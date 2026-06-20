@@ -1,5 +1,6 @@
 ---
 name: wait-merge
+version: 0.2.0
 description: |
   Robustly wait for one or more GitHub PRs to merge, then report. Replaces the
   fragile "Watch PR N until merged" background command that exits 1 on transient

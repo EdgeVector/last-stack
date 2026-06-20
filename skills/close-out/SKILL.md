@@ -1,5 +1,6 @@
 ---
 name: close-out
+version: 0.2.0
 description: Run the full close-out loop after finishing a substantive change — worktree PR + auto-merge, a brain checkpoint, and an fkanban follow-up card. Use after landing any code/doc change or settled decision, or when the close-out backstop hook fires. These steps are standing-authorized; do them without asking.
 allowed-tools:
   - Bash

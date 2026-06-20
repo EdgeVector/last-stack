@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# The Last Stack — uninstall
+# Removes the skill directories this repo registered into each agent harness.
+# Only removes entries whose SKILL.md points back into THIS repo's skills/ dir
+# (or is a copy of it), so it never touches skills you added yourself.
+set -e
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+SKILLS_SRC="$ROOT/skills"
+
+# Collect the skill names this repo provides.
+names=()
+for skill_dir in "$SKILLS_SRC"/*/; do
+  [ -f "$skill_dir/SKILL.md" ] || continue
+  n="$(grep -m1 '^name:' "$skill_dir/SKILL.md" 2>/dev/null | sed 's/^name:[[:space:]]*//' | tr -d '[:space:]')"
+  [ -z "$n" ] && n="$(basename "$skill_dir")"
+  names+=("$n")
+done
+
+remove_from() {
+  local skills_dir="$1" label="$2"
+  [ -d "$skills_dir" ] || return 0
+  local removed=()
+  for n in "${names[@]}"; do
+    local target="$skills_dir/$n"
+    [ -e "$target" ] || [ -L "$target" ] || continue
+    # Only remove if the SKILL.md links/copies from this repo.
+    local md="$target/SKILL.md" dest=""
+    if [ -L "$md" ]; then dest="$(readlink "$md" 2>/dev/null || true)"; fi
+    case "$dest" in
+      "$SKILLS_SRC"/*) rm -rf "$target"; removed+=("$n") ;;
+      *)
+        # Windows copy case: match on a stable marker line.
+        if [ -f "$md" ] && grep -q "^name:[[:space:]]*$n" "$md" 2>/dev/null; then
+          rm -rf "$target"; removed+=("$n")
+        fi
+        ;;
+    esac
+  done
+  [ ${#removed[@]} -gt 0 ] && echo "  $label: removed ${removed[*]}"
+  return 0
+}
+
+echo "Uninstalling The Last Stack skills ..."
+remove_from "$HOME/.claude/skills"          "claude"
+remove_from "$HOME/.codex/skills"           "codex"
+remove_from "$HOME/.factory/skills"         "factory"
+remove_from "$HOME/.config/opencode/skills" "opencode"
+echo "Done. (This repo at $ROOT is left in place — delete it to fully remove.)"
