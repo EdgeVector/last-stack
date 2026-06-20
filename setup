@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# The Last Stack — setup / installer
+#
+# Registers each skill in skills/ into whatever agent harnesses you have
+# installed (Claude Code, Codex, Factory/droid, OpenCode). Skills stay in this
+# repo; the harness gets a real directory with a symlinked SKILL.md, so a later
+# `git pull` updates every installed skill at once.
+#
+# Usage:
+#   ./setup                 # auto-detect harnesses, install where present
+#   ./setup --host claude   # claude | codex | factory | opencode | auto
+#   ./setup --local         # install into ./.claude/skills (project-vendored)
+#   ./setup --uninstall     # remove installed skill links (see bin/last-stack-uninstall)
+#
+# Re-running is idempotent.
+set -e
+umask 077
+
+ROOT="$(cd "$(dirname "$0")" && pwd -P)"
+SKILLS_SRC="$ROOT/skills"
+
+HOST="auto"
+LOCAL_INSTALL=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --host) HOST="$2"; shift 2 ;;
+    --host=*) HOST="${1#*=}"; shift ;;
+    --local) LOCAL_INSTALL=1; shift ;;
+    --uninstall) exec "$ROOT/bin/last-stack-uninstall" ;;
+    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+    *) echo "unknown flag: $1" >&2; exit 2 ;;
+  esac
+done
+
+# ── Windows lacks reliable symlinks without Developer Mode; copy there instead ─
+IS_WINDOWS=0
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*|Windows_NT) IS_WINDOWS=1 ;; esac
+
+_link_or_copy() {
+  # $1 = source file, $2 = destination path
+  if [ "$IS_WINDOWS" -eq 1 ]; then
+    cp -f "$1" "$2"
+  else
+    ln -snf "$1" "$2"
+  fi
+}
+
+# ── Register every skills/<name>/SKILL.md into a target skills dir ────────────
+register_into() {
+  local skills_dir="$1"
+  local label="$2"
+  local linked=()
+  mkdir -p "$skills_dir"
+  for skill_dir in "$SKILLS_SRC"/*/; do
+    [ -f "$skill_dir/SKILL.md" ] || continue
+    local dir_name skill_name target
+    dir_name="$(basename "$skill_dir")"
+    [ "$dir_name" = "node_modules" ] && continue
+    # Prefer the frontmatter `name:` so the slash-command matches the skill name.
+    skill_name="$(grep -m1 '^name:' "$skill_dir/SKILL.md" 2>/dev/null | sed 's/^name:[[:space:]]*//' | tr -d '[:space:]')"
+    [ -z "$skill_name" ] && skill_name="$dir_name"
+    target="$skills_dir/$skill_name"
+    # Replace stale dir-symlinks from older layouts.
+    [ -L "$target" ] && rm -f "$target"
+    mkdir -p "$target"
+    [ -L "$target/SKILL.md" ] && rm -f "$target/SKILL.md"
+    _link_or_copy "${skill_dir%/}/SKILL.md" "$target/SKILL.md"
+    linked+=("$skill_name")
+  done
+  if [ ${#linked[@]} -gt 0 ]; then
+    echo "  ${label}: ${linked[*]}"
+  else
+    echo "  ${label}: (no skills found)" >&2
+  fi
+}
+
+# ── --local: vendor into the current project's .claude/skills ─────────────────
+if [ "$LOCAL_INSTALL" -eq 1 ]; then
+  echo "Installing The Last Stack (v$(cat "$ROOT/VERSION")) into ./.claude/skills ..."
+  register_into "$(pwd)/.claude/skills" "claude (project)"
+  echo "Done."
+  exit 0
+fi
+
+# ── Detect which harnesses are present ────────────────────────────────────────
+INSTALL_CLAUDE=0; INSTALL_CODEX=0; INSTALL_FACTORY=0; INSTALL_OPENCODE=0
+case "$HOST" in
+  claude)   INSTALL_CLAUDE=1 ;;
+  codex)    INSTALL_CODEX=1 ;;
+  factory)  INSTALL_FACTORY=1 ;;
+  opencode) INSTALL_OPENCODE=1 ;;
+  auto)
+    { command -v claude   >/dev/null 2>&1 || [ -d "$HOME/.claude" ]; } && INSTALL_CLAUDE=1
+    { command -v codex    >/dev/null 2>&1 || [ -d "$HOME/.codex" ]; }  && INSTALL_CODEX=1
+    { command -v droid    >/dev/null 2>&1 || [ -d "$HOME/.factory" ]; } && INSTALL_FACTORY=1
+    { command -v opencode >/dev/null 2>&1 || [ -d "$HOME/.config/opencode" ]; } && INSTALL_OPENCODE=1
+    # Nothing detected → default to Claude Code.
+    if [ $((INSTALL_CLAUDE+INSTALL_CODEX+INSTALL_FACTORY+INSTALL_OPENCODE)) -eq 0 ]; then
+      INSTALL_CLAUDE=1
+    fi
+    ;;
+  *) echo "unknown --host: $HOST (use claude|codex|factory|opencode|auto)" >&2; exit 2 ;;
+esac
+
+echo "Installing The Last Stack (v$(cat "$ROOT/VERSION")) ..."
+[ "$INSTALL_CLAUDE"   -eq 1 ] && register_into "$HOME/.claude/skills"          "claude"
+[ "$INSTALL_CODEX"    -eq 1 ] && register_into "$HOME/.codex/skills"           "codex"
+[ "$INSTALL_FACTORY"  -eq 1 ] && register_into "$HOME/.factory/skills"         "factory"
+[ "$INSTALL_OPENCODE" -eq 1 ] && register_into "$HOME/.config/opencode/skills" "opencode"
+
+echo
+echo "Done. Upgrade later with:  cd \"$ROOT\" && git pull && ./setup"
+echo "Uninstall with:           \"$ROOT/setup\" --uninstall"

@@ -1,5 +1,6 @@
 ---
 name: fkanban-setup
+version: 0.2.0
 description: |
   Bootstrap fkanban on a fresh machine or checkout — install deps, run `init`
   (resolve published schemas + seed the default board), verify with `doctor`,

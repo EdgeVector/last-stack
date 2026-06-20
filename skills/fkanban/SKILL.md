@@ -1,5 +1,6 @@
 ---
 name: fkanban
+version: 0.2.0
 description: |
   Manage the fkanban board — a kanban over LastDB. File, list, show, move,
   groom, and soft-delete cards via the fkanban CLI. Use when the user wants to

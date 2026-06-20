@@ -1,5 +1,6 @@
 ---
 name: fkanban-agent
+version: 0.2.0
 description: |
   Drive a single fkanban card all the way to a MERGED PR — a card only
   reaches `done` when its code is actually in the repo. Two entry modes:

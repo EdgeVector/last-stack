@@ -9,12 +9,48 @@ top of [LastDB](https://folddb.com) and its two companion tools:
 - **Kanban** — [`fkanban`](https://github.com/EdgeVector/fkanban): a task board
   over LastDB (the *what's in flight*: cards moving through columns).
 
-These skills are written for agent harnesses that load
+The skills are written for agent harnesses that load
 [Agent Skills](https://docs.claude.com/en/docs/agents-and-tools/agent-skills)
 (a `SKILL.md` per skill, discovered by the agent and invoked by name) — e.g.
-Claude Code. They give an agent a consistent playbook for filing tasks, driving
-a single task to a merged pull request, waiting on PRs robustly, and closing out
-finished work.
+Claude Code, Codex, Factory, OpenCode. They give an agent a consistent playbook
+for filing tasks, driving a single task to a merged pull request, waiting on PRs
+robustly, and closing out finished work.
+
+## Install
+
+One line — clone the repo and run `setup`:
+
+```bash
+git clone https://github.com/EdgeVector/last-stack ~/.last-stack && ~/.last-stack/setup
+```
+
+`setup` auto-detects which agent harnesses you have (Claude Code, Codex,
+Factory, OpenCode) and registers every skill into each one. The skills stay in
+the cloned repo; each harness gets a directory with a symlinked `SKILL.md`, so a
+later `git pull` updates every installed skill at once.
+
+Options:
+
+```bash
+~/.last-stack/setup --host claude   # install for one harness only
+~/.last-stack/setup --local         # vendor into ./.claude/skills (this project only)
+~/.last-stack/setup --uninstall     # remove the registered skills
+```
+
+> Prefer to copy skills by hand? Each skill is a self-contained directory under
+> `skills/` — `cp -R skills/<name> ~/.claude/skills/`. `setup` just automates that
+> across every harness and keeps them updatable.
+
+## Upgrade
+
+```bash
+cd ~/.last-stack && git pull && ./setup
+```
+
+Or just tell your agent **"upgrade the last stack"** — the included
+**last-stack-upgrade** skill does the pull + re-register and shows what changed.
+Skills can cheaply check for a new version via `bin/last-stack-update-check`
+(cached, never blocks; prints `UP_TO_DATE` / `UPGRADE_AVAILABLE` / `UNKNOWN`).
 
 ## What's in the stack
 
@@ -25,28 +61,18 @@ finished work.
 | **fkanban-setup** | Bootstrap fkanban on a fresh machine — install, `init` (resolve published schemas), `doctor`, optional MCP registration. |
 | **wait-merge** | Robustly wait for a GitHub PR to merge by interpreting PR *state*, not a watcher's exit code. |
 | **close-out** | The post-change loop: open a PR from a worktree, drive it to merged, checkpoint the decision to the brain, file a follow-up card. |
+| **last-stack-upgrade** | Update the stack in place and re-register the skills. |
 
-## Install
+## Repo layout
 
-Skills are plain directories — drop them where your agent looks for skills. For
-Claude Code, that's `~/.claude/skills/` (user-level) or `.claude/skills/`
-(project-level):
-
-```bash
-# clone the stack
-git clone <this-repo-url> last-stack
-
-# install all skills at the user level
-mkdir -p ~/.claude/skills
-cp -R last-stack/skills/* ~/.claude/skills/
 ```
-
-Each skill is self-contained — copy only the ones you want. After installing,
-your agent discovers them by name (e.g. "follow the fkanban-agent skill",
-"set up fkanban", "wait for this PR to merge").
-
-You'll also want the underlying tools installed and a LastDB node running — see
-the **fkanban-setup** skill and the `fkanban` / `fbrain` repos.
+VERSION                 the installed version (update-check compares against this)
+setup                   installer — registers skills into your agent harnesses
+bin/
+  last-stack-update-check   is a newer version available? (cached, non-blocking)
+  last-stack-uninstall      remove the registered skills
+skills/<name>/SKILL.md  one directory per skill
+```
 
 ## How an AI agent uses this
 
@@ -73,6 +99,9 @@ The intended loop, end to end:
 The two halves are deliberate: **the brain records why; the board records
 what's in flight.** Keep decisions in `fbrain` and active work in `fkanban`, and
 the agent always has both context and a worklist.
+
+You'll also want the underlying tools installed and a LastDB node running — see
+the **fkanban-setup** skill and the `fkanban` / `fbrain` repos.
 
 ## Configuring the node URL
 
