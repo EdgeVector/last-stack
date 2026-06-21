@@ -16,6 +16,14 @@ Claude Code, Codex, Factory, OpenCode. They give an agent a consistent playbook
 for filing tasks, driving a single task to a merged pull request, waiting on PRs
 robustly, and closing out finished work.
 
+The companion **routines** (`routines/`) are the *engine* that runs the playbook
+on a schedule: small, parameterized prompts you register as scheduled (cron)
+agents — a self-improvement loop, papercut sweep, machine-hygiene/disk-reclaim, a
+PR drainer, and the kanban/brain driving loop (pickup, watch, groom,
+program-driver, rollup, consolidate, morning-sync). The skills *assume* this
+pipeline exists; the routines provide it. See
+[`routines/README.md`](routines/README.md).
+
 ## Install
 
 One line — clone the repo and run `setup`:
@@ -63,6 +71,22 @@ Skills can cheaply check for a new version via `bin/last-stack-update-check`
 | **close-out** | The post-change loop: open a PR from a worktree, drive it to merged, checkpoint the decision to the brain, file a follow-up card. |
 | **last-stack-upgrade** | Update the stack in place and re-register the skills. |
 
+And the **routines** (`routines/`) — parameterized scheduled-agent templates that
+run the skills on a cadence:
+
+| Routine | What it does |
+|---|---|
+| **self-improvement-loop** | Mine recent sessions for friction; upgrade the agent's own skills/routines/permissions. |
+| **papercut-sweep** | File a card per dev-process papercut found in sessions. |
+| **worktree-cleanup** / **disk-reclaim** | Prune stale worktrees/branches; reclaim disk; keep the machine healthy. |
+| **drain-open-prs** | Drive every open PR across all repos toward zero (merge or close). |
+| **fkanban-pickup** / **fkanban-watch** | Drain the ready queue (fan out WORK agents); reconcile the board. |
+| **groom-board** / **program-driver** | Promote ready work into `todo`; keep each program's next card flowing. |
+| **program-rollup** / **consolidate-brain** / **morning-sync** | Mirror the board into the brain; keep statuses honest; deliver the daily decision briefing. |
+
+See [`routines/README.md`](routines/README.md) for how routines + skills compose,
+and fill in the `<PLACEHOLDERS>` before scheduling any of them.
+
 ## Repo layout
 
 ```
@@ -72,6 +96,8 @@ bin/
   last-stack-update-check   is a newer version available? (cached, non-blocking)
   last-stack-uninstall      remove the registered skills
 skills/<name>/SKILL.md  one directory per skill
+routines/<name>.md      one parameterized scheduled-agent template per routine
+routines/README.md      how routines + skills compose; how to register them
 ```
 
 ## How an AI agent uses this
@@ -99,6 +125,16 @@ The intended loop, end to end:
 The two halves are deliberate: **the brain records why; the board records
 what's in flight.** Keep decisions in `fbrain` and active work in `fkanban`, and
 the agent always has both context and a worklist.
+
+Steps 1–5 describe what an agent does *when invoked*. To make the loop
+**self-driving** — so cards get filed, promoted, picked up, and reconciled
+without a human kicking it each time — register the **routines** as scheduled
+agents: generators (`self-improvement-loop`, `papercut-sweep`) file work,
+`groom-board`/`program-driver` promote it, `fkanban-pickup` fans out WORK agents,
+`fkanban-watch`/`drain-open-prs` reconcile the stragglers, and
+`program-rollup`/`consolidate-brain`/`morning-sync` keep the brain honest and
+surface the short genuinely-human decision set. See
+[`routines/README.md`](routines/README.md).
 
 You'll also want the underlying tools installed and a LastDB node running — see
 the **fkanban-setup** skill and the `fkanban` / `fbrain` repos.
