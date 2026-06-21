@@ -1,0 +1,141 @@
+# The Last Stack — routines
+
+The **skills** (`../skills/`) are the agent *playbook*: how an agent files a
+task, drives one card to a merged PR, waits on a PR robustly, closes out
+finished work. They describe *modes* (`WORK`, `RECONCILE`) and reference a
+"pickup → agent → watch" pipeline — but a skill only runs when something *invokes
+it*. The **routines** here are that something: small, self-contained prompts you
+register as **scheduled (cron) agents**, each of which wakes on a cadence, does
+one bounded pass, and exits. Together they turn the playbook into a self-driving
+loop.
+
+> If the skills are the rules of the game, the routines are the players who
+> actually show up each turn.
+
+These are **templates**, not drop-in config. Every one carries `<PLACEHOLDERS>`
+you fill in for your own workspace (paths, repo list, the CLI you use for your
+brain/board, your build/test commands). Read a routine top-to-bottom and adapt it
+before you schedule it. Nothing here is tied to a specific product — these are
+generalized from a working agent fleet, with all workspace-specific details
+stripped out.
+
+## How routines + skills compose
+
+```
+                 ┌─────────────────── generators ───────────────────┐
+   sessions ──▶  self-improvement-loop      papercut-sweep
+                 (upgrades the agent's       (files a card per
+                  own skills/routines)        friction it finds)
+                          │                        │
+                          ▼                        ▼
+                 ┌──────────────────── the board (fkanban) ─────────────────┐
+                 │  backlog → todo → doing → review → done                   │
+   program-driver ─▶ promote each program's next card into `todo`           │
+   groom-board    ─▶ promote ready backlog→todo, break up epics, prune junk  │
+                 └──────────────────────────────────────────────────────────┘
+                          │ (ready `todo` cards)
+                          ▼
+   fkanban-pickup ─▶ fan out one `fkanban-agent` (WORK mode) per card/batch ──▶ opens PR, drives to MERGED
+                          │
+                          ▼
+   fkanban-watch  ─▶ RECONCILE: advance merged PRs to `done`, re-arm/un-stick the stragglers
+   drain-open-prs ─▶ daily backstop: drive every open PR across all repos toward zero
+
+                 ┌──────────────────── the brain (fbrain) ──────────────────┐
+   program-rollup   ─▶ mirror board status into the driving index (auto block)
+   consolidate-brain ─▶ fix lying statuses, archive completed/dupe records
+   morning-sync      ─▶ surface the SHORT genuinely-human decision set
+                 └──────────────────────────────────────────────────────────┘
+
+                 ┌──────────────────── machine health ──────────────────────┐
+   worktree-cleanup ─▶ prune stale worktrees/branches, bring repos to latest
+   disk-reclaim     ─▶ hourly: reclaim disk, prune merged worktrees
+                 └──────────────────────────────────────────────────────────┘
+```
+
+The division of labour is deliberate:
+
+- **The board (`fkanban`) records what's in flight.** Cards move through
+  columns; a card is `done` only when its PR is merged.
+- **The brain (`fbrain`) records why.** Decisions, designs, the program DAGs, the
+  driving index. Routines keep the brain honest against the board.
+- **Generators fill the queue; the pickup engine drains it; the reconciler and
+  drainer clean up the stragglers.** No single routine does everything — each is
+  cheap, bounded, and exits, so several can run concurrently without wedging.
+
+The skills assume this pipeline exists. `fkanban-agent`'s RECONCILE mode is run
+*by* `fkanban-watch`; its WORK mode is fanned out *by* `fkanban-pickup`; the cards
+it works are promoted *by* `program-driver` / `groom-board` and filed *by* the
+generators. **Ship the skills without the routines and the playbook has no
+engine.** That's why this pack exists.
+
+## The two clusters
+
+### A. Self-fixing fleet health — portable to any agent fleet
+
+| Routine | Cadence (suggested) | What it does |
+|---|---|---|
+| [`self-improvement-loop`](self-improvement-loop.md) | daily | Mine recent agent sessions for recurring friction; upgrade the agent's OWN skills / routines / permission allowlist / docs. The flagship self-fixing loop. |
+| [`papercut-sweep`](papercut-sweep.md) | daily | File a card per dev-process papercut found in sessions (does not ship fixes itself). |
+| [`worktree-cleanup`](worktree-cleanup.md) | daily (off-hours) | Prune stale worktrees/branches; bring repos to latest default branch. |
+| [`disk-reclaim`](disk-reclaim.md) | hourly | Reclaim disk, prune merged/clean worktrees, sweep orphan processes. |
+| [`drain-open-prs`](drain-open-prs.md) | daily | Drive every open PR across all repos toward zero (merge or close). |
+
+### B. The kanban / brain driving loop — pairs 1:1 with the skills
+
+| Routine | Cadence (suggested) | What it does |
+|---|---|---|
+| [`fkanban-pickup`](fkanban-pickup.md) | hourly | Drain the ready queue; fan out one `fkanban-agent` (WORK) per card/batch. |
+| [`fkanban-watch`](fkanban-watch.md) | every 10–20 min | RECONCILE the board; advance merged PRs, un-stick the strays. |
+| [`groom-board`](groom-board.md) | daily | Promote ready `backlog`→`todo`, break up epics, prune junk. |
+| [`program-driver`](program-driver.md) | hourly | Promote each program's next DAG card into `todo`. |
+| [`program-rollup`](program-rollup.md) | hourly | Mirror the board into the brain's driving index (auto-status block). |
+| [`consolidate-brain`](consolidate-brain.md) | daily | Keep brain statuses honest; archive completed/dupe records. |
+| [`morning-sync`](morning-sync.md) | daily | Surface the short genuinely-human decision set; a read-only briefing. |
+
+## Registering a routine as a scheduled agent
+
+These templates are harness-agnostic prompts. Register each one as a recurring
+agent however your harness schedules work — for example, with Claude Code's
+**scheduled tasks** (a `SKILL.md`-style prompt + a cron expression), or any cron
++ headless-agent runner. The body of each `.md` file *is* the prompt; the
+frontmatter suggests a cadence. The pattern every routine follows:
+
+1. **Run cold.** Assume no memory of prior runs — read your orientation docs
+   (your workspace `CLAUDE.md` / equivalent, your memory index) at the top.
+2. **Do ONE bounded pass**, then **exit**. Never loop, never `sleep`-to-wait.
+3. **Be idempotent and additive.** Re-running should be safe. Default to *not*
+   acting when in doubt.
+4. **Leave a heartbeat** (optional but recommended) so a silently-failed routine
+   is visible to `morning-sync` / a health check.
+
+## The golden rules every routine obeys
+
+These are baked into every template below; they're the difference between a
+self-driving fleet and a runaway one:
+
+- **No `sleep`-to-wait, ever.** Wait for CI / a merge only with a *sleepless*
+  foreground watcher that returns on real state change (see the `wait-merge`
+  skill). A `sleep`-loop wedges the run and can cancel queued sibling calls.
+- **One bounded pass per wake, then exit.** Waiting is the *gap between*
+  invocations, not a loop inside one. (One historical fleet wedged at 124 idle
+  agents / 19 GB swap — all from agents that looped instead of exiting.)
+- **Never edit a shared checkout in place.** Use an isolated `git worktree add`.
+  Never `git stash` / `reset` / `clean` a shared repo — sibling agents share it.
+- **Never touch your live brain/board node destructively.** Don't kill, restart,
+  or reset the process hosting your brain/board. Read through the app.
+- **Dev, not prod, when a design is in flight.** Do reversible work; leave the
+  prod cutover for a human.
+- **File, don't ship — unless you're the executor.** The generators and triage
+  routines FILE cards; only `fkanban-pickup` (via `fkanban-agent`) and the
+  reconcilers actually open/merge PRs. Keep the lanes separate.
+
+## Adapting these to your stack
+
+The templates name `fkanban` (board) and `fbrain` (brain) because that's what the
+companion skills use — but **the loop is tool-agnostic.** Swap in any board CLI
+with columns and any notes store; the routine logic (promote ready work, fan out
+one worker per card, reconcile merged PRs, keep the brain honest) is what
+matters. Wherever a template says `bun run src/cli.ts <cmd>` or `fbrain <cmd>`,
+substitute your tool's command. Wherever it says `<WORKSPACE>` /
+`<owner>/<repo>` / `<DEFAULT_BRANCH>` / `<BUILD+TEST commands>`, fill in yours.
