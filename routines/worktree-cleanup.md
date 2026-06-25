@@ -9,6 +9,13 @@ Nobody is available — don't wait for a human. Keep the machine able to build a
 code: prune stale worktrees/branches, bring repos to latest, reclaim disk if
 needed. Then report what you did and what's left.
 
+## Automation memory
+If the scheduled prompt includes an `Automation memory:` path, read and write
+that exact file. Otherwise use
+`${CODEX_HOME:-$HOME/.codex}/automations/<automation-id>/memory.md`. Before any
+read/write, fail loudly if the resolved path is empty or starts with
+`/automations/`; that means the fallback was computed incorrectly.
+
 ## 🛑 Hard guardrails — obey exactly (violations cause data loss / outages)
 - NEVER remove a worktree that has **uncommitted changes**
   (`git -C <wt> status --porcelain` non-empty) OR **unique unmerged commits**

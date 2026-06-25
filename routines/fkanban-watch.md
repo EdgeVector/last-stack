@@ -9,6 +9,13 @@ FOLLOW the board — advance in-flight work — NOT to author or ship new featur
 code. If the sweep is quiet and you spotted something worth doing, FILE it as a
 card for the `fkanban-pickup` + `fkanban-agent` pipeline to build.
 
+## Automation memory
+If the scheduled prompt includes an `Automation memory:` path, read and write
+that exact file. Otherwise use
+`${CODEX_HOME:-$HOME/.codex}/automations/<automation-id>/memory.md`. Before any
+read/write, fail loudly if the resolved path is empty or starts with
+`/automations/`; that means the fallback was computed incorrectly.
+
 ## Action budget per wake (cheap vs heavy)
 - **CHEAP mechanical advances are NOT capped** — do EVERY applicable one this
   wake: move every merged card to `done`; **re-arm auto-merge on every PR that is
@@ -39,6 +46,7 @@ card for the `fkanban-pickup` + `fkanban-agent` pipeline to build.
       in the body, fall back to the head-branch lookup.
    c. Advance it — but the DEFAULT for any swept card is LEAVE IT ALONE. Only act
       on concrete PR/branch evidence; when in doubt, do nothing.
+      If you need merge-queue membership, do not request `isInMergeQueue` through `gh pr view/list --json`; use `gh api graphql` for the queue flag and `autoMergeRequest{enabledAt}`.
       - **Merged** (`state=MERGED` / `mergedAt` set) → `move <slug> done`. This is
         the ONLY path to `done` — a verified MERGED PR. If you can't point at a
         merged PR, it does NOT go to `done`, no matter how the card reads.

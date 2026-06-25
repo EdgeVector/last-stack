@@ -16,6 +16,13 @@ code, file cards, or change record statuses. The heavier daily
 archival/dedup/status-fix + prose curation belongs to `consolidate-brain`; the
 board-ops (moving merged cards to `done`) belongs to `fkanban-watch`.
 
+## Automation memory
+If the scheduled prompt includes an `Automation memory:` path, read and write
+that exact file. Otherwise use
+`${CODEX_HOME:-$HOME/.codex}/automations/<automation-id>/memory.md`. Before any
+read/write, fail loudly if the resolved path is empty or starts with
+`/automations/`; that means the fallback was computed incorrectly.
+
 ## Hard safety rules (non-negotiable)
 - The node hosting your brain/board is your live data. NEVER kill / restart /
   reset / clean / stash it. If in doubt, do nothing. Read through the app only.

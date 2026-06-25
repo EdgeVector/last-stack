@@ -9,6 +9,13 @@ edit gate cards, or run `fkanban-agent`. The only writes are (a) upserting the
 brief to a `morning-sync-brief-latest` note in your brain and (b) one heartbeat
 line. You start cold with no memory of prior runs.
 
+## Automation memory
+If the scheduled prompt includes an `Automation memory:` path, read and write
+that exact file. Otherwise use
+`${CODEX_HOME:-$HOME/.codex}/automations/<automation-id>/memory.md`. Before any
+read/write, fail loudly if the resolved path is empty or starts with
+`/automations/`; that means the fallback was computed incorrectly.
+
 > **CRITICAL framing:** the fleet DRIVES autonomously toward the goal; it does NOT
 > gate on caution. So this brief is NOT a decision-fatigue queue. Most "gates" are
 > autonomous (driven by `program-driver`/`fkanban-agent`) and must NOT be surfaced

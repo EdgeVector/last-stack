@@ -103,11 +103,30 @@ frontmatter suggests a cadence. The pattern every routine follows:
 
 1. **Run cold.** Assume no memory of prior runs — read your orientation docs
    (your workspace `CLAUDE.md` / equivalent, your memory index) at the top.
-2. **Do ONE bounded pass**, then **exit**. Never loop, never `sleep`-to-wait.
-3. **Be idempotent and additive.** Re-running should be safe. Default to *not*
+2. **Resolve automation memory safely.** If the scheduler supplies an explicit
+   `Automation memory:` path, use it exactly. Otherwise resolve
+   `${CODEX_HOME:-$HOME/.codex}/automations/<automation-id>/memory.md`. Fail
+   loudly if the result is empty or starts with `/automations/`.
+3. **Do ONE bounded pass**, then **exit**. Never loop, never `sleep`-to-wait.
+4. **Be idempotent and additive.** Re-running should be safe. Default to *not*
    acting when in doubt.
-4. **Leave a heartbeat** (optional but recommended) so a silently-failed routine
+5. **Leave a heartbeat** (optional but recommended) so a silently-failed routine
    is visible to `morning-sync` / a health check.
+
+Safe memory-path shell pattern for rendered automation prompts:
+
+```bash
+automation_id="<automation-id>"
+memory_path="<Automation memory path if supplied>"
+if [ -z "$memory_path" ]; then
+  memory_path="${CODEX_HOME:-$HOME/.codex}/automations/$automation_id/memory.md"
+fi
+case "$memory_path" in
+  ""|/automations/*) echo "unsafe automation memory path: $memory_path" >&2; exit 1 ;;
+esac
+mkdir -p "$(dirname "$memory_path")"
+touch "$memory_path"
+```
 
 ## The golden rules every routine obeys
 
