@@ -11,6 +11,13 @@ cards landed as one PR) — each driving its card(s) all the way to a MERGED PR
 `fkanban-watch` (reconcile) routine — do NOT do reconcile work here. The goal is
 to DRAIN THE READY QUEUE AS FAST AS IS SAFE every hour so cards don't back up.
 
+## Automation memory
+If the scheduled prompt includes an `Automation memory:` path, read and write
+that exact file. Otherwise use
+`${CODEX_HOME:-$HOME/.codex}/automations/<automation-id>/memory.md`. Before any
+read/write, fail loudly if the resolved path is empty or starts with
+`/automations/`; that means the fallback was computed incorrectly.
+
 > **Why batch?** If your CI recompiles the whole workspace on every run
 > regardless of diff size, 3 small same-subsystem PRs each pay a full CI run
 > while one batched PR pays it once. Batching is a CI-cost lever — only batch
@@ -99,6 +106,7 @@ unit2 = SINGLE[d]").
     `gh pr update-branch <n>` if BEHIND, rebase if DIRTY, fix if a required check
     fails. When MERGED, move the card (for a batch, EVERY card that shipped) to
     `done` and EXIT."
+  - "When checking merge-queue membership, NEVER request `isInMergeQueue` through `gh pr view/list --json`; query the queue flag through `gh api graphql`."
   - "If you hit a GENUINE human-only blocker (ambiguous spec, a conflict needing
     product judgment, a required gate only a human can clear, a dependency on
     unmerged work): leave the branch clean, move the card to `review`, append a

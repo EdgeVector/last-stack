@@ -186,6 +186,8 @@ act on (see step 2). When in doubt, do nothing.** Skip a card only if it has no
    gh -R <repo> pr list --head fkanban/<slug> --state all \
      --json number,state,mergedAt,mergeStateStatus,reviewDecision,statusCheckRollup
    ```
+   Do not request `isInMergeQueue` through `gh pr view/list --json`; use GraphQL
+   with `gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){pullRequest(number:<n>){isInMergeQueue autoMergeRequest{enabledAt}}}}'`.
 2. **Decide from PR state:**
    - **Merged** (`state=MERGED` / `mergedAt` set) → `move <slug> done`. Done.
      A card reaches `done` ONLY this way — a verified MERGED PR. If you cannot

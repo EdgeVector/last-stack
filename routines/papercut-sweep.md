@@ -15,6 +15,13 @@ cards.
 Read your project's agent-orientation doc and durable memory index first, and
 honor their standing rules.
 
+## Automation memory
+If the scheduled prompt includes an `Automation memory:` path, read and write
+that exact file. Otherwise use
+`${CODEX_HOME:-$HOME/.codex}/automations/<automation-id>/memory.md`. Before any
+read/write, fail loudly if the resolved path is empty or starts with
+`/automations/`; that means the fallback was computed incorrectly.
+
 ## Step 1 — Gather the last day's session signal
 - Enumerate recent sessions using whatever your harness offers unattended. A
   full-text transcript *search* tool may be blocked in unattended runs — if so,

@@ -44,6 +44,13 @@ gh -R <repo> pr view <n> \
   2>/dev/null || true
 ```
 
+Do not add `isInMergeQueue` to `gh pr view/list --json`; use GraphQL because
+older `gh` releases reject that field:
+
+```bash
+gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){pullRequest(number:<n>){isInMergeQueue autoMergeRequest{enabledAt}}}}' 2>/dev/null || true
+```
+
 Decision table:
 
 | Observed | Meaning | Action |
@@ -67,7 +74,7 @@ JSON even when auto-merge is actually armed**. Don't conclude "auto-merge isn't
 set" from a null there — confirm via GraphQL:
 
 ```bash
-gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){pullRequest(number:<n>){autoMergeRequest{enabledAt}}}}' 2>/dev/null || true
+gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){pullRequest(number:<n>){isInMergeQueue autoMergeRequest{enabledAt}}}}' 2>/dev/null || true
 ```
 
 Re-assert auto-merge when a clean, approved PR is just sitting. Match your

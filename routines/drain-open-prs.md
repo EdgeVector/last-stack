@@ -26,6 +26,20 @@ gh -R <owner>/<repo> pr list --state open \
   --json number,title,headRefName,isDraft,mergeable,mergeStateStatus,reviewDecision,autoMergeRequest,updatedAt,statusCheckRollup,author
 ```
 
+Do not add `isInMergeQueue` to `gh pr view/list --json`; use GraphQL when
+queue membership is needed:
+
+```bash
+gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){pullRequest(number:<n>){isInMergeQueue autoMergeRequest{enabledAt}}}}' 2>/dev/null || true
+```
+
+## Automation memory
+If the scheduled prompt includes an `Automation memory:` path, read and write
+that exact file. Otherwise use
+`${CODEX_HOME:-$HOME/.codex}/automations/<automation-id>/memory.md`. Before any
+read/write, fail loudly if the resolved path is empty or starts with
+`/automations/`; that means the fallback was computed incorrectly.
+
 ## 🛑 Hard guardrails — obey exactly
 - **NEVER touch a PR whose head branch has a _LIVE_ worktree — but a _PARKED_
   worktree is yours to drive.** Before acting on ANY PR, `git -C <repo> worktree

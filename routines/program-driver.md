@@ -13,6 +13,13 @@ PROMOTER/DRIVER/GENERATOR of the program DAGs — you never write feature code, 
 PRs, run `fkanban-agent`, rebase, or merge (the pickup→agent pipeline does that).
 Each run starts cold.
 
+## Automation memory
+If the scheduled prompt includes an `Automation memory:` path, read and write
+that exact file. Otherwise use
+`${CODEX_HOME:-$HOME/.codex}/automations/<automation-id>/memory.md`. Before any
+read/write, fail loudly if the resolved path is empty or starts with
+`/automations/`; that means the fallback was computed incorrectly.
+
 > **DRIVE, don't gate.** The board idles when work is treated as "waiting on a
 > human" but isn't. Default to AUTONOMOUS progress. Apply the gate taxonomy below
 > on every card; only a SHORT genuinely-human set ever gets escalated instead of
