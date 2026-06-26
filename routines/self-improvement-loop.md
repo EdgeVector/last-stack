@@ -45,6 +45,11 @@ Window: the LAST 24 HOURS of sessions. If that yields little signal (fewer than
   Note: a full-text transcript *search* tool may require interactive approval
   and be blocked in unattended runs — if so, read/grep the raw transcript files
   directly instead.
+- For Codex/Aline history, the canonical agent path is the installed
+  `onecontext` skill. Do not tell agents to run an `aline` CLI unless
+  `command -v aline` succeeds in the expected agent shell; when the skill or CLI
+  is unavailable, fall back to `rg` over `${CODEX_HOME:-$HOME/.codex}/sessions`
+  JSONL transcripts.
 - Common transcript-grepping gotchas to plan around: (a) file mtimes can be
   unreliable if an indexer bulk-touches old files — filter by an in-content
   timestamp field, not `-mtime`; (b) a harness session id may not equal the
