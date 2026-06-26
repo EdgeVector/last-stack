@@ -32,6 +32,10 @@ read/write, fail loudly if the resolved path is empty or starts with
   and wedges the run). Print "at rate limit, not starting" and EXIT.
 - If you already moved some cards to `doing` before hitting the limit, move them
   back to `todo` so the next run re-picks them, then exit.
+- If your scheduled prompt gates pickup on merge-queue depth, compute that depth
+  with GraphQL or a helper wrapping GraphQL. Never render or run
+  a `gh pr` JSON request for `isInMergeQueue`; local GitHub CLI versions can
+  reject that field before the routine starts.
 
 ## Setup
 - Drive the board CLI from `<board repo dir>` with `<board CLI> ...`.

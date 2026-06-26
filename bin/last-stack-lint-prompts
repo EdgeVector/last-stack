@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+
+if [ "$#" -eq 0 ]; then
+  set -- "$ROOT"
+fi
+
+fail=0
+
+check_path_exists() {
+  local path="$1"
+  if [ ! -e "$path" ]; then
+    echo "missing path: $path" >&2
+    fail=1
+    return 1
+  fi
+}
+
+for path in "$@"; do
+  check_path_exists "$path" || continue
+
+  matches="$(rg -n 'gh[^\n]*pr[^\n]*--json[^\n]*isInMergeQueue' "$path" \
+    -g '!**/.git/**' -g '!**/logs/**' -g '!**/run/**' -g '!**/memory.md' \
+    -g '!bin/last-stack-lint-prompts' || true)"
+  matches="$(printf '%s\n' "$matches" | grep -v -E 'Do not|Never|do not|never' || true)"
+  if [ -n "$matches" ]; then
+    printf '%s\n' "$matches"
+    echo "unsupported gh --json isInMergeQueue usage found under $path" >&2
+    fail=1
+  fi
+
+  if rg -n '\$CODEX_HOME/automations|\$\{CODEX_HOME\}/automations' "$path" \
+    -g '!**/.git/**' -g '!**/logs/**' -g '!**/run/**' -g '!**/memory.md' \
+    -g '!bin/last-stack-lint-prompts'
+  then
+    echo "unsafe CODEX_HOME automation fallback found under $path" >&2
+    fail=1
+  fi
+done
+
+while IFS= read -r -d '' toml; do
+  if ! grep -q '^status = "ACTIVE"' "$toml"; then
+    continue
+  fi
+
+  prompt="$(grep -m1 '^prompt = ' "$toml" || true)"
+  if [ -z "$prompt" ]; then
+    continue
+  fi
+
+  if [[ "$prompt" != *"Automation ID:"* || "$prompt" != *"Automation memory:"* ]]; then
+    echo "active automation prompt lacks explicit Automation ID/memory: $toml" >&2
+    fail=1
+  fi
+
+  if [[ "$prompt" == *"Automation memory: /automations/"* ]]; then
+    echo "active automation prompt has unsafe absolute memory path: $toml" >&2
+    fail=1
+  fi
+done < <(find "$@" -path '*/automation.toml' -type f -print0 2>/dev/null || true)
+
+exit "$fail"
