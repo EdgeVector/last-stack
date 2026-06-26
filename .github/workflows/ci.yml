@@ -28,6 +28,9 @@ jobs:
       - name: VERSION is present and non-empty
         run: test -s VERSION
 
+      - name: Prompt safety lint
+        run: bin/last-stack-lint-prompts
+
       - name: Every skill has valid frontmatter
         run: |
           set -e
