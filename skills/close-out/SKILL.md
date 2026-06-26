@@ -94,11 +94,25 @@ If the work leaves a follow-up that closes by elapsed time or by someone else
 tracked only in your head.
 
 ```bash
-fkanban add <valid-slug> --title "<title>" --column todo --tags <...> --body "<...>"
+cat > /tmp/fkanban-follow-up.md <<'EOF'
+Repo: <owner>/<repo>
+Base: main
+Branch: fkanban/<valid-slug>
+Kind: pr
+
+## GOAL
+...
+
+## VERIFY
+...
+EOF
+fkanban add <valid-slug> --title "<title>" --column todo --tags <...> --repo <owner>/<repo> --base main --branch fkanban/<valid-slug> --kind pr < /tmp/fkanban-follow-up.md
 ```
 
-Slugs must be lowercase `[a-z0-9-_]`, start with a letter/digit. `--body`
-replaces the whole body (dump + concatenate first if you mean to append).
+Slugs must be lowercase `[a-z0-9-_]`, start with a letter/digit. The body must
+include `Repo:`/`Base:` headers; use `Kind: registry` or `Kind: tracker` plus
+the same ownership headers for non-PR follow-ups. `--body` replaces the whole
+body (dump + concatenate first if you mean to append).
 
 ## 5. Update memory if the fact is durable
 

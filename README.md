@@ -60,6 +60,29 @@ Or just tell your agent **"upgrade the last stack"** — the included
 Skills can cheaply check for a new version via `bin/last-stack-update-check`
 (cached, never blocks; prints `UP_TO_DATE` / `UPGRADE_AVAILABLE` / `UNKNOWN`).
 
+## Keeping The Last Stack Current
+
+Treat reusable agent improvements as upstream candidates by default. When a
+session produces a new skill, routine, permission pattern, or process rule,
+first decide whether it is workspace-specific or generally useful. If it is
+portable, make the change safe for this repo and upstream it here so every
+installed harness can pick it up on the next `git pull && ./setup`.
+
+The expected path is:
+
+1. Capture the rationale in the brain (`fbrain`) when the change should survive
+   the current chat.
+2. File or update a board card (`fkanban`) for the delivery/audit trail.
+3. Patch the shared skill or routine in `skills/` or `routines/` using
+   placeholder-based, product-neutral wording.
+4. Verify the changed prompt still works cold, without chat memory or local-only
+   assumptions.
+5. Leave workspace-only details in the workspace's own agent docs, not in this
+   pack.
+
+This keeps one-off local improvements from quietly forking the fleet while still
+preserving project-specific rules where they belong.
+
 ## What's in the stack
 
 | Skill | What it does |

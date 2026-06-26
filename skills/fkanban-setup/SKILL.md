@@ -14,8 +14,10 @@ description: |
 # fkanban — setup & repair
 
 fkanban is a Bun/TypeScript client of a **LastDB node** — the board lives on the
-node, the CLI just talks to it over HTTP. Setup = make the CLI able to reach a
-node that already has the `fkanban/*` schemas published. **The `fkanban/*`
+node, the CLI just talks to it over the configured transport. Local daily-driver
+nodes may be **Unix-socket only** with HTTP intentionally shut down. Setup = make
+the CLI able to reach a node that already has the `fkanban/*` schemas published.
+**The `fkanban/*`
 schemas are already published**, so `fkanban init` only *loads and resolves*
 them — it never publishes anything and needs no developer credentials.
 
@@ -100,9 +102,11 @@ re-check your `--schema-service-url` / `--node-url`.
 
 ## If `doctor` fails
 
-- **node unreachable** → the node/daemon isn't up. Check the node's health
-  endpoint (`curl -s <node-url>/api/health`). **Never** kill/restart a node you
-  don't own to "fix" this — surface it; restart only a node you own.
+- **node unreachable** → the node/daemon isn't reachable over the configured
+  transport. First trust the `doctor` transport line: a green socket-backed
+  `doctor` means the node is healthy even if `curl <node-url>/api/health` fails
+  because HTTP is disabled. If `doctor` fails, surface it. **Never** kill/restart
+  a node you don't own to "fix" this — restart only a node you own.
 - **schema hash mismatch / not loaded** → re-run `init`.
 - **config missing** → run `init`.
 

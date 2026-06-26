@@ -171,3 +171,21 @@ one worker per card, reconcile merged PRs, keep the brain honest) is what
 matters. Wherever a template says `bun run src/cli.ts <cmd>` or `fbrain <cmd>`,
 substitute your tool's command. Wherever it says `<WORKSPACE>` /
 `<owner>/<repo>` / `<DEFAULT_BRANCH>` / `<BUILD+TEST commands>`, fill in yours.
+
+## Upstreaming Routine Improvements
+
+When a scheduled run discovers a better way to operate the agent fleet, classify
+the improvement before applying it:
+
+- **Portable:** a better prompt step, safety rail, cadence rule, verification
+  habit, or skill handoff that would help other Last Stack users. Patch the
+  relevant file in this repo (`routines/` or `skills/`) with placeholders instead
+  of local names, then file/update the board card and record the rationale in
+  `fbrain`.
+- **Workspace-specific:** a local path, repo list, credential detail, product
+  policy, or environment-specific command. Keep it in the workspace's agent docs
+  or local scheduled-task config, and do not bake it into this pack.
+
+Default to upstreaming the portable part and isolating the local binding. A good
+routine change should run cold from a fresh install after `git pull && ./setup`,
+with no hidden dependency on the session that discovered it.

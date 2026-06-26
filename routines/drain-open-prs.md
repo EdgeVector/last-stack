@@ -94,7 +94,9 @@ read/write, fail loudly if the resolved path is empty or starts with
    when done. If the conflict needs real product judgment, don't guess — comment
    flagging it and leave it.
 6. **Relevant + a required check RED** → ALWAYS read the failing job first
-   (`gh run view <run-id> --log-failed -R <repo>`). Branch on the failure KIND:
+   (`gh run view <run-id> --log-failed -R <repo>`). Do not stop at umbrella
+   checks like `ci-required`; inspect the underlying failed job(s). Branch on the
+   failure KIND:
    - **Infra flake** — cancelled / runner shutdown / timeout / lost-runner, with
      tests actually passing. NOT a code failure and the #1 reason a green-able PR
      sits stuck for hours. Action: `gh run rerun <run-id> --failed -R <repo>`
@@ -103,6 +105,11 @@ read/write, fail loudly if the resolved path is empty or starts with
      sitting — re-running it IS the action.
    - **Mechanical** (formatter/linter/version-consistency) → fix in a worktree as
      in (5), push, re-assert merge.
+   - **Deterministic broken test with a clear branch-local cause** → reproduce or
+     identify the exact failing test from logs, inspect the PR diff, fix the test
+     or code in a fresh worktree, run the narrowest reliable local verifier for
+     that failure, push with lease, then re-assert merge. This is in scope for
+     the drainer; do not flag it merely because it is a test failure.
    - **Real logic/test failure needing product judgment** → don't guess; comment
      flagging the specific failure and leave it for a human.
 7. **Pending** (CI running, or waiting on a human you can't satisfy) → leave for

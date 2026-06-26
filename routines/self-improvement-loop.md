@@ -34,6 +34,12 @@ skill?", "should this manual chore become a routine?", "is the agent fighting
 the same permission prompt every day?", "did the agent get corrected by the same
 stale doc repeatedly?".
 
+When a tooling improvement is portable beyond this one workspace, make it safe
+to upstream into The Last Stack (`skills/` or `routines/`) instead of leaving a
+private local fork. Keep local paths, repo names, credentials, and product policy
+in workspace docs/config; upstream only the generalized skill/routine/process
+rule with placeholders.
+
 First, READ these for orientation and honor every standing rule:
 - `<WORKSPACE>/<your project CLAUDE.md or equivalent agent-orientation doc>`
 - `<your durable memory index, e.g. ~/.<agent>/memory/MEMORY.md>`
@@ -93,8 +99,11 @@ exactly what changed.
 Apply directly (low blast radius, additive, reversible):
 - NEW SKILL → write the skill file with proper frontmatter (`name`,
   `description` with strong trigger phrasing), following the format of your
-  existing skills. Codify the observed workflow concretely.
-- EDIT an existing skill/routine → make the targeted fix.
+  existing skills. Codify the observed workflow concretely. If it is portable,
+  place or mirror it in The Last Stack so other harnesses can install it.
+- EDIT an existing skill/routine → make the targeted fix. If the fix generalizes,
+  patch the shared Last Stack copy with product-neutral wording and placeholders;
+  keep workspace-only bindings local.
 - PERMISSION allowlist → add the safe, read-only/idempotent entry to your
   harness's project-local settings. NEVER a write/deploy/destructive command.
 - DOC / MEMORY → add a clarification or a new memory note (+ a one-line index
@@ -126,6 +135,9 @@ File a board card for:
   workspace — never `git add -A`/`git add .` in a shared checkout.
 - Verify each write landed (re-read the file / re-list the task / re-list the
   board card).
+- For portable skill/routine/process changes, verify the shared Last Stack file
+  is updated so the change survives `git pull && ./setup` and can be picked up
+  by other agents.
 
 ## Output
 End with a concise report: signals found (grouped by type), what you APPLIED
