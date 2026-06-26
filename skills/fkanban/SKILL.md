@@ -31,7 +31,9 @@ LastDB node. Cards move through columns; every change persists in the node.
   `cd <fkanban-repo> && PATH="$HOME/.bun/bin:$PATH" bun run src/cli.ts <command>`.
   `fkanban doctor` reports whether the shim is on PATH.
 - **Where the data lives:** the board records live on **your LastDB node**. The
-  CLI talks to the node over **HTTP**, so it's fast. The node URL is
+  CLI talks to the node over its configured transport. Local daily-driver nodes
+  may be **Unix-socket only** with HTTP intentionally shut down; `doctor` reports
+  the active transport and should be treated as authoritative. The node URL is
   **configurable** — `init` defaults to a node running locally on your machine;
   point it elsewhere with `--node-url` / the config file (`~/.fkanban/config.json`).
 - **Columns:** `backlog → todo → doing → review → done`.
@@ -62,6 +64,12 @@ fkanban board list
 `add` with the same slug **updates** the card (upsert), so it's safe to edit a
 card by re-adding it. Default column for a fresh card is `backlog`; for a task
 you want worked soon, pass `--column todo`.
+
+Every live card must carry body ownership headers. Even registry or tracker
+cards that are not normal pickup work need explicit `Repo:` and `Base:` lines so
+watch/groom/pickup routines can classify them consistently. For non-PR cards,
+also set `Kind: registry` or `Kind: tracker` in the body and pass
+`--kind registry|tracker`.
 
 ### Filing a card with a real body — feed it via stdin
 
@@ -101,13 +109,15 @@ A card that's meant to be implemented should carry, in its `--body`:
    > **Follow the fkanban-agent skill — drive this through to a MERGED PR.
    > A card is only `done` when its code is actually in the repo.**
 
-2. **A work header telling the agent where to work** (there is no `repo` field
-   on the schema, so it goes in the body):
+2. **A work/ownership header telling the agent where to work or which repo owns
+   the tracker/registry context**. The CLI stores structured fields too, but
+   routines still parse body headers directly, so the body header is mandatory:
 
    ```
    Repo: owner/name           # owner/name or absolute local path
    Base: main                 # base branch
    Branch: fkanban/<slug>     # optional; defaults to fkanban/<slug>
+   Kind: pr                   # pr | registry | tracker
    ```
 
 3. **The spec itself:** GOAL / CONTEXT / STEPS / VERIFY (exact commands that
@@ -131,7 +141,9 @@ than describing stale "current state".
 
 - **Never kill a LastDB node you didn't start** — the board lives on it. If
   `doctor` says the node is unreachable, surface it; don't restart things
-  blindly. For destructive/migration testing, spin up an ephemeral node on
-  another port rather than touching a shared daily-driver node.
+  blindly. Do not treat a disabled HTTP health endpoint as failure when
+  `doctor` succeeds over the Unix socket. For destructive/migration testing,
+  spin up an ephemeral node on another port rather than touching a shared
+  daily-driver node.
 - This skill only **manages** the board. To actually implement a card, hand off
   to the **fkanban-agent** skill (or tell the user it's ready to be worked).

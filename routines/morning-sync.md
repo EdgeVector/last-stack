@@ -44,8 +44,11 @@ Lead with a one-line restatement of the goal / top objective, then:
 
 ## Setup
 - If your shell is sandboxed, prepend `$PATH` on every call so your tools resolve.
-- First run your board health check (`<board CLI> doctor`). If the node is
-  unreachable, STOP and report — never restart/kill the process hosting your
+- First run your board health check (`<board CLI> doctor`). Treat a green
+  `doctor` as authoritative even when it reports a Unix-socket transport and the
+  HTTP endpoint is unavailable; some LastDB/F-Kanban installs intentionally run
+  socket-only with HTTP shut down. If `doctor` says the node is unreachable or
+  unprovisioned, STOP and report — never restart/kill the process hosting your
   brain/board node.
 - Snapshot: `<board CLI> list --json`; the brain's goal note, driving index,
   `open-decisions`, and `routine-heartbeats`.
