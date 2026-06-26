@@ -26,6 +26,11 @@ read/write, fail loudly if the resolved path is empty or starts with
 - Enumerate recent sessions using whatever your harness offers unattended. A
   full-text transcript *search* tool may be blocked in unattended runs — if so,
   read/grep the raw transcript files directly.
+- For Codex/Aline history, the canonical agent path is the installed
+  `onecontext` skill. Do not tell agents to run an `aline` CLI unless
+  `command -v aline` succeeds in the expected agent shell; when the skill or CLI
+  is unavailable, fall back to `rg` over `${CODEX_HOME:-$HOME/.codex}/sessions`
+  JSONL transcripts.
 - Grepping gotchas (same as the self-improvement loop): unreliable mtimes →
   filter by an in-content timestamp; session id ≠ transcript filename →
   `grep -l "<id>"`; in `zsh`, quote globs and append `|| true`.
