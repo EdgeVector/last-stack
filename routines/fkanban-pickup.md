@@ -154,3 +154,10 @@ empty, nothing to build." Then exit.
 > `routine-heartbeats` note in your brain (read-modify-write; newest-on-top):
 > `fkanban-pickup <ISO-ts> <ok|noop|error> <one-line outcome>`. `morning-sync`
 > reads this to make a silent pickup failure loud.
+>
+> If the parent spawned worker agents, the heartbeat must include the spawned
+> child/thread ids when the harness exposes them. If the harness leaves stale
+> child edges, active listeners, or other cleanup state that might suppress the
+> next hourly pickup, record that explicitly as `error scheduler-cleanup-stale`
+> in the heartbeat and automation memory. Do not let a successful worker merge
+> hide the fact that future pickup runs may be suppressed.
