@@ -34,6 +34,26 @@ read/write, fail loudly if the resolved path is empty or starts with
 - Follow the **fkanban-agent** skill, RECONCILE mode — it is the source of truth
   for behavior; this prompt is the trigger.
 
+## Pickup failover
+Treat `fkanban-pickup` as critical infrastructure. Before the normal reconcile
+sweep, check the latest `last-stack fkanban-pickup` scheduler session in
+`${CODEX_HOME:-$HOME/.codex}/session_index.jsonl` and the
+`routine-heartbeats` entry for `fkanban-pickup`. If both are stale by more than
+2 hours, and `fkanban list --json` shows any unblocked `todo` card with a
+`Repo:` header and no `BLOCKED:` line, switch this wake into pickup failover:
+
+- Read `/Users/tomtang/.last-stack/routines/fkanban-pickup.md` fully.
+- Execute one bounded pickup pass using that routine's rules, with the same
+  board/brain CLIs and workspace.
+- Use N=1 in failover mode unless the pickup routine requires a lower safe
+  value; the goal is to keep the pipeline alive, not to double normal capacity.
+- Append both a `fkanban-watch ... ok pickup-failover ...` heartbeat and the
+  pickup routine's required `fkanban-pickup ... ok ...` heartbeat.
+- Then exit without doing the normal reconcile sweep.
+
+If pickup is fresh, or there is no eligible unblocked `todo` work, continue with
+the normal reconcile sweep below.
+
 ## The sweep
 1. `<board CLI> list --json` to read the whole board.
 2. For EVERY card NOT already in `done` (NOT just `doing`/`review` — a card can be

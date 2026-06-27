@@ -39,6 +39,11 @@ Lead with a one-line restatement of the goal / top objective, then:
   but un-carded.
 - **§🩺 Routine health** — from your scheduler's last-run timestamps + the
   `routine-heartbeats` note; flag any routine stale-vs-cadence or errored.
+  Treat `fkanban-pickup` as critical: if it has no scheduler session or
+  `routine-heartbeats` entry within the last 2 hours AND there is any eligible
+  `todo` card with `Repo:`/`Base:` and no `BLOCKED:` note, surface this as a
+  top routine-health alert. Name the top eligible card(s), the last pickup time,
+  and say that the ready queue is not being drained.
 - **§📦 Moved overnight** — git activity across your repos in the last 24h, rolled
   up BY PROGRAM (not by individual PR), short.
 
@@ -52,6 +57,10 @@ Lead with a one-line restatement of the goal / top objective, then:
   brain/board node.
 - Snapshot: `<board CLI> list --json`; the brain's goal note, driving index,
   `open-decisions`, and `routine-heartbeats`.
+- Also inspect your scheduler/session index if available. For Codex Desktop this
+  is typically `$CODEX_HOME/session_index.jsonl` or
+  `$HOME/.codex/session_index.jsonl`; compare `last-stack fkanban-pickup` against
+  the hourly cadence. Use this only as read-only evidence for §🩺.
 
 ## Deliver
 Build the brief per the skeleton, lead with the goal one-liner. Then: print the
