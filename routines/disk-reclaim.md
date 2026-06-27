@@ -36,9 +36,20 @@ read/write, fail loudly if the resolved path is empty or starts with
 ## Procedure each run
 1. **Assess.** `df -h <data volume> | tail -1`; list any build/server processes
    and confirm which one is your live brain/board node so you never touch it.
-2. **Enumerate worktrees** across all repos + all worktree locations via
-   `git -C <repo> worktree list --porcelain`; derive each one's repo from
-   `git -C <path> rev-parse --git-common-dir`.
+2. **Discover repo roots before any repo-level Git command.** The workspace
+   root may be only a container directory, so do not probe it as a checkout.
+   Enumerate child repos first, then run Git against each repo:
+   ```bash
+   workspace="<WORKSPACE>"
+   find "$workspace" -mindepth 2 -maxdepth 3 -type d -name .git -prune \
+     | while IFS= read -r git_dir; do
+         repo="${git_dir%/.git}"
+         git -C "$repo" rev-parse --show-toplevel
+       done
+   ```
+   Use those repo roots to enumerate worktrees across all repos + all worktree
+   locations via `git -C "$repo" worktree list --porcelain`; derive each one's
+   repo from `git -C <path> rev-parse --git-common-dir`.
 3. **Per worktree, compute** branch, unique-commit count, dirty count, and
    whether a live process runs in it. A worktree is REMOVABLE only if 0 unique
    commits AND clean AND its card isn't `doing`/`review`. If it has a live orphan

@@ -79,12 +79,24 @@ gh pr view <N> --repo <owner>/<repo> --json state,mergeStateStatus,autoMergeRequ
 ## 3. Checkpoint the decision to the brain
 
 Save the *why* / the settled decision / the milestone. Brain = why + decision;
-Kanban = what's in flight. Pipe big bodies via **stdin**, not as command args
-(args may not shell-expand and can clobber the record):
+Kanban = what's in flight. Pipe big Markdown bodies via **stdin** or a body
+file, never as shell-expanded command arguments. If the body contains backticks,
+`$()`, `$var`, globs, or other shell metacharacters, write it with a quoted
+heredoc so the shell cannot evaluate it:
 
 ```bash
-printf '%s\n' '---' 'type: project' 'title: <title>' 'tags: [<...>]' '---' '' '<body>' \
-  | fbrain put <slug> --type project
+body_file="$(mktemp)"
+cat > "$body_file" <<'EOF'
+---
+type: project
+title: <title>
+tags: [<...>]
+---
+
+<body with literal `backticks` and $(examples)>
+EOF
+fbrain put <slug> --type project < "$body_file"
+rm -f "$body_file"
 ```
 
 ## 4. File an fkanban card for anything that closes later

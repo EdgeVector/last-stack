@@ -130,7 +130,7 @@ scan of your repos for these. A PR is a STRANDED candidate when ALL hold:
   CLEAN/mergeable but auto-merge OFF/dropped, or (ii) `mergeStateStatus`
   BLOCKED/DIRTY/BEHIND with auto-merge ON.
 - NOT a draft.
-- NO `git worktree list` entry on its head branch (an active worktree = a sibling
+- NO active worktree entry on its head branch (an active worktree = a sibling
   agent mid-work; NEVER touch those).
 - NOT owned by another routine's branch namespace.
 Apply the CHEAP fixes to EVERY stranded candidate (uncapped): re-arm auto-merge
