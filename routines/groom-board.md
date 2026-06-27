@@ -109,5 +109,6 @@ read/write, fail loudly if the resolved path is empty or starts with
   and `morning-sync` can see what changed.
 
 > **Heartbeat (optional but recommended).** LAST action, even on a no-op run:
-> append `groom-board <ISO-ts> <ok|noop|error> <outcome>` to a
-> `routine-heartbeats` note (`noop` = ran, nothing to promote/prune).
+> call `<last-stack>/bin/last-stack-fbrain-append-heartbeat --line
+> "groom-board <ISO-ts> <ok|noop|error> <outcome>"` (`noop` = ran, nothing to
+> promote/prune).

@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# Safely add one newest-on-top line to the typed routine-heartbeats reference.
+set -euo pipefail
+
+slug="routine-heartbeats"
+line=""
+
+usage() {
+  cat <<'EOF'
+Usage:
+  last-stack-fbrain-append-heartbeat [--slug routine-heartbeats] --line "<heartbeat>"
+  printf '%s\n' "<heartbeat>" | last-stack-fbrain-append-heartbeat --stdin
+
+Reads the target with `fbrain get <slug> --type reference --json`, aborts on any
+read or JSON error, then writes the new line plus the existing body back with
+`fbrain put <slug> --type reference`. Existing lines are preserved.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --slug)
+      [ "$#" -ge 2 ] || { echo "--slug requires a value" >&2; exit 2; }
+      slug="$2"
+      shift 2
+      ;;
+    --slug=*)
+      slug="${1#*=}"
+      shift
+      ;;
+    --line)
+      [ "$#" -ge 2 ] || { echo "--line requires a value" >&2; exit 2; }
+      line="$2"
+      shift 2
+      ;;
+    --line=*)
+      line="${1#*=}"
+      shift
+      ;;
+    --stdin)
+      IFS= read -r line || true
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      if [ -z "$line" ]; then
+        line="$*"
+        break
+      fi
+      echo "unexpected argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [ -z "$slug" ]; then
+  echo "slug is required" >&2
+  exit 2
+fi
+if [ -z "$line" ]; then
+  echo "heartbeat line is required" >&2
+  exit 2
+fi
+case "$line" in
+  *$'\n'*)
+    echo "heartbeat line must be a single line" >&2
+    exit 2
+    ;;
+esac
+
+command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 127; }
+command -v fbrain >/dev/null 2>&1 || { echo "fbrain is required" >&2; exit 127; }
+
+read_err="$(mktemp)"
+put_body="$(mktemp)"
+cleanup() {
+  rm -f "$read_err" "$put_body"
+}
+trap cleanup EXIT
+
+if ! record_json="$(fbrain get "$slug" --type reference --json 2>"$read_err")"; then
+  cat "$read_err" >&2
+  echo "aborting: could not read $slug as --type reference; not writing" >&2
+  exit 1
+fi
+
+if ! printf '%s' "$record_json" | jq -e 'type == "object" and (has("error") | not)' >/dev/null; then
+  printf '%s\n' "$record_json" >&2
+  echo "aborting: typed read returned an error payload; not writing" >&2
+  exit 1
+fi
+
+body="$(printf '%s' "$record_json" | jq -r '.body // ""')"
+
+{
+  printf '%s\n' "$line"
+  if [ -n "$body" ]; then
+    printf '%s\n' "$body"
+  fi
+} > "$put_body"
+
+fbrain put "$slug" --type reference --json < "$put_body" >/dev/null
+echo "appended heartbeat to $slug"

@@ -150,10 +150,10 @@ End with a one-line report: which cards you picked + spawned (by slug); or "queu
 empty, nothing to build." Then exit.
 
 > **Heartbeat (optional but recommended).** As the LAST action — even when the
-> queue was empty or you aborted at the rate limit — append one line to a
-> `routine-heartbeats` note in your brain (read-modify-write; newest-on-top):
-> `fkanban-pickup <ISO-ts> <ok|noop|error> <one-line outcome>`. `morning-sync`
-> reads this to make a silent pickup failure loud.
+> queue was empty or you aborted at the rate limit — call
+> `<last-stack>/bin/last-stack-fbrain-append-heartbeat --line "fkanban-pickup
+> <ISO-ts> <ok|noop|error> <one-line outcome>"`. `morning-sync` reads
+> `routine-heartbeats` to make a silent pickup failure loud.
 >
 > If the parent spawned worker agents, the heartbeat must include the spawned
 > child/thread ids when the harness exposes them. If the harness leaves stale
