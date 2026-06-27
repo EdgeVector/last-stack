@@ -71,6 +71,14 @@ fkanban list --json               # whole board
 (No shim on PATH — `command not found: fkanban`? Fall back to
 `bun run src/cli.ts <cmd>` from the fkanban repo directory; equivalent.)
 
+Codex CLI diagnostics sometimes emit
+`WARNING: proceeding, even though we could not update PATH: Operation not permitted (os error 1)`
+from sandboxed shells, including `codex app-server --help` and
+`codex debug --help`. Treat that warning as benign when the command exits 0 and
+prints the requested help/output. Treat a nonzero exit, missing expected output,
+or an unrelated error as actionable; do not spend time debugging the PATH warning
+alone.
+
 ## The card brief (read it as your spec)
 
 The card body is the specification. By convention it carries a header that
