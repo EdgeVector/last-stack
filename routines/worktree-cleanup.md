@@ -44,6 +44,9 @@ read/write, fail loudly if the resolved path is empty or starts with
    (`git -C <wt> status --porcelain`), and whether a live process is cwd'd in it.
    A worktree is **REMOVABLE only if** it has 0 unique commits AND a clean tree
    AND its board card is not `doing`/`review`. Otherwise LEAVE IT.
+   If you store command output in shell variables, do not name one `status`;
+   `zsh` treats `status` as a read-only special parameter. Use a specific name
+   such as `repo_status` or `git_status`.
 3. **Remove the removable ones.** `git -C <repo> worktree remove --force <path>`
    then `git -C <repo> branch -D <branch>` for a fully-merged branch. Run
    `git -C <repo> worktree prune` per repo afterwards. Delete any now-empty

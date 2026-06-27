@@ -281,6 +281,9 @@ Check the repo's contributor docs (`CONTRIBUTING.md` / `AGENTS.md` /
   a human.
 - **Never kill a LastDB node you didn't start**; don't `clean`/`reset`/`stash` a
   shared repo — use `git worktree add`.
+- **Avoid zsh's read-only `status` parameter.** Shell snippets and one-liners
+  may run under `zsh`; use names like `git_status`, `repo_status`, or `st` for
+  temporary command output instead of assigning to `status`.
 - **Never chain `sleep` to wait — but DO drive your PR to merge.** **WORK mode**
   owns its PR to merge and waits with a *sleepless* foreground watcher
   (`/wait-merge`, or `gh pr checks <n> --watch`, or `gh run watch <run-id>`) that

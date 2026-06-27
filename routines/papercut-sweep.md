@@ -33,7 +33,8 @@ read/write, fail loudly if the resolved path is empty or starts with
   JSONL transcripts.
 - Grepping gotchas (same as the self-improvement loop): unreliable mtimes →
   filter by an in-content timestamp; session id ≠ transcript filename →
-  `grep -l "<id>"`; in `zsh`, quote globs and append `|| true`.
+  `grep -l "<id>"`; in `zsh`, quote globs, append `|| true`, and never assign
+  to a variable named `status` because it is read-only.
 - Look for papercut signals: a command that errored then was retried with a
   tweak; permission-prompt friction; the agent hunting for a file/script/
   endpoint; "that's deprecated, use X" corrections; repeated manual setup steps;
