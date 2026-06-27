@@ -57,6 +57,36 @@ with every actionable blocker and papercut discovered.
    failed; retrying blockers is part of the signal. If the recipe itself is
    structurally impossible, file or reuse a `fix-dogfood-recipe-*` card.
 
+## Target Checkout Freshness Preflight
+Before running the selected feature recipe, identify every existing Git checkout
+the recipe will execute from or inspect. Use only the recipe text, isolation
+rules, and explicit paths in `dogfood-registry`; do not broad-scan unrelated
+repos. For each target checkout, report:
+
+- path, current branch, `HEAD`, dirty/clean state, upstream remote/ref, local
+  upstream ref oid, remote upstream oid, and freshness result;
+- `fresh` when `HEAD` matches the remote upstream oid, or when the local upstream
+  ref matches the remote upstream oid and `HEAD` is not behind it;
+- `stale` when the remote upstream oid differs from `HEAD` or the local upstream
+  ref and the checkout cannot be proven current;
+- `unknown` when there is no upstream/tracked remote ref or the remote cannot be
+  read.
+
+This preflight is strictly non-mutating. Do not run `git fetch`, `git pull`,
+`git merge`, `git rebase`, `git checkout`, `git stash`, `git reset`, or
+`git clean` in a target checkout. Use commands such as `git status --porcelain`,
+`git rev-parse`, `git for-each-ref`, and `git ls-remote` so dirty worktrees and
+user branches are preserved. Prefer
+`<last-stack>/bin/last-stack-git-checkout-freshness <repo> [<repo>...]`, which
+performs this check without mutating the target checkout.
+
+If any target checkout is `stale` or `unknown`, STOP before the recipe runs.
+Report it as a dogfood workflow blocker, not a product blocker: do not file or
+reopen feature bug cards based on stale local code. Update the rotation log as
+`blocked` with the checkout path and oid mismatch, append the routine heartbeat,
+and tell the next run to use a current isolated worktree or have the human update
+the target checkout. Never mutate the user's target repo to make it current.
+
 ## Run The Recipe
 - Follow the selected entry exactly. Feature-specific knowledge belongs in
   `dogfood-registry`, not in this routine.
@@ -121,9 +151,12 @@ card.
   - `cards filed`: comma-separated slugs, or `-`
 - If you correct durable rationale or recipe text, make the smallest possible
   edit to `dogfood-registry` and mention it in the report.
-- Last action: append a typed heartbeat to Brain record `routine-heartbeats`
-  (`--type reference`) in this form:
+- Last action: append the heartbeat through
+  `<last-stack>/bin/last-stack-fbrain-append-heartbeat --line "<line>"`, where
+  `<line>` has this form:
   `dogfood-rotate <ISO-ts> <ok|noop|error> feature=<slug> result=<result> cards=<n>`.
+  The helper reads `routine-heartbeats --type reference`, aborts on read errors,
+  and preserves existing lines.
 
 ## Guardrails
 - Files cards and Brain updates only. Do not ship feature fixes, open PRs, run
@@ -140,6 +173,8 @@ card.
 End with a concise report:
 - selected feature and why it was eligible;
 - pass/fail/blocked result with the real assertion;
+- target checkout freshness report, including any stale/unknown checkout that
+  stopped the run before recipe execution;
 - cards filed or reused;
 - Brain rotation-log update status;
 - preflight transport state (`reachable` / `tcp_health_down_socket_ok` /

@@ -127,5 +127,6 @@ index and guarantee each unblocked one has its next card in `todo`.
   note in place; always refresh its timestamp.
 
 > **Heartbeat (optional but recommended).** LAST action, even on a
-> no-op/early-exit run: append `program-driver <ISO-ts> <ok|noop|error>
-> <outcome>` to a `routine-heartbeats` note (`noop` = changed nothing).
+> no-op/early-exit run: call
+> `<last-stack>/bin/last-stack-fbrain-append-heartbeat --line "program-driver
+> <ISO-ts> <ok|noop|error> <outcome>"` (`noop` = changed nothing).

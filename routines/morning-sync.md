@@ -65,8 +65,9 @@ Lead with a one-line restatement of the goal / top objective, then:
 ## Deliver
 Build the brief per the skeleton, lead with the goal one-liner. Then: print the
 full brief (it reaches the human via this task's completion notification), upsert
-it to a `morning-sync-brief-latest` note via stdin, and append `morning-sync
-<ISO-ts> ok <summary>` to `routine-heartbeats` (newest on top).
+it to a `morning-sync-brief-latest` note via stdin, and use
+`<last-stack>/bin/last-stack-fbrain-append-heartbeat --line "morning-sync
+<ISO-ts> ok <summary>"` to append the typed `routine-heartbeats` line.
 
 End by noting that most things are being driven automatically and the human only
 needs to weigh in on §⚠️ or redirect §🚀.

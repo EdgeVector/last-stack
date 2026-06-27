@@ -117,6 +117,21 @@ frontmatter suggests a cadence. The pattern every routine follows:
 5. **Leave a heartbeat** (optional but recommended) so a silently-failed routine
    is visible to `morning-sync` / a health check.
 
+Safe heartbeat append pattern:
+
+```bash
+last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+"$last_stack/bin/last-stack-fbrain-append-heartbeat" --line \
+  "<routine> <ISO-ts> <ok|noop|error> <summary>"
+```
+
+Use this helper instead of open-coding heartbeat read/write snippets. It reads
+`fbrain get routine-heartbeats --type reference --json`, aborts on any read or
+JSON error, then writes the new newest-on-top line plus the existing body back
+with `fbrain put routine-heartbeats --type reference`. If a project and
+reference share the `routine-heartbeats` slug, the typed read still targets the
+reference; if the typed read fails, the helper performs no write.
+
 Safe memory-path shell pattern for rendered automation prompts:
 
 ```bash

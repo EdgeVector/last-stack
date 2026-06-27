@@ -172,5 +172,5 @@ nudged, which were skipped (no Repo header), which stalled — or, if quiet, whi
 card you filed (or that you found nothing). Then exit.
 
 > **Heartbeat (optional but recommended).** LAST action, even on a quiet sweep:
-> append `fkanban-watch <ISO-ts> <ok|noop|error> <outcome>` to a
-> `routine-heartbeats` note (`noop` = quiet sweep).
+> call `<last-stack>/bin/last-stack-fbrain-append-heartbeat --line
+> "fkanban-watch <ISO-ts> <ok|noop|error> <outcome>"` (`noop` = quiet sweep).

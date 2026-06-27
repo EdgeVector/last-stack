@@ -95,5 +95,6 @@ read/write, fail loudly if the resolved path is empty or starts with
    "candidate to close" programs. Then EXIT.
 
 > **Heartbeat (optional but recommended).** LAST action, even if nothing changed:
-> append `program-rollup <ISO-ts> <ok|noop|error> <outcome>` to a
-> `routine-heartbeats` note (`noop` = no status delta).
+> call `<last-stack>/bin/last-stack-fbrain-append-heartbeat --line
+> "program-rollup <ISO-ts> <ok|noop|error> <outcome>"` (`noop` = no status
+> delta).
