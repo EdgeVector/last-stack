@@ -131,6 +131,10 @@ mkdir -p "$(dirname "$memory_path")"
 touch "$memory_path"
 ```
 
+When writing shell snippets that may run under `zsh`, do not use `status` as a
+temporary variable name. In `zsh`, `status` is a read-only special parameter; use
+specific names such as `git_status`, `repo_status`, or `st` instead.
+
 Codex automation prompt skeletons should render the same information directly:
 
 ```text

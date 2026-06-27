@@ -61,7 +61,9 @@ Window: the LAST 24 HOURS of sessions. If that yields little signal (fewer than
   timestamp field, not `-mtime`; (b) a harness session id may not equal the
   transcript *filename* — the id often appears *inside* the file, so
   `grep -l "<id>"` to map session → file; (c) in `zsh`, quote globs and append
-  `|| true` so an unmatched glob (`no matches found`) doesn't abort the command.
+  `|| true` so an unmatched glob (`no matches found`) doesn't abort the command;
+  (d) never assign to a variable named `status` because `zsh` reserves it as a
+  read-only special parameter.
 - Hunt specifically for TOOLING-improvement signals:
   - A multi-step manual workflow performed by hand that recurs across sessions →
     candidate for a NEW SKILL.
