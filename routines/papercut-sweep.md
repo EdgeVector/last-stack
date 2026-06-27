@@ -45,8 +45,15 @@ read/write, fail loudly if the resolved path is empty or starts with
 
 ## Step 2 — Triage each papercut
 For each distinct papercut, classify it:
-- ALREADY KNOWN: already captured in memory or on the board (check the board
-  first). If so, do NOT re-file — skip it.
+- ALREADY KNOWN / COVERED: already captured by an OPEN board card that still
+  accurately covers this fresh evidence (check the board first). Do NOT file a
+  duplicate card, but update the existing card with the new evidence if it would
+  help the worker.
+- RECURRING KNOWN: already mentioned somewhere, but the issue is still recurring
+  after the prior card/doc/memory entry. This is ACTIONABLE, not a terminal
+  skip. If the existing card is `done`, stale, too broad, or only a Brain/doc
+  note, file a follow-up card or reopen/update the board state so the recurrence
+  has live work attached to it.
 - ACTIONABLE: anything worth fixing — a doc correction, a helper script, a
   clearer error message, a permission-allowlist entry, a stale-reference
   cleanup, OR a product code change. ALL of these become CARDS — you do not fix
@@ -57,11 +64,14 @@ For each distinct papercut, classify it:
 - For EVERY actionable papercut, FILE one board card (do NOT open a worktree,
   write code, or open a PR — `fkanban-pickup` + `fkanban-agent` build the
   cards). Dedupe against existing cards first.
+- For EVERY recurring-known papercut, record the board action you took: updated
+  live card, reopened/moved stale card, or filed a follow-up. Never report only
+  "already known" when fresh evidence shows the issue still recurs.
 - Make each card pickup-eligible and cold-start-ready. Example with the fkanban
   CLI:
   ```bash
-  <board CLI> add <slug> --title "<title>" --column todo --tags papercut,<repo-tag> \
-    --body "$(cat <<'EOF'
+  body_file="$(mktemp)"
+  cat > "$body_file" <<'EOF'
   **Follow the fkanban-agent skill — drive this through to a MERGED PR.**
 
   Repo: <owner>/<repo>
@@ -74,7 +84,8 @@ For each distinct papercut, classify it:
   ## VERIFY — the exact commands that must pass.
   ## DONE WHEN — PR merged into <DEFAULT_BRANCH>.
   EOF
-  )"
+  <board CLI> add <slug> --title "<title>" --column todo --tags papercut,<repo-tag> < "$body_file"
+  rm -f "$body_file"
   ```
   Tiny doc/settings cards still go through the board — just keep STEPS/VERIFY
   minimal.
@@ -94,5 +105,7 @@ For each distinct papercut, classify it:
 
 ## Output
 End with a concise report: papercuts found (grouped), what you filed (with
-slugs), and what you skipped as already-known. If the last day had no agent
-activity or no actionable papercuts, say so plainly.
+slugs), what recurring-known issues received follow-up board action, and what
+you skipped as already-known because an open card already covers the fresh
+evidence. If the last day had no agent activity or no actionable papercuts, say
+so plainly.

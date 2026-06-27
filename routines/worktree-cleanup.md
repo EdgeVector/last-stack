@@ -34,11 +34,22 @@ read/write, fail loudly if the resolved path is empty or starts with
   continue only with cleanup steps that do not depend on board state.
 
 ## Procedure each run
-1. **Enumerate worktrees authoritatively** across every repo and every worktree
-   location you use (e.g. a dedicated worktrees dir, per-repo `.worktrees/`,
-   top-level siblings). For each repo:
-   `git -C <repo> worktree list --porcelain`. Derive each worktree's owning repo
-   from `git -C <path> rev-parse --git-common-dir`.
+1. **Discover repo roots before any repo-level Git command.** The workspace
+   root may be only a container directory, so do not run root-level Git probes
+   there first. Enumerate child repos, then run Git against each discovered repo:
+   ```bash
+   workspace="<WORKSPACE>"
+   find "$workspace" -mindepth 2 -maxdepth 3 -type d -name .git -prune \
+     | while IFS= read -r git_dir; do
+         repo="${git_dir%/.git}"
+         git -C "$repo" rev-parse --show-toplevel
+       done
+   ```
+   Use the resulting repo roots to enumerate worktrees authoritatively across
+   every repo and every worktree location you use (e.g. a dedicated worktrees
+   dir, per-repo `.worktrees/`, top-level siblings). For each repo, run
+   `git -C "$repo" worktree list --porcelain`. Derive each worktree's owning
+   repo from `git -C <path> rev-parse --git-common-dir`.
 2. **Classify each worktree.** Compute: its branch, unique-commit count
    (`git -C <wt> cherry origin/<DEFAULT_BRANCH> <branch>`), dirty-file count
    (`git -C <wt> status --porcelain`), and whether a live process is cwd'd in it.

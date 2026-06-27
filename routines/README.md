@@ -135,6 +135,31 @@ When writing shell snippets that may run under `zsh`, do not use `status` as a
 temporary variable name. In `zsh`, `status` is a read-only special parameter; use
 specific names such as `git_status`, `repo_status`, or `st` instead.
 
+When a routine starts from a workspace container such as
+`/Users/tomtang/code/edgevector`, discover child Git repositories before running
+repo-level Git commands. The root may not be a checkout. Use a child-repo pass
+like:
+
+```bash
+workspace="<WORKSPACE>"
+find "$workspace" -mindepth 2 -maxdepth 3 -type d -name .git -prune \
+  | while IFS= read -r git_dir; do
+      repo="${git_dir%/.git}"
+      git -C "$repo" rev-parse --show-toplevel
+    done
+```
+
+Only after that should a routine run commands such as
+`git -C "$repo" worktree list --porcelain` or `git -C "$repo" status -sb`.
+This avoids a noisy first failure from treating the workspace root as a repo.
+
+When generating Markdown for `fbrain put`, `fkanban add`, `gh --body`, or any
+similar command, keep the body out of shell-expanded strings. Use a quoted
+heredoc into a temp file, pipe stdin, or pass a body file. If the text can
+contain backticks, `$()`, `$var`, globs, semicolons, or other shell
+metacharacters, it must never be expanded by the shell; substitute only narrow
+placeholders afterward with a controlled command such as `sed`.
+
 Codex automation prompt skeletons should render the same information directly:
 
 ```text
