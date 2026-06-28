@@ -54,13 +54,38 @@ sweep, check the latest `last-stack fkanban-pickup` scheduler session in
 If pickup is fresh, or there is no eligible unblocked `todo` work, continue with
 the normal reconcile sweep below.
 
+## Self-heal stranded no-repo cards (CHEAP, uncapped — do FIRST)
+A card needs both a `Repo:` and a `Base:` header to be pickup-eligible. `add`/`move`
+auto-derive them at the chokepoint — but a card filed BEFORE that landed, or via a
+path that bypassed it, can sit in `todo`/`backlog` with no header and silently
+strand. Repair them so nothing drops:
+
+- From `list --json`, find every card in `todo` or `backlog` whose body has NO
+  `Repo:` header AND is not a registry/recipe card (no `Target: fbrain record`,
+  no `dogfood-registry`, title not `fix dogfood recipe: …` — those target an
+  fbrain record, not a repo, and are header-less on purpose).
+- For each, run `<board CLI> add <slug>` (a field-preserving update: with no flags
+  it keeps title/body/tags/column as-is and just re-runs the auto-derivation
+  chokepoint). That deterministically either:
+  - stamps the unambiguous repo from the card's subsystem tag, OR
+  - stamps the DEFAULT repo (`EdgeVector/fold`) with a `# defaulted` marker when
+    the card carries no subsystem signal at all, OR
+  - sets `block_status=needs_human` with a `Repo ambiguous: …` reason when the
+    tags map to TWO+ repos (a real conflict it refuses to guess) — now LOUD in
+    `list` / morning-sync instead of invisibly skipped.
+- This is a CHEAP remote-free advance — do it for EVERY such card each wake; it
+  counts as forward action. A card still header-less after this is a registry
+  card (correctly skipped) or a needs_human conflict (correctly surfaced).
+
 ## The sweep
 1. `<board CLI> list --json` to read the whole board.
 2. For EVERY card NOT already in `done` (NOT just `doing`/`review` — a card can be
    merged while still in `todo` if a human/other flow did the work; that is the
    exact bug being fixed, so do not restrict by column):
    a. Parse the `Repo:`/`Base:` header lines from the card body. If `Repo:` is
-      missing, SKIP the card (it isn't meant for this flow).
+      missing, SKIP the card — after the self-heal step above, a still-header-less
+      card is either a registry card or a surfaced needs_human conflict, neither of
+      which is meant for this PR-advance flow.
    b. Find its PR. PREFER an explicit `PR:` line / URL in the body (work landed
       outside this flow won't use the `fkanban/<slug>` branch). Only if NO URL is
       in the body, fall back to the head-branch lookup.
