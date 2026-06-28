@@ -13,6 +13,15 @@ with every actionable blocker and papercut discovered.
 - Work from your workspace root (the directory that holds your repos).
 - Use F-Brain via `fbrain` and F-Kanban via `fkanban`; default board is
   `default`.
+- Before any Brain/board writes or product assertions, make sure the Last Stack
+  routine checkout you are reading is current. Run
+  `${LAST_STACK_ROOT:-$HOME/.last-stack}/bin/last-stack-update-check`. If it
+  prints `UPGRADE_AVAILABLE` or `GIT_UPDATE_AVAILABLE`, STOP and report a
+  dogfood workflow blocker telling the scheduler/human to run the
+  `last-stack-upgrade` skill, then re-run dogfood from the upgraded prompt. Do
+  not continue from stale routine text: stale installed prompts can miss wrapper
+  fixes such as current target checkout selection and repeatedly block on the
+  user's dirty primary checkout even after the repo PR has merged.
 - First run the preflight health check. Treat the **CLI doctors as
   authoritative for reachability**, not a raw TCP probe — modern LastDB/F-Kanban
   installs run socket-only with the legacy local HTTP endpoint shut down, and a

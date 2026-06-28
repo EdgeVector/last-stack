@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # The Last Stack — update check
-# Compares the installed VERSION against the latest on GitHub and prints one of:
+# Compares the installed checkout against the latest on GitHub and prints one of:
 #   UP_TO_DATE
 #   UPGRADE_AVAILABLE  local=<x> remote=<y>
+#   GIT_UPDATE_AVAILABLE  local_head=<sha> remote_head=<sha>
 #   UNKNOWN            (offline / lookup failed — never blocks)
-# Caches the result for 60 minutes so it's cheap to call from a skill preamble.
+# Version lookups are cached for 60 minutes so they're cheap to call from a
+# skill preamble. Git HEAD checks are intentionally uncached, because routine
+# fixes can land without a VERSION bump.
 set -e
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -13,6 +16,40 @@ LOCAL="$(cat "$ROOT/VERSION" 2>/dev/null || echo "0.0.0")"
 REMOTE_URL="${LASTSTACK_REMOTE_URL:-https://raw.githubusercontent.com/EdgeVector/last-stack/main/VERSION}"
 CACHE="$ROOT/.update-check"
 TTL=3600  # seconds
+
+short_sha() {
+  printf '%s' "$1" | cut -c1-12
+}
+
+git_update_check() {
+  git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+
+  remote="${LASTSTACK_REMOTE_REPO:-origin}"
+  local_ref="$(git -C "$ROOT" symbolic-ref -q HEAD 2>/dev/null || true)"
+  [ -n "$local_ref" ] || return 0
+
+  remote_info="$(git -C "$ROOT" ls-remote --symref "$remote" HEAD 2>/dev/null || true)"
+  [ -n "$remote_info" ] || return 0
+
+  remote_ref="$(printf '%s\n' "$remote_info" | awk '$1 == "ref:" && $3 == "HEAD" {print $2; exit}')"
+  remote_head="$(printf '%s\n' "$remote_info" | awk '$2 == "HEAD" && $1 != "ref:" {print $1; exit}')"
+  [ -n "$remote_ref" ] && [ -n "$remote_head" ] || return 0
+
+  # Only compare installs sitting on the remote default branch. Feature
+  # worktrees legitimately differ from origin/HEAD while a PR is in progress.
+  [ "$local_ref" = "$remote_ref" ] || return 0
+
+  local_head="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"
+  [ -n "$local_head" ] || return 0
+
+  if [ "$local_head" != "$remote_head" ]; then
+    printf 'GIT_UPDATE_AVAILABLE  local_head=%s remote_head=%s\n' \
+      "$(short_sha "$local_head")" "$(short_sha "$remote_head")"
+    exit 0
+  fi
+}
+
+git_update_check
 
 now="$(date +%s 2>/dev/null || echo 0)"
 if [ -f "$CACHE" ]; then
