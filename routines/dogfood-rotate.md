@@ -57,11 +57,42 @@ with every actionable blocker and papercut discovered.
    failed; retrying blockers is part of the signal. If the recipe itself is
    structurally impossible, file or reuse a `fix-dogfood-recipe-*` card.
 
-## Target Checkout Freshness Preflight
+## Target Checkout Selection And Freshness Preflight
 Before running the selected feature recipe, identify every existing Git checkout
 the recipe will execute from or inspect. Use only the recipe text, isolation
 rules, and explicit paths in `dogfood-registry`; do not broad-scan unrelated
-repos. For each target checkout, report:
+repos.
+
+For each recipe target checkout, resolve the actual execution path before
+product assertions run:
+
+1. Treat the path named by the recipe as the source target and always include its
+   non-mutating freshness report in the run output.
+2. Prefer `<last-stack>/bin/last-stack-dogfood-target-checkout <repo> [...]`.
+   It inspects the source target plus sibling Git worktrees for the same repo and
+   dedicated dogfood checkouts under `~/.fkanban/dogfood-targets`; when the
+   source target is stale, unknown, or dirty, it selects a clean isolated
+   checkout only when that checkout tracks the same upstream and its `HEAD`
+   exactly matches the remote upstream oid.
+3. If the source target is already clean and fresh, the helper may select it.
+   Otherwise, recipe commands must run from the selected isolated checkout path,
+   not from the stale or dirty source target.
+4. If no current isolated checkout is available, STOP before the recipe runs.
+   Report a dogfood workflow blocker with reason
+   `no-current-isolated-checkout`, update the rotation log as `blocked`, append
+   the heartbeat, and do not run product assertions.
+
+The selected checkout policy is intentionally conservative: dogfood rotations
+may read Git metadata from a user's checkout, but they must never make that
+checkout current. To remediate a blocker, create or refresh a separate clean
+worktree outside the user's primary repo, for example:
+
+```bash
+git -C /path/to/repo worktree add --track -b dogfood/current-<repo> \
+  ~/.fkanban/dogfood-targets/<repo> origin/main
+```
+
+For each source and selected target checkout, report:
 
 - path, current branch, `HEAD`, dirty/clean state, upstream remote/ref, local
   upstream ref oid, remote upstream oid, and freshness result;
@@ -72,20 +103,22 @@ repos. For each target checkout, report:
 - `unknown` when there is no upstream/tracked remote ref or the remote cannot be
   read.
 
-This preflight is strictly non-mutating. Do not run `git fetch`, `git pull`,
-`git merge`, `git rebase`, `git checkout`, `git stash`, `git reset`, or
-`git clean` in a target checkout. Use commands such as `git status --porcelain`,
-`git rev-parse`, `git for-each-ref`, and `git ls-remote` so dirty worktrees and
-user branches are preserved. Prefer
+This preflight is strictly non-mutating for all recipe-selected and candidate
+target checkouts. Do not run `git fetch`, `git pull`, `git merge`, `git rebase`,
+`git checkout`, `git stash`, `git reset`, or `git clean` in a target checkout.
+Use commands such as `git status --porcelain`, `git rev-parse`,
+`git for-each-ref`, `git worktree list`, and `git ls-remote` so dirty worktrees
+and user branches are preserved. Prefer
 `<last-stack>/bin/last-stack-git-checkout-freshness <repo> [<repo>...]`, which
 performs this check without mutating the target checkout.
 
-If any target checkout is `stale` or `unknown`, STOP before the recipe runs.
-Report it as a dogfood workflow blocker, not a product blocker: do not file or
-reopen feature bug cards based on stale local code. Update the rotation log as
-`blocked` with the checkout path and oid mismatch, append the routine heartbeat,
-and tell the next run to use a current isolated worktree or have the human update
-the target checkout. Never mutate the user's target repo to make it current.
+If the selected execution checkout is `stale` or `unknown`, STOP before the
+recipe runs. Report it as a dogfood workflow blocker, not a product blocker: do
+not file or reopen feature bug cards based on stale local code. Update the
+rotation log as `blocked` with the checkout path and oid mismatch, append the
+routine heartbeat, and tell the next run to use a current isolated checkout or
+have the human update/create that isolated checkout. Never mutate the user's
+target repo to make it current.
 
 ## Run The Recipe
 - Follow the selected entry exactly. Feature-specific knowledge belongs in
