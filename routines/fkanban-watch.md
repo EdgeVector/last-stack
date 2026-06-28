@@ -75,7 +75,37 @@ strand. Repair them so nothing drops:
     `list` / morning-sync instead of invisibly skipped.
 - This is a CHEAP remote-free advance — do it for EVERY such card each wake; it
   counts as forward action. A card still header-less after this is a registry
-  card (correctly skipped) or a needs_human conflict (correctly surfaced).
+  card (correctly skipped) or a needs_human conflict — which the next step triages.
+
+## Triage repo-conflict cards (REASON it out — don't punt to a human)
+The chokepoint refuses to GUESS between two mapped repos, so it parks such a card
+`block_status=needs_human` with a `Repo ambiguous: tags map to A + B …` reason.
+That hold is a request for JUDGMENT, not necessarily for a human — and you (this
+routine) are an agent who can read the card. Resolve them inline; only escalate
+to a human when the card itself genuinely doesn't say which repo it belongs to.
+
+For each card with `block_status == needs_human` AND a `block_reason` starting
+`Repo ambiguous:` (these are OUR auto-holds — don't touch other needs_human
+holds), `<board CLI> show <slug>` and read the GOAL / STEPS / file paths /
+components it names, then pick exactly one outcome:
+
+- **One repo clearly owns the work** (it edits files, modules, or a subsystem
+  that live in exactly one of the candidate repos) → resolve it:
+  `<board CLI> add <slug> --repo <owner/name>`. The explicit `--repo` stamps the
+  body `Repo:`/`Base:` header, overrides the conflicting tags, and self-clears the
+  hold — the card is immediately pickup-eligible. CHEAP; do for every clear case.
+- **It's actually two pieces of work, one per repo** → SPLIT: narrow THIS card to
+  one repo with `add <slug> --repo <A>` (trim its body to that repo's portion),
+  and file a sibling card for the other repo's portion with the carried-over brief
+  + `--repo <B>` (+ a `dep:` edge if one must land first). At most ONE split per
+  wake (it's the heavy unit); leave the rest for next wake.
+- **The card honestly doesn't say which repo** → don't force it: leave the hold,
+  append a one-line `TRIAGE: can't tell repo from the card — candidates <A> / <B>;
+  needs a human pick` note so `morning-sync` surfaces a crisp, decidable question.
+  This is the ONLY path that still waits on a human, and only when the card lacks
+  the information to decide.
+
+Resolving/splitting a conflict card COUNTS as forward action.
 
 ## The sweep
 1. `<board CLI> list --json` to read the whole board.
