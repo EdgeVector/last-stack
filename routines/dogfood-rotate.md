@@ -82,9 +82,12 @@ product assertions run:
    dedicated dogfood checkouts under `~/.fkanban/dogfood-targets`; when the
    source target is stale, unknown, or dirty, it selects a clean isolated
    checkout only when that checkout tracks the same upstream and its `HEAD`
-   exactly matches the remote upstream oid. Stale dedicated checkouts are still
-   only evidence: do not run the recipe from them, and do not refresh them during
-   this preflight.
+   exactly matches the remote upstream oid. If no such checkout exists, the
+   helper may create or fast-forward a clean dedicated checkout under
+   `LAST_STACK_DOGFOOD_TARGET_ROOTS` (default `~/.fkanban/dogfood-targets`) and
+   then emit the selected checkout's non-mutating freshness report. It must never
+   fetch, reset, stash, clean, rebase, or otherwise mutate the source target
+   named by the recipe.
 3. If the source target is already clean and fresh, the helper may select it.
    Otherwise, parse the helper's `RESULT ... selected=<path> ... result=ok`
    record and substitute that selected path for every recipe command, browser
@@ -98,10 +101,12 @@ product assertions run:
 
 The selected checkout policy is intentionally conservative: dogfood rotations
 may read Git metadata from a user's checkout, but they must never make that
-checkout current. A stale isolated checkout is a workflow blocker until a current
-one exists; the routine must not silently fall back to the source target. To
-remediate a blocker, create or refresh a separate clean worktree outside the
-user's primary repo, for example:
+checkout current. A stale clean dedicated checkout under the dogfood target roots
+may be fast-forwarded; a dirty, divergent, wrong-remote, or otherwise unsafe
+isolated checkout is a workflow blocker until a current checkout can be created
+or refreshed. The routine must not silently fall back to the source target. To
+remediate a blocker manually, create or refresh a separate clean checkout outside
+the user's primary repo, for example:
 
 ```bash
 git -C /path/to/repo worktree add --track -b dogfood/current-<repo> \
@@ -119,12 +124,13 @@ For each source and selected target checkout, report:
 - `unknown` when there is no upstream/tracked remote ref or the remote cannot be
   read.
 
-This preflight is strictly non-mutating for all recipe-selected and candidate
-target checkouts. Do not run `git fetch`, `git pull`, `git merge`, `git rebase`,
-`git checkout`, `git stash`, `git reset`, or `git clean` in a target checkout.
+This preflight is strictly non-mutating for the source target checkout named by
+the recipe. Do not run `git fetch`, `git pull`, `git merge`, `git rebase`,
+`git checkout`, `git stash`, `git reset`, or `git clean` in that source target.
 Use commands such as `git status --porcelain`, `git rev-parse`,
 `git for-each-ref`, `git worktree list`, and `git ls-remote` so dirty worktrees
-and user branches are preserved. Prefer
+and user branches are preserved. The helper may run clone/fetch/ff-only merge
+only inside clean dedicated dogfood checkouts under the target roots. Prefer
 `<last-stack>/bin/last-stack-git-checkout-freshness <repo> [<repo>...]`, which
 performs this check without mutating the target checkout.
 

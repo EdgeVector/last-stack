@@ -29,37 +29,7 @@ before_head="$(git -C "$tmp/target" rev-parse HEAD)"
 before_upstream="$(git -C "$tmp/target" rev-parse --verify -q '@{u}')"
 before_status="$(git -C "$tmp/target" status --porcelain=v1 --untracked-files=all)"
 
-if LAST_STACK_DOGFOOD_TARGET_ROOTS="$tmp/targets" \
-  "$ROOT/bin/last-stack-dogfood-target-checkout" "$tmp/target" > "$tmp/no-current.out" 2>&1; then
-  printf 'expected blocker without current isolated checkout\n' >&2
-  exit 1
-fi
-grep -q $'\tresult=blocker\t' "$tmp/no-current.out"
-grep -q $'\treason=no-current-isolated-checkout$' "$tmp/no-current.out"
-
-mkdir -p "$tmp/targets"
-git clone --branch main --single-branch "$tmp/origin.git" "$tmp/targets/stale-current" >/dev/null 2>&1
-
-printf 'three\n' >> "$tmp/seed/file.txt"
-git -C "$tmp/seed" commit -am three >/dev/null
-git -C "$tmp/seed" push origin HEAD:main >/dev/null 2>&1
-
-if LAST_STACK_DOGFOOD_TARGET_ROOTS="$tmp/targets" \
-  "$ROOT/bin/last-stack-dogfood-target-checkout" "$tmp/target" > "$tmp/stale-isolated.out" 2>&1; then
-  printf 'expected blocker with only a stale isolated checkout\n' >&2
-  exit 1
-fi
-grep -q $'\treason=no-current-isolated-checkout$' "$tmp/stale-isolated.out"
-
-git clone --branch main --single-branch "$tmp/origin.git" "$tmp/targets/current" >/dev/null 2>&1
-
-resolved="$(LAST_STACK_DOGFOOD_TARGET_ROOTS="$tmp/targets" \
-  "$ROOT/bin/last-stack-dogfood-target-checkout" "$tmp/target")"
-grep -q $'^TARGET\t.*\tresult=stale\t' <<< "$resolved"
-grep -q $'^SELECTED\tpath=.*targets/current.*\tresult=fresh\t' <<< "$resolved"
-grep -q $'\tresult=ok\treason=current-isolated-checkout$' <<< "$resolved"
-
-selected="$(
+selected_from() {
   awk -F '\t' '
     /^RESULT\t/ {
       for (i = 1; i <= NF; i++) {
@@ -68,9 +38,45 @@ selected="$(
         }
       }
     }
-  ' <<< "$resolved"
-)"
-test "$selected" = "$tmp/targets/current"
+  '
+}
+
+if LAST_STACK_DOGFOOD_TARGET_MANAGE=0 \
+  LAST_STACK_DOGFOOD_TARGET_ROOTS="$tmp/no-managed-targets" \
+  "$ROOT/bin/last-stack-dogfood-target-checkout" "$tmp/target" > "$tmp/no-current.out" 2>&1; then
+  printf 'expected blocker without current isolated checkout when management is disabled\n' >&2
+  exit 1
+fi
+grep -q $'\tresult=blocker\t' "$tmp/no-current.out"
+grep -q $'\treason=no-current-isolated-checkout$' "$tmp/no-current.out"
+
+created="$(LAST_STACK_DOGFOOD_TARGET_ROOTS="$tmp/managed-targets" \
+  "$ROOT/bin/last-stack-dogfood-target-checkout" "$tmp/target")"
+grep -q $'^TARGET\t.*\tresult=stale\t' <<< "$created"
+grep -q $'^SELECTED\tpath=.*managed-targets/origin.*\tresult=fresh\t' <<< "$created"
+grep -q $'\tresult=ok\treason=current-isolated-checkout$' <<< "$created"
+
+selected="$(selected_from <<< "$created")"
+test "$selected" = "$tmp/managed-targets/origin"
+test "$(git -C "$selected" rev-parse HEAD)" = "$(git -C "$tmp/origin.git" rev-parse main)"
+recipe_seen="$(git -C "$selected" show HEAD:file.txt)"
+grep -q '^two$' <<< "$recipe_seen"
+
+mkdir -p "$tmp/refresh-targets"
+git clone --branch main --single-branch "$tmp/origin.git" "$tmp/refresh-targets/origin" >/dev/null 2>&1
+
+printf 'three\n' >> "$tmp/seed/file.txt"
+git -C "$tmp/seed" commit -am three >/dev/null
+git -C "$tmp/seed" push origin HEAD:main >/dev/null 2>&1
+
+resolved="$(LAST_STACK_DOGFOOD_TARGET_ROOTS="$tmp/refresh-targets" \
+  "$ROOT/bin/last-stack-dogfood-target-checkout" "$tmp/target")"
+grep -q $'^TARGET\t.*\tresult=stale\t' <<< "$resolved"
+grep -q $'^SELECTED\tpath=.*refresh-targets/origin.*\tresult=fresh\t' <<< "$resolved"
+grep -q $'\tresult=ok\treason=current-isolated-checkout$' <<< "$resolved"
+
+selected="$(selected_from <<< "$resolved")"
+test "$selected" = "$tmp/refresh-targets/origin"
 test "$(git -C "$selected" rev-parse HEAD)" = "$(git -C "$tmp/origin.git" rev-parse main)"
 
 recipe_seen="$(git -C "$selected" show HEAD:file.txt)"

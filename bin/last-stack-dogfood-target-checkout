@@ -17,14 +17,19 @@ For each recipe target checkout, prints:
 
 When the recipe target is stale or unknown, this command selects a clean,
 fresh sibling git worktree or dedicated dogfood checkout that tracks the same
-upstream and exactly matches that remote oid. It never fetches, checks out,
-rebases, stashes, resets, or cleans any target checkout. If no current isolated
-checkout is available, it exits non-zero after reporting a workflow blocker so
-product assertions do not run on stale local code.
+upstream and exactly matches that remote oid. If needed, it creates or
+fast-forwards a clean dedicated checkout under the dogfood target roots. It
+never fetches, checks out, rebases, stashes, resets, or cleans the source
+target checkout. If no current isolated checkout can be selected or safely
+managed, it exits non-zero after reporting a workflow blocker so product
+assertions do not run on stale local code.
 
 Additional isolated checkouts are discovered under
 LAST_STACK_DOGFOOD_TARGET_ROOTS, a colon-separated list that defaults to
 $HOME/.fkanban/dogfood-targets.
+
+Set LAST_STACK_DOGFOOD_TARGET_MANAGE=0 to disable dedicated checkout
+create/refresh behavior and report a blocker instead.
 EOF
 }
 
@@ -93,11 +98,169 @@ remote_url() {
   git -C "$repo" remote get-url "$remote" 2>/dev/null || true
 }
 
+safe_path_name() {
+  printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '-'
+}
+
+repo_name_from_url() {
+  local url="$1"
+  local name
+
+  name="${url##*/}"
+  name="${name%.git}"
+  safe_path_name "$name"
+}
+
+first_target_root() {
+  local roots="$1"
+  local root
+  local -a root_list=()
+
+  IFS=':' read -r -a root_list <<< "$roots"
+  for root in "${root_list[@]}"; do
+    [ -n "$root" ] || continue
+    printf '%s' "$root"
+    return 0
+  done
+
+  return 1
+}
+
+managed_checkout_path() {
+  local roots="$1"
+  local remote_url_value="$2"
+  local upstream="$3"
+  local root repo_name branch branch_name
+
+  root="$(first_target_root "$roots" || true)"
+  [ -n "$root" ] || return 1
+
+  repo_name="$(repo_name_from_url "$remote_url_value")"
+  [ -n "$repo_name" ] || return 1
+
+  branch="${upstream#*/}"
+  branch_name="$(safe_path_name "$branch")"
+  if [ "$branch_name" = "main" ]; then
+    printf '%s/%s' "$root" "$repo_name"
+  else
+    printf '%s/%s-%s' "$root" "$repo_name" "$branch_name"
+  fi
+}
+
+target_management_enabled() {
+  [ "${LAST_STACK_DOGFOOD_TARGET_MANAGE:-1}" != "0" ] &&
+    [ "${LAST_STACK_DOGFOOD_TARGET_AUTO_MANAGE:-1}" != "0" ]
+}
+
+refresh_managed_checkout() {
+  local path="$1"
+  local target_remote="$2"
+  local target_upstream="$3"
+  local target_remote_url="$4"
+  local branch remote_ref report dirty upstream
+
+  git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+  [ "$(remote_url "$path" "$target_remote")" = "$target_remote_url" ] || return 1
+
+  report="$("$FRESHNESS" "$path")"
+  dirty="$(field_value "$report" dirty || true)"
+  upstream="$(field_value "$report" upstream || true)"
+  [ "$dirty" = "no" ] || return 1
+  [ "$upstream" = "$target_upstream" ] || return 1
+
+  branch="$(git -C "$path" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+  [ "$branch" = "${target_upstream#*/}" ] || return 1
+
+  remote_ref="refs/heads/${target_upstream#*/}"
+  git -C "$path" fetch "$target_remote" "$remote_ref" >/dev/null 2>&1 || return 1
+  git -C "$path" merge --ff-only FETCH_HEAD >/dev/null 2>&1 || return 1
+}
+
+create_managed_checkout() {
+  local path="$1"
+  local target_remote="$2"
+  local target_upstream="$3"
+  local target_remote_url="$4"
+  local branch
+
+  [ -e "$path" ] && return 1
+  branch="${target_upstream#*/}"
+  mkdir -p "$(dirname "$path")"
+  git clone \
+    --origin "$target_remote" \
+    --branch "$branch" \
+    --single-branch \
+    "$target_remote_url" \
+    "$path" >/dev/null 2>&1
+}
+
+ensure_managed_candidate() {
+  local roots="$1"
+  local target_remote="$2"
+  local target_upstream="$3"
+  local target_remote_url="$4"
+  local path
+
+  target_management_enabled || return 1
+  [ -n "$target_remote_url" ] || return 1
+
+  path="$(managed_checkout_path "$roots" "$target_remote_url" "$target_upstream" || true)"
+  [ -n "$path" ] || return 1
+
+  if git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    refresh_managed_checkout "$path" "$target_remote" "$target_upstream" "$target_remote_url" || return 1
+    printf '%s' "$path"
+    return 0
+  fi
+
+  create_managed_checkout "$path" "$target_remote" "$target_upstream" "$target_remote_url" || return 1
+  printf '%s' "$path"
+}
+
+try_select_candidate() {
+  local target="$1"
+  local target_real="$2"
+  local target_remote="$3"
+  local target_remote_url="$4"
+  local target_upstream="$5"
+  local candidate="$6"
+  local candidate_real candidate_report candidate_result candidate_dirty
+  local candidate_upstream candidate_head candidate_remote_upstream
+
+  candidate_real="$(real_path "$candidate")"
+  if [ "$candidate_real" = "$target_real" ]; then
+    return 1
+  fi
+
+  if [ -n "$target_remote_url" ] &&
+    [ "$(remote_url "$candidate" "$target_remote")" != "$target_remote_url" ]; then
+    return 1
+  fi
+
+  candidate_report="$("$FRESHNESS" "$candidate")"
+  candidate_result="$(field_value "$candidate_report" result || true)"
+  candidate_dirty="$(field_value "$candidate_report" dirty || true)"
+  candidate_upstream="$(field_value "$candidate_report" upstream || true)"
+  candidate_head="$(field_value "$candidate_report" head || true)"
+  candidate_remote_upstream="$(field_value "$candidate_report" remote_upstream || true)"
+
+  if [ "$candidate_result" = "fresh" ] &&
+    [ "$candidate_dirty" = "no" ] &&
+    [ "$candidate_upstream" = "$target_upstream" ] &&
+    [ "$candidate_head" = "$candidate_remote_upstream" ]; then
+    printf 'SELECTED\t%s\n' "$candidate_report"
+    printf 'RESULT\tinput=%s\tselected=%s\tresult=ok\treason=current-isolated-checkout\n' \
+      "$(quote_field "$target")" "$(quote_field "$candidate")"
+    return 0
+  fi
+
+  return 1
+}
+
 select_for_target() {
   local target="$1"
   local target_report target_path target_result target_dirty target_upstream
-  local target_real candidate candidate_real candidate_report candidate_result
-  local candidate_dirty candidate_upstream candidate_head candidate_remote_upstream
+  local target_real candidate managed_candidate
   local target_remote target_remote_url
   local roots root git_entry repo_path
   local -a worktrees=()
@@ -149,33 +312,22 @@ select_for_target() {
 
   if [ "${#worktrees[@]}" -gt 0 ]; then
     for candidate in "${worktrees[@]}"; do
-      candidate_real="$(real_path "$candidate")"
-      if [ "$candidate_real" = "$target_real" ]; then
-        continue
-      fi
-
-      if [ -n "$target_remote_url" ] &&
-        [ "$(remote_url "$candidate" "$target_remote")" != "$target_remote_url" ]; then
-        continue
-      fi
-
-      candidate_report="$("$FRESHNESS" "$candidate")"
-      candidate_result="$(field_value "$candidate_report" result || true)"
-      candidate_dirty="$(field_value "$candidate_report" dirty || true)"
-      candidate_upstream="$(field_value "$candidate_report" upstream || true)"
-      candidate_head="$(field_value "$candidate_report" head || true)"
-      candidate_remote_upstream="$(field_value "$candidate_report" remote_upstream || true)"
-
-      if [ "$candidate_result" = "fresh" ] &&
-        [ "$candidate_dirty" = "no" ] &&
-        [ "$candidate_upstream" = "$target_upstream" ] &&
-        [ "$candidate_head" = "$candidate_remote_upstream" ]; then
-        printf 'SELECTED\t%s\n' "$candidate_report"
-        printf 'RESULT\tinput=%s\tselected=%s\tresult=ok\treason=current-isolated-checkout\n' \
-          "$(quote_field "$target")" "$(quote_field "$candidate")"
+      if try_select_candidate \
+        "$target" "$target_real" "$target_remote" "$target_remote_url" \
+        "$target_upstream" "$candidate"; then
         return 0
       fi
     done
+  fi
+
+  managed_candidate="$(ensure_managed_candidate \
+    "$roots" "$target_remote" "$target_upstream" "$target_remote_url" || true)"
+  if [ -n "$managed_candidate" ]; then
+    if try_select_candidate \
+      "$target" "$target_real" "$target_remote" "$target_remote_url" \
+      "$target_upstream" "$managed_candidate"; then
+      return 0
+    fi
   fi
 
   print_blocker "$target" "no-current-isolated-checkout"
