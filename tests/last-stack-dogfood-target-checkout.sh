@@ -38,6 +38,19 @@ grep -q $'\tresult=blocker\t' "$tmp/no-current.out"
 grep -q $'\treason=no-current-isolated-checkout$' "$tmp/no-current.out"
 
 mkdir -p "$tmp/targets"
+git clone --branch main --single-branch "$tmp/origin.git" "$tmp/targets/stale-current" >/dev/null 2>&1
+
+printf 'three\n' >> "$tmp/seed/file.txt"
+git -C "$tmp/seed" commit -am three >/dev/null
+git -C "$tmp/seed" push origin HEAD:main >/dev/null 2>&1
+
+if LAST_STACK_DOGFOOD_TARGET_ROOTS="$tmp/targets" \
+  "$ROOT/bin/last-stack-dogfood-target-checkout" "$tmp/target" > "$tmp/stale-isolated.out" 2>&1; then
+  printf 'expected blocker with only a stale isolated checkout\n' >&2
+  exit 1
+fi
+grep -q $'\treason=no-current-isolated-checkout$' "$tmp/stale-isolated.out"
+
 git clone --branch main --single-branch "$tmp/origin.git" "$tmp/targets/current" >/dev/null 2>&1
 
 resolved="$(LAST_STACK_DOGFOOD_TARGET_ROOTS="$tmp/targets" \
@@ -45,6 +58,23 @@ resolved="$(LAST_STACK_DOGFOOD_TARGET_ROOTS="$tmp/targets" \
 grep -q $'^TARGET\t.*\tresult=stale\t' <<< "$resolved"
 grep -q $'^SELECTED\tpath=.*targets/current.*\tresult=fresh\t' <<< "$resolved"
 grep -q $'\tresult=ok\treason=current-isolated-checkout$' <<< "$resolved"
+
+selected="$(
+  awk -F '\t' '
+    /^RESULT\t/ {
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^selected=/) {
+          print substr($i, 10)
+        }
+      }
+    }
+  ' <<< "$resolved"
+)"
+test "$selected" = "$tmp/targets/current"
+test "$(git -C "$selected" rev-parse HEAD)" = "$(git -C "$tmp/origin.git" rev-parse main)"
+
+recipe_seen="$(git -C "$selected" show HEAD:file.txt)"
+grep -q '^three$' <<< "$recipe_seen"
 
 after_head="$(git -C "$tmp/target" rev-parse HEAD)"
 after_upstream="$(git -C "$tmp/target" rev-parse --verify -q '@{u}')"
