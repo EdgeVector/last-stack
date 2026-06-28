@@ -151,8 +151,8 @@ When writing shell snippets that may run under `zsh`, do not use `status` as a
 temporary variable name. In `zsh`, `status` is a read-only special parameter; use
 specific names such as `git_status`, `repo_status`, or `st` instead.
 
-When a routine starts from a workspace container such as
-`/Users/tomtang/code/edgevector`, discover child Git repositories before running
+When a routine starts from a workspace container (the directory that holds
+your repos), discover child Git repositories before running
 repo-level Git commands. The root may not be a checkout. Use a child-repo pass
 like:
 

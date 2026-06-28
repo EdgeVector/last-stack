@@ -67,7 +67,7 @@ read/write, fail loudly if the resolved path is empty or starts with
    (`git -C <repo> log --branches --not --remotes --oneline`), and open PRs for
    the same owner/repo. Classify each dirty checkout:
    - Generated/cache-only: remove only ignored or known generated artifacts
-     such as `.folddb-dev`, build output, or local node/runtime caches.
+     such as build output, dependency caches, or local node/runtime data dirs.
    - Stale reverse-diff or misplaced patch: preserve a patch under `/tmp` if it
      is not trivially generated, then restore only paths proven to be stale by
      comparing against `origin/<DEFAULT_BRANCH>` and merged/closed PR state.

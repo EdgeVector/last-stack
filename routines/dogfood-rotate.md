@@ -10,33 +10,33 @@ using that feature's recipe as the source of truth, then keep the board stocked
 with every actionable blocker and papercut discovered.
 
 ## Setup
-- Work from `/Users/tomtang/code/edgevector`.
+- Work from your workspace root (the directory that holds your repos).
 - Use F-Brain via `fbrain` and F-Kanban via `fkanban`; default board is
   `default`.
 - First run the preflight health check. Treat the **CLI doctors as
-  authoritative for reachability**, not a raw TCP probe — some LastDB/F-Kanban
-  installs intentionally run socket-only with the HTTP endpoint shut down, and a
+  authoritative for reachability**, not a raw TCP probe — modern LastDB/F-Kanban
+  installs run socket-only with the legacy local HTTP endpoint shut down, and a
   green `doctor` over a Unix socket still means Brain/Kanban are fully readable
   and writable:
   1. Run `fkanban doctor` and `fbrain doctor`.
-  2. Optionally probe TCP with `curl -s http://127.0.0.1:9001/api/health` for
-     diagnostics only. A failed `curl` (e.g. exit 7) is **not** by itself an
-     unreachable node — the node may be serving over the configured Unix socket
-     (`/Users/tomtang/.folddb/data/folddb.sock`).
+  2. A raw TCP probe of the legacy local HTTP port is diagnostics-only and is
+     expected to fail on a socket-only install. A failed probe (e.g. `curl`
+     exit 7) is **not** by itself an unreachable node — the node serves over its
+     configured Unix socket (e.g. `~/.folddb/data/folddb.sock`).
   3. Classify the result and act:
      - **reachable** — at least one of `fkanban doctor` / `fbrain doctor` is
        green (over TCP or socket). Proceed. If the doctors are green but the TCP
        `curl` failed, you are in the `tcp_health_down_socket_ok` state: the node
        is reachable over the socket; continue normally and note the transport in
        the run report.
-     - **tcp_health_down_socket_ok** — TCP `:9001` is down but the doctors pass
-       over the socket. This is **reachable**; do NOT block. Proceed to feature
+     - **tcp_health_down_socket_ok** — the legacy TCP endpoint is down but the
+       doctors pass over the socket. This is **reachable**; do NOT block. Proceed to feature
        selection (or, if no feature is eligible this run, emit an explicit
        socket-only noop reason rather than a false outage).
      - **unreachable** — BOTH `fkanban doctor` and `fbrain doctor` fail (neither
        TCP nor socket works). Only then STOP and report an error; the node is
        genuinely down.
-  - Never kill, restart, or mutate the process hosting Tom's Brain/Kanban node,
+  - Never kill, restart, or mutate the process hosting your Brain/Kanban node,
     regardless of the health-check outcome.
 - Read `dogfood-registry` from F-Brain on every run. It is canonical for the
   feature list, cadences, recipes, pass criteria, isolation rules, and rotation
@@ -90,7 +90,7 @@ the target checkout. Never mutate the user's target repo to make it current.
 ## Run The Recipe
 - Follow the selected entry exactly. Feature-specific knowledge belongs in
   `dogfood-registry`, not in this routine.
-- Use isolated/dev surfaces only. Never use Tom's live `:9001` Brain node as the
+- Use isolated/dev surfaces only. Never use your live primary Brain node as the
   dogfood target — a green socket-only preflight makes the Brain *readable* for
   bookkeeping, but it is never a valid dogfood surface.
 - When a recipe hits HTTP APIs, fetch `GET /api/openapi.json` from the ephemeral
@@ -164,7 +164,7 @@ card.
 - No destructive operations: no `git reset --hard`, `git clean`, `git stash`, or
   deleting shared worktrees.
 - Do not touch real user data, real `~/.folddb`, real `~/.lastdb`, or the live
-  `:9001` Brain as a dogfood target.
+  primary Brain node as a dogfood target.
 - If credentials, Apple TCC, GUI access, second-node rigs, cloud-prod, or other
   manual prerequisites are required, record the limitation and file/reuse a card
   only when the registry incorrectly placed that surface in auto-rotation.
