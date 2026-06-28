@@ -117,6 +117,9 @@ VERSION                 the installed version (update-check compares against thi
 setup                   installer — registers skills into your agent harnesses
 bin/
   last-stack-update-check   is a newer version available? (cached, non-blocking)
+  last-stack-dogfood-target-checkout
+                            select a current dogfood checkout without mutating
+                            the recipe's original target checkout
   last-stack-git-checkout-freshness
                             non-mutating tracked-remote freshness preflight
   last-stack-fbrain-append-heartbeat

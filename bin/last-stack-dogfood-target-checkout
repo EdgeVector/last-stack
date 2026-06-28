@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+# Resolve dogfood recipe checkouts to current, clean isolated checkouts.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+FRESHNESS="$ROOT/bin/last-stack-git-checkout-freshness"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  last-stack-dogfood-target-checkout <repo> [<repo>...]
+
+For each recipe target checkout, prints:
+  TARGET <non-mutating freshness report for the recipe target>
+  SELECTED <non-mutating freshness report for the checkout to use>
+  RESULT input=<repo> selected=<repo> result=<ok|blocker> reason=<reason>
+
+When the recipe target is stale or unknown, this command selects a clean,
+fresh sibling git worktree or dedicated dogfood checkout that tracks the same
+upstream and exactly matches that remote oid. It never fetches, checks out,
+rebases, stashes, resets, or cleans any target checkout. If no current isolated
+checkout is available, it exits non-zero after reporting a workflow blocker so
+product assertions do not run on stale local code.
+
+Additional isolated checkouts are discovered under
+LAST_STACK_DOGFOOD_TARGET_ROOTS, a colon-separated list that defaults to
+$HOME/.fkanban/dogfood-targets.
+EOF
+}
+
+quote_field() {
+  printf '%s' "$1" | tr '\t\n' '  '
+}
+
+field_value() {
+  local line="$1"
+  local key="$2"
+  local part
+  local -a parts
+
+  IFS=$'\t' read -r -a parts <<< "$line"
+  for part in "${parts[@]}"; do
+    if [[ "$part" == "$key="* ]]; then
+      printf '%s' "${part#*=}"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+real_path() {
+  local path="$1"
+
+  if [ -d "$path" ]; then
+    (cd "$path" && pwd -P)
+  else
+    printf '%s' "$path"
+  fi
+}
+
+print_blocker() {
+  local input="$1"
+  local reason="$2"
+  local selected="${3:--}"
+
+  printf 'RESULT\tinput=%s\tselected=%s\tresult=blocker\treason=%s\n' \
+    "$(quote_field "$input")" "$(quote_field "$selected")" "$reason"
+}
+
+add_candidate() {
+  local candidate="$1"
+  local candidate_real seen seen_real
+
+  [ -n "$candidate" ] || return 0
+  candidate_real="$(real_path "$candidate")"
+  if [ "${#worktrees[@]}" -gt 0 ]; then
+    for seen in "${worktrees[@]}"; do
+      seen_real="$(real_path "$seen")"
+      if [ "$seen_real" = "$candidate_real" ]; then
+        return 0
+      fi
+    done
+  fi
+
+  worktrees+=("$candidate")
+}
+
+remote_url() {
+  local repo="$1"
+  local remote="$2"
+
+  git -C "$repo" remote get-url "$remote" 2>/dev/null || true
+}
+
+select_for_target() {
+  local target="$1"
+  local target_report target_path target_result target_dirty target_upstream
+  local target_real candidate candidate_real candidate_report candidate_result
+  local candidate_dirty candidate_upstream candidate_head candidate_remote_upstream
+  local target_remote target_remote_url
+  local roots root git_entry repo_path
+  local -a worktrees=()
+  local -a root_list=()
+
+  target_report="$("$FRESHNESS" "$target")"
+  printf 'TARGET\t%s\n' "$target_report"
+
+  target_result="$(field_value "$target_report" result || true)"
+  target_dirty="$(field_value "$target_report" dirty || true)"
+  target_upstream="$(field_value "$target_report" upstream || true)"
+  target_path="$(field_value "$target_report" path || printf '%s' "$target")"
+
+  if ! git -C "$target" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    print_blocker "$target" "target-is-not-a-git-worktree"
+    return 1
+  fi
+
+  if [ "$target_result" = "fresh" ] && [ "$target_dirty" = "no" ]; then
+    printf 'SELECTED\t%s\n' "$target_report"
+    printf 'RESULT\tinput=%s\tselected=%s\tresult=ok\treason=recipe-target-current-clean\n' \
+      "$(quote_field "$target")" "$(quote_field "$target_path")"
+    return 0
+  fi
+
+  if [ -z "$target_upstream" ] || [ "$target_upstream" = "-" ]; then
+    print_blocker "$target" "target-upstream-unknown"
+    return 1
+  fi
+
+  target_real="$(real_path "$target")"
+  target_remote="${target_upstream%%/*}"
+  target_remote_url="$(remote_url "$target" "$target_remote")"
+
+  while IFS= read -r candidate; do
+    add_candidate "$candidate"
+  done < <(git -C "$target" worktree list --porcelain | awk '/^worktree / {print substr($0, 10)}')
+
+  roots="${LAST_STACK_DOGFOOD_TARGET_ROOTS:-$HOME/.fkanban/dogfood-targets}"
+  IFS=':' read -r -a root_list <<< "$roots"
+  for root in "${root_list[@]}"; do
+    [ -n "$root" ] || continue
+    [ -d "$root" ] || continue
+    while IFS= read -r git_entry; do
+      repo_path="${git_entry%/.git}"
+      add_candidate "$repo_path"
+    done < <(find "$root" -maxdepth 4 -name .git -print 2>/dev/null)
+  done
+
+  if [ "${#worktrees[@]}" -gt 0 ]; then
+    for candidate in "${worktrees[@]}"; do
+      candidate_real="$(real_path "$candidate")"
+      if [ "$candidate_real" = "$target_real" ]; then
+        continue
+      fi
+
+      if [ -n "$target_remote_url" ] &&
+        [ "$(remote_url "$candidate" "$target_remote")" != "$target_remote_url" ]; then
+        continue
+      fi
+
+      candidate_report="$("$FRESHNESS" "$candidate")"
+      candidate_result="$(field_value "$candidate_report" result || true)"
+      candidate_dirty="$(field_value "$candidate_report" dirty || true)"
+      candidate_upstream="$(field_value "$candidate_report" upstream || true)"
+      candidate_head="$(field_value "$candidate_report" head || true)"
+      candidate_remote_upstream="$(field_value "$candidate_report" remote_upstream || true)"
+
+      if [ "$candidate_result" = "fresh" ] &&
+        [ "$candidate_dirty" = "no" ] &&
+        [ "$candidate_upstream" = "$target_upstream" ] &&
+        [ "$candidate_head" = "$candidate_remote_upstream" ]; then
+        printf 'SELECTED\t%s\n' "$candidate_report"
+        printf 'RESULT\tinput=%s\tselected=%s\tresult=ok\treason=current-isolated-checkout\n' \
+          "$(quote_field "$target")" "$(quote_field "$candidate")"
+        return 0
+      fi
+    done
+  fi
+
+  print_blocker "$target" "no-current-isolated-checkout"
+  return 1
+}
+
+if [ "$#" -eq 0 ]; then
+  usage >&2
+  exit 2
+fi
+
+exit_code=0
+for target in "$@"; do
+  if ! select_for_target "$target"; then
+    exit_code=1
+  fi
+done
+
+exit "$exit_code"
