@@ -127,10 +127,12 @@ For each source and selected target checkout, report:
 This preflight is strictly non-mutating for the source target checkout named by
 the recipe. Do not run `git fetch`, `git pull`, `git merge`, `git rebase`,
 `git checkout`, `git stash`, `git reset`, or `git clean` in that source target.
-Use commands such as `git status --porcelain`, `git rev-parse`,
-`git for-each-ref`, `git worktree list`, and `git ls-remote` so dirty worktrees
-and user branches are preserved. The helper may run clone/fetch/ff-only merge
-only inside clean dedicated dogfood checkouts under the target roots. Prefer
+After proving the path is a Git work tree, use repo-scoped non-mutating commands
+such as `git -C "$repo" status --porcelain`, `git -C "$repo" rev-parse`,
+`git -C "$repo" for-each-ref`, `git -C "$repo" worktree list`, and
+`git -C "$repo" ls-remote` so dirty worktrees and user branches are preserved.
+The helper may run clone/fetch/ff-only merge only inside clean dedicated dogfood
+checkouts under the target roots. Prefer
 `<last-stack>/bin/last-stack-git-checkout-freshness <repo> [<repo>...]`, which
 performs this check without mutating the target checkout.
 
