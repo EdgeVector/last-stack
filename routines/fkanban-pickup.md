@@ -1,7 +1,7 @@
 ---
 name: fkanban-pickup
 cadence: hourly
-description: Drain the ready board queue as fast as is safe — pick the top ready `todo` cards, optionally BATCH same-subsystem cards into one PR to cut CI cost, and fan them out to background fkanban-agent (WORK) workers, each driving its card(s) to a MERGED PR. If the queue is empty, just exit. Never authors/ships work itself.
+description: Drain the ready board queue as fast as is safe — pick the top ready `todo` cards, optionally BATCH same-subsystem cards into one PR to cut CI cost, and fan them out to background fkanban-agent (WORK) workers, each driving its card(s) to a MERGED PR. If the queue is empty, just exit (or, with `Idle mode: ship-one-simplification` opted in, ship one small simplification PR instead). Never authors/ships card work itself.
 ---
 
 You pick up to `<N, e.g. 8>` ready board cards per run and fan them out — one
@@ -125,13 +125,45 @@ unit2 = SINGLE[d]").
   or park watching the spawned agents — they run independently; `fkanban-watch`
   is the backstop for anything that slips.
 
-## Nothing to pick up — EXIT
-When the `todo` queue is empty, just exit cleanly. Do NOT go hunt for a bug to
-fix and ship — this routine is the BUILD EXECUTOR for ready cards, not a work
-author. Keeping the queue full is the generator routines' job
-(`self-improvement-loop`, `papercut-sweep`, `program-driver`, `groom-board`, and
-`fkanban-watch`'s quiet-sweep all FILE cards). Report "queue empty, nothing to
-build" and exit.
+## Nothing to pick up
+When the `todo` queue is empty, behavior depends on the scheduled prompt's **idle
+mode** (default `exit`):
+
+### Idle mode `exit` (default)
+Just exit cleanly. Do NOT go hunt for a bug to fix and ship — in this mode the
+routine is the BUILD EXECUTOR for ready cards, not a work author. Keeping the
+queue full is the generator routines' job (`self-improvement-loop`,
+`papercut-sweep`, `program-driver`, `groom-board`, and `fkanban-watch`'s
+quiet-sweep all FILE cards). Report "queue empty, nothing to build" and exit.
+
+### Idle mode `ship-one-simplification` (opt-in)
+Enable by putting `Idle mode: ship-one-simplification` in the scheduled prompt.
+Instead of idling, spend the wake shipping ONE small, high-confidence
+simplification. Do this ONLY when zero cards were picked this run (if you picked
+≥1 card, skip it and exit). The rate-limit guard still applies — if you hit a
+limit, do NOT spawn it. Spawn exactly ONE background agent (no nested spawns, no
+`sleep`-loops), then the parent EXITS immediately. Self-contained agent prompt:
+
+> Idle-time simplification — no card; you're improving a codebase you work during
+> a quiet wake. Pick ONE repo, preferring one WITHOUT a shared build cache that
+> concurrent builds would thrash (see the shared-build-cache sub-cap in selection
+> step 5); a shared-cache repo is allowed only if nothing else fits. `git fetch`,
+> then isolate in a fresh worktree off the default branch (`git worktree add
+> <worktrees-dir>/simplify-<repo>-<short-ts> -b chore/simplify-<short-ts>
+> origin/<default-branch>` — never edit/stash/reset a shared checkout; skip any
+> repo that already has an active sibling worktree). Find ONE simplification
+> scoped to a single concern — dead code, a redundant branch, a needless
+> abstraction, a duplicated helper, an over-complex expression (reuse / clarity /
+> efficiency, NOT a behavior change, NOT a bug hunt), small enough to review in
+> one sitting. Make the edit, confirm the touched package still builds and its
+> tests pass, open a PR (`gh pr create --fill`, title prefixed `chore(simplify):`),
+> enable auto-merge per the repo's merge strategy (merge-queue repo: bare `gh pr
+> merge <n> --auto`; plain auto-merge: add your strategy flag), then DRIVE IT TO
+> MERGED — use the `wait-merge` skill or a sleepless `gh pr checks <n> --watch`
+> (NEVER `sleep`), acting on each state change. If you can't find a genuinely
+> safe, worthwhile simplification, open NO PR, remove the worktree, and exit — do
+> NOT manufacture churn. Stay dev-only: escalate only prod cutover / public-facing
+> / money-legal / irreversible. One simplification only.
 
 ## Hard rules
 - AT MOST `<N>` cards per run (and any shared-build-cache sub-cap from step 5) —
@@ -153,7 +185,10 @@ empty, nothing to build." Then exit.
 > queue was empty or you aborted at the rate limit — call
 > `<last-stack>/bin/last-stack-fbrain-append-heartbeat --line "fkanban-pickup
 > <ISO-ts> <ok|noop|error> <one-line outcome>"`. `morning-sync` reads
-> `routine-heartbeats` to make a silent pickup failure loud.
+> `routine-heartbeats` to make a silent pickup failure loud. Use `error` for the
+rate-limit abort; `noop` when the queue was empty AND you did not spawn the idle
+simplification agent; otherwise `ok` with the count of card agents spawned (and
+note the idle simplification agent if you spawned one).
 >
 > If the parent spawned worker agents, the heartbeat must include the spawned
 > child/thread ids when the harness exposes them. If the harness leaves stale
