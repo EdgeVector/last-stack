@@ -86,7 +86,7 @@ iterating), override both URLs:
 
 ```bash
 fkanban init \
-  --node-url http://127.0.0.1:9105 \
+  --node-url unix:///tmp/throwaway-node/folddb.sock \
   --schema-service-url <your-schema-service-url>
 ```
 

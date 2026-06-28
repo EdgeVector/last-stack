@@ -42,7 +42,7 @@ sweep, check the latest `last-stack fkanban-pickup` scheduler session in
 2 hours, and `fkanban list --json` shows any unblocked `todo` card with a
 `Repo:` header and no `BLOCKED:` line, switch this wake into pickup failover:
 
-- Read `/Users/tomtang/.last-stack/routines/fkanban-pickup.md` fully.
+- Read the `fkanban-pickup` routine fully (`<last-stack>/routines/fkanban-pickup.md`).
 - Execute one bounded pickup pass using that routine's rules, with the same
   board/brain CLIs and workspace.
 - Use N=1 in failover mode unless the pickup routine requires a lower safe
