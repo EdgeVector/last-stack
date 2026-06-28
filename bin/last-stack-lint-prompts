@@ -18,12 +18,36 @@ check_path_exists() {
   fi
 }
 
+search_prompt_pattern() {
+  local pattern="$1"
+  local path="$2"
+
+  if command -v rg >/dev/null 2>&1; then
+    rg -n "$pattern" "$path" \
+      -g '!**/.git/**' -g '!**/logs/**' -g '!**/run/**' -g '!**/memory.md' \
+      -g '!bin/last-stack-lint-prompts' || true
+    return
+  fi
+
+  if [ -d "$path" ]; then
+    grep -RInE \
+      --exclude-dir=.git --exclude-dir=logs --exclude-dir=run \
+      --exclude=memory.md --exclude=last-stack-lint-prompts \
+      "$pattern" "$path" || true
+    return
+  fi
+
+  if [ "$(basename "$path")" = "last-stack-lint-prompts" ]; then
+    return
+  fi
+
+  grep -nE "$pattern" "$path" || true
+}
+
 for path in "$@"; do
   check_path_exists "$path" || continue
 
-  matches="$(rg -n 'gh[^\n]*pr[^\n]*--json[^\n]*isInMergeQueue' "$path" \
-    -g '!**/.git/**' -g '!**/logs/**' -g '!**/run/**' -g '!**/memory.md' \
-    -g '!bin/last-stack-lint-prompts' || true)"
+  matches="$(search_prompt_pattern 'gh[^\n]*pr[^\n]*--json[^\n]*isInMergeQueue' "$path")"
   matches="$(printf '%s\n' "$matches" | grep -v -E 'Do not|Never|do not|never' || true)"
   if [ -n "$matches" ]; then
     printf '%s\n' "$matches"
@@ -31,17 +55,28 @@ for path in "$@"; do
     fail=1
   fi
 
-  if rg -n '\$CODEX_HOME/automations|\$\{CODEX_HOME\}/automations' "$path" \
-    -g '!**/.git/**' -g '!**/logs/**' -g '!**/run/**' -g '!**/memory.md' \
-    -g '!bin/last-stack-lint-prompts'
-  then
+  zsh_status_assignments="$(search_prompt_pattern '(^|[^[:alnum:]_])status=' "$path")"
+  if [ -n "$zsh_status_assignments" ]; then
+    printf '%s\n' "$zsh_status_assignments"
+    echo "zsh-unsafe shell assignment to read-only status found under $path" >&2
+    fail=1
+  fi
+
+  workspace_git_probes="$(search_prompt_pattern 'git -C /Users/tomtang/code/edgevector|git -C <WORKSPACE>|git -C "\$workspace"|git -C \$workspace|git status --short --branch|(^|[^-[:alnum:]_])git worktree list' "$path")"
+  if [ -n "$workspace_git_probes" ]; then
+    printf '%s\n' "$workspace_git_probes"
+    echo "unsafe workspace/root-level Git probe found under $path" >&2
+    fail=1
+  fi
+
+  unsafe_codex_home="$(search_prompt_pattern '\$CODEX_HOME/automations|\$\{CODEX_HOME\}/automations' "$path")"
+  if [ -n "$unsafe_codex_home" ]; then
+    printf '%s\n' "$unsafe_codex_home"
     echo "unsafe CODEX_HOME automation fallback found under $path" >&2
     fail=1
   fi
 
-  heartbeat_gets="$(rg -n 'fbrain[^\n]*get[^\n]*routine-heartbeats' "$path" \
-    -g '!**/.git/**' -g '!**/logs/**' -g '!**/run/**' -g '!**/memory.md' \
-    -g '!bin/last-stack-lint-prompts' || true)"
+  heartbeat_gets="$(search_prompt_pattern 'fbrain[^\n]*get[^\n]*routine-heartbeats' "$path")"
   heartbeat_gets="$(printf '%s\n' "$heartbeat_gets" | grep -v -- '--type reference' || true)"
   if [ -n "$heartbeat_gets" ]; then
     printf '%s\n' "$heartbeat_gets"
