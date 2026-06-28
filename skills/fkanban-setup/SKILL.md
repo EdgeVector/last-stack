@@ -38,9 +38,11 @@ Three things, in order:
    bun install
    ```
 3. **A running LastDB node** — fkanban is a thin client; it needs a node to talk
-   to. `init` defaults to a node running locally on your machine, so a locally
-   started node works out of the box; point elsewhere with `--node-url`. Start a
-   node (e.g. from your LastDB install / daemon) before running `init`. On a
+   to. `init` defaults to the local LastDB node — the Unix socket at
+   `$HOME/.folddb/data/folddb.sock` (LastDB's default data dir) — so a locally
+   started node works out of the box; point elsewhere with `--node-url` (or move
+   the data dir with `FOLDDB_HOME`). Start a node (e.g. from your LastDB install /
+   daemon) before running `init`. On a
    fresh, unprovisioned node, `fkanban init` auto-provisions the node identity on
    first run, so you can skip any interactive identity wizard — handy for
    headless/SSH/CI.
@@ -72,9 +74,10 @@ fkanban init        # bootstrap + LOAD/RESOLVE published schemas + seed default 
 fkanban doctor      # verify: shim on PATH, config, node reachable, schemas loaded, round-trip
 ```
 
-`init` is **idempotent** — safe to re-run. Defaults: a node running locally on
-your machine, plus a schema-service URL it uses to load the published schemas
-(override either with `--node-url` / `--schema-service-url`).
+`init` is **idempotent** — safe to re-run. Defaults: the local LastDB node at
+`unix://$HOME/.folddb/data/folddb.sock`, plus a schema-service URL it uses to
+load the published schemas (override either with `--node-url` /
+`--schema-service-url`).
 
 A green `doctor` ends with `✓ query round-trip — N cards, M boards`. After
 that, the `fkanban` skill's commands all work.
