@@ -31,6 +31,13 @@ jobs:
       - name: Prompt safety lint
         run: bin/last-stack-lint-prompts
 
+      - name: Shell regression tests
+        run: |
+          set -e
+          for t in tests/*.sh; do
+            bash "$t"
+          done
+
       - name: Every skill has valid frontmatter
         run: |
           set -e

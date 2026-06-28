@@ -116,7 +116,8 @@ and fill in the `<PLACEHOLDERS>` before scheduling any of them.
 VERSION                 the installed version (update-check compares against this)
 setup                   installer — registers skills into your agent harnesses
 bin/
-  last-stack-update-check   is a newer version available? (cached, non-blocking)
+  last-stack-update-check   is a newer version or default-branch HEAD available?
+                            (version checks cached; git HEAD checks uncached)
   last-stack-dogfood-target-checkout
                             select a current dogfood checkout without mutating
                             the recipe's original target checkout
