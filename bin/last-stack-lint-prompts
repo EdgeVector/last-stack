@@ -55,6 +55,14 @@ for path in "$@"; do
     fail=1
   fi
 
+  release_latest_matches="$(search_prompt_pattern 'gh.*release.*view.*--json.*isLatest' "$path")"
+  release_latest_matches="$(printf '%s\n' "$release_latest_matches" | grep -v -E 'Do not|Never|do not|never|unsupported' || true)"
+  if [ -n "$release_latest_matches" ]; then
+    printf '%s\n' "$release_latest_matches"
+    echo "unsupported gh release --json isLatest usage found under $path" >&2
+    fail=1
+  fi
+
   zsh_status_assignments="$(search_prompt_pattern '(^|[^[:alnum:]_])status=' "$path")"
   if [ -n "$zsh_status_assignments" ]; then
     printf '%s\n' "$zsh_status_assignments"

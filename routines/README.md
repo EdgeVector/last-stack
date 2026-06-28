@@ -147,6 +147,13 @@ mkdir -p "$(dirname "$memory_path")"
 touch "$memory_path"
 ```
 
+This pattern must work with `CODEX_HOME` unset. Never construct automation
+memory by appending `automations/...` directly to a possibly empty `CODEX_HOME`;
+that can resolve to `/automations/...`. Prefer an explicit `Automation memory:`
+path from the prompt, otherwise use
+`${CODEX_HOME:-$HOME/.codex}/automations/<id>/memory.md` and validate before
+creating directories.
+
 When writing shell snippets that may run under `zsh`, do not use `status` as a
 temporary variable name. In `zsh`, `status` is a read-only special parameter; use
 specific names such as `git_status`, `repo_status`, or `st` instead.
@@ -185,6 +192,18 @@ Run the Last Stack routine `<routine>`: first run `<last-stack>/bin/last-stack-u
 When a prompt needs merge-queue membership, it must use GraphQL or a helper
 wrapping GraphQL. Do not request the `isInMergeQueue` field through `gh pr`
 JSON output; older GitHub CLI releases reject that field.
+
+Treat `gh: Unknown JSON field` as a prompt/tooling compatibility issue. Do not
+keep retrying the same command or classify it as a product failure. Prefer fields
+that the installed GitHub CLI advertises, or use `gh api` / GraphQL for values
+whose CLI JSON support drifts across versions. For release checks, do not request
+`isLatest` through `gh release view --json`; use supported release fields such
+as `tagName,isPrerelease,isDraft,publishedAt,url`, and when you need the latest
+release identity query the API instead:
+
+```bash
+gh api repos/<owner>/<repo>/releases/latest --jq .tag_name
+```
 
 ## The golden rules every routine obeys
 

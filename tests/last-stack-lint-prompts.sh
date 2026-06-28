@@ -39,6 +39,30 @@ if "$ROOT/bin/last-stack-lint-prompts" "$bad_workspace_git" >/dev/null 2>&1; the
   exit 1
 fi
 
+bad_gh_release="$tmp/bad-gh-release.md"
+printf '%s\n' "gh release view --repo owner/repo --json tagName,is""Latest,isPrerelease" > "$bad_gh_release"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_gh_release" >/dev/null 2>&1; then
+  echo "expected unsupported gh release isLatest JSON field to fail prompt lint" >&2
+  exit 1
+fi
+
+memory_home="$tmp/home"
+mkdir -p "$memory_home"
+env -u CODEX_HOME HOME="$memory_home" bash -eu <<'SH'
+automation_id="last-stack-smoke"
+memory_path=""
+if [ -z "$memory_path" ]; then
+  memory_path="${CODEX_HOME:-$HOME/.codex}/automations/$automation_id/memory.md"
+fi
+case "$memory_path" in
+  ""|/automations/*) echo "unsafe automation memory path: $memory_path" >&2; exit 1 ;;
+esac
+mkdir -p "$(dirname "$memory_path")"
+touch "$memory_path"
+test "$memory_path" = "$HOME/.codex/automations/$automation_id/memory.md"
+test -f "$memory_path"
+SH
+
 if command -v zsh >/dev/null 2>&1; then
   zsh -fc 'fbrain() { return 7; }; fbrain doctor >/dev/null 2>&1; doctor_status=$?; test "$doctor_status" -eq 7'
 fi
