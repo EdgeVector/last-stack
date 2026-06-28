@@ -73,10 +73,15 @@ product assertions run:
    dedicated dogfood checkouts under `~/.fkanban/dogfood-targets`; when the
    source target is stale, unknown, or dirty, it selects a clean isolated
    checkout only when that checkout tracks the same upstream and its `HEAD`
-   exactly matches the remote upstream oid.
+   exactly matches the remote upstream oid. Stale dedicated checkouts are still
+   only evidence: do not run the recipe from them, and do not refresh them during
+   this preflight.
 3. If the source target is already clean and fresh, the helper may select it.
-   Otherwise, recipe commands must run from the selected isolated checkout path,
-   not from the stale or dirty source target.
+   Otherwise, parse the helper's `RESULT ... selected=<path> ... result=ok`
+   record and substitute that selected path for every recipe command, browser
+   launch, build command, and assertion that would have executed from the source
+   target. The source target remains only the non-mutating metadata subject for
+   the freshness report.
 4. If no current isolated checkout is available, STOP before the recipe runs.
    Report a dogfood workflow blocker with reason
    `no-current-isolated-checkout`, update the rotation log as `blocked`, append
@@ -84,8 +89,10 @@ product assertions run:
 
 The selected checkout policy is intentionally conservative: dogfood rotations
 may read Git metadata from a user's checkout, but they must never make that
-checkout current. To remediate a blocker, create or refresh a separate clean
-worktree outside the user's primary repo, for example:
+checkout current. A stale isolated checkout is a workflow blocker until a current
+one exists; the routine must not silently fall back to the source target. To
+remediate a blocker, create or refresh a separate clean worktree outside the
+user's primary repo, for example:
 
 ```bash
 git -C /path/to/repo worktree add --track -b dogfood/current-<repo> \
