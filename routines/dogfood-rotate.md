@@ -22,7 +22,7 @@ with every actionable blocker and papercut discovered.
   2. A raw TCP probe of the legacy local HTTP port is diagnostics-only and is
      expected to fail on a socket-only install. A failed probe (e.g. `curl`
      exit 7) is **not** by itself an unreachable node — the node serves over its
-     configured Unix socket (e.g. `~/.folddb/data/folddb.sock`).
+     configured Unix socket — `$HOME/.folddb/data/folddb.sock` by default.
   3. Classify the result and act:
      - **reachable** — at least one of `fkanban doctor` / `fbrain doctor` is
        green (over TCP or socket). Proceed. If the doctors are green but the TCP
