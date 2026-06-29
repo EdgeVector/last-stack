@@ -67,6 +67,21 @@ if "$ROOT/bin/last-stack-lint-prompts" "$bad_ambiguous_repo_skip" >/dev/null 2>&
   exit 1
 fi
 
+good_aline_guard="$tmp/good-aline-guard.md"
+cat > "$good_aline_guard" <<'GOOD_ALINE'
+if command -v aline >/dev/null 2>&1; then
+  aline search "prior decision"
+fi
+GOOD_ALINE
+"$ROOT/bin/last-stack-lint-prompts" "$good_aline_guard"
+
+bad_aline_unguarded="$tmp/bad-aline-unguarded.md"
+printf '%s\n' "aline sea""rch \"prior decision\"" > "$bad_aline_unguarded"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_aline_unguarded" >/dev/null 2>&1; then
+  echo "expected unguarded aline sea""rch guidance to fail prompt lint" >&2
+  exit 1
+fi
+
 pickup="$ROOT/routines/fkanban-pickup.md"
 grep -q 'Repo: (workspace root' "$pickup"
 grep -q 'Repo: (machine-hygiene skill' "$pickup"
