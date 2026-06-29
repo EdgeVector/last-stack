@@ -66,7 +66,7 @@ Window: the LAST 24 HOURS of sessions. If that yields little signal (fewer than
       rg -i "<pattern>" || true
   fi
   ```
-  If the installed `onecontext` skill recommends `aline search` but the binary
+  If the installed `onecontext` skill recommends Aline commands but the binary
   is absent, skip the stale command and use the raw transcript fallback above.
 - Common transcript-grepping gotchas to plan around: (a) file mtimes can be
   unreliable if an indexer bulk-touches old files — filter by an in-content

@@ -44,6 +44,63 @@ search_prompt_pattern() {
   grep -nE "$pattern" "$path" || true
 }
 
+check_aline_search_guards() {
+  local root="$1"
+  local files=()
+  local file
+
+  if [ -d "$root" ]; then
+    while IFS= read -r -d '' file; do
+      files+=("$file")
+    done < <(
+      find "$root" -type f \
+        ! -path '*/.git/*' \
+        ! -path '*/logs/*' \
+        ! -path '*/run/*' \
+        ! -name memory.md \
+        ! -name last-stack-lint-prompts \
+        -print0
+    )
+  else
+    [ "$(basename "$root")" = "last-stack-lint-prompts" ] && return 0
+    files=("$root")
+  fi
+
+  for file in "${files[@]}"; do
+    [ -f "$file" ] || continue
+    grep -Iq . "$file" || continue
+    awk -v file="$file" '
+      {
+        lines[NR] = $0
+        if ($0 ~ /command[[:space:]]+-v[[:space:]]+aline/) {
+          guard[NR] = 1
+        }
+      }
+      END {
+        for (line = 1; line <= NR; line++) {
+          if (lines[line] !~ /aline[[:space:]]+search/) {
+            continue
+          }
+          guarded = 0
+          for (near = line - 8; near <= line + 2; near++) {
+            if (near > 0 && guard[near]) {
+              guarded = 1
+            }
+          }
+          if (!guarded) {
+            printf "%s:%d:%s\n", file, line, lines[line]
+            bad = 1
+          }
+        }
+        exit bad
+      }
+    ' "$file" || {
+      echo "unguarded aline search usage found under $root" >&2
+      fail=1
+    }
+  done
+}
+
 for path in "$@"; do
   check_path_exists "$path" || continue
 
@@ -107,6 +164,8 @@ for path in "$@"; do
     echo "routine-heartbeats reads must specify --type reference" >&2
     fail=1
   fi
+
+  check_aline_search_guards "$path"
 done
 
 while IFS= read -r -d '' toml; do

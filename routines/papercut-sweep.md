@@ -41,7 +41,7 @@ read/write, fail loudly if the resolved path is empty or starts with
       rg -i "<pattern>" || true
   fi
   ```
-  If the installed `onecontext` skill recommends `aline search` but the binary
+  If the installed `onecontext` skill recommends Aline commands but the binary
   is absent, skip the stale command and use the raw transcript fallback above.
 - Grepping gotchas (same as the self-improvement loop): unreliable mtimes →
   filter by an in-content timestamp; session id ≠ transcript filename →

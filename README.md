@@ -90,6 +90,7 @@ preserving project-specific rules where they belong.
 | **fkanban** | Board CRUD over LastDB — file/list/show/move/groom cards. |
 | **fkanban-agent** | Drive a single card all the way to a **merged** PR; or reconcile-sweep an in-flight board. |
 | **fkanban-setup** | Bootstrap fkanban on a fresh machine — install, `init` (resolve published schemas), `doctor`, optional MCP registration. |
+| **onecontext** | Search prior Codex sessions, with guarded Aline usage and a JSONL fallback when Aline is unavailable. |
 | **wait-merge** | Robustly wait for a GitHub PR to merge by interpreting PR *state*, not a watcher's exit code. |
 | **close-out** | The post-change loop: open a PR from a worktree, drive it to merged, checkpoint the decision to the brain, file a follow-up card. |
 | **last-stack-upgrade** | Update the stack in place and re-register the skills. |
