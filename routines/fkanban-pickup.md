@@ -45,11 +45,27 @@ read/write, fail loudly if the resolved path is empty or starts with
 
 ## Selection rule (pick up to `<N>` cards)
 1. `<board CLI> list --json`.
-2. Eligible = a card in the `todo` column whose body has a `Repo:` header line.
-   `todo` is the ready queue — only work cards promoted there. Ignore `backlog`
-   (unready) entirely.
-3. SKIP any card missing `Repo:`/`Base:`, ambiguous/underspecified, or carrying a
-   `BLOCKED:` note — leave it in `todo`.
+2. Eligible = a card in the `todo` column whose body has parseable `Repo:` and
+   `Base:` header lines. `Repo:` must be either `owner/name` or an absolute local
+   Git checkout path. `todo` is the ready queue — only work cards promoted there.
+   Ignore `backlog` (unready) entirely.
+3. Leave missing `Repo:`/`Base:` cards in `todo`; `fkanban-watch` owns the
+   header self-heal path. Leave cards carrying a `BLOCKED:` note alone. For cards
+   whose `Repo:` header is present but not a resolvable target, do NOT silently
+   skip and reconsider them every run. Convert the card into a loud one-time
+   blocker:
+   - Read it with `<board CLI> show <slug> --json`.
+   - Append exactly one line if absent: `BLOCKED: fkanban-pickup cannot resolve
+     Repo: "<repo header>"; replace it with owner/name or an absolute Git
+     checkout path.`
+   - Persist the amended body via `<board CLI> add <slug> --column review
+     --block-status needs_human --block-reason "Repo target not resolvable:
+     <repo header>" < "$body_file"`, then confirm with `<board CLI> show <slug>
+     --json`.
+   - Examples that must take this deterministic blocker path unless a real Git
+     checkout is proven before selection: `Repo: (workspace root — .claude/launch.json lives at /Users/tomtang/code/edgevector/.claude/launch.json; commit it in whichever repo tracks that file, else file note)` and `Repo: (machine-hygiene skill — /Users/tomtang/.claude or the repo tracking the machine-hygiene SKILL.md)`.
+   This blocker conversion counts as forward action. Do it before computing
+   work-units so the unchanged card is not logged as a recurring pickup skip.
 4. Sort eligible cards by priority (lowest `position`; tie-break oldest
    `created_at`) and take the top `<N>`.
 5. **Shared-build-cache sub-cap (if applicable):** if concurrent builds against
@@ -79,6 +95,9 @@ unit2 = SINGLE[d]").
 **STEP B — for EACH work-unit:**
 - FIRST move its card(s) to `doing` (`<board CLI> move <slug> doing`) so siblings
   and the next run don't double-pick. For a batch, move ALL its cards.
+- Use the fkanban CLI-supported command shapes. `show` and `move` use the
+  current/default board context; only commands whose help lists a board option
+  may receive one.
 - Then spawn ONE background agent for that work-unit (run it in the background so
   this parent isn't blocked) — ONE agent per unit, so a 3-card batch is ONE
   agent/branch/PR, not three. Give each agent a fully self-contained prompt:

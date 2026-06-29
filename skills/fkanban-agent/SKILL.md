@@ -68,6 +68,10 @@ fkanban move <slug> doing         # column transition
 fkanban list --json               # whole board
 ```
 
+`show` and `move` do not take a per-command board flag. If you need the default
+board, use the forms above; only add a board flag to commands whose help lists
+one.
+
 (No shim on PATH — `command not found: fkanban`? Fall back to
 `bun run src/cli.ts <cmd>` from the fkanban repo directory; equivalent.)
 
