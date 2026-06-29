@@ -63,6 +63,22 @@ for path in "$@"; do
     fail=1
   fi
 
+  fkanban_board_matches="$(search_prompt_pattern '(fkanban|<board CLI>)[[:space:]]+(show|move)([[:space:]]|$).*--board' "$path")"
+  fkanban_board_matches="$(printf '%s\n' "$fkanban_board_matches" | grep -v -E 'Do not|Never|do not|never|unsupported|do not take|only commands whose help lists' || true)"
+  if [ -n "$fkanban_board_matches" ]; then
+    printf '%s\n' "$fkanban_board_matches"
+    echo "unsupported fkanban show/move --board usage found under $path" >&2
+    fail=1
+  fi
+
+  ambiguous_pickup_skips="$(search_prompt_pattern 'SKIP.*ambiguous.*leave it in.*todo|SKIP.*underspecified.*leave it in.*todo|ambiguous.*Repo.*leave it in.*todo' "$path")"
+  ambiguous_pickup_skips="$(printf '%s\n' "$ambiguous_pickup_skips" | grep -v -E 'Do not|Never|do not|never|unsupported' || true)"
+  if [ -n "$ambiguous_pickup_skips" ]; then
+    printf '%s\n' "$ambiguous_pickup_skips"
+    echo "ambiguous fkanban-pickup repo targets must be annotated or blocked, not silently left in todo" >&2
+    fail=1
+  fi
+
   zsh_status_assignments="$(search_prompt_pattern '(^|[^[:alnum:]_])status=' "$path")"
   if [ -n "$zsh_status_assignments" ]; then
     printf '%s\n' "$zsh_status_assignments"

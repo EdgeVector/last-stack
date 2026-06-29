@@ -46,6 +46,33 @@ if "$ROOT/bin/last-stack-lint-prompts" "$bad_gh_release" >/dev/null 2>&1; then
   exit 1
 fi
 
+bad_fkanban_show_board="$tmp/bad-fkanban-show-board.md"
+printf '%s\n' "fkanban sh""ow some-card --bo""ard default --json" > "$bad_fkanban_show_board"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_show_board" >/dev/null 2>&1; then
+  echo "expected unsupported fkanban show --board usage to fail prompt lint" >&2
+  exit 1
+fi
+
+bad_fkanban_move_board="$tmp/bad-fkanban-move-board.md"
+printf '%s\n' "fkanban mo""ve some-card doing --bo""ard default" > "$bad_fkanban_move_board"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_move_board" >/dev/null 2>&1; then
+  echo "expected unsupported fkanban move --board usage to fail prompt lint" >&2
+  exit 1
+fi
+
+bad_ambiguous_repo_skip="$tmp/bad-ambiguous-repo-skip.md"
+printf '%s\n' "SK""IP ambiguous repo targets and leave it in todo." > "$bad_ambiguous_repo_skip"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_ambiguous_repo_skip" >/dev/null 2>&1; then
+  echo "expected ambiguous repo-target no-op skip guidance to fail prompt lint" >&2
+  exit 1
+fi
+
+pickup="$ROOT/routines/fkanban-pickup.md"
+grep -q 'Repo: (workspace root' "$pickup"
+grep -q 'Repo: (machine-hygiene skill' "$pickup"
+grep -q 'fkanban-pickup cannot resolve' "$pickup"
+grep -q -- '--block-status needs_human' "$pickup"
+
 memory_home="$tmp/home"
 mkdir -p "$memory_home"
 env -u CODEX_HOME HOME="$memory_home" bash -eu <<'SH'
