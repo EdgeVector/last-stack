@@ -25,7 +25,7 @@ search_prompt_pattern() {
   if command -v rg >/dev/null 2>&1; then
     rg -n "$pattern" "$path" \
       -g '!**/.git/**' -g '!**/logs/**' -g '!**/run/**' -g '!**/memory.md' \
-      -g '!bin/last-stack-lint-prompts' || true
+      -g '!bin/last-stack-lint-prompts' -g '!**/bin/last-stack-lint-prompts' || true
     return
   fi
 
@@ -197,10 +197,34 @@ for path in "$@"; do
     fail=1
   fi
 
-  workspace_git_probes="$(search_prompt_pattern 'git -C /Users/tomtang/code/edgevector|git -C <WORKSPACE>|git -C "\$workspace"|git -C \$workspace|git status --short --branch|(^|[^-[:alnum:]_])git worktree list' "$path")"
+  unsupported_shell_forms="$(search_prompt_pattern '(^|[^[:alnum:]_])(mapfile|readarray)([[:space:]]|$)' "$path")"
+  unsupported_shell_forms="$(printf '%s\n' "$unsupported_shell_forms" | grep -v -Ei 'Do not|Never|do not|never|avoid|unsupported|banned|without[[:space:]]+(mapfile|readarray)|no[[:space:]]+(mapfile|readarray)' || true)"
+  if [ -n "$unsupported_shell_forms" ]; then
+    printf '%s\n' "$unsupported_shell_forms"
+    echo "unsupported zsh/macOS shell form found under $path (use portable while-read or Python snippets)" >&2
+    fail=1
+  fi
+
+  unquoted_heredocs="$(search_prompt_pattern '<<[[:space:]]*[A-Za-z0-9_]+([[:space:]]|$)' "$path")"
+  unquoted_heredocs="$(printf '%s\n' "$unquoted_heredocs" | grep -v -Ei "Do not|Never|do not|never|unsupported|unsafe|unquoted|quoted heredoc|single-quoted" || true)"
+  if [ -n "$unquoted_heredocs" ]; then
+    printf '%s\n' "$unquoted_heredocs"
+    echo "unquoted heredoc delimiter found under $path; Markdown/F-Brain/fkanban bodies must use <<'EOF' or a body file" >&2
+    fail=1
+  fi
+
+  workspace_git_probes="$(search_prompt_pattern 'git -C /Users/tomtang/code/edgevector|git -C <WORKSPACE>|git -C "\$workspace"|git -C \$workspace|git -C "\$WORKSPACE"|git -C \$WORKSPACE|git status --short --branch|git rev-parse --show-toplevel|(^|[^-[:alnum:]_])git worktree list' "$path")"
   if [ -n "$workspace_git_probes" ]; then
     printf '%s\n' "$workspace_git_probes"
     echo "unsafe workspace/root-level Git probe found under $path" >&2
+    fail=1
+  fi
+
+  gh_pr_without_repo="$(search_prompt_pattern '(^|[^[:alnum:]_-])gh[[:space:]]+pr[[:space:]]+(create|view|list|merge|checks|update-branch|comment|close)([[:space:]]|$)' "$path")"
+  gh_pr_without_repo="$(printf '%s\n' "$gh_pr_without_repo" | grep -v -E 'gh[[:space:]]+(-R|--repo)|--repo[[:space:]]+|-R[[:space:]]+|Do not|Never|do not|never|request `isInMergeQueue` through `gh pr view/list --json`' || true)"
+  if [ -n "$gh_pr_without_repo" ]; then
+    printf '%s\n' "$gh_pr_without_repo"
+    echo "gh pr command without explicit --repo/-R found under $path" >&2
     fail=1
   fi
 

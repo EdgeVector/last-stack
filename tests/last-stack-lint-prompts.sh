@@ -33,11 +33,45 @@ bad_workspace_git="$tmp/bad-workspace-git.md"
   printf '%s\n' "pwd && git stat""us --short --branch"
   printf '%s\n' "git -C /Users/tomtang/code/edge""vector status --short"
   printf '%s\n' "git work""tree list --porcelain"
+  printf '%s\n' "git rev""-parse --show-toplevel"
 } > "$bad_workspace_git"
 if "$ROOT/bin/last-stack-lint-prompts" "$bad_workspace_git" >/dev/null 2>&1; then
   echo "expected unsafe workspace/root Git probes to fail prompt lint" >&2
   exit 1
 fi
+
+bad_gh_pr_without_repo="$tmp/bad-gh-pr-without-repo.md"
+printf '%s\n' "gh pr vi""ew 123 --json state" > "$bad_gh_pr_without_repo"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_gh_pr_without_repo" >/dev/null 2>&1; then
+  echo "expected gh pr commands without explicit repo to fail prompt lint" >&2
+  exit 1
+fi
+
+good_gh_pr_with_repo="$tmp/good-gh-pr-with-repo.md"
+printf '%s\n' "gh -R owner/repo pr vi""ew 123 --json state" > "$good_gh_pr_with_repo"
+"$ROOT/bin/last-stack-lint-prompts" "$good_gh_pr_with_repo"
+
+bad_mapfile="$tmp/bad-mapfile.md"
+printf '%s\n' "map""file -t cards < <(fkanban list --json)" > "$bad_mapfile"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_mapfile" >/dev/null 2>&1; then
+  echo "expected map""file/read""array usage to fail prompt lint" >&2
+  exit 1
+fi
+
+good_mapfile_warning="$tmp/good-mapfile-warning.md"
+printf '%s\n' "Do not use map""file/read""array in zsh/macOS snippets; use while-read or Python." > "$good_mapfile_warning"
+"$ROOT/bin/last-stack-lint-prompts" "$good_mapfile_warning"
+
+bad_unquoted_heredoc="$tmp/bad-unquoted-heredoc.md"
+printf '%s\n' "cat > body.md <<""EOF" 'Markdown with `backticks`' "EOF" > "$bad_unquoted_heredoc"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_unquoted_heredoc" >/dev/null 2>&1; then
+  echo "expected unquoted heredoc to fail prompt lint" >&2
+  exit 1
+fi
+
+good_quoted_heredoc="$tmp/good-quoted-heredoc.md"
+printf '%s\n' "cat > body.md <<'EOF'" 'Markdown with `backticks`' "EOF" > "$good_quoted_heredoc"
+"$ROOT/bin/last-stack-lint-prompts" "$good_quoted_heredoc"
 
 bad_gh_release="$tmp/bad-gh-release.md"
 printf '%s\n' "gh release view --repo owner/repo --json tagName,is""Latest,isPrerelease" > "$bad_gh_release"

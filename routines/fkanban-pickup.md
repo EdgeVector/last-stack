@@ -114,19 +114,23 @@ unit2 = SINGLE[d]").
   - "Isolate your work: `git worktree add <worktrees-dir>/<lead-slug> -b
     fkanban/<lead-slug> origin/<base>` in the target repo (for a batch,
     `<lead-slug>` = the highest-priority card). Never edit a shared checkout in
-    place; never stash/reset/clean a shared repo."
+    place; never stash/reset/clean a shared repo. The worker must resolve
+    `<repo>` to an explicit local checkout and `cd` there before any `git`
+    command; it must use `gh -R <repo>` for GitHub commands. If `<repo>` cannot
+    be resolved, it must block the card in `review` instead of probing the
+    workspace root."
   - "Implement per the card brief, matching the repo's conventions and style.
     Honor OUT OF SCOPE; keep the PR atomic. Run the brief's VERIFY commands and
     validate by running the app where the brief calls for it, not just tests."
   - "`git push -u origin HEAD` → `gh -R <repo> pr create --fill --base <base>` →
     enable auto-merge per the repo's merge strategy (for a merge-queue repo, bare
-    `gh pr merge <n> --auto` — the queue sets the method; for plain auto-merge add
+    `gh -R <repo> pr merge <n> --auto` — the queue sets the method; for plain auto-merge add
     your strategy flag)."
   - "Then DRIVE THE PR TO MERGED — do NOT hand off a green-but-unmerged PR (that
     fire-and-forget hand-off is exactly what lets PRs pile up stranded). Use the
-    `wait-merge` skill (or a sleepless `gh pr checks <n> --watch`, NEVER `sleep`)
+    `wait-merge` skill (or a sleepless `gh -R <repo> pr checks <n> --watch`, NEVER `sleep`)
     and act on each state change: re-arm if auto-merge was dropped,
-    `gh pr update-branch <n>` if BEHIND, rebase if DIRTY, fix if a required check
+    `gh -R <repo> pr update-branch <n>` if BEHIND, rebase if DIRTY, fix if a required check
     fails. When MERGED, move the card (for a batch, EVERY card that shipped) to
     `done` and EXIT."
   - "When checking merge-queue membership, NEVER request `isInMergeQueue` through `gh pr view/list --json`; query the queue flag through `gh api graphql`."
@@ -175,10 +179,10 @@ limit, do NOT spawn it. Spawn exactly ONE background agent (no nested spawns, no
 > abstraction, a duplicated helper, an over-complex expression (reuse / clarity /
 > efficiency, NOT a behavior change, NOT a bug hunt), small enough to review in
 > one sitting. Make the edit, confirm the touched package still builds and its
-> tests pass, open a PR (`gh pr create --fill`, title prefixed `chore(simplify):`),
-> enable auto-merge per the repo's merge strategy (merge-queue repo: bare `gh pr
-> merge <n> --auto`; plain auto-merge: add your strategy flag), then DRIVE IT TO
-> MERGED — use the `wait-merge` skill or a sleepless `gh pr checks <n> --watch`
+> tests pass, open a PR (`gh -R <owner>/<repo> pr create --fill`, title prefixed `chore(simplify):`),
+> enable auto-merge per the repo's merge strategy (merge-queue repo: bare `gh -R
+> <owner>/<repo> pr merge <n> --auto`; plain auto-merge: add your strategy flag), then DRIVE IT TO
+> MERGED — use the `wait-merge` skill or a sleepless `gh -R <owner>/<repo> pr checks <n> --watch`
 > (NEVER `sleep`), acting on each state change. If you can't find a genuinely
 > safe, worthwhile simplification, open NO PR, remove the worktree, and exit — do
 > NOT manufacture churn. Stay dev-only: escalate only prod cutover / public-facing

@@ -132,13 +132,13 @@ Resolving/splitting a conflict card COUNTS as forward action.
         cards. (Marking an un-started card `done` silently buries real work — a
         real historical bug.)
       - **No PR + a `fkanban/<slug>` branch with commits** → finish landing it
-        (push + `gh pr create --fill` + enable auto-merge).
+        (push + `gh -R <repo> pr create --fill` + enable auto-merge).
       - **Auto-merge OFF/dropped** (`autoMergeRequest` null) while CLEAN and not
-        merged → re-arm: `gh pr merge <n> --auto`. The merge queue silently DROPS
+        merged → re-arm: `gh -R <repo> pr merge <n> --auto`. The merge queue silently DROPS
         auto-merge whenever it ejects a PR; nothing else re-fires it, so a
         green-and-ready PR sits forever. A CLEAN PR with auto-merge OFF is a
         STRAND. CHEAP advance.
-      - **BEHIND base** but otherwise clean + green → `gh pr update-branch <n>`
+      - **BEHIND base** but otherwise clean + green → `gh -R <repo> pr update-branch <n>`
         (lightweight, NO worktree), and ensure auto-merge is armed. Do NOT trust
         the queue to self-update a BEHIND branch — a jammed queue never admits it.
         Guard: if a worktree for the card exists, only update-branch when it's

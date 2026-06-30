@@ -157,6 +157,9 @@ creating directories.
 When writing shell snippets that may run under `zsh`, do not use `status` as a
 temporary variable name. In `zsh`, `status` is a read-only special parameter; use
 specific names such as `git_status`, `repo_status`, or `st` instead.
+Do not use Bash-only `mapfile` / `readarray` in agent-facing snippets; macOS and
+`zsh` sessions commonly lack them. Use a portable `while IFS= read -r ...` loop
+or a short Python snippet for list handling.
 
 When a routine starts from a workspace container (the directory that holds
 your repos), discover child Git repositories before running
@@ -175,6 +178,9 @@ find "$workspace" -mindepth 2 -maxdepth 3 -type d -name .git -prune \
 Only after that should a routine run commands such as
 `git -C "$repo" worktree list --porcelain` or `git -C "$repo" status -sb`.
 This avoids a noisy first failure from treating the workspace root as a repo.
+GitHub commands should be repo-qualified the same way: use `gh -R <owner>/<repo>
+...` (or `--repo <owner>/<repo>`) after the card or routine has resolved the
+owning repo. Do not let `gh` infer a repository from an aggregate workspace.
 
 When generating Markdown for `fbrain put`, `fkanban add`, `gh --body`, or any
 similar command, keep the body out of shell-expanded strings. Use a quoted
@@ -182,6 +188,8 @@ heredoc into a temp file, pipe stdin, or pass a body file. If the text can
 contain backticks, `$()`, `$var`, globs, semicolons, or other shell
 metacharacters, it must never be expanded by the shell; substitute only narrow
 placeholders afterward with a controlled command such as `sed`.
+Unquoted heredocs such as `<<EOF` are not allowed for these bodies; use a
+single-quoted delimiter such as `<<'EOF'`.
 
 Codex automation prompt skeletons should render the same information directly:
 

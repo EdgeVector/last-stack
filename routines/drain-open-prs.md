@@ -126,7 +126,7 @@ read/write, fail loudly if the resolved path is empty or starts with
 - Issue ONE tool call per turn and append `|| true` so a non-zero exit doesn't
   cancel the rest of the queue.
 - Do NOT chain `sleep` to wait on CI. For a PR whose merge you just enabled,
-  either confirm with a sleepless `gh pr checks <n> --watch` if you must see it
+  either confirm with a sleepless `gh -R <repo> pr checks <n> --watch` if you must see it
   land in-turn, or just leave it for tomorrow — auto-merge fires when CI goes
   green. Interpret PR STATE, not a watcher's exit code (a BLOCKED/red/queue
   state = re-poll, not a failure).
