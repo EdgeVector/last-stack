@@ -50,7 +50,7 @@ boot
 # 4    ASSERT+ : node must come up usable and unlock with the correct password.
 st="$(api /api/system/status | sed -n 's/.*"status":"\([^"]*\)".*/\1/p')"
 if [ "$st" != "ok" ]; then
-  echo "FAIL[assert+]: status=$st (expected ok) — reproduces 2026-06-30 lockout"; exit 1
+  echo "FAIL[assert+]: node reported '$st' (expected ok) — reproduces 2026-06-30 lockout"; exit 1
 fi
 if ! api /api/system/unlock -X POST -H 'content-type: application/json' \
        -d "{\"password\":\"$PW\"}" >/dev/null; then
