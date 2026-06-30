@@ -26,7 +26,7 @@ merged.
 > **Drive to merge, but never idle-park or sleep-loop.** The rule that prevents
 > wedged/runaway agents is **no `sleep`-to-wait, ever**: you wait for CI/the
 > merge process only with a *sleepless* foreground watcher (the `/wait-merge`
-> skill, or `gh pr checks <n> --watch`), which returns when state actually
+> skill, or `gh -R <repo> pr checks <n> --watch`), which returns when state actually
 > changes and is bounded by GitHub's check timeout. While waiting you take
 > *action* on state changes (re-arm dropped auto-merge, update-branch a BEHIND
 > PR, rebase a DIRTY one) rather than spinning. You exit when the PR is **MERGED**
@@ -118,8 +118,14 @@ to `review`, append a one-line note explaining what's missing, and exit.
 
 1. **Claim it.** `bun run src/cli.ts show <slug> --json`. If it's already in
    `review`/`done`, stop — someone landed it. Otherwise move it to `doing`.
-2. **Set up an isolated worktree** (never edit a shared checkout in place, and
-   never `stash`/`reset` — sibling agents may share these repos):
+2. **Resolve the target repo, then set up an isolated worktree** (never edit a
+   shared checkout in place, and never `stash`/`reset` — sibling agents may
+   share these repos). The `Repo:` header must resolve to an explicit local Git
+   checkout path before any `git` or `gh` command runs. If it is missing,
+   ambiguous, points at the aggregate workspace (for example
+   `/Users/tomtang/code/edgevector`), or cannot be resolved to a checkout, move
+   the card to `review` with a one-line `BLOCKED:` note instead of probing the
+   current directory or workspace root:
    ```bash
    cd <target-repo-root>
    git fetch origin <base>
@@ -146,12 +152,12 @@ to `review`, append a one-line note explaining what's missing, and exit.
    *state* (not a watcher's exit code), tolerates merge churn, re-asserts
    auto-merge when a clean PR stalls, and only declares failure on a genuinely
    terminal state. If you drive by hand instead, loop with a **sleepless** watcher
-   (`gh pr checks <n> --watch`, NEVER `sleep`) and on each state change act:
+   (`gh -R <repo> pr checks <n> --watch`, NEVER `sleep`) and on each state change act:
    - **MERGED** (`state=MERGED`) → `move <slug> done`. **You are done — exit.**
    - **auto-merge dropped** (`autoMergeRequest` null) while CLEAN/mergeable →
-     re-arm: `gh pr merge <n> --auto`. (A merge queue can silently drop it; this
+     re-arm: `gh -R <repo> pr merge <n> --auto`. (A merge queue can silently drop it; this
      is a common strand — re-arm and keep watching.)
-   - **BEHIND** (and otherwise clean/green) → `gh pr update-branch <n>`
+   - **BEHIND** (and otherwise clean/green) → `gh -R <repo> pr update-branch <n>`
      (lightweight, no worktree). Don't assume the queue self-updates a BEHIND
      branch. Then keep watching; auto-merge fires once it re-greens.
    - **DIRTY / CONFLICTING** → rebase in your worktree (`git fetch origin
@@ -219,13 +225,13 @@ act on (see step 2). When in doubt, do nothing.** Skip a card only if it has no
      BEHIND) → enter the worktree, read the failing job logs
      (`gh run view --log-failed`), fix, re-run VERIFY, push. HEAVY (see budget).
    - **Auto-merge dropped** (`autoMergeRequest` is null) while the PR is CLEAN /
-     mergeable and not merged → **re-arm it: `gh pr merge <n> --auto`.** A merge
+     mergeable and not merged → **re-arm it: `gh -R <repo> pr merge <n> --auto`.** A merge
      queue can silently drop the auto-merge request when it ejects a PR; once
      dropped nothing re-fires it, so a green-and-ready PR sits forever. Do NOT
      require auto-merge to be ON to consider a PR stuck — a CLEAN PR with
      auto-merge OFF is itself a strand. CHEAP advance (uncapped).
    - **Behind base, otherwise clean + green** (`mergeStateStatus` = BEHIND, NOT
-     DIRTY, no red required check) → **`gh pr update-branch <n>`** (lightweight,
+     DIRTY, no red required check) → **`gh -R <repo> pr update-branch <n>`** (lightweight,
      NO worktree/force-push). Don't assume a merge queue self-updates a BEHIND
      branch. Guard: if a `~/.fkanban/worktrees/<slug>` exists, only
      update-branch when it is clean AND fully pushed
@@ -239,11 +245,11 @@ act on (see step 2). When in doubt, do nothing.** Skip a card only if it has no
    - **Conflicts / dirty** (`mergeStateStatus` = DIRTY/CONFLICTING) → enter the
      worktree, `git fetch origin <base>`, rebase onto `origin/<base>`, resolve,
      re-verify, force-push with lease. HEAVY. If the conflict needs product
-     judgment, don't guess — `gh pr comment` flagging it and leave it.
+     judgment, don't guess — `gh -R <repo> pr comment` flagging it and leave it.
    - **Changes requested** (`reviewDecision=CHANGES_REQUESTED`) → read the
      review comments, address them, push, reply briefly.
    - **Clean + approved but not merging** → re-assert auto-merge
-     (`gh pr merge <n> --auto`); if a required check is stuck, surface it, don't
+     (`gh -R <repo> pr merge <n> --auto`); if a required check is stuck, surface it, don't
      force-merge.
    - **Pending** (CI running, awaiting human review) → leave it; it'll be
      re-checked next wake.
@@ -256,14 +262,14 @@ act on (see step 2). When in doubt, do nothing.** Skip a card only if it has no
 that's what lets a burst of BEHIND PRs rot. Each wake:
 - Do EVERY CHEAP advance (uncapped): move every merged card to `done`; re-arm
   auto-merge on every clean-but-unarmed/stuck PR (including ones whose auto-merge
-  was *dropped*); `gh pr update-branch` the oldest few clean-green-BEHIND carded
+  was *dropped*); `gh -R <repo> pr update-branch` the oldest few clean-green-BEHIND carded
   PRs (not just one).
 - Do at most ONE HEAVY unit: a worktree CI-fix OR a conflict rebase. Pick the
   highest-value one, then exit.
 
 Heavy fixes happen inside `~/.fkanban/worktrees/<slug>` on branch
 `fkanban/<slug>` — reuse the existing worktree if present; create it (WORK MODE
-step 2) if not. A `gh pr update-branch` needs NO worktree at all.
+step 2) if not. A `gh -R <repo> pr update-branch` needs NO worktree at all.
 
 ---
 
@@ -271,17 +277,18 @@ step 2) if not. A `gh pr update-branch` needs NO worktree at all.
 
 Repositories differ in how they merge. Match your repo's policy:
 
-- **Plain auto-merge:** `gh pr merge <n> --auto --squash` (or `--merge` /
+- **Plain auto-merge:** `gh -R <repo> pr merge <n> --auto --squash` (or `--merge` /
   `--rebase` to match the repo's preferred method).
-- **Merge-queue repos:** enable auto-merge with bare **`gh pr merge <n>
+- **Merge-queue repos:** enable auto-merge with bare **`gh -R <repo> pr merge <n>
   --auto`** — do **not** pass a strategy flag, because the queue's ruleset sets
   the method (passing `--squash` errors `The merge strategy for main is set by
   the merge queue`). A `BLOCKED`/`AWAITING_CHECKS` state is the normal in-queue
   resting state, not a dropped auto-merge.
 - **Auto-merge disabled:** some repos disallow `--auto` entirely (it errors
-  "Auto merge is not allowed"). There, the flow is: push → `gh pr create` →
-  `gh pr checks <n> --watch` (block sleeplessly until CI is green) →
-  `gh pr merge <n> --squash` to land it manually.
+  "Auto merge is not allowed"). There, the flow is: push →
+  `gh -R <repo> pr create` → `gh -R <repo> pr checks <n> --watch` (block
+  sleeplessly until CI is green) → `gh -R <repo> pr merge <n> --squash` to land
+  it manually.
 
 Check the repo's contributor docs (`CONTRIBUTING.md` / `AGENTS.md` /
 `CLAUDE.md`) for which applies.
@@ -293,12 +300,23 @@ Check the repo's contributor docs (`CONTRIBUTING.md` / `AGENTS.md` /
   a human.
 - **Never kill a LastDB node you didn't start**; don't `clean`/`reset`/`stash` a
   shared repo — use `git worktree add`.
+- **Never probe the workspace root as a repo.** A container such as
+  `/Users/tomtang/code/edgevector` may only hold child repos. Resolve the card's
+  `Repo:` header to a concrete checkout, `cd` there (or use `git -C "$repo"`),
+  and use `gh -R <owner>/<repo>` before all Git/GitHub operations. If the repo
+  path is not explicit and resolvable, block the card in `review`.
 - **Avoid zsh's read-only `status` parameter.** Shell snippets and one-liners
   may run under `zsh`; use names like `git_status`, `repo_status`, or `st` for
   temporary command output instead of assigning to `status`.
+- **Avoid zsh/macOS-only shell traps.** Do not use Bash-only `mapfile` /
+  `readarray` in snippets that may run under `zsh` or macOS Bash 3.2; use
+  portable `while IFS= read -r ...` loops or Python for list processing. For
+  Markdown/F-Brain/fkanban/PR bodies, always use a body file with a
+  single-quoted heredoc delimiter such as `<<'EOF'` (or stdin), never an
+  unquoted heredoc or shell-expanded string.
 - **Never chain `sleep` to wait — but DO drive your PR to merge.** **WORK mode**
   owns its PR to merge and waits with a *sleepless* foreground watcher
-  (`/wait-merge`, or `gh pr checks <n> --watch`, or `gh run watch <run-id>`) that
+  (`/wait-merge`, or `gh -R <repo> pr checks <n> --watch`, or `gh run watch <run-id>`) that
   returns on real state change — acting on each change (re-arm/update-branch/
   rebase) until MERGED or a genuine blocker. **RECONCILE mode** does one sweep
   of unit-work and exits; the next wake re-checks. What is forbidden in BOTH is

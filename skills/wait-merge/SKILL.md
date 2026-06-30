@@ -26,7 +26,7 @@ triggers:
 ## Why this exists
 
 A naive pattern — a single long-lived background command like
-`gh pr checks <n> --watch && gh run watch ...` labeled "Watch PR N until merged"
+`gh -R <repo> pr checks <n> --watch && gh run watch ...` labeled "Watch PR N until merged"
 — **exits non-zero** the moment a check goes transiently red, the PR enters a
 merge queue, or `--watch` returns on a non-success terminal. The harness then
 surfaces it as a *failed task*, you re-kick it, and it fails again.
@@ -79,10 +79,10 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){pullRequest(
 
 Re-assert auto-merge when a clean, approved PR is just sitting. Match your
 repo's merge policy:
-- **Merge-queue repos** → bare `gh pr merge <n> --auto` (NO strategy flag; the
+- **Merge-queue repos** → bare `gh -R <repo> pr merge <n> --auto` (NO strategy flag; the
   queue sets the method). A `BLOCKED` state / `AWAITING_CHECKS` queue entry is
   the normal pre-merge resting state, not a failure.
-- **Plain auto-merge** → `gh pr merge <n> --auto --squash` (or your repo's
+- **Plain auto-merge** → `gh -R <repo> pr merge <n> --auto --squash` (or your repo's
   preferred method).
 - A PR whose auto-merge predates its repo getting a queue may need a
   disable→re-enable to enter the queue (bare `--auto` no-ops on an
