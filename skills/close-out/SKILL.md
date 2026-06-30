@@ -55,6 +55,17 @@ git -C "$WT" push -u origin "$BR"
 gh pr create --repo <owner>/<repo> --base main --head "$BR" --title "..." --body "..."
 ```
 
+**Every PR body carries a `## Proof` block** — nothing lands unproven (SOP
+`sop-autonomous-acceptance-gate`). Keep it proportional to blast radius:
+
+```
+## Proof
+- Claim:    <the user-visible capability this makes work, one sentence>
+- Tier:     <no-behavior-change | unit+negative | user-visible-roundtrip>
+- How:      <exact command(s) / test name(s), or the acceptance script path>
+- Verified: <what — other than me — confirmed it: CI job, a fresh agent that ran the app>
+```
+
 ## 2. Auto-merge and babysit to MERGED
 
 Match your repo's merge policy (see the **wait-merge** / **fkanban-agent**
@@ -76,19 +87,26 @@ gh pr view <N> --repo <owner>/<repo> --json state,mergeStateStatus,autoMergeRequ
 (Auto-merge can show `autoMergeRequest:null` even when enabled — confirm via the
 `enabledAt` GraphQL field.)
 
-## 3. Run the acceptance check (state-changing work only)
+## 3. Produce the proof — at the tier the change demands
 
-If the change touches persistent state or user-visible behavior (passwords, auth,
-settings, data writes, sync), prove the round trip before calling it done — don't
-trust "tests green / PR merged." Run the feature's `test/acceptance/<feature>.sh`
-against the **real app on a throwaway data dir** (`mktemp -d`,
-`FOLDDB_DISABLE_KEYCHAIN=1`; never `~/.folddb` or the primary brain/keyring). The
-check must cross a **process boundary** (restart / re-open) between the write and
-the read, and include a **negative case**. If no script exists, write one from the
-template in the SOP `sop-autonomous-acceptance-gate` (fbrain). Record the result
-in the brain checkpoint below. A failing acceptance check is a blocker, not a
-footnote — this is the gate that catches "password sets but won't unlock"
-(incident 2026-06-30). Pure-doc / non-runtime changes skip this step.
+Nothing lands unproven, and "proven" is checked by something other than you (an
+agent ran it / CI, not a human eyeballing). Match the proof to blast radius:
+
+- **No behavior change** (refactor/rename/docs) → existing tests green; state why
+  it's behavior-preserving. Done.
+- **Logic with a testable unit** → a unit/integration test of the new behavior
+  **plus a negative case**.
+- **User-visible or stateful** (passwords, auth, settings, data writes, sync, UI)
+  → run the feature's `test/acceptance/<feature>.sh` against the **real app on a
+  throwaway data dir** (`mktemp -d`, `FOLDDB_DISABLE_KEYCHAIN=1`; never `~/.folddb`
+  or the primary brain/keyring). It must cross a **process boundary** (restart /
+  re-open) between the write and the read, and include a **negative case**. No
+  script yet? Write one from the SOP `sop-autonomous-acceptance-gate` template.
+
+Anchor the proof to the **user story, not the diff** — that is what catches
+half-built features ("set" shipped without "unlock", incident 2026-06-30). Record
+the result in the Proof block and the brain checkpoint below. A failing or absent
+proof is a blocker, not a footnote.
 
 ## 4. Checkpoint the decision to the brain
 
@@ -149,7 +167,8 @@ repo/git already records.
 ---
 
 **Self-check before you consider the work done:** Is there a PR? Is it on
-auto-merge and being driven to merged? For state-changing work, did an acceptance
+auto-merge and being driven to merged? Does the PR carry a verified `## Proof`
+block at the right tier — and for user-visible/stateful work, did an acceptance
 check actually run the app and pass (round trip across a restart, plus a negative
 case)? Is the decision in the brain? Is every deferred follow-up a card? If any
 answer is "no" and the step applies — do it now.
