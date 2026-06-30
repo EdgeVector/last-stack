@@ -76,7 +76,21 @@ gh pr view <N> --repo <owner>/<repo> --json state,mergeStateStatus,autoMergeRequ
 (Auto-merge can show `autoMergeRequest:null` even when enabled — confirm via the
 `enabledAt` GraphQL field.)
 
-## 3. Checkpoint the decision to the brain
+## 3. Run the acceptance check (state-changing work only)
+
+If the change touches persistent state or user-visible behavior (passwords, auth,
+settings, data writes, sync), prove the round trip before calling it done — don't
+trust "tests green / PR merged." Run the feature's `test/acceptance/<feature>.sh`
+against the **real app on a throwaway data dir** (`mktemp -d`,
+`FOLDDB_DISABLE_KEYCHAIN=1`; never `~/.folddb` or the primary brain/keyring). The
+check must cross a **process boundary** (restart / re-open) between the write and
+the read, and include a **negative case**. If no script exists, write one from the
+template in the SOP `sop-autonomous-acceptance-gate` (fbrain). Record the result
+in the brain checkpoint below. A failing acceptance check is a blocker, not a
+footnote — this is the gate that catches "password sets but won't unlock"
+(incident 2026-06-30). Pure-doc / non-runtime changes skip this step.
+
+## 4. Checkpoint the decision to the brain
 
 Save the *why* / the settled decision / the milestone. Brain = why + decision;
 Kanban = what's in flight. Pipe big Markdown bodies via **stdin** or a body
@@ -99,7 +113,7 @@ fbrain put <slug> --type project < "$body_file"
 rm -f "$body_file"
 ```
 
-## 4. File an fkanban card for anything that closes later
+## 5. File an fkanban card for anything that closes later
 
 If the work leaves a follow-up that closes by elapsed time or by someone else
 (a verification window, a prod cutover, a human gate), file it so it's not
@@ -126,7 +140,7 @@ include `Repo:`/`Base:` headers; use `Kind: registry` or `Kind: tracker` plus
 the same ownership headers for non-PR follow-ups. `--body` replaces the whole
 body (dump + concatenate first if you mean to append).
 
-## 5. Update memory if the fact is durable
+## 6. Update memory if the fact is durable
 
 If you learned something cross-session (a corrected assumption, a new standing
 rule), record it where your agent keeps durable memory. Don't duplicate what the
@@ -135,5 +149,7 @@ repo/git already records.
 ---
 
 **Self-check before you consider the work done:** Is there a PR? Is it on
-auto-merge and being driven to merged? Is the decision in the brain? Is every
-deferred follow-up a card? If any answer is "no" and the step applies — do it now.
+auto-merge and being driven to merged? For state-changing work, did an acceptance
+check actually run the app and pass (round trip across a restart, plus a negative
+case)? Is the decision in the brain? Is every deferred follow-up a card? If any
+answer is "no" and the step applies — do it now.

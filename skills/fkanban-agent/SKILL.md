@@ -52,7 +52,27 @@ merged.
 | `backlog` / `todo` | not yet picked up |
 | `doing` | an agent is implementing, OR is driving its open PR to merge |
 | `review` | parked for a human — hit a genuine blocker (`BLOCKED:`/`STALLED:` note explains why) |
-| `done` | PR is **merged** (terminal; set only after verifying merge) |
+| `done` | PR is **merged** AND the acceptance gate passed (terminal) |
+
+### Acceptance gate — required for `done` on any state-changing feature
+
+A merged PR is necessary but **not sufficient**. If the card changes persistent
+state or user-visible behavior (passwords, auth, settings, data writes, sync), it
+reaches `done` only when an **acceptance check ran against the real running app
+and passed** — the agent ran it, not a human. See the SOP
+`sop-autonomous-acceptance-gate` (fbrain). The check must:
+
+- run the real binary/node on a **throwaway** data dir (`mktemp -d`,
+  `FOLDDB_DISABLE_KEYCHAIN=1`) — NEVER `~/.folddb` or the primary brain/keyring;
+- **cross a process boundary** (restart the node / re-open) between the write and
+  the read — an in-process set-then-get passes while the app is broken;
+- include a **negative case** (wrong password rejected, missing permission denied).
+
+If no acceptance script exists for a state-changing card, write one
+(`test/acceptance/<feature>.sh`, template in the SOP) before closing. A card with
+a merged PR but a missing or failing acceptance check goes to `review` with an
+`ACCEPTANCE:` note — **not** `done`. This is what stops "password sets but the app
+won't unlock with it" (incident 2026-06-30) from reaching a user.
 
 Note: `review` is an **exception** state, not the normal post-PR resting place.
 The happy path is `doing` → (drive PR to merge) → `done`. A card only lands in
