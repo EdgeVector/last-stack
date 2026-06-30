@@ -82,6 +82,17 @@ run `fkanban show <slug> --json`, or pass `full_body: true` to the MCP
 GOOD_FULL_BODY
 "$ROOT/bin/last-stack-lint-prompts" "$good_fkanban_full_body"
 
+bad_default_board_unscoped="$tmp/bad-default-board-unscoped.md"
+printf '%s\n' "Use workspace \`<workspace>\`, board CLI \`<board-cli>\`, default bo""ard \`<board>\`, and global CLIs from PATH." > "$bad_default_board_unscoped"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_default_board_unscoped" >/dev/null 2>&1; then
+  echo "expected unscoped default-board advertisement to fail prompt lint" >&2
+  exit 1
+fi
+
+good_default_board_scoped="$tmp/good-default-board-scoped.md"
+printf '%s\n' "Use \`<board-cli>\`, default bo""ard \`<board>\` (the board name is only a --board argument for list and add; show, move, rm, and rank/dep/tag verbs operate on the default board implicitly and reject --board)." > "$good_default_board_scoped"
+"$ROOT/bin/last-stack-lint-prompts" "$good_default_board_scoped"
+
 bad_ambiguous_repo_skip="$tmp/bad-ambiguous-repo-skip.md"
 printf '%s\n' "SK""IP ambiguous repo targets and leave it in todo." > "$bad_ambiguous_repo_skip"
 if "$ROOT/bin/last-stack-lint-prompts" "$bad_ambiguous_repo_skip" >/dev/null 2>&1; then

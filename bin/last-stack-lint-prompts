@@ -44,6 +44,46 @@ search_prompt_pattern() {
   grep -nE "$pattern" "$path" || true
 }
 
+check_default_board_scope() {
+  # A prompt/skeleton that advertises a "default board <name>" value must also
+  # carry the scope note that only `list`/`add` take a `--board` argument, so
+  # routine agents don't apply `--board` to `show`/`move` (which reject it).
+  local root="$1"
+  local files=()
+  local file
+
+  if [ -d "$root" ]; then
+    while IFS= read -r -d '' file; do
+      files+=("$file")
+    done < <(
+      find "$root" -type f \
+        ! -path '*/.git/*' \
+        ! -path '*/logs/*' \
+        ! -path '*/run/*' \
+        ! -name memory.md \
+        ! -name last-stack-lint-prompts \
+        -print0
+    )
+  else
+    [ "$(basename "$root")" = "last-stack-lint-prompts" ] && return 0
+    files=("$root")
+  fi
+
+  for file in "${files[@]}"; do
+    [ -f "$file" ] || continue
+    grep -Iq . "$file" || continue
+    # Only fire on the launcher-style advertisement of a board *value*
+    # ("default board `<board>`" / "default board: foo"), not prose that
+    # merely mentions board flags.
+    if grep -Eiq 'default board[[:space:]]*[`:]' "$file"; then
+      if ! grep -Eiq '(show|move).*(do not take|does not take|reject|not accept|no per-command board)|only.*(list|add).*(--board| board argument)|(--board| board argument).*only.*(list|add)' "$file"; then
+        printf '%s\n' "$file: advertises a default board value without scoping --board to list/add" >&2
+        fail=1
+      fi
+    fi
+  done
+}
+
 check_aline_search_guards() {
   local root="$1"
   local files=()
@@ -180,6 +220,7 @@ for path in "$@"; do
   fi
 
   check_aline_search_guards "$path"
+  check_default_board_scope "$path"
 done
 
 while IFS= read -r -d '' toml; do
