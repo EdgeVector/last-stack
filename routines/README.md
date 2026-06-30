@@ -186,7 +186,7 @@ placeholders afterward with a controlled command such as `sed`.
 Codex automation prompt skeletons should render the same information directly:
 
 ```text
-Run the Last Stack routine `<routine>`: first run `<last-stack>/bin/last-stack-update-check`; if it prints `UPGRADE_AVAILABLE` or `GIT_UPDATE_AVAILABLE`, run the `last-stack-upgrade` skill or stop before reading stale routine text. Then read `<last-stack>/routines/<routine>.md` fully and execute one bounded pass. Automation ID: <automation-id>. Automation memory: ${CODEX_HOME:-$HOME/.codex}/automations/<automation-id>/memory.md. Use workspace `<workspace>`, board CLI `<board-cli>`, brain CLI `<brain-cli>`, default board `<board>`, and global CLIs from PATH.
+Run the Last Stack routine `<routine>`: first run `<last-stack>/bin/last-stack-update-check`; if it prints `UPGRADE_AVAILABLE` or `GIT_UPDATE_AVAILABLE`, run the `last-stack-upgrade` skill or stop before reading stale routine text. Then read `<last-stack>/routines/<routine>.md` fully and execute one bounded pass. Automation ID: <automation-id>. Automation memory: ${CODEX_HOME:-$HOME/.codex}/automations/<automation-id>/memory.md. Use workspace `<workspace>`, board CLI `<board-cli>`, brain CLI `<brain-cli>`, default board `<board>` (the board name is only a `--board` argument for `list` and `add`; `show`, `move`, `rm`, and rank/dep/tag verbs operate on the default board implicitly and reject `--board`), and global CLIs from PATH.
 ```
 
 When a prompt needs merge-queue membership, it must use GraphQL or a helper
