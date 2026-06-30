@@ -128,6 +128,20 @@ for path in "$@"; do
     fail=1
   fi
 
+  # `fkanban list` has NO full-body option (its flags are board/column/tag/
+  # assignee/wide/limit/all). Agents keep inventing `fkanban list --full-body`
+  # (or `--full_body`), which the CLI rejects with `Unknown option`. The
+  # supported full-body paths are `fkanban show <slug>` for one card, or the
+  # MCP `fkanban_list`/`fkanban_search` `full_body: true` argument. Block the
+  # CLI flag in agent-facing guidance.
+  fkanban_full_body_matches="$(search_prompt_pattern '(fkanban|<board CLI>)[[:space:]]+list([[:space:]]|$).*--full[-_]body' "$path")"
+  fkanban_full_body_matches="$(printf '%s\n' "$fkanban_full_body_matches" | grep -v -E 'Do not|Never|do not|never|unsupported|no such flag' || true)"
+  if [ -n "$fkanban_full_body_matches" ]; then
+    printf '%s\n' "$fkanban_full_body_matches"
+    echo "unsupported fkanban list --full-body usage found under $path (use fkanban show <slug>, or MCP full_body:true)" >&2
+    fail=1
+  fi
+
   ambiguous_pickup_skips="$(search_prompt_pattern 'SKIP.*ambiguous.*leave it in.*todo|SKIP.*underspecified.*leave it in.*todo|ambiguous.*Repo.*leave it in.*todo' "$path")"
   ambiguous_pickup_skips="$(printf '%s\n' "$ambiguous_pickup_skips" | grep -v -E 'Do not|Never|do not|never|unsupported' || true)"
   if [ -n "$ambiguous_pickup_skips" ]; then
