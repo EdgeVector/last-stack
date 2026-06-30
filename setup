@@ -139,6 +139,16 @@ register_into() {
     mkdir -p "$target"
     [ -L "$target/SKILL.md" ] && rm -f "$target/SKILL.md"
     _link_or_copy "${skill_dir%/}/SKILL.md" "$target/SKILL.md"
+    # Mirror any sidecar files (helper scripts, references/) so skills with more
+    # than a SKILL.md work fully from the source repo — not just their SKILL.md.
+    local base="${skill_dir%/}"
+    find "$base" -type f ! -name SKILL.md | while IFS= read -r src; do
+      rel="${src#"$base"/}"
+      dest="$target/$rel"
+      mkdir -p "$(dirname "$dest")"
+      [ -L "$dest" ] && rm -f "$dest"
+      _link_or_copy "$src" "$dest"
+    done
     linked+=("$skill_name")
   done
   if [ ${#linked[@]} -gt 0 ]; then

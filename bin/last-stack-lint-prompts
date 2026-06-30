@@ -190,7 +190,11 @@ for path in "$@"; do
     fail=1
   fi
 
-  zsh_status_assignments="$(search_prompt_pattern '(^|[^[:alnum:]_])status=' "$path")"
+  # Flag real shell assignments to the zsh read-only `status` var — i.e. at a
+  # statement boundary (line start, or after ; && ||). Prose/doc mentions like
+  # `status=active` (DynamoDB attrs) or `(status=active, ...)` inside an echo
+  # string are NOT assignments and must not trip this.
+  zsh_status_assignments="$(search_prompt_pattern '(^|[;&|])[[:space:]]*status=' "$path")"
   if [ -n "$zsh_status_assignments" ]; then
     printf '%s\n' "$zsh_status_assignments"
     echo "zsh-unsafe shell assignment to read-only status found under $path" >&2
