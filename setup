@@ -18,6 +18,7 @@ umask 077
 
 ROOT="$(cd "$(dirname "$0")" && pwd -P)"
 SKILLS_SRC="$ROOT/skills"
+HOOKS_SRC="$ROOT/hooks"
 
 HOST="auto"
 LOCAL_INSTALL=0
@@ -43,6 +44,79 @@ _link_or_copy() {
   else
     ln -snf "$1" "$2"
   fi
+}
+
+upsert_pretool_hook() {
+  local settings="$1"
+  local matcher="$2"
+  local command="$3"
+  local timeout="$4"
+  local tmp
+  tmp="$(mktemp)"
+  jq \
+    --arg matcher "$matcher" \
+    --arg command "$command" \
+    --argjson timeout "$timeout" '
+      .hooks //= {}
+      | .hooks.PreToolUse //= []
+      | .hooks.PreToolUse =
+        (if any(.hooks.PreToolUse[]?; .matcher == $matcher) then
+          [.hooks.PreToolUse[] |
+            if .matcher == $matcher then
+              .hooks = (((.hooks // []) | map(select(.command != $command))) + [{
+                type: "command",
+                command: $command,
+                timeout: $timeout
+              }])
+            else
+              .
+            end
+          ]
+        else
+          .hooks.PreToolUse + [{
+            matcher: $matcher,
+            hooks: [{
+              type: "command",
+              command: $command,
+              timeout: $timeout
+            }]
+          }]
+        end)
+    ' "$settings" > "$tmp"
+  mv "$tmp" "$settings"
+}
+
+install_claude_hooks() {
+  local hooks_dir="$HOME/.claude/hooks"
+  local settings="$HOME/.claude/settings.json"
+  mkdir -p "$hooks_dir" "$(dirname "$settings")"
+
+  for hook in read-before-edit.sh unsafe-inline-json.sh; do
+    [ -f "$HOOKS_SRC/$hook" ] || continue
+    cp -f "$HOOKS_SRC/$hook" "$hooks_dir/$hook"
+    chmod 700 "$hooks_dir/$hook"
+  done
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "  claude hooks: installed scripts; skipped settings.json registration (jq not found)" >&2
+    return 0
+  fi
+
+  if [ ! -s "$settings" ]; then
+    printf '{}\n' > "$settings"
+  fi
+
+  upsert_pretool_hook "$settings" "Edit" \
+    "$hooks_dir/read-before-edit.sh  # block Edit unless the file was Read earlier in this session" \
+    10
+  upsert_pretool_hook "$settings" "Write" \
+    "$hooks_dir/read-before-edit.sh  # block overwriting existing files unless they were Read earlier in this session; allow new files/scratchpad" \
+    10
+  upsert_pretool_hook "$settings" "Bash" \
+    "$hooks_dir/unsafe-inline-json.sh  # block brittle node -e/python -c inline JSON parsing; use jq or a scratchpad script" \
+    5
+
+  echo "  claude hooks: read-before-edit.sh unsafe-inline-json.sh"
 }
 
 # ── Register every skills/<name>/SKILL.md into a target skills dir ────────────
@@ -104,6 +178,7 @@ esac
 
 echo "Installing The Last Stack (v$(cat "$ROOT/VERSION")) ..."
 [ "$INSTALL_CLAUDE"   -eq 1 ] && register_into "$HOME/.claude/skills"          "claude"
+[ "$INSTALL_CLAUDE"   -eq 1 ] && install_claude_hooks
 [ "$INSTALL_CODEX"    -eq 1 ] && register_into "$HOME/.codex/skills"           "codex"
 [ "$INSTALL_FACTORY"  -eq 1 ] && register_into "$HOME/.factory/skills"         "factory"
 [ "$INSTALL_OPENCODE" -eq 1 ] && register_into "$HOME/.config/opencode/skills" "opencode"
