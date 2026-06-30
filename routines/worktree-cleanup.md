@@ -62,6 +62,27 @@ read/write, fail loudly if the resolved path is empty or starts with
    then `git -C <repo> branch -D <branch>` for a fully-merged branch. Run
    `git -C <repo> worktree prune` per repo afterwards. Delete any now-empty
    worktree parent dir.
+3a. **Reap stale dev-server port orphans (port-scoped, brain-safe).** Local
+   preview / dev servers (e.g. Vite, a per-app dev node) bind well-known ports;
+   when their launching session dies the process can outlive it and keep holding
+   the port, so the next preview/dev run can't bind and an agent stalls. Reap
+   ONLY those orphans, identified by **port + command line** — never by a process
+   *name* (your brain/board node may share the same binary name).
+   - For each known preview/dev-server port (`lsof -ti :<port>` for each of your
+     `<preview/dev-server ports>`), inspect every listener's full command line
+     (`ps -o command= -p <pid>`).
+   - **Kill a PID only if BOTH hold:** (a) its command line matches your
+     preview/dev-server launch pattern (e.g. the `run.sh` / `vite` dev invocation
+     for that port), AND (b) it is NOT your live brain/board node — confirm by
+     the node's own identity (its Unix socket / data dir / launch flags via
+     `lsof <your node socket>` or `lsof -i :<your node port>`), NEVER by the
+     binary name. A long uptime is NOT an orphan signal.
+   - Skip any listener whose owning session is still alive or whose cwd is a
+     `doing`/`review` board worktree. Log each PID + port + command line you
+     reaped (and each you deliberately spared and why).
+   This is the port-scoped sibling of the worktree-orphan reap in step 3 — same
+   "prove it's a disposable orphan, never your node" discipline, but keyed on a
+   held port rather than a removable worktree.
 4. **Audit dirty shared checkouts and local-only work.** For every primary repo
    checkout, collect `git -C <repo> status -sb`, unpushed branch commits
    (`git -C <repo> log --branches --not --remotes --oneline`), and open PRs for
