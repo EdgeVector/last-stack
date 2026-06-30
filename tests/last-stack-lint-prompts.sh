@@ -60,6 +60,28 @@ if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_move_board" >/dev/null 2>&1
   exit 1
 fi
 
+bad_fkanban_list_full_body="$tmp/bad-fkanban-list-full-body.md"
+printf '%s\n' "fkanban li""st --column doing --full""-body --json" > "$bad_fkanban_list_full_body"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_list_full_body" >/dev/null 2>&1; then
+  echo "expected unsupported fkanban list --full-body usage to fail prompt lint" >&2
+  exit 1
+fi
+
+bad_fkanban_list_full_body_underscore="$tmp/bad-fkanban-list-full-body-underscore.md"
+printf '%s\n' "fkanban li""st --full""_body" > "$bad_fkanban_list_full_body_underscore"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_list_full_body_underscore" >/dev/null 2>&1; then
+  echo "expected unsupported fkanban list --full_body usage to fail prompt lint" >&2
+  exit 1
+fi
+
+good_fkanban_full_body="$tmp/good-fkanban-full-body.md"
+cat > "$good_fkanban_full_body" <<'GOOD_FULL_BODY'
+fkanban list has NO --full-body flag; never use it. For one card's full body
+run `fkanban show <slug> --json`, or pass `full_body: true` to the MCP
+`fkanban_list` / `fkanban_search` tools.
+GOOD_FULL_BODY
+"$ROOT/bin/last-stack-lint-prompts" "$good_fkanban_full_body"
+
 bad_ambiguous_repo_skip="$tmp/bad-ambiguous-repo-skip.md"
 printf '%s\n' "SK""IP ambiguous repo targets and leave it in todo." > "$bad_ambiguous_repo_skip"
 if "$ROOT/bin/last-stack-lint-prompts" "$bad_ambiguous_repo_skip" >/dev/null 2>&1; then

@@ -60,6 +60,14 @@ fkanban board create <slug> --title ... --columns a,b,c
 fkanban board list
 ```
 
+`list` flags: `--board --column --tag --assignee --wide --limit N --all --json`.
+**`fkanban list` has no full-body option** — there is no `--full-body`
+(or `--full_body`); passing it fails with `Unknown option '--full-body'`.
+`list` always returns a body preview. To read a card's complete body use
+`fkanban show <slug> --json` (one card), or pass `full_body: true` to the MCP
+`fkanban_list` / `fkanban_search` tools (the underscore form is the *MCP tool
+argument*, never a CLI flag).
+
 `add` flags: `--title --board --column --assignee --tags --body`. Re-running
 `add` with the same slug **updates** the card (upsert), so it's safe to edit a
 card by re-adding it. Default column for a fresh card is `backlog`; for a task
