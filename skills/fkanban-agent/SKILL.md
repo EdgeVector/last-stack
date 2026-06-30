@@ -52,27 +52,38 @@ merged.
 | `backlog` / `todo` | not yet picked up |
 | `doing` | an agent is implementing, OR is driving its open PR to merge |
 | `review` | parked for a human — hit a genuine blocker (`BLOCKED:`/`STALLED:` note explains why) |
-| `done` | PR is **merged** AND the acceptance gate passed (terminal) |
+| `done` | PR is **merged** AND its proof was verified (terminal) |
 
-### Acceptance gate — required for `done` on any state-changing feature
+### Prove-it-to-land gate — required for `done` on EVERY card
 
-A merged PR is necessary but **not sufficient**. If the card changes persistent
-state or user-visible behavior (passwords, auth, settings, data writes, sync), it
-reaches `done` only when an **acceptance check ran against the real running app
-and passed** — the agent ran it, not a human. See the SOP
-`sop-autonomous-acceptance-gate` (fbrain). The check must:
+A merged PR is necessary but **not sufficient**. Nothing reaches `done` unless the
+card's **user-visible capability is complete and proven to work, checked by
+something other than the author** (an agent ran it / CI, not a human eyeballing).
+"Done" is defined on the capability the card promised, not on the diff. See the
+SOP `sop-autonomous-acceptance-gate` (fbrain). Two rules:
 
-- run the real binary/node on a **throwaway** data dir (`mktemp -d`,
-  `FOLDDB_DISABLE_KEYCHAIN=1`) — NEVER `~/.folddb` or the primary brain/keyring;
-- **cross a process boundary** (restart the node / re-open) between the write and
-  the read — an in-process set-then-get passes while the app is broken;
-- include a **negative case** (wrong password rejected, missing permission denied).
+**1. Every PR carries a verified `## Proof` block.** Form of proof is proportional
+to blast radius — don't over-gate trivia, don't under-gate behavior:
 
-If no acceptance script exists for a state-changing card, write one
-(`test/acceptance/<feature>.sh`, template in the SOP) before closing. A card with
-a merged PR but a missing or failing acceptance check goes to `review` with an
-`ACCEPTANCE:` note — **not** `done`. This is what stops "password sets but the app
-won't unlock with it" (incident 2026-06-30) from reaching a user.
+| Change | Required proof |
+|---|---|
+| No behavior change (refactor/rename/docs) | Existing tests green; one line on why it's behavior-preserving |
+| Logic with a testable unit | A unit/integration test of the new behavior **plus a negative case** |
+| User-visible or stateful (auth, passwords, settings, data writes, sync, UI) | The real-app **round trip** (rule 2) |
+
+**2. User-visible/stateful cards need a real-app acceptance check.** Run the real
+binary/node on a **throwaway** data dir (`mktemp -d`, `FOLDDB_DISABLE_KEYCHAIN=1`)
+— NEVER `~/.folddb` or the primary brain/keyring; **cross a process boundary**
+(restart / re-open) between the write and the read — an in-process set-then-get
+passes while the app is broken; include a **negative case**. If no script exists,
+write one (`test/acceptance/<feature>.sh`, template in the SOP) before closing.
+
+Anchor the proof to the **user story, not the diff** ("a user can set a password
+and later unlock with it") — that is what forces completeness, since you can't
+write "unlock works" without `unlock` existing. A card with a merged PR but a
+missing/unverifiable proof (or a failing acceptance check) goes to `review` with a
+`PROOF:` note — **not** `done`. This is what stops "password sets but the app won't
+unlock with it" (incident 2026-06-30) from reaching a user.
 
 Note: `review` is an **exception** state, not the normal post-PR resting place.
 The happy path is `doing` → (drive PR to merge) → `done`. A card only lands in
