@@ -57,6 +57,17 @@ read/write, fail loudly if the resolved path is empty or starts with
    node), kill that PID first, then `git worktree remove --force <path>` and
    `git branch -D <branch>`. Then `git worktree prune` per repo. Remove a now-
    empty worktree parent dir.
+3a. **Reap stale dev-server port orphans (port-scoped, brain-safe).** A preview /
+   dev server (Vite, a per-app dev node) whose launching session died can outlive
+   it and keep holding its port, blocking the next run. For each known
+   preview/dev-server port (`lsof -ti :<port>` for each of your
+   `<preview/dev-server ports>`), check each listener's full command line
+   (`ps -o command= -p <pid>`) and kill a PID ONLY if (a) it matches your
+   preview/dev-server launch pattern (the `run.sh` / `vite` invocation) AND (b) it
+   is NOT your live brain/board node (confirm by the node's own socket / data dir
+   via `lsof <your node socket>` or `lsof -i :<your node port>`, NEVER by binary
+   name — uptime is not an orphan signal). Skip any whose session is still alive
+   or whose cwd is a `doing`/`review` worktree. Log each PID + port reaped.
 4. **Prevention.** Sweep stale build caches older than a few days (e.g. a
    `cargo sweep`/`go clean`/`node_modules` prune equivalent for your stack).
    Confirm any incremental-build cache cap is in effect; note it if not (don't
