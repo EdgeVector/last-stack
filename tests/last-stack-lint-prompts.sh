@@ -83,7 +83,7 @@ fi
 bad_fkanban_show_board="$tmp/bad-fkanban-show-board.md"
 printf '%s\n' "fkanban sh""ow some-card --bo""ard default --json" > "$bad_fkanban_show_board"
 if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_show_board" >/dev/null 2>&1; then
-  echo "expected unsupported fkanban show --board usage to fail prompt lint" >&2
+  echo "expected unsupported fkanban show board flag usage to fail prompt lint" >&2
   exit 1
 fi
 
