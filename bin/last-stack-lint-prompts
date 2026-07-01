@@ -164,7 +164,7 @@ for path in "$@"; do
   fkanban_board_matches="$(printf '%s\n' "$fkanban_board_matches" | grep -v -E 'Do not|Never|do not|never|unsupported|do not take|only commands whose help lists' || true)"
   if [ -n "$fkanban_board_matches" ]; then
     printf '%s\n' "$fkanban_board_matches"
-    echo "unsupported fkanban show/move --board usage found under $path" >&2
+    echo "unsupported fkanban show/move board flag usage found under $path" >&2
     fail=1
   fi
 
@@ -217,7 +217,8 @@ for path in "$@"; do
     fail=1
   fi
 
-  workspace_git_probes="$(search_prompt_pattern 'git -C /Users/tomtang/code/edgevector|git -C <WORKSPACE>|git -C "\$workspace"|git -C \$workspace|git -C "\$WORKSPACE"|git -C \$WORKSPACE|git status --short --branch|git rev-parse --show-toplevel|(^|[^-[:alnum:]_])git worktree list' "$path")"
+  workspace_git_pattern='git[[:space:]]-C[[:space:]]/Users/tomtang/code/edgevector|git[[:space:]]-C[[:space:]]<WORKSPACE>|git[[:space:]]-C[[:space:]]"\$workspace"|git[[:space:]]-C[[:space:]]\$workspace|git[[:space:]]-C[[:space:]]"\$WORKSPACE"|git[[:space:]]-C[[:space:]]\$WORKSPACE|git[[:space:]]status[[:space:]]--short[[:space:]]--branch|git[[:space:]]rev-parse[[:space:]]--show-toplevel|(^|[^-[:alnum:]_])git[[:space:]]worktree[[:space:]]list'
+  workspace_git_probes="$(search_prompt_pattern "$workspace_git_pattern" "$path")"
   if [ -n "$workspace_git_probes" ]; then
     printf '%s\n' "$workspace_git_probes"
     echo "unsafe workspace/root-level Git probe found under $path" >&2
