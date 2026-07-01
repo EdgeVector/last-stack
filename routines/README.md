@@ -77,6 +77,7 @@ engine.** That's why this pack exists.
 |---|---|---|
 | [`self-improvement-loop`](self-improvement-loop.md) | daily | Mine recent agent sessions for recurring friction; upgrade the agent's OWN skills / routines / permission allowlist / docs. The flagship self-fixing loop. |
 | [`papercut-sweep`](papercut-sweep.md) | daily | File a card per dev-process papercut found in sessions (does not ship fixes itself). |
+| [`devops-continuous-improvement`](devops-continuous-improvement.md) | daily | Inspect CI, merge flow, deployment, testing, and release gates; ship one small DevOps fix or file precise follow-up cards. |
 | [`worktree-cleanup`](worktree-cleanup.md) | daily (off-hours) | Prune stale worktrees/branches; bring repos to latest default branch. |
 | [`disk-reclaim`](disk-reclaim.md) | hourly | Reclaim disk, prune merged/clean worktrees, sweep orphan processes. |
 | [`drain-open-prs`](drain-open-prs.md) | daily | Drive every open PR across all repos toward zero (merge or close). |

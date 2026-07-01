@@ -107,6 +107,7 @@ run the skills on a cadence:
 |---|---|
 | **self-improvement-loop** | Mine recent sessions for friction; upgrade the agent's own skills/routines/permissions. |
 | **papercut-sweep** | File a card per dev-process papercut found in sessions. |
+| **devops-continuous-improvement** | Inspect CI, merge flow, deployment, testing, and release gates; ship one small DevOps fix or file precise cards. |
 | **worktree-cleanup** / **disk-reclaim** | Prune stale worktrees/branches; reclaim disk; keep the machine healthy. |
 | **drain-open-prs** | Drive every open PR across all repos toward zero (merge or close). |
 | **fkanban-pickup** / **fkanban-watch** | Drain the ready queue (fan out WORK agents); reconcile the board. |
