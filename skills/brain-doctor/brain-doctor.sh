@@ -123,6 +123,14 @@ if [ -S "$SOCKET" ]; then
     info "    cd ~/code/edgevector/fkanban && bun run src/cli.ts doctor"
     info "    (a successful board read / fbrain get means the brain is alive — do NOT restart)"
     bump 1
+  elif [ "$BODY" = "000" ]; then
+    # curl can exit rc=0 with %{http_code}=000 when a connection is accepted and
+    # closed without a valid HTTP reply. That is not a responsive HTTP read path.
+    warn "GET / over socket → HTTP 000 (connection accepted, no valid HTTP reply) — NOT alive."
+    info "Confirm with a socket-backed op:  cd ~/code/edgevector/fkanban && bun run src/cli.ts doctor"
+    info "If that also fails: the node is up but wedged/mid-restart, not down. Re-check shortly —"
+    info "~/.folddb/watchdog.sh self-heals a confirmed wedge (3 consecutive failures) automatically."
+    bump 2
   else
     ok "GET / over socket → HTTP $BODY in ${LAT}s (read path is alive)."
     SLOW=$(perl -e "print( ($LAT eq '?')?0:(($LAT>5)?1:0) )" 2>/dev/null || echo 0)
