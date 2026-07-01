@@ -37,6 +37,11 @@ Factory, OpenCode) and registers every skill into each one. The skills stay in
 the cloned repo; each harness gets a directory with a symlinked `SKILL.md`, so a
 later `git pull` updates every installed skill at once.
 
+For Claude Code, `setup` also installs the bundled safety hooks and allowlists
+the `fbrain` MCP read tools plus `fbrain_put` in `~/.claude/settings.json`, so
+scheduled routines can use the brain tools without unattended permission
+declines.
+
 Options:
 
 ```bash

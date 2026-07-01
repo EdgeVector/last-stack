@@ -86,6 +86,24 @@ upsert_pretool_hook() {
   mv "$tmp" "$settings"
 }
 
+upsert_permission_allow() {
+  local settings="$1"
+  local rule="$2"
+  local tmp
+  tmp="$(mktemp)"
+  jq \
+    --arg rule "$rule" '
+      .permissions //= {}
+      | .permissions.allow //= []
+      | if any(.permissions.allow[]?; . == $rule) then
+          .
+        else
+          .permissions.allow += [$rule]
+        end
+    ' "$settings" > "$tmp"
+  mv "$tmp" "$settings"
+}
+
 install_claude_hooks() {
   local hooks_dir="$HOME/.claude/hooks"
   local settings="$HOME/.claude/settings.json"
@@ -116,7 +134,18 @@ install_claude_hooks() {
     "$hooks_dir/unsafe-inline-json.sh  # block brittle node -e/python -c inline JSON parsing; use jq or a scratchpad script" \
     5
 
+  for tool in \
+    mcp__fbrain__fbrain_get \
+    mcp__fbrain__fbrain_search \
+    mcp__fbrain__fbrain_list \
+    mcp__fbrain__fbrain_ask \
+    mcp__fbrain__fbrain_put
+  do
+    upsert_permission_allow "$settings" "$tool"
+  done
+
   echo "  claude hooks: read-before-edit.sh unsafe-inline-json.sh"
+  echo "  claude permissions: fbrain MCP get/search/list/ask/put"
 }
 
 # ── Register every skills/<name>/SKILL.md into a target skills dir ────────────
