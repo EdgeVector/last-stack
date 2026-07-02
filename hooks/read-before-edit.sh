@@ -79,12 +79,33 @@ fi
 transcript="$(printf '%s' "$input" | jq -r '.transcript_path // ""' 2>/dev/null || echo "")"
 [ -f "$transcript" ] || exit 0
 
-read_paths="$(jq -r '
-  select(.type == "assistant")
+# Reads may be recorded in a sibling transcript: subagent tool calls get the
+# parent session's transcript_path, while their Read calls land in
+# <session>/subagents/agent-*.jsonl. Scan the whole session family.
+case "$transcript" in
+  */subagents/*.jsonl) session_dir="${transcript%/subagents/*}" ;;
+  *.jsonl) session_dir="${transcript%.jsonl}" ;;
+  *) session_dir="" ;;
+esac
+
+transcripts=("$transcript")
+if [ -n "$session_dir" ]; then
+  [ -f "$session_dir.jsonl" ] && [ "$session_dir.jsonl" != "$transcript" ] \
+    && transcripts+=("$session_dir.jsonl")
+  for t in "$session_dir"/subagents/*.jsonl; do
+    [ -f "$t" ] && [ "$t" != "$transcript" ] && transcripts+=("$t")
+  done
+fi
+
+# -R + fromjson? parses each line independently so one malformed line cannot
+# truncate the scan.
+read_paths="$(cat "${transcripts[@]}" 2>/dev/null | jq -R -r '
+  fromjson?
+  | select(.type == "assistant")
   | .message.content[]?
   | select(.type == "tool_use" and .name == "Read")
   | .input.file_path // empty
-' "$transcript" 2>/dev/null || true)"
+' 2>/dev/null || true)"
 
 while IFS= read -r read_path; do
   [ -n "$read_path" ] || continue

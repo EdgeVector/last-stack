@@ -32,7 +32,8 @@ if edit_payload | "$ROOT/hooks/read-before-edit.sh" >/tmp/read-before-edit.out 2
 fi
 grep -q 'Read the file first' /tmp/read-before-edit.out
 
-jq -n --arg path "$target" '{
+# Transcripts are JSONL: one compact JSON object per line.
+jq -nc --arg path "$target" '{
   type: "assistant",
   message: {
     content: [
@@ -41,6 +42,54 @@ jq -n --arg path "$target" '{
   }
 }' > "$transcript"
 edit_payload | "$ROOT/hooks/read-before-edit.sh"
+
+# A Read recorded only in a subagent transcript must unblock an Edit whose
+# hook input carries the parent session's transcript_path (subagent tool
+# calls receive the parent path).
+sub_target="$tmp/sub.txt"
+printf 'old\n' > "$sub_target"
+mkdir -p "$tmp/session/subagents"
+jq -nc --arg path "$sub_target" '{
+  type: "assistant",
+  message: {
+    content: [
+      {type: "tool_use", name: "Read", input: {file_path: $path}}
+    ]
+  }
+}' > "$tmp/session/subagents/agent-test.jsonl"
+jq -n \
+  --arg path "$sub_target" \
+  --arg transcript "$transcript" \
+  --arg cwd "$tmp" \
+  '{
+    tool_name: "Edit",
+    cwd: $cwd,
+    transcript_path: $transcript,
+    tool_input: {file_path: $path, old_string: "old", new_string: "new"}
+  }' | "$ROOT/hooks/read-before-edit.sh"
+
+# A malformed transcript line must not hide Reads recorded after it.
+malformed_target="$tmp/malformed.txt"
+printf 'old\n' > "$malformed_target"
+printf 'not json\n' >> "$transcript"
+jq -nc --arg path "$malformed_target" '{
+  type: "assistant",
+  message: {
+    content: [
+      {type: "tool_use", name: "Read", input: {file_path: $path}}
+    ]
+  }
+}' >> "$transcript"
+jq -n \
+  --arg path "$malformed_target" \
+  --arg transcript "$transcript" \
+  --arg cwd "$tmp" \
+  '{
+    tool_name: "Edit",
+    cwd: $cwd,
+    transcript_path: $transcript,
+    tool_input: {file_path: $path, old_string: "old", new_string: "new"}
+  }' | "$ROOT/hooks/read-before-edit.sh"
 
 new_file="$tmp/new.txt"
 jq -n \
