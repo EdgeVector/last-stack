@@ -192,6 +192,11 @@ placeholders afterward with a controlled command such as `sed`.
 Unquoted heredocs such as `<<EOF` are not allowed for these bodies; use a
 single-quoted delimiter such as `<<'EOF'`.
 
+For `fbrain put`, pass the schema explicitly (`--type reference`, `--type
+project`, etc.) or include a valid `type:` in frontmatter. Do not pass
+`--title`; `put` takes the title from frontmatter `title:` or the first H1.
+Creation-style flags belong to `fbrain <type> new`, not `put`.
+
 Codex automation prompt skeletons should render the same information directly:
 
 ```text
@@ -229,6 +234,10 @@ self-driving fleet and a runaway one:
   Never `git stash` / `reset` / `clean` a shared repo — sibling agents share it.
 - **Never touch your live brain/board node destructively.** Don't kill, restart,
   or reset the process hosting your brain/board. Read through the app.
+- **A locked brain is not a dead brain.** If a board/brain command returns
+  `HTTP 423`, `keyring_undecryptable`, or "the node is up but cannot decrypt
+  your data", stop and report `brain locked`; do not restart, run recovery loops,
+  or attempt keychain/passphrase repair unattended.
 - **Dev, not prod, when a design is in flight.** Do reversible work; leave the
   prod cutover for a human.
 - **File, don't ship — unless you're the executor.** The generators and triage

@@ -23,6 +23,29 @@ then drives that PR to MERGED before exiting — it does not hand a green-but-
 unmerged PR off and walk away. A card reaches `done` only when its PR is verified
 merged.
 
+> ⚠️ **`Repo: EdgeVector/fold` → the LOCAL FORGE, not GitHub (since 2026-07-02).**
+> Every `gh -R EdgeVector/fold ...` command in this handbook must instead be its
+> Forgejo-API equivalent against `http://localhost:3300` — GitHub's fold is a
+> read-only daily mirror; `gh` there reads stale state and cannot merge. Full
+> command map + auth: `fbrain get sop-forge-pr-workflow`. Essentials
+> (`TOKEN=$(security find-generic-password -s forgejo-token -w)`,
+> `FOLD=http://localhost:3300/api/v1/repos/EdgeVector/fold`, all calls
+> `-H "Authorization: token $TOKEN"`):
+> `git push origin <branch>` works as-is (origin already points at the forge);
+> create PR = `POST $FOLD/pulls` with `{"title","body","head","base":"main"}`;
+> arm auto-merge = `POST $FOLD/pulls/<n>/merge` with
+> `{"Do":"merge","merge_when_checks_succeed":true,"delete_branch_after_merge":true}`
+> (native Forgejo auto-merge; NO merge queue; branch protection requires the
+> `ci-required` Forgejo Actions check green, admins included — never bypass it);
+> view = `GET $FOLD/pulls/<n>` (merged=`.merged`, mergeable=`.mergeable`,
+> draft=`.draft`); CI = `GET $FOLD/commits/<head-sha>/status`; update a BEHIND
+> branch = `POST $FOLD/pulls/<n>/update`; comment =
+> `POST $FOLD/issues/<n>/comments`; close = `PATCH $FOLD/pulls/<n>` with
+> `{"state":"closed"}`. No rerun-failed API — push an empty commit to re-trigger
+> a flaky run. The forge has no checks-watch equivalent of the GitHub CLI: hold
+> your turn by polling the head-commit status between forward actions instead.
+> All OTHER repos keep the normal GitHub `gh` flow.
+
 > **Drive to merge, but never idle-park or sleep-loop.** The rule that prevents
 > wedged/runaway agents is **no `sleep`-to-wait, ever**: you wait for CI/the
 > merge process only with a *sleepless* foreground watcher (the `/wait-merge`

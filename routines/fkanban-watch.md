@@ -1,7 +1,7 @@
 ---
 name: fkanban-watch
 cadence: every 10–20 min
-description: Reconcile the board — advance merged PRs to `done`, re-arm/un-stick stranded in-flight PRs. When the sweep is quiet, optionally FILE a card for the pickup pipeline. Never authors/ships new feature code itself.
+description: Reconcile the board — advance merged PRs to `done`, re-arm/un-stick stranded in-flight PRs, and detect+unstick a merge-queue head deadlocked for over an hour (investigate root cause before dequeuing). When the sweep is quiet, optionally FILE a card for the pickup pipeline. Never authors/ships new feature code itself.
 ---
 
 You are the board reconciler. Run ONE reconcile sweep, then exit. Your job is to
@@ -106,6 +106,73 @@ components it names, then pick exactly one outcome:
   the information to decide.
 
 Resolving/splitting a conflict card COUNTS as forward action.
+
+## Detect and unstick a deadlocked merge-queue head (CHEAP, uncapped — do FIRST)
+A stuck queue HEAD blocks every entry behind it, including cards this sweep is
+about to try to advance — so check this before the per-card loop, not after.
+Root-cause precedent: `incident-2026-07-01-merge-queue-deadlock-missing-merge-group-trigger`
+(fbrain) — a required-check workflow missing a `merge_group:` trigger left the
+queue-head PR permanently `AWAITING_CHECKS` (never failing, just never
+resolving) for ~3 hours, while the actual fix sat queued right behind it and
+could never prove itself until it became the head. `gh pr view` on the stuck PR
+looks completely healthy (mergeable, clean, no failing check) — this is
+INVISIBLE to plain PR-state checks; you must query the queue entry itself.
+
+For every repo this routine touches that runs a GitHub merge queue (check via
+the query below; note `EdgeVector/fold` no longer qualifies — since 2026-07-02
+fold lives on the local Forgejo forge at `http://localhost:3300`, which has no
+merge queue; see `fbrain get sop-forge-pr-workflow`):
+
+```bash
+gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(branch:"main"){entries(first:5){nodes{position state enqueuedAt pullRequest{number title}}}}}}'
+```
+
+1. Look at the **position-1 (head) entry only** — a mid-queue `UNMERGEABLE`
+   entry is normal (its cascading test commit hasn't been evaluated yet); the
+   HEAD is the one that must resolve for anyone to merge.
+2. Compute its age: `now - enqueuedAt`. If `state` is `AWAITING_CHECKS` or
+   `UNMERGEABLE` **and age > 60 minutes**, treat it as a genuine deadlock, not
+   normal queue churn (normal CI + min-wait windows resolve in minutes; an
+   hour with zero state change is a real stall).
+3. **Investigate before acting** — find out WHY, don't just unstick blindly:
+   - Compare required-check runs across queue entries:
+     `gh run list -R <repo> --workflow "<required-check-name>" --json databaseId,status,conclusion,createdAt,headBranch,event`
+     filtered to `event=="merge_group"` and `headBranch` matching
+     `gh-readonly-queue/**`. If every OTHER queue entry has a run for a given
+     required workflow but the head entry does NOT, that workflow is missing
+     something (commonly: no `merge_group:` trigger, or a condition that
+     excludes queue-branch pushes) — check
+     `.github/workflows/<name>.yml`'s `on:` block on `main`.
+   - Check whether any PR already queued BEHIND the head fixes exactly that
+     gap (`gh -R <repo> pr view <n> --json files` for each) — if so, the deadlock is
+     self-inflicted (the fix can't run until it's the head) and unsticking the
+     head is the correct, safe move.
+   - If the cause isn't a clear CI/workflow config gap (e.g. it looks like a
+     real, reproducible test failure or a product conflict), do NOT auto-unstick
+     — comment on the head PR with findings and leave it; that's a real signal,
+     not a false stall.
+4. **Safe unstick (does not bypass any required check — only reorders):**
+   ```bash
+   gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){pullRequest(number:<head-n>){id}}}'
+   gh api graphql -f query='mutation{dequeuePullRequest(input:{id:"<node-id>"}){clientMutationId}}'
+   gh -R <repo> pr merge <head-n> --auto   # re-arm so it re-queues at the back
+   ```
+   This only removes the PR from the wait queue and re-arms auto-merge — it
+   never merges around a failing check, per the standing policy
+   (`devops-ci-merge-deploy-operating-policy`: required gates stay
+   authoritative). Confirm the train actually moves afterward: re-query the
+   head entry once; `estimatedTimeToMerge` should drop sharply (was ~2h+,
+   should read minutes) if this was the real fix.
+5. **Record it.** File/update an fbrain incident reference with the root cause
+   (mirror `incident-2026-07-01-merge-queue-deadlock-missing-merge-group-trigger`'s
+   shape) and, if the root cause is a workflow config gap, file a card to fix
+   the workflow's trigger properly (don't just keep unsticking the symptom
+   forever — a recurring dequeue on the SAME workflow gap is a signal to
+   actually land the trigger fix, not to keep working around it).
+6. **Never unstick more than once per wake per repo**, and never if you can't
+   articulate a concrete reason — an unexplained repeated dequeue is exactly
+   the "automation bypasses gates it doesn't understand" failure mode this
+   whole system exists to avoid.
 
 ## The sweep
 1. `<board CLI> list --json` to read the whole board.

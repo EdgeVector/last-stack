@@ -153,5 +153,9 @@ than describing stale "current state".
   `doctor` succeeds over the Unix socket. For destructive/migration testing,
   spin up an ephemeral node on another port rather than touching a shared
   daily-driver node.
+- If a board/brain command returns `HTTP 423`, `keyring_undecryptable`, or "the
+  node is up but cannot decrypt your data", the node is alive but locked. Stop
+  and surface that exact state; do not run restart/doctor loops or attempt
+  keychain/passphrase repair unattended.
 - This skill only **manages** the board. To actually implement a card, hand off
   to the **fkanban-agent** skill (or tell the user it's ready to be worked).
