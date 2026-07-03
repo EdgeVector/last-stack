@@ -240,6 +240,11 @@ self-driving fleet and a runaway one:
   or attempt keychain/passphrase repair unattended.
 - **Dev, not prod, when a design is in flight.** Do reversible work; leave the
   prod cutover for a human.
+- **`gh` only speaks github.com.** A repo whose `origin` points at a self-hosted
+  forge (Forgejo/Gitea/GitLab, often on localhost) must be driven through that
+  forge's API for all PR work — check the workspace brain/AGENTS.md for the
+  repo's forge SOP, and never read or act on a read-only GitHub mirror of a
+  forge-hosted repo.
 - **File, don't ship — unless you're the executor.** The generators and triage
   routines FILE cards; only `fkanban-pickup` (via `fkanban-agent`) and the
   reconcilers actually open/merge PRs. Keep the lanes separate.

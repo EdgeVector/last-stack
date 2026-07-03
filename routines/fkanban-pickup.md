@@ -42,6 +42,11 @@ read/write, fail loudly if the resolved path is empty or starts with
 - Each spawned agent follows the **fkanban-agent** skill, WORK mode — that skill
   is the source of truth for the per-card lifecycle. This prompt is just the
   trigger + selection + fan-out rule.
+- **Forge-hosted repos:** `gh` only works for github.com remotes. If a card's
+  repo has its `origin` on a self-hosted forge (Forgejo/Gitea/GitLab, often on
+  localhost), the worker must use that forge's API for PR create/merge/status —
+  check the workspace brain/AGENTS.md for the repo's forge SOP before assuming
+  GitHub, and never act on a read-only GitHub mirror.
 
 ## Selection rule (pick up to `<N>` cards)
 1. `<board CLI> list --json`.
