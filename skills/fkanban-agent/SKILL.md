@@ -368,6 +368,12 @@ Check the repo's contributor docs (`CONTRIBUTING.md` / `AGENTS.md` /
   Markdown/F-Brain/fkanban/PR bodies, always use a body file with a
   single-quoted heredoc delimiter such as `<<'EOF'` (or stdin), never an
   unquoted heredoc or shell-expanded string.
+- **Never execute pasted Markdown/card/Brain text.** Shell tool calls are for
+  intentional commands only. If a block contains headings (`##`), bullets,
+  blockquotes, card headers (`Repo:` / `GOAL:` / `VERIFY:`), `[[...]]`, or prose
+  like `:9001`, it is data, not a script. Put that text in a body file with a
+  single-quoted heredoc and pass it via stdin; do not paste it into `zsh`,
+  `eval` it, or "clean it up" by running the whole block as shell.
 - **Never chain `sleep` to wait — but DO drive your PR to merge.** **WORK mode**
   owns its PR to merge and waits with a *sleepless* foreground watcher
   (`/wait-merge`, or `gh -R <repo> pr checks <n> --watch`, or `gh run watch <run-id>`) that
