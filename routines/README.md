@@ -105,17 +105,38 @@ frontmatter suggests a cadence. The pattern every routine follows:
 
 1. **Run cold.** Assume no memory of prior runs — read your orientation docs
    (your workspace `CLAUDE.md` / equivalent, your memory index) at the top.
-2. **Resolve automation memory safely.** Codex scheduled prompts must include
+2. **Normalize the global CLI PATH once, then preflight required tools.**
+   Scheduled shells often start with a stripped PATH; every routine should begin
+   with the same global path prefix and a single up-front diagnostic instead of
+   cascading `command not found` failures:
+   ```bash
+   last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+   global_path="${LAST_STACK_GLOBAL_PATH:-$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
+   export PATH="$global_path:$PATH"
+   "$last_stack/bin/last-stack-cli-preflight" git curl jq gh
+   ```
+   Add routine-specific CLIs such as `fbrain` or `fkanban` to the preflight when
+   the prompt needs them.
+3. **Resolve automation memory safely.** Codex scheduled prompts must include
    both `Automation ID: <automation-id>` and `Automation memory:
    ${CODEX_HOME:-$HOME/.codex}/automations/<automation-id>/memory.md` after
    placeholder expansion; if the scheduler supplies an explicit
    `Automation memory:` path, use it exactly. Otherwise resolve
    `${CODEX_HOME:-$HOME/.codex}/automations/<automation-id>/memory.md`. Fail
    loudly if the result is empty or starts with `/automations/`.
-3. **Do ONE bounded pass**, then **exit**. Never loop, never `sleep`-to-wait.
-4. **Be idempotent and additive.** Re-running should be safe. Default to *not*
+4. **Read routine prompts through the guarded reader.** Do not `sed`/`cat`
+   `routines/<routine>.md` directly. Use `last-stack-routine-read` so missing
+   files and stale installed checkouts produce one actionable error:
+   ```bash
+   "$last_stack/bin/last-stack-routine-read" "<routine>" >/tmp/last-stack-routine.md
+   ```
+   If it prints `LAST_STACK_ROUTINE_STALE` or `LAST_STACK_ROUTINE_MISSING`, stop
+   before executing stale or absent instructions and run the `last-stack-upgrade`
+   skill or `cd "$last_stack" && git pull --ff-only && ./setup`.
+5. **Do ONE bounded pass**, then **exit**. Never loop, never `sleep`-to-wait.
+6. **Be idempotent and additive.** Re-running should be safe. Default to *not*
    acting when in doubt.
-5. **Leave a heartbeat** (optional but recommended) so a silently-failed routine
+7. **Leave a heartbeat** (optional but recommended) so a silently-failed routine
    is visible to `morning-sync` / a health check.
 
 Safe heartbeat append pattern:
@@ -200,7 +221,7 @@ Creation-style flags belong to `fbrain <type> new`, not `put`.
 Codex automation prompt skeletons should render the same information directly:
 
 ```text
-Run the Last Stack routine `<routine>`: first run `<last-stack>/bin/last-stack-update-check`; if it prints `UPGRADE_AVAILABLE` or `GIT_UPDATE_AVAILABLE`, run the `last-stack-upgrade` skill or stop before reading stale routine text. Then read `<last-stack>/routines/<routine>.md` fully and execute one bounded pass. Automation ID: <automation-id>. Automation memory: ${CODEX_HOME:-$HOME/.codex}/automations/<automation-id>/memory.md. Use workspace `<workspace>`, board CLI `<board-cli>`, brain CLI `<brain-cli>`, default board `<board>` (the board name is only a `--board` argument for `list` and `add`; `show`, `move`, `rm`, and rank/dep/tag verbs operate on the default board implicitly and reject `--board`), and global CLIs from PATH.
+Run the Last Stack routine `<routine>`: set `last_stack="<last-stack>"`; export `PATH="${LAST_STACK_GLOBAL_PATH:-$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}:$PATH"`; run `$last_stack/bin/last-stack-cli-preflight git curl jq gh <board-cli> <brain-cli>`; then read the routine with `$last_stack/bin/last-stack-routine-read "<routine>"` and execute one bounded pass. If the reader prints `LAST_STACK_ROUTINE_STALE` or `LAST_STACK_ROUTINE_MISSING`, run the `last-stack-upgrade` skill or stop before executing stale/absent routine text. Automation ID: <automation-id>. Automation memory: ${CODEX_HOME:-$HOME/.codex}/automations/<automation-id>/memory.md. Use workspace `<workspace>`, board CLI `<board-cli>`, brain CLI `<brain-cli>`, default board `<board>` (the board name is only a `--board` argument for `list` and `add`; `show`, `move`, `rm`, and rank/dep/tag verbs operate on the default board implicitly and reject `--board`), and global CLIs from PATH.
 ```
 
 When a prompt needs merge-queue membership, it must use GraphQL or a helper
