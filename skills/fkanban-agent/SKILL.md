@@ -23,28 +23,34 @@ then drives that PR to MERGED before exiting — it does not hand a green-but-
 unmerged PR off and walk away. A card reaches `done` only when its PR is verified
 merged.
 
-> ⚠️ **`Repo: EdgeVector/fold` → the LOCAL FORGE, not GitHub (since 2026-07-02).**
-> Every `gh -R EdgeVector/fold ...` command in this handbook must instead be its
-> Forgejo-API equivalent against `http://localhost:3300` — GitHub's fold is a
-> read-only daily mirror; `gh` there reads stale state and cannot merge. Full
-> command map + auth: `fbrain get sop-forge-pr-workflow`. Essentials
+> ⚠️ **ALL NON-PUBLIC repos → the LOCAL FORGE, not GitHub.** Forge-hot:
+> `EdgeVector/fold` (since 2026-07-02) plus `exemem-infra`, `exemem-workspace`,
+> `lastgit` (since 2026-07-03, Tom's decision after the GitHub Actions billing
+> halt). Every `gh -R EdgeVector/<forge-hot-repo> ...` command in this handbook
+> must instead be its Forgejo-API equivalent against `http://localhost:3300` —
+> their GitHub copies are read-only 24h push-mirrors; `gh` there reads stale
+> state and cannot merge. Full command map + auth + the current venue map:
+> `fbrain get sop-forge-pr-workflow`. Essentials
 > (`TOKEN=$(security find-generic-password -s forgejo-token -w)`,
-> `FOLD=http://localhost:3300/api/v1/repos/EdgeVector/fold`, all calls
+> `REPO=http://localhost:3300/api/v1/repos/EdgeVector/<repo>`, all calls
 > `-H "Authorization: token $TOKEN"`):
 > `git push origin <branch>` works as-is (origin already points at the forge);
-> create PR = `POST $FOLD/pulls` with `{"title","body","head","base":"main"}`;
-> arm auto-merge = `POST $FOLD/pulls/<n>/merge` with
+> create PR = `POST $REPO/pulls` with `{"title","body","head","base":"main"}`;
+> arm auto-merge = `POST $REPO/pulls/<n>/merge` with
 > `{"Do":"merge","merge_when_checks_succeed":true,"delete_branch_after_merge":true}`
-> (native Forgejo auto-merge; NO merge queue; branch protection requires the
-> `ci-required` Forgejo Actions check green, admins included — never bypass it);
-> view = `GET $FOLD/pulls/<n>` (merged=`.merged`, mergeable=`.mergeable`,
-> draft=`.draft`); CI = `GET $FOLD/commits/<head-sha>/status`; update a BEHIND
-> branch = `POST $FOLD/pulls/<n>/update`; comment =
-> `POST $FOLD/issues/<n>/comments`; close = `PATCH $FOLD/pulls/<n>` with
+> (native Forgejo auto-merge; NO merge queue; fold's branch protection requires
+> the `ci-required` Forgejo Actions check green, admins included — never bypass
+> it; exemem-infra/exemem-workspace/lastgit have NO forge gate yet, so arming
+> auto-merge merges IMMEDIATELY — be sure the work is done before arming);
+> view = `GET $REPO/pulls/<n>` (merged=`.merged`, mergeable=`.mergeable`,
+> draft=`.draft`); CI = `GET $REPO/commits/<head-sha>/status`; update a BEHIND
+> branch = `POST $REPO/pulls/<n>/update`; comment =
+> `POST $REPO/issues/<n>/comments`; close = `PATCH $REPO/pulls/<n>` with
 > `{"state":"closed"}`. No rerun-failed API — push an empty commit to re-trigger
 > a flaky run. The forge has no checks-watch equivalent of the GitHub CLI: hold
 > your turn by polling the head-commit status between forward actions instead.
-> All OTHER repos keep the normal GitHub `gh` flow.
+> All PUBLIC repos (fbrain, fkanban, schema-infra, last-stack, websites, …) keep
+> the normal GitHub `gh` flow; Keepside_Desktop is GitHub-primary and hands-off.
 
 > **Drive to merge, but never idle-park or sleep-loop.** The rule that prevents
 > wedged/runaway agents is **no `sleep`-to-wait, ever**: you wait for CI/the
