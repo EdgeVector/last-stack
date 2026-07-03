@@ -105,8 +105,10 @@ agent ran it / CI, not a human eyeballing). Match the proof to blast radius:
 
 Anchor the proof to the **user story, not the diff** — that is what catches
 half-built features ("set" shipped without "unlock", incident 2026-06-30). Record
-the result in the Proof block and the brain checkpoint below. A failing or absent
-proof is a blocker, not a footnote.
+the result in the brain checkpoint below and on the fkanban card (VERIFY /
+END STATE). **PR-body `## Proof` blocks and the fold `proof-block` CI check were
+REMOVED 2026-07-03 (Tom: merge-stall churn)** — do not write them, and do not
+block on their absence. A failing validation is still a blocker, not a footnote.
 
 ## 4. Checkpoint the decision to the brain
 
