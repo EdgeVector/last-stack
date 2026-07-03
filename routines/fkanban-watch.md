@@ -33,6 +33,11 @@ read/write, fail loudly if the resolved path is empty or starts with
 - Drive the board CLI from `<board repo dir>` with `<board CLI> ...`.
 - Follow the **fkanban-agent** skill, RECONCILE mode — it is the source of truth
   for behavior; this prompt is the trigger.
+- **Forge-hosted repos:** `gh` only works for github.com remotes. For a repo
+  whose `origin` points at a self-hosted forge (Forgejo/Gitea/GitLab, often on
+  localhost), do every PR read/advance via that forge's API — check the
+  workspace brain/AGENTS.md for the repo's forge SOP before assuming GitHub,
+  and never act on a read-only GitHub mirror of a forge-hosted repo.
 
 ## Pickup failover
 Treat `fkanban-pickup` as critical infrastructure. Before the normal reconcile
