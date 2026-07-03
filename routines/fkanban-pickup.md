@@ -116,14 +116,15 @@ unit2 = SINGLE[d]").
     problematic (conflict, needs human judgment), SPLIT it out — leave it in
     `doing`→`review` with a `BLOCKED:` note — and ship the rest; never let one
     bad card strand the batch."
-  - "Isolate your work: `git worktree add <worktrees-dir>/<lead-slug> -b
-    fkanban/<lead-slug> origin/<base>` in the target repo (for a batch,
-    `<lead-slug>` = the highest-priority card). Never edit a shared checkout in
-    place; never stash/reset/clean a shared repo. The worker must resolve
-    `<repo>` to an explicit local checkout and `cd` there before any `git`
-    command; it must use `gh -R <repo>` for GitHub commands. If `<repo>` cannot
-    be resolved, it must block the card in `review` instead of probing the
-    workspace root."
+  - "Isolate your work only after a checkout-resolution guard: resolve `<repo>`
+    to an explicit `<target-repo-root>` (never the aggregate workspace), verify
+    it with `git -C "$target_repo" rev-parse --show-toplevel`, then change into
+    `$target_repo` before any `git fetch` or `git worktree add
+    <worktrees-dir>/<lead-slug> -b fkanban/<lead-slug> origin/<base>` command
+    (for a batch, `<lead-slug>` = the highest-priority card). Never edit a shared
+    checkout in place; never stash/reset/clean a shared repo. The worker must
+    use `gh -R <repo>` for GitHub commands. If `<repo>` cannot be resolved, it
+    must block the card in `review` instead of probing the workspace root."
   - "Implement per the card brief, matching the repo's conventions and style.
     Honor OUT OF SCOPE; keep the PR atomic. Run the brief's VERIFY commands and
     validate by running the app where the brief calls for it, not just tests."
@@ -175,11 +176,14 @@ limit, do NOT spawn it. Spawn exactly ONE background agent (no nested spawns, no
 > Idle-time simplification — no card; you're improving a codebase you work during
 > a quiet wake. Pick ONE repo, preferring one WITHOUT a shared build cache that
 > concurrent builds would thrash (see the shared-build-cache sub-cap in selection
-> step 5); a shared-cache repo is allowed only if nothing else fits. `git fetch`,
-> then isolate in a fresh worktree off the default branch (`git worktree add
-> <worktrees-dir>/simplify-<repo>-<short-ts> -b chore/simplify-<short-ts>
-> origin/<default-branch>` — never edit/stash/reset a shared checkout; skip any
-> repo that already has an active sibling worktree). Find ONE simplification
+> step 5); a shared-cache repo is allowed only if nothing else fits. Resolve it
+> to an explicit local checkout, reject the aggregate workspace root, verify with
+> `git -C "$target_repo" rev-parse --show-toplevel`, then `cd "$target_repo"` and
+> `git fetch` before isolating in a fresh worktree off the default branch (`git
+> worktree add <worktrees-dir>/simplify-<repo>-<short-ts> -b
+> chore/simplify-<short-ts> origin/<default-branch>` — never
+> edit/stash/reset a shared checkout; skip any repo that already has an active
+> sibling worktree). Find ONE simplification
 > scoped to a single concern — dead code, a redundant branch, a needless
 > abstraction, a duplicated helper, an over-complex expression (reuse / clarity /
 > efficiency, NOT a behavior change, NOT a bug hunt), small enough to review in
@@ -203,7 +207,8 @@ limit, do NOT spawn it. Spawn exactly ONE background agent (no nested spawns, no
   start. Never `stash`/`reset`/`clean` a shared repo — every agent isolates with
   `git worktree add`.
 - Dev, not prod, when a card touches a prod-facing surface or an in-flight design.
-- Before referencing "current state" of a repo, `git fetch` and check the default
+- Before referencing "current state" of a repo, resolve the repo to an explicit
+  local checkout first, then `git -C "$target_repo" fetch` and check the default
   branch — the work may already be merged (avoid a duplicate PR).
 
 End with a one-line report: which cards you picked + spawned (by slug); or "queue

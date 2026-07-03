@@ -174,9 +174,14 @@ to `review`, append a one-line note explaining what's missing, and exit.
    ambiguous, points at the aggregate workspace (for example
    `/Users/tomtang/code/edgevector`), or cannot be resolved to a checkout, move
    the card to `review` with a one-line `BLOCKED:` note instead of probing the
-   current directory or workspace root:
+   current directory or workspace root. Treat checkout resolution as a hard
+   preflight gate and run Git from the resolved checkout, not from the workspace
+   container:
    ```bash
-   cd <target-repo-root>
+   target_repo="<resolved-target-repo-root>"
+   case "$target_repo" in ""|/Users/tomtang/code/edgevector) exit 2 ;; esac
+   git -C "$target_repo" rev-parse --show-toplevel
+   cd "$target_repo"
    git fetch origin <base>
    git worktree add ~/.fkanban/worktrees/<slug> -b fkanban/<slug> origin/<base>
    cd ~/.fkanban/worktrees/<slug>
