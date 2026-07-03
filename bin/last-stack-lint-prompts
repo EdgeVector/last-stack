@@ -9,6 +9,33 @@ fi
 
 fail=0
 
+default_pr_json_fields="additions assignees author autoMergeRequest baseRefName baseRefOid body changedFiles closed closedAt closingIssuesReferences comments commits createdAt deletions files fullDatabaseId headRefName headRefOid headRepository headRepositoryOwner id isCrossRepository isDraft labels latestReviews maintainerCanModify mergeCommit mergeStateStatus mergeable mergedAt mergedBy milestone number potentialMergeCommit projectCards projectItems reactionGroups reviewDecision reviewRequests reviews state statusCheckRollup title updatedAt url"
+default_release_json_fields="apiUrl assets author body createdAt databaseId id isDraft isImmutable isPrerelease name publishedAt tagName tarballUrl targetCommitish uploadUrl url zipballUrl"
+
+gh_json_fields() {
+  local fallback="$1"
+  local fields
+  shift
+
+  if command -v gh >/dev/null 2>&1; then
+    fields="$("$@" --json 2>&1 | awk '
+      /^[[:space:]]+[A-Za-z][A-Za-z0-9_]*[[:space:]]*$/ {
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", $0)
+        print
+      }
+    ' | tr '\n' ' ')"
+    if [ -n "$fields" ]; then
+      printf '%s\n' "$fields"
+      return
+    fi
+  fi
+
+  printf '%s\n' "$fallback"
+}
+
+pr_json_fields="${LASTSTACK_GH_PR_JSON_FIELDS:-$(gh_json_fields "$default_pr_json_fields" gh pr view)}"
+release_json_fields="${LASTSTACK_GH_RELEASE_JSON_FIELDS:-$(gh_json_fields "$default_release_json_fields" gh release view)}"
+
 check_path_exists() {
   local path="$1"
   if [ ! -e "$path" ]; then
@@ -141,6 +168,107 @@ check_aline_search_guards() {
   done
 }
 
+check_gh_json_fields() {
+  local root="$1"
+  local files=()
+  local file
+
+  if [ -d "$root" ]; then
+    while IFS= read -r -d '' file; do
+      files+=("$file")
+    done < <(
+      find "$root" -type f \
+        ! -path '*/.git/*' \
+        ! -path '*/logs/*' \
+        ! -path '*/run/*' \
+        ! -name memory.md \
+        ! -name last-stack-lint-prompts \
+        -print0
+    )
+  else
+    [ "$(basename "$root")" = "last-stack-lint-prompts" ] && return 0
+    files=("$root")
+  fi
+
+  for file in "${files[@]}"; do
+    [ -f "$file" ] || continue
+    grep -Iq . "$file" || continue
+    awk -v file="$file" -v pr_allowed="$pr_json_fields" -v release_allowed="$release_json_fields" '
+      BEGIN {
+        split(pr_allowed, pr_parts, /[[:space:]]+/)
+        for (idx in pr_parts) {
+          if (pr_parts[idx] != "") {
+            allowed["pr", pr_parts[idx]] = 1
+          }
+        }
+        split(release_allowed, release_parts, /[[:space:]]+/)
+        for (idx in release_parts) {
+          if (release_parts[idx] != "") {
+            allowed["release", release_parts[idx]] = 1
+          }
+        }
+      }
+      function trim(value) {
+        gsub(/^[[:space:]`"'\''\\]+|[[:space:]`"'\''\\]+$/, "", value)
+        return value
+      }
+      function check_fields(kind, fields, line_no, line_text, parts, idx, field) {
+        fields = trim(fields)
+        sub(/[[:space:]].*$/, "", fields)
+        split(fields, parts, ",")
+        for (idx in parts) {
+          field = trim(parts[idx])
+          if (field == "") {
+            continue
+          }
+          if (field ~ /"/) {
+            continue
+          }
+          if (!allowed[kind, field]) {
+            printf "%s:%d:%s\n", file, line_no, line_text
+            printf "unsupported gh %s --json field: %s\n", kind, field > "/dev/stderr"
+            bad = 1
+          }
+        }
+      }
+      function inspect(line, line_no, original, fields) {
+        if (line ~ /Do not|Never|do not|never|unsupported|Unknown JSON field/) {
+          return
+        }
+        if (line !~ /(^|[^[:alnum:]_-])gh[[:space:]].*--json/) {
+          return
+        }
+        if (line ~ /[[:space:]]pr[[:space:]]+(view|list)([[:space:]]|$)/) {
+          if (match(line, /--json[=[:space:]]+[^[:space:]]+/)) {
+            fields = substr(line, RSTART, RLENGTH)
+            sub(/^--json[=[:space:]]+/, "", fields)
+            check_fields("pr", fields, line_no, original)
+          }
+        }
+        if (line ~ /[[:space:]]release[[:space:]]+view([[:space:]]|$)/) {
+          if (match(line, /--json[=[:space:]]+[^[:space:]]+/)) {
+            fields = substr(line, RSTART, RLENGTH)
+            sub(/^--json[=[:space:]]+/, "", fields)
+            check_fields("release", fields, line_no, original)
+          }
+        }
+      }
+      {
+        line = $0
+        start = NR
+        while (line ~ /\\[[:space:]]*$/ && (getline next_line) > 0) {
+          sub(/\\[[:space:]]*$/, "", line)
+          line = line " " next_line
+        }
+        inspect(line, start, line)
+      }
+      END {
+        exit bad
+      }
+    ' "$file" || fail=1
+  done
+}
+
 for path in "$@"; do
   check_path_exists "$path" || continue
 
@@ -248,6 +376,7 @@ for path in "$@"; do
     fail=1
   fi
 
+  check_gh_json_fields "$path"
   check_aline_search_guards "$path"
   check_default_board_scope "$path"
 done

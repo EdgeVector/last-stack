@@ -125,6 +125,8 @@ setup                   installer — registers skills into your agent harnesses
 bin/
   last-stack-update-check   is a newer version or default-branch HEAD available?
                             (version checks cached; git HEAD checks uncached)
+  last-stack-cli-preflight  verify routine-required global CLIs are on PATH
+  last-stack-routine-read   freshness/missing-file guarded routine prompt reader
   last-stack-dogfood-target-checkout
                             select a current dogfood checkout without mutating
                             the recipe's original target checkout

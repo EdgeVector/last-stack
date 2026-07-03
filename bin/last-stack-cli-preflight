@@ -1,0 +1,46 @@
+#!/bin/sh
+# Verify the global CLIs a Last Stack routine expects are visible once, up front.
+set -eu
+
+default_global_path="$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+global_path="${LAST_STACK_GLOBAL_PATH:-$default_global_path}"
+
+if [ "$#" -eq 0 ]; then
+  set -- git curl jq gh
+fi
+
+missing=""
+for tool in "$@"; do
+  if command -v "$tool" >/dev/null 2>&1; then
+    continue
+  fi
+
+  found=""
+  old_ifs=$IFS
+  IFS=:
+  for dir in $global_path; do
+    if [ -x "$dir/$tool" ]; then
+      found="$dir/$tool"
+      break
+    fi
+  done
+  IFS=$old_ifs
+
+  if [ -n "$found" ]; then
+    missing="$missing
+$tool (available at $found but not on PATH)"
+  else
+    missing="$missing
+$tool"
+  fi
+done
+
+if [ -n "$missing" ]; then
+  {
+    echo "LAST_STACK_CLI_PATH_MISSING"
+    echo "PATH=$PATH"
+    echo "Required CLI(s) not visible:$missing"
+    echo "Remediation: export PATH=\"${global_path}:\$PATH\" before running the routine, or install the missing CLI(s)."
+  } >&2
+  exit 127
+fi

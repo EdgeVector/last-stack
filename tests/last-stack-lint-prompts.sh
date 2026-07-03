@@ -51,6 +51,20 @@ good_gh_pr_with_repo="$tmp/good-gh-pr-with-repo.md"
 printf '%s\n' "gh -R owner/repo pr vi""ew 123 --json state" > "$good_gh_pr_with_repo"
 "$ROOT/bin/last-stack-lint-prompts" "$good_gh_pr_with_repo"
 
+bad_gh_pr_unknown_json="$tmp/bad-gh-pr-unknown-json.md"
+printf '%s\n' "gh -R owner/repo pr vi""ew 123 --json number,is""InMergeQueue" > "$bad_gh_pr_unknown_json"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_gh_pr_unknown_json" >/dev/null 2>&1; then
+  echo "expected unsupported gh pr JSON fields to fail prompt lint" >&2
+  exit 1
+fi
+
+bad_gh_pr_unknown_json_multiline="$tmp/bad-gh-pr-unknown-json-multiline.md"
+printf '%s\n' "gh -R owner/repo pr vi""ew 123 \\" "  --json number,is""InMergeQueue" > "$bad_gh_pr_unknown_json_multiline"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_gh_pr_unknown_json_multiline" >/dev/null 2>&1; then
+  echo "expected unsupported multiline gh pr JSON fields to fail prompt lint" >&2
+  exit 1
+fi
+
 bad_mapfile="$tmp/bad-mapfile.md"
 printf '%s\n' "map""file -t cards < <(fkanban list --json)" > "$bad_mapfile"
 if "$ROOT/bin/last-stack-lint-prompts" "$bad_mapfile" >/dev/null 2>&1; then

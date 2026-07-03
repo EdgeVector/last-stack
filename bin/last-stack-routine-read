@@ -1,0 +1,40 @@
+#!/bin/sh
+# Read a routine prompt through one guarded path: freshness first, then file read.
+set -eu
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+
+if [ "$#" -ne 1 ]; then
+  echo "usage: last-stack-routine-read <routine-name>" >&2
+  exit 2
+fi
+
+routine="$1"
+case "$routine" in
+  ""|/*|*/*|*..*|*.md)
+    echo "LAST_STACK_ROUTINE_INVALID routine=$routine" >&2
+    echo "Pass the routine basename without slashes or .md, for example: fkanban-pickup" >&2
+    exit 2
+    ;;
+esac
+
+if [ "${LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK:-0}" != "1" ] && [ -x "$ROOT/bin/last-stack-update-check" ]; then
+  update_status="$("$ROOT/bin/last-stack-update-check" 2>/dev/null || true)"
+  case "$update_status" in
+    UPGRADE_AVAILABLE*|GIT_UPDATE_AVAILABLE*)
+      echo "LAST_STACK_ROUTINE_STALE $update_status" >&2
+      echo "Run the last-stack-upgrade skill or: cd \"$ROOT\" && git pull --ff-only && ./setup" >&2
+      exit 78
+      ;;
+  esac
+fi
+
+routine_path="$ROOT/routines/$routine.md"
+if [ ! -r "$routine_path" ]; then
+  echo "LAST_STACK_ROUTINE_MISSING routine=$routine path=$routine_path" >&2
+  echo "The installed Last Stack checkout does not contain this routine prompt." >&2
+  echo "Run the last-stack-upgrade skill or: cd \"$ROOT\" && git pull --ff-only && ./setup" >&2
+  exit 66
+fi
+
+cat "$routine_path"
