@@ -87,6 +87,34 @@ good_quoted_heredoc="$tmp/good-quoted-heredoc.md"
 printf '%s\n' "cat > body.md <<'EOF'" 'Markdown with `backticks`' "EOF" > "$good_quoted_heredoc"
 "$ROOT/bin/last-stack-lint-prompts" "$good_quoted_heredoc"
 
+bad_raw_markdown_shell_block="$tmp/bad-raw-markdown-shell-block.md"
+printf '%s\n' \
+  '```'"bash" \
+  "fkanban sh""ow some-card --json" \
+  "## GO""AL" \
+  "- this card body is data, not a command" \
+  "[[""placeholder]]" \
+  ":90""01 failure is prose, not a shell builtin" \
+  '```' > "$bad_raw_markdown_shell_block"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_raw_markdown_shell_block" >/dev/null 2>&1; then
+  echo "expected raw Markdown/card text inside a shell block to fail prompt lint" >&2
+  exit 1
+fi
+
+good_markdown_body_file="$tmp/good-markdown-body-file.md"
+cat > "$good_markdown_body_file" <<'GOOD_MARKDOWN_BODY'
+```bash
+cat > /tmp/card-body.md <<'EOF'
+## GOAL
+- this card body is data, not a command
+[[placeholder]]
+:9001 failure is prose, not a shell builtin
+EOF
+fkanban add some-card --body-file /tmp/card-body.md
+```
+GOOD_MARKDOWN_BODY
+"$ROOT/bin/last-stack-lint-prompts" "$good_markdown_body_file"
+
 bad_gh_release="$tmp/bad-gh-release.md"
 printf '%s\n' "gh release view --repo owner/repo --json tagName,is""Latest,isPrerelease" > "$bad_gh_release"
 if "$ROOT/bin/last-stack-lint-prompts" "$bad_gh_release" >/dev/null 2>&1; then

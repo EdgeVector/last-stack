@@ -269,6 +269,80 @@ check_gh_json_fields() {
   done
 }
 
+check_raw_markdown_shell_blocks() {
+  local root="$1"
+  local files=()
+  local file
+
+  if [ -d "$root" ]; then
+    while IFS= read -r -d '' file; do
+      files+=("$file")
+    done < <(
+      find "$root" -type f \
+        ! -path '*/.git/*' \
+        ! -path '*/logs/*' \
+        ! -path '*/run/*' \
+        ! -name memory.md \
+        ! -name last-stack-lint-prompts \
+        -print0
+    )
+  else
+    [ "$(basename "$root")" = "last-stack-lint-prompts" ] && return 0
+    files=("$root")
+  fi
+
+  for file in "${files[@]}"; do
+    [ -f "$file" ] || continue
+    grep -Iq . "$file" || continue
+    awk -v file="$file" '
+      function remember_heredoc(line, marker) {
+        if (match(line, /<<-?[[:space:]]*["'\''"]?[A-Za-z_][A-Za-z0-9_]*["'\''"]?/)) {
+          marker = substr(line, RSTART, RLENGTH)
+          sub(/^<<-?[[:space:]]*/, "", marker)
+          gsub(/["'\''"]/, "", marker)
+          if (marker != "") {
+            heredoc = marker
+          }
+        }
+      }
+      /^```[[:space:]]*(bash|sh|shell|zsh)([[:space:]].*)?$/ {
+        in_shell = 1
+        heredoc = ""
+        next
+      }
+      /^```/ {
+        in_shell = 0
+        heredoc = ""
+        next
+      }
+      in_shell {
+        if (heredoc != "") {
+          if ($0 ~ "^[[:space:]]*" heredoc "[[:space:]]*$") {
+            heredoc = ""
+          }
+          next
+        }
+
+        remember_heredoc($0)
+
+        if ($0 ~ /^[[:space:]]*$/ || $0 ~ /^[[:space:]]*#/) {
+          next
+        }
+        if ($0 ~ /^[[:space:]]*(##+|[-*][[:space:]]|>[[:space:]]|\[\[|:[0-9]+([[:space:]]|$)|(Repo|Base|Branch|GOAL|CONTEXT|STEPS|VERIFY|DONE WHEN|OUT OF SCOPE):)/) {
+          printf "%s:%d:%s\n", file, NR, $0
+          bad = 1
+        }
+      }
+      END {
+        exit bad
+      }
+    ' "$file" || {
+      echo "raw Markdown/card text found inside shell-fenced prompt block under $root; put text in a quoted heredoc/body file and pass it via stdin" >&2
+      fail=1
+    }
+  done
+}
+
 for path in "$@"; do
   check_path_exists "$path" || continue
 
@@ -378,6 +452,7 @@ for path in "$@"; do
 
   check_gh_json_fields "$path"
   check_aline_search_guards "$path"
+  check_raw_markdown_shell_blocks "$path"
   check_default_board_scope "$path"
 done
 
