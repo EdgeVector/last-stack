@@ -139,7 +139,7 @@ unit2 = SINGLE[d]").
     `gh -R <repo> pr update-branch <n>` if BEHIND, rebase if DIRTY, fix if a required check
     fails. When MERGED, move the card (for a batch, EVERY card that shipped) to
     `done` and EXIT."
-  - "When checking merge-queue membership, NEVER request `isInMergeQueue` through `gh pr view/list --json`; query the queue flag through `gh api graphql`."
+  - "When checking merge-queue membership, NEVER request `isInMergeQueue` through `gh pr view/list --json`; query the queue flag through the Last Stack `last-stack-gh-pr-queue-state` helper or `gh api graphql` with explicit owner/name variables, never `gh -R <repo> api graphql`."
   - "If you hit a GENUINE human-only blocker (ambiguous spec, a conflict needing
     product judgment, a required gate only a human can clear, a dependency on
     unmerged work): leave the branch clean, move the card to `review`, append a

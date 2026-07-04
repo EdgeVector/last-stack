@@ -125,7 +125,10 @@ setup                   installer — registers skills into your agent harnesses
 bin/
   last-stack-update-check   is a newer version or default-branch HEAD available?
                             (version checks cached; git HEAD checks uncached)
+  last-stack-shell-prelude  sourceable PATH prelude for scheduled routines
   last-stack-cli-preflight  verify routine-required global CLIs are on PATH
+  last-stack-gh-pr-queue-state
+                            GraphQL PR queue-state helper without gh -R drift
   last-stack-routine-read   freshness/missing-file guarded routine prompt reader
   last-stack-dogfood-target-checkout
                             select a current dogfood checkout without mutating

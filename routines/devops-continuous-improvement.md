@@ -70,9 +70,10 @@ gh -R <owner>/<repo> run list --limit 20
 ```
 
 When checking merge-queue membership, do not request `isInMergeQueue` through
-`gh pr view/list --json`; query it through GraphQL:
+`gh pr view/list --json`; query it through the Last Stack helper or GraphQL:
 ```bash
-gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){pullRequest(number:<n>){isInMergeQueue autoMergeRequest{enabledAt}}}}'
+last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+"$last_stack/bin/last-stack-gh-pr-queue-state" <owner>/<repo> <n>
 ```
 
 When inspecting local checkout state, operate on explicit child checkouts only.
