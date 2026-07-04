@@ -167,6 +167,13 @@ to `review`, append a one-line note explaining what's missing, and exit.
 
 1. **Claim it.** `bun run src/cli.ts show <slug> --json`. If it's already in
    `review`/`done`, stop — someone landed it. Otherwise move it to `doing`.
+   If the installed Last Stack checkout is available, normalize scheduled-shell
+   PATH before running CLI-heavy snippets:
+   ```bash
+   last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+   . "$last_stack/bin/last-stack-shell-prelude"
+   "$last_stack/bin/last-stack-cli-preflight" git gh
+   ```
 2. **Resolve the target repo, then set up an isolated worktree** (never edit a
    shared checkout in place, and never `stash`/`reset` — sibling agents may
    share these repos). The `Repo:` header must resolve to an explicit local Git
@@ -258,8 +265,10 @@ act on (see step 2). When in doubt, do nothing.** Skip a card only if it has no
    gh -R <repo> pr list --head fkanban/<slug> --state all \
      --json number,state,mergedAt,mergeStateStatus,reviewDecision,statusCheckRollup
    ```
-   Do not request `isInMergeQueue` through `gh pr view/list --json`; use GraphQL
-   with `gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){pullRequest(number:<n>){isInMergeQueue autoMergeRequest{enabledAt}}}}'`.
+   Do not request `isInMergeQueue` through `gh pr view/list --json`; use
+   `$last_stack/bin/last-stack-gh-pr-queue-state <owner>/<repo> <n>` when Last
+   Stack is installed, or use `gh api graphql` with explicit owner/name
+   variables. Do not use `gh -R <repo> api graphql`.
 2. **Decide from PR state:**
    - **Merged** (`state=MERGED` / `mergedAt` set) → `move <slug> done`. Done.
      A card reaches `done` ONLY this way — a verified MERGED PR. If you cannot
@@ -361,7 +370,7 @@ Check the repo's contributor docs (`CONTRIBUTING.md` / `AGENTS.md` /
   path is not explicit and resolvable, block the card in `review`.
 - **Avoid zsh's read-only `status` parameter.** Shell snippets and one-liners
   may run under `zsh`; use names like `git_status`, `repo_status`, or `st` for
-  temporary command output instead of assigning to `status`.
+  temporary command output instead of assigning or declaring `status`.
 - **Avoid zsh/macOS-only shell traps.** Do not use Bash-only `mapfile` /
   `readarray` in snippets that may run under `zsh` or macOS Bash 3.2; use
   portable `while IFS= read -r ...` loops or Python for list processing. For

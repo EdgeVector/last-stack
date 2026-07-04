@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Query PR merge-queue state through GraphQL without relying on gh pr --json drift.
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  last-stack-gh-pr-queue-state <owner/repo> <pr-number>
+
+Prints the GraphQL pullRequest fields:
+  isInMergeQueue
+  autoMergeRequest.enabledAt
+
+The helper intentionally calls `gh api graphql` directly. Do not prefix this
+with `gh -R`; `gh api` does not accept the PR-command repository shorthand on
+all installed CLI versions.
+EOF
+}
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  usage
+  exit 0
+fi
+
+if [ "$#" -ne 2 ]; then
+  usage >&2
+  exit 2
+fi
+
+repo="$1"
+pr_number="$2"
+
+case "$repo" in
+  */*) ;;
+  *) echo "repo must be owner/name: $repo" >&2; exit 2 ;;
+esac
+
+case "$pr_number" in
+  ''|*[!0-9]*) echo "PR number must be numeric: $pr_number" >&2; exit 2 ;;
+esac
+
+owner="${repo%%/*}"
+name="${repo#*/}"
+
+if [ -z "$owner" ] || [ -z "$name" ] || [ "$name" != "${name#*/}" ]; then
+  echo "repo must be owner/name: $repo" >&2
+  exit 2
+fi
+
+gh api graphql \
+  -f owner="$owner" \
+  -f name="$name" \
+  -F number="$pr_number" \
+  -f query='query($owner:String!, $name:String!, $number:Int!) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $number) {
+        isInMergeQueue
+        autoMergeRequest {
+          enabledAt
+        }
+      }
+    }
+  }'

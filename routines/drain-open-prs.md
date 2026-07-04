@@ -35,7 +35,8 @@ Do not add `isInMergeQueue` to `gh pr view/list --json`; use GraphQL when
 queue membership is needed:
 
 ```bash
-gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){pullRequest(number:<n>){isInMergeQueue autoMergeRequest{enabledAt}}}}' 2>/dev/null || true
+last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+"$last_stack/bin/last-stack-gh-pr-queue-state" <owner>/<repo> <n> 2>/dev/null || true
 ```
 
 ## Automation memory

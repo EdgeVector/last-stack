@@ -28,6 +28,13 @@ if "$ROOT/bin/last-stack-lint-prompts" "$bad_status" >/dev/null 2>&1; then
   exit 1
 fi
 
+bad_local_status="$tmp/bad-local-status.md"
+printf '%s\n' "local stat""us=\$?; echo \"\$stat""us\"" > "$bad_local_status"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_local_status" >/dev/null 2>&1; then
+  echo "expected reserved local status declaration to fail prompt lint" >&2
+  exit 1
+fi
+
 bad_workspace_git="$tmp/bad-workspace-git.md"
 {
   printf '%s\n' "pwd && git stat""us --short --branch"
@@ -50,6 +57,17 @@ fi
 good_gh_pr_with_repo="$tmp/good-gh-pr-with-repo.md"
 printf '%s\n' "gh -R owner/repo pr vi""ew 123 --json state" > "$good_gh_pr_with_repo"
 "$ROOT/bin/last-stack-lint-prompts" "$good_gh_pr_with_repo"
+
+bad_gh_repo_graphql="$tmp/bad-gh-repo-graphql.md"
+printf '%s\n' "gh -R owner/repo api graph""ql -f query='{}'" > "$bad_gh_repo_graphql"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_gh_repo_graphql" >/dev/null 2>&1; then
+  echo "expected gh -R api graphql usage to fail prompt lint" >&2
+  exit 1
+fi
+
+good_gh_queue_helper="$tmp/good-gh-queue-helper.md"
+printf '%s\n' 'last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"' '"$last_stack/bin/last-stack-gh-pr-queue-state" owner/repo 123' > "$good_gh_queue_helper"
+"$ROOT/bin/last-stack-lint-prompts" "$good_gh_queue_helper"
 
 bad_gh_pr_unknown_json="$tmp/bad-gh-pr-unknown-json.md"
 printf '%s\n' "gh -R owner/repo pr vi""ew 123 --json number,is""InMergeQueue" > "$bad_gh_pr_unknown_json"
@@ -168,6 +186,17 @@ fi
 good_default_board_scoped="$tmp/good-default-board-scoped.md"
 printf '%s\n' "Use \`<board-cli>\`, default bo""ard \`<board>\` (the board name is only a --board argument for list and add; show, move, rm, and rank/dep/tag verbs operate on the default board implicitly and reject --board)." > "$good_default_board_scoped"
 "$ROOT/bin/last-stack-lint-prompts" "$good_default_board_scoped"
+
+bad_routine_skeleton="$tmp/bad-routine-skeleton.md"
+printf '%s\n' "Run the Last Stack routine \`<routine>\`: set \`last_stack=\"<last-stack>\"\`; then read the routine and execute one bounded pass." > "$bad_routine_skeleton"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_routine_skeleton" >/dev/null 2>&1; then
+  echo "expected routine skeleton without PATH prelude/preflight to fail prompt lint" >&2
+  exit 1
+fi
+
+good_routine_skeleton="$tmp/good-routine-skeleton.md"
+printf '%s\n' "Run the Last Stack routine \`<routine>\`: set \`last_stack=\"<last-stack>\"\`; source \`\$last_stack/bin/last-stack-shell-prelude\`; run \`\$last_stack/bin/last-stack-cli-preflight git curl jq gh <board-cli> <brain-cli>\`; then read the routine and execute one bounded pass." > "$good_routine_skeleton"
+"$ROOT/bin/last-stack-lint-prompts" "$good_routine_skeleton"
 
 bad_ambiguous_repo_skip="$tmp/bad-ambiguous-repo-skip.md"
 printf '%s\n' "SK""IP ambiguous repo targets and leave it in todo." > "$bad_ambiguous_repo_skip"

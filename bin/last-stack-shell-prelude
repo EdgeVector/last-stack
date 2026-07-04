@@ -1,0 +1,16 @@
+#!/bin/sh
+# Source this at the start of scheduled routine snippets to restore common CLIs.
+# Usage: . "$last_stack/bin/last-stack-shell-prelude"
+
+default_global_path="$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+global_path="${LAST_STACK_GLOBAL_PATH:-$default_global_path}"
+
+case ":$PATH:" in
+  *":$global_path:"*) ;;
+  *) PATH="$global_path:$PATH" ;;
+esac
+export PATH
+
+if [ "${1:-}" = "--print" ] || [ "${LAST_STACK_SHELL_PRELUDE_PRINT:-}" = "1" ]; then
+  printf 'PATH=%s\n' "$PATH"
+fi

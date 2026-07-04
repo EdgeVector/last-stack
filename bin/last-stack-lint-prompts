@@ -362,6 +362,14 @@ for path in "$@"; do
     fail=1
   fi
 
+  gh_repo_graphql_matches="$(search_prompt_pattern '(^|[^[:alnum:]_-])gh[[:space:]]+(-R|--repo)[[:space:]]+[^[:space:]]+[[:space:]]+api[[:space:]]+graphql' "$path")"
+  gh_repo_graphql_matches="$(printf '%s\n' "$gh_repo_graphql_matches" | grep -v -E 'Do not|Never|do not|never|unsupported|does not accept|must not pass' || true)"
+  if [ -n "$gh_repo_graphql_matches" ]; then
+    printf '%s\n' "$gh_repo_graphql_matches"
+    echo "unsupported gh -R/--repo api graphql usage found under $path (use gh api graphql with owner/name variables or last-stack-gh-pr-queue-state)" >&2
+    fail=1
+  fi
+
   fkanban_board_matches="$(search_prompt_pattern '(fkanban|<board CLI>)[[:space:]]+(show|move)([[:space:]]|$).*--board' "$path")"
   fkanban_board_matches="$(printf '%s\n' "$fkanban_board_matches" | grep -v -E 'Do not|Never|do not|never|unsupported|do not take|only commands whose help lists' || true)"
   if [ -n "$fkanban_board_matches" ]; then
@@ -403,6 +411,13 @@ for path in "$@"; do
     fail=1
   fi
 
+  zsh_local_status_assignments="$(search_prompt_pattern '(^|[;&|])[[:space:]]*(local|typeset|declare|export)[[:space:]][^;&|#]*status=' "$path")"
+  if [ -n "$zsh_local_status_assignments" ]; then
+    printf '%s\n' "$zsh_local_status_assignments"
+    echo "zsh-unsafe shell declaration of read-only status found under $path" >&2
+    fail=1
+  fi
+
   unsupported_shell_forms="$(search_prompt_pattern '(^|[^[:alnum:]_])(mapfile|readarray)([[:space:]]|$)' "$path")"
   unsupported_shell_forms="$(printf '%s\n' "$unsupported_shell_forms" | grep -v -Ei 'Do not|Never|do not|never|avoid|unsupported|banned|without[[:space:]]+(mapfile|readarray)|no[[:space:]]+(mapfile|readarray)' || true)"
   if [ -n "$unsupported_shell_forms" ]; then
@@ -439,6 +454,14 @@ for path in "$@"; do
   if [ -n "$unsafe_codex_home" ]; then
     printf '%s\n' "$unsafe_codex_home"
     echo "unsafe CODEX_HOME automation fallback found under $path" >&2
+    fail=1
+  fi
+
+  routine_skeletons="$(search_prompt_pattern 'Run the Last Stack routine `<routine>`' "$path")"
+  routine_skeletons="$(printf '%s\n' "$routine_skeletons" | grep -v -E 'last-stack-shell-prelude|last-stack-cli-preflight|export `?PATH|export PATH' || true)"
+  if [ -n "$routine_skeletons" ]; then
+    printf '%s\n' "$routine_skeletons"
+    echo "Last Stack routine skeleton lacks PATH prelude/preflight guidance" >&2
     fail=1
   fi
 

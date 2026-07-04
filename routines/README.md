@@ -111,8 +111,7 @@ frontmatter suggests a cadence. The pattern every routine follows:
    cascading `command not found` failures:
    ```bash
    last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
-   global_path="${LAST_STACK_GLOBAL_PATH:-$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
-   export PATH="$global_path:$PATH"
+   . "$last_stack/bin/last-stack-shell-prelude"
    "$last_stack/bin/last-stack-cli-preflight" git curl jq gh
    ```
    Add routine-specific CLIs such as `fbrain` or `fkanban` to the preflight when
@@ -221,12 +220,15 @@ Creation-style flags belong to `fbrain <type> new`, not `put`.
 Codex automation prompt skeletons should render the same information directly:
 
 ```text
-Run the Last Stack routine `<routine>`: set `last_stack="<last-stack>"`; export `PATH="${LAST_STACK_GLOBAL_PATH:-$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}:$PATH"`; run `$last_stack/bin/last-stack-cli-preflight git curl jq gh <board-cli> <brain-cli>`; then read the routine with `$last_stack/bin/last-stack-routine-read "<routine>"` and execute one bounded pass. If the reader prints `LAST_STACK_ROUTINE_STALE` or `LAST_STACK_ROUTINE_MISSING`, run the `last-stack-upgrade` skill or stop before executing stale/absent routine text. Automation ID: <automation-id>. Automation memory: ${CODEX_HOME:-$HOME/.codex}/automations/<automation-id>/memory.md. Use workspace `<workspace>`, board CLI `<board-cli>`, brain CLI `<brain-cli>`, default board `<board>` (the board name is only a `--board` argument for `list` and `add`; `show`, `move`, `rm`, and rank/dep/tag verbs operate on the default board implicitly and reject `--board`), and global CLIs from PATH.
+Run the Last Stack routine `<routine>`: set `last_stack="<last-stack>"`; source `$last_stack/bin/last-stack-shell-prelude`; run `$last_stack/bin/last-stack-cli-preflight git curl jq gh <board-cli> <brain-cli>`; then read the routine with `$last_stack/bin/last-stack-routine-read "<routine>"` and execute one bounded pass. If the reader prints `LAST_STACK_ROUTINE_STALE` or `LAST_STACK_ROUTINE_MISSING`, run the `last-stack-upgrade` skill or stop before executing stale/absent routine text. Automation ID: <automation-id>. Automation memory: ${CODEX_HOME:-$HOME/.codex}/automations/<automation-id>/memory.md. Use workspace `<workspace>`, board CLI `<board-cli>`, brain CLI `<brain-cli>`, default board `<board>` (the board name is only a `--board` argument for `list` and `add`; `show`, `move`, `rm`, and rank/dep/tag verbs operate on the default board implicitly and reject `--board`), and global CLIs from PATH.
 ```
 
-When a prompt needs merge-queue membership, it must use GraphQL or a helper
-wrapping GraphQL. Do not request the `isInMergeQueue` field through `gh pr`
-JSON output; older GitHub CLI releases reject that field.
+When a prompt needs PR merge-queue membership, use
+`$last_stack/bin/last-stack-gh-pr-queue-state <owner>/<repo> <pr-number>` or an
+equivalent `gh api graphql` call with explicit owner/name variables. Do not
+request the `isInMergeQueue` field through `gh pr` JSON output; older GitHub CLI
+releases reject that field. Do not run `gh -R <repo> api graphql`; `gh api`
+does not accept that repository shorthand on all installed CLI versions.
 
 Treat `gh: Unknown JSON field` as a prompt/tooling compatibility issue. Do not
 keep retrying the same command or classify it as a product failure. Prefer fields

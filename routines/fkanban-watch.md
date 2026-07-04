@@ -193,7 +193,7 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
       in the body, fall back to the head-branch lookup.
    c. Advance it — but the DEFAULT for any swept card is LEAVE IT ALONE. Only act
       on concrete PR/branch evidence; when in doubt, do nothing.
-      If you need merge-queue membership, do not request `isInMergeQueue` through `gh pr view/list --json`; use `gh api graphql` for the queue flag and `autoMergeRequest{enabledAt}`.
+      If you need merge-queue membership, do not request `isInMergeQueue` through `gh pr view/list --json`; use `$last_stack/bin/last-stack-gh-pr-queue-state <owner>/<repo> <n>` or `gh api graphql` with explicit owner/name variables for the queue flag and `autoMergeRequest{enabledAt}`. Never use `gh -R <repo> api graphql`.
       - **Merged** (`state=MERGED` / `mergedAt` set) → `move <slug> done`. This is
         the ONLY path to `done` — a verified MERGED PR. If you can't point at a
         merged PR, it does NOT go to `done`, no matter how the card reads.
