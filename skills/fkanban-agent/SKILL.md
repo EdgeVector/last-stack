@@ -3,12 +3,12 @@ name: fkanban-agent
 version: 0.2.0
 description: |
   Drive a single fkanban card all the way to a MERGED PR — a card only
-  reaches `done` when its code is actually in the repo. Two entry modes:
-  WORK (you were pointed at one card slug — implement it, open a PR, then
-  DRIVE THE PR TO MERGED and move the card to `done`; only fall back to
-  `review` if you hit a genuine human-only blocker) and RECONCILE (a sweep
-  routine woke you — go over every in-flight card, push stuck PRs to merge,
-  and move merged ones to `done`).
+  reaches `done` when its code is actually in the repo and its outcome is
+  proven. Three entry modes: WORK (you were pointed at one card slug —
+  implement it, open a PR, then DRIVE THE PR TO MERGED, unless an async
+  post-merge END STATE still needs validation), RECONCILE (a sweep routine
+  woke you — advance in-flight PRs), and VALIDATE (run one bounded post-merge
+  validation and close or surface it).
   Triggered when the user or a spawn/wake prompt says "follow the
   fkanban-agent skill", names an fkanban card to work, or says "reconcile
   the fkanban board".
@@ -80,7 +80,7 @@ merged.
 |---|---|
 | `backlog` / `todo` | not yet picked up |
 | `doing` | an agent is implementing, OR is driving its open PR to merge |
-| `review` | parked for a human — hit a genuine blocker (`BLOCKED:`/`STALLED:` note explains why) |
+| `review` | parked for a human, or visibly awaiting/failing post-merge validation (`BLOCKED:`/`STALLED:`/`PROOF:` note explains why) |
 | `done` | PR is **merged** AND the card's outcome was validated (terminal) |
 
 ### Outcome validation — at the CARD level, not in PR bodies
@@ -104,9 +104,13 @@ stops "password sets but the app won't unlock with it" (incident 2026-06-30) fro
 reaching a user.
 
 Note: `review` is an **exception** state, not the normal post-PR resting place.
-The happy path is `doing` → (drive PR to merge) → `done`. A card only lands in
+The happy path is `doing` → (drive PR to merge) → `done`. A card lands in
 `review` when an agent genuinely cannot get the PR merged without a human
-(ambiguous spec, product-judgment conflict, a human-only required gate).
+(ambiguous spec, product-judgment conflict, a human-only required gate), or when
+the PR is merged but the card's END STATE is async and still needs a later
+dev-only validation run. In that async case, WORK mode must leave a clear
+`BLOCKED: awaiting <validation>` marker so `fkanban-validate` can pick it up
+instead of silently stranding the card in `doing`.
 
 Use the CLI for all board writes. With the global shim on PATH these run from
 anywhere:
@@ -160,6 +164,7 @@ to `review`, append a one-line note explaining what's missing, and exit.
 
 - You were given (or your cwd implies) **one specific card** → **WORK MODE**.
 - You were woken to "reconcile" / sweep the board → **RECONCILE MODE**.
+- You were woken to "validate" / "post-merge validation" → **VALIDATE MODE**.
 
 ---
 
@@ -214,7 +219,15 @@ to `review`, append a one-line note explaining what's missing, and exit.
    auto-merge when a clean PR stalls, and only declares failure on a genuinely
    terminal state. If you drive by hand instead, loop with a **sleepless** watcher
    (`gh -R <repo> pr checks <n> --watch`, NEVER `sleep`) and on each state change act:
-   - **MERGED** (`state=MERGED`) → `move <slug> done`. **You are done — exit.**
+   - **MERGED** (`state=MERGED`) → re-read the card. If the card's `## END STATE`
+     / `VERIFY` is already proven by local checks, move it to `done`. If it
+     explicitly requires async post-merge validation that cannot finish inside
+     this WORK turn (for example a dev deploy, release run, clean-machine
+     install, or dogfood check), append a one-line
+     `BLOCKED: awaiting <specific validation>` note and move it to `review`.
+     That is the handoff contract for `fkanban-validate`; do not leave it in
+     `doing`, and do not pretend the END STATE is done. Prod cutovers and public
+     irreversible actions are always human-gated.
    - **auto-merge dropped** (`autoMergeRequest` null) while CLEAN/mergeable →
      re-arm: `gh -R <repo> pr merge <n> --auto`. (A merge queue can silently drop it; this
      is a common strand — re-arm and keep watching.)
@@ -336,6 +349,55 @@ step 2) if not. A `gh -R <repo> pr update-branch` needs NO worktree at all.
 
 ---
 
+## VALIDATE MODE — run one post-merge END STATE validation, then close or surface it
+
+Run once per wake, then exit. This mode is the missing owner between "PR merged"
+and "the card's END STATE is actually true" for checks that can only happen
+after merge: dev deploys, release runs, clean-machine installs, real-machine
+dogfood, or other autonomous dev/staging validations. It does **not** author
+feature code and does **not** run prod cutovers or outward/irreversible actions.
+
+1. **Scan for candidates.** Read the board and consider cards in:
+   - `doing` whose PR is merged but whose `## END STATE` / `VERIFY` names a
+     runnable post-merge check that is not yet proven.
+   - `review` cards with a `BLOCKED: awaiting <validation>` marker after merge.
+   Use the same `Repo:` / `Base:` / `PR:` parsing and forge-vs-GitHub venue rules
+   as RECONCILE mode. If there is no concrete merged PR or commit evidence,
+   leave the card alone; VALIDATE does not start or rescue implementation work.
+   Pick the highest-priority runnable candidate. One validation per wake.
+2. **Run the validation on a dev/staging/throwaway surface only.** Follow the
+   card's `VERIFY` and `## END STATE` literally when they are autonomous and
+   bounded. Examples: query a dev deploy health check, trigger and watch a
+   release verification workflow, run a clean-machine install against a temporary
+   environment, or execute a dogfood script against an isolated data dir. If the
+   check would spend real production money, cut over prod, mutate public data, or
+   require a human credential/device decision, do not run it; append a
+   `BLOCKED: <human gate>` note and leave the card in `review`.
+3. **Pass closes the card.** If the END STATE now holds, append a short `PROOF:`
+   line naming the command or external run that proved it, then move the card to
+   `done`. A merged card with an unmet post-merge END STATE is not done until
+   this proof exists.
+4. **Fail becomes visible work.** If validation ran and failed, append a
+   `PROOF: failed <check> — <concise observed failure>` note, file one
+   pickup-ready fix card with a `Repo:`/`Base:`/`Branch:` header, the
+   fkanban-agent trigger header, a narrow GOAL/STEPS/VERIFY brief, and a
+   dependency or cross-reference to the failed card when useful. Move the
+   validated card to `review`. Do not silently leave it in `doing`.
+5. **Unrelated blockers do not thrash.** If validation cannot run because a
+   named upstream blocker is already known (for example a runner-saturation or
+   dev-401 card), append or refresh `BLOCKED: awaiting <blocker-slug> for
+   <validation>`, leave the card in `review`, and exit. Do not create duplicate
+   fix cards for the same upstream blocker.
+6. **Heartbeat.** When run from the scheduled `fkanban-validate` routine, append
+   one `routine-heartbeats` line summarizing `ok`, `noop`, or `error` and the
+   card/result. Use the Last Stack heartbeat helper instead of open-coding a
+   typed F-Brain read/write.
+
+VALIDATE mode is intentionally bounded. It should make one stranded merged card
+terminal (`done`) or loud (`review` + proof/fix/blocker) per wake, then stop.
+
+---
+
 ## Merge strategy (per repo)
 
 Repositories differ in how they merge. Match your repo's policy:
@@ -401,4 +463,7 @@ Check the repo's contributor docs (`CONTRIBUTING.md` / `AGENTS.md` /
 The reconcile pass is meant to be driven by a **scheduled routine** that simply
 runs RECONCILE MODE and exits on each fire — inline worktree → fix → push →
 exit, NO spawned agents. A cadence of every 10–20 min is plenty (CI + human
-review move on that scale).
+review move on that scale). The post-merge validator is a separate scheduled
+routine that runs VALIDATE MODE on a slower cadence offset from reconcile, so
+heavy deploy/release/dogfood checks have an owner without being folded into the
+PR reconciler.

@@ -38,7 +38,8 @@ stripped out.
    fkanban-pickup ─▶ fan out one `fkanban-agent` (WORK mode) per card/batch ──▶ opens PR, drives to MERGED
                           │
                           ▼
-   fkanban-watch  ─▶ RECONCILE: advance merged PRs to `done`, re-arm/un-stick the stragglers
+   fkanban-watch  ─▶ RECONCILE: advance merged PRs, re-arm/un-stick the stragglers
+   fkanban-validate ─▶ VALIDATE: run post-merge END STATE checks, then done/review
    drain-open-prs ─▶ daily backstop: drive every open PR across all repos toward zero
 
                  ┌──────────────────── the brain (fbrain) ──────────────────┐
@@ -88,6 +89,7 @@ engine.** That's why this pack exists.
 |---|---|---|
 | [`fkanban-pickup`](fkanban-pickup.md) | hourly | Drain the ready queue; fan out one `fkanban-agent` (WORK) per card/batch. |
 | [`fkanban-watch`](fkanban-watch.md) | every 10–20 min | RECONCILE the board; advance merged PRs, un-stick the strays. |
+| [`fkanban-validate`](fkanban-validate.md) | hourly, offset from watch | VALIDATE one merged card's post-merge END STATE; move it to `done` on pass or `review` with proof/fix/blocker on fail. |
 | [`groom-board`](groom-board.md) | daily | Promote ready `backlog`→`todo`, break up epics, prune junk. |
 | [`program-driver`](program-driver.md) | hourly | Promote each program's next DAG card into `todo`. |
 | [`program-rollup`](program-rollup.md) | hourly | Mirror the board into the brain's driving index (auto-status block). |
