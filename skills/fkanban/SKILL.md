@@ -122,11 +122,28 @@ A card that's meant to be implemented should carry, in its `--body`:
    routines still parse body headers directly, so the body header is mandatory:
 
    ```
-   Repo: owner/name           # owner/name or absolute local path
-   Base: main                 # base branch
-   Branch: fkanban/<slug>     # optional; defaults to fkanban/<slug>
-   Kind: pr                   # pr | registry | tracker
+   Repo: owner/name
+   Base: main
+   Branch: fkanban/<slug>
+   Kind: pr
    ```
+
+   Field meanings — `Repo`: `owner/name` (e.g. `EdgeVector/fold`) or an
+   absolute local Git checkout path; `Base`: base branch; `Branch`: optional,
+   defaults to `fkanban/<slug>`; `Kind`: `pr | registry | tracker`.
+
+   > **⚠️ Keep each header value a single clean token on its own line.**
+   > `fkanban-pickup` resolves `Repo:` **literally** — it does NOT strip
+   > trailing `# comments`, parentheticals, or prose. A dirty value
+   > (`Repo: EdgeVector/fold  # defaulted`, `Repo: fold (also touches exemem-infra)`,
+   > `Repo: last-stack`, `Repo: none`, or `Base:`/`Branch:` mashed onto the
+   > `Repo:` line) is treated as **unresolvable** and the card is force-blocked
+   > into `review`/`needs_human` — the #1 cause of stranded cards. So:
+   > - Use the full `owner/name` (`EdgeVector/last-stack`, not bare `last-stack`).
+   > - No trailing `#` comment and no `(parenthetical)` on the value line.
+   > - Put `Base:`, `Branch:`, `Kind:` each on their **own** line.
+   > - Multi-repo notes ("also touches X", "sibling repos …") go in the spec
+   >   body prose, never on the `Repo:` line. Pick the ONE primary repo.
 
 3. **The spec itself:** GOAL / CONTEXT / STEPS / VERIFY (exact commands that
    must pass) / DONE WHEN (PR merged into <base>) / OUT OF SCOPE.
