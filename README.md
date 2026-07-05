@@ -93,7 +93,7 @@ preserving project-specific rules where they belong.
 | Skill | What it does |
 |---|---|
 | **fkanban** | Board CRUD over LastDB — file/list/show/move/groom cards. |
-| **fkanban-agent** | Drive a single card all the way to a **merged** PR; or reconcile-sweep an in-flight board. |
+| **fkanban-agent** | Drive a card to **merged**, reconcile in-flight PRs, or validate post-merge END STATE checks. |
 | **fkanban-setup** | Bootstrap fkanban on a fresh machine — install, `init` (resolve published schemas), `doctor`, optional MCP registration. |
 | **onecontext** | Search prior Codex sessions, with guarded Aline usage and a JSONL fallback when Aline is unavailable. |
 | **wait-merge** | Robustly wait for a GitHub PR to merge by interpreting PR *state*, not a watcher's exit code. |
@@ -110,7 +110,7 @@ run the skills on a cadence:
 | **devops-continuous-improvement** | Inspect CI, merge flow, deployment, testing, and release gates; ship one small DevOps fix or file precise cards. |
 | **worktree-cleanup** / **disk-reclaim** | Prune stale worktrees/branches; reclaim disk; keep the machine healthy. |
 | **drain-open-prs** | Drive every open PR across all repos toward zero (merge or close). |
-| **fkanban-pickup** / **fkanban-watch** | Drain the ready queue (fan out WORK agents); reconcile the board. |
+| **fkanban-pickup** / **fkanban-watch** / **fkanban-validate** | Drain the ready queue; reconcile PRs; run post-merge END STATE validation. |
 | **groom-board** / **program-driver** | Promote ready work into `todo`; keep each program's next card flowing. |
 | **program-rollup** / **consolidate-brain** / **morning-sync** | Mirror the board into the brain; keep statuses honest; deliver the daily decision briefing. |
 
@@ -153,15 +153,21 @@ The intended loop, end to end:
 2. **Drive one card to merged** (`fkanban-agent` skill, WORK mode). The agent
    claims the card, works in an isolated git worktree, opens a PR, and then
    *drives that PR to MERGED* — re-arming auto-merge, updating a behind branch,
-   rebasing conflicts — before moving the card to `done`. A card is only `done`
-   when its code is actually in the repo.
+   rebasing conflicts — before moving the card to `done`, or to `review` with a
+   `BLOCKED: awaiting <validation>` marker when the END STATE requires an async
+   post-merge check. A card is only `done` when its code is actually in the repo
+   and the outcome is proven.
 3. **Wait on PRs without false failures** (`wait-merge` skill). Interprets PR
    state rather than trusting a watcher's exit code, so transient CI/queue churn
    doesn't look like a failure.
 4. **Reconcile the board** (`fkanban-agent` skill, RECONCILE mode). A scheduled
    sweep moves merged-but-unadvanced cards to `done` and nudges stuck PRs —
    leaving un-started cards alone.
-5. **Close out** (`close-out` skill). After any substantive change: PR from a
+5. **Validate post-merge outcomes** (`fkanban-agent` skill, VALIDATE mode). A
+   scheduled pass runs one dev-only post-merge END STATE check, then moves the
+   card to `done` on pass or `review` with `PROOF:` plus a fix card/blocker on
+   fail.
+6. **Close out** (`close-out` skill). After any substantive change: PR from a
    worktree, drive to merged, checkpoint the *why* to the brain (`fbrain`), and
    file any follow-up as a card (`fkanban`).
 
@@ -169,12 +175,13 @@ The two halves are deliberate: **the brain records why; the board records
 what's in flight.** Keep decisions in `fbrain` and active work in `fkanban`, and
 the agent always has both context and a worklist.
 
-Steps 1–5 describe what an agent does *when invoked*. To make the loop
+Steps 1–6 describe what an agent does *when invoked*. To make the loop
 **self-driving** — so cards get filed, promoted, picked up, and reconciled
 without a human kicking it each time — register the **routines** as scheduled
 agents: generators (`self-improvement-loop`, `papercut-sweep`) file work,
 `groom-board`/`program-driver` promote it, `fkanban-pickup` fans out WORK agents,
-`fkanban-watch`/`drain-open-prs` reconcile the stragglers, and
+`fkanban-watch`/`drain-open-prs` reconcile the stragglers, `fkanban-validate`
+runs post-merge END STATE checks, and
 `program-rollup`/`consolidate-brain`/`morning-sync` keep the brain honest and
 surface the short genuinely-human decision set. See
 [`routines/README.md`](routines/README.md).
