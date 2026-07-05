@@ -187,6 +187,49 @@ fkanban worktree, and log every PID + port + cmdline reaped (and every one spare
 and why). After reaping, a fresh `preview_start name=lastdb-ui` should bind
 cleanly while the primary `folddb_server` brain (socket still live) is untouched.
 
+### 4b. Runaway / orphaned test-node reaper (path-scoped — never the brain)
+A dmg-smoke / real-machine-gate / dogfood run launches its own `lastdb_server`
+against a **throwaway temp home** (`/private/tmp/ldb-*`, `/var/folders/**`) or
+straight off a **mounted release DMG** (`/Volumes/LastDB/…`). If the harness dies
+without cleaning up, that node is orphaned (`ppid=1`) and can wedge in a busy-loop
+at **hundreds of % CPU** — one such gate2 orphan pegged ~10 cores for 20 h and
+starved the primary brain, making the whole board crawl (looks like "LastDB is
+slow / out of memory" but it is pure CPU starvation; check `load average` vs
+`hw.ncpu` and top-CPU procs first — RAM is usually fine). This is distinct from
+§4a (that's PORT-scoped vite/dev-server orphans); this one is TEMP-HOME/DMG-scoped
+node orphans.
+
+Reap keyed on **temp-home socket path OR DMG binary path** — NEVER on the process
+name or uptime (the brain is also a long-lived `lastdb_server`/`fold-app`):
+
+```bash
+brain_pids=$(lsof -t /Users/tomtang/.folddb/data/folddb.sock 2>/dev/null)  # NEVER a target
+for pid in $(pgrep -f 'lastdb_server|folddb_server'); do
+  case " $brain_pids " in *" $pid "*) continue ;; esac        # skip the primary brain
+  cmd=$(ps -o command= -p "$pid" 2>/dev/null)
+  socks=$(lsof -p "$pid" 2>/dev/null | grep -oE '/(private/tmp/ldb-[^ ]*|var/folders/[^ ]*)/folddb[^ ]*\.sock')
+  cpu=$(ps -o %cpu= -p "$pid" 2>/dev/null | tr -d ' ')
+  # Reap ONLY a node whose HOME is a throwaway temp dir or whose BINARY is a mounted DMG:
+  if [ -n "$socks" ] || printf '%s' "$cmd" | grep -q '^/Volumes/'; then
+    echo "reaping orphan test-node: pid=$pid cpu=${cpu}% :: $cmd :: ${socks:-<dmg-launched>}"
+    kill "$pid" 2>/dev/null; sleep 2
+    kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null   # busy-loopers ignore SIGTERM
+  else
+    echo "SPARED (not a temp/DMG node): pid=$pid cpu=${cpu}% :: $cmd"
+  fi
+done
+# Then eject any now-idle release DMG the dead node held open:
+for v in /Volumes/LastDB*; do [ -d "$v" ] && hdiutil detach "$v" 2>/dev/null; done
+```
+
+Guardrails: the brain (`fold-app` / `lastdb_server` on `~/.folddb/data/folddb.sock`)
+is excluded by construction — it lives under `~/.folddb`, NOT a temp dir, and is
+never DMG-launched, so it never matches. A high-CPU `lastdb_server` under
+`~/code/.../target/*` or `~/.folddb` is NOT a target (could be a legit dev/brain
+proc) — only temp-home/DMG nodes are. Log every PID reaped and every one spared.
+The proper upstream fix is the gate cleaning up its own node on exit — track that
+as an fkanban card, don't rely on this reaper alone.
+
 ### 5. Prevention upkeep (do this so the buildup stops recurring)
 - **`cargo-sweep`** to keep the shared target bounded without nuking warm builds.
   NOTE: modern cargo-sweep uses a `sweep` SUBCOMMAND (the old top-level

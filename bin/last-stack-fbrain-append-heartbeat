@@ -13,7 +13,9 @@ Usage:
 
 Reads the target with `fbrain get <slug> --type reference --json`, aborts on any
 read or JSON error, then writes the new line plus the existing body back with
-`fbrain put <slug> --type reference`. Existing lines are preserved.
+`fbrain put <slug> --type reference`. Existing lines are preserved. If an older
+local fbrain config is missing a newly-added schema hash, falls back to
+`fbrain append` so the heartbeat is still recorded without running `fbrain init`.
 EOF
 }
 
@@ -76,13 +78,38 @@ command -v fbrain >/dev/null 2>&1 || { echo "fbrain is required" >&2; exit 127; 
 
 read_err="$(mktemp)"
 put_body="$(mktemp)"
+append_err="$(mktemp)"
 cleanup() {
-  rm -f "$read_err" "$put_body"
+  rm -f "$read_err" "$put_body" "$append_err"
 }
 trap cleanup EXIT
 
+fallback_append() {
+  # A new schema type can make old fbrain configs fail reads before the target
+  # reference is reachable. In unattended routines, do not run fbrain init; grow
+  # the heartbeat record server-side instead.
+  printf '\n%s\n' "$line" | fbrain append "$slug" --type reference --raw --json >"$put_body" 2>"$append_err" || {
+    cat "$append_err" >&2
+    [ -s "$put_body" ] && cat "$put_body" >&2
+    echo "aborting: fallback append failed for $slug" >&2
+    exit 1
+  }
+  if ! jq -e 'type == "object" and .ok == true' "$put_body" >/dev/null; then
+    cat "$append_err" >&2
+    cat "$put_body" >&2
+    echo "aborting: fallback append returned an error payload" >&2
+    exit 1
+  fi
+  echo "appended heartbeat to $slug via fbrain append fallback"
+  exit 0
+}
+
 if ! record_json="$(fbrain get "$slug" --type reference --json 2>"$read_err")"; then
+  if { printf '%s\n' "$record_json"; cat "$read_err"; } | grep -q 'No canonical hash registered'; then
+    fallback_append
+  fi
   cat "$read_err" >&2
+  [ -n "$record_json" ] && printf '%s\n' "$record_json" >&2
   echo "aborting: could not read $slug as --type reference; not writing" >&2
   exit 1
 fi

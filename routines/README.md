@@ -151,9 +151,13 @@ last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 Use this helper instead of open-coding heartbeat read/write snippets. It reads
 `fbrain get routine-heartbeats --type reference --json`, aborts on any read or
 JSON error, then writes the new newest-on-top line plus the existing body back
-with `fbrain put routine-heartbeats --type reference`. If a project and
-reference share the `routine-heartbeats` slug, the typed read still targets the
-reference; if the typed read fails, the helper performs no write.
+with `fbrain put routine-heartbeats --type reference`. If the read fails only
+because an older local fbrain config is missing a newly-added schema hash (for
+example `No canonical hash registered for type "decision"`), the helper falls
+back to `fbrain append routine-heartbeats --type reference --raw --json` and
+records the heartbeat at the tail without running `fbrain init`. If a project
+and reference share the `routine-heartbeats` slug, the typed read still targets
+the reference; for other read failures, the helper performs no write.
 
 Safe memory-path shell pattern for rendered automation prompts:
 
