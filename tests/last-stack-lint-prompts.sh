@@ -39,6 +39,8 @@ bad_workspace_git="$tmp/bad-workspace-git.md"
 {
   printf '%s\n' "pwd && git stat""us --short --branch"
   printf '%s\n' "git -C /Users/tomtang/code/edge""vector status --short"
+  printf '%s\n' "git -C \"\$workspace_ro""ot\" status --short"
+  printf '%s\n' "git -C \"\$workspa""ce_dir\" rev-parse --show-toplevel"
   printf '%s\n' "git work""tree list --porcelain"
   printf '%s\n' "git rev""-parse --show-toplevel"
 } > "$bad_workspace_git"
@@ -195,7 +197,7 @@ if "$ROOT/bin/last-stack-lint-prompts" "$bad_routine_skeleton" >/dev/null 2>&1; 
 fi
 
 good_routine_skeleton="$tmp/good-routine-skeleton.md"
-printf '%s\n' "Run the Last Stack routine \`<routine>\`: set \`last_stack=\"<last-stack>\"\`; source \`\$last_stack/bin/last-stack-shell-prelude\`; run \`\$last_stack/bin/last-stack-cli-preflight git curl jq gh <board-cli> <brain-cli>\`; then read the routine and execute one bounded pass." > "$good_routine_skeleton"
+printf '%s\n' "Run the Last Stack routine \`<routine>\`: set \`last_stack=\"<last-stack>\"\`; source \`\$last_stack/bin/last-stack-shell-prelude\`; run \`\$last_stack/bin/last-stack-cli-preflight git curl jq gh <board-cli> <brain-cli>\`; then read the routine and execute one bounded pass. Before repo-scoped git, resolve the child repo with \`\$last_stack/bin/last-stack-repo-op-guard \"\$target_repo\" \"<workspace>\"\`." > "$good_routine_skeleton"
 "$ROOT/bin/last-stack-lint-prompts" "$good_routine_skeleton"
 
 bad_ambiguous_repo_skip="$tmp/bad-ambiguous-repo-skip.md"

@@ -434,7 +434,7 @@ for path in "$@"; do
     fail=1
   fi
 
-  workspace_git_pattern='git[[:space:]]-C[[:space:]]/Users/tomtang/code/edgevector|git[[:space:]]-C[[:space:]]<WORKSPACE>|git[[:space:]]-C[[:space:]]"\$workspace"|git[[:space:]]-C[[:space:]]\$workspace|git[[:space:]]-C[[:space:]]"\$WORKSPACE"|git[[:space:]]-C[[:space:]]\$WORKSPACE|git[[:space:]]status[[:space:]]--short[[:space:]]--branch|git[[:space:]]rev-parse[[:space:]]--show-toplevel|(^|[^-[:alnum:]_])git[[:space:]]worktree[[:space:]]list'
+  workspace_git_pattern='git[[:space:]]-C[[:space:]]/Users/tomtang/code/edgevector([[:space:]]|$)|git[[:space:]]-C[[:space:]]<WORKSPACE>|git[[:space:]]-C[[:space:]]"?\$[A-Za-z_]*(workspace|WORKSPACE)[A-Za-z_]*"?|git[[:space:]]status[[:space:]]--short[[:space:]]--branch|git[[:space:]]rev-parse[[:space:]]--show-toplevel|(^|[^-[:alnum:]_])git[[:space:]]worktree[[:space:]]list'
   workspace_git_probes="$(search_prompt_pattern "$workspace_git_pattern" "$path")"
   if [ -n "$workspace_git_probes" ]; then
     printf '%s\n' "$workspace_git_probes"
