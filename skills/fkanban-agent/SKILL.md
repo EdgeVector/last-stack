@@ -192,6 +192,7 @@ to `review`, append a one-line note explaining what's missing, and exit.
    ```bash
    target_repo="<resolved-target-repo-root>"
    case "$target_repo" in ""|/Users/tomtang/code/edgevector) exit 2 ;; esac
+   target_repo="$("$last_stack/bin/last-stack-repo-op-guard" "$target_repo" "/Users/tomtang/code/edgevector")"
    git -C "$target_repo" rev-parse --show-toplevel
    cd "$target_repo"
    git fetch origin <base>

@@ -118,7 +118,8 @@ unit2 = SINGLE[d]").
     bad card strand the batch."
   - "Isolate your work only after a checkout-resolution guard: resolve `<repo>`
     to an explicit `<target-repo-root>` (never the aggregate workspace), verify
-    it with `git -C "$target_repo" rev-parse --show-toplevel`, then change into
+    it with `$last_stack/bin/last-stack-repo-op-guard "$target_repo" "<workspace>"`
+    and `git -C "$target_repo" rev-parse --show-toplevel`, then change into
     `$target_repo` before any `git fetch` or `git worktree add
     <worktrees-dir>/<lead-slug> -b fkanban/<lead-slug> origin/<base>` command
     (for a batch, `<lead-slug>` = the highest-priority card). Never edit a shared

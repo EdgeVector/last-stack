@@ -208,6 +208,20 @@ This avoids a noisy first failure from treating the workspace root as a repo.
 GitHub commands should be repo-qualified the same way: use `gh -R <owner>/<repo>
 ...` (or `--repo <owner>/<repo>`) after the card or routine has resolved the
 owning repo. Do not let `gh` infer a repository from an aggregate workspace.
+For single-card workers, run the reusable guard before the first repo-scoped
+operation:
+
+```bash
+workspace="/Users/tomtang/code/edgevector"   # or your rendered <WORKSPACE>
+target_repo="$("$last_stack/bin/last-stack-repo-op-guard" "$target_repo" "$workspace")"
+git -C "$target_repo" rev-parse --show-toplevel
+```
+
+The guard rejects the aggregate workspace root and requires a concrete child
+checkout such as `/Users/tomtang/code/edgevector/last-stack`,
+`/Users/tomtang/code/edgevector/fold`, or
+`/Users/tomtang/code/edgevector/fkanban` before `git` or repo-inferred `gh`
+commands run.
 
 When generating Markdown for `fbrain put`, `fkanban add`, `gh --body`, or any
 similar command, keep the body out of shell-expanded strings. Use a quoted
@@ -226,7 +240,7 @@ Creation-style flags belong to `fbrain <type> new`, not `put`.
 Codex automation prompt skeletons should render the same information directly:
 
 ```text
-Run the Last Stack routine `<routine>`: set `last_stack="<last-stack>"`; source `$last_stack/bin/last-stack-shell-prelude`; run `$last_stack/bin/last-stack-cli-preflight git curl jq gh <board-cli> <brain-cli>`; then read the routine with `$last_stack/bin/last-stack-routine-read "<routine>"` and execute one bounded pass. If the reader prints `LAST_STACK_ROUTINE_STALE` or `LAST_STACK_ROUTINE_MISSING`, run the `last-stack-upgrade` skill or stop before executing stale/absent routine text. Automation ID: <automation-id>. Automation memory: ${CODEX_HOME:-$HOME/.codex}/automations/<automation-id>/memory.md. Use workspace `<workspace>`, board CLI `<board-cli>`, brain CLI `<brain-cli>`, default board `<board>` (the board name is only a `--board` argument for `list` and `add`; `show`, `move`, `rm`, and rank/dep/tag verbs operate on the default board implicitly and reject `--board`), and global CLIs from PATH.
+Run the Last Stack routine `<routine>`: set `last_stack="<last-stack>"`; source `$last_stack/bin/last-stack-shell-prelude`; run `$last_stack/bin/last-stack-cli-preflight git curl jq gh <board-cli> <brain-cli>`; then read the routine with `$last_stack/bin/last-stack-routine-read "<routine>"` and execute one bounded pass. If the reader prints `LAST_STACK_ROUTINE_STALE` or `LAST_STACK_ROUTINE_MISSING`, run the `last-stack-upgrade` skill or stop before executing stale/absent routine text. Automation ID: <automation-id>. Automation memory: ${CODEX_HOME:-$HOME/.codex}/automations/<automation-id>/memory.md. Use workspace `<workspace>` only as a container of child checkouts; before repo-scoped `git` or repo-inferred `gh`, resolve the child repo with `$last_stack/bin/last-stack-repo-op-guard "$target_repo" "<workspace>"` and use examples such as `git -C /Users/tomtang/code/edgevector/<repo> status -sb`, never the workspace root itself. Use board CLI `<board-cli>`, brain CLI `<brain-cli>`, default board `<board>` (the board name is only a `--board` argument for `list` and `add`; `show`, `move`, `rm`, and rank/dep/tag verbs operate on the default board implicitly and reject `--board`), and global CLIs from PATH.
 ```
 
 When a prompt needs PR merge-queue membership, use
