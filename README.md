@@ -130,6 +130,10 @@ bin/
   last-stack-repo-op-guard  reject workspace roots before repo-scoped git/gh
   last-stack-gh-pr-queue-state
                             GraphQL PR queue-state helper without gh -R drift
+  last-stack-forge-ci-log   print a failing forge (Forgejo) CI job's log tail —
+                            resolves the run + attempt-scoped web log endpoint
+                            (run with dangerouslyDisableSandbox: TCP to :3300 is
+                            sandbox-blocked)
   last-stack-routine-read   freshness/missing-file guarded routine prompt reader
   last-stack-dogfood-target-checkout
                             select a current dogfood checkout without mutating

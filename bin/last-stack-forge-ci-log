@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# Print the log of a failing forge (Forgejo) CI job — the ONE sanctioned recipe.
+#
+# Why this exists: when a forge CI run goes red, agents have no obvious way to
+# read the failing job's log. Two traps bite every time:
+#   1. `curl` to http://localhost:3300 dies with `command not found: curl` under
+#      a SANDBOXED Bash tool call (the sandbox blocks the TCP path even though
+#      /usr/bin/curl exists). Fix: run this helper — and any forge curl — with
+#      `dangerouslyDisableSandbox: true`. (curl over --unix-socket to folddb.sock
+#      is unaffected; only TCP-to-:3300 is blocked.)
+#   2. Forgejo has NO /api/v1 log endpoint. The logs live behind a WEB route that
+#      needs a browser SESSION COOKIE (an API token 303-redirects to login), and
+#      the working path includes an /attempt/<n>/ segment everyone omits:
+#          GET /{owner}/{repo}/actions/runs/{run}/jobs/{job}/attempt/{attempt}/logs
+#      returns the job's plain-text combined log.
+#
+# This helper does the whole thing: token-auth the /api/v1/actions/tasks list to
+# resolve the run + jobs for a red run, log in for a session cookie, then fetch
+# the failing job's log and print its tail.
+#
+# MUST be run with dangerouslyDisableSandbox:true (TCP to :3300 is sandbox-blocked).
+set -euo pipefail
+
+ROOT="${FORGE_ROOT:-http://localhost:3300}"
+TAIL="${FORGE_CI_LOG_TAIL:-80}"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  last-stack-forge-ci-log <owner/repo> <run-number> [job-index] [attempt]
+  last-stack-forge-ci-log <owner/repo> --sha <head-sha>   # find the red run for a commit
+
+Prints the plain-text log tail of a forge (Forgejo) CI job.
+
+Arguments:
+  <owner/repo>   e.g. EdgeVector/fold
+  <run-number>   the per-repo run index shown in the run URL
+                 (.../actions/runs/<run-number>) — this is `run_number` in the
+                 /api/v1/.../actions/tasks list, NOT the global task id.
+  [job-index]    0-based job within the run. Default: auto — dumps EVERY failing
+                 job's log (and lists the jobs it found).
+  [attempt]      re-run attempt. Default: 1 (first run).
+
+  --sha <sha>    instead of a run-number, resolve the newest run for <head-sha>
+                 from the tasks list and dump its failing jobs.
+
+Env:
+  FORGE_ROOT           forge base URL (default http://localhost:3300)
+  FORGE_CI_LOG_TAIL    lines of tail to print per job (default 80; 0 = whole log)
+
+Auth (already provisioned in the macOS keychain):
+  forge web login    user `tom`,  security find-generic-password -s forgejo-admin -w
+  forge api token    security find-generic-password -s forgejo-token -w
+
+⚠️  Run this with `dangerouslyDisableSandbox: true` — a sandboxed Bash tool call
+    blocks TCP to localhost:3300 and fails with `command not found: curl`.
+EOF
+}
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] || [ "$#" -lt 2 ]; then
+  usage
+  [ "$#" -lt 2 ] && exit 2 || exit 0
+fi
+
+repo="$1"; shift
+case "$repo" in */*) ;; *) echo "repo must be owner/name: $repo" >&2; exit 2 ;; esac
+
+TOKEN="$(security find-generic-password -s forgejo-token -w 2>/dev/null || true)"
+[ -n "$TOKEN" ] || { echo "no forgejo-token in keychain (security find-generic-password -s forgejo-token -w)" >&2; exit 3; }
+
+api() { curl -fsS -H "Authorization: token $TOKEN" "$ROOT/api/v1/$1"; }
+
+# ── Resolve run-number + the list of failing job indices ──────────────────────
+run_number=""
+sha=""
+job_index=""
+attempt="1"
+
+if [ "${1:-}" = "--sha" ]; then
+  sha="${2:?--sha needs a value}"
+else
+  run_number="$1"
+  case "$run_number" in ''|*[!0-9]*) echo "run-number must be numeric (or use --sha): $run_number" >&2; exit 2 ;; esac
+  [ "${2:-}" != "" ] && job_index="$2"
+  [ "${3:-}" != "" ] && attempt="$3"
+fi
+
+# Pull the tasks list once; it maps run_number -> per-job status/name.
+tasks_json="$(api "repos/$repo/actions/tasks?limit=100")"
+
+if [ -n "$sha" ]; then
+  run_number="$(printf '%s' "$tasks_json" | jq -r --arg s "$sha" \
+    '[.workflow_runs[] | select(.head_sha|startswith($s))] | (.[0].run_number // empty)')"
+  [ -n "$run_number" ] || { echo "no run found for sha $sha in the last 100 tasks" >&2; exit 4; }
+  echo "resolved sha $sha -> run $run_number" >&2
+fi
+
+# Jobs of this run, in the order Forgejo assigns web job-indices (ascending id).
+# Emit "idx<TAB>status<TAB>name" so we know which indices are failing.
+jobs_tsv="$(printf '%s' "$tasks_json" | jq -r --argjson rn "$run_number" '
+  [ .workflow_runs[] | select(.run_number == $rn) ] | sort_by(.id)
+  | to_entries[] | "\(.key)\t\(.value.status)\t\(.value.name)"')"
+
+if [ -z "$jobs_tsv" ]; then
+  echo "no jobs found for run $run_number in the tasks list (list truncated? raise limit / pass a fresher run)" >&2
+  exit 4
+fi
+
+echo "run $run_number jobs (idx / status / name):" >&2
+printf '%s\n' "$jobs_tsv" | sed 's/^/  /' >&2
+
+# Decide which job indices to dump.
+targets=""
+if [ -n "$job_index" ]; then
+  targets="$job_index"
+else
+  targets="$(printf '%s\n' "$jobs_tsv" | awk -F'\t' '$2=="failure"{print $1}')"
+  [ -n "$targets" ] || targets="$(printf '%s\n' "$jobs_tsv" | awk -F'\t' '{print $1}')"  # nothing failed -> dump all
+fi
+
+# ── Web session cookie (the log route rejects the API token) ──────────────────
+web_user="tom"
+web_pass="$(security find-generic-password -s forgejo-admin -w 2>/dev/null || true)"
+[ -n "$web_pass" ] || { echo "no forgejo-admin password in keychain (security find-generic-password -s forgejo-admin -w)" >&2; exit 3; }
+
+cookie="$(mktemp)"
+trap 'rm -f "$cookie"' EXIT
+curl -fsS -c "$cookie" "$ROOT/user/login" -o /dev/null
+csrf="$(awk '/_csrf/{v=$7} END{print v}' "$cookie")"
+curl -fsS -b "$cookie" -c "$cookie" -X POST "$ROOT/user/login" \
+  --data-urlencode "_csrf=$csrf" \
+  --data-urlencode "user_name=$web_user" \
+  --data-urlencode "password=$web_pass" -o /dev/null
+
+# ── Fetch + print each target job's log ───────────────────────────────────────
+for idx in $targets; do
+  name="$(printf '%s\n' "$jobs_tsv" | awk -F'\t' -v i="$idx" '$1==i{print $3}')"
+  url="$ROOT/$repo/actions/runs/$run_number/jobs/$idx/attempt/$attempt/logs"
+  echo
+  echo "===== job $idx  ($name)  —  $url ====="
+  if [ "$TAIL" = "0" ]; then
+    curl -fsS -b "$cookie" "$url"
+  else
+    curl -fsS -b "$cookie" "$url" | tail -n "$TAIL"
+  fi
+done
