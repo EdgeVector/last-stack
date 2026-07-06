@@ -21,6 +21,37 @@ quote_field() {
   printf '%s' "$1" | tr '\t\n' '  '
 }
 
+forge_auth_scope() {
+  local url="$1"
+
+  case "$url" in
+    http://localhost:3300/*) printf 'http://localhost:3300/' ;;
+    http://127.0.0.1:3300/*) printf 'http://127.0.0.1:3300/' ;;
+    http://100.109.94.59:3300/*) printf 'http://100.109.94.59:3300/' ;;
+  esac
+}
+
+git_ls_remote() {
+  local repo="$1"
+  local remote="$2"
+  local ref="$3"
+  local remote_url scope token auth
+
+  remote_url="$(git -C "$repo" remote get-url "$remote" 2>/dev/null || true)"
+  scope="$(forge_auth_scope "$remote_url")"
+  if [ -n "$scope" ] &&
+    token="$(security find-generic-password -s forgejo-token -w 2>/dev/null)"; then
+    auth="$(printf 'tom:%s' "$token" | base64 | tr -d '\n')"
+    git -C "$repo" \
+      -c credential.helper= \
+      -c "http.${scope}.extraHeader=Authorization: Basic $auth" \
+      ls-remote "$remote" "$ref"
+    return
+  fi
+
+  git -C "$repo" ls-remote "$remote" "$ref"
+}
+
 if [ "$#" -eq 0 ]; then
   usage >&2
   exit 2
@@ -65,7 +96,11 @@ for repo in "$@"; do
   local_upstream="$(git -C "$repo" rev-parse --verify -q '@{u}' 2>/dev/null || true)"
   [ -n "$local_upstream" ] || local_upstream="-"
 
-  remote_upstream="$(git -C "$repo" ls-remote "$remote_name" "$remote_ref" 2>/dev/null | awk 'NR == 1 {print $1}')"
+  remote_upstream="$(
+    git_ls_remote "$repo" "$remote_name" "$remote_ref" 2>/dev/null |
+      awk 'NR == 1 {print $1}' ||
+      true
+  )"
   if [ -z "$remote_upstream" ]; then
     printf 'path=%s\tbranch=%s\thead=%s\tdirty=%s\tupstream=%s\tlocal_upstream=%s\tremote_upstream=-\tresult=unknown\treason=remote-upstream-unreadable\n' \
       "$(quote_field "$repo")" "$(quote_field "$branch")" "$head_oid" "$dirty" \
