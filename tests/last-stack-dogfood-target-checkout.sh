@@ -82,6 +82,26 @@ test "$(git -C "$selected" rev-parse HEAD)" = "$(git -C "$tmp/origin.git" rev-pa
 recipe_seen="$(git -C "$selected" show HEAD:file.txt)"
 grep -q '^three$' <<< "$recipe_seen"
 
+git -c init.defaultBranch=main init --bare "$tmp/other-origin.git" >/dev/null
+mkdir -p "$tmp/collision-targets"
+git clone --branch main --single-branch "$tmp/origin.git" "$tmp/collision-targets/origin" >/dev/null 2>&1
+git -C "$tmp/collision-targets/origin" remote set-url origin "$tmp/other-origin.git"
+
+printf 'four\n' >> "$tmp/seed/file.txt"
+git -C "$tmp/seed" commit -am four >/dev/null
+git -C "$tmp/seed" push origin HEAD:main >/dev/null 2>&1
+
+collision_resolved="$(LAST_STACK_DOGFOOD_TARGET_ROOTS="$tmp/collision-targets" \
+  "$ROOT/bin/last-stack-dogfood-target-checkout" "$tmp/target")"
+grep -q $'^TARGET\t.*\tresult=stale\t' <<< "$collision_resolved"
+grep -q $'^SELECTED\tpath=.*collision-targets.*\tresult=fresh\t' <<< "$collision_resolved"
+grep -q $'\tresult=ok\treason=current-isolated-checkout$' <<< "$collision_resolved"
+
+selected="$(selected_from <<< "$collision_resolved")"
+test "$selected" != "$tmp/collision-targets/origin"
+test "$(git -C "$selected" remote get-url origin)" = "$tmp/origin.git"
+test "$(git -C "$selected" rev-parse HEAD)" = "$(git -C "$tmp/origin.git" rev-parse main)"
+
 git clone "$tmp/origin.git" "$tmp/no-upstream-target" >/dev/null 2>&1
 git -C "$tmp/no-upstream-target" checkout -b local-work main >/dev/null 2>&1
 git -C "$tmp/no-upstream-target" branch --unset-upstream >/dev/null 2>&1 || true
