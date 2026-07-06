@@ -49,9 +49,15 @@ does NOT mean the node is down.
 
 - `fkanban list` / `fkanban list --wide` / `fkanban search "<text>"` /
   `fkanban show <slug>`.
+- `fkanban list --full-body --json` is valid for complete board/card bodies.
+  `fkanban search` has no `--full-body` / `--full_body` CLI flag; use
+  `fkanban search "<text>" --json` plus `fkanban show <slug> --json`, or MCP
+  `fkanban_search` with `full_body: true`.
 - `fkanban add <slug> --title "..." --column todo --body "..."` — NOTE:
   `--body` REPLACES the whole body. To edit an existing card,
   `fkanban show <slug>` first, concatenate, then re-add with the full new body.
+- Only `list`, `search`, and `add` take `--board`; `show`, `move`, `rm`,
+  `rank`, `dep`, and `tag` use the default board implicitly and reject it.
 - Every new card needs `--north-star <slug>` or an `## END STATE` section in
   the body, and if it names a repo, the `Repo:` line must be a bare
   `owner/name` token alone on its line (no comments or prose after it).
