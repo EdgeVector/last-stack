@@ -82,6 +82,22 @@ test "$(git -C "$selected" rev-parse HEAD)" = "$(git -C "$tmp/origin.git" rev-pa
 recipe_seen="$(git -C "$selected" show HEAD:file.txt)"
 grep -q '^three$' <<< "$recipe_seen"
 
+git clone "$tmp/origin.git" "$tmp/no-upstream-target" >/dev/null 2>&1
+git -C "$tmp/no-upstream-target" checkout -b local-work main >/dev/null 2>&1
+git -C "$tmp/no-upstream-target" branch --unset-upstream >/dev/null 2>&1 || true
+printf 'local-only\n' > "$tmp/no-upstream-target/local.txt"
+
+no_upstream_created="$(LAST_STACK_DOGFOOD_TARGET_ROOTS="$tmp/no-upstream-managed-targets" \
+  "$ROOT/bin/last-stack-dogfood-target-checkout" "$tmp/no-upstream-target")"
+grep -q $'^TARGET\t.*\tresult=unknown\treason=no-upstream$' <<< "$no_upstream_created"
+grep -q $'^SELECTED\tpath=.*no-upstream-managed-targets/origin.*\tresult=fresh\t' <<< "$no_upstream_created"
+grep -q $'\tresult=ok\treason=current-isolated-checkout$' <<< "$no_upstream_created"
+
+selected="$(selected_from <<< "$no_upstream_created")"
+test "$selected" = "$tmp/no-upstream-managed-targets/origin"
+test "$(git -C "$selected" rev-parse HEAD)" = "$(git -C "$tmp/origin.git" rev-parse main)"
+test -f "$tmp/no-upstream-target/local.txt"
+
 after_head="$(git -C "$tmp/target" rev-parse HEAD)"
 after_upstream="$(git -C "$tmp/target" rev-parse --verify -q '@{u}')"
 after_status="$(git -C "$tmp/target" status --porcelain=v1 --untracked-files=all)"

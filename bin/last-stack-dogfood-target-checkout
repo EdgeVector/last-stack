@@ -98,6 +98,60 @@ remote_url() {
   git -C "$repo" remote get-url "$remote" 2>/dev/null || true
 }
 
+forge_auth_scope() {
+  local url="$1"
+
+  case "$url" in
+    http://localhost:3300/*) printf 'http://localhost:3300/' ;;
+    http://127.0.0.1:3300/*) printf 'http://127.0.0.1:3300/' ;;
+    http://100.109.94.59:3300/*) printf 'http://100.109.94.59:3300/' ;;
+  esac
+}
+
+git_with_remote_url_auth() {
+  local remote_url_value="$1"
+  shift
+  local scope token auth
+
+  scope="$(forge_auth_scope "$remote_url_value")"
+  if [ -n "$scope" ] &&
+    token="$(security find-generic-password -s forgejo-token -w 2>/dev/null)"; then
+    auth="$(printf 'tom:%s' "$token" | base64 | tr -d '\n')"
+    git \
+      -c credential.helper= \
+      -c "http.${scope}.extraHeader=Authorization: Basic $auth" \
+      "$@"
+    return
+  fi
+
+  git "$@"
+}
+
+remote_branch_exists() {
+  local repo="$1"
+  local remote="$2"
+  local remote_url_value="$3"
+  local branch="$4"
+
+  git_with_remote_url_auth "$remote_url_value" \
+    -C "$repo" ls-remote --exit-code "$remote" "refs/heads/$branch" \
+    >/dev/null 2>&1
+}
+
+default_remote() {
+  local repo="$1"
+  local remote
+
+  if git -C "$repo" remote get-url origin >/dev/null 2>&1; then
+    printf 'origin'
+    return 0
+  fi
+
+  remote="$(git -C "$repo" remote | awk 'NR == 1 {print}')"
+  [ -n "$remote" ] || return 1
+  printf '%s' "$remote"
+}
+
 safe_path_name() {
   printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '-'
 }
@@ -172,7 +226,8 @@ refresh_managed_checkout() {
   [ "$branch" = "${target_upstream#*/}" ] || return 1
 
   remote_ref="refs/heads/${target_upstream#*/}"
-  git -C "$path" fetch "$target_remote" "$remote_ref" >/dev/null 2>&1 || return 1
+  git_with_remote_url_auth "$target_remote_url" \
+    -C "$path" fetch "$target_remote" "$remote_ref" >/dev/null 2>&1 || return 1
   git -C "$path" merge --ff-only FETCH_HEAD >/dev/null 2>&1 || return 1
 }
 
@@ -186,7 +241,8 @@ create_managed_checkout() {
   [ -e "$path" ] && return 1
   branch="${target_upstream#*/}"
   mkdir -p "$(dirname "$path")"
-  git clone \
+  git_with_remote_url_auth "$target_remote_url" \
+    clone \
     --origin "$target_remote" \
     --branch "$branch" \
     --single-branch \
@@ -286,14 +342,22 @@ select_for_target() {
     return 0
   fi
 
-  if [ -z "$target_upstream" ] || [ "$target_upstream" = "-" ]; then
-    print_blocker "$target" "target-upstream-unknown"
-    return 1
-  fi
-
   target_real="$(real_path "$target")"
-  target_remote="${target_upstream%%/*}"
-  target_remote_url="$(remote_url "$target" "$target_remote")"
+  if [ -z "$target_upstream" ] || [ "$target_upstream" = "-" ]; then
+    target_remote="$(default_remote "$target" || true)"
+    target_remote_url="$(remote_url "$target" "$target_remote")"
+    if [ -n "$target_remote" ] &&
+      [ -n "$target_remote_url" ] &&
+      remote_branch_exists "$target" "$target_remote" "$target_remote_url" main; then
+      target_upstream="$target_remote/main"
+    else
+      print_blocker "$target" "target-upstream-unknown"
+      return 1
+    fi
+  else
+    target_remote="${target_upstream%%/*}"
+    target_remote_url="$(remote_url "$target" "$target_remote")"
+  fi
 
   while IFS= read -r candidate; do
     add_candidate "$candidate"
