@@ -11,6 +11,12 @@ with every actionable blocker and papercut discovered.
 
 ## Setup
 - Work from your workspace root (the directory that holds your repos).
+- Normalize the scheduled shell before any CLI-heavy work:
+  ```bash
+  last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+  . "$last_stack/bin/last-stack-shell-prelude"
+  "$last_stack/bin/last-stack-cli-preflight" git curl jq fbrain fkanban
+  ```
 - Use F-Brain via `fbrain` and F-Kanban via `fkanban`; default board is
   `default`.
 - Before any Brain/board writes or product assertions, make sure the Last Stack

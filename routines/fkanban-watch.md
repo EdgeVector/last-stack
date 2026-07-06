@@ -30,6 +30,12 @@ read/write, fail loudly if the resolved path is empty or starts with
   one, do it, then exit.
 
 ## Setup
+- Normalize the scheduled shell before any CLI-heavy work:
+  ```bash
+  last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+  . "$last_stack/bin/last-stack-shell-prelude"
+  "$last_stack/bin/last-stack-cli-preflight" git curl jq gh <board-cli> <brain-cli>
+  ```
 - Drive the board CLI from `<board repo dir>` with `<board CLI> ...`.
 - Follow the **fkanban-agent** skill, RECONCILE mode — it is the source of truth
   for behavior; this prompt is the trigger.

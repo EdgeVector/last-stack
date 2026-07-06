@@ -177,7 +177,7 @@ to `review`, append a one-line note explaining what's missing, and exit.
    ```bash
    last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
    . "$last_stack/bin/last-stack-shell-prelude"
-   "$last_stack/bin/last-stack-cli-preflight" git gh
+   "$last_stack/bin/last-stack-cli-preflight" git gh curl jq fkanban fbrain
    ```
 2. **Resolve the target repo, then set up an isolated worktree** (never edit a
    shared checkout in place, and never `stash`/`reset` — sibling agents may

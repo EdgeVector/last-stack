@@ -34,6 +34,13 @@ read/write, fail loudly if the resolved path is empty or starts with
   first (`<board list command>`) and cross-check by intent.
 
 ## Procedure each run
+0. **Normalize the scheduled shell.** Source the Last Stack PATH prelude and
+   preflight the global CLIs before shell-heavy work:
+   ```bash
+   last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+   . "$last_stack/bin/last-stack-shell-prelude"
+   "$last_stack/bin/last-stack-cli-preflight" git curl jq <board-cli>
+   ```
 1. **Assess.** `df -h <data volume> | tail -1`; list any build/server processes
    and confirm which one is your live brain/board node so you never touch it.
 2. **Discover repo roots before any repo-level Git command.** The workspace

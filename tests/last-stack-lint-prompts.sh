@@ -121,6 +121,18 @@ if "$ROOT/bin/last-stack-lint-prompts" "$bad_raw_markdown_shell_block" >/dev/nul
   exit 1
 fi
 
+bad_board_text_shell_block="$tmp/bad-board-text-shell-block.md"
+printf '%s\n' \
+  '```'"zsh" \
+  "back""log" \
+  "to""do" \
+  "fkanban-""agent" \
+  '```' > "$bad_board_text_shell_block"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_board_text_shell_block" >/dev/null 2>&1; then
+  echo "expected copied board/prompt tokens inside a shell block to fail prompt lint" >&2
+  exit 1
+fi
+
 good_markdown_body_file="$tmp/good-markdown-body-file.md"
 cat > "$good_markdown_body_file" <<'GOOD_MARKDOWN_BODY'
 ```bash
@@ -239,6 +251,32 @@ fi
 good_routine_skeleton="$tmp/good-routine-skeleton.md"
 printf '%s\n' "Run the Last Stack routine \`<routine>\`: set \`last_stack=\"<last-stack>\"\`; source \`\$last_stack/bin/last-stack-shell-prelude\`; run \`\$last_stack/bin/last-stack-cli-preflight git curl jq gh <board-cli> <brain-cli>\`; then read the routine and execute one bounded pass. Before repo-scoped git, resolve the child repo with \`\$last_stack/bin/last-stack-repo-op-guard \"\$target_repo\" \"<workspace>\"\`." > "$good_routine_skeleton"
 "$ROOT/bin/last-stack-lint-prompts" "$good_routine_skeleton"
+
+bad_global_cli_path="$tmp/bad-global-cli-path.md"
+printf '%s\n' "Use global CLIs from PA""TH." > "$bad_global_cli_path"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_global_cli_path" >/dev/null 2>&1; then
+  echo "expected global CLI guidance without shell prelude/preflight to fail prompt lint" >&2
+  exit 1
+fi
+
+good_global_cli_path="$tmp/good-global-cli-path.md"
+printf '%s\n' "Use global CLIs from PA""TH after the prelude below: \`last-stack-shell-prelude\` and \`last-stack-cli-preflight\`." > "$good_global_cli_path"
+"$ROOT/bin/last-stack-lint-prompts" "$good_global_cli_path"
+
+bad_local_checkout_git="$tmp/bad-local-checkout-git.md"
+printf '%s\n' 'repo="<local-checkout>"' 'git -C "$repo" status --short --branch' > "$bad_local_checkout_git"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_local_checkout_git" >/dev/null 2>&1; then
+  echo "expected local-checkout git without repo-op guard to fail prompt lint" >&2
+  exit 1
+fi
+
+good_local_checkout_git="$tmp/good-local-checkout-git.md"
+printf '%s\n' \
+  'last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"' \
+  'repo="<local-checkout>"' \
+  'repo="$("$last_stack/bin/last-stack-repo-op-guard" "$repo" "<WORKSPACE>")"' \
+  'git -C "$repo" status --short --branch' > "$good_local_checkout_git"
+"$ROOT/bin/last-stack-lint-prompts" "$good_local_checkout_git"
 
 bad_ambiguous_repo_skip="$tmp/bad-ambiguous-repo-skip.md"
 printf '%s\n' "SK""IP ambiguous repo targets and leave it in todo." > "$bad_ambiguous_repo_skip"

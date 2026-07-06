@@ -39,6 +39,14 @@ read/write, fail loudly if the resolved path is empty or starts with
 
 ## Setup
 - Drive the board CLI from `<board repo dir>` with `<board CLI> ...`.
+- Normalize the scheduled shell before any CLI-heavy work so GUI/sandboxed
+  launches can still find `git`, `gh`, `curl`, `jq`, `<board CLI>`, and
+  `<brain-cli>`:
+  ```bash
+  last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+  . "$last_stack/bin/last-stack-shell-prelude"
+  "$last_stack/bin/last-stack-cli-preflight" git curl jq gh <board-cli> <brain-cli>
+  ```
 - Each spawned agent follows the **fkanban-agent** skill, WORK mode — that skill
   is the source of truth for the per-card lifecycle. This prompt is just the
   trigger + selection + fan-out rule.
@@ -118,7 +126,8 @@ unit2 = SINGLE[d]").
     bad card strand the batch."
   - "Isolate your work only after a checkout-resolution guard: resolve `<repo>`
     to an explicit `<target-repo-root>` (never the aggregate workspace), verify
-    it with `$last_stack/bin/last-stack-repo-op-guard "$target_repo" "<workspace>"`
+    it with `last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"`,
+    `$last_stack/bin/last-stack-repo-op-guard "$target_repo" "<workspace>"`,
     and `git -C "$target_repo" rev-parse --show-toplevel`, then change into
     `$target_repo` before any `git fetch` or `git worktree add
     <worktrees-dir>/<lead-slug> -b fkanban/<lead-slug> origin/<base>` command
@@ -188,7 +197,9 @@ limit, do NOT spawn it. Spawn exactly ONE background agent (no nested spawns, no
 > scoped to a single concern — dead code, a redundant branch, a needless
 > abstraction, a duplicated helper, an over-complex expression (reuse / clarity /
 > efficiency, NOT a behavior change, NOT a bug hunt), small enough to review in
-> one sitting. Make the edit, confirm the touched package still builds and its
+> one sitting. Source `$last_stack/bin/last-stack-shell-prelude` and run
+> `$last_stack/bin/last-stack-cli-preflight git curl jq gh` before shell-heavy
+> checks. Make the edit, confirm the touched package still builds and its
 > tests pass, open a PR (`gh -R <owner>/<repo> pr create --fill`, title prefixed `chore(simplify):`),
 > enable auto-merge per the repo's merge strategy (merge-queue repo: bare `gh -R
 > <owner>/<repo> pr merge <n> --auto`; plain auto-merge: add your strategy flag), then DRIVE IT TO
