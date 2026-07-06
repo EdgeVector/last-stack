@@ -156,27 +156,38 @@ if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_move_board" >/dev/null 2>&1
   exit 1
 fi
 
-bad_fkanban_list_full_body="$tmp/bad-fkanban-list-full-body.md"
-printf '%s\n' "fkanban li""st --column doing --full""-body --json" > "$bad_fkanban_list_full_body"
-if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_list_full_body" >/dev/null 2>&1; then
-  echo "expected unsupported fkanban list --full-body usage to fail prompt lint" >&2
+bad_fkanban_tag_board="$tmp/bad-fkanban-tag-board.md"
+printf '%s\n' "fkanban ta""g add some-card p1 --bo""ard default" > "$bad_fkanban_tag_board"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_tag_board" >/dev/null 2>&1; then
+  echo "expected unsupported fkanban tag --board usage to fail prompt lint" >&2
   exit 1
 fi
 
-bad_fkanban_list_full_body_underscore="$tmp/bad-fkanban-list-full-body-underscore.md"
-printf '%s\n' "fkanban li""st --full""_body" > "$bad_fkanban_list_full_body_underscore"
-if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_list_full_body_underscore" >/dev/null 2>&1; then
-  echo "expected unsupported fkanban list --full_body usage to fail prompt lint" >&2
+bad_fkanban_search_full_body="$tmp/bad-fkanban-search-full-body.md"
+printf '%s\n' "fkanban sea""rch auth --full""-body --json" > "$bad_fkanban_search_full_body"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_search_full_body" >/dev/null 2>&1; then
+  echo "expected unsupported fkanban search --full-body usage to fail prompt lint" >&2
+  exit 1
+fi
+
+bad_fkanban_search_full_body_underscore="$tmp/bad-fkanban-search-full-body-underscore.md"
+printf '%s\n' "fkanban sea""rch auth --full""_body" > "$bad_fkanban_search_full_body_underscore"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_search_full_body_underscore" >/dev/null 2>&1; then
+  echo "expected unsupported fkanban search --full_body usage to fail prompt lint" >&2
   exit 1
 fi
 
 good_fkanban_full_body="$tmp/good-fkanban-full-body.md"
 cat > "$good_fkanban_full_body" <<'GOOD_FULL_BODY'
-fkanban list has NO --full-body flag; never use it. For one card's full body
-run `fkanban show <slug> --json`, or pass `full_body: true` to the MCP
-`fkanban_list` / `fkanban_search` tools.
+fkanban list accepts `--full-body`, but fkanban search has no such flag. For one
+card's full body run `fkanban show <slug> --json`, or pass `full_body: true` to
+the MCP `fkanban_search` tool.
 GOOD_FULL_BODY
 "$ROOT/bin/last-stack-lint-prompts" "$good_fkanban_full_body"
+
+good_fkanban_list_full_body="$tmp/good-fkanban-list-full-body.md"
+printf '%s\n' "fkanban li""st --column doing --full""-body --json" > "$good_fkanban_list_full_body"
+"$ROOT/bin/last-stack-lint-prompts" "$good_fkanban_list_full_body"
 
 bad_default_board_unscoped="$tmp/bad-default-board-unscoped.md"
 printf '%s\n' "Use workspace \`<workspace>\`, board CLI \`<board-cli>\`, default bo""ard \`<board>\`, and global CLIs from PATH." > "$bad_default_board_unscoped"

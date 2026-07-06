@@ -370,25 +370,24 @@ for path in "$@"; do
     fail=1
   fi
 
-  fkanban_board_matches="$(search_prompt_pattern '(fkanban|<board CLI>)[[:space:]]+(show|move)([[:space:]]|$).*--board' "$path")"
+  fkanban_board_matches="$(search_prompt_pattern '(fkanban|<board CLI>)[[:space:]]+(show|move|rm|rank|dep|tag)([[:space:]]|$).*--board' "$path")"
   fkanban_board_matches="$(printf '%s\n' "$fkanban_board_matches" | grep -v -E 'Do not|Never|do not|never|unsupported|do not take|only commands whose help lists' || true)"
   if [ -n "$fkanban_board_matches" ]; then
     printf '%s\n' "$fkanban_board_matches"
-    echo "unsupported fkanban show/move board flag usage found under $path" >&2
+    echo "unsupported fkanban non-list/add/search board flag usage found under $path" >&2
     fail=1
   fi
 
-  # `fkanban list` has NO full-body option (its flags are board/column/tag/
-  # assignee/wide/limit/all). Agents keep inventing `fkanban list --full-body`
-  # (or `--full_body`), which the CLI rejects with `Unknown option`. The
-  # supported full-body paths are `fkanban show <slug>` for one card, or the
-  # MCP `fkanban_list`/`fkanban_search` `full_body: true` argument. Block the
-  # CLI flag in agent-facing guidance.
-  fkanban_full_body_matches="$(search_prompt_pattern '(fkanban|<board CLI>)[[:space:]]+list([[:space:]]|$).*--full[-_]body' "$path")"
-  fkanban_full_body_matches="$(printf '%s\n' "$fkanban_full_body_matches" | grep -v -E 'Do not|Never|do not|never|unsupported|no such flag' || true)"
+  # `fkanban search` has NO full-body option. Agents keep inventing
+  # `fkanban search <query> --full-body` (or `--full_body`), which the CLI
+  # rejects with `Unknown option`. For full bodies, use CLI JSON and
+  # `fkanban show <slug> --json`, or pass `full_body: true` to the MCP
+  # `fkanban_search` tool. Block the bad CLI flag in agent-facing guidance.
+  fkanban_full_body_matches="$(search_prompt_pattern '(fkanban|<board CLI>)[[:space:]]+search([[:space:]]|$).*--full[-_]body' "$path")"
+  fkanban_full_body_matches="$(printf '%s\n' "$fkanban_full_body_matches" | grep -v -E 'Do not|Never|do not|never|unsupported|no such flag|has no|no --full-body' || true)"
   if [ -n "$fkanban_full_body_matches" ]; then
     printf '%s\n' "$fkanban_full_body_matches"
-    echo "unsupported fkanban list --full-body usage found under $path (use fkanban show <slug>, or MCP full_body:true)" >&2
+    echo "unsupported fkanban search --full-body usage found under $path (use fkanban search --json + show, or MCP full_body:true)" >&2
     fail=1
   fi
 
