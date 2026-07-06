@@ -89,6 +89,15 @@ Match the template exactly. The structure + the house style classes:
 Voice: concrete, honest, a little playful; lead with the reader's takeaway. Look
 at the existing posts and match their register.
 
+**Introduce every internal actor on first use, in reader-facing terms.** The
+reader has never heard of our routines, the fleet, Brain, or any workspace
+name — a bare "the routine"/"the fleet" reads as nonsense from outside. One
+clause is enough ("an automated job of ours", "Brain, the knowledge-base app
+we build on LastDB"). Re-read the draft once as a stranger: any sentence whose
+subject you couldn't identify from the post alone gets rewritten (this bit us:
+"Degrade, Don't Die" shipped with "Brain is one of the two apps we build
+LastDB with" and an unexplained "routine", and needed a follow-up fix PR).
+
 ## 3. Diagrams — hand-authored architectural SVG (default; use `/diagram`)
 
 **Invoke the `/diagram` skill** and follow it — it carries the full grammar
