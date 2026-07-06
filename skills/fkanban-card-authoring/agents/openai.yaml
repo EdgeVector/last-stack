@@ -1,0 +1,4 @@
+interface:
+  display_name: "F-Kanban Card Authoring"
+  short_description: "Create pickup-safe F-Kanban cards"
+  default_prompt: "Use $fkanban-card-authoring to create or repair an F-Kanban card so pickup can route it safely."

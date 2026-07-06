@@ -1,0 +1,4 @@
+interface:
+  display_name: "F-Brain Writing"
+  short_description: "Write durable F-Brain records safely"
+  default_prompt: "Use $fbrain-writing to create, update, append, or status-patch durable F-Brain records safely."

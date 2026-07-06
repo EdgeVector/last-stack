@@ -1,0 +1,4 @@
+interface:
+  display_name: "Forge Hot PR"
+  short_description: "Drive Forgejo PRs for forge-hot repos"
+  default_prompt: "Use $forge-hot-pr to open, check, or merge a PR on a forge-hot EdgeVector repo."

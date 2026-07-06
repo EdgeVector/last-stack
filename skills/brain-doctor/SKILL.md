@@ -1,19 +1,6 @@
 ---
 name: brain-doctor
-description: |
-  Read-only triage of the folddb brain (Tom's primary fbrain/fkanban
-  daily-driver node, reached over the Unix socket ~/.folddb/data/folddb.sock)
-  when it's wedged, slow, or down. Bundles the hand-run recipe
-  that recurs on every "is fkanban down", "is the brain wedged", "why is my
-  computer so slow", "fbrain/fkanban won't respond", or "FoldDB couldn't take
-  over" incident: distinguishes a full sled-IO deadlock from the partial
-  write-path stall, finds duplicate launchd/brew supervisors, catches a stale
-  ~/.folddb/port breadcrumb, and classifies orphan folddb_server / run.sh /
-  kanban-hook procs vs the real brain. Use when the user (or a routine) reports
-  the brain/board/fbrain unresponsive or slow, or says "run brain-doctor",
-  "diagnose the brain", "check the brain socket". This is the DIAGNOSE-FIRST companion to
-  machine-hygiene (which does the cleanup/writes); brain-doctor only reads and
-  prints recommended recovery commands — it never kills, restarts, or writes.
+description: Read-only triage of Tom's primary LastDB/F-Brain/F-Kanban node over the Unix socket when it is wedged, slow, down, blank in the GUI, or the socket vanishes after unlock. Use when the user says run brain-doctor, diagnose the brain, check the brain socket, fbrain/fkanban will not respond, LastDB is blank, or LastDB will not come up. Distinguishes Browse N+1 file-descriptor exhaustion, sled deadlocks, partial write stalls, duplicate supervisors, stale port breadcrumbs, and orphans. Diagnose-first; never kills, restarts, or writes.
 ---
 
 # brain-doctor — folddb socket triage
@@ -39,6 +26,16 @@ stashes. It prints the exact recommended recovery command for a human (or a
 supervised session) to run. That honors the standing rule: **never kill the
 brain unattended; surface, don't act.**
 
+## Diagnostic posture
+
+Do not relaunch, rebuild, reinstall, or restart as the first diagnostic move.
+The recent LastDB blank-window/socket-vanish incidents got worse when agents
+restarted early: reload destroyed evidence, overlapped launch supervisors, and
+made symptoms look like keyring, stale binary, or daemon takeover bugs.
+
+Observe first, then perform at most one clean supervised launch after the cause
+is classified.
+
 ## Reading the output / acting on it
 
 The script checks, in order: (1) socket + folddb_server PID + uptime/CPU,
@@ -48,6 +45,18 @@ brain), (3) responsiveness probe over the socket, (4) duplicate supervisors,
 
 Key triage decisions it encodes:
 
+- **Blank UI / vanished Unix socket / "network connection failed" after unlock:**
+  suspect file-descriptor exhaustion before keyring, stale frontend, or stale
+  binary. Check the node PID and compare open fds with the GUI process limit:
+  ```bash
+  pid=$(pgrep -fn 'folddb|lastdb|fold_db_node|fold-app' || true)
+  test -n "$pid" && lsof -p "$pid" | wc -l
+  launchctl limit maxfiles
+  ```
+  If the process looks alive but the owner socket vanished, log tails mention
+  `Too many open files`, or fd count is near the soft limit, classify this as
+  the Browse N+1 / fd-exhaustion class. Capture `lsof`, socket list, and logs
+  before any restart.
 - **WEDGED (full deadlock):** `GET /` over the socket times out **and** CPU ~0%.
   A plain `brew services restart` / launchctl restart looks successful but leaves
   the SIGTERM-deaf PID holding the socket. You must `kill -9 <pid>` (confirm first with
@@ -67,6 +76,10 @@ Key triage decisions it encodes:
   plus idle `run.sh --local` harnesses on temp `--home` and hours-old stuck
   `kanban hooks ingest` procs, are safe sweep candidates — but verify cwd is gone
   and no live client/builder first, and surface rather than kill in unattended runs.
+- **Keyring-looking failures:** only treat as keyring recovery after observing
+  a concrete keyring/decrypt error. Primary-brain keyring recovery is Tom-gated;
+  do not rotate credentials, clear keychains, or run destructive recovery
+  unattended.
 
 ## When NOT to use this
 
@@ -81,4 +94,6 @@ Key triage decisions it encodes:
 `project_folddb_desktop_takeover_dup_supervisor` (dup supervisor + stale port),
 `feedback_dont_kill_primary_folddb_server` (live-brain protection),
 `project_kanban_orphan_folddb_server` (orphan sweep classifier),
-`project_cli_status_flake_fixed` / `project_folddb_cli_sled_lock_slow` (slow ≠ wedged).
+`project_cli_status_flake_fixed` / `project_folddb_cli_sled_lock_slow` (slow ≠ wedged),
+`retro-node-wont-come-up-misdiagnosis-loops-2026-06-29-07-01`
+(Browse N+1 fd exhaustion, restart-first amplified the incident).
