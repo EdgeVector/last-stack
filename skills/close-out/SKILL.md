@@ -116,7 +116,38 @@ Save the *why* / the settled decision / the milestone. Brain = why + decision;
 Kanban = what's in flight. Pipe big Markdown bodies via **stdin** or a body
 file, never as shell-expanded command arguments. If the body contains backticks,
 `$()`, `$var`, globs, or other shell metacharacters, write it with a quoted
-heredoc so the shell cannot evaluate it:
+heredoc so the shell cannot evaluate it.
+
+**If a real DECISION was settled** (a call someone made — a chosen approach, an
+outcome, a gate cleared), record it as its own **`decision` record** so it lands
+in the queryable decision ledger (`fbrain list --type decision`) with real
+`program`/`gate_slug`/`decided_by`/`decided_on` columns — NOT as a prose note
+and NEVER by appending to the archived `decisions-log` monolith:
+
+```bash
+body_file="$(mktemp)"
+cat > "$body_file" <<'EOF'
+---
+type: decision
+slug: decision-<date>-<short-kebab>
+title: <one-line summary of the call>
+status: <go|hold|done|moot|superseded>   # the OUTCOME
+program: <owning program / North Star slug, empty string if none>
+gate_slug: <open-decisions gate cleared, empty string if none>
+decided_by: <who made the call, e.g. Tom>
+decided_on: <RFC 3339 date>
+tags: [decisions]
+---
+
+<what was chosen, why, what it unblocks — literal `backticks`/$(examples) safe>
+EOF
+fbrain put decision-<date>-<short-kebab> --type decision < "$body_file"
+rm -f "$body_file"
+```
+
+**For a milestone / why-note that is NOT a decision** (a settled fact,
+implementation record, or project checkpoint), use the appropriate note type
+instead:
 
 ```bash
 body_file="$(mktemp)"
