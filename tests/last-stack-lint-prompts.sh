@@ -227,8 +227,40 @@ GOOD_FULL_BODY
 "$ROOT/bin/last-stack-lint-prompts" "$good_fkanban_full_body"
 
 good_fkanban_list_full_body="$tmp/good-fkanban-list-full-body.md"
-printf '%s\n' "fkanban li""st --column doing --full""-body --json" > "$good_fkanban_list_full_body"
+printf '%s\n' "fkanban li""st accepts --full""-body for syntax, but routines must not use it; use capped/column previews plus show for selected cards instead." > "$good_fkanban_list_full_body"
 "$ROOT/bin/last-stack-lint-prompts" "$good_fkanban_list_full_body"
+
+bad_fkanban_list_full_body="$tmp/bad-fkanban-list-full-body.md"
+printf '%s\n' "fkanban li""st --full""-body --json" > "$bad_fkanban_list_full_body"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_list_full_body" >/dev/null 2>&1; then
+  echo "expected broad fkanban list --full-body usage to fail prompt lint" >&2
+  exit 1
+fi
+
+bad_fkanban_list_all="$tmp/bad-fkanban-list-all.md"
+printf '%s\n' "<board CLI> li""st --json --a""ll" > "$bad_fkanban_list_all"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_list_all" >/dev/null 2>&1; then
+  echo "expected broad board list --all usage to fail prompt lint" >&2
+  exit 1
+fi
+
+bad_routine_doctor_health="$tmp/bad-routine-doctor-health.md"
+printf '%s\n' "First: <board CLI> doc""tor, then continue if it passes." > "$bad_routine_doctor_health"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_routine_doctor_health" >/dev/null 2>&1; then
+  echo "expected routine doctor health check to fail prompt lint" >&2
+  exit 1
+fi
+
+good_busy_node_backoff="$tmp/good-busy-node-backoff.md"
+cat > "$good_busy_node_backoff" <<'GOOD_BUSY_NODE_BACKOFF'
+Run a socket-backed narrow read first:
+<board CLI> list --column todo --json
+Then read selected cards with:
+<board CLI> show <slug> --json
+On `service_timeout`, "node did not respond", or "too many concurrent reads",
+exit or retry one idempotent slug upsert; do not run doctor/init or restart.
+GOOD_BUSY_NODE_BACKOFF
+"$ROOT/bin/last-stack-lint-prompts" "$good_busy_node_backoff"
 
 bad_default_board_unscoped="$tmp/bad-default-board-unscoped.md"
 printf '%s\n' "Use workspace \`<workspace>\`, board CLI \`<board-cli>\`, default bo""ard \`<board>\`, and global CLIs from PATH." > "$bad_default_board_unscoped"

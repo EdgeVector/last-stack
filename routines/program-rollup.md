@@ -44,24 +44,33 @@ read/write, fail loudly if the resolved path is empty or starts with
   back by staging the new body to a temp file (`<brain put> active-programs
   --body_path <tmpfile>` — NEVER inline a long body, it can drop in transit).
   Preserve the record's status.
-- Board (READ ONLY): `<board CLI> list --json --all` → a flat array of every card
-  `{slug, title, column, body, tags, …}`. For a `review`-column card, scan its
-  `body` field (already in the payload) for a line starting `BLOCKED:`/`STALLED:`
-  — no separate `show` call needed.
+- Board (READ ONLY): use narrow, sequential reads. First read the driving index,
+  extract exact candidate slugs from existing rollup blocks and prose, then
+  point-read those cards with `<board CLI> show <slug> --json`. If you must fill
+  a membership gap, use capped/column previews such as `<board CLI> list --column
+  doing --json`; never load the whole board with `--all`, `--wide`, or full
+  bodies. For a `review`-column card, use that card's `show` body to capture the
+  first `BLOCKED:`/`STALLED:` line.
 
 ## Each run — do exactly this
-1. **Orient.** Read the driving index body and the board. Build a map
-   `slug → {column, body}` for every live card. If either read fails because the
-   node is down → report + EXIT.
+1. **Orient.** Read the driving index body first. Extract the live candidate
+   slugs named in existing rollup blocks and prose, then read only those cards
+   from the board with `<board CLI> show <slug> --json`, one at a time. Build a
+   map `slug → {column, body}` for successfully read candidate cards. If a read
+   returns `service_timeout`, "node did not respond", or "too many concurrent
+   reads", treat that as busy-node backpressure: do not run doctor/init or
+   restart anything; report `busy-node skipped rollup` and EXIT so the next
+   scheduled pass retries under lower load.
 2. **Split the index into program sections** (top-level `## N. <title>` blocks).
    Process each independently.
 3. **Resolve each program's member cards (brain-owned, self-seeding).**
    - If the section already has a `rollup:start`…`rollup:end` block, parse its
      `cards:` line into the starting membership set.
-   - ALSO scan the section's PROSE for tokens that EXACTLY match a live board slug
-     (lowercase `[a-z0-9-]+`, usually in backticks). Union them in. This
-     self-seeds on first run and self-heals (newly-named cards get adopted
-     automatically).
+   - ALSO scan the section's PROSE for tokens that look like board slugs
+     (lowercase `[a-z0-9-]+`, usually in backticks), point-read each candidate
+     with `<board CLI> show <slug> --json`, and union in only candidates that
+     exist. This self-seeds on first run and self-heals newly named cards without
+     scanning the full board.
    - Drop nothing: if a previously-tracked card is no longer on the board, keep it
      and mark it `gone`.
    - If a section resolves to ZERO member cards (e.g. a human-gated, card-free

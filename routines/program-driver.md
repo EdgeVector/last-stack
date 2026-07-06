@@ -54,21 +54,26 @@ index and guarantee each unblocked one has its next card in `todo`.
 
 ## Setup
 - Drive the board CLI from `<board repo dir>` with `<board CLI> <cmd>`.
-- First: `<board CLI> doctor` (or your health check). If the node is
-  unreachable/unprovisioned, STOP and report — never restart/kill/touch the
-  process hosting your brain/board node.
-- `list --json` is valid JSON — parse from a file. Iterate slug lists with a bash
-  array, never a bare `$var`.
+- First: run a socket-backed narrow read, for example
+  `<board CLI> list --column todo --json`, and parse it from a file. If the read
+  returns `service_timeout`, "node did not respond", or "too many concurrent
+  reads", treat that as busy-node backpressure: STOP, report `busy-node skipped
+  program-driver`, and do not run doctor/init or restart anything.
+- Iterate slug lists with a bash array, never a bare `$var`.
 - Columns: `backlog → todo → doing → review → done`. `add <slug>` is an upsert.
 
 ## What to do each run
-1. **Load the program DAGs.** Read your brain's driving index — it lists each
-   program, its "Next move", its board epic, and the named cards in its DAG. This
-   index IS your work list.
+1. **Load the program DAGs.** Read your brain's driving index with a targeted
+   record read — it lists each program, its "Next move", its board epic, and the
+   named cards in its DAG. This index IS your work list. Do this before any board
+   expansion so the later board reads can stay narrow.
 
-2. **Snapshot the board.** `list --json` → which slugs are in which column. A
-   program's next card may already be in `doing`/`review`/`done` — if so that
-   program is already moving; do nothing for it this run.
+2. **Snapshot the board narrowly.** Read the needed columns sequentially:
+   `<board CLI> list --column todo --json`, then `doing`, `review`, `done`, and
+   `backlog` only if you need to promote from backlog. Do not launch these reads
+   in parallel, and do not use wide/full-body board reads. A program's next card
+   may already be in `doing`/`review`/`done` — if so that program is already
+   moving; do nothing for it this run.
 
 3. **For each program, find its NEXT unblocked card and make sure it's in
    `todo`.** Walk the DAG in order; the "next" card is the earliest not yet

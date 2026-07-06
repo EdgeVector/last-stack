@@ -22,20 +22,26 @@ read/write, fail loudly if the resolved path is empty or starts with
 ## Setup
 - Read your board skill / CLI contract before acting.
 - Drive the board CLI from `<board repo dir>` with `<board CLI> <cmd>`.
-- First: `<board CLI> doctor` (or your health check). If the node is
-  unreachable/unprovisioned, STOP and report — do NOT restart, kill, or touch the
-  process hosting your brain/board node.
+- First: run a socket-backed narrow read, for example
+  `<board CLI> list --column todo --json`, and parse it from a file. If the read
+  returns `service_timeout`, "node did not respond", or "too many concurrent
+  reads", treat that as busy-node backpressure: STOP, report `busy-node skipped
+  groom-board`, and do not run doctor/init or restart anything.
 - Columns: `backlog → todo → doing → review → done`. `add <slug>` is an upsert;
   `rm <slug>` soft-deletes; `move <slug> <column>`.
-- `list --json` is valid JSON — parse it from a file rather than piping into a
-  one-liner over stdin. In `zsh`, iterate slug lists with a bash array
-  (`for s in "${arr[@]}"`), never a bare `$var`.
+- Read columns sequentially with `<board CLI> list --column <column> --json` and
+  point-read one selected card with `<board CLI> show <slug> --json` when you
+  need the full body. Do not use wide/full-body board reads or parallel board
+  reads. In `zsh`, iterate slug lists with a bash array (`for s in "${arr[@]}"`),
+  never a bare `$var`.
 
 ## What to do each run
-1. **Snapshot the board.** `list --json` → counts per column. Note anything
-   stuck: cards long in `doing` (claimed, no PR) or `review` (PR open, not
-   merged). Surface these in the report; do NOT re-drive them (that's
-   `fkanban-watch`'s job).
+1. **Snapshot the board narrowly.** Read `backlog`, `todo`, `doing`, and
+   `review` with sequential `<board CLI> list --column <column> --json` calls.
+   Use those previews for counts and stuck-card detection; only call
+   `<board CLI> show <slug> --json` for the one card you are editing, deleting,
+   or splitting. Surface stuck `doing`/`review` cards in the report; do NOT
+   re-drive them (that's `fkanban-watch`'s job).
 
 2. **Prune scratch/test cards.** Soft-delete (`rm`) clear test-harness junk:
    `zz-*` slugs, single-letter/placeholder titles, empty bodies, obvious

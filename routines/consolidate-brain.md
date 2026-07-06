@@ -51,9 +51,13 @@ Statuses differ by record type — use your store's terminal enums, e.g.:
 3. **Collapse duplicates.** If two records cover the same topic, archive the
    weaker/older copy and keep the canonical one. Don't merge bodies — just archive
    the dupe.
-4. **Keep the driving index current — PROSE ONLY.** Read the board (`<board CLI>
-   list`) and reconcile the driving index against it — each active program should
-   map to its board epic/cards with an honest **Why / decision / Next move**.
+4. **Keep the driving index current — PROSE ONLY.** Read the board with
+   sequential column previews (`<board CLI> list --column todo --json`, then
+   `doing`, `review`, and `backlog` as needed) and reconcile the driving index
+   against it — each active program should map to its board epic/cards with an
+   honest **Why / decision / Next move**. Use `<board CLI> show <slug> --json`
+   for the one card whose full body you need; do not use broad/full-body board
+   reads.
    Convention: **brain = why/decision; board = what's in flight; if the index
    disagrees with the board, the board wins.** Curate the human prose: add a
    newly-started program, retire a finished one, fix a stale next-move, name the

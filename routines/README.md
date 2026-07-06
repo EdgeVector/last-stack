@@ -134,10 +134,16 @@ frontmatter suggests a cadence. The pattern every routine follows:
    If it prints `LAST_STACK_ROUTINE_STALE` or `LAST_STACK_ROUTINE_MISSING`, stop
    before executing stale or absent instructions and run the `last-stack-upgrade`
    skill or `cd "$last_stack" && git pull --ff-only && ./setup`.
-5. **Do ONE bounded pass**, then **exit**. Never loop, never `sleep`-to-wait.
-6. **Be idempotent and additive.** Re-running should be safe. Default to *not*
+5. **Budget LastDB reads.** Start with the narrowest data-plane read that proves
+   the node is reachable, such as `<board-cli> list --column todo --json` or a
+   targeted `<brain-cli> get <slug> --type <type> --json`. Prefer column/capped
+   previews plus `<board-cli> show <slug> --json` for selected cards. Sequence
+   Brain and board reads instead of launching broad reads concurrently, and do
+   not use `doctor`/`init`/raw TCP probes as routine health gates.
+6. **Do ONE bounded pass**, then **exit**. Never loop, never `sleep`-to-wait.
+7. **Be idempotent and additive.** Re-running should be safe. Default to *not*
    acting when in doubt.
-7. **Leave a heartbeat** (optional but recommended) so a silently-failed routine
+8. **Leave a heartbeat** (optional but recommended) so a silently-failed routine
    is visible to `morning-sync` / a health check.
 
 Safe heartbeat append pattern:
@@ -291,7 +297,8 @@ self-driving fleet and a runaway one:
   `service_timeout`, "node did not respond within 30000ms", or "too many
   concurrent reads", treat it as load/backpressure. Do not run doctor/restart
   loops. Prefer targeted reads, avoid broad list/search sweeps during the hot
-  window, and retry only idempotent slug upserts in a bounded way.
+  window, sequence expensive reads instead of running them in parallel, and retry
+  only idempotent slug upserts in a bounded way.
 - **Dev, not prod, when a design is in flight.** Do reversible work; leave the
   prod cutover for a human.
 - **`gh` only speaks github.com.** A repo whose `origin` points at a self-hosted

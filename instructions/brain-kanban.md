@@ -47,9 +47,11 @@ does NOT mean the node is down.
 
 ### fkanban CLI
 
-- `fkanban list` / `fkanban list --wide` / `fkanban search "<text>"` /
+- `fkanban list --column todo --json` / `fkanban search "<text>"` /
   `fkanban show <slug>`.
 - `fkanban list --full-body --json` is valid for complete board/card bodies.
+  Do not use broad/full-body list reads in routines; use capped or column
+  previews plus `fkanban show <slug> --json` for the one selected card.
   `fkanban search` has no `--full-body` / `--full_body` CLI flag; use
   `fkanban search "<text>" --json` plus `fkanban show <slug> --json`, or MCP
   `fkanban_search` with `full_body: true`.

@@ -57,7 +57,11 @@ read/write, fail loudly if the resolved path is empty or starts with
   GitHub, and never act on a read-only GitHub mirror.
 
 ## Selection rule (pick up to `<N>` cards)
-1. `<board CLI> list --json`.
+1. Read only the ready queue: `<board CLI> list --column todo --json`. If the
+   read returns `service_timeout`, "node did not respond", or "too many
+   concurrent reads", treat it as busy-node backpressure: do not run doctor/init
+   or restart anything; append/emit a `fkanban-pickup ... noop busy-node`
+   outcome if possible and EXIT so the next scheduled run retries.
 2. Eligible = a card in the `todo` column whose body has parseable `Repo:` and
    `Base:` header lines. `Repo:` must be either `owner/name` or an absolute local
    Git checkout path. `todo` is the ready queue — only work cards promoted there.
