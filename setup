@@ -17,8 +17,22 @@ set -e
 umask 077
 
 ROOT="$(cd "$(dirname "$0")" && pwd -P)"
-SKILLS_SRC="$ROOT/skills"
-HOOKS_SRC="$ROOT/hooks"
+
+resolve_source_root() {
+  local candidate
+  for candidate in "$HOME/.last-stack" "${LAST_STACK_ROOT:-}"; do
+    [ -n "$candidate" ] || continue
+    if [ -f "$candidate/VERSION" ] && [ -d "$candidate/skills" ]; then
+      cd "$candidate" && pwd -P
+      return 0
+    fi
+  done
+  printf '%s\n' "$ROOT"
+}
+
+SOURCE_ROOT="$(resolve_source_root)"
+SKILLS_SRC="$SOURCE_ROOT/skills"
+HOOKS_SRC="$SOURCE_ROOT/hooks"
 
 HOST="auto"
 LOCAL_INSTALL=0
@@ -27,7 +41,7 @@ while [ $# -gt 0 ]; do
     --host) HOST="$2"; shift 2 ;;
     --host=*) HOST="${1#*=}"; shift ;;
     --local) LOCAL_INSTALL=1; shift ;;
-    --uninstall) exec "$ROOT/bin/last-stack-uninstall" ;;
+    --uninstall) exec "$SOURCE_ROOT/bin/last-stack-uninstall" ;;
     -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
@@ -39,11 +53,53 @@ case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*|Windows_NT) IS_WINDOWS=1 ;; esac
 
 _link_or_copy() {
   # $1 = source file, $2 = destination path
-  if [ "$IS_WINDOWS" -eq 1 ]; then
+  if [ "$IS_WINDOWS" -eq 1 ] || is_transient_last_stack_target "$1"; then
     cp -f "$1" "$2"
   else
     ln -snf "$1" "$2"
   fi
+}
+
+is_transient_last_stack_target() {
+  local target="$1"
+  case "$target" in
+    "$HOME/.fkanban/worktrees"/*|*/.fkanban/worktrees/*) return 0 ;;
+  esac
+
+  local source_top
+  source_top="$(git -C "$SOURCE_ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$source_top" ] || return 1
+
+  local wt worktrees
+  worktrees="$(git -C "$source_top" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0, 10)}')"
+  while IFS= read -r wt; do
+    [ -n "$wt" ] || continue
+    [ "$wt" = "$source_top" ] && continue
+    case "$target" in
+      "$wt"/*) return 0 ;;
+    esac
+  done <<< "$worktrees"
+
+  return 1
+}
+
+assert_safe_skill_links() {
+  local target_dir="$1"
+  local link dest abs_dest
+  [ -d "$target_dir" ] || return 0
+  find "$target_dir" -type l -print | while IFS= read -r link; do
+    dest="$(readlink "$link" 2>/dev/null || true)"
+    [ -n "$dest" ] || continue
+    case "$dest" in
+      /*) abs_dest="$dest" ;;
+      *) abs_dest="$(cd "$(dirname "$link")" && cd "$(dirname "$dest")" && pwd -P)/$(basename "$dest")" ;;
+    esac
+    if is_transient_last_stack_target "$abs_dest"; then
+      echo "refusing transient Last Stack skill link: $link -> $abs_dest" >&2
+      echo "run setup from or with LAST_STACK_ROOT pointing at the canonical ~/.last-stack checkout" >&2
+      exit 1
+    fi
+  done
 }
 
 upsert_pretool_hook() {
@@ -178,6 +234,7 @@ register_into() {
       [ -L "$dest" ] && rm -f "$dest"
       _link_or_copy "$src" "$dest"
     done
+    assert_safe_skill_links "$target"
     linked+=("$skill_name")
   done
   if [ ${#linked[@]} -gt 0 ]; then
@@ -189,7 +246,7 @@ register_into() {
 
 # ── --local: vendor into the current project's .claude/skills ─────────────────
 if [ "$LOCAL_INSTALL" -eq 1 ]; then
-  echo "Installing The Last Stack (v$(cat "$ROOT/VERSION")) into ./.claude/skills ..."
+  echo "Installing The Last Stack (v$(cat "$SOURCE_ROOT/VERSION")) into ./.claude/skills ..."
   register_into "$(pwd)/.claude/skills" "claude (project)"
   echo "Done."
   exit 0
@@ -215,7 +272,7 @@ case "$HOST" in
   *) echo "unknown --host: $HOST (use claude|codex|factory|opencode|auto)" >&2; exit 2 ;;
 esac
 
-echo "Installing The Last Stack (v$(cat "$ROOT/VERSION")) ..."
+echo "Installing The Last Stack (v$(cat "$SOURCE_ROOT/VERSION")) ..."
 [ "$INSTALL_CLAUDE"   -eq 1 ] && register_into "$HOME/.claude/skills"          "claude"
 [ "$INSTALL_CLAUDE"   -eq 1 ] && install_claude_hooks
 [ "$INSTALL_CODEX"    -eq 1 ] && register_into "$HOME/.codex/skills"           "codex"
@@ -223,5 +280,5 @@ echo "Installing The Last Stack (v$(cat "$ROOT/VERSION")) ..."
 [ "$INSTALL_OPENCODE" -eq 1 ] && register_into "$HOME/.config/opencode/skills" "opencode"
 
 echo
-echo "Done. Upgrade later with:  cd \"$ROOT\" && git pull && ./setup"
-echo "Uninstall with:           \"$ROOT/setup\" --uninstall"
+echo "Done. Upgrade later with:  cd \"$SOURCE_ROOT\" && git pull && ./setup"
+echo "Uninstall with:           \"$SOURCE_ROOT/setup\" --uninstall"
