@@ -24,7 +24,8 @@ Repos to inspect:
 Use `<brain-cli>` for durable rationale and `<board-cli>` for live work state.
 Use default board `<board>` (only `list` and `add` take the `--board` argument;
 `show`, `move`, `rm`, and rank/dep/tag verbs operate on the default board
-implicitly and reject `--board`). Use global CLIs from PATH.
+implicitly and reject `--board`). Use global CLIs from PATH after the prelude
+below.
 
 ## Setup
 1. Read the project agent-orientation doc in `<WORKSPACE>` and honor its
@@ -32,20 +33,26 @@ implicitly and reject `--board`). Use global CLIs from PATH.
 2. Read this automation memory file and the relevant F-Brain DevOps policy
    records before acting. Prefer updating existing Brain records over creating
    duplicates.
-3. Confirm LastDB is reachable with socket-backed reads:
+3. Normalize the scheduled shell before any CLI-heavy work:
+   ```bash
+   last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+   . "$last_stack/bin/last-stack-shell-prelude"
+   "$last_stack/bin/last-stack-cli-preflight" git curl jq gh <board-cli> <brain-cli>
+   ```
+4. Confirm LastDB is reachable with socket-backed reads:
    ```bash
    <board-cli> list --board <board> --json >/dev/null
-   <brain-cli> list -n 1 >/dev/null
+   <brain-cli> get routine-heartbeats --type reference >/dev/null
    ```
    These reads are the health check. Modern LastDB/F-Brain/F-Kanban installs may
    intentionally serve only over the Unix socket
    `~/.folddb/data/folddb.sock`; the retired TCP endpoint
    `http://127.0.0.1:9001` being refused is not an outage.
-4. Do not use `fbrain doctor`, `fkanban doctor`, or `fkanban init` as routine
+5. Do not use `fbrain doctor`, `fkanban doctor`, or `fkanban init` as routine
    health checks. Some control-plane verbs still exercise TCP-only routes and
    can print `node not reachable at http://127.0.0.1:9001` even when board and
    brain reads work over the socket.
-5. Never kill, restart, or mutate the process hosting the Brain/Kanban node
+6. Never kill, restart, or mutate the process hosting the Brain/Kanban node
    because of a TCP `:9001` failure. If the socket-backed reads above succeed,
    proceed.
 
@@ -80,7 +87,7 @@ When inspecting local checkout state, operate on explicit child checkouts only.
 The workspace root may be a container, not a repo:
 ```bash
 repo="<local-checkout>"
-git -C "$repo" rev-parse --show-toplevel
+repo="$("$last_stack/bin/last-stack-repo-op-guard" "$repo" "<WORKSPACE>")"
 git -C "$repo" status --short --branch
 ```
 
@@ -107,8 +114,10 @@ For a small DevOps/docs/tooling fix:
    Never edit a shared checkout in place.
 2. Create an isolated worktree from the target base:
    ```bash
-   git -C <local-checkout> fetch origin <base>
-   git -C <local-checkout> worktree add ~/.fkanban/worktrees/<slug> \
+   target_repo="<local-checkout>"
+   target_repo="$("$last_stack/bin/last-stack-repo-op-guard" "$target_repo" "<WORKSPACE>")"
+   git -C "$target_repo" fetch origin <base>
+   git -C "$target_repo" worktree add ~/.fkanban/worktrees/<slug> \
      -b fkanban/<slug> origin/<base>
    ```
 3. Implement the smallest change that closes the identified DevOps gap.

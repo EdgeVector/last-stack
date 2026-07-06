@@ -34,6 +34,13 @@ read/write, fail loudly if the resolved path is empty or starts with
   continue only with cleanup steps that do not depend on board state.
 
 ## Procedure each run
+0. **Normalize the scheduled shell.** Source the Last Stack PATH prelude and
+   preflight the global CLIs before shell-heavy work:
+   ```bash
+   last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+   . "$last_stack/bin/last-stack-shell-prelude"
+   "$last_stack/bin/last-stack-cli-preflight" git curl jq gh <board-cli> <brain-cli>
+   ```
 1. **Discover repo roots before any repo-level Git command.** The workspace
    root may be only a container directory, so do not run root-level Git probes
    there first. Enumerate child repos, then run Git against each discovered repo:

@@ -378,7 +378,9 @@ check_raw_markdown_shell_blocks() {
         if ($0 ~ /^[[:space:]]*$/ || $0 ~ /^[[:space:]]*#/) {
           next
         }
-        if ($0 ~ /^[[:space:]]*(##+|[-*][[:space:]]|>[[:space:]]|\[\[|:[0-9]+([[:space:]]|$)|(Repo|Base|Branch|GOAL|CONTEXT|STEPS|VERIFY|DONE WHEN|OUT OF SCOPE):)/) {
+        if ($0 ~ /^[[:space:]]*(##+|[-*][[:space:]]|>[[:space:]]|\[\[|:[0-9]+([[:space:]]|$)|(Repo|Base|Branch|GOAL|CONTEXT|STEPS|VERIFY|DONE WHEN|OUT OF SCOPE):)/ ||
+            $0 ~ /^[[:space:]]*(backlog|todo|doing|review)([[:space:]]|$)/ ||
+            $0 ~ /^[[:space:]]*[A-Za-z0-9_-]*fkanban-agent[A-Za-z0-9_-]*([[:space:]]|$)/) {
           printf "%s:%d:%s\n", file, NR, $0
           bad = 1
         }
@@ -511,6 +513,22 @@ for path in "$@"; do
   if [ -n "$routine_skeletons" ]; then
     printf '%s\n' "$routine_skeletons"
     echo "Last Stack routine skeleton lacks PATH prelude/preflight guidance" >&2
+    fail=1
+  fi
+
+  global_cli_guidance="$(search_prompt_pattern 'Use global CLIs from PATH' "$path")"
+  global_cli_guidance="$(printf '%s\n' "$global_cli_guidance" | grep -v -E 'last-stack-shell-prelude|last-stack-cli-preflight|after the prelude' || true)"
+  if [ -n "$global_cli_guidance" ]; then
+    printf '%s\n' "$global_cli_guidance"
+    echo "global CLI guidance must require last-stack-shell-prelude/last-stack-cli-preflight" >&2
+    fail=1
+  fi
+
+  unguarded_local_checkout_git="$(search_prompt_pattern 'git[[:space:]]-C[[:space:]]<local-checkout>|repo="<local-checkout>"' "$path")"
+  repo_guard_mentions="$(search_prompt_pattern 'last-stack-repo-op-guard' "$path")"
+  if [ -n "$unguarded_local_checkout_git" ] && [ -z "$repo_guard_mentions" ]; then
+    printf '%s\n' "$unguarded_local_checkout_git"
+    echo "local-checkout Git examples must pass through last-stack-repo-op-guard before repo-scoped commands" >&2
     fail=1
   fi
 
