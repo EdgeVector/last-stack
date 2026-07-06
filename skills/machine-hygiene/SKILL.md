@@ -247,8 +247,11 @@ as an fkanban card, don't rely on this reaper alone.
   unattended — surface it).
 - **Disk floor:** if free space < ~30 GB, run the §3 atomic-swap purge proactively instead
   of waiting for 0 bytes.
-- **Concurrency:** ≥3 fold agents building into the shared target serialize on its lock and
-  pile on disk — note it if you see >2 running; more agents drain the board *slower*.
+- **Concurrency:** fold no longer has a fixed <=2 build/test-agent cap. Modern
+  fkanban worktrees keep their own `target/` and share sccache, but older
+  kanban/gstack worktrees can still symlink into the shared target and pile on
+  disk. If many fold builds are active, report the actual load/disk pressure
+  instead of applying the old blanket two-agent throttle.
 - The 4 hourly dogfood tasks regenerate the clutter; if it's recurring too fast, recommend
   running them in-place (no per-run worktree) or lowering cadence — but only **change
   schedules if the user has approved it**.

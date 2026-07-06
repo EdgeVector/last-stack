@@ -104,8 +104,11 @@ if the card actually reads back.
 
 `add` is two keyed point reads + one write (~0.2s) and every request carries a
 30s deadline (`FKANBAN_HTTP_TIMEOUT_MS` to override), so commands fail fast
-instead of hanging on a busy node. A `service_timeout` error is safe to
-retry — `add` is an upsert keyed by slug.
+instead of hanging on a busy node. `service_timeout`, "node did not respond
+within 30000ms", or "too many concurrent reads" means load/backpressure, not a
+dead node. Do not run doctor/restart loops for that class of error; retry the
+idempotent slug upsert after a short backoff or raise `FKANBAN_HTTP_TIMEOUT_MS`
+for one bounded command, then verify with `show`.
 
 ## The card brief is the spec — and must trigger the agent
 
@@ -174,5 +177,9 @@ than describing stale "current state".
   node is up but cannot decrypt your data", the node is alive but locked. Stop
   and surface that exact state; do not run restart/doctor loops or attempt
   keychain/passphrase repair unattended.
+- If a board/brain command returns `service_timeout`, "node did not respond
+  within 30000ms", or "too many concurrent reads", the shared node is busy.
+  Prefer targeted reads (`show`, typed `fbrain get`) over broad lists, retry
+  only idempotent upserts by slug, and never restart the node to clear load.
 - This skill only **manages** the board. To actually implement a card, hand off
   to the **fkanban-agent** skill (or tell the user it's ready to be worked).
