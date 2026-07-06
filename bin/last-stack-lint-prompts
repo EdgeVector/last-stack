@@ -11,6 +11,9 @@ fail=0
 
 default_pr_json_fields="additions assignees author autoMergeRequest baseRefName baseRefOid body changedFiles closed closedAt closingIssuesReferences comments commits createdAt deletions files fullDatabaseId headRefName headRefOid headRepository headRepositoryOwner id isCrossRepository isDraft labels latestReviews maintainerCanModify mergeCommit mergeStateStatus mergeable mergedAt mergedBy milestone number potentialMergeCommit projectCards projectItems reactionGroups reviewDecision reviewRequests reviews state statusCheckRollup title updatedAt url"
 default_release_json_fields="apiUrl assets author body createdAt databaseId id isDraft isImmutable isPrerelease name publishedAt tagName tarballUrl targetCommitish uploadUrl url zipballUrl"
+default_run_view_json_fields="attempt conclusion createdAt databaseId displayTitle event headBranch headSha jobs name number startedAt status updatedAt url workflowDatabaseId workflowName"
+default_run_list_json_fields="attempt conclusion createdAt databaseId displayTitle event headBranch headSha name number startedAt status updatedAt url workflowDatabaseId workflowName"
+default_pr_checks_json_fields="bucket completedAt description event link name startedAt state workflow"
 
 gh_json_fields() {
   local fallback="$1"
@@ -35,6 +38,9 @@ gh_json_fields() {
 
 pr_json_fields="${LASTSTACK_GH_PR_JSON_FIELDS:-$(gh_json_fields "$default_pr_json_fields" gh pr view)}"
 release_json_fields="${LASTSTACK_GH_RELEASE_JSON_FIELDS:-$(gh_json_fields "$default_release_json_fields" gh release view)}"
+run_view_json_fields="${LASTSTACK_GH_RUN_VIEW_JSON_FIELDS:-$(gh_json_fields "$default_run_view_json_fields" gh run view)}"
+run_list_json_fields="${LASTSTACK_GH_RUN_LIST_JSON_FIELDS:-$(gh_json_fields "$default_run_list_json_fields" gh run list)}"
+pr_checks_json_fields="${LASTSTACK_GH_PR_CHECKS_JSON_FIELDS:-$(gh_json_fields "$default_pr_checks_json_fields" gh pr checks)}"
 
 check_path_exists() {
   local path="$1"
@@ -193,7 +199,12 @@ check_gh_json_fields() {
   for file in "${files[@]}"; do
     [ -f "$file" ] || continue
     grep -Iq . "$file" || continue
-    awk -v file="$file" -v pr_allowed="$pr_json_fields" -v release_allowed="$release_json_fields" '
+    awk -v file="$file" \
+      -v pr_allowed="$pr_json_fields" \
+      -v release_allowed="$release_json_fields" \
+      -v run_view_allowed="$run_view_json_fields" \
+      -v run_list_allowed="$run_list_json_fields" \
+      -v pr_checks_allowed="$pr_checks_json_fields" '
       BEGIN {
         split(pr_allowed, pr_parts, /[[:space:]]+/)
         for (idx in pr_parts) {
@@ -205,6 +216,24 @@ check_gh_json_fields() {
         for (idx in release_parts) {
           if (release_parts[idx] != "") {
             allowed["release", release_parts[idx]] = 1
+          }
+        }
+        split(run_view_allowed, run_view_parts, /[[:space:]]+/)
+        for (idx in run_view_parts) {
+          if (run_view_parts[idx] != "") {
+            allowed["run view", run_view_parts[idx]] = 1
+          }
+        }
+        split(run_list_allowed, run_list_parts, /[[:space:]]+/)
+        for (idx in run_list_parts) {
+          if (run_list_parts[idx] != "") {
+            allowed["run list", run_list_parts[idx]] = 1
+          }
+        }
+        split(pr_checks_allowed, pr_checks_parts, /[[:space:]]+/)
+        for (idx in pr_checks_parts) {
+          if (pr_checks_parts[idx] != "") {
+            allowed["pr checks", pr_checks_parts[idx]] = 1
           }
         }
       }
@@ -250,6 +279,27 @@ check_gh_json_fields() {
             fields = substr(line, RSTART, RLENGTH)
             sub(/^--json[=[:space:]]+/, "", fields)
             check_fields("release", fields, line_no, original)
+          }
+        }
+        if (line ~ /[[:space:]]run[[:space:]]+view([[:space:]]|$)/) {
+          if (match(line, /--json[=[:space:]]+[^[:space:]]+/)) {
+            fields = substr(line, RSTART, RLENGTH)
+            sub(/^--json[=[:space:]]+/, "", fields)
+            check_fields("run view", fields, line_no, original)
+          }
+        }
+        if (line ~ /[[:space:]]run[[:space:]]+list([[:space:]]|$)/) {
+          if (match(line, /--json[=[:space:]]+[^[:space:]]+/)) {
+            fields = substr(line, RSTART, RLENGTH)
+            sub(/^--json[=[:space:]]+/, "", fields)
+            check_fields("run list", fields, line_no, original)
+          }
+        }
+        if (line ~ /[[:space:]]pr[[:space:]]+checks([[:space:]]|$)/) {
+          if (match(line, /--json[=[:space:]]+[^[:space:]]+/)) {
+            fields = substr(line, RSTART, RLENGTH)
+            sub(/^--json[=[:space:]]+/, "", fields)
+            check_fields("pr checks", fields, line_no, original)
           }
         }
       }
