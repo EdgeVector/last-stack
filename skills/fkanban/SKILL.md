@@ -50,9 +50,9 @@ fkanban doctor      # shim on PATH, config present, node reachable, schemas load
 with `bun run src/cli.ts` and run from the fkanban repo directory.)
 
 ```bash
-fkanban list --json                 # whole default board
-fkanban list --board <b> --column todo   # filter
-fkanban list --full-body --json     # whole board with complete bodies
+fkanban list --column todo --json   # narrow column preview
+fkanban list --board <b> --column todo --json  # board-scoped column preview
+# Avoid fkanban list --full-body in routines; use show for selected cards.
 fkanban search "<text>" --json      # text search; no --full-body flag
 fkanban show <slug> --json          # one card in detail
 fkanban add <slug> [flags]          # create OR update a card

@@ -443,6 +443,26 @@ for path in "$@"; do
     fail=1
   fi
 
+  broad_board_reads="$(search_prompt_pattern '(^|[^[:alnum:]_-])(fkanban|<board CLI>)[[:space:]]+list.*(--wide|--full-body|--all)' "$path")"
+  broad_board_reads="$(printf '%s\n' "$broad_board_reads" \
+    | grep -v -Ei 'Do not|Never|do not|never|avoid|unsupported|no such flag|has no|not use|must not|instead|accepts|valid|syntax' \
+    | grep -v -E '/tests/last-stack-lint-prompts.sh' || true)"
+  if [ -n "$broad_board_reads" ]; then
+    printf '%s\n' "$broad_board_reads"
+    echo "broad fkanban list usage found under $path (use capped/column previews plus show for selected cards)" >&2
+    fail=1
+  fi
+
+  routine_doctor_checks="$(search_prompt_pattern '(^|[^[:alnum:]_-])(fbrain|fkanban|<brain-cli>|<board CLI>)[[:space:]]+(doctor|init)([^[:alnum:]_-]|$)' "$path")"
+  routine_doctor_checks="$(printf '%s\n' "$routine_doctor_checks" \
+    | grep -v -Ei 'Do not|Do \*\*not|Never|do not|never|avoid|unsupported|expected|setup|bootstrap|fresh machine|user asks|diagnostics|brain-doctor|fkanban-setup|not run|without running|not use|must not|no `?fbrain doctor|no `?fkanban doctor|raw TCP|defaults|hint:' \
+    | grep -v -E '/skills/(fkanban-setup|fkanban|brain-doctor)/|/tests/|/bin/|/README.md|/routines/README.md' || true)"
+  if [ -n "$routine_doctor_checks" ]; then
+    printf '%s\n' "$routine_doctor_checks"
+    echo "routine prompt uses doctor/init as a health check under $path (use a socket-backed narrow read and busy-node backoff)" >&2
+    fail=1
+  fi
+
   ambiguous_pickup_skips="$(search_prompt_pattern 'SKIP.*ambiguous.*leave it in.*todo|SKIP.*underspecified.*leave it in.*todo|ambiguous.*Repo.*leave it in.*todo' "$path")"
   ambiguous_pickup_skips="$(printf '%s\n' "$ambiguous_pickup_skips" | grep -v -E 'Do not|Never|do not|never|unsupported' || true)"
   if [ -n "$ambiguous_pickup_skips" ]; then

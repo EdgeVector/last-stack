@@ -54,7 +54,7 @@ Two modes. Pick by how you were invoked:
   missing:
   ```bash
   export PATH="$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
-  fkanban doctor            # or: cd ~/code/edgevector/fkanban && bun run src/cli.ts doctor
+  fkanban list --column todo --json  # or: cd ~/code/edgevector/fkanban && bun run src/cli.ts list --column todo --json
   ```
   Read the `fkanban` skill (`~/.claude/skills/fkanban/SKILL.md`) for the current
   CLI contract before any board write.
@@ -62,7 +62,11 @@ Two modes. Pick by how you were invoked:
   multi-line bodies via **stdin** (`fbrain put ... < /tmp/body.md`), never
   `--body "$(...)"` — that mangles/clobbers the record (memory
   `feedback_mcp_args_no_shell_expansion`).
-- `fkanban list --json` is valid JSON; parse from a file, iterate slugs with a
+- Use narrow board reads: `fkanban list --column todo --json`, then `doing` and
+  `review` as needed, parsed from files. Use `fkanban show <slug> --json` for the
+  one card whose full body you need. If a read returns `service_timeout`, "node
+  did not respond", or "too many concurrent reads", treat it as busy-node
+  backpressure; do not run doctor/init or restart anything. Iterate slugs with a
   bash array (`for s in "${arr[@]}"`), never a bare `$var`.
 - Columns: `backlog → todo → doing → review → done`. `add` is an upsert;
   `move <slug> <column>`.
@@ -94,9 +98,11 @@ Two modes. Pick by how you were invoked:
 Produce a **decision-first** briefing, not a status dump. Lead with what's
 waiting on Tom. Steps:
 
-1. **Snapshot.** `fkanban list --json` (counts + every card's column + body head).
-   `fbrain get active-programs`. `fbrain get open-decisions --type reference` and
-   `fbrain get routine-heartbeats --type reference`.
+1. **Snapshot.** Read `todo`, `doing`, and `review` with sequential
+   `fkanban list --column <column> --json` calls (counts + card previews). Then
+   read targeted brain records one at a time: `fbrain get active-programs`,
+   `fbrain get open-decisions --type reference`, and `fbrain get
+   routine-heartbeats --type reference`.
 
 2. **§1 — Decisions that GENUINELY need you (keep it SHORT).** Per Tom's standing
    correction (`feedback_autonomous_drive_dev_not_gated`), most old "gates" are NOT

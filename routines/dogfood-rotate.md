@@ -28,34 +28,19 @@ with every actionable blocker and papercut discovered.
   not continue from stale routine text: stale installed prompts can miss wrapper
   fixes such as current target checkout selection and repeatedly block on the
   user's dirty primary checkout even after the repo PR has merged.
-- First run the preflight health check. Treat the **CLI doctors as
-  authoritative for reachability**, not a raw TCP probe — modern LastDB/F-Kanban
-  installs run socket-only with the legacy local HTTP endpoint shut down, and a
-  green `doctor` over a Unix socket still means Brain/Kanban are fully readable
-  and writable:
-  1. Run `fkanban doctor` and `fbrain doctor`.
-  2. A raw TCP probe of the legacy local HTTP port is diagnostics-only and is
-     expected to fail on a socket-only install. A failed probe (e.g. `curl`
-     exit 7) is **not** by itself an unreachable node — the node serves over its
-     configured Unix socket — `$HOME/.folddb/data/folddb.sock` by default.
-  3. Classify the result and act:
-     - **reachable** — at least one of `fkanban doctor` / `fbrain doctor` is
-       green (over TCP or socket). Proceed. If the doctors are green but the TCP
-       `curl` failed, you are in the `tcp_health_down_socket_ok` state: the node
-       is reachable over the socket; continue normally and note the transport in
-       the run report.
-     - **tcp_health_down_socket_ok** — the legacy TCP endpoint is down but the
-       doctors pass over the socket. This is **reachable**; do NOT block. Proceed to feature
-       selection (or, if no feature is eligible this run, emit an explicit
-       socket-only noop reason rather than a false outage).
-     - **unreachable** — BOTH `fkanban doctor` and `fbrain doctor` fail (neither
-       TCP nor socket works). Only then STOP and report an error; the node is
-       genuinely down.
-  - Never kill, restart, or mutate the process hosting your Brain/Kanban node,
-    regardless of the health-check outcome.
-- Read `dogfood-registry` from F-Brain on every run. It is canonical for the
-  feature list, cadences, recipes, pass criteria, isolation rules, and rotation
-  log.
+- First run data-plane preflight reads, sequentially: `fbrain get
+  dogfood-registry --type project --json` and `fkanban list --column todo
+  --json`. These socket-backed reads are the health check. Do not use
+  `fbrain doctor`, `fkanban doctor`, `fkanban init`, or raw TCP probes as routine
+  health gates; the legacy TCP endpoint may be intentionally unavailable while
+  socket reads work. If either data-plane read returns `service_timeout`, "node
+  did not respond", or "too many concurrent reads", treat it as busy-node
+  backpressure: STOP, append/emit a `dogfood-rotate ... noop busy-node` outcome
+  if possible, and let the next scheduled run retry. Never kill, restart, or
+  mutate the process hosting your Brain/Kanban node, regardless of the
+  preflight outcome.
+- Reuse the preflight `dogfood-registry` read as the canonical feature list,
+  cadences, recipes, pass criteria, isolation rules, and rotation log.
 - Also honor these Brain records when present:
   - `preferences-dogfood-user-focused`
   - `preferences-dogfood-polish-is-feature`
