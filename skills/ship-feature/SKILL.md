@@ -97,8 +97,9 @@ Delegate the investigation; don't read the whole tree yourself. Spawn an
 - Rough size: is this one PR or several? Sequential or parallelizable?
 
 Land on an honest size estimate: number of tasks, rough dependency graph, and
-whether tasks can run in parallel (mind the workspace's concurrency limits — in
-fold, never more than ~2 build/test agents at once; see references).
+whether tasks can run in parallel (mind the workspace's resource limits; fold no
+longer has a fixed two-agent build/test cap, but high-concurrency Rust builds
+still need disk/load awareness; see references).
 
 ## Phase 2 — Design
 
@@ -163,7 +164,9 @@ workspace's board, merge, and babysitting mechanics. For each task:
   Verify `origin/<base>` before referencing "current state."
 - Respect dependency order — don't create a task whose prerequisite hasn't
   merged unless they're genuinely independent.
-- Respect concurrency limits (fold: ≤2 build/test agents at once).
+- Respect resource limits (fold: no fixed <=2 build/test cap; use the repo's
+  worktree-concurrency proof when changing the test harness, and watch disk/load
+  before launching many Rust builds).
 
 Then enter the loop. See `references/loop-playbook.md` for the full driving and
 recovery playbook — read it before/while you start the loop.

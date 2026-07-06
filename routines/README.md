@@ -281,6 +281,11 @@ self-driving fleet and a runaway one:
   `HTTP 423`, `keyring_undecryptable`, or "the node is up but cannot decrypt
   your data", stop and report `brain locked`; do not restart, run recovery loops,
   or attempt keychain/passphrase repair unattended.
+- **A busy brain is not a dead brain.** If a board/brain command returns
+  `service_timeout`, "node did not respond within 30000ms", or "too many
+  concurrent reads", treat it as load/backpressure. Do not run doctor/restart
+  loops. Prefer targeted reads, avoid broad list/search sweeps during the hot
+  window, and retry only idempotent slug upserts in a bounded way.
 - **Dev, not prod, when a design is in flight.** Do reversible work; leave the
   prod cutover for a human.
 - **`gh` only speaks github.com.** A repo whose `origin` points at a self-hosted
