@@ -165,6 +165,22 @@ repo_name_from_url() {
   safe_path_name "$name"
 }
 
+remote_slug_from_url() {
+  local url="$1"
+  local slug
+
+  slug="$(printf '%s' "$url" |
+    sed -E \
+      -e 's#^[A-Za-z][A-Za-z0-9+.-]*://([^/@]+@)?##' \
+      -e 's#^([^@]+@)?([^:]+):#\2/#' \
+      -e 's#\.git$##' \
+      -e 's#[/:]+#-#g' \
+      -e 's#[^A-Za-z0-9._-]#-#g' \
+      -e 's#^-+##' \
+      -e 's#-+$##')"
+  safe_path_name "$slug"
+}
+
 first_target_root() {
   local roots="$1"
   local root
@@ -198,6 +214,27 @@ managed_checkout_path() {
     printf '%s/%s' "$root" "$repo_name"
   else
     printf '%s/%s-%s' "$root" "$repo_name" "$branch_name"
+  fi
+}
+
+managed_checkout_collision_path() {
+  local roots="$1"
+  local remote_url_value="$2"
+  local upstream="$3"
+  local root remote_slug branch branch_name
+
+  root="$(first_target_root "$roots" || true)"
+  [ -n "$root" ] || return 1
+
+  remote_slug="$(remote_slug_from_url "$remote_url_value")"
+  [ -n "$remote_slug" ] || return 1
+
+  branch="${upstream#*/}"
+  branch_name="$(safe_path_name "$branch")"
+  if [ "$branch_name" = "main" ]; then
+    printf '%s/%s' "$root" "$remote_slug"
+  else
+    printf '%s/%s-%s' "$root" "$remote_slug" "$branch_name"
   fi
 }
 
@@ -255,13 +292,24 @@ ensure_managed_candidate() {
   local target_remote="$2"
   local target_upstream="$3"
   local target_remote_url="$4"
-  local path
+  local path collision_path
 
   target_management_enabled || return 1
   [ -n "$target_remote_url" ] || return 1
 
   path="$(managed_checkout_path "$roots" "$target_remote_url" "$target_upstream" || true)"
   [ -n "$path" ] || return 1
+
+  if git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
+    refresh_managed_checkout "$path" "$target_remote" "$target_upstream" "$target_remote_url"; then
+    printf '%s' "$path"
+    return 0
+  elif [ -e "$path" ]; then
+    collision_path="$(managed_checkout_collision_path "$roots" "$target_remote_url" "$target_upstream" || true)"
+    [ -n "$collision_path" ] || return 1
+    [ "$collision_path" != "$path" ] || return 1
+    path="$collision_path"
+  fi
 
   if git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     refresh_managed_checkout "$path" "$target_remote" "$target_upstream" "$target_remote_url" || return 1
