@@ -75,12 +75,16 @@ one. Don't double-fix — if you already fixed the PR, trash the redundant task.
 
 ## Concurrency & resource discipline
 
-- **fold: ≤2 build/test agents at once.** `cargo test --all-targets` deadlocks
-  fold's network/schema_service integration tests at 0% CPU and wedges agents in
-  `awaiting_review`. Scope task tests to the touched crate where possible.
-- All kanban + worktree builds share **one `~/code/edgevector/fold/target`** —
-  that's the disk hog. If disk pressure appears, a `cargo clean` needs quiescing
-  agents first — surface it, don't do it unattended.
+- **fold: no fixed <=2 build/test cap.** The stale `cargo test --all-targets`
+  deadlock rule was lifted after the split/nextest harness and worktree
+  concurrency proof. Scope task tests to the touched crate where possible, but
+  do not throttle the whole fold fleet solely because two agents are already
+  testing.
+- Watch fold disk/load pressure before launching many Rust builds. Modern
+  fkanban worktrees should use their own `target/` plus shared sccache; older
+  kanban/gstack worktrees may still symlink to `~/code/edgevector/fold/target`.
+  If disk pressure appears, a `cargo clean` needs quiescing agents first —
+  surface it, don't do it unattended.
 - The kanban server **auto-pulls the oldest backlog task** when an in-progress
   slot frees. Trashing a fold task can silently start another — account for it.
 - Orphaned `folddb_server` (deleted worktree, ppid=1) and `kanban hooks ingest`
