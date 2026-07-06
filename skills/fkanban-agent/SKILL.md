@@ -283,6 +283,12 @@ act on (see step 2). When in doubt, do nothing.** Skip a card only if it has no
    `$last_stack/bin/last-stack-gh-pr-queue-state <owner>/<repo> <n>` when Last
    Stack is installed, or use `gh api graphql` with explicit owner/name
    variables. Do not use `gh -R <repo> api graphql`.
+   Do not request invented "latest" fields such as `isLatest` through `gh run
+   view`, `gh run list`, or `gh -R <repo> pr checks --json`; use fields
+   advertised by the installed CLI
+   (`databaseId,status,conclusion,createdAt,...` for runs; `name,state,bucket`
+   for PR checks) and select the newest relevant item explicitly, or query the
+   Actions API.
 2. **Decide from PR state:**
    - **Merged** (`state=MERGED` / `mergedAt` set) → `move <slug> done`. Done.
      A card reaches `done` ONLY this way — a verified MERGED PR. If you cannot

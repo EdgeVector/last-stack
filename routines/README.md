@@ -262,6 +262,12 @@ release identity query the API instead:
 gh api repos/<owner>/<repo>/releases/latest --jq .tag_name
 ```
 
+For workflow run or PR-check recency, do not request `isLatest` through `gh run
+view`, `gh run list`, or `gh pr checks` JSON output. Use fields advertised by
+the installed CLI such as `databaseId,status,conclusion,createdAt,headBranch`
+for runs and `name,state,bucket` for PR checks, then select the newest relevant
+run/check explicitly or query the Actions API.
+
 ## The golden rules every routine obeys
 
 These are baked into every template below; they're the difference between a
