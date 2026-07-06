@@ -51,6 +51,20 @@ LastDB post is **share-the-process / product-positive**, NEVER an IP disclosure.
   *behavior and the lesson* at a conceptual level — not the implementation.
 - If unsure whether something crosses the line, ask the user before writing it.
 
+**Accuracy gate — the incident record outranks the flattering story.** When a
+post is grounded in a recent incident or fix, before writing: (1) search the
+brain for the incident's papercut/root-cause record and use the LATEST
+corrected diagnosis — a root cause is often revised within days, and a post
+built on the first diagnosis publishes a falsehood; (2) if the post celebrates
+a behavior, a repair command, or a "we handle this" claim, RUN it live and
+confirm it actually works end-to-end today — a repair hint that dead-ends, or
+a graceful path masking an open bug, is a retraction waiting to happen; (3) if
+the honest story is "we papered over an unfixed foundation bug", either tell
+that story or skip the post. (This bit us: "Degrade, Don't Die" shipped a
+config-drift story contradicted by the recorded root cause, celebrated a
+repair command that couldn't complete, and was retracted by Tom the next day
+— fold_db_website#69/#71/#73.)
+
 ## 1. Setup — always a worktree
 
 ```bash
