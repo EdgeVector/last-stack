@@ -41,9 +41,33 @@ remove_from() {
   return 0
 }
 
+remove_brain_kanban_block() {
+  # Strip the setup-managed brain-kanban block from a harness instructions file.
+  local file="$1" label="$2"
+  [ -f "$file" ] || return 0
+  grep -q 'last-stack:brain-kanban:start' "$file" || return 0
+  local tmp
+  tmp="$(mktemp)"
+  awk '
+    /last-stack:brain-kanban:start/ { ib = 1; next }
+    /last-stack:brain-kanban:end/   { ib = 0; next }
+    !ib { lines[++n] = $0 }
+    END {
+      while (n > 0 && lines[n] == "") n--
+      for (i = 1; i <= n; i++) print lines[i]
+    }
+  ' "$file" > "$tmp"
+  mv "$tmp" "$file"
+  echo "  $label: removed brain-kanban instructions block"
+}
+
 echo "Uninstalling The Last Stack skills ..."
 remove_from "$HOME/.claude/skills"          "claude"
 remove_from "$HOME/.codex/skills"           "codex"
 remove_from "$HOME/.factory/skills"         "factory"
 remove_from "$HOME/.config/opencode/skills" "opencode"
-echo "Done. (This repo at $ROOT is left in place — delete it to fully remove.)"
+remove_brain_kanban_block "$HOME/.codex/AGENTS.md"           "codex"
+remove_brain_kanban_block "$HOME/.factory/AGENTS.md"         "factory"
+remove_brain_kanban_block "$HOME/.config/opencode/AGENTS.md" "opencode"
+echo "Done. (This repo at $ROOT is left in place — delete it to fully remove."
+echo "       MCP server entries in ~/.codex/config.toml are kept; remove manually if unwanted.)"

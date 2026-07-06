@@ -204,6 +204,90 @@ install_claude_hooks() {
   echo "  claude permissions: fbrain MCP get/search/list/ask/put"
 }
 
+# ── Brain/Kanban wiring: usage instructions + Codex MCP registration ──────────
+BK_START='<!-- last-stack:brain-kanban:start (managed by last-stack setup; edits inside are overwritten) -->'
+BK_END='<!-- last-stack:brain-kanban:end -->'
+
+upsert_brain_kanban_block() {
+  # $1 = harness instructions file (e.g. ~/.codex/AGENTS.md), $2 = label
+  local file="$1"
+  local label="$2"
+  local src="$SOURCE_ROOT/instructions/brain-kanban.md"
+  [ -f "$src" ] || return 0
+  mkdir -p "$(dirname "$file")"
+  [ -f "$file" ] || : > "$file"
+  local tmp
+  tmp="$(mktemp)"
+  # Drop any previous managed block (and trailing blank lines), keep user content.
+  awk -v s="$BK_START" -v e="$BK_END" '
+    $0 == s { ib = 1; next }
+    $0 == e { ib = 0; next }
+    !ib { lines[++n] = $0 }
+    END {
+      while (n > 0 && lines[n] == "") n--
+      for (i = 1; i <= n; i++) print lines[i]
+    }
+  ' "$file" > "$tmp"
+  [ -s "$tmp" ] && echo "" >> "$tmp"
+  {
+    printf '%s\n' "$BK_START"
+    cat "$src"
+    printf '%s\n' "$BK_END"
+  } >> "$tmp"
+  mv "$tmp" "$file"
+  echo "  ${label} instructions: brain-kanban block -> $file"
+}
+
+ensure_codex_mcp_servers() {
+  # fbrain and fkanban are bun shims. GUI-launched MCP hosts (the Codex desktop
+  # app) spawn servers with a bare PATH that lacks ~/.bun/bin, so without an
+  # explicit env the server exits 127 and the client reports "transport closed".
+  local cfg="$HOME/.codex/config.toml"
+  local mcp_path="$HOME/.bun/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  local added=()
+  mkdir -p "$(dirname "$cfg")"
+  [ -f "$cfg" ] || : > "$cfg"
+  local name cmd
+  for name in fbrain fkanban; do
+    case "$name" in
+      fbrain)  cmd="$HOME/.bun/bin/fbrain" ;;
+      fkanban) cmd="$HOME/.local/bin/fkanban" ;;
+    esac
+    if [ ! -x "$cmd" ]; then
+      cmd="$(command -v "$name" 2>/dev/null || true)"
+    fi
+    if [ -z "$cmd" ]; then
+      echo "  codex mcp: $name CLI not found; skipped its MCP registration" >&2
+      continue
+    fi
+    if ! grep -q "^\[mcp_servers\.$name\]" "$cfg"; then
+      {
+        echo ""
+        echo "[mcp_servers.$name]"
+        echo "args = [\"mcp\"]"
+        echo "command = \"$cmd\""
+        echo "startup_timeout_sec = 120"
+      } >> "$cfg"
+      added+=("$name")
+    fi
+    if ! grep -q "^\[mcp_servers\.$name\.env\]" "$cfg"; then
+      {
+        echo ""
+        echo "# $name is a bun shim; GUI-spawned MCP servers get a bare PATH (no ~/.bun/bin)"
+        echo "# and exit 127 -> 'transport closed' without this."
+        echo "[mcp_servers.$name.env]"
+        echo "PATH = \"$mcp_path\""
+      } >> "$cfg"
+      added+=("$name.env")
+    fi
+  done
+  if [ ${#added[@]} -gt 0 ]; then
+    echo "  codex mcp: added ${added[*]} to $cfg"
+  else
+    echo "  codex mcp: fbrain + fkanban already registered"
+  fi
+}
+
 # ── Register every skills/<name>/SKILL.md into a target skills dir ────────────
 register_into() {
   local skills_dir="$1"
@@ -276,8 +360,12 @@ echo "Installing The Last Stack (v$(cat "$SOURCE_ROOT/VERSION")) ..."
 [ "$INSTALL_CLAUDE"   -eq 1 ] && register_into "$HOME/.claude/skills"          "claude"
 [ "$INSTALL_CLAUDE"   -eq 1 ] && install_claude_hooks
 [ "$INSTALL_CODEX"    -eq 1 ] && register_into "$HOME/.codex/skills"           "codex"
+[ "$INSTALL_CODEX"    -eq 1 ] && upsert_brain_kanban_block "$HOME/.codex/AGENTS.md" "codex"
+[ "$INSTALL_CODEX"    -eq 1 ] && ensure_codex_mcp_servers
 [ "$INSTALL_FACTORY"  -eq 1 ] && register_into "$HOME/.factory/skills"         "factory"
+[ "$INSTALL_FACTORY"  -eq 1 ] && upsert_brain_kanban_block "$HOME/.factory/AGENTS.md" "factory"
 [ "$INSTALL_OPENCODE" -eq 1 ] && register_into "$HOME/.config/opencode/skills" "opencode"
+[ "$INSTALL_OPENCODE" -eq 1 ] && upsert_brain_kanban_block "$HOME/.config/opencode/AGENTS.md" "opencode"
 
 echo
 echo "Done. Upgrade later with:  cd \"$SOURCE_ROOT\" && git pull && ./setup"

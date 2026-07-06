@@ -144,6 +144,11 @@ bin/
                             safely add a typed routine-heartbeats line
   last-stack-uninstall      remove the registered skills
 skills/<name>/SKILL.md  one directory per skill
+instructions/brain-kanban.md
+                        canonical fbrain/fkanban usage guidance; setup upserts it
+                        as a managed block into each harness's global AGENTS.md
+                        and registers the fbrain/fkanban MCP servers for Codex
+                        (with a PATH env so GUI-spawned servers can find bun)
 routines/<name>.md      one parameterized scheduled-agent template per routine
 routines/README.md      how routines + skills compose; how to register them
 ```
