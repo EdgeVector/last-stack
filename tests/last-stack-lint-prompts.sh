@@ -142,6 +142,35 @@ if "$ROOT/bin/last-stack-lint-prompts" "$bad_gh_release" >/dev/null 2>&1; then
   exit 1
 fi
 
+bad_gh_run_view="$tmp/bad-gh-run-view.md"
+printf '%s\n' "gh run view 123 --repo owner/repo --json databaseId,is""Latest,status" > "$bad_gh_run_view"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_gh_run_view" >/dev/null 2>&1; then
+  echo "expected unsupported gh run view isLatest JSON field to fail prompt lint" >&2
+  exit 1
+fi
+
+bad_gh_run_list="$tmp/bad-gh-run-list.md"
+printf '%s\n' "gh run list -R owner/repo --json databaseId,is""Latest,status" > "$bad_gh_run_list"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_gh_run_list" >/dev/null 2>&1; then
+  echo "expected unsupported gh run list isLatest JSON field to fail prompt lint" >&2
+  exit 1
+fi
+
+bad_gh_pr_checks="$tmp/bad-gh-pr-checks.md"
+printf '%s\n' "gh -R owner/repo pr checks 123 --json name,is""Latest,state" > "$bad_gh_pr_checks"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_gh_pr_checks" >/dev/null 2>&1; then
+  echo "expected unsupported gh pr che""cks isLatest JSON field to fail prompt lint" >&2
+  exit 1
+fi
+
+good_gh_run_and_checks="$tmp/good-gh-run-and-checks.md"
+cat > "$good_gh_run_and_checks" <<'GOOD_GH_RUN_AND_CHECKS'
+gh run view 123 --repo owner/repo --json databaseId,status,conclusion
+gh run list -R owner/repo --json databaseId,status,conclusion
+gh -R owner/repo pr checks 123 --json name,state,bucket
+GOOD_GH_RUN_AND_CHECKS
+"$ROOT/bin/last-stack-lint-prompts" "$good_gh_run_and_checks"
+
 bad_fkanban_show_board="$tmp/bad-fkanban-show-board.md"
 printf '%s\n' "fkanban sh""ow some-card --bo""ard default --json" > "$bad_fkanban_show_board"
 if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_show_board" >/dev/null 2>&1; then
