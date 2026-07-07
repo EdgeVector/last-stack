@@ -20,9 +20,11 @@ actions noted below.
 ## 🛑 Hard guardrails (violating these has caused outages)
 
 - **NEVER kill the primary `folddb_server` brain.** It's Tom's primary brain with live Chrome
-  connections; long uptime is NOT an orphan signal. Identify the primary brain by its socket
-  (`lsof /Users/tomtang/.folddb/data/folddb.sock`) or process (`pgrep -fl folddb_server`)
-  before touching any folddb_server — the TCP port is gone, so a port probe no longer finds it.
+  connections; long uptime is NOT an orphan signal. Identify the primary brain by its live
+  LastDB socket (`lsof /Users/tomtang/.lastdb/data/folddb.sock`), with the old
+  `~/.folddb/data/folddb.sock` path only as a fallback, or by the app process
+  (`pgrep -fl 'MacOS/[f]old-app'`) before touching any folddb_server — the TCP port is gone,
+  so a port probe no longer finds it.
   The **preview-port reaper (§4a)** is brain-safe by construction: it excludes any PID bound to
   the brain socket and kills only vite/`run.sh` dev launches on the preview ports — match by
   port + cmdline, never by the name "node"/"folddb".
@@ -92,7 +94,9 @@ actions noted below.
 ```bash
 df -h /System/Volumes/Data | tail -1                       # free space
 ps aux | grep folddb_server | grep -v grep                 # confirm primary brain only
-lsof /Users/tomtang/.folddb/data/folddb.sock 2>/dev/null   # identify the primary brain by its socket
+lsof /Users/tomtang/.lastdb/data/folddb.sock 2>/dev/null   # identify the primary brain by its live socket
+lsof /Users/tomtang/.folddb/data/folddb.sock 2>/dev/null    # stale-path fallback only
+pgrep -fl 'MacOS/[f]old-app'                               # process fallback for the app-hosted brain
 ```
 Read the kanban board to learn what's protected (Cline kanban is DEPRECATED — the active
 board is **fkanban**): `cd ~/code/edgevector/fkanban && bun src/cli.ts list`. Protect any
@@ -164,10 +168,16 @@ not an orphan signal). Known preview ports: **5173** (lastdb-ui), **5178**,
 
 ```bash
 # Identify the primary brain FIRST so it can never be a kill target:
-brain_pids=$(lsof -t /Users/tomtang/.folddb/data/folddb.sock 2>/dev/null)
+brain_pids=$(
+  {
+    lsof -t /Users/tomtang/.lastdb/data/folddb.sock 2>/dev/null
+    lsof -t /Users/tomtang/.folddb/data/folddb.sock 2>/dev/null
+    pgrep -f 'MacOS/[f]old-app' 2>/dev/null
+  } | sort -u
+)
 for port in 5173 5178 5183 8766; do
   for pid in $(lsof -ti :"$port" 2>/dev/null); do
-    case " $brain_pids " in *" $pid "*) continue ;; esac   # never the brain socket
+    case " $brain_pids " in *" $pid "*) echo "skip brain pid $pid on :$port"; continue ;; esac
     cmd=$(ps -o command= -p "$pid" 2>/dev/null)
     # Reap only a vite / folddb dev-server run.sh launch on a preview port:
     case "$cmd" in
@@ -181,7 +191,8 @@ for port in 5173 5178 5183 8766; do
 done
 ```
 
-Guardrails: skip any PID in `brain_pids` (the `~/.folddb/data/folddb.sock` brain),
+Guardrails: skip any PID in `brain_pids` (the live `~/.lastdb/data/folddb.sock` brain,
+with `~/.folddb/data/folddb.sock` only as a fallback, or the `MacOS/fold-app` process),
 skip a port whose owning session is still live or whose cwd is a `DOING`/`REVIEW`
 fkanban worktree, and log every PID + port + cmdline reaped (and every one spared
 and why). After reaping, a fresh `preview_start name=lastdb-ui` should bind
@@ -203,9 +214,15 @@ Reap keyed on **temp-home socket path OR DMG binary path** — NEVER on the proc
 name or uptime (the brain is also a long-lived `lastdb_server`/`fold-app`):
 
 ```bash
-brain_pids=$(lsof -t /Users/tomtang/.folddb/data/folddb.sock 2>/dev/null)  # NEVER a target
-for pid in $(pgrep -f 'lastdb_server|folddb_server'); do
-  case " $brain_pids " in *" $pid "*) continue ;; esac        # skip the primary brain
+brain_pids=$(
+  {
+    lsof -t /Users/tomtang/.lastdb/data/folddb.sock 2>/dev/null
+    lsof -t /Users/tomtang/.folddb/data/folddb.sock 2>/dev/null
+    pgrep -f 'MacOS/[f]old-app' 2>/dev/null
+  } | sort -u
+)  # NEVER a target
+for pid in $(pgrep -f '[l]astdb_server|[f]olddb_server|MacOS/[f]old-app'); do
+  case " $brain_pids " in *" $pid "*) echo "skip brain pid $pid"; continue ;; esac
   cmd=$(ps -o command= -p "$pid" 2>/dev/null)
   socks=$(lsof -p "$pid" 2>/dev/null | grep -oE '/(private/tmp/ldb-[^ ]*|var/folders/[^ ]*)/folddb[^ ]*\.sock')
   cpu=$(ps -o %cpu= -p "$pid" 2>/dev/null | tr -d ' ')
@@ -222,11 +239,12 @@ done
 for v in /Volumes/LastDB*; do [ -d "$v" ] && hdiutil detach "$v" 2>/dev/null; done
 ```
 
-Guardrails: the brain (`fold-app` / `lastdb_server` on `~/.folddb/data/folddb.sock`)
-is excluded by construction — it lives under `~/.folddb`, NOT a temp dir, and is
-never DMG-launched, so it never matches. A high-CPU `lastdb_server` under
-`~/code/.../target/*` or `~/.folddb` is NOT a target (could be a legit dev/brain
-proc) — only temp-home/DMG nodes are. Log every PID reaped and every one spared.
+Guardrails: the brain (`fold-app` / `lastdb_server` on the live
+`~/.lastdb/data/folddb.sock`, with `~/.folddb/data/folddb.sock` only as a fallback)
+is excluded by construction before temp/DMG classification. A high-CPU
+`lastdb_server` under `~/code/.../target/*`, `~/.lastdb`, or `~/.folddb` is NOT a
+target (could be a legit dev/brain proc) — only temp-home/DMG nodes are. Log every
+PID reaped and every one spared.
 The proper upstream fix is the gate cleaning up its own node on exit — track that
 as an fkanban card, don't rely on this reaper alone.
 
