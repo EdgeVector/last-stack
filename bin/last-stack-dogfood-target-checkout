@@ -73,6 +73,33 @@ print_blocker() {
     "$(quote_field "$input")" "$(quote_field "$selected")" "$reason"
 }
 
+print_checkout_remediation() {
+  local input="$1"
+  local roots="$2"
+  local remote_name="$3"
+  local remote_url_value="$4"
+  local upstream="$5"
+  local path branch root
+
+  branch="${upstream#*/}"
+  path="$(managed_checkout_path "$roots" "$remote_url_value" "$upstream" || true)"
+  if [ -z "$path" ] || [ -e "$path" ]; then
+    path="$(managed_checkout_collision_path "$roots" "$remote_url_value" "$upstream" || true)"
+  fi
+
+  root="$(first_target_root "$roots" || true)"
+  if [ -n "$path" ] && [ ! -e "$path" ]; then
+    printf 'REMEDIATION\tinput=%s\taction=create-current-isolated-checkout\tpath=%s\tcommand=git clone --origin %s --branch %s --single-branch %s %s\n' \
+      "$(quote_field "$input")" "$(quote_field "$path")" \
+      "$(quote_field "$remote_name")" "$(quote_field "$branch")" \
+      "$(quote_field "$remote_url_value")" "$(quote_field "$path")"
+  elif [ -n "$root" ]; then
+    printf 'REMEDIATION\tinput=%s\taction=choose-empty-target-root\troot=%s\tcommand=LAST_STACK_DOGFOOD_TARGET_ROOTS=%s last-stack-dogfood-target-checkout %s\n' \
+      "$(quote_field "$input")" "$(quote_field "$root")" \
+      "$(quote_field "$root/current")" "$(quote_field "$input")"
+  fi
+}
+
 add_candidate() {
   local candidate="$1"
   local candidate_real seen seen_real
@@ -443,6 +470,7 @@ select_for_target() {
   fi
 
   print_blocker "$target" "no-current-isolated-checkout"
+  print_checkout_remediation "$target" "$roots" "$target_remote" "$target_remote_url" "$target_upstream"
   return 1
 }
 

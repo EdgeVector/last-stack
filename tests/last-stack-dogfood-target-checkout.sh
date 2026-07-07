@@ -49,6 +49,8 @@ if LAST_STACK_DOGFOOD_TARGET_MANAGE=0 \
 fi
 grep -q $'\tresult=blocker\t' "$tmp/no-current.out"
 grep -q $'\treason=no-current-isolated-checkout$' "$tmp/no-current.out"
+grep -q $'^REMEDIATION\t.*\taction=create-current-isolated-checkout\t' "$tmp/no-current.out"
+grep -q "$tmp/no-managed-targets/origin" "$tmp/no-current.out"
 
 created="$(LAST_STACK_DOGFOOD_TARGET_ROOTS="$tmp/managed-targets" \
   "$ROOT/bin/last-stack-dogfood-target-checkout" "$tmp/target")"
