@@ -11,6 +11,9 @@ fail=0
 
 default_pr_json_fields="additions assignees author autoMergeRequest baseRefName baseRefOid body changedFiles closed closedAt closingIssuesReferences comments commits createdAt deletions files fullDatabaseId headRefName headRefOid headRepository headRepositoryOwner id isCrossRepository isDraft labels latestReviews maintainerCanModify mergeCommit mergeStateStatus mergeable mergedAt mergedBy milestone number potentialMergeCommit projectCards projectItems reactionGroups reviewDecision reviewRequests reviews state statusCheckRollup title updatedAt url"
 default_release_json_fields="apiUrl assets author body createdAt databaseId id isDraft isImmutable isPrerelease name publishedAt tagName tarballUrl targetCommitish uploadUrl url zipballUrl"
+default_run_view_json_fields="attempt conclusion createdAt databaseId displayTitle event headBranch headSha jobs name number startedAt status updatedAt url workflowDatabaseId workflowName"
+default_run_list_json_fields="attempt conclusion createdAt databaseId displayTitle event headBranch headSha name number startedAt status updatedAt url workflowDatabaseId workflowName"
+default_pr_checks_json_fields="bucket completedAt description event link name startedAt state workflow"
 
 gh_json_fields() {
   local fallback="$1"
@@ -35,6 +38,9 @@ gh_json_fields() {
 
 pr_json_fields="${LASTSTACK_GH_PR_JSON_FIELDS:-$(gh_json_fields "$default_pr_json_fields" gh pr view)}"
 release_json_fields="${LASTSTACK_GH_RELEASE_JSON_FIELDS:-$(gh_json_fields "$default_release_json_fields" gh release view)}"
+run_view_json_fields="${LASTSTACK_GH_RUN_VIEW_JSON_FIELDS:-$(gh_json_fields "$default_run_view_json_fields" gh run view)}"
+run_list_json_fields="${LASTSTACK_GH_RUN_LIST_JSON_FIELDS:-$(gh_json_fields "$default_run_list_json_fields" gh run list)}"
+pr_checks_json_fields="${LASTSTACK_GH_PR_CHECKS_JSON_FIELDS:-$(gh_json_fields "$default_pr_checks_json_fields" gh pr checks)}"
 
 check_path_exists() {
   local path="$1"
@@ -193,7 +199,12 @@ check_gh_json_fields() {
   for file in "${files[@]}"; do
     [ -f "$file" ] || continue
     grep -Iq . "$file" || continue
-    awk -v file="$file" -v pr_allowed="$pr_json_fields" -v release_allowed="$release_json_fields" '
+    awk -v file="$file" \
+      -v pr_allowed="$pr_json_fields" \
+      -v release_allowed="$release_json_fields" \
+      -v run_view_allowed="$run_view_json_fields" \
+      -v run_list_allowed="$run_list_json_fields" \
+      -v pr_checks_allowed="$pr_checks_json_fields" '
       BEGIN {
         split(pr_allowed, pr_parts, /[[:space:]]+/)
         for (idx in pr_parts) {
@@ -205,6 +216,24 @@ check_gh_json_fields() {
         for (idx in release_parts) {
           if (release_parts[idx] != "") {
             allowed["release", release_parts[idx]] = 1
+          }
+        }
+        split(run_view_allowed, run_view_parts, /[[:space:]]+/)
+        for (idx in run_view_parts) {
+          if (run_view_parts[idx] != "") {
+            allowed["run view", run_view_parts[idx]] = 1
+          }
+        }
+        split(run_list_allowed, run_list_parts, /[[:space:]]+/)
+        for (idx in run_list_parts) {
+          if (run_list_parts[idx] != "") {
+            allowed["run list", run_list_parts[idx]] = 1
+          }
+        }
+        split(pr_checks_allowed, pr_checks_parts, /[[:space:]]+/)
+        for (idx in pr_checks_parts) {
+          if (pr_checks_parts[idx] != "") {
+            allowed["pr checks", pr_checks_parts[idx]] = 1
           }
         }
       }
@@ -250,6 +279,27 @@ check_gh_json_fields() {
             fields = substr(line, RSTART, RLENGTH)
             sub(/^--json[=[:space:]]+/, "", fields)
             check_fields("release", fields, line_no, original)
+          }
+        }
+        if (line ~ /[[:space:]]run[[:space:]]+view([[:space:]]|$)/) {
+          if (match(line, /--json[=[:space:]]+[^[:space:]]+/)) {
+            fields = substr(line, RSTART, RLENGTH)
+            sub(/^--json[=[:space:]]+/, "", fields)
+            check_fields("run view", fields, line_no, original)
+          }
+        }
+        if (line ~ /[[:space:]]run[[:space:]]+list([[:space:]]|$)/) {
+          if (match(line, /--json[=[:space:]]+[^[:space:]]+/)) {
+            fields = substr(line, RSTART, RLENGTH)
+            sub(/^--json[=[:space:]]+/, "", fields)
+            check_fields("run list", fields, line_no, original)
+          }
+        }
+        if (line ~ /[[:space:]]pr[[:space:]]+checks([[:space:]]|$)/) {
+          if (match(line, /--json[=[:space:]]+[^[:space:]]+/)) {
+            fields = substr(line, RSTART, RLENGTH)
+            sub(/^--json[=[:space:]]+/, "", fields)
+            check_fields("pr checks", fields, line_no, original)
           }
         }
       }
@@ -328,7 +378,9 @@ check_raw_markdown_shell_blocks() {
         if ($0 ~ /^[[:space:]]*$/ || $0 ~ /^[[:space:]]*#/) {
           next
         }
-        if ($0 ~ /^[[:space:]]*(##+|[-*][[:space:]]|>[[:space:]]|\[\[|:[0-9]+([[:space:]]|$)|(Repo|Base|Branch|GOAL|CONTEXT|STEPS|VERIFY|DONE WHEN|OUT OF SCOPE):)/) {
+        if ($0 ~ /^[[:space:]]*(##+|[-*][[:space:]]|>[[:space:]]|\[\[|:[0-9]+([[:space:]]|$)|(Repo|Base|Branch|GOAL|CONTEXT|STEPS|VERIFY|DONE WHEN|OUT OF SCOPE):)/ ||
+            $0 ~ /^[[:space:]]*(backlog|todo|doing|review)([[:space:]]|$)/ ||
+            $0 ~ /^[[:space:]]*[A-Za-z0-9_-]*fkanban-agent[A-Za-z0-9_-]*([[:space:]]|$)/) {
           printf "%s:%d:%s\n", file, NR, $0
           bad = 1
         }
@@ -370,25 +422,44 @@ for path in "$@"; do
     fail=1
   fi
 
-  fkanban_board_matches="$(search_prompt_pattern '(fkanban|<board CLI>)[[:space:]]+(show|move)([[:space:]]|$).*--board' "$path")"
+  fkanban_board_matches="$(search_prompt_pattern '(fkanban|<board CLI>)[[:space:]]+(show|move|rm|rank|dep|tag)([[:space:]]|$).*--board' "$path")"
   fkanban_board_matches="$(printf '%s\n' "$fkanban_board_matches" | grep -v -E 'Do not|Never|do not|never|unsupported|do not take|only commands whose help lists' || true)"
   if [ -n "$fkanban_board_matches" ]; then
     printf '%s\n' "$fkanban_board_matches"
-    echo "unsupported fkanban show/move board flag usage found under $path" >&2
+    echo "unsupported fkanban non-list/add/search board flag usage found under $path" >&2
     fail=1
   fi
 
-  # `fkanban list` has NO full-body option (its flags are board/column/tag/
-  # assignee/wide/limit/all). Agents keep inventing `fkanban list --full-body`
-  # (or `--full_body`), which the CLI rejects with `Unknown option`. The
-  # supported full-body paths are `fkanban show <slug>` for one card, or the
-  # MCP `fkanban_list`/`fkanban_search` `full_body: true` argument. Block the
-  # CLI flag in agent-facing guidance.
-  fkanban_full_body_matches="$(search_prompt_pattern '(fkanban|<board CLI>)[[:space:]]+list([[:space:]]|$).*--full[-_]body' "$path")"
-  fkanban_full_body_matches="$(printf '%s\n' "$fkanban_full_body_matches" | grep -v -E 'Do not|Never|do not|never|unsupported|no such flag' || true)"
+  # `fkanban search` has NO full-body option. Agents keep inventing
+  # `fkanban search <query> --full-body` (or `--full_body`), which the CLI
+  # rejects with `Unknown option`. For full bodies, use CLI JSON and
+  # `fkanban show <slug> --json`, or pass `full_body: true` to the MCP
+  # `fkanban_search` tool. Block the bad CLI flag in agent-facing guidance.
+  fkanban_full_body_matches="$(search_prompt_pattern '(fkanban|<board CLI>)[[:space:]]+search([[:space:]]|$).*--full[-_]body' "$path")"
+  fkanban_full_body_matches="$(printf '%s\n' "$fkanban_full_body_matches" | grep -v -E 'Do not|Never|do not|never|unsupported|no such flag|has no|no --full-body' || true)"
   if [ -n "$fkanban_full_body_matches" ]; then
     printf '%s\n' "$fkanban_full_body_matches"
-    echo "unsupported fkanban list --full-body usage found under $path (use fkanban show <slug>, or MCP full_body:true)" >&2
+    echo "unsupported fkanban search --full-body usage found under $path (use fkanban search --json + show, or MCP full_body:true)" >&2
+    fail=1
+  fi
+
+  broad_board_reads="$(search_prompt_pattern '(^|[^[:alnum:]_-])(fkanban|<board CLI>)[[:space:]]+list.*(--wide|--full-body|--all)' "$path")"
+  broad_board_reads="$(printf '%s\n' "$broad_board_reads" \
+    | grep -v -Ei 'Do not|Never|do not|never|avoid|unsupported|no such flag|has no|not use|must not|instead|accepts|valid|syntax' \
+    | grep -v -E '/tests/last-stack-lint-prompts.sh' || true)"
+  if [ -n "$broad_board_reads" ]; then
+    printf '%s\n' "$broad_board_reads"
+    echo "broad fkanban list usage found under $path (use capped/column previews plus show for selected cards)" >&2
+    fail=1
+  fi
+
+  routine_doctor_checks="$(search_prompt_pattern '(^|[^[:alnum:]_-])(fbrain|fkanban|<brain-cli>|<board CLI>)[[:space:]]+(doctor|init)([^[:alnum:]_-]|$)' "$path")"
+  routine_doctor_checks="$(printf '%s\n' "$routine_doctor_checks" \
+    | grep -v -Ei 'Do not|Do \*\*not|Never|do not|never|avoid|unsupported|expected|setup|bootstrap|fresh machine|user asks|diagnostics|brain-doctor|fkanban-setup|not run|without running|not use|must not|no `?fbrain doctor|no `?fkanban doctor|raw TCP|defaults|hint:' \
+    | grep -v -E '/skills/(fkanban-setup|fkanban|brain-doctor)/|/tests/|/bin/|/README.md|/routines/README.md' || true)"
+  if [ -n "$routine_doctor_checks" ]; then
+    printf '%s\n' "$routine_doctor_checks"
+    echo "routine prompt uses doctor/init as a health check under $path (use a socket-backed narrow read and busy-node backoff)" >&2
     fail=1
   fi
 
@@ -462,6 +533,22 @@ for path in "$@"; do
   if [ -n "$routine_skeletons" ]; then
     printf '%s\n' "$routine_skeletons"
     echo "Last Stack routine skeleton lacks PATH prelude/preflight guidance" >&2
+    fail=1
+  fi
+
+  global_cli_guidance="$(search_prompt_pattern 'Use global CLIs from PATH' "$path")"
+  global_cli_guidance="$(printf '%s\n' "$global_cli_guidance" | grep -v -E 'last-stack-shell-prelude|last-stack-cli-preflight|after the prelude' || true)"
+  if [ -n "$global_cli_guidance" ]; then
+    printf '%s\n' "$global_cli_guidance"
+    echo "global CLI guidance must require last-stack-shell-prelude/last-stack-cli-preflight" >&2
+    fail=1
+  fi
+
+  unguarded_local_checkout_git="$(search_prompt_pattern 'git[[:space:]]-C[[:space:]]<local-checkout>|repo="<local-checkout>"' "$path")"
+  repo_guard_mentions="$(search_prompt_pattern 'last-stack-repo-op-guard' "$path")"
+  if [ -n "$unguarded_local_checkout_git" ] && [ -z "$repo_guard_mentions" ]; then
+    printf '%s\n' "$unguarded_local_checkout_git"
+    echo "local-checkout Git examples must pass through last-stack-repo-op-guard before repo-scoped commands" >&2
     fail=1
   fi
 

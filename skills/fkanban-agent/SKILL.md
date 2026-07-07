@@ -177,7 +177,7 @@ to `review`, append a one-line note explaining what's missing, and exit.
    ```bash
    last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
    . "$last_stack/bin/last-stack-shell-prelude"
-   "$last_stack/bin/last-stack-cli-preflight" git gh
+   "$last_stack/bin/last-stack-cli-preflight" git gh curl jq fkanban fbrain
    ```
 2. **Resolve the target repo, then set up an isolated worktree** (never edit a
    shared checkout in place, and never `stash`/`reset` — sibling agents may
@@ -283,6 +283,12 @@ act on (see step 2). When in doubt, do nothing.** Skip a card only if it has no
    `$last_stack/bin/last-stack-gh-pr-queue-state <owner>/<repo> <n>` when Last
    Stack is installed, or use `gh api graphql` with explicit owner/name
    variables. Do not use `gh -R <repo> api graphql`.
+   Do not request invented "latest" fields such as `isLatest` through `gh run
+   view`, `gh run list`, or `gh -R <repo> pr checks --json`; use fields
+   advertised by the installed CLI
+   (`databaseId,status,conclusion,createdAt,...` for runs; `name,state,bucket`
+   for PR checks) and select the newest relevant item explicitly, or query the
+   Actions API.
 2. **Decide from PR state:**
    - **Merged** (`state=MERGED` / `mergedAt` set) → `move <slug> done`. Done.
      A card reaches `done` ONLY this way — a verified MERGED PR. If you cannot

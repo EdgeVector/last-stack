@@ -121,6 +121,18 @@ if "$ROOT/bin/last-stack-lint-prompts" "$bad_raw_markdown_shell_block" >/dev/nul
   exit 1
 fi
 
+bad_board_text_shell_block="$tmp/bad-board-text-shell-block.md"
+printf '%s\n' \
+  '```'"zsh" \
+  "back""log" \
+  "to""do" \
+  "fkanban-""agent" \
+  '```' > "$bad_board_text_shell_block"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_board_text_shell_block" >/dev/null 2>&1; then
+  echo "expected copied board/prompt tokens inside a shell block to fail prompt lint" >&2
+  exit 1
+fi
+
 good_markdown_body_file="$tmp/good-markdown-body-file.md"
 cat > "$good_markdown_body_file" <<'GOOD_MARKDOWN_BODY'
 ```bash
@@ -142,6 +154,35 @@ if "$ROOT/bin/last-stack-lint-prompts" "$bad_gh_release" >/dev/null 2>&1; then
   exit 1
 fi
 
+bad_gh_run_view="$tmp/bad-gh-run-view.md"
+printf '%s\n' "gh run view 123 --repo owner/repo --json databaseId,is""Latest,status" > "$bad_gh_run_view"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_gh_run_view" >/dev/null 2>&1; then
+  echo "expected unsupported gh run view isLatest JSON field to fail prompt lint" >&2
+  exit 1
+fi
+
+bad_gh_run_list="$tmp/bad-gh-run-list.md"
+printf '%s\n' "gh run list -R owner/repo --json databaseId,is""Latest,status" > "$bad_gh_run_list"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_gh_run_list" >/dev/null 2>&1; then
+  echo "expected unsupported gh run list isLatest JSON field to fail prompt lint" >&2
+  exit 1
+fi
+
+bad_gh_pr_checks="$tmp/bad-gh-pr-checks.md"
+printf '%s\n' "gh -R owner/repo pr checks 123 --json name,is""Latest,state" > "$bad_gh_pr_checks"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_gh_pr_checks" >/dev/null 2>&1; then
+  echo "expected unsupported gh pr che""cks isLatest JSON field to fail prompt lint" >&2
+  exit 1
+fi
+
+good_gh_run_and_checks="$tmp/good-gh-run-and-checks.md"
+cat > "$good_gh_run_and_checks" <<'GOOD_GH_RUN_AND_CHECKS'
+gh run view 123 --repo owner/repo --json databaseId,status,conclusion
+gh run list -R owner/repo --json databaseId,status,conclusion
+gh -R owner/repo pr checks 123 --json name,state,bucket
+GOOD_GH_RUN_AND_CHECKS
+"$ROOT/bin/last-stack-lint-prompts" "$good_gh_run_and_checks"
+
 bad_fkanban_show_board="$tmp/bad-fkanban-show-board.md"
 printf '%s\n' "fkanban sh""ow some-card --bo""ard default --json" > "$bad_fkanban_show_board"
 if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_show_board" >/dev/null 2>&1; then
@@ -156,27 +197,70 @@ if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_move_board" >/dev/null 2>&1
   exit 1
 fi
 
-bad_fkanban_list_full_body="$tmp/bad-fkanban-list-full-body.md"
-printf '%s\n' "fkanban li""st --column doing --full""-body --json" > "$bad_fkanban_list_full_body"
-if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_list_full_body" >/dev/null 2>&1; then
-  echo "expected unsupported fkanban list --full-body usage to fail prompt lint" >&2
+bad_fkanban_tag_board="$tmp/bad-fkanban-tag-board.md"
+printf '%s\n' "fkanban ta""g add some-card p1 --bo""ard default" > "$bad_fkanban_tag_board"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_tag_board" >/dev/null 2>&1; then
+  echo "expected unsupported fkanban tag --board usage to fail prompt lint" >&2
   exit 1
 fi
 
-bad_fkanban_list_full_body_underscore="$tmp/bad-fkanban-list-full-body-underscore.md"
-printf '%s\n' "fkanban li""st --full""_body" > "$bad_fkanban_list_full_body_underscore"
-if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_list_full_body_underscore" >/dev/null 2>&1; then
-  echo "expected unsupported fkanban list --full_body usage to fail prompt lint" >&2
+bad_fkanban_search_full_body="$tmp/bad-fkanban-search-full-body.md"
+printf '%s\n' "fkanban sea""rch auth --full""-body --json" > "$bad_fkanban_search_full_body"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_search_full_body" >/dev/null 2>&1; then
+  echo "expected unsupported fkanban search --full-body usage to fail prompt lint" >&2
+  exit 1
+fi
+
+bad_fkanban_search_full_body_underscore="$tmp/bad-fkanban-search-full-body-underscore.md"
+printf '%s\n' "fkanban sea""rch auth --full""_body" > "$bad_fkanban_search_full_body_underscore"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_search_full_body_underscore" >/dev/null 2>&1; then
+  echo "expected unsupported fkanban search --full_body usage to fail prompt lint" >&2
   exit 1
 fi
 
 good_fkanban_full_body="$tmp/good-fkanban-full-body.md"
 cat > "$good_fkanban_full_body" <<'GOOD_FULL_BODY'
-fkanban list has NO --full-body flag; never use it. For one card's full body
-run `fkanban show <slug> --json`, or pass `full_body: true` to the MCP
-`fkanban_list` / `fkanban_search` tools.
+fkanban list accepts `--full-body`, but fkanban search has no such flag. For one
+card's full body run `fkanban show <slug> --json`, or pass `full_body: true` to
+the MCP `fkanban_search` tool.
 GOOD_FULL_BODY
 "$ROOT/bin/last-stack-lint-prompts" "$good_fkanban_full_body"
+
+good_fkanban_list_full_body="$tmp/good-fkanban-list-full-body.md"
+printf '%s\n' "fkanban li""st accepts --full""-body for syntax, but routines must not use it; use capped/column previews plus show for selected cards instead." > "$good_fkanban_list_full_body"
+"$ROOT/bin/last-stack-lint-prompts" "$good_fkanban_list_full_body"
+
+bad_fkanban_list_full_body="$tmp/bad-fkanban-list-full-body.md"
+printf '%s\n' "fkanban li""st --full""-body --json" > "$bad_fkanban_list_full_body"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_list_full_body" >/dev/null 2>&1; then
+  echo "expected broad fkanban list --full-body usage to fail prompt lint" >&2
+  exit 1
+fi
+
+bad_fkanban_list_all="$tmp/bad-fkanban-list-all.md"
+printf '%s\n' "<board CLI> li""st --json --a""ll" > "$bad_fkanban_list_all"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_list_all" >/dev/null 2>&1; then
+  echo "expected broad board list --all usage to fail prompt lint" >&2
+  exit 1
+fi
+
+bad_routine_doctor_health="$tmp/bad-routine-doctor-health.md"
+printf '%s\n' "First: <board CLI> doc""tor, then continue if it passes." > "$bad_routine_doctor_health"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_routine_doctor_health" >/dev/null 2>&1; then
+  echo "expected routine doctor health check to fail prompt lint" >&2
+  exit 1
+fi
+
+good_busy_node_backoff="$tmp/good-busy-node-backoff.md"
+cat > "$good_busy_node_backoff" <<'GOOD_BUSY_NODE_BACKOFF'
+Run a socket-backed narrow read first:
+<board CLI> list --column todo --json
+Then read selected cards with:
+<board CLI> show <slug> --json
+On `service_timeout`, "node did not respond", or "too many concurrent reads",
+exit or retry one idempotent slug upsert; do not run doctor/init or restart.
+GOOD_BUSY_NODE_BACKOFF
+"$ROOT/bin/last-stack-lint-prompts" "$good_busy_node_backoff"
 
 bad_default_board_unscoped="$tmp/bad-default-board-unscoped.md"
 printf '%s\n' "Use workspace \`<workspace>\`, board CLI \`<board-cli>\`, default bo""ard \`<board>\`, and global CLIs from PATH." > "$bad_default_board_unscoped"
@@ -199,6 +283,32 @@ fi
 good_routine_skeleton="$tmp/good-routine-skeleton.md"
 printf '%s\n' "Run the Last Stack routine \`<routine>\`: set \`last_stack=\"<last-stack>\"\`; source \`\$last_stack/bin/last-stack-shell-prelude\`; run \`\$last_stack/bin/last-stack-cli-preflight git curl jq gh <board-cli> <brain-cli>\`; then read the routine and execute one bounded pass. Before repo-scoped git, resolve the child repo with \`\$last_stack/bin/last-stack-repo-op-guard \"\$target_repo\" \"<workspace>\"\`." > "$good_routine_skeleton"
 "$ROOT/bin/last-stack-lint-prompts" "$good_routine_skeleton"
+
+bad_global_cli_path="$tmp/bad-global-cli-path.md"
+printf '%s\n' "Use global CLIs from PA""TH." > "$bad_global_cli_path"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_global_cli_path" >/dev/null 2>&1; then
+  echo "expected global CLI guidance without shell prelude/preflight to fail prompt lint" >&2
+  exit 1
+fi
+
+good_global_cli_path="$tmp/good-global-cli-path.md"
+printf '%s\n' "Use global CLIs from PA""TH after the prelude below: \`last-stack-shell-prelude\` and \`last-stack-cli-preflight\`." > "$good_global_cli_path"
+"$ROOT/bin/last-stack-lint-prompts" "$good_global_cli_path"
+
+bad_local_checkout_git="$tmp/bad-local-checkout-git.md"
+printf '%s\n' 'repo="<local-checkout>"' 'git -C "$repo" status --short --branch' > "$bad_local_checkout_git"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_local_checkout_git" >/dev/null 2>&1; then
+  echo "expected local-checkout git without repo-op guard to fail prompt lint" >&2
+  exit 1
+fi
+
+good_local_checkout_git="$tmp/good-local-checkout-git.md"
+printf '%s\n' \
+  'last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"' \
+  'repo="<local-checkout>"' \
+  'repo="$("$last_stack/bin/last-stack-repo-op-guard" "$repo" "<WORKSPACE>")"' \
+  'git -C "$repo" status --short --branch' > "$good_local_checkout_git"
+"$ROOT/bin/last-stack-lint-prompts" "$good_local_checkout_git"
 
 bad_ambiguous_repo_skip="$tmp/bad-ambiguous-repo-skip.md"
 printf '%s\n' "SK""IP ambiguous repo targets and leave it in todo." > "$bad_ambiguous_repo_skip"

@@ -49,14 +49,15 @@ Lead with a one-line restatement of the goal / top objective, then:
 
 ## Setup
 - If your shell is sandboxed, prepend `$PATH` on every call so your tools resolve.
-- First run your board health check (`<board CLI> doctor`). Treat a green
-  `doctor` as authoritative even when it reports a Unix-socket transport and the
-  HTTP endpoint is unavailable; some LastDB/F-Kanban installs intentionally run
-  socket-only with HTTP shut down. If `doctor` says the node is unreachable or
-  unprovisioned, STOP and report — never restart/kill the process hosting your
-  brain/board node.
-- Snapshot: `<board CLI> list --json`; the brain's goal note, driving index,
-  `open-decisions`, and `routine-heartbeats`.
+- First run a socket-backed narrow board read such as
+  `<board CLI> list --column todo --json`. Treat `service_timeout`, "node did not
+  respond", or "too many concurrent reads" as busy-node backpressure: STOP,
+  report `busy-node skipped morning-sync`, and do not run doctor/init or restart
+  anything.
+- Snapshot with bounded reads: read `todo`, `doing`, and `review` as sequential
+  `<board CLI> list --column <column> --json` calls; use `show` only for the one
+  card whose full body you need. Read the brain's goal note, driving index,
+  `open-decisions`, and `routine-heartbeats` as targeted records, one at a time.
 - Also inspect your scheduler/session index if available. For Codex Desktop this
   is typically `$CODEX_HOME/session_index.jsonl` or
   `$HOME/.codex/session_index.jsonl`; compare `last-stack fkanban-pickup` against

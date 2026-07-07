@@ -6,8 +6,8 @@ description: >-
   pickup→agent pipeline drives the unblocked features to completion. Two modes —
   BRIEF (read-only; assemble + deliver the ranked decision queue, run by the
   scheduled morning-sync routine each day at 7:00) and WORK (interactive; walk
-  Tom through the decisions one at a time, write each to the fbrain decisions-log
-  ledger, and execute it onto the fkanban board — clear a gate to todo, scope a
+  Tom through the decisions one at a time, write each as its own fbrain
+  `decision` record, and execute it onto the fkanban board — clear a gate to todo, scope a
   program into a card, or record a hold). Use when Tom says "morning sync", "let's
   do the morning sync", "what decisions are waiting on me", "let's plan through
   things", "work through the blockers", "clear the gates", or when the scheduled
@@ -54,7 +54,7 @@ Two modes. Pick by how you were invoked:
   missing:
   ```bash
   export PATH="$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
-  fkanban doctor            # or: cd ~/code/edgevector/fkanban && bun run src/cli.ts doctor
+  fkanban list --column todo --json  # or: cd ~/code/edgevector/fkanban && bun run src/cli.ts list --column todo --json
   ```
   Read the `fkanban` skill (`~/.claude/skills/fkanban/SKILL.md`) for the current
   CLI contract before any board write.
@@ -62,7 +62,11 @@ Two modes. Pick by how you were invoked:
   multi-line bodies via **stdin** (`fbrain put ... < /tmp/body.md`), never
   `--body "$(...)"` — that mangles/clobbers the record (memory
   `feedback_mcp_args_no_shell_expansion`).
-- `fkanban list --json` is valid JSON; parse from a file, iterate slugs with a
+- Use narrow board reads: `fkanban list --column todo --json`, then `doing` and
+  `review` as needed, parsed from files. Use `fkanban show <slug> --json` for the
+  one card whose full body you need. If a read returns `service_timeout`, "node
+  did not respond", or "too many concurrent reads", treat it as busy-node
+  backpressure; do not run doctor/init or restart anything. Iterate slugs with a
   bash array (`for s in "${arr[@]}"`), never a bare `$var`.
 - Columns: `backlog → todo → doing → review → done`. `add` is an upsert;
   `move <slug> <column>`.
@@ -72,8 +76,14 @@ Two modes. Pick by how you were invoked:
 - **`active-programs`** (fbrain project) — the driving index: ~11 programs, each
   with a "Next move", its DAG cards, and `needs-human`/`blocked-needs-human`
   lines. This is the program work-list.
-- **`decisions-log`** (fbrain reference, append-only) — every decision Tom makes,
-  dated, with what it unblocked. The durable memory. WORK appends here.
+- **`decision` records** (fbrain type `decision`, one record per decision) —
+  every call Tom makes, dated, with what it unblocked. The durable memory. WORK
+  writes ONE `decision` record per call (`fbrain list --type decision`, newest
+  first). This replaced the old monolithic `decisions-log` reference record
+  (archived 2026-07-06 with a tombstone pointer) — appending is now a tiny
+  per-record write, not a full-ledger rewrite. Read a specific one with
+  `fbrain get <slug> --type decision`; the `program`/`gate_slug`/`decided_by`/
+  `decided_on` columns are queryable fields, not buried in prose.
 - **`open-decisions`** (fbrain reference) — the standing queue of pending
   decisions. `fkanban-agent` escalates gated next-steps here (Component C); BRIEF
   reads it so a stall becomes a dated line, never silence.
@@ -88,9 +98,11 @@ Two modes. Pick by how you were invoked:
 Produce a **decision-first** briefing, not a status dump. Lead with what's
 waiting on Tom. Steps:
 
-1. **Snapshot.** `fkanban list --json` (counts + every card's column + body head).
-   `fbrain get active-programs`. `fbrain get open-decisions --type reference` and
-   `fbrain get routine-heartbeats --type reference`.
+1. **Snapshot.** Read `todo`, `doing`, and `review` with sequential
+   `fkanban list --column <column> --json` calls (counts + card previews). Then
+   read targeted brain records one at a time: `fbrain get active-programs`,
+   `fbrain get open-decisions --type reference`, and `fbrain get
+   routine-heartbeats --type reference`.
 
 2. **§1 — Decisions that GENUINELY need you (keep it SHORT).** Per Tom's standing
    correction (`feedback_autonomous_drive_dev_not_gated`), most old "gates" are NOT
@@ -220,15 +232,39 @@ stands up, `todo` is freshly stocked and the pipeline takes over.
 
 3. **On each answer, do BOTH (capture, then execute):**
 
-   a. **Capture to `decisions-log`** (append, never overwrite). Read the current
-      record, prepend a dated entry, write back via stdin:
-      ```
-      ## <date> — <gate-slug>
+   a. **Capture as a `decision` record** (one tiny write per decision — NOT an
+      append to a monolith). Write a NEW record of type `decision` via stdin,
+      with the queryable columns set in frontmatter and the rationale in the
+      body:
+      ```bash
+      slug="decision-<date>-<short-kebab-of-the-call>"   # unique, stable
+      body_file="$(mktemp)"
+      cat > "$body_file" <<'EOF'
+      ---
+      type: decision
+      slug: <slug>
+      title: <one-line summary of the call>
+      status: <go|hold|done|moot|superseded>   # the OUTCOME, not a workflow state
+      program: <owning program / North Star slug, empty string if none>
+      gate_slug: <open-decisions gate this clears, empty string if none>
+      decided_by: Tom
+      decided_on: <date, RFC 3339 e.g. 2026-07-06>
+      tags: [decisions]
+      ---
+
       Decision: <what Tom chose>
-      Program: <program> · Unblocks: <cards>
+      Unblocks: <cards>
       Rationale: <one line, in Tom's framing>
+      EOF
+      fbrain put "$slug" --type decision < "$body_file"
+      rm -f "$body_file"
       ```
-      This is the permanent memory — "remember all the decisions."
+      This is the permanent memory — "remember all the decisions." Each decision
+      is its own record (`fbrain list --type decision` shows the whole ledger,
+      newest first); NEVER append to the archived `decisions-log` monolith.
+      Status mapping: a cleared gate you proceed on = `go`; a deferral = `hold`;
+      a decision whose work already landed = `done`; a premise that went away =
+      `moot`; a call a later one replaced = `superseded`.
 
    b. **Execute onto the board**, by decision type:
 
@@ -251,9 +287,10 @@ stands up, `todo` is freshly stocked and the pipeline takes over.
         `origin/<base>:<file>`) so you don't file already-merged work. Leave any
         epic/tracker card where it is.
 
-      - **HOLD / defer.** Record in `decisions-log` as `hold, revisit <date|when>`
-        and add a `hold-until <date>` marker to the card body so BRIEF stops
-        re-surfacing it daily until then. Do not move it.
+      - **HOLD / defer.** Write the `decision` record with `status: hold` and a
+        `revisit <date|when>` note in its body, and add a `hold-until <date>`
+        marker to the card body so BRIEF stops re-surfacing it daily until then.
+        Do not move it.
 
       - **NEEDS MORE INFO.** If Tom can't decide because something's unclear,
         DON'T force it — capture `pending: <what he needs>` to `open-decisions`
@@ -280,14 +317,17 @@ stands up, `todo` is freshly stocked and the pipeline takes over.
 - **Dev, not prod.** Any card you promote/file that touches a prod surface says
   "dev-first, one clean cutover" in its brief; the prod cutover/flip is always a
   separate, still-gated, human step — record it, never auto-promote it.
-- **Capture before you execute.** Every decision lands in `decisions-log` BEFORE
-  you touch the board, so nothing is lost if a write fails midway.
+- **Capture before you execute.** Every decision lands as its own `decision`
+  record BEFORE you touch the board, so nothing is lost if a write fails midway.
 - **Verify against `origin/main`** before writing any fact into a card brief —
   local checkouts lag and the work may already be merged.
 - **Don't fabricate decisions.** If §1 is empty (everything in flight, nothing
   gated), say so plainly and stop — a clean board is a good outcome, not a prompt
   to manufacture busywork.
-- **Append, never clobber** the ledgers. Read-modify-write; big bodies via stdin.
+- **One record per decision; never clobber.** Each decision is a NEW `decision`
+  record (a tiny write) — never rewrite a prior decision or the archived
+  `decisions-log` monolith. For the standing `open-decisions`/`active-programs`
+  ledgers you still edit, read-modify-write; big bodies via stdin.
 - This skill is the only place decisions get *captured + executed*. It does NOT
   ship code, open PRs, or run fkanban-agent — the pickup→agent pipeline does that
   once the cards are in `todo`.

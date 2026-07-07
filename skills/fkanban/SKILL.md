@@ -50,8 +50,10 @@ fkanban doctor      # shim on PATH, config present, node reachable, schemas load
 with `bun run src/cli.ts` and run from the fkanban repo directory.)
 
 ```bash
-fkanban list --json                 # whole default board
-fkanban list --board <b> --column todo   # filter
+fkanban list --column todo --json   # narrow column preview
+fkanban list --board <b> --column todo --json  # board-scoped column preview
+# Avoid fkanban list --full-body in routines; use show for selected cards.
+fkanban search "<text>" --json      # text search; no --full-body flag
 fkanban show <slug> --json          # one card in detail
 fkanban add <slug> [flags]          # create OR update a card
 fkanban move <slug> <column> [--position N]
@@ -60,13 +62,20 @@ fkanban board create <slug> --title ... --columns a,b,c
 fkanban board list
 ```
 
-`list` flags: `--board --column --tag --assignee --wide --limit N --all --json`.
-**`fkanban list` has no full-body option** — there is no `--full-body`
+`list` flags: `--board --column --tag --assignee --wide --field --limit N
+--all --json --full-body --full_body`.
+
+`search` flags: `--board --column --field --limit N --all --json`.
+**`fkanban search` has no full-body option** — there is no `--full-body`
 (or `--full_body`); passing it fails with `Unknown option '--full-body'`.
-`list` always returns a body preview. To read a card's complete body use
-`fkanban show <slug> --json` (one card), or pass `full_body: true` to the MCP
-`fkanban_list` / `fkanban_search` tools (the underscore form is the *MCP tool
-argument*, never a CLI flag).
+If you need full bodies from search results, use `fkanban search <query> --json`
+and then `fkanban show <slug> --json` for a selected card, or pass
+`full_body: true` to the MCP `fkanban_search` tool (the underscore form is the
+*MCP tool argument*, never a CLI flag).
+
+`show`, `move`, `rm`, `rank`, `dep`, and `tag` operate on the default board
+implicitly and reject `--board`. Only add `--board` to commands whose help lists
+one, such as `list`, `search`, and `add`.
 
 `add` flags: `--title --board --column --assignee --tags --body`. Re-running
 `add` with the same slug **updates** the card (upsert), so it's safe to edit a

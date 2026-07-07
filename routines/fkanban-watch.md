@@ -30,6 +30,12 @@ read/write, fail loudly if the resolved path is empty or starts with
   one, do it, then exit.
 
 ## Setup
+- Normalize the scheduled shell before any CLI-heavy work:
+  ```bash
+  last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+  . "$last_stack/bin/last-stack-shell-prelude"
+  "$last_stack/bin/last-stack-cli-preflight" git curl jq gh <board-cli> <brain-cli>
+  ```
 - Drive the board CLI from `<board repo dir>` with `<board CLI> ...`.
 - Follow the **fkanban-agent** skill, RECONCILE mode — it is the source of truth
   for behavior; this prompt is the trigger.
@@ -44,8 +50,9 @@ Treat `fkanban-pickup` as critical infrastructure. Before the normal reconcile
 sweep, check the latest `last-stack fkanban-pickup` scheduler session in
 `${CODEX_HOME:-$HOME/.codex}/session_index.jsonl` and the
 `routine-heartbeats` entry for `fkanban-pickup`. If both are stale by more than
-2 hours, and `fkanban list --json` shows any unblocked `todo` card with a
-`Repo:` header and no `BLOCKED:` line, switch this wake into pickup failover:
+2 hours, and `fkanban list --column todo --json` shows any unblocked `todo` card
+with a `Repo:` header and no `BLOCKED:` line, switch this wake into pickup
+failover:
 
 - Read the `fkanban-pickup` routine fully (`<last-stack>/routines/fkanban-pickup.md`).
 - Execute one bounded pickup pass using that routine's rules, with the same
@@ -65,10 +72,13 @@ auto-derive them at the chokepoint — but a card filed BEFORE that landed, or v
 path that bypassed it, can sit in `todo`/`backlog` with no header and silently
 strand. Repair them so nothing drops:
 
-- From `list --json`, find every card in `todo` or `backlog` whose body has NO
-  `Repo:` header AND is not a registry/recipe card (no `Target: fbrain record`,
-  no `dogfood-registry`, title not `fix dogfood recipe: …` — those target an
-  fbrain record, not a repo, and are header-less on purpose).
+- Read `todo` and `backlog` sequentially with `<board CLI> list --column
+  <column> --json`. Find every card in those previews whose body has NO `Repo:`
+  header AND is not a registry/recipe card (no `Target: fbrain record`, no
+  `dogfood-registry`, title not `fix dogfood recipe: …` — those target an fbrain
+  record, not a repo, and are header-less on purpose). If a preview is
+  insufficient to classify one card, point-read that card with `<board CLI> show
+  <slug> --json`; do not switch to a full-board/full-body read.
 - For each, run `<board CLI> add <slug>` (a field-preserving update: with no flags
   it keeps title/body/tags/column as-is and just re-runs the auto-derivation
   chokepoint). That deterministically either:
@@ -180,17 +190,26 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
    whole system exists to avoid.
 
 ## The sweep
-1. `<board CLI> list --json` to read the whole board.
-2. For EVERY card NOT already in `done` (NOT just `doing`/`review` — a card can be
-   merged while still in `todo` if a human/other flow did the work; that is the
-   exact bug being fixed, so do not restrict by column):
+1. Read the board as sequential column previews: `<board CLI> list --column todo
+   --json`, then `doing`, `review`, and `backlog`. Read `done` only if you need a
+   local duplicate/branch check. Do not launch multiple LastDB reads in parallel,
+   and do not use wide/full-body list reads. If any read returns
+   `service_timeout`, "node did not respond", or "too many concurrent reads",
+   treat it as busy-node backpressure: append/report a `fkanban-watch ... noop
+   busy-node` outcome if possible, do not run doctor/init or restart anything,
+   and EXIT.
+2. For EVERY previewed card NOT already in `done` (NOT just `doing`/`review` — a
+   card can be merged while still in `todo` if a human/other flow did the work;
+   that is the exact bug being fixed, so do not restrict by column):
    a. Parse the `Repo:`/`Base:` header lines from the card body. If `Repo:` is
       missing, SKIP the card — after the self-heal step above, a still-header-less
       card is either a registry card or a surfaced needs_human conflict, neither of
       which is meant for this PR-advance flow.
    b. Find its PR. PREFER an explicit `PR:` line / URL in the body (work landed
-      outside this flow won't use the `fkanban/<slug>` branch). Only if NO URL is
-      in the body, fall back to the head-branch lookup.
+      outside this flow won't use the `fkanban/<slug>` branch). If the preview
+      does not include enough body to know, read just that card with `<board CLI>
+      show <slug> --json`. Only if NO URL is in the body, fall back to the
+      head-branch lookup.
    c. Advance it — but the DEFAULT for any swept card is LEAVE IT ALONE. Only act
       on concrete PR/branch evidence; when in doubt, do nothing.
       If you need merge-queue membership, do not request `isInMergeQueue` through `gh pr view/list --json`; use `$last_stack/bin/last-stack-gh-pr-queue-state <owner>/<repo> <n>` or `gh api graphql` with explicit owner/name variables for the queue flag and `autoMergeRequest{enabledAt}`. Never use `gh -R <repo> api graphql`.
