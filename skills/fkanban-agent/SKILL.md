@@ -42,6 +42,9 @@ merged.
 > the `ci-required` Forgejo Actions check green, admins included — never bypass
 > it; exemem-infra/exemem-workspace/lastgit have NO forge gate yet, so arming
 > auto-merge merges IMMEDIATELY — be sure the work is done before arming);
+> **All forge API JSON reads must use the control-char-safe jq wrapper** because
+> Forgejo can return raw U+0000-U+001F bytes in PR bodies:
+> `curl -fsS "$URL" -H "Authorization: token $TOKEN" | "$last_stack/bin/last-stack-forge-json-jq" -r '...'`.
 > view = `GET $REPO/pulls/<n>` (merged=`.merged`, mergeable=`.mergeable`,
 > draft=`.draft`); CI = `GET $REPO/commits/<head-sha>/status`; update a BEHIND
 > branch = `POST $REPO/pulls/<n>/update`; comment =

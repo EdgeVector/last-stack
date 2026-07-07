@@ -33,7 +33,9 @@ read/write, fail loudly if the resolved path is empty or starts with
 - **Forge-hosted repos:** `gh` only works for github.com remotes. For a repo
   whose `origin` points at a self-hosted forge, do PR reads through that forge's
   API using the workspace brain/AGENTS.md SOP. Never act on a read-only GitHub
-  mirror of a forge-hosted repo.
+  mirror of a forge-hosted repo. Pipe forge API JSON through
+  `"$last_stack/bin/last-stack-forge-json-jq"` before jq filtering; Forgejo PR
+  bodies can include raw control characters.
 - PUBLIC repos keep normal GitHub flow. Always qualify GitHub commands with the
   repo:
   ```bash
