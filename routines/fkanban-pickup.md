@@ -54,7 +54,10 @@ read/write, fail loudly if the resolved path is empty or starts with
   repo has its `origin` on a self-hosted forge (Forgejo/Gitea/GitLab, often on
   localhost), the worker must use that forge's API for PR create/merge/status —
   check the workspace brain/AGENTS.md for the repo's forge SOP before assuming
-  GitHub, and never act on a read-only GitHub mirror.
+  GitHub, and never act on a read-only GitHub mirror. Poll forge PR/CI JSON with
+  `"$last_stack/bin/last-stack-forge-json-jq"` rather than raw `jq`, because PR
+  bodies may contain literal control characters that make Forgejo's response
+  invalid JSON.
 
 ## Selection rule (pick up to `<N>` cards)
 1. Read only the ready queue: `<board CLI> list --column todo --json`. If the

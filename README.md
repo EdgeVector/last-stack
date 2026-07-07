@@ -134,6 +134,8 @@ bin/
                             resolves the run + attempt-scoped web log endpoint
                             (run with dangerouslyDisableSandbox: TCP to :3300 is
                             sandbox-blocked)
+  last-stack-forge-json-jq   control-char-safe jq wrapper for Forgejo API JSON
+                            status polls
   last-stack-routine-read   freshness/missing-file guarded routine prompt reader
   last-stack-dogfood-target-checkout
                             select a current dogfood checkout without mutating

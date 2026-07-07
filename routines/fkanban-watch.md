@@ -138,6 +138,16 @@ the query below; note `EdgeVector/fold` no longer qualifies — since 2026-07-02
 fold lives on the local Forgejo forge at `http://localhost:3300`, which has no
 merge queue; see `fbrain get sop-forge-pr-workflow`):
 
+For forge-hosted repos, every PR/CI JSON poll should use:
+
+```bash
+curl -fsS "$URL" -H "Authorization: token $TOKEN" |
+  "$last_stack/bin/last-stack-forge-json-jq" -r '...'
+```
+
+Do not pipe Forgejo API output directly to `jq`; PR bodies can contain literal
+control characters that make the response invalid JSON.
+
 ```bash
 gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(branch:"main"){entries(first:5){nodes{position state enqueuedAt pullRequest{number title}}}}}}'
 ```
