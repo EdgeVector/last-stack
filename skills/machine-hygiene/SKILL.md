@@ -87,6 +87,10 @@ actions noted below.
   (`export PATH=/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin`).
   (2) Even then, wrapping commands in a **zsh function loses PATH inside the function body**
   (`command not found: git/rm`) — INLINE the commands, don't define helper functions.
+  (3) Never use bare temp/volume globs in reaper snippets (`/private/tmp/cv.*`,
+  `/Volumes/LastDB*`): zsh aborts the whole script with `no matches found` when
+  they are empty. Use `find ... -name 'pattern' | while read ...` or a zsh
+  null-glob qualifier instead.
 
 ## Procedure
 
@@ -235,8 +239,10 @@ for pid in $(pgrep -f '[l]astdb_server|[f]olddb_server|MacOS/[f]old-app'); do
     echo "SPARED (not a temp/DMG node): pid=$pid cpu=${cpu}% :: $cmd"
   fi
 done
-# Then eject any now-idle release DMG the dead node held open:
-for v in /Volumes/LastDB*; do [ -d "$v" ] && hdiutil detach "$v" 2>/dev/null; done
+# Then eject any now-idle release DMG the dead node held open. Use find instead
+# of a bare /Volumes/LastDB* glob so "no mounted LastDB DMG" is a no-op in zsh.
+find /Volumes -maxdepth 1 -type d -name 'LastDB*' -print 2>/dev/null |
+  while IFS= read -r v; do hdiutil detach "$v" 2>/dev/null || true; done
 ```
 
 Guardrails: the brain (`fold-app` / `lastdb_server` on the live
