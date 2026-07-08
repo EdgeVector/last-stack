@@ -47,6 +47,13 @@ every time.
 
 ## Review
 
+Claude_Preview selector gotcha: `preview_click` and `preview_fill` pass their
+selector through plain `document.querySelector`, so Playwright-only
+pseudo-selectors such as `:has-text("Browse")`, `:contains("Browse")`, or
+text-engine selectors are invalid and will fail. To click by visible text, call
+`preview_snapshot` first, use the accessibility tree to identify the real
+selector or UID, then click that target.
+
 Walk the desktop tabs (sidebar groups: MAIN/DATA/IMPORT/SOCIAL/ADMIN/SYSTEM)
 looking for the usual design-review lenses — contrast/accessibility, dead-end
 empty states with no CTA, label/copy mismatches, jargon, inconsistent
