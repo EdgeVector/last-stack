@@ -35,12 +35,17 @@ git_update_check() {
   remote_head="$(printf '%s\n' "$remote_info" | awk '$2 == "HEAD" && $1 != "ref:" {print $1; exit}')"
   [ -n "$remote_ref" ] && [ -n "$remote_head" ] || return 0
 
-  # Only compare installs sitting on the remote default branch. Feature
-  # worktrees legitimately differ from origin/HEAD while a PR is in progress.
-  [ "$local_ref" = "$remote_ref" ] || return 0
-
   local_head="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"
   [ -n "$local_head" ] || return 0
+
+  if [ "$local_ref" != "$remote_ref" ]; then
+    if ! git -C "$ROOT" merge-base --is-ancestor "$remote_head" HEAD >/dev/null 2>&1; then
+      printf 'GIT_UPDATE_AVAILABLE  local_ref=%s remote_ref=%s local_head=%s remote_head=%s\n' \
+        "$local_ref" "$remote_ref" "$(short_sha "$local_head")" "$(short_sha "$remote_head")"
+      exit 0
+    fi
+    return 0
+  fi
 
   if [ "$local_head" != "$remote_head" ]; then
     printf 'GIT_UPDATE_AVAILABLE  local_head=%s remote_head=%s\n' \
