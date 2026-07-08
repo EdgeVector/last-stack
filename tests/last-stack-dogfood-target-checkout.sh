@@ -104,6 +104,36 @@ test "$selected" != "$tmp/collision-targets/origin"
 test "$(git -C "$selected" remote get-url origin)" = "$tmp/origin.git"
 test "$(git -C "$selected" rev-parse HEAD)" = "$(git -C "$tmp/origin.git" rev-parse main)"
 
+git clone "$tmp/origin.git" "$tmp/non-main-target" >/dev/null 2>&1
+git -C "$tmp/non-main-target" checkout -b release/behind-main --track origin/main >/dev/null 2>&1
+non_main_before_branch="$(git -C "$tmp/non-main-target" symbolic-ref --quiet --short HEAD)"
+non_main_before_head="$(git -C "$tmp/non-main-target" rev-parse HEAD)"
+non_main_before_status="$(git -C "$tmp/non-main-target" status --porcelain=v1 --untracked-files=all)"
+
+printf 'five\n' >> "$tmp/seed/file.txt"
+git -C "$tmp/seed" commit -am five >/dev/null
+git -C "$tmp/seed" push origin HEAD:main >/dev/null 2>&1
+git -C "$tmp/non-main-target" fetch origin main >/dev/null 2>&1
+
+mkdir -p "$tmp/non-main-targets"
+git clone --branch main --single-branch "$tmp/origin.git" "$tmp/non-main-targets/origin" >/dev/null 2>&1
+git -C "$tmp/non-main-targets/origin" remote set-url origin "$tmp/other-origin.git"
+git -C "$tmp/non-main-targets/origin" checkout HEAD~1 >/dev/null 2>&1
+
+non_main_resolved="$(LAST_STACK_DOGFOOD_TARGET_ROOTS="$tmp/non-main-targets" \
+  "$ROOT/bin/last-stack-dogfood-target-checkout" "$tmp/non-main-target")"
+grep -q $'^TARGET\t.*\tbranch=release/behind-main\t.*\tresult=stale\treason=head-behind-upstream-by-1$' <<< "$non_main_resolved"
+grep -q $'^SELECTED\tpath=.*non-main-targets.*\tbranch=main\t.*\tresult=fresh\t' <<< "$non_main_resolved"
+grep -q $'\tresult=ok\treason=current-isolated-checkout$' <<< "$non_main_resolved"
+
+selected="$(selected_from <<< "$non_main_resolved")"
+test "$selected" != "$tmp/non-main-targets/origin"
+test "$(git -C "$selected" remote get-url origin)" = "$tmp/origin.git"
+test "$(git -C "$selected" rev-parse HEAD)" = "$(git -C "$tmp/origin.git" rev-parse main)"
+test "$(git -C "$tmp/non-main-target" symbolic-ref --quiet --short HEAD)" = "$non_main_before_branch"
+test "$(git -C "$tmp/non-main-target" rev-parse HEAD)" = "$non_main_before_head"
+test "$(git -C "$tmp/non-main-target" status --porcelain=v1 --untracked-files=all)" = "$non_main_before_status"
+
 git clone "$tmp/origin.git" "$tmp/no-upstream-target" >/dev/null 2>&1
 git -C "$tmp/no-upstream-target" checkout -b local-work main >/dev/null 2>&1
 git -C "$tmp/no-upstream-target" branch --unset-upstream >/dev/null 2>&1 || true
