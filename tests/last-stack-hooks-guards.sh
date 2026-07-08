@@ -112,10 +112,16 @@ if jq -n '{
 fi
 grep -q 'use jq' /tmp/unsafe-inline-json.out
 grep -q 'scratchpad' /tmp/unsafe-inline-json.out
+grep -q 'last-stack-json-get' /tmp/unsafe-inline-json.out
 
 jq -n '{
   tool_name: "Bash",
   tool_input: {command: "jq -r .x data.json"}
+}' | "$ROOT/hooks/unsafe-inline-json.sh"
+
+jq -n '{
+  tool_name: "Bash",
+  tool_input: {command: "curl --unix-socket ~/.folddb/data/folddb.sock http://localhost/api/system/auto-identity | last-stack-json-get .app_id"}
 }' | "$ROOT/hooks/unsafe-inline-json.sh"
 
 echo "ok"

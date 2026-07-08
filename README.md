@@ -127,6 +127,8 @@ bin/
                             (version checks cached; git HEAD checks uncached)
   last-stack-shell-prelude  sourceable PATH prelude for scheduled routines
   last-stack-cli-preflight  verify routine-required global CLIs are on PATH
+  last-stack-json-get       extract one simple field path from socket/API JSON
+                            without relying on jq or inline python/node parsing
   last-stack-repo-op-guard  reject workspace roots before repo-scoped git/gh
   last-stack-gh-pr-queue-state
                             GraphQL PR queue-state helper without gh -R drift
