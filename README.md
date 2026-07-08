@@ -50,6 +50,19 @@ Options:
 ~/.last-stack/setup --uninstall     # remove the registered skills
 ```
 
+## Download LastDB + Apps
+
+To download the usable LastDB app stack in one pass, run:
+
+```bash
+~/.last-stack/bin/last-stack-install-apps
+```
+
+That installs the LastDB daemon and downloads Brain, Kanban, Situations, Dogfood
+Graph, and LastSecrets. LastGit is intentionally excluded until it is stable
+enough for the public bundle. See
+[`docs/lastdb-apps.md`](docs/lastdb-apps.md) for the full guide.
+
 > Prefer to copy skills by hand? Each skill is a self-contained directory under
 > `skills/` — `cp -R skills/<name> ~/.claude/skills/`. `setup` just automates that
 > across every harness and keeps them updatable.
@@ -146,6 +159,7 @@ bin/
                             non-mutating tracked-remote freshness preflight
   last-stack-fbrain-append-heartbeat
                             safely add a typed routine-heartbeats line
+  last-stack-install-apps   download LastDB plus the usable app stack
   last-stack-uninstall      remove the registered skills
 skills/<name>/SKILL.md  one directory per skill
 instructions/brain-kanban.md
