@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# Install the usable LastDB app stack from public repos.
+set -euo pipefail
+
+TARGET_DIR="${LASTDB_APPS_DIR:-$HOME/lastdb-apps}"
+INSTALL_LASTDB=1
+LINK_CLIS=1
+
+usage() {
+  cat <<'USAGE'
+last-stack-install-apps [options]
+
+Downloads the stable LastDB app stack:
+  LastDB daemon, fbrain, fkanban, fsituations, dogfood-graph, LastSecrets.
+
+Options:
+  --dir <path>      clone/update app repos under this directory
+                   (default: ~/lastdb-apps or $LASTDB_APPS_DIR)
+  --no-brew         skip installing the LastDB Homebrew formula
+  --no-link         skip linking CLI commands onto PATH
+  -h, --help        show this help
+
+LastGit is intentionally not installed by this bundle yet.
+USAGE
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dir)
+      TARGET_DIR="$2"
+      shift 2
+      ;;
+    --dir=*)
+      TARGET_DIR="${1#*=}"
+      shift
+      ;;
+    --no-brew)
+      INSTALL_LASTDB=0
+      shift
+      ;;
+    --no-link)
+      LINK_CLIS=0
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown flag: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+need() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "missing required command: $1" >&2
+    exit 127
+  fi
+}
+
+clone_or_update() {
+  local name="$1"
+  local url="$2"
+  local dest="$TARGET_DIR/$name"
+
+  if [ -d "$dest/.git" ]; then
+    echo "==> updating $name"
+    git -C "$dest" pull --ff-only
+  elif [ -e "$dest" ]; then
+    echo "refusing to overwrite non-git path: $dest" >&2
+    exit 1
+  else
+    echo "==> cloning $name"
+    git clone "$url" "$dest"
+  fi
+}
+
+run_bun_install() {
+  local name="$1"
+  local dest="$TARGET_DIR/$name"
+  [ -f "$dest/package.json" ] || return 0
+  echo "==> installing dependencies for $name"
+  bun install --cwd "$dest"
+}
+
+link_cli() {
+  local name="$1"
+  local dest="$TARGET_DIR/$name"
+  [ "$LINK_CLIS" -eq 1 ] || return 0
+
+  case "$name" in
+    fkanban)
+      echo "==> linking fkanban CLI"
+      (cd "$dest" && bun run install-cli)
+      ;;
+    fsituations)
+      if [ -x "$dest/bin/fsituations" ]; then
+        echo "==> linking fsituations CLI"
+        mkdir -p "$HOME/.local/bin"
+        ln -snf "$dest/bin/fsituations" "$HOME/.local/bin/fsituations"
+      fi
+      ;;
+    fbrain|lastsecrets)
+      echo "==> linking $name CLI with bun link"
+      (cd "$dest" && bun link)
+      ;;
+  esac
+}
+
+need git
+need bun
+
+if [ "$INSTALL_LASTDB" -eq 1 ]; then
+  need brew
+  echo "==> installing LastDB daemon"
+  brew install edgevector/lastdb/lastdb
+fi
+
+mkdir -p "$TARGET_DIR"
+
+clone_or_update fbrain "https://github.com/EdgeVector/fbrain.git"
+clone_or_update fkanban "https://github.com/EdgeVector/fkanban.git"
+clone_or_update fsituations "https://github.com/EdgeVector/fsituations.git"
+clone_or_update dogfood-graph "https://github.com/EdgeVector/dogfood-graph.git"
+clone_or_update lastsecrets "https://github.com/EdgeVector/lastsecrets.git"
+
+for app in fbrain fkanban fsituations dogfood-graph lastsecrets; do
+  run_bun_install "$app"
+  link_cli "$app"
+done
+
+printf '\n'
+printf 'Installed LastDB apps under:\n'
+printf '  %s\n\n' "$TARGET_DIR"
+printf 'Next steps:\n'
+printf '  brew services start lastdb\n'
+printf '  fbrain init --grant-consent\n'
+printf '  fkanban init\n'
+printf '  fsituations init\n'
+printf '  lastsecrets init\n\n'
+printf 'Dogfood Graph is a local app:\n'
+printf '  cd "%s/dogfood-graph" && npm run dev\n\n' "$TARGET_DIR"
+printf 'Make sure ~/.local/bin and ~/.bun/bin are on PATH if linked commands are not found.\n'
