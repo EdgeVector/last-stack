@@ -192,6 +192,18 @@ repo_name_from_url() {
   safe_path_name "$name"
 }
 
+is_fold_remote_url() {
+  local url="$1"
+
+  case "$url" in
+    */EdgeVector/fold|*/EdgeVector/fold.git|*github.com:EdgeVector/fold|*github.com:EdgeVector/fold.git)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
 remote_slug_from_url() {
   local url="$1"
   local slug
@@ -390,7 +402,7 @@ try_select_candidate() {
 
 select_for_target() {
   local target="$1"
-  local target_report target_path target_result target_dirty target_upstream
+  local target_report target_path target_result target_dirty target_upstream target_reason
   local target_real candidate managed_candidate
   local target_remote target_remote_url
   local roots root git_entry repo_path
@@ -403,6 +415,7 @@ select_for_target() {
   target_result="$(field_value "$target_report" result || true)"
   target_dirty="$(field_value "$target_report" dirty || true)"
   target_upstream="$(field_value "$target_report" upstream || true)"
+  target_reason="$(field_value "$target_report" reason || true)"
   target_path="$(field_value "$target_report" path || printf '%s' "$target")"
 
   if ! git -C "$target" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -432,6 +445,13 @@ select_for_target() {
   else
     target_remote="${target_upstream%%/*}"
     target_remote_url="$(remote_url "$target" "$target_remote")"
+    if [ "$target_result" = "unknown" ] &&
+      [ "$target_reason" = "remote-upstream-unreadable" ] &&
+      [ "$target_dirty" = "no" ] &&
+      is_fold_remote_url "$target_remote_url" &&
+      remote_branch_exists "$target" "$target_remote" "$target_remote_url" main; then
+      target_upstream="$target_remote/main"
+    fi
   fi
 
   while IFS= read -r candidate; do
