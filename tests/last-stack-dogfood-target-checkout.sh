@@ -134,6 +134,33 @@ test "$(git -C "$tmp/non-main-target" symbolic-ref --quiet --short HEAD)" = "$no
 test "$(git -C "$tmp/non-main-target" rev-parse HEAD)" = "$non_main_before_head"
 test "$(git -C "$tmp/non-main-target" status --porcelain=v1 --untracked-files=all)" = "$non_main_before_status"
 
+mkdir -p "$tmp/EdgeVector"
+git clone --bare "$tmp/origin.git" "$tmp/EdgeVector/fold.git" >/dev/null 2>&1
+git clone "$tmp/EdgeVector/fold.git" "$tmp/unreadable-upstream-target" >/dev/null 2>&1
+git -C "$tmp/unreadable-upstream-target" checkout -b agent/name-lastdb-mini >/dev/null 2>&1
+unreadable_before_branch="$(git -C "$tmp/unreadable-upstream-target" symbolic-ref --quiet --short HEAD)"
+unreadable_before_head="$(git -C "$tmp/unreadable-upstream-target" rev-parse HEAD)"
+unreadable_before_status="$(git -C "$tmp/unreadable-upstream-target" status --porcelain=v1 --untracked-files=all)"
+git -C "$tmp/unreadable-upstream-target" update-ref refs/remotes/origin/agent/name-lastdb-mini HEAD
+git -C "$tmp/unreadable-upstream-target" branch --set-upstream-to=origin/agent/name-lastdb-mini >/dev/null 2>&1
+
+printf 'fold-main\n' >> "$tmp/seed/file.txt"
+git -C "$tmp/seed" commit -am fold-main >/dev/null
+git -C "$tmp/seed" push "$tmp/EdgeVector/fold.git" HEAD:main >/dev/null 2>&1
+
+unreadable_resolved="$(LAST_STACK_DOGFOOD_TARGET_ROOTS="$tmp/unreadable-managed-targets" \
+  "$ROOT/bin/last-stack-dogfood-target-checkout" "$tmp/unreadable-upstream-target")"
+grep -q $'^TARGET\t.*\tbranch=agent/name-lastdb-mini\t.*\tresult=unknown\treason=remote-upstream-unreadable$' <<< "$unreadable_resolved"
+grep -q $'^SELECTED\tpath=.*unreadable-managed-targets/fold\tbranch=main\t.*\tresult=fresh\t' <<< "$unreadable_resolved"
+grep -q $'\tresult=ok\treason=current-isolated-checkout$' <<< "$unreadable_resolved"
+
+selected="$(selected_from <<< "$unreadable_resolved")"
+test "$selected" = "$tmp/unreadable-managed-targets/fold"
+test "$(git -C "$selected" rev-parse HEAD)" = "$(git -C "$tmp/EdgeVector/fold.git" rev-parse main)"
+test "$(git -C "$tmp/unreadable-upstream-target" symbolic-ref --quiet --short HEAD)" = "$unreadable_before_branch"
+test "$(git -C "$tmp/unreadable-upstream-target" rev-parse HEAD)" = "$unreadable_before_head"
+test "$(git -C "$tmp/unreadable-upstream-target" status --porcelain=v1 --untracked-files=all)" = "$unreadable_before_status"
+
 git clone "$tmp/origin.git" "$tmp/no-upstream-target" >/dev/null 2>&1
 git -C "$tmp/no-upstream-target" checkout -b local-work main >/dev/null 2>&1
 git -C "$tmp/no-upstream-target" branch --unset-upstream >/dev/null 2>&1 || true
