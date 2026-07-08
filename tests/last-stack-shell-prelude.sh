@@ -20,9 +20,15 @@ export PATH LAST_STACK_GLOBAL_PATH
 . "$ROOT/bin/last-stack-shell-prelude"
 
 command -v gh >/dev/null 2>&1
+PATH="/usr/bin:/bin"
+unset LAST_STACK_GLOBAL_PATH
+LAST_STACK_ROOT="$ROOT"
+export PATH LAST_STACK_ROOT
+. "$ROOT/bin/last-stack-shell-prelude"
+command -v last-stack-json-get >/dev/null 2>&1
 case ":$PATH:" in
-  *":$fake_global:"*) ;;
-  *) echo "expected prelude to prepend fake global path" >&2; exit 1 ;;
+  *":$ROOT/bin:"*) ;;
+  *) echo "expected prelude to prepend last-stack bin path" >&2; exit 1 ;;
 esac
 
 echo "ok"

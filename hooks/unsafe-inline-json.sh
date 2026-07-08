@@ -53,4 +53,4 @@ emit_deny "BLOCKED: unsafe inline JSON parsing in Bash.
 
 This command uses node -e / python -c with JSON.parse, json.load/json.loads, or a fragile f-string [\"...\"] index. That quoting pattern is a recurring fleet failure.
 
-Hint: use jq for simple JSON extraction, or write a small .py file in scratchpad and run the file. Avoid -c/-e JSON quoting."
+Hint: for socket/API JSON, pipe to last-stack-json-get .field after sourcing last-stack-shell-prelude. For richer parsing, use jq when available or write a small .py file in scratchpad and run the file. Avoid -c/-e JSON quoting."
