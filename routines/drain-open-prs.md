@@ -25,7 +25,9 @@ repos:** `gh` only works for github.com remotes — a repo whose `origin` points
 a self-hosted forge (Forgejo/Gitea/GitLab, often on localhost) must be swept via
 THAT forge's API instead; check the workspace brain/AGENTS.md for the repo's
 forge SOP before assuming GitHub, and never act on a read-only GitHub mirror of
-a forge-hosted repo. Enumerate each GitHub repo:
+a forge-hosted repo. For forge API JSON reads, pipe curl through
+`"$last_stack/bin/last-stack-forge-json-jq"` so raw control characters in PR
+bodies cannot make `jq` abort. Enumerate each GitHub repo:
 ```bash
 gh -R <owner>/<repo> pr list --state open \
   --json number,title,headRefName,isDraft,mergeable,mergeStateStatus,reviewDecision,autoMergeRequest,updatedAt,statusCheckRollup,author
