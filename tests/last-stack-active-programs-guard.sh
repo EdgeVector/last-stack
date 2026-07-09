@@ -22,6 +22,12 @@ next
 ## 3. Another active program
 **program-slug:** `[[second-active-program]]`
 next
+
+## 4. North-star local-first app namespacing — ✅ CLOSED
+**program-slug:** `[[north-star-local-first-app-namespacing]]`
+reopened after historical closure
+- local-first-app-namespacing-backfill is doing
+- local-first-app-namespacing-dogfood is review
 EOF_BEFORE
 
 cp "$before" "$after"
@@ -64,8 +70,18 @@ if grep -q 'old-program' "$active_out"; then
 fi
 grep -q 'active-program' "$active_out"
 grep -q 'second-active-program' "$active_out"
+grep -q 'north-star-local-first-app-namespacing' "$active_out"
 grep -q 'Completed programs archive' "$completed_out"
 grep -q '\[\[old-program\]\] - Closed old program' "$completed_out"
+if grep -q 'north-star-local-first-app-namespacing' "$completed_out"; then
+  echo "reopened active program was archived" >&2
+  exit 1
+fi
+if "$ROOT/bin/last-stack-active-programs-guard" check "$before" "$active_out" >/dev/null 2>"$tmp/err"; then
+  echo "expected intentional archive without completed output to fail" >&2
+  exit 1
+fi
+grep -q 'program header count dropped' "$tmp/err"
 "$ROOT/bin/last-stack-active-programs-guard" check \
   "$before" \
   "$active_out" \
