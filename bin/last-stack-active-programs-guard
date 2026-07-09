@@ -1,0 +1,179 @@
+#!/usr/bin/env python3
+"""Guard active-programs rewrites against silent section loss."""
+
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from pathlib import Path
+
+
+HEADER_RE = re.compile(r"^##\s+(\d+)\.\s+(.+)$", re.MULTILINE)
+ANY_PROGRAM_HEADER_RE = re.compile(r"##\s+\d+\.\s+")
+PROGRAM_SLUG_RE = re.compile(r"\*\*program-slug:\*\*\s*`\[\[([^]]+)\]\]`")
+REFERENCE_SLUG_RE = re.compile(r"\[\[([^]]+)\]\]")
+CLOSED_MARKERS = (
+    "✅",
+    "closed",
+    "complete",
+    "retired",
+    "prod cutover shipped",
+    "dev capstone landed",
+)
+
+
+def read_text(path: str) -> str:
+    return Path(path).read_text(encoding="utf-8")
+
+
+def fail(message: str) -> None:
+    print(f"active-programs guard failed: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def embedded_headers(body: str) -> list[str]:
+    lines: list[str] = []
+    for match in ANY_PROGRAM_HEADER_RE.finditer(body):
+        if match.start() == 0 or body[match.start() - 1] == "\n":
+            continue
+        line_start = body.rfind("\n", 0, match.start()) + 1
+        line_end = body.find("\n", match.start())
+        if line_end == -1:
+            line_end = len(body)
+        lines.append(body[line_start:line_end][:160])
+    return lines
+
+
+def canonical_headers(body: str) -> list[tuple[str, str]]:
+    return [(match.group(1), match.group(2).strip()) for match in HEADER_RE.finditer(body)]
+
+
+def program_slugs(body: str) -> set[str]:
+    return set(PROGRAM_SLUG_RE.findall(body))
+
+
+def reference_slugs(body: str) -> set[str]:
+    return set(REFERENCE_SLUG_RE.findall(body))
+
+
+def check_rewrite(before_path: str, after_path: str, completed_after_path: str | None = None) -> None:
+    before = read_text(before_path)
+    after = read_text(after_path)
+    completed_after = read_text(completed_after_path) if completed_after_path else ""
+
+    embedded = embedded_headers(after)
+    if embedded:
+        fail(f"embedded program header not at line start: {embedded[0]}")
+
+    before_headers = canonical_headers(before)
+    after_headers = canonical_headers(after)
+    before_slugs = program_slugs(before)
+    after_slugs = program_slugs(after)
+    completed_slugs = reference_slugs(completed_after)
+    missing = before_slugs - after_slugs
+    unarchived_missing = sorted(missing - completed_slugs)
+
+    if len(after_headers) < len(before_headers):
+        dropped = len(before_headers) - len(after_headers)
+        if not completed_after_path or dropped > len(missing) or not missing <= completed_slugs:
+            fail(f"program header count dropped from {len(before_headers)} to {len(after_headers)}")
+
+    if unarchived_missing:
+        fail("program slugs disappeared: " + ", ".join(unarchived_missing))
+
+    print(
+        "active-programs guard ok: "
+        f"headers {len(before_headers)} -> {len(after_headers)}, "
+        f"program slugs {len(before_slugs)} -> {len(after_slugs)}"
+        + (f", archived {len(missing)}" if missing else "")
+    )
+
+
+def split_sections(body: str) -> tuple[str, list[tuple[str, str, str]]]:
+    matches = list(HEADER_RE.finditer(body))
+    if not matches:
+        return body, []
+
+    preamble = body[: matches[0].start()]
+    sections: list[tuple[str, str, str]] = []
+    for idx, match in enumerate(matches):
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
+        sections.append((match.group(1), match.group(2).strip(), body[match.start() : end].strip()))
+    return preamble, sections
+
+
+def is_closed_section(title: str) -> bool:
+    title_lower = title.lower()
+    return any(marker in title_lower for marker in CLOSED_MARKERS)
+
+
+def archive_line(title: str, section: str) -> str:
+    slug_match = PROGRAM_SLUG_RE.search(section)
+    if slug_match:
+        return f"- [[{slug_match.group(1)}]] - {title}"
+    return f"- {title}"
+
+
+def archive_closed(active_path: str, completed_path: str, active_out: str, completed_out: str) -> None:
+    active = read_text(active_path)
+    completed = Path(completed_path).read_text(encoding="utf-8") if Path(completed_path).exists() else ""
+
+    embedded = embedded_headers(active)
+    if embedded:
+        fail(f"input has embedded program header not at line start: {embedded[0]}")
+
+    preamble, sections = split_sections(active)
+    if not sections:
+        fail("no canonical program sections found")
+
+    kept: list[str] = []
+    archived: list[str] = []
+    for _ordinal, title, section in sections:
+        if is_closed_section(title):
+            line = archive_line(title, section)
+            if line not in completed:
+                archived.append(line)
+        else:
+            kept.append(section)
+
+    if not archived:
+        fail("no closed program sections found to archive")
+
+    new_active = "\n\n".join(part for part in [preamble.strip(), *kept] if part).rstrip() + "\n"
+    archive_block = "## Completed programs archive\n\n" + "\n".join(archived) + "\n"
+    new_completed = (completed.rstrip() + "\n\n" if completed.strip() else "") + archive_block
+
+    Path(active_out).write_text(new_active, encoding="utf-8")
+    Path(completed_out).write_text(new_completed, encoding="utf-8")
+    print(f"archived {len(archived)} closed program section(s)")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    check = subparsers.add_parser("check", help="fail if an active-programs rewrite lost sections")
+    check.add_argument("before")
+    check.add_argument("after")
+    check.add_argument(
+        "--completed-after",
+        help="completed-programs body after an intentional archive move",
+    )
+
+    archive = subparsers.add_parser("archive-closed", help="split closed sections into completed archive")
+    archive.add_argument("--active", required=True)
+    archive.add_argument("--completed", required=True)
+    archive.add_argument("--active-out", required=True)
+    archive.add_argument("--completed-out", required=True)
+
+    args = parser.parse_args()
+    if args.command == "check":
+        check_rewrite(args.before, args.after, args.completed_after)
+    elif args.command == "archive-closed":
+        archive_closed(args.active, args.completed, args.active_out, args.completed_out)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -159,6 +159,9 @@ bin/
                             non-mutating tracked-remote freshness preflight
   last-stack-fbrain-append-heartbeat
                             safely add a typed routine-heartbeats line
+  last-stack-active-programs-guard
+                            reject active-programs rewrites that drop program
+                            headers/slugs; split closed programs into archive
   last-stack-install-apps   download LastDB plus the usable app stack
   last-stack-uninstall      remove the registered skills
 skills/<name>/SKILL.md  one directory per skill

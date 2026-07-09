@@ -61,12 +61,43 @@ index and guarantee each unblocked one has its next card in `todo`.
   program-driver`, and do not run doctor/init or restart anything.
 - Iterate slug lists with a bash array, never a bare `$var`.
 - Columns: `backlog → todo → doing → review → done`. `add <slug>` is an upsert.
+- The driving index is too large and too important for blind whole-record
+  regeneration. If you need to change `active-programs`, stage the current body
+  and proposed body as files and run:
+  ```bash
+  "$last_stack/bin/last-stack-active-programs-guard" check "$before_body" "$after_body"
+  ```
+  If the guard fails, ABORT the write and heartbeat `error` with the guard
+  reason. Never persist a proposed body with fewer `## N.` program headers, a
+  missing `**program-slug:**` value, or an embedded `## N.` header that is not at
+  the start of a line.
 
 ## What to do each run
 1. **Load the program DAGs.** Read your brain's driving index with a targeted
    record read — it lists each program, its "Next move", its board epic, and the
-   named cards in its DAG. This index IS your work list. Do this before any board
-   expansion so the later board reads can stay narrow.
+   named cards in its DAG. Also read `completed-programs` if it exists; it is the
+   archive of closed programs and MUST NOT be treated as active work. This index
+   IS your work list. Do this before any board expansion so the later board reads
+   can stay narrow.
+
+   Before promoting work, keep the index small: if `active-programs` still
+   contains clearly closed sections (`✅`, `CLOSED`, `COMPLETE`, `RETIRED`, or
+   shipped cutover headings), split them into `completed-programs` as one-line
+   archive entries with their `[[program-slug]]` link. Use:
+   ```bash
+   "$last_stack/bin/last-stack-active-programs-guard" archive-closed \
+     --active "$active_body" \
+     --completed "$completed_body" \
+     --active-out "$new_active_body" \
+     --completed-out "$new_completed_body"
+   "$last_stack/bin/last-stack-active-programs-guard" check \
+     "$active_body" \
+     "$new_active_body" \
+     --completed-after "$new_completed_body"
+   ```
+   Then write both records from staged body files and point-read them back. If
+   the guard reports malformed or potentially truncated input/output, do not
+   rewrite either record; heartbeat an `error` so morning-sync sees the failure.
 
 2. **Snapshot the board narrowly.** Read the needed columns sequentially:
    `<board CLI> list --column todo --json`, then `doing`, `review`, `done`, and
@@ -120,6 +151,9 @@ index and guarantee each unblocked one has its next card in `todo`.
 - Respect gate headers and unmet deps absolutely.
 - Verify facts against the default branch before writing them into a brief — the
   work may already be merged.
+- Prefer edit-in-place updates to a single active program's prose. Do not
+  regenerate the entire `active-programs` body from model output; that is the
+  failure mode that can silently drop tail programs under an output budget.
 
 ## Output
 - A per-program one-liner: `<program> → next card <slug>: <already moving |
