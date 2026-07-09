@@ -21,6 +21,10 @@ CLOSED_MARKERS = (
     "prod cutover shipped",
     "dev capstone landed",
 )
+ACTIVE_SECTION_MARKER_RE = re.compile(
+    r"\b(reopened|re-opened|active|in-flight|in flight|todo|doing|review)\b",
+    re.IGNORECASE,
+)
 
 
 def read_text(path: str) -> str:
@@ -108,6 +112,10 @@ def is_closed_section(title: str) -> bool:
     return any(marker in title_lower for marker in CLOSED_MARKERS)
 
 
+def has_active_board_state(title: str, section: str) -> bool:
+    return ACTIVE_SECTION_MARKER_RE.search(f"{title}\n{section}") is not None
+
+
 def archive_line(title: str, section: str) -> str:
     slug_match = PROGRAM_SLUG_RE.search(section)
     if slug_match:
@@ -130,7 +138,7 @@ def archive_closed(active_path: str, completed_path: str, active_out: str, compl
     kept: list[str] = []
     archived: list[str] = []
     for _ordinal, title, section in sections:
-        if is_closed_section(title):
+        if is_closed_section(title) and not has_active_board_state(title, section):
             line = archive_line(title, section)
             if line not in completed:
                 archived.append(line)
