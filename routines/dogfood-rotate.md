@@ -49,11 +49,20 @@ with every actionable blocker and papercut discovered.
 1. Parse the `## Features` entries and the auto-maintained rotation log in
    `dogfood-registry`.
 2. Exclude entries listed under "Manual / rig-required surfaces".
-3. A feature is eligible when its cadence has elapsed since `last_run`, or when
+3. Exclude entries marked retired or otherwise ineligible anywhere in the
+   registry's durable maintenance notes. The canonical form is a
+   `## Retired / ineligible auto-rotation surfaces` section with a table or
+   bullet naming the feature slug and its reason. Treat `status: retired`,
+   `eligible: false`, `auto-rotation: false`, or an equivalent explicit
+   retirement note in that section as authoritative even if the older `##
+   Features` entry and rotation-log row remain for history. Do not file
+   recipe-broken cards for retired entries; select the next eligible supported
+   surface instead.
+4. A feature is eligible when its cadence has elapsed since `last_run`, or when
    it has no log row / `never`.
-4. Pick the stalest eligible feature. For equal staleness, prefer shorter
+5. Pick the stalest eligible feature. For equal staleness, prefer shorter
    cadence, then `build` track over `maintain`.
-5. Dogfood one feature per run. Do not skip a feature just because its prior run
+6. Dogfood one feature per run. Do not skip a feature just because its prior run
    failed; retrying blockers is part of the signal. If the recipe itself is
    structurally impossible, file or reuse a `fix-dogfood-recipe-*` card.
 
