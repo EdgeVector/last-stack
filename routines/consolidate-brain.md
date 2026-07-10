@@ -58,6 +58,13 @@ Statuses differ by record type — use your store's terminal enums, e.g.:
    honest **Why / decision / Next move**. Use `<board CLI> show <slug> --json`
    for the one card whose full body you need; do not use broad/full-body board
    reads.
+   Before editing prose, stage the active-programs body and a board snapshot with
+   at least `slug` and `column`, then run
+   `<last-stack>/bin/last-stack-active-programs-guard stale-report --active
+   <active-body> --board <snapshot-json>`. Treat `drained` reports as the primary
+   candidate list for retiring stale program prose or moving it to the completed
+   archive; treat `mixed` reports as ordinary progress notes and keep the live
+   next card visible.
    Convention: **brain = why/decision; board = what's in flight; if the index
    disagrees with the board, the board wins.** Curate the human prose: add a
    newly-started program, retire a finished one, fix a stale next-move, name the

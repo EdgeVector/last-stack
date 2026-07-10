@@ -99,6 +99,17 @@ index and guarantee each unblocked one has its next card in `todo`.
    the guard reports malformed or potentially truncated input/output, do not
    rewrite either record; heartbeat an `error` so morning-sync sees the failure.
 
+   Also stage a narrow board snapshot for the card slugs named by
+   `active-programs` and run:
+   ```bash
+   "$last_stack/bin/last-stack-active-programs-guard" stale-report \
+     --active "$active_body" \
+     --board "$board_snapshot"
+   ```
+   If the report marks a section `drained`, do not generate or promote a new
+   card from that stale prose in this run. Report it as a consolidation candidate
+   so `consolidate-brain` can retire or refresh the program deliberately.
+
 2. **Snapshot the board narrowly.** Read the needed columns sequentially:
    `<board CLI> list --column todo --json`, then `doing`, `review`, `done`, and
    `backlog` only if you need to promote from backlog. Do not launch these reads

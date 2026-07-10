@@ -51,6 +51,11 @@ read/write, fail loudly if the resolved path is empty or starts with
   doing --json`; never load the whole board with `--all`, `--wide`, or full
   bodies. For a `review`-column card, use that card's `show` body to capture the
   first `BLOCKED:`/`STALLED:` line.
+- Stale-index guard: stage the card snapshot you already read as JSON containing
+  at least `slug` and `column`, then run
+  `<last-stack>/bin/last-stack-active-programs-guard stale-report --active
+  <active-body> --board <snapshot-json>`. This is a dry-run evidence report; it
+  must not rewrite human prose.
 
 ## Each run — do exactly this
 1. **Orient.** Read the driving index body first. Extract the live candidate
@@ -99,9 +104,14 @@ read/write, fail loudly if the resolved path is empty or starts with
    updated blocks are present; retry the put ONCE if the shared node dropped the
    write. Diff-check: nothing outside the `rollup:start/end` blocks should have
    changed.
-7. **Report + exit.** One short summary: how many programs rolled up, done/total
-   per program, every `blocked-needs-human` surfaced (slug + reason), and any
-   "candidate to close" programs. Then EXIT.
+7. **Surface stale prose evidence.** Run the stale-index guard against the same
+   staged active body and board snapshot. If it reports a `drained` section, name
+   that section in the summary as a consolidation candidate; do not edit prose
+   here.
+8. **Report + exit.** One short summary: how many programs rolled up, done/total
+   per program, every `blocked-needs-human` surfaced (slug + reason), any
+   "candidate to close" programs, and any stale/drained sections from the guard.
+   Then EXIT.
 
 > **Heartbeat (optional but recommended).** LAST action, even if nothing changed:
 > call `<last-stack>/bin/last-stack-fbrain-append-heartbeat --line
