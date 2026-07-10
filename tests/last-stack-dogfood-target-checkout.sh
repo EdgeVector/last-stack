@@ -20,15 +20,6 @@ git -C "$tmp/seed" push -u origin HEAD:main >/dev/null 2>&1
 git clone "$tmp/origin.git" "$tmp/target" >/dev/null 2>&1
 git -C "$tmp/target" checkout main >/dev/null 2>&1
 
-printf 'two\n' >> "$tmp/seed/file.txt"
-git -C "$tmp/seed" commit -am two >/dev/null
-git -C "$tmp/seed" push origin HEAD:main >/dev/null 2>&1
-
-printf 'dirty\n' > "$tmp/target/dirty.txt"
-before_head="$(git -C "$tmp/target" rev-parse HEAD)"
-before_upstream="$(git -C "$tmp/target" rev-parse --verify -q '@{u}')"
-before_status="$(git -C "$tmp/target" status --porcelain=v1 --untracked-files=all)"
-
 selected_from() {
   awk -F '\t' '
     /^RESULT\t/ {
@@ -40,6 +31,32 @@ selected_from() {
     }
   '
 }
+
+printf 'two\n' >> "$tmp/seed/file.txt"
+git -C "$tmp/seed" commit -am two >/dev/null
+git -C "$tmp/seed" push origin HEAD:main >/dev/null 2>&1
+
+clean_before_head="$(git -C "$tmp/target" rev-parse HEAD)"
+clean_before_upstream="$(git -C "$tmp/target" rev-parse --verify -q '@{u}')"
+clean_before_status="$(git -C "$tmp/target" status --porcelain=v1 --untracked-files=all)"
+
+clean_created="$(LAST_STACK_DOGFOOD_TARGET_ROOTS="$tmp/clean-managed-targets" \
+  "$ROOT/bin/last-stack-dogfood-target-checkout" "$tmp/target")"
+grep -q $'^TARGET\t.*\tresult=stale\treason=remote-upstream-advanced-without-local-fetch$' <<< "$clean_created"
+grep -q $'^SELECTED\tpath=.*clean-managed-targets/origin.*\tresult=fresh\t' <<< "$clean_created"
+grep -q $'\tresult=ok\treason=current-isolated-checkout$' <<< "$clean_created"
+
+selected="$(selected_from <<< "$clean_created")"
+test "$selected" = "$tmp/clean-managed-targets/origin"
+test "$(git -C "$selected" rev-parse HEAD)" = "$(git -C "$tmp/origin.git" rev-parse main)"
+test "$(git -C "$tmp/target" rev-parse HEAD)" = "$clean_before_head"
+test "$(git -C "$tmp/target" rev-parse --verify -q '@{u}')" = "$clean_before_upstream"
+test "$(git -C "$tmp/target" status --porcelain=v1 --untracked-files=all)" = "$clean_before_status"
+
+printf 'dirty\n' > "$tmp/target/dirty.txt"
+before_head="$(git -C "$tmp/target" rev-parse HEAD)"
+before_upstream="$(git -C "$tmp/target" rev-parse --verify -q '@{u}')"
+before_status="$(git -C "$tmp/target" status --porcelain=v1 --untracked-files=all)"
 
 if LAST_STACK_DOGFOOD_TARGET_MANAGE=0 \
   LAST_STACK_DOGFOOD_TARGET_ROOTS="$tmp/no-managed-targets" \
