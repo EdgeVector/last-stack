@@ -33,6 +33,44 @@ EOF_BEFORE
 cp "$before" "$after"
 "$ROOT/bin/last-stack-active-programs-guard" check "$before" "$after"
 
+board="$tmp/board.json"
+proof="$tmp/proof-slugs.txt"
+cat > "$board" <<'EOF_BOARD'
+[
+  {"slug":"done-card","column":"done"},
+  {"slug":"live-card","column":"doing"},
+  {"slug":"mixed-done-card","column":"done"}
+]
+EOF_BOARD
+cat > "$proof" <<'EOF_PROOF'
+gone-card
+EOF_PROOF
+cat > "$after" <<'EOF_STALE'
+## 1. Drained stale program
+**program-slug:** `[[drained-program]]`
+Next move still points at `done-card` and `gone-card`.
+<!-- rollup:start | auto-maintained hourly by program-rollup — edit the prose above, NOT this block | updated 2026-07-10T00:00Z -->
+**Status (auto):** 1/2 landed
+cards: done-card, gone-card (gone)
+<!-- rollup:end -->
+
+## 2. Mixed active program
+**program-slug:** `[[mixed-program]]`
+Next move still includes `mixed-done-card`, but `live-card` is doing.
+<!-- rollup:start | auto-maintained hourly by program-rollup — edit the prose above, NOT this block | updated 2026-07-10T00:00Z -->
+**Status (auto):** 1/2 landed · in flight: live-card (doing)
+cards: mixed-done-card, live-card
+<!-- rollup:end -->
+EOF_STALE
+cp "$after" "$tmp/stale-before"
+"$ROOT/bin/last-stack-active-programs-guard" stale-report \
+  --active "$after" \
+  --board "$board" \
+  --proof-slugs "$proof" > "$tmp/stale-report"
+grep -q 'Drained stale program.*drained.*done-card (done).*gone-card (gone, proof)' "$tmp/stale-report"
+grep -q 'Mixed active program.*mixed.*mixed-done-card (done).*live-card (doing)' "$tmp/stale-report"
+cmp "$tmp/stale-before" "$after"
+
 head -n 7 "$before" > "$after"
 if "$ROOT/bin/last-stack-active-programs-guard" check "$before" "$after" >/dev/null 2>"$tmp/err"; then
   echo "expected truncated rewrite to fail" >&2
