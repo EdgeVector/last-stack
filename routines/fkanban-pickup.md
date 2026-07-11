@@ -69,6 +69,8 @@ read/write, fail loudly if the resolved path is empty or starts with
    concurrent reads", treat it as busy-node backpressure: do not run doctor/init
    or restart anything; append/emit a `fkanban-pickup ... noop busy-node`
    outcome if possible and EXIT so the next scheduled run retries.
+   Do not append `--all` to this read. JSON output is already uncapped, and
+   `--all` is not part of the ready-queue selector.
 2. Eligible = a card in the `todo` column whose body has parseable `Repo:` and
    `Base:` header lines. `Repo:` must be either `owner/name` or an absolute local
    Git checkout path. `todo` is the ready queue — only work cards promoted there.

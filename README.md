@@ -63,6 +63,11 @@ Graph, and LastSecrets. LastGit is intentionally excluded until it is stable
 enough for the public bundle. See
 [`docs/lastdb-apps.md`](docs/lastdb-apps.md) for the full guide.
 
+Agents should use the separate setup path in
+[`docs/lastdb-apps-agent.md`](docs/lastdb-apps-agent.md), or the static
+[`docs/lastdb-apps-agent.html`](docs/lastdb-apps-agent.html) copy when a
+client-rendered docs page appears blank.
+
 > Prefer to copy skills by hand? Each skill is a self-contained directory under
 > `skills/` — `cp -R skills/<name> ~/.claude/skills/`. `setup` just automates that
 > across every harness and keeps them updatable.

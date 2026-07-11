@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LastDB Apps Agent Setup</title>
+  <meta name="description" content="Agent-readable setup guide for installing LastDB apps, fbrain, fkanban, fsituations, Dogfood Graph, and LastSecrets.">
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #fbfaf7;
+      --fg: #282828;
+      --muted: #665c54;
+      --border: #d5c4a1;
+      --code-bg: #f2e5bc;
+      --link: #076678;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #1d2021;
+        --fg: #ebdbb2;
+        --muted: #bdae93;
+        --border: #504945;
+        --code-bg: #282828;
+        --link: #83a598;
+      }
+    }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font: 16px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      max-width: 840px;
+      margin: 0 auto;
+      padding: 40px 20px 64px;
+    }
+    h1, h2 {
+      line-height: 1.2;
+    }
+    h1 {
+      margin: 0 0 12px;
+      font-size: 2rem;
+    }
+    h2 {
+      margin-top: 32px;
+      font-size: 1.25rem;
+    }
+    p, li {
+      color: var(--muted);
+    }
+    a {
+      color: var(--link);
+    }
+    pre {
+      overflow-x: auto;
+      padding: 14px;
+      border: 1px solid var(--border);
+      background: var(--code-bg);
+    }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+    .note {
+      border: 1px solid var(--border);
+      padding: 14px;
+      background: color-mix(in srgb, var(--code-bg) 70%, transparent);
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>LastDB Apps Agent Setup</h1>
+    <p>This page is for AI coding agents that need to install or verify the LastDB app stack for a user. It is self-contained HTML so agents and crawlers can read the setup steps without executing JavaScript or waiting for JSON-loaded content.</p>
+
+    <p>Markdown source: <a href="./lastdb-apps-agent.md">lastdb-apps-agent.md</a>. Human app-stack page: <a href="./lastdb-apps.md">lastdb-apps.md</a>.</p>
+
+    <h2>Goal</h2>
+    <p>Install LastDB plus the app tools that make the local brain/board workflow work:</p>
+    <ul>
+      <li>LastDB daemon</li>
+      <li>Brain (<code>fbrain</code>)</li>
+      <li>Kanban (<code>fkanban</code>)</li>
+      <li>Situations (<code>fsituations</code>)</li>
+      <li>Dogfood Graph</li>
+      <li>LastSecrets</li>
+    </ul>
+    <p>LastGit is intentionally not part of this public app bundle yet.</p>
+
+    <h2>Preconditions</h2>
+    <ol>
+      <li>You are allowed to install developer tools for the user.</li>
+      <li>Homebrew is available on macOS if you want the daemon installed automatically.</li>
+      <li>Bun is available or can be installed before app dependency installation.</li>
+      <li>You are not handling raw secrets. If secrets are needed, store and retrieve them through LastSecrets, never through chat or shell history.</li>
+    </ol>
+
+    <h2>Install</h2>
+    <pre><code>git clone https://github.com/EdgeVector/last-stack ~/.last-stack
+~/.last-stack/setup
+~/.last-stack/bin/last-stack-install-apps</code></pre>
+    <p>The installer downloads app repos under <code>~/lastdb-apps</code> by default, installs the LastDB daemon with Homebrew, runs app dependency installs, and links supported CLI commands.</p>
+
+    <p>Use a custom app directory:</p>
+    <pre><code>~/.last-stack/bin/last-stack-install-apps --dir ~/src/lastdb-apps</code></pre>
+
+    <p>Skip Homebrew when LastDB is already installed:</p>
+    <pre><code>~/.last-stack/bin/last-stack-install-apps --no-brew</code></pre>
+
+    <p>Skip command linking when you only need checkouts:</p>
+    <pre><code>~/.last-stack/bin/last-stack-install-apps --no-link</code></pre>
+
+    <h2>Start LastDB</h2>
+    <pre><code>brew services start lastdb</code></pre>
+    <p>If Homebrew services are unavailable, start the daemon using the local LastDB daemon command available in that installation. Do not assume the retired <code>http://127.0.0.1:9001</code> TCP endpoint is the health check for the modern brain/kanban tools.</p>
+
+    <h2>Initialize Apps</h2>
+    <pre><code>fbrain init --grant-consent  # setup Brain
+fkanban init                 # setup Kanban
+fsituations init
+lastsecrets init</code></pre>
+
+    <p>Then verify the app layer with socket-backed reads:</p>
+    <pre><code>fkanban list
+fbrain get routine-heartbeats --type reference</code></pre>
+
+    <p><code>fkanban list</code> succeeding means the LastDB-backed board path is reachable. Do not run <code>fbrain doctor</code>, <code>fkanban doctor</code>, or <code>fkanban init</code> as routine health checks just because <code>:9001</code> is refused; those control-plane paths may still exercise stale TCP assumptions.</p>
+
+    <h2>Run Dogfood Graph</h2>
+    <pre><code>cd ~/lastdb-apps/dogfood-graph
+npm run dev</code></pre>
+
+    <h2>Path Fix</h2>
+    <p>If linked commands are not found, make sure Bun and local user binaries are on the shell path:</p>
+    <pre><code>export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"</code></pre>
+
+    <h2>Manual Install</h2>
+    <p>Install the daemon:</p>
+    <pre><code>brew install edgevector/lastdb/lastdb
+brew services start lastdb</code></pre>
+
+    <p>Download the app repos:</p>
+    <pre><code>mkdir -p ~/lastdb-apps
+cd ~/lastdb-apps
+git clone https://github.com/EdgeVector/fbrain.git
+git clone https://github.com/EdgeVector/fkanban.git
+git clone https://github.com/EdgeVector/fsituations.git
+git clone https://github.com/EdgeVector/dogfood-graph.git
+git clone https://github.com/EdgeVector/lastsecrets.git</code></pre>
+
+    <p>Install dependencies:</p>
+    <pre><code>for app in fbrain fkanban fsituations dogfood-graph lastsecrets; do
+  bun install --cwd "$HOME/lastdb-apps/$app"
+done</code></pre>
+
+    <p>Link commands:</p>
+    <pre><code>cd ~/lastdb-apps/fbrain && bun link
+cd ~/lastdb-apps/fkanban && bun run install-cli
+ln -snf ~/lastdb-apps/fsituations/bin/fsituations ~/.local/bin/fsituations
+cd ~/lastdb-apps/lastsecrets && bun link</code></pre>
+
+    <h2>If The Web Page Looks Blank</h2>
+    <div class="note">
+      <p>Report the actual observation: "The browser-visible page is blank" or "the initial HTML only contains a JavaScript shell." Do not claim the underlying setup data is unreadable until you have tried one of these source paths:</p>
+      <pre><code>curl -fsSL https://raw.githubusercontent.com/EdgeVector/last-stack/main/docs/lastdb-apps-agent.md
+curl -fsSL https://raw.githubusercontent.com/EdgeVector/last-stack/main/docs/lastdb-apps-agent.html</code></pre>
+    </div>
+  </main>
+</body>
+</html>

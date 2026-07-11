@@ -30,25 +30,26 @@ merged.
 > must instead be its Forgejo-API equivalent against `http://localhost:3300` —
 > their GitHub copies are read-only 24h push-mirrors; `gh` there reads stale
 > state and cannot merge. Full command map + auth + the current venue map:
-> `fbrain get sop-forge-pr-workflow`. Essentials
-> (`TOKEN=$(security find-generic-password -s forgejo-token -w)`,
-> `REPO=http://localhost:3300/api/v1/repos/EdgeVector/<repo>`, all calls
-> `-H "Authorization: token $TOKEN"`):
-> `git push origin <branch>` works as-is (origin already points at the forge);
-> create PR = `POST $REPO/pulls` with `{"title","body","head","base":"main"}`;
-> arm auto-merge = `POST $REPO/pulls/<n>/merge` with
-> `{"Do":"merge","merge_when_checks_succeed":true,"delete_branch_after_merge":true}`
+> `fbrain get sop-forge-pr-workflow`. Essentials: use
+> `$HOME/.last-stack/bin/last-stack-forge-api` for Forgejo API calls instead of
+> hand-building `TOKEN=... curl ... -H "Authorization: token $TOKEN"` snippets,
+> and use `$HOME/.last-stack/bin/last-stack-forge-git -C <repo> <git-args...>`
+> if plain Forgejo `git fetch` / `push` / `ls-remote` cannot read credentials.
+> `git push origin <branch>` usually works as-is (origin already points at the
+> forge); create PR =
+> `last-stack-forge-api --method POST --data @body.json repos/EdgeVector/<repo>/pulls`;
+> arm auto-merge =
+> `last-stack-forge-api --method POST --data '{"Do":"merge","merge_when_checks_succeed":true,"delete_branch_after_merge":true}' repos/EdgeVector/<repo>/pulls/<n>/merge`
 > (native Forgejo auto-merge; NO merge queue; fold's branch protection requires
 > the `ci-required` Forgejo Actions check green, admins included — never bypass
 > it; exemem-infra/exemem-workspace/lastgit have NO forge gate yet, so arming
 > auto-merge merges IMMEDIATELY — be sure the work is done before arming);
-> **All forge API JSON reads must use the control-char-safe jq wrapper** because
-> Forgejo can return raw U+0000-U+001F bytes in PR bodies:
-> `curl -fsS "$URL" -H "Authorization: token $TOKEN" | "$last_stack/bin/last-stack-forge-json-jq" -r '...'`.
-> view = `GET $REPO/pulls/<n>` (merged=`.merged`, mergeable=`.mergeable`,
-> draft=`.draft`); CI = `GET $REPO/commits/<head-sha>/status`; update a BEHIND
-> branch = `POST $REPO/pulls/<n>/update`; comment =
-> `POST $REPO/issues/<n>/comments`; close = `PATCH $REPO/pulls/<n>` with
+> **All forge API JSON reads should go through `last-stack-forge-api --jq`**
+> because it routes projections through the control-char-safe jq wrapper.
+> view = `last-stack-forge-api repos/EdgeVector/<repo>/pulls/<n>` (merged=`.merged`, mergeable=`.mergeable`,
+> draft=`.draft`); CI = `last-stack-forge-api repos/EdgeVector/<repo>/commits/<head-sha>/status`; update a BEHIND
+> branch = `last-stack-forge-api --method POST repos/EdgeVector/<repo>/pulls/<n>/update`; comment =
+> `last-stack-forge-api --method POST --data @comment.json repos/EdgeVector/<repo>/issues/<n>/comments`; close = `last-stack-forge-api --method PATCH --data @close.json repos/EdgeVector/<repo>/pulls/<n>` with
 > `{"state":"closed"}`. No rerun-failed API — push an empty commit to re-trigger
 > a flaky run. The forge has no checks-watch equivalent of the GitHub CLI: hold
 > your turn by polling the head-commit status between forward actions instead.

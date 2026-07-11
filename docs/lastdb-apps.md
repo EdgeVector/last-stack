@@ -3,6 +3,13 @@
 This is the practical download path for the LastDB tools Tom is actively
 dogfooding and considers usable for other people to try.
 
+If you are an AI coding agent setting up LastDB for a user, use the dedicated
+agent guide instead:
+
+- [`lastdb-apps-agent.md`](lastdb-apps-agent.md)
+- [`lastdb-apps-agent.html`](lastdb-apps-agent.html) for agent/crawler contexts
+  that do not execute JavaScript or client-side JSON loaders.
+
 Included:
 
 - **LastDB**: the local daemon installed from the `edgevector/lastdb` Homebrew
