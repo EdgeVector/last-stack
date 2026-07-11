@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# Print a one-shot Forgejo Actions run/task snapshot.
+#
+# Use this instead of hand-rolled "sleep N; curl .../actions/runs; curl
+# .../actions/tasks" polling in routines. Scheduled routines should take one
+# snapshot, act on the current state, leave a heartbeat, and exit; the next wake
+# is the poll interval.
+#
+# MUST be run with a shell that can reach the forge TCP URL. In sandboxed Codex
+# Bash, localhost:3300 may be blocked and surface as "command not found: curl".
+set -euo pipefail
+
+ROOT="${FORGE_ROOT:-http://localhost:3300}"
+RUN_LIMIT="${FORGE_RUN_SNAPSHOT_RUN_LIMIT:-12}"
+TASK_LIMIT="${FORGE_RUN_SNAPSHOT_TASK_LIMIT:-250}"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  last-stack-forge-run-snapshot <owner/repo> [run-number]
+  last-stack-forge-run-snapshot <owner/repo> --sha <head-sha>
+
+Prints current Forgejo Actions runs plus the jobs for the selected run(s).
+This is a one-shot status snapshot, not a waiter. Do not wrap it in sleep loops.
+
+Env:
+  FORGE_ROOT                      forge base URL (default http://localhost:3300)
+  FORGE_RUN_SNAPSHOT_RUN_LIMIT    runs to fetch (default 12)
+  FORGE_RUN_SNAPSHOT_TASK_LIMIT   tasks to fetch (default 250)
+  FORGE_TOKEN                     API token override; otherwise uses keychain
+
+Auth fallback:
+  security find-generic-password -s forgejo-token -w
+EOF
+}
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] || [ "$#" -lt 1 ]; then
+  usage
+  [ "$#" -lt 1 ] && exit 2 || exit 0
+fi
+
+repo="$1"; shift
+case "$repo" in */*) ;; *) echo "repo must be owner/name: $repo" >&2; exit 2 ;; esac
+
+TOKEN="${FORGE_TOKEN:-}"
+if [ -z "$TOKEN" ]; then
+  TOKEN="$(security find-generic-password -s forgejo-token -w 2>/dev/null || true)"
+fi
+[ -n "$TOKEN" ] || { echo "no forge token available (FORGE_TOKEN or keychain forgejo-token)" >&2; exit 3; }
+
+api() {
+  curl -fsS -H "Authorization: token $TOKEN" "$ROOT/api/v1/$1"
+}
+
+selector=""
+sha=""
+if [ "${1:-}" = "--sha" ]; then
+  [ -n "${2:-}" ] || { echo "--sha needs a value" >&2; exit 2; }
+  sha="$2"
+elif [ -n "${1:-}" ]; then
+  selector="$1"
+  case "$selector" in *[!0-9]*) echo "run-number must be numeric: $selector" >&2; exit 2 ;; esac
+fi
+
+runs_json="$(api "repos/$repo/actions/runs?limit=$RUN_LIMIT")"
+tasks_json="$(api "repos/$repo/actions/tasks?limit=$TASK_LIMIT")"
+
+if [ -n "$sha" ]; then
+  selector="$(printf '%s' "$runs_json" | jq -r --arg s "$sha" '
+    [.workflow_runs[]? | select((.commit_sha // .head_sha // "") | startswith($s))]
+    | (.[0].index_in_repo // .[0].run_number // empty)')"
+  [ -n "$selector" ] || { echo "no run found for sha $sha in latest $RUN_LIMIT runs" >&2; exit 4; }
+  echo "resolved sha $sha -> run $selector" >&2
+fi
+
+echo "RUNS"
+if [ -n "$selector" ]; then
+  printf '%s' "$runs_json" | jq -r --argjson rn "$selector" '
+    .workflow_runs[]?
+    | select((.index_in_repo // .run_number) == $rn)
+    | [
+        (.id // ""),
+        (.index_in_repo // .run_number // ""),
+        (.workflow_id // ""),
+        (.status // ""),
+        (.conclusion // ""),
+        ((.commit_sha // .head_sha // "")[0:12]),
+        (.prettyref // .head_branch // ""),
+        (.event // ""),
+        (.created // .created_at // ""),
+        (.started // .started_at // ""),
+        (.stopped // .updated_at // "")
+      ] | @tsv'
+else
+  printf '%s' "$runs_json" | jq -r '
+    .workflow_runs[]?
+    | [
+        (.id // ""),
+        (.index_in_repo // .run_number // ""),
+        (.workflow_id // ""),
+        (.status // ""),
+        (.conclusion // ""),
+        ((.commit_sha // .head_sha // "")[0:12]),
+        (.prettyref // .head_branch // ""),
+        (.event // ""),
+        (.created // .created_at // ""),
+        (.started // .started_at // ""),
+        (.stopped // .updated_at // "")
+      ] | @tsv'
+fi
+
+echo "JOBS"
+if [ -n "$selector" ]; then
+  printf '%s' "$tasks_json" | jq -r --argjson rn "$selector" '
+    [.workflow_runs[]? | select((.run_number // .index_in_repo) == $rn)] | sort_by(.id)
+    | to_entries[]
+    | [
+        (.value.id // ""),
+        (.value.run_number // .value.index_in_repo // ""),
+        (.key),
+        (.value.status // ""),
+        (.value.conclusion // ""),
+        (.value.name // ""),
+        (.value.started // .value.started_at // ""),
+        (.value.stopped // .value.updated_at // "")
+      ] | @tsv'
+else
+  printf '%s' "$tasks_json" | jq -r '
+    [.workflow_runs[]?] | sort_by(.run_number // .index_in_repo // 0, .id // 0)
+    | .[]
+    | [
+        (.id // ""),
+        (.run_number // .index_in_repo // ""),
+        "",
+        (.status // ""),
+        (.conclusion // ""),
+        (.name // ""),
+        (.started // .started_at // ""),
+        (.stopped // .updated_at // "")
+      ] | @tsv'
+fi

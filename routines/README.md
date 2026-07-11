@@ -262,6 +262,45 @@ release identity query the API instead:
 gh api repos/<owner>/<repo>/releases/latest --jq .tag_name
 ```
 
+When checking a self-hosted Forgejo Actions run from a scheduled routine, do not
+simulate polling with `sleep N` before repeated `curl` calls. Use the one-shot
+snapshot helper and let the next routine wake be the poll interval:
+
+```bash
+"$last_stack/bin/last-stack-forge-run-snapshot" <owner>/<repo> [run-number]
+"$last_stack/bin/last-stack-forge-run-snapshot" <owner>/<repo> --sha <head-sha>
+```
+
+The helper prints current run/job state only; it is not a waiter. If the state is
+still pending, leave a heartbeat or card note and exit. For failing job logs,
+continue to use `last-stack-forge-ci-log`.
+
+For other one-shot Forgejo API reads or writes, use the shared API wrapper
+instead of repeating `TOKEN=...; curl http://localhost:3300/api/v1/... | jq ...`
+in routine prompts:
+
+```bash
+"$last_stack/bin/last-stack-forge-api" repos/EdgeVector/fold/pulls?state=open --jq '.[] | [.number,.title] | @tsv'
+"$last_stack/bin/last-stack-forge-api" --method POST --data @body.json repos/EdgeVector/fold/pulls
+```
+
+The wrapper handles token lookup, URL prefixing, and control-character-safe
+`jq` projections. It is still a one-shot call: do not wrap it in sleep loops.
+
+For git operations against local Forgejo remotes, use the matching git wrapper
+instead of open-coding `TOKEN=...; git -c http.<scope>.extraHeader=...`:
+
+```bash
+"$last_stack/bin/last-stack-forge-git" -C /Users/tomtang/code/edgevector/fold fetch origin main
+"$last_stack/bin/last-stack-forge-git" -C /Users/tomtang/code/edgevector/fold ls-remote --heads origin main
+"$last_stack/bin/last-stack-forge-git" -C /Users/tomtang/code/edgevector/fold push -u origin "$branch"
+```
+
+If a legacy prompt pipes Forgejo API output into `last-stack-forge-json-jq`, that
+compatibility helper exists now. For new prompts, keep using
+`last-stack-forge-api --jq` so auth, URL prefixing, and JSON cleanup remain in
+one place.
+
 ## The golden rules every routine obeys
 
 These are baked into every template below; they're the difference between a

@@ -44,8 +44,13 @@ Rules:
 - Do not stamp guessed repos. If ownership is genuinely unknown, leave the
   repo header out and make the body say what must be decided.
 - Put multi-repo scope in the body, not in `Repo:`.
-- Use `Kind: tracker` for non-code tracking, `Kind: pr` for code work, and
-  `Kind: validation` for proof-only runs when that distinction matters.
+- Do not create parent/project cards in F-Kanban. Track umbrellas, programs,
+  capstones, broad trackers, and other parent context as F-Brain North Stars.
+- Use `Kind: pr` for executable code/doc work and `Kind: validation` for
+  proof-only runs. `registry`, `meta`, `tracker`, `umbrella`, `program`, and
+  `capstone` are legacy read-only/non-executable kinds and new writes reject
+  them. If work is not agent-pickup or an explicit human wait, it does not
+  belong in F-Kanban.
 
 ## Write Bodies
 
@@ -67,10 +72,31 @@ What should be true when the card is done.
 Important links, prior PRs, fbrain records, commands, or constraints.
 
 ## END STATE
-- Code/config/docs change landed, or tracker proof recorded.
+- Code/config/docs change landed, or validation proof recorded.
 - Validation performed and noted.
 - Card moved only when the stated end state is true.
 ```
+
+For CLI writes, keep the card body off the shell command line. Pipe a
+single-quoted heredoc on stdin:
+
+```bash
+fkanban add <slug> --title "Short title" --column todo --north-star <north-star> <<'EOF'
+Repo: EdgeVector/fold
+Base: main
+Kind: pr
+
+## PROBLEM
+What is broken or missing.
+
+## END STATE
+- The desired outcome is proven.
+EOF
+```
+
+Do not use `--body "$(cat <<EOF ...)"` or any shell-expanded string for
+Markdown/card text. Backticks, `$()`, and card headers can be evaluated by the
+shell before fkanban sees them, corrupting the card.
 
 Avoid boilerplate that creates false routing signals. In particular, do not use
 free-form prose like "fbrain agent" or "fkanban agent" as an ownership hint.

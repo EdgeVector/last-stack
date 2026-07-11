@@ -1,12 +1,12 @@
 ---
 name: fkanban-pickup
-cadence: hourly
-description: Drain the ready board queue as fast as is safe — pick the top ready `todo` cards, optionally BATCH same-subsystem cards into one PR to cut CI cost, and fan them out to background fkanban-agent (WORK) workers, each driving its card(s) to a MERGED PR. If the queue is empty, just exit (or, with `Idle mode: ship-one-simplification` opted in, ship one small simplification PR instead). Never authors/ships card work itself.
+cadence: every 20 minutes
+description: Drain the ready board queue as fast as is safe — form up to three work-units from ready `todo` cards and fan them out to background fkanban-agent (WORK) workers, each driving one singleton or batch to a separate MERGED PR. If the queue is empty, just exit (or, with `Idle mode: ship-one-simplification` opted in, ship one small simplification PR instead). Never authors/ships card work itself.
 ---
 
-You pick up to `<N, e.g. 8>` ready board cards per run and fan them out — one
-background agent per WORK-UNIT (a singleton card, or a BATCH of ≤3 same-subsystem
-cards landed as one PR) — each driving its card(s) all the way to a MERGED PR
+You form up to `<N, e.g. 3>` work-units per run from ready board cards and fan
+them out — one background agent per work-unit, one branch, one separate PR —
+each driving its singleton card or 2-3 card batch all the way to a MERGED PR
 (not just an opened PR), then exit. This is the WORK-mode counterpart to the
 `fkanban-watch` (reconcile) routine — do NOT do reconcile work here. The goal is
 to DRAIN THE READY QUEUE AS FAST AS IS SAFE every hour so cards don't back up.
@@ -18,10 +18,14 @@ that exact file. Otherwise use
 read/write, fail loudly if the resolved path is empty or starts with
 `/automations/`; that means the fallback was computed incorrectly.
 
-> **Why batch?** If your CI recompiles the whole workspace on every run
-> regardless of diff size, 3 small same-subsystem PRs each pay a full CI run
-> while one batched PR pays it once. Batching is a CI-cost lever — only batch
-> cards that share a subsystem so the combined PR stays reviewable.
+> **Throughput policy.** This routine optimizes for PR throughput at three
+> concurrent agents per full eligible pass. Batching is allowed inside each
+> agent: one work-unit may be either a singleton card or a 2-3 card same-repo,
+> same-base, same-subsystem batch. If enough work is eligible, spawn three
+> independent workers expected to produce three separate PRs. The only reason to
+> spawn fewer than `<N>` workers is that fewer than `<N>` work-units are
+> genuinely eligible after blockers, repo guards, collision checks, batching
+> opportunities, and shared-build-cache caps.
 
 ## Rate-limit guard (check FIRST)
 - Do NOT start if your agent account is rate-limited. Spawning many parallel
@@ -39,6 +43,14 @@ read/write, fail loudly if the resolved path is empty or starts with
 
 ## Setup
 - Drive the board CLI from `<board repo dir>` with `<board CLI> ...`.
+- Normalize the scheduled shell before any CLI-heavy work so GUI/sandboxed
+  launches can still find `git`, `gh`, `curl`, `jq`, `<board CLI>`, and
+  `<brain-cli>`:
+  ```bash
+  last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+  . "$last_stack/bin/last-stack-shell-prelude"
+  "$last_stack/bin/last-stack-cli-preflight" git curl jq gh <board-cli> <brain-cli>
+  ```
 - Each spawned agent follows the **fkanban-agent** skill, WORK mode — that skill
   is the source of truth for the per-card lifecycle. This prompt is just the
   trigger + selection + fan-out rule.
@@ -48,8 +60,14 @@ read/write, fail loudly if the resolved path is empty or starts with
   check the workspace brain/AGENTS.md for the repo's forge SOP before assuming
   GitHub, and never act on a read-only GitHub mirror.
 
-## Selection rule (pick up to `<N>` cards)
-1. `<board CLI> list --json`.
+## Selection rule (form up to `<N>` work-units)
+1. Read only the ready queue: `<board CLI> list --column todo --json`. If the
+   read returns `service_timeout`, "node did not respond", or "too many
+   concurrent reads", treat it as busy-node backpressure: do not run doctor/init
+   or restart anything; append/emit a `fkanban-pickup ... noop busy-node`
+   outcome if possible and EXIT so the next scheduled run retries.
+   Do not append `--all` to this read. JSON output is already uncapped, and
+   `--all` is not part of the ready-queue selector.
 2. Eligible = a card in the `todo` column whose body has parseable `Repo:` and
    `Base:` header lines. `Repo:` must be either `owner/name` or an absolute local
    Git checkout path. `todo` is the ready queue — only work cards promoted there.
@@ -72,7 +90,9 @@ read/write, fail loudly if the resolved path is empty or starts with
    This blocker conversion counts as forward action. Do it before computing
    work-units so the unchanged card is not logged as a recurring pickup skip.
 4. Sort eligible cards by priority (lowest `position`; tie-break oldest
-   `created_at`) and take the top `<N>`.
+   `created_at`) and take enough cards to form up to `<N>` work-units. Because
+   a work-unit may batch up to three cards, a full pass may select more than
+   `<N>` cards when same-subsystem batching is available.
 5. **Shared-build-cache sub-cap (if applicable):** if concurrent builds against
    one repo thrash a shared build cache (e.g. a workspace `target/` that can
    deadlock under `--all-targets`), cap how many of the selected cards may target
@@ -83,47 +103,45 @@ read/write, fail loudly if the resolved path is empty or starts with
    `doing`.
 6. If none are eligible, EXIT cleanly (see "Nothing to pick up").
 
-## Fan-out — spawn ONE background agent per WORK-UNIT
+## Fan-out — spawn ONE background agent per work-unit
 **Compute the work-units FIRST, before moving or spawning anything.**
 
-**STEP A — group selected cards into work-units (MANDATORY, do this first).** A
-work-unit is EITHER a singleton card OR a BATCH of 2–3 cards that share the SAME
-`Repo:` + SAME `Base:` + a shared **subsystem tag** (the epic). Define your
-subsystem tags for your codebase (a card's subsystem = the first such tag present
-in its `tags`). Whenever 2+ selected cards share an epic, batch them into one
-work-unit (≤3 per batch; a 4th+ same-epic card waits for next run). NEVER batch
-across different repos/bases; NEVER batch a `blocked`/`design-needed` card or one
-with a `BLOCKED:` note (keep it singleton). List your computed work-units
-explicitly before proceeding (e.g. "unit1 = BATCH[a, b, c] (subsystemX);
-unit2 = SINGLE[d]").
+**STEP A — group selected cards into up to `<N>` work-units.** A work-unit is
+either a singleton card or a batch of 2-3 cards that share the same `Repo:`, same
+`Base:`, and a shared subsystem tag. Prefer useful same-subsystem batches, but
+do not batch across unrelated surfaces just to fill a unit. A full eligible pass
+should produce three work-units, for example:
+`unit1 = BATCH[a,b,c]`, `unit2 = SINGLE[d]`, `unit3 = BATCH[e,f]`.
 
-**STEP B — for EACH work-unit:**
+**For EACH work-unit:**
 - FIRST move its card(s) to `doing` (`<board CLI> move <slug> doing`) so siblings
-  and the next run don't double-pick. For a batch, move ALL its cards.
+  and the next run don't double-pick. For a batch, move ALL cards in the unit.
 - Use the fkanban CLI-supported command shapes. `show` and `move` use the
   current/default board context; only commands whose help lists a board option
   may receive one.
-- Then spawn ONE background agent for that work-unit (run it in the background so
-  this parent isn't blocked) — ONE agent per unit, so a 3-card batch is ONE
-  agent/branch/PR, not three. Give each agent a fully self-contained prompt:
+- Then spawn ONE background agent for that work-unit (run it in the background
+  so this parent isn't blocked). A normal full pass with three eligible
+  work-units must spawn three background agents and should yield three separate
+  PRs. Give each agent a fully self-contained prompt:
   - Singleton: "Follow the fkanban-agent skill, WORK mode. Work EXACTLY this one
-    card: `<slug>`. Its Repo is `<repo>` and Base is `<base>`."
-  - Batch: "Follow the fkanban-agent skill, WORK mode (BATCH). Work these
-    same-subsystem cards as ONE combined PR: `<slug1>`, `<slug2>`[, `<slug3>`].
-    Shared Repo `<repo>`, Base `<base>`, epic `<subsystem>`. Implement all on ONE
-    branch, keep each card's change a coherent section of the PR body, and move
-    ALL of them to `done` only once the single PR MERGES. If one card proves
-    problematic (conflict, needs human judgment), SPLIT it out — leave it in
-    `doing`→`review` with a `BLOCKED:` note — and ship the rest; never let one
-    bad card strand the batch."
+    card: `<slug>`. Its Repo is `<repo>` and Base is `<base>`. Open and drive a
+    separate PR for this card; do not combine it with cleanup bumps or unrelated
+    routine fixes."
+  - Batch: "Follow the fkanban-agent skill, WORK mode. Work EXACTLY this batch:
+    `<slug1>`, `<slug2>`[, `<slug3>`]. Shared Repo `<repo>`, Base `<base>`,
+    subsystem `<subsystem>`. Open and drive one separate PR for this batch, with
+    a clear PR-body section for each card. Do not add cleanup bumps or unrelated
+    routine fixes. If one card proves genuinely blocked, split it out to
+    `review` with a `BLOCKED:` note and ship the rest if still coherent."
   - "Isolate your work only after a checkout-resolution guard: resolve `<repo>`
     to an explicit `<target-repo-root>` (never the aggregate workspace), verify
-    it with `$last_stack/bin/last-stack-repo-op-guard "$target_repo" "<workspace>"`
+    it with `last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"`,
+    `$last_stack/bin/last-stack-repo-op-guard "$target_repo" "<workspace>"`,
     and `git -C "$target_repo" rev-parse --show-toplevel`, then change into
     `$target_repo` before any `git fetch` or `git worktree add
     <worktrees-dir>/<lead-slug> -b fkanban/<lead-slug> origin/<base>` command
-    (for a batch, `<lead-slug>` = the highest-priority card). Never edit a shared
-    checkout in place; never stash/reset/clean a shared repo. The worker must
+    (`<lead-slug>` is the singleton slug or the highest-priority card in a
+    batch). Never edit a shared checkout in place; never stash/reset/clean a shared repo. The worker must
     use `gh -R <repo>` for GitHub commands. If `<repo>` cannot be resolved, it
     must block the card in `review` instead of probing the workspace root."
   - "Implement per the card brief, matching the repo's conventions and style.
@@ -138,8 +156,8 @@ unit2 = SINGLE[d]").
     `wait-merge` skill (or a sleepless `gh -R <repo> pr checks <n> --watch`, NEVER `sleep`)
     and act on each state change: re-arm if auto-merge was dropped,
     `gh -R <repo> pr update-branch <n>` if BEHIND, rebase if DIRTY, fix if a required check
-    fails. When MERGED, move the card (for a batch, EVERY card that shipped) to
-    `done` and EXIT."
+    fails. When MERGED, move every shipped card in the work-unit to `done` and
+    EXIT."
   - "When checking merge-queue membership, NEVER request `isInMergeQueue` through `gh pr view/list --json`; query the queue flag through the Last Stack `last-stack-gh-pr-queue-state` helper or `gh api graphql` with explicit owner/name variables, never `gh -R <repo> api graphql`."
   - "If you hit a GENUINE human-only blocker (ambiguous spec, a conflict needing
     product judgment, a required gate only a human can clear, a dependency on
@@ -188,7 +206,9 @@ limit, do NOT spawn it. Spawn exactly ONE background agent (no nested spawns, no
 > scoped to a single concern — dead code, a redundant branch, a needless
 > abstraction, a duplicated helper, an over-complex expression (reuse / clarity /
 > efficiency, NOT a behavior change, NOT a bug hunt), small enough to review in
-> one sitting. Make the edit, confirm the touched package still builds and its
+> one sitting. Source `$last_stack/bin/last-stack-shell-prelude` and run
+> `$last_stack/bin/last-stack-cli-preflight git curl jq gh` before shell-heavy
+> checks. Make the edit, confirm the touched package still builds and its
 > tests pass, open a PR (`gh -R <owner>/<repo> pr create --fill`, title prefixed `chore(simplify):`),
 > enable auto-merge per the repo's merge strategy (merge-queue repo: bare `gh -R
 > <owner>/<repo> pr merge <n> --auto`; plain auto-merge: add your strategy flag), then DRIVE IT TO
@@ -199,10 +219,11 @@ limit, do NOT spawn it. Spawn exactly ONE background agent (no nested spawns, no
 > / money-legal / irreversible. One simplification only.
 
 ## Hard rules
-- AT MOST `<N>` cards per run (and any shared-build-cache sub-cap from step 5) —
-  one background agent per GROUP. Each agent works one card OR one same-epic batch
-  (≤3) and drives its single PR to MERGED, or exits to `review` on a genuine
-  human-only blocker — no nested spawning, no `sleep`-loops, no idle parking.
+- AT MOST `<N>` work-units per run (and any shared-build-cache sub-cap from step 5) —
+  one background agent per work-unit, one branch, one separate PR. Each agent
+  works exactly one singleton card or one 2-3 card same-subsystem batch and
+  drives its PR to MERGED, or exits to `review` on a genuine human-only blocker
+  — no nested spawning, no `sleep`-loops, no idle parking.
 - Move each card to `doing` BEFORE spawning its agent.
 - Never kill the process hosting your brain/board node or any node you didn't
   start. Never `stash`/`reset`/`clean` a shared repo — every agent isolates with
@@ -220,9 +241,14 @@ empty, nothing to build." Then exit.
 > `<last-stack>/bin/last-stack-fbrain-append-heartbeat --line "fkanban-pickup
 > <ISO-ts> <ok|noop|error> <one-line outcome>"`. `morning-sync` reads
 > `routine-heartbeats` to make a silent pickup failure loud. Use `error` for the
-rate-limit abort; `noop` when the queue was empty AND you did not spawn the idle
-simplification agent; otherwise `ok` with the count of card agents spawned (and
-note the idle simplification agent if you spawned one).
+> rate-limit abort; `noop` when the queue was empty AND you did not spawn the idle
+> simplification agent; otherwise
+> `ok cards=<n> units=<n> spawned=<n> expected_prs=<n>` with selected card slugs,
+> work-unit grouping, and spawned worker ids. In a full eligible pass,
+> `units`, `spawned`, and `expected_prs` should all be `3`; `cards` may be
+> higher when batches are used. If unit/spawn/PR counts are lower, include the
+> concrete reason (`busy-node`, `fold-open-guard`, `only-<n>-eligible`,
+> `collision`, `blocked`, or `rate-limit`).
 >
 > If the parent spawned worker agents, the heartbeat must include the spawned
 > child/thread ids when the harness exposes them. If the harness leaves stale

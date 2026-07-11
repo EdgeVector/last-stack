@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# Small authenticated Forgejo API wrapper for Last Stack agents.
+#
+# Why this exists: agents repeatedly hand-roll:
+#   TOKEN=$(security find-generic-password -s forgejo-token -w)
+#   curl -H "Authorization: token $TOKEN" http://localhost:3300/api/v1/... | jq ...
+# That repeats auth boilerplate, gets sandbox/TCP behavior misdiagnosed as a
+# missing curl, and reopens raw-control-character jq failures. This helper is a
+# one-shot API call; it does not wait or poll.
+#
+# MUST be run with a shell that can reach the forge TCP URL. In sandboxed Codex
+# Bash, localhost:3300 may be blocked and surface as "command not found: curl".
+set -euo pipefail
+
+ROOT="${FORGE_ROOT:-http://localhost:3300}"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  last-stack-forge-api [--method METHOD] [--data JSON|@file] [--jq FILTER] <api-path-or-url>
+
+Examples:
+  last-stack-forge-api repos/EdgeVector/fold/pulls?state=open --jq '.[] | [.number,.title] | @tsv'
+  last-stack-forge-api --method POST --data @body.json repos/EdgeVector/fold/pulls
+  last-stack-forge-api --method POST --data '{"Do":"merge","merge_when_checks_succeed":true}' repos/EdgeVector/fold/pulls/123/merge
+
+Path forms:
+  repos/OWNER/REPO/...      -> $FORGE_ROOT/api/v1/repos/OWNER/REPO/...
+  /api/v1/repos/...         -> $FORGE_ROOT/api/v1/repos/...
+  http://...                -> used as-is
+
+Env:
+  FORGE_ROOT     forge base URL (default http://localhost:3300)
+  FORGE_TOKEN    API token override; otherwise uses keychain forgejo-token
+
+Run this with a shell that can reach localhost:3300. In sandboxed Codex Bash,
+TCP to the local forge may be blocked and look like a missing curl binary.
+EOF
+}
+
+method="GET"
+data=""
+jq_filter=""
+target=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    -X|--method)
+      [ -n "${2:-}" ] || { echo "$1 requires a value" >&2; exit 2; }
+      method="$2"
+      shift 2
+      ;;
+    -d|--data)
+      [ -n "${2:-}" ] || { echo "$1 requires a value" >&2; exit 2; }
+      data="$2"
+      shift 2
+      ;;
+    --jq)
+      [ -n "${2:-}" ] || { echo "$1 requires a value" >&2; exit 2; }
+      jq_filter="$2"
+      shift 2
+      ;;
+    --)
+      shift
+      [ "$#" -gt 0 ] || { echo "-- must be followed by the API path" >&2; exit 2; }
+      [ -z "$target" ] || { echo "multiple API paths provided: $target and $1" >&2; exit 2; }
+      target="$1"
+      shift
+      ;;
+    -*)
+      echo "unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+    *)
+      [ -z "$target" ] || { echo "multiple API paths provided: $target and $1" >&2; exit 2; }
+      target="$1"
+      shift
+      ;;
+  esac
+done
+
+[ -n "$target" ] || { usage >&2; exit 2; }
+
+case "$target" in
+  http://*|https://*)
+    url="$target"
+    ;;
+  /api/v1/*)
+    url="$ROOT$target"
+    ;;
+  api/v1/*)
+    url="$ROOT/${target}"
+    ;;
+  /*)
+    url="$ROOT/api/v1$target"
+    ;;
+  *)
+    url="$ROOT/api/v1/$target"
+    ;;
+esac
+
+token="${FORGE_TOKEN:-}"
+if [ -z "$token" ]; then
+  token="$(security find-generic-password -s forgejo-token -w 2>/dev/null || true)"
+fi
+[ -n "$token" ] || { echo "no forge token available (FORGE_TOKEN or keychain forgejo-token)" >&2; exit 3; }
+
+curl_args=(-fsS -X "$method" -H "Authorization: token $token")
+if [ -n "$data" ]; then
+  curl_args+=(-H "Content-Type: application/json" --data "$data")
+fi
+
+if [ -n "$jq_filter" ]; then
+  # Drop illegal raw controls before jq. Keep JSON whitespace: tab, LF, CR.
+  curl "${curl_args[@]}" "$url" | perl -0pe 's/[\x00-\x08\x0B\x0C\x0E-\x1F]//g' | jq -r "$jq_filter"
+else
+  curl "${curl_args[@]}" "$url"
+fi

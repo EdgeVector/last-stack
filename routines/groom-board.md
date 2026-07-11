@@ -20,7 +20,9 @@ read/write, fail loudly if the resolved path is empty or starts with
 `/automations/`; that means the fallback was computed incorrectly.
 
 ## Setup
-- Read your board skill / CLI contract before acting.
+- Read the `fkanban-grooming` skill and your board skill / CLI contract before
+  acting. Use `fkanban-grooming` for dependency-stub reconciliation, stale
+  generated blockers, review/doing lane hygiene, and pickup-ready counts.
 - Drive the board CLI from `<board repo dir>` with `<board CLI> <cmd>`.
 - First: `<board CLI> doctor` (or your health check). If the node is
   unreachable/unprovisioned, STOP and report — do NOT restart, kill, or touch the

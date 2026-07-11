@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Compatibility jq wrapper for Forgejo JSON containing raw control bytes.
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  last-stack-forge-json-jq <jq-args...>
+
+Reads JSON from stdin, strips illegal raw ASCII control bytes while preserving
+JSON whitespace, then execs jq with the provided arguments. Prefer
+last-stack-forge-api --jq for new Forgejo API calls; this wrapper keeps older
+curl | last-stack-forge-json-jq snippets working.
+EOF
+}
+
+case "${1:-}" in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+esac
+
+if ! command -v jq >/dev/null 2>&1; then
+  echo "jq not found on PATH" >&2
+  exit 127
+fi
+
+perl -0pe 's/[\x00-\x08\x0B\x0C\x0E-\x1F]//g' | jq "$@"

@@ -29,12 +29,34 @@ git remote -v
 For a forge-hot repo, `origin` should point at Forgejo. Push branches to
 `origin`; never push to a `github` remote.
 
-Load credentials from the macOS keychain when using the API:
+Prefer the Last Stack API wrapper for Forgejo calls. It loads the macOS keychain
+token, prefixes `/api/v1`, and can run a control-character-safe `jq` projection:
 
 ```bash
-TOKEN=$(security find-generic-password -s forgejo-token -w)
-ROOT=http://localhost:3300
+last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+forge_api="$last_stack/bin/last-stack-forge-api"
+
+"$forge_api" repos/EdgeVector/fold/pulls?state=open --jq '.[] | [.number,.title] | @tsv'
 ```
+
+Run forge API helpers from a shell that can reach `localhost:3300`; sandboxed
+Codex Bash may block that TCP path and surface it as `command not found: curl`.
+
+For normal git operations against Forgejo remotes, use the git wrapper instead
+of hand-building `http.<scope>.extraHeader` commands. It injects the same
+keychain token only for this one invocation:
+
+```bash
+forge_git="$last_stack/bin/last-stack-forge-git"
+"$forge_git" -C /Users/tomtang/code/edgevector/fold fetch origin main
+"$forge_git" -C /Users/tomtang/code/edgevector/fold ls-remote --heads origin main
+"$forge_git" -C /Users/tomtang/code/edgevector/fold push -u origin "$branch"
+```
+
+For new Forgejo API calls, prefer `last-stack-forge-api --jq`. If you inherit an
+older `curl | last-stack-forge-json-jq` snippet, the compatibility wrapper now
+exists, but do not add new uses unless `last-stack-forge-api --jq` cannot express
+the call.
 
 ## Create PR
 
@@ -43,10 +65,12 @@ Push the branch, then create the PR through the Forgejo API:
 ```bash
 git push origin "$branch"
 
-curl -s -X POST "$ROOT/api/v1/repos/EdgeVector/$repo/pulls" \
-  -H "Authorization: token $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "{\"title\":\"$title\",\"body\":\"$body\",\"head\":\"$branch\",\"base\":\"main\"}"
+body_json="$(jq -n \
+  --arg title "$title" \
+  --arg body "$body" \
+  --arg head "$branch" \
+  '{title:$title,body:$body,head:$head,base:"main"}')"
+"$forge_api" --method POST --data "$body_json" "repos/EdgeVector/$repo/pulls"
 ```
 
 Write a real PR body before requesting review or auto-merge. Include motivation,
@@ -58,10 +82,9 @@ Arm auto-merge immediately after creating the PR, ideally while required checks
 are still pending:
 
 ```bash
-curl -s -X POST "$ROOT/api/v1/repos/EdgeVector/$repo/pulls/$number/merge" \
-  -H "Authorization: token $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"Do":"merge","merge_when_checks_succeed":true,"delete_branch_after_merge":true}'
+"$forge_api" --method POST \
+  --data '{"Do":"merge","merge_when_checks_succeed":true,"delete_branch_after_merge":true}' \
+  "repos/EdgeVector/$repo/pulls/$number/merge"
 ```
 
 Forgejo 15.0.3 quirks:
@@ -77,8 +100,7 @@ List recent tasks and filter by commit SHA; the list mixes branches and stale
 attempts:
 
 ```bash
-curl -s "$ROOT/api/v1/repos/EdgeVector/$repo/actions/tasks?limit=100" \
-  -H "Authorization: token $TOKEN"
+"$forge_api" "repos/EdgeVector/$repo/actions/tasks?limit=100"
 ```
 
 For `fold`, the protected required context is exactly:
@@ -121,7 +143,7 @@ and an `/attempt/<n>/` path segment.
 After merge:
 
 ```bash
-git fetch origin main
+"$forge_git" -C /path/to/repo fetch origin main
 git branch --merged origin/main
 ```
 

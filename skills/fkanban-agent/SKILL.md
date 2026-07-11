@@ -27,9 +27,14 @@ merged.
 > `EdgeVector/fold` (since 2026-07-02) plus `exemem-infra`, `exemem-workspace`,
 > `lastgit` (since 2026-07-03, Tom's decision after the GitHub Actions billing
 > halt). Every `gh -R EdgeVector/<forge-hot-repo> ...` command in this handbook
-> must instead be its Forgejo-API equivalent against `http://localhost:3300` —
-> their GitHub copies are read-only 24h push-mirrors; `gh` there reads stale
-> state and cannot merge. Full command map + auth + the current venue map:
+> that reads or mutates PR/merge state must instead be its Forgejo-API
+> equivalent against `http://localhost:3300` — their GitHub copies are read-only
+> push-mirrors for PR purposes; `gh` there reads stale PR state and cannot merge.
+> This PR-routing rule is not a blanket workflow-routing rule: some post-merge
+> validation workflows may still be authoritative on GitHub. As of 2026-07-10,
+> fold PRs remain Forgejo-primary, but LastDB/Tauri Release evidence is on
+> GitHub Actions (`gh -R EdgeVector/fold run list/view --workflow "Tauri Release"`).
+> Full command map + auth + the current venue map:
 > `fbrain get sop-forge-pr-workflow`. Essentials
 > (`TOKEN=$(security find-generic-password -s forgejo-token -w)`,
 > `REPO=http://localhost:3300/api/v1/repos/EdgeVector/<repo>`, all calls
@@ -51,6 +56,10 @@ merged.
 > your turn by polling the head-commit status between forward actions instead.
 > All PUBLIC repos (fbrain, fkanban, schema-infra, last-stack, websites, …) keep
 > the normal GitHub `gh` flow; Keepside_Desktop is GitHub-primary and hands-off.
+> Prefer `$HOME/.last-stack/bin/last-stack-forge-api` for one-shot Forgejo API
+> calls instead of hand-written `TOKEN=...; curl ... | jq ...`; it handles token
+> lookup, `/api/v1` URL prefixing, and control-character-safe `jq` projection.
+> Run it from a shell that can reach `localhost:3300`.
 
 > **Drive to merge, but never idle-park or sleep-loop.** The rule that prevents
 > wedged/runaway agents is **no `sleep`-to-wait, ever**: you wait for CI/the
@@ -119,6 +128,25 @@ anywhere:
 fkanban show <slug> --json        # read a card
 fkanban move <slug> doing         # column transition
 fkanban list --json               # whole board
+```
+
+When adding or rewriting a card body from the CLI, pass Markdown on stdin or via
+a body file. Do not wrap a heredoc in `--body "$(cat <<EOF ...)"`; that makes
+the shell evaluate backticks, `$()`, and card text before fkanban receives it.
+Safe form:
+
+```bash
+fkanban add <slug> --title "Short title" --column todo --north-star <north-star> <<'EOF'
+Repo: EdgeVector/fold
+Base: main
+Kind: pr
+
+## PROBLEM
+What is broken or missing.
+
+## END STATE
+- The desired outcome is proven.
+EOF
 ```
 
 `show` and `move` do not take a per-command board flag. If you need the default

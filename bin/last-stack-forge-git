@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# Run git with Forgejo localhost auth injected when the target remote needs it.
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  last-stack-forge-git [-C <repo>] <git-args...>
+
+Examples:
+  last-stack-forge-git -C /Users/tomtang/code/edgevector/fold fetch origin main
+  last-stack-forge-git -C /Users/tomtang/code/edgevector/fold ls-remote --heads origin main
+  last-stack-forge-git -C /Users/tomtang/code/edgevector/fold push -u origin my-branch
+
+This is a thin git wrapper for EdgeVector's local Forgejo remotes. If the
+selected remote resolves to localhost:3300, it loads the macOS keychain
+forgejo-token and injects an Authorization header for this one git invocation.
+For non-Forgejo remotes, or when no token is available, it falls back to git.
+EOF
+}
+
+forge_auth_scope() {
+  local url="$1"
+
+  case "$url" in
+    http://localhost:3300/*) printf 'http://localhost:3300/' ;;
+    http://127.0.0.1:3300/*) printf 'http://127.0.0.1:3300/' ;;
+    http://100.109.94.59:3300/*) printf 'http://100.109.94.59:3300/' ;;
+  esac
+}
+
+remote_url_for_args() {
+  local repo="$1"
+  shift
+  local -a args=("$@")
+  local idx=0 subcmd token remote remote_url
+
+  while [ "$idx" -lt "${#args[@]}" ]; do
+    case "${args[$idx]}" in
+      -C)
+        idx=$((idx + 2))
+        ;;
+      --git-dir|--work-tree|--namespace|--exec-path)
+        idx=$((idx + 2))
+        ;;
+      -c)
+        idx=$((idx + 2))
+        ;;
+      --)
+        idx=$((idx + 1))
+        break
+        ;;
+      -*)
+        idx=$((idx + 1))
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+
+  subcmd="${args[$idx]:-}"
+  remote="origin"
+
+  case "$subcmd" in
+    fetch|pull|push|ls-remote)
+      idx=$((idx + 1))
+      while [ "$idx" -lt "${#args[@]}" ]; do
+        token="${args[$idx]}"
+        idx=$((idx + 1))
+        case "$token" in
+          --)
+            break
+            ;;
+          -*)
+            continue
+            ;;
+          http://*|https://*)
+            printf '%s' "$token"
+            return 0
+            ;;
+          *)
+            if git -C "$repo" remote get-url "$token" >/dev/null 2>&1; then
+              remote="$token"
+              break
+            fi
+            ;;
+        esac
+      done
+      ;;
+  esac
+
+  remote_url="$(git -C "$repo" remote get-url "$remote" 2>/dev/null || true)"
+  if [ -z "$remote_url" ] && [ "$remote" != "origin" ]; then
+    remote_url="$(git -C "$repo" remote get-url origin 2>/dev/null || true)"
+  fi
+
+  printf '%s' "$remote_url"
+}
+
+if [ "$#" -eq 0 ]; then
+  usage >&2
+  exit 2
+fi
+
+case "${1:-}" in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+esac
+
+repo="."
+for ((i = 1; i <= $#; i++)); do
+  arg="${!i}"
+  if [ "$arg" = "-C" ]; then
+    next=$((i + 1))
+    if [ "$next" -le "$#" ]; then
+      repo="${!next}"
+    fi
+    break
+  fi
+done
+
+remote_url="$(remote_url_for_args "$repo" "$@")"
+scope="$(forge_auth_scope "$remote_url")"
+
+if [ -n "$scope" ] &&
+  token="$(security find-generic-password -s forgejo-token -w 2>/dev/null)"; then
+  auth="$(printf 'tom:%s' "$token" | base64 | tr -d '\n')"
+  exec git \
+    -c credential.helper= \
+    -c "http.${scope}.extraHeader=Authorization: Basic $auth" \
+    "$@"
+fi
+
+exec git "$@"

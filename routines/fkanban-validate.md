@@ -34,6 +34,11 @@ read/write, fail loudly if the resolved path is empty or starts with
   whose `origin` points at a self-hosted forge, do PR reads through that forge's
   API using the workspace brain/AGENTS.md SOP. Never act on a read-only GitHub
   mirror of a forge-hosted repo.
+- **Workflow venue is separate from PR venue.** Do not assume a forge-hosted
+  repo's post-merge validation workflow still runs on Forgejo. Check the card,
+  Brain/SOP updates, and current workflow history. As of 2026-07-10, fold PRs
+  remain Forgejo-primary, but LastDB/Tauri Release evidence is on GitHub
+  Actions (`gh -R EdgeVector/fold run list/view --workflow "Tauri Release"`).
 - PUBLIC repos keep normal GitHub flow. Always qualify GitHub commands with the
   repo:
   ```bash
