@@ -27,7 +27,16 @@ THAT forge's API instead; check the workspace brain/AGENTS.md for the repo's
 forge SOP before assuming GitHub, and never act on a read-only GitHub mirror of
 a forge-hosted repo. For forge API JSON reads, pipe curl through
 `"$last_stack/bin/last-stack-forge-json-jq"` so raw control characters in PR
-bodies cannot make `jq` abort. Enumerate each GitHub repo:
+bodies cannot make `jq` abort.
+
+Before enumerating a repo, resolve its concrete checkout and run
+`"$last_stack/bin/last-stack-pr-venue" --json <owner/repo> "$target_repo"`.
+LastGit is opt-in only; if `.venue == "lastgit"`, read
+`fbrain get sop-lastgit-native-forge-workflow` and drain `lastgit cr` change
+requests instead of Forgejo/GitHub PRs. Use `lastgit cr list/view`, `lastgit ci
+status`, `lastgit cr complete --once`, `lastgit cr merge --require-status`, and
+`lastgit cr close`; never run LastGit CI watchers against the primary brain
+socket and never put raw CI secrets in records/logs. Enumerate each GitHub repo:
 ```bash
 gh -R <owner>/<repo> pr list --state open \
   --json number,title,headRefName,isDraft,mergeable,mergeStateStatus,reviewDecision,autoMergeRequest,updatedAt,statusCheckRollup,author

@@ -44,6 +44,14 @@ read/write, fail loudly if the resolved path is empty or starts with
   localhost), do every PR read/advance via that forge's API — check the
   workspace brain/AGENTS.md for the repo's forge SOP before assuming GitHub,
   and never act on a read-only GitHub mirror of a forge-hosted repo.
+- **LastGit-native repos:** before PR/CR lookup or advance, resolve the concrete
+  checkout and run `"$last_stack/bin/last-stack-pr-venue" --json <owner/repo>
+  "$target_repo"`. If `.venue == "lastgit"`, read
+  `fbrain get sop-lastgit-native-forge-workflow`, treat `lastgit://<slug>/cr/<id>`
+  card lines as review artifacts, and use `lastgit cr view/list`, `lastgit ci
+  status`, and `lastgit cr complete --once` instead of Forgejo/GitHub commands.
+  LastGit routing is opt-in only; all other repos keep their existing route.
+  Never run LastGit CI watchers against the primary brain socket.
 
 ## DONE-WHEN evaluator for non-PR cards
 `Kind: pr` cards still reach `done` only through a verified merged PR. For
@@ -264,25 +272,33 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
       missing, SKIP the card — after the self-heal step above, a still-header-less
       card is either a registry card or a surfaced needs_human conflict, neither of
       which is meant for this PR-advance flow.
-   d. Find its PR. PREFER an explicit `PR:` line / URL in the body (work landed
+   d. Find its PR/CR. Route the repo first with `last-stack-pr-venue`. PREFER an
+      explicit `PR:` line / URL / `lastgit://<slug>/cr/<id>` in the body (work landed
       outside this flow won't use the `fkanban/<slug>` branch). If the preview
       does not include enough body to know, read just that card with `<board CLI>
       show <slug> --json`. Only if NO URL is in the body, fall back to the
-      head-branch lookup.
+      head-branch lookup. For LastGit, use `lastgit cr view <slug> <id> --json`
+      for explicit CRs, or `lastgit cr list <slug> --json` and match the card
+      branch when no explicit CR is recorded.
    e. Advance it — but the DEFAULT for any swept card is LEAVE IT ALONE. Only act
       on concrete PR/branch evidence; when in doubt, do nothing.
       If you need merge-queue membership, do not request `isInMergeQueue` through `gh pr view/list --json`; use `$last_stack/bin/last-stack-gh-pr-queue-state <owner>/<repo> <n>` or `gh api graphql` with explicit owner/name variables for the queue flag and `autoMergeRequest{enabledAt}`. Never use `gh -R <repo> api graphql`.
-      - **Merged** (`state=MERGED` / `mergedAt` set) → `move <slug> done`. This is
-        the ONLY path to `done` — a verified MERGED PR. If you can't point at a
-        merged PR, it does NOT go to `done`, no matter how the card reads.
-      - **No PR AND no `fkanban/<slug>` branch with commits** → the card is
+      - **Merged** (`state=MERGED` / `mergedAt` set for GitHub/Forgejo, or
+        `state=="merged"` with non-empty `merge_oid` for LastGit) → `move <slug>
+        done`. This is the ONLY path to `done` — a verified merged PR/CR. If
+        you can't point at a merged review artifact, it does NOT go to `done`,
+        no matter how the card reads.
+      - **No PR/CR AND no `fkanban/<slug>` branch with commits** → the card is
         UN-STARTED (a fresh `todo`/`backlog` item nobody picked up). LEAVE IT
         EXACTLY WHERE IT IS — never move it, never to `done`. The reconciler
         advances *in-flight* work; it does not start, complete, or retire fresh
         cards. (Marking an un-started card `done` silently buries real work — a
         real historical bug.)
-      - **No PR + a `fkanban/<slug>` branch with commits** → finish landing it
-        (push + `gh -R <repo> pr create --fill` + enable auto-merge).
+      - **No PR/CR + a `fkanban/<slug>` branch with commits** → finish landing it
+        using the routed venue: GitHub `gh -R <repo> pr create --fill`, Forgejo
+        local API create, or LastGit `git push lastgit HEAD:<branch>` plus
+        `lastgit cr create <slug> --head <branch> --base <base> --auto-merge
+        --require-status <context> --json`.
       - **Auto-merge OFF/dropped** (`autoMergeRequest` null) while CLEAN and not
         merged → re-arm: `gh -R <repo> pr merge <n> --auto`. The merge queue silently DROPS
         auto-merge whenever it ejects a PR; nothing else re-fires it, so a
@@ -316,6 +332,16 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
       - **Changes requested** → address the comments, push, reply briefly.
       - **Clean + approved but not merging** → re-assert auto-merge. Never
         force-merge around a failing required gate.
+      - **LastGit open CR** → inspect
+        `lastgit ci status <head-oid> --repo <slug> --json`. If the current
+        head is green and `auto_merge=="true"`, run
+        `lastgit cr complete <slug> --once --json` and re-read the CR. If green
+        but not auto-merge, run `lastgit cr merge <slug> <cr-id>
+        --require-status <context>`. If red and the heavy budget is available,
+        fix in the worktree, re-run VERIFY, and push to the `lastgit` remote.
+        If pending/missing, leave it for the next sweep. If merge/CAS conflict
+        is reported, rebase/push when mechanical; otherwise block with a concise
+        human decision note.
       - **Pending** (CI running / awaiting human) → leave it for next sweep.
    f. Give-up guard: `review` is ONLY for cards a fresh build attempt cannot fix
       (human-only decision/gate, dependency on unmerged work). For those, append
@@ -327,8 +353,8 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
       re-dispatching; never silently loop a builder forever, never auto-merge
       around a failing gate.
 
-## Catch UNCARDED stranded PRs
-The carded sweep above only sees PRs with a card. PRs opened directly (no card)
+## Catch UNCARDED stranded PRs/CRs
+The carded sweep above only sees PRs/CRs with a card. PRs opened directly (no card)
 with auto-merge ON can go red and rot silently. After the carded loop, run ONE
 scan of your repos for these. A PR is a STRANDED candidate when ALL hold:
 - NOT merged and NOT just pending CI — specifically stuck in either (i)
@@ -340,10 +366,13 @@ scan of your repos for these. A PR is a STRANDED candidate when ALL hold:
 - NOT owned by another routine's branch namespace.
 Apply the CHEAP fixes to EVERY stranded candidate (uncapped): re-arm auto-merge
 on each CLEAN-but-unarmed one; `update-branch` the oldest few clean-green-BEHIND
-ones; `gh run rerun <run-id> --failed` on every flaky-cancellation. AT MOST ONE
-HEAVY fix per wake (a real mechanical fix in a worktree, OR a DIRTY rebase). If a
-fix isn't clearly mechanical, comment flagging it and move on. Handling stranded
-PRs COUNTS as forward action.
+ones; `gh run rerun <run-id> --failed` on every flaky-cancellation. For LastGit
+repos, scan open CRs with `lastgit cr list <slug> --state open --json`, run
+`lastgit cr complete <slug> --once --json` for green auto-merge CRs, and leave
+pending/missing-status CRs alone. AT MOST ONE HEAVY fix per wake (a real
+mechanical fix in a worktree, OR a DIRTY rebase). If a fix isn't clearly
+mechanical, comment/record the blocker and move on. Handling stranded PRs/CRs
+COUNTS as forward action.
 
 ## When the sweep is quiet — FILE a card, don't ship code
 A sweep is "quiet" when it took NO forward action: nothing moved to `done`, no CI
