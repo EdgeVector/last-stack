@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# Verify (and by default repair) that every Last Stack skill link in each
+# installed agent harness still resolves into the Last Stack source tree.
+#
+# Why this exists: other skill installers — notably gstack `./setup` — register
+# their own skills by symlinking `<harness>/skills/<name>/SKILL.md`. When a
+# gstack skill shares a name with a Last Stack skill (e.g. gstack shipped a
+# mermaid/excalidraw `diagram` skill that collides with Last Stack's hand-drawn
+# architectural `/diagram`), gstack silently re-points that SKILL.md at its own
+# tree, replacing the Last Stack skill. This guard detects that drift and
+# re-points the link back at the Last Stack source, so re-running it (or Last
+# Stack `./setup`) AFTER gstack setup makes Last Stack win.
+#
+# Usage:
+#   last-stack-verify-skill-links [--check] [--quiet] [SKILLS_DIR ...]
+#
+#   (default)        verify every Last Stack skill link; repair any drift.
+#                    Exit 0 once all links resolve into the Last Stack tree,
+#                    non-zero if a link could not be repaired.
+#   --check          report only; make NO changes. Exit 0 if every link already
+#                    resolves canonically, non-zero (2) if any drift is found.
+#   --quiet          suppress the "all N skills OK" success line; still print
+#                    drift, repairs, and collision warnings.
+#   SKILLS_DIR ...   one or more harness skills dirs to check (e.g.
+#                    ~/.claude/skills). Default: auto-detect installed harnesses.
+#
+# Run this — or Last Stack `./setup` — AFTER any gstack `./setup` / upgrade.
+set -eu
+umask 077
+
+CHECK_ONLY=0
+QUIET=0
+DIRS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --check) CHECK_ONLY=1; shift ;;
+    --quiet) QUIET=1; shift ;;
+    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
+    --) shift; while [ $# -gt 0 ]; do DIRS+=("$1"); shift; done ;;
+    -*) echo "unknown flag: $1" >&2; exit 2 ;;
+    *) DIRS+=("$1"); shift ;;
+  esac
+done
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+
+resolve_source_root() {
+  local candidate
+  for candidate in "$HOME/.last-stack" "${LAST_STACK_ROOT:-}"; do
+    [ -n "$candidate" ] || continue
+    if [ -f "$candidate/VERSION" ] && [ -d "$candidate/skills" ]; then
+      cd "$candidate" && pwd -P
+      return 0
+    fi
+  done
+  printf '%s\n' "$ROOT"
+}
+
+SOURCE_ROOT="$(resolve_source_root)"
+SKILLS_SRC="$SOURCE_ROOT/skills"
+
+if [ ! -d "$SKILLS_SRC" ]; then
+  echo "no Last Stack skills source found (looked in $SKILLS_SRC)" >&2
+  exit 1
+fi
+
+# Auto-detect harness skills dirs when none were passed explicitly.
+if [ ${#DIRS[@]} -eq 0 ]; then
+  for d in \
+    "$HOME/.claude/skills" \
+    "$HOME/.codex/skills" \
+    "$HOME/.factory/skills" \
+    "$HOME/.config/opencode/skills"
+  do
+    [ -d "$d" ] && DIRS+=("$d")
+  done
+fi
+
+if [ ${#DIRS[@]} -eq 0 ]; then
+  [ "$QUIET" -eq 1 ] || echo "no installed harness skills dirs found; nothing to verify"
+  exit 0
+fi
+
+# Resolve the canonical real path of the source skills tree once.
+SKILLS_SRC_REAL="$(cd "$SKILLS_SRC" && pwd -P)"
+
+skill_name_for() {
+  # Prefer the frontmatter `name:` (matches how setup registers), fall back to
+  # the directory basename.
+  local skill_dir="$1" name
+  name="$(grep -m1 '^name:' "$skill_dir/SKILL.md" 2>/dev/null | sed 's/^name:[[:space:]]*//' | tr -d '[:space:]')"
+  [ -n "$name" ] || name="$(basename "$skill_dir")"
+  printf '%s\n' "$name"
+}
+
+# Where does an existing link/file actually point? Prints the resolved real path
+# of the SKILL.md target, or empty if it does not exist.
+resolved_target() {
+  local skill_md="$1" dest abs dir base
+  [ -e "$skill_md" ] || { printf '\n'; return 0; }
+  if [ -L "$skill_md" ]; then
+    dest="$(readlink "$skill_md" 2>/dev/null || true)"
+    case "$dest" in
+      /*) abs="$dest" ;;
+      *) abs="$(cd "$(dirname "$skill_md")" 2>/dev/null && cd "$(dirname "$dest")" 2>/dev/null && pwd -P)/$(basename "$dest")" ;;
+    esac
+  else
+    abs="$skill_md"
+  fi
+  # Canonicalize (the target may itself be missing after a bad stomp).
+  dir="$(dirname "$abs")"
+  base="$(basename "$abs")"
+  if [ -d "$dir" ]; then
+    printf '%s\n' "$(cd "$dir" && pwd -P)/$base"
+  else
+    printf '%s\n' "$abs"
+  fi
+}
+
+# Re-point one skill's SKILL.md (and sidecar files) at the canonical source.
+repair_skill() {
+  local src_dir="$1" target="$2" src base rel dest
+  mkdir -p "$target"
+  # Remove whatever is sitting at SKILL.md (foreign symlink, copied file, or dir).
+  rm -rf "$target/SKILL.md"
+  ln -snf "$src_dir/SKILL.md" "$target/SKILL.md"
+  # Mirror sidecar files (helper scripts, references/) exactly like setup does.
+  base="${src_dir%/}"
+  find "$base" -type f ! -name SKILL.md | while IFS= read -r src; do
+    rel="${src#"$base"/}"
+    dest="$target/$rel"
+    mkdir -p "$(dirname "$dest")"
+    rm -rf "$dest"
+    ln -snf "$src" "$dest"
+  done
+}
+
+drift=0
+repaired=0
+failed=0
+checked=0
+
+for dir in "${DIRS[@]}"; do
+  [ -d "$dir" ] || continue
+  for skill_dir in "$SKILLS_SRC"/*/; do
+    [ -f "$skill_dir/SKILL.md" ] || continue
+    dir_name="$(basename "$skill_dir")"
+    [ "$dir_name" = "node_modules" ] && continue
+    name="$(skill_name_for "${skill_dir%/}")"
+    target="$dir/$name"
+    skill_md="$target/SKILL.md"
+    want="$SKILLS_SRC_REAL/$name/SKILL.md"
+    checked=$((checked + 1))
+
+    got="$(resolved_target "$skill_md")"
+    if [ "$got" = "$want" ]; then
+      continue
+    fi
+
+    drift=$((drift + 1))
+    if [ -z "$got" ]; then
+      echo "DRIFT: $skill_md is missing (Last Stack skill '$name' not registered here)" >&2
+    else
+      # A resolved target OUTSIDE the Last Stack tree is a name collision — most
+      # likely another installer (e.g. gstack) claimed this skill name.
+      case "$got" in
+        "$SKILLS_SRC_REAL"/*) echo "DRIFT: $skill_md -> $got (points at a non-canonical Last Stack path)" >&2 ;;
+        *) echo "COLLISION: $skill_md -> $got (a foreign installer claimed skill name '$name')" >&2 ;;
+      esac
+    fi
+
+    if [ "$CHECK_ONLY" -eq 1 ]; then
+      continue
+    fi
+
+    if repair_skill "${skill_dir%/}" "$target"; then
+      now="$(resolved_target "$skill_md")"
+      if [ "$now" = "$want" ]; then
+        echo "  repaired: $skill_md -> $want"
+        repaired=$((repaired + 1))
+      else
+        echo "  FAILED to repair: $skill_md (still -> ${now:-<missing>})" >&2
+        failed=$((failed + 1))
+      fi
+    else
+      echo "  FAILED to repair: $skill_md" >&2
+      failed=$((failed + 1))
+    fi
+  done
+done
+
+if [ "$CHECK_ONLY" -eq 1 ]; then
+  if [ "$drift" -gt 0 ]; then
+    echo "last-stack-verify-skill-links: $drift skill link(s) drifted; run 'last-stack-verify-skill-links' (no --check) or Last Stack ./setup to repair" >&2
+    exit 2
+  fi
+  [ "$QUIET" -eq 1 ] || echo "last-stack-verify-skill-links: $checked skill link(s) OK"
+  exit 0
+fi
+
+if [ "$failed" -gt 0 ]; then
+  echo "last-stack-verify-skill-links: $failed skill link(s) could not be repaired" >&2
+  exit 1
+fi
+
+if [ "$repaired" -gt 0 ]; then
+  echo "last-stack-verify-skill-links: repaired $repaired skill link(s); all $checked now resolve into the Last Stack tree"
+else
+  [ "$QUIET" -eq 1 ] || echo "last-stack-verify-skill-links: $checked skill link(s) OK"
+fi
+exit 0

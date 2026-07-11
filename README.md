@@ -78,6 +78,15 @@ Or just tell your agent **"upgrade the last stack"** — the included
 Skills can cheaply check for a new version via `bin/last-stack-update-check`
 (cached, never blocks; prints `UP_TO_DATE` / `UPGRADE_AVAILABLE` / `UNKNOWN`).
 
+> **Run `setup` AFTER any gstack setup / `/gstack-upgrade`.** gstack `./setup`
+> re-symlinks its own skills into `~/.claude/skills/<name>`; when a gstack skill
+> shares a name with a Last Stack one (e.g. gstack's mermaid `diagram` vs. the
+> hand-drawn architectural `/diagram`) it silently replaces ours. Last Stack
+> `setup` re-points our links and finishes by running
+> `bin/last-stack-verify-skill-links`, which verifies every Last Stack skill still
+> resolves into the Last Stack tree and repairs any that a foreign installer
+> stomped. Run that guard standalone any time to check (`--check`) or repair.
+
 ## Keeping The Last Stack Current
 
 Treat reusable agent improvements as upstream candidates by default. When a
@@ -138,6 +147,11 @@ setup                   installer — registers skills into your agent harnesses
 bin/
   last-stack-update-check   is a newer version or default-branch HEAD available?
                             (version checks cached; git HEAD checks uncached)
+  last-stack-verify-skill-links
+                            verify (and by default repair) that every Last Stack
+                            skill link still resolves into the Last Stack tree;
+                            undoes a gstack same-name skill stomp. setup runs it
+                            as its final step. --check reports only.
   last-stack-shell-prelude  sourceable PATH prelude for scheduled routines
   last-stack-cli-preflight  verify routine-required global CLIs are on PATH
   last-stack-json-get       extract one simple field path from socket/API JSON
