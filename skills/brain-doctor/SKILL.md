@@ -2,14 +2,15 @@
 name: brain-doctor
 description: |
   Read-only triage of the folddb brain (Tom's primary fbrain/fkanban
-  daily-driver node, reached over the Unix socket ~/.folddb/data/folddb.sock)
+  daily-driver node — the desktop fold-app process, reached over the Unix socket
+  ~/.lastdb/data/folddb.sock, also served on the legacy ~/.folddb path)
   when it's wedged, slow, or down. Bundles the hand-run recipe
   that recurs on every "is fkanban down", "is the brain wedged", "why is my
   computer so slow", "fbrain/fkanban won't respond", or "FoldDB couldn't take
   over" incident: distinguishes a full sled-IO deadlock from the partial
   write-path stall, finds duplicate launchd/brew supervisors, catches a stale
-  ~/.folddb/port breadcrumb, and classifies orphan folddb_server / run.sh /
-  kanban-hook procs vs the real brain. Use when the user (or a routine) reports
+  ~/.folddb/port breadcrumb, and classifies orphan lastdb_server/folddb_server /
+  run.sh / kanban-hook procs vs the real brain. Use when the user (or a routine) reports
   the brain/board/fbrain unresponsive or slow, or says "run brain-doctor",
   "diagnose the brain", "check the brain socket". This is the DIAGNOSE-FIRST companion to
   machine-hygiene (which does the cleanup/writes); brain-doctor only reads and
@@ -18,8 +19,10 @@ description: |
 
 # brain-doctor — folddb socket triage
 
-The brain is Tom's primary node — `fbrain` and `fkanban` both run on it, reached
-over the **Unix socket `~/.folddb/data/folddb.sock`** (the legacy local TCP
+The brain is Tom's primary node — `fbrain` and `fkanban` both run on it. It is the
+desktop **`fold-app`** process, reached over the **Unix socket
+`~/.lastdb/data/folddb.sock`** (the same node is also served on the legacy
+`~/.folddb/data/folddb.sock` path — both return HTTP 200; the legacy local TCP
 endpoint is shut down). When it stalls, the board and the knowledge base both go
 dark. This skill codifies the triage recipe that was previously re-derived by
 hand from 5+ scattered memory notes on every incident.
