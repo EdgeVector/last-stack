@@ -367,6 +367,23 @@ echo "Installing The Last Stack (v$(cat "$SOURCE_ROOT/VERSION")) ..."
 [ "$INSTALL_OPENCODE" -eq 1 ] && register_into "$HOME/.config/opencode/skills" "opencode"
 [ "$INSTALL_OPENCODE" -eq 1 ] && upsert_brain_kanban_block "$HOME/.config/opencode/AGENTS.md" "opencode"
 
+# ── Guard against foreign installers (e.g. gstack) stomping our skill links ────
+# Another installer that ships a same-named skill (gstack shipped a `diagram`
+# skill colliding with our hand-drawn one) silently re-points that SKILL.md at
+# its own tree. Registering above already re-points our links, but verify + emit
+# any collisions so re-running setup AFTER gstack setup provably restores us.
+guard="$SOURCE_ROOT/bin/last-stack-verify-skill-links"
+if [ -x "$guard" ]; then
+  guard_dirs=()
+  [ "$INSTALL_CLAUDE"   -eq 1 ] && guard_dirs+=("$HOME/.claude/skills")
+  [ "$INSTALL_CODEX"    -eq 1 ] && guard_dirs+=("$HOME/.codex/skills")
+  [ "$INSTALL_FACTORY"  -eq 1 ] && guard_dirs+=("$HOME/.factory/skills")
+  [ "$INSTALL_OPENCODE" -eq 1 ] && guard_dirs+=("$HOME/.config/opencode/skills")
+  [ ${#guard_dirs[@]} -gt 0 ] && "$guard" --quiet "${guard_dirs[@]}" || true
+fi
+
 echo
 echo "Done. Upgrade later with:  cd \"$SOURCE_ROOT\" && git pull && ./setup"
+echo "  (run this AFTER any gstack ./setup — it re-points Last Stack skill links"
+echo "   that a colliding gstack skill name would otherwise stomp)"
 echo "Uninstall with:           \"$SOURCE_ROOT/setup\" --uninstall"
