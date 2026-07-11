@@ -45,6 +45,39 @@ read/write, fail loudly if the resolved path is empty or starts with
   workspace brain/AGENTS.md for the repo's forge SOP before assuming GitHub,
   and never act on a read-only GitHub mirror of a forge-hosted repo.
 
+## DONE-WHEN evaluator for non-PR cards
+`Kind: pr` cards still reach `done` only through a verified merged PR. For
+non-PR work, the reconciler has a second read-only done signal:
+
+```
+Kind: tracker|validation|meta
+DONE-WHEN: <predicate>
+```
+
+Supported deterministic predicate forms:
+- `DONE-WHEN: fbrain <slug> exists`
+- `DONE-WHEN: fbrain <slug> updated-after <YYYY-MM-DD>`
+- `DONE-WHEN: routine <name> heartbeat matches /<regex>/ after <YYYY-MM-DD>`
+- `DONE-WHEN: date >= <YYYY-MM-DD>`
+- `DONE-WHEN: file <path> matches /<regex>/`
+
+Evaluate these predicates before stamping any orphan/needs-human marker. Prefer
+the shared helper when available:
+
+```bash
+"$last_stack/bin/last-stack-fkanban-done-when-eval" \
+  --kind "$kind" \
+  --predicate "$done_when"
+```
+
+Exit `0` means satisfied: move the card to `done` and cite the helper output as
+evidence. Exit `1` means false or time-window pending: leave the card quietly in
+its current column, with no `NEEDS-HUMAN` marker. Exit `2` means malformed:
+escalate the malformed predicate as a card-spec issue. Exit `3` means ignored
+because the card is `Kind: pr`: continue the merged-PR logic below. Predicate
+evaluation is read-only and fail-closed; an errored or unsupported predicate
+never auto-closes a card.
+
 ## Pickup failover
 Treat `fkanban-pickup` as critical infrastructure. Before the normal reconcile
 sweep, check the latest `last-stack fkanban-pickup` scheduler session in
@@ -211,16 +244,32 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
 2. For EVERY previewed card NOT already in `done` (NOT just `doing`/`review` — a
    card can be merged while still in `todo` if a human/other flow did the work;
    that is the exact bug being fixed, so do not restrict by column):
-   a. Parse the `Repo:`/`Base:` header lines from the card body. If `Repo:` is
+   a. Parse the `Repo:`/`Base:`/`Kind:` header lines and any single-line
+      `DONE-WHEN:` predicate from the card body. Treat a missing `Kind:` as
+      `pr` only for legacy PR cards that have a branch/PR shape; new non-PR cards
+      must declare `Kind: tracker|validation|meta`.
+   b. Before orphan/needs-human escalation, evaluate non-PR `DONE-WHEN`:
+      - If `Kind:` is not `pr` and `DONE-WHEN:` is present, run the evaluator.
+        Satisfied (`0`) → `move <slug> done` and include the evaluator evidence
+        in the report/heartbeat. False or pending (`1`) → leave the card quietly
+        in place. Malformed/error (`2`) → append or refresh a concise
+        `NEEDS-HUMAN: malformed DONE-WHEN <predicate>` marker. Ignored (`3`) is
+        only valid for `Kind: pr`; continue PR reconciliation.
+      - If `Kind:` is not `pr` and no `DONE-WHEN:` is present, do not search for
+        a PR forever. Append or refresh `NEEDS-HUMAN: non-PR card missing
+        DONE-WHEN` so the author can add a machine-checkable predicate.
+      - If `Kind: pr`, never use `DONE-WHEN` to close it; continue the merged-PR
+        logic below.
+   c. Parse the `Repo:`/`Base:` header lines from the card body. If `Repo:` is
       missing, SKIP the card — after the self-heal step above, a still-header-less
       card is either a registry card or a surfaced needs_human conflict, neither of
       which is meant for this PR-advance flow.
-   b. Find its PR. PREFER an explicit `PR:` line / URL in the body (work landed
+   d. Find its PR. PREFER an explicit `PR:` line / URL in the body (work landed
       outside this flow won't use the `fkanban/<slug>` branch). If the preview
       does not include enough body to know, read just that card with `<board CLI>
       show <slug> --json`. Only if NO URL is in the body, fall back to the
       head-branch lookup.
-   c. Advance it — but the DEFAULT for any swept card is LEAVE IT ALONE. Only act
+   e. Advance it — but the DEFAULT for any swept card is LEAVE IT ALONE. Only act
       on concrete PR/branch evidence; when in doubt, do nothing.
       If you need merge-queue membership, do not request `isInMergeQueue` through `gh pr view/list --json`; use `$last_stack/bin/last-stack-gh-pr-queue-state <owner>/<repo> <n>` or `gh api graphql` with explicit owner/name variables for the queue flag and `autoMergeRequest{enabledAt}`. Never use `gh -R <repo> api graphql`.
       - **Merged** (`state=MERGED` / `mergedAt` set) → `move <slug> done`. This is
@@ -268,7 +317,7 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
       - **Clean + approved but not merging** → re-assert auto-merge. Never
         force-merge around a failing required gate.
       - **Pending** (CI running / awaiting human) → leave it for next sweep.
-   d. Give-up guard: `review` is ONLY for cards a fresh build attempt cannot fix
+   f. Give-up guard: `review` is ONLY for cards a fresh build attempt cannot fix
       (human-only decision/gate, dependency on unmerged work). For those, append
       `STALLED:`/`BLOCKED: <why>` and leave them in `review`. A card whose only
       problem is a real-but-fixable bug or queue starvation does NOT belong in
