@@ -62,6 +62,16 @@ read/write, fail loudly if the resolved path is empty or starts with
   `"$last_stack/bin/last-stack-forge-json-jq"` rather than raw `jq`, because PR
   bodies may contain literal control characters that make Forgejo's response
   invalid JSON.
+- **LastGit-native repos:** before spawning a worker, resolve the concrete
+  checkout and run `"$last_stack/bin/last-stack-pr-venue" --json <owner/repo>
+  "$target_repo"`. If `.venue == "lastgit"`, the worker must read
+  `fbrain get sop-lastgit-native-forge-workflow`, use `.lastgit_slug` and
+  `.ci_context`, open a `lastgit cr` instead of a Forgejo/GitHub PR, and drive it
+  with `lastgit cr view` / `lastgit ci status` / `lastgit cr complete --once`.
+  LastGit is opt-in only; repos not explicitly marked LastGit-native stay on
+  their existing GitHub/Forgejo route. Never run LastGit CI watchers against the
+  primary brain socket; require a dedicated non-primary `LASTGIT_SOCKET` or an
+  explicit throwaway `--node-url`, and keep secrets as LastSecrets locators.
 
 ## Selection rule (form up to `<N>` work-units)
 1. Read only the ready queue: `<board CLI> list --column todo --json`. If the
@@ -143,22 +153,30 @@ should produce three work-units, for example:
     <worktrees-dir>/<lead-slug> -b fkanban/<lead-slug> origin/<base>` command
     (`<lead-slug>` is the singleton slug or the highest-priority card in a
     batch). Never edit a shared checkout in place; never stash/reset/clean a shared repo. The worker must
-    use `gh -R <repo>` for GitHub commands. If `<repo>` cannot be resolved, it
-    must block the card in `review` instead of probing the workspace root."
+    route review artifacts with `route_json="$("$last_stack/bin/last-stack-pr-venue" --json "<repo>" "$target_repo")"`
+    before any PR/CR command. If `<repo>` cannot be resolved, it must block the
+    card in `review` instead of probing the workspace root."
   - "Implement per the card brief, matching the repo's conventions and style.
     Honor OUT OF SCOPE; keep the PR atomic. Run the brief's VERIFY commands and
     validate by running the app where the brief calls for it, not just tests."
-  - "`git push -u origin HEAD` → `gh -R <repo> pr create --fill --base <base>` →
+  - "If `venue=github`, `git push -u origin HEAD` → `gh -R <repo> pr create --fill --base <base>` →
     enable auto-merge per the repo's merge strategy (for a merge-queue repo, bare
     `gh -R <repo> pr merge <n> --auto` — the queue sets the method; for plain auto-merge add
-    your strategy flag)."
-  - "Then DRIVE THE PR TO MERGED — do NOT hand off a green-but-unmerged PR (that
+    your strategy flag). If `venue=forgejo`, use the local Forgejo SOP/API helper
+    for PR create/status/merge and never `gh` against a read-only mirror. If
+    `venue=lastgit`, read `fbrain get sop-lastgit-native-forge-workflow`, ensure
+    `lastgit` is preflighted, push `HEAD:<branch>` to the `lastgit` remote, open
+    `lastgit cr create <slug> --head <branch> --base <base> --auto-merge --require-status <context> --json`,
+    and record `PR: lastgit://<slug>/cr/<cr-id>` on the card."
+  - "Then DRIVE THE PR/CR TO MERGED — do NOT hand off a green-but-unmerged PR/CR (that
     fire-and-forget hand-off is exactly what lets PRs pile up stranded). Use the
     `wait-merge` skill (or a sleepless `gh -R <repo> pr checks <n> --watch`, NEVER `sleep`)
     and act on each state change: re-arm if auto-merge was dropped,
     `gh -R <repo> pr update-branch <n>` if BEHIND, rebase if DIRTY, fix if a required check
-    fails. When MERGED, move every shipped card in the work-unit to `done` and
-    EXIT."
+    fails. For LastGit CRs, use `lastgit cr view`, `lastgit ci status <head-oid> --repo <slug> --json`,
+    and `lastgit cr complete <slug> --once --json`; fix/rebase/push on conflict
+    or red status, and never run CI against the primary brain socket. When
+    MERGED, move every shipped card in the work-unit to `done` and EXIT."
   - "When checking merge-queue membership, NEVER request `isInMergeQueue` through `gh pr view/list --json`; query the queue flag through the Last Stack `last-stack-gh-pr-queue-state` helper or `gh api graphql` with explicit owner/name variables, never `gh -R <repo> api graphql`."
   - "If you hit a GENUINE human-only blocker (ambiguous spec, a conflict needing
     product judgment, a required gate only a human can clear, a dependency on

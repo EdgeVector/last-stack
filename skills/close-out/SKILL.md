@@ -37,6 +37,23 @@ If your changes are sitting in a shared main checkout, move them to a worktree
 first — `git add -A` in a shared checkout can sweep sibling work into your
 commit. Always work in an isolated worktree.
 
+Before opening the review artifact, route the repo:
+
+```bash
+last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+route_json="$("$last_stack/bin/last-stack-pr-venue" --json <owner>/<repo> "$WT")"
+venue="$(printf '%s\n' "$route_json" | jq -r .venue)"
+```
+
+Use GitHub `gh` only when `venue=github`; use the local Forgejo SOP/API helper
+when `venue=forgejo`; use `lastgit cr` when `venue=lastgit`. LastGit routing is
+explicit opt-in only. For LastGit-native repos, read
+`fbrain get sop-lastgit-native-forge-workflow`, push the branch to the `lastgit`
+remote, create `lastgit cr create <slug> --head <branch> --base main
+--auto-merge --require-status <context> --json`, and drive it with
+`lastgit cr view`, `lastgit ci status`, and `lastgit cr complete --once`. Do not
+run LastGit CI watchers against the primary brain socket.
+
 ```bash
 REPO="$HOME/code/<repo>"
 WT="$HOME/code-worktrees/<short-name>"
@@ -86,6 +103,12 @@ gh pr view <N> --repo <owner>/<repo> --json state,mergeStateStatus,autoMergeRequ
 
 (Auto-merge can show `autoMergeRequest:null` even when enabled — confirm via the
 `enabledAt` GraphQL field.)
+
+For LastGit-native repos, `lastgit cr create ... --auto-merge --require-status
+<context>` is the arm step. A foreground `lastgit cr complete <slug> --once
+--json` is the cheap merge driver once `lastgit ci status <head-oid> --repo
+<slug> --json` is green. Red/missing status blocks; do not use `--admin` unless
+a human explicitly clears that bypass.
 
 ## 3. Produce the proof — at the tier the change demands
 
@@ -199,8 +222,8 @@ repo/git already records.
 
 ---
 
-**Self-check before you consider the work done:** Is there a PR? Is it on
-auto-merge and being driven to merged? Does the PR carry a verified `## Proof`
+**Self-check before you consider the work done:** Is there a routed PR/CR? Is it
+on auto-merge and being driven to merged? Does the PR carry a verified `## Proof`
 block at the right tier — and for user-visible/stateful work, did an acceptance
 check actually run the app and pass (round trip across a restart, plus a negative
 case)? Is the decision in the brain? Is every deferred follow-up a card? If any

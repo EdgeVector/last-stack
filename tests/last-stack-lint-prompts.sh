@@ -340,6 +340,18 @@ grep -q -- '--block-status needs_human' "$pickup"
 grep -q 'checkout-resolution guard' "$pickup"
 grep -q 'git -C "$target_repo" rev-parse --show-toplevel' "$pickup"
 grep -q 'reject the aggregate workspace root' "$pickup"
+grep -q 'last-stack-pr-venue' "$pickup"
+grep -q 'lastgit cr create' "$pickup"
+
+agent="$ROOT/skills/fkanban-agent/SKILL.md"
+grep -q 'last-stack-pr-venue' "$agent"
+grep -q 'sop-lastgit-native-forge-workflow' "$agent"
+grep -q 'lastgit cr complete' "$agent"
+
+watch="$ROOT/routines/fkanban-watch.md"
+grep -q 'last-stack-pr-venue' "$watch"
+grep -q 'lastgit cr list' "$watch"
+grep -q 'lastgit ci status' "$watch"
 
 memory_home="$tmp/home"
 mkdir -p "$memory_home"

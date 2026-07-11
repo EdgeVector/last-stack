@@ -157,6 +157,8 @@ bin/
   last-stack-json-get       extract one simple field path from socket/API JSON
                             without relying on jq or inline python/node parsing
   last-stack-repo-op-guard  reject workspace roots before repo-scoped git/gh
+  last-stack-pr-venue       route a repo to github, forgejo, or explicit
+                            LastGit-native CR handling before PR/CR operations
   last-stack-gh-pr-queue-state
                             GraphQL PR queue-state helper without gh -R drift
   last-stack-forge-ci-log   print a failing forge (Forgejo) CI job's log tail —

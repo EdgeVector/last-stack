@@ -23,7 +23,22 @@ then drives that PR to MERGED before exiting — it does not hand a green-but-
 unmerged PR off and walk away. A card reaches `done` only when its PR is verified
 merged.
 
-> ⚠️ **ALL NON-PUBLIC repos → the LOCAL FORGE, not GitHub.** Forge-hot:
+> ⚠️ **Route repo review artifacts before opening or reconciling one.** After
+> resolving the concrete checkout, run
+> `"$last_stack/bin/last-stack-pr-venue" --json <owner/repo> "$target_repo"` and
+> branch on `.venue`: `github`, `forgejo`, or `lastgit`. LastGit is **opt-in
+> only** via repo config (`git config laststack.pr-venue lastgit` or
+> `.last-stack/pr-venue`) or `LAST_STACK_LASTGIT_NATIVE_REPOS`; the helper
+> preserves today's GitHub/Forgejo defaults otherwise. If `.venue == "lastgit"`,
+> read `fbrain get sop-lastgit-native-forge-workflow` and use the returned
+> `.lastgit_slug` / `.ci_context`. Do not run LastGit CI watchers against Tom's
+> primary brain socket; pin `LASTGIT_SOCKET` to a dedicated non-primary lastdbd
+> socket, or use an explicit throwaway `--node-url`. Store secrets only as
+> LastSecrets locators; never put raw secret values in Brain/Kanban/logs/PR/CR
+> text.
+>
+> ⚠️ **ALL NON-PUBLIC repos → the LOCAL FORGE, not GitHub unless they explicitly
+> opt into LastGit-native routing.** Forge-hot:
 > `EdgeVector/fold` (since 2026-07-02) plus `exemem-infra`, `exemem-workspace`,
 > `lastgit` (since 2026-07-03, Tom's decision after the GitHub Actions billing
 > halt). Every `gh -R EdgeVector/<forge-hot-repo> ...` command in this handbook
@@ -53,7 +68,8 @@ merged.
 > a flaky run. The forge has no checks-watch equivalent of the GitHub CLI: hold
 > your turn by polling the head-commit status between forward actions instead.
 > All PUBLIC repos (fbrain, fkanban, schema-infra, last-stack, websites, …) keep
-> the normal GitHub `gh` flow; Keepside_Desktop is GitHub-primary and hands-off.
+> the normal GitHub `gh` flow unless `last-stack-pr-venue` says `lastgit`;
+> Keepside_Desktop is GitHub-primary and hands-off.
 
 > **Drive to merge, but never idle-park or sleep-loop.** The rule that prevents
 > wedged/runaway agents is **no `sleep`-to-wait, ever**: you wait for CI/the
@@ -231,16 +247,42 @@ to `review`, append a one-line note explaining what's missing, and exit.
    existing style. Honor OUT OF SCOPE — keep the PR atomic.
 4. **Verify locally** — run the brief's exact VERIFY commands. Green tests are
    not sufficient if the brief says to run the app — do that too.
-5. **Open the PR + arm auto-merge** (adjust the merge command to your repo — see
-   "Merge strategy"):
+5. **Open the PR/CR + arm auto-merge**. First route the repo:
+   ```bash
+   route_json="$("$last_stack/bin/last-stack-pr-venue" --json "<repo>" "$target_repo")"
+   venue="$(printf '%s\n' "$route_json" | jq -r .venue)"
+   lastgit_slug="$(printf '%s\n' "$route_json" | jq -r .lastgit_slug)"
+   ci_context="$(printf '%s\n' "$route_json" | jq -r .ci_context)"
+   ```
+   For GitHub (adjust merge command to your repo — see "Merge strategy"):
    ```bash
    git commit -am "<msg>"
    git push -u origin HEAD
    gh -R <repo> pr create --fill --base <base>
    gh -R <repo> pr merge <n> --auto            # if the repo allows auto-merge
    ```
+   For Forgejo, use the local-forge API path from `sop-forge-pr-workflow`
+   (or the workspace AGENTS.md helper map) and keep using Forgejo's
+   `merge_when_checks_succeed` request for repos that have not opted into
+   LastGit.
+
+   For LastGit-native repos, use the CR path from
+   `sop-lastgit-native-forge-workflow` instead of Forgejo/GitHub:
+   ```bash
+   "$last_stack/bin/last-stack-cli-preflight" git curl jq lastgit fkanban fbrain
+   git remote get-url lastgit >/dev/null || git remote add lastgit "lastdb:///$lastgit_slug"
+   git push lastgit HEAD:<branch>
+   cr_json="$(lastgit cr create "$lastgit_slug" --head <branch> --base <base> \
+     --title "<title>" --body "<body-file-or-safe-string>" \
+     --auto-merge --require-status "$ci_context" --json)"
+   cr_id="$(printf '%s\n' "$cr_json" | jq -r .cr_id)"
+   ```
+   Record a card `PR:` line as `lastgit://<slug>/cr/<cr-id>` so later
+   reconcile/validate passes can find it without guessing. LastGit's
+   `--auto-merge --require-status` is the arm step; do not call Forgejo for a
+   LastGit-native repo.
 6. **Drive it to MERGED — do not hand off a green-but-unmerged PR.** Arming
-   auto-merge is necessary but not always sufficient: a PR can fall out of
+   auto-merge is necessary but not always sufficient: a PR/CR can fall out of
    mergeable state (go BEHIND, go DIRTY, or have its auto-merge dropped) and then
    sit forever. You own getting it the rest of the way. The robust mechanism is
    the **`/wait-merge` skill** — invoke it on your PR number; it interprets PR
@@ -278,6 +320,26 @@ to `review`, append a one-line note explaining what's missing, and exit.
    reliable and the PR strands. Stay on the foreground watcher in THIS turn
    through to the terminal state.
 
+   For LastGit-native CRs, drive with LastGit state instead of `gh`/Forgejo:
+   - `lastgit cr view "$lastgit_slug" "$cr_id" --json` is the source of truth
+     (`state=open|merged|closed`, `head_oid`, `auto_merge`, `require_status`,
+     `merge_oid`).
+   - `lastgit ci status <head-oid> --repo "$lastgit_slug" --json` reads the
+     required context. A missing/pending/failure status blocks merge; do not
+     bypass it.
+   - `lastgit cr complete "$lastgit_slug" --once --json` is the cheap
+     auto-merge completer pass. If the CR is green and still open, run it and
+     re-read the CR. If the CR was created without `auto_merge`, use
+     `lastgit cr merge "$lastgit_slug" "$cr_id" --require-status "$ci_context"`
+     only after the current head is green.
+   - If LastGit merge reports a conflict or rejected CAS push, fetch/rebase the
+     branch in the worktree, re-run VERIFY, push `HEAD:<branch>` to the `lastgit`
+     remote, and re-read the CR/current head. If the conflict requires product
+     judgment, block the card in `review`.
+   - Use the dedicated LastGit watcher/completer daemons from the SOP only on a
+     non-primary dev/code node. Never start LastGit CI against the primary brain
+     socket, and never smuggle raw CI secrets into logs or records.
+
 If you hit a **genuine human-only blocker** (ambiguous spec, a conflict needing
 product judgment, a required gate only a human can clear, or a dependency on
 unmerged work): leave the branch clean, move the card to `review`, append a
@@ -307,9 +369,13 @@ has no `Repo:` header (it isn't meant for this flow). For each candidate:
    - missing or malformed → surface the card-authoring issue
      (`NEEDS-HUMAN: non-PR card missing/malformed DONE-WHEN`).
    For `Kind: pr`, ignore `DONE-WHEN` for closure and continue below.
-2. **Find its PR.** Prefer an explicit `PR:` line / PR URL in the body — work
-   landed outside WORK mode won't use the `fkanban/<slug>` branch convention.
-   Fall back to the head-branch lookup only when no PR URL is present:
+2. **Find its PR/CR.** Route the repo with `last-stack-pr-venue` before lookup.
+   Prefer an explicit `PR:` line / PR URL / `lastgit://<slug>/cr/<id>` in the
+   body — work landed outside WORK mode won't use the `fkanban/<slug>` branch
+   convention. Fall back to the head-branch lookup only when no explicit review
+   artifact is present.
+
+   For GitHub:
    ```bash
    # explicit URL in body:
    gh -R <repo> pr view <n> --json number,state,mergedAt,mergeStateStatus,reviewDecision,statusCheckRollup
@@ -327,19 +393,27 @@ has no `Repo:` header (it isn't meant for this flow). For each candidate:
    (`databaseId,status,conclusion,createdAt,...` for runs; `name,state,bucket`
    for PR checks) and select the newest relevant item explicitly, or query the
    Actions API.
+
+   For Forgejo, use the local-forge API equivalents from `sop-forge-pr-workflow`.
+   For LastGit, read `lastgit://<slug>/cr/<id>` with
+   `lastgit cr view <slug> <id> --json`, or list open/merged/closed CRs with
+   `lastgit cr list <slug> --json` and match `.head_branch == "fkanban/<slug>"`
+   (or the card branch) when no explicit `PR:` line exists.
 3. **Decide from PR state:**
-   - **Merged** (`state=MERGED` / `mergedAt` set) → `move <slug> done`. Done.
-     A `Kind: pr` card reaches `done` ONLY this way — a verified MERGED PR. If
-     you cannot point at a merged PR for the PR card, it does **not** go to
+   - **Merged** (`state=MERGED` / `mergedAt` set for GitHub/Forgejo, or
+     `state=="merged"` with non-empty `merge_oid` for LastGit) → `move <slug>
+     done`. Done. A `Kind: pr` card reaches `done` ONLY this way — a verified
+     merged PR/CR. If you cannot point at a merged review artifact for the PR
+     card, it does **not** go to
      `done`, no matter how the card reads.
-   - **No PR found AND no `fkanban/<slug>` branch with commits** → the card is
+   - **No PR/CR found AND no `fkanban/<slug>` branch with commits** → the card is
      **un-started** (a fresh `todo`/`backlog` item nobody has picked up yet).
      **LEAVE IT EXACTLY WHERE IT IS — do NOT move it, and NEVER move it to
      `done`.** The reconciler advances *in-flight* work (cards that already
-     have a PR, or a branch with commits); it does not start, complete, or
+     have a PR/CR, or a branch with commits); it does not start, complete, or
      retire fresh cards. Marking an un-started card `done` silently buries real
      work.
-   - **No PR found** but a `fkanban/<slug>` branch with commits exists and the
+   - **No PR/CR found** but a `fkanban/<slug>` branch with commits exists and the
      card is in `doing` → a worker opened a branch but didn't finish landing
      (or died mid-work). Finish WORK MODE step 5 for it. Don't thrash.
    - **CI red** (a real failing required check in `statusCheckRollup`, not just
@@ -372,6 +446,14 @@ has no `Repo:` header (it isn't meant for this flow). For each candidate:
    - **Clean + approved but not merging** → re-assert auto-merge
      (`gh -R <repo> pr merge <n> --auto`); if a required check is stuck, surface it, don't
      force-merge.
+   - **LastGit open CR** → read the current head status with
+     `lastgit ci status <head-oid> --repo <slug> --json`. If green and
+     `auto_merge=="true"`, run `lastgit cr complete <slug> --once --json` and
+     re-read. If green and `auto_merge!="true"`, run
+     `lastgit cr merge <slug> <cr-id> --require-status <context>`. If red,
+     inspect the status/log excerpt and do one heavy worktree fix if budget
+     allows. If pending/missing, leave it. If conflict/CAS rejected, rebase and
+     push the branch to the `lastgit` remote, then re-verify.
    - **Pending** (CI running, awaiting human review) → leave it; it'll be
      re-checked next wake.
 4. **Give-up guard:** if a card has been in `review` with no forward progress
@@ -459,6 +541,10 @@ Repositories differ in how they merge. Match your repo's policy:
   `gh -R <repo> pr create` → `gh -R <repo> pr checks <n> --watch` (block
   sleeplessly until CI is green) → `gh -R <repo> pr merge <n> --squash` to land
   it manually.
+- **LastGit-native:** only when `last-stack-pr-venue` returns `lastgit`.
+  Push the branch to the `lastgit` remote, open `lastgit cr create ... --auto-merge
+  --require-status <context>`, drive with `lastgit cr complete --once` /
+  `lastgit cr view`, and never call Forgejo/GitHub for that card.
 
 Check the repo's contributor docs (`CONTRIBUTING.md` / `AGENTS.md` /
 `CLAUDE.md`) for which applies.
