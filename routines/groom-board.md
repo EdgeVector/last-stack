@@ -37,6 +37,37 @@ read/write, fail loudly if the resolved path is empty or starts with
   reads. In `zsh`, iterate slug lists with a bash array (`for s in "${arr[@]}"`),
   never a bare `$var`.
 
+## DONE-WHEN convention for non-PR cards
+New non-PR cards must be machine-checkable:
+
+```
+Kind: tracker|validation|meta
+DONE-WHEN: <predicate>
+```
+
+Supported read-only predicate forms:
+- `DONE-WHEN: fbrain <slug> exists`
+- `DONE-WHEN: fbrain <slug> updated-after <YYYY-MM-DD>`
+- `DONE-WHEN: routine <name> heartbeat matches /<regex>/ after <YYYY-MM-DD>`
+- `DONE-WHEN: date >= <YYYY-MM-DD>`
+- `DONE-WHEN: file <path> matches /<regex>/`
+
+Before any age/stuck-card escalation, evaluate a non-PR card's predicate with
+the shared helper when available:
+
+```bash
+"$last_stack/bin/last-stack-fkanban-done-when-eval" \
+  --kind "$kind" \
+  --predicate "$done_when"
+```
+
+Exit `0` means the predicate is satisfied: move the card to `done` and cite the
+helper output. Exit `1` means false or not-yet-elapsed: leave the card quietly
+in its current column and do not stamp `NEEDS-HUMAN`. Exit `2` means malformed:
+surface `NEEDS-HUMAN: malformed DONE-WHEN <predicate>`. Exit `3` means `Kind:
+pr`, which must still be handled by the PR reconciler. This evaluator is
+read-only and fail-closed; errors never auto-close a card.
+
 ## What to do each run
 1. **Snapshot the board narrowly.** Read `backlog`, `todo`, `doing`, and
    `review` with sequential `<board CLI> list --column <column> --json` calls.
@@ -44,6 +75,13 @@ read/write, fail loudly if the resolved path is empty or starts with
    `<board CLI> show <slug> --json` for the one card you are editing, deleting,
    or splitting. Surface stuck `doing`/`review` cards in the report; do NOT
    re-drive them (that's `fkanban-watch`'s job).
+
+   Before surfacing a stuck non-PR card as `NEEDS-HUMAN`, point-read it and
+   evaluate its `DONE-WHEN:` predicate. A satisfied predicate closes the card to
+   `done`; a pending time window or false predicate stays quiet; a missing
+   predicate on `Kind: tracker|validation|meta` is a card-authoring issue and may
+   be surfaced as `NEEDS-HUMAN: non-PR card missing DONE-WHEN`. Never use
+   `DONE-WHEN` to close `Kind: pr`.
 
 2. **Prune scratch/test cards.** Soft-delete (`rm`) clear test-harness junk:
    `zz-*` slugs, single-letter/placeholder titles, empty bodies, obvious
@@ -58,8 +96,8 @@ read/write, fail loudly if the resolved path is empty or starts with
 4. **Promote EVERY ready card backlog → todo. There is NO count cap on `todo`.**
    Readiness is the only filter: a card is ready when it has a real
    GOAL/STEPS/VERIFY brief, a `Repo:`/`Base:` header, the `fkanban-agent` header,
-   no gate marker, and no unmet dependency. If it's ready, promote it. If not,
-   leave it.
+   no gate marker, no unmet dependency, and, for `Kind: tracker|validation|meta`,
+   a valid `DONE-WHEN:` predicate. If it's ready, promote it. If not, leave it.
    > Rationale: the hourly pickup routine fans out several agents, so a small
    > `todo` drains in a couple hours and the board then idles. A cap manufactures
    > idle time. The pickup routine self-throttles by its own fan-out; the

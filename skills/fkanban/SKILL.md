@@ -29,19 +29,20 @@ LastDB node. Cards move through columns; every change persists in the node.
   complete PATH that includes both at the start of every fkanban Bash call (PATH
   does not persist between calls), or invoke the CLI directly:
   `cd <fkanban-repo> && PATH="$HOME/.bun/bin:$PATH" bun run src/cli.ts <command>`.
-  `fkanban doctor` reports whether the shim is on PATH.
+  Confirm the shim with `command -v fkanban` and a narrow read.
 - **Where the data lives:** the board records live on **your LastDB node**. The
   CLI talks to the node over its configured transport. Local daily-driver nodes
-  may be **Unix-socket only** with HTTP intentionally shut down; `doctor` reports
-  the active transport and should be treated as authoritative. The node URL is
+  may be **Unix-socket only** with HTTP intentionally shut down; use a
+  socket-backed narrow read as the routine health check. The node URL is
   **configurable** — `init` defaults to a node running locally on your machine;
   point it elsewhere with `--node-url` / the config file (`~/.fkanban/config.json`).
 - **Columns:** `backlog → todo → doing → review → done`.
 
-Before doing anything non-trivial, sanity-check the setup:
+Before doing anything non-trivial, sanity-check the setup with a socket-backed
+narrow read:
 
 ```bash
-fkanban doctor      # shim on PATH, config present, node reachable, schemas loaded
+fkanban list --column todo --json
 ```
 
 ## Commands
@@ -82,11 +83,12 @@ one, such as `list`, `search`, and `add`.
 card by re-adding it. Default column for a fresh card is `backlog`; for a task
 you want worked soon, pass `--column todo`.
 
-Every live card must carry body ownership headers. Even registry or tracker
-cards that are not normal pickup work need explicit `Repo:` and `Base:` lines so
-watch/groom/pickup routines can classify them consistently. For non-PR cards,
-also set `Kind: registry` or `Kind: tracker` in the body and pass
-`--kind registry|tracker`.
+Every live card must carry body ownership headers. Even tracker, validation, or
+meta cards that are not normal pickup work need explicit `Repo:` and `Base:`
+lines so watch/groom/pickup routines can classify them consistently. For non-PR
+cards, set `Kind: tracker|validation|meta`, include an explicit `DONE-WHEN:`
+predicate, and pass the matching `--kind` value when the CLI supports it.
+Legacy registry cards are only for registry-record maintenance.
 
 ### Filing a card with a real body — feed it via stdin
 
@@ -142,7 +144,8 @@ A card that's meant to be implemented should carry, in its `--body`:
 
    Field meanings — `Repo`: `owner/name` (e.g. `EdgeVector/fold`) or an
    absolute local Git checkout path; `Base`: base branch; `Branch`: optional,
-   defaults to `fkanban/<slug>`; `Kind`: `pr | registry | tracker`.
+   defaults to `fkanban/<slug>`; `Kind`: `pr | tracker | validation | meta`
+   for new cards (`registry` only for legacy registry-record cards).
 
    > **⚠️ Keep each header value a single clean token on its own line.**
    > `fkanban-pickup` resolves `Repo:` **literally** — it does NOT strip
@@ -160,6 +163,24 @@ A card that's meant to be implemented should carry, in its `--body`:
 3. **The spec itself:** GOAL / CONTEXT / STEPS / VERIFY (exact commands that
    must pass) / DONE WHEN (PR merged into <base>) / OUT OF SCOPE.
 
+   For non-PR cards, replace the PR merge terminal condition with one
+   single-line machine-checkable predicate:
+
+   ```
+   Kind: tracker|validation|meta
+   DONE-WHEN: fbrain <slug> exists
+   DONE-WHEN: fbrain <slug> updated-after <YYYY-MM-DD>
+   DONE-WHEN: routine <name> heartbeat matches /<regex>/ after <YYYY-MM-DD>
+   DONE-WHEN: date >= <YYYY-MM-DD>
+   DONE-WHEN: file <path> matches /<regex>/
+   ```
+
+   `DONE-WHEN` predicates are read-only and deterministic. The reconciler and
+   groomer may move a non-PR card to `done` only when the predicate is
+   satisfied. Pending predicates stay quiet. Malformed or missing predicates on
+   non-PR cards become a visible card-authoring issue. `Kind: pr` cards ignore
+   `DONE-WHEN` for closure and still require a merged PR.
+
 Verify the facts you put in a brief against `origin/main` before filing —
 local checkouts lag, so `git fetch` and read `origin/<base>:<file>` rather
 than describing stale "current state".
@@ -171,8 +192,9 @@ than describing stale "current state".
   `doing` (claimed, no PR). Surface them; don't silently re-drive — that's the
   fkanban-agent reconcile pass's job.
 - Superseded / wrong card → `rm <slug>` (soft delete), or re-`add` to fix it.
-- A card in `done` means its PR **merged** — that's the normal terminal state,
-  not a kill.
+- A PR card in `done` means its PR **merged** — that's the normal terminal
+  state, not a kill. A non-PR card in `done` means its `DONE-WHEN` predicate was
+  satisfied and cited by watch/groom.
 
 ## Guardrails
 

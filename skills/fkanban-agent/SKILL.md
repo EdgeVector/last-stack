@@ -85,7 +85,7 @@ merged.
 | `backlog` / `todo` | not yet picked up |
 | `doing` | an agent is implementing, OR is driving its open PR to merge |
 | `review` | parked for a human, or visibly awaiting/failing post-merge validation (`BLOCKED:`/`STALLED:`/`PROOF:` note explains why) |
-| `done` | PR is **merged** AND the card's outcome was validated (terminal) |
+| `done` | PR is **merged** AND the card's outcome was validated, or a non-PR card's `DONE-WHEN` predicate is satisfied |
 
 ### Outcome validation — at the CARD level, not in PR bodies
 
@@ -106,6 +106,26 @@ diff ("a user can set a password and later unlock with it") — see the SOP
 VERIFY/END STATE goes to `review` with a `PROOF:` note — not `done`. This is what
 stops "password sets but the app won't unlock with it" (incident 2026-06-30) from
 reaching a user.
+
+### DONE-WHEN predicates for non-PR cards
+
+`Kind: pr` cards never auto-close from `DONE-WHEN`; they still require a
+verified merged PR. Non-PR cards must carry `Kind: tracker|validation|meta` and
+one explicit read-only predicate:
+
+```
+DONE-WHEN: fbrain <slug> exists
+DONE-WHEN: fbrain <slug> updated-after <YYYY-MM-DD>
+DONE-WHEN: routine <name> heartbeat matches /<regex>/ after <YYYY-MM-DD>
+DONE-WHEN: date >= <YYYY-MM-DD>
+DONE-WHEN: file <path> matches /<regex>/
+```
+
+The reconciler and groomer evaluate predicates with
+`bin/last-stack-fkanban-done-when-eval` when Last Stack is installed. Satisfied
+predicates move the non-PR card to `done` with evidence; false or pending
+predicates stay quiet; malformed predicates become a visible card-authoring
+issue. Predicate evaluation is read-only and fail-closed.
 
 Note: `review` is an **exception** state, not the normal post-PR resting place.
 The happy path is `doing` → (drive PR to merge) → `done`. A card lands in
@@ -149,6 +169,7 @@ tells you **where** to work (there is no `repo` field on the schema):
 Repo: owner/name               # owner/name, or an absolute local path
 Base: main                     # base branch to target
 Branch: fkanban/<slug>         # optional; defaults to fkanban/<slug>
+Kind: pr                       # pr | tracker | validation | meta
 PR: <url>                      # written by WORK mode once the PR is open
 
 GOAL: ...
@@ -158,6 +179,10 @@ VERIFY: <exact commands that must pass>
 DONE WHEN: PR merged into <base>
 OUT OF SCOPE: ...
 ```
+
+For non-PR cards, use `Kind: tracker|validation|meta` and a single-line
+`DONE-WHEN:` predicate from the supported forms above instead of `DONE WHEN: PR
+merged ...`. The predicate is the card's machine-checkable terminal condition.
 
 If `Repo:`/`Base:` are missing or ambiguous, **do not guess** — move the card
 to `review`, append a one-line note explaining what's missing, and exit.
@@ -267,13 +292,23 @@ force-merge around a failing required gate.
 Run once per wake, then exit. Sweep **every card not already in `done`** — not
 just `doing`/`review`. (A card can be merged while still sitting in `todo` if a
 human or another flow did the work — a merged PR whose card never advanced.)
-**But widening the sweep is ONLY to catch cards whose PR already merged — it is
-NOT a licence to resolve un-started cards. The DEFAULT action for any swept card
-is to LEAVE IT ALONE; you only act when there is concrete PR/branch evidence to
-act on (see step 2). When in doubt, do nothing.** Skip a card only if it has no
-`Repo:` header (it isn't meant for this flow). For each candidate:
+**But widening the sweep is ONLY to catch cards whose PR already merged, or
+non-PR cards whose `DONE-WHEN` predicate is already satisfied. It is NOT a
+licence to resolve un-started PR cards. The DEFAULT action for any swept card is
+to LEAVE IT ALONE; you only act when there is concrete PR/branch evidence or a
+satisfied non-PR predicate. When in doubt, do nothing.** Skip a card only if it
+has no `Repo:` header (it isn't meant for this flow). For each candidate:
 
-1. **Find its PR.** Prefer an explicit `PR:` line / PR URL in the body — work
+1. **Classify the card.** Parse `Kind:` and any single-line `DONE-WHEN:`
+   predicate. Treat missing `Kind:` as `pr` only for legacy PR-shaped cards.
+   For `Kind: tracker|validation|meta`, evaluate `DONE-WHEN` before PR lookup:
+   - satisfied → `move <slug> done` and cite the evaluator output.
+   - false or pending → leave it quietly where it is; do not stamp
+     `NEEDS-HUMAN`.
+   - missing or malformed → surface the card-authoring issue
+     (`NEEDS-HUMAN: non-PR card missing/malformed DONE-WHEN`).
+   For `Kind: pr`, ignore `DONE-WHEN` for closure and continue below.
+2. **Find its PR.** Prefer an explicit `PR:` line / PR URL in the body — work
    landed outside WORK mode won't use the `fkanban/<slug>` branch convention.
    Fall back to the head-branch lookup only when no PR URL is present:
    ```bash
@@ -293,11 +328,11 @@ act on (see step 2). When in doubt, do nothing.** Skip a card only if it has no
    (`databaseId,status,conclusion,createdAt,...` for runs; `name,state,bucket`
    for PR checks) and select the newest relevant item explicitly, or query the
    Actions API.
-2. **Decide from PR state:**
+3. **Decide from PR state:**
    - **Merged** (`state=MERGED` / `mergedAt` set) → `move <slug> done`. Done.
-     A card reaches `done` ONLY this way — a verified MERGED PR. If you cannot
-     point at a merged PR for the card, it does **not** go to `done`, no matter
-     how the card reads.
+     A `Kind: pr` card reaches `done` ONLY this way — a verified MERGED PR. If
+     you cannot point at a merged PR for the PR card, it does **not** go to
+     `done`, no matter how the card reads.
    - **No PR found AND no `fkanban/<slug>` branch with commits** → the card is
      **un-started** (a fresh `todo`/`backlog` item nobody has picked up yet).
      **LEAVE IT EXACTLY WHERE IT IS — do NOT move it, and NEVER move it to
@@ -340,7 +375,7 @@ act on (see step 2). When in doubt, do nothing.** Skip a card only if it has no
      force-merge.
    - **Pending** (CI running, awaiting human review) → leave it; it'll be
      re-checked next wake.
-3. **Give-up guard:** if a card has been in `review` with no forward progress
+4. **Give-up guard:** if a card has been in `review` with no forward progress
    for a long time (several days of wakes, or a hard human-only blocker), append
    `STALLED: <why>` to the body and leave it in `review` for a human — never
    silently loop forever and never auto-merge around a failing gate.

@@ -2,11 +2,15 @@
 # brain-doctor.sh — READ-ONLY triage of the folddb brain (Tom's primary
 # fbrain/fkanban daily-driver node) and the orphan procs that masquerade as it.
 #
-# The brain is reached over the Unix socket at ~/.folddb/data/folddb.sock — the
-# legacy local TCP endpoint is intentionally SHUT DOWN, so a TCP probe (or an
-# `lsof -i` on the old port) finds nothing even when the brain is perfectly
-# healthy. NEVER treat a missing TCP listener as a node outage; the socket is
-# the source of truth.
+# The brain (the desktop `fold-app` process) is reached over a Unix socket — it
+# serves the same node over BOTH ~/.lastdb/data/folddb.sock and the legacy
+# ~/.folddb/data/folddb.sock (both return HTTP 200). The legacy local TCP endpoint
+# is intentionally SHUT DOWN, so a TCP probe (or an `lsof -i` on the old port) finds
+# nothing even when the brain is perfectly healthy. NEVER treat a missing TCP
+# listener as a node outage; the socket is the source of truth. Note: on the
+# ~/.folddb path `lsof -t` can return EMPTY while the socket is healthy, so this
+# script defaults to ~/.lastdb (where lsof attributes the listener PID) and
+# identifies the brain by process name (fold-app) too, not lsof alone.
 #
 # Codifies the hand-run recipe that recurs across every "is fkanban down / is the
 # brain wedged / why is my computer slow / couldn't take over" incident. Pulls
@@ -17,12 +21,23 @@
 # reads state and PRINTS the recommended recovery command for a human to run.
 # That honors the standing rule: never kill the brain / surface-don't-act unattended.
 #
-# Usage:  brain-doctor.sh [SOCKET]   (SOCKET defaults to ~/.folddb/data/folddb.sock)
+# Usage:  brain-doctor.sh [SOCKET]   (SOCKET defaults to ~/.lastdb/data/folddb.sock,
+#         falling back to ~/.folddb/data/folddb.sock; FOLDDB_SOCKET env also overrides)
 # Exit:   0 = healthy   1 = degraded/partial   2 = wedged/down   3 = not running
 
 set -u
+LASTDB_HOME="${LASTDB_HOME:-$HOME/.lastdb}"
 FOLDDB_HOME="${FOLDDB_HOME:-$HOME/.folddb}"
-SOCKET="${1:-${FOLDDB_SOCKET:-$FOLDDB_HOME/data/folddb.sock}}"
+# The brain (the desktop `fold-app` process) serves the SAME node over BOTH
+# ~/.lastdb/data/folddb.sock and ~/.folddb/data/folddb.sock (both return HTTP 200).
+# Prefer ~/.lastdb: `lsof -t` reliably attributes the listener PID there, whereas on
+# ~/.folddb `lsof -t` can return EMPTY even though the socket is perfectly healthy
+# (curl still gets 200). Arg / FOLDDB_SOCKET override wins; else prefer lastdb, fall
+# back to the legacy folddb path.
+if [ -n "${1:-}" ]; then SOCKET="$1"
+elif [ -n "${FOLDDB_SOCKET:-}" ]; then SOCKET="$FOLDDB_SOCKET"
+elif [ -S "$LASTDB_HOME/data/folddb.sock" ]; then SOCKET="$LASTDB_HOME/data/folddb.sock"
+else SOCKET="$FOLDDB_HOME/data/folddb.sock"; fi
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-8}"
 
 # --- tiny output helpers (bash 3.2 safe, no associative arrays) ---------------
@@ -39,10 +54,12 @@ bold "════════════════════════�
 bold " folddb brain-doctor  —  socket $SOCKET  —  $(date '+%Y-%m-%d %H:%M:%S %Z')"
 bold "════════════════════════════════════════════════════════════"
 
-# ── 1. Socket + folddb_server process ─────────────────────────────────────────
+# ── 1. Socket + brain process ─────────────────────────────────────────────────
 bold ""
-bold "1. Brain socket + folddb_server process"
-# The brain owns the Unix socket. Find the folddb_server process that holds it.
+bold "1. Brain socket + brain process (fold-app / lastdb_server)"
+# The brain owns the Unix socket. Find the brain process that holds it. The live
+# brain is the desktop `fold-app` (renamed from `folddb_server`/`lastdb_server`);
+# match all three so identification survives the FoldDB→LastDB rename.
 BRAIN_PID=""
 if [ -S "$SOCKET" ]; then
   ok "socket present: $SOCKET"
@@ -51,14 +68,15 @@ if [ -S "$SOCKET" ]; then
   for pid in $SOCK_PIDS; do
     CMD="$(ps -o command= -p "$pid" 2>/dev/null)"
     case "$CMD" in
-      *folddb_server*) BRAIN_PID="$pid"; break ;;
+      *fold-app*|*lastdb_server*|*folddb_server*) BRAIN_PID="$pid"; break ;;
     esac
   done
-  # fall back to the folddb_server process if lsof is restricted (sandbox)
+  # fall back to the brain process if lsof is restricted (sandbox) OR returns empty
+  # (on ~/.folddb `lsof -t` can be empty while the socket is healthy — see header).
   if [ -z "$BRAIN_PID" ]; then
-    for pid in $(pgrep -f 'folddb_server' 2>/dev/null); do
+    for pid in $(pgrep -f 'MacOS/fold-app|lastdb_server|folddb_server' 2>/dev/null); do
       CMD="$(ps -o command= -p "$pid" 2>/dev/null)"
-      case "$CMD" in *folddb_server*) BRAIN_PID="$pid"; break ;; esac
+      case "$CMD" in *fold-app*|*lastdb_server*|*folddb_server*) BRAIN_PID="$pid"; break ;; esac
     done
   fi
 else
@@ -70,7 +88,7 @@ fi
 
 if [ -n "$BRAIN_PID" ]; then
   PS_LINE="$(ps -o pid=,ppid=,%cpu=,rss=,etime=,comm= -p "$BRAIN_PID" 2>/dev/null)"
-  ok "PID $BRAIN_PID is the folddb_server brain serving the socket"
+  ok "PID $BRAIN_PID is the fold-app brain serving the socket"
   if [ -n "$PS_LINE" ]; then
     CPU="$(echo "$PS_LINE" | awk '{print $3}')"
     RSSKB="$(echo "$PS_LINE" | awk '{print $4}')"
@@ -81,7 +99,7 @@ if [ -n "$BRAIN_PID" ]; then
     [ "$PPID_V" = "1" ] && info "ppid=1 → launchd-supervised (expected for the durable brain)."
   fi
 elif [ -S "$SOCKET" ]; then
-  warn "socket exists but no folddb_server process resolved (ps/lsof may be sandbox-restricted)."
+  warn "socket exists but no brain process (fold-app / lastdb_server) resolved (ps/lsof may be sandbox-restricted)."
   info "If a board read works (fkanban doctor / fbrain get), the brain is alive — trust the socket op."
 fi
 
@@ -190,21 +208,23 @@ fi
 
 # ── 6. Orphan / impostor folddb procs (sweep candidates) ─────────────────────
 bold ""
-bold "6. Orphan folddb_server / harness procs (NOT the primary-socket brain)"
+bold "6. Orphan lastdb_server/folddb_server test-node procs (NOT the primary-socket brain)"
 FOUND_ORPHAN=0
-# folddb_server processes that are NOT the brain pid
-for pid in $(pgrep -f 'folddb_server' 2>/dev/null); do
+# Orphaned TEST-NODE binaries (lastdb_server / folddb_server) that are NOT the brain
+# pid. Deliberately do NOT match `fold-app`: the desktop brain (and its crash-reporter
+# helper) run as fold-app and must never be classified as an orphan sweep candidate.
+for pid in $(pgrep -f 'lastdb_server|folddb_server' 2>/dev/null); do
   [ "$pid" = "$BRAIN_PID" ] && continue
-  # confirm it's really a folddb_server (pgrep -f false-positives on agent prompt text)
+  # confirm it's really a *_server binary (pgrep -f false-positives on agent prompt text)
   CMD="$(ps -o command= -p "$pid" 2>/dev/null)"
   case "$CMD" in
-    *folddb_server*) : ;;
+    *lastdb_server*|*folddb_server*) : ;;
     *) continue ;;
   esac
   CWD="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)"
   GONE=""
   if [ -n "$CWD" ] && [ ! -d "$CWD" ]; then GONE=" [cwd DELETED → safe to kill]"; fi
-  warn "orphan folddb_server pid=$pid cwd=${CWD:-?}${GONE}"
+  warn "orphan test-node pid=$pid cwd=${CWD:-?}${GONE}"
   FOUND_ORPHAN=1
 done
 # run.sh dev harnesses reparented to launchd
