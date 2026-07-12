@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  last-stack-forge-git [-C <repo>] <git-args...>
+
+Runs git with the local Forgejo token injected as an HTTP extraHeader, avoiding
+hand-built auth headers for http://localhost:3300 remotes.
+
+Example:
+  last-stack-forge-git -C /path/to/fold ls-remote --heads origin main
+EOF
+}
+
+if [[ $# -eq 0 || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+repo_dir="$PWD"
+args=("$@")
+for ((i=0; i<${#args[@]}; i++)); do
+  if [[ "${args[$i]}" == "-C" && $((i + 1)) -lt ${#args[@]} ]]; then
+    repo_dir="${args[$((i + 1))]}"
+    break
+  fi
+done
+
+if ! git -C "$repo_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "not a git repository: $repo_dir" >&2
+  exit 2
+fi
+
+origin_url="$(git -C "$repo_dir" remote get-url origin 2>/dev/null || true)"
+if [[ "$origin_url" != http://localhost:3300/* && "$origin_url" != http://127.0.0.1:3300/* ]]; then
+  exec git "${args[@]}"
+fi
+
+token="${FORGE_TOKEN:-}"
+if [[ -z "$token" ]]; then
+  token="$(security find-generic-password -s forgejo-token -w 2>/dev/null || true)"
+fi
+if [[ -z "$token" ]]; then
+  echo "missing Forgejo token: set FORGE_TOKEN or store keychain item forgejo-token" >&2
+  exit 1
+fi
+
+exec git \
+  -c "http.http://localhost:3300/.extraHeader=Authorization: token $token" \
+  -c "http.http://127.0.0.1:3300/.extraHeader=Authorization: token $token" \
+  "${args[@]}"
