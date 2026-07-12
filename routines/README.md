@@ -118,6 +118,11 @@ frontmatter suggests a cadence. The pattern every routine follows:
    ```
    Add routine-specific CLIs such as `fbrain` or `fkanban` to the preflight when
    the prompt needs them.
+   For local Forgejo API calls, prefer
+   `"$last_stack/bin/last-stack-forge-api" ...` over hand-written
+   `TOKEN=$(security ...) curl ...` snippets; for Forgejo git auth failures,
+   prefer `"$last_stack/bin/last-stack-forge-git" -C <repo> <git-args...>` over
+   hand-built `http.<scope>.extraHeader` commands.
 3. **Resolve automation memory safely.** Codex scheduled prompts must include
    both `Automation ID: <automation-id>` and `Automation memory:
    ${CODEX_HOME:-$HOME/.codex}/automations/<automation-id>/memory.md` after
