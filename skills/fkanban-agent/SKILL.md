@@ -21,7 +21,10 @@ repo, board on your LastDB node). It does **not** spawn agents. This skill makes
 the agent **own a card through merge**: it implements the card, opens the PR, and
 then drives that PR to MERGED before exiting — it does not hand a green-but-
 unmerged PR off and walk away. A card reaches `done` only when its PR is verified
-merged.
+merged. **PR/CR opened is not done, and there is no separate background driver
+watching it for you.** The WORK-mode agent that opens the review artifact must
+record it on the card and keep driving it in this same turn until merged or
+genuinely blocked.
 
 > ⚠️ **Route repo review artifacts before opening or reconciling one.** After
 > resolving the concrete checkout, run
@@ -258,13 +261,17 @@ to `review`, append a one-line note explaining what's missing, and exit.
    ```bash
    git commit -am "<msg>"
    git push -u origin HEAD
-   gh -R <repo> pr create --fill --base <base>
+   pr_url="$(gh -R <repo> pr create --fill --base <base>)"
+   branch="$(git branch --show-current)"
+   fkanban add <slug> --pr-url "$pr_url" --branch "$branch"
    gh -R <repo> pr merge <n> --auto            # if the repo allows auto-merge
    ```
    For Forgejo, use the local-forge API path from `sop-forge-pr-workflow`
    (or the workspace AGENTS.md helper map) and keep using Forgejo's
    `merge_when_checks_succeed` request for repos that have not opted into
-   LastGit.
+   LastGit. Immediately after the Forgejo create call returns, record the
+   returned PR URL and current branch on the card:
+   `fkanban add <slug> --pr-url "$pr_url" --branch "$branch"`.
 
    For LastGit-native repos, use the CR path from
    `sop-lastgit-native-forge-workflow` instead of Forgejo/GitHub:
@@ -277,14 +284,17 @@ to `review`, append a one-line note explaining what's missing, and exit.
      --auto-merge --require-status "$ci_context" --json)"
    cr_id="$(printf '%s\n' "$cr_json" | jq -r .cr_id)"
    ```
-   Record a card `PR:` line as `lastgit://<slug>/cr/<cr-id>` so later
-   reconcile/validate passes can find it without guessing. LastGit's
-   `--auto-merge --require-status` is the arm step; do not call Forgejo for a
-   LastGit-native repo.
+   Immediately record the CR locator and branch on the card:
+   `fkanban add <slug> --pr-url "lastgit://$lastgit_slug/cr/$cr_id" --branch <branch>`.
+   Later reconcile/validate passes must be able to find it without guessing.
+   LastGit's `--auto-merge --require-status` is the arm step; do not call
+   Forgejo for a LastGit-native repo.
 6. **Drive it to MERGED — do not hand off a green-but-unmerged PR.** Arming
    auto-merge is necessary but not always sufficient: a PR/CR can fall out of
    mergeable state (go BEHIND, go DIRTY, or have its auto-merge dropped) and then
-   sit forever. You own getting it the rest of the way. The robust mechanism is
+   sit forever. **Opening a PR/CR is not a handoff point: there is no background
+   driver, watcher, or later task that automatically owns the review artifact
+   you just opened.** You own getting it the rest of the way. The robust mechanism is
    the **`/wait-merge` skill** — invoke it on your PR number; it interprets PR
    *state* (not a watcher's exit code), tolerates merge churn, re-asserts
    auto-merge when a clean PR stalls, and only declares failure on a genuinely
@@ -309,6 +319,13 @@ to `review`, append a one-line note explaining what's missing, and exit.
      <base>` → rebase onto `origin/<base>` → resolve → re-run VERIFY →
      force-push with lease). If the conflict needs product judgment you can't
      make, stop and treat it as a blocker (below).
+   - **Forge `mergeable:false` with green required checks** → do a local
+     test-merge before treating it as a stuck forge status: in the worktree,
+     `git fetch origin <base>` then `git merge --no-commit --no-ff origin/<base>`;
+     if it conflicts, `git merge --abort`, resolve by rebasing/merging locally,
+     re-run VERIFY, and push. Only use the empty-commit/stuck-status heal after
+     a local test-merge proves there is no real conflict; otherwise it just burns
+     another CI cycle without changing mergeability.
    - **CI red** (a real failing required check) → read `gh run view
      --log-failed`, fix in the worktree, re-run VERIFY, push. Keep watching.
    - **BLOCKED / AWAITING_CHECKS** while in a merge queue → this is the *normal*

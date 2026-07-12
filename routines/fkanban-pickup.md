@@ -100,11 +100,22 @@ read/write, fail loudly if the resolved path is empty or starts with
      checkout is proven before selection: `Repo: (workspace root — .claude/launch.json lives at /Users/tomtang/code/edgevector/.claude/launch.json; commit it in whichever repo tracks that file, else file note)` and `Repo: (machine-hygiene skill — /Users/tomtang/.claude or the repo tracking the machine-hygiene SKILL.md)`.
    This blocker conversion counts as forward action. Do it before computing
    work-units so the unchanged card is not logged as a recurring pickup skip.
-4. Sort eligible cards by priority (lowest `position`; tie-break oldest
-   `created_at`) and take enough cards to form up to `<N>` work-units. Because
-   a work-unit may batch up to three cards, a full pass may select more than
-   `<N>` cards when same-subsystem batching is available.
-5. **Shared-build-cache sub-cap (if applicable):** if concurrent builds against
+4. **Surface-overlap gate:** before a card can enter a work-unit, run
+   `<board CLI> overlap <slug> --json` (or the same declared-surface check if
+   your board CLI wrapper exposes it differently). The command compares the
+   candidate's declared `Surfaces:` / structured surfaces against `doing` and
+   `review` cards in the same repo. If it reports a conflict or exits with the
+   declared-conflict code, SKIP/SERIALIZE that card for this run and leave it in
+   `todo`; do not move it to `doing`, do not spawn it, and do not batch it with
+   the colliding work. Missing surfaces are an adoption warning, not a conflict:
+   prefer cards with declared surfaces when forming concurrent same-repo units,
+   but do not block an otherwise ready card solely because overlap is unknown.
+   Include each deferral in the heartbeat as `collision=<slug>:<in-flight-slug>`.
+5. Sort eligible, non-colliding cards by priority (lowest `position`;
+   tie-break oldest `created_at`) and take enough cards to form up to `<N>`
+   work-units. Because a work-unit may batch up to three cards, a full pass may
+   select more than `<N>` cards when same-subsystem batching is available.
+6. **Shared-build-cache sub-cap (if applicable):** if concurrent builds against
    one repo thrash a shared build cache (e.g. a workspace `target/` that can
    deadlock under `--all-targets`), cap how many of the selected cards may target
    that repo in one run (e.g. ≤3), and fill the remaining slots with cards
@@ -160,16 +171,21 @@ should produce three work-units, for example:
     Honor OUT OF SCOPE; keep the PR atomic. Run the brief's VERIFY commands and
     validate by running the app where the brief calls for it, not just tests."
   - "If `venue=github`, `git push -u origin HEAD` → `gh -R <repo> pr create --fill --base <base>` →
+    immediately record `pr_url` and `branch` on the card with
+    `<board CLI> add <slug> --pr-url <url> --branch <branch>` →
     enable auto-merge per the repo's merge strategy (for a merge-queue repo, bare
     `gh -R <repo> pr merge <n> --auto` — the queue sets the method; for plain auto-merge add
     your strategy flag). If `venue=forgejo`, use the local Forgejo SOP/API helper
-    for PR create/status/merge and never `gh` against a read-only mirror. If
+    for PR create/status/merge and never `gh` against a read-only mirror; record
+    the returned PR URL and branch on the card immediately after create. If
     `venue=lastgit`, read `fbrain get sop-lastgit-native-forge-workflow`, ensure
     `lastgit` is preflighted, push `HEAD:<branch>` to the `lastgit` remote, open
     `lastgit cr create <slug> --head <branch> --base <base> --auto-merge --require-status <context> --json`,
-    and record `PR: lastgit://<slug>/cr/<cr-id>` on the card."
+    and record `PR: lastgit://<slug>/cr/<cr-id>` plus the branch on the card."
   - "Then DRIVE THE PR/CR TO MERGED — do NOT hand off a green-but-unmerged PR/CR (that
-    fire-and-forget hand-off is exactly what lets PRs pile up stranded). Use the
+    fire-and-forget hand-off is exactly what lets PRs pile up stranded). PR/CR
+    opened is not done, and there is no separate background driver watching the
+    review artifact for you. Use the
     `wait-merge` skill (or a sleepless `gh -R <repo> pr checks <n> --watch`, NEVER `sleep`)
     and act on each state change: re-arm if auto-merge was dropped,
     `gh -R <repo> pr update-branch <n>` if BEHIND, rebase if DIRTY, fix if a required check
@@ -263,7 +279,7 @@ empty, nothing to build." Then exit.
 > rate-limit abort; `noop` when the queue was empty AND you did not spawn the idle
 > simplification agent; otherwise
 > `ok cards=<n> units=<n> spawned=<n> expected_prs=<n>` with selected card slugs,
-> work-unit grouping, and spawned worker ids. In a full eligible pass,
+> work-unit grouping, collision deferrals, and spawned worker ids. In a full eligible pass,
 > `units`, `spawned`, and `expected_prs` should all be `3`; `cards` may be
 > higher when batches are used. If unit/spawn/PR counts are lower, include the
 > concrete reason (`busy-node`, `fold-open-guard`, `only-<n>-eligible`,
