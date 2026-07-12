@@ -34,11 +34,13 @@ engine skills or routine prompts.
    ~/.last-stack/bin/last-stack-install-apps
    ```
 
-2. Initialize Brain and Kanban for the project.
+2. Complete one-time Brain and Kanban setup for the project using their app
+   guides, then verify the data-plane with narrow reads. Do not make scheduled
+   routines depend on setup or doctor commands as health checks.
 
    ```bash
-   fbrain init --grant-consent
-   fkanban init
+   fkanban list
+   fbrain get workspace-config || true
    ```
 
 3. Copy the templates to a scratch directory and replace every placeholder.
