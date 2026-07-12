@@ -140,6 +140,9 @@ run the skills on a cadence:
 
 See [`routines/README.md`](routines/README.md) for how routines + skills compose,
 and fill in the `<PLACEHOLDERS>` before scheduling any of them.
+For a new project, start with the routine fleet bootstrap guide and record
+templates in [`docs/routine-fleet-portability.md`](docs/routine-fleet-portability.md)
+and [`templates/routine-fleet/`](templates/routine-fleet/).
 
 ### Registry Rotator Records
 
@@ -204,6 +207,9 @@ instructions/brain-kanban.md
                         (with a PATH env so GUI-spawned servers can find bun)
 routines/<name>.md      one parameterized scheduled-agent template per routine
 routines/README.md      how routines + skills compose; how to register them
+templates/routine-fleet/
+                        portable Brain record templates for project routine
+                        config, probe registries, and shared SOPs
 ```
 
 ## How an AI agent uses this
