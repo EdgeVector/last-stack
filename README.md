@@ -118,6 +118,7 @@ preserving project-specific rules where they belong.
 | **fkanban-agent** | Drive a card to **merged**, reconcile in-flight PRs, or validate post-merge END STATE checks. |
 | **fkanban-setup** | Bootstrap fkanban on a fresh machine — install, `init` (resolve published schemas), `doctor`, optional MCP registration. |
 | **onecontext** | Search prior Codex sessions, with guarded Aline usage and a JSONL fallback when Aline is unavailable. |
+| **registry-rotator** | Generic engine for registry-backed scheduled routines: pick the most-overdue eligible entry, run its recipe, file cards, and stamp the registry log. |
 | **wait-merge** | Robustly wait for a GitHub PR to merge by interpreting PR *state*, not a watcher's exit code. |
 | **close-out** | The post-change loop: open a PR from a worktree, drive it to merged, checkpoint the decision to the brain, file a follow-up card. |
 | **last-stack-upgrade** | Update the stack in place and re-register the skills. |
@@ -138,6 +139,20 @@ run the skills on a cadence:
 
 See [`routines/README.md`](routines/README.md) for how routines + skills compose,
 and fill in the `<PLACEHOLDERS>` before scheduling any of them.
+
+### Registry Rotator Records
+
+The **registry-rotator** skill expects each project registry to be a Markdown
+record with one rotatable entry per heading, entry fields for `track`,
+`cadence`, `recipe`, `pass =`, and `isolation`, and a single
+`rotation-log:start/end` table with `feature`, `last_run`, `result`, and
+`cards filed` columns. The engine reads project paths and venues from the
+project's config source (`workspace-config` / `repo-venue-map` while those are
+still interim fbrain shims), selects the eligible entry with the largest
+`age / cadence` overdue ratio, dispatches that entry's recipe, files fkanban
+cards per `sop-routine-shared-contract`, and rewrites only the rotation-log row
+for the selected entry. Scheduled tasks should be thin triggers that pass a
+registry slug such as `registry=dogfood-registry`.
 
 ## Repo layout
 
