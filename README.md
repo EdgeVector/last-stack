@@ -121,6 +121,7 @@ preserving project-specific rules where they belong.
 | **wait-merge** | Robustly wait for a GitHub PR to merge by interpreting PR *state*, not a watcher's exit code. |
 | **close-out** | The post-change loop: open a PR from a worktree, drive it to merged, checkpoint the decision to the brain, file a follow-up card. |
 | **last-stack-upgrade** | Update the stack in place and re-register the skills. |
+| **session-miner** | Generic engine for mining recent agent session transcripts with profiles for papercuts, incidents, owner-stated knowledge, and tooling friction. |
 
 And the **routines** (`routines/`) — parameterized scheduled-agent templates that
 run the skills on a cadence:
@@ -238,6 +239,12 @@ runs post-merge END STATE checks, and
 `program-rollup`/`consolidate-brain`/`morning-sync` keep the brain honest and
 surface the short genuinely-human decision set. See
 [`routines/README.md`](routines/README.md).
+
+The **session-miner** skill is the shared engine behind transcript-mining
+routines. A scheduled task can become a thin trigger that passes a profile name
+such as `papercuts`, `incidents`, `owner-statements`, or `friction-patterns` plus
+a time window; the skill handles transcript parsing, dedupe, report-only dry
+runs, and profile-specific writes.
 
 You'll also want the underlying tools installed and a LastDB node running — see
 the **fkanban-setup** skill and the `fkanban` / `fbrain` repos.
