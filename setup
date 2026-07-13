@@ -206,11 +206,17 @@ install_claude_hooks() {
 }
 
 # ── Brain/Kanban wiring: usage instructions + Codex MCP registration ──────────
+# Managed block targets:
+#   Claude Code → ~/.claude/CLAUDE.md
+#   Codex       → ~/.codex/AGENTS.md
+#   Factory     → ~/.factory/AGENTS.md
+#   OpenCode    → ~/.config/opencode/AGENTS.md
 BK_START='<!-- last-stack:brain-kanban:start (managed by last-stack setup; edits inside are overwritten) -->'
 BK_END='<!-- last-stack:brain-kanban:end -->'
 
 upsert_brain_kanban_block() {
-  # $1 = harness instructions file (e.g. ~/.codex/AGENTS.md), $2 = label
+  # $1 = harness instructions file (e.g. ~/.claude/CLAUDE.md, ~/.codex/AGENTS.md)
+  # $2 = label
   local file="$1"
   local label="$2"
   local src="$SOURCE_ROOT/instructions/brain-kanban.md"
@@ -360,6 +366,7 @@ esac
 echo "Installing The Last Stack (v$(cat "$SOURCE_ROOT/VERSION")) ..."
 [ "$INSTALL_CLAUDE"   -eq 1 ] && register_into "$HOME/.claude/skills"          "claude"
 [ "$INSTALL_CLAUDE"   -eq 1 ] && install_claude_hooks
+[ "$INSTALL_CLAUDE"   -eq 1 ] && upsert_brain_kanban_block "$HOME/.claude/CLAUDE.md" "claude"
 [ "$INSTALL_CODEX"    -eq 1 ] && register_into "$HOME/.codex/skills"           "codex"
 [ "$INSTALL_CODEX"    -eq 1 ] && upsert_brain_kanban_block "$HOME/.codex/AGENTS.md" "codex"
 [ "$INSTALL_CODEX"    -eq 1 ] && ensure_codex_mcp_servers

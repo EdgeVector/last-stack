@@ -206,12 +206,15 @@ bin/
 skills/<name>/SKILL.md  one directory per skill
 instructions/brain-kanban.md
                         canonical brain/kanban usage guidance; setup upserts it
-                        as a managed block into each harness's global AGENTS.md
-                        and registers the brain/kanban MCP servers for Codex
-                        (with a PATH env so GUI-spawned servers can find bun);
-                        also records the creation-time default that new repos
-                        start in LastGit while existing venue choices remain
-                        unchanged until explicitly migrated
+                        as a managed block into each harness's global
+                        instructions file (`~/.claude/CLAUDE.md`,
+                        `~/.codex/AGENTS.md`, `~/.factory/AGENTS.md`,
+                        `~/.config/opencode/AGENTS.md`) and registers the
+                        brain/kanban MCP servers for Codex (with a PATH env so
+                        GUI-spawned servers can find bun); also records the
+                        creation-time default that new repos start in LastGit
+                        while existing venue choices remain unchanged until
+                        explicitly migrated
 routines/<name>.md      one parameterized scheduled-agent template per routine
 routines/README.md      how routines + skills compose; how to register them
 templates/routine-fleet/
