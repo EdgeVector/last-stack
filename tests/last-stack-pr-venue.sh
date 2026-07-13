@@ -19,6 +19,9 @@ git -C "$repo" commit -m initial >/dev/null
 
 test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/last-stack "$repo")" = "github"
 test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/fold "$repo")" = "forgejo"
+# exemem-infra is GitHub-primary since 2026-07-13 (decision-2026-07-13-exemem-infra-github-primary);
+# its forge copy is retired + archived, so it must NOT route to the forge.
+test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/exemem-infra "$repo")" = "github"
 
 git -C "$repo" config laststack.pr-venue lastgit
 git -C "$repo" config laststack.lastgit-slug last-stack-shadow
