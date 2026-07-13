@@ -117,7 +117,7 @@ fi
 
 if [ -z "$venue" ]; then
   case "$repo" in
-    EdgeVector/fold|EdgeVector/exemem-infra|EdgeVector/exemem-workspace|EdgeVector/lastgit)
+    EdgeVector/fold|EdgeVector/exemem-workspace|EdgeVector/lastgit)
       venue="forgejo"
       reason="default:forge-hot"
       ;;
