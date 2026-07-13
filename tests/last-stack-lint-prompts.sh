@@ -332,6 +332,45 @@ if "$ROOT/bin/last-stack-lint-prompts" "$bad_aline_unguarded" >/dev/null 2>&1; t
   exit 1
 fi
 
+# Bare repo-scoped git probes run before a checkout is resolved (the recurring
+# workspace-root `fatal: not a git repository` class) must fail the lint.
+bad_bare_git_status="$tmp/bad-bare-git-status.md"
+printf '%s\n' "pwd" "git stat""us" > "$bad_bare_git_status"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_bare_git_status" >/dev/null 2>&1; then
+  echo "expected bare workspace-root git status to fail prompt lint" >&2
+  exit 1
+fi
+
+bad_workspace_cd_git_branch="$tmp/bad-workspace-cd-git-branch.md"
+printf '%s\n' "cd /Users/tomtang/code/edge""vector" "git bra""nch" > "$bad_workspace_cd_git_branch"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_workspace_cd_git_branch" >/dev/null 2>&1; then
+  echo "expected bare git branch after cd to workspace root to fail prompt lint" >&2
+  exit 1
+fi
+
+bad_workspace_var_git_lsremote="$tmp/bad-workspace-var-git-lsremote.md"
+printf '%s\n' 'cd "$workspace"' "git ls-rem""ote origin" > "$bad_workspace_var_git_lsremote"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_workspace_var_git_lsremote" >/dev/null 2>&1; then
+  echo "expected bare git ls-remote after cd to a workspace var to fail prompt lint" >&2
+  exit 1
+fi
+
+# A probe run after a concrete checkout has been resolved is allowed.
+good_resolved_checkout_probe="$tmp/good-resolved-checkout-probe.md"
+printf '%s\n' \
+  'repo="$("$last_stack/bin/last-stack-repo-op-guard" "$repo" "<WORKSPACE>")"' \
+  'cd "$repo"' \
+  "git stat""us --porcelain" \
+  "git rev-pa""rse HEAD" > "$good_resolved_checkout_probe"
+"$ROOT/bin/last-stack-lint-prompts" "$good_resolved_checkout_probe"
+
+# `git -C <checkout>` forms and negative guidance never trip the probe check.
+good_git_dash_c_probe="$tmp/good-git-dash-c-probe.md"
+printf '%s\n' \
+  'git -C "$repo" bra''nch --show-current' \
+  "Do not run git stat""us from the workspace root; resolve a checkout first." > "$good_git_dash_c_probe"
+"$ROOT/bin/last-stack-lint-prompts" "$good_git_dash_c_probe"
+
 pickup="$ROOT/routines/kanban-pickup.md"
 grep -q 'Repo: (workspace root' "$pickup"
 grep -q 'Repo: (machine-hygiene skill' "$pickup"

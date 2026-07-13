@@ -174,6 +174,85 @@ check_aline_search_guards() {
   done
 }
 
+check_workspace_root_git_probes() {
+  # Block bare repo-scoped git probes (`git status`, `git branch`,
+  # `git ls-remote`, `git rev-parse`) run before a concrete checkout is
+  # resolved. The recurring `fatal: not a git repository` class comes from
+  # routine/worker preludes that run these from the aggregate workspace root
+  # (`/Users/tomtang/code/edgevector`) instead of `git -C <checkout>` after
+  # path resolution. A probe is allowed once the same file has established a
+  # checkout context earlier: a `git -C`, `worktree add`, `last-stack-repo-op-guard`
+  # call, or a `cd`/`pushd` into a non-workspace-root target.
+  local root="$1"
+  local files=()
+  local file
+
+  if [ -d "$root" ]; then
+    while IFS= read -r -d '' file; do
+      files+=("$file")
+    done < <(
+      find "$root" -type f \
+        ! -path '*/.git/*' \
+        ! -path '*/logs/*' \
+        ! -path '*/run/*' \
+        ! -name memory.md \
+        ! -name last-stack-lint-prompts \
+        -print0
+    )
+  else
+    [ "$(basename "$root")" = "last-stack-lint-prompts" ] && return 0
+    files=("$root")
+  fi
+
+  for file in "${files[@]}"; do
+    [ -f "$file" ] || continue
+    grep -Iq . "$file" || continue
+    awk -v file="$file" '
+      function is_workspace_target(t) {
+        gsub(/^["'\''`]+|["'\''`]+$/, "", t)
+        sub(/\/+$/, "", t)
+        if (t == "/Users/tomtang/code/edgevector") return 1
+        if (t == "<WORKSPACE>") return 1
+        if (t ~ /^\$\{?[Ww][Oo][Rr][Kk][Ss][Pp][Aa][Cc][Ee][A-Za-z0-9_]*\}?$/) return 1
+        return 0
+      }
+      function line_establishes(l,   t) {
+        if (l ~ /(^|[^[:alnum:]_-])git[[:space:]]+-C([[:space:]]|$)/) return 1
+        if (l ~ /worktree[[:space:]]+add/) return 1
+        if (l ~ /repo-op-guard/) return 1
+        if (match(l, /(^|[^[:alnum:]_-])(cd|pushd)[[:space:]]+[^[:space:];&|)]+/)) {
+          t = substr(l, RSTART, RLENGTH)
+          sub(/^.*(cd|pushd)[[:space:]]+/, "", t)
+          if (!is_workspace_target(t)) return 1
+        }
+        return 0
+      }
+      function is_negative_guidance(l) {
+        return (l ~ /Do not|Never|do not|never|avoid|unsupported|unsafe|instead of|must not|resolve.*checkout/)
+      }
+      function is_bare_probe(l) {
+        return (l ~ /(^|[`(;&|]|\$\()[[:space:]]*git[[:space:]]+(status|ls-remote|rev-parse|branch)([[:space:]]|$)/)
+      }
+      {
+        line = $0
+        if (line_establishes(line)) {
+          established = 1
+        }
+        if (!established && is_bare_probe(line) && !is_negative_guidance(line)) {
+          printf "%s:%d:%s\n", file, NR, line
+          bad = 1
+        }
+      }
+      END {
+        exit bad
+      }
+    ' "$file" || {
+      echo "bare workspace-root Git probe found under $root; resolve a concrete checkout (last-stack-repo-op-guard) and use git -C <checkout> before status/branch/ls-remote/rev-parse" >&2
+      fail=1
+    }
+  done
+}
+
 check_gh_json_fields() {
   local root="$1"
   local files=()
@@ -564,6 +643,7 @@ for path in "$@"; do
   check_aline_search_guards "$path"
   check_raw_markdown_shell_blocks "$path"
   check_default_board_scope "$path"
+  check_workspace_root_git_probes "$path"
 done
 
 while IFS= read -r -d '' toml; do
