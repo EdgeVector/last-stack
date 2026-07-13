@@ -19,12 +19,12 @@ actions noted below.
 
 ## 🛑 Hard guardrails (violating these has caused outages)
 
-- **NEVER kill the primary `folddb_server` brain.** It's Tom's primary brain with live Chrome
+- **NEVER kill the primary `folddb_server` / `lastdbd` brain.** It's Tom's primary brain with live Chrome
   connections; long uptime is NOT an orphan signal. Identify the primary brain by its live
   LastDB socket (`lsof /Users/tomtang/.lastdb/data/folddb.sock`), with the old
   `~/.folddb/data/folddb.sock` path only as a fallback, or by the app process
-  (`pgrep -fl 'MacOS/[f]old-app'`) before touching any folddb_server — the TCP port is gone,
-  so a port probe no longer finds it.
+  (`pgrep -fl 'MacOS/[f]old-app'`) or Mini daemon (`pgrep -fl '[l]astdbd'`) before
+  touching any folddb_server/lastdbd — the TCP port is gone, so a port probe no longer finds it.
   The **preview-port reaper (§4a)** is brain-safe by construction: it excludes any PID bound to
   the brain socket and kills only vite/`run.sh` dev launches on the preview ports — match by
   port + cmdline, never by the name "node"/"folddb".
@@ -101,6 +101,7 @@ ps aux | grep folddb_server | grep -v grep                 # confirm primary bra
 lsof /Users/tomtang/.lastdb/data/folddb.sock 2>/dev/null   # identify the primary brain by its live socket
 lsof /Users/tomtang/.folddb/data/folddb.sock 2>/dev/null    # stale-path fallback only
 pgrep -fl 'MacOS/[f]old-app'                               # process fallback for the app-hosted brain
+pgrep -fl '[l]astdbd'                                      # Mini primary brain fallback; socket lsof can be empty
 ```
 Read the kanban board to learn what's protected (Cline kanban is DEPRECATED — the active
 board is **kanban**): `cd ~/code/edgevector/kanban && bun src/cli.ts list`. Protect any
@@ -112,9 +113,19 @@ on branch `app-iso/dev-deploy-code-signature`). `~/.cline/worktrees/` is now emp
 ### 2. Git hygiene (safe, always do)
 For each real repo (skip the umbrella, skip dirty repos for the pull step):
 ```bash
-git -C "$d" fetch --all --prune --quiet
+TO=$(command -v gtimeout || command -v timeout || true)
+# Fetch origin only: origin is source of truth, and mirror remotes can hang or auth-prompt.
+if [ -n "$TO" ]; then
+  "$TO" 60 git -C "$d" fetch --prune --quiet origin || echo "  fetch skipped (timeout/fail): $d"
+else
+  git -C "$d" fetch --prune --quiet origin || echo "  fetch skipped (fail): $d"
+fi
 # if on main and clean:
-git -C "$d" pull --ff-only --quiet
+if [ -n "$TO" ]; then
+  "$TO" 60 git -C "$d" pull --ff-only --quiet || echo "  pull skipped (timeout/fail): $d"
+else
+  git -C "$d" pull --ff-only --quiet || echo "  pull skipped (fail): $d"
+fi
 git -C "$d" worktree prune
 ```
 **Delete merged branches** — use patch-id, not `--merged` (squash merges aren't ancestors):
@@ -177,6 +188,7 @@ brain_pids=$(
     lsof -t /Users/tomtang/.lastdb/data/folddb.sock 2>/dev/null
     lsof -t /Users/tomtang/.folddb/data/folddb.sock 2>/dev/null
     pgrep -f 'MacOS/[f]old-app' 2>/dev/null
+    pgrep -f '[l]astdbd' 2>/dev/null
   } | sort -u
 )
 for port in 5173 5178 5183 8766; do
@@ -196,7 +208,8 @@ done
 ```
 
 Guardrails: skip any PID in `brain_pids` (the live `~/.lastdb/data/folddb.sock` brain,
-with `~/.folddb/data/folddb.sock` only as a fallback, or the `MacOS/fold-app` process),
+with `~/.folddb/data/folddb.sock` only as a fallback, the `MacOS/fold-app` process,
+or the post-2026-07-12 `lastdbd` Mini primary),
 skip a port whose owning session is still live or whose cwd is a `DOING`/`REVIEW`
 kanban worktree, and log every PID + port + cmdline reaped (and every one spared
 and why). After reaping, a fresh `preview_start name=lastdb-ui` should bind
@@ -223,6 +236,7 @@ brain_pids=$(
     lsof -t /Users/tomtang/.lastdb/data/folddb.sock 2>/dev/null
     lsof -t /Users/tomtang/.folddb/data/folddb.sock 2>/dev/null
     pgrep -f 'MacOS/[f]old-app' 2>/dev/null
+    pgrep -f '[l]astdbd' 2>/dev/null
   } | sort -u
 )  # NEVER a target
 for pid in $(pgrep -f '[l]astdb_server|[f]olddb_server|MacOS/[f]old-app'); do
@@ -245,7 +259,7 @@ find /Volumes -maxdepth 1 -type d -name 'LastDB*' -print 2>/dev/null |
   while IFS= read -r v; do hdiutil detach "$v" 2>/dev/null || true; done
 ```
 
-Guardrails: the brain (`fold-app` / `lastdb_server` on the live
+Guardrails: the brain (`fold-app` / `lastdb_server` / `lastdbd` on the live
 `~/.lastdb/data/folddb.sock`, with `~/.folddb/data/folddb.sock` only as a fallback)
 is excluded by construction before temp/DMG classification. A high-CPU
 `lastdb_server` under `~/code/.../target/*`, `~/.lastdb`, or `~/.folddb` is NOT a
