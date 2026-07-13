@@ -68,6 +68,23 @@ do not hard-code it as the primary. The legacy TCP port
 - `kanban move <slug> <column>` — blocked cards (unfinished deps) refuse
   doing/review/done without `--force`.
 
+### Git commits from isolated worktrees
+
+Never run `git add -A` or `git add .` in a shared checkout; sibling agents may
+have unrelated edits there. In a dedicated isolated worktree for your card, the
+shared-checkout prohibition does not apply: before committing, always stage the
+whole worktree with `git add -A` or commit tracked edits with `git commit -a`
+so staged deletions and editor/Edit-tool changes both land in the commit.
+
+Before pushing, require the isolated worktree status to be empty, for example
+`git -C "$worktree" status --short`, or inspect `git show --stat HEAD`. If the
+commit stat is only deletions but you also edited files, you probably dropped
+unstaged edits. When local checks passed against the working tree but CI fails
+from the committed tree with missing modules, dangling references, or
+deleted-file imports, treat that as an unstaged-edit drop: stage the edits and
+amend or make a real fix commit. Do not use an empty commit just to retrigger
+CI.
+
 ### Errors
 
 `service_timeout`, "node did not respond within Nms", and "too many concurrent
