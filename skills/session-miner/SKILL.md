@@ -5,7 +5,7 @@ description: |
   Use when a routine asks to scan the last N hours of sessions for papercuts,
   incidents/prevention, owner-stated durable knowledge, or agent-tooling
   improvement opportunities, then either report findings or write the profile's
-  outputs to fkanban/fbrain/tooling.
+  outputs to kanban/brain/tooling.
 ---
 
 # Session Miner
@@ -21,14 +21,14 @@ mode=<report-only|apply, default report-only>
 project=<workspace key or absolute workspace root, optional>
 ```
 
-`report-only` never writes fbrain, fkanban, source files, settings, or routine
+`report-only` never writes brain, kanban, source files, settings, or routine
 prompts. `apply` performs the writes declared by the selected profile, after
 dedupe and safety checks.
 
 ## Start
 
 1. Fetch and honor the shared routine contract:
-   `fbrain get sop-routine-shared-contract --type sop`. It owns heartbeat,
+   `brain get sop-routine-shared-contract --type sop`. It owns heartbeat,
    primary-brain safety, card filing shape, dedupe, shell discipline, and
    verify-vs-origin-main rules.
 2. Resolve project paths from `workspace-config` while that interim shim exists;
@@ -39,7 +39,7 @@ dedupe and safety checks.
 3. Resolve the transcript directory from config. For Claude Code projects this
    is usually `~/.claude/projects/<encoded-project>/`. Treat file mtimes as
    advisory only: filter sessions by the JSONL line `timestamp` field.
-4. Load the extractor profile. Prefer `fbrain get miner-profile-<profile>`
+4. Load the extractor profile. Prefer `brain get miner-profile-<profile>`
    when that record exists; otherwise use the embedded reference profiles below.
    A brain profile may override: profile name, purpose, input selectors,
    candidate rules, dedupe keys, output destination, output template, and apply
@@ -79,9 +79,9 @@ Every profile uses the same triage pass:
 - Prefer repeated patterns across multiple sessions or across days. A severe
   one-off may still qualify for incidents, but routine papercuts and tooling
   improvements should normally recur.
-- Dedupe before writing. Check live fkanban cards, open PRs at the repo venue,
+- Dedupe before writing. Check live kanban cards, open PRs at the repo venue,
   active card branches/worktrees by exact slug/area, recently merged PRs, and
-  any profile ledger. For fbrain outputs, search first and update in place
+  any profile ledger. For brain outputs, search first and update in place
   instead of creating near-duplicates.
 - In `report-only`, produce the exact writes that would be made, including
   proposed card slugs or brain slugs, but do not perform them.
@@ -95,7 +95,7 @@ Every profile uses the same triage pass:
 
 Source routine: `daily-agent-papercut-sweep`.
 
-Purpose: Find dev-process friction that should become fkanban cards.
+Purpose: Find dev-process friction that should become kanban cards.
 
 Candidate signals:
 
@@ -106,7 +106,7 @@ Candidate signals:
 - Flaky or hanging tests, confusing CLI output, stale docs, or repeated manual
   setup.
 
-Output in `apply`: one fkanban card per actionable papercut, usually `todo`.
+Output in `apply`: one kanban card per actionable papercut, usually `todo`.
 Use the shared contract card body. Include evidence, recurrence count, suggested
 fix, and a concrete VERIFY line. File ambiguous or large fixes to `backlog`.
 
@@ -129,8 +129,8 @@ Candidate signals:
 - Cards moved into blocked/review because a process failed.
 
 Output in `apply`: update a dated retro record and the prevention ledger, then
-write the cheapest durable prevention for each top bite: fbrain SOP/concept for
-process knowledge, fkanban card for code/tooling guardrails, or routine prompt
+write the cheapest durable prevention for each top bite: brain SOP/concept for
+process knowledge, kanban card for code/tooling guardrails, or routine prompt
 fix card when the routine itself caused the bite.
 
 Skip: trivia that cost minutes, Sentry re-triage already handled by a dedicated
@@ -150,7 +150,7 @@ Candidate signals:
   work rules.
 - Clarifications that correct a wrong assumption a future agent might repeat.
 
-Output in `apply`: fbrain concept/preference/sop/reference records. Search for
+Output in `apply`: brain concept/preference/sop/reference records. Search for
 an existing record first and update it in place; do not create duplicate records.
 Never store secrets. Do not create `decision` records; append decision material
 to the existing decisions log when the project's brain contract requires it.
@@ -175,7 +175,7 @@ Candidate signals:
 Output in `apply`: targeted, low-blast-radius tooling changes only: new or
 edited skills/routines, safe read-only permission allowlist additions, or
 CLAUDE/AGENTS/memory clarifications where the project allows them. Also file an
-audit fkanban card for each applied change, or a product-code card when the
+audit kanban card for each applied change, or a product-code card when the
 finding belongs outside the tooling layer.
 
 Limits: at most two new skills and one new scheduled routine per run unless the
@@ -184,13 +184,13 @@ delete or wholesale rewrite existing tooling.
 
 ## Apply Mechanics
 
-For fkanban cards, follow the shared contract exactly: clean `Repo:`,
-`Base: main`, `Branch: fkanban/<slug>`, a north star or `## END STATE`, then
+For kanban cards, follow the shared contract exactly: clean `Repo:`,
+`Base: main`, `Branch: kanban/<slug>`, a north star or `## END STATE`, then
 GOAL / CONTEXT / STEPS / VERIFY / DONE WHEN. Use repo venue/config records to
 choose GitHub vs Forgejo only for dedupe; mining routines do not open PRs.
 
-For fbrain records, use typed reads/searches first. Upsert small records through
-the normal fbrain path; for larger multiline bodies, stage a body file and pass
+For brain records, use typed reads/searches first. Upsert small records through
+the normal brain path; for larger multiline bodies, stage a body file and pass
 it to the CLI or MCP tool instead of forcing large inline JSON.
 
 For direct tooling edits in `friction-patterns`, keep changes additive and

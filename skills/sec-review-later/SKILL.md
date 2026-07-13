@@ -6,7 +6,7 @@ description: >-
   fans out one adversarial security-reviewer agent per attack-surface dimension
   (the hand-authored "you are a senior security reviewer auditing the X sprint"
   fan-out, codified), dedupes + adversarially verifies findings, files an
-  fkanban card per confirmed real issue, and records a reviewed-through
+  kanban card per confirmed real issue, and records a reviewed-through
   checkpoint. Use when asked to "do the sec-review-later pass", "review the
   security-flagged commits", "audit the [sec-review-later] backlog", "run the
   deferred security review", or after a security-sensitive sprint lands on main.
@@ -23,7 +23,7 @@ sprint, the PR list, a git range, the primary files, and a per-dimension
 adversarial hunt list. This skill codifies that fan-out.
 
 This is **read + review + file-cards**, NOT a code-fixer. It produces confirmed
-findings and fkanban cards; the `fkanban-pickup` → `fkanban-agent` pipeline
+findings and kanban cards; the `kanban-pickup` → `kanban-agent` pipeline
 ships the fixes. Never push fixes from this skill.
 
 ## What you do NOT duplicate
@@ -115,18 +115,18 @@ bucket/range/PRs/dimensions from the digest, and run it with
 
 ## Step 3 — file a card per confirmed finding
 
-For each verified finding, file an fkanban card (use the `fkanban` skill / CLI)
+For each verified finding, file a kanban card (use the `kanban` skill / CLI)
 so the fix pipeline picks it up:
 
 ```bash
-cd ~/code/edgevector/fkanban
+cd ~/code/edgevector/kanban
 bun run src/cli.ts add <slug> --title "[sec] <short title>" --column todo \
   --tags fold,security,sec-review-later \
   --body "$(cat <bodyfile>)"
 ```
 
-Card body must be COLD-agent-ready (the fkanban-agent worker has no context):
-`Repo:`/`Base:`/`Branch:` header lines, the fkanban-agent trigger header, and a
+Card body must be COLD-agent-ready (the kanban-agent worker has no context):
+`Repo:`/`Base:`/`Branch:` header lines, the kanban-agent trigger header, and a
 GOAL / CONTEXT(file:line) / STEPS / VERIFY / DONE-WHEN / OUT-OF-SCOPE spec.
 Instruct the worker to prefix its PR title `[sec-review-later] ` so the fix
 itself rounds back into the next pass. Don't blind-overwrite an existing card

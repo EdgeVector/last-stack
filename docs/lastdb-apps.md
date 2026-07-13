@@ -7,10 +7,10 @@ Included:
 
 - **LastDB**: the local daemon installed from the `edgevector/lastdb` Homebrew
   tap.
-- **Brain (`fbrain`)**: durable notes, decisions, references, and retrieval over
+- **Brain (`brain`)**: durable notes, decisions, references, and retrieval over
   LastDB.
-- **Kanban (`fkanban`)**: board and work-state tracking over LastDB.
-- **Situations (`fsituations`)**: active operational posture and preflight
+- **Kanban (`kanban`)**: board and work-state tracking over LastDB.
+- **Situations (`situations`)**: active operational posture and preflight
   checks for agents.
 - **Dogfood Graph**: LastDB-native manual dogfood planning and evidence.
 - **LastSecrets**: local secret references backed by LastDB, with raw values kept
@@ -66,9 +66,9 @@ brew services start lastdb
 Initialize the apps you want to use:
 
 ```bash
-fbrain init --grant-consent   # setup Brain
-fkanban init                  # setup Kanban
-fsituations init
+brain init --grant-consent   # setup Brain
+kanban init                  # setup Kanban
+situations init
 lastsecrets init
 ```
 
@@ -100,9 +100,9 @@ Download the app repos:
 ```bash
 mkdir -p ~/lastdb-apps
 cd ~/lastdb-apps
-git clone https://github.com/EdgeVector/fbrain.git
-git clone https://github.com/EdgeVector/fkanban.git
-git clone https://github.com/EdgeVector/fsituations.git
+git clone https://github.com/EdgeVector/brain.git
+git clone https://github.com/EdgeVector/kanban.git
+git clone https://github.com/EdgeVector/situations.git
 git clone https://github.com/EdgeVector/dogfood-graph.git
 git clone https://github.com/EdgeVector/lastsecrets.git
 ```
@@ -110,7 +110,7 @@ git clone https://github.com/EdgeVector/lastsecrets.git
 Install dependencies:
 
 ```bash
-for app in fbrain fkanban fsituations dogfood-graph lastsecrets; do
+for app in brain kanban situations dogfood-graph lastsecrets; do
   bun install --cwd "$HOME/lastdb-apps/$app"
 done
 ```
@@ -118,9 +118,9 @@ done
 Link commands:
 
 ```bash
-cd ~/lastdb-apps/fbrain && bun link
-cd ~/lastdb-apps/fkanban && bun run install-cli
-ln -snf ~/lastdb-apps/fsituations/bin/fsituations ~/.local/bin/fsituations
+cd ~/lastdb-apps/brain && bun link
+cd ~/lastdb-apps/kanban && bun run install-cli
+ln -snf ~/lastdb-apps/situations/bin/situations ~/.local/bin/situations
 cd ~/lastdb-apps/lastsecrets && bun link
 ```
 

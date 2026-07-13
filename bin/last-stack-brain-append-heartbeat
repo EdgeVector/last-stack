@@ -8,14 +8,14 @@ line=""
 usage() {
   cat <<'EOF'
 Usage:
-  last-stack-fbrain-append-heartbeat [--slug routine-heartbeats] --line "<heartbeat>"
-  printf '%s\n' "<heartbeat>" | last-stack-fbrain-append-heartbeat --stdin
+  last-stack-brain-append-heartbeat [--slug routine-heartbeats] --line "<heartbeat>"
+  printf '%s\n' "<heartbeat>" | last-stack-brain-append-heartbeat --stdin
 
-Reads the target with `fbrain get <slug> --type reference --json`, aborts on any
+Reads the target with `brain get <slug> --type reference --json`, aborts on any
 read or JSON error, then writes the new line plus the existing body back with
-`fbrain put <slug> --type reference`. Existing lines are preserved. If an older
-local fbrain config is missing a newly-added schema hash, falls back to
-`fbrain append` so the heartbeat is still recorded without running `fbrain init`.
+`brain put <slug> --type reference`. Existing lines are preserved. If an older
+local brain config is missing a newly-added schema hash, falls back to
+`brain append` so the heartbeat is still recorded without running `brain init`.
 EOF
 }
 
@@ -74,7 +74,7 @@ case "$line" in
 esac
 
 command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 127; }
-command -v fbrain >/dev/null 2>&1 || { echo "fbrain is required" >&2; exit 127; }
+command -v brain >/dev/null 2>&1 || { echo "brain is required" >&2; exit 127; }
 
 read_err="$(mktemp)"
 put_body="$(mktemp)"
@@ -85,10 +85,10 @@ cleanup() {
 trap cleanup EXIT
 
 fallback_append() {
-  # A new schema type can make old fbrain configs fail reads before the target
-  # reference is reachable. In unattended routines, do not run fbrain init; grow
+  # A new schema type can make old brain configs fail reads before the target
+  # reference is reachable. In unattended routines, do not run brain init; grow
   # the heartbeat record server-side instead.
-  printf '\n%s\n' "$line" | fbrain append "$slug" --type reference --raw --json >"$put_body" 2>"$append_err" || {
+  printf '\n%s\n' "$line" | brain append "$slug" --type reference --raw --json >"$put_body" 2>"$append_err" || {
     cat "$append_err" >&2
     [ -s "$put_body" ] && cat "$put_body" >&2
     echo "aborting: fallback append failed for $slug" >&2
@@ -100,11 +100,11 @@ fallback_append() {
     echo "aborting: fallback append returned an error payload" >&2
     exit 1
   fi
-  echo "appended heartbeat to $slug via fbrain append fallback"
+  echo "appended heartbeat to $slug via brain append fallback"
   exit 0
 }
 
-if ! record_json="$(fbrain get "$slug" --type reference --json 2>"$read_err")"; then
+if ! record_json="$(brain get "$slug" --type reference --json 2>"$read_err")"; then
   if { printf '%s\n' "$record_json"; cat "$read_err"; } | grep -q 'No canonical hash registered'; then
     fallback_append
   fi
@@ -129,5 +129,5 @@ body="$(printf '%s' "$record_json" | jq -r '.body // ""')"
   fi
 } > "$put_body"
 
-fbrain put "$slug" --type reference --json < "$put_body" >/dev/null
+brain put "$slug" --type reference --json < "$put_body" >/dev/null
 echo "appended heartbeat to $slug"

@@ -43,13 +43,13 @@ actions noted below.
 ## Environment facts (so you don't re-derive them)
 
 - **Repos** live directly under `~/code/edgevector/` (fold, fold_dev_node, exemem-infra,
-  schema-infra, fbrain, edgevector-website, fold_db_website, homebrew-folddb,
+  schema-infra, brain, edgevector-website, fold_db_website, homebrew-folddb,
   exemem-workspace, edgevector-org-github, demo-repository). The umbrella `edgevector`
   dir is itself a stray git repo wrapper — leave it alone.
 - **Worktrees live in FIVE places** — check all each run, and authoritatively enumerate
-  via `git -C <repo> worktree list --porcelain` for fold / fbrain / fold_dev_node /
+  via `git -C <repo> worktree list --porcelain` for fold / brain / fold_dev_node /
   schema-infra / exemem-infra / exemem-workspace (don't trust a single dir listing): (1)
-  **fkanban worktrees** `~/.fkanban/worktrees/<slug>/` (protected if the card is
+  **kanban worktrees** `~/.kanban/worktrees/<slug>/` (protected if the card is
   `DOING`/`REVIEW`; `~/.cline/worktrees/` is the legacy/empty predecessor); (2) gstack
   agent worktrees `fold/.claude/worktrees/<name>` and `fold_dev_node/.claude/worktrees/<name>`
   (live idle procs → archive the session to free them; two `agent-*` ones are `locked` WIP —
@@ -76,7 +76,7 @@ actions noted below.
   to hundreds of GB (294 GB observed). Per-worktree targets are tiny — don't chase them.
 - **The clutter engine = 4 ENABLED hourly scheduled tasks** that spawn a session (and for
   two of them a fresh `.claude` worktree) every hour and never tear down: `dog-food` (:05),
-  `fold-dev-node` (:01), `fbrain-dogfooding` (:02), `check-if-kanban-tasks-are-stuck` (:07).
+  `fold-dev-node` (:01), `brain-dogfooding` (:02), `check-if-kanban-tasks-are-stuck` (:07).
   Over a day → ~30 worktrees, 100+ sessions, ~33 idle resident `claude` processes.
 - The dogfood `claude/*` worktrees are **data-clean** (0 commits ahead, no uncommitted
   changes) — nothing is lost by archiving them. `locked` worktrees (e.g.
@@ -103,8 +103,8 @@ lsof /Users/tomtang/.folddb/data/folddb.sock 2>/dev/null    # stale-path fallbac
 pgrep -fl 'MacOS/[f]old-app'                               # process fallback for the app-hosted brain
 ```
 Read the kanban board to learn what's protected (Cline kanban is DEPRECATED — the active
-board is **fkanban**): `cd ~/code/edgevector/fkanban && bun src/cli.ts list`. Protect any
-card in `DOING`/`REVIEW` (and their `~/.fkanban/worktrees/<slug>` worktrees + branches).
+board is **kanban**): `cd ~/code/edgevector/kanban && bun src/cli.ts list`. Protect any
+card in `DOING`/`REVIEW` (and their `~/.kanban/worktrees/<slug>` worktrees + branches).
 Card slugs don't always string-match the worktree dir/branch name — cross-check by intent
 (e.g. REVIEW card `app-iso-schema-infra-dev-deploy` ↔ worktree `schema-infra-app-iso-dev-deploy`
 on branch `app-iso/dev-deploy-code-signature`). `~/.cline/worktrees/` is now empty/legacy.
@@ -198,7 +198,7 @@ done
 Guardrails: skip any PID in `brain_pids` (the live `~/.lastdb/data/folddb.sock` brain,
 with `~/.folddb/data/folddb.sock` only as a fallback, or the `MacOS/fold-app` process),
 skip a port whose owning session is still live or whose cwd is a `DOING`/`REVIEW`
-fkanban worktree, and log every PID + port + cmdline reaped (and every one spared
+kanban worktree, and log every PID + port + cmdline reaped (and every one spared
 and why). After reaping, a fresh `preview_start name=lastdb-ui` should bind
 cleanly while the primary `folddb_server` brain (socket still live) is untouched.
 
@@ -252,7 +252,7 @@ is excluded by construction before temp/DMG classification. A high-CPU
 target (could be a legit dev/brain proc) — only temp-home/DMG nodes are. Log every
 PID reaped and every one spared.
 The proper upstream fix is the gate cleaning up its own node on exit — track that
-as an fkanban card, don't rely on this reaper alone.
+as a kanban card, don't rely on this reaper alone.
 
 ### 5. Prevention upkeep (do this so the buildup stops recurring)
 - **`cargo-sweep`** to keep the shared target bounded without nuking warm builds.
@@ -272,7 +272,7 @@ as an fkanban card, don't rely on this reaper alone.
 - **Disk floor:** if free space < ~30 GB, run the §3 atomic-swap purge proactively instead
   of waiting for 0 bytes.
 - **Concurrency:** fold no longer has a fixed <=2 build/test-agent cap. Modern
-  fkanban worktrees keep their own `target/` and share sccache, but older
+  kanban worktrees keep their own `target/` and share sccache, but older
   kanban/gstack worktrees can still symlink into the shared target and pile on
   disk. If many fold builds are active, report the actual load/disk pressure
   instead of applying the old blanket two-agent throttle.

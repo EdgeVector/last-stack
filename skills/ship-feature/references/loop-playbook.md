@@ -81,7 +81,7 @@ one. Don't double-fix — if you already fixed the PR, trash the redundant task.
   do not throttle the whole fold fleet solely because two agents are already
   testing.
 - Watch fold disk/load pressure before launching many Rust builds. Modern
-  fkanban worktrees should use their own `target/` plus shared sccache; older
+  kanban worktrees should use their own `target/` plus shared sccache; older
   kanban/gstack worktrees may still symlink to `~/code/edgevector/fold/target`.
   If disk pressure appears, a `cargo clean` needs quiescing agents first —
   surface it, don't do it unattended.

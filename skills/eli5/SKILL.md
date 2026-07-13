@@ -5,7 +5,7 @@ description: |
   the recurring "ELI5 this for me" request. Translates a design, a PR, an error,
   a piece of architecture, or "the current state" of an in-flight feature into a
   clear analogy + concrete mechanics + the one decision that actually matters to
-  the user. Grounds the explanation in real state (fbrain notes, the code, gh,
+  the user. Grounds the explanation in real state (brain notes, the code, gh,
   the actual error) — never explains "current state" from memory. Offers a
   diagram when one would help.
   Use when the user says "ELI5", "Eli-fy it", "explain like I'm 5", "eli5 the
@@ -41,7 +41,7 @@ isn't real. Before writing a word, figure out *what the user is pointing at* and
 
 | They're pointing at… | Ground it by… |
 |---|---|
-| "the current state" of an in-flight design/feature | `mcp__fbrain__fbrain_search` / `fbrain_get` for the project note; recent PRs (`gh pr list`, `gh pr view`); the design doc in exemem-workspace |
+| "the current state" of an in-flight design/feature | `mcp__brain__brain_search` / `brain_get` for the project note; recent PRs (`gh pr list`, `gh pr view`); the design doc in exemem-workspace |
 | a PR / a change | `gh pr view <n> -R <owner>/<repo> --json title,body,files` + read the actual diff |
 | an error / failure | read the real error text and the code path that emits it |
 | an architecture/concept ("what is an app in folddb", "TCP off") | read the relevant code + the CLAUDE.md / repo docs; check the memory index for a settled answer |
@@ -85,5 +85,5 @@ read its `read_me` first). One clean diagram, not decoration.
   part that's actually confusing.
 - If the honest answer is "this is more tangled than it should be," say that —
   a clear "here's why it's confusing" is more useful than false simplicity.
-- If grounding reveals the design has drifted from a memory/fbrain note, flag
+- If grounding reveals the design has drifted from a memory/brain note, flag
   the drift explicitly ("the note says X, but main now does Y").

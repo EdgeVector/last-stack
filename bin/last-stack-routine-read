@@ -13,7 +13,7 @@ routine="$1"
 case "$routine" in
   ""|/*|*/*|*..*|*.md)
     echo "LAST_STACK_ROUTINE_INVALID routine=$routine" >&2
-    echo "Pass the routine basename without slashes or .md, for example: fkanban-pickup" >&2
+    echo "Pass the routine basename without slashes or .md, for example: kanban-pickup" >&2
     exit 2
     ;;
 esac

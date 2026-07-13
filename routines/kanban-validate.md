@@ -1,6 +1,6 @@
 ---
-name: fkanban-validate
-cadence: hourly, offset from fkanban-watch
+name: kanban-validate
+cadence: hourly, offset from kanban-watch
 description: Run one bounded post-merge END STATE validation for a merged card, then move it to done on pass or review with proof plus a fix card/blocker on fail. Never authors feature code and never runs prod cutovers.
 ---
 
@@ -20,16 +20,16 @@ read/write, fail loudly if the resolved path is empty or starts with
 
 ## Setup
 - Drive the board CLI from `<board repo dir>` with `<board CLI> ...`.
-- Follow the **fkanban-agent** skill, VALIDATE MODE — it is the source of truth
+- Follow the **kanban-agent** skill, VALIDATE MODE — it is the source of truth
   for behavior; this prompt is the trigger.
 - Normalize scheduled-shell PATH before CLI-heavy work:
   ```bash
   last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
   . "$last_stack/bin/last-stack-shell-prelude"
-  "$last_stack/bin/last-stack-cli-preflight" git curl jq gh fkanban fbrain
+  "$last_stack/bin/last-stack-cli-preflight" git curl jq gh kanban brain
   ```
 - Read this routine through the guarded reader when the scheduler supports it:
-  `"$last_stack/bin/last-stack-routine-read" "fkanban-validate"`.
+  `"$last_stack/bin/last-stack-routine-read" "kanban-validate"`.
 - **Forge-hosted repos:** `gh` only works for github.com remotes. For a repo
   whose `origin` points at a self-hosted forge, do PR reads through that forge's
   API using the workspace brain/AGENTS.md SOP. Never act on a read-only GitHub
@@ -54,13 +54,13 @@ read/write, fail loudly if the resolved path is empty or starts with
    evidence, or whose remaining step is a human/prod/public cutover.
 4. Rank runnable candidates by priority tag (`p0` before `p1` before `p2` before
    `p3`), then board position. Pick exactly one. If none qualify, append a
-   `fkanban-validate <ISO-ts> noop no-candidates` heartbeat and exit.
+   `kanban-validate <ISO-ts> noop no-candidates` heartbeat and exit.
 
 When checking PR state on GitHub, prefer an explicit `PR:` URL in the card body.
 If there is no PR URL, fall back to the card branch convention:
 
 ```bash
-gh -R <owner>/<repo> pr list --head fkanban/<slug> --state all --json number,state,mergedAt,headRefName,url
+gh -R <owner>/<repo> pr list --head kanban/<slug> --state all --json number,state,mergedAt,headRefName,url
 ```
 
 For forge-hosted repos, use the forge SOP's equivalent PR read. A card is a
@@ -90,7 +90,7 @@ instead of parking inside the run.
 - **FAIL:** append `PROOF: failed <validation> — <observed failure>` to the
   card, file one pickup-ready fix card with:
   - `Repo:` / `Base:` / `Branch:` headers.
-  - The `Follow the fkanban-agent skill — drive this through to a MERGED PR.`
+  - The `Follow the kanban-agent skill — drive this through to a MERGED PR.`
     trigger line.
   - A narrow GOAL/STEPS/VERIFY brief and a reference to the failed card.
   Move the failed validation card to `review`, then append an `ok` heartbeat
@@ -112,8 +112,8 @@ put card text in a shell-expanded string.
 LAST action, even on a quiet sweep:
 
 ```bash
-"$last_stack/bin/last-stack-fbrain-append-heartbeat" --line \
-  "fkanban-validate <ISO-ts> <ok|noop|error> <outcome>"
+"$last_stack/bin/last-stack-brain-append-heartbeat" --line \
+  "kanban-validate <ISO-ts> <ok|noop|error> <outcome>"
 ```
 
 End with a one-line report: which card was validated, whether it passed, failed,

@@ -28,21 +28,21 @@ stripped out.
                   own skills/routines)        friction it finds)
                           │                        │
                           ▼                        ▼
-                 ┌──────────────────── the board (fkanban) ─────────────────┐
+                 ┌──────────────────── the board (kanban) ─────────────────┐
                  │  backlog → todo → doing → review → done                   │
    program-driver ─▶ promote each program's next card into `todo`           │
    groom-board    ─▶ promote ready backlog→todo, break up epics, prune junk  │
                  └──────────────────────────────────────────────────────────┘
                           │ (ready `todo` cards)
                           ▼
-   fkanban-pickup ─▶ fan out one `fkanban-agent` (WORK mode) per card/batch ──▶ opens PR, drives to MERGED
+   kanban-pickup ─▶ fan out one `kanban-agent` (WORK mode) per card/batch ──▶ opens PR, drives to MERGED
                           │
                           ▼
-   fkanban-watch  ─▶ RECONCILE: advance merged PRs, re-arm/un-stick the stragglers
-   fkanban-validate ─▶ VALIDATE: run post-merge END STATE checks, then done/review
+   kanban-watch  ─▶ RECONCILE: advance merged PRs, re-arm/un-stick the stragglers
+   kanban-validate ─▶ VALIDATE: run post-merge END STATE checks, then done/review
    drain-open-prs ─▶ daily backstop: drive every open PR across all repos toward zero
 
-                 ┌──────────────────── the brain (fbrain) ──────────────────┐
+                 ┌──────────────────── the brain (brain) ──────────────────┐
    program-rollup   ─▶ mirror board status into the driving index (auto block)
    consolidate-brain ─▶ fix lying statuses, archive completed/dupe records
    morning-sync      ─▶ surface the SHORT genuinely-human decision set
@@ -56,16 +56,16 @@ stripped out.
 
 The division of labour is deliberate:
 
-- **The board (`fkanban`) records what's in flight.** Cards move through
+- **The board (`kanban`) records what's in flight.** Cards move through
   columns; a card is `done` only when its PR is merged.
-- **The brain (`fbrain`) records why.** Decisions, designs, the program DAGs, the
+- **The brain (`brain`) records why.** Decisions, designs, the program DAGs, the
   driving index. Routines keep the brain honest against the board.
 - **Generators fill the queue; the pickup engine drains it; the reconciler and
   drainer clean up the stragglers.** No single routine does everything — each is
   cheap, bounded, and exits, so several can run concurrently without wedging.
 
-The skills assume this pipeline exists. `fkanban-agent`'s RECONCILE mode is run
-*by* `fkanban-watch`; its WORK mode is fanned out *by* `fkanban-pickup`; the cards
+The skills assume this pipeline exists. `kanban-agent`'s RECONCILE mode is run
+*by* `kanban-watch`; its WORK mode is fanned out *by* `kanban-pickup`; the cards
 it works are promoted *by* `program-driver` / `groom-board` and filed *by* the
 generators. **Ship the skills without the routines and the playbook has no
 engine.** That's why this pack exists.
@@ -87,9 +87,9 @@ engine.** That's why this pack exists.
 
 | Routine | Cadence (suggested) | What it does |
 |---|---|---|
-| [`fkanban-pickup`](fkanban-pickup.md) | hourly | Drain the ready queue; fan out one `fkanban-agent` (WORK) per card/batch. |
-| [`fkanban-watch`](fkanban-watch.md) | every 10–20 min | RECONCILE the board; advance merged PRs, un-stick the strays. |
-| [`fkanban-validate`](fkanban-validate.md) | hourly, offset from watch | VALIDATE one merged card's post-merge END STATE; move it to `done` on pass or `review` with proof/fix/blocker on fail. |
+| [`kanban-pickup`](kanban-pickup.md) | hourly | Drain the ready queue; fan out one `kanban-agent` (WORK) per card/batch. |
+| [`kanban-watch`](kanban-watch.md) | every 10–20 min | RECONCILE the board; advance merged PRs, un-stick the strays. |
+| [`kanban-validate`](kanban-validate.md) | hourly, offset from watch | VALIDATE one merged card's post-merge END STATE; move it to `done` on pass or `review` with proof/fix/blocker on fail. |
 | [`groom-board`](groom-board.md) | daily | Promote ready `backlog`→`todo`, break up epics, prune junk. |
 | [`program-driver`](program-driver.md) | hourly | Promote each program's next DAG card into `todo`. |
 | [`program-rollup`](program-rollup.md) | hourly | Mirror the board into the brain's driving index (auto-status block). |
@@ -116,7 +116,7 @@ frontmatter suggests a cadence. The pattern every routine follows:
    . "$last_stack/bin/last-stack-shell-prelude"
    "$last_stack/bin/last-stack-cli-preflight" git curl jq gh
    ```
-   Add routine-specific CLIs such as `fbrain` or `fkanban` to the preflight when
+   Add routine-specific CLIs such as `brain` or `kanban` to the preflight when
    the prompt needs them.
    For local Forgejo API calls, prefer
    `"$last_stack/bin/last-stack-forge-api" ...` over hand-written
@@ -155,18 +155,18 @@ Safe heartbeat append pattern:
 
 ```bash
 last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
-"$last_stack/bin/last-stack-fbrain-append-heartbeat" --line \
+"$last_stack/bin/last-stack-brain-append-heartbeat" --line \
   "<routine> <ISO-ts> <ok|noop|error> <summary>"
 ```
 
 Use this helper instead of open-coding heartbeat read/write snippets. It reads
-`fbrain get routine-heartbeats --type reference --json`, aborts on any read or
+`brain get routine-heartbeats --type reference --json`, aborts on any read or
 JSON error, then writes the new newest-on-top line plus the existing body back
-with `fbrain put routine-heartbeats --type reference`. If the read fails only
-because an older local fbrain config is missing a newly-added schema hash (for
+with `brain put routine-heartbeats --type reference`. If the read fails only
+because an older local brain config is missing a newly-added schema hash (for
 example `No canonical hash registered for type "decision"`), the helper falls
-back to `fbrain append routine-heartbeats --type reference --raw --json` and
-records the heartbeat at the tail without running `fbrain init`. If a project
+back to `brain append routine-heartbeats --type reference --raw --json` and
+records the heartbeat at the tail without running `brain init`. If a project
 and reference share the `routine-heartbeats` slug, the typed read still targets
 the reference; for other read failures, the helper performs no write.
 
@@ -231,10 +231,10 @@ git -C "$target_repo" rev-parse --show-toplevel
 The guard rejects the aggregate workspace root and requires a concrete child
 checkout such as `/Users/tomtang/code/edgevector/last-stack`,
 `/Users/tomtang/code/edgevector/fold`, or
-`/Users/tomtang/code/edgevector/fkanban` before `git` or repo-inferred `gh`
+`/Users/tomtang/code/edgevector/kanban` before `git` or repo-inferred `gh`
 commands run.
 
-When generating Markdown for `fbrain put`, `fkanban add`, `gh --body`, or any
+When generating Markdown for `brain put`, `kanban add`, `gh --body`, or any
 similar command, keep the body out of shell-expanded strings. Use a quoted
 heredoc into a temp file, pipe stdin, or pass a body file. If the text can
 contain backticks, `$()`, `$var`, globs, semicolons, or other shell
@@ -243,10 +243,10 @@ placeholders afterward with a controlled command such as `sed`.
 Unquoted heredocs such as `<<EOF` are not allowed for these bodies; use a
 single-quoted delimiter such as `<<'EOF'`.
 
-For `fbrain put`, pass the schema explicitly (`--type reference`, `--type
+For `brain put`, pass the schema explicitly (`--type reference`, `--type
 project`, etc.) or include a valid `type:` in frontmatter. Do not pass
 `--title`; `put` takes the title from frontmatter `title:` or the first H1.
-Creation-style flags belong to `fbrain <type> new`, not `put`.
+Creation-style flags belong to `brain <type> new`, not `put`.
 
 Codex automation prompt skeletons should render the same information directly:
 
@@ -312,16 +312,16 @@ self-driving fleet and a runaway one:
   repo's forge SOP, and never read or act on a read-only GitHub mirror of a
   forge-hosted repo.
 - **File, don't ship — unless you're the executor.** The generators and triage
-  routines FILE cards; only `fkanban-pickup` (via `fkanban-agent`) and the
+  routines FILE cards; only `kanban-pickup` (via `kanban-agent`) and the
   reconcilers actually open/merge PRs. Keep the lanes separate.
 
 ## Adapting these to your stack
 
-The templates name `fkanban` (board) and `fbrain` (brain) because that's what the
+The templates name `kanban` (board) and `brain` (brain) because that's what the
 companion skills use — but **the loop is tool-agnostic.** Swap in any board CLI
 with columns and any notes store; the routine logic (promote ready work, fan out
 one worker per card, reconcile merged PRs, keep the brain honest) is what
-matters. Wherever a template says `bun run src/cli.ts <cmd>` or `fbrain <cmd>`,
+matters. Wherever a template says `bun run src/cli.ts <cmd>` or `brain <cmd>`,
 substitute your tool's command. Wherever it says `<WORKSPACE>` /
 `<owner>/<repo>` / `<DEFAULT_BRANCH>` / `<BUILD+TEST commands>`, fill in yours.
 
@@ -334,7 +334,7 @@ the improvement before applying it:
   habit, or skill handoff that would help other Last Stack users. Patch the
   relevant file in this repo (`routines/` or `skills/`) with placeholders instead
   of local names, then file/update the board card and record the rationale in
-  `fbrain`.
+  `brain`.
 - **Workspace-specific:** a local path, repo list, credential detail, product
   policy, or environment-specific command. Keep it in the workspace's agent docs
   or local scheduled-task config, and do not bake it into this pack.

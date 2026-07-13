@@ -1,6 +1,6 @@
 #!/bin/bash
 # brain-doctor.sh — READ-ONLY triage of the folddb brain (Tom's primary
-# fbrain/fkanban daily-driver node) and the orphan procs that masquerade as it.
+# brain/kanban daily-driver node) and the orphan procs that masquerade as it.
 #
 # The brain (the desktop `fold-app` process) is reached over a Unix socket — it
 # serves the same node over BOTH ~/.lastdb/data/folddb.sock and the legacy
@@ -12,7 +12,7 @@
 # script defaults to ~/.lastdb (where lsof attributes the listener PID) and
 # identifies the brain by process name (fold-app) too, not lsof alone.
 #
-# Codifies the hand-run recipe that recurs across every "is fkanban down / is the
+# Codifies the hand-run recipe that recurs across every "is kanban down / is the
 # brain wedged / why is my computer slow / couldn't take over" incident. Pulls
 # together: sled-IO deadlock triage (full vs partial wedge), dup-supervisor
 # detection, and the orphan-folddb_server sweep classifier.
@@ -100,7 +100,7 @@ if [ -n "$BRAIN_PID" ]; then
   fi
 elif [ -S "$SOCKET" ]; then
   warn "socket exists but no brain process (fold-app / lastdb_server) resolved (ps/lsof may be sandbox-restricted)."
-  info "If a board read works (fkanban doctor / fbrain get), the brain is alive — trust the socket op."
+  info "If a board read works (kanban doctor / brain get), the brain is alive — trust the socket op."
 fi
 
 # ── 2. Live clients (the do-not-kill signal) ─────────────────────────────────
@@ -138,14 +138,14 @@ if [ -S "$SOCKET" ]; then
     # rc!=0 with no body and not a timeout: socket present but no HTTP reply.
     # Could be a non-HTTP server or a half-open socket — fall back to a real op.
     warn "no HTTP reply over the socket (curl rc=$CURL_RC). Confirm liveness with a socket-backed op:"
-    info "    cd ~/code/edgevector/fkanban && bun run src/cli.ts doctor"
-    info "    (a successful board read / fbrain get means the brain is alive — do NOT restart)"
+    info "    cd ~/code/edgevector/kanban && bun run src/cli.ts doctor"
+    info "    (a successful board read / brain get means the brain is alive — do NOT restart)"
     bump 1
   elif [ "$BODY" = "000" ]; then
     # curl can exit rc=0 with %{http_code}=000 when a connection is accepted and
     # closed without a valid HTTP reply. That is not a responsive HTTP read path.
     warn "GET / over socket → HTTP 000 (connection accepted, no valid HTTP reply) — NOT alive."
-    info "Confirm with a socket-backed op:  cd ~/code/edgevector/fkanban && bun run src/cli.ts doctor"
+    info "Confirm with a socket-backed op:  cd ~/code/edgevector/kanban && bun run src/cli.ts doctor"
     info "If that also fails: the node is up but wedged/mid-restart, not down. Re-check shortly —"
     info "~/.folddb/watchdog.sh self-heals a confirmed wedge (3 consecutive failures) automatically."
     bump 2
@@ -154,7 +154,7 @@ if [ -S "$SOCKET" ]; then
     SLOW=$(perl -e "print( ($LAT eq '?')?0:(($LAT>5)?1:0) )" 2>/dev/null || echo 0)
     if [ "$SLOW" = "1" ]; then
       warn "Read latency >5s — could be the partial WRITE-path / embedding stall (reads ok, big writes hang >300s)."
-      info "If fbrain/fkanban WRITES hang but reads are instant, that's the partial wedge."
+      info "If brain/kanban WRITES hang but reads are instant, that's the partial wedge."
       info "Graceful fix works for the partial wedge (no kill -9 needed):"
       info "    launchctl kickstart -k gui/\$(id -u)/com.folddb.daemon"
       bump 1

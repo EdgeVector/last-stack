@@ -39,8 +39,8 @@ engine skills or routine prompts.
    routines depend on setup or doctor commands as health checks.
 
    ```bash
-   fkanban list
-   fbrain get workspace-config || true
+   kanban list
+   brain get workspace-config || true
    ```
 
 3. Copy the templates to a scratch directory and replace every placeholder.
@@ -55,19 +55,19 @@ engine skills or routine prompts.
 
    ```bash
    for file in /tmp/routine-fleet-bootstrap/*.md; do
-     fbrain put < "$file"
+     brain put < "$file"
    done
    ```
 
 5. Verify the records can be read by slug.
 
    ```bash
-   fbrain get workspace-config
-   fbrain get repo-venue-map
-   fbrain get tag-repo-map
-   fbrain get signal-sources
-   fbrain get probe-registry
-   fbrain get sop-routine-shared-contract
+   brain get workspace-config
+   brain get repo-venue-map
+   brain get tag-repo-map
+   brain get signal-sources
+   brain get probe-registry
+   brain get sop-routine-shared-contract
    ```
 
 6. Register scheduled routines only after the records are valid. Routine prompts

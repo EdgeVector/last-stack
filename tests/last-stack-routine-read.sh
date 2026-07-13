@@ -3,11 +3,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 
-prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" fkanban-pickup)"
+prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" kanban-pickup)"
 case "$prompt" in
-  *"name: fkanban-pickup"*|*"ready board queue"*) ;;
+  *"name: kanban-pickup"*|*"ready board queue"*) ;;
   *)
-    echo "expected fkanban-pickup prompt text" >&2
+    echo "expected kanban-pickup prompt text" >&2
     exit 1
     ;;
 esac
@@ -28,7 +28,7 @@ fi
 grep -q 'LAST_STACK_ROUTINE_MISSING' "/tmp/last-stack-routine-read-missing.$$"
 rm -f "/tmp/last-stack-routine-read-missing.$$"
 
-if "$ROOT/bin/last-stack-routine-read" "../fkanban-pickup" >/dev/null 2>"/tmp/last-stack-routine-read-invalid.$$"; then
+if "$ROOT/bin/last-stack-routine-read" "../kanban-pickup" >/dev/null 2>"/tmp/last-stack-routine-read-invalid.$$"; then
   echo "expected invalid routine name to fail" >&2
   exit 1
 fi

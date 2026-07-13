@@ -23,7 +23,7 @@ into one briefing organized **by feature/program**, and make crystal-clear **wha
 is waiting on him**. This skill codifies that job so it's fast and consistent.
 
 The default is **read-only** — a report. Do not file cards, push, merge, or write
-fbrain unless Tom explicitly asks in the same breath.
+brain unless Tom explicitly asks in the same breath.
 
 ## 1. Gather the raw data (one command)
 
@@ -32,7 +32,7 @@ fbrain unless Tom explicitly asks in the same breath.
 ```
 
 This prints four sections, all read-only:
-1. **Commits** per active repo (fold, schema-infra, exemem-infra, fold_dev_node, fkanban)
+1. **Commits** per active repo (fold, schema-infra, exemem-infra, fold_dev_node, kanban)
 2. **Open PRs** per repo — number, mergeable state, auto-merge armed?, review decision
 3. **Routine runs** in the window — every scheduled-task session, grouped by routine,
    each showing its *final assistant words* (the run's self-reported outcome)
@@ -58,7 +58,7 @@ Then gather **usage + bugs** (the product's error weather + adoption), read-only
 The raw data is mechanical. Layer on the *meaning*:
 
 - **What's gated — SOURCE THE "Waiting on you" SECTION ONLY FROM `open-decisions`.**
-  `fbrain get open-decisions --type reference` is the SINGLE authoritative ledger of
+  `brain get open-decisions --type reference` is the SINGLE authoritative ledger of
   human gates ([[human-gate-single-source-and-crosscheck]]); its live (un-cleared)
   lines ARE the "waiting on you" set. Do NOT build that section from `active-programs`
   prose or rollup `needs-human:`/`blocked-needs-human:` tokens — those are derived
@@ -69,7 +69,7 @@ The raw data is mechanical. Layer on the *meaning*:
   still live against the durable records (linked `done`/project record + `origin/main`
   + the board) before surfacing — if the work landed/moot, it's resolved, not waiting.
 - **What's stuck but NOT yours — the "🔧 Stuck in the machine" section.** Read the
-  `blocked-on-engineering:` tokens across the `active-programs` rollup blocks (`fbrain
+  `blocked-on-engineering:` tokens across the `active-programs` rollup blocks (`brain
   get active-programs --type project`). These are the engineering/dev blockers the
   autonomous loop owns — red CI, dep bugs, dep-gated cards — NOT decisions for Tom.
   List each: slug · program · the one-line reason · and a moving-vs-wedged read (open
@@ -145,5 +145,5 @@ Rules of thumb:
 
 Only if he explicitly said so ("…and unblock them", "…and file cards for the gaps"):
 do the action, then still give the digest. For PR-merge babysitting use the
-`wait-merge` skill; for filing work use the `fkanban` skill. Otherwise stop at the
+`wait-merge` skill; for filing work use the `kanban` skill. Otherwise stop at the
 report — the report is the correct default output.

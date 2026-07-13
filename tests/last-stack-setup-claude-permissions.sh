@@ -16,7 +16,7 @@ cat > "$HOME/.claude/settings.json" <<'JSON'
   "permissions": {
     "allow": [
       "Bash(*)",
-      "mcp__fbrain__fbrain_get"
+      "mcp__brain__brain_get"
     ]
   }
 }
@@ -30,11 +30,11 @@ settings="$HOME/.claude/settings.json"
 jq -e '
   .permissions.allow as $allow
   | ($allow | index("Bash(*)")) != null
-  and ($allow | map(select(. == "mcp__fbrain__fbrain_get")) | length) == 1
-  and ($allow | index("mcp__fbrain__fbrain_search")) != null
-  and ($allow | index("mcp__fbrain__fbrain_list")) != null
-  and ($allow | index("mcp__fbrain__fbrain_ask")) != null
-  and ($allow | index("mcp__fbrain__fbrain_put")) != null
+  and ($allow | map(select(. == "mcp__brain__brain_get")) | length) == 1
+  and ($allow | index("mcp__brain__brain_search")) != null
+  and ($allow | index("mcp__brain__brain_list")) != null
+  and ($allow | index("mcp__brain__brain_ask")) != null
+  and ($allow | index("mcp__brain__brain_put")) != null
 ' "$settings" >/dev/null
 
 jq -e '

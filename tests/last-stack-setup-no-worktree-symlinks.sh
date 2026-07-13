@@ -35,7 +35,7 @@ bad_links="$(
     dest="$(readlink "$link")"
     case "$dest" in
       "$canonical_real"/*) ;;
-      "$scratch_real"/*|*/.fkanban/worktrees/*) printf '%s -> %s\n' "$link" "$dest" ;;
+      "$scratch_real"/*|*/.kanban/worktrees/*|*/.fkanban/worktrees/*) printf '%s -> %s\n' "$link" "$dest" ;;
       *) printf '%s -> %s\n' "$link" "$dest" ;;
     esac
   done

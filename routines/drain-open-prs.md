@@ -15,7 +15,7 @@ Run ONE full sweep, then exit with a report.
 > you judge irrelevant — that's the whole point of this routine. (Decide for
 > your own fleet whether that authorization holds; tighten it if not.)
 
-This complements the more frequent `fkanban-watch` reconciler (which only
+This complements the more frequent `kanban-watch` reconciler (which only
 advances carded PRs). You are the broader once-a-day backstop that drains the
 long tail across every repo and actually closes dead PRs.
 
@@ -32,7 +32,7 @@ bodies cannot make `jq` abort.
 Before enumerating a repo, resolve its concrete checkout and run
 `"$last_stack/bin/last-stack-pr-venue" --json <owner/repo> "$target_repo"`.
 LastGit is opt-in only; if `.venue == "lastgit"`, read
-`fbrain get sop-lastgit-native-forge-workflow` and drain `lastgit cr` change
+`brain get sop-lastgit-native-forge-workflow` and drain `lastgit cr` change
 requests instead of Forgejo/GitHub PRs. Use `lastgit cr list/view`, `lastgit ci
 status`, `lastgit cr complete --once`, `lastgit cr merge --require-status`, and
 `lastgit cr close`; never run LastGit CI watchers against the primary brain
@@ -131,7 +131,7 @@ read/write, fail loudly if the resolved path is empty or starts with
      flagging the specific failure and leave it for a human.
 7. **Pending** (CI running, or waiting on a human you can't satisfy) → leave for
    the next daily run.
-8. **Branch owned by another active routine** (e.g. `fkanban/*` → the pickup
+8. **Branch owned by another active routine** (e.g. `kanban/*` → the pickup
    pipeline) → defer ONLY while it's genuinely progressing (LIVE worktree, CI
    running now, or a commit pushed in the last ~2h). The moment it's PARKED —
    worktree clean+idle (or gone) and the PR stuck on a stale red/BLOCKED state —

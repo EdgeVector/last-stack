@@ -3,10 +3,10 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 
-json='{"app_id":"fbrain","cert":{"authorized_publisher":true},"schemas":[{"name":"Concept"}],"meta":null}'
+json='{"app_id":"brain","cert":{"authorized_publisher":true},"schemas":[{"name":"Concept"}],"meta":null}'
 
 got="$(printf '%s\n' "$json" | "$ROOT/bin/last-stack-json-get" .app_id)"
-[ "$got" = "fbrain" ] || { echo "expected app_id, got: $got" >&2; exit 1; }
+[ "$got" = "brain" ] || { echo "expected app_id, got: $got" >&2; exit 1; }
 
 got="$(printf '%s\n' "$json" | "$ROOT/bin/last-stack-json-get" .cert.authorized_publisher)"
 [ "$got" = "true" ] || { echo "expected boolean true, got: $got" >&2; exit 1; }

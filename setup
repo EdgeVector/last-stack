@@ -63,6 +63,7 @@ _link_or_copy() {
 is_transient_last_stack_target() {
   local target="$1"
   case "$target" in
+    "$HOME/.kanban/worktrees"/*|*/.kanban/worktrees/*) return 0 ;;
     "$HOME/.fkanban/worktrees"/*|*/.fkanban/worktrees/*) return 0 ;;
   esac
 
@@ -191,17 +192,17 @@ install_claude_hooks() {
     5
 
   for tool in \
-    mcp__fbrain__fbrain_get \
-    mcp__fbrain__fbrain_search \
-    mcp__fbrain__fbrain_list \
-    mcp__fbrain__fbrain_ask \
-    mcp__fbrain__fbrain_put
+    mcp__brain__brain_get \
+    mcp__brain__brain_search \
+    mcp__brain__brain_list \
+    mcp__brain__brain_ask \
+    mcp__brain__brain_put
   do
     upsert_permission_allow "$settings" "$tool"
   done
 
   echo "  claude hooks: read-before-edit.sh unsafe-inline-json.sh"
-  echo "  claude permissions: fbrain MCP get/search/list/ask/put"
+  echo "  claude permissions: brain MCP get/search/list/ask/put"
 }
 
 # ── Brain/Kanban wiring: usage instructions + Codex MCP registration ──────────
@@ -239,7 +240,7 @@ upsert_brain_kanban_block() {
 }
 
 ensure_codex_mcp_servers() {
-  # fbrain and fkanban are bun shims. GUI-launched MCP hosts (the Codex desktop
+  # brain and kanban are bun shims. GUI-launched MCP hosts (the Codex desktop
   # app) spawn servers with a bare PATH that lacks ~/.bun/bin, so without an
   # explicit env the server exits 127 and the client reports "transport closed".
   local cfg="$HOME/.codex/config.toml"
@@ -248,10 +249,10 @@ ensure_codex_mcp_servers() {
   mkdir -p "$(dirname "$cfg")"
   [ -f "$cfg" ] || : > "$cfg"
   local name cmd
-  for name in fbrain fkanban; do
+  for name in brain kanban; do
     case "$name" in
-      fbrain)  cmd="$HOME/.bun/bin/fbrain" ;;
-      fkanban) cmd="$HOME/.local/bin/fkanban" ;;
+      brain)  cmd="$HOME/.bun/bin/brain" ;;
+      kanban) cmd="$HOME/.local/bin/kanban" ;;
     esac
     if [ ! -x "$cmd" ]; then
       cmd="$(command -v "$name" 2>/dev/null || true)"
@@ -284,7 +285,7 @@ ensure_codex_mcp_servers() {
   if [ ${#added[@]} -gt 0 ]; then
     echo "  codex mcp: added ${added[*]} to $cfg"
   else
-    echo "  codex mcp: fbrain + fkanban already registered"
+    echo "  codex mcp: brain + kanban already registered"
   fi
 }
 

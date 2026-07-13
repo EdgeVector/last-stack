@@ -1,35 +1,35 @@
 ---
-name: fkanban-grooming
-description: Use when auditing or grooming F-Kanban board health: dependency-stub reconciliation, stale generated blockers, malformed Repo/Base/Kind headers, stale review/doing placement, superseded trackers, pickup-ready counts, or unblock accounting. Triage-only; never ships feature code.
+name: kanban-grooming
+description: Use when auditing or grooming Kanban board health: dependency-stub reconciliation, stale generated blockers, malformed Repo/Base/Kind headers, stale review/doing placement, superseded trackers, pickup-ready counts, or unblock accounting. Triage-only; never ships feature code.
 ---
 
-# F-Kanban Grooming
+# Kanban Grooming
 
 This skill is for board hygiene, not feature implementation. Use it with the
-`fkanban-card-authoring` rules for exact card shape.
+`kanban-card-authoring` rules for exact card shape.
 
 ## Start
 
-1. Check F-Situations before mutating board state.
+1. Check Situations before mutating board state.
 2. Use socket-backed board reads; do not run doctor/init or restart LastDB for
    `:9001` or busy-node errors.
 3. Use capped or column-scoped reads for routine automation. Read full card
-   bodies only for selected cards with `fkanban show <slug>`.
+   bodies only for selected cards with `kanban show <slug>`.
 
 ## Audit Checklist
 
 Run these checks and repair only when the evidence is clear:
 
 - **Dependency stubs:** For active cards tagged `dependency-stub`, determine
-  whether the prerequisite is already done under another slug. Use fkanban,
-  F-Brain, repo history, PRs, and current source. If done, append a `PROOF
+  whether the prerequisite is already done under another slug. Use kanban,
+  Brain, repo history, PRs, and current source. If done, append a `PROOF
   <date>:` note and move the stub to `done`. If not done, rewrite it into a real
   tracker/PR/validation card with clean headers and dependencies.
 - **Dependent unblock accounting:** After closing dependency cards, list direct
   dependents and separate cards now `blocked:false` from cards still blocked by
   another dependency or intentional gate.
 - **Generated repo-block damage:** Clear `needs_human` blockers whose reason is
-  only `Repo target not resolvable` / `fkanban-pickup cannot resolve Repo` when
+  only `Repo target not resolvable` / `kanban-pickup cannot resolve Repo` when
   the correct repo is evident from the body, title, tags, or known checkout.
   Normalize standalone `Repo: owner/name`, `Base: main`, and `Kind:` headers.
   Leave a real human gate only when ownership is genuinely unclear.
@@ -59,23 +59,23 @@ Run these checks and repair only when the evidence is clear:
 ## Useful Queries
 
 ```text
-fkanban list --column todo --limit 200 --json > /tmp/fkanban-todo.json
-fkanban list --column doing --limit 100 --json > /tmp/fkanban-doing.json
-fkanban list --column review --limit 100 --json > /tmp/fkanban-review.json
-jq -s 'add' /tmp/fkanban-todo.json /tmp/fkanban-doing.json /tmp/fkanban-review.json \
-  > /tmp/fkanban-active.json
+kanban list --column todo --limit 200 --json > /tmp/kanban-todo.json
+kanban list --column doing --limit 100 --json > /tmp/kanban-doing.json
+kanban list --column review --limit 100 --json > /tmp/kanban-review.json
+jq -s 'add' /tmp/kanban-todo.json /tmp/kanban-doing.json /tmp/kanban-review.json \
+  > /tmp/kanban-active.json
 
 # Active missing dependency slugs
 jq -r '.[] | select(.column!="done" and ((.missingDeps//[])|length>0))
-  | [.slug,.column,((.missingDeps//[])|join(","))] | @tsv' /tmp/fkanban-active.json
+  | [.slug,.column,((.missingDeps//[])|join(","))] | @tsv' /tmp/kanban-active.json
 
 # Stale generated repo blockers
 jq -r '.[] | select(.column!="done" and .block_status=="needs_human"
-  and ((.block_reason//"")|test("Repo target not resolvable|fkanban-pickup cannot resolve Repo")))
-  | [.slug,.column,.repo,.base,.kind,.block_reason] | @tsv' /tmp/fkanban-active.json
+  and ((.block_reason//"")|test("Repo target not resolvable|kanban-pickup cannot resolve Repo")))
+  | [.slug,.column,.repo,.base,.kind,.block_reason] | @tsv' /tmp/kanban-active.json
 
 # Pickup-ready count
 jq '[.[] | select(.column=="todo" and (.blocked|not)
   and (.kind=="pr" or .kind=="validation")
-  and ((.repo//"")!="") and ((.base//"")!=""))] | length' /tmp/fkanban-active.json
+  and ((.repo//"")!="") and ((.base//"")!=""))] | length' /tmp/kanban-active.json
 ```

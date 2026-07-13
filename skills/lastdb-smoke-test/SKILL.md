@@ -13,21 +13,21 @@ description: |
   signed build + human witness before a version reaches stable/Latest). Make
   sure to reach for this instead of hand-deriving the smoke steps from
   scratch — the full procedure, with every hard-won gotcha, lives in a living
-  fbrain SOP that this skill always reads fresh before running.
+  brain SOP that this skill always reads fresh before running.
 ---
 
 # lastdb-smoke-test
 
 This wraps a procedure that has already bitten hard on nearly every axis —
 stale binaries, stub builds, clobbered launch configs, wrong build dirs — and
-the fixes are all recorded as a **living SOP in fbrain**, not baked into this
+the fixes are all recorded as a **living SOP in brain**, not baked into this
 file. Read it fresh every run; it gets a new dated "Change log" entry (and
 sometimes a new numbered step) each time a run discovers something new, so a
 stale copy here would silently regress the procedure.
 
 ## Do this, in order
 
-1. `fbrain_get slug:sop-lastdb-local-smoke-test` (paginate with `body_offset`
+1. `brain_get slug:sop-lastdb-local-smoke-test` (paginate with `body_offset`
    until `bodyNextOffset` is null — it's long). Read the **Hard rules** and
    **Procedure** sections in full before touching anything; skimming has
    caused real repeat failures (stub binaries, stale checkouts).
@@ -40,16 +40,16 @@ stale copy here would silently regress the procedure.
    correctly judge a borderline case (e.g. whether a stale binary is an
    acceptable deviation this run).
 4. Classify every finding per the SOP's **Filing rule**: a papercut needs
-   BOTH an fkanban card AND an fbrain `reference` record (dedupe against
+   BOTH a kanban card AND a brain `reference` record (dedupe against
    existing ones first — bump "last seen" rather than duplicating); a
-   blocker needs a `release-blocker` + `subsystem-fold_db_node` fkanban card,
+   blocker needs a `release-blocker` + `subsystem-fold_db_node` kanban card,
    possibly linked into the release-gate epic. A run that finds something and
    only describes it in your final summary, without filing it, has
    accomplished nothing — the finding evaporates with the session.
 5. Tear down cleanly (stop the preview server, remove any rebuild worktree,
    confirm the primary brain socket `~/.folddb/data/folddb.sock` is still
    alive and the shared `fold` checkout's tracked files are untouched).
-6. Append a dated "Change log" entry to the SOP (`fbrain_put` on
+6. Append a dated "Change log" entry to the SOP (`brain_put` on
    `sop-lastdb-local-smoke-test`, appending — never silently rewriting past
    entries) recording: run number, binary/commit built from (or the
    acceptable-stale justification), GREEN/RED result per tab, and anything

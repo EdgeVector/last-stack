@@ -6,14 +6,14 @@ description: >-
   pickup→agent pipeline drives the unblocked features to completion. Two modes —
   BRIEF (read-only; assemble + deliver the ranked decision queue, run by the
   scheduled morning-sync routine each day at 7:00) and WORK (interactive; walk
-  Tom through the decisions one at a time, write each as its own fbrain
-  `decision` record, and execute it onto the fkanban board — clear a gate to todo, scope a
+  Tom through the decisions one at a time, write each as its own brain
+  `decision` record, and execute it onto the kanban board — clear a gate to todo, scope a
   program into a card, or record a hold). Use when Tom says "morning sync", "let's
   do the morning sync", "what decisions are waiting on me", "let's plan through
   things", "work through the blockers", "clear the gates", or when the scheduled
   morning-sync routine fires (BRIEF). This is the decision-capture + execute loop
   that sits ON TOP of program-driver/groom/pickup/agent — it does not replace
-  them. Read-only in BRIEF; writes board + fbrain only in WORK.
+  them. Read-only in BRIEF; writes board + brain only in WORK.
 ---
 
 # morning-sync — decisions in, completed features out
@@ -49,21 +49,21 @@ Two modes. Pick by how you were invoked:
   socket `~/.folddb/data/folddb.sock`. NEVER kill, restart, or touch the primary
   folddb_server brain or any `folddb_server` you didn't start. If the node is
   unreachable, STOP and report — do not restart anything.
-- fkanban CLI: prefer the shim, but the Bash tool is sandboxed (stripped `$PATH`),
+- kanban CLI: prefer the shim, but the Bash tool is sandboxed (stripped `$PATH`),
   so **prepend the full PATH every call** and run from the repo if the shim is
   missing:
   ```bash
   export PATH="$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
-  fkanban list --column todo --json  # or: cd ~/code/edgevector/fkanban && bun run src/cli.ts list --column todo --json
+  kanban list --column todo --json  # or: cd ~/code/edgevector/kanban && bun run src/cli.ts list --column todo --json
   ```
-  Read the `fkanban` skill (`~/.claude/skills/fkanban/SKILL.md`) for the current
+  Read the `kanban` skill (`~/.claude/skills/kanban/SKILL.md`) for the current
   CLI contract before any board write.
-- fbrain CLI is on PATH after the same prepend (`$HOME/.bun/bin/fbrain`). Write
-  multi-line bodies via **stdin** (`fbrain put ... < /tmp/body.md`), never
+- brain CLI is on PATH after the same prepend (`$HOME/.bun/bin/brain`). Write
+  multi-line bodies via **stdin** (`brain put ... < /tmp/body.md`), never
   `--body "$(...)"` — that mangles/clobbers the record (memory
   `feedback_mcp_args_no_shell_expansion`).
-- Use narrow board reads: `fkanban list --column todo --json`, then `doing` and
-  `review` as needed, parsed from files. Use `fkanban show <slug> --json` for the
+- Use narrow board reads: `kanban list --column todo --json`, then `doing` and
+  `review` as needed, parsed from files. Use `kanban show <slug> --json` for the
   one card whose full body you need. If a read returns `service_timeout`, "node
   did not respond", or "too many concurrent reads", treat it as busy-node
   backpressure; do not run doctor/init or restart anything. Iterate slugs with a
@@ -73,21 +73,21 @@ Two modes. Pick by how you were invoked:
 
 ## The data the loop reads/writes
 
-- **`active-programs`** (fbrain project) — the driving index: ~11 programs, each
+- **`active-programs`** (brain project) — the driving index: ~11 programs, each
   with a "Next move", its DAG cards, and `needs-human`/`blocked-needs-human`
   lines. This is the program work-list.
-- **`decision` records** (fbrain type `decision`, one record per decision) —
+- **`decision` records** (brain type `decision`, one record per decision) —
   every call Tom makes, dated, with what it unblocked. The durable memory. WORK
-  writes ONE `decision` record per call (`fbrain list --type decision`, newest
+  writes ONE `decision` record per call (`brain list --type decision`, newest
   first). This replaced the old monolithic `decisions-log` reference record
   (archived 2026-07-06 with a tombstone pointer) — appending is now a tiny
   per-record write, not a full-ledger rewrite. Read a specific one with
-  `fbrain get <slug> --type decision`; the `program`/`gate_slug`/`decided_by`/
+  `brain get <slug> --type decision`; the `program`/`gate_slug`/`decided_by`/
   `decided_on` columns are queryable fields, not buried in prose.
-- **`open-decisions`** (fbrain reference) — the standing queue of pending
-  decisions. `fkanban-agent` escalates gated next-steps here (Component C); BRIEF
+- **`open-decisions`** (brain reference) — the standing queue of pending
+  decisions. `kanban-agent` escalates gated next-steps here (Component C); BRIEF
   reads it so a stall becomes a dated line, never silence.
-- **`routine-heartbeats`** (fbrain reference) — one line per routine run
+- **`routine-heartbeats`** (brain reference) — one line per routine run
   (`<routine> <ISO-ts> <ok|error|noop> <outcome>`). BRIEF §3 flags any routine
   that didn't run or errored.
 
@@ -99,16 +99,16 @@ Produce a **decision-first** briefing, not a status dump. Lead with what's
 waiting on Tom. Steps:
 
 1. **Snapshot.** Read `todo`, `doing`, and `review` with sequential
-   `fkanban list --column <column> --json` calls (counts + card previews). Then
-   read targeted brain records one at a time: `fbrain get active-programs`,
-   `fbrain get open-decisions --type reference`, and `fbrain get
+   `kanban list --column <column> --json` calls (counts + card previews). Then
+   read targeted brain records one at a time: `brain get active-programs`,
+   `brain get open-decisions --type reference`, and `brain get
    routine-heartbeats --type reference`.
 
 2. **§1 — Decisions that GENUINELY need you (keep it SHORT).** Per Tom's standing
    correction (`feedback_autonomous_drive_dev_not_gated`), most old "gates" are NOT
    human — dev flips, security reviews, and design-first cards are DRIVEN
-   autonomously by program-driver/fkanban-agent, NOT surfaced here. Only include
-   the genuinely-human set (`fbrain get north-star` taxonomy):
+   autonomously by program-driver/kanban-agent, NOT surfaced here. Only include
+   the genuinely-human set (`brain get north-star` taxonomy):
    - **prod cutovers / public launches** (irreversible, outward),
    - **shipping NEW capability to END USERS** (e.g. the shipping-build WASM flip),
    - **brand / naming / tagline**, **business / legal / patent**,
@@ -149,13 +149,13 @@ waiting on Tom. Steps:
      routine whose `lastRunAt` is older than its cadence (hourly routine not run in
      >90 min; daily not run in >26 h) — that's a routine that silently stopped
      firing.
-   - **Did it succeed?** Read `routine-heartbeats` (fbrain) for the *outcome* of
+   - **Did it succeed?** Read `routine-heartbeats` (brain) for the *outcome* of
      the last run: flag any routine whose latest heartbeat is `error`, or that has
      a recent `lastRunAt` but NO matching heartbeat (ran but died before its
      heartbeat = a silent mid-run failure). A routine with no heartbeat at all yet
      just predates Component D — note it once, don't alarm.
    Cross-check the driving-layer set explicitly: `program-driver`,
-   `groom-fkanban-board`, `fkanban-pickup`, `fkanban-watch`, `program-rollup`,
+   `groom-kanban-board`, `kanban-pickup`, `kanban-watch`, `program-rollup`,
    plus the generators. If `list_scheduled_tasks` is unavailable in a headless
    run, fall back to `routine-heartbeats` alone and say so.
 
@@ -179,7 +179,7 @@ waiting on Tom. Steps:
    section silently.
 
 7. **Deliver + persist.** Print the brief (this reaches Tom via the scheduled
-   task's completion notification). Then write it to fbrain
+   task's completion notification). Then write it to brain
    `morning-sync-brief-latest` (reference, upsert) so WORK mode and the
    morning-digest can pick it up. Heartbeat: append a `morning-sync <ts> ok
    <n decisions, m scope, k routine-alerts>` line to `routine-heartbeats`.
@@ -190,7 +190,7 @@ card, never edits a gate card, never clears a gate. That is WORK's job.
 Brief skeleton:
 
 ```
-## 🌅 Morning sync — <date>   ·  North Star: <one-line from `fbrain get north-star`>
+## 🌅 Morning sync — <date>   ·  North Star: <one-line from `brain get north-star`>
 
 ### 🚀 What I'm driving (autonomous — FYI, redirect if wrong)
 - <program> — <dev/security/design work promoted or generated toward criterion N>.
@@ -256,11 +256,11 @@ stands up, `todo` is freshly stocked and the pipeline takes over.
       Unblocks: <cards>
       Rationale: <one line, in Tom's framing>
       EOF
-      fbrain put "$slug" --type decision < "$body_file"
+      brain put "$slug" --type decision < "$body_file"
       rm -f "$body_file"
       ```
       This is the permanent memory — "remember all the decisions." Each decision
-      is its own record (`fbrain list --type decision` shows the whole ledger,
+      is its own record (`brain list --type decision` shows the whole ledger,
       newest first); NEVER append to the archived `decisions-log` monolith.
       Status mapping: a cleared gate you proceed on = `go`; a deferral = `hold`;
       a decision whose work already landed = `done`; a premise that went away =
@@ -270,19 +270,19 @@ stands up, `todo` is freshly stocked and the pipeline takes over.
 
       - **CLEAR A GATE (go).** Edit the gate card body: replace the gate marker
         line with `✅ DECIDED <date> (Tom): <decision>`; ensure it has a real
-        GOAL/STEPS/VERIFY brief, a `Repo:`/`Base:` header, and the fkanban-agent
-        header (`Follow the fkanban-agent skill — drive this through to a MERGED
+        GOAL/STEPS/VERIFY brief, a `Repo:`/`Base:` header, and the kanban-agent
+        header (`Follow the kanban-agent skill — drive this through to a MERGED
         PR. A card is only done when its code is actually in the repo.`). Then
         `move <slug> todo`. **Then promote anything that was blocked only on this
         gate** — any card whose body declared a dep solely on this slug. Use the
-        `fkanban` add-via-stdin pattern to rewrite the body cleanly.
+        `kanban` add-via-stdin pattern to rewrite the body cleanly.
         - DEV-FIRST RULE: if the gate touches a prod surface, the card you promote
           is the **dev** slice; the prod cutover/flip stays a SEPARATE explicit
           card that remains gated (record it in `open-decisions` as "prod cutover
           — human, after dev soak"). Never auto-promote a prod cutover.
 
       - **SCOPE A PROGRAM (§2).** File ONE PR-sized first-slice card to `todo`
-        with a full GOAL/STEPS/VERIFY brief + Repo/Base + fkanban-agent header.
+        with a full GOAL/STEPS/VERIFY brief + Repo/Base + kanban-agent header.
         **Verify facts against `origin/main` first** (`git fetch` + read
         `origin/<base>:<file>`) so you don't file already-merged work. Leave any
         epic/tracker card where it is.
@@ -296,7 +296,7 @@ stands up, `todo` is freshly stocked and the pipeline takes over.
         DON'T force it — capture `pending: <what he needs>` to `open-decisions`
         and move on. (Offer to pull the missing context with the `eli5` skill.)
 
-   c. After executing, confirm with `fkanban show <slug>` that the card reads back
+   c. After executing, confirm with `kanban show <slug>` that the card reads back
       correctly (DECIDED line present, `column` correct) before moving on.
 
 4. **Update `active-programs`.** For each program touched, refresh its "Next move"
@@ -305,7 +305,7 @@ stands up, `todo` is freshly stocked and the pipeline takes over.
 
 5. **Close the session.** Report: decisions captured (N), gates cleared → cards
    promoted (list slugs + new column), programs scoped (new card slugs), holds.
-   End with the resulting `todo` count and: "the :15 fkanban-pickup will start
+   End with the resulting `todo` count and: "the :15 kanban-pickup will start
    driving these within the hour." Heartbeat: append `morning-sync <ts> ok
    WORK: <n cleared, m scoped>` to `routine-heartbeats`.
 
@@ -329,5 +329,5 @@ stands up, `todo` is freshly stocked and the pipeline takes over.
   `decisions-log` monolith. For the standing `open-decisions`/`active-programs`
   ledgers you still edit, read-modify-write; big bodies via stdin.
 - This skill is the only place decisions get *captured + executed*. It does NOT
-  ship code, open PRs, or run fkanban-agent — the pickup→agent pipeline does that
+  ship code, open PRs, or run kanban-agent — the pickup→agent pipeline does that
   once the cards are in `todo`.
