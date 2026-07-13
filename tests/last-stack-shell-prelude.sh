@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 tmp="$(mktemp -d)"
 cleanup() {
-  rm -rf "$tmp"
+  /bin/rm -rf "$tmp"
 }
 trap cleanup EXIT
 
@@ -20,15 +20,44 @@ export PATH LAST_STACK_GLOBAL_PATH
 . "$ROOT/bin/last-stack-shell-prelude"
 
 command -v gh >/dev/null 2>&1
+last_stack_require_tools gh
+test "$LAST_STACK_TOOL_GH" = "$fake_global/gh"
+
 PATH="/usr/bin:/bin"
 unset LAST_STACK_GLOBAL_PATH
 LAST_STACK_ROOT="$ROOT"
 export PATH LAST_STACK_ROOT
 . "$ROOT/bin/last-stack-shell-prelude"
 command -v last-stack-json-get >/dev/null 2>&1
+last_stack_require_tools git awk basename rm bash last-stack-json-get
+test -n "$LAST_STACK_TOOL_GIT"
+test -n "$LAST_STACK_TOOL_AWK"
+test -n "$LAST_STACK_TOOL_BASENAME"
+test -n "$LAST_STACK_TOOL_RM"
+test -n "$LAST_STACK_TOOL_BASH"
+test "$LAST_STACK_TOOL_LAST_STACK_JSON_GET" = "$ROOT/bin/last-stack-json-get"
 case ":$PATH:" in
   *":$ROOT/bin:"*) ;;
   *) echo "expected prelude to prepend last-stack bin path" >&2; exit 1 ;;
 esac
+
+empty_global="$tmp/empty-global"
+mkdir -p "$empty_global"
+PATH="$empty_global"
+LAST_STACK_GLOBAL_PATH="$empty_global"
+export PATH LAST_STACK_GLOBAL_PATH
+. "$ROOT/bin/last-stack-shell-prelude"
+if last_stack_require_tools missing-basic-tool >/dev/null 2>"$tmp/missing.err"; then
+  echo "expected missing stripped-PATH tool to fail" >&2
+  exit 1
+fi
+PATH="/usr/bin:/bin"
+export PATH
+grep -q 'LAST_STACK_CLI_PATH_MISSING' "$tmp/missing.err"
+grep -q 'Required CLI(s) not visible:' "$tmp/missing.err"
+if grep -q 'command not found' "$tmp/missing.err"; then
+  echo "expected controlled missing-tool error, not shell command-not-found" >&2
+  exit 1
+fi
 
 echo "ok"
