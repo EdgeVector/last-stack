@@ -2,7 +2,7 @@
 # Acceptance check — LastDB master password survives a restart.
 #
 # This is the worked example for the acceptance gate (SOP
-# `sop-autonomous-acceptance-gate` in fbrain). It is the check that, had it
+# `sop-autonomous-acceptance-gate` in brain). It is the check that, had it
 # existed, would have caught the 2026-06-30 master-password lockout BEFORE it
 # shipped: the password could be SET (write path, unit tests green, PR merged)
 # but the node would not UNLOCK with it after a restart, because boot key

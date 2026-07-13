@@ -34,7 +34,7 @@ keypair + a row in `ExememDevelopers-{env}` + (dev only) an
 `EXEMEM_DEV_API_KEY` minted into the API-keys DynamoDB table.
 
 This is the "Step 1 + 2a/2b" subset of the larger `app-identity-dogfood`
-flow, factored out for reuse: any app developer (fbrain, kanban, future
+flow, factored out for reuse: any app developer (brain, kanban, future
 third-party) onboards through this skill, then runs the publish steps for
 their own app.
 
@@ -71,7 +71,7 @@ Resolved from arguments / env / sensible defaults, in order:
 | Variable | Default | How resolved |
 |---|---|---|
 | `ENV`        | `dev` | First positional arg or `--env`. Accepts `dev` or `prod`. |
-| `USER_HASH`  | required | Second positional arg or `--user-hash`. Must be a stable identifier for this developer (e.g. `tomtang-fbrain-dev`, `kanban-rust-dev`). Ask if not provided. |
+| `USER_HASH`  | required | Second positional arg or `--user-hash`. Must be a stable identifier for this developer (e.g. `tomtang-brain-dev`, `kanban-rust-dev`). Ask if not provided. |
 | `HANDLE`     | `$USER_HASH` | `--handle`. Cosmetic; recorded in the local keypair file alongside the key, never sent on the wire. |
 
 If `USER_HASH` is ambiguous (no arg + ambiguous from the prompt), ASK the
@@ -296,7 +296,7 @@ other places:
   `folddb-dev schema publish --schema <name> --app <id>
   --schema-service-url <url>` for each schema.
 
-For an autonomous fbrain-specific end-to-end loop (this skill +
+For an autonomous brain-specific end-to-end loop (this skill +
 publish steps + verify), see the `app-identity-dogfood` skill.
 
 ## Memory hooks

@@ -380,7 +380,7 @@ check_raw_markdown_shell_blocks() {
         }
         if ($0 ~ /^[[:space:]]*(##+|[-*][[:space:]]|>[[:space:]]|\[\[|:[0-9]+([[:space:]]|$)|(Repo|Base|Branch|GOAL|CONTEXT|STEPS|VERIFY|DONE WHEN|OUT OF SCOPE):)/ ||
             $0 ~ /^[[:space:]]*(backlog|todo|doing|review)([[:space:]]|$)/ ||
-            $0 ~ /^[[:space:]]*[A-Za-z0-9_-]*fkanban-agent[A-Za-z0-9_-]*([[:space:]]|$)/) {
+            $0 ~ /^[[:space:]]*[A-Za-z0-9_-]*kanban-agent[A-Za-z0-9_-]*([[:space:]]|$)/) {
           printf "%s:%d:%s\n", file, NR, $0
           bad = 1
         }
@@ -422,41 +422,41 @@ for path in "$@"; do
     fail=1
   fi
 
-  fkanban_board_matches="$(search_prompt_pattern '(fkanban|<board CLI>)[[:space:]]+(show|move|rm|rank|dep|tag)([[:space:]]|$).*--board' "$path")"
-  fkanban_board_matches="$(printf '%s\n' "$fkanban_board_matches" | grep -v -E 'Do not|Never|do not|never|unsupported|do not take|only commands whose help lists' || true)"
-  if [ -n "$fkanban_board_matches" ]; then
-    printf '%s\n' "$fkanban_board_matches"
-    echo "unsupported fkanban non-list/add/search board flag usage found under $path" >&2
+  kanban_board_matches="$(search_prompt_pattern '(kanban|<board CLI>)[[:space:]]+(show|move|rm|rank|dep|tag)([[:space:]]|$).*--board' "$path")"
+  kanban_board_matches="$(printf '%s\n' "$kanban_board_matches" | grep -v -E 'Do not|Never|do not|never|unsupported|do not take|only commands whose help lists' || true)"
+  if [ -n "$kanban_board_matches" ]; then
+    printf '%s\n' "$kanban_board_matches"
+    echo "unsupported kanban non-list/add/search board flag usage found under $path" >&2
     fail=1
   fi
 
-  # `fkanban search` has NO full-body option. Agents keep inventing
-  # `fkanban search <query> --full-body` (or `--full_body`), which the CLI
+  # `kanban search` has NO full-body option. Agents keep inventing
+  # `kanban search <query> --full-body` (or `--full_body`), which the CLI
   # rejects with `Unknown option`. For full bodies, use CLI JSON and
-  # `fkanban show <slug> --json`, or pass `full_body: true` to the MCP
-  # `fkanban_search` tool. Block the bad CLI flag in agent-facing guidance.
-  fkanban_full_body_matches="$(search_prompt_pattern '(fkanban|<board CLI>)[[:space:]]+search([[:space:]]|$).*--full[-_]body' "$path")"
-  fkanban_full_body_matches="$(printf '%s\n' "$fkanban_full_body_matches" | grep -v -E 'Do not|Never|do not|never|unsupported|no such flag|has no|no --full-body' || true)"
-  if [ -n "$fkanban_full_body_matches" ]; then
-    printf '%s\n' "$fkanban_full_body_matches"
-    echo "unsupported fkanban search --full-body usage found under $path (use fkanban search --json + show, or MCP full_body:true)" >&2
+  # `kanban show <slug> --json`, or pass `full_body: true` to the MCP
+  # `kanban_search` tool. Block the bad CLI flag in agent-facing guidance.
+  kanban_full_body_matches="$(search_prompt_pattern '(kanban|<board CLI>)[[:space:]]+search([[:space:]]|$).*--full[-_]body' "$path")"
+  kanban_full_body_matches="$(printf '%s\n' "$kanban_full_body_matches" | grep -v -E 'Do not|Never|do not|never|unsupported|no such flag|has no|no --full-body' || true)"
+  if [ -n "$kanban_full_body_matches" ]; then
+    printf '%s\n' "$kanban_full_body_matches"
+    echo "unsupported kanban search --full-body usage found under $path (use kanban search --json + show, or MCP full_body:true)" >&2
     fail=1
   fi
 
-  broad_board_reads="$(search_prompt_pattern '(^|[^[:alnum:]_-])(fkanban|<board CLI>)[[:space:]]+list.*(--wide|--full-body|--all)' "$path")"
+  broad_board_reads="$(search_prompt_pattern '(^|[^[:alnum:]_-])(kanban|<board CLI>)[[:space:]]+list.*(--wide|--full-body|--all)' "$path")"
   broad_board_reads="$(printf '%s\n' "$broad_board_reads" \
     | grep -v -Ei 'Do not|Never|do not|never|avoid|unsupported|no such flag|has no|not use|must not|instead|accepts|valid|syntax' \
     | grep -v -E '/tests/last-stack-lint-prompts.sh' || true)"
   if [ -n "$broad_board_reads" ]; then
     printf '%s\n' "$broad_board_reads"
-    echo "broad fkanban list usage found under $path (use capped/column previews plus show for selected cards)" >&2
+    echo "broad kanban list usage found under $path (use capped/column previews plus show for selected cards)" >&2
     fail=1
   fi
 
-  routine_doctor_checks="$(search_prompt_pattern '(^|[^[:alnum:]_-])(fbrain|fkanban|<brain-cli>|<board CLI>)[[:space:]]+(doctor|init)([^[:alnum:]_-]|$)' "$path")"
+  routine_doctor_checks="$(search_prompt_pattern '(^|[^[:alnum:]_-])(brain|kanban|<brain-cli>|<board CLI>)[[:space:]]+(doctor|init)([^[:alnum:]_-]|$)' "$path")"
   routine_doctor_checks="$(printf '%s\n' "$routine_doctor_checks" \
-    | grep -v -Ei 'Do not|Do \*\*not|Never|do not|never|avoid|unsupported|expected|setup|bootstrap|fresh machine|user asks|diagnostics|brain-doctor|fkanban-setup|not run|without running|not use|must not|no `?fbrain doctor|no `?fkanban doctor|raw TCP|defaults|hint:' \
-    | grep -v -E '/skills/(fkanban-setup|fkanban|brain-doctor)/|/tests/|/bin/|/README.md|/routines/README.md' || true)"
+    | grep -v -Ei 'Do not|Do \*\*not|Never|do not|never|avoid|unsupported|expected|setup|bootstrap|fresh machine|user asks|diagnostics|brain-doctor|kanban-setup|not run|without running|not use|must not|no `?brain doctor|no `?kanban doctor|raw TCP|defaults|hint:' \
+    | grep -v -E '/skills/(kanban-setup|kanban|brain-doctor)/|/tests/|/bin/|/README.md|/routines/README.md' || true)"
   if [ -n "$routine_doctor_checks" ]; then
     printf '%s\n' "$routine_doctor_checks"
     echo "routine prompt uses doctor/init as a health check under $path (use a socket-backed narrow read and busy-node backoff)" >&2
@@ -467,7 +467,7 @@ for path in "$@"; do
   ambiguous_pickup_skips="$(printf '%s\n' "$ambiguous_pickup_skips" | grep -v -E 'Do not|Never|do not|never|unsupported' || true)"
   if [ -n "$ambiguous_pickup_skips" ]; then
     printf '%s\n' "$ambiguous_pickup_skips"
-    echo "ambiguous fkanban-pickup repo targets must be annotated or blocked, not silently left in todo" >&2
+    echo "ambiguous kanban-pickup repo targets must be annotated or blocked, not silently left in todo" >&2
     fail=1
   fi
 
@@ -501,7 +501,7 @@ for path in "$@"; do
   unquoted_heredocs="$(printf '%s\n' "$unquoted_heredocs" | grep -v -Ei "Do not|Never|do not|never|unsupported|unsafe|unquoted|quoted heredoc|single-quoted" || true)"
   if [ -n "$unquoted_heredocs" ]; then
     printf '%s\n' "$unquoted_heredocs"
-    echo "unquoted heredoc delimiter found under $path; Markdown/F-Brain/fkanban bodies must use <<'EOF' or a body file" >&2
+    echo "unquoted heredoc delimiter found under $path; Markdown/Brain/kanban bodies must use <<'EOF' or a body file" >&2
     fail=1
   fi
 
@@ -552,7 +552,7 @@ for path in "$@"; do
     fail=1
   fi
 
-  heartbeat_gets="$(search_prompt_pattern 'fbrain[^\n]*get[^\n]*routine-heartbeats' "$path")"
+  heartbeat_gets="$(search_prompt_pattern 'brain[^\n]*get[^\n]*routine-heartbeats' "$path")"
   heartbeat_gets="$(printf '%s\n' "$heartbeat_gets" | grep -v -- '--type reference' || true)"
   if [ -n "$heartbeat_gets" ]; then
     printf '%s\n' "$heartbeat_gets"

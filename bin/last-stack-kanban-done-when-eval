@@ -3,7 +3,7 @@ set -u
 
 usage() {
   cat >&2 <<'EOF'
-usage: last-stack-fkanban-done-when-eval --kind <kind> --predicate <DONE-WHEN>
+usage: last-stack-kanban-done-when-eval --kind <kind> --predicate <DONE-WHEN>
 
 Exit codes:
   0  predicate is satisfied
@@ -12,8 +12,8 @@ Exit codes:
   3  ignored because Kind: pr still requires a merged PR
 
 Supported predicates:
-  fbrain <slug> exists
-  fbrain <slug> updated-after <YYYY-MM-DD>
+  brain <slug> exists
+  brain <slug> updated-after <YYYY-MM-DD>
   routine <name> heartbeat matches /<regex>/ after <YYYY-MM-DD>
   date >= <YYYY-MM-DD>
   file <path> matches /<regex>/
@@ -57,29 +57,29 @@ if [ "$kind" = "pr" ]; then
   exit 3
 fi
 
-if [[ "$predicate" =~ ^fbrain[[:space:]]+([^[:space:]]+)[[:space:]]+exists$ ]]; then
+if [[ "$predicate" =~ ^brain[[:space:]]+([^[:space:]]+)[[:space:]]+exists$ ]]; then
   slug="${BASH_REMATCH[1]}"
-  if fbrain get "$slug" >/dev/null 2>&1; then
-    echo "satisfied: fbrain $slug exists"
+  if brain get "$slug" >/dev/null 2>&1; then
+    echo "satisfied: brain $slug exists"
     exit 0
   fi
-  echo "pending: fbrain $slug does not exist"
+  echo "pending: brain $slug does not exist"
   exit 1
 fi
 
-if [[ "$predicate" =~ ^fbrain[[:space:]]+([^[:space:]]+)[[:space:]]+updated-after[[:space:]]+([0-9]{4}-[0-9]{2}-[0-9]{2})$ ]]; then
+if [[ "$predicate" =~ ^brain[[:space:]]+([^[:space:]]+)[[:space:]]+updated-after[[:space:]]+([0-9]{4}-[0-9]{2}-[0-9]{2})$ ]]; then
   slug="${BASH_REMATCH[1]}"
   cutoff="${BASH_REMATCH[2]}"
-  record="$(fbrain get "$slug" 2>/dev/null)" || {
-    echo "pending: fbrain $slug does not exist"
+  record="$(brain get "$slug" 2>/dev/null)" || {
+    echo "pending: brain $slug does not exist"
     exit 1
   }
   updated="$(printf '%s\n' "$record" | awk '/^updated_at:/ { print substr($2, 1, 10); exit }')"
   if [ -n "$updated" ] && [[ "$updated" > "$cutoff" || "$updated" = "$cutoff" ]]; then
-    echo "satisfied: fbrain $slug updated_at $updated >= $cutoff"
+    echo "satisfied: brain $slug updated_at $updated >= $cutoff"
     exit 0
   fi
-  echo "pending: fbrain $slug updated_at ${updated:-unknown} < $cutoff"
+  echo "pending: brain $slug updated_at ${updated:-unknown} < $cutoff"
   exit 1
 fi
 
@@ -87,7 +87,7 @@ if [[ "$predicate" =~ ^routine[[:space:]]+([^[:space:]]+)[[:space:]]+heartbeat[[
   routine="${BASH_REMATCH[1]}"
   regex="${BASH_REMATCH[2]}"
   cutoff="${BASH_REMATCH[3]}"
-  heartbeats="$(fbrain get routine-heartbeats --type reference 2>/dev/null)" || {
+  heartbeats="$(brain get routine-heartbeats --type reference 2>/dev/null)" || {
     echo "pending: routine-heartbeats record unavailable"
     exit 1
   }

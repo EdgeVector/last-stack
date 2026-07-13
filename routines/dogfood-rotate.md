@@ -1,7 +1,7 @@
 ---
 name: dogfood-rotate
 cadence: hourly
-description: Rotate through the Brain-owned dogfood registry, exercise one eligible feature on isolated/dev surfaces, and file deduped papercut/blocker cards on F-Kanban. Files work only; never ships fixes.
+description: Rotate through the Brain-owned dogfood registry, exercise one eligible feature on isolated/dev surfaces, and file deduped papercut/blocker cards on Kanban. Files work only; never ships fixes.
 ---
 
 You are the **dogfood-rotate** routine. Each run starts cold. Your objective is
@@ -15,9 +15,9 @@ with every actionable blocker and papercut discovered.
   ```bash
   last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
   . "$last_stack/bin/last-stack-shell-prelude"
-  "$last_stack/bin/last-stack-cli-preflight" git curl jq fbrain fkanban
+  "$last_stack/bin/last-stack-cli-preflight" git curl jq brain kanban
   ```
-- Use F-Brain via `fbrain` and F-Kanban via `fkanban`; default board is
+- Use Brain via `brain` and Kanban via `kanban`; default board is
   `default`.
 - Before any Brain/board writes or product assertions, make sure the Last Stack
   routine checkout you are reading is current. Run
@@ -28,10 +28,10 @@ with every actionable blocker and papercut discovered.
   not continue from stale routine text: stale installed prompts can miss wrapper
   fixes such as current target checkout selection and repeatedly block on the
   user's dirty primary checkout even after the repo PR has merged.
-- First run data-plane preflight reads, sequentially: `fbrain get
-  dogfood-registry --type project --json` and `fkanban list --column todo
+- First run data-plane preflight reads, sequentially: `brain get
+  dogfood-registry --type project --json` and `kanban list --column todo
   --json`. These socket-backed reads are the health check. Do not use
-  `fbrain doctor`, `fkanban doctor`, `fkanban init`, or raw TCP probes as routine
+  `brain doctor`, `kanban doctor`, `kanban init`, or raw TCP probes as routine
   health gates; the legacy TCP endpoint may be intentionally unavailable while
   socket reads work. If either data-plane read returns `service_timeout`, "node
   did not respond", or "too many concurrent reads", treat it as busy-node
@@ -79,12 +79,12 @@ product assertions run:
    non-mutating freshness report in the run output.
 2. Prefer `<last-stack>/bin/last-stack-dogfood-target-checkout <repo> [...]`.
    It inspects the source target plus sibling Git worktrees for the same repo and
-   dedicated dogfood checkouts under `~/.fkanban/dogfood-targets`; when the
+   dedicated dogfood checkouts under `~/.kanban/dogfood-targets`; when the
    source target is stale, unknown, or dirty, it selects a clean isolated
    checkout only when that checkout tracks the same upstream and its `HEAD`
    exactly matches the remote upstream oid. If no such checkout exists, the
    helper may create or fast-forward a clean dedicated checkout under
-   `LAST_STACK_DOGFOOD_TARGET_ROOTS` (default `~/.fkanban/dogfood-targets`) and
+   `LAST_STACK_DOGFOOD_TARGET_ROOTS` (default `~/.kanban/dogfood-targets`) and
    then emit the selected checkout's non-mutating freshness report. It must never
    fetch, reset, stash, clean, rebase, or otherwise mutate the source target
    named by the recipe.
@@ -110,7 +110,7 @@ the user's primary repo, for example:
 
 ```bash
 git -C /path/to/repo worktree add --track -b dogfood/current-<repo> \
-  ~/.fkanban/dogfood-targets/<repo> origin/main
+  ~/.kanban/dogfood-targets/<repo> origin/main
 ```
 
 For each source and selected target checkout, report:
@@ -161,7 +161,7 @@ target repo to make it current.
 ## File Cards
 For every actionable blocker, papercut, stale recipe, confusing UX, flaky
 behavior, missing fixture, or safety issue discovered:
-- Dedupe first with `fkanban search` / `fkanban list` and Brain search. If a
+- Dedupe first with `kanban search` / `kanban list` and Brain search. If a
   live card already captures it, reuse that slug in the run report and rotation
   log; do not file a duplicate.
 - File all actionable papercuts, not only blockers. Polish found by dogfood is
@@ -173,11 +173,11 @@ behavior, missing fixture, or safety issue discovered:
 - Make each card cold-start-ready:
 
 ```text
-**Follow the fkanban-agent skill - drive this through to a MERGED PR.**
+**Follow the kanban-agent skill - drive this through to a MERGED PR.**
 
 Repo: <owner>/<repo>
 Base: <default branch>
-Branch: fkanban/<slug>
+Branch: kanban/<slug>
 
 ## GOAL
 <observable fix>
@@ -209,7 +209,7 @@ card.
 - If you correct durable rationale or recipe text, make the smallest possible
   edit to `dogfood-registry` and mention it in the report.
 - Last action: append the heartbeat through
-  `<last-stack>/bin/last-stack-fbrain-append-heartbeat --line "<line>"`, where
+  `<last-stack>/bin/last-stack-brain-append-heartbeat --line "<line>"`, where
   `<line>` has this form:
   `dogfood-rotate <ISO-ts> <ok|noop|error> feature=<slug> result=<result> cards=<n>`.
   The helper reads `routine-heartbeats --type reference`, aborts on read errors,
@@ -217,7 +217,7 @@ card.
 
 ## Guardrails
 - Files cards and Brain updates only. Do not ship feature fixes, open PRs, run
-  `fkanban-agent`, rebase, merge, deploy, or cut prod.
+  `kanban-agent`, rebase, merge, deploy, or cut prod.
 - No destructive operations: no `git reset --hard`, `git clean`, `git stash`, or
   deleting shared worktrees.
 - Do not touch real user data, real `~/.folddb`, real `~/.lastdb`, or the live

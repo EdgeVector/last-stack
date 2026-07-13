@@ -11,7 +11,7 @@ trap cleanup EXIT
 fake_bin="$tmp/bin"
 mkdir -p "$fake_bin"
 
-cat > "$fake_bin/fbrain" <<'FAKE'
+cat > "$fake_bin/brain" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -46,7 +46,7 @@ case "$cmd" in
     fi
     if [ "${FAKE_FBRain_SCHEMA_FAIL:-0}" = "1" ]; then
       printf 'error: No canonical hash registered for type "decision" in config.\n'
-      printf 'hint:  Re-run `fbrain init` so the config picks up all 10 schema hashes.\n'
+      printf 'hint:  Re-run `brain init` so the config picks up all 10 schema hashes.\n'
       exit 1
     fi
     if [ "$typed" -ne 1 ]; then
@@ -123,14 +123,14 @@ case "$cmd" in
     ;;
 esac
 FAKE
-chmod +x "$fake_bin/fbrain"
+chmod +x "$fake_bin/brain"
 
 export PATH="$fake_bin:$PATH"
 export FAKE_FBRain_ARGS="$tmp/args"
 export FAKE_FBRain_PUT_BODY="$tmp/put-body"
 export FAKE_FBRain_APPEND_BODY="$tmp/append-body"
 
-"$ROOT/bin/last-stack-fbrain-append-heartbeat" --line "new-heartbeat"
+"$ROOT/bin/last-stack-brain-append-heartbeat" --line "new-heartbeat"
 
 grep -q -- 'get routine-heartbeats --type reference --json' "$FAKE_FBRain_ARGS"
 grep -q -- 'put routine-heartbeats --type reference --json' "$FAKE_FBRain_ARGS"
@@ -141,7 +141,7 @@ cmp "$expected" "$FAKE_FBRain_PUT_BODY"
 
 rm -f "$FAKE_FBRain_PUT_BODY"
 export FAKE_FBRain_READ_FAIL=1
-if "$ROOT/bin/last-stack-fbrain-append-heartbeat" --line "must-not-write" >/dev/null 2>&1; then
+if "$ROOT/bin/last-stack-brain-append-heartbeat" --line "must-not-write" >/dev/null 2>&1; then
   echo "expected read failure" >&2
   exit 1
 fi
@@ -153,7 +153,7 @@ fi
 rm -f "$FAKE_FBRain_APPEND_BODY" "$FAKE_FBRain_PUT_BODY"
 unset FAKE_FBRain_READ_FAIL
 export FAKE_FBRain_SCHEMA_FAIL=1
-"$ROOT/bin/last-stack-fbrain-append-heartbeat" --line "schema-drift-heartbeat"
+"$ROOT/bin/last-stack-brain-append-heartbeat" --line "schema-drift-heartbeat"
 
 grep -q -- 'append routine-heartbeats --type reference --raw --json' "$FAKE_FBRain_ARGS"
 printf '\nschema-drift-heartbeat\n' > "$expected"

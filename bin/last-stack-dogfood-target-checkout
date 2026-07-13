@@ -26,7 +26,7 @@ assertions do not run on stale local code.
 
 Additional isolated checkouts are discovered under
 LAST_STACK_DOGFOOD_TARGET_ROOTS, a colon-separated list that defaults to
-$HOME/.fkanban/dogfood-targets.
+$HOME/.kanban/dogfood-targets.
 
 Set LAST_STACK_DOGFOOD_TARGET_MANAGE=0 to disable dedicated checkout
 create/refresh behavior and report a blocker instead.
@@ -458,7 +458,7 @@ select_for_target() {
     add_candidate "$candidate"
   done < <(git -C "$target" worktree list --porcelain | awk '/^worktree / {print substr($0, 10)}')
 
-  roots="${LAST_STACK_DOGFOOD_TARGET_ROOTS:-$HOME/.fkanban/dogfood-targets}"
+  roots="${LAST_STACK_DOGFOOD_TARGET_ROOTS:-$HOME/.kanban/dogfood-targets}"
   IFS=':' read -r -a root_list <<< "$roots"
   for root in "${root_list[@]}"; do
     [ -n "$root" ] || continue

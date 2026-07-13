@@ -5,7 +5,7 @@ description: Deliver a daily briefing — progress being driven (§🚀) + the S
 ---
 
 Produce and DELIVER the daily briefing. This is READ-ONLY — do not move cards,
-edit gate cards, or run `fkanban-agent`. The only writes are (a) upserting the
+edit gate cards, or run `kanban-agent`. The only writes are (a) upserting the
 brief to a `morning-sync-brief-latest` note in your brain and (b) one heartbeat
 line. You start cold with no memory of prior runs.
 
@@ -18,7 +18,7 @@ read/write, fail loudly if the resolved path is empty or starts with
 
 > **CRITICAL framing:** the fleet DRIVES autonomously toward the goal; it does NOT
 > gate on caution. So this brief is NOT a decision-fatigue queue. Most "gates" are
-> autonomous (driven by `program-driver`/`fkanban-agent`) and must NOT be surfaced
+> autonomous (driven by `program-driver`/`kanban-agent`) and must NOT be surfaced
 > as decisions. The job is to show progress and surface ONLY what genuinely needs
 > a human.
 
@@ -39,7 +39,7 @@ Lead with a one-line restatement of the goal / top objective, then:
   but un-carded.
 - **§🩺 Routine health** — from your scheduler's last-run timestamps + the
   `routine-heartbeats` note; flag any routine stale-vs-cadence or errored.
-  Treat `fkanban-pickup` as critical: if it has no scheduler session or
+  Treat `kanban-pickup` as critical: if it has no scheduler session or
   `routine-heartbeats` entry within the last 2 hours AND there is any eligible
   `todo` card with `Repo:`/`Base:` and no `BLOCKED:` note, surface this as a
   top routine-health alert. Name the top eligible card(s), the last pickup time,
@@ -60,14 +60,14 @@ Lead with a one-line restatement of the goal / top objective, then:
   `open-decisions`, and `routine-heartbeats` as targeted records, one at a time.
 - Also inspect your scheduler/session index if available. For Codex Desktop this
   is typically `$CODEX_HOME/session_index.jsonl` or
-  `$HOME/.codex/session_index.jsonl`; compare `last-stack fkanban-pickup` against
+  `$HOME/.codex/session_index.jsonl`; compare `last-stack kanban-pickup` against
   the hourly cadence. Use this only as read-only evidence for §🩺.
 
 ## Deliver
 Build the brief per the skeleton, lead with the goal one-liner. Then: print the
 full brief (it reaches the human via this task's completion notification), upsert
 it to a `morning-sync-brief-latest` note via stdin, and use
-`<last-stack>/bin/last-stack-fbrain-append-heartbeat --line "morning-sync
+`<last-stack>/bin/last-stack-brain-append-heartbeat --line "morning-sync
 <ISO-ts> ok <summary>"` to append the typed `routine-heartbeats` line.
 
 End by noting that most things are being driven automatically and the human only
@@ -78,4 +78,4 @@ needs to weigh in on §⚠️ or redirect §🚀.
 > §⚠️ decisions one at a time, write each answer to a durable `decisions-log` in
 > the brain, and execute it onto the board (clear a gate to `todo`, scope a
 > program into a card, or record a hold). That keeps the decision-capture loop ON
-> TOP of `program-driver`/`groom-board`/`fkanban-pickup` without replacing them.
+> TOP of `program-driver`/`groom-board`/`kanban-pickup` without replacing them.

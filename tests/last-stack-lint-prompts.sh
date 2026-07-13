@@ -22,7 +22,7 @@ GOOD
 "$ROOT/bin/last-stack-lint-prompts" "$good"
 
 bad_status="$tmp/bad-status.md"
-printf '%s\n' "fbrain doctor >/dev/null; stat""us=\$?; echo \"\$stat""us\"" > "$bad_status"
+printf '%s\n' "brain doctor >/dev/null; stat""us=\$?; echo \"\$stat""us\"" > "$bad_status"
 if "$ROOT/bin/last-stack-lint-prompts" "$bad_status" >/dev/null 2>&1; then
   echo "expected reserved status assignment to fail prompt lint" >&2
   exit 1
@@ -86,7 +86,7 @@ if "$ROOT/bin/last-stack-lint-prompts" "$bad_gh_pr_unknown_json_multiline" >/dev
 fi
 
 bad_mapfile="$tmp/bad-mapfile.md"
-printf '%s\n' "map""file -t cards < <(fkanban list --json)" > "$bad_mapfile"
+printf '%s\n' "map""file -t cards < <(kanban list --json)" > "$bad_mapfile"
 if "$ROOT/bin/last-stack-lint-prompts" "$bad_mapfile" >/dev/null 2>&1; then
   echo "expected map""file/read""array usage to fail prompt lint" >&2
   exit 1
@@ -110,7 +110,7 @@ printf '%s\n' "cat > body.md <<'EOF'" 'Markdown with `backticks`' "EOF" > "$good
 bad_raw_markdown_shell_block="$tmp/bad-raw-markdown-shell-block.md"
 printf '%s\n' \
   '```'"bash" \
-  "fkanban sh""ow some-card --json" \
+  "kanban sh""ow some-card --json" \
   "## GO""AL" \
   "- this card body is data, not a command" \
   "[[""placeholder]]" \
@@ -126,7 +126,7 @@ printf '%s\n' \
   '```'"zsh" \
   "back""log" \
   "to""do" \
-  "fkanban-""agent" \
+  "kanban-""agent" \
   '```' > "$bad_board_text_shell_block"
 if "$ROOT/bin/last-stack-lint-prompts" "$bad_board_text_shell_block" >/dev/null 2>&1; then
   echo "expected copied board/prompt tokens inside a shell block to fail prompt lint" >&2
@@ -142,7 +142,7 @@ cat > /tmp/card-body.md <<'EOF'
 [[placeholder]]
 :9001 failure is prose, not a shell builtin
 EOF
-fkanban add some-card --body-file /tmp/card-body.md
+kanban add some-card --body-file /tmp/card-body.md
 ```
 GOOD_MARKDOWN_BODY
 "$ROOT/bin/last-stack-lint-prompts" "$good_markdown_body_file"
@@ -183,63 +183,63 @@ gh -R owner/repo pr checks 123 --json name,state,bucket
 GOOD_GH_RUN_AND_CHECKS
 "$ROOT/bin/last-stack-lint-prompts" "$good_gh_run_and_checks"
 
-bad_fkanban_show_board="$tmp/bad-fkanban-show-board.md"
-printf '%s\n' "fkanban sh""ow some-card --bo""ard default --json" > "$bad_fkanban_show_board"
-if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_show_board" >/dev/null 2>&1; then
-  echo "expected unsupported fkanban show board flag usage to fail prompt lint" >&2
+bad_kanban_show_board="$tmp/bad-kanban-show-board.md"
+printf '%s\n' "kanban sh""ow some-card --bo""ard default --json" > "$bad_kanban_show_board"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_kanban_show_board" >/dev/null 2>&1; then
+  echo "expected unsupported kanban show board flag usage to fail prompt lint" >&2
   exit 1
 fi
 
-bad_fkanban_move_board="$tmp/bad-fkanban-move-board.md"
-printf '%s\n' "fkanban mo""ve some-card doing --bo""ard default" > "$bad_fkanban_move_board"
-if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_move_board" >/dev/null 2>&1; then
-  echo "expected unsupported fkanban move --board usage to fail prompt lint" >&2
+bad_kanban_move_board="$tmp/bad-kanban-move-board.md"
+printf '%s\n' "kanban mo""ve some-card doing --bo""ard default" > "$bad_kanban_move_board"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_kanban_move_board" >/dev/null 2>&1; then
+  echo "expected unsupported kanban move --board usage to fail prompt lint" >&2
   exit 1
 fi
 
-bad_fkanban_tag_board="$tmp/bad-fkanban-tag-board.md"
-printf '%s\n' "fkanban ta""g add some-card p1 --bo""ard default" > "$bad_fkanban_tag_board"
-if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_tag_board" >/dev/null 2>&1; then
-  echo "expected unsupported fkanban tag --board usage to fail prompt lint" >&2
+bad_kanban_tag_board="$tmp/bad-kanban-tag-board.md"
+printf '%s\n' "kanban ta""g add some-card p1 --bo""ard default" > "$bad_kanban_tag_board"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_kanban_tag_board" >/dev/null 2>&1; then
+  echo "expected unsupported kanban tag --board usage to fail prompt lint" >&2
   exit 1
 fi
 
-bad_fkanban_search_full_body="$tmp/bad-fkanban-search-full-body.md"
-printf '%s\n' "fkanban sea""rch auth --full""-body --json" > "$bad_fkanban_search_full_body"
-if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_search_full_body" >/dev/null 2>&1; then
-  echo "expected unsupported fkanban search --full-body usage to fail prompt lint" >&2
+bad_kanban_search_full_body="$tmp/bad-kanban-search-full-body.md"
+printf '%s\n' "kanban sea""rch auth --full""-body --json" > "$bad_kanban_search_full_body"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_kanban_search_full_body" >/dev/null 2>&1; then
+  echo "expected unsupported kanban search --full-body usage to fail prompt lint" >&2
   exit 1
 fi
 
-bad_fkanban_search_full_body_underscore="$tmp/bad-fkanban-search-full-body-underscore.md"
-printf '%s\n' "fkanban sea""rch auth --full""_body" > "$bad_fkanban_search_full_body_underscore"
-if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_search_full_body_underscore" >/dev/null 2>&1; then
-  echo "expected unsupported fkanban search --full_body usage to fail prompt lint" >&2
+bad_kanban_search_full_body_underscore="$tmp/bad-kanban-search-full-body-underscore.md"
+printf '%s\n' "kanban sea""rch auth --full""_body" > "$bad_kanban_search_full_body_underscore"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_kanban_search_full_body_underscore" >/dev/null 2>&1; then
+  echo "expected unsupported kanban search --full_body usage to fail prompt lint" >&2
   exit 1
 fi
 
-good_fkanban_full_body="$tmp/good-fkanban-full-body.md"
-cat > "$good_fkanban_full_body" <<'GOOD_FULL_BODY'
-fkanban list accepts `--full-body`, but fkanban search has no such flag. For one
-card's full body run `fkanban show <slug> --json`, or pass `full_body: true` to
-the MCP `fkanban_search` tool.
+good_kanban_full_body="$tmp/good-kanban-full-body.md"
+cat > "$good_kanban_full_body" <<'GOOD_FULL_BODY'
+kanban list accepts `--full-body`, but kanban search has no such flag. For one
+card's full body run `kanban show <slug> --json`, or pass `full_body: true` to
+the MCP `kanban_search` tool.
 GOOD_FULL_BODY
-"$ROOT/bin/last-stack-lint-prompts" "$good_fkanban_full_body"
+"$ROOT/bin/last-stack-lint-prompts" "$good_kanban_full_body"
 
-good_fkanban_list_full_body="$tmp/good-fkanban-list-full-body.md"
-printf '%s\n' "fkanban li""st accepts --full""-body for syntax, but routines must not use it; use capped/column previews plus show for selected cards instead." > "$good_fkanban_list_full_body"
-"$ROOT/bin/last-stack-lint-prompts" "$good_fkanban_list_full_body"
+good_kanban_list_full_body="$tmp/good-kanban-list-full-body.md"
+printf '%s\n' "kanban li""st accepts --full""-body for syntax, but routines must not use it; use capped/column previews plus show for selected cards instead." > "$good_kanban_list_full_body"
+"$ROOT/bin/last-stack-lint-prompts" "$good_kanban_list_full_body"
 
-bad_fkanban_list_full_body="$tmp/bad-fkanban-list-full-body.md"
-printf '%s\n' "fkanban li""st --full""-body --json" > "$bad_fkanban_list_full_body"
-if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_list_full_body" >/dev/null 2>&1; then
-  echo "expected broad fkanban list --full-body usage to fail prompt lint" >&2
+bad_kanban_list_full_body="$tmp/bad-kanban-list-full-body.md"
+printf '%s\n' "kanban li""st --full""-body --json" > "$bad_kanban_list_full_body"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_kanban_list_full_body" >/dev/null 2>&1; then
+  echo "expected broad kanban list --full-body usage to fail prompt lint" >&2
   exit 1
 fi
 
-bad_fkanban_list_all="$tmp/bad-fkanban-list-all.md"
-printf '%s\n' "<board CLI> li""st --json --a""ll" > "$bad_fkanban_list_all"
-if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_list_all" >/dev/null 2>&1; then
+bad_kanban_list_all="$tmp/bad-kanban-list-all.md"
+printf '%s\n' "<board CLI> li""st --json --a""ll" > "$bad_kanban_list_all"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_kanban_list_all" >/dev/null 2>&1; then
   echo "expected broad board list --all usage to fail prompt lint" >&2
   exit 1
 fi
@@ -332,10 +332,10 @@ if "$ROOT/bin/last-stack-lint-prompts" "$bad_aline_unguarded" >/dev/null 2>&1; t
   exit 1
 fi
 
-pickup="$ROOT/routines/fkanban-pickup.md"
+pickup="$ROOT/routines/kanban-pickup.md"
 grep -q 'Repo: (workspace root' "$pickup"
 grep -q 'Repo: (machine-hygiene skill' "$pickup"
-grep -q 'fkanban-pickup cannot resolve' "$pickup"
+grep -q 'kanban-pickup cannot resolve' "$pickup"
 grep -q -- '--block-status needs_human' "$pickup"
 grep -q 'checkout-resolution guard' "$pickup"
 grep -q 'git -C "$target_repo" rev-parse --show-toplevel' "$pickup"
@@ -347,16 +347,16 @@ grep -q 'Surface-overlap gate' "$pickup"
 grep -q 'collision=<slug>:<in-flight-slug>' "$pickup"
 grep -q 'record `pr_url` and `branch` on the card' "$pickup"
 
-agent="$ROOT/skills/fkanban-agent/SKILL.md"
+agent="$ROOT/skills/kanban-agent/SKILL.md"
 grep -q 'last-stack-pr-venue' "$agent"
 grep -q 'sop-lastgit-native-forge-workflow' "$agent"
 grep -q 'lastgit cr complete' "$agent"
 grep -q 'PR/CR opened is not done' "$agent"
 grep -q 'there is no separate background driver' "$agent"
-grep -q 'fkanban add <slug> --pr-url "$pr_url" --branch "$branch"' "$agent"
+grep -q 'kanban add <slug> --pr-url "$pr_url" --branch "$branch"' "$agent"
 grep -q 'local test-merge' "$agent"
 
-watch="$ROOT/routines/fkanban-watch.md"
+watch="$ROOT/routines/kanban-watch.md"
 grep -q 'last-stack-pr-venue' "$watch"
 grep -q 'lastgit cr list' "$watch"
 grep -q 'lastgit ci status' "$watch"
@@ -379,7 +379,7 @@ test -f "$memory_path"
 SH
 
 if command -v zsh >/dev/null 2>&1; then
-  zsh -fc 'fbrain() { return 7; }; fbrain doctor >/dev/null 2>&1; doctor_status=$?; test "$doctor_status" -eq 7'
+  zsh -fc 'brain() { return 7; }; brain doctor >/dev/null 2>&1; doctor_status=$?; test "$doctor_status" -eq 7'
 fi
 
 echo "ok"

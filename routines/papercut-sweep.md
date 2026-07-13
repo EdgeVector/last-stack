@@ -9,7 +9,7 @@ You are running an unattended daily routine in `<WORKSPACE>`. Objective: surface
 tooling, missing docs — that agent sessions hit in the LAST 24 HOURS, then FILE a
 board card for each so they get fixed by the build pipeline. The goal is to make
 the dev process incrementally easier each day. You FILE work onto the board; you
-do NOT ship fixes yourself — `fkanban-pickup` + `fkanban-agent` workers build the
+do NOT ship fixes yourself — `kanban-pickup` + `kanban-agent` workers build the
 cards.
 
 Read your project's agent-orientation doc and durable memory index first, and
@@ -74,21 +74,21 @@ For each distinct papercut, classify it:
 
 ## Step 3 — Act — FILE CARDS ONLY (do not ship fixes yourself)
 - For EVERY actionable papercut, FILE one board card (do NOT open a worktree,
-  write code, or open a PR — `fkanban-pickup` + `fkanban-agent` build the
+  write code, or open a PR — `kanban-pickup` + `kanban-agent` build the
   cards). Dedupe against existing cards first.
 - For EVERY recurring-known papercut, record the board action you took: updated
   live card, reopened/moved stale card, or filed a follow-up. Never report only
   "already known" when fresh evidence shows the issue still recurs.
-- Make each card pickup-eligible and cold-start-ready. Example with the fkanban
+- Make each card pickup-eligible and cold-start-ready. Example with the kanban
   CLI:
   ```bash
   body_file="$(mktemp)"
   cat > "$body_file" <<'EOF'
-  **Follow the fkanban-agent skill — drive this through to a MERGED PR.**
+  **Follow the kanban-agent skill — drive this through to a MERGED PR.**
 
   Repo: <owner>/<repo>
   Base: <DEFAULT_BRANCH>
-  Branch: fkanban/<slug>
+  Branch: kanban/<slug>
 
   ## GOAL — one line, the observable fix.
   ## CONTEXT — the EVIDENCE: which sessions / how often it recurred.

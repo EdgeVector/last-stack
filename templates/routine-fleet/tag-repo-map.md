@@ -3,7 +3,7 @@ type: reference
 slug: tag-repo-map
 title: Tag to Repo Map - <PROJECT_NAME>
 status: active
-tags: routines, portability, config, fkanban
+tags: routines, portability, config, kanban
 ---
 # Tag to Repo Map - <PROJECT_NAME>
 
@@ -20,7 +20,7 @@ worse than no repo.
 
 ## Map
 
-<!-- tag: the exact fkanban tag without "#". -->
+<!-- tag: the exact kanban tag without "#". -->
 <!-- Repo: the owner/name token used in task card headers. -->
 <!-- notes: optional boundary or ambiguity note. -->
 

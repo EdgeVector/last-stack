@@ -130,7 +130,7 @@ File a board card for:
 - EVERY change you applied above (as the audit record — note "ALREADY APPLIED"
   in the body, with what changed and how to revert), AND
 - any opportunity that is actually PRODUCT CODE work — do NOT build those; give
-  them the `fkanban-agent` trigger header + `Repo:`/`Base:`/`Branch:` headers +
+  them the `kanban-agent` trigger header + `Repo:`/`Base:`/`Branch:` headers +
   evidence + suggested fix + a `VERIFY:` line so the pickup pipeline ships them.
 
 ## Hard rails (do NOT cross, even though you're autonomous)

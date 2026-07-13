@@ -47,7 +47,7 @@ Generator and triage routines file cards. The pickup/agent pipeline ships the
 work. A pickup-ready card body must include:
 
 1. The project-standard agent trigger line.
-2. `Repo: <OWNER>/<REPO>`, `Base: <BASE_BRANCH>`, and `Branch: fkanban/<SLUG>`.
+2. `Repo: <OWNER>/<REPO>`, `Base: <BASE_BRANCH>`, and `Branch: kanban/<SLUG>`.
 3. A North Star or explicit END STATE.
 4. `GOAL`, `CONTEXT`, `STEPS`, `VERIFY`, and `DONE WHEN`.
 

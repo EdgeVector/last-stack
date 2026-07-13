@@ -4,9 +4,9 @@
 LastDB-backed workflow with an AI coding agent — the agent layer that sits on
 top of [LastDB](https://folddb.com) and its two companion tools:
 
-- **Brain** — [`fbrain`](https://github.com/EdgeVector/fbrain): long-lived notes
+- **Brain** — [`brain`](https://github.com/EdgeVector/brain): long-lived notes
   over LastDB (the *why*: decisions, designs, milestones).
-- **Kanban** — [`fkanban`](https://github.com/EdgeVector/fkanban): a task board
+- **Kanban** — [`kanban`](https://github.com/EdgeVector/kanban): a task board
   over LastDB (the *what's in flight*: cards moving through columns).
 
 The skills are written for agent harnesses that load
@@ -38,7 +38,7 @@ the cloned repo; each harness gets a directory with a symlinked `SKILL.md`, so a
 later `git pull` updates every installed skill at once.
 
 For Claude Code, `setup` also installs the bundled safety hooks and allowlists
-the `fbrain` MCP read tools plus `fbrain_put` in `~/.claude/settings.json`, so
+the `brain` MCP read tools plus `brain_put` in `~/.claude/settings.json`, so
 scheduled routines can use the brain tools without unattended permission
 declines.
 
@@ -97,9 +97,9 @@ installed harness can pick it up on the next `git pull && ./setup`.
 
 The expected path is:
 
-1. Capture the rationale in the brain (`fbrain`) when the change should survive
+1. Capture the rationale in the brain (`brain`) when the change should survive
    the current chat.
-2. File or update a board card (`fkanban`) for the delivery/audit trail.
+2. File or update a board card (`kanban`) for the delivery/audit trail.
 3. Patch the shared skill or routine in `skills/` or `routines/` using
    placeholder-based, product-neutral wording.
 4. Verify the changed prompt still works cold, without chat memory or local-only
@@ -114,9 +114,9 @@ preserving project-specific rules where they belong.
 
 | Skill | What it does |
 |---|---|
-| **fkanban** | Board CRUD over LastDB — file/list/show/move/groom cards. |
-| **fkanban-agent** | Drive a card to **merged**, reconcile in-flight PRs, or validate post-merge END STATE checks. |
-| **fkanban-setup** | Bootstrap fkanban on a fresh machine — install, `init` (resolve published schemas), `doctor`, optional MCP registration. |
+| **kanban** | Board CRUD over LastDB — file/list/show/move/groom cards. |
+| **kanban-agent** | Drive a card to **merged**, reconcile in-flight PRs, or validate post-merge END STATE checks. |
+| **kanban-setup** | Bootstrap kanban on a fresh machine — install, `init` (resolve published schemas), `doctor`, optional MCP registration. |
 | **onecontext** | Search prior Codex sessions, with guarded Aline usage and a JSONL fallback when Aline is unavailable. |
 | **registry-rotator** | Generic engine for registry-backed scheduled routines: pick the most-overdue eligible entry, run its recipe, file cards, and stamp the registry log. |
 | **wait-merge** | Robustly wait for a GitHub PR to merge by interpreting PR *state*, not a watcher's exit code. |
@@ -134,7 +134,7 @@ run the skills on a cadence:
 | **devops-continuous-improvement** | Inspect CI, merge flow, deployment, testing, and release gates; ship one small DevOps fix or file precise cards. |
 | **worktree-cleanup** / **disk-reclaim** | Prune stale worktrees/branches; reclaim disk; keep the machine healthy. |
 | **drain-open-prs** | Drive every open PR across all repos toward zero (merge or close). |
-| **fkanban-pickup** / **fkanban-watch** / **fkanban-validate** | Drain the ready queue; reconcile PRs; run post-merge END STATE validation. |
+| **kanban-pickup** / **kanban-watch** / **kanban-validate** | Drain the ready queue; reconcile PRs; run post-merge END STATE validation. |
 | **groom-board** / **program-driver** | Promote ready work into `todo`; keep each program's next card flowing. |
 | **program-rollup** / **consolidate-brain** / **morning-sync** | Mirror the board into the brain; keep statuses honest; deliver the daily decision briefing. |
 
@@ -152,8 +152,8 @@ record with one rotatable entry per heading, entry fields for `track`,
 `rotation-log:start/end` table with `feature`, `last_run`, `result`, and
 `cards filed` columns. The engine reads project paths and venues from the
 project's config source (`workspace-config` / `repo-venue-map` while those are
-still interim fbrain shims), selects the eligible entry with the largest
-`age / cadence` overdue ratio, dispatches that entry's recipe, files fkanban
+still interim brain shims), selects the eligible entry with the largest
+`age / cadence` overdue ratio, dispatches that entry's recipe, files kanban
 cards per `sop-routine-shared-contract`, and rewrites only the rotation-log row
 for the selected entry. Scheduled tasks should be thin triggers that pass a
 registry slug such as `registry=dogfood-registry`.
@@ -196,7 +196,7 @@ bin/
                             the recipe's original target checkout
   last-stack-git-checkout-freshness
                             non-mutating tracked-remote freshness preflight
-  last-stack-fbrain-append-heartbeat
+  last-stack-brain-append-heartbeat
                             safely add a typed routine-heartbeats line
   last-stack-active-programs-guard
                             reject active-programs rewrites that drop program
@@ -205,9 +205,9 @@ bin/
   last-stack-uninstall      remove the registered skills
 skills/<name>/SKILL.md  one directory per skill
 instructions/brain-kanban.md
-                        canonical fbrain/fkanban usage guidance; setup upserts it
+                        canonical brain/kanban usage guidance; setup upserts it
                         as a managed block into each harness's global AGENTS.md
-                        and registers the fbrain/fkanban MCP servers for Codex
+                        and registers the brain/kanban MCP servers for Codex
                         (with a PATH env so GUI-spawned servers can find bun)
 routines/<name>.md      one parameterized scheduled-agent template per routine
 routines/README.md      how routines + skills compose; how to register them
@@ -220,10 +220,10 @@ templates/routine-fleet/
 
 The intended loop, end to end:
 
-1. **File work as cards** (`fkanban` skill). A card body is the spec: a `Repo:` /
+1. **File work as cards** (`kanban` skill). A card body is the spec: a `Repo:` /
    `Base:` header plus GOAL / STEPS / VERIFY / DONE WHEN. Cards live on your
    LastDB node.
-2. **Drive one card to merged** (`fkanban-agent` skill, WORK mode). The agent
+2. **Drive one card to merged** (`kanban-agent` skill, WORK mode). The agent
    claims the card, works in an isolated git worktree, opens a PR, and then
    *drives that PR to MERGED* — re-arming auto-merge, updating a behind branch,
    rebasing conflicts — before moving the card to `done`, or to `review` with a
@@ -233,27 +233,27 @@ The intended loop, end to end:
 3. **Wait on PRs without false failures** (`wait-merge` skill). Interprets PR
    state rather than trusting a watcher's exit code, so transient CI/queue churn
    doesn't look like a failure.
-4. **Reconcile the board** (`fkanban-agent` skill, RECONCILE mode). A scheduled
+4. **Reconcile the board** (`kanban-agent` skill, RECONCILE mode). A scheduled
    sweep moves merged-but-unadvanced cards to `done` and nudges stuck PRs —
    leaving un-started cards alone.
-5. **Validate post-merge outcomes** (`fkanban-agent` skill, VALIDATE mode). A
+5. **Validate post-merge outcomes** (`kanban-agent` skill, VALIDATE mode). A
    scheduled pass runs one dev-only post-merge END STATE check, then moves the
    card to `done` on pass or `review` with `PROOF:` plus a fix card/blocker on
    fail.
 6. **Close out** (`close-out` skill). After any substantive change: PR from a
-   worktree, drive to merged, checkpoint the *why* to the brain (`fbrain`), and
-   file any follow-up as a card (`fkanban`).
+   worktree, drive to merged, checkpoint the *why* to the brain (`brain`), and
+   file any follow-up as a card (`kanban`).
 
 The two halves are deliberate: **the brain records why; the board records
-what's in flight.** Keep decisions in `fbrain` and active work in `fkanban`, and
+what's in flight.** Keep decisions in `brain` and active work in `kanban`, and
 the agent always has both context and a worklist.
 
 Steps 1–6 describe what an agent does *when invoked*. To make the loop
 **self-driving** — so cards get filed, promoted, picked up, and reconciled
 without a human kicking it each time — register the **routines** as scheduled
 agents: generators (`self-improvement-loop`, `papercut-sweep`) file work,
-`groom-board`/`program-driver` promote it, `fkanban-pickup` fans out WORK agents,
-`fkanban-watch`/`drain-open-prs` reconcile the stragglers, `fkanban-validate`
+`groom-board`/`program-driver` promote it, `kanban-pickup` fans out WORK agents,
+`kanban-watch`/`drain-open-prs` reconcile the stragglers, `kanban-validate`
 runs post-merge END STATE checks, and
 `program-rollup`/`consolidate-brain`/`morning-sync` keep the brain honest and
 surface the short genuinely-human decision set. See
@@ -266,12 +266,12 @@ a time window; the skill handles transcript parsing, dedupe, report-only dry
 runs, and profile-specific writes.
 
 You'll also want the underlying tools installed and a LastDB node running — see
-the **fkanban-setup** skill and the `fkanban` / `fbrain` repos.
+the **kanban-setup** skill and the `kanban` / `brain` repos.
 
 ## Configuring the node URL
 
 Every skill talks to a LastDB node over HTTP. The node URL is **configurable** —
-`fkanban init` defaults to a node running locally on your machine, and you
+`kanban init` defaults to a node running locally on your machine, and you
 override it with `--node-url` (and `--schema-service-url` for a different schema
 service). Point the skills at whichever node hosts your board and brain.
 

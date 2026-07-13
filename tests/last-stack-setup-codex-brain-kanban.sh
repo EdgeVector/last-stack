@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # setup --host codex must (1) upsert the managed brain-kanban instructions
 # block into ~/.codex/AGENTS.md without clobbering user content, (2) register
-# the fbrain/fkanban MCP servers in ~/.codex/config.toml with a PATH env that
+# the brain/kanban MCP servers in ~/.codex/config.toml with a PATH env that
 # includes ~/.bun/bin (GUI-spawned servers otherwise exit 127), and (3) be
 # idempotent across re-runs. Uninstall must remove the instructions block.
 set -euo pipefail
@@ -20,9 +20,9 @@ fail() {
 
 export HOME="$tmp/home"
 mkdir -p "$HOME/.codex" "$HOME/.bun/bin" "$HOME/.local/bin"
-printf '#!/bin/sh\nexit 0\n' > "$HOME/.bun/bin/fbrain"
-printf '#!/bin/sh\nexit 0\n' > "$HOME/.local/bin/fkanban"
-chmod +x "$HOME/.bun/bin/fbrain" "$HOME/.local/bin/fkanban"
+printf '#!/bin/sh\nexit 0\n' > "$HOME/.bun/bin/brain"
+printf '#!/bin/sh\nexit 0\n' > "$HOME/.local/bin/kanban"
+chmod +x "$HOME/.bun/bin/brain" "$HOME/.local/bin/kanban"
 
 agents="$HOME/.codex/AGENTS.md"
 cfg="$HOME/.codex/config.toml"
@@ -36,14 +36,14 @@ printf '## My own notes\nkeep me\n' > "$agents"
 # ── AGENTS.md: managed block present, user content preserved ──────────────────
 grep -q 'keep me' "$agents" || fail "user AGENTS.md content was clobbered"
 grep -q 'last-stack:brain-kanban:start' "$agents" || fail "managed block missing from AGENTS.md"
-grep -q 'fbrain ask' "$agents" || fail "CLI guidance missing from managed block"
+grep -q 'brain ask' "$agents" || fail "CLI guidance missing from managed block"
 grep -q 'folddb.sock' "$agents" || fail "transport guidance missing from managed block"
 
 # ── config.toml: both servers registered, env PATH includes ~/.bun/bin ────────
-grep -q '^\[mcp_servers\.fbrain\]' "$cfg" || fail "fbrain MCP server not registered"
-grep -q '^\[mcp_servers\.fbrain\.env\]' "$cfg" || fail "fbrain env table missing"
-grep -q '^\[mcp_servers\.fkanban\]' "$cfg" || fail "fkanban MCP server not registered"
-grep -q '^\[mcp_servers\.fkanban\.env\]' "$cfg" || fail "fkanban env table missing"
+grep -q '^\[mcp_servers\.brain\]' "$cfg" || fail "brain MCP server not registered"
+grep -q '^\[mcp_servers\.brain\.env\]' "$cfg" || fail "brain env table missing"
+grep -q '^\[mcp_servers\.kanban\]' "$cfg" || fail "kanban MCP server not registered"
+grep -q '^\[mcp_servers\.kanban\.env\]' "$cfg" || fail "kanban env table missing"
 grep -q "$HOME/.bun/bin" "$cfg" || fail "PATH env does not include ~/.bun/bin"
 
 # ── Idempotence: re-run changes nothing, block appears exactly once ───────────
@@ -57,29 +57,29 @@ cmp -s "$agents" "$tmp/agents.before" || fail "AGENTS.md changed on re-run"
 
 # ── Pre-existing server entry without env: only the env table is appended ─────
 {
-  echo '[mcp_servers.fbrain]'
+  echo '[mcp_servers.brain]'
   echo 'args = ["mcp"]'
-  echo "command = \"$HOME/.bun/bin/fbrain\""
+  echo "command = \"$HOME/.bun/bin/brain\""
   echo 'startup_timeout_sec = 120'
   echo ''
-  echo '[mcp_servers.fbrain.tools.fbrain_put]'
+  echo '[mcp_servers.brain.tools.brain_put]'
   echo 'approval_mode = "approve"'
 } > "$cfg"
 "$ROOT/setup" --host codex > /dev/null 2>&1 || fail "setup over pre-existing config exited non-zero"
-[ "$(grep -c '^\[mcp_servers\.fbrain\]' "$cfg")" -eq 1 ] \
-  || fail "fbrain server block duplicated over pre-existing entry"
-grep -q '^\[mcp_servers\.fbrain\.env\]' "$cfg" || fail "env table not added to pre-existing entry"
+[ "$(grep -c '^\[mcp_servers\.brain\]' "$cfg")" -eq 1 ] \
+  || fail "brain server block duplicated over pre-existing entry"
+grep -q '^\[mcp_servers\.brain\.env\]' "$cfg" || fail "env table not added to pre-existing entry"
 grep -q 'approval_mode = "approve"' "$cfg" || fail "pre-existing tool config was lost"
 
 # ── Missing CLIs: setup still succeeds and skips MCP registration ─────────────
-rm -f "$HOME/.bun/bin/fbrain" "$HOME/.local/bin/fkanban" "$cfg"
-# Bare PATH so a real fbrain/fkanban on the developer's machine isn't found.
+rm -f "$HOME/.bun/bin/brain" "$HOME/.local/bin/kanban" "$cfg"
+# Bare PATH so a real brain/kanban on the developer's machine isn't found.
 env PATH="/usr/bin:/bin" "$ROOT/setup" --host codex > "$tmp/setup4.out" 2>&1 || {
   cat "$tmp/setup4.out" >&2
-  fail "setup without fbrain/fkanban CLIs exited non-zero"
+  fail "setup without brain/kanban CLIs exited non-zero"
 }
-if grep -q '^\[mcp_servers\.fbrain\]' "$cfg" 2>/dev/null; then
-  fail "registered fbrain MCP server despite missing CLI"
+if grep -q '^\[mcp_servers\.brain\]' "$cfg" 2>/dev/null; then
+  fail "registered brain MCP server despite missing CLI"
 fi
 
 # ── Uninstall removes the managed block but keeps user content ────────────────

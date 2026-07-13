@@ -322,7 +322,7 @@ def main() -> int:
     stale.add_argument(
         "--board",
         required=True,
-        help="JSON from fkanban list/show aggregation; only slug and column are required",
+        help="JSON from kanban list/show aggregation; only slug and column are required",
     )
     stale.add_argument(
         "--proof-slugs",

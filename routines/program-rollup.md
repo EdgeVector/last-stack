@@ -14,7 +14,7 @@ READ-ONLY on the board and on code, and WRITE-ONLY on a single delimited
 generated block inside the driving index. You never move cards, open PRs, write
 code, file cards, or change record statuses. The heavier daily
 archival/dedup/status-fix + prose curation belongs to `consolidate-brain`; the
-board-ops (moving merged cards to `done`) belongs to `fkanban-watch`.
+board-ops (moving merged cards to `done`) belongs to `kanban-watch`.
 
 ## Automation memory
 If the scheduled prompt includes an `Automation memory:` path, read and write
@@ -114,6 +114,6 @@ read/write, fail loudly if the resolved path is empty or starts with
    Then EXIT.
 
 > **Heartbeat (optional but recommended).** LAST action, even if nothing changed:
-> call `<last-stack>/bin/last-stack-fbrain-append-heartbeat --line
+> call `<last-stack>/bin/last-stack-brain-append-heartbeat --line
 > "program-rollup <ISO-ts> <ok|noop|error> <outcome>"` (`noop` = no status
 > delta).

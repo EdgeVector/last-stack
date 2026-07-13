@@ -1,77 +1,77 @@
 ---
-name: fkanban
+name: kanban
 version: 0.2.0
 description: |
-  Manage the fkanban board — a kanban over LastDB. File, list, show, move,
-  groom, and soft-delete cards via the fkanban CLI. Use when the user wants to
-  "file an fkanban task/card", "add to the board", "what's on the board",
+  Manage the kanban board — a kanban over LastDB. File, list, show, move,
+  groom, and soft-delete cards via the kanban CLI. Use when the user wants to
+  "file a kanban task/card", "add to the board", "what's on the board",
   "backlog", "list tasks", "move a card", "show card <slug>", or "groom the
-  board". This is the board-CRUD counterpart to the fkanban-agent skill (which
-  drives one card to a merged PR); use fkanban-agent — not this — to actually
+  board". This is the board-CRUD counterpart to the kanban-agent skill (which
+  drives one card to a merged PR); use kanban-agent — not this — to actually
   implement a card.
 ---
 
-# fkanban — board management
+# kanban — board management
 
-fkanban is a kanban task board stored in **LastDB**: a thin CLI/MCP client of a
+kanban is a kanban task board stored in **LastDB**: a thin CLI/MCP client of a
 LastDB node. Cards move through columns; every change persists in the node.
 
-- **Location / how to run:** clone `fkanban` and run its `src/cli.ts` under
-  **bun**. A global shim (`fkanban`) can be symlinked onto your PATH so a bare
-  `fkanban <command>` resolves from anywhere; without it, run
+- **Location / how to run:** clone `kanban` and run its `src/cli.ts` under
+  **bun**. A global shim (`kanban`) can be symlinked onto your PATH so a bare
+  `kanban <command>` resolves from anywhere; without it, run
   `bun run src/cli.ts <command>` from the repo directory. See the
-  **fkanban-setup** skill for install.
+  **kanban-setup** skill for install.
 - **⚠️ PATH gotcha (sandboxed shells):** some agent harnesses run shell commands
-  **sandboxed** with a stripped `$PATH`, so a bare `fkanban …` fails with
-  `command not found: fkanban`, and even after you add the shim's directory the
+  **sandboxed** with a stripped `$PATH`, so a bare `kanban …` fails with
+  `command not found: kanban`, and even after you add the shim's directory the
   shim's internal `exec bun` can then fail with `command not found: bun`. Both
   the shim dir and the bun dir must be on PATH. The robust fix is to prepend a
-  complete PATH that includes both at the start of every fkanban Bash call (PATH
+  complete PATH that includes both at the start of every kanban Bash call (PATH
   does not persist between calls), or invoke the CLI directly:
-  `cd <fkanban-repo> && PATH="$HOME/.bun/bin:$PATH" bun run src/cli.ts <command>`.
-  Confirm the shim with `command -v fkanban` and a narrow read.
+  `cd <kanban-repo> && PATH="$HOME/.bun/bin:$PATH" bun run src/cli.ts <command>`.
+  Confirm the shim with `command -v kanban` and a narrow read.
 - **Where the data lives:** the board records live on **your LastDB node**. The
   CLI talks to the node over its configured transport. Local daily-driver nodes
   may be **Unix-socket only** with HTTP intentionally shut down; use a
   socket-backed narrow read as the routine health check. The node URL is
   **configurable** — `init` defaults to a node running locally on your machine;
-  point it elsewhere with `--node-url` / the config file (`~/.fkanban/config.json`).
+  point it elsewhere with `--node-url` / the config file (`~/.kanban/config.json`).
 - **Columns:** `backlog → todo → doing → review → done`.
 
 Before doing anything non-trivial, sanity-check the setup with a socket-backed
 narrow read:
 
 ```bash
-fkanban list --column todo --json
+kanban list --column todo --json
 ```
 
 ## Commands
 
-(With the shim on PATH these run from anywhere; otherwise replace `fkanban`
-with `bun run src/cli.ts` and run from the fkanban repo directory.)
+(With the shim on PATH these run from anywhere; otherwise replace `kanban`
+with `bun run src/cli.ts` and run from the kanban repo directory.)
 
 ```bash
-fkanban list --column todo --json   # narrow column preview
-fkanban list --board <b> --column todo --json  # board-scoped column preview
-# Avoid fkanban list --full-body in routines; use show for selected cards.
-fkanban search "<text>" --json      # text search; no --full-body flag
-fkanban show <slug> --json          # one card in detail
-fkanban add <slug> [flags]          # create OR update a card
-fkanban move <slug> <column> [--position N]
-fkanban rm <slug>                   # soft-delete
-fkanban board create <slug> --title ... --columns a,b,c
-fkanban board list
+kanban list --column todo --json   # narrow column preview
+kanban list --board <b> --column todo --json  # board-scoped column preview
+# Avoid kanban list --full-body in routines; use show for selected cards.
+kanban search "<text>" --json      # text search; no --full-body flag
+kanban show <slug> --json          # one card in detail
+kanban add <slug> [flags]          # create OR update a card
+kanban move <slug> <column> [--position N]
+kanban rm <slug>                   # soft-delete
+kanban board create <slug> --title ... --columns a,b,c
+kanban board list
 ```
 
 `list` flags: `--board --column --tag --assignee --wide --field --limit N
 --all --json --full-body --full_body`.
 
 `search` flags: `--board --column --field --limit N --all --json`.
-**`fkanban search` has no full-body option** — there is no `--full-body`
+**`kanban search` has no full-body option** — there is no `--full-body`
 (or `--full_body`); passing it fails with `Unknown option '--full-body'`.
-If you need full bodies from search results, use `fkanban search <query> --json`
-and then `fkanban show <slug> --json` for a selected card, or pass
-`full_body: true` to the MCP `fkanban_search` tool (the underscore form is the
+If you need full bodies from search results, use `kanban search <query> --json`
+and then `kanban show <slug> --json` for a selected card, or pass
+`full_body: true` to the MCP `kanban_search` tool (the underscore form is the
 *MCP tool argument*, never a CLI flag).
 
 `show`, `move`, `rm`, `rank`, `dep`, and `tag` operate on the default board
@@ -103,11 +103,11 @@ cat > /tmp/card-body.md <<'EOF'
 ...full markdown body...
 EOF
 # 2. file the card (stdin body)
-fkanban add my-slug \
+kanban add my-slug \
   --title "Short imperative title" \
   --column todo --tags "app,cli,perf" < /tmp/card-body.md
 # 3. verify it landed
-fkanban show my-slug | head -8
+kanban show my-slug | head -8
 ```
 
 Always confirm with `show <slug>` after writing — the `add` is only successful
@@ -125,10 +125,10 @@ for one bounded command, then verify with `show`.
 
 A card that's meant to be implemented should carry, in its `--body`:
 
-1. **A header so the agent picks it up and drives it to merge** (fkanban does
+1. **A header so the agent picks it up and drives it to merge** (kanban does
    not auto-spawn agents and finished cards don't reach `done` on their own):
 
-   > **Follow the fkanban-agent skill — drive this through to a MERGED PR.
+   > **Follow the kanban-agent skill — drive this through to a MERGED PR.
    > A card is only `done` when its code is actually in the repo.**
 
 2. **A work/ownership header telling the agent where to work or which repo owns
@@ -138,17 +138,17 @@ A card that's meant to be implemented should carry, in its `--body`:
    ```
    Repo: owner/name
    Base: main
-   Branch: fkanban/<slug>
+   Branch: kanban/<slug>
    Kind: pr
    ```
 
    Field meanings — `Repo`: `owner/name` (e.g. `EdgeVector/fold`) or an
    absolute local Git checkout path; `Base`: base branch; `Branch`: optional,
-   defaults to `fkanban/<slug>`; `Kind`: `pr | tracker | validation | meta`
+   defaults to `kanban/<slug>`; `Kind`: `pr | tracker | validation | meta`
    for new cards (`registry` only for legacy registry-record cards).
 
    > **⚠️ Keep each header value a single clean token on its own line.**
-   > `fkanban-pickup` resolves `Repo:` **literally** — it does NOT strip
+   > `kanban-pickup` resolves `Repo:` **literally** — it does NOT strip
    > trailing `# comments`, parentheticals, or prose. A dirty value
    > (`Repo: EdgeVector/fold  # defaulted`, `Repo: fold (also touches exemem-infra)`,
    > `Repo: last-stack`, `Repo: none`, or `Base:`/`Branch:` mashed onto the
@@ -168,8 +168,8 @@ A card that's meant to be implemented should carry, in its `--body`:
 
    ```
    Kind: tracker|validation|meta
-   DONE-WHEN: fbrain <slug> exists
-   DONE-WHEN: fbrain <slug> updated-after <YYYY-MM-DD>
+   DONE-WHEN: brain <slug> exists
+   DONE-WHEN: brain <slug> updated-after <YYYY-MM-DD>
    DONE-WHEN: routine <name> heartbeat matches /<regex>/ after <YYYY-MM-DD>
    DONE-WHEN: date >= <YYYY-MM-DD>
    DONE-WHEN: file <path> matches /<regex>/
@@ -190,7 +190,7 @@ than describing stale "current state".
 - "What's on the board" → `list --json`, then summarize by column.
 - "What's stuck" → look for cards long in `review` (PR open, not merged) or
   `doing` (claimed, no PR). Surface them; don't silently re-drive — that's the
-  fkanban-agent reconcile pass's job.
+  kanban-agent reconcile pass's job.
 - Superseded / wrong card → `rm <slug>` (soft delete), or re-`add` to fix it.
 - A PR card in `done` means its PR **merged** — that's the normal terminal
   state, not a kill. A non-PR card in `done` means its `DONE-WHEN` predicate was
@@ -210,7 +210,7 @@ than describing stale "current state".
   keychain/passphrase repair unattended.
 - If a board/brain command returns `service_timeout`, "node did not respond
   within 30000ms", or "too many concurrent reads", the shared node is busy.
-  Prefer targeted reads (`show`, typed `fbrain get`) over broad lists, retry
+  Prefer targeted reads (`show`, typed `brain get`) over broad lists, retry
   only idempotent upserts by slug, and never restart the node to clear load.
 - This skill only **manages** the board. To actually implement a card, hand off
-  to the **fkanban-agent** skill (or tell the user it's ready to be worked).
+  to the **kanban-agent** skill (or tell the user it's ready to be worked).

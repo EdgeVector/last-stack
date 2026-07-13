@@ -11,7 +11,7 @@ usage() {
 last-stack-install-apps [options]
 
 Downloads the stable LastDB app stack:
-  LastDB daemon, fbrain, fkanban, fsituations, dogfood-graph, LastSecrets.
+  LastDB daemon, brain, kanban, situations, dogfood-graph, LastSecrets.
 
 Options:
   --dir <path>      clone/update app repos under this directory
@@ -92,18 +92,18 @@ link_cli() {
   [ "$LINK_CLIS" -eq 1 ] || return 0
 
   case "$name" in
-    fkanban)
-      echo "==> linking fkanban CLI"
+    kanban)
+      echo "==> linking kanban CLI"
       (cd "$dest" && bun run install-cli)
       ;;
-    fsituations)
-      if [ -x "$dest/bin/fsituations" ]; then
-        echo "==> linking fsituations CLI"
+    situations)
+      if [ -x "$dest/bin/situations" ]; then
+        echo "==> linking situations CLI"
         mkdir -p "$HOME/.local/bin"
-        ln -snf "$dest/bin/fsituations" "$HOME/.local/bin/fsituations"
+        ln -snf "$dest/bin/situations" "$HOME/.local/bin/situations"
       fi
       ;;
-    fbrain|lastsecrets)
+    brain|lastsecrets)
       echo "==> linking $name CLI with bun link"
       (cd "$dest" && bun link)
       ;;
@@ -121,13 +121,13 @@ fi
 
 mkdir -p "$TARGET_DIR"
 
-clone_or_update fbrain "https://github.com/EdgeVector/fbrain.git"
-clone_or_update fkanban "https://github.com/EdgeVector/fkanban.git"
-clone_or_update fsituations "https://github.com/EdgeVector/fsituations.git"
+clone_or_update brain "https://github.com/EdgeVector/brain.git"
+clone_or_update kanban "https://github.com/EdgeVector/kanban.git"
+clone_or_update situations "https://github.com/EdgeVector/situations.git"
 clone_or_update dogfood-graph "https://github.com/EdgeVector/dogfood-graph.git"
 clone_or_update lastsecrets "https://github.com/EdgeVector/lastsecrets.git"
 
-for app in fbrain fkanban fsituations dogfood-graph lastsecrets; do
+for app in brain kanban situations dogfood-graph lastsecrets; do
   run_bun_install "$app"
   link_cli "$app"
 done
@@ -137,9 +137,9 @@ printf 'Installed LastDB apps under:\n'
 printf '  %s\n\n' "$TARGET_DIR"
 printf 'Next steps:\n'
 printf '  brew services start lastdb\n'
-printf '  fbrain init --grant-consent\n'
-printf '  fkanban init\n'
-printf '  fsituations init\n'
+printf '  brain init --grant-consent\n'
+printf '  kanban init\n'
+printf '  situations init\n'
 printf '  lastsecrets init\n\n'
 printf 'Dogfood Graph is a local app:\n'
 printf '  cd "%s/dogfood-graph" && npm run dev\n\n' "$TARGET_DIR"

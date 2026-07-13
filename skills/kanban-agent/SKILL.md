@@ -1,8 +1,8 @@
 ---
-name: fkanban-agent
+name: kanban-agent
 version: 0.2.0
 description: |
-  Drive a single fkanban card all the way to a MERGED PR — a card only
+  Drive a single kanban card all the way to a MERGED PR — a card only
   reaches `done` when its code is actually in the repo and its outcome is
   proven. Three entry modes: WORK (you were pointed at one card slug —
   implement it, open a PR, then DRIVE THE PR TO MERGED, unless an async
@@ -10,13 +10,13 @@ description: |
   woke you — advance in-flight PRs), and VALIDATE (run one bounded post-merge
   validation and close or surface it).
   Triggered when the user or a spawn/wake prompt says "follow the
-  fkanban-agent skill", names an fkanban card to work, or says "reconcile
-  the fkanban board".
+  kanban-agent skill", names a kanban card to work, or says "reconcile
+  the kanban board".
 ---
 
-# fkanban — agent handbook
+# kanban — agent handbook
 
-fkanban is a kanban over LastDB (CLI + MCP, `bun run src/cli.ts` in the fkanban
+kanban is a kanban over LastDB (CLI + MCP, `bun run src/cli.ts` in the kanban
 repo, board on your LastDB node). It does **not** spawn agents. This skill makes
 the agent **own a card through merge**: it implements the card, opens the PR, and
 then drives that PR to MERGED before exiting — it does not hand a green-but-
@@ -33,7 +33,7 @@ genuinely blocked.
 > only** via repo config (`git config laststack.pr-venue lastgit` or
 > `.last-stack/pr-venue`) or `LAST_STACK_LASTGIT_NATIVE_REPOS`; the helper
 > preserves today's GitHub/Forgejo defaults otherwise. If `.venue == "lastgit"`,
-> read `fbrain get sop-lastgit-native-forge-workflow` and use the returned
+> read `brain get sop-lastgit-native-forge-workflow` and use the returned
 > `.lastgit_slug` / `.ci_context`. Do not run LastGit CI watchers against Tom's
 > primary brain socket; pin `LASTGIT_SOCKET` to a dedicated non-primary lastdbd
 > socket, or use an explicit throwaway `--node-url`. Store secrets only as
@@ -48,7 +48,7 @@ genuinely blocked.
 > must instead be its Forgejo-API equivalent against `http://localhost:3300` —
 > their GitHub copies are read-only 24h push-mirrors; `gh` there reads stale
 > state and cannot merge. Full command map + auth + the current venue map:
-> `fbrain get sop-forge-pr-workflow`. Essentials: use
+> `brain get sop-forge-pr-workflow`. Essentials: use
 > `$HOME/.last-stack/bin/last-stack-forge-api` for Forgejo API calls instead of
 > hand-building `TOKEN=... curl ... -H "Authorization: token $TOKEN"` snippets,
 > and use `$HOME/.last-stack/bin/last-stack-forge-git -C <repo> <git-args...>`
@@ -71,7 +71,7 @@ genuinely blocked.
 > `{"state":"closed"}`. No rerun-failed API — push an empty commit to re-trigger
 > a flaky run. The forge has no checks-watch equivalent of the GitHub CLI: hold
 > your turn by polling the head-commit status between forward actions instead.
-> All PUBLIC repos (fbrain, fkanban, schema-infra, last-stack, websites, …) keep
+> All PUBLIC repos (brain, kanban, schema-infra, last-stack, websites, …) keep
 > the normal GitHub `gh` flow unless `last-stack-pr-venue` says `lastgit`;
 > Keepside_Desktop is GitHub-primary and hands-off.
 
@@ -121,7 +121,7 @@ acceptance check: run the real binary/node on a **throwaway** data dir
 brain/keyring; **cross a process boundary** (restart / re-open) between the write
 and the read; include a **negative case**. Anchor it to the user story, not the
 diff ("a user can set a password and later unlock with it") — see the SOP
-`sop-autonomous-acceptance-gate` (fbrain). A card whose merged PR fails its
+`sop-autonomous-acceptance-gate` (brain). A card whose merged PR fails its
 VERIFY/END STATE goes to `review` with a `PROOF:` note — not `done`. This is what
 stops "password sets but the app won't unlock with it" (incident 2026-06-30) from
 reaching a user.
@@ -133,15 +133,15 @@ verified merged PR. Non-PR cards must carry `Kind: tracker|validation|meta` and
 one explicit read-only predicate:
 
 ```
-DONE-WHEN: fbrain <slug> exists
-DONE-WHEN: fbrain <slug> updated-after <YYYY-MM-DD>
+DONE-WHEN: brain <slug> exists
+DONE-WHEN: brain <slug> updated-after <YYYY-MM-DD>
 DONE-WHEN: routine <name> heartbeat matches /<regex>/ after <YYYY-MM-DD>
 DONE-WHEN: date >= <YYYY-MM-DD>
 DONE-WHEN: file <path> matches /<regex>/
 ```
 
 The reconciler and groomer evaluate predicates with
-`bin/last-stack-fkanban-done-when-eval` when Last Stack is installed. Satisfied
+`bin/last-stack-kanban-done-when-eval` when Last Stack is installed. Satisfied
 predicates move the non-PR card to `done` with evidence; false or pending
 predicates stay quiet; malformed predicates become a visible card-authoring
 issue. Predicate evaluation is read-only and fail-closed.
@@ -152,24 +152,24 @@ The happy path is `doing` → (drive PR to merge) → `done`. A card lands in
 (ambiguous spec, product-judgment conflict, a human-only required gate), or when
 the PR is merged but the card's END STATE is async and still needs a later
 dev-only validation run. In that async case, WORK mode must leave a clear
-`BLOCKED: awaiting <validation>` marker so `fkanban-validate` can pick it up
+`BLOCKED: awaiting <validation>` marker so `kanban-validate` can pick it up
 instead of silently stranding the card in `doing`.
 
 Use the CLI for all board writes. With the global shim on PATH these run from
 anywhere:
 
 ```bash
-fkanban show <slug> --json        # read a card
-fkanban move <slug> doing         # column transition
-fkanban list --json               # whole board
+kanban show <slug> --json        # read a card
+kanban move <slug> doing         # column transition
+kanban list --json               # whole board
 ```
 
 `show` and `move` do not take a per-command board flag. If you need the default
 board, use the forms above; only add a board flag to commands whose help lists
 one.
 
-(No shim on PATH — `command not found: fkanban`? Fall back to
-`bun run src/cli.ts <cmd>` from the fkanban repo directory; equivalent.)
+(No shim on PATH — `command not found: kanban`? Fall back to
+`bun run src/cli.ts <cmd>` from the kanban repo directory; equivalent.)
 
 Codex CLI diagnostics sometimes emit
 `WARNING: proceeding, even though we could not update PATH: Operation not permitted (os error 1)`
@@ -187,7 +187,7 @@ tells you **where** to work (there is no `repo` field on the schema):
 ```
 Repo: owner/name               # owner/name, or an absolute local path
 Base: main                     # base branch to target
-Branch: fkanban/<slug>         # optional; defaults to fkanban/<slug>
+Branch: kanban/<slug>         # optional; defaults to kanban/<slug>
 Kind: pr                       # pr | tracker | validation | meta
 PR: <url>                      # written by WORK mode once the PR is open
 
@@ -225,7 +225,7 @@ to `review`, append a one-line note explaining what's missing, and exit.
    ```bash
    last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
    . "$last_stack/bin/last-stack-shell-prelude"
-   "$last_stack/bin/last-stack-cli-preflight" git gh curl jq fkanban fbrain
+   "$last_stack/bin/last-stack-cli-preflight" git gh curl jq kanban brain
    ```
 2. **Resolve the target repo, then set up an isolated worktree** (never edit a
    shared checkout in place, and never `stash`/`reset` — sibling agents may
@@ -244,8 +244,8 @@ to `review`, append a one-line note explaining what's missing, and exit.
    git -C "$target_repo" rev-parse --show-toplevel
    cd "$target_repo"
    git fetch origin <base>
-   git worktree add ~/.fkanban/worktrees/<slug> -b fkanban/<slug> origin/<base>
-   cd ~/.fkanban/worktrees/<slug>
+   git worktree add ~/.kanban/worktrees/<slug> -b kanban/<slug> origin/<base>
+   cd ~/.kanban/worktrees/<slug>
    ```
 3. **Do the work** described in the brief. Match the repo's contributor docs and
    existing style. Honor OUT OF SCOPE — keep the PR atomic.
@@ -264,7 +264,7 @@ to `review`, append a one-line note explaining what's missing, and exit.
    git push -u origin HEAD
    pr_url="$(gh -R <repo> pr create --fill --base <base>)"
    branch="$(git branch --show-current)"
-   fkanban add <slug> --pr-url "$pr_url" --branch "$branch"
+   kanban add <slug> --pr-url "$pr_url" --branch "$branch"
    gh -R <repo> pr merge <n> --auto            # if the repo allows auto-merge
    ```
    For Forgejo, use the local-forge API path from `sop-forge-pr-workflow`
@@ -272,12 +272,12 @@ to `review`, append a one-line note explaining what's missing, and exit.
    `merge_when_checks_succeed` request for repos that have not opted into
    LastGit. Immediately after the Forgejo create call returns, record the
    returned PR URL and current branch on the card:
-   `fkanban add <slug> --pr-url "$pr_url" --branch "$branch"`.
+   `kanban add <slug> --pr-url "$pr_url" --branch "$branch"`.
 
    For LastGit-native repos, use the CR path from
    `sop-lastgit-native-forge-workflow` instead of Forgejo/GitHub:
    ```bash
-   "$last_stack/bin/last-stack-cli-preflight" git curl jq lastgit fkanban fbrain
+   "$last_stack/bin/last-stack-cli-preflight" git curl jq lastgit kanban brain
    git remote get-url lastgit >/dev/null || git remote add lastgit "lastdb:///$lastgit_slug"
    git push lastgit HEAD:<branch>
    cr_json="$(lastgit cr create "$lastgit_slug" --head <branch> --base <base> \
@@ -286,7 +286,7 @@ to `review`, append a one-line note explaining what's missing, and exit.
    cr_id="$(printf '%s\n' "$cr_json" | jq -r .cr_id)"
    ```
    Immediately record the CR locator and branch on the card:
-   `fkanban add <slug> --pr-url "lastgit://$lastgit_slug/cr/$cr_id" --branch <branch>`.
+   `kanban add <slug> --pr-url "lastgit://$lastgit_slug/cr/$cr_id" --branch <branch>`.
    Later reconcile/validate passes must be able to find it without guessing.
    LastGit's `--auto-merge --require-status` is the arm step; do not call
    Forgejo for a LastGit-native repo.
@@ -307,7 +307,7 @@ to `review`, append a one-line note explaining what's missing, and exit.
      this WORK turn (for example a dev deploy, release run, clean-machine
      install, or dogfood check), append a one-line
      `BLOCKED: awaiting <specific validation>` note and move it to `review`.
-     That is the handoff contract for `fkanban-validate`; do not leave it in
+     That is the handoff contract for `kanban-validate`; do not leave it in
      `doing`, and do not pretend the END STATE is done. Prod cutovers and public
      irreversible actions are always human-gated.
    - **auto-merge dropped** (`autoMergeRequest` null) while CLEAN/mergeable →
@@ -389,7 +389,7 @@ has no `Repo:` header (it isn't meant for this flow). For each candidate:
    For `Kind: pr`, ignore `DONE-WHEN` for closure and continue below.
 2. **Find its PR/CR.** Route the repo with `last-stack-pr-venue` before lookup.
    Prefer an explicit `PR:` line / PR URL / `lastgit://<slug>/cr/<id>` in the
-   body — work landed outside WORK mode won't use the `fkanban/<slug>` branch
+   body — work landed outside WORK mode won't use the `kanban/<slug>` branch
    convention. Fall back to the head-branch lookup only when no explicit review
    artifact is present.
 
@@ -398,7 +398,7 @@ has no `Repo:` header (it isn't meant for this flow). For each candidate:
    # explicit URL in body:
    gh -R <repo> pr view <n> --json number,state,mergedAt,mergeStateStatus,reviewDecision,statusCheckRollup
    # else by convention branch:
-   gh -R <repo> pr list --head fkanban/<slug> --state all \
+   gh -R <repo> pr list --head kanban/<slug> --state all \
      --json number,state,mergedAt,mergeStateStatus,reviewDecision,statusCheckRollup
    ```
    Do not request `isInMergeQueue` through `gh pr view/list --json`; use
@@ -415,7 +415,7 @@ has no `Repo:` header (it isn't meant for this flow). For each candidate:
    For Forgejo, use the local-forge API equivalents from `sop-forge-pr-workflow`.
    For LastGit, read `lastgit://<slug>/cr/<id>` with
    `lastgit cr view <slug> <id> --json`, or list open/merged/closed CRs with
-   `lastgit cr list <slug> --json` and match `.head_branch == "fkanban/<slug>"`
+   `lastgit cr list <slug> --json` and match `.head_branch == "kanban/<slug>"`
    (or the card branch) when no explicit `PR:` line exists.
 3. **Decide from PR state:**
    - **Merged** (`state=MERGED` / `mergedAt` set for GitHub/Forgejo, or
@@ -424,14 +424,14 @@ has no `Repo:` header (it isn't meant for this flow). For each candidate:
      merged PR/CR. If you cannot point at a merged review artifact for the PR
      card, it does **not** go to
      `done`, no matter how the card reads.
-   - **No PR/CR found AND no `fkanban/<slug>` branch with commits** → the card is
+   - **No PR/CR found AND no `kanban/<slug>` branch with commits** → the card is
      **un-started** (a fresh `todo`/`backlog` item nobody has picked up yet).
      **LEAVE IT EXACTLY WHERE IT IS — do NOT move it, and NEVER move it to
      `done`.** The reconciler advances *in-flight* work (cards that already
      have a PR/CR, or a branch with commits); it does not start, complete, or
      retire fresh cards. Marking an un-started card `done` silently buries real
      work.
-   - **No PR/CR found** but a `fkanban/<slug>` branch with commits exists and the
+   - **No PR/CR found** but a `kanban/<slug>` branch with commits exists and the
      card is in `doing` → a worker opened a branch but didn't finish landing
      (or died mid-work). Finish WORK MODE step 5 for it. Don't thrash.
    - **CI red** (a real failing required check in `statusCheckRollup`, not just
@@ -446,7 +446,7 @@ has no `Repo:` header (it isn't meant for this flow). For each candidate:
    - **Behind base, otherwise clean + green** (`mergeStateStatus` = BEHIND, NOT
      DIRTY, no red required check) → **`gh -R <repo> pr update-branch <n>`** (lightweight,
      NO worktree/force-push). Don't assume a merge queue self-updates a BEHIND
-     branch. Guard: if a `~/.fkanban/worktrees/<slug>` exists, only
+     branch. Guard: if a `~/.kanban/worktrees/<slug>` exists, only
      update-branch when it is clean AND fully pushed
      (`git -C <wt> status --porcelain` empty AND
      `git -C <wt> rev-list --count origin/<branch>..HEAD` == 0); if it has
@@ -488,8 +488,8 @@ that's what lets a burst of BEHIND PRs rot. Each wake:
 - Do at most ONE HEAVY unit: a worktree CI-fix OR a conflict rebase. Pick the
   highest-value one, then exit.
 
-Heavy fixes happen inside `~/.fkanban/worktrees/<slug>` on branch
-`fkanban/<slug>` — reuse the existing worktree if present; create it (WORK MODE
+Heavy fixes happen inside `~/.kanban/worktrees/<slug>` on branch
+`kanban/<slug>` — reuse the existing worktree if present; create it (WORK MODE
 step 2) if not. A `gh -R <repo> pr update-branch` needs NO worktree at all.
 
 ---
@@ -525,7 +525,7 @@ feature code and does **not** run prod cutovers or outward/irreversible actions.
 4. **Fail becomes visible work.** If validation ran and failed, append a
    `PROOF: failed <check> — <concise observed failure>` note, file one
    pickup-ready fix card with a `Repo:`/`Base:`/`Branch:` header, the
-   fkanban-agent trigger header, a narrow GOAL/STEPS/VERIFY brief, and a
+   kanban-agent trigger header, a narrow GOAL/STEPS/VERIFY brief, and a
    dependency or cross-reference to the failed card when useful. Move the
    validated card to `review`. Do not silently leave it in `doing`.
 5. **Unrelated blockers do not thrash.** If validation cannot run because a
@@ -533,10 +533,10 @@ feature code and does **not** run prod cutovers or outward/irreversible actions.
    dev-401 card), append or refresh `BLOCKED: awaiting <blocker-slug> for
    <validation>`, leave the card in `review`, and exit. Do not create duplicate
    fix cards for the same upstream blocker.
-6. **Heartbeat.** When run from the scheduled `fkanban-validate` routine, append
+6. **Heartbeat.** When run from the scheduled `kanban-validate` routine, append
    one `routine-heartbeats` line summarizing `ok`, `noop`, or `error` and the
    card/result. Use the Last Stack heartbeat helper instead of open-coding a
-   typed F-Brain read/write.
+   typed Brain read/write.
 
 VALIDATE mode is intentionally bounded. It should make one stranded merged card
 terminal (`done`) or loud (`review` + proof/fix/blocker) per wake, then stop.
@@ -585,7 +585,7 @@ Check the repo's contributor docs (`CONTRIBUTING.md` / `AGENTS.md` /
 - **Avoid zsh/macOS-only shell traps.** Do not use Bash-only `mapfile` /
   `readarray` in snippets that may run under `zsh` or macOS Bash 3.2; use
   portable `while IFS= read -r ...` loops or Python for list processing. For
-  Markdown/F-Brain/fkanban/PR bodies, always use a body file with a
+  Markdown/Brain/kanban/PR bodies, always use a body file with a
   single-quoted heredoc delimiter such as `<<'EOF'` (or stdin), never an
   unquoted heredoc or shell-expanded string.
 - **Never execute pasted Markdown/card/Brain text.** Shell tool calls are for

@@ -3,9 +3,9 @@ name: app-identity-dogfood
 description: |
   Run the App Identity app-creation flow end-to-end against the DEV
   environment, autonomously. Uses the consolidated `folddb` developer CLI,
-  isolated persistent dogfood state, and the fbrain 9-schema knowledge-record
+  isolated persistent dogfood state, and the brain 9-schema knowledge-record
   set including Sop. Validates that `folddb login`, `folddb init`, and
-  `folddb push` can publish the `fbrain` app namespace without touching Tom's
+  `folddb push` can publish the `brain` app namespace without touching Tom's
   primary LastDB brain or leaking secrets.
 allowed-tools:
   - Bash
@@ -18,7 +18,7 @@ triggers:
   - app identity dogfood
   - validate app creation flow
   - test schema registration namespacing
-  - fbrain app creation
+  - brain app creation
 ---
 
 # App Identity Dogfood (DEV, Consolidated CLI)
@@ -27,9 +27,9 @@ This skill exercises the supported App Identity developer journey on the
 deployed DEV stack:
 
 1. `folddb login --env dev` establishes the developer identity and DevCert.
-2. `folddb init fbrain` writes the local app manifest.
-3. `folddb push --env dev` registers the app and publishes the fbrain schemas.
-4. Snapshot/status checks prove the live registry has the owned fbrain schema
+2. `folddb init brain` writes the local app manifest.
+3. `folddb push --env dev` registers the app and publishes the brain schemas.
+4. Snapshot/status checks prove the live registry has the owned brain schema
    set and the local manifest is in sync.
 
 This file is the canonical runbook for commands. The older team-facing
@@ -43,12 +43,12 @@ Memory: `project_app_identity`, `project_fbrain`.
 
 1. DEV only. Every endpoint and credential must target the dev environment.
    Abort if anything resolves to prod.
-2. Never use Tom's primary LastDB/F-Brain state. Do not read or write
-   `$HOME/.lastdb`, `$HOME/.folddb`, `$HOME/.fbrain`, or the primary socket as
+2. Never use Tom's primary LastDB/Brain state. Do not read or write
+   `$HOME/.lastdb`, `$HOME/.folddb`, `$HOME/.brain`, or the primary socket as
    part of this dogfood.
 3. Use a dedicated persistent dogfood home, not a temp home, for the developer
    identity:
-   `FOLDDB_HOME=$HOME/.last-stack/dogfood/app-identity/fbrain`.
+   `FOLDDB_HOME=$HOME/.last-stack/dogfood/app-identity/brain`.
    This is intentionally stable so reruns use the same owner key. Do not pass
    `folddb login --force` unless Tom explicitly asks for an owner rotation.
 4. Keep secrets out of chat, Brain, Kanban, docs, logs, and PR bodies. If a run
@@ -65,11 +65,11 @@ Memory: `project_app_identity`, `project_fbrain`.
 | dev schema service | `https://y0q3m6vk75.execute-api.us-west-2.amazonaws.com` |
 | dev Exemem API | `https://ygyu7ritx8.execute-api.us-west-2.amazonaws.com` |
 | dev region | `us-west-2` |
-| dogfood app id | `fbrain` |
-| dogfood handle | `app-identity-dogfood-fbrain` |
-| dogfood home | `$HOME/.last-stack/dogfood/app-identity/fbrain` |
-| fbrain schema source | `$HOME/code/edgevector/fbrain/src/schemas.ts` |
-| fbrain pass set | Concept, Task, Design, Preference, Reference, Agent, Project, Spike, Sop |
+| dogfood app id | `brain` |
+| dogfood handle | `app-identity-dogfood-brain` |
+| dogfood home | `$HOME/.last-stack/dogfood/app-identity/brain` |
+| brain schema source | `$HOME/code/edgevector/brain/src/schemas.ts` |
+| brain pass set | Concept, Task, Design, Preference, Reference, Agent, Project, Spike, Sop |
 
 The pass set is nine user-facing knowledge-record schemas. Include `Sop`.
 Do not use the old eight-type list. `Decision` is intentionally outside this
@@ -101,17 +101,17 @@ gap. Do not report a dogfood pass.
 ## Step 1 - Isolate Persistent Dogfood State
 
 Set the CLI home before every `folddb` command. This home is persistent across
-runs by design; it owns the `fbrain` app registration.
+runs by design; it owns the `brain` app registration.
 
 ```bash
-export FOLDDB_HOME="$HOME/.last-stack/dogfood/app-identity/fbrain"
+export FOLDDB_HOME="$HOME/.last-stack/dogfood/app-identity/brain"
 export FOLDDB_DISABLE_KEYCHAIN=1
 mkdir -p "$FOLDDB_HOME"
 
 echo "dogfood home: $FOLDDB_HOME"
 test "$FOLDDB_HOME" != "$HOME/.lastdb"
 test "$FOLDDB_HOME" != "$HOME/.folddb"
-test "$FOLDDB_HOME" != "$HOME/.fbrain"
+test "$FOLDDB_HOME" != "$HOME/.brain"
 
 for sock in "$HOME/.lastdb/data/folddb.sock" "$HOME/.folddb/data/folddb.sock"; do
   if [ -S "$sock" ]; then
@@ -128,7 +128,7 @@ owner and can fail the registry's first-write-wins ownership model.
 Use the consolidated CLI credential boundary:
 
 ```bash
-folddb login --env dev --handle app-identity-dogfood-fbrain
+folddb login --env dev --handle app-identity-dogfood-brain
 ```
 
 If the dedicated home already has a developer key and persisted API key, this
@@ -137,14 +137,14 @@ refreshes the dev cert and keeps the same owner identity.
 If the command reports a missing API key, use the approved credential path for
 the run:
 
-- With an invite code: `folddb login --env dev --handle app-identity-dogfood-fbrain --invite "$INVITE_CODE"`.
+- With an invite code: `folddb login --env dev --handle app-identity-dogfood-brain --invite "$INVITE_CODE"`.
 - With an API key from LastSecrets: retrieve it point-of-use, pass it with
   `--api-key`, and do not echo it.
 
 Never mint an ad-hoc owner for convenience, and never rotate with `--force`
 unless Tom explicitly asks for owner rotation.
 
-## Step 3 - Scaffold the fbrain Manifest
+## Step 3 - Scaffold the brain Manifest
 
 Use a temporary project directory for the manifest and schema files. The project
 can be temporary because the owner identity lives in the persistent dogfood
@@ -154,25 +154,25 @@ home.
 WORK=$(mktemp -d /tmp/appident-dogfood.XXXXXX)
 cd "$WORK"
 
-folddb init fbrain --env dev --force
+folddb init brain --env dev --force
 ```
 
 Edit `folddb.toml` so the metadata is publishable:
 
 ```toml
-app_id = "fbrain"
+app_id = "brain"
 schemas = ["schemas/*.json"]
 
 [metadata]
 display_name = "FBrain"
 description = "Local-first knowledge brain for EdgeVector."
-homepage_url = "https://github.com/EdgeVector/fbrain"
+homepage_url = "https://github.com/EdgeVector/brain"
 ```
 
 `folddb init` writes an example schema. Remove it after replacing the directory
-with fbrain's real schemas.
+with brain's real schemas.
 
-## Step 4 - Emit the Current fbrain Schemas
+## Step 4 - Emit the Current brain Schemas
 
 Write one top-level schema JSON file per pass-set schema:
 
@@ -180,7 +180,7 @@ Write one top-level schema JSON file per pass-set schema:
 rm -rf "$WORK/schemas"
 mkdir -p "$WORK/schemas"
 
-( cd "$HOME/code/edgevector/fbrain" && WORK="$WORK" bun -e '
+( cd "$HOME/code/edgevector/brain" && WORK="$WORK" bun -e '
   import { RECORD_TYPES, schemaFor } from "./src/schemas.ts";
   import { writeFileSync } from "fs";
 
@@ -250,7 +250,7 @@ curl -s -H "X-API-Key: $SKEY" "$SS/v1/snapshot" > "$WORK/snapshot.json"
 
 jq -r '
   [.schemas[]
-   | select(.owner_app_id == "fbrain")
+   | select(.owner_app_id == "brain")
    | .descriptive_name]
   | unique
   | .[]' "$WORK/snapshot.json"
@@ -260,15 +260,15 @@ PASS criteria:
 
 - `folddb app status --env dev --dir "$WORK"` reports the app registered on dev
   and no schema drift for the manifest.
-- Snapshot contains `fbrain` app metadata.
-- Snapshot contains all nine `owner_app_id == "fbrain"` schemas:
+- Snapshot contains `brain` app metadata.
+- Snapshot contains all nine `owner_app_id == "brain"` schemas:
   Concept, Task, Design, Preference, Reference, Agent, Project, Spike, Sop.
 - The owned schema identity hashes are stable across reruns. A rerun must not
   create a second owner key or require reclaiming the app id.
 
 Serialization note: snapshot `.schemas[].name` is the canonical identity hash,
-not a literal `fbrain/Concept` string. Namespacing is proven by
-`owner_app_id == "fbrain"` and the hash stability.
+not a literal `brain/Concept` string. Namespacing is proven by
+`owner_app_id == "brain"` and the hash stability.
 
 ## Step 7 - Cleanup
 
@@ -301,7 +301,7 @@ Route failures this way:
 |---|---|
 | deployed app registry route missing or unhealthy | `EdgeVector/schema-infra` |
 | consolidated CLI behavior, manifest, login, init, push, status | `EdgeVector/fold` |
-| fbrain schema source or schema count mismatch | `EdgeVector/fbrain` |
+| brain schema source or schema count mismatch | `EdgeVector/brain` |
 | Exemem dev credential or invite behavior | `EdgeVector/exemem-infra` |
 | this dogfood recipe | `EdgeVector/last-stack` |
 

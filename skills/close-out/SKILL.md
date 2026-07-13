@@ -1,7 +1,7 @@
 ---
 name: close-out
 version: 0.2.0
-description: Run the full close-out loop after finishing a substantive change — worktree PR + auto-merge, a brain checkpoint, and an fkanban follow-up card. Use after landing any code/doc change or settled decision, or when the close-out backstop hook fires. These steps are standing-authorized; do them without asking.
+description: Run the full close-out loop after finishing a substantive change — worktree PR + auto-merge, a brain checkpoint, and a kanban follow-up card. Use after landing any code/doc change or settled decision, or when the close-out backstop hook fires. These steps are standing-authorized; do them without asking.
 allowed-tools:
   - Bash
   - Read
@@ -25,9 +25,9 @@ don't ask permission for the mechanical parts. Only stop for a genuine fork
 Run the steps that apply to what you just did. Skip ones that don't.
 
 This loop assumes two LastDB surfaces:
-- **Brain** (`fbrain`) — long-lived notes: the *why*, settled decisions,
+- **Brain** (`brain`) — long-lived notes: the *why*, settled decisions,
   milestones.
-- **Kanban** (`fkanban`) — what's in flight: cards moving through columns.
+- **Kanban** (`kanban`) — what's in flight: cards moving through columns.
 
 (Adjust the CLI names if your brain/board tools differ.)
 
@@ -48,7 +48,7 @@ venue="$(printf '%s\n' "$route_json" | jq -r .venue)"
 Use GitHub `gh` only when `venue=github`; use the local Forgejo SOP/API helper
 when `venue=forgejo`; use `lastgit cr` when `venue=lastgit`. LastGit routing is
 explicit opt-in only. For LastGit-native repos, read
-`fbrain get sop-lastgit-native-forge-workflow`, push the branch to the `lastgit`
+`brain get sop-lastgit-native-forge-workflow`, push the branch to the `lastgit`
 remote, create `lastgit cr create <slug> --head <branch> --base main
 --auto-merge --require-status <context> --json`, and drive it with
 `lastgit cr view`, `lastgit ci status`, and `lastgit cr complete --once`. Do not
@@ -85,7 +85,7 @@ gh pr create --repo <owner>/<repo> --base main --head "$BR" --title "..." --body
 
 ## 2. Auto-merge and babysit to MERGED
 
-Match your repo's merge policy (see the **wait-merge** / **fkanban-agent**
+Match your repo's merge policy (see the **wait-merge** / **kanban-agent**
 skills). For a merge-queue repo use bare `--auto` (no strategy flag); for plain
 auto-merge add `--squash` (or your preferred method):
 
@@ -128,7 +128,7 @@ agent ran it / CI, not a human eyeballing). Match the proof to blast radius:
 
 Anchor the proof to the **user story, not the diff** — that is what catches
 half-built features ("set" shipped without "unlock", incident 2026-06-30). Record
-the result in the brain checkpoint below and on the fkanban card (VERIFY /
+the result in the brain checkpoint below and on the kanban card (VERIFY /
 END STATE). **PR-body `## Proof` blocks and the fold `proof-block` CI check were
 REMOVED 2026-07-03 (Tom: merge-stall churn)** — do not write them, and do not
 block on their absence. A failing validation is still a blocker, not a footnote.
@@ -143,7 +143,7 @@ heredoc so the shell cannot evaluate it.
 
 **If a real DECISION was settled** (a call someone made — a chosen approach, an
 outcome, a gate cleared), record it as its own **`decision` record** so it lands
-in the queryable decision ledger (`fbrain list --type decision`) with real
+in the queryable decision ledger (`brain list --type decision`) with real
 `program`/`gate_slug`/`decided_by`/`decided_on` columns — NOT as a prose note
 and NEVER by appending to the archived `decisions-log` monolith:
 
@@ -164,7 +164,7 @@ tags: [decisions]
 
 <what was chosen, why, what it unblocks — literal `backticks`/$(examples) safe>
 EOF
-fbrain put decision-<date>-<short-kebab> --type decision < "$body_file"
+brain put decision-<date>-<short-kebab> --type decision < "$body_file"
 rm -f "$body_file"
 ```
 
@@ -183,21 +183,21 @@ tags: [<...>]
 
 <body with literal `backticks` and $(examples)>
 EOF
-fbrain put <slug> --type project < "$body_file"
+brain put <slug> --type project < "$body_file"
 rm -f "$body_file"
 ```
 
-## 5. File an fkanban card for anything that closes later
+## 5. File a kanban card for anything that closes later
 
 If the work leaves a follow-up that closes by elapsed time or by someone else
 (a verification window, a prod cutover, a human gate), file it so it's not
 tracked only in your head.
 
 ```bash
-cat > /tmp/fkanban-follow-up.md <<'EOF'
+cat > /tmp/kanban-follow-up.md <<'EOF'
 Repo: <owner>/<repo>
 Base: main
-Branch: fkanban/<valid-slug>
+Branch: kanban/<valid-slug>
 Kind: pr
 
 ## GOAL
@@ -206,7 +206,7 @@ Kind: pr
 ## VERIFY
 ...
 EOF
-fkanban add <valid-slug> --title "<title>" --column todo --tags <...> --repo <owner>/<repo> --base main --branch fkanban/<valid-slug> --kind pr < /tmp/fkanban-follow-up.md
+kanban add <valid-slug> --title "<title>" --column todo --tags <...> --repo <owner>/<repo> --base main --branch kanban/<valid-slug> --kind pr < /tmp/kanban-follow-up.md
 ```
 
 Slugs must be lowercase `[a-z0-9-_]`, start with a letter/digit. The body must

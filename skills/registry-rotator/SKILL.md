@@ -20,29 +20,29 @@ ship code, open worktrees, open PRs, or spawn agents.
 
 Required:
 
-- `registry=<slug>`: the fbrain record holding the registry.
+- `registry=<slug>`: the brain record holding the registry.
 
 Optional:
 
-- `type=<type>`: fbrain type for the registry. Default: `project`.
+- `type=<type>`: brain type for the registry. Default: `project`.
 - `mode=dry-run|run`: default `run`. Dry run computes the selected entry and
   prints the rotation-log diff it would write, but makes no brain, board, repo,
   or external-service mutations.
 - `routine=<name>`: heartbeat name. Default: `registry-rotator:<registry>`.
 - `config-source=<slug-or-app-ref>`: where project config lives. If omitted,
   read the live project config from F-Config when available, otherwise use the
-  interim fbrain shims named below.
+  interim brain shims named below.
 
 If `registry` is missing, stop and report the missing argument.
 
 ## Run Start
 
 1. Source the Last Stack shell prelude if available and run the CLI preflight for
-   `git`, `curl`, `jq`, `fkanban`, and `fbrain`.
+   `git`, `curl`, `jq`, `kanban`, and `brain`.
 2. Fetch `sop-routine-shared-contract` and honor it. If this skill conflicts
    with that SOP, the SOP wins.
 3. Load project configuration from the declared config source. Until F-Config is
-   present, read these fbrain shim records:
+   present, read these brain shim records:
    `workspace-config`, `repo-venue-map`, and any registry-specific mapping record
    named by the entry. Use these records for workspace roots, checkout paths,
    worktree roots, repo venues, merge mechanisms, CI gate names, and hands-off
@@ -53,7 +53,7 @@ If `registry` is missing, stop and report the missing argument.
 
 ## Registry Shape
 
-A registry is a Markdown fbrain record with:
+A registry is a Markdown brain record with:
 
 - One entry per rotatable unit, normally headed as `### <entry-slug> ...`.
 - Entry fields for `track`, `cadence`, `recipe`, `pass =`, and `isolation`.
@@ -113,7 +113,7 @@ Dry-run mode stops after selection and stamp planning. Print:
 - a unified diff of only the rotation-log block row that would change, using
   result `dry-run` and cards filed `--`.
 
-Dry run must not write fbrain, fkanban, files, repos, tickets, or external apps.
+Dry run must not write brain, kanban, files, repos, tickets, or external apps.
 
 ## Run The Recipe
 
@@ -147,7 +147,7 @@ Classify the result as:
 ## File Cards
 
 For each papercut, failed assertion, missing fixture, stale recipe, or blocker
-that should survive this run, file one fkanban card per
+that should survive this run, file one kanban card per
 `sop-routine-shared-contract` section 3.
 
 Before filing, dedupe per the shared contract:
@@ -159,7 +159,7 @@ Before filing, dedupe per the shared contract:
 - any registry-specific ledger named by the entry.
 
 Cards must be pickup-ready when the fix is clear. Put uncertain or oversized
-work in `backlog` with a narrow investigation goal. Do not run `fkanban-agent`
+work in `backlog` with a narrow investigation goal. Do not run `kanban-agent`
 from this skill.
 
 Resolve the card's `Repo:` and PR venue from project config. If the entry names
@@ -175,7 +175,7 @@ only the selected entry's table row inside the `rotation-log:start/end` block:
 - `result`: one of `pass`, `fail`, `blocked`, or `recipe-broken`;
 - `cards filed`: comma-separated card slugs, or `--` when none were filed.
 
-Preserve every other row and all prose. Write back with `fbrain put` using the
+Preserve every other row and all prose. Write back with `brain put` using the
 same slug and type. Do not use append for the registry. If the record changed
 under you and the selected row can no longer be matched safely, stop, heartbeat
 `error`, and report the concurrent edit.
@@ -183,7 +183,7 @@ under you and the selected row can no longer be matched safely, stop, heartbeat
 ## Heartbeat And Report
 
 Heartbeat last, even after no-op or error, using
-`last-stack-fbrain-append-heartbeat` when available. Format:
+`last-stack-brain-append-heartbeat` when available. Format:
 
 `<routine-name> <ISO-UTC> <ok|noop|error> <one-line outcome>`
 

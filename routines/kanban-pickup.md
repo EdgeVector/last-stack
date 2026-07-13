@@ -1,14 +1,14 @@
 ---
-name: fkanban-pickup
+name: kanban-pickup
 cadence: every 20 minutes
-description: Drain the ready board queue as fast as is safe — form up to three work-units from ready `todo` cards and fan them out to background fkanban-agent (WORK) workers, each driving one singleton or batch to a separate MERGED PR. If the queue is empty, just exit (or, with `Idle mode: ship-one-simplification` opted in, ship one small simplification PR instead). Never authors/ships card work itself.
+description: Drain the ready board queue as fast as is safe — form up to three work-units from ready `todo` cards and fan them out to background kanban-agent (WORK) workers, each driving one singleton or batch to a separate MERGED PR. If the queue is empty, just exit (or, with `Idle mode: ship-one-simplification` opted in, ship one small simplification PR instead). Never authors/ships card work itself.
 ---
 
 You form up to `<N, e.g. 3>` work-units per run from ready board cards and fan
 them out — one background agent per work-unit, one branch, one separate PR —
 each driving its singleton card or 2-3 card batch all the way to a MERGED PR
 (not just an opened PR), then exit. This is the WORK-mode counterpart to the
-`fkanban-watch` (reconcile) routine — do NOT do reconcile work here. The goal is
+`kanban-watch` (reconcile) routine — do NOT do reconcile work here. The goal is
 to DRAIN THE READY QUEUE AS FAST AS IS SAFE every hour so cards don't back up.
 
 ## Automation memory
@@ -51,7 +51,7 @@ read/write, fail loudly if the resolved path is empty or starts with
   . "$last_stack/bin/last-stack-shell-prelude"
   "$last_stack/bin/last-stack-cli-preflight" git curl jq gh <board-cli> <brain-cli>
   ```
-- Each spawned agent follows the **fkanban-agent** skill, WORK mode — that skill
+- Each spawned agent follows the **kanban-agent** skill, WORK mode — that skill
   is the source of truth for the per-card lifecycle. This prompt is just the
   trigger + selection + fan-out rule.
 - **Forge-hosted repos:** `gh` only works for github.com remotes. If a card's
@@ -65,7 +65,7 @@ read/write, fail loudly if the resolved path is empty or starts with
 - **LastGit-native repos:** before spawning a worker, resolve the concrete
   checkout and run `"$last_stack/bin/last-stack-pr-venue" --json <owner/repo>
   "$target_repo"`. If `.venue == "lastgit"`, the worker must read
-  `fbrain get sop-lastgit-native-forge-workflow`, use `.lastgit_slug` and
+  `brain get sop-lastgit-native-forge-workflow`, use `.lastgit_slug` and
   `.ci_context`, open a `lastgit cr` instead of a Forgejo/GitHub PR, and drive it
   with `lastgit cr view` / `lastgit ci status` / `lastgit cr complete --once`.
   LastGit is opt-in only; repos not explicitly marked LastGit-native stay on
@@ -77,19 +77,19 @@ read/write, fail loudly if the resolved path is empty or starts with
 1. Read only the ready queue: `<board CLI> list --column todo --json`. If the
    read returns `service_timeout`, "node did not respond", or "too many
    concurrent reads", treat it as busy-node backpressure: do not run doctor/init
-   or restart anything; append/emit a `fkanban-pickup ... noop busy-node`
+   or restart anything; append/emit a `kanban-pickup ... noop busy-node`
    outcome if possible and EXIT so the next scheduled run retries.
 2. Eligible = a card in the `todo` column whose body has parseable `Repo:` and
    `Base:` header lines. `Repo:` must be either `owner/name` or an absolute local
    Git checkout path. `todo` is the ready queue — only work cards promoted there.
    Ignore `backlog` (unready) entirely.
-3. Leave missing `Repo:`/`Base:` cards in `todo`; `fkanban-watch` owns the
+3. Leave missing `Repo:`/`Base:` cards in `todo`; `kanban-watch` owns the
    header self-heal path. Leave cards carrying a `BLOCKED:` note alone. For cards
    whose `Repo:` header is present but not a resolvable target, do NOT silently
    skip and reconsider them every run. Convert the card into a loud one-time
    blocker:
    - Read it with `<board CLI> show <slug> --json`.
-   - Append exactly one line if absent: `BLOCKED: fkanban-pickup cannot resolve
+   - Append exactly one line if absent: `BLOCKED: kanban-pickup cannot resolve
      Repo: "<repo header>"; replace it with owner/name or an absolute Git
      checkout path.`
    - Persist the amended body via `<board CLI> add <slug> --column review
@@ -138,18 +138,18 @@ should produce three work-units, for example:
 **For EACH work-unit:**
 - FIRST move its card(s) to `doing` (`<board CLI> move <slug> doing`) so siblings
   and the next run don't double-pick. For a batch, move ALL cards in the unit.
-- Use the fkanban CLI-supported command shapes. `show` and `move` use the
+- Use the kanban CLI-supported command shapes. `show` and `move` use the
   current/default board context; only commands whose help lists a board option
   may receive one.
 - Then spawn ONE background agent for that work-unit (run it in the background
   so this parent isn't blocked). A normal full pass with three eligible
   work-units must spawn three background agents and should yield three separate
   PRs. Give each agent a fully self-contained prompt:
-  - Singleton: "Follow the fkanban-agent skill, WORK mode. Work EXACTLY this one
+  - Singleton: "Follow the kanban-agent skill, WORK mode. Work EXACTLY this one
     card: `<slug>`. Its Repo is `<repo>` and Base is `<base>`. Open and drive a
     separate PR for this card; do not combine it with cleanup bumps or unrelated
     routine fixes."
-  - Batch: "Follow the fkanban-agent skill, WORK mode. Work EXACTLY this batch:
+  - Batch: "Follow the kanban-agent skill, WORK mode. Work EXACTLY this batch:
     `<slug1>`, `<slug2>`[, `<slug3>`]. Shared Repo `<repo>`, Base `<base>`,
     subsystem `<subsystem>`. Open and drive one separate PR for this batch, with
     a clear PR-body section for each card. Do not add cleanup bumps or unrelated
@@ -161,7 +161,7 @@ should produce three work-units, for example:
     `$last_stack/bin/last-stack-repo-op-guard "$target_repo" "<workspace>"`,
     and `git -C "$target_repo" rev-parse --show-toplevel`, then change into
     `$target_repo` before any `git fetch` or `git worktree add
-    <worktrees-dir>/<lead-slug> -b fkanban/<lead-slug> origin/<base>` command
+    <worktrees-dir>/<lead-slug> -b kanban/<lead-slug> origin/<base>` command
     (`<lead-slug>` is the singleton slug or the highest-priority card in a
     batch). Never edit a shared checkout in place; never stash/reset/clean a shared repo. The worker must
     route review artifacts with `route_json="$("$last_stack/bin/last-stack-pr-venue" --json "<repo>" "$target_repo")"`
@@ -178,7 +178,7 @@ should produce three work-units, for example:
     your strategy flag). If `venue=forgejo`, use the local Forgejo SOP/API helper
     for PR create/status/merge and never `gh` against a read-only mirror; record
     the returned PR URL and branch on the card immediately after create. If
-    `venue=lastgit`, read `fbrain get sop-lastgit-native-forge-workflow`, ensure
+    `venue=lastgit`, read `brain get sop-lastgit-native-forge-workflow`, ensure
     `lastgit` is preflighted, push `HEAD:<branch>` to the `lastgit` remote, open
     `lastgit cr create <slug> --head <branch> --base <base> --auto-merge --require-status <context> --json`,
     and record `PR: lastgit://<slug>/cr/<cr-id>` plus the branch on the card."
@@ -205,7 +205,7 @@ should produce three work-units, for example:
     the PR strands. NEVER a `sleep`-loop, NEVER a turn parked doing nothing. Do
     not pick up other cards, do not spawn sub-agents."
 - After spawning all agents, this parent EXITS immediately. Do NOT wait, sleep,
-  or park watching the spawned agents — they run independently; `fkanban-watch`
+  or park watching the spawned agents — they run independently; `kanban-watch`
   is the backstop for anything that slips.
 
 ## Nothing to pick up
@@ -216,7 +216,7 @@ mode** (default `exit`):
 Just exit cleanly. Do NOT go hunt for a bug to fix and ship — in this mode the
 routine is the BUILD EXECUTOR for ready cards, not a work author. Keeping the
 queue full is the generator routines' job (`self-improvement-loop`,
-`papercut-sweep`, `program-driver`, `groom-board`, and `fkanban-watch`'s
+`papercut-sweep`, `program-driver`, `groom-board`, and `kanban-watch`'s
 quiet-sweep all FILE cards). Report "queue empty, nothing to build" and exit.
 
 ### Idle mode `ship-one-simplification` (opt-in)
@@ -273,7 +273,7 @@ empty, nothing to build." Then exit.
 
 > **Heartbeat (optional but recommended).** As the LAST action — even when the
 > queue was empty or you aborted at the rate limit — call
-> `<last-stack>/bin/last-stack-fbrain-append-heartbeat --line "fkanban-pickup
+> `<last-stack>/bin/last-stack-brain-append-heartbeat --line "kanban-pickup
 > <ISO-ts> <ok|noop|error> <one-line outcome>"`. `morning-sync` reads
 > `routine-heartbeats` to make a silent pickup failure loud. Use `error` for the
 > rate-limit abort; `noop` when the queue was empty AND you did not spawn the idle

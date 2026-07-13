@@ -3,7 +3,7 @@ name: lastdb-ui-design-review
 description: |
   Run a live UX/visual design pass on the LastDB desktop UI (the React+Vite
   app in fold/fold_db_node/src/server/static-react) against a fresh isolated
-  dev node, dedupe findings against open fkanban cards AND merged PRs, and
+  dev node, dedupe findings against open kanban cards AND merged PRs, and
   file new `lastdb-ui-*` cards for real issues. Use whenever asked to "review
   the lastdb ui", "do a lastdb design review", "check the lastdb UI for
   visual/UX issues", "run a design pass on lastdb", or when the scheduled
@@ -18,7 +18,7 @@ description: |
 
 The LastDB UI is a **desktop-only** React+Vite app (IBM Plex Mono / gruvbox-
 dark, Heroicons line-art nav) served by the `fold_db_node` Rust binary. Full
-background lives in fbrain `lastdb-ui-dev-review-recipe-and-routine` — read it
+background lives in brain `lastdb-ui-dev-review-recipe-and-routine` — read it
 first; this file is the short version plus the one lesson worth repeating
 every time.
 
@@ -70,7 +70,7 @@ finding, not a style nitpick.
 
 ## Filing
 
-File real issues as fkanban cards, slug pattern `lastdb-ui-*`, column `todo`,
+File real issues as kanban cards, slug pattern `lastdb-ui-*`, column `todo`,
 repo `EdgeVector/fold`. Before filing, check both the open board AND recently
 merged PRs — the dedupe-against-merged-not-just-open lesson above is the
 single most common way this routine wastes a filing. A typical run surfaces

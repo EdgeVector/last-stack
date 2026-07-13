@@ -30,7 +30,7 @@ below.
 ## Setup
 1. Read the project agent-orientation doc in `<WORKSPACE>` and honor its
    standing rules.
-2. Read this automation memory file and the relevant F-Brain DevOps policy
+2. Read this automation memory file and the relevant Brain DevOps policy
    records before acting. Prefer updating existing Brain records over creating
    duplicates.
 3. Normalize the scheduled shell before any CLI-heavy work:
@@ -44,11 +44,11 @@ below.
    <board-cli> list --board <board> --json >/dev/null
    <brain-cli> get routine-heartbeats --type reference >/dev/null
    ```
-   These reads are the health check. Modern LastDB/F-Brain/F-Kanban installs may
+   These reads are the health check. Modern LastDB/Brain/Kanban installs may
    intentionally serve only over the Unix socket
    `~/.folddb/data/folddb.sock`; the retired TCP endpoint
    `http://127.0.0.1:9001` being refused is not an outage.
-5. Do not use `fbrain doctor`, `fkanban doctor`, or `fkanban init` as routine
+5. Do not use `brain doctor`, `kanban doctor`, or `kanban init` as routine
    health checks. Some control-plane verbs still exercise TCP-only routes and
    can print `node not reachable at http://127.0.0.1:9001` even when board and
    brain reads work over the socket.
@@ -117,8 +117,8 @@ For a small DevOps/docs/tooling fix:
    target_repo="<local-checkout>"
    target_repo="$("$last_stack/bin/last-stack-repo-op-guard" "$target_repo" "<WORKSPACE>")"
    git -C "$target_repo" fetch origin <base>
-   git -C "$target_repo" worktree add ~/.fkanban/worktrees/<slug> \
-     -b fkanban/<slug> origin/<base>
+   git -C "$target_repo" worktree add ~/.kanban/worktrees/<slug> \
+     -b kanban/<slug> origin/<base>
    ```
 3. Implement the smallest change that closes the identified DevOps gap.
 4. Run the exact local verifier for the changed surface. For prompt/routine
@@ -147,7 +147,7 @@ one precise card per unit of work. Make it pickup-ready:
 ```bash
 body_file="$(mktemp)"
 cat > "$body_file" <<'EOF'
-Follow the fkanban-agent skill, WORK mode. Drive this card through to a MERGED PR.
+Follow the kanban-agent skill, WORK mode. Drive this card through to a MERGED PR.
 
 Repo: <owner>/<repo>
 Base: <base>
