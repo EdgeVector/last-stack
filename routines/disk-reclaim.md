@@ -39,7 +39,7 @@ read/write, fail loudly if the resolved path is empty or starts with
    ```bash
    last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
    . "$last_stack/bin/last-stack-shell-prelude"
-   "$last_stack/bin/last-stack-cli-preflight" git curl jq <board-cli>
+   last_stack_require_tools git curl jq find rm <board-cli>
    ```
 1. **Assess.** `df -h <data volume> | tail -1`; list any build/server processes
    and confirm which one is your live brain/board node so you never touch it.
@@ -48,10 +48,10 @@ read/write, fail loudly if the resolved path is empty or starts with
    Enumerate child repos first, then run Git against each repo:
    ```bash
    workspace="<WORKSPACE>"
-   find "$workspace" -mindepth 2 -maxdepth 3 -type d -name .git -prune \
+   "$LAST_STACK_TOOL_FIND" "$workspace" -mindepth 2 -maxdepth 3 -type d -name .git -prune \
      | while IFS= read -r git_dir; do
          repo="${git_dir%/.git}"
-         git -C "$repo" rev-parse --show-toplevel
+         "$LAST_STACK_TOOL_GIT" -C "$repo" rev-parse --show-toplevel
        done
    ```
    Use those repo roots to enumerate worktrees across all repos + all worktree
@@ -63,7 +63,9 @@ read/write, fail loudly if the resolved path is empty or starts with
    process (verify its command path is inside the worktree and it is NOT your
    node), kill that PID first, then `git worktree remove --force <path>` and
    `git branch -D <branch>`. Then `git worktree prune` per repo. Remove a now-
-   empty worktree parent dir.
+   empty worktree parent dir. Use `"$LAST_STACK_TOOL_GIT"` and
+   `"$LAST_STACK_TOOL_RM"` for generated cleanup commands in this stripped-shell
+   path.
 3a. **Reap stale dev-server port orphans (port-scoped, brain-safe).** A preview /
    dev server (Vite, a per-app dev node) whose launching session died can outlive
    it and keep holding its port, blocking the next run. For each known

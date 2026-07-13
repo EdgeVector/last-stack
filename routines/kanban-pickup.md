@@ -50,6 +50,7 @@ read/write, fail loudly if the resolved path is empty or starts with
   last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
   . "$last_stack/bin/last-stack-shell-prelude"
   "$last_stack/bin/last-stack-cli-preflight" git curl jq gh <board-cli> <brain-cli>
+  last_stack_require_tools git curl jq gh <board-cli> <brain-cli>
   ```
 - Each spawned agent follows the **kanban-agent** skill, WORK mode — that skill
   is the source of truth for the per-card lifecycle. This prompt is just the
@@ -242,8 +243,10 @@ limit, do NOT spawn it. Spawn exactly ONE background agent (no nested spawns, no
 > abstraction, a duplicated helper, an over-complex expression (reuse / clarity /
 > efficiency, NOT a behavior change, NOT a bug hunt), small enough to review in
 > one sitting. Source `$last_stack/bin/last-stack-shell-prelude` and run
-> `$last_stack/bin/last-stack-cli-preflight git curl jq gh` before shell-heavy
-> checks. Make the edit, confirm the touched package still builds and its
+> `$last_stack/bin/last-stack-cli-preflight git curl jq gh`; if you generate
+> shell loops, also run `last_stack_require_tools git curl jq gh` and use the
+> exported `LAST_STACK_TOOL_*` paths before shell-heavy checks. Make the edit,
+> confirm the touched package still builds and its
 > tests pass, open a PR (`gh -R <owner>/<repo> pr create --fill`, title prefixed `chore(simplify):`),
 > enable auto-merge per the repo's merge strategy (merge-queue repo: bare `gh -R
 > <owner>/<repo> pr merge <n> --auto`; plain auto-merge: add your strategy flag), then DRIVE IT TO

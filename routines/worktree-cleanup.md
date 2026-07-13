@@ -39,17 +39,17 @@ read/write, fail loudly if the resolved path is empty or starts with
    ```bash
    last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
    . "$last_stack/bin/last-stack-shell-prelude"
-   "$last_stack/bin/last-stack-cli-preflight" git curl jq gh <board-cli> <brain-cli>
+   last_stack_require_tools git curl jq gh find rm <board-cli> <brain-cli>
    ```
 1. **Discover repo roots before any repo-level Git command.** The workspace
    root may be only a container directory, so do not run root-level Git probes
    there first. Enumerate child repos, then run Git against each discovered repo:
    ```bash
    workspace="<WORKSPACE>"
-   find "$workspace" -mindepth 2 -maxdepth 3 -type d -name .git -prune \
+   "$LAST_STACK_TOOL_FIND" "$workspace" -mindepth 2 -maxdepth 3 -type d -name .git -prune \
      | while IFS= read -r git_dir; do
          repo="${git_dir%/.git}"
-         git -C "$repo" rev-parse --show-toplevel
+         "$LAST_STACK_TOOL_GIT" -C "$repo" rev-parse --show-toplevel
        done
    ```
    Use the resulting repo roots to enumerate worktrees authoritatively across
@@ -65,9 +65,10 @@ read/write, fail loudly if the resolved path is empty or starts with
    If you store command output in shell variables, do not name one `status`;
    `zsh` treats `status` as a read-only special parameter. Use a specific name
    such as `repo_status` or `git_status`.
-3. **Remove the removable ones.** `git -C <repo> worktree remove --force <path>`
-   then `git -C <repo> branch -D <branch>` for a fully-merged branch. Run
-   `git -C <repo> worktree prune` per repo afterwards. Delete any now-empty
+3. **Remove the removable ones.** `"$LAST_STACK_TOOL_GIT" -C <repo> worktree
+   remove --force <path>` then `"$LAST_STACK_TOOL_GIT" -C <repo> branch -D
+   <branch>` for a fully-merged branch. Run `"$LAST_STACK_TOOL_GIT" -C <repo>
+   worktree prune` per repo afterwards. Delete any now-empty
    worktree parent dir.
 3a. **Reap stale dev-server port orphans (port-scoped, brain-safe).** Local
    preview / dev servers (e.g. Vite, a per-app dev node) bind well-known ports;

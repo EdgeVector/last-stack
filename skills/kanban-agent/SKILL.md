@@ -226,6 +226,7 @@ to `review`, append a one-line note explaining what's missing, and exit.
    last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
    . "$last_stack/bin/last-stack-shell-prelude"
    "$last_stack/bin/last-stack-cli-preflight" git gh curl jq kanban brain
+   last_stack_require_tools git gh curl jq kanban brain
    ```
 2. **Resolve the target repo, then set up an isolated worktree** (never edit a
    shared checkout in place, and never `stash`/`reset` — sibling agents may
@@ -241,10 +242,10 @@ to `review`, append a one-line note explaining what's missing, and exit.
    target_repo="<resolved-target-repo-root>"
    case "$target_repo" in ""|/Users/tomtang/code/edgevector) exit 2 ;; esac
    target_repo="$("$last_stack/bin/last-stack-repo-op-guard" "$target_repo" "/Users/tomtang/code/edgevector")"
-   git -C "$target_repo" rev-parse --show-toplevel
+   "$LAST_STACK_TOOL_GIT" -C "$target_repo" rev-parse --show-toplevel
    cd "$target_repo"
-   git fetch origin <base>
-   git worktree add ~/.kanban/worktrees/<slug> -b kanban/<slug> origin/<base>
+   "$LAST_STACK_TOOL_GIT" fetch origin <base>
+   "$LAST_STACK_TOOL_GIT" worktree add ~/.kanban/worktrees/<slug> -b kanban/<slug> origin/<base>
    cd ~/.kanban/worktrees/<slug>
    ```
 3. **Do the work** described in the brief. Match the repo's contributor docs and

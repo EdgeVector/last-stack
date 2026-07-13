@@ -118,6 +118,14 @@ frontmatter suggests a cadence. The pattern every routine follows:
    ```
    Add routine-specific CLIs such as `brain` or `kanban` to the preflight when
    the prompt needs them.
+   For shell-heavy snippets or generated loops, resolve tools in the current
+   shell and use the exported absolute paths instead of relying on later PATH
+   lookups:
+   ```bash
+   last_stack_require_tools git awk basename rm bash
+   "$LAST_STACK_TOOL_GIT" -C "$repo" status --short --branch
+   "$LAST_STACK_TOOL_AWK" 'BEGIN { print "ok" }'
+   ```
    For local Forgejo API calls, prefer
    `"$last_stack/bin/last-stack-forge-api" ...` over hand-written
    `TOKEN=$(security ...) curl ...` snippets; for Forgejo git auth failures,
@@ -206,10 +214,11 @@ like:
 
 ```bash
 workspace="<WORKSPACE>"
-find "$workspace" -mindepth 2 -maxdepth 3 -type d -name .git -prune \
+last_stack_require_tools find git
+"$LAST_STACK_TOOL_FIND" "$workspace" -mindepth 2 -maxdepth 3 -type d -name .git -prune \
   | while IFS= read -r git_dir; do
       repo="${git_dir%/.git}"
-      git -C "$repo" rev-parse --show-toplevel
+      "$LAST_STACK_TOOL_GIT" -C "$repo" rev-parse --show-toplevel
     done
 ```
 
