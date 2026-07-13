@@ -10,6 +10,19 @@ board, keep rationale in the Brain.
 Prefer the MCP tools (`brain_*`, `kanban_*`) when the servers are connected;
 the CLI below is the fallback and uses the SAME verbs.
 
+### New repository venue default: LastGit
+
+Create new repositories in LastGit first, with `lastdb:///<slug>` as the
+canonical remote. Commit `.last-stack/pr-venue` with `lastgit` on its first
+line, add a required `.lastgit/ci.sh` gate, and configure the repo's supervised
+CI watcher/completer with a concurrency limit of one. Do not create a Forgejo
+or GitHub source repository first unless the repository is explicitly public
+or a mirror is part of the request.
+
+This is a creation-time default, not an instruction to silently migrate
+existing repositories. Existing repos keep their configured GitHub, Forgejo,
+or LastGit venue until an explicit migration changes it.
+
 ### Transport: the unix socket, NOT TCP — a `:9001` failure is NOT an outage
 
 The LastDB node serves the brain and board over the unix socket
