@@ -72,6 +72,30 @@ esac
 test -f "$tmp/install/.setup-ran"
 grep -q 'updated: yes' "$tmp/install/routines/demo.md"
 
+# --- stale with content-equivalent dirt: repair metadata + setup ---
+rm -f "$tmp/install/.setup-ran"
+printf 'prewritten remote content\n' >>"$tmp/seed/README.md"
+printf 'name: extra\n' >"$tmp/seed/routines/extra.md"
+git -C "$tmp/seed" add .
+git -C "$tmp/seed" commit -m "content equivalent routine add" >/dev/null
+git -C "$tmp/seed" push origin HEAD:main >/dev/null 2>&1
+
+old_head="$(git -C "$tmp/install" rev-parse --short=12 HEAD)"
+cp "$tmp/seed/README.md" "$tmp/install/README.md"
+cp "$tmp/seed/routines/extra.md" "$tmp/install/routines/extra.md"
+test -n "$(git -C "$tmp/install" status --porcelain)"
+out="$("$tmp/install/bin/last-stack-self-upgrade" --reason=test)"
+case "$out" in
+  *"result=upgraded"*"local_head=$old_head"*"note=content-equivalent-dirty"*) ;;
+  *)
+    printf 'expected content-equivalent dirty upgrade, got:\n%s\n' "$out" >&2
+    exit 1
+    ;;
+esac
+test -f "$tmp/install/.setup-ran"
+test -z "$(git -C "$tmp/install" status --porcelain --untracked-files=no)"
+git -C "$tmp/install" ls-files --error-unmatch routines/extra.md >/dev/null
+
 # --- routine-read auto-heals when stale ---
 # Put install behind again.
 printf 'second fix\n' >>"$tmp/seed/README.md"

@@ -2,8 +2,9 @@
 # Safe self-upgrade of The Last Stack install checkout.
 #
 # Policy (intentionally conservative):
-#   - Never reset/hard-reset/force-push/merge.
-#   - Only fast-forward when the install working tree is clean.
+#   - Never reset/hard-reset/force-push.
+#   - Only fast-forward when the install working tree is clean, or when local
+#     changed files already byte-match the fast-forward target tree.
 #   - Re-run ./setup after a successful pull so harness skill links refresh.
 #
 # Machine-readable result lines (stdout):
@@ -87,19 +88,80 @@ if [ -z "$local_head" ]; then
   exit 1
 fi
 
-# Only tracked modifications/deletes block upgrade. Untracked files are left to
-# `git pull --ff-only` (it refuses when they would be overwritten). Ignoring
-# untracked avoids false dirties from helper state (.self-upgrade.lock,
-# .update-check) and intentional local-only shims that do not conflict.
-dirty="$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null || true)"
-if [ -n "$dirty" ]; then
-  dirty_count="$(printf '%s\n' "$dirty" | sed '/^$/d' | wc -l | tr -d ' ')"
-  sample="$(printf '%s\n' "$dirty" | sed '/^$/d' | head -8 | tr '\n' '|' | sed 's/|$//')"
-  emit "result=error-dirty local_head=$(short_sha "$local_head") dirty_count=$dirty_count sample=$sample"
+dirty_status() {
+  # Only tracked modifications/deletes are treated as dirty. Untracked files
+  # are handled separately only when the target remote tree tracks that path.
+  git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null || true
+}
+
+dirty_sample() {
+  printf '%s\n' "$1" | sed '/^$/d' | head -8 | tr '\n' '|' | sed 's/|$//'
+}
+
+dirty_count() {
+  printf '%s\n' "$1" | sed '/^$/d' | wc -l | tr -d ' '
+}
+
+emit_dirty_error() {
+  dirty="$1"
+  detail="${2:-}"
+  sample="$(dirty_sample "$dirty")"
+  count="$(dirty_count "$dirty")"
+  if [ -n "$detail" ]; then
+    emit "result=error-dirty local_head=$(short_sha "$local_head") dirty_count=$count sample=$sample detail=$detail"
+  else
+    emit "result=error-dirty local_head=$(short_sha "$local_head") dirty_count=$count sample=$sample"
+  fi
   echo "Install checkout has tracked local edits; refusing self-upgrade. Develop in a separate clone, not the install dir." >&2
   echo "Resolve with a clean tree, then re-run: cd \"$ROOT\" && git pull --ff-only && ./setup" >&2
-  exit 1
-fi
+}
+
+path_matches_remote() {
+  target_head="$1"
+  rel="$2"
+  if git -C "$ROOT" cat-file -e "$target_head:$rel" 2>/dev/null; then
+    [ -f "$ROOT/$rel" ] || return 1
+    git -C "$ROOT" show "$target_head:$rel" | cmp -s - "$ROOT/$rel"
+  else
+    [ ! -e "$ROOT/$rel" ]
+  fi
+}
+
+tracked_dirty_matches_remote() {
+  target_head="$1"
+  dirty="$2"
+  [ -n "$dirty" ] || return 0
+  printf '%s\n' "$dirty" | while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case "$line" in
+      " M "*|" D "*) ;;
+      *) exit 1 ;;
+    esac
+    rel="${line#???}"
+    path_matches_remote "$target_head" "$rel" || exit 1
+  done
+}
+
+untracked_remote_conflicts_match() {
+  target_head="$1"
+  git -C "$ROOT" ls-files --others --exclude-standard -z 2>/dev/null |
+    while IFS= read -r -d '' rel; do
+      if git -C "$ROOT" cat-file -e "$target_head:$rel" 2>/dev/null; then
+        path_matches_remote "$target_head" "$rel" || exit 1
+      fi
+    done
+}
+
+metadata_fast_forward_to() {
+  target_head="$1"
+  local_ref="$(git -C "$ROOT" symbolic-ref -q HEAD 2>/dev/null || true)"
+  git -C "$ROOT" read-tree "$target_head"
+  if [ -n "$local_ref" ]; then
+    git -C "$ROOT" update-ref "$local_ref" "$target_head" "$local_head"
+  else
+    git -C "$ROOT" update-ref HEAD "$target_head" "$local_head"
+  fi
+}
 
 # Concurrent upgrades (several routines waking together) serialize on a mkdir lock.
 lock_dir="$ROOT/.self-upgrade.lock"
@@ -138,16 +200,14 @@ cleanup_lock() {
 }
 trap cleanup_lock EXIT
 
-# Re-check tracked dirt after lock (another process may have finished).
-dirty="$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null || true)"
-if [ -n "$dirty" ]; then
-  emit "result=error-dirty local_head=$(short_sha "$local_head") dirty_count=post-lock"
-  exit 1
-fi
-
 if ! git -C "$ROOT" fetch --quiet "$remote" 2>/dev/null; then
   # Offline / unreachable remote: treat as non-fatal up-to-date-ish for cron,
-  # but still exit 0 only when we cannot prove staleness.
+  # but only when the install has no local tracked edits.
+  dirty="$(dirty_status)"
+  if [ -n "$dirty" ]; then
+    emit_dirty_error "$dirty" "fetch-failed"
+    exit 1
+  fi
   emit "result=up-to-date local_head=$(short_sha "$local_head") note=fetch-failed"
   exit 0
 fi
@@ -170,6 +230,11 @@ if [ -z "$remote_head" ]; then
 fi
 
 if [ "$local_head" = "$remote_head" ]; then
+  dirty="$(dirty_status)"
+  if [ -n "$dirty" ]; then
+    emit_dirty_error "$dirty"
+    exit 1
+  fi
   version="$(tr -d '[:space:]' <"$ROOT/VERSION" 2>/dev/null || echo unknown)"
   emit "result=up-to-date local_head=$(short_sha "$local_head") remote_head=$(short_sha "$remote_head") version=$version"
   exit 0
@@ -178,6 +243,41 @@ fi
 if ! git -C "$ROOT" merge-base --is-ancestor "$local_head" "$remote_head" 2>/dev/null; then
   emit "result=error-diverged local_head=$(short_sha "$local_head") remote_head=$(short_sha "$remote_head")"
   echo "Install HEAD is not a fast-forward ancestor of remote HEAD; refusing self-upgrade." >&2
+  exit 1
+fi
+
+dirty="$(dirty_status)"
+if [ -n "$dirty" ]; then
+  if tracked_dirty_matches_remote "$remote_head" "$dirty" &&
+     untracked_remote_conflicts_match "$remote_head"; then
+    if [ "$check_only" -eq 1 ]; then
+      emit "result=would-upgrade local_head=$(short_sha "$local_head") remote_head=$(short_sha "$remote_head") note=content-equivalent-dirty"
+      exit 0
+    fi
+    if metadata_fast_forward_to "$remote_head"; then
+      new_head="$(git -C "$ROOT" rev-parse HEAD)"
+      version="$(tr -d '[:space:]' <"$ROOT/VERSION" 2>/dev/null || echo unknown)"
+      if [ "$do_setup" -eq 1 ] && [ -x "$ROOT/setup" ]; then
+        if ! (cd "$ROOT" && ./setup) >/tmp/last-stack-self-upgrade-setup.$$ 2>&1; then
+          emit "result=error-setup local_head=$(short_sha "$local_head") new_head=$(short_sha "$new_head")"
+          cat /tmp/last-stack-self-upgrade-setup.$$ >&2 || true
+          rm -f /tmp/last-stack-self-upgrade-setup.$$
+          exit 1
+        fi
+        rm -f /tmp/last-stack-self-upgrade-setup.$$
+      fi
+      emit "result=upgraded local_head=$(short_sha "$local_head") remote_head=$(short_sha "$new_head") version=$version note=content-equivalent-dirty"
+      exit 0
+    fi
+  fi
+  emit_dirty_error "$dirty"
+  exit 1
+fi
+
+if ! untracked_remote_conflicts_match "$remote_head"; then
+  emit "result=error-dirty local_head=$(short_sha "$local_head") dirty_count=untracked-conflict"
+  echo "Install checkout has untracked files that would be overwritten by the fast-forward." >&2
+  echo "Move or remove those files from \"$ROOT\", then re-run self-upgrade." >&2
   exit 1
 fi
 
