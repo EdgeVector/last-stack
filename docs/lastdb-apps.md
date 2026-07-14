@@ -72,11 +72,12 @@ brew services start lastdb
 Initialize the apps:
 
 ```bash
-brain init --grant-consent
-kanban init
-situations init
-lastsecrets init
-org init
+# first-run setup (not a health check — run once after brew services start lastdb)
+brain init --grant-consent   # bootstrap Brain
+kanban init                  # bootstrap Kanban
+situations init              # bootstrap Situations
+lastsecrets init             # bootstrap LastSecrets (needed for org keys)
+org init                     # bootstrap Org (invite/join)
 ```
 
 Join someone's org (after they send an invite file):
