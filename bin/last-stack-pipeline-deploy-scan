@@ -13,7 +13,7 @@
 #   - the latest success|failure line is `failure`, OR
 #   - the latest line is `pending` older than --pending-max-s (default 4h)
 #   AND there is no later success.
-set -u
+set -eu
 
 json=0
 root="${LASTGIT_DEPLOY_ROOT:-$HOME/.lastgit}"
@@ -47,13 +47,30 @@ while [ "$#" -gt 0 ]; do
 done
 
 now="$(date -u +%s)"
-# Portable JSON string escape
+
 json_escape() {
-  # shellcheck disable=SC2001
   printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/	/\\t/g' | tr '\n' ' '
 }
 
-# Collect results as lines: repo|status|sha|blocked|reason|log|mtime
+log_mtime() {
+  local f="$1"
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import os,sys; print(int(os.path.getmtime(sys.argv[1])))' "$f" 2>/dev/null && return 0
+  fi
+  # GNU stat
+  if stat -c %Y "$f" >/dev/null 2>&1; then
+    stat -c %Y "$f"
+    return 0
+  fi
+  # BSD stat
+  if stat -f %m "$f" >/dev/null 2>&1; then
+    stat -f %m "$f"
+    return 0
+  fi
+  echo 0
+}
+
+# Collect results as lines: repo|pipe_status|sha|blocked|reason|log|mtime
 results=()
 shopt -s nullglob
 for dir in "$root"/deploy-*/; do
@@ -63,7 +80,7 @@ for dir in "$root"/deploy-*/; do
     deploy-*) repo="${base#deploy-}" ;;
     *) continue ;;
   esac
-  log="$dir/deploy.log"
+  log="${dir}deploy.log"
   if [ ! -f "$log" ]; then
     results+=("$repo|missing||1|deploy.log missing|$log|0")
     continue
@@ -72,24 +89,31 @@ for dir in "$root"/deploy-*/; do
   # last success / failure / pending lines (ignore skip / JSON telemetry)
   last_term=""
   last_pend=""
-  while IFS= read -r line || [ -n "$line" ]; do
+  last_any=""
+  while IFS= read -r line || [ -n "${line:-}" ]; do
     case "$line" in
-      success\ *|failure\ *) last_term="$line" ;;
-      pending\ *) last_pend="$line" ;;
+      success\ *|failure\ *)
+        last_term="$line"
+        last_any="$line"
+        ;;
+      pending\ *)
+        last_pend="$line"
+        last_any="$line"
+        ;;
     esac
   done <"$log"
 
-  mtime="$(stat -f %m "$log" 2>/dev/null || stat -c %Y "$log" 2>/dev/null || echo 0)"
+  mtime="$(log_mtime "$log")"
   pipe_status="unknown"
   sha=""
   blocked=0
   reason="no success/failure/pending lines"
 
   if [ -n "$last_term" ]; then
-    # e.g. "failure abcdef deploy-pipeline" or "success abcdef deploy-pipeline"
-    set -- $last_term
-    pipe_status="$1"
-    sha="${2:-}"
+    # e.g. "failure abcdef deploy-pipeline"
+    pipe_status="${last_term%% *}"
+    rest="${last_term#* }"
+    sha="${rest%% *}"
     if [ "$pipe_status" = "failure" ]; then
       blocked=1
       reason="latest terminal status is failure for $sha"
@@ -98,35 +122,23 @@ for dir in "$root"/deploy-*/; do
     fi
   fi
 
-  # Pending after last terminal, or only pending ever
-  if [ -n "$last_pend" ]; then
-    set -- $last_pend
-    pend_sha="${2:-}"
-    # If pending is the newest event overall, check age via log mtime as proxy
-    # (deploy.log lines lack timestamps on success/failure lines).
-    age=$(( now - mtime ))
-    # Prefer blocked if pending is more recent than last terminal:
-    # approximate: if last line of file is pending-ish via reading last matching line order
-    last_any=""
-    while IFS= read -r line || [ -n "$line" ]; do
-      case "$line" in
-        success\ *|failure\ *|pending\ *) last_any="$line" ;;
-      esac
-    done <"$log"
-    case "$last_any" in
-      pending\ *)
-        pipe_status="pending"
-        sha="$pend_sha"
-        if [ "$age" -gt "$pending_max_s" ]; then
-          blocked=1
-          reason="pending ${age}s (max ${pending_max_s}s) for $sha"
-        else
-          blocked=0
-          reason="pending ${age}s (within grace) for $sha"
-        fi
-        ;;
-    esac
-  fi
+  # If the newest event overall is pending, apply grace on log mtime
+  case "$last_any" in
+    pending\ *)
+      rest="${last_any#* }"
+      pend_sha="${rest%% *}"
+      pipe_status="pending"
+      sha="$pend_sha"
+      age=$((now - mtime))
+      if [ "$age" -gt "$pending_max_s" ]; then
+        blocked=1
+        reason="pending ${age}s (max ${pending_max_s}s) for $sha"
+      else
+        blocked=0
+        reason="pending ${age}s (within grace) for $sha"
+      fi
+      ;;
+  esac
 
   results+=("$repo|$pipe_status|$sha|$blocked|$reason|$log|$mtime")
 done
