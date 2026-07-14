@@ -40,6 +40,7 @@ stripped out.
                           ▼
    kanban-watch  ─▶ RECONCILE: advance merged PRs, re-arm/un-stick the stragglers
    kanban-validate ─▶ VALIDATE: run post-merge END STATE checks, then done/review
+   pipeline-health ─▶ every ~10m: LastGit CRs + forge PRs unblocked (stuck >10m → fix)
    drain-open-prs ─▶ daily backstop: drive every open PR across all repos toward zero
 
                  ┌──────────────────── the brain (brain) ──────────────────┐
@@ -84,6 +85,7 @@ engine.** That's why this pack exists.
 | [`worktree-cleanup`](worktree-cleanup.md) | daily (off-hours) | Prune stale worktrees/branches; bring repos to latest default branch. |
 | [`disk-reclaim`](disk-reclaim.md) | hourly | Reclaim disk, prune merged/clean worktrees, sweep orphan processes. |
 | [`self-upgrade`](self-upgrade.md) | every 1–2 hours | Clean-only fast-forward of the install checkout + `./setup` so other routines do not stall on `LAST_STACK_ROUTINE_STALE`. |
+| [`pipeline-health`](pipeline-health.md) | every ~10 min | Keep LastGit CRs and forge (fold / forge-hot) PRs unblocked; investigate and fix anything stuck >10 minutes. |
 | [`drain-open-prs`](drain-open-prs.md) | daily | Drive every open PR across all repos toward zero (merge or close). |
 
 ### B. The kanban / brain driving loop — pairs 1:1 with the skills
