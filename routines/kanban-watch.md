@@ -27,13 +27,15 @@ continue — do not fail the whole run.
 
 ## Action budget per wake (cheap vs heavy)
 - **CHEAP mechanical advances are NOT capped** — do EVERY applicable one this
-  wake: move every merged card to `done`; **re-arm auto-merge on every PR that is
-  CLEAN/mergeable but has auto-merge OFF or *dropped*** (a dropped auto-merge is
-  the #1 strand and nothing else re-fires it); and `gh pr update-branch` the
-  oldest few clean-green-BEHIND carded PRs. These are lightweight remote API
-  calls and must not be left to rot one-per-hour. In steady state most PRs are
-  driven to merge by their own `kanban-agent`; this sweep is the BACKSTOP for
-  whatever slips — so be thorough on the cheap advances.
+  wake: **reclaim zombie `doing` claims** (no PR/branch/commits + no live
+  worker + older than 90m → `move … todo`); move every merged card to `done`;
+  **re-arm auto-merge on every PR that is CLEAN/mergeable but has auto-merge OFF
+  or *dropped*** (a dropped auto-merge is the #1 strand and nothing else
+  re-fires it); and `gh pr update-branch` the oldest few clean-green-BEHIND
+  carded PRs. These are lightweight remote API / board moves and must not be
+  left to rot one-per-hour. In steady state most PRs are driven to merge by
+  their own `kanban-agent`; this sweep is the BACKSTOP for whatever slips — so
+  be thorough on the cheap advances.
 - **HEAVY work IS capped at ONE bounded unit per wake**: a worktree CI-fix, a
   conflict rebase, OR (on a quiet sweep) filing one card. Pick the highest-value
   one, do it, then exit.
@@ -115,6 +117,32 @@ failover:
 
 If pickup is fresh, or there is no eligible unblocked `todo` work, continue with
 the normal reconcile sweep below.
+
+## Reclaim zombie `doing` claims (CHEAP, uncapped — do EARLY)
+
+A card in `doing` with **no PR/CR**, **no `kanban/<slug>` branch with commits**,
+and **no live worker** is a pipeline stall: surface-overlap and shared-build
+gates treat it as in-flight, so pickup skips overlapping todos forever.
+
+This is the backstop for the failure mode `kanban-pickup` already forbids
+("Do not leave zombie `doing` cards with no worker") when the claiming session
+dies before it can roll back.
+
+For every card in `doing` (from the column preview):
+1. Skip non-PR kinds that use `DONE-WHEN` (evaluate those on the normal path).
+2. If the card has an explicit `PR:` / `pr_url` / `lastgit://…/cr/…`, skip
+   (in-flight review artifact — normal PR reconcile owns it).
+3. If head-branch lookup finds an open/merged PR/CR for `kanban/<slug>` (or the
+   card's `Branch:`), skip (record URL if missing, then advance normally).
+4. If `updated_at` is younger than **90 minutes**, skip (grace for long builds).
+5. If a worktree for `<slug>` exists under `~/.fkanban/worktrees` or
+   `~/.kanban/worktrees` with uncommitted changes OR a live process whose
+   command line contains that worktree path, skip (live worker).
+6. Otherwise **`move <slug> todo`**. Note `reclaimed-zombie=<slug>` in the
+   heartbeat. Do this for EVERY matching card this wake (uncapped CHEAP).
+
+Do **not** reclaim from `todo`/`backlog`/`review`. Do **not** move zombies to
+`done`. Prefer reclaim over parking in `review` — the next pickup should retry.
 
 ## Self-heal stranded no-repo cards (CHEAP, uncapped — do FIRST)
 A card needs both a `Repo:` and a `Base:` header to be pickup-eligible. `add`/`move`
@@ -297,12 +325,26 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
         done`. This is the ONLY path to `done` — a verified merged PR/CR. If
         you can't point at a merged review artifact, it does NOT go to `done`,
         no matter how the card reads.
-      - **No PR/CR AND no `kanban/<slug>` branch with commits** → the card is
-        UN-STARTED (a fresh `todo`/`backlog` item nobody picked up). LEAVE IT
-        EXACTLY WHERE IT IS — never move it, never to `done`. The reconciler
-        advances *in-flight* work; it does not start, complete, or retire fresh
-        cards. (Marking an un-started card `done` silently buries real work — a
-        real historical bug.)
+      - **No PR/CR AND no `kanban/<slug>` branch with commits** → column-dependent:
+        - In `todo` / `backlog`: UN-STARTED. LEAVE IT EXACTLY WHERE IT IS — never
+          move it, never to `done`. (Marking an un-started card `done` silently
+          buries real work — a real historical bug.)
+        - In `doing`: this is almost always a **zombie claim** (worker died,
+          rate-limited abort without rollback, or pre-no-spawn fan-out left the
+          card claimed). **RECLAIM to `todo`** so pickup can drain it again.
+          CHEAP, uncapped. Guard so you do not thrash a live worker:
+          1. Skip reclaim if `updated_at` is younger than **90 minutes** (long
+             cargo/CI units are normal).
+          2. Skip reclaim if a worktree exists at
+             `${WORKTREES_DIR:-$HOME/.fkanban/worktrees}/<slug>` (or
+             `~/.kanban/worktrees/<slug>`) AND either (a) it has uncommitted
+             changes, or (b) a process list match for that worktree path is
+             live (rustc/cargo/codex/claude/agent).
+          3. Otherwise `move <slug> todo`. Optionally append one line once:
+             `RECLAIMED: zombie doing (no PR/branch/commits; no live worker)`.
+          Heartbeat should include `reclaimed-zombie=<slug[,slug…]>` when any
+          reclaim happens.
+        - In `review`: leave alone (human gate / BLOCKED note owns it).
       - **No PR/CR + a `kanban/<slug>` branch with commits** → finish landing it
         using the routed venue: GitHub `gh -R <repo> pr create --fill`, Forgejo
         local API create, or LastGit `git push lastgit HEAD:<branch>` plus
