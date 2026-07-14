@@ -79,8 +79,19 @@ continue — do not fail the whole run.
    path. Ignore `backlog` entirely.
 3. Leave missing `Repo:`/`Base:` cards in `todo` for `kanban-watch` self-heal.
    Leave cards with a `BLOCKED:` note alone. For present-but-unresolvable `Repo:`
-   headers, convert once to a loud human blocker (append `BLOCKED: …`, move to
-   `review` with `--block-status needs_human`) — do not re-skip every hour.
+   headers, convert once to a loud human blocker — do not re-skip every hour:
+   - Append exactly one line if absent: `BLOCKED: kanban-pickup cannot resolve
+     Repo: "<repo header>"; replace it with owner/name or an absolute Git
+     checkout path.`
+   - Persist via `<board CLI> add <slug> --column review
+     --block-status needs_human --block-reason "Repo target not resolvable:
+     <repo header>"` and confirm with `show`.
+   - Examples that must take this path unless a real Git checkout is proven
+     before selection: `Repo: (workspace root — .claude/launch.json lives at
+     /Users/tomtang/code/edgevector/.claude/launch.json; commit it in whichever
+     repo tracks that file, else file note)` and
+     `Repo: (machine-hygiene skill — /Users/tomtang/.claude or the repo tracking
+     the machine-hygiene SKILL.md)`.
 4. **Surface-overlap gate:** before a card can enter the work-unit, run
    `<board CLI> overlap <slug> --json`. On conflict, SKIP and leave in `todo`;
    note `collision=<slug>:<in-flight-slug>` in the heartbeat.
@@ -106,8 +117,8 @@ continue — do not fail the whole run.
    implement without a successful claim.
 2. **Read the full brief:** `<board CLI> show <slug> --json` for each card in
    the unit.
-3. **Isolate:** resolve `<repo>` to an explicit `<target-repo-root>` (never the
-   aggregate workspace). Verify with
+3. **Isolate (checkout-resolution guard):** resolve `<repo>` to an explicit
+   `<target-repo-root>` and **reject the aggregate workspace root**. Verify with
    `"$last_stack/bin/last-stack-repo-op-guard" "$target_repo" "<workspace>"`
    and `git -C "$target_repo" rev-parse --show-toplevel`. Then:
    ```bash
@@ -126,13 +137,15 @@ continue — do not fail the whole run.
    route_json="$("$last_stack/bin/last-stack-pr-venue" --json "<repo>" "$target_repo")"
    ```
    - `venue=github`: push → `gh -R <repo> pr create --fill --base <base>` →
-     record `pr_url` + `branch` on the card immediately → enable auto-merge per
-     repo strategy → drive to MERGED with `wait-merge` or sleepless
-     `gh -R <repo> pr checks <n> --watch` (NEVER `sleep`).
-   - `venue=forgejo`: local Forgejo SOP/API only — never `gh` against a mirror.
+     immediately record `pr_url` and `branch` on the card with
+     `<board CLI> add <slug> --pr-url <url> --branch <branch>` → enable
+     auto-merge per repo strategy → drive to MERGED with `wait-merge` or
+     sleepless `gh -R <repo> pr checks <n> --watch` (NEVER `sleep`).
+   - `venue=forgejo`: local Forgejo SOP/API only — never `gh` against a mirror;
+     record `pr_url` and `branch` on the card immediately after create.
    - `venue=lastgit`: `lastgit cr create … --auto-merge …`, record
-     `PR: lastgit://…`, drive with `lastgit cr view` / `ci status` /
-     `cr complete --once`.
+     `PR: lastgit://…` plus the branch on the card, drive with
+     `lastgit cr view` / `ci status` / `cr complete --once`.
 6. **On MERGED:** move every shipped card in the unit to `done` and EXIT.
 7. **Genuine human-only blocker** (ambiguous spec, product judgment, human-only
    gate, dep on unmerged work): leave the branch clean, move the card(s) to
