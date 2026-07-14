@@ -425,13 +425,16 @@ has no `Repo:` header (it isn't meant for this flow). For each candidate:
      merged PR/CR. If you cannot point at a merged review artifact for the PR
      card, it does **not** go to
      `done`, no matter how the card reads.
-   - **No PR/CR found AND no `kanban/<slug>` branch with commits** → the card is
-     **un-started** (a fresh `todo`/`backlog` item nobody has picked up yet).
-     **LEAVE IT EXACTLY WHERE IT IS — do NOT move it, and NEVER move it to
-     `done`.** The reconciler advances *in-flight* work (cards that already
-     have a PR/CR, or a branch with commits); it does not start, complete, or
-     retire fresh cards. Marking an un-started card `done` silently buries real
-     work.
+   - **No PR/CR found AND no `kanban/<slug>` branch with commits** → depends on
+     column:
+     - `todo` / `backlog`: **un-started**. LEAVE IT EXACTLY WHERE IT IS — never
+       to `done`. Reconcile does not start or retire fresh cards.
+     - `doing`: **zombie claim**. After a **90-minute** `updated_at` grace, and
+       only if no live worktree worker is present (no dirty tree / no process on
+       `~/.fkanban/worktrees/<slug>` or `~/.kanban/worktrees/<slug>`),
+       **`move <slug> todo`** so pickup can reclaim it. CHEAP, uncapped. Never
+       move these to `done`.
+     - `review`: leave alone (human/BLOCKED owns it).
    - **No PR/CR found** but a `kanban/<slug>` branch with commits exists and the
      card is in `doing` → a worker opened a branch but didn't finish landing
      (or died mid-work). Finish WORK MODE step 5 for it. Don't thrash.
