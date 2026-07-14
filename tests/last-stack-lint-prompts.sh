@@ -49,6 +49,27 @@ if "$ROOT/bin/last-stack-lint-prompts" "$bad_workspace_git" >/dev/null 2>&1; the
   exit 1
 fi
 
+bad_workspace_dash_c_status="$tmp/bad-workspace-dash-c-status.md"
+printf '%s\n' "git -C /Users/tomtang/code/edge""vector status --short" > "$bad_workspace_dash_c_status"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_workspace_dash_c_status" >/dev/null 2>&1; then
+  echo "expected git -C aggregate workspace status to fail prompt lint" >&2
+  exit 1
+fi
+
+bad_workspace_dash_c_redirected_status="$tmp/bad-workspace-dash-c-redirected-status.md"
+printf '%s\n' "git -C /Users/tomtang/code/edge""vector status --short 2>&1" > "$bad_workspace_dash_c_redirected_status"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_workspace_dash_c_redirected_status" >/dev/null 2>&1; then
+  echo "expected git -C aggregate workspace status with redirection to fail prompt lint" >&2
+  exit 1
+fi
+
+bad_workspace_var_dash_c_revparse="$tmp/bad-workspace-var-dash-c-revparse.md"
+printf '%s\n' "git -C \"\$workspace_ro""ot\" rev-parse --show-toplevel" > "$bad_workspace_var_dash_c_revparse"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_workspace_var_dash_c_revparse" >/dev/null 2>&1; then
+  echo "expected git -C workspace variable rev-parse to fail prompt lint" >&2
+  exit 1
+fi
+
 bad_gh_pr_without_repo="$tmp/bad-gh-pr-without-repo.md"
 printf '%s\n' "gh pr vi""ew 123 --json state" > "$bad_gh_pr_without_repo"
 if "$ROOT/bin/last-stack-lint-prompts" "$bad_gh_pr_without_repo" >/dev/null 2>&1; then
