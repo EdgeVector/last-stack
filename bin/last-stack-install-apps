@@ -11,9 +11,10 @@ usage() {
 last-stack-install-apps [options]
 
 Downloads the stable LastDB app stack:
-  LastDB daemon, brain, kanban (from public fkanban), situations, dogfood-graph,
-  org.
-  LastSecrets is optional (private repo) — installed when clone succeeds.
+  LastDB daemon, brain, kanban (from public fkanban), situations, dogfood-graph.
+  Optional when available:
+    org          (LastGit: lastdb:///org — needs a running local LastDB + LastGit)
+    lastsecrets  (private GitHub repo)
 
 Options:
   --dir <path>      clone/update app repos under this directory
@@ -87,7 +88,14 @@ clone_or_update() {
     if ! git clone "$url" "$dest"; then
       if [ "$optional" = "optional" ]; then
         echo "    warning: could not clone optional app $name from $url — skipping" >&2
-        echo "    (if the repo is private, authenticate to GitHub or install it later)" >&2
+        case "$url" in
+          lastdb://*|lastgit://*)
+            echo "    (LastGit apps need a running local LastDB node + LastGit; install later after \`brew services start lastdb\`)" >&2
+            ;;
+          *)
+            echo "    (if the repo is private, authenticate to GitHub or install it later)" >&2
+            ;;
+        esac
         return 1
       fi
       echo "failed to clone $name from $url" >&2
@@ -147,23 +155,34 @@ mkdir -p "$TARGET_DIR"
 
 # Public apps (required). Kanban's public GitHub repo is EdgeVector/fkanban;
 # the CLI still installs as `kanban` via that package's install-cli.
-clone_or_update brain "https://github.com/EdgeVector/brain.git"
-clone_or_update kanban "https://github.com/EdgeVector/fkanban.git"
-clone_or_update situations "https://github.com/EdgeVector/situations.git"
-clone_or_update dogfood-graph "https://github.com/EdgeVector/dogfood-graph.git"
-clone_or_update org "lastdb:///org"
+# Failures here must abort — ranks 01–03 of the public install map depend on them.
+clone_or_update brain "https://github.com/EdgeVector/brain.git" || exit 1
+clone_or_update kanban "https://github.com/EdgeVector/fkanban.git" || exit 1
+clone_or_update situations "https://github.com/EdgeVector/situations.git" || exit 1
+clone_or_update dogfood-graph "https://github.com/EdgeVector/dogfood-graph.git" || exit 1
 
-# Optional: LastSecrets is not public on GitHub yet. Soft-fail so a brand-new
-# machine without LastSecrets repo access still gets the required apps working.
+# Optional apps: soft-fail so a brand-new machine following thelastdb.com/llms.txt
+# still gets Brain + Kanban + Situations working. Org lives only on LastGit
+# (lastdb:///) and needs a running node — which the docs start *after* this
+# installer — so treating it as required breaks first-run.
+ORG_OK=0
+if clone_or_update org "lastdb:///org" optional; then
+  ORG_OK=1
+fi
+
 LASTSECRETS_OK=0
 if clone_or_update lastsecrets "https://github.com/EdgeVector/lastsecrets.git" optional; then
   LASTSECRETS_OK=1
 fi
 
-for app in brain kanban situations dogfood-graph org; do
+for app in brain kanban situations dogfood-graph; do
   run_bun_install "$app"
   link_cli "$app"
 done
+if [ "$ORG_OK" -eq 1 ]; then
+  run_bun_install org
+  link_cli org
+fi
 if [ "$LASTSECRETS_OK" -eq 1 ]; then
   run_bun_install lastsecrets
   link_cli lastsecrets
@@ -182,7 +201,11 @@ if [ "$LASTSECRETS_OK" -eq 1 ]; then
 else
   printf '  # lastsecrets skipped (private / unavailable) — install later if you have access\n'
 fi
-printf '  org init\n'
+if [ "$ORG_OK" -eq 1 ]; then
+  printf '  org init\n'
+else
+  printf '  # org skipped (LastGit lastdb:///org unavailable) — start lastdb, then re-run this installer\n'
+fi
 printf '\n'
 printf 'Dogfood Graph is a local app:\n'
 printf '  cd "%s/dogfood-graph" && npm run dev\n\n' "$TARGET_DIR"

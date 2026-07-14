@@ -13,13 +13,19 @@ Included:
 - **Situations (`situations`)**: active operational posture and preflight
   checks for agents.
 - **Dogfood Graph**: LastDB-native manual dogfood planning and evidence.
-- **Org (`org`)**: local org membership, invites, and join setup over LastDB.
-- **LastSecrets**: local secret references backed by LastDB, with raw values kept
-  out of normal search surfaces.
+- **Org (`org`)**: optional — local org membership/invites over LastDB. Cloned
+  from LastGit (`lastdb:///org`) only when a local LastDB + LastGit path works;
+  skipped on a cold first install (re-run the installer after `brew services
+  start lastdb` if you need it).
+- **LastSecrets**: optional — local secret references backed by LastDB, with
+  raw values kept out of normal search surfaces (private GitHub; skipped when
+  clone fails).
 
 Not included:
 
-- **LastGit**: intentionally left out until it is stable enough for this bundle.
+- **LastGit**: intentionally left out until it is stable enough for this bundle
+  (the installer may still *consume* `lastdb:///` for optional apps when
+  available).
 
 ## One Command
 
@@ -70,8 +76,9 @@ Initialize the apps you want to use:
 brain init --grant-consent   # setup Brain
 kanban init                  # setup Kanban
 situations init
-lastsecrets init
-org init
+# only if install-apps linked them:
+# lastsecrets init
+# org init                   # re-run install-apps after lastdb is up if skipped
 ```
 
 Run Dogfood Graph locally:
@@ -103,19 +110,22 @@ Download the app repos:
 mkdir -p ~/lastdb-apps
 cd ~/lastdb-apps
 git clone https://github.com/EdgeVector/brain.git
-git clone https://github.com/EdgeVector/kanban.git
+git clone https://github.com/EdgeVector/fkanban.git kanban
 git clone https://github.com/EdgeVector/situations.git
 git clone https://github.com/EdgeVector/dogfood-graph.git
-git clone lastdb:///org
-git clone https://github.com/EdgeVector/lastsecrets.git
+# optional (need running lastdb + LastGit):
+# git clone lastdb:///org
+# optional (private GitHub):
+# git clone https://github.com/EdgeVector/lastsecrets.git
 ```
 
 Install dependencies:
 
 ```bash
-for app in brain kanban situations dogfood-graph org lastsecrets; do
+for app in brain kanban situations dogfood-graph; do
   bun install --cwd "$HOME/lastdb-apps/$app"
 done
+# optional: org lastsecrets
 ```
 
 Link commands:
@@ -124,8 +134,8 @@ Link commands:
 cd ~/lastdb-apps/brain && bun link
 cd ~/lastdb-apps/kanban && bun run install-cli
 ln -snf ~/lastdb-apps/situations/bin/situations ~/.local/bin/situations
-cd ~/lastdb-apps/org && bun link
-cd ~/lastdb-apps/lastsecrets && bun link
+# optional: cd ~/lastdb-apps/org && bun link
+# optional: cd ~/lastdb-apps/lastsecrets && bun link
 ```
 
 Dogfood Graph is a web app rather than a global CLI; run it from its checkout.
