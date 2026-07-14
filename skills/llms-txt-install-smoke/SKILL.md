@@ -60,9 +60,9 @@ The script prints `VERDICT: GREEN` or `VERDICT: RED` and exits 0/1.
 | install-apps | brain + kanban + situations CLIs on sandbox PATH (lastsecrets may skip if private) |
 | daemon | isolated `lastdbd --data-dir $LASTDB_HOME` serves socket within 30s |
 | health | `curl --unix-socket …/folddb.sock http://localhost/health` → `{"status":"ok"}` |
-| brain init | `brain init --grant-consent` exit 0; config has **no** `:9001` |
-| kanban init | exit 0; `kanban list` shows default board |
-| situations init | exit 0 without pre-declared schema; `situations list` exit 0 |
+| brain first-run bootstrap | `brain init --grant-consent` exit 0 (setup, not a health check); config has **no** `:9001` |
+| kanban first-run bootstrap | setup exit 0; `kanban list` shows default board |
+| situations first-run bootstrap | setup exit 0 without pre-declared schema; `situations list` exit 0 |
 | quick try | `brain concept new` + `brain get hello` succeeds; `brain ask "first note"` or `brain search "first note"` finds the note |
 
 ## On RED
