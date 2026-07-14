@@ -1,7 +1,7 @@
 ---
 name: kanban-pickup
 cadence: every 15 minutes
-description: Drain the ready board queue one work-unit at a time — YOU perform kanban-agent WORK mode yourself in an isolated worktree and drive to a MERGED PR. No subagents, no collab SpawnAgent, no background harness fan-out. If the queue is empty, exit (or idle-mode simplification if opted in).
+description: Drain the ready board queue one work-unit at a time — YOU perform kanban-agent WORK mode yourself in an isolated worktree and drive to a MERGED PR. No subagents, no collab SpawnAgent, no background harness fan-out. If the queue is empty, run Idle mode smart-heal (program next-slice, CodeRings hotspot, or low-risk simplification) instead of no-oping.
 ---
 
 You pick **one** ready work-unit per run and **do the work yourself** — isolate
@@ -16,6 +16,11 @@ silently dropping workers while cards sat stranded in `doing`.
 minutes. Prefer correctness over parallel fan-out. If a prior run is still
 in-flight (single-flight lock), this fire is skipped — that is fine; do not
 try to overlap yourself. The next free slot drains the next card.
+
+**Empty queue:** default **Idle mode: smart-heal** (below) so the fleet keeps
+self-improving between feature waves. Prefer real program / North Star work
+over random cleanup. Never invent product scope, never reopen closed planes
+(desktop UI, transform/view/WASM).
 
 ## Automation memory
 If the scheduled prompt includes an `Automation memory:` path, read and write
@@ -104,7 +109,8 @@ continue — do not fail the whole run.
 6. **Shared-build-cache:** if the target repo has heavy concurrent-build risk
    and other `doing` work already targets it, prefer a different repo's card
    when one exists; else proceed with the singleton (you are not fanning out).
-7. If none are eligible, EXIT cleanly (see "Nothing to pick up").
+7. If none are eligible, go to **Nothing to pick up** (Idle mode: smart-heal).
+   Do not invent a random feature first — follow the idle ladder.
 
 ## Execute — YOU are the worker (no fan-out)
 
@@ -161,40 +167,115 @@ continue — do not fail the whole run.
 - Do not kill any brain/board node you did not start.
 
 ## Nothing to pick up
-When the `todo` queue is empty (or nothing eligible):
+When the `todo` queue is empty (or nothing eligible after selection gates):
 
-### Idle mode `exit` (default)
-Exit cleanly. Report "queue empty, nothing to build". Do NOT invent work.
+### Idle mode selection
+- **Default: `smart-heal`** (always on unless the scheduled prompt sets
+  `Idle mode: exit`).
+- `Idle mode: exit` — report "queue empty, nothing to build" and EXIT (no invent).
+- `Idle mode: ship-one-simplification` — only step 4 of the ladder below
+  (legacy opt-in; prefer smart-heal).
 
-### Idle mode `ship-one-simplification` (opt-in)
-Only if the scheduled prompt contains `Idle mode: ship-one-simplification` and
-zero cards were claimed this run: ship ONE small high-confidence simplification
-**yourself** in a fresh worktree (same no-spawn rules). If you cannot find a
-safe simplification, open no PR and exit.
+### Idle mode `smart-heal` (default)
+Zero pickup-eligible cards were claimed this run. Do **exactly one** action from
+the ladder, top-down. Stop after the first successful action. Same no-spawn
+rules, same one-PR / one-worktree discipline as WORK mode.
+
+#### Anti-thrash (check before any idle work)
+- If rate-limited / node busy → `noop busy-node` or rate-limit EXIT (same as
+  normal path).
+- Read automation memory (if writable) for `last_idle_at` / `last_idle_repo` /
+  `last_idle_kind`. If you shipped an idle merge in the **same repo** within
+  the last **2 hours**, skip that repo (try another ladder step or true noop).
+- At most **one** idle implement or **one** card-file per run — never both a
+  full implement and a second invent.
+- Do **not** reopen closed product planes: desktop/Tauri UI, transform/view/WASM,
+  temp fold LastGit homes, inventing new North Stars.
+
+#### Ladder (stop at first real action)
+
+**1) Program / North Star next slice (preferred)**  
+Read `brain get active-programs` (project). For each active program, if:
+- Next move is a **concrete PR-sized** step, and
+- No card for that step is already in `todo`/`doing`/`review`, and
+- It is not human-gated / dep-blocked / capstone-as-pickup,
+then either:
+- **File one** PR card to `todo` with full GOAL/STEPS/VERIFY + `Repo:`/`Base:` +
+  kanban-agent header, then **immediately claim and WORK it** in this same run
+  (preferred when the slice is clear), **or**
+- File only and EXIT if the slice is large / uncertain (heartbeat
+  `ok idle=program-filed slug=…`).
+Do not dump whole programs/capstones into `todo`. Prefer the most-behind program
+with a clear next slice. Verify facts against `origin/main` before filing.
+
+**2) CodeRings high-impact hotspot (sensor, not full scan)**  
+Cheap read only — do **not** run a full fold capture every idle fire:
+- Prefer existing board/brain signals: CodeRings continuous exerciser RED cards,
+  weekly growth cards, or a recent snapshot summary if already on disk/brain.
+- If you can identify **one** localizable hotspot (oversized file, dead export,
+  obvious duplication, unused path) with a **small** fix:
+  - **High confidence** (delete-only / internal, tests prove safe) → implement
+    as a normal WORK unit (synthetic card optional but preferred for audit).
+  - **Medium/low or API/data/crypto** → **file a PR card** only for human/groom
+    pickup; do not force a large refactor.
+- If CodeRings data is missing or stale and consult would be expensive → skip
+  to step 3 (do not burn the idle slot on a weekly-scale scan).
+
+**3) Known fleet chore (allowlist only)**  
+Only if (1)–(2) yield nothing. At most one of:
+- A ready papercut already on the board you can finish this session, or
+- A single **idempotent** cleanup already described on an existing card in
+  backlog that is PR-sized and unblocked (promote + work), or
+- Note a true generator gap in the heartbeat (`idle=no-program-slice`) — do
+  **not** run doctor/init, full canonicalize sweeps, or brain stress as idle.
+
+**4) Low-risk simplification (fallback)**  
+Ship **one** small improvement in a fresh worktree:
+- Prefer: unused private code, dead flags, clear bug with test, redundant
+  wrapper, docs that block installs (dev-only).
+- Prefer repos with green CI and no open migration/human gate on that surface.
+- **Ship** (PR → merge) when confidence is high and blast radius is low.
+- **File for review** (card in `review` or PR without auto-merge) when medium
+  confidence or public API / multi-crate / data format.
+- If nothing safe → step 5.
+
+**5) True noop**  
+Heartbeat `noop idle nothing-safe` (distinguish from "didn't run"). EXIT.
+
+#### After any idle ship/file
+- Heartbeat must include `idle=<program-slice|coderings|chore|simplify|filed>`
+  and `result=…` / `slug=…` / `pr=…` as applicable.
+- If automation memory is writable, append one line:
+  `last_idle_at=<ISO> kind=<…> repo=<…> slug=<…>`.
+- Optional trailer: `ROUTINE_RESULT outcome=ok|noop detail=idle=…`.
 
 ## Hard rules
-- AT MOST **one work-unit per run** (singleton preferred).
+- AT MOST **one work-unit per run** (singleton preferred) — whether pickup or idle.
 - Claim (`doing`) only for work **you** will execute in this session.
 - Never kill the process hosting your brain/board node or any node you didn't
   start. Never `stash`/`reset`/`clean` a shared repo — isolate with
   `git worktree add`.
 - Before referencing "current state" of a repo, fetch the default branch first —
   the work may already be merged.
+- Idle work still honors **checkout-resolution guard**, overlap, and venue
+  routing. Idle is not a free pass to edit the workspace root.
 
 End with a one-line report: which card(s) you claimed + worked, PR/CR url if
-any, final column (`done` / `review` / rolled-back `todo`); or "queue empty,
-nothing to build." Then exit.
+any, final column (`done` / `review` / rolled-back `todo`); or idle outcome
+(`idle=program-slice|coderings|chore|simplify|filed|nothing-safe`). Then exit.
 
 > **Heartbeat (LAST action, always).** Call
 > `<last-stack>/bin/last-stack-brain-append-heartbeat --line "kanban-pickup
 > <ISO-ts> <ok|noop|error> <one-line outcome>"`.
 >
-> - `noop` — queue empty / busy-node / nothing eligible (and no idle ship).
+> - `noop` — busy-node, or idle ladder reached nothing-safe / `Idle mode: exit`.
 > - `error` — rate-limit abort, claim failure with no recovery, harness fault.
-> - `ok` — you executed the unit: include
+> - `ok` — you executed a unit (pickup or idle): include
 >   `cards=<n> worked=<slug[,slug…]> result=merged|review-blocked|rolled-back-todo`
->   plus `pr=<url>` when opened. Example:
+>   plus `pr=<url>` when opened; for idle add `idle=<kind>`. Example:
 >   `ok cards=1 worked=foo-service-shared-surface-contract result=merged pr=http://…/pulls/12`.
+>   Idle example:
+>   `ok idle=simplify cards=1 worked=chore-drop-dead-helper result=merged pr=…`.
 >
 > Do **not** report `spawned=` or child thread ids — this routine does not spawn.
 > Optional machine trailer (helps the routines dashboard): print a final line
