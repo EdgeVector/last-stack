@@ -10,11 +10,11 @@ usage() {
   cat <<'USAGE'
 last-stack-install-apps [options]
 
-Downloads the stable LastDB app stack:
-  LastDB daemon, brain, kanban (from public fkanban), situations, dogfood-graph.
-  Optional when available:
-    org          (LastGit: lastdb:///org — needs a running local LastDB + LastGit)
-    lastsecrets  (private GitHub repo)
+Downloads the stable LastDB app stack from public GitHub:
+  LastDB daemon (Homebrew), brain, kanban (fkanban), situations, dogfood-graph,
+  org, lastsecrets.
+
+  org + lastsecrets are required for invite/join ("join my org") onboarding.
 
 Options:
   --dir <path>      clone/update app repos under this directory
@@ -23,7 +23,9 @@ Options:
   --no-link         skip linking CLI commands onto PATH
   -h, --help        show this help
 
-LastGit is intentionally not installed by this bundle yet.
+LastGit is intentionally not installed by this bundle yet (review venue for
+EdgeVector contributors). Public app source is GitHub so a cold first install
+needs no running LastDB node and no LastGit remote helper.
 USAGE
 }
 
@@ -88,14 +90,7 @@ clone_or_update() {
     if ! git clone "$url" "$dest"; then
       if [ "$optional" = "optional" ]; then
         echo "    warning: could not clone optional app $name from $url — skipping" >&2
-        case "$url" in
-          lastdb://*|lastgit://*)
-            echo "    (LastGit apps need a running local LastDB node + LastGit; install later after \`brew services start lastdb\`)" >&2
-            ;;
-          *)
-            echo "    (if the repo is private, authenticate to GitHub or install it later)" >&2
-            ;;
-        esac
+        echo "    (if the repo is private, authenticate to GitHub or install it later)" >&2
         return 1
       fi
       echo "failed to clone $name from $url" >&2
@@ -153,40 +148,20 @@ fi
 
 mkdir -p "$TARGET_DIR"
 
-# Public apps (required). Kanban's public GitHub repo is EdgeVector/fkanban;
-# the CLI still installs as `kanban` via that package's install-cli.
-# Failures here must abort — ranks 01–03 of the public install map depend on them.
+# All required apps are public on GitHub so invitees can cold-install without
+# LastGit, without a running node, and without GitHub org membership.
+# Failures here must abort — invite/join needs org + lastsecrets linked.
 clone_or_update brain "https://github.com/EdgeVector/brain.git" || exit 1
 clone_or_update kanban "https://github.com/EdgeVector/fkanban.git" || exit 1
 clone_or_update situations "https://github.com/EdgeVector/situations.git" || exit 1
 clone_or_update dogfood-graph "https://github.com/EdgeVector/dogfood-graph.git" || exit 1
+clone_or_update org "https://github.com/EdgeVector/org.git" || exit 1
+clone_or_update lastsecrets "https://github.com/EdgeVector/lastsecrets.git" || exit 1
 
-# Optional apps: soft-fail so a brand-new machine following thelastdb.com/llms.txt
-# still gets Brain + Kanban + Situations working. Org lives only on LastGit
-# (lastdb:///) and needs a running node — which the docs start *after* this
-# installer — so treating it as required breaks first-run.
-ORG_OK=0
-if clone_or_update org "lastdb:///org" optional; then
-  ORG_OK=1
-fi
-
-LASTSECRETS_OK=0
-if clone_or_update lastsecrets "https://github.com/EdgeVector/lastsecrets.git" optional; then
-  LASTSECRETS_OK=1
-fi
-
-for app in brain kanban situations dogfood-graph; do
+for app in brain kanban situations dogfood-graph org lastsecrets; do
   run_bun_install "$app"
   link_cli "$app"
 done
-if [ "$ORG_OK" -eq 1 ]; then
-  run_bun_install org
-  link_cli org
-fi
-if [ "$LASTSECRETS_OK" -eq 1 ]; then
-  run_bun_install lastsecrets
-  link_cli lastsecrets
-fi
 
 printf '\n'
 printf 'Installed LastDB apps under:\n'
@@ -196,16 +171,8 @@ printf '  brew services start lastdb\n'
 printf '  brain init --grant-consent\n'
 printf '  kanban init\n'
 printf '  situations init\n'
-if [ "$LASTSECRETS_OK" -eq 1 ]; then
-  printf '  lastsecrets init\n'
-else
-  printf '  # lastsecrets skipped (private / unavailable) — install later if you have access\n'
-fi
-if [ "$ORG_OK" -eq 1 ]; then
-  printf '  org init\n'
-else
-  printf '  # org skipped (LastGit lastdb:///org unavailable) — start lastdb, then re-run this installer\n'
-fi
+printf '  lastsecrets init\n'
+printf '  org init\n'
 printf '\n'
 printf 'Dogfood Graph is a local app:\n'
 printf '  cd "%s/dogfood-graph" && npm run dev\n\n' "$TARGET_DIR"
