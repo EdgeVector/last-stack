@@ -84,6 +84,16 @@ continue — do not fail the whole run.
   `lastgit cr complete --once`. Never run LastGit CI against the primary brain
   socket.
 
+### Recover prior transport/board-write interruptions
+
+Before selecting a new card, read automation memory. If the newest unresolved
+`pending_rollback=<slug> reason=<reason>` entry exists from a prior run, first
+try `<board CLI> move <slug> todo`, append `pending_rollback_cleared=<slug>` on
+success, heartbeat `ok cards=1 worked=<slug> result=rolled-back-todo
+reason=<reason>`, and EXIT. If the board is still busy/unreachable, heartbeat
+`noop busy-node pending_rollback=<slug>` and EXIT. Do not start another
+work-unit while a prior claimed card only needs rollback reconciliation.
+
 ## Selection rule (form ONE work-unit)
 1. Read only the ready queue: `<board CLI> list --column todo --json`. If the
    read returns `service_timeout`, "node did not respond", or "too many
@@ -161,6 +171,20 @@ continue — do not fail the whole run.
    - `venue=lastgit`: `lastgit cr create … --auto-merge …`, record
      `PR: lastgit://…` plus the branch on the card, drive with
      `lastgit cr view` / `ci status` / `cr complete --once`.
+   - If pushing or opening the PR/CR fails because the review venue or required
+     board transport is unavailable (for example a missing LastGit socket,
+     socket-unreachable, `service_timeout`, "node did not respond", or "too
+     many concurrent reads") **before a PR/CR URL is recorded**, do not report a
+     routine `error` and do not leave the card silently claimed. Try to move the
+     card back to `todo` so the next pickup can retry from a clean claim. If
+     that board write also fails, append one automation-memory line
+     `pending_rollback=<slug> reason=<transport-unavailable>` when writable,
+     heartbeat `ok cards=1 worked=<slug> result=rolled-back-todo-unconfirmed
+     reason=<transport-unavailable>`, print `ROUTINE_RESULT outcome=ok
+     detail=worked=<slug> pr=none final_column=todo-unconfirmed
+     reason=<transport-unavailable>`, and EXIT. This is an external transport
+     interruption, not a harness fault; `kanban-watch` or the next pickup fire
+     will reconcile the visible card state.
 6. **On MERGED:** move every shipped card in the unit to `done` and EXIT.
 7. **Genuine human-only blocker** (ambiguous spec, product judgment, human-only
    gate, dep on unmerged work): leave the branch clean, move the card(s) to

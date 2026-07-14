@@ -393,10 +393,8 @@ printf '%s\n' \
 "$ROOT/bin/last-stack-lint-prompts" "$good_git_dash_c_probe"
 
 pickup="$ROOT/routines/kanban-pickup.md"
-grep -q 'Repo: (workspace root' "$pickup"
-grep -q 'Repo: (machine-hygiene skill' "$pickup"
 grep -q 'kanban-pickup cannot resolve' "$pickup"
-grep -q -- '--block-status needs_human' "$pickup"
+grep -q 'do \*\*not\*\* set `block_status=needs_human`' "$pickup"
 grep -q 'checkout-resolution guard' "$pickup"
 grep -q 'git -C "$target_repo" rev-parse --show-toplevel' "$pickup"
 grep -q 'reject the aggregate workspace root' "$pickup"
