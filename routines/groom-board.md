@@ -13,11 +13,20 @@ the cross-cutting groomer that prunes, promotes, breaks down, and aligns. Each
 run starts cold.
 
 ## Automation memory
-If the scheduled prompt includes an `Automation memory:` path, read and write
-that exact file. Otherwise use
-`${CODEX_HOME:-$HOME/.codex}/automations/<automation-id>/memory.md`. Before any
+If the scheduled prompt includes an `Automation memory:` path (routinesd injects
+one under `## Dispatch envelope`), read and write **that exact file**. Prefer it
+over any guessed path.
+
+Fallback order only when no envelope path is present:
+1. `${ROUTINES_HOME:-$HOME/.routines}/memory/<automation-id>/memory.md`
+2. `${CODEX_HOME:-$HOME/.codex}/automations/<automation-id>/memory.md`
+
+`<automation-id>` is the routines registry id (e.g. `last-stack-fkanban-pickup`),
+**not** the skill frontmatter `name:` (e.g. not bare `kanban-pickup`). Before any
 read/write, fail loudly if the resolved path is empty or starts with
-`/automations/`; that means the fallback was computed incorrectly.
+`/automations/`; that means the fallback was computed incorrectly. If the
+sandbox refuses the path, note `memory_unwritable=<path>` in the heartbeat and
+continue — do not fail the whole run.
 
 ## Setup
 - Read the `kanban-grooming` skill and your board skill / CLI contract before
