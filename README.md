@@ -107,6 +107,18 @@ not stay stuck on `LAST_STACK_ROUTINE_STALE`. Register the
 > resolves into the Last Stack tree and repairs any that a foreign installer
 > stomped. Run that guard standalone any time to check (`--check`) or repair.
 
+## Repository Venue
+
+The Last Stack is homed in LastGit at `lastdb:///last-stack`; agent-authored
+changes go through LastGit change requests with the required `ci-required` gate
+from `.lastgit/ci.sh`. The GitHub repository remains the public read-only clone
+and browse mirror for installers and documentation links.
+
+The committed `.last-stack/pr-venue` marker is what makes the shared
+`last-stack-pr-venue` helper route this repo to LastGit. Mirror synchronization
+is an operational concern of the LastGit multi-repo mirror supervisor; do not
+open ordinary development PRs against the GitHub mirror.
+
 ## Keeping The Last Stack Current
 
 Treat reusable agent improvements as upstream candidates by default. When a
