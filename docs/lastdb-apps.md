@@ -1,31 +1,30 @@
 # LastDB App Stack
 
 This is the practical download path for the LastDB tools Tom is actively
-dogfooding and considers usable for other people to try.
+dogfooding and considers usable for other people to try — including **invite
+recipients** who need Org + LastSecrets to join an organization.
 
-Included:
+Included (all **public** on GitHub):
 
 - **LastDB**: the local daemon installed from the `edgevector/lastdb` Homebrew
   tap.
 - **Brain (`brain`)**: durable notes, decisions, references, and retrieval over
   LastDB.
-- **Kanban (`kanban`)**: board and work-state tracking over LastDB.
+- **Kanban (`kanban`)**: board and work-state tracking over LastDB (repo
+  `EdgeVector/fkanban`).
 - **Situations (`situations`)**: active operational posture and preflight
   checks for agents.
 - **Dogfood Graph**: LastDB-native manual dogfood planning and evidence.
-- **Org (`org`)**: optional — local org membership/invites over LastDB. Cloned
-  from LastGit (`lastdb:///org`) only when a local LastDB + LastGit path works;
-  skipped on a cold first install (re-run the installer after `brew services
-  start lastdb` if you need it).
-- **LastSecrets**: optional — local secret references backed by LastDB, with
-  raw values kept out of normal search surfaces (private GitHub; skipped when
-  clone fails).
+- **Org (`org`)**: org membership, shared org databases, invite/join. Public
+  install source: `https://github.com/EdgeVector/org`.
+- **LastSecrets (`lastsecrets`)**: local secret references backed by LastDB
+  (raw values never in search indexes). Required by Org for E2E keys. Public
+  install source: `https://github.com/EdgeVector/lastsecrets`.
 
-Not included:
+Not included in this bundle:
 
-- **LastGit**: intentionally left out until it is stable enough for this bundle
-  (the installer may still *consume* `lastdb:///` for optional apps when
-  available).
+- **LastGit**: review/CI venue for EdgeVector contributors (not required for a
+  cold invitee install of the app CLIs).
 
 ## One Command
 
@@ -40,7 +39,7 @@ git clone https://github.com/EdgeVector/last-stack ~/.last-stack
 By default the installer:
 
 - installs the LastDB daemon with Homebrew;
-- clones the app repos under `~/lastdb-apps`;
+- clones the public app repos under `~/lastdb-apps`;
 - runs `bun install` in each app repo;
 - links the CLI apps where they expose a command.
 
@@ -70,15 +69,21 @@ Start LastDB:
 brew services start lastdb
 ```
 
-Initialize the apps you want to use:
+Initialize the apps:
 
 ```bash
-brain init --grant-consent   # setup Brain
-kanban init                  # setup Kanban
-situations init
-# only if install-apps linked them:
-# lastsecrets init
-# org init                   # re-run install-apps after lastdb is up if skipped
+# first-run setup (not a health check — run once after brew services start lastdb)
+brain init --grant-consent   # bootstrap Brain
+kanban init                  # bootstrap Kanban
+situations init              # bootstrap Situations
+lastsecrets init             # bootstrap LastSecrets (needed for org keys)
+org init                     # bootstrap Org (invite/join)
+```
+
+Join someone's org (after they send an invite file):
+
+```bash
+org join --from ~/Downloads/something.invite.json
 ```
 
 Run Dogfood Graph locally:
@@ -113,19 +118,16 @@ git clone https://github.com/EdgeVector/brain.git
 git clone https://github.com/EdgeVector/fkanban.git kanban
 git clone https://github.com/EdgeVector/situations.git
 git clone https://github.com/EdgeVector/dogfood-graph.git
-# optional (need running lastdb + LastGit):
-# git clone lastdb:///org
-# optional (private GitHub):
-# git clone https://github.com/EdgeVector/lastsecrets.git
+git clone https://github.com/EdgeVector/org.git
+git clone https://github.com/EdgeVector/lastsecrets.git
 ```
 
 Install dependencies:
 
 ```bash
-for app in brain kanban situations dogfood-graph; do
+for app in brain kanban situations dogfood-graph org lastsecrets; do
   bun install --cwd "$HOME/lastdb-apps/$app"
 done
-# optional: org lastsecrets
 ```
 
 Link commands:
@@ -134,8 +136,8 @@ Link commands:
 cd ~/lastdb-apps/brain && bun link
 cd ~/lastdb-apps/kanban && bun run install-cli
 ln -snf ~/lastdb-apps/situations/bin/situations ~/.local/bin/situations
-# optional: cd ~/lastdb-apps/org && bun link
-# optional: cd ~/lastdb-apps/lastsecrets && bun link
+cd ~/lastdb-apps/org && bun link
+cd ~/lastdb-apps/lastsecrets && bun link
 ```
 
 Dogfood Graph is a web app rather than a global CLI; run it from its checkout.
