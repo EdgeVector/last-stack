@@ -108,11 +108,13 @@ continue — do not fail the whole run.
    eligible card has `Priority: P0` / tag `p0` **and** tags or title matching
    `pipeline` / `deploy-pipeline` / `deploy-pipeline-red-`, pick that card
    first (Tom 2026-07-14: a blocked merge or deploy pipeline is always P0).
-   Form **exactly one** work-unit:
-   - Prefer a **singleton** (one card).
-   - Optionally batch 2–3 cards only if they share the same `Repo:`, same
-     `Base:`, and a clear shared subsystem tag **and** you can finish the batch
-     PR in this single session. When in doubt, singleton.
+   Form the work-unit(s):
+   - Default: **one singleton** card.
+   - Optionally batch 2–3 cards only if they share the same `Repo:`/`Base:` and
+     a clear shared subsystem tag **and** you can finish the batch PR in this
+     session. When in doubt, singleton.
+   - After a singleton **merges**, if ≥35m budget remains, you may start **one
+     more** non-overlapping singleton (sequential; no spawn).
 6. **Shared-build-cache:** if the target repo has heavy concurrent-build risk
    and other `doing` work already targets it, prefer a different repo's card
    when one exists; else proceed with the singleton (you are not fanning out).
