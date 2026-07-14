@@ -80,7 +80,7 @@ for dir in "$root"/deploy-*/; do
   done <"$log"
 
   mtime="$(stat -f %m "$log" 2>/dev/null || stat -c %Y "$log" 2>/dev/null || echo 0)"
-  status="unknown"
+  pipe_status="unknown"
   sha=""
   blocked=0
   reason="no success/failure/pending lines"
@@ -88,9 +88,9 @@ for dir in "$root"/deploy-*/; do
   if [ -n "$last_term" ]; then
     # e.g. "failure abcdef deploy-pipeline" or "success abcdef deploy-pipeline"
     set -- $last_term
-    status="$1"
+    pipe_status="$1"
     sha="${2:-}"
-    if [ "$status" = "failure" ]; then
+    if [ "$pipe_status" = "failure" ]; then
       blocked=1
       reason="latest terminal status is failure for $sha"
     else
@@ -115,7 +115,7 @@ for dir in "$root"/deploy-*/; do
     done <"$log"
     case "$last_any" in
       pending\ *)
-        status="pending"
+        pipe_status="pending"
         sha="$pend_sha"
         if [ "$age" -gt "$pending_max_s" ]; then
           blocked=1
@@ -128,7 +128,7 @@ for dir in "$root"/deploy-*/; do
     esac
   fi
 
-  results+=("$repo|$status|$sha|$blocked|$reason|$log|$mtime")
+  results+=("$repo|$pipe_status|$sha|$blocked|$reason|$log|$mtime")
 done
 shopt -u nullglob
 
@@ -136,13 +136,13 @@ if [ "$json" -eq 1 ]; then
   printf '['
   first=1
   for row in "${results[@]+"${results[@]}"}"; do
-    IFS='|' read -r repo status sha blocked reason log mtime <<<"$row"
+    IFS='|' read -r repo pipe_status sha blocked reason log mtime <<<"$row"
     [ "$first" -eq 1 ] || printf ','
     first=0
     if [ "$blocked" = "1" ]; then bj=true; else bj=false; fi
     printf '{"repo":"%s","status":"%s","sha":"%s","blocked":%s,"reason":"%s","log":"%s","log_mtime":%s}' \
       "$(json_escape "$repo")" \
-      "$(json_escape "$status")" \
+      "$(json_escape "$pipe_status")" \
       "$(json_escape "$sha")" \
       "$bj" \
       "$(json_escape "$reason")" \
@@ -156,13 +156,13 @@ else
   fi
   blocked_n=0
   for row in "${results[@]+"${results[@]}"}"; do
-    IFS='|' read -r repo status sha blocked reason log mtime <<<"$row"
+    IFS='|' read -r repo pipe_status sha blocked reason log mtime <<<"$row"
     mark="ok"
     if [ "$blocked" = "1" ]; then
       mark="BLOCKED"
       blocked_n=$((blocked_n + 1))
     fi
-    printf '%s  %-20s  status=%-8s  sha=%s  %s\n' "$mark" "$repo" "$status" "${sha:--}" "$reason"
+    printf '%s  %-20s  status=%-8s  sha=%s  %s\n' "$mark" "$repo" "$pipe_status" "${sha:--}" "$reason"
   done
   echo "summary blocked=$blocked_n total=${#results[@]}"
 fi
