@@ -82,6 +82,10 @@ Brain record (stable):
 4. **Summarize** in one short paragraph: active NS count, top live-pressure
    North Stars (slug + live counts), unattributed live card count, HTML path.
    Mention any orphan `north_star` values (cards pointing at missing NS records).
+   **Do not create North Star projects here** — that is `north-star-hygiene`
+   (daily) / skill `north-star-hygiene`. You may note
+   `HYGIENE_NEEDS_WORK=1` if `last-stack-north-star-dashboard --stdout hygiene`
+   reports orphans so morning-sync can see the gap.
 5. **Heartbeat** (last action):
    ```bash
    "$last_stack/bin/last-stack-brain-append-heartbeat" --line \

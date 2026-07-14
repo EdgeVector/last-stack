@@ -11,6 +11,7 @@ import argparse
 import html
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -30,6 +31,21 @@ ALIASES: dict[str, str] = {
     "lastdb-secrets-and-local-schema-resolver-roadmap-2026-07-06": (
         "north-star-schema-shared-surface-native-resolver"
     ),
+}
+
+# Product-token families used for low-confidence mis-tag heuristics.
+# A live card attributed to an NS family but matching a *different* family
+# (and none of the NS family tokens) is reported as mistag_candidate.
+NS_TOKEN_FAMILIES: dict[str, set[str]] = {
+    "discovery": {"discovery", "fof", "deliver", "slice", "slices"},
+    "lastgit": {"lastgit", "forgejo", "forge", "mirror"},
+    "schema": {"schema", "resolver", "shared-surface", "pack"},
+    "metering": {"metering", "quota", "billing", "stripe", "b2", "r2", "storage"},
+    "coderings": {"coderings", "complexity", "snapshot"},
+    "nano": {"nano", "bm25", "kernel"},
+    "sentry": {"sentry"},
+    "dogfood": {"dogfood"},
+    "routine": {"routine", "routines", "last-stack"},
 }
 
 
@@ -212,6 +228,8 @@ def build_model(
         if s["status"] in {"in_progress", "planning"} or (s["live"] > 0 and s["record_present"])
     ]
 
+    hygiene = build_hygiene(sections, by_slug, groups, unattributed)
+
     return {
         "generated_at": now_iso(),
         "board_total": len(cards),
@@ -231,7 +249,169 @@ def build_model(
             "by_column": dict(Counter(str(c.get("column") or "?") for c in unattributed)),
         },
         "aliases": ALIASES,
+        "hygiene": hygiene,
     }
+
+
+def _tokens(text: str) -> set[str]:
+    return {t for t in re.split(r"[^a-z0-9]+", (text or "").lower()) if len(t) >= 3}
+
+
+def _family_hits(tokens: set[str]) -> set[str]:
+    hits: set[str] = set()
+    for family, fam_tokens in NS_TOKEN_FAMILIES.items():
+        if tokens & fam_tokens:
+            hits.add(family)
+    return hits
+
+
+def build_hygiene(
+    sections: list[dict[str, Any]],
+    by_slug: dict[str, dict[str, Any]],
+    groups: dict[str, list[dict[str, Any]]],
+    unattributed: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Structured actions for north-star-hygiene skill/routine."""
+    orphan_live: list[dict[str, Any]] = []
+    orphan_done_only: list[dict[str, Any]] = []
+    for s in sections:
+        if s["record_present"]:
+            continue
+        if s["total"] == 0:
+            continue
+        entry = {
+            "slug": s["slug"],
+            "live": s["live"],
+            "total": s["total"],
+            "done": s["done"],
+            "live_slugs": [c.get("slug") for c in s["live_cards"]],
+            "action": "create_north_star_project",
+            "priority": "P1" if s["live"] else "P3",
+        }
+        if s["live"] > 0:
+            orphan_live.append(entry)
+        else:
+            orphan_done_only.append(entry)
+
+    # Prefer live orphans first, then done-only (still useful for checkpoints).
+    orphan_live.sort(key=lambda e: (-e["live"], e["slug"]))
+    orphan_done_only.sort(key=lambda e: (-e["total"], e["slug"]))
+
+    mistag_candidates: list[dict[str, Any]] = []
+    for ns_slug, member_cards in groups.items():
+        ns_tokens = _tokens(ns_slug)
+        ns_fams = _family_hits(ns_tokens)
+        if not ns_fams:
+            continue
+        for card in member_cards:
+            if str(card.get("column") or "") not in LIVE_COLUMNS:
+                continue
+            blob = f"{card.get('slug') or ''} {card.get('title') or ''}"
+            card_tokens = _tokens(blob)
+            card_fams = _family_hits(card_tokens)
+            # Card strongly matches another product family and none of the NS family.
+            if card_fams and not (card_fams & ns_fams) and (card_fams - ns_fams):
+                mistag_candidates.append(
+                    {
+                        "slug": card.get("slug"),
+                        "column": card.get("column"),
+                        "title": card.get("title"),
+                        "north_star": ns_slug,
+                        "card_families": sorted(card_fams),
+                        "ns_families": sorted(ns_fams),
+                        "action": "clear_or_repoint_north_star",
+                        "confidence": "heuristic",
+                    }
+                )
+
+    mistag_candidates.sort(key=lambda e: (str(e.get("north_star")), str(e.get("slug"))))
+
+    live_unattributed = [
+        c for c in unattributed if str(c.get("column") or "") in LIVE_COLUMNS
+    ]
+
+    return {
+        "orphan_north_stars_live": orphan_live,
+        "orphan_north_stars_done_only": orphan_done_only,
+        "mistag_candidates": mistag_candidates,
+        "unattributed_live_count": len(live_unattributed),
+        "summary": {
+            "orphan_live_count": len(orphan_live),
+            "orphan_done_only_count": len(orphan_done_only),
+            "mistag_candidate_count": len(mistag_candidates),
+            "unattributed_live_count": len(live_unattributed),
+            "needs_work": bool(orphan_live or mistag_candidates),
+        },
+    }
+
+
+def render_hygiene_markdown(model: dict[str, Any]) -> str:
+    h = model.get("hygiene") or {}
+    lines: list[str] = []
+    lines.append("# North Star hygiene report")
+    lines.append("")
+    lines.append(f"**Generated:** `{model.get('generated_at')}`")
+    lines.append("")
+    summary = h.get("summary") or {}
+    lines.append(
+        f"- orphan NS with **live** cards: **{summary.get('orphan_live_count', 0)}** "
+        f"(create brain project)"
+    )
+    lines.append(
+        f"- orphan NS done-only: **{summary.get('orphan_done_only_count', 0)}** "
+        f"(optional create for checkpoints)"
+    )
+    lines.append(
+        f"- mistag candidates (heuristic): **{summary.get('mistag_candidate_count', 0)}**"
+    )
+    lines.append(
+        f"- unattributed live cards: **{summary.get('unattributed_live_count', 0)}** "
+        f"(report only — do not invent NS)"
+    )
+    lines.append("")
+    if not summary.get("needs_work") and not h.get("orphan_north_stars_done_only"):
+        lines.append("_No hygiene actions needed._")
+        lines.append("")
+        return "\n".join(lines)
+
+    if h.get("orphan_north_stars_live"):
+        lines.append("## Orphan North Stars (live cards) — CREATE PROJECT")
+        lines.append("")
+        for e in h["orphan_north_stars_live"]:
+            lines.append(
+                f"### `{e['slug']}` · live={e['live']} total={e['total']} · {e['priority']}"
+            )
+            lines.append("")
+            lines.append(f"- **action:** `{e['action']}`")
+            lines.append(
+                "- **live cards:** "
+                + (", ".join(f"`{s}`" for s in (e.get("live_slugs") or [])[:20]) or "—")
+            )
+            lines.append("")
+    if h.get("orphan_north_stars_done_only"):
+        lines.append("## Orphan North Stars (done-only) — optional create")
+        lines.append("")
+        for e in h["orphan_north_stars_done_only"]:
+            lines.append(
+                f"- `{e['slug']}` · done={e['done']} total={e['total']} · "
+                f"action=`{e['action']}`"
+            )
+        lines.append("")
+    if h.get("mistag_candidates"):
+        lines.append("## Mistag candidates (heuristic — agent confirms before clear)")
+        lines.append("")
+        for e in h["mistag_candidates"]:
+            lines.append(
+                f"- `{e['slug']}` ({e['column']}) → ns `{e['north_star']}` · "
+                f"card_fams={e['card_families']} ns_fams={e['ns_families']}"
+            )
+        lines.append("")
+    lines.append(
+        "Run the **north-star-hygiene** skill/routine to materialize projects and "
+        "clear confirmed mis-tags, then `last-stack-north-star-dashboard --put-brain`."
+    )
+    lines.append("")
+    return "\n".join(lines)
 
 
 def fmt_card_line(card: dict[str, Any]) -> str:
@@ -358,16 +538,40 @@ def render_markdown(model: dict[str, Any]) -> str:
             lines.append(f"- `{src}` → `{dst}`")
         lines.append("")
 
+    # Compact hygiene summary so the dashboard brain record surfaces work items.
+    h = model.get("hygiene") or {}
+    summary = h.get("summary") or {}
+    if summary.get("orphan_live_count") or summary.get("mistag_candidate_count"):
+        lines.append("## Hygiene (needs action)")
+        lines.append("")
+        lines.append(
+            f"- **orphan NS with live cards:** {summary.get('orphan_live_count', 0)} "
+            f"— create brain `project` (skill/routine `north-star-hygiene`)"
+        )
+        for e in (h.get("orphan_north_stars_live") or [])[:8]:
+            lines.append(
+                f"  - `{e['slug']}` live={e['live']} total={e['total']}"
+            )
+        lines.append(
+            f"- **mistag candidates:** {summary.get('mistag_candidate_count', 0)} "
+            f"(heuristic; confirm before clearing)"
+        )
+        lines.append(
+            f"- **unattributed live:** {summary.get('unattributed_live_count', 0)}"
+        )
+        lines.append("")
+
     lines.append("## How to refresh")
     lines.append("")
     lines.append("```bash")
     lines.append("last-stack-north-star-dashboard --put-brain --html ~/code/edgevector/north-star-dashboard.html")
+    lines.append("last-stack-north-star-dashboard --stdout hygiene   # orphan/mistag report only")
     lines.append("```")
     lines.append("")
     lines.append(
-        "Routine: `north-star-rollup` (hourly) regenerates this record in place. "
-        "Related: `[[active-programs]]` (driving prose), `program-rollup` "
-        "(per-program auto blocks)."
+        "Routines: `north-star-rollup` (hourly matrix) · `north-star-hygiene` "
+        "(materialize orphan NS projects). Related: `[[active-programs]]`, "
+        "`program-rollup`."
     )
     lines.append("")
     return "\n".join(lines)
@@ -630,7 +834,17 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p.add_argument("--put-brain", action="store_true", help=f"upsert brain reference {DEFAULT_BRAIN_SLUG}")
     p.add_argument("--brain-slug", default=DEFAULT_BRAIN_SLUG)
     p.add_argument("--json-out", type=Path, help="write the computed model as JSON")
-    p.add_argument("--stdout", choices=["markdown", "json", "none"], default="markdown")
+    p.add_argument(
+        "--hygiene-json",
+        type=Path,
+        help="write only the hygiene sub-object as JSON (for north-star-hygiene)",
+    )
+    p.add_argument(
+        "--stdout",
+        choices=["markdown", "json", "hygiene", "none"],
+        default="markdown",
+        help="stdout format (hygiene = action report for the hygiene skill/routine)",
+    )
     return p.parse_args(argv)
 
 
@@ -648,10 +862,17 @@ def main(argv: Optional[list[str]] = None) -> int:
         model = build_model(cards, projects)
         md = render_markdown(model)
         html_doc = render_html(model)
+        hygiene_md = render_hygiene_markdown(model)
 
         if args.json_out:
             args.json_out.write_text(json.dumps(model, indent=2) + "\n", encoding="utf-8")
             print(f"JSON_OUT={args.json_out}", file=sys.stderr)
+        if args.hygiene_json:
+            args.hygiene_json.write_text(
+                json.dumps(model.get("hygiene") or {}, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            print(f"HYGIENE_JSON={args.hygiene_json}", file=sys.stderr)
         if args.markdown:
             args.markdown.write_text(md, encoding="utf-8")
             print(f"MARKDOWN={args.markdown}", file=sys.stderr)
@@ -673,6 +894,20 @@ def main(argv: Optional[list[str]] = None) -> int:
         elif args.stdout == "json":
             json.dump(model, sys.stdout, indent=2)
             sys.stdout.write("\n")
+        elif args.stdout == "hygiene":
+            sys.stdout.write(hygiene_md)
+            if not hygiene_md.endswith("\n"):
+                sys.stdout.write("\n")
+            summary = (model.get("hygiene") or {}).get("summary") or {}
+            # Exit 0 always for tooling; surface needs_work on stderr for agents.
+            if summary.get("needs_work"):
+                print(
+                    f"HYGIENE_NEEDS_WORK=1 orphan_live={summary.get('orphan_live_count', 0)} "
+                    f"mistag={summary.get('mistag_candidate_count', 0)}",
+                    file=sys.stderr,
+                )
+            else:
+                print("HYGIENE_NEEDS_WORK=0", file=sys.stderr)
         return 0
     except Exception as exc:  # noqa: BLE001 — CLI surface
         print(f"ERROR={exc}", file=sys.stderr)

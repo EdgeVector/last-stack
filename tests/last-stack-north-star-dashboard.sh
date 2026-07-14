@@ -82,6 +82,18 @@ cat >"$WORK/cards.json" <<'EOF'
     "block_status": "none",
     "blockedBy": [],
     "pr_url": ""
+  },
+  {
+    "slug": "sentry-triage-restore-signal-sources",
+    "title": "sentry-triage: restore SENTRY_AUTH_TOKEN",
+    "column": "todo",
+    "kind": "pr",
+    "north_star": "north-star-storage-metering-correctness",
+    "tags": ["p2"],
+    "blocked": false,
+    "block_status": "none",
+    "blockedBy": [],
+    "pr_url": ""
   }
 ]
 EOF
@@ -118,12 +130,14 @@ EOF
   --markdown "$WORK/out.md" \
   --html "$WORK/out.html" \
   --json-out "$WORK/out.json" \
+  --hygiene-json "$WORK/hygiene.json" \
   --stdout none
 
 # Alias folded into schema NS live count (todo + doing = 2 live + 1 done)
-python3 - <<'PY' "$WORK/out.json"
+python3 - <<'PY' "$WORK/out.json" "$WORK/hygiene.json"
 import json, sys
 m = json.load(open(sys.argv[1]))
+h = json.load(open(sys.argv[2]))
 by = {s["slug"]: s for s in m["sections"]}
 schema = by["north-star-schema-shared-surface-native-resolver"]
 assert schema["counts"]["todo"] == 1, schema
@@ -132,17 +146,31 @@ assert schema["counts"]["done"] == 1, schema
 assert schema["live"] == 2, schema
 assert schema["total"] == 3, schema
 meter = by["north-star-storage-metering-correctness"]
-assert meter["live"] == 1
+assert meter["live"] == 2, meter  # metering-wire + intentional sentry mistag fixture
 assert any(c["slug"] == "metering-wire-b2" for c in meter["blocked_cards"])
 orphan = by["north-star-does-not-exist"]
 assert orphan["status"] == "orphan"
-assert orphan["live"] == 1
+assert orphan["live"] == 1, orphan
 assert m["unattributed"]["total"] == 1
 assert m["unattributed"]["live"][0]["slug"] == "no-ns-live"
 # active_programs is NOT a north star
 assert "active-programs" not in by
+# hygiene report
+assert h["summary"]["needs_work"] is True
+assert h["summary"]["orphan_live_count"] >= 1
+assert any(e["slug"] == "north-star-does-not-exist" for e in h["orphan_north_stars_live"])
+# sentry under metering → mistag heuristic
+assert any(e["slug"] == "sentry-triage-restore-signal-sources" for e in h["mistag_candidates"]), h["mistag_candidates"]
 print("assertions ok")
 PY
+
+# hygiene stdout mode
+"$BIN" \
+  --cards-json "$WORK/cards.json" \
+  --projects-json "$WORK/projects.json" \
+  --stdout hygiene >"$WORK/hygiene.md" 2>"$WORK/hygiene.err"
+grep -q "Orphan North Stars" "$WORK/hygiene.md"
+grep -q "HYGIENE_NEEDS_WORK=1" "$WORK/hygiene.err"
 
 grep -q "north-star-schema-shared-surface-native-resolver" "$WORK/out.md"
 grep -q "Unattributed cards" "$WORK/out.md"
