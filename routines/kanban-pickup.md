@@ -1,21 +1,24 @@
 ---
 name: kanban-pickup
-cadence: every 15 minutes
-description: Drain the ready board queue one work-unit at a time — YOU perform kanban-agent WORK mode yourself in an isolated worktree and drive to a MERGED PR. No subagents, no collab SpawnAgent, no background harness fan-out. If the queue is empty, run Idle mode smart-heal (program next-slice, CodeRings hotspot, or low-risk simplification) instead of no-oping.
+cadence: every 5 minutes
+description: Drain the ready board queue fast (one unit default, optional second sequential) — YOU perform kanban-agent WORK mode yourself in an isolated worktree and drive to a MERGED PR. No subagents, no collab SpawnAgent, no background harness fan-out. If the queue is empty, run Idle mode smart-heal (program next-slice, CodeRings hotspot, or low-risk simplification) instead of no-oping.
 ---
 
-You pick **one** ready work-unit per run and **do the work yourself** — isolate
-in a git worktree, implement, open a PR/CR, drive it to MERGED, then exit. This
-is the WORK-mode counterpart to `kanban-watch` (reconcile). Do **not** do
-reconcile work here. Do **not** spawn sub-agents, collab workers, Task tools,
-or background `codex`/`claude`/`grok` processes. Scheduled harness runs (esp.
+You pick ready work and **do it yourself** — isolate in a git worktree,
+implement, open a PR/CR, drive it to MERGED. This is the WORK-mode counterpart
+to `kanban-watch` (reconcile). Do **not** do reconcile work here. Do **not**
+spawn sub-agents, collab workers, Task tools, or background
+`codex`/`claude`/`grok` processes. Scheduled harness runs (esp.
 `codex exec --ephemeral`) cannot keep collab children alive; fan-out was
 silently dropping workers while cards sat stranded in `doing`.
 
-**Throughput model:** one reliable work-unit per fire, scheduled every ~15
-minutes. Prefer correctness over parallel fan-out. If a prior run is still
-in-flight (single-flight lock), this fire is skipped — that is fine; do not
-try to overlap yourself. The next free slot drains the next card.
+**Throughput model (Tom 2026-07-14 — drain faster):** scheduled every ~5 minutes.
+Default **one** work-unit per fire. If that unit merges with **≥35 minutes**
+of session budget remaining and another non-overlapping eligible card exists,
+you MAY claim and complete **one second** unit in the same run (still no
+spawn/fan-out — sequential only). Prefer correctness; never strand a card in
+`doing` without finishing or rolling it back to `todo`. If a prior run is
+still in-flight (single-flight lock), this fire is skipped.
 
 **Empty queue:** default **Idle mode: smart-heal** (below) so the fleet keeps
 self-improving between feature waves. Prefer real program / North Star work
@@ -91,24 +94,21 @@ continue — do not fail the whole run.
    path. Ignore `backlog` entirely.
 3. Leave missing `Repo:`/`Base:` cards in `todo` for `kanban-watch` self-heal.
    Leave cards with a `BLOCKED:` note alone. For present-but-unresolvable `Repo:`
-   headers, convert once to a loud human blocker — do not re-skip every hour:
-   - Append exactly one line if absent: `BLOCKED: kanban-pickup cannot resolve
-     Repo: "<repo header>"; replace it with owner/name or an absolute Git
-     checkout path.`
-   - Persist via `<board CLI> add <slug> --column review
-     --block-status needs_human --block-reason "Repo target not resolvable:
-     <repo header>"` and confirm with `show`.
-   - Examples that must take this path unless a real Git checkout is proven
-     before selection: `Repo: (workspace root — .claude/launch.json lives at
-     /Users/tomtang/code/edgevector/.claude/launch.json; commit it in whichever
-     repo tracks that file, else file note)` and
-     `Repo: (machine-hygiene skill — /Users/tomtang/.claude or the repo tracking
-     the machine-hygiene SKILL.md)`.
+   headers: append **one** body line
+   `BLOCKED: kanban-pickup cannot resolve Repo: "<repo header>"; replace with
+   owner/name or absolute Git checkout path.` if absent, **leave the card in
+   `todo`**, and do **not** set `block_status=needs_human` (Tom 2026-07-14:
+   no human gates for agent-filed routing bugs — next agent/groom fixes the
+   header). Skip that card this run; pick another eligible card.
 4. **Surface-overlap gate:** before a card can enter the work-unit, run
    `<board CLI> overlap <slug> --json`. On conflict, SKIP and leave in `todo`;
    note `collision=<slug>:<in-flight-slug>` in the heartbeat.
 5. Sort eligible, non-colliding cards by priority (lowest `position`; tie-break
-   oldest `created_at`). Form **exactly one** work-unit:
+   oldest `created_at`). **Pipeline blocks outrank ordinary work:** if any
+   eligible card has `Priority: P0` / tag `p0` **and** tags or title matching
+   `pipeline` / `deploy-pipeline` / `deploy-pipeline-red-`, pick that card
+   first (Tom 2026-07-14: a blocked merge or deploy pipeline is always P0).
+   Form **exactly one** work-unit:
    - Prefer a **singleton** (one card).
    - Optionally batch 2–3 cards only if they share the same `Repo:`, same
      `Base:`, and a clear shared subsystem tag **and** you can finish the batch
@@ -257,7 +257,7 @@ Heartbeat `noop idle nothing-safe` (distinguish from "didn't run"). EXIT.
 - Optional trailer: `ROUTINE_RESULT outcome=ok|noop detail=idle=…`.
 
 ## Hard rules
-- AT MOST **one work-unit per run** (singleton preferred) — whether pickup or idle.
+- AT MOST **two sequential work-units per run** (default one; second only if first merged and ≥35m budget left). Never spawn. Idle mode stays one action.
 - Claim (`doing`) only for work **you** will execute in this session.
 - Never kill the process hosting your brain/board node or any node you didn't
   start. Never `stash`/`reset`/`clean` a shared repo — isolate with
