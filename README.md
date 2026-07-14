@@ -16,6 +16,11 @@ Claude Code, Codex, Factory, OpenCode. They give an agent a consistent playbook
 for filing tasks, driving a single task to a merged pull request, waiting on PRs
 robustly, and closing out finished work.
 
+Compatibility skill names from the old fkanban naming remain installed where
+they are needed for scheduled prompts: `fkanban-card-authoring` points agents at
+`kanban`, and `fkanban-grooming` points agents at `kanban-grooming`. New prompts
+should use the `kanban` names directly.
+
 The companion **routines** (`routines/`) are the *engine* that runs the playbook
 on a schedule: small, parameterized prompts you register as scheduled (cron)
 agents — a self-improvement loop, papercut sweep, machine-hygiene/disk-reclaim, a
@@ -131,6 +136,8 @@ preserving project-specific rules where they belong.
 |---|---|
 | **kanban** | Board CRUD over LastDB — file/list/show/move/groom cards. |
 | **kanban-agent** | Drive a card to **merged**, reconcile in-flight PRs, or validate post-merge END STATE checks. |
+| **fkanban-card-authoring** | Compatibility shim for old prompts; use **kanban** for current card authoring rules. |
+| **fkanban-grooming** | Compatibility shim for old prompts; use **kanban-grooming** for current board grooming rules. |
 | **kanban-setup** | Bootstrap kanban on a fresh machine — install, `init` (resolve published schemas), `doctor`, optional MCP registration. |
 | **onecontext** | Search prior Codex sessions, with guarded Aline usage and a JSONL fallback when Aline is unavailable. |
 | **registry-rotator** | Generic engine for registry-backed scheduled routines: pick the most-overdue eligible entry, run its recipe, file cards, and stamp the registry log. |
