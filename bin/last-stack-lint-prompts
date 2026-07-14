@@ -216,8 +216,24 @@ check_workspace_root_git_probes() {
         if (t ~ /^\$\{?[Ww][Oo][Rr][Kk][Ss][Pp][Aa][Cc][Ee][A-Za-z0-9_]*\}?$/) return 1
         return 0
       }
+      function git_c_target(l,   t) {
+        if (match(l, /(^|[^[:alnum:]_-])git[[:space:]]+-C[[:space:]]+("[^"]+"|'\''[^'\'']+'\''|`[^`]+`|[^[:space:];&|)]+)/)) {
+          t = substr(l, RSTART, RLENGTH)
+          sub(/^.*git[[:space:]]+-C[[:space:]]+/, "", t)
+          return t
+        }
+        return ""
+      }
+      function git_c_command(l,   rest) {
+        rest = l
+        if (sub(/^.*(^|[^[:alnum:]_-])git[[:space:]]+-C[[:space:]]+("[^"]+"|'\''[^'\'']+'\''|`[^`]+`|[^[:space:];&|)]+)[[:space:]]+/, "", rest)) {
+          return rest
+        }
+        return ""
+      }
       function line_establishes(l,   t) {
-        if (l ~ /(^|[^[:alnum:]_-])git[[:space:]]+-C([[:space:]]|$)/) return 1
+        t = git_c_target(l)
+        if (t != "" && !is_workspace_target(t)) return 1
         if (l ~ /worktree[[:space:]]+add/) return 1
         if (l ~ /repo-op-guard/) return 1
         if (match(l, /(^|[^[:alnum:]_-])(cd|pushd)[[:space:]]+[^[:space:];&|)]+/)) {
@@ -233,14 +249,23 @@ check_workspace_root_git_probes() {
       function is_bare_probe(l) {
         return (l ~ /(^|[`(;&|]|\$\()[[:space:]]*git[[:space:]]+(status|ls-remote|rev-parse|branch)([[:space:]]|$)/)
       }
+      function is_workspace_git_c_probe(l,   t, cmd) {
+        t = git_c_target(l)
+        if (t == "" || !is_workspace_target(t)) return 0
+        cmd = git_c_command(l)
+        return (cmd ~ /^(status|ls-remote|rev-parse|branch)([[:space:]]|$)/)
+      }
       {
         line = $0
-        if (line_establishes(line)) {
-          established = 1
-        }
-        if (!established && is_bare_probe(line) && !is_negative_guidance(line)) {
+        if (is_workspace_git_c_probe(line) && !is_negative_guidance(line)) {
           printf "%s:%d:%s\n", file, NR, line
           bad = 1
+        } else if (!established && is_bare_probe(line) && !is_negative_guidance(line)) {
+          printf "%s:%d:%s\n", file, NR, line
+          bad = 1
+        }
+        if (line_establishes(line)) {
+          established = 1
         }
       }
       END {
