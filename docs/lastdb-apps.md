@@ -13,6 +13,7 @@ Included:
 - **Situations (`situations`)**: active operational posture and preflight
   checks for agents.
 - **Dogfood Graph**: LastDB-native manual dogfood planning and evidence.
+- **Org (`org`)**: local org membership, invites, and join setup over LastDB.
 - **LastSecrets**: local secret references backed by LastDB, with raw values kept
   out of normal search surfaces.
 
@@ -70,6 +71,7 @@ brain init --grant-consent   # setup Brain
 kanban init                  # setup Kanban
 situations init
 lastsecrets init
+org init
 ```
 
 Run Dogfood Graph locally:
@@ -104,13 +106,14 @@ git clone https://github.com/EdgeVector/brain.git
 git clone https://github.com/EdgeVector/kanban.git
 git clone https://github.com/EdgeVector/situations.git
 git clone https://github.com/EdgeVector/dogfood-graph.git
+git clone lastdb:///org
 git clone https://github.com/EdgeVector/lastsecrets.git
 ```
 
 Install dependencies:
 
 ```bash
-for app in brain kanban situations dogfood-graph lastsecrets; do
+for app in brain kanban situations dogfood-graph org lastsecrets; do
   bun install --cwd "$HOME/lastdb-apps/$app"
 done
 ```
@@ -121,6 +124,7 @@ Link commands:
 cd ~/lastdb-apps/brain && bun link
 cd ~/lastdb-apps/kanban && bun run install-cli
 ln -snf ~/lastdb-apps/situations/bin/situations ~/.local/bin/situations
+cd ~/lastdb-apps/org && bun link
 cd ~/lastdb-apps/lastsecrets && bun link
 ```
 
