@@ -11,7 +11,8 @@ usage() {
 last-stack-install-apps [options]
 
 Downloads the stable LastDB app stack:
-  LastDB daemon, brain, kanban (from public fkanban), situations, dogfood-graph.
+  LastDB daemon, brain, kanban (from public fkanban), situations, dogfood-graph,
+  org.
   LastSecrets is optional (private repo) — installed when clone succeeds.
 
 Options:
@@ -126,7 +127,7 @@ link_cli() {
         ln -snf "$dest/bin/situations" "$HOME/.local/bin/situations"
       fi
       ;;
-    brain|lastsecrets)
+    brain|lastsecrets|org)
       echo "==> linking $name CLI with bun link"
       (cd "$dest" && bun link)
       ;;
@@ -150,15 +151,16 @@ clone_or_update brain "https://github.com/EdgeVector/brain.git"
 clone_or_update kanban "https://github.com/EdgeVector/fkanban.git"
 clone_or_update situations "https://github.com/EdgeVector/situations.git"
 clone_or_update dogfood-graph "https://github.com/EdgeVector/dogfood-graph.git"
+clone_or_update org "lastdb:///org"
 
 # Optional: LastSecrets is not public on GitHub yet. Soft-fail so a brand-new
-# machine without org auth still gets Brain + Kanban working.
+# machine without LastSecrets repo access still gets the required apps working.
 LASTSECRETS_OK=0
 if clone_or_update lastsecrets "https://github.com/EdgeVector/lastsecrets.git" optional; then
   LASTSECRETS_OK=1
 fi
 
-for app in brain kanban situations dogfood-graph; do
+for app in brain kanban situations dogfood-graph org; do
   run_bun_install "$app"
   link_cli "$app"
 done
@@ -180,6 +182,7 @@ if [ "$LASTSECRETS_OK" -eq 1 ]; then
 else
   printf '  # lastsecrets skipped (private / unavailable) — install later if you have access\n'
 fi
+printf '  org init\n'
 printf '\n'
 printf 'Dogfood Graph is a local app:\n'
 printf '  cd "%s/dogfood-graph" && npm run dev\n\n' "$TARGET_DIR"
