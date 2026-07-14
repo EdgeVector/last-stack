@@ -535,7 +535,7 @@ for path in "$@"; do
   routine_doctor_checks="$(search_prompt_pattern '(^|[^[:alnum:]_-])(brain|kanban|<brain-cli>|<board CLI>)[[:space:]]+(doctor|init)([^[:alnum:]_-]|$)' "$path")"
   routine_doctor_checks="$(printf '%s\n' "$routine_doctor_checks" \
     | grep -v -Ei 'Do not|Do \*\*not|Never|do not|never|avoid|unsupported|expected|setup|bootstrap|fresh machine|user asks|diagnostics|brain-doctor|kanban-setup|not run|without running|not use|must not|no `?brain doctor|no `?kanban doctor|raw TCP|defaults|hint:' \
-    | grep -v -E '/skills/(kanban-setup|kanban|brain-doctor)/|/tests/|/bin/|/README.md|/routines/README.md' || true)"
+    | grep -v -E '/skills/(kanban-setup|kanban|brain-doctor|llms-txt-install-smoke)/|/tests/|/bin/|/README.md|/routines/README.md|/routines/llms-txt-install-smoke\.md' || true)"
   if [ -n "$routine_doctor_checks" ]; then
     printf '%s\n' "$routine_doctor_checks"
     echo "routine prompt uses doctor/init as a health check under $path (use a socket-backed narrow read and busy-node backoff)" >&2
