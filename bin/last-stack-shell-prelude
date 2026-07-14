@@ -11,6 +11,8 @@ case ":$PATH:" in
   *) PATH="$global_path:$PATH" ;;
 esac
 export PATH
+LAST_STACK_PRELUDE_PATH="$PATH"
+export LAST_STACK_PRELUDE_PATH
 
 if [ "${1:-}" = "--print" ] || [ "${LAST_STACK_SHELL_PRELUDE_PRINT:-}" = "1" ]; then
   printf 'PATH=%s\n' "$PATH"
@@ -89,4 +91,14 @@ $tool"
     } >&2
     return 127
   fi
+}
+
+last_stack_run_tool() {
+  if [ "$#" -eq 0 ]; then
+    echo "LAST_STACK_TOOL_MISSING" >&2
+    echo "Usage: last_stack_run_tool <tool-path> [args...]" >&2
+    return 127
+  fi
+
+  PATH="${LAST_STACK_PRELUDE_PATH:-$PATH}" "$@"
 }

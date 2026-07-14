@@ -131,6 +131,15 @@ frontmatter suggests a cadence. The pattern every routine follows:
    "$LAST_STACK_TOOL_GIT" -C "$repo" status --short --branch
    "$LAST_STACK_TOOL_AWK" 'BEGIN { print "ok" }'
    ```
+   If a resolved command is a shell script or shim with an `/usr/bin/env`
+   shebang, run it through `last_stack_run_tool` inside generated snippets. This
+   keeps the restored prelude PATH visible even if the surrounding snippet later
+   narrows `PATH`:
+   ```bash
+   last_stack_require_tools fkanban
+   PATH="/some/intentionally/narrow/path"
+   last_stack_run_tool "$LAST_STACK_TOOL_FKANBAN" list --column doing --json
+   ```
    For local Forgejo API calls, prefer
    `"$last_stack/bin/last-stack-forge-api" ...` over hand-written
    `TOKEN=$(security ...) curl ...` snippets; for Forgejo git auth failures,
@@ -226,10 +235,10 @@ like:
 ```bash
 workspace="<WORKSPACE>"
 last_stack_require_tools find git
-"$LAST_STACK_TOOL_FIND" "$workspace" -mindepth 2 -maxdepth 3 -type d -name .git -prune \
+last_stack_run_tool "$LAST_STACK_TOOL_FIND" "$workspace" -mindepth 2 -maxdepth 3 -type d -name .git -prune \
   | while IFS= read -r git_dir; do
       repo="${git_dir%/.git}"
-      "$LAST_STACK_TOOL_GIT" -C "$repo" rev-parse --show-toplevel
+      last_stack_run_tool "$LAST_STACK_TOOL_GIT" -C "$repo" rev-parse --show-toplevel
     done
 ```
 

@@ -12,6 +12,8 @@ fake_global="$tmp/global"
 mkdir -p "$fake_global"
 printf '#!/bin/sh\nexit 0\n' > "$fake_global/gh"
 chmod +x "$fake_global/gh"
+printf '#!/usr/bin/env bash\nprintf shim-ok\n' > "$fake_global/shim-with-env-bash"
+chmod +x "$fake_global/shim-with-env-bash"
 
 PATH="/usr/bin:/bin"
 LAST_STACK_GLOBAL_PATH="$fake_global"
@@ -22,6 +24,9 @@ export PATH LAST_STACK_GLOBAL_PATH
 command -v gh >/dev/null 2>&1
 last_stack_require_tools gh
 test "$LAST_STACK_TOOL_GH" = "$fake_global/gh"
+last_stack_require_tools shim-with-env-bash
+PATH="$fake_global"
+test "$(last_stack_run_tool "$LAST_STACK_TOOL_SHIM_WITH_ENV_BASH")" = "shim-ok"
 
 PATH="/usr/bin:/bin"
 unset LAST_STACK_GLOBAL_PATH
@@ -36,6 +41,7 @@ test -n "$LAST_STACK_TOOL_BASENAME"
 test -n "$LAST_STACK_TOOL_RM"
 test -n "$LAST_STACK_TOOL_BASH"
 test "$LAST_STACK_TOOL_LAST_STACK_JSON_GET" = "$ROOT/bin/last-stack-json-get"
+test -n "$LAST_STACK_PRELUDE_PATH"
 case ":$PATH:" in
   *":$ROOT/bin:"*) ;;
   *) echo "expected prelude to prepend last-stack bin path" >&2; exit 1 ;;

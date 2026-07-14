@@ -55,10 +55,10 @@ continue — do not fail the whole run.
    there first. Enumerate child repos, then run Git against each discovered repo:
    ```bash
    workspace="<WORKSPACE>"
-   "$LAST_STACK_TOOL_FIND" "$workspace" -mindepth 2 -maxdepth 3 -type d -name .git -prune \
+   last_stack_run_tool "$LAST_STACK_TOOL_FIND" "$workspace" -mindepth 2 -maxdepth 3 -type d -name .git -prune \
      | while IFS= read -r git_dir; do
          repo="${git_dir%/.git}"
-         "$LAST_STACK_TOOL_GIT" -C "$repo" rev-parse --show-toplevel
+         last_stack_run_tool "$LAST_STACK_TOOL_GIT" -C "$repo" rev-parse --show-toplevel
        done
    ```
    Use the resulting repo roots to enumerate worktrees authoritatively across
@@ -74,10 +74,11 @@ continue — do not fail the whole run.
    If you store command output in shell variables, do not name one `status`;
    `zsh` treats `status` as a read-only special parameter. Use a specific name
    such as `repo_status` or `git_status`.
-3. **Remove the removable ones.** `"$LAST_STACK_TOOL_GIT" -C <repo> worktree
-   remove --force <path>` then `"$LAST_STACK_TOOL_GIT" -C <repo> branch -D
-   <branch>` for a fully-merged branch. Run `"$LAST_STACK_TOOL_GIT" -C <repo>
-   worktree prune` per repo afterwards. Delete any now-empty
+3. **Remove the removable ones.** `last_stack_run_tool "$LAST_STACK_TOOL_GIT" -C
+   <repo> worktree remove --force <path>` then `last_stack_run_tool
+   "$LAST_STACK_TOOL_GIT" -C <repo> branch -D <branch>` for a fully-merged
+   branch. Run `last_stack_run_tool "$LAST_STACK_TOOL_GIT" -C <repo> worktree
+   prune` per repo afterwards. Delete any now-empty
    worktree parent dir.
 3a. **Reap stale dev-server port orphans (port-scoped, brain-safe).** Local
    preview / dev servers (e.g. Vite, a per-app dev node) bind well-known ports;
