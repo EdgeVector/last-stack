@@ -49,6 +49,7 @@ stripped out.
                  └──────────────────────────────────────────────────────────┘
 
                  ┌──────────────────── machine health ──────────────────────┐
+   self-upgrade     ─▶ keep ~/.last-stack clean-FF to origin (unblocks fleet)
    worktree-cleanup ─▶ prune stale worktrees/branches, bring repos to latest
    disk-reclaim     ─▶ hourly: reclaim disk, prune merged worktrees
                  └──────────────────────────────────────────────────────────┘
@@ -81,6 +82,7 @@ engine.** That's why this pack exists.
 | [`devops-continuous-improvement`](devops-continuous-improvement.md) | daily | Inspect CI, merge flow, deployment, testing, and release gates; ship one small DevOps fix or file precise follow-up cards. |
 | [`worktree-cleanup`](worktree-cleanup.md) | daily (off-hours) | Prune stale worktrees/branches; bring repos to latest default branch. |
 | [`disk-reclaim`](disk-reclaim.md) | hourly | Reclaim disk, prune merged/clean worktrees, sweep orphan processes. |
+| [`self-upgrade`](self-upgrade.md) | every 1–2 hours | Clean-only fast-forward of the install checkout + `./setup` so other routines do not stall on `LAST_STACK_ROUTINE_STALE`. |
 | [`drain-open-prs`](drain-open-prs.md) | daily | Drive every open PR across all repos toward zero (merge or close). |
 
 ### B. The kanban / brain driving loop — pairs 1:1 with the skills
@@ -144,9 +146,15 @@ frontmatter suggests a cadence. The pattern every routine follows:
    ```bash
    "$last_stack/bin/last-stack-routine-read" "<routine>" >/tmp/last-stack-routine.md
    ```
-   If it prints `LAST_STACK_ROUTINE_STALE` or `LAST_STACK_ROUTINE_MISSING`, stop
-   before executing stale or absent instructions and run the `last-stack-upgrade`
-   skill or `cd "$last_stack" && git pull --ff-only && ./setup`.
+   On staleness the reader **auto-heals when the install tree is clean**: it
+   runs `last-stack-self-upgrade` (fast-forward + `./setup`), then re-checks.
+   If the install is dirty, diverged, or the helper is missing, it prints
+   `LAST_STACK_ROUTINE_STALE` and exits 78 — stop before executing stale text.
+   Do **not** set `LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1` or
+   `LASTSTACK_SELF_UPGRADE_SKIP=1` in scheduled automations. Never
+   `reset --hard` the install dir to force a pass; develop in a separate clone.
+   Manual fallback: `"$last_stack/bin/last-stack-self-upgrade"` or
+   `cd "$last_stack" && git pull --ff-only && ./setup`.
 5. **Budget LastDB reads.** Start with the narrowest data-plane read that proves
    the node is reachable, such as `<board-cli> list --column todo --json` or a
    targeted `<brain-cli> get <slug> --type <type> --json`. Prefer column/capped
@@ -260,7 +268,7 @@ Creation-style flags belong to `brain <type> new`, not `put`.
 Codex automation prompt skeletons should render the same information directly:
 
 ```text
-Run the Last Stack routine `<routine>`: set `last_stack="<last-stack>"`; source `$last_stack/bin/last-stack-shell-prelude`; run `$last_stack/bin/last-stack-cli-preflight git curl jq gh <board-cli> <brain-cli>`; then read the routine with `$last_stack/bin/last-stack-routine-read "<routine>"` and execute one bounded pass. If the reader prints `LAST_STACK_ROUTINE_STALE` or `LAST_STACK_ROUTINE_MISSING`, run the `last-stack-upgrade` skill or stop before executing stale/absent routine text. Automation ID: <automation-id>. Automation memory: ${CODEX_HOME:-$HOME/.codex}/automations/<automation-id>/memory.md. Use workspace `<workspace>` only as a container of child checkouts; before repo-scoped `git` or repo-inferred `gh`, resolve the child repo with `$last_stack/bin/last-stack-repo-op-guard "$target_repo" "<workspace>"` and use examples such as `git -C /Users/tomtang/code/edgevector/<repo> status -sb`, never the workspace root itself. Use board CLI `<board-cli>`, brain CLI `<brain-cli>`, default board `<board>` (the board name is only a `--board` argument for `list` and `add`; `show`, `move`, `rm`, and rank/dep/tag verbs operate on the default board implicitly and reject `--board`), and global CLIs from PATH.
+Run the Last Stack routine `<routine>`: set `last_stack="<last-stack>"`; source `$last_stack/bin/last-stack-shell-prelude`; run `$last_stack/bin/last-stack-cli-preflight git curl jq gh <board-cli> <brain-cli>`; then read the routine with `$last_stack/bin/last-stack-routine-read "<routine>"` and execute one bounded pass. The reader clean-only auto-upgrades a stale install via `last-stack-self-upgrade` before serving the prompt; if it still prints `LAST_STACK_ROUTINE_STALE` (dirty/diverged install) or `LAST_STACK_ROUTINE_MISSING`, stop before executing stale/absent routine text and heartbeat the failure — never `reset --hard` the install dir. Prefer a scheduled `self-upgrade` routine so the install stays current even when other jobs are idle. Automation ID: <automation-id>. Automation memory: ${CODEX_HOME:-$HOME/.codex}/automations/<automation-id>/memory.md. Use workspace `<workspace>` only as a container of child checkouts; before repo-scoped `git` or repo-inferred `gh`, resolve the child repo with `$last_stack/bin/last-stack-repo-op-guard "$target_repo" "<workspace>"` and use examples such as `git -C /Users/tomtang/code/edgevector/<repo> status -sb`, never the workspace root itself. Use board CLI `<board-cli>`, brain CLI `<brain-cli>`, default board `<board>` (the board name is only a `--board` argument for `list` and `add`; `show`, `move`, `rm`, and rank/dep/tag verbs operate on the default board implicitly and reject `--board`), and global CLIs from PATH.
 ```
 
 When a prompt needs PR merge-queue membership, use

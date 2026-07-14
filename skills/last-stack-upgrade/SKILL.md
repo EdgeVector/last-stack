@@ -1,13 +1,13 @@
 ---
 name: last-stack-upgrade
-version: 0.2.0
+version: 0.3.0
 description: |
   Upgrade The Last Stack to the latest version and show what changed. Detects
-  where the stack is installed (the cloned repo dir), runs `git pull`, re-runs
-  `./setup` to re-register the skills into your agent harnesses, and reports the
-  version delta. Use when asked to "upgrade the last stack", "update the last
-  stack", "get the latest skills", or when a skill preamble reports
-  UPGRADE_AVAILABLE from `bin/last-stack-update-check`.
+  where the stack is installed (the cloned repo dir), runs the clean-only
+  `last-stack-self-upgrade` helper (git pull --ff-only + ./setup), and reports
+  the version delta. Use when asked to "upgrade the last stack", "update the
+  last stack", "get the latest skills", or when a skill preamble / routine
+  reports UPGRADE_AVAILABLE or LAST_STACK_ROUTINE_STALE.
 allowed-tools:
   - Bash
   - Read
@@ -33,26 +33,38 @@ Upgrade The Last Stack in place and re-register the skills.
    ```
    If none resolve, ask the user where they cloned it.
 
-2. **Record the current version**, then pull and re-run setup:
+2. **Prefer the safe helper** (refuses dirty trees; never force-resets):
+   ```bash
+   OLD_HEAD=$(git -C <install-dir> rev-parse --short HEAD)
+   OLD=$(cat <install-dir>/VERSION)
+   <install-dir>/bin/last-stack-self-upgrade --reason=skill
+   NEW_HEAD=$(git -C <install-dir> rev-parse --short HEAD)
+   NEW=$(cat <install-dir>/VERSION)
+   echo "Upgraded The Last Stack: $OLD ($OLD_HEAD) -> $NEW ($NEW_HEAD)"
+   ```
+   If the helper is missing (very old install), fall back to:
    ```bash
    cd <install-dir>
-   OLD=$(cat VERSION)
-   git pull --ff-only
-   NEW=$(cat VERSION)
-   ./setup        # re-registers skills into every harness you have
-   echo "Upgraded The Last Stack: $OLD -> $NEW"
+   # only when git status --porcelain is empty
+   git pull --ff-only && ./setup
    ```
 
-3. **Report what changed.** Show the version delta and, if useful, the changelog
-   between versions:
+3. **Report what changed.** Show the version/head delta and, if useful, the
+   changelog between versions:
    ```bash
-   git log --oneline "v$OLD..HEAD" 2>/dev/null || git log --oneline -10
+   git -C <install-dir> log --oneline "$OLD_HEAD..HEAD" 2>/dev/null || \
+     git -C <install-dir> log --oneline -10
    ```
 
 ## Notes
 
-- `git pull --ff-only` keeps it safe — if the local repo has diverged (you edited
-  a skill), it stops cleanly instead of creating a merge. Resolve, then re-run.
+- **Install dir is product, not a dev checkout.** Feature work belongs in a
+  separate clone. Local edits in `~/.last-stack` make `error-dirty` and block
+  every scheduled routine that depends on freshness.
+- `last-stack-self-upgrade` only fast-forwards a **clean** tree. It never
+  `reset --hard`, merges, or stashes. Dirty/diverged installs fail closed.
+- `last-stack-routine-read` already calls the helper on staleness; this skill is
+  the interactive/manual path and the recovery when auto-heal cannot run.
 - Re-running `./setup` is idempotent; it refreshes the SKILL.md links so every
   installed harness picks up the new version.
 - This only updates The Last Stack's own skills — it never touches skills you
