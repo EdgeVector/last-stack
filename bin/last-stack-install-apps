@@ -11,7 +11,8 @@ usage() {
 last-stack-install-apps [options]
 
 Downloads the stable LastDB app stack:
-  LastDB daemon, brain, kanban, situations, dogfood-graph, LastSecrets.
+  LastDB daemon, brain, kanban (from public fkanban), situations, dogfood-graph.
+  LastSecrets is optional (private repo) — installed when clone succeeds.
 
 Options:
   --dir <path>      clone/update app repos under this directory
@@ -65,16 +66,33 @@ clone_or_update() {
   local name="$1"
   local url="$2"
   local dest="$TARGET_DIR/$name"
+  local optional="${3:-}"
 
   if [ -d "$dest/.git" ]; then
     echo "==> updating $name"
-    git -C "$dest" pull --ff-only
+    if ! git -C "$dest" pull --ff-only; then
+      if [ "$optional" = "optional" ]; then
+        echo "    warning: could not update optional app $name — skipping" >&2
+        return 1
+      fi
+      return 1
+    fi
+    return 0
   elif [ -e "$dest" ]; then
     echo "refusing to overwrite non-git path: $dest" >&2
     exit 1
   else
     echo "==> cloning $name"
-    git clone "$url" "$dest"
+    if ! git clone "$url" "$dest"; then
+      if [ "$optional" = "optional" ]; then
+        echo "    warning: could not clone optional app $name from $url — skipping" >&2
+        echo "    (if the repo is private, authenticate to GitHub or install it later)" >&2
+        return 1
+      fi
+      echo "failed to clone $name from $url" >&2
+      return 1
+    fi
+    return 0
   fi
 }
 
@@ -90,11 +108,16 @@ link_cli() {
   local name="$1"
   local dest="$TARGET_DIR/$name"
   [ "$LINK_CLIS" -eq 1 ] || return 0
+  [ -d "$dest" ] || return 0
 
   case "$name" in
     kanban)
       echo "==> linking kanban CLI"
-      (cd "$dest" && bun run install-cli)
+      # Ensure a user bin dir exists for first-run machines (install-cli creates
+      # ~/.local/bin when needed, but put it on PATH for this process too).
+      mkdir -p "$HOME/.local/bin"
+      export PATH="$HOME/.local/bin:${PATH:-}"
+      (cd "$dest" && bun run install-cli "$HOME/.local/bin")
       ;;
     situations)
       if [ -x "$dest/bin/situations" ]; then
@@ -121,16 +144,28 @@ fi
 
 mkdir -p "$TARGET_DIR"
 
+# Public apps (required). Kanban's public GitHub repo is EdgeVector/fkanban;
+# the CLI still installs as `kanban` via that package's install-cli.
 clone_or_update brain "https://github.com/EdgeVector/brain.git"
-clone_or_update kanban "https://github.com/EdgeVector/kanban.git"
+clone_or_update kanban "https://github.com/EdgeVector/fkanban.git"
 clone_or_update situations "https://github.com/EdgeVector/situations.git"
 clone_or_update dogfood-graph "https://github.com/EdgeVector/dogfood-graph.git"
-clone_or_update lastsecrets "https://github.com/EdgeVector/lastsecrets.git"
 
-for app in brain kanban situations dogfood-graph lastsecrets; do
+# Optional: LastSecrets is not public on GitHub yet. Soft-fail so a brand-new
+# machine without org auth still gets Brain + Kanban working.
+LASTSECRETS_OK=0
+if clone_or_update lastsecrets "https://github.com/EdgeVector/lastsecrets.git" optional; then
+  LASTSECRETS_OK=1
+fi
+
+for app in brain kanban situations dogfood-graph; do
   run_bun_install "$app"
   link_cli "$app"
 done
+if [ "$LASTSECRETS_OK" -eq 1 ]; then
+  run_bun_install lastsecrets
+  link_cli lastsecrets
+fi
 
 printf '\n'
 printf 'Installed LastDB apps under:\n'
@@ -140,7 +175,12 @@ printf '  brew services start lastdb\n'
 printf '  brain init --grant-consent\n'
 printf '  kanban init\n'
 printf '  situations init\n'
-printf '  lastsecrets init\n\n'
+if [ "$LASTSECRETS_OK" -eq 1 ]; then
+  printf '  lastsecrets init\n'
+else
+  printf '  # lastsecrets skipped (private / unavailable) — install later if you have access\n'
+fi
+printf '\n'
 printf 'Dogfood Graph is a local app:\n'
 printf '  cd "%s/dogfood-graph" && npm run dev\n\n' "$TARGET_DIR"
 printf 'Make sure ~/.local/bin and ~/.bun/bin are on PATH if linked commands are not found.\n'
