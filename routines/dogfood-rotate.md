@@ -20,14 +20,15 @@ with every actionable blocker and papercut discovered.
 - Use Brain via `brain` and Kanban via `kanban`; default board is
   `default`.
 - Before any Brain/board writes or product assertions, make sure the Last Stack
-  routine checkout you are reading is current. Run
-  `${LAST_STACK_ROOT:-$HOME/.last-stack}/bin/last-stack-update-check`. If it
-  prints `UPGRADE_AVAILABLE` or `GIT_UPDATE_AVAILABLE`, STOP and report a
-  dogfood workflow blocker telling the scheduler/human to run the
-  `last-stack-upgrade` skill, then re-run dogfood from the upgraded prompt. Do
-  not continue from stale routine text: stale installed prompts can miss wrapper
-  fixes such as current target checkout selection and repeatedly block on the
-  user's dirty primary checkout even after the repo PR has merged.
+  routine checkout you are reading is current. Prefer reading this routine
+  through `last-stack-routine-read dogfood-rotate` (it clean-only auto-upgrades
+  a stale install). If you only have `last-stack-update-check` and it prints
+  `UPGRADE_AVAILABLE` or `GIT_UPDATE_AVAILABLE`, run
+  `${LAST_STACK_ROOT:-$HOME/.last-stack}/bin/last-stack-self-upgrade` once, then
+  re-read the upgraded prompt. If self-upgrade returns `error-dirty` or
+  `error-diverged`, STOP, heartbeat the failure, and file/reuse a single
+  install-dir blocker — never continue from stale routine text and never
+  `reset --hard` the install.
 - First run data-plane preflight reads, sequentially: `brain get
   dogfood-registry --type project --json` and `kanban list --column todo
   --json`. These socket-backed reads are the health check. Do not use

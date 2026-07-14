@@ -1,5 +1,8 @@
 #!/bin/sh
 # Read a routine prompt through one guarded path: freshness first, then file read.
+# When the install is behind origin, attempt a clean-only self-upgrade before
+# failing closed — so scheduled routines recover without a human once the tree
+# is clean.
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -18,22 +21,58 @@ case "$routine" in
     ;;
 esac
 
+is_stale_status() {
+  case "$1" in
+    UPGRADE_AVAILABLE*|GIT_UPDATE_AVAILABLE*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+stale_fail() {
+  stale_status="$1"
+  detail="${2:-}"
+  echo "LAST_STACK_ROUTINE_STALE $stale_status" >&2
+  if [ -n "$detail" ]; then
+    echo "$detail" >&2
+  fi
+  echo "If the install is clean, run: \"$ROOT/bin/last-stack-self-upgrade\"" >&2
+  echo "Or: cd \"$ROOT\" && git pull --ff-only && ./setup" >&2
+  echo "If dirty, develop in a separate clone — never leave edits in the install dir." >&2
+  exit 78
+}
+
 if [ "${LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK:-0}" != "1" ] && [ -x "$ROOT/bin/last-stack-update-check" ]; then
   update_status="$("$ROOT/bin/last-stack-update-check" 2>/dev/null || true)"
-  case "$update_status" in
-    UPGRADE_AVAILABLE*|GIT_UPDATE_AVAILABLE*)
-      echo "LAST_STACK_ROUTINE_STALE $update_status" >&2
-      echo "Run the last-stack-upgrade skill or: cd \"$ROOT\" && git pull --ff-only && ./setup" >&2
-      exit 78
-      ;;
-  esac
+  if is_stale_status "$update_status"; then
+    if [ "${LASTSTACK_SELF_UPGRADE_SKIP:-0}" = "1" ]; then
+      stale_fail "$update_status" "Auto self-upgrade disabled (LASTSTACK_SELF_UPGRADE_SKIP=1)."
+    fi
+    if [ -x "$ROOT/bin/last-stack-self-upgrade" ]; then
+      upgrade_err="$(mktemp "${TMPDIR:-/tmp}/last-stack-routine-read-upgrade.XXXXXX")"
+      if "$ROOT/bin/last-stack-self-upgrade" --reason=routine-read >"$upgrade_err" 2>&1; then
+        # Refresh status after a successful clean upgrade (or up-to-date race).
+        update_status="$("$ROOT/bin/last-stack-update-check" 2>/dev/null || true)"
+        if is_stale_status "$update_status"; then
+          stale_fail "$update_status" "Self-upgrade reported success but install is still stale. $(cat "$upgrade_err" 2>/dev/null || true)"
+        fi
+        rm -f "$upgrade_err"
+      else
+        detail="$(cat "$upgrade_err" 2>/dev/null || true)"
+        rm -f "$upgrade_err"
+        stale_fail "$update_status" "Self-upgrade refused or failed (clean-only policy). $detail"
+      fi
+    else
+      stale_fail "$update_status" "last-stack-self-upgrade is not installed yet; upgrade once by hand."
+    fi
+  fi
 fi
 
 routine_path="$ROOT/routines/$routine.md"
 if [ ! -r "$routine_path" ]; then
   echo "LAST_STACK_ROUTINE_MISSING routine=$routine path=$routine_path" >&2
   echo "The installed Last Stack checkout does not contain this routine prompt." >&2
-  echo "Run the last-stack-upgrade skill or: cd \"$ROOT\" && git pull --ff-only && ./setup" >&2
+  echo "If the install is clean, run: \"$ROOT/bin/last-stack-self-upgrade\"" >&2
+  echo "Or: cd \"$ROOT\" && git pull --ff-only && ./setup" >&2
   exit 66
 fi
 

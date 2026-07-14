@@ -69,14 +69,29 @@ enough for the public bundle. See
 
 ## Upgrade
 
+Prefer the clean-only helper (refuses a dirty install tree; never force-resets):
+
 ```bash
-cd ~/.last-stack && git pull && ./setup
+~/.last-stack/bin/last-stack-self-upgrade
 ```
 
-Or just tell your agent **"upgrade the last stack"** — the included
-**last-stack-upgrade** skill does the pull + re-register and shows what changed.
+Manual equivalent when the tree is clean:
+
+```bash
+cd ~/.last-stack && git pull --ff-only && ./setup
+```
+
+Or tell your agent **"upgrade the last stack"** — the included
+**last-stack-upgrade** skill runs the helper and shows what changed.
 Skills can cheaply check for a new version via `bin/last-stack-update-check`
-(cached, never blocks; prints `UP_TO_DATE` / `UPGRADE_AVAILABLE` / `UNKNOWN`).
+(cached VERSION lookup; git HEAD checks are uncached; prints `UP_TO_DATE` /
+`UPGRADE_AVAILABLE` / `GIT_UPDATE_AVAILABLE` / `UNKNOWN`).
+
+**Scheduled fleets:** `last-stack-routine-read` auto-runs
+`last-stack-self-upgrade` when the install is behind and clean, so routines do
+not stay stuck on `LAST_STACK_ROUTINE_STALE`. Register the
+[`self-upgrade`](routines/self-upgrade.md) routine as a 1–2h backstop. Keep
+`~/.last-stack` free of local edits — develop in a separate clone.
 
 > **Run `setup` AFTER any gstack setup / `/gstack-upgrade`.** gstack `./setup`
 > re-symlinks its own skills into `~/.claude/skills/<name>`; when a gstack skill
@@ -121,7 +136,7 @@ preserving project-specific rules where they belong.
 | **registry-rotator** | Generic engine for registry-backed scheduled routines: pick the most-overdue eligible entry, run its recipe, file cards, and stamp the registry log. |
 | **wait-merge** | Robustly wait for a GitHub PR to merge by interpreting PR *state*, not a watcher's exit code. |
 | **close-out** | The post-change loop: open a PR from a worktree, drive it to merged, checkpoint the decision to the brain, file a follow-up card. |
-| **last-stack-upgrade** | Update the stack in place and re-register the skills. |
+| **last-stack-upgrade** | Update the stack in place (clean-only self-upgrade) and re-register the skills. |
 | **session-miner** | Generic engine for mining recent agent session transcripts with profiles for papercuts, incidents, owner-stated knowledge, and tooling friction. |
 
 And the **routines** (`routines/`) — parameterized scheduled-agent templates that
@@ -165,6 +180,8 @@ VERSION                 the installed version (update-check compares against thi
 setup                   installer — registers skills into your agent harnesses
 bin/
   last-stack-update-check   is a newer version or default-branch HEAD available?
+  last-stack-self-upgrade   clean-only FF pull + ./setup (used by routine-read)
+  last-stack-routine-read   serve a routine prompt; auto-heals stale clean installs
                             (version checks cached; git HEAD checks uncached)
   last-stack-verify-skill-links
                             verify (and by default repair) that every Last Stack

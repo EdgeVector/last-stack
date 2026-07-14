@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+# Safe self-upgrade of The Last Stack install checkout.
+#
+# Policy (intentionally conservative):
+#   - Never reset/hard-reset/force-push/merge.
+#   - Only fast-forward when the install working tree is clean.
+#   - Re-run ./setup after a successful pull so harness skill links refresh.
+#
+# Machine-readable result lines (stdout):
+#   LAST_STACK_SELF_UPGRADE result=up-to-date|upgraded|already-current \
+#       local_head=<sha> [remote_head=<sha>] [version=<v>]
+#   LAST_STACK_SELF_UPGRADE result=error-dirty|error-diverged|error-pull|error-setup|error-lock|error-not-git \
+#       ...
+#
+# Exit codes:
+#   0  up-to-date or successfully upgraded
+#   1  upgrade needed/attempted but failed (dirty tree, pull refused, etc.)
+#   2  usage error
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+remote="${LASTSTACK_REMOTE_REPO:-origin}"
+do_setup=1
+check_only=0
+reason=""
+
+usage() {
+  cat <<'EOF' >&2
+usage: last-stack-self-upgrade [--check-only] [--no-setup] [--reason <tag>]
+
+Safely fast-forward the Last Stack install and re-run ./setup when clean.
+
+  --check-only   Report what would happen; do not pull or setup
+  --no-setup     Skip ./setup after a successful pull
+  --reason <tag> Optional caller tag (e.g. routine-read, cron)
+
+Environment:
+  LAST_STACK_ROOT           install root (resolved from this script by default)
+  LASTSTACK_REMOTE_REPO     git remote name (default: origin)
+  LASTSTACK_SELF_UPGRADE_SKIP=1  callers may set this to disable auto-heal
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --check-only) check_only=1; shift ;;
+    --no-setup) do_setup=0; shift ;;
+    --reason=*)
+      reason="${1#--reason=}"
+      shift
+      ;;
+    --reason)
+      [ "$#" -ge 2 ] || { usage; exit 2; }
+      reason="$2"
+      shift 2
+      ;;
+    -h|--help) usage; exit 0 ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+short_sha() {
+  printf '%s' "$1" | cut -c1-12
+}
+
+emit() {
+  # shellcheck disable=SC2059
+  printf 'LAST_STACK_SELF_UPGRADE'
+  if [ -n "$reason" ]; then
+    printf ' reason=%s' "$reason"
+  fi
+  printf ' %s\n' "$*"
+}
+
+if ! git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  emit "result=error-not-git root=$ROOT"
+  exit 1
+fi
+
+local_head="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"
+if [ -z "$local_head" ]; then
+  emit "result=error-not-git root=$ROOT"
+  exit 1
+fi
+
+# Only tracked modifications/deletes block upgrade. Untracked files are left to
+# `git pull --ff-only` (it refuses when they would be overwritten). Ignoring
+# untracked avoids false dirties from helper state (.self-upgrade.lock,
+# .update-check) and intentional local-only shims that do not conflict.
+dirty="$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null || true)"
+if [ -n "$dirty" ]; then
+  dirty_count="$(printf '%s\n' "$dirty" | sed '/^$/d' | wc -l | tr -d ' ')"
+  sample="$(printf '%s\n' "$dirty" | sed '/^$/d' | head -8 | tr '\n' '|' | sed 's/|$//')"
+  emit "result=error-dirty local_head=$(short_sha "$local_head") dirty_count=$dirty_count sample=$sample"
+  echo "Install checkout has tracked local edits; refusing self-upgrade. Develop in a separate clone, not the install dir." >&2
+  echo "Resolve with a clean tree, then re-run: cd \"$ROOT\" && git pull --ff-only && ./setup" >&2
+  exit 1
+fi
+
+# Concurrent upgrades (several routines waking together) serialize on a mkdir lock.
+lock_dir="$ROOT/.self-upgrade.lock"
+lock_timeout_s="${LASTSTACK_SELF_UPGRADE_LOCK_TIMEOUT_S:-600}"
+acquired=0
+if mkdir "$lock_dir" 2>/dev/null; then
+  printf '%s\n' "$$" >"$lock_dir/pid"
+  acquired=1
+else
+  lock_age=0
+  if [ -f "$lock_dir/pid" ]; then
+    # Best-effort stale lock reclaim (mtime age).
+    now="$(date +%s 2>/dev/null || echo 0)"
+    mtime="$(stat -f %m "$lock_dir" 2>/dev/null || stat -c %Y "$lock_dir" 2>/dev/null || echo 0)"
+    if [ "$now" -gt 0 ] && [ "$mtime" -gt 0 ]; then
+      lock_age=$((now - mtime))
+    fi
+  fi
+  if [ "$lock_age" -ge "$lock_timeout_s" ]; then
+    rm -rf "$lock_dir"
+    if mkdir "$lock_dir" 2>/dev/null; then
+      printf '%s\n' "$$" >"$lock_dir/pid"
+      acquired=1
+    fi
+  fi
+fi
+
+if [ "$acquired" -ne 1 ]; then
+  emit "result=error-lock local_head=$(short_sha "$local_head")"
+  echo "Another self-upgrade holds $lock_dir; try again shortly." >&2
+  exit 1
+fi
+
+cleanup_lock() {
+  rm -rf "$lock_dir"
+}
+trap cleanup_lock EXIT
+
+# Re-check tracked dirt after lock (another process may have finished).
+dirty="$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null || true)"
+if [ -n "$dirty" ]; then
+  emit "result=error-dirty local_head=$(short_sha "$local_head") dirty_count=post-lock"
+  exit 1
+fi
+
+if ! git -C "$ROOT" fetch --quiet "$remote" 2>/dev/null; then
+  # Offline / unreachable remote: treat as non-fatal up-to-date-ish for cron,
+  # but still exit 0 only when we cannot prove staleness.
+  emit "result=up-to-date local_head=$(short_sha "$local_head") note=fetch-failed"
+  exit 0
+fi
+
+remote_info="$(git -C "$ROOT" ls-remote --symref "$remote" HEAD 2>/dev/null || true)"
+remote_ref="$(printf '%s\n' "$remote_info" | awk '$1 == "ref:" && $3 == "HEAD" {print $2; exit}')"
+remote_head="$(printf '%s\n' "$remote_info" | awk '$2 == "HEAD" && $1 != "ref:" {print $1; exit}')"
+
+if [ -z "$remote_head" ]; then
+  # Fallback: origin/main or origin/HEAD
+  remote_head="$(git -C "$ROOT" rev-parse --verify "$remote/HEAD" 2>/dev/null || true)"
+  if [ -z "$remote_head" ]; then
+    remote_head="$(git -C "$ROOT" rev-parse --verify "$remote/main" 2>/dev/null || true)"
+  fi
+fi
+
+if [ -z "$remote_head" ]; then
+  emit "result=up-to-date local_head=$(short_sha "$local_head") note=no-remote-head"
+  exit 0
+fi
+
+if [ "$local_head" = "$remote_head" ]; then
+  version="$(tr -d '[:space:]' <"$ROOT/VERSION" 2>/dev/null || echo unknown)"
+  emit "result=up-to-date local_head=$(short_sha "$local_head") remote_head=$(short_sha "$remote_head") version=$version"
+  exit 0
+fi
+
+if ! git -C "$ROOT" merge-base --is-ancestor "$local_head" "$remote_head" 2>/dev/null; then
+  emit "result=error-diverged local_head=$(short_sha "$local_head") remote_head=$(short_sha "$remote_head")"
+  echo "Install HEAD is not a fast-forward ancestor of remote HEAD; refusing self-upgrade." >&2
+  exit 1
+fi
+
+if [ "$check_only" -eq 1 ]; then
+  emit "result=would-upgrade local_head=$(short_sha "$local_head") remote_head=$(short_sha "$remote_head")"
+  exit 0
+fi
+
+local_ref="$(git -C "$ROOT" symbolic-ref -q HEAD 2>/dev/null || true)"
+if [ -n "$remote_ref" ] && [ -n "$local_ref" ] && [ "$local_ref" = "$remote_ref" ]; then
+  if ! git -C "$ROOT" pull --ff-only --quiet "$remote" 2>/tmp/last-stack-self-upgrade-pull.$$; then
+    emit "result=error-pull local_head=$(short_sha "$local_head") remote_head=$(short_sha "$remote_head")"
+    cat /tmp/last-stack-self-upgrade-pull.$$ >&2 || true
+    rm -f /tmp/last-stack-self-upgrade-pull.$$
+    exit 1
+  fi
+  rm -f /tmp/last-stack-self-upgrade-pull.$$
+else
+  # Detached HEAD or non-default branch that is still a clean FF ancestor of
+  # remote HEAD: move to remote HEAD with a pure fast-forward merge.
+  if ! git -C "$ROOT" merge --ff-only "$remote_head" 2>/tmp/last-stack-self-upgrade-pull.$$; then
+    emit "result=error-pull local_head=$(short_sha "$local_head") remote_head=$(short_sha "$remote_head")"
+    cat /tmp/last-stack-self-upgrade-pull.$$ >&2 || true
+    rm -f /tmp/last-stack-self-upgrade-pull.$$
+    exit 1
+  fi
+  rm -f /tmp/last-stack-self-upgrade-pull.$$
+fi
+
+new_head="$(git -C "$ROOT" rev-parse HEAD)"
+version="$(tr -d '[:space:]' <"$ROOT/VERSION" 2>/dev/null || echo unknown)"
+
+if [ "$do_setup" -eq 1 ] && [ -x "$ROOT/setup" ]; then
+  if ! (cd "$ROOT" && ./setup) >/tmp/last-stack-self-upgrade-setup.$$ 2>&1; then
+    emit "result=error-setup local_head=$(short_sha "$local_head") new_head=$(short_sha "$new_head")"
+    cat /tmp/last-stack-self-upgrade-setup.$$ >&2 || true
+    rm -f /tmp/last-stack-self-upgrade-setup.$$
+    exit 1
+  fi
+  rm -f /tmp/last-stack-self-upgrade-setup.$$
+fi
+
+emit "result=upgraded local_head=$(short_sha "$local_head") remote_head=$(short_sha "$new_head") version=$version"
+exit 0
