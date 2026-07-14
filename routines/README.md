@@ -45,6 +45,7 @@ stripped out.
 
                  ┌──────────────────── the brain (brain) ──────────────────┐
    program-rollup   ─▶ mirror board status into the driving index (auto block)
+   north-star-rollup─▶ cards×north_star matrix into north-star-dashboard
    consolidate-brain ─▶ fix lying statuses, archive completed/dupe records
    morning-sync      ─▶ surface the SHORT genuinely-human decision set
                  └──────────────────────────────────────────────────────────┘
@@ -98,6 +99,7 @@ engine.** That's why this pack exists.
 | [`groom-board`](groom-board.md) | daily | Promote ready `backlog`→`todo`, break up epics, prune junk. |
 | [`program-driver`](program-driver.md) | hourly | Promote each program's next DAG card into `todo`. |
 | [`program-rollup`](program-rollup.md) | hourly | Mirror the board into the brain's driving index (auto-status block). |
+| [`north-star-rollup`](north-star-rollup.md) | hourly | Roll up cards by `north_star` × column into brain `north-star-dashboard` + local HTML. |
 | [`consolidate-brain`](consolidate-brain.md) | daily | Keep brain statuses honest; archive completed/dupe records. |
 | [`morning-sync`](morning-sync.md) | daily | Surface the short genuinely-human decision set; a read-only briefing. |
 | [`dogfood-rotate`](dogfood-rotate.md) | hourly | Rotate through the brain-owned dogfood registry; exercise one feature on isolated/dev surfaces; file deduped papercut/blocker cards (files work only). |
