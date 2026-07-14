@@ -108,11 +108,7 @@ continue — do not fail the whole run.
    `<board CLI> overlap <slug> --json`. On conflict, SKIP and leave in `todo`;
    note `collision=<slug>:<in-flight-slug>` in the heartbeat.
 5. Sort eligible, non-colliding cards by priority (lowest `position`; tie-break
-   oldest `created_at`). **Pipeline blocks outrank ordinary work:** if any
-   eligible card has `Priority: P0` / tag `p0` **and** tags or title matching
-   `pipeline` / `deploy-pipeline` / `deploy-pipeline-red-`, pick that card
-   first (Tom 2026-07-14: a blocked merge or deploy pipeline is always P0).
-   Form **exactly one** work-unit:
+   oldest `created_at`). Form **exactly one** work-unit:
    - Prefer a **singleton** (one card).
    - Optionally batch 2–3 cards only if they share the same `Repo:`, same
      `Base:`, and a clear shared subsystem tag **and** you can finish the batch
