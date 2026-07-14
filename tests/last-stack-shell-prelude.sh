@@ -66,4 +66,16 @@ if grep -q 'command not found' "$tmp/missing.err"; then
   exit 1
 fi
 
+workspace="$tmp/workspace"
+mkdir -p "$workspace/brain/bin"
+printf '#!/bin/sh\nexit 0\n' > "$workspace/brain/bin/brain"
+chmod +x "$workspace/brain/bin/brain"
+PATH="/usr/bin:/bin"
+LAST_STACK_WORKSPACE="$workspace"
+unset LAST_STACK_GLOBAL_PATH
+export PATH LAST_STACK_WORKSPACE
+. "$ROOT/bin/last-stack-shell-prelude"
+last_stack_require_tools brain
+test "$LAST_STACK_TOOL_BRAIN" = "$workspace/brain/bin/brain"
+
 echo "ok"
