@@ -20,6 +20,13 @@ case "$dogfood_prompt" in
     exit 1
     ;;
 esac
+case "$dogfood_prompt" in
+  *"error-dirty"*"warn: last-stack-checkout-dirty"*"noop heartbeat"*"reason=last-stack-checkout-dirty"*) ;;
+  *)
+    echo "expected dogfood-rotate prompt to treat dirty install checkout as noop, not error" >&2
+    exit 1
+    ;;
+esac
 
 if LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" does-not-exist >/dev/null 2>"/tmp/last-stack-routine-read-missing.$$"; then
   echo "expected missing routine to fail" >&2
