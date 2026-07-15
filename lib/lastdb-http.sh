@@ -42,7 +42,7 @@ last_stack_lastdb_json() {
   local path="$2"
   local body="${3-}"
   local socket node_url use_socket=0
-  local tmp_headers tmp_body status
+  local tmp_headers tmp_body http_code
   socket="$(last_stack_lastdb_socket)"
   node_url="$(last_stack_lastdb_node_url)"
 
@@ -78,8 +78,8 @@ last_stack_lastdb_json() {
     curl_args+=("${node_url}${path}")
   fi
 
-  status="$(curl "${curl_args[@]}" || true)"
-  if [ -z "$status" ] || [ "$status" = "000" ]; then
+  http_code="$(curl "${curl_args[@]}" || true)"
+  if [ -z "$http_code" ] || [ "$http_code" = "000" ]; then
     if [ "$use_socket" -eq 1 ]; then
       echo "last-stack-lastdb: unreachable over socket $socket" >&2
     else
@@ -87,8 +87,8 @@ last_stack_lastdb_json() {
     fi
     return 1
   fi
-  if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
-    echo "last-stack-lastdb: $method $path returned HTTP $status: $(head -c 400 "$tmp_body")" >&2
+  if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+    echo "last-stack-lastdb: $method $path returned HTTP $http_code: $(head -c 400 "$tmp_body")" >&2
     return 1
   fi
   cat "$tmp_body"
