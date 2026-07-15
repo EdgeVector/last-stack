@@ -1,0 +1,918 @@
+#!/usr/bin/env python3
+"""Roll up kanban cards by north_star × column into markdown + HTML.
+
+Read-only against the board/brain by default. Optional --put-brain writes the
+markdown snapshot into the durable brain reference `north-star-dashboard`.
+"""
+
+from __future__ import annotations
+
+import argparse
+import html
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from collections import Counter, defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+
+COLUMNS = ("backlog", "todo", "doing", "review", "done")
+LIVE_COLUMNS = ("backlog", "todo", "doing", "review")
+DEFAULT_BRAIN_SLUG = "north-star-dashboard"
+DEFAULT_HTML_PATH = Path.home() / "code" / "edgevector" / "north-star-dashboard.html"
+
+# Historical / alias card.north_star values → canonical NS slug.
+ALIASES: dict[str, str] = {
+    "lastdb-secrets-and-local-schema-resolver-roadmap-2026-07-06": (
+        "north-star-schema-shared-surface-native-resolver"
+    ),
+}
+
+# Product-token families used for low-confidence mis-tag heuristics.
+# A live card attributed to an NS family but matching a *different* family
+# (and none of the NS family tokens) is reported as mistag_candidate.
+NS_TOKEN_FAMILIES: dict[str, set[str]] = {
+    "discovery": {"discovery", "fof", "deliver", "slice", "slices"},
+    "lastgit": {"lastgit", "forgejo", "forge", "mirror"},
+    "schema": {"schema", "resolver", "shared-surface", "pack"},
+    "metering": {"metering", "quota", "billing", "stripe", "b2", "r2", "storage"},
+    "coderings": {"coderings", "complexity", "snapshot"},
+    "nano": {"nano", "bm25", "kernel"},
+    "sentry": {"sentry"},
+    "dogfood": {"dogfood"},
+    "routine": {"routine", "routines", "last-stack"},
+}
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+
+
+def run_json(cmd: list[str], *, env: Optional[dict[str, str]] = None) -> Any:
+    proc = subprocess.run(
+        cmd,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(f"command failed ({proc.returncode}): {' '.join(cmd)}\n{err}")
+    text = proc.stdout.strip()
+    if not text:
+        return []
+    return json.loads(text)
+
+
+def normalize_north_star(raw: Optional[str]) -> str:
+    value = (raw or "").strip()
+    if not value:
+        return ""
+    # Accept [[slug]] body mentions if someone stuffed them into the field.
+    if value.startswith("[[") and value.endswith("]]"):
+        value = value[2:-2].strip()
+    return ALIASES.get(value, value)
+
+
+def priority_of(card: dict[str, Any]) -> str:
+    tags = card.get("tags") or []
+    for tag in tags:
+        t = str(tag).lower()
+        if t in {"p0", "p1", "p2", "p3"}:
+            return t.upper()
+    return ""
+
+
+def is_north_star_project(rec: dict[str, Any]) -> bool:
+    tags = {str(t).lower() for t in (rec.get("tags") or [])}
+    slug = str(rec.get("slug") or "")
+    title = str(rec.get("title") or "")
+    if "north-star" in tags:
+        return True
+    if slug.startswith("north-star-"):
+        return True
+    if "North Star" in title or "🌟" in title:
+        return True
+    return False
+
+
+def load_cards_from_file(path: Path) -> list[dict[str, Any]]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        if isinstance(data.get("cards"), list):
+            return data["cards"]
+        # column-keyed maps
+        out: list[dict[str, Any]] = []
+        for key, val in data.items():
+            if isinstance(val, list) and val and isinstance(val[0], dict) and "slug" in val[0]:
+                for c in val:
+                    card = dict(c)
+                    card.setdefault("column", key)
+                    out.append(card)
+        if out:
+            return out
+    raise ValueError(f"unrecognized cards JSON shape in {path}")
+
+
+def load_projects_from_file(path: Path) -> list[dict[str, Any]]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and isinstance(data.get("records"), list):
+        return data["records"]
+    raise ValueError(f"unrecognized projects JSON shape in {path}")
+
+
+def fetch_live(board: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    cards = run_json(["kanban", "list", "--board", board, "--json", "--all"])
+    if not isinstance(cards, list):
+        raise RuntimeError("kanban list --json did not return a list")
+    projects = run_json(["brain", "list", "--type", "project", "--json", "--limit", "200"])
+    if not isinstance(projects, list):
+        raise RuntimeError("brain list --json did not return a list")
+    return cards, projects
+
+
+def build_model(
+    cards: list[dict[str, Any]],
+    projects: list[dict[str, Any]],
+) -> dict[str, Any]:
+    ns_projects = [p for p in projects if is_north_star_project(p)]
+    by_slug: dict[str, dict[str, Any]] = {
+        str(p.get("slug")): p for p in ns_projects if p.get("slug")
+    }
+
+    # Group cards by resolved north_star.
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    unattributed: list[dict[str, Any]] = []
+    for card in cards:
+        ns = normalize_north_star(card.get("north_star"))
+        if not ns:
+            unattributed.append(card)
+            continue
+        groups[ns].append(card)
+
+    # Active first (in_progress / planning), then others, then orphans with cards.
+    def ns_sort_key(slug: str) -> tuple[int, str]:
+        rec = by_slug.get(slug)
+        if rec is None:
+            return (2, slug)
+        status = str(rec.get("status") or "")
+        if status in {"in_progress", "planning"}:
+            return (0, slug)
+        if status in {"archived", "done"}:
+            return (1, slug)
+        return (1, slug)
+
+    all_ns = set(by_slug) | set(groups)
+    ordered_ns = sorted(all_ns, key=ns_sort_key)
+
+    sections: list[dict[str, Any]] = []
+    for slug in ordered_ns:
+        rec = by_slug.get(slug)
+        member_cards = groups.get(slug, [])
+        col_counts = Counter(str(c.get("column") or "?") for c in member_cards)
+        live = [c for c in member_cards if str(c.get("column") or "") in LIVE_COLUMNS]
+        done_n = col_counts.get("done", 0)
+        total = len(member_cards)
+        pct = int(round(100.0 * done_n / total)) if total else 0
+
+        def card_sort(c: dict[str, Any]) -> tuple[int, str, str]:
+            col = str(c.get("column") or "")
+            try:
+                col_i = COLUMNS.index(col)  # type: ignore[arg-type]
+            except ValueError:
+                col_i = 99
+            pri = priority_of(c)
+            pri_i = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}.get(pri, 9)
+            return (col_i, pri_i, str(c.get("slug") or ""))
+
+        live_sorted = sorted(live, key=card_sort)
+        sections.append(
+            {
+                "slug": slug,
+                "title": (rec or {}).get("title") or slug,
+                "status": (rec or {}).get("status") or ("orphan" if member_cards else "missing"),
+                "tags": list((rec or {}).get("tags") or []),
+                "record_present": rec is not None,
+                "counts": {col: int(col_counts.get(col, 0)) for col in COLUMNS},
+                "other_counts": {
+                    k: v for k, v in col_counts.items() if k not in COLUMNS
+                },
+                "total": total,
+                "done": done_n,
+                "live": len(live),
+                "pct_done": pct,
+                "live_cards": live_sorted,
+                "blocked_cards": [
+                    c
+                    for c in live_sorted
+                    if c.get("blocked")
+                    or str(c.get("block_status") or "none") not in {"", "none"}
+                ],
+            }
+        )
+
+    board_counts = Counter(str(c.get("column") or "?") for c in cards)
+    active_sections = [
+        s
+        for s in sections
+        if s["status"] in {"in_progress", "planning"} or (s["live"] > 0 and s["record_present"])
+    ]
+
+    hygiene = build_hygiene(sections, by_slug, groups, unattributed)
+
+    return {
+        "generated_at": now_iso(),
+        "board_total": len(cards),
+        "board_counts": {col: int(board_counts.get(col, 0)) for col in COLUMNS},
+        "north_star_records": len(by_slug),
+        "sections": sections,
+        "active_sections": active_sections,
+        "unattributed": {
+            "total": len(unattributed),
+            "live": sorted(
+                [c for c in unattributed if str(c.get("column") or "") in LIVE_COLUMNS],
+                key=lambda c: (
+                    COLUMNS.index(c["column"]) if c.get("column") in COLUMNS else 99,
+                    str(c.get("slug") or ""),
+                ),
+            ),
+            "by_column": dict(Counter(str(c.get("column") or "?") for c in unattributed)),
+        },
+        "aliases": ALIASES,
+        "hygiene": hygiene,
+    }
+
+
+def _tokens(text: str) -> set[str]:
+    return {t for t in re.split(r"[^a-z0-9]+", (text or "").lower()) if len(t) >= 3}
+
+
+def _family_hits(tokens: set[str]) -> set[str]:
+    hits: set[str] = set()
+    for family, fam_tokens in NS_TOKEN_FAMILIES.items():
+        if tokens & fam_tokens:
+            hits.add(family)
+    return hits
+
+
+def build_hygiene(
+    sections: list[dict[str, Any]],
+    by_slug: dict[str, dict[str, Any]],
+    groups: dict[str, list[dict[str, Any]]],
+    unattributed: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Structured actions for north-star-hygiene skill/routine."""
+    orphan_live: list[dict[str, Any]] = []
+    orphan_done_only: list[dict[str, Any]] = []
+    for s in sections:
+        if s["record_present"]:
+            continue
+        if s["total"] == 0:
+            continue
+        entry = {
+            "slug": s["slug"],
+            "live": s["live"],
+            "total": s["total"],
+            "done": s["done"],
+            "live_slugs": [c.get("slug") for c in s["live_cards"]],
+            "action": "create_north_star_project",
+            "priority": "P1" if s["live"] else "P3",
+        }
+        if s["live"] > 0:
+            orphan_live.append(entry)
+        else:
+            orphan_done_only.append(entry)
+
+    # Prefer live orphans first, then done-only (still useful for checkpoints).
+    orphan_live.sort(key=lambda e: (-e["live"], e["slug"]))
+    orphan_done_only.sort(key=lambda e: (-e["total"], e["slug"]))
+
+    mistag_candidates: list[dict[str, Any]] = []
+    for ns_slug, member_cards in groups.items():
+        ns_tokens = _tokens(ns_slug)
+        ns_fams = _family_hits(ns_tokens)
+        if not ns_fams:
+            continue
+        for card in member_cards:
+            if str(card.get("column") or "") not in LIVE_COLUMNS:
+                continue
+            blob = f"{card.get('slug') or ''} {card.get('title') or ''}"
+            card_tokens = _tokens(blob)
+            card_fams = _family_hits(card_tokens)
+            # Card strongly matches another product family and none of the NS family.
+            if card_fams and not (card_fams & ns_fams) and (card_fams - ns_fams):
+                mistag_candidates.append(
+                    {
+                        "slug": card.get("slug"),
+                        "column": card.get("column"),
+                        "title": card.get("title"),
+                        "north_star": ns_slug,
+                        "card_families": sorted(card_fams),
+                        "ns_families": sorted(ns_fams),
+                        "action": "clear_or_repoint_north_star",
+                        "confidence": "heuristic",
+                    }
+                )
+
+    mistag_candidates.sort(key=lambda e: (str(e.get("north_star")), str(e.get("slug"))))
+
+    live_unattributed = [
+        c for c in unattributed if str(c.get("column") or "") in LIVE_COLUMNS
+    ]
+
+    return {
+        "orphan_north_stars_live": orphan_live,
+        "orphan_north_stars_done_only": orphan_done_only,
+        "mistag_candidates": mistag_candidates,
+        "unattributed_live_count": len(live_unattributed),
+        "summary": {
+            "orphan_live_count": len(orphan_live),
+            "orphan_done_only_count": len(orphan_done_only),
+            "mistag_candidate_count": len(mistag_candidates),
+            "unattributed_live_count": len(live_unattributed),
+            "needs_work": bool(orphan_live or mistag_candidates),
+        },
+    }
+
+
+def render_hygiene_markdown(model: dict[str, Any]) -> str:
+    h = model.get("hygiene") or {}
+    lines: list[str] = []
+    lines.append("# North Star hygiene report")
+    lines.append("")
+    lines.append(f"**Generated:** `{model.get('generated_at')}`")
+    lines.append("")
+    summary = h.get("summary") or {}
+    lines.append(
+        f"- orphan NS with **live** cards: **{summary.get('orphan_live_count', 0)}** "
+        f"(create brain project)"
+    )
+    lines.append(
+        f"- orphan NS done-only: **{summary.get('orphan_done_only_count', 0)}** "
+        f"(optional create for checkpoints)"
+    )
+    lines.append(
+        f"- mistag candidates (heuristic): **{summary.get('mistag_candidate_count', 0)}**"
+    )
+    lines.append(
+        f"- unattributed live cards: **{summary.get('unattributed_live_count', 0)}** "
+        f"(report only — do not invent NS)"
+    )
+    lines.append("")
+    if not summary.get("needs_work") and not h.get("orphan_north_stars_done_only"):
+        lines.append("_No hygiene actions needed._")
+        lines.append("")
+        return "\n".join(lines)
+
+    if h.get("orphan_north_stars_live"):
+        lines.append("## Orphan North Stars (live cards) — CREATE PROJECT")
+        lines.append("")
+        for e in h["orphan_north_stars_live"]:
+            lines.append(
+                f"### `{e['slug']}` · live={e['live']} total={e['total']} · {e['priority']}"
+            )
+            lines.append("")
+            lines.append(f"- **action:** `{e['action']}`")
+            lines.append(
+                "- **live cards:** "
+                + (", ".join(f"`{s}`" for s in (e.get("live_slugs") or [])[:20]) or "—")
+            )
+            lines.append("")
+    if h.get("orphan_north_stars_done_only"):
+        lines.append("## Orphan North Stars (done-only) — optional create")
+        lines.append("")
+        for e in h["orphan_north_stars_done_only"]:
+            lines.append(
+                f"- `{e['slug']}` · done={e['done']} total={e['total']} · "
+                f"action=`{e['action']}`"
+            )
+        lines.append("")
+    if h.get("mistag_candidates"):
+        lines.append("## Mistag candidates (heuristic — agent confirms before clear)")
+        lines.append("")
+        for e in h["mistag_candidates"]:
+            lines.append(
+                f"- `{e['slug']}` ({e['column']}) → ns `{e['north_star']}` · "
+                f"card_fams={e['card_families']} ns_fams={e['ns_families']}"
+            )
+        lines.append("")
+    lines.append(
+        "Run the **north-star-hygiene** skill/routine to materialize projects and "
+        "clear confirmed mis-tags, then `last-stack-north-star-dashboard --put-brain`."
+    )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def fmt_card_line(card: dict[str, Any]) -> str:
+    slug = card.get("slug") or "?"
+    col = card.get("column") or "?"
+    kind = card.get("kind") or ""
+    pri = priority_of(card)
+    bits = [f"`{slug}`", f"({col})"]
+    if pri:
+        bits.append(pri)
+    if kind and kind != "pr":
+        bits.append(f"kind:{kind}")
+    if card.get("blocked"):
+        by = ",".join(card.get("blockedBy") or []) or "deps"
+        bits.append(f"blocked:{by}")
+    if card.get("block_status") and card.get("block_status") != "none":
+        bits.append(f"hold:{card.get('block_status')}")
+    if card.get("pr_url"):
+        bits.append("has-pr")
+    return "- " + " ".join(bits)
+
+
+def render_markdown(model: dict[str, Any]) -> str:
+    lines: list[str] = []
+    lines.append("# North Star dashboard")
+    lines.append("")
+    lines.append(
+        f"**Generated:** `{model['generated_at']}` · "
+        f"**Board cards:** {model['board_total']} · "
+        f"**NS records:** {model['north_star_records']}"
+    )
+    lines.append("")
+    lines.append(
+        "Point-in-time rollup of kanban cards by the card `north_star` field "
+        "(aliases applied) against brain `project` North Star records. "
+        "Regenerate with `last-stack-north-star-dashboard`."
+    )
+    lines.append("")
+    lines.append("## Board funnel")
+    lines.append("")
+    bc = model["board_counts"]
+    lines.append(
+        "| "
+        + " | ".join(COLUMNS)
+        + " | total |"
+    )
+    lines.append("| " + " | ".join(["---:"] * (len(COLUMNS) + 1)) + " |")
+    lines.append(
+        "| "
+        + " | ".join(str(bc.get(c, 0)) for c in COLUMNS)
+        + f" | {model['board_total']} |"
+    )
+    lines.append("")
+    lines.append("## Active North Stars (live pressure)")
+    lines.append("")
+    lines.append(
+        "| North Star | status | backlog | todo | doing | review | done | live | %done |"
+    )
+    lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|")
+    for s in model["active_sections"]:
+        c = s["counts"]
+        lines.append(
+            f"| `{s['slug']}` | {s['status']} | {c['backlog']} | {c['todo']} | "
+            f"{c['doing']} | {c['review']} | {c['done']} | {s['live']} | {s['pct_done']}% |"
+        )
+    if not model["active_sections"]:
+        lines.append("| _(none)_ | | | | | | | | |")
+    lines.append("")
+
+    for s in model["sections"]:
+        # Skip empty archived orphans with zero cards? Keep all with cards or records.
+        if not s["record_present"] and s["total"] == 0:
+            continue
+        title = s["title"]
+        lines.append(f"## {title}")
+        lines.append("")
+        lines.append(f"- **slug:** `[[{s['slug']}]]`")
+        lines.append(f"- **status:** `{s['status']}`")
+        if not s["record_present"]:
+            lines.append(
+                "- **record:** missing brain project (cards still reference this slug)"
+            )
+        c = s["counts"]
+        lines.append(
+            f"- **counts:** backlog={c['backlog']} · todo={c['todo']} · "
+            f"doing={c['doing']} · review={c['review']} · done={c['done']} "
+            f"· live={s['live']} · total={s['total']} · {s['pct_done']}% done"
+        )
+        if s["blocked_cards"]:
+            lines.append(
+                "- **blocked/held:** "
+                + ", ".join(f"`{c.get('slug')}`" for c in s["blocked_cards"][:12])
+            )
+        lines.append("")
+        if s["live_cards"]:
+            lines.append("### Live cards")
+            lines.append("")
+            for card in s["live_cards"]:
+                lines.append(fmt_card_line(card))
+            lines.append("")
+        else:
+            lines.append("_No live (non-done) cards attributed to this North Star._")
+            lines.append("")
+
+    ua = model["unattributed"]
+    lines.append("## Unattributed cards (no `north_star`)")
+    lines.append("")
+    lines.append(
+        f"**{ua['total']}** cards have no `north_star` "
+        f"(live: {len(ua['live'])}; by column: `{ua['by_column']}`)."
+    )
+    lines.append("")
+    if ua["live"]:
+        lines.append("### Live unattributed (sample ≤40)")
+        lines.append("")
+        for card in ua["live"][:40]:
+            lines.append(fmt_card_line(card))
+        lines.append("")
+
+    if model["aliases"]:
+        lines.append("## Aliases applied")
+        lines.append("")
+        for src, dst in sorted(model["aliases"].items()):
+            lines.append(f"- `{src}` → `{dst}`")
+        lines.append("")
+
+    # Compact hygiene summary so the dashboard brain record surfaces work items.
+    h = model.get("hygiene") or {}
+    summary = h.get("summary") or {}
+    if summary.get("orphan_live_count") or summary.get("mistag_candidate_count"):
+        lines.append("## Hygiene (needs action)")
+        lines.append("")
+        lines.append(
+            f"- **orphan NS with live cards:** {summary.get('orphan_live_count', 0)} "
+            f"— create brain `project` (skill/routine `north-star-hygiene`)"
+        )
+        for e in (h.get("orphan_north_stars_live") or [])[:8]:
+            lines.append(
+                f"  - `{e['slug']}` live={e['live']} total={e['total']}"
+            )
+        lines.append(
+            f"- **mistag candidates:** {summary.get('mistag_candidate_count', 0)} "
+            f"(heuristic; confirm before clearing)"
+        )
+        lines.append(
+            f"- **unattributed live:** {summary.get('unattributed_live_count', 0)}"
+        )
+        lines.append("")
+
+    lines.append("## How to refresh")
+    lines.append("")
+    lines.append("```bash")
+    lines.append("last-stack-north-star-dashboard --put-brain --html ~/code/edgevector/north-star-dashboard.html")
+    lines.append("last-stack-north-star-dashboard --stdout hygiene   # orphan/mistag report only")
+    lines.append("```")
+    lines.append("")
+    lines.append(
+        "Routines: `north-star-rollup` (hourly matrix) · `north-star-hygiene` "
+        "(materialize orphan NS projects). Related: `[[active-programs]]`, "
+        "`program-rollup`."
+    )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_html(model: dict[str, Any]) -> str:
+    def esc(s: Any) -> str:
+        return html.escape(str(s if s is not None else ""), quote=True)
+
+    bc = model["board_counts"]
+    stats = "".join(
+        f'<div class="stat"><b>{bc.get(col, 0)}</b><span>{col}</span></div>'
+        for col in COLUMNS
+    )
+    stats += (
+        f'<div class="stat"><b>{model["board_total"]}</b><span>total cards</span></div>'
+        f'<div class="stat"><b>{model["north_star_records"]}</b><span>NS records</span></div>'
+        f'<div class="stat"><b>{len(model["active_sections"])}</b><span>active NS</span></div>'
+    )
+
+    cards_html: list[str] = []
+    for s in model["sections"]:
+        if not s["record_present"] and s["total"] == 0:
+            continue
+        status = s["status"]
+        status_class = "active" if status in {"in_progress", "planning"} else (
+            "orphan" if status == "orphan" else "closed"
+        )
+        c = s["counts"]
+        mini = []
+        for card in s["live_cards"][:24]:
+            col = esc(card.get("column") or "")
+            slug = esc(card.get("slug") or "")
+            title = esc(card.get("title") or card.get("slug") or "")
+            pri = priority_of(card)
+            pri_s = f" · {pri}" if pri else ""
+            mini.append(
+                f'<div class="mini {col}"><span>{col}{esc(pri_s)}</span>'
+                f"<b>{slug}</b><span>{title}</span></div>"
+            )
+        if not mini:
+            mini_html = '<div class="muted">No live cards.</div>'
+        else:
+            mini_html = f'<div class="mini-cards">{"".join(mini)}</div>'
+
+        search_blob = " ".join(
+            [
+                s["slug"],
+                str(s["title"]),
+                status,
+                " ".join(str(c.get("slug") or "") for c in s["live_cards"]),
+            ]
+        ).lower()
+
+        cards_html.append(
+            f'<section class="program" data-status="{esc(status_class)}" '
+            f'data-text="{esc(search_blob)}">'
+            f'<div class="program-head"><div>'
+            f'<h3>{esc(s["title"])}</h3>'
+            f'<div class="slug">{esc(s["slug"])}</div></div>'
+            f'<div class="program-metrics">'
+            f'<span class="pill {status_class}">{esc(status)}</span> '
+            f'<span class="pill">{s["live"]} live</span> '
+            f'<span class="pill">{s["pct_done"]}% done</span>'
+            f"</div></div>"
+            f'<div class="bar"><span style="width:{s["pct_done"]}%"></span></div>'
+            f'<p class="brief">backlog {c["backlog"]} · todo {c["todo"]} · '
+            f'doing {c["doing"]} · review {c["review"]} · done {c["done"]}</p>'
+            f"{mini_html}</section>"
+        )
+
+    # Matrix table
+    rows = []
+    for s in model["active_sections"]:
+        c = s["counts"]
+        rows.append(
+            "<tr>"
+            f'<td><code>{esc(s["slug"])}</code><div class="muted">{esc(s["title"])}</div></td>'
+            f'<td>{esc(s["status"])}</td>'
+            + "".join(f"<td>{c[col]}</td>" for col in COLUMNS)
+            + f'<td><b>{s["live"]}</b></td>'
+            f'<td>{s["pct_done"]}%</td>'
+            "</tr>"
+        )
+
+    ua = model["unattributed"]
+    ua_rows = []
+    for card in ua["live"][:60]:
+        ua_rows.append(
+            "<tr>"
+            f'<td><code>{esc(card.get("slug"))}</code></td>'
+            f'<td>{esc(card.get("column"))}</td>'
+            f'<td>{esc(priority_of(card) or "—")}</td>'
+            f'<td>{esc(card.get("kind") or "")}</td>'
+            f'<td>{esc(card.get("title") or "")}</td>'
+            "</tr>"
+        )
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>North Star dashboard</title>
+<style>
+:root{{--bg:#f4f1ea;--ink:#1c1917;--muted:#78716c;--line:#d6d3d1;--panel:#fffdf8;--blue:#1d4ed8;--green:#15803d;--amber:#b45309;--red:#b91c1c;--violet:#6d28d9;--slate:#57534e;--teal:#0f766e}}
+*{{box-sizing:border-box}} body{{margin:0;font:14px/1.45 ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;background:var(--bg);color:var(--ink)}}
+header{{background:#1c1917;color:#fafaf9;padding:28px 32px 22px}} header h1{{margin:0 0 6px;font-size:28px}} header p{{margin:0;color:#a8a29e;max-width:920px}}
+main{{padding:24px 32px 48px;max-width:1400px;margin:0 auto}}
+.topline{{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px}}
+.stat{{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;min-width:110px}}
+.stat b{{display:block;font-size:24px}} .stat span{{color:var(--muted);font-size:12px}}
+.controls{{position:sticky;top:0;z-index:5;background:rgba(244,241,234,.94);backdrop-filter:blur(8px);border:1px solid var(--line);border-radius:10px;padding:10px;margin:14px 0 18px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}}
+.controls input{{flex:1;min-width:220px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;background:#fff}}
+.controls button{{border:1px solid var(--line);background:#fff;border-radius:8px;padding:7px 10px;font:inherit;cursor:pointer}}
+.controls button.active{{background:#1c1917;color:#fff;border-color:#1c1917}}
+h2{{font-size:18px;margin:26px 0 12px}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}}
+.program{{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}}
+.program h3{{margin:0;font-size:15px}} .slug{{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);margin-top:2px}}
+.program-head{{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}}
+.program-metrics{{text-align:right}} .brief{{color:var(--muted);font-size:12px;margin:8px 0}}
+.pill{{display:inline-flex;border:1px solid var(--line);border-radius:999px;padding:2px 8px;font-size:11px;margin:1px;background:#fafaf9}}
+.pill.active{{background:#ecfdf5;border-color:#86efac;color:#166534}}
+.pill.closed{{background:#f5f5f4;color:#57534e}}
+.pill.orphan{{background:#fff7ed;border-color:#fdba74;color:#9a3412}}
+.bar{{height:8px;background:#e7e5e4;border-radius:999px;overflow:hidden;margin:10px 0}}
+.bar span{{display:block;height:100%;background:linear-gradient(90deg,var(--teal),var(--green))}}
+.mini-cards{{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}}
+.mini{{border:1px solid var(--line);border-radius:8px;padding:6px 8px;background:#fff;max-width:100%;min-width:140px}}
+.mini span{{display:block;font-size:11px;color:var(--muted)}} .mini b{{font-size:12px;font-family:ui-monospace,Menlo,monospace}}
+.mini.todo{{border-left:4px solid var(--blue)}} .mini.doing{{border-left:4px solid var(--amber)}}
+.mini.review{{border-left:4px solid var(--violet)}} .mini.backlog{{border-left:4px solid var(--slate)}}
+table{{width:100%;border-collapse:separate;border-spacing:0;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-bottom:16px}}
+th,td{{padding:9px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}}
+th{{background:#ebe7df;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#57534e}}
+tr:last-child td{{border-bottom:0}} code{{font-family:ui-monospace,Menlo,monospace;font-size:12px}}
+.muted{{color:var(--muted)}} .notice{{border-left:4px solid var(--amber);background:#fffbeb;padding:10px 12px;border-radius:8px;margin:10px 0;color:#78350f}}
+.hidden{{display:none !important}}
+@media(max-width:900px){{main{{padding:16px}} .program-head{{display:block}} .program-metrics{{text-align:left;margin-top:6px}}}}
+</style>
+</head>
+<body>
+<header>
+  <h1>North Star dashboard</h1>
+  <p>Generated <code>{esc(model["generated_at"])}</code>. Cards grouped by kanban <code>north_star</code> field (aliases applied) against brain North Star projects. HTML path is a local snapshot; brain record <code>{esc(DEFAULT_BRAIN_SLUG)}</code> is the durable copy.</p>
+</header>
+<main>
+  <div class="topline">{stats}</div>
+  <div class="notice">Live pressure = backlog + todo + doing + review. <code>done</code> is trustworthy only as merge-landed. Unattributed live cards: <b>{len(ua["live"])}</b> / {ua["total"]} total without a north_star.</div>
+  <div class="controls">
+    <input id="q" placeholder="Filter North Stars and card slugs…" />
+    <button data-filter="all" class="active">All NS</button>
+    <button data-filter="active">Active / live</button>
+    <button data-filter="orphan">Orphan refs</button>
+    <button data-filter="closed">Closed / other</button>
+  </div>
+  <h2>Active matrix</h2>
+  <table>
+    <thead><tr><th>North Star</th><th>status</th>
+    {''.join(f'<th>{c}</th>' for c in COLUMNS)}
+    <th>live</th><th>%done</th></tr></thead>
+    <tbody>
+      {''.join(rows) if rows else '<tr><td colspan="9" class="muted">No active North Stars with pressure.</td></tr>'}
+    </tbody>
+  </table>
+  <h2>North Stars</h2>
+  <div id="programs" class="grid">{''.join(cards_html)}</div>
+  <h2>Live unattributed cards</h2>
+  <table>
+    <thead><tr><th>slug</th><th>column</th><th>priority</th><th>kind</th><th>title</th></tr></thead>
+    <tbody>
+      {''.join(ua_rows) if ua_rows else '<tr><td colspan="5" class="muted">None</td></tr>'}
+    </tbody>
+  </table>
+</main>
+<script>
+const q = document.getElementById('q');
+const programs = [...document.querySelectorAll('.program')];
+let filter = 'all';
+function apply() {{
+  const term = (q.value || '').trim().toLowerCase();
+  for (const el of programs) {{
+    const status = el.dataset.status || '';
+    const text = el.dataset.text || '';
+    let statusOk = true;
+    if (filter === 'active') statusOk = status === 'active';
+    if (filter === 'orphan') statusOk = status === 'orphan';
+    if (filter === 'closed') statusOk = status === 'closed';
+    const termOk = !term || text.includes(term);
+    el.classList.toggle('hidden', !(statusOk && termOk));
+  }}
+}}
+q.addEventListener('input', apply);
+for (const btn of document.querySelectorAll('.controls button[data-filter]')) {{
+  btn.addEventListener('click', () => {{
+    filter = btn.dataset.filter;
+    document.querySelectorAll('.controls button[data-filter]').forEach(b => b.classList.toggle('active', b === btn));
+    apply();
+  }});
+}}
+</script>
+</body>
+</html>
+"""
+
+
+def put_brain(slug: str, markdown: str, title: str) -> None:
+    # Stage body to temp file; pipe frontmatter+body via stdin to brain put.
+    body = (
+        "---\n"
+        f"type: reference\n"
+        f"slug: {slug}\n"
+        f"title: {title}\n"
+        "tags: [north-star, dashboard, driving-layer, kanban, rollup]\n"
+        "status: active\n"
+        "---\n"
+        f"{markdown}"
+    )
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".md", delete=False) as fh:
+        fh.write(body)
+        path = fh.name
+    try:
+        # Prefer path-friendly invocation: brain put reads stdin.
+        proc = subprocess.run(
+            ["brain", "put", slug, "--type", "reference"],
+            input=body,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"brain put failed ({proc.returncode}): "
+                f"{(proc.stderr or proc.stdout or '').strip()}"
+            )
+        print(f"BRAIN_PUT={slug}", file=sys.stderr)
+        if proc.stdout.strip():
+            print(proc.stdout.strip(), file=sys.stderr)
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--board", default="default", help="kanban board slug")
+    p.add_argument("--cards-json", type=Path, help="fixture: cards JSON (skip live kanban)")
+    p.add_argument("--projects-json", type=Path, help="fixture: brain projects JSON")
+    p.add_argument("--markdown", type=Path, help="write markdown snapshot to this path")
+    p.add_argument(
+        "--html",
+        type=Path,
+        nargs="?",
+        const=DEFAULT_HTML_PATH,
+        help=f"write HTML dashboard (default path if flag alone: {DEFAULT_HTML_PATH})",
+    )
+    p.add_argument("--put-brain", action="store_true", help=f"upsert brain reference {DEFAULT_BRAIN_SLUG}")
+    p.add_argument("--brain-slug", default=DEFAULT_BRAIN_SLUG)
+    p.add_argument("--json-out", type=Path, help="write the computed model as JSON")
+    p.add_argument(
+        "--hygiene-json",
+        type=Path,
+        help="write only the hygiene sub-object as JSON (for north-star-hygiene)",
+    )
+    p.add_argument(
+        "--stdout",
+        choices=["markdown", "json", "hygiene", "none"],
+        default="markdown",
+        help="stdout format (hygiene = action report for the hygiene skill/routine)",
+    )
+    return p.parse_args(argv)
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    args = parse_args(argv)
+    try:
+        if args.cards_json and args.projects_json:
+            cards = load_cards_from_file(args.cards_json)
+            projects = load_projects_from_file(args.projects_json)
+        elif args.cards_json or args.projects_json:
+            print("both --cards-json and --projects-json are required together", file=sys.stderr)
+            return 2
+        else:
+            cards, projects = fetch_live(args.board)
+        model = build_model(cards, projects)
+        md = render_markdown(model)
+        html_doc = render_html(model)
+        hygiene_md = render_hygiene_markdown(model)
+
+        if args.json_out:
+            args.json_out.write_text(json.dumps(model, indent=2) + "\n", encoding="utf-8")
+            print(f"JSON_OUT={args.json_out}", file=sys.stderr)
+        if args.hygiene_json:
+            args.hygiene_json.write_text(
+                json.dumps(model.get("hygiene") or {}, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            print(f"HYGIENE_JSON={args.hygiene_json}", file=sys.stderr)
+        if args.markdown:
+            args.markdown.write_text(md, encoding="utf-8")
+            print(f"MARKDOWN={args.markdown}", file=sys.stderr)
+        if args.html is not None:
+            args.html.parent.mkdir(parents=True, exist_ok=True)
+            args.html.write_text(html_doc, encoding="utf-8")
+            print(f"HTML={args.html}", file=sys.stderr)
+        if args.put_brain:
+            put_brain(
+                args.brain_slug,
+                md,
+                title="North Star dashboard — cards by north_star × column",
+            )
+
+        if args.stdout == "markdown":
+            sys.stdout.write(md)
+            if not md.endswith("\n"):
+                sys.stdout.write("\n")
+        elif args.stdout == "json":
+            json.dump(model, sys.stdout, indent=2)
+            sys.stdout.write("\n")
+        elif args.stdout == "hygiene":
+            sys.stdout.write(hygiene_md)
+            if not hygiene_md.endswith("\n"):
+                sys.stdout.write("\n")
+            summary = (model.get("hygiene") or {}).get("summary") or {}
+            # Exit 0 always for tooling; surface needs_work on stderr for agents.
+            if summary.get("needs_work"):
+                print(
+                    f"HYGIENE_NEEDS_WORK=1 orphan_live={summary.get('orphan_live_count', 0)} "
+                    f"mistag={summary.get('mistag_candidate_count', 0)}",
+                    file=sys.stderr,
+                )
+            else:
+                print("HYGIENE_NEEDS_WORK=0", file=sys.stderr)
+        return 0
+    except Exception as exc:  # noqa: BLE001 — CLI surface
+        print(f"ERROR={exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
