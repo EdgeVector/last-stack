@@ -1,0 +1,342 @@
+#!/usr/bin/env bash
+# Publish a privacy-safe last-stack install health snapshot to LastDB Mini.
+#
+# Salient fields (admin deliver source — no secrets):
+#   VERSION, install HEAD (short+full), last self-upgrade check result,
+#   skill-link verify status.
+#
+# Usage:
+#   last-stack-publish-status [--json] [--dry-run] [--install-root DIR]
+#
+# Environment:
+#   LAST_STACK_ROOT                 install root override
+#   LAST_STACK_LASTDB_SOCKET        Mini control socket
+#   LAST_STACK_LASTDB_NODE_URL      fallback HTTP base (default loopback)
+#
+# Machine line (stdout, non-json):
+#   LAST_STACK_PUBLISH_STATUS result=published|dry-run schema=<hash> slug=health-latest
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+# shellcheck source=../lib/lastdb-http.sh
+. "$ROOT/lib/lastdb-http.sh"
+
+APP_ID="last-stack"
+SCHEMA_NAME="LastStackHealthSnapshot"
+SCHEMA_VERSION="1"
+SNAPSHOT_SLUG="health-latest"
+
+JSON=0
+DRY_RUN=0
+INSTALL_ROOT=""
+
+usage() {
+  cat <<'EOF' >&2
+usage: last-stack-publish-status [--json] [--dry-run] [--install-root DIR]
+
+Collect last-stack install health and upsert LastStackHealthSnapshot on Mini.
+
+  --json            print full result JSON
+  --dry-run         collect + declare schema plan only; do not mutate LastDB
+  --install-root    install checkout to inspect (default: LAST_STACK_ROOT or ~/.last-stack or this tree)
+
+Recipient-facing delivery is last-stack-deliver-status.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json) JSON=1; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --install-root=*)
+      INSTALL_ROOT="${1#--install-root=}"
+      shift
+      ;;
+    --install-root)
+      [ "$#" -ge 2 ] || { usage; exit 2; }
+      INSTALL_ROOT="$2"
+      shift 2
+      ;;
+    -h|--help) usage; exit 0 ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+resolve_install_root() {
+  local candidate
+  if [ -n "$INSTALL_ROOT" ]; then
+    printf '%s\n' "$(cd "$INSTALL_ROOT" && pwd -P)"
+    return
+  fi
+  for candidate in "${LAST_STACK_ROOT:-}" "$HOME/.last-stack" "$ROOT"; do
+    [ -n "$candidate" ] || continue
+    if [ -f "$candidate/VERSION" ] && [ -d "$candidate/bin" ]; then
+      printf '%s\n' "$(cd "$candidate" && pwd -P)"
+      return
+    fi
+  done
+  printf '%s\n' "$ROOT"
+}
+
+# Exported for tests: build health field map without talking to LastDB.
+# Prints a JSON object of string fields.
+last_stack_build_health_fields() {
+  local install_root="$1"
+  local now="${2:-}"
+  local version head_full head_short
+  local upgrade_line upgrade_result
+  local skill_status skill_checked skill_detail skill_rc
+  local upgrade_bin skill_bin tmp_out tmp_err
+
+  if [ -z "$now" ]; then
+    now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  fi
+
+  version="$(tr -d '[:space:]' <"$install_root/VERSION" 2>/dev/null || echo unknown)"
+  if git -C "$install_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    head_full="$(git -C "$install_root" rev-parse HEAD 2>/dev/null || echo unknown)"
+    head_short="$(printf '%s' "$head_full" | cut -c1-12)"
+  else
+    head_full="not-a-git-checkout"
+    head_short="not-a-git"
+  fi
+
+  upgrade_bin="$install_root/bin/last-stack-self-upgrade"
+  tmp_out="$(mktemp)"
+  tmp_err="$(mktemp)"
+  if [ -x "$upgrade_bin" ]; then
+    # --check-only is non-mutating; exit code may be 0 even for would-upgrade.
+    set +e
+    "$upgrade_bin" --check-only --reason=publish-status >"$tmp_out" 2>"$tmp_err"
+    set -e
+    upgrade_line="$(tr '\n' ' ' <"$tmp_out" | sed 's/[[:space:]]*$//')"
+    if [ -z "$upgrade_line" ]; then
+      upgrade_line="$(tr '\n' ' ' <"$tmp_err" | sed 's/[[:space:]]*$//')"
+    fi
+    upgrade_result="$(printf '%s' "$upgrade_line" | sed -n 's/.*result=\([^[:space:]]*\).*/\1/p')"
+    [ -n "$upgrade_result" ] || upgrade_result="unknown"
+  else
+    upgrade_line="LAST_STACK_SELF_UPGRADE result=missing-bin"
+    upgrade_result="missing-bin"
+  fi
+  rm -f "$tmp_out" "$tmp_err"
+
+  skill_bin="$install_root/bin/last-stack-verify-skill-links"
+  tmp_out="$(mktemp)"
+  tmp_err="$(mktemp)"
+  skill_checked="0"
+  skill_detail=""
+  skill_status="unknown"
+  if [ -x "$skill_bin" ]; then
+    set +e
+    "$skill_bin" --check >"$tmp_out" 2>"$tmp_err"
+    skill_rc=$?
+    set -e
+    skill_detail="$(cat "$tmp_out" "$tmp_err" 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]]*$//' | cut -c1-500)"
+    # Prefer the first "N skill link(s)" count (avoid sed greedy last-digit trap on 12 → 2).
+    skill_checked="$(printf '%s' "$skill_detail" | grep -Eo '[0-9]+ skill link\(s\)' | head -1 | grep -Eo '^[0-9]+' || true)"
+    [ -n "$skill_checked" ] || skill_checked="0"
+    case "$skill_rc" in
+      0) skill_status="ok" ;;
+      2) skill_status="drift" ;;
+      *) skill_status="error" ;;
+    esac
+  else
+    skill_status="missing-bin"
+    skill_detail="last-stack-verify-skill-links not executable"
+  fi
+  rm -f "$tmp_out" "$tmp_err"
+
+  # Cap free-form strings; keep privacy-safe (no env dumps, no secrets).
+  upgrade_line="$(printf '%s' "$upgrade_line" | cut -c1-500)"
+  skill_detail="$(printf '%s' "$skill_detail" | cut -c1-500)"
+
+  python3 - "$SNAPSHOT_SLUG" "$now" "$version" "$install_root" "$head_full" "$head_short" \
+    "$upgrade_result" "$upgrade_line" "$skill_status" "$skill_checked" "$skill_detail" "$SCHEMA_VERSION" <<'PY'
+import json, sys
+keys = [
+    "slug",
+    "captured_at",
+    "version",
+    "install_root",
+    "install_head",
+    "install_head_short",
+    "self_upgrade_result",
+    "self_upgrade_line",
+    "skill_link_status",
+    "skill_link_checked",
+    "skill_link_detail",
+    "schema_version",
+]
+vals = sys.argv[1:]
+print(json.dumps(dict(zip(keys, vals)), separators=(",", ":")))
+PY
+}
+
+schema_definition_json() {
+  python3 <<'PY'
+import json
+fields = [
+    "slug",
+    "captured_at",
+    "version",
+    "install_root",
+    "install_head",
+    "install_head_short",
+    "self_upgrade_result",
+    "self_upgrade_line",
+    "skill_link_status",
+    "skill_link_checked",
+    "skill_link_detail",
+    "schema_version",
+]
+schema = {
+    "name": "LastStackHealthSnapshot",
+    "owner_app_id": "last-stack",
+    "descriptive_name": "LastStackHealthSnapshot",
+    "purpose_statement": "Slim last-stack install health snapshot safe for admin delivery",
+    "schema_type": "Hash",
+    "key": {"hash_field": "slug"},
+    "fields": fields,
+    "field_types": {f: "String" for f in fields},
+    "field_descriptions": {f: f.replace("_", " ") for f in fields},
+    "field_data_classifications": {
+        f: {"sensitivity_level": 0, "data_domain": "last-stack"} for f in fields
+    },
+}
+print(json.dumps({"app_id": "last-stack", "schema": schema}, separators=(",", ":")))
+PY
+}
+
+SNAPSHOT_FIELDS_CSV="slug,captured_at,version,install_root,install_head,install_head_short,self_upgrade_result,self_upgrade_line,skill_link_status,skill_link_checked,skill_link_detail,schema_version"
+
+declare_schema() {
+  last_stack_lastdb_auto_identity >/dev/null
+  local body resp canonical
+  body="$(schema_definition_json)"
+  resp="$(last_stack_lastdb_json POST /api/apps/declare-schema "$body")" || return 1
+  canonical="$(printf '%s' "$resp" | last_stack_json_field .canonical 2>/dev/null || true)"
+  if [ -z "$canonical" ] || [ "$canonical" = "null" ]; then
+    echo "last-stack-publish-status: declare-schema returned no canonical hash: $resp" >&2
+    return 1
+  fi
+  printf '%s\n' "$canonical"
+}
+
+query_existing() {
+  local schema_hash="$1"
+  local key_hash="$2"
+  local body resp count
+  body="$(python3 - "$schema_hash" "$key_hash" <<'PY'
+import json, sys
+schema_hash, key_hash = sys.argv[1], sys.argv[2]
+print(json.dumps({
+    "schema_name": schema_hash,
+    "fields": ["slug"],
+    "filter": {"HashKey": key_hash},
+    "limit": 1,
+    "offset": 0,
+}, separators=(",", ":")))
+PY
+)"
+  resp="$(last_stack_lastdb_json POST /api/query "$body")" || return 1
+  count="$(printf '%s' "$resp" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(len(d.get("results") or d.get("rows") or []))')"
+  [ "$count" != "0" ]
+}
+
+upsert_snapshot() {
+  local schema_hash="$1"
+  local fields_json="$2"
+  local mutation_type="create"
+  if query_existing "$schema_hash" "$SNAPSHOT_SLUG"; then
+    mutation_type="update"
+  fi
+  local body
+  body="$(python3 - "$schema_hash" "$fields_json" "$mutation_type" "$SNAPSHOT_SLUG" <<'PY'
+import json, sys
+schema_hash = sys.argv[1]
+fields = json.loads(sys.argv[2])
+mutation_type = sys.argv[3]
+key_hash = sys.argv[4]
+print(json.dumps({
+    "type": "mutation",
+    "schema": schema_hash,
+    "fields_and_values": fields,
+    "key_value": {"hash": key_hash, "range": None},
+    "mutation_type": mutation_type,
+}, separators=(",", ":")))
+PY
+)"
+  last_stack_lastdb_json POST /api/mutation "$body" >/dev/null
+  printf '%s\n' "$mutation_type"
+}
+
+main() {
+  local install_root fields_json schema_hash mutation_type wrote=0
+  install_root="$(resolve_install_root)"
+  fields_json="$(last_stack_build_health_fields "$install_root")"
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    schema_hash="dry-run-not-declared"
+    mutation_type="none"
+  else
+    schema_hash="$(declare_schema)"
+    mutation_type="$(upsert_snapshot "$schema_hash" "$fields_json")"
+    wrote=1
+  fi
+
+  if [ "$JSON" -eq 1 ]; then
+    python3 - "$fields_json" "$schema_hash" "$mutation_type" "$wrote" "$DRY_RUN" <<'PY'
+import json, sys
+fields = json.loads(sys.argv[1])
+print(json.dumps({
+    "app_id": "last-stack",
+    "schema_name": "last-stack/LastStackHealthSnapshot",
+    "schema_hash": sys.argv[2],
+    "slug": fields.get("slug"),
+    "mutation_type": sys.argv[3],
+    "wrote": sys.argv[4] == "1",
+    "dry_run": sys.argv[5] == "1",
+    "fields": fields,
+    "delivery_stage": {
+        "mode": "snapshot",
+        "max_records": 1,
+        "legs": [{
+            "schema_name": sys.argv[2],
+            "fields": list(fields.keys()),
+            "hash_keys": [fields.get("slug")],
+        }],
+    },
+}, indent=2))
+PY
+  else
+    if [ "$DRY_RUN" -eq 1 ]; then
+      printf 'LAST_STACK_PUBLISH_STATUS result=dry-run slug=%s version=%s head=%s upgrade=%s skill=%s\n' \
+        "$SNAPSHOT_SLUG" \
+        "$(printf '%s' "$fields_json" | last_stack_json_field .version)" \
+        "$(printf '%s' "$fields_json" | last_stack_json_field .install_head_short)" \
+        "$(printf '%s' "$fields_json" | last_stack_json_field .self_upgrade_result)" \
+        "$(printf '%s' "$fields_json" | last_stack_json_field .skill_link_status)"
+    else
+      printf 'LAST_STACK_PUBLISH_STATUS result=published schema=%s slug=%s mutation=%s version=%s head=%s upgrade=%s skill=%s\n' \
+        "$schema_hash" \
+        "$SNAPSHOT_SLUG" \
+        "$mutation_type" \
+        "$(printf '%s' "$fields_json" | last_stack_json_field .version)" \
+        "$(printf '%s' "$fields_json" | last_stack_json_field .install_head_short)" \
+        "$(printf '%s' "$fields_json" | last_stack_json_field .self_upgrade_result)" \
+        "$(printf '%s' "$fields_json" | last_stack_json_field .skill_link_status)"
+    fi
+  fi
+}
+
+# Allow tests to source helpers without running main.
+if [ "${LAST_STACK_PUBLISH_STATUS_LIB_ONLY:-0}" = "1" ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
+main
