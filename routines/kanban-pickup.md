@@ -1,21 +1,24 @@
 ---
 name: kanban-pickup
-cadence: every 15 minutes
-description: Drain the ready board queue one work-unit at a time — YOU perform kanban-agent WORK mode yourself in an isolated worktree and drive to a MERGED PR. No subagents, no collab SpawnAgent, no background harness fan-out. If the queue is empty, run Idle mode smart-heal (program next-slice, CodeRings hotspot, or low-risk simplification) instead of no-oping.
+cadence: every 5 minutes
+description: Drain the ready board queue fast (one unit default, optional second sequential) — YOU perform kanban-agent WORK mode yourself in an isolated worktree and drive to a MERGED PR. No subagents, no collab SpawnAgent, no background harness fan-out. If the queue is empty, run Idle mode smart-heal (program next-slice, CodeRings hotspot, or low-risk simplification) instead of no-oping.
 ---
 
-You pick **one** ready work-unit per run and **do the work yourself** — isolate
-in a git worktree, implement, open a PR/CR, drive it to MERGED, then exit. This
-is the WORK-mode counterpart to `kanban-watch` (reconcile). Do **not** do
-reconcile work here. Do **not** spawn sub-agents, collab workers, Task tools,
-or background `codex`/`claude`/`grok` processes. Scheduled harness runs (esp.
+You pick ready work and **do it yourself** — isolate in a git worktree,
+implement, open a PR/CR, drive it to MERGED. This is the WORK-mode counterpart
+to `kanban-watch` (reconcile). Do **not** do reconcile work here. Do **not**
+spawn sub-agents, collab workers, Task tools, or background
+`codex`/`claude`/`grok` processes. Scheduled harness runs (esp.
 `codex exec --ephemeral`) cannot keep collab children alive; fan-out was
 silently dropping workers while cards sat stranded in `doing`.
 
-**Throughput model:** one reliable work-unit per fire, scheduled every ~15
-minutes. Prefer correctness over parallel fan-out. If a prior run is still
-in-flight (single-flight lock), this fire is skipped — that is fine; do not
-try to overlap yourself. The next free slot drains the next card.
+**Throughput model (Tom 2026-07-14 — drain faster):** scheduled every ~5 minutes.
+Default **one** work-unit per fire. If that unit merges with **≥35 minutes**
+of session budget remaining and another non-overlapping eligible card exists,
+you MAY claim and complete **one second** unit in the same run (still no
+spawn/fan-out — sequential only). Prefer correctness; never strand a card in
+`doing` without finishing or rolling it back to `todo`. If a prior run is
+still in-flight (single-flight lock), this fire is skipped.
 
 **Empty queue:** default **Idle mode: smart-heal** (below) so the fleet keeps
 self-improving between feature waves. Prefer real program / North Star work
@@ -81,6 +84,16 @@ continue — do not fail the whole run.
   `lastgit cr complete --once`. Never run LastGit CI against the primary brain
   socket.
 
+### Recover prior transport/board-write interruptions
+
+Before selecting a new card, read automation memory. If the newest unresolved
+`pending_rollback=<slug> reason=<reason>` entry exists from a prior run, first
+try `<board CLI> move <slug> todo`, append `pending_rollback_cleared=<slug>` on
+success, heartbeat `ok cards=1 worked=<slug> result=rolled-back-todo
+reason=<reason>`, and EXIT. If the board is still busy/unreachable, heartbeat
+`noop busy-node pending_rollback=<slug>` and EXIT. Do not start another
+work-unit while a prior claimed card only needs rollback reconciliation.
+
 ## Selection rule (form ONE work-unit)
 1. Read only the ready queue: `<board CLI> list --column todo --json`. If the
    read returns `service_timeout`, "node did not respond", or "too many
@@ -91,19 +104,12 @@ continue — do not fail the whole run.
    path. Ignore `backlog` entirely.
 3. Leave missing `Repo:`/`Base:` cards in `todo` for `kanban-watch` self-heal.
    Leave cards with a `BLOCKED:` note alone. For present-but-unresolvable `Repo:`
-   headers, convert once to a loud human blocker — do not re-skip every hour:
-   - Append exactly one line if absent: `BLOCKED: kanban-pickup cannot resolve
-     Repo: "<repo header>"; replace it with owner/name or an absolute Git
-     checkout path.`
-   - Persist via `<board CLI> add <slug> --column review
-     --block-status needs_human --block-reason "Repo target not resolvable:
-     <repo header>"` and confirm with `show`.
-   - Examples that must take this path unless a real Git checkout is proven
-     before selection: `Repo: (workspace root — .claude/launch.json lives at
-     /Users/tomtang/code/edgevector/.claude/launch.json; commit it in whichever
-     repo tracks that file, else file note)` and
-     `Repo: (machine-hygiene skill — /Users/tomtang/.claude or the repo tracking
-     the machine-hygiene SKILL.md)`.
+   headers: append **one** body line
+   `BLOCKED: kanban-pickup cannot resolve Repo: "<repo header>"; replace with
+   owner/name or absolute Git checkout path.` if absent, **leave the card in
+   `todo`**, and do **not** set `block_status=needs_human` (Tom 2026-07-14:
+   no human gates for agent-filed routing bugs — next agent/groom fixes the
+   header). Skip that card this run; pick another eligible card.
 4. **Surface-overlap gate:** before a card can enter the work-unit, run
    `<board CLI> overlap <slug> --json`. On conflict, SKIP and leave in `todo`;
    note `collision=<slug>:<in-flight-slug>` in the heartbeat.
@@ -112,11 +118,13 @@ continue — do not fail the whole run.
    eligible card has `Priority: P0` / tag `p0` **and** tags or title matching
    `pipeline` / `deploy-pipeline` / `deploy-pipeline-red-`, pick that card
    first (Tom 2026-07-14: a blocked merge or deploy pipeline is always P0).
-   Form **exactly one** work-unit:
-   - Prefer a **singleton** (one card).
-   - Optionally batch 2–3 cards only if they share the same `Repo:`, same
-     `Base:`, and a clear shared subsystem tag **and** you can finish the batch
-     PR in this single session. When in doubt, singleton.
+   Form the work-unit(s):
+   - Default: **one singleton** card.
+   - Optionally batch 2–3 cards only if they share the same `Repo:`/`Base:` and
+     a clear shared subsystem tag **and** you can finish the batch PR in this
+     session. When in doubt, singleton.
+   - After a singleton **merges**, if ≥35m budget remains, you may start **one
+     more** non-overlapping singleton (sequential; no spawn).
 6. **Shared-build-cache:** if the target repo has heavy concurrent-build risk
    and other `doing` work already targets it, prefer a different repo's card
    when one exists; else proceed with the singleton (you are not fanning out).
@@ -163,6 +171,20 @@ continue — do not fail the whole run.
    - `venue=lastgit`: `lastgit cr create … --auto-merge …`, record
      `PR: lastgit://…` plus the branch on the card, drive with
      `lastgit cr view` / `ci status` / `cr complete --once`.
+   - If pushing or opening the PR/CR fails because the review venue or required
+     board transport is unavailable (for example a missing LastGit socket,
+     socket-unreachable, `service_timeout`, "node did not respond", or "too
+     many concurrent reads") **before a PR/CR URL is recorded**, do not report a
+     routine `error` and do not leave the card silently claimed. Try to move the
+     card back to `todo` so the next pickup can retry from a clean claim. If
+     that board write also fails, append one automation-memory line
+     `pending_rollback=<slug> reason=<transport-unavailable>` when writable,
+     heartbeat `ok cards=1 worked=<slug> result=rolled-back-todo-unconfirmed
+     reason=<transport-unavailable>`, print `ROUTINE_RESULT outcome=ok
+     detail=worked=<slug> pr=none final_column=todo-unconfirmed
+     reason=<transport-unavailable>`, and EXIT. This is an external transport
+     interruption, not a harness fault; `kanban-watch` or the next pickup fire
+     will reconcile the visible card state.
 6. **On MERGED:** move every shipped card in the unit to `done` and EXIT.
 7. **Genuine human-only blocker** (ambiguous spec, product judgment, human-only
    gate, dep on unmerged work): leave the branch clean, move the card(s) to
@@ -261,7 +283,7 @@ Heartbeat `noop idle nothing-safe` (distinguish from "didn't run"). EXIT.
 - Optional trailer: `ROUTINE_RESULT outcome=ok|noop detail=idle=…`.
 
 ## Hard rules
-- AT MOST **one work-unit per run** (singleton preferred) — whether pickup or idle.
+- AT MOST **two sequential work-units per run** (default one; second only if first merged and ≥35m budget left). Never spawn. Idle mode stays one action.
 - Claim (`doing`) only for work **you** will execute in this session.
 - Never kill the process hosting your brain/board node or any node you didn't
   start. Never `stash`/`reset`/`clean` a shared repo — isolate with

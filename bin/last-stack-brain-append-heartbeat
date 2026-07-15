@@ -74,7 +74,21 @@ case "$line" in
 esac
 
 command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 127; }
-command -v brain >/dev/null 2>&1 || { echo "brain is required" >&2; exit 127; }
+brain_cmd="${LAST_STACK_BRAIN:-}"
+if [ -n "$brain_cmd" ] && ! [ -x "$brain_cmd" ]; then
+  echo "LAST_STACK_BRAIN is not executable: $brain_cmd" >&2
+  exit 127
+fi
+if [ -z "$brain_cmd" ]; then
+  brain_cmd="$(command -v brain 2>/dev/null || true)"
+fi
+if [ -z "$brain_cmd" ]; then
+  brain_cmd="$(command -v fbrain 2>/dev/null || true)"
+fi
+if [ -z "$brain_cmd" ]; then
+  echo "brain or fbrain is required" >&2
+  exit 127
+fi
 
 read_err="$(mktemp)"
 put_body="$(mktemp)"
@@ -88,7 +102,7 @@ fallback_append() {
   # A new schema type can make old brain configs fail reads before the target
   # reference is reachable. In unattended routines, do not run brain init; grow
   # the heartbeat record server-side instead.
-  printf '\n%s\n' "$line" | brain append "$slug" --type reference --raw --json >"$put_body" 2>"$append_err" || {
+  printf '\n%s\n' "$line" | "$brain_cmd" append "$slug" --type reference --raw --json >"$put_body" 2>"$append_err" || {
     cat "$append_err" >&2
     [ -s "$put_body" ] && cat "$put_body" >&2
     echo "aborting: fallback append failed for $slug" >&2
@@ -104,7 +118,7 @@ fallback_append() {
   exit 0
 }
 
-if ! record_json="$(brain get "$slug" --type reference --json 2>"$read_err")"; then
+if ! record_json="$("$brain_cmd" get "$slug" --type reference --json 2>"$read_err")"; then
   if { printf '%s\n' "$record_json"; cat "$read_err"; } | grep -q 'No canonical hash registered'; then
     fallback_append
   fi
@@ -129,5 +143,5 @@ body="$(printf '%s' "$record_json" | jq -r '.body // ""')"
   fi
 } > "$put_body"
 
-brain put "$slug" --type reference --json < "$put_body" >/dev/null
+"$brain_cmd" put "$slug" --type reference --json < "$put_body" >/dev/null
 echo "appended heartbeat to $slug"
