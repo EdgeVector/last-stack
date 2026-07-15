@@ -448,6 +448,16 @@ grep -q 'DIRTY-WORKTREE-STALLED' "$watch"
 grep -q 'attempts>=3' "$watch"
 grep -q 'dirty worktree with \*\*no live process\*\* is not an infinite skip' "$watch"
 
+merge_babysit="$ROOT/routines/merge-babysit.md"
+test -f "$merge_babysit"
+grep -q 'lastgit stuck --json' "$merge_babysit"
+grep -q 'flagged=lastgit-stuck-cmd-missing' "$merge_babysit"
+grep -q '"$timeout_bin" 20s lastgit cr list' "$merge_babysit"
+grep -q '12 repos' "$merge_babysit"
+grep -q '5 open CRs' "$merge_babysit"
+grep -q 'green_merge_conflict' "$merge_babysit"
+grep -q 'Self-heal' "$merge_babysit"
+
 pipeline="$ROOT/routines/pipeline-health.md"
 grep -q 'LASTGIT_PRIMARY_SOCKET' "$pipeline"
 if rg -n 'lastgit/code|code node|both forge nodes|LASTGIT_CODE_SOCKET' "$pipeline" >/dev/null; then
