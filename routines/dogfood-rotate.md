@@ -25,10 +25,15 @@ with every actionable blocker and papercut discovered.
   a stale install). If you only have `last-stack-update-check` and it prints
   `UPGRADE_AVAILABLE` or `GIT_UPDATE_AVAILABLE`, run
   `${LAST_STACK_ROOT:-$HOME/.last-stack}/bin/last-stack-self-upgrade` once, then
-  re-read the upgraded prompt. If self-upgrade returns `error-dirty` or
-  `error-diverged`, STOP, heartbeat the failure, and file/reuse a single
-  install-dir blocker — never continue from stale routine text and never
-  `reset --hard` the install.
+  re-read the upgraded prompt. If self-upgrade returns `error-dirty`, STOP
+  before product assertions, print `warn: last-stack-checkout-dirty`, append a
+  graceful noop heartbeat with `reason=last-stack-checkout-dirty`, and do not
+  file an install-dir blocker for dirty checkout alone. A dirty install checkout
+  is normal while agents are working; never `reset --hard`, `checkout --`, clean,
+  or otherwise repair it from this routine. If self-upgrade returns
+  `error-diverged` or another non-dirty failure, STOP, heartbeat the failure, and
+  file/reuse a single install-dir blocker — never continue from stale routine
+  text.
 - First run data-plane preflight reads, sequentially: `brain get
   dogfood-registry --type project --json` and `kanban list --column todo
   --json`. These socket-backed reads are the health check. Do not use
