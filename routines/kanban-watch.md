@@ -136,8 +136,27 @@ For every card in `doing` (from the column preview):
    card's `Branch:`), skip (record URL if missing, then advance normally).
 4. If `updated_at` is younger than **90 minutes**, skip (grace for long builds).
 5. If a worktree for `<slug>` exists under `~/.fkanban/worktrees` or
-   `~/.kanban/worktrees` with uncommitted changes OR a live process whose
-   command line contains that worktree path, skip (live worker).
+   `~/.kanban/worktrees`:
+   - A live process whose command line contains that worktree path is a live
+     worker: skip.
+   - A dirty worktree with **no live process** is not an infinite skip. Inspect
+     `git -C "$worktree_path" status --short` and
+     `git -C "$worktree_path" log --oneline -5`.
+     - If the dirty files and recent commits are coherent for this card, finish
+       the branch through the normal "branch with commits" path below.
+     - If they are mixed-scope/unrelated, do **not** commit them into this
+       card. Check whether blocker IDs named in the body are already resolved
+       (for LastGit, `lastgit cr view <repo-slug> <cr-id> --json` plus open CR
+       list; for GitHub/Forgejo, the routed PR/CR view). If the blocker is
+       merged or the card's operational end state is otherwise provably true,
+       append `RESOLVED: dirty worktree parked; blocker resolved by <evidence>`
+       and move the card out of `doing` (`done` only with a verified merged
+       artifact; otherwise `review` with `needs_human`).
+     - Otherwise append or update exactly one line
+       `DIRTY-WORKTREE-STALLED: no live worker; mixed/uncommitted worktree needs manual triage; first_seen=<ISO>; attempts=<n>`
+       and move the card to `review` with `block_status=needs_human` once
+       `attempts>=3` or the first marker is older than 90 minutes. Before that,
+       leave it in `doing` so a short-lived local edit is not stolen.
 6. Otherwise **`move <slug> todo`**. Note `reclaimed-zombie=<slug>` in the
    heartbeat. Do this for EVERY matching card this wake (uncapped CHEAP).
 
@@ -378,8 +397,18 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
           a fresh builder on the existing branch/PR). Only leave it in `review` if
           a human decision is genuinely required.
       - **Conflicts / DIRTY** → enter the worktree, fetch base, rebase, resolve,
-        re-verify, force-push with lease. HEAVY — one/wake. If the conflict needs
-        product judgment, don't guess — comment flagging it and leave it.
+        re-verify, force-push with lease. HEAVY — one/wake. If the worktree is
+        dirty but has no live process, first classify it:
+        - coherent card-scoped WIP → commit/push/open-or-update the routed
+          review artifact after running VERIFY.
+        - mixed-scope/unrelated edits → never silently commit them. Check
+          whether the named blocker is already resolved; if so, append evidence
+          and move the card to `done` only when there is a verified merged
+          artifact, otherwise to `review` with `needs_human`. If not resolved,
+          append/update the `DIRTY-WORKTREE-STALLED:` line above and escalate to
+          `review` after 3 attempts or 90 minutes since `first_seen`.
+        If the conflict needs product judgment, don't guess — comment flagging
+        it and leave it.
       - **Changes requested** → address the comments, push, reply briefly.
       - **Clean + approved but not merging** → re-assert auto-merge. Never
         force-merge around a failing required gate.
