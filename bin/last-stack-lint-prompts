@@ -93,6 +93,7 @@ check_default_board_scope() {
         ! -path '*/.git/*' \
         ! -path '*/logs/*' \
         ! -path '*/run/*' \
+        ! -path '*/tests/*' \
         ! -name memory.md \
         ! -name last-stack-lint-prompts \
         -print0
@@ -130,6 +131,7 @@ check_aline_search_guards() {
         ! -path '*/.git/*' \
         ! -path '*/logs/*' \
         ! -path '*/run/*' \
+        ! -path '*/tests/*' \
         ! -name memory.md \
         ! -name last-stack-lint-prompts \
         -print0
@@ -191,6 +193,74 @@ check_pipeline_health_lastgit_socket_inventory() {
     printf '%s\n' "$file: pipeline-health references retired LastGit code socket inventory" >&2
     fail=1
   fi
+}
+
+check_admin_ui_repo_targets() {
+  # Generated card bodies that mention hosted admin UI/consumer surfaces must
+  # target the repo that owns those surfaces. App-publisher work belongs in the
+  # app repo, but `web/admin`, `kanban-crypto`, `openDelivery`, and `/api/admin/*`
+  # work belongs in EdgeVector/exemem-infra or must be split into separate cards.
+  local root="$1"
+  local files=()
+  local file
+
+  if [ -d "$root" ]; then
+    while IFS= read -r -d '' file; do
+      files+=("$file")
+    done < <(
+      find "$root" -type f \
+        ! -path '*/.git/*' \
+        ! -path '*/logs/*' \
+        ! -path '*/run/*' \
+        ! -name memory.md \
+        ! -name last-stack-lint-prompts \
+        -print0
+    )
+  else
+    [ "$(basename "$root")" = "last-stack-lint-prompts" ] && return 0
+    files=("$root")
+  fi
+
+  for file in "${files[@]}"; do
+    [ -f "$file" ] || continue
+    grep -Iq . "$file" || continue
+    awk -v file="$file" '
+      function is_negative_guidance(line) {
+        return (line ~ /Do not|Never|do not|never|reject|must not|instead|split|route/)
+      }
+      function repo_from(line, repo) {
+        if (match(line, /^[[:space:]]*Repo:[[:space:]]*EdgeVector\/[A-Za-z0-9._-]+/)) {
+          repo = substr(line, RSTART, RLENGTH)
+          sub(/^[[:space:]]*Repo:[[:space:]]*/, "", repo)
+          return repo
+        }
+        return ""
+      }
+      function mentions_admin_ui(line) {
+        return (line ~ /(web\/admin|kanban-crypto|openDelivery|\/api\/admin\/|admin SPA|Admin SPA)/)
+      }
+      {
+        line = $0
+        if (is_negative_guidance(line)) {
+          next
+        }
+        repo = repo_from(line)
+        if (repo != "") {
+          active_repo = repo
+        }
+        if (active_repo != "" && active_repo != "EdgeVector/exemem-infra" && mentions_admin_ui(line)) {
+          printf "%s:%d:%s\n", file, NR, line
+          bad = 1
+        }
+      }
+      END {
+        exit bad
+      }
+    ' "$file" || {
+      echo "admin UI/consumer card targets a repo other than EdgeVector/exemem-infra; split app publisher work from hosted admin SPA work" >&2
+      fail=1
+    }
+  done
 }
 
 check_workspace_root_git_probes() {
@@ -686,6 +756,7 @@ for path in "$@"; do
   check_gh_json_fields "$path"
   check_aline_search_guards "$path"
   check_pipeline_health_lastgit_socket_inventory "$path"
+  check_admin_ui_repo_targets "$path"
   check_raw_markdown_shell_blocks "$path"
   check_default_board_scope "$path"
   check_workspace_root_git_probes "$path"
