@@ -55,6 +55,15 @@ continue — do not fail the whole run.
 1. Read the board with `<board CLI> list --json`. `list` may take a board flag
    when your CLI supports it; `show` and `move` do not take a per-command board
    flag.
+   If the board read fails because the LastDB/F-Kanban node is busy or the Unix
+   socket/read route is temporarily unavailable (`service_timeout`, "node did
+   not respond", "too many concurrent reads", "socket close", "socket
+   unreachable", or "read route not reachable"), do not run doctor/init and do
+   not restart anything. Treat this as a soft blocker for this sweep: write a
+   memory note if writable, heartbeat `kanban-validate <ISO-ts> noop
+   board-read-unavailable`, print `ROUTINE_RESULT outcome=noop
+   detail=board-read-unavailable`, and exit. A red routine here only files
+   duplicate triage for a transient board transport condition.
 2. Consider only cards in:
    - `doing` with a concrete merged PR or merged commit evidence and a not-yet-
      proven `## END STATE` / `VERIFY` that needs a post-merge check.
@@ -124,6 +133,11 @@ LAST action, even on a quiet sweep:
 "$last_stack/bin/last-stack-brain-append-heartbeat" --line \
   "kanban-validate <ISO-ts> <ok|noop|error> <outcome>"
 ```
+
+Use `error` only when the routine itself is broken in a way that should create
+triage work, such as missing required binaries after preflight, prompt/registry
+bugs, or an unexpected unhandled exception. Known external blockers and
+transient board/Brain transport failures are `noop`, not `error`.
 
 End with a one-line report: which card was validated, whether it passed, failed,
 or was blocked, and any fix card filed. Then exit.
