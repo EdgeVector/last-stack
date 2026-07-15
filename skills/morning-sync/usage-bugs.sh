@@ -14,6 +14,69 @@ WHICH="${1:-all}"
 
 py() { python3 "$@"; }
 
+default_sentry_projects() {
+  cat <<'EOF'
+rust
+javascript-react
+javascript-react-xq
+lastdb-mini
+exemem-backend
+agent-cli
+routines
+lastgit
+remote
+discovery
+photos
+EOF
+}
+
+sentry_projects_from_signal_sources() {
+  local record
+  record=""
+  if command -v fbrain >/dev/null 2>&1; then
+    record=$(fbrain get signal-sources --type reference 2>/dev/null || true)
+  fi
+  if [ -z "$record" ] && command -v brain >/dev/null 2>&1; then
+    record=$(brain get signal-sources --type reference 2>/dev/null || true)
+  fi
+  if [ -z "$record" ]; then
+    return 1
+  fi
+
+  SIGNAL_SOURCES_RECORD="$record" py - <<'PY'
+import os, re, sys
+
+record = os.environ.get("SIGNAL_SOURCES_RECORD", "")
+match = re.search(r"^- \*\*scopes\*\*:\s*(.+)$", record, re.MULTILINE)
+if not match:
+    sys.exit(1)
+
+raw_scopes = re.findall(r"`([^`]+)`", match.group(1))
+if not raw_scopes:
+    raw_scopes = [part.strip() for part in match.group(1).split(",")]
+
+seen = set()
+for scope in raw_scopes:
+    scope = scope.strip().strip("`")
+    if "/" not in scope:
+        continue
+    project = scope.rsplit("/", 1)[1].strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", project):
+        continue
+    if project in seen:
+        continue
+    seen.add(project)
+    print(project)
+PY
+}
+
+sentry_projects() {
+  if sentry_projects_from_signal_sources; then
+    return
+  fi
+  default_sentry_projects
+}
+
 # ----------------------------------------------------------------------------
 # 🐛 BUGS — Sentry (edge-vector org; fleet projects)
 # ----------------------------------------------------------------------------
@@ -29,19 +92,14 @@ sentry_block() {
     return
   fi
   local slug json
-  local projects=(
-    rust
-    javascript-react
-    javascript-react-xq
-    lastdb-mini
-    exemem-backend
-    agent-cli
-    routines
-    lastgit
-    remote
-    discovery
-    photos
-  )
+  local projects=()
+  while IFS= read -r slug; do
+    [ -n "$slug" ] && projects+=("$slug")
+  done < <(sentry_projects)
+  if [ "${#projects[@]}" -eq 0 ]; then
+    echo "- ⚠️ No Sentry projects found in signal-sources or fallback list."
+    return
+  fi
   for slug in "${projects[@]}"; do
     json=$(curl -s --max-time 25 -H "Authorization: Bearer $TOKEN" \
       "https://sentry.io/api/0/projects/edge-vector/$slug/issues/?query=is:unresolved&statsPeriod=14d&limit=100" 2>/dev/null)
