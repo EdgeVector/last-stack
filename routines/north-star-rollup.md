@@ -71,7 +71,7 @@ Brain record (stable):
      --stdout none
    ```
    The script:
-   - lists the full board (`kanban list --json --all`)
+   - collects board state through bounded column reads and selected card details
    - lists brain projects, keeps North Stars
    - applies known NS aliases (e.g. legacy schema roadmap → shared-surface NS)
    - upserts `north-star-dashboard` and writes the HTML file

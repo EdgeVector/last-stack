@@ -106,10 +106,11 @@ For each entry in `orphan_north_stars_live` (then, if time remains, done-only):
 ```bash
 slug="<exact orphan slug>"
 body_file="$(mktemp)"
-cat >"$body_file" <<EOF
+export NORTH_STAR_SLUG="$slug"
+cat >"$body_file" <<'EOF'
 ---
 type: project
-slug: $slug
+slug: __NORTH_STAR_SLUG__
 title: 🌟 North Star — <short product name from evidence>
 status: in_progress
 tags: [north-star, <product tags>]
@@ -117,7 +118,7 @@ tags: [north-star, <product tags>]
 
 # 🌟 North Star — <name>
 
-**Slug (stable card field):** \`$slug\`
+**Slug (stable card field):** `__NORTH_STAR_SLUG__`
 **Repo / venue:** <from cards>
 **Related:** [[active-programs]], <designs if any>
 
@@ -132,8 +133,9 @@ tags: [north-star, <product tags>]
 <anti-goals from standing directives / card OUT OF SCOPE>
 
 ## Board note
-Card field \`north_star: $slug\` is canonical — do not invent a second slug.
+Card field `north_star: __NORTH_STAR_SLUG__` is canonical — do not invent a second slug.
 EOF
+perl -0pi -e 's/__NORTH_STAR_SLUG__/$ENV{NORTH_STAR_SLUG}/g' "$body_file"
 brain put "$slug" --type project <"$body_file"
 rm -f "$body_file"
 brain get "$slug" --type project | head -20   # confirm
