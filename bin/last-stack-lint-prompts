@@ -212,6 +212,7 @@ check_admin_ui_repo_targets() {
         ! -path '*/.git/*' \
         ! -path '*/logs/*' \
         ! -path '*/run/*' \
+        ! -path '*/tests/*' \
         ! -name memory.md \
         ! -name last-stack-lint-prompts \
         -print0
