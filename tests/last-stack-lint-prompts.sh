@@ -346,6 +346,29 @@ fi
 GOOD_ALINE
 "$ROOT/bin/last-stack-lint-prompts" "$good_aline_guard"
 
+bad_admin_ui_repo="$tmp/bad-admin-ui-repo.md"
+cat > "$bad_admin_ui_repo" <<'BAD_ADMIN_UI_REPO'
+Repo: EdgeVector/brain
+Base: main
+
+## GOAL
+Add the Brain tab in web/admin and reuse openDelivery with kanban-crypto.
+BAD_ADMIN_UI_REPO
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_admin_ui_repo" >/dev/null 2>&1; then
+  echo "expected hosted admin UI work under a non-exemem-infra repo to fail prompt lint" >&2
+  exit 1
+fi
+
+good_admin_ui_repo="$tmp/good-admin-ui-repo.md"
+cat > "$good_admin_ui_repo" <<'GOOD_ADMIN_UI_REPO'
+Repo: EdgeVector/exemem-infra
+Base: main
+
+## GOAL
+Add the Brain tab in web/admin and reuse openDelivery with kanban-crypto.
+GOOD_ADMIN_UI_REPO
+"$ROOT/bin/last-stack-lint-prompts" "$good_admin_ui_repo"
+
 bad_aline_unguarded="$tmp/bad-aline-unguarded.md"
 printf '%s\n' "aline sea""rch \"prior decision\"" > "$bad_aline_unguarded"
 if "$ROOT/bin/last-stack-lint-prompts" "$bad_aline_unguarded" >/dev/null 2>&1; then

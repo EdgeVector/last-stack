@@ -142,6 +142,15 @@ index and guarantee each unblocked one has its next card in `todo`.
    - **The next card doesn't exist yet, but the index's "Next move" is concrete
      and unblocked → file it** as one PR-sized `todo` card. Verify against the
      default branch first so you don't file something already merged.
+     When the generated work mentions hosted admin UI or consumer surfaces
+     (`web/admin`, `kanban-crypto`, `openDelivery`, `/api/admin/*`, admin SPA
+     tabs), route that UI/consumer card to `EdgeVector/exemem-infra` or split
+     it from the app-publisher card. Do not emit one card whose repo points at
+     an app repo such as brain, situations, lastgit, discovery, or last-stack
+     while the body asks the pickup agent to edit the hosted admin SPA. For
+     cross-repo admin delivery, file a dependency chain: app repo publishes or
+     dogfoods the delivered slice; `EdgeVector/exemem-infra` consumes it in the
+     admin SPA.
    - **Has a gate marker → apply the taxonomy, don't reflexively park.** A body
      opening `⛔ DO NOT START` / `[design-first]` / `GATED` is NOT automatically a
      human gate. Classify it: dev-only / security-review-class / test-validation /
