@@ -304,7 +304,14 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
    `service_timeout`, "node did not respond", or "too many concurrent reads",
    treat it as busy-node backpressure: append/report a `kanban-watch ... noop
    busy-node` outcome if possible, do not run doctor/init or restart anything,
-   and EXIT.
+   and EXIT. If the socket file exists but the board/brain read route is
+   unreachable, closes unexpectedly, or reports `node socket not reachable`,
+   treat that the same way: there is no safe board snapshot to reconcile, so
+   report `kanban-watch ... noop board-socket-unreachable no-reconcile` and EXIT.
+   Do not file duplicate routine-error cards for this condition when
+   `routine-error-last-stack-fkanban-watch` already tracks it; if the heartbeat
+   helper also fails on the same socket, still make the final stdout report use
+   `noop`, not `error`.
 2. For EVERY previewed card NOT already in `done` (NOT just `doing`/`review` — a
    card can be merged while still in `todo` if a human/other flow did the work;
    that is the exact bug being fixed, so do not restrict by column):
@@ -488,3 +495,6 @@ card you filed (or that you found nothing). Then exit.
 > **Heartbeat (optional but recommended).** LAST action, even on a quiet sweep:
 > call `<last-stack>/bin/last-stack-brain-append-heartbeat --line
 > "kanban-watch <ISO-ts> <ok|noop|error> <outcome>"` (`noop` = quiet sweep).
+> Use `noop`, not `error`, for expected no-action external blockers such as
+> busy-node backpressure or `board-socket-unreachable` where no reconcile can be
+> safely attempted and a tracker card already exists.
