@@ -8,8 +8,8 @@ You are the **pipeline-health** routine for `<WORKSPACE>`. Run ONE bounded pass,
 then exit. Your job is to keep **merge and post-merge deploy pipelines** healthy
 so nothing silently rots:
 
-1. **LastGit CRs** — every repo on every LastGit forge node you are configured to
-   watch (`lastgit list` per socket).
+1. **LastGit CRs** — every repo on the primary LastGit forge inventory
+   (`lastgit list` on the primary socket).
 2. **Forgejo (or self-hosted forge) PRs** — at least `<FORGE_FOLD_REPO>` (usually
    `EdgeVector/fold`), plus any other forge-hot repos listed in
    `<FORGE_HOT_REPOS>`.
@@ -185,24 +185,21 @@ scan shows unblocked.
 or fixed every blocked entry this wake (then heartbeat `ok` with
 `deploy_blocked=… filed=…` / `fixed=…`).
 
-## LastGit sockets / nodes
-Configure explicitly (do not guess from home discovery alone):
-
-| Role | Socket path | Notes |
-|---|---|---|
-| `<LASTGIT_CODE_SOCKET>` | e.g. `~/.lastgit/code/data/folddb.sock` | Preferred non-primary forge node |
-| `<LASTGIT_PRIMARY_SOCKET>` | e.g. `~/.lastdb/data/folddb.sock` | Only if repos actually live there; never start new CI watchers on it |
-
-For each socket that exists:
+## LastGit socket / inventory
+Use the primary LastGit socket by default. The old non-primary code forge socket
+is retired; do not require it or treat its absence as a pipeline outage. Only
+scan an additional LastGit socket when an explicit live inventory setting names
+one for this routine.
 
 ```bash
 export LASTGIT_SCHEMA_MAP="${LASTGIT_SCHEMA_MAP:-$HOME/.lastgit/schema-map.json}"
-export LASTGIT_SOCKET="<socket>"
+export LASTGIT_SOCKET="${LASTGIT_PRIMARY_SOCKET:-$HOME/.lastdb/data/folddb.sock}"
 lastgit list --json
 ```
 
-Skip a socket that errors with `wrong_node` (no lastgit schemas). Enumerate
-every enabled slug from `lastgit list --json`.
+If an explicitly configured extra socket errors with `wrong_node` (no lastgit
+schemas), skip that extra socket. Enumerate every enabled slug from
+`lastgit list --json`.
 
 ## Per LastGit repo (cheap scan)
 ```bash

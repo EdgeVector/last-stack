@@ -419,6 +419,21 @@ grep -q 'last-stack-pr-venue' "$watch"
 grep -q 'lastgit cr list' "$watch"
 grep -q 'lastgit ci status' "$watch"
 
+pipeline="$ROOT/routines/pipeline-health.md"
+grep -q 'LASTGIT_PRIMARY_SOCKET' "$pipeline"
+if rg -n 'lastgit/code|code node|both forge nodes|LASTGIT_CODE_SOCKET' "$pipeline" >/dev/null; then
+  echo "pipeline-health should not reference the retired LastGit code socket" >&2
+  exit 1
+fi
+
+bad_pipeline_root="$tmp/bad-pipeline-root"
+mkdir -p "$bad_pipeline_root/routines"
+printf '%s\n' 'LASTGIT_CODE_SOCKET=$HOME/.lastgit/code/data/folddb.sock lastgit list --json' > "$bad_pipeline_root/routines/pipeline-health.md"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_pipeline_root" >/dev/null 2>&1; then
+  echo "expected retired LastGit code socket prompt lint to fail" >&2
+  exit 1
+fi
+
 memory_home="$tmp/home"
 mkdir -p "$memory_home"
 env -u CODEX_HOME HOME="$memory_home" bash -eu <<'SH'
