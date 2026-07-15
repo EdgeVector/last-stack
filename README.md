@@ -107,6 +107,46 @@ not stay stuck on `LAST_STACK_ROUTINE_STALE`. Register the
 > resolves into the Last Stack tree and repairs any that a foreign installer
 > stomped. Run that guard standalone any time to check (`--check`) or repair.
 
+## Admin health publish + deliver
+
+Privacy-safe install health for the Exemem admin SPA (Kanban deliver path —
+`delivery_slice` / `lastdb.slice.v1`). **Not** an admin SPA tab (that is a
+separate `exemem-infra` card); this is the Mini **publisher + dogfood deliver**.
+
+Payload (all non-secret):
+
+| Field | Source |
+|-------|--------|
+| `version` | `VERSION` |
+| `install_head_short` | install checkout `git rev-parse` |
+| `self_upgrade_result` | `last-stack-self-upgrade --check-only` |
+| `skill_link_status` | `last-stack-verify-skill-links --check` (`ok` / `drift` / `error`) |
+
+```bash
+# Write slim LastStackHealthSnapshot (key health-latest) on Mini:
+~/.last-stack/bin/last-stack-publish-status
+~/.last-stack/bin/last-stack-publish-status --json
+~/.last-stack/bin/last-stack-publish-status --dry-run --json
+
+# Stage (and optionally approve) a deliver to the admin kanban-consumer.
+# Recipient keys are operational — reuse the enroll-kanban-consumer bundle;
+# never commit them. Env names:
+#   LAST_STACK_ADMIN_RECIPIENT_PUBKEY
+#   LAST_STACK_ADMIN_MESSAGING_PUBLIC_KEY
+#   LAST_STACK_ADMIN_MESSAGING_PSEUDONYM
+~/.last-stack/bin/last-stack-deliver-status --dry-run --json
+~/.last-stack/bin/last-stack-deliver-status            # stage only
+~/.last-stack/bin/last-stack-deliver-status --approve  # stage + send
+```
+
+v1 **reuses the existing kanban-consumer identity** (schema-agnostic deliver).
+Mailbox poll + `openDelivery` stay on the admin consumer side (exemem-infra);
+this repo only owns publish + stage/approve on Mini.
+
+Dogfood evidence (2026-07-15, non-secret): staged + approved
+`message_type=delivery_slice`, `shared=1`, schema
+`last-stack/LastStackHealthSnapshot`, single record `health-latest`.
+
 ## Repository Venue
 
 The Last Stack is homed in LastGit at `lastdb:///last-stack`; agent-authored
@@ -197,6 +237,8 @@ registry slug such as `registry=dogfood-registry`.
 ```
 VERSION                 the installed version (update-check compares against this)
 setup                   installer — registers skills into your agent harnesses
+lib/
+  lastdb-http.sh        shared Mini socket HTTP helpers for publish/deliver
 bin/
   last-stack-update-check   is a newer version or default-branch HEAD available?
   last-stack-self-upgrade   clean-only FF pull + ./setup (used by routine-read)
@@ -207,6 +249,10 @@ bin/
                             skill link still resolves into the Last Stack tree;
                             undoes a gstack same-name skill stomp. setup runs it
                             as its final step. --check reports only.
+  last-stack-publish-status write slim LastStackHealthSnapshot to Mini (VERSION,
+                            install HEAD, self-upgrade check, skill-link verify)
+  last-stack-deliver-status publish + stage/approve lastdb.slice.v1 to the admin
+                            kanban-consumer (routines deliver-status pattern)
   last-stack-shell-prelude  sourceable PATH prelude for scheduled routines
   last-stack-cli-preflight  verify routine-required global CLIs are on PATH
   last-stack-json-get       extract one simple field path from socket/API JSON
