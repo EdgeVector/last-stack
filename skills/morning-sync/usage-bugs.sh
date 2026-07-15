@@ -15,7 +15,7 @@ WHICH="${1:-all}"
 py() { python3 "$@"; }
 
 # ----------------------------------------------------------------------------
-# 🐛 BUGS — Sentry (edge-vector org; rust backend + javascript-react frontend)
+# 🐛 BUGS — Sentry (edge-vector org; fleet projects)
 # ----------------------------------------------------------------------------
 sentry_block() {
   echo "### 🐛 Bugs (Sentry · last 14d unresolved)"
@@ -29,7 +29,20 @@ sentry_block() {
     return
   fi
   local slug json
-  for slug in rust javascript-react; do
+  local projects=(
+    rust
+    javascript-react
+    javascript-react-xq
+    lastdb-mini
+    exemem-backend
+    agent-cli
+    routines
+    lastgit
+    remote
+    discovery
+    photos
+  )
+  for slug in "${projects[@]}"; do
     json=$(curl -s --max-time 25 -H "Authorization: Bearer $TOKEN" \
       "https://sentry.io/api/0/projects/edge-vector/$slug/issues/?query=is:unresolved&statsPeriod=14d&limit=100" 2>/dev/null)
     SENTRY_SLUG="$slug" SENTRY_JSON="$json" py - <<'PY'
