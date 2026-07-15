@@ -95,6 +95,25 @@ reason=<reason>`, and EXIT. If the board is still busy/unreachable, heartbeat
 work-unit while a prior claimed card only needs rollback reconciliation.
 
 ## Selection rule (form ONE work-unit)
+
+**Preferred path (board CLI with `pickup claim`):** let the board pick and
+CAS-claim the next card so you do not reimplement priority / overlap / races:
+
+```bash
+CLAIM_JSON=$(<board CLI> pickup claim --json --worker "<automation-id>")
+# optional: --prefer-repo owner/name --exclude-repo owner/name --max-doing N
+```
+
+- If `claimed=true` and `reason=claimed`: the card is already in `doing`.
+  **Do not** `move … doing` again. Use `.card` (slug, repo, base, body, …) as
+  the work-unit and continue at Execute (isolate / implement). Still drive to
+  **MERGED** as usual.
+- If `claimed=false` (`no-eligible` / `at-capacity`): go to **Nothing to pick
+  up** (or heartbeat noop at-capacity and EXIT). Include useful `skipped`
+  entries in the heartbeat.
+- If the CLI rejects `pickup claim` (unknown subcommand / old board binary):
+  fall through to the manual steps below.
+
 1. Read only the ready queue: `<board CLI> list --column todo --json`. If the
    read returns `service_timeout`, "node did not respond", or "too many
    concurrent reads", treat it as busy-node backpressure: do not run doctor/init
