@@ -38,6 +38,24 @@ raw value to logs, Brain, Kanban, PR descriptions, or source files. Use the
 `service`, `environment`, and `release` tags consistently even when multiple
 small binaries share a project such as `agent-cli`.
 
+## Bun/TypeScript Helper
+
+Reusable Bun/TypeScript services can initialize Sentry through
+`lib/observability/sentry.ts`:
+
+```ts
+import { initSentry } from "./lib/observability/sentry";
+
+await initSentry({ service: "routinesd" });
+```
+
+The helper is a no-op when `OBS_SENTRY_DSN` is unset. When a DSN is present, the
+consuming repo must provide `@sentry/node`; the helper initializes the SDK with
+`service`, `environment`, and `release` tags, installs process handlers for
+uncaught exceptions and unhandled rejections, and redacts common secret-bearing
+request headers and event extras before send. Tests can inject `sentryModule` to
+avoid network calls.
+
 ## Triage Reader
 
 `skills/morning-sync/usage-bugs.sh sentry` reads unresolved issues from every
