@@ -79,9 +79,15 @@ every incomplete NS has a named proof card; completed terminals close the NS.
   "$last_stack/bin/last-stack-active-programs-guard" check "$before_body" "$after_body"
   ```
   If the guard fails, ABORT the write and heartbeat `error` with the guard
-  reason. Never persist a proposed body with fewer `## N.` program headers, a
-  missing `**program-slug:**` value, or an embedded `## N.` header that is not at
-  the start of a line.
+  reason. Never persist a proposed body that drops a `**program-slug:**` (unless
+  it appears in `completed-programs`), drops a program section header without
+  an intentional archive, or embeds a program header mid-line.
+
+  **Section headers (identity vs order):** preferred form is
+  `## Program: <slug>` (optionally `## Program: <slug> — Title`). Document order
+  is sort order — **move whole sections to reorder; do not renumber**. Stable
+  identity is always `**program-slug:** \`[[…]]\``. Legacy `## N. Title` headers
+  are still accepted by the guard during transition.
 
 ## What to do each run
 1. **Load the program DAGs.** Read your brain's driving index with a targeted

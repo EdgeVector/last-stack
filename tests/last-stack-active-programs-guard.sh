@@ -127,4 +127,98 @@ grep -q 'program header count dropped' "$tmp/err"
 
 "$ROOT/bin/last-stack-active-programs-guard" check "$before" "$before"
 
+# --- Slug headers: preferred form (no ordinals) ---
+slug_before="$tmp/slug-before.md"
+slug_after="$tmp/slug-after.md"
+cat > "$slug_before" <<'EOF_SLUG'
+# Active programs
+
+## Program: north-star-alpha — Alpha
+**program-slug:** `[[north-star-alpha]]`
+Next: ship A
+
+## Program: north-star-beta
+**program-slug:** `[[north-star-beta]]`
+Next: ship B
+EOF_SLUG
+
+# Reorder sections (beta first) — must pass without renumbering
+cat > "$slug_after" <<'EOF_REORDER'
+# Active programs
+
+## Program: north-star-beta
+**program-slug:** `[[north-star-beta]]`
+Next: ship B
+
+## Program: north-star-alpha — Alpha
+**program-slug:** `[[north-star-alpha]]`
+Next: ship A
+EOF_REORDER
+"$ROOT/bin/last-stack-active-programs-guard" check "$slug_before" "$slug_after"
+
+# Convert legacy ordinals → ## Program: with same slugs — must pass
+cat > "$tmp/ordinal.md" <<'EOF_ORD'
+## 1. Alpha
+**program-slug:** `[[north-star-alpha]]`
+a
+
+## 2. Beta
+**program-slug:** `[[north-star-beta]]`
+b
+EOF_ORD
+cat > "$tmp/from-ordinal.md" <<'EOF_FROM'
+## Program: north-star-alpha — Alpha
+**program-slug:** `[[north-star-alpha]]`
+a
+
+## Program: north-star-beta — Beta
+**program-slug:** `[[north-star-beta]]`
+b
+EOF_FROM
+"$ROOT/bin/last-stack-active-programs-guard" check "$tmp/ordinal.md" "$tmp/from-ordinal.md"
+
+# Wiki-header form also accepted
+cat > "$tmp/wiki.md" <<'EOF_WIKI'
+## [[north-star-alpha]] — Alpha
+**program-slug:** `[[north-star-alpha]]`
+a
+
+## [[north-star-beta]]
+**program-slug:** `[[north-star-beta]]`
+b
+EOF_WIKI
+"$ROOT/bin/last-stack-active-programs-guard" check "$tmp/from-ordinal.md" "$tmp/wiki.md"
+
+# archive-closed on ## Program: closed section
+cat > "$tmp/slug-closed.md" <<'EOF_CLOSED'
+## Program: old-program — ✅ CLOSED
+**program-slug:** `[[old-program]]`
+done
+
+## Program: active-program
+**program-slug:** `[[active-program]]`
+next
+EOF_CLOSED
+: > "$tmp/completed2.md"
+"$ROOT/bin/last-stack-active-programs-guard" archive-closed \
+  --active "$tmp/slug-closed.md" \
+  --completed "$tmp/completed2.md" \
+  --active-out "$tmp/active2.md" \
+  --completed-out "$tmp/completed2-out.md"
+if grep -q 'old-program' "$tmp/active2.md"; then
+  echo "slug-form closed program remained active" >&2
+  exit 1
+fi
+grep -q 'active-program' "$tmp/active2.md"
+grep -q '\[\[old-program\]\]' "$tmp/completed2-out.md"
+
+# embedded ## Program: mid-line fails
+cp "$slug_before" "$slug_after"
+printf '%s' '<!-- x -->## Program: evil-slug' >> "$slug_after"
+if "$ROOT/bin/last-stack-active-programs-guard" check "$slug_before" "$slug_after" >/dev/null 2>"$tmp/err"; then
+  echo "expected embedded ## Program: header to fail" >&2
+  exit 1
+fi
+grep -q 'embedded program header' "$tmp/err"
+
 echo "ok"
