@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  last-stack-forge-api [--method METHOD] [--data JSON|@file] [--jq FILTER] <api-path-or-url>
+  last-stack-forge-api METHOD [--data JSON|@file] [--jq FILTER] <api-path-or-url>
+
+Examples:
+  last-stack-forge-api repos/EdgeVector/fold/pulls?state=open --jq '.[] | [.number,.title] | @tsv'
+  last-stack-forge-api --method POST --data @body.json repos/EdgeVector/fold/pulls
+  last-stack-forge-api POST --data '{"Do":"merge","merge_when_checks_succeed":true}' repos/EdgeVector/fold/pulls/123/merge
+
+Path forms:
+  repos/OWNER/REPO/...      -> $FORGE_ROOT/api/v1/repos/OWNER/REPO/...
+  /api/v1/repos/...         -> $FORGE_ROOT/api/v1/repos/...
+  http://...                -> used as-is
+
+Env:
+  FORGE_ROOT     forge base URL (default http://localhost:3300)
+  FORGE_TOKEN    API token override; otherwise uses keychain forgejo-token
+
+Run this with a shell that can reach localhost:3300. In sandboxed agent shells,
+TCP to the local forge may be blocked and look like a missing curl binary.
+EOF
+}
+
+method=GET
+data_arg=
+jq_filter=
+path_arg=
+
+if [[ $# -eq 0 ]]; then
+  usage >&2
+  exit 2
+fi
+
+case "${1:-}" in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  GET|POST|PUT|PATCH|DELETE)
+    method="$1"
+    shift
+    ;;
+esac
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --method|-X)
+      [[ $# -ge 2 ]] || { echo "missing value for $1" >&2; exit 2; }
+      method="$2"
+      shift 2
+      ;;
+    --data|-d)
+      [[ $# -ge 2 ]] || { echo "missing value for $1" >&2; exit 2; }
+      data_arg="$2"
+      shift 2
+      ;;
+    --jq)
+      [[ $# -ge 2 ]] || { echo "missing value for $1" >&2; exit 2; }
+      jq_filter="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "unknown option: $1" >&2
+      exit 2
+      ;;
+    *)
+      if [[ -n "$path_arg" ]]; then
+        echo "unexpected extra argument: $1" >&2
+        exit 2
+      fi
+      path_arg="$1"
+      shift
+      ;;
+  esac
+done
+
+if [[ -z "$path_arg" && $# -gt 0 ]]; then
+  path_arg="$1"
+  shift
+fi
+if [[ -z "$path_arg" || $# -gt 0 ]]; then
+  usage >&2
+  exit 2
+fi
+
+forge_root="${FORGE_ROOT:-http://localhost:3300}"
+forge_root="${forge_root%/}"
+
+case "$path_arg" in
+  http://*|https://*)
+    url="$path_arg"
+    ;;
+  /api/v1/*)
+    url="$forge_root$path_arg"
+    ;;
+  repos/*)
+    url="$forge_root/api/v1/$path_arg"
+    ;;
+  *)
+    url="$forge_root/api/v1/$path_arg"
+    ;;
+esac
+
+token="${FORGE_TOKEN:-}"
+if [[ -z "$token" ]]; then
+  token="$(security find-generic-password -s forgejo-token -w 2>/dev/null || true)"
+fi
+if [[ -z "$token" ]]; then
+  echo "missing Forgejo token: set FORGE_TOKEN or store keychain item forgejo-token" >&2
+  exit 1
+fi
+
+curl_args=(-fsS -X "$method" -H "Authorization: token $token" -H "Accept: application/json")
+if [[ -n "$data_arg" ]]; then
+  curl_args+=(-H "Content-Type: application/json")
+  if [[ "$data_arg" == @* ]]; then
+    curl_args+=(--data-binary "$data_arg")
+  else
+    curl_args+=(--data-binary "$data_arg")
+  fi
+fi
+curl_args+=("$url")
+
+if [[ -n "$jq_filter" ]]; then
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  jq_bin="$script_dir/last-stack-forge-json-jq"
+  if [[ -x "$jq_bin" ]]; then
+    curl "${curl_args[@]}" | "$jq_bin" "$jq_filter"
+  else
+    curl "${curl_args[@]}" | jq "$jq_filter"
+  fi
+else
+  curl "${curl_args[@]}"
+fi

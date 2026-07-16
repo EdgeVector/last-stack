@@ -1,0 +1,397 @@
+#!/usr/bin/env bash
+# The Last Stack — setup / installer
+#
+# Registers each skill in skills/ into whatever agent harnesses you have
+# installed (Claude Code, Codex, Factory/droid, OpenCode). Skills stay in this
+# repo; the harness gets a real directory with a symlinked SKILL.md, so a later
+# `git pull` updates every installed skill at once.
+#
+# Usage:
+#   ./setup                 # auto-detect harnesses, install where present
+#   ./setup --host claude   # claude | codex | factory | opencode | auto
+#   ./setup --local         # install into ./.claude/skills (project-vendored)
+#   ./setup --uninstall     # remove installed skill links (see bin/last-stack-uninstall)
+#
+# Re-running is idempotent.
+set -e
+umask 077
+
+ROOT="$(cd "$(dirname "$0")" && pwd -P)"
+
+resolve_source_root() {
+  local candidate
+  for candidate in "$HOME/.last-stack" "${LAST_STACK_ROOT:-}"; do
+    [ -n "$candidate" ] || continue
+    if [ -f "$candidate/VERSION" ] && [ -d "$candidate/skills" ]; then
+      cd "$candidate" && pwd -P
+      return 0
+    fi
+  done
+  printf '%s\n' "$ROOT"
+}
+
+SOURCE_ROOT="$(resolve_source_root)"
+SKILLS_SRC="$SOURCE_ROOT/skills"
+HOOKS_SRC="$SOURCE_ROOT/hooks"
+
+HOST="auto"
+LOCAL_INSTALL=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --host) HOST="$2"; shift 2 ;;
+    --host=*) HOST="${1#*=}"; shift ;;
+    --local) LOCAL_INSTALL=1; shift ;;
+    --uninstall) exec "$SOURCE_ROOT/bin/last-stack-uninstall" ;;
+    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+    *) echo "unknown flag: $1" >&2; exit 2 ;;
+  esac
+done
+
+# ── Windows lacks reliable symlinks without Developer Mode; copy there instead ─
+IS_WINDOWS=0
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*|Windows_NT) IS_WINDOWS=1 ;; esac
+
+_link_or_copy() {
+  # $1 = source file, $2 = destination path
+  if [ "$IS_WINDOWS" -eq 1 ] || is_transient_last_stack_target "$1"; then
+    cp -f "$1" "$2"
+  else
+    ln -snf "$1" "$2"
+  fi
+}
+
+is_transient_last_stack_target() {
+  local target="$1"
+  case "$target" in
+    "$HOME/.kanban/worktrees"/*|*/.kanban/worktrees/*) return 0 ;;
+    "$HOME/.fkanban/worktrees"/*|*/.fkanban/worktrees/*) return 0 ;;
+  esac
+
+  local source_top
+  source_top="$(git -C "$SOURCE_ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$source_top" ] || return 1
+
+  local wt worktrees
+  worktrees="$(git -C "$source_top" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0, 10)}')"
+  while IFS= read -r wt; do
+    [ -n "$wt" ] || continue
+    [ "$wt" = "$source_top" ] && continue
+    case "$target" in
+      "$wt"/*) return 0 ;;
+    esac
+  done <<< "$worktrees"
+
+  return 1
+}
+
+assert_safe_skill_links() {
+  local target_dir="$1"
+  local link dest abs_dest
+  [ -d "$target_dir" ] || return 0
+  find "$target_dir" -type l -print | while IFS= read -r link; do
+    dest="$(readlink "$link" 2>/dev/null || true)"
+    [ -n "$dest" ] || continue
+    case "$dest" in
+      /*) abs_dest="$dest" ;;
+      *) abs_dest="$(cd "$(dirname "$link")" && cd "$(dirname "$dest")" && pwd -P)/$(basename "$dest")" ;;
+    esac
+    if is_transient_last_stack_target "$abs_dest"; then
+      echo "refusing transient Last Stack skill link: $link -> $abs_dest" >&2
+      echo "run setup from or with LAST_STACK_ROOT pointing at the canonical ~/.last-stack checkout" >&2
+      exit 1
+    fi
+  done
+}
+
+upsert_pretool_hook() {
+  local settings="$1"
+  local matcher="$2"
+  local command="$3"
+  local timeout="$4"
+  local tmp
+  tmp="$(mktemp)"
+  jq \
+    --arg matcher "$matcher" \
+    --arg command "$command" \
+    --argjson timeout "$timeout" '
+      .hooks //= {}
+      | .hooks.PreToolUse //= []
+      | .hooks.PreToolUse =
+        (if any(.hooks.PreToolUse[]?; .matcher == $matcher) then
+          [.hooks.PreToolUse[] |
+            if .matcher == $matcher then
+              .hooks = (((.hooks // []) | map(select(.command != $command))) + [{
+                type: "command",
+                command: $command,
+                timeout: $timeout
+              }])
+            else
+              .
+            end
+          ]
+        else
+          .hooks.PreToolUse + [{
+            matcher: $matcher,
+            hooks: [{
+              type: "command",
+              command: $command,
+              timeout: $timeout
+            }]
+          }]
+        end)
+    ' "$settings" > "$tmp"
+  mv "$tmp" "$settings"
+}
+
+upsert_permission_allow() {
+  local settings="$1"
+  local rule="$2"
+  local tmp
+  tmp="$(mktemp)"
+  jq \
+    --arg rule "$rule" '
+      .permissions //= {}
+      | .permissions.allow //= []
+      | if any(.permissions.allow[]?; . == $rule) then
+          .
+        else
+          .permissions.allow += [$rule]
+        end
+    ' "$settings" > "$tmp"
+  mv "$tmp" "$settings"
+}
+
+install_claude_hooks() {
+  local hooks_dir="$HOME/.claude/hooks"
+  local settings="$HOME/.claude/settings.json"
+  mkdir -p "$hooks_dir" "$(dirname "$settings")"
+
+  for hook in read-before-edit.sh unsafe-inline-json.sh; do
+    [ -f "$HOOKS_SRC/$hook" ] || continue
+    cp -f "$HOOKS_SRC/$hook" "$hooks_dir/$hook"
+    chmod 700 "$hooks_dir/$hook"
+  done
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "  claude hooks: installed scripts; skipped settings.json registration (jq not found)" >&2
+    return 0
+  fi
+
+  if [ ! -s "$settings" ]; then
+    printf '{}\n' > "$settings"
+  fi
+
+  upsert_pretool_hook "$settings" "Edit" \
+    "$hooks_dir/read-before-edit.sh  # block Edit unless the file was Read earlier in this session" \
+    10
+  upsert_pretool_hook "$settings" "Write" \
+    "$hooks_dir/read-before-edit.sh  # block overwriting existing files unless they were Read earlier in this session; allow new files/scratchpad" \
+    10
+  upsert_pretool_hook "$settings" "Bash" \
+    "$hooks_dir/unsafe-inline-json.sh  # block brittle node -e/python -c inline JSON parsing; use jq or a scratchpad script" \
+    5
+
+  for tool in \
+    mcp__brain__brain_get \
+    mcp__brain__brain_search \
+    mcp__brain__brain_list \
+    mcp__brain__brain_ask \
+    mcp__brain__brain_put
+  do
+    upsert_permission_allow "$settings" "$tool"
+  done
+
+  echo "  claude hooks: read-before-edit.sh unsafe-inline-json.sh"
+  echo "  claude permissions: brain MCP get/search/list/ask/put"
+}
+
+# ── Brain/Kanban wiring: usage instructions + Codex MCP registration ──────────
+# Managed block targets:
+#   Claude Code → ~/.claude/CLAUDE.md
+#   Codex       → ~/.codex/AGENTS.md
+#   Factory     → ~/.factory/AGENTS.md
+#   OpenCode    → ~/.config/opencode/AGENTS.md
+BK_START='<!-- last-stack:brain-kanban:start (managed by last-stack setup; edits inside are overwritten) -->'
+BK_END='<!-- last-stack:brain-kanban:end -->'
+
+upsert_brain_kanban_block() {
+  # $1 = harness instructions file (e.g. ~/.claude/CLAUDE.md, ~/.codex/AGENTS.md)
+  # $2 = label
+  local file="$1"
+  local label="$2"
+  local src="$SOURCE_ROOT/instructions/brain-kanban.md"
+  [ -f "$src" ] || return 0
+  mkdir -p "$(dirname "$file")"
+  [ -f "$file" ] || : > "$file"
+  local tmp
+  tmp="$(mktemp)"
+  # Drop any previous managed block (and trailing blank lines), keep user content.
+  awk -v s="$BK_START" -v e="$BK_END" '
+    $0 == s { ib = 1; next }
+    $0 == e { ib = 0; next }
+    !ib { lines[++n] = $0 }
+    END {
+      while (n > 0 && lines[n] == "") n--
+      for (i = 1; i <= n; i++) print lines[i]
+    }
+  ' "$file" > "$tmp"
+  [ -s "$tmp" ] && echo "" >> "$tmp"
+  {
+    printf '%s\n' "$BK_START"
+    cat "$src"
+    printf '%s\n' "$BK_END"
+  } >> "$tmp"
+  mv "$tmp" "$file"
+  echo "  ${label} instructions: brain-kanban block -> $file"
+}
+
+ensure_codex_mcp_servers() {
+  # brain and kanban are bun shims. GUI-launched MCP hosts (the Codex desktop
+  # app) spawn servers with a bare PATH that lacks ~/.bun/bin, so without an
+  # explicit env the server exits 127 and the client reports "transport closed".
+  local cfg="$HOME/.codex/config.toml"
+  local mcp_path="$HOME/.bun/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  local added=()
+  mkdir -p "$(dirname "$cfg")"
+  [ -f "$cfg" ] || : > "$cfg"
+  local name cmd
+  for name in brain kanban; do
+    case "$name" in
+      brain)  cmd="$HOME/.bun/bin/brain" ;;
+      kanban) cmd="$HOME/.local/bin/kanban" ;;
+    esac
+    if [ ! -x "$cmd" ]; then
+      cmd="$(command -v "$name" 2>/dev/null || true)"
+    fi
+    if [ -z "$cmd" ]; then
+      echo "  codex mcp: $name CLI not found; skipped its MCP registration" >&2
+      continue
+    fi
+    if ! grep -q "^\[mcp_servers\.$name\]" "$cfg"; then
+      {
+        echo ""
+        echo "[mcp_servers.$name]"
+        echo "args = [\"mcp\"]"
+        echo "command = \"$cmd\""
+        echo "startup_timeout_sec = 120"
+      } >> "$cfg"
+      added+=("$name")
+    fi
+    if ! grep -q "^\[mcp_servers\.$name\.env\]" "$cfg"; then
+      {
+        echo ""
+        echo "# $name is a bun shim; GUI-spawned MCP servers get a bare PATH (no ~/.bun/bin)"
+        echo "# and exit 127 -> 'transport closed' without this."
+        echo "[mcp_servers.$name.env]"
+        echo "PATH = \"$mcp_path\""
+      } >> "$cfg"
+      added+=("$name.env")
+    fi
+  done
+  if [ ${#added[@]} -gt 0 ]; then
+    echo "  codex mcp: added ${added[*]} to $cfg"
+  else
+    echo "  codex mcp: brain + kanban already registered"
+  fi
+}
+
+# ── Register every skills/<name>/SKILL.md into a target skills dir ────────────
+register_into() {
+  local skills_dir="$1"
+  local label="$2"
+  local linked=()
+  mkdir -p "$skills_dir"
+  for skill_dir in "$SKILLS_SRC"/*/; do
+    [ -f "$skill_dir/SKILL.md" ] || continue
+    local dir_name skill_name target
+    dir_name="$(basename "$skill_dir")"
+    [ "$dir_name" = "node_modules" ] && continue
+    # Prefer the frontmatter `name:` so the slash-command matches the skill name.
+    skill_name="$(grep -m1 '^name:' "$skill_dir/SKILL.md" 2>/dev/null | sed 's/^name:[[:space:]]*//' | tr -d '[:space:]')"
+    [ -z "$skill_name" ] && skill_name="$dir_name"
+    target="$skills_dir/$skill_name"
+    # Replace stale dir-symlinks from older layouts.
+    [ -L "$target" ] && rm -f "$target"
+    mkdir -p "$target"
+    [ -L "$target/SKILL.md" ] && rm -f "$target/SKILL.md"
+    _link_or_copy "${skill_dir%/}/SKILL.md" "$target/SKILL.md"
+    # Mirror any sidecar files (helper scripts, references/) so skills with more
+    # than a SKILL.md work fully from the source repo — not just their SKILL.md.
+    local base="${skill_dir%/}"
+    find "$base" -type f ! -name SKILL.md | while IFS= read -r src; do
+      rel="${src#"$base"/}"
+      dest="$target/$rel"
+      mkdir -p "$(dirname "$dest")"
+      [ -L "$dest" ] && rm -f "$dest"
+      _link_or_copy "$src" "$dest"
+    done
+    assert_safe_skill_links "$target"
+    linked+=("$skill_name")
+  done
+  if [ ${#linked[@]} -gt 0 ]; then
+    echo "  ${label}: ${linked[*]}"
+  else
+    echo "  ${label}: (no skills found)" >&2
+  fi
+}
+
+# ── --local: vendor into the current project's .claude/skills ─────────────────
+if [ "$LOCAL_INSTALL" -eq 1 ]; then
+  echo "Installing The Last Stack (v$(cat "$SOURCE_ROOT/VERSION")) into ./.claude/skills ..."
+  register_into "$(pwd)/.claude/skills" "claude (project)"
+  echo "Done."
+  exit 0
+fi
+
+# ── Detect which harnesses are present ────────────────────────────────────────
+INSTALL_CLAUDE=0; INSTALL_CODEX=0; INSTALL_FACTORY=0; INSTALL_OPENCODE=0
+case "$HOST" in
+  claude)   INSTALL_CLAUDE=1 ;;
+  codex)    INSTALL_CODEX=1 ;;
+  factory)  INSTALL_FACTORY=1 ;;
+  opencode) INSTALL_OPENCODE=1 ;;
+  auto)
+    { command -v claude   >/dev/null 2>&1 || [ -d "$HOME/.claude" ]; } && INSTALL_CLAUDE=1
+    { command -v codex    >/dev/null 2>&1 || [ -d "$HOME/.codex" ]; }  && INSTALL_CODEX=1
+    { command -v droid    >/dev/null 2>&1 || [ -d "$HOME/.factory" ]; } && INSTALL_FACTORY=1
+    { command -v opencode >/dev/null 2>&1 || [ -d "$HOME/.config/opencode" ]; } && INSTALL_OPENCODE=1
+    # Nothing detected → default to Claude Code.
+    if [ $((INSTALL_CLAUDE+INSTALL_CODEX+INSTALL_FACTORY+INSTALL_OPENCODE)) -eq 0 ]; then
+      INSTALL_CLAUDE=1
+    fi
+    ;;
+  *) echo "unknown --host: $HOST (use claude|codex|factory|opencode|auto)" >&2; exit 2 ;;
+esac
+
+echo "Installing The Last Stack (v$(cat "$SOURCE_ROOT/VERSION")) ..."
+[ "$INSTALL_CLAUDE"   -eq 1 ] && register_into "$HOME/.claude/skills"          "claude"
+[ "$INSTALL_CLAUDE"   -eq 1 ] && install_claude_hooks
+[ "$INSTALL_CLAUDE"   -eq 1 ] && upsert_brain_kanban_block "$HOME/.claude/CLAUDE.md" "claude"
+[ "$INSTALL_CODEX"    -eq 1 ] && register_into "$HOME/.codex/skills"           "codex"
+[ "$INSTALL_CODEX"    -eq 1 ] && upsert_brain_kanban_block "$HOME/.codex/AGENTS.md" "codex"
+[ "$INSTALL_CODEX"    -eq 1 ] && ensure_codex_mcp_servers
+[ "$INSTALL_FACTORY"  -eq 1 ] && register_into "$HOME/.factory/skills"         "factory"
+[ "$INSTALL_FACTORY"  -eq 1 ] && upsert_brain_kanban_block "$HOME/.factory/AGENTS.md" "factory"
+[ "$INSTALL_OPENCODE" -eq 1 ] && register_into "$HOME/.config/opencode/skills" "opencode"
+[ "$INSTALL_OPENCODE" -eq 1 ] && upsert_brain_kanban_block "$HOME/.config/opencode/AGENTS.md" "opencode"
+
+# ── Guard against foreign installers (e.g. gstack) stomping our skill links ────
+# Another installer that ships a same-named skill (gstack shipped a `diagram`
+# skill colliding with our hand-drawn one) silently re-points that SKILL.md at
+# its own tree. Registering above already re-points our links, but verify + emit
+# any collisions so re-running setup AFTER gstack setup provably restores us.
+guard="$SOURCE_ROOT/bin/last-stack-verify-skill-links"
+if [ -x "$guard" ]; then
+  guard_dirs=()
+  [ "$INSTALL_CLAUDE"   -eq 1 ] && guard_dirs+=("$HOME/.claude/skills")
+  [ "$INSTALL_CODEX"    -eq 1 ] && guard_dirs+=("$HOME/.codex/skills")
+  [ "$INSTALL_FACTORY"  -eq 1 ] && guard_dirs+=("$HOME/.factory/skills")
+  [ "$INSTALL_OPENCODE" -eq 1 ] && guard_dirs+=("$HOME/.config/opencode/skills")
+  [ ${#guard_dirs[@]} -gt 0 ] && "$guard" --quiet "${guard_dirs[@]}" || true
+fi
+
+echo
+echo "Done. Upgrade later with:  cd \"$SOURCE_ROOT\" && git pull && ./setup"
+echo "  (run this AFTER any gstack ./setup — it re-points Last Stack skill links"
+echo "   that a colliding gstack skill name would otherwise stomp)"
+echo "Uninstall with:           \"$SOURCE_ROOT/setup\" --uninstall"

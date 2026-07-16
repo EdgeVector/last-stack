@@ -1,0 +1,91 @@
+#!/usr/bin/python3
+"""Extract one simple field path from JSON on stdin without jq."""
+import json
+import re
+import sys
+
+
+def usage() -> int:
+    print("usage: last-stack-json-get <.field[0].nested>", file=sys.stderr)
+    return 2
+
+
+def parse_path(expr: str):
+    if not expr:
+        raise ValueError("empty path")
+    if expr == ".":
+        return []
+    if expr.startswith("."):
+        expr = expr[1:]
+    if not expr:
+        raise ValueError("empty path")
+
+    tokens = []
+    for part in expr.split("."):
+        if not part:
+            raise ValueError("empty path segment")
+        match = re.match(r"^([A-Za-z_][A-Za-z0-9_-]*)", part)
+        if not match:
+            raise ValueError(f"unsupported path segment: {part}")
+        tokens.append(match.group(1))
+        rest = part[match.end() :]
+        while rest:
+            idx_match = re.match(r"^\[([0-9]+)\]", rest)
+            if not idx_match:
+                raise ValueError(f"unsupported path segment: {part}")
+            tokens.append(int(idx_match.group(1)))
+            rest = rest[idx_match.end() :]
+    return tokens
+
+
+def descend(value, tokens):
+    current = value
+    for token in tokens:
+        if isinstance(token, int):
+            if not isinstance(current, list):
+                raise KeyError(f"not an array at [{token}]")
+            try:
+                current = current[token]
+            except IndexError as exc:
+                raise KeyError(f"array index not found: {token}") from exc
+        else:
+            if not isinstance(current, dict):
+                raise KeyError(f"not an object at .{token}")
+            try:
+                current = current[token]
+            except KeyError as exc:
+                raise KeyError(f"field not found: {token}") from exc
+    return current
+
+
+def emit(value) -> None:
+    if isinstance(value, str):
+        print(value)
+    elif isinstance(value, bool):
+        print("true" if value else "false")
+    elif value is None:
+        print("null")
+    elif isinstance(value, (int, float)):
+        print(value)
+    else:
+        print(json.dumps(value, separators=(",", ":")))
+
+
+def main() -> int:
+    if len(sys.argv) != 2:
+        return usage()
+    try:
+        tokens = parse_path(sys.argv[1])
+        value = descend(json.load(sys.stdin), tokens)
+    except json.JSONDecodeError as exc:
+        print(f"last-stack-json-get: invalid JSON: {exc}", file=sys.stderr)
+        return 1
+    except (KeyError, TypeError, ValueError) as exc:
+        print(f"last-stack-json-get: {exc}", file=sys.stderr)
+        return 1
+    emit(value)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

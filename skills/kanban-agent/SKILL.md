@@ -1,0 +1,622 @@
+---
+name: kanban-agent
+version: 0.2.0
+description: |
+  Drive a single kanban card all the way to a MERGED PR — a card only
+  reaches `done` when its code is actually in the repo and its outcome is
+  proven. Three entry modes: WORK (you were pointed at one card slug —
+  implement it, open a PR, then DRIVE THE PR TO MERGED, unless an async
+  post-merge END STATE still needs validation), RECONCILE (a sweep routine
+  woke you — advance in-flight PRs), and VALIDATE (run one bounded post-merge
+  validation and close or surface it).
+  Triggered when the user or a spawn/wake prompt says "follow the
+  kanban-agent skill", names a kanban card to work, or says "reconcile
+  the kanban board".
+---
+
+# kanban — agent handbook
+
+kanban is a kanban over LastDB (CLI + MCP, `bun run src/cli.ts` in the kanban
+repo, board on your LastDB node). It does **not** spawn agents. This skill makes
+the agent **own a card through merge**: it implements the card, opens the PR, and
+then drives that PR to MERGED before exiting — it does not hand a green-but-
+unmerged PR off and walk away. A card reaches `done` only when its PR is verified
+merged. **PR/CR opened is not done, and there is no separate background driver
+watching it for you.** The WORK-mode agent that opens the review artifact must
+record it on the card and keep driving it in this same turn until merged or
+genuinely blocked.
+
+> ⚠️ **Route repo review artifacts before opening or reconciling one.** After
+> resolving the concrete checkout, run
+> `"$last_stack/bin/last-stack-pr-venue" --json <owner/repo> "$target_repo"` and
+> branch on `.venue`: `github`, `forgejo`, or `lastgit`. LastGit is **opt-in
+> only** via repo config (`git config laststack.pr-venue lastgit` or
+> `.last-stack/pr-venue`) or `LAST_STACK_LASTGIT_NATIVE_REPOS`; the helper
+> preserves today's GitHub/Forgejo defaults otherwise. If `.venue == "lastgit"`,
+> read `brain get sop-lastgit-native-forge-workflow` and use the returned
+> `.lastgit_slug` / `.ci_context`. Do not run LastGit CI watchers against Tom's
+> primary brain socket; pin `LASTGIT_SOCKET` to a dedicated non-primary lastdbd
+> socket, or use an explicit throwaway `--node-url`. Store secrets only as
+> LastSecrets locators; never put raw secret values in Brain/Kanban/logs/PR/CR
+> text.
+>
+> ⚠️ **ALL NON-PUBLIC repos → the LOCAL FORGE, not GitHub unless they explicitly
+> opt into LastGit-native routing.** Forge-hot:
+> `EdgeVector/fold` (since 2026-07-02) plus `exemem-infra`, `exemem-workspace`,
+> `lastgit` (since 2026-07-03, Tom's decision after the GitHub Actions billing
+> halt). Every `gh -R EdgeVector/<forge-hot-repo> ...` command in this handbook
+> must instead be its Forgejo-API equivalent against `http://localhost:3300` —
+> their GitHub copies are read-only 24h push-mirrors; `gh` there reads stale
+> state and cannot merge. Full command map + auth + the current venue map:
+> `brain get sop-forge-pr-workflow`. Essentials: use
+> `$HOME/.last-stack/bin/last-stack-forge-api` for Forgejo API calls instead of
+> hand-building `TOKEN=... curl ... -H "Authorization: token $TOKEN"` snippets,
+> and use `$HOME/.last-stack/bin/last-stack-forge-git -C <repo> <git-args...>`
+> if plain Forgejo `git fetch` / `push` / `ls-remote` cannot read credentials.
+> `git push origin <branch>` usually works as-is (origin already points at the
+> forge); create PR =
+> `last-stack-forge-api --method POST --data @body.json repos/EdgeVector/<repo>/pulls`;
+> arm auto-merge =
+> `last-stack-forge-api --method POST --data '{"Do":"merge","merge_when_checks_succeed":true,"delete_branch_after_merge":true}' repos/EdgeVector/<repo>/pulls/<n>/merge`
+> (native Forgejo auto-merge; NO merge queue; fold's branch protection requires
+> the `ci-required` Forgejo Actions check green, admins included — never bypass
+> it; exemem-infra/exemem-workspace/lastgit have NO forge gate yet, so arming
+> auto-merge merges IMMEDIATELY — be sure the work is done before arming);
+> **All forge API JSON reads should go through `last-stack-forge-api --jq`**
+> because it routes projections through the control-char-safe jq wrapper.
+> view = `last-stack-forge-api repos/EdgeVector/<repo>/pulls/<n>` (merged=`.merged`, mergeable=`.mergeable`,
+> draft=`.draft`); CI = `last-stack-forge-api repos/EdgeVector/<repo>/commits/<head-sha>/status`; update a BEHIND
+> branch = `last-stack-forge-api --method POST repos/EdgeVector/<repo>/pulls/<n>/update`; comment =
+> `last-stack-forge-api --method POST --data @comment.json repos/EdgeVector/<repo>/issues/<n>/comments`; close = `last-stack-forge-api --method PATCH --data @close.json repos/EdgeVector/<repo>/pulls/<n>` with
+> `{"state":"closed"}`. No rerun-failed API — push an empty commit to re-trigger
+> a flaky run. The forge has no checks-watch equivalent of the GitHub CLI: hold
+> your turn by polling the head-commit status between forward actions instead.
+> All PUBLIC repos (brain, kanban, schema-infra, last-stack, websites, …) keep
+> the normal GitHub `gh` flow unless `last-stack-pr-venue` says `lastgit`;
+> Keepside_Desktop is GitHub-primary and hands-off.
+
+> **Drive to merge, but never idle-park or sleep-loop.** The rule that prevents
+> wedged/runaway agents is **no `sleep`-to-wait, ever**: you wait for CI/the
+> merge process only with a *sleepless* foreground watcher (the `/wait-merge`
+> skill, or `gh -R <repo> pr checks <n> --watch`), which returns when state actually
+> changes and is bounded by GitHub's check timeout. While waiting you take
+> *action* on state changes (re-arm dropped auto-merge, update-branch a BEHIND
+> PR, rebase a DIRTY one) rather than spinning. You exit when the PR is **MERGED**
+> (move card → `done`) or when you hit a **genuine human-only blocker** (move
+> card → `review` with a `BLOCKED:`/`STALLED:` note). You do NOT exit just
+> because the PR is open and queued — that fire-and-forget hand-off is exactly
+> what lets PRs pile up stranded.
+>
+> **"Spawn a watcher and come to rest" is NOT "drive to merge."** Do not start a
+> background CI-watcher process and then end your turn expecting to be re-woken
+> when it finishes — that re-wake is not reliable, and it leaves the PR with
+> nobody driving it (it strands exactly as before, one step later). Hold THIS
+> turn open with a *foreground* sleepless `--watch` until the PR reaches a
+> terminal state. Holding one turn on a foreground watcher is the allowed,
+> bounded thing; resting while a detached watcher runs is not.
+
+## Columns
+
+`backlog → todo → doing → review → done`
+
+| Column | Meaning |
+|---|---|
+| `backlog` / `todo` | not yet picked up |
+| `doing` | an agent is implementing, OR is driving its open PR to merge |
+| `review` | parked for a human, or visibly awaiting/failing post-merge validation (`BLOCKED:`/`STALLED:`/`PROOF:` note explains why) |
+| `done` | PR is **merged** AND the card's outcome was validated, or a non-PR card's `DONE-WHEN` predicate is satisfied |
+
+### Outcome validation — at the CARD level, not in PR bodies
+
+**PR-body `## Proof` blocks are NOT required** (Tom removed the requirement and
+its `proof-block` CI gate 2026-07-03 — the check failed on ~30% of fleet PRs and
+silently stalled auto-merge into rerun churn). Do not write them, and never treat
+a missing one as a blocker.
+
+Validation lives on the **card** instead: run the card's `VERIFY:` line before
+closing, and honor its `## END STATE`. For user-visible/stateful cards (auth,
+passwords, settings, data writes, sync, UI), that still means a real-app
+acceptance check: run the real binary/node on a **throwaway** data dir
+(`mktemp -d`, `FOLDDB_DISABLE_KEYCHAIN=1`) — NEVER `~/.folddb` or the primary
+brain/keyring; **cross a process boundary** (restart / re-open) between the write
+and the read; include a **negative case**. Anchor it to the user story, not the
+diff ("a user can set a password and later unlock with it") — see the SOP
+`sop-autonomous-acceptance-gate` (brain). A card whose merged PR fails its
+VERIFY/END STATE goes to `review` with a `PROOF:` note — not `done`. This is what
+stops "password sets but the app won't unlock with it" (incident 2026-06-30) from
+reaching a user.
+
+### DONE-WHEN predicates for non-PR cards
+
+`Kind: pr` cards never auto-close from `DONE-WHEN`; they still require a
+verified merged PR. Non-PR cards must carry `Kind: tracker|validation|meta` and
+one explicit read-only predicate:
+
+```
+DONE-WHEN: brain <slug> exists
+DONE-WHEN: brain <slug> updated-after <YYYY-MM-DD>
+DONE-WHEN: routine <name> heartbeat matches /<regex>/ after <YYYY-MM-DD>
+DONE-WHEN: date >= <YYYY-MM-DD>
+DONE-WHEN: file <path> matches /<regex>/
+```
+
+The reconciler and groomer evaluate predicates with
+`bin/last-stack-kanban-done-when-eval` when Last Stack is installed. Satisfied
+predicates move the non-PR card to `done` with evidence; false or pending
+predicates stay quiet; malformed predicates become a visible card-authoring
+issue. Predicate evaluation is read-only and fail-closed.
+
+Note: `review` is an **exception** state, not the normal post-PR resting place.
+The happy path is `doing` → (drive PR to merge) → `done`. A card lands in
+`review` when an agent genuinely cannot get the PR merged without a human
+(ambiguous spec, product-judgment conflict, a human-only required gate), or when
+the PR is merged but the card's END STATE is async and still needs a later
+dev-only validation run. In that async case, WORK mode must leave a clear
+`BLOCKED: awaiting <validation>` marker so `kanban-validate` can pick it up
+instead of silently stranding the card in `doing`.
+
+Use the CLI for all board writes. With the global shim on PATH these run from
+anywhere:
+
+```bash
+kanban show <slug> --json        # read a card
+kanban move <slug> doing         # column transition
+kanban list --json               # whole board
+```
+
+`show` and `move` do not take a per-command board flag. If you need the default
+board, use the forms above; only add a board flag to commands whose help lists
+one.
+
+(No shim on PATH — `command not found: kanban`? Fall back to
+`bun run src/cli.ts <cmd>` from the kanban repo directory; equivalent.)
+
+Codex CLI diagnostics sometimes emit
+`WARNING: proceeding, even though we could not update PATH: Operation not permitted (os error 1)`
+from sandboxed shells, including `codex app-server --help` and
+`codex debug --help`. Treat that warning as benign when the command exits 0 and
+prints the requested help/output. Treat a nonzero exit, missing expected output,
+or an unrelated error as actionable; do not spend time debugging the PATH warning
+alone.
+
+## The card brief (read it as your spec)
+
+The card body is the specification. By convention it carries a header that
+tells you **where** to work (there is no `repo` field on the schema):
+
+```
+Repo: owner/name               # owner/name, or an absolute local path
+Base: main                     # base branch to target
+Branch: kanban/<slug>         # optional; defaults to kanban/<slug>
+Kind: pr                       # pr | tracker | validation | meta
+PR: <url>                      # written by WORK mode once the PR is open
+
+GOAL: ...
+CONTEXT: ...
+STEPS: ...
+VERIFY: <exact commands that must pass>
+DONE WHEN: PR merged into <base>
+OUT OF SCOPE: ...
+```
+
+For non-PR cards, use `Kind: tracker|validation|meta` and a single-line
+`DONE-WHEN:` predicate from the supported forms above instead of `DONE WHEN: PR
+merged ...`. The predicate is the card's machine-checkable terminal condition.
+
+If `Repo:`/`Base:` are missing or ambiguous, **do not guess** — move the card
+to `review`, append a one-line note explaining what's missing, and exit.
+
+---
+
+## Which mode am I in?
+
+- You were given (or your cwd implies) **one specific card** → **WORK MODE**.
+- You were woken to "reconcile" / sweep the board → **RECONCILE MODE**.
+- You were woken to "validate" / "post-merge validation" → **VALIDATE MODE**.
+
+---
+
+## WORK MODE — implement one card, open the PR, drive it to merged
+
+1. **Claim it.** `bun run src/cli.ts show <slug> --json`. If it's already in
+   `review`/`done`, stop — someone landed it. Otherwise move it to `doing`.
+   If the installed Last Stack checkout is available, normalize scheduled-shell
+   PATH before running CLI-heavy snippets:
+   ```bash
+   last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+   . "$last_stack/bin/last-stack-shell-prelude"
+   "$last_stack/bin/last-stack-cli-preflight" git gh curl jq kanban brain
+   last_stack_require_tools git gh curl jq kanban brain
+   ```
+2. **Resolve the target repo, then set up an isolated worktree** (never edit a
+   shared checkout in place, and never `stash`/`reset` — sibling agents may
+   share these repos). The `Repo:` header must resolve to an explicit local Git
+   checkout path before any `git` or `gh` command runs. If it is missing,
+   ambiguous, points at the aggregate workspace (for example
+   `/Users/tomtang/code/edgevector`), or cannot be resolved to a checkout, move
+   the card to `review` with a one-line `BLOCKED:` note instead of probing the
+   current directory or workspace root. Treat checkout resolution as a hard
+   preflight gate and run Git from the resolved checkout, not from the workspace
+   container:
+   ```bash
+   target_repo="<resolved-target-repo-root>"
+   case "$target_repo" in ""|/Users/tomtang/code/edgevector) exit 2 ;; esac
+   target_repo="$("$last_stack/bin/last-stack-repo-op-guard" "$target_repo" "/Users/tomtang/code/edgevector")"
+   "$LAST_STACK_TOOL_GIT" -C "$target_repo" rev-parse --show-toplevel
+   cd "$target_repo"
+   "$LAST_STACK_TOOL_GIT" fetch origin <base>
+   "$LAST_STACK_TOOL_GIT" worktree add ~/.kanban/worktrees/<slug> -b kanban/<slug> origin/<base>
+   cd ~/.kanban/worktrees/<slug>
+   ```
+3. **Do the work** described in the brief. Match the repo's contributor docs and
+   existing style. Honor OUT OF SCOPE — keep the PR atomic.
+4. **Verify locally** — run the brief's exact VERIFY commands. Green tests are
+   not sufficient if the brief says to run the app — do that too.
+5. **Open the PR/CR + arm auto-merge**. First route the repo:
+   ```bash
+   route_json="$("$last_stack/bin/last-stack-pr-venue" --json "<repo>" "$target_repo")"
+   venue="$(printf '%s\n' "$route_json" | jq -r .venue)"
+   lastgit_slug="$(printf '%s\n' "$route_json" | jq -r .lastgit_slug)"
+   ci_context="$(printf '%s\n' "$route_json" | jq -r .ci_context)"
+   ```
+   For GitHub (adjust merge command to your repo — see "Merge strategy"):
+   ```bash
+   git commit -am "<msg>"
+   git push -u origin HEAD
+   pr_url="$(gh -R <repo> pr create --fill --base <base>)"
+   branch="$(git branch --show-current)"
+   kanban add <slug> --pr-url "$pr_url" --branch "$branch"
+   gh -R <repo> pr merge <n> --auto            # if the repo allows auto-merge
+   ```
+   For Forgejo, use the local-forge API path from `sop-forge-pr-workflow`
+   (or the workspace AGENTS.md helper map) and keep using Forgejo's
+   `merge_when_checks_succeed` request for repos that have not opted into
+   LastGit. Immediately after the Forgejo create call returns, record the
+   returned PR URL and current branch on the card:
+   `kanban add <slug> --pr-url "$pr_url" --branch "$branch"`.
+
+   For LastGit-native repos, use the CR path from
+   `sop-lastgit-native-forge-workflow` instead of Forgejo/GitHub:
+   ```bash
+   "$last_stack/bin/last-stack-cli-preflight" git curl jq lastgit kanban brain
+   git remote get-url lastgit >/dev/null || git remote add lastgit "lastdb:///$lastgit_slug"
+   git push lastgit HEAD:<branch>
+   cr_json="$(lastgit cr create "$lastgit_slug" --head <branch> --base <base> \
+     --title "<title>" --body "<body-file-or-safe-string>" \
+     --auto-merge --require-status "$ci_context" --json)"
+   cr_id="$(printf '%s\n' "$cr_json" | jq -r .cr_id)"
+   ```
+   Immediately record the CR locator and branch on the card:
+   `kanban add <slug> --pr-url "lastgit://$lastgit_slug/cr/$cr_id" --branch <branch>`.
+   Later reconcile/validate passes must be able to find it without guessing.
+   LastGit's `--auto-merge --require-status` is the arm step; do not call
+   Forgejo for a LastGit-native repo.
+6. **Drive it to MERGED — do not hand off a green-but-unmerged PR.** Arming
+   auto-merge is necessary but not always sufficient: a PR/CR can fall out of
+   mergeable state (go BEHIND, go DIRTY, or have its auto-merge dropped) and then
+   sit forever. **Opening a PR/CR is not a handoff point: there is no background
+   driver, watcher, or later task that automatically owns the review artifact
+   you just opened.** You own getting it the rest of the way. The robust mechanism is
+   the **`/wait-merge` skill** — invoke it on your PR number; it interprets PR
+   *state* (not a watcher's exit code), tolerates merge churn, re-asserts
+   auto-merge when a clean PR stalls, and only declares failure on a genuinely
+   terminal state. If you drive by hand instead, loop with a **sleepless** watcher
+   (`gh -R <repo> pr checks <n> --watch`, NEVER `sleep`) and on each state change act:
+   - **MERGED** (`state=MERGED`) → re-read the card. If the card's `## END STATE`
+     / `VERIFY` is already proven by local checks, move it to `done`. If it
+     explicitly requires async post-merge validation that cannot finish inside
+     this WORK turn (for example a dev deploy, release run, clean-machine
+     install, or dogfood check), append a one-line
+     `BLOCKED: awaiting <specific validation>` note and move it to `review`.
+     That is the handoff contract for `kanban-validate`; do not leave it in
+     `doing`, and do not pretend the END STATE is done. Prod cutovers and public
+     irreversible actions are always human-gated.
+   - **auto-merge dropped** (`autoMergeRequest` null) while CLEAN/mergeable →
+     re-arm: `gh -R <repo> pr merge <n> --auto`. (A merge queue can silently drop it; this
+     is a common strand — re-arm and keep watching.)
+   - **BEHIND** (and otherwise clean/green) → `gh -R <repo> pr update-branch <n>`
+     (lightweight, no worktree). Don't assume the queue self-updates a BEHIND
+     branch. Then keep watching; auto-merge fires once it re-greens.
+   - **DIRTY / CONFLICTING** → rebase in your worktree (`git fetch origin
+     <base>` → rebase onto `origin/<base>` → resolve → re-run VERIFY →
+     force-push with lease). If the conflict needs product judgment you can't
+     make, stop and treat it as a blocker (below).
+   - **Forge `mergeable:false` with green required checks** → do a local
+     test-merge before treating it as a stuck forge status: in the worktree,
+     `git fetch origin <base>` then `git merge --no-commit --no-ff origin/<base>`;
+     if it conflicts, `git merge --abort`, resolve by rebasing/merging locally,
+     re-run VERIFY, and push. Only use the empty-commit/stuck-status heal after
+     a local test-merge proves there is no real conflict; otherwise it just burns
+     another CI cycle without changing mergeability.
+   - **CI red** (a real failing required check) → read `gh run view
+     --log-failed`, fix in the worktree, re-run VERIFY, push. Keep watching.
+   - **BLOCKED / AWAITING_CHECKS** while in a merge queue → this is the *normal*
+     in-queue resting state, not a strand. Keep watching; don't thrash.
+   Keep going until MERGED or a genuine blocker. A merge queue can take a while
+   (CI + a min-wait window); a single bounded `--watch` that returns on merge is
+   fine — that is doing work, not idling. **Do NOT** push your fix, spawn a
+   detached watcher, and end the turn "to be re-woken" — that re-wake isn't
+   reliable and the PR strands. Stay on the foreground watcher in THIS turn
+   through to the terminal state.
+
+   For LastGit-native CRs, drive with LastGit state instead of `gh`/Forgejo:
+   - `lastgit cr view "$lastgit_slug" "$cr_id" --json` is the source of truth
+     (`state=open|merged|closed`, `head_oid`, `auto_merge`, `require_status`,
+     `merge_oid`).
+   - `lastgit ci status <head-oid> --repo "$lastgit_slug" --json` reads the
+     required context. A missing/pending/failure status blocks merge; do not
+     bypass it.
+   - `lastgit cr complete "$lastgit_slug" --once --json` is the cheap
+     auto-merge completer pass. If the CR is green and still open, run it and
+     re-read the CR. If the CR was created without `auto_merge`, use
+     `lastgit cr merge "$lastgit_slug" "$cr_id" --require-status "$ci_context"`
+     only after the current head is green.
+   - If LastGit merge reports a conflict or rejected CAS push, fetch/rebase the
+     branch in the worktree, re-run VERIFY, push `HEAD:<branch>` to the `lastgit`
+     remote, and re-read the CR/current head. If the conflict requires product
+     judgment, block the card in `review`.
+   - Use the dedicated LastGit watcher/completer daemons from the SOP only on a
+     non-primary dev/code node. Never start LastGit CI against the primary brain
+     socket, and never smuggle raw CI secrets into logs or records.
+
+If you hit a **genuine human-only blocker** (ambiguous spec, a conflict needing
+product judgment, a required gate only a human can clear, or a dependency on
+unmerged work): leave the branch clean, move the card to `review`, append a
+short `BLOCKED: <why>` note to the body, and exit. Don't spin, and don't
+force-merge around a failing required gate.
+
+---
+
+## RECONCILE MODE — sweep in-flight cards, advance or fix, then exit
+
+Run once per wake, then exit. Sweep **every card not already in `done`** — not
+just `doing`/`review`. (A card can be merged while still sitting in `todo` if a
+human or another flow did the work — a merged PR whose card never advanced.)
+**But widening the sweep is ONLY to catch cards whose PR already merged, or
+non-PR cards whose `DONE-WHEN` predicate is already satisfied. It is NOT a
+licence to resolve un-started PR cards. The DEFAULT action for any swept card is
+to LEAVE IT ALONE; you only act when there is concrete PR/branch evidence or a
+satisfied non-PR predicate. When in doubt, do nothing.** Skip a card only if it
+has no `Repo:` header (it isn't meant for this flow). For each candidate:
+
+1. **Classify the card.** Parse `Kind:` and any single-line `DONE-WHEN:`
+   predicate. Treat missing `Kind:` as `pr` only for legacy PR-shaped cards.
+   For `Kind: tracker|validation|meta`, evaluate `DONE-WHEN` before PR lookup:
+   - satisfied → `move <slug> done` and cite the evaluator output.
+   - false or pending → leave it quietly where it is; do not stamp
+     `NEEDS-HUMAN`.
+   - missing or malformed → surface the card-authoring issue
+     (`NEEDS-HUMAN: non-PR card missing/malformed DONE-WHEN`).
+   For `Kind: pr`, ignore `DONE-WHEN` for closure and continue below.
+2. **Find its PR/CR.** Route the repo with `last-stack-pr-venue` before lookup.
+   Prefer an explicit `PR:` line / PR URL / `lastgit://<slug>/cr/<id>` in the
+   body — work landed outside WORK mode won't use the `kanban/<slug>` branch
+   convention. Fall back to the head-branch lookup only when no explicit review
+   artifact is present.
+
+   For GitHub:
+   ```bash
+   # explicit URL in body:
+   gh -R <repo> pr view <n> --json number,state,mergedAt,mergeStateStatus,reviewDecision,statusCheckRollup
+   # else by convention branch:
+   gh -R <repo> pr list --head kanban/<slug> --state all \
+     --json number,state,mergedAt,mergeStateStatus,reviewDecision,statusCheckRollup
+   ```
+   Do not request `isInMergeQueue` through `gh pr view/list --json`; use
+   `$last_stack/bin/last-stack-gh-pr-queue-state <owner>/<repo> <n>` when Last
+   Stack is installed, or use `gh api graphql` with explicit owner/name
+   variables. Do not use `gh -R <repo> api graphql`.
+   Do not request invented "latest" fields such as `isLatest` through `gh run
+   view`, `gh run list`, or `gh -R <repo> pr checks --json`; use fields
+   advertised by the installed CLI
+   (`databaseId,status,conclusion,createdAt,...` for runs; `name,state,bucket`
+   for PR checks) and select the newest relevant item explicitly, or query the
+   Actions API.
+
+   For Forgejo, use the local-forge API equivalents from `sop-forge-pr-workflow`.
+   For LastGit, read `lastgit://<slug>/cr/<id>` with
+   `lastgit cr view <slug> <id> --json`, or list open/merged/closed CRs with
+   `lastgit cr list <slug> --json` and match `.head_branch == "kanban/<slug>"`
+   (or the card branch) when no explicit `PR:` line exists.
+3. **Decide from PR state:**
+   - **Merged** (`state=MERGED` / `mergedAt` set for GitHub/Forgejo, or
+     `state=="merged"` with non-empty `merge_oid` for LastGit) → `move <slug>
+     done`. Done. A `Kind: pr` card reaches `done` ONLY this way — a verified
+     merged PR/CR. If you cannot point at a merged review artifact for the PR
+     card, it does **not** go to
+     `done`, no matter how the card reads.
+   - **No PR/CR found AND no `kanban/<slug>` branch with commits** → depends on
+     column:
+     - `todo` / `backlog`: **un-started**. LEAVE IT EXACTLY WHERE IT IS — never
+       to `done`. Reconcile does not start or retire fresh cards.
+     - `doing`: **zombie claim**. After a **90-minute** `updated_at` grace, and
+       only if no live worktree worker is present (no dirty tree / no process on
+       `~/.fkanban/worktrees/<slug>` or `~/.kanban/worktrees/<slug>`),
+       **`move <slug> todo`** so pickup can reclaim it. CHEAP, uncapped. Never
+       move these to `done`.
+     - `review`: leave alone (human/BLOCKED owns it).
+   - **No PR/CR found** but a `kanban/<slug>` branch with commits exists and the
+     card is in `doing` → a worker opened a branch but didn't finish landing
+     (or died mid-work). Finish WORK MODE step 5 for it. Don't thrash.
+   - **CI red** (a real failing required check in `statusCheckRollup`, not just
+     BEHIND) → enter the worktree, read the failing job logs
+     (`gh run view --log-failed`), fix, re-run VERIFY, push. HEAVY (see budget).
+   - **Auto-merge dropped** (`autoMergeRequest` is null) while the PR is CLEAN /
+     mergeable and not merged → **re-arm it: `gh -R <repo> pr merge <n> --auto`.** A merge
+     queue can silently drop the auto-merge request when it ejects a PR; once
+     dropped nothing re-fires it, so a green-and-ready PR sits forever. Do NOT
+     require auto-merge to be ON to consider a PR stuck — a CLEAN PR with
+     auto-merge OFF is itself a strand. CHEAP advance (uncapped).
+   - **Behind base, otherwise clean + green** (`mergeStateStatus` = BEHIND, NOT
+     DIRTY, no red required check) → **`gh -R <repo> pr update-branch <n>`** (lightweight,
+     NO worktree/force-push). Don't assume a merge queue self-updates a BEHIND
+     branch. Guard: if a `~/.kanban/worktrees/<slug>` exists, only
+     update-branch when it is clean AND fully pushed
+     (`git -C <wt> status --porcelain` empty AND
+     `git -C <wt> rev-list --count origin/<branch>..HEAD` == 0); if it has
+     uncommitted/unpushed work a sibling is mid-edit — SKIP. **Serialization:**
+     because one merge re-BEHINDs the others, update-branch the OLDEST few
+     clean-green-BEHIND carded PRs each wake (not just one), and ensure each
+     still has auto-merge armed. They re-green and advance. CHEAP advance
+     (uncapped).
+   - **Conflicts / dirty** (`mergeStateStatus` = DIRTY/CONFLICTING) → enter the
+     worktree, `git fetch origin <base>`, rebase onto `origin/<base>`, resolve,
+     re-verify, force-push with lease. HEAVY. If the conflict needs product
+     judgment, don't guess — `gh -R <repo> pr comment` flagging it and leave it.
+   - **Changes requested** (`reviewDecision=CHANGES_REQUESTED`) → read the
+     review comments, address them, push, reply briefly.
+   - **Clean + approved but not merging** → re-assert auto-merge
+     (`gh -R <repo> pr merge <n> --auto`); if a required check is stuck, surface it, don't
+     force-merge.
+   - **LastGit open CR** → read the current head status with
+     `lastgit ci status <head-oid> --repo <slug> --json`. If green and
+     `auto_merge=="true"`, run `lastgit cr complete <slug> --once --json` and
+     re-read. If green and `auto_merge!="true"`, run
+     `lastgit cr merge <slug> <cr-id> --require-status <context>`. If red,
+     inspect the status/log excerpt and do one heavy worktree fix if budget
+     allows. If pending/missing, leave it. If conflict/CAS rejected, rebase and
+     push the branch to the `lastgit` remote, then re-verify.
+   - **Pending** (CI running, awaiting human review) → leave it; it'll be
+     re-checked next wake.
+4. **Give-up guard:** if a card has been in `review` with no forward progress
+   for a long time (several days of wakes, or a hard human-only blocker), append
+   `STALLED: <why>` to the body and leave it in `review` for a human — never
+   silently loop forever and never auto-merge around a failing gate.
+
+**Action budget per wake (cheap vs heavy).** Don't throttle the cheap advances —
+that's what lets a burst of BEHIND PRs rot. Each wake:
+- Do EVERY CHEAP advance (uncapped): move every merged card to `done`; re-arm
+  auto-merge on every clean-but-unarmed/stuck PR (including ones whose auto-merge
+  was *dropped*); `gh -R <repo> pr update-branch` the oldest few clean-green-BEHIND carded
+  PRs (not just one).
+- Do at most ONE HEAVY unit: a worktree CI-fix OR a conflict rebase. Pick the
+  highest-value one, then exit.
+
+Heavy fixes happen inside `~/.kanban/worktrees/<slug>` on branch
+`kanban/<slug>` — reuse the existing worktree if present; create it (WORK MODE
+step 2) if not. A `gh -R <repo> pr update-branch` needs NO worktree at all.
+
+---
+
+## VALIDATE MODE — run one post-merge END STATE validation, then close or surface it
+
+Run once per wake, then exit. This mode is the missing owner between "PR merged"
+and "the card's END STATE is actually true" for checks that can only happen
+after merge: dev deploys, release runs, clean-machine installs, real-machine
+dogfood, or other autonomous dev/staging validations. It does **not** author
+feature code and does **not** run prod cutovers or outward/irreversible actions.
+
+1. **Scan for candidates.** Read the board and consider cards in:
+   - `doing` whose PR is merged but whose `## END STATE` / `VERIFY` names a
+     runnable post-merge check that is not yet proven.
+   - `review` cards with a `BLOCKED: awaiting <validation>` marker after merge.
+   Use the same `Repo:` / `Base:` / `PR:` parsing and forge-vs-GitHub venue rules
+   as RECONCILE mode. If there is no concrete merged PR or commit evidence,
+   leave the card alone; VALIDATE does not start or rescue implementation work.
+   Pick the highest-priority runnable candidate. One validation per wake.
+2. **Run the validation on a dev/staging/throwaway surface only.** Follow the
+   card's `VERIFY` and `## END STATE` literally when they are autonomous and
+   bounded. Examples: query a dev deploy health check, trigger and watch a
+   release verification workflow, run a clean-machine install against a temporary
+   environment, or execute a dogfood script against an isolated data dir. If the
+   check would spend real production money, cut over prod, mutate public data, or
+   require a human credential/device decision, do not run it; append a
+   `BLOCKED: <human gate>` note and leave the card in `review`.
+3. **Pass closes the card.** If the END STATE now holds, append a short `PROOF:`
+   line naming the command or external run that proved it, then move the card to
+   `done`. A merged card with an unmet post-merge END STATE is not done until
+   this proof exists.
+4. **Fail becomes visible work.** If validation ran and failed, append a
+   `PROOF: failed <check> — <concise observed failure>` note, file one
+   pickup-ready fix card with a `Repo:`/`Base:`/`Branch:` header, the
+   kanban-agent trigger header, a narrow GOAL/STEPS/VERIFY brief, and a
+   dependency or cross-reference to the failed card when useful. Move the
+   validated card to `review`. Do not silently leave it in `doing`.
+5. **Unrelated blockers do not thrash.** If validation cannot run because a
+   named upstream blocker is already known (for example a runner-saturation or
+   dev-401 card), append or refresh `BLOCKED: awaiting <blocker-slug> for
+   <validation>`, leave the card in `review`, and exit. Do not create duplicate
+   fix cards for the same upstream blocker.
+6. **Heartbeat.** When run from the scheduled `kanban-validate` routine, append
+   one `routine-heartbeats` line summarizing `ok`, `noop`, or `error` and the
+   card/result. Use the Last Stack heartbeat helper instead of open-coding a
+   typed Brain read/write.
+
+VALIDATE mode is intentionally bounded. It should make one stranded merged card
+terminal (`done`) or loud (`review` + proof/fix/blocker) per wake, then stop.
+
+---
+
+## Merge strategy (per repo)
+
+Repositories differ in how they merge. Match your repo's policy:
+
+- **Plain auto-merge:** `gh -R <repo> pr merge <n> --auto --squash` (or `--merge` /
+  `--rebase` to match the repo's preferred method).
+- **Merge-queue repos:** enable auto-merge with bare **`gh -R <repo> pr merge <n>
+  --auto`** — do **not** pass a strategy flag, because the queue's ruleset sets
+  the method (passing `--squash` errors `The merge strategy for main is set by
+  the merge queue`). A `BLOCKED`/`AWAITING_CHECKS` state is the normal in-queue
+  resting state, not a dropped auto-merge.
+- **Auto-merge disabled:** some repos disallow `--auto` entirely (it errors
+  "Auto merge is not allowed"). There, the flow is: push →
+  `gh -R <repo> pr create` → `gh -R <repo> pr checks <n> --watch` (block
+  sleeplessly until CI is green) → `gh -R <repo> pr merge <n> --squash` to land
+  it manually.
+- **LastGit-native:** only when `last-stack-pr-venue` returns `lastgit`.
+  Push the branch to the `lastgit` remote, open `lastgit cr create ... --auto-merge
+  --require-status <context>`, drive with `lastgit cr complete --once` /
+  `lastgit cr view`, and never call Forgejo/GitHub for that card.
+
+Check the repo's contributor docs (`CONTRIBUTING.md` / `AGENTS.md` /
+`CLAUDE.md`) for which applies.
+
+## Guardrails
+
+- **Dev, not prod.** If the work touches a prod-facing surface or the design is
+  still in flight, do it on a dev/staging surface and leave the prod cutover for
+  a human.
+- **Never kill a LastDB node you didn't start**; don't `clean`/`reset`/`stash` a
+  shared repo — use `git worktree add`.
+- **Never probe the workspace root as a repo.** A container such as
+  `/Users/tomtang/code/edgevector` may only hold child repos. Resolve the card's
+  `Repo:` header to a concrete checkout, `cd` there (or use `git -C "$repo"`),
+  and use `gh -R <owner>/<repo>` before all Git/GitHub operations. If the repo
+  path is not explicit and resolvable, block the card in `review`.
+- **Avoid zsh's read-only `status` parameter.** Shell snippets and one-liners
+  may run under `zsh`; use names like `git_status`, `repo_status`, or `st` for
+  temporary command output instead of assigning or declaring `status`.
+- **Avoid zsh/macOS-only shell traps.** Do not use Bash-only `mapfile` /
+  `readarray` in snippets that may run under `zsh` or macOS Bash 3.2; use
+  portable `while IFS= read -r ...` loops or Python for list processing. For
+  Markdown/Brain/kanban/PR bodies, always use a body file with a
+  single-quoted heredoc delimiter such as `<<'EOF'` (or stdin), never an
+  unquoted heredoc or shell-expanded string.
+- **Never execute pasted Markdown/card/Brain text.** Shell tool calls are for
+  intentional commands only. If a block contains headings (`##`), bullets,
+  blockquotes, card headers (`Repo:` / `GOAL:` / `VERIFY:`), `[[...]]`, or prose
+  like `:9001`, it is data, not a script. Put that text in a body file with a
+  single-quoted heredoc and pass it via stdin; do not paste it into `zsh`,
+  `eval` it, or "clean it up" by running the whole block as shell.
+- **Never chain `sleep` to wait — but DO drive your PR to merge.** **WORK mode**
+  owns its PR to merge and waits with a *sleepless* foreground watcher
+  (`/wait-merge`, or `gh -R <repo> pr checks <n> --watch`, or `gh run watch <run-id>`) that
+  returns on real state change — acting on each change (re-arm/update-branch/
+  rebase) until MERGED or a genuine blocker. **RECONCILE mode** does one sweep
+  of unit-work and exits; the next wake re-checks. What is forbidden in BOTH is
+  `sleep N && <poll>` — a blocked sleep can cancel queued sibling tool calls. A
+  sleepless `--watch` that blocks one turn until merge is fine and is the
+  intended mechanism; an idle `sleep`-loop or a turn parked doing nothing is the
+  wedge to avoid.
+- Keep PRs atomic; honor OUT OF SCOPE; don't spawn sibling agents — if work
+  splits, describe the split and let a human add cards.
+
+## The watcher that re-enters this skill
+
+The reconcile pass is meant to be driven by a **scheduled routine** that simply
+runs RECONCILE MODE and exits on each fire — inline worktree → fix → push →
+exit, NO spawned agents. A cadence of every 10–20 min is plenty (CI + human
+review move on that scale). The post-merge validator is a separate scheduled
+routine that runs VALIDATE MODE on a slower cadence offset from reconcile, so
+heavy deploy/release/dogfood checks have an owner without being folded into the
+PR reconciler.

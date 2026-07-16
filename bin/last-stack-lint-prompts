@@ -1,0 +1,787 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+
+if [ "$#" -eq 0 ]; then
+  set -- "$ROOT"
+fi
+
+fail=0
+
+default_pr_json_fields="additions assignees author autoMergeRequest baseRefName baseRefOid body changedFiles closed closedAt closingIssuesReferences comments commits createdAt deletions files fullDatabaseId headRefName headRefOid headRepository headRepositoryOwner id isCrossRepository isDraft labels latestReviews maintainerCanModify mergeCommit mergeStateStatus mergeable mergedAt mergedBy milestone number potentialMergeCommit projectCards projectItems reactionGroups reviewDecision reviewRequests reviews state statusCheckRollup title updatedAt url"
+default_release_json_fields="apiUrl assets author body createdAt databaseId id isDraft isImmutable isPrerelease name publishedAt tagName tarballUrl targetCommitish uploadUrl url zipballUrl"
+default_run_view_json_fields="attempt conclusion createdAt databaseId displayTitle event headBranch headSha jobs name number startedAt status updatedAt url workflowDatabaseId workflowName"
+default_run_list_json_fields="attempt conclusion createdAt databaseId displayTitle event headBranch headSha name number startedAt status updatedAt url workflowDatabaseId workflowName"
+default_pr_checks_json_fields="bucket completedAt description event link name startedAt state workflow"
+
+gh_json_fields() {
+  local fallback="$1"
+  local fields
+  shift
+
+  if command -v gh >/dev/null 2>&1; then
+    fields="$("$@" --json 2>&1 | awk '
+      /^[[:space:]]+[A-Za-z][A-Za-z0-9_]*[[:space:]]*$/ {
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", $0)
+        print
+      }
+    ' | tr '\n' ' ')"
+    if [ -n "$fields" ]; then
+      printf '%s\n' "$fields"
+      return
+    fi
+  fi
+
+  printf '%s\n' "$fallback"
+}
+
+pr_json_fields="${LASTSTACK_GH_PR_JSON_FIELDS:-$(gh_json_fields "$default_pr_json_fields" gh pr view)}"
+release_json_fields="${LASTSTACK_GH_RELEASE_JSON_FIELDS:-$(gh_json_fields "$default_release_json_fields" gh release view)}"
+run_view_json_fields="${LASTSTACK_GH_RUN_VIEW_JSON_FIELDS:-$(gh_json_fields "$default_run_view_json_fields" gh run view)}"
+run_list_json_fields="${LASTSTACK_GH_RUN_LIST_JSON_FIELDS:-$(gh_json_fields "$default_run_list_json_fields" gh run list)}"
+pr_checks_json_fields="${LASTSTACK_GH_PR_CHECKS_JSON_FIELDS:-$(gh_json_fields "$default_pr_checks_json_fields" gh pr checks)}"
+
+check_path_exists() {
+  local path="$1"
+  if [ ! -e "$path" ]; then
+    echo "missing path: $path" >&2
+    fail=1
+    return 1
+  fi
+}
+
+search_prompt_pattern() {
+  local pattern="$1"
+  local path="$2"
+
+  if command -v rg >/dev/null 2>&1; then
+    rg -n "$pattern" "$path" \
+      -g '!**/.git/**' -g '!**/logs/**' -g '!**/run/**' -g '!**/memory.md' \
+      -g '!bin/last-stack-lint-prompts' -g '!**/bin/last-stack-lint-prompts' || true
+    return
+  fi
+
+  if [ -d "$path" ]; then
+    grep -RInE \
+      --exclude-dir=.git --exclude-dir=logs --exclude-dir=run \
+      --exclude=memory.md --exclude=last-stack-lint-prompts \
+      "$pattern" "$path" || true
+    return
+  fi
+
+  if [ "$(basename "$path")" = "last-stack-lint-prompts" ]; then
+    return
+  fi
+
+  grep -nE "$pattern" "$path" || true
+}
+
+check_default_board_scope() {
+  # A prompt/skeleton that advertises a "default board <name>" value must also
+  # carry the scope note that only `list`/`add` take a `--board` argument, so
+  # routine agents don't apply `--board` to `show`/`move` (which reject it).
+  local root="$1"
+  local files=()
+  local file
+
+  if [ -d "$root" ]; then
+    while IFS= read -r -d '' file; do
+      files+=("$file")
+    done < <(
+      find "$root" -type f \
+        ! -path '*/.git/*' \
+        ! -path '*/logs/*' \
+        ! -path '*/run/*' \
+        ! -path '*/tests/*' \
+        ! -name memory.md \
+        ! -name last-stack-lint-prompts \
+        -print0
+    )
+  else
+    [ "$(basename "$root")" = "last-stack-lint-prompts" ] && return 0
+    files=("$root")
+  fi
+
+  for file in "${files[@]}"; do
+    [ -f "$file" ] || continue
+    grep -Iq . "$file" || continue
+    # Only fire on the launcher-style advertisement of a board *value*
+    # ("default board `<board>`" / "default board: foo"), not prose that
+    # merely mentions board flags.
+    if grep -Eiq 'default board[[:space:]]*[`:]' "$file"; then
+      if ! grep -Eiq '(show|move).*(do not take|does not take|reject|not accept|no per-command board)|only.*(list|add).*(--board| board argument)|(--board| board argument).*only.*(list|add)' "$file"; then
+        printf '%s\n' "$file: advertises a default board value without scoping --board to list/add" >&2
+        fail=1
+      fi
+    fi
+  done
+}
+
+check_aline_search_guards() {
+  local root="$1"
+  local files=()
+  local file
+
+  if [ -d "$root" ]; then
+    while IFS= read -r -d '' file; do
+      files+=("$file")
+    done < <(
+      find "$root" -type f \
+        ! -path '*/.git/*' \
+        ! -path '*/logs/*' \
+        ! -path '*/run/*' \
+        ! -path '*/tests/*' \
+        ! -name memory.md \
+        ! -name last-stack-lint-prompts \
+        -print0
+    )
+  else
+    [ "$(basename "$root")" = "last-stack-lint-prompts" ] && return 0
+    files=("$root")
+  fi
+
+  for file in "${files[@]}"; do
+    [ -f "$file" ] || continue
+    grep -Iq . "$file" || continue
+    awk -v file="$file" '
+      {
+        lines[NR] = $0
+        if ($0 ~ /command[[:space:]]+-v[[:space:]]+aline/) {
+          guard[NR] = 1
+        }
+      }
+      END {
+        for (line = 1; line <= NR; line++) {
+          if (lines[line] !~ /aline[[:space:]]+search/) {
+            continue
+          }
+          guarded = 0
+          for (near = line - 8; near <= line + 2; near++) {
+            if (near > 0 && guard[near]) {
+              guarded = 1
+            }
+          }
+          if (!guarded) {
+            printf "%s:%d:%s\n", file, line, lines[line]
+            bad = 1
+          }
+        }
+        exit bad
+      }
+    ' "$file" || {
+      echo "unguarded aline search usage found under $root" >&2
+      fail=1
+    }
+  done
+}
+
+check_pipeline_health_lastgit_socket_inventory() {
+  local root="$1"
+  local file
+
+  if [ -d "$root" ]; then
+    file="$root/routines/pipeline-health.md"
+  else
+    file="$root"
+  fi
+
+  [ -f "$file" ] || return 0
+  [ "$(basename "$file")" = "pipeline-health.md" ] || return 0
+
+  if grep -Eiq 'LASTGIT_CODE_SOCKET|\.lastgit/code|code node|both forge nodes' "$file"; then
+    printf '%s\n' "$file: pipeline-health references retired LastGit code socket inventory" >&2
+    fail=1
+  fi
+}
+
+check_admin_ui_repo_targets() {
+  # Generated card bodies that mention hosted admin UI/consumer surfaces must
+  # target the repo that owns those surfaces. App-publisher work belongs in the
+  # app repo, but `web/admin`, `kanban-crypto`, `openDelivery`, and `/api/admin/*`
+  # work belongs in EdgeVector/exemem-infra or must be split into separate cards.
+  local root="$1"
+  local files=()
+  local file
+
+  if [ -d "$root" ]; then
+    while IFS= read -r -d '' file; do
+      files+=("$file")
+    done < <(
+      find "$root" -type f \
+        ! -path '*/.git/*' \
+        ! -path '*/logs/*' \
+        ! -path '*/run/*' \
+        ! -path '*/tests/*' \
+        ! -name memory.md \
+        ! -name last-stack-lint-prompts \
+        -print0
+    )
+  else
+    [ "$(basename "$root")" = "last-stack-lint-prompts" ] && return 0
+    files=("$root")
+  fi
+
+  for file in "${files[@]}"; do
+    [ -f "$file" ] || continue
+    grep -Iq . "$file" || continue
+    awk -v file="$file" '
+      function is_negative_guidance(line) {
+        return (line ~ /Do not|Never|do not|never|reject|must not|instead|split|route/)
+      }
+      function repo_from(line, repo) {
+        if (match(line, /^[[:space:]]*Repo:[[:space:]]*EdgeVector\/[A-Za-z0-9._-]+/)) {
+          repo = substr(line, RSTART, RLENGTH)
+          sub(/^[[:space:]]*Repo:[[:space:]]*/, "", repo)
+          return repo
+        }
+        return ""
+      }
+      function mentions_admin_ui(line) {
+        return (line ~ /(web\/admin|kanban-crypto|openDelivery|\/api\/admin\/|admin SPA|Admin SPA)/)
+      }
+      {
+        line = $0
+        if (is_negative_guidance(line)) {
+          next
+        }
+        repo = repo_from(line)
+        if (repo != "") {
+          active_repo = repo
+        }
+        if (active_repo != "" && active_repo != "EdgeVector/exemem-infra" && mentions_admin_ui(line)) {
+          printf "%s:%d:%s\n", file, NR, line
+          bad = 1
+        }
+      }
+      END {
+        exit bad
+      }
+    ' "$file" || {
+      echo "admin UI/consumer card targets a repo other than EdgeVector/exemem-infra; split app publisher work from hosted admin SPA work" >&2
+      fail=1
+    }
+  done
+}
+
+check_workspace_root_git_probes() {
+  # Block bare repo-scoped git probes (`git status`, `git branch`,
+  # `git ls-remote`, `git rev-parse`) run before a concrete checkout is
+  # resolved. The recurring `fatal: not a git repository` class comes from
+  # routine/worker preludes that run these from the aggregate workspace root
+  # (`/Users/tomtang/code/edgevector`) instead of `git -C <checkout>` after
+  # path resolution. A probe is allowed once the same file has established a
+  # checkout context earlier: a `git -C`, `worktree add`, `last-stack-repo-op-guard`
+  # call, or a `cd`/`pushd` into a non-workspace-root target.
+  local root="$1"
+  local files=()
+  local file
+
+  if [ -d "$root" ]; then
+    while IFS= read -r -d '' file; do
+      files+=("$file")
+    done < <(
+      find "$root" -type f \
+        ! -path '*/.git/*' \
+        ! -path '*/logs/*' \
+        ! -path '*/run/*' \
+        ! -name memory.md \
+        ! -name last-stack-lint-prompts \
+        -print0
+    )
+  else
+    [ "$(basename "$root")" = "last-stack-lint-prompts" ] && return 0
+    files=("$root")
+  fi
+
+  for file in "${files[@]}"; do
+    [ -f "$file" ] || continue
+    grep -Iq . "$file" || continue
+    awk -v file="$file" '
+      function is_workspace_target(t) {
+        gsub(/^["'\''`]+|["'\''`]+$/, "", t)
+        sub(/\/+$/, "", t)
+        if (t == "/Users/tomtang/code/edgevector") return 1
+        if (t == "<WORKSPACE>") return 1
+        if (t ~ /^\$\{?[Ww][Oo][Rr][Kk][Ss][Pp][Aa][Cc][Ee][A-Za-z0-9_]*\}?$/) return 1
+        return 0
+      }
+      function git_c_target(l,   t) {
+        if (match(l, /(^|[^[:alnum:]_-])git[[:space:]]+-C[[:space:]]+("[^"]+"|'\''[^'\'']+'\''|`[^`]+`|[^[:space:];&|)]+)/)) {
+          t = substr(l, RSTART, RLENGTH)
+          sub(/^.*git[[:space:]]+-C[[:space:]]+/, "", t)
+          return t
+        }
+        return ""
+      }
+      function git_c_command(l,   rest) {
+        rest = l
+        if (sub(/^.*(^|[^[:alnum:]_-])git[[:space:]]+-C[[:space:]]+("[^"]+"|'\''[^'\'']+'\''|`[^`]+`|[^[:space:];&|)]+)[[:space:]]+/, "", rest)) {
+          return rest
+        }
+        return ""
+      }
+      function line_establishes(l,   t) {
+        t = git_c_target(l)
+        if (t != "" && !is_workspace_target(t)) return 1
+        if (l ~ /worktree[[:space:]]+add/) return 1
+        if (l ~ /repo-op-guard/) return 1
+        if (match(l, /(^|[^[:alnum:]_-])(cd|pushd)[[:space:]]+[^[:space:];&|)]+/)) {
+          t = substr(l, RSTART, RLENGTH)
+          sub(/^.*(cd|pushd)[[:space:]]+/, "", t)
+          if (!is_workspace_target(t)) return 1
+        }
+        return 0
+      }
+      function is_negative_guidance(l) {
+        return (l ~ /Do not|Never|do not|never|avoid|unsupported|unsafe|instead of|must not|resolve.*checkout/)
+      }
+      function is_bare_probe(l) {
+        return (l ~ /(^|[`(;&|]|\$\()[[:space:]]*git[[:space:]]+(status|ls-remote|rev-parse|branch)([[:space:]]|$)/)
+      }
+      function is_workspace_git_c_probe(l,   t, cmd) {
+        t = git_c_target(l)
+        if (t == "" || !is_workspace_target(t)) return 0
+        cmd = git_c_command(l)
+        return (cmd ~ /^(status|ls-remote|rev-parse|branch)([[:space:]]|$)/)
+      }
+      {
+        line = $0
+        if (is_workspace_git_c_probe(line) && !is_negative_guidance(line)) {
+          printf "%s:%d:%s\n", file, NR, line
+          bad = 1
+        } else if (!established && is_bare_probe(line) && !is_negative_guidance(line)) {
+          printf "%s:%d:%s\n", file, NR, line
+          bad = 1
+        }
+        if (line_establishes(line)) {
+          established = 1
+        }
+      }
+      END {
+        exit bad
+      }
+    ' "$file" || {
+      echo "bare workspace-root Git probe found under $root; resolve a concrete checkout (last-stack-repo-op-guard) and use git -C <checkout> before status/branch/ls-remote/rev-parse" >&2
+      fail=1
+    }
+  done
+}
+
+check_gh_json_fields() {
+  local root="$1"
+  local files=()
+  local file
+
+  if [ -d "$root" ]; then
+    while IFS= read -r -d '' file; do
+      files+=("$file")
+    done < <(
+      find "$root" -type f \
+        ! -path '*/.git/*' \
+        ! -path '*/logs/*' \
+        ! -path '*/run/*' \
+        ! -name memory.md \
+        ! -name last-stack-lint-prompts \
+        -print0
+    )
+  else
+    [ "$(basename "$root")" = "last-stack-lint-prompts" ] && return 0
+    files=("$root")
+  fi
+
+  for file in "${files[@]}"; do
+    [ -f "$file" ] || continue
+    grep -Iq . "$file" || continue
+    awk -v file="$file" \
+      -v pr_allowed="$pr_json_fields" \
+      -v release_allowed="$release_json_fields" \
+      -v run_view_allowed="$run_view_json_fields" \
+      -v run_list_allowed="$run_list_json_fields" \
+      -v pr_checks_allowed="$pr_checks_json_fields" '
+      BEGIN {
+        split(pr_allowed, pr_parts, /[[:space:]]+/)
+        for (idx in pr_parts) {
+          if (pr_parts[idx] != "") {
+            allowed["pr", pr_parts[idx]] = 1
+          }
+        }
+        split(release_allowed, release_parts, /[[:space:]]+/)
+        for (idx in release_parts) {
+          if (release_parts[idx] != "") {
+            allowed["release", release_parts[idx]] = 1
+          }
+        }
+        split(run_view_allowed, run_view_parts, /[[:space:]]+/)
+        for (idx in run_view_parts) {
+          if (run_view_parts[idx] != "") {
+            allowed["run view", run_view_parts[idx]] = 1
+          }
+        }
+        split(run_list_allowed, run_list_parts, /[[:space:]]+/)
+        for (idx in run_list_parts) {
+          if (run_list_parts[idx] != "") {
+            allowed["run list", run_list_parts[idx]] = 1
+          }
+        }
+        split(pr_checks_allowed, pr_checks_parts, /[[:space:]]+/)
+        for (idx in pr_checks_parts) {
+          if (pr_checks_parts[idx] != "") {
+            allowed["pr checks", pr_checks_parts[idx]] = 1
+          }
+        }
+      }
+      function trim(value) {
+        gsub(/^[[:space:]`"'\''\\]+|[[:space:]`"'\''\\]+$/, "", value)
+        return value
+      }
+      function check_fields(kind, fields, line_no, line_text, parts, idx, field) {
+        fields = trim(fields)
+        sub(/[[:space:]].*$/, "", fields)
+        split(fields, parts, ",")
+        for (idx in parts) {
+          field = trim(parts[idx])
+          if (field == "") {
+            continue
+          }
+          if (field ~ /"/) {
+            continue
+          }
+          if (!allowed[kind, field]) {
+            printf "%s:%d:%s\n", file, line_no, line_text
+            printf "unsupported gh %s --json field: %s\n", kind, field > "/dev/stderr"
+            bad = 1
+          }
+        }
+      }
+      function inspect(line, line_no, original, fields) {
+        if (line ~ /Do not|Never|do not|never|unsupported|Unknown JSON field/) {
+          return
+        }
+        if (line !~ /(^|[^[:alnum:]_-])gh[[:space:]].*--json/) {
+          return
+        }
+        if (line ~ /[[:space:]]pr[[:space:]]+(view|list)([[:space:]]|$)/) {
+          if (match(line, /--json[=[:space:]]+[^[:space:]]+/)) {
+            fields = substr(line, RSTART, RLENGTH)
+            sub(/^--json[=[:space:]]+/, "", fields)
+            check_fields("pr", fields, line_no, original)
+          }
+        }
+        if (line ~ /[[:space:]]release[[:space:]]+view([[:space:]]|$)/) {
+          if (match(line, /--json[=[:space:]]+[^[:space:]]+/)) {
+            fields = substr(line, RSTART, RLENGTH)
+            sub(/^--json[=[:space:]]+/, "", fields)
+            check_fields("release", fields, line_no, original)
+          }
+        }
+        if (line ~ /[[:space:]]run[[:space:]]+view([[:space:]]|$)/) {
+          if (match(line, /--json[=[:space:]]+[^[:space:]]+/)) {
+            fields = substr(line, RSTART, RLENGTH)
+            sub(/^--json[=[:space:]]+/, "", fields)
+            check_fields("run view", fields, line_no, original)
+          }
+        }
+        if (line ~ /[[:space:]]run[[:space:]]+list([[:space:]]|$)/) {
+          if (match(line, /--json[=[:space:]]+[^[:space:]]+/)) {
+            fields = substr(line, RSTART, RLENGTH)
+            sub(/^--json[=[:space:]]+/, "", fields)
+            check_fields("run list", fields, line_no, original)
+          }
+        }
+        if (line ~ /[[:space:]]pr[[:space:]]+checks([[:space:]]|$)/) {
+          if (match(line, /--json[=[:space:]]+[^[:space:]]+/)) {
+            fields = substr(line, RSTART, RLENGTH)
+            sub(/^--json[=[:space:]]+/, "", fields)
+            check_fields("pr checks", fields, line_no, original)
+          }
+        }
+      }
+      {
+        line = $0
+        start = NR
+        while (line ~ /\\[[:space:]]*$/ && (getline next_line) > 0) {
+          sub(/\\[[:space:]]*$/, "", line)
+          line = line " " next_line
+        }
+        inspect(line, start, line)
+      }
+      END {
+        exit bad
+      }
+    ' "$file" || fail=1
+  done
+}
+
+check_raw_markdown_shell_blocks() {
+  local root="$1"
+  local files=()
+  local file
+
+  if [ -d "$root" ]; then
+    while IFS= read -r -d '' file; do
+      files+=("$file")
+    done < <(
+      find "$root" -type f \
+        ! -path '*/.git/*' \
+        ! -path '*/logs/*' \
+        ! -path '*/run/*' \
+        ! -name memory.md \
+        ! -name last-stack-lint-prompts \
+        -print0
+    )
+  else
+    [ "$(basename "$root")" = "last-stack-lint-prompts" ] && return 0
+    files=("$root")
+  fi
+
+  for file in "${files[@]}"; do
+    [ -f "$file" ] || continue
+    grep -Iq . "$file" || continue
+    awk -v file="$file" '
+      function remember_heredoc(line, marker) {
+        if (match(line, /<<-?[[:space:]]*["'\''"]?[A-Za-z_][A-Za-z0-9_]*["'\''"]?/)) {
+          marker = substr(line, RSTART, RLENGTH)
+          sub(/^<<-?[[:space:]]*/, "", marker)
+          gsub(/["'\''"]/, "", marker)
+          if (marker != "") {
+            heredoc = marker
+          }
+        }
+      }
+      /^```[[:space:]]*(bash|sh|shell|zsh)([[:space:]].*)?$/ {
+        in_shell = 1
+        heredoc = ""
+        next
+      }
+      /^```/ {
+        in_shell = 0
+        heredoc = ""
+        next
+      }
+      in_shell {
+        if (heredoc != "") {
+          if ($0 ~ "^[[:space:]]*" heredoc "[[:space:]]*$") {
+            heredoc = ""
+          }
+          next
+        }
+
+        remember_heredoc($0)
+
+        if ($0 ~ /^[[:space:]]*$/ || $0 ~ /^[[:space:]]*#/) {
+          next
+        }
+        if ($0 ~ /^[[:space:]]*(##+|[-*][[:space:]]|>[[:space:]]|\[\[|:[0-9]+([[:space:]]|$)|(Repo|Base|Branch|GOAL|CONTEXT|STEPS|VERIFY|DONE WHEN|OUT OF SCOPE):)/ ||
+            $0 ~ /^[[:space:]]*(backlog|todo|doing|review)([[:space:]]|$)/ ||
+            $0 ~ /^[[:space:]]*[A-Za-z0-9_-]*kanban-agent[A-Za-z0-9_-]*([[:space:]]|$)/) {
+          printf "%s:%d:%s\n", file, NR, $0
+          bad = 1
+        }
+      }
+      END {
+        exit bad
+      }
+    ' "$file" || {
+      echo "raw Markdown/card text found inside shell-fenced prompt block under $root; put text in a quoted heredoc/body file and pass it via stdin" >&2
+      fail=1
+    }
+  done
+}
+
+for path in "$@"; do
+  check_path_exists "$path" || continue
+
+  matches="$(search_prompt_pattern 'gh[^\n]*pr[^\n]*--json[^\n]*isInMergeQueue' "$path")"
+  matches="$(printf '%s\n' "$matches" | grep -v -E 'Do not|Never|do not|never' || true)"
+  if [ -n "$matches" ]; then
+    printf '%s\n' "$matches"
+    echo "unsupported gh --json isInMergeQueue usage found under $path" >&2
+    fail=1
+  fi
+
+  release_latest_matches="$(search_prompt_pattern 'gh.*release.*view.*--json.*isLatest' "$path")"
+  release_latest_matches="$(printf '%s\n' "$release_latest_matches" | grep -v -E 'Do not|Never|do not|never|unsupported' || true)"
+  if [ -n "$release_latest_matches" ]; then
+    printf '%s\n' "$release_latest_matches"
+    echo "unsupported gh release --json isLatest usage found under $path" >&2
+    fail=1
+  fi
+
+  gh_repo_graphql_matches="$(search_prompt_pattern '(^|[^[:alnum:]_-])gh[[:space:]]+(-R|--repo)[[:space:]]+[^[:space:]]+[[:space:]]+api[[:space:]]+graphql' "$path")"
+  gh_repo_graphql_matches="$(printf '%s\n' "$gh_repo_graphql_matches" | grep -v -E 'Do not|Never|do not|never|unsupported|does not accept|must not pass' || true)"
+  if [ -n "$gh_repo_graphql_matches" ]; then
+    printf '%s\n' "$gh_repo_graphql_matches"
+    echo "unsupported gh -R/--repo api graphql usage found under $path (use gh api graphql with owner/name variables or last-stack-gh-pr-queue-state)" >&2
+    fail=1
+  fi
+
+  kanban_board_matches="$(search_prompt_pattern '(kanban|<board CLI>)[[:space:]]+(show|move|rm|rank|dep|tag)([[:space:]]|$).*--board' "$path")"
+  kanban_board_matches="$(printf '%s\n' "$kanban_board_matches" | grep -v -E 'Do not|Never|do not|never|unsupported|do not take|only commands whose help lists' || true)"
+  if [ -n "$kanban_board_matches" ]; then
+    printf '%s\n' "$kanban_board_matches"
+    echo "unsupported kanban non-list/add/search board flag usage found under $path" >&2
+    fail=1
+  fi
+
+  # `kanban search` has NO full-body option. Agents keep inventing
+  # `kanban search <query> --full-body` (or `--full_body`), which the CLI
+  # rejects with `Unknown option`. For full bodies, use CLI JSON and
+  # `kanban show <slug> --json`, or pass `full_body: true` to the MCP
+  # `kanban_search` tool. Block the bad CLI flag in agent-facing guidance.
+  kanban_full_body_matches="$(search_prompt_pattern '(kanban|<board CLI>)[[:space:]]+search([[:space:]]|$).*--full[-_]body' "$path")"
+  kanban_full_body_matches="$(printf '%s\n' "$kanban_full_body_matches" | grep -v -E 'Do not|Never|do not|never|unsupported|no such flag|has no|no --full-body' || true)"
+  if [ -n "$kanban_full_body_matches" ]; then
+    printf '%s\n' "$kanban_full_body_matches"
+    echo "unsupported kanban search --full-body usage found under $path (use kanban search --json + show, or MCP full_body:true)" >&2
+    fail=1
+  fi
+
+  broad_board_reads="$(search_prompt_pattern '(^|[^[:alnum:]_-])(kanban|<board CLI>)[[:space:]]+list.*(--wide|--full-body|--all)' "$path")"
+  broad_board_reads="$(printf '%s\n' "$broad_board_reads" \
+    | grep -v -Ei 'Do not|Never|do not|never|avoid|unsupported|no such flag|has no|not use|must not|instead|accepts|valid|syntax' \
+    | grep -v -E '/tests/last-stack-lint-prompts.sh' || true)"
+  if [ -n "$broad_board_reads" ]; then
+    printf '%s\n' "$broad_board_reads"
+    echo "broad kanban list usage found under $path (use capped/column previews plus show for selected cards)" >&2
+    fail=1
+  fi
+
+  routine_doctor_checks="$(search_prompt_pattern '(^|[^[:alnum:]_-])(brain|kanban|<brain-cli>|<board CLI>)[[:space:]]+(doctor|init)([^[:alnum:]_-]|$)' "$path")"
+  routine_doctor_checks="$(printf '%s\n' "$routine_doctor_checks" \
+    | grep -v -Ei 'Do not|Do \*\*not|Never|do not|never|avoid|unsupported|expected|setup|bootstrap|fresh machine|user asks|diagnostics|brain-doctor|kanban-setup|not run|without running|not use|must not|no `?brain doctor|no `?kanban doctor|raw TCP|defaults|hint:' \
+    | grep -v -E '/skills/(kanban-setup|kanban|brain-doctor|llms-txt-install-smoke)/|/tests/|/bin/|/README.md|/routines/README.md|/routines/llms-txt-install-smoke\.md' || true)"
+  if [ -n "$routine_doctor_checks" ]; then
+    printf '%s\n' "$routine_doctor_checks"
+    echo "routine prompt uses doctor/init as a health check under $path (use a socket-backed narrow read and busy-node backoff)" >&2
+    fail=1
+  fi
+
+  ambiguous_pickup_skips="$(search_prompt_pattern 'SKIP.*ambiguous.*leave it in.*todo|SKIP.*underspecified.*leave it in.*todo|ambiguous.*Repo.*leave it in.*todo' "$path")"
+  ambiguous_pickup_skips="$(printf '%s\n' "$ambiguous_pickup_skips" | grep -v -E 'Do not|Never|do not|never|unsupported' || true)"
+  if [ -n "$ambiguous_pickup_skips" ]; then
+    printf '%s\n' "$ambiguous_pickup_skips"
+    echo "ambiguous kanban-pickup repo targets must be annotated or blocked, not silently left in todo" >&2
+    fail=1
+  fi
+
+  # Flag real shell assignments to the zsh read-only `status` var — i.e. at a
+  # statement boundary (line start, or after ; && ||). Prose/doc mentions like
+  # `status=active` (DynamoDB attrs) or `(status=active, ...)` inside an echo
+  # string are NOT assignments and must not trip this.
+  zsh_status_assignments="$(search_prompt_pattern '(^|[;&|])[[:space:]]*status=' "$path")"
+  if [ -n "$zsh_status_assignments" ]; then
+    printf '%s\n' "$zsh_status_assignments"
+    echo "zsh-unsafe shell assignment to read-only status found under $path" >&2
+    fail=1
+  fi
+
+  zsh_local_status_assignments="$(search_prompt_pattern '(^|[;&|])[[:space:]]*(local|typeset|declare|export)[[:space:]][^;&|#]*status=' "$path")"
+  if [ -n "$zsh_local_status_assignments" ]; then
+    printf '%s\n' "$zsh_local_status_assignments"
+    echo "zsh-unsafe shell declaration of read-only status found under $path" >&2
+    fail=1
+  fi
+
+  unsupported_shell_forms="$(search_prompt_pattern '(^|[^[:alnum:]_])(mapfile|readarray)([[:space:]]|$)' "$path")"
+  unsupported_shell_forms="$(printf '%s\n' "$unsupported_shell_forms" | grep -v -Ei 'Do not|Never|do not|never|avoid|unsupported|banned|without[[:space:]]+(mapfile|readarray)|no[[:space:]]+(mapfile|readarray)' || true)"
+  if [ -n "$unsupported_shell_forms" ]; then
+    printf '%s\n' "$unsupported_shell_forms"
+    echo "unsupported zsh/macOS shell form found under $path (use portable while-read or Python snippets)" >&2
+    fail=1
+  fi
+
+  unquoted_heredocs="$(search_prompt_pattern '<<[[:space:]]*[A-Za-z0-9_]+([[:space:]]|$)' "$path")"
+  unquoted_heredocs="$(printf '%s\n' "$unquoted_heredocs" | grep -v -Ei "Do not|Never|do not|never|unsupported|unsafe|unquoted|quoted heredoc|single-quoted" || true)"
+  if [ -n "$unquoted_heredocs" ]; then
+    printf '%s\n' "$unquoted_heredocs"
+    echo "unquoted heredoc delimiter found under $path; Markdown/Brain/kanban bodies must use <<'EOF' or a body file" >&2
+    fail=1
+  fi
+
+  workspace_git_pattern='git[[:space:]]-C[[:space:]]/Users/tomtang/code/edgevector([[:space:]]|$)|git[[:space:]]-C[[:space:]]<WORKSPACE>|git[[:space:]]-C[[:space:]]"?\$[A-Za-z_]*(workspace|WORKSPACE)[A-Za-z_]*"?|git[[:space:]]status[[:space:]]--short[[:space:]]--branch|git[[:space:]]rev-parse[[:space:]]--show-toplevel|(^|[^-[:alnum:]_])git[[:space:]]worktree[[:space:]]list'
+  workspace_git_probes="$(search_prompt_pattern "$workspace_git_pattern" "$path")"
+  if [ -n "$workspace_git_probes" ]; then
+    printf '%s\n' "$workspace_git_probes"
+    echo "unsafe workspace/root-level Git probe found under $path" >&2
+    fail=1
+  fi
+
+  gh_pr_without_repo="$(search_prompt_pattern '(^|[^[:alnum:]_-])gh[[:space:]]+pr[[:space:]]+(create|view|list|merge|checks|update-branch|comment|close)([[:space:]]|$)' "$path")"
+  gh_pr_without_repo="$(printf '%s\n' "$gh_pr_without_repo" | grep -v -E 'gh[[:space:]]+(-R|--repo)|--repo[[:space:]]+|-R[[:space:]]+|Do not|Never|do not|never|request `isInMergeQueue` through `gh pr view/list --json`' || true)"
+  if [ -n "$gh_pr_without_repo" ]; then
+    printf '%s\n' "$gh_pr_without_repo"
+    echo "gh pr command without explicit --repo/-R found under $path" >&2
+    fail=1
+  fi
+
+  unsafe_codex_home="$(search_prompt_pattern '\$CODEX_HOME/automations|\$\{CODEX_HOME\}/automations' "$path")"
+  if [ -n "$unsafe_codex_home" ]; then
+    printf '%s\n' "$unsafe_codex_home"
+    echo "unsafe CODEX_HOME automation fallback found under $path" >&2
+    fail=1
+  fi
+
+  routine_skeletons="$(search_prompt_pattern 'Run the Last Stack routine `<routine>`' "$path")"
+  routine_skeletons="$(printf '%s\n' "$routine_skeletons" | grep -v -E 'last-stack-shell-prelude|last-stack-cli-preflight|export `?PATH|export PATH' || true)"
+  if [ -n "$routine_skeletons" ]; then
+    printf '%s\n' "$routine_skeletons"
+    echo "Last Stack routine skeleton lacks PATH prelude/preflight guidance" >&2
+    fail=1
+  fi
+
+  global_cli_guidance="$(search_prompt_pattern 'Use global CLIs from PATH' "$path")"
+  global_cli_guidance="$(printf '%s\n' "$global_cli_guidance" | grep -v -E 'last-stack-shell-prelude|last-stack-cli-preflight|after the prelude' || true)"
+  if [ -n "$global_cli_guidance" ]; then
+    printf '%s\n' "$global_cli_guidance"
+    echo "global CLI guidance must require last-stack-shell-prelude/last-stack-cli-preflight" >&2
+    fail=1
+  fi
+
+  unguarded_local_checkout_git="$(search_prompt_pattern 'git[[:space:]]-C[[:space:]]<local-checkout>|repo="<local-checkout>"' "$path")"
+  repo_guard_mentions="$(search_prompt_pattern 'last-stack-repo-op-guard' "$path")"
+  if [ -n "$unguarded_local_checkout_git" ] && [ -z "$repo_guard_mentions" ]; then
+    printf '%s\n' "$unguarded_local_checkout_git"
+    echo "local-checkout Git examples must pass through last-stack-repo-op-guard before repo-scoped commands" >&2
+    fail=1
+  fi
+
+  heartbeat_gets="$(search_prompt_pattern 'brain[^\n]*get[^\n]*routine-heartbeats' "$path")"
+  heartbeat_gets="$(printf '%s\n' "$heartbeat_gets" | grep -v -- '--type reference' || true)"
+  if [ -n "$heartbeat_gets" ]; then
+    printf '%s\n' "$heartbeat_gets"
+    echo "routine-heartbeats reads must specify --type reference" >&2
+    fail=1
+  fi
+
+  check_gh_json_fields "$path"
+  check_aline_search_guards "$path"
+  check_pipeline_health_lastgit_socket_inventory "$path"
+  check_admin_ui_repo_targets "$path"
+  check_raw_markdown_shell_blocks "$path"
+  check_default_board_scope "$path"
+  check_workspace_root_git_probes "$path"
+done
+
+while IFS= read -r -d '' toml; do
+  if ! grep -q '^status = "ACTIVE"' "$toml"; then
+    continue
+  fi
+
+  prompt="$(grep -m1 '^prompt = ' "$toml" || true)"
+  if [ -z "$prompt" ]; then
+    continue
+  fi
+
+  if [[ "$prompt" != *"Automation ID:"* || "$prompt" != *"Automation memory:"* ]]; then
+    echo "active automation prompt lacks explicit Automation ID/memory: $toml" >&2
+    fail=1
+  fi
+
+  if [[ "$prompt" == *"Automation memory: /automations/"* ]]; then
+    echo "active automation prompt has unsafe absolute memory path: $toml" >&2
+    fail=1
+  fi
+done < <(find "$@" -path '*/automation.toml' -type f -print0 2>/dev/null || true)
+
+exit "$fail"

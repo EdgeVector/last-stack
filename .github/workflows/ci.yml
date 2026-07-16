@@ -1,0 +1,63 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  ci-required:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Shell syntax check
+        run: |
+          set -e
+          bash -n setup
+          for f in bin/*; do
+            head -1 "$f" | grep -q '^#!.*sh' && bash -n "$f"
+          done
+
+      - name: shellcheck
+        continue-on-error: true
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck -S warning setup bin/last-stack-uninstall bin/last-stack-update-check
+
+      - name: VERSION is present and non-empty
+        run: test -s VERSION
+
+      - name: Prompt safety lint
+        run: bin/last-stack-lint-prompts
+
+      - name: Shell regression tests
+        run: |
+          set -e
+          for t in tests/*.sh; do
+            bash "$t"
+          done
+
+      - name: Every skill has valid frontmatter
+        run: |
+          set -e
+          fail=0
+          for d in skills/*/; do
+            f="$d/SKILL.md"
+            if [ ! -f "$f" ]; then echo "MISSING: $f"; fail=1; continue; fi
+            head -1 "$f" | grep -q '^---' || { echo "NO FRONTMATTER: $f"; fail=1; }
+            grep -q '^name:' "$f" || { echo "NO name: $f"; fail=1; }
+            grep -q '^description:' "$f" || { echo "NO description: $f"; fail=1; }
+          done
+          exit $fail
+
+      - name: setup --local registers all skills
+        run: |
+          set -e
+          mkdir -p /tmp/proj && cd /tmp/proj
+          "$GITHUB_WORKSPACE/setup" --local
+          for d in "$GITHUB_WORKSPACE"/skills/*/; do
+            n=$(grep -m1 '^name:' "$d/SKILL.md" | sed 's/^name:[[:space:]]*//' | tr -d '[:space:]')
+            test -f ".claude/skills/$n/SKILL.md" || { echo "not registered: $n"; exit 1; }
+          done
+          echo "OK: all skills registered"

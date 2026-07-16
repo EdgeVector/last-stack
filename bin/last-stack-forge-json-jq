@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Strip Forgejo's raw control characters before handing API JSON to jq.
+#
+# Forgejo 15.0.3 can return literal U+0000-U+001F bytes in string fields such
+# as pull request bodies. jq rejects that invalid JSON, so all forge API status
+# polling should flow through this helper instead of piping curl directly to jq.
+set -euo pipefail
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  cat <<'EOF'
+Usage:
+  curl -fsS "$FORGE_API_URL" ... | last-stack-forge-json-jq [jq-args...]
+
+Runs jq after deleting raw U+0000-U+001F control bytes from stdin. Use this for
+Forgejo API JSON polls whose PR body or other string fields may contain literal
+newlines/tabs/control characters.
+EOF
+  exit 0
+fi
+
+tr -d '\000-\037' | jq "$@"

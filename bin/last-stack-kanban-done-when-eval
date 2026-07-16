@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+set -u
+
+usage() {
+  cat >&2 <<'EOF'
+usage: last-stack-kanban-done-when-eval --kind <kind> --predicate <DONE-WHEN>
+
+Exit codes:
+  0  predicate is satisfied
+  1  predicate is false or pending
+  2  predicate is malformed or errored
+  3  ignored because Kind: pr still requires a merged PR
+
+Supported predicates:
+  brain <slug> exists
+  brain <slug> updated-after <YYYY-MM-DD>
+  routine <name> heartbeat matches /<regex>/ after <YYYY-MM-DD>
+  date >= <YYYY-MM-DD>
+  file <path> matches /<regex>/
+EOF
+}
+
+kind=""
+predicate=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --kind)
+      [ "$#" -ge 2 ] || { usage; exit 2; }
+      kind="$2"
+      shift 2
+      ;;
+    --predicate)
+      [ "$#" -ge 2 ] || { usage; exit 2; }
+      predicate="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      if [ -z "$predicate" ]; then
+        predicate="$*"
+        break
+      fi
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+[ -n "$predicate" ] || { usage; exit 2; }
+
+if [ "$kind" = "pr" ]; then
+  echo "ignored: Kind: pr requires a verified merged PR"
+  exit 3
+fi
+
+if [[ "$predicate" =~ ^brain[[:space:]]+([^[:space:]]+)[[:space:]]+exists$ ]]; then
+  slug="${BASH_REMATCH[1]}"
+  if brain get "$slug" >/dev/null 2>&1; then
+    echo "satisfied: brain $slug exists"
+    exit 0
+  fi
+  echo "pending: brain $slug does not exist"
+  exit 1
+fi
+
+if [[ "$predicate" =~ ^brain[[:space:]]+([^[:space:]]+)[[:space:]]+updated-after[[:space:]]+([0-9]{4}-[0-9]{2}-[0-9]{2})$ ]]; then
+  slug="${BASH_REMATCH[1]}"
+  cutoff="${BASH_REMATCH[2]}"
+  record="$(brain get "$slug" 2>/dev/null)" || {
+    echo "pending: brain $slug does not exist"
+    exit 1
+  }
+  updated="$(printf '%s\n' "$record" | awk '/^updated_at:/ { print substr($2, 1, 10); exit }')"
+  if [ -n "$updated" ] && [[ "$updated" > "$cutoff" || "$updated" = "$cutoff" ]]; then
+    echo "satisfied: brain $slug updated_at $updated >= $cutoff"
+    exit 0
+  fi
+  echo "pending: brain $slug updated_at ${updated:-unknown} < $cutoff"
+  exit 1
+fi
+
+if [[ "$predicate" =~ ^routine[[:space:]]+([^[:space:]]+)[[:space:]]+heartbeat[[:space:]]+matches[[:space:]]+/(.*)/[[:space:]]+after[[:space:]]+([0-9]{4}-[0-9]{2}-[0-9]{2})$ ]]; then
+  routine="${BASH_REMATCH[1]}"
+  regex="${BASH_REMATCH[2]}"
+  cutoff="${BASH_REMATCH[3]}"
+  heartbeats="$(brain get routine-heartbeats --type reference 2>/dev/null)" || {
+    echo "pending: routine-heartbeats record unavailable"
+    exit 1
+  }
+  match_line="$(
+    printf '%s\n' "$heartbeats" |
+      awk -v routine="$routine" -v regex="$regex" -v cutoff="$cutoff" '
+        index($0, routine) && $0 ~ regex {
+          if (match($0, /[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/)) {
+            line_date = substr($0, RSTART, RLENGTH)
+            if (line_date >= cutoff) {
+              print
+              exit
+            }
+          }
+        }
+      '
+  )"
+  if [ -n "$match_line" ]; then
+    echo "satisfied: routine $routine heartbeat matched after $cutoff: $match_line"
+    exit 0
+  fi
+  echo "pending: no routine $routine heartbeat matched /$regex/ after $cutoff"
+  exit 1
+fi
+
+if [[ "$predicate" =~ ^date[[:space:]]+\>=[[:space:]]+([0-9]{4}-[0-9]{2}-[0-9]{2})$ ]]; then
+  cutoff="${BASH_REMATCH[1]}"
+  today="$(date -u +%F)"
+  if [[ "$today" > "$cutoff" || "$today" = "$cutoff" ]]; then
+    echo "satisfied: date $today >= $cutoff"
+    exit 0
+  fi
+  echo "pending: date $today < $cutoff"
+  exit 1
+fi
+
+if [[ "$predicate" =~ ^file[[:space:]]+([^[:space:]]+)[[:space:]]+matches[[:space:]]+/(.*)/$ ]]; then
+  path="${BASH_REMATCH[1]}"
+  regex="${BASH_REMATCH[2]}"
+  if [ ! -f "$path" ]; then
+    echo "pending: file $path does not exist"
+    exit 1
+  fi
+  if grep -Eq "$regex" "$path"; then
+    echo "satisfied: file $path matches /$regex/"
+    exit 0
+  fi
+  echo "pending: file $path does not match /$regex/"
+  exit 1
+fi
+
+echo "malformed: unsupported DONE-WHEN predicate: $predicate"
+exit 2

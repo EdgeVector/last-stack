@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: last-stack-repo-op-guard <candidate-repo> [workspace-root] [context]
+
+Resolve a repo operation target to a concrete Git checkout root. Rejects an
+aggregate workspace/container root, and a malformed composite path (a checkout
+path accidentally joined with a branch or owner/name token), before agents run
+repo-scoped git or gh commands from the wrong directory.
+
+`context` (or $LAST_STACK_REPO_OP_CONTEXT) is echoed in error messages so a
+routing failure can be traced back to its card slug / routine.
+EOF
+}
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  usage
+  exit 0
+fi
+
+candidate="${1:-}"
+workspace="${2:-${LAST_STACK_WORKSPACE_ROOT:-}}"
+context="${3:-${LAST_STACK_REPO_OP_CONTEXT:-}}"
+
+# Suffix appended to every rejection so the failure is traceable to its source.
+context_suffix=""
+if [ -n "$context" ]; then
+  context_suffix=" (context: $context)"
+fi
+
+if [ -z "$candidate" ]; then
+  echo "LAST_STACK_REPO_OP_GUARD: missing candidate repo path$context_suffix" >&2
+  usage
+  exit 2
+fi
+
+# Reject a malformed composite path before any filesystem probe. The recurring
+# failure mode is a board row's `Repo: owner/name`, a branch, and a checkout
+# path getting joined into a single whitespace-separated string such as
+# `/Users/tomtang/code/edgevector/fbrain kanban/brain-rename EdgeVector/fbrain`,
+# which then cascades into `fatal: not a git repository`. A real checkout path
+# in this workspace never contains whitespace or a newline.
+case "$candidate" in
+  *[[:space:]]*)
+    echo "LAST_STACK_REPO_OP_GUARD: malformed composite repo path$context_suffix: $candidate" >&2
+    echo "This looks like a checkout path joined with a branch or owner/name token." >&2
+    echo "Resolve the board row to a single concrete checkout path before calling git/gh." >&2
+    exit 2
+    ;;
+esac
+
+physical_path() {
+  local path="$1"
+  if [ -d "$path" ]; then
+    (cd "$path" >/dev/null 2>&1 && pwd -P) || return 1
+    return
+  fi
+  return 1
+}
+
+candidate_physical="$(physical_path "$candidate" || true)"
+workspace_physical=""
+if [ -n "$workspace" ]; then
+  workspace_physical="$(physical_path "$workspace" || true)"
+fi
+
+if [ -n "$workspace_physical" ] && [ "$candidate_physical" = "$workspace_physical" ]; then
+  echo "LAST_STACK_REPO_OP_GUARD: refusing aggregate workspace root$context_suffix: $candidate" >&2
+  echo "Select a child checkout such as $workspace/<repo> before running repo-scoped git/gh commands." >&2
+  exit 2
+fi
+
+if [ -z "$candidate_physical" ]; then
+  echo "LAST_STACK_REPO_OP_GUARD: path is not a directory$context_suffix: $candidate" >&2
+  exit 2
+fi
+
+if ! repo_root="$(git -C "$candidate_physical" rev-parse --show-toplevel 2>/dev/null)"; then
+  echo "LAST_STACK_REPO_OP_GUARD: path is not a Git checkout$context_suffix: $candidate" >&2
+  echo "If this is a workspace container, select a concrete child checkout first." >&2
+  exit 2
+fi
+
+repo_root="$(physical_path "$repo_root")"
+
+if [ -n "$workspace_physical" ] && [ "$repo_root" = "$workspace_physical" ]; then
+  echo "LAST_STACK_REPO_OP_GUARD: resolved target is the aggregate workspace root$context_suffix: $repo_root" >&2
+  echo "Select a child checkout before running repo-scoped git/gh commands." >&2
+  exit 2
+fi
+
+printf '%s\n' "$repo_root"

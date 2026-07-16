@@ -1,0 +1,16 @@
+#!/bin/sh
+# Verify the global CLIs a Last Stack routine expects are visible once, up front.
+set -eu
+
+script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
+if [ -z "${LAST_STACK_ROOT+x}" ]; then
+  LAST_STACK_ROOT="$(CDPATH= cd -- "$script_dir/.." && pwd -P)"
+  export LAST_STACK_ROOT
+fi
+. "$script_dir/last-stack-shell-prelude"
+
+if [ "$#" -eq 0 ]; then
+  set -- git curl jq gh
+fi
+
+last_stack_require_tools "$@"

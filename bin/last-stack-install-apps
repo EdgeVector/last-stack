@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# Install the usable LastDB app stack from public repos.
+set -euo pipefail
+
+TARGET_DIR="${LASTDB_APPS_DIR:-$HOME/lastdb-apps}"
+INSTALL_LASTDB=1
+LINK_CLIS=1
+
+usage() {
+  cat <<'USAGE'
+last-stack-install-apps [options]
+
+Downloads the stable LastDB app stack from public GitHub:
+  LastDB daemon (Homebrew), brain, kanban (fkanban), situations, dogfood-graph,
+  org, lastsecrets.
+
+  org + lastsecrets are required for invite/join ("join my org") onboarding.
+
+Options:
+  --dir <path>      clone/update app repos under this directory
+                   (default: ~/lastdb-apps or $LASTDB_APPS_DIR)
+  --no-brew         skip installing the LastDB Homebrew formula
+  --no-link         skip linking CLI commands onto PATH
+  -h, --help        show this help
+
+LastGit is intentionally not installed by this bundle yet (review venue for
+EdgeVector contributors). Public app source is GitHub so a cold first install
+needs no running LastDB node and no LastGit remote helper.
+USAGE
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dir)
+      TARGET_DIR="$2"
+      shift 2
+      ;;
+    --dir=*)
+      TARGET_DIR="${1#*=}"
+      shift
+      ;;
+    --no-brew)
+      INSTALL_LASTDB=0
+      shift
+      ;;
+    --no-link)
+      LINK_CLIS=0
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown flag: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+need() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "missing required command: $1" >&2
+    exit 127
+  fi
+}
+
+clone_or_update() {
+  local name="$1"
+  local url="$2"
+  local dest="$TARGET_DIR/$name"
+  local optional="${3:-}"
+
+  if [ -d "$dest/.git" ]; then
+    echo "==> updating $name"
+    if ! git -C "$dest" pull --ff-only; then
+      if [ "$optional" = "optional" ]; then
+        echo "    warning: could not update optional app $name — skipping" >&2
+        return 1
+      fi
+      return 1
+    fi
+    return 0
+  elif [ -e "$dest" ]; then
+    echo "refusing to overwrite non-git path: $dest" >&2
+    exit 1
+  else
+    echo "==> cloning $name"
+    if ! git clone "$url" "$dest"; then
+      if [ "$optional" = "optional" ]; then
+        echo "    warning: could not clone optional app $name from $url — skipping" >&2
+        echo "    (if the repo is private, authenticate to GitHub or install it later)" >&2
+        return 1
+      fi
+      echo "failed to clone $name from $url" >&2
+      return 1
+    fi
+    return 0
+  fi
+}
+
+run_bun_install() {
+  local name="$1"
+  local dest="$TARGET_DIR/$name"
+  [ -f "$dest/package.json" ] || return 0
+  echo "==> installing dependencies for $name"
+  bun install --cwd "$dest"
+}
+
+link_cli() {
+  local name="$1"
+  local dest="$TARGET_DIR/$name"
+  [ "$LINK_CLIS" -eq 1 ] || return 0
+  [ -d "$dest" ] || return 0
+
+  case "$name" in
+    kanban)
+      echo "==> linking kanban CLI"
+      # Ensure a user bin dir exists for first-run machines (install-cli creates
+      # ~/.local/bin when needed, but put it on PATH for this process too).
+      mkdir -p "$HOME/.local/bin"
+      export PATH="$HOME/.local/bin:${PATH:-}"
+      (cd "$dest" && bun run install-cli "$HOME/.local/bin")
+      ;;
+    situations)
+      if [ -x "$dest/bin/situations" ]; then
+        echo "==> linking situations CLI"
+        mkdir -p "$HOME/.local/bin"
+        ln -snf "$dest/bin/situations" "$HOME/.local/bin/situations"
+      fi
+      ;;
+    brain|lastsecrets|org)
+      echo "==> linking $name CLI with bun link"
+      (cd "$dest" && bun link)
+      ;;
+  esac
+}
+
+need git
+need bun
+
+if [ "$INSTALL_LASTDB" -eq 1 ]; then
+  need brew
+  echo "==> installing LastDB daemon"
+  brew install edgevector/lastdb/lastdb
+fi
+
+mkdir -p "$TARGET_DIR"
+
+# All required apps are public on GitHub so invitees can cold-install without
+# LastGit, without a running node, and without GitHub org membership.
+# Failures here must abort — invite/join needs org + lastsecrets linked.
+clone_or_update brain "https://github.com/EdgeVector/brain.git" || exit 1
+clone_or_update kanban "https://github.com/EdgeVector/fkanban.git" || exit 1
+clone_or_update situations "https://github.com/EdgeVector/situations.git" || exit 1
+clone_or_update dogfood-graph "https://github.com/EdgeVector/dogfood-graph.git" || exit 1
+clone_or_update org "https://github.com/EdgeVector/org.git" || exit 1
+clone_or_update lastsecrets "https://github.com/EdgeVector/lastsecrets.git" || exit 1
+
+for app in brain kanban situations dogfood-graph org lastsecrets; do
+  run_bun_install "$app"
+  link_cli "$app"
+done
+
+printf '\n'
+printf 'Installed LastDB apps under:\n'
+printf '  %s\n\n' "$TARGET_DIR"
+printf 'Next steps:\n'
+printf '  brew services start lastdb\n'
+printf '  brain init --grant-consent\n'
+printf '  kanban init\n'
+printf '  situations init\n'
+printf '  lastsecrets init\n'
+printf '  org init\n'
+printf '\n'
+printf 'Dogfood Graph is a local app:\n'
+printf '  cd "%s/dogfood-graph" && npm run dev\n\n' "$TARGET_DIR"
+printf 'Make sure ~/.local/bin and ~/.bun/bin are on PATH if linked commands are not found.\n'

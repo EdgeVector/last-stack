@@ -1,0 +1,305 @@
+#!/usr/bin/env bash
+# Publish last-stack health to Mini, then stage (and optionally approve) a
+# LastDB deliver of that slice to the admin kanban-consumer identity.
+#
+# Pattern mirror: routines deliver-status (EdgeVector/routines).
+# Transport: delivery_slice / lastdb.slice.v1 — same path as admin Kanban.
+# v1 reuses the existing kanban-consumer keys (schema-agnostic deliver).
+#
+# Usage:
+#   last-stack-deliver-status [--json] [--dry-run] [--approve] [--install-root DIR]
+#     [--recipient-pubkey B64] [--messaging-public-key B64] [--messaging-pseudonym UUID]
+#     [--recipient-name NAME] [--max-records N]
+#
+# Recipient keys are operational inputs (never committed). Prefer env:
+#   LAST_STACK_ADMIN_RECIPIENT_PUBKEY
+#   LAST_STACK_ADMIN_MESSAGING_PUBLIC_KEY
+#   LAST_STACK_ADMIN_MESSAGING_PSEUDONYM
+#   LAST_STACK_ADMIN_RECIPIENT_NAME   (optional display name)
+#
+# Without --approve: stages only and prints delivery_id.
+# With --approve: Mini seals + sends through Exemem messaging.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+# shellcheck source=../lib/lastdb-http.sh
+. "$ROOT/lib/lastdb-http.sh"
+
+JSON=0
+DRY_RUN=0
+APPROVE=0
+INSTALL_ROOT=""
+MAX_RECORDS=1
+RECIPIENT_PUBKEY="${LAST_STACK_ADMIN_RECIPIENT_PUBKEY:-}"
+MESSAGING_PUBLIC_KEY="${LAST_STACK_ADMIN_MESSAGING_PUBLIC_KEY:-}"
+MESSAGING_PSEUDONYM="${LAST_STACK_ADMIN_MESSAGING_PSEUDONYM:-}"
+RECIPIENT_NAME="${LAST_STACK_ADMIN_RECIPIENT_NAME:-}"
+
+usage() {
+  cat <<'EOF' >&2
+usage: last-stack-deliver-status [options]
+
+Publish last-stack health, then stage (and optionally approve) a Mini deliver
+to the admin kanban-consumer (or any recipient keys you pass).
+
+  --json
+  --dry-run              publish dry-run + print planned stage request only
+  --approve              approve the staged delivery (send encrypted slice)
+  --install-root DIR
+  --max-records N        deliver max records (default 1 — single snapshot)
+  --recipient-pubkey B64
+  --messaging-public-key B64
+  --messaging-pseudonym UUID
+  --recipient-name NAME
+
+Environment mirrors the flags with LAST_STACK_ADMIN_* names.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json) JSON=1; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --approve) APPROVE=1; shift ;;
+    --install-root=*)
+      INSTALL_ROOT="${1#--install-root=}"
+      shift
+      ;;
+    --install-root)
+      [ "$#" -ge 2 ] || { usage; exit 2; }
+      INSTALL_ROOT="$2"
+      shift 2
+      ;;
+    --max-records=*)
+      MAX_RECORDS="${1#--max-records=}"
+      shift
+      ;;
+    --max-records)
+      [ "$#" -ge 2 ] || { usage; exit 2; }
+      MAX_RECORDS="$2"
+      shift 2
+      ;;
+    --recipient-pubkey=*)
+      RECIPIENT_PUBKEY="${1#--recipient-pubkey=}"
+      shift
+      ;;
+    --recipient-pubkey)
+      [ "$#" -ge 2 ] || { usage; exit 2; }
+      RECIPIENT_PUBKEY="$2"
+      shift 2
+      ;;
+    --messaging-public-key=*)
+      MESSAGING_PUBLIC_KEY="${1#--messaging-public-key=}"
+      shift
+      ;;
+    --messaging-public-key)
+      [ "$#" -ge 2 ] || { usage; exit 2; }
+      MESSAGING_PUBLIC_KEY="$2"
+      shift 2
+      ;;
+    --messaging-pseudonym=*)
+      MESSAGING_PSEUDONYM="${1#--messaging-pseudonym=}"
+      shift
+      ;;
+    --messaging-pseudonym)
+      [ "$#" -ge 2 ] || { usage; exit 2; }
+      MESSAGING_PSEUDONYM="$2"
+      shift 2
+      ;;
+    --recipient-name=*)
+      RECIPIENT_NAME="${1#--recipient-name=}"
+      shift
+      ;;
+    --recipient-name)
+      [ "$#" -ge 2 ] || { usage; exit 2; }
+      RECIPIENT_NAME="$2"
+      shift 2
+      ;;
+    -h|--help) usage; exit 0 ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+case "$MAX_RECORDS" in
+  ''|*[!0-9]*|0)
+    echo "invalid --max-records $MAX_RECORDS" >&2
+    exit 2
+    ;;
+esac
+
+if [ -z "$RECIPIENT_PUBKEY" ] || [ -z "$MESSAGING_PUBLIC_KEY" ] || [ -z "$MESSAGING_PSEUDONYM" ]; then
+  echo "missing recipient keys: need --recipient-pubkey, --messaging-public-key, --messaging-pseudonym" >&2
+  echo "(or LAST_STACK_ADMIN_RECIPIENT_PUBKEY / LAST_STACK_ADMIN_MESSAGING_PUBLIC_KEY / LAST_STACK_ADMIN_MESSAGING_PSEUDONYM)" >&2
+  echo "v1 reuses the admin kanban-consumer bundle from exemem-infra enroll-kanban-consumer." >&2
+  exit 2
+fi
+
+publish_args=(--json)
+if [ "$DRY_RUN" -eq 1 ]; then
+  publish_args+=(--dry-run)
+fi
+if [ -n "$INSTALL_ROOT" ]; then
+  publish_args+=(--install-root "$INSTALL_ROOT")
+fi
+
+publish_json="$("$ROOT/bin/last-stack-publish-status" "${publish_args[@]}")"
+schema_hash="$(printf '%s' "$publish_json" | last_stack_json_field .schema_hash)"
+slug="$(printf '%s' "$publish_json" | last_stack_json_field .slug)"
+fields_csv="$(printf '%s' "$publish_json" | python3 -c 'import sys,json; print(",".join(json.load(sys.stdin)["fields"].keys()))')"
+
+stage_request="$(python3 - "$schema_hash" "$slug" "$MAX_RECORDS" "$RECIPIENT_PUBKEY" \
+  "$MESSAGING_PUBLIC_KEY" "$MESSAGING_PSEUDONYM" "$RECIPIENT_NAME" "$fields_csv" <<'PY'
+import json, sys
+schema_hash, slug, max_records, recipient_pubkey, messaging_public_key, messaging_pseudonym, recipient_name, fields_csv = sys.argv[1:]
+fields = [f for f in fields_csv.split(",") if f]
+req = {
+    "recipient_pubkey": recipient_pubkey,
+    "messaging_public_key": messaging_public_key,
+    "messaging_pseudonym": messaging_pseudonym,
+    "mode": "snapshot",
+    "max_records": int(max_records),
+    "legs": [{
+        "schema_name": schema_hash,
+        "fields": fields,
+        "hash_keys": [slug],
+    }],
+}
+if recipient_name:
+    req["recipient_display_name"] = recipient_name
+print(json.dumps(req, separators=(",", ":")))
+PY
+)"
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  if [ "$JSON" -eq 1 ]; then
+    python3 - "$publish_json" "$stage_request" <<'PY'
+import json, sys
+pub = json.loads(sys.argv[1])
+stage = json.loads(sys.argv[2])
+print(json.dumps({
+    "dry_run": True,
+    "publish": pub,
+    "delivery_request": stage,
+    "staged": None,
+    "approved": None,
+}, indent=2))
+PY
+  else
+    printf 'LAST_STACK_DELIVER_STATUS result=dry-run slug=%s max_records=%s schema=%s\n' \
+      "$slug" "$MAX_RECORDS" "$schema_hash"
+  fi
+  exit 0
+fi
+
+last_stack_lastdb_auto_identity >/dev/null
+stage_resp="$(last_stack_lastdb_json POST /api/sharing/deliver "$stage_request")" || {
+  echo "last-stack-deliver-status: stage failed" >&2
+  exit 1
+}
+
+delivery_id="$(printf '%s' "$stage_resp" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+def dig(*keys, default=""):
+    cur = d
+    for k in keys:
+        if not isinstance(cur, dict):
+            return default
+        cur = cur.get(k)
+    return cur if cur is not None else default
+# shape: {data:{delivery:{delivery_id, preview:{...}}, note}} or flat
+for path in [
+    ("data","delivery","delivery_id"),
+    ("delivery","delivery_id"),
+    ("delivery_id",),
+    ("data","delivery_id"),
+]:
+    v = dig(*path)
+    if v:
+        print(v)
+        break
+')"
+
+if [ -z "$delivery_id" ]; then
+  echo "last-stack-deliver-status: stage returned no delivery_id: $stage_resp" >&2
+  exit 1
+fi
+
+record_count="$(printf '%s' "$stage_resp" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+def dig(*keys, default=0):
+    cur = d
+    for k in keys:
+        if not isinstance(cur, dict):
+            return default
+        cur = cur.get(k)
+    return cur if isinstance(cur, (int, float)) else default
+for path in [
+    ("data","delivery","preview","record_count"),
+    ("delivery","preview","record_count"),
+    ("preview","record_count"),
+    ("record_count",),
+]:
+    v = dig(*path)
+    if v:
+        print(int(v))
+        break
+else:
+    print(0)
+')"
+
+approved_json="null"
+if [ "$APPROVE" -eq 1 ]; then
+  approve_resp="$(last_stack_lastdb_json POST "/api/sharing/deliveries/${delivery_id}/approve")" || {
+    echo "last-stack-deliver-status: approve failed for $delivery_id" >&2
+    exit 1
+  }
+  approved_json="$(printf '%s' "$approve_resp" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+data = d.get("data") if isinstance(d.get("data"), dict) else d
+print(json.dumps({
+    "delivery_id": data.get("delivery_id") or "",
+    "shared": data.get("shared") if isinstance(data.get("shared"), (int, float)) else 0,
+    "message_type": data.get("message_type") or "",
+}, separators=(",", ":")))
+')"
+fi
+
+if [ "$JSON" -eq 1 ]; then
+  python3 - "$publish_json" "$stage_request" "$delivery_id" "$record_count" "$approved_json" "$stage_resp" <<'PY'
+import json, sys
+pub = json.loads(sys.argv[1])
+stage_req = json.loads(sys.argv[2])
+delivery_id = sys.argv[3]
+record_count = int(sys.argv[4])
+approved = json.loads(sys.argv[5]) if sys.argv[5] != "null" else None
+stage_raw = json.loads(sys.argv[6])
+print(json.dumps({
+    "dry_run": False,
+    "publish": pub,
+    "delivery_request": stage_req,
+    "staged": {
+        "delivery_id": delivery_id,
+        "record_count": record_count,
+        "raw_note": (stage_raw.get("data") or stage_raw).get("note") if isinstance(stage_raw, dict) else "",
+    },
+    "approved": approved,
+}, indent=2))
+PY
+else
+  if [ "$APPROVE" -eq 1 ]; then
+    shared="$(printf '%s' "$approved_json" | last_stack_json_field .shared 2>/dev/null || echo 0)"
+    msg_type="$(printf '%s' "$approved_json" | last_stack_json_field .message_type 2>/dev/null || true)"
+    printf 'LAST_STACK_DELIVER_STATUS result=delivered delivery_id=%s shared=%s message_type=%s records=%s schema=%s slug=%s\n' \
+      "$delivery_id" "$shared" "${msg_type:-}" "$record_count" "$schema_hash" "$slug"
+  else
+    printf 'LAST_STACK_DELIVER_STATUS result=staged delivery_id=%s records=%s schema=%s slug=%s; re-run with --approve to send\n' \
+      "$delivery_id" "$record_count" "$schema_hash" "$slug"
+  fi
+fi

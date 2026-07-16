@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: last-stack-pr-venue [--json] <owner/repo> [repo-root]
+
+Print the PR/CR venue for a repo: github, forgejo, or lastgit.
+
+LastGit is opt-in only. A repo opts in with one of:
+  git config laststack.pr-venue lastgit
+  git config laststack.prVenue lastgit
+  .last-stack/pr-venue containing lastgit
+  LAST_STACK_LASTGIT_NATIVE_REPOS containing owner/repo
+
+Repo-local config may also set:
+  git config laststack.lastgit-slug <slug>
+  git config laststack.lastgit-ci-context <context>
+EOF
+}
+
+json=false
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  usage
+  exit 0
+fi
+if [ "${1:-}" = "--json" ]; then
+  json=true
+  shift
+fi
+
+repo="${1:-}"
+repo_root="${2:-}"
+
+if [ -z "$repo" ]; then
+  echo "LAST_STACK_PR_VENUE: missing owner/repo" >&2
+  usage
+  exit 2
+fi
+
+case "$repo" in
+  */*) ;;
+  *)
+    echo "LAST_STACK_PR_VENUE: repo must be owner/name, got: $repo" >&2
+    exit 2
+    ;;
+esac
+
+repo_name="${repo##*/}"
+default_slug="$repo_name"
+ci_context="ci-required"
+venue=""
+reason=""
+
+repo_config() {
+  key="$1"
+  if [ -n "$repo_root" ] && git -C "$repo_root" rev-parse --show-toplevel >/dev/null 2>&1; then
+    git -C "$repo_root" config --get "$key" 2>/dev/null || true
+  fi
+}
+
+normalize_venue() {
+  value="$1"
+  case "$value" in
+    github|forgejo|lastgit) printf '%s\n' "$value" ;;
+    "") ;;
+    *)
+      echo "LAST_STACK_PR_VENUE: unsupported venue '$value' for $repo" >&2
+      exit 2
+      ;;
+  esac
+}
+
+venue="$(normalize_venue "$(repo_config laststack.pr-venue)")"
+if [ -n "$venue" ]; then
+  reason="git-config:laststack.pr-venue"
+fi
+
+if [ -z "$venue" ]; then
+  venue="$(normalize_venue "$(repo_config laststack.prVenue)")"
+  if [ -n "$venue" ]; then
+    reason="git-config:laststack.prVenue"
+  fi
+fi
+
+if [ -z "$venue" ] && [ -n "$repo_root" ] && [ -f "$repo_root/.last-stack/pr-venue" ]; then
+  marker="$(sed -n '1{s/[[:space:]]*$//;p;}' "$repo_root/.last-stack/pr-venue")"
+  venue="$(normalize_venue "$marker")"
+  if [ -n "$venue" ]; then
+    reason=".last-stack/pr-venue"
+  fi
+fi
+
+list_contains_repo() {
+  haystack="$1"
+  old_ifs=$IFS
+  IFS=', '
+  for item in $haystack; do
+    if [ "$item" = "$repo" ]; then
+      IFS=$old_ifs
+      return 0
+    fi
+  done
+  IFS=$old_ifs
+  return 1
+}
+
+if [ -z "$venue" ] && list_contains_repo "${LAST_STACK_LASTGIT_NATIVE_REPOS:-}"; then
+  venue="lastgit"
+  reason="env:LAST_STACK_LASTGIT_NATIVE_REPOS"
+fi
+
+if [ -z "$venue" ] && list_contains_repo "${LAST_STACK_FORGEJO_REPOS:-}"; then
+  venue="forgejo"
+  reason="env:LAST_STACK_FORGEJO_REPOS"
+fi
+
+if [ -z "$venue" ]; then
+  case "$repo" in
+    EdgeVector/fold|EdgeVector/exemem-workspace|EdgeVector/lastgit)
+      venue="forgejo"
+      reason="default:forge-hot"
+      ;;
+    *)
+      venue="github"
+      reason="default:public-github"
+      ;;
+  esac
+fi
+
+configured_slug="$(repo_config laststack.lastgit-slug)"
+if [ -n "$configured_slug" ]; then
+  default_slug="$configured_slug"
+fi
+
+configured_context="$(repo_config laststack.lastgit-ci-context)"
+if [ -n "$configured_context" ]; then
+  ci_context="$configured_context"
+fi
+
+if [ "$json" = true ]; then
+  jq -n \
+    --arg repo "$repo" \
+    --arg repo_root "$repo_root" \
+    --arg venue "$venue" \
+    --arg lastgit_slug "$default_slug" \
+    --arg ci_context "$ci_context" \
+    --arg reason "$reason" \
+    '{repo:$repo, repo_root:$repo_root, venue:$venue, lastgit_slug:$lastgit_slug, ci_context:$ci_context, reason:$reason}'
+else
+  printf '%s\n' "$venue"
+fi
