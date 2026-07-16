@@ -434,6 +434,8 @@ printf '%s\n' \
 "$ROOT/bin/last-stack-lint-prompts" "$good_git_dash_c_probe"
 
 pickup="$ROOT/routines/kanban-pickup.md"
+"$ROOT/bin/last-stack-lint-prompts" "$pickup"
+"$ROOT/bin/last-stack-lint-prompts" "$ROOT/routines/kanban-validate.md"
 grep -q 'kanban-pickup cannot resolve' "$pickup"
 grep -q 'do \*\*not\*\* set `block_status=needs_human`' "$pickup"
 grep -q 'checkout-resolution guard' "$pickup"
