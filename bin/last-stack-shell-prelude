@@ -22,7 +22,7 @@ do
   esac
 done
 
-default_global_path="${LAST_STACK_ROOT:-$HOME/.last-stack}/bin:$HOME/.local/bin:$HOME/.bun/bin${sibling_cli_path:+:$sibling_cli_path}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+default_global_path="${LAST_STACK_ROOT:-$HOME/.last-stack}/bin${sibling_cli_path:+:$sibling_cli_path}:$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 global_path="${LAST_STACK_GLOBAL_PATH:-$default_global_path}"
 
 case ":$PATH:" in

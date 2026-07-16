@@ -65,6 +65,7 @@ last_stack_lastdb_json() {
     -o "$tmp_body"
     -w "%{http_code}"
     -X "$method"
+    -H "X-LastDB-Client: last-stack"
   )
   if [ -n "${LAST_STACK_LASTDB_USER_HASH:-}" ]; then
     curl_args+=(-H "X-User-Hash: ${LAST_STACK_LASTDB_USER_HASH}")
