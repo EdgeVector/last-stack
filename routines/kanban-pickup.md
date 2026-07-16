@@ -20,6 +20,27 @@ spawn/fan-out — sequential only). Prefer correctness; never strand a card in
 `doing` without finishing or rolling it back to `todo`. If a prior run is
 still in-flight (single-flight lock), this fire is skipped.
 
+**Run-budget guard (prevents timeout zombies):** immediately after CLI preflight,
+record a local start timestamp:
+```bash
+run_started_epoch="$(date +%s)"
+run_timeout_min="${ROUTINES_TIMEOUT_MIN:-${TIMEOUT_MIN:-45}}"
+```
+Before starting any optional work after the first claimed unit — including a
+second pickup unit, or idle smart-heal that would file **and immediately claim**
+a new card — recompute remaining seconds:
+```bash
+elapsed=$(( $(date +%s) - run_started_epoch ))
+remaining=$(( run_timeout_min * 60 - elapsed ))
+```
+Only start that optional executable work when `remaining >= 2100` (35 minutes).
+If less remains, do not claim another card. For idle mode, prefer filing the
+card only and exiting with `ok idle=program-filed` / `ok idle=filed`; if no
+clear file-only slice exists, heartbeat `noop idle nothing-safe
+reason=budget-low`. If a card has already been claimed and the budget drops
+below 600 seconds before a PR/CR URL is recorded, roll it back to `todo` rather
+than trying to beat the harness timeout.
+
 **Empty queue:** default **Idle mode: smart-heal** (below) so the fleet keeps
 self-improving between feature waves. Prefer real program / North Star work
 over random cleanup. Never invent product scope, never reopen closed planes
@@ -93,6 +114,7 @@ back to `todo` (or `pending_rollback=` in memory) per transport rules below.
   . "$last_stack/bin/last-stack-shell-prelude"
   "$last_stack/bin/last-stack-cli-preflight" git curl jq gh <board-cli> <brain-cli>
   ```
+- Record `run_started_epoch` / `run_timeout_min` for the run-budget guard above.
 - Follow the **kanban-agent** skill, **WORK mode**, yourself — that skill is the
   source of truth for the per-card lifecycle. This prompt is selection + the
   no-spawn execution contract.
@@ -295,7 +317,8 @@ Read `brain get active-programs` (project). For each active program, if:
 then either:
 - **File one** PR card to `todo` with full GOAL/STEPS/VERIFY + `Repo:`/`Base:` +
   kanban-agent header, then **immediately claim and WORK it** in this same run
-  (preferred when the slice is clear), **or**
+  only if the run-budget guard still shows at least 35 minutes remaining
+  (preferred when the slice is clear and the run is still fresh), **or**
 - File only and EXIT if the slice is large / uncertain (heartbeat
   `ok idle=program-filed slug=…`).
 Do not dump whole programs/capstones into `todo`. Prefer the most-behind program
