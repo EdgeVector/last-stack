@@ -280,6 +280,9 @@ bin/
                             non-mutating tracked-remote freshness preflight
   last-stack-brain-append-heartbeat
                             safely add a typed routine-heartbeats line
+  last-stack-board-drain-report
+                            print board position plus 1h/6h/24h pickup drain
+                            velocity from routine-heartbeats and run metadata
   last-stack-active-programs-guard
                             reject active-programs rewrites that drop program
                             headers/slugs; split closed programs into archive
