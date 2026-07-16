@@ -35,7 +35,7 @@ stripped out.
                  └──────────────────────────────────────────────────────────┘
                           │ (ready `todo` cards)
                           ▼
-   kanban-pickup ─▶ fan out one `kanban-agent` (WORK mode) per card/batch ──▶ opens PR, drives to MERGED
+   kanban-pickup ─▶ claim one card; do WORK mode inline ────────────────▶ opens PR, drives to MERGED
                           │
                           ▼
    kanban-watch  ─▶ RECONCILE: advance merged PRs, re-arm/un-stick the stragglers
@@ -68,10 +68,29 @@ The division of labour is deliberate:
   cheap, bounded, and exits, so several can run concurrently without wedging.
 
 The skills assume this pipeline exists. `kanban-agent`'s RECONCILE mode is run
-*by* `kanban-watch`; its WORK mode is fanned out *by* `kanban-pickup`; the cards
-it works are promoted *by* `program-driver` / `groom-board` and filed *by* the
-generators. **Ship the skills without the routines and the playbook has no
-engine.** That's why this pack exists.
+*by* `kanban-watch`; its WORK mode is executed inline by each scheduled
+`kanban-pickup` worker; the cards it works are promoted *by* `program-driver` /
+`groom-board` and filed *by* the generators. **Ship the skills without the
+routines and the playbook has no engine.** That's why this pack exists.
+
+### Scaling kanban-pickup workers
+
+`kanban-pickup` capacity comes from separate routines registry entries with
+separate ids and locks, all pointing at the same no-spawn prompt. Do not add
+in-process fan-out or detached agent launches to the prompt.
+
+Use the helper to write the base worker plus w2-w6 idempotently:
+
+```bash
+last-stack-kanban-pickup-workers --workers 6 \
+  --prompt-path "$HOME/.last-stack/routines/kanban-pickup.md"
+ls ~/.routines/registry/last-stack-fkanban-pickup*.toml
+```
+
+The first three workers keep the established 15-minute anchors (`:00`, `:05`,
+`:10`). Workers w4-w6 fill the half-step slots (`:02:30`, `:07:30`, `:12:30`),
+so the fleet gets a pickup slot about every 2.5 minutes without changing the
+one-card-per-fire contract.
 
 ## The two clusters
 
@@ -93,7 +112,7 @@ engine.** That's why this pack exists.
 
 | Routine | Cadence (suggested) | What it does |
 |---|---|---|
-| [`kanban-pickup`](kanban-pickup.md) | hourly | Drain the ready queue; fan out one `kanban-agent` (WORK) per card/batch. |
+| [`kanban-pickup`](kanban-pickup.md) | every 5m fleet slot, scalable with separate workers | Drain the ready queue; claim one card and run WORK mode inline. |
 | [`kanban-watch`](kanban-watch.md) | every 10–20 min | RECONCILE the board; advance merged PRs, un-stick the strays. |
 | [`kanban-validate`](kanban-validate.md) | hourly, offset from watch | VALIDATE one merged card's post-merge END STATE; move it to `done` on pass or `review` with proof/fix/blocker on fail. |
 | [`groom-board`](groom-board.md) | daily | Promote ready `backlog`→`todo`, break up epics, prune junk. |
