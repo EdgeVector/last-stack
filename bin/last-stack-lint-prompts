@@ -774,7 +774,8 @@ for path in "$@"; do
   fi
 
   heartbeat_gets="$(search_prompt_pattern 'brain[^\n]*get[^\n]*routine-heartbeats' "$path")"
-  heartbeat_gets="$(printf '%s\n' "$heartbeat_gets" | grep -v -- '--type reference' || true)"
+  heartbeat_gets="$(printf '%s\n' "$heartbeat_gets" \
+    | grep -v -E -- '--type[[:space:]]+reference|["'\'']--type["'\''][[:space:]]*,[[:space:]]*["'\'']reference["'\'']' || true)"
   if [ -n "$heartbeat_gets" ]; then
     printf '%s\n' "$heartbeat_gets"
     echo "routine-heartbeats reads must specify --type reference" >&2
