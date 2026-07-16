@@ -208,6 +208,13 @@ every incomplete NS has a named proof card; completed terminals close the NS.
    Standing rule: no `Kind: tracker` / umbrella as terminal proof; no date-only
    `DONE-WHEN` as NS completion. Design: [[design-north-star-completion-contract]].
 
+   **Product-grade proof harnesses:** prefer terminal cards whose VERIFY is
+   `last-stack-north-star-proof <north-star-slug>` (offline default; live via
+   `NORTH_STAR_PROOF_MODE=live`). Reports land in
+   `~/.last-stack/north-star-proofs/<slug>.md` with first line `PASS` /
+   `PASS-OFFLINE` / `FAIL`. DONE-WHEN:
+   `file $HOME/.last-stack/north-star-proofs/<slug>.md matches /^PASS/`.
+
 ## Guardrails
 - NEVER kill or restart the process hosting your brain/board node.
 - Triage/promote/decompose only. You do NOT ship code, open PRs, run
