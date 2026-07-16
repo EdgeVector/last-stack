@@ -433,6 +433,17 @@ printf '%s\n' \
   "Do not run git stat""us from the workspace root; resolve a checkout first." > "$good_git_dash_c_probe"
 "$ROOT/bin/last-stack-lint-prompts" "$good_git_dash_c_probe"
 
+bad_live_routine_result="$tmp/bad-live-routine-result.md"
+printf '%s\n' 'ROUTINE_RESULT outcome=ok detail=example-from-prompt' > "$bad_live_routine_result"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_live_routine_result" >/dev/null 2>&1; then
+  echo "expected literal live-looking ROUTINE_RESULT examples to fail prompt lint" >&2
+  exit 1
+fi
+
+good_placeholder_routine_result="$tmp/good-placeholder-routine-result.md"
+printf '%s\n' 'Use the ROUTINE_RESULT token followed by outcome=<ok|noop|error> detail=<one-line-outcome>.' > "$good_placeholder_routine_result"
+"$ROOT/bin/last-stack-lint-prompts" "$good_placeholder_routine_result"
+
 pickup="$ROOT/routines/kanban-pickup.md"
 grep -q 'kanban-pickup cannot resolve' "$pickup"
 grep -q 'do \*\*not\*\* set `block_status=needs_human`' "$pickup"
@@ -447,6 +458,8 @@ grep -q 'collision=<slug>:<in-flight-slug>' "$pickup"
 grep -q 'ready-but-conflicting work exists' "$pickup"
 grep -q 'Idle budget guard' "$pickup"
 grep -q 'noop no-claim reason=<reason>' "$pickup"
+grep -q 'machine trailer before exit' "$pickup"
+grep -q 'outcome=ok|noop|error detail=...' "$pickup"
 grep -q 'record `pr_url` and `branch` on the card' "$pickup"
 grep -q 'Wall-clock budget (hard)' "$pickup"
 grep -q 'idle=budget-exhausted' "$pickup"
