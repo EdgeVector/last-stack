@@ -16,26 +16,43 @@ git -C "$repo" config user.name Test
 touch "$repo/file.txt"
 git -C "$repo" add file.txt
 git -C "$repo" commit -m initial >/dev/null
+git -C "$repo" branch -M main
+initial_head="$(git -C "$repo" rev-parse HEAD)"
+git -C "$repo" update-ref refs/remotes/origin/main "$initial_head"
 
 test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/last-stack "$repo")" = "github"
 test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/fold "$repo")" = "forgejo"
 # exemem-infra is GitHub-primary since 2026-07-13 (decision-2026-07-13-exemem-infra-github-primary);
 # its forge copy is retired + archived, so it must NOT route to the forge.
 test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/exemem-infra "$repo")" = "github"
+test "$("$ROOT/bin/last-stack-pr-venue" --compare-ref EdgeVector/last-stack "$repo")" = "origin/main"
 
 git -C "$repo" config laststack.pr-venue lastgit
 git -C "$repo" config laststack.lastgit-slug last-stack-shadow
 git -C "$repo" config laststack.lastgit-ci-context smoke-required
+printf '%s\n' changed > "$repo/file.txt"
+git -C "$repo" add file.txt
+git -C "$repo" commit -m changed >/dev/null
+lastgit_head="$(git -C "$repo" rev-parse HEAD)"
+git -C "$repo" update-ref refs/remotes/lastgit/main "$lastgit_head"
 
 json="$("$ROOT/bin/last-stack-pr-venue" --json EdgeVector/last-stack "$repo")"
 printf '%s\n' "$json" | jq -e '.venue == "lastgit"' >/dev/null
 printf '%s\n' "$json" | jq -e '.lastgit_slug == "last-stack-shadow"' >/dev/null
 printf '%s\n' "$json" | jq -e '.ci_context == "smoke-required"' >/dev/null
+printf '%s\n' "$json" | jq -e '.compare_ref == "lastgit/main"' >/dev/null
+test "$("$ROOT/bin/last-stack-pr-venue" --compare-ref EdgeVector/last-stack "$repo")" = "lastgit/main"
+test "$(git -C "$repo" rev-list --count "$("$ROOT/bin/last-stack-pr-venue" --compare-ref EdgeVector/last-stack "$repo")"..HEAD)" = "0"
+
+git -C "$repo" update-ref -d refs/remotes/lastgit/main
+test "$("$ROOT/bin/last-stack-pr-venue" --compare-ref EdgeVector/last-stack "$repo")" = "origin/main"
+git -C "$repo" update-ref refs/remotes/lastgit/main "$lastgit_head"
 
 git -C "$repo" config --unset laststack.pr-venue
 mkdir -p "$repo/.last-stack"
 printf '%s\n' "lastgit" > "$repo/.last-stack/pr-venue"
 test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/last-stack "$repo")" = "lastgit"
+test "$("$ROOT/bin/last-stack-pr-venue" --compare-ref EdgeVector/last-stack "$repo")" = "lastgit/main"
 
 rm "$repo/.last-stack/pr-venue"
 test "$(LAST_STACK_LASTGIT_NATIVE_REPOS="EdgeVector/last-stack EdgeVector/other" "$ROOT/bin/last-stack-pr-venue" EdgeVector/last-stack "$repo")" = "lastgit"

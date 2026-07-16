@@ -3,9 +3,10 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'EOF'
-Usage: last-stack-pr-venue [--json] <owner/repo> [repo-root]
+Usage: last-stack-pr-venue [--json|--compare-ref] <owner/repo> [repo-root]
 
 Print the PR/CR venue for a repo: github, forgejo, or lastgit.
+With --compare-ref, print the canonical ref for local-ahead checks.
 
 LastGit is opt-in only. A repo opts in with one of:
   git config laststack.pr-venue lastgit
@@ -19,15 +20,22 @@ Repo-local config may also set:
 EOF
 }
 
-json=false
+mode=plain
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
   usage
   exit 0
 fi
-if [ "${1:-}" = "--json" ]; then
-  json=true
+while [ "${1:-}" = "--json" ] || [ "${1:-}" = "--compare-ref" ]; do
+  case "$1" in
+    --json)
+      mode=json
+      ;;
+    --compare-ref)
+      mode=compare_ref
+      ;;
+  esac
   shift
-fi
+done
 
 repo="${1:-}"
 repo_root="${2:-}"
@@ -56,6 +64,42 @@ repo_config() {
   key="$1"
   if [ -n "$repo_root" ] && git -C "$repo_root" rev-parse --show-toplevel >/dev/null 2>&1; then
     git -C "$repo_root" config --get "$key" 2>/dev/null || true
+  fi
+}
+
+remote_ref_exists() {
+  remote="$1"
+  branch="$2"
+  [ -n "$branch" ] || return 1
+  [ -n "$repo_root" ] || return 1
+  git -C "$repo_root" show-ref --verify --quiet "refs/remotes/$remote/$branch"
+}
+
+canonical_compare_ref() {
+  [ -n "$repo_root" ] || return 0
+  git -C "$repo_root" rev-parse --show-toplevel >/dev/null 2>&1 || return 0
+
+  branch="$(git -C "$repo_root" symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+
+  if [ "$venue" = "lastgit" ] && remote_ref_exists lastgit "$branch"; then
+    printf 'lastgit/%s\n' "$branch"
+    return 0
+  fi
+
+  upstream="$(git -C "$repo_root" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+  if [ -n "$upstream" ]; then
+    printf '%s\n' "$upstream"
+    return 0
+  fi
+
+  if remote_ref_exists origin "$branch"; then
+    printf 'origin/%s\n' "$branch"
+    return 0
+  fi
+
+  if remote_ref_exists origin main; then
+    printf 'origin/main\n'
+    return 0
   fi
 }
 
@@ -138,7 +182,9 @@ if [ -n "$configured_context" ]; then
   ci_context="$configured_context"
 fi
 
-if [ "$json" = true ]; then
+compare_ref="$(canonical_compare_ref)"
+
+if [ "$mode" = json ]; then
   jq -n \
     --arg repo "$repo" \
     --arg repo_root "$repo_root" \
@@ -146,7 +192,14 @@ if [ "$json" = true ]; then
     --arg lastgit_slug "$default_slug" \
     --arg ci_context "$ci_context" \
     --arg reason "$reason" \
-    '{repo:$repo, repo_root:$repo_root, venue:$venue, lastgit_slug:$lastgit_slug, ci_context:$ci_context, reason:$reason}'
+    --arg compare_ref "$compare_ref" \
+    '{repo:$repo, repo_root:$repo_root, venue:$venue, lastgit_slug:$lastgit_slug, ci_context:$ci_context, reason:$reason, compare_ref:$compare_ref}'
+elif [ "$mode" = compare_ref ]; then
+  if [ -z "$compare_ref" ]; then
+    echo "LAST_STACK_PR_VENUE: no comparison ref found for $repo" >&2
+    exit 1
+  fi
+  printf '%s\n' "$compare_ref"
 else
   printf '%s\n' "$venue"
 fi
