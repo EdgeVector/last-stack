@@ -106,6 +106,7 @@ one-card-per-fire contract.
 | [`disk-reclaim`](disk-reclaim.md) | hourly | Reclaim disk, prune merged/clean worktrees, sweep orphan processes. |
 | [`self-upgrade`](self-upgrade.md) | every 1–2 hours | Clean-only fast-forward of the install checkout + `./setup` so other routines do not stall on `LAST_STACK_ROUTINE_STALE`. |
 | [`pipeline-health`](pipeline-health.md) | every ~10 min | Keep LastGit CRs and forge (fold / forge-hot) PRs unblocked; investigate and fix anything stuck >10 minutes. |
+| [`merge-babysit`](merge-babysit.md) | every ~15 min | Self-heal stuck LastGit CRs, completing green laggards or filing P0 merge cards without turning transient backend outages into fleet-red runs. |
 | [`drain-open-prs`](drain-open-prs.md) | daily | Drive every open PR across all repos toward zero (merge or close). |
 
 ### B. The kanban / brain driving loop — pairs 1:1 with the skills

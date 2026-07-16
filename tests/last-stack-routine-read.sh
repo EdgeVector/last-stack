@@ -56,6 +56,18 @@ case "$dogfood_prompt" in
     ;;
 esac
 
+merge_babysit_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" merge-babysit)"
+if ! grep -Fq "transient shared backpressure" <<<"$merge_babysit_prompt" ||
+   ! grep -Fq "busy-node/backend-unreachable" <<<"$merge_babysit_prompt"; then
+  echo "expected merge-babysit to classify backend inventory outages as noop backpressure" >&2
+  exit 1
+fi
+if ! grep -Fq "Use \`noop\` when" <<<"$merge_babysit_prompt" ||
+   ! grep -Fq "first shared backend/inventory read is" <<<"$merge_babysit_prompt"; then
+  echo "expected merge-babysit heartbeat contract to keep backend-unreachable out of error" >&2
+  exit 1
+fi
+
 if LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" does-not-exist >/dev/null 2>"/tmp/last-stack-routine-read-missing.$$"; then
   echo "expected missing routine to fail" >&2
   exit 1
