@@ -9,7 +9,9 @@ open PRs across ALL your repos toward ZERO every day. For each open PR, decide
 whether it's still wanted, then take it to a terminal state: MERGE it
 (rebasing/resolving conflicts and fixing mechanical CI as needed), or CLOSE it
 (stale / superseded / abandoned / irrelevant) with a one-line comment saying why.
-Run ONE full sweep, then exit with a report.
+Run ONE full sweep, emit a fresh `ROUTINE_RESULT` line, then exit with a
+report. Do not keep inspecting old memory, waiting on CI, or re-enumerating once
+the report and result line are written.
 
 > You ARE authorized to merge green-CI PRs even if unreviewed, and to close PRs
 > you judge irrelevant — that's the whole point of this routine. (Decide for
@@ -53,7 +55,10 @@ last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 ## Automation memory
 If the scheduled prompt includes an `Automation memory:` path (routinesd injects
 one under `## Dispatch envelope`), read and write **that exact file**. Prefer it
-over any guessed path.
+over any guessed path. Read only a bounded recent tail, for example
+`tail -n 120 "$memory_path"`; never `cat` or paste the full historical memory
+file into the transcript. Old memory can contain prior heartbeat/result lines,
+so it is context only and must not be treated as this run's outcome.
 
 Fallback order only when no envelope path is present:
 1. `${ROUTINES_HOME:-$HOME/.routines}/memory/<automation-id>/memory.md`
@@ -165,4 +170,17 @@ Per repo: which PRs were MERGED, CLOSED (with reason), FIXED+merged, SKIPPED
 (live worktree / pending CI / draft-WIP), and FLAGGED for a human (human-gated
 prod cutover, real logic failures, ambiguous relevance). End with the remaining
 open-PR count per repo and the headline: how many drained to zero vs how many
-still need a human. Then exit.
+still need a human.
+
+Immediately before the final report, print exactly one fresh result line:
+
+```text
+ROUTINE_RESULT outcome=<ok|noop|error> actions=<N> detail=<short counters>
+```
+
+Use `ok` when this run merged, closed, fixed, commented, re-ran CI, pushed, or
+otherwise changed state. Use `noop` when the sweep completed and the only
+remaining PRs/CRs are accepted soft blockers such as recent draft WIP, pending
+CI, already-flagged human gates, or an empty fleet. Use `error` only for a real
+failure in this run. After printing `ROUTINE_RESULT` and the report, exit
+without additional tool calls.
