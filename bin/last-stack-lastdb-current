@@ -1,0 +1,259 @@
+#!/usr/bin/env bash
+# Keep LastDB Mini binaries behind one stable user-local path.
+set -euo pipefail
+
+LASTDB_HOME_DEFAULT="${LASTDB_HOME:-$HOME/.lastdb}"
+LINK_DIR_DEFAULT="${LASTDB_LINK_DIR:-$HOME/.local/bin}"
+DRY_RUN=0
+VERBOSE=0
+
+usage() {
+  cat <<'USAGE'
+last-stack-lastdb-current <command> [options]
+
+Commands:
+  set       Create/update LASTDB_HOME/current and user PATH shims.
+  check     Verify LASTDB_HOME/current and shims are canonical.
+
+Options:
+  --lastdb-home <path>       LastDB home containing current (default: ~/.lastdb)
+  --bin-dir <path>           Directory containing lastdbd and lastdb.
+                             Defaults to the resolved directory of lastdbd on PATH.
+  --link-dir <path>          Directory for CLI shims (default: ~/.local/bin)
+  --launch-agent-plist <p>   Rewrite ProgramArguments[0] and PATH entries in p
+                             to use LASTDB_HOME/current. The plist is edited on
+                             disk only; launchctl is never called.
+  --dry-run                  Print actions without changing files.
+  -v, --verbose              Print verification detail.
+  -h, --help                 Show help.
+
+The helper never starts, stops, restarts, kickstarts, or kills lastdbd.
+USAGE
+}
+
+die() {
+  printf 'last-stack-lastdb-current: %s\n' "$*" >&2
+  exit 1
+}
+
+log() {
+  printf 'last-stack-lastdb-current: %s\n' "$*"
+}
+
+run() {
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf 'DRY-RUN '
+    printf '%q ' "$@"
+    printf '\n'
+  else
+    "$@"
+  fi
+}
+
+resolve_file() {
+  local path="$1"
+  local dir target
+  while [ -L "$path" ]; do
+    dir="$(cd "$(dirname "$path")" && pwd -P)"
+    target="$(readlink "$path")"
+    case "$target" in
+      /*) path="$target" ;;
+      *) path="$dir/$target" ;;
+    esac
+  done
+  dir="$(cd "$(dirname "$path")" && pwd -P)" || return 1
+  printf '%s/%s\n' "$dir" "$(basename "$path")"
+}
+
+resolve_dir() {
+  local path="$1"
+  if [ -L "$path" ]; then
+    path="$(resolve_file "$path")"
+  fi
+  cd "$path" && pwd -P
+}
+
+discover_bin_dir() {
+  local lastdbd
+  lastdbd="$(command -v lastdbd 2>/dev/null || true)"
+  [ -n "$lastdbd" ] || die "cannot discover lastdbd on PATH; pass --bin-dir"
+  lastdbd="$(resolve_file "$lastdbd")" || die "cannot resolve lastdbd path: $lastdbd"
+  dirname "$lastdbd"
+}
+
+require_bin_dir() {
+  local bin_dir="$1"
+  [ -d "$bin_dir" ] || die "bin dir does not exist: $bin_dir"
+  [ -x "$bin_dir/lastdbd" ] || die "missing executable: $bin_dir/lastdbd"
+  [ -x "$bin_dir/lastdb" ] || die "missing executable: $bin_dir/lastdb"
+}
+
+replace_symlink() {
+  local target="$1"
+  local link="$2"
+  if [ -e "$link" ] && [ ! -L "$link" ]; then
+    die "refusing to replace non-symlink path: $link"
+  fi
+  run rm -f "$link"
+  run ln -s "$target" "$link"
+}
+
+set_current() {
+  local home="$1"
+  local bin_dir="$2"
+  local link_dir="$3"
+  local current="$home/current"
+
+  require_bin_dir "$bin_dir"
+  run mkdir -p "$home" "$link_dir"
+  replace_symlink "$bin_dir" "$current"
+  replace_symlink "$current/lastdb" "$link_dir/lastdb"
+  replace_symlink "$current/lastdbd" "$link_dir/lastdbd"
+  replace_symlink "$current/lastdb" "$link_dir/folddb"
+  log "current=$current bin_dir=$bin_dir link_dir=$link_dir"
+}
+
+rewrite_launch_agent_plist() {
+  local plist="$1"
+  local home="$2"
+  local current="$home/current"
+  local current_lastdbd="$current/lastdbd"
+  local tmp
+
+  [ -f "$plist" ] || die "launch agent plist not found: $plist"
+  tmp="$(mktemp)"
+  python3 - "$plist" "$tmp" "$current" "$current_lastdbd" <<'PY'
+import plistlib
+import sys
+
+src, dst, current, current_lastdbd = sys.argv[1:5]
+with open(src, "rb") as f:
+    data = plistlib.load(f)
+
+args = data.get("ProgramArguments")
+if not isinstance(args, list) or not args:
+    raise SystemExit("plist has no ProgramArguments array")
+if not str(args[0]).endswith("lastdbd"):
+    raise SystemExit(f"ProgramArguments[0] is not lastdbd: {args[0]}")
+args[0] = current_lastdbd
+data["ProgramArguments"] = args
+
+env = data.get("EnvironmentVariables")
+if isinstance(env, dict):
+    path = str(env.get("PATH", ""))
+    parts = [p for p in path.split(":") if p]
+    filtered = []
+    for p in parts:
+        if p == current:
+            continue
+        if p.endswith("/bin-with-upload-cap") or p.endswith("/bin-with-506"):
+            continue
+        filtered.append(p)
+    env["PATH"] = ":".join([current] + filtered)
+
+with open(dst, "wb") as f:
+    plistlib.dump(data, f, sort_keys=False)
+PY
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "would rewrite launch agent plist: $plist"
+    rm -f "$tmp"
+  else
+    cp "$plist" "$plist.bak-lastdb-current-$(date -u +%Y%m%dT%H%M%SZ)"
+    mv "$tmp" "$plist"
+    log "rewrote launch agent plist without reloading it: $plist"
+  fi
+}
+
+check_link() {
+  local label="$1"
+  local actual="$2"
+  local expected="$3"
+  local resolved_actual resolved_expected
+
+  [ -L "$actual" ] || die "$label is not a symlink: $actual"
+  resolved_actual="$(resolve_file "$actual")" || die "cannot resolve $actual"
+  resolved_expected="$(resolve_file "$expected")" || die "cannot resolve $expected"
+  if [ "$resolved_actual" != "$resolved_expected" ]; then
+    die "$label resolves to $resolved_actual, expected $resolved_expected"
+  fi
+  [ "$VERBOSE" -eq 0 ] || log "ok $label -> $resolved_actual"
+}
+
+check_current() {
+  local home="$1"
+  local bin_dir="$2"
+  local link_dir="$3"
+  local current="$home/current"
+  local current_dir expected_dir path_lastdbd path_resolved current_resolved
+
+  [ -L "$current" ] || die "current is not a symlink: $current"
+  current_dir="$(resolve_dir "$current")" || die "cannot resolve $current"
+  if [ -n "$bin_dir" ]; then
+    expected_dir="$(resolve_dir "$bin_dir")" || die "cannot resolve $bin_dir"
+    [ "$current_dir" = "$expected_dir" ] || die "current=$current_dir expected=$expected_dir"
+  fi
+
+  check_link "lastdb shim" "$link_dir/lastdb" "$current/lastdb"
+  check_link "lastdbd shim" "$link_dir/lastdbd" "$current/lastdbd"
+  check_link "folddb shim" "$link_dir/folddb" "$current/lastdb"
+
+  if path_lastdbd="$(command -v lastdbd 2>/dev/null)"; then
+    path_resolved="$(resolve_file "$path_lastdbd")"
+    current_resolved="$(resolve_file "$current/lastdbd")"
+    [ "$path_resolved" = "$current_resolved" ] || die "PATH lastdbd resolves to $path_resolved, expected $current_resolved"
+    [ "$VERBOSE" -eq 0 ] || log "ok PATH lastdbd -> $path_resolved"
+  fi
+
+  "$current/lastdbd" --version >/dev/null
+  "$current/lastdb" --version >/dev/null
+  log "ok current=$current_dir"
+}
+
+cmd="${1:-}"
+[ -n "$cmd" ] || { usage >&2; exit 2; }
+shift || true
+
+home="$LASTDB_HOME_DEFAULT"
+link_dir="$LINK_DIR_DEFAULT"
+bin_dir=""
+launch_agent_plist=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --lastdb-home) home="$2"; shift 2 ;;
+    --lastdb-home=*) home="${1#*=}"; shift ;;
+    --bin-dir) bin_dir="$2"; shift 2 ;;
+    --bin-dir=*) bin_dir="${1#*=}"; shift ;;
+    --link-dir) link_dir="$2"; shift 2 ;;
+    --link-dir=*) link_dir="${1#*=}"; shift ;;
+    --launch-agent-plist) launch_agent_plist="$2"; shift 2 ;;
+    --launch-agent-plist=*) launch_agent_plist="${1#*=}"; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    -v|--verbose) VERBOSE=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "unknown flag: $1" ;;
+  esac
+done
+
+case "$cmd" in
+  set)
+    [ -n "$bin_dir" ] || bin_dir="$(discover_bin_dir)"
+    bin_dir="$(resolve_dir "$bin_dir")"
+    set_current "$home" "$bin_dir" "$link_dir"
+    if [ -n "$launch_agent_plist" ]; then
+      rewrite_launch_agent_plist "$launch_agent_plist" "$home"
+    fi
+    ;;
+  check)
+    if [ -n "$bin_dir" ]; then
+      bin_dir="$(resolve_dir "$bin_dir")"
+    fi
+    check_current "$home" "$bin_dir" "$link_dir"
+    ;;
+  -h|--help)
+    usage
+    ;;
+  *)
+    die "unknown command: $cmd"
+    ;;
+esac
