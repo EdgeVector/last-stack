@@ -70,10 +70,15 @@ actions noted below.
   contain submodules**, so `git worktree remove` fails ("working trees containing submodules
   cannot be moved or removed") — workaround: `rm -rf <worktree-dir>` then
   `git -C <repo> worktree prune` + `git branch -D <br>` (safe when clean + no live proc).
-- **The disk hog is the single shared `fold/target`** (and `fold_dev_node/target`). Every
-  kanban worktree (`~/.cline/worktrees/<id>/fold/target`) and gstack worktree
-  (`fold/.claude/worktrees/<name>`) **symlinks into it**. Cargo never GCs it, so it grows
-  to hundreds of GB (294 GB observed). Per-worktree targets are tiny — don't chase them.
+- **The two big disk hogs:** (1) **`$HOME/.lastgit/{deploy-*,forge-*}/scratch`** —
+  full deploy/forge checkouts that accumulate to hundreds of GB; the scheduled
+  `disk-reclaim` routine **always** prunes unused children (keep live
+  lsof/docker mounts + pipeline cursors/logs). (2) the shared **`fold/target`**
+  (and `fold_dev_node/target`). Every kanban worktree
+  (`~/.cline/worktrees/<id>/fold/target`) and gstack worktree
+  (`fold/.claude/worktrees/<name>`) **may symlink into** the shared target.
+  Cargo never GCs it, so it can grow huge. Per-worktree targets are tiny —
+  don't chase them.
 - **The clutter engine = 4 ENABLED hourly scheduled tasks** that spawn a session (and for
   two of them a fresh `.claude` worktree) every hour and never tear down: `dog-food` (:05),
   `fold-dev-node` (:01), `brain-dogfooding` (:02), `check-if-kanban-tasks-are-stuck` (:07).
@@ -136,10 +141,20 @@ uniq=$(git -C "$d" cherry origin/main "$br" | grep -c '^+')   # 0 ⇒ content al
 # Branches checked out in a live worktree are auto-protected (git refuses).
 ```
 
-### 3. Disk reclaim (the shared target)
-Only when free space is low. **`cargo clean` requires quiescing the agents building into
-the shared target first.** If unsupervised and agents are actively building, surface it in
-the report rather than breaking them — UNLESS the disk is critically full (then act).
+### 3. Disk reclaim (LastGit scratch first, then shared target)
+
+**Always (every hygiene / disk-reclaim run):** prune unused
+`$HOME/.lastgit/{deploy-*,forge-*}/scratch` children and unused `ship-runs` /
+non-live `ship-checkouts` per `routines/disk-reclaim.md` step **4b**. Build a
+live-path set from `lsof` + `docker inspect` mounts under `~/.lastgit`; keep
+live trees and never delete pipeline cursors/`*.log`/`canary-state.json` or
+`primary`/`mirror-clones` roots. This is the usual multi-hundred-GB reclaim;
+do not wait for the ~30 GB floor.
+
+Only when free space is still low after scratch prune. **`cargo clean` requires
+quiescing the agents building into the shared target first.** If unsupervised and
+agents are actively building, surface it in the report rather than breaking them —
+UNLESS the disk is critically full (then act).
 
 **Atomic-swap reclaim (works even under live agents, supervised + authorized):**
 ```bash
@@ -158,9 +173,9 @@ A plain in-place `rm` races with relaunched builds for minutes and barely reclai
 
 **0-byte deadlock:** at literally 0 bytes free, the Bash tool itself can't run (it can't
 create its `/private/tmp/.../*.output` file → `ENOSPC`). Break it by freeing a few GB
-first: `rm -rf ~/code/edgevector/fold_dev_node/target` (≈36 GB) ± `pkill -9 -f
-'clippy-driver|rustc|cargo'`. If you can't run any command, ask the user to run that one
-line.
+first: unused `~/.lastgit/**/scratch` children, then
+`rm -rf ~/code/edgevector/fold_dev_node/target` (≈36 GB) ± `pkill -9 -f
+'clippy-driver|rustc|cargo'`. If you can't run any command, ask the user to run that.
 
 ### 4. Stale worktrees, sessions, processes
 - Prune `.claude/worktrees/*` only if **no live process** (`lsof -d cwd | grep <path>`) and
