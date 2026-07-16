@@ -242,6 +242,12 @@ to `review`, append a one-line note explaining what's missing, and exit.
    "$last_stack/bin/last-stack-cli-preflight" git gh curl jq kanban brain
    last_stack_require_tools git gh curl jq kanban brain
    ```
+   The prelude intentionally puts `~/.local/bin` ahead of ad-hoc checkout paths;
+   host-track-managed CLI installs should be discovered there. Before long work,
+   or whenever `brain`, `kanban`, `situations`, `lastgit`, or another shared CLI
+   behaves unexpectedly, run `host-track status` when available and the tool's
+   `which` command (for example `lastgit which`) so you do not drive a card with
+   stale binaries from a WIP worktree.
 2. **Resolve the target repo, then set up an isolated worktree** (never edit a
    shared checkout in place, and never `stash`/`reset` — sibling agents may
    share these repos). The `Repo:` header must resolve to an explicit local Git

@@ -70,13 +70,16 @@ if grep -q 'command not found' "$tmp/missing.err"; then
 fi
 
 workspace="$tmp/workspace"
+fake_home="$tmp/home"
+mkdir -p "$fake_home"
 mkdir -p "$workspace/brain/bin"
 printf '#!/bin/sh\nexit 0\n' > "$workspace/brain/bin/brain"
 chmod +x "$workspace/brain/bin/brain"
 PATH="/usr/bin:/bin"
 LAST_STACK_WORKSPACE="$workspace"
+HOME="$fake_home"
 unset LAST_STACK_GLOBAL_PATH
-export PATH LAST_STACK_WORKSPACE
+export PATH LAST_STACK_WORKSPACE HOME
 . "$ROOT/bin/last-stack-shell-prelude"
 last_stack_require_tools brain
 test "$LAST_STACK_TOOL_BRAIN" = "$workspace/brain/bin/brain"

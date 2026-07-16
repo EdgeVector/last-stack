@@ -10,6 +10,16 @@ board, keep rationale in the Brain.
 Prefer the MCP tools (`brain_*`, `kanban_*`) when the servers are connected;
 the CLI below is the fallback and uses the SAME verbs.
 
+### Host-track CLI hygiene
+
+For long-running agent work, prefer installed global CLIs over binaries from a
+random WIP checkout. Source `last-stack-shell-prelude` or otherwise ensure
+`~/.local/bin` is ahead of ad-hoc repo paths; host-track-managed installs live
+there. When `brain`, `kanban`, `situations`, `lastgit`, or another shared CLI
+misbehaves, first run `host-track status` when available and `<cmd> which` (for
+example `lastgit which`) before blaming LastDB, changing PATH by hand, or
+running a checkout-local binary.
+
 ### New repository venue default: LastGit
 
 Create new repositories in LastGit first, with `lastdb:///<slug>` as the

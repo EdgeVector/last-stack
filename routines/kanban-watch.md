@@ -67,6 +67,12 @@ envelope). Do not invent trailers when `DRIVEN_BY` is unset.
   . "$last_stack/bin/last-stack-shell-prelude"
   "$last_stack/bin/last-stack-cli-preflight" git curl jq gh <board-cli> <brain-cli>
   ```
+- The prelude must leave `~/.local/bin` ahead of ad-hoc checkout paths so
+  host-track-managed CLI installs win over stale WIP binaries. Before a heavy
+  reconcile fix, or whenever `brain`, `<board-cli>`, `situations`, `lastgit`, or
+  another shared CLI behaves oddly, run `host-track status` when available and
+  `<cmd> which` (for example `lastgit which`) before changing PATH or running a
+  checkout-local command.
 - Drive the board CLI from `<board repo dir>` with `<board CLI> ...`.
 - Follow the **kanban-agent** skill, RECONCILE mode — it is the source of truth
   for behavior; this prompt is the trigger.
