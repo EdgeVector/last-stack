@@ -59,7 +59,9 @@ This complements the existing routines:
   papercut/gap cards.
 - `kanban-pickup` (hourly) SHIPS ready `todo` cards via `kanban-agent`.
 YOU are the hourly, PROGRAM-DAG-aware promoter: walk the programs in the driving
-index and guarantee each unblocked one has its next card in `todo`.
+index and guarantee each unblocked one has its next card in `todo`. You also
+enforce the North Star **terminal verification** contract (completion-check):
+every incomplete NS has a named proof card; completed terminals close the NS.
 
 ## Setup
 - Drive the board CLI from `<board repo dir>` with `<board CLI> <cmd>`.
@@ -169,6 +171,36 @@ index and guarantee each unblocked one has its next card in `todo`.
    criterion and file ONE well-formed PR-sized card (verified against the default
    branch). Tie each generated card to a specific criterion and a real program —
    don't invent busywork. One generated card per run is enough.
+
+
+6. **North Star completion contract** (every run). After the program walk, run:
+   ```bash
+   "$last_stack/bin/last-stack-north-star-completion-check" \
+     --completion-json "$work/ns-completion.json" 2>"$work/ns-completion.err" \
+     | tee "$work/ns-completion.md"
+   ```
+   Or: `last-stack-north-star-dashboard --fetch-bodies --stdout completion`.
+   For each row in `completion.north_stars` (skip `verdict=closed`):
+   - **`ns_completable`** (terminal card `done`, NS still `in_progress`):
+     mark the brain project `status: done` via `brain put` (preserve body;
+     add a one-line `Completed: <ISO-date> terminal=<slug>` note under Terminal
+     verification). Archive the matching `active-programs` section into
+     `completed-programs` with `last-stack-active-programs-guard archive-closed`
+     when the section is clearly closed. Heartbeat `completed=<ns-slug>`.
+   - **`terminal_missing` / `definition_incomplete`**: if the NS has a concrete
+     end state, **file ONE** terminal card (prefer `Kind: pr` harness; else
+     `Kind: validation` + `DONE-WHEN`) per
+     [[sop-north-star-terminal-verification]], set `north_star` on the card,
+     and append `## Terminal verification` + `**Card:** \`<slug>\`` on the NS
+     body (edit in place; do not regenerate the whole NS). One new terminal card
+     per incomplete NS per run max.
+   - **`board_drained_ns_open`**: do not invent unrelated papercuts; promote or
+     file only the terminal verification card for that NS.
+   - Prefer generating thin-queue work for the **most-behind incomplete** NS
+     (highest live pressure or missing terminal), never for `done`/`archived`.
+
+   Standing rule: no `Kind: tracker` / umbrella as terminal proof; no date-only
+   `DONE-WHEN` as NS completion. Design: [[design-north-star-completion-contract]].
 
 ## Guardrails
 - NEVER kill or restart the process hosting your brain/board node.

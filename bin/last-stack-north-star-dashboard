@@ -3,6 +3,11 @@
 
 Read-only against the board/brain by default. Optional --put-brain writes the
 markdown snapshot into the durable brain reference `north-star-dashboard`.
+
+Also computes North Star **completion** (terminal verification contract):
+`last-stack-north-star-dashboard --stdout completion` or the wrapper
+`last-stack-north-star-completion-check`. See brain
+`sop-north-star-terminal-verification`.
 """
 
 from __future__ import annotations
@@ -47,6 +52,332 @@ NS_TOKEN_FAMILIES: dict[str, set[str]] = {
     "dogfood": {"dogfood"},
     "routine": {"routine", "routines", "last-stack"},
 }
+
+
+
+# --- North Star completion / terminal verification --------------------------
+
+TERMINAL_SECTION_RE = re.compile(
+    r"^##[ \t]+Terminal verification\b[^\n]*\n(.*?)(?=^##[ \t]|\Z)",
+    re.IGNORECASE | re.MULTILINE | re.DOTALL,
+)
+END_STATE_SECTION_RE = re.compile(
+    r"^##[ \t]+(?:End state|What \"done\" looks like|What 'done' looks like)\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+# Prefer explicit "Card:" / "Terminal card:" lines; fall back to first slug-like token.
+TERMINAL_CARD_LINE_RE = re.compile(
+    r"(?im)^\s*(?:[-*]\s*)?(?:\*\*)?(?:Card|Terminal card|Capstone(?: card)?)(?:\*\*)?\s*:\s*`?([a-z0-9][a-z0-9._-]*)`?"
+)
+BACKTICK_SLUG_RE = re.compile(r"`([a-z0-9][a-z0-9._-]{2,})`")
+DATE_ONLY_DONE_WHEN_RE = re.compile(
+    r"(?im)^\s*DONE-WHEN:\s*date\s*>=\s*\d{4}-\d{2}-\d{2}\s*$"
+)
+
+
+def has_end_state_section(body: str) -> bool:
+    return bool(END_STATE_SECTION_RE.search(body or ""))
+
+
+def parse_terminal_card_from_body(body: str) -> str:
+    """Return the named terminal card slug from ## Terminal verification, or ''."""
+    if not body:
+        return ""
+    m = TERMINAL_SECTION_RE.search(body)
+    if not m:
+        return ""
+    section = m.group(1) or ""
+    m2 = TERMINAL_CARD_LINE_RE.search(section)
+    if m2:
+        return m2.group(1).strip()
+    # First backtick slug in the section that looks like a card id (has a hyphen).
+    for hit in BACKTICK_SLUG_RE.findall(section):
+        if "-" in hit and not hit.startswith("north-star"):
+            return hit
+    return ""
+
+
+def is_terminal_shaped_card(card: dict[str, Any]) -> bool:
+    kind = str(card.get("kind") or "").lower()
+    slug = str(card.get("slug") or "").lower()
+    title = str(card.get("title") or "")
+    if kind in {"validation", "capstone"}:
+        return True
+    if "capstone" in slug:
+        return True
+    if title.upper().startswith("CAPSTONE"):
+        return True
+    if "terminal" in slug and "verification" in slug:
+        return True
+    return False
+
+
+def terminal_proof_quality(card: Optional[dict[str, Any]]) -> str:
+    """Classify how good a terminal card is as proof: good | weak | missing."""
+    if not card:
+        return "missing"
+    kind = str(card.get("kind") or "").lower()
+    body = str(card.get("body") or "")
+    # Date-only DONE-WHEN parents are weak (calendar ≠ product proof).
+    if DATE_ONLY_DONE_WHEN_RE.search(body) and kind in {"capstone", "validation", "meta"}:
+        return "weak"
+    if kind == "tracker":
+        return "weak"
+    if kind in {"pr", "validation", "capstone"} or is_terminal_shaped_card(card):
+        return "good"
+    return "weak"
+
+
+def pick_inferred_terminal(
+    member_cards: list[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    """Prefer live terminal-shaped cards, else done ones."""
+    shaped = [c for c in member_cards if is_terminal_shaped_card(c)]
+    if not shaped:
+        return None
+
+    def rank(c: dict[str, Any]) -> tuple[int, int, str]:
+        col = str(c.get("column") or "")
+        # Prefer live non-done, then done.
+        live_i = 0 if col in LIVE_COLUMNS else 1
+        kind = str(c.get("kind") or "")
+        kind_i = {"pr": 0, "validation": 1, "capstone": 2}.get(kind, 9)
+        return (live_i, kind_i, str(c.get("slug") or ""))
+
+    return sorted(shaped, key=rank)[0]
+
+
+def enrich_projects_with_bodies(
+    projects: list[dict[str, Any]],
+    *,
+    fetch: bool,
+) -> list[dict[str, Any]]:
+    """When fetch=True, brain-get bodies for North Star projects missing body."""
+    if not fetch:
+        return projects
+    out: list[dict[str, Any]] = []
+    for p in projects:
+        if not is_north_star_project(p):
+            out.append(p)
+            continue
+        if p.get("body"):
+            out.append(p)
+            continue
+        slug = str(p.get("slug") or "")
+        if not slug:
+            out.append(p)
+            continue
+        try:
+            full = run_json(["brain", "get", slug, "--type", "project", "--json"])
+            if isinstance(full, dict) and full.get("body") is not None:
+                merged = dict(p)
+                merged["body"] = full.get("body") or ""
+                # Prefer fresher status/title from get when present.
+                for k in ("status", "title", "tags"):
+                    if full.get(k) is not None:
+                        merged[k] = full[k]
+                out.append(merged)
+                continue
+        except Exception:  # noqa: BLE001 — completion is best-effort
+            pass
+        out.append(p)
+    return out
+
+
+def build_completion_for_section(
+    section: dict[str, Any],
+    rec: Optional[dict[str, Any]],
+    member_cards: list[dict[str, Any]],
+    cards_by_slug: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    body = str((rec or {}).get("body") or "")
+    has_end = has_end_state_section(body)
+    named = parse_terminal_card_from_body(body)
+    named_card = cards_by_slug.get(named) if named else None
+    inferred = pick_inferred_terminal(member_cards)
+    # Prefer explicit name when present; fall back to board inference.
+    terminal_card = named_card or inferred
+    terminal_slug = (
+        named
+        if named
+        else (str(terminal_card.get("slug")) if terminal_card else "")
+    )
+    terminal_column = str(terminal_card.get("column") or "") if terminal_card else ""
+    terminal_kind = str(terminal_card.get("kind") or "") if terminal_card else ""
+    quality = terminal_proof_quality(terminal_card)
+    if named and not named_card:
+        terminal_state = "named_missing_on_board"
+        quality = "missing"
+    elif not terminal_card:
+        terminal_state = "missing"
+    elif terminal_column == "done":
+        terminal_state = "done"
+    else:
+        terminal_state = "live"
+
+    ns_status = str(section.get("status") or "")
+    closed = ns_status in {"completed", "archived", "done"}
+    board_drained = int(section.get("live") or 0) == 0 and not closed
+    flags: list[str] = []
+    if not closed and not has_end:
+        flags.append("definition_incomplete")
+    if not closed and terminal_state in {"missing", "named_missing_on_board"}:
+        flags.append("terminal_missing")
+    if not closed and terminal_state == "live":
+        flags.append("terminal_live")
+    if terminal_state == "done":
+        flags.append("terminal_done")
+    if quality == "weak":
+        flags.append("terminal_weak")
+    if board_drained and terminal_state != "done":
+        flags.append("board_drained_ns_open")
+    if not closed and terminal_state == "done":
+        flags.append("ns_completable")
+    if closed:
+        flags.append("ns_closed")
+
+    if closed:
+        verdict = "closed"
+    elif "ns_completable" in flags:
+        verdict = "completable"
+    elif "terminal_missing" in flags or "definition_incomplete" in flags:
+        verdict = "definition_incomplete"
+    elif "board_drained_ns_open" in flags:
+        verdict = "board_drained_ns_open"
+    elif "terminal_live" in flags:
+        verdict = "in_progress"
+    else:
+        verdict = "in_progress"
+
+    return {
+        "north_star": section.get("slug"),
+        "ns_status": ns_status,
+        "has_end_state_section": has_end,
+        "named_terminal_slug": named or "",
+        "terminal_slug": terminal_slug,
+        "terminal_source": (
+            "body" if named_card else ("inferred" if inferred and terminal_card is inferred else ("body_missing_card" if named else "none"))
+        ),
+        "terminal_column": terminal_column,
+        "terminal_kind": terminal_kind,
+        "terminal_state": terminal_state,
+        "terminal_quality": quality,
+        "board_drained": board_drained,
+        "live": int(section.get("live") or 0),
+        "pct_done": int(section.get("pct_done") or 0),
+        "flags": flags,
+        "verdict": verdict,
+    }
+
+
+def attach_completion(
+    sections: list[dict[str, Any]],
+    by_slug: dict[str, dict[str, Any]],
+    groups: dict[str, list[dict[str, Any]]],
+    all_cards: list[dict[str, Any]],
+) -> dict[str, Any]:
+    cards_by_slug = {
+        str(c.get("slug")): c for c in all_cards if c.get("slug")
+    }
+    rows: list[dict[str, Any]] = []
+    for s in sections:
+        slug = str(s.get("slug") or "")
+        rec = by_slug.get(slug)
+        members = groups.get(slug, [])
+        comp = build_completion_for_section(s, rec, members, cards_by_slug)
+        s["completion"] = comp
+        rows.append(comp)
+
+    def count_flag(flag: str) -> int:
+        return sum(1 for r in rows if flag in (r.get("flags") or []))
+
+    summary = {
+        "north_stars": len(rows),
+        "closed": sum(1 for r in rows if r.get("verdict") == "closed"),
+        "completable": count_flag("ns_completable"),
+        "terminal_missing": count_flag("terminal_missing"),
+        "terminal_live": count_flag("terminal_live"),
+        "terminal_done": count_flag("terminal_done"),
+        "definition_incomplete": count_flag("definition_incomplete"),
+        "board_drained_ns_open": count_flag("board_drained_ns_open"),
+        "terminal_weak": count_flag("terminal_weak"),
+        "needs_work": False,
+    }
+    summary["needs_work"] = bool(
+        summary["completable"]
+        or summary["terminal_missing"]
+        or summary["definition_incomplete"]
+        or summary["board_drained_ns_open"]
+        or summary["terminal_weak"]
+    )
+    return {"summary": summary, "north_stars": rows}
+
+
+def render_completion_markdown(model: dict[str, Any]) -> str:
+    comp = model.get("completion") or {}
+    summary = comp.get("summary") or {}
+    rows = comp.get("north_stars") or []
+    lines: list[str] = []
+    lines.append("# North Star completion report")
+    lines.append("")
+    lines.append(f"**Generated:** `{model.get('generated_at')}`")
+    lines.append("")
+    lines.append(
+        f"- closed={summary.get('closed', 0)} · completable={summary.get('completable', 0)} · "
+        f"terminal_missing={summary.get('terminal_missing', 0)} · "
+        f"terminal_live={summary.get('terminal_live', 0)} · "
+        f"board_drained_ns_open={summary.get('board_drained_ns_open', 0)} · "
+        f"definition_incomplete={summary.get('definition_incomplete', 0)} · "
+        f"terminal_weak={summary.get('terminal_weak', 0)}"
+    )
+    lines.append("")
+    lines.append(
+        "| North Star | status | verdict | terminal | col | quality | flags |"
+    )
+    lines.append("|---|---|---|---|---|---|---|")
+    for r in rows:
+        flags = ",".join(r.get("flags") or []) or "—"
+        lines.append(
+            f"| `{r.get('north_star')}` | {r.get('ns_status')} | {r.get('verdict')} | "
+            f"`{r.get('terminal_slug') or '—'}` | {r.get('terminal_column') or '—'} | "
+            f"{r.get('terminal_quality')} | {flags} |"
+        )
+    if not rows:
+        lines.append("| _(none)_ | | | | | | |")
+    lines.append("")
+    action = [r for r in rows if r.get("verdict") in {
+        "completable", "definition_incomplete", "board_drained_ns_open"
+    } or "terminal_missing" in (r.get("flags") or [])]
+    if action:
+        lines.append("## Action queue (program-driver)")
+        lines.append("")
+        for r in action:
+            slug = r.get("north_star")
+            v = r.get("verdict")
+            if "ns_completable" in (r.get("flags") or []):
+                lines.append(
+                    f"- `{slug}`: terminal `{r.get('terminal_slug')}` is done → "
+                    f"**mark NS done (status=done)** + archive active-programs section"
+                )
+            elif "terminal_missing" in (r.get("flags") or []):
+                lines.append(
+                    f"- `{slug}`: **file terminal verification card** "
+                    f"(see [[sop-north-star-terminal-verification]])"
+                )
+            elif v == "board_drained_ns_open":
+                lines.append(
+                    f"- `{slug}`: board drained but terminal not done → "
+                    f"promote/file only terminal work (`{r.get('terminal_slug') or 'new'}`)"
+                )
+            else:
+                lines.append(f"- `{slug}`: verdict={v} flags={r.get('flags')}")
+        lines.append("")
+    lines.append(
+        "SOP: `brain get sop-north-star-terminal-verification --type sop` · "
+        "Design: `brain get design-north-star-completion-contract --type design`"
+    )
+    lines.append("")
+    return "\n".join(lines)
 
 
 def now_iso() -> str:
@@ -229,6 +560,7 @@ def build_model(
     ]
 
     hygiene = build_hygiene(sections, by_slug, groups, unattributed)
+    completion = attach_completion(sections, by_slug, groups, cards)
 
     return {
         "generated_at": now_iso(),
@@ -250,6 +582,7 @@ def build_model(
         },
         "aliases": ALIASES,
         "hygiene": hygiene,
+        "completion": completion,
     }
 
 
@@ -468,17 +801,21 @@ def render_markdown(model: dict[str, Any]) -> str:
     lines.append("## Active North Stars (live pressure)")
     lines.append("")
     lines.append(
-        "| North Star | status | backlog | todo | doing | review | done | live | %done |"
+        "| North Star | status | terminal | verdict | backlog | todo | doing | review | done | live | %done |"
     )
-    lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|")
+    lines.append("|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|")
     for s in model["active_sections"]:
         c = s["counts"]
+        comp = s.get("completion") or {}
+        term = comp.get("terminal_slug") or "—"
+        verdict = comp.get("verdict") or "—"
         lines.append(
-            f"| `{s['slug']}` | {s['status']} | {c['backlog']} | {c['todo']} | "
-            f"{c['doing']} | {c['review']} | {c['done']} | {s['live']} | {s['pct_done']}% |"
+            f"| `{s['slug']}` | {s['status']} | `{term}` | {verdict} | "
+            f"{c['backlog']} | {c['todo']} | {c['doing']} | {c['review']} | "
+            f"{c['done']} | {s['live']} | {s['pct_done']}% |"
         )
     if not model["active_sections"]:
-        lines.append("| _(none)_ | | | | | | | | |")
+        lines.append("| _(none)_ | | | | | | | | | | |")
     lines.append("")
 
     for s in model["sections"]:
@@ -490,6 +827,16 @@ def render_markdown(model: dict[str, Any]) -> str:
         lines.append("")
         lines.append(f"- **slug:** `[[{s['slug']}]]`")
         lines.append(f"- **status:** `{s['status']}`")
+        comp = s.get("completion") or {}
+        if comp:
+            lines.append(
+                f"- **terminal:** `{comp.get('terminal_slug') or '—'}` "
+                f"({comp.get('terminal_state') or 'missing'}, "
+                f"quality={comp.get('terminal_quality')}, "
+                f"verdict={comp.get('verdict')})"
+            )
+            if comp.get("flags"):
+                lines.append(f"- **completion flags:** {', '.join(comp['flags'])}")
         if not s["record_present"]:
             lines.append(
                 "- **record:** missing brain project (cards still reference this slug)"
@@ -566,12 +913,14 @@ def render_markdown(model: dict[str, Any]) -> str:
     lines.append("```bash")
     lines.append("last-stack-north-star-dashboard --put-brain --html ~/code/edgevector/north-star-dashboard.html")
     lines.append("last-stack-north-star-dashboard --stdout hygiene   # orphan/mistag report only")
+    lines.append("last-stack-north-star-completion-check            # terminal verification contract")
     lines.append("```")
     lines.append("")
     lines.append(
         "Routines: `north-star-rollup` (hourly matrix) · `north-star-hygiene` "
-        "(materialize orphan NS projects). Related: `[[active-programs]]`, "
-        "`program-rollup`."
+        "(materialize orphan NS projects) · `program-driver` (terminal feed + "
+        "completion). Related: `[[active-programs]]`, "
+        "`[[sop-north-star-terminal-verification]]`, `program-rollup`."
     )
     lines.append("")
     return "\n".join(lines)
@@ -647,10 +996,13 @@ def render_html(model: dict[str, Any]) -> str:
     rows = []
     for s in model["active_sections"]:
         c = s["counts"]
+        comp = s.get("completion") or {}
         rows.append(
             "<tr>"
             f'<td><code>{esc(s["slug"])}</code><div class="muted">{esc(s["title"])}</div></td>'
             f'<td>{esc(s["status"])}</td>'
+            f'<td><code>{esc(comp.get("terminal_slug") or "—")}</code></td>'
+            f'<td>{esc(comp.get("verdict") or "—")}</td>'
             + "".join(f"<td>{c[col]}</td>" for col in COLUMNS)
             + f'<td><b>{s["live"]}</b></td>'
             f'<td>{s["pct_done"]}%</td>'
@@ -731,11 +1083,11 @@ tr:last-child td{{border-bottom:0}} code{{font-family:ui-monospace,Menlo,monospa
   </div>
   <h2>Active matrix</h2>
   <table>
-    <thead><tr><th>North Star</th><th>status</th>
+    <thead><tr><th>North Star</th><th>status</th><th>terminal</th><th>verdict</th>
     {''.join(f'<th>{c}</th>' for c in COLUMNS)}
     <th>live</th><th>%done</th></tr></thead>
     <tbody>
-      {''.join(rows) if rows else '<tr><td colspan="9" class="muted">No active North Stars with pressure.</td></tr>'}
+      {''.join(rows) if rows else '<tr><td colspan="11" class="muted">No active North Stars with pressure.</td></tr>'}
     </tbody>
   </table>
   <h2>North Stars</h2>
@@ -841,9 +1193,19 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
     p.add_argument(
         "--stdout",
-        choices=["markdown", "json", "hygiene", "none"],
+        choices=["markdown", "json", "hygiene", "completion", "none"],
         default="markdown",
-        help="stdout format (hygiene = action report for the hygiene skill/routine)",
+        help="stdout format (hygiene = orphan report; completion = terminal contract)",
+    )
+    p.add_argument(
+        "--fetch-bodies",
+        action="store_true",
+        help="brain-get North Star bodies (needed for ## Terminal verification parse in live mode)",
+    )
+    p.add_argument(
+        "--completion-json",
+        type=Path,
+        help="write only the completion sub-object as JSON",
     )
     return p.parse_args(argv)
 
@@ -859,10 +1221,19 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 2
         else:
             cards, projects = fetch_live(args.board)
+        # Live mode needs bodies for Terminal verification; fixtures may embed body.
+        fetch_bodies = bool(args.fetch_bodies) or (
+            not args.cards_json and args.stdout in {"completion", "json", "markdown"}
+        )
+        # Always fetch for put-brain / html so terminal columns populate.
+        if args.put_brain or args.html is not None or args.completion_json:
+            fetch_bodies = True
+        projects = enrich_projects_with_bodies(projects, fetch=fetch_bodies)
         model = build_model(cards, projects)
         md = render_markdown(model)
         html_doc = render_html(model)
         hygiene_md = render_hygiene_markdown(model)
+        completion_md = render_completion_markdown(model)
 
         if args.json_out:
             args.json_out.write_text(json.dumps(model, indent=2) + "\n", encoding="utf-8")
@@ -873,6 +1244,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                 encoding="utf-8",
             )
             print(f"HYGIENE_JSON={args.hygiene_json}", file=sys.stderr)
+        if args.completion_json:
+            args.completion_json.write_text(
+                json.dumps(model.get("completion") or {}, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            print(f"COMPLETION_JSON={args.completion_json}", file=sys.stderr)
         if args.markdown:
             args.markdown.write_text(md, encoding="utf-8")
             print(f"MARKDOWN={args.markdown}", file=sys.stderr)
@@ -908,6 +1285,20 @@ def main(argv: Optional[list[str]] = None) -> int:
                 )
             else:
                 print("HYGIENE_NEEDS_WORK=0", file=sys.stderr)
+        elif args.stdout == "completion":
+            sys.stdout.write(completion_md)
+            if not completion_md.endswith("\n"):
+                sys.stdout.write("\n")
+            summary = (model.get("completion") or {}).get("summary") or {}
+            if summary.get("needs_work"):
+                print(
+                    f"COMPLETION_NEEDS_WORK=1 completable={summary.get('completable', 0)} "
+                    f"terminal_missing={summary.get('terminal_missing', 0)} "
+                    f"board_drained_ns_open={summary.get('board_drained_ns_open', 0)}",
+                    file=sys.stderr,
+                )
+            else:
+                print("COMPLETION_NEEDS_WORK=0", file=sys.stderr)
         return 0
     except Exception as exc:  # noqa: BLE001 — CLI surface
         print(f"ERROR={exc}", file=sys.stderr)
