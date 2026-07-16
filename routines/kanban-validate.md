@@ -1,8 +1,22 @@
 ---
 name: kanban-validate
 cadence: hourly, offset from kanban-watch
-description: Run one bounded post-merge END STATE validation for a merged card, then move it to done on pass or review with proof plus a fix card/blocker on fail. Never authors feature code and never runs prod cutovers.
+description: Run one bounded post-merge END STATE validation for a merged card, then move it to done on pass or leave in todo with proof + block_status plus a fix card/blocker on fail. Never authors feature code and never runs prod cutovers.
 ---
+
+## NO REVIEW COLUMN (Tom 2026-07-16 — won't-undo)
+
+There is **no `review` column**. Board columns are only:
+`backlog → todo → doing → done`.
+
+- Incomplete work: stay in `todo` or `doing`
+- Complete work: `done` only with merge/END-STATE proof
+- Intentional holds: `block_status=needs_human|deferred|design_first` + reason
+  while the card stays in `todo` (or `backlog` if dep-blocked)
+
+Never `kanban move <slug> review`. The live board rejects it. Do not invent
+a review lane on custom boards either.
+
 
 You are the post-merge validation runner. Run ONE validation pass, then exit.
 Your job is to prove the END STATE for a card whose PR already merged but whose
@@ -121,12 +135,12 @@ instead of parking inside the run.
   naming the failed card and fix card.
 - **BLOCKED:** if validation cannot run because of a known unrelated blocker,
   append or refresh `BLOCKED: awaiting <blocker-slug> for <validation>`, move
-  or leave the card in `review`, and append a `noop` heartbeat naming the
+  or leave it in `todo` with `block_status=needs_human`, and append a `noop` heartbeat naming the
   blocker. Do not file duplicate fix cards for a blocker that already has a
   card.
 - **HUMAN GATE:** if the remaining END STATE is prod/public/irreversible or
   needs human-only credentials/devices, append `BLOCKED: human gate — <why>`,
-  leave the card in `review`, and append a `noop` heartbeat.
+  leave it in `todo` with `block_status=needs_human`, and append a `noop` heartbeat.
 
 Use `<board CLI> show <slug> --json` before editing a card body so concurrent
 updates are preserved. Use a body file or stdin for all Markdown writes; never

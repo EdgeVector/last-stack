@@ -3,6 +3,20 @@ name: kanban-grooming
 description: Use when auditing or grooming Kanban board health: dependency-stub reconciliation, stale generated blockers, malformed Repo/Base/Kind headers, stale review/doing placement, superseded trackers, pickup-ready counts, or unblock accounting. Triage-only; never ships feature code.
 ---
 
+## NO REVIEW COLUMN (Tom 2026-07-16 — won't-undo)
+
+There is **no `review` column**. Board columns are only:
+`backlog → todo → doing → done`.
+
+- Incomplete work: stay in `todo` or `doing`
+- Complete work: `done` only with merge/END-STATE proof
+- Intentional holds: `block_status=needs_human|deferred|design_first` + reason
+  while the card stays in `todo` (or `backlog` if dep-blocked)
+
+Never `kanban move <slug> review`. The live board rejects it. Do not invent
+a review lane on custom boards either.
+
+
 # Kanban Grooming
 
 This skill is for board hygiene, not feature implementation. Use it with the
