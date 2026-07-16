@@ -25,6 +25,24 @@ self-improving between feature waves. Prefer real program / North Star work
 over random cleanup. Never invent product scope, never reopen closed planes
 (desktop UI, transform/view/WASM).
 
+## Wall-clock budget (hard)
+Treat each scheduled fire as a bounded foreground session, not an open-ended
+agent workspace. At the beginning of the run, record `run_started_epoch=$(date
+-u +%s)` and use elapsed wall-clock time before every expensive phase.
+
+- Do not start an idle implementation unless elapsed time is under **10
+  minutes** and the chosen change is plausibly shippable within **25 minutes**.
+- Do not start any new validation or PR/CR publish sequence after **35 minutes**
+  elapsed. Instead, move any claimed-but-unpublished card back to `todo` (or
+  leave a file-only card in `todo`), heartbeat `noop idle=budget-exhausted`, print
+  `ROUTINE_RESULT outcome=noop detail=idle=budget-exhausted`, and EXIT.
+- If elapsed time reaches **45 minutes** before a PR/CR URL has been recorded,
+  stop immediately after rollback/memory note best-effort. Do not launch a final
+  multi-command publish block near the harness timeout; the next scheduled fire
+  can reclaim cleanly.
+- Idle mode is optional when budget is tight. A clean `noop idle=budget-exhausted`
+  is better than a red harness timeout with a zombie `doing` card.
+
 ## Automation memory
 If the scheduled prompt includes an `Automation memory:` path (routinesd injects
 one under `## Dispatch envelope`), read and write **that exact file**. Prefer it
@@ -277,6 +295,9 @@ rules, same one-PR / one-worktree discipline as WORK mode.
 #### Anti-thrash (check before any idle work)
 - If rate-limited / node busy → `noop busy-node` or rate-limit EXIT (same as
   normal path).
+- If elapsed time is already **10 minutes or more**, do not start idle
+  implementation. You may file one clear small PR card if that takes only a few
+  minutes; otherwise heartbeat `noop idle=budget-exhausted` and EXIT.
 - Read automation memory (if writable) for `last_idle_at` / `last_idle_repo` /
   `last_idle_kind`. If you shipped an idle merge in the **same repo** within
   the last **2 hours**, skip that repo (try another ladder step or true noop).
