@@ -15,7 +15,8 @@ edit North Star / `active-programs` prose.
 
 This complements (does not replace):
 - `program-rollup` — prose-membership auto blocks inside `active-programs`
-- `program-driver` — promotes next program cards into `todo`
+- `program-driver` — promotes next program cards into `todo`; enforces terminal verification / NS completion
+- `last-stack-north-star-completion-check` — terminal card status (also `--stdout completion` on the dashboard binary)
 - `morning-sync` — human-gate briefing
 
 ## Automation memory
