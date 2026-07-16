@@ -261,7 +261,11 @@ to `review`, append a one-line note explaining what's missing, and exit.
    ```
    For GitHub (adjust merge command to your repo — see "Merge strategy"):
    ```bash
-   git commit -am "<msg>"
+   # Prefer last-stack-git-commit when DRIVEN_BY=routine (scheduled); falls
+   # through to plain git commit for interactive sessions.
+   "$last_stack/bin/last-stack-git-commit" -am "<msg>" \
+     || git commit -am "<msg>"
+   # PR/CR body: append "$last_stack/bin/last-stack-attribution-trailers" when non-empty
    git push -u origin HEAD
    pr_url="$(gh -R <repo> pr create --fill --base <base>)"
    branch="$(git branch --show-current)"

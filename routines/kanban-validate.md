@@ -27,6 +27,11 @@ read/write, fail loudly if the resolved path is empty or starts with
 sandbox refuses the path, note `memory_unwritable=<path>` in the heartbeat and
 continue — do not fail the whole run.
 
+## Attribution (when you land code)
+Scheduled routine: stamp landings with
+`"$last_stack/bin/last-stack-git-commit"` / `Driven-By: routine` trailers from
+the dispatch envelope. Never invent trailers in interactive sessions.
+
 ## Setup
 - Drive the board CLI from `<board repo dir>` with `<board CLI> ...`.
 - Follow the **kanban-agent** skill, VALIDATE MODE — it is the source of truth

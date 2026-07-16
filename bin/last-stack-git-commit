@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# git commit wrapper that appends routine provenance trailers when
+# DRIVEN_BY=routine (set by routinesd). Interactive use is a thin pass-through.
+#
+# Examples:
+#   last-stack-git-commit -m "fix: foo"
+#   last-stack-git-commit -am "fix: foo"
+#   last-stack-git-commit -F msg.txt
+set -euo pipefail
+
+self_dir="$(cd "$(dirname "$0")" && pwd -P)"
+trailers="$("$self_dir/last-stack-attribution-trailers" 2>/dev/null || true)"
+
+if [ -z "$trailers" ]; then
+  exec git commit "$@"
+fi
+
+msg_file=""
+passthrough=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -m|--message)
+      shift
+      [ "$#" -gt 0 ] || { echo "last-stack-git-commit: -m needs a message" >&2; exit 2; }
+      msg_file="$(mktemp)"
+      {
+        printf '%s\n\n' "$1"
+        printf '%s\n' "$trailers"
+      } >"$msg_file"
+      shift
+      ;;
+    -m*)
+      msg_file="$(mktemp)"
+      {
+        printf '%s\n\n' "${1#-m}"
+        printf '%s\n' "$trailers"
+      } >"$msg_file"
+      shift
+      ;;
+    --message=*)
+      msg_file="$(mktemp)"
+      {
+        printf '%s\n\n' "${1#--message=}"
+        printf '%s\n' "$trailers"
+      } >"$msg_file"
+      shift
+      ;;
+    -F|--file)
+      shift
+      [ "$#" -gt 0 ] || { echo "last-stack-git-commit: -F needs a file" >&2; exit 2; }
+      msg_file="$(mktemp)"
+      {
+        cat "$1"
+        printf '\n%s\n' "$trailers"
+      } >"$msg_file"
+      shift
+      ;;
+    -F*)
+      msg_file="$(mktemp)"
+      {
+        cat "${1#-F}"
+        printf '\n%s\n' "$trailers"
+      } >"$msg_file"
+      shift
+      ;;
+    --file=*)
+      msg_file="$(mktemp)"
+      {
+        cat "${1#--file=}"
+        printf '\n%s\n' "$trailers"
+      } >"$msg_file"
+      shift
+      ;;
+    *)
+      passthrough+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$msg_file" ]; then
+  echo "last-stack-git-commit: routine runs must pass -m or -F so trailers can be appended" >&2
+  exit 2
+fi
+
+cleanup() { rm -f "$msg_file"; }
+trap cleanup EXIT
+git commit "${passthrough[@]}" -F "$msg_file"

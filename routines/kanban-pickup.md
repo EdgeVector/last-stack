@@ -81,6 +81,23 @@ read/write, fail loudly if the resolved path is empty or starts with
 sandbox refuses the path, note `memory_unwritable=<path>` in the heartbeat and
 continue — do not fail the whole run.
 
+## Attribution (routine provenance — required)
+You are a **scheduled routine** (dispatch envelope + env). Interactive human
+sessions do not set `DRIVEN_BY=routine`. When you land code:
+
+1. Prefer commits via `"$last_stack/bin/last-stack-git-commit" -m "…" …` so
+   trailers are automatic. Or append `"$last_stack/bin/last-stack-attribution-trailers"`.
+2. Every commit message and every PR / LastGit CR body must end with:
+   - `Driven-By: routine`
+   - `Automation-Id: <this Automation ID>`
+   - `Run-Id: <ROUTINES_RUN_ID if set>`
+3. LastGit CR actor is already `routine:<id>` via `LASTGIT_ACTOR` — do not
+   override it to your shell username.
+4. Situations notices: `--actor routine:<Automation ID>` (or `routine:<id>`).
+
+Never invent these trailers when `DRIVEN_BY` is unset (interactive Tom-driven
+work must stay unmarked).
+
 > **No-spawn policy (hard).** NEVER use Codex `SpawnAgent` / collab agents,
 > Claude Task/subagent tools, `nohup codex|claude|grok … &`, or any other
 > background agent launch. If you cannot finish the work-unit in this session,
