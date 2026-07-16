@@ -32,6 +32,13 @@ case "$prompt" in
     exit 1
     ;;
 esac
+case "$prompt" in
+  *"then EXIT with \`ok idle=program-filed slug=...\` so the"*"next pickup fire claims it with a fresh budget"*) ;;
+  *)
+    echo "expected kanban-pickup program idle path to file and exit" >&2
+    exit 1
+    ;;
+esac
 
 dogfood_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" dogfood-rotate)"
 case "$dogfood_prompt" in

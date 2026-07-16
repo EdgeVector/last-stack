@@ -356,9 +356,8 @@ Read `brain get active-programs` (project). For each active program, if:
 - It is not human-gated / dep-blocked / capstone-as-pickup,
 then either:
 - **File one** PR card to `todo` with full GOAL/STEPS/VERIFY + `Repo:`/`Base:` +
-  kanban-agent header, then **immediately claim and WORK it** in this same run
-  only if the run-budget guard still shows at least 35 minutes remaining
-  (preferred when the slice is clear and the run is still fresh), **or**
+  kanban-agent header, then EXIT with `ok idle=program-filed slug=...` so the
+  next pickup fire claims it with a fresh budget, **or**
 - File only and EXIT if the slice is large / uncertain (heartbeat
   `ok idle=program-filed slug=…`).
 Do not dump whole programs/capstones into `todo`. Prefer the most-behind program
