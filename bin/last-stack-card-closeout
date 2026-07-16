@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# Atomic post-merge board closeout for pickup/kanban-agent.
+#
+# Usage:
+#   last-stack-card-closeout <slug> [--board-cli fkanban|kanban] \
+#     [--pr-url URL] [--branch NAME] [--force]
+#
+# 1. Optionally stamps --pr-url / --branch via add (preserves column).
+# 2. Moves the card to done (with lastdb-retry).
+# 3. Verifies show --json reports column=done; retries once if not.
+# 4. Exits 0 only when the card is in the terminal column.
+#
+# Refuse final_column=done in ROUTINE_RESULT unless this helper exits 0.
+set -euo pipefail
+
+self_dir="$(cd "$(dirname "$0")" && pwd -P)"
+slug="${1:-}"
+shift || true
+if [ -z "$slug" ]; then
+  echo "usage: last-stack-card-closeout <slug> [--board-cli fkanban|kanban] [--pr-url u] [--branch b] [--force]" >&2
+  exit 2
+fi
+
+board_cli=""
+pr_url=""
+branch=""
+force=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --board-cli) board_cli="${2:-}"; shift 2 ;;
+    --pr-url) pr_url="${2:-}"; shift 2 ;;
+    --branch) branch="${2:-}"; shift 2 ;;
+    --force) force=1; shift ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+if [ -z "$board_cli" ]; then
+  if command -v fkanban >/dev/null 2>&1; then board_cli=fkanban
+  elif command -v kanban >/dev/null 2>&1; then board_cli=kanban
+  else
+    echo "last-stack-card-closeout: need fkanban or kanban on PATH" >&2
+    exit 2
+  fi
+fi
+
+retry=( )
+if [ -x "$self_dir/last-stack-lastdb-retry" ]; then
+  retry=( "$self_dir/last-stack-lastdb-retry" --attempts 3 -- )
+fi
+
+run() {
+  if [ "${#retry[@]}" -gt 0 ]; then
+    "${retry[@]}" "$@"
+  else
+    "$@"
+  fi
+}
+
+# Stamp PR/branch without changing column (add preserves existing column).
+if [ -n "$pr_url" ] || [ -n "$branch" ]; then
+  add_args=( "$board_cli" add "$slug" )
+  [ -n "$pr_url" ] && add_args+=( --pr-url "$pr_url" )
+  [ -n "$branch" ] && add_args+=( --branch "$branch" )
+  run "${add_args[@]}"
+fi
+
+move_to_done() {
+  if [ "$force" -eq 1 ]; then
+    run "$board_cli" move "$slug" done --force
+  else
+    run "$board_cli" move "$slug" done
+  fi
+}
+
+column_of() {
+  "$board_cli" show "$slug" --json 2>/dev/null | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+c = d.get("card") or d
+print(c.get("column") or "")
+' 2>/dev/null || true
+}
+
+move_to_done || true
+col="$(column_of)"
+if [ "$col" != "done" ]; then
+  echo "last-stack-card-closeout: column=$col after first move; retrying with --force" >&2
+  force=1
+  move_to_done || true
+  col="$(column_of)"
+fi
+
+if [ "$col" != "done" ]; then
+  echo "last-stack-card-closeout: FAILED column=$col (wanted done) slug=$slug" >&2
+  exit 1
+fi
+
+echo "last-stack-card-closeout: ok slug=$slug column=done"
+exit 0
