@@ -57,6 +57,32 @@ continue — do not fail the whole run.
   with GraphQL or a helper wrapping GraphQL. Never render or run a `gh pr` JSON
   request for `isInMergeQueue`.
 
+## LastDB flap retry (bounded — try a few times)
+LastDB/Mini can flap under load (brief `service_timeout`, "node did not respond",
+"too many concurrent reads", `uds_connection_limit`, socket blips). **That is not
+an outage.** For board/brain socket commands used by pickup (claim, list, show,
+move, add, heartbeat append):
+
+1. Prefer the helper when present:
+   ```bash
+   last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+   "$last_stack/bin/last-stack-lastdb-retry" --attempts 3 --sleep-ms 750 -- \
+     <board CLI> pickup claim --json --worker "<automation-id>"
+   ```
+2. If the helper is missing, **retry the same command up to 3 total attempts**
+   with a short ~0.5–1s pause between attempts on those transient signals only.
+3. **Do not** restart `lastdbd`, do not run doctor/init, do not open an incident
+   card solely for a flap.
+4. **Do not** retry forever, and **do not** thrash on structural rejects:
+   `max_outbox_entries` / `lastdb-sync-outbox-full` → one attempt then
+   `noop busy-node board_write_rejected=…` (retrying only re-escalates).
+5. Rate-limit remains non-retryable (see guard above).
+
+Only after 3 failed attempts on a true flap signal should you heartbeat
+`noop busy-node` and EXIT. Prefer completing a claimed unit over aborting on a
+single blip mid-work: re-try the board write; if it still fails, roll the card
+back to `todo` (or `pending_rollback=` in memory) per transport rules below.
+
 ## Setup
 - Drive the board CLI from `<board repo dir>` with `<board CLI> ...`.
 - Normalize the scheduled shell before any CLI-heavy work so GUI/sandboxed
@@ -88,11 +114,13 @@ continue — do not fail the whole run.
 
 Before selecting a new card, read automation memory. If the newest unresolved
 `pending_rollback=<slug> reason=<reason>` entry exists from a prior run, first
-try `<board CLI> move <slug> todo`, append `pending_rollback_cleared=<slug>` on
-success, heartbeat `ok cards=1 worked=<slug> result=rolled-back-todo
-reason=<reason>`, and EXIT. If the board is still busy/unreachable, heartbeat
-`noop busy-node pending_rollback=<slug>` and EXIT. Do not start another
-work-unit while a prior claimed card only needs rollback reconciliation.
+try (with flap retries)
+`"$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- <board CLI> move
+<slug> todo`, append `pending_rollback_cleared=<slug>` on success, heartbeat
+`ok cards=1 worked=<slug> result=rolled-back-todo reason=<reason>`, and EXIT.
+If the board is still busy/unreachable after retries, heartbeat
+`noop busy-node pending_rollback=<slug> attempts=3` and EXIT. Do not start
+another work-unit while a prior claimed card only needs rollback reconciliation.
 
 ## Selection rule (form ONE work-unit)
 
@@ -100,7 +128,8 @@ work-unit while a prior claimed card only needs rollback reconciliation.
 CAS-claim the next card so you do not reimplement priority / overlap / races:
 
 ```bash
-CLAIM_JSON=$(<board CLI> pickup claim --json --worker "<automation-id>")
+CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
+  <board CLI> pickup claim --json --worker "<automation-id>")
 # optional: --prefer-repo owner/name --exclude-repo owner/name --max-doing N
 ```
 
@@ -111,23 +140,25 @@ CLAIM_JSON=$(<board CLI> pickup claim --json --worker "<automation-id>")
 - If `claimed=false` (`no-eligible` / `at-capacity`): go to **Nothing to pick
   up** (or heartbeat noop at-capacity and EXIT). Include useful `skipped`
   entries in the heartbeat.
-- If `pickup claim` exits nonzero before returning JSON and the output mentions
-  board-write backpressure (`max_outbox_entries`, `uds_connection_limit`, HTTP
-  503, `service_timeout`, "node did not respond", or "too many concurrent
-  reads"), no card was claimed. Treat this as temporary busy-node/no-write
-  backpressure: do not run doctor/init, do not restart anything, do not fall
-  through to manual claim, heartbeat `noop busy-node board_write_rejected=<reason>
-  no_card_claimed`, print `ROUTINE_RESULT outcome=noop
-  detail=busy_node board_write_rejected=<reason> no_card_claimed`, and EXIT. If
-  the heartbeat append itself fails with the same mutation rejection, still print
-  the `ROUTINE_RESULT outcome=noop` trailer.
+- If `pickup claim` still exits nonzero after the **bounded flap retries** above
+  and the output mentions board-write backpressure (`max_outbox_entries`,
+  `uds_connection_limit`, HTTP 503, `service_timeout`, "node did not respond",
+  or "too many concurrent reads"), no card was claimed. Treat as temporary
+  busy-node/no-write backpressure: do not run doctor/init, do not restart
+  anything, do not fall through to manual claim, heartbeat
+  `noop busy-node board_write_rejected=<reason> no_card_claimed attempts=3`,
+  print `ROUTINE_RESULT outcome=noop detail=busy_node board_write_rejected=<reason>
+  no_card_claimed`, and EXIT. If the heartbeat append itself fails with the same
+  mutation rejection, still print the `ROUTINE_RESULT outcome=noop` trailer.
 - If the CLI rejects `pickup claim` (unknown subcommand / old board binary):
   fall through to the manual steps below.
 
-1. Read only the ready queue: `<board CLI> list --column todo --json`. If the
-   read returns `service_timeout`, "node did not respond", or "too many
-   concurrent reads", treat it as busy-node backpressure: do not run doctor/init
-   or restart anything; heartbeat `kanban-pickup ... noop busy-node` and EXIT.
+1. Read only the ready queue (with the same flap-retry wrapper):
+   `"$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- <board CLI> list
+   --column todo --json`. If the read still returns `service_timeout`, "node did
+   not respond", or "too many concurrent reads" after retries, treat as
+   busy-node backpressure: do not run doctor/init or restart anything;
+   heartbeat `kanban-pickup ... noop busy-node attempts=3` and EXIT.
 2. Eligible = a card in `todo` whose body has parseable `Repo:` and `Base:`
    headers. `Repo:` must be either `owner/name` or an absolute local Git checkout
    path. Ignore `backlog` entirely.

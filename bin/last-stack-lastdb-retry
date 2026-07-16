@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# Retry a LastDB-backed CLI a few times on transient socket/busy flaps.
+#
+# Usage:
+#   last-stack-lastdb-retry [--attempts N] [--sleep-ms MS] -- <command> [args...]
+#
+# Retries ONLY transient LastDB backpressure / socket blips. Does NOT retry:
+#   - max_outbox_entries (structural; needs outbox drain, not thrash)
+#   - rate-limit / 429 (agent must stop)
+#   - claim_conflict / successful non-zero business outcomes
+#
+# Exit: propagates the last command exit code. On final failure after retries
+# still returns that exit code (caller decides noop vs error).
+
+set -euo pipefail
+
+attempts=3
+sleep_ms=750
+
+usage() {
+  cat <<'EOF'
+Usage: last-stack-lastdb-retry [--attempts N] [--sleep-ms MS] -- <command> [args...]
+
+Run <command> with up to N attempts (default 3) when stderr/stdout match
+transient LastDB flap signals. Sleep MS milliseconds between attempts
+(default 750). Never restarts lastdbd. Never retries max_outbox_entries.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --attempts)
+      attempts="${2:?}"
+      shift 2
+      ;;
+    --sleep-ms)
+      sleep_ms="${2:?}"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    *)
+      # allow bare command without --
+      break
+      ;;
+  esac
+done
+
+if [ "$#" -eq 0 ]; then
+  usage >&2
+  exit 2
+fi
+
+# Patterns that mean "try again shortly" (node busy / socket blip / brief UDS pressure).
+is_transient_flap() {
+  local text="$1"
+  printf '%s' "$text" | grep -Eiq \
+    'service_timeout|node did not respond|too many concurrent reads|uds_connection_limit|connection refused|Was there a typo in the url or port|ECONNRESET|socket.*(gone|unavailable|unreachable)|temporarily at capacity|resource has been exhausted' \
+    || return 1
+  # Structural write reject — do not thrash
+  if printf '%s' "$text" | grep -Eiq 'max_outbox_entries|lastdb-sync-outbox-full|outbox.?full'; then
+    return 1
+  fi
+  # Agent rate limit — do not thrash
+  if printf '%s' "$text" | grep -Eiq 'rate.?limit|429|limit reached'; then
+    return 1
+  fi
+  return 0
+}
+
+attempt=1
+last_rc=1
+combined=""
+
+while [ "$attempt" -le "$attempts" ]; do
+  tmp_out="$(mktemp)"
+  tmp_err="$(mktemp)"
+  set +e
+  "$@" >"$tmp_out" 2>"$tmp_err"
+  last_rc=$?
+  set -e
+  out="$(cat "$tmp_out")"
+  err="$(cat "$tmp_err")"
+  rm -f "$tmp_out" "$tmp_err"
+  combined="${out}${err}"
+
+  if [ "$last_rc" -eq 0 ]; then
+    printf '%s' "$out"
+    [ -n "$err" ] && printf '%s' "$err" >&2
+    exit 0
+  fi
+
+  if [ "$attempt" -lt "$attempts" ] && is_transient_flap "$combined"; then
+    # short backoff without a long sleep-loop (bounded attempts only)
+    if command -v python3 >/dev/null 2>&1; then
+      python3 -c "import time; time.sleep(max(0, int('${sleep_ms}'))/1000.0)"
+    else
+      # bash $(( )) is integer seconds floor; use 1s minimum on macOS sleep
+      sleep 1
+    fi
+    attempt=$((attempt + 1))
+    continue
+  fi
+
+  printf '%s' "$out"
+  [ -n "$err" ] && printf '%s' "$err" >&2
+  exit "$last_rc"
+done
+
+exit "$last_rc"

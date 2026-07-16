@@ -8,6 +8,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Keep this test hermetic even on machines with an authenticated `gh` in PATH.
+export LASTSTACK_GH_PR_JSON_FIELDS="additions assignees author autoMergeRequest baseRefName baseRefOid body changedFiles closed closedAt closingIssuesReferences comments commits createdAt deletions files fullDatabaseId headRefName headRefOid headRepository headRepositoryOwner id isCrossRepository isDraft labels latestReviews maintainerCanModify mergeCommit mergeStateStatus mergeable mergedAt mergedBy milestone number potentialMergeCommit projectCards projectItems reactionGroups reviewDecision reviewRequests reviews state statusCheckRollup title updatedAt url"
+export LASTSTACK_GH_RELEASE_JSON_FIELDS="apiUrl assets author body createdAt databaseId id isDraft isImmutable isPrerelease name publishedAt tagName tarballUrl targetCommitish uploadUrl url zipballUrl"
+export LASTSTACK_GH_RUN_VIEW_JSON_FIELDS="attempt conclusion createdAt databaseId displayTitle event headBranch headSha jobs name number startedAt status updatedAt url workflowDatabaseId workflowName"
+export LASTSTACK_GH_RUN_LIST_JSON_FIELDS="attempt conclusion createdAt databaseId displayTitle event headBranch headSha name number startedAt status updatedAt url workflowDatabaseId workflowName"
+export LASTSTACK_GH_PR_CHECKS_JSON_FIELDS="bucket completedAt description event link name startedAt state workflow"
+
 good="$tmp/good.md"
 cat > "$good" <<'GOOD'
 workspace="<WORKSPACE>"
