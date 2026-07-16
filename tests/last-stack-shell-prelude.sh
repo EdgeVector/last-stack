@@ -7,6 +7,9 @@ cleanup() {
   /bin/rm -rf "$tmp"
 }
 trap cleanup EXIT
+HOME="$tmp/home"
+mkdir -p "$HOME"
+export HOME
 
 fake_global="$tmp/global"
 mkdir -p "$fake_global"
