@@ -346,8 +346,9 @@ Steps 1–6 describe what an agent does *when invoked*. To make the loop
 **self-driving** — so cards get filed, promoted, picked up, and reconciled
 without a human kicking it each time — register the **routines** as scheduled
 agents: generators (`self-improvement-loop`, `papercut-sweep`) file work,
-`groom-board`/`program-driver` promote it, `kanban-pickup` fans out WORK agents,
-`kanban-watch`/`drain-open-prs` reconcile the stragglers, `kanban-validate`
+`groom-board`/`program-driver` promote it, separate `kanban-pickup` workers
+claim and ship one WORK card each, `kanban-watch`/`drain-open-prs` reconcile
+the stragglers, `kanban-validate`
 runs post-merge END STATE checks, and
 `program-rollup`/`consolidate-brain`/`morning-sync` keep the brain honest and
 surface the short genuinely-human decision set. See
