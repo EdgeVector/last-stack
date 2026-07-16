@@ -1,0 +1,336 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  source_dir="$(cd "$(dirname "$SOURCE")" && pwd -P)"
+  link_target="$(readlink "$SOURCE")"
+  case "$link_target" in
+    /*) SOURCE="$link_target" ;;
+    *) SOURCE="$source_dir/$link_target" ;;
+  esac
+done
+ROOT="$(cd "$(dirname "$SOURCE")/.." && pwd -P)"
+if [ -n "${HOST_TRACK_REGISTRY:-}" ]; then
+  REGISTRY="$HOST_TRACK_REGISTRY"
+elif [ -f "$ROOT/config/host-track/apps.json" ]; then
+  REGISTRY="$ROOT/config/host-track/apps.json"
+else
+  REGISTRY="$HOME/.local/share/last-stack/config/host-track/apps.json"
+fi
+STAMP_DIR="${HOST_TRACK_STAMP_DIR:-$HOME/.host-track/stamps}"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  host-track status [--json] [app]
+  host-track which <app>
+  host-track check <app>
+  host-track refresh [--force] (<app>|--all)
+
+Environment:
+  HOST_TRACK_REGISTRY   Registry JSON path (default: last-stack config)
+  HOST_TRACK_STAMP_DIR  Stamp directory (default: ~/.host-track/stamps)
+EOF
+}
+
+die() {
+  printf 'host-track: %s\n' "$*" >&2
+  exit 2
+}
+
+need_jq() {
+  command -v jq >/dev/null 2>&1 || die "jq is required"
+}
+
+expand_path() {
+  case "${1:-}" in
+    "") printf '\n' ;;
+    '$HOME') printf '%s\n' "$HOME" ;;
+    '$HOME'/*) printf '%s/%s\n' "$HOME" "${1#\$HOME/}" ;;
+    "~") printf '%s\n' "$HOME" ;;
+    "~"/*) printf '%s/%s\n' "$HOME" "${1#~/}" ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+app_json() {
+  local app="$1"
+  jq -c --arg app "$app" '.apps[]? | select(.app == $app)' "$REGISTRY"
+}
+
+require_app_json() {
+  local app="$1" json
+  json="$(app_json "$app")"
+  [ -n "$json" ] || die "unknown app: $app"
+  printf '%s\n' "$json"
+}
+
+field() {
+  local json="$1" key="$2"
+  printf '%s\n' "$json" | jq -r --arg key "$key" '.[$key] // ""'
+}
+
+git_head() {
+  local path="$1"
+  [ -n "$path" ] || return 0
+  git -C "$path" rev-parse HEAD 2>/dev/null || true
+}
+
+gate_head() {
+  local host_track="$1" remote="$2" ref="$3"
+  [ -n "$host_track" ] || return 0
+  [ -n "$remote" ] || return 0
+  [ -n "$ref" ] || return 0
+  git -C "$host_track" ls-remote "$remote" "$ref" 2>/dev/null | awk 'NR == 1 {print $1}' || true
+}
+
+command_path() {
+  local command_name="$1"
+  [ -n "$command_name" ] || return 0
+  command -v "$command_name" 2>/dev/null || true
+}
+
+status_json_for() {
+  local app="$1" json kind command_name gate gate_main host_track_raw host_track refresh_raw refresh_path
+  local gate_remote gate_ref notes exec_path host_head gate_tip stale stamp_path
+
+  json="$(require_app_json "$app")"
+  kind="$(field "$json" kind)"
+  command_name="$(field "$json" command)"
+  gate="$(field "$json" gate)"
+  gate_main="$(field "$json" gate_main)"
+  host_track_raw="$(field "$json" host_track)"
+  host_track="$(expand_path "$host_track_raw")"
+  refresh_raw="$(field "$json" refresh)"
+  refresh_path="$(expand_path "$refresh_raw")"
+  gate_remote="$(field "$json" gate_remote)"
+  gate_ref="$(field "$json" gate_ref)"
+  notes="$(field "$json" notes)"
+  exec_path="$(command_path "$command_name")"
+  host_head="$(git_head "$host_track")"
+  gate_tip="$(gate_head "$host_track" "$gate_remote" "$gate_ref")"
+  stamp_path="$STAMP_DIR/$app.json"
+
+  stale="null"
+  if [ -n "$host_head" ] && [ -n "$gate_tip" ]; then
+    if [ "$host_head" = "$gate_tip" ]; then
+      stale="false"
+    else
+      stale="true"
+    fi
+  fi
+
+  jq -n \
+    --arg app "$app" \
+    --arg command "$command_name" \
+    --arg gate "$gate" \
+    --arg gate_main "$gate_main" \
+    --arg host_track "$host_track" \
+    --arg host_head "$host_head" \
+    --arg gate_head "$gate_tip" \
+    --arg exec_path "$exec_path" \
+    --arg kind "$kind" \
+    --arg notes "$notes" \
+    --arg refresh "$refresh_path" \
+    --arg stamp "$stamp_path" \
+    --argjson stale "$stale" \
+    '{
+      app: $app,
+      command: $command,
+      gate: $gate,
+      gate_main: $gate_main,
+      host_track: $host_track,
+      host_head: ($host_head | select(length > 0) // null),
+      gate_head: ($gate_head | select(length > 0) // null),
+      exec_path: ($exec_path | select(length > 0) // null),
+      kind: $kind,
+      stale: $stale,
+      stamp: $stamp,
+      refresh: ($refresh | select(length > 0) // null),
+      notes: $notes
+    }'
+}
+
+status_plain_for() {
+  local status="$1"
+  printf '%s\n' "$status" | jq -r '
+    [
+      "app=" + .app,
+      "kind=" + .kind,
+      "command=" + .command,
+      "exec_path=" + (.exec_path // "-"),
+      "host_track=" + .host_track,
+      "host_head=" + (.host_head // "-"),
+      "gate_head=" + (.gate_head // "-"),
+      "stale=" + (.stale | tostring),
+      "notes=" + .notes
+    ] | @tsv'
+}
+
+list_apps() {
+  jq -r '.apps[]?.app' "$REGISTRY"
+}
+
+status_cmd() {
+  local json_out=0 app="" statuses=() one
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --json) json_out=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      --*) die "unknown status flag: $1" ;;
+      *) app="$1"; shift ;;
+    esac
+  done
+
+  if [ -n "$app" ]; then
+    one="$(status_json_for "$app")"
+    if [ "$json_out" -eq 1 ]; then
+      printf '%s\n' "$one"
+    else
+      status_plain_for "$one"
+    fi
+    return
+  fi
+
+  while IFS= read -r app; do
+    [ -n "$app" ] || continue
+    statuses+=("$(status_json_for "$app")")
+  done < <(list_apps)
+
+  if [ "$json_out" -eq 1 ]; then
+    printf '%s\n' "${statuses[@]}" | jq -s '.'
+  else
+    printf '%s\n' "${statuses[@]}" | while IFS= read -r one; do
+      [ -n "$one" ] || continue
+      status_plain_for "$one"
+    done
+  fi
+}
+
+which_cmd() {
+  local app="${1:-}" status exec_path
+  [ -n "$app" ] || die "which requires an app"
+  status="$(status_json_for "$app")"
+  exec_path="$(printf '%s\n' "$status" | jq -r '.exec_path // ""')"
+  [ -n "$exec_path" ] || {
+    printf 'host-track: no executable found for %s\n' "$app" >&2
+    return 1
+  }
+  printf '%s\n' "$exec_path"
+}
+
+check_cmd() {
+  local app="${1:-}" status exec_path stale
+  [ -n "$app" ] || die "check requires an app"
+  status="$(status_json_for "$app")"
+  exec_path="$(printf '%s\n' "$status" | jq -r '.exec_path // ""')"
+  stale="$(printf '%s\n' "$status" | jq -r '.stale | tostring')"
+  if [ -z "$exec_path" ]; then
+    printf 'host-track: %s executable missing\n' "$app" >&2
+    return 1
+  fi
+  if [ "$stale" = "true" ]; then
+    printf 'host-track: %s stale\n' "$app" >&2
+    return 1
+  fi
+  printf 'host-track: %s ok\n' "$app"
+}
+
+write_stamp() {
+  local app="$1" status="$2"
+  mkdir -p "$STAMP_DIR"
+  printf '%s\n' "$status" | jq --arg refreshed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '. + {refreshed_at: $refreshed_at}' > "$STAMP_DIR/$app.json"
+}
+
+refresh_app() {
+  local app="$1" force="$2" json status stale app_record refresh_path refresh_mode host_track
+  local self_upgrade setup_path
+
+  json="$(require_app_json "$app")"
+  status="$(status_json_for "$app")"
+  stale="$(printf '%s\n' "$status" | jq -r '.stale | tostring')"
+
+  if [ "$force" -eq 0 ] && [ "$stale" = "false" ]; then
+    printf 'host-track: %s already current\n' "$app"
+    write_stamp "$app" "$status"
+    return 0
+  fi
+
+  refresh_path="$(printf '%s\n' "$status" | jq -r '.refresh // ""')"
+  refresh_mode="$(field "$json" refresh_mode)"
+  host_track="$(printf '%s\n' "$status" | jq -r '.host_track')"
+
+  if [ -n "$refresh_path" ] && [ -x "$refresh_path" ]; then
+    if [ "$force" -eq 1 ]; then
+      "$refresh_path" --force
+    else
+      "$refresh_path"
+    fi
+  elif [ "$refresh_mode" = "last-stack-self-upgrade" ]; then
+    self_upgrade="$host_track/bin/last-stack-self-upgrade"
+    setup_path="$host_track/setup"
+    if [ -x "$self_upgrade" ]; then
+      "$self_upgrade" --reason=host-track-refresh
+    elif [ -d "$host_track/.git" ] && [ -x "$setup_path" ]; then
+      git -C "$host_track" pull --ff-only
+      "$setup_path"
+    else
+      printf 'host-track: %s has no usable last-stack refresh path\n' "$app" >&2
+      return 3
+    fi
+  else
+    printf 'host-track: %s has no refresh command yet\n' "$app" >&2
+    return 3
+  fi
+
+  status="$(status_json_for "$app")"
+  write_stamp "$app" "$status"
+}
+
+refresh_cmd() {
+  local force=0 all=0 app="" failures=0 rc
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --force) force=1; shift ;;
+      --all) all=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      --*) die "unknown refresh flag: $1" ;;
+      *) app="$1"; shift ;;
+    esac
+  done
+
+  if [ "$all" -eq 1 ]; then
+    while IFS= read -r app; do
+      [ -n "$app" ] || continue
+      if refresh_app "$app" "$force"; then
+        :
+      else
+        rc=$?
+        [ "$rc" -eq 3 ] || failures=$((failures + 1))
+      fi
+    done < <(list_apps)
+    [ "$failures" -eq 0 ]
+    return
+  fi
+
+  [ -n "$app" ] || die "refresh requires an app or --all"
+  refresh_app "$app" "$force"
+}
+
+main() {
+  need_jq
+  [ -f "$REGISTRY" ] || die "registry not found: $REGISTRY"
+
+  case "${1:-}" in
+    status) shift; status_cmd "$@" ;;
+    which) shift; which_cmd "$@" ;;
+    check) shift; check_cmd "$@" ;;
+    refresh) shift; refresh_cmd "$@" ;;
+    -h|--help|"") usage; exit 0 ;;
+    *) die "unknown subcommand: $1" ;;
+  esac
+}
+
+main "$@"

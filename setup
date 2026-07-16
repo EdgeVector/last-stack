@@ -295,6 +295,24 @@ ensure_codex_mcp_servers() {
   fi
 }
 
+install_host_track_shim() {
+  local src="$SOURCE_ROOT/bin/host-track"
+  local dest="$HOME/.local/bin/host-track"
+  local registry_src="$SOURCE_ROOT/config/host-track/apps.json"
+  local registry_dest="$HOME/.local/share/last-stack/config/host-track/apps.json"
+  [ -f "$src" ] || return 0
+  mkdir -p "$(dirname "$dest")"
+  [ -L "$dest" ] && rm -f "$dest"
+  _link_or_copy "$src" "$dest"
+  chmod 700 "$dest" 2>/dev/null || true
+  if [ -f "$registry_src" ]; then
+    mkdir -p "$(dirname "$registry_dest")"
+    cp -f "$registry_src" "$registry_dest"
+    chmod 600 "$registry_dest" 2>/dev/null || true
+  fi
+  echo "  host-track: $dest"
+}
+
 # ── Register every skills/<name>/SKILL.md into a target skills dir ────────────
 register_into() {
   local skills_dir="$1"
@@ -374,6 +392,7 @@ echo "Installing The Last Stack (v$(cat "$SOURCE_ROOT/VERSION")) ..."
 [ "$INSTALL_FACTORY"  -eq 1 ] && upsert_brain_kanban_block "$HOME/.factory/AGENTS.md" "factory"
 [ "$INSTALL_OPENCODE" -eq 1 ] && register_into "$HOME/.config/opencode/skills" "opencode"
 [ "$INSTALL_OPENCODE" -eq 1 ] && upsert_brain_kanban_block "$HOME/.config/opencode/AGENTS.md" "opencode"
+install_host_track_shim
 
 # ── Guard against foreign installers (e.g. gstack) stomping our skill links ────
 # Another installer that ships a same-named skill (gstack shipped a `diagram`
