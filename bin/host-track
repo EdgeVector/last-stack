@@ -24,7 +24,7 @@ usage() {
   cat >&2 <<'EOF'
 Usage:
   host-track status [--json] [app]
-  host-track which <app>
+  host-track which [--json] <app>
   host-track check <app>
   host-track refresh [--force] (<app>|--all)
 
@@ -77,6 +77,26 @@ git_head() {
   git -C "$path" rev-parse HEAD 2>/dev/null || true
 }
 
+git_head_short() {
+  local path="$1"
+  [ -n "$path" ] || return 0
+  git -C "$path" rev-parse --short HEAD 2>/dev/null || true
+}
+
+version_file() {
+  local path="$1"
+  [ -n "$path" ] || return 0
+  [ -f "$path/VERSION" ] || return 0
+  sed -n '1p' "$path/VERSION"
+}
+
+git_dirty() {
+  local path="$1"
+  [ -n "$path" ] || return 1
+  [ -d "$path/.git" ] || return 1
+  [ -z "$(git -C "$path" status --porcelain)" ]
+}
+
 gate_head() {
   local host_track="$1" remote="$2" ref="$3"
   [ -n "$host_track" ] || return 0
@@ -93,7 +113,7 @@ command_path() {
 
 status_json_for() {
   local app="$1" json kind command_name gate gate_main host_track_raw host_track refresh_raw refresh_path
-  local gate_remote gate_ref notes exec_path host_head gate_tip stale stamp_path
+  local gate_remote gate_ref notes exec_path host_head host_head_short version gate_tip stale stamp_path
 
   json="$(require_app_json "$app")"
   kind="$(field "$json" kind)"
@@ -109,6 +129,8 @@ status_json_for() {
   notes="$(field "$json" notes)"
   exec_path="$(command_path "$command_name")"
   host_head="$(git_head "$host_track")"
+  host_head_short="$(git_head_short "$host_track")"
+  version="$(version_file "$host_track")"
   gate_tip="$(gate_head "$host_track" "$gate_remote" "$gate_ref")"
   stamp_path="$STAMP_DIR/$app.json"
 
@@ -128,6 +150,8 @@ status_json_for() {
     --arg gate_main "$gate_main" \
     --arg host_track "$host_track" \
     --arg host_head "$host_head" \
+    --arg host_head_short "$host_head_short" \
+    --arg version "$version" \
     --arg gate_head "$gate_tip" \
     --arg exec_path "$exec_path" \
     --arg kind "$kind" \
@@ -142,6 +166,8 @@ status_json_for() {
       gate_main: $gate_main,
       host_track: $host_track,
       host_head: ($host_head | select(length > 0) // null),
+      host_head_short: ($host_head_short | select(length > 0) // null),
+      version: ($version | select(length > 0) // null),
       gate_head: ($gate_head | select(length > 0) // null),
       exec_path: ($exec_path | select(length > 0) // null),
       kind: $kind,
@@ -161,6 +187,7 @@ status_plain_for() {
       "command=" + .command,
       "exec_path=" + (.exec_path // "-"),
       "host_track=" + .host_track,
+      "version=" + (.version // "-"),
       "host_head=" + (.host_head // "-"),
       "gate_head=" + (.gate_head // "-"),
       "stale=" + (.stale | tostring),
@@ -209,7 +236,15 @@ status_cmd() {
 }
 
 which_cmd() {
-  local app="${1:-}" status exec_path
+  local json_out=0 app="" status exec_path
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --json) json_out=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      --*) die "unknown which flag: $1" ;;
+      *) app="$1"; shift ;;
+    esac
+  done
   [ -n "$app" ] || die "which requires an app"
   status="$(status_json_for "$app")"
   exec_path="$(printf '%s\n' "$status" | jq -r '.exec_path // ""')"
@@ -217,6 +252,10 @@ which_cmd() {
     printf 'host-track: no executable found for %s\n' "$app" >&2
     return 1
   }
+  if [ "$json_out" -eq 1 ]; then
+    printf '%s\n' "$status"
+    return
+  fi
   printf '%s\n' "$exec_path"
 }
 
@@ -274,6 +313,10 @@ refresh_app() {
     if [ -x "$self_upgrade" ]; then
       "$self_upgrade" --reason=host-track-refresh
     elif [ -d "$host_track/.git" ] && [ -x "$setup_path" ]; then
+      if ! git_dirty "$host_track"; then
+        printf 'host-track: %s host checkout is dirty; refusing fallback refresh\n' "$app" >&2
+        return 1
+      fi
       git -C "$host_track" pull --ff-only
       "$setup_path"
     else

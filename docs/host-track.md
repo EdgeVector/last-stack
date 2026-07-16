@@ -10,6 +10,7 @@ ad hoc worktrees under `~/code/edgevector`.
 host-track status --json
 host-track status lastgit
 host-track which lastgit
+host-track which last-stack --json
 host-track check lastgit
 host-track refresh lastgit
 host-track refresh --force last-stack
@@ -28,6 +29,8 @@ Each status record reports:
 - `gate_main`
 - `host_track`
 - `host_head`
+- `host_head_short`
+- `version`
 - `gate_head`
 - `exec_path`
 - `kind`
