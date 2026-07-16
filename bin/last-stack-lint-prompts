@@ -781,6 +781,15 @@ for path in "$@"; do
     fail=1
   fi
 
+  live_routine_result_examples="$(search_prompt_pattern 'ROUTINE_RESULT[[:space:]]+outcome=(ok|noop|error)([[:space:]]|$)' "$path")"
+  live_routine_result_examples="$(printf '%s\n' "$live_routine_result_examples" \
+    | grep -v -E 'Do not|Never|do not|never|unsupported|bad-|expected .*fail|literal live-looking|/tests/last-stack-lint-prompts\.sh:' || true)"
+  if [ -n "$live_routine_result_examples" ]; then
+    printf '%s\n' "$live_routine_result_examples"
+    echo "live-looking ROUTINE_RESULT example found under $path; use bracketed placeholders such as outcome=<ok|noop|error> in prompts so routinesd cannot parse prompt text as a result" >&2
+    fail=1
+  fi
+
   check_gh_json_fields "$path"
   check_aline_search_guards "$path"
   check_pipeline_health_lastgit_socket_inventory "$path"

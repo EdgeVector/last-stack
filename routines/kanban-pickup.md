@@ -234,8 +234,13 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
 6. **Shared-build-cache:** if the target repo has heavy concurrent-build risk
    and other `doing` work already targets it, prefer a different repo's card
    when one exists; else proceed with the singleton (you are not fanning out).
-7. If none are eligible, go to **Nothing to pick up** (Idle mode: smart-heal).
-   Do not invent a random feature first — follow the idle ladder.
+7. If none are eligible because all ready work collided with `doing` cards,
+   shared-build-cache, surface overlap, or another in-flight claim, heartbeat
+   `noop queue-blocked skipped=<slug:reason,...>` and EXIT. That is pipeline
+   backpressure, not idle capacity.
+8. If none are eligible because the queue is genuinely empty, go to **Nothing to
+   pick up** (Idle mode: smart-heal). Do not invent a random feature first —
+   follow the idle ladder.
 
 ## Execute — YOU are the worker (no fan-out)
 

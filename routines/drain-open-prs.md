@@ -172,11 +172,9 @@ prod cutover, real logic failures, ambiguous relevance). End with the remaining
 open-PR count per repo and the headline: how many drained to zero vs how many
 still need a human.
 
-Immediately before the final report, print exactly one fresh result line:
-
-```text
-ROUTINE_RESULT outcome=<ok|noop|error> actions=<N> detail=<short counters>
-```
+Immediately before the final report, print exactly one fresh result line using
+the `ROUTINE_RESULT` token followed by `outcome=<ok|noop|error>`,
+`actions=<N>`, and `detail=<short counters>`.
 
 Use `ok` when this run merged, closed, fixed, commented, re-ran CI, pushed, or
 otherwise changed state. Use `noop` when the sweep completed and the only
