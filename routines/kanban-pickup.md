@@ -328,6 +328,9 @@ rules, same one-PR / one-worktree discipline as WORK mode.
 - Do not run broad repo scans (`rg --files` / whole-repo `rg`) or open an idle
   worktree unless you can still finish and merge with at least a 10-minute
   harness margin. If that margin is uncertain, file one card or true-noop.
+- A run may either file one idle card **or** work one already-existing card; it
+  must not create a new synthetic idle card and then claim/work that same card
+  in the same fire.
 
 #### Anti-thrash (check before any idle work)
 - If rate-limited / node busy → `noop busy-node` or rate-limit EXIT (same as
@@ -382,13 +385,20 @@ Only if (1)–(2) yield nothing. At most one of:
   **not** run doctor/init, full canonicalize sweeps, or brain stress as idle.
 
 **4) Low-risk simplification (fallback)**  
-Ship **one** small improvement in a fresh worktree:
+File **one** small improvement for later pickup:
 - Prefer: unused private code, dead flags, clear bug with test, redundant
   wrapper, docs that block installs (dev-only).
 - Prefer repos with green CI and no open migration/human gate on that surface.
-- **Ship** (PR → merge) when confidence is high and blast radius is low.
-- **File for review** (card in `review` or PR without auto-merge) when medium
-  confidence or public API / multi-crate / data format.
+- Create a full PR-shaped kanban card in `todo` with Repo/Base/Branch/Kind,
+  GOAL/STEPS/VERIFY/END STATE, and surfaces.
+- Heartbeat `ok idle=filed slug=<slug> result=filed-card`, print the machine
+  trailer by using the `ROUTINE_RESULT` token followed by
+  `outcome=ok detail=idle=filed slug=<slug> result=filed-card`, and EXIT.
+- Do **not** immediately claim or implement the card you just created. A later
+  pickup fire will claim it through normal overlap and budget gates.
+- Only ship instead of file when the simplification is already represented by
+  an existing unblocked card before idle starts and you can merge it without
+  creating a new card first.
 - If nothing safe → step 5.
 
 **5) True noop**  
@@ -399,11 +409,13 @@ Heartbeat `noop idle nothing-safe` (distinguish from "didn't run"). EXIT.
   and `result=…` / `slug=…` / `pr=…` as applicable.
 - If automation memory is writable, append one line:
   `last_idle_at=<ISO> kind=<…> repo=<…> slug=<…>`.
-- Optional trailer: the `ROUTINE_RESULT` token followed by
-  `outcome=ok|noop detail=idle=...`.
+- Print a final trailer by using the `ROUTINE_RESULT` token followed by
+  `outcome=ok|noop detail=idle=...`, then EXIT immediately. Do not continue to
+  another card, another idle ladder step, or implementation after recording an
+  idle terminal result.
 
 ## Hard rules
-- AT MOST **two sequential work-units per run** (default one; second only if first merged and ≥35m budget left). Never spawn. Idle mode stays one action.
+- AT MOST **two sequential work-units per run** (default one; second only if first merged and ≥35m budget left). Never spawn. Idle mode stays one action: file one card or work one pre-existing card, never both.
 - Claim (`doing`) only for work **you** will execute in this session.
 - Never kill the process hosting your brain/board node or any node you didn't
   start. Never `stash`/`reset`/`clean` a shared repo — isolate with
