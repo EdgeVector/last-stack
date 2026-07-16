@@ -141,8 +141,7 @@ For every card in `doing` (from the column preview):
 3. If head-branch lookup finds an open/merged PR/CR for `kanban/<slug>` (or the
    card's `Branch:`), skip (record URL if missing, then advance normally).
 4. If `updated_at` is younger than **90 minutes**, skip (grace for long builds).
-5. If a worktree for `<slug>` exists under `~/.fkanban/worktrees` or
-   `~/.kanban/worktrees`:
+5. If a worktree for `<slug>` exists under `~/.kanban/worktrees`:
    - A live process whose command line contains that worktree path is a live
      worker: skip.
    - A dirty worktree with **no live process** is not an infinite skip. Inspect
@@ -368,8 +367,7 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
           1. Skip reclaim if `updated_at` is younger than **90 minutes** (long
              cargo/CI units are normal).
           2. Skip reclaim if a worktree exists at
-             `${WORKTREES_DIR:-$HOME/.fkanban/worktrees}/<slug>` (or
-             `~/.kanban/worktrees/<slug>`) AND either (a) it has uncommitted
+             `${WORKTREES_DIR:-$HOME/.kanban/worktrees}/<slug>` AND either (a) it has uncommitted
              changes, or (b) a process list match for that worktree path is
              live (rustc/cargo/codex/claude/agent).
           3. Otherwise `move <slug> todo`. Optionally append one line once:

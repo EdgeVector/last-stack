@@ -442,7 +442,7 @@ has no `Repo:` header (it isn't meant for this flow). For each candidate:
        to `done`. Reconcile does not start or retire fresh cards.
      - `doing`: **zombie claim**. After a **90-minute** `updated_at` grace, and
        only if no live worktree worker is present (no dirty tree / no process on
-       `~/.fkanban/worktrees/<slug>` or `~/.kanban/worktrees/<slug>`),
+       `~/.kanban/worktrees/<slug>`),
        **`move <slug> todo`** so pickup can reclaim it. CHEAP, uncapped. Never
        move these to `done`.
      - `review`: leave alone (human/BLOCKED owns it).

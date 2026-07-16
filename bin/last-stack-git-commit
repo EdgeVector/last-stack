@@ -2,6 +2,9 @@
 # git commit wrapper that appends routine provenance trailers when
 # DRIVEN_BY=routine (set by routinesd). Interactive use is a thin pass-through.
 #
+# When DRIVEN_BY=routine, also stamps a non-human git author identity derived
+# from AUTOMATION_ID so `git log --format=fuller` matches CR actor provenance.
+#
 # Examples:
 #   last-stack-git-commit -m "fix: foo"
 #   last-stack-git-commit -am "fix: foo"
@@ -14,6 +17,24 @@ trailers="$("$self_dir/last-stack-attribution-trailers" 2>/dev/null || true)"
 if [ -z "$trailers" ]; then
   exec git commit "$@"
 fi
+
+# Routine author: only when DRIVEN_BY=routine (trailers non-empty implies that).
+# Prefer AUTOMATION_ID; fall back to LASTGIT_ACTOR without the routine: prefix.
+auto_id="${AUTOMATION_ID:-}"
+if [ -z "$auto_id" ] && [ -n "${LASTGIT_ACTOR:-}" ]; then
+  auto_id="${LASTGIT_ACTOR#routine:}"
+fi
+if [ -z "$auto_id" ]; then
+  auto_id="routine"
+fi
+# Sanitize for git author email local-part
+safe_id="$(printf '%s' "$auto_id" | tr -c 'A-Za-z0-9._-' '-' | sed 's/^-*//;s/-*$//')"
+[ -n "$safe_id" ] || safe_id="routine"
+export GIT_AUTHOR_NAME="routine:${safe_id}"
+export GIT_AUTHOR_EMAIL="routine+${safe_id}@routines.local"
+# Keep committer aligned so both sides of git log read as the routine.
+export GIT_COMMITTER_NAME="${GIT_AUTHOR_NAME}"
+export GIT_COMMITTER_EMAIL="${GIT_AUTHOR_EMAIL}"
 
 msg_file=""
 passthrough=()

@@ -277,9 +277,9 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
    ```bash
    git -C "$target_repo" fetch origin
    git -C "$target_repo" worktree add \
-     "${WORKTREES_DIR:-$HOME/.fkanban/worktrees}/<lead-slug>" \
+     "${WORKTREES_DIR:-$HOME/.kanban/worktrees}/<lead-slug>" \
      -b "kanban/<lead-slug>" "origin/<base>"
-   cd "${WORKTREES_DIR:-$HOME/.fkanban/worktrees}/<lead-slug>"
+   cd "${WORKTREES_DIR:-$HOME/.kanban/worktrees}/<lead-slug>"
    ```
    Never edit a shared checkout in place; never stash/reset/clean a shared repo.
 4. **Implement** per the card brief and repo conventions. Honor OUT OF SCOPE.
