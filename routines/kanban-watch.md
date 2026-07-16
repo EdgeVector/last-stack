@@ -25,6 +25,12 @@ read/write, fail loudly if the resolved path is empty or starts with
 sandbox refuses the path, note `memory_unwritable=<path>` in the heartbeat and
 continue — do not fail the whole run.
 
+## Attribution (when you land code)
+Scheduled routine: if you commit or open a PR/CR, use
+`"$last_stack/bin/last-stack-git-commit"` / trailers
+`Driven-By: routine` + `Automation-Id:` + optional `Run-Id:` (see dispatch
+envelope). Do not invent trailers when `DRIVEN_BY` is unset.
+
 ## Action budget per wake (cheap vs heavy)
 - **CHEAP mechanical advances are NOT capped** — do EVERY applicable one this
   wake: **reclaim zombie `doing` claims** (no PR/branch/commits + no live
