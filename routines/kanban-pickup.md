@@ -314,13 +314,28 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
      and EXIT. This is an external transport
      interruption, not a harness fault; `kanban-watch` or the next pickup fire
      will reconcile the visible card state.
-6. **On MERGED:** move every shipped card in the unit to `done` and EXIT.
+6. **On MERGED (hard closeout — verify before claiming done):**
+   For every shipped slug, run the closeout helper (preferred) or equivalent:
+   ```bash
+   "$last_stack/bin/last-stack-card-closeout" <slug> \
+     --pr-url "<merged-pr-or-lastgit-cr-url>" \
+     --branch "<head-branch>"
+   ```
+   The helper stamps PR/branch, moves to `done`, and **re-reads** the card.
+   You may print `final_column=done` / "card is done" **only** after the helper
+   exits 0 (or after `show --json` proves `column=done`). If closeout fails,
+   retry once with `--force`; if still not done, heartbeat
+   `result=merged-board-closeout-failed` and EXIT without lying about column.
+   Then EXIT the run (no second unit after a failed closeout).
 7. **Genuine human-only blocker** (ambiguous spec, product judgment, human-only
    gate, dep on unmerged work): leave the branch clean, move the card(s) to
    `review`, append `BLOCKED: <why>`, and EXIT.
 8. **If you must abort mid-work** (timeout pressure, rate limit, harness death
    risk) and the PR is not open yet: move card(s) **back to `todo`** so the next
    run reclaims them. Do not leave zombie `doing` cards with no worker.
+9. **Never re-claim a card already in `done` with a merged PR** for the same
+   unit in this or a sibling fire — that is how concurrent pickups re-open
+   `doing` after a good closeout.
 
 ### Hard bans during execute
 - No nested agents / SpawnAgent / Task subagents / detached harness processes.

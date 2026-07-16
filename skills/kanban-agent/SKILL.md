@@ -307,11 +307,18 @@ to `review`, append a one-line note explaining what's missing, and exit.
    terminal state. If you drive by hand instead, loop with a **sleepless** watcher
    (`gh -R <repo> pr checks <n> --watch`, NEVER `sleep`) and on each state change act:
    - **MERGED** (`state=MERGED`) → re-read the card. If the card's `## END STATE`
-     / `VERIFY` is already proven by local checks, move it to `done`. If it
-     explicitly requires async post-merge validation that cannot finish inside
-     this WORK turn (for example a dev deploy, release run, clean-machine
-     install, or dogfood check), append a one-line
-     `BLOCKED: awaiting <specific validation>` note and move it to `review`.
+     / `VERIFY` is already proven by local checks, **close the board atomically**:
+     ```bash
+     "$last_stack/bin/last-stack-card-closeout" <slug> \
+       --pr-url "<pr-or-lastgit-cr-url>" --branch "<branch>"
+     ```
+     Only treat the unit as board-done when that helper exits 0 (it re-reads
+     `column=done`). Do not trust a bare `move … done` without verification —
+     concurrent pickups and later `add --pr-url` races have left cards in
+     `doing` after a successful move. If the card explicitly requires async
+     post-merge validation that cannot finish inside this WORK turn (dev deploy,
+     release run, clean-machine install, dogfood), append
+     `BLOCKED: awaiting <specific validation>` and move to `review` instead.
      That is the handoff contract for `kanban-validate`; do not leave it in
      `doing`, and do not pretend the END STATE is done. Prod cutovers and public
      irreversible actions are always human-gated.
