@@ -39,6 +39,13 @@ case "$prompt" in
     exit 1
     ;;
 esac
+case "$prompt" in
+  *"Live operational proof watches are bounded too"*"reason=watch-budget-reserved"*) ;;
+  *)
+    echo "expected kanban-pickup operational watches to reserve closeout budget" >&2
+    exit 1
+    ;;
+esac
 
 dogfood_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" dogfood-rotate)"
 case "$dogfood_prompt" in
