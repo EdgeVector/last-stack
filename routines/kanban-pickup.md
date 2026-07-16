@@ -166,6 +166,12 @@ back to `todo` (or `pending_rollback=` in memory) per transport rules below.
   "$last_stack/bin/last-stack-cli-preflight" git curl jq gh <board-cli> <brain-cli>
   ```
 - Record `run_started_epoch` / `run_timeout_min` for the run-budget guard above.
+  The prelude must leave `~/.local/bin` ahead of ad-hoc checkout paths so
+  host-track-managed CLI installs win over stale WIP binaries. Before expensive
+  work, or whenever `brain`, `<board-cli>`, `situations`, `lastgit`, or another
+  shared CLI behaves oddly, run `host-track status` when available and
+  `<cmd> which` (for example `lastgit which`) before changing PATH or running a
+  checkout-local command.
 - Follow the **kanban-agent** skill, **WORK mode**, yourself — that skill is the
   source of truth for the per-card lifecycle. This prompt is selection + the
   no-spawn execution contract.
