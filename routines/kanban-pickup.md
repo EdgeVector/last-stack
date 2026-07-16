@@ -4,6 +4,20 @@ cadence: every 5 minutes
 description: Drain the ready board queue fast (one unit default, optional second sequential) — YOU perform kanban-agent WORK mode yourself in an isolated worktree and drive to a MERGED PR. No subagents, no collab SpawnAgent, no background harness fan-out. If the queue is empty, run Idle mode smart-heal (program next-slice, CodeRings hotspot, or low-risk simplification) instead of no-oping.
 ---
 
+## NO REVIEW COLUMN (Tom 2026-07-16 — won't-undo)
+
+There is **no `review` column**. Board columns are only:
+`backlog → todo → doing → done`.
+
+- Incomplete work: stay in `todo` or `doing`
+- Complete work: `done` only with merge/END-STATE proof
+- Intentional holds: `block_status=needs_human|deferred|design_first` + reason
+  while the card stays in `todo` (or `backlog` if dep-blocked)
+
+Never `kanban move <slug> review`. The live board rejects it. Do not invent
+a review lane on custom boards either.
+
+
 You pick ready work and **do it yourself** — isolate in a git worktree,
 implement, open a PR/CR, drive it to MERGED. This is the WORK-mode counterpart
 to `kanban-watch` (reconcile). Do **not** do reconcile work here. Do **not**

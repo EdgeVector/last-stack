@@ -4,6 +4,20 @@ cadence: every 10–20 min
 description: Reconcile the board — advance merged PRs to `done`, re-arm/un-stick stranded in-flight PRs, and detect+unstick a merge-queue head deadlocked for over an hour (investigate root cause before dequeuing). When the sweep is quiet, optionally FILE a card for the pickup pipeline. Never authors/ships new feature code itself.
 ---
 
+## NO REVIEW COLUMN (Tom 2026-07-16 — won't-undo)
+
+There is **no `review` column**. Board columns are only:
+`backlog → todo → doing → done`.
+
+- Incomplete work: stay in `todo` or `doing`
+- Complete work: `done` only with merge/END-STATE proof
+- Intentional holds: `block_status=needs_human|deferred|design_first` + reason
+  while the card stays in `todo` (or `backlog` if dep-blocked)
+
+Never `kanban move <slug> review`. The live board rejects it. Do not invent
+a review lane on custom boards either.
+
+
 You are the board reconciler. Run ONE reconcile sweep, then exit. Your job is to
 FOLLOW the board — advance in-flight work — NOT to author or ship new feature
 code. If the sweep is quiet and you spotted something worth doing, FILE it as a
@@ -159,7 +173,7 @@ For every card in `doing` (from the column preview):
        artifact; otherwise `review` with `needs_human`).
      - Otherwise append or update exactly one line
        `DIRTY-WORKTREE-STALLED: no live worker; mixed/uncommitted worktree needs manual triage; first_seen=<ISO>; attempts=<n>`
-       and move the card to `review` with `block_status=needs_human` once
+       and leave the card in `todo` (or `doing` if mid-work) with `block_status=needs_human` with `block_status=needs_human` once
        `attempts>=3` or the first marker is older than 90 minutes. Before that,
        leave it in `doing` so a short-lived local edit is not stolen.
 6. Otherwise **`move <slug> todo`**. Note `reclaimed-zombie=<slug>` in the
@@ -405,7 +419,7 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
           heavy budget is spent OR it needs more than a mechanical fix, do NOT
           park it rotting — **RE-DISPATCH** the card (add `PR:` + `RESUME:` +
           bump `Build attempt:`, then `move <slug> todo` so the next pickup puts
-          a fresh builder on the existing branch/PR). Only leave it in `review` if
+          a fresh builder on the existing branch/PR). Only leave it in `todo` with `block_status=needs_human` if
           a human decision is genuinely required.
       - **Conflicts / DIRTY** → enter the worktree, fetch base, rebase, resolve,
         re-verify, force-push with lease. HEAVY — one/wake. If the worktree is
@@ -415,7 +429,7 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
         - mixed-scope/unrelated edits → never silently commit them. Check
           whether the named blocker is already resolved; if so, append evidence
           and move the card to `done` only when there is a verified merged
-          artifact, otherwise to `review` with `needs_human`. If not resolved,
+          artifact, otherwise in `todo` with `needs_human`. If not resolved,
           append/update the `DIRTY-WORKTREE-STALLED:` line above and escalate to
           `review` after 3 attempts or 90 minutes since `first_seen`.
         If the conflict needs product judgment, don't guess — comment flagging

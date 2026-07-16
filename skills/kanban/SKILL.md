@@ -11,6 +11,20 @@ description: |
   implement a card.
 ---
 
+## NO REVIEW COLUMN (Tom 2026-07-16 — won't-undo)
+
+There is **no `review` column**. Board columns are only:
+`backlog → todo → doing → done`.
+
+- Incomplete work: stay in `todo` or `doing`
+- Complete work: `done` only with merge/END-STATE proof
+- Intentional holds: `block_status=needs_human|deferred|design_first` + reason
+  while the card stays in `todo` (or `backlog` if dep-blocked)
+
+Never `kanban move <slug> review`. The live board rejects it. Do not invent
+a review lane on custom boards either.
+
+
 # kanban — board management
 
 kanban is a kanban task board stored in **LastDB**: a thin CLI/MCP client of a
@@ -36,7 +50,7 @@ LastDB node. Cards move through columns; every change persists in the node.
   socket-backed narrow read as the routine health check. The node URL is
   **configurable** — `init` defaults to a node running locally on your machine;
   point it elsewhere with `--node-url` / the config file (`~/.kanban/config.json`).
-- **Columns:** `backlog → todo → doing → review → done`.
+- **Columns:** `backlog → todo → doing → done`.
 
 Before doing anything non-trivial, sanity-check the setup with a socket-backed
 narrow read:
