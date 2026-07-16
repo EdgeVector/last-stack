@@ -41,6 +41,17 @@ do not hard-code it as the primary. The legacy TCP port
   primary node is already running on the socket; restarting it is harmful.
 - Health check (socket-safe): `kanban list` succeeding ⇒ node is up.
 
+### LastDB Mini binary path hygiene
+
+Prefer the stable user-local Mini path over Homebrew or ad hoc canary dirs:
+`~/.lastdb/current/{lastdb,lastdbd}` is the canonical primary binary tree, and
+`~/.local/bin/{lastdb,lastdbd,folddb}` should symlink through that `current`
+directory. Use `~/.last-stack/bin/last-stack-lastdb-current set` after a
+successful safe upgrade or deliberate canary promotion, then
+`~/.last-stack/bin/last-stack-lastdb-current check --verbose` to verify the
+shell-visible CLI and daemon binary agree. The helper never restarts/kills
+`lastdbd`; LaunchAgent reload/kickstart remains a separate supervised action.
+
 ### brain CLI — read
 
 - `brain ask "<question>"` — best search (hybrid BM25+vector). Use this first.

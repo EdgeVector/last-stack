@@ -284,6 +284,9 @@ bin/
                             reject active-programs rewrites that drop program
                             headers/slugs; split closed programs into archive
   last-stack-install-apps   download LastDB plus the usable app stack
+  last-stack-lastdb-current maintain ~/.lastdb/current plus ~/.local/bin
+                            lastdb/lastdbd/folddb shims; optionally rewrite a
+                            LaunchAgent plist without restarting lastdbd
   last-stack-uninstall      remove the registered skills
 skills/<name>/SKILL.md  one directory per skill
 instructions/brain-kanban.md

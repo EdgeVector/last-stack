@@ -144,6 +144,15 @@ if [ "$INSTALL_LASTDB" -eq 1 ]; then
   need brew
   echo "==> installing LastDB daemon"
   brew install edgevector/lastdb/lastdb
+  if [ -x "$(dirname "$0")/last-stack-lastdb-current" ]; then
+    echo "==> linking LastDB daemon through ~/.lastdb/current"
+    brew_prefix="$(brew --prefix edgevector/lastdb/lastdb 2>/dev/null || brew --prefix lastdb 2>/dev/null || true)"
+    if [ -n "$brew_prefix" ] && [ -x "$brew_prefix/bin/lastdbd" ]; then
+      "$(dirname "$0")/last-stack-lastdb-current" set --bin-dir "$brew_prefix/bin"
+    elif command -v lastdbd >/dev/null 2>&1; then
+      "$(dirname "$0")/last-stack-lastdb-current" set
+    fi
+  fi
 fi
 
 mkdir -p "$TARGET_DIR"
