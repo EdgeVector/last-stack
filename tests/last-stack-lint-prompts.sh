@@ -290,6 +290,17 @@ exit or retry one idempotent slug upsert; do not run doctor/init or restart.
 GOOD_BUSY_NODE_BACKOFF
 "$ROOT/bin/last-stack-lint-prompts" "$good_busy_node_backoff"
 
+bad_routine_result_literal="$tmp/bad-routine-result-literal.md"
+printf '%s\n' 'print `ROUTINE_RESULT outcome=noop detail=idle=nothing-safe` before exit' > "$bad_routine_result_literal"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_routine_result_literal" >/dev/null 2>&1; then
+  echo "expected literal ROUTINE_RESULT outcome= prompt text to fail prompt lint" >&2
+  exit 1
+fi
+
+good_routine_result_literal="$tmp/good-routine-result-literal.md"
+printf '%s\n' 'print the `ROUTINE_RESULT` token followed by `outcome=noop detail=idle=nothing-safe` before exit' > "$good_routine_result_literal"
+"$ROOT/bin/last-stack-lint-prompts" "$good_routine_result_literal"
+
 bad_default_board_unscoped="$tmp/bad-default-board-unscoped.md"
 printf '%s\n' "Use workspace \`<workspace>\`, board CLI \`<board-cli>\`, default bo""ard \`<board>\`, and global CLIs from PATH." > "$bad_default_board_unscoped"
 if "$ROOT/bin/last-stack-lint-prompts" "$bad_default_board_unscoped" >/dev/null 2>&1; then

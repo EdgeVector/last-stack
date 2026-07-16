@@ -61,7 +61,8 @@ continue — do not fail the whole run.
    unreachable", or "read route not reachable"), do not run doctor/init and do
    not restart anything. Treat this as a soft blocker for this sweep: write a
    memory note if writable, heartbeat `kanban-validate <ISO-ts> noop
-   board-read-unavailable`, print `ROUTINE_RESULT outcome=noop
+   board-read-unavailable`, print the machine trailer by using the
+   `ROUTINE_RESULT` token followed by `outcome=noop
    detail=board-read-unavailable`, and exit. A red routine here only files
    duplicate triage for a transient board transport condition.
 2. Consider only cards in:

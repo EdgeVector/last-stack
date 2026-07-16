@@ -18,10 +18,16 @@ default_pr_checks_json_fields="bucket completedAt description event link name st
 gh_json_fields() {
   local fallback="$1"
   local fields
+  local gh_output
   shift
 
   if command -v gh >/dev/null 2>&1; then
-    fields="$("$@" --json 2>&1 | awk '
+    if command -v timeout >/dev/null 2>&1; then
+      gh_output="$(timeout 5s "$@" --json 2>&1 || true)"
+    else
+      gh_output="$("$@" --json 2>&1 || true)"
+    fi
+    fields="$(printf '%s\n' "$gh_output" | awk '
       /^[[:space:]]+[A-Za-z][A-Za-z0-9_]*[[:space:]]*$/ {
         gsub(/^[[:space:]]+|[[:space:]]+$/, "", $0)
         print
@@ -199,6 +205,19 @@ check_pipeline_health_lastgit_socket_inventory() {
 
   if grep -Eiq 'LASTGIT_CODE_SOCKET|\.lastgit/code|code node|both forge nodes' "$file"; then
     printf '%s\n' "$file: pipeline-health references retired LastGit code socket inventory" >&2
+    fail=1
+  fi
+}
+
+check_routine_result_prompt_literals() {
+  local root="$1"
+  local matches
+
+  matches="$(search_prompt_pattern 'ROUTINE_RESULT[[:space:]]+outcome=' "$root")"
+  if [ -n "$matches" ]; then
+    printf '%s\n' "$matches" >&2
+    printf '%s\n' \
+      "prompt text must not contain literal routine-result trailers; codex echoes prompts and routinesd may parse the echoed prompt as a result" >&2
     fail=1
   fi
 }
@@ -765,6 +784,7 @@ for path in "$@"; do
   check_gh_json_fields "$path"
   check_aline_search_guards "$path"
   check_pipeline_health_lastgit_socket_inventory "$path"
+  check_routine_result_prompt_literals "$path"
   check_admin_ui_repo_targets "$path"
   check_raw_markdown_shell_blocks "$path"
   check_default_board_scope "$path"

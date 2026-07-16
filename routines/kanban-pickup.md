@@ -173,9 +173,10 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
   busy-node/no-write backpressure: do not run doctor/init, do not restart
   anything, do not fall through to manual claim, heartbeat
   `noop busy-node board_write_rejected=<reason> no_card_claimed attempts=3`,
-  print `ROUTINE_RESULT outcome=noop detail=busy_node board_write_rejected=<reason>
-  no_card_claimed`, and EXIT. If the heartbeat append itself fails with the same
-  mutation rejection, still print the `ROUTINE_RESULT outcome=noop` trailer.
+  print the machine trailer by using the `ROUTINE_RESULT` token followed by
+  `outcome=noop detail=busy_node board_write_rejected=<reason> no_card_claimed`,
+  and EXIT. If the heartbeat append itself fails with the same mutation
+  rejection, still print the machine trailer with `outcome=noop`.
 - If the CLI rejects `pickup claim` (unknown subcommand / old board binary):
   fall through to the manual steps below.
 
@@ -266,9 +267,10 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
      that board write also fails, append one automation-memory line
      `pending_rollback=<slug> reason=<transport-unavailable>` when writable,
      heartbeat `ok cards=1 worked=<slug> result=rolled-back-todo-unconfirmed
-     reason=<transport-unavailable>`, print `ROUTINE_RESULT outcome=ok
-     detail=worked=<slug> pr=none final_column=todo-unconfirmed
-     reason=<transport-unavailable>`, and EXIT. This is an external transport
+     reason=<transport-unavailable>`, print the machine trailer by using the
+     `ROUTINE_RESULT` token followed by `outcome=ok detail=worked=<slug>
+     pr=none final_column=todo-unconfirmed reason=<transport-unavailable>`,
+     and EXIT. This is an external transport
      interruption, not a harness fault; `kanban-watch` or the next pickup fire
      will reconcile the visible card state.
 6. **On MERGED:** move every shipped card in the unit to `done` and EXIT.
@@ -376,7 +378,8 @@ Heartbeat `noop idle nothing-safe` (distinguish from "didn't run"). EXIT.
   and `result=…` / `slug=…` / `pr=…` as applicable.
 - If automation memory is writable, append one line:
   `last_idle_at=<ISO> kind=<…> repo=<…> slug=<…>`.
-- Optional trailer: `ROUTINE_RESULT outcome=ok|noop detail=idle=…`.
+- Optional trailer: the `ROUTINE_RESULT` token followed by
+  `outcome=ok|noop detail=idle=...`.
 
 ## Hard rules
 - AT MOST **two sequential work-units per run** (default one; second only if first merged and ≥35m budget left). Never spawn. Idle mode stays one action.
@@ -412,4 +415,5 @@ any, final column (`done` / `review` / rolled-back `todo`); or idle outcome
 >
 > Do **not** report `spawned=` or child thread ids — this routine does not spawn.
 > Optional machine trailer (helps the routines dashboard): print a final line
-> `ROUTINE_RESULT outcome=ok|noop|error detail=…` before exit.
+> a machine trailer before exit: the token `ROUTINE_RESULT`, then
+> `outcome=ok|noop|error detail=...`.
