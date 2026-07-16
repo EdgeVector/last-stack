@@ -470,6 +470,8 @@ grep -q 'record `pr_url` and `branch` on the card' "$pickup"
 grep -q 'Wall-clock budget (hard)' "$pickup"
 grep -q 'idle=budget-exhausted' "$pickup"
 grep -q 'Do not start any new validation or PR/CR publish sequence after \*\*35 minutes\*\*' "$pickup"
+grep -q 'Live operational proof watches are bounded too' "$pickup"
+grep -q 'reason=watch-budget-reserved' "$pickup"
 grep -q 'host-track status' "$pickup"
 grep -q '<cmd> which' "$pickup"
 
