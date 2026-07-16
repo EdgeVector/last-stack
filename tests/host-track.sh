@@ -24,6 +24,7 @@ echo fakeapp
 SH
 chmod +x "$fake_bin/fakeapp"
 export PATH="$fake_bin:/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin"
+ln -s "$ROOT/bin/host-track" "$fake_bin/host-track"
 
 remote="$tmp/remote.git"
 seed="$tmp/seed"
@@ -47,6 +48,27 @@ git -C "$(dirname "$0")" merge --ff-only origin/main
 SH
 chmod +x "$host/refresh-host.sh"
 
+last_stack_remote="$tmp/last-stack-remote.git"
+last_stack_seed="$tmp/last-stack-seed"
+last_stack_host="$tmp/last-stack-host"
+git init --bare -q "$last_stack_remote"
+git init -q -b main "$last_stack_seed"
+git -C "$last_stack_seed" config user.email test@example.invalid
+git -C "$last_stack_seed" config user.name "Host Track Test"
+printf '1.2.3-test\n' > "$last_stack_seed/VERSION"
+git -C "$last_stack_seed" add VERSION
+git -C "$last_stack_seed" commit -q -m "last-stack seed"
+git -C "$last_stack_seed" remote add lastgit "$last_stack_remote"
+git -C "$last_stack_seed" push -q lastgit main
+git clone -q "$last_stack_remote" "$last_stack_host"
+git -C "$last_stack_host" remote rename origin lastgit
+cat > "$last_stack_host/setup" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'setup\n' > "$(dirname "$0")/.setup-ran"
+SH
+chmod +x "$last_stack_host/setup"
+
 registry="$tmp/registry.json"
 cat > "$registry" <<EOF
 {
@@ -62,6 +84,18 @@ cat > "$registry" <<EOF
       "host_track": "$host",
       "refresh": "$host/refresh-host.sh",
       "notes": "test app"
+    },
+    {
+      "app": "last-stack",
+      "kind": "C skill-pack",
+      "command": "host-track",
+      "gate": "lastgit",
+      "gate_main": "$last_stack_remote#main",
+      "gate_remote": "lastgit",
+      "gate_ref": "refs/heads/main",
+      "host_track": "$last_stack_host",
+      "refresh_mode": "last-stack-self-upgrade",
+      "notes": "test last-stack"
     }
   ]
 }
@@ -79,6 +113,17 @@ printf '%s\n' "$status" | jq -e '.stale == false' >/dev/null || fail "fresh host
 "$ROOT/bin/host-track" which fake | grep -q '/fakeapp$' || fail "which did not print fakeapp"
 "$ROOT/bin/host-track" check fake >/dev/null || fail "fresh check failed"
 
+last_stack_status="$("$ROOT/bin/host-track" status --json last-stack)"
+printf '%s\n' "$last_stack_status" | jq -e '.app == "last-stack"' >/dev/null || fail "last-stack status app mismatch"
+printf '%s\n' "$last_stack_status" | jq -e '.kind == "C skill-pack"' >/dev/null || fail "last-stack kind mismatch"
+printf '%s\n' "$last_stack_status" | jq -e '.version == "1.2.3-test"' >/dev/null || fail "last-stack VERSION missing"
+printf '%s\n' "$last_stack_status" | jq -e '.host_head and .host_head_short' >/dev/null || fail "last-stack HEAD missing"
+last_stack_which="$("$ROOT/bin/host-track" which last-stack --json)"
+printf '%s\n' "$last_stack_which" | jq -e '.exec_path | endswith("/host-track")' >/dev/null \
+  || fail "which --json did not report host-track executable"
+printf '%s\n' "$last_stack_which" | jq -e '.version == "1.2.3-test" and .host_head' >/dev/null \
+  || fail "which --json did not include VERSION and HEAD"
+
 printf 'two\n' > "$seed/file.txt"
 git -C "$seed" add file.txt
 git -C "$seed" commit -q -m update
@@ -94,7 +139,12 @@ fi
 fresh="$("$ROOT/bin/host-track" status --json fake)"
 printf '%s\n' "$fresh" | jq -e '.stale == false' >/dev/null || fail "refresh did not catch up"
 test -s "$stamp_dir/fake.json" || fail "refresh did not write stamp"
-printf '%s\n' "$("$ROOT/bin/host-track" status --json)" | jq -e 'length == 1 and .[0].app == "fake"' >/dev/null \
+printf 'dirty\n' > "$last_stack_host/dirty.txt"
+if "$ROOT/bin/host-track" refresh --force last-stack >/dev/null 2>&1; then
+  fail "dirty fallback last-stack refresh succeeded"
+fi
+
+printf '%s\n' "$("$ROOT/bin/host-track" status --json)" | jq -e 'length == 2 and .[0].app == "fake" and .[1].app == "last-stack"' >/dev/null \
   || fail "status --json did not return registry array"
 
 echo "ok: host-track status/check/which/refresh"
