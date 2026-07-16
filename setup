@@ -33,6 +33,9 @@ resolve_source_root() {
 SOURCE_ROOT="$(resolve_source_root)"
 SKILLS_SRC="$SOURCE_ROOT/skills"
 HOOKS_SRC="$SOURCE_ROOT/hooks"
+SOURCE_TOP_LOADED=0
+SOURCE_TOP=""
+SOURCE_WORKTREES=""
 
 HOST="auto"
 LOCAL_INSTALL=0
@@ -67,19 +70,23 @@ is_transient_last_stack_target() {
     "$HOME/.fkanban/worktrees"/*|*/.fkanban/worktrees/*) return 0 ;;
   esac
 
-  local source_top
-  source_top="$(git -C "$SOURCE_ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
-  [ -n "$source_top" ] || return 1
+  if [ "$SOURCE_TOP_LOADED" -eq 0 ]; then
+    SOURCE_TOP="$(git -C "$SOURCE_ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [ -n "$SOURCE_TOP" ]; then
+      SOURCE_WORKTREES="$(git -C "$SOURCE_TOP" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0, 10)}')"
+    fi
+    SOURCE_TOP_LOADED=1
+  fi
+  [ -n "$SOURCE_TOP" ] || return 1
 
-  local wt worktrees
-  worktrees="$(git -C "$source_top" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0, 10)}')"
+  local wt
   while IFS= read -r wt; do
     [ -n "$wt" ] || continue
-    [ "$wt" = "$source_top" ] && continue
+    [ "$wt" = "$SOURCE_TOP" ] && continue
     case "$target" in
       "$wt"/*) return 0 ;;
     esac
-  done <<< "$worktrees"
+  done <<< "$SOURCE_WORKTREES"
 
   return 1
 }
