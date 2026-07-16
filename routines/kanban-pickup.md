@@ -11,8 +11,8 @@ There is **no `review` column**. Board columns are only:
 
 - Incomplete work: stay in `todo` or `doing`
 - Complete work: `done` only with merge/END-STATE proof
-- Intentional holds: `block_status=needs_human|deferred|design_first` + reason
-  while the card stays in `todo` (or `backlog` if dep-blocked)
+- Intentional holds: rare `needs_human` → **backlog only**; `deferred` /
+  `design_first` also stay out of `todo`
 
 Never `kanban move <slug> review`. The live board rejects it. Do not invent
 a review lane on custom boards either.
@@ -115,8 +115,9 @@ work must stay unmarked).
 > **No-spawn policy (hard).** NEVER use Codex `SpawnAgent` / collab agents,
 > Claude Task/subagent tools, `nohup codex|claude|grok … &`, or any other
 > background agent launch. If you cannot finish the work-unit in this session,
-> move cards back to `todo` (or `review` with `BLOCKED:` for a genuine human
-> gate) and EXIT. A partial claim left in `doing` with no live worker is the
+> move cards back to `todo` before a PR/CR is recorded, or to `backlog` with
+> `block_status=needs_human` for a genuine human gate, and EXIT. A partial claim
+> left in `doing` with no live worker is the
 > failure mode this policy prevents.
 
 ## Rate-limit guard (check FIRST)
@@ -343,7 +344,8 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
    Then EXIT the run (no second unit after a failed closeout).
 7. **Genuine human-only blocker** (ambiguous spec, product judgment, human-only
    gate, dep on unmerged work): leave the branch clean, move the card(s) to
-   `review`, append `BLOCKED: <why>`, and EXIT.
+   `backlog` with `block_status=needs_human`, append `BLOCKED: <why>`, and
+   EXIT.
 8. **If you must abort mid-work** (timeout pressure, rate limit, harness death
    risk) and the PR is not open yet: move card(s) **back to `todo`** so the next
    run reclaims them. Do not leave zombie `doing` cards with no worker.
@@ -403,7 +405,7 @@ rules, same one-PR / one-worktree discipline as WORK mode.
 **1) Program / North Star next slice (preferred)**  
 Read `brain get active-programs` (project). For each active program, if:
 - Next move is a **concrete PR-sized** step, and
-- No card for that step is already in `todo`/`doing`/`review`, and
+- No card for that step is already in `todo`/`doing`/`backlog`, and
 - It is not human-gated / dep-blocked / capstone-as-pickup,
 then either:
 - **File one** PR card to `todo` with full GOAL/STEPS/VERIFY + `Repo:`/`Base:` +
@@ -477,7 +479,7 @@ Heartbeat `noop idle nothing-safe` (distinguish from "didn't run"). EXIT.
   routing. Idle is not a free pass to edit the workspace root.
 
 End with a one-line report: which card(s) you claimed + worked, PR/CR url if
-any, final column (`done` / `review` / rolled-back `todo`); or idle outcome
+any, final column (`done` / human-gated `backlog` / rolled-back `todo`); or idle outcome
 (`idle=program-slice|coderings|chore|simplify|filed|nothing-safe`). Then exit.
 
 > **Heartbeat (LAST action, always).** Call
@@ -491,7 +493,7 @@ any, final column (`done` / `review` / rolled-back `todo`); or idle outcome
 > - `error` — rate-limit abort, non-backpressure claim failure with no recovery,
 >   harness fault.
 > - `ok` — you executed a unit (pickup or idle): include
->   `cards=<n> worked=<slug[,slug…]> result=merged|review-blocked|rolled-back-todo`
+>   `cards=<n> worked=<slug[,slug…]> result=merged|human-blocked|rolled-back-todo`
 >   plus `pr=<url>` when opened; for idle add `idle=<kind>`. Example:
 >   `ok cards=1 worked=foo-service-shared-surface-contract result=merged pr=http://…/pulls/12`.
 >   Idle example:
