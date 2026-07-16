@@ -103,3 +103,21 @@ CI.
 `service_timeout`, "node did not respond within Nms", and "too many concurrent
 reads" mean the node is BUSY, not down — retry the read; only retry writes that
 are idempotent slug upserts. Do not restart anything.
+
+### Who is burning the node? — `lastdb ops` (request telemetry)
+
+When the node is slow, shedding, or timing out, **name the offender** before
+guessing. Mini records every completed data-plane op in-process (resets on
+daemon restart):
+
+```bash
+lastdb status    # host vitals + short request-ops summary
+lastdb ops       # full worst-offender tables (client, kind, schema, ms, count)
+```
+
+Or read `status.request_ops` on `GET /api/status` over the socket. Rankings:
+`top_by_total_ms` (who eats wall time), `top_by_count` (chatty callers),
+`top_by_duration` (slowest singles in the ring). Clients self-identify with
+header `X-LastDB-Client: <name>` (`brain`, `kanban`, `lastgit`, …) — not a
+security boundary; missing → `unknown`. Full playbook:
+`brain get sop-lastdb-request-ops-telemetry --type sop`.

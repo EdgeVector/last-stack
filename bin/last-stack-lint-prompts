@@ -36,11 +36,19 @@ gh_json_fields() {
   printf '%s\n' "$fallback"
 }
 
-pr_json_fields="${LASTSTACK_GH_PR_JSON_FIELDS:-$(gh_json_fields "$default_pr_json_fields" gh pr view)}"
-release_json_fields="${LASTSTACK_GH_RELEASE_JSON_FIELDS:-$(gh_json_fields "$default_release_json_fields" gh release view)}"
-run_view_json_fields="${LASTSTACK_GH_RUN_VIEW_JSON_FIELDS:-$(gh_json_fields "$default_run_view_json_fields" gh run view)}"
-run_list_json_fields="${LASTSTACK_GH_RUN_LIST_JSON_FIELDS:-$(gh_json_fields "$default_run_list_json_fields" gh run list)}"
-pr_checks_json_fields="${LASTSTACK_GH_PR_CHECKS_JSON_FIELDS:-$(gh_json_fields "$default_pr_checks_json_fields" gh pr checks)}"
+if [ "${LASTSTACK_LINT_PROMPTS_DISCOVER_GH_FIELDS:-0}" = "1" ]; then
+  pr_json_fields="${LASTSTACK_GH_PR_JSON_FIELDS:-$(gh_json_fields "$default_pr_json_fields" gh pr view)}"
+  release_json_fields="${LASTSTACK_GH_RELEASE_JSON_FIELDS:-$(gh_json_fields "$default_release_json_fields" gh release view)}"
+  run_view_json_fields="${LASTSTACK_GH_RUN_VIEW_JSON_FIELDS:-$(gh_json_fields "$default_run_view_json_fields" gh run view)}"
+  run_list_json_fields="${LASTSTACK_GH_RUN_LIST_JSON_FIELDS:-$(gh_json_fields "$default_run_list_json_fields" gh run list)}"
+  pr_checks_json_fields="${LASTSTACK_GH_PR_CHECKS_JSON_FIELDS:-$(gh_json_fields "$default_pr_checks_json_fields" gh pr checks)}"
+else
+  pr_json_fields="${LASTSTACK_GH_PR_JSON_FIELDS:-$default_pr_json_fields}"
+  release_json_fields="${LASTSTACK_GH_RELEASE_JSON_FIELDS:-$default_release_json_fields}"
+  run_view_json_fields="${LASTSTACK_GH_RUN_VIEW_JSON_FIELDS:-$default_run_view_json_fields}"
+  run_list_json_fields="${LASTSTACK_GH_RUN_LIST_JSON_FIELDS:-$default_run_list_json_fields}"
+  pr_checks_json_fields="${LASTSTACK_GH_PR_CHECKS_JSON_FIELDS:-$default_pr_checks_json_fields}"
+fi
 
 check_path_exists() {
   local path="$1"
