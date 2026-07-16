@@ -137,9 +137,13 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
   **Do not** `move … doing` again. Use `.card` (slug, repo, base, body, …) as
   the work-unit and continue at Execute (isolate / implement). Still drive to
   **MERGED** as usual.
-- If `claimed=false` (`no-eligible` / `at-capacity`): go to **Nothing to pick
-  up** (or heartbeat noop at-capacity and EXIT). Include useful `skipped`
-  entries in the heartbeat.
+- If `claimed=false` with `reason=at-capacity`, or with any non-empty `skipped`
+  list / `scanned_ready>0` (for example `surface-overlap`), this is **not** an
+  empty queue. Heartbeat `noop no-claim reason=<reason> skipped=<slug:reason>`
+  and EXIT. Do not enter idle mode while ready-but-conflicting work exists.
+- If `claimed=false` only because the ready queue is truly empty
+  (`scanned_ready=0` and no skipped cards), go to **Nothing to pick up**. Include
+  the claim reason in the heartbeat.
 - If `pickup claim` still exits nonzero after the **bounded flap retries** above
   and the output mentions board-write backpressure (`max_outbox_entries`,
   `uds_connection_limit`, HTTP 503, `service_timeout`, "node did not respond",
@@ -273,6 +277,15 @@ When the `todo` queue is empty (or nothing eligible after selection gates):
 Zero pickup-eligible cards were claimed this run. Do **exactly one** action from
 the ladder, top-down. Stop after the first successful action. Same no-spawn
 rules, same one-PR / one-worktree discipline as WORK mode.
+
+#### Idle budget guard
+- Idle mode is allowed only after a **true empty queue** claim/read, not after
+  `surface-overlap`, `at-capacity`, or any ready-card skip.
+- Start idle with a bias to fast exit: if the first cheap probe does not reveal
+  a clear PR-sized action, heartbeat `noop idle nothing-safe` and EXIT.
+- Do not run broad repo scans (`rg --files` / whole-repo `rg`) or open an idle
+  worktree unless you can still finish and merge with at least a 10-minute
+  harness margin. If that margin is uncertain, file one card or true-noop.
 
 #### Anti-thrash (check before any idle work)
 - If rate-limited / node busy → `noop busy-node` or rate-limit EXIT (same as
