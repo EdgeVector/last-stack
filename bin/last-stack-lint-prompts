@@ -69,6 +69,14 @@ search_prompt_pattern() {
   local pattern="$1"
   local path="$2"
 
+  if [ ! -d "$path" ]; then
+    if [ "$(basename "$path")" = "last-stack-lint-prompts" ]; then
+      return
+    fi
+    grep -nE "$pattern" "$path" || true
+    return
+  fi
+
   if command -v rg >/dev/null 2>&1; then
     rg -n "$pattern" "$path" \
       -g '!**/.git/**' -g '!**/logs/**' -g '!**/run/**' -g '!**/memory.md' \
@@ -76,19 +84,10 @@ search_prompt_pattern() {
     return
   fi
 
-  if [ -d "$path" ]; then
-    grep -RInE \
-      --exclude-dir=.git --exclude-dir=logs --exclude-dir=run \
-      --exclude=memory.md --exclude=last-stack-lint-prompts \
-      "$pattern" "$path" || true
-    return
-  fi
-
-  if [ "$(basename "$path")" = "last-stack-lint-prompts" ]; then
-    return
-  fi
-
-  grep -nE "$pattern" "$path" || true
+  grep -RInE \
+    --exclude-dir=.git --exclude-dir=logs --exclude-dir=run \
+    --exclude=memory.md --exclude=last-stack-lint-prompts \
+    "$pattern" "$path" || true
 }
 
 check_default_board_scope() {
