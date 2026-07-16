@@ -55,8 +55,9 @@ agent workspace. At the beginning of the run, record `run_started_epoch=$(date
   minutes** and the chosen change is plausibly shippable within **25 minutes**.
 - Do not start any new validation or PR/CR publish sequence after **35 minutes**
   elapsed. Instead, move any claimed-but-unpublished card back to `todo` (or
-  leave a file-only card in `todo`), heartbeat `noop idle=budget-exhausted`, print
-  `ROUTINE_RESULT outcome=noop detail=idle=budget-exhausted`, and EXIT.
+  leave a file-only card in `todo`), heartbeat `noop idle=budget-exhausted`,
+  print the machine trailer by using the `ROUTINE_RESULT` token followed by
+  `outcome=noop detail=idle=budget-exhausted`, and EXIT.
 - If elapsed time reaches **45 minutes** before a PR/CR URL has been recorded,
   stop immediately after rollback/memory note best-effort. Do not launch a final
   multi-command publish block near the harness timeout; the next scheduled fire
