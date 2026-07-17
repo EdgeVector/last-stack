@@ -46,7 +46,7 @@ LastDB post is **share-the-process / product-positive**, NEVER an IP disclosure.
   conceptually, the "we build LastDB on LastDB" story, honest debugging tales.
 - 🛑 Never include: security/keyring internals, scoped-transform + anything
   patent-adjacent, private-repo source, the moat, internal infra names/ports
-  (the brain socket `~/.folddb/data/folddb.sock`, brain/kanban internals), customer/personal data, secrets.
+  (the brain socket `~/.lastdb/data/folddb.sock`, brain/kanban internals), customer/personal data, secrets.
 - When a learning touches a real feature (e.g. schema evolution), describe the
   *behavior and the lesson* at a conceptual level — not the implementation.
 - If unsure whether something crosses the line, ask the user before writing it.

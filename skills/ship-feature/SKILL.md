@@ -201,8 +201,8 @@ This is the stop condition. **Pull the merged code and actually run it.**
 - Observe the feature producing its expected, observable result — the
   acceptance criteria from Phase 2.
 - For services/endpoints: hit the real endpoint and check the response. For
-  CLIs: run the command and check output. For node/folddb work: exercise via
-  the running node — **never against Tom's primary folddb_server brain** unless explicitly
+  CLIs: run the command and check output. For LastDB-node work: exercise via
+  the running node — **never against Tom's primary LastDB brain** unless explicitly
   told; spin an ephemeral node (the app-identity-dogfood skill shows the
   pattern).
 
@@ -246,9 +246,9 @@ is heads-down), default toward:
 
 ## Hard guardrails (this workspace)
 
-- **Never kill the primary `folddb_server` brain** — that's Tom's brain. Identify
-  it by its socket (`lsof /Users/tomtang/.folddb/data/folddb.sock`) or process
-  (`pgrep -fl folddb_server`) before killing any folddb_server — the TCP port is
+- **Never kill the primary LastDB brain** — that's Tom's brain. Identify
+  it by its socket (`lsof /Users/tomtang/.lastdb/data/folddb.sock`) or process
+  (`pgrep -fl 'lastdbd|folddb_server'`) before killing any LastDB-like process — the TCP port is
   gone, so a port probe no longer finds it.
 - **Never stash/reset/restore** in a shared repo — other agents share the
   worktree. Use `git worktree add` instead.

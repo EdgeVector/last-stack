@@ -137,7 +137,7 @@ Rules of thumb:
   program state from memory. If a routine's final words say "wedged node" or
   "blocked", surface it; if they say "auto-merge armed, exiting", that's healthy.
 - **Honor the standing rules:** don't treat BLOCKED/queued PRs as failures; never
-  propose touching the primary folddb_server brain or a prod deploy as a casual "next step"; flag the
+  propose touching the primary LastDB brain or a prod deploy as a casual "next step"; flag the
   human-gated lines (schema-infra#142, the shipping-build flip, business calls) as
   *hold*, not *do*.
 

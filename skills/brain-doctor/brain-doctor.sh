@@ -1,5 +1,5 @@
 #!/bin/bash
-# brain-doctor.sh — READ-ONLY triage of the folddb brain (Tom's primary
+# brain-doctor.sh — READ-ONLY triage of the LastDB brain (Tom's primary
 # brain/kanban daily-driver node) and the orphan procs that masquerade as it.
 #
 # The brain (the desktop `fold-app` process) is reached over a Unix socket — it
@@ -15,7 +15,7 @@
 # Codifies the hand-run recipe that recurs across every "is kanban down / is the
 # brain wedged / why is my computer slow / couldn't take over" incident. Pulls
 # together: sled-IO deadlock triage (full vs partial wedge), dup-supervisor
-# detection, and the orphan-folddb_server sweep classifier.
+# detection, and the legacy folddb_server orphan sweep classifier.
 #
 # SAFETY: this script NEVER kills, restarts, writes, or stashes anything. It only
 # reads state and PRINTS the recommended recovery command for a human to run.
@@ -33,7 +33,7 @@ FOLDDB_HOME="${FOLDDB_HOME:-$HOME/.folddb}"
 # Prefer ~/.lastdb: `lsof -t` reliably attributes the listener PID there, whereas on
 # ~/.folddb `lsof -t` can return EMPTY even though the socket is perfectly healthy
 # (curl still gets 200). Arg / FOLDDB_SOCKET override wins; else prefer lastdb, fall
-# back to the legacy folddb path.
+# back to the legacy ~/.folddb path.
 if [ -n "${1:-}" ]; then SOCKET="$1"
 elif [ -n "${FOLDDB_SOCKET:-}" ]; then SOCKET="$FOLDDB_SOCKET"
 elif [ -S "$LASTDB_HOME/data/folddb.sock" ]; then SOCKET="$LASTDB_HOME/data/folddb.sock"
@@ -51,7 +51,7 @@ STATUS=0   # worst status seen
 bump(){ [ "$1" -gt "$STATUS" ] && STATUS="$1"; return 0; }
 
 bold "════════════════════════════════════════════════════════════"
-bold " folddb brain-doctor  —  socket $SOCKET  —  $(date '+%Y-%m-%d %H:%M:%S %Z')"
+bold " LastDB brain-doctor  —  socket $SOCKET  —  $(date '+%Y-%m-%d %H:%M:%S %Z')"
 bold "════════════════════════════════════════════════════════════"
 
 # ── 1. Socket + brain process ─────────────────────────────────────────────────
@@ -164,33 +164,33 @@ fi
 
 # ── 4. Supervisors (dup-supervisor drift) ────────────────────────────────────
 bold ""
-bold "4. launchd / brew supervisors for folddb"
+bold "4. launchd / brew supervisors for legacy folddb labels"
 LC="$(launchctl list 2>/dev/null | grep -i folddb)"
 # count only daemon-style labels (exclude the GUI .app entry)
 DAEMON_SUP="$(printf '%s\n' "$LC" | grep -iv 'folddb\.app' | grep -i folddb)"
 NDAEMON="$(printf '%s\n' "$DAEMON_SUP" | grep -c .)"
 if [ "$NDAEMON" -eq 0 ]; then
-  warn "No folddb daemon LaunchAgent found (brain may be hand-started, not durable)."
+  warn "No legacy folddb daemon LaunchAgent found (brain may be hand-started, not durable)."
 else
   printf '%s\n' "$DAEMON_SUP" | awk '{print "    • label="$3"  pid="$1"  laststatus="$2}'
   if [ "$NDAEMON" -gt 1 ]; then
-    bad "MORE THAN ONE folddb daemon supervisor → drift (the 'couldn't take over' class)."
+    bad "MORE THAN ONE legacy folddb daemon supervisor → drift (the 'couldn't take over' class)."
     info "Expected: exactly one, label com.folddb.daemon. Legacy com.tomtang.folddb should be gone."
     info "Remove the loser:  launchctl bootout gui/\$(id -u)/<legacy-label>"
     bump 1
   else
-    ok "Exactly one folddb daemon supervisor."
+    ok "Exactly one legacy folddb daemon supervisor."
   fi
 fi
 BREW_F="$(brew services list 2>/dev/null | grep -i '^folddb' )"
 if [ -n "$BREW_F" ]; then
   BREW_STATE="$(echo "$BREW_F" | awk '{print $2}')"
   if [ "$BREW_STATE" != "none" ] && [ -n "$BREW_STATE" ]; then
-    bad "brew services ALSO supervises folddb ($BREW_STATE) → duplicate supervisor."
+    bad "brew services ALSO supervises legacy folddb ($BREW_STATE) → duplicate supervisor."
     info "Remove it:  brew services stop folddb"
     bump 1
   else
-    ok "brew services not supervising folddb (state=$BREW_STATE)."
+    ok "brew services not supervising legacy folddb (state=$BREW_STATE)."
   fi
 fi
 
@@ -206,7 +206,7 @@ else
   info "No $PORTFILE (fine — the socket, not a TCP port, is the rendezvous now)."
 fi
 
-# ── 6. Orphan / impostor folddb procs (sweep candidates) ─────────────────────
+# ── 6. Orphan / impostor legacy LastDB procs (sweep candidates) ───────────────
 bold ""
 bold "6. Orphan lastdb_server/folddb_server test-node procs (NOT the primary-socket brain)"
 FOUND_ORPHAN=0
@@ -239,7 +239,7 @@ for pid in $(pgrep -f 'kanban hooks ingest' 2>/dev/null); do
   FOUND_ORPHAN=1
 done
 if [ "$FOUND_ORPHAN" -eq 0 ]; then
-  ok "No orphan folddb procs found."
+  ok "No orphan legacy LastDB procs found."
 else
   info "Rule: NEVER kill the primary-socket brain. Verify cwd is a deleted worktree / disposable temp home,"
   info "      and it does not hold $SOCKET / has no live builder, before killing. Surface-don't-act unattended."

@@ -39,7 +39,7 @@ Three things, in order:
    ```
 3. **A running LastDB node** — kanban is a thin client; it needs a node to talk
    to. `init` defaults to the local LastDB node — the Unix socket at
-   `$HOME/.folddb/data/folddb.sock` (LastDB's default data dir) — so a locally
+   `$HOME/.lastdb/data/folddb.sock` (the current LastDB data dir) — so a locally
    started node works out of the box; point elsewhere with `--node-url` (or move
    the data dir with `FOLDDB_HOME`). Start a node (e.g. from your LastDB install /
    daemon) before running `init`. On a
@@ -75,7 +75,7 @@ kanban doctor      # verify: shim on PATH, config, node reachable, schemas loade
 ```
 
 `init` is **idempotent** — safe to re-run. Defaults: the local LastDB node at
-`unix://$HOME/.folddb/data/folddb.sock`, plus a schema-service URL it uses to
+`unix://$HOME/.lastdb/data/folddb.sock`, plus a schema-service URL it uses to
 load the published schemas (override either with `--node-url` /
 `--schema-service-url`).
 

@@ -32,8 +32,8 @@ every time.
    `~/code/edgevector/.claude/launch.json`:
    `cd fold/fold_db_node && FOLDDB_DISABLE_KEYCHAIN=1 FOLDDB_PORT=9101
    VITE_PORT=5173 FOLDDB_HOME=/private/tmp/lastdb-uxreview ./run.sh`.
-   This is an isolated tmp node on TCP 9101 — not the folddb_server brain on
-   the `~/.folddb` socket. `run.sh` runs node + Vite as one lifecycle (killing
+   This is an isolated tmp node on TCP 9101 — not the primary LastDB brain on
+   the `~/.lastdb` socket. `run.sh` runs node + Vite as one lifecycle (killing
    the Vite child tears down both, via trap), so `preview_stop` cleanly tears
    the whole stack down.
 3. If it's a fresh data dir, bootstrap past onboarding:

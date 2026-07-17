@@ -1,12 +1,13 @@
 ---
 name: brain-doctor
 description: |
-  Read-only triage of the folddb brain (Tom's primary brain/kanban
-  daily-driver node — the desktop fold-app process, reached over the Unix socket
-  ~/.lastdb/data/folddb.sock, also served on the legacy ~/.folddb path)
+  Read-only triage of the LastDB brain (Tom's primary brain/kanban
+  daily-driver node — the desktop fold-app process or Mini daemon, reached over
+  the Unix socket ~/.lastdb/data/folddb.sock, also served on the legacy
+  ~/.folddb path)
   when it's wedged, slow, or down. Bundles the hand-run recipe
   that recurs on every "is kanban down", "is the brain wedged", "why is my
-  computer so slow", "brain/kanban won't respond", or "FoldDB couldn't take
+  computer so slow", "brain/kanban won't respond", or "LastDB couldn't take
   over" incident: distinguishes a full sled-IO deadlock from the partial
   write-path stall, finds duplicate launchd/brew supervisors, catches a stale
   ~/.folddb/port breadcrumb, and classifies orphan lastdb_server/folddb_server /
@@ -17,7 +18,7 @@ description: |
   prints recommended recovery commands — it never kills, restarts, or writes.
 ---
 
-# brain-doctor — folddb socket triage
+# brain-doctor — LastDB socket triage
 
 The brain is Tom's primary node — `brain` and `kanban` both run on it. It is the
 desktop **`fold-app`** process, reached over the **Unix socket
@@ -73,7 +74,7 @@ throttle the top client — do **not** restart primary `lastdbd` for load alone.
 
 ## Reading the output / acting on it
 
-The script checks, in order: (0) recent Situations notices, (1) socket + folddb_server PID + uptime/CPU,
+The script checks, in order: (0) recent Situations notices, (1) socket + LastDB server PID + uptime/CPU,
 (2) processes holding the socket (the do-not-kill signal — live client = real
 brain), (3) responsiveness probe over the socket, (4) duplicate supervisors,
 (5) vestigial port breadcrumb, (6) orphan folddb procs, (7) disk. Then a verdict.
@@ -91,7 +92,7 @@ Key triage decisions it encodes:
   `launchctl kickstart -k gui/$(id -u)/com.folddb.daemon` clears it — `kill -9`
   is NOT needed here. This is uptime-accumulated embedding-path degradation, not
   data scaling: the same big writes succeed right after restart.
-- **Duplicate supervisor / stale breadcrumb:** the "FoldDB couldn't take over"
+- **Duplicate supervisor / stale breadcrumb:** the "LastDB couldn't take over"
   class. Fix by removing the loser supervisor and/or correcting `~/.folddb/port`
   (commands are printed). Since fold#812 the breadcrumb is no longer load-bearing
   for takeover, but it's still drift worth clearing.
@@ -109,6 +110,7 @@ Key triage decisions it encodes:
 
 ## Background (memory cross-refs)
 
+Historical Brain records still use old slugs:
 `project_folddb_brain_wedged_2026_06_13` (full vs partial wedge recipe),
 `project_folddb_desktop_takeover_dup_supervisor` (dup supervisor + stale port),
 `feedback_dont_kill_primary_folddb_server` (live-brain protection),

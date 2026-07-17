@@ -2,7 +2,7 @@
 name: app-identity-dogfood
 description: |
   Run the App Identity app-creation flow end-to-end against the DEV
-  environment, autonomously. Uses the consolidated `folddb` developer CLI,
+  environment, autonomously. Uses the LastDB developer CLI (`folddb` command),
   isolated persistent dogfood state, and the brain 9-schema knowledge-record
   set including Sop. Validates that `folddb login`, `folddb init`, and
   `folddb push` can publish the `brain` app namespace without touching Tom's
@@ -21,7 +21,7 @@ triggers:
   - brain app creation
 ---
 
-# App Identity Dogfood (DEV, Consolidated CLI)
+# App Identity Dogfood (DEV, LastDB CLI)
 
 This skill exercises the supported App Identity developer journey on the
 deployed DEV stack:
