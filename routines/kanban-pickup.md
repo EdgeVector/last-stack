@@ -72,18 +72,30 @@ agent workspace. At the beginning of the run, record `run_started_epoch=$(date
   leave a file-only card in `todo`), heartbeat `noop idle=budget-exhausted`,
   print the machine trailer by using the `ROUTINE_RESULT` token followed by
   `outcome=noop detail=idle=budget-exhausted`, and EXIT.
+- Before every foreground watcher, deploy wait, sync drain, or other END STATE
+  proof that can run for minutes, recompute elapsed/remaining budget. Only start
+  or continue that wait when there is enough time left to finish the proof,
+  perform board closeout, append heartbeat, and print the machine trailer. If a
+  claimed card still has no recorded PR/CR URL and remaining time is under
+  **10 minutes**, roll it back to `todo` now and exit with
+  `ok cards=1 worked=<slug> result=rolled-back-todo reason=budget-low`; do not
+  watch external progress until the harness SIGTERM cuts off closeout.
 - If elapsed time reaches **45 minutes** before a PR/CR URL has been recorded,
   stop immediately after rollback/memory note best-effort. Do not launch a final
   multi-command publish block near the harness timeout; the next scheduled fire
   can reclaim cleanly.
-- If a PR/CR URL **has** been recorded and elapsed time reaches **40 minutes**
-  before merge is complete, stop watching instead of racing the harness timeout.
-  Leave the card in `doing` with its PR/CR URL and branch recorded, heartbeat
-  `ok cards=1 worked=<slug> result=pr-open-pending-ci pr=<url>
-  final_column=doing`, print a machine trailer whose detail includes
-  `worked=<slug> result=pr-open-pending-ci pr=<url> final_column=doing`, and
-  EXIT. `kanban-watch` or a later pickup fire can reconcile the open review
-  artifact; a clean handoff is better than SIGTERM.
+- If a PR/CR URL has been recorded and elapsed time reaches **35 minutes** (or
+  fewer than **10 minutes** remain), stop immediately after one best-effort card
+  update / memory note. Leave the card in `doing` with the recorded `pr_url` and
+  `branch`, heartbeat
+  `ok cards=1 worked=<slug> result=in-flight-budget-handoff pr=<url>
+  final_column=doing`, print the `ROUTINE_RESULT` token followed by
+  `outcome=<ok> detail=worked=<slug> result=in-flight-budget-handoff pr=<url>`,
+  and EXIT.
+  Do not start another fetch, rebase, push, validation retry, CI poll, or
+  merge-complete command after the 35-minute publish stop line; `kanban-watch`
+  or a later pickup fire can reconcile a visible in-flight PR/CR, but routinesd
+  cannot recover a killed foreground process cleanly.
 - Idle mode is optional when budget is tight. A clean `noop idle=budget-exhausted`
   is better than a red harness timeout with a zombie `doing` card.
 
@@ -313,7 +325,15 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
    Never edit a shared checkout in place; never stash/reset/clean a shared repo.
 4. **Implement** per the card brief and repo conventions. Honor OUT OF SCOPE.
    Run VERIFY commands from the brief; validate by running the app when the
-   brief requires it, not only unit tests.
+   brief requires it, not only unit tests. Before starting any long-running
+   VERIFY / END STATE proof such as a deploy wait, cloud sync drain, status
+   watch, or log-follow, recompute remaining budget. Do not begin the wait
+   unless it can plausibly finish with at least a 5-minute closeout margin. If
+   the card has no recorded PR/CR URL yet and the margin is gone, move it back
+   to `todo`, heartbeat `ok ... result=rolled-back-todo reason=budget-low`,
+   print the `ROUTINE_RESULT` token followed by
+   `outcome=ok detail=worked=<slug> final_column=todo reason=budget-low`, and
+   EXIT.
 5. **Route review artifacts:**
    ```bash
    route_json="$("$last_stack/bin/last-stack-pr-venue" --json "<repo>" "$target_repo")"
@@ -328,11 +348,19 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
    - `venue=lastgit`: `lastgit cr create … --auto-merge …`, record
      `PR: lastgit://…` plus the branch on the card, drive with
      `lastgit cr view` / `ci status` / `cr complete --once`.
-   - After a PR/CR URL is recorded, re-check elapsed time before each CI watch,
-     merge wait, or publish-status loop. If elapsed is **40 minutes or more**,
-     stop with `result=pr-open-pending-ci` as described in the wall-clock budget
-     section. Do not keep a foreground watch alive until the harness kills the
-     routine.
+   - Before every expensive post-publish operation (fetch/rebase after a
+     non-fast-forward push, another push, CI watch/poll, `lastgit cr complete`,
+     or merge-closeout polling), recompute elapsed/remaining budget from
+     `run_started_epoch` / `run_timeout_min`. If a PR/CR URL and branch are
+     already recorded and either elapsed time is **35 minutes or more** or fewer
+     than **10 minutes** remain, do not continue the publish/merge loop.
+     Heartbeat `ok cards=1 worked=<slug>
+     result=in-flight-budget-handoff pr=<url> final_column=doing`, print
+     the `ROUTINE_RESULT` token followed by `outcome=<ok>
+     detail=worked=<slug> result=in-flight-budget-handoff pr=<url>`, and EXIT.
+     This is a clean
+     bounded handoff, not an error; the card is visible with a review artifact
+     for `kanban-watch` / the next scheduled fire.
    - If pushing or opening the PR/CR fails because the review venue or required
      board transport is unavailable (for example a missing LastGit socket,
      socket-unreachable, `service_timeout`, "node did not respond", or "too
@@ -367,9 +395,7 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
    EXIT.
 8. **If you must abort mid-work** (timeout pressure, rate limit, harness death
    risk) and the PR is not open yet: move card(s) **back to `todo`** so the next
-   run reclaims them. If the PR is already open and recorded, leave the card in
-   `doing` and exit `ok result=pr-open-pending-ci` with the PR/CR URL. Do not
-   leave zombie `doing` cards with no worker and no review artifact.
+   run reclaims them. Do not leave zombie `doing` cards with no worker.
 9. **Never re-claim a card already in `done` with a merged PR** for the same
    unit in this or a sibling fire — that is how concurrent pickups re-open
    `doing` after a good closeout.
@@ -514,7 +540,7 @@ any, final column (`done` / human-gated `backlog` / rolled-back `todo`); or idle
 > - `error` — rate-limit abort, non-backpressure claim failure with no recovery,
 >   harness fault.
 > - `ok` — you executed a unit (pickup or idle): include
->   `cards=<n> worked=<slug[,slug…]> result=merged|human-blocked|rolled-back-todo`
+>   `cards=<n> worked=<slug[,slug…]> result=merged|human-blocked|rolled-back-todo|in-flight-budget-handoff`
 >   plus `pr=<url>` when opened; for idle add `idle=<kind>`. Example:
 >   `ok cards=1 worked=foo-service-shared-surface-contract result=merged pr=http://…/pulls/12`.
 >   Idle example:
