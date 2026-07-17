@@ -7,6 +7,9 @@ cleanup() {
   /bin/rm -rf "$tmp"
 }
 trap cleanup EXIT
+HOME="$tmp/home"
+mkdir -p "$HOME"
+export HOME
 
 fake_global="$tmp/global"
 mkdir -p "$fake_global"
@@ -67,20 +70,29 @@ if grep -q 'command not found' "$tmp/missing.err"; then
 fi
 
 workspace="$tmp/workspace"
+fake_home="$tmp/home"
+mkdir -p "$fake_home"
 mkdir -p "$workspace/brain/bin"
+mkdir -p "$workspace/fkanban/bin"
+mkdir -p "$fake_home/.local/bin"
 printf '#!/bin/sh\nexit 0\n' > "$workspace/brain/bin/brain"
+printf '#!/bin/sh\nexit 0\n' > "$workspace/fkanban/bin/fkanban"
+printf '#!/bin/sh\nexit 0\n' > "$fake_home/.local/bin/brain"
+printf '#!/bin/sh\nexit 0\n' > "$fake_home/.local/bin/fkanban"
 chmod +x "$workspace/brain/bin/brain"
-test_home="$tmp/home"
-mkdir -p "$test_home/.local/bin"
-printf '#!/bin/sh\nexit 0\n' > "$test_home/.local/bin/brain"
-chmod +x "$test_home/.local/bin/brain"
+chmod +x "$workspace/fkanban/bin/fkanban"
+chmod +x "$fake_home/.local/bin/brain"
+chmod +x "$fake_home/.local/bin/fkanban"
 PATH="/usr/bin:/bin"
+HOME="$fake_home"
 LAST_STACK_WORKSPACE="$workspace"
-HOME="$test_home"
+HOME="$fake_home"
 unset LAST_STACK_GLOBAL_PATH
 export PATH LAST_STACK_WORKSPACE HOME
 . "$ROOT/bin/last-stack-shell-prelude"
 last_stack_require_tools brain
-test "$LAST_STACK_TOOL_BRAIN" = "$test_home/.local/bin/brain"
+test "$LAST_STACK_TOOL_BRAIN" = "$fake_home/.local/bin/brain"
+last_stack_require_tools fkanban
+test "$LAST_STACK_TOOL_FKANBAN" = "$fake_home/.local/bin/fkanban"
 
 echo "ok"

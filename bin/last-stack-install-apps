@@ -108,6 +108,26 @@ run_bun_install() {
   bun install --cwd "$dest"
 }
 
+install_lastdb_formula() {
+  local tap="edgevector/lastdb"
+  local formula="$tap/lastdb"
+  local trust_formula="$tap/folddb"
+
+  need brew
+  echo "==> installing LastDB daemon"
+  if ! brew tap | grep -Fxq "$tap"; then
+    brew tap "$tap"
+  fi
+
+  if brew trust --help 2>/dev/null | grep -q -- '--tap'; then
+    brew trust --tap "$tap"
+  else
+    brew trust --formula "$trust_formula"
+  fi
+
+  brew install "$formula"
+}
+
 link_cli() {
   local name="$1"
   local dest="$TARGET_DIR/$name"
@@ -141,9 +161,16 @@ need git
 need bun
 
 if [ "$INSTALL_LASTDB" -eq 1 ]; then
-  need brew
-  echo "==> installing LastDB daemon"
-  brew install edgevector/lastdb/lastdb
+  install_lastdb_formula
+  if [ -x "$(dirname "$0")/last-stack-lastdb-current" ]; then
+    echo "==> linking LastDB daemon through ~/.lastdb/current"
+    brew_prefix="$(brew --prefix edgevector/lastdb/lastdb 2>/dev/null || brew --prefix lastdb 2>/dev/null || true)"
+    if [ -n "$brew_prefix" ] && [ -x "$brew_prefix/bin/lastdbd" ]; then
+      "$(dirname "$0")/last-stack-lastdb-current" set --bin-dir "$brew_prefix/bin"
+    elif command -v lastdbd >/dev/null 2>&1; then
+      "$(dirname "$0")/last-stack-lastdb-current" set
+    fi
+  fi
 fi
 
 mkdir -p "$TARGET_DIR"

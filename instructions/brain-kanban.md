@@ -10,6 +10,16 @@ board, keep rationale in the Brain.
 Prefer the MCP tools (`brain_*`, `kanban_*`) when the servers are connected;
 the CLI below is the fallback and uses the SAME verbs.
 
+### Host-track CLI hygiene
+
+For long-running agent work, prefer installed global CLIs over binaries from a
+random WIP checkout. Source `last-stack-shell-prelude` or otherwise ensure
+`~/.local/bin` is ahead of ad-hoc repo paths; host-track-managed installs live
+there. When `brain`, `kanban`, `situations`, `lastgit`, or another shared CLI
+misbehaves, first run `host-track status` when available and `<cmd> which` (for
+example `lastgit which`) before blaming LastDB, changing PATH by hand, or
+running a checkout-local binary.
+
 ### New repository venue default: LastGit
 
 Create new repositories in LastGit first, with `lastdb:///<slug>` as the
@@ -40,6 +50,17 @@ do not hard-code it as the primary. The legacy TCP port
 - Never start/restart/kill a folddb/lastdb node to "fix" a `:9001` error — the
   primary node is already running on the socket; restarting it is harmful.
 - Health check (socket-safe): `kanban list` succeeding ⇒ node is up.
+
+### LastDB Mini binary path hygiene
+
+Prefer the stable user-local Mini path over Homebrew or ad hoc canary dirs:
+`~/.lastdb/current/{lastdb,lastdbd}` is the canonical primary binary tree, and
+`~/.local/bin/{lastdb,lastdbd,folddb}` should symlink through that `current`
+directory. Use `~/.last-stack/bin/last-stack-lastdb-current set` after a
+successful safe upgrade or deliberate canary promotion, then
+`~/.last-stack/bin/last-stack-lastdb-current check --verbose` to verify the
+shell-visible CLI and daemon binary agree. The helper never restarts/kills
+`lastdbd`; LaunchAgent reload/kickstart remains a separate supervised action.
 
 ### brain CLI — read
 
@@ -103,3 +124,21 @@ CI.
 `service_timeout`, "node did not respond within Nms", and "too many concurrent
 reads" mean the node is BUSY, not down — retry the read; only retry writes that
 are idempotent slug upserts. Do not restart anything.
+
+### Who is burning the node? — `lastdb ops` (request telemetry)
+
+When the node is slow, shedding, or timing out, **name the offender** before
+guessing. Mini records every completed data-plane op in-process (resets on
+daemon restart):
+
+```bash
+lastdb status    # host vitals + short request-ops summary
+lastdb ops       # full worst-offender tables (client, kind, schema, ms, count)
+```
+
+Or read `status.request_ops` on `GET /api/status` over the socket. Rankings:
+`top_by_total_ms` (who eats wall time), `top_by_count` (chatty callers),
+`top_by_duration` (slowest singles in the ring). Clients self-identify with
+header `X-LastDB-Client: <name>` (`brain`, `kanban`, `lastgit`, …) — not a
+security boundary; missing → `unknown`. Full playbook:
+`brain get sop-lastdb-request-ops-telemetry --type sop`.
