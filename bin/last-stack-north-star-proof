@@ -25,6 +25,7 @@ Known slugs:
   north-star-lastdb-minimal-node
   north-star-app-ops-latency
   north-star-schema-shared-surface-native-resolver
+  north-star-lastdb-file-blobs-on-demand-sync
 
 Reports land in $NORTH_STAR_PROOF_DIR (default ~/.last-stack/north-star-proofs/<slug>.md)
 First line is PASS | PASS-OFFLINE | FAIL for DONE-WHEN file matching.
@@ -56,6 +57,7 @@ map_slug_to_script() {
     north-star-lastdb-minimal-node) echo "minimal-node/run.sh" ;;
     north-star-app-ops-latency) echo "app-ops/run.sh" ;;
     north-star-schema-shared-surface-native-resolver) echo "schema/run.sh" ;;
+    north-star-lastdb-file-blobs-on-demand-sync) echo "file-blobs-on-demand-sync/run.sh" ;;
     *) return 1 ;;
   esac
 }
@@ -68,6 +70,7 @@ ALL_SLUGS=(
   north-star-lastdb-minimal-node
   north-star-app-ops-latency
   north-star-schema-shared-surface-native-resolver
+  north-star-lastdb-file-blobs-on-demand-sync
 )
 
 if [ "$LIST" -eq 1 ]; then

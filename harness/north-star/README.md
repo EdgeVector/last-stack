@@ -23,3 +23,4 @@ First line is `PASS`, `PASS-OFFLINE`, or `FAIL` for kanban DONE-WHEN matching.
 | minimal-node | throwaway lastdbd boot | CoW smoke skill |
 | app-ops | `lastdb ops --by-app` | same against live Mini |
 | schema | no-wasm tree gate | fold capstone `run.sh` when landed |
+| file-blobs-on-demand-sync | fold source/test contract + optional narrow cargo tests | same narrow fold proof command on a non-primary checkout |

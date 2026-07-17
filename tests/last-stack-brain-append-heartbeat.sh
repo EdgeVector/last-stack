@@ -128,6 +128,7 @@ chmod +x "$fake_bin/brain"
 
 SYSTEM_PATH="/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin"
 export PATH="$fake_bin:$SYSTEM_PATH"
+unset LAST_STACK_BRAIN
 export FAKE_FBRain_ARGS="$tmp/args"
 export FAKE_FBRain_PUT_BODY="$tmp/put-body"
 export FAKE_FBRain_APPEND_BODY="$tmp/append-body"
