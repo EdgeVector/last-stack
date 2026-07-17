@@ -84,6 +84,17 @@ if ! grep -Fq "Use \`noop\` when" <<<"$merge_babysit_prompt" ||
   exit 1
 fi
 
+north_star_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" north-star-rollup)"
+if ! grep -Fq 'timeout 300 "$dash_bin"' <<<"$north_star_prompt" ||
+   ! grep -Fq "reason=dashboard-timeout-prior-snapshot" <<<"$north_star_prompt"; then
+  echo "expected north-star-rollup to budget dashboard refresh and soft-noop intact snapshot timeouts" >&2
+  exit 1
+fi
+if ! grep -Fq "Dashboard timeout with a usable prior brain record + HTML snapshot" <<<"$north_star_prompt"; then
+  echo "expected north-star-rollup exit semantics to keep transient dashboard timeouts out of error" >&2
+  exit 1
+fi
+
 if LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" does-not-exist >/dev/null 2>"/tmp/last-stack-routine-read-missing.$$"; then
   echo "expected missing routine to fail" >&2
   exit 1
