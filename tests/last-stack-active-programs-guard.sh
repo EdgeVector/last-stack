@@ -73,6 +73,18 @@ Next move still includes `mixed-done-card`, but `live-card` is doing.
 cards: mixed-done-card, live-card
 <!-- rollup:end -->
 
+## Program: review-lane-program — Retired review lane program
+**program-slug:** `[[review-lane-program]]`
+Next move still names `retired-review-card`.
+
+## Program: deferred-table-program — Deferred backlog table program
+**program-slug:** `[[deferred-table-program]]`
+Next move still says ship **blocked-backlog-card**.
+
+| slug | column | notes |
+|---|---|---|
+| table-done-card | todo | stale table row |
+
 ## 3. Held program
 **program-slug:** `[[held-program]]`
 Live next move says to pick up `held-card` once the host-side cutover is ready.
@@ -105,10 +117,10 @@ cp "$after" "$tmp/stale-before"
   --proof-reports "$proof_reports" > "$tmp/stale-report"
 grep -q 'Drained stale program.*drained.*cue: Next move still points.*done-card (done).*gone-card (gone, proof).*suggested fix: archive done row or clear stale next move' "$tmp/stale-report"
 grep -q 'Mixed active program.*mixed.*cue: Next move still includes.*mixed-done-card (done).*live-card (doing).*suggested fix: clear stale refs and advance prose to the live card' "$tmp/stale-report"
-grep -q 'Held program.*held.*cue: Live next move says.*held-card (backlog, needs_human).*suggested fix: mark prose blocked/held or move next move to a ready card' "$tmp/stale-report"
 grep -q 'Retired review lane program.*drained.*cue: Next move still names.*retired-review-card (review, retired).*suggested fix: archive done row or clear stale next move' "$tmp/stale-report"
 grep -q 'Deferred backlog table program.*mixed.*cue: Next move still says.*table-done-card (done).*held: blocked-backlog-card (backlog, deferred).*suggested fix: archive done refs and mark held refs as blocked' "$tmp/stale-report"
 grep -q 'Completed proof still active.*drained.*north-star-lastdb-file-blobs-on-demand-sync (program proof PASS-OFFLINE)' "$tmp/stale-report"
+grep -q 'Held program.*held.*cue: Live next move says.*held-card (backlog, needs_human).*suggested fix: mark prose blocked/held or move next move to a ready card' "$tmp/stale-report"
 cmp "$tmp/stale-before" "$after"
 
 cat > "$after" <<'EOF_PROGRAM_STALE'
