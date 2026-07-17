@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+remote="${SITUATIONS_HOST_TRACK_REMOTE:-lastdb:///situations}"
+host_root="${HOST_TRACK_HOME:-$HOME/.host-track}"
+host_track="${SITUATIONS_HOST_TRACK_DIR:-$host_root/situations}"
+refresh_script="$host_track/scripts/refresh-host.sh"
+
+if [ ! -x "$refresh_script" ]; then
+  mkdir -p "$host_root"
+  if [ -e "$host_track" ] && [ ! -d "$host_track/.git" ]; then
+    printf 'situations host track exists but is not a git checkout: %s\n' "$host_track" >&2
+    exit 1
+  fi
+  if [ ! -d "$host_track/.git" ]; then
+    git clone "$remote" "$host_track"
+  fi
+fi
+
+if [ ! -x "$refresh_script" ]; then
+  printf 'situations host refresh script is not executable: %s\n' "$refresh_script" >&2
+  exit 1
+fi
+
+exec "$refresh_script" "$@"
