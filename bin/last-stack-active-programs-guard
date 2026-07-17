@@ -237,6 +237,35 @@ def load_proof_slugs(path: Optional[str]) -> set[str]:
     return set()
 
 
+def completed_proof_reports(path: Optional[str]) -> dict[str, str]:
+    if not path:
+        return {}
+    proof_path = Path(path).expanduser()
+    if not proof_path.exists():
+        return {}
+
+    reports = [proof_path]
+    if proof_path.is_dir():
+        reports = sorted(proof_path.glob("*.md"))
+
+    completed: dict[str, str] = {}
+    for report in reports:
+        if not report.is_file():
+            continue
+        text = report.read_text(encoding="utf-8", errors="replace")
+        first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+        if not first_line.startswith("PASS"):
+            continue
+        slug = report.stem
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug):
+            match = re.search(r"North Star proof\s+[-:]\s+([a-z0-9][a-z0-9-]*)", text)
+            if not match:
+                continue
+            slug = match.group(1)
+        completed[slug] = first_line
+    return completed
+
+
 def check_rewrite(before_path: str, after_path: str, completed_after_path: str | None = None) -> None:
     before = read_text(before_path)
     after = read_text(after_path)
@@ -373,20 +402,32 @@ def archive_closed(active_path: str, completed_path: str, active_out: str, compl
     print(f"archived {len(archived)} closed program section(s)")
 
 
-def stale_report(active_path: str, board_path: str, proof_slugs_path: Optional[str] = None) -> int:
+def stale_report(
+    active_path: str,
+    board_path: str,
+    proof_slugs_path: Optional[str] = None,
+    proof_reports_path: Optional[str] = None,
+) -> int:
     active = read_text(active_path)
     board_cards = load_board_cards(board_path)
     proof_slugs = load_proof_slugs(proof_slugs_path)
+    completed_proofs = completed_proof_reports(proof_reports_path)
     _preamble, sections = split_sections(active)
     reports: list[str] = []
 
     for _section_id, title, section in sections:
         ref_sources = section_card_ref_sources(section)
-        if not ref_sources:
+        program = sorted(program_slugs(section))
+        proven_programs = [
+            f"{slug} (program proof {completed_proofs[slug]})"
+            for slug in program
+            if slug in completed_proofs
+        ]
+        if not ref_sources and not proven_programs:
             continue
 
         live_refs: list[str] = []
-        stale_refs: list[str] = []
+        stale_refs: list[str] = list(proven_programs)
         held_refs: list[str] = []
         unknown_refs: list[str] = []
         for slug in sorted(ref_sources):
@@ -478,6 +519,10 @@ def main() -> int:
         "--proof-slugs",
         help="optional file containing slugs with external proof for gone cards",
     )
+    stale.add_argument(
+        "--proof-reports",
+        help="optional proof report file or directory; PASS reports mark matching program slugs complete",
+    )
 
     args = parser.parse_args()
     if args.command == "check":
@@ -485,7 +530,7 @@ def main() -> int:
     elif args.command == "archive-closed":
         archive_closed(args.active, args.completed, args.active_out, args.completed_out)
     elif args.command == "stale-report":
-        return stale_report(args.active, args.board, args.proof_slugs)
+        return stale_report(args.active, args.board, args.proof_slugs, args.proof_reports)
     return 0
 
 
