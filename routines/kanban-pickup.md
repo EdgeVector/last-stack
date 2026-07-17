@@ -96,6 +96,17 @@ agent workspace. At the beginning of the run, record `run_started_epoch=$(date
   merge-complete command after the 35-minute publish stop line; `kanban-watch`
   or a later pickup fire can reconcile a visible in-flight PR/CR, but routinesd
   cannot recover a killed foreground process cleanly.
+- Live operational proof watches are bounded too. If the card only needs
+  evidence from an external process that is already running (sync catch-up,
+  deploy propagation, mirror polling, CI completion, etc.), stop watching when
+  fewer than **10 minutes** remain. If the END STATE is proven, close out the
+  card immediately. If it is still pending, append the observed state to the
+  card, move/leave it in `todo` as appropriate, heartbeat
+  `ok cards=1 worked=<slug> result=rolled-back-todo reason=watch-budget-reserved`
+  (or the proven closeout result), print the machine trailer by using the
+  `ROUTINE_RESULT` token followed by `outcome=ok detail=worked=<slug>
+  reason=watch-budget-reserved`, and EXIT. Never consume the final budget
+  reserve with a watch loop and then start board closeout at the harness edge.
 - Idle mode is optional when budget is tight. A clean `noop idle=budget-exhausted`
   is better than a red harness timeout with a zombie `doing` card.
 

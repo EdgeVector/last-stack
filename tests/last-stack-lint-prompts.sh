@@ -473,6 +473,8 @@ grep -q 'Do not start any new validation or PR/CR publish sequence after \*\*35 
 grep -q 'Before every foreground watcher, deploy wait, sync drain, or other END STATE' "$pickup"
 grep -q 'reason=budget-low' "$pickup"
 grep -q 'watch external progress until the harness SIGTERM cuts off closeout' "$pickup"
+grep -q 'Live operational proof watches are bounded too' "$pickup"
+grep -q 'reason=watch-budget-reserved' "$pickup"
 grep -q 'host-track status' "$pickup"
 grep -q '<cmd> which' "$pickup"
 
