@@ -38,8 +38,12 @@ example of all the pieces below.
 ## The aesthetic (non-negotiable)
 
 - **Thin, uniform strokes** — `stroke-width="1"` everywhere. One weight.
-- **Sharp geometry** — rectangles with square corners, right angles. No rounded
+- **Sharp geometry** — square corners, right angles, precise polygons. No rounded
   blobs, no drop shadows, no gradients, no fills except hatch.
+- **Varied shapes, by TYPE** — do NOT make everything a rectangle. Each *kind*
+  of thing gets its own shape (see Shape vocabulary below), used consistently
+  across every figure in the same document. Tom explicitly asked for this
+  (2026-07-16): "I don't want everything to be rectangles."
 - **Poché hatch** for anything "solid" / stored / on-disk (a thin diagonal line
   pattern — the classic architectural fill). Voids/empties stay outline-only.
 - **Dimension lines** (a span line with short perpendicular end-ticks + a label
@@ -53,6 +57,32 @@ example of all the pieces below.
 - **One accent colour only**, reserved for the "new"/highlighted element. Every
   other line is the muted structural colour.
 - A small `figcaption` ("FIG. N — …", uppercase, dim) under each figure.
+
+## Shape vocabulary — shape encodes TYPE
+
+Different shapes for different types of things. Pick one shape per semantic
+type, keep it consistent across all figures in a document, and never let a
+diagram collapse into all-rectangles. The working set (extend it in the same
+spirit when a new type appears):
+
+| shape | SVG | means |
+|---|---|---|
+| plain rectangle | `<rect>` outline | container / machine / surface (a laptop, a device, a board) |
+| rectangle + poché | `<rect fill=hatch>` | data at rest — a store, a database, persisted bytes |
+| small square | tiny `<rect>` (~20–34px) | one atomic data unit (an atom, a log entry); hatch if persisted, accent outline if in flight |
+| circle | `<circle>` | a record/object/pointer (a molecule, a knowledge graph — add 2px dots + hairline links inside for "graph") |
+| hexagon | `<polygon>` 6-pt, flat left/right vertices | a process/service that computes (a resolver, a daemon); **dashed** outline when remote / not yours |
+| clipped-corner card | `<path>` rect with one corner cut ~16px | a definition/spec sheet — schema, contract, config; field rows as underlined lines inside |
+| diamond | `<polygon>` 4-pt | a decision / check / validation gate |
+| person glyph | head `<circle>` + shoulders arc (`M x y Q …`) | a human actor (Alice, a recipient) |
+| envelope | rect + `polyline` flap | a payload in transit |
+| star | 10-pt `<polygon>` | a goal / outcome / north star |
+
+Connectors attach to a shape's natural vertex (hexagon side points, diamond
+tips, a card's straight edge) with the usual 4×4 joint marks. Poché and dashed
+outlines compose with any shape — hatch = "holds data", dashed = "remote or
+out of your control" — so e.g. a dashed hexagon with a hatched rect inside
+reads "remote service storing ciphertext".
 
 ## Palette
 

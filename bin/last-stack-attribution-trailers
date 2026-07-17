@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Print git/PR trailers for routine provenance when this process was launched
+# by routinesd (DRIVEN_BY=routine). Interactive sessions print nothing (exit 0)
+# so agents can always append "$(last-stack-attribution-trailers)" safely.
+#
+# Usage:
+#   last-stack-attribution-trailers           # stdout trailers or empty
+#   last-stack-attribution-trailers --require # fail if not a routine run
+set -euo pipefail
+
+require=0
+if [ "${1:-}" = "--require" ]; then
+  require=1
+fi
+
+driven="${DRIVEN_BY:-}"
+auto_id="${AUTOMATION_ID:-}"
+
+if [ "$driven" != "routine" ] || [ -z "$auto_id" ]; then
+  if [ "$require" -eq 1 ]; then
+    echo "last-stack-attribution-trailers: not a routine run (DRIVEN_BY/AUTOMATION_ID unset)" >&2
+    exit 2
+  fi
+  exit 0
+fi
+
+printf 'Driven-By: routine\n'
+printf 'Automation-Id: %s\n' "$auto_id"
+if [ -n "${ROUTINES_RUN_ID:-}" ]; then
+  printf 'Run-Id: %s\n' "$ROUTINES_RUN_ID"
+elif [ -n "${ROUTINES_RUN_DIR:-}" ]; then
+  stamp="${ROUTINES_RUN_DIR%/}"
+  stamp="${stamp##*/}"
+  if [ -n "$stamp" ]; then
+    printf 'Run-Id: %s\n' "$stamp"
+  fi
+fi

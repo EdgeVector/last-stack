@@ -80,10 +80,20 @@ if [ -n "$brain_cmd" ] && ! [ -x "$brain_cmd" ]; then
   exit 127
 fi
 if [ -z "$brain_cmd" ]; then
-  brain_cmd="$(command -v brain 2>/dev/null || true)"
-fi
-if [ -z "$brain_cmd" ]; then
-  brain_cmd="$(command -v fbrain 2>/dev/null || true)"
+  old_ifs="$IFS"
+  IFS=:
+  for path_dir in $PATH; do
+    [ -n "$path_dir" ] || path_dir="."
+    if [ -x "$path_dir/fbrain" ]; then
+      brain_cmd="$path_dir/fbrain"
+      break
+    fi
+    if [ -x "$path_dir/brain" ]; then
+      brain_cmd="$path_dir/brain"
+      break
+    fi
+  done
+  IFS="$old_ifs"
 fi
 if [ -z "$brain_cmd" ]; then
   echo "brain or fbrain is required" >&2

@@ -126,7 +126,8 @@ esac
 FAKE
 chmod +x "$fake_bin/brain"
 
-export PATH="$fake_bin:$PATH"
+SYSTEM_PATH="/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin"
+export PATH="$fake_bin:$SYSTEM_PATH"
 export FAKE_FBRain_ARGS="$tmp/args"
 export FAKE_FBRain_PUT_BODY="$tmp/put-body"
 export FAKE_FBRain_APPEND_BODY="$tmp/append-body"
@@ -169,7 +170,9 @@ mv "$fake_bin/brain" "$fake_bin/fbrain"
 unset FAKE_FBRain_SCHEMA_FAIL
 PATH="$fake_bin:$jq_dir:/usr/bin:/bin:/usr/sbin:/sbin"
 hash -r
+export LAST_STACK_BRAIN="$fake_bin/fbrain"
 "$ROOT/bin/last-stack-brain-append-heartbeat" --line "fbrain-heartbeat"
+unset LAST_STACK_BRAIN
 grep -q -- 'get routine-heartbeats --type reference --json' "$FAKE_FBRain_ARGS"
 printf 'fbrain-heartbeat\nold-one\nold-two\n' > "$expected"
 cmp "$expected" "$FAKE_FBRain_PUT_BODY"

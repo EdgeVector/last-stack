@@ -7,6 +7,9 @@ cleanup() {
   /bin/rm -rf "$tmp"
 }
 trap cleanup EXIT
+HOME="$tmp/home"
+mkdir -p "$HOME"
+export HOME
 
 fake_global="$tmp/global"
 mkdir -p "$fake_global"
@@ -68,6 +71,7 @@ fi
 
 workspace="$tmp/workspace"
 fake_home="$tmp/home"
+mkdir -p "$fake_home"
 mkdir -p "$workspace/brain/bin"
 mkdir -p "$fake_home/.local/bin"
 printf '#!/bin/sh\nexit 0\n' > "$workspace/brain/bin/brain"
@@ -77,8 +81,9 @@ chmod +x "$fake_home/.local/bin/brain"
 PATH="/usr/bin:/bin"
 HOME="$fake_home"
 LAST_STACK_WORKSPACE="$workspace"
+HOME="$fake_home"
 unset LAST_STACK_GLOBAL_PATH
-export PATH HOME LAST_STACK_WORKSPACE
+export PATH LAST_STACK_WORKSPACE HOME
 . "$ROOT/bin/last-stack-shell-prelude"
 last_stack_require_tools brain
 test "$LAST_STACK_TOOL_BRAIN" = "$fake_home/.local/bin/brain"

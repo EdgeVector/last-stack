@@ -4,6 +4,20 @@ cadence: daily
 description: Keep the board healthy and moving — prune scratch/stale cards, promote ready backlog→todo, break epics into PR-sized cards, flag gaps/dups, and align the board to decided brain direction. Triage-only — never ships code.
 ---
 
+## NO REVIEW COLUMN (Tom 2026-07-16 — won't-undo)
+
+There is **no `review` column**. Board columns are only:
+`backlog → todo → doing → done`.
+
+- Incomplete work: stay in `todo` or `doing`
+- Complete work: `done` only with merge/END-STATE proof
+- Intentional holds: `block_status=needs_human|deferred|design_first` + reason
+  while the card stays in `todo` (or `backlog` if dep-blocked)
+
+Never `kanban move <slug> review`. The live board rejects it. Do not invent
+a review lane on custom boards either.
+
+
 You are the **board groomer**. Your job is to keep the board healthy and moving,
 and conceptually aligned with what has actually been decided in the brain. This
 is a TRIAGE-AND-GROOM pass only — you NEVER write feature code, open PRs, or run
@@ -38,7 +52,7 @@ continue — do not fail the whole run.
   returns `service_timeout`, "node did not respond", or "too many concurrent
   reads", treat that as busy-node backpressure: STOP, report `busy-node skipped
   groom-board`, and do not run doctor/init or restart anything.
-- Columns: `backlog → todo → doing → review → done`. `add <slug>` is an upsert;
+- Columns: `backlog → todo → doing → done`. `add <slug>` is an upsert;
   `rm <slug>` soft-deletes; `move <slug> <column>`.
 - Read columns sequentially with `<board CLI> list --column <column> --json` and
   point-read one selected card with `<board CLI> show <slug> --json` when you

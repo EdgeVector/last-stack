@@ -32,6 +32,8 @@ printf '## My own notes\nkeep me\n' > "$agents"
   cat "$tmp/setup1.out" >&2
   fail "setup --host codex exited non-zero"
 }
+test -x "$HOME/.local/bin/host-track" || fail "host-track shim was not installed"
+"$HOME/.local/bin/host-track" --help >/dev/null || fail "host-track shim is not runnable"
 
 # ── AGENTS.md: managed block present, user content preserved ──────────────────
 grep -q 'keep me' "$agents" || fail "user AGENTS.md content was clobbered"
