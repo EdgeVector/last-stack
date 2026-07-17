@@ -1,7 +1,7 @@
 ---
 name: onboarding-preview
 description: |
-  Spin up the LastDB / folddb_node NEW-USER ONBOARDING wizard locally and drive
+  Spin up the LastDB NEW-USER ONBOARDING wizard locally and drive
   it in a browser — WITHOUT building, signing, or notarizing a desktop app. Runs
   a debug-built node on a throwaway empty DB so the SPA drops into the real
   first-run setup wizard (Key → Identity → AI Setup → Cloud Backup → Apple Data →
@@ -130,7 +130,7 @@ with step 1 **"KEY SETUP — Choose your root"** showing master-password fields 
 The dev server stays up until stopped. When the user is done, kill the
 background run (the `b...`-style Bash task id, or `pkill -f 'run.sh'` /
 `folddb stop` if appropriate — be careful not to kill Tom's primary
-`folddb_server` brain; this throwaway node lives under `/tmp/folddb-slot-9101`).
+LastDB brain; this throwaway node lives under `/tmp/folddb-slot-9101`).
 
 ## Lighter fallback: pure UI, no backend
 

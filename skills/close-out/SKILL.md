@@ -134,7 +134,7 @@ agent ran it / CI, not a human eyeballing). Match the proof to blast radius:
   **plus a negative case**.
 - **User-visible or stateful** (passwords, auth, settings, data writes, sync, UI)
   → run the feature's `test/acceptance/<feature>.sh` against the **real app on a
-  throwaway data dir** (`mktemp -d`, `FOLDDB_DISABLE_KEYCHAIN=1`; never `~/.folddb`
+  throwaway data dir** (`mktemp -d`, `FOLDDB_DISABLE_KEYCHAIN=1`; never `~/.lastdb` or `~/.folddb`
   or the primary brain/keyring). It must cross a **process boundary** (restart /
   re-open) between the write and the read, and include a **negative case**. No
   script yet? Write one from the SOP `sop-autonomous-acceptance-gate` template.

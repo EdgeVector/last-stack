@@ -19,21 +19,21 @@ actions noted below.
 
 ## 🛑 Hard guardrails (violating these has caused outages)
 
-- **NEVER kill the primary `folddb_server` / `lastdbd` brain.** It's Tom's primary brain with live Chrome
+- **NEVER kill the primary LastDB brain (`lastdbd`, or legacy `folddb_server`).** It's Tom's primary brain with live Chrome
   connections; long uptime is NOT an orphan signal. Identify the primary brain by its live
   LastDB socket (`lsof /Users/tomtang/.lastdb/data/folddb.sock`), with the old
   `~/.folddb/data/folddb.sock` path only as a fallback, or by the app process
   (`pgrep -fl 'MacOS/[f]old-app'`) or Mini daemon (`pgrep -fl '[l]astdbd'`) before
-  touching any folddb_server/lastdbd — the TCP port is gone, so a port probe no longer finds it.
+  touching any LastDB-like process — the TCP port is gone, so a port probe no longer finds it.
   The **preview-port reaper (§4a)** is brain-safe by construction: it excludes any PID bound to
   the brain socket and kills only vite/`run.sh` dev launches on the preview ports — match by
-  port + cmdline, never by the name "node"/"folddb".
+  port + cmdline, never by a generic process name.
 - **NEVER stash/reset/`checkout --` in a shared repo.** Multiple agents share these
   checkouts. Use worktrees, never destroy uncommitted work.
 - **NEVER touch in-progress kanban work.** Tasks in `in_progress`/`review` on the kanban
   board (and their `~/.cline/worktrees/<id>` worktrees + branches) are off-limits.
 - **NEVER force-remove a worktree that has a live process in it**, and **never kill a
-  `claude` agent process.** Removing a worktree out from under a live `folddb_server` has
+  `claude` agent process.** Removing a worktree out from under a live LastDB server has
   produced a 339 GB orphan-server wedge.
 - **`archive_session` is unavailable in unsupervised mode** (it always prompts). Do not
   attempt it at 3 AM — **enumerate** stale sessions and report instead.
@@ -97,7 +97,7 @@ actions noted below.
 ### 1. Assess
 ```bash
 df -h /System/Volumes/Data | tail -1                       # free space
-ps aux | grep folddb_server | grep -v grep                 # confirm primary brain only
+ps aux | grep -E 'lastdbd|folddb_server' | grep -v grep    # confirm primary brain only
 lsof /Users/tomtang/.lastdb/data/folddb.sock 2>/dev/null   # identify the primary brain by its live socket
 lsof /Users/tomtang/.folddb/data/folddb.sock 2>/dev/null    # stale-path fallback only
 pgrep -fl 'MacOS/[f]old-app'                               # process fallback for the app-hosted brain
@@ -143,7 +143,7 @@ the report rather than breaking them — UNLESS the disk is critically full (the
 
 **Atomic-swap reclaim (works even under live agents, supervised + authorized):**
 ```bash
-# 1. stop active compiles (NOT the primary folddb_server brain, NOT node/kanban)
+# 1. stop active compiles (NOT the primary LastDB brain, NOT node/kanban)
 pkill -9 -f clippy-driver; pkill -9 -f '/rustc'; pkill -9 -f cargo
 # 2. O(1) rename — zero race window — then recreate empty so worktree symlinks resolve
 mv ~/code/edgevector/fold/target ~/code/edgevector/fold/target.PURGE
@@ -177,7 +177,7 @@ A force-quit preview/dev session can leave its `node` (vite / `run.sh` dev) proc
 holding a preview port, so the next `preview_start` fails with
 `Port 5173/5183 is in use by "node" (PID …) (not a preview server)` and the agent
 stalls. Reap ONLY those orphans, keyed on **port + command line** — NEVER on the
-name "node" or "folddb" (the primary brain is also a long-lived proc; uptime is
+name "node" or any legacy LastDB binary name (the primary brain is also a long-lived proc; uptime is
 not an orphan signal). Known preview ports: **5173** (lastdb-ui), **5178**,
 **5183** (newuser-node), **8766**.
 
@@ -195,7 +195,7 @@ for port in 5173 5178 5183 8766; do
   for pid in $(lsof -ti :"$port" 2>/dev/null); do
     case " $brain_pids " in *" $pid "*) echo "skip brain pid $pid on :$port"; continue ;; esac
     cmd=$(ps -o command= -p "$pid" 2>/dev/null)
-    # Reap only a vite / folddb dev-server run.sh launch on a preview port:
+    # Reap only a vite / LastDB dev-server run.sh launch on a preview port:
     case "$cmd" in
       *vite*|*run.sh*|*node_modules/.bin/vite*|*newuser-node*|*lastdb-ui*)
         echo "reaping orphan preview-port proc: pid=$pid port=$port :: $cmd"
@@ -213,7 +213,7 @@ or the post-2026-07-12 `lastdbd` Mini primary),
 skip a port whose owning session is still live or whose cwd is a `DOING`/`REVIEW`
 kanban worktree, and log every PID + port + cmdline reaped (and every one spared
 and why). After reaping, a fresh `preview_start name=lastdb-ui` should bind
-cleanly while the primary `folddb_server` brain (socket still live) is untouched.
+cleanly while the primary LastDB brain (socket still live) is untouched.
 
 ### 4b. Runaway / orphaned test-node reaper (path-scoped — never the brain)
 A dmg-smoke / real-machine-gate / dogfood run launches its own `lastdb_server`

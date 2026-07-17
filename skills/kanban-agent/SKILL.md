@@ -131,7 +131,7 @@ Validation lives on the **card** instead: run the card's `VERIFY:` line before
 closing, and honor its `## END STATE`. For user-visible/stateful cards (auth,
 passwords, settings, data writes, sync, UI), that still means a real-app
 acceptance check: run the real binary/node on a **throwaway** data dir
-(`mktemp -d`, `FOLDDB_DISABLE_KEYCHAIN=1`) — NEVER `~/.folddb` or the primary
+(`mktemp -d`, `FOLDDB_DISABLE_KEYCHAIN=1`) — NEVER `~/.lastdb`, `~/.folddb`, or the primary
 brain/keyring; **cross a process boundary** (restart / re-open) between the write
 and the read; include a **negative case**. Anchor it to the user story, not the
 diff ("a user can set a password and later unlock with it") — see the SOP

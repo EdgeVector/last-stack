@@ -44,7 +44,7 @@ isn't real. Before writing a word, figure out *what the user is pointing at* and
 | "the current state" of an in-flight design/feature | `mcp__brain__brain_search` / `brain_get` for the project note; recent PRs (`gh pr list`, `gh pr view`); the design doc in exemem-workspace |
 | a PR / a change | `gh pr view <n> -R <owner>/<repo> --json title,body,files` + read the actual diff |
 | an error / failure | read the real error text and the code path that emits it |
-| an architecture/concept ("what is an app in folddb", "TCP off") | read the relevant code + the CLAUDE.md / repo docs; check the memory index for a settled answer |
+| an architecture/concept ("what is an app in LastDB", "TCP off") | read the relevant code + the CLAUDE.md / repo docs; check the memory index for a settled answer |
 | "is X done / built yet?" | check origin/main and the relevant PR state — local checkouts and your memory both lag |
 
 If you genuinely can't tell which thing they mean, ask one short clarifying
@@ -62,7 +62,7 @@ Keep it tight. Three beats, in this order:
 1. **The analogy / one-sentence gist** — the plain-English "it's basically like
    ___" that makes the rest click. Lead with this.
 2. **The concrete mechanics** — what actually happens, in 2–5 short bullets, in
-   the user's domain terms (apps, schemas, nodes, the primary folddb_server brain, exemem,
+   the user's domain terms (apps, schemas, nodes, the primary LastDB brain, exemem,
    the bulletin board). Name the real pieces so it connects to the codebase.
 3. **What it means for you** — the payoff: the decision the user actually has to
    make, what's blocked on what, or "nothing to do, it just works." End here,
