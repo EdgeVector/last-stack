@@ -40,10 +40,10 @@ cat > "$board" <<'EOF_BOARD'
   {"slug":"done-card","column":"done"},
   {"slug":"live-card","column":"doing"},
   {"slug":"mixed-done-card","column":"done"},
+  {"slug":"held-card","column":"backlog","block_status":"needs_human","block_reason":"host-side cutover"},
   {"slug":"retired-review-card","column":"review"},
   {"slug":"blocked-backlog-card","column":"backlog","block_status":"deferred"},
-  {"slug":"table-done-card","column":"done"},
-  {"slug":"held-card","column":"backlog","block_status":"needs_human","block_reason":"host-side cutover"}
+  {"slug":"table-done-card","column":"done"}
 ]
 EOF_BOARD
 cat > "$proof" <<'EOF_PROOF'
@@ -85,6 +85,18 @@ Live next move says to pick up `held-card` once the host-side cutover is ready.
 **Status (auto):** 0/1 landed
 cards: held-card
 <!-- rollup:end -->
+
+## Program: review-lane-program — Retired review lane program
+**program-slug:** `[[review-lane-program]]`
+Next move still names `retired-review-card`.
+
+## Program: deferred-table-program — Deferred backlog table program
+**program-slug:** `[[deferred-table-program]]`
+Next move still says ship **blocked-backlog-card**.
+
+| slug | column | notes |
+|---|---|---|
+| table-done-card | todo | stale table row |
 EOF_STALE
 cp "$after" "$tmp/stale-before"
 "$ROOT/bin/last-stack-active-programs-guard" stale-report \
