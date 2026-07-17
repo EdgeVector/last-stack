@@ -2,7 +2,7 @@
 
 **The Last Stack** is a small, curated set of **agent skills** for driving a
 LastDB-backed workflow with an AI coding agent — the agent layer that sits on
-top of [LastDB](https://folddb.com) and its two companion tools:
+top of [LastDB](https://thelastdb.com) and its two companion tools:
 
 - **Brain** — [`brain`](https://github.com/EdgeVector/brain): long-lived notes
   over LastDB (the *why*: decisions, designs, milestones).
@@ -280,10 +280,16 @@ bin/
                             non-mutating tracked-remote freshness preflight
   last-stack-brain-append-heartbeat
                             safely add a typed routine-heartbeats line
+  last-stack-board-drain-report
+                            print board position plus 1h/6h/24h pickup drain
+                            velocity from routine-heartbeats and run metadata
   last-stack-active-programs-guard
                             reject active-programs rewrites that drop program
                             headers/slugs; split closed programs into archive
   last-stack-install-apps   download LastDB plus the usable app stack
+  last-stack-lastdb-current maintain ~/.lastdb/current plus ~/.local/bin
+                            lastdb/lastdbd/folddb shims; optionally rewrite a
+                            LaunchAgent plist without restarting lastdbd
   last-stack-uninstall      remove the registered skills
 skills/<name>/SKILL.md  one directory per skill
 instructions/brain-kanban.md
@@ -340,8 +346,9 @@ Steps 1–6 describe what an agent does *when invoked*. To make the loop
 **self-driving** — so cards get filed, promoted, picked up, and reconciled
 without a human kicking it each time — register the **routines** as scheduled
 agents: generators (`self-improvement-loop`, `papercut-sweep`) file work,
-`groom-board`/`program-driver` promote it, `kanban-pickup` fans out WORK agents,
-`kanban-watch`/`drain-open-prs` reconcile the stragglers, `kanban-validate`
+`groom-board`/`program-driver` promote it, separate `kanban-pickup` workers
+claim and ship one WORK card each, `kanban-watch`/`drain-open-prs` reconcile
+the stragglers, `kanban-validate`
 runs post-merge END STATE checks, and
 `program-rollup`/`consolidate-brain`/`morning-sync` keep the brain honest and
 surface the short genuinely-human decision set. See

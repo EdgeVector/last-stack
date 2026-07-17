@@ -61,6 +61,24 @@ remove_brain_kanban_block() {
   echo "  $label: removed brain-kanban instructions block"
 }
 
+real_home_matches() {
+  local real_home
+  real_home="$(eval "printf '%s' ~$(id -un)" 2>/dev/null || true)"
+  [ -n "$real_home" ] && [ "$HOME" = "$real_home" ]
+}
+
+remove_host_track_refresh_agent() {
+  local label="com.edgevector.host-track-refresh"
+  local plist="${LAST_STACK_HOST_TRACK_PLIST:-$HOME/.last-stack/launchd/$label.plist}"
+  if [ "$(uname -s)" = "Darwin" ] && real_home_matches && command -v launchctl >/dev/null 2>&1; then
+    launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true
+  fi
+  if [ -e "$plist" ] || [ -L "$plist" ]; then
+    rm -f "$plist"
+    echo "  host-track: removed refresh LaunchAgent plist"
+  fi
+}
+
 echo "Uninstalling The Last Stack skills ..."
 remove_from "$HOME/.claude/skills"          "claude"
 remove_from "$HOME/.codex/skills"           "codex"
@@ -70,5 +88,6 @@ remove_brain_kanban_block "$HOME/.claude/CLAUDE.md"          "claude"
 remove_brain_kanban_block "$HOME/.codex/AGENTS.md"           "codex"
 remove_brain_kanban_block "$HOME/.factory/AGENTS.md"         "factory"
 remove_brain_kanban_block "$HOME/.config/opencode/AGENTS.md" "opencode"
+remove_host_track_refresh_agent
 echo "Done. (This repo at $ROOT is left in place — delete it to fully remove."
 echo "       MCP server entries in ~/.codex/config.toml are kept; remove manually if unwanted.)"

@@ -38,8 +38,12 @@ example of all the pieces below.
 ## The aesthetic (non-negotiable)
 
 - **Thin, uniform strokes** — `stroke-width="1"` everywhere. One weight.
-- **Sharp geometry** — rectangles with square corners, right angles. No rounded
+- **Sharp geometry** — square corners, right angles, precise polygons. No rounded
   blobs, no drop shadows, no gradients, no fills except hatch.
+- **Varied shapes, by TYPE** — do NOT make everything a rectangle. Each *kind*
+  of thing gets its own shape (see Shape vocabulary below), used consistently
+  across every figure in the same document. Tom explicitly asked for this
+  (2026-07-16): "I don't want everything to be rectangles."
 - **Poché hatch** for anything "solid" / stored / on-disk (a thin diagonal line
   pattern — the classic architectural fill). Voids/empties stay outline-only.
 - **Dimension lines** (a span line with short perpendicular end-ticks + a label
@@ -53,6 +57,52 @@ example of all the pieces below.
 - **One accent colour only**, reserved for the "new"/highlighted element. Every
   other line is the muted structural colour.
 - A small `figcaption` ("FIG. N — …", uppercase, dim) under each figure.
+
+## Shape vocabulary — shape encodes TYPE (Tom, 2026-07-16)
+
+Different shapes for different types of things. Pick one shape per semantic
+type, keep it consistent across all figures in a document, never let a diagram
+collapse into all-rectangles, and add a small legend row when 3+ shape classes
+appear. House taxonomy — proven in the EVF-DELIVER-001 patent figures
+(`exemem-workspace/docs/corporate/patent_deliver_figures/`, FIG 1 carries the
+legend row). Extend it in the same spirit when a new type appears:
+
+| shape | means | how to draw |
+|---|---|---|
+| rectangle | ONLY containers / devices / processes / services — never data | `<rect>` outline |
+| cylinder | database / store / persisted bytes | body `<path>` + `<ellipse>` top lid |
+| cut-corner document | data record / spec / definition sheet (schema, contract, config) | `<polygon>` with one corner clipped ~14px + `<polyline>` fold mark; field rows as underlined lines |
+| small square | one atomic data unit (an atom, a log entry) | tiny `<rect>` ~20–34px |
+| diamond | decision / check / human consent gate | 4-point `<polygon>` |
+| hexagon | sealed / encrypted parcel | 6-point `<polygon>`, flat left/right vertices |
+| circle | party / actor / keyholder (incl. apps and services acting as recipients) | `<circle>`; label inside if short, else beside |
+| person glyph | specifically a human (Alice, the approver) | head `<circle>` + shoulders arc |
+| triangle | key / credential | small 3-point `<polygon>` |
+| envelope | payload in transit | rect + `polyline` flap |
+| star | goal / outcome / north star | 10-point `<polygon>` |
+
+Two modifiers compose with ANY shape: **poché hatch** = "holds real data"
+(a poché document = a record that exists; an outline-only hexagon = an
+empty/absent parcel), and a **dashed outline** = "remote / not yours" (a dashed
+cylinder inside a dashed rect reads "someone else's service storing bytes").
+Connectors attach at a shape's natural vertex (hexagon side points, diamond
+tips, a document's straight edge) with the usual 4×4 joint marks.
+
+Snippets (light palette; swap colours per surface):
+
+```
+<!-- cylinder: body path + top lid -->
+<path d="M 64 106 A 50 9 0 0 1 164 106 L 164 148 A 50 9 0 0 1 64 148 Z"
+      fill="url(#poche)" stroke="#3b4a5a" stroke-width="1"/>
+<ellipse cx="114" cy="106" rx="50" ry="9" fill="#fbfaf7" stroke="#3b4a5a" stroke-width="1"/>
+<!-- document: cut top-right corner + fold mark -->
+<polygon points="192,98 272,98 286,112 286,156 192,156" fill="none" stroke="#3b4a5a" stroke-width="1"/>
+<polyline points="272,98 272,112 286,112" fill="none" stroke="#3b4a5a" stroke-width="1"/>
+<!-- diamond / hexagon / triangle -->
+<polygon points="75,214 175,184 275,214 175,244" fill="none" stroke="#2f6f8f" stroke-width="1"/>
+<polygon points="257,96 373,96 401,136 373,176 257,176 229,136" fill="none" stroke="#3b4a5a" stroke-width="1"/>
+<polygon points="315,32 291,72 339,72" fill="none" stroke="#2f6f8f" stroke-width="1"/>
+```
 
 ## Palette
 
@@ -124,6 +174,7 @@ Render in a host:
 
 ## Composition checklist
 - Decide the ONE idea each figure carries; one figure per idea, 2–3 max.
+- Categorize elements by shape (see Shape vocabulary); legend row if 3+ classes.
 - Lay out on a grid; equal margins; consistent box sizes.
 - "Solid/has data" → poché. "Empty/void/new" → outline only (often the accent).
 - Quantities → dimension lines, not prose inside the box.

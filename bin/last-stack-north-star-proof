@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# Run product-grade North Star terminal proof harnesses.
+# Default mode is offline (CI-safe). Set NORTH_STAR_PROOF_MODE=live for full dogfood.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+# shellcheck source=../harness/north-star/common.sh
+. "$ROOT/harness/north-star/common.sh"
+
+usage() {
+  cat <<'U'
+usage: last-stack-north-star-proof [--list] [--offline|--live] [<ns-slug>|all]
+
+North Star terminal proof harness runner.
+
+Modes:
+  --offline (default)  structural + fixture / unit proofs; never primary brain
+  --live               full dogfood when prerequisites exist (still never primary)
+
+Known slugs:
+  north-star-coderings
+  north-star-lastdb-deliver-data-slices
+  north-star-lastgit-native-forge
+  north-star-storage-metering-correctness
+  north-star-lastdb-minimal-node
+  north-star-app-ops-latency
+  north-star-schema-shared-surface-native-resolver
+  north-star-lastdb-file-blobs-on-demand-sync
+
+Reports land in $NORTH_STAR_PROOF_DIR (default ~/.last-stack/north-star-proofs/<slug>.md)
+First line is PASS | PASS-OFFLINE | FAIL for DONE-WHEN file matching.
+U
+}
+
+LIST=0
+MODE="${NORTH_STAR_PROOF_MODE:-offline}"
+ARGS=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --list) LIST=1; shift ;;
+    --offline) MODE=offline; shift ;;
+    --live) MODE=live; shift ;;
+    all|north-star-*) ARGS+=("$1"); shift ;;
+    *) echo "unknown arg: $1" >&2; usage; exit 2 ;;
+  esac
+done
+
+export NORTH_STAR_PROOF_MODE="$MODE"
+
+map_slug_to_script() {
+  case "$1" in
+    north-star-coderings) echo "coderings/run.sh" ;;
+    north-star-lastdb-deliver-data-slices) echo "deliver-slices/run.sh" ;;
+    north-star-lastgit-native-forge) echo "lastgit/run.sh" ;;
+    north-star-storage-metering-correctness) echo "metering/run.sh" ;;
+    north-star-lastdb-minimal-node) echo "minimal-node/run.sh" ;;
+    north-star-app-ops-latency) echo "app-ops/run.sh" ;;
+    north-star-schema-shared-surface-native-resolver) echo "schema/run.sh" ;;
+    north-star-lastdb-file-blobs-on-demand-sync) echo "file-blobs-on-demand-sync/run.sh" ;;
+    *) return 1 ;;
+  esac
+}
+
+ALL_SLUGS=(
+  north-star-coderings
+  north-star-lastdb-deliver-data-slices
+  north-star-lastgit-native-forge
+  north-star-storage-metering-correctness
+  north-star-lastdb-minimal-node
+  north-star-app-ops-latency
+  north-star-schema-shared-surface-native-resolver
+  north-star-lastdb-file-blobs-on-demand-sync
+)
+
+if [ "$LIST" -eq 1 ]; then
+  printf '%s\n' "${ALL_SLUGS[@]}"
+  exit 0
+fi
+
+if [ "${#ARGS[@]}" -eq 0 ]; then
+  usage
+  exit 2
+fi
+
+TARGETS=()
+for a in "${ARGS[@]}"; do
+  if [ "$a" = "all" ]; then
+    TARGETS=("${ALL_SLUGS[@]}")
+    break
+  fi
+  TARGETS+=("$a")
+done
+
+fail=0
+for slug in "${TARGETS[@]}"; do
+  rel="$(map_slug_to_script "$slug")" || {
+    echo "FAIL: unknown north star slug: $slug" >&2
+    fail=1
+    continue
+  }
+  script="$ROOT/harness/north-star/$rel"
+  if [ ! -x "$script" ] && [ -f "$script" ]; then
+    chmod +x "$script"
+  fi
+  if [ ! -f "$script" ]; then
+    echo "FAIL: missing harness $script" >&2
+    fail=1
+    continue
+  fi
+  echo "=== proving $slug (mode=$MODE) ==="
+  if ! bash "$script"; then
+    echo "FAIL: $slug" >&2
+    fail=1
+  else
+    echo "OK: $slug"
+  fi
+done
+exit "$fail"

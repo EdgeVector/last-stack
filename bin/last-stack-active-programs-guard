@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""Guard active-programs rewrites against silent section loss."""
+"""Guard active-programs rewrites against silent section loss.
+
+Program sections are identified by **program-slug** (stable), not ordinals.
+Preferred section header form (document order = sort order; move blocks to reorder):
+
+    ## Program: north-star-lastgit-native-forge
+    **program-slug:** `[[north-star-lastgit-native-forge]]`
+
+Legacy numbered headers (`## N. Title`) are still accepted for one release so
+older indexes and tests keep working. New writes should use `## Program:`.
+"""
 
 from __future__ import annotations
 
@@ -11,8 +21,29 @@ from pathlib import Path
 from typing import Optional
 
 
-HEADER_RE = re.compile(r"^##\s+(\d+)\.\s+(.+)$", re.MULTILINE)
-ANY_PROGRAM_HEADER_RE = re.compile(r"##\s+\d+\.\s+")
+# Preferred: ## Program: <slug>  or  ## Program: <slug> — Title
+PROGRAM_HEADER_RE = re.compile(
+    r"^##\s+Program:\s+([a-z0-9][a-z0-9-]*)(?:\s*[—–-]\s*(.+))?$",
+    re.MULTILINE,
+)
+# Alternate wiki form: ## [[slug]]  or  ## [[slug]] — Title
+WIKI_HEADER_RE = re.compile(
+    r"^##\s+\[\[([a-z0-9][a-z0-9-]*)\]\](?:\s*[—–-]\s*(.+))?$",
+    re.MULTILINE,
+)
+# Legacy ordinal form: ## N. Title
+ORDINAL_HEADER_RE = re.compile(r"^##\s+(\d+)\.\s+(.+)$", re.MULTILINE)
+
+# Any program header at line start (for split + embedded detection)
+ANY_PROGRAM_HEADER_RE = re.compile(
+    r"^##\s+(?:Program:\s+[a-z0-9][a-z0-9-]*|\[\[[a-z0-9][a-z0-9-]*\]\]|\d+\.\s+)",
+    re.MULTILINE,
+)
+# Mid-line / embedded detection (broader patterns)
+EMBEDDED_HEADER_PROBE_RE = re.compile(
+    r"##\s+(?:Program:\s+[a-z0-9][a-z0-9-]*|\[\[[a-z0-9][a-z0-9-]*\]\]|\d+\.\s+)"
+)
+
 PROGRAM_SLUG_RE = re.compile(r"\*\*program-slug:\*\*\s*`\[\[([^]]+)\]\]`")
 REFERENCE_SLUG_RE = re.compile(r"\[\[([^]]+)\]\]")
 BACKTICK_SLUG_RE = re.compile(r"`([a-z0-9][a-z0-9-]{2,})`")
@@ -25,10 +56,14 @@ CLOSED_MARKERS = (
     "prod cutover shipped",
     "dev capstone landed",
 )
-LIVE_COLUMNS = {"backlog", "todo", "doing", "review"}
+LIVE_COLUMNS = {"todo", "doing"}
 STALE_COLUMNS = {"done"}
 ACTIVE_SECTION_MARKER_RE = re.compile(
-    r"\b(reopened|re-opened|active|in-flight|in flight|todo|doing|review)\b",
+    r"\b(reopened|re-opened|active|live|next move|first todo|in-flight|in flight|todo|doing)\b",
+    re.IGNORECASE,
+)
+ACTIVE_CUE_RE = re.compile(
+    r"\b(next move|live|first todo|todo|doing|in-flight|in flight|ready|current)\b",
     re.IGNORECASE,
 )
 
@@ -42,9 +77,49 @@ def fail(message: str) -> None:
     raise SystemExit(1)
 
 
+def iter_program_header_matches(body: str) -> list[re.Match[str]]:
+    """Return program-section header matches in document order (line-start only)."""
+    matches: list[re.Match[str]] = []
+    for regex in (PROGRAM_HEADER_RE, WIKI_HEADER_RE, ORDINAL_HEADER_RE):
+        for match in regex.finditer(body):
+            if match.start() == 0 or body[match.start() - 1] == "\n":
+                matches.append(match)
+    matches.sort(key=lambda m: m.start())
+    # De-dupe same span (should not happen across forms)
+    deduped: list[re.Match[str]] = []
+    seen_starts: set[int] = set()
+    for match in matches:
+        if match.start() in seen_starts:
+            continue
+        seen_starts.add(match.start())
+        deduped.append(match)
+    return deduped
+
+
+def header_identity(match: re.Match[str]) -> tuple[str, str]:
+    """Return (stable_id, display_title) for a header match.
+
+    stable_id is the program slug when the header embeds one, else ordinal:N
+    for legacy numbered headers.
+    """
+    text = match.group(0)
+    if text.startswith("## Program:") or text.startswith("##Program:"):
+        slug = match.group(1)
+        title = (match.group(2) or slug).strip()
+        return slug, title
+    if "[[" in text:
+        slug = match.group(1)
+        title = (match.group(2) or slug).strip()
+        return slug, title
+    # ordinal
+    ordinal = match.group(1)
+    title = match.group(2).strip()
+    return f"ordinal:{ordinal}", title
+
+
 def embedded_headers(body: str) -> list[str]:
     lines: list[str] = []
-    for match in ANY_PROGRAM_HEADER_RE.finditer(body):
+    for match in EMBEDDED_HEADER_PROBE_RE.finditer(body):
         if match.start() == 0 or body[match.start() - 1] == "\n":
             continue
         line_start = body.rfind("\n", 0, match.start()) + 1
@@ -56,7 +131,8 @@ def embedded_headers(body: str) -> list[str]:
 
 
 def canonical_headers(body: str) -> list[tuple[str, str]]:
-    return [(match.group(1), match.group(2).strip()) for match in HEADER_RE.finditer(body)]
+    """List of (section_id, title) in document order."""
+    return [header_identity(m) for m in iter_program_header_matches(body)]
 
 
 def program_slugs(body: str) -> set[str]:
@@ -112,15 +188,23 @@ def card_entries(value: object) -> list[dict[str, object]]:
     return entries
 
 
-def load_board_columns(board_path: str) -> dict[str, str]:
+def load_board_cards(board_path: str) -> dict[str, dict[str, object]]:
     raw = json.loads(read_text(board_path))
-    columns: dict[str, str] = {}
+    cards: dict[str, dict[str, object]] = {}
     for card in card_entries(raw):
         slug = card.get("slug")
         column = card.get("column")
         if isinstance(slug, str) and isinstance(column, str):
-            columns[slug] = column
-    return columns
+            cards[slug] = card
+    return cards
+
+
+def load_board_columns(board_path: str) -> dict[str, str]:
+    return {
+        slug: str(card["column"])
+        for slug, card in load_board_cards(board_path).items()
+        if isinstance(card.get("column"), str)
+    }
 
 
 def load_proof_slugs(path: Optional[str]) -> set[str]:
@@ -157,11 +241,15 @@ def check_rewrite(before_path: str, after_path: str, completed_after_path: str |
     missing = before_slugs - after_slugs
     unarchived_missing = sorted(missing - completed_slugs)
 
+    # Header *count* may not drop without an intentional archive. Reordering,
+    # renumbering, or converting ## N. → ## Program: with the same section
+    # count is fine (identity is program-slug, not the ordinal).
     if len(after_headers) < len(before_headers):
         dropped = len(before_headers) - len(after_headers)
         if not completed_after_path or dropped > len(missing) or not missing <= completed_slugs:
             fail(f"program header count dropped from {len(before_headers)} to {len(after_headers)}")
 
+    # Primary identity: program-slug set must not silently shrink.
     if unarchived_missing:
         fail("program slugs disappeared: " + ", ".join(unarchived_missing))
 
@@ -174,7 +262,7 @@ def check_rewrite(before_path: str, after_path: str, completed_after_path: str |
 
 
 def split_sections(body: str) -> tuple[str, list[tuple[str, str, str]]]:
-    matches = list(HEADER_RE.finditer(body))
+    matches = iter_program_header_matches(body)
     if not matches:
         return body, []
 
@@ -182,7 +270,8 @@ def split_sections(body: str) -> tuple[str, list[tuple[str, str, str]]]:
     sections: list[tuple[str, str, str]] = []
     for idx, match in enumerate(matches):
         end = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
-        sections.append((match.group(1), match.group(2).strip(), body[match.start() : end].strip()))
+        section_id, title = header_identity(match)
+        sections.append((section_id, title, body[match.start() : end].strip()))
     return preamble, sections
 
 
@@ -193,6 +282,41 @@ def is_closed_section(title: str) -> bool:
 
 def has_active_board_state(title: str, section: str) -> bool:
     return ACTIVE_SECTION_MARKER_RE.search(f"{title}\n{section}") is not None
+
+
+def is_held_card(card: dict[str, object]) -> bool:
+    column = str(card.get("column") or "")
+    block_status = str(card.get("block_status") or "").strip().lower()
+    block_reason = str(card.get("block_reason") or "").strip()
+    if column != "backlog":
+        return False
+    return bool(block_reason) or block_status not in {"", "none", "unblocked"}
+
+
+def section_cue(section: str, slugs: set[str]) -> str:
+    for line in section.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("<!--") or stripped.startswith("**Status (auto):"):
+            continue
+        if any(slug in stripped for slug in slugs) and ACTIVE_CUE_RE.search(stripped):
+            return stripped[:180]
+    for line in section.splitlines():
+        stripped = line.strip()
+        if stripped and ACTIVE_CUE_RE.search(stripped):
+            return stripped[:180]
+    return "section has active/live wording"
+
+
+def suggested_fix(state: str, stale_refs: list[str], held_refs: list[str], live_refs: list[str]) -> str:
+    if state == "drained":
+        return "archive done row or clear stale next move"
+    if held_refs and not stale_refs:
+        return "mark prose blocked/held or move next move to a ready card"
+    if live_refs:
+        return "clear stale refs and advance prose to the live card"
+    if held_refs:
+        return "archive done refs and mark held refs as blocked"
+    return "clear stale next move"
 
 
 def archive_line(title: str, section: str) -> str:
@@ -216,7 +340,7 @@ def archive_closed(active_path: str, completed_path: str, active_out: str, compl
 
     kept: list[str] = []
     archived: list[str] = []
-    for _ordinal, title, section in sections:
+    for _section_id, title, section in sections:
         if is_closed_section(title) and not has_active_board_state(title, section):
             line = archive_line(title, section)
             if line not in completed:
@@ -238,25 +362,30 @@ def archive_closed(active_path: str, completed_path: str, active_out: str, compl
 
 def stale_report(active_path: str, board_path: str, proof_slugs_path: Optional[str] = None) -> int:
     active = read_text(active_path)
-    board_columns = load_board_columns(board_path)
+    board_cards = load_board_cards(board_path)
     proof_slugs = load_proof_slugs(proof_slugs_path)
     _preamble, sections = split_sections(active)
     reports: list[str] = []
 
-    for _ordinal, title, section in sections:
+    for _section_id, title, section in sections:
         ref_sources = section_card_ref_sources(section)
         if not ref_sources:
             continue
 
         live_refs: list[str] = []
         stale_refs: list[str] = []
+        held_refs: list[str] = []
         unknown_refs: list[str] = []
         for slug in sorted(ref_sources):
-            column = board_columns.get(slug)
+            card = board_cards.get(slug)
+            column = str(card.get("column")) if card else None
             if column in LIVE_COLUMNS:
                 live_refs.append(f"{slug} ({column})")
             elif column in STALE_COLUMNS:
                 stale_refs.append(f"{slug} ({column})")
+            elif card and is_held_card(card):
+                block_status = str(card.get("block_status") or "held")
+                held_refs.append(f"{slug} ({column}, {block_status})")
             elif slug in proof_slugs:
                 stale_refs.append(f"{slug} (gone, proof)")
             elif column is None and "rollup" in ref_sources[slug]:
@@ -266,22 +395,28 @@ def stale_report(active_path: str, board_path: str, proof_slugs_path: Optional[s
             else:
                 unknown_refs.append(f"{slug} ({column})")
 
-        if not stale_refs:
+        if not stale_refs and not held_refs:
             continue
 
         state = "mixed"
-        if not live_refs and not unknown_refs:
+        if not live_refs and not unknown_refs and not held_refs:
             state = "drained"
+        elif held_refs and not live_refs and not unknown_refs and not stale_refs:
+            state = "held"
         program = sorted(program_slugs(section))
         prefix = f"{title}"
         if program:
             prefix += f" [{program[0]}]"
+        cue = section_cue(section, set(ref_sources))
         detail = "; ".join(
             part
             for part in [
+                f"cue: {cue}",
                 f"stale: {', '.join(stale_refs)}",
+                f"held: {', '.join(held_refs)}" if held_refs else "",
                 f"live: {', '.join(live_refs)}" if live_refs else "",
                 f"unknown: {', '.join(unknown_refs)}" if unknown_refs else "",
+                f"suggested fix: {suggested_fix(state, stale_refs, held_refs, live_refs)}",
             ]
             if part
         )
@@ -316,7 +451,7 @@ def main() -> int:
 
     stale = subparsers.add_parser(
         "stale-report",
-        help="report active-program sections that still reference done or gone board cards",
+        help="report active-program sections that still reference done, gone, or held board cards",
     )
     stale.add_argument("--active", required=True)
     stale.add_argument(

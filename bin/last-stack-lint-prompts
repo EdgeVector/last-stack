@@ -18,10 +18,16 @@ default_pr_checks_json_fields="bucket completedAt description event link name st
 gh_json_fields() {
   local fallback="$1"
   local fields
+  local gh_output
   shift
 
   if command -v gh >/dev/null 2>&1; then
-    fields="$("$@" --json 2>&1 | awk '
+    if command -v timeout >/dev/null 2>&1; then
+      gh_output="$(timeout 5s "$@" --json 2>&1 || true)"
+    else
+      gh_output="$("$@" --json 2>&1 || true)"
+    fi
+    fields="$(printf '%s\n' "$gh_output" | awk '
       /^[[:space:]]+[A-Za-z][A-Za-z0-9_]*[[:space:]]*$/ {
         gsub(/^[[:space:]]+|[[:space:]]+$/, "", $0)
         print
@@ -36,11 +42,19 @@ gh_json_fields() {
   printf '%s\n' "$fallback"
 }
 
-pr_json_fields="${LASTSTACK_GH_PR_JSON_FIELDS:-$(gh_json_fields "$default_pr_json_fields" gh pr view)}"
-release_json_fields="${LASTSTACK_GH_RELEASE_JSON_FIELDS:-$(gh_json_fields "$default_release_json_fields" gh release view)}"
-run_view_json_fields="${LASTSTACK_GH_RUN_VIEW_JSON_FIELDS:-$(gh_json_fields "$default_run_view_json_fields" gh run view)}"
-run_list_json_fields="${LASTSTACK_GH_RUN_LIST_JSON_FIELDS:-$(gh_json_fields "$default_run_list_json_fields" gh run list)}"
-pr_checks_json_fields="${LASTSTACK_GH_PR_CHECKS_JSON_FIELDS:-$(gh_json_fields "$default_pr_checks_json_fields" gh pr checks)}"
+if [ "${LASTSTACK_LINT_PROMPTS_DISCOVER_GH_FIELDS:-0}" = "1" ]; then
+  pr_json_fields="${LASTSTACK_GH_PR_JSON_FIELDS:-$(gh_json_fields "$default_pr_json_fields" gh pr view)}"
+  release_json_fields="${LASTSTACK_GH_RELEASE_JSON_FIELDS:-$(gh_json_fields "$default_release_json_fields" gh release view)}"
+  run_view_json_fields="${LASTSTACK_GH_RUN_VIEW_JSON_FIELDS:-$(gh_json_fields "$default_run_view_json_fields" gh run view)}"
+  run_list_json_fields="${LASTSTACK_GH_RUN_LIST_JSON_FIELDS:-$(gh_json_fields "$default_run_list_json_fields" gh run list)}"
+  pr_checks_json_fields="${LASTSTACK_GH_PR_CHECKS_JSON_FIELDS:-$(gh_json_fields "$default_pr_checks_json_fields" gh pr checks)}"
+else
+  pr_json_fields="${LASTSTACK_GH_PR_JSON_FIELDS:-$default_pr_json_fields}"
+  release_json_fields="${LASTSTACK_GH_RELEASE_JSON_FIELDS:-$default_release_json_fields}"
+  run_view_json_fields="${LASTSTACK_GH_RUN_VIEW_JSON_FIELDS:-$default_run_view_json_fields}"
+  run_list_json_fields="${LASTSTACK_GH_RUN_LIST_JSON_FIELDS:-$default_run_list_json_fields}"
+  pr_checks_json_fields="${LASTSTACK_GH_PR_CHECKS_JSON_FIELDS:-$default_pr_checks_json_fields}"
+fi
 
 check_path_exists() {
   local path="$1"
@@ -55,6 +69,14 @@ search_prompt_pattern() {
   local pattern="$1"
   local path="$2"
 
+  if [ ! -d "$path" ]; then
+    if [ "$(basename "$path")" = "last-stack-lint-prompts" ]; then
+      return
+    fi
+    grep -nE "$pattern" "$path" || true
+    return
+  fi
+
   if command -v rg >/dev/null 2>&1; then
     rg -n "$pattern" "$path" \
       -g '!**/.git/**' -g '!**/logs/**' -g '!**/run/**' -g '!**/memory.md' \
@@ -62,19 +84,10 @@ search_prompt_pattern() {
     return
   fi
 
-  if [ -d "$path" ]; then
-    grep -RInE \
-      --exclude-dir=.git --exclude-dir=logs --exclude-dir=run \
-      --exclude=memory.md --exclude=last-stack-lint-prompts \
-      "$pattern" "$path" || true
-    return
-  fi
-
-  if [ "$(basename "$path")" = "last-stack-lint-prompts" ]; then
-    return
-  fi
-
-  grep -nE "$pattern" "$path" || true
+  grep -RInE \
+    --exclude-dir=.git --exclude-dir=logs --exclude-dir=run \
+    --exclude=memory.md --exclude=last-stack-lint-prompts \
+    "$pattern" "$path" || true
 }
 
 check_default_board_scope() {
@@ -191,6 +204,19 @@ check_pipeline_health_lastgit_socket_inventory() {
 
   if grep -Eiq 'LASTGIT_CODE_SOCKET|\.lastgit/code|code node|both forge nodes' "$file"; then
     printf '%s\n' "$file: pipeline-health references retired LastGit code socket inventory" >&2
+    fail=1
+  fi
+}
+
+check_routine_result_prompt_literals() {
+  local root="$1"
+  local matches
+
+  matches="$(search_prompt_pattern 'ROUTINE_RESULT[[:space:]]+outcome=' "$root")"
+  if [ -n "$matches" ]; then
+    printf '%s\n' "$matches" >&2
+    printf '%s\n' \
+      "prompt text must not contain literal routine-result trailers; codex echoes prompts and routinesd may parse the echoed prompt as a result" >&2
     fail=1
   fi
 }
@@ -747,16 +773,27 @@ for path in "$@"; do
   fi
 
   heartbeat_gets="$(search_prompt_pattern 'brain[^\n]*get[^\n]*routine-heartbeats' "$path")"
-  heartbeat_gets="$(printf '%s\n' "$heartbeat_gets" | grep -v -- '--type reference' || true)"
+  heartbeat_gets="$(printf '%s\n' "$heartbeat_gets" \
+    | grep -v -E -- '--type[[:space:]]+reference|["'\'']--type["'\''][[:space:]]*,[[:space:]]*["'\'']reference["'\'']' || true)"
   if [ -n "$heartbeat_gets" ]; then
     printf '%s\n' "$heartbeat_gets"
     echo "routine-heartbeats reads must specify --type reference" >&2
     fail=1
   fi
 
+  live_routine_result_examples="$(search_prompt_pattern 'ROUTINE_RESULT[[:space:]]+outcome=(ok|noop|error)([[:space:]]|$)' "$path")"
+  live_routine_result_examples="$(printf '%s\n' "$live_routine_result_examples" \
+    | grep -v -E 'Do not|Never|do not|never|unsupported|bad-|expected .*fail|literal live-looking|/tests/last-stack-lint-prompts\.sh:' || true)"
+  if [ -n "$live_routine_result_examples" ]; then
+    printf '%s\n' "$live_routine_result_examples"
+    echo "live-looking ROUTINE_RESULT example found under $path; use bracketed placeholders such as outcome=<ok|noop|error> in prompts so routinesd cannot parse prompt text as a result" >&2
+    fail=1
+  fi
+
   check_gh_json_fields "$path"
   check_aline_search_guards "$path"
   check_pipeline_health_lastgit_socket_inventory "$path"
+  check_routine_result_prompt_literals "$path"
   check_admin_ui_repo_targets "$path"
   check_raw_markdown_shell_blocks "$path"
   check_default_board_scope "$path"

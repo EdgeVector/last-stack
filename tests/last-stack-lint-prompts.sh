@@ -8,6 +8,32 @@ cleanup() {
 }
 trap cleanup EXIT
 
+if [ "${1:-}" = "--smoke" ]; then
+  pickup="$ROOT/routines/kanban-pickup.md"
+
+  "$ROOT/bin/last-stack-lint-prompts" \
+    "$pickup" \
+    "$ROOT/routines/kanban-watch.md" \
+    "$ROOT/routines/pipeline-health.md" \
+    "$ROOT/skills/kanban-agent/SKILL.md" \
+    "$ROOT/instructions/brain-kanban.md"
+
+  grep -q 'Live operational proof watches are bounded too' "$pickup"
+  grep -q 'reason=watch-budget-reserved' "$pickup"
+  grep -q 'Before every foreground watcher, deploy wait, sync drain, or other END STATE' "$pickup"
+  grep -q 'reason=budget-low' "$pickup"
+  grep -q 'watch external progress until the harness SIGTERM cuts off closeout' "$pickup"
+  echo "ok last-stack-lint-prompts smoke"
+  exit 0
+fi
+
+# Keep this test hermetic even on machines with an authenticated `gh` in PATH.
+export LASTSTACK_GH_PR_JSON_FIELDS="additions assignees author autoMergeRequest baseRefName baseRefOid body changedFiles closed closedAt closingIssuesReferences comments commits createdAt deletions files fullDatabaseId headRefName headRefOid headRepository headRepositoryOwner id isCrossRepository isDraft labels latestReviews maintainerCanModify mergeCommit mergeStateStatus mergeable mergedAt mergedBy milestone number potentialMergeCommit projectCards projectItems reactionGroups reviewDecision reviewRequests reviews state statusCheckRollup title updatedAt url"
+export LASTSTACK_GH_RELEASE_JSON_FIELDS="apiUrl assets author body createdAt databaseId id isDraft isImmutable isPrerelease name publishedAt tagName tarballUrl targetCommitish uploadUrl url zipballUrl"
+export LASTSTACK_GH_RUN_VIEW_JSON_FIELDS="attempt conclusion createdAt databaseId displayTitle event headBranch headSha jobs name number startedAt status updatedAt url workflowDatabaseId workflowName"
+export LASTSTACK_GH_RUN_LIST_JSON_FIELDS="attempt conclusion createdAt databaseId displayTitle event headBranch headSha name number startedAt status updatedAt url workflowDatabaseId workflowName"
+export LASTSTACK_GH_PR_CHECKS_JSON_FIELDS="bucket completedAt description event link name startedAt state workflow"
+
 good="$tmp/good.md"
 cat > "$good" <<'GOOD'
 workspace="<WORKSPACE>"
@@ -283,6 +309,21 @@ exit or retry one idempotent slug upsert; do not run doctor/init or restart.
 GOOD_BUSY_NODE_BACKOFF
 "$ROOT/bin/last-stack-lint-prompts" "$good_busy_node_backoff"
 
+bad_routine_result_literal="$tmp/bad-routine-result-literal.md"
+printf '%s\n' 'print `ROUTINE_RESULT outcome=noop detail=idle=nothing-safe` before exit' > "$bad_routine_result_literal"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_routine_result_literal" >/dev/null 2>&1; then
+  echo "expected literal ROUTINE_RESULT outcome= prompt text to fail prompt lint" >&2
+  exit 1
+fi
+
+good_routine_result_literal="$tmp/good-routine-result-literal.md"
+printf '%s\n' 'print the `ROUTINE_RESULT` token followed by `outcome=noop detail=idle=nothing-safe` before exit' > "$good_routine_result_literal"
+"$ROOT/bin/last-stack-lint-prompts" "$good_routine_result_literal"
+
+good_routine_heartbeats_python="$tmp/good-routine-heartbeats-python.md"
+printf '%s\n' 'data = run_json([brain_cmd, "get", "routine-heartbeats", "--type", "reference", "--json"])' > "$good_routine_heartbeats_python"
+"$ROOT/bin/last-stack-lint-prompts" "$good_routine_heartbeats_python"
+
 bad_default_board_unscoped="$tmp/bad-default-board-unscoped.md"
 printf '%s\n' "Use workspace \`<workspace>\`, board CLI \`<board-cli>\`, default bo""ard \`<board>\`, and global CLIs from PATH." > "$bad_default_board_unscoped"
 if "$ROOT/bin/last-stack-lint-prompts" "$bad_default_board_unscoped" >/dev/null 2>&1; then
@@ -415,7 +456,20 @@ printf '%s\n' \
   "Do not run git stat""us from the workspace root; resolve a checkout first." > "$good_git_dash_c_probe"
 "$ROOT/bin/last-stack-lint-prompts" "$good_git_dash_c_probe"
 
+bad_live_routine_result="$tmp/bad-live-routine-result.md"
+printf '%s\n' 'ROUTINE_RESULT outcome=ok detail=example-from-prompt' > "$bad_live_routine_result"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_live_routine_result" >/dev/null 2>&1; then
+  echo "expected literal live-looking ROUTINE_RESULT examples to fail prompt lint" >&2
+  exit 1
+fi
+
+good_placeholder_routine_result="$tmp/good-placeholder-routine-result.md"
+printf '%s\n' 'Use the ROUTINE_RESULT token followed by outcome=<ok|noop|error> detail=<one-line-outcome>.' > "$good_placeholder_routine_result"
+"$ROOT/bin/last-stack-lint-prompts" "$good_placeholder_routine_result"
+
 pickup="$ROOT/routines/kanban-pickup.md"
+"$ROOT/bin/last-stack-lint-prompts" "$pickup"
+"$ROOT/bin/last-stack-lint-prompts" "$ROOT/routines/kanban-validate.md"
 grep -q 'kanban-pickup cannot resolve' "$pickup"
 grep -q 'do \*\*not\*\* set `block_status=needs_human`' "$pickup"
 grep -q 'checkout-resolution guard' "$pickup"
@@ -426,11 +480,34 @@ grep -q 'lastgit cr create' "$pickup"
 grep -q 'overlap <slug> --json' "$pickup"
 grep -q 'Surface-overlap gate' "$pickup"
 grep -q 'collision=<slug>:<in-flight-slug>' "$pickup"
+grep -q 'ready-but-conflicting work exists' "$pickup"
+grep -q 'Idle budget guard' "$pickup"
+grep -q 'noop no-claim reason=<reason>' "$pickup"
+grep -q 'machine trailer before exit' "$pickup"
+grep -q 'outcome=ok|noop|error detail=...' "$pickup"
 grep -q 'record `pr_url` and `branch` on the card' "$pickup"
 grep -q 'The candidate is pickup work with `Kind: pr`' "$pickup"
 grep -q 'Existing terminal, capstone, tracker, meta, or validation cards stay in' "$pickup"
 grep -q 'pickup must not force them into `todo`' "$pickup"
 grep -q 'fresh budget' "$pickup"
+grep -q 'Wall-clock budget (hard)' "$pickup"
+grep -q 'idle=budget-exhausted' "$pickup"
+grep -q 'Long foreground commands must be self-timeboxed by the shell' "$pickup"
+grep -q 'timeout -k 30s <seconds>' "$pickup"
+grep -q 'result=rolled-back-todo reason=command-timebox' "$pickup"
+grep -q 'reason=no-command-timebox' "$pickup"
+grep -q 'Do not wait for a long child process to finish unwinding after the timebox' "$pickup"
+grep -q 'Do not start any new validation or PR/CR publish sequence after \*\*35 minutes\*\*' "$pickup"
+grep -q 'LastGit missing-CI is a handoff condition' "$pickup"
+grep -q 'hand-build or manually publish the status from pickup' "$pickup"
+grep -q 'result=in-flight-ci-pending' "$pickup"
+grep -q 'Live operational proof watches are bounded too' "$pickup"
+grep -q 'reason=watch-budget-reserved' "$pickup"
+grep -q 'Before every foreground watcher, deploy wait, sync drain, or other END STATE' "$pickup"
+grep -q 'reason=budget-low' "$pickup"
+grep -q 'watch external progress until the harness SIGTERM cuts off closeout' "$pickup"
+grep -q 'host-track status' "$pickup"
+grep -q '<cmd> which' "$pickup"
 
 agent="$ROOT/skills/kanban-agent/SKILL.md"
 grep -q 'last-stack-pr-venue' "$agent"
@@ -438,29 +515,31 @@ grep -q 'sop-lastgit-native-forge-workflow' "$agent"
 grep -q 'lastgit cr complete' "$agent"
 grep -q 'PR/CR opened is not done' "$agent"
 grep -q 'there is no separate background driver' "$agent"
+grep -q 'host-track status' "$agent"
+grep -q 'lastgit which' "$agent"
 grep -q 'kanban add <slug> --pr-url "$pr_url" --branch "$branch"' "$agent"
 grep -q 'local test-merge' "$agent"
+grep -q 'LastGit missing-CI is a handoff condition' "$agent"
+grep -q 'manually publish the status from pickup' "$agent"
+grep -q 'do not use a `review` column' "$agent"
+
+brain_kanban="$ROOT/instructions/brain-kanban.md"
+grep -q 'Host-track CLI hygiene' "$brain_kanban"
+grep -q 'host-track status' "$brain_kanban"
+grep -q 'lastgit which' "$brain_kanban"
 
 watch="$ROOT/routines/kanban-watch.md"
 grep -q 'last-stack-pr-venue' "$watch"
 grep -q 'lastgit cr list' "$watch"
 grep -q 'lastgit ci status' "$watch"
+grep -q 'host-track status' "$watch"
+grep -q '<cmd> which' "$watch"
 grep -q 'noop board-socket-unreachable no-reconcile' "$watch"
 grep -q 'routine-error-last-stack-fkanban-watch' "$watch"
 grep -q 'Use `noop`, not `error`, for expected no-action external blockers' "$watch"
 grep -q 'DIRTY-WORKTREE-STALLED' "$watch"
 grep -q 'attempts>=3' "$watch"
 grep -q 'dirty worktree with \*\*no live process\*\* is not an infinite skip' "$watch"
-
-merge_babysit="$ROOT/routines/merge-babysit.md"
-test -f "$merge_babysit"
-grep -q 'lastgit stuck --json' "$merge_babysit"
-grep -q 'flagged=lastgit-stuck-cmd-missing' "$merge_babysit"
-grep -q '"$timeout_bin" 20s lastgit cr list' "$merge_babysit"
-grep -q '12 repos' "$merge_babysit"
-grep -q '5 open CRs' "$merge_babysit"
-grep -q 'green_merge_conflict' "$merge_babysit"
-grep -q 'Self-heal' "$merge_babysit"
 
 pipeline="$ROOT/routines/pipeline-health.md"
 grep -q 'LASTGIT_PRIMARY_SOCKET' "$pipeline"

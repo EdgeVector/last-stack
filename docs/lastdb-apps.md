@@ -69,6 +69,20 @@ Start LastDB:
 brew services start lastdb
 ```
 
+Keep the Mini binary path canonical:
+
+```bash
+~/.last-stack/bin/last-stack-lastdb-current set
+~/.last-stack/bin/last-stack-lastdb-current check --verbose
+```
+
+The helper creates `~/.lastdb/current` and points
+`~/.local/bin/{lastdb,lastdbd,folddb}` through it. It never starts, stops,
+restarts, kickstarts, or kills `lastdbd`. Safe-upgrade scripts should call it
+after a successful live binary change; pass `--launch-agent-plist <path>` when a
+user LaunchAgent plist should be rewritten to `~/.lastdb/current/lastdbd`
+without reloading the job.
+
 Initialize the apps:
 
 ```bash

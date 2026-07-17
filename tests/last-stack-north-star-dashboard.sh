@@ -94,6 +94,30 @@ cat >"$WORK/cards.json" <<'EOF'
     "block_status": "none",
     "blockedBy": [],
     "pr_url": ""
+  },
+  {
+    "slug": "schema-shared-surface-native-resolver-capstone",
+    "title": "CAPSTONE: shared-surface + native resolver E2E",
+    "column": "todo",
+    "kind": "pr",
+    "north_star": "north-star-schema-shared-surface-native-resolver",
+    "tags": ["p1"],
+    "blocked": false,
+    "block_status": "none",
+    "blockedBy": [],
+    "pr_url": ""
+  },
+  {
+    "slug": "coderings-ns-terminal-verification",
+    "title": "CodeRings terminal verification",
+    "column": "done",
+    "kind": "validation",
+    "north_star": "north-star-coderings",
+    "tags": [],
+    "blocked": false,
+    "block_status": "none",
+    "blockedBy": [],
+    "pr_url": ""
   }
 ]
 EOF
@@ -105,14 +129,24 @@ cat >"$WORK/projects.json" <<'EOF'
     "slug": "north-star-schema-shared-surface-native-resolver",
     "title": "🌟 North Star — shared surfaces + native local schema resolver",
     "status": "in_progress",
-    "tags": ["north-star", "schema-service"]
+    "tags": ["north-star", "schema-service"],
+    "body": "## End state\n\nShared surfaces work.\n\n## Terminal verification\n\n- **Card:** `schema-shared-surface-native-resolver-capstone`\n- **Shape:** pr runnable harness\n"
   },
   {
     "type": "project",
     "slug": "north-star-storage-metering-correctness",
     "title": "🌟 North Star — cloud storage metering stays correct forever",
     "status": "in_progress",
-    "tags": ["north-star", "metering"]
+    "tags": ["north-star", "metering"],
+    "body": "## End state\n\nMeters match reality.\n"
+  },
+  {
+    "type": "project",
+    "slug": "north-star-coderings",
+    "title": "🌟 North Star — CodeRings",
+    "status": "in_progress",
+    "tags": ["north-star", "coderings"],
+    "body": "## End state\n\nSnapshots work.\n\n## Terminal verification\n\n- **Card:** `coderings-ns-terminal-verification`\n"
   },
   {
     "type": "project",
@@ -140,11 +174,11 @@ m = json.load(open(sys.argv[1]))
 h = json.load(open(sys.argv[2]))
 by = {s["slug"]: s for s in m["sections"]}
 schema = by["north-star-schema-shared-surface-native-resolver"]
-assert schema["counts"]["todo"] == 1, schema
+assert schema["counts"]["todo"] == 2, schema
 assert schema["counts"]["doing"] == 1, schema
 assert schema["counts"]["done"] == 1, schema
-assert schema["live"] == 2, schema
-assert schema["total"] == 3, schema
+assert schema["live"] == 3, schema
+assert schema["total"] == 4, schema
 meter = by["north-star-storage-metering-correctness"]
 assert meter["live"] == 2, meter  # metering-wire + intentional sentry mistag fixture
 assert any(c["slug"] == "metering-wire-b2" for c in meter["blocked_cards"])
@@ -174,7 +208,44 @@ grep -q "HYGIENE_NEEDS_WORK=1" "$WORK/hygiene.err"
 
 grep -q "north-star-schema-shared-surface-native-resolver" "$WORK/out.md"
 grep -q "Unattributed cards" "$WORK/out.md"
+! grep -q "review=" "$WORK/out.md"
 grep -q "North Star dashboard" "$WORK/out.html"
 grep -q "schema-resolver-pack-public-origin" "$WORK/out.html"
+grep -q "Live pressure = backlog + todo + doing." "$WORK/out.html"
+! grep -q ">review<" "$WORK/out.html"
+
+
+# completion contract
+"$BIN" \
+  --cards-json "$WORK/cards.json" \
+  --projects-json "$WORK/projects.json" \
+  --completion-json "$WORK/completion.json" \
+  --stdout completion >"$WORK/completion.md" 2>"$WORK/completion.err"
+
+python3 - <<'PY' "$WORK/completion.json"
+import json, sys
+c = json.load(open(sys.argv[1]))
+by = {r["north_star"]: r for r in c["north_stars"]}
+schema = by["north-star-schema-shared-surface-native-resolver"]
+assert schema["named_terminal_slug"] == "schema-shared-surface-native-resolver-capstone", schema
+assert schema["terminal_state"] == "live", schema
+assert "terminal_live" in schema["flags"], schema
+meter = by["north-star-storage-metering-correctness"]
+assert "terminal_missing" in meter["flags"] or meter["terminal_state"] == "missing", meter
+assert meter["has_end_state_section"] is True
+coder = by["north-star-coderings"]
+assert "ns_completable" in coder["flags"], coder
+assert coder["terminal_state"] == "done", coder
+assert c["summary"]["needs_work"] is True
+print("completion assertions ok")
+PY
+
+grep -q "North Star completion report" "$WORK/completion.md"
+grep -q "COMPLETION_NEEDS_WORK=1" "$WORK/completion.err"
+
+WRAP="$ROOT/bin/last-stack-north-star-completion-check"
+if [ -x "$WRAP" ]; then
+  bash -n "$WRAP"
+fi
 
 echo "PASS last-stack-north-star-dashboard"
