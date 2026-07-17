@@ -147,4 +147,10 @@ fi
 printf '%s\n' "$("$ROOT/bin/host-track" status --json)" | jq -e 'length == 2 and .[0].app == "fake" and .[1].app == "last-stack"' >/dev/null \
   || fail "status --json did not return registry array"
 
+plain_status="$("$ROOT/bin/host-track" status)"
+printf '%s\n' "$plain_status" | grep -q $'^app=fake\t' || fail "plain status missing fake app"
+printf '%s\n' "$plain_status" | grep -q $'^app=last-stack\t' || fail "plain status missing last-stack app"
+plain_count="$(printf '%s\n' "$plain_status" | grep -c '^app=')"
+[ "$plain_count" -eq 2 ] || fail "plain status returned $plain_count app rows"
+
 echo "ok: host-track status/check/which/refresh"
