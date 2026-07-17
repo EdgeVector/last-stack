@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Optional
 
 
-HEADER_RE = re.compile(r"^##\s+(\d+)\.\s+(.+)$", re.MULTILINE)
-ANY_PROGRAM_HEADER_RE = re.compile(r"##\s+\d+\.\s+")
+HEADER_RE = re.compile(r"^##\s+(?:(\d+)\.\s+(.+)|Program:\s+(.+))$", re.MULTILINE)
+ANY_PROGRAM_HEADER_RE = re.compile(r"##\s+(?:\d+\.\s+|Program:\s+)")
 PROGRAM_SLUG_RE = re.compile(r"\*\*program-slug:\*\*\s*`\[\[([^]]+)\]\]`")
 REFERENCE_SLUG_RE = re.compile(r"\[\[([^]]+)\]\]")
 BACKTICK_SLUG_RE = re.compile(r"`([a-z0-9][a-z0-9-]{2,})`")
@@ -56,7 +56,12 @@ def embedded_headers(body: str) -> list[str]:
 
 
 def canonical_headers(body: str) -> list[tuple[str, str]]:
-    return [(match.group(1), match.group(2).strip()) for match in HEADER_RE.finditer(body)]
+    headers: list[tuple[str, str]] = []
+    for match in HEADER_RE.finditer(body):
+        identifier = match.group(1) or "Program"
+        title = match.group(2) or match.group(3) or ""
+        headers.append((identifier, title.strip()))
+    return headers
 
 
 def program_slugs(body: str) -> set[str]:
@@ -182,7 +187,9 @@ def split_sections(body: str) -> tuple[str, list[tuple[str, str, str]]]:
     sections: list[tuple[str, str, str]] = []
     for idx, match in enumerate(matches):
         end = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
-        sections.append((match.group(1), match.group(2).strip(), body[match.start() : end].strip()))
+        identifier = match.group(1) or "Program"
+        title = match.group(2) or match.group(3) or ""
+        sections.append((identifier, title.strip(), body[match.start() : end].strip()))
     return preamble, sections
 
 
