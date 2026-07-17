@@ -60,6 +60,44 @@ envelope). Do not invent trailers when `DRIVEN_BY` is unset.
   conflict rebase, OR (on a quiet sweep) filing one card. Pick the highest-value
   one, do it, then exit.
 
+## Run-budget guard (prevents timeout zombies)
+This routine currently has a short harness budget. Preserve enough time to
+write a heartbeat/card update instead of letting the harness SIGTERM be the
+only closeout.
+
+Immediately after CLI preflight, record:
+
+```bash
+run_started_epoch="$(date +%s)"
+run_timeout_min="${ROUTINES_TIMEOUT_MIN:-${TIMEOUT_MIN:-30}}"
+closeout_reserve_sec=300
+```
+
+Before every foreground LastGit reconcile command that can wait on transport,
+mergeability probes, or local merge/push work (`lastgit stuck`,
+`lastgit cr complete --once`, `lastgit cr merge`, and any `git fetch` through
+the `lastdb:///` remote), compute:
+
+```bash
+elapsed=$(( $(date +%s) - run_started_epoch ))
+remaining=$(( run_timeout_min * 60 - elapsed ))
+command_budget=$(( remaining - closeout_reserve_sec ))
+```
+
+If `command_budget <= 60`, do not start that command. Instead append/update the
+relevant card with `WATCH-HANDOFF: budget low before <command>; next sweep
+should resume from <evidence>` and heartbeat `kanban-watch ... ok
+result=watch-budget-handoff reason=budget-low`.
+
+When a foreground command is allowed, run it under `timeout -k 30s
+<command_budget>s ...` or `gtimeout -k 30s <command_budget>s ...`. If no timeout
+binary is available, do not start a potentially blocking LastGit reconcile
+command; record `reason=no-command-timebox` as the same handoff. If the timeout
+fires, immediately read durable state with only short point reads, update the
+card with `WATCH-HANDOFF: <command> timed out after <n>s; durable state=<...>`,
+heartbeat `kanban-watch ... ok result=watch-budget-handoff reason=command-timeout`,
+and exit. A handoff with a live card is an `ok` routine result, not `error`.
+
 ## Setup
 - Normalize the scheduled shell before any CLI-heavy work:
   ```bash
@@ -453,6 +491,15 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
         If pending/missing, leave it for the next sweep. If merge/CAS conflict
         is reported, rebase/push when mechanical; otherwise block with a concise
         human decision note.
+        Every `lastgit stuck`, `lastgit cr complete --once`, `lastgit cr merge`,
+        and `git fetch` over `lastdb:///` in this path must use the run-budget
+        guard above. If the guarded command times out or returns socket/transport
+        oddities such as `node_unreachable` / `Was there a typo in the url or
+        port?`, stop trying to merge in this wake: update or file one card
+        (for example the carded CR or `routine-error-last-stack-fkanban-watch`)
+        with exact CR id, head ref, head oid, last known CI state, and the
+        transport text; then heartbeat `ok result=watch-budget-handoff`.
+        Do not chain a second heavy LastGit merge attempt after such a timeout.
       - **Pending** (CI running / awaiting human) → leave it for next sweep.
    f. Give-up guard: `review` is ONLY for cards a fresh build attempt cannot fix
       (human-only decision/gate, dependency on unmerged work). For those, append

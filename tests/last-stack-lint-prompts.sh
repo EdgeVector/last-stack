@@ -540,6 +540,12 @@ grep -q 'Use `noop`, not `error`, for expected no-action external blockers' "$wa
 grep -q 'DIRTY-WORKTREE-STALLED' "$watch"
 grep -q 'attempts>=3' "$watch"
 grep -q 'dirty worktree with \*\*no live process\*\* is not an infinite skip' "$watch"
+grep -q 'Run-budget guard (prevents timeout zombies)' "$watch"
+grep -q 'closeout_reserve_sec=300' "$watch"
+grep -q 'lastgit stuck' "$watch"
+grep -q 'result=watch-budget-handoff' "$watch"
+grep -q 'reason=command-timeout' "$watch"
+grep -q 'Do not chain a second heavy LastGit merge attempt after such a timeout' "$watch"
 
 pipeline="$ROOT/routines/pipeline-health.md"
 grep -q 'LASTGIT_PRIMARY_SOCKET' "$pipeline"
