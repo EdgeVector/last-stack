@@ -58,31 +58,51 @@ example of all the pieces below.
   other line is the muted structural colour.
 - A small `figcaption` ("FIG. N — …", uppercase, dim) under each figure.
 
-## Shape vocabulary — shape encodes TYPE
+## Shape vocabulary — shape encodes TYPE (Tom, 2026-07-16)
 
 Different shapes for different types of things. Pick one shape per semantic
-type, keep it consistent across all figures in a document, and never let a
-diagram collapse into all-rectangles. The working set (extend it in the same
-spirit when a new type appears):
+type, keep it consistent across all figures in a document, never let a diagram
+collapse into all-rectangles, and add a small legend row when 3+ shape classes
+appear. House taxonomy — proven in the EVF-DELIVER-001 patent figures
+(`exemem-workspace/docs/corporate/patent_deliver_figures/`, FIG 1 carries the
+legend row). Extend it in the same spirit when a new type appears:
 
-| shape | SVG | means |
+| shape | means | how to draw |
 |---|---|---|
-| plain rectangle | `<rect>` outline | container / machine / surface (a laptop, a device, a board) |
-| rectangle + poché | `<rect fill=hatch>` | data at rest — a store, a database, persisted bytes |
-| small square | tiny `<rect>` (~20–34px) | one atomic data unit (an atom, a log entry); hatch if persisted, accent outline if in flight |
-| circle | `<circle>` | a record/object/pointer (a molecule, a knowledge graph — add 2px dots + hairline links inside for "graph") |
-| hexagon | `<polygon>` 6-pt, flat left/right vertices | a process/service that computes (a resolver, a daemon); **dashed** outline when remote / not yours |
-| clipped-corner card | `<path>` rect with one corner cut ~16px | a definition/spec sheet — schema, contract, config; field rows as underlined lines inside |
-| diamond | `<polygon>` 4-pt | a decision / check / validation gate |
-| person glyph | head `<circle>` + shoulders arc (`M x y Q …`) | a human actor (Alice, a recipient) |
-| envelope | rect + `polyline` flap | a payload in transit |
-| star | 10-pt `<polygon>` | a goal / outcome / north star |
+| rectangle | ONLY containers / devices / processes / services — never data | `<rect>` outline |
+| cylinder | database / store / persisted bytes | body `<path>` + `<ellipse>` top lid |
+| cut-corner document | data record / spec / definition sheet (schema, contract, config) | `<polygon>` with one corner clipped ~14px + `<polyline>` fold mark; field rows as underlined lines |
+| small square | one atomic data unit (an atom, a log entry) | tiny `<rect>` ~20–34px |
+| diamond | decision / check / human consent gate | 4-point `<polygon>` |
+| hexagon | sealed / encrypted parcel | 6-point `<polygon>`, flat left/right vertices |
+| circle | party / actor / keyholder (incl. apps and services acting as recipients) | `<circle>`; label inside if short, else beside |
+| person glyph | specifically a human (Alice, the approver) | head `<circle>` + shoulders arc |
+| triangle | key / credential | small 3-point `<polygon>` |
+| envelope | payload in transit | rect + `polyline` flap |
+| star | goal / outcome / north star | 10-point `<polygon>` |
 
-Connectors attach to a shape's natural vertex (hexagon side points, diamond
-tips, a card's straight edge) with the usual 4×4 joint marks. Poché and dashed
-outlines compose with any shape — hatch = "holds data", dashed = "remote or
-out of your control" — so e.g. a dashed hexagon with a hatched rect inside
-reads "remote service storing ciphertext".
+Two modifiers compose with ANY shape: **poché hatch** = "holds real data"
+(a poché document = a record that exists; an outline-only hexagon = an
+empty/absent parcel), and a **dashed outline** = "remote / not yours" (a dashed
+cylinder inside a dashed rect reads "someone else's service storing bytes").
+Connectors attach at a shape's natural vertex (hexagon side points, diamond
+tips, a document's straight edge) with the usual 4×4 joint marks.
+
+Snippets (light palette; swap colours per surface):
+
+```
+<!-- cylinder: body path + top lid -->
+<path d="M 64 106 A 50 9 0 0 1 164 106 L 164 148 A 50 9 0 0 1 64 148 Z"
+      fill="url(#poche)" stroke="#3b4a5a" stroke-width="1"/>
+<ellipse cx="114" cy="106" rx="50" ry="9" fill="#fbfaf7" stroke="#3b4a5a" stroke-width="1"/>
+<!-- document: cut top-right corner + fold mark -->
+<polygon points="192,98 272,98 286,112 286,156 192,156" fill="none" stroke="#3b4a5a" stroke-width="1"/>
+<polyline points="272,98 272,112 286,112" fill="none" stroke="#3b4a5a" stroke-width="1"/>
+<!-- diamond / hexagon / triangle -->
+<polygon points="75,214 175,184 275,214 175,244" fill="none" stroke="#2f6f8f" stroke-width="1"/>
+<polygon points="257,96 373,96 401,136 373,176 257,176 229,136" fill="none" stroke="#3b4a5a" stroke-width="1"/>
+<polygon points="315,32 291,72 339,72" fill="none" stroke="#2f6f8f" stroke-width="1"/>
+```
 
 ## Palette
 
@@ -142,44 +162,6 @@ Building blocks:
   Use the accent colour for the dimension of the highlighted span.
 - **Alignment guide** — faint dashed vertical/horizontal line tying two rows
   together: `stroke="#504945" stroke-dasharray="2 3"`.
-
-## Shape vocabulary — categorize by shape (Tom, 2026-07-16)
-
-Don't draw everything as rectangles pointing at rectangles. In a multi-element
-diagram, give each CATEGORY of thing its own shape so the semantics read at a
-glance. House taxonomy (adapt the meanings per domain, but stay consistent
-across a figure set, and add a small legend row when 3+ shape classes appear):
-
-| shape | means | how to draw |
-|---|---|---|
-| cylinder | database / store | `<path d="M x y A rx ry 0 0 1 x2 y ... Z"/>` body + `<ellipse>` top lid |
-| cut-corner document | data record / artifact | `<polygon>` with one corner clipped + `<polyline>` fold mark |
-| diamond | decision / human gate | 4-point `<polygon>` |
-| hexagon | sealed / encrypted parcel | 6-point `<polygon>` |
-| circle | party / actor / keyholder | `<circle>` (label inside if short, else beside) |
-| triangle | key / credential | small 3-point `<polygon>` |
-| rectangle | ONLY processes/services and container boundaries | `<rect>` |
-
-Snippets (light palette; swap colours per surface):
-
-```
-<!-- cylinder: body path + top lid -->
-<path d="M 64 106 A 50 9 0 0 1 164 106 L 164 148 A 50 9 0 0 1 64 148 Z"
-      fill="url(#poche)" stroke="#3b4a5a" stroke-width="1"/>
-<ellipse cx="114" cy="106" rx="50" ry="9" fill="#fbfaf7" stroke="#3b4a5a" stroke-width="1"/>
-<!-- document: cut top-right corner + fold mark -->
-<polygon points="192,98 272,98 286,112 286,156 192,156" fill="none" stroke="#3b4a5a" stroke-width="1"/>
-<polyline points="272,98 272,112 286,112" fill="none" stroke="#3b4a5a" stroke-width="1"/>
-<!-- diamond / hexagon / triangle -->
-<polygon points="75,214 175,184 275,214 175,244" fill="none" stroke="#2f6f8f" stroke-width="1"/>
-<polygon points="257,96 373,96 401,136 373,176 257,176 229,136" fill="none" stroke="#3b4a5a" stroke-width="1"/>
-<polygon points="315,32 291,72 339,72" fill="none" stroke="#2f6f8f" stroke-width="1"/>
-```
-
-Poché still marks "has real data" regardless of shape (a poché document = a
-record that exists; an outline-only hexagon = an empty/absent parcel). Worked
-example with legend: `exemem-workspace/docs/corporate/patent_deliver_figures/`
-(FIG 1 carries the legend row).
 
 Render in a host:
 - **Web / React (JSX):** wrap in a tiny `ArchFigure({svg, caption})` that does
