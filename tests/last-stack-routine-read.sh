@@ -63,6 +63,15 @@ case "$dogfood_prompt" in
     ;;
 esac
 
+north_star_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" north-star-rollup)"
+case "$north_star_prompt" in
+  *"reason=dashboard-timeout-prior-snapshot"*"ROUTINE_RESULT"*"outcome=<ok|noop|error> detail=<same-one-line-outcome>"*) ;;
+  *)
+    echo "expected north-star-rollup prompt to classify prior-snapshot dashboard timeouts as noop and emit a ROUTINE_RESULT final trailer" >&2
+    exit 1
+    ;;
+esac
+
 merge_babysit_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" merge-babysit)"
 if ! grep -Fq "transient shared backpressure" <<<"$merge_babysit_prompt" ||
    ! grep -Fq "busy-node/backend-unreachable" <<<"$merge_babysit_prompt"; then

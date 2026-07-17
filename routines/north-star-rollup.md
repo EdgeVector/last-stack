@@ -87,16 +87,34 @@ Brain record (stable):
    (daily) / skill `north-star-hygiene`. You may note
    `HYGIENE_NEEDS_WORK=1` if `last-stack-north-star-dashboard --stdout hygiene`
    reports orphans so morning-sync can see the gap.
-5. **Heartbeat** (last action):
+5. **Dashboard timeout handling.** If the dashboard command times out before
+   confirmation, first inspect the prior brain record and HTML snapshot. If
+   they are present and non-empty, report a `noop` with
+   `reason=dashboard-timeout-prior-snapshot` and include the prior snapshot
+   timestamp/counts in the summary. Treat this as temporary load, not a fleet
+   error. Only use `error` for a timeout when there is no usable prior brain
+   record or HTML snapshot to serve as the durable dashboard.
+6. **Heartbeat** (last write/tool action):
    ```bash
    "$last_stack/bin/last-stack-brain-append-heartbeat" --line \
      "north-star-rollup <ISO-ts> <ok|noop|error> <one-line-outcome>"
    ```
+7. **Final trailer, then stop.** After the heartbeat helper returns, do not run
+   more tools. Respond with exactly one machine-readable line so routinesd can
+   classify and close the run without waiting for fallback parsing: the
+   `ROUTINE_RESULT` token followed by
+   `outcome=<ok|noop|error> detail=<same-one-line-outcome>`.
+   Then exit. For a successful regenerate, use `outcome=ok`. For a busy-node or
+   prior-snapshot dashboard timeout skip, use `outcome=noop`. For a real script,
+   brain write, or empty-dashboard failure, use `outcome=error`.
 
 ## Exit code semantics
 - Successful regenerate → success (`ok`)
 - Busy-node / unreachable → success noop (`noop reason=busy-node`) — do not fail
   the routine fleet for a temporary load spike
+- Dashboard timeout with a usable prior brain record + HTML snapshot → success
+  noop (`noop reason=dashboard-timeout-prior-snapshot`) — do not fail the
+  routine fleet when the durable mirror is still available
 - Script crash, brain put failure, empty HTML after claimed success → `error`
 
 ## Out of scope
