@@ -39,6 +39,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
   test -f "$plist" || fail "host-track refresh LaunchAgent plist was not installed"
   grep -q '<string>refresh</string>' "$plist" || fail "LaunchAgent does not run host-track refresh"
   grep -q '<string>--all</string>' "$plist" || fail "LaunchAgent does not refresh all apps"
+  grep -q '/opt/homebrew/bin' "$plist" || fail "LaunchAgent PATH does not include Homebrew"
   grep -q '<integer>1200</integer>' "$plist" || fail "LaunchAgent StartInterval is not 20 minutes"
 fi
 

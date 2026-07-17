@@ -55,7 +55,8 @@ Refresh stamps are written under `~/.host-track/stamps/<app>.json`, or under
 The safety poll runs every 20 minutes. When the registry has Forgejo-gated apps
 with local host checkouts, setup also adds existing `<git-dir>/FETCH_HEAD` paths
 as optional `WatchPaths`, so fetch activity can trigger the same refresh command
-without one plist per app.
+without one plist per app. The plist sets a tool-friendly PATH including
+`~/.local/bin`, `~/.bun/bin`, Homebrew, and system directories.
 
 Uninstall removes the plist and boots out the loaded service:
 
