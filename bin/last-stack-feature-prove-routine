@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# Install/update the scheduled Feature Ship Loop proof routine.
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+ROUTINES_HOME="${ROUTINES_HOME:-$HOME/.routines}"
+REGISTRY_DIR="$ROUTINES_HOME/registry"
+PROMPT_PATH="$ROOT/routines/feature-prove.md"
+ID="last-stack-feature-prove"
+DRY_RUN=0
+
+usage() {
+  cat <<'USAGE'
+last-stack-feature-prove-routine [options]
+
+Writes the routines registry entry for the Feature Ship Loop product-proof
+routine. Re-running is idempotent.
+
+Options:
+  --registry-dir <p>  registry directory (default: $ROUTINES_HOME/registry)
+  --prompt-path <p>   feature-prove prompt path (default: this checkout)
+  --id <id>           automation id (default: last-stack-feature-prove)
+  --dry-run           print target path and contents without writing
+  -h, --help          show this help
+USAGE
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --registry-dir)
+      REGISTRY_DIR="$2"
+      shift 2
+      ;;
+    --registry-dir=*)
+      REGISTRY_DIR="${1#*=}"
+      shift
+      ;;
+    --prompt-path)
+      PROMPT_PATH="$2"
+      shift 2
+      ;;
+    --prompt-path=*)
+      PROMPT_PATH="${1#*=}"
+      shift
+      ;;
+    --id)
+      ID="$2"
+      shift 2
+      ;;
+    --id=*)
+      ID="${1#*=}"
+      shift
+      ;;
+    --dry-run)
+      DRY_RUN=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown flag: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+case "$ID" in
+  ""|*/*)
+    echo "unsafe automation id: $ID" >&2
+    exit 2
+    ;;
+esac
+
+if [ ! -r "$PROMPT_PATH" ]; then
+  echo "prompt path is not readable: $PROMPT_PATH" >&2
+  exit 66
+fi
+
+path="$REGISTRY_DIR/$ID.toml"
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  printf '%s\n' "--- $path"
+fi
+
+{
+  printf '# Feature Ship Loop product-proof routine.\n'
+  printf '# Sweeps feature-owner cards after terminal PR deps merge; writes PASS proof or files fix-forward work.\n'
+  printf 'id = "%s"\n' "$ID"
+  printf 'harness = "codex"\n'
+  printf 'model = "gpt-5.5"\n'
+  printf 'effort = "high"\n'
+  printf 'rrule = "FREQ=HOURLY;INTERVAL=1;BYMINUTE=40;BYSECOND=0"\n'
+  printf 'cwd = "/Users/tomtang/code/edgevector"\n'
+  printf 'status = "active"\n'
+  printf 'timeout_min = 45\n'
+  printf 'prompt_path = "%s"\n' "$PROMPT_PATH"
+} | if [ "$DRY_RUN" -eq 1 ]; then
+  cat
+else
+  mkdir -p "$REGISTRY_DIR"
+  tmp="$(mktemp "${TMPDIR:-/tmp}/last-stack-feature-prove.XXXXXX")"
+  cat >"$tmp"
+  if [ -f "$path" ] && cmp -s "$tmp" "$path"; then
+    rm -f "$tmp"
+    printf 'unchanged %s\n' "$path"
+  else
+    mv "$tmp" "$path"
+    printf 'wrote %s\n' "$path"
+  fi
+fi
+
+printf 'configured %s in %s\n' "$ID" "$REGISTRY_DIR"
