@@ -80,6 +80,18 @@ agent workspace. At the beginning of the run, record `run_started_epoch=$(date
   **10 minutes**, roll it back to `todo` now and exit with
   `ok cards=1 worked=<slug> result=rolled-back-todo reason=budget-low`; do not
   watch external progress until the harness SIGTERM cuts off closeout.
+- Long foreground commands must be self-timeboxed by the shell, not by manual
+  interrupt. For deploys, Docker builds, Rust/Cargo builds, cloud smoke suites,
+  sync drains, log follows, or any command that may ignore Ctrl-C while
+  unwinding, compute a command timeout that ends before the closeout reserve
+  and run it through `timeout -k 30s <seconds> ...` (or `gtimeout -k 30s` on
+  macOS). If no timeout binary is available, do not start that command from
+  pickup; roll the card back to `todo` and exit with `result=rolled-back-todo
+  reason=no-command-timebox`. If the timeout fires, immediately record the
+  observed state, move the unpublished card back to `todo`, heartbeat
+  `ok cards=1 worked=<slug> result=rolled-back-todo reason=command-timebox`,
+  print the machine trailer using the `ROUTINE_RESULT` token, and EXIT.
+  Do not wait for a long child process to finish unwinding after the timebox.
 - If elapsed time reaches **45 minutes** before a PR/CR URL has been recorded,
   stop immediately after rollback/memory note best-effort. Do not launch a final
   multi-command publish block near the harness timeout; the next scheduled fire
@@ -357,7 +369,12 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
    to `todo`, heartbeat `ok ... result=rolled-back-todo reason=budget-low`,
    print the `ROUTINE_RESULT` token followed by
    `outcome=ok detail=worked=<slug> final_column=todo reason=budget-low`, and
-   EXIT.
+   EXIT. For long deploy/build/proof commands, reserve closeout time by wrapping
+   the command in `timeout -k 30s <seconds> ...` or `gtimeout -k 30s <seconds>
+   ...`; choose `<seconds>` so the command returns before the 10-minute reserve.
+   A command timebox firing is a clean rollback/handoff result, not a routine
+   error, provided the card is moved back to `todo` or a pending rollback is
+   written to automation memory.
 5. **Route review artifacts:**
    ```bash
    route_json="$("$last_stack/bin/last-stack-pr-venue" --json "<repo>" "$target_repo")"
