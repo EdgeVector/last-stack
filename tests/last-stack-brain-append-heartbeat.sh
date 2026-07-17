@@ -176,5 +176,6 @@ unset LAST_STACK_BRAIN
 grep -q -- 'get routine-heartbeats --type reference --json' "$FAKE_FBRain_ARGS"
 printf 'fbrain-heartbeat\nold-one\nold-two\n' > "$expected"
 cmp "$expected" "$FAKE_FBRain_PUT_BODY"
+unset LAST_STACK_BRAIN
 
 echo "ok"
