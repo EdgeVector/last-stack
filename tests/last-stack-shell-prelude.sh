@@ -70,12 +70,17 @@ workspace="$tmp/workspace"
 mkdir -p "$workspace/brain/bin"
 printf '#!/bin/sh\nexit 0\n' > "$workspace/brain/bin/brain"
 chmod +x "$workspace/brain/bin/brain"
+test_home="$tmp/home"
+mkdir -p "$test_home/.local/bin"
+printf '#!/bin/sh\nexit 0\n' > "$test_home/.local/bin/brain"
+chmod +x "$test_home/.local/bin/brain"
 PATH="/usr/bin:/bin"
 LAST_STACK_WORKSPACE="$workspace"
+HOME="$test_home"
 unset LAST_STACK_GLOBAL_PATH
-export PATH LAST_STACK_WORKSPACE
+export PATH LAST_STACK_WORKSPACE HOME
 . "$ROOT/bin/last-stack-shell-prelude"
 last_stack_require_tools brain
-test "$LAST_STACK_TOOL_BRAIN" = "$workspace/brain/bin/brain"
+test "$LAST_STACK_TOOL_BRAIN" = "$test_home/.local/bin/brain"
 
 echo "ok"

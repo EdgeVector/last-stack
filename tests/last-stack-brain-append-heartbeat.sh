@@ -125,7 +125,7 @@ esac
 FAKE
 chmod +x "$fake_bin/brain"
 
-export PATH="$fake_bin:$PATH"
+export PATH="$fake_bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
 export FAKE_FBRain_ARGS="$tmp/args"
 export FAKE_FBRain_PUT_BODY="$tmp/put-body"
 export FAKE_FBRain_APPEND_BODY="$tmp/append-body"
