@@ -121,14 +121,16 @@ every incomplete NS has a named proof card; completed terminals close the NS.
    ```bash
    "$last_stack/bin/last-stack-active-programs-guard" stale-report \
      --active "$active_body" \
-     --board "$board_snapshot"
+     --board "$board_snapshot" \
+     --proof-reports "$HOME/.last-stack/north-star-proofs"
    ```
    The report includes the active prose cue, the actual board state, and a
-   suggested fix. If it marks a section `drained`, do not generate or promote a
-   new card from that stale prose in this run. If it marks a section `held`, do
-   not treat it as pickup-ready until the prose or card status is refreshed.
-   Report either case as a consolidation candidate so `consolidate-brain` can
-   retire or refresh the program deliberately.
+   suggested fix. If it marks a section `drained` because all referenced cards
+   are done or its own North Star proof report is `PASS`, do not generate or
+   promote a new card from that stale prose in this run. If it marks a section
+   `held`, do not treat it as pickup-ready until the prose or card status is
+   refreshed. Report either case as a consolidation candidate so
+   `consolidate-brain` can retire or refresh the program deliberately.
 
 2. **Snapshot the board narrowly.** Read the needed columns sequentially:
    `<board CLI> list --column todo --json`, then `doing`, `done`, and `backlog`
