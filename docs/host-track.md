@@ -72,5 +72,5 @@ Uninstall removes the plist and boots out the loaded service:
 - `D daemon/cloud`: intentionally out of scope for this driver until a concrete
   app opts in.
 
-The initial registry includes real entries for `lastgit` and `last-stack`, plus
-placeholder B-kind entries for `brain`, `situations`, and `kanban`.
+The initial registry includes real entries for `lastgit`, `last-stack`, and
+`situations`, plus placeholder B-kind entries for `brain` and `kanban`.

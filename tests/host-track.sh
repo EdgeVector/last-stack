@@ -105,6 +105,19 @@ stamp_dir="$tmp/stamps"
 export HOST_TRACK_REGISTRY="$registry"
 export HOST_TRACK_STAMP_DIR="$stamp_dir"
 
+default_registry="$ROOT/config/host-track/apps.json"
+jq -e '
+  .apps[] | select(.app == "situations")
+  | .gate == "lastgit"
+    and .gate_main == "lastdb:///situations#main"
+    and .gate_remote == "lastgit"
+    and .gate_ref == "refs/heads/main"
+    and .host_track == "$HOME/.host-track/situations"
+    and .refresh == "$HOME/.last-stack/bin/last-stack-refresh-situations-host-track"
+' "$default_registry" >/dev/null || fail "default situations registry is not a real LastGit host-track entry"
+test -x "$ROOT/bin/last-stack-refresh-situations-host-track" \
+  || fail "situations host-track bootstrap wrapper is not executable"
+
 status="$("$ROOT/bin/host-track" status --json fake)"
 printf '%s\n' "$status" | jq -e '.app == "fake"' >/dev/null || fail "status app mismatch"
 printf '%s\n' "$status" | jq -e '.exec_path | endswith("/fakeapp")' >/dev/null || fail "status missing executable"
