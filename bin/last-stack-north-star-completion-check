@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Thin wrapper: North Star terminal-verification / completion contract report.
+# See brain sop-north-star-terminal-verification.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+BIN="$ROOT/bin/last-stack-north-star-dashboard"
+if [ ! -x "$BIN" ]; then
+  BIN="$(command -v last-stack-north-star-dashboard || true)"
+fi
+if [ -z "${BIN:-}" ] || [ ! -x "$BIN" ]; then
+  echo "ERROR=last-stack-north-star-dashboard not found" >&2
+  exit 127
+fi
+
+# Default: live board + fetch NS bodies + completion markdown on stdout.
+# Pass-through extra flags (e.g. --completion-json, fixtures).
+exec "$BIN" --fetch-bodies --stdout completion "$@"

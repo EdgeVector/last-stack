@@ -4,17 +4,19 @@ cadence: every 5 minutes
 description: Drain the ready board queue fast (one unit default, optional second sequential) — YOU perform kanban-agent WORK mode yourself in an isolated worktree and drive to a MERGED PR. No subagents, no collab SpawnAgent, no background harness fan-out. If the queue is empty, run Idle mode smart-heal (program next-slice, CodeRings hotspot, or low-risk simplification) instead of no-oping.
 ---
 
-## NO REVIEW COLUMN
+## NO REVIEW COLUMN (Tom 2026-07-16 — won't-undo)
 
 There is **no `review` column**. Board columns are only:
-`backlog -> todo -> doing -> done`.
+`backlog → todo → doing → done`.
 
 - Incomplete work: stay in `todo` or `doing`
 - Complete work: `done` only with merge/END-STATE proof
-- Intentional holds: rare; `needs_human` / `deferred` / `design_first` -> `backlog`
+- Intentional holds: rare `needs_human` → **backlog only**; `deferred` /
+  `design_first` also stay out of `todo`
 
-Never `kanban move <slug> review`. The live board rejects it. Do not invent a
-review lane on custom boards either.
+Never `kanban move <slug> review`. The live board rejects it. Do not invent
+a review lane on custom boards either.
+
 
 You pick ready work and **do it yourself** — isolate in a git worktree,
 implement, open a PR/CR, drive it to MERGED. This is the WORK-mode counterpart
@@ -38,20 +40,27 @@ record a local start timestamp:
 run_started_epoch="$(date +%s)"
 run_timeout_min="${ROUTINES_TIMEOUT_MIN:-${TIMEOUT_MIN:-45}}"
 ```
-Before starting optional work after the first claimed unit, including a second
-pickup unit or idle smart-heal that would file **and immediately claim** a new
-card, recompute remaining seconds:
+Before starting any optional work after the first claimed unit — including a
+second pickup unit, or idle smart-heal that would file **and immediately claim**
+a new card — recompute remaining seconds:
 ```bash
 elapsed=$(( $(date +%s) - run_started_epoch ))
 remaining=$(( run_timeout_min * 60 - elapsed ))
 ```
-Only start optional executable work when `remaining >= 2100` (35 minutes). If
-less remains, do not claim another card. If a card has already been claimed and
-the budget drops below 600 seconds before a PR/CR URL is recorded, roll it back
-to `todo` rather than trying to beat the harness timeout.
+Only start that optional executable work when `remaining >= 2100` (35 minutes).
+If less remains, do not claim another card. For idle mode, prefer filing the
+card only and exiting with `ok idle=program-filed` / `ok idle=filed`; if no
+clear file-only slice exists, heartbeat `noop idle nothing-safe
+reason=budget-low`. If a card has already been claimed and the budget drops
+below 600 seconds before a PR/CR URL is recorded, roll it back to `todo` rather
+than trying to beat the harness timeout.
+
+**Empty queue:** default **Idle mode: smart-heal** (below) so the fleet keeps
+self-improving between feature waves. Prefer real program / North Star work
+over random cleanup. Never invent product scope, never reopen closed planes
+(desktop UI, transform/view/WASM).
 
 ## Wall-clock budget (hard)
-
 Treat each scheduled fire as a bounded foreground session, not an open-ended
 agent workspace. At the beginning of the run, record `run_started_epoch=$(date
 -u +%s)` and use elapsed wall-clock time before every expensive phase.
@@ -63,17 +72,32 @@ agent workspace. At the beginning of the run, record `run_started_epoch=$(date
   leave a file-only card in `todo`), heartbeat `noop idle=budget-exhausted`,
   print the machine trailer by using the `ROUTINE_RESULT` token followed by
   `outcome=noop detail=idle=budget-exhausted`, and EXIT.
+- Before every foreground watcher, deploy wait, sync drain, or other END STATE
+  proof that can run for minutes, recompute elapsed/remaining budget. Only start
+  or continue that wait when there is enough time left to finish the proof,
+  perform board closeout, append heartbeat, and print the machine trailer. If a
+  claimed card still has no recorded PR/CR URL and remaining time is under
+  **10 minutes**, roll it back to `todo` now and exit with
+  `ok cards=1 worked=<slug> result=rolled-back-todo reason=budget-low`; do not
+  watch external progress until the harness SIGTERM cuts off closeout.
 - If elapsed time reaches **45 minutes** before a PR/CR URL has been recorded,
   stop immediately after rollback/memory note best-effort. Do not launch a final
   multi-command publish block near the harness timeout; the next scheduled fire
   can reclaim cleanly.
+- If a PR/CR URL has been recorded and elapsed time reaches **35 minutes** (or
+  fewer than **10 minutes** remain), stop immediately after one best-effort card
+  update / memory note. Leave the card in `doing` with the recorded `pr_url` and
+  `branch`, heartbeat
+  `ok cards=1 worked=<slug> result=in-flight-budget-handoff pr=<url>
+  final_column=doing`, print the `ROUTINE_RESULT` token followed by
+  `outcome=<ok> detail=worked=<slug> result=in-flight-budget-handoff pr=<url>`,
+  and EXIT.
+  Do not start another fetch, rebase, push, validation retry, CI poll, or
+  merge-complete command after the 35-minute publish stop line; `kanban-watch`
+  or a later pickup fire can reconcile a visible in-flight PR/CR, but routinesd
+  cannot recover a killed foreground process cleanly.
 - Idle mode is optional when budget is tight. A clean `noop idle=budget-exhausted`
   is better than a red harness timeout with a zombie `doing` card.
-
-**Empty queue:** default **Idle mode: smart-heal** (below) so the fleet keeps
-self-improving between feature waves. Prefer real program / North Star work
-over random cleanup. Never invent product scope, never reopen closed planes
-(desktop UI, transform/view/WASM).
 
 ## Automation memory
 If the scheduled prompt includes an `Automation memory:` path (routinesd injects
@@ -91,12 +115,30 @@ read/write, fail loudly if the resolved path is empty or starts with
 sandbox refuses the path, note `memory_unwritable=<path>` in the heartbeat and
 continue — do not fail the whole run.
 
+## Attribution (routine provenance — required)
+You are a **scheduled routine** (dispatch envelope + env). Interactive human
+sessions do not set `DRIVEN_BY=routine`. When you land code:
+
+1. Prefer commits via `"$last_stack/bin/last-stack-git-commit" -m "…" …` so
+   trailers are automatic. Or append `"$last_stack/bin/last-stack-attribution-trailers"`.
+2. Every commit message and every PR / LastGit CR body must end with:
+   - `Driven-By: routine`
+   - `Automation-Id: <this Automation ID>`
+   - `Run-Id: <ROUTINES_RUN_ID if set>`
+3. LastGit CR actor is already `routine:<id>` via `LASTGIT_ACTOR` — do not
+   override it to your shell username.
+4. Situations notices: `--actor routine:<Automation ID>` (or `routine:<id>`).
+
+Never invent these trailers when `DRIVEN_BY` is unset (interactive Tom-driven
+work must stay unmarked).
+
 > **No-spawn policy (hard).** NEVER use Codex `SpawnAgent` / collab agents,
 > Claude Task/subagent tools, `nohup codex|claude|grok … &`, or any other
 > background agent launch. If you cannot finish the work-unit in this session,
-> move cards back to `todo` (or `backlog` with `block_status=needs_human` for a
-> genuine human gate) and EXIT. A partial claim left in `doing` with no live
-> worker is the failure mode this policy prevents.
+> move cards back to `todo` before a PR/CR is recorded, or to `backlog` with
+> `block_status=needs_human` for a genuine human gate, and EXIT. A partial claim
+> left in `doing` with no live worker is the
+> failure mode this policy prevents.
 
 ## Rate-limit guard (check FIRST)
 - Do NOT start if your agent account is rate-limited.
@@ -144,6 +186,12 @@ back to `todo` (or `pending_rollback=` in memory) per transport rules below.
   "$last_stack/bin/last-stack-cli-preflight" git curl jq gh <board-cli> <brain-cli>
   ```
 - Record `run_started_epoch` / `run_timeout_min` for the run-budget guard above.
+  The prelude must leave `~/.local/bin` ahead of ad-hoc checkout paths so
+  host-track-managed CLI installs win over stale WIP binaries. Before expensive
+  work, or whenever `brain`, `<board-cli>`, `situations`, `lastgit`, or another
+  shared CLI behaves oddly, run `host-track status` when available and
+  `<cmd> which` (for example `lastgit which`) before changing PATH or running a
+  checkout-local command.
 - Follow the **kanban-agent** skill, **WORK mode**, yourself — that skill is the
   source of truth for the per-card lifecycle. This prompt is selection + the
   no-spawn execution contract.
@@ -193,8 +241,8 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
   empty queue. Heartbeat `noop no-claim reason=<reason> skipped=<slug:reason>`
   and EXIT. Do not enter idle mode while ready-but-conflicting work exists.
 - If `claimed=false` only because the ready queue is truly empty
-  (`scanned_ready=0` and no skipped cards), go to **Nothing to pick up**.
-  Include the claim reason in the heartbeat.
+  (`scanned_ready=0` and no skipped cards), go to **Nothing to pick up**. Include
+  the claim reason in the heartbeat.
 - If `pickup claim` still exits nonzero after the **bounded flap retries** above
   and the output mentions board-write backpressure (`max_outbox_entries`,
   `uds_connection_limit`, HTTP 503, `service_timeout`, "node did not respond",
@@ -202,9 +250,10 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
   busy-node/no-write backpressure: do not run doctor/init, do not restart
   anything, do not fall through to manual claim, heartbeat
   `noop busy-node board_write_rejected=<reason> no_card_claimed attempts=3`,
-  print `ROUTINE_RESULT outcome=noop detail=busy_node board_write_rejected=<reason>
-  no_card_claimed`, and EXIT. If the heartbeat append itself fails with the same
-  mutation rejection, still print the `ROUTINE_RESULT outcome=noop` trailer.
+  print the machine trailer by using the `ROUTINE_RESULT` token followed by
+  `outcome=noop detail=busy_node board_write_rejected=<reason> no_card_claimed`,
+  and EXIT. If the heartbeat append itself fails with the same mutation
+  rejection, still print the machine trailer with `outcome=noop`.
 - If the CLI rejects `pickup claim` (unknown subcommand / old board binary):
   fall through to the manual steps below.
 
@@ -269,14 +318,22 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
    ```bash
    git -C "$target_repo" fetch origin
    git -C "$target_repo" worktree add \
-     "${WORKTREES_DIR:-$HOME/.fkanban/worktrees}/<lead-slug>" \
+     "${WORKTREES_DIR:-$HOME/.kanban/worktrees}/<lead-slug>" \
      -b "kanban/<lead-slug>" "origin/<base>"
-   cd "${WORKTREES_DIR:-$HOME/.fkanban/worktrees}/<lead-slug>"
+   cd "${WORKTREES_DIR:-$HOME/.kanban/worktrees}/<lead-slug>"
    ```
    Never edit a shared checkout in place; never stash/reset/clean a shared repo.
 4. **Implement** per the card brief and repo conventions. Honor OUT OF SCOPE.
    Run VERIFY commands from the brief; validate by running the app when the
-   brief requires it, not only unit tests.
+   brief requires it, not only unit tests. Before starting any long-running
+   VERIFY / END STATE proof such as a deploy wait, cloud sync drain, status
+   watch, or log-follow, recompute remaining budget. Do not begin the wait
+   unless it can plausibly finish with at least a 5-minute closeout margin. If
+   the card has no recorded PR/CR URL yet and the margin is gone, move it back
+   to `todo`, heartbeat `ok ... result=rolled-back-todo reason=budget-low`,
+   print the `ROUTINE_RESULT` token followed by
+   `outcome=ok detail=worked=<slug> final_column=todo reason=budget-low`, and
+   EXIT.
 5. **Route review artifacts:**
    ```bash
    route_json="$("$last_stack/bin/last-stack-pr-venue" --json "<repo>" "$target_repo")"
@@ -291,6 +348,19 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
    - `venue=lastgit`: `lastgit cr create … --auto-merge …`, record
      `PR: lastgit://…` plus the branch on the card, drive with
      `lastgit cr view` / `ci status` / `cr complete --once`.
+   - Before every expensive post-publish operation (fetch/rebase after a
+     non-fast-forward push, another push, CI watch/poll, `lastgit cr complete`,
+     or merge-closeout polling), recompute elapsed/remaining budget from
+     `run_started_epoch` / `run_timeout_min`. If a PR/CR URL and branch are
+     already recorded and either elapsed time is **35 minutes or more** or fewer
+     than **10 minutes** remain, do not continue the publish/merge loop.
+     Heartbeat `ok cards=1 worked=<slug>
+     result=in-flight-budget-handoff pr=<url> final_column=doing`, print
+     the `ROUTINE_RESULT` token followed by `outcome=<ok>
+     detail=worked=<slug> result=in-flight-budget-handoff pr=<url>`, and EXIT.
+     This is a clean
+     bounded handoff, not an error; the card is visible with a review artifact
+     for `kanban-watch` / the next scheduled fire.
    - If pushing or opening the PR/CR fails because the review venue or required
      board transport is unavailable (for example a missing LastGit socket,
      socket-unreachable, `service_timeout`, "node did not respond", or "too
@@ -300,9 +370,10 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
      that board write also fails, append one automation-memory line
      `pending_rollback=<slug> reason=<transport-unavailable>` when writable,
      heartbeat `ok cards=1 worked=<slug> result=rolled-back-todo-unconfirmed
-     reason=<transport-unavailable>`, print `ROUTINE_RESULT outcome=ok
-     detail=worked=<slug> pr=none final_column=todo-unconfirmed
-     reason=<transport-unavailable>`, and EXIT. This is an external transport
+     reason=<transport-unavailable>`, print the machine trailer by using the
+     `ROUTINE_RESULT` token followed by `outcome=ok detail=worked=<slug>
+     pr=none final_column=todo-unconfirmed reason=<transport-unavailable>`,
+     and EXIT. This is an external transport
      interruption, not a harness fault; `kanban-watch` or the next pickup fire
      will reconcile the visible card state.
 6. **On MERGED (hard closeout — verify before claiming done):**
@@ -312,18 +383,22 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
      --pr-url "<merged-pr-or-lastgit-cr-url>" \
      --branch "<head-branch>"
    ```
-   The helper stamps PR/branch, moves to `done`, and re-reads the card. You may
-   print `final_column=done` / "card is done" only after the helper exits 0 (or
-   after `show --json` proves `column=done`). If closeout fails, retry once with
-   `--force`; if still not done, heartbeat `result=merged-board-closeout-failed`
-   and EXIT without lying about column. Then EXIT the run.
+   The helper stamps PR/branch, moves to `done`, and **re-reads** the card.
+   You may print `final_column=done` / "card is done" **only** after the helper
+   exits 0 (or after `show --json` proves `column=done`). If closeout fails,
+   retry once with `--force`; if still not done, heartbeat
+   `result=merged-board-closeout-failed` and EXIT without lying about column.
+   Then EXIT the run (no second unit after a failed closeout).
 7. **Genuine human-only blocker** (ambiguous spec, product judgment, human-only
    gate, dep on unmerged work): leave the branch clean, move the card(s) to
-   `backlog`, append `BLOCKED: <why>`, set `block_status=needs_human` with a
-   crisp `block_reason`, and EXIT.
+   `backlog` with `block_status=needs_human`, append `BLOCKED: <why>`, and
+   EXIT.
 8. **If you must abort mid-work** (timeout pressure, rate limit, harness death
    risk) and the PR is not open yet: move card(s) **back to `todo`** so the next
    run reclaims them. Do not leave zombie `doing` cards with no worker.
+9. **Never re-claim a card already in `done` with a merged PR** for the same
+   unit in this or a sibling fire — that is how concurrent pickups re-open
+   `doing` after a good closeout.
 
 ### Hard bans during execute
 - No nested agents / SpawnAgent / Task subagents / detached harness processes.
@@ -345,6 +420,18 @@ When the `todo` queue is empty (or nothing eligible after selection gates):
 Zero pickup-eligible cards were claimed this run. Do **exactly one** action from
 the ladder, top-down. Stop after the first successful action. Same no-spawn
 rules, same one-PR / one-worktree discipline as WORK mode.
+
+#### Idle budget guard
+- Idle mode is allowed only after a **true empty queue** claim/read, not after
+  `surface-overlap`, `at-capacity`, or any ready-card skip.
+- Start idle with a bias to fast exit: if the first cheap probe does not reveal
+  a clear PR-sized action, heartbeat `noop idle nothing-safe` and EXIT.
+- Do not run broad repo scans (`rg --files` / whole-repo `rg`) or open an idle
+  worktree unless you can still finish and merge with at least a 10-minute
+  harness margin. If that margin is uncertain, file one card or true-noop.
+- A run may either file one idle card **or** work one already-existing card; it
+  must not create a new synthetic idle card and then claim/work that same card
+  in the same fire.
 
 #### Anti-thrash (check before any idle work)
 - If rate-limited / node busy → `noop busy-node` or rate-limit EXIT (same as
@@ -371,7 +458,8 @@ then either:
 - **File one** PR card to `todo` with full GOAL/STEPS/VERIFY + `Repo:`/`Base:` +
   kanban-agent header, then EXIT with `ok idle=program-filed slug=...` so the
   next pickup fire claims it with a fresh budget, **or**
-- File only and EXIT if the slice is large / uncertain (same heartbeat).
+- File only and EXIT if the slice is large / uncertain (heartbeat
+  `ok idle=program-filed slug=…`).
 Do not dump whole programs/capstones into `todo`. Prefer the most-behind program
 with a clear next slice. Verify facts against `origin/main` before filing.
 
@@ -401,15 +489,15 @@ File **one** small improvement for later pickup:
 - Prefer: unused private code, dead flags, clear bug with test, redundant
   wrapper, docs that block installs (dev-only).
 - Prefer repos with green CI and no open migration/human gate on that surface.
-- Create a full PR-shaped kanban card in `todo` with `Repo:`/`Base:`/`Branch:`,
+- Create a full PR-shaped kanban card in `todo` with Repo/Base/Branch/Kind,
   GOAL/STEPS/VERIFY/END STATE, and surfaces.
 - Heartbeat `ok idle=filed slug=<slug> result=filed-card`, print the machine
   trailer by using the `ROUTINE_RESULT` token followed by
   `outcome=ok detail=idle=filed slug=<slug> result=filed-card`, and EXIT.
 - Do **not** immediately claim or implement the card you just created. A later
   pickup fire will claim it through normal overlap and budget gates.
-- Only ship instead of file when the simplification is already represented by an
-  existing unblocked card before idle starts and you can merge it without
+- Only ship instead of file when the simplification is already represented by
+  an existing unblocked card before idle starts and you can merge it without
   creating a new card first.
 - If nothing safe → step 5.
 
@@ -421,14 +509,13 @@ Heartbeat `noop idle nothing-safe` (distinguish from "didn't run"). EXIT.
   and `result=…` / `slug=…` / `pr=…` as applicable.
 - If automation memory is writable, append one line:
   `last_idle_at=<ISO> kind=<…> repo=<…> slug=<…>`.
-- Print a final trailer with `ROUTINE_RESULT outcome=ok|noop detail=idle=…`,
-  then EXIT immediately. Do not continue to another card, another idle ladder
-  step, or implementation after recording an idle terminal result.
+- Print a final trailer by using the `ROUTINE_RESULT` token followed by
+  `outcome=ok|noop detail=idle=...`, then EXIT immediately. Do not continue to
+  another card, another idle ladder step, or implementation after recording an
+  idle terminal result.
 
 ## Hard rules
-- AT MOST **two sequential work-units per run** (default one; second only if
-  first merged and ≥35m budget left). Never spawn. Idle mode stays one action:
-  file one card or work one pre-existing card, never both.
+- AT MOST **two sequential work-units per run** (default one; second only if first merged and ≥35m budget left). Never spawn. Idle mode stays one action: file one card or work one pre-existing card, never both.
 - Claim (`doing`) only for work **you** will execute in this session.
 - Never kill the process hosting your brain/board node or any node you didn't
   start. Never `stash`/`reset`/`clean` a shared repo — isolate with
@@ -439,7 +526,7 @@ Heartbeat `noop idle nothing-safe` (distinguish from "didn't run"). EXIT.
   routing. Idle is not a free pass to edit the workspace root.
 
 End with a one-line report: which card(s) you claimed + worked, PR/CR url if
-any, final column (`done` / `backlog` / rolled-back `todo`); or idle outcome
+any, final column (`done` / human-gated `backlog` / rolled-back `todo`); or idle outcome
 (`idle=program-slice|coderings|chore|simplify|filed|nothing-safe`). Then exit.
 
 > **Heartbeat (LAST action, always).** Call
@@ -453,7 +540,7 @@ any, final column (`done` / `backlog` / rolled-back `todo`); or idle outcome
 > - `error` — rate-limit abort, non-backpressure claim failure with no recovery,
 >   harness fault.
 > - `ok` — you executed a unit (pickup or idle): include
->   `cards=<n> worked=<slug[,slug…]> result=merged|needs-human-blocked|rolled-back-todo`
+>   `cards=<n> worked=<slug[,slug…]> result=merged|human-blocked|rolled-back-todo|in-flight-budget-handoff`
 >   plus `pr=<url>` when opened; for idle add `idle=<kind>`. Example:
 >   `ok cards=1 worked=foo-service-shared-surface-contract result=merged pr=http://…/pulls/12`.
 >   Idle example:
@@ -461,4 +548,5 @@ any, final column (`done` / `backlog` / rolled-back `todo`); or idle outcome
 >
 > Do **not** report `spawned=` or child thread ids — this routine does not spawn.
 > Optional machine trailer (helps the routines dashboard): print a final line
-> `ROUTINE_RESULT outcome=ok|noop|error detail=…` before exit.
+> a machine trailer before exit: the token `ROUTINE_RESULT`, then
+> `outcome=ok|noop|error detail=...`.

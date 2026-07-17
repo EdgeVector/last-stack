@@ -14,6 +14,20 @@ description: |
   the kanban board".
 ---
 
+## NO REVIEW COLUMN (Tom 2026-07-16 — won't-undo)
+
+There is **no `review` column**. Board columns are only:
+`backlog → todo → doing → done`.
+
+- Incomplete work: stay in `todo` or `doing`
+- Complete work: `done` only with merge/END-STATE proof
+- Intentional holds: `block_status=needs_human|deferred|design_first` + reason
+  while the card stays in `todo` (or `backlog` if dep-blocked)
+
+Never `kanban move <slug> review`. The live board rejects it. Do not invent
+a review lane on custom boards either.
+
+
 # kanban — agent handbook
 
 kanban is a kanban over LastDB (CLI + MCP, `bun run src/cli.ts` in the kanban
@@ -97,13 +111,13 @@ genuinely blocked.
 
 ## Columns
 
-`backlog → todo → doing → review → done`
+`backlog → todo → doing → done`
 
 | Column | Meaning |
 |---|---|
 | `backlog` / `todo` | not yet picked up |
 | `doing` | an agent is implementing, OR is driving its open PR to merge |
-| `review` | parked for a human, or visibly awaiting/failing post-merge validation (`BLOCKED:`/`STALLED:`/`PROOF:` note explains why) |
+| *(no review)* | use `todo` + `block_status` for human gates; never park incomplete work |
 | `done` | PR is **merged** AND the card's outcome was validated, or a non-PR card's `DONE-WHEN` predicate is satisfied |
 
 ### Outcome validation — at the CARD level, not in PR bodies
@@ -122,7 +136,7 @@ brain/keyring; **cross a process boundary** (restart / re-open) between the writ
 and the read; include a **negative case**. Anchor it to the user story, not the
 diff ("a user can set a password and later unlock with it") — see the SOP
 `sop-autonomous-acceptance-gate` (brain). A card whose merged PR fails its
-VERIFY/END STATE goes to `review` with a `PROOF:` note — not `done`. This is what
+VERIFY/END STATE goes in `todo` with a `PROOF:` note — not `done`. This is what
 stops "password sets but the app won't unlock with it" (incident 2026-06-30) from
 reaching a user.
 
@@ -228,13 +242,19 @@ to `review`, append a one-line note explaining what's missing, and exit.
    "$last_stack/bin/last-stack-cli-preflight" git gh curl jq kanban brain
    last_stack_require_tools git gh curl jq kanban brain
    ```
+   The prelude intentionally puts `~/.local/bin` ahead of ad-hoc checkout paths;
+   host-track-managed CLI installs should be discovered there. Before long work,
+   or whenever `brain`, `kanban`, `situations`, `lastgit`, or another shared CLI
+   behaves unexpectedly, run `host-track status` when available and the tool's
+   `which` command (for example `lastgit which`) so you do not drive a card with
+   stale binaries from a WIP worktree.
 2. **Resolve the target repo, then set up an isolated worktree** (never edit a
    shared checkout in place, and never `stash`/`reset` — sibling agents may
    share these repos). The `Repo:` header must resolve to an explicit local Git
    checkout path before any `git` or `gh` command runs. If it is missing,
    ambiguous, points at the aggregate workspace (for example
    `/Users/tomtang/code/edgevector`), or cannot be resolved to a checkout, move
-   the card to `review` with a one-line `BLOCKED:` note instead of probing the
+   the card in `todo` with a one-line `BLOCKED:` note instead of probing the
    current directory or workspace root. Treat checkout resolution as a hard
    preflight gate and run Git from the resolved checkout, not from the workspace
    container:
@@ -261,7 +281,11 @@ to `review`, append a one-line note explaining what's missing, and exit.
    ```
    For GitHub (adjust merge command to your repo — see "Merge strategy"):
    ```bash
-   git commit -am "<msg>"
+   # Prefer last-stack-git-commit when DRIVEN_BY=routine (scheduled); falls
+   # through to plain git commit for interactive sessions.
+   "$last_stack/bin/last-stack-git-commit" -am "<msg>" \
+     || git commit -am "<msg>"
+   # PR/CR body: append "$last_stack/bin/last-stack-attribution-trailers" when non-empty
    git push -u origin HEAD
    pr_url="$(gh -R <repo> pr create --fill --base <base>)"
    branch="$(git branch --show-current)"
@@ -303,11 +327,18 @@ to `review`, append a one-line note explaining what's missing, and exit.
    terminal state. If you drive by hand instead, loop with a **sleepless** watcher
    (`gh -R <repo> pr checks <n> --watch`, NEVER `sleep`) and on each state change act:
    - **MERGED** (`state=MERGED`) → re-read the card. If the card's `## END STATE`
-     / `VERIFY` is already proven by local checks, move it to `done`. If it
-     explicitly requires async post-merge validation that cannot finish inside
-     this WORK turn (for example a dev deploy, release run, clean-machine
-     install, or dogfood check), append a one-line
-     `BLOCKED: awaiting <specific validation>` note and move it to `review`.
+     / `VERIFY` is already proven by local checks, **close the board atomically**:
+     ```bash
+     "$last_stack/bin/last-stack-card-closeout" <slug> \
+       --pr-url "<pr-or-lastgit-cr-url>" --branch "<branch>"
+     ```
+     Only treat the unit as board-done when that helper exits 0 (it re-reads
+     `column=done`). Do not trust a bare `move … done` without verification —
+     concurrent pickups and later `add --pr-url` races have left cards in
+     `doing` after a successful move. If the card explicitly requires async
+     post-merge validation that cannot finish inside this WORK turn (dev deploy,
+     release run, clean-machine install, dogfood), append
+     `BLOCKED: awaiting <specific validation>` and move to `review` instead.
      That is the handoff contract for `kanban-validate`; do not leave it in
      `doing`, and do not pretend the END STATE is done. Prod cutovers and public
      irreversible actions are always human-gated.
@@ -361,7 +392,7 @@ to `review`, append a one-line note explaining what's missing, and exit.
 
 If you hit a **genuine human-only blocker** (ambiguous spec, a conflict needing
 product judgment, a required gate only a human can clear, or a dependency on
-unmerged work): leave the branch clean, move the card to `review`, append a
+unmerged work): leave the branch clean, leave the card in `todo` (or `doing` if mid-work) with `block_status=needs_human`, append a
 short `BLOCKED: <why>` note to the body, and exit. Don't spin, and don't
 force-merge around a failing required gate.
 
@@ -431,7 +462,7 @@ has no `Repo:` header (it isn't meant for this flow). For each candidate:
        to `done`. Reconcile does not start or retire fresh cards.
      - `doing`: **zombie claim**. After a **90-minute** `updated_at` grace, and
        only if no live worktree worker is present (no dirty tree / no process on
-       `~/.fkanban/worktrees/<slug>` or `~/.kanban/worktrees/<slug>`),
+       `~/.kanban/worktrees/<slug>`),
        **`move <slug> todo`** so pickup can reclaim it. CHEAP, uncapped. Never
        move these to `done`.
      - `review`: leave alone (human/BLOCKED owns it).
@@ -478,9 +509,9 @@ has no `Repo:` header (it isn't meant for this flow). For each candidate:
      push the branch to the `lastgit` remote, then re-verify.
    - **Pending** (CI running, awaiting human review) → leave it; it'll be
      re-checked next wake.
-4. **Give-up guard:** if a card has been in `review` with no forward progress
+4. **Give-up guard:** if a card has been in `todo` with no forward progress
    for a long time (several days of wakes, or a hard human-only blocker), append
-   `STALLED: <why>` to the body and leave it in `review` for a human — never
+   `STALLED: <why>` to the body and leave it in `todo` with `block_status=needs_human` for a human — never
    silently loop forever and never auto-merge around a failing gate.
 
 **Action budget per wake (cheap vs heavy).** Don't throttle the cheap advances —
@@ -521,7 +552,7 @@ feature code and does **not** run prod cutovers or outward/irreversible actions.
    environment, or execute a dogfood script against an isolated data dir. If the
    check would spend real production money, cut over prod, mutate public data, or
    require a human credential/device decision, do not run it; append a
-   `BLOCKED: <human gate>` note and leave the card in `review`.
+   `BLOCKED: <human gate>` note and leave it in `todo` with `block_status=needs_human`.
 3. **Pass closes the card.** If the END STATE now holds, append a short `PROOF:`
    line naming the command or external run that proved it, then move the card to
    `done`. A merged card with an unmet post-merge END STATE is not done until
@@ -535,7 +566,7 @@ feature code and does **not** run prod cutovers or outward/irreversible actions.
 5. **Unrelated blockers do not thrash.** If validation cannot run because a
    named upstream blocker is already known (for example a runner-saturation or
    dev-401 card), append or refresh `BLOCKED: awaiting <blocker-slug> for
-   <validation>`, leave the card in `review`, and exit. Do not create duplicate
+   <validation>`, leave it in `todo` with `block_status=needs_human`, and exit. Do not create duplicate
    fix cards for the same upstream blocker.
 6. **Heartbeat.** When run from the scheduled `kanban-validate` routine, append
    one `routine-heartbeats` line summarizing `ok`, `noop`, or `error` and the

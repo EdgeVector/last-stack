@@ -5,24 +5,34 @@
 
 workspace_root="${LAST_STACK_WORKSPACE:-${PWD:-}}"
 edgevector_root="${LAST_STACK_EDGEVECTOR_ROOT:-$HOME/code/edgevector}"
-sibling_cli_path=""
+workspace_cli_path=""
+edgevector_cli_path=""
 for candidate in \
   "$workspace_root/brain/bin" \
   "$workspace_root/fkanban/bin" \
-  "$workspace_root/kanban/bin" \
+  "$workspace_root/kanban/bin"
+do
+  [ -n "$candidate" ] || continue
+  [ -d "$candidate" ] || continue
+  case ":$workspace_cli_path:" in
+    *":$candidate:"*) ;;
+    *) workspace_cli_path="${workspace_cli_path:+$workspace_cli_path:}$candidate" ;;
+  esac
+done
+for candidate in \
   "$edgevector_root/brain/bin" \
   "$edgevector_root/fkanban/bin" \
   "$edgevector_root/kanban/bin"
 do
   [ -n "$candidate" ] || continue
   [ -d "$candidate" ] || continue
-  case ":$sibling_cli_path:" in
+  case ":$edgevector_cli_path:" in
     *":$candidate:"*) ;;
-    *) sibling_cli_path="${sibling_cli_path:+$sibling_cli_path:}$candidate" ;;
+    *) edgevector_cli_path="${edgevector_cli_path:+$edgevector_cli_path:}$candidate" ;;
   esac
 done
 
-default_global_path="${LAST_STACK_ROOT:-$HOME/.last-stack}/bin:$HOME/.local/bin:$HOME/.bun/bin${sibling_cli_path:+:$sibling_cli_path}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+default_global_path="${LAST_STACK_ROOT:-$HOME/.last-stack}/bin${workspace_cli_path:+:$workspace_cli_path}:$HOME/.local/bin:$HOME/.bun/bin${edgevector_cli_path:+:$edgevector_cli_path}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 global_path="${LAST_STACK_GLOBAL_PATH:-$default_global_path}"
 
 case ":$PATH:" in

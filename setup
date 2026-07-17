@@ -33,6 +33,9 @@ resolve_source_root() {
 SOURCE_ROOT="$(resolve_source_root)"
 SKILLS_SRC="$SOURCE_ROOT/skills"
 HOOKS_SRC="$SOURCE_ROOT/hooks"
+SOURCE_TOP_LOADED=0
+SOURCE_TOP=""
+SOURCE_WORKTREES=""
 
 HOST="auto"
 LOCAL_INSTALL=0
@@ -67,19 +70,23 @@ is_transient_last_stack_target() {
     "$HOME/.fkanban/worktrees"/*|*/.fkanban/worktrees/*) return 0 ;;
   esac
 
-  local source_top
-  source_top="$(git -C "$SOURCE_ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
-  [ -n "$source_top" ] || return 1
+  if [ "$SOURCE_TOP_LOADED" -eq 0 ]; then
+    SOURCE_TOP="$(git -C "$SOURCE_ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [ -n "$SOURCE_TOP" ]; then
+      SOURCE_WORKTREES="$(git -C "$SOURCE_TOP" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0, 10)}')"
+    fi
+    SOURCE_TOP_LOADED=1
+  fi
+  [ -n "$SOURCE_TOP" ] || return 1
 
-  local wt worktrees
-  worktrees="$(git -C "$source_top" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print substr($0, 10)}')"
+  local wt
   while IFS= read -r wt; do
     [ -n "$wt" ] || continue
-    [ "$wt" = "$source_top" ] && continue
+    [ "$wt" = "$SOURCE_TOP" ] && continue
     case "$target" in
       "$wt"/*) return 0 ;;
     esac
-  done <<< "$worktrees"
+  done <<< "$SOURCE_WORKTREES"
 
   return 1
 }
@@ -295,6 +302,24 @@ ensure_codex_mcp_servers() {
   fi
 }
 
+install_host_track_shim() {
+  local src="$SOURCE_ROOT/bin/host-track"
+  local dest="$HOME/.local/bin/host-track"
+  local registry_src="$SOURCE_ROOT/config/host-track/apps.json"
+  local registry_dest="$HOME/.local/share/last-stack/config/host-track/apps.json"
+  [ -f "$src" ] || return 0
+  mkdir -p "$(dirname "$dest")"
+  [ -L "$dest" ] && rm -f "$dest"
+  _link_or_copy "$src" "$dest"
+  chmod 700 "$dest" 2>/dev/null || true
+  if [ -f "$registry_src" ]; then
+    mkdir -p "$(dirname "$registry_dest")"
+    cp -f "$registry_src" "$registry_dest"
+    chmod 600 "$registry_dest" 2>/dev/null || true
+  fi
+  echo "  host-track: $dest"
+}
+
 # ── Register every skills/<name>/SKILL.md into a target skills dir ────────────
 register_into() {
   local skills_dir="$1"
@@ -374,6 +399,7 @@ echo "Installing The Last Stack (v$(cat "$SOURCE_ROOT/VERSION")) ..."
 [ "$INSTALL_FACTORY"  -eq 1 ] && upsert_brain_kanban_block "$HOME/.factory/AGENTS.md" "factory"
 [ "$INSTALL_OPENCODE" -eq 1 ] && register_into "$HOME/.config/opencode/skills" "opencode"
 [ "$INSTALL_OPENCODE" -eq 1 ] && upsert_brain_kanban_block "$HOME/.config/opencode/AGENTS.md" "opencode"
+install_host_track_shim
 
 # ── Guard against foreign installers (e.g. gstack) stomping our skill links ────
 # Another installer that ships a same-named skill (gstack shipped a `diagram`
