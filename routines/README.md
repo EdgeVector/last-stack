@@ -32,6 +32,7 @@ stripped out.
                  │  backlog → todo → doing → review → done                   │
    program-driver ─▶ promote each program's next card into `todo`           │
    groom-board    ─▶ promote ready backlog→todo, break up epics, prune junk  │
+   feature-prove  ─▶ when feature-owner slice deps are done, run product proof│
                  └──────────────────────────────────────────────────────────┘
                           │ (ready `todo` cards)
                           ▼
@@ -117,7 +118,8 @@ one-card-per-fire contract.
 | [`kanban-watch`](kanban-watch.md) | every 10–20 min | RECONCILE the board; advance merged PRs, un-stick the strays. |
 | [`kanban-validate`](kanban-validate.md) | hourly, offset from watch | VALIDATE one merged card's post-merge END STATE; move it to `done` on pass or `review` with proof/fix/blocker on fail. |
 | [`groom-board`](groom-board.md) | daily | Promote ready `backlog`→`todo`, break up epics, prune junk. |
-| [`program-driver`](program-driver.md) | hourly | Promote each program's next DAG card into `todo`. |
+| [`program-driver`](program-driver.md) | hourly | Promote each program's next DAG card into `todo` (includes Feature Ship Loop frontier budget). |
+| [`feature-prove`](feature-prove.md) | hourly | Product-proof stage for `feature-owner` cards; PASS file or fix-forward / open-decisions. |
 | [`program-rollup`](program-rollup.md) | hourly | Mirror the board into the brain's driving index (auto-status block). |
 | [`north-star-rollup`](north-star-rollup.md) | hourly | Roll up cards by `north_star` × column into brain `north-star-dashboard` + local HTML. |
 | [`north-star-hygiene`](north-star-hygiene.md) | daily | Create missing brain North Star projects for orphan card `north_star` fields; clear high-confidence mis-tags; refresh dashboard. |
