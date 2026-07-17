@@ -391,6 +391,11 @@ write_host_track_refresh_agent_plist() {
     <string>refresh</string>
     <string>--all</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
   <key>StartInterval</key>
   <integer>1200</integer>
   <key>StandardOutPath</key>
