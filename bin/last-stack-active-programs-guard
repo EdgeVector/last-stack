@@ -48,6 +48,7 @@ REFERENCE_SLUG_RE = re.compile(r"\[\[([^]]+)\]\]")
 BACKTICK_SLUG_RE = re.compile(r"`([a-z0-9][a-z0-9-]{2,})`")
 BOLD_SLUG_RE = re.compile(r"\*\*([a-z0-9][a-z0-9-]{2,})\*\*")
 TABLE_SLUG_RE = re.compile(r"^\|\s*([a-z0-9][a-z0-9-]{2,})\s*\|", re.MULTILINE)
+TABLE_SEPARATOR_CELL_RE = re.compile(r"^:?-{3,}:?$")
 ROLLUP_CARDS_RE = re.compile(r"^cards:\s*(.+)$", re.MULTILINE)
 CLOSED_MARKERS = (
     "✅",
@@ -60,6 +61,7 @@ CLOSED_MARKERS = (
 LIVE_COLUMNS = {"todo", "doing"}
 STALE_COLUMNS = {"done"}
 RETIRED_COLUMNS = {"review"}
+BOARD_COLUMNS = LIVE_COLUMNS | STALE_COLUMNS | RETIRED_COLUMNS | {"backlog"}
 NON_PICKUP_BLOCK_STATUSES = {"deferred", "design_first", "needs_human"}
 ACTIVE_SECTION_MARKER_RE = re.compile(
     r"\b(reopened|re-opened|active|live|next move|first todo|in-flight|in flight|todo|doing)\b",
@@ -156,6 +158,42 @@ def bold_slugs(body: str) -> set[str]:
 
 def table_slugs(body: str) -> set[str]:
     return {slug for slug in TABLE_SLUG_RE.findall(body) if slug != "slug"}
+
+
+def table_cells(line: str) -> list[str]:
+    stripped = line.strip()
+    if not stripped.startswith("|") or "|" not in stripped[1:]:
+        return []
+    return [cell.strip() for cell in stripped.strip("|").split("|")]
+
+
+def normalize_table_cell(cell: str) -> str:
+    value = cell.strip()
+    value = re.sub(r"^`(.+)`$", r"\1", value)
+    value = re.sub(r"^\*\*(.+)\*\*$", r"\1", value)
+    value = re.sub(r"^\[\[([^]|]+)(?:\|[^]]+)?\]\]$", r"\1", value)
+    return value.strip().lower()
+
+
+def is_table_separator(cells: list[str]) -> bool:
+    return bool(cells) and all(TABLE_SEPARATOR_CELL_RE.fullmatch(cell.strip()) for cell in cells)
+
+
+def table_column_claims(body: str) -> dict[str, set[str]]:
+    claims: dict[str, set[str]] = {}
+    for line in body.splitlines():
+        cells = table_cells(line)
+        if len(cells) < 2 or is_table_separator(cells):
+            continue
+        slug = normalize_table_cell(cells[0])
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{2,}", slug) or slug == "slug":
+            continue
+        for cell in cells[1:]:
+            value = normalize_table_cell(cell)
+            if value in BOARD_COLUMNS:
+                claims.setdefault(slug, set()).add(value)
+                break
+    return claims
 
 
 def rollup_card_slugs(body: str) -> set[str]:
@@ -430,9 +468,16 @@ def stale_report(
         stale_refs: list[str] = list(proven_programs)
         held_refs: list[str] = []
         unknown_refs: list[str] = []
+        table_mismatches: list[str] = []
+        table_claims = table_column_claims(section)
         for slug in sorted(ref_sources):
             card = board_cards.get(slug)
             column = str(card.get("column")) if card else None
+            claimed_columns = table_claims.get(slug, set())
+            if column and claimed_columns and column not in claimed_columns:
+                table_mismatches.append(
+                    f"{slug} (table {','.join(sorted(claimed_columns))}, board {column})"
+                )
             if column in LIVE_COLUMNS:
                 live_refs.append(f"{slug} ({column})")
             elif column in STALE_COLUMNS:
@@ -451,11 +496,11 @@ def stale_report(
             else:
                 unknown_refs.append(f"{slug} ({column})")
 
-        if not stale_refs and not held_refs:
+        if not stale_refs and not held_refs and not table_mismatches:
             continue
 
         state = "mixed"
-        if not live_refs and not unknown_refs and not held_refs:
+        if stale_refs and not live_refs and not unknown_refs and not held_refs:
             state = "drained"
         elif held_refs and not live_refs and not unknown_refs and not stale_refs:
             state = "held"
@@ -468,7 +513,8 @@ def stale_report(
             part
             for part in [
                 f"cue: {cue}",
-                f"stale: {', '.join(stale_refs)}",
+                f"stale: {', '.join(stale_refs)}" if stale_refs else "",
+                f"table-mismatch: {', '.join(table_mismatches)}" if table_mismatches else "",
                 f"held: {', '.join(held_refs)}" if held_refs else "",
                 f"live: {', '.join(live_refs)}" if live_refs else "",
                 f"unknown: {', '.join(unknown_refs)}" if unknown_refs else "",
