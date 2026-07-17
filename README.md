@@ -2,7 +2,7 @@
 
 **The Last Stack** is a small, curated set of **agent skills** for driving a
 LastDB-backed workflow with an AI coding agent — the agent layer that sits on
-top of [LastDB](https://folddb.com) and its two companion tools:
+top of [LastDB](https://thelastdb.com) and its two companion tools:
 
 - **Brain** — [`brain`](https://github.com/EdgeVector/brain): long-lived notes
   over LastDB (the *why*: decisions, designs, milestones).
