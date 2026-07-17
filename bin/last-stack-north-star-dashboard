@@ -26,8 +26,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 
-COLUMNS = ("backlog", "todo", "doing", "review", "done")
-LIVE_COLUMNS = ("backlog", "todo", "doing", "review")
+COLUMNS = ("backlog", "todo", "doing", "done")
+LIVE_COLUMNS = ("backlog", "todo", "doing")
 DEFAULT_BRAIN_SLUG = "north-star-dashboard"
 DEFAULT_HTML_PATH = Path.home() / "code" / "edgevector" / "north-star-dashboard.html"
 
@@ -801,9 +801,11 @@ def render_markdown(model: dict[str, Any]) -> str:
     lines.append("## Active North Stars (live pressure)")
     lines.append("")
     lines.append(
-        "| North Star | status | terminal | verdict | backlog | todo | doing | review | done | live | %done |"
+        "| North Star | status | terminal | verdict | "
+        + " | ".join(COLUMNS)
+        + " | live | %done |"
     )
-    lines.append("|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|")
+    lines.append("|---|---|---|---|" + "|".join(["---:"] * (len(COLUMNS) + 2)) + "|")
     for s in model["active_sections"]:
         c = s["counts"]
         comp = s.get("completion") or {}
@@ -811,11 +813,11 @@ def render_markdown(model: dict[str, Any]) -> str:
         verdict = comp.get("verdict") or "—"
         lines.append(
             f"| `{s['slug']}` | {s['status']} | `{term}` | {verdict} | "
-            f"{c['backlog']} | {c['todo']} | {c['doing']} | {c['review']} | "
-            f"{c['done']} | {s['live']} | {s['pct_done']}% |"
+            + " | ".join(str(c[col]) for col in COLUMNS)
+            + f" | {s['live']} | {s['pct_done']}% |"
         )
     if not model["active_sections"]:
-        lines.append("| _(none)_ | | | | | | | | | | |")
+        lines.append("| _(none)_ | | | | " + " | ".join([""] * (len(COLUMNS) + 2)) + " |")
     lines.append("")
 
     for s in model["sections"]:
@@ -844,7 +846,7 @@ def render_markdown(model: dict[str, Any]) -> str:
         c = s["counts"]
         lines.append(
             f"- **counts:** backlog={c['backlog']} · todo={c['todo']} · "
-            f"doing={c['doing']} · review={c['review']} · done={c['done']} "
+            f"doing={c['doing']} · done={c['done']} "
             f"· live={s['live']} · total={s['total']} · {s['pct_done']}% done"
         )
         if s["blocked_cards"]:
@@ -988,7 +990,7 @@ def render_html(model: dict[str, Any]) -> str:
             f"</div></div>"
             f'<div class="bar"><span style="width:{s["pct_done"]}%"></span></div>'
             f'<p class="brief">backlog {c["backlog"]} · todo {c["todo"]} · '
-            f'doing {c["doing"]} · review {c["review"]} · done {c["done"]}</p>'
+            f'doing {c["doing"]} · done {c["done"]}</p>'
             f"{mini_html}</section>"
         )
 
@@ -1056,7 +1058,7 @@ h2{{font-size:18px;margin:26px 0 12px}}
 .mini{{border:1px solid var(--line);border-radius:8px;padding:6px 8px;background:#fff;max-width:100%;min-width:140px}}
 .mini span{{display:block;font-size:11px;color:var(--muted)}} .mini b{{font-size:12px;font-family:ui-monospace,Menlo,monospace}}
 .mini.todo{{border-left:4px solid var(--blue)}} .mini.doing{{border-left:4px solid var(--amber)}}
-.mini.review{{border-left:4px solid var(--violet)}} .mini.backlog{{border-left:4px solid var(--slate)}}
+.mini.backlog{{border-left:4px solid var(--slate)}}
 table{{width:100%;border-collapse:separate;border-spacing:0;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-bottom:16px}}
 th,td{{padding:9px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}}
 th{{background:#ebe7df;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#57534e}}
@@ -1073,7 +1075,7 @@ tr:last-child td{{border-bottom:0}} code{{font-family:ui-monospace,Menlo,monospa
 </header>
 <main>
   <div class="topline">{stats}</div>
-  <div class="notice">Live pressure = backlog + todo + doing + review. <code>done</code> is trustworthy only as merge-landed. Unattributed live cards: <b>{len(ua["live"])}</b> / {ua["total"]} total without a north_star.</div>
+  <div class="notice">Live pressure = backlog + todo + doing. <code>done</code> is trustworthy only as merge-landed. Unattributed live cards: <b>{len(ua["live"])}</b> / {ua["total"]} total without a north_star.</div>
   <div class="controls">
     <input id="q" placeholder="Filter North Stars and card slugs…" />
     <button data-filter="all" class="active">All NS</button>
@@ -1087,7 +1089,7 @@ tr:last-child td{{border-bottom:0}} code{{font-family:ui-monospace,Menlo,monospa
     {''.join(f'<th>{c}</th>' for c in COLUMNS)}
     <th>live</th><th>%done</th></tr></thead>
     <tbody>
-      {''.join(rows) if rows else '<tr><td colspan="11" class="muted">No active North Stars with pressure.</td></tr>'}
+      {''.join(rows) if rows else f'<tr><td colspan="{len(COLUMNS) + 4}" class="muted">No active North Stars with pressure.</td></tr>'}
     </tbody>
   </table>
   <h2>North Stars</h2>
