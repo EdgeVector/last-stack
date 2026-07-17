@@ -94,6 +94,10 @@ if ! grep -Fq "Dashboard timeout with a usable prior brain record + HTML snapsho
   echo "expected north-star-rollup exit semantics to keep transient dashboard timeouts out of error" >&2
   exit 1
 fi
+if ! grep -Fq 's/^\*\*Generated:\*\*[[:space:]]*`\([^`]*\)`.*/\1/p' <<<"$north_star_prompt"; then
+  echo "expected north-star-rollup to parse markdown **Generated:** dashboard stamps" >&2
+  exit 1
+fi
 
 if LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" does-not-exist >/dev/null 2>"/tmp/last-stack-routine-read-missing.$$"; then
   echo "expected missing routine to fail" >&2

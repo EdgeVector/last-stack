@@ -90,8 +90,18 @@ Brain record (stable):
    artifact exists or confirmation proves the artifact is empty/corrupt.
 3. **Confirm.** Point-read `brain get north-star-dashboard --type reference`
    (or `brain get north-star-dashboard`) and check the body head contains the
-   current UTC hour's `Generated:` stamp (or today's date). Confirm the HTML
-   file exists and is non-empty.
+   current UTC hour's generated stamp (or today's date). The dashboard markdown
+   currently renders the stamp inline as `**Generated:** \`<ISO>\``; older
+   snapshots may use a plain `Generated: <ISO>` line. Accept both forms. A
+   robust extraction is:
+   ```bash
+   generated=$(
+     printf '%s\n' "$brain_out" |
+       sed -n 's/^Generated:[[:space:]]*//p; s/^\*\*Generated:\*\*[[:space:]]*`\([^`]*\)`.*/\1/p' |
+       head -1
+   )
+   ```
+   Confirm the HTML file exists and is non-empty.
 4. **Summarize** in one short paragraph: active NS count, top live-pressure
    North Stars (slug + live counts), unattributed live card count, HTML path.
    Mention any orphan `north_star` values (cards pointing at missing NS records).
