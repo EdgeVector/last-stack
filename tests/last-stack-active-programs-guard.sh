@@ -35,6 +35,8 @@ cp "$before" "$after"
 
 board="$tmp/board.json"
 proof="$tmp/proof-slugs.txt"
+proof_reports="$tmp/proof-reports"
+mkdir -p "$proof_reports"
 cat > "$board" <<'EOF_BOARD'
 [
   {"slug":"done-card","column":"done"},
@@ -49,6 +51,11 @@ EOF_BOARD
 cat > "$proof" <<'EOF_PROOF'
 gone-card
 EOF_PROOF
+cat > "$proof_reports/north-star-lastdb-file-blobs-on-demand-sync.md" <<'EOF_REPORT'
+PASS-OFFLINE
+
+# North Star proof - north-star-lastdb-file-blobs-on-demand-sync
+EOF_REPORT
 cat > "$after" <<'EOF_STALE'
 ## 1. Drained stale program
 **program-slug:** `[[drained-program]]`
@@ -85,17 +92,23 @@ Next move still says ship **blocked-backlog-card**.
 | slug | column | notes |
 |---|---|---|
 | table-done-card | todo | stale table row |
+
+## Program: proof-complete-program — Completed proof still active
+**program-slug:** `[[north-star-lastdb-file-blobs-on-demand-sync]]`
+Proof passed, but this program is still listed in active-programs.
 EOF_STALE
 cp "$after" "$tmp/stale-before"
 "$ROOT/bin/last-stack-active-programs-guard" stale-report \
   --active "$after" \
   --board "$board" \
-  --proof-slugs "$proof" > "$tmp/stale-report"
+  --proof-slugs "$proof" \
+  --proof-reports "$proof_reports" > "$tmp/stale-report"
 grep -q 'Drained stale program.*drained.*cue: Next move still points.*done-card (done).*gone-card (gone, proof).*suggested fix: archive done row or clear stale next move' "$tmp/stale-report"
 grep -q 'Mixed active program.*mixed.*cue: Next move still includes.*mixed-done-card (done).*live-card (doing).*suggested fix: clear stale refs and advance prose to the live card' "$tmp/stale-report"
 grep -q 'Held program.*held.*cue: Live next move says.*held-card (backlog, needs_human).*suggested fix: mark prose blocked/held or move next move to a ready card' "$tmp/stale-report"
 grep -q 'Retired review lane program.*drained.*cue: Next move still names.*retired-review-card (review, retired).*suggested fix: archive done row or clear stale next move' "$tmp/stale-report"
 grep -q 'Deferred backlog table program.*mixed.*cue: Next move still says.*table-done-card (done).*held: blocked-backlog-card (backlog, deferred).*suggested fix: archive done refs and mark held refs as blocked' "$tmp/stale-report"
+grep -q 'Completed proof still active.*drained.*north-star-lastdb-file-blobs-on-demand-sync (program proof PASS-OFFLINE)' "$tmp/stale-report"
 cmp "$tmp/stale-before" "$after"
 
 cat > "$after" <<'EOF_PROGRAM_STALE'
