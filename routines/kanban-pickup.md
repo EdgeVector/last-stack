@@ -72,6 +72,14 @@ agent workspace. At the beginning of the run, record `run_started_epoch=$(date
   leave a file-only card in `todo`), heartbeat `noop idle=budget-exhausted`,
   print the machine trailer by using the `ROUTINE_RESULT` token followed by
   `outcome=noop detail=idle=budget-exhausted`, and EXIT.
+- Before every foreground watcher, deploy wait, sync drain, or other END STATE
+  proof that can run for minutes, recompute elapsed/remaining budget. Only start
+  or continue that wait when there is enough time left to finish the proof,
+  perform board closeout, append heartbeat, and print the machine trailer. If a
+  claimed card still has no recorded PR/CR URL and remaining time is under
+  **10 minutes**, roll it back to `todo` now and exit with
+  `ok cards=1 worked=<slug> result=rolled-back-todo reason=budget-low`; do not
+  watch external progress until the harness SIGTERM cuts off closeout.
 - If elapsed time reaches **45 minutes** before a PR/CR URL has been recorded,
   stop immediately after rollback/memory note best-effort. Do not launch a final
   multi-command publish block near the harness timeout; the next scheduled fire
@@ -317,7 +325,15 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
    Never edit a shared checkout in place; never stash/reset/clean a shared repo.
 4. **Implement** per the card brief and repo conventions. Honor OUT OF SCOPE.
    Run VERIFY commands from the brief; validate by running the app when the
-   brief requires it, not only unit tests.
+   brief requires it, not only unit tests. Before starting any long-running
+   VERIFY / END STATE proof such as a deploy wait, cloud sync drain, status
+   watch, or log-follow, recompute remaining budget. Do not begin the wait
+   unless it can plausibly finish with at least a 5-minute closeout margin. If
+   the card has no recorded PR/CR URL yet and the margin is gone, move it back
+   to `todo`, heartbeat `ok ... result=rolled-back-todo reason=budget-low`,
+   print the `ROUTINE_RESULT` token followed by
+   `outcome=ok detail=worked=<slug> final_column=todo reason=budget-low`, and
+   EXIT.
 5. **Route review artifacts:**
    ```bash
    route_json="$("$last_stack/bin/last-stack-pr-venue" --json "<repo>" "$target_repo")"
