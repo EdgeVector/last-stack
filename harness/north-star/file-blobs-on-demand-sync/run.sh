@@ -44,8 +44,8 @@ require_file() {
 }
 
 require_pattern() {
-  local path="$1" pattern="$2" label="$3"
-  if ! fold_read "$path" | grep -Eq "$pattern"; then
+  local path="$1" pattern="$2" label="$3" content
+  if ! content="$(fold_read "$path")" || ! grep -Eq "$pattern" <<<"$content"; then
     ns_write_report "$SLUG" FAIL "missing contract in $path: $label" || exit 1
     exit 1
   fi
