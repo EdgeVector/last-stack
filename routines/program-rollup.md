@@ -75,7 +75,9 @@ continue — do not fail the whole run.
    reads", treat that as busy-node backpressure: do not run doctor/init or
    restart anything; report `busy-node skipped rollup` and EXIT so the next
    scheduled pass retries under lower load.
-2. **Split the index into program sections** (top-level `## N. <title>` blocks).
+2. **Split the index into program sections** (top-level `## Program: <slug>`
+   blocks; legacy `## N. <title>` still accepted). Identity is
+   `**program-slug:**`; document order is sort order.
    Process each independently.
 3. **Resolve each program's member cards (brain-owned, self-seeding).**
    - If the section already has a `rollup:start`…`rollup:end` block, parse its
