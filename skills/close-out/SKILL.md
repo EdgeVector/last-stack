@@ -54,6 +54,19 @@ remote, create `lastgit cr create <slug> --head <branch> --base main
 `lastgit cr view`, `lastgit ci status`, and `lastgit cr complete --once`. Do not
 run LastGit CI watchers against the primary brain socket.
 
+Close-out/backstop hooks that check for local commits ahead of the canonical
+remote should resolve the comparison ref through the same helper:
+
+```bash
+compare_ref="$("$last_stack/bin/last-stack-pr-venue" --compare-ref <owner>/<repo> "$WT")"
+git -C "$WT" rev-list --count "$compare_ref"..HEAD
+```
+
+For LastGit-native repos this uses `lastgit/<current-branch>` when present, so a
+local `main` that already matches `lastgit/main` is not reported as unpushed just
+because `origin/main` is a lagging mirror. Non-LastGit repos keep the existing
+upstream/origin comparison behavior.
+
 ```bash
 REPO="$HOME/code/<repo>"
 WT="$HOME/code-worktrees/<short-name>"

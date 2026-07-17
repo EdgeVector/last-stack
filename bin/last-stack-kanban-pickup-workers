@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+# Install/update separate scheduled kanban-pickup workers.
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+ROUTINES_HOME="${ROUTINES_HOME:-$HOME/.routines}"
+REGISTRY_DIR="$ROUTINES_HOME/registry"
+PROMPT_PATH="$ROOT/routines/kanban-pickup.md"
+WORKERS=6
+DRY_RUN=0
+
+usage() {
+  cat <<'USAGE'
+last-stack-kanban-pickup-workers [options]
+
+Writes idempotent routines registry entries for separate kanban-pickup workers.
+The workers all use the same no-spawn prompt, but have distinct ids and locks.
+
+Options:
+  --workers <n>       number of workers to configure, 3..6 (default: 6)
+  --registry-dir <p>  registry directory (default: $ROUTINES_HOME/registry)
+  --prompt-path <p>   kanban-pickup prompt path (default: this checkout)
+  --dry-run           print target paths and contents without writing
+  -h, --help          show this help
+USAGE
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --workers)
+      WORKERS="$2"
+      shift 2
+      ;;
+    --workers=*)
+      WORKERS="${1#*=}"
+      shift
+      ;;
+    --registry-dir)
+      REGISTRY_DIR="$2"
+      shift 2
+      ;;
+    --registry-dir=*)
+      REGISTRY_DIR="${1#*=}"
+      shift
+      ;;
+    --prompt-path)
+      PROMPT_PATH="$2"
+      shift 2
+      ;;
+    --prompt-path=*)
+      PROMPT_PATH="${1#*=}"
+      shift
+      ;;
+    --dry-run)
+      DRY_RUN=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown flag: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+case "$WORKERS" in
+  3|4|5|6) ;;
+  *)
+    echo "workers must be an integer from 3 through 6" >&2
+    exit 2
+    ;;
+esac
+
+if [ ! -r "$PROMPT_PATH" ]; then
+  echo "prompt path is not readable: $PROMPT_PATH" >&2
+  exit 66
+fi
+
+# Preserve the established 3-worker anchors (w1 at :00, w2 at :05, w3 at :10).
+# Additional workers fill the half-steps between them so the fleet drains faster
+# without changing existing worker ids or turning pickup into in-process fan-out.
+worker_offset_seconds() {
+  case "$1" in
+    1) echo 0 ;;
+    2) echo 300 ;;
+    3) echo 600 ;;
+    4) echo 150 ;;
+    5) echo 450 ;;
+    6) echo 750 ;;
+  esac
+}
+
+worker_id() {
+  if [ "$1" -eq 1 ]; then
+    echo "last-stack-fkanban-pickup"
+  else
+    echo "last-stack-fkanban-pickup-w$1"
+  fi
+}
+
+worker_path() {
+  printf '%s/%s.toml\n' "$REGISTRY_DIR" "$(worker_id "$1")"
+}
+
+byminute_for_offset() {
+  local offset="$1"
+  local minute=$((offset / 60))
+  printf '%s,%s,%s,%s' "$minute" "$((minute + 15))" "$((minute + 30))" "$((minute + 45))"
+}
+
+write_worker() {
+  local n="$1"
+  local id path offset second byminute label peer_note
+  id="$(worker_id "$n")"
+  path="$(worker_path "$n")"
+  offset="$(worker_offset_seconds "$n")"
+  second=$((offset % 60))
+  byminute="$(byminute_for_offset "$offset")"
+  label="worker $n"
+  if [ "$n" -eq 1 ]; then
+    peer_note="Parallelism = sibling workers last-stack-fkanban-pickup-w2..-w$WORKERS (same prompt, own locks)."
+  else
+    peer_note="Own single-flight lock so it can run alongside the other pickup workers."
+  fi
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '%s\n' "--- $path"
+  fi
+
+  {
+    printf '# Kanban pickup %s - same no-spawn prompt as the base worker.\n' "$label"
+    printf '# %s\n' "$peer_note"
+    printf '# Staggered slot: +%02d:%02d in each 15-minute cycle. Tom 2026-07-16.\n' "$((offset / 60))" "$second"
+    printf 'id = "%s"\n' "$id"
+    printf 'harness = "codex"\n'
+    printf 'model = "gpt-5.5"\n'
+    printf 'effort = "high"\n'
+    printf 'rrule = "FREQ=HOURLY;BYMINUTE=%s;BYSECOND=%s"\n' "$byminute" "$second"
+    printf 'cwd = "/Users/tomtang/code/edgevector"\n'
+    printf 'status = "active"\n'
+    printf 'timeout_min = 45\n'
+    printf '# Cap: one WORK unit per fire; capacity comes from separate registry workers, not SpawnAgent fan-out.\n'
+    printf 'prompt_path = "%s"\n' "$PROMPT_PATH"
+  } | if [ "$DRY_RUN" -eq 1 ]; then
+    cat
+  else
+    mkdir -p "$REGISTRY_DIR"
+    tmp="$(mktemp "${TMPDIR:-/tmp}/last-stack-pickup-worker.XXXXXX")"
+    cat >"$tmp"
+    if [ -f "$path" ] && cmp -s "$tmp" "$path"; then
+      rm -f "$tmp"
+      printf 'unchanged %s\n' "$path"
+    else
+      mv "$tmp" "$path"
+      printf 'wrote %s\n' "$path"
+    fi
+  fi
+}
+
+n=1
+while [ "$n" -le "$WORKERS" ]; do
+  write_worker "$n"
+  n=$((n + 1))
+done
+
+printf 'configured %s kanban-pickup workers in %s\n' "$WORKERS" "$REGISTRY_DIR"

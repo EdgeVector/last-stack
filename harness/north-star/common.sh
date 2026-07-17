@@ -42,7 +42,7 @@ ns_write_report() {
   report="$dir/${slug}.md"
   {
     printf '%s\n' "$verdict"
-    printf '\n# North Star proof - %s\n\n' "$slug"
+    printf '\n# North Star proof — %s\n\n' "$slug"
     printf 'Generated: %s\n\n' "$(ns_now)"
     printf '%s\n' "$body"
   } >"$report"

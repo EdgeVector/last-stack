@@ -1,7 +1,7 @@
 ---
 name: disk-reclaim
 cadence: hourly
-description: Hourly disk-space reclaim — prune merged/clean worktrees, sweep orphan LastGit deploy/forge scratch, sweep orphan build processes, sweep stale build caches, and purge below the disk floor. The disk-focused subset of worktree-cleanup; does not pull repos or ship code.
+description: Hourly disk-space reclaim — prune merged/clean worktrees, sweep orphan build processes, sweep stale build caches, and purge below the disk floor. The disk-focused subset of worktree-cleanup; does not pull repos or ship code.
 ---
 
 Hourly disk-space reclaim for `<WORKSPACE>`. Runs unattended every hour — make
@@ -11,12 +11,6 @@ was reclaimed and current free space (`df -h`).
 This is the DISK-FOCUSED subset of the `worktree-cleanup` routine: do NOT pull
 repos to latest, do NOT enumerate/archive sessions, do NOT file cards. Just
 reclaim disk safely.
-
-**Known disk hog (2026-07):** unused checkouts under
-`$HOME/.lastgit/{deploy-*,forge-*}/scratch` (and one-shot `scratch-once*`) plus
-stale `ship-runs` / non-live `ship-checkouts` regularly grow to hundreds of GB
-while agent worktrees look modest. **Always** run the LastGit scratch prune
-below — not only when under the disk floor.
 
 ## Automation memory
 If the scheduled prompt includes an `Automation memory:` path (routinesd injects
@@ -96,64 +90,13 @@ continue — do not fail the whole run.
    `cargo sweep`/`go clean`/`node_modules` prune equivalent for your stack).
    Confirm any incremental-build cache cap is in effect; note it if not (don't
    change global env unattended).
-4b. **LastGit scratch prune (ALWAYS — do this every run, not only under the
-   floor).** Deploy/forge pipelines leave full checkouts under
-   `$HOME/.lastgit/…/scratch`; those are the usual multi-hundred-GB hog.
-   **Never delete** cursor files, `*.log`, `canary-state.json`, parent pipeline
-   dirs, or `mirror-clones` / `primary` / forge data dirs themselves — only
-   **unused scratch children** (and unused ship-run/checkout trees).
-
-   **Live-path set (KEEP anything referenced):**
-   ```bash
-   lastgit_home="${LASTGIT_HOME:-$HOME/.lastgit}"
-   live_file="$(mktemp)"
-   {
-     # Open files under lastgit (cwd, scripts, docker bind-mounts)
-     lsof 2>/dev/null | grep -oE "${lastgit_home}/[^ ]+" || true
-     # Docker container mounts (active lambda/container builds)
-     if command -v docker >/dev/null 2>&1; then
-       docker ps -q 2>/dev/null | while IFS= read -r id; do
-         docker inspect -f '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' "$id" 2>/dev/null
-       done | grep -E "^${lastgit_home}/" || true
-     fi
-   } | sort -u > "$live_file"
-   ```
-   A path is **LIVE** if any live entry equals it, is under it, or it is under a
-   live entry. Prefer a cheap prefix check over recursive `lsof +D` (which can
-   hang the unattended window).
-
-   **Scratch roots to scan** (create-none; skip missing):
-   - `$lastgit_home/deploy-*/scratch`
-   - `$lastgit_home/deploy-*/scratch-once*`  (remove the whole once-dir when not live)
-   - `$lastgit_home/forge-*/scratch`
-   - `$lastgit_home/ship-runs/*` (per-repo run trees)
-   - `$lastgit_home/ship-checkouts/*` (only when **not** live; if live, you may
-     strip only nested `.docker-cache` / `target` / `cdk/node_modules` that are
-     themselves not live)
-
-   **Remove rule:** for each child of a scratch root (or each once-dir / ship
-   tree), if it is **not LIVE**, `rm -rf` it. Log `RM <path>` and `KEEP live
-   <path>`. Do **not** require the disk floor — always drain unused scratch so
-   deploy history cannot silently fill the volume between floor breaches.
-
-   **Hard no-touch under `$lastgit_home`:** `primary/`, `mirror-clones/` (except
-   optional nested `target/` / `.docker-cache` **only** when that path is not
-   live and free space is under the floor), forge/deploy **parent** config
-   (`deploy.cursor`, `*.log`, `canary-state.json`, launchd logs). Never wipe the
-   entire `$HOME/.lastgit` tree.
-
-   Record approximate size before/after (`du -sh "$lastgit_home"`) in the report.
 5. **Disk floor.** If free space < `<your floor, e.g. ~30 GB>`, proactively purge
    the largest reclaimable build-cache dir with an **atomic swap** so an active
    build doesn't see a half-deleted tree: `mv target target.PURGE` → recreate an
    empty `target/` → `rm -rf target.PURGE` in the background. Stop active
-   compiles first (kill the compiler processes, NOT the node). Prefer, in order:
-   (1) leftover LastGit scratch still present after step 4b, (2) shared
-   `target/` / sccache / act caches, (3) other regenerable agent caches. Never
-   blow away a shared build cache while you're still above the floor **except**
-   the always-on LastGit scratch prune in 4b.
+   compiles first (kill the compiler processes, NOT the node). Never blow away a
+   shared build cache while you're still above the floor.
 
 ## Output
-Report: GB reclaimed, worktrees pruned (and which were kept and why), LastGit
-scratch entries removed/kept-live, `du -sh $HOME/.lastgit` before/after, final
-free space, and anything left for a human.
+Report: GB reclaimed, worktrees pruned (and which were kept and why), final free
+space, and anything left for a human.

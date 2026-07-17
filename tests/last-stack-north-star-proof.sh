@@ -1,15 +1,39 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$ROOT/bin/last-stack-north-star-proof"
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/ns-proof-test.XXXXXX")"
-cleanup() {
-  rm -rf "$WORK"
-}
-trap cleanup EXIT
+chmod +x "$BIN" "$ROOT/harness/north-star"/*/run.sh
 
-fold="$WORK/edgevector/fold"
+"$BIN" --list | grep -q north-star-coderings
+"$BIN" --list | grep -q north-star-schema-shared-surface-native-resolver
+"$BIN" --list | grep -q north-star-lastdb-file-blobs-on-demand-sync
+
+PROOF_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ns-proof-test.XXXXXX")"
+FILE_BLOB_WORK="$(mktemp -d "${TMPDIR:-/tmp}/ns-file-blob-proof-test.XXXXXX")"
+trap 'rm -rf "$PROOF_DIR" "$FILE_BLOB_WORK"' EXIT
+export NORTH_STAR_PROOF_DIR="$PROOF_DIR"
+export NORTH_STAR_PROOF_MODE=offline
+export EDGEVECTOR_WORKSPACE="${EDGEVECTOR_WORKSPACE:-$HOME/code/edgevector}"
+
+# Always-safe offline proofs when checkouts exist
+if [ -d "$EDGEVECTOR_WORKSPACE/coderings" ]; then
+  "$BIN" --offline north-star-coderings
+  head -1 "$PROOF_DIR/north-star-coderings.md" | grep -qE '^PASS'
+fi
+
+if command -v lastdb >/dev/null 2>&1; then
+  "$BIN" --offline north-star-app-ops-latency
+  head -1 "$PROOF_DIR/north-star-app-ops-latency.md" | grep -qE '^PASS'
+fi
+
+# Structural: all harness scripts exist and bash -n clean
+for s in coderings deliver-slices lastgit metering minimal-node app-ops schema file-blobs-on-demand-sync; do
+  bash -n "$ROOT/harness/north-star/$s/run.sh"
+done
+bash -n "$BIN"
+bash -n "$ROOT/harness/north-star/common.sh"
+
+fold="$FILE_BLOB_WORK/edgevector/fold"
 mkdir -p \
   "$fold/docs/designs" \
   "$fold/fold_db/crates/core/src/sync/engine" \
@@ -48,16 +72,12 @@ fn device_join_metadata_only() {
 }
 EOF
 
-chmod +x "$BIN"
-"$BIN" --list >"$WORK/list.out"
-grep -q '^north-star-lastdb-file-blobs-on-demand-sync$' "$WORK/list.out"
-
-EDGEVECTOR_WORKSPACE="$WORK/edgevector" \
-NORTH_STAR_PROOF_DIR="$WORK/proofs" \
+EDGEVECTOR_WORKSPACE="$FILE_BLOB_WORK/edgevector" \
+NORTH_STAR_PROOF_DIR="$PROOF_DIR" \
 FOLD_FILE_BLOB_PROOF_RUN_CARGO=0 \
-  "$BIN" --offline north-star-lastdb-file-blobs-on-demand-sync >"$WORK/proof.out"
+  "$BIN" --offline north-star-lastdb-file-blobs-on-demand-sync >"$FILE_BLOB_WORK/proof.out"
 
-report="$WORK/proofs/north-star-lastdb-file-blobs-on-demand-sync.md"
+report="$PROOF_DIR/north-star-lastdb-file-blobs-on-demand-sync.md"
 test -f "$report"
 test "$(sed -n '1p' "$report")" = "PASS-OFFLINE"
 grep -q "metadata-only" "$report"
@@ -65,6 +85,6 @@ grep -q "on-demand" "$report"
 grep -q "cache" "$report"
 grep -q "no bulk" "$report"
 grep -q "cargo test -p fold_db" "$report"
-grep -q "PROOF_VERDICT=PASS-OFFLINE" "$WORK/proof.out"
+grep -q "PROOF_VERDICT=PASS-OFFLINE" "$FILE_BLOB_WORK/proof.out"
 
 echo "PASS last-stack-north-star-proof"
