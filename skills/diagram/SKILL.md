@@ -143,6 +143,44 @@ Building blocks:
 - **Alignment guide** — faint dashed vertical/horizontal line tying two rows
   together: `stroke="#504945" stroke-dasharray="2 3"`.
 
+## Shape vocabulary — categorize by shape (Tom, 2026-07-16)
+
+Don't draw everything as rectangles pointing at rectangles. In a multi-element
+diagram, give each CATEGORY of thing its own shape so the semantics read at a
+glance. House taxonomy (adapt the meanings per domain, but stay consistent
+across a figure set, and add a small legend row when 3+ shape classes appear):
+
+| shape | means | how to draw |
+|---|---|---|
+| cylinder | database / store | `<path d="M x y A rx ry 0 0 1 x2 y ... Z"/>` body + `<ellipse>` top lid |
+| cut-corner document | data record / artifact | `<polygon>` with one corner clipped + `<polyline>` fold mark |
+| diamond | decision / human gate | 4-point `<polygon>` |
+| hexagon | sealed / encrypted parcel | 6-point `<polygon>` |
+| circle | party / actor / keyholder | `<circle>` (label inside if short, else beside) |
+| triangle | key / credential | small 3-point `<polygon>` |
+| rectangle | ONLY processes/services and container boundaries | `<rect>` |
+
+Snippets (light palette; swap colours per surface):
+
+```
+<!-- cylinder: body path + top lid -->
+<path d="M 64 106 A 50 9 0 0 1 164 106 L 164 148 A 50 9 0 0 1 64 148 Z"
+      fill="url(#poche)" stroke="#3b4a5a" stroke-width="1"/>
+<ellipse cx="114" cy="106" rx="50" ry="9" fill="#fbfaf7" stroke="#3b4a5a" stroke-width="1"/>
+<!-- document: cut top-right corner + fold mark -->
+<polygon points="192,98 272,98 286,112 286,156 192,156" fill="none" stroke="#3b4a5a" stroke-width="1"/>
+<polyline points="272,98 272,112 286,112" fill="none" stroke="#3b4a5a" stroke-width="1"/>
+<!-- diamond / hexagon / triangle -->
+<polygon points="75,214 175,184 275,214 175,244" fill="none" stroke="#2f6f8f" stroke-width="1"/>
+<polygon points="257,96 373,96 401,136 373,176 257,176 229,136" fill="none" stroke="#3b4a5a" stroke-width="1"/>
+<polygon points="315,32 291,72 339,72" fill="none" stroke="#2f6f8f" stroke-width="1"/>
+```
+
+Poché still marks "has real data" regardless of shape (a poché document = a
+record that exists; an outline-only hexagon = an empty/absent parcel). Worked
+example with legend: `exemem-workspace/docs/corporate/patent_deliver_figures/`
+(FIG 1 carries the legend row).
+
 Render in a host:
 - **Web / React (JSX):** wrap in a tiny `ArchFigure({svg, caption})` that does
   `<div dangerouslySetInnerHTML={{__html: svg}} />` + a `<figcaption>` (see the
@@ -154,6 +192,7 @@ Render in a host:
 
 ## Composition checklist
 - Decide the ONE idea each figure carries; one figure per idea, 2–3 max.
+- Categorize elements by shape (see Shape vocabulary); legend row if 3+ classes.
 - Lay out on a grid; equal margins; consistent box sizes.
 - "Solid/has data" → poché. "Empty/void/new" → outline only (often the accent).
 - Quantities → dimension lines, not prose inside the box.
