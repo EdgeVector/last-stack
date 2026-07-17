@@ -103,10 +103,23 @@ agent workspace. At the beginning of the run, record `run_started_epoch=$(date
   final_column=doing`, print the `ROUTINE_RESULT` token followed by
   `outcome=<ok> detail=worked=<slug> result=in-flight-budget-handoff pr=<url>`,
   and EXIT.
-  Do not start another fetch, rebase, push, validation retry, CI poll, or
-  merge-complete command after the 35-minute publish stop line; `kanban-watch`
-  or a later pickup fire can reconcile a visible in-flight PR/CR, but routinesd
-  cannot recover a killed foreground process cleanly.
+  Do not start another fetch, rebase, push, validation retry, CI poll, manual
+  LastGit status publication, `lastgit cr complete`, or merge-closeout command
+  after the 35-minute publish stop line; `kanban-watch` or a later pickup fire
+  can reconcile a visible in-flight PR/CR, but routinesd cannot recover a killed
+  foreground process cleanly.
+- LastGit missing-CI is a handoff condition, not pickup work. After a LastGit CR
+  is recorded on the card, you may run **one** bounded `lastgit cr complete
+  --once` / `lastgit ci status` check. If that still shows no `ci-required`
+  status, do **not** hand-build or manually publish the status from pickup, do
+  **not** start another watcher, and do **not** keep polling. Ensure a P0
+  `pipeline` / `missing-ci` card exists for the affected CR if one is not already
+  present, then heartbeat
+  `ok cards=1 worked=<slug> result=in-flight-ci-pending pr=<url>
+  final_column=doing`, print the `ROUTINE_RESULT` token followed by
+  `outcome=ok detail=worked=<slug> result=in-flight-ci-pending pr=<url>`, and
+  EXIT. `pipeline-health`, `kanban-watch`, or a later pickup fire owns the
+  missing-CI repair path.
 - Live operational proof watches are bounded too. If the card only needs
   evidence from an external process that is already running (sync catch-up,
   deploy propagation, mirror polling, CI completion, etc.), stop watching when
@@ -371,8 +384,9 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
      `PR: lastgit://…` plus the branch on the card, drive with
      `lastgit cr view` / `ci status` / `cr complete --once`.
    - Before every expensive post-publish operation (fetch/rebase after a
-     non-fast-forward push, another push, CI watch/poll, `lastgit cr complete`,
-     or merge-closeout polling), recompute elapsed/remaining budget from
+     non-fast-forward push, another push, validation retry, CI watch/poll,
+     `lastgit ci status`, `lastgit cr complete`, or merge-closeout polling),
+     recompute elapsed/remaining budget from
      `run_started_epoch` / `run_timeout_min`. If a PR/CR URL and branch are
      already recorded and either elapsed time is **35 minutes or more** or fewer
      than **10 minutes** remain, do not continue the publish/merge loop.

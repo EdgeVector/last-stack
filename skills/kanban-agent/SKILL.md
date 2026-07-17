@@ -338,10 +338,10 @@ to `review`, append a one-line note explaining what's missing, and exit.
      `doing` after a successful move. If the card explicitly requires async
      post-merge validation that cannot finish inside this WORK turn (dev deploy,
      release run, clean-machine install, dogfood), append
-     `BLOCKED: awaiting <specific validation>` and move to `review` instead.
-     That is the handoff contract for `kanban-validate`; do not leave it in
-     `doing`, and do not pretend the END STATE is done. Prod cutovers and public
-     irreversible actions are always human-gated.
+     `BLOCKED: awaiting <specific validation>` and move/leave it in `todo`
+     instead. That is the handoff contract for `kanban-validate`; do not leave it
+     in `doing`, do not use a `review` column, and do not pretend the END STATE is
+     done. Prod cutovers and public irreversible actions are always human-gated.
    - **auto-merge dropped** (`autoMergeRequest` null) while CLEAN/mergeable →
      re-arm: `gh -R <repo> pr merge <n> --auto`. (A merge queue can silently drop it; this
      is a common strand — re-arm and keep watching.)
@@ -370,6 +370,24 @@ to `review`, append a one-line note explaining what's missing, and exit.
    reliable and the PR strands. Stay on the foreground watcher in THIS turn
    through to the terminal state.
 
+   Scheduled routines must still obey their run budget while driving a PR/CR.
+   If the routine prompt has `run_started_epoch` / `run_timeout_min`, recompute
+   elapsed/remaining before every fetch/rebase, push, validation retry, CI poll,
+   `lastgit ci status`, `lastgit cr complete`, or merge-closeout command. Once
+   the routine's published-artifact stop line is reached (for kanban-pickup, 35
+   minutes elapsed or fewer than 10 minutes remain), leave the card in `doing`
+   with the recorded PR/CR URL and exit with the routine's in-flight handoff
+   heartbeat/trailer instead of trying one more LastGit status or completer
+   action.
+
+   LastGit missing-CI is a handoff condition for scheduled pickup, not a prompt
+   to write status records by hand. After a LastGit CR is recorded on the card,
+   pickup may run one bounded `lastgit cr complete --once` / `lastgit ci status`
+   check. If that still shows no `ci-required` status, do not hand-build or
+   manually publish the status from pickup, do not start another watcher, and do
+   not keep polling. Leave the CR/card visible for `pipeline-health`,
+   `kanban-watch`, or a later pickup fire to repair the missing-CI path.
+
    For LastGit-native CRs, drive with LastGit state instead of `gh`/Forgejo:
    - `lastgit cr view "$lastgit_slug" "$cr_id" --json` is the source of truth
      (`state=open|merged|closed`, `head_oid`, `auto_merge`, `require_status`,
@@ -385,7 +403,7 @@ to `review`, append a one-line note explaining what's missing, and exit.
    - If LastGit merge reports a conflict or rejected CAS push, fetch/rebase the
      branch in the worktree, re-run VERIFY, push `HEAD:<branch>` to the `lastgit`
      remote, and re-read the CR/current head. If the conflict requires product
-     judgment, block the card in `review`.
+     judgment, move the card to `backlog` with `block_status=needs_human`.
    - Use the dedicated LastGit watcher/completer daemons from the SOP only on a
      non-primary dev/code node. Never start LastGit CI against the primary brain
      socket, and never smuggle raw CI secrets into logs or records.
@@ -613,7 +631,8 @@ Check the repo's contributor docs (`CONTRIBUTING.md` / `AGENTS.md` /
   `/Users/tomtang/code/edgevector` may only hold child repos. Resolve the card's
   `Repo:` header to a concrete checkout, `cd` there (or use `git -C "$repo"`),
   and use `gh -R <owner>/<repo>` before all Git/GitHub operations. If the repo
-  path is not explicit and resolvable, block the card in `review`.
+  path is not explicit and resolvable, move the card to `backlog` with
+  `block_status=needs_human`.
 - **Avoid zsh's read-only `status` parameter.** Shell snippets and one-liners
   may run under `zsh`; use names like `git_status`, `repo_status`, or `st` for
   temporary command output instead of assigning or declaring `status`.
