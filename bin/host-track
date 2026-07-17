@@ -143,7 +143,7 @@ status_json_for() {
     fi
   fi
 
-  jq -n \
+  jq -c -n \
     --arg app "$app" \
     --arg command "$command_name" \
     --arg gate "$gate" \
