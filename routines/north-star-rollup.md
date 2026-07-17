@@ -38,6 +38,10 @@ the path, note `memory_unwritable=<path>` in the heartbeat and continue.
 - If the board/brain is busy (`service_timeout`, "too many concurrent reads",
   "node did not respond"), report `busy-node skipped north-star-rollup` and EXIT.
   Do not run doctor/init.
+- If the dashboard command times out but the previous brain/dashboard snapshot
+  and HTML file are still present and non-empty, treat that as transient shared
+  backpressure: heartbeat `noop reason=dashboard-timeout-prior-snapshot`
+  and EXIT. Do not turn a one-pass refresh miss into a fleet error.
 - No `sleep`-to-wait; one foreground pass then exit. Wrap long calls in `timeout`
   when available.
 - Prefer the pure script over hand-assembled markdown — the script is the source
@@ -66,13 +70,13 @@ Brain record (stable):
    project --limit 1`). On busy-node errors, EXIT with noop.
 2. **Regenerate.** Run:
    ```bash
-   timeout 120 "$dash_bin" \
+   timeout 300 "$dash_bin" \
      --put-brain \
      --html "$HOME/code/edgevector/north-star-dashboard.html" \
      --stdout none
    ```
    The script:
-   - collects board state through bounded column reads and selected card details
+   - collects board state from the board
    - lists brain projects, keeps North Stars
    - applies known NS aliases (e.g. legacy schema roadmap → shared-surface NS)
    - upserts `north-star-dashboard` and writes the HTML file
