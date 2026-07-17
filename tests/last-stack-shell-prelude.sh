@@ -85,9 +85,9 @@ chmod +x "$fake_home/.local/bin/brain"
 chmod +x "$fake_home/.local/bin/fkanban"
 PATH="/usr/bin:/bin"
 LAST_STACK_WORKSPACE="$workspace"
-HOME="$fake_home"
+LAST_STACK_EDGEVECTOR_ROOT="$tmp/no-edgevector"
 unset LAST_STACK_GLOBAL_PATH
-export PATH LAST_STACK_WORKSPACE HOME
+export PATH LAST_STACK_WORKSPACE LAST_STACK_EDGEVECTOR_ROOT HOME
 . "$ROOT/bin/last-stack-shell-prelude"
 last_stack_require_tools brain
 test "$LAST_STACK_TOOL_BRAIN" = "$fake_home/.local/bin/brain"
