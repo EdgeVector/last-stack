@@ -10,6 +10,7 @@ trap cleanup EXIT
 
 fake_bin="$tmp/bin"
 mkdir -p "$fake_bin"
+jq_dir="$(dirname "$(command -v jq)")"
 
 cat > "$fake_bin/brain" <<'FAKE'
 #!/usr/bin/env bash
@@ -166,6 +167,7 @@ fi
 rm -f "$FAKE_FBRain_ARGS" "$FAKE_FBRain_PUT_BODY" "$FAKE_FBRain_APPEND_BODY"
 mv "$fake_bin/brain" "$fake_bin/fbrain"
 unset FAKE_FBRain_SCHEMA_FAIL
+PATH="$fake_bin:$jq_dir:/usr/bin:/bin:/usr/sbin:/sbin"
 "$ROOT/bin/last-stack-brain-append-heartbeat" --line "fbrain-heartbeat"
 grep -q -- 'get routine-heartbeats --type reference --json' "$FAKE_FBRain_ARGS"
 printf 'fbrain-heartbeat\nold-one\nold-two\n' > "$expected"
