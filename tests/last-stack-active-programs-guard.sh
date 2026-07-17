@@ -39,7 +39,8 @@ cat > "$board" <<'EOF_BOARD'
 [
   {"slug":"done-card","column":"done"},
   {"slug":"live-card","column":"doing"},
-  {"slug":"mixed-done-card","column":"done"}
+  {"slug":"mixed-done-card","column":"done"},
+  {"slug":"held-card","column":"backlog","block_status":"needs_human","block_reason":"host-side cutover"}
 ]
 EOF_BOARD
 cat > "$proof" <<'EOF_PROOF'
@@ -61,14 +62,23 @@ Next move still includes `mixed-done-card`, but `live-card` is doing.
 **Status (auto):** 1/2 landed · in flight: live-card (doing)
 cards: mixed-done-card, live-card
 <!-- rollup:end -->
+
+## 3. Held program
+**program-slug:** `[[held-program]]`
+Live next move says to pick up `held-card` once the host-side cutover is ready.
+<!-- rollup:start | auto-maintained hourly by program-rollup — edit the prose above, NOT this block | updated 2026-07-10T00:00Z -->
+**Status (auto):** 0/1 landed
+cards: held-card
+<!-- rollup:end -->
 EOF_STALE
 cp "$after" "$tmp/stale-before"
 "$ROOT/bin/last-stack-active-programs-guard" stale-report \
   --active "$after" \
   --board "$board" \
   --proof-slugs "$proof" > "$tmp/stale-report"
-grep -q 'Drained stale program.*drained.*done-card (done).*gone-card (gone, proof)' "$tmp/stale-report"
-grep -q 'Mixed active program.*mixed.*mixed-done-card (done).*live-card (doing)' "$tmp/stale-report"
+grep -q 'Drained stale program.*drained.*cue: Next move still points.*done-card (done).*gone-card (gone, proof).*suggested fix: archive done row or clear stale next move' "$tmp/stale-report"
+grep -q 'Mixed active program.*mixed.*cue: Next move still includes.*mixed-done-card (done).*live-card (doing).*suggested fix: clear stale refs and advance prose to the live card' "$tmp/stale-report"
+grep -q 'Held program.*held.*cue: Live next move says.*held-card (backlog, needs_human).*suggested fix: mark prose blocked/held or move next move to a ready card' "$tmp/stale-report"
 cmp "$tmp/stale-before" "$after"
 
 head -n 7 "$before" > "$after"
