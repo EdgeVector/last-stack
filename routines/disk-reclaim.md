@@ -97,6 +97,14 @@ continue — do not fail the whole run.
    compiles first (kill the compiler processes, NOT the node). Never blow away a
    shared build cache while you're still above the floor.
 
+   Keep this step bounded. After the swap, the routine has already made the live
+   path safe; wait at most two minutes for the background delete to finish, then
+   report `purge_continuing=<path>` and heartbeat/finish normally if the old
+   `*.PURGE*` directory still exists. Do **not** re-enter a large `rm -rf` in the
+   foreground or start another purge after the final ten-minute budget window.
+   A later disk-reclaim run may resume deleting the stale `*.PURGE*` directory
+   using the same bounded-wait rule.
+
 ## Output
 Report: GB reclaimed, worktrees pruned (and which were kept and why), final free
 space, and anything left for a human.
