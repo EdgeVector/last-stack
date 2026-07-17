@@ -20,11 +20,15 @@ git -C "$repo" branch -M main
 initial_head="$(git -C "$repo" rev-parse HEAD)"
 git -C "$repo" update-ref refs/remotes/origin/main "$initial_head"
 
-test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/last-stack "$repo")" = "github"
+# Defaults without marker (2026-07-17): most EdgeVector repos are LastGit-native;
+# GitHub copies are read-only mirrors. Do not default public repos to github.
+test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/last-stack "$repo")" = "lastgit"
 test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/fold "$repo")" = "forgejo"
-# exemem-infra is GitHub-primary since 2026-07-13 (decision-2026-07-13-exemem-infra-github-primary);
-# its forge copy is retired + archived, so it must NOT route to the forge.
-test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/exemem-infra "$repo")" = "github"
+test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/lastgit "$repo")" = "forgejo"
+# exemem-infra cut over to LastGit (GitHub is read-only mirror / deploy artifact only).
+test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/exemem-infra "$repo")" = "lastgit"
+# True GitHub primaries still default to github.
+test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/Keepside_Desktop "$repo")" = "github"
 test "$("$ROOT/bin/last-stack-pr-venue" --compare-ref EdgeVector/last-stack "$repo")" = "origin/main"
 
 git -C "$repo" config laststack.pr-venue lastgit

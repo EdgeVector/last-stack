@@ -46,6 +46,11 @@ continue — do not fail the whole run.
 - Read the `kanban-grooming` skill and your board skill / CLI contract before
   acting. Use `kanban-grooming` for dependency-stub reconciliation, stale
   generated blockers, review/doing lane hygiene, and pickup-ready counts.
+- **Deep human-gate classification** (REAL_HUMAN / NOT_A_BLOCKER /
+  NEEDS_RECOMMENDATION + investigation cards + `human-gate-audit-latest`) is
+  owned by the sibling routine **`human-gate-audit`**, not this pass. You may
+  still clear *obvious* false gates when evidence is clear; do not re-implement
+  the full three-bucket audit here.
 - Drive the board CLI from `<board repo dir>` with `<board CLI> <cmd>`.
 - First: run a socket-backed narrow read, for example
   `<board CLI> list --column todo --json`, and parse it from a file. If the read

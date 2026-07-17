@@ -13,6 +13,19 @@ fail() {
   exit 1
 }
 
+kanban_registry="$(jq -c '.apps[] | select(.app == "kanban")' "$ROOT/config/host-track/apps.json")"
+printf '%s\n' "$kanban_registry" | jq -e '
+  .kind == "B checkout-shim" and
+  .gate == "lastgit" and
+  .gate_main == "lastdb:///fkanban#main" and
+  .gate_remote == "lastgit" and
+  .gate_ref == "refs/heads/main" and
+  .host_track == "$HOME/.host-track/fkanban" and
+  .refresh == "$HOME/.local/bin/kanban-host-track-refresh"
+' >/dev/null || fail "default kanban registry entry is not a real host-track target"
+printf '%s\n' "$kanban_registry" | jq -e '.notes | test("Placeholder") | not' >/dev/null \
+  || fail "default kanban registry entry still looks like a placeholder"
+
 export HOME="$tmp/home"
 mkdir -p "$HOME/.local/bin"
 
