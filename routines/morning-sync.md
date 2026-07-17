@@ -41,9 +41,12 @@ Lead with a one-line restatement of the goal / top objective, then:
   launches (irreversible, outward), shipping NEW capability to END USERS,
   brand/naming/tagline, business/legal, a genuinely-novel architecture fork. Plus
   `open-decisions` escalations + the driving index's `needs-human` /
-  `blocked-needs-human` lines. Dedup by slug. Do NOT list dev-enable / security-
-  review / design-first cards here — those are being driven. **If §⚠️ is empty,
-  say so — that's the goal.**
+  `blocked-needs-human` lines. Prefer brain **`human-gate-audit-latest`**
+  (written by routine `human-gate-audit`) as the pre-classified source:
+  use its **REAL_HUMAN** and **Waiting on recommendation** sections; ignore
+  holds already marked NOT_A_BLOCKER / cleared. Dedup by slug. Do NOT list
+  dev-enable / security-review / design-first cards here — those are being
+  driven. **If §⚠️ is empty, say so — that's the goal.**
 - **§🧩 Needs scoping** — active programs with no card whose next move is concrete
   but un-carded.
 - **§🩺 Routine health** — from your scheduler's last-run timestamps + the
@@ -66,7 +69,8 @@ Lead with a one-line restatement of the goal / top objective, then:
 - Snapshot with bounded reads: read `todo`, `doing`, and `review` as sequential
   `<board CLI> list --column <column> --json` calls; use `show` only for the one
   card whose full body you need. Read the brain's goal note, driving index,
-  `open-decisions`, and `routine-heartbeats` as targeted records, one at a time.
+  `open-decisions`, `routine-heartbeats`, and **`human-gate-audit-latest`**
+  (if present) as targeted records, one at a time.
 - Also inspect your scheduler/session index if available. For Codex Desktop this
   is typically `$CODEX_HOME/session_index.jsonl` or
   `$HOME/.codex/session_index.jsonl`; compare `last-stack kanban-pickup` against
