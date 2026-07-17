@@ -84,17 +84,6 @@ agent workspace. At the beginning of the run, record `run_started_epoch=$(date
   stop immediately after rollback/memory note best-effort. Do not launch a final
   multi-command publish block near the harness timeout; the next scheduled fire
   can reclaim cleanly.
-- Live operational proof watches are bounded too. If the card only needs
-  evidence from an external process that is already running (sync catch-up,
-  deploy propagation, mirror polling, CI completion, etc.), stop watching when
-  fewer than **10 minutes** remain. If the END STATE is proven, close out the
-  card immediately. If it is still pending, append the observed state to the
-  card, move/leave it in `todo` as appropriate, heartbeat
-  `ok cards=1 worked=<slug> result=rolled-back-todo reason=watch-budget-reserved`
-  (or the proven closeout result), print the machine trailer by using the
-  `ROUTINE_RESULT` token followed by `outcome=ok detail=worked=<slug>
-  reason=watch-budget-reserved`, and EXIT. Never consume the final budget
-  reserve with a watch loop and then start board closeout at the harness edge.
 - If a PR/CR URL has been recorded and elapsed time reaches **35 minutes** (or
   fewer than **10 minutes** remain), stop immediately after one best-effort card
   update / memory note. Leave the card in `doing` with the recorded `pr_url` and
@@ -107,6 +96,18 @@ agent workspace. At the beginning of the run, record `run_started_epoch=$(date
   merge-complete command after the 35-minute publish stop line; `kanban-watch`
   or a later pickup fire can reconcile a visible in-flight PR/CR, but routinesd
   cannot recover a killed foreground process cleanly.
+- LastGit missing-CI is a handoff condition, not pickup work. After a LastGit CR
+  is recorded on the card, you may run **one** bounded `lastgit ci watch` or
+  `lastgit cr complete --once`/`lastgit ci status` check. If that still shows no
+  `ci-required` status, do **not** hand-build or manually publish the status from
+  pickup, do **not** start another watcher, and do **not** keep polling. Ensure a
+  P0 `pipeline` / `missing-ci` card exists for the affected CR if one is not
+  already present, then heartbeat
+  `ok cards=1 worked=<slug> result=in-flight-ci-pending pr=<url>
+  final_column=doing`, print the `ROUTINE_RESULT` token followed by
+  `outcome=ok detail=worked=<slug> result=in-flight-ci-pending pr=<url>`, and
+  EXIT. `pipeline-health`, `kanban-watch`, or a later pickup fire owns the
+  missing-CI repair path.
 - Live operational proof watches are bounded too. If the card only needs
   evidence from an external process that is already running (sync catch-up,
   deploy propagation, mirror polling, CI completion, etc.), stop watching when
