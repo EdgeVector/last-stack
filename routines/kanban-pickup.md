@@ -84,17 +84,6 @@ agent workspace. At the beginning of the run, record `run_started_epoch=$(date
   stop immediately after rollback/memory note best-effort. Do not launch a final
   multi-command publish block near the harness timeout; the next scheduled fire
   can reclaim cleanly.
-- Live operational proof watches are bounded too. If the card only needs
-  evidence from an external process that is already running (sync catch-up,
-  deploy propagation, mirror polling, CI completion, etc.), stop watching when
-  fewer than **10 minutes** remain. If the END STATE is proven, close out the
-  card immediately. If it is still pending, append the observed state to the
-  card, move/leave it in `todo` as appropriate, heartbeat
-  `ok cards=1 worked=<slug> result=rolled-back-todo reason=watch-budget-reserved`
-  (or the proven closeout result), print the machine trailer by using the
-  `ROUTINE_RESULT` token followed by `outcome=ok detail=worked=<slug>
-  reason=watch-budget-reserved`, and EXIT. Never consume the final budget
-  reserve with a watch loop and then start board closeout at the harness edge.
 - If a PR/CR URL has been recorded and elapsed time reaches **35 minutes** (or
   fewer than **10 minutes** remain), stop immediately after one best-effort card
   update / memory note. Leave the card in `doing` with the recorded `pr_url` and
