@@ -1,0 +1,61 @@
+{
+  "apps": [
+    {
+      "app": "lastgit",
+      "kind": "A compile",
+      "command": "lastgit",
+      "gate": "forgejo",
+      "gate_main": "http://localhost:3300/EdgeVector/lastgit.git#main",
+      "gate_remote": "origin",
+      "gate_ref": "refs/heads/main",
+      "host_track": "$HOME/.lastgit/host-checkout/lastgit",
+      "refresh": "$HOME/.lastgit/host-checkout/lastgit/.lastgit/refresh-host.sh",
+      "notes": "Delegates to LastGit's host refresh script."
+    },
+    {
+      "app": "last-stack",
+      "kind": "C skill-pack",
+      "command": "host-track",
+      "gate": "lastgit",
+      "gate_main": "lastdb:///last-stack#main",
+      "gate_remote": "lastgit",
+      "gate_ref": "refs/heads/main",
+      "host_track": "$HOME/.last-stack",
+      "refresh_mode": "last-stack-self-upgrade",
+      "notes": "Refreshes the canonical skill-pack checkout and reruns setup."
+    },
+    {
+      "app": "brain",
+      "kind": "B checkout-shim",
+      "command": "brain",
+      "gate": "placeholder",
+      "gate_main": "",
+      "gate_remote": "",
+      "gate_ref": "",
+      "host_track": "$HOME/code/edgevector/brain",
+      "notes": "Placeholder until brain moves from workspace symlink to host track."
+    },
+    {
+      "app": "situations",
+      "kind": "B checkout-shim",
+      "command": "situations",
+      "gate": "placeholder",
+      "gate_main": "",
+      "gate_remote": "",
+      "gate_ref": "",
+      "host_track": "$HOME/code/edgevector/situations",
+      "notes": "Placeholder until situations moves from workspace symlink to host track."
+    },
+    {
+      "app": "kanban",
+      "kind": "B checkout-shim",
+      "command": "kanban",
+      "gate": "placeholder",
+      "gate_main": "",
+      "gate_remote": "",
+      "gate_ref": "",
+      "host_track": "$HOME/code/edgevector/fkanban",
+      "notes": "Placeholder until kanban moves from workspace symlink to host track."
+    }
+  ]
+}

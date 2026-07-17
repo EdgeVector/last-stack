@@ -125,6 +125,13 @@ tags: [north-star, <product tags>]
 ## End state
 <5–8 bullets: product done, not libraries. Pull from card DONE-WHEN / design.>
 
+## Terminal verification
+- **Card:** `<terminal-card-slug>`
+- **Shape:** `pr` runnable harness | `validation` DONE-WHEN
+- **Done means:** <one line>
+(See [[sop-north-star-terminal-verification]]. If no card exists yet, leave
+`Card: TBD` and let program-driver file one.)
+
 ## Completion proof
 - Landed (board done): <list>
 - Open (live): <list>

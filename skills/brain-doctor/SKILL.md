@@ -42,9 +42,38 @@ stashes. It prints the exact recommended recovery command for a human (or a
 supervised session) to run. That honors the standing rule: **never kill the
 brain unattended; surface, don't act.**
 
+## Situations notices FIRST (before framing an incident)
+
+Before treating flapping / timeouts / busy-node as a new outage, check the
+non-blocking agent-impact feed:
+
+```bash
+situations notices --since 1h
+# especially: --system lastdbd  or  --system last-stack
+```
+
+`brain-doctor.sh` also prints a **0. Recent Situations notices** section when
+the CLI is available. A matching notice (LastDB upgrade, Last Stack upgrade,
+cutover) means: **expected fallout**, not a new P0 — wait out the notice window
+before kill/restart recommendations.
+
+## Request ops — name the load (before "wedged")
+
+Slow ≠ dead. Before framing a wedge, run:
+
+```bash
+lastdb status    # RSS/CPU/QoS + short request-ops summary
+lastdb ops       # worst clients / kinds / schemas by total time and count
+```
+
+This is Mini's in-process per-request ranking (`status.request_ops`). Clients
+self-identify via `X-LastDB-Client`. Full playbook:
+`brain get sop-lastdb-request-ops-telemetry --type sop`. Use it to fix or
+throttle the top client — do **not** restart primary `lastdbd` for load alone.
+
 ## Reading the output / acting on it
 
-The script checks, in order: (1) socket + folddb_server PID + uptime/CPU,
+The script checks, in order: (0) recent Situations notices, (1) socket + folddb_server PID + uptime/CPU,
 (2) processes holding the socket (the do-not-kill signal — live client = real
 brain), (3) responsiveness probe over the socket, (4) duplicate supervisors,
 (5) vestigial port breadcrumb, (6) orphan folddb procs, (7) disk. Then a verdict.
