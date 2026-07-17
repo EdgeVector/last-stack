@@ -1,6 +1,6 @@
 ---
 name: kanban-grooming
-description: Use when auditing or grooming Kanban board health: dependency-stub reconciliation, stale generated blockers, malformed Repo/Base/Kind headers, stale review/doing placement, superseded trackers, pickup-ready counts, or unblock accounting. Triage-only; never ships feature code.
+description: Use when auditing or grooming Kanban board health: dependency-stub reconciliation, stale generated blockers, malformed Repo/Base/Kind headers, stale review/doing placement, superseded trackers, pickup-ready counts, unblock accounting, or human-gate classification. For the full three-bucket needs_human audit (REAL_HUMAN / NOT_A_BLOCKER / NEEDS_RECOMMENDATION), prefer routine human-gate-audit. Triage-only; never ships feature code.
 ---
 
 ## NO REVIEW COLUMN (Tom 2026-07-16 — won't-undo)
@@ -93,3 +93,18 @@ jq '[.[] | select(.column=="todo" and (.blocked|not)
   and (.kind=="pr" or .kind=="validation")
   and ((.repo//"")!="") and ((.base//"")!=""))] | length' /tmp/kanban-active.json
 ```
+
+## Human-gate three-bucket model (Tom 2026-07-17)
+
+Deep classification is owned by routine **`human-gate-audit`** (daily). Use the
+same buckets when grooming touches a human hold:
+
+| Bucket | Meaning | Action |
+|--------|---------|--------|
+| **REAL_HUMAN** | pen / vendor / freeze / Tom-only secret / irreversible prod | keep gate; crisp `block_reason` |
+| **NOT_A_BLOCKER** | agent-completable (incl. host ops with permission) | clear gate; promote if pickup-ready |
+| **NEEDS_RECOMMENDATION** | blocked on missing evidence, not pen | measure now **or** file investigation child that ends with a RECOMMENDATION for Tom |
+
+Digest: brain **`human-gate-audit-latest`**. Morning-sync §⚠️ should prefer that
+record over raw `needs_human` labels. Never leave `needs_human` in todo/doing —
+demote to backlog first.

@@ -132,6 +132,7 @@ the normal routine memory under `~/.routines/memory/last-stack-feature-prove/`.
 | [`kanban-watch`](kanban-watch.md) | every 10–20 min | RECONCILE the board; advance merged PRs, un-stick the strays. |
 | [`kanban-validate`](kanban-validate.md) | hourly, offset from watch | VALIDATE one merged card's post-merge END STATE; move it to `done` on pass or `review` with proof/fix/blocker on fail. |
 | [`groom-board`](groom-board.md) | daily | Promote ready `backlog`→`todo`, break up epics, prune junk. |
+| [`human-gate-audit`](human-gate-audit.md) | daily | Classify every `needs_human`/`design_first`/`deferred` hold into REAL_HUMAN / NOT_A_BLOCKER / NEEDS_RECOMMENDATION; clear false gates; file investigation cards; write `human-gate-audit-latest` for morning-sync. |
 | [`program-driver`](program-driver.md) | hourly | Promote each program's next DAG card into `todo` (includes Feature Ship Loop frontier budget). |
 | [`feature-prove`](feature-prove.md) | hourly | Product-proof stage for `feature-owner` cards; PASS file or fix-forward / open-decisions. |
 | [`program-rollup`](program-rollup.md) | hourly | Mirror the board into the brain's driving index (auto-status block). |
