@@ -178,6 +178,12 @@ work must stay unmarked).
 
 ## Rate-limit guard (check FIRST)
 - Do NOT start if your agent account is rate-limited.
+- If an active Situation, preflight, or harness notice says this automation is
+  fenced by a Codex usage-limit / rate-limit **before any card is claimed**, do
+  no work, do not claim a card, heartbeat `noop rate-limit ... no_card_claimed`,
+  print the final machine trailer using the `ROUTINE_RESULT` token followed by
+  `outcome=noop detail=rate-limit active_situation=<slug> no_card_claimed`, and
+  EXIT. This is an intentional external blocker heartbeat, not a routine error.
 - If at ANY point you hit a rate-limit / 429 / "limit reached", STOP — do NOT
   sleep-and-retry. If you already moved a card to `doing`, move it back to
   `todo`, print "at rate limit, not starting", and EXIT.
@@ -595,8 +601,10 @@ any, final column (`done` / human-gated `backlog` / rolled-back `todo`); or idle
 >   A pre-claim board-write rejection such as `max_outbox_entries` is `noop`
 >   because no card was claimed and retrying immediately only re-escalates the
 >   same shared backpressure.
-> - `error` — rate-limit abort, non-backpressure claim failure with no recovery,
->   harness fault.
+>   A pre-claim active Situation / harness fence for Codex usage-limit is also
+>   `noop rate-limit ... no_card_claimed`; it should not file routine-error P0s.
+> - `error` — rate-limit after a card was claimed and could not be safely rolled
+>   back, non-backpressure claim failure with no recovery, harness fault.
 > - `ok` — you executed a unit (pickup or idle): include
 >   `cards=<n> worked=<slug[,slug…]> result=merged|human-blocked|rolled-back-todo|in-flight-budget-handoff`
 >   plus `pr=<url>` when opened; for idle add `idle=<kind>`. Example:

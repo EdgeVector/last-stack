@@ -46,6 +46,13 @@ case "$prompt" in
     exit 1
     ;;
 esac
+case "$prompt" in
+  *"pre-claim active Situation / harness fence for Codex usage-limit"*"noop rate-limit ... no_card_claimed"*) ;;
+  *)
+    echo "expected kanban-pickup to classify pre-claim harness rate-limit fences as noop" >&2
+    exit 1
+    ;;
+esac
 
 dogfood_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" dogfood-rotate)"
 case "$dogfood_prompt" in
