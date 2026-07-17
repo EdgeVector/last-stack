@@ -84,7 +84,6 @@ chmod +x "$workspace/fkanban/bin/fkanban"
 chmod +x "$fake_home/.local/bin/brain"
 chmod +x "$fake_home/.local/bin/fkanban"
 PATH="/usr/bin:/bin"
-HOME="$fake_home"
 LAST_STACK_WORKSPACE="$workspace"
 HOME="$fake_home"
 unset LAST_STACK_GLOBAL_PATH
