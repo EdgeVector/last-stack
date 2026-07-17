@@ -50,12 +50,13 @@
       "app": "kanban",
       "kind": "B checkout-shim",
       "command": "kanban",
-      "gate": "placeholder",
-      "gate_main": "",
-      "gate_remote": "",
-      "gate_ref": "",
-      "host_track": "$HOME/code/edgevector/fkanban",
-      "notes": "Placeholder until kanban moves from workspace symlink to host track."
+      "gate": "lastgit",
+      "gate_main": "lastdb:///fkanban#main",
+      "gate_remote": "lastgit",
+      "gate_ref": "refs/heads/main",
+      "host_track": "$HOME/.host-track/fkanban",
+      "refresh": "$HOME/.local/bin/kanban-host-track-refresh",
+      "notes": "Kind B host-track checkout; PATH shims point into ~/.host-track/fkanban/bin."
     }
   ]
 }
