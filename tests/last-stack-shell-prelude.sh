@@ -71,9 +71,11 @@ mkdir -p "$workspace/brain/bin"
 printf '#!/bin/sh\nexit 0\n' > "$workspace/brain/bin/brain"
 chmod +x "$workspace/brain/bin/brain"
 PATH="/usr/bin:/bin"
+HOME="$tmp/home"
+mkdir -p "$HOME"
 LAST_STACK_WORKSPACE="$workspace"
 unset LAST_STACK_GLOBAL_PATH
-export PATH LAST_STACK_WORKSPACE
+export PATH HOME LAST_STACK_WORKSPACE
 . "$ROOT/bin/last-stack-shell-prelude"
 last_stack_require_tools brain
 test "$LAST_STACK_TOOL_BRAIN" = "$workspace/brain/bin/brain"
