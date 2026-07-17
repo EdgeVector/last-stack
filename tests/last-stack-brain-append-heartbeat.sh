@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 tmp="$(mktemp -d)"
+jq_dir="$(dirname "$(command -v jq)")"
 cleanup() {
   rm -rf "$tmp"
 }
@@ -10,7 +11,6 @@ trap cleanup EXIT
 
 fake_bin="$tmp/bin"
 mkdir -p "$fake_bin"
-jq_dir="$(dirname "$(command -v jq)")"
 
 cat > "$fake_bin/brain" <<'FAKE'
 #!/usr/bin/env bash

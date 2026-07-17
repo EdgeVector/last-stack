@@ -60,7 +60,7 @@ consent-token model*.
    minting DevCerts, and every published-app row that names the old
    `owner_dev_pubkey` becomes orphaned (those apps can no longer be
    re-published or have their schemas extended by this machine).
-4. **Don't touch the primary fold_db_node daemon (the folddb_server brain)** — this skill writes
+4. **Don't touch the primary LastDB brain (the legacy `folddb_server` binary name may appear)** — this skill writes
    to DynamoDB and runs `folddb-dev` CLI verbs; it does NOT start a dev
    session and does NOT need the homebrew daemon.
 

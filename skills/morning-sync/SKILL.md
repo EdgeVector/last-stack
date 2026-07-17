@@ -45,9 +45,9 @@ Two modes. Pick by how you were invoked:
 
 ## Setup (both modes)
 
-- The board + brain live on the **local folddb node**, reached over the Unix
-  socket `~/.folddb/data/folddb.sock`. NEVER kill, restart, or touch the primary
-  folddb_server brain or any `folddb_server` you didn't start. If the node is
+- The board + brain live on the **local LastDB node**, reached over the Unix
+  socket `~/.lastdb/data/folddb.sock`. NEVER kill, restart, or touch the primary
+  LastDB brain or any legacy `folddb_server` process you didn't start. If the node is
   unreachable, STOP and report — do not restart anything.
 - kanban CLI: prefer the shim, but the Bash tool is sandboxed (stripped `$PATH`),
   so **prepend the full PATH every call** and run from the repo if the shim is
@@ -313,7 +313,7 @@ stands up, `todo` is freshly stocked and the pipeline takes over.
 
 ## Guardrails (EdgeVector standing rules — apply to WORK writes)
 
-- **Never** kill/restart the primary folddb_server brain or any folddb_server. The board lives there.
+- **Never** kill/restart the primary LastDB brain or any legacy `folddb_server` process. The board lives there.
 - **Dev, not prod.** Any card you promote/file that touches a prod surface says
   "dev-first, one clean cutover" in its brief; the prod cutover/flip is always a
   separate, still-gated, human step — record it, never auto-promote it.

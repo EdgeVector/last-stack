@@ -153,7 +153,7 @@ title + card slug), refuted/dropped findings, and the new checkpoint sha.
 
 ## Notes
 - Read `origin/main` truth: `git fetch origin -q` first (scan.sh does this).
-- Don't touch the primary folddb_server brain (Tom's brain) or push anything; this is review-only.
+- Don't touch the primary LastDB brain (Tom's brain) or push anything; this is review-only.
 - Scope the fleet to the sprint: a small fix sprint → 3 reviewers, single-vote
   verify; a large/crit one (the tcp-loopback closure) → 5–6 reviewers, 2–3 vote
   adversarial verify.

@@ -87,8 +87,9 @@ one. Don't double-fix — if you already fixed the PR, trash the redundant task.
   surface it, don't do it unattended.
 - The kanban server **auto-pulls the oldest backlog task** when an in-progress
   slot frees. Trashing a fold task can silently start another — account for it.
-- Orphaned `folddb_server` (deleted worktree, ppid=1) and `kanban hooks ingest`
-  procs leak and are safe to sweep — but **never** the primary folddb_server brain.
+- Orphaned legacy `folddb_server` processes (deleted worktree, ppid=1) and
+  `kanban hooks ingest` procs leak and are safe to sweep — but **never** the
+  primary LastDB brain.
 
 ## Merge mechanics
 
@@ -108,9 +109,9 @@ The stop condition is *observing the feature work in the running app*. Pick the
 exercise path you captured in Phase 1:
 
 - **Rust service / lambda / node:** build the merged code, run it (ephemeral
-  node — never the primary folddb_server brain), hit the real endpoint/command, assert the
+  node — never the primary LastDB brain), hit the real endpoint/command, assert the
   observable result. The `app-identity-dogfood` skill is a worked example of
-  spinning an ephemeral folddb-dev node and verifying via `/v1/snapshot`.
+  spinning an ephemeral LastDB dev node (`folddb-dev` command) and verifying via `/v1/snapshot`.
 - **CLI:** run the command on a real input, check stdout/exit.
 - **Web/UI:** use the `browse` / `verify` skills to drive the page and observe.
 - **Library:** exercise the public API in a tiny throwaway harness, not just unit

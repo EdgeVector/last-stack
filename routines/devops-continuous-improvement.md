@@ -55,7 +55,7 @@ below.
    ```
    These reads are the health check. Modern LastDB/Brain/Kanban installs may
    intentionally serve only over the Unix socket
-   `~/.folddb/data/folddb.sock`; the retired TCP endpoint
+   `~/.lastdb/data/folddb.sock`; the retired TCP endpoint
    `http://127.0.0.1:9001` being refused is not an outage.
 5. Do not use `brain doctor`, `kanban doctor`, or `kanban init` as routine
    health checks. Some control-plane verbs still exercise TCP-only routes and

@@ -3,7 +3,7 @@ name: lastdb-smoke-test
 description: |
   Run the recurring, unattended LastDB local real-data smoke test — a fast
   (~minutes) regression check that current `origin/main` still works against
-  a fresh copy-on-write copy of Tom's REAL folddb data, on an isolated port,
+  a fresh copy-on-write copy of Tom's REAL LastDB data, on an isolated port,
   never touching the primary brain. Use this whenever asked to "run the
   lastdb smoke test", "do a lastdb local smoke test", "smoke-test lastdb
   main", "check if lastdb main still works", or when the scheduled
@@ -47,7 +47,7 @@ stale copy here would silently regress the procedure.
    only describes it in your final summary, without filing it, has
    accomplished nothing — the finding evaporates with the session.
 5. Tear down cleanly (stop the preview server, remove any rebuild worktree,
-   confirm the primary brain socket `~/.folddb/data/folddb.sock` is still
+   confirm the primary brain socket `~/.lastdb/data/folddb.sock` is still
    alive and the shared `fold` checkout's tracked files are untouched).
 6. Append a dated "Change log" entry to the SOP (`brain_put` on
    `sop-lastdb-local-smoke-test`, appending — never silently rewriting past
@@ -59,8 +59,8 @@ stale copy here would silently regress the procedure.
 
 ## Never
 
-- Touch `~/.folddb` directly, or kill/restart the primary `folddb_server`
-  brain. This test always runs against a throwaway COW copy on an isolated
+- Touch `~/.lastdb` or `~/.folddb` directly, or kill/restart the primary
+  LastDB brain. This test always runs against a throwaway COW copy on an isolated
   port — see the SOP's Hard rules for the exact recipe.
 - Build in the shared `~/code/edgevector/fold` checkout in place — it's
   frequently behind `origin/main`. Rebuild from a disposable worktree at
