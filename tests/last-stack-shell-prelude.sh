@@ -76,6 +76,11 @@ unset LAST_STACK_GLOBAL_PATH
 export PATH LAST_STACK_WORKSPACE
 . "$ROOT/bin/last-stack-shell-prelude"
 last_stack_require_tools brain
-test "$LAST_STACK_TOOL_BRAIN" = "$workspace/brain/bin/brain"
+managed_brain="$HOME/.local/bin/brain"
+if [ -x "$managed_brain" ]; then
+  test "$LAST_STACK_TOOL_BRAIN" = "$managed_brain"
+else
+  test "$LAST_STACK_TOOL_BRAIN" = "$workspace/brain/bin/brain"
+fi
 
 echo "ok"

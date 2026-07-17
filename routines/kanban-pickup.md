@@ -290,16 +290,22 @@ rules, same one-PR / one-worktree discipline as WORK mode.
 **1) Program / North Star next slice (preferred)**  
 Read `brain get active-programs` (project). For each active program, if:
 - Next move is a **concrete PR-sized** step, and
-- No card for that step is already in `todo`/`doing`/`review`, and
+- The candidate is pickup work with `Kind: pr`, and
+- No card for that step is already in `todo`/`doing`/`backlog`, and
 - It is not human-gated / dep-blocked / capstone-as-pickup,
 then either:
 - **File one** PR card to `todo` with full GOAL/STEPS/VERIFY + `Repo:`/`Base:` +
-  kanban-agent header, then **immediately claim and WORK it** in this same run
-  (preferred when the slice is clear), **or**
+  `Kind: pr` + kanban-agent header, then EXIT with
+  `ok idle=program-filed slug=...` so the next pickup fire claims it with a
+  fresh budget, **or**
 - File only and EXIT if the slice is large / uncertain (heartbeat
   `ok idle=program-filed slug=…`).
-Do not dump whole programs/capstones into `todo`. Prefer the most-behind program
-with a clear next slice. Verify facts against `origin/main` before filing.
+Existing terminal, capstone, tracker, meta, or validation cards stay in
+`backlog`; pickup must not force them into `todo`. If a program's next visible
+artifact is non-pickup work, skip it or file a concrete `Kind: pr` follow-up
+card instead of promoting the terminal card itself. Do not dump whole
+programs/capstones into `todo`. Prefer the most-behind program with a clear
+next slice. Verify facts against `origin/main` before filing.
 
 **2) CodeRings high-impact hotspot (sensor, not full scan)**  
 Cheap read only — do **not** run a full fold capture every idle fire:
