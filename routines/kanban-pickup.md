@@ -499,9 +499,8 @@ Read `brain get active-programs` (project). For each active program, if:
 - It is not human-gated / dep-blocked / capstone-as-pickup,
 then either:
 - **File one** PR card to `todo` with full GOAL/STEPS/VERIFY + `Repo:`/`Base:` +
-  `Kind: pr` + kanban-agent header, then EXIT with
-  `ok idle=program-filed slug=...` so the next pickup fire claims it with a
-  fresh budget, **or**
+  `Kind: pr` + kanban-agent header, then EXIT with `ok idle=program-filed slug=...` so the
+  next pickup fire claims it with a fresh budget, **or**
 - File only and EXIT if the slice is large / uncertain (heartbeat
   `ok idle=program-filed slug=…`).
 Existing terminal, capstone, tracker, meta, or validation cards stay in
