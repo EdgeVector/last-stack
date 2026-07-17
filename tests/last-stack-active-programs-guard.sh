@@ -81,6 +81,32 @@ grep -q 'Mixed active program.*mixed.*cue: Next move still includes.*mixed-done-
 grep -q 'Held program.*held.*cue: Live next move says.*held-card (backlog, needs_human).*suggested fix: mark prose blocked/held or move next move to a ready card' "$tmp/stale-report"
 cmp "$tmp/stale-before" "$after"
 
+cat > "$after" <<'EOF_PROGRAM_STALE'
+## Program: drained-program — Drained stale program
+**program-slug:** `[[drained-program]]`
+Next move still points at `done-card` and `gone-card`.
+<!-- rollup:start | auto-maintained hourly by program-rollup — edit the prose above, NOT this block | updated 2026-07-10T00:00Z -->
+**Status (auto):** 1/2 landed
+cards: done-card, gone-card (gone)
+<!-- rollup:end -->
+
+## Program: mixed-program — Mixed active program
+**program-slug:** `[[mixed-program]]`
+Next move still includes `mixed-done-card`, but `live-card` is doing.
+<!-- rollup:start | auto-maintained hourly by program-rollup — edit the prose above, NOT this block | updated 2026-07-10T00:00Z -->
+**Status (auto):** 1/2 landed · in flight: live-card (doing)
+cards: mixed-done-card, live-card
+<!-- rollup:end -->
+EOF_PROGRAM_STALE
+cp "$after" "$tmp/program-stale-before"
+"$ROOT/bin/last-stack-active-programs-guard" stale-report \
+  --active "$after" \
+  --board "$board" \
+  --proof-slugs "$proof" > "$tmp/program-stale-report"
+grep -q 'Drained stale program.*drained.*done-card (done).*gone-card (gone, proof)' "$tmp/program-stale-report"
+grep -q 'Mixed active program.*mixed.*mixed-done-card (done).*live-card (doing)' "$tmp/program-stale-report"
+cmp "$tmp/program-stale-before" "$after"
+
 head -n 7 "$before" > "$after"
 if "$ROOT/bin/last-stack-active-programs-guard" check "$before" "$after" >/dev/null 2>"$tmp/err"; then
   echo "expected truncated rewrite to fail" >&2
