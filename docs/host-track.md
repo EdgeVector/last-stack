@@ -42,6 +42,27 @@ Each status record reports:
 Refresh stamps are written under `~/.host-track/stamps/<app>.json`, or under
 `HOST_TRACK_STAMP_DIR` when set.
 
+## Refresh Agent
+
+`./setup` installs a user LaunchAgent named
+`com.edgevector.host-track-refresh`. The plist lives at
+`~/.last-stack/launchd/com.edgevector.host-track-refresh.plist` and runs:
+
+```bash
+~/.local/bin/host-track refresh --all
+```
+
+The safety poll runs every 20 minutes. When the registry has Forgejo-gated apps
+with local host checkouts, setup also adds existing `<git-dir>/FETCH_HEAD` paths
+as optional `WatchPaths`, so fetch activity can trigger the same refresh command
+without one plist per app.
+
+Uninstall removes the plist and boots out the loaded service:
+
+```bash
+~/.last-stack/setup --uninstall
+```
+
 ## Registry Kinds
 
 - `A compile`: build and install a binary, such as `lastgit`.

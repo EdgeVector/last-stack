@@ -320,6 +320,130 @@ install_host_track_shim() {
   echo "  host-track: $dest"
 }
 
+xml_escape() {
+  sed \
+    -e 's/&/\&amp;/g' \
+    -e 's/</\&lt;/g' \
+    -e 's/>/\&gt;/g' \
+    -e 's/"/\&quot;/g' \
+    -e "s/'/\&apos;/g"
+}
+
+host_track_launchd_plist_path() {
+  printf '%s\n' "${LAST_STACK_HOST_TRACK_PLIST:-$HOME/.last-stack/launchd/com.edgevector.host-track-refresh.plist}"
+}
+
+host_track_real_home_matches() {
+  local real_home
+  real_home="$(eval "printf '%s' ~$(id -un)" 2>/dev/null || true)"
+  [ -n "$real_home" ] && [ "$HOME" = "$real_home" ]
+}
+
+host_track_refresh_watch_paths() {
+  local registry="$SOURCE_ROOT/config/host-track/apps.json"
+  local raw path git_dir
+  [ -f "$registry" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  command -v git >/dev/null 2>&1 || return 0
+
+  jq -r '.apps[]? | select(.gate == "forgejo") | .host_track // empty' "$registry" |
+    while IFS= read -r raw; do
+      [ -n "$raw" ] || continue
+      case "$raw" in
+        '$HOME') path="$HOME" ;;
+        '$HOME'/*) path="$HOME/${raw#\$HOME/}" ;;
+        "~") path="$HOME" ;;
+        "~"/*) path="$HOME/${raw#~/}" ;;
+        *) path="$raw" ;;
+      esac
+      [ -d "$path" ] || continue
+      git_dir="$(git -C "$path" rev-parse --git-dir 2>/dev/null || true)"
+      [ -n "$git_dir" ] || continue
+      case "$git_dir" in
+        /*) ;;
+        *) git_dir="$path/$git_dir" ;;
+      esac
+      if [ -e "$git_dir/FETCH_HEAD" ]; then
+        printf '%s\n' "$git_dir/FETCH_HEAD"
+      fi
+    done
+}
+
+write_host_track_refresh_agent_plist() {
+  local plist="$1"
+  local program="$HOME/.local/bin/host-track"
+  local log_dir="$HOME/Library/Logs/last-stack"
+  local watch_paths
+  mkdir -p "$(dirname "$plist")" "$log_dir"
+  watch_paths="$(host_track_refresh_watch_paths | awk '!seen[$0]++')"
+
+  {
+    cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.edgevector.host-track-refresh</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$(printf '%s' "$program" | xml_escape)</string>
+    <string>refresh</string>
+    <string>--all</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>1200</integer>
+  <key>StandardOutPath</key>
+  <string>$(printf '%s' "$log_dir/host-track-refresh.log" | xml_escape)</string>
+  <key>StandardErrorPath</key>
+  <string>$(printf '%s' "$log_dir/host-track-refresh.err.log" | xml_escape)</string>
+EOF
+    if [ -n "$watch_paths" ]; then
+      cat <<'EOF'
+  <key>WatchPaths</key>
+  <array>
+EOF
+      printf '%s\n' "$watch_paths" | while IFS= read -r watch_path; do
+        [ -n "$watch_path" ] || continue
+        printf '    <string>%s</string>\n' "$(printf '%s' "$watch_path" | xml_escape)"
+      done
+      cat <<'EOF'
+  </array>
+EOF
+    fi
+    cat <<'EOF'
+</dict>
+</plist>
+EOF
+  } > "$plist"
+  chmod 600 "$plist" 2>/dev/null || true
+}
+
+install_host_track_refresh_agent() {
+  [ "$(uname -s)" = "Darwin" ] || return 0
+  local plist label="com.edgevector.host-track-refresh"
+  plist="$(host_track_launchd_plist_path)"
+  write_host_track_refresh_agent_plist "$plist"
+  echo "  host-track refresh agent: $plist"
+
+  if ! host_track_real_home_matches; then
+    echo "  host-track refresh agent: launchctl skipped for non-login HOME"
+    return 0
+  fi
+  command -v launchctl >/dev/null 2>&1 || {
+    echo "  host-track refresh agent: launchctl not found; plist written only" >&2
+    return 0
+  }
+
+  launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true
+  if launchctl bootstrap "gui/$(id -u)" "$plist" >/dev/null 2>&1; then
+    launchctl enable "gui/$(id -u)/$label" >/dev/null 2>&1 || true
+    echo "  host-track refresh agent: loaded $label"
+  else
+    echo "  host-track refresh agent: launchctl bootstrap failed; plist written only" >&2
+  fi
+}
+
 # ── Register every skills/<name>/SKILL.md into a target skills dir ────────────
 register_into() {
   local skills_dir="$1"
@@ -400,6 +524,7 @@ echo "Installing The Last Stack (v$(cat "$SOURCE_ROOT/VERSION")) ..."
 [ "$INSTALL_OPENCODE" -eq 1 ] && register_into "$HOME/.config/opencode/skills" "opencode"
 [ "$INSTALL_OPENCODE" -eq 1 ] && upsert_brain_kanban_block "$HOME/.config/opencode/AGENTS.md" "opencode"
 install_host_track_shim
+install_host_track_refresh_agent
 
 # ── Guard against foreign installers (e.g. gstack) stomping our skill links ────
 # Another installer that ships a same-named skill (gstack shipped a `diagram`
