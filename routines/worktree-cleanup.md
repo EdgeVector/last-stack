@@ -128,13 +128,10 @@ continue — do not fail the whole run.
    forward the default branch. Agents work in worktrees, so switching the main
    checkout's branch doesn't disturb them — but never force or discard.
 7. **Reclaim disk if needed** (see the `disk-reclaim` routine for the full,
-   safer procedure — this routine may reuse it). Always include **disk-reclaim
-   step 4b**: prune unused `$HOME/.lastgit/{deploy-*,forge-*}/scratch` children
-   and unused `ship-runs` / non-live `ship-checkouts`, keeping only live
-   (lsof/docker-mount) paths and never deleting pipeline cursors/logs. Then
-   delete build-artifact dirs (`target/`, `node_modules/` in throwaway
-   worktrees, caches) — removing a build cache never touches source. If you're
-   below your disk floor, prune the largest reclaimable caches first.
+   safer procedure — this routine may reuse it). Delete build-artifact dirs
+   (`target/`, `node_modules/` in throwaway worktrees, caches) — removing a build
+   cache never touches source. If you're below your disk floor, prune the
+   largest reclaimable caches first.
 8. **Prevention upkeep.** Apply whatever stops the buildup from recurring in your
    stack (e.g. a periodic build-cache sweep, a disk-floor check). Don't change
    global environment unattended — note a recommendation in the report instead.

@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""Guard active-programs rewrites against silent section loss."""
+"""Guard active-programs rewrites against silent section loss.
+
+Program sections are identified by **program-slug** (stable), not ordinals.
+Preferred section header form (document order = sort order; move blocks to reorder):
+
+    ## Program: north-star-lastgit-native-forge
+    **program-slug:** `[[north-star-lastgit-native-forge]]`
+
+Legacy numbered headers (`## N. Title`) are still accepted for one release so
+older indexes and tests keep working. New writes should use `## Program:`.
+"""
 
 from __future__ import annotations
 
@@ -11,8 +21,29 @@ from pathlib import Path
 from typing import Optional
 
 
-HEADER_RE = re.compile(r"^##\s+(\d+)\.\s+(.+)$", re.MULTILINE)
-ANY_PROGRAM_HEADER_RE = re.compile(r"##\s+\d+\.\s+")
+# Preferred: ## Program: <slug>  or  ## Program: <slug> — Title
+PROGRAM_HEADER_RE = re.compile(
+    r"^##\s+Program:\s+([a-z0-9][a-z0-9-]*)(?:\s*[—–-]\s*(.+))?$",
+    re.MULTILINE,
+)
+# Alternate wiki form: ## [[slug]]  or  ## [[slug]] — Title
+WIKI_HEADER_RE = re.compile(
+    r"^##\s+\[\[([a-z0-9][a-z0-9-]*)\]\](?:\s*[—–-]\s*(.+))?$",
+    re.MULTILINE,
+)
+# Legacy ordinal form: ## N. Title
+ORDINAL_HEADER_RE = re.compile(r"^##\s+(\d+)\.\s+(.+)$", re.MULTILINE)
+
+# Any program header at line start (for split + embedded detection)
+ANY_PROGRAM_HEADER_RE = re.compile(
+    r"^##\s+(?:Program:\s+[a-z0-9][a-z0-9-]*|\[\[[a-z0-9][a-z0-9-]*\]\]|\d+\.\s+)",
+    re.MULTILINE,
+)
+# Mid-line / embedded detection (broader patterns)
+EMBEDDED_HEADER_PROBE_RE = re.compile(
+    r"##\s+(?:Program:\s+[a-z0-9][a-z0-9-]*|\[\[[a-z0-9][a-z0-9-]*\]\]|\d+\.\s+)"
+)
+
 PROGRAM_SLUG_RE = re.compile(r"\*\*program-slug:\*\*\s*`\[\[([^]]+)\]\]`")
 REFERENCE_SLUG_RE = re.compile(r"\[\[([^]]+)\]\]")
 BACKTICK_SLUG_RE = re.compile(r"`([a-z0-9][a-z0-9-]{2,})`")
@@ -46,9 +77,49 @@ def fail(message: str) -> None:
     raise SystemExit(1)
 
 
+def iter_program_header_matches(body: str) -> list[re.Match[str]]:
+    """Return program-section header matches in document order (line-start only)."""
+    matches: list[re.Match[str]] = []
+    for regex in (PROGRAM_HEADER_RE, WIKI_HEADER_RE, ORDINAL_HEADER_RE):
+        for match in regex.finditer(body):
+            if match.start() == 0 or body[match.start() - 1] == "\n":
+                matches.append(match)
+    matches.sort(key=lambda m: m.start())
+    # De-dupe same span (should not happen across forms)
+    deduped: list[re.Match[str]] = []
+    seen_starts: set[int] = set()
+    for match in matches:
+        if match.start() in seen_starts:
+            continue
+        seen_starts.add(match.start())
+        deduped.append(match)
+    return deduped
+
+
+def header_identity(match: re.Match[str]) -> tuple[str, str]:
+    """Return (stable_id, display_title) for a header match.
+
+    stable_id is the program slug when the header embeds one, else ordinal:N
+    for legacy numbered headers.
+    """
+    text = match.group(0)
+    if text.startswith("## Program:") or text.startswith("##Program:"):
+        slug = match.group(1)
+        title = (match.group(2) or slug).strip()
+        return slug, title
+    if "[[" in text:
+        slug = match.group(1)
+        title = (match.group(2) or slug).strip()
+        return slug, title
+    # ordinal
+    ordinal = match.group(1)
+    title = match.group(2).strip()
+    return f"ordinal:{ordinal}", title
+
+
 def embedded_headers(body: str) -> list[str]:
     lines: list[str] = []
-    for match in ANY_PROGRAM_HEADER_RE.finditer(body):
+    for match in EMBEDDED_HEADER_PROBE_RE.finditer(body):
         if match.start() == 0 or body[match.start() - 1] == "\n":
             continue
         line_start = body.rfind("\n", 0, match.start()) + 1
@@ -60,7 +131,8 @@ def embedded_headers(body: str) -> list[str]:
 
 
 def canonical_headers(body: str) -> list[tuple[str, str]]:
-    return [(match.group(1), match.group(2).strip()) for match in HEADER_RE.finditer(body)]
+    """List of (section_id, title) in document order."""
+    return [header_identity(m) for m in iter_program_header_matches(body)]
 
 
 def program_slugs(body: str) -> set[str]:
@@ -169,11 +241,15 @@ def check_rewrite(before_path: str, after_path: str, completed_after_path: str |
     missing = before_slugs - after_slugs
     unarchived_missing = sorted(missing - completed_slugs)
 
+    # Header *count* may not drop without an intentional archive. Reordering,
+    # renumbering, or converting ## N. → ## Program: with the same section
+    # count is fine (identity is program-slug, not the ordinal).
     if len(after_headers) < len(before_headers):
         dropped = len(before_headers) - len(after_headers)
         if not completed_after_path or dropped > len(missing) or not missing <= completed_slugs:
             fail(f"program header count dropped from {len(before_headers)} to {len(after_headers)}")
 
+    # Primary identity: program-slug set must not silently shrink.
     if unarchived_missing:
         fail("program slugs disappeared: " + ", ".join(unarchived_missing))
 
@@ -186,7 +262,7 @@ def check_rewrite(before_path: str, after_path: str, completed_after_path: str |
 
 
 def split_sections(body: str) -> tuple[str, list[tuple[str, str, str]]]:
-    matches = list(HEADER_RE.finditer(body))
+    matches = iter_program_header_matches(body)
     if not matches:
         return body, []
 
@@ -194,7 +270,8 @@ def split_sections(body: str) -> tuple[str, list[tuple[str, str, str]]]:
     sections: list[tuple[str, str, str]] = []
     for idx, match in enumerate(matches):
         end = matches[idx + 1].start() if idx + 1 < len(matches) else len(body)
-        sections.append((match.group(1), match.group(2).strip(), body[match.start() : end].strip()))
+        section_id, title = header_identity(match)
+        sections.append((section_id, title, body[match.start() : end].strip()))
     return preamble, sections
 
 
@@ -263,7 +340,7 @@ def archive_closed(active_path: str, completed_path: str, active_out: str, compl
 
     kept: list[str] = []
     archived: list[str] = []
-    for _ordinal, title, section in sections:
+    for _section_id, title, section in sections:
         if is_closed_section(title) and not has_active_board_state(title, section):
             line = archive_line(title, section)
             if line not in completed:
@@ -290,7 +367,7 @@ def stale_report(active_path: str, board_path: str, proof_slugs_path: Optional[s
     _preamble, sections = split_sections(active)
     reports: list[str] = []
 
-    for _ordinal, title, section in sections:
+    for _section_id, title, section in sections:
         ref_sources = section_card_ref_sources(section)
         if not ref_sources:
             continue
