@@ -80,6 +80,14 @@ Brain record (stable):
    - lists brain projects, keeps North Stars
    - applies known NS aliases (e.g. legacy schema roadmap → shared-surface NS)
    - upserts `north-star-dashboard` and writes the HTML file
+   If the wrapper returns `124` (timeout) or stderr contains a transient
+   busy-node signal, do **not** turn the fleet red when a previous dashboard
+   snapshot exists and is non-empty. Treat it as load/backpressure: update
+   memory with the timeout, heartbeat
+   `north-star-rollup <ISO-ts> noop reason=dashboard-timeout-prior-snapshot previous_html_bytes=<bytes>`,
+   print `ROUTINE_RESULT outcome=noop detail=reason=dashboard-timeout-prior-snapshot`,
+   and exit. Only use `error` for timeout/crash cases where no prior dashboard
+   artifact exists or confirmation proves the artifact is empty/corrupt.
 3. **Confirm.** Point-read `brain get north-star-dashboard --type reference`
    (or `brain get north-star-dashboard`) and check the body head contains the
    current UTC hour's `Generated:` stamp (or today's date). Confirm the HTML

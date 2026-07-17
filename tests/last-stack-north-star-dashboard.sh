@@ -208,8 +208,11 @@ grep -q "HYGIENE_NEEDS_WORK=1" "$WORK/hygiene.err"
 
 grep -q "north-star-schema-shared-surface-native-resolver" "$WORK/out.md"
 grep -q "Unattributed cards" "$WORK/out.md"
+! grep -q "review=" "$WORK/out.md"
 grep -q "North Star dashboard" "$WORK/out.html"
 grep -q "schema-resolver-pack-public-origin" "$WORK/out.html"
+grep -q "Live pressure = backlog + todo + doing." "$WORK/out.html"
+! grep -q ">review<" "$WORK/out.html"
 
 
 # completion contract
