@@ -84,6 +84,20 @@ if ! grep -Fq "Use \`noop\` when" <<<"$merge_babysit_prompt" ||
   exit 1
 fi
 
+groom_board_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" groom-board)"
+if ! grep -Fq "board-socket-unavailable skipped" <<<"$groom_board_prompt" ||
+   ! grep -Fq 'groom-board`, do not run doctor/init/restart' <<<"$groom_board_prompt" ||
+   ! grep -Fq 'classify the run as `noop`' <<<"$groom_board_prompt" ||
+   ! grep -Fq 'not `error`' <<<"$groom_board_prompt"; then
+  echo "expected groom-board to classify unavailable board sockets as noop skips" >&2
+  exit 1
+fi
+if ! grep -Fq "never read a" <<<"$groom_board_prompt" ||
+   ! grep -Fq '`review` column because it does not exist' <<<"$groom_board_prompt"; then
+  echo "expected groom-board snapshot instructions to avoid the retired review column" >&2
+  exit 1
+fi
+
 north_star_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" north-star-rollup)"
 if ! grep -Fq 'timeout 300 "$dash_bin"' <<<"$north_star_prompt" ||
    ! grep -Fq "reason=dashboard-timeout-prior-snapshot" <<<"$north_star_prompt"; then

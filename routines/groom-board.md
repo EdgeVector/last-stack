@@ -56,7 +56,12 @@ continue — do not fail the whole run.
   `<board CLI> list --column todo --json`, and parse it from a file. If the read
   returns `service_timeout`, "node did not respond", or "too many concurrent
   reads", treat that as busy-node backpressure: STOP, report `busy-node skipped
-  groom-board`, and do not run doctor/init or restart anything.
+  groom-board`, and do not run doctor/init or restart anything. If a board or
+  brain read reports a missing/unreachable Unix socket, `socket closed`, `read
+  route not reachable`, or `node socket not reachable`, treat that as the same
+  no-action external dependency: STOP, report `board-socket-unavailable skipped
+  groom-board`, do not run doctor/init/restart, and classify the run as `noop`,
+  not `error`.
 - Columns: `backlog → todo → doing → done`. `add <slug>` is an upsert;
   `rm <slug>` soft-deletes; `move <slug> <column>`.
 - Read columns sequentially with `<board CLI> list --column <column> --json` and
@@ -97,12 +102,14 @@ pr`, which must still be handled by the PR reconciler. This evaluator is
 read-only and fail-closed; errors never auto-close a card.
 
 ## What to do each run
-1. **Snapshot the board narrowly.** Read `backlog`, `todo`, `doing`, and
-   `review` with sequential `<board CLI> list --column <column> --json` calls.
+1. **Snapshot the board narrowly.** Read `backlog`, `todo`, and `doing` with
+   sequential `<board CLI> list --column <column> --json` calls. Read `done`
+   only if you need it for duplicate or dependency reconciliation; never read a
+   `review` column because it does not exist.
    Use those previews for counts and stuck-card detection; only call
    `<board CLI> show <slug> --json` for the one card you are editing, deleting,
-   or splitting. Surface stuck `doing`/`review` cards in the report; do NOT
-   re-drive them (that's `kanban-watch`'s job).
+   or splitting. Surface stuck `doing` cards in the report; do NOT re-drive them
+   (that's `kanban-watch`'s job).
 
    Before surfacing a stuck non-PR card as `NEEDS-HUMAN`, point-read it and
    evaluate its `DONE-WHEN:` predicate. A satisfied predicate closes the card to
@@ -177,7 +184,7 @@ read-only and fail-closed; errors never auto-close a card.
 - A concise digest: board counts (before→after), cards pruned, promoted to todo,
   epics broken down (new child slugs), and a "⚠️ Needs a human" section listing
   missing-prerequisite gaps, suspected duplicates, possibly-stale-vs-brain cards,
-  and any card stuck in doing/review.
+  and any card stuck in doing.
 - Checkpoint a one-paragraph status to the brain (update the existing
   board-grooming note in place if one exists; else create one) so the next run
   and `morning-sync` can see what changed.
@@ -185,4 +192,8 @@ read-only and fail-closed; errors never auto-close a card.
 > **Heartbeat (optional but recommended).** LAST action, even on a no-op run:
 > call `<last-stack>/bin/last-stack-brain-append-heartbeat --line
 > "groom-board <ISO-ts> <ok|noop|error> <outcome>"` (`noop` = ran, nothing to
-> promote/prune).
+> promote/prune, busy-node, or board/socket unavailable). If the heartbeat helper
+> cannot write because the brain socket is also unavailable, still print the
+> heartbeat line and print the `ROUTINE_RESULT` token followed by
+> `outcome=<noop> detail=<board-socket-unavailable>` so routinesd records a
+> graceful skip instead of auto-filing a P0 error.
