@@ -60,6 +60,9 @@ fn file_blob_upload_and_delete_confirm_after_successful_object_ops() {}
 fn file_blob_explicit_download_opens_with_returned_dek() {}
 fn file_blob_on_demand_fetch_caches_local_hit_and_rejects_wrong_dek() {}
 EOF
+for i in $(seq 1 2000); do
+  printf '// trailing fixture line %s keeps grep -q from being a safe pipefail shortcut\n' "$i"
+done >>"$fold/fold_db/crates/core/src/sync/engine/tests.rs"
 cat >"$fold/fold_db/crates/core/tests/file_blob_structured_reads_test.rs" <<'EOF'
 fn structured_reads_without_bytes_missing_blob_local_CAS() {}
 EOF
