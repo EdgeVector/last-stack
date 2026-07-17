@@ -93,6 +93,20 @@ The first three workers keep the established 15-minute anchors (`:00`, `:05`,
 so the fleet gets a pickup slot about every 2.5 minutes without changing the
 one-card-per-fire contract.
 
+### Registering feature-prove
+
+`feature-prove` is the product-proof stage for Feature Ship Loop owner cards.
+After installing this pack, write its scheduled registry entry idempotently:
+
+```bash
+last-stack-feature-prove-routine \
+  --prompt-path "$HOME/.last-stack/routines/feature-prove.md"
+ls ~/.routines/registry/last-stack-feature-prove.toml
+```
+
+It runs hourly on its own lock, uses the `feature-prove.md` prompt, and writes
+the normal routine memory under `~/.routines/memory/last-stack-feature-prove/`.
+
 ## The two clusters
 
 ### A. Self-fixing fleet health — portable to any agent fleet
