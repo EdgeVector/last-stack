@@ -8,6 +8,25 @@ cleanup() {
 }
 trap cleanup EXIT
 
+if [ "${1:-}" = "--smoke" ]; then
+  pickup="$ROOT/routines/kanban-pickup.md"
+
+  "$ROOT/bin/last-stack-lint-prompts" \
+    "$pickup" \
+    "$ROOT/routines/kanban-watch.md" \
+    "$ROOT/routines/pipeline-health.md" \
+    "$ROOT/skills/kanban-agent/SKILL.md" \
+    "$ROOT/instructions/brain-kanban.md"
+
+  grep -q 'Live operational proof watches are bounded too' "$pickup"
+  grep -q 'reason=watch-budget-reserved' "$pickup"
+  grep -q 'Before every foreground watcher, deploy wait, sync drain, or other END STATE' "$pickup"
+  grep -q 'reason=budget-low' "$pickup"
+  grep -q 'watch external progress until the harness SIGTERM cuts off closeout' "$pickup"
+  echo "ok last-stack-lint-prompts smoke"
+  exit 0
+fi
+
 # Keep this test hermetic even on machines with an authenticated `gh` in PATH.
 export LASTSTACK_GH_PR_JSON_FIELDS="additions assignees author autoMergeRequest baseRefName baseRefOid body changedFiles closed closedAt closingIssuesReferences comments commits createdAt deletions files fullDatabaseId headRefName headRefOid headRepository headRepositoryOwner id isCrossRepository isDraft labels latestReviews maintainerCanModify mergeCommit mergeStateStatus mergeable mergedAt mergedBy milestone number potentialMergeCommit projectCards projectItems reactionGroups reviewDecision reviewRequests reviews state statusCheckRollup title updatedAt url"
 export LASTSTACK_GH_RELEASE_JSON_FIELDS="apiUrl assets author body createdAt databaseId id isDraft isImmutable isPrerelease name publishedAt tagName tarballUrl targetCommitish uploadUrl url zipballUrl"
@@ -470,6 +489,8 @@ grep -q 'record `pr_url` and `branch` on the card' "$pickup"
 grep -q 'Wall-clock budget (hard)' "$pickup"
 grep -q 'idle=budget-exhausted' "$pickup"
 grep -q 'Do not start any new validation or PR/CR publish sequence after \*\*35 minutes\*\*' "$pickup"
+grep -q 'Live operational proof watches are bounded too' "$pickup"
+grep -q 'reason=watch-budget-reserved' "$pickup"
 grep -q 'Before every foreground watcher, deploy wait, sync drain, or other END STATE' "$pickup"
 grep -q 'reason=budget-low' "$pickup"
 grep -q 'watch external progress until the harness SIGTERM cuts off closeout' "$pickup"
