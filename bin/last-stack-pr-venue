@@ -161,13 +161,26 @@ fi
 
 if [ -z "$venue" ]; then
   case "$repo" in
-    EdgeVector/fold|EdgeVector/exemem-workspace|EdgeVector/lastgit)
+    # Remaining Forgejo gates of record (GitHub = read-only mirror).
+    EdgeVector/fold|EdgeVector/lastgit)
       venue="forgejo"
       reason="default:forge-hot"
       ;;
-    *)
+    # LastGit-native fleet (GitHub = read-only mirror). Keep in sync with
+    # brain reference-edgevector-github-mirrors-read-only.
+    EdgeVector/brain|EdgeVector/demo-repository|EdgeVector/discovery|EdgeVector/dogfood-graph|EdgeVector/edgevector-website|EdgeVector/exemem-infra|EdgeVector/exemem-workspace|EdgeVector/fkanban|EdgeVector/fold_db_website|EdgeVector/homebrew-lastdb|EdgeVector/last-stack|EdgeVector/lastsecrets|EdgeVector/org|EdgeVector/routines|EdgeVector/schema-infra|EdgeVector/situations|EdgeVector/configurations|EdgeVector/autoresearch-docstore|EdgeVector/coderings|EdgeVector/lastdb-core|EdgeVector/lastdb-nano|EdgeVector/laststore|EdgeVector/photos|EdgeVector/remote)
+      venue="lastgit"
+      reason="default:lastgit-native"
+      ;;
+    # True GitHub primaries only. Everything else defaults lastgit-warden
+    # (safer than github: agents must not push mirrors).
+    EdgeVector/Keepside_Desktop|EdgeVector/.github|EdgeVector/edgevectorlabs-website|EdgeVector/canonical-samples|EdgeVector/runner-smoke)
       venue="github"
-      reason="default:public-github"
+      reason="default:github-primary"
+      ;;
+    *)
+      venue="lastgit"
+      reason="default:lastgit-prefer-over-github-mirror"
       ;;
   esac
 fi
