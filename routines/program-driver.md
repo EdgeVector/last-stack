@@ -63,6 +63,29 @@ index and guarantee each unblocked one has its next card in `todo`. You also
 enforce the North Star **terminal verification** contract (completion-check):
 every incomplete NS has a named proof card; completed terminals close the NS.
 
+### Feature Ship Loop budget (Tom 2026-07-17)
+
+Canonical: brain `sop-feature-ship-loop` / `preference-feature-ship-loop`.
+
+Before promoting idle/P3 papercuts or inventing program slices:
+
+1. Search the board for cards with tag `feature-owner` (or Kind validation
+   whose body has `## STATUS` + `feature-owner` tag) that are **not** done.
+2. For each with `STATUS: driving` or `proving`:
+   - Read `## CHILDREN` / deps; find the **frontier** unblocked `Kind: pr`
+     slice that is not done.
+   - If that frontier is in `backlog` and pickup-ready → **promote to `todo`**
+     at P0/P1 (ensure tags `feature-ship` + priority).
+   - If no frontier PR exists but END STATE is incomplete → file **one**
+     PR-sized child (not a tracker) and promote it; update owner CHILDREN.
+   - If terminal deps are all done and STATUS is still `driving` → set
+     STATUS `proving` and promote the terminal proof card to `todo` when it
+     is agent-runnable (or leave a note for `feature-prove`).
+3. **Never** put the feature-owner card itself in `todo` (not pickup work).
+4. **Never** file tracker-only feature wishes; materialize owner + PR slices
+   + terminal product proof.
+5. Feature frontier P0/P1 outranks pure `idle:*` promotion this run.
+
 ## Setup
 - Drive the board CLI from `<board repo dir>` with `<board CLI> <cmd>`.
 - First: run a socket-backed narrow read, for example

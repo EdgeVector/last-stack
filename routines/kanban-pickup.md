@@ -491,6 +491,17 @@ rules, same one-PR / one-worktree discipline as WORK mode.
 
 #### Ladder (stop at first real action)
 
+**0) Feature Ship Loop frontier (preferred over idle invent)**  
+Canonical: brain `sop-feature-ship-loop`. If any live `feature-owner` card has
+`STATUS: driving|proving` and a pickup-ready `Kind: pr` child tagged
+`feature-ship` is already in `todo`, **do not idle** — EXIT so a sibling
+pickup claims it (or claim it if you are selecting from todo). If the frontier
+slice is only in `backlog` and unblocked, promote that one card to `todo` and
+EXIT with `ok idle=feature-frontier-promoted slug=...` (do not implement in the
+same fire unless you claimed it via normal WORK). Never pick up the
+feature-owner validation card itself. Never invent idle simplifications while a
+P0/P1 feature-ship frontier is waiting.
+
 **1) Program / North Star next slice (preferred)**  
 Read `brain get active-programs` (project). For each active program, if:
 - Next move is a **concrete PR-sized** step, and
