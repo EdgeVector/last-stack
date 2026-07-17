@@ -24,3 +24,4 @@ First line is `PASS`, `PASS-OFFLINE`, or `FAIL` for kanban DONE-WHEN matching.
 | app-ops | `lastdb ops --by-app` | same against live Mini |
 | schema | no-wasm tree gate | fold capstone `run.sh` when landed |
 | file-blobs-on-demand-sync | fold source/test contract + optional narrow cargo tests | same narrow fold proof command on a non-primary checkout |
+| laststore-is-document-store-last-db-is-conventions | Brain record/design contract, fixtureable via `LASTSTORE_PROOF_RECORD_FILE` | same Brain contract against the live record |

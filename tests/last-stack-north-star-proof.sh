@@ -7,6 +7,7 @@ chmod +x "$BIN" "$ROOT/harness/north-star"/*/run.sh
 "$BIN" --list | grep -q north-star-coderings
 "$BIN" --list | grep -q north-star-schema-shared-surface-native-resolver
 "$BIN" --list | grep -q north-star-lastdb-file-blobs-on-demand-sync
+"$BIN" --list | grep -q north-star-laststore-is-document-store-last-db-is-conventions
 
 PROOF_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ns-proof-test.XXXXXX")"
 FILE_BLOB_WORK="$(mktemp -d "${TMPDIR:-/tmp}/ns-file-blob-proof-test.XXXXXX")"
@@ -27,7 +28,7 @@ if command -v lastdb >/dev/null 2>&1; then
 fi
 
 # Structural: all harness scripts exist and bash -n clean
-for s in coderings deliver-slices lastgit metering minimal-node app-ops schema file-blobs-on-demand-sync; do
+for s in coderings deliver-slices lastgit metering minimal-node app-ops schema file-blobs-on-demand-sync laststore; do
   bash -n "$ROOT/harness/north-star/$s/run.sh"
 done
 bash -n "$BIN"
@@ -89,5 +90,41 @@ grep -q "cache" "$report"
 grep -q "no bulk" "$report"
 grep -q "cargo test -p fold_db" "$report"
 grep -q "PROOF_VERDICT=PASS-OFFLINE" "$FILE_BLOB_WORK/proof.out"
+
+laststore_record="$PROOF_DIR/laststore-record.md"
+cat >"$laststore_record" <<'EOF'
+# North Star - Last Store vs LastDB abstraction
+
+Last Store is a multi-collection document store (put/get/delete by collection + id, optional prefix walk, flush, compact).
+LastDB is a convention of collections, ids, and documents on top of it.
+
+Last Store: collections, ids, bodies, prefix list, group-commit, compact.
+LastDB product: tip id layout, atoms, schemas, list keys, hash-range page indexes, B-tree-as-docs, upper-layer walk logic.
+
+Mini gaps are Mini packaging, a Mini -> Last Store path, and Mini cutover migration work; they are not product incompleteness.
+Design: storage-v2.md and reference-laststore-collection-naming.
+Do not invent a catch-all collection main for new Storage v2 work.
+EOF
+
+LASTSTORE_PROOF_RECORD_FILE="$laststore_record" \
+NORTH_STAR_PROOF_DIR="$PROOF_DIR" \
+  "$BIN" --offline north-star-laststore-is-document-store-last-db-is-conventions >"$PROOF_DIR/laststore.out"
+
+laststore_report="$PROOF_DIR/north-star-laststore-is-document-store-last-db-is-conventions.md"
+test "$(sed -n '1p' "$laststore_report")" = "PASS-OFFLINE"
+grep -q "multi-collection document engine" "$laststore_report"
+grep -q "Mini packaging" "$laststore_report"
+grep -q "PROOF_VERDICT=PASS-OFFLINE" "$PROOF_DIR/laststore.out"
+
+bad_laststore_record="$PROOF_DIR/bad-laststore-record.md"
+cat >"$bad_laststore_record" <<'EOF'
+Last Store is a convention of collections. LastDB is a document store.
+EOF
+if LASTSTORE_PROOF_RECORD_FILE="$bad_laststore_record" \
+  NORTH_STAR_PROOF_DIR="$PROOF_DIR" \
+  "$BIN" --offline north-star-laststore-is-document-store-last-db-is-conventions >"$PROOF_DIR/laststore-bad.out" 2>&1; then
+  echo "bad LastStore abstraction fixture unexpectedly passed" >&2
+  exit 1
+fi
 
 echo "PASS last-stack-north-star-proof"
