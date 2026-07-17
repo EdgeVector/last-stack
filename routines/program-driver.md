@@ -69,7 +69,7 @@ index and guarantee each unblocked one has its next card in `todo`.
   reads", treat that as busy-node backpressure: STOP, report `busy-node skipped
   program-driver`, and do not run doctor/init or restart anything.
 - Iterate slug lists with a bash array, never a bare `$var`.
-- Columns: `backlog → todo → doing → review → done`. `add <slug>` is an upsert.
+- Columns: `backlog → todo → doing → done`. `add <slug>` is an upsert.
 - The driving index is too large and too important for blind whole-record
   regeneration. If you need to change `active-programs`, stage the current body
   and proposed body as files and run:
@@ -120,16 +120,16 @@ index and guarantee each unblocked one has its next card in `todo`.
    so `consolidate-brain` can retire or refresh the program deliberately.
 
 2. **Snapshot the board narrowly.** Read the needed columns sequentially:
-   `<board CLI> list --column todo --json`, then `doing`, `review`, `done`, and
+   `<board CLI> list --column todo --json`, then `doing`, `done`, and
    `backlog` only if you need to promote from backlog. Do not launch these reads
    in parallel, and do not use wide/full-body board reads. A program's next card
-   may already be in `doing`/`review`/`done` — if so that program is already
+   may already be in `doing`/`done` — if so that program is already
    moving; do nothing for it this run.
 
 3. **For each program, find its NEXT unblocked card and make sure it's in
    `todo`.** Walk the DAG in order; the "next" card is the earliest not yet
    `done`. Then:
-   - **Already in `todo`/`doing`/`review`:** program is moving — leave it, note
+   - **Already in `todo`/`doing`:** program is moving — leave it, note
      it.
    - **In `backlog` and READY → promote to `todo`.** Ready = real
      GOAL/STEPS/VERIFY, a `Repo:`/`Base:` header, the `kanban-agent` header, no

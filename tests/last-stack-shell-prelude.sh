@@ -67,15 +67,20 @@ if grep -q 'command not found' "$tmp/missing.err"; then
 fi
 
 workspace="$tmp/workspace"
-mkdir -p "$workspace/brain/bin"
+home="$tmp/home"
+mkdir -p "$workspace/brain/bin" "$home/.local/bin"
 printf '#!/bin/sh\nexit 0\n' > "$workspace/brain/bin/brain"
 chmod +x "$workspace/brain/bin/brain"
+printf '#!/bin/sh\nexit 0\n' > "$home/.local/bin/brain"
+chmod +x "$home/.local/bin/brain"
 PATH="/usr/bin:/bin"
 LAST_STACK_WORKSPACE="$workspace"
+LAST_STACK_EDGEVECTOR_ROOT="$tmp/no-edgevector"
+HOME="$home"
 unset LAST_STACK_GLOBAL_PATH
-export PATH LAST_STACK_WORKSPACE
+export PATH LAST_STACK_WORKSPACE LAST_STACK_EDGEVECTOR_ROOT HOME
 . "$ROOT/bin/last-stack-shell-prelude"
 last_stack_require_tools brain
-test "$LAST_STACK_TOOL_BRAIN" = "$workspace/brain/bin/brain"
+test "$LAST_STACK_TOOL_BRAIN" = "$home/.local/bin/brain"
 
 echo "ok"

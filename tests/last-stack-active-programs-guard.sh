@@ -27,7 +27,7 @@ next
 **program-slug:** `[[north-star-local-first-app-namespacing]]`
 reopened after historical closure
 - local-first-app-namespacing-backfill is doing
-- local-first-app-namespacing-dogfood is review
+- local-first-app-namespacing-dogfood is todo
 EOF_BEFORE
 
 cp "$before" "$after"
@@ -39,7 +39,10 @@ cat > "$board" <<'EOF_BOARD'
 [
   {"slug":"done-card","column":"done"},
   {"slug":"live-card","column":"doing"},
-  {"slug":"mixed-done-card","column":"done"}
+  {"slug":"mixed-done-card","column":"done"},
+  {"slug":"retired-review-card","column":"review"},
+  {"slug":"blocked-backlog-card","column":"backlog","block_status":"deferred"},
+  {"slug":"table-done-card","column":"done"}
 ]
 EOF_BOARD
 cat > "$proof" <<'EOF_PROOF'
@@ -61,6 +64,18 @@ Next move still includes `mixed-done-card`, but `live-card` is doing.
 **Status (auto):** 1/2 landed · in flight: live-card (doing)
 cards: mixed-done-card, live-card
 <!-- rollup:end -->
+
+## Program: Retired review lane program
+**program-slug:** `[[review-lane-program]]`
+Next move still names `retired-review-card`.
+
+## Program: Deferred backlog table program
+**program-slug:** `[[deferred-table-program]]`
+Next move still says ship **blocked-backlog-card**.
+
+| slug | column | notes |
+|---|---|---|
+| table-done-card | todo | stale table row |
 EOF_STALE
 cp "$after" "$tmp/stale-before"
 "$ROOT/bin/last-stack-active-programs-guard" stale-report \
@@ -69,6 +84,8 @@ cp "$after" "$tmp/stale-before"
   --proof-slugs "$proof" > "$tmp/stale-report"
 grep -q 'Drained stale program.*drained.*done-card (done).*gone-card (gone, proof)' "$tmp/stale-report"
 grep -q 'Mixed active program.*mixed.*mixed-done-card (done).*live-card (doing)' "$tmp/stale-report"
+grep -q 'Retired review lane program.*drained.*retired-review-card (review, retired)' "$tmp/stale-report"
+grep -q 'Deferred backlog table program.*drained.*blocked-backlog-card (backlog, deferred).*table-done-card (done)' "$tmp/stale-report"
 cmp "$tmp/stale-before" "$after"
 
 head -n 7 "$before" > "$after"
