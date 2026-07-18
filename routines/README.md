@@ -93,20 +93,6 @@ The first three workers keep the established 15-minute anchors (`:00`, `:05`,
 so the fleet gets a pickup slot about every 2.5 minutes without changing the
 one-card-per-fire contract.
 
-### Registering feature-prove
-
-`feature-prove` is the product-proof stage for Feature Ship Loop owner cards.
-After installing this pack, write its scheduled registry entry idempotently:
-
-```bash
-last-stack-feature-prove-routine \
-  --prompt-path "$HOME/.last-stack/routines/feature-prove.md"
-ls ~/.routines/registry/last-stack-feature-prove.toml
-```
-
-It runs hourly on its own lock, uses the `feature-prove.md` prompt, and writes
-the normal routine memory under `~/.routines/memory/last-stack-feature-prove/`.
-
 ## The two clusters
 
 ### A. Self-fixing fleet health — portable to any agent fleet
@@ -132,7 +118,6 @@ the normal routine memory under `~/.routines/memory/last-stack-feature-prove/`.
 | [`kanban-watch`](kanban-watch.md) | every 10–20 min | RECONCILE the board; advance merged PRs, un-stick the strays. |
 | [`kanban-validate`](kanban-validate.md) | hourly, offset from watch | VALIDATE one merged card's post-merge END STATE; move it to `done` on pass or `review` with proof/fix/blocker on fail. |
 | [`groom-board`](groom-board.md) | daily | Promote ready `backlog`→`todo`, break up epics, prune junk. |
-| [`human-gate-audit`](human-gate-audit.md) | daily | Classify every `needs_human`/`design_first`/`deferred` hold into REAL_HUMAN / NOT_A_BLOCKER / NEEDS_RECOMMENDATION; clear false gates; file investigation cards; write `human-gate-audit-latest` for morning-sync. |
 | [`program-driver`](program-driver.md) | hourly | Promote each program's next DAG card into `todo` (includes Feature Ship Loop frontier budget). |
 | [`feature-prove`](feature-prove.md) | hourly | Product-proof stage for `feature-owner` cards; PASS file or fix-forward / open-decisions. |
 | [`program-rollup`](program-rollup.md) | hourly | Mirror the board into the brain's driving index (auto-status block). |
@@ -228,16 +213,11 @@ last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
   "<routine> <ISO-ts> <ok|noop|error> <summary>"
 ```
 
-Use this helper instead of open-coding heartbeat read/write snippets. It reads
-`brain get routine-heartbeats --type reference --json`, aborts on any read or
-JSON error, then writes the new newest-on-top line plus the existing body back
-with `brain put routine-heartbeats --type reference`. If the read fails only
-because an older local brain config is missing a newly-added schema hash (for
-example `No canonical hash registered for type "decision"`), the helper falls
-back to `brain append routine-heartbeats --type reference --raw --json` and
-records the heartbeat at the tail without running `brain init`. If a project
-and reference share the `routine-heartbeats` slug, the typed read still targets
-the reference; for other read failures, the helper performs no write.
+Use this helper instead of open-coding heartbeat snippets. Heartbeats are
+**filesystem-only** (not LastDB/brain) — the helper appends one line to
+`~/.last-stack/logs/routine-heartbeats.log` (override with
+`LAST_STACK_HEARTBEATS_FILE`). Read with `tail` or
+`last-stack-heartbeats-path`. Never `brain put`/`brain append` heartbeats.
 
 Safe memory-path shell pattern for rendered automation prompts:
 
