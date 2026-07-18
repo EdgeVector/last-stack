@@ -601,9 +601,10 @@ scan of your repos for these. A PR is a STRANDED candidate when ALL hold:
 Apply the CHEAP fixes to EVERY stranded candidate (uncapped): re-arm auto-merge
 on each CLEAN-but-unarmed one; `update-branch` the oldest few clean-green-BEHIND
 ones; `gh run rerun <run-id> --failed` on every flaky-cancellation. For LastGit
-repos, scan open CRs with `lastgit cr list <slug> --state open --json`, run
-`lastgit cr complete <slug> --once --json` for green auto-merge CRs, and leave
-pending/missing-status CRs alone. AT MOST ONE HEAVY fix per wake (a real
+repos, list open CRs with **one** `lastgit cr list --all-open --json` (never
+N× `cr list <slug>`), run `lastgit cr complete <slug> --once --json` only for
+repos that actually have open auto_merge CRs, and leave pending/missing-status
+CRs alone. AT MOST ONE HEAVY fix per wake (a real
 mechanical fix in a worktree, OR a DIRTY rebase). If a fix isn't clearly
 mechanical, comment/record the blocker and move on. Handling stranded PRs/CRs
 COUNTS as forward action.
