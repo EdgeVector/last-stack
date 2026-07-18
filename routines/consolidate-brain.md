@@ -20,7 +20,7 @@ resolve Last Stack once, source its prelude, and preflight the tools you will
 use:
 
 ```bash
-last_stack="${LAST_STACK_HOME:-$HOME/.last-stack}"
+last_stack="${LAST_STACK_ROOT:-${LAST_STACK_HOME:-$HOME/.last-stack}}"
 . "$last_stack/bin/last-stack-shell-prelude"
 "$last_stack/bin/last-stack-cli-preflight" git jq <brain-cli> <board-cli> || true
 ```
