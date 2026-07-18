@@ -87,10 +87,21 @@ if [[ "$predicate" =~ ^routine[[:space:]]+([^[:space:]]+)[[:space:]]+heartbeat[[
   routine="${BASH_REMATCH[1]}"
   regex="${BASH_REMATCH[2]}"
   cutoff="${BASH_REMATCH[3]}"
-  heartbeats="$(brain get routine-heartbeats --type reference 2>/dev/null)" || {
-    echo "pending: routine-heartbeats record unavailable"
+  # Heartbeats live on the filesystem, not LastDB/brain.
+  hb_file="${LAST_STACK_HEARTBEATS_FILE:-}"
+  if [ -z "$hb_file" ]; then
+    _ls_root="$(cd "$(dirname "$0")/.." && pwd)"
+    if [ -d "$_ls_root/bin" ]; then
+      hb_file="$_ls_root/logs/routine-heartbeats.log"
+    else
+      hb_file="${HOME}/.last-stack/logs/routine-heartbeats.log"
+    fi
+  fi
+  if [ ! -f "$hb_file" ]; then
+    echo "pending: heartbeats log unavailable ($hb_file)"
     exit 1
-  }
+  fi
+  heartbeats="$(cat "$hb_file")"
   match_line="$(
     printf '%s\n' "$heartbeats" |
       awk -v routine="$routine" -v regex="$regex" -v cutoff="$cutoff" '

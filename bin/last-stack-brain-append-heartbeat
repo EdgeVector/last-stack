@@ -1,9 +1,32 @@
 #!/usr/bin/env bash
-# Safely add one newest-on-top line to the typed routine-heartbeats reference.
+# Append one heartbeat line to a local log file — NOT LastDB / brain.
+#
+# Heartbeats are fleet "I ran" pings. They must not use LastDB (versioned
+# full-body rewrites of a Reference record ballooned atom storage).
+#
+# Default log: ~/.last-stack/logs/routine-heartbeats.log
+# Override:    LAST_STACK_HEARTBEATS_FILE=/path/to/file
+#
+# Lines are appended (newest at end). Single-line only.
 set -euo pipefail
 
-slug="routine-heartbeats"
+slug="routine-heartbeats" # retained for CLI compatibility; not a brain slug
 line=""
+
+default_log() {
+  if [ -n "${LAST_STACK_HEARTBEATS_FILE:-}" ]; then
+    printf '%s\n' "$LAST_STACK_HEARTBEATS_FILE"
+    return
+  fi
+  # Prefer the last-stack install this script lives in, else ~/.last-stack
+  local root
+  root="$(cd "$(dirname "$0")/.." && pwd)"
+  if [ -d "$root/logs" ] || [ -d "$root/bin" ]; then
+    printf '%s\n' "$root/logs/routine-heartbeats.log"
+    return
+  fi
+  printf '%s\n' "${HOME}/.last-stack/logs/routine-heartbeats.log"
+}
 
 usage() {
   cat <<'EOF'
@@ -11,11 +34,18 @@ Usage:
   last-stack-brain-append-heartbeat [--slug routine-heartbeats] --line "<heartbeat>"
   printf '%s\n' "<heartbeat>" | last-stack-brain-append-heartbeat --stdin
 
-Reads the target with `brain get <slug> --type reference --json`, aborts on any
-read or JSON error, then writes the new line plus the existing body back with
-`brain put <slug> --type reference`. Existing lines are preserved. If an older
-local brain config is missing a newly-added schema hash, falls back to
-`brain append` so the heartbeat is still recorded without running `brain init`.
+Appends one line to a filesystem log (NOT brain / LastDB).
+
+  Default file:  <last-stack>/logs/routine-heartbeats.log
+                 or ~/.last-stack/logs/routine-heartbeats.log
+  Override:      LAST_STACK_HEARTBEATS_FILE=/path/to/log
+
+  --slug is accepted for backward compatibility and ignored for storage
+  (all fleet heartbeats share one file).
+
+Read with:
+  tail -n 200 "$(last-stack-heartbeats-path)"
+  # or: cat "$LAST_STACK_HEARTBEATS_FILE"
 EOF
 }
 
@@ -58,10 +88,6 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if [ -z "$slug" ]; then
-  echo "slug is required" >&2
-  exit 2
-fi
 if [ -z "$line" ]; then
   echo "heartbeat line is required" >&2
   exit 2
@@ -73,85 +99,8 @@ case "$line" in
     ;;
 esac
 
-command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 127; }
-brain_cmd="${LAST_STACK_BRAIN:-}"
-if [ -n "$brain_cmd" ] && ! [ -x "$brain_cmd" ]; then
-  echo "LAST_STACK_BRAIN is not executable: $brain_cmd" >&2
-  exit 127
-fi
-if [ -z "$brain_cmd" ]; then
-  old_ifs="$IFS"
-  IFS=:
-  for path_dir in $PATH; do
-    [ -n "$path_dir" ] || path_dir="."
-    if [ -x "$path_dir/fbrain" ]; then
-      brain_cmd="$path_dir/fbrain"
-      break
-    fi
-    if [ -x "$path_dir/brain" ]; then
-      brain_cmd="$path_dir/brain"
-      break
-    fi
-  done
-  IFS="$old_ifs"
-fi
-if [ -z "$brain_cmd" ]; then
-  echo "brain or fbrain is required" >&2
-  exit 127
-fi
-
-read_err="$(mktemp)"
-put_body="$(mktemp)"
-append_err="$(mktemp)"
-cleanup() {
-  rm -f "$read_err" "$put_body" "$append_err"
-}
-trap cleanup EXIT
-
-fallback_append() {
-  # A new schema type can make old brain configs fail reads before the target
-  # reference is reachable. In unattended routines, do not run brain init; grow
-  # the heartbeat record server-side instead.
-  printf '\n%s\n' "$line" | "$brain_cmd" append "$slug" --type reference --raw --json >"$put_body" 2>"$append_err" || {
-    cat "$append_err" >&2
-    [ -s "$put_body" ] && cat "$put_body" >&2
-    echo "aborting: fallback append failed for $slug" >&2
-    exit 1
-  }
-  if ! jq -e 'type == "object" and .ok == true' "$put_body" >/dev/null; then
-    cat "$append_err" >&2
-    cat "$put_body" >&2
-    echo "aborting: fallback append returned an error payload" >&2
-    exit 1
-  fi
-  echo "appended heartbeat to $slug via brain append fallback"
-  exit 0
-}
-
-if ! record_json="$("$brain_cmd" get "$slug" --type reference --json 2>"$read_err")"; then
-  if { printf '%s\n' "$record_json"; cat "$read_err"; } | grep -q 'No canonical hash registered'; then
-    fallback_append
-  fi
-  cat "$read_err" >&2
-  [ -n "$record_json" ] && printf '%s\n' "$record_json" >&2
-  echo "aborting: could not read $slug as --type reference; not writing" >&2
-  exit 1
-fi
-
-if ! printf '%s' "$record_json" | jq -e 'type == "object" and (has("error") | not)' >/dev/null; then
-  printf '%s\n' "$record_json" >&2
-  echo "aborting: typed read returned an error payload; not writing" >&2
-  exit 1
-fi
-
-body="$(printf '%s' "$record_json" | jq -r '.body // ""')"
-
-{
-  printf '%s\n' "$line"
-  if [ -n "$body" ]; then
-    printf '%s\n' "$body"
-  fi
-} > "$put_body"
-
-"$brain_cmd" put "$slug" --type reference --json < "$put_body" >/dev/null
-echo "appended heartbeat to $slug"
+log_file="$(default_log)"
+mkdir -p "$(dirname "$log_file")"
+# Append-only — never rewrite the whole file through LastDB.
+printf '%s\n' "$line" >>"$log_file"
+echo "appended heartbeat to file ${log_file}${slug:+ (label=$slug)}"

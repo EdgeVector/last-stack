@@ -106,19 +106,29 @@ def load_cards(args: argparse.Namespace) -> list[dict[str, Any]]:
     raise RuntimeError(last_err or "could not load board cards")
 
 
+def default_heartbeats_path() -> Path:
+    env = os.environ.get("LAST_STACK_HEARTBEATS_FILE")
+    if env:
+        return Path(env)
+    # Prefer last-stack install next to this script
+    here = Path(__file__).resolve().parent.parent
+    candidate = here / "logs" / "routine-heartbeats.log"
+    if candidate.parent.is_dir() or (here / "bin").is_dir():
+        return candidate
+    return Path.home() / ".last-stack" / "logs" / "routine-heartbeats.log"
+
+
 def load_heartbeats(args: argparse.Namespace) -> str:
     if args.heartbeats_file:
         return Path(args.heartbeats_file).read_text(encoding="utf-8")
 
-    brain_cmd = os.environ.get("LAST_STACK_BRAIN") or first_executable(["fbrain", "brain"])
-    if not brain_cmd:
-        return ""
+    # Filesystem log only — never LastDB / brain (heartbeats moved off Mini).
+    path = default_heartbeats_path()
     try:
-        data = run_json([brain_cmd, "get", "routine-heartbeats", "--type", "reference", "--json"])
-    except Exception:
+        if path.is_file():
+            return path.read_text(encoding="utf-8")
+    except OSError:
         return ""
-    if isinstance(data, dict):
-        return str(data.get("body") or "")
     return ""
 
 

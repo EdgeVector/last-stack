@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Print the filesystem path of the routine heartbeats log (not LastDB).
+set -euo pipefail
+if [ -n "${LAST_STACK_HEARTBEATS_FILE:-}" ]; then
+  printf '%s\n' "$LAST_STACK_HEARTBEATS_FILE"
+  exit 0
+fi
+root="$(cd "$(dirname "$0")/.." && pwd)"
+if [ -d "$root/bin" ]; then
+  printf '%s\n' "$root/logs/routine-heartbeats.log"
+  exit 0
+fi
+printf '%s\n' "${HOME}/.last-stack/logs/routine-heartbeats.log"

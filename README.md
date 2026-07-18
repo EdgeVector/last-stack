@@ -279,7 +279,11 @@ bin/
   last-stack-git-checkout-freshness
                             non-mutating tracked-remote freshness preflight
   last-stack-brain-append-heartbeat
-                            safely add a typed routine-heartbeats line
+                            append a fleet heartbeat line to a **filesystem**
+                            log (NOT LastDB/brain). Default:
+                            ~/.last-stack/logs/routine-heartbeats.log
+  last-stack-heartbeats-path
+                            print the heartbeats log path
   last-stack-board-drain-report
                             print board position plus 1h/6h/24h pickup drain
                             velocity from routine-heartbeats and run metadata
