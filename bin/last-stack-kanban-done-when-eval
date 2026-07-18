@@ -140,7 +140,7 @@ if [[ "$predicate" =~ ^file[[:space:]]+([^[:space:]]+)[[:space:]]+matches[[:spac
   regex="${BASH_REMATCH[2]}"
   # Expand ~ and $HOME so harness reports under ~/.last-stack/north-star-proofs work.
   if [[ "$path" == "~/"* ]]; then
-    path="$HOME/${path#~/}"
+    path="$HOME/${path:2}"
   fi
   path="${path//\$HOME/$HOME}"
   if [ ! -f "$path" ]; then
