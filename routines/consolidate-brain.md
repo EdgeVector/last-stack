@@ -14,6 +14,22 @@ Read first (don't skip):
 - The convention note that explains your consolidation rules, if you keep one.
 - The driving index (`<brain get> active-programs`).
 
+## Scheduled-shell setup
+Scheduled shells can start with a stripped PATH. Before any CLI-heavy work,
+resolve Last Stack once, source its prelude, and preflight the tools you will
+use:
+
+```bash
+last_stack="${LAST_STACK_HOME:-$HOME/.last-stack}"
+. "$last_stack/bin/last-stack-shell-prelude"
+"$last_stack/bin/last-stack-cli-preflight" git jq <brain-cli> <board-cli> || true
+```
+
+Invoke Last Stack helpers by absolute path, for example
+`"$last_stack/bin/last-stack-active-programs-guard"`. Do not rely on bare helper
+names such as `last-stack-active-programs-guard`; they may not be on the
+scheduled harness PATH.
+
 ## Automation memory
 If the scheduled prompt includes an `Automation memory:` path (routinesd injects
 one under `## Dispatch envelope`), read and write **that exact file**. Prefer it
