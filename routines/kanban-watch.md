@@ -47,7 +47,8 @@ envelope). Do not invent trailers when `DRIVEN_BY` is unset.
 
 ## Action budget per wake (cheap vs heavy)
 - **CHEAP mechanical advances are NOT capped** — do EVERY applicable one this
-  wake, **including on pickup-failover early exits**: **reclaim zombie
+  wake, **including on pickup-failover early exits**: **`kanban groom
+  board-cards-heal --apply`** (list/show BoardCards drift) then **reclaim zombie
   `doing` claims** (no PR/branch/commits + no live worker + older than
   **60m** → `move … todo`; soft rule — never SIGKILL agents) **before** any
   failover claim; move every merged card to `done` when on the full-reconcile
@@ -164,12 +165,50 @@ because the card is `Kind: pr`: continue the merged-PR logic below. Predicate
 evaluation is read-only and fail-closed; an errored or unsupported predicate
 never auto-closes a card.
 
+## Heal BoardCards list/show drift (CHEAP — ALWAYS, before zombie reclaim)
+
+**Why (2026-07-18):** BoardCards is a HashRange membership index
+(`column#position#slug`). Moves that omit the previous sk leave **orphan
+`doing#…` rows** after the Card document is already `done`. Then:
+
+- `kanban list --column doing` still shows finished work (ghosts for hours)
+- surface-overlap treats ghosts as in-flight → pickup idles forever
+- soft 1h zombie reclaim **skips** these cards (they have PR/CR metadata and
+  are not dead claims)
+
+**Authoritative column is `kanban show <slug>` (Card point-read).** List is
+the index.
+
+**Every wake, before zombie reclaim and before any early exit:**
+
+```bash
+kanban groom board-cards-heal --apply
+# or: fkanban groom board-cards-heal --apply
+```
+
+- Dry-run first only when debugging; production wakes **apply**.
+- Cheap: one BoardCards partition + CardListIndex, then deletes/upserts only
+  drifted slugs.
+- Heartbeat keys:
+  - `list-show-drift=0` when clean
+  - `list-show-drift-healed=<n>` when apply fixed n cards
+  - `list-show-drift-failed=<reason>` if the command errors (do not block the
+    rest of the wake; continue to zombie reclaim)
+
+If drift reappears after a green heal on the same wake, note
+`list-show-drift-recurred` and prefer filing/refreshing a P0 papercut on
+`EdgeVector/fkanban` (index writer bug) rather than infinite loops.
+
+Also acceptable equivalent: `bun scripts/backfill-board-cards.ts` from the
+fkanban checkout (heavier; prefer `groom board-cards-heal`).
+
 ## Reclaim zombie `doing` claims (CHEAP, uncapped — ALWAYS, even on pickup failover)
 
-**Order (Tom 2026-07-18):** run this section **before** pickup failover and
-**before** any early exit. Historical bug: failover used to `exit` without
-reconcile, so multi-hour zombies sat untouched while watch "succeeded." CHEAP
-reclaim must not be skipped.
+**Order (Tom 2026-07-18):** run **BoardCards list/show drift heal** first, then
+this section, **before** pickup failover and **before** any early exit.
+Historical bug: failover used to `exit` without reconcile, so multi-hour
+zombies sat untouched while watch "succeeded." CHEAP reclaim must not be
+skipped.
 
 **Soft rule (Tom 2026-07-18):** anything sitting in `doing` longer than **~1
 hour** should be *checked*. Default for a **dead claim** (no PR/CR, no branch
