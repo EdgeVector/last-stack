@@ -47,9 +47,11 @@ envelope). Do not invent trailers when `DRIVEN_BY` is unset.
 
 ## Action budget per wake (cheap vs heavy)
 - **CHEAP mechanical advances are NOT capped** — do EVERY applicable one this
-  wake: **reclaim zombie `doing` claims** (no PR/branch/commits + no live
-  worker + older than **60m** → `move … todo`; soft rule — never SIGKILL
-  agents); move every merged card to `done`;
+  wake, **including on pickup-failover early exits**: **reclaim zombie
+  `doing` claims** (no PR/branch/commits + no live worker + older than
+  **60m** → `move … todo`; soft rule — never SIGKILL agents) **before** any
+  failover claim; move every merged card to `done` when on the full-reconcile
+  path;
   **re-arm auto-merge on every PR that is CLEAN/mergeable but has auto-merge OFF
   or *dropped*** (a dropped auto-merge is the #1 strand and nothing else
   re-fires it); and `gh pr update-branch` the oldest few clean-green-BEHIND
@@ -124,28 +126,12 @@ because the card is `Kind: pr`: continue the merged-PR logic below. Predicate
 evaluation is read-only and fail-closed; an errored or unsupported predicate
 never auto-closes a card.
 
-## Pickup failover
-Treat `kanban-pickup` as critical infrastructure. Before the normal reconcile
-sweep, check the latest `last-stack kanban-pickup` scheduler session in
-`${CODEX_HOME:-$HOME/.codex}/session_index.jsonl` and the
-`routine-heartbeats` entry for `kanban-pickup`. If both are stale by more than
-2 hours, and `kanban list --column todo --json` shows any unblocked `todo` card
-with a `Repo:` header and no `BLOCKED:` line, switch this wake into pickup
-failover:
+## Reclaim zombie `doing` claims (CHEAP, uncapped — ALWAYS, even on pickup failover)
 
-- Read the `kanban-pickup` routine fully (`<last-stack>/routines/kanban-pickup.md`).
-- Execute one bounded pickup pass using that routine's rules, with the same
-  board/brain CLIs and workspace.
-- Use N=1 in failover mode unless the pickup routine requires a lower safe
-  value; the goal is to keep the pipeline alive, not to double normal capacity.
-- Append both a `kanban-watch ... ok pickup-failover ...` heartbeat and the
-  pickup routine's required `kanban-pickup ... ok ...` heartbeat.
-- Then exit without doing the normal reconcile sweep.
-
-If pickup is fresh, or there is no eligible unblocked `todo` work, continue with
-the normal reconcile sweep below.
-
-## Reclaim zombie `doing` claims (CHEAP, uncapped — do EARLY)
+**Order (Tom 2026-07-18):** run this section **before** pickup failover and
+**before** any early exit. Historical bug: failover used to `exit` without
+reconcile, so multi-hour zombies sat untouched while watch "succeeded." CHEAP
+reclaim must not be skipped.
 
 **Soft rule (Tom 2026-07-18):** anything sitting in `doing` longer than **~1
 hour** should be *checked*. Default for a **dead claim** (no PR/CR, no branch
@@ -178,11 +164,18 @@ For every card in `doing` (from the column preview):
 5. If a worktree for `<slug>` exists under `~/.kanban/worktrees`:
    - A live process whose command line contains that worktree path is a live
      worker: **skip** (soft rule — do not reclaim or kill mid-run).
-   - A dirty worktree with **no live process** is not an infinite skip. Inspect
-     `git -C "$worktree_path" status --short` and
+   - **Clean** worktree, zero commits ahead of base, branch never pushed, no
+     live process → treat as dead claim and **`move <slug> todo`** (same as
+     step 6). This is the common "worker died after worktree create" path and
+     must run on failover wakes too.
+   - A **dirty** worktree with **no live process** is not an infinite skip.
+     Inspect `git -C "$worktree_path" status --short` and
      `git -C "$worktree_path" log --oneline -5`.
-     - If the dirty files and recent commits are coherent for this card, finish
-       the branch through the normal "branch with commits" path below.
+     - If the dirty files and recent commits are coherent for this card and
+       this wake continues into full reconcile, finish the branch through the
+       normal "branch with commits" path below. On a failover-early-exit wake,
+       leave the card in `doing` this pass (do not thrash mid-WIP); note
+       `dirty-worktree-deferred=<slug>` in the heartbeat.
      - If they are mixed-scope/unrelated, do **not** commit them into this
        card. Check whether blocker IDs named in the body are already resolved
        (for LastGit, `lastgit cr view <repo-slug> <cr-id> --json` plus open CR
@@ -197,12 +190,39 @@ For every card in `doing` (from the column preview):
        `block_status=needs_human` once `attempts>=3` or the first marker is
        older than **60 minutes**. Before that, leave it in `doing` so a
        short-lived local edit is not stolen.
-6. Otherwise **`move <slug> todo`**. Note `reclaimed-zombie=<slug>` in the
-   heartbeat. Do this for EVERY matching card this wake (uncapped CHEAP).
+6. Otherwise (no worktree, or clean empty claim) **`move <slug> todo`**. Note
+   `reclaimed-zombie=<slug>` in the heartbeat. Do this for EVERY matching card
+   this wake (uncapped CHEAP) — including when the wake will later take the
+   pickup-failover early exit.
 
 Do **not** reclaim from `todo`/`backlog`. Do **not** move zombies to `done`.
 Do **not** SIGKILL agent/build processes for age. Prefer reclaim over parking
 — the next pickup should retry.
+
+## Pickup failover
+Treat `kanban-pickup` as critical infrastructure. **After** the zombie-reclaim
+section above (never skip reclaim for failover), check the latest
+`last-stack kanban-pickup` scheduler session in
+`${CODEX_HOME:-$HOME/.codex}/session_index.jsonl` and the
+`routine-heartbeats` entry for `kanban-pickup`. If both are stale by more than
+2 hours, and `kanban list --column todo --json` shows any unblocked `todo` card
+with a `Repo:` header and no `BLOCKED:` line, switch this wake into pickup
+failover:
+
+- Read the `kanban-pickup` routine fully (`<last-stack>/routines/kanban-pickup.md`).
+- Execute one bounded pickup pass using that routine's rules, with the same
+  board/brain CLIs and workspace.
+- Use N=1 in failover mode unless the pickup routine requires a lower safe
+  value; the goal is to keep the pipeline alive, not to double normal capacity.
+- Append both a `kanban-watch ... ok pickup-failover ...` heartbeat and the
+  pickup routine's required `kanban-pickup ... ok ...` heartbeat. Include any
+  `reclaimed-zombie=…` keys from this wake in the watch heartbeat.
+- Then exit without doing the **heavy** / normal PR reconcile sweep
+  (re-arm, update-branch, worktree CI fix, filing cards). **Do not** skip
+  zombie reclaim — that already ran.
+
+If pickup is fresh, or there is no eligible unblocked `todo` work, continue with
+the normal reconcile sweep below.
 
 ## Self-heal stranded no-repo cards (CHEAP, uncapped — do FIRST)
 A card needs both a `Repo:` and a `Base:` header to be pickup-eligible. `add`/`move`
