@@ -20,7 +20,28 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
-remote="${LASTSTACK_REMOTE_REPO:-origin}"
+
+# The install's `origin` remote is often a read-only GitHub mirror; the
+# canonical source for LastGit-native repos (like this one) is the `lastgit`
+# remote. Comparing against a stale mirror misreports a legitimate
+# fast-forward-ahead-of-mirror install as error-diverged. Prefer `lastgit`
+# when the repo has opted into it, same convention as last-stack-pr-venue.
+default_remote() {
+  if git -C "$ROOT" remote get-url lastgit >/dev/null 2>&1; then
+    venue="$(git -C "$ROOT" config --get laststack.pr-venue 2>/dev/null || true)"
+    [ -n "$venue" ] || venue="$(git -C "$ROOT" config --get laststack.prVenue 2>/dev/null || true)"
+    if [ -z "$venue" ] && [ -f "$ROOT/.last-stack/pr-venue" ]; then
+      venue="$(sed -n '1{s/[[:space:]]*$//;p;}' "$ROOT/.last-stack/pr-venue")"
+    fi
+    if [ "$venue" = "lastgit" ]; then
+      printf 'lastgit\n'
+      return 0
+    fi
+  fi
+  printf 'origin\n'
+}
+
+remote="${LASTSTACK_REMOTE_REPO:-$(default_remote)}"
 do_setup=1
 check_only=0
 reason=""
@@ -37,7 +58,8 @@ Safely fast-forward the Last Stack install and re-run ./setup when clean.
 
 Environment:
   LAST_STACK_ROOT           install root (resolved from this script by default)
-  LASTSTACK_REMOTE_REPO     git remote name (default: origin)
+  LASTSTACK_REMOTE_REPO     git remote name (default: lastgit when the repo
+                            is opted into the lastgit venue, else origin)
   LASTSTACK_SELF_UPGRADE_SKIP=1  callers may set this to disable auto-heal
 EOF
 }
