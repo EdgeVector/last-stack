@@ -105,6 +105,25 @@ if ! grep -Fq "never read a" <<<"$groom_board_prompt" ||
   exit 1
 fi
 
+worktree_cleanup_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" worktree-cleanup)"
+if ! grep -Fq "Run Budget And Exit Contract" <<<"$worktree_cleanup_prompt" ||
+   ! grep -Fq "timeout -k 30s <seconds>" <<<"$worktree_cleanup_prompt" ||
+   ! grep -Fq "reason=command-timebox" <<<"$worktree_cleanup_prompt"; then
+  echo "expected worktree-cleanup to bound long foreground commands before the harness timeout" >&2
+  exit 1
+fi
+if ! grep -Fq "board-socket-unavailable" <<<"$worktree_cleanup_prompt" ||
+   ! grep -Fq "do not run" <<<"$worktree_cleanup_prompt" ||
+   ! grep -Fq "doctor/init/restart" <<<"$worktree_cleanup_prompt"; then
+  echo "expected worktree-cleanup to classify board socket backpressure as noop, not doctor/restart" >&2
+  exit 1
+fi
+if ! grep -Fq "There is no \`review\` column" <<<"$worktree_cleanup_prompt" ||
+   ! grep -Fq 'ROUTINE_RESULT` token followed by' <<<"$worktree_cleanup_prompt"; then
+  echo "expected worktree-cleanup to avoid review-column state and emit a final routine result" >&2
+  exit 1
+fi
+
 north_star_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" north-star-rollup)"
 if ! grep -Fq 'timeout 300 "$dash_bin"' <<<"$north_star_prompt" ||
    ! grep -Fq "reason=dashboard-timeout-prior-snapshot" <<<"$north_star_prompt"; then
