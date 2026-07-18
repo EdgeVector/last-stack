@@ -108,3 +108,14 @@ continue — do not fail the whole run.
 ## Output
 Report: GB reclaimed, worktrees pruned (and which were kept and why), final free
 space, and anything left for a human.
+
+> **Heartbeat (LAST action, always — even a bounded no-op).** Call
+> `<last-stack>/bin/last-stack-brain-append-heartbeat --line "disk-reclaim
+> <ISO-ts> <ok|noop|error> <outcome>"`, e.g. `ok reclaimed_gb=<n>
+> worktrees_pruned=<n>` on a real reclaim, or `noop reclaimed_gb=0
+> worktrees_pruned=0` when the run found nothing to remove. Without this call,
+> routinesd's outcome classifier has no ok/noop/error token to key on and
+> reports `lastOutcome=unknown` for every finished run regardless of how the
+> run actually went. If the heartbeat helper cannot write because the brain
+> socket is unavailable, still print the heartbeat line so the run's stdout
+> carries the token.
