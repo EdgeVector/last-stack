@@ -93,6 +93,16 @@ Before promoting idle/P3 papercuts or inventing program slices:
   returns `service_timeout`, "node did not respond", or "too many concurrent
   reads", treat that as busy-node backpressure: STOP, report `busy-node skipped
   program-driver`, and do not run doctor/init or restart anything.
+- If any required board/Brain read after that fails because the primary
+  data-plane socket or read route is missing/unreachable (`No such file or
+  directory`, `node read route not reachable`, `socket missing`, `socket
+  unreachable`, `connection refused`, `ECONNRESET`, or equivalent), treat it as
+  the already-carded primary-data blocker, not a program-driver logic failure:
+  STOP, write only the automation-memory note if that file path is writable,
+  and heartbeat `program-driver <ISO-ts> noop primary-data-unavailable
+  no-mutations`. Do not run doctor/init, restart/kill LastDB, mutate
+  board/Brain, generate/promote cards, or emit an `error` heartbeat for this
+  no-mutation external blocker.
 - Iterate slug lists with a bash array, never a bare `$var`.
 - Columns: `backlog → todo → doing → done`. `add <slug>` is an upsert.
 - The driving index is too large and too important for blind whole-record
@@ -261,10 +271,13 @@ Before promoting idle/P3 papercuts or inventing program slices:
   promoted to todo | epic-slice filed <child-slug> | next-move card filed <slug> |
   GATED (needs human: <what>) | no ready next step>`.
 - A "⚠️ Needs a human" section listing every program stalled ONLY on a human gate.
-- Checkpoint a one-paragraph status to the brain on EVERY run — even a no-op run
-  where nothing was promoted (so "ran and found everything gated/in-flight" is
-  distinguishable from "didn't run"). Update an existing `program-driver-status`
-  note in place; always refresh its timestamp.
+- Checkpoint a one-paragraph status to the brain on EVERY run where the Brain
+  data plane is available — even a no-op run where nothing was promoted (so "ran
+  and found everything gated/in-flight" is distinguishable from "didn't run").
+  Update an existing `program-driver-status` note in place; always refresh its
+  timestamp. If the primary data plane becomes unavailable before any mutation,
+  skip the Brain checkpoint and use the `noop primary-data-unavailable
+  no-mutations` heartbeat above.
 
 > **Heartbeat (optional but recommended).** LAST action, even on a
 > no-op/early-exit run: call

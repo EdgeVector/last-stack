@@ -309,6 +309,12 @@ exit or retry one idempotent slug upsert; do not run doctor/init or restart.
 GOOD_BUSY_NODE_BACKOFF
 "$ROOT/bin/last-stack-lint-prompts" "$good_busy_node_backoff"
 
+program_driver="$ROOT/routines/program-driver.md"
+grep -q 'noop primary-data-unavailable' "$program_driver"
+grep -q 'no-mutations' "$program_driver"
+grep -q 'Do not run doctor/init' "$program_driver"
+grep -q 'restart/kill LastDB' "$program_driver"
+
 bad_routine_result_literal="$tmp/bad-routine-result-literal.md"
 printf '%s\n' 'print `ROUTINE_RESULT outcome=noop detail=idle=nothing-safe` before exit' > "$bad_routine_result_literal"
 if "$ROOT/bin/last-stack-lint-prompts" "$bad_routine_result_literal" >/dev/null 2>&1; then
