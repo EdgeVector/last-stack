@@ -377,3 +377,5 @@ service). Point the skills at whichever node hosts your board and brain.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+See also [docs/lastdb-no-product-scan.md](docs/lastdb-no-product-scan.md).

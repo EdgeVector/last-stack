@@ -616,3 +616,7 @@ any, final column (`done` / human-gated `backlog` / rolled-back `todo`); or idle
 > Optional machine trailer (helps the routines dashboard): print a final line
 > a machine trailer before exit: the token `ROUTINE_RESULT`, then
 > `outcome=ok|noop|error detail=...`.
+
+## LastDB access
+
+Do not full-scan LastDB schemas on hot paths. Prefer column-scoped `kanban list --column` and keyed reads. See `docs/lastdb-no-product-scan.md`.
