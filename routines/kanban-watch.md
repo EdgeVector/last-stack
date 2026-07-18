@@ -48,7 +48,8 @@ envelope). Do not invent trailers when `DRIVEN_BY` is unset.
 ## Action budget per wake (cheap vs heavy)
 - **CHEAP mechanical advances are NOT capped** — do EVERY applicable one this
   wake: **reclaim zombie `doing` claims** (no PR/branch/commits + no live
-  worker + older than 90m → `move … todo`); move every merged card to `done`;
+  worker + older than **60m** → `move … todo`; soft rule — never SIGKILL
+  agents); move every merged card to `done`;
   **re-arm auto-merge on every PR that is CLEAN/mergeable but has auto-merge OFF
   or *dropped*** (a dropped auto-merge is the #1 strand and nothing else
   re-fires it); and `gh pr update-branch` the oldest few clean-green-BEHIND
@@ -146,6 +147,14 @@ the normal reconcile sweep below.
 
 ## Reclaim zombie `doing` claims (CHEAP, uncapped — do EARLY)
 
+**Soft rule (Tom 2026-07-18):** anything sitting in `doing` longer than **~1
+hour** should be *checked*. Default for a **dead claim** (no PR/CR, no branch
+commits, no live worker) is reclaim to `todo` so pickup can retry. This is
+**not** a hard kill of agents or processes — never `kill`/`pkill` a live
+codex/claude/grok/cargo worker just for age. Live work, open PRs/CRs, and
+recent progress stay put. Durable: brain
+`preference-kanban-doing-soft-1h-reclaim`.
+
 A card in `doing` with **no PR/CR**, **no `kanban/<slug>` branch with commits**,
 and **no live worker** is a pipeline stall: surface-overlap and shared-build
 gates treat it as in-flight, so pickup skips overlapping todos forever.
@@ -154,16 +163,21 @@ This is the backstop for the failure mode `kanban-pickup` already forbids
 ("Do not leave zombie `doing` cards with no worker") when the claiming session
 dies before it can roll back.
 
+**Age clock (soft 60m):** prefer *doing-since* when `position` looks like
+epoch-ms (~1e12–1e13, fkanban sets this on column enter); else fall back to
+`updated_at`. Grace = **60 minutes**.
+
 For every card in `doing` (from the column preview):
 1. Skip non-PR kinds that use `DONE-WHEN` (evaluate those on the normal path).
 2. If the card has an explicit `PR:` / `pr_url` / `lastgit://…/cr/…`, skip
    (in-flight review artifact — normal PR reconcile owns it).
 3. If head-branch lookup finds an open/merged PR/CR for `kanban/<slug>` (or the
    card's `Branch:`), skip (record URL if missing, then advance normally).
-4. If `updated_at` is younger than **90 minutes**, skip (grace for long builds).
+4. If age (doing-since / `updated_at`) is younger than **60 minutes**, skip
+   (grace for long builds and honest in-flight work).
 5. If a worktree for `<slug>` exists under `~/.kanban/worktrees`:
    - A live process whose command line contains that worktree path is a live
-     worker: skip.
+     worker: **skip** (soft rule — do not reclaim or kill mid-run).
    - A dirty worktree with **no live process** is not an infinite skip. Inspect
      `git -C "$worktree_path" status --short` and
      `git -C "$worktree_path" log --oneline -5`.
@@ -176,17 +190,19 @@ For every card in `doing` (from the column preview):
        merged or the card's operational end state is otherwise provably true,
        append `RESOLVED: dirty worktree parked; blocker resolved by <evidence>`
        and move the card out of `doing` (`done` only with a verified merged
-       artifact; otherwise `review` with `needs_human`).
+       artifact; otherwise `todo` with `needs_human`).
      - Otherwise append or update exactly one line
        `DIRTY-WORKTREE-STALLED: no live worker; mixed/uncommitted worktree needs manual triage; first_seen=<ISO>; attempts=<n>`
-       and leave the card in `todo` (or `doing` if mid-work) with `block_status=needs_human` with `block_status=needs_human` once
-       `attempts>=3` or the first marker is older than 90 minutes. Before that,
-       leave it in `doing` so a short-lived local edit is not stolen.
+       and leave the card in `todo` (or `doing` if mid-work) with
+       `block_status=needs_human` once `attempts>=3` or the first marker is
+       older than **60 minutes**. Before that, leave it in `doing` so a
+       short-lived local edit is not stolen.
 6. Otherwise **`move <slug> todo`**. Note `reclaimed-zombie=<slug>` in the
    heartbeat. Do this for EVERY matching card this wake (uncapped CHEAP).
 
-Do **not** reclaim from `todo`/`backlog`/`review`. Do **not** move zombies to
-`done`. Prefer reclaim over parking in `review` — the next pickup should retry.
+Do **not** reclaim from `todo`/`backlog`. Do **not** move zombies to `done`.
+Do **not** SIGKILL agent/build processes for age. Prefer reclaim over parking
+— the next pickup should retry.
 
 ## Self-heal stranded no-repo cards (CHEAP, uncapped — do FIRST)
 A card needs both a `Repo:` and a `Base:` header to be pickup-eligible. `add`/`move`
@@ -383,15 +399,16 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
         - In `doing`: this is almost always a **zombie claim** (worker died,
           rate-limited abort without rollback, or pre-no-spawn fan-out left the
           card claimed). **RECLAIM to `todo`** so pickup can drain it again.
-          CHEAP, uncapped. Guard so you do not thrash a live worker:
-          1. Skip reclaim if `updated_at` is younger than **90 minutes** (long
-             cargo/CI units are normal).
+          CHEAP, uncapped. **Soft 60m rule** (never process-kill for age):
+          1. Skip reclaim if age (prefer `position` doing-since epoch-ms, else
+             `updated_at`) is younger than **60 minutes** (long cargo/CI units
+             and honest in-flight work are normal).
           2. Skip reclaim if a worktree exists at
              `${WORKTREES_DIR:-$HOME/.kanban/worktrees}/<slug>` AND either (a) it has uncommitted
              changes, or (b) a process list match for that worktree path is
-             live (rustc/cargo/codex/claude/agent).
+             live (rustc/cargo/codex/claude/grok/agent) — **leave live workers alone**.
           3. Otherwise `move <slug> todo`. Optionally append one line once:
-             `RECLAIMED: zombie doing (no PR/branch/commits; no live worker)`.
+             `RECLAIMED: zombie doing (no PR/branch/commits; no live worker; age>60m)`.
           Heartbeat should include `reclaimed-zombie=<slug[,slug…]>` when any
           reclaim happens.
         - In `review`: leave alone (human gate / BLOCKED note owns it).
@@ -437,7 +454,7 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
           and move the card to `done` only when there is a verified merged
           artifact, otherwise in `todo` with `needs_human`. If not resolved,
           append/update the `DIRTY-WORKTREE-STALLED:` line above and escalate to
-          `review` after 3 attempts or 90 minutes since `first_seen`.
+          `todo` + `needs_human` after 3 attempts or 60 minutes since `first_seen`.
         If the conflict needs product judgment, don't guess — comment flagging
         it and leave it.
       - **Changes requested** → address the comments, push, reply briefly.
