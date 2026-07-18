@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: last-stack-launchd-path-audit [--fix] [--reload] [--dir <launchagents-dir>]
+
+Scan com.edgevector.*.plist launchd agents for EnvironmentVariables:PATH
+entries that put /opt/homebrew/bin ahead of /usr/bin. Homebrew git under
+launchd hits a CoreFoundation CF-init SIGSEGV that Apple's /usr/bin/git does
+not; agents whose PATH resolves Homebrew git first are at risk any time they
+spawn git.
+
+Default is a read-only scan (exit 0, prints one NEEDS_FIX/OK line per plist).
+  --fix     Reorder PATH so /usr/bin precedes the first /opt/homebrew/bin,
+            in place, preserving every other entry's relative order.
+  --reload  With --fix, launchctl bootout + bootstrap each changed agent so
+            the new PATH takes effect immediately. Reloads one agent at a
+            time and prints its post-reload state.
+  --dir     LaunchAgents directory to scan (default: ~/Library/LaunchAgents).
+
+Exit code is the count of plists that still need a fix (0 = clean), capped
+at 99, so `--fix` runs can be re-invoked idempotently in scripts.
+EOF
+}
+
+fix=0
+reload=0
+dir="$HOME/Library/LaunchAgents"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --fix) fix=1 ;;
+    --reload) reload=1 ;;
+    --dir) dir="${2:?--dir requires a path}"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "last-stack-launchd-path-audit: unknown argument: $1" >&2; usage; exit 2 ;;
+  esac
+  shift
+done
+
+# Reorders a colon-separated PATH string so /usr/bin sits immediately before
+# the first /opt/homebrew/bin entry, preserving every other entry's relative
+# order. Prints the (possibly unchanged) result on stdout; exits 1 if no
+# change was needed (already correct, or one of the two entries is absent).
+reorder_path() {
+  local path="$1"
+  local -a parts
+  IFS=':' read -r -a parts <<<"$path"
+
+  local usr_bin_idx=-1 hb_idx=-1 i
+  for i in "${!parts[@]}"; do
+    if [ "${parts[$i]}" = "/usr/bin" ] && [ "$usr_bin_idx" = -1 ]; then
+      usr_bin_idx=$i
+    fi
+    if [ "${parts[$i]}" = "/opt/homebrew/bin" ] && [ "$hb_idx" = -1 ]; then
+      hb_idx=$i
+    fi
+  done
+
+  if [ "$usr_bin_idx" = -1 ] || [ "$hb_idx" = -1 ] || [ "$usr_bin_idx" -lt "$hb_idx" ]; then
+    printf '%s' "$path"
+    return 1
+  fi
+
+  local -a new=()
+  for i in "${!parts[@]}"; do
+    [ "$i" = "$usr_bin_idx" ] && continue
+    if [ "$i" = "$hb_idx" ]; then
+      new+=("/usr/bin")
+    fi
+    new+=("${parts[$i]}")
+  done
+
+  local out
+  out="$(IFS=:; printf '%s' "${new[*]}")"
+  printf '%s' "$out"
+  return 0
+}
+
+reload_agent() {
+  local plist="$1"
+  local label uid
+  label="$(basename "$plist" .plist)"
+  uid="$(id -u)"
+  launchctl bootout "gui/$uid/$label" >/dev/null 2>&1 || true
+  launchctl bootstrap "gui/$uid" "$plist"
+  echo "RELOADED $label"
+  launchctl print "gui/$uid/$label" 2>/dev/null | grep -m1 'state =' | sed "s/^/  $label: /"
+}
+
+needs_fix=0
+
+for plist in "$dir"/com.edgevector.*.plist; do
+  [ -f "$plist" ] || continue
+  label="$(basename "$plist" .plist)"
+
+  current="$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:PATH" "$plist" 2>/dev/null)" || continue
+
+  if new_path="$(reorder_path "$current")"; then
+    needs_fix=$((needs_fix + 1))
+    if [ "$fix" = 1 ]; then
+      /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:PATH $new_path" "$plist"
+      echo "FIXED $label"
+      if [ "$reload" = 1 ]; then
+        reload_agent "$plist"
+      fi
+    else
+      echo "NEEDS_FIX $label"
+    fi
+  else
+    echo "OK $label"
+  fi
+done
+
+[ "$needs_fix" -gt 99 ] && needs_fix=99
+[ "$fix" = 1 ] && exit 0
+exit "$needs_fix"
