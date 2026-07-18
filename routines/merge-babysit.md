@@ -75,22 +75,21 @@ If `lastgit stuck` is available, parse `.stuck[]`. If `count==0`, heartbeat
 
 If `lastgit stuck` is unknown/missing, do **not** heartbeat `error` just for
 that capability gap. Record `flagged=lastgit-stuck-cmd-missing`, then fall
-back to a bounded per-repo scan:
+back to the **fleet open-CR list** (one query — never N× `cr list <slug>`):
 
 ```bash
-"$timeout_bin" 20s lastgit list --json
-"$timeout_bin" 20s lastgit cr list <slug> --state open --json
+"$timeout_bin" 30s lastgit cr list --all-open --json
+# For at most 12 open CRs that look aged/suspicious, point-read CI/detail:
 "$timeout_bin" 20s lastgit ci status <head_oid> --repo <slug> --json
 "$timeout_bin" 20s lastgit cr view <slug> <cr_id> --json
 "$timeout_bin" 20s lastgit cr events <slug> <cr_id> --json
 ```
 
-Scan at most **12 repos** and **5 open CRs per repo**. Prefer repos already
-seen in automation memory, then repos with open CRs in prior heartbeats, then
-remaining `lastgit list` slugs in list order. If caps leave entries unscanned,
-include `flagged=lastgit-repo-scan-capped:<remaining-count>` or
-`flagged=lastgit-cr-scan-capped:<slug>:<remaining-count>` in the heartbeat and
-exit `ok` after filing/updating cards for any stuck CRs you did inspect.
+Cap detail probes at **12 open CRs** fleet-wide. Prefer CRs already seen in
+automation memory, then auto_merge=true, then list order. If caps leave
+entries unscanned, include
+`flagged=lastgit-cr-scan-capped:<remaining-count>` in the heartbeat and exit
+`ok` after filing/updating cards for any stuck CRs you did inspect.
 
 In fallback mode, treat an inspected CR as stuck when it has been open for
 more than 10 minutes (from CR events, CR view metadata, or automation-memory

@@ -198,17 +198,24 @@ lastgit list --json
 ```
 
 If an explicitly configured extra socket errors with `wrong_node` (no lastgit
-schemas), skip that extra socket. Enumerate every enabled slug from
-`lastgit list --json`.
+schemas), skip that extra socket. Prefer fleet open-CR inventory below; only
+use `lastgit list --json` when you need the home list for non-CR checks
+(deploy watchers, mirrors), not for open-CR enumeration.
 
-## Per LastGit repo (cheap scan)
+## Open CRs (fleet — one query, not N× `cr list`)
+
+**Do not** fan out `lastgit cr list <slug>` over every home. That was a top
+LastDB ChangeRequest storm (2026-07-18). Prefer:
+
 ```bash
 export LASTGIT_SOCKET="<socket>"
-lastgit cr list <slug> --state open --json
+# Preferred: structured stuck classification (uses LastgitOpenCrIndex).
+lastgit stuck --json --min-age-min 10
+# Fleet open membership (thin; one OpenCrIndex read):
+lastgit cr list --all-open --json
 ```
 
-For each open CR, collect: `cr_id`, `title`, `head_ref`, `base_ref`,
-`head_oid`, `auto_merge`, `require_status`, and CI:
+Only for CRs that look stuck (or need CI detail), point-read:
 
 ```bash
 lastgit ci status <head_oid> --repo <slug> --json
