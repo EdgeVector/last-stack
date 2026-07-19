@@ -186,14 +186,22 @@ prose mistakes) — clear the card field instead if the slug is garbage.
 ### 5. Refresh dashboard
 
 ```bash
-"$dash_bin" \
+timeout 300 "$dash_bin" \
   --put-brain \
   --html "${NORTH_STAR_HTML:-$HOME/code/edgevector/north-star-dashboard.html}" \
   --stdout none
 ```
 
-Re-run `--stdout hygiene` and confirm `orphan_live_count` dropped for the slugs
-you created.
+If this refresh times out or reports transient busy-node/backpressure after the
+detected hygiene writes already succeeded, confirm a previous dashboard brain
+record or HTML snapshot exists and is non-empty, then continue to heartbeat the
+actual hygiene result. Use `ok` if projects were created or mistags were
+cleared, otherwise `noop`, and include
+`reason=dashboard-refresh-timeout-prior-snapshot`. Do not mark the routine
+`error` for a refresh-only timeout with a usable prior snapshot.
+
+When the refresh succeeds, re-run `--stdout hygiene` and confirm
+`orphan_live_count` dropped for the slugs you created.
 
 ### 6. Heartbeat
 

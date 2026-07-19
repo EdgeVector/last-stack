@@ -47,6 +47,21 @@ Read the skill file fully before acting:
 1. Preflight cheap `kanban list --column todo --json` (or board list limit 1).
 2. Run FIX mode from the skill (detect → create orphan NS projects → clear
    confirmed mistags → refresh dashboard with `--put-brain --html`).
+   Wrap the final dashboard refresh in a command budget:
+   ```bash
+   timeout 300 "$dash_bin" \
+     --put-brain \
+     --html "${NORTH_STAR_HTML:-$HOME/code/edgevector/north-star-dashboard.html}" \
+     --stdout none
+   ```
+   If the dashboard refresh times out or reports transient busy-node/backpressure
+   after all detected hygiene writes already succeeded, do **not** convert the
+   hygiene pass to `error`. Verify the prior dashboard brain record or HTML
+   snapshot exists and is non-empty, then heartbeat the actual hygiene result:
+   `ok` when `created>0` or `mistag_cleared>0`, otherwise `noop`, with
+   `reason=dashboard-refresh-timeout-prior-snapshot`. Use `error` only when a
+   required hygiene Brain/board write failed, or when no usable prior dashboard
+   artifact exists.
 3. Cap work: at most **5** new North Star projects per run; leave the rest for
    the next day (list them in the summary). Prefer orphans with **live** cards.
 4. Heartbeat last:
@@ -58,6 +73,9 @@ Read the skill file fully before acting:
 ## Exit semantics
 - No orphans / no mistags to act on → **noop** success
 - Created ≥1 project or cleared ≥1 mistag → **ok**
+- Dashboard timeout/backpressure with completed hygiene writes and a usable
+  prior dashboard brain record or HTML snapshot → **ok**/**noop** matching the
+  hygiene work performed, not **error**
 - Brain/board write failure after detect → **error**
 - Busy-node → **noop** (not error)
 
