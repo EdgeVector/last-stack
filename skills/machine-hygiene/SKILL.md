@@ -111,23 +111,24 @@ Card slugs don't always string-match the worktree dir/branch name — cross-chec
 on branch `app-iso/dev-deploy-code-signature`). `~/.cline/worktrees/` is now empty/legacy.
 
 ### 2. Git hygiene (safe, always do)
-For each real repo (skip the umbrella, skip dirty repos for the pull step):
+**Shared-checkout mirror contract** (brain: `sop-shared-checkout-mirror-contract`):
+the ambient checkout in `~/code/edgevector/<repo>` is nobody's working copy. It
+stays on `main`, tracks the repo's **venue** remote (`.last-stack/pr-venue` →
+lastgit/forgejo/github — NOT blindly `origin`), and is never edited in place;
+agents work in isolated worktrees branched from the venue main. The old recipe
+here ("if on main and clean: pull origin") let every parked or dirty repo drift
+forever — fold got 134 commits behind, last-stack 256 (re-parked 2026-07-19).
+
+Run the maintained helper — it does the whole pass (venue-aware single-ref
+fetch, salvage-first per-file staging, 60-min recency guard, behind→ff,
+ahead/diverged→FLAG, exclude seeding, worktree prune) and never resets, pushes,
+or touches a repo with fresh edits:
 ```bash
-TO=$(command -v gtimeout || command -v timeout || true)
-# Fetch origin only: origin is source of truth, and mirror remotes can hang or auth-prompt.
-if [ -n "$TO" ]; then
-  "$TO" 60 git -C "$d" fetch --prune --quiet origin || echo "  fetch skipped (timeout/fail): $d"
-else
-  git -C "$d" fetch --prune --quiet origin || echo "  fetch skipped (fail): $d"
-fi
-# if on main and clean:
-if [ -n "$TO" ]; then
-  "$TO" 60 git -C "$d" pull --ff-only --quiet || echo "  pull skipped (timeout/fail): $d"
-else
-  git -C "$d" pull --ff-only --quiet || echo "  pull skipped (fail): $d"
-fi
-git -C "$d" worktree prune
+"$HOME/.last-stack/bin/last-stack-repark-shared-checkouts" || true   # exit 0 always; act on FLAG lines
 ```
+Surface every `FLAG` line in the report. `ahead`/`diverged` flags mean local
+main holds commits the venue lacks — that needs an interactive salvage+push/reset
+audit (see the 2026-07-19 sweep in brain), never an unattended fix.
 **Delete merged branches** — use patch-id, not `--merged` (squash merges aren't ancestors):
 ```bash
 uniq=$(git -C "$d" cherry origin/main "$br" | grep -c '^+')   # 0 ⇒ content already in main
