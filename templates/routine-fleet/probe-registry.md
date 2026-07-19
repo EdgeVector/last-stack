@@ -35,6 +35,13 @@ authorizes production. -->
 <!-- What to write when the probe completes. Use "none" for report-only probes. -->
 - **verdict_record**: `<VERDICT_RECORD_SLUG_OR_NONE>`
 
+<!-- How the routine should classify partial or timeboxed probe legs. A bounded
+finding that is filed or already tracked is successful probe output, not a
+routine harness failure. -->
+- **result_classification**: `ok when findings are filed/tracked; noop when
+  findings are known duplicates or external dependencies are unavailable; error
+  only when the probe cannot preserve evidence, teardown, or heartbeat`
+
 <!-- How to format the newest-on-top verdict line. -->
 - **verdict_line_format**: `<ISO_TS> <GREEN_OR_RED> <KEY_METRICS> run=<RUN_ID>`
 
@@ -43,6 +50,13 @@ authorizes production. -->
 
 <!-- How to collapse repeated findings and avoid filing duplicate cards. -->
 - **dedupe**: `<BOARD_SEARCH>, <OPEN_PR_SEARCH>, <LEDGER_OR_VERDICT_CHECK>`
+
+<!-- Exact board filing contract. Include standalone structured headers in the
+card body and use the current board CLI flags so pickup-readiness can parse the
+card without repair. -->
+- **card_filing**: `pipe Markdown body on stdin; include standalone Repo:
+  <OWNER>/<REPO> and Base: <BASE_BRANCH> lines near the top; pass --repo
+  <OWNER>/<REPO> --base <BASE_BRANCH> --kind pr --tags comma,separated`
 
 <!-- Cleanup that always runs, especially for throwaway processes and data dirs. -->
 - **teardown**: `<TEARDOWN_STEPS>`
@@ -60,8 +74,14 @@ authorizes production. -->
 - **isolation**: `throwaway data dir under <TMP_DIR>; never <PRIMARY_DATA_DIR>`
 - **verdict_record**: `<PROBE_VERDICT_SLUG>`
 - **verdict_line_format**: `<ISO_TS> <GREEN|RED> findings=<N> errors=<N> run=<RUN_ID>`
+- **result_classification**: `ok when this run files or updates a card for a
+  real finding; noop when an existing live card already tracks the same finding;
+  error only for probe/harness failure before evidence and heartbeat`
 - **card_target**: `Repo: <OWNER>/<REPO>; Base: main; tags: probes,<TAG>; priority: P1`
 - **dedupe**: `search board for <FINDING_CATEGORY>; search open PRs for <AREA>; check last <N> verdicts`
+- **card_filing**: `body begins with Repo: <OWNER>/<REPO> and Base: main;
+  fkanban add <slug> --column todo --repo <OWNER>/<REPO> --base main --kind pr
+  --tags probes,<TAG>`
 - **teardown**: `stop process <PID_FILE>; remove <TMP_DIR>`
 - **skip_policy**: `dependency unavailable, missing credentials, or dev surface down -> heartbeat noop`
 
@@ -71,3 +91,9 @@ authorizes production. -->
 - A probe kills only processes it started and names by PID/socket/home.
 - Findings file work; probe routines do not ship product fixes directly.
 - Verdict records are honest: partial or skipped runs are not green.
+- Timeboxed probe legs that preserve evidence and file or identify a live card
+  are `ok` or `noop` routine outcomes. Reserve `error` for probe failures that
+  prevent evidence capture, teardown, or the final heartbeat.
+- Filed board cards must be pickup-ready at creation time: structured `Repo:`
+  and `Base:` body headers plus matching `--repo`, `--base`, `--kind`, and
+  comma-separated `--tags` CLI metadata.

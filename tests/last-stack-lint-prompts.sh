@@ -23,6 +23,12 @@ if [ "${1:-}" = "--smoke" ]; then
   grep -q 'Before every foreground watcher, deploy wait, sync drain, or other END STATE' "$pickup"
   grep -q 'reason=budget-low' "$pickup"
   grep -q 'watch external progress until the harness SIGTERM cuts off closeout' "$pickup"
+  probe_registry="$ROOT/templates/routine-fleet/probe-registry.md"
+  grep -q 'result_classification' "$probe_registry"
+  grep -q 'ok when findings are filed/tracked' "$probe_registry"
+  grep -q 'card_filing' "$probe_registry"
+  grep -q 'standalone Repo:' "$probe_registry"
+  grep -q 'comma-separated `--tags`' "$probe_registry"
   echo "ok last-stack-lint-prompts smoke"
   exit 0
 fi
