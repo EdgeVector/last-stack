@@ -1,7 +1,7 @@
 ---
 name: disk-reclaim
 cadence: hourly
-description: Hourly disk-space reclaim — prune merged/clean worktrees, sweep orphan build processes, sweep stale build caches, and purge below the disk floor. The disk-focused subset of worktree-cleanup; does not pull repos or ship code.
+description: Hourly disk-space reclaim — prune merged/clean worktrees, sweep orphan build processes, sweep stale build caches, apply LastDB backup/test-copy retention, and escalate below the disk floor. The disk-focused subset of worktree-cleanup; does not pull repos or ship code.
 ---
 
 Hourly disk-space reclaim for `<WORKSPACE>`. Runs unattended every hour — make
@@ -41,6 +41,14 @@ continue — do not fail the whole run.
   `salvage-*` / `tombstone-*` / `locked` worktrees.
 - NEVER touch a worktree whose board card is in `doing`/`review`. Read the board
   first (`<board list command>`) and cross-check by intent.
+- NEVER touch the live LastDB home (`~/.lastdb`), any `lastdb-backup-pre-*`
+  pinned rollback backup outside `~/.lastdb-backups/`, or an in-place retained
+  engine tree while a soak/rollback card is open. LastDB pruning below is scoped
+  EXCLUSIVELY to `~/.lastdb-backups/`, `~/.lastdb-test-copies/`,
+  `~/lastdb-ephemeral-*`, and `~/.lastdb.broken-*`. Before ANY such rm: the
+  candidate must be a real directory (`[ ! -L "$p" ]`), its realpath must NOT
+  resolve inside `~/.lastdb`, and `lsof +D "$p"` must be empty (2026-07-19: a
+  smoke path once symlinked the primary — the readlink guard is load-bearing).
 
 ## Procedure each run
 0. **Normalize the scheduled shell.** Source the Last Stack PATH prelude and
@@ -90,6 +98,21 @@ continue — do not fail the whole run.
    `cargo sweep`/`go clean`/`node_modules` prune equivalent for your stack).
    Confirm any incremental-build cache cap is in effect; note it if not (don't
    change global env unattended).
+4a. **LastDB backup retention (`~/.lastdb-backups/` ONLY).** Keep the newest 3
+   `pre-*` backup dirs by their trailing timestamp; delete every older one
+   (retention set with Tom 2026-07-19 after unbounded backups contributed to
+   the ENOSPC that killed routinesd — see brain
+   `papercut-lastdb-backups-unbounded-retention`). Apply the LastDB guardrail
+   above (real dir, realpath outside `~/.lastdb`, `lsof` empty) to each
+   candidate. These dirs are APFS clones: report reclaim as the `df` delta,
+   never the `du` sum. Heartbeat token: `backups_pruned=<n>`.
+4b. **Stale LastDB scratch copies.** Delete: `~/.lastdb-test-copies/*` with
+   mtime older than 48h (ALWAYS keep `flip-records*` and anything matching
+   `pin-*`/`keep-*`); `~/lastdb-ephemeral-*` older than 48h;
+   `~/.lastdb.broken-*` older than 7 days. Same guardrail per candidate. If a
+   copy contains a top-level `*-REPORT.md`/`VALIDATE-REPORT.md`, copy that file
+   into `~/.lastdb-test-copies/flip-records/` before deleting the tree.
+   Heartbeat token: `lastdb_copies_pruned=<n>`.
 5. **Disk floor.** If free space < `<your floor, e.g. ~30 GB>`, proactively purge
    the largest reclaimable build-cache dir with an **atomic swap** so an active
    build doesn't see a half-deleted tree: `mv target target.PURGE` → recreate an
@@ -104,6 +127,22 @@ continue — do not fail the whole run.
    foreground or start another purge after the final ten-minute budget window.
    A later disk-reclaim run may resume deleting the stale `*.PURGE*` directory
    using the same bounded-wait rule.
+6. **Free-space floor escalation — act while the scheduler still runs.**
+   routinesd itself dies on ENOSPC (it did on 2026-07-19, taking the whole
+   fleet — including this routine — down for 9 hours), so the floor must
+   trigger loudly BEFORE the disk is tight. After all reclaim steps, read the
+   final free space:
+   - **< 60 GiB free:** add `low_disk=<free>` to the heartbeat line and post a
+     Situations notice (`situations notice --title "disk low: <free> free
+     after reclaim" --kind other --system host-disk`) so every agent sees it.
+     Do not post a duplicate if an unexpired low-disk notice from a prior run
+     is already up.
+   - **< 30 GiB free:** additionally run the step-5 aggressive purge even if
+     it was skipped, tighten step-4a retention to newest 1 for this run only,
+     and upsert brain record `papercut-low-disk-emergency` (type reference)
+     with `df -h` output and the largest remaining consumers so the papercut
+     router files a P0 card. This is the last line of defense — never end a
+     run below 30 GiB silently.
 
 ## Output
 Report: GB reclaimed, worktrees pruned (and which were kept and why), final free
@@ -112,8 +151,10 @@ space, and anything left for a human.
 > **Heartbeat (LAST action, always — even a bounded no-op).** Call
 > `<last-stack>/bin/last-stack-brain-append-heartbeat --line "disk-reclaim
 > <ISO-ts> <ok|noop|error> <outcome>"`, e.g. `ok reclaimed_gb=<n>
-> worktrees_pruned=<n>` on a real reclaim, or `noop reclaimed_gb=0
-> worktrees_pruned=0` when the run found nothing to remove. Without this call,
+> worktrees_pruned=<n> backups_pruned=<n> lastdb_copies_pruned=<n>
+> final_free=<free>` (plus `low_disk=<free>` whenever step 6 tripped) on a real
+> reclaim, or `noop reclaimed_gb=0 worktrees_pruned=0` when the run found
+> nothing to remove. Without this call,
 > routinesd's outcome classifier has no ok/noop/error token to key on and
 > reports `lastOutcome=unknown` for every finished run regardless of how the
 > run actually went. If the heartbeat helper cannot write because the brain
