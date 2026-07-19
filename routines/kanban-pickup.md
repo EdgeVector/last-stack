@@ -508,6 +508,14 @@ same fire unless you claimed it via normal WORK). Never pick up the
 feature-owner validation card itself. Never invent idle simplifications while a
 P0/P1 feature-ship frontier is waiting.
 
+Access pattern for this frontier probe must stay scan-free: read scoped queues
+with `fkanban list --column todo --json` and `fkanban list --column backlog
+--json`, filter those previews locally for `feature-owner` / `feature-ship`
+candidate slugs, then run keyed `fkanban show <slug> --json` only for the few
+candidates whose body or deps are needed. Do not run broad board search or
+full-body board scans from this idle hot path; if scoped reads do not identify
+a clear frontier quickly, continue down the idle ladder or true-noop.
+
 **1) Program / North Star next slice (preferred)**  
 Read `brain get active-programs` (project). For each active program, if:
 - Next move is a **concrete PR-sized** step, and
