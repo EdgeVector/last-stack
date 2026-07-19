@@ -1,0 +1,170 @@
+#!/bin/bash
+# last-stack-repark-shared-checkouts — keep workspace shared checkouts as
+# read-only mirrors of their venue's main.
+#
+# Contract (brain: sop-shared-checkout-mirror-contract): the ambient checkout
+# in ~/code/edgevector/<repo> is nobody's working copy. It stays on main,
+# tracks the repo's *venue* remote (gate of record), and is never edited in
+# place — agents work in isolated worktrees branched from the venue main.
+#
+# Per repo this script:
+#   1. skips symlinks, non-repos, and repos with dirty files touched <60 min
+#      ago (a live agent may be mid-edit; FLAG instead of interfering)
+#   2. fetches only refs/heads/main from the venue remote (bounded, one ref —
+#      keeps load off the primary LastDB node for lastdb:// remotes)
+#   3. salvages any dirty state: per-file staging (NEVER `git add -A` in a
+#      shared checkout) onto the current branch, or onto
+#      salvage/shared-checkout-<date> when parked on main; excluded junk
+#      (.worktrees/, *.tmp, node_modules/, target/) is left untracked
+#   4. re-parks on main (parked feature branches keep their refs)
+#   5. behind-only -> ff; ahead or diverged -> FLAG for a human/interactive
+#      agent (unattended runs never reset or push)
+#   6. seeds .git/info/exclude with machine-local dirs, prunes dead worktrees
+#
+# Exit 0 always; FLAG lines are the routine's surface. --dry-run previews.
+set -u
+
+GIT=/usr/bin/git
+WS="${REPARK_WORKSPACE:-$HOME/code/edgevector}"
+DATE=$(date +%Y%m%d)
+SALVAGE="salvage/shared-checkout-$DATE"
+NOW=$(date +%s)
+RECENT_S=3600
+DRY=0
+[ "${1:-}" = "--dry-run" ] && DRY=1
+
+trailers() {  # routine attribution on salvage commits (interactive runs: none)
+  if [ "${DRIVEN_BY:-}" = "routine" ]; then
+    printf 'Driven-By: routine\nAutomation-Id: %s\nRun-Id: %s\n' \
+      "${AUTOMATION_ID:-unknown}" "${ROUTINES_RUN_ID:-unknown}"
+  fi
+}
+
+venue_remote() {  # $1=repo-dir -> echo remote name of the gate of record
+  local d="$1" venue=""
+  venue=$(head -1 "$d/.last-stack/pr-venue" 2>/dev/null)
+  [ -n "$venue" ] || venue=$($GIT -C "$d" config laststack.pr-venue 2>/dev/null)
+  case "$venue" in
+    lastgit) echo lastgit; return;;
+    forgejo)
+      if $GIT -C "$d" remote get-url origin 2>/dev/null | grep -q ':3300'; then
+        echo origin
+      else
+        echo forge
+      fi
+      return;;
+    github)
+      if $GIT -C "$d" remote | grep -qx github; then echo github; else echo origin; fi
+      return;;
+  esac
+  # no declared venue: prefer lastgit, then origin
+  if $GIT -C "$d" remote | grep -qx lastgit; then echo lastgit; else echo origin; fi
+}
+
+flag() { printf 'FLAG %-24s %s\n' "$1" "$2"; }
+note() { printf 'ok   %-24s %s\n' "$1" "$2"; }
+
+cd "$WS" || exit 0
+for d in */; do
+  d=${d%/}
+  [ -L "$d" ] && continue
+  # shared checkouts only: a linked WORKTREE has a .git *file* — never re-park
+  # those, they are agents' in-flight working copies pinned to feature branches
+  [ -d "$d/.git" ] || continue
+  rem=$(venue_remote "$d")
+  $GIT -C "$d" remote | grep -qx "$rem" || { flag "$d" "venue remote '$rem' not configured"; continue; }
+  mb=main
+  $GIT -C "$d" rev-parse --verify -q refs/heads/main >/dev/null || mb=master
+  target="refs/remotes/$rem/$mb"
+
+  # 1. recent-activity guard
+  recent=""
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    f=${line:3}
+    case "$f" in .worktrees/*|.gstack/*|*.tmp|node_modules/*|target/*|*/target/*) continue;; esac
+    [ -e "$d/$f" ] || continue
+    m=$(stat -f %m "$d/$f" 2>/dev/null) || continue
+    [ $((NOW - m)) -lt $RECENT_S ] && { recent="$f"; break; }
+  done <<EOF
+$($GIT -C "$d" status --porcelain 2>/dev/null)
+EOF
+  [ -n "$recent" ] && { flag "$d" "recent activity (<60min): $recent — left alone"; continue; }
+
+  [ -f "$d/.git/index.lock" ] && { flag "$d" "index.lock present — git op in flight or stale; left alone"; continue; }
+
+  if [ "$DRY" = 1 ]; then
+    note "$d" "dry-run: would sync to $rem/$mb"
+    continue
+  fi
+
+  # seed machine-local excludes so mirrors read clean
+  ex="$d/.git/info/exclude"
+  if [ -f "$ex" ] && ! grep -q '^\.worktrees/$' "$ex" 2>/dev/null; then
+    printf '.worktrees/\n.gstack/\n' >> "$ex"
+  fi
+
+  # 2. bounded single-ref fetch of the venue main
+  $GIT -C "$d" fetch --no-tags "$rem" "+refs/heads/$mb:$target" >/dev/null 2>&1
+  $GIT -C "$d" rev-parse --verify -q "$target" >/dev/null || { flag "$d" "no $rem/$mb after fetch"; continue; }
+
+  # 3. salvage dirty state (per-file; never add -A in a shared checkout)
+  cur=$($GIT -C "$d" branch --show-current)
+  dirty=$($GIT -C "$d" status --porcelain 2>/dev/null)
+  salvaged=""
+  if [ -n "$dirty" ]; then
+    if [ -z "$cur" ] || [ "$cur" = "$mb" ]; then
+      $GIT -C "$d" rev-parse --verify -q "refs/heads/$SALVAGE" >/dev/null \
+        && $GIT -C "$d" switch -q "$SALVAGE" || $GIT -C "$d" switch -q -c "$SALVAGE" \
+        || { flag "$d" "cannot open salvage branch"; continue; }
+      cur="$SALVAGE"
+    fi
+    staged=0
+    while IFS= read -r line; do
+      [ -z "$line" ] && continue
+      f=${line:3}
+      case "$f" in .worktrees/*|.gstack/*|*.tmp|node_modules/*|target/*|*/target/*) continue;; esac
+      $GIT -C "$d" add -- "$f" 2>/dev/null && staged=1
+    done <<EOF
+$dirty
+EOF
+    if [ "$staged" = 1 ] && ! $GIT -C "$d" diff --cached --quiet 2>/dev/null; then
+      if $GIT -C "$d" commit -q \
+          -m "salvage: shared-checkout leftovers before mirror re-park $DATE" \
+          -m "Automated by last-stack-repark-shared-checkouts; review, cherry-pick or drop." \
+          -m "$(trailers)"; then
+        salvaged=" salvaged-on:$cur"
+      else
+        flag "$d" "salvage commit failed on $cur — left as-is"
+        continue
+      fi
+    fi
+  fi
+
+  # 4. re-park on main
+  if [ "$($GIT -C "$d" branch --show-current)" != "$mb" ]; then
+    $GIT -C "$d" switch -q "$mb" 2>/dev/null \
+      || { flag "$d" "cannot switch to $mb (parked: $cur)$salvaged"; continue; }
+  fi
+
+  # 5. behind-only -> ff; anything else -> FLAG (unattended never resets/pushes)
+  ahead=$($GIT -C "$d" rev-list --count "$target..$mb" 2>/dev/null || echo "?")
+  behind=$($GIT -C "$d" rev-list --count "$mb..$target" 2>/dev/null || echo "?")
+  if [ "$ahead" = "0" ] && [ "$behind" = "0" ]; then
+    note "$d" "current$salvaged"
+  elif [ "$ahead" = "0" ]; then
+    if $GIT -C "$d" merge --ff-only -q "$target" >/dev/null 2>&1; then
+      note "$d" "ff($behind)$salvaged"
+    else
+      flag "$d" "ff to $rem/$mb failed$salvaged"
+    fi
+  elif [ "$behind" = "0" ]; then
+    flag "$d" "main ahead($ahead) of $rem/$mb — needs push audit$salvaged"
+  else
+    flag "$d" "main diverged ($ahead/$behind) from $rem/$mb — needs salvage+reset audit$salvaged"
+  fi
+
+  # 6. prune metadata for deleted worktree dirs (never touches live ones)
+  $GIT -C "$d" worktree prune 2>/dev/null
+done
+exit 0
