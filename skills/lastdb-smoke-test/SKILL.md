@@ -39,10 +39,13 @@ stale copy here would silently regress the procedure.
    those, don't just execute steps blind, because the "why" is what lets you
    correctly judge a borderline case (e.g. whether a stale binary is an
    acceptable deviation this run).
-4. Classify every finding per the SOP's **Filing rule**: a papercut needs
-   BOTH a kanban card AND a brain `reference` record (dedupe against
-   existing ones first — bump "last seen" rather than duplicating); a
-   blocker needs a `release-blocker` + `subsystem-fold_db_node` kanban card,
+4. Classify every finding per the SOP's **Filing rule** (tightened by Tom
+   2026-07-19, brain `preference-always-file-papercuts-in-brain`): a
+   papercut gets a brain record ONLY — slug `papercut-<short-topic>`,
+   dedupe against existing ones first and bump "last seen" rather than
+   duplicating; do NOT file a kanban card for it (a dedicated triage
+   routine cards brain papercuts). A release BLOCKER is not a papercut and
+   still needs a `release-blocker` + `subsystem-fold_db_node` kanban card,
    possibly linked into the release-gate epic. A run that finds something and
    only describes it in your final summary, without filing it, has
    accomplished nothing — the finding evaporates with the session.

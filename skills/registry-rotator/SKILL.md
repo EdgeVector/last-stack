@@ -144,11 +144,15 @@ Classify the result as:
 - `blocked`: an external or prerequisite condition prevents an honest run.
 - `recipe-broken`: the recipe cannot reach or evaluate its own assertion.
 
-## File Cards
+## File Findings
 
-For each papercut, failed assertion, missing fixture, stale recipe, or blocker
-that should survive this run, file one kanban card per
-`sop-routine-shared-contract` section 3.
+Papercuts (friction, confusing UX, tooling misbehavior) go to BRAIN ONLY —
+slug `papercut-<short-topic>`, search-first + update-in-place, per
+`preference-always-file-papercuts-in-brain` (Tom 2026-07-19: no direct
+kanban papercut cards; a triage routine promotes them). For each failed
+assertion, missing fixture, stale recipe, or genuine BLOCKER (a feature or
+recipe that cannot run) that should survive this run, file one kanban card
+per `sop-routine-shared-contract` section 3.
 
 Before filing, dedupe per the shared contract:
 
