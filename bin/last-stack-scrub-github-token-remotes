@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+# Replace embedded GitHub OAuth-token remote URLs with credential-helper URLs.
+set -euo pipefail
+
+mode="apply"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  last-stack-scrub-github-token-remotes [--check|--dry-run] [<workspace-or-repo>...]
+
+Scans Git checkouts for remotes like:
+  https://x-access-token:<token>@github.com/<owner>/<repo>.git
+
+When applying, the command rewrites them to:
+  https://github.com/<owner>/<repo>.git
+
+It never prints the original URL or token. Repos that are changed get a local
+credential helper for github.com:
+  !gh auth git-credential
+EOF
+}
+
+quote_field() {
+  printf '%s' "$1" | tr '\t\n' '  '
+}
+
+is_repo() {
+  [ -d "$1/.git" ]
+}
+
+sanitize_github_url() {
+  local url="$1"
+
+  case "$url" in
+    https://x-access-token:*@github.com/*)
+      printf 'https://github.com/%s' "${url#*@github.com/}"
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+repo_targets() {
+  local target
+
+  if [ "$#" -eq 0 ]; then
+    set -- "${REPARK_WORKSPACE:-$HOME/code/edgevector}"
+  fi
+
+  for target in "$@"; do
+    if is_repo "$target"; then
+      printf '%s\n' "$target"
+      continue
+    fi
+    [ -d "$target" ] || continue
+    find "$target" -mindepth 1 -maxdepth 1 -type d ! -name '.*' -exec test -d '{}/.git' ';' -print
+  done
+}
+
+scrub_remote_values() {
+  local repo="$1"
+  local remote="$2"
+  local key="$3"
+  local values="$4"
+  local sanitized changed=0
+  local -a rewritten=()
+
+  while IFS= read -r value; do
+    [ -n "$value" ] || continue
+    if sanitized="$(sanitize_github_url "$value")"; then
+      rewritten+=("$sanitized")
+      changed=$((changed + 1))
+    else
+      rewritten+=("$value")
+    fi
+  done <<<"$values"
+
+  if [ "$changed" -eq 0 ]; then
+    return 0
+  fi
+
+  if [ "$mode" = "check" ]; then
+    printf 'would-scrub\tpath=%s\tremote=%s\tkey=%s\turls=%s\n' \
+      "$(quote_field "$repo")" "$(quote_field "$remote")" "$key" "$changed"
+    return "$changed"
+  fi
+
+  if [ "$key" = "url" ]; then
+    git -C "$repo" remote set-url "$remote" "${rewritten[0]}"
+  else
+    git -C "$repo" config --unset-all "remote.$remote.pushurl" >/dev/null 2>&1 || true
+    for sanitized in "${rewritten[@]}"; do
+      git -C "$repo" remote set-url --add --push "$remote" "$sanitized"
+    done
+  fi
+  printf 'scrubbed\tpath=%s\tremote=%s\tkey=%s\turls=%s\n' \
+    "$(quote_field "$repo")" "$(quote_field "$remote")" "$key" "$changed"
+  return "$changed"
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --check) mode="check"; shift ;;
+    --dry-run) mode="check"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    --) shift; break ;;
+    -*) usage >&2; exit 2 ;;
+    *) break ;;
+  esac
+done
+
+checked=0
+scrubbed=0
+while IFS= read -r repo; do
+  [ -n "$repo" ] || continue
+  checked=$((checked + 1))
+  repo_scrubbed=0
+  while IFS= read -r remote; do
+    [ -n "$remote" ] || continue
+    url="$(git -C "$repo" remote get-url "$remote" 2>/dev/null || true)"
+    if [ -n "$url" ]; then
+      if scrub_remote_values "$repo" "$remote" url "$url"; then
+        :
+      else
+        count="$?"
+        repo_scrubbed=$((repo_scrubbed + count))
+      fi
+    fi
+    pushurls="$(git -C "$repo" config --get-all "remote.$remote.pushurl" 2>/dev/null || true)"
+    if [ -n "$pushurls" ]; then
+      if scrub_remote_values "$repo" "$remote" pushurl "$pushurls"; then
+        :
+      else
+        count="$?"
+        repo_scrubbed=$((repo_scrubbed + count))
+      fi
+    fi
+  done < <(git -C "$repo" remote 2>/dev/null || true)
+
+  if [ "$repo_scrubbed" -gt 0 ]; then
+    scrubbed=$((scrubbed + repo_scrubbed))
+    if [ "$mode" != "check" ]; then
+      git -C "$repo" config --local credential.https://github.com.helper '!gh auth git-credential'
+    fi
+  fi
+done < <(repo_targets "$@")
+
+if [ "$mode" = "check" ] && [ "$scrubbed" -gt 0 ]; then
+  printf 'embedded-token-remotes-found\tchecked=%s\turls=%s\n' "$checked" "$scrubbed"
+  exit 1
+fi
+
+printf 'ok\tchecked=%s\tscrubbed=%s\n' "$checked" "$scrubbed"
