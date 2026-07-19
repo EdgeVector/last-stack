@@ -56,8 +56,20 @@
       "gate_remote": "lastgit",
       "gate_ref": "refs/heads/main",
       "host_track": "$HOME/.host-track/fkanban",
-      "refresh": "$HOME/.local/bin/kanban-host-track-refresh",
+      "refresh": "$HOME/.last-stack/bin/last-stack-refresh-fkanban-host-track",
       "notes": "Kind B host-track checkout; PATH shims point into ~/.host-track/fkanban/bin."
+    },
+    {
+      "app": "fkanban",
+      "kind": "B checkout-shim",
+      "command": "fkanban",
+      "gate": "lastgit",
+      "gate_main": "lastdb:///fkanban#main",
+      "gate_remote": "lastgit",
+      "gate_ref": "refs/heads/main",
+      "host_track": "$HOME/.host-track/fkanban",
+      "refresh": "$HOME/.last-stack/bin/last-stack-refresh-fkanban-host-track",
+      "notes": "First-class alias for the F-Kanban CLI; shares the managed host-track checkout with kanban."
     }
   ]
 }

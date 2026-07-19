@@ -21,10 +21,26 @@ printf '%s\n' "$kanban_registry" | jq -e '
   .gate_remote == "lastgit" and
   .gate_ref == "refs/heads/main" and
   .host_track == "$HOME/.host-track/fkanban" and
-  .refresh == "$HOME/.local/bin/kanban-host-track-refresh"
+  .refresh == "$HOME/.last-stack/bin/last-stack-refresh-fkanban-host-track"
 ' >/dev/null || fail "default kanban registry entry is not a real host-track target"
 printf '%s\n' "$kanban_registry" | jq -e '.notes | test("Placeholder") | not' >/dev/null \
   || fail "default kanban registry entry still looks like a placeholder"
+
+fkanban_registry="$(jq -c '.apps[] | select(.app == "fkanban")' "$ROOT/config/host-track/apps.json")"
+printf '%s\n' "$fkanban_registry" | jq -e '
+  .kind == "B checkout-shim" and
+  .command == "fkanban" and
+  .gate == "lastgit" and
+  .gate_main == "lastdb:///fkanban#main" and
+  .gate_remote == "lastgit" and
+  .gate_ref == "refs/heads/main" and
+  .host_track == "$HOME/.host-track/fkanban" and
+  .refresh == "$HOME/.last-stack/bin/last-stack-refresh-fkanban-host-track"
+' >/dev/null || fail "default fkanban registry entry is not a real host-track target"
+printf '%s\n' "$fkanban_registry" | jq -e '.notes | test("Placeholder") | not' >/dev/null \
+  || fail "default fkanban registry entry still looks like a placeholder"
+test -x "$ROOT/bin/last-stack-refresh-fkanban-host-track" \
+  || fail "fkanban host-track bootstrap wrapper is not executable"
 
 export HOME="$tmp/home"
 mkdir -p "$HOME/.local/bin"
