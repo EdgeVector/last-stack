@@ -1,6 +1,6 @@
 ---
 name: kanban-agent
-version: 0.2.0
+version: 0.3.0
 description: |
   Drive a single kanban card all the way to a MERGED PR — a card only
   reaches `done` when its code is actually in the repo and its outcome is
@@ -270,6 +270,50 @@ to `review`, append a one-line note explaining what's missing, and exit.
    ```
 3. **Do the work** described in the brief. Match the repo's contributor docs and
    existing style. Honor OUT OF SCOPE — keep the PR atomic.
+
+   > **Card turns out too big mid-work? Split it yourself — file the cards,
+   > don't just describe the split.** If the brief's scope is materially
+   > larger than one atomic PR (independent concerns, a discovered
+   > sub-problem with its own VERIFY, a STEPS list that no longer fits one
+   > review), do not force it into a single oversized PR and do not stop and
+   > wait for a human to author follow-up cards:
+   > 1. Land the smallest coherent, independently-verifiable slice of the
+   >    original brief as its own atomic PR/CR through the normal steps 4-6
+   >    below. Never abandon the unit of work you already started half-done.
+   > 2. For each remaining piece, file a new card with the standard brief
+   >    shape (`Repo:`/`Base:`/`Branch:`/`Kind:` header, `GOAL`/`CONTEXT`/
+   >    `STEPS`/`VERIFY`/`OUT OF SCOPE`) so a future pickup can work it
+   >    without you:
+   >    ```bash
+   >    kanban add <new-slug> --title "<short title>" --column todo \
+   >      --repo "<owner/name>" --priority <P0-P3> --body "$(cat <<'EOF'
+   >    Repo: <owner/name>
+   >    Base: <base>
+   >    Kind: pr
+   >
+   >    ## GOAL
+   >    ...
+   >    EOF
+   >    )"
+   >    ```
+   > 3. **Wire dependencies so pickup doesn't grab out-of-order work:** if a
+   >    new card needs the piece you're about to land first, add the edge
+   >    before you exit — `kanban dep add <new-slug> <original-slug>` (or
+   >    between two new cards when one depends on the other). A card with an
+   >    unmet dep stays blocked until the dep reaches its board's final
+   >    column, so this is what keeps the split honest instead of racing.
+   > 4. **Cross-link both directions.** Append the new child slugs to the
+   >    original card's body (a short `## SPLIT INTO` list) so anyone reading
+   >    it later sees where the rest of the scope went, and reference the
+   >    original/sibling slugs in each new card's `CONTEXT` section.
+   > 5. Keep going: drive the slice you landed to merged (steps 4-6 below) in
+   >    this same turn. Do not spawn a sibling agent to do that for you — you
+   >    still own this card through merge; you are only handing off the
+   >    *remaining, not-yet-started* scope as fresh pickup-ready cards.
+   >
+   >    This replaces the older "describe the split and let a human add
+   >    cards" behavior — a human can still redirect or re-scope any of the
+   >    filed cards afterward, but filing them is no longer a human-only step.
 4. **Verify locally** — run the brief's exact VERIFY commands. Green tests are
    not sufficient if the brief says to run the app — do that too.
 5. **Open the PR/CR + arm auto-merge**. First route the repo:
@@ -663,7 +707,9 @@ Check the repo's contributor docs (`CONTRIBUTING.md` / `AGENTS.md` /
   intended mechanism; an idle `sleep`-loop or a turn parked doing nothing is the
   wedge to avoid.
 - Keep PRs atomic; honor OUT OF SCOPE; don't spawn sibling agents — if work
-  splits, describe the split and let a human add cards.
+  splits, file the follow-up cards yourself and wire dependencies (see the
+  callout under WORK MODE step 3). A human can still redirect the split
+  afterward; don't wait for one to author the cards.
 
 ## The watcher that re-enters this skill
 
