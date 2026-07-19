@@ -83,7 +83,19 @@ continue — do not fail the whole run.
    empty worktree parent dir. Use `last_stack_run_tool "$LAST_STACK_TOOL_GIT"`
    and `last_stack_run_tool "$LAST_STACK_TOOL_RM"` for generated cleanup
    commands in this stripped-shell path.
-3a. **Reap stale dev-server port orphans (port-scoped, brain-safe).** A preview /
+3a. **Migrate legacy repo-local `.worktrees/` after the live audit.** Disk
+   reclaim must not delete non-removable worktrees just because they live under
+   a checkout. After the board/lsof audit above, run the bounded migration
+   helper so clean idle survivors move to the canonical kanban worktree pool:
+   ```bash
+   "$HOME/.last-stack/bin/last-stack-migrate-repo-local-worktrees" \
+     --workspace "$workspace" \
+     --dest "${WORKTREES_DIR:-$HOME/.kanban/worktrees}" || true
+   ```
+   Report every `FLAG ... kept ...` line. The helper skips dirty paths, live or
+   open paths, protected names, non-owned directories, and destination
+   collisions.
+3b. **Reap stale dev-server port orphans (port-scoped, brain-safe).** A preview /
    dev server (Vite, a per-app dev node) whose launching session died can outlive
    it and keep holding its port, blocking the next run. For each known
    preview/dev-server port (`lsof -ti :<port>` for each of your

@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# Move legacy repo-local .worktrees/<name> entries into the canonical
+# ~/.kanban/worktrees pool after proving they are safe to relocate.
+set -u
+
+GIT=${LAST_STACK_TOOL_GIT:-/usr/bin/git}
+FIND=${LAST_STACK_TOOL_FIND:-/usr/bin/find}
+LSOF=${LAST_STACK_TOOL_LSOF:-$(command -v lsof || true)}
+
+workspace="${REPARK_WORKSPACE:-$HOME/code/edgevector}"
+dest_root="${WORKTREES_DIR:-$HOME/.kanban/worktrees}"
+dry_run=0
+
+usage() {
+  cat >&2 <<'EOF'
+usage: last-stack-migrate-repo-local-worktrees [--dry-run] [--workspace DIR] [--dest DIR] [REPO...]
+
+Moves clean, idle Git worktrees from REPO/.worktrees/<name> to DEST/<name>.
+When no REPO is supplied, child Git repos under --workspace are scanned.
+EOF
+}
+
+abspath_existing_dir() {
+  [ -d "$1" ] || return 1
+  (cd "$1" && pwd -P)
+}
+
+git_common_dir_abs() {
+  local repo="$1" common
+  common=$($GIT -C "$repo" rev-parse --git-common-dir 2>/dev/null) || return 1
+  case "$common" in
+    /*) abspath_existing_dir "$common" ;;
+    *) abspath_existing_dir "$repo/$common" ;;
+  esac
+}
+
+has_live_process() {
+  local path="$1"
+  [ -n "$LSOF" ] || return 2
+  "$LSOF" +D "$path" >/dev/null 2>&1
+}
+
+note() {
+  printf 'ok   %-24s %s\n' "$1" "$2"
+}
+
+flag() {
+  printf 'FLAG %-24s %s\n' "$1" "$2"
+}
+
+repos_file=""
+tmp=""
+cleanup() {
+  [ -n "$tmp" ] && rm -rf "$tmp"
+}
+trap cleanup EXIT
+
+repos=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run)
+      dry_run=1
+      shift
+      ;;
+    --workspace)
+      [ $# -ge 2 ] || { usage; exit 2; }
+      workspace="$2"
+      shift 2
+      ;;
+    --dest)
+      [ $# -ge 2 ] || { usage; exit 2; }
+      dest_root="$2"
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --*)
+      usage
+      exit 2
+      ;;
+    *)
+      repos="${repos}${repos:+
+}$1"
+      shift
+      ;;
+  esac
+done
+
+tmp=$(mktemp -d)
+repos_file="$tmp/repos"
+
+if [ -n "$repos" ]; then
+  printf '%s\n' "$repos" > "$repos_file"
+else
+  [ -d "$workspace" ] || exit 0
+  "$FIND" "$workspace" -mindepth 2 -maxdepth 3 -type d -name .git -prune 2>/dev/null |
+    while IFS= read -r git_dir; do
+      repo="${git_dir%/.git}"
+      $GIT -C "$repo" rev-parse --show-toplevel 2>/dev/null || true
+    done > "$repos_file"
+fi
+
+[ -s "$repos_file" ] || exit 0
+
+mkdir -p "$dest_root" 2>/dev/null || {
+  flag migrate "destination root unavailable: $dest_root"
+  exit 0
+}
+
+while IFS= read -r repo; do
+  [ -n "$repo" ] || continue
+  repo_abs=$(abspath_existing_dir "$repo") || { flag "$repo" "not a directory"; continue; }
+  [ -d "$repo_abs/.git" ] || { flag "$(basename "$repo_abs")" "not a primary checkout"; continue; }
+  legacy_root="$repo_abs/.worktrees"
+  [ -d "$legacy_root" ] || continue
+
+  repo_name=$(basename "$repo_abs")
+  repo_common=$(git_common_dir_abs "$repo_abs") || { flag "$repo_name" "cannot resolve git common dir"; continue; }
+
+  "$FIND" "$legacy_root" -mindepth 1 -maxdepth 1 -type d 2>/dev/null |
+    while IFS= read -r wt; do
+      wt_name=$(basename "$wt")
+      case "$wt_name" in
+        salvage-*|tombstone-*|locked|locked-*)
+          flag "$repo_name" "kept $wt_name: protected name"
+          continue
+          ;;
+      esac
+
+      wt_common=$(git_common_dir_abs "$wt") || {
+        flag "$repo_name" "kept $wt_name: not a Git worktree"
+        continue
+      }
+      [ "$wt_common" = "$repo_common" ] || {
+        flag "$repo_name" "kept $wt_name: belongs to another repo"
+        continue
+      }
+
+      dirty=$($GIT -C "$wt" status --porcelain 2>/dev/null)
+      [ -z "$dirty" ] || {
+        flag "$repo_name" "kept $wt_name: dirty worktree"
+        continue
+      }
+
+      if has_live_process "$wt"; then
+        flag "$repo_name" "kept $wt_name: live process or open file"
+        continue
+      elif [ $? -eq 2 ]; then
+        flag "$repo_name" "kept $wt_name: lsof unavailable"
+        continue
+      fi
+
+      dest="$dest_root/$wt_name"
+      [ ! -e "$dest" ] || {
+        flag "$repo_name" "kept $wt_name: destination exists"
+        continue
+      }
+
+      if [ "$dry_run" = 1 ]; then
+        note "$repo_name" "dry-run migrate $wt -> $dest"
+        continue
+      fi
+
+      if $GIT -C "$repo_abs" worktree move "$wt" "$dest" >/dev/null 2>&1; then
+        note "$repo_name" "migrated $wt_name -> $dest"
+      else
+        flag "$repo_name" "kept $wt_name: git worktree move failed"
+      fi
+    done
+
+  $GIT -C "$repo_abs" worktree prune 2>/dev/null || true
+  rmdir "$legacy_root" 2>/dev/null || true
+done < "$repos_file"
+
+exit 0
