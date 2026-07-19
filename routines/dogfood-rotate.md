@@ -21,19 +21,25 @@ with every actionable blocker and papercut discovered.
   `default`.
 - Before any Brain/board writes or product assertions, make sure the Last Stack
   routine checkout you are reading is current. Prefer reading this routine
-  through `last-stack-routine-read dogfood-rotate` (it clean-only auto-upgrades
-  a stale install). If you only have `last-stack-update-check` and it prints
-  `UPGRADE_AVAILABLE` or `GIT_UPDATE_AVAILABLE`, run
+  through `last-stack-routine-read dogfood-rotate` (it auto-upgrades a stale
+  clean install and may repair tracked install dirt as described below). If you
+  only have `last-stack-update-check` and it prints `UPGRADE_AVAILABLE` or
+  `GIT_UPDATE_AVAILABLE`, run
   `${LAST_STACK_ROOT:-$HOME/.last-stack}/bin/last-stack-self-upgrade` once, then
-  re-read the upgraded prompt. If self-upgrade returns `error-dirty`, STOP
-  before product assertions, print `warn: last-stack-checkout-dirty`, append a
-  graceful noop heartbeat with `reason=last-stack-checkout-dirty`, and do not
-  file an install-dir blocker for dirty checkout alone. A dirty install checkout
-  is normal while agents are working; never `reset --hard`, `checkout --`, clean,
-  or otherwise repair it from this routine. If self-upgrade returns
-  `error-diverged` or another non-dirty failure, STOP, heartbeat the failure, and
-  file/reuse a single install-dir blocker — never continue from stale routine
-  text.
+  re-read the upgraded prompt. Honor
+  `[[preference-agents-work-in-worktrees-install-checkout-disposable]]`: product
+  work belongs in isolated worktrees, while `${LAST_STACK_ROOT:-$HOME/.last-stack}`
+  is a disposable host-tooling install. If self-upgrade, routine-read, or
+  host-track is blocked by tracked dirt in that install checkout, authorized
+  remediation is to create a backup branch, then run
+  `git reset --hard lastgit/main` in the install checkout and retry the blocked
+  read/upgrade. Do not ask Tom again and do not file an install-dir blocker for
+  dirt alone. If the dirty-install path still returns `error-dirty` /
+  `warn: last-stack-checkout-dirty` and cannot be repaired in this bounded run,
+  emit a noop heartbeat with `reason=last-stack-checkout-dirty` and stop; this
+  is not a dogfood error. If self-upgrade returns `error-diverged` or another
+  non-dirty failure, STOP, heartbeat the failure, and file/reuse a single
+  install-dir blocker; do not continue from stale routine text.
 - First run data-plane preflight reads, sequentially: `brain get
   dogfood-registry --type project --json` and `kanban list --column todo
   --json`. These socket-backed reads are the health check. Do not use
@@ -224,8 +230,11 @@ card.
 ## Guardrails
 - Files cards and Brain updates only. Do not ship feature fixes, open PRs, run
   `kanban-agent`, rebase, merge, deploy, or cut prod.
-- No destructive operations: no `git reset --hard`, `git clean`, `git stash`, or
-  deleting shared worktrees.
+- No destructive operations in product repos or shared worktrees: no
+  `git reset --hard`, `git clean`, `git stash`, or deleting shared worktrees.
+  The only install-checkout exception is the authorized backup-branch plus
+  `git reset --hard lastgit/main` remediation above when tracked dirt blocks
+  routine-read, self-upgrade, or host-track.
 - Do not touch real user data, real `~/.folddb`, real `~/.lastdb`, or the live
   primary Brain node as a dogfood target.
 - If credentials, Apple TCC, GUI access, second-node rigs, cloud-prod, or other

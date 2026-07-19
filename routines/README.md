@@ -189,8 +189,11 @@ frontmatter suggests a cadence. The pattern every routine follows:
    If the install is dirty, diverged, or the helper is missing, it prints
    `LAST_STACK_ROUTINE_STALE` and exits 78 — stop before executing stale text.
    Do **not** set `LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1` or
-   `LASTSTACK_SELF_UPGRADE_SKIP=1` in scheduled automations. Never
-   `reset --hard` the install dir to force a pass; develop in a separate clone.
+   `LASTSTACK_SELF_UPGRADE_SKIP=1` in scheduled automations. Develop in a
+   separate clone or worktree. If tracked dirt in the disposable install blocks
+   routine-read, self-upgrade, or host-track, authorized remediation is
+   backup-branch plus `git reset --hard lastgit/main` per
+   `[[preference-agents-work-in-worktrees-install-checkout-disposable]]`.
    Manual fallback: `"$last_stack/bin/last-stack-self-upgrade"` or
    `cd "$last_stack" && git pull --ff-only && ./setup`.
 5. **Budget LastDB reads.** Start with the narrowest data-plane read that proves
@@ -301,7 +304,7 @@ Creation-style flags belong to `brain <type> new`, not `put`.
 Codex automation prompt skeletons should render the same information directly:
 
 ```text
-Run the Last Stack routine `<routine>`: set `last_stack="<last-stack>"`; source `$last_stack/bin/last-stack-shell-prelude`; run `$last_stack/bin/last-stack-cli-preflight git curl jq gh <board-cli> <brain-cli>`; then read the routine with `$last_stack/bin/last-stack-routine-read "<routine>"` and execute one bounded pass. The reader clean-only auto-upgrades a stale install via `last-stack-self-upgrade` before serving the prompt; if it still prints `LAST_STACK_ROUTINE_STALE` (dirty/diverged install) or `LAST_STACK_ROUTINE_MISSING`, stop before executing stale/absent routine text and heartbeat the failure — never `reset --hard` the install dir. Prefer a scheduled `self-upgrade` routine so the install stays current even when other jobs are idle. Automation ID: <automation-id>. Automation memory: ${CODEX_HOME:-$HOME/.codex}/automations/<automation-id>/memory.md. Use workspace `<workspace>` only as a container of child checkouts; before repo-scoped `git` or repo-inferred `gh`, resolve the child repo with `$last_stack/bin/last-stack-repo-op-guard "$target_repo" "<workspace>"` and use examples such as `git -C /Users/tomtang/code/edgevector/<repo> status -sb`, never the workspace root itself. Use board CLI `<board-cli>`, brain CLI `<brain-cli>`, default board `<board>` (the board name is only a `--board` argument for `list` and `add`; `show`, `move`, `rm`, and rank/dep/tag verbs operate on the default board implicitly and reject `--board`), and global CLIs from PATH.
+Run the Last Stack routine `<routine>`: set `last_stack="<last-stack>"`; source `$last_stack/bin/last-stack-shell-prelude`; run `$last_stack/bin/last-stack-cli-preflight git curl jq gh <board-cli> <brain-cli>`; then read the routine with `$last_stack/bin/last-stack-routine-read "<routine>"` and execute one bounded pass. The reader auto-upgrades a stale install via `last-stack-self-upgrade` before serving the prompt; if it still prints `LAST_STACK_ROUTINE_STALE` (dirty/diverged install) or `LAST_STACK_ROUTINE_MISSING`, stop before executing stale/absent routine text and heartbeat the failure. Agents do product work in isolated worktrees. If tracked dirt in the disposable install blocks routine-read, self-upgrade, or host-track, authorized remediation is backup-branch plus `git reset --hard lastgit/main` per `[[preference-agents-work-in-worktrees-install-checkout-disposable]]`. Prefer a scheduled `self-upgrade` routine so the install stays current even when other jobs are idle. Automation ID: <automation-id>. Automation memory: ${CODEX_HOME:-$HOME/.codex}/automations/<automation-id>/memory.md. Use workspace `<workspace>` only as a container of child checkouts; before repo-scoped `git` or repo-inferred `gh`, resolve the child repo with `$last_stack/bin/last-stack-repo-op-guard "$target_repo" "<workspace>"` and use examples such as `git -C /Users/tomtang/code/edgevector/<repo> status -sb`, never the workspace root itself. Use board CLI `<board-cli>`, brain CLI `<brain-cli>`, default board `<board>` (the board name is only a `--board` argument for `list` and `add`; `show`, `move`, `rm`, and rank/dep/tag verbs operate on the default board implicitly and reject `--board`), and global CLIs from PATH.
 ```
 
 When a prompt needs PR merge-queue membership, use

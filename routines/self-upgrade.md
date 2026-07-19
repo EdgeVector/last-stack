@@ -1,7 +1,7 @@
 ---
 name: self-upgrade
 cadence: every 1–2 hours (or on any LAST_STACK_ROUTINE_STALE heartbeat)
-description: Keep the installed Last Stack checkout (~/.last-stack) fast-forwarded to origin when the working tree is clean. Never develops in the install dir; never force-resets.
+description: Keep the installed Last Stack checkout (~/.last-stack) fast-forwarded to origin. Never develops in the install dir; may repair tracked install dirt with a backup branch plus reset.
 ---
 
 You are the **self-upgrade** routine. Each run starts cold. Your only job is to
@@ -10,10 +10,12 @@ do not die at the freshness gate.
 
 ## Why this exists
 `last-stack-routine-read` fail-closes when the install is behind origin. Without
-an automatic clean-only upgrade, fleets stay stuck for days filing
-`stale-routine` heartbeats and doing no real work. This routine (and the
-`last-stack-self-upgrade` helper it calls) closes that loop **only when the
-install working tree is clean**.
+an automatic upgrade path, fleets stay stuck for days filing `stale-routine`
+heartbeats and doing no real work. This routine (and the
+`last-stack-self-upgrade` helper it calls) closes that loop for clean installs
+and, per `[[preference-agents-work-in-worktrees-install-checkout-disposable]]`,
+may repair tracked dirt in the disposable install checkout with a backup branch
+plus reset.
 
 ## Automation memory
 If the scheduled prompt includes an `Automation memory:` path (routinesd injects
@@ -32,11 +34,16 @@ sandbox refuses the path, note `memory_unwritable=<path>` in the heartbeat and
 continue — do not fail the whole run.
 
 ## Hard guardrails
-- NEVER `git reset --hard`, `git clean -fd`, force-push, stash, or merge in the
-  install dir.
-- NEVER develop, hand-edit skills, or leave uncommitted work in
+- Do not develop, hand-edit skills, or intentionally leave uncommitted work in
   `${LAST_STACK_ROOT:-$HOME/.last-stack}`. Feature work belongs in a separate
-  clone (e.g. a workspace `last-stack/` checkout) via PR.
+  clone or isolated worktree via PR.
+- If tracked dirt in `${LAST_STACK_ROOT:-$HOME/.last-stack}` blocks
+  self-upgrade, routine-read, or host-track, the authorized repair is:
+  create a backup branch, then `git reset --hard lastgit/main` in the install
+  checkout. Do not ask Tom again and do not file install-dirty as
+  `needs_human`.
+- Do not `git clean -fd`, force-push, stash, merge, or delete worktrees from the
+  install dir.
 - NEVER set `LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1` or
   `LASTSTACK_SELF_UPGRADE_SKIP=1` to "make the pass succeed."
 - Do ONE bounded pass, then exit.
@@ -55,9 +62,10 @@ continue — do not fail the whole run.
    Interpret the machine line `LAST_STACK_SELF_UPGRADE result=...`:
    - `up-to-date` → noop
    - `upgraded` → success; note old→new heads
-   - `error-dirty` → STOP. Heartbeat the dirty sample. Optionally file/reuse a
-     single backlog blocker that the install dir has local edits (do not invent
-     a force-clean). Do not upgrade.
+   - `error-dirty` → repair tracked install dirt with backup-branch plus
+     `git reset --hard lastgit/main`, then retry once. If the retry is still
+     dirty, heartbeat the dirty sample and stop without filing a human blocker
+     for dirt alone.
    - `error-diverged` / `error-pull` / `error-setup` / `error-lock` → STOP and
      heartbeat the result. Do not force.
 3. Confirm the reader is healthy:
