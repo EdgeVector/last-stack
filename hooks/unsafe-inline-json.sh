@@ -13,17 +13,19 @@ cmd="$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || e
 [ -n "$cmd" ] || exit 0
 
 emit_deny() {
+  # Deny the tool call and surface the reason, but never halt the session:
+  # "continue": false here killed entire agent turns on every violation
+  # (Tom, 2026-07-18). Deny alone lets the agent retry compliantly.
   local reason="$1"
   jq -n --arg r "$reason" '{
-    continue: false,
-    stopReason: $r,
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       permissionDecision: "deny",
       permissionDecisionReason: $r
     }
-  }' 2>/dev/null || printf '%s\n' "$reason" >&2
-  exit 1
+  }' 2>/dev/null && exit 0
+  printf '%s\n' "$reason" >&2
+  exit 2
 }
 
 matches_node_json=0
