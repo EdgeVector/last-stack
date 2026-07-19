@@ -204,7 +204,7 @@ run the skills on a cadence:
 | Routine | What it does |
 |---|---|
 | **self-improvement-loop** | Mine recent sessions for friction; upgrade the agent's own skills/routines/permissions. |
-| **papercut-sweep** | File a card per dev-process papercut found in sessions. |
+| **papercut-reconciler** | The ONLY papercut→card path: harvest session papercuts into Brain records, cluster ALL open Brain papercuts into patterns, file pattern-level cards. |
 | **devops-continuous-improvement** | Inspect CI, merge flow, deployment, testing, and release gates; ship one small DevOps fix or file precise cards. |
 | **worktree-cleanup** / **disk-reclaim** | Prune stale worktrees/branches; reclaim disk; keep the machine healthy. |
 | **drain-open-prs** | Drive every open PR across all repos toward zero (merge or close). |
@@ -349,7 +349,7 @@ the agent always has both context and a worklist.
 Steps 1–6 describe what an agent does *when invoked*. To make the loop
 **self-driving** — so cards get filed, promoted, picked up, and reconciled
 without a human kicking it each time — register the **routines** as scheduled
-agents: generators (`self-improvement-loop`, `papercut-sweep`) file work,
+agents: generators (`self-improvement-loop`, `papercut-reconciler`) file work,
 `groom-board`/`program-driver` promote it, separate `kanban-pickup` workers
 claim and ship one WORK card each, `kanban-watch`/`drain-open-prs` reconcile
 the stragglers, `kanban-validate`

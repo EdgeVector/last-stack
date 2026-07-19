@@ -23,9 +23,9 @@ stripped out.
 
 ```
                  ┌─────────────────── generators ───────────────────┐
-   sessions ──▶  self-improvement-loop      papercut-sweep
-                 (upgrades the agent's       (files a card per
-                  own skills/routines)        friction it finds)
+   sessions ──▶  self-improvement-loop      papercut-reconciler
+                 (upgrades the agent's       (clusters Brain papercuts
+                  own skills/routines)        into pattern cards)
                           │                        │
                           ▼                        ▼
                  ┌──────────────────── the board (kanban) ─────────────────┐
@@ -101,7 +101,7 @@ one-card-per-fire contract.
 |---|---|---|
 | [`llms-txt-install-smoke`](llms-txt-install-smoke.md) | daily | Isolated dogfood of https://thelastdb.com/llms.txt first-run install; file cards on RED (never touches primary LastDB). |
 | [`self-improvement-loop`](self-improvement-loop.md) | daily | Mine recent agent sessions for recurring friction; upgrade the agent's OWN skills / routines / permission allowlist / docs. The flagship self-fixing loop. |
-| [`papercut-sweep`](papercut-sweep.md) | daily | File a card per dev-process papercut found in sessions (does not ship fixes itself). |
+| [`papercut-reconciler`](papercut-reconciler.md) | every 6h | The ONLY papercut→card path: harvests session papercuts into Brain records, clusters ALL open Brain papercuts into patterns, files pattern-level cards (does not ship fixes itself). Agents file papercuts to Brain only, never to the board. |
 | [`devops-continuous-improvement`](devops-continuous-improvement.md) | daily | Inspect CI, merge flow, deployment, testing, and release gates; ship one small DevOps fix or file precise follow-up cards. |
 | [`worktree-cleanup`](worktree-cleanup.md) | daily (off-hours) | Prune stale worktrees/branches; bring repos to latest default branch. |
 | [`disk-reclaim`](disk-reclaim.md) | hourly | Reclaim disk, prune merged/clean worktrees, sweep orphan processes. |

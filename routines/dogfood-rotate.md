@@ -1,13 +1,13 @@
 ---
 name: dogfood-rotate
 cadence: hourly
-description: Rotate through the Brain-owned dogfood registry, exercise one eligible feature on isolated/dev surfaces, and file deduped papercut/blocker cards on Kanban. Files work only; never ships fixes.
+description: Rotate through the Brain-owned dogfood registry, exercise one eligible feature on isolated/dev surfaces, file deduped BLOCKER cards on Kanban and papercut records in Brain. Files work only; never ships fixes.
 ---
 
 You are the **dogfood-rotate** routine. Each run starts cold. Your objective is
 to dogfood exactly one eligible feature from the Brain-owned `dogfood-registry`,
-using that feature's recipe as the source of truth, then keep the board stocked
-with every actionable blocker and papercut discovered.
+using that feature's recipe as the source of truth, then file every actionable
+blocker as a board card and every papercut as a Brain record.
 
 ## Setup
 - Work from your workspace root (the directory that holds your repos).
@@ -176,18 +176,21 @@ target repo to make it current.
   and file user-visible friction. Do not do broad code audits or completionist
   cleanup.
 
-## File Cards
-For every actionable blocker, papercut, stale recipe, confusing UX, flaky
-behavior, missing fixture, or safety issue discovered:
-- Dedupe first with `kanban search` / `kanban list` and Brain search. If a
-  live card already captures it, reuse that slug in the run report and rotation
-  log; do not file a duplicate.
-- File all actionable papercuts, not only blockers. Polish found by dogfood is
-  feature work.
-- Put clear, pickup-ready blockers in `todo`; put ambiguous or investigation
-  items in `backlog`.
-- Tag cards with `dogfood`, the feature slug, a priority tag (`p0`-`p3`), and
-  `papercut`, `blocker`, `recipe`, or another concrete surface tag.
+## File findings — blockers to the board, papercuts to Brain
+Split every actionable finding by severity:
+- **BLOCKER** (feature broken, recipe fails, data-loss/safety issue): file a
+  board card. Dedupe first with `kanban search` / `kanban list` and Brain
+  search; if a live card already captures it, reuse that slug in the run
+  report and rotation log. Put clear, pickup-ready blockers in `todo`;
+  ambiguous or investigation items in `backlog`. Tag cards with `dogfood`,
+  the feature slug, a priority tag (`p0`-`p3`), and `blocker`, `recipe`, or
+  another concrete surface tag.
+- **PAPERCUT** (friction, polish, confusing UX, stale recipe wording, flaky
+  annoyance that doesn't block the feature): file a Brain record ONLY —
+  slug `papercut-<short-topic>`, type `reference`, tag `papercut`, body with
+  `Status: OPEN`, symptom, suggested fix, evidence. Never file a papercut
+  card — the `papercut-reconciler` routine clusters Brain papercuts into
+  pattern-level cards (standing rule, Tom 2026-07-18).
 - Make each card cold-start-ready:
 
 ```text

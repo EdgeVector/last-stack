@@ -10,7 +10,7 @@ fleet is hitting; you do **not** ship feature code, open PRs, or run
 kanban-agent WORK mode.
 
 This is distinct from:
-- `papercut-sweep` — session transcript papercuts (broader than routinesd)
+- `papercut-reconciler` — Brain papercut clustering → pattern cards (broader than routinesd)
 - `pipeline-health` — CR/PR merge pipeline unblocking (every ~10m)
 - `kanban-watch` — board reconcile for carded PRs
 

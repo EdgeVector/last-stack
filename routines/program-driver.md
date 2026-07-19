@@ -55,8 +55,8 @@ continue — do not fail the whole run.
 
 This complements the existing routines:
 - `groom-board` (daily) is the cross-cutting prune/align/promote pass.
-- The generators (`papercut-sweep`, `self-improvement-loop`, …) FILE
-  papercut/gap cards.
+- The generators (`papercut-reconciler`, `self-improvement-loop`, …) FILE
+  pattern/gap cards (papercuts reach the board only via the reconciler).
 - `kanban-pickup` (hourly) SHIPS ready `todo` cards via `kanban-agent`.
 YOU are the hourly, PROGRAM-DAG-aware promoter: walk the programs in the driving
 index and guarantee each unblocked one has its next card in `todo`. You also

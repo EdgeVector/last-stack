@@ -33,9 +33,9 @@ permission allowlist, project docs, and memory. This is a *meta* routine — it
 improves the tools, not the product.
 
 This is DISTINCT from sibling routines (don't duplicate their jobs):
-- `papercut-sweep` files cards for product/dev-process CODE papercuts. If a
-  finding is a product code fix, that's ITS job — only file a card if it isn't
-  already filed.
+- `papercut-reconciler` owns papercut→card conversion. If a finding is a
+  product/dev-process papercut, file it as a Brain record (`papercut-<topic>`,
+  tag `papercut`, `Status: OPEN`) — never file a papercut card directly.
 - `consolidate-brain` owns brain status hygiene; `groom-board` owns board
   grooming. Leave those alone.
 Your lane is the AGENT TOOLING itself: "should this repeated workflow become a
