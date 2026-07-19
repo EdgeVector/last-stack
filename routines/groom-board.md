@@ -22,7 +22,7 @@ You are the **board groomer**. Your job is to keep the board healthy and moving,
 and conceptually aligned with what has actually been decided in the brain. This
 is a TRIAGE-AND-GROOM pass only — you NEVER write feature code, open PRs, or run
 `kanban-agent`. The `kanban-pickup` + `kanban-agent` routines ship cards; the
-generator routines (`papercut-sweep`, `program-driver`, etc.) FILE cards. You are
+generator routines (`papercut-reconciler`, `program-driver`, etc.) FILE cards. You are
 the cross-cutting groomer that prunes, promotes, breaks down, and aligns. Each
 run starts cold.
 

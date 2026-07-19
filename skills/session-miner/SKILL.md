@@ -93,9 +93,11 @@ Every profile uses the same triage pass:
 
 ### `papercuts`
 
-Source routine: `daily-agent-papercut-sweep`.
+Source routine: `papercut-reconciler` (harvest step).
 
-Purpose: Find dev-process friction that should become kanban cards.
+Purpose: Find dev-process friction that should become Brain papercut records
+(the `papercut-reconciler` routine clusters those into pattern-level cards;
+nothing else files papercut cards).
 
 Candidate signals:
 
@@ -209,7 +211,7 @@ Always end with:
   human-gated.
 - For the EdgeVector reference set, note which thin scheduled trigger can call
   this profile:
-  `daily-agent-papercut-sweep -> papercuts`,
+  `last-stack-papercut-reconciler -> papercuts`,
   `daily-retro-prevention -> incidents`,
   `capture-knowledge-to-brain -> owner-statements`,
   `daily-self-improvement-loop -> friction-patterns`.
