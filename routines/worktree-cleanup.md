@@ -169,9 +169,17 @@ continue — do not fail the whole run.
    accurate non-terminal column. If coherent local work has no PR, open a draft
    PR. If CI is red or pending, leave it for the CI/drain routine unless the fix
    is clearly inside this cleanup's local-change scope.
-6. **Bring repos to latest.** `git -C <repo> fetch --all --prune` then fast-
-   forward the default branch. Agents work in worktrees, so switching the main
-   checkout's branch doesn't disturb them — but never force or discard.
+6. **Bring repos to latest.** Run the maintained repark helper — do NOT
+   hand-roll fetch/pull loops (`fetch --all` hammers the primary LastDB node
+   via lastdb:// remotes, and ad-hoc recipes are how the 2026-07-19 drift
+   happened: fold 134 behind, last-stack 256):
+   ```bash
+   "$HOME/.last-stack/bin/last-stack-repark-shared-checkouts" || true
+   ```
+   It is venue-aware, salvage-first, skips repos with fresh edits, and never
+   resets or pushes. Surface every `FLAG` line in your report verbatim —
+   `ahead`/`diverged` flags need an interactive audit, not an unattended fix.
+   Contract: brain `sop-shared-checkout-mirror-contract`.
 7. **Reclaim disk if needed** (see the `disk-reclaim` routine for the full,
    safer procedure — this routine may reuse it). Delete build-artifact dirs
    (`target/`, `node_modules/` in throwaway worktrees, caches) — removing a build
