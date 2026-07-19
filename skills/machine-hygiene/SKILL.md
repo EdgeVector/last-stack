@@ -56,7 +56,8 @@ actions noted below.
   never touch); (3) **top-level sibling worktrees** `~/code/edgevector/<name>` (e.g.
   `fold-superset-tray`, `fold-aws-runtime-pin`) AND `~/code/edgevector-worktrees/<name>`
   (`app-sec/*`, `app-run/*`, plus some `exemem-workspace` doc worktrees like `nmsr-correct`);
-  (4) **`~/code/edgevector/.worktrees/<name>`** — a newer internal location (e.g.
+  (4) **`~/code/edgevector/.worktrees/<name>`** — a legacy repo-local location
+  that must be migrated to `~/.kanban/worktrees/` after live/dirty audit (e.g.
   `schema-naming-ingestion-method`). The siblings are the easiest to miss — find them via
   `git -C <path> worktree list`. `~/code/edgevector/.worktrees` and any
   repo-local `.worktrees/` directory are legacy/violation locations: enumerate
@@ -170,6 +171,16 @@ line.
 - Prune `.claude/worktrees/*` only if **no live process** (`lsof -d cwd | grep <path>`) and
   the branch is merged/clean. In practice the dogfood ones all have live idle processes, so
   the clean way to remove a worktree + stop its process is to **archive its session**.
+- After the live/dirty audit, migrate clean idle repo-local `.worktrees/*`
+  survivors into the canonical kanban pool instead of leaving hidden nests under
+  shared checkouts:
+  ```bash
+  "$HOME/.last-stack/bin/last-stack-migrate-repo-local-worktrees" \
+    --workspace "$HOME/code/edgevector" \
+    --dest "${WORKTREES_DIR:-$HOME/.kanban/worktrees}" || true
+  ```
+  Include every `FLAG ... kept ...` line in the report; those are protected
+  residuals, not cleanup failures.
 - **Unsupervised:** you CAN'T archive. Enumerate via `mcp__ccd_session_mgmt__list_sessions`
   (stale = `isRunning:false` + dogfood title / merged branch / removed-worktree cwd) and
   list them for a UI bulk-archive. Titles to sweep: "Dog food", "Fold dev node",

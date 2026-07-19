@@ -127,7 +127,20 @@ continue — do not fail the whole run.
    branch. Run `last_stack_run_tool "$LAST_STACK_TOOL_GIT" -C <repo> worktree
    prune` per repo afterwards. Delete any now-empty
    worktree parent dir.
-3a. **Reap stale dev-server port orphans (port-scoped, brain-safe).** Local
+3a. **Migrate legacy repo-local `.worktrees/` after the live audit.** Once the
+   board/lsof checks above have identified what is safe to touch, move remaining
+   clean, idle repo-local worktrees into the canonical kanban pool instead of
+   letting every checkout grow its own hidden worktree nest:
+   ```bash
+   "$HOME/.last-stack/bin/last-stack-migrate-repo-local-worktrees" \
+     --workspace "$workspace" \
+     --dest "${WORKTREES_DIR:-$HOME/.kanban/worktrees}" || true
+   ```
+   Treat `FLAG ... kept ...` lines as protected residuals for the report. The
+   helper refuses dirty entries, live/open paths, protected names
+   (`salvage-*`, `tombstone-*`, `locked*`), non-owned directories, and
+   destination collisions.
+3b. **Reap stale dev-server port orphans (port-scoped, brain-safe).** Local
    preview / dev servers (e.g. Vite, a per-app dev node) bind well-known ports;
    when their launching session dies the process can outlive it and keep holding
    the port, so the next preview/dev run can't bind and an agent stalls. Reap
