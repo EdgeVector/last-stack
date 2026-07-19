@@ -25,3 +25,4 @@ First line is `PASS`, `PASS-OFFLINE`, or `FAIL` for kanban DONE-WHEN matching.
 | schema | no-wasm tree gate | fold capstone `run.sh` when landed |
 | file-blobs-on-demand-sync | fold source/test contract + optional narrow cargo tests | same narrow fold proof command on a non-primary checkout |
 | laststore-is-document-store-last-db-is-conventions | Brain record/design contract, fixtureable via `LASTSTORE_PROOF_RECORD_FILE` | same Brain contract against the live record |
+| mini-brain-observability | Fold source contract for `lastdb status`, session/crash attribution, self-metrics, dashboard regen, health alert, and dogfood hooks | same checks against current source; never restarts the primary daemon |
