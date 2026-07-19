@@ -46,6 +46,15 @@ case "$prompt" in
     exit 1
     ;;
 esac
+
+kanban_watch_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" kanban-watch)"
+if ! grep -Fq "card_batch_limit" <<<"$kanban_watch_prompt" ||
+   ! grep -Fq "watch-budget-handoff" <<<"$kanban_watch_prompt" ||
+   ! grep -Fq "Do not read \`review\`; that column does" <<<"$kanban_watch_prompt" ||
+   ! grep -Fq "not exist. Read \`done\` only if you need" <<<"$kanban_watch_prompt"; then
+  echo "expected kanban-watch to bound card sweeps and avoid the retired review column" >&2
+  exit 1
+fi
 case "$prompt" in
   *"pre-claim active Situation / harness fence for Codex usage-limit"*"noop rate-limit ... no_card_claimed"*) ;;
   *)

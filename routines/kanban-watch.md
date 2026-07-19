@@ -46,7 +46,8 @@ Scheduled routine: if you commit or open a PR/CR, use
 envelope). Do not invent trailers when `DRIVEN_BY` is unset.
 
 ## Action budget per wake (cheap vs heavy)
-- **CHEAP mechanical advances are NOT capped** — do EVERY applicable one this
+- **CHEAP mechanical advances are broadly expected, but still run under the
+  global wake deadline below** — do EVERY applicable one this
   wake, **including on pickup-failover early exits**: **`kanban groom
   board-cards-heal --apply`** (list/show BoardCards drift) then **reclaim zombie
   `doing` claims** (no PR/branch/commits + no live worker + older than
@@ -75,12 +76,12 @@ Immediately after CLI preflight, record:
 run_started_epoch="$(date +%s)"
 run_timeout_min="${ROUTINES_TIMEOUT_MIN:-${TIMEOUT_MIN:-30}}"
 closeout_reserve_sec=300
+soft_stop_sec=$(( run_timeout_min * 60 - closeout_reserve_sec ))
+card_batch_limit="${KANBAN_WATCH_CARD_BATCH_LIMIT:-12}"
 ```
 
-Before every foreground LastGit reconcile command that can wait on transport,
-mergeability probes, or local merge/push work (`lastgit stuck`,
-`lastgit cr complete --once`, `lastgit cr merge`, and any `git fetch` through
-the `lastdb:///` remote), compute:
+Before every major phase, before every card/PR/CR that needs remote lookup, and
+after each batch of `card_batch_limit` carded items, compute:
 
 ```bash
 elapsed=$(( $(date +%s) - run_started_epoch ))
@@ -88,10 +89,19 @@ remaining=$(( run_timeout_min * 60 - elapsed ))
 command_budget=$(( remaining - closeout_reserve_sec ))
 ```
 
-If `command_budget <= 60`, do not start that command. Instead append/update the
-relevant card with `WATCH-HANDOFF: budget low before <command>; next sweep
-should resume from <evidence>` and heartbeat `kanban-watch ... ok
-result=watch-budget-handoff reason=budget-low`.
+If `elapsed >= soft_stop_sec` or `command_budget <= 60`, stop the sweep even if
+cheap work remains. Append/update the relevant card if there is a specific
+in-flight artifact; otherwise write the durable state summary to automation
+memory. Heartbeat `kanban-watch ... ok result=watch-budget-handoff
+reason=budget-low processed=<n> remaining=<n> next=<slug-or-phase>`, print the
+same one-line report to stdout, and exit 0. Budget handoff is normal bounded
+progress, not an error.
+
+Do not start any foreground LastGit reconcile command that can wait on
+transport, mergeability probes, or local merge/push work (`lastgit stuck`,
+`lastgit cr complete --once`, `lastgit cr merge`, and any `git fetch` through
+the `lastdb:///` remote) unless the command budget above leaves at least 60
+seconds.
 
 When a foreground command is allowed, run it under `timeout -k 30s
 <command_budget>s ...` or `gtimeout -k 30s <command_budget>s ...`. If no timeout
@@ -436,7 +446,8 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
 
 ## The sweep
 1. Read the board as sequential column previews: `<board CLI> list --column todo
-   --json`, then `doing`, `review`, and `backlog`. Read `done` only if you need a
+   --json`, then `doing`, and `backlog`. Do not read `review`; that column does
+   not exist. Read `done` only if you need a
    local duplicate/branch check. Do not launch multiple LastDB reads in parallel,
    and do not use wide/full-body list reads. If any read returns
    `service_timeout`, "node did not respond", or "too many concurrent reads",
@@ -450,7 +461,12 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
    `routine-error-last-stack-fkanban-watch` already tracks it; if the heartbeat
    helper also fails on the same socket, still make the final stdout report use
    `noop`, not `error`.
-2. For EVERY previewed card NOT already in `done` (NOT just `doing`/`review` — a
+2. Build a deterministic ordered worklist from the previews: `doing` first, then
+   `todo`, then `backlog`. Process at most `card_batch_limit` cards before the
+   next mandatory budget check. If the deadline is near, heartbeat a
+   `watch-budget-handoff` with the next unprocessed slug/phase instead of
+   continuing.
+3. For EVERY processed previewed card NOT already in `done` (NOT just `doing` — a
    card can be merged while still in `todo` if a human/other flow did the work;
    that is the exact bug being fixed, so do not restrict by column):
    a. Parse the `Repo:`/`Base:`/`Kind:` header lines and any single-line
@@ -577,11 +593,11 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
         transport text; then heartbeat `ok result=watch-budget-handoff`.
         Do not chain a second heavy LastGit merge attempt after such a timeout.
       - **Pending** (CI running / awaiting human) → leave it for next sweep.
-   f. Give-up guard: `review` is ONLY for cards a fresh build attempt cannot fix
-      (human-only decision/gate, dependency on unmerged work). For those, append
-      `STALLED:`/`BLOCKED: <why>` and leave them in `review`. A card whose only
-      problem is a real-but-fixable bug or queue starvation does NOT belong in
-      `review` — RE-DISPATCH it. When a re-dispatched card's `Build attempt:`
+   f. Give-up guard: human-only decision/gate or dependency-blocked work stays
+      in `todo` or `backlog` with `block_status=needs_human|deferred` and a
+      concise reason. A card whose only problem is a real-but-fixable bug or
+      queue starvation gets RE-DISPATCHED to `todo`. When a re-dispatched card's
+      `Build attempt:`
       reaches 3 and still fails, append a `STALLED: <n> attempts, still failing
       <check>` line so `program-rollup`/`morning-sync` surfaces it — but keep
       re-dispatching; never silently loop a builder forever, never auto-merge
@@ -598,7 +614,9 @@ scan of your repos for these. A PR is a STRANDED candidate when ALL hold:
 - NO active worktree entry on its head branch (an active worktree = a sibling
   agent mid-work; NEVER touch those).
 - NOT owned by another routine's branch namespace.
-Apply the CHEAP fixes to EVERY stranded candidate (uncapped): re-arm auto-merge
+Run this phase only if the budget check still leaves the closeout reserve.
+Apply the CHEAP fixes to EVERY stranded candidate found within the remaining
+budget: re-arm auto-merge
 on each CLEAN-but-unarmed one; `update-branch` the oldest few clean-green-BEHIND
 ones; `gh run rerun <run-id> --failed` on every flaky-cancellation. For LastGit
 repos, list open CRs with **one** `lastgit cr list --all-open --json` (never
