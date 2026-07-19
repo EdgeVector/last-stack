@@ -33,3 +33,4 @@ bin/last-stack-lint-prompts \
 bash tests/last-stack-routine-read.sh
 bash tests/last-stack-kanban-done-when-eval.sh
 bash tests/last-stack-lint-prompts.sh --smoke
+bash tests/last-stack-command-modes.sh

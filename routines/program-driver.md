@@ -230,6 +230,12 @@ Before promoting idle/P3 papercuts or inventing program slices:
      | tee "$work/ns-completion.md"
    ```
    Or: `last-stack-north-star-dashboard --fetch-bodies --stdout completion`.
+   If the direct helper exits `126` or stderr says `Permission denied`, treat it
+   as last-stack executable-mode drift. Check
+   `test -x "$last_stack/bin/last-stack-north-star-completion-check"`, report
+   the exact non-executable helper path in the heartbeat/status, and file or
+   promote the packaging regression rather than falling through to broad
+   fallbacks that hide the mode error.
    For each row in `completion.north_stars` (skip `verdict=closed`):
    - **`ns_completable`** (terminal card `done`, NS still `in_progress`):
      mark the brain project `status: done` via `brain put` (preserve body;
