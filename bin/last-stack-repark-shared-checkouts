@@ -25,6 +25,7 @@
 set -u
 
 GIT=/usr/bin/git
+BIN_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 WS="${REPARK_WORKSPACE:-$HOME/code/edgevector}"
 DATE=$(date +%Y%m%d)
 SALVAGE="salvage/shared-checkout-$DATE"
@@ -102,6 +103,12 @@ EOF
   ex="$d/.git/info/exclude"
   if [ -f "$ex" ] && ! grep -q '^\.worktrees/$' "$ex" 2>/dev/null; then
     printf '.worktrees/\n.gstack/\n' >> "$ex"
+  fi
+
+  # Normalize stale embedded GitHub OAuth-token remotes before unattended fetch.
+  # The helper never prints the original URL or token.
+  if [ -x "$BIN_DIR/last-stack-scrub-github-token-remotes" ]; then
+    "$BIN_DIR/last-stack-scrub-github-token-remotes" "$d" >/dev/null 2>&1 || true
   fi
 
   # 2. bounded single-ref fetch of the venue main
