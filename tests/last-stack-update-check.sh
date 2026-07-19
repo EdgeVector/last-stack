@@ -53,4 +53,62 @@ case "$stale_feature" in
     ;;
 esac
 
+# --- lastgit venue: defaults to lastgit remote over a stale origin mirror ---
+lgtmp="$(mktemp -d)"
+lgcleanup() {
+  rm -rf "$lgtmp"
+}
+trap 'lgcleanup; cleanup' EXIT
+
+git -c init.defaultBranch=main init --bare "$lgtmp/origin-mirror.git" >/dev/null
+git -c init.defaultBranch=main init --bare "$lgtmp/lastgit.git" >/dev/null
+git clone "$lgtmp/lastgit.git" "$lgtmp/seed" >/dev/null 2>&1
+git -C "$lgtmp/seed" config user.email test@example.com
+git -C "$lgtmp/seed" config user.name Test
+mkdir -p "$lgtmp/seed/bin"
+cp "$ROOT/bin/last-stack-update-check" "$lgtmp/seed/bin/last-stack-update-check"
+cp "$ROOT/VERSION" "$lgtmp/seed/VERSION"
+printf 'initial\n' >"$lgtmp/seed/README.md"
+git -C "$lgtmp/seed" add .
+git -C "$lgtmp/seed" commit -m initial >/dev/null
+git -C "$lgtmp/seed" push origin HEAD:main >/dev/null 2>&1
+# The read-only mirror only receives the first commit.
+git -C "$lgtmp/seed" push "$lgtmp/origin-mirror.git" HEAD:main >/dev/null 2>&1
+
+git clone "$lgtmp/lastgit.git" "$lgtmp/install" >/dev/null 2>&1
+mkdir -p "$lgtmp/install/.last-stack"
+printf 'lastgit\n' >"$lgtmp/install/.last-stack/pr-venue"
+git -C "$lgtmp/install" remote rename origin lastgit
+git -C "$lgtmp/install" remote add origin "$lgtmp/origin-mirror.git"
+
+# Advance canonical LastGit and fast-forward the install. The install is now
+# ahead of the stale origin mirror but current with its venue remote.
+printf 'second\n' >>"$lgtmp/seed/README.md"
+git -C "$lgtmp/seed" commit -am second >/dev/null
+git -C "$lgtmp/seed" push origin HEAD:main >/dev/null 2>&1
+git -C "$lgtmp/install" pull --ff-only lastgit main >/dev/null 2>&1
+version_url_lastgit="file://$lgtmp/install/VERSION"
+
+stale_mirror="$(LASTSTACK_REMOTE_REPO=origin LASTSTACK_REMOTE_URL="$version_url_lastgit" "$lgtmp/install/bin/last-stack-update-check")"
+case "$stale_mirror" in
+  GIT_UPDATE_AVAILABLE*) ;;
+  *)
+    printf 'expected explicit origin comparison to see stale mirror, got: %s\n' "$stale_mirror" >&2
+    exit 1
+    ;;
+esac
+
+venue_current="$(LASTSTACK_REMOTE_URL="$version_url_lastgit" "$lgtmp/install/bin/last-stack-update-check")"
+test "$venue_current" = "UP_TO_DATE"
+
+rm -f "$lgtmp/install/.last-stack/pr-venue" "$lgtmp/install/.update-check"
+without_venue="$(LASTSTACK_REMOTE_URL="$version_url_lastgit" "$lgtmp/install/bin/last-stack-update-check")"
+case "$without_venue" in
+  GIT_UPDATE_AVAILABLE*) ;;
+  *)
+    printf 'expected default origin without pr-venue opt-in, got: %s\n' "$without_venue" >&2
+    exit 1
+    ;;
+esac
+
 echo "ok"

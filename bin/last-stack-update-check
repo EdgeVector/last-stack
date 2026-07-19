@@ -21,10 +21,25 @@ short_sha() {
   printf '%s' "$1" | cut -c1-12
 }
 
+default_remote() {
+  if git -C "$ROOT" remote get-url lastgit >/dev/null 2>&1; then
+    venue="$(git -C "$ROOT" config --get laststack.pr-venue 2>/dev/null || true)"
+    [ -n "$venue" ] || venue="$(git -C "$ROOT" config --get laststack.prVenue 2>/dev/null || true)"
+    if [ -z "$venue" ] && [ -f "$ROOT/.last-stack/pr-venue" ]; then
+      venue="$(sed -n '1{s/[[:space:]]*$//;p;}' "$ROOT/.last-stack/pr-venue")"
+    fi
+    if [ "$venue" = "lastgit" ]; then
+      printf 'lastgit\n'
+      return 0
+    fi
+  fi
+  printf 'origin\n'
+}
+
 git_update_check() {
   git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
 
-  remote="${LASTSTACK_REMOTE_REPO:-origin}"
+  remote="${LASTSTACK_REMOTE_REPO:-$(default_remote)}"
   local_ref="$(git -C "$ROOT" symbolic-ref -q HEAD 2>/dev/null || true)"
   [ -n "$local_ref" ] || return 0
 
