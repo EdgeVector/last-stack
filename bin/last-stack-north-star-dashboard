@@ -30,6 +30,7 @@ COLUMNS = ("backlog", "todo", "doing", "done")
 LIVE_COLUMNS = ("backlog", "todo", "doing")
 DEFAULT_BRAIN_SLUG = "north-star-dashboard"
 DEFAULT_HTML_PATH = Path.home() / "code" / "edgevector" / "north-star-dashboard.html"
+DEFAULT_CMD_TIMEOUT_SECONDS = 30.0
 
 # Historical / alias card.north_star values → canonical NS slug.
 ALIASES: dict[str, str] = {
@@ -384,14 +385,32 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
 
 
+def command_timeout_seconds() -> float:
+    raw = os.environ.get("LAST_STACK_NORTH_STAR_DASHBOARD_CMD_TIMEOUT", "").strip()
+    if not raw:
+        return DEFAULT_CMD_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_CMD_TIMEOUT_SECONDS
+    return value if value > 0 else DEFAULT_CMD_TIMEOUT_SECONDS
+
+
 def run_json(cmd: list[str], *, env: Optional[dict[str, str]] = None) -> Any:
-    proc = subprocess.run(
-        cmd,
-        check=False,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
+    timeout = command_timeout_seconds()
+    try:
+        proc = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"command timed out after {timeout:g}s: {' '.join(cmd)}"
+        ) from exc
     if proc.returncode != 0:
         err = (proc.stderr or proc.stdout or "").strip()
         raise RuntimeError(f"command failed ({proc.returncode}): {' '.join(cmd)}\n{err}")
@@ -1150,13 +1169,18 @@ def put_brain(slug: str, markdown: str, title: str) -> None:
         path = fh.name
     try:
         # Prefer path-friendly invocation: brain put reads stdin.
-        proc = subprocess.run(
-            ["brain", "put", slug, "--type", "reference"],
-            input=body,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
+        timeout = command_timeout_seconds()
+        try:
+            proc = subprocess.run(
+                ["brain", "put", slug, "--type", "reference"],
+                input=body,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"brain put timed out after {timeout:g}s: {slug}") from exc
         if proc.returncode != 0:
             raise RuntimeError(
                 f"brain put failed ({proc.returncode}): "

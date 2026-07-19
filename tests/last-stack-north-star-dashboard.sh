@@ -214,6 +214,19 @@ grep -q "schema-resolver-pack-public-origin" "$WORK/out.html"
 grep -q "Live pressure = backlog + todo + doing." "$WORK/out.html"
 ! grep -q ">review<" "$WORK/out.html"
 
+# Per-command timeout should make a stuck `brain get` non-fatal during optional
+# body enrichment instead of hanging the whole dashboard refresh.
+mkdir -p "$WORK/fakebin"
+cat >"$WORK/fakebin/brain" <<'EOF'
+#!/usr/bin/env bash
+sleep 2
+EOF
+chmod +x "$WORK/fakebin/brain"
+PATH="$WORK/fakebin:$PATH" LAST_STACK_NORTH_STAR_DASHBOARD_CMD_TIMEOUT=0.1 "$BIN" \
+  --cards-json "$WORK/cards.json" \
+  --projects-json "$WORK/projects.json" \
+  --fetch-bodies \
+  --stdout none >"$WORK/timeout.out" 2>"$WORK/timeout.err"
 
 # completion contract
 "$BIN" \
