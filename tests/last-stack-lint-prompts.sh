@@ -265,6 +265,13 @@ if "$ROOT/bin/last-stack-lint-prompts" "$bad_kanban_search_full_body_underscore"
   exit 1
 fi
 
+bad_fkanban_feature_frontier_search="$tmp/bad-fkanban-feature-frontier-search.md"
+printf '%s\n' "fkanban sea""rch \"feature-owner STATUS driving proving feature-ship\" --json" > "$bad_fkanban_feature_frontier_search"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_feature_frontier_search" >/dev/null 2>&1; then
+  echo "expected unscoped fkanban feature-frontier search to fail prompt lint" >&2
+  exit 1
+fi
+
 good_kanban_full_body="$tmp/good-kanban-full-body.md"
 cat > "$good_kanban_full_body" <<'GOOD_FULL_BODY'
 kanban list accepts `--full-body`, but kanban search has no such flag. For one
@@ -496,6 +503,11 @@ grep -q 'The candidate is pickup work with `Kind: pr`' "$pickup"
 grep -q 'Existing terminal, capstone, tracker, meta, or validation cards stay in' "$pickup"
 grep -q 'pickup must not force them into `todo`' "$pickup"
 grep -q 'fresh budget' "$pickup"
+grep -q 'Access pattern for this frontier probe must stay scan-free' "$pickup"
+grep -q 'fkanban list --column todo --json' "$pickup"
+grep -q 'fkanban list --column backlog' "$pickup"
+grep -q 'keyed `fkanban show <slug> --json`' "$pickup"
+grep -q 'Do not run broad board search or' "$pickup"
 grep -q 'Wall-clock budget (hard)' "$pickup"
 grep -q 'idle=budget-exhausted' "$pickup"
 grep -q 'Long foreground commands must be self-timeboxed by the shell' "$pickup"
@@ -545,7 +557,7 @@ grep -q 'routine-error-last-stack-fkanban-watch' "$watch"
 grep -q 'Use `noop`, not `error`, for expected no-action external blockers' "$watch"
 grep -q 'DIRTY-WORKTREE-STALLED' "$watch"
 grep -q 'attempts>=3' "$watch"
-grep -q 'dirty worktree with \*\*no live process\*\* is not an infinite skip' "$watch"
+grep -q 'A \*\*dirty\*\* worktree with \*\*no live process\*\* is not an infinite skip' "$watch"
 grep -q 'Run-budget guard (prevents timeout zombies)' "$watch"
 grep -q 'closeout_reserve_sec=300' "$watch"
 grep -q 'lastgit stuck' "$watch"

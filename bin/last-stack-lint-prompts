@@ -663,6 +663,15 @@ for path in "$@"; do
     fail=1
   fi
 
+  feature_frontier_search_matches="$(search_prompt_pattern 'fkanban[[:space:]]+search[^\n]*(feature-owner|feature-ship|STATUS[[:space:]]+driving|STATUS[[:space:]]+proving)' "$path")"
+  feature_frontier_search_matches="$(printf '%s\n' "$feature_frontier_search_matches" \
+    | grep -v -Ei 'Do not|Never|do not|never|unsupported|expected .*fail|/tests/last-stack-lint-prompts\.sh:' || true)"
+  if [ -n "$feature_frontier_search_matches" ]; then
+    printf '%s\n' "$feature_frontier_search_matches"
+    echo "unscoped fkanban feature-frontier search found under $path (use column-scoped list previews plus keyed show)" >&2
+    fail=1
+  fi
+
   broad_board_reads="$(search_prompt_pattern '(^|[^[:alnum:]_-])(kanban|<board CLI>)[[:space:]]+list.*(--wide|--full-body|--all)' "$path")"
   broad_board_reads="$(printf '%s\n' "$broad_board_reads" \
     | grep -v -Ei 'Do not|Never|do not|never|avoid|unsupported|no such flag|has no|not use|must not|instead|accepts|valid|syntax' \
