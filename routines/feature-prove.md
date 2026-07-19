@@ -27,7 +27,11 @@ file. Else
 ## What to do each run
 
 1. **Find driving features.**  
-   `kanban search "feature-owner" --json` (or tag search). Keep cards that are
+   Prefer bounded board reads: `kanban list --column todo --json`,
+   `kanban list --column doing --json`, and tag/field filters when available.
+   `kanban search "feature-owner" --json` is optional; if it returns
+   `full_schema_scan_not_allowed`, continue from the scoped reads instead of
+   treating the board as down. Keep cards that are
    not `done`, Kind is non-pr (validation/meta), tags include `feature-owner`
    or body has `## STATUS` with `driving` or `proving`.
 
@@ -72,4 +76,6 @@ file. Else
 Append via last-stack helper when available:
 `feature-prove <ISO> ok|noop|error <detail>`
 
-Print a one-line machine trailer: `ROUTINE_RESULT outcome=... detail=...`
+Print the one-line machine-result trailer required by the shared routine
+contract; do not embed a literal example token in this prompt because harnesses
+may echo prompts into logs.

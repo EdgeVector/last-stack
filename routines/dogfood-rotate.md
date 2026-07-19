@@ -179,9 +179,12 @@ target repo to make it current.
 ## File findings — blockers to the board, papercuts to Brain
 Split every actionable finding by severity:
 - **BLOCKER** (feature broken, recipe fails, data-loss/safety issue): file a
-  board card. Dedupe first with `kanban search` / `kanban list` and Brain
-  search; if a live card already captures it, reuse that slug in the run
-  report and rotation log. Put clear, pickup-ready blockers in `todo`;
+  board card. Dedupe first with scoped `kanban list --column todo --json` /
+  `kanban list --column doing --json`, known slug-pattern `kanban show` checks,
+  and Brain search. `kanban search` is optional; if it returns
+  `full_schema_scan_not_allowed`, fall back to the scoped reads instead of
+  treating the board as down. If a live card already captures it, reuse that
+  slug in the run report and rotation log. Put clear, pickup-ready blockers in `todo`;
   ambiguous or investigation items in `backlog`. Tag cards with `dogfood`,
   the feature slug, a priority tag (`p0`-`p3`), and `blocker`, `recipe`, or
   another concrete surface tag.

@@ -134,8 +134,11 @@ fi
 For each **blocked** entry (`blocked=true`, or human scan shows latest
 terminal `failure`, or `pending` older than **4 hours**):
 
-1. **Dedupe:** `kanban search "deploy-pipeline <repo>"` / slug pattern
-   `deploy-pipeline-red-<repo>-*`. If an open card already exists in
+1. **Dedupe:** start with `kanban list --column todo --json`,
+   `kanban list --column doing --json`, and slug-pattern `kanban show` checks
+   for `deploy-pipeline-red-<repo>-*`. `kanban search "deploy-pipeline <repo>"`
+   is optional; if it returns `full_schema_scan_not_allowed`, continue with the
+   scoped reads. If an open card already exists in
    todo/doing/review for that repo+pipeline, **update it** (append evidence
    line with sha + log path) and ensure `Priority: P0` + tags include
    `pipeline,deploy,p0`. Do not file a duplicate.

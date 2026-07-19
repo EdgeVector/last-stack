@@ -31,8 +31,9 @@ Fallback order only when no envelope path is present:
   and Tom cleared it — prefer filing a card if the daemon looks wedged.
 - Never use `brain doctor` / `kanban doctor` / TCP `:9001` as health checks.
 - FILE cards only; no feature code, no PR merges, no `git reset --hard`.
-- Dedupe hard: search the board before filing; update an open card instead of
-  duplicating.
+- Dedupe hard: inspect scoped board columns before filing; update an open card
+  instead of duplicating. `kanban search` is optional and may be unavailable
+  while scan guards are active.
 
 ## Setup
 ```bash
@@ -79,12 +80,15 @@ Prioritize: repeated heartbeat errors, exit=1 in <10s, chronic
 Automation memory paths, Claude/Codex argv regressions, dual ACTIVE schedulers.
 
 ## Step 3 — File cards (deduped)
-Search first:
+Search scoped columns first:
 ```bash
-kanban search "routine" --json
-kanban search "memory_unwritable" --json
-kanban search "<short error token>" --json
+kanban list --column todo --json
+kanban list --column doing --json
+kanban show "<likely-slug>" --json  # when a dated/stable slug is predictable
 ```
+Optional `kanban search "<short error token>" --json` may help, but if it
+returns `full_schema_scan_not_allowed`, continue with the scoped reads and do
+not treat that as board outage.
 
 When filing, use full headers + END STATE. Example shape:
 
