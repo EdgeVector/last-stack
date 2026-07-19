@@ -19,7 +19,9 @@
 #   4. re-parks on main (parked feature branches keep their refs)
 #   5. behind-only -> ff; ahead or diverged -> FLAG for a human/interactive
 #      agent (unattended runs never reset or push)
-#   6. seeds .git/info/exclude with machine-local dirs, prunes dead worktrees
+#   6. flags repo-local .worktrees nests (canonical agent worktrees live under
+#      ~/.fkanban/worktrees), seeds .git/info/exclude with machine-local dirs,
+#      prunes dead worktrees
 #
 # Exit 0 always; FLAG lines are the routine's surface. --dry-run previews.
 set -u
@@ -74,6 +76,7 @@ for d in */; do
   [ -d "$d/.git" ] || continue
   rem=$(venue_remote "$d")
   $GIT -C "$d" remote | grep -qx "$rem" || { flag "$d" "venue remote '$rem' not configured"; continue; }
+  [ -d "$d/.worktrees" ] && flag "$d" "repo-local .worktrees present; canonical agent worktrees live under ~/.fkanban/worktrees"
   mb=main
   $GIT -C "$d" rev-parse --verify -q refs/heads/main >/dev/null || mb=master
   target="refs/remotes/$rem/$mb"

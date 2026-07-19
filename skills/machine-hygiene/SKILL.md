@@ -58,7 +58,10 @@ actions noted below.
   (`app-sec/*`, `app-run/*`, plus some `exemem-workspace` doc worktrees like `nmsr-correct`);
   (4) **`~/code/edgevector/.worktrees/<name>`** — a newer internal location (e.g.
   `schema-naming-ingestion-method`). The siblings are the easiest to miss — find them via
-  `git -C <path> worktree list`. NOTE: a worktree's parent dir does NOT identify its repo — derive the
+  `git -C <path> worktree list`. `~/code/edgevector/.worktrees` and any
+  repo-local `.worktrees/` directory are legacy/violation locations: enumerate
+  them for cleanup, but do not create new agent work there. The canonical agent
+  location is `~/.fkanban/worktrees`. NOTE: a worktree's parent dir does NOT identify its repo — derive the
   repo from `git -C <path> rev-parse --git-common-dir`. Prune any with 0 unique commits
   (`git cherry origin/main <br>` → 0) AND a clean tree; **keep ones with uncommitted WIP**
   (a clean committed branch can still carry uncommitted changes — `status --short` before

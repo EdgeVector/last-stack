@@ -358,13 +358,20 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
    `"$last_stack/bin/last-stack-repo-op-guard" "$target_repo" "<workspace>"`
    and `git -C "$target_repo" rev-parse --show-toplevel`. Then:
    ```bash
-   git -C "$target_repo" fetch origin
-   git -C "$target_repo" worktree add \
-     "${WORKTREES_DIR:-$HOME/.kanban/worktrees}/<lead-slug>" \
-     -b "kanban/<lead-slug>" "origin/<base>"
-   cd "${WORKTREES_DIR:-$HOME/.kanban/worktrees}/<lead-slug>"
-   ```
-   Never edit a shared checkout in place; never stash/reset/clean a shared repo.
+  git -C "$target_repo" fetch origin
+  mkdir -p "${WORKTREES_DIR:-$HOME/.fkanban/worktrees}"
+  git -C "$target_repo" worktree add \
+    "${WORKTREES_DIR:-$HOME/.fkanban/worktrees}/<lead-slug>" \
+    -b "kanban/<lead-slug>" "origin/<base>"
+  cd "${WORKTREES_DIR:-$HOME/.fkanban/worktrees}/<lead-slug>"
+  ```
+  `WORKTREES_DIR` must be outside the shared checkout; never point it at
+  `<repo>/.worktrees` or any other repo-local path. Never edit a shared checkout
+  in place; never blanket stash/reset/clean a shared repo.
+  If you discover that you started in the shared checkout before isolating, move
+  only your own edits into the worktree, restore those exact files in the shared
+  checkout, or run `last-stack-repark-shared-checkouts` to salvage attributable
+  leftovers. Do not leave abandoned root-checkout edits behind.
 4. **Implement** per the card brief and repo conventions. Honor OUT OF SCOPE.
    Run VERIFY commands from the brief; validate by running the app when the
    brief requires it, not only unit tests. Before starting any long-running
@@ -425,6 +432,9 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
      interruption, not a harness fault; `kanban-watch` or the next pickup fire
      will reconcile the visible card state.
 6. **On MERGED (hard closeout — verify before claiming done):**
+   Before board closeout, leave any shared checkout you touched clean or
+   explicitly salvaged; the isolated worktree may be removed later, but the
+   ambient `~/code/edgevector/<repo>` checkout is not your working copy.
    For every shipped slug, run the closeout helper (preferred) or equivalent:
    ```bash
    "$last_stack/bin/last-stack-card-closeout" <slug> \

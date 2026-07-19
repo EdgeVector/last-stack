@@ -278,6 +278,17 @@ if "$ROOT/bin/last-stack-lint-prompts" "$bad_fkanban_feature_frontier_search" >/
   exit 1
 fi
 
+bad_repo_local_worktree="$tmp/bad-repo-local-worktree.md"
+printf '%s\n' 'git -C "$repo" worktree add "$repo/.worktrees/card" -b kanban/card origin/main' > "$bad_repo_local_worktree"
+if "$ROOT/bin/last-stack-lint-prompts" "$bad_repo_local_worktree" >/dev/null 2>&1; then
+  echo "expected repo-local .worktrees creation guidance to fail prompt lint" >&2
+  exit 1
+fi
+
+good_fkanban_worktree="$tmp/good-fkanban-worktree.md"
+printf '%s\n' 'git -C "$repo" worktree add "${WORKTREES_DIR:-$HOME/.fkanban/worktrees}/card" -b kanban/card origin/main' > "$good_fkanban_worktree"
+"$ROOT/bin/last-stack-lint-prompts" "$good_fkanban_worktree"
+
 good_kanban_full_body="$tmp/good-kanban-full-body.md"
 cat > "$good_kanban_full_body" <<'GOOD_FULL_BODY'
 kanban list accepts `--full-body`, but kanban search has no such flag. For one
@@ -493,6 +504,8 @@ grep -q 'kanban-pickup cannot resolve' "$pickup"
 grep -q 'do \*\*not\*\* set `block_status=needs_human`' "$pickup"
 grep -q 'checkout-resolution guard' "$pickup"
 grep -q 'git -C "$target_repo" rev-parse --show-toplevel' "$pickup"
+grep -q '\$HOME/.fkanban/worktrees' "$pickup"
+grep -q 'never point it at' "$pickup"
 grep -q 'reject the aggregate workspace root' "$pickup"
 grep -q 'last-stack-pr-venue' "$pickup"
 grep -q 'lastgit cr create' "$pickup"
@@ -541,6 +554,8 @@ grep -q 'PR/CR opened is not done' "$agent"
 grep -q 'there is no separate background driver' "$agent"
 grep -q 'host-track status' "$agent"
 grep -q 'lastgit which' "$agent"
+grep -q '\$HOME/.fkanban/worktrees' "$agent"
+grep -q 'last-stack-repark-shared-checkouts' "$agent"
 grep -q 'kanban add <slug> --pr-url "$pr_url" --branch "$branch"' "$agent"
 grep -q 'local test-merge' "$agent"
 grep -q 'LastGit missing-CI is a handoff condition' "$agent"

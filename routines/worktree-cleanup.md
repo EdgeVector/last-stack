@@ -107,8 +107,10 @@ continue — do not fail the whole run.
        done
    ```
    Use the resulting repo roots to enumerate worktrees authoritatively across
-   every repo and every worktree location you use (e.g. a dedicated worktrees
-   dir, per-repo `.worktrees/`, top-level siblings). For each repo, run
+   every repo and every worktree location you use. The canonical agent location
+   is `~/.fkanban/worktrees`; per-repo `.worktrees/` directories are legacy
+   violations to flag or remove when clean, not a place to create new work. For
+   each repo, run
    `git -C "$repo" worktree list --porcelain`. Derive each worktree's owning
    repo from `git -C <path> rev-parse --git-common-dir`.
 2. **Classify each worktree.** Compute: its branch, unique-commit count

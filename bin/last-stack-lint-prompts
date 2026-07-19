@@ -672,6 +672,15 @@ for path in "$@"; do
     fail=1
   fi
 
+  repo_local_worktree_matches="$(search_prompt_pattern 'worktree[[:space:]]+add[^\n]*\.worktrees|WORKTREES_DIR:-[^}\n]*\.worktrees' "$path")"
+  repo_local_worktree_matches="$(printf '%s\n' "$repo_local_worktree_matches" \
+    | grep -v -Ei 'Do not|Never|do not|never|unsupported|expected .*fail|bad-|/tests/last-stack-lint-prompts\.sh:' || true)"
+  if [ -n "$repo_local_worktree_matches" ]; then
+    printf '%s\n' "$repo_local_worktree_matches"
+    echo "repo-local .worktrees creation guidance found under $path (use ~/.fkanban/worktrees)" >&2
+    fail=1
+  fi
+
   broad_board_reads="$(search_prompt_pattern '(^|[^[:alnum:]_-])(kanban|<board CLI>)[[:space:]]+list.*(--wide|--full-body|--all)' "$path")"
   broad_board_reads="$(printf '%s\n' "$broad_board_reads" \
     | grep -v -Ei 'Do not|Never|do not|never|avoid|unsupported|no such flag|has no|not use|must not|instead|accepts|valid|syntax' \
