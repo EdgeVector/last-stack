@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+remote="${FKANBAN_HOST_TRACK_REMOTE:-lastdb:///fkanban}"
+host_root="${HOST_TRACK_HOME:-$HOME/.host-track}"
+host_track="${FKANBAN_HOST_TRACK_DIR:-$host_root/fkanban}"
+refresh_script="$host_track/bin/host-track-refresh"
+
+if [ ! -x "$refresh_script" ]; then
+  mkdir -p "$host_root"
+  if [ -e "$host_track" ] && [ ! -d "$host_track/.git" ]; then
+    printf 'fkanban host track exists but is not a git checkout: %s\n' "$host_track" >&2
+    exit 1
+  fi
+  if [ ! -d "$host_track/.git" ]; then
+    git clone "$remote" "$host_track"
+  fi
+fi
+
+if [ ! -x "$refresh_script" ]; then
+  printf 'fkanban host refresh script is not executable: %s\n' "$refresh_script" >&2
+  exit 1
+fi
+
+exec "$refresh_script" "$@"
