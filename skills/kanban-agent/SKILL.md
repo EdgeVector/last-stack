@@ -265,9 +265,17 @@ to `review`, append a one-line note explaining what's missing, and exit.
    "$LAST_STACK_TOOL_GIT" -C "$target_repo" rev-parse --show-toplevel
    cd "$target_repo"
    "$LAST_STACK_TOOL_GIT" fetch origin <base>
-   "$LAST_STACK_TOOL_GIT" worktree add ~/.kanban/worktrees/<slug> -b kanban/<slug> origin/<base>
-   cd ~/.kanban/worktrees/<slug>
+   mkdir -p "${WORKTREES_DIR:-$HOME/.fkanban/worktrees}"
+   "$LAST_STACK_TOOL_GIT" worktree add "${WORKTREES_DIR:-$HOME/.fkanban/worktrees}/<slug>" -b kanban/<slug> origin/<base>
+   cd "${WORKTREES_DIR:-$HOME/.fkanban/worktrees}/<slug>"
    ```
+   `WORKTREES_DIR` must be outside the shared checkout; never create
+   `<target-repo>/.worktrees` or any other repo-local worktree nest.
+   If you accidentally started editing in the shared checkout and then restart
+   the card in a worktree, move only your own edits into the worktree and leave
+   the shared checkout clean. For multi-file leftovers, use
+   `last-stack-repark-shared-checkouts` so salvage commits carry attribution
+   instead of silently abandoning root-checkout dirt.
 3. **Do the work** described in the brief. Match the repo's contributor docs and
    existing style. Honor OUT OF SCOPE — keep the PR atomic.
 
@@ -525,7 +533,7 @@ has no `Repo:` header (it isn't meant for this flow). For each candidate:
      - `doing`: **zombie claim** (soft 60m rule — Tom 2026-07-18). After a
        **60-minute** grace (prefer `position` doing-since epoch-ms, else
        `updated_at`), and only if no live worktree worker is present (no process
-       on `~/.kanban/worktrees/<slug>`; dirty trees without a live process are
+       on `${WORKTREES_DIR:-$HOME/.fkanban/worktrees}/<slug>`; dirty trees without a live process are
        not an infinite skip — see kanban-watch),
        **`move <slug> todo`** so pickup can reclaim it. CHEAP, uncapped. Never
        move these to `done`. Never SIGKILL agents/builds for age alone; open
@@ -589,7 +597,7 @@ that's what lets a burst of BEHIND PRs rot. Each wake:
 - Do at most ONE HEAVY unit: a worktree CI-fix OR a conflict rebase. Pick the
   highest-value one, then exit.
 
-Heavy fixes happen inside `~/.kanban/worktrees/<slug>` on branch
+Heavy fixes happen inside `${WORKTREES_DIR:-$HOME/.fkanban/worktrees}/<slug>` on branch
 `kanban/<slug>` — reuse the existing worktree if present; create it (WORK MODE
 step 2) if not. A `gh -R <repo> pr update-branch` needs NO worktree at all.
 

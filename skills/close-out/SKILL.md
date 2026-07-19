@@ -35,7 +35,14 @@ This loop assumes two LastDB surfaces:
 
 If your changes are sitting in a shared main checkout, move them to a worktree
 first — `git add -A` in a shared checkout can sweep sibling work into your
-commit. Always work in an isolated worktree.
+commit. Always work in an isolated worktree under
+`${WORKTREES_DIR:-$HOME/.fkanban/worktrees}`, never inside the repo as
+`<repo>/.worktrees`.
+
+After moving, leave the shared checkout clean. Restore only the exact files you
+edited, or run `last-stack-repark-shared-checkouts` so any multi-file leftover
+state is parked on an attributable salvage branch instead of being abandoned in
+the ambient checkout.
 
 Before opening the review artifact, route the repo:
 
@@ -69,12 +76,12 @@ upstream/origin comparison behavior.
 
 ```bash
 REPO="$HOME/code/<repo>"
-WT="$HOME/code-worktrees/<short-name>"
+WT="${WORKTREES_DIR:-$HOME/.fkanban/worktrees}/<short-name>"
 BR="<branch>"
 # preserve your edit, restore the shared checkout to clean, branch off origin/main
 cp "$REPO/<changed-file>" /tmp/closeout.$$ 2>/dev/null || true
 git -C "$REPO" fetch origin --quiet
-git -C "$REPO" checkout -- <changed-file>        # only if you edited in the main checkout
+git -C "$REPO" checkout -- <changed-file>        # only if this is your own shared-checkout edit
 git -C "$REPO" worktree add "$WT" -b "$BR" origin/main
 # re-apply your change into $WT, then:
 git -C "$WT" add -A
