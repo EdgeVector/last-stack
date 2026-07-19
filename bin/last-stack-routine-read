@@ -41,6 +41,29 @@ stale_fail() {
   exit 78
 }
 
+upgrade_result() {
+  awk '
+    /^LAST_STACK_SELF_UPGRADE / {
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^result=/) {
+          sub(/^result=/, "", $i)
+          print $i
+          exit
+        }
+      }
+    }
+  ' "$1" 2>/dev/null || true
+}
+
+defer_locked_upgrade() {
+  stale_status="$1"
+  detail_file="$2"
+  echo "LAST_STACK_ROUTINE_DEFERRED self_upgrade_lock $stale_status" >&2
+  cat "$detail_file" >&2 2>/dev/null || true
+  echo "A concurrent self-upgrade is already holding $ROOT/.self-upgrade.lock; retry the routine on the next scheduled fire." >&2
+  exit 75
+}
+
 if [ "${LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK:-0}" != "1" ] && [ -x "$ROOT/bin/last-stack-update-check" ]; then
   update_status="$("$ROOT/bin/last-stack-update-check" 2>/dev/null || true)"
   if is_stale_status "$update_status"; then
@@ -49,7 +72,30 @@ if [ "${LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK:-0}" != "1" ] && [ -x "$ROOT/bin/las
     fi
     if [ -x "$ROOT/bin/last-stack-self-upgrade" ]; then
       upgrade_err="$(mktemp "${TMPDIR:-/tmp}/last-stack-routine-read-upgrade.XXXXXX")"
-      if "$ROOT/bin/last-stack-self-upgrade" --reason=routine-read >"$upgrade_err" 2>&1; then
+      attempts="${LASTSTACK_ROUTINE_READ_LOCK_ATTEMPTS:-3}"
+      backoff_s="${LASTSTACK_ROUTINE_READ_LOCK_BACKOFF_S:-2}"
+      attempt=1
+      upgrade_ok=0
+      while :; do
+        : >"$upgrade_err"
+        if "$ROOT/bin/last-stack-self-upgrade" --reason=routine-read >"$upgrade_err" 2>&1; then
+          upgrade_ok=1
+          break
+        fi
+        result="$(upgrade_result "$upgrade_err")"
+        if [ "$result" != "error-lock" ]; then
+          break
+        fi
+        if [ "$attempt" -ge "$attempts" ]; then
+          defer_locked_upgrade "$update_status" "$upgrade_err"
+        fi
+        attempt=$((attempt + 1))
+        sleep "$backoff_s"
+      done
+      if [ "${result:-}" = "" ]; then
+        result="$(upgrade_result "$upgrade_err")"
+      fi
+      if [ "$upgrade_ok" -eq 1 ]; then
         # Refresh status after a successful clean upgrade (or up-to-date race).
         update_status="$("$ROOT/bin/last-stack-update-check" 2>/dev/null || true)"
         if is_stale_status "$update_status"; then
@@ -57,6 +103,9 @@ if [ "${LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK:-0}" != "1" ] && [ -x "$ROOT/bin/las
         fi
         rm -f "$upgrade_err"
       else
+        if [ "$result" = "error-lock" ]; then
+          defer_locked_upgrade "$update_status" "$upgrade_err"
+        fi
         detail="$(cat "$upgrade_err" 2>/dev/null || true)"
         rm -f "$upgrade_err"
         stale_fail "$update_status" "Self-upgrade refused or failed (clean-only policy). $detail"

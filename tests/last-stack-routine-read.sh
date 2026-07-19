@@ -69,6 +69,13 @@ case "$dogfood_prompt" in
     exit 1
     ;;
 esac
+case "$dogfood_prompt" in
+  *"LAST_STACK_ROUTINE_DEFERRED self_upgrade_lock"*"bounded"*"reason=self-upgrade-lock"*"do not file an install-dir blocker"*) ;;
+  *)
+    echo "expected dogfood-rotate prompt to treat concurrent self-upgrade locks as noop backoff" >&2
+    exit 1
+    ;;
+esac
 
 north_star_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" north-star-rollup)"
 case "$north_star_prompt" in

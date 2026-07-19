@@ -37,9 +37,13 @@ with every actionable blocker and papercut discovered.
   dirt alone. If the dirty-install path still returns `error-dirty` /
   `warn: last-stack-checkout-dirty` and cannot be repaired in this bounded run,
   emit a noop heartbeat with `reason=last-stack-checkout-dirty` and stop; this
-  is not a dogfood error. If self-upgrade returns `error-diverged` or another
-  non-dirty failure, STOP, heartbeat the failure, and file/reuse a single
-  install-dir blocker; do not continue from stale routine text.
+  is not a dogfood error. If routine-read emits
+  `LAST_STACK_ROUTINE_DEFERRED self_upgrade_lock`, STOP, heartbeat a bounded
+  noop with `reason=self-upgrade-lock`, and do not file an install-dir blocker;
+  the concurrent self-upgrade or next scheduled run owns recovery. If
+  self-upgrade returns `error-diverged` or another non-dirty failure, STOP,
+  heartbeat the failure, and file/reuse a single install-dir blocker; do not
+  continue from stale routine text.
 - First run data-plane preflight reads, sequentially: `brain get
   dogfood-registry --type project --json` and `kanban list --column todo
   --json`. These socket-backed reads are the health check. Do not use
