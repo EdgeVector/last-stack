@@ -8,10 +8,12 @@ chmod +x "$BIN" "$ROOT/harness/north-star"/*/run.sh
 "$BIN" --list | grep -q north-star-schema-shared-surface-native-resolver
 "$BIN" --list | grep -q north-star-lastdb-file-blobs-on-demand-sync
 "$BIN" --list | grep -q north-star-laststore-is-document-store-last-db-is-conventions
+"$BIN" --list | grep -q north-star-mini-brain-observability
 
 PROOF_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ns-proof-test.XXXXXX")"
 FILE_BLOB_WORK="$(mktemp -d "${TMPDIR:-/tmp}/ns-file-blob-proof-test.XXXXXX")"
-trap 'rm -rf "$PROOF_DIR" "$FILE_BLOB_WORK"' EXIT
+MINI_OBS_WORK="$(mktemp -d "${TMPDIR:-/tmp}/ns-mini-obs-proof-test.XXXXXX")"
+trap 'rm -rf "$PROOF_DIR" "$FILE_BLOB_WORK" "$MINI_OBS_WORK"' EXIT
 export NORTH_STAR_PROOF_DIR="$PROOF_DIR"
 export NORTH_STAR_PROOF_MODE=offline
 export EDGEVECTOR_WORKSPACE="${EDGEVECTOR_WORKSPACE:-$HOME/code/edgevector}"
@@ -28,7 +30,7 @@ if command -v lastdb >/dev/null 2>&1; then
 fi
 
 # Structural: all harness scripts exist and bash -n clean
-for s in coderings deliver-slices lastgit metering minimal-node app-ops schema file-blobs-on-demand-sync laststore; do
+for s in coderings deliver-slices lastgit metering minimal-node app-ops schema file-blobs-on-demand-sync laststore mini-brain-observability; do
   bash -n "$ROOT/harness/north-star/$s/run.sh"
 done
 bash -n "$BIN"
@@ -126,5 +128,84 @@ if LASTSTORE_PROOF_RECORD_FILE="$bad_laststore_record" \
   echo "bad LastStore abstraction fixture unexpectedly passed" >&2
   exit 1
 fi
+
+mini_fold="$MINI_OBS_WORK/edgevector/fold"
+mkdir -p \
+  "$mini_fold/lastdb_node/src/bin" \
+  "$mini_fold/lastdb_node/src/ops" \
+  "$mini_fold/scripts/lastdbd" \
+  "$MINI_OBS_WORK/last-stack/routines"
+cat >"$mini_fold/lastdb_node/src/bin/lastdb.rs" <<'EOF'
+fn status(data_dir: Option<PathBuf>) {
+  crash_attribution::daemon_status_line();
+  crash_attribution::status_lines();
+  self_metrics::status_lines();
+  request_ops_lines();
+  probe_status();
+}
+fn alert_check(data_dir: Option<PathBuf>) {}
+fn probe_status() {
+  "GET /api/status";
+  "X-LastDB-Client: lastdb";
+}
+EOF
+cat >"$mini_fold/lastdb_node/src/ops/crash_attribution.rs" <<'EOF'
+fn install_crash_hook() {}
+fn promote_previous_crash_evidence() {
+  previous_log_tail();
+  "unclean exit";
+  "Sentry";
+}
+fn previous_log_tail() {}
+fn status_lines() {}
+EOF
+cat >"$mini_fold/lastdb_node/src/ops/session_ledger.rs" <<'EOF'
+struct SessionRecord { prev_session_clean: bool }
+fn live_session() {}
+EOF
+cat >"$mini_fold/lastdb_node/src/main.rs" <<'EOF'
+fn main() {
+  install_crash_hook();
+  promote_previous_crash_evidence();
+}
+EOF
+cat >"$mini_fold/lastdb_node/src/ops/self_metrics.rs" <<'EOF'
+const DEFAULT_SELF_METRICS_LOG_REL: &str = "logs/self-metrics.jsonl";
+const SELF_METRIC_SCHEMA: &str = "lastdb_telemetry/SelfMetricSample";
+struct StatusSnapshot {
+  rss_bytes: u64,
+  cpu_percent: f64,
+  sync_last_success_ts: u64,
+  sync_pending_count: u64,
+  request_ops: u64,
+}
+fn write() { "LASTDB_SELF_METRICS_TO_DB"; }
+EOF
+cat >"$mini_fold/scripts/lastdbd/telemetry-dashboard-regen.sh" <<'EOF'
+#!/usr/bin/env bash
+"$lastdb_bin" --data-dir "$LASTDB_HOME" telemetry-dashboard
+echo "DASHBOARD_HTML=/tmp/dashboard.html"
+EOF
+cat >"$mini_fold/scripts/lastdbd/mini-health-alert-check.sh" <<'EOF'
+#!/usr/bin/env bash
+LASTDB_HEALTH_ALERT_FAILURES_BEFORE_ALERT=2
+heartbeat_helper=heartbeat
+lastdb alert-check
+EOF
+cat >"$MINI_OBS_WORK/last-stack/routines/dogfood-rotate.md" <<'EOF'
+Use dogfood-registry to dogfood exactly one eligible feature from the Brain-owned registry.
+EOF
+
+MINI_BRAIN_OBSERVABILITY_PROOF_FOLD_DIR="$mini_fold" \
+MINI_BRAIN_OBSERVABILITY_PROOF_LAST_STACK_DIR="$MINI_OBS_WORK/last-stack" \
+NORTH_STAR_PROOF_DIR="$PROOF_DIR" \
+  "$BIN" --offline north-star-mini-brain-observability >"$PROOF_DIR/mini-obs.out"
+
+mini_obs_report="$PROOF_DIR/north-star-mini-brain-observability.md"
+test "$(sed -n '1p' "$mini_obs_report")" = "PASS-OFFLINE"
+grep -q "lastdb status" "$mini_obs_report"
+grep -q "Crash/session attribution" "$mini_obs_report"
+grep -q "Self-metrics history" "$mini_obs_report"
+grep -q "PROOF_VERDICT=PASS-OFFLINE" "$PROOF_DIR/mini-obs.out"
 
 echo "PASS last-stack-north-star-proof"
