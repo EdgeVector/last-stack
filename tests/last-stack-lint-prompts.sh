@@ -601,6 +601,11 @@ grep -q 'result=watch-budget-handoff' "$watch"
 grep -q 'reason=command-timeout' "$watch"
 grep -q 'Do not chain a second heavy LastGit merge attempt after such a timeout' "$watch"
 
+consolidate="$ROOT/routines/consolidate-brain.md"
+grep -q 'last-stack-brain-reference-guard' "$consolidate"
+grep -q 'any referrer is listed, KEEP the record' "$consolidate"
+grep -q 'silently delete or archive a still-referenced record' "$consolidate"
+
 pipeline="$ROOT/routines/pipeline-health.md"
 grep -q 'LASTGIT_PRIMARY_SOCKET' "$pipeline"
 if rg -n 'lastgit/code|code node|both forge nodes|LASTGIT_CODE_SOCKET' "$pipeline" >/dev/null; then

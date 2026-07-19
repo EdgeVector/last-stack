@@ -53,6 +53,14 @@ continue — do not fail the whole run.
   <newstatus> --type <type>`) — this updates status IN PLACE and preserves the
   body. NEVER use a full-body `put` to change a status (a put without the full
   body wipes it).
+- Before any purge, delete, or irreversible archive/consolidation path for
+  record slugs, run the pre-delete reference guard:
+  `"$last_stack/bin/last-stack-brain-reference-guard" --live --file-root "$last_stack" <slug...>`.
+  It scans brain record bodies for `[[slug]]`, board card `north_star` and body
+  references, and Last Stack `AGENTS.md`/`CLAUDE.md`/skill/routine prompts. If
+  any referrer is listed, KEEP the record and surface the referrers; never
+  silently delete or archive a still-referenced record. For audit-only passes,
+  add `--report-only --json` and keep the report with the run notes.
 - Archiving is reversible if your store is append-only, but don't churn. When
   genuinely uncertain whether a record is still live, KEEP it.
 

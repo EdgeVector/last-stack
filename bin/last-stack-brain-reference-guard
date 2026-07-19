@@ -1,0 +1,308 @@
+#!/usr/bin/env python3
+"""Refuse brain-record deletion candidates that are still referenced."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from typing import Any, Iterable
+
+
+BRAIN_TYPES = (
+    "concept",
+    "task",
+    "design",
+    "preference",
+    "reference",
+    "agent",
+    "project",
+    "spike",
+    "sop",
+)
+TEXT_FILE_NAMES = {"AGENTS.md", "CLAUDE.md"}
+TEXT_FILE_DIRS = ("skills", "routines")
+TRANSIENT_ERRORS = (
+    "node socket not reachable",
+    "service_timeout",
+    "node did not respond",
+    "too many concurrent reads",
+    "uds_connection_limit",
+)
+
+
+def load_json(path: str) -> Any:
+    with Path(path).open(encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def is_transient(message: str) -> bool:
+    return any(signal in message for signal in TRANSIENT_ERRORS)
+
+
+def run_json(argv: list[str]) -> Any:
+    last_error = ""
+    for attempt in range(1, 4):
+        try:
+            return run_json_once(argv)
+        except RuntimeError as exc:
+            last_error = str(exc)
+            if attempt == 3 or not is_transient(last_error):
+                raise
+            time.sleep(0.75)
+    raise RuntimeError(last_error)
+
+
+def run_json_once(argv: list[str]) -> Any:
+    proc = subprocess.run(argv, text=True, capture_output=True, check=False)
+    if proc.returncode != 0:
+        raise RuntimeError(f"{' '.join(argv)} failed: {proc.stderr.strip()}")
+    try:
+        value = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{' '.join(argv)} did not return JSON") from exc
+    if isinstance(value, dict) and value.get("error"):
+        hint = f" ({value.get('hint')})" if value.get("hint") else ""
+        raise RuntimeError(f"{' '.join(argv)} failed: {value['error']}{hint}")
+    return value
+
+
+def as_items(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if isinstance(value, dict):
+        for key in ("records", "items", "cards"):
+            items = value.get(key)
+            if isinstance(items, list):
+                return [item for item in items if isinstance(item, dict)]
+    return []
+
+
+def read_candidates(args: argparse.Namespace) -> list[str]:
+    slugs = list(args.candidate)
+    if args.candidates_file:
+        for line in Path(args.candidates_file).read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                slugs.append(line)
+    seen: set[str] = set()
+    unique: list[str] = []
+    for slug in slugs:
+        if slug not in seen:
+            seen.add(slug)
+            unique.append(slug)
+    return unique
+
+
+def wiki_refers(text: str, slug: str) -> bool:
+    return f"[[{slug}]]" in text
+
+
+def token_refers(text: str, slug: str) -> bool:
+    return bool(re.search(rf"(?<![A-Za-z0-9-]){re.escape(slug)}(?![A-Za-z0-9-])", text))
+
+
+def add_ref(refs: dict[str, list[dict[str, str]]], slug: str, kind: str, where: str, detail: str) -> None:
+    refs.setdefault(slug, []).append({"kind": kind, "where": where, "detail": detail})
+
+
+def iter_prompt_files(root: Path) -> Iterable[Path]:
+    for name in TEXT_FILE_NAMES:
+        path = root / name
+        if path.is_file():
+            yield path
+    for dirname in TEXT_FILE_DIRS:
+        base = root / dirname
+        if not base.is_dir():
+            continue
+        for path in base.rglob("*.md"):
+            if path.is_file():
+                yield path
+
+
+def load_live_records(workers: int) -> list[dict[str, Any]]:
+    previews: list[dict[str, Any]] = []
+    for record_type in BRAIN_TYPES:
+        page_size = 50
+        offset = 0
+        while True:
+            listed = as_items(
+                run_json(
+                    [
+                        "brain",
+                        "list",
+                        "--type",
+                        record_type,
+                        "--limit",
+                        str(page_size),
+                        "--offset",
+                        str(offset),
+                        "--json",
+                    ]
+                )
+            )
+            for preview in listed:
+                if preview.get("slug"):
+                    preview.setdefault("type", record_type)
+                    previews.append(preview)
+            if len(listed) < page_size:
+                break
+            offset += page_size
+
+    def fetch(preview: dict[str, Any]) -> dict[str, Any]:
+        slug = str(preview["slug"])
+        record_type = str(preview["type"])
+        full = run_json(["brain", "get", slug, "--type", record_type, "--json"])
+        if not isinstance(full, dict):
+            raise RuntimeError(f"brain get {slug} returned non-object JSON")
+        full.setdefault("type", record_type)
+        return full
+
+    records: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        future_map = {pool.submit(fetch, preview): preview for preview in previews}
+        for future in as_completed(future_map):
+            records.append(future.result())
+    return records
+
+
+def load_live_board(workers: int) -> list[dict[str, Any]]:
+    del workers
+    cards: list[dict[str, Any]] = []
+    for column in ("todo", "doing", "backlog", "done"):
+        try:
+            cards.extend(
+                as_items(run_json(["fkanban", "list", "--column", column, "--full-body", "--json"]))
+            )
+        except RuntimeError:
+            cards.extend(
+                as_items(run_json(["kanban", "list", "--column", column, "--full-body", "--json"]))
+            )
+    return cards
+
+
+def build_report(
+    candidates: list[str],
+    records: list[dict[str, Any]],
+    cards: list[dict[str, Any]],
+    roots: list[Path],
+) -> dict[str, Any]:
+    refs: dict[str, list[dict[str, str]]] = {slug: [] for slug in candidates}
+
+    for record in records:
+        source_slug = str(record.get("slug") or "")
+        record_type = str(record.get("type") or "record")
+        body = str(record.get("body") or "")
+        title = str(record.get("title") or "")
+        for slug in candidates:
+            if source_slug == slug:
+                continue
+            if wiki_refers(body, slug):
+                add_ref(refs, slug, "brain-record", f"{record_type}:{source_slug}", title)
+
+    for card in cards:
+        card_slug = str(card.get("slug") or "")
+        body = str(card.get("body") or "")
+        north_star = str(card.get("north_star") or "")
+        title = str(card.get("title") or "")
+        for slug in candidates:
+            if north_star == slug:
+                add_ref(refs, slug, "board-north-star", card_slug, title)
+            if token_refers(body, slug):
+                add_ref(refs, slug, "board-body", card_slug, title)
+
+    for root in roots:
+        for path in iter_prompt_files(root):
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            display = os.path.relpath(path, root)
+            for slug in candidates:
+                if token_refers(text, slug):
+                    add_ref(refs, slug, "prompt-file", display, str(root))
+
+    referenced = {slug: entries for slug, entries in refs.items() if entries}
+    return {
+        "checked": len(candidates),
+        "referenced_count": len(referenced),
+        "referenced": referenced,
+    }
+
+
+def print_text_report(report: dict[str, Any]) -> None:
+    if report["referenced_count"] == 0:
+        print(f"ok: no referenced deletion candidates ({report['checked']} checked)")
+        return
+    print(
+        f"refusing deletion: {report['referenced_count']} of "
+        f"{report['checked']} candidate(s) are still referenced",
+        file=sys.stderr,
+    )
+    for slug, entries in report["referenced"].items():
+        print(f"- {slug}", file=sys.stderr)
+        for entry in entries:
+            detail = f" - {entry['detail']}" if entry["detail"] else ""
+            print(f"  {entry['kind']}: {entry['where']}{detail}", file=sys.stderr)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Check brain purge/consolidation deletion candidates for live references "
+            "before any destructive action."
+        )
+    )
+    parser.add_argument("candidate", nargs="*", help="brain record slugs proposed for deletion")
+    parser.add_argument("--candidates-file", help="newline-delimited candidate slugs")
+    parser.add_argument("--records-json", help="fixture JSON array of brain records")
+    parser.add_argument("--board-json", help="fixture JSON array of board cards")
+    parser.add_argument(
+        "--file-root",
+        action="append",
+        default=[],
+        help="scan AGENTS.md, CLAUDE.md, skills/*.md, and routines/*.md below this root",
+    )
+    parser.add_argument("--live", action="store_true", help="read current brain and board via CLI")
+    parser.add_argument("--live-workers", type=int, default=4, help="bounded parallel live point reads")
+    parser.add_argument("--json", action="store_true", help="emit JSON")
+    parser.add_argument("--report-only", action="store_true", help="always exit 0 after reporting")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    candidates = read_candidates(args)
+    if not candidates:
+        print("no deletion candidates supplied", file=sys.stderr)
+        return 2
+
+    records: list[dict[str, Any]] = []
+    cards: list[dict[str, Any]] = []
+    if args.live:
+        records.extend(load_live_records(args.live_workers))
+        cards.extend(load_live_board(args.live_workers))
+    if args.records_json:
+        records.extend(as_items(load_json(args.records_json)))
+    if args.board_json:
+        cards.extend(as_items(load_json(args.board_json)))
+
+    roots = [Path(root).resolve() for root in args.file_root]
+    report = build_report(candidates, records, cards, roots)
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print_text_report(report)
+    if report["referenced_count"] and not args.report_only:
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
