@@ -41,9 +41,11 @@ with every actionable blocker and papercut discovered.
   `LAST_STACK_ROUTINE_DEFERRED self_upgrade_lock`, STOP, heartbeat a bounded
   noop with `reason=self-upgrade-lock`, and do not file an install-dir blocker;
   the concurrent self-upgrade or next scheduled run owns recovery. If
-  self-upgrade returns `error-diverged` or another non-dirty failure, STOP,
-  heartbeat the failure, and file/reuse a single install-dir blocker; do not
-  continue from stale routine text.
+  routine-read emits `LAST_STACK_ROUTINE_DEFERRED self_upgrade_fetch_failed`,
+  STOP, heartbeat a bounded noop with `reason=self-upgrade-fetch-failed`, and
+  let the next scheduled run retry. If self-upgrade returns `error-diverged` or
+  another non-dirty failure, STOP, heartbeat the failure, and file/reuse a
+  single install-dir blocker; do not continue from stale routine text.
 - First run data-plane preflight reads, sequentially: `brain get
   dogfood-registry --type project --json` and `kanban list --column todo
   --json`. These socket-backed reads are the health check. Do not use

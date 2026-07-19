@@ -64,6 +64,15 @@ defer_locked_upgrade() {
   exit 75
 }
 
+defer_fetch_failed_upgrade() {
+  stale_status="$1"
+  detail_file="$2"
+  echo "LAST_STACK_ROUTINE_DEFERRED self_upgrade_fetch_failed $stale_status" >&2
+  cat "$detail_file" >&2 2>/dev/null || true
+  echo "Self-upgrade could not fetch the remote; retry the routine on the next scheduled fire." >&2
+  exit 75
+}
+
 if [ "${LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK:-0}" != "1" ] && [ -x "$ROOT/bin/last-stack-update-check" ]; then
   update_status="$("$ROOT/bin/last-stack-update-check" 2>/dev/null || true)"
   if is_stale_status "$update_status"; then
@@ -99,6 +108,9 @@ if [ "${LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK:-0}" != "1" ] && [ -x "$ROOT/bin/las
         # Refresh status after a successful clean upgrade (or up-to-date race).
         update_status="$("$ROOT/bin/last-stack-update-check" 2>/dev/null || true)"
         if is_stale_status "$update_status"; then
+          if grep -q 'note=fetch-failed' "$upgrade_err" 2>/dev/null; then
+            defer_fetch_failed_upgrade "$update_status" "$upgrade_err"
+          fi
           stale_fail "$update_status" "Self-upgrade reported success but install is still stale. $(cat "$upgrade_err" 2>/dev/null || true)"
         fi
         rm -f "$upgrade_err"
