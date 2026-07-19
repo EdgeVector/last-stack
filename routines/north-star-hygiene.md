@@ -32,6 +32,10 @@ the path, note `memory_unwritable=<path>` in the heartbeat and continue.
 - Do not invent NS for unattributed (empty `north_star`) cards.
 - Mistag clears only at high confidence; otherwise report in the summary.
 - Brain multi-line bodies via stdin only.
+- Do not stock pickup `todo`: north-star-hygiene never files or promotes
+  terminal proof cards into default `todo`. If a missing proof needs pickup
+  work, report the gap for program-driver to file a `Kind: pr` harness; if it is
+  `Kind: validation`, keep it parked outside default `todo`.
 
 ## Setup
 ```bash

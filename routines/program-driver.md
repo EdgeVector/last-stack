@@ -41,7 +41,10 @@ continue — do not fail the whole run.
   - **Security-review-class** cards: promote them — running the review + fixing
     findings IS the work. Never park "awaiting security review." (Findings flow as
     their own cards; the dependent dev-flip auto-promotes once they merge.)
-  - Tests / validation / investigation / refactors.
+  - PR-sized tests / validation-harness / investigation / refactors.
+    Non-PR `Kind: validation` cards are proof state, not pickup work: keep them
+    out of default `todo` unless you convert the proof into an executable
+    `Kind: pr` harness card.
   - **`[design-first]` / "open design decision"** cards: do NOT park them waiting
     for a human. Pick a reasonable default direction, write it into the card as
     `DECIDED (auto, revisit-able): <approach>`, turn it into a PR-sized brief, and
@@ -79,8 +82,9 @@ Before promoting idle/P3 papercuts or inventing program slices:
    - If no frontier PR exists but END STATE is incomplete → file **one**
      PR-sized child (not a tracker) and promote it; update owner CHILDREN.
    - If terminal deps are all done and STATUS is still `driving` → set
-     STATUS `proving` and promote the terminal proof card to `todo` when it
-     is agent-runnable (or leave a note for `feature-prove`).
+     STATUS `proving`. Promote only a `Kind: pr` terminal harness to default
+     `todo`; keep `Kind: validation` / `meta` proof cards parked for
+     `feature-prove` or `kanban-validate`.
 3. **Never** put the feature-owner card itself in `todo` (not pickup work).
 4. **Never** file tracker-only feature wishes; materialize owner + PR slices
    + terminal product proof.
@@ -176,11 +180,14 @@ Before promoting idle/P3 papercuts or inventing program slices:
    `todo`.** Walk the DAG in order; the "next" card is the earliest not yet
    `done`. Then:
    - **Already in `todo`/`doing`:** program is moving — leave it, note it.
-   - **In `backlog` and READY → promote to `todo`.** Ready = real
-     GOAL/STEPS/VERIFY, a `Repo:`/`Base:` header, the `kanban-agent` header, no
-     gate marker, no unmet dependency. No count cap on `todo`. If it's missing
-     ONLY the `kanban-agent` header but is otherwise complete, add the header and
-     promote.
+   - **In `backlog` and READY → promote to `todo`.** Ready for pickup promotion
+     means `Kind: pr`, real GOAL/STEPS/VERIFY, a `Repo:`/`Base:` header, the
+     `kanban-agent` header, no gate marker, and no unmet dependency. No count
+     cap on `todo`. If a PR card is missing ONLY the `kanban-agent` header but
+     is otherwise complete, add the header and promote. Existing terminal,
+     capstone, tracker, meta, or `Kind: validation` cards stay outside default
+     `todo`; file or promote a separate executable `Kind: pr` child when pickup
+     work is needed.
    - **An `[EPIC]` / multi-PR card whose next slice is well-defined and unblocked
      → file ONE PR-sized child** for that slice; leave the epic in `backlog` as
      the tracker. One slice per epic per run.
@@ -231,14 +238,17 @@ Before promoting idle/P3 papercuts or inventing program slices:
      `completed-programs` with `last-stack-active-programs-guard archive-closed`
      when the section is clearly closed. Heartbeat `completed=<ns-slug>`.
    - **`terminal_missing` / `definition_incomplete`**: if the NS has a concrete
-     end state, **file ONE** terminal card (prefer `Kind: pr` harness; else
-     `Kind: validation` + `DONE-WHEN`) per
+     end state, **file ONE** terminal card per
      [[sop-north-star-terminal-verification]], set `north_star` on the card,
      and append `## Terminal verification` + `**Card:** \`<slug>\`` on the NS
-     body (edit in place; do not regenerate the whole NS). One new terminal card
-     per incomplete NS per run max.
+     body (edit in place; do not regenerate the whole NS). Prefer a pickup-ready
+     `Kind: pr` harness in default `todo`; if the terminal must be
+     `Kind: validation` + `DONE-WHEN`, park it outside default `todo` so pickup
+     does not see a non-PR blocker. One new terminal card per incomplete NS per
+     run max.
    - **`board_drained_ns_open`**: do not invent unrelated papercuts; promote or
-     file only the terminal verification card for that NS.
+     file only terminal `Kind: pr` harness work for that NS. Park non-PR
+     terminal proof cards outside default `todo`.
    - Prefer generating thin-queue work for the **most-behind incomplete** NS
      (highest live pressure or missing terminal), never for `done`/`archived`.
 
