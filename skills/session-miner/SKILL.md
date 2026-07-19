@@ -79,6 +79,9 @@ Every profile uses the same triage pass:
 - Prefer repeated patterns across multiple sessions or across days. A severe
   one-off may still qualify for incidents, but routine papercuts and tooling
   improvements should normally recur.
+- Papercut-profile outputs are BRAIN records only (`papercut-<short-topic>`,
+  per `preference-always-file-papercuts-in-brain`, Tom 2026-07-19) — never
+  direct kanban cards; the triage routine cards them.
 - Dedupe before writing. Check live kanban cards, open PRs at the repo venue,
   active card branches/worktrees by exact slug/area, recently merged PRs, and
   any profile ledger. For brain outputs, search first and update in place
