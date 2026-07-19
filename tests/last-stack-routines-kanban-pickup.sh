@@ -9,5 +9,7 @@ grep -q 'Existing terminal, capstone, tracker, meta, or validation cards stay in
 grep -q 'pickup must not force them into `todo`' "$pickup"
 grep -q 'file a concrete `Kind: pr` follow-up' "$pickup"
 grep -q 'fresh budget' "$pickup"
+grep -q 'last-stack-park-terminal-validation-todo' "$pickup"
+grep -q 'excludes `Kind: pr`' "$pickup"
 
 echo ok

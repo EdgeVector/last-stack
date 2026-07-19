@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# Park already-drifted North Star terminal validation cards outside pickup todo.
+set -euo pipefail
+
+self_dir="$(cd "$(dirname "$0")" && pwd -P)"
+board_cli=""
+dry_run=0
+json=0
+
+usage() {
+  cat >&2 <<'EOF'
+usage: last-stack-park-terminal-validation-todo [--board-cli fkanban|kanban] [--dry-run] [--json]
+
+Reads only the default board's todo column, finds terminal-verification proof
+cards that are not Kind: pr, and moves them to backlog. This is intentionally
+narrow: pickup-ready PR cards are never parked by this helper.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --board-cli) board_cli="${2:-}"; shift 2 ;;
+    --dry-run) dry_run=1; shift ;;
+    --json) json=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown arg: $1" >&2; usage; exit 2 ;;
+  esac
+done
+
+if [ -z "$board_cli" ]; then
+  if command -v fkanban >/dev/null 2>&1; then board_cli=fkanban
+  elif command -v kanban >/dev/null 2>&1; then board_cli=kanban
+  else
+    echo "last-stack-park-terminal-validation-todo: need fkanban or kanban on PATH" >&2
+    exit 2
+  fi
+fi
+
+retry=( )
+if [ -x "$self_dir/last-stack-lastdb-retry" ]; then
+  retry=( "$self_dir/last-stack-lastdb-retry" --attempts 3 -- )
+fi
+
+run() {
+  if [ "${#retry[@]}" -gt 0 ]; then
+    "${retry[@]}" "$@"
+  else
+    "$@"
+  fi
+}
+
+todo_json="$(run "$board_cli" list --column todo --json)"
+
+mapfile -t slugs < <(
+  printf '%s\n' "$todo_json" | python3 -c '
+import json
+import re
+import sys
+
+data = json.load(sys.stdin)
+if isinstance(data, dict):
+    cards = data.get("cards") or data.get("items") or []
+else:
+    cards = data
+
+terminal_re = re.compile(r"terminal[- ]verification|ns-terminal-verification", re.I)
+
+def text(card, key):
+    value = card.get(key) or ""
+    return value if isinstance(value, str) else ""
+
+for card in cards:
+    slug = text(card, "slug")
+    if not slug:
+        continue
+    kind = text(card, "kind").strip().lower()
+    if kind == "pr":
+        continue
+    title = text(card, "title")
+    body = text(card, "body")
+    tags = card.get("tags") or []
+    if not isinstance(tags, list):
+        tags = []
+    tags_l = {str(t).lower() for t in tags}
+    haystack = "\n".join([slug, title, body])
+    terminal_tagged = "terminal" in tags_l and ("north-star" in tags_l or "validation" in tags_l)
+    terminal_text = bool(terminal_re.search(haystack)) or "sop-north-star-terminal-verification" in body
+    if terminal_tagged or terminal_text:
+        print(slug)
+'
+)
+
+moved=()
+for slug in "${slugs[@]}"; do
+  if [ "$dry_run" -eq 0 ]; then
+    run "$board_cli" move "$slug" backlog
+  fi
+  moved+=( "$slug" )
+done
+
+if [ "$json" -eq 1 ]; then
+  python3 - "${moved[@]}" <<'PY'
+import json
+import sys
+
+slugs = sys.argv[1:]
+print(json.dumps({"parked": len(slugs), "slugs": slugs}, separators=(",", ":")))
+PY
+else
+  printf 'parked=%s' "${#moved[@]}"
+  if [ "${#moved[@]}" -gt 0 ]; then
+    printf ' slugs=%s' "$(IFS=,; printf '%s' "${moved[*]}")"
+  fi
+  printf '\n'
+fi
