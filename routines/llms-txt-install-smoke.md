@@ -35,7 +35,10 @@ scheduled-run shell discipline. If this prompt conflicts with it, the contract w
 3. On **GREEN**: do not file cards. Heartbeat and exit.
 
 4. On **RED**:
-   - Dedupe: `kanban search "llms-txt"`, `kanban search "first-run install"`.
+   - Dedupe with `kanban list --column todo --json` and
+     `kanban list --column doing --json` first, checking for matching
+     `llms-txt` / `first-run install` cards. `kanban search` is optional; if it
+     returns `full_schema_scan_not_allowed`, continue with the scoped reads.
    - File or update **one** card per distinct failure cluster (not one per log line).
    - Tags: `first-run`, `llms-txt-smoke`, plus the owning subsystem
      (`brain` / `kanban` / `situations` / `last-stack` / `website`).

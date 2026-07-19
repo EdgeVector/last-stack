@@ -85,6 +85,11 @@ Window: the LAST 24 HOURS of sessions. If that yields little signal (fewer than
   `|| true` so an unmatched glob (`no matches found`) doesn't abort the command;
   (d) never assign to a variable named `status` because `zsh` reserves it as a
   read-only special parameter.
+- When mining routine run logs, do not echo raw machine-result trailers from
+  other runs into this routine's stdout/stderr. Redact the machine-result token
+  in any excerpt before printing it, summarize the outcome in prose, or write
+  full raw excerpts only to scratch files that are not printed. The harness may
+  attribute any visible prior trailer to this run.
 - Hunt specifically for TOOLING-improvement signals:
   - A multi-step manual workflow performed by hand that recurs across sessions →
     candidate for a NEW SKILL.
@@ -166,4 +171,8 @@ File a board card for:
 End with a concise report: signals found (grouped by type), what you APPLIED
 directly (with file paths), what you FILED as cards (with slugs), and what you
 SKIPPED as already-existing. If the day had no agent activity or no recurring
-tooling opportunity, say so plainly and change nothing.
+tooling opportunity, say so plainly and change nothing. Then append the routine
+heartbeat and print exactly one fresh machine-result line for this run. Use the
+`ROUTINE_RESULT` token followed by
+`outcome=<ok|noop|error> detail=<one-line-outcome>`; never print raw prior
+machine-result lines from mined logs.

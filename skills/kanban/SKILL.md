@@ -88,6 +88,14 @@ and then `kanban show <slug> --json` for a selected card, or pass
 `full_body: true` to the MCP `kanban_search` tool (the underscore form is the
 *MCP tool argument*, never a CLI flag).
 
+Search is useful, but it may be temporarily unavailable while a board backend is
+blocking full-schema scans. In routines, prefer scoped reads first:
+`kanban list --column todo --json`, `kanban list --column doing --json`, and
+`kanban show <known-slug> --json`. If `kanban search` returns
+`full_schema_scan_not_allowed`, do not treat that as board outage and do not run
+doctor/restart paths; fall back to column previews plus slug-pattern checks, then
+file/update the best deduped card you can prove from those bounded reads.
+
 `show`, `move`, `rm`, `rank`, `dep`, and `tag` operate on the default board
 implicitly and reject `--board`. Only add `--board` to commands whose help lists
 one, such as `list`, `search`, and `add`.

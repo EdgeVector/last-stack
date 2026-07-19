@@ -84,6 +84,13 @@ case "$dogfood_prompt" in
     ;;
 esac
 
+self_improvement_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" self-improvement-loop)"
+if ! grep -Fq "do not echo raw machine-result trailers" <<<"$self_improvement_prompt" ||
+   ! grep -Fq "exactly one fresh machine-result line" <<<"$self_improvement_prompt"; then
+  echo "expected self-improvement-loop to prevent nested routine-result trailer attribution" >&2
+  exit 1
+fi
+
 north_star_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" north-star-rollup)"
 case "$north_star_prompt" in
   *"reason=dashboard-timeout-prior-snapshot"*"ROUTINE_RESULT"*"outcome=<ok|noop|error> detail=<same-one-line-outcome>"*) ;;

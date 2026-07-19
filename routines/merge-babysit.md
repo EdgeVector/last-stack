@@ -153,8 +153,11 @@ If product judgment is required: file/update one P0 card (tags
 ### 4. File the rest
 
 For every other stuck entry you did not fix, including fallback-detected stuck
-CRs: file or update one deduped P0 kanban card (`kanban search` first) so
-pickup reclaim can own it. Include:
+CRs: file or update one deduped P0 kanban card. Dedupe with scoped
+`kanban list --column todo --json` / `kanban list --column doing --json` and
+known slug-pattern `kanban show` checks first; `kanban search` is optional and a
+`full_schema_scan_not_allowed` response is only a fallback signal. Pickup
+reclaim can own the resulting card. Include:
 
 ```
 Repo: EdgeVector/<slug>
