@@ -42,6 +42,68 @@ printf '%s\n' "$fkanban_registry" | jq -e '.notes | test("Placeholder") | not' >
 test -x "$ROOT/bin/last-stack-refresh-fkanban-host-track" \
   || fail "fkanban host-track bootstrap wrapper is not executable"
 
+installed_root="$tmp/installed-last-stack"
+mkdir -p "$installed_root/bin" "$installed_root/config/host-track"
+cp "$ROOT/bin/host-track" "$installed_root/bin/host-track"
+cat > "$installed_root/config/host-track/apps.json" <<'EOF'
+{
+  "apps": [
+    {
+      "app": "last-stack",
+      "kind": "C skill-pack",
+      "command": "host-track",
+      "gate": "lastgit",
+      "gate_main": "lastdb:///last-stack#main",
+      "gate_remote": "lastgit",
+      "gate_ref": "refs/heads/main",
+      "host_track": "$HOME/.last-stack",
+      "refresh_mode": "last-stack-self-upgrade",
+      "notes": "stale installed registry"
+    }
+  ]
+}
+EOF
+cat > "$installed_root/bin/last-stack-self-upgrade" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+root="$(cd "$(dirname "$0")/.." && pwd -P)"
+cat > "$root/config/host-track/apps.json" <<'JSON'
+{
+  "apps": [
+    {
+      "app": "last-stack",
+      "kind": "C skill-pack",
+      "command": "host-track",
+      "gate": "lastgit",
+      "gate_main": "lastdb:///last-stack#main",
+      "gate_remote": "lastgit",
+      "gate_ref": "refs/heads/main",
+      "host_track": "$HOME/.last-stack",
+      "refresh_mode": "last-stack-self-upgrade",
+      "notes": "fresh installed registry"
+    },
+    {
+      "app": "fkanban",
+      "kind": "B checkout-shim",
+      "command": "fkanban",
+      "gate": "lastgit",
+      "gate_main": "lastdb:///fkanban#main",
+      "gate_remote": "lastgit",
+      "gate_ref": "refs/heads/main",
+      "host_track": "$HOME/.host-track/fkanban",
+      "refresh": "$HOME/.last-stack/bin/last-stack-refresh-fkanban-host-track",
+      "notes": "fresh alias"
+    }
+  ]
+}
+JSON
+printf 'upgraded\n'
+SH
+chmod +x "$installed_root/bin/host-track" "$installed_root/bin/last-stack-self-upgrade"
+installed_status="$("$installed_root/bin/host-track" status --json fkanban)"
+printf '%s\n' "$installed_status" | jq -e '.app == "fkanban" and .command == "fkanban"' >/dev/null \
+  || fail "default registry miss did not self-upgrade and retry fkanban lookup"
+
 export HOME="$tmp/home"
 mkdir -p "$HOME/.local/bin"
 

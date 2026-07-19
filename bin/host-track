@@ -13,12 +13,16 @@ done
 ROOT="$(cd "$(dirname "$SOURCE")/.." && pwd -P)"
 if [ -n "${HOST_TRACK_REGISTRY:-}" ]; then
   REGISTRY="$HOST_TRACK_REGISTRY"
+  REGISTRY_IS_DEFAULT=0
 elif [ -f "$ROOT/config/host-track/apps.json" ]; then
   REGISTRY="$ROOT/config/host-track/apps.json"
+  REGISTRY_IS_DEFAULT=1
 else
   REGISTRY="$HOME/.local/share/last-stack/config/host-track/apps.json"
+  REGISTRY_IS_DEFAULT=1
 fi
 STAMP_DIR="${HOST_TRACK_STAMP_DIR:-$HOME/.host-track/stamps}"
+REGISTRY_SYNC_ATTEMPTED=0
 
 usage() {
   cat >&2 <<'EOF'
@@ -59,9 +63,29 @@ app_json() {
   jq -c --arg app "$app" '.apps[]? | select(.app == $app)' "$REGISTRY"
 }
 
+maybe_sync_default_registry() {
+  local self_upgrade
+  [ "$REGISTRY_IS_DEFAULT" -eq 1 ] || return 1
+  [ "$REGISTRY_SYNC_ATTEMPTED" -eq 0 ] || return 1
+  REGISTRY_SYNC_ATTEMPTED=1
+
+  self_upgrade="$ROOT/bin/last-stack-self-upgrade"
+  [ -x "$self_upgrade" ] || return 1
+  "$self_upgrade" --reason=host-track-registry-miss >/dev/null 2>&1 || return 1
+
+  if [ -f "$ROOT/config/host-track/apps.json" ]; then
+    REGISTRY="$ROOT/config/host-track/apps.json"
+  fi
+  return 0
+}
+
 require_app_json() {
   local app="$1" json
   json="$(app_json "$app")"
+  if [ -z "$json" ]; then
+    maybe_sync_default_registry || true
+    json="$(app_json "$app")"
+  fi
   [ -n "$json" ] || die "unknown app: $app"
   printf '%s\n' "$json"
 }
