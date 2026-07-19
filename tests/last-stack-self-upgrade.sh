@@ -122,6 +122,22 @@ if LASTSTACK_SELF_UPGRADE_SKIP=1 "$tmp/install/bin/last-stack-routine-read" demo
 fi
 grep -q 'LAST_STACK_ROUTINE_STALE' /tmp/self-upgrade-skip.err
 
+# --- routine-read defers on a concurrent self-upgrade lock ---
+mkdir "$tmp/install/.self-upgrade.lock"
+printf '999999\n' >"$tmp/install/.self-upgrade.lock/pid"
+if LASTSTACK_ROUTINE_READ_LOCK_ATTEMPTS=1 LASTSTACK_ROUTINE_READ_LOCK_BACKOFF_S=0 \
+  "$tmp/install/bin/last-stack-routine-read" demo >/tmp/self-upgrade-lock.out 2>/tmp/self-upgrade-lock.err; then
+  echo "expected held self-upgrade lock to defer routine-read" >&2
+  exit 1
+fi
+grep -q 'LAST_STACK_ROUTINE_DEFERRED self_upgrade_lock' /tmp/self-upgrade-lock.err
+grep -q 'result=error-lock' /tmp/self-upgrade-lock.err
+if grep -q 'LAST_STACK_ROUTINE_STALE' /tmp/self-upgrade-lock.err; then
+  echo "expected held self-upgrade lock to avoid stale failure classification" >&2
+  exit 1
+fi
+rm -rf "$tmp/install/.self-upgrade.lock"
+
 # --- lastgit venue: defaults to lastgit remote over a stale origin mirror ---
 # Simulates the read-only GitHub mirror lagging behind the canonical LastGit
 # remote: the install is legitimately fast-forward-ahead of the stale
