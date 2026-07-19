@@ -284,7 +284,15 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
   and EXIT. Do not enter idle mode while ready-but-conflicting work exists.
 - If `claimed=false` only because the ready queue is truly empty
   (`scanned_ready=0` and no skipped cards), go to **Nothing to pick up**. Include
-  the claim reason in the heartbeat.
+  the claim reason in the heartbeat. If diagnostics show default-`todo` blockers
+  that are only terminal North Star proof cards (`Kind: validation` / `meta`,
+  `terminal-verification`, `terminal` + `north-star` tags), first run the narrow
+  repair helper:
+  `"$last_stack/bin/last-stack-park-terminal-validation-todo" --board-cli <board CLI> --json`.
+  The helper reads only `todo`, excludes `Kind: pr`, and idempotently parks those
+  proof cards in `backlog` so pickup does not keep seeing non-work queue noise.
+  Do not hand-sweep the board; use the helper and continue to idle mode after it
+  reports its parked count.
 - If `pickup claim` still exits nonzero after the **bounded flap retries** above
   and the output mentions board-write backpressure (`max_outbox_entries`,
   `uds_connection_limit`, HTTP 503, `service_timeout`, "node did not respond",
@@ -339,8 +347,9 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
    `noop queue-blocked skipped=<slug:reason,...>` and EXIT. That is pipeline
    backpressure, not idle capacity.
 8. If none are eligible because the queue is genuinely empty, go to **Nothing to
-   pick up** (Idle mode: smart-heal). Do not invent a random feature first —
-   follow the idle ladder.
+   pick up** (Idle mode: smart-heal). If the only todo noise is terminal North
+   Star proof cards, run `last-stack-park-terminal-validation-todo` before idle.
+   Do not invent a random feature first — follow the idle ladder.
 
 ## Execute — YOU are the worker (no fan-out)
 

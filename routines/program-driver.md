@@ -172,9 +172,15 @@ Before promoting idle/P3 papercuts or inventing program slices:
 2. **Snapshot the board narrowly.** Read the needed columns sequentially:
    `<board CLI> list --column todo --json`, then `doing`, `done`, and `backlog`
    only if you need to promote from backlog. Do not launch these reads in
-   parallel, and do not use wide/full-body board reads. A program's next card may
-   already be in `doing`/`done` — if so that program is already moving or
-   complete; do nothing for it this run.
+   parallel, and do not use wide/full-body board reads. Before treating default
+   `todo` as stocked, run the narrow repair helper when available:
+   `"$last_stack/bin/last-stack-park-terminal-validation-todo" --board-cli <board CLI> --json`.
+   It parks already-drifted terminal North Star proof cards (`Kind: validation`
+   / `meta`, `terminal-verification`, or `terminal` + `north-star` tags) in
+   `backlog` and explicitly excludes `Kind: pr`, so it cannot hide pickup-ready
+   implementation work. A program's next card may already be in `doing`/`done`
+   — if so that program is already moving or complete; do nothing for it this
+   run.
 
 3. **For each program, find its NEXT unblocked card and make sure it's in
    `todo`.** Walk the DAG in order; the "next" card is the earliest not yet
