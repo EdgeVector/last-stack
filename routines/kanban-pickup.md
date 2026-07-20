@@ -52,8 +52,30 @@ If less remains, do not claim another card. For idle mode, prefer filing the
 card only and exiting with `ok idle=program-filed` / `ok idle=filed`; if no
 clear file-only slice exists, heartbeat `noop idle nothing-safe
 reason=budget-low`. If a card has already been claimed and the budget drops
-below 600 seconds before a PR/CR URL is recorded, roll it back to `todo` rather
-than trying to beat the harness timeout.
+below 600 seconds before a PR/CR URL is recorded, apply **Checkpoint before
+timebox** (below) — never silent clean-todo thrash after real work.
+
+## Checkpoint before timebox (won't-undo — Tom 2026-07-20)
+
+Silent `rolled-back-todo` after commits/branches caused multi-hour thrash
+(claim → work → timebox → empty todo → re-claim). **Hard rules:**
+
+1. **After first git commit** on the worktree: stamp
+   `<board CLI> add <slug> --branch <branch>` (or body `Branch:`) **before**
+   any further long command. Prefer also appending a body line:
+   `HANDOFF: worktree=<path> branch=<branch>`.
+2. **After push / open PR-CR**: stamp `pr_url` + `branch` immediately (already
+   required at step 5) — then prefer `in-flight-budget-handoff` over rollback.
+3. **On timebox / budget-low / command-timebox / no-command-timebox:**
+   - If **any commits exist on the card branch** OR `branch` is already set:
+     **do NOT** move to `todo` with a clean slate. Leave `doing`, ensure
+     `branch` + `HANDOFF:` are recorded, heartbeat
+     `ok cards=1 worked=<slug> result=in-flight-budget-handoff pr=none
+     final_column=doing reason=<budget|command-timebox>`, EXIT.
+   - If **zero commits** and no branch progress: then roll back to `todo`
+     with `result=rolled-back-todo reason=<…>` (true empty claim).
+4. `kanban-watch` must not soft-reclaim HANDOFF/branch-with-commits cards as
+   empty zombies (see watch prompt).
 
 **Empty queue:** default **Idle mode: smart-heal** (below) so the fleet keeps
 self-improving between feature waves. Prefer real program / North Star work
@@ -86,14 +108,16 @@ agent workspace. At the beginning of the run, record `run_started_epoch=$(date
   unwinding, compute a command timeout that ends before the closeout reserve
   and run it through `timeout -k 30s <seconds> ...` (or `gtimeout -k 30s` on
   macOS). If no timeout binary is available, do not start that command from
-  pickup; roll the card back to `todo` and exit with `result=rolled-back-todo
-  reason=no-command-timebox`. If the timeout fires, immediately record the
-  observed state, move the unpublished card back to `todo`, heartbeat
-  `ok cards=1 worked=<slug> result=rolled-back-todo reason=command-timebox`,
-  print the machine trailer using the `ROUTINE_RESULT` token, and EXIT.
+  pickup; apply **Checkpoint before timebox** (hand off if branch/commits exist;
+  only clean `rolled-back-todo reason=no-command-timebox` when zero progress).
+  If the timeout fires, immediately record observed state, apply the same
+  checkpoint rules (`in-flight-budget-handoff` if branch/commits; else
+  `rolled-back-todo reason=command-timebox`), print the machine trailer using
+  the `ROUTINE_RESULT` token, and EXIT.
   Do not wait for a long child process to finish unwinding after the timebox.
 - If elapsed time reaches **45 minutes** before a PR/CR URL has been recorded,
-  stop immediately after rollback/memory note best-effort. Do not launch a final
+  stop immediately after checkpoint/memory note best-effort (hand off if any
+  branch/commits; clean todo rollback only if empty). Do not launch a final
   multi-command publish block near the harness timeout; the next scheduled fire
   can reclaim cleanly.
 - If a PR/CR URL has been recorded and elapsed time reaches **35 minutes** (or
@@ -550,6 +574,11 @@ rules, same one-PR / one-worktree discipline as WORK mode.
 #### Ladder (stop at first real action)
 
 **0) Feature Ship Loop frontier (preferred over idle invent)**  
+**HARD feature-owner budget:** while any live feature-owner is
+`STATUS: driving|proving` with unblocked not-done Kind:pr children, idle mode
+must **not** invent papercut/hygiene implementation work. File-only ok only for
+true pipeline P0s.
+
 Canonical: brain `sop-feature-ship-loop`. If any live `feature-owner` card has
 `STATUS: driving|proving` and a pickup-ready `Kind: pr` child tagged
 `feature-ship` is already in `todo`, **do not idle** — EXIT so a sibling

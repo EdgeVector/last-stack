@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# last-stack-ship-preflight — will multi-hour autonomous shipping die?
+# Exit 0 = OK to walk away (with caveats printed). Exit 1 = hard fail reason.
+set -euo pipefail
+
+script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
+if [ -z "${LAST_STACK_ROOT+x}" ]; then
+  LAST_STACK_ROOT="$(CDPATH= cd -- "$script_dir/.." && pwd -P)"
+  export LAST_STACK_ROOT
+fi
+# shellcheck source=/dev/null
+. "$script_dir/last-stack-shell-prelude" 2>/dev/null || true
+
+JSON=0
+for arg in "$@"; do
+  case "$arg" in
+    --json) JSON=1 ;;
+    -h|--help)
+      echo "Usage: last-stack-ship-preflight [--json]"
+      echo "Exit 0 if multi-hour ship looks viable; 1 if a Class A/B fail is present."
+      exit 0
+      ;;
+  esac
+done
+
+failures=()
+warnings=()
+checks=()
+
+add_ok() { checks+=("OK|$1|$2"); }
+add_fail() { checks+=("FAIL|$1|$2"); failures+=("$2"); }
+add_warn() { checks+=("WARN|$1|$2"); warnings+=("$2"); }
+
+# 1) last-stack routine-read
+if [ -x "$LAST_STACK_ROOT/bin/last-stack-routine-read" ]; then
+  if out="$("$LAST_STACK_ROOT/bin/last-stack-routine-read" kanban-pickup 2>&1)"; then
+    if printf '%s' "$out" | grep -qiE 'LAST_STACK_ROUTINE_STALE|stale|error-pull|GIT_UPDATE'; then
+      add_fail "last-stack-routine-read" "stale or unreadable kanban-pickup prompt"
+    else
+      add_ok "last-stack-routine-read" "kanban-pickup readable"
+    fi
+  else
+    add_fail "last-stack-routine-read" "routine-read failed (exit $?); install may be dirty/stale"
+  fi
+else
+  add_fail "last-stack-routine-read" "missing bin/last-stack-routine-read"
+fi
+
+# 2) update-check if present
+if [ -x "$LAST_STACK_ROOT/bin/last-stack-update-check" ]; then
+  uc="$("$LAST_STACK_ROOT/bin/last-stack-update-check" 2>&1 || true)"
+  if printf '%s' "$uc" | grep -qiE 'UP_TO_DATE|up-to-date|current'; then
+    add_ok "last-stack-update-check" "install current"
+  elif printf '%s' "$uc" | grep -qiE 'UPDATE|stale|behind|AVAILABLE'; then
+    add_fail "last-stack-update-check" "install not up to date: $(printf '%s' "$uc" | tr '\n' ' ' | head -c 120)"
+  else
+    add_warn "last-stack-update-check" "unclear: $(printf '%s' "$uc" | tr '\n' ' ' | head -c 80)"
+  fi
+fi
+
+# 3) disk free (root of home)
+free_gb=$(df -g "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')
+if [ -n "${free_gb:-}" ] && [ "$free_gb" -lt 5 ] 2>/dev/null; then
+  add_fail "disk" "only ${free_gb}G free on \$HOME volume (need ≥5G)"
+elif [ -n "${free_gb:-}" ]; then
+  add_ok "disk" "${free_gb}G free"
+else
+  add_warn "disk" "could not read free space"
+fi
+
+# 4) routinesd launchd
+if launchctl print "gui/$(id -u)/com.edgevector.routinesd" >/dev/null 2>&1; then
+  state=$(launchctl print "gui/$(id -u)/com.edgevector.routinesd" 2>/dev/null | awk -F'= ' '/state =/{print $2; exit}' || true)
+  if printf '%s' "$state" | grep -qi 'running'; then
+    add_ok "routinesd" "running ($state)"
+  else
+    add_fail "routinesd" "not running (state=${state:-unknown}); kickstart com.edgevector.routinesd"
+  fi
+else
+  add_warn "routinesd" "launchd label not found (com.edgevector.routinesd)"
+fi
+
+# 5) heartbeat freshness
+hb="${LAST_STACK_HEARTBEATS_PATH:-$HOME/.last-stack/logs/routine-heartbeats.log}"
+if [ -f "$hb" ]; then
+  # macOS stat
+  mtime=$(stat -f %m "$hb" 2>/dev/null || stat -c %Y "$hb" 2>/dev/null || echo 0)
+  now=$(date +%s)
+  age=$(( now - mtime ))
+  if [ "$age" -gt 1800 ]; then
+    add_fail "heartbeats" "routine-heartbeats.log mtime age ${age}s (>1800); fleet may be dead"
+  else
+    add_ok "heartbeats" "age ${age}s"
+  fi
+  # last pickup line
+  last_pickup=$(grep 'kanban-pickup' "$hb" 2>/dev/null | tail -1 || true)
+  if printf '%s' "$last_pickup" | grep -q 'stale-last-stack-install'; then
+    add_fail "pickup-heartbeat" "last pickup: stale-last-stack-install"
+  elif printf '%s' "$last_pickup" | grep -q 'no_card_claimed'; then
+    add_warn "pickup-heartbeat" "last pickup claimed nothing: $(printf '%s' "$last_pickup" | head -c 140)"
+  elif [ -n "$last_pickup" ]; then
+    add_ok "pickup-heartbeat" "recent pickup line present"
+  else
+    add_warn "pickup-heartbeat" "no kanban-pickup lines in heartbeats"
+  fi
+else
+  add_warn "heartbeats" "missing $hb"
+fi
+
+# 6) todo ready count
+if command -v kanban >/dev/null 2>&1; then
+  ready=$(kanban pickup status --json 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("ready",0))' 2>/dev/null || echo "?")
+  if [ "$ready" = "?" ]; then
+    add_warn "pickup-ready" "could not parse kanban pickup status"
+  elif [ "$ready" -gt 0 ] 2>/dev/null; then
+    add_ok "pickup-ready" "${ready} cards ready"
+  else
+    add_warn "pickup-ready" "0 pickup-ready cards (idle queue)"
+  fi
+else
+  add_warn "pickup-ready" "kanban CLI not on PATH"
+fi
+
+# 7) situations
+if command -v situations >/dev/null 2>&1; then
+  sit_n=$(situations list --json 2>/dev/null | python3 -c 'import sys,json; print(len(json.load(sys.stdin)))' 2>/dev/null || echo "?")
+  if [ "$sit_n" = "?" ]; then
+    add_warn "situations" "could not list"
+  elif [ "$sit_n" -gt 0 ] 2>/dev/null; then
+    add_warn "situations" "${sit_n} active situation(s) — check fences"
+  else
+    add_ok "situations" "none active"
+  fi
+fi
+
+if [ "$JSON" = 1 ]; then
+  python3 - "$JSON" <<'PY'
+import json, os, sys
+# rebuild from env not available; print simple
+print(json.dumps({"note": "use human output; json lines follow"}))
+PY
+  for c in "${checks[@]}"; do
+    IFS='|' read -r st name detail <<<"$c"
+    printf '{"status":"%s","check":"%s","detail":%s}\n' "$st" "$name" "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$detail")"
+  done
+  if [ "${#failures[@]}" -gt 0 ]; then
+    echo "{\"result\":\"FAIL\",\"failures\":$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${failures[@]}")}"
+    exit 1
+  fi
+  echo '{"result":"PASS"}'
+  exit 0
+fi
+
+echo "ship-preflight — multi-hour autonomous shipping"
+for c in "${checks[@]}"; do
+  IFS='|' read -r st name detail <<<"$c"
+  printf '  %-5s %-24s %s\n' "$st" "$name" "$detail"
+done
+
+if [ "${#failures[@]}" -gt 0 ]; then
+  echo
+  echo "FAIL — shipping will likely die in under 5h:"
+  for f in "${failures[@]}"; do
+    echo "  - $f"
+  done
+  exit 1
+fi
+
+if [ "${#warnings[@]}" -gt 0 ]; then
+  echo
+  echo "PASS with warnings — walk away only if you accept:"
+  for w in "${warnings[@]}"; do
+    echo "  - $w"
+  done
+  exit 0
+fi
+
+echo
+echo "PASS — no hard Class A failures detected"
+exit 0

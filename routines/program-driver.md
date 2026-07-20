@@ -72,6 +72,14 @@ Canonical: brain `sop-feature-ship-loop` / `preference-feature-ship-loop`.
 
 Before promoting idle/P3 papercuts or inventing program slices:
 
+**HARD feature-owner budget (won't-undo — Tom 2026-07-20):** while **any**
+live `feature-owner` card has `STATUS: driving|proving` and at least one
+unblocked not-done `Kind: pr` child (frontier), you **must not** promote
+idle papercuts, routine-error fillers, or unlaned hygiene into `todo` ahead of
+that frontier. Only after frontier slices are in `todo`/`doing`/`done` may you
+stock papercut work. Heartbeat `noop feature-budget-holds` if the only thing
+you would have promoted is papercut while a driving feature exists.
+
 1. Search the board for cards with tag `feature-owner` (or Kind validation
    whose body has `## STATUS` + `feature-owner` tag) that are **not** done.
 2. For each with `STATUS: driving` or `proving`:
