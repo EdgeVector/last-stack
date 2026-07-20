@@ -174,6 +174,51 @@ untracked_remote_conflicts_match() {
     done
 }
 
+is_known_local_state_path() {
+  case "$1" in
+    logs/*|proofs/*|feature-proofs/*|north-star-proofs/*|dogfood/*|lastdb-backups/*) return 0 ;;
+    launchd/*|config.local-backup-*|config.local-backup-*/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+untracked_remote_conflicts_safe() {
+  target_head="$1"
+  git -C "$ROOT" ls-files --others --exclude-standard -z 2>/dev/null |
+    while IFS= read -r -d '' rel; do
+      if git -C "$ROOT" cat-file -e "$target_head:$rel" 2>/dev/null; then
+        if path_matches_remote "$target_head" "$rel"; then
+          continue
+        fi
+        is_known_local_state_path "$rel" || exit 1
+      fi
+    done
+}
+
+quarantine_known_local_state_conflicts() {
+  target_head="$1"
+  quarantine_root="${LASTSTACK_SELF_UPGRADE_QUARANTINE_DIR:-$HOME/.local/state/last-stack/self-upgrade-quarantine}"
+  run_id="$(date -u +%Y%m%dT%H%M%SZ).$$"
+  moved=0
+
+  while IFS= read -r -d '' rel; do
+    if ! git -C "$ROOT" cat-file -e "$target_head:$rel" 2>/dev/null; then
+      continue
+    fi
+    if path_matches_remote "$target_head" "$rel"; then
+      continue
+    fi
+    is_known_local_state_path "$rel" || continue
+
+    dest="$quarantine_root/$run_id/$rel"
+    mkdir -p "$(dirname "$dest")"
+    mv "$ROOT/$rel" "$dest"
+    moved=$((moved + 1))
+  done < <(git -C "$ROOT" ls-files --others --exclude-standard -z 2>/dev/null)
+
+  [ "$moved" -eq 0 ] || emit "result=local-state-quarantined count=$moved path=$quarantine_root/$run_id"
+}
+
 metadata_fast_forward_to() {
   target_head="$1"
   local_ref="$(git -C "$ROOT" symbolic-ref -q HEAD 2>/dev/null || true)"
@@ -271,11 +316,12 @@ fi
 dirty="$(dirty_status)"
 if [ -n "$dirty" ]; then
   if tracked_dirty_matches_remote "$remote_head" "$dirty" &&
-     untracked_remote_conflicts_match "$remote_head"; then
+     untracked_remote_conflicts_safe "$remote_head"; then
     if [ "$check_only" -eq 1 ]; then
       emit "result=would-upgrade local_head=$(short_sha "$local_head") remote_head=$(short_sha "$remote_head") note=content-equivalent-dirty"
       exit 0
     fi
+    quarantine_known_local_state_conflicts "$remote_head"
     if metadata_fast_forward_to "$remote_head"; then
       new_head="$(git -C "$ROOT" rev-parse HEAD)"
       version="$(tr -d '[:space:]' <"$ROOT/VERSION" 2>/dev/null || echo unknown)"
@@ -296,7 +342,7 @@ if [ -n "$dirty" ]; then
   exit 1
 fi
 
-if ! untracked_remote_conflicts_match "$remote_head"; then
+if ! untracked_remote_conflicts_safe "$remote_head"; then
   emit "result=error-dirty local_head=$(short_sha "$local_head") dirty_count=untracked-conflict"
   echo "Install checkout has untracked files that would be overwritten by the fast-forward." >&2
   echo "Move or remove those files from \"$ROOT\", then re-run self-upgrade." >&2
@@ -307,6 +353,8 @@ if [ "$check_only" -eq 1 ]; then
   emit "result=would-upgrade local_head=$(short_sha "$local_head") remote_head=$(short_sha "$remote_head")"
   exit 0
 fi
+
+quarantine_known_local_state_conflicts "$remote_head"
 
 local_ref="$(git -C "$ROOT" symbolic-ref -q HEAD 2>/dev/null || true)"
 if [ -n "$remote_ref" ] && [ -n "$local_ref" ] && [ "$local_ref" = "$remote_ref" ]; then
