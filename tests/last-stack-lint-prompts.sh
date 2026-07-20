@@ -587,6 +587,8 @@ grep -q 'reason=budget-low' "$pickup"
 grep -q 'watch external progress until the harness SIGTERM cuts off closeout' "$pickup"
 grep -q 'host-track status' "$pickup"
 grep -q '<cmd> which' "$pickup"
+grep -q 'If the active Codex skill registry does not' "$pickup"
+grep -q 'skills/kanban-agent/SKILL.md` from the resolved' "$pickup"
 
 agent="$ROOT/skills/kanban-agent/SKILL.md"
 grep -q 'last-stack-pr-venue' "$agent"
