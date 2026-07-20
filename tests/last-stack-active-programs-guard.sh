@@ -46,7 +46,8 @@ cat > "$board" <<'EOF_BOARD'
   {"slug":"retired-review-card","column":"review"},
   {"slug":"blocked-backlog-card","column":"backlog","block_status":"deferred"},
   {"slug":"table-done-card","column":"done"},
-  {"slug":"table-live-card","column":"doing"}
+  {"slug":"table-live-card","column":"doing"},
+  {"slug":"validation-proof-card","column":"todo","kind":"validation"}
 ]
 EOF_BOARD
 cat > "$proof" <<'EOF_PROOF'
@@ -121,6 +122,16 @@ grep -q 'Completed proof still active.*drained.*north-star-lastdb-file-blobs-on-
 grep -q 'Held program.*held.*cue: Live next move says.*held-card (backlog, needs_human).*suggested fix: mark prose blocked/held or move next move to a ready card' "$tmp/stale-report"
 grep -q 'Completed proof still active.*drained.*north-star-lastdb-file-blobs-on-demand-sync (program proof PASS-OFFLINE)' "$tmp/stale-report"
 cmp "$tmp/stale-before" "$after"
+
+cat > "$after" <<'EOF_NON_PICKUP_FRONTIER'
+## Program: validation-frontier-program — Validation proof advertised as pickup
+**program-slug:** `[[validation-frontier-program]]`
+Next move says `validation-proof-card` is pickup-ready terminal proof work.
+EOF_NON_PICKUP_FRONTIER
+"$ROOT/bin/last-stack-active-programs-guard" stale-report \
+  --active "$after" \
+  --board "$board" > "$tmp/non-pickup-frontier-report"
+grep -q 'Validation proof advertised as pickup.*non-pickup-frontier.*cue: Next move says.*non-pickup: validation-proof-card (todo, Kind: validation).*suggested fix: park terminal proof outside todo or file a Kind: pr child' "$tmp/non-pickup-frontier-report"
 
 cat > "$after" <<'EOF_PROGRAM_STALE'
 ## Program: drained-program — Drained stale program

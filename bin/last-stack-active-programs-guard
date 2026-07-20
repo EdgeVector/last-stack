@@ -63,6 +63,7 @@ STALE_COLUMNS = {"done"}
 RETIRED_COLUMNS = {"review"}
 BOARD_COLUMNS = LIVE_COLUMNS | STALE_COLUMNS | RETIRED_COLUMNS | {"backlog"}
 NON_PICKUP_BLOCK_STATUSES = {"deferred", "design_first", "needs_human"}
+NON_PICKUP_KINDS = {"validation", "meta", "tracker"}
 ACTIVE_SECTION_MARKER_RE = re.compile(
     r"\b(reopened|re-opened|active|live|next move|first todo|in-flight|in flight|todo|doing)\b",
     re.IGNORECASE,
@@ -377,6 +378,15 @@ def is_held_card(card: dict[str, object]) -> bool:
     return bool(block_reason) or block_status not in {"", "none", "unblocked"}
 
 
+def card_kind(card: dict[str, object]) -> str:
+    explicit = str(card.get("kind") or "").strip().lower()
+    if explicit:
+        return explicit
+    body = str(card.get("body") or "")
+    match = re.search(r"^Kind:\s*([a-z_-]+)\s*$", body, re.MULTILINE | re.IGNORECASE)
+    return match.group(1).strip().lower() if match else ""
+
+
 def section_cue(section: str, slugs: set[str]) -> str:
     for line in section.splitlines():
         stripped = line.strip()
@@ -405,7 +415,10 @@ def suggested_fix(
     held_refs: list[str],
     live_refs: list[str],
     missing_live_refs: list[str],
+    non_pickup_refs: list[str],
 ) -> str:
+    if non_pickup_refs and not stale_refs and not held_refs and not live_refs and not missing_live_refs:
+        return "park terminal proof outside todo or file a Kind: pr child"
     if missing_live_refs and not stale_refs and not held_refs and not live_refs:
         return "clear stale frontier prose or file/promote the named card"
     if state == "drained":
@@ -489,12 +502,17 @@ def stale_report(
         held_refs: list[str] = []
         unknown_refs: list[str] = []
         missing_live_refs: list[str] = []
+        non_pickup_refs: list[str] = []
         table_mismatches: list[str] = []
         table_claims = table_column_claims(section)
         for slug in sorted(ref_sources):
             card = board_cards.get(slug)
             column = str(card.get("column")) if card else None
             claimed_columns = table_claims.get(slug, set())
+            kind = card_kind(card) if card else ""
+            if card and kind in NON_PICKUP_KINDS and claims_missing_live_card(section, slug):
+                non_pickup_refs.append(f"{slug} ({column}, Kind: {kind})")
+                continue
             if column and claimed_columns and column not in claimed_columns:
                 table_mismatches.append(
                     f"{slug} (table {','.join(sorted(claimed_columns))}, board {column})"
@@ -519,16 +537,18 @@ def stale_report(
             else:
                 unknown_refs.append(f"{slug} ({column})")
 
-        if not stale_refs and not held_refs and not table_mismatches and not missing_live_refs:
+        if not stale_refs and not held_refs and not table_mismatches and not missing_live_refs and not non_pickup_refs:
             continue
 
         state = "mixed"
-        if stale_refs and not live_refs and not unknown_refs and not held_refs and not missing_live_refs:
+        if stale_refs and not live_refs and not unknown_refs and not held_refs and not missing_live_refs and not non_pickup_refs:
             state = "drained"
-        elif held_refs and not live_refs and not unknown_refs and not stale_refs and not missing_live_refs:
+        elif held_refs and not live_refs and not unknown_refs and not stale_refs and not missing_live_refs and not non_pickup_refs:
             state = "held"
-        elif missing_live_refs and not live_refs and not unknown_refs and not stale_refs and not held_refs:
+        elif missing_live_refs and not live_refs and not unknown_refs and not stale_refs and not held_refs and not non_pickup_refs:
             state = "missing-live"
+        elif non_pickup_refs and not live_refs and not unknown_refs and not stale_refs and not held_refs and not missing_live_refs:
+            state = "non-pickup-frontier"
         program = sorted(program_slugs(section))
         prefix = f"{title}"
         if program:
@@ -542,9 +562,10 @@ def stale_report(
                 f"table-mismatch: {', '.join(table_mismatches)}" if table_mismatches else "",
                 f"held: {', '.join(held_refs)}" if held_refs else "",
                 f"missing-live: {', '.join(missing_live_refs)}" if missing_live_refs else "",
+                f"non-pickup: {', '.join(non_pickup_refs)}" if non_pickup_refs else "",
                 f"live: {', '.join(live_refs)}" if live_refs else "",
                 f"unknown: {', '.join(unknown_refs)}" if unknown_refs else "",
-                f"suggested fix: {suggested_fix(state, stale_refs, held_refs, live_refs, missing_live_refs)}",
+                f"suggested fix: {suggested_fix(state, stale_refs, held_refs, live_refs, missing_live_refs, non_pickup_refs)}",
             ]
             if part
         )
