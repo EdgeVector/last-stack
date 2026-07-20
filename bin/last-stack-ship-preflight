@@ -41,8 +41,9 @@ add_warn() { checks+=("WARN|$1|$2"); warnings+=("$2"); }
 # 1) last-stack routine-read
 if [ -x "$LAST_STACK_ROOT/bin/last-stack-routine-read" ]; then
   if out="$("$LAST_STACK_ROOT/bin/last-stack-routine-read" kanban-pickup 2>&1)"; then
-    if printf '%s' "$out" | grep -qiE 'LAST_STACK_ROUTINE_STALE|stale|error-pull|GIT_UPDATE'; then
-      add_fail "last-stack-routine-read" "stale or unreadable kanban-pickup prompt"
+    # Only trust the explicit stale marker (prompt bodies contain the word "stale" often)
+    if printf '%s' "$out" | grep -q 'LAST_STACK_ROUTINE_STALE'; then
+      add_fail "last-stack-routine-read" "LAST_STACK_ROUTINE_STALE (install dirty/stale)"
     else
       add_ok "last-stack-routine-read" "kanban-pickup readable"
     fi
