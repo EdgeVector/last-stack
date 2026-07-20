@@ -289,10 +289,10 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
   `terminal-verification`, `terminal` + `north-star` tags), first run the narrow
   repair helper:
   `"$last_stack/bin/last-stack-park-terminal-validation-todo" --board-cli <board CLI> --json`.
-  The helper reads only `todo`, excludes `Kind: pr`, and idempotently parks those
-  proof cards in `backlog` so pickup does not keep seeing non-work queue noise.
-  Do not hand-sweep the board; use the helper and continue to idle mode after it
-  reports its parked count.
+  The helper reads only `todo`, excludes `Kind: pr`, idempotently parks those
+  proof cards in `backlog`, and also parks pending valid non-PR `DONE-WHEN`
+  cards while closing satisfied ones to `done`. Do not hand-sweep the board; use
+  the helper and continue to idle mode after it reports its parked/done count.
 - If `pickup claim` still exits nonzero after the **bounded flap retries** above
   and the output mentions board-write backpressure (`max_outbox_entries`,
   `uds_connection_limit`, HTTP 503, `service_timeout`, "node did not respond",

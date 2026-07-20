@@ -168,12 +168,13 @@ the shared helper when available:
 ```
 
 Exit `0` means satisfied: move the card to `done` and cite the helper output as
-evidence. Exit `1` means false or time-window pending: leave the card quietly in
-its current column, with no `NEEDS-HUMAN` marker. Exit `2` means malformed:
-escalate the malformed predicate as a card-spec issue. Exit `3` means ignored
-because the card is `Kind: pr`: continue the merged-PR logic below. Predicate
-evaluation is read-only and fail-closed; an errored or unsupported predicate
-never auto-closes a card.
+evidence. Exit `1` means false or time-window pending: keep it quiet, and if it
+is in default `todo`, move it to `backlog` so pickup does not see non-PR
+validation work as queue noise. Exit `2` means malformed: escalate the malformed
+predicate as a card-spec issue. Exit `3` means ignored because the card is
+`Kind: pr`: continue the merged-PR logic below. Predicate evaluation is
+read-only and fail-closed; an errored or unsupported predicate never auto-closes
+a card.
 
 ## Heal BoardCards list/show drift (CHEAP — ALWAYS, before zombie reclaim)
 
@@ -477,7 +478,9 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
       - If `Kind:` is not `pr` and `DONE-WHEN:` is present, run the evaluator.
         Satisfied (`0`) → `move <slug> done` and include the evaluator evidence
         in the report/heartbeat. False or pending (`1`) → leave the card quietly
-        in place. Malformed/error (`2`) → append or refresh a concise
+        in place unless it is in default `todo`; pending non-PR `DONE-WHEN`
+        cards in `todo` move to `backlog` so pickup stays PR-only.
+        Malformed/error (`2`) → append or refresh a concise
         `NEEDS-HUMAN: malformed DONE-WHEN <predicate>` marker. Ignored (`3`) is
         only valid for `Kind: pr`; continue PR reconciliation.
       - If `Kind:` is not `pr` and no `DONE-WHEN:` is present, do not search for
