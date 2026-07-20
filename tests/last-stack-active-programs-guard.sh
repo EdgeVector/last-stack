@@ -43,6 +43,7 @@ cat > "$board" <<'EOF_BOARD'
   {"slug":"live-card","column":"doing"},
   {"slug":"mixed-done-card","column":"done"},
   {"slug":"held-card","column":"backlog","block_status":"needs_human","block_reason":"host-side cutover"},
+  {"slug":"plain-backlog-card","column":"backlog"},
   {"slug":"retired-review-card","column":"review"},
   {"slug":"blocked-backlog-card","column":"backlog","block_status":"deferred"},
   {"slug":"table-done-card","column":"done"},
@@ -84,6 +85,10 @@ Live next move says to pick up `held-card` once the host-side cutover is ready.
 cards: held-card
 <!-- rollup:end -->
 
+## Program: parked-backlog-program — Backlog card advertised as todo
+**program-slug:** `[[parked-backlog-program]]`
+Current next move says `plain-backlog-card` is in todo and pickup-ready.
+
 ## Program: review-lane-program — Retired review lane program
 **program-slug:** `[[review-lane-program]]`
 Next move still names `retired-review-card`.
@@ -121,6 +126,7 @@ grep -q 'Deferred backlog table program.*mixed.*cue: Next move still says.*table
 grep -q 'Live table column mismatch.*mixed.*cue: | table-live-card | todo | stale table column |.*table-mismatch: table-live-card (table todo, board doing).*live: table-live-card (doing)' "$tmp/stale-report"
 grep -q 'Completed proof still active.*drained.*north-star-lastdb-file-blobs-on-demand-sync (program proof PASS-OFFLINE)' "$tmp/stale-report"
 grep -q 'Held program.*held.*cue: Live next move says.*held-card (backlog, needs_human).*suggested fix: mark prose blocked/held or move next move to a ready card' "$tmp/stale-report"
+grep -q 'Backlog card advertised as todo.*held.*cue: Current next move says.*plain-backlog-card (backlog, parked).*suggested fix: mark prose blocked/held or move next move to a ready card' "$tmp/stale-report"
 grep -q 'Completed proof still active.*drained.*north-star-lastdb-file-blobs-on-demand-sync (program proof PASS-OFFLINE)' "$tmp/stale-report"
 cmp "$tmp/stale-before" "$after"
 

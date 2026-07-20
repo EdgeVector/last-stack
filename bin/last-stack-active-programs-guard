@@ -531,6 +531,8 @@ def stale_report(
             elif card and is_held_card(card):
                 block_status = str(card.get("block_status") or "held")
                 held_refs.append(f"{slug} ({column}, {block_status})")
+            elif column == "backlog" and claims_missing_live_card(section, slug):
+                held_refs.append(f"{slug} (backlog, parked)")
             elif slug in proof_slugs:
                 stale_refs.append(f"{slug} (gone, proof)")
             elif column is None and "rollup" in ref_sources[slug]:
