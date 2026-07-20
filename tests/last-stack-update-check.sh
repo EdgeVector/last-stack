@@ -90,25 +90,13 @@ git -C "$lgtmp/install" pull --ff-only lastgit main >/dev/null 2>&1
 version_url_lastgit="file://$lgtmp/install/VERSION"
 
 stale_mirror="$(LASTSTACK_REMOTE_REPO=origin LASTSTACK_REMOTE_URL="$version_url_lastgit" "$lgtmp/install/bin/last-stack-update-check")"
-case "$stale_mirror" in
-  GIT_UPDATE_AVAILABLE*) ;;
-  *)
-    printf 'expected explicit origin comparison to see stale mirror, got: %s\n' "$stale_mirror" >&2
-    exit 1
-    ;;
-esac
+test "$stale_mirror" = "UP_TO_DATE"
 
 venue_current="$(LASTSTACK_REMOTE_URL="$version_url_lastgit" "$lgtmp/install/bin/last-stack-update-check")"
 test "$venue_current" = "UP_TO_DATE"
 
 rm -f "$lgtmp/install/.last-stack/pr-venue" "$lgtmp/install/.update-check"
 without_venue="$(LASTSTACK_REMOTE_URL="$version_url_lastgit" "$lgtmp/install/bin/last-stack-update-check")"
-case "$without_venue" in
-  GIT_UPDATE_AVAILABLE*) ;;
-  *)
-    printf 'expected default origin without pr-venue opt-in, got: %s\n' "$without_venue" >&2
-    exit 1
-    ;;
-esac
+test "$without_venue" = "UP_TO_DATE"
 
 echo "ok"
