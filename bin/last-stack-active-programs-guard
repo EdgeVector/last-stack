@@ -418,6 +418,8 @@ def suggested_fix(
     non_pickup_refs: list[str],
 ) -> str:
     if non_pickup_refs and not stale_refs and not held_refs and not live_refs and not missing_live_refs:
+        if any("(backlog," in ref for ref in non_pickup_refs):
+            return "refresh prose to backlog/non-pickup or file a Kind: pr child"
         return "park terminal proof outside todo or file a Kind: pr child"
     if missing_live_refs and not stale_refs and not held_refs and not live_refs:
         return "clear stale frontier prose or file/promote the named card"
@@ -511,7 +513,10 @@ def stale_report(
             claimed_columns = table_claims.get(slug, set())
             kind = card_kind(card) if card else ""
             if card and kind in NON_PICKUP_KINDS and claims_missing_live_card(section, slug):
-                non_pickup_refs.append(f"{slug} ({column}, Kind: {kind})")
+                # Terminal proof cards can be correctly parked in backlog while
+                # active-programs prose still claims they are todo/pickup-ready.
+                parked = ", parked" if column == "backlog" else ""
+                non_pickup_refs.append(f"{slug} ({column}, Kind: {kind}{parked})")
                 continue
             if column and claimed_columns and column not in claimed_columns:
                 table_mismatches.append(

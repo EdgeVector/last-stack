@@ -47,7 +47,8 @@ cat > "$board" <<'EOF_BOARD'
   {"slug":"blocked-backlog-card","column":"backlog","block_status":"deferred"},
   {"slug":"table-done-card","column":"done"},
   {"slug":"table-live-card","column":"doing"},
-  {"slug":"validation-proof-card","column":"todo","kind":"validation"}
+  {"slug":"validation-proof-card","column":"todo","kind":"validation"},
+  {"slug":"parked-validation-proof-card","column":"backlog","kind":"validation"}
 ]
 EOF_BOARD
 cat > "$proof" <<'EOF_PROOF'
@@ -132,6 +133,16 @@ EOF_NON_PICKUP_FRONTIER
   --active "$after" \
   --board "$board" > "$tmp/non-pickup-frontier-report"
 grep -q 'Validation proof advertised as pickup.*non-pickup-frontier.*cue: Next move says.*non-pickup: validation-proof-card (todo, Kind: validation).*suggested fix: park terminal proof outside todo or file a Kind: pr child' "$tmp/non-pickup-frontier-report"
+
+cat > "$after" <<'EOF_PARKED_NON_PICKUP_FRONTIER'
+## Program: parked-validation-frontier-program — Parked validation proof advertised as todo
+**program-slug:** `[[parked-validation-frontier-program]]`
+Next move says `parked-validation-proof-card` is still in todo and ready for pickup.
+EOF_PARKED_NON_PICKUP_FRONTIER
+"$ROOT/bin/last-stack-active-programs-guard" stale-report \
+  --active "$after" \
+  --board "$board" > "$tmp/parked-non-pickup-frontier-report"
+grep -q 'Parked validation proof advertised as todo.*non-pickup-frontier.*cue: Next move says.*non-pickup: parked-validation-proof-card (backlog, Kind: validation, parked).*suggested fix: refresh prose to backlog/non-pickup or file a Kind: pr child' "$tmp/parked-non-pickup-frontier-report"
 
 cat > "$after" <<'EOF_PROGRAM_STALE'
 ## Program: drained-program — Drained stale program

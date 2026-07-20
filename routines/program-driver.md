@@ -171,8 +171,12 @@ Before promoting idle/P3 papercuts or inventing program slices:
    are done or its own North Star proof report is `PASS`, do not generate or
    promote a new card from that stale prose in this run. If it marks a section
    `held`, do not treat it as pickup-ready until the prose or card status is
-   refreshed. Report either case as a consolidation candidate so
-   `consolidate-brain` can retire or refresh the program deliberately.
+   refreshed. If it marks `non-pickup-frontier` for a terminal proof card that
+   is already parked in `backlog`, the board state is correct; refresh
+   `active-programs` prose to say backlog/non-pickup, or file a concrete
+   `Kind: pr` child if executable pickup work is still needed. Report these
+   cases as consolidation candidates so `consolidate-brain` can retire or
+   refresh the program deliberately.
 
 2. **Snapshot the board narrowly.** Read the needed columns sequentially:
    `<board CLI> list --column todo --json`, then `doing`, `done`, and `backlog`
