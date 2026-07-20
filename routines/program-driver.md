@@ -172,11 +172,12 @@ Before promoting idle/P3 papercuts or inventing program slices:
    promote a new card from that stale prose in this run. If it marks a section
    `held`, do not treat it as pickup-ready until the prose or card status is
    refreshed. If it marks `non-pickup-frontier` for a terminal proof card that
-   is already parked in `backlog`, the board state is correct; refresh
-   `active-programs` prose to say backlog/non-pickup, or file a concrete
-   `Kind: pr` child if executable pickup work is still needed. Report these
-   cases as consolidation candidates so `consolidate-brain` can retire or
-   refresh the program deliberately.
+   is already parked in `backlog`, the board state is correct; refresh `active-programs` prose to say backlog/non-pickup, or file a concrete
+   `Kind: pr` child if executable pickup work is still needed. If the report
+   marks `held` because active prose claims a `backlog` card is `todo`,
+   `doing`, or pickup-ready, trust the board state and refresh the prose before
+   promotion. Report these cases as consolidation candidates so
+   `consolidate-brain` can retire or refresh the program deliberately.
 
 2. **Snapshot the board narrowly.** Read the needed columns sequentially:
    `<board CLI> list --column todo --json`, then `doing`, `done`, and `backlog`
