@@ -177,10 +177,10 @@ Before promoting idle/P3 papercuts or inventing program slices:
    `"$last_stack/bin/last-stack-park-terminal-validation-todo" --board-cli <board CLI> --json`.
    It parks already-drifted terminal North Star proof cards (`Kind: validation`
    / `meta`, `terminal-verification`, or `terminal` + `north-star` tags) in
-   `backlog` and explicitly excludes `Kind: pr`, so it cannot hide pickup-ready
-   implementation work. A program's next card may already be in `doing`/`done`
-   — if so that program is already moving or complete; do nothing for it this
-   run.
+   `backlog`; it also evaluates non-PR `DONE-WHEN` cards, moving satisfied ones
+   to `done` and pending valid ones to `backlog`. It explicitly excludes `Kind: pr`, so it cannot hide pickup-ready implementation work. A program's next
+   card may already be in `doing`/`done` — if so that program is already moving
+   or complete; do nothing for it this run.
 
 3. **For each program, find its NEXT unblocked card and make sure it's in
    `todo`.** Walk the DAG in order; the "next" card is the earliest not yet

@@ -7,12 +7,12 @@ trap 'rm -rf "$tmp"' EXIT
 
 stub="$tmp/fkanban-stub"
 log="$tmp/moves.log"
+pass_file="$tmp/pass-proof.txt"
+todo_json="$tmp/todo.json"
 
-cat > "$stub" <<'STUB'
-#!/usr/bin/env bash
-set -euo pipefail
-if [ "$1" = "list" ]; then
-  cat <<'JSON'
+printf 'PASS\n' > "$pass_file"
+
+cat > "$todo_json" <<JSON
 [
   {
     "slug": "alpha-ns-terminal-verification",
@@ -45,9 +45,39 @@ if [ "$1" = "list" ]; then
     "kind": "meta",
     "tags": ["terminal", "north-star"],
     "body": "See [[sop-north-star-terminal-verification]]."
+  },
+  {
+    "slug": "epsilon-pending-done-when",
+    "title": "Pending proof",
+    "column": "todo",
+    "kind": "validation",
+    "tags": ["validation"],
+    "body": "Kind: validation\\nDONE-WHEN: file $tmp/missing-proof.txt matches /^PASS/"
+  },
+  {
+    "slug": "zeta-satisfied-done-when",
+    "title": "Satisfied proof",
+    "column": "todo",
+    "kind": "validation",
+    "tags": ["validation"],
+    "body": "Kind: validation\\nDONE-WHEN: file $pass_file matches /^PASS/"
+  },
+  {
+    "slug": "eta-malformed-done-when",
+    "title": "Malformed proof",
+    "column": "todo",
+    "kind": "validation",
+    "tags": ["validation"],
+    "body": "Kind: validation\\nDONE-WHEN: unsupported predicate"
   }
 ]
 JSON
+
+cat > "$stub" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$1" = "list" ]; then
+  cat "${STUB_TODO_JSON:?}"
   exit 0
 fi
 if [ "$1" = "move" ]; then
@@ -59,14 +89,19 @@ exit 1
 STUB
 chmod +x "$stub"
 
-STUB_LOG="$log" "$ROOT/bin/last-stack-park-terminal-validation-todo" \
+STUB_LOG="$log" STUB_TODO_JSON="$todo_json" "$ROOT/bin/last-stack-park-terminal-validation-todo" \
   --board-cli "$stub" --json > "$tmp/out.json"
 
-grep -q '"parked":2' "$tmp/out.json"
+grep -q '"parked":3' "$tmp/out.json"
+grep -q '"done":1' "$tmp/out.json"
 grep -q '"alpha-ns-terminal-verification"' "$tmp/out.json"
 grep -q '"delta-terminal-meta"' "$tmp/out.json"
+grep -q '"epsilon-pending-done-when"' "$tmp/out.json"
+grep -q '"zeta-satisfied-done-when"' "$tmp/out.json"
 grep -q '^alpha-ns-terminal-verification backlog$' "$log"
 grep -q '^delta-terminal-meta backlog$' "$log"
+grep -q '^epsilon-pending-done-when backlog$' "$log"
+grep -q '^zeta-satisfied-done-when done$' "$log"
 
 if grep -q 'beta-terminal-pr-harness' "$log"; then
   echo "Kind: pr terminal harness must not be parked" >&2
@@ -74,6 +109,10 @@ if grep -q 'beta-terminal-pr-harness' "$log"; then
 fi
 if grep -q 'gamma-ordinary-validation' "$log"; then
   echo "ordinary validation cards must not be parked" >&2
+  exit 1
+fi
+if grep -q 'eta-malformed-done-when' "$log"; then
+  echo "malformed DONE-WHEN cards must be left for watch/groom escalation" >&2
   exit 1
 fi
 

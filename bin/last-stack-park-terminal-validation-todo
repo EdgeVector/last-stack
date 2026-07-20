@@ -12,8 +12,10 @@ usage() {
 usage: last-stack-park-terminal-validation-todo [--board-cli fkanban|kanban] [--dry-run] [--json]
 
 Reads only the default board's todo column, finds terminal-verification proof
-cards that are not Kind: pr, and moves them to backlog. This is intentionally
-narrow: pickup-ready PR cards are never parked by this helper.
+cards that are not Kind: pr, and moves them to backlog. It also evaluates
+non-PR Kind: tracker|validation|meta cards with DONE-WHEN predicates: satisfied
+predicates move to done, pending valid predicates move to backlog. This is
+intentionally narrow: pickup-ready PR cards are never parked by this helper.
 EOF
 }
 
@@ -51,7 +53,7 @@ run() {
 
 todo_json="$(run "$board_cli" list --column todo --json)"
 
-mapfile -t slugs < <(
+mapfile -t candidates < <(
   printf '%s\n' "$todo_json" | python3 -c '
 import json
 import re
@@ -64,6 +66,8 @@ else:
     cards = data
 
 terminal_re = re.compile(r"terminal[- ]verification|ns-terminal-verification", re.I)
+kind_re = re.compile(r"(?im)^\s*Kind:\s*([A-Za-z_-]+)\s*$")
+done_when_re = re.compile(r"(?im)^\s*DONE-WHEN:\s*(.+?)\s*$")
 
 def text(card, key):
     value = card.get(key) or ""
@@ -73,11 +77,15 @@ for card in cards:
     slug = text(card, "slug")
     if not slug:
         continue
+    body = text(card, "body")
     kind = text(card, "kind").strip().lower()
+    if not kind:
+        match = kind_re.search(body)
+        if match:
+            kind = match.group(1).strip().lower()
     if kind == "pr":
         continue
     title = text(card, "title")
-    body = text(card, "body")
     tags = card.get("tags") or []
     if not isinstance(tags, list):
         tags = []
@@ -85,31 +93,78 @@ for card in cards:
     haystack = "\n".join([slug, title, body])
     terminal_tagged = "terminal" in tags_l and ("north-star" in tags_l or "validation" in tags_l)
     terminal_text = bool(terminal_re.search(haystack)) or "sop-north-star-terminal-verification" in body
-    if terminal_tagged or terminal_text:
-        print(slug)
+    done_when_match = done_when_re.search(body)
+    done_when = done_when_match.group(1).strip() if done_when_match else ""
+    if terminal_tagged or terminal_text or (kind in {"tracker", "validation", "meta"} and done_when):
+        print(json.dumps({
+            "slug": slug,
+            "kind": kind,
+            "terminal": bool(terminal_tagged or terminal_text),
+            "done_when": done_when,
+        }, separators=(",", ":")))
 '
 )
 
-moved=()
-for slug in "${slugs[@]}"; do
-  if [ "$dry_run" -eq 0 ]; then
-    run "$board_cli" move "$slug" backlog
+done_when_eval="$self_dir/last-stack-kanban-done-when-eval"
+parked=()
+completed=()
+for candidate in "${candidates[@]}"; do
+  slug="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["slug"])' "$candidate")"
+  kind="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("kind") or "")' "$candidate")"
+  terminal="$(python3 -c 'import json,sys; print("1" if json.loads(sys.argv[1]).get("terminal") else "0")' "$candidate")"
+  done_when="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("done_when") or "")' "$candidate")"
+  move_to="backlog"
+
+  if [ -n "$done_when" ] && [ -x "$done_when_eval" ]; then
+    if "$done_when_eval" --kind "$kind" --predicate "$done_when" >/dev/null 2>&1; then
+      move_to="done"
+    else
+      status=$?
+      if [ "$status" -eq 1 ]; then
+        move_to="backlog"
+      elif [ "$terminal" -eq 1 ]; then
+        move_to="backlog"
+      else
+        continue
+      fi
+    fi
   fi
-  moved+=( "$slug" )
+
+  if [ "$dry_run" -eq 0 ]; then
+    run "$board_cli" move "$slug" "$move_to"
+  fi
+  if [ "$move_to" = "done" ]; then
+    completed+=( "$slug" )
+  else
+    parked+=( "$slug" )
+  fi
 done
 
 if [ "$json" -eq 1 ]; then
-  python3 - "${moved[@]}" <<'PY'
+  python3 - "${#parked[@]}" "${#completed[@]}" "${parked[@]}" -- "${completed[@]}" <<'PY'
 import json
 import sys
 
-slugs = sys.argv[1:]
-print(json.dumps({"parked": len(slugs), "slugs": slugs}, separators=(",", ":")))
+parked_count = int(sys.argv[1])
+completed_count = int(sys.argv[2])
+args = sys.argv[3:]
+split = args.index("--")
+parked = args[:split]
+completed = args[split + 1:]
+print(json.dumps({
+    "parked": parked_count,
+    "done": completed_count,
+    "slugs": parked,
+    "done_slugs": completed,
+}, separators=(",", ":")))
 PY
 else
-  printf 'parked=%s' "${#moved[@]}"
-  if [ "${#moved[@]}" -gt 0 ]; then
-    printf ' slugs=%s' "$(IFS=,; printf '%s' "${moved[*]}")"
+  printf 'parked=%s done=%s' "${#parked[@]}" "${#completed[@]}"
+  if [ "${#parked[@]}" -gt 0 ]; then
+    printf ' slugs=%s' "$(IFS=,; printf '%s' "${parked[*]}")"
+  fi
+  if [ "${#completed[@]}" -gt 0 ]; then
+    printf ' done_slugs=%s' "$(IFS=,; printf '%s' "${completed[*]}")"
   fi
   printf '\n'
 fi

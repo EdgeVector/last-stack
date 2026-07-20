@@ -95,11 +95,12 @@ the shared helper when available:
 ```
 
 Exit `0` means the predicate is satisfied: move the card to `done` and cite the
-helper output. Exit `1` means false or not-yet-elapsed: leave the card quietly
-in its current column and do not stamp `NEEDS-HUMAN`. Exit `2` means malformed:
-surface `NEEDS-HUMAN: malformed DONE-WHEN <predicate>`. Exit `3` means `Kind:
-pr`, which must still be handled by the PR reconciler. This evaluator is
-read-only and fail-closed; errors never auto-close a card.
+helper output. Exit `1` means false or not-yet-elapsed: keep it quiet, and if it
+is in default `todo`, park it in `backlog` so pickup does not see non-PR
+validation work as queue noise. Exit `2` means malformed: surface
+`NEEDS-HUMAN: malformed DONE-WHEN <predicate>`. Exit `3` means `Kind: pr`, which
+must still be handled by the PR reconciler. This evaluator is read-only and
+fail-closed; errors never auto-close a card.
 
 ## What to do each run
 1. **Snapshot the board narrowly.** Read `backlog`, `todo`, and `doing` with
@@ -113,10 +114,11 @@ read-only and fail-closed; errors never auto-close a card.
 
    Before surfacing a stuck non-PR card as `NEEDS-HUMAN`, point-read it and
    evaluate its `DONE-WHEN:` predicate. A satisfied predicate closes the card to
-   `done`; a pending time window or false predicate stays quiet; a missing
-   predicate on `Kind: tracker|validation|meta` is a card-authoring issue and may
-   be surfaced as `NEEDS-HUMAN: non-PR card missing DONE-WHEN`. Never use
-   `DONE-WHEN` to close `Kind: pr`.
+   `done`; a pending time window or false predicate stays quiet and, if the card
+   is in default `todo`, moves to `backlog`; a missing predicate on `Kind:
+   tracker|validation|meta` is a card-authoring issue and may be surfaced as
+   `NEEDS-HUMAN: non-PR card missing DONE-WHEN`. Never use `DONE-WHEN` to close
+   `Kind: pr`.
 
 2. **Prune scratch/test cards.** Soft-delete (`rm`) clear test-harness junk:
    `zz-*` slugs, single-letter/placeholder titles, empty bodies, obvious
