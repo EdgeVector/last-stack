@@ -130,11 +130,16 @@ fail-closed; errors never auto-close a card.
    `[deferred…]`, `GATED:`, or declares an unmet dependency ("blocked on
    <other-card>"). These are intentional. Don't move or delete them.
 
-4. **Promote EVERY ready card backlog → todo. There is NO count cap on `todo`.**
-   Readiness is the only filter: a card is ready when it has a real
-   GOAL/STEPS/VERIFY brief, a `Repo:`/`Base:` header, the `kanban-agent` header,
-   no gate marker, no unmet dependency, and, for `Kind: tracker|validation|meta`,
-   a valid `DONE-WHEN:` predicate. If it's ready, promote it. If not, leave it.
+4. **Promote EVERY ready PR card backlog → todo. There is NO count cap on `todo`.**
+   Readiness is the only filter for pickup work: a card is ready when it is
+   `Kind: pr`, has a real GOAL/STEPS/VERIFY brief, a `Repo:`/`Base:` header, the
+   `kanban-agent` header, no gate marker, and no unmet dependency. If it's
+   ready, promote it. If not, leave it.
+
+   Non-PR `Kind: tracker|validation|meta` cards are not pickup work even when
+   their `DONE-WHEN:` predicate is valid. Evaluate them with the DONE-WHEN helper
+   and move satisfied cards to `done`; keep pending valid ones in `backlog`.
+   Never promote non-PR validation or terminal proof cards into default `todo`.
    > Rationale: the hourly pickup routine fans out several agents, so a small
    > `todo` drains in a couple hours and the board then idles. A cap manufactures
    > idle time. The pickup routine self-throttles by its own fan-out; the

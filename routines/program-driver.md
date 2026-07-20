@@ -260,7 +260,8 @@ Before promoting idle/P3 papercuts or inventing program slices:
      and append `## Terminal verification` + `**Card:** \`<slug>\`` on the NS
      body (edit in place; do not regenerate the whole NS). Prefer a pickup-ready
      `Kind: pr` harness in default `todo`; if the terminal must be
-     `Kind: validation` + `DONE-WHEN`, park it outside default `todo` so pickup
+     `Kind: validation` + `DONE-WHEN`, file or upsert it with `--column backlog`
+     and never preserve/reapply `todo`. Park it outside default `todo` so pickup
      does not see a non-PR blocker. One new terminal card per incomplete NS per
      run max.
    - **`board_drained_ns_open`**: do not invent unrelated papercuts; promote or
