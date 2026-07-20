@@ -234,6 +234,31 @@ back to `todo` (or `pending_rollback=` in memory) per transport rules below.
   shared CLI behaves oddly, run `host-track status` when available and
   `<cmd> which` (for example `lastgit which`) before changing PATH or running a
   checkout-local command.
+- **Direct `prompt_path` freshness guard:** pickup workers load this file
+  directly from the installed Last Stack checkout, so they do not get
+  `last-stack-routine-read`'s auto-upgrade before prompt load. After CLI
+  preflight and before any board claim, run:
+  ```bash
+  if [ -x "$last_stack/bin/last-stack-self-upgrade" ]; then
+    upgrade_check="$("$last_stack/bin/last-stack-self-upgrade" --check-only --reason=kanban-pickup-prompt-freshness 2>&1 || true)"
+    case "$upgrade_check" in
+      *"result=would-upgrade"*)
+        if "$last_stack/bin/last-stack-self-upgrade" --reason=kanban-pickup-prompt-freshness >/tmp/last-stack-pickup-self-upgrade.$$ 2>&1; then
+          stale_detail="stale-last-stack-install upgraded-before-claim no_card_claimed"
+        else
+          stale_detail="stale-last-stack-install upgrade-failed no_card_claimed"
+        fi
+        rm -f /tmp/last-stack-pickup-self-upgrade.$$
+        "$last_stack/bin/last-stack-brain-append-heartbeat" --line "kanban-pickup $(date -u +%Y-%m-%dT%H:%M:%SZ) noop $stale_detail" || true
+        printf '%s %s\n' 'ROUTINE_RESULT' "outcome=noop detail=$stale_detail"
+        exit 0
+        ;;
+    esac
+  fi
+  ```
+  If the upgrade attempt fails, still do not claim a card from a stale prompt:
+  heartbeat `noop stale-last-stack-install upgrade-failed no_card_claimed` and
+  exit. The next scheduled fire can retry after the install is current.
 - Follow the **kanban-agent** skill, **WORK mode**, yourself — that skill is the
   source of truth for the per-card lifecycle. This prompt is selection + the
   no-spawn execution contract.
