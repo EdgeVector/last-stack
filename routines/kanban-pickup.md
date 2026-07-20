@@ -527,6 +527,13 @@ same fire unless you claimed it via normal WORK). Never pick up the
 feature-owner validation card itself. Never invent idle simplifications while a
 P0/P1 feature-ship frontier is waiting.
 
+Only `Kind: pr` child frontiers are pickup work. If the next feature frontier is
+a terminal proof card (`Kind: validation` / `meta` / `tracker`, or any non-PR
+card whose only executable contract is `DONE-WHEN`), do not promote or claim it
+from pickup. If such a terminal proof card already drifted into default `todo`,
+run `last-stack-park-terminal-validation-todo` and EXIT with the helper outcome;
+`feature-prove` / `kanban-watch` own the proof evaluation path.
+
 Access pattern for this frontier probe must stay scan-free: read scoped queues
 with `fkanban list --column todo --json` and `fkanban list --column backlog
 --json`, filter those previews locally for `feature-owner` / `feature-ship`

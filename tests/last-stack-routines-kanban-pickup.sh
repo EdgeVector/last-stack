@@ -11,5 +11,7 @@ grep -q 'file a concrete `Kind: pr` follow-up' "$pickup"
 grep -q 'fresh budget' "$pickup"
 grep -q 'last-stack-park-terminal-validation-todo' "$pickup"
 grep -q 'excludes `Kind: pr`' "$pickup"
+grep -q 'Only `Kind: pr` child frontiers are pickup work' "$pickup"
+grep -q 'terminal proof card already drifted into default `todo`' "$pickup"
 
 echo ok
