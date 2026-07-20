@@ -358,7 +358,14 @@ quarantine_known_local_state_conflicts "$remote_head"
 
 local_ref="$(git -C "$ROOT" symbolic-ref -q HEAD 2>/dev/null || true)"
 if [ -n "$remote_ref" ] && [ -n "$local_ref" ] && [ "$local_ref" = "$remote_ref" ]; then
-  if ! git -C "$ROOT" pull --ff-only --quiet "$remote" 2>/tmp/last-stack-self-upgrade-pull.$$; then
+  # Pass the branch explicitly: `git pull <remote>` without a refspec only
+  # works when <remote> is the branch's configured upstream. When the venue
+  # remote (e.g. `lastgit`) differs from the branch's tracked remote (still
+  # `origin` on most installs), a bare `git pull --ff-only lastgit` fails
+  # with "did not specify a branch" even though the fetch above already
+  # succeeded — this used to strand every lastgit-venue self-upgrade.
+  pull_branch="${local_ref#refs/heads/}"
+  if ! git -C "$ROOT" pull --ff-only --quiet "$remote" "$pull_branch" 2>/tmp/last-stack-self-upgrade-pull.$$; then
     emit "result=error-pull local_head=$(short_sha "$local_head") remote_head=$(short_sha "$remote_head")"
     cat /tmp/last-stack-self-upgrade-pull.$$ >&2 || true
     rm -f /tmp/last-stack-self-upgrade-pull.$$

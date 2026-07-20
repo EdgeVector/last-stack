@@ -237,21 +237,41 @@ git -C "$lgtmp/seed" push origin HEAD:main >/dev/null 2>&1
 # origin mirror only gets the first commit (stale).
 git -C "$lgtmp/seed" push "$lgtmp/origin-mirror.git" HEAD:main >/dev/null 2>&1
 
-git clone "$lgtmp/lastgit.git" "$lgtmp/install" >/dev/null 2>&1
+# Install clones from the (stale) origin mirror — matching real repos, where
+# `origin` is the branch's tracked upstream from the original clone, and a
+# separate `lastgit` remote is added later WITHOUT ever renaming/re-tracking
+# origin. (A prior version of this test used `remote rename origin lastgit`,
+# which quietly re-points the branch's tracking config at `lastgit` too and so
+# never exercises the real-world mismatch below.)
+git clone "$lgtmp/origin-mirror.git" "$lgtmp/install" >/dev/null 2>&1
 mkdir -p "$lgtmp/install/bin" "$lgtmp/install/.last-stack"
 cp "$ROOT/bin/last-stack-self-upgrade" "$lgtmp/install/bin/last-stack-self-upgrade"
 chmod +x "$lgtmp/install/bin/last-stack-self-upgrade"
 cp "$ROOT/VERSION" "$lgtmp/install/VERSION"
 printf 'lastgit\n' >"$lgtmp/install/.last-stack/pr-venue"
-git -C "$lgtmp/install" remote rename origin lastgit
-git -C "$lgtmp/install" remote add origin "$lgtmp/origin-mirror.git"
+git -C "$lgtmp/install" remote add lastgit "$lgtmp/lastgit.git"
 
-# Advance lastgit (canonical) further; install fast-forwards to it and is now
-# strictly ahead of the stale origin mirror.
+# Advance lastgit (canonical) further than the stale origin mirror.
 printf 'second\n' >>"$lgtmp/seed/README.md"
 git -C "$lgtmp/seed" commit -am second >/dev/null
 git -C "$lgtmp/seed" push origin HEAD:main >/dev/null 2>&1
-git -C "$lgtmp/install" pull --ff-only lastgit main >/dev/null 2>&1
+
+# Real (non-check-only) upgrade through the lastgit venue remote: the local
+# branch's tracked upstream is `origin`, not `lastgit`, so a bare
+# `git pull --ff-only lastgit` fails with "did not specify a branch" unless
+# the branch is passed explicitly. This reproduces the 2026-07-20 kanban-pickup
+# stall where every scheduled routine saw the install as permanently stale
+# because self-upgrade could never actually complete the pull.
+old_head="$(git -C "$lgtmp/install" rev-parse --short=12 HEAD)"
+out="$("$lgtmp/install/bin/last-stack-self-upgrade" --reason=test)"
+case "$out" in
+  *"result=upgraded"*"local_head=$old_head"*) ;;
+  *)
+    printf 'expected real upgrade via lastgit venue remote (tracked-remote mismatch), got:\n%s\n' "$out" >&2
+    exit 1
+    ;;
+esac
+grep -q 'second' "$lgtmp/install/README.md"
 
 # Explicit origin comparison reproduces the old bug: install is ahead of the
 # stale mirror, which `merge-base --is-ancestor` reports as not-an-ancestor.
