@@ -363,12 +363,19 @@ def render_completion_markdown(model: dict[str, Any]) -> str:
             elif "terminal_missing" in (r.get("flags") or []):
                 lines.append(
                     f"- `{slug}`: **file terminal verification card** "
-                    f"(see [[sop-north-star-terminal-verification]])"
+                    f"(see [[sop-north-star-terminal-verification]]). "
+                    f"Only `Kind: pr` harness work belongs in default `todo`; "
+                    f"`Kind: validation` / `DONE-WHEN` terminal proof must be "
+                    f"filed or upserted with `--column backlog` and must not "
+                    f"preserve/reapply `todo`."
                 )
             elif v == "board_drained_ns_open":
                 lines.append(
                     f"- `{slug}`: board drained but terminal not done → "
-                    f"promote/file only terminal work (`{r.get('terminal_slug') or 'new'}`)"
+                    f"promote/file only terminal `Kind: pr` harness work "
+                    f"(`{r.get('terminal_slug') or 'new'}`); keep non-PR "
+                    f"`Kind: validation` / `DONE-WHEN` proof in `backlog`, not "
+                    f"default `todo`."
                 )
             else:
                 lines.append(f"- `{slug}`: verdict={v} flags={r.get('flags')}")

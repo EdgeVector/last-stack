@@ -254,6 +254,12 @@ print("completion assertions ok")
 PY
 
 grep -q "North Star completion report" "$WORK/completion.md"
+grep -q 'Only `Kind: pr` harness work belongs in default `todo`' "$WORK/completion.md"
+grep -q '`Kind: validation` / `DONE-WHEN` terminal proof must be filed or upserted with `--column backlog`' "$WORK/completion.md"
+if grep -q 'promote/file only terminal work' "$WORK/completion.md"; then
+  echo "completion action queue must not imply non-PR terminal proof is pickup/todo work" >&2
+  exit 1
+fi
 grep -q "COMPLETION_NEEDS_WORK=1" "$WORK/completion.err"
 
 WRAP="$ROOT/bin/last-stack-north-star-completion-check"
