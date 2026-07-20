@@ -291,8 +291,12 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
   `"$last_stack/bin/last-stack-park-terminal-validation-todo" --board-cli <board CLI> --json`.
   The helper reads only `todo`, excludes `Kind: pr`, idempotently parks those
   proof cards in `backlog`, and also parks pending valid non-PR `DONE-WHEN`
-  cards while closing satisfied ones to `done`. Do not hand-sweep the board; use
-  the helper and continue to idle mode after it reports its parked/done count.
+  cards while closing satisfied ones to `done`. Do not hand-sweep the board. If
+  the helper reports `parked>0` or `done>0`, treat that as this run's one idle
+  action: heartbeat `ok idle=terminal-validation-parked result=parked-card
+  parked=<n> done=<n>`, print the `ROUTINE_RESULT` token followed by
+  `outcome=ok detail=idle=terminal-validation-parked parked=<n> done=<n>`, and
+  EXIT. Continue to idle mode only when the helper reports zero changes.
 - If `pickup claim` still exits nonzero after the **bounded flap retries** above
   and the output mentions board-write backpressure (`max_outbox_entries`,
   `uds_connection_limit`, HTTP 503, `service_timeout`, "node did not respond",
@@ -348,7 +352,9 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
    backpressure, not idle capacity.
 8. If none are eligible because the queue is genuinely empty, go to **Nothing to
    pick up** (Idle mode: smart-heal). If the only todo noise is terminal North
-   Star proof cards, run `last-stack-park-terminal-validation-todo` before idle.
+   Star proof cards, run `last-stack-park-terminal-validation-todo`; if it parks
+   or completes any card, heartbeat `ok idle=terminal-validation-parked
+   result=parked-card` and EXIT before starting idle invent.
    Do not invent a random feature first — follow the idle ladder.
 
 ## Execute — YOU are the worker (no fan-out)
