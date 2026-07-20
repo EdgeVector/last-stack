@@ -96,6 +96,43 @@ test -f "$tmp/install/.setup-ran"
 test -z "$(git -C "$tmp/install" status --porcelain --untracked-files=no)"
 git -C "$tmp/install" ls-files --error-unmatch routines/extra.md >/dev/null
 
+# --- stale with generated local-state conflict: quarantine, then upgrade ---
+rm -f "$tmp/install/.setup-ran"
+mkdir -p "$tmp/seed/proofs" "$tmp/install/proofs"
+printf 'remote proof template\n' >"$tmp/seed/proofs/report.md"
+git -C "$tmp/seed" add proofs/report.md
+git -C "$tmp/seed" commit -m "add tracked proof template" >/dev/null
+git -C "$tmp/seed" push origin HEAD:main >/dev/null 2>&1
+
+old_head="$(git -C "$tmp/install" rev-parse --short=12 HEAD)"
+printf 'local generated proof\n' >"$tmp/install/proofs/report.md"
+quarantine_dir="$tmp/quarantine"
+out="$(LASTSTACK_SELF_UPGRADE_QUARANTINE_DIR="$quarantine_dir" "$tmp/install/bin/last-stack-self-upgrade" --reason=test)"
+case "$out" in
+  *"result=local-state-quarantined"*"result=upgraded"*"local_head=$old_head"*) ;;
+  *)
+    printf 'expected generated local-state quarantine + upgrade, got:\n%s\n' "$out" >&2
+    exit 1
+    ;;
+esac
+grep -q 'remote proof template' "$tmp/install/proofs/report.md"
+grep -R -q 'local generated proof' "$quarantine_dir"
+test -f "$tmp/install/.setup-ran"
+
+# --- stale with unknown untracked conflict: still fails closed ---
+printf 'remote source\n' >"$tmp/seed/local-source.txt"
+git -C "$tmp/seed" add local-source.txt
+git -C "$tmp/seed" commit -m "add source path" >/dev/null
+git -C "$tmp/seed" push origin HEAD:main >/dev/null 2>&1
+printf 'local source\n' >"$tmp/install/local-source.txt"
+if "$tmp/install/bin/last-stack-self-upgrade" --reason=test >/tmp/self-upgrade-untracked.out 2>/tmp/self-upgrade-untracked.err; then
+  echo "expected unknown untracked conflict to fail" >&2
+  exit 1
+fi
+grep -q 'dirty_count=untracked-conflict' /tmp/self-upgrade-untracked.out
+rm -f "$tmp/install/local-source.txt"
+"$tmp/install/bin/last-stack-self-upgrade" --reason=test >/dev/null
+
 # --- routine-read auto-heals when stale ---
 # Put install behind again.
 printf 'second fix\n' >>"$tmp/seed/README.md"
