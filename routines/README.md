@@ -12,6 +12,23 @@ loop.
 > If the skills are the rules of the game, the routines are the players who
 > actually show up each turn.
 
+## Three roles (conceptual spine — Tom 2026-07-20)
+
+Collapse the routine zoo into **Generate · Claim · Reconcile**. Everything else
+is a specialized generator or backstop.
+
+| Role | Job | Ships code? | Examples |
+|------|-----|-------------|----------|
+| **Generate** | File/promote PR-sized work onto the board | No | `program-driver`, `groom-board`, `papercut-reconciler`, `pipeline-health` (cards) |
+| **Claim** | `pickup claim` → implement → open PR/CR | **Yes** | `kanban-pickup` (+ worker replicas) |
+| **Reconcile** | Advance merges, heal zombies, close done | Fixes only | `kanban-watch`, `merge-babysit`, `kanban-validate`, reapers |
+
+Brain = intent · Board = queue · Pickup = only code shipper · Watch = only closer.
+
+Operator tools: `last-stack-ship-preflight` (walk-away check),
+`kanban pickup explain <slug>` (why not claimable),
+`last-stack-fleet-deadman` (out-of-band fleet liveness).
+
 These are **templates**, not drop-in config. Every one carries `<PLACEHOLDERS>`
 you fill in for your own workspace (paths, repo list, the CLI you use for your
 brain/board, your build/test commands). Read a routine top-to-bottom and adapt it

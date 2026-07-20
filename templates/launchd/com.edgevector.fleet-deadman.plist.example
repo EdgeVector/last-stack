@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.edgevector.fleet-deadman</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/REPLACE/.last-stack/bin/last-stack-fleet-deadman</string>
+    <string>--page</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>300</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/REPLACE/.last-stack/logs/fleet-deadman.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/REPLACE/.last-stack/logs/fleet-deadman.err.log</string>
+</dict>
+</plist>

@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Out-of-band fleet liveness — must NOT depend on routinesd scheduling.
+# Usage: last-stack-fleet-deadman [--check] [--page]
+set -euo pipefail
+
+script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
+LAST_STACK_ROOT="$(CDPATH= cd -- "$script_dir/.." && pwd -P)"
+export LAST_STACK_ROOT
+
+CHECK_ONLY=1
+PAGE=0
+STALE_MAX_S="${FLEET_DEADMAN_STALE_S:-1800}"
+for arg in "$@"; do
+  case "$arg" in
+    --check) CHECK_ONLY=1 ;;
+    --page) PAGE=1; CHECK_ONLY=0 ;;
+    -h|--help) echo "Usage: last-stack-fleet-deadman [--check|--page]"; exit 0 ;;
+  esac
+done
+
+uid=$(id -u)
+label="gui/${uid}/com.edgevector.routinesd"
+hb="${LAST_STACK_HEARTBEATS_PATH:-$HOME/.last-stack/logs/routine-heartbeats.log}"
+problems=()
+
+if ! launchctl print "$label" >/dev/null 2>&1; then
+  problems+=("routinesd launchd label missing ($label)")
+else
+  state=$(launchctl print "$label" 2>/dev/null | awk -F'= ' '/state =/{print $2; exit}' || true)
+  if ! printf '%s' "$state" | grep -qi 'running'; then
+    problems+=("routinesd not running (state=${state:-unknown})")
+  fi
+fi
+
+if [ ! -f "$hb" ]; then
+  problems+=("missing heartbeats log: $hb")
+else
+  mtime=$(stat -f %m "$hb" 2>/dev/null || stat -c %Y "$hb" 2>/dev/null || echo 0)
+  now=$(date +%s)
+  age=$(( now - mtime ))
+  if [ "$age" -gt "$STALE_MAX_S" ]; then
+    problems+=("heartbeats stale age=${age}s max=${STALE_MAX_S}s file=$hb")
+  fi
+fi
+
+if [ "${#problems[@]}" -eq 0 ]; then
+  echo "fleet-deadman OK — routinesd running and heartbeats fresh (≤${STALE_MAX_S}s)"
+  exit 0
+fi
+
+echo "fleet-deadman FAIL:"
+for p in "${problems[@]}"; do
+  echo "  - $p"
+done
+echo "heal: launchctl kickstart -k $label"
+echo "      then check disk (ENOSPC history) and last-stack-ship-preflight"
+
+if [ "$PAGE" = 1 ] && command -v last-stack-page >/dev/null 2>&1; then
+  last-stack-page "fleet-deadman: ${problems[*]}" 2>/dev/null || true
+elif [ "$PAGE" = 1 ]; then
+  echo "(no last-stack-page on PATH; not paged)"
+fi
+
+exit 1

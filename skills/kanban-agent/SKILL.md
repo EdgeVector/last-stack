@@ -160,6 +160,28 @@ predicates move the non-PR card to `done` with evidence; false or pending
 predicates stay quiet; malformed predicates become a visible card-authoring
 issue. Predicate evaluation is read-only and fail-closed.
 
+### Live symptom recheck (won't-undo — Tom 2026-07-20)
+
+**Merged + green CI is not done** when the card's GOAL/END STATE names a live
+failing signal. Author and enforce DONE-WHEN / VERIFY so that closing the card
+requires re-checking the **original failing signal in the original environment**
+(daemon, runner lane, host install path, release workflow) — not a synthetic
+fixture, alternate OS runner, or throwaway probe that never saw the bug.
+
+Examples of **insufficient** proof:
+- Fixture-only unit test while the scheduled routine still noops with the same
+  heartbeat signature on the live host.
+- Green CI on `pc-linux` while the macOS GitHub `Release` lane still 404s the
+  same step.
+- PR merged to `fold` main while primary `lastdbd` still runs a pre-merge binary
+  (needs safe-upgrade / live version evidence).
+
+Canonical SOP: brain `sop-done-when-requires-live-symptom-recheck` (generalizes
+`sop-primary-lastdb-fix-requires-safe-upgrade-deploy`). If you cannot recheck
+the live signal this turn, leave the card in `todo`/`doing` with
+`PROOF: pending live recheck of <signal> on <env>` — do **not** move to `done`.
+
+
 Note: `review` is an **exception** state, not the normal post-PR resting place.
 The happy path is `doing` → (drive PR to merge) → `done`. A card lands in
 `review` when an agent genuinely cannot get the PR merged without a human

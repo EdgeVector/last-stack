@@ -229,6 +229,13 @@ codex/claude/grok/cargo worker just for age. Live work, open PRs/CRs, and
 recent progress stay put. Durable: brain
 `preference-kanban-doing-soft-1h-reclaim`.
 
+**HANDOFF / checkpoint cards (do not reclaim as empty zombies):** if `doing`
+has a non-empty `branch` field, body contains `HANDOFF:`, or
+`git` shows commits on `kanban/<slug>` even without `pr_url`, this is an
+in-flight budget handoff from pickup — **skip soft reclaim**. Prefer leaving
+in `doing` for pickup resume / merge-babysit, or file a P2 only if age > 4h
+with no worker. Never move these to `todo` without preserving branch metadata.
+
 A card in `doing` with **no PR/CR**, **no `kanban/<slug>` branch with commits**,
 and **no live worker** is a pipeline stall: surface-overlap and shared-build
 gates treat it as in-flight, so pickup skips overlapping todos forever.
