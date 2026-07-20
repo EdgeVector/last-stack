@@ -159,6 +159,24 @@ if LASTSTACK_SELF_UPGRADE_SKIP=1 "$tmp/install/bin/last-stack-routine-read" demo
 fi
 grep -q 'LAST_STACK_ROUTINE_STALE' /tmp/self-upgrade-skip.err
 
+# --- routine-read stale failure is actionable when tracked dirt blocks auto-heal ---
+printf 'dirty local install edit\n' >>"$tmp/install/README.md"
+if LASTSTACK_ROUTINE_READ_LOCK_ATTEMPTS=1 LASTSTACK_ROUTINE_READ_LOCK_BACKOFF_S=0 \
+  "$tmp/install/bin/last-stack-routine-read" demo >/tmp/self-upgrade-dirty-read.out 2>/tmp/self-upgrade-dirty-read.err; then
+  echo "expected dirty stale install to fail closed" >&2
+  exit 1
+fi
+grep -q 'LAST_STACK_ROUTINE_STALE' /tmp/self-upgrade-dirty-read.err
+grep -q 'LAST_STACK_ROUTINE_CONTEXT routine=demo root=.*/install' /tmp/self-upgrade-dirty-read.err
+grep -q 'LAST_STACK_ROUTINE_DETAIL_BEGIN' /tmp/self-upgrade-dirty-read.err
+grep -q 'result=error-dirty' /tmp/self-upgrade-dirty-read.err
+grep -q 'dirty_count=1' /tmp/self-upgrade-dirty-read.err
+grep -q 'sample= M README.md' /tmp/self-upgrade-dirty-read.err
+grep -q 'LAST_STACK_ROUTINE_REMEDIATION inspect: cd ".*/install"' /tmp/self-upgrade-dirty-read.err
+grep -q 'LAST_STACK_ROUTINE_REMEDIATION clean-upgrade:' /tmp/self-upgrade-dirty-read.err
+grep -q 'LAST_STACK_ROUTINE_REMEDIATION dirty-tree:' /tmp/self-upgrade-dirty-read.err
+git -C "$tmp/install" checkout -- README.md
+
 # --- routine-read defers when self-upgrade cannot fetch and install stays stale ---
 cp "$tmp/install/bin/last-stack-self-upgrade" "$tmp/install/bin/last-stack-self-upgrade.real"
 cat >"$tmp/install/bin/last-stack-self-upgrade" <<'EOF'

@@ -32,12 +32,16 @@ stale_fail() {
   stale_status="$1"
   detail="${2:-}"
   echo "LAST_STACK_ROUTINE_STALE $stale_status" >&2
+  echo "LAST_STACK_ROUTINE_CONTEXT routine=$routine root=$ROOT" >&2
   if [ -n "$detail" ]; then
+    echo "LAST_STACK_ROUTINE_DETAIL_BEGIN" >&2
     echo "$detail" >&2
+    echo "LAST_STACK_ROUTINE_DETAIL_END" >&2
   fi
-  echo "If the install is clean, run: \"$ROOT/bin/last-stack-self-upgrade\"" >&2
-  echo "Or: cd \"$ROOT\" && git pull --ff-only && ./setup" >&2
-  echo "If dirty, develop in a separate clone — never leave edits in the install dir." >&2
+  echo "LAST_STACK_ROUTINE_REMEDIATION inspect: cd \"$ROOT\" && git status --short --untracked-files=no && git remote -v" >&2
+  echo "LAST_STACK_ROUTINE_REMEDIATION clean-upgrade: \"$ROOT/bin/last-stack-self-upgrade\"" >&2
+  echo "LAST_STACK_ROUTINE_REMEDIATION manual-ff: cd \"$ROOT\" && git pull --ff-only && ./setup" >&2
+  echo "LAST_STACK_ROUTINE_REMEDIATION dirty-tree: move edits to a separate clone/worktree, then retry" >&2
   exit 78
 }
 
