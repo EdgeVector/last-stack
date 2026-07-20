@@ -261,7 +261,9 @@ back to `todo` (or `pending_rollback=` in memory) per transport rules below.
   exit. The next scheduled fire can retry after the install is current.
 - Follow the **kanban-agent** skill, **WORK mode**, yourself — that skill is the
   source of truth for the per-card lifecycle. This prompt is selection + the
-  no-spawn execution contract.
+  no-spawn execution contract. If the active Codex skill registry does not
+  expose `kanban-agent`, read `skills/kanban-agent/SKILL.md` from the resolved
+  `last-stack` checkout and follow that canonical source directly.
 - **Forge-hosted repos:** `gh` only works for github.com remotes. If a card's
   repo has its `origin` on a self-hosted forge (Forgejo/Gitea/GitLab, often on
   localhost), use that forge's API for PR create/merge/status — check the
