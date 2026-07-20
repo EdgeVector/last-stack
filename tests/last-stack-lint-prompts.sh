@@ -355,6 +355,16 @@ grep -q 'Promote only a `Kind: pr` terminal harness to default' "$program_driver
 grep -q 'exits `126`' "$program_driver"
 grep -q 'executable-mode drift' "$program_driver"
 grep -q 'test -x "$last_stack/bin/last-stack-north-star-completion-check"' "$program_driver"
+grep -q 'file or upsert it with `--column backlog`' "$program_driver"
+grep -q 'never preserve/reapply `todo`' "$program_driver"
+
+groom_board="$ROOT/routines/groom-board.md"
+grep -q 'Promote EVERY ready PR card backlog' "$groom_board"
+grep -q 'a card is ready when it is' "$groom_board"
+grep -q '`Kind: pr`' "$groom_board"
+grep -q 'Non-PR `Kind: tracker|validation|meta` cards are not pickup work' "$groom_board"
+grep -q 'keep pending valid ones in `backlog`' "$groom_board"
+grep -q 'Never promote non-PR validation or terminal proof cards into default `todo`' "$groom_board"
 
 north_star_hygiene="$ROOT/routines/north-star-hygiene.md"
 grep -q 'Do not stock pickup `todo`' "$north_star_hygiene"
