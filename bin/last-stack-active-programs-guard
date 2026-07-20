@@ -71,6 +71,10 @@ ACTIVE_CUE_RE = re.compile(
     r"\b(next move|live|first todo|todo|doing|in-flight|in flight|ready|current)\b",
     re.IGNORECASE,
 )
+MISSING_LIVE_CLAIM_RE = re.compile(
+    r"\b(todo|ready|current|frontier|terminal\s+frontier|pickup-ready|pickup\s+ready)\b",
+    re.IGNORECASE,
+)
 
 
 def read_text(path: str) -> str:
@@ -387,7 +391,23 @@ def section_cue(section: str, slugs: set[str]) -> str:
     return "section has active/live wording"
 
 
-def suggested_fix(state: str, stale_refs: list[str], held_refs: list[str], live_refs: list[str]) -> str:
+def claims_missing_live_card(section: str, slug: str) -> bool:
+    for line in section.splitlines():
+        stripped = line.strip()
+        if slug in stripped and MISSING_LIVE_CLAIM_RE.search(stripped):
+            return True
+    return False
+
+
+def suggested_fix(
+    state: str,
+    stale_refs: list[str],
+    held_refs: list[str],
+    live_refs: list[str],
+    missing_live_refs: list[str],
+) -> str:
+    if missing_live_refs and not stale_refs and not held_refs and not live_refs:
+        return "clear stale frontier prose or file/promote the named card"
     if state == "drained":
         return "archive done row or clear stale next move"
     if held_refs and not stale_refs:
@@ -468,6 +488,7 @@ def stale_report(
         stale_refs: list[str] = list(proven_programs)
         held_refs: list[str] = []
         unknown_refs: list[str] = []
+        missing_live_refs: list[str] = []
         table_mismatches: list[str] = []
         table_claims = table_column_claims(section)
         for slug in sorted(ref_sources):
@@ -491,19 +512,23 @@ def stale_report(
                 stale_refs.append(f"{slug} (gone, proof)")
             elif column is None and "rollup" in ref_sources[slug]:
                 stale_refs.append(f"{slug} (gone)")
+            elif column is None and claims_missing_live_card(section, slug):
+                missing_live_refs.append(f"{slug} (claimed live, absent)")
             elif column is None:
                 unknown_refs.append(f"{slug} (gone?)")
             else:
                 unknown_refs.append(f"{slug} ({column})")
 
-        if not stale_refs and not held_refs and not table_mismatches:
+        if not stale_refs and not held_refs and not table_mismatches and not missing_live_refs:
             continue
 
         state = "mixed"
-        if stale_refs and not live_refs and not unknown_refs and not held_refs:
+        if stale_refs and not live_refs and not unknown_refs and not held_refs and not missing_live_refs:
             state = "drained"
-        elif held_refs and not live_refs and not unknown_refs and not stale_refs:
+        elif held_refs and not live_refs and not unknown_refs and not stale_refs and not missing_live_refs:
             state = "held"
+        elif missing_live_refs and not live_refs and not unknown_refs and not stale_refs and not held_refs:
+            state = "missing-live"
         program = sorted(program_slugs(section))
         prefix = f"{title}"
         if program:
@@ -516,9 +541,10 @@ def stale_report(
                 f"stale: {', '.join(stale_refs)}" if stale_refs else "",
                 f"table-mismatch: {', '.join(table_mismatches)}" if table_mismatches else "",
                 f"held: {', '.join(held_refs)}" if held_refs else "",
+                f"missing-live: {', '.join(missing_live_refs)}" if missing_live_refs else "",
                 f"live: {', '.join(live_refs)}" if live_refs else "",
                 f"unknown: {', '.join(unknown_refs)}" if unknown_refs else "",
-                f"suggested fix: {suggested_fix(state, stale_refs, held_refs, live_refs)}",
+                f"suggested fix: {suggested_fix(state, stale_refs, held_refs, live_refs, missing_live_refs)}",
             ]
             if part
         )

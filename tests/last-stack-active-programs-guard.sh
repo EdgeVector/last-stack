@@ -148,6 +148,19 @@ grep -q 'Drained stale program.*drained.*done-card (done).*gone-card (gone, proo
 grep -q 'Mixed active program.*mixed.*mixed-done-card (done).*live-card (doing)' "$tmp/program-stale-report"
 cmp "$tmp/program-stale-before" "$after"
 
+cat > "$tmp/empty-board.json" <<'EOF_EMPTY_BOARD'
+[]
+EOF_EMPTY_BOARD
+cat > "$after" <<'EOF_MISSING_LIVE'
+## Program: stale-frontier-program — Stale pickup frontier program
+**program-slug:** `[[stale-frontier-program]]`
+Current terminal frontier is `stale-terminal-verification` in todo and ready for pickup.
+EOF_MISSING_LIVE
+"$ROOT/bin/last-stack-active-programs-guard" stale-report \
+  --active "$after" \
+  --board "$tmp/empty-board.json" > "$tmp/missing-live-report"
+grep -q 'Stale pickup frontier program.*missing-live.*cue: Current terminal frontier is.*missing-live: stale-terminal-verification (claimed live, absent).*suggested fix: clear stale frontier prose or file/promote the named card' "$tmp/missing-live-report"
+
 head -n 7 "$before" > "$after"
 if "$ROOT/bin/last-stack-active-programs-guard" check "$before" "$after" >/dev/null 2>"$tmp/err"; then
   echo "expected truncated rewrite to fail" >&2
