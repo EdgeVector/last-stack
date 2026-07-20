@@ -6,6 +6,7 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
 ROUTINES_HOME="${ROUTINES_HOME:-$HOME/.routines}"
 REGISTRY_DIR="$ROUTINES_HOME/registry"
 PROMPT_PATH="$ROOT/routines/kanban-pickup.md"
+BOOTSTRAP_PROMPT_PATH="$ROUTINES_HOME/prompts/last-stack-kanban-pickup-bootstrap.md"
 WORKERS=6
 DRY_RUN=0
 
@@ -20,6 +21,8 @@ Options:
   --workers <n>       number of workers to configure, 3..6 (default: 6)
   --registry-dir <p>  registry directory (default: $ROUTINES_HOME/registry)
   --prompt-path <p>   kanban-pickup prompt path (default: this checkout)
+  --bootstrap-path <p> freshness bootstrap prompt path
+                       (default: $ROUTINES_HOME/prompts/last-stack-kanban-pickup-bootstrap.md)
   --dry-run           print target paths and contents without writing
   -h, --help          show this help
 USAGE
@@ -51,6 +54,14 @@ while [ "$#" -gt 0 ]; do
       PROMPT_PATH="${1#*=}"
       shift
       ;;
+    --bootstrap-path)
+      BOOTSTRAP_PROMPT_PATH="$2"
+      shift 2
+      ;;
+    --bootstrap-path=*)
+      BOOTSTRAP_PROMPT_PATH="${1#*=}"
+      shift
+      ;;
     --dry-run)
       DRY_RUN=1
       shift
@@ -79,6 +90,57 @@ if [ ! -r "$PROMPT_PATH" ]; then
   echo "prompt path is not readable: $PROMPT_PATH" >&2
   exit 66
 fi
+
+bootstrap_content() {
+  cat <<EOF
+# Kanban Pickup Freshness Bootstrap
+
+This scheduled routine prompt is intentionally small and stable. It prevents
+routinesd from dispatching an old embedded kanban-pickup body after a Last Stack
+routine fix has merged.
+
+After any required outer AGENTS/Situations preflight, and before any board read,
+card claim, idle action, or shared system mutation, run:
+
+\`\`\`bash
+last_stack="\${LAST_STACK_ROOT:-\$HOME/.last-stack}"
+"\$last_stack/bin/last-stack-routine-read" kanban-pickup
+\`\`\`
+
+If that command exits 0, treat its stdout as the authoritative prompt for this
+run and follow it completely. The fallback source prompt path used when this
+bootstrap was written was:
+
+\`\`\`
+$PROMPT_PATH
+\`\`\`
+
+If the reader exits nonzero, do not claim a card and do not enter idle mode.
+Append the normal kanban-pickup heartbeat as:
+\`noop stale-last-stack-install routine-read-failed no_card_claimed\`
+and print the final machine trailer:
+\`ROUTINE_RESULT outcome=noop detail=stale-last-stack-install routine-read-failed no_card_claimed\`.
+EOF
+}
+
+write_bootstrap_prompt() {
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '%s\n' "--- $BOOTSTRAP_PROMPT_PATH"
+    bootstrap_content
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$BOOTSTRAP_PROMPT_PATH")"
+  tmp="$(mktemp "${TMPDIR:-/tmp}/last-stack-pickup-bootstrap.XXXXXX")"
+  bootstrap_content >"$tmp"
+  if [ -f "$BOOTSTRAP_PROMPT_PATH" ] && cmp -s "$tmp" "$BOOTSTRAP_PROMPT_PATH"; then
+    rm -f "$tmp"
+    printf 'unchanged %s\n' "$BOOTSTRAP_PROMPT_PATH"
+  else
+    mv "$tmp" "$BOOTSTRAP_PROMPT_PATH"
+    printf 'wrote %s\n' "$BOOTSTRAP_PROMPT_PATH"
+  fi
+}
 
 # Preserve the established 3-worker anchors (w1 at :00, w2 at :05, w3 at :10).
 # Additional workers fill the half-steps between them so the fleet drains faster
@@ -144,7 +206,8 @@ write_worker() {
     printf 'status = "active"\n'
     printf 'timeout_min = 45\n'
     printf '# Cap: one WORK unit per fire; capacity comes from separate registry workers, not SpawnAgent fan-out.\n'
-    printf 'prompt_path = "%s"\n' "$PROMPT_PATH"
+    printf '# Prompt path is a freshness bootstrap; it delegates through last-stack-routine-read before claim.\n'
+    printf 'prompt_path = "%s"\n' "$BOOTSTRAP_PROMPT_PATH"
   } | if [ "$DRY_RUN" -eq 1 ]; then
     cat
   else
@@ -160,6 +223,8 @@ write_worker() {
     fi
   fi
 }
+
+write_bootstrap_prompt
 
 n=1
 while [ "$n" -le "$WORKERS" ]; do
