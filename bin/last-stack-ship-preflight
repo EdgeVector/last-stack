@@ -3,8 +3,15 @@
 # Exit 0 = OK to walk away (with caveats printed). Exit 1 = hard fail reason.
 set -euo pipefail
 
-script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
-if [ -z "${LAST_STACK_ROOT+x}" ]; then
+# Resolve through symlinks so ~/.local/bin/foo → ~/.last-stack/bin/foo
+_src="${BASH_SOURCE[0]:-$0}"
+while [ -L "$_src" ]; do
+  _dir="$(CDPATH= cd -- "$(dirname -- "$_src")" && pwd -P)"
+  _src="$(readlink "$_src")"
+  case "$_src" in /*) ;; *) _src="$_dir/$_src" ;; esac
+done
+script_dir="$(CDPATH= cd -- "$(dirname -- "$_src")" && pwd -P)"
+if [ -z "${LAST_STACK_ROOT+x}" ] || [ ! -x "${LAST_STACK_ROOT}/bin/last-stack-routine-read" ]; then
   LAST_STACK_ROOT="$(CDPATH= cd -- "$script_dir/.." && pwd -P)"
   export LAST_STACK_ROOT
 fi
