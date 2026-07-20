@@ -1,0 +1,599 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+last_stack="${LAST_STACK_ROOT:-$ROOT}"
+if [ -f "$last_stack/bin/last-stack-shell-prelude" ]; then
+  # shellcheck disable=SC1091
+  . "$last_stack/bin/last-stack-shell-prelude"
+fi
+
+dry_run=0
+skip_preflight=0
+board_json=""
+now_iso=""
+mem="${CARD_REAPER_MEMORY:-$HOME/.routines/memory/last-stack-card-reaper/memory.md}"
+run_dir="${ROUTINES_RUN_DIR:-${CARD_REAPER_RUN_DIR:-}}"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dry-run) dry_run=1; shift ;;
+    --skip-preflight) skip_preflight=1; shift ;;
+    --board-json) board_json="$2"; shift 2 ;;
+    --board-json=*) board_json="${1#*=}"; shift ;;
+    --memory) mem="$2"; shift 2 ;;
+    --memory=*) mem="${1#*=}"; shift ;;
+    --now) now_iso="$2"; shift 2 ;;
+    --now=*) now_iso="${1#*=}"; shift ;;
+    -h|--help)
+      cat <<'EOF'
+usage: last-stack-card-reaper-run [--dry-run] [--board-json PATH] [--skip-preflight]
+
+Enforce card staleness SLAs for the scheduled last-stack-card-reaper routine.
+EOF
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [ -z "$run_dir" ]; then
+  run_dir="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-card-reaper.XXXXXX")"
+fi
+scratch="$run_dir/scratch"
+mkdir -p "$scratch" "$(dirname "$mem")" 2>/dev/null || true
+
+if [ -z "$now_iso" ]; then
+  now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+fi
+
+export DRIVEN_BY="${DRIVEN_BY:-routine}"
+export AUTOMATION_ID="${AUTOMATION_ID:-last-stack-card-reaper}"
+export LASTGIT_ACTOR="${LASTGIT_ACTOR:-routine:last-stack-card-reaper}"
+export ROUTINES_RUN_ID="${ROUTINES_RUN_ID:-$(basename "$run_dir")}"
+
+run_status="ok"
+flagged=()
+report=()
+live=0
+killed_backlog=0
+killed_todo=0
+killed_doing=0
+rolled_back=0
+salvaged=0
+exempt_needs_human=0
+memory_unwritable=0
+
+heartbeat() {
+  local st="$1"
+  local flags="none"
+  if [ "${#flagged[@]}" -gt 0 ]; then
+    flags="$(IFS=,; echo "${flagged[*]}")"
+  fi
+  if [ "$memory_unwritable" = "1" ]; then
+    if [ "$flags" = "none" ]; then
+      flags="memory_unwritable=$mem"
+    else
+      flags="$flags,memory_unwritable=$mem"
+    fi
+  fi
+  printf 'card-reaper %s %s live=%s killed=<backlog=%s,todo=%s,doing=%s> rolled_back=%s salvaged=%s exempt_needs_human=%s flagged=%s\n' \
+    "$now_iso" "$st" "$live" "$killed_backlog" "$killed_todo" "$killed_doing" \
+    "$rolled_back" "$salvaged" "$exempt_needs_human" "$flags"
+}
+
+finish() {
+  local st="$1"
+  if [ "${#report[@]}" -gt 0 ]; then
+    printf '%s\n' "${report[@]}"
+  fi
+  heartbeat "$st"
+}
+
+if [ "$skip_preflight" -ne 1 ]; then
+  brain get sop-routine-shared-contract --type sop >/dev/null 2>"$scratch/brain_contract.err" || true
+
+  situations_cmd=()
+  if command -v situations >/dev/null 2>&1; then
+    situations_cmd=(situations)
+  elif [ -d /Users/tomtang/code/edgevector/situations ]; then
+    situations_cmd=(bun --cwd /Users/tomtang/code/edgevector/situations src/cli.ts)
+  elif [ -d /Users/tomtang/code/edgevector/fsituations ]; then
+    situations_cmd=(bun --cwd /Users/tomtang/code/edgevector/fsituations src/cli.ts)
+  fi
+
+  if [ "${#situations_cmd[@]}" -eq 0 ]; then
+    flagged+=(situations-unavailable)
+  elif ! "${situations_cmd[@]}" list --json >"$scratch/situations.json" 2>"$scratch/situations.err"; then
+    flagged+=(situations-list-failed)
+    finish noop
+    exit 0
+  else
+    "${situations_cmd[@]}" notices --since 1h >"$scratch/notices.txt" 2>"$scratch/notices.err" || true
+    node - "$scratch/situations.json" "$scratch/situation_block.txt" <<'NODE'
+const fs = require("fs");
+const input = process.argv[2];
+const output = process.argv[3];
+let data;
+try { data = JSON.parse(fs.readFileSync(input, "utf8")); } catch { data = null; }
+const arr = Array.isArray(data) ? data
+  : Array.isArray(data?.situations) ? data.situations
+  : Array.isArray(data?.items) ? data.items
+  : [];
+const blocking = arr.find((s) => {
+  const state = String(s.status || s.state || "").toLowerCase();
+  const text = JSON.stringify(s).toLowerCase();
+  const active = !["closed", "resolved", "inactive", "done"].includes(state);
+  return active && (
+    text.includes("freeze") ||
+    text.includes("board mutation") ||
+    text.includes("board mutations") ||
+    text.includes("kanban mutation") ||
+    text.includes("kanban mutations")
+  );
+});
+if (blocking) fs.writeFileSync(output, String(blocking.slug || blocking.id || "unknown"));
+NODE
+    if [ -s "$scratch/situation_block.txt" ]; then
+      flagged+=("situation-freeze:$(cat "$scratch/situation_block.txt")")
+      finish noop
+      exit 0
+    fi
+  fi
+fi
+
+if [ -n "$board_json" ]; then
+  cp "$board_json" "$scratch/board.json"
+elif ! kanban list --json >"$scratch/board.json" 2>"$scratch/board.err"; then
+  err="$(cat "$scratch/board.err" 2>/dev/null || true)"
+  case "$err" in
+    *service_timeout*|*"node did not respond"*|*"too many concurrent reads"*|*"missing socket"*|*"No such file or directory"*folddb.sock*)
+      flagged+=(busy-node)
+      finish noop
+      exit 0
+      ;;
+    *)
+      flagged+=(board-read-failed)
+      finish error
+      exit 0
+      ;;
+  esac
+fi
+
+node - "$scratch/board.json" "$scratch/result.json" "$scratch" "$mem" "$now_iso" "$last_stack" "$dry_run" <<'NODE'
+const fs = require("fs");
+const path = require("path");
+const cp = require("child_process");
+
+const boardPath = process.argv[2];
+const resultPath = process.argv[3];
+const mem = process.argv[5];
+const iso = process.argv[6];
+const lastStack = process.argv[7];
+const dryRun = process.argv[8] === "1";
+const nowMs = Date.parse(iso);
+const home = process.env.HOME || "";
+const edgevectorRoot = process.env.LAST_STACK_EDGEVECTOR_ROOT || path.join(home, "code", "edgevector");
+const worktreeRoot = path.join(home, ".fkanban", "worktrees");
+const runId = process.env.ROUTINES_RUN_ID || "unknown";
+const env = {
+  ...process.env,
+  DRIVEN_BY: process.env.DRIVEN_BY || "routine",
+  AUTOMATION_ID: process.env.AUTOMATION_ID || "last-stack-card-reaper",
+  LASTGIT_ACTOR: process.env.LASTGIT_ACTOR || "routine:last-stack-card-reaper",
+};
+const res = {
+  status: "ok",
+  live: 0,
+  killed: {backlog: 0, todo: 0, doing: 0},
+  rolled_back: 0,
+  salvaged: 0,
+  exempt_needs_human: 0,
+  flagged: [],
+  report: [],
+  memory_unwritable: false,
+};
+
+function writeResult() {
+  fs.writeFileSync(resultPath, JSON.stringify(res, null, 2));
+}
+
+function run(cmd, args, opts = {}) {
+  const out = cp.spawnSync(cmd, args, {
+    encoding: "utf8",
+    timeout: opts.timeout || 120000,
+    cwd: opts.cwd || undefined,
+    env,
+    input: opts.input,
+    maxBuffer: 20 * 1024 * 1024,
+  });
+  return {
+    ok: out.status === 0,
+    status: out.status,
+    signal: out.signal,
+    stdout: out.stdout || "",
+    stderr: out.stderr || "",
+    error: out.error ? String(out.error) : "",
+  };
+}
+
+function appendMemory(line) {
+  if (dryRun) return;
+  try {
+    fs.mkdirSync(path.dirname(mem), {recursive: true});
+    fs.appendFileSync(mem, `${line}\n`);
+  } catch {
+    res.memory_unwritable = true;
+  }
+}
+
+function parseBoard(raw) {
+  const data = JSON.parse(raw);
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data.cards)) return data.cards;
+  if (Array.isArray(data.items)) return data.items;
+  if (Array.isArray(data.board?.cards)) return data.board.cards;
+  return [];
+}
+
+function dateMs(s) {
+  const t = Date.parse(s || "");
+  return Number.isFinite(t) ? t : NaN;
+}
+
+function ageHours(card) {
+  const t = dateMs(card.created_at || card.createdAt || card.created);
+  return Number.isFinite(t) ? (nowMs - t) / 36e5 : 0;
+}
+
+function branchOf(card) {
+  return card.branch || card.git_branch || card.work_branch || "";
+}
+
+function worktreePath(slug) {
+  return path.join(worktreeRoot, String(slug));
+}
+
+function repoPath(card) {
+  const repo = String(card.repo || card.repository || "").trim();
+  if (!repo) return "";
+  const name = repo.includes("/") ? repo.split("/").pop() : repo;
+  const candidate = path.join(edgevectorRoot, name);
+  return fs.existsSync(candidate) ? candidate : "";
+}
+
+function isNeedsHuman(card) {
+  const bs = String(card.block_status || card.blockStatus || "").toLowerCase();
+  const br = String(card.block_reason || card.blockReason || "").toLowerCase();
+  return bs.includes("needs_human") || br.includes("needs_human") || br.includes("needs human");
+}
+
+function openPrSignal(card) {
+  return Boolean(String(card.pr_url || card.prUrl || card.pr || "").trim());
+}
+
+function branchHasRecentCommit(card, hours) {
+  const branch = branchOf(card);
+  if (!branch) return false;
+  const wt = worktreePath(card.slug);
+  const cwd = fs.existsSync(wt) ? wt : repoPath(card);
+  if (!cwd) return false;
+  const since = new Date(nowMs - hours * 36e5).toISOString();
+  const out = run("git", ["log", branch, "--since", since, "--format=%H", "-n", "1"], {cwd, timeout: 30000});
+  return out.ok && out.stdout.trim().length > 0;
+}
+
+function hasLiveProcess(wt) {
+  if (!fs.existsSync(wt)) return false;
+  const out = run("lsof", ["+D", wt], {timeout: 30000});
+  return out.ok && out.stdout.trim().length > 0;
+}
+
+function newestMtimeMs(dir) {
+  let newest = 0;
+  function walk(p, depth = 0) {
+    if (depth > 12) return;
+    let entries;
+    try { entries = fs.readdirSync(p, {withFileTypes: true}); } catch { return; }
+    for (const e of entries) {
+      if ([".git", "node_modules", ".next", "dist", "build"].includes(e.name)) continue;
+      const fp = path.join(p, e.name);
+      let st;
+      try { st = fs.lstatSync(fp); } catch { continue; }
+      if (st.mtimeMs > newest) newest = st.mtimeMs;
+      if (e.isDirectory() && !e.isSymbolicLink()) walk(fp, depth + 1);
+    }
+  }
+  walk(dir);
+  return newest;
+}
+
+function isDirtyWorktree(wt) {
+  if (!fs.existsSync(wt)) return false;
+  const out = run("git", ["-C", wt, "status", "--short"], {timeout: 30000});
+  return out.ok && out.stdout.trim().length > 0;
+}
+
+function hasProgressSignal(card, hours) {
+  return openPrSignal(card) || branchHasRecentCommit(card, hours);
+}
+
+function depsActive(card, cards) {
+  const deps = Array.isArray(card.deps) ? card.deps : [];
+  if (!deps.length) return false;
+  const depSet = new Set(deps.map(String));
+  return cards.some((c) => depSet.has(String(c.slug)) &&
+    String(c.column || "").toLowerCase() === "doing" &&
+    hasProgressSignal(c, 1));
+}
+
+function getFullBody(slug) {
+  const out = run("kanban", ["show", slug, "--json"], {timeout: 60000});
+  if (!out.ok) throw new Error(`kanban show failed for ${slug}: ${out.stderr || out.error}`);
+  const data = JSON.parse(out.stdout);
+  return String(data.body || data.card?.body || "");
+}
+
+function readdBody(slug, body, opts = {}) {
+  if (dryRun) return;
+  const args = ["add", slug];
+  if (opts.clearAssignee) args.push("--assignee", "");
+  const out = run("kanban", args, {timeout: 60000, input: body});
+  if (!out.ok) throw new Error(`kanban add failed for ${slug}: ${out.stderr || out.error}`);
+}
+
+function rmCard(slug) {
+  if (dryRun) return;
+  const out = run("kanban", ["rm", slug], {timeout: 60000});
+  if (!out.ok) throw new Error(`kanban rm failed for ${slug}: ${out.stderr || out.error}`);
+}
+
+function moveTodo(card) {
+  if (dryRun) return;
+  const slug = String(card.slug);
+  const args = ["move", slug, "todo"];
+  if (card.block_status || card.blockStatus || (Array.isArray(card.deps) && card.deps.length)) {
+    args.push("--force");
+  }
+  const out = run("kanban", args, {timeout: 60000});
+  if (!out.ok) throw new Error(`kanban move failed for ${slug}: ${out.stderr || out.error}`);
+}
+
+function removeWorktree(wt) {
+  if (dryRun || !fs.existsSync(wt)) return;
+  const out = run("git", ["-C", wt, "worktree", "remove", wt], {timeout: 60000});
+  if (!out.ok) res.flagged.push(`worktree-remove-failed:${path.basename(wt)}`);
+}
+
+function reapNote(rule) {
+  return `\n\n## CARD REAP ${iso}\nRule: ${rule}\nRecovery: soft-deleted; recreate via program-driver or restore this body.\n`;
+}
+
+function rollbackNote(rule) {
+  return `\n\n## CARD REAP ${iso}\nRule: ${rule}\nAction: stale in-flight state stripped; rolled back to todo for pickup.\n`;
+}
+
+function salvageNote(branch) {
+  return `\n\n## PARKED-WORK SALVAGE ${iso}\nBranch pushed: ${branch || "unknown"}\nNext worker: resume from that branch; do not restart from main.\n`;
+}
+
+function salvage(slug, card) {
+  const wt = worktreePath(slug);
+  if (!fs.existsSync(wt)) return {ok: true, did: false};
+  if (hasLiveProcess(wt)) {
+    res.flagged.push(`salvage-deferred:${slug}`);
+    return {ok: false, did: false};
+  }
+  const newest = newestMtimeMs(wt);
+  if (newest && (nowMs - newest) < 60 * 60 * 1000) {
+    res.flagged.push(`salvage-deferred:${slug}`);
+    return {ok: false, did: false};
+  }
+  if (!isDirtyWorktree(wt)) return {ok: true, did: false};
+  if (res.salvaged >= 3) {
+    res.flagged.push(`salvage-capped:${slug}`);
+    return {ok: false, did: false};
+  }
+  if (dryRun) {
+    res.flagged.push(`dry-run-salvage:${slug}`);
+    return {ok: false, did: false};
+  }
+  const add = run("git", ["-C", wt, "add", "-A"], {timeout: 60000});
+  if (!add.ok) {
+    res.flagged.push(`salvage-failed:${slug}`);
+    return {ok: false, did: false};
+  }
+  const msg = `salvage: parked work from dead worker (card ${slug})\n\nDriven-By: routine\nAutomation-Id: last-stack-card-reaper\nRun-Id: ${runId}`;
+  let commit = run(path.join(lastStack, "bin", "last-stack-git-commit"), ["-C", wt, "-m", msg], {timeout: 120000});
+  if (!commit.ok && (commit.error.includes("ENOENT") || commit.stderr.includes("No such file"))) {
+    commit = run("git", ["-C", wt, "commit", "-m", msg], {timeout: 120000});
+  }
+  if (!commit.ok) {
+    res.flagged.push(`salvage-failed:${slug}`);
+    return {ok: false, did: false};
+  }
+  const branch = branchOf(card) || run("git", ["-C", wt, "branch", "--show-current"], {timeout: 30000}).stdout.trim();
+  const push = run("git", ["-C", wt, "push", "origin", `HEAD:${branch}`], {timeout: 360000});
+  if (!push.ok) {
+    res.flagged.push(`salvage-failed:${slug}`);
+    return {ok: false, did: false};
+  }
+  res.salvaged++;
+  return {ok: true, did: true, branch};
+}
+
+function killCard(card, rule, col) {
+  const slug = String(card.slug);
+  const wt = worktreePath(slug);
+  if (fs.existsSync(wt) && isDirtyWorktree(wt)) {
+    const s = salvage(slug, card);
+    if (!s.ok) return false;
+  }
+  const body = dryRun ? String(card.body || "") : getFullBody(slug);
+  readdBody(slug, body + reapNote(rule));
+  rmCard(slug);
+  if (col === "backlog") res.killed.backlog++;
+  else if (col === "todo") res.killed.todo++;
+  else if (col === "doing") res.killed.doing++;
+  appendMemory(`${iso} killed ${slug} rule=${rule}`);
+  if (fs.existsSync(wt) && !isDirtyWorktree(wt)) removeWorktree(wt);
+  res.report.push(`${dryRun ? "would_kill" : "killed"} ${slug}: ${rule}`);
+  return true;
+}
+
+function rollbackDoing(card, rule) {
+  const slug = String(card.slug);
+  const wt = worktreePath(slug);
+  if (fs.existsSync(wt) && isDirtyWorktree(wt)) {
+    const s = salvage(slug, card);
+    if (!s.ok) return false;
+    const body0 = dryRun ? String(card.body || "") : getFullBody(slug);
+    readdBody(slug, body0 + salvageNote(s.branch));
+  }
+  const body = dryRun ? String(card.body || "") : getFullBody(slug);
+  readdBody(slug, body + rollbackNote(rule), {clearAssignee: true});
+  moveTodo(card);
+  if (fs.existsSync(wt) && !isDirtyWorktree(wt)) removeWorktree(wt);
+  res.rolled_back++;
+  appendMemory(`${iso} rolled_back ${slug} rule=${rule}`);
+  res.report.push(`${dryRun ? "would_roll_back" : "rolled_back"} ${slug}: ${rule}`);
+  return true;
+}
+
+let cards = [];
+try {
+  cards = parseBoard(fs.readFileSync(boardPath, "utf8"));
+} catch {
+  res.status = "error";
+  res.flagged.push("board-json-parse-failed");
+  writeResult();
+  process.exit(0);
+}
+
+res.live = cards.filter((c) => String(c.column || "").toLowerCase() !== "done").length;
+const byOrder = cards.filter((c) => c && c.slug)
+  .sort((a, b) => dateMs(a.created_at || a.createdAt) - dateMs(b.created_at || b.createdAt));
+let actions = 0;
+
+try {
+  for (const card of byOrder.filter((c) => String(c.column || "").toLowerCase() === "doing")) {
+    if (actions >= 10) {
+      res.flagged.push(`reap-capped:${Math.max(0, byOrder.length - actions)}`);
+      break;
+    }
+    const slug = String(card.slug);
+    if (isNeedsHuman(card)) {
+      if (ageHours(card) > 168) {
+        res.exempt_needs_human++;
+        res.flagged.push(`needs-human-aging:${slug}`);
+      }
+      continue;
+    }
+    if (openPrSignal(card)) continue;
+    if (depsActive(card, cards)) {
+      res.flagged.push(`active-dependent:${slug}`);
+      continue;
+    }
+    const wt = worktreePath(slug);
+    const dead = !hasProgressSignal(card, 1) && !hasLiveProcess(wt);
+    const hrs = ageHours(card);
+    let memText = "";
+    try { if (fs.existsSync(mem)) memText = fs.readFileSync(mem, "utf8"); } catch { res.memory_unwritable = true; }
+    const churn = memText.includes(`rolled_back ${slug}`);
+    if (dead && (hrs >= 24 || churn)) {
+      const rule = churn ? `doing churn after prior rollback; age=${hrs.toFixed(1)}h` : `doing squatter >24h; age=${hrs.toFixed(1)}h`;
+      if (killCard(card, rule, "doing")) actions++;
+    } else if (dead && hrs >= 1) {
+      if (rollbackDoing(card, `doing dead claim >60m; age=${hrs.toFixed(1)}h`)) actions++;
+    }
+  }
+
+  for (const card of byOrder.filter((c) => String(c.column || "").toLowerCase() === "todo")) {
+    if (actions >= 10) {
+      res.flagged.push(`reap-capped:${Math.max(0, byOrder.length - actions)}`);
+      break;
+    }
+    const slug = String(card.slug);
+    if (isNeedsHuman(card)) {
+      if (ageHours(card) > 168) {
+        res.exempt_needs_human++;
+        res.flagged.push(`needs-human-aging:${slug}`);
+      }
+      continue;
+    }
+    if (openPrSignal(card)) continue;
+    if (depsActive(card, cards)) {
+      res.flagged.push(`active-dependent:${slug}`);
+      continue;
+    }
+    const hrs = ageHours(card);
+    if (hrs >= 72 && !hasProgressSignal(card, 72)) {
+      if (killCard(card, `todo stale >72h with no progress; age=${hrs.toFixed(1)}h`, "todo")) actions++;
+    }
+  }
+
+  for (const card of byOrder.filter((c) => String(c.column || "").toLowerCase() === "backlog")) {
+    if (actions >= 10) {
+      res.flagged.push(`reap-capped:${Math.max(0, byOrder.length - actions)}`);
+      break;
+    }
+    const slug = String(card.slug);
+    if (isNeedsHuman(card)) {
+      if (ageHours(card) > 168) {
+        res.exempt_needs_human++;
+        res.flagged.push(`needs-human-aging:${slug}`);
+      }
+      continue;
+    }
+    if (openPrSignal(card)) continue;
+    if (depsActive(card, cards)) {
+      res.flagged.push(`active-dependent:${slug}`);
+      continue;
+    }
+    const hrs = ageHours(card);
+    if (hrs >= 168) {
+      if (killCard(card, `backlog stale >7d; age=${(hrs / 24).toFixed(1)}d`, "backlog")) actions++;
+    }
+  }
+} catch (e) {
+  res.status = "error";
+  res.flagged.push(`exception:${String(e.message || e).replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120)}`);
+}
+
+if (actions === 0 && res.status === "ok") res.status = "noop";
+if (dryRun) res.flagged.push("dry-run");
+writeResult();
+NODE
+
+if [ ! -s "$scratch/result.json" ]; then
+  flagged+=(runner-no-result)
+  finish error
+  exit 0
+fi
+
+eval "$(
+  node - "$scratch/result.json" <<'NODE'
+const fs = require("fs");
+const r = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+function sh(s) { return String(s).replace(/'/g, "'\\''"); }
+console.log(`run_status='${sh(r.status || "ok")}'`);
+console.log(`live='${sh(r.live ?? 0)}'`);
+console.log(`killed_backlog='${sh(r.killed?.backlog ?? 0)}'`);
+console.log(`killed_todo='${sh(r.killed?.todo ?? 0)}'`);
+console.log(`killed_doing='${sh(r.killed?.doing ?? 0)}'`);
+console.log(`rolled_back='${sh(r.rolled_back ?? 0)}'`);
+console.log(`salvaged='${sh(r.salvaged ?? 0)}'`);
+console.log(`exempt_needs_human='${sh(r.exempt_needs_human ?? 0)}'`);
+const flagged = Array.isArray(r.flagged) ? r.flagged : [];
+for (const f of flagged) console.log(`flagged+=( '${sh(f)}' )`);
+if (r.memory_unwritable) console.log("memory_unwritable=1");
+const report = Array.isArray(r.report) ? r.report : [];
+for (const line of report) console.log(`report+=( '${sh(line)}' )`);
+NODE
+)"
+
+finish "$run_status"
+exit 0
