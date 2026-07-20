@@ -53,7 +53,11 @@ run() {
 
 todo_json="$(run "$board_cli" list --column todo --json)"
 
-mapfile -t candidates < <(
+candidates=()
+while IFS= read -r candidate; do
+  [ -n "$candidate" ] || continue
+  candidates+=( "$candidate" )
+done < <(
   printf '%s\n' "$todo_json" | python3 -c '
 import json
 import re
