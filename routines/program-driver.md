@@ -79,6 +79,11 @@ Before promoting idle/P3 papercuts or inventing program slices:
      slice that is not done.
    - If that frontier is in `backlog` and pickup-ready → **promote to `todo`**
      at P0/P1 (ensure tags `feature-ship` + priority).
+   - If the next frontier is terminal proof state (`Kind: validation` / `meta`
+     / `tracker`, or any non-PR `DONE-WHEN` card), keep it parked outside
+     default `todo`; if it drifted into `todo`, run
+     `last-stack-park-terminal-validation-todo` instead of promoting or
+     rewriting it as pickup work.
    - If no frontier PR exists but END STATE is incomplete → file **one**
      PR-sized child (not a tracker) and promote it; update owner CHILDREN.
    - If terminal deps are all done and STATUS is still `driving` → set
