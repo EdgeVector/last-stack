@@ -19,6 +19,12 @@ git -C "$tmp" init --quiet --bare origin.git
 git -C "$repo" remote add origin "$remote"
 git -C "$repo" push --quiet -u origin main
 
+# Existing repo-specific hook behavior must survive the managed prelude.
+mkdir -p "$repo/.git/hooks"
+printf '#!/usr/bin/env bash\nprintf existing-hook-ran >"%s"\n' "$tmp/existing-hook-ran" \
+  > "$repo/.git/hooks/pre-commit"
+chmod +x "$repo/.git/hooks/pre-commit"
+
 cp "$ROOT/bin/last-stack-shared-checkout-guard" "$tmp/bin/last-stack-shared-checkout-guard"
 chmod +x "$tmp/bin/last-stack-shared-checkout-guard"
 LAST_STACK_SHARED_WORKSPACE="$ws" \
@@ -40,6 +46,12 @@ git -C "$repo" worktree add --quiet -b feature/test "$worktree" main
 printf 'isolated\n' >> "$worktree/README.md"
 git -C "$worktree" add README.md
 LAST_STACK_SHARED_WORKSPACE="$ws" git -C "$worktree" commit --quiet -m isolated
+
+printf 'recovery\n' >> "$repo/README.md"
+git -C "$repo" add README.md
+LAST_STACK_SHARED_WORKSPACE="$ws" LAST_STACK_ALLOW_SHARED_CHECKOUT_WRITE=1 \
+  git -C "$repo" commit --quiet -m recovery
+test -f "$tmp/existing-hook-ran"
 
 if LAST_STACK_SHARED_WORKSPACE="$ws" git -C "$repo" push origin main >"$tmp/push.out" 2>&1; then
   echo "expected ambient push to be rejected" >&2
