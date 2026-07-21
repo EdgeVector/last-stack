@@ -34,6 +34,17 @@ spawn/fan-out — sequential only). Prefer correctness; never strand a card in
 `doing` without finishing or rolling it back to `todo`. If a prior run is
 still in-flight (single-flight lock), this fire is skipped.
 
+**Board closeout first (prevents stuck multi-hour `doing`):** immediately after
+CLI preflight, before any claim, run the deterministic closer so already-merged
+handoffs do not block surface-overlap or pollute the factory:
+
+```bash
+"$last_stack/bin/last-stack-board-closeout-sweep" || true
+```
+
+Never heartbeat `in-flight-budget-handoff` with `pr=none` — if no PR/CR URL was
+recorded, roll the card back to `todo` (see wall-clock budget below).
+
 **Run-budget guard (prevents timeout zombies):** immediately after CLI preflight,
 record a local start timestamp:
 ```bash

@@ -109,7 +109,19 @@ read/write, fail loudly if the resolved path is empty or starts with
    `brain get sop-forge-pr-workflow --type sop` (Forgejo) if you need merge
    semantics.
 
-## MANDATORY first — post-merge deploy-pipeline scan
+## MANDATORY first — board closeout (merged PR/CR → done)
+
+After unblocking merges (or even when open count is 0), board claims can still
+sit in `doing` if `kanban-watch` is paused. Always run:
+
+```bash
+"$last_stack/bin/last-stack-board-closeout-sweep" || true
+```
+
+Include `closed=` from that heartbeat when relevant. See
+`routines/board-closeout.md`.
+
+## MANDATORY second — post-merge deploy-pipeline scan
 
 **Do this before treating the wake as quiet/noop.** Open CRs being empty does
 **not** mean the pipeline is healthy.

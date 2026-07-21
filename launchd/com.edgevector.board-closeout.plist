@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.edgevector.board-closeout</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/tomtang/.last-stack/bin/last-stack-board-closeout-sweep</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/tomtang/code/edgevector</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/tomtang</string>
+    <key>USER</key>
+    <string>tomtang</string>
+    <key>PATH</key>
+    <string>/Users/tomtang/.local/bin:/Users/tomtang/.last-stack/bin:/Users/tomtang/.bun/bin:/Users/tomtang/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>LAST_STACK_ROOT</key>
+    <string>/Users/tomtang/.last-stack</string>
+  </dict>
+
+  <!-- Every 15 minutes; StartInterval is simpler than calendar for closeout. -->
+  <key>StartInterval</key>
+  <integer>900</integer>
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>Nice</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/tomtang/Library/Logs/board-closeout.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/tomtang/Library/Logs/board-closeout.err.log</string>
+</dict>
+</plist>

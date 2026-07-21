@@ -1,0 +1,696 @@
+#!/usr/bin/env bash
+# Deterministic board closeout — no LLM.
+#
+# Closes the gap where pickup hands off in-flight PRs into `doing`, then
+# kanban-watch / card-reaper are paused (e.g. low-credit) and merged work
+# sits for hours.
+#
+# Actions (CHEAP, uncapped within --max-actions):
+#   1. doing + pr_url whose PR/CR is MERGED  → last-stack-card-closeout (done)
+#   2. doing, age ≥ grace, no PR, no live worker, no branch commits → move todo
+#
+# Usage:
+#   last-stack-board-closeout-sweep [--dry-run] [--grace-min 60] [--max-actions 50]
+#                                   [--board-cli kanban|fkanban] [--skip-zombie]
+#
+# Exit 0 always after a completed pass (including noop). Exit 2 on usage error.
+# Prints a single heartbeat line:
+#   board-closeout <ISO> ok|noop closed=<n> rolled_back=<n> skipped=<n> flagged=...
+set -euo pipefail
+
+self_dir="$(cd "$(dirname "$0")" && pwd -P)"
+last_stack="$(cd "$self_dir/.." && pwd -P)"
+if [ -f "$last_stack/bin/last-stack-shell-prelude" ]; then
+  # shellcheck disable=SC1091
+  . "$last_stack/bin/last-stack-shell-prelude"
+fi
+
+dry_run=0
+grace_min=60
+max_actions=50
+board_cli=""
+skip_zombie=0
+json_out=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dry-run) dry_run=1; shift ;;
+    --grace-min) grace_min="${2:-}"; shift 2 ;;
+    --grace-min=*) grace_min="${1#*=}"; shift ;;
+    --max-actions) max_actions="${2:-}"; shift 2 ;;
+    --max-actions=*) max_actions="${1#*=}"; shift ;;
+    --board-cli) board_cli="${2:-}"; shift 2 ;;
+    --board-cli=*) board_cli="${1#*=}"; shift ;;
+    --skip-zombie) skip_zombie=1; shift ;;
+    --json) json_out=1; shift ;;
+    -h|--help)
+      sed -n '2,22p' "$0"
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [ -z "$board_cli" ]; then
+  if command -v kanban >/dev/null 2>&1; then board_cli=kanban
+  elif command -v fkanban >/dev/null 2>&1; then board_cli=fkanban
+  else
+    echo "board-closeout: need kanban or fkanban on PATH" >&2
+    exit 2
+  fi
+fi
+
+export BOARD_CLI="$board_cli"
+export LAST_STACK_ROOT="$last_stack"
+export BOARD_CLOSEOUT_DRY_RUN="$dry_run"
+export BOARD_CLOSEOUT_GRACE_MIN="$grace_min"
+export BOARD_CLOSEOUT_MAX_ACTIONS="$max_actions"
+export BOARD_CLOSEOUT_SKIP_ZOMBIE="$skip_zombie"
+export BOARD_CLOSEOUT_JSON="$json_out"
+export PATH="$last_stack/bin:${PATH:-}"
+
+# Prefer node (matches card-reaper); fall back to python3.
+if command -v node >/dev/null 2>&1; then
+  exec node - "$last_stack" <<'NODE'
+const fs = require("fs");
+const path = require("path");
+const cp = require("child_process");
+const os = require("os");
+
+const lastStack = process.argv[2];
+const boardCli = process.env.BOARD_CLI || "kanban";
+const dryRun = process.env.BOARD_CLOSEOUT_DRY_RUN === "1";
+const graceMin = Math.max(1, parseInt(process.env.BOARD_CLOSEOUT_GRACE_MIN || "60", 10) || 60);
+const maxActions = Math.max(1, parseInt(process.env.BOARD_CLOSEOUT_MAX_ACTIONS || "50", 10) || 50);
+const skipZombie = process.env.BOARD_CLOSEOUT_SKIP_ZOMBIE === "1";
+const jsonOut = process.env.BOARD_CLOSEOUT_JSON === "1";
+const nowMs = Date.now();
+const iso = new Date(nowMs).toISOString().replace(/\.\d{3}Z$/, "Z");
+const home = process.env.HOME || os.homedir();
+const worktreeRoots = [
+  path.join(home, ".kanban", "worktrees"),
+  path.join(home, ".fkanban", "worktrees"),
+];
+const forgeApi = path.join(lastStack, "bin", "last-stack-forge-api");
+const closeoutBin = path.join(lastStack, "bin", "last-stack-card-closeout");
+const forgeJsonJq = path.join(lastStack, "bin", "last-stack-forge-json-jq");
+
+const res = {
+  status: "ok",
+  closed: [],
+  rolled_back: [],
+  skipped: [],
+  flagged: [],
+};
+
+function run(cmd, args, opts = {}) {
+  const out = cp.spawnSync(cmd, args, {
+    encoding: "utf8",
+    timeout: opts.timeout || 60000,
+    env: process.env,
+    maxBuffer: 20 * 1024 * 1024,
+  });
+  return {
+    ok: out.status === 0,
+    status: out.status,
+    stdout: out.stdout || "",
+    stderr: out.stderr || "",
+    error: out.error ? String(out.error.message || out.error) : "",
+  };
+}
+
+function stripControls(s) {
+  return String(s || "").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, " ");
+}
+
+function parseJsonLoose(raw) {
+  try {
+    return JSON.parse(stripControls(raw));
+  } catch {
+    return null;
+  }
+}
+
+function listDoing() {
+  // Prefer --all so we don't miss capped previews; fall back to plain column list.
+  let out = run(boardCli, ["list", "--column", "doing", "--json", "--all"], { timeout: 120000 });
+  if (!out.ok) {
+    out = run(boardCli, ["list", "--column", "doing", "--json"], { timeout: 120000 });
+  }
+  if (!out.ok) {
+    const err = `${out.stderr} ${out.error}`;
+    if (/service_timeout|node did not respond|too many concurrent reads|folddb\.sock/i.test(err)) {
+      res.status = "noop";
+      res.flagged.push("busy-node");
+      return null;
+    }
+    res.status = "error";
+    res.flagged.push("board-list-failed");
+    return null;
+  }
+  const data = parseJsonLoose(out.stdout);
+  if (!data) {
+    res.status = "error";
+    res.flagged.push("board-json-parse-failed");
+    return null;
+  }
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data.cards)) return data.cards;
+  if (Array.isArray(data.items)) return data.items;
+  return [];
+}
+
+function ageMs(card) {
+  // Prefer position as doing-since epoch-ms (fkanban sets on column enter).
+  const pos = Number(card.position);
+  if (Number.isFinite(pos) && pos > 1e12) return nowMs - pos;
+  if (Number.isFinite(pos) && pos > 1e9) return nowMs - pos * 1000;
+  const updated = Date.parse(card.updated_at || card.updatedAt || "");
+  if (Number.isFinite(updated)) return nowMs - updated;
+  const created = Date.parse(card.created_at || card.createdAt || "");
+  if (Number.isFinite(created)) return nowMs - created;
+  return 0;
+}
+
+function prUrlOf(card) {
+  return String(card.pr_url || card.prUrl || card.pr || "").trim();
+}
+
+function worktreeFor(slug) {
+  for (const root of worktreeRoots) {
+    const p = path.join(root, slug);
+    if (fs.existsSync(p)) return p;
+  }
+  return "";
+}
+
+function hasLiveWorker(wt) {
+  if (!wt || !fs.existsSync(wt)) return false;
+  // Prefer pgrep on path; lsof +D is slow and noisy.
+  const out = run("ps", ["-ax", "-o", "command="], { timeout: 15000 });
+  if (!out.ok) return false;
+  const needle = wt;
+  return out.stdout.split("\n").some((line) => line.includes(needle) && !/\b(rg|grep)\b/.test(line));
+}
+
+function branchHasCommits(card, wt) {
+  const branch = String(card.branch || "").trim();
+  const cwd = wt && fs.existsSync(wt) ? wt : "";
+  if (!cwd) return Boolean(branch); // unknown: treat as possible WIP if branch named
+  const out = run("git", ["-C", cwd, "rev-list", "--count", "HEAD", "--not", "origin/main", "main", "origin/master", "master"], { timeout: 30000 });
+  // Fallback: commits not on remote tracking if that failed
+  if (!out.ok) {
+    const o2 = run("git", ["-C", cwd, "log", "--oneline", "-1"], { timeout: 15000 });
+    return o2.ok && o2.stdout.trim().length > 0 && Boolean(branch);
+  }
+  // rev-list with multiple --not bases may error; try simpler
+  const simple = run("git", ["-C", cwd, "rev-list", "--count", "origin/main..HEAD"], { timeout: 30000 });
+  if (simple.ok) {
+    const n = parseInt(simple.stdout.trim(), 10);
+    return Number.isFinite(n) && n > 0;
+  }
+  const simple2 = run("git", ["-C", cwd, "rev-list", "--count", "main..HEAD"], { timeout: 30000 });
+  if (simple2.ok) {
+    const n = parseInt(simple2.stdout.trim(), 10);
+    return Number.isFinite(n) && n > 0;
+  }
+  return Boolean(branch);
+}
+
+function classifyPr(url) {
+  if (!url) return { kind: "none" };
+  // lastgit://repo/cr/cr-id or lastgit://repo/cr/cr-id
+  let m = url.match(/^lastgit:\/\/([^/]+)\/cr\/([^/\s?#]+)/i);
+  if (m) return { kind: "lastgit", repo: m[1], id: m[2] };
+  // Forgejo / Gitea: .../Owner/Repo/pulls/N
+  m = url.match(/\/([^/]+)\/([^/]+)\/pulls?\/(\d+)/i);
+  if (m) {
+    // If host looks like github.com, use gh path
+    if (/github\.com/i.test(url)) {
+      return { kind: "github", owner: m[1], repo: m[2], number: m[3] };
+    }
+    return { kind: "forge", owner: m[1], repo: m[2], number: m[3] };
+  }
+  // github.com/owner/repo/pull/N
+  m = url.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/i);
+  if (m) return { kind: "github", owner: m[1], repo: m[2], number: m[3] };
+  return { kind: "unknown", url };
+}
+
+function isMerged(pr) {
+  if (pr.kind === "none") return { merged: false, detail: "no-pr" };
+  if (pr.kind === "forge") {
+    if (!fs.existsSync(forgeApi)) {
+      res.flagged.push("forge-api-missing");
+      return { merged: false, detail: "forge-api-missing" };
+    }
+    const apiPath = `repos/${pr.owner}/${pr.repo}/pulls/${pr.number}`;
+    const out = run(forgeApi, [apiPath], { timeout: 45000 });
+    if (!out.ok) {
+      res.flagged.push(`forge-fetch-failed:${pr.owner}/${pr.repo}#${pr.number}`);
+      return { merged: false, detail: "forge-fetch-failed" };
+    }
+    const d = parseJsonLoose(out.stdout);
+    if (!d) return { merged: false, detail: "forge-parse-failed" };
+    const merged = d.merged === true || String(d.state || "").toLowerCase() === "merged";
+    // closed without merged = not our done path
+    return { merged, detail: merged ? `forge#${pr.number}` : `forge#${pr.number}:${d.state || "open"}` };
+  }
+  if (pr.kind === "lastgit") {
+    const out = run("lastgit", ["cr", "view", pr.repo, pr.id, "--json"], { timeout: 45000 });
+    if (!out.ok) {
+      res.flagged.push(`lastgit-fetch-failed:${pr.repo}/${pr.id}`);
+      return { merged: false, detail: "lastgit-fetch-failed" };
+    }
+    const d = parseJsonLoose(out.stdout);
+    if (!d) return { merged: false, detail: "lastgit-parse-failed" };
+    const cr = d.cr || d.change_request || d;
+    const state = String(cr.state || cr.status || d.state || "").toLowerCase();
+    const mergeOid = cr.merge_oid || cr.mergeOid || d.merge_oid || "";
+    const merged = state === "merged" || Boolean(mergeOid);
+    return { merged, detail: merged ? `lastgit:${pr.id}` : `lastgit:${pr.id}:${state || "open"}` };
+  }
+  if (pr.kind === "github") {
+    const out = run("gh", ["pr", "view", pr.number, "-R", `${pr.owner}/${pr.repo}`, "--json", "state,mergedAt"], { timeout: 45000 });
+    if (!out.ok) {
+      res.flagged.push(`gh-fetch-failed:${pr.owner}/${pr.repo}#${pr.number}`);
+      return { merged: false, detail: "gh-fetch-failed" };
+    }
+    const d = parseJsonLoose(out.stdout);
+    if (!d) return { merged: false, detail: "gh-parse-failed" };
+    const merged = Boolean(d.mergedAt) || String(d.state || "").toUpperCase() === "MERGED";
+    return { merged, detail: merged ? `gh#${pr.number}` : `gh#${pr.number}:${d.state || "OPEN"}` };
+  }
+  res.flagged.push("pr-url-unparsed");
+  return { merged: false, detail: "unparsed" };
+}
+
+function closeCard(slug, prUrl, branch) {
+  if (dryRun) {
+    res.closed.push(slug);
+    return true;
+  }
+  if (!fs.existsSync(closeoutBin)) {
+    // Fallback: direct move
+    const args = ["move", slug, "done", "--force"];
+    const out = run(boardCli, args, { timeout: 60000 });
+    if (!out.ok) {
+      res.flagged.push(`close-failed:${slug}`);
+      return false;
+    }
+    res.closed.push(slug);
+    return true;
+  }
+  const args = [slug, "--board-cli", boardCli];
+  if (prUrl) args.push("--pr-url", prUrl);
+  if (branch) args.push("--branch", branch);
+  const out = run(closeoutBin, args, { timeout: 90000 });
+  if (!out.ok) {
+    res.flagged.push(`close-failed:${slug}`);
+    return false;
+  }
+  res.closed.push(slug);
+  return true;
+}
+
+function rollbackTodo(slug) {
+  if (dryRun) {
+    res.rolled_back.push(slug);
+    return true;
+  }
+  const out = run(boardCli, ["move", slug, "todo", "--force"], { timeout: 60000 });
+  if (!out.ok) {
+    // try without force
+    const out2 = run(boardCli, ["move", slug, "todo"], { timeout: 60000 });
+    if (!out2.ok) {
+      res.flagged.push(`rollback-failed:${slug}`);
+      return false;
+    }
+  }
+  // clear assignee best-effort so pickup can re-claim
+  run(boardCli, ["add", slug, "--assignee", ""], { timeout: 30000 });
+  res.rolled_back.push(slug);
+  return true;
+}
+
+const cards = listDoing();
+if (cards === null) {
+  finish();
+  process.exit(0);
+}
+
+let actions = 0;
+const graceMs = graceMin * 60 * 1000;
+
+for (const card of cards) {
+  if (actions >= maxActions) {
+    res.flagged.push(`action-capped:${cards.length - actions}`);
+    break;
+  }
+  const slug = String(card.slug || "");
+  if (!slug) continue;
+  const url = prUrlOf(card);
+  const branch = String(card.branch || "").trim();
+  const age = ageMs(card);
+  const wt = worktreeFor(slug);
+
+  if (url) {
+    const pr = classifyPr(url);
+    const m = isMerged(pr);
+    if (m.merged) {
+      if (closeCard(slug, url, branch)) actions++;
+      else res.skipped.push(`${slug}:close-failed`);
+      continue;
+    }
+    // Open / unknown PR: leave for watch/merge-babysit. Soft 1h does not reclaim these.
+    res.skipped.push(`${slug}:pr-open-or-unknown`);
+    continue;
+  }
+
+  // No PR — soft zombie reclaim only after grace, never kill live workers / WIP commits.
+  if (skipZombie) {
+    res.skipped.push(`${slug}:no-pr-zombie-skipped`);
+    continue;
+  }
+  if (age < graceMs) {
+    res.skipped.push(`${slug}:young`);
+    continue;
+  }
+  if (hasLiveWorker(wt)) {
+    res.skipped.push(`${slug}:live-worker`);
+    continue;
+  }
+  if (branchHasCommits(card, wt)) {
+    // Pickup contract: never leave doing without a PR/CR after budget.
+    // Roll back to todo so the next fire can reopen/finish the PR; keep worktree.
+    res.flagged.push(`wip-no-pr:${slug}`);
+    if (rollbackTodo(slug)) {
+      actions++;
+      continue;
+    }
+    res.skipped.push(`${slug}:wip-no-pr-rollback-failed`);
+    continue;
+  }
+  if (rollbackTodo(slug)) actions++;
+}
+
+function finish() {
+  const closed = res.closed.length;
+  const rolled = res.rolled_back.length;
+  const skipped = res.skipped.length;
+  const flags = res.flagged.length ? res.flagged.join(",") : "none";
+  let st = res.status;
+  if (st === "ok" && closed === 0 && rolled === 0) st = "noop";
+  const line =
+    `board-closeout ${iso} ${st} closed=${closed}` +
+    (closed ? ` closed_slugs=${res.closed.join(",")}` : "") +
+    ` rolled_back=${rolled}` +
+    (rolled ? ` rolled_slugs=${res.rolled_back.join(",")}` : "") +
+    ` skipped=${skipped} flagged=${flags}`;
+  console.log(line);
+  if (jsonOut) {
+    console.log(JSON.stringify({ ...res, status: st, iso }, null, 2));
+  }
+  // Heartbeat best-effort
+  const hb = path.join(lastStack, "bin", "last-stack-brain-append-heartbeat");
+  if (!dryRun && fs.existsSync(hb)) {
+    run(hb, ["--line", line], { timeout: 30000 });
+  }
+}
+
+finish();
+process.exit(0);
+NODE
+fi
+
+# Python fallback
+exec python3 - "$last_stack" <<'PY'
+import json, os, re, subprocess, sys, time
+from pathlib import Path
+
+last_stack = Path(sys.argv[1])
+board_cli = os.environ.get("BOARD_CLI", "kanban")
+dry_run = os.environ.get("BOARD_CLOSEOUT_DRY_RUN") == "1"
+grace_min = max(1, int(os.environ.get("BOARD_CLOSEOUT_GRACE_MIN") or "60"))
+max_actions = max(1, int(os.environ.get("BOARD_CLOSEOUT_MAX_ACTIONS") or "50"))
+skip_zombie = os.environ.get("BOARD_CLOSEOUT_SKIP_ZOMBIE") == "1"
+json_out = os.environ.get("BOARD_CLOSEOUT_JSON") == "1"
+now = time.time()
+iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+home = Path.home()
+worktree_roots = [home / ".kanban" / "worktrees", home / ".fkanban" / "worktrees"]
+forge_api = last_stack / "bin" / "last-stack-forge-api"
+closeout_bin = last_stack / "bin" / "last-stack-card-closeout"
+
+res = {"status": "ok", "closed": [], "rolled_back": [], "skipped": [], "flagged": []}
+
+def run(cmd, timeout=60):
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return p.returncode == 0, p.stdout or "", p.stderr or ""
+    except Exception as e:
+        return False, "", str(e)
+
+def strip(s):
+    return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", s or "")
+
+def list_doing():
+    ok, out, err = run([board_cli, "list", "--column", "doing", "--json", "--all"], timeout=120)
+    if not ok:
+        ok, out, err = run([board_cli, "list", "--column", "doing", "--json"], timeout=120)
+    if not ok:
+        if re.search(r"service_timeout|node did not respond|too many concurrent reads|folddb\.sock", err + out, re.I):
+            res["status"] = "noop"
+            res["flagged"].append("busy-node")
+            return None
+        res["status"] = "error"
+        res["flagged"].append("board-list-failed")
+        return None
+    try:
+        data = json.loads(strip(out))
+    except Exception:
+        res["status"] = "error"
+        res["flagged"].append("board-json-parse-failed")
+        return None
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for k in ("cards", "items"):
+            if isinstance(data.get(k), list):
+                return data[k]
+    return []
+
+def age_s(card):
+    try:
+        pos = float(card.get("position") or 0)
+        if pos > 1e12:
+            return now - pos / 1000.0
+        if pos > 1e9:
+            return now - pos
+    except Exception:
+        pass
+    for key in ("updated_at", "created_at"):
+        raw = card.get(key) or ""
+        if not raw:
+            continue
+        try:
+            # fromisoformat handles Z with replace
+            from datetime import datetime
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            return now - dt.timestamp()
+        except Exception:
+            continue
+    return 0
+
+def pr_url(card):
+    return (card.get("pr_url") or card.get("prUrl") or card.get("pr") or "").strip()
+
+def worktree(slug):
+    for root in worktree_roots:
+        p = root / slug
+        if p.is_dir():
+            return p
+    return None
+
+def live_worker(wt):
+    if not wt:
+        return False
+    ok, out, _ = run(["ps", "-ax", "-o", "command="], timeout=15)
+    if not ok:
+        return False
+    s = str(wt)
+    return any(s in line and "rg " not in line and "grep" not in line for line in out.splitlines())
+
+def has_commits(wt):
+    if not wt:
+        return False
+    ok, out, _ = run(["git", "-C", str(wt), "rev-list", "--count", "origin/main..HEAD"], timeout=30)
+    if ok:
+        try:
+            return int(out.strip() or "0") > 0
+        except Exception:
+            pass
+    return False
+
+def is_merged(url):
+    if not url:
+        return False, "no-pr"
+    m = re.match(r"lastgit://([^/]+)/cr/([^/\s?#]+)", url)
+    if m:
+        repo, cid = m.group(1), m.group(2)
+        ok, out, _ = run(["lastgit", "cr", "view", repo, cid, "--json"], timeout=45)
+        if not ok:
+            res["flagged"].append(f"lastgit-fetch-failed:{repo}/{cid}")
+            return False, "lastgit-fetch-failed"
+        try:
+            d = json.loads(strip(out))
+        except Exception:
+            return False, "lastgit-parse-failed"
+        cr = d.get("cr") or d.get("change_request") or d
+        state = str(cr.get("state") or cr.get("status") or d.get("state") or "").lower()
+        merge_oid = cr.get("merge_oid") or cr.get("mergeOid") or d.get("merge_oid") or ""
+        return state == "merged" or bool(merge_oid), f"lastgit:{cid}"
+    m = re.search(r"/([^/]+)/([^/]+)/pulls?/(\d+)", url)
+    if m and "github.com" not in url:
+        owner, repo, num = m.group(1), m.group(2), m.group(3)
+        if not forge_api.exists():
+            res["flagged"].append("forge-api-missing")
+            return False, "forge-api-missing"
+        ok, out, _ = run([str(forge_api), f"repos/{owner}/{repo}/pulls/{num}"], timeout=45)
+        if not ok:
+            res["flagged"].append(f"forge-fetch-failed:{owner}/{repo}#{num}")
+            return False, "forge-fetch-failed"
+        try:
+            d = json.loads(strip(out))
+        except Exception:
+            return False, "forge-parse-failed"
+        merged = d.get("merged") is True or str(d.get("state") or "").lower() == "merged"
+        return merged, f"forge#{num}"
+    m = re.search(r"github\.com/([^/]+)/([^/]+)/pull/(\d+)", url)
+    if m:
+        owner, repo, num = m.group(1), m.group(2), m.group(3)
+        ok, out, _ = run(["gh", "pr", "view", num, "-R", f"{owner}/{repo}", "--json", "state,mergedAt"], timeout=45)
+        if not ok:
+            res["flagged"].append(f"gh-fetch-failed:{owner}/{repo}#{num}")
+            return False, "gh-fetch-failed"
+        try:
+            d = json.loads(strip(out))
+        except Exception:
+            return False, "gh-parse-failed"
+        merged = bool(d.get("mergedAt")) or str(d.get("state") or "").upper() == "MERGED"
+        return merged, f"gh#{num}"
+    res["flagged"].append("pr-url-unparsed")
+    return False, "unparsed"
+
+def close_card(slug, url, branch):
+    if dry_run:
+        res["closed"].append(slug)
+        return True
+    if closeout_bin.exists():
+        args = [str(closeout_bin), slug, "--board-cli", board_cli]
+        if url:
+            args += ["--pr-url", url]
+        if branch:
+            args += ["--branch", branch]
+        ok, _, _ = run(args, timeout=90)
+        if not ok:
+            res["flagged"].append(f"close-failed:{slug}")
+            return False
+        res["closed"].append(slug)
+        return True
+    ok, _, _ = run([board_cli, "move", slug, "done", "--force"], timeout=60)
+    if not ok:
+        res["flagged"].append(f"close-failed:{slug}")
+        return False
+    res["closed"].append(slug)
+    return True
+
+def rollback(slug):
+    if dry_run:
+        res["rolled_back"].append(slug)
+        return True
+    ok, _, _ = run([board_cli, "move", slug, "todo", "--force"], timeout=60)
+    if not ok:
+        ok, _, _ = run([board_cli, "move", slug, "todo"], timeout=60)
+        if not ok:
+            res["flagged"].append(f"rollback-failed:{slug}")
+            return False
+    run([board_cli, "add", slug, "--assignee", ""], timeout=30)
+    res["rolled_back"].append(slug)
+    return True
+
+cards = list_doing()
+if cards is None:
+    st = res["status"]
+    flags = ",".join(res["flagged"]) if res["flagged"] else "none"
+    print(f"board-closeout {iso} {st} closed=0 rolled_back=0 skipped=0 flagged={flags}")
+    sys.exit(0)
+
+actions = 0
+grace_s = grace_min * 60
+for card in cards:
+    if actions >= max_actions:
+        res["flagged"].append(f"action-capped:{len(cards) - actions}")
+        break
+    slug = str(card.get("slug") or "")
+    if not slug:
+        continue
+    url = pr_url(card)
+    branch = str(card.get("branch") or "").strip()
+    age = age_s(card)
+    wt = worktree(slug)
+    if url:
+        merged, detail = is_merged(url)
+        if merged:
+            if close_card(slug, url, branch):
+                actions += 1
+            else:
+                res["skipped"].append(f"{slug}:close-failed")
+            continue
+        res["skipped"].append(f"{slug}:pr-open-or-unknown")
+        continue
+    if skip_zombie:
+        res["skipped"].append(f"{slug}:no-pr-zombie-skipped")
+        continue
+    if age < grace_s:
+        res["skipped"].append(f"{slug}:young")
+        continue
+    if live_worker(wt):
+        res["skipped"].append(f"{slug}:live-worker")
+        continue
+    if has_commits(wt):
+        # Pickup contract: no PR after grace → todo (worktree kept).
+        res["flagged"].append(f"wip-no-pr:{slug}")
+        if rollback(slug):
+            actions += 1
+            continue
+        res["skipped"].append(f"{slug}:wip-no-pr-rollback-failed")
+        continue
+    if rollback(slug):
+        actions += 1
+
+closed = len(res["closed"])
+rolled = len(res["rolled_back"])
+skipped = len(res["skipped"])
+flags = ",".join(res["flagged"]) if res["flagged"] else "none"
+st = res["status"]
+if st == "ok" and closed == 0 and rolled == 0:
+    st = "noop"
+line = f"board-closeout {iso} {st} closed={closed}"
+if closed:
+    line += f" closed_slugs={','.join(res['closed'])}"
+line += f" rolled_back={rolled}"
+if rolled:
+    line += f" rolled_slugs={','.join(res['rolled_back'])}"
+line += f" skipped={skipped} flagged={flags}"
+print(line)
+if json_out:
+    print(json.dumps({**res, "status": st, "iso": iso}, indent=2))
+hb = last_stack / "bin" / "last-stack-brain-append-heartbeat"
+if not dry_run and hb.exists():
+    run([str(hb), "--line", line], timeout=30)
+sys.exit(0)
+PY

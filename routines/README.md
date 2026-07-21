@@ -39,6 +39,8 @@ stripped out.
    kanban-pickup ─▶ claim one card; do WORK mode inline ────────────────▶ opens PR, drives to MERGED
                           │
                           ▼
+   board-closeout ─▶ ALWAYS-ON (LaunchAgent 15m, zero LLM): merged PR/CR → done;
+                     true zombie doing → todo. Survives low-credit when watch is paused.
    kanban-watch  ─▶ RECONCILE: advance merged PRs, re-arm/un-stick the stragglers
    kanban-validate ─▶ VALIDATE: run post-merge END STATE checks, then done/review
    pipeline-health ─▶ every ~10m: LastGit CRs + forge PRs unblocked (stuck >10m → fix)

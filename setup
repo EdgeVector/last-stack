@@ -531,6 +531,12 @@ echo "Installing The Last Stack (v$(cat "$SOURCE_ROOT/VERSION")) ..."
 install_host_track_shim
 install_host_track_refresh_agent
 
+# Zero-LLM board closeout (merged PR/CR → done) — survives low-credit watch pause.
+if [ -x "$SOURCE_ROOT/bin/last-stack-board-closeout-install" ]; then
+  "$SOURCE_ROOT/bin/last-stack-board-closeout-install" install || \
+    echo "  board-closeout LaunchAgent: install failed (non-fatal)" >&2
+fi
+
 # ── Guard against foreign installers (e.g. gstack) stomping our skill links ────
 # Another installer that ships a same-named skill (gstack shipped a `diagram`
 # skill colliding with our hand-drawn one) silently re-points that SKILL.md at
