@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Reject Git writes from ambient workspace mirrors. Feature work belongs in a
+# linked worktree; ~/code/edgevector/<repo> is browse/object-store state only.
+set -euo pipefail
+
+action="${1:-write}"
+workspace="${LAST_STACK_SHARED_WORKSPACE:-$HOME/code/edgevector}"
+top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+
+[ -n "$top" ] || exit 0
+top="$(cd "$top" && pwd -P)"
+workspace="$(cd "$workspace" 2>/dev/null && pwd -P || printf '%s' "$workspace")"
+
+# Only an immediate child with a real .git directory is an ambient checkout.
+# Linked worktrees have a .git file and are the required place for changes.
+[ "$(dirname "$top")" = "$workspace" ] || exit 0
+[ -d "$top/.git" ] || exit 0
+
+if [ "${LAST_STACK_ALLOW_SHARED_CHECKOUT_WRITE:-0}" = "1" ]; then
+  exit 0
+fi
+
+branch="$(git -C "$top" branch --show-current 2>/dev/null || true)"
+printf 'BLOCKED_SHARED_CHECKOUT action=%s repo=%s branch=%s\n' \
+  "$action" "$(basename "$top")" "${branch:-detached}" >&2
+printf 'The ambient checkout is a read-only mirror. Create/use an isolated worktree under ~/.fkanban/worktrees and retry.\n' >&2
+printf 'Emergency override (audited use only): LAST_STACK_ALLOW_SHARED_CHECKOUT_WRITE=1\n' >&2
+exit 1

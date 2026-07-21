@@ -36,6 +36,13 @@ RECENT_S=3600
 DRY=0
 [ "${1:-}" = "--dry-run" ] && DRY=1
 
+# Repair the mechanical fence first. This does not mutate working trees and
+# preserves any repo-specific hook body after the managed prelude.
+if [ "$DRY" = 0 ] && [ -x "$BIN_DIR/last-stack-install-shared-checkout-guards" ]; then
+  "$BIN_DIR/last-stack-install-shared-checkout-guards" "$WS" >/dev/null 2>&1 \
+    || printf 'FLAG %-24s %s\n' "shared-checkout-guards" "install/audit failed"
+fi
+
 trailers() {  # routine attribution on salvage commits (interactive runs: none)
   if [ "${DRIVEN_BY:-}" = "routine" ]; then
     printf 'Driven-By: routine\nAutomation-Id: %s\nRun-Id: %s\n' \
