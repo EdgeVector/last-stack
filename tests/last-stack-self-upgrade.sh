@@ -265,9 +265,28 @@ grep -q 'streak=3' /tmp/self-upgrade-fetch3.err
 
 mv "$tmp/install/bin/last-stack-self-upgrade.real" "$tmp/install/bin/last-stack-self-upgrade"
 
-# --- routine-read defers on a concurrent self-upgrade lock ---
+# --- dead lock owners are reclaimed immediately ---
 mkdir "$tmp/install/.self-upgrade.lock"
 printf '999999\n' >"$tmp/install/.self-upgrade.lock/pid"
+out="$("$tmp/install/bin/last-stack-self-upgrade" --reason=test 2>"$tmp/dead-lock.err")"
+case "$out" in
+  *"result=up-to-date"*|*"result=upgraded"*) ;;
+  *)
+    printf 'expected dead lock owner recovery, got:\n%s\n' "$out" >&2
+    exit 1
+    ;;
+esac
+grep -q 'reclaiming lock from dead owner pid=999999' "$tmp/dead-lock.err"
+test ! -e "$tmp/install/.self-upgrade.lock"
+
+# --- routine-read defers while a live owner holds the lock ---
+printf 'lock contention update\n' >>"$tmp/seed/README.md"
+git -C "$tmp/seed" commit -am "lock contention update" >/dev/null
+git -C "$tmp/seed" push origin HEAD:main >/dev/null 2>&1
+sleep 30 &
+lock_holder=$!
+mkdir "$tmp/install/.self-upgrade.lock"
+printf '%s\n' "$lock_holder" >"$tmp/install/.self-upgrade.lock/pid"
 if LASTSTACK_ROUTINE_READ_LOCK_ATTEMPTS=1 LASTSTACK_ROUTINE_READ_LOCK_BACKOFF_S=0 \
   "$tmp/install/bin/last-stack-routine-read" demo >/tmp/self-upgrade-lock.out 2>/tmp/self-upgrade-lock.err; then
   echo "expected held self-upgrade lock to defer routine-read" >&2
@@ -279,7 +298,51 @@ if grep -q 'LAST_STACK_ROUTINE_STALE' /tmp/self-upgrade-lock.err; then
   echo "expected held self-upgrade lock to avoid stale failure classification" >&2
   exit 1
 fi
+kill "$lock_holder" 2>/dev/null || true
+wait "$lock_holder" 2>/dev/null || true
 rm -rf "$tmp/install/.self-upgrade.lock"
+
+# --- an expired, genuinely-owned updater is terminated and replaced ---
+real_git="$(command -v git)"
+mkdir -p "$tmp/fakebin"
+cat >"$tmp/fakebin/git" <<'EOF'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  if [ "$arg" = fetch ]; then
+    : >"$LOCK_FETCH_MARKER"
+    sleep 30
+    break
+  fi
+done
+exec "$REAL_GIT" "$@"
+EOF
+chmod +x "$tmp/fakebin/git"
+marker="$tmp/lock-fetch-started"
+PATH="$tmp/fakebin:$PATH" REAL_GIT="$real_git" LOCK_FETCH_MARKER="$marker" \
+  LASTSTACK_SELF_UPGRADE_LOCK_TIMEOUT_S=1 \
+  "$tmp/install/bin/last-stack-self-upgrade" --no-setup --reason=lock-holder \
+  >"$tmp/expired-owner.out" 2>"$tmp/expired-owner.err" &
+expired_owner=$!
+for _ in 1 2 3 4 5; do
+  [ -e "$marker" ] && break
+  sleep 1
+done
+test -e "$marker"
+sleep 2
+out="$(LASTSTACK_SELF_UPGRADE_LOCK_TIMEOUT_S=1 \
+  LASTSTACK_SELF_UPGRADE_LOCK_TERM_GRACE_S=1 \
+  "$tmp/install/bin/last-stack-self-upgrade" --no-setup --reason=test \
+  2>"$tmp/expired-recovery.err")"
+wait "$expired_owner" 2>/dev/null || true
+case "$out" in
+  *"result=up-to-date"*|*"result=upgraded"*) ;;
+  *)
+    printf 'expected expired owner recovery, got:\n%s\n' "$out" >&2
+    exit 1
+    ;;
+esac
+grep -q "terminating expired owner pid=$expired_owner" "$tmp/expired-recovery.err"
+test ! -e "$tmp/install/.self-upgrade.lock"
 
 # --- lastgit venue: defaults to lastgit remote over a stale origin mirror ---
 # Simulates the read-only GitHub mirror lagging behind the canonical LastGit

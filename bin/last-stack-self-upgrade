@@ -73,6 +73,9 @@ Environment:
   LASTSTACK_REMOTE_REPO     git remote name (default: lastgit when the repo
                             is opted into the lastgit venue, else origin)
   LASTSTACK_SELF_UPGRADE_SKIP=1  callers may set this to disable auto-heal
+  LASTSTACK_SELF_UPGRADE_LOCK_TIMEOUT_S  terminate an updater holding the lock
+                            longer than this many seconds (default: 600)
+  LASTSTACK_SELF_UPGRADE_LOCK_TERM_GRACE_S  TERM grace before KILL (default: 5)
 EOF
 }
 
@@ -277,29 +280,114 @@ metadata_fast_forward_to() {
   fi
 }
 
-# Concurrent upgrades (several routines waking together) serialize on a mkdir lock.
+# Concurrent upgrades (several routines waking together) serialize on a mkdir
+# lock. The owner token matters: an expired owner may be terminated and a new
+# process may acquire the same path before the old process unwinds its EXIT
+# trap. Cleanup must never remove a successor's lock.
 lock_dir="$ROOT/.self-upgrade.lock"
 lock_timeout_s="${LASTSTACK_SELF_UPGRADE_LOCK_TIMEOUT_S:-600}"
+lock_term_grace_s="${LASTSTACK_SELF_UPGRADE_LOCK_TERM_GRACE_S:-5}"
+case "$lock_timeout_s:$lock_term_grace_s" in
+  *[!0-9:]*|:*|*:)
+    echo "Self-upgrade lock timeout and TERM grace must be non-negative integers." >&2
+    exit 2
+    ;;
+esac
+lock_token="$$.$RANDOM.$(date +%s 2>/dev/null || echo 0)"
 acquired=0
-if mkdir "$lock_dir" 2>/dev/null; then
-  printf '%s\n' "$$" >"$lock_dir/pid"
-  acquired=1
-else
-  lock_age=0
-  if [ -f "$lock_dir/pid" ]; then
-    # Best-effort stale lock reclaim (mtime age).
-    now="$(date +%s 2>/dev/null || echo 0)"
-    mtime="$(stat -f %m "$lock_dir" 2>/dev/null || stat -c %Y "$lock_dir" 2>/dev/null || echo 0)"
-    if [ "$now" -gt 0 ] && [ "$mtime" -gt 0 ]; then
-      lock_age=$((now - mtime))
-    fi
+
+try_acquire_lock() {
+  if mkdir "$lock_dir" 2>/dev/null; then
+    printf '%s\n' "$$" >"$lock_dir/pid"
+    {
+      printf 'pid=%s\n' "$$"
+      printf 'token=%s\n' "$lock_token"
+      printf 'started_at=%s\n' "$(date +%s 2>/dev/null || echo 0)"
+      printf 'root=%s\n' "$ROOT"
+    } >"$lock_dir/owner"
+    acquired=1
   fi
-  if [ "$lock_age" -ge "$lock_timeout_s" ]; then
-    rm -rf "$lock_dir"
-    if mkdir "$lock_dir" 2>/dev/null; then
-      printf '%s\n' "$$" >"$lock_dir/pid"
-      acquired=1
-    fi
+}
+
+lock_owner_pid() {
+  if [ -f "$lock_dir/owner" ]; then
+    sed -n 's/^pid=//p' "$lock_dir/owner" | head -1
+  elif [ -f "$lock_dir/pid" ]; then
+    sed -n '1p' "$lock_dir/pid"
+  fi
+}
+
+lock_age_seconds() {
+  now="$(date +%s 2>/dev/null || echo 0)"
+  stamp="$lock_dir/owner"
+  [ -e "$stamp" ] || stamp="$lock_dir"
+  mtime="$(stat -f %m "$stamp" 2>/dev/null || stat -c %Y "$stamp" 2>/dev/null || echo 0)"
+  if [ "$now" -gt 0 ] && [ "$mtime" -gt 0 ] && [ "$now" -ge "$mtime" ]; then
+    printf '%s\n' "$((now - mtime))"
+  else
+    printf '0\n'
+  fi
+}
+
+quarantine_lock() {
+  stale_lock="$lock_dir.reclaim.$lock_token"
+  if mv "$lock_dir" "$stale_lock" 2>/dev/null; then
+    rm -rf "$stale_lock"
+    return 0
+  fi
+  return 1
+}
+
+signal_process_tree() {
+  local parent_pid="$1"
+  local signal_name="$2"
+  local child_pid
+  if command -v pgrep >/dev/null 2>&1; then
+    while IFS= read -r child_pid; do
+      [ -n "$child_pid" ] || continue
+      signal_process_tree "$child_pid" "$signal_name"
+      kill -"$signal_name" "$child_pid" 2>/dev/null || true
+    done < <(pgrep -P "$parent_pid" 2>/dev/null || true)
+  fi
+  kill -"$signal_name" "$parent_pid" 2>/dev/null || true
+}
+
+try_acquire_lock
+if [ "$acquired" -ne 1 ]; then
+  owner_pid="$(lock_owner_pid || true)"
+  lock_age="$(lock_age_seconds)"
+  owner_alive=0
+  if [[ "$owner_pid" =~ ^[0-9]+$ ]] && kill -0 "$owner_pid" 2>/dev/null; then
+    owner_alive=1
+  fi
+
+  if [ "$owner_alive" -eq 0 ]; then
+    echo "Self-upgrade: reclaiming lock from dead owner pid=${owner_pid:-unknown}." >&2
+    quarantine_lock || true
+    try_acquire_lock
+  elif [ "$lock_age" -ge "$lock_timeout_s" ]; then
+    owner_command="$(ps -p "$owner_pid" -o command= 2>/dev/null || true)"
+    case "$owner_command" in
+      *"/bin/last-stack-self-upgrade"*)
+        echo "Self-upgrade: terminating expired owner pid=$owner_pid age_s=$lock_age." >&2
+        signal_process_tree "$owner_pid" TERM
+        grace_left="$lock_term_grace_s"
+        while [ "$grace_left" -gt 0 ] && kill -0 "$owner_pid" 2>/dev/null; do
+          sleep 1
+          grace_left=$((grace_left - 1))
+        done
+        if kill -0 "$owner_pid" 2>/dev/null; then
+          signal_process_tree "$owner_pid" KILL
+        fi
+        ;;
+      *)
+        # The PID was reused after the recorded updater died. Never signal an
+        # unrelated process; the lock itself is still stale and recoverable.
+        echo "Self-upgrade: reclaiming expired lock with reused pid=$owner_pid age_s=$lock_age." >&2
+        ;;
+    esac
+    quarantine_lock || true
+    try_acquire_lock
   fi
 fi
 
@@ -310,7 +398,10 @@ if [ "$acquired" -ne 1 ]; then
 fi
 
 cleanup_lock() {
-  rm -rf "$lock_dir"
+  current_token="$(sed -n 's/^token=//p' "$lock_dir/owner" 2>/dev/null | head -1 || true)"
+  if [ "$current_token" = "$lock_token" ]; then
+    quarantine_lock || true
+  fi
 }
 trap cleanup_lock EXIT
 
