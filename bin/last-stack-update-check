@@ -17,6 +17,27 @@ REMOTE_URL="${LASTSTACK_REMOTE_URL:-https://raw.githubusercontent.com/EdgeVector
 CACHE="$ROOT/.update-check"
 TTL=3600  # seconds
 
+artifact_update_check() {
+  command -v host-track >/dev/null 2>&1 || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  artifact_status="$(host-track status --json last-stack 2>/dev/null || true)"
+  [ "$(printf '%s\n' "$artifact_status" | jq -r '.install_mode // ""' 2>/dev/null)" = "artifact" ] || return 1
+  stale="$(printf '%s\n' "$artifact_status" | jq -r '.stale | tostring' 2>/dev/null)"
+  local_manifest="$(printf '%s\n' "$artifact_status" | jq -r '.manifest_digest // ""' 2>/dev/null)"
+  channel_manifest="$(printf '%s\n' "$artifact_status" | jq -r '.channel_manifest_digest // ""' 2>/dev/null)"
+  case "$stale" in
+    false) printf 'UP_TO_DATE\n' ;;
+    true) printf 'ARTIFACT_UPDATE_AVAILABLE  local_manifest=%s channel_manifest=%s\n' \
+      "${local_manifest:0:12}" "${channel_manifest:0:12}" ;;
+    *) printf 'UNKNOWN\n' ;;
+  esac
+  return 0
+}
+
+if artifact_update_check; then
+  exit 0
+fi
+
 short_sha() {
   printf '%s' "$1" | cut -c1-12
 }

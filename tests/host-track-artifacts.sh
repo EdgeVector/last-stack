@@ -16,6 +16,12 @@ export HOST_TRACK_REGISTRY="$tmp/registry.json"
 export HOST_TRACK_STAMP_DIR="$tmp/stamps"
 export PATH="$HOME/.local/bin:$tmp/bin:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
 mkdir -p "$HOME/.local/bin" "$tmp/bin" "$tmp/cas"
+cat > "$HOME/post-install" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\t%s\n' "$HOST_TRACK_APP" "$HOST_TRACK_MANIFEST_DIGEST" > "$HOME/post-install-ran"
+SH
+chmod +x "$HOME/post-install"
 
 cat > "$tmp/bin/lastgit" <<'SH'
 #!/usr/bin/env bash
@@ -57,6 +63,7 @@ cat > "$HOST_TRACK_REGISTRY" <<'JSON'
       "command": "demo",
       "artifact_root": "$HOME/../cas",
       "install_root": "$HOME/apps/demo",
+      "post_install": "$HOME/post-install",
       "links": [
         {"source": "bin/demo", "target": "$HOME/.local/bin/demo"}
       ],
@@ -94,6 +101,7 @@ oid_bad="$(printf '3%.0s' {1..40})"
 
 publish_fixture "$digest_one" "$oid_one" $'#!/usr/bin/env bash\necho v1'
 "$ROOT/bin/host-track" install demo >/dev/null
+[ "$(cut -f1 "$HOME/post-install-ran")" = demo ] || fail "artifact post-install did not run"
 [ "$(readlink "$HOME/apps/demo/current")" = "versions/$digest_one" ] || fail "first install was not activated"
 [ "$(demo)" = v1 ] || fail "first installed command did not run"
 jq -e --arg digest "$digest_one" '.manifest_digest == $digest and .install_mode == "artifact"' \

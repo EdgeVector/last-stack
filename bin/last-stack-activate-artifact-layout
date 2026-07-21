@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+compat_root="${LAST_STACK_COMPAT_ROOT:-$HOME/.last-stack}"
+artifact_install_root="${LAST_STACK_ARTIFACT_INSTALL_ROOT:-$compat_root/.artifacts}"
+artifact_current="$artifact_install_root/current"
+backup_root="${LAST_STACK_LAYOUT_BACKUP_ROOT:-$HOME/.local/state/last-stack/layout-backups}"
+dry_run=0
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: last-stack-activate-artifact-layout [--dry-run]
+
+Repoints Last Stack's stable ~/.last-stack code paths at the active immutable
+Host Track artifact. Existing paths are moved to a timestamped recovery tree;
+local state such as launchd, logs, proofs, and .git is left in place.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dry-run) dry_run=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage; exit 2 ;;
+  esac
+done
+
+[ -L "$artifact_current" ] || {
+  printf 'last-stack artifact current link missing: %s\n' "$artifact_current" >&2
+  exit 1
+}
+[ -x "$artifact_current/setup" ] && [ -f "$artifact_current/VERSION" ] && [ -d "$artifact_current/skills" ] || {
+  printf 'last-stack active artifact is incomplete: %s\n' "$artifact_current" >&2
+  exit 1
+}
+
+managed_paths=(VERSION setup bin config docs harness hooks instructions lib routines skills templates)
+run_id="$(date -u +%Y%m%dT%H%M%SZ).$$"
+backup="$backup_root/$run_id"
+lock="$compat_root/.artifact-layout.lock"
+lock_token="$$.$RANDOM"
+changed_paths=()
+moved_paths=()
+
+mkdir -p "$compat_root"
+if ! mkdir "$lock" 2>/dev/null; then
+  printf 'last-stack artifact layout is already being changed: %s\n' "$lock" >&2
+  exit 1
+fi
+printf '%s\n' "$lock_token" > "$lock/owner"
+
+cleanup_lock() {
+  if [ -f "$lock/owner" ] && [ "$(cat "$lock/owner")" = "$lock_token" ]; then
+    rm -f "$lock/owner"
+    rmdir "$lock" 2>/dev/null || true
+  fi
+}
+
+rollback_changes() {
+  local i rel target saved
+  trap - ERR
+  for ((i=${#changed_paths[@]}-1; i>=0; i--)); do
+    rel="${changed_paths[$i]}"
+    target="$compat_root/$rel"
+    [ ! -L "$target" ] || rm -f "$target"
+    saved="$backup/$rel"
+    if [ -e "$saved" ] || [ -L "$saved" ]; then
+      mkdir -p "$(dirname "$target")"
+      mv "$saved" "$target"
+    fi
+  done
+  cleanup_lock
+}
+
+trap 'rc=$?; rollback_changes; exit "$rc"' ERR
+trap cleanup_lock EXIT
+
+atomic_link() {
+  local source="$1" target="$2" tmp
+  tmp="${target}.tmp-$$"
+  ln -s "$source" "$tmp"
+  if mv -f -h "$tmp" "$target" 2>/dev/null; then
+    :
+  elif mv -fT "$tmp" "$target" 2>/dev/null; then
+    :
+  else
+    rm -f "$tmp"
+    return 1
+  fi
+}
+
+for rel in "${managed_paths[@]}"; do
+  [ -e "$artifact_current/$rel" ] || {
+    printf 'artifact payload missing managed path: %s\n' "$rel" >&2
+    exit 1
+  }
+done
+
+for rel in "${managed_paths[@]}"; do
+  source="$artifact_current/$rel"
+  target="$compat_root/$rel"
+  if [ -L "$target" ] && [ "$(readlink "$target")" = "$source" ]; then
+    continue
+  fi
+  if [ "$dry_run" -eq 1 ]; then
+    printf 'WOULD_LINK %s -> %s\n' "$target" "$source"
+    continue
+  fi
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    saved="$backup/$rel"
+    mkdir -p "$(dirname "$saved")"
+    mv "$target" "$saved"
+    moved_paths+=("$rel")
+  fi
+  changed_paths+=("$rel")
+  atomic_link "$source" "$target"
+done
+
+if [ "$dry_run" -eq 1 ]; then
+  cleanup_lock
+  trap - ERR EXIT
+  exit 0
+fi
+
+LAST_STACK_ROOT="$artifact_current" "$artifact_current/setup"
+
+trap - ERR
+cleanup_lock
+trap - EXIT
+printf 'LAST_STACK_ARTIFACT_LAYOUT result=activated current=%s backup=%s moved=%s\n' \
+  "$(readlink "$artifact_current")" "$backup" "${#moved_paths[@]}"

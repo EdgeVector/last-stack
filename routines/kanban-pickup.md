@@ -274,7 +274,20 @@ back to `todo` (or `pending_rollback=` in memory) per transport rules below.
   `last-stack-routine-read`'s auto-upgrade before prompt load. After CLI
   preflight and before any board claim, run:
   ```bash
-  if [ -x "$last_stack/bin/last-stack-self-upgrade" ]; then
+  artifact_status="$(host-track status --json last-stack 2>/dev/null || true)"
+  if [ "$(printf '%s\n' "$artifact_status" | jq -r '.install_mode // ""' 2>/dev/null)" = "artifact" ]; then
+    if [ "$(printf '%s\n' "$artifact_status" | jq -r '.stale | tostring' 2>/dev/null)" = "true" ]; then
+      if host-track refresh last-stack >/tmp/last-stack-pickup-artifact-refresh.$$ 2>&1; then
+        stale_detail="stale-last-stack-artifact refreshed-before-claim no_card_claimed"
+      else
+        stale_detail="stale-last-stack-artifact refresh-failed no_card_claimed"
+      fi
+      rm -f /tmp/last-stack-pickup-artifact-refresh.$$
+      "$last_stack/bin/last-stack-brain-append-heartbeat" --line "kanban-pickup $(date -u +%Y-%m-%dT%H:%M:%SZ) noop $stale_detail" || true
+      printf '%s %s\n' 'ROUTINE_RESULT' "outcome=noop detail=$stale_detail"
+      exit 0
+    fi
+  elif [ -x "$last_stack/bin/last-stack-self-upgrade" ]; then
     upgrade_check="$("$last_stack/bin/last-stack-self-upgrade" --check-only --reason=kanban-pickup-prompt-freshness 2>&1 || true)"
     case "$upgrade_check" in
       *"result=would-upgrade"*)

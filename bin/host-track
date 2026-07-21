@@ -469,6 +469,15 @@ install_artifact_links() {
   done < <(printf '%s\n' "$json" | jq -r '.links[]? | @base64')
 }
 
+run_artifact_post_install() {
+  local app="$1" json="$2" install_root="$3" digest="$4" post_install
+  post_install="$(expand_path "$(field "$json" post_install)")"
+  [ -n "$post_install" ] || return 0
+  [ -x "$post_install" ] || die "artifact post-install is not executable: $post_install"
+  HOST_TRACK_APP="$app" HOST_TRACK_INSTALL_ROOT="$install_root" \
+    HOST_TRACK_MANIFEST_DIGEST="$digest" "$post_install"
+}
+
 artifact_install_app() {
   local app="$1" channel_override="${2:-}" json install_mode artifact_app channel artifact_root install_root
   local manifest digest stage encoded entry rel expected_sha mode blob target actual_sha mode_octal
@@ -523,6 +532,7 @@ artifact_install_app() {
   fi
   atomic_symlink "versions/$digest" "$install_root/current"
   install_artifact_links "$json" "$install_root"
+  run_artifact_post_install "$app" "$json" "$install_root" "$digest"
 
   stamp_path="$STAMP_DIR/$app.json"
   mkdir -p "$STAMP_DIR"
@@ -556,6 +566,7 @@ rollback_artifact_app() {
   digest="${previous_target#versions/}"
   manifest="$artifact_root/manifests/$digest.json"
   [ -f "$manifest" ] || die "previous artifact manifest is missing"
+  run_artifact_post_install "$app" "$json" "$install_root" "$digest"
   stamp_path="$STAMP_DIR/$app.json"
   mkdir -p "$STAMP_DIR"
   jq --arg app "$app" --arg channel "$channel" --arg artifact_root "$artifact_root" \

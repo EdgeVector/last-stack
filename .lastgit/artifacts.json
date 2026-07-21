@@ -1,0 +1,21 @@
+{
+  "artifacts": [
+    {
+      "app": "last-stack",
+      "paths": [
+        "VERSION",
+        "setup",
+        "bin",
+        "config",
+        "docs",
+        "harness",
+        "hooks",
+        "instructions",
+        "lib",
+        "routines",
+        "skills",
+        "templates"
+      ]
+    }
+  ]
+}

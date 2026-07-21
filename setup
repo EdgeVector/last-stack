@@ -20,7 +20,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd -P)"
 
 resolve_source_root() {
   local candidate
-  for candidate in "$HOME/.last-stack" "${LAST_STACK_ROOT:-}"; do
+  for candidate in "${LAST_STACK_ROOT:-}" "$HOME/.last-stack/.artifacts/current" "$HOME/.last-stack"; do
     [ -n "$candidate" ] || continue
     if [ -f "$candidate/VERSION" ] && [ -d "$candidate/skills" ]; then
       cd "$candidate" && pwd -P
@@ -31,6 +31,10 @@ resolve_source_root() {
 }
 
 SOURCE_ROOT="$(resolve_source_root)"
+ARTIFACT_INSTALL=0
+case "$SOURCE_ROOT" in
+  "$HOME/.last-stack/.artifacts/"*) ARTIFACT_INSTALL=1 ;;
+esac
 SKILLS_SRC="$SOURCE_ROOT/skills"
 HOOKS_SRC="$SOURCE_ROOT/hooks"
 SOURCE_TOP_LOADED=0
@@ -566,8 +570,13 @@ fi
 # Zero-LLM self-upgrade healer (every 30m) — keeps install FF'd so pickup does
 # not soft-defer forever on GIT_UPDATE_AVAILABLE / fetch-failed.
 if [ -x "$SOURCE_ROOT/bin/last-stack-self-upgrade-install" ]; then
-  "$SOURCE_ROOT/bin/last-stack-self-upgrade-install" install || \
-    echo "  last-stack-self-upgrade LaunchAgent: install failed (non-fatal)" >&2
+  if [ "$ARTIFACT_INSTALL" -eq 1 ]; then
+    "$SOURCE_ROOT/bin/last-stack-self-upgrade-install" uninstall || \
+      echo "  last-stack-self-upgrade LaunchAgent: uninstall failed (non-fatal)" >&2
+  else
+    "$SOURCE_ROOT/bin/last-stack-self-upgrade-install" install || \
+      echo "  last-stack-self-upgrade LaunchAgent: install failed (non-fatal)" >&2
+  fi
 fi
 
 # ── Guard against foreign installers (e.g. gstack) stomping our skill links ────
@@ -586,7 +595,11 @@ if [ -x "$guard" ]; then
 fi
 
 echo
-echo "Done. Upgrade later with:  cd \"$SOURCE_ROOT\" && git pull && ./setup"
+if [ "$ARTIFACT_INSTALL" -eq 1 ]; then
+  echo "Done. Upgrade later with:  host-track refresh last-stack"
+else
+  echo "Done. Upgrade later with:  cd \"$SOURCE_ROOT\" && git pull && ./setup"
+fi
 echo "  (run this AFTER any gstack ./setup — it re-points Last Stack skill links"
 echo "   that a colliding gstack skill name would otherwise stomp)"
 echo "Uninstall with:           \"$SOURCE_ROOT/setup\" --uninstall"
