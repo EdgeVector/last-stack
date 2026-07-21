@@ -1,7 +1,13 @@
 {
+  "defaults": {
+    "install_mode": "artifact",
+    "artifact_channel": "stable",
+    "artifact_root": "$HOME/.lastgit/artifacts"
+  },
   "apps": [
     {
       "app": "lastgit",
+      "install_mode": "checkout",
       "kind": "A compile",
       "command": "lastgit",
       "gate": "forgejo",
@@ -14,6 +20,7 @@
     },
     {
       "app": "last-stack",
+      "install_mode": "checkout",
       "kind": "C skill-pack",
       "command": "host-track",
       "gate": "lastgit",
@@ -26,6 +33,7 @@
     },
     {
       "app": "brain",
+      "install_mode": "checkout",
       "kind": "B checkout-shim",
       "command": "brain",
       "gate": "placeholder",
@@ -37,6 +45,7 @@
     },
     {
       "app": "situations",
+      "install_mode": "checkout",
       "kind": "B checkout-shim",
       "command": "situations",
       "gate": "lastgit",
@@ -49,6 +58,7 @@
     },
     {
       "app": "kanban",
+      "install_mode": "checkout",
       "kind": "B checkout-shim",
       "command": "kanban",
       "gate": "lastgit",
@@ -61,6 +71,7 @@
     },
     {
       "app": "fkanban",
+      "install_mode": "checkout",
       "kind": "B checkout-shim",
       "command": "fkanban",
       "gate": "lastgit",
