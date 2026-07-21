@@ -21,7 +21,7 @@ is a specialized generator or backstop.
 |------|-----|-------------|----------|
 | **Generate** | File/promote PR-sized work onto the board | No | `program-driver`, `groom-board`, `papercut-reconciler`, `pipeline-health` (cards) |
 | **Claim** | `pickup claim` → implement → open PR/CR | **Yes** | `kanban-pickup` (+ worker replicas) |
-| **Reconcile** | Advance merges, heal zombies, close done | Fixes only | `kanban-watch`, `merge-babysit`, `kanban-validate`, reapers |
+| **Reconcile** | Advance merges, heal zombies, close done, drive outcome proof | Fixes only | `kanban-watch`, `merge-babysit`, `kanban-validate`, `milestone-driver`, reapers |
 
 Brain = intent · Board = queue · Pickup = only code shipper · Watch = only closer.
 
@@ -48,6 +48,7 @@ stripped out.
                  ┌──────────────────── the board (kanban) ─────────────────┐
                  │  backlog → todo → doing → review → done                   │
    program-driver ─▶ promote each program's next card into `todo`           │
+   milestone-driver▶ reconcile one milestone's frontier, blockers, and proof│
    groom-board    ─▶ promote ready backlog→todo, break up epics, prune junk  │
    feature-prove  ─▶ when feature-owner slice deps are done, run product proof│
                  └──────────────────────────────────────────────────────────┘
@@ -140,6 +141,7 @@ one-card-per-fire contract.
 | [`kanban-validate`](kanban-validate.md) | hourly, offset from watch | VALIDATE one merged card's post-merge END STATE; move it to `done` on pass or `review` with proof/fix/blocker on fail. |
 | [`groom-board`](groom-board.md) | daily | Promote ready `backlog`→`todo`, break up epics, prune junk. |
 | [`program-driver`](program-driver.md) | hourly | Promote each program's next DAG card into `todo` (includes Feature Ship Loop frontier budget). |
+| [`milestone-driver`](milestone-driver.md) | every 6h | Reconcile one milestone's dependencies, executable frontier, blockers, and terminal proof without picking up the milestone itself. |
 | [`feature-prove`](feature-prove.md) | hourly | Product-proof stage for `feature-owner` cards; PASS file or fix-forward / open-decisions. |
 | [`program-rollup`](program-rollup.md) | hourly | Mirror the board into the brain's driving index (auto-status block). |
 | [`north-star-rollup`](north-star-rollup.md) | hourly | Roll up cards by `north_star` × column into brain `north-star-dashboard` + local HTML. |
