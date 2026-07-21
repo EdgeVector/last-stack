@@ -8,6 +8,7 @@
   <key>ProgramArguments</key>
   <array>
     <string>/Users/tomtang/.last-stack/bin/last-stack-self-upgrade</string>
+    <string>--repair-dirty</string>
     <string>--reason=launchd</string>
   </array>
 

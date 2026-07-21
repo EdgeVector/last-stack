@@ -141,7 +141,7 @@ if [ "${LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK:-0}" != "1" ] && [ -x "$ROOT/bin/las
       result=""
       while :; do
         : >"$upgrade_err"
-        if "$ROOT/bin/last-stack-self-upgrade" --reason=routine-read >"$upgrade_err" 2>&1; then
+        if "$ROOT/bin/last-stack-self-upgrade" --repair-dirty --reason=routine-read >"$upgrade_err" 2>&1; then
           upgrade_ok=1
           break
         fi

@@ -4,7 +4,7 @@ version: 0.3.0
 description: |
   Upgrade The Last Stack to the latest version and show what changed. Detects
   where the stack is installed (the cloned repo dir), runs the clean-only
-  `last-stack-self-upgrade` helper (git pull --ff-only + ./setup), and reports
+  `last-stack-self-upgrade` helper (managed install mirror repair + setup), and reports
   the version delta. Use when asked to "upgrade the last stack", "update the
   last stack", "get the latest skills", or when a skill preamble / routine
   reports UPGRADE_AVAILABLE or LAST_STACK_ROUTINE_STALE.
@@ -37,7 +37,7 @@ Upgrade The Last Stack in place and re-register the skills.
    ```bash
    OLD_HEAD=$(git -C <install-dir> rev-parse --short HEAD)
    OLD=$(cat <install-dir>/VERSION)
-   <install-dir>/bin/last-stack-self-upgrade --reason=skill
+   <install-dir>/bin/last-stack-self-upgrade --repair-dirty --reason=skill
    NEW_HEAD=$(git -C <install-dir> rev-parse --short HEAD)
    NEW=$(cat <install-dir>/VERSION)
    echo "Upgraded The Last Stack: $OLD ($OLD_HEAD) -> $NEW ($NEW_HEAD)"
@@ -61,8 +61,10 @@ Upgrade The Last Stack in place and re-register the skills.
 - **Install dir is product, not a dev checkout.** Feature work belongs in a
   separate clone. Local edits in `~/.last-stack` make `error-dirty` and block
   every scheduled routine that depends on freshness.
-- `last-stack-self-upgrade` only fast-forwards a **clean** tree. It never
-  `reset --hard`, merges, or stashes. Dirty/diverged installs fail closed.
+- `last-stack-self-upgrade` is clean-only by default. The explicit
+  `--repair-dirty` install-mirror mode first writes a recovery bundle and
+  binary patches outside the install, then resets the disposable install to
+  verified venue `main`. It never force-pushes or rewrites a development clone.
 - `last-stack-routine-read` already calls the helper on staleness; this skill is
   the interactive/manual path and the recovery when auto-heal cannot run.
 - Re-running `./setup` is idempotent; it refreshes the SKILL.md links so every

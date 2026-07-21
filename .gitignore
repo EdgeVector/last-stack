@@ -1,2 +1,12 @@
 .update-check
 .self-upgrade.lock/
+config.local-backup-*/
+dogfood/
+feature-proofs/
+lastdb-backups/
+launchd/com.edgevector.host-track-refresh.plist
+logs/
+north-star-proofs/
+proofs/
+state/
+worktrees/

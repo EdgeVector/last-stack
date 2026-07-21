@@ -2,13 +2,15 @@
 # Safe self-upgrade of The Last Stack install checkout.
 #
 # Policy (intentionally conservative):
-#   - Never reset/hard-reset/force-push.
+#   - Never reset/hard-reset unless the caller explicitly selects the managed
+#     install mirror repair mode. That mode writes a recovery bundle + patches
+#     before resetting to the verified venue HEAD.
 #   - Only fast-forward when the install working tree is clean, or when local
 #     changed files already byte-match the fast-forward target tree.
 #   - Re-run ./setup after a successful pull so harness skill links refresh.
 #
 # Machine-readable result lines (stdout):
-#   LAST_STACK_SELF_UPGRADE result=up-to-date|upgraded|already-current \
+#   LAST_STACK_SELF_UPGRADE result=up-to-date|upgraded|repaired-mirror|already-current \
 #       local_head=<sha> [remote_head=<sha>] [version=<v>]
 #   LAST_STACK_SELF_UPGRADE result=error-dirty|error-diverged|error-pull|error-setup|error-lock|error-not-git|error-fetch \
 #       ...
@@ -52,15 +54,17 @@ default_remote() {
 remote="${LASTSTACK_REMOTE_REPO:-$(default_remote)}"
 do_setup=1
 check_only=0
+repair_dirty=0
 reason=""
 
 usage() {
   cat <<'EOF' >&2
-usage: last-stack-self-upgrade [--check-only] [--no-setup] [--reason <tag>]
+usage: last-stack-self-upgrade [--check-only] [--repair-dirty] [--no-setup] [--reason <tag>]
 
 Safely fast-forward the Last Stack install and re-run ./setup when clean.
 
   --check-only   Report what would happen; do not pull or setup
+  --repair-dirty Salvage the installed checkout, then force it to venue HEAD
   --no-setup     Skip ./setup after a successful pull
   --reason <tag> Optional caller tag (e.g. routine-read, cron)
 
@@ -75,6 +79,7 @@ EOF
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --check-only) check_only=1; shift ;;
+    --repair-dirty) repair_dirty=1; shift ;;
     --no-setup) do_setup=0; shift ;;
     --reason=*)
       reason="${1#--reason=}"
@@ -227,6 +232,40 @@ quarantine_known_local_state_conflicts() {
   [ "$moved" -eq 0 ] || emit "result=local-state-quarantined count=$moved path=$quarantine_root/$run_id"
 }
 
+salvage_install_mirror() {
+  target_head="$1"
+  recovery_root="${LASTSTACK_MIRROR_RECOVERY_DIR:-$HOME/.local/state/last-stack/install-mirror-recovery}"
+  run_id="$(date -u +%Y%m%dT%H%M%SZ).$$"
+  recovery="$recovery_root/$run_id"
+  mkdir -p "$recovery"
+  git -C "$ROOT" status --short >"$recovery/status.txt"
+  git -C "$ROOT" diff --binary >"$recovery/working-tree.patch"
+  git -C "$ROOT" diff --cached --binary >"$recovery/index.patch"
+  git -C "$ROOT" ls-files --others --exclude-standard >"$recovery/untracked-files.txt"
+  git -C "$ROOT" bundle create "$recovery/local-head.bundle" HEAD >/dev/null 2>&1 || true
+  {
+    printf 'root=%s\n' "$ROOT"
+    printf 'local_head=%s\n' "$local_head"
+    printf 'target_head=%s\n' "$target_head"
+    printf 'remote=%s\n' "$remote"
+  } >"$recovery/metadata.env"
+  printf '%s\n' "$recovery"
+}
+
+setup_after_upgrade() {
+  old_head="$1"
+  new_head="$2"
+  if [ "$do_setup" -eq 1 ] && [ -x "$ROOT/setup" ]; then
+    if ! (cd "$ROOT" && ./setup) >/tmp/last-stack-self-upgrade-setup.$$ 2>&1; then
+      emit "result=error-setup local_head=$(short_sha "$old_head") new_head=$(short_sha "$new_head")"
+      cat /tmp/last-stack-self-upgrade-setup.$$ >&2 || true
+      rm -f /tmp/last-stack-self-upgrade-setup.$$
+      return 1
+    fi
+    rm -f /tmp/last-stack-self-upgrade-setup.$$
+  fi
+}
+
 metadata_fast_forward_to() {
   target_head="$1"
   local_ref="$(git -C "$ROOT" symbolic-ref -q HEAD 2>/dev/null || true)"
@@ -335,8 +374,42 @@ if [ -z "$remote_head" ]; then
   exit 0
 fi
 
+# Managed install mirror mode is the only destructive path. The remote head is
+# already fetched/resolved above. Preserve local commits and edits outside the
+# install before making the checkout exactly match the canonical venue branch.
+dirty="$(dirty_status)"
+diverged=0
+if [ "$local_head" != "$remote_head" ] &&
+   ! git -C "$ROOT" merge-base --is-ancestor "$local_head" "$remote_head" 2>/dev/null; then
+  diverged=1
+fi
+if [ "$repair_dirty" -eq 1 ] && { [ -n "$dirty" ] || [ "$diverged" -eq 1 ]; }; then
+  if ! untracked_remote_conflicts_safe "$remote_head"; then
+    emit "result=error-dirty local_head=$(short_sha "$local_head") dirty_count=untracked-conflict"
+    echo "Install checkout has an unknown untracked path that conflicts with venue HEAD; refusing mirror repair." >&2
+    exit 1
+  fi
+  if [ "$check_only" -eq 1 ]; then
+    emit "result=would-repair-mirror local_head=$(short_sha "$local_head") remote_head=$(short_sha "$remote_head")"
+    exit 0
+  fi
+  quarantine_known_local_state_conflicts "$remote_head"
+  recovery="$(salvage_install_mirror "$remote_head")"
+  if ! git -C "$ROOT" reset --hard "$remote_head" >/tmp/last-stack-self-upgrade-reset.$$ 2>&1; then
+    emit "result=error-pull local_head=$(short_sha "$local_head") remote_head=$(short_sha "$remote_head") recovery=$recovery"
+    cat /tmp/last-stack-self-upgrade-reset.$$ >&2 || true
+    rm -f /tmp/last-stack-self-upgrade-reset.$$
+    exit 1
+  fi
+  rm -f /tmp/last-stack-self-upgrade-reset.$$
+  new_head="$(git -C "$ROOT" rev-parse HEAD)"
+  setup_after_upgrade "$local_head" "$new_head" || exit 1
+  version="$(tr -d '[:space:]' <"$ROOT/VERSION" 2>/dev/null || echo unknown)"
+  emit "result=repaired-mirror local_head=$(short_sha "$local_head") remote_head=$(short_sha "$new_head") version=$version recovery=$recovery"
+  exit 0
+fi
+
 if [ "$local_head" = "$remote_head" ]; then
-  dirty="$(dirty_status)"
   if [ -n "$dirty" ]; then
     emit_dirty_error "$dirty"
     exit 1
@@ -346,7 +419,7 @@ if [ "$local_head" = "$remote_head" ]; then
   exit 0
 fi
 
-if ! git -C "$ROOT" merge-base --is-ancestor "$local_head" "$remote_head" 2>/dev/null; then
+if [ "$diverged" -eq 1 ]; then
   emit "result=error-diverged local_head=$(short_sha "$local_head") remote_head=$(short_sha "$remote_head")"
   echo "Install HEAD is not a fast-forward ancestor of remote HEAD; refusing self-upgrade." >&2
   exit 1

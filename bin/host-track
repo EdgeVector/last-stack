@@ -335,7 +335,7 @@ refresh_app() {
     self_upgrade="$host_track/bin/last-stack-self-upgrade"
     setup_path="$host_track/setup"
     if [ -x "$self_upgrade" ]; then
-      "$self_upgrade" --reason=host-track-refresh
+      "$self_upgrade" --repair-dirty --reason=host-track-refresh
     elif [ -d "$host_track/.git" ] && [ -x "$setup_path" ]; then
       if ! git_dirty "$host_track"; then
         printf 'host-track: %s host checkout is dirty; refusing fallback refresh\n' "$app" >&2

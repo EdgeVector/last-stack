@@ -29,7 +29,8 @@ install_agent() {
     -e "s|/Users/tomtang|${HOME}|g" \
     "$plist_src" >"$plist_dst"
   /usr/libexec/PlistBuddy -c "Set :ProgramArguments:0 ${last_stack}/bin/last-stack-self-upgrade" "$plist_dst" 2>/dev/null || true
-  /usr/libexec/PlistBuddy -c "Set :ProgramArguments:1 --reason=launchd" "$plist_dst" 2>/dev/null || true
+  /usr/libexec/PlistBuddy -c "Set :ProgramArguments:1 --repair-dirty" "$plist_dst" 2>/dev/null || true
+  /usr/libexec/PlistBuddy -c "Set :ProgramArguments:2 --reason=launchd" "$plist_dst" 2>/dev/null || true
   /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:LAST_STACK_ROOT ${last_stack}" "$plist_dst" 2>/dev/null || true
   /usr/libexec/PlistBuddy -c "Set :WorkingDirectory ${last_stack}" "$plist_dst" 2>/dev/null || true
 
