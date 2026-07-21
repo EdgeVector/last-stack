@@ -20,14 +20,15 @@ notifications do NOT reach this user — do not use it).
   ends. A lingering wakeup after done is noise.
 
 Each wake, in order:
-1. List the board (the kanban skill; CLI shape: `task list`, there is no
-   `task get`; ids are short, not UUIDs; pass `--project-path` from a non-repo
-   cwd).
+1. Read the milestone first (`fkanban milestone detail <slug> --json`), then
+   inspect only its linked cards and PRs. The milestone is supervisory and is
+   never a pickup card.
 2. Triage each in-progress/awaiting task: merged? progressing? wedged? (taxonomy
    below).
 3. Recover wedges. Unblock the next dependency tier. Create fix-forward tasks for
    anything that regressed.
-4. If all tasks merged → run Phase 7 validation.
+4. If all implementation cards merged → run Phase 7 validation, record proof
+   on the linked terminal card, and run `fkanban milestone reconcile <slug>`.
 5. Re-schedule unless done.
 
 ## Reading task state correctly (don't false-positive a wedge)
@@ -118,8 +119,23 @@ exercise path you captured in Phase 1:
   tests.
 
 Prefer the **`verify`** skill (run app, observe behavior, confirm intent) or
-**`run`** skill (launch/drive the app) over hand-rolling. Tests passing is a
-milestone; the app doing the thing is the gate.
+**`run`** skill (launch/drive the app) over hand-rolling. Tests passing is an
+intermediate event; the app doing the thing is the gate.
+
+## Milestone ownership and generation
+
+- `ship-feature` creates the initial milestone graph immediately after plan
+  approval: milestone, linked PR slices, and linked terminal proof card.
+- A Brain North Star supplies durable intent but never auto-generates
+  milestones. One North Star may have many milestones over time.
+- Create one milestone per independently provable product outcome. Default to
+  one for a normal feature; use multiple only when each outcome has its own
+  acceptance proof and explicit milestone dependencies.
+- `last-stack-milestone-driver` owns ongoing reconciliation, frontier promotion,
+  blockers, and proof readiness. It may repair or extend decomposition, but it
+  does not replace the approved intake outcome.
+- Completion comes only from proof-gated milestone reconciliation, never from
+  PR count or a direct forced complete state.
 
 ## When to break silence (contract #3)
 
