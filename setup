@@ -320,6 +320,25 @@ install_host_track_shim() {
   echo "  host-track: $dest"
 }
 
+install_shared_checkout_guards() {
+  local local_bin="$HOME/.local/bin"
+  local name src dest
+  mkdir -p "$local_bin"
+  for name in last-stack-shared-checkout-guard last-stack-install-shared-checkout-guards; do
+    src="$SOURCE_ROOT/bin/$name"
+    dest="$local_bin/$name"
+    [ -f "$src" ] || continue
+    [ -L "$dest" ] && rm -f "$dest"
+    _link_or_copy "$src" "$dest"
+    chmod 700 "$dest" 2>/dev/null || true
+  done
+  if [ -x "$local_bin/last-stack-install-shared-checkout-guards" ]; then
+    "$local_bin/last-stack-install-shared-checkout-guards" \
+      "${LAST_STACK_SHARED_WORKSPACE:-$HOME/code/edgevector}" \
+      || echo "  shared-checkout guards: install failed" >&2
+  fi
+}
+
 xml_escape() {
   sed \
     -e 's/&/\&amp;/g' \
@@ -529,6 +548,7 @@ echo "Installing The Last Stack (v$(cat "$SOURCE_ROOT/VERSION")) ..."
 [ "$INSTALL_OPENCODE" -eq 1 ] && register_into "$HOME/.config/opencode/skills" "opencode"
 [ "$INSTALL_OPENCODE" -eq 1 ] && upsert_brain_kanban_block "$HOME/.config/opencode/AGENTS.md" "opencode"
 install_host_track_shim
+install_shared_checkout_guards
 install_host_track_refresh_agent
 
 # Zero-LLM board closeout (merged PR/CR → done) — survives low-credit watch pause.
