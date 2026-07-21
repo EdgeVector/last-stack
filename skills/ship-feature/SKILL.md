@@ -4,14 +4,13 @@ description: |
   Take a feature the user wants to "make sure works" and drive it to done
   autonomously: scope how much work it is, design it, surface ALL open
   questions at once with ELI5 explanations + recommendations, get one plan
-  approval, then drive the work through the Kanban board — looping unattended
-  until the feature is validated by ACTUALLY RUNNING THE APP, not just passing
-  tests. The user does not want to monitor; this skill batches every decision
-  up front and then goes heads-down until it can prove the feature works or
-  it hits a genuinely new blocker.
+  approval, then materialize a first-class F-Kanban milestone with linked
+  implementation and terminal-proof cards and drive it unattended until the
+  feature is validated by ACTUALLY RUNNING THE APP, not just passing tests.
+  Batch every decision up front, then work until proof or a genuinely new blocker.
   Use this when the user says "make sure this feature works", "ship this
   feature", "/ship-feature ...", "drive this to done", "I want X to work and
-  I don't want to babysit it", "automate building and validating <feature>",
+  I don't want to babysit it", "automate building and validating a feature",
   or otherwise asks for an end-to-end build-and-prove-it workflow they can
   walk away from. Prefer this over ad-hoc coding whenever the request implies
   unattended, looped, end-to-end delivery with a validation gate.
@@ -27,13 +26,6 @@ allowed-tools:
   - TaskCreate
   - TaskUpdate
   - TaskList
-triggers:
-  - ship feature
-  - ship-feature
-  - make sure this feature works
-  - drive this feature to done
-  - make it work and dont make me babysit
-  - automate building and validating a feature
 ---
 
 # /ship-feature — scope → design → ask once → drive → prove
@@ -55,7 +47,7 @@ necessary but not sufficient — the stop condition is the app running the featu
 3. **Quiet until done or blocked** — only interrupt them when finished, stuck,
    or you hit a *new* decision you genuinely could not have asked up front.
 4. **Validation = the app actually runs the feature.** Not "tests green," not
-   "PR merged." Those are milestones, not the finish line.
+   "PR merged." Those are intermediate events, not the finish line.
 
 If you ever feel tempted to ask a question mid-loop, first ask yourself: *could
 I have anticipated this during scoping?* If yes, you broke contract #1 — make a
@@ -107,6 +99,10 @@ Produce a tight implementation design:
 
 - Decompose into **Kanban-task-sized units** — each independently landable as
   one PR, each with a clear acceptance check.
+- Define the **F-Kanban milestone graph**. Create one milestone per independently
+  provable product outcome; default to one milestone for one approved feature.
+  Use milestone dependencies only when the approved plan contains multiple
+  outcomes that must land in sequence.
 - Define the **acceptance criteria** centered on running the app: "when X is
   done, running `<command/endpoint/path>` produces `<observable result>`."
 - Note risks and the validation plan (how you'll prove the whole thing at the
@@ -145,6 +141,8 @@ Present a concise plan the user can approve in one read:
 
 - One-line restatement of the feature and what "done" will look like.
 - The task list (titles + one-line each) with the dependency order.
+- The milestone outcome(s), owning North Star when one already exists, and the
+  terminal proof card for each milestone.
 - How long-ish / how many agents, and the validation you'll run at the end.
 - The answers from Phase 3 folded in.
 
@@ -153,8 +151,42 @@ Then get a single yes/no. After approval, **do not ask again** unless contract
 
 ## Phase 5 — Drive via Kanban
 
-Use the **`kanban` skill** to create and manage tasks — it already knows this
-workspace's board, merge, and babysitting mechanics. For each task:
+Materialize the approved plan as **North Star → Milestone → cards**. The
+`ship-feature` intake agent creates the initial milestone records; North Stars
+never generate milestones automatically, and `milestone-driver` grooms/drives
+them afterward. Do not invent a North Star merely to create a milestone: link
+an existing, clearly matching North Star, otherwise leave `north_star` empty and
+preserve the explicit milestone outcome.
+
+For each independently provable outcome:
+
+1. Create the milestone scaffold **before any linked card**, in milestone
+   dependency order. Run `fkanban milestone add <slug>` with `--state planned`,
+   `--driver last-stack-milestone-driver`, `--proof-status pending`, and the
+   approved `--north-star` / milestone `--deps` where applicable, but omit
+   `--proof-card` for this first upsert. Its body must state the observable
+   outcome and acceptance criteria, not a task list.
+2. Create the terminal proof card in `backlog` (`Kind: validation`, or
+   `Kind: pr` only when authoring the proof harness itself is shippable work).
+   Link it with `--milestone <slug>` and `--north-star <slug>` when present.
+   Until feature-proof discovery is fully milestone-native, tag the validation
+   card `feature-owner,feature-proof,feature-ship`; the milestone, not this card,
+   owns the graph.
+3. Finalize the same milestone with a second
+   `fkanban milestone add <slug> --proof-card <terminal-slug> --proof-status pending`
+   upsert. This two-step sequence is required: cards reject a missing milestone,
+   and milestones reject a named proof card that does not exist.
+4. Create every slice with structured `--milestone <slug>` and the same
+   `--north-star` value. Put only the first unblocked `Kind: pr` frontier in
+   `todo`; dependency-blocked work stays in `backlog`.
+5. Run `fkanban milestone reconcile <slug> --json`, then verify with both
+   `fkanban milestone detail <slug> --json` and
+   `fkanban milestone groom --json`. Materialization is invalid if the driver,
+   proof card, child links, North Star agreement, or executable frontier is
+   missing. Repair the graph before entering the unattended loop.
+
+Use the **`kanban` skill** to create and manage cards — it already knows this
+workspace's board, merge, and babysitting mechanics. For each slice:
 
 - **Every task prompt MUST start with a header telling the agent to follow the
   `kanban-agent` skill and see it through to a merged PR** — without it the
@@ -184,8 +216,11 @@ enough to make progress, the user can always interrupt), and on each wake:
    thinking wedge, 529 wedge, bg-notification wedge, killed-task wedge, etc.).
    Recovery is usually trash + recreate the task, never a server restart.
 3. **Unblock the next tier** — when a prerequisite merges, create the dependent
-   task.
-4. **When all tasks are merged → VALIDATE** (Phase 7). This is the real gate.
+   task or let `last-stack-milestone-driver` promote the existing linked
+   frontier. Do not create a second milestone for the same approved outcome.
+4. **When all milestone slices are merged → VALIDATE** (Phase 7). This is the
+   real gate. A milestone completes only after its linked terminal proof passes
+   and `milestone reconcile` accepts completion.
 5. **Re-schedule** the next wakeup unless fully done. **Stop scheduling** once
    validated — that ends the loop cleanly.
 
