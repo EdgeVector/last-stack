@@ -296,6 +296,7 @@ bin/
                             LaunchAgent plist without restarting lastdbd
   last-stack-uninstall      remove the registered skills
 skills/<name>/SKILL.md  one directory per skill
+  (includes lastdb-safe-upgrade — multi-harness Mini safe upgrade)
 instructions/brain-kanban.md
                         canonical brain/kanban usage guidance; setup upserts it
                         as a managed block into each harness's global
