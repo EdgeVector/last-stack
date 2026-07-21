@@ -37,11 +37,12 @@ continue — do not fail the whole run.
 - Do not develop, hand-edit skills, or intentionally leave uncommitted work in
   `${LAST_STACK_ROOT:-$HOME/.last-stack}`. Feature work belongs in a separate
   clone or isolated worktree via PR.
-- If tracked dirt in `${LAST_STACK_ROOT:-$HOME/.last-stack}` blocks
-  self-upgrade, routine-read, or host-track, the authorized repair is:
-  create a backup branch, then `git reset --hard lastgit/main` in the install
-  checkout. Do not ask Tom again and do not file install-dirty as
-  `needs_human`.
+- The installed checkout is a managed mirror. `last-stack-routine-read`,
+  host-track, and the zero-LLM LaunchAgent call `last-stack-self-upgrade
+  --repair-dirty`: it writes a bundle plus binary patches under
+  `~/.local/state/last-stack/install-mirror-recovery/`, then resets only the
+  install checkout to verified venue `main`. Do not ask Tom again and do not
+  file install-dirty as `needs_human`.
 - Do not `git clean -fd`, force-push, stash, merge, or delete worktrees from the
   install dir.
 - NEVER set `LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1` or
@@ -67,10 +68,9 @@ continue — do not fail the whole run.
      Heartbeat and STOP. Do not claim up-to-date. The launchd healer
      (`last-stack-self-upgrade-install`) will retry; after repeated fails,
      factory-health fires `install_stale_hard`.
-   - `error-dirty` → repair tracked install dirt with backup-branch plus
-     `git reset --hard lastgit/main`, then retry once. If the retry is still
-     dirty, heartbeat the dirty sample and stop without filing a human blocker
-     for dirt alone.
+   - `repaired-mirror` → success; include the recovery path in the heartbeat.
+   - `error-dirty` → the mirror repair found an unknown untracked collision or
+     could not make a recovery artifact; stop and heartbeat the exact reason.
    - `error-diverged` / `error-pull` / `error-setup` / `error-lock` → STOP and
      heartbeat the result. Do not force.
 3. Confirm the reader is healthy:

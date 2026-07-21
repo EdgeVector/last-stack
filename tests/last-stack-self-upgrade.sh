@@ -57,7 +57,21 @@ if "$tmp/install/bin/last-stack-self-upgrade" --reason=test >/tmp/self-upgrade-d
   exit 1
 fi
 grep -q 'result=error-dirty' /tmp/self-upgrade-dirty.out
-git -C "$tmp/install" checkout -- README.md
+
+# --- explicit managed-mirror mode salvages, then repairs dirty install ---
+recovery="$tmp/mirror-recovery"
+out="$(LASTSTACK_MIRROR_RECOVERY_DIR="$recovery" \
+  "$tmp/install/bin/last-stack-self-upgrade" --repair-dirty --reason=test)"
+case "$out" in
+  *"result=repaired-mirror"*"recovery=$recovery/"*) ;;
+  *)
+    printf 'expected repaired mirror, got:\n%s\n' "$out" >&2
+    exit 1
+    ;;
+esac
+test -z "$(git -C "$tmp/install" status --porcelain --untracked-files=no)"
+grep -q '^initial$' "$tmp/install/README.md"
+grep -R -q 'local edit' "$recovery"/*/working-tree.patch
 
 # --- stale: upgrade pulls + setup ---
 printf 'routine fix without version bump\n' >>"$tmp/seed/README.md"
@@ -184,25 +198,20 @@ if LASTSTACK_SELF_UPGRADE_SKIP=1 "$tmp/install/bin/last-stack-routine-read" demo
 fi
 grep -q 'LAST_STACK_ROUTINE_STALE' /tmp/self-upgrade-skip.err
 
-# --- routine-read stale failure is actionable when tracked dirt blocks auto-heal ---
+# --- routine-read repairs tracked install dirt and returns current prompt ---
 printf 'dirty local install edit\n' >>"$tmp/install/README.md"
-if LASTSTACK_ROUTINE_READ_LOCK_ATTEMPTS=1 LASTSTACK_ROUTINE_READ_LOCK_BACKOFF_S=0 \
-  "$tmp/install/bin/last-stack-routine-read" demo >/tmp/self-upgrade-dirty-read.out 2>/tmp/self-upgrade-dirty-read.err; then
-  echo "expected dirty stale install to fail closed" >&2
-  exit 1
-fi
-grep -q 'LAST_STACK_ROUTINE_STALE' /tmp/self-upgrade-dirty-read.err
-grep -q 'LAST_STACK_ROUTINE_CONTEXT routine=demo root=.*/install' /tmp/self-upgrade-dirty-read.err
-grep -q 'LAST_STACK_ROUTINE_DETAIL_BEGIN' /tmp/self-upgrade-dirty-read.err
-grep -q 'result=error-dirty' /tmp/self-upgrade-dirty-read.err
-grep -q 'dirty_count=1' /tmp/self-upgrade-dirty-read.err
-grep -q 'sample= M README.md' /tmp/self-upgrade-dirty-read.err
-grep -q 'LAST_STACK_ROUTINE_REMEDIATION inspect: cd ".*/install"' /tmp/self-upgrade-dirty-read.err
-grep -q 'LAST_STACK_ROUTINE_REMEDIATION clean-upgrade:' /tmp/self-upgrade-dirty-read.err
-grep -q 'LAST_STACK_ROUTINE_REMEDIATION dirty-tree:' /tmp/self-upgrade-dirty-read.err
-git -C "$tmp/install" checkout -- README.md
+LASTSTACK_MIRROR_RECOVERY_DIR="$tmp/routine-read-recovery" \
+  LASTSTACK_ROUTINE_READ_LOCK_ATTEMPTS=1 LASTSTACK_ROUTINE_READ_LOCK_BACKOFF_S=0 \
+  "$tmp/install/bin/last-stack-routine-read" demo >/tmp/self-upgrade-dirty-read.out 2>/tmp/self-upgrade-dirty-read.err
+grep -q 'updated: yes' /tmp/self-upgrade-dirty-read.out
+test -z "$(git -C "$tmp/install" status --porcelain --untracked-files=no)"
+grep -R -q 'dirty local install edit' "$tmp/routine-read-recovery"/*/working-tree.patch
 
 # --- routine-read defers when self-upgrade cannot fetch and install stays stale ---
+# Put the now-repaired install behind again.
+printf 'fourth fix\n' >>"$tmp/seed/README.md"
+git -C "$tmp/seed" commit -am "fourth fix" >/dev/null
+git -C "$tmp/seed" push origin HEAD:main >/dev/null 2>&1
 # Soft path (legacy note=fetch-failed with exit 0 still defer when still stale).
 cp "$tmp/install/bin/last-stack-self-upgrade" "$tmp/install/bin/last-stack-self-upgrade.real"
 cat >"$tmp/install/bin/last-stack-self-upgrade" <<'EOF'
