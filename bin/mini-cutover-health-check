@@ -1,0 +1,230 @@
+#!/usr/bin/env bash
+# Deterministic health check for program-mini-cutover-lastdb-core.
+#
+# Exit: 0 = HEALTHY or WAITING_ON_TOM; 1 = STALLED/UNHEALTHY; 2 = tool failure.
+set -euo pipefail
+
+JSON=0
+STALL_HOURS="${MINI_CUTOVER_STALL_HOURS:-36}"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --json) JSON=1; shift ;;
+    --stall-hours) STALL_HOURS="${2:?}"; shift 2 ;;
+    -h|--help)
+      echo "Usage: mini-cutover-health-check [--json] [--stall-hours N]"
+      exit 0
+      ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+# shellcheck disable=SC1091
+[[ -f "$last_stack/bin/last-stack-shell-prelude" ]] && . "$last_stack/bin/last-stack-shell-prelude" || true
+export PATH="${HOME}/.local/bin:${HOME}/.bun/bin:${PATH}"
+
+need() { command -v "$1" >/dev/null 2>&1 || { echo "missing CLI: $1" >&2; exit 2; }; }
+need kanban
+need brain
+need python3
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+# Never turn an unavailable data source into a missing-card incident. A read
+# failure is a checker/tool failure (exit 2), which the routine logs without
+# paging Tom about data loss.
+read_or_fail() {
+  local label="$1" output="$2"
+  shift 2
+  if ! "$@" >"$output" 2>"$tmp/${label}.err"; then
+    echo "mini-cutover-health-check: ${label} read failed" >&2
+    sed -n '1,5p' "$tmp/${label}.err" >&2
+    exit 2
+  fi
+}
+
+read_or_fail cards "$tmp/cards.json" kanban search mini-cutover --json
+read_or_fail active-programs "$tmp/ap.txt" brain get active-programs --type project
+read_or_fail open-decisions "$tmp/od.txt" brain get open-decisions --type reference
+read_or_fail completion-ledger "$tmp/ns.txt" brain get north-star-lastdb-no-sled-document-store --type project
+
+# The hygiene dependency is ancillary and may legitimately have been cleaned up.
+kanban show fold-db-aggressive-hygiene-20260717 --json >"$tmp/hygiene.json" 2>/dev/null || echo null >"$tmp/hygiene.json"
+
+export MC_JSON="$JSON" MC_STALL_HOURS="$STALL_HOURS" MC_NOW="$(date +%s)"
+export MC_CARDS="$tmp/cards.json" MC_HYGIENE="$tmp/hygiene.json"
+export MC_AP="$tmp/ap.txt" MC_OD="$tmp/od.txt" MC_NS="$tmp/ns.txt"
+
+python3 <<'PY'
+import json, os, sys
+from datetime import datetime, timezone
+
+json_mode = os.environ["MC_JSON"] == "1"
+stall_hours = int(os.environ["MC_STALL_HOURS"])
+now = int(os.environ["MC_NOW"])
+stall_secs = stall_hours * 3600
+
+with open(os.environ["MC_CARDS"]) as f:
+    cards = json.load(f)
+if not isinstance(cards, list):
+    cards = cards.get("cards") or cards.get("items") or []
+if not isinstance(cards, list):
+    raise SystemExit("kanban search returned invalid card JSON")
+
+hygiene = None
+try:
+    with open(os.environ["MC_HYGIENE"]) as f:
+        hygiene = json.load(f)
+    if not isinstance(hygiene, dict) or not hygiene.get("slug"):
+        hygiene = None
+except Exception:
+    hygiene = None
+
+ap = open(os.environ["MC_AP"]).read()
+od = open(os.environ["MC_OD"]).read()
+completion_ledger = open(os.environ["MC_NS"]).read()
+
+ORDER = [
+    "mini-cutover-p0-namespace-inventory",
+    "mini-cutover-p0-cow-offline-baseline",
+    "mini-cutover-p1-laststore-kv-adapter",
+    "mini-cutover-p1-factory-engine-flag",
+    "mini-cutover-p1-empty-home-boot-smoke",
+    "mini-cutover-p2-domain-encrypt-laststore",
+    "mini-cutover-p2-cow-real-data-green",
+    "mini-cutover-p3-sled-to-laststore-migrator",
+    "mini-cutover-p4-cutover-safety-package",
+    "mini-cutover-p4-primary-flip",
+    "mini-cutover-p5-remove-sled",
+]
+
+def parse_ts(value):
+    if not value:
+        return None
+    value = str(value).strip()
+    try:
+        if value.endswith("Z"):
+            value = value[:-1] + "+00:00"
+        dt = datetime.fromisoformat(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    except Exception:
+        return None
+
+def age_h(ts):
+    return None if ts is None else round((now - ts) / 3600.0, 1)
+
+mc = [c for c in cards if str(c.get("slug", "")).startswith("mini-cutover")]
+by = {c.get("slug"): c for c in mc}
+if hygiene:
+    by[hygiene.get("slug")] = hygiene
+
+def has_completion_checkpoint(slug):
+    # fkanban writes this durable checkpoint before a done card can later be
+    # tombstoned. Require the structured heading, not a casual slug mention.
+    return f"F-Kanban completion checkpoint: {slug}" in completion_ledger
+
+def col(slug):
+    live = (by.get(slug) or {}).get("column")
+    if live:
+        return live
+    if has_completion_checkpoint(slug):
+        return "done"
+    return "?"
+
+def evidence(slug):
+    if slug in by:
+        return "live-card"
+    if has_completion_checkpoint(slug):
+        return "brain-completion-checkpoint"
+    return "missing"
+
+def is_done(slug):
+    return col(slug) == "done"
+
+def deps_done(slug):
+    deps = (by.get(slug) or {}).get("deps") or []
+    return all(col(dep) == "done" for dep in deps)
+
+issues = []
+status = "HEALTHY"
+program_in_index = "program-mini-cutover-lastdb-core" in ap
+if not program_in_index:
+    issues.append("program-mini-cutover-lastdb-core missing from active-programs")
+    status = "UNHEALTHY"
+
+missing = [slug for slug in ORDER if evidence(slug) == "missing"]
+if missing:
+    issues.append("missing phase evidence: " + ", ".join(missing))
+    status = "UNHEALTHY"
+
+in_flight = [c for c in mc if col(c.get("slug")) in ("todo", "doing")]
+done_n = sum(1 for slug in ORDER if is_done(slug))
+
+pkg_done = is_done("mini-cutover-p4-cutover-safety-package")
+flip_done = is_done("mini-cutover-p4-primary-flip")
+od_has_flip = (
+    "mini-cutover-p4-primary-flip" in od and "status=open" in od
+) or ("READY-FOR-CUTOVER" in od and "status=open" in od)
+if pkg_done and not flip_done:
+    if od_has_flip:
+        status = "WAITING_ON_TOM"
+        issues.append("primary flip waiting on Tom YES (expected)")
+    else:
+        status = "UNHEALTHY"
+        issues.append("P4 safety package done but no open decision for Tom YES")
+
+for card in in_flight:
+    slug = card.get("slug")
+    ts = parse_ts(card.get("updated_at") or card.get("created_at"))
+    hours = age_h(ts)
+    if hours is not None and now - (ts or now) >= stall_secs:
+        issues.append(f"stale {card.get('column')} card {slug} (~{hours}h since update; stall>{stall_hours}h)")
+        if status == "HEALTHY":
+            status = "STALLED"
+
+for card in mc:
+    slug = card.get("slug")
+    block_status = (card.get("block_status") or "").lower()
+    if block_status in ("needs_human", "design_first") and slug != "mini-cutover-p4-primary-flip":
+        issues.append(f"unexpected human hold on {slug}: {block_status} — {card.get('block_reason') or ''}")
+        status = "UNHEALTHY"
+
+if not in_flight and status != "WAITING_ON_TOM" and not flip_done:
+    frontier = next((slug for slug in ORDER if not is_done(slug)), None)
+    if frontier and frontier != "mini-cutover-p4-primary-flip":
+        frontier_col = col(frontier)
+        if frontier_col == "backlog" and deps_done(frontier):
+            issues.append(f"no todo/doing; unblocked frontier {frontier} still in backlog (program-driver should promote)")
+            if status == "HEALTHY":
+                status = "STALLED"
+
+summary = {
+    "status": status,
+    "program": "program-mini-cutover-lastdb-core",
+    "stall_hours": stall_hours,
+    "cards_found": len(mc),
+    "done_phases": done_n,
+    "order_total": len(ORDER),
+    "in_flight": [c.get("slug") for c in in_flight],
+    "columns": {slug: col(slug) for slug in ORDER if col(slug) != "?"},
+    "phase_evidence": {slug: evidence(slug) for slug in ORDER},
+    "issues": issues,
+    "program_in_active_programs": program_in_index,
+    "hygiene_column": col("fold-db-aggressive-hygiene-20260717"),
+}
+
+if json_mode:
+    print(json.dumps(summary, indent=2))
+else:
+    print(f"status={status}")
+    print(f"program_in_index={program_in_index} cards={len(mc)} done={done_n}/{len(ORDER)}")
+    print(f"in_flight={summary['in_flight']}")
+    for issue in issues:
+        print(f"- {issue}")
+    print("JSON:" + json.dumps(summary))
+
+sys.exit(1 if status in ("UNHEALTHY", "STALLED") else 0)
+PY
