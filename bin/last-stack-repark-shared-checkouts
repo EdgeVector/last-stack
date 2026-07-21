@@ -43,6 +43,34 @@ trailers() {  # routine attribution on salvage commits (interactive runs: none)
   fi
 }
 
+open_salvage_branch() {  # $1=repo-dir -> echo branch name
+  local d="$1" branch="$SALVAGE" n candidate
+  if $GIT -C "$d" rev-parse --verify -q "refs/heads/$branch" >/dev/null; then
+    if $GIT -C "$d" switch -q "$branch" 2>/dev/null; then
+      printf '%s\n' "$branch"
+      return 0
+    fi
+
+    # The daily salvage branch may already track older leftovers whose paths
+    # conflict with today's dirty checkout. Create a fresh branch from the
+    # current HEAD so Git does not have to overwrite local files before we can
+    # commit them.
+    n=1
+    while :; do
+      candidate="$SALVAGE-$n"
+      if ! $GIT -C "$d" rev-parse --verify -q "refs/heads/$candidate" >/dev/null; then
+        $GIT -C "$d" switch -q -c "$candidate" 2>/dev/null || return 1
+        printf '%s\n' "$candidate"
+        return 0
+      fi
+      n=$((n + 1))
+    done
+  fi
+
+  $GIT -C "$d" switch -q -c "$branch" 2>/dev/null || return 1
+  printf '%s\n' "$branch"
+}
+
 venue_remote() {  # $1=repo-dir -> echo remote name of the gate of record
   local d="$1" venue=""
   venue=$(head -1 "$d/.last-stack/pr-venue" 2>/dev/null)
@@ -124,10 +152,8 @@ EOF
   salvaged=""
   if [ -n "$dirty" ]; then
     if [ -z "$cur" ] || [ "$cur" = "$mb" ]; then
-      $GIT -C "$d" rev-parse --verify -q "refs/heads/$SALVAGE" >/dev/null \
-        && $GIT -C "$d" switch -q "$SALVAGE" || $GIT -C "$d" switch -q -c "$SALVAGE" \
+      cur=$(open_salvage_branch "$d") \
         || { flag "$d" "cannot open salvage branch"; continue; }
-      cur="$SALVAGE"
     fi
     staged=0
     while IFS= read -r line; do

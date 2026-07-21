@@ -24,7 +24,7 @@ if [ "${1:-}" = "--smoke" ]; then
   grep -q 'reason=budget-low' "$pickup"
   grep -q 'watch external progress until the harness SIGTERM cuts off closeout' "$pickup"
   grep -q 'last-stack-card-reaper-run' "$ROOT/routines/card-reaper.md"
-  grep -q 'final response exactly the final' "$ROOT/routines/card-reaper.md"
+  grep -q 'make your final response the final' "$ROOT/routines/card-reaper.md"
   probe_registry="$ROOT/templates/routine-fleet/probe-registry.md"
   grep -q 'result_classification' "$probe_registry"
   grep -q 'ok when findings are filed/tracked' "$probe_registry"
