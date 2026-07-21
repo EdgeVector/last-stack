@@ -335,6 +335,16 @@ function depsActive(card, cards) {
     hasProgressSignal(c, 1));
 }
 
+function liveDependentSlugs(card, cards) {
+  const slug = String(card.slug || "");
+  if (!slug) return [];
+  return cards
+    .filter((c) => c && String(c.slug || "") !== slug)
+    .filter((c) => String(c.column || "").toLowerCase() !== "done")
+    .filter((c) => Array.isArray(c.deps) && c.deps.map(String).includes(slug))
+    .map((c) => String(c.slug));
+}
+
 function getFullBody(slug) {
   const out = run("kanban", ["show", slug, "--json"], {timeout: 60000});
   if (!out.ok) throw new Error(`kanban show failed for ${slug}: ${out.stderr || out.error}`);
@@ -505,6 +515,16 @@ try {
     const wt = worktreePath(slug);
     const dead = !hasProgressSignal(card, 1) && !hasLiveProcess(wt);
     const hrs = ageHours(card);
+    const dependents = liveDependentSlugs(card, cards);
+    if (dependents.length) {
+      res.flagged.push(`protected-live-dependent:${slug}`);
+      if (dead && hrs >= 1) {
+        const listed = dependents.slice(0, 3).join("+");
+        const rule = `doing dead claim with live dependents; age=${hrs.toFixed(1)}h dependents=${listed}`;
+        if (rollbackDoing(card, rule)) actions++;
+      }
+      continue;
+    }
     let memText = "";
     try { if (fs.existsSync(mem)) memText = fs.readFileSync(mem, "utf8"); } catch { res.memory_unwritable = true; }
     const churn = memText.includes(`rolled_back ${slug}`);
@@ -536,6 +556,10 @@ try {
     }
     const hrs = ageHours(card);
     if (hrs >= 72 && !hasProgressSignal(card, 72)) {
+      if (liveDependentSlugs(card, cards).length) {
+        res.flagged.push(`protected-live-dependent:${slug}`);
+        continue;
+      }
       if (killCard(card, `todo stale >72h with no progress; age=${hrs.toFixed(1)}h`, "todo")) actions++;
     }
   }
@@ -560,6 +584,10 @@ try {
     }
     const hrs = ageHours(card);
     if (hrs >= 168) {
+      if (liveDependentSlugs(card, cards).length) {
+        res.flagged.push(`protected-live-dependent:${slug}`);
+        continue;
+      }
       if (killCard(card, `backlog stale >7d; age=${(hrs / 24).toFixed(1)}d`, "backlog")) actions++;
     }
   }
