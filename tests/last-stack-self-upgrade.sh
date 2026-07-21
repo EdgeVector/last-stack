@@ -323,6 +323,11 @@ printf 'second\n' >>"$lgtmp/seed/README.md"
 git -C "$lgtmp/seed" commit -am second >/dev/null
 git -C "$lgtmp/seed" push origin HEAD:main >/dev/null 2>&1
 
+# A damaged unrelated ref in the venue must not freeze the managed install.
+# Install mirrors consume canonical main only and should not fetch every
+# feature branch as an implicit side effect.
+printf '%040d\n' 1 >"$lgtmp/lastgit.git/refs/heads/broken-ref"
+
 # Real (non-check-only) upgrade through the lastgit venue remote: the local
 # branch's tracked upstream is `origin`, not `lastgit`, so a bare
 # `git pull --ff-only lastgit` fails with "did not specify a branch" unless

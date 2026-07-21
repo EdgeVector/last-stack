@@ -315,7 +315,11 @@ cleanup_lock() {
 trap cleanup_lock EXIT
 
 fetch_err="$(mktemp "${TMPDIR:-/tmp}/last-stack-self-upgrade-fetch.XXXXXX")"
-if ! git -C "$ROOT" fetch --quiet "$remote" >"$fetch_err" 2>&1; then
+# This install is a mirror of venue main, not a feature-ref cache. Fetch only
+# canonical main so an unrelated broken/partially-replicated branch cannot
+# freeze every skill and routine refresh.
+if ! git -C "$ROOT" fetch --quiet "$remote" \
+  "+refs/heads/main:refs/remotes/$remote/main" >"$fetch_err" 2>&1; then
   # Fetch failed. Prefer ls-remote (lighter) to learn whether we are behind:
   # that is the factory-freeze case (ls-remote OK, fetch broken) that used to
   # soft-succeed as up-to-date and leave every routine-read deferred forever.
