@@ -14,19 +14,18 @@ require() {
   fi
 }
 
-require 'North Star → Milestone → cards' "$skill"
-require 'never generate milestones automatically' "$skill"
-require 'fkanban milestone add <slug>' "$skill"
-require 'before any linked card' "$skill"
-require '--driver last-stack-milestone-driver' "$skill"
-require '--proof-card <terminal-slug>' "$skill"
-require '--proof-status pending' "$skill"
-require 'This two-step sequence is required' "$skill"
-require '--milestone <slug>' "$skill"
-require 'fkanban milestone reconcile <slug> --json' "$skill"
-require 'fkanban milestone detail <slug> --json' "$skill"
+require 'North Star → milestone → Kanban routine' "$skill"
+require 'must not directly create milestones or Kanban' "$skill"
+require 'MILESTONE_REQUEST slug=<milestone-slug> status=pending' "$skill"
+require 'routines run last-stack-north-star-driver' "$skill"
+require 'NORTH_STAR_DRIVER_TARGET=<north-star-slug>' "$skill"
+require 'MILESTONE_DRIVER_TARGET=<milestone-slug> routines run last-stack-milestone-driver' "$skill"
+require 'The routine—not Ship It—creates' "$skill"
+require 'The milestone routine—not' "$skill"
+require 'fkanban milestone detail <milestone-slug> --json' "$skill"
 require 'fkanban milestone groom --json' "$skill"
-require 'A Brain North Star supplies durable intent but never auto-generates' "$playbook"
+require '`last-stack-north-star-driver` converts one North Star outcome request' "$playbook"
+require '`last-stack-milestone-driver` creates/links the milestone' "$playbook"
 require 'Completion comes only from proof-gated milestone reconciliation' "$playbook"
 
 printf 'ship-feature milestone contract: ok\n'

@@ -4,9 +4,9 @@ description: |
   Take a feature the user wants to "make sure works" and drive it to done
   autonomously: scope how much work it is, design it, surface ALL open
   questions at once with ELI5 explanations + recommendations, get one plan
-  approval, then materialize a first-class F-Kanban milestone with linked
-  implementation and terminal-proof cards and drive it unattended until the
-  feature is validated by ACTUALLY RUNNING THE APP, not just passing tests.
+  approval, then hand the outcome to the North Star → milestone → Kanban routine
+  pipeline and drive it unattended until the feature is validated by ACTUALLY
+  RUNNING THE APP, not just passing tests.
   Batch every decision up front, then work until proof or a genuinely new blocker.
   Use this when the user says "make sure this feature works", "ship this
   feature", "/ship-feature ...", "drive this to done", "I want X to work and
@@ -151,42 +151,41 @@ Then get a single yes/no. After approval, **do not ask again** unless contract
 
 ## Phase 5 — Drive via Kanban
 
-Materialize the approved plan as **North Star → Milestone → cards**. The
-`ship-feature` intake agent creates the initial milestone records; North Stars
-never generate milestones automatically, and `milestone-driver` grooms/drives
-them afterward. Do not invent a North Star merely to create a milestone: link
-an existing, clearly matching North Star, otherwise leave `north_star` empty and
-preserve the explicit milestone outcome.
+Hand the approved plan into the hierarchical routine pipeline. Ship It is the
+intake/orchestration layer; it must not directly create milestones or Kanban
+cards.
 
 For each independently provable outcome:
 
-1. Create the milestone scaffold **before any linked card**, in milestone
-   dependency order. Run `fkanban milestone add <slug>` with `--state planned`,
-   `--driver last-stack-milestone-driver`, `--proof-status pending`, and the
-   approved `--north-star` / milestone `--deps` where applicable, but omit
-   `--proof-card` for this first upsert. Its body must state the observable
-   outcome and acceptance criteria, not a task list.
-2. Create the terminal proof card in `backlog` (`Kind: validation`, or
-   `Kind: pr` only when authoring the proof harness itself is shippable work).
-   Link it with `--milestone <slug>` and `--north-star <slug>` when present.
-   Until feature-proof discovery is fully milestone-native, tag the validation
-   card `feature-owner,feature-proof,feature-ship`; the milestone, not this card,
-   owns the graph.
-3. Finalize the same milestone with a second
-   `fkanban milestone add <slug> --proof-card <terminal-slug> --proof-status pending`
-   upsert. This two-step sequence is required: cards reject a missing milestone,
-   and milestones reject a named proof card that does not exist.
-4. Create every slice with structured `--milestone <slug>` and the same
-   `--north-star` value. Put only the first unblocked `Kind: pr` frontier in
-   `todo`; dependency-blocked work stays in `backlog`.
-5. Run `fkanban milestone reconcile <slug> --json`, then verify with both
-   `fkanban milestone detail <slug> --json` and
-   `fkanban milestone groom --json`. Materialization is invalid if the driver,
-   proof card, child links, North Star agreement, or executable frontier is
-   missing. Repair the graph before entering the unattended loop.
+1. Resolve one durable Brain North Star. Reuse a clearly matching active North
+   Star; otherwise create one during approved intake with Tom's strategic end
+   state. Do not invent or broaden strategic intent after approval.
+2. Append an idempotent request to that North Star using `brain append`:
+   `MILESTONE_REQUEST slug=<milestone-slug> status=pending`, followed by the
+   approved Outcome and Acceptance text. Never rewrite a large North Star to add
+   the request.
+3. Trigger the North Star routine for the exact request:
+   `NORTH_STAR_DRIVER_TARGET=<north-star-slug>` and
+   `NORTH_STAR_DRIVER_REQUEST=<milestone-slug>` with
+   `routines run last-stack-north-star-driver`. The routine—not Ship It—creates
+   the milestone scaffold. If manual dispatch is unavailable, leave the durable
+   pending request for its scheduled pass.
+4. Confirm the milestone exists and matches the approved North Star/outcome via
+   `fkanban milestone detail <milestone-slug> --json`.
+5. Trigger targeted bounded passes with
+   `MILESTONE_DRIVER_TARGET=<milestone-slug> routines run last-stack-milestone-driver`
+   until the milestone has a linked terminal proof and at least one concrete
+   `Kind: pr` frontier, or reports a real blocker. The milestone routine—not
+   Ship It—creates and links those cards. Never bypass the routine by writing
+   the graph directly.
 
-Use the **`kanban` skill** to create and manage cards — it already knows this
-workspace's board, merge, and babysitting mechanics. For each slice:
+Materialization is invalid until `fkanban milestone detail` and
+`fkanban milestone groom --json` confirm the two routine ownership boundaries,
+driver, proof link, child links, North Star agreement, and executable frontier.
+
+Use the **`kanban` skill** to observe and manage cards after the milestone driver
+has generated them—it already knows this workspace's board, merge, and
+babysitting mechanics. For each slice:
 
 - **Every task prompt MUST start with a header telling the agent to follow the
   `kanban-agent` skill and see it through to a merged PR** — without it the
