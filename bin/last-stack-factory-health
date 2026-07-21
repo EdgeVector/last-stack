@@ -273,6 +273,22 @@ def diagnose_ship(alerts_context: dict[str, Any]) -> list[str]:
     stale = alerts_context.get("stale_doing", 0)
     max_age = alerts_context.get("max_doing_age_h", 0)
     profile = alerts_context.get("routines_profile", "")
+    install_behind = alerts_context.get("install_behind", False)
+    install_stale_hb = int(alerts_context.get("install_stale_heartbeats", 0) or 0)
+    if install_behind or install_stale_hb:
+        recs.append(
+            "Last Stack install freshness gate is failing — run "
+            "`$LAST_STACK_ROOT/bin/last-stack-self-upgrade` and "
+            "`last-stack-update-check` (expect UP_TO_DATE)."
+        )
+        recs.append(
+            "Confirm launchd healer: `last-stack-self-upgrade-install status` "
+            "(com.edgevector.last-stack-self-upgrade)."
+        )
+        recs.append(
+            "If fetch keeps failing while ls-remote works: inspect LastGit/LastDB "
+            "socket and recent self-upgrade stderr (fetch is no longer silent)."
+        )
     if stale or max_age >= 2:
         recs.append(
             "Run `last-stack-board-closeout-sweep` — merged PR cards may be stuck in doing "
@@ -281,7 +297,7 @@ def diagnose_ship(alerts_context: dict[str, Any]) -> list[str]:
         recs.append("Check LaunchAgent: `last-stack-board-closeout-install status`.")
     if todo == 0 and doing == 0:
         recs.append("Queue empty — check program-driver / groom-board / backlog promotions.")
-    elif todo > 0 and doing == 0:
+    elif todo > 0 and doing == 0 and not (install_behind or install_stale_hb):
         recs.append(
             "Todo backlog with empty doing — pickup may be paused, locked, or failing; "
             "`routines status` + recent kanban-pickup heartbeats."
@@ -298,6 +314,70 @@ def diagnose_ship(alerts_context: dict[str, Any]) -> list[str]:
     if not recs:
         recs.append("Inspect factory http://127.0.0.1:4177 and last hour of routine-heartbeats for pickup/watch.")
     return recs
+
+
+def update_check_status(last_stack: Path) -> str:
+    """Return raw last-stack-update-check stdout (first line) or empty."""
+    bin_path = last_stack / "bin" / "last-stack-update-check"
+    if not bin_path.exists():
+        return ""
+    code, out, _ = run([str(bin_path)], timeout=45)
+    if code != 0 and not out.strip():
+        return ""
+    line = (out or "").strip().splitlines()
+    return line[0] if line else ""
+
+
+def install_is_behind(status: str) -> bool:
+    s = (status or "").strip()
+    return s.startswith("GIT_UPDATE_AVAILABLE") or s.startswith("UPGRADE_AVAILABLE")
+
+
+def count_trailing_stale_install_heartbeats(scan_lines: int = 200) -> int:
+    """Count consecutive newest-to-oldest pickup heartbeats that are install-stale noops.
+
+    Scans ~/.last-stack/logs/routine-heartbeats.log (and ~/.routines fallback).
+    """
+    candidates = [
+        Path.home() / ".last-stack" / "logs" / "routine-heartbeats.log",
+        Path.home() / ".routines" / "routine-heartbeats.log",
+        Path.home() / ".routines" / "heartbeats.log",
+    ]
+    path = next((p for p in candidates if p.is_file()), None)
+    if not path:
+        return 0
+    try:
+        # Read last scan_lines efficiently
+        with path.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            chunk = min(size, max(scan_lines, 50) * 200)
+            f.seek(max(0, size - chunk))
+            text = f.read().decode("utf-8", errors="replace")
+    except Exception:
+        return 0
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    # Walk from newest: only count pickup-related lines; stop on first
+    # non-stale pickup success/other outcome after we started counting.
+    stale_re = re.compile(
+        r"(kanban-pickup|fkanban-pickup|last-stack-fkanban-pickup).*stale-last-stack-install",
+        re.I,
+    )
+    pickup_re = re.compile(r"(kanban-pickup|fkanban-pickup|last-stack-fkanban-pickup)", re.I)
+    count = 0
+    for ln in reversed(lines[-scan_lines:]):
+        if not pickup_re.search(ln):
+            continue
+        if stale_re.search(ln) or (
+            "stale-last-stack-install" in ln and "routine-read-failed" in ln
+        ):
+            count += 1
+            continue
+        # A newer non-stale pickup line ends the trailing streak.
+        if count > 0:
+            break
+        # Haven't started streak; keep scanning older lines.
+    return count
 
 
 def build_snapshot(
@@ -701,6 +781,82 @@ def evaluate(cfg: dict[str, Any], snap: Snapshot, meta: dict[str, Any], state: d
                 )
             )
 
+    # ── install freshness (self-upgrade gate) ──────────────────────────────
+    if cfg_get(cfg, "install", "enabled", True):
+        last_stack = Path(meta.get("last_stack") or Path.home() / ".last-stack")
+        status = str(meta.get("install_update_status") or "")
+        behind = bool(meta.get("install_behind"))
+        if not status and last_stack.exists():
+            status = update_check_status(last_stack)
+            behind = install_is_behind(status)
+        scan_n = int(cfg_get(cfg, "install", "heartbeat_scan_lines", 200))
+        hb_stale = int(meta.get("install_stale_heartbeats") or 0)
+        if not hb_stale:
+            hb_stale = count_trailing_stale_install_heartbeats(scan_n)
+        soft_n = int(cfg_get(cfg, "install", "heartbeat_stale_soft", 3))
+        hard_n = int(cfg_get(cfg, "install", "heartbeat_stale_hard", 6))
+        soft_when_behind = bool(cfg_get(cfg, "install", "soft_when_behind", True))
+        ctx = {
+            "doing": snap.doing,
+            "todo": snap.todo,
+            "stale_doing": snap.stale_doing,
+            "max_doing_age_h": snap.max_doing_age_h,
+            "routines_profile": meta.get("routines_profile", ""),
+            "install_behind": behind,
+            "install_stale_heartbeats": hb_stale,
+        }
+        recs = diagnose_ship(ctx)
+        # Hard: known-behind with idle factory, or long stale-install noop streak
+        if behind and snap.todo > 0 and snap.doing == 0:
+            alerts.append(
+                Alert(
+                    severity="hard",
+                    code="install_stale_hard",
+                    title="Last Stack install behind; pickup cannot claim",
+                    detail=(
+                        f"update_check={status[:120]!r} todo={snap.todo} doing={snap.doing} "
+                        f"stale_install_heartbeats={hb_stale}"
+                    ),
+                    recommendations=recs,
+                )
+            )
+        elif hb_stale >= hard_n and snap.todo > 0:
+            alerts.append(
+                Alert(
+                    severity="hard",
+                    code="install_stale_hard",
+                    title="Pickup stuck on stale-last-stack-install",
+                    detail=(
+                        f"trailing_stale_install_heartbeats={hb_stale} (hard≥{hard_n}) "
+                        f"todo={snap.todo} doing={snap.doing} update_check={status[:80]!r}"
+                    ),
+                    recommendations=recs,
+                )
+            )
+        elif soft_when_behind and behind:
+            alerts.append(
+                Alert(
+                    severity="soft",
+                    code="install_stale_soft",
+                    title="Last Stack install reports update available",
+                    detail=f"update_check={status[:120]!r} stale_install_heartbeats={hb_stale}",
+                    recommendations=recs,
+                )
+            )
+        elif hb_stale >= soft_n and snap.todo > 0 and snap.doing == 0:
+            alerts.append(
+                Alert(
+                    severity="soft",
+                    code="install_stale_soft",
+                    title="Pickup nooping on stale install while todo has work",
+                    detail=(
+                        f"trailing_stale_install_heartbeats={hb_stale} (soft≥{soft_n}) "
+                        f"todo={snap.todo} doing={snap.doing}"
+                    ),
+                    recommendations=recs,
+                )
+            )
+
     return alerts
 
 
@@ -818,6 +974,21 @@ def main(argv: list[str]) -> int:
     max_age, stale = recompute_stale(meta.get("doing_cards") or [], soft_age)
     snap.max_doing_age_h = max_age
     snap.stale_doing = stale
+
+    # Install freshness context for evaluate()
+    meta["last_stack"] = str(last_stack)
+    try:
+        uc = update_check_status(last_stack)
+    except Exception:
+        uc = ""
+    meta["install_update_status"] = uc
+    meta["install_behind"] = install_is_behind(uc)
+    try:
+        meta["install_stale_heartbeats"] = count_trailing_stale_install_heartbeats(
+            int(cfg_get(cfg, "install", "heartbeat_scan_lines", 200))
+        )
+    except Exception:
+        meta["install_stale_heartbeats"] = 0
 
     alerts = evaluate(cfg, snap, meta, state)
 

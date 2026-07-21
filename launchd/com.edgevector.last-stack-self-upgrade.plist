@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.edgevector.last-stack-self-upgrade</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/tomtang/.last-stack/bin/last-stack-self-upgrade</string>
+    <string>--reason=launchd</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/tomtang/.last-stack</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/tomtang</string>
+    <key>USER</key>
+    <string>tomtang</string>
+    <key>PATH</key>
+    <string>/Users/tomtang/.local/bin:/Users/tomtang/.last-stack/bin:/Users/tomtang/.bun/bin:/Users/tomtang/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>LAST_STACK_ROOT</key>
+    <string>/Users/tomtang/.last-stack</string>
+  </dict>
+
+  <!-- Every 30 minutes at :12 and :42 — stagger past pickup :00/:20/:40 -->
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict>
+      <key>Minute</key>
+      <integer>12</integer>
+    </dict>
+    <dict>
+      <key>Minute</key>
+      <integer>42</integer>
+    </dict>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>Nice</key>
+  <integer>5</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/tomtang/Library/Logs/last-stack-self-upgrade.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/tomtang/Library/Logs/last-stack-self-upgrade.err.log</string>
+</dict>
+</plist>

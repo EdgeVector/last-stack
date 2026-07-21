@@ -1,0 +1,13 @@
+# Zero-LLM path is preferred (launchd com.edgevector.last-stack-self-upgrade).
+# This Codex routine is a secondary healer: runs the self-upgrade prompt when
+# launchd is missing or agents need dirty-tree repair via the documented
+# backup-branch + reset policy.
+id = "last-stack-self-upgrade"
+harness = "codex"
+model = "gpt-5.5"
+effort = "low"
+rrule = "FREQ=HOURLY;INTERVAL=1;BYMINUTE=22;BYSECOND=0"
+cwd = "/Users/tomtang/code/edgevector"
+status = "active"
+timeout_min = 15
+prompt_path = "/Users/tomtang/.last-stack/routines/self-upgrade.md"

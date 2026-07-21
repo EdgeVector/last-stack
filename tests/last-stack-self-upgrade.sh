@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Host shells often export LASTSTACK_REMOTE_REPO=lastgit for the real install;
+# this harness uses bare `origin` remotes, so clear venue overrides.
+unset LASTSTACK_REMOTE_REPO LASTSTACK_REMOTE_URL LASTSTACK_SELF_UPGRADE_SKIP \
+  LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK 2>/dev/null || true
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 tmp="$(mktemp -d)"
 cleanup() {
@@ -149,6 +154,26 @@ case "$prompt" in
     ;;
 esac
 
+# --- fetch fails while ls-remote shows remote ahead → error-fetch (not soft up-to-date) ---
+printf 'fetch fail fixture\n' >>"$tmp/seed/README.md"
+git -C "$tmp/seed" commit -am "ahead for fetch-fail" >/dev/null
+git -C "$tmp/seed" push origin HEAD:main >/dev/null 2>&1
+# Break the origin remote URL so fetch fails, but leave a usable origin/main
+# ref from a prior successful fetch so ls-remote fallback still sees ahead.
+git -C "$tmp/install" fetch origin >/dev/null 2>&1 || true
+git -C "$tmp/install" remote set-url origin "$tmp/origin.git.DOES_NOT_EXIST"
+if "$tmp/install/bin/last-stack-self-upgrade" --reason=test >/tmp/self-upgrade-error-fetch.out 2>/tmp/self-upgrade-error-fetch.err; then
+  echo "expected error-fetch when behind but fetch broken" >&2
+  cat /tmp/self-upgrade-error-fetch.out /tmp/self-upgrade-error-fetch.err >&2 || true
+  exit 1
+fi
+grep -q 'result=error-fetch' /tmp/self-upgrade-error-fetch.out
+grep -q 'note=fetch-failed' /tmp/self-upgrade-error-fetch.out
+grep -q 'git fetch' /tmp/self-upgrade-error-fetch.err
+# Restore origin for remaining tests.
+git -C "$tmp/install" remote set-url origin "$tmp/origin.git"
+"$tmp/install/bin/last-stack-self-upgrade" --reason=test >/dev/null
+
 # --- skip flag still fails closed ---
 printf 'third fix\n' >>"$tmp/seed/README.md"
 git -C "$tmp/seed" commit -am "third fix" >/dev/null
@@ -178,6 +203,7 @@ grep -q 'LAST_STACK_ROUTINE_REMEDIATION dirty-tree:' /tmp/self-upgrade-dirty-rea
 git -C "$tmp/install" checkout -- README.md
 
 # --- routine-read defers when self-upgrade cannot fetch and install stays stale ---
+# Soft path (legacy note=fetch-failed with exit 0 still defer when still stale).
 cp "$tmp/install/bin/last-stack-self-upgrade" "$tmp/install/bin/last-stack-self-upgrade.real"
 cat >"$tmp/install/bin/last-stack-self-upgrade" <<'EOF'
 #!/bin/sh
@@ -185,17 +211,49 @@ echo "LAST_STACK_SELF_UPGRADE reason=routine-read result=up-to-date local_head=s
 exit 0
 EOF
 chmod +x "$tmp/install/bin/last-stack-self-upgrade"
+rm -f "$tmp/install/state/self-upgrade-fetch-fail.count"
 if LASTSTACK_ROUTINE_READ_LOCK_ATTEMPTS=1 LASTSTACK_ROUTINE_READ_LOCK_BACKOFF_S=0 \
+  LASTSTACK_FETCH_FAIL_STATE_DIR="$tmp/install/state" \
   "$tmp/install/bin/last-stack-routine-read" demo >/tmp/self-upgrade-fetch.out 2>/tmp/self-upgrade-fetch.err; then
   echo "expected fetch-failed stale install to defer routine-read" >&2
   exit 1
 fi
 grep -q 'LAST_STACK_ROUTINE_DEFERRED self_upgrade_fetch_failed' /tmp/self-upgrade-fetch.err
 grep -q 'note=fetch-failed' /tmp/self-upgrade-fetch.err
+grep -q 'streak=1' /tmp/self-upgrade-fetch.err
 if grep -q 'LAST_STACK_ROUTINE_STALE' /tmp/self-upgrade-fetch.err; then
   echo "expected fetch-failed stale install to avoid stale failure classification" >&2
   exit 1
 fi
+
+# error-fetch (exit 1) also defers, not hard-stale, so blips stay soft.
+cat >"$tmp/install/bin/last-stack-self-upgrade" <<'EOF'
+#!/bin/sh
+echo "LAST_STACK_SELF_UPGRADE reason=routine-read result=error-fetch local_head=stub remote_head=deadbeef note=fetch-failed"
+exit 1
+EOF
+chmod +x "$tmp/install/bin/last-stack-self-upgrade"
+if LASTSTACK_ROUTINE_READ_LOCK_ATTEMPTS=1 LASTSTACK_ROUTINE_READ_LOCK_BACKOFF_S=0 \
+  LASTSTACK_FETCH_FAIL_STATE_DIR="$tmp/install/state" \
+  LASTSTACK_FETCH_FAIL_SOFT_MAX=3 \
+  "$tmp/install/bin/last-stack-routine-read" demo >/tmp/self-upgrade-fetch2.out 2>/tmp/self-upgrade-fetch2.err; then
+  echo "expected error-fetch to defer routine-read" >&2
+  exit 1
+fi
+grep -q 'LAST_STACK_ROUTINE_DEFERRED self_upgrade_fetch_failed' /tmp/self-upgrade-fetch2.err
+grep -q 'streak=2' /tmp/self-upgrade-fetch2.err
+
+# After soft_max consecutive fetch fails → escalate signal (still exit 75).
+if LASTSTACK_ROUTINE_READ_LOCK_ATTEMPTS=1 LASTSTACK_ROUTINE_READ_LOCK_BACKOFF_S=0 \
+  LASTSTACK_FETCH_FAIL_STATE_DIR="$tmp/install/state" \
+  LASTSTACK_FETCH_FAIL_SOFT_MAX=3 \
+  "$tmp/install/bin/last-stack-routine-read" demo >/tmp/self-upgrade-fetch3.out 2>/tmp/self-upgrade-fetch3.err; then
+  echo "expected error-fetch streak escalate still defer" >&2
+  exit 1
+fi
+grep -q 'LAST_STACK_ROUTINE_ESCALATED self_upgrade_fetch_failed' /tmp/self-upgrade-fetch3.err
+grep -q 'streak=3' /tmp/self-upgrade-fetch3.err
+
 mv "$tmp/install/bin/last-stack-self-upgrade.real" "$tmp/install/bin/last-stack-self-upgrade"
 
 # --- routine-read defers on a concurrent self-upgrade lock ---
