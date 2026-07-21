@@ -1,0 +1,87 @@
+# Factory health — configurable bands (edit freely; script reloads each run).
+# Override path: FACTORY_HEALTH_CONFIG=/path/to.toml
+# State (history + alert streaks): ~/.last-stack/state/factory-health/
+
+[general]
+# Local timezone for quiet hours (IANA). Empty = system local.
+timezone = "America/Los_Angeles"
+# How often launchd should fire (document only; plist owns interval).
+cadence_min = 60
+# Prefer live factory dashboard when up.
+factory_url = "http://127.0.0.1:4177"
+# Use completed hour (hourAgo=1), not partial current hour, for ship-rate checks.
+use_completed_hour = true
+
+[notify]
+enabled = true
+# ra notify priority when any HARD fires; SOFT uses low.
+priority_hard = "high"
+priority_soft = "normal"
+# Re-notify same fingerprint at most this often (seconds).
+cooldown_s = 3600
+# Suppress relative (ratio/z) ship alerts in these local hours (inclusive start, exclusive end).
+quiet_hours = [0, 8]
+# Absolute HARD alerts still fire during quiet hours if true.
+quiet_allows_hard = true
+
+[auto_fix]
+# Phase 1 default: message only. Flip per-action when Tom trusts them.
+enabled = false
+# Allowed action ids when enabled: board_closeout, report_only
+actions = []
+
+# ── Ship rate ──────────────────────────────────────────────────────────────
+# Compare last completed hour ships to the rolling 24h baseline of hourly ships.
+# Fire SOFT only if ALL of:
+#   1. baseline mean >= min_baseline_mean (avoids overnight false positives)
+#   2. last hour < ratio * mean
+#   3. last hour < mean - z * std   (when std>0; else ratio alone)
+#   4. consecutive_hours completed hours fail the band (hysteresis)
+# HARD if last hour is also below hard_ratio * mean (stricter).
+[ship_rate]
+enabled = true
+window_hours = 24
+min_baseline_mean = 1.0
+soft_ratio = 0.50
+hard_ratio = 0.25
+z_score = 1.5
+consecutive_hours = 2
+# Absolute floor: never alert relative if last hour still has at least this many ships
+# (and mean is modest). Set 0 to disable.
+absolute_floor = 0
+
+# ── Doing age / occupancy ──────────────────────────────────────────────────
+[doing]
+enabled = true
+# Max age (hours) of any single doing card by position doing-since.
+soft_max_age_h = 2.0
+hard_max_age_h = 5.0
+# Count of doing cards older than soft_max_age_h.
+soft_stale_count = 3
+hard_stale_count = 8
+# Absolute doing column size.
+soft_count = 12
+hard_count = 20
+
+# ── Todo depth ─────────────────────────────────────────────────────────────
+[todo]
+enabled = true
+soft_count = 25
+hard_count = 50
+# Also alert if todo is empty while baseline ship rate was healthy (starvation).
+empty_todo_with_baseline = true
+
+# ── 24h ship volume ────────────────────────────────────────────────────────
+# Ships in last 24h vs previous 24h (needs history ring; optional soft only).
+[ship_volume]
+enabled = true
+soft_ratio = 0.50
+hard_ratio = 0.25
+# Need this many prior samples in the ring before relative volume fires.
+min_history_points = 6
+
+# ── Closeout / pipeline smell ──────────────────────────────────────────────
+[closeout]
+enabled = true
+# doing cards with pr_url older than this (hours) → suggest board-closeout.
+merged_suspect_age_h = 1.5
