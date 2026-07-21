@@ -122,18 +122,17 @@ Prefer the **`verify`** skill (run app, observe behavior, confirm intent) or
 **`run`** skill (launch/drive the app) over hand-rolling. Tests passing is an
 intermediate event; the app doing the thing is the gate.
 
-## Milestone ownership and generation
+## Hierarchical driver ownership
 
-- `ship-feature` creates the initial milestone graph immediately after plan
-  approval: milestone, linked PR slices, and linked terminal proof card.
-- A Brain North Star supplies durable intent but never auto-generates
-  milestones. One North Star may have many milestones over time.
-- Create one milestone per independently provable product outcome. Default to
-  one for a normal feature; use multiple only when each outcome has its own
-  acceptance proof and explicit milestone dependencies.
-- `last-stack-milestone-driver` owns ongoing reconciliation, frontier promotion,
-  blockers, and proof readiness. It may repair or extend decomposition, but it
-  does not replace the approved intake outcome.
+- `ship-feature` records the approved outcome request on its Brain North Star
+  and orchestrates targeted routine passes; it does not write milestones/cards.
+- `last-stack-north-star-driver` converts one North Star outcome request into
+  one milestone scaffold. It never creates or moves cards.
+- `last-stack-milestone-driver` creates/links the milestone's terminal proof and
+  bounded PR cards, one generated card per pass. It never implements them.
+- Pickup/kanban-agent executes cards. Proof workers record terminal evidence.
+- One North Star may have many milestones over time. Default to one milestone
+  for one independently provable approved outcome.
 - Completion comes only from proof-gated milestone reconciliation, never from
   PR count or a direct forced complete state.
 
