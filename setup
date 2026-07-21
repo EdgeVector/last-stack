@@ -543,6 +543,13 @@ if [ -x "$SOURCE_ROOT/bin/last-stack-factory-health-install" ]; then
     echo "  factory-health LaunchAgent: install failed (non-fatal)" >&2
 fi
 
+# Zero-LLM self-upgrade healer (every 30m) — keeps install FF'd so pickup does
+# not soft-defer forever on GIT_UPDATE_AVAILABLE / fetch-failed.
+if [ -x "$SOURCE_ROOT/bin/last-stack-self-upgrade-install" ]; then
+  "$SOURCE_ROOT/bin/last-stack-self-upgrade-install" install || \
+    echo "  last-stack-self-upgrade LaunchAgent: install failed (non-fatal)" >&2
+fi
+
 # ── Guard against foreign installers (e.g. gstack) stomping our skill links ────
 # Another installer that ships a same-named skill (gstack shipped a `diagram`
 # skill colliding with our hand-drawn one) silently re-points that SKILL.md at

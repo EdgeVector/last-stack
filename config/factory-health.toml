@@ -80,6 +80,21 @@ hard_ratio = 0.25
 # Need this many prior samples in the ring before relative volume fires.
 min_history_points = 6
 
+# ── Install freshness (Last Stack self-upgrade gate) ───────────────────────
+# Detects the factory-freeze where pickup noops on stale-last-stack-install
+# while todo is non-empty and doing is empty — or update-check says behind.
+[install]
+enabled = true
+# Soft when update-check reports GIT_UPDATE_AVAILABLE / UPGRADE_AVAILABLE.
+soft_when_behind = true
+# Soft when recent pickup heartbeats show N+ consecutive stale-install noops
+# and todo>0 with doing==0.
+heartbeat_stale_soft = 3
+# Hard when consecutive stale-install noops >= this (or behind + empty doing + todo>0).
+heartbeat_stale_hard = 6
+# How far back in routine-heartbeats.log to scan (lines).
+heartbeat_scan_lines = 200
+
 # ── Closeout / pipeline smell ──────────────────────────────────────────────
 [closeout]
 enabled = true

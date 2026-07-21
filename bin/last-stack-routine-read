@@ -21,6 +21,12 @@ case "$routine" in
     ;;
 esac
 
+# Consecutive fetch-fail streak before hard escalate (ra notify). Soft defer
+# still happens each time so a single blip does not fail the whole fleet.
+FETCH_FAIL_SOFT_MAX="${LASTSTACK_FETCH_FAIL_SOFT_MAX:-3}"
+FETCH_FAIL_STATE_DIR="${LASTSTACK_FETCH_FAIL_STATE_DIR:-$ROOT/state}"
+FETCH_FAIL_STATE_FILE="$FETCH_FAIL_STATE_DIR/self-upgrade-fetch-fail.count"
+
 is_stale_status() {
   case "$1" in
     UPGRADE_AVAILABLE*|GIT_UPDATE_AVAILABLE*) return 0 ;;
@@ -59,6 +65,41 @@ upgrade_result() {
   ' "$1" 2>/dev/null || true
 }
 
+clear_fetch_fail_streak() {
+  rm -f "$FETCH_FAIL_STATE_FILE" 2>/dev/null || true
+}
+
+read_fetch_fail_streak() {
+  if [ -f "$FETCH_FAIL_STATE_FILE" ]; then
+    tr -d '[:space:]' <"$FETCH_FAIL_STATE_FILE" 2>/dev/null || echo 0
+  else
+    echo 0
+  fi
+}
+
+bump_fetch_fail_streak() {
+  mkdir -p "$FETCH_FAIL_STATE_DIR" 2>/dev/null || true
+  cur="$(read_fetch_fail_streak)"
+  case "$cur" in
+    ''|*[!0-9]*) cur=0 ;;
+  esac
+  next=$((cur + 1))
+  printf '%s\n' "$next" >"$FETCH_FAIL_STATE_FILE" 2>/dev/null || true
+  printf '%s\n' "$next"
+}
+
+maybe_notify_fetch_fail() {
+  streak="$1"
+  detail="$2"
+  # Best-effort ra notify once the soft budget is exhausted. Never fail the reader
+  # if ra is missing.
+  if ! command -v ra >/dev/null 2>&1; then
+    return 0
+  fi
+  msg="Last Stack install self-upgrade fetch failing (${streak}x). routine=$routine root=$ROOT. $detail Run: $ROOT/bin/last-stack-self-upgrade"
+  ra notify "$msg" --priority high >/dev/null 2>&1 || true
+}
+
 defer_locked_upgrade() {
   stale_status="$1"
   detail_file="$2"
@@ -71,9 +112,17 @@ defer_locked_upgrade() {
 defer_fetch_failed_upgrade() {
   stale_status="$1"
   detail_file="$2"
-  echo "LAST_STACK_ROUTINE_DEFERRED self_upgrade_fetch_failed $stale_status" >&2
-  cat "$detail_file" >&2 2>/dev/null || true
-  echo "Self-upgrade could not fetch the remote; retry the routine on the next scheduled fire." >&2
+  detail="$(cat "$detail_file" 2>/dev/null || true)"
+  streak="$(bump_fetch_fail_streak)"
+  echo "LAST_STACK_ROUTINE_DEFERRED self_upgrade_fetch_failed $stale_status streak=$streak soft_max=$FETCH_FAIL_SOFT_MAX" >&2
+  printf '%s\n' "$detail" >&2
+  if [ "$streak" -ge "$FETCH_FAIL_SOFT_MAX" ]; then
+    echo "LAST_STACK_ROUTINE_ESCALATED self_upgrade_fetch_failed streak=$streak" >&2
+    echo "Self-upgrade fetch has failed $streak consecutive times while install is stale; notifying and still deferring so the next healer/launchd pass can recover." >&2
+    maybe_notify_fetch_fail "$streak" "$detail"
+  else
+    echo "Self-upgrade could not fetch the remote; retry the routine on the next scheduled fire (streak $streak/$FETCH_FAIL_SOFT_MAX)." >&2
+  fi
   exit 75
 }
 
@@ -89,6 +138,7 @@ if [ "${LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK:-0}" != "1" ] && [ -x "$ROOT/bin/las
       backoff_s="${LASTSTACK_ROUTINE_READ_LOCK_BACKOFF_S:-2}"
       attempt=1
       upgrade_ok=0
+      result=""
       while :; do
         : >"$upgrade_err"
         if "$ROOT/bin/last-stack-self-upgrade" --reason=routine-read >"$upgrade_err" 2>&1; then
@@ -112,15 +162,19 @@ if [ "${LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK:-0}" != "1" ] && [ -x "$ROOT/bin/las
         # Refresh status after a successful clean upgrade (or up-to-date race).
         update_status="$("$ROOT/bin/last-stack-update-check" 2>/dev/null || true)"
         if is_stale_status "$update_status"; then
-          if grep -q 'note=fetch-failed' "$upgrade_err" 2>/dev/null; then
+          if grep -qE 'note=fetch-failed|result=error-fetch' "$upgrade_err" 2>/dev/null; then
             defer_fetch_failed_upgrade "$update_status" "$upgrade_err"
           fi
           stale_fail "$update_status" "Self-upgrade reported success but install is still stale. $(cat "$upgrade_err" 2>/dev/null || true)"
         fi
+        clear_fetch_fail_streak
         rm -f "$upgrade_err"
       else
         if [ "$result" = "error-lock" ]; then
           defer_locked_upgrade "$update_status" "$upgrade_err"
+        fi
+        if [ "$result" = "error-fetch" ] || grep -q 'note=fetch-failed' "$upgrade_err" 2>/dev/null; then
+          defer_fetch_failed_upgrade "$update_status" "$upgrade_err"
         fi
         detail="$(cat "$upgrade_err" 2>/dev/null || true)"
         rm -f "$upgrade_err"
@@ -129,6 +183,9 @@ if [ "${LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK:-0}" != "1" ] && [ -x "$ROOT/bin/las
     else
       stale_fail "$update_status" "last-stack-self-upgrade is not installed yet; upgrade once by hand."
     fi
+  else
+    # Fresh install — clear any prior fetch-fail streak so a later blip starts at 1.
+    clear_fetch_fail_streak
   fi
 fi
 

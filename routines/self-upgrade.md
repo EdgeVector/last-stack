@@ -60,8 +60,13 @@ continue — do not fail the whole run.
    "$last_stack/bin/last-stack-self-upgrade" --reason=self-upgrade-routine
    ```
    Interpret the machine line `LAST_STACK_SELF_UPGRADE result=...`:
-   - `up-to-date` → noop
+   - `up-to-date` → noop (if `note=fetch-failed` only, remote was fully offline
+     and we could not prove staleness — ok)
    - `upgraded` → success; note old→new heads
+   - `error-fetch` → fetch failed while `ls-remote` still shows remote ahead.
+     Heartbeat and STOP. Do not claim up-to-date. The launchd healer
+     (`last-stack-self-upgrade-install`) will retry; after repeated fails,
+     factory-health fires `install_stale_hard`.
    - `error-dirty` → repair tracked install dirt with backup-branch plus
      `git reset --hard lastgit/main`, then retry once. If the retry is still
      dirty, heartbeat the dirty sample and stop without filing a human blocker

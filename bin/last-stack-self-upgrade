@@ -10,13 +10,21 @@
 # Machine-readable result lines (stdout):
 #   LAST_STACK_SELF_UPGRADE result=up-to-date|upgraded|already-current \
 #       local_head=<sha> [remote_head=<sha>] [version=<v>]
-#   LAST_STACK_SELF_UPGRADE result=error-dirty|error-diverged|error-pull|error-setup|error-lock|error-not-git \
+#   LAST_STACK_SELF_UPGRADE result=error-dirty|error-diverged|error-pull|error-setup|error-lock|error-not-git|error-fetch \
 #       ...
 #
 # Exit codes:
 #   0  up-to-date or successfully upgraded
-#   1  upgrade needed/attempted but failed (dirty tree, pull refused, etc.)
+#   1  upgrade needed/attempted but failed (dirty tree, pull refused, fetch failed while behind, etc.)
 #   2  usage error
+#
+# Fetch failure policy:
+#   - If `git fetch` fails but `ls-remote` still shows remote HEAD ahead of
+#     local → `result=error-fetch` exit 1 (known-stale; do not pretend up-to-date).
+#   - If both fetch and ls-remote fail (true offline) and tree is clean →
+#     `result=up-to-date note=fetch-failed` exit 0 (cannot prove we are behind).
+#   - Fetch stderr is always logged (not swallowed) so the next agent can name
+#     the failure.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -267,17 +275,48 @@ cleanup_lock() {
 }
 trap cleanup_lock EXIT
 
-if ! git -C "$ROOT" fetch --quiet "$remote" 2>/dev/null; then
-  # Offline / unreachable remote: treat as non-fatal up-to-date-ish for cron,
-  # but only when the install has no local tracked edits.
+fetch_err="$(mktemp "${TMPDIR:-/tmp}/last-stack-self-upgrade-fetch.XXXXXX")"
+if ! git -C "$ROOT" fetch --quiet "$remote" >"$fetch_err" 2>&1; then
+  # Fetch failed. Prefer ls-remote (lighter) to learn whether we are behind:
+  # that is the factory-freeze case (ls-remote OK, fetch broken) that used to
+  # soft-succeed as up-to-date and leave every routine-read deferred forever.
+  fetch_tail="$(tail -c 2000 "$fetch_err" 2>/dev/null || true)"
+  rm -f "$fetch_err"
+  if [ -n "$fetch_tail" ]; then
+    echo "Self-upgrade: git fetch $remote failed:" >&2
+    printf '%s\n' "$fetch_tail" >&2
+  else
+    echo "Self-upgrade: git fetch $remote failed (no stderr captured)." >&2
+  fi
+
   dirty="$(dirty_status)"
   if [ -n "$dirty" ]; then
     emit_dirty_error "$dirty" "fetch-failed"
     exit 1
   fi
+
+  remote_info="$(git -C "$ROOT" ls-remote --symref "$remote" HEAD 2>/dev/null || true)"
+  remote_head_probe="$(printf '%s\n' "$remote_info" | awk '$2 == "HEAD" && $1 != "ref:" {print $1; exit}')"
+  if [ -z "$remote_head_probe" ]; then
+    remote_head_probe="$(git -C "$ROOT" rev-parse --verify "$remote/HEAD" 2>/dev/null || true)"
+  fi
+  if [ -z "$remote_head_probe" ]; then
+    remote_head_probe="$(git -C "$ROOT" rev-parse --verify "$remote/main" 2>/dev/null || true)"
+  fi
+
+  if [ -n "$remote_head_probe" ] && [ "$remote_head_probe" != "$local_head" ]; then
+    emit "result=error-fetch local_head=$(short_sha "$local_head") remote_head=$(short_sha "$remote_head_probe") note=fetch-failed remote=$remote"
+    echo "Install is behind remote HEAD but git fetch failed; refusing to claim up-to-date." >&2
+    echo "Retry soon, or inspect: git -C \"$ROOT\" fetch $remote" >&2
+    exit 1
+  fi
+
+  # True offline (or remote unreachable for both fetch and ls-remote): cannot
+  # prove staleness. Soft success so cron/launchd does not spam when offline.
   emit "result=up-to-date local_head=$(short_sha "$local_head") note=fetch-failed"
   exit 0
 fi
+rm -f "$fetch_err"
 
 remote_info="$(git -C "$ROOT" ls-remote --symref "$remote" HEAD 2>/dev/null || true)"
 remote_ref="$(printf '%s\n' "$remote_info" | awk '$1 == "ref:" && $3 == "HEAD" {print $2; exit}')"
