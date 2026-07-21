@@ -11,8 +11,11 @@ runner, then exit.
 ```bash
 last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 . "$last_stack/bin/last-stack-shell-prelude"
+# Merged PR/CR → done first (card-reaper still skips any pr_url for reaps).
+"$last_stack/bin/last-stack-board-closeout-sweep" || true
 "$last_stack/bin/last-stack-card-reaper-run"
 ```
 
-After the command exits, make your final response exactly the final
-`card-reaper ...` heartbeat line printed by the command, and nothing else.
+After the commands exit, make your final response the final
+`card-reaper ...` heartbeat line printed by the reaper (optionally prefix with
+the `board-closeout …` line). Nothing else.

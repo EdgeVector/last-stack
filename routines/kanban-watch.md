@@ -48,7 +48,10 @@ envelope). Do not invent trailers when `DRIVEN_BY` is unset.
 ## Action budget per wake (cheap vs heavy)
 - **CHEAP mechanical advances are broadly expected, but still run under the
   global wake deadline below** — do EVERY applicable one this
-  wake, **including on pickup-failover early exits**: **`kanban groom
+  wake, **including on pickup-failover early exits**: first
+  **`"$last_stack/bin/last-stack-board-closeout-sweep"`** (merged PR/CR →
+  `done`, true zombies → `todo`; zero-LLM, also runs via LaunchAgent every 15m
+  when watch is paused); then **`kanban groom
   board-cards-heal --apply`** (list/show BoardCards drift) then **reclaim zombie
   `doing` claims** (no PR/branch/commits + no live worker + older than
   **60m** → `move … todo`; soft rule — never SIGKILL agents) **before** any
@@ -175,6 +178,20 @@ predicate as a card-spec issue. Exit `3` means ignored because the card is
 `Kind: pr`: continue the merged-PR logic below. Predicate evaluation is
 read-only and fail-closed; an errored or unsupported predicate never auto-closes
 a card.
+
+## Board closeout sweep (CHEAP — ALWAYS, first)
+
+Before heal / zombie reclaim / failover, run the deterministic closer so merged
+PR/CR cards cannot sit in `doing` for hours when a prior wake skipped them:
+
+```bash
+"$last_stack/bin/last-stack-board-closeout-sweep" || true
+```
+
+Include any `closed=` / `rolled_back=` keys from that heartbeat in the watch
+heartbeat. See `routines/board-closeout.md` and brain
+`preference-kanban-board-closeout-always-on`. Soft 1h zombie reclaim **skips**
+cards with `pr_url`; this sweep is what closes them once the PR is **merged**.
 
 ## Heal BoardCards list/show drift (CHEAP — ALWAYS, before zombie reclaim)
 

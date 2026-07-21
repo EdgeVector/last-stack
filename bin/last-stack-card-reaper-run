@@ -93,6 +93,11 @@ finish() {
   heartbeat "$st"
 }
 
+# Always-on merged-PR closeout (survives low-credit when watch is paused).
+if [ -x "$last_stack/bin/last-stack-board-closeout-sweep" ] && [ "$dry_run" -ne 1 ]; then
+  "$last_stack/bin/last-stack-board-closeout-sweep" >>"$scratch/board-closeout.log" 2>&1 || true
+fi
+
 if [ "$skip_preflight" -ne 1 ]; then
   brain get sop-routine-shared-contract --type sop >/dev/null 2>"$scratch/brain_contract.err" || true
 

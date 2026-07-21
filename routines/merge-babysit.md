@@ -64,14 +64,27 @@ cannot prove any CR is stuck while the inventory backend is unavailable.
 
 ## STEPS
 
+### 0. Board closeout (CHEAP — always)
+
+Merged LastGit CRs often leave the kanban card in `doing` when watch is paused.
+Before detect/exit:
+
+```bash
+"$last_stack/bin/last-stack-board-closeout-sweep" || true
+```
+
+If stuck count is later 0, still report any `closed=` from this sweep in the
+heartbeat instead of pure `noop` when cards were closed.
+
 ### 1. Detect (cheap)
 
 ```bash
 "$timeout_bin" 180s lastgit stuck --json --min-age-min 10
 ```
 
-If `lastgit stuck` is available, parse `.stuck[]`. If `count==0`, heartbeat
-`noop no-stuck-crs` and EXIT.
+If `lastgit stuck` is available, parse `.stuck[]`. If `count==0`, still keep
+any board-closeout results; only then heartbeat `noop no-stuck-crs` and EXIT
+when closeout also closed nothing.
 
 If `lastgit stuck` is unknown/missing, do **not** heartbeat `error` just for
 that capability gap. Record `flagged=lastgit-stuck-cmd-missing`, then fall
