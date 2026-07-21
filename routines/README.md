@@ -58,6 +58,8 @@ stripped out.
                           ▼
    board-closeout ─▶ ALWAYS-ON (LaunchAgent 15m, zero LLM): merged PR/CR → done;
                      true zombie doing → todo. Survives low-credit when watch is paused.
+   factory-health ─▶ hourly bands (ship rate / todo / doing age) vs baselines;
+                     ra notify Tom when out of band; auto_fix opt-in later.
    kanban-watch  ─▶ RECONCILE: advance merged PRs, re-arm/un-stick the stragglers
    kanban-validate ─▶ VALIDATE: run post-merge END STATE checks, then done/review
    pipeline-health ─▶ every ~10m: LastGit CRs + forge PRs unblocked (stuck >10m → fix)

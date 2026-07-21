@@ -1,0 +1,908 @@
+#!/usr/bin/env python3
+"""Hourly Kanban Factory health check — configurable bands, low false positives.
+
+Phase 1: diagnose + ra notify Tom. Auto-fix is opt-in via config.
+
+Usage:
+  last-stack-factory-health [--dry-run] [--config PATH] [--json] [--no-notify]
+
+Exit 0 always after a completed pass (including alerts). Exit 2 on usage error.
+Heartbeat line:
+  factory-health <ISO> ok|soft|hard|noop alerts=N … flagged=…
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import re
+import statistics
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from dataclasses import dataclass, field, asdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover
+    ZoneInfo = None  # type: ignore
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def iso_z(dt: Optional[datetime] = None) -> str:
+    d = dt or utc_now()
+    return d.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def run(cmd: list[str], timeout: float = 60.0) -> tuple[int, str, str]:
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return p.returncode, p.stdout or "", p.stderr or ""
+    except Exception as e:
+        return 1, "", str(e)
+
+
+def strip_controls(s: str) -> str:
+    return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", s or "")
+
+
+def parse_json(raw: str) -> Any:
+    return json.loads(strip_controls(raw))
+
+
+def load_toml(path: Path) -> dict[str, Any]:
+    text = path.read_text(encoding="utf-8")
+    try:
+        import tomllib  # py311+
+
+        return tomllib.loads(text)
+    except ModuleNotFoundError:
+        pass
+    # Minimal fallback for known flat sections (no nested arrays of tables).
+    data: dict[str, Any] = {}
+    section = ""
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip()
+            data.setdefault(section, {})
+            continue
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k, v = k.strip(), v.strip()
+        if v.startswith("[") and v.endswith("]"):
+            inner = v[1:-1].strip()
+            if not inner:
+                val: Any = []
+            else:
+                parts = [p.strip() for p in inner.split(",")]
+                out = []
+                for p in parts:
+                    if p.startswith('"') and p.endswith('"'):
+                        out.append(p[1:-1])
+                    else:
+                        try:
+                            out.append(int(p))
+                        except ValueError:
+                            try:
+                                out.append(float(p))
+                            except ValueError:
+                                out.append(p)
+                val = out
+        elif v in ("true", "false"):
+            val = v == "true"
+        elif v.startswith('"') and v.endswith('"'):
+            val = v[1:-1]
+        else:
+            try:
+                val = int(v)
+            except ValueError:
+                try:
+                    val = float(v)
+                except ValueError:
+                    val = v
+        if section:
+            data[section][k] = val
+        else:
+            data[k] = val
+    return data
+
+
+def cfg_get(cfg: dict[str, Any], section: str, key: str, default: Any) -> Any:
+    sec = cfg.get(section) or {}
+    if not isinstance(sec, dict):
+        return default
+    return sec[key] if key in sec else default
+
+
+@dataclass
+class Alert:
+    severity: str  # soft | hard
+    code: str
+    title: str
+    detail: str
+    recommendations: list[str] = field(default_factory=list)
+
+
+@dataclass
+class Snapshot:
+    ts: str
+    todo: int = 0
+    doing: int = 0
+    backlog: int = 0
+    done: int = 0
+    ships_last_h: float = 0.0
+    ships_24h: float = 0.0
+    ships_per_hour_24h: float = 0.0
+    max_doing_age_h: float = 0.0
+    stale_doing: int = 0
+    doing_with_pr: int = 0
+
+
+def default_config_path(last_stack: Path) -> Path:
+    env = os.environ.get("FACTORY_HEALTH_CONFIG")
+    if env:
+        return Path(env)
+    return last_stack / "config" / "factory-health.toml"
+
+
+def state_dir(last_stack: Path) -> Path:
+    env = os.environ.get("FACTORY_HEALTH_STATE_DIR")
+    if env:
+        return Path(env)
+    return Path.home() / ".last-stack" / "state" / "factory-health"
+
+
+def load_state(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {"history": [], "streaks": {}, "last_alert": {}}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"history": [], "streaks": {}, "last_alert": {}}
+
+
+def save_state(path: Path, state: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+
+
+def fetch_factory(url: str, timeout: float = 4.0) -> Optional[dict[str, Any]]:
+    try:
+        req = urllib.request.Request(url.rstrip("/") + "/api/state", method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return parse_json(resp.read().decode("utf-8", errors="replace"))
+    except Exception:
+        return None
+
+
+def list_cards(board_cli: str) -> list[dict[str, Any]]:
+    # Prefer --all; fall back.
+    for args in (
+        [board_cli, "list", "--json", "--all"],
+        [board_cli, "list", "--json"],
+    ):
+        code, out, err = run(args, timeout=120)
+        if code != 0:
+            continue
+        try:
+            data = parse_json(out)
+        except Exception:
+            continue
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for k in ("cards", "items"):
+                if isinstance(data.get(k), list):
+                    return data[k]
+    return []
+
+
+def age_hours(card: dict[str, Any], now: float) -> float:
+    pos = card.get("position")
+    try:
+        p = float(pos)
+        if p > 1e12:
+            return max(0.0, (now - p / 1000.0) / 3600.0)
+        if p > 1e9:
+            return max(0.0, (now - p) / 3600.0)
+    except Exception:
+        pass
+    for key in ("updated_at", "created_at"):
+        raw = card.get(key) or ""
+        if not raw:
+            continue
+        try:
+            dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            return max(0.0, (now - dt.timestamp()) / 3600.0)
+        except Exception:
+            continue
+    return 0.0
+
+
+def mean_std(xs: list[float]) -> tuple[float, float]:
+    if not xs:
+        return 0.0, 0.0
+    if len(xs) == 1:
+        return float(xs[0]), 0.0
+    m = statistics.fmean(xs)
+    s = statistics.pstdev(xs)
+    return float(m), float(s)
+
+
+def local_hour(cfg: dict[str, Any]) -> int:
+    tz_name = cfg_get(cfg, "general", "timezone", "") or ""
+    if tz_name and ZoneInfo is not None:
+        try:
+            return datetime.now(ZoneInfo(tz_name)).hour
+        except Exception:
+            pass
+    return datetime.now().astimezone().hour
+
+
+def in_quiet_hours(cfg: dict[str, Any]) -> bool:
+    q = cfg_get(cfg, "notify", "quiet_hours", [0, 8])
+    if not isinstance(q, list) or len(q) < 2:
+        return False
+    start, end = int(q[0]), int(q[1])
+    h = local_hour(cfg)
+    if start == end:
+        return False
+    if start < end:
+        return start <= h < end
+    # wraps midnight
+    return h >= start or h < end
+
+
+def diagnose_ship(alerts_context: dict[str, Any]) -> list[str]:
+    recs: list[str] = []
+    doing = alerts_context.get("doing", 0)
+    todo = alerts_context.get("todo", 0)
+    stale = alerts_context.get("stale_doing", 0)
+    max_age = alerts_context.get("max_doing_age_h", 0)
+    profile = alerts_context.get("routines_profile", "")
+    if stale or max_age >= 2:
+        recs.append(
+            "Run `last-stack-board-closeout-sweep` — merged PR cards may be stuck in doing "
+            "(especially if low-credit paused kanban-watch)."
+        )
+        recs.append("Check LaunchAgent: `last-stack-board-closeout-install status`.")
+    if todo == 0 and doing == 0:
+        recs.append("Queue empty — check program-driver / groom-board / backlog promotions.")
+    elif todo > 0 and doing == 0:
+        recs.append(
+            "Todo backlog with empty doing — pickup may be paused, locked, or failing; "
+            "`routines status` + recent kanban-pickup heartbeats."
+        )
+    elif todo > 0 and doing > 0 and stale:
+        recs.append(
+            "Work is claimed but not finishing — look at CI/merge babysit and surface-overlap ghosts."
+        )
+    if profile == "low-credit":
+        recs.append(
+            "Active profile is low-credit (watch/groom paused). Ship-only is expected to be thinner; "
+            "ensure board-closeout LaunchAgent is loaded, or `routines-profile apply normal` when flush."
+        )
+    if not recs:
+        recs.append("Inspect factory http://127.0.0.1:4177 and last hour of routine-heartbeats for pickup/watch.")
+    return recs
+
+
+def build_snapshot(
+    cards: list[dict[str, Any]],
+    factory: Optional[dict[str, Any]],
+    use_completed_hour: bool,
+) -> tuple[Snapshot, dict[str, Any]]:
+    now = time.time()
+    cols = {"backlog": 0, "todo": 0, "doing": 0, "done": 0, "review": 0}
+    max_age = 0.0
+    stale = 0
+    with_pr = 0
+    soft_age = 2.0  # default; caller may recompute stale with config
+    doing_cards: list[dict[str, Any]] = []
+
+    for c in cards:
+        col = str(c.get("column") or "").lower()
+        if col in cols:
+            cols[col] += 1
+        if col == "doing":
+            doing_cards.append(c)
+            age = age_hours(c, now)
+            max_age = max(max_age, age)
+            if age >= soft_age:
+                stale += 1
+            if c.get("pr_url") or c.get("prUrl") or c.get("pr"):
+                with_pr += 1
+
+    ships_last_h = 0.0
+    ships_24h = 0.0
+    ships_per_hour_24h = 0.0
+    hourly: list[dict[str, Any]] = []
+    velocity: dict[str, Any] = {}
+
+    if factory and isinstance(factory.get("velocity"), dict):
+        velocity = factory["velocity"]
+        hourly = list(velocity.get("hourly") or [])
+        ships = velocity.get("ships") or {}
+        h24 = ships.get("h24") or {}
+        ships_24h = float(h24.get("count") or 0)
+        ships_per_hour_24h = float(h24.get("perHour") or 0)
+        # pick completed hour vs current
+        target_ago = 1 if use_completed_hour else 0
+        for b in hourly:
+            if int(b.get("hourAgo", -1)) == target_ago:
+                ships_last_h = float(b.get("ships") or 0)
+                break
+        if ships_last_h == 0 and hourly:
+            # fallback: most recent bucket
+            ships_last_h = float(hourly[-1].get("ships") or 0)
+    else:
+        # Fallback: count done_at in last 1h / 24h from board
+        for c in cards:
+            if str(c.get("column") or "").lower() != "done":
+                continue
+            raw = c.get("done_at") or c.get("updated_at") or ""
+            if not raw:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+                age_h = (now - dt.timestamp()) / 3600.0
+            except Exception:
+                continue
+            if age_h <= 1:
+                ships_last_h += 1
+            if age_h <= 24:
+                ships_24h += 1
+        ships_per_hour_24h = ships_24h / 24.0 if ships_24h else 0.0
+
+    # Prefer factory summary counts when present
+    if factory and isinstance(factory.get("summary"), dict):
+        sc = factory["summary"].get("counts") or {}
+        for k in ("backlog", "todo", "doing", "done"):
+            if k in sc:
+                cols[k] = int(sc[k])
+
+    snap = Snapshot(
+        ts=iso_z(),
+        todo=cols["todo"],
+        doing=cols["doing"],
+        backlog=cols["backlog"],
+        done=cols["done"],
+        ships_last_h=ships_last_h,
+        ships_24h=ships_24h,
+        ships_per_hour_24h=ships_per_hour_24h,
+        max_doing_age_h=round(max_age, 2),
+        stale_doing=stale,
+        doing_with_pr=with_pr,
+    )
+    meta = {
+        "hourly": hourly,
+        "velocity": velocity,
+        "doing_cards": doing_cards,
+        "factory_ok": factory is not None and factory.get("ok", True) is not False,
+        "routines_profile": "",
+    }
+    if factory and isinstance(factory.get("routinesProfile"), dict):
+        meta["routines_profile"] = str(
+            factory["routinesProfile"].get("active")
+            or factory["routinesProfile"].get("name")
+            or ""
+        )
+    # ACTIVE profile file
+    active = Path.home() / ".routines" / "profiles" / "ACTIVE"
+    if active.exists():
+        try:
+            meta["routines_profile"] = active.read_text(encoding="utf-8").strip() or meta["routines_profile"]
+        except Exception:
+            pass
+    return snap, meta
+
+
+def recompute_stale(doing_cards: list[dict[str, Any]], soft_age: float) -> tuple[float, int]:
+    now = time.time()
+    max_age = 0.0
+    stale = 0
+    for c in doing_cards:
+        age = age_hours(c, now)
+        max_age = max(max_age, age)
+        if age >= soft_age:
+            stale += 1
+    return round(max_age, 2), stale
+
+
+def evaluate(cfg: dict[str, Any], snap: Snapshot, meta: dict[str, Any], state: dict[str, Any]) -> list[Alert]:
+    alerts: list[Alert] = []
+    streaks: dict[str, Any] = state.setdefault("streaks", {})
+    ctx = {
+        "doing": snap.doing,
+        "todo": snap.todo,
+        "stale_doing": snap.stale_doing,
+        "max_doing_age_h": snap.max_doing_age_h,
+        "routines_profile": meta.get("routines_profile") or "",
+    }
+
+    # ── ship rate ──────────────────────────────────────────────────────────
+    if cfg_get(cfg, "ship_rate", "enabled", True):
+        hourly = meta.get("hourly") or []
+        use_completed = bool(cfg_get(cfg, "general", "use_completed_hour", True))
+        series: list[float] = []
+        # Baseline: hourAgo 1..window (completed hours only)
+        window = int(cfg_get(cfg, "ship_rate", "window_hours", 24))
+        by_ago = {int(b.get("hourAgo", -1)): float(b.get("ships") or 0) for b in hourly}
+        for ago in range(1 if use_completed else 0, window + 1):
+            if ago in by_ago:
+                series.append(by_ago[ago])
+        last = float(by_ago.get(1 if use_completed else 0, snap.ships_last_h))
+        mean, std = mean_std(series[1:] if len(series) > 1 else series)  # exclude last hour from baseline when present
+        # Prefer baseline without the evaluated hour
+        if series:
+            # series[0] is most recent completed if we built 1..N in order
+            # Rebuild cleanly:
+            base_vals = [by_ago[a] for a in range(2, window + 1) if a in by_ago]
+            if not base_vals:
+                base_vals = [by_ago[a] for a in range(1, window + 1) if a in by_ago and a != (1 if use_completed else 0)]
+            mean, std = mean_std(base_vals)
+
+        min_mean = float(cfg_get(cfg, "ship_rate", "min_baseline_mean", 1.0))
+        soft_ratio = float(cfg_get(cfg, "ship_rate", "soft_ratio", 0.5))
+        hard_ratio = float(cfg_get(cfg, "ship_rate", "hard_ratio", 0.25))
+        z = float(cfg_get(cfg, "ship_rate", "z_score", 1.5))
+        need_streak = int(cfg_get(cfg, "ship_rate", "consecutive_hours", 2))
+        abs_floor = float(cfg_get(cfg, "ship_rate", "absolute_floor", 0))
+
+        # Dual test: ratio AND z-score (when std meaningful)
+        # Dual gate (AND) to cut false positives:
+        #   ratio_fail: last < soft_ratio * mean
+        #   z_fail:     last < mean − z·σ  (or true when σ≈0 so ratio alone applies)
+        quiet = in_quiet_hours(cfg)
+        suppress_relative = quiet or mean < min_mean
+
+        if mean > 0:
+            ratio_soft = last < soft_ratio * mean
+            ratio_hard = last < hard_ratio * mean
+            z_fail = std <= 1e-9 or last < (mean - z * std)
+            below_soft = ratio_soft and z_fail
+            below_hard = ratio_hard and z_fail
+        else:
+            below_soft = False
+            below_hard = False
+
+        if abs_floor > 0 and last >= abs_floor:
+            below_soft = False
+            below_hard = False
+
+        key = "ship_rate_soft"
+        if suppress_relative:
+            streaks[key] = 0
+            streaks["ship_rate_hard"] = 0
+        else:
+            if below_soft:
+                streaks[key] = int(streaks.get(key) or 0) + 1
+            else:
+                streaks[key] = 0
+            if below_hard:
+                streaks["ship_rate_hard"] = int(streaks.get("ship_rate_hard") or 0) + 1
+            else:
+                streaks["ship_rate_hard"] = 0
+
+            if int(streaks.get("ship_rate_hard") or 0) >= need_streak:
+                alerts.append(
+                    Alert(
+                        severity="hard",
+                        code="ship_rate_hard",
+                        title="Ship rate collapsed",
+                        detail=(
+                            f"Last completed hour ships={last:.0f}; "
+                            f"24h baseline mean={mean:.2f}/h std={std:.2f}; "
+                            f"hard band <{hard_ratio:.0%} mean & z≥{z}; "
+                            f"streak={streaks['ship_rate_hard']}/{need_streak}"
+                        ),
+                        recommendations=diagnose_ship(ctx),
+                    )
+                )
+            elif int(streaks.get(key) or 0) >= need_streak:
+                alerts.append(
+                    Alert(
+                        severity="soft",
+                        code="ship_rate_soft",
+                        title="Ship rate below band",
+                        detail=(
+                            f"Last completed hour ships={last:.0f}; "
+                            f"24h baseline mean={mean:.2f}/h std={std:.2f}; "
+                            f"soft requires <{soft_ratio:.0%} mean AND <mean−{z}σ; "
+                            f"streak={streaks[key]}/{need_streak}"
+                        ),
+                        recommendations=diagnose_ship(ctx),
+                    )
+                )
+
+    # ── doing ──────────────────────────────────────────────────────────────
+    if cfg_get(cfg, "doing", "enabled", True):
+        soft_age = float(cfg_get(cfg, "doing", "soft_max_age_h", 2.0))
+        hard_age = float(cfg_get(cfg, "doing", "hard_max_age_h", 5.0))
+        soft_stale_n = int(cfg_get(cfg, "doing", "soft_stale_count", 3))
+        hard_stale_n = int(cfg_get(cfg, "doing", "hard_stale_count", 8))
+        soft_count = int(cfg_get(cfg, "doing", "soft_count", 12))
+        hard_count = int(cfg_get(cfg, "doing", "hard_count", 20))
+
+        max_age, stale = recompute_stale(meta.get("doing_cards") or [], soft_age)
+        snap.max_doing_age_h = max_age
+        snap.stale_doing = stale
+        ctx["max_doing_age_h"] = max_age
+        ctx["stale_doing"] = stale
+
+        if max_age >= hard_age or stale >= hard_stale_n or snap.doing >= hard_count:
+            oldest = ""
+            if meta.get("doing_cards"):
+                now = time.time()
+                best = max(meta["doing_cards"], key=lambda c: age_hours(c, now))
+                oldest = f" oldest={best.get('slug')} ({age_hours(best, now):.1f}h)"
+            alerts.append(
+                Alert(
+                    severity="hard",
+                    code="doing_stuck_hard",
+                    title="Doing column critically stuck",
+                    detail=(
+                        f"doing={snap.doing} max_age={max_age:.1f}h stale(≥{soft_age}h)={stale}"
+                        f"{oldest}"
+                    ),
+                    recommendations=[
+                        "Run `last-stack-board-closeout-sweep` (merged → done; zombie → todo).",
+                        "If low-credit: watch is paused — closeout LaunchAgent is the safety net.",
+                        "Inspect open PRs that are not merged and live workers on worktrees.",
+                    ]
+                    + diagnose_ship(ctx),
+                )
+            )
+        elif max_age >= soft_age or stale >= soft_stale_n or snap.doing >= soft_count:
+            alerts.append(
+                Alert(
+                    severity="soft",
+                    code="doing_stuck_soft",
+                    title="Doing column elevated",
+                    detail=f"doing={snap.doing} max_age={max_age:.1f}h stale(≥{soft_age}h)={stale}",
+                    recommendations=[
+                        "Dry-run: `last-stack-board-closeout-sweep --dry-run`",
+                        "Check factory doing lane for multi-hour chips with merged PRs.",
+                    ],
+                )
+            )
+
+    # ── todo ───────────────────────────────────────────────────────────────
+    if cfg_get(cfg, "todo", "enabled", True):
+        soft_t = int(cfg_get(cfg, "todo", "soft_count", 25))
+        hard_t = int(cfg_get(cfg, "todo", "hard_count", 50))
+        if snap.todo >= hard_t:
+            alerts.append(
+                Alert(
+                    severity="hard",
+                    code="todo_depth_hard",
+                    title="Todo pile critically deep",
+                    detail=f"todo={snap.todo} (hard≥{hard_t})",
+                    recommendations=[
+                        "Scale pickup workers or clear blockers (needs_human / deps).",
+                        "Run groom-board / program-driver if backlog isn't promoting cleanly.",
+                    ],
+                )
+            )
+        elif snap.todo >= soft_t:
+            alerts.append(
+                Alert(
+                    severity="soft",
+                    code="todo_depth_soft",
+                    title="Todo pile elevated",
+                    detail=f"todo={snap.todo} (soft≥{soft_t})",
+                    recommendations=["Check pickup capacity and blocked/human-gated cards."],
+                )
+            )
+        if (
+            cfg_get(cfg, "todo", "empty_todo_with_baseline", True)
+            and snap.todo == 0
+            and snap.ships_per_hour_24h >= float(cfg_get(cfg, "ship_rate", "min_baseline_mean", 1.0))
+            and snap.doing == 0
+        ):
+            alerts.append(
+                Alert(
+                    severity="soft",
+                    code="todo_starved",
+                    title="Queue empty while factory was shipping",
+                    detail=(
+                        f"todo=0 doing=0 but 24h ship rate≈{snap.ships_per_hour_24h:.2f}/h — "
+                        "may be fine if intentionally drained"
+                    ),
+                    recommendations=[
+                        "If unexpected: promote next program slices / unstick backlog deps.",
+                    ],
+                )
+            )
+
+    # ── ship volume 24h vs history ─────────────────────────────────────────
+    if cfg_get(cfg, "ship_volume", "enabled", True):
+        hist = state.get("history") or []
+        min_pts = int(cfg_get(cfg, "ship_volume", "min_history_points", 6))
+        soft_r = float(cfg_get(cfg, "ship_volume", "soft_ratio", 0.5))
+        hard_r = float(cfg_get(cfg, "ship_volume", "hard_ratio", 0.25))
+        past = [float(h.get("ships_24h") or 0) for h in hist[-48:] if h.get("ships_24h") is not None]
+        if len(past) >= min_pts and not in_quiet_hours(cfg):
+            m, s = mean_std(past)
+            if m >= float(cfg_get(cfg, "ship_rate", "min_baseline_mean", 1.0)) * 8:  # rough daily floor
+                if snap.ships_24h < hard_r * m:
+                    alerts.append(
+                        Alert(
+                            severity="hard",
+                            code="ship_volume_hard",
+                            title="24h ship volume collapsed vs history",
+                            detail=f"ships_24h={snap.ships_24h:.0f} history_mean={m:.1f} hard_ratio={hard_r}",
+                            recommendations=diagnose_ship(ctx),
+                        )
+                    )
+                elif snap.ships_24h < soft_r * m:
+                    alerts.append(
+                        Alert(
+                            severity="soft",
+                            code="ship_volume_soft",
+                            title="24h ship volume soft vs history",
+                            detail=f"ships_24h={snap.ships_24h:.0f} history_mean={m:.1f} soft_ratio={soft_r}",
+                            recommendations=diagnose_ship(ctx),
+                        )
+                    )
+
+    # ── closeout smell ─────────────────────────────────────────────────────
+    if cfg_get(cfg, "closeout", "enabled", True):
+        age_lim = float(cfg_get(cfg, "closeout", "merged_suspect_age_h", 1.5))
+        suspects = []
+        now = time.time()
+        for c in meta.get("doing_cards") or []:
+            if not (c.get("pr_url") or c.get("prUrl") or c.get("pr")):
+                continue
+            age = age_hours(c, now)
+            if age >= age_lim:
+                suspects.append(f"{c.get('slug')}({age:.1f}h)")
+        hard_age = float(cfg_get(cfg, "doing", "hard_max_age_h", 5.0))
+        pr_ages = [
+            age_hours(c, now)
+            for c in (meta.get("doing_cards") or [])
+            if (c.get("pr_url") or c.get("prUrl") or c.get("pr"))
+        ]
+        max_pr_age = max(pr_ages) if pr_ages else 0.0
+        if len(suspects) >= 1 and max_pr_age >= hard_age:
+            alerts.append(
+                Alert(
+                    severity="hard",
+                    code="closeout_stale_pr_card",
+                    title="Aged doing card with PR (closeout lag)",
+                    detail=f"max_pr_age={max_pr_age:.1f}h suspects={', '.join(suspects[:8])}",
+                    recommendations=["Run board-closeout sweep; check watch paused under low-credit."],
+                )
+            )
+        elif len(suspects) >= 3:
+            alerts.append(
+                Alert(
+                    severity="soft",
+                    code="closeout_backlog",
+                    title="Many aged doing cards still carry PR URLs",
+                    detail=f"count={len(suspects)} sample={', '.join(suspects[:5])}",
+                    recommendations=[
+                        "Likely merged-but-not-closed — run `last-stack-board-closeout-sweep`.",
+                        "Confirm com.edgevector.board-closeout LaunchAgent is loaded.",
+                    ],
+                )
+            )
+
+    return alerts
+
+
+def fingerprint(alerts: list[Alert]) -> str:
+    return "|".join(sorted(f"{a.severity}:{a.code}" for a in alerts))
+
+
+def should_notify(state: dict[str, Any], fp: str, cooldown_s: int) -> bool:
+    la = state.get("last_alert") or {}
+    if la.get("fp") != fp:
+        return True
+    try:
+        last = float(la.get("ts_epoch") or 0)
+    except Exception:
+        return True
+    return (time.time() - last) >= cooldown_s
+
+
+def format_message(snap: Snapshot, alerts: list[Alert], meta: dict[str, Any]) -> str:
+    hard = [a for a in alerts if a.severity == "hard"]
+    soft = [a for a in alerts if a.severity == "soft"]
+    level = "HARD" if hard else "SOFT"
+    lines = [
+        f"🏭 Factory health {level} — {snap.ts}",
+        f"board todo={snap.todo} doing={snap.doing} backlog={snap.backlog} done={snap.done}",
+        f"ships last_h={snap.ships_last_h:.0f}  24h={snap.ships_24h:.0f} (~{snap.ships_per_hour_24h:.2f}/h)",
+        f"doing max_age={snap.max_doing_age_h}h stale={snap.stale_doing} profile={meta.get('routines_profile') or '?'}",
+        "",
+    ]
+    for a in hard + soft:
+        lines.append(f"• [{a.severity.upper()}] {a.title}")
+        lines.append(f"  {a.detail}")
+        for r in a.recommendations[:4]:
+            lines.append(f"  → {r}")
+        lines.append("")
+    lines.append("Phase: notify only (auto_fix off). Reply / ask agent to apply a fix.")
+    lines.append("Config: last-stack/config/factory-health.toml")
+    return "\n".join(lines).strip()
+
+
+def notify_tom(msg: str, priority: str, dry_run: bool) -> tuple[bool, str]:
+    if dry_run:
+        return True, "dry-run"
+    # Prefer ra notify
+    code, out, err = run(["ra", "notify", msg, "--priority", priority], timeout=45)
+    if code == 0:
+        return True, (out or "ok").strip()[:200]
+    return False, (err or out or f"exit {code}")[:300]
+
+
+def maybe_auto_fix(cfg: dict[str, Any], alerts: list[Alert], last_stack: Path, dry_run: bool) -> list[str]:
+    if not cfg_get(cfg, "auto_fix", "enabled", False):
+        return []
+    allowed = set(cfg_get(cfg, "auto_fix", "actions", []) or [])
+    actions: list[str] = []
+    if not allowed:
+        return actions
+    codes = {a.code for a in alerts}
+    if "board_closeout" in allowed and codes & {
+        "doing_stuck_hard",
+        "doing_stuck_soft",
+        "closeout_backlog",
+        "closeout_stale_pr_card",
+        "ship_rate_hard",
+        "ship_rate_soft",
+    }:
+        bin_path = last_stack / "bin" / "last-stack-board-closeout-sweep"
+        if bin_path.exists():
+            if dry_run:
+                actions.append("would:board_closeout")
+            else:
+                code, out, err = run([str(bin_path)], timeout=180)
+                actions.append(f"board_closeout:exit={code}")
+    return actions
+
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(description="Kanban factory health (hourly bands)")
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--config", default="")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--no-notify", action="store_true")
+    ap.add_argument("--last-stack", default="")
+    args = ap.parse_args(argv)
+
+    self_dir = Path(__file__).resolve().parent
+    last_stack = Path(args.last_stack) if args.last_stack else self_dir.parent
+    cfg_path = Path(args.config) if args.config else default_config_path(last_stack)
+    if not cfg_path.exists():
+        print(f"factory-health: missing config {cfg_path}", file=sys.stderr)
+        return 2
+    cfg = load_toml(cfg_path)
+
+    sdir = state_dir(last_stack)
+    state_path = sdir / "state.json"
+    state = load_state(state_path)
+
+    board_cli = "kanban"
+    code_k, _, _ = run(["sh", "-c", "command -v kanban"], timeout=5)
+    if code_k != 0:
+        board_cli = "fkanban"
+
+    factory_url = str(cfg_get(cfg, "general", "factory_url", "http://127.0.0.1:4177"))
+    factory = fetch_factory(factory_url)
+    cards = list_cards(board_cli)
+    if not cards and not factory:
+        line = f"factory-health {iso_z()} noop alerts=0 flagged=board-and-factory-unavailable"
+        print(line)
+        return 0
+
+    use_completed = bool(cfg_get(cfg, "general", "use_completed_hour", True))
+    snap, meta = build_snapshot(cards, factory, use_completed)
+    # refresh stale with config soft age for snapshot fields before evaluate mutates
+    soft_age = float(cfg_get(cfg, "doing", "soft_max_age_h", 2.0))
+    max_age, stale = recompute_stale(meta.get("doing_cards") or [], soft_age)
+    snap.max_doing_age_h = max_age
+    snap.stale_doing = stale
+
+    alerts = evaluate(cfg, snap, meta, state)
+
+    # Append history ring (keep ~7d hourly)
+    hist = state.setdefault("history", [])
+    hist.append(asdict(snap))
+    state["history"] = hist[-24 * 7 :]
+
+    actions = maybe_auto_fix(cfg, alerts, last_stack, args.dry_run)
+
+    severity = "ok"
+    if any(a.severity == "hard" for a in alerts):
+        severity = "hard"
+    elif any(a.severity == "soft" for a in alerts):
+        severity = "soft"
+    elif not alerts:
+        severity = "ok"
+
+    notified = False
+    notify_detail = "skipped"
+    if alerts and cfg_get(cfg, "notify", "enabled", True) and not args.no_notify:
+        quiet = in_quiet_hours(cfg)
+        hard_only = [a for a in alerts if a.severity == "hard"]
+        if quiet and not cfg_get(cfg, "notify", "quiet_allows_hard", True):
+            notify_detail = "quiet-hours"
+        elif quiet and not hard_only and cfg_get(cfg, "notify", "quiet_allows_hard", True):
+            # soft only during quiet — skip
+            notify_detail = "quiet-soft-suppressed"
+        else:
+            to_send = hard_only if quiet else alerts
+            if not to_send:
+                notify_detail = "quiet-no-hard"
+            else:
+                fp = fingerprint(to_send)
+                cooldown = int(cfg_get(cfg, "notify", "cooldown_s", 3600))
+                if should_notify(state, fp, cooldown):
+                    msg = format_message(snap, to_send, meta)
+                    pri = (
+                        str(cfg_get(cfg, "notify", "priority_hard", "high"))
+                        if any(a.severity == "hard" for a in to_send)
+                        else str(cfg_get(cfg, "notify", "priority_soft", "normal"))
+                    )
+                    ok, detail = notify_tom(msg, pri, args.dry_run)
+                    notified = ok
+                    notify_detail = detail
+                    if ok and not args.dry_run:
+                        state["last_alert"] = {"fp": fp, "ts_epoch": time.time(), "ts": iso_z()}
+                else:
+                    notify_detail = "cooldown"
+
+    if not args.dry_run:
+        save_state(state_path, state)
+
+    codes = ",".join(a.code for a in alerts) if alerts else "none"
+    line = (
+        f"factory-health {iso_z()} {severity} alerts={len(alerts)} codes={codes} "
+        f"todo={snap.todo} doing={snap.doing} ships_h={snap.ships_last_h:.0f} "
+        f"ships_24h={snap.ships_24h:.0f} max_doing_age_h={snap.max_doing_age_h} "
+        f"notified={int(notified)} notify={notify_detail} "
+        f"auto_fix={','.join(actions) if actions else 'none'} "
+        f"factory={'up' if meta.get('factory_ok') else 'down'}"
+    )
+    print(line)
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "snapshot": asdict(snap),
+                    "alerts": [asdict(a) for a in alerts],
+                    "meta": {k: v for k, v in meta.items() if k != "doing_cards"},
+                    "notified": notified,
+                    "notify_detail": notify_detail,
+                    "actions": actions,
+                },
+                indent=2,
+            )
+        )
+
+    # Heartbeat best-effort
+    hb = last_stack / "bin" / "last-stack-brain-append-heartbeat"
+    if not args.dry_run and hb.exists():
+        run([str(hb), "--line", line], timeout=30)
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

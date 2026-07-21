@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Install / uninstall / status / run-once the factory-health LaunchAgent (hourly).
+set -euo pipefail
+
+self_dir="$(cd "$(dirname "$0")" && pwd -P)"
+last_stack="$(cd "$self_dir/.." && pwd -P)"
+label="com.edgevector.factory-health"
+plist_src="$last_stack/launchd/${label}.plist"
+plist_dst="${FACTORY_HEALTH_PLIST:-$HOME/Library/LaunchAgents/${label}.plist}"
+uid="$(id -u)"
+domain="gui/${uid}"
+cmd="${1:-status}"
+
+install_agent() {
+  chmod +x "$last_stack/bin/last-stack-factory-health" 2>/dev/null || true
+  [ -x "$last_stack/bin/last-stack-factory-health" ] || {
+    echo "missing $last_stack/bin/last-stack-factory-health" >&2
+    exit 1
+  }
+  [ -f "$plist_src" ] || {
+    echo "missing $plist_src" >&2
+    exit 1
+  }
+  mkdir -p "$(dirname "$plist_dst")"
+  sed \
+    -e "s|/Users/tomtang/.last-stack|${last_stack}|g" \
+    -e "s|/Users/tomtang|${HOME}|g" \
+    "$plist_src" >"$plist_dst"
+  /usr/libexec/PlistBuddy -c "Set :ProgramArguments:0 ${last_stack}/bin/last-stack-factory-health" "$plist_dst" 2>/dev/null || true
+  /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:LAST_STACK_ROOT ${last_stack}" "$plist_dst" 2>/dev/null || true
+  /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:FACTORY_HEALTH_CONFIG ${last_stack}/config/factory-health.toml" "$plist_dst" 2>/dev/null || true
+
+  if command -v launchctl >/dev/null 2>&1; then
+    launchctl bootout "${domain}/${label}" >/dev/null 2>&1 || true
+    if launchctl bootstrap "$domain" "$plist_dst" >/dev/null 2>&1; then
+      launchctl enable "${domain}/${label}" >/dev/null 2>&1 || true
+      launchctl kickstart -k "${domain}/${label}" >/dev/null 2>&1 || true
+      echo "factory-health: loaded ${label} (hourly)"
+    else
+      echo "factory-health: plist at $plist_dst (bootstrap failed)" >&2
+    fi
+  else
+    echo "factory-health: plist written $plist_dst"
+  fi
+}
+
+uninstall_agent() {
+  launchctl bootout "${domain}/${label}" >/dev/null 2>&1 || true
+  rm -f "$plist_dst"
+  echo "factory-health: uninstalled"
+}
+
+status_agent() {
+  echo "bin: $last_stack/bin/last-stack-factory-health"
+  echo "config: $last_stack/config/factory-health.toml"
+  echo "plist: $plist_dst"
+  [ -f "$plist_dst" ] && echo "plist: present" || echo "plist: missing"
+  launchctl print "${domain}/${label}" 2>/dev/null | head -25 || echo "launchctl: not loaded"
+  if [ -f "$HOME/Library/Logs/factory-health.out.log" ]; then
+    echo "--- last log ---"
+    tail -5 "$HOME/Library/Logs/factory-health.out.log" || true
+  fi
+}
+
+case "$cmd" in
+  install) install_agent ;;
+  uninstall) uninstall_agent ;;
+  status) status_agent ;;
+  run-once) exec "$last_stack/bin/last-stack-factory-health" "${@:2}" ;;
+  -h|--help) sed -n '2,6p' "$0" ;;
+  *) echo "usage: $0 install|uninstall|status|run-once" >&2; exit 2 ;;
+esac

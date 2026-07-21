@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.edgevector.factory-health</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/tomtang/.last-stack/bin/last-stack-factory-health</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/tomtang/code/edgevector</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/tomtang</string>
+    <key>USER</key>
+    <string>tomtang</string>
+    <key>PATH</key>
+    <string>/Users/tomtang/.local/bin:/Users/tomtang/.last-stack/bin:/Users/tomtang/.bun/bin:/Users/tomtang/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>LAST_STACK_ROOT</key>
+    <string>/Users/tomtang/.last-stack</string>
+    <key>FACTORY_HEALTH_CONFIG</key>
+    <string>/Users/tomtang/.last-stack/config/factory-health.toml</string>
+  </dict>
+
+  <!-- Hourly at :17 to stagger past pickup :00/:30 and watch :03 -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Minute</key>
+    <integer>17</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>Nice</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/tomtang/Library/Logs/factory-health.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/tomtang/Library/Logs/factory-health.err.log</string>
+</dict>
+</plist>
