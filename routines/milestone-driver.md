@@ -46,11 +46,38 @@ actions and human-clearance requirements. A notice or unrelated Situation is
 context, not a reason to stop. Never restart LastDB, routinesd, or other shared
 infrastructure.
 
-Start with a socket-backed narrow board read:
+## Creation inventory gate
+
+Before milestone selection—including targeted dispatch—count the current live
+board and milestone load:
 
 ```bash
+fkanban list --column backlog --json > /tmp/milestone-driver-backlog.json
 fkanban list --column todo --json > /tmp/milestone-driver-todo.json
+fkanban list --column doing --json > /tmp/milestone-driver-doing.json
+fkanban milestone portfolio --json > /tmp/milestone-driver-portfolio.json
+backlog_count="$(jq 'length' /tmp/milestone-driver-backlog.json)"
+todo_count="$(jq 'length' /tmp/milestone-driver-todo.json)"
+doing_count="$(jq 'length' /tmp/milestone-driver-doing.json)"
+milestone_count="$(jq '[.[] | select(.state != "complete" and .state != "abandoned")] | length' /tmp/milestone-driver-portfolio.json)"
+printf 'CREATION_INVENTORY backlog=%s todo=%s doing=%s nonterminal_milestones=%s\n' \
+  "$backlog_count" "$todo_count" "$doing_count" "$milestone_count"
 ```
+
+The `CREATION_INVENTORY` line must contain the number of cards in `backlog`,
+`todo`, and `doing`, plus the number of nonterminal milestones. These counts
+help reuse and consolidate existing work; they do not impose a global todo cap.
+If any inventory read fails, create nothing, heartbeat a noop, and exit.
+
+Immediately before any `fkanban add`, repeat all four inventory reads, print the
+refreshed counts, and point-read the selected milestone again. For a proof card,
+search for the deterministic proof slug and repair an unambiguous existing link
+instead of creating a duplicate. For implementation work, count live `Kind:
+pr` children of the selected milestone in `backlog`, `todo`, and `doing`. If
+that count is nonzero, do not create another implementation child. Promote the
+existing pickup-ready frontier when permitted; otherwise report
+`noop existing-live-frontier`. This recheck is mandatory even if selection used
+an earlier inventory snapshot.
 
 If a required read returns `service_timeout`, `node did not respond`, or
 `too many concurrent reads`, treat it as busy-node backpressure: make no board
@@ -59,10 +86,10 @@ reads. If needed, use `lastdb status` and `lastdb ops` only to name load.
 
 ## Select one milestone
 
-### Targeted dispatch is an absolute gate
+### Targeted dispatch is an absolute selection gate
 
-Before reading the portfolio or applying any ranking rule, inspect and print the
-target explicitly:
+After the creation inventory gate, and before applying any ranking rule,
+inspect and print the target explicitly:
 
 ```bash
 printf 'MILESTONE_DRIVER_TARGET=%s\n' "${MILESTONE_DRIVER_TARGET:-<unset>}"
@@ -79,15 +106,17 @@ If `MILESTONE_DRIVER_TARGET` is nonempty:
    **Drive the selected milestone**.
 
 This gate is mandatory for Ship It dispatch. Targeting never relaxes blockers,
-proof gates, or the one-card budget.
+proof gates, the creation inventory gate, or the one-card budget.
 
 Only when `MILESTONE_DRIVER_TARGET` is empty, read the compact supervisory
 surfaces, not a full-body board dump:
 
 ```bash
-fkanban milestone portfolio --json > /tmp/milestone-portfolio.json
 fkanban milestone groom --json > /tmp/milestone-groom.json
 ```
+
+Use `/tmp/milestone-driver-portfolio.json` from the creation inventory gate for
+portfolio ranking.
 
 Ignore `complete` and `abandoned` records. Select exactly one milestone using
 this order, with oldest portfolio position as the tie-breaker:
@@ -122,7 +151,8 @@ proof, and warnings. State changes use explicit proof-gated milestone commands.
 
 ### Planned and active state
 
-- If the milestone has no `proof_card`, create one terminal `Kind: validation`
+- If the milestone has no `proof_card`, pass the creation inventory gate again,
+  then create one terminal `Kind: validation`
   card in `backlog` before creating implementation work. Use the deterministic
   slug `<milestone-slug>-proof`, matching `--milestone` and `--north-star`, tags
   `feature-owner,feature-proof,feature-ship,terminal-verification`, and a
@@ -138,7 +168,8 @@ proof, and warnings. State changes use explicit proof-gated milestone commands.
 - If a pickup-ready PR child is in `backlog`, promote at most one to `todo`.
   Never force through unfinished dependencies or an intentional block.
 - If no executable frontier exists but the outcome and next slice are concrete,
-  search for duplicates, then file exactly one PR-sized child linked with both
+  pass the creation inventory gate again and search for duplicates, then
+  file exactly one PR-sized child linked with both
   `--milestone <slug>` and the milestone's `--north-star` when present. The card
   needs a bare `Repo: owner/name`, `Base:`, `Kind: pr`, bounded steps, verify,
   and `## END STATE`. Leave it in `backlog` when blocked; otherwise use `todo`.
