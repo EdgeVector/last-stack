@@ -19,5 +19,11 @@ grep -q 'Direct `prompt_path` freshness guard' "$pickup"
 grep -q 'last-stack-self-upgrade" --check-only --reason=kanban-pickup-prompt-freshness' "$pickup"
 grep -q 'stale-last-stack-install upgraded-before-claim no_card_claimed' "$pickup"
 grep -q 'stale-last-stack-install upgrade-failed no_card_claimed' "$pickup"
+grep -q 'Empty-todo credit gate' "$pickup"
+grep -q 'TODO_INVENTORY count=' "$pickup"
+grep -q 'noop empty-todo no_card_claimed' "$pickup"
+grep -q 'Default: `exit`' "$pickup"
+grep -q 'Idle mode: smart-heal' "$pickup"
+grep -q 'opt-in only' "$pickup"
 
 echo ok

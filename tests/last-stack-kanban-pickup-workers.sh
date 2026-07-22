@@ -14,6 +14,9 @@ printf '%s\n' '---' 'name: kanban-pickup' '---' >"$prompt"
 
 test -f "$bootstrap"
 grep -q 'last-stack-routine-read" kanban-pickup' "$bootstrap"
+grep -q 'Empty-todo credit gate' "$bootstrap"
+grep -q 'list --column todo --json' "$bootstrap"
+grep -q 'empty-todo no_card_claimed' "$bootstrap"
 grep -q "$prompt" "$bootstrap"
 grep -q 'routine-read-failed no_card_claimed' "$bootstrap"
 

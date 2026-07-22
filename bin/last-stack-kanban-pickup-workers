@@ -99,8 +99,42 @@ This scheduled routine prompt is intentionally small and stable. It prevents
 routinesd from dispatching an old embedded kanban-pickup body after a Last Stack
 routine fix has merged.
 
-After any required outer AGENTS/Situations preflight, and before any board read,
-card claim, idle action, or shared system mutation, run:
+## 1) Empty-todo credit gate (do this first)
+
+After any required outer AGENTS/Situations preflight, and **before** loading the
+full pickup prompt, claiming a card, idle invent, or any other agent work, run:
+
+\`\`\`bash
+last_stack="\${LAST_STACK_ROOT:-\$HOME/.last-stack}"
+. "\$last_stack/bin/last-stack-shell-prelude"
+"\$last_stack/bin/last-stack-cli-preflight" jq fkanban 2>/dev/null \\
+  || "\$last_stack/bin/last-stack-cli-preflight" jq kanban
+# Zero-LLM closer is fine even when todo is empty (does not start agents).
+"\$last_stack/bin/last-stack-board-closeout-sweep" || true
+board_cli="fkanban"
+command -v fkanban >/dev/null 2>&1 || board_cli="kanban"
+if ! "\$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \\
+  "\$board_cli" list --column todo --json > /tmp/kanban-pickup-todo.json
+then
+  echo "noop busy-node no_card_claimed"
+  printf '%s %s\\n' 'ROUTINE_RESULT' 'outcome=noop detail=busy-node no_card_claimed'
+  exit 0
+fi
+todo_count="\$(jq 'length' /tmp/kanban-pickup-todo.json)"
+printf 'TODO_INVENTORY count=%s\\n' "\$todo_count"
+if [ "\$todo_count" -eq 0 ]; then
+  "\$last_stack/bin/last-stack-brain-append-heartbeat" --line \\
+    "kanban-pickup \$(date -u +%Y-%m-%dT%H:%M:%SZ) noop empty-todo no_card_claimed" || true
+  printf '%s %s\\n' 'ROUTINE_RESULT' 'outcome=noop detail=empty-todo no_card_claimed'
+  exit 0
+fi
+\`\`\`
+
+If \`todo_count\` is 0 (or the todo read failed as busy-node), **stop here**. Do
+not load the full pickup prompt, do not claim, do not invent idle work, do not
+start implementation agents. Only when \`todo_count > 0\` continue to step 2.
+
+## 2) Load authoritative pickup prompt
 
 \`\`\`bash
 last_stack="\${LAST_STACK_ROOT:-\$HOME/.last-stack}"

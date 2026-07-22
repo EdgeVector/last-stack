@@ -1,7 +1,7 @@
 ---
 name: kanban-pickup
 cadence: every 5 minutes
-description: Drain the ready board queue fast (one unit default, optional second sequential) — YOU perform kanban-agent WORK mode yourself in an isolated worktree and drive to a MERGED PR. No subagents, no collab SpawnAgent, no background harness fan-out. If the queue is empty, run Idle mode smart-heal (program next-slice, CodeRings hotspot, or low-risk simplification) instead of no-oping.
+description: Drain the ready board queue fast (one unit default, optional second sequential) — YOU perform kanban-agent WORK mode yourself in an isolated worktree and drive to a MERGED PR. No subagents, no collab SpawnAgent, no background harness fan-out. If todo is empty, exit immediately (no claim, no idle invent) to save credits; optional Idle mode smart-heal only when explicitly requested.
 ---
 
 ## NO REVIEW COLUMN (Tom 2026-07-16 — won't-undo)
@@ -41,6 +41,27 @@ handoffs do not block surface-overlap or pollute the factory:
 ```bash
 "$last_stack/bin/last-stack-board-closeout-sweep" || true
 ```
+
+**Empty-todo credit gate (won't-undo — Tom 2026-07-22):** right after CLI
+preflight + board-closeout-sweep, and **before** any claim, idle invent, or
+other expensive agent work, cheap-count the ready column:
+
+```bash
+"$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
+  <board CLI> list --column todo --json > /tmp/kanban-pickup-todo.json
+todo_count="$(jq 'length' /tmp/kanban-pickup-todo.json)"
+printf 'TODO_INVENTORY count=%s\n' "$todo_count"
+```
+
+- If the read fails after retries with busy-node signals (`service_timeout`,
+  "node did not respond", "too many concurrent reads"), heartbeat
+  `noop busy-node no_card_claimed` and EXIT (do not claim, do not idle).
+- If `todo_count` is **0**: do **not** claim a card, do **not** enter idle
+  smart-heal, do **not** invent or file work, do **not** start implementation.
+  Heartbeat `noop empty-todo no_card_claimed`, print
+  `ROUTINE_RESULT outcome=noop detail=empty-todo no_card_claimed`, and EXIT.
+  (`doing` cards are already claimed — `kanban-watch` / board-closeout own them.)
+- If `todo_count` is **> 0**, continue with claim selection as usual.
 
 Never heartbeat `in-flight-budget-handoff` with `pr=none` — if no PR/CR URL was
 recorded, roll the card back to `todo` (see wall-clock budget below).
@@ -88,9 +109,10 @@ Silent `rolled-back-todo` after commits/branches caused multi-hour thrash
 4. `kanban-watch` must not soft-reclaim HANDOFF/branch-with-commits cards as
    empty zombies (see watch prompt).
 
-**Empty queue:** default **Idle mode: smart-heal** (below) so the fleet keeps
-self-improving between feature waves. Prefer real program / North Star work
-over random cleanup. Never invent product scope, never reopen closed planes
+**Empty queue / empty todo:** default **Idle mode: exit** (credit save — Tom
+2026-07-22). Do not invent cards or start work when `todo` is empty. Optional
+`Idle mode: smart-heal` remains available only when the scheduled prompt
+explicitly sets it. Never invent product scope, never reopen closed planes
 (desktop UI, transform/view/WASM).
 
 ## Wall-clock budget (hard)
@@ -438,11 +460,11 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
    `noop queue-blocked skipped=<slug:reason,...>` and EXIT. That is pipeline
    backpressure, not idle capacity.
 8. If none are eligible because the queue is genuinely empty, go to **Nothing to
-   pick up** (Idle mode: smart-heal). If the only todo noise is terminal North
+   pick up** (default Idle mode: exit). If the only todo noise is terminal North
    Star proof cards, run `last-stack-park-terminal-validation-todo`; if it parks
    or completes any card, heartbeat `ok idle=terminal-validation-parked
-   result=parked-card` and EXIT before starting idle invent.
-   Do not invent a random feature first — follow the idle ladder.
+   result=parked-card` and EXIT. Do not invent work unless the scheduled prompt
+   explicitly sets `Idle mode: smart-heal`.
 
 ## Execute — YOU are the worker (no fan-out)
 
@@ -574,16 +596,21 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
 When the `todo` queue is empty (or nothing eligible after selection gates):
 
 ### Idle mode selection
-- **Default: `smart-heal`** (always on unless the scheduled prompt sets
-  `Idle mode: exit`).
-- `Idle mode: exit` — report "queue empty, nothing to build" and EXIT (no invent).
+- **Default: `exit`** (Tom 2026-07-22 credit save). Report queue empty / nothing
+  eligible, heartbeat `noop empty-todo no_card_claimed` or
+  `noop idle nothing-safe`, print the matching `ROUTINE_RESULT`, and EXIT.
+  Do **not** invent cards or start agents when there is no ready `todo` work.
+- `Idle mode: smart-heal` — optional opt-in only when the scheduled prompt
+  explicitly sets it. Then run the ladder below.
 - `Idle mode: ship-one-simplification` — only step 4 of the ladder below
-  (legacy opt-in; prefer smart-heal).
+  (legacy opt-in).
 
-### Idle mode `smart-heal` (default)
-Zero pickup-eligible cards were claimed this run. Do **exactly one** action from
-the ladder, top-down. Stop after the first successful action. Same no-spawn
-rules, same one-PR / one-worktree discipline as WORK mode.
+### Idle mode `smart-heal` (opt-in only)
+Zero pickup-eligible cards were claimed this run **and** the scheduled prompt
+explicitly set `Idle mode: smart-heal`. Do **exactly one** action from the
+ladder, top-down. Stop after the first successful action. Same no-spawn rules,
+same one-PR / one-worktree discipline as WORK mode. If smart-heal is not
+explicitly requested, treat this section as disabled and EXIT.
 
 #### Idle budget guard
 - Idle mode is allowed only after a **true empty queue** claim/read, not after
