@@ -50,6 +50,13 @@ require 'If the milestone has no `proof_card`' "$milestone"
 require '--proof-card <proof-slug> --proof-status pending' "$milestone"
 require 'file exactly one PR-sized child' "$milestone"
 require 'Never implement product code' "$milestone"
+# Factory-fill contract (2026-07-22 tightened): empty todo is starvation; don't
+# burn the pass on proof-only scaffolding under pressure.
+require 'Factory-fill contract' "$milestone"
+require 'idle_hint=starving' "$milestone"
+require 'portfolio-not-feedable' "$milestone"
+require 'Pickup only eats `todo`' "$milestone"
+require 'Body-level stops count as holds' "$milestone"
 
 inventory_line="$(grep -nF 'Creation inventory gate' "$milestone" | cut -d: -f1 | head -1)"
 target_line="$(grep -nF 'Targeted dispatch is an absolute selection gate' "$milestone" | cut -d: -f1)"
