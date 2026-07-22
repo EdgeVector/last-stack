@@ -10,12 +10,34 @@ records, never pickup cards. This routine is the sole routine owner for turning
 a milestone into linked terminal-proof and bounded `Kind: pr` Kanban tasks;
 implementation remains with the normal pickup fleet (`last-stack-fkanban-pickup*`).
 
-**Factory-fill contract (Tom 2026-07-22):** When the default board's `todo`
-column is empty or thin, this routine's job is to **restock pickup fuel** —
-concrete unblocked `Kind: pr` cards in **`todo`** — not to stall on
-"implementation-done, proof pending" milestones. Proof execution belongs to
-`kanban-validate`. This driver only *files* / *promotes* PR work and *completes*
-milestones when proof evidence already exists.
+**Factory-fill contract (Tom 2026-07-22; tightened after false-restock review):**
+When the default board's `todo` column is empty or thin, this routine's **primary
+job** is to **restock pickup fuel** — concrete unblocked `Kind: pr` cards in
+**`todo`**. Proof scaffolding alone is **not** success under factory pressure.
+Proof *execution* belongs to `kanban-validate`. This driver only *files* /
+*promotes* PR work, *completes* milestones when proof evidence already exists,
+and only files validation proof cards when that does not starve the factory.
+
+## Success criteria (read this before acting)
+
+Rank outcomes for this pass (highest first):
+
+1. **`promoted`** — moved one unblocked `Kind: pr` from `backlog` → `todo`
+2. **`filed`** — created one unblocked `Kind: pr` in **`todo`** (or `backlog`
+   only if dep-held)
+3. **`completed`** — proof-gated milestone complete (PASS evidence already on card)
+4. **`noop portfolio-not-feedable`** — no promoteable/fileable PR anywhere;
+   do **not** burn the pass on proof-only scaffolding when `todo` is empty
+5. **`filed` proof card** — allowed only when:
+   - `MILESTONE_DRIVER_TARGET` is set, **or**
+   - `todo` already has fuel (`todo_count >= 1`), **or**
+   - the selected milestone already has concrete implementation work that will
+     be filed **in the same pass** after the proof link (starving exception
+     below)
+
+Under factory pressure (`idle_hint=starving` or `thin`), **never** end the pass
+with only a new validation card in `backlog` and `todo` still empty. Either
+promote/file a PR, complete a milestone, or `noop portfolio-not-feedable`.
 
 ## Non-negotiable contract
 
@@ -29,13 +51,21 @@ milestones when proof evidence already exists.
   with exact machine-readable passing evidence:
   `fkanban milestone state <slug> complete --proof-status passing --json`.
   The CLI rejects this transition unless the proof contract passes.
-- Create at most **one Kanban card** per run. Missing terminal proof is repaired
-  before implementation decomposition; otherwise create at most one executable
-  `Kind: pr` child.
+- Create at most **one Kanban card** per run. Exception when starving and the
+  selected empty-frontier milestone needs both a missing proof link and a first
+  PR: then you may create the proof card **and** one PR in the same pass (proof
+  first, then PR into `todo`). Otherwise: missing proof repair alone is deferred
+  when starving (pick a feedable milestone instead).
 - Keep terminal `validation`, `capstone`, `tracker`, `meta`, and `program` cards
   out of default `todo`.
 - **New unblocked `Kind: pr` children go to `todo`, not backlog.** Backlog is
   only for dep-blocked or intentionally held PR work.
+- **Promoteable** means: `Kind: pr`, column `backlog`, deps finished, 
+  `block_status` none/empty, has `Repo`/`Base`, body is a real brief (not empty),
+  and body does **not** record an explicit Tom/owner stop ("STOPPED by Tom",
+  "resume only by explicit direction", etc.). Body-level stops count as holds
+  even when `block_status` is empty — do not promote those; prefer setting /
+  treating as held and picking another card or milestone.
 - Preserve card bodies. Before changing an existing card body, point-read it
   with `fkanban show <slug> --json`, concatenate the full body, and write the
   complete result through stdin. `fkanban add --body` replaces the whole body.
@@ -73,17 +103,22 @@ printf 'CREATION_INVENTORY backlog=%s todo=%s doing=%s nonterminal_milestones=%s
   "$backlog_count" "$todo_count" "$doing_count" "$milestone_count"
 ```
 
-Also print factory pressure:
+Also print factory pressure. **Pickup only eats `todo`.** Empty `todo` is
+starvation even if `doing` is busy:
 
 ```bash
+if [ "$todo_count" -eq 0 ]; then idle_hint=starving
+elif [ "$todo_count" -le 1 ]; then idle_hint=thin
+else idle_hint=ok
+fi
 printf 'FACTORY_PRESSURE todo=%s doing=%s idle_hint=%s\n' \
-  "$todo_count" "$doing_count" \
-  "$( [ "$todo_count" -eq 0 ] && [ "$doing_count" -le 1 ] && echo starving || echo ok )"
+  "$todo_count" "$doing_count" "$idle_hint"
 ```
 
-When `idle_hint=starving`, **strongly prefer** milestones that can yield a new
-or promoted `Kind: pr` into `todo` over milestones that only need proof
-execution.
+When `idle_hint` is `starving` or `thin`, **strongly prefer** milestones that can
+yield a new or promoted `Kind: pr` into `todo`. Skip proof-pending,
+proof-only, and missing-proof-only milestones unless no feedable alternative
+exists (then `noop portfolio-not-feedable`, do not file proof-only).
 
 These counts help reuse and consolidate existing work; they do not impose a
 global todo cap. If any inventory read fails, create nothing, heartbeat a noop,
@@ -101,13 +136,19 @@ For the selected milestone, count live (non-done) children with `Kind: pr` in
 
 | Live Kind:pr situation | Action this pass |
 |------------------------|------------------|
-| Any in `todo` or `doing` | **Do not create** another PR. Heartbeat `noop existing-live-frontier` (fleet already has fuel). |
-| Only in `backlog`, and **≥1** is unblocked + `block_status` none/empty + has `Repo`/`Base` | **Promote one** to `todo` (`fkanban move <slug> todo --force` only if policy requires; prefer move without force when allowed). Heartbeat `promoted`. **Do not create** a sibling. |
-| Only in `backlog`, **all** dep-blocked or held (`needs_human`/`deferred`/`design_first`) | **Do not create** another PR for this milestone. Treat as **not factory-feedable**; pick another milestone (or `noop frontier-blocked` if targeted). |
-| **Zero** live Kind:pr children | Allowed to **create one** PR-sized child (after proof-card exists), placed in **`todo`** if unblocked, else `backlog` if dep-held. |
-| All implementation Kind:pr children **done**, proof not PASS | **Proof-pending.** Do not invent more implementation PRs. Prefer another milestone with empty/promoteable frontier. If targeted and proof has machine PASS evidence, complete; else `noop proof-pending` (validate owns execution). |
+| Any in `todo` or `doing` | **Do not create** another PR. Heartbeat `noop existing-live-frontier` (fleet already has fuel for this milestone). |
+| Only in `backlog`, and **≥1** is **promoteable** (see contract) | **Promote one** to `todo`. Heartbeat `promoted`. **Do not create** a sibling. |
+| Only in `backlog`, **all** dep-blocked, held, empty-body, or body-stopped | **Do not create** another PR for this milestone. Treat as **not factory-feedable**; pick another milestone (or `noop frontier-blocked` if targeted). |
+| **Zero** live Kind:pr children, implementation not finished | Allowed to **create one** PR-sized child (proof card may be created in-pass if missing and starving — see success criteria), placed in **`todo`** if unblocked, else `backlog` if dep-held. |
+| All implementation Kind:pr children **done** (or groom `implementation-done-proof-pending` with real terminal impl children), proof not PASS | **Proof-pending.** Do not invent more implementation PRs. Prefer another milestone with empty/promoteable frontier. If targeted and proof has machine PASS evidence, complete; else `noop proof-pending` (validate owns execution). |
 
 This recheck is mandatory even if selection used an earlier inventory snapshot.
+
+**Groom warning hygiene:** `implementation-done-proof-pending` means real
+implementation children exist and are terminal. Empty / never-started milestones
+must **not** be treated as proof-pending solely because that code appeared in
+older CLI versions; classify empty as `empty-frontier` or
+`needs-decomposition` instead.
 
 If a required read returns `service_timeout`, `node did not respond`, or
 `too many concurrent reads`, treat it as busy-node backpressure: make no board
@@ -136,7 +177,8 @@ If `MILESTONE_DRIVER_TARGET` is nonempty:
    **Drive the selected milestone**.
 
 This gate is mandatory for Ship It dispatch. Targeting never relaxes blockers,
-proof gates, the creation inventory gate, or the one-card budget.
+proof gates, the creation inventory gate, or the one-card budget (except the
+starving proof+PR exception when the target needs both).
 
 Only when `MILESTONE_DRIVER_TARGET` is empty, read the compact supervisory
 surfaces, not a full-body board dump:
@@ -151,44 +193,52 @@ portfolio ranking.
 Ignore `complete` and `abandoned` records. For each nonterminal milestone,
 classify its **PR frontier** from portfolio/groom + detail when needed:
 
-- `empty-frontier` — zero live Kind:pr children (may still need proof card)
-- `promoteable` — ≥1 unblocked PR in backlog, none in todo/doing
+- `promoteable` — ≥1 promoteable `Kind: pr` in backlog, none in todo/doing
+- `empty-frontier` — zero live Kind:pr children **and** implementation is not
+  finished (never started, or needs next slice). May still lack a proof card.
 - `in-flight` — ≥1 PR in todo/doing
-- `frontier-blocked` — only held/dep-blocked PRs in backlog
-- `proof-pending` — implementation PR children all done (or none required),
-  proof card not terminal PASS; milestone not complete
+- `frontier-blocked` — only held/dep-blocked/body-stopped PRs in backlog
+- `proof-pending` — implementation PR children all **done** (real terminal impl
+  work exists), proof card not terminal PASS; milestone not complete
+- `proof-only` — milestone exists only to hold a terminal verification (name
+  ends in `-proof` / body is pure acceptance, no implementation slices left to
+  invent). Not factory fuel.
 
 Select exactly one milestone using this order, oldest portfolio position as
 tie-breaker **within** a band:
 
 1. **`promoteable`** (any lifecycle) — cheapest factory restock: move one PR to
-   `todo`. Prefer when `idle_hint=starving`.
+   `todo`. Prefer when `idle_hint` is starving/thin.
 2. **`empty-frontier`** on `active` or `planned` (deps complete) where the next
-   implementation slice is concrete enough to file a PR-sized child — **or**
-   missing proof card (create proof first, still empty of PR). Prefer when
-   starving.
+   **implementation** slice is concrete enough to file a PR-sized child.
+   Prefer when starving. If proof card is missing, create it **in the same
+   pass as the PR** when starving (see success criteria); do not select solely
+   to file proof and exit.
 3. **`proving`** with proof body already containing exact `PROOF: PASS` /
    `RESULT: PASS` (complete this pass) or known failing proof that needs one
-   fix-forward PR.
+   fix-forward PR into `todo`.
 4. **`active`** with structural grooming warnings you can repair without new
-   product invention (missing proof link, bad milestone/NS link).
+   product invention (missing proof link **only when `todo` already has fuel**,
+   bad milestone/NS link).
 5. **`blocked`** whose named milestone dependencies are now complete.
-6. **`planned`** whose dependencies are complete.
-7. **`proof-pending` only** — **lowest priority.** Skip for creation when any
-   higher band exists. Never invent busywork PRs to avoid proof. Leave for
-   `kanban-validate` / feature-proof workers.
+6. **`planned`** whose dependencies are complete and next slice is concrete.
+7. **`proof-pending` / `proof-only`** — **lowest priority for factory.** Skip
+   when any higher band exists. Never invent busywork PRs to avoid proof.
+   Leave for `kanban-validate` / feature-proof workers.
 8. **`in-flight`** — skip (noop); fleet already has work for that milestone.
 9. **`frontier-blocked`** — skip unless you can clear an *objective* false
-   block (not Situation/human).
+   block (not Situation/human/body stop).
 
-If the top-ranked pick is `proof-pending` or `in-flight` or `frontier-blocked`
-and a lower-ranked empty/promoteable milestone exists, **select the
-empty/promoteable one instead**. Factory idle is a reason to skip proof-pending
-noops.
+If the top-ranked pick is `proof-pending`, `proof-only`, `in-flight`, or
+`frontier-blocked` and a lower-ranked empty/promoteable milestone exists,
+**select the empty/promoteable one instead**. Factory idle is a reason to skip
+proof-pending noops.
 
-If none needs action, heartbeat `noop portfolio-healthy` and exit. Point-read
-the selected record with `fkanban milestone detail <slug> --json`; point-read
-only the child cards needed to decide the next action.
+If none can feed the factory and none can complete with existing PASS evidence,
+heartbeat `noop portfolio-not-feedable` (or `noop portfolio-healthy` when `todo`
+already has fuel and nothing needs reconcile) and exit. Point-read the selected
+record with `fkanban milestone detail <slug> --json`; point-read only the child
+cards needed to decide the next action.
 
 ## Drive the selected milestone
 
@@ -210,25 +260,28 @@ proof, and warnings. State changes use explicit proof-gated milestone commands.
 
 ### Planned and active state
 
-- If the milestone has no `proof_card`, pass the creation inventory gate again,
-  then create one terminal `Kind: validation`
-  card in **`backlog`** before creating implementation work. Use the deterministic
-  slug `<milestone-slug>-proof`, matching `--milestone` and `--north-star`, tags
+- If the milestone has no `proof_card` under factory pressure (`starving`/`thin`):
+  do **not** select this milestone just to file proof — prefer a
+  promoteable/empty-frontier feedable alternative. If this milestone is still
+  selected (target, or only concrete empty-frontier with a clear next PR slice),
+  create the proof card **and** the first PR in the same pass when possible;
+  place the PR in `todo`.
+- If the milestone has no `proof_card` when `todo` already has fuel: pass the
+  creation inventory gate again, create one terminal `Kind: validation` card in
+  **`backlog`**, link it, re-read detail, and exit. Use the deterministic slug
+  `<milestone-slug>-proof`, matching `--milestone` and `--north-star`, tags
   `feature-proof,terminal-verification,milestone-proof` (do **not** tag
-  `feature-owner` — retired 2026-07-22), and a
-  machine-checkable DONE-WHEN such as
-  `file ~/.last-stack/feature-proofs/<milestone-slug>.md matches /^PASS/`
+  `feature-owner` — retired 2026-07-22), and a machine-checkable DONE-WHEN such
+  as `file ~/.last-stack/feature-proofs/<milestone-slug>.md matches /^PASS/`
   or `file ~/.last-stack/north-star-proofs/<north-star-slug>.md matches /^PASS/`
   when the NS has a harness. Copy the milestone's observable acceptance criteria
   into `## END STATE` and `## PRODUCT VERIFY`; do not weaken or invent them.
-  Then update the milestone with `--proof-card <proof-slug> --proof-status pending`,
-  re-read detail, and exit this pass. This proof card consumes the one-card
-  generation budget.
+  Then update the milestone with `--proof-card <proof-slug> --proof-status pending`.
 - A `planned` milestone may move to `active` when its milestone dependencies are
   complete and it has an executable child already in `todo`/`doing`, or a
-  pickup-ready `Kind: pr` child that can be promoted now.
-- If a pickup-ready PR child is in `backlog`, **promote at most one to `todo`**.
-  Never force through unfinished dependencies or an intentional block.
+  promoteable `Kind: pr` child that can be promoted now.
+- If a promoteable PR child is in `backlog`, **promote at most one to `todo`**.
+  Never force through unfinished dependencies or an intentional/body-level hold.
 - If no executable Kind:pr frontier exists but the outcome and next slice are
   concrete, pass the creation inventory gate again and search for duplicates, then
   file exactly one PR-sized child linked with both
@@ -267,8 +320,7 @@ proof, and warnings. State changes use explicit proof-gated milestone commands.
 - Missing driver, North Star mismatch, or a terminal proof outside the milestone
   is grooming work. Repair an unambiguous structural link only after
   point-reading both records; otherwise report it without guessing. A missing
-  proof card follows the generation rule above rather than remaining an
-  indefinite warning.
+  proof card follows the generation rule under **Planned and active state**.
 
 ## Finish
 
@@ -280,7 +332,13 @@ Append one compact heartbeat through
 `$last_stack/bin/last-stack-brain-append-heartbeat`, naming the milestone and
 one outcome: `promoted`, `filed`, `activated`, `reconciled`, `completed`,
 `blocked`, or `noop` (with detail like `proof-pending`, `existing-live-frontier`,
-`frontier-blocked`, `needs-decomposition` when applicable).
+`frontier-blocked`, `needs-decomposition`, `portfolio-not-feedable` when
+applicable).
 
 End with the ROUTINE_RESULT token followed by
 `outcome=<ok|noop|error> detail=<one-line-outcome>`.
+
+When factory pressure was starving/thin, `outcome=ok` requires that `todo`
+gained a `Kind: pr` (promoted or filed) **or** a milestone completed with PASS
+evidence. Filing only a validation proof card while `todo` remains empty is
+`outcome=noop` (or error if you violated the contract), not `ok`.
