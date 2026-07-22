@@ -109,6 +109,9 @@ jq -e --arg digest "$digest_one" '.manifest_digest == $digest and .install_mode 
 "$ROOT/bin/host-track" status --json demo | jq -e '.install_mode == "artifact" and .stale == false' >/dev/null \
   || fail "installed artifact did not report fresh"
 "$ROOT/bin/host-track" check demo >/dev/null || fail "verified active artifact failed check"
+"$ROOT/bin/host-track" refresh demo >/dev/null
+jq -e --arg oid "$oid_one" '.source_oid == $oid' "$HOST_TRACK_STAMP_DIR/demo.json" >/dev/null \
+  || fail "no-op artifact refresh dropped source provenance"
 cp "$HOME/apps/demo/current/bin/demo" "$tmp/active-backup"
 printf 'tampered install\n' > "$HOME/apps/demo/current/bin/demo"
 if "$ROOT/bin/host-track" check demo >/dev/null 2>&1; then
