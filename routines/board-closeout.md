@@ -22,7 +22,8 @@ This closeout is the always-on, zero-credit answer:
 
 | Condition | Action |
 |-----------|--------|
-| `doing` + PR/CR **merged** | `last-stack-card-closeout` → `done` only if any `Requires-Deploy:` gate has terminal success |
+| `doing` + PR/CR **merged** (field **or** body `PR:`/`CR:`/`lastgit://`) | heal empty `pr_url` if needed; `last-stack-card-closeout` → `done` only if any `Requires-Deploy:` gate has terminal success |
+| `doing` + deploy-parked (`Requires-Deploy:`, tags `awaiting-deploy`/`live-proof`/`deploy-gate`, or live-proof wait notes) | **skip reclaim**; stamp `awaiting-deploy`; leave in `doing` |
 | `doing`, age ≥ 60m, no PR, no live worker, no branch commits | `move todo` |
 | `doing`, age ≥ 60m, no PR, no live worker, **WIP commits** (illegal handoff) | `move todo` (flag `wip-no-pr`; worktree kept) |
 | open PR / live worker / younger than grace | skip |
@@ -32,7 +33,9 @@ Durable: brain `preference-kanban-board-closeout-always-on` and
 
 `Requires-Deploy: deploy-pipeline` is a machine gate, not prose. The closeout
 helper reads `last-stack-pipeline-deploy-scan --json`; pending, missing, or red
-deploy status leaves the card out of `done` even when the PR/CR is merged.
+deploy status leaves the card out of `done` even when the PR/CR is merged — and
+**does not** roll the card back to `todo` (that thrash is banned for deploy
+parks). The sweep lists doing with `--full-body` so body headers are visible.
 
 ## Preferred: LaunchAgent (no LLM)
 

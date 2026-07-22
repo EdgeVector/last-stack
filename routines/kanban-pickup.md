@@ -160,13 +160,22 @@ agent workspace. At the beginning of the run, record `run_started_epoch=$(date
   evidence from an external process that is already running (sync catch-up,
   deploy propagation, mirror polling, CI completion, etc.), stop watching when
   fewer than **10 minutes** remain. If the END STATE is proven, close out the
-  card immediately. If it is still pending, append the observed state to the
-  card, move/leave it in `todo` as appropriate, heartbeat
-  `ok cards=1 worked=<slug> result=rolled-back-todo reason=watch-budget-reserved`
-  (or the proven closeout result), print the machine trailer by using the
-  `ROUTINE_RESULT` token followed by `outcome=ok detail=worked=<slug>
-  reason=watch-budget-reserved`, and EXIT. Never consume the final budget
-  reserve with a watch loop and then start board closeout at the harness edge.
+  card immediately. If it is still pending:
+  - **Deploy / live-proof wait (won't-undo thrash ban):** leave the card in
+    **`doing`** (do **not** roll back to `todo`). Ensure structured `pr_url` +
+    `branch` are stamped when a CR/PR exists, append observed state + a
+    `Requires-Deploy: deploy-pipeline` line when the END STATE depends on
+    deploy, and `tag add <slug> awaiting-deploy`. Heartbeat
+    `ok cards=1 worked=<slug> result=in-flight-deploy-pending pr=<url|none>
+    final_column=doing reason=watch-budget-reserved`. Board-closeout skips
+    reclaim for deploy-parked cards and only moves them to `done` when the
+    deploy gate is terminal.
+  - **Other external waits without a PR/CR and without deploy gate:** append
+    observed state, move/leave in `todo` as appropriate, heartbeat
+    `ok cards=1 worked=<slug> result=rolled-back-todo reason=watch-budget-reserved`.
+  Print the machine trailer with the `ROUTINE_RESULT` token and EXIT. Never
+  consume the final budget reserve with a watch loop and then start board
+  closeout at the harness edge.
 - Idle mode is optional when budget is tight. A clean `noop idle=budget-exhausted`
   is better than a red harness timeout with a zombie `doing` card.
 
@@ -489,9 +498,13 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
      sleepless `gh -R <repo> pr checks <n> --watch` (NEVER `sleep`).
    - `venue=forgejo`: local Forgejo SOP/API only — never `gh` against a mirror;
      record `pr_url` and `branch` on the card immediately after create.
-   - `venue=lastgit`: `lastgit cr create … --auto-merge …`, record
-     `PR: lastgit://…` plus the branch on the card, drive with
-     `lastgit cr view` / `ci status` / `cr complete --once`.
+   - `venue=lastgit`: `lastgit cr create … --auto-merge …`, then **immediately**
+     stamp structured fields (not body-only):
+     `<board CLI> add <slug> --pr-url "lastgit://<repo>/cr/<cr-id>" --branch "<branch>"`
+     (also keep a body `PR: lastgit://…` line for humans). Drive with
+     `lastgit cr view` / `ci status` / `cr complete --once`. Never heartbeat
+     `in-flight-budget-handoff` / `in-flight-ci-pending` with an empty
+     structured `pr_url` when a CR id exists.
    - Before every expensive post-publish operation (fetch/rebase after a
      non-fast-forward push, another push, validation retry, CI watch/poll,
      `lastgit ci status`, `lastgit cr complete`, or merge-closeout polling),

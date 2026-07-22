@@ -35,7 +35,11 @@ board-closeout <ISO> ok|noop closed=N closed_slugs=… rolled_back=N skipped=N f
 ## What it will not do
 
 - Kill live agent processes
-- Reclaim cards with an **open** PR/CR
+- Reclaim cards with an **open** PR/CR (field **or** body `PR:` / `CR:` /
+  `lastgit://…` — empty structured `pr_url` is healed from the body when found)
+- Reclaim **deploy-parked** cards: `Requires-Deploy:` body header, tags
+  `awaiting-deploy` / `live-proof` / `deploy-gate`, or live-proof wait notes.
+  Those stay in `doing` until the deploy gate is terminal (closeout → done).
 - Open PRs for you — WIP-with-commits-but-no-`pr_url` after grace is rolled
   back to **`todo`** (flag `wip-no-pr:<slug>`; worktree kept) so pickup can
   resume. That state is a pickup contract violation (`handoff` requires a URL).

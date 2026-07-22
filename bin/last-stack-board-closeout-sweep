@@ -6,8 +6,20 @@
 # sits for hours.
 #
 # Actions (CHEAP, uncapped within --max-actions):
-#   1. doing + pr_url whose PR/CR is MERGED  → last-stack-card-closeout (done)
-#   2. doing, age ≥ grace, no PR, no live worker, no branch commits → move todo
+#   1. doing + pr_url (field or body PR:/CR:/lastgit://) whose PR/CR is MERGED
+#      → last-stack-card-closeout (done; honors Requires-Deploy)
+#   2. empty/no-PR doing, age ≥ grace, no live worker, no branch commits → todo
+#   3. WIP commits + no PR after grace → todo (flag wip-no-pr; worktree kept)
+#
+# Protections (do NOT reclaim):
+#   - open / unknown PR on structured pr_url or body header
+#   - live agent process in the card worktree
+#   - deploy-gated / live-proof park: body Requires-Deploy:, tags
+#     awaiting-deploy|live-proof|deploy-gate, or HANDOFF + Requires-Deploy
+#   - younger than --grace-min (default 60)
+#
+# On heal: empty pr_url + body PR/CR → best-effort
+#   `<board> add <slug> --pr-url <url>` so later soft reclaim skips the card.
 #
 # Usage:
 #   last-stack-board-closeout-sweep [--dry-run] [--grace-min 60] [--max-actions 50]
@@ -135,8 +147,16 @@ function parseJsonLoose(raw) {
 }
 
 function listDoing() {
-  // Prefer --all so we don't miss capped previews; fall back to plain column list.
-  let out = run(boardCli, ["list", "--column", "doing", "--json", "--all"], { timeout: 120000 });
+  // Prefer --all --full-body: bare list returns empty body previews, which
+  // hides PR: / Requires-Deploy: headers needed for heal + deploy-park.
+  let out = run(
+    boardCli,
+    ["list", "--column", "doing", "--json", "--all", "--full-body"],
+    { timeout: 180000 },
+  );
+  if (!out.ok) {
+    out = run(boardCli, ["list", "--column", "doing", "--json", "--all"], { timeout: 120000 });
+  }
   if (!out.ok) {
     out = run(boardCli, ["list", "--column", "doing", "--json"], { timeout: 120000 });
   }
@@ -175,8 +195,101 @@ function ageMs(card) {
   return 0;
 }
 
+function bodyOf(card) {
+  return String(card.body || card.Body || "");
+}
+
+function parseBodyHeader(body, name) {
+  const re = new RegExp(`^[ \\t]*${name}:[ \\t]*(.*)$`, "i");
+  let inFence = false;
+  for (const line of String(body || "").split("\n")) {
+    if (/^[ \t]*```/.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    const m = line.match(re);
+    if (m) {
+      const raw = String(m[1] || "")
+        .split("#")[0]
+        .trim()
+        .split(/\s+/)[0];
+      return raw || "";
+    }
+  }
+  return "";
+}
+
+function extractPrUrlFromBody(body, repo) {
+  for (const name of ["PR", "CR"]) {
+    const raw = parseBodyHeader(body, name);
+    if (!raw) continue;
+    if (/^(https?:\/\/|lastgit:\/\/)/i.test(raw)) return raw;
+    const cr = raw.match(/\b(cr-[A-Za-z0-9_-]+)\b/);
+    if (cr) {
+      const r = String(repo || "").trim();
+      const slug = r.includes("/") ? r.split("/").pop() : r;
+      if (slug) return `lastgit://${slug}/cr/${cr[1]}`;
+      return cr[1];
+    }
+    if (/pulls?\/\d+/i.test(raw) || /\/pull\/\d+/i.test(raw)) return raw;
+  }
+  let inFence = false;
+  for (const line of String(body || "").split("\n")) {
+    if (/^[ \t]*```/.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    const m = line.match(/\blastgit:\/\/[^\s)>\]]+/i);
+    if (m) return m[0].replace(/[.,;]+$/, "");
+  }
+  return "";
+}
+
 function prUrlOf(card) {
-  return String(card.pr_url || card.prUrl || card.pr || "").trim();
+  const field = String(card.pr_url || card.prUrl || card.pr || "").trim();
+  if (field) return field;
+  return extractPrUrlFromBody(bodyOf(card), card.repo || card.Repo || "");
+}
+
+function healPrUrl(slug, url) {
+  if (!url || dryRun) return;
+  // Best-effort structured stamp so soft reclaim + watch skip this card later.
+  run(boardCli, ["add", slug, "--pr-url", url], { timeout: 45000 });
+}
+
+function tagList(card) {
+  const t = card.tags || card.Tags || [];
+  if (Array.isArray(t)) return t.map((x) => String(x).toLowerCase());
+  return String(t)
+    .split(/[,\s]+/)
+    .map((x) => x.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+/** Deploy-gated / live-proof park: leave in doing; do not zombie-reclaim. */
+function isDeployParked(card) {
+  const tags = tagList(card);
+  if (tags.some((t) => ["awaiting-deploy", "live-proof", "deploy-gate"].includes(t))) {
+    return true;
+  }
+  const body = bodyOf(card);
+  if (parseBodyHeader(body, "Requires-Deploy")) return true;
+  if (/^Requires-Deploy:/im.test(body)) return true;
+  // Live-proof wait notes written by pickup without the structured header.
+  if (/\b(LIVE PROOF|deploy-pipeline proof|awaiting deploy)\b/i.test(body) &&
+      /\b(pending|do not mark done|returning the card|leave(?:ing)? this card)\b/i.test(body)) {
+    return true;
+  }
+  return false;
+}
+
+function ensureAwaitingDeployTag(slug, card) {
+  if (dryRun) return;
+  const tags = tagList(card);
+  if (tags.includes("awaiting-deploy")) return;
+  run(boardCli, ["tag", "add", slug, "awaiting-deploy"], { timeout: 30000 });
 }
 
 function worktreeFor(slug) {
@@ -352,21 +465,45 @@ for (const card of cards) {
   }
   const slug = String(card.slug || "");
   if (!slug) continue;
+  const fieldPr = String(card.pr_url || card.prUrl || card.pr || "").trim();
   const url = prUrlOf(card);
-  const branch = String(card.branch || "").trim();
+  const branch =
+    String(card.branch || "").trim() || parseBodyHeader(bodyOf(card), "Branch");
   const age = ageMs(card);
   const wt = worktreeFor(slug);
+  const deployParked = isDeployParked(card);
+
+  // Heal empty structured pr_url from body so later soft-reclaim skips this card.
+  if (url && !fieldPr) {
+    healPrUrl(slug, url);
+    res.flagged.push(`pr-url-healed:${slug}`);
+  }
 
   if (url) {
     const pr = classifyPr(url);
     const m = isMerged(pr);
     if (m.merged) {
       if (closeCard(slug, url, branch)) actions++;
-      else res.skipped.push(`${slug}:close-failed`);
+      else {
+        // Deploy gate pending / closeout refused — park in doing, do not reclaim.
+        res.skipped.push(`${slug}:close-failed`);
+        if (deployParked || /deploy/i.test(String(m.detail || ""))) {
+          ensureAwaitingDeployTag(slug, card);
+          res.flagged.push(`deploy-parked:${slug}`);
+        }
+      }
       continue;
     }
     // Open / unknown PR: leave for watch/merge-babysit. Soft 1h does not reclaim these.
     res.skipped.push(`${slug}:pr-open-or-unknown`);
+    continue;
+  }
+
+  // Deploy-gated / live-proof wait without a parseable PR yet: park, do not thrash.
+  if (deployParked) {
+    ensureAwaitingDeployTag(slug, card);
+    res.skipped.push(`${slug}:deploy-parked`);
+    res.flagged.push(`deploy-parked:${slug}`);
     continue;
   }
 
@@ -458,7 +595,12 @@ def strip(s):
     return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", s or "")
 
 def list_doing():
-    ok, out, err = run([board_cli, "list", "--column", "doing", "--json", "--all"], timeout=120)
+    ok, out, err = run(
+        [board_cli, "list", "--column", "doing", "--json", "--all", "--full-body"],
+        timeout=180,
+    )
+    if not ok:
+        ok, out, err = run([board_cli, "list", "--column", "doing", "--json", "--all"], timeout=120)
     if not ok:
         ok, out, err = run([board_cli, "list", "--column", "doing", "--json"], timeout=120)
     if not ok:
@@ -505,8 +647,90 @@ def age_s(card):
             continue
     return 0
 
+def body_of(card):
+    return str(card.get("body") or card.get("Body") or "")
+
+def parse_body_header(body, name):
+    re_h = re.compile(rf"^[ \t]*{re.escape(name)}:[ \t]*(.*)$", re.I)
+    in_fence = False
+    for line in str(body or "").splitlines():
+        if re.match(r"^[ \t]*```", line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        m = re_h.match(line)
+        if m:
+            raw = m.group(1).split("#", 1)[0].strip().split()
+            return raw[0] if raw else ""
+    return ""
+
+def extract_pr_url_from_body(body, repo=""):
+    for name in ("PR", "CR"):
+        raw = parse_body_header(body, name)
+        if not raw:
+            continue
+        if re.match(r"^(https?://|lastgit://)", raw, re.I):
+            return raw
+        cr = re.search(r"\b(cr-[A-Za-z0-9_-]+)\b", raw)
+        if cr:
+            r = (repo or "").strip()
+            slug = r.split("/")[-1] if r else ""
+            if slug:
+                return f"lastgit://{slug}/cr/{cr.group(1)}"
+            return cr.group(1)
+        if re.search(r"pulls?/\d+", raw, re.I) or re.search(r"/pull/\d+", raw, re.I):
+            return raw
+    in_fence = False
+    for line in str(body or "").splitlines():
+        if re.match(r"^[ \t]*```", line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        m = re.search(r"\blastgit://[^\s)>\]]+", line, re.I)
+        if m:
+            return re.sub(r"[.,;]+$", "", m.group(0))
+    return ""
+
 def pr_url(card):
-    return (card.get("pr_url") or card.get("prUrl") or card.get("pr") or "").strip()
+    field = (card.get("pr_url") or card.get("prUrl") or card.get("pr") or "").strip()
+    if field:
+        return field
+    return extract_pr_url_from_body(body_of(card), card.get("repo") or card.get("Repo") or "")
+
+def heal_pr_url(slug, url):
+    if dry_run or not url:
+        return
+    run([board_cli, "add", slug, "--pr-url", url], timeout=45)
+
+def tag_list(card):
+    t = card.get("tags") or card.get("Tags") or []
+    if isinstance(t, list):
+        return [str(x).lower() for x in t]
+    return [x.strip().lower() for x in str(t).split() if x.strip()]
+
+def is_deploy_parked(card):
+    tags = tag_list(card)
+    if any(t in ("awaiting-deploy", "live-proof", "deploy-gate") for t in tags):
+        return True
+    body = body_of(card)
+    if parse_body_header(body, "Requires-Deploy"):
+        return True
+    if re.search(r"^Requires-Deploy:", body, re.I | re.M):
+        return True
+    if re.search(r"\b(LIVE PROOF|deploy-pipeline proof|awaiting deploy)\b", body, re.I) and re.search(
+        r"\b(pending|do not mark done|returning the card|leave(?:ing)? this card)\b", body, re.I
+    ):
+        return True
+    return False
+
+def ensure_awaiting_deploy_tag(slug, card):
+    if dry_run:
+        return
+    if "awaiting-deploy" in tag_list(card):
+        return
+    run([board_cli, "tag", "add", slug, "awaiting-deploy"], timeout=30)
 
 def worktree(slug):
     for root in worktree_roots:
@@ -638,10 +862,15 @@ for card in cards:
     slug = str(card.get("slug") or "")
     if not slug:
         continue
+    field_pr = (card.get("pr_url") or card.get("prUrl") or card.get("pr") or "").strip()
     url = pr_url(card)
-    branch = str(card.get("branch") or "").strip()
+    branch = str(card.get("branch") or "").strip() or parse_body_header(body_of(card), "Branch")
     age = age_s(card)
     wt = worktree(slug)
+    deploy_parked = is_deploy_parked(card)
+    if url and not field_pr:
+        heal_pr_url(slug, url)
+        res["flagged"].append(f"pr-url-healed:{slug}")
     if url:
         merged, detail = is_merged(url)
         if merged:
@@ -649,8 +878,16 @@ for card in cards:
                 actions += 1
             else:
                 res["skipped"].append(f"{slug}:close-failed")
+                if deploy_parked or re.search(r"deploy", str(detail or ""), re.I):
+                    ensure_awaiting_deploy_tag(slug, card)
+                    res["flagged"].append(f"deploy-parked:{slug}")
             continue
         res["skipped"].append(f"{slug}:pr-open-or-unknown")
+        continue
+    if deploy_parked:
+        ensure_awaiting_deploy_tag(slug, card)
+        res["skipped"].append(f"{slug}:deploy-parked")
+        res["flagged"].append(f"deploy-parked:{slug}")
         continue
     if skip_zombie:
         res["skipped"].append(f"{slug}:no-pr-zombie-skipped")
