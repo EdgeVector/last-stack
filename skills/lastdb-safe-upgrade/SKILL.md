@@ -75,7 +75,13 @@ proxy is optional later for near-zero client impact.
    backup) — do not improvise.
 5. Probe bar = smoke bar: identity decrypts, `/api/schemas` > 0, `Board` query
    returns real **title values** (counts alone are not proof).
-6. Do not claim “primary stopped” unless this script actually stopped the
+6. **RSS bar (memory-guard):** after data-plane GREEN, boot candidate again on a
+   CoW copy, settle (~45s), sample peak RSS. **RED** if peak RSS ≥
+   `LASTDBD_RSS_LIMIT_MB` minus headroom (default 10%). Limit is read from
+   env, then the memory-guard LaunchAgent plist, else 6144. Incident 2026-07-22:
+   sled-free cutover sat at ~8.5 GiB while the guard killed at 6 GiB → thrash.
+   Live post-check re-samples primary RSS the same way.
+7. Do not claim “primary stopped” unless this script actually stopped the
    supervisor for that venue.
 
 ## Do this, in order
@@ -129,11 +135,11 @@ The script:
 | Preflight | Primary home exists, identity.key present, live `/health` ok (if socket up) |
 | Resolve candidate | `brew update` / `--version` tarball / `--candidate` |
 | **1. Backup** | `cp -cR` (APFS) or `cp -a` → `~/.lastdb-backups/pre-<new>-from-<old>-<ts>/` |
-| **2. Probe** | `BIN=<candidate>` CoW smoke harness (never live home) |
+| **2. Probe** | `BIN=<candidate>` CoW smoke harness (never live home) + **RSS settle/sample** vs memory-guard limit |
 | Detect venue | sidebin vs brew |
 | **3. Live** | sidebin atomic install + kickstart **or** brew upgrade/restart |
-| **4. Post-check** | Live `/health`, schemas > 0, Board title; cutover_s in notice |
-| RED | Exit 1, **keep backup**, primary untouched if probe failed |
+| **4. Post-check** | Live `/health`, schemas > 0, Board title, **live peak RSS** vs guard; cutover_s in notice |
+| RED | Exit 1, **keep backup**, primary untouched if probe failed (incl. RSS over guard) |
 
 ### B. If the script is missing or fails open
 
@@ -149,7 +155,8 @@ Always print:
 - Venue (sidebin / brew)  
 - Backup path  
 - Probe GREEN/RED (+ first Board title if green)  
-- Whether live upgrade ran + cutover seconds  
+- **Probe peak RSS MiB vs memory-guard limit / fail_at**  
+- Whether live upgrade ran + cutover seconds + live peak RSS  
 - Rollback commands (script prints them)
 
 Optional: append a one-liner to brain reference `lastdb-safe-upgrade-log` via
@@ -166,7 +173,7 @@ incident.
 | `VERDICT: GREEN` | Probe + live cutover + live post-check passed | Done |
 | `VERDICT: GREEN_PROBE_ONLY` | Probe passed; primary still on old version | Re-run with `--yes` if Tom wants the upgrade |
 | `VERDICT: ALREADY_CURRENT` | Already on candidate/stable | Nothing to do |
-| `VERDICT: RED` | Candidate cannot serve real data | **Do not upgrade**; file release-blocker; keep backup |
+| `VERDICT: RED` | Candidate cannot serve real data **or** peak RSS exceeds memory-guard bar | **Do not upgrade**; file release-blocker; keep backup. If RSS: fix candidate memory or raise guard only with Tom clearance |
 
 ## Rollback
 
@@ -209,4 +216,5 @@ kanban list   # must show real cards
 
 Incidents: 2026-07-13 wrong-key / 0.22.6 decrypt brick; 2026-07-16 brew upgrade
 failed because primary is sidebin+launchd not brew services; 2026-07-21 Codex
-could not find this skill because it was Claude-only (not in last-stack).
+could not find this skill because it was Claude-only (not in last-stack);
+2026-07-22 post-cutover RSS ~8.5 GiB vs memory-guard 6 GiB thrash (RSS bar added).

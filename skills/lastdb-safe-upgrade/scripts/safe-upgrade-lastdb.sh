@@ -6,10 +6,12 @@
 #   1. Create a durable offline backup of ~/.lastdb
 #   2. Boot the CANDIDATE lastdbd against a throwaway CoW/probe copy
 #   3. Require GREEN (identity decrypts, schemas load, real Board values)
+#      AND probe RSS stays under the memory-guard ceiling (so live cutover
+#      does not immediately thrash-restart under lastdbd-memory-guard)
 #   4. Only then venue-aware live install:
 #        sidebin → atomic install under bin-with-upload-cap + launchctl kickstart
 #        brew    → brew upgrade + brew services restart (only if formula installed)
-#   5. Post-check the LIVE home; print rollback if anything looks wrong
+#   5. Post-check the LIVE home (incl. live RSS vs guard); print rollback if wrong
 #
 # Design: fold/docs/designs/lastdb-minimal-downtime-cutover.md
 #
@@ -68,11 +70,148 @@ log() { printf '[safe-upgrade] %s\n' "$*"; }
 die() { printf '[safe-upgrade] ERROR: %s\n' "$*" >&2; exit 1; }
 warn() { printf '[safe-upgrade] WARN: %s\n' "$*" >&2; }
 
+# Memory-guard ceiling used by com.tomtang.lastdbd-memory-guard (Tom, 2026-07-14).
+# Env LASTDBD_RSS_LIMIT_MB wins; else LaunchAgent plist; else 6144.
+# Probe/live must stay under this or the guard SIGTERMs primary in a thrash loop
+# (incident after 2026-07-22 sled-free cutover: candidate ~8.5G vs limit 6G).
+MEMORY_GUARD_PLIST="${LASTDBD_MEMORY_GUARD_PLIST:-$HOME/Library/LaunchAgents/com.tomtang.lastdbd-memory-guard.plist}"
+# Extra headroom fraction (0–100). Fail probe if RSS >= limit * (100-HEADROOM)/100.
+# Default 10% so live does not sit right on the kill line after settle.
+RSS_HEADROOM_PCT="${LASTDB_PROBE_RSS_HEADROOM_PCT:-10}"
+# After data-plane ready, wait this long then sample RSS (embeddings finish loading).
+RSS_SETTLE_SECS="${LASTDB_PROBE_RSS_SETTLE_SECS:-45}"
+RSS_SAMPLE_SECS="${LASTDB_PROBE_RSS_SAMPLE_SECS:-15}"
+
 cleanup_work() {
   # Never delete durable backups. Only temp fetch dirs under $WORK.
   [ -n "${WORK:-}" ] && [ -d "$WORK" ] && rm -rf "$WORK"
 }
 trap cleanup_work EXIT
+
+rss_mb_of_pid() {
+  local pid="$1" rss_kb
+  rss_kb="$(ps -p "$pid" -o rss= 2>/dev/null | tr -d ' ' || echo 0)"
+  [ -n "$rss_kb" ] || rss_kb=0
+  echo $((rss_kb / 1024))
+}
+
+resolve_rss_limit_mb() {
+  if [ -n "${LASTDBD_RSS_LIMIT_MB:-}" ]; then
+    echo "$LASTDBD_RSS_LIMIT_MB"
+    return
+  fi
+  if [ -n "${LASTDB_PROBE_RSS_LIMIT_MB:-}" ]; then
+    echo "$LASTDB_PROBE_RSS_LIMIT_MB"
+    return
+  fi
+  if [ -f "$MEMORY_GUARD_PLIST" ]; then
+    local from_plist
+    from_plist="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:LASTDBD_RSS_LIMIT_MB' "$MEMORY_GUARD_PLIST" 2>/dev/null || true)"
+    if [ -n "$from_plist" ] && [ "$from_plist" -gt 0 ] 2>/dev/null; then
+      echo "$from_plist"
+      return
+    fi
+  fi
+  echo 6144
+}
+
+rss_fail_threshold_mb() {
+  local limit="$1" headroom="$RSS_HEADROOM_PCT"
+  if ! [ "$headroom" -ge 0 ] 2>/dev/null; then headroom=10; fi
+  if [ "$headroom" -gt 50 ]; then headroom=50; fi
+  echo $((limit * (100 - headroom) / 100))
+}
+
+# Boot candidate on a throwaway CoW of primary; after settle, return peak RSS MiB.
+# Prints progress to stderr via log; stdout is only the integer MiB (or empty on fail).
+# Sets global PROBE_RSS_MB on success for callers.
+probe_candidate_peak_rss_mb() {
+  local bin="$1"
+  local limit_mb fail_at settle sample
+  local copy sock log pid uh i max_rss rss
+  limit_mb="$(resolve_rss_limit_mb)"
+  fail_at="$(rss_fail_threshold_mb "$limit_mb")"
+  settle="${RSS_SETTLE_SECS}"
+  sample="${RSS_SAMPLE_SECS}"
+  log "RSS bar: limit=${limit_mb}MiB fail_at>=${fail_at}MiB (headroom ${RSS_HEADROOM_PCT}%) settle=${settle}s sample=${sample}s"
+
+  mkdir -p "$PROBE_ROOT"
+  copy="$PROBE_ROOT/rss-probe-$(date +%s)-$$"
+  log="$copy.boot.log"
+  rm -rf "$copy"
+  if ! cp -cR "$PRIMARY_HOME" "$copy" 2>/dev/null; then
+    warn "RSS probe: APFS clone failed"
+    echo ""
+    return 1
+  fi
+  rm -f "$copy/cloud_sync.json" "$copy/data/"*.sock 2>/dev/null || true
+  sock="$copy/data/folddb.sock"
+
+  env -u SENTRY_DSN -u FOLD_SENTRY_DSN "$bin" --data-dir "$copy" >"$log" 2>&1 &
+  pid=$!
+  uh=""
+  for i in $(seq 1 300); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      warn "RSS probe: node exited during boot ($(tail -2 "$log" 2>/dev/null | tr '\n' ' '))"
+      rm -rf "$copy" "$log" 2>/dev/null || true
+      echo ""
+      return 1
+    fi
+    if [ -S "$sock" ]; then
+      uh="$(curl -sS --max-time 3 --unix-socket "$sock" -H 'Host: localhost' http://x/api/system/auto-identity 2>/dev/null | jq -r '.user_hash // empty' 2>/dev/null || true)"
+      [ -n "$uh" ] && break
+    fi
+    sleep 1
+  done
+  if [ -z "$uh" ]; then
+    warn "RSS probe: identity not ready in 300s"
+    kill "$pid" 2>/dev/null || true
+    sleep 1
+    kill -9 "$pid" 2>/dev/null || true
+    rm -rf "$copy" "$log" 2>/dev/null || true
+    echo ""
+    return 1
+  fi
+  log "RSS probe: identity ready after ${i}s; settling ${settle}s for embeddings/load..."
+  sleep "$settle"
+  max_rss=0
+  for i in $(seq 1 "$sample"); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      warn "RSS probe: node died during sample window"
+      break
+    fi
+    rss="$(rss_mb_of_pid "$pid")"
+    if [ "$rss" -gt "$max_rss" ] 2>/dev/null; then max_rss="$rss"; fi
+    sleep 1
+  done
+  kill "$pid" 2>/dev/null || true
+  sleep 2
+  kill -9 "$pid" 2>/dev/null || true
+  rm -rf "$copy" "$log" 2>/dev/null || true
+  PROBE_RSS_MB="$max_rss"
+  PROBE_RSS_LIMIT_MB="$limit_mb"
+  PROBE_RSS_FAIL_AT_MB="$fail_at"
+  log "RSS probe: peak_rss_mb=${max_rss} limit_mb=${limit_mb} fail_at_mb=${fail_at}"
+  echo "$max_rss"
+  return 0
+}
+
+enforce_rss_under_limit() {
+  # $1 = rss_mb, $2 = context label (probe|live)
+  local rss="$1" ctx="$2" limit fail_at
+  limit="$(resolve_rss_limit_mb)"
+  fail_at="$(rss_fail_threshold_mb "$limit")"
+  if ! [ "$rss" -ge 0 ] 2>/dev/null; then
+    warn "RSS $ctx: could not measure rss_mb (got '$rss'); treating as RED"
+    return 1
+  fi
+  if [ "$rss" -ge "$fail_at" ]; then
+    log "RSS $ctx RED: rss_mb=${rss} >= fail_at=${fail_at} (limit=${limit}, headroom=${RSS_HEADROOM_PCT}%)"
+    return 1
+  fi
+  log "RSS $ctx GREEN: rss_mb=${rss} < fail_at=${fail_at} (limit=${limit})"
+  return 0
+}
 
 
 # --- venue: sidebin (LaunchAgent) vs brew ------------------------------------
@@ -372,13 +511,41 @@ if [ "$SMOKE_RC" -ne 0 ] || ! grep -q 'VERDICT: GREEN' "$SMOKE_OUT"; then
   echo "NEXT:   do NOT brew upgrade; file a release-blocker; restore from backup only if primary is already broken"
   exit 1
 fi
-log "probe GREEN for candidate $CAND_VER"
+log "data-plane probe GREEN for candidate $CAND_VER"
+
+# RSS bar (memory-guard): candidate must not explode past the live kill ceiling.
+# Incident 2026-07-22: post-cutover ~8.5G RSS vs 6G guard → thrash restarts.
+PROBE_RSS_MB=""
+PROBE_RSS_LIMIT_MB=""
+PROBE_RSS_FAIL_AT_MB=""
+set +e
+PROBE_RSS_MB="$(probe_candidate_peak_rss_mb "$CANDIDATE_BIN" | tail -1)"
+RSS_RC=$?
+set -e
+if [ "$RSS_RC" -ne 0 ] || [ -z "$PROBE_RSS_MB" ]; then
+  echo ""
+  echo "VERDICT: RED"
+  echo "REASON: candidate $CAND_VER failed RSS probe (could not measure post-settle RSS on CoW copy)"
+  echo "BACKUP: $BACKUP  (kept; primary NOT upgraded)"
+  echo "NEXT:   fix probe/CoW disk; do NOT live-upgrade until RSS bar is measurable"
+  exit 1
+fi
+if ! enforce_rss_under_limit "$PROBE_RSS_MB" "probe"; then
+  echo ""
+  echo "VERDICT: RED"
+  echo "REASON: candidate $CAND_VER peak_rss_mb=${PROBE_RSS_MB} exceeds memory-guard bar (limit=$(resolve_rss_limit_mb)MiB headroom=${RSS_HEADROOM_PCT}%)"
+  echo "BACKUP: $BACKUP  (kept; primary NOT upgraded)"
+  echo "NEXT:   do NOT live-upgrade; raise LASTDBD_RSS_LIMIT_MB only with Tom clearance, or fix candidate memory before cutover"
+  exit 1
+fi
+log "probe GREEN for candidate $CAND_VER (data-plane + RSS peak_mb=${PROBE_RSS_MB})"
 
 if [ "$PROBE_ONLY" -eq 1 ]; then
   echo ""
   echo "VERDICT: GREEN_PROBE_ONLY"
-  echo "SUMMARY: candidate $CAND_VER boots and serves a CoW of real data. Primary left on $CURRENT_VER."
+  echo "SUMMARY: candidate $CAND_VER boots and serves a CoW of real data; peak_rss_mb=${PROBE_RSS_MB} under guard limit=$(resolve_rss_limit_mb). Primary left on $CURRENT_VER."
   echo "BACKUP:  $BACKUP"
+  echo "RSS:     peak_mb=${PROBE_RSS_MB} limit_mb=$(resolve_rss_limit_mb) fail_at_mb=$(rss_fail_threshold_mb "$(resolve_rss_limit_mb)")"
   echo "NEXT:    re-run without --probe-only (and --yes if non-interactive) for venue-aware live cutover"
   exit 0
 fi
@@ -451,9 +618,43 @@ QOK="$(echo "$QRES" | jq -r '.ok // empty' 2>/dev/null || true)"
 QVAL="$(echo "$QRES" | jq -r '.results[0].fields.title // .results[0].title // empty' 2>/dev/null || true)"
 [ "$QOK" = "true" ] && [ -n "$QVAL" ] || die "live Board query failed after cutover — treat as RED; restore from $BACKUP"
 
+# Live RSS vs memory-guard (settle briefly — embeddings may still be loading).
+log "live RSS settle ${RSS_SETTLE_SECS}s then sample ${RSS_SAMPLE_SECS}s..."
+sleep "$RSS_SETTLE_SECS"
+LIVE_PID=""
+if [ -S "$PRIMARY_SOCK" ]; then
+  LIVE_PID="$(lsof -t "$PRIMARY_SOCK" 2>/dev/null | head -1 || true)"
+fi
+if [ -z "${LIVE_PID:-}" ]; then
+  LIVE_PID="$(pgrep -f "$SIDEBIN_DIR/lastdbd\$|$SIDEBIN_DIR/lastdbd " 2>/dev/null | head -1 || true)"
+fi
+LIVE_RSS_MB=0
+if [ -n "${LIVE_PID:-}" ]; then
+  for i in $(seq 1 "$RSS_SAMPLE_SECS"); do
+    r="$(rss_mb_of_pid "$LIVE_PID")"
+    if [ "$r" -gt "$LIVE_RSS_MB" ] 2>/dev/null; then LIVE_RSS_MB="$r"; fi
+    sleep 1
+  done
+else
+  warn "live RSS: could not resolve primary pid; skipping hard fail (data-plane ok)"
+  LIVE_RSS_MB=""
+fi
+if [ -n "${LIVE_RSS_MB:-}" ]; then
+  if ! enforce_rss_under_limit "$LIVE_RSS_MB" "live"; then
+    echo ""
+    echo "VERDICT: RED"
+    echo "REASON: live peak_rss_mb=${LIVE_RSS_MB} exceeds memory-guard bar after cutover — primary may thrash-restart"
+    echo "BACKUP: $BACKUP"
+    echo "BINARY ROLLBACK (preferred first try, sidebin):"
+    echo "  cp -a $SIDEBIN_DIR/lastdbd.bak-pre-* $SIDEBIN_DIR/lastdbd  # pick newest bak"
+    echo "  launchctl kickstart -k gui/\$(id -u)/$LAUNCHD_LABEL"
+    die "live RSS over memory-guard bar; restore binary bak if thrashing continues"
+  fi
+fi
+
 CUTOVER_T1="$(date +%s)"
 CUTOVER_SECS=$((CUTOVER_T1 - CUTOVER_T0))
-log "STEP 4/4: live post-check GREEN (schemas=$NSCHEMAS first Board title=\"$QVAL\" cutover_s=$CUTOVER_SECS venue=$VENUE)"
+log "STEP 4/4: live post-check GREEN (schemas=$NSCHEMAS first Board title=\"$QVAL\" cutover_s=$CUTOVER_SECS venue=$VENUE peak_rss_mb=${LIVE_RSS_MB:-unknown})"
 
 # Post a Situations notice so other agents attribute post-upgrade flapping.
 POST_NOTICE=""
@@ -504,7 +705,7 @@ fi
 
 echo ""
 echo "VERDICT: GREEN"
-echo "SUMMARY: upgraded lastdbd $CURRENT_VER → $INSTALLED; venue=$VENUE; cutover_s=$CUTOVER_SECS; probe + live Board read OK; backup at $BACKUP"
+echo "SUMMARY: upgraded lastdbd $CURRENT_VER → $INSTALLED; venue=$VENUE; cutover_s=$CUTOVER_SECS; probe + live Board read OK; probe_rss_mb=${PROBE_RSS_MB:-?} live_rss_mb=${LIVE_RSS_MB:-?} limit_mb=$(resolve_rss_limit_mb); backup at $BACKUP"
 echo ""
 echo "ROLLBACK (binary only, if new binary misbehaves but data is fine):"
 if [ "$VENUE" = "sidebin" ]; then
