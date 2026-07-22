@@ -56,10 +56,30 @@ reads. If needed, use `lastdb status` and `lastdb ops` only to name load.
 
 ## Select one milestone
 
-If `MILESTONE_DRIVER_TARGET` is set, select that exact nonterminal milestone
-after point-reading it. Targeting never relaxes blockers or proof gates.
+### Targeted dispatch is an absolute gate
 
-Read the compact supervisory surfaces, not a full-body board dump:
+Before reading the portfolio or applying any ranking rule, inspect and print the
+target explicitly:
+
+```bash
+printf 'MILESTONE_DRIVER_TARGET=%s\n' "${MILESTONE_DRIVER_TARGET:-<unset>}"
+```
+
+If `MILESTONE_DRIVER_TARGET` is nonempty:
+
+1. Point-read exactly that slug with
+   `fkanban milestone detail "$MILESTONE_DRIVER_TARGET" --json`.
+2. Lock it as the selected milestone for this entire pass. Do not select,
+   reconcile, inspect children for, or mutate any other milestone.
+3. If it is missing or terminal, heartbeat a targeted noop/error and exit.
+4. Skip the portfolio-ranking procedure below and continue directly to
+   **Drive the selected milestone**.
+
+This gate is mandatory for Ship It dispatch. Targeting never relaxes blockers,
+proof gates, or the one-card budget.
+
+Only when `MILESTONE_DRIVER_TARGET` is empty, read the compact supervisory
+surfaces, not a full-body board dump:
 
 ```bash
 fkanban milestone portfolio --json > /tmp/milestone-portfolio.json
