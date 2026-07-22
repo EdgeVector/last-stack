@@ -50,27 +50,21 @@
     },
     {
       "app": "brain",
-      "install_mode": "artifact",
-      "kind": "artifact-bundle",
+      "install_mode": "checkout",
+      "kind": "B local-safe",
       "command": "brain",
       "gate": "lastgit",
       "gate_main": "lastdb:///brain#main",
-      "artifact_app": "brain",
-      "artifact_channel": "stable",
-      "artifact_root": "$HOME/.lastgit/artifacts",
-      "install_root": "$HOME/.host-track/apps/brain",
-      "post_install": "$HOME/.host-track/apps/brain/current/bin/brain-host-track-post-install",
-      "links": [
-        {
-          "source": "bin/brain",
-          "target": "$HOME/.local/bin/brain"
-        },
-        {
-          "source": "bin/brain-mcp",
-          "target": "$HOME/.local/bin/brain-mcp"
-        }
-      ],
-      "notes": "Verified LastGit artifact install; PATH links point into the immutable Host Track artifact bundle."
+      "gate_remote": "lastgit",
+      "gate_ref": "refs/heads/main",
+      "host_track": "$HOME/.host-track/apps/brain/current",
+      "refresh": "$HOME/.local/bin/last-stack-refresh-brain-local-safe",
+      "artifact_exemption": {
+        "kind": "bootstrap-recovery",
+        "owner": "Tom",
+        "rationale": "Brain uses local safe-upgrade (versions/current/previous under ~/.host-track/apps/brain) until a LastGit CAS channel is published. No cloud required; CI last step: last-stack-safe-upgrade-cli brain --source-dir $PWD."
+      },
+      "notes": "Local safe-upgrade: ~/.host-track/apps/brain/{versions,current,previous}; PATH ~/.local/bin/brain -> current/bin/brain. Upgrade: last-stack-safe-upgrade-cli brain. Rollback: last-stack-safe-activate-cli rollback --app brain --link bin/brain:$HOME/.local/bin/brain. Never develop in the install tree."
     },
     {
       "app": "situations",

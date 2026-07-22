@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Host-track refresh entry for brain via local safe-upgrade (no cloud CAS required).
+# CI last step on this machine can also call:
+#   last-stack-safe-upgrade-cli brain --source-dir "$PWD"
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd -P)"
+UPGRADE="$ROOT/last-stack-safe-upgrade-cli"
+if [ ! -x "$UPGRADE" ]; then
+  UPGRADE="$(command -v last-stack-safe-upgrade-cli 2>/dev/null || true)"
+fi
+[ -x "$UPGRADE" ] || {
+  echo "last-stack-safe-upgrade-cli not found" >&2
+  exit 127
+}
+# --force from host-track refresh is ignored for content; always rebuilds from gate tip
+exec "$UPGRADE" brain "$@"

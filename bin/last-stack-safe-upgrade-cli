@@ -1,0 +1,335 @@
+#!/usr/bin/env bash
+# last-stack-safe-upgrade-cli — build a new local version + smoke + safe-activate.
+#
+# All local. CI's last step on this Mac can be:
+#   last-stack-safe-upgrade-cli brain
+# or:
+#   last-stack-safe-upgrade-cli brain --source-dir "$PWD"
+#
+# Flow:
+#   1. Materialize source into versions staging (git clone/archive or copy dir)
+#   2. Optional post-build (bun install / custom --build)
+#   3. Smoke with PATH pointing at the NEW tree (current unchanged until smoke passes)
+#   4. safe-activate-cli (current/previous + PATH links)
+#
+# Rollback: last-stack-safe-activate-cli rollback --app brain --link ...
+set -euo pipefail
+
+die() { printf 'safe-upgrade-cli: %s\n' "$*" >&2; exit 2; }
+
+SELF="$(cd "$(dirname "$0")" && pwd -P)"
+ACTIVATE="${LAST_STACK_SAFE_ACTIVATE:-$SELF/last-stack-safe-activate-cli}"
+[ -x "$ACTIVATE" ] || ACTIVATE="$(command -v last-stack-safe-activate-cli 2>/dev/null || true)"
+[ -x "$ACTIVATE" ] || die "last-stack-safe-activate-cli not found"
+
+APPS_ROOT="${HOST_TRACK_APPS_ROOT:-$HOME/.host-track/apps}"
+GIT="${GIT:-/usr/bin/git}"
+
+# Defaults per known app
+app_defaults() {
+  local app="$1"
+  case "$app" in
+    brain)
+      DEFAULT_REMOTE="lastdb:///brain"
+      DEFAULT_BARE="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/brain.git"
+      DEFAULT_LINKS="bin/brain:$HOME/.local/bin/brain"
+      DEFAULT_BUILD="bun_install"
+      DEFAULT_SMOKE="brain_smoke"
+      ;;
+    situations)
+      DEFAULT_REMOTE="lastdb:///situations"
+      DEFAULT_BARE="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/situations.git"
+      DEFAULT_LINKS="bin/situations:$HOME/.local/bin/situations"
+      DEFAULT_BUILD="bun_install"
+      DEFAULT_SMOKE="situations_smoke"
+      ;;
+    routines)
+      DEFAULT_REMOTE="lastdb:///routines"
+      DEFAULT_BARE="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/routines.git"
+      DEFAULT_LINKS="bin/routines:$HOME/.local/bin/routines|src/cli.ts_wrapper"
+      DEFAULT_BUILD="bun_install"
+      DEFAULT_SMOKE="routines_smoke"
+      ;;
+    lastsecrets)
+      DEFAULT_REMOTE="lastdb:///lastsecrets"
+      DEFAULT_BARE="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/lastsecrets.git"
+      DEFAULT_LINKS="src/cli.ts_wrapper:lastsecrets"
+      DEFAULT_BUILD="bun_install"
+      DEFAULT_SMOKE="lastsecrets_smoke"
+      ;;
+    configurations)
+      DEFAULT_REMOTE="lastdb:///configurations"
+      DEFAULT_BARE="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/configurations.git"
+      DEFAULT_LINKS="src/cli.ts_wrapper:configurations"
+      DEFAULT_BUILD="bun_install"
+      DEFAULT_SMOKE="configurations_smoke"
+      ;;
+    *)
+      DEFAULT_REMOTE="lastdb:///$app"
+      DEFAULT_BARE="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/${app}.git"
+      DEFAULT_LINKS=""
+      DEFAULT_BUILD="bun_install"
+      DEFAULT_SMOKE="true"
+      ;;
+  esac
+}
+
+run_bun_install() {
+  local root="$1"
+  [ -f "$root/package.json" ] || return 0
+  command -v bun >/dev/null 2>&1 || die "bun required for $root"
+  if [ -x "$root/bin/brain-host-track-post-install" ]; then
+    (cd "$root" && ./bin/brain-host-track-post-install) || \
+      (cd "$root" && bun install --frozen-lockfile --production) || \
+      (cd "$root" && bun install --frozen-lockfile) || \
+      (cd "$root" && bun install)
+  else
+    (cd "$root" && bun install --frozen-lockfile --production 2>/dev/null) \
+      || (cd "$root" && bun install --frozen-lockfile 2>/dev/null) \
+      || (cd "$root" && bun install)
+  fi
+}
+
+ensure_bin_wrapper() {
+  # For apps that only have src/cli.ts — write bin/<name> if missing
+  local root="$1" name="$2"
+  mkdir -p "$root/bin"
+  if [ -x "$root/bin/$name" ]; then
+    return 0
+  fi
+  if [ ! -f "$root/src/cli.ts" ]; then
+    return 0
+  fi
+  cat >"$root/bin/$name" <<WRAP
+#!/usr/bin/env bash
+set -euo pipefail
+root="\$(cd "\$(dirname "\$0")/.." && pwd -P)"
+if bun_bin="\$(command -v bun 2>/dev/null)"; then
+  :
+elif [ -x "\$HOME/.bun/bin/bun" ]; then
+  bun_bin="\$HOME/.bun/bin/bun"
+else
+  echo "$name: bun not found" >&2
+  exit 127
+fi
+exec "\$bun_bin" "\$root/src/cli.ts" "\$@"
+WRAP
+  chmod +x "$root/bin/$name"
+}
+
+smoke_brain() {
+  local root="$1"
+  [ -x "$root/bin/brain" ] || die "smoke: no bin/brain in $root"
+  PATH="$root/bin:$PATH" brain which >/dev/null
+  # Live LastDB read — proves the install can talk to the node
+  PATH="$root/bin:$PATH" brain get sop-edgevector-portals >/dev/null \
+    || PATH="$root/bin:$PATH" brain get concepts-edgevector-repo-layout >/dev/null \
+    || die "smoke: brain get failed"
+  printf 'safe-upgrade-cli: brain smoke OK\n'
+}
+
+smoke_situations() {
+  local root="$1"
+  PATH="$root/bin:$PATH" situations list >/dev/null || die "smoke: situations list failed"
+  printf 'safe-upgrade-cli: situations smoke OK\n'
+}
+
+smoke_routines() {
+  local root="$1"
+  ensure_bin_wrapper "$root" routines
+  PATH="$root/bin:$PATH" routines --help >/dev/null || die "smoke: routines --help failed"
+  printf 'safe-upgrade-cli: routines smoke OK\n'
+}
+
+smoke_lastsecrets() {
+  local root="$1"
+  ensure_bin_wrapper "$root" lastsecrets
+  PATH="$root/bin:$PATH" lastsecrets --help >/dev/null || die "smoke: lastsecrets --help failed"
+  printf 'safe-upgrade-cli: lastsecrets smoke OK\n'
+}
+
+smoke_configurations() {
+  local root="$1"
+  ensure_bin_wrapper "$root" configurations
+  PATH="$root/bin:$PATH" configurations --help >/dev/null || die "smoke: configurations --help failed"
+  printf 'safe-upgrade-cli: configurations smoke OK\n'
+}
+
+materialize_from_git() {
+  local dest="$1" remote="$2" bare="$3" ref="$4"
+  mkdir -p "$(dirname "$dest")"
+  if [ -d "$bare/objects" ] || [ -f "$bare/HEAD" ]; then
+    $GIT --git-dir="$bare" fetch --quiet origin "+refs/heads/${ref}:refs/heads/${ref}" 2>/dev/null \
+      || $GIT --git-dir="$bare" fetch --quiet origin "$ref" 2>/dev/null \
+      || $GIT --git-dir="$bare" fetch --quiet "$remote" "+refs/heads/${ref}:refs/heads/${ref}" 2>/dev/null \
+      || true
+    local oid
+    oid="$($GIT --git-dir="$bare" rev-parse --verify "refs/heads/$ref" 2>/dev/null \
+      || $GIT --git-dir="$bare" rev-parse --verify "$ref" 2>/dev/null \
+      || true)"
+    [ -n "$oid" ] || die "cannot resolve $ref in bare $bare"
+    mkdir -p "$dest"
+    $GIT --git-dir="$bare" archive "$oid" | tar -x -C "$dest"
+    printf '%s\n' "$oid"
+    return
+  fi
+  # clone shallow to temp then archive
+  local tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/safe-upgrade-clone.XXXXXX")"
+  $GIT clone --quiet --depth 1 --branch "$ref" "$remote" "$tmp/repo" \
+    || $GIT clone --quiet --depth 1 "$remote" "$tmp/repo"
+  local oid
+  oid="$($GIT -C "$tmp/repo" rev-parse HEAD)"
+  mkdir -p "$dest"
+  $GIT -C "$tmp/repo" archive HEAD | tar -x -C "$dest"
+  rm -rf "$tmp"
+  printf '%s\n' "$oid"
+}
+
+materialize_from_dir() {
+  local dest="$1" src="$2"
+  mkdir -p "$dest"
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a --exclude .git "$src"/ "$dest"/
+  else
+    # portable-ish
+    tar -C "$src" --exclude .git -cf - . | tar -C "$dest" -xf -
+  fi
+  if [ -d "$src/.git" ]; then
+    $GIT -C "$src" rev-parse HEAD 2>/dev/null || printf 'dir-%s\n' "$(date +%Y%m%d%H%M%S)"
+  else
+    printf 'dir-%s\n' "$(date +%Y%m%d%H%M%S)"
+  fi
+}
+
+usage() {
+  cat <<'EOF'
+Usage:
+  last-stack-safe-upgrade-cli <app> [options]
+
+Options:
+  --source-dir DIR     Build from local tree (e.g. CI checkout / worktree)
+  --remote URL         Git remote (default: lastdb:///<app>)
+  --ref REF            Branch/ref (default: main)
+  --bare PATH          Bare cache git dir to archive from
+  --link REL:ABS       PATH link (repeatable). Default depends on app.
+  --skip-smoke         Do not smoke (not recommended)
+  --dry-run            Materialize + smoke only; do not flip current
+  -h, --help
+
+Examples:
+  last-stack-safe-upgrade-cli brain
+  last-stack-safe-upgrade-cli brain --source-dir "$PWD"   # CI last step
+  last-stack-safe-activate-cli rollback --app brain \
+    --link bin/brain:$HOME/.local/bin/brain
+EOF
+}
+
+main() {
+  local app="" source_dir="" remote="" bare="" ref="main"
+  local skip_smoke=0 dry_run=0
+  local -a links=()
+
+  [ "$#" -gt 0 ] || { usage; exit 2; }
+  case "${1:-}" in -h|--help) usage; exit 0 ;; esac
+  app="$1"; shift
+  app_defaults "$app"
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --source-dir) source_dir="${2:-}"; shift 2 ;;
+      --remote) remote="${2:-}"; shift 2 ;;
+      --bare) bare="${2:-}"; shift 2 ;;
+      --ref) ref="${2:-}"; shift 2 ;;
+      --link) links+=("${2:-}"); shift 2 ;;
+      --skip-smoke) skip_smoke=1; shift ;;
+      --dry-run) dry_run=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *) die "unknown arg: $1" ;;
+    esac
+  done
+
+  remote="${remote:-$DEFAULT_REMOTE}"
+  bare="${bare:-$DEFAULT_BARE}"
+  if [ "${#links[@]}" -eq 0 ] && [ -n "$DEFAULT_LINKS" ]; then
+    # support single default; multi later
+    case "$DEFAULT_LINKS" in
+      *\|*) links+=("bin/$app:$HOME/.local/bin/$app") ;;
+      *) links+=("$DEFAULT_LINKS") ;;
+    esac
+  fi
+
+  local install_root stage version_id
+  install_root="$APPS_ROOT/$app"
+  mkdir -p "$install_root/versions"
+  stage="$(mktemp -d "$install_root/versions/.build.XXXXXX")"
+
+  cleanup() { rm -rf "$stage" 2>/dev/null || true; }
+  trap cleanup EXIT
+
+  printf 'safe-upgrade-cli: materializing %s …\n' "$app"
+  if [ -n "$source_dir" ]; then
+    [ -d "$source_dir" ] || die "source-dir missing: $source_dir"
+    version_id="$(materialize_from_dir "$stage" "$source_dir")"
+  else
+    version_id="$(materialize_from_git "$stage" "$remote" "$bare" "$ref")"
+  fi
+  # normalize id to short-safe
+  version_id="$(printf '%s' "$version_id" | tr -cd 'a-fA-F0-9' | cut -c1-40)"
+  [ -n "$version_id" ] || version_id="v$(date +%Y%m%d%H%M%S)"
+
+  printf 'safe-upgrade-cli: version_id=%s build…\n' "$version_id"
+  case "$DEFAULT_BUILD" in
+    bun_install) run_bun_install "$stage" ;;
+    *) ;;
+  esac
+  # ensure wrappers for apps that need them
+  case "$app" in
+    routines|lastsecrets|configurations) ensure_bin_wrapper "$stage" "$app" ;;
+    brain) [ -x "$stage/bin/brain" ] || die "brain materialize missing bin/brain" ;;
+  esac
+
+  if [ "$skip_smoke" -eq 0 ]; then
+    printf 'safe-upgrade-cli: smoking new version (current PATH install unchanged)…\n'
+    case "$DEFAULT_SMOKE" in
+      brain_smoke) smoke_brain "$stage" ;;
+      situations_smoke) smoke_situations "$stage" ;;
+      routines_smoke) smoke_routines "$stage" ;;
+      lastsecrets_smoke) smoke_lastsecrets "$stage" ;;
+      configurations_smoke) smoke_configurations "$stage" ;;
+      true) true ;;
+      *) die "unknown smoke: $DEFAULT_SMOKE" ;;
+    esac
+  else
+    printf 'safe-upgrade-cli: smoke skipped\n'
+  fi
+
+  if [ "$dry_run" -eq 1 ]; then
+    printf 'safe-upgrade-cli: dry-run OK (not activating). stage=%s id=%s\n' "$stage" "$version_id"
+    trap - EXIT
+    rm -rf "$stage"
+    exit 0
+  fi
+
+  # Move stage to final version id path expected by activate
+  local final="$install_root/versions/$version_id"
+  if [ -e "$final" ]; then
+    printf 'safe-upgrade-cli: version %s exists; replacing after smoke\n' "$version_id"
+    rm -rf "$final"
+  fi
+  mv "$stage" "$final"
+  trap - EXIT
+
+  local -a act_args=(activate --app "$app" --version-id "$version_id" --version-dir "$final")
+  local L
+  for L in "${links[@]+"${links[@]}"}"; do
+    [ -n "$L" ] || continue
+    act_args+=(--link "$L")
+  done
+  "$ACTIVATE" "${act_args[@]}"
+
+  printf 'safe-upgrade-cli: DONE app=%s version=%s\n' "$app" "$version_id"
+  "$ACTIVATE" status --app "$app"
+}
+
+main "$@"
