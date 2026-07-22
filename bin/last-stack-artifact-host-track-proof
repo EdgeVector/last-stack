@@ -13,16 +13,17 @@ done
 ROOT="$(cd "$(dirname "$SOURCE")/.." && pwd -P)"
 
 registry="${HOST_TRACK_REGISTRY:-}"
-proof_path="${LAST_STACK_ARTIFACT_HOST_TRACK_PROOF:-$HOME/.last-stack/feature-proofs/artifact-driven-host-track-registry-cutover.md}"
+proof_slug="artifact-driven-host-track-registry-cutover"
+proof_path="${LAST_STACK_ARTIFACT_HOST_TRACK_PROOF:-}"
 json_out=0
 
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  last-stack-artifact-host-track-proof [--json] [--registry <path>] [--proof <path>]
+  last-stack-artifact-host-track-proof [--fleet] [--json] [--registry <path>] [--proof <path>]
 
 Runs the Host Track artifact invariant and per-app host-track checks. On success
-writes a PASS proof file for the artifact-driven registry cutover.
+writes a PASS proof file for the artifact-driven Host Track proof.
 EOF
 }
 
@@ -33,6 +34,10 @@ die() {
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --fleet)
+      proof_slug="artifact-driven-host-track-fleet"
+      shift
+      ;;
     --json) json_out=1; shift ;;
     --registry) [ "$#" -ge 2 ] || die "--registry requires a value"; registry="$2"; shift 2 ;;
     --proof) [ "$#" -ge 2 ] || die "--proof requires a value"; proof_path="$2"; shift 2 ;;
@@ -41,6 +46,10 @@ while [ "$#" -gt 0 ]; do
     *) die "unexpected argument: $1" ;;
   esac
 done
+
+if [ -z "$proof_path" ]; then
+  proof_path="$HOME/.last-stack/feature-proofs/$proof_slug.md"
+fi
 
 command -v jq >/dev/null 2>&1 || die "jq is required"
 
@@ -105,7 +114,7 @@ checked_count="$(jq -s 'length' "$check_jsonl")"
 timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 mkdir -p "$(dirname "$proof_path")"
 {
-  printf 'PASS artifact-driven-host-track-registry-cutover %s\n' "$timestamp"
+  printf 'PASS %s %s\n' "$proof_slug" "$timestamp"
   printf '\n'
   printf 'registry: %s\n' "$registry"
   printf 'checked_apps: %s\n' "$checked_count"

@@ -13,6 +13,12 @@ fail() {
 
 default_registry="$ROOT/config/host-track/apps.json"
 
+[ -x "$ROOT/bin/last-stack-artifact-host-track-proof" ] \
+  || fail "artifact host-track proof helper is missing from bin"
+jq -e '.artifacts[] | select(.app == "last-stack") | .paths | index("bin")' \
+  "$ROOT/.lastgit/artifacts.json" >/dev/null \
+  || fail "last-stack artifact bundle omits bin, including proof helper"
+
 jq -e '
   . as $root
   | [$root.apps[] | select((.install_mode // $root.defaults.install_mode // "checkout") == "checkout")] | length == 0
@@ -97,6 +103,15 @@ proof="$tmp/proof.md"
   | jq -e '.ok == true and .proof == "'"$proof"'"' >/dev/null || fail "proof helper did not return ok json"
 grep -q '^PASS artifact-driven-host-track-registry-cutover ' "$proof" \
   || fail "proof helper did not write PASS proof"
+
+fleet_home="$tmp/fleet-home"
+mkdir -p "$fleet_home"
+HOME="$fleet_home" "$ROOT/bin/last-stack-artifact-host-track-proof" --fleet --registry "$HOST_TRACK_REGISTRY" --json \
+  | jq -e '.ok == true and (.proof | endswith("/.last-stack/feature-proofs/artifact-driven-host-track-fleet.md"))' \
+    >/dev/null || fail "fleet proof helper did not return ok json with fleet proof path"
+grep -q '^PASS artifact-driven-host-track-fleet ' \
+  "$fleet_home/.last-stack/feature-proofs/artifact-driven-host-track-fleet.md" \
+  || fail "fleet proof helper did not write PASS fleet proof"
 
 jq '.apps += [{
   "app": "legacy",
