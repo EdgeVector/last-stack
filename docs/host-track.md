@@ -160,6 +160,30 @@ bin/last-stack-artifact-host-track-proof
 Refresh stamps are written under `~/.host-track/stamps/<app>.json`, or under
 `HOST_TRACK_STAMP_DIR` when set.
 
+## Post-merge auto safe-upgrade (completer companion)
+
+After a LastGit CR **merges to main**, the local forge supervisor can run
+install-side safe-upgrade so PATH tracks main without stuffing that into CI.
+
+- **Script:** `last-stack-post-merge-safe-upgrade --all`
+- **Supervised by:** lastgit `.lastgit/forge-run.sh` (same process as CI watch +
+  Discord notify) when the binary is on PATH
+- **Detects merges** like `notify-discord.sh`: fleet open-CR index → open→gone →
+  `cr view` → if `state=merged` and base is `main` and repo is mapped → upgrade
+- **Mapped apps:** brain, situations, fkanban/kanban, routines, lastsecrets,
+  configurations
+- **Failure:** log + retry (max 3); **does not unmerge**; operator can run
+  `last-stack-safe-upgrade-cli <app>` manually
+- **State:** `~/.lastgit/post-merge-safe-upgrade/`
+- **Disable:** `LAST_STACK_POST_MERGE_DISABLE=1` on the forge LaunchAgent env
+
+```bash
+# map
+last-stack-post-merge-safe-upgrade --map
+# one poll pass (seed or catch-up)
+last-stack-post-merge-safe-upgrade --once --all
+```
+
 ## Local safe-upgrade (no cloud) — agent CLIs
 
 For machine-local CI (Forgejo/LastGit on this Mac), you do **not** need to push

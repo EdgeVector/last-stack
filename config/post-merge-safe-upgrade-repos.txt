@@ -1,0 +1,8 @@
+# repo slug → last-stack-safe-upgrade-cli app (documented; code map is source of truth)
+brain brain
+situations situations
+fkanban fkanban
+kanban fkanban
+routines routines
+lastsecrets lastsecrets
+configurations configurations
