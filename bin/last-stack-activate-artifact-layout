@@ -129,10 +129,31 @@ if [ "$dry_run" -eq 1 ]; then
   exit 0
 fi
 
-LAST_STACK_ROOT="$artifact_current" "$artifact_current/setup"
+# Freeze the active version tree so agents cannot hand-edit through compatibility
+# symlinks. New digests are always new directories (host-track never mutates an
+# existing versions/<digest> in place).
+freeze_artifact_tree() {
+  local tree="$1"
+  [ -d "$tree" ] || return 0
+  # Restore write on the tree root only long enough to chmod children when
+  # re-freezing an already frozen version (idempotent activate).
+  chmod u+w "$tree" 2>/dev/null || true
+  if command -v find >/dev/null 2>&1; then
+    find "$tree" \( -type f -o -type d \) -exec chmod a-w {} + 2>/dev/null || \
+      find "$tree" \( -type f -o -type d \) -exec chmod a-w {} \; 2>/dev/null || true
+  fi
+}
+
+resolved_current="$(cd "$artifact_current" && pwd -P)"
+freeze_artifact_tree "$resolved_current"
+
+# Nested setup must not re-enter layout activation.
+LAST_STACK_ROOT="$artifact_current" \
+  LAST_STACK_SKIP_ARTIFACT_LAYOUT=1 \
+  "$artifact_current/setup"
 
 trap - ERR
 cleanup_lock
 trap - EXIT
-printf 'LAST_STACK_ARTIFACT_LAYOUT result=activated current=%s backup=%s moved=%s\n' \
-  "$(readlink "$artifact_current")" "$backup" "${#moved_paths[@]}"
+printf 'LAST_STACK_ARTIFACT_LAYOUT result=activated current=%s backup=%s moved=%s frozen=%s\n' \
+  "$(readlink "$artifact_current")" "$backup" "${#moved_paths[@]}" "$resolved_current"

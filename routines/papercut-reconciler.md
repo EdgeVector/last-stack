@@ -4,12 +4,17 @@ cadence: every 6h
 description: The ONLY filer of papercut board cards. Reads open papercuts and the never-again prevention registry from Brain, clusters them into patterns, and files a few well-scoped cards with compound-regression requirements where applicable. Also mines recent sessions into Brain papercut records first.
 ---
 
-## HARD feature-owner budget (Tom 2026-07-20)
+## HARD ship-outcome budget (Tom 2026-07-22; was feature-owner budget)
 
-While any `feature-owner` card has `STATUS: driving|proving` and unblocked
-not-done `Kind: pr` children, **do not** promote new papercut PR cards into
-`default/todo`. Keep them in backlog or brain-only until the feature frontier
-is stocked. Prefer no-op heartbeat `noop feature-budget-holds`.
+While any **active/proving milestone** (or ship-mode North Star with a
+nonterminal milestone) has unblocked not-done `Kind: pr` children, **do not**
+promote new papercut PR cards into `default/todo`. Keep them in backlog or
+brain-only until the milestone frontier is stocked. Prefer no-op heartbeat
+`noop ship-outcome-budget-holds`.
+
+Do **not** use new `feature-owner` cards for budget; that graph is retired
+(brain `sop-feature-ship-loop`). Legacy feature-owner cards still on the board
+may count as "driving" only until migrated — still do not file new ones.
 
 
 
@@ -25,6 +30,16 @@ find the patterns behind them, and file a **small number of well-scoped,
 pattern-level cards** (as many as genuinely needed, but clustered — never 1:1
 record→card by default). The pickup pipeline ships the cards; you never ship
 fixes yourself.
+
+**Pipeline producer (Tom, 2026-07-22):** `pipeline-health` no longer files
+board P0s for red/stuck deploys or stuck merges. It files Brain papercuts
+with stable slugs `papercut-pipeline-deploy-<repo>` and
+`papercut-pipeline-stuck-cr-…` (tags `papercut,pipeline,deploy` / `p0`). Treat
+those as first-class OPEN papercuts: cluster by repo/failure class, promote
+**pattern-level** cards when recurrence or severity warrants — not automatic
+1:1 board P0s that monopolize pickup. Prefer durable fix + compound prevention
+over "poll deploy until green" cards. See
+[[preference-pipeline-health-brain-papercuts]].
 
 Read your project's agent-orientation doc and durable memory index first, and
 honor their standing rules. Fetch the shared routine contract and this

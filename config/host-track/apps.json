@@ -41,7 +41,7 @@
           "target": "$HOME/.local/bin/host-track"
         }
       ],
-      "notes": "Installs the exact LastGit CI artifact; compatibility paths under ~/.last-stack point through the active immutable bundle."
+      "notes": "One rule: runtime is the Host Track CI artifact only. post_install activates ~/.last-stack/{bin,skills,routines,...} → .artifacts/current (immutable). Never develop in the install; use a worktree. Upgrade with: host-track refresh last-stack"
     },
     {
       "app": "brain",

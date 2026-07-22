@@ -43,3 +43,4 @@ bash tests/last-stack-deploy-gated-closeout.sh
 bash tests/host-track-artifacts.sh
 bash tests/last-stack-artifact-layout.sh
 bash tests/last-stack-artifact-routine-freshness.sh
+bash tests/last-stack-artifact-one-rule.sh

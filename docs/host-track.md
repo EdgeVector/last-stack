@@ -55,14 +55,31 @@ When configured, `post_install` runs after activation and after rollback with
 `HOST_TRACK_MANIFEST_DIGEST` in its environment. A failed hook leaves the app
 stale (no new stamp), so the refresh agent retries instead of claiming success.
 
-### Last Stack compatibility layout
+### Last Stack one rule (artifact is the only runtime)
+
+**Runtime install = Host Track CI artifact only. Never a place you develop.**
+
+| Role | Path | Mutable? |
+|------|------|----------|
+| **Run** | `~/.local/state/last-stack/artifacts/versions/<digest>` via `current` | No — replace whole version |
+| **Compat paths** | `~/.last-stack/{bin,skills,routines,...}` -> `~/.local/state/last-stack/artifacts/current/...` | Symlinks only |
+| **Dev** | Isolated worktree of `EdgeVector/last-stack` | Yes — normal CR flow |
+| **State** | logs, proofs, dogfood, stamps under `~/.local/state` / install state dirs | Yes |
 
 Last Stack artifacts install below `~/.local/state/last-stack/artifacts` so
 verified versions, stages, and rollback state do not dirty the `~/.last-stack`
-owner mirror. If a non-git compatibility root needs stable code paths (`bin`,
-`skills`, `routines`, `config`, and the other packaged support trees), they can
-point through the active artifact. Run the one-time, recoverable migration only
-after a verified Last Stack artifact is installed:
+owner mirror. The artifact `post_install` runs `setup`, and artifact-mode setup
+runs `last-stack-activate-artifact-layout`, which:
+
+1. Moves any leftover real code trees aside (recovery under
+   `~/.local/state/last-stack/layout-backups`)
+2. Symlinks stable paths (`bin`, `skills`, `routines`, `config`, ...) at
+   `~/.local/state/last-stack/artifacts/current/...`
+3. Freezes the active version tree (`chmod a-w`) so agents cannot hand-edit
+   through the compatibility links
+4. Re-runs `./setup` from the artifact (skill links, host-track refresh agent)
+
+Manual / dry-run:
 
 ```bash
 ~/.local/state/last-stack/artifacts/current/bin/last-stack-activate-artifact-layout --dry-run
@@ -76,6 +93,14 @@ worktree compatibility root instead of replacing tracked source paths with
 artifact links; use a non-git compatibility root for that layout. Artifact
 installs use the Host Track refresh agent, so setup removes the retired Git
 self-upgrade LaunchAgent.
+
+**Upgrade:** `host-track refresh last-stack` (or the host-track refresh
+LaunchAgent). Git `self-upgrade` / dirty-tree repair is a no-op on artifact
+runtime and must not be used to “heal” agent edits.
+
+**Develop:** worktrees only. Never `Write` product files under `~/.last-stack`.
+Runtime artifact state is intentionally outside the owner mirror so it cannot
+dirty that checkout.
 
 ## Status Shape
 

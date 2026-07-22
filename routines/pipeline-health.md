@@ -1,7 +1,7 @@
 ---
 name: pipeline-health
 cadence: every 10 min
-description: Keep merge + post-merge deploy pipelines unblocked — open LastGit CRs, Forgejo forge-hot PRs, and LastGit deploy-pipeline logs. Anything blocked is P0 — fix this wake or file a P0 board card so pickup drains it first.
+description: Keep merge + post-merge deploy pipelines unblocked — open LastGit CRs, Forgejo forge-hot PRs, and LastGit deploy-pipeline logs. Anything blocked is P0 severity — fix this wake or file a Brain papercut so papercut-reconciler can promote clustered board work.
 ---
 
 You are the **pipeline-health** routine for `<WORKSPACE>`. Run ONE bounded pass,
@@ -18,29 +18,42 @@ so nothing silently rots:
    stuck deploy after main lands is a **pipeline block**, not a background
    ops note.
 
-### Priority policy (Tom, 2026-07-14 — do not re-litigate)
+### Priority policy (Tom, 2026-07-14 severity + 2026-07-22 filing path)
 
-**If any merge or deploy pipeline is blocked, that is P0.** It outranks feature
-cards, papercuts, and program slices. You must either:
+**If any merge or deploy pipeline is blocked, that is P0 severity.** Fix it this
+wake when mechanical. **Do not file pickup-ready kanban P0 cards** for pipeline
+blocks you cannot finish this wake.
 
-- **Fix it this wake** (heavy unit — preferred when mechanical), OR
-- **File/update one pickup-ready P0 kanban card** so `kanban-pickup` drains it
-  next (after `kanban rank` on todo), OR
-- **HEAVY-fix the existing open card** for that pipeline if one already exists.
+Standing rule (Tom, 2026-07-22 — do not re-litigate):
+
+- **Escalation path = Brain papercuts only**, not board cards.
+- File/update a Brain record `papercut-pipeline-…` with tag `papercut` (plus
+  `pipeline` / `deploy` as appropriate).
+- **`papercut-reconciler`** is the **only** component that turns those records
+  into board cards (clustered, fair-share with feature lanes). See
+  [[sop-brain-papercut-reconciler]] and
+  [[preference-pipeline-health-brain-papercuts]].
+- You may still **HEAVY-fix** one mechanical issue this wake (merge, CI flake,
+  deploy script). You may **not** open or re-rank `deploy-pipeline-red-*`
+  kanban cards for pickup monopoly.
 
 Reporting `noop` while a deploy log ends in `failure` (or a green-but-unmerged
-CR has been open >10m) is a **routine failure**. Do not claim the pipeline is
-healthy because `open_cr=0`.
+CR has been open >10m) **and** you neither fixed it nor filed/updated the Brain
+papercut is a **routine failure**. Do not claim the pipeline is healthy because
+`open_cr=0`.
 
 This is **not** a feature-shipping routine and **not** a board reconciler for
 ordinary cards. You do not move random cards (leave that to `kanban-watch`). You
-**do** push stuck CRs/PRs toward merge, clear red deploys, fix mechanical CI,
-resolve clean conflicts, re-fire dropped auto-merge, and escalate what you
-cannot clear as **P0**.
+**do** push stuck CRs/PRs toward merge, clear red deploys when mechanical, fix
+mechanical CI, resolve clean conflicts, re-fire dropped auto-merge, and escalate
+what you cannot clear as **Brain papercuts**.
 
 Complements:
 - `kanban-watch` — board RECONCILE for *carded* PRs (every ~hour).
-- `kanban-pickup` — WORK mode; will pick your P0 pipeline cards first after rank.
+- `papercut-reconciler` — sole papercut→board path (every ~6h); promotes
+  pipeline papercuts into clustered cards when patterns warrant.
+- `kanban-pickup` — WORK mode on **reconciler-filed** cards (and program work),
+  **not** on pipeline-health-filed board P0s.
 - `drain-open-prs` — once-a-day broad PR drain / close dead weight.
 - LastGit `forge run` / `shadow-run` / `deploy-run` daemons — continuous CI + deploy.
 
@@ -60,16 +73,18 @@ read/write, fail loudly if the resolved path is empty or starts with
   below); list open CRs/PRs; check daemon liveness via logs; run
   `lastgit cr complete <slug> --once` for green auto-merge CRs; re-arm Forgejo
   `merge_when_checks_succeed` when checks are green; nudge BEHIND bases with a
-  lease force-push only from a fresh worktree after rebase; **file/update P0
-  cards** for every blocked deploy/merge you are not fixing this wake; run
-  `kanban rank` (or board rank) on `todo` after filing any P0; append heartbeat.
+  lease force-push only from a fresh worktree after rebase; **file/update Brain
+  papercuts** for every blocked deploy/merge you are not fixing this wake;
+  append heartbeat. **Do not** `kanban add` pipeline P0 cards. **Do not**
+  `kanban rank` solely to front-load pipeline work.
 - **HEAVY (at most ONE unit this wake):** prefer in this order:
-  1. **blocked deploy-pipeline** (latest log line `failure`, or pending >4h),
+  1. **blocked deploy-pipeline** (latest log line `failure`, or pending >4h)
+     when a **bounded mechanical** fix fits this wake,
   2. **stuck merge** (CR/PR open >10m green-unmerged / red-stale / conflict),
   3. other mechanical CI.
-  Worktree CI fix, conflict rebase, deploy script fix, OR filing the P0 card
-  if the fix needs product judgment / secrets / human gate. Pick the highest
-  priority stuck item, do it, then exit.
+  Worktree CI fix, conflict rebase, deploy script fix, OR filing/updating the
+  Brain papercut if the fix needs product judgment / secrets / human / multi-hour
+  host proof. Pick the highest priority stuck item, do it, then exit.
 
 ## 🛑 Hard guardrails
 - **NEVER kill/restart the primary brain/board node** (`lastdbd` on
@@ -85,7 +100,10 @@ read/write, fail loudly if the resolved path is empty or starts with
 - **NEVER touch a LIVE worktree** on the head branch (dirty tree, commit or
   non-cache file touched in the last ~2h, or a process cwd'd there). PARKED
   worktrees (clean + idle + no process) are fair game to adopt.
-- **Dev, not prod.** Skip human-gated prod cutovers; flag them.
+- **NEVER file `deploy-pipeline-red-*` (or similar) kanban cards.** Brain
+  papercuts only for escalation. Legacy board cards already open may be left for
+  `kanban-watch` / closeout; do not mint new ones.
+- **Dev, not prod.** Skip human-gated prod cutovers; flag them in the papercut.
 - **One pass, then exit.** No `sleep` loops. Waiting is the gap between wakes.
 
 ## Setup
@@ -97,12 +115,14 @@ read/write, fail loudly if the resolved path is empty or starts with
    export PATH="<LASTGIT_BIN_DIR>:$PATH"
    "$last_stack/bin/last-stack-cli-preflight" git curl jq <board-cli> <brain-cli>
    command -v lastgit >/dev/null || { echo "lastgit missing on PATH" >&2; exit 1; }
+   command -v brain >/dev/null || { echo "brain missing on PATH" >&2; exit 1; }
    ```
 2. Situations preflight (read-only list is enough unless you will mutate CI
    gates): honor any active Situation that freezes pipeline work.
 3. Confirm board/brain reachability with a cheap socket-backed read:
    ```bash
    <board-cli> list --column todo --json >/dev/null
+   brain get sop-brain-papercut-reconciler --type sop >/dev/null
    ```
    Do **not** use doctor/init/TCP `:9001` as a health check.
 4. Read `brain get sop-lastgit-native-forge-workflow --type sop` (LastGit) and
@@ -146,59 +166,80 @@ fi
 For each **blocked** entry (`blocked=true`, or human scan shows latest
 terminal `failure`, or `pending` older than **4 hours**):
 
-1. **Dedupe:** start with `kanban list --column todo --json`,
-   `kanban list --column doing --json`, and slug-pattern `kanban show` checks
-   for `deploy-pipeline-red-<repo>-*`. `kanban search "deploy-pipeline <repo>"`
-   is optional; if it returns `full_schema_scan_not_allowed`, continue with the
-   scoped reads. If an open card already exists in
-   todo/doing/review for that repo+pipeline, **update it** (append evidence
-   line with sha + log path) and ensure `Priority: P0` + tags include
-   `pipeline,deploy,p0`. Do not file a duplicate.
-2. **No open card** → **FILE a P0 PR card** immediately (CHEAP):
+1. **Dedupe in Brain (not the board):**
+   ```bash
+   slug="papercut-pipeline-deploy-<repo>"   # stable per repo — update in place
+   brain get "$slug" --type reference 2>/dev/null || true
+   brain ask "papercut pipeline deploy <repo>" 2>/dev/null || true
+   ```
+   If an OPEN record exists, **append** a dated evidence line (sha, log path,
+   status, reason) via `brain append` (never get→edit→put a large body).
+   If FIXED/RECONCILED but the deploy is red again, reopen with a new
+   `Status: OPEN` append + fresh evidence (same slug preferred).
 
-```
-Repo: EdgeVector/<repo>     # e.g. EdgeVector/exemem-infra
-Base: main
-Branch: kanban/deploy-pipeline-red-<repo>-<YYYYMMDD>
-Kind: pr
-Priority: P0
-Tags: pipeline, deploy, p0, agent-runnable
+2. **No open papercut** → **FILE a Brain papercut** immediately (CHEAP).
+   Use `brain put` with YAML frontmatter on stdin (search first so you reuse
+   the stable slug):
 
-**Follow the kanban-agent skill — drive this through to a MERGED PR.
-A card is only done when the next main deploy-pipeline run succeeds.**
+```yaml
+---
+type: reference
+slug: papercut-pipeline-deploy-<repo>
+title: "Pipeline: <repo> deploy-pipeline red/stuck"
+tags: [papercut, pipeline, deploy, p0]
+---
 
-## GOAL
-Clear LastGit post-merge deploy-pipeline for <repo> — latest status is
-failure/stuck on sha <sha>. Evidence: <log path> reason=<reason>.
+Status: OPEN
+Severity: P0
+Source: pipeline-health
+Repo: EdgeVector/<repo>
+Owner-hint: last-stack / schema-infra deploy path as appropriate
 
-## STEPS
-1. Read the deploy log tail + scratch under ~/.lastgit/deploy-<repo>/scratch.
-2. Reproduce / identify root cause (build, pin, secrets, CDK, path).
-3. Fix in an isolated worktree; merge via the repo's venue.
+## Symptom
+LastGit post-merge deploy-pipeline for <repo> is failure or stuck pending.
+- sha: <sha>
+- status: <failure|pending>
+- reason: <reason from scan>
+- log: ~/.lastgit/deploy-<repo>/deploy.log
+- checked_at: <ISO-UTC>
+
+## Why this is a papercut (not a board P0)
+Pipeline recovery often needs multi-hour host deploy proof and/or unsandboxed
+launchd ops. Filing direct kanban P0s monopolizes pickup without finishing.
+Brain + papercut-reconciler owns promotion to board work.
+
+## Suggested fix shape
+1. Read deploy log tail + scratch under ~/.lastgit/deploy-<repo>/scratch.
+2. Mechanical code/config fix in isolated worktree if needed; merge via venue.
+3. Ensure deploy watcher LaunchAgent is healthy (unsandboxed host if required).
 4. Confirm deploy log shows `success <new-sha> deploy-pipeline`.
 
-## VERIFY
-"$last_stack/bin/last-stack-pipeline-deploy-scan" --json | jq '.[]|select(.repo=="<repo>")'
-# expect blocked=false and status=success (or pending within grace after a new push)
+## Never-again coverage
+- Failure invariant: a red/stuck post-merge deploy must not silently starve
+  feature pickup via perpetual P0 board monopoly, and must not leave main
+  undeployed without a durable OPEN papercut.
+- Current guard/test: NONE (pipeline-health brain-papercut path)
+- Prevention: MISSING until a compound probe exists for deploy-green + no thrash
 
-## DONE WHEN
-Latest terminal deploy-pipeline status for this repo is success on main.
-
-## OUT OF SCOPE
-Unrelated feature work; force-green by skipping required gates.
+## Evidence
+- pipeline-health wake <ISO-UTC>
+- scan JSON / log excerpt …
 ```
 
-3. After filing/updating any P0: `kanban rank` (or board equivalent) on `todo`
-   so pickup drains pipeline cards first.
-4. Prefer spending the **heavy** unit on the oldest blocked deploy over any
-   non-pipeline work.
+3. Prefer spending the **heavy** unit on the oldest blocked deploy **only if**
+   a mechanical fix fits this wake. Otherwise file/update the papercut and exit.
+4. **Do not** create `deploy-pipeline-red-*` kanban cards. **Do not** re-rank
+   todo to force pipeline work ahead of feature lanes.
 
-Record in automation memory: `deploy_blocked=<repo:sha:…>` and clear when
-scan shows unblocked.
+Record in automation memory: `deploy_blocked=<repo:sha:…>` and
+`filed_papercut=<slug[,…]>` / `updated_papercut=<slug[,…]>`; clear
+`deploy_blocked` when scan shows unblocked. When a deploy goes green, append
+`Status: FIXED (<ISO>)` to the papercut if you confirmed success this wake
+(or leave it for reconciler if unsure).
 
-**Do not heartbeat `noop` if any deploy is blocked** unless you already filed
-or fixed every blocked entry this wake (then heartbeat `ok` with
-`deploy_blocked=… filed=…` / `fixed=…`).
+**Do not heartbeat `noop` if any deploy is blocked** unless you already
+filed/updated the Brain papercut (or fixed) every blocked entry this wake
+(then heartbeat `ok` with `deploy_blocked=… filed_papercut=…`).
 
 ## LastGit socket / inventory
 Use the primary LastGit socket by default. The old non-primary code forge socket
@@ -252,10 +293,16 @@ memory's first-seen timestamp if events lack times) **and** any of:
 
 Younger than 10 minutes with CI still running → leave it (normal lag).
 
-**P0 for stuck merges:** any STUCK CR is pipeline-critical. If you cannot clear
-it this wake (heavy budget spent or needs human), file/update a **P0** card
-with the CR id, head oid, CI excerpt, and `Priority: P0` tags `pipeline,p0`
-— same as deploy failures. Do not leave stuck merges only in the heartbeat.
+**Stuck merges → Brain papercut (not board P0):** any STUCK CR is
+pipeline-critical. If you cannot clear it this wake (heavy budget spent or
+needs human), file/update:
+
+- slug: `papercut-pipeline-stuck-cr-<repo>-<cr-id-short>` (or append to a
+  stable `papercut-pipeline-stuck-merges-<repo>` if many)
+- tags: `papercut,pipeline,p0`
+- body: CR id, head oid, CI excerpt, first-seen age, why still open
+
+Do not leave stuck merges only in the heartbeat with no Brain record.
 
 ### LastGit actions
 1. **Green + auto_merge** →
@@ -284,17 +331,19 @@ with the CR id, head oid, CI excerpt, and `Priority: P0` tags `pipeline,p0`
      to skip cleanly when the dependency is absent, or mark the suite optional
      in `.lastgit/ci.sh` if that is already the project convention; do not
      weaken real required tests.
-   - **Real product failure / needs judgment** → do not guess. File or update
-     one board card (dedupe first) describing the failure + CR id, and leave
-     the CR open.
+   - **Real product failure / needs judgment** → do not guess. File or update a
+     **Brain papercut** (not a board card) describing the failure + CR id, and
+     leave the CR open.
 4. **Merge conflict** → worktree at head, merge/rebase base, resolve only
-   mechanical conflicts; if product conflict, flag and leave.
+   mechanical conflicts; if product conflict, flag via papercut and leave.
 5. **Daemon unhealthy** (no forge-run log lines for many minutes while CRs are
    pending, or launchd job not running for the **non-primary** forge agent) →
    report in heartbeat; you may `launchctl kickstart -k gui/$(id -u)/<label>`
    **only** for explicitly listed non-primary labels in
    `<LASTGIT_SAFE_LAUNCHD_LABELS>`. NEVER kickstart/restart the primary brain
-   node label.
+   node label. If you cannot fix launchd from this sandbox, file
+   `papercut-pipeline-deploy-<repo>` or a host-ops papercut with
+   `needs_human` in the body.
 
 ## Forgejo / fold (and other forge-hot)
 For each repo in `<FORGE_HOT_REPOS>` (must include fold):
@@ -324,7 +373,7 @@ For each non-draft open PR, load checks / status via the forge API (see
 4. **405 merge / stuck status-check** while green → empty-commit push from
    worktree (known Forgejo papercut; see brain
    `papercut-forge-merge-405-stuck-status-check`).
-5. **Human-gated prod cutover** (title/body say so) → leave + flag only.
+5. **Human-gated prod cutover** (title/body say so) → leave + papercut only.
 
 Never use `gh` for forge-hot source-of-truth PRs. Never push the read-only
 GitHub mirror of a forge-hosted repo.
@@ -351,21 +400,27 @@ CRs/PRs no longer open.
 ```bash
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 "$last_stack/bin/last-stack-brain-append-heartbeat" --line \
-  "pipeline-health $ts <ok|noop|error> open_cr=<n> open_forge=<n> deploy_blocked=<n|repo:sha,…> merged=<…> fixed=<…> stuck=<…> filed_p0=<…> flagged=<…>"
+  "pipeline-health $ts <ok|noop|error> open_cr=<n> open_forge=<n> deploy_blocked=<n|repo:sha,…> merged=<…> fixed=<…> stuck=<…> filed_papercut=<…> flagged=<…>"
 ```
 
 Rules:
 - Use **`noop` only** when open_cr=0, open_forge=0, **and** deploy_blocked=0
-  (or every blocked deploy already has a live P0 card and you confirmed it this
-  wake without new action — still prefer `ok deploy_blocked=… already-carded=…`).
-- Use **`ok`** when you fixed, merged, filed P0, or re-armed anything.
+  (or every blocked deploy already has an OPEN Brain papercut you confirmed this
+  wake without new action — still prefer
+  `ok deploy_blocked=… already-papercut=…`).
+- Use **`ok`** when you fixed, merged, filed/updated a papercut, or re-armed
+  anything.
 - Use **`error`** for tool/auth failures that prevented the deploy scan or the
   stuck-merge scan entirely.
+- Prefer `filed_papercut=` over legacy `filed_p0=` (the latter meant board cards;
+  do not reintroduce board P0 filing).
 
 If brain is busy, write the same line into automation memory and continue; do
-not retry-loop.
+not retry-loop. For papercut writes under load, retry only idempotent slug
+upserts in a bounded way.
 
 ## Report
 End with a short report: open CR count per LastGit socket, open forge PR count,
-**deploy-pipeline blocked list**, what you merged/fixed/nudged/filed-as-P0,
-what is still stuck and why, any daemon concerns. Then exit.
+**deploy-pipeline blocked list**, what you merged/fixed/nudged, which
+**Brain papercuts** you filed/updated, what is still stuck and why, any daemon
+concerns. Then exit.

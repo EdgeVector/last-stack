@@ -1,5 +1,7 @@
 .update-check
 .self-upgrade.lock/
+.artifact-layout.lock/
+.artifacts/
 config.local-backup-*
 dogfood
 feature-proofs

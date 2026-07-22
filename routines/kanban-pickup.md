@@ -418,7 +418,10 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
 5. Sort eligible, non-colliding cards by priority (lowest `position`; tie-break
    oldest `created_at`). **Pipeline blocks outrank ordinary work:** if any
    eligible card has `Priority: P0` / tag `p0` **and** tags or title matching
-   `pipeline` / `deploy-pipeline` / `deploy-pipeline-red-`, pick that card
+   `pipeline` / `deploy-pipeline` / `deploy-pipeline-red-` when already on the
+   board from **legacy** filings or **papercut-reconciler** promotion — but do
+   **not** expect `pipeline-health` to mint fresh board P0s (those escalate as
+   Brain papercuts as of 2026-07-22)
    first (Tom 2026-07-14: a blocked merge or deploy pipeline is always P0).
    Form the work-unit(s):
    - Default: **one singleton** card.
@@ -610,36 +613,37 @@ rules, same one-PR / one-worktree discipline as WORK mode.
 
 #### Ladder (stop at first real action)
 
-**0) Feature Ship Loop frontier (preferred over idle invent)**  
-**HARD feature-owner budget:** while any live feature-owner is
-`STATUS: driving|proving` with unblocked not-done Kind:pr children, idle mode
-must **not** invent papercut/hygiene implementation work. File-only ok only for
-true pipeline P0s.
+**0) Ship-outcome frontier (preferred over idle invent)**  
+**HARD ship-outcome budget (2026-07-22):** while any **active/proving milestone**
+(or ship-mode North Star with a nonterminal milestone) has unblocked not-done
+`Kind: pr` children, idle mode must **not** invent papercut/hygiene
+implementation work. File-only ok only for true pipeline P0s.
 
-Canonical: brain `sop-feature-ship-loop`. If any live `feature-owner` card has
-`STATUS: driving|proving` and a pickup-ready `Kind: pr` child tagged
-`feature-ship` is already in `todo`, **do not idle** — EXIT so a sibling
-pickup claims it (or claim it if you are selecting from todo). If the frontier
-slice is only in `backlog` and unblocked, promote that one card to `todo` and
-EXIT with `ok idle=feature-frontier-promoted slug=...` (do not implement in the
-same fire unless you claimed it via normal WORK). Never pick up the
-feature-owner validation card itself. Never invent idle simplifications while a
-P0/P1 feature-ship frontier is waiting.
+Canonical: brain `sop-feature-ship-loop` (North Star → Milestone → cards; **no
+new feature-owner cards**). If a pickup-ready `Kind: pr` child of an active
+milestone is already in `todo`, **do not idle** — EXIT so a sibling pickup
+claims it (or claim it via normal WORK). If the frontier slice is only in
+`backlog` and unblocked, promote that one card to `todo` and EXIT with
+`ok idle=ms-frontier-promoted slug=...` (do not implement in the same fire
+unless you claimed it via normal WORK). Never pick up milestones or terminal
+validation cards as WORK. Never invent idle simplifications while a P0/P1
+milestone frontier is waiting.
 
-Only `Kind: pr` child frontiers are pickup work. If the next feature frontier is
-a terminal proof card (`Kind: validation` / `meta` / `tracker`, or any non-PR
+Only `Kind: pr` child frontiers are pickup work. If the next frontier is a
+terminal proof card (`Kind: validation` / `meta` / `tracker`, or any non-PR
 card whose only executable contract is `DONE-WHEN`), do not promote or claim it
 from pickup. If such a terminal proof card already drifted into default `todo`,
 run `last-stack-park-terminal-validation-todo` and EXIT with the helper outcome;
 `feature-prove` / `kanban-watch` own the proof evaluation path.
 
-Access pattern for this frontier probe must stay scan-free: read scoped queues
-with `fkanban list --column todo --json` and `fkanban list --column backlog
---json`, filter those previews locally for `feature-owner` / `feature-ship`
-candidate slugs, then run keyed `fkanban show <slug> --json` only for the few
-candidates whose body or deps are needed. Do not run broad board search or
-full-body board scans from this idle hot path; if scoped reads do not identify
-a clear frontier quickly, continue down the idle ladder or true-noop.
+Access pattern for this frontier probe must stay scan-free: prefer
+`fkanban milestone portfolio --json` (or detail for one active MS) plus scoped
+`fkanban list --column todo --json` and `fkanban list --column backlog --json`.
+Filter for PR cards linked to active milestones / matching `north_star`, then
+keyed `fkanban show <slug> --json` only for a few candidates. Do not run broad
+board search or full-body board scans from this idle hot path. Legacy
+`feature-owner` tags may still appear on old cards — treat their PR children as
+frontier if still driving, but do not create new owner cards.
 
 **1) Program / North Star next slice (preferred)**  
 Read `brain get active-programs` (project). For each active program, if:

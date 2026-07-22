@@ -581,8 +581,8 @@ if [ -x "$SOURCE_ROOT/bin/last-stack-factory-health-install" ]; then
     echo "  factory-health LaunchAgent: install failed (non-fatal)" >&2
 fi
 
-# Zero-LLM self-upgrade healer (every 30m) — keeps install FF'd so pickup does
-# not soft-defer forever on GIT_UPDATE_AVAILABLE / fetch-failed.
+# Zero-LLM self-upgrade healer (every 30m) — checkout installs only.
+# Artifact runtime (one rule): host-track refresh agent is the only upgrader.
 if [ -x "$SOURCE_ROOT/bin/last-stack-self-upgrade-install" ]; then
   if [ "$ARTIFACT_INSTALL" -eq 1 ]; then
     "$SOURCE_ROOT/bin/last-stack-self-upgrade-install" uninstall || \
@@ -590,6 +590,32 @@ if [ -x "$SOURCE_ROOT/bin/last-stack-self-upgrade-install" ]; then
   else
     "$SOURCE_ROOT/bin/last-stack-self-upgrade-install" install || \
       echo "  last-stack-self-upgrade LaunchAgent: install failed (non-fatal)" >&2
+  fi
+fi
+
+# One rule: when this setup is running from the Host Track artifact, ensure
+# ~/.last-stack/{bin,skills,routines,...} are compatibility symlinks into
+# .artifacts/current — never a second mutable copy agents can dirty.
+# Nested call from last-stack-activate-artifact-layout sets SKIP=1.
+if [ "$ARTIFACT_INSTALL" -eq 1 ] && \
+   [ "${LAST_STACK_SKIP_ARTIFACT_LAYOUT:-0}" != "1" ] && \
+   [ -x "$SOURCE_ROOT/bin/last-stack-activate-artifact-layout" ]; then
+  compat_root="${LAST_STACK_COMPAT_ROOT:-$HOME/.last-stack}"
+  need_layout=0
+  if [ ! -L "$compat_root/bin" ]; then
+    need_layout=1
+  else
+    link="$(readlink "$compat_root/bin" 2>/dev/null || true)"
+    case "$link" in
+      */.artifacts/current/bin|*/.artifacts/current/bin/) ;;
+      *) need_layout=1 ;;
+    esac
+  fi
+  if [ "$need_layout" -eq 1 ]; then
+    echo "  activating artifact compatibility layout under $compat_root ..."
+    LAST_STACK_SKIP_ARTIFACT_LAYOUT=1 \
+      "$SOURCE_ROOT/bin/last-stack-activate-artifact-layout" || \
+      echo "  artifact layout activation failed (non-fatal this run)" >&2
   fi
 fi
 

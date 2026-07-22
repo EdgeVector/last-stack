@@ -19,7 +19,7 @@ is a specialized generator or backstop.
 
 | Role | Job | Ships code? | Examples |
 |------|-----|-------------|----------|
-| **Generate** | File/promote PR-sized work onto the board | No | `program-driver`, `groom-board`, `papercut-reconciler`, `pipeline-health` (cards) |
+| **Generate** | File/promote PR-sized work onto the board | No | `program-driver`, `groom-board`, `papercut-reconciler` (sole papercut→card); `pipeline-health` files **Brain papercuts** only for pipeline blocks |
 | **Claim** | `pickup claim` → implement → open PR/CR | **Yes** | `kanban-pickup` (+ worker replicas) |
 | **Reconcile** | Advance merges, heal zombies, close done, drive outcome proof | Fixes only | `kanban-watch`, `merge-babysit`, `kanban-validate`, `milestone-driver`, reapers |
 
@@ -50,7 +50,7 @@ stripped out.
    north-star-driver▶ create one bounded milestone from North Star intent    │
    milestone-driver▶ create/link one proof or PR card; reconcile milestone  │
    groom-board    ─▶ promote ready backlog→todo, break up epics, prune junk  │
-   feature-prove  ─▶ when feature-owner slice deps are done, run product proof│
+   feature-prove  ─▶ when NS/milestone terminal deps are done, run product proof│
                  └──────────────────────────────────────────────────────────┘
                           │ (ready `todo` cards)
                           ▼
@@ -63,7 +63,7 @@ stripped out.
                      ra notify Tom when out of band; auto_fix opt-in later.
    kanban-watch  ─▶ RECONCILE: advance merged PRs, re-arm/un-stick the stragglers
    kanban-validate ─▶ VALIDATE: run post-merge END STATE checks, then done/review
-   pipeline-health ─▶ every ~10m: LastGit CRs + forge PRs unblocked (stuck >10m → fix)
+   pipeline-health ─▶ every ~10m: LastGit CRs + forge PRs unblocked (stuck >10m → fix or Brain papercut)
    drain-open-prs ─▶ daily backstop: drive every open PR across all repos toward zero
 
                  ┌──────────────────── the brain (brain) ──────────────────┐
@@ -128,7 +128,7 @@ one-card-per-fire contract.
 | [`worktree-cleanup`](worktree-cleanup.md) | daily (off-hours) | Prune stale worktrees/branches; bring repos to latest default branch. |
 | [`disk-reclaim`](disk-reclaim.md) | hourly | Reclaim disk, prune merged/clean worktrees, sweep orphan processes. |
 | [`self-upgrade`](self-upgrade.md) | every 1–2 hours (Codex) + launchd every 30m | Clean-only fast-forward of the install checkout + `./setup` so other routines do not stall on `LAST_STACK_ROUTINE_STALE`. Prefer the zero-LLM LaunchAgent (`last-stack-self-upgrade-install`); Codex routine registry entry defaults to paused (dirty-repair only if resumed). |
-| [`pipeline-health`](pipeline-health.md) | every ~10 min | Keep LastGit CRs and forge (fold / forge-hot) PRs unblocked; investigate and fix anything stuck >10 minutes. |
+| [`pipeline-health`](pipeline-health.md) | every ~10 min | Keep LastGit CRs and forge (fold / forge-hot) PRs unblocked; fix mechanical issues or file Brain papercuts (`papercut-pipeline-*`) — never board P0 monopoly. |
 | [`merge-babysit`](merge-babysit.md) | every ~15 min | Self-heal stuck LastGit CRs, completing green laggards or filing P0 merge cards without turning transient backend outages into fleet-red runs. |
 | [`drain-open-prs`](drain-open-prs.md) | daily | Drive every open PR across all repos toward zero (merge or close). |
 
@@ -143,7 +143,7 @@ one-card-per-fire contract.
 | [`north-star-driver`](north-star-driver.md) | every 6h | Convert one active North Star or approved outcome request into one milestone scaffold; never creates cards. |
 | [`milestone-driver`](milestone-driver.md) | every 6h | Generate/link at most one proof or PR-sized Kanban child, then reconcile one milestone; never implements cards. |
 | [`program-driver`](program-driver.md) | paused compatibility only | Superseded by the two hierarchical drivers; exits without mutation if invoked. |
-| [`feature-prove`](feature-prove.md) | hourly | Product-proof stage for `feature-owner` cards; PASS file or fix-forward / open-decisions. |
+| [`feature-prove`](feature-prove.md) | hourly | Product-proof for ship-mode North Star / milestone terminals; PASS file or fix-forward / open-decisions. No new feature-owner path. |
 | [`program-rollup`](program-rollup.md) | hourly | Mirror the board into the brain's driving index (auto-status block). |
 | [`north-star-rollup`](north-star-rollup.md) | hourly | Roll up cards by `north_star` × column into brain `north-star-dashboard` + local HTML. |
 | [`north-star-hygiene`](north-star-hygiene.md) | daily | Create missing brain North Star projects for orphan card `north_star` fields; clear high-confidence mis-tags; refresh dashboard. |
