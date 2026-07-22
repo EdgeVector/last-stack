@@ -9,6 +9,7 @@ chmod +x "$BIN" "$ROOT/harness/north-star"/*/run.sh
 "$BIN" --list | grep -q north-star-lastdb-file-blobs-on-demand-sync
 "$BIN" --list | grep -q north-star-laststore-is-document-store-last-db-is-conventions
 "$BIN" --list | grep -q north-star-mini-brain-observability
+"$BIN" --list | grep -q north-star-lastdb-search-as-app
 
 PROOF_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ns-proof-test.XXXXXX")"
 FILE_BLOB_WORK="$(mktemp -d "${TMPDIR:-/tmp}/ns-file-blob-proof-test.XXXXXX")"
@@ -30,7 +31,7 @@ if command -v lastdb >/dev/null 2>&1; then
 fi
 
 # Structural: all harness scripts exist and bash -n clean
-for s in coderings deliver-slices lastgit metering minimal-node app-ops schema file-blobs-on-demand-sync laststore mini-brain-observability; do
+for s in coderings deliver-slices lastgit metering minimal-node app-ops schema file-blobs-on-demand-sync laststore mini-brain-observability search-as-app; do
   bash -n "$ROOT/harness/north-star/$s/run.sh"
 done
 bash -n "$BIN"
@@ -207,5 +208,107 @@ grep -q "lastdb status" "$mini_obs_report"
 grep -q "Crash/session attribution" "$mini_obs_report"
 grep -q "Self-metrics history" "$mini_obs_report"
 grep -q "PROOF_VERDICT=PASS-OFFLINE" "$PROOF_DIR/mini-obs.out"
+
+SEARCH_AS_APP_WORK="$(mktemp -d "${TMPDIR:-/tmp}/ns-search-as-app-proof-test.XXXXXX")"
+trap 'rm -rf "$PROOF_DIR" "$FILE_BLOB_WORK" "$MINI_OBS_WORK" "$SEARCH_AS_APP_WORK"' EXIT
+
+search_app="$SEARCH_AS_APP_WORK/search"
+saa_fold="$SEARCH_AS_APP_WORK/fold"
+saa_brain="$SEARCH_AS_APP_WORK/brain"
+saa_kanban="$SEARCH_AS_APP_WORK/fkanban"
+mkdir -p \
+  "$search_app/.last-stack" "$search_app/.lastgit" \
+  "$saa_fold/lastdb_uds/src" "$saa_fold/lastdb_node/src" "$saa_fold/fold_db/crates/core" \
+  "$saa_brain/src/commands" \
+  "$saa_kanban/src/commands"
+
+cat >"$search_app/README.md" <<'EOF'
+Search is a first-party app hosted from lastdb:///search.
+Index data is local-only and regenerable from atoms, tips, and app text projections.
+Index data is not CloudSync product data.
+The LastDB kernel should not ship FastEmbed, ONNX, or model weights by default.
+EOF
+printf 'lastgit\n' >"$search_app/.last-stack/pr-venue"
+printf '#!/usr/bin/env bash\necho ok\n' >"$search_app/.lastgit/ci.sh"
+
+cat >"$saa_fold/lastdb_uds/src/uds_router.rs" <<'EOF'
+enum DataRoute { SearchAppQuery }
+impl DataRoute {
+  fn path(&self) -> (&str, &str) {
+    match self { Self::SearchAppQuery => ("GET", "/api/search/query") }
+  }
+}
+EOF
+cat >"$saa_fold/lastdb_node/src/exec.rs" <<'EOF'
+match route {
+  DataRoute::SearchAppQuery => execute_search_app_query_route(req, ctx, host).await,
+}
+EOF
+cat >"$saa_fold/fold_db/crates/core/Cargo.toml" <<'EOF'
+[package]
+name = "fold_db"
+
+[features]
+default = []
+semantic-search = ["dep:fastembed"]
+
+[dependencies]
+fastembed = { version = "4", optional = true }
+EOF
+cat >"$saa_fold/lastdb_node/Cargo.toml" <<'EOF'
+[package]
+name = "lastdb_node"
+
+[features]
+default = ["cloud-sync", "sentry-telemetry"]
+semantic-search = ["fold_db/semantic-search"]
+EOF
+
+cat >"$saa_brain/src/client.ts" <<'EOF'
+const result = await sdkDataPath("/api/app/search", (client) => client.search(query));
+EOF
+cat >"$saa_brain/src/commands/ask.ts" <<'EOF'
+const node = newSearchClientFromCfg(opts.cfg, opts.verbose).node;
+// note: search index cache was cold/stale — rebuilding from N record(s)
+EOF
+
+cat >"$saa_kanban/src/client.ts" <<'EOF'
+const result = await sdkDataPath("/api/app/search", (client) => client.search(query));
+EOF
+cat >"$saa_kanban/src/commands/search.ts" <<'EOF'
+async function nativeIndexCandidateSlugs() {}
+EOF
+
+SEARCH_AS_APP_PROOF_SEARCH_DIR="$search_app" \
+SEARCH_AS_APP_PROOF_FOLD_DIR="$saa_fold" \
+SEARCH_AS_APP_PROOF_BRAIN_DIR="$saa_brain" \
+SEARCH_AS_APP_PROOF_KANBAN_DIR="$saa_kanban" \
+NORTH_STAR_PROOF_DIR="$PROOF_DIR" \
+  "$BIN" --offline north-star-lastdb-search-as-app >"$PROOF_DIR/search-as-app.out"
+
+search_as_app_report="$PROOF_DIR/north-star-lastdb-search-as-app.md"
+test "$(sed -n '1p' "$search_as_app_report")" = "PASS-OFFLINE"
+grep -q "SearchAppQuery" "$search_as_app_report"
+grep -qi "fastembed/onnx" "$search_as_app_report"
+grep -q "PROOF_VERDICT=PASS-OFFLINE" "$PROOF_DIR/search-as-app.out"
+
+# Regression guard: fastembed sneaking into the default binary must FAIL.
+cat >"$saa_fold/lastdb_node/Cargo.toml" <<'EOF'
+[package]
+name = "lastdb_node"
+
+[features]
+default = ["cloud-sync", "sentry-telemetry", "semantic-search"]
+semantic-search = ["fold_db/semantic-search"]
+EOF
+if SEARCH_AS_APP_PROOF_SEARCH_DIR="$search_app" \
+  SEARCH_AS_APP_PROOF_FOLD_DIR="$saa_fold" \
+  SEARCH_AS_APP_PROOF_BRAIN_DIR="$saa_brain" \
+  SEARCH_AS_APP_PROOF_KANBAN_DIR="$saa_kanban" \
+  NORTH_STAR_PROOF_DIR="$PROOF_DIR" \
+  "$BIN" --offline north-star-lastdb-search-as-app >"$PROOF_DIR/search-as-app-bad.out" 2>&1; then
+  echo "fastembed-in-default-binary fixture unexpectedly passed" >&2
+  exit 1
+fi
 
 echo "PASS last-stack-north-star-proof"
