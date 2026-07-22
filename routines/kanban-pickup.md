@@ -418,7 +418,10 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
 5. Sort eligible, non-colliding cards by priority (lowest `position`; tie-break
    oldest `created_at`). **Pipeline blocks outrank ordinary work:** if any
    eligible card has `Priority: P0` / tag `p0` **and** tags or title matching
-   `pipeline` / `deploy-pipeline` / `deploy-pipeline-red-`, pick that card
+   `pipeline` / `deploy-pipeline` / `deploy-pipeline-red-` when already on the
+   board from **legacy** filings or **papercut-reconciler** promotion — but do
+   **not** expect `pipeline-health` to mint fresh board P0s (those escalate as
+   Brain papercuts as of 2026-07-22)
    first (Tom 2026-07-14: a blocked merge or deploy pipeline is always P0).
    Form the work-unit(s):
    - Default: **one singleton** card.
