@@ -1,7 +1,7 @@
 ---
 name: papercut-reconciler
 cadence: every 6h
-description: The ONLY filer of papercut board cards. Reads open papercut records from Brain (agents file papercuts there, never to the board), clusters them into patterns, and files a few well-scoped cards per pattern. Also mines recent sessions into Brain papercut records first.
+description: The ONLY filer of papercut board cards. Reads open papercuts and the never-again prevention registry from Brain, clusters them into patterns, and files a few well-scoped cards with compound-regression requirements where applicable. Also mines recent sessions into Brain papercut records first.
 ---
 
 ## HARD feature-owner budget (Tom 2026-07-20)
@@ -61,15 +61,23 @@ output; a stale doc that misled an agent; the same workaround across sessions.
   update in place — no near-duplicate slugs):
   slug `papercut-<short-topic>`, type `reference`, tag `papercut`, body with
   `Status: OPEN`, symptom, root cause if known, suggested fix, evidence
-  (sessions/dates/frequency).
+  (sessions/dates/frequency), plus a `## Never-again coverage` section with:
+  the failure invariant, current guard/test (or `NONE`), proposed compound
+  regression test, and `Prevention: MISSING|COVERED|NOT_APPLICABLE`.
 - Do NOT file board cards in this step.
 
-## Step 2 — Collect ALL open papercut records
+## Step 2 — Collect ALL open papercuts and prevention gaps
 - Enumerate papercut records: `brain list --type reference --limit 200` and
   filter slugs starting `papercut-`, plus `brain ask "papercut"` for strays.
-- Skip records whose body says `Status: FIXED` or `Status: RECONCILED`, and
-  anything already stamped in the `papercut-reconciler-ledger` with a live
-  card.
+- Read `brain get papercut-prevention-registry --type reference`. This is the
+  compact never-again index for fixed/reconciled papercuts whose prevention
+  coverage still needs review; do not assume `Status: FIXED` means recurrence
+  is impossible.
+- For remediation, skip records whose body says `Status: FIXED` or
+  `Status: RECONCILED`, and anything already stamped in the
+  `papercut-reconciler-ledger` with a live card. For prevention, retain any
+  registry entry or papercut section marked `Prevention: MISSING`, even after
+  the symptom was fixed or reconciled.
 - Read the survivors' bodies (targeted `brain get`, not bulk dumps).
 
 ## Step 3 — Find the patterns
@@ -79,6 +87,15 @@ test, confusing error), same fix shape. A pattern backed by several records —
 or one papercut recurring across sessions/days — outranks any single fresh
 papercut. One-off, user-specific mistakes: leave OPEN, file nothing.
 
+For every recurring pattern, state the cross-boundary failure invariant and
+decide whether a **compound regression test** is applicable. Here, compound
+means one test/probe that recreates the original multi-component path (for
+example supervisor → updater → subprocess → lock → next caller), rather than
+several disconnected unit tests that can all pass while the incident recurs.
+If a compound test is not practical, require an explicit `NOT_APPLICABLE`
+rationale and name the stronger executable guard or live probe that replaces
+it. Documentation alone is never prevention coverage.
+
 ## Step 4 — File pattern-level cards (the ONLY papercut→card path)
 For each pattern worth fixing now:
 - Dedupe per the shared contract (live board across columns, open CRs/PRs,
@@ -86,8 +103,12 @@ For each pattern worth fixing now:
   a near-duplicate.
 - File ONE pickup-ready card covering the cluster — pattern-level GOAL, the
   member papercut slugs listed in CONTEXT as evidence, concrete STEPS/VERIFY,
-  `DONE WHEN` merged. Tag `papercut,reconciler` plus the repo tag. Use the
-  standard cold-start card shape from the shared contract (agent trigger line,
+  and a `COMPOUND PREVENTION` section naming the failure invariant, target
+  test/probe location, components crossed, red-before/green-after proof
+  command, and coverage status. `DONE WHEN` must require that executable proof
+  to land and pass, not merely that the implementation merges. Tag
+  `papercut,reconciler` plus the repo tag. Use the standard cold-start card
+  shape from the shared contract (agent trigger line,
   `Repo:`/`Base:`/`Branch:`, North Star or END STATE).
 - File as many pattern cards as the evidence genuinely supports; too ambiguous
   or too large → one `backlog` card with what you know.
@@ -98,6 +119,10 @@ For each pattern worth fixing now:
   `<ISO-UTC> <papercut-slug> -> card:<card-slug> | pattern:<name> | skip:<reason>`
 - Append a `Status: RECONCILED → card:<card-slug> (<ISO date>)` line to each
   papercut record folded into a card (`brain append`, never get→edit→put).
+- Append prevention state changes to `papercut-prevention-registry`: papercut
+  slug, invariant, compound-test/guard locator, `MISSING|COVERED|NOT_APPLICABLE`,
+  evidence, and linked card. Never mark `COVERED` from prose or a merged change
+  alone; require a passing executable proof against the original failure path.
 
 ## Hard constraints (unattended-run safety)
 - FILE, don't ship: no code/doc/settings edits, no branches, no PRs — only
@@ -107,6 +132,7 @@ For each pattern worth fixing now:
 
 ## Output
 End with a concise report: new papercuts harvested into Brain, open papercuts
-considered, patterns found, cards filed/updated (slugs), and what stayed OPEN
+and prevention gaps considered, patterns found, compound tests required or
+explicitly not applicable, cards filed/updated (slugs), and what stayed OPEN
 as not-yet-actionable. A quiet run that files nothing is a valid outcome — say
 so plainly.
