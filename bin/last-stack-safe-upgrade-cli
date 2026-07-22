@@ -25,9 +25,12 @@ ACTIVATE="${LAST_STACK_SAFE_ACTIVATE:-$SELF/last-stack-safe-activate-cli}"
 APPS_ROOT="${HOST_TRACK_APPS_ROOT:-$HOME/.host-track/apps}"
 GIT="${GIT:-/usr/bin/git}"
 
-# Defaults per known app
+# Defaults per known app.
+# DEFAULT_LINKS: space-separated "rel:abs" pairs (no spaces inside a pair).
+# INSTALL_APP: directory name under ~/.host-track/apps (defaults to $app).
 app_defaults() {
   local app="$1"
+  INSTALL_APP="$app"
   case "$app" in
     brain)
       DEFAULT_REMOTE="lastdb:///brain"
@@ -35,41 +38,57 @@ app_defaults() {
       DEFAULT_LINKS="bin/brain:$HOME/.local/bin/brain"
       DEFAULT_BUILD="bun_install"
       DEFAULT_SMOKE="brain_smoke"
+      DEFAULT_WRAPPERS="brain"
       ;;
     situations)
       DEFAULT_REMOTE="lastdb:///situations"
       DEFAULT_BARE="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/situations.git"
-      DEFAULT_LINKS="bin/situations:$HOME/.local/bin/situations"
+      DEFAULT_LINKS="bin/situations:$HOME/.local/bin/situations bin/fsituations:$HOME/.local/bin/fsituations"
       DEFAULT_BUILD="bun_install"
       DEFAULT_SMOKE="situations_smoke"
+      DEFAULT_WRAPPERS="situations fsituations"
+      ;;
+    kanban|fkanban)
+      # Shared install root: both commands ship from the fkanban tree
+      INSTALL_APP="fkanban"
+      DEFAULT_REMOTE="lastdb:///fkanban"
+      DEFAULT_BARE="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/fkanban.git"
+      DEFAULT_LINKS="bin/kanban:$HOME/.local/bin/kanban bin/fkanban:$HOME/.local/bin/fkanban"
+      DEFAULT_BUILD="bun_install"
+      DEFAULT_SMOKE="fkanban_smoke"
+      DEFAULT_WRAPPERS="kanban fkanban"
       ;;
     routines)
       DEFAULT_REMOTE="lastdb:///routines"
       DEFAULT_BARE="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/routines.git"
-      DEFAULT_LINKS="bin/routines:$HOME/.local/bin/routines|src/cli.ts_wrapper"
+      DEFAULT_LINKS="bin/routines:$HOME/.local/bin/routines"
       DEFAULT_BUILD="bun_install"
       DEFAULT_SMOKE="routines_smoke"
+      DEFAULT_WRAPPERS="routines"
       ;;
     lastsecrets)
       DEFAULT_REMOTE="lastdb:///lastsecrets"
       DEFAULT_BARE="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/lastsecrets.git"
-      DEFAULT_LINKS="src/cli.ts_wrapper:lastsecrets"
+      DEFAULT_LINKS="bin/lastsecrets:$HOME/.local/bin/lastsecrets"
       DEFAULT_BUILD="bun_install"
       DEFAULT_SMOKE="lastsecrets_smoke"
+      DEFAULT_WRAPPERS="lastsecrets"
       ;;
     configurations)
       DEFAULT_REMOTE="lastdb:///configurations"
       DEFAULT_BARE="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/configurations.git"
-      DEFAULT_LINKS="src/cli.ts_wrapper:configurations"
+      DEFAULT_LINKS="bin/configurations:$HOME/.local/bin/configurations"
       DEFAULT_BUILD="bun_install"
       DEFAULT_SMOKE="configurations_smoke"
+      DEFAULT_WRAPPERS="configurations"
       ;;
     *)
       DEFAULT_REMOTE="lastdb:///$app"
       DEFAULT_BARE="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/${app}.git"
-      DEFAULT_LINKS=""
+      DEFAULT_LINKS="bin/$app:$HOME/.local/bin/$app"
       DEFAULT_BUILD="bun_install"
       DEFAULT_SMOKE="true"
+      DEFAULT_WRAPPERS="$app"
       ;;
   esac
 }
@@ -91,19 +110,31 @@ run_bun_install() {
 }
 
 ensure_bin_wrapper() {
-  # For apps that only have src/cli.ts — write bin/<name> if missing
+  # For apps that only have src/cli.ts — write bin/<name> if missing.
+  # Always resolve symlinks so PATH links (~/.local/bin/X -> …/current/bin/X) work.
   local root="$1" name="$2"
   mkdir -p "$root/bin"
-  if [ -x "$root/bin/$name" ]; then
-    return 0
+  # Re-write wrappers we own (marker comment) so upgrades fix old broken shims
+  if [ -x "$root/bin/$name" ] && ! grep -q 'last-stack-safe-upgrade-wrapper' "$root/bin/$name" 2>/dev/null; then
+    # Prefer upstream bin if present and not our stub
+    if [ -f "$root/src/cli.ts" ] && ! head -5 "$root/bin/$name" | grep -q 'src/cli.ts'; then
+      return 0
+    fi
   fi
   if [ ! -f "$root/src/cli.ts" ]; then
     return 0
   fi
   cat >"$root/bin/$name" <<WRAP
 #!/usr/bin/env bash
+# last-stack-safe-upgrade-wrapper
 set -euo pipefail
-root="\$(cd "\$(dirname "\$0")/.." && pwd -P)"
+src="\${BASH_SOURCE[0]}"
+while [ -h "\$src" ]; do
+  dir="\$(cd -P "\$(dirname "\$src")" && pwd)"
+  src="\$(readlink "\$src")"
+  case "\$src" in /*) ;; *) src="\$dir/\$src" ;; esac
+done
+root="\$(cd -P "\$(dirname "\$src")/.." && pwd)"
 if bun_bin="\$(command -v bun 2>/dev/null)"; then
   :
 elif [ -x "\$HOME/.bun/bin/bun" ]; then
@@ -144,7 +175,14 @@ smoke_routines() {
 smoke_lastsecrets() {
   local root="$1"
   ensure_bin_wrapper "$root" lastsecrets
-  PATH="$root/bin:$PATH" lastsecrets --help >/dev/null || die "smoke: lastsecrets --help failed"
+  # CLI has no --help; bare invocation prints usage and exits non-zero
+  local out
+  out="$(PATH="$root/bin:$PATH" lastsecrets 2>&1 || true)"
+  printf '%s' "$out" | grep -q 'lastsecrets' \
+    || die "smoke: lastsecrets did not print usage"
+  # Prefer a real socket-backed verb when the node is up
+  PATH="$root/bin:$PATH" lastsecrets list >/dev/null 2>&1 \
+    || true
   printf 'safe-upgrade-cli: lastsecrets smoke OK\n'
 }
 
@@ -153,6 +191,16 @@ smoke_configurations() {
   ensure_bin_wrapper "$root" configurations
   PATH="$root/bin:$PATH" configurations --help >/dev/null || die "smoke: configurations --help failed"
   printf 'safe-upgrade-cli: configurations smoke OK\n'
+}
+
+smoke_fkanban() {
+  local root="$1"
+  ensure_bin_wrapper "$root" kanban
+  ensure_bin_wrapper "$root" fkanban
+  PATH="$root/bin:$PATH" kanban list --column todo >/dev/null \
+    || PATH="$root/bin:$PATH" fkanban list --column todo >/dev/null \
+    || die "smoke: kanban/fkanban list failed"
+  printf 'safe-upgrade-cli: fkanban smoke OK\n'
 }
 
 materialize_from_git() {
@@ -252,22 +300,20 @@ main() {
   remote="${remote:-$DEFAULT_REMOTE}"
   bare="${bare:-$DEFAULT_BARE}"
   if [ "${#links[@]}" -eq 0 ] && [ -n "$DEFAULT_LINKS" ]; then
-    # support single default; multi later
-    case "$DEFAULT_LINKS" in
-      *\|*) links+=("bin/$app:$HOME/.local/bin/$app") ;;
-      *) links+=("$DEFAULT_LINKS") ;;
-    esac
+    # shellcheck disable=SC2206
+    local -a _dl=($DEFAULT_LINKS)
+    links+=("${_dl[@]}")
   fi
 
   local install_root stage version_id
-  install_root="$APPS_ROOT/$app"
+  install_root="$APPS_ROOT/${INSTALL_APP:-$app}"
   mkdir -p "$install_root/versions"
   stage="$(mktemp -d "$install_root/versions/.build.XXXXXX")"
 
   cleanup() { rm -rf "$stage" 2>/dev/null || true; }
   trap cleanup EXIT
 
-  printf 'safe-upgrade-cli: materializing %s …\n' "$app"
+  printf 'safe-upgrade-cli: materializing %s (install=%s) …\n' "$app" "${INSTALL_APP:-$app}"
   if [ -n "$source_dir" ]; then
     [ -d "$source_dir" ] || die "source-dir missing: $source_dir"
     version_id="$(materialize_from_dir "$stage" "$source_dir")"
@@ -283,9 +329,12 @@ main() {
     bun_install) run_bun_install "$stage" ;;
     *) ;;
   esac
-  # ensure wrappers for apps that need them
+  # ensure bin wrappers for all declared command names
+  local w
+  for w in ${DEFAULT_WRAPPERS:-$app}; do
+    ensure_bin_wrapper "$stage" "$w"
+  done
   case "$app" in
-    routines|lastsecrets|configurations) ensure_bin_wrapper "$stage" "$app" ;;
     brain) [ -x "$stage/bin/brain" ] || die "brain materialize missing bin/brain" ;;
   esac
 
@@ -297,6 +346,7 @@ main() {
       routines_smoke) smoke_routines "$stage" ;;
       lastsecrets_smoke) smoke_lastsecrets "$stage" ;;
       configurations_smoke) smoke_configurations "$stage" ;;
+      fkanban_smoke) smoke_fkanban "$stage" ;;
       true) true ;;
       *) die "unknown smoke: $DEFAULT_SMOKE" ;;
     esac
@@ -320,7 +370,8 @@ main() {
   mv "$stage" "$final"
   trap - EXIT
 
-  local -a act_args=(activate --app "$app" --version-id "$version_id" --version-dir "$final")
+  local install_app="${INSTALL_APP:-$app}"
+  local -a act_args=(activate --app "$install_app" --version-id "$version_id" --version-dir "$final")
   local L
   for L in "${links[@]+"${links[@]}"}"; do
     [ -n "$L" ] || continue
@@ -328,8 +379,8 @@ main() {
   done
   "$ACTIVATE" "${act_args[@]}"
 
-  printf 'safe-upgrade-cli: DONE app=%s version=%s\n' "$app" "$version_id"
-  "$ACTIVATE" status --app "$app"
+  printf 'safe-upgrade-cli: DONE app=%s install=%s version=%s\n' "$app" "$install_app" "$version_id"
+  "$ACTIVATE" status --app "$install_app"
 }
 
 main "$@"

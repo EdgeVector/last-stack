@@ -620,11 +620,23 @@ refresh_app() {
   host_track="$(printf '%s\n' "$status" | jq -r '.host_track')"
 
   if [ -n "$refresh_path" ] && [ -x "$refresh_path" ]; then
-    if [ "$force" -eq 1 ]; then
-      "$refresh_path" --force
-    else
-      "$refresh_path"
-    fi
+    # Local-safe helper takes "<app> [--force]"; legacy refresh scripts take only [--force].
+    case "$(basename "$refresh_path")" in
+      last-stack-refresh-local-safe|last-stack-safe-upgrade-cli|last-stack-safe-upgrade-all-local)
+        if [ "$force" -eq 1 ]; then
+          "$refresh_path" "$app" --force
+        else
+          "$refresh_path" "$app"
+        fi
+        ;;
+      *)
+        if [ "$force" -eq 1 ]; then
+          "$refresh_path" --force
+        else
+          "$refresh_path"
+        fi
+        ;;
+    esac
   elif [ "$refresh_mode" = "last-stack-self-upgrade" ]; then
     self_upgrade="$host_track/bin/last-stack-self-upgrade"
     setup_path="$host_track/setup"

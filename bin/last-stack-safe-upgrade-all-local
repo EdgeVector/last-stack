@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Upgrade every local-safe agent CLI (not lastgit/last-stack/lastdb Mini artifacts).
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd -P)"
+UPGRADE="$ROOT/last-stack-safe-upgrade-cli"
+[ -x "$UPGRADE" ] || UPGRADE="$(command -v last-stack-safe-upgrade-cli)"
+[ -x "$UPGRADE" ] || {
+  echo "last-stack-safe-upgrade-cli not found" >&2
+  exit 127
+}
+
+# kanban/fkanban share one install — only run once as fkanban
+apps=(brain situations fkanban routines lastsecrets configurations)
+fail=0
+for app in "${apps[@]}"; do
+  printf '\n======== safe-upgrade %s ========\n' "$app"
+  if "$UPGRADE" "$app"; then
+    printf 'OK %s\n' "$app"
+  else
+    printf 'FAIL %s\n' "$app" >&2
+    fail=1
+  fi
+done
+if [ "$fail" -ne 0 ]; then
+  echo "safe-upgrade-all-local: one or more apps failed" >&2
+  exit 1
+fi
+echo "safe-upgrade-all-local: all OK"
