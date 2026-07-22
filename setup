@@ -20,7 +20,14 @@ ROOT="$(cd "$(dirname "$0")" && pwd -P)"
 
 resolve_source_root() {
   local candidate
-  for candidate in "${LAST_STACK_ROOT:-}" "$HOME/.last-stack/.artifacts/current" "$HOME/.last-stack"; do
+  for candidate in \
+    "${LAST_STACK_ROOT:-}" \
+    "${HOST_TRACK_INSTALL_ROOT:+$HOST_TRACK_INSTALL_ROOT/current}" \
+    "$HOME/.local/state/last-stack/artifacts/current" \
+    "$HOME/.last-stack/.artifacts/current" \
+    "$ROOT" \
+    "$HOME/.last-stack"
+  do
     [ -n "$candidate" ] || continue
     if [ -f "$candidate/VERSION" ] && [ -d "$candidate/skills" ]; then
       cd "$candidate" && pwd -P
@@ -32,9 +39,16 @@ resolve_source_root() {
 
 SOURCE_ROOT="$(resolve_source_root)"
 ARTIFACT_INSTALL=0
-case "$SOURCE_ROOT" in
-  "$HOME/.last-stack/.artifacts/"*) ARTIFACT_INSTALL=1 ;;
-esac
+artifact_roots=()
+[ -n "${HOST_TRACK_INSTALL_ROOT:-}" ] && artifact_roots+=("$HOST_TRACK_INSTALL_ROOT")
+artifact_roots+=("$HOME/.local/state/last-stack/artifacts" "$HOME/.last-stack/.artifacts")
+for artifact_root in "${artifact_roots[@]}"; do
+  [ -n "$artifact_root" ] || continue
+  artifact_root="$(cd "$artifact_root" 2>/dev/null && pwd -P || printf '%s\n' "$artifact_root")"
+  case "$SOURCE_ROOT" in
+    "$artifact_root"|"$artifact_root"/*) ARTIFACT_INSTALL=1 ;;
+  esac
+done
 SKILLS_SRC="$SOURCE_ROOT/skills"
 HOOKS_SRC="$SOURCE_ROOT/hooks"
 SOURCE_TOP_LOADED=0

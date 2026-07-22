@@ -475,7 +475,8 @@ run_artifact_post_install() {
   [ -n "$post_install" ] || return 0
   [ -x "$post_install" ] || die "artifact post-install is not executable: $post_install"
   HOST_TRACK_APP="$app" HOST_TRACK_INSTALL_ROOT="$install_root" \
-    HOST_TRACK_MANIFEST_DIGEST="$digest" "$post_install"
+    HOST_TRACK_MANIFEST_DIGEST="$digest" LAST_STACK_ROOT="$install_root/current" \
+    "$post_install"
 }
 
 artifact_install_app() {
