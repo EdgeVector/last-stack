@@ -315,12 +315,15 @@ log "STEP 1/4: durable backup → $BACKUP"
 # Prefer APFS clone for speed. A *live* primary races with the copy:
 #   - UDS sockets under data/*.sock (not copyable)
 #   - CAS blob files that vanish mid-walk
-# Those produce non-zero `cp` exit even when identity + sled db are cloned.
+# Those produce non-zero `cp` exit even when identity + store data are cloned.
 # Treat clone as OK when essential files land; only fall back to rsync when not.
 # Never use bare `cp -a` of a multi-GB live home when disk is tight (fills disk).
 backup_essentials_ok() {
   local root="$1"
-  [ -f "$root/identity.key" ] && [ -e "$root/data/db" ] && [ -d "$root/data" ]
+  # identity + data dir required. Storage is either legacy sled (data/db) or
+  # Last Store collections under data/data/ (Mini LASTDB_ENGINE=laststore).
+  [ -f "$root/identity.key" ] && [ -d "$root/data" ] || return 1
+  [ -e "$root/data/db" ] || [ -d "$root/data/data" ] || [ -d "$root/data/laststore" ]
 }
 set +e
 cp -cR "$PRIMARY_HOME" "$BACKUP" 2>"$WORK/backup.err"
