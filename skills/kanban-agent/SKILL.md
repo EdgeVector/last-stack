@@ -625,52 +625,72 @@ step 2) if not. A `gh -R <repo> pr update-branch` needs NO worktree at all.
 
 ---
 
-## VALIDATE MODE — run one post-merge END STATE validation, then close or surface it
+## VALIDATE MODE — run one proof or post-merge END STATE check, then close or surface it
 
-Run once per wake, then exit. This mode is the missing owner between "PR merged"
-and "the card's END STATE is actually true" for checks that can only happen
-after merge: dev deploys, release runs, clean-machine installs, real-machine
-dogfood, or other autonomous dev/staging validations. It does **not** author
+Run once per wake, then exit. This mode is the **proof lane**, not pickup:
+pickup only claims `Kind: pr` in `default/todo`. VALIDATE owns (a) post-merge
+END STATE for already-merged PR cards, and (b) `Kind: validation` / `capstone`
+terminal proof cards that sit in **backlog** on purpose. It does **not** author
 feature code and does **not** run prod cutovers or outward/irreversible actions.
+Scheduled entrypoint: routine `kanban-validate` /
+`last-stack-fkanban-validate` (see that prompt for candidate ranking).
 
-1. **Scan for candidates.** Read the board and consider cards in:
-   - `doing` whose PR is merged but whose `## END STATE` / `VERIFY` names a
-     runnable post-merge check that is not yet proven.
-   - `review` cards with a `BLOCKED: awaiting <validation>` marker after merge.
-   Use the same `Repo:` / `Base:` / `PR:` parsing and forge-vs-GitHub venue rules
-   as RECONCILE mode. If there is no concrete merged PR or commit evidence,
-   leave the card alone; VALIDATE does not start or rescue implementation work.
-   Pick the highest-priority runnable candidate. One validation per wake.
+0. **Cheap DONE-WHEN first (when Last Stack is installed).** For non-PR kinds
+   (`validation|tracker|capstone|meta`), evaluate single-line `DONE-WHEN:` with
+   `bin/last-stack-kanban-done-when-eval`. Satisfied → `PROOF` + `done`. Pending
+   → continue. Malformed → surface authoring debt. For
+   `file ~/.last-stack/north-star-proofs/<slug>.md matches /^PASS/` predicates,
+   you may run `bin/last-stack-north-star-proof --offline <ns-slug>` once (or
+   `--live` only when the card explicitly requires it and is safe), then re-eval.
+1. **Scan for candidates (two pools).** Read the board and consider:
+   - **Pool A — post-merge:** `doing`/`todo` (or backlog with a post-merge
+     marker) whose PR/CR is **merged** but whose `## END STATE` / `VERIFY` is
+     not yet proven, or body has `BLOCKED: awaiting <validation>`.
+   - **Pool B — terminal proofs (starvation fix):** `backlog` (or forced `todo`)
+     cards with `Kind: validation` or `Kind: capstone`, no
+     `needs_human`/`deferred`/`design_first`, not dep-blocked, with a concrete
+     `DONE-WHEN` and/or autonomous `VERIFY` / `## END STATE`. Prefer
+     `north-star-proof` / milestone proof cards when tagged.
+   Use the same `Repo:` / `Base:` / `PR:` parsing and forge-vs-GitHub/LastGit
+   venue rules as RECONCILE mode. **Never** `pickup claim`. Pool A still
+   requires merged PR/commit evidence; Pool B does **not** (proof cards are not
+   implementation PRs). Prefer Pool B when it has ready candidates and Pool A
+   is empty (or when a Pool B card is higher priority). One validation per wake.
 2. **Run the validation on a dev/staging/throwaway surface only.** Follow the
    card's `VERIFY` and `## END STATE` literally when they are autonomous and
    bounded. Examples: query a dev deploy health check, trigger and watch a
    release verification workflow, run a clean-machine install against a temporary
-   environment, or execute a dogfood script against an isolated data dir. If the
-   check would spend real production money, cut over prod, mutate public data, or
-   require a human credential/device decision, do not run it; append a
-   `BLOCKED: <human gate>` note and leave it in `todo` with `block_status=needs_human`.
-3. **Pass closes the card.** If the END STATE now holds, append a short `PROOF:`
-   line naming the command or external run that proved it, then move the card to
-   `done`. A merged card with an unmet post-merge END STATE is not done until
-   this proof exists.
+   environment, execute a dogfood script against an isolated data dir, or run
+   the card's documented `cargo test` / harness. If the check would spend real
+   production money, cut over prod, mutate public data, or require a human
+   credential/device decision, do not run it; append a `BLOCKED: <human gate>`
+   note and leave it in `backlog`/`todo` with `block_status=needs_human`.
+3. **Pass closes the card.** If the END STATE / DONE-WHEN now holds, append a
+   short `PROOF:` line naming the command or external run that proved it, then
+   move the card to `done`. A merged PR card with an unmet post-merge END STATE
+   is not done until this proof exists; a North Star proof card is not done
+   until VERIFY/DONE-WHEN passes.
 4. **Fail becomes visible work.** If validation ran and failed, append a
    `PROOF: failed <check> — <concise observed failure>` note, file one
-   pickup-ready fix card with a `Repo:`/`Base:`/`Branch:` header, the
-   kanban-agent trigger header, a narrow GOAL/STEPS/VERIFY brief, and a
-   dependency or cross-reference to the failed card when useful. Move the
-   validated card to `review`. Do not silently leave it in `doing`.
+   pickup-ready **`Kind: pr`** fix card with a `Repo:`/`Base:`/`Branch:` header,
+   the kanban-agent trigger header, a narrow GOAL/STEPS/VERIFY brief, and a
+   dependency or cross-reference to the failed card when useful. Leave the
+   proof/validation card in **`backlog`** (not a `review` column — that lane
+   does not exist). Do not silently leave it in `doing`.
 5. **Unrelated blockers do not thrash.** If validation cannot run because a
    named upstream blocker is already known (for example a runner-saturation or
    dev-401 card), append or refresh `BLOCKED: awaiting <blocker-slug> for
-   <validation>`, leave it in `todo` with `block_status=needs_human`, and exit. Do not create duplicate
-   fix cards for the same upstream blocker.
+   <validation>`, leave it in `backlog`/`todo` (use `needs_human` only for real
+   human gates), and exit. Do not create duplicate fix cards for the same
+   upstream blocker.
 6. **Heartbeat.** When run from the scheduled `kanban-validate` routine, append
    one `routine-heartbeats` line summarizing `ok`, `noop`, or `error` and the
    card/result. Use the Last Stack heartbeat helper instead of open-coding a
    typed Brain read/write.
 
-VALIDATE mode is intentionally bounded. It should make one stranded merged card
-terminal (`done`) or loud (`review` + proof/fix/blocker) per wake, then stop.
+VALIDATE mode is intentionally bounded. It should make one stranded proof or
+post-merge card terminal (`done`) or loud (PROOF fail + pickup-ready fix PR) per
+wake, then stop.
 
 ---
 

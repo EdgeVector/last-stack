@@ -65,7 +65,7 @@ stripped out.
    factory-health ─▶ hourly bands (ship rate / todo / doing age) vs baselines;
                      ra notify Tom when out of band; auto_fix opt-in later.
    kanban-watch  ─▶ RECONCILE: advance merged PRs, re-arm/un-stick the stragglers
-   kanban-validate ─▶ VALIDATE: run post-merge END STATE checks, then done/review
+   kanban-validate ─▶ VALIDATE/PROOF: DONE-WHEN + post-merge END STATE or backlog validation proof → done or fix PR
    pipeline-health ─▶ every ~10m: LastGit CRs + forge PRs unblocked (stuck >10m → fix or Brain papercut)
    drain-open-prs ─▶ daily backstop: drive every open PR across all repos toward zero
 
@@ -142,7 +142,7 @@ one-card-per-fire contract.
 |---|---|---|
 | [`kanban-pickup`](kanban-pickup.md) | every 5m fleet slot, scalable with separate workers | Drain the ready queue; claim one card and run WORK mode inline. |
 | [`kanban-watch`](kanban-watch.md) | every 10–20 min | RECONCILE the board; advance merged PRs, un-stick the strays. |
-| [`kanban-validate`](kanban-validate.md) | hourly, offset from watch | VALIDATE one merged card's post-merge END STATE; move it to `done` on pass or `review` with proof/fix/blocker on fail. |
+| [`kanban-validate`](kanban-validate.md) | every 4h (lean), offset from watch | **Proof lane (not pickup):** DONE-WHEN sweep + ONE of (A) post-merge END STATE or (B) backlog `Kind: validation`/`capstone` terminal proof; `done` on pass, or PROOF fail + pickup-ready fix PR on fail. |
 | [`groom-board`](groom-board.md) | daily | Promote ready `backlog`→`todo`, break up epics, prune junk. |
 | [`north-star-driver`](north-star-driver.md) | every 6h | Convert one active North Star or approved outcome request into one milestone scaffold; never creates cards. |
 | [`milestone-driver`](milestone-driver.md) | every 6h | Generate/link at most one proof or PR-sized Kanban child, then reconcile one milestone; never implements cards. |

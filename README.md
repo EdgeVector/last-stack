@@ -213,7 +213,7 @@ reaper.
 | **devops-continuous-improvement** | Inspect CI, merge flow, deployment, testing, and release gates; ship one small DevOps fix or file precise cards. |
 | **worktree-cleanup** / **disk-reclaim** | Prune stale worktrees/branches; reclaim disk; keep the machine healthy. |
 | **drain-open-prs** | Drive every open PR across all repos toward zero (merge or close). |
-| **kanban-pickup** / **kanban-watch** / **kanban-validate** | Drain the ready queue; reconcile PRs; run post-merge END STATE validation. |
+| **kanban-pickup** / **kanban-watch** / **kanban-validate** | Drain ready **PR** queue; reconcile PRs; **proof lane** (DONE-WHEN + backlog validation proofs + post-merge END STATE). |
 | **groom-board** / **north-star-driver** / **milestone-driver** | Promote ready work and turn North Star intent into milestones and PR-sized cards. |
 | **program-rollup** / **consolidate-brain** / **morning-sync** | Mirror the board into the brain; keep statuses honest; deliver the daily decision briefing. |
 
