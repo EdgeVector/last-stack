@@ -57,21 +57,25 @@ stale (no new stamp), so the refresh agent retries instead of claiming success.
 
 ### Last Stack compatibility layout
 
-Last Stack artifacts install below `~/.last-stack/.artifacts`. Its stable code
-paths (`bin`, `skills`, `routines`, `config`, and the other packaged support
-trees) point through `.artifacts/current`, so existing routines and harness
-links keep their established `~/.last-stack/...` paths. Run the one-time,
-recoverable migration only after a verified Last Stack artifact is installed:
+Last Stack artifacts install below `~/.local/state/last-stack/artifacts` so
+verified versions, stages, and rollback state do not dirty the `~/.last-stack`
+owner mirror. If a non-git compatibility root needs stable code paths (`bin`,
+`skills`, `routines`, `config`, and the other packaged support trees), they can
+point through the active artifact. Run the one-time, recoverable migration only
+after a verified Last Stack artifact is installed:
 
 ```bash
-~/.last-stack/.artifacts/current/bin/last-stack-activate-artifact-layout --dry-run
-~/.last-stack/.artifacts/current/bin/last-stack-activate-artifact-layout
+~/.local/state/last-stack/artifacts/current/bin/last-stack-activate-artifact-layout --dry-run
+~/.local/state/last-stack/artifacts/current/bin/last-stack-activate-artifact-layout
 ```
 
 The migration moves displaced code into a timestamped directory under
 `~/.local/state/last-stack/layout-backups`; it leaves `.git`, `launchd`, logs,
-proofs, and other local state untouched. Artifact installs use the Host Track
-refresh agent, so setup removes the retired Git self-upgrade LaunchAgent.
+proofs, and other local state untouched. By default the activator skips a git
+worktree compatibility root instead of replacing tracked source paths with
+artifact links; use a non-git compatibility root for that layout. Artifact
+installs use the Host Track refresh agent, so setup removes the retired Git
+self-upgrade LaunchAgent.
 
 ## Status Shape
 

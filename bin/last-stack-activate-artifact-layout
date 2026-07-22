@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 compat_root="${LAST_STACK_COMPAT_ROOT:-$HOME/.last-stack}"
-artifact_install_root="${LAST_STACK_ARTIFACT_INSTALL_ROOT:-$compat_root/.artifacts}"
+artifact_install_root="${LAST_STACK_ARTIFACT_INSTALL_ROOT:-${HOST_TRACK_INSTALL_ROOT:-$HOME/.local/state/last-stack/artifacts}}"
 artifact_current="$artifact_install_root/current"
 backup_root="${LAST_STACK_LAYOUT_BACKUP_ROOT:-$HOME/.local/state/last-stack/layout-backups}"
 dry_run=0
@@ -33,6 +33,13 @@ done
   printf 'last-stack active artifact is incomplete: %s\n' "$artifact_current" >&2
   exit 1
 }
+
+if [ "${LAST_STACK_ARTIFACT_LAYOUT_ALLOW_GIT_WORKTREE:-0}" != "1" ] &&
+  git -C "$compat_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  printf 'LAST_STACK_ARTIFACT_LAYOUT result=skipped reason=git-owner-mirror compat=%s current=%s\n' \
+    "$compat_root" "$(readlink "$artifact_current")"
+  exit 0
+fi
 
 managed_paths=(VERSION setup bin config docs harness hooks instructions lib routines skills templates)
 run_id="$(date -u +%Y%m%dT%H%M%SZ).$$"

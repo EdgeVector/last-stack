@@ -33,8 +33,8 @@
       "artifact_app": "last-stack",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
-      "install_root": "$HOME/.last-stack/.artifacts",
-      "post_install": "$HOME/.last-stack/.artifacts/current/setup",
+      "install_root": "$HOME/.local/state/last-stack/artifacts",
+      "post_install": "$HOME/.local/state/last-stack/artifacts/current/setup",
       "links": [
         {
           "source": "bin/host-track",
