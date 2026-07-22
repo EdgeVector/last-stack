@@ -13,6 +13,7 @@ host-track which lastgit
 host-track which last-stack --json
 host-track check lastgit
 host-track refresh lastgit
+host-track refresh --all
 host-track refresh --force last-stack
 host-track install --channel candidate my-app
 host-track rollback my-app
@@ -144,6 +145,18 @@ bin/last-stack-host-track-artifact-invariant --json
 HOST_TRACK_REGISTRY=/path/to/apps.json bin/last-stack-host-track-artifact-invariant
 ```
 
+`bin/last-stack-artifact-host-track-proof` is the terminal proof wrapper for
+the artifact-driven registry cutover. It runs Host Track status, the artifact
+invariant, and `host-track check` for every registered app. On success it writes
+`PASS` to
+`~/.last-stack/feature-proofs/artifact-driven-host-track-registry-cutover.md`.
+Run it after refreshing the registry from promoted artifacts:
+
+```bash
+host-track refresh --all
+bin/last-stack-artifact-host-track-proof
+```
+
 Refresh stamps are written under `~/.host-track/stamps/<app>.json`, or under
 `HOST_TRACK_STAMP_DIR` when set.
 
@@ -171,11 +184,17 @@ Uninstall removes the plist and boots out the loaded service:
 
 ## Registry Kinds
 
-- `A compile`: build and install a binary, such as `lastgit`.
-- `B checkout-shim`: fast-forward a host checkout and expose a PATH shim.
+- `artifact-bundle`: install a verified immutable LastGit artifact and expose
+  PATH links from its active `current` version.
+- `A compile`: legacy checkout-era build and install flow.
+- `B checkout-shim`: legacy checkout-era fast-forward and PATH shim flow.
 - `C skill-pack`: refresh a skill-pack checkout and rerun its setup.
 - `D daemon/cloud`: intentionally out of scope for this driver until a concrete
   app opts in.
 
-The registry includes real entries for `lastgit`, `last-stack`, `situations`,
-and `kanban`, plus a placeholder B-kind entry for `brain`.
+The default registry is artifact-backed for `lastgit`, `last-stack`, `brain`,
+`situations`, `kanban`, `fkanban`, `lastdb`, and `lastdbd`. The `kanban` and
+`fkanban` commands share the `fkanban` artifact bundle. The `lastdb` and
+`lastdbd` commands share the `lastdb-bundle` artifact so the invariant can
+detect CLI/daemon source or manifest skew; live primary activation still goes
+through `lastdb-safe-upgrade`.
