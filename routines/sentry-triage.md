@@ -48,11 +48,34 @@ policy.
 For each project slug parsed from `signal-sources` Sentry scopes:
 
 ```bash
-curl -s -H "Authorization: Bearer $TOKEN" \
-  "https://sentry.io/api/0/projects/edge-vector/<slug>/issues/?query=is:unresolved&statsPeriod=14d&limit=50" || true
+url="https://sentry.io/api/0/projects/edge-vector/<slug>/issues/?query=is:unresolved&statsPeriod=14d&limit=100"
+headers_file="/tmp/sentry.headers.$$"
+page_file="/tmp/sentry.page.$$"
+while [ -n "$url" ]; do
+  curl -sS -D "$headers_file" -o "$page_file" \
+    -H "Authorization: Bearer $TOKEN" "$url" || true
+  # Append this page, then continue only when the Link rel="next" entry has results="true".
+  url="$(SENTRY_HEADERS="$headers_file" python3 - <<'PY'
+import os
+import re
+text = open(os.environ["SENTRY_HEADERS"], encoding="utf-8", errors="replace").read()
+for line in text.splitlines():
+    if not line.lower().startswith("link:"):
+        continue
+    for part in re.split(r",\s*(?=<)", line.split(":", 1)[1].strip()):
+        m = re.match(r"<([^>]+)>\s*;(.*)$", part.strip())
+        if m and 'rel="next"' in m.group(2) and 'results="true"' in m.group(2):
+            print(m.group(1))
+            raise SystemExit
+PY
+)"
+done
+rm -f "$headers_file" "$page_file"
 ```
 
 Valid `statsPeriod` values are only ``, `24h`, and `14d`.
+Do not cap triage at the first page; keep following Sentry pagination until the
+`next` link reports no further results.
 
 Capture per issue: `id`, `title`, `level`, `count`, `userCount`, `firstSeen`,
 `lastSeen`, `permalink`, and `metadata`.

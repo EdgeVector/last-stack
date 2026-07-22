@@ -77,6 +77,82 @@ sentry_projects() {
   default_sentry_projects
 }
 
+sentry_next_link() {
+  local headers="$1"
+  SENTRY_HEADERS="$headers" py - <<'PY'
+import os, re
+
+headers_path = os.environ["SENTRY_HEADERS"]
+try:
+    text = open(headers_path, encoding="utf-8", errors="replace").read()
+except OSError:
+    raise SystemExit
+
+for line in text.splitlines():
+    if not line.lower().startswith("link:"):
+        continue
+    value = line.split(":", 1)[1].strip()
+    for part in re.split(r",\s*(?=<)", value):
+        match = re.match(r"<([^>]+)>\s*;(.*)$", part.strip())
+        if not match:
+            continue
+        url, attrs_raw = match.groups()
+        attrs = dict(
+            (key, val)
+            for key, val in re.findall(r';?\s*([A-Za-z_-]+)="([^"]*)"', attrs_raw)
+        )
+        if attrs.get("rel") == "next" and attrs.get("results", "true").lower() == "true":
+            print(url)
+            raise SystemExit
+PY
+}
+
+sentry_project_issues_json() {
+  local token="$1"
+  local slug="$2"
+  local url="https://sentry.io/api/0/projects/edge-vector/$slug/issues/?query=is:unresolved&statsPeriod=14d&limit=100"
+  local page_limit="${SENTRY_PAGE_LIMIT:-20}"
+  local tmp_dir page headers body next_url
+  tmp_dir="$(mktemp -d)"
+  page=0
+
+  while [ -n "$url" ] && [ "$page" -lt "$page_limit" ]; do
+    page=$((page + 1))
+    headers="$tmp_dir/headers-$page"
+    body="$tmp_dir/body-$page.json"
+    if ! curl -sS --max-time 25 -D "$headers" -o "$body" \
+      -H "Authorization: Bearer $token" \
+      "$url" 2>/dev/null; then
+      rm -rf "$tmp_dir"
+      return 1
+    fi
+    next_url="$(sentry_next_link "$headers" || true)"
+    [ "$next_url" = "$url" ] && next_url=""
+    url="$next_url"
+  done
+
+  py - "$tmp_dir"/body-*.json <<'PY'
+import json, sys
+
+combined = []
+for path in sys.argv[1:]:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            page = json.load(handle)
+    except Exception as exc:
+        print(json.dumps({"error": f"unparseable page {path}: {exc}"}))
+        raise SystemExit(1)
+    if not isinstance(page, list):
+        print(json.dumps(page))
+        raise SystemExit
+    combined.extend(page)
+print(json.dumps(combined))
+PY
+  local rc=$?
+  rm -rf "$tmp_dir"
+  return "$rc"
+}
+
 # ----------------------------------------------------------------------------
 # 🐛 BUGS — Sentry (edge-vector org; fleet projects)
 # ----------------------------------------------------------------------------
@@ -101,8 +177,7 @@ sentry_block() {
     return
   fi
   for slug in "${projects[@]}"; do
-    json=$(curl -s --max-time 25 -H "Authorization: Bearer $TOKEN" \
-      "https://sentry.io/api/0/projects/edge-vector/$slug/issues/?query=is:unresolved&statsPeriod=14d&limit=100" 2>/dev/null)
+    json=$(sentry_project_issues_json "$TOKEN" "$slug" 2>/dev/null || true)
     SENTRY_SLUG="$slug" SENTRY_JSON="$json" py - <<'PY'
 import os, json, datetime
 slug = os.environ["SENTRY_SLUG"]
