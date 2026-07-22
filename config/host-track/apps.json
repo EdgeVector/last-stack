@@ -16,6 +16,11 @@
       "gate_ref": "refs/heads/main",
       "host_track": "$HOME/.lastgit/host-checkout/lastgit",
       "refresh": "$HOME/.lastgit/host-checkout/lastgit/.lastgit/refresh-host.sh",
+      "artifact_exemption": {
+        "kind": "bootstrap-recovery",
+        "owner": "Tom",
+        "rationale": "LastGit keeps a checkout-backed recovery path until its own artifact producer and Forgejo-gated bootstrap path are proven."
+      },
       "notes": "Delegates to LastGit's host refresh script."
     },
     {
@@ -48,6 +53,11 @@
       "gate_remote": "",
       "gate_ref": "",
       "host_track": "$HOME/code/edgevector/brain",
+      "artifact_exemption": {
+        "kind": "bootstrap-recovery",
+        "owner": "Tom",
+        "rationale": "Brain is a temporary checkout shim until the artifact migration publishes and installs a verified Brain bundle."
+      },
       "notes": "Placeholder until brain moves from workspace symlink to host track."
     },
     {
@@ -61,6 +71,11 @@
       "gate_ref": "refs/heads/main",
       "host_track": "$HOME/.host-track/situations",
       "refresh": "$HOME/.last-stack/bin/last-stack-refresh-situations-host-track",
+      "artifact_exemption": {
+        "kind": "bootstrap-recovery",
+        "owner": "Tom",
+        "rationale": "Situations remains checkout-backed while the host-track artifact rollout migrates it to a verified bundle."
+      },
       "notes": "Fast-forwards the situations host checkout from LastGit and exposes the PATH shim."
     },
     {
@@ -74,6 +89,11 @@
       "gate_ref": "refs/heads/main",
       "host_track": "$HOME/.host-track/fkanban",
       "refresh": "$HOME/.last-stack/bin/last-stack-refresh-fkanban-host-track",
+      "artifact_exemption": {
+        "kind": "bootstrap-recovery",
+        "owner": "Tom",
+        "rationale": "Kanban remains checkout-backed while the host-track artifact rollout migrates F-Kanban to a verified bundle."
+      },
       "notes": "Kind B host-track checkout; PATH shims point into ~/.host-track/fkanban/bin."
     },
     {
@@ -87,6 +107,11 @@
       "gate_ref": "refs/heads/main",
       "host_track": "$HOME/.host-track/fkanban",
       "refresh": "$HOME/.last-stack/bin/last-stack-refresh-fkanban-host-track",
+      "artifact_exemption": {
+        "kind": "bootstrap-recovery",
+        "owner": "Tom",
+        "rationale": "F-Kanban remains checkout-backed while the host-track artifact rollout migrates it to a verified bundle."
+      },
       "notes": "First-class alias for the F-Kanban CLI; shares the managed host-track checkout with kanban."
     }
   ]

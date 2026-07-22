@@ -25,7 +25,10 @@ experiments can point at another registry with `HOST_TRACK_REGISTRY`.
 
 New entries in the default registry inherit `install_mode: artifact`. Existing
 checkout-backed apps carry an explicit `install_mode: checkout` until their
-producer and compatibility proof are migrated. An artifact entry can set:
+producer and compatibility proof are migrated. Checkout-backed apps must carry
+an `artifact_exemption` with `kind` set to `deployment-only` or
+`bootstrap-recovery`, plus an `owner` and `rationale`, so continuous dogfood can
+separate intentional exceptions from drift. An artifact entry can set:
 
 ```json
 {
@@ -94,6 +97,23 @@ Each status record reports:
 Artifact-backed records also report `artifact_app`, `artifact_channel`,
 `artifact_root`, `install_root`, `manifest_digest`, and
 `channel_manifest_digest`.
+
+## Continuous Artifact Invariant
+
+`bin/last-stack-host-track-artifact-invariant` is the dogfood-registry recipe
+entry point for Host Track artifact freshness. It inventories every registered
+app, rejects non-artifact installs without a machine-readable exemption, checks
+the selected channel and `stale:false`, verifies exact manifest source
+provenance, rehashes active payload files, confirms command paths resolve inside
+immutable `versions/<manifest>` directories, compares paired `lastdb` and
+`lastdbd` bundle identity when both are registered, and proves rollback state by
+inspecting the `previous` symlink without switching it.
+
+```bash
+bin/last-stack-host-track-artifact-invariant
+bin/last-stack-host-track-artifact-invariant --json
+HOST_TRACK_REGISTRY=/path/to/apps.json bin/last-stack-host-track-artifact-invariant
+```
 
 Refresh stamps are written under `~/.host-track/stamps/<app>.json`, or under
 `HOST_TRACK_STAMP_DIR` when set.

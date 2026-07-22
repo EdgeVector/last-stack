@@ -1,0 +1,285 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  source_dir="$(cd "$(dirname "$SOURCE")" && pwd -P)"
+  link_target="$(readlink "$SOURCE")"
+  case "$link_target" in
+    /*) SOURCE="$link_target" ;;
+    *) SOURCE="$source_dir/$link_target" ;;
+  esac
+done
+ROOT="$(cd "$(dirname "$SOURCE")/.." && pwd -P)"
+
+json_out=0
+registry="${HOST_TRACK_REGISTRY:-}"
+host_track_bin="${HOST_TRACK_BIN:-$ROOT/bin/host-track}"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  last-stack-host-track-artifact-invariant [--json] [--registry <path>]
+
+Checks the Host Track registry for artifact-install invariants. Checkout-backed
+apps must carry artifact_exemption.kind = deployment-only or bootstrap-recovery
+with owner and rationale.
+EOF
+}
+
+die() {
+  printf 'artifact-invariant: %s\n' "$*" >&2
+  exit 2
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json) json_out=1; shift ;;
+    --registry) [ "$#" -ge 2 ] || die "--registry requires a value"; registry="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    --*) die "unknown flag: $1" ;;
+    *) die "unexpected argument: $1" ;;
+  esac
+done
+
+command -v jq >/dev/null 2>&1 || die "jq is required"
+[ -x "$host_track_bin" ] || die "host-track binary is not executable: $host_track_bin"
+
+if [ -z "$registry" ]; then
+  if [ -f "$ROOT/config/host-track/apps.json" ]; then
+    registry="$ROOT/config/host-track/apps.json"
+  else
+    registry="$HOME/.local/share/last-stack/config/host-track/apps.json"
+  fi
+fi
+[ -f "$registry" ] || die "registry not found: $registry"
+
+expand_path() {
+  case "${1:-}" in
+    "") printf '\n' ;;
+    '$HOME') printf '%s\n' "$HOME" ;;
+    '$HOME'/*) printf '%s/%s\n' "$HOME" "${1#\$HOME/}" ;;
+    "~") printf '%s\n' "$HOME" ;;
+    "~"/*) printf '%s/%s\n' "$HOME" "${1#~/}" ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+hash_file() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    die "shasum or sha256sum is required"
+  fi
+}
+
+real_path() {
+  local path="$1" dir base target
+  if command -v realpath >/dev/null 2>&1; then
+    realpath "$path"
+    return
+  fi
+  while [ -L "$path" ]; do
+    dir="$(cd "$(dirname "$path")" && pwd -P)"
+    target="$(readlink "$path")"
+    case "$target" in
+      /*) path="$target" ;;
+      *) path="$dir/$target" ;;
+    esac
+  done
+  dir="$(cd "$(dirname "$path")" && pwd -P)"
+  base="$(basename "$path")"
+  printf '%s/%s\n' "$dir" "$base"
+}
+
+base64_decode() {
+  if printf '' | base64 --decode >/dev/null 2>&1; then
+    base64 --decode
+  else
+    base64 -D
+  fi
+}
+
+safe_artifact_relpath() {
+  local rel="$1"
+  [ -n "$rel" ] || return 1
+  case "$rel" in
+    /*|*\\*|*$'\n'*|*$'\r'*|*$'\t'*) return 1 ;;
+  esac
+  ! printf '%s\n' "$rel" | tr '/' '\n' | grep -qx '\.\.'
+}
+
+manifest_for() {
+  local app="$1" artifact_app="$2" channel="$3" artifact_root="$4" digest="$5"
+  local manifest_path
+  if command -v lastgit >/dev/null 2>&1; then
+    if lastgit artifact resolve --app "$artifact_app" --channel "$channel" --root "$artifact_root" --json 2>/dev/null; then
+      return
+    fi
+  fi
+  manifest_path="$artifact_root/manifests/$digest.json"
+  [ -f "$manifest_path" ] || return 1
+  cat "$manifest_path"
+}
+
+statuses="$(HOST_TRACK_REGISTRY="$registry" "$host_track_bin" status --json)"
+registry_apps="$(jq -c '.apps[]?' "$registry")"
+failures=()
+details=()
+
+add_failure() {
+  local app="$1" code="$2" message="$3"
+  failures+=("$app:$code")
+  details+=("$(jq -cn --arg app "$app" --arg code "$code" --arg message "$message" \
+    '{app:$app, ok:false, code:$code, message:$message}')")
+}
+
+add_ok() {
+  local app="$1" message="$2"
+  details+=("$(jq -cn --arg app "$app" --arg message "$message" \
+    '{app:$app, ok:true, message:$message}')")
+}
+
+while IFS= read -r app_json; do
+  [ -n "$app_json" ] || continue
+  app="$(printf '%s\n' "$app_json" | jq -r '.app // ""')"
+  [ -n "$app" ] || continue
+  status="$(printf '%s\n' "$statuses" | jq -c --arg app "$app" '.[]? | select(.app == $app)' | head -n 1)"
+  if [ -z "$status" ]; then
+    add_failure "$app" "missing-status" "host-track status did not include registry app"
+    continue
+  fi
+
+  install_mode="$(printf '%s\n' "$status" | jq -r '.install_mode // "checkout"')"
+  if [ "$install_mode" != "artifact" ]; then
+    exemption_kind="$(printf '%s\n' "$app_json" | jq -r '.artifact_exemption.kind // ""')"
+    exemption_owner="$(printf '%s\n' "$app_json" | jq -r '.artifact_exemption.owner // ""')"
+    exemption_rationale="$(printf '%s\n' "$app_json" | jq -r '.artifact_exemption.rationale // ""')"
+    case "$exemption_kind" in
+      deployment-only|bootstrap-recovery)
+        if [ -n "$exemption_owner" ] && [ -n "$exemption_rationale" ]; then
+          add_ok "$app" "checkout exempt: $exemption_kind"
+        else
+          add_failure "$app" "invalid-exemption" "checkout app exemption needs owner and rationale"
+        fi
+        ;;
+      *)
+        add_failure "$app" "checkout-without-exemption" "non-artifact app needs deployment-only or bootstrap-recovery exemption"
+        ;;
+    esac
+    continue
+  fi
+
+  stale="$(printf '%s\n' "$status" | jq -r '.stale | tostring')"
+  [ "$stale" = "false" ] || add_failure "$app" "stale" "artifact app is not fresh"
+
+  artifact_app="$(printf '%s\n' "$status" | jq -r '.artifact_app // ""')"
+  channel="$(printf '%s\n' "$status" | jq -r '.artifact_channel // ""')"
+  artifact_root="$(printf '%s\n' "$status" | jq -r '.artifact_root // ""')"
+  install_root="$(printf '%s\n' "$status" | jq -r '.install_root // ""')"
+  digest="$(printf '%s\n' "$status" | jq -r '.manifest_digest // ""')"
+  channel_digest="$(printf '%s\n' "$status" | jq -r '.channel_manifest_digest // ""')"
+  exec_path="$(printf '%s\n' "$status" | jq -r '.exec_path // ""')"
+
+  case "$channel" in stable|candidate|canary) ;; *) add_failure "$app" "invalid-channel" "artifact channel is not stable/candidate/canary" ;; esac
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || add_failure "$app" "invalid-manifest-digest" "manifest digest is missing or malformed"
+  [ "$digest" = "$channel_digest" ] || add_failure "$app" "channel-drift" "installed manifest differs from selected channel manifest"
+  [ -n "$artifact_app" ] || add_failure "$app" "missing-artifact-app" "artifact_app is missing"
+  [ -n "$artifact_root" ] && [ -d "$artifact_root" ] || add_failure "$app" "missing-artifact-root" "artifact root is missing"
+  [ -n "$install_root" ] && [ -d "$install_root" ] || add_failure "$app" "missing-install-root" "install root is missing"
+  [ -L "$install_root/current" ] || add_failure "$app" "missing-current" "current is not a symlink"
+  if [ -L "$install_root/current" ] && [ "$(readlink "$install_root/current")" != "versions/$digest" ]; then
+    add_failure "$app" "current-drift" "current symlink does not point at the installed manifest"
+  fi
+
+  if [ -n "$exec_path" ] && [ -n "$install_root" ] && [[ "$digest" =~ ^[0-9a-f]{64}$ ]]; then
+    resolved_exec="$(real_path "$exec_path" 2>/dev/null || true)"
+    immutable_prefix="$(real_path "$install_root/versions/$digest" 2>/dev/null || true)/"
+    case "$resolved_exec" in
+      "$immutable_prefix"*) ;;
+      *) add_failure "$app" "command-outside-immutable-version" "command path does not resolve inside versions/<manifest>" ;;
+    esac
+  else
+    add_failure "$app" "missing-command" "command path is missing"
+  fi
+
+  if [[ "$digest" =~ ^[0-9a-f]{64}$ ]] && [ -n "$artifact_app" ] && [ -n "$channel" ] && [ -n "$artifact_root" ]; then
+    if manifest="$(manifest_for "$app" "$artifact_app" "$channel" "$artifact_root" "$digest")"; then
+      repo="$(printf '%s\n' "$manifest" | jq -r '.repo // ""')"
+      source_oid="$(printf '%s\n' "$manifest" | jq -r '.source_oid // ""')"
+      [ -n "$repo" ] || add_failure "$app" "missing-repo-provenance" "manifest repo provenance is missing"
+      [[ "$source_oid" =~ ^[0-9a-f]{40}$ ]] || add_failure "$app" "missing-source-provenance" "manifest source_oid provenance is missing or malformed"
+
+      while IFS= read -r encoded; do
+        [ -n "$encoded" ] || continue
+        entry="$(printf '%s' "$encoded" | base64_decode)"
+        rel="$(printf '%s\n' "$entry" | jq -r '.path // ""')"
+        expected_sha="$(printf '%s\n' "$entry" | jq -r '.sha256 // ""')"
+        if ! safe_artifact_relpath "$rel"; then
+          add_failure "$app" "unsafe-payload-path" "manifest contains unsafe payload path"
+          continue
+        fi
+        if ! [[ "$expected_sha" =~ ^[0-9a-f]{64}$ ]]; then
+          add_failure "$app" "invalid-payload-hash" "manifest contains malformed payload hash"
+          continue
+        fi
+        active_file="$install_root/current/$rel"
+        if [ ! -f "$active_file" ] || [ -L "$active_file" ]; then
+          add_failure "$app" "missing-active-payload" "active payload file is missing or symlinked: $rel"
+          continue
+        fi
+        actual_sha="$(hash_file "$active_file")"
+        [ "$actual_sha" = "$expected_sha" ] || add_failure "$app" "payload-hash-drift" "active payload hash drifted: $rel"
+      done < <(printf '%s\n' "$manifest" | jq -r '.files[]? | @base64')
+    else
+      add_failure "$app" "manifest-unresolved" "selected channel manifest could not be resolved"
+    fi
+  fi
+
+  rollback_message="rollback proof: no previous version"
+  if [ -L "$install_root/previous" ]; then
+    previous_target="$(readlink "$install_root/previous")"
+    case "$previous_target" in
+      versions/*)
+        previous_digest="${previous_target#versions/}"
+        if [[ "$previous_digest" =~ ^[0-9a-f]{64}$ ]] && [ -f "$artifact_root/manifests/$previous_digest.json" ] && [ -d "$install_root/$previous_target" ]; then
+          rollback_message="rollback proof: previous version is restorable"
+        else
+          add_failure "$app" "invalid-rollback-target" "previous symlink target is not restorable"
+        fi
+        ;;
+      *) add_failure "$app" "invalid-rollback-target" "previous symlink does not point at versions/<manifest>" ;;
+    esac
+  fi
+
+  if [ "${#failures[@]}" -eq 0 ] || ! printf '%s\n' "${failures[@]}" | grep -q "^$app:"; then
+    add_ok "$app" "artifact fresh; provenance and hashes verified; $rollback_message"
+  fi
+done < <(printf '%s\n' "$registry_apps")
+
+lastdb_status="$(printf '%s\n' "$statuses" | jq -c '.[]? | select(.app == "lastdb")' | head -n 1)"
+lastdbd_status="$(printf '%s\n' "$statuses" | jq -c '.[]? | select(.app == "lastdbd")' | head -n 1)"
+if [ -n "$lastdb_status" ] && [ -n "$lastdbd_status" ]; then
+  lastdb_digest="$(printf '%s\n' "$lastdb_status" | jq -r '.manifest_digest // ""')"
+  lastdbd_digest="$(printf '%s\n' "$lastdbd_status" | jq -r '.manifest_digest // ""')"
+  lastdb_oid="$(printf '%s\n' "$lastdb_status" | jq -r '.host_head // ""')"
+  lastdbd_oid="$(printf '%s\n' "$lastdbd_status" | jq -r '.host_head // ""')"
+  [ "$lastdb_digest" = "$lastdbd_digest" ] || add_failure "lastdb,lastdbd" "bundle-identity-drift" "lastdb and lastdbd are not from the same manifest"
+  [ "$lastdb_oid" = "$lastdbd_oid" ] || add_failure "lastdb,lastdbd" "source-identity-drift" "lastdb and lastdbd are not from the same source oid"
+fi
+
+if [ "$json_out" -eq 1 ]; then
+  printf '%s\n' "${details[@]}" | jq -s --arg registry "$registry" --argjson ok "$([ "${#failures[@]}" -eq 0 ] && echo true || echo false)" \
+    '{ok:$ok, registry:$registry, checks:.}'
+else
+  if [ "${#failures[@]}" -eq 0 ]; then
+    printf 'ok: host-track artifact invariant holds for %s\n' "$registry"
+  else
+    printf 'FAIL: host-track artifact invariant found %s issue(s)\n' "${#failures[@]}" >&2
+    printf '%s\n' "${details[@]}" | jq -r 'select(.ok == false) | .app + ": " + .code + " - " + .message' >&2
+  fi
+fi
+
+[ "${#failures[@]}" -eq 0 ]
