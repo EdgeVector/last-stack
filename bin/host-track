@@ -590,7 +590,12 @@ refresh_app() {
 
   if [ "$force" -eq 0 ] && [ "$stale" = "false" ]; then
     printf 'host-track: %s already current\n' "$app"
-    write_stamp "$app" "$status"
+    # Artifact stamps are the provenance record written by artifact_install_app.
+    # Replacing one with the projected status shape drops source_oid and other
+    # manifest fields, so a no-op refresh must leave it intact.
+    if [ "$install_mode" != "artifact" ]; then
+      write_stamp "$app" "$status"
+    fi
     return 0
   fi
 
