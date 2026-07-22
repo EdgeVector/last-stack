@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Install/audit a small managed prelude in every ambient repo's existing Git
-# hooks without replacing repo-specific hook behavior.
+# Install/audit a managed prelude in every ambient repo's Git hooks without
+# replacing repo-specific hook bodies. WORKTREES-ONLY (Tom 2026-07-22).
 set -euo pipefail
 
 workspace="${LAST_STACK_SHARED_WORKSPACE:-$HOME/code/edgevector}"
@@ -16,14 +16,28 @@ esac
 [ "$#" -eq 0 ] || workspace="$1"
 
 start="# last-stack-shared-checkout-guard:start"
+end="# last-stack-shared-checkout-guard:end"
 failures=0
 count=0
 
+# Hooks that refuse ambient writes (worktrees pass the guard).
+HOOKS=(pre-commit pre-push pre-merge-commit pre-rebase prepare-commit-msg)
+
+strip_managed_block() {
+  # stdin -> stdout, remove managed prelude block; keep other lines.
+  awk -v start="$start" -v end="$end" '
+    $0 == start { skip=1; next }
+    $0 == end { skip=0; next }
+    !skip { print }
+  '
+}
+
 install_hook() {
-  local repo="$1" hook_name="$2" hooks_dir="$3" hook tmp
+  local repo="$1" hook_name="$2" hooks_dir="$3" hook tmp body shebang
   hook="$hooks_dir/$hook_name"
   if [ "$mode" = "audit" ]; then
-    if [ -f "$hook" ] && grep -Fq "$start" "$hook"; then
+    # Accept any installed guard path; re-install refreshes the absolute path.
+    if [ -f "$hook" ] && grep -Fq "$start" "$hook" && grep -Fq "last-stack-shared-checkout-guard" "$hook"; then
       return 0
     fi
     printf 'MISSING_GUARD repo=%s hook=%s\n' "$(basename "$repo")" "$hook_name"
@@ -31,27 +45,31 @@ install_hook() {
   fi
 
   mkdir -p "$hooks_dir"
-  if [ -f "$hook" ] && grep -Fq "$start" "$hook"; then
+  # Already installed with current guard path.
+  if [ -f "$hook" ] && grep -Fq "$start" "$hook" && grep -Fq "$guard" "$hook"; then
     chmod +x "$hook"
     return 0
   fi
 
+  shebang='#!/usr/bin/env bash'
+  body=""
+  if [ -f "$hook" ]; then
+    if head -1 "$hook" | grep -q '^#!'; then
+      shebang="$(head -1 "$hook")"
+      body="$(tail -n +2 "$hook" | strip_managed_block)"
+    else
+      body="$(strip_managed_block < "$hook")"
+    fi
+  fi
+
   tmp="$(mktemp "${TMPDIR:-/tmp}/last-stack-hook.XXXXXX")"
   {
-    if [ -f "$hook" ] && head -1 "$hook" | grep -q '^#!'; then
-      head -1 "$hook"
-    else
-      printf '#!/usr/bin/env bash\n'
-    fi
+    printf '%s\n' "$shebang"
     printf '%s\n' "$start"
     printf '"%s" %s || exit $?\n' "$guard" "$hook_name"
-    printf '# last-stack-shared-checkout-guard:end\n'
-    if [ -f "$hook" ]; then
-      if head -1 "$hook" | grep -q '^#!'; then
-        tail -n +2 "$hook"
-      else
-        cat "$hook"
-      fi
+    printf '%s\n' "$end"
+    if [ -n "$body" ]; then
+      printf '%s\n' "$body"
     fi
   } > "$tmp"
   mv "$tmp" "$hook"
@@ -68,6 +86,7 @@ install_hook() {
 }
 
 for repo in "$workspace"/*; do
+  # Ambient checkout only: real .git directory (linked worktrees use a .git file).
   [ -d "$repo/.git" ] || continue
   count=$((count + 1))
   hooks_dir="$(git -C "$repo" rev-parse --git-path hooks 2>/dev/null || true)"
@@ -75,12 +94,14 @@ for repo in "$workspace"/*; do
     /*) ;;
     *) hooks_dir="$repo/$hooks_dir" ;;
   esac
-  install_hook "$repo" pre-commit "$hooks_dir" || failures=$((failures + 1))
-  install_hook "$repo" pre-push "$hooks_dir" || failures=$((failures + 1))
+  for hook_name in "${HOOKS[@]}"; do
+    install_hook "$repo" "$hook_name" "$hooks_dir" || failures=$((failures + 1))
+  done
 done
 
 if [ "$failures" -ne 0 ]; then
   printf 'SHARED_CHECKOUT_GUARDS result=fail repos=%s missing=%s\n' "$count" "$failures" >&2
   exit 1
 fi
-printf 'SHARED_CHECKOUT_GUARDS result=ok mode=%s repos=%s\n' "$mode" "$count"
+printf 'SHARED_CHECKOUT_GUARDS result=ok mode=%s repos=%s hooks=%s\n' \
+  "$mode" "$count" "${#HOOKS[@]}"
