@@ -50,136 +50,144 @@
     },
     {
       "app": "brain",
-      "install_mode": "checkout",
-      "kind": "B local-safe",
+      "install_mode": "artifact",
+      "kind": "artifact-bundle",
       "command": "brain",
       "gate": "lastgit",
       "gate_main": "lastdb:///brain#main",
-      "gate_remote": "lastgit",
-      "gate_ref": "refs/heads/main",
-      "host_track": "$HOME/.host-track/apps/brain/current",
-      "refresh": "$HOME/.local/bin/last-stack-refresh-local-safe",
-      "refresh_args": ["brain"],
-      "artifact_exemption": {
-        "kind": "bootstrap-recovery",
-        "owner": "Tom",
-        "rationale": "Local safe-upgrade (versions/current/previous) until LastGit CAS channel is published. CI: last-stack-safe-upgrade-cli brain --source-dir $PWD."
-      },
-      "notes": "Local safe-upgrade under ~/.host-track/apps/brain. Upgrade: last-stack-safe-upgrade-cli brain. Rollback: last-stack-safe-activate-cli rollback --app brain --link bin/brain:$HOME/.local/bin/brain."
+      "artifact_app": "brain",
+      "artifact_channel": "stable",
+      "artifact_root": "$HOME/.lastgit/artifacts",
+      "install_root": "$HOME/.host-track/apps/brain",
+      "links": [
+        {
+          "source": "dist/brain",
+          "target": "$HOME/.local/bin/brain"
+        },
+        {
+          "source": "dist/fbrain",
+          "target": "$HOME/.local/bin/fbrain"
+        }
+      ],
+      "notes": "Verified Brain artifact install. PATH links brain and fbrain from the same artifact."
     },
     {
       "app": "situations",
-      "install_mode": "checkout",
-      "kind": "B local-safe",
+      "install_mode": "artifact",
+      "kind": "artifact-bundle",
       "command": "situations",
       "gate": "lastgit",
       "gate_main": "lastdb:///situations#main",
-      "gate_remote": "lastgit",
-      "gate_ref": "refs/heads/main",
-      "host_track": "$HOME/.host-track/apps/situations/current",
-      "refresh": "$HOME/.local/bin/last-stack-refresh-local-safe",
-      "refresh_args": ["situations"],
-      "artifact_exemption": {
-        "kind": "bootstrap-recovery",
-        "owner": "Tom",
-        "rationale": "Local safe-upgrade until CAS channel exists."
-      },
-      "notes": "Local safe-upgrade under ~/.host-track/apps/situations. PATH: situations + fsituations."
+      "artifact_app": "situations",
+      "artifact_channel": "stable",
+      "artifact_root": "$HOME/.lastgit/artifacts",
+      "install_root": "$HOME/.host-track/apps/situations",
+      "links": [
+        {
+          "source": "dist/situations",
+          "target": "$HOME/.local/bin/situations"
+        },
+        {
+          "source": "dist/fsituations",
+          "target": "$HOME/.local/bin/fsituations"
+        }
+      ],
+      "notes": "Verified Situations artifact install. PATH links situations and fsituations from the same artifact."
     },
     {
       "app": "kanban",
-      "install_mode": "checkout",
-      "kind": "B local-safe",
+      "install_mode": "artifact",
+      "kind": "artifact-bundle",
       "command": "kanban",
       "gate": "lastgit",
       "gate_main": "lastdb:///fkanban#main",
-      "gate_remote": "lastgit",
-      "gate_ref": "refs/heads/main",
-      "host_track": "$HOME/.host-track/apps/fkanban/current",
-      "refresh": "$HOME/.local/bin/last-stack-refresh-local-safe",
-      "refresh_args": ["fkanban"],
-      "artifact_exemption": {
-        "kind": "bootstrap-recovery",
-        "owner": "Tom",
-        "rationale": "Local safe-upgrade shared with fkanban until CAS channel exists."
-      },
-      "notes": "Shares install with fkanban at ~/.host-track/apps/fkanban. Upgrade via last-stack-safe-upgrade-cli fkanban."
+      "artifact_app": "fkanban",
+      "artifact_channel": "stable",
+      "artifact_root": "$HOME/.lastgit/artifacts",
+      "install_root": "$HOME/.host-track/apps/fkanban",
+      "links": [
+        {
+          "source": "dist/kanban",
+          "target": "$HOME/.local/bin/kanban"
+        }
+      ],
+      "notes": "Shares the verified fkanban artifact bundle with fkanban."
     },
     {
       "app": "fkanban",
-      "install_mode": "checkout",
-      "kind": "B local-safe",
+      "install_mode": "artifact",
+      "kind": "artifact-bundle",
       "command": "fkanban",
       "gate": "lastgit",
       "gate_main": "lastdb:///fkanban#main",
-      "gate_remote": "lastgit",
-      "gate_ref": "refs/heads/main",
-      "host_track": "$HOME/.host-track/apps/fkanban/current",
-      "refresh": "$HOME/.local/bin/last-stack-refresh-local-safe",
-      "refresh_args": ["fkanban"],
-      "artifact_exemption": {
-        "kind": "bootstrap-recovery",
-        "owner": "Tom",
-        "rationale": "Local safe-upgrade until CAS channel exists."
-      },
-      "notes": "Local safe-upgrade; PATH links kanban + fkanban."
+      "artifact_app": "fkanban",
+      "artifact_channel": "stable",
+      "artifact_root": "$HOME/.lastgit/artifacts",
+      "install_root": "$HOME/.host-track/apps/fkanban",
+      "links": [
+        {
+          "source": "dist/fkanban",
+          "target": "$HOME/.local/bin/fkanban"
+        }
+      ],
+      "notes": "Verified fkanban artifact install. The artifact also carries the kanban compatibility CLI."
     },
     {
       "app": "routines",
-      "install_mode": "checkout",
-      "kind": "B local-safe",
+      "install_mode": "artifact",
+      "kind": "artifact-bundle",
       "command": "routines",
       "gate": "lastgit",
       "gate_main": "lastdb:///routines#main",
-      "gate_remote": "lastgit",
-      "gate_ref": "refs/heads/main",
-      "host_track": "$HOME/.host-track/apps/routines/current",
-      "refresh": "$HOME/.local/bin/last-stack-refresh-local-safe",
-      "refresh_args": ["routines"],
-      "artifact_exemption": {
-        "kind": "bootstrap-recovery",
-        "owner": "Tom",
-        "rationale": "Local safe-upgrade after portal cutover."
-      },
-      "notes": "Local safe-upgrade under ~/.host-track/apps/routines."
+      "artifact_app": "routines",
+      "artifact_channel": "stable",
+      "artifact_root": "$HOME/.lastgit/artifacts",
+      "install_root": "$HOME/.host-track/apps/routines",
+      "links": [
+        {
+          "source": "dist/routines",
+          "target": "$HOME/.local/bin/routines"
+        }
+      ],
+      "notes": "Verified Routines artifact install."
     },
     {
       "app": "lastsecrets",
-      "install_mode": "checkout",
-      "kind": "B local-safe",
+      "install_mode": "artifact",
+      "kind": "artifact-bundle",
       "command": "lastsecrets",
       "gate": "lastgit",
       "gate_main": "lastdb:///lastsecrets#main",
-      "gate_remote": "lastgit",
-      "gate_ref": "refs/heads/main",
-      "host_track": "$HOME/.host-track/apps/lastsecrets/current",
-      "refresh": "$HOME/.local/bin/last-stack-refresh-local-safe",
-      "refresh_args": ["lastsecrets"],
-      "artifact_exemption": {
-        "kind": "bootstrap-recovery",
-        "owner": "Tom",
-        "rationale": "Local safe-upgrade after portal cutover."
-      },
-      "notes": "Local safe-upgrade under ~/.host-track/apps/lastsecrets."
+      "artifact_app": "lastsecrets",
+      "artifact_channel": "stable",
+      "artifact_root": "$HOME/.lastgit/artifacts",
+      "install_root": "$HOME/.host-track/apps/lastsecrets",
+      "links": [
+        {
+          "source": "dist/lastsecrets",
+          "target": "$HOME/.local/bin/lastsecrets"
+        }
+      ],
+      "notes": "Verified LastSecrets artifact install."
     },
     {
       "app": "configurations",
-      "install_mode": "checkout",
-      "kind": "B local-safe",
+      "install_mode": "artifact",
+      "kind": "artifact-bundle",
       "command": "configurations",
       "gate": "lastgit",
       "gate_main": "lastdb:///configurations#main",
-      "gate_remote": "lastgit",
-      "gate_ref": "refs/heads/main",
-      "host_track": "$HOME/.host-track/apps/configurations/current",
-      "refresh": "$HOME/.local/bin/last-stack-refresh-local-safe",
-      "refresh_args": ["configurations"],
-      "artifact_exemption": {
-        "kind": "bootstrap-recovery",
-        "owner": "Tom",
-        "rationale": "Local safe-upgrade after portal cutover."
-      },
-      "notes": "Local safe-upgrade under ~/.host-track/apps/configurations."
+      "artifact_app": "configurations",
+      "artifact_channel": "stable",
+      "artifact_root": "$HOME/.lastgit/artifacts",
+      "install_root": "$HOME/.host-track/apps/configurations",
+      "links": [
+        {
+          "source": "dist/configurations",
+          "target": "$HOME/.local/bin/configurations"
+        }
+      ],
+      "notes": "Verified Configurations artifact install."
     },
     {
       "app": "lastdb",
