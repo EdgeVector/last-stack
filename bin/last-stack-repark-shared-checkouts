@@ -234,3 +234,32 @@ EOF
   $GIT -C "$d" worktree prune 2>/dev/null
 done
 exit 0
+
+# --- Portal bare caches (LastGit portals under workspace) ---
+# Portals have no .git directory, so the ambient loop skips them. Keep their
+# bare object stores at venue tip so `bin/wt start` is fast and fresh.
+if [ "${REPARK_SKIP_PORTALS:-0}" != "1" ]; then
+  for portal in "$WS"/*; do
+    [ -f "$portal/.portal/remote" ] || continue
+    [ -f "$portal/.portal/cache" ] || continue
+    slug=$(basename "$portal")
+    cache=$(tr -d '[:space:]' <"$portal/.portal/cache")
+    remote=$(tr -d '[:space:]' <"$portal/.portal/remote")
+    [ -n "$cache" ] && [ -n "$remote" ] || continue
+    if [ "$DRY" = 1 ]; then
+      note "portal:$slug" "dry-run: would fetch $remote → $cache"
+      continue
+    fi
+    if [ ! -d "$cache" ]; then
+      flag "portal:$slug" "cache missing: $cache"
+      continue
+    fi
+    if $GIT -C "$cache" fetch --prune --quiet origin "+refs/heads/main:refs/heads/main" 2>/dev/null \
+      || $GIT -C "$cache" fetch --prune --quiet "$remote" "+refs/heads/main:refs/heads/main" 2>/dev/null; then
+      tip=$($GIT -C "$cache" rev-parse --short refs/heads/main 2>/dev/null || echo "?")
+      note "portal:$slug" "cache@$tip"
+    else
+      flag "portal:$slug" "cache fetch failed from $remote"
+    fi
+  done
+fi

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Portal-local wrapper: always bound to this portal directory.
+set -euo pipefail
+PORTAL="$(cd "$(dirname "$0")/.." && pwd -P)"
+export PORTAL_DIR="$PORTAL"
+exec last-stack-portal-wt --portal "$PORTAL" "$@"

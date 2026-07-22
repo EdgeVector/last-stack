@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+# last-stack-portal-wt — worktree entrypoint for EdgeVector *portals*
+# (thin dirs under ~/code/edgevector/<slug> that are NOT product checkouts).
+#
+# Usage (from a portal, or with --portal):
+#   last-stack-portal-wt start <branch-or-slug>   # fetch venue tip + worktree
+#   last-stack-portal-wt list
+#   last-stack-portal-wt path
+#   last-stack-portal-wt rm <worktree-name>
+#   last-stack-portal-wt fetch
+set -euo pipefail
+
+GIT="${GIT:-/usr/bin/git}"
+CACHE_ROOT="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}"
+WT_ROOT="${WORKTREES_DIR:-$HOME/.fkanban/worktrees}"
+
+die() { printf 'portal-wt: %s\n' "$*" >&2; exit 1; }
+
+find_portal() {
+  local d="${PORTAL_DIR:-}"
+  if [ -n "$d" ] && [ -f "$d/.portal/remote" ]; then
+    printf '%s\n' "$(cd "$d" && pwd -P)"
+    return
+  fi
+  d="$(pwd -P)"
+  while [ "$d" != "/" ]; do
+    if [ -f "$d/.portal/remote" ]; then
+      printf '%s\n' "$d"
+      return
+    fi
+    d="$(dirname "$d")"
+  done
+  return 1
+}
+
+read_portal() {
+  PORTAL="$(find_portal)" || die "not inside a portal (no .portal/remote); pass --portal <dir>"
+  SLUG="$(tr -d '[:space:]' <"$PORTAL/.portal/slug" 2>/dev/null || basename "$PORTAL")"
+  REMOTE="$(tr -d '[:space:]' <"$PORTAL/.portal/remote")"
+  VENUE="$(tr -d '[:space:]' <"$PORTAL/.portal/venue" 2>/dev/null || echo lastgit)"
+  CACHE="$(tr -d '[:space:]' <"$PORTAL/.portal/cache" 2>/dev/null || true)"
+  [ -n "$CACHE" ] || CACHE="$CACHE_ROOT/${SLUG}.git"
+  MAIN_REF="${PORTAL_MAIN_REF:-main}"
+}
+
+ensure_cache() {
+  mkdir -p "$(dirname "$CACHE")"
+  if [ ! -d "$CACHE" ]; then
+    printf 'portal-wt: cloning bare cache %s ← %s\n' "$CACHE" "$REMOTE" >&2
+    $GIT clone --bare --quiet "$REMOTE" "$CACHE"
+    $GIT -C "$CACHE" config remote.origin.fetch "+refs/heads/*:refs/heads/*" 2>/dev/null || true
+  fi
+  # Always refresh main tip before starting work
+  printf 'portal-wt: fetch %s (%s)\n' "$REMOTE" "$MAIN_REF" >&2
+  $GIT -C "$CACHE" fetch --prune --quiet origin \
+    "+refs/heads/${MAIN_REF}:refs/heads/${MAIN_REF}" 2>/dev/null \
+    || $GIT -C "$CACHE" fetch --prune --quiet origin "$MAIN_REF" 2>/dev/null \
+    || $GIT -C "$CACHE" fetch --prune --quiet "$REMOTE" \
+         "+refs/heads/${MAIN_REF}:refs/heads/${MAIN_REF}"
+  $GIT -C "$CACHE" rev-parse --verify -q "refs/heads/${MAIN_REF}" >/dev/null \
+    || die "no ${MAIN_REF} after fetch from $REMOTE"
+}
+
+cmd_fetch() {
+  read_portal
+  ensure_cache
+  tip="$($GIT -C "$CACHE" rev-parse --short "refs/heads/${MAIN_REF}")"
+  printf 'portal-wt: %s %s @ %s\n' "$SLUG" "$MAIN_REF" "$tip"
+}
+
+cmd_path() {
+  read_portal
+  printf 'portal=%s\nslug=%s\nremote=%s\nvenue=%s\ncache=%s\nworktrees=%s\n' \
+    "$PORTAL" "$SLUG" "$REMOTE" "$VENUE" "$CACHE" "$WT_ROOT"
+}
+
+cmd_list() {
+  read_portal
+  if [ -d "$CACHE" ]; then
+    $GIT -C "$CACHE" worktree list
+  else
+    printf 'portal-wt: no cache yet at %s (run: wt start …)\n' "$CACHE" >&2
+  fi
+}
+
+cmd_rm() {
+  read_portal
+  local name="${1:-}"
+  [ -n "$name" ] || die "usage: wt rm <worktree-dir-name>"
+  local path="$WT_ROOT/$name"
+  [ -e "$path" ] || path="$name"
+  [ -e "$path" ] || die "worktree not found: $name"
+  ensure_cache
+  $GIT -C "$CACHE" worktree remove --force "$path" 2>/dev/null \
+    || rm -rf "$path"
+  $GIT -C "$CACHE" worktree prune 2>/dev/null || true
+  printf 'portal-wt: removed %s\n' "$path"
+}
+
+cmd_start() {
+  read_portal
+  local spec="${1:-}"
+  [ -n "$spec" ] || die "usage: wt start <branch-name-or-card-slug>"
+  # Accept kanban/foo or bare slug → branch kanban/slug if no slash
+  local branch="$spec"
+  case "$branch" in
+    */*) ;;
+    *) branch="kanban/$branch" ;;
+  esac
+  local name
+  name="$(printf '%s' "$branch" | tr '/' '-')"
+  # prefix with slug for uniqueness across portals
+  name="${SLUG}-${name}"
+  local path="$WT_ROOT/$name"
+
+  ensure_cache
+  mkdir -p "$WT_ROOT"
+
+  if [ -e "$path" ]; then
+    printf 'portal-wt: worktree already exists\n%s\n' "$path"
+    exit 0
+  fi
+
+  if $GIT -C "$CACHE" show-ref --verify --quiet "refs/heads/$branch"; then
+    $GIT -C "$CACHE" worktree add --quiet "$path" "$branch"
+  else
+    $GIT -C "$CACHE" worktree add --quiet -b "$branch" "$path" "refs/heads/${MAIN_REF}"
+  fi
+
+  # Drop a small marker so agents know this is the work surface
+  printf 'portal=%s\nslug=%s\nbranch=%s\ncreated=%s\n' \
+    "$PORTAL" "$SLUG" "$branch" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    >"$path/.portal-worktree"
+
+  printf 'portal-wt: ready\n'
+  printf '  portal  %s\n' "$PORTAL"
+  printf '  cache   %s\n' "$CACHE"
+  printf '  branch  %s\n' "$branch"
+  printf '  path    %s\n' "$path"
+  printf 'WORK ONLY IN THE PATH ABOVE. Do not edit the portal directory.\n' >&2
+}
+
+# --- arg parse ---
+cmd=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --portal)
+      PORTAL_DIR="${2:-}"
+      [ -n "$PORTAL_DIR" ] || die "--portal needs a directory"
+      shift 2
+      ;;
+    start|list|path|rm|fetch)
+      cmd="$1"
+      shift
+      break
+      ;;
+    -h|--help)
+      sed -n '2,12p' "$0" | tr -d '#'
+      exit 0
+      ;;
+    *)
+      die "unknown arg: $1 (try start|list|path|rm|fetch)"
+      ;;
+  esac
+done
+[ -n "$cmd" ] || die "usage: last-stack-portal-wt [--portal DIR] start|list|path|rm|fetch …"
+
+case "$cmd" in
+  start) cmd_start "$@" ;;
+  list) cmd_list ;;
+  path) cmd_path ;;
+  rm) cmd_rm "$@" ;;
+  fetch) cmd_fetch ;;
+esac
