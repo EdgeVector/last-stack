@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+# last-stack-post-merge-safe-upgrade — after a LastGit CR merges to main, run
+# local safe-upgrade for mapped agent CLIs. CI stays pure; this is install-only.
+#
+# Pattern mirrors lastgit `.lastgit/notify-discord.sh --all`:
+#   one fleet open-CR index read → detect open→gone → point-view → if merged
+#   to main and repo is mapped → last-stack-safe-upgrade-cli <app>
+#
+# Failure does NOT unmerge. Logs + leaves CR un-recorded so next poll retries
+# (capped by LAST_STACK_POST_MERGE_MAX_ATTEMPTS, default 3).
+#
+# Usage:
+#   last-stack-post-merge-safe-upgrade --all [<state-dir>]
+#   last-stack-post-merge-safe-upgrade --once --all [<state-dir>]
+#   last-stack-post-merge-safe-upgrade --map   # print repo→app map
+#
+# Env:
+#   LAST_STACK_POST_MERGE_INTERVAL   poll seconds (default 20)
+#   LAST_STACK_POST_MERGE_STATE_DIR  default ~/.lastgit/post-merge-safe-upgrade
+#   LAST_STACK_POST_MERGE_TIMEOUT    seconds per upgrade (default 600)
+#   LAST_STACK_POST_MERGE_MAX_ATTEMPTS  retries per CR (default 3)
+#   LAST_STACK_POST_MERGE_DRY_RUN=1  log only
+set -euo pipefail
+
+ONCE=0
+MODE=""
+STATE_DIR=""
+SHOW_MAP=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --once) ONCE=1; shift ;;
+    --all) MODE=all; shift ;;
+    --map) SHOW_MAP=1; shift ;;
+    -h|--help)
+      sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    --) shift; break ;;
+    -*)
+      echo "post-merge-safe-upgrade: unknown flag: $1" >&2
+      exit 2
+      ;;
+    *)
+      if [ -z "$STATE_DIR" ]; then STATE_DIR=$1; shift
+      else
+        echo "post-merge-safe-upgrade: unexpected arg: $1" >&2
+        exit 2
+      fi
+      ;;
+  esac
+done
+
+# repo slug → safe-upgrade-cli app name (empty = skip)
+# Only LastGit-venue agent CLIs that use local-safe installs.
+map_repo_to_app() {
+  case "$1" in
+    brain) printf 'brain\n' ;;
+    situations) printf 'situations\n' ;;
+    fkanban|kanban) printf 'fkanban\n' ;;
+    routines) printf 'routines\n' ;;
+    lastsecrets) printf 'lastsecrets\n' ;;
+    configurations) printf 'configurations\n' ;;
+    *) printf '\n' ;;
+  esac
+}
+
+if [ "$SHOW_MAP" = 1 ]; then
+  for r in brain situations fkanban kanban routines lastsecrets configurations; do
+    printf '%-16s -> %s\n' "$r" "$(map_repo_to_app "$r")"
+  done
+  exit 0
+fi
+
+[ "$MODE" = "all" ] || {
+  echo "usage: last-stack-post-merge-safe-upgrade --all [<state-dir>] [--once]" >&2
+  exit 2
+}
+
+STATE_DIR="${STATE_DIR:-${LAST_STACK_POST_MERGE_STATE_DIR:-$HOME/.lastgit/post-merge-safe-upgrade}}"
+INTERVAL="${LAST_STACK_POST_MERGE_INTERVAL:-20}"
+UPGRADE_TIMEOUT="${LAST_STACK_POST_MERGE_TIMEOUT:-600}"
+MAX_ATTEMPTS="${LAST_STACK_POST_MERGE_MAX_ATTEMPTS:-3}"
+DRY_RUN="${LAST_STACK_POST_MERGE_DRY_RUN:-0}"
+
+UPGRADE_BIN="$(command -v last-stack-safe-upgrade-cli 2>/dev/null || true)"
+if [ -z "$UPGRADE_BIN" ] && [ -x "$HOME/.local/bin/last-stack-safe-upgrade-cli" ]; then
+  UPGRADE_BIN="$HOME/.local/bin/last-stack-safe-upgrade-cli"
+fi
+if [ -z "$UPGRADE_BIN" ] && [ -x "$HOME/.last-stack/bin/last-stack-safe-upgrade-cli" ]; then
+  UPGRADE_BIN="$HOME/.last-stack/bin/last-stack-safe-upgrade-cli"
+fi
+
+timeout_bin=""
+if command -v timeout >/dev/null 2>&1; then
+  timeout_bin="timeout"
+elif command -v gtimeout >/dev/null 2>&1; then
+  timeout_bin="gtimeout"
+fi
+
+mkdir -p "$STATE_DIR"
+LOG="${LAST_STACK_POST_MERGE_LOG:-$STATE_DIR/post-merge.log}"
+
+log() {
+  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG" >&2
+}
+
+fleet_open_path() { printf '%s/fleet.open\n' "$STATE_DIR"; }
+handled_path() { printf '%s/%s.handled\n' "$STATE_DIR" "$1"; }
+attempts_path() { printf '%s/%s.attempts\n' "$STATE_DIR" "$1"; }
+
+attempt_count() {
+  # $1=repo $2=cr_id
+  local f
+  f="$(attempts_path "$1")"
+  [ -f "$f" ] || { printf '0\n'; return; }
+  awk -v id="$2" '$1==id {c=$2} END{print c+0}' "$f"
+}
+
+bump_attempt() {
+  local repo="$1" id="$2" f tmp c
+  f="$(attempts_path "$repo")"
+  mkdir -p "$(dirname "$f")"
+  touch "$f"
+  c="$(attempt_count "$repo" "$id")"
+  c=$((c + 1))
+  tmp="$(mktemp)"
+  awk -v id="$id" -v c="$c" '
+    $1==id {next}
+    {print}
+    END {print id, c}
+  ' "$f" >"$tmp"
+  mv "$tmp" "$f"
+  printf '%s\n' "$c"
+}
+
+mark_handled() {
+  local repo="$1" id="$2" f
+  f="$(handled_path "$repo")"
+  mkdir -p "$(dirname "$f")"
+  touch "$f"
+  grep -qx "$id" "$f" 2>/dev/null && return 0
+  printf '%s\n' "$id" >>"$f"
+}
+
+is_handled() {
+  local repo="$1" id="$2" f
+  f="$(handled_path "$repo")"
+  [ -f "$f" ] && grep -qx "$id" "$f" 2>/dev/null
+}
+
+run_upgrade() {
+  local app="$1" repo="$2" id="$3"
+  if [ ! -x "$UPGRADE_BIN" ]; then
+    log "ERROR: last-stack-safe-upgrade-cli not found; cannot upgrade $app for $repo $id"
+    return 1
+  fi
+  if [ "$DRY_RUN" = 1 ]; then
+    log "DRY_RUN: would upgrade app=$app repo=$repo cr=$id"
+    return 0
+  fi
+  log "upgrading app=$app repo=$repo cr=$id …"
+  if [ -n "$timeout_bin" ]; then
+    "$timeout_bin" "$UPGRADE_TIMEOUT" "$UPGRADE_BIN" "$app"
+  else
+    "$UPGRADE_BIN" "$app"
+  fi
+}
+
+handle_departure() {
+  # $1=repo $2=cr_id  (left the open set)
+  local repo="$1" id="$2" view state base app attempts
+  is_handled "$repo" "$id" && return 0
+
+  app="$(map_repo_to_app "$repo")"
+  if [ -z "$app" ]; then
+    # Not a local-safe agent CLI — ignore permanently
+    mark_handled "$repo" "$id"
+    return 0
+  fi
+
+  view="$(lastgit cr view "$repo" "$id" --json 2>/dev/null || printf '{}')"
+  state="$(printf '%s' "$view" | jq -r '.state // empty')"
+  if [ "$state" != "merged" ]; then
+    # closed without merge — don't upgrade, don't retry forever
+    mark_handled "$repo" "$id"
+    log "skip $repo $id state=$state (not merged)"
+    return 0
+  fi
+
+  base="$(printf '%s' "$view" | jq -r '.base_ref // .base_branch // empty' | sed 's#^refs/heads/##')"
+  if [ -n "$base" ] && [ "$base" != "main" ]; then
+    mark_handled "$repo" "$id"
+    log "skip $repo $id base=$base (not main)"
+    return 0
+  fi
+
+  if run_upgrade "$app" "$repo" "$id"; then
+    mark_handled "$repo" "$id"
+    log "OK upgraded app=$app after $repo $id"
+    return 0
+  fi
+
+  attempts="$(bump_attempt "$repo" "$id")"
+  log "FAIL upgrade app=$app repo=$repo cr=$id attempt=$attempts/$MAX_ATTEMPTS"
+  if [ "$attempts" -ge "$MAX_ATTEMPTS" ]; then
+    mark_handled "$repo" "$id"
+    log "GIVE_UP app=$app repo=$repo cr=$id after $attempts attempts (main stays merged; run manually: last-stack-safe-upgrade-cli $app)"
+  fi
+  return 0
+}
+
+poll_fleet() {
+  local open_path tmp_open key repo id
+  mkdir -p "$STATE_DIR"
+  open_path="$(fleet_open_path)"
+  tmp_open="$(mktemp "${TMPDIR:-/tmp}/post-merge-open.XXXXXX")"
+
+  if ! lastgit cr list --all-open --json 2>/dev/null \
+      | jq -r '.[] | "\(.repo):\(.cr_id)"' \
+      | sort -u >"$tmp_open"; then
+    log "fleet open list failed; skipping pass"
+    rm -f "$tmp_open"
+    return 0
+  fi
+
+  if [ ! -f "$open_path" ]; then
+    # Cold seed: do not upgrade historical merges
+    mv "$tmp_open" "$open_path"
+    log "seeded fleet open set ($(grep -c . "$open_path" 2>/dev/null || echo 0) open CRs; no upgrades)"
+    return 0
+  fi
+
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    if grep -qx "$key" "$tmp_open" 2>/dev/null; then
+      continue
+    fi
+    repo="${key%%:*}"
+    id="${key#*:}"
+    [ -n "$repo" ] && [ -n "$id" ] || continue
+    handle_departure "$repo" "$id" || true
+  done <"$open_path"
+
+  mv "$tmp_open" "$open_path"
+}
+
+log "start mode=all state_dir=$STATE_DIR interval=${INTERVAL}s once=$ONCE upgrade=${UPGRADE_BIN:-MISSING} dry_run=$DRY_RUN"
+
+if [ "$ONCE" = 1 ]; then
+  poll_fleet
+  exit 0
+fi
+
+while true; do
+  poll_fleet || true
+  sleep "$INTERVAL"
+done
