@@ -160,6 +160,51 @@ bin/last-stack-artifact-host-track-proof
 Refresh stamps are written under `~/.host-track/stamps/<app>.json`, or under
 `HOST_TRACK_STAMP_DIR` when set.
 
+## Local safe-upgrade (no cloud) — agent CLIs
+
+For machine-local CI (Forgejo/LastGit on this Mac), you do **not** need to push
+artifacts to Exemem/R2. Build a new immutable version, smoke it, then flip
+`current` while keeping `previous` for rollback.
+
+Layout (same shape as artifact installs):
+
+```text
+~/.host-track/apps/<app>/
+  versions/<git-sha>/    # immutable built tree
+  current  -> versions/<sha>
+  previous -> versions/<old-sha>
+~/.local/bin/<cmd> -> …/current/bin/<cmd>
+```
+
+### Tools
+
+```bash
+# Build from lastgit/bare cache tip, smoke, activate (PATH flip only after smoke)
+last-stack-safe-upgrade-cli brain
+
+# CI last step on a green main checkout (all local):
+last-stack-safe-upgrade-cli brain --source-dir "$PWD"
+
+# Status / rollback
+last-stack-safe-activate-cli status --app brain
+last-stack-safe-activate-cli rollback --app brain \
+  --link "bin/brain:$HOME/.local/bin/brain"
+```
+
+Safe properties:
+
+1. Smoke runs with `PATH=<new-version>/bin:…` **before** `current` moves.
+2. `previous` always retains the last good version after a successful flip.
+3. Install trees are not work surfaces — develop via portals + `wt start`.
+
+`host-track refresh brain` calls `last-stack-refresh-brain-local-safe` →
+`last-stack-safe-upgrade-cli brain` (registry entry). LaunchAgent
+`com.edgevector.host-track-refresh` will pick this up on its poll once the
+registry is live.
+
+Brain is the dogfood app (2026-07-22). Same tool supports situations, routines,
+lastsecrets, configurations.
+
 ## Refresh Agent
 
 `./setup` installs a user LaunchAgent named
