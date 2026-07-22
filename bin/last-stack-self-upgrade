@@ -115,6 +115,50 @@ emit() {
   printf ' %s\n' "$*"
 }
 
+# One rule: the *live install* (compat root / artifact tree) is upgraded only
+# via host-track. Fixture checkouts and repo worktrees still use git self-upgrade.
+# Compare resolved paths (macOS /var vs /private/var).
+compat_root="${LAST_STACK_COMPAT_ROOT:-$HOME/.last-stack}"
+compat_root_res="$(cd "$compat_root" 2>/dev/null && pwd -P || printf '%s\n' "$compat_root")"
+is_live_install_root=0
+case "$ROOT" in
+  "$compat_root"|"$compat_root"/*|"$compat_root_res"|"$compat_root_res"/*) is_live_install_root=1 ;;
+  */.last-stack/.artifacts/*|*/.artifacts/versions/*|*/.artifacts/current*|*/.last-stack) is_live_install_root=1 ;;
+esac
+# Basename fallback: any path ending in /.last-stack is the owner install root.
+case "$ROOT" in
+  */.last-stack) is_live_install_root=1 ;;
+esac
+if [ "$is_live_install_root" -eq 1 ]; then
+  if command -v host-track >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    _ht_mode="$(host-track status --json last-stack 2>/dev/null | jq -r '.install_mode // empty' 2>/dev/null || true)"
+    if [ "$_ht_mode" = "artifact" ]; then
+      emit "result=artifact-runtime remediation=host-track-refresh-last-stack"
+      echo "Last Stack is Host Track artifact-backed. Use: host-track refresh last-stack" >&2
+      echo "Do not git-pull or edit ~/.last-stack; develop in an isolated worktree." >&2
+      exit 0
+    fi
+  fi
+  case "$ROOT" in
+    */.artifacts/versions/*|*/.artifacts/current*|*/.artifacts/*)
+      emit "result=artifact-runtime remediation=host-track-refresh-last-stack"
+      echo "Last Stack resolved under an artifact tree. Use: host-track refresh last-stack" >&2
+      exit 0
+      ;;
+  esac
+  compat_bin="$compat_root/bin"
+  if [ -L "$compat_bin" ]; then
+    _link="$(readlink "$compat_bin" 2>/dev/null || true)"
+    case "$_link" in
+      */.artifacts/current/bin|*/.artifacts/current/bin/)
+        emit "result=artifact-runtime remediation=host-track-refresh-last-stack"
+        echo "Last Stack compatibility layout is active. Use: host-track refresh last-stack" >&2
+        exit 0
+        ;;
+    esac
+  fi
+fi
+
 if ! git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   emit "result=error-not-git root=$ROOT"
   exit 1

@@ -1,11 +1,30 @@
 #!/bin/sh
 # Read a routine prompt through one guarded path: freshness first, then file read.
-# When the install is behind origin, attempt a clean-only self-upgrade before
-# failing closed — so scheduled routines recover without a human once the tree
-# is clean.
+#
+# One rule: when Last Stack is Host Track artifact-backed, the only upgrade path
+# is `host-track refresh last-stack`. Git self-upgrade / dirty-tree repair is
+# never used for that runtime (agents must develop in a worktree, not ~/.last-stack).
+#
+# Legacy checkout installs still attempt clean/self-upgrade before failing closed.
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+
+# True when compatibility layout is active (bin → .artifacts/current/bin) or the
+# resolved root already lives under the artifact versions tree.
+is_artifact_runtime() {
+  case "$ROOT" in
+    */.last-stack/.artifacts/*|*/.artifacts/versions/*|*/.artifacts/current*) return 0 ;;
+  esac
+  compat_bin="${LAST_STACK_COMPAT_ROOT:-$HOME/.last-stack}/bin"
+  if [ -L "$compat_bin" ]; then
+    link="$(readlink "$compat_bin" 2>/dev/null || true)"
+    case "$link" in
+      */.artifacts/current/bin|*/.artifacts/current/bin/) return 0 ;;
+    esac
+  fi
+  return 1
+}
 
 if [ "$#" -ne 1 ]; then
   echo "usage: last-stack-routine-read <routine-name>" >&2
@@ -135,10 +154,26 @@ defer_fetch_failed_upgrade() {
   exit 75
 }
 
-if [ "${LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK:-0}" != "1" ] && \
+# Artifact runtime only for the *live* install tree (never fixture worktrees).
+# When active: host-track refresh only — never git self-upgrade / dirty-tree heal.
+artifact_mode=0
+live_install=0
+compat_root="${LAST_STACK_COMPAT_ROOT:-$HOME/.last-stack}"
+compat_res="$(cd "$compat_root" 2>/dev/null && pwd -P || printf '%s\n' "$compat_root")"
+case "$ROOT" in
+  "$compat_root"|"$compat_root"/*|"$compat_res"|"$compat_res"/*) live_install=1 ;;
+  */.last-stack/.artifacts/*|*/.artifacts/versions/*|*/.artifacts/current*|*/.last-stack) live_install=1 ;;
+esac
+if is_artifact_runtime; then
+  live_install=1
+fi
+
+if { [ "$live_install" -eq 1 ] || [ "${LASTSTACK_USE_HOST_TRACK_STATUS:-0}" = "1" ]; } && \
+   [ "${LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK:-0}" != "1" ] && \
    command -v host-track >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
   artifact_status="$(host-track status --json last-stack 2>/dev/null || true)"
   if [ "$(printf '%s\n' "$artifact_status" | jq -r '.install_mode // ""' 2>/dev/null)" = "artifact" ]; then
+    artifact_mode=1
     artifact_stale="$(printf '%s\n' "$artifact_status" | jq -r '.stale | tostring' 2>/dev/null)"
     if [ "$artifact_stale" = "true" ]; then
       update_status="$("$ROOT/bin/last-stack-update-check" 2>/dev/null || true)"
@@ -160,6 +195,12 @@ if [ "${LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK:-0}" != "1" ] && \
     clear_fetch_fail_streak
     LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1
   fi
+fi
+
+if [ "$live_install" -eq 1 ] && [ "$artifact_mode" -eq 0 ] && is_artifact_runtime; then
+  # Layout active but host-track status unavailable — still refuse git heal.
+  artifact_mode=1
+  LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1
 fi
 
 if [ "${LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK:-0}" != "1" ] && [ -x "$ROOT/bin/last-stack-update-check" ]; then
@@ -228,9 +269,14 @@ fi
 routine_path="$ROOT/routines/$routine.md"
 if [ ! -r "$routine_path" ]; then
   echo "LAST_STACK_ROUTINE_MISSING routine=$routine path=$routine_path" >&2
-  echo "The installed Last Stack checkout does not contain this routine prompt." >&2
-  echo "If the install is clean, run: \"$ROOT/bin/last-stack-self-upgrade\"" >&2
-  echo "Or: cd \"$ROOT\" && git pull --ff-only && ./setup" >&2
+  echo "The installed Last Stack runtime does not contain this routine prompt." >&2
+  if [ "$artifact_mode" -eq 1 ] || is_artifact_runtime; then
+    echo "Remediation: host-track refresh last-stack" >&2
+    echo "Develop routine prompts in a last-stack worktree, not under ~/.last-stack." >&2
+  else
+    echo "If the install is clean, run: \"$ROOT/bin/last-stack-self-upgrade\"" >&2
+    echo "Or: cd \"$ROOT\" && git pull --ff-only && ./setup" >&2
+  fi
   exit 66
 fi
 

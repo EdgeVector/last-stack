@@ -2,6 +2,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+# Ambient agent env can point LASTSTACK_REMOTE_REPO at lastgit; fixtures only
+# have origin. Clear Host Track / remote overrides so this test stays git-path.
+unset LASTSTACK_REMOTE_REPO LASTSTACK_REMOTE_URL LASTSTACK_USE_HOST_TRACK_STATUS \
+  LASTSTACK_SELF_UPGRADE_SKIP LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK 2>/dev/null || true
 tmp="$(mktemp -d)"
 cleanup() {
   rm -rf "$tmp"
