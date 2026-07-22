@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Target fleet — EdgeVector routines</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./ev-house.css" />
+  <style>
+    .page-doc.map-wide { max-width: 980px; }
+    .before-after {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin: 0.8em 0;
+    }
+    @media (max-width: 720px) { .before-after { grid-template-columns: 1fr; } }
+    .ba-col {
+      border: 1px solid var(--border);
+      background: var(--bg);
+    }
+    .ba-col h3 {
+      margin: 0;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-code);
+    }
+    .ba-col.before h3 { color: var(--term-red); }
+    .ba-col.after h3 { color: var(--term-green); }
+    .ba-col .body { padding: 10px 12px; }
+    .ba-col ul { margin: 0.2em 0 0; padding-left: 1.15em; color: var(--fg-dim); }
+    .ba-col li { margin: 0.25em 0; }
+    .ba-col .big {
+      font-size: 28px; font-weight: 700; color: var(--fg-strong);
+      line-height: 1.1; margin: 0 0 4px;
+    }
+    .ba-col .sub { color: var(--fg-muted); font-size: 12px; margin: 0 0 8px; }
+
+    /* Target 4 jobs */
+    .jobs {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+      margin: 0.8em 0;
+    }
+    @media (max-width: 720px) { .jobs { grid-template-columns: 1fr; } }
+    .job {
+      border: 1px solid var(--border);
+      border-top-width: 3px;
+      padding: 10px 12px;
+      background: var(--bg);
+    }
+    .job.j1 { border-top-color: var(--term-purple); }
+    .job.j2 { border-top-color: var(--term-green); }
+    .job.j3 { border-top-color: var(--term-orange); }
+    .job.j4 { border-top-color: var(--term-blue); }
+    .job .n {
+      font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--fg-muted);
+    }
+    .job .t { font-weight: 700; color: var(--fg-strong); margin: 2px 0 6px; font-size: 14px; }
+    .job .d { color: var(--fg-dim); font-size: 13px; margin: 0 0 8px; }
+    .job .engines {
+      font-size: 12px; color: var(--fg);
+      border-top: 1px dashed var(--border-light);
+      padding-top: 8px; margin-top: 4px;
+    }
+    .job code { font-size: 0.92em; }
+
+    /* Ladder */
+    .ladder {
+      border: 1px solid var(--border);
+      background: var(--bg-code);
+      padding: 12px 14px;
+      margin: 0.6em 0;
+      line-height: 1.6;
+      overflow-x: auto;
+      white-space: pre;
+    }
+    .ladder .ok { color: var(--term-green); font-weight: 700; }
+    .ladder .no { color: var(--term-red); font-weight: 700; }
+    .ladder .dim { color: var(--fg-muted); }
+
+    /* Fate table */
+    .ev-table.fate { font-size: 12px; }
+    .ev-table.fate td.keep { color: var(--term-green); font-weight: 700; white-space: nowrap; }
+    .ev-table.fate td.fold { color: var(--term-blue); font-weight: 700; white-space: nowrap; }
+    .ev-table.fate td.pause { color: var(--term-yellow); font-weight: 700; white-space: nowrap; }
+    .ev-table.fate td.drop { color: var(--term-red); font-weight: 700; white-space: nowrap; }
+    .ev-table.fate td.back { color: var(--term-aqua); font-weight: 700; white-space: nowrap; }
+    .ev-table.fate code { font-size: 0.92em; }
+
+    /* Phases */
+    .phase-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin: 0.8em 0;
+    }
+    @media (max-width: 800px) { .phase-grid { grid-template-columns: 1fr; } }
+    .phase {
+      border: 1px solid var(--border);
+      padding: 10px 12px;
+      background: var(--bg);
+    }
+    .phase .w {
+      font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
+      text-transform: uppercase; color: var(--accent);
+    }
+    .phase h3 {
+      margin: 2px 0 8px; font-size: 14px; font-weight: 700;
+      text-transform: none; letter-spacing: 0; color: var(--fg-strong);
+    }
+    .phase ul { margin: 0; padding-left: 1.1em; color: var(--fg-dim); font-size: 13px; }
+    .phase li { margin: 0.25em 0; }
+
+    /* Mini map */
+    .map-frame {
+      border: 1px solid var(--border);
+      background: var(--bg);
+      overflow-x: auto;
+      margin: 0.8em 0;
+    }
+    .map-frame svg { display: block; width: 100%; min-width: 720px; height: auto; }
+    .map-frame figcaption {
+      font-size: 12px; color: var(--fg-muted);
+      padding: 6px 10px; border-top: 1px solid var(--border-light);
+      letter-spacing: 0.04em; text-transform: uppercase;
+    }
+
+    .keep-list {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin: 0.6em 0;
+    }
+    @media (max-width: 600px) { .keep-list { grid-template-columns: 1fr; } }
+    .keep-item {
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--term-green);
+      padding: 8px 10px;
+      background: var(--bg);
+    }
+    .keep-item strong { display: block; color: var(--fg-strong); }
+    .keep-item span { color: var(--fg-dim); font-size: 12px; }
+
+    .sticky-toc {
+      position: sticky; top: 0; z-index: 5;
+      background: color-mix(in srgb, var(--bg) 92%, transparent);
+      backdrop-filter: blur(6px);
+      border-bottom: 1px solid var(--border);
+      margin: 0 -16px 12px;
+      padding: 8px 16px;
+    }
+    .sticky-toc a { margin-right: 12px; font-size: 12px; }
+    .count-pill {
+      display: inline-block;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: var(--accent);
+    }
+  </style>
+</head>
+<body>
+  <div class="page-doc map-wide">
+    <p class="doc-kicker">EdgeVector · last-stack · target fleet</p>
+    <h1 class="doc-title">Target fleet — simplify without losing overnight ship</h1>
+    <p class="doc-lede">
+      One page: the mental model Tom should hold, the ~12 named jobs that replace ~30 routines,
+      fate of every current routine (keep / fold / pause / drop), and a two-week cut plan.
+      This is the target operator view; live registration details stay in <a href="../routines/README.md">routines/README.md</a>.
+    </p>
+    <div class="meta-row">
+      <span class="meta-item"><strong>Goal</strong> fewer names, same guards</span>
+      <span class="meta-item"><strong>Spine</strong> Generate · Claim · Reconcile</span>
+      <span class="meta-item"><strong>Freeze</strong> no new engines (prefer rotator / miner)</span>
+      <span class="meta-item"><strong>As of</strong> 2026-07-22</span>
+    </div>
+
+    <nav class="sticky-toc" aria-label="Sections">
+      <a href="#before-after">Before → after</a>
+      <a href="#four-jobs">Four jobs</a>
+      <a href="#ladder">One ladder</a>
+      <a href="#target-map">Target map</a>
+      <a href="#fate">Fate table</a>
+      <a href="#keep">Don’t cut</a>
+      <a href="#plan">2-week plan</a>
+    </nav>
+
+    <div class="ascii-rule" aria-hidden="true"></div>
+
+    <!-- 01 Before / after -->
+    <section class="section-default" id="before-after">
+      <h2><span class="section-num">01</span> Before → after</h2>
+      <div class="before-after">
+        <div class="ba-col before">
+          <h3>Today (hard to manage)</h3>
+          <div class="body">
+            <p class="big">~30</p>
+            <p class="sub">named scheduled routines</p>
+            <ul>
+              <li>Two hierarchy stories (milestone <em>and</em> feature-owner)</li>
+              <li>3–4 routines each for “close board” and “unstick merge”</li>
+              <li>Many generators that look peer-equal to pickup</li>
+              <li><code>program-driver</code> still in the zoo (paused)</li>
+              <li>Full graph only legible as a poster</li>
+            </ul>
+          </div>
+        </div>
+        <div class="ba-col after">
+          <h3>Target (operator view)</h3>
+          <div class="body">
+            <p class="big">4 + thin</p>
+            <p class="sub">named jobs · ~12 engines under the hood</p>
+            <ul>
+              <li><strong>One</strong> execution ladder per intent</li>
+              <li><strong>One</strong> claim path (<code>kanban-pickup</code>)</li>
+              <li><strong>One</strong> board-close story + <strong>one</strong> merge story</li>
+              <li>Papercuts: brain only → reconciler (unchanged rule)</li>
+              <li>Fleet: upgrade + disk + one deadman</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+      <div class="callout info">
+        <strong>Principle</strong>
+        Collapse <em>names and schedules</em>, not safety. Proof gates, papercut monopoly,
+        pickup-only shipping, and self-upgrade stay. Complexity cost is LLM judgment sprawl
+        and overlapping cadences — not LaunchAgents.
+      </div>
+    </section>
+
+    <!-- 02 Four jobs -->
+    <section class="section-default" id="four-jobs">
+      <h2><span class="section-num">02</span> What Tom memorizes — four jobs</h2>
+      <div class="jobs">
+        <div class="job j1">
+          <div class="n">Job 1 · Generate</div>
+          <div class="t">Drive outcomes onto the board</div>
+          <p class="d">Turn intent into a frontier of <code>Kind: pr</code> work. Never implement product code.</p>
+          <div class="engines">
+            <strong>Engines:</strong>
+            outcome driver (milestone <em>or</em> feature materialize) ·
+            <code>groom-board</code> ·
+            <code>papercut-reconciler</code> ·
+            optional signal/probe rotator entries
+          </div>
+        </div>
+        <div class="job j2">
+          <div class="n">Job 2 · Claim</div>
+          <div class="t">Ship code</div>
+          <p class="d">The only product implementer. Isolated worktree → CR/PR → merged.</p>
+          <div class="engines">
+            <strong>Engine:</strong>
+            <code>kanban-pickup</code> (+ workers) · skill <code>kanban-agent</code> WORK ·
+            idle smart-heal only when no driving feature
+          </div>
+        </div>
+        <div class="job j3">
+          <div class="n">Job 3 · Reconcile</div>
+          <div class="t">Unblock merge · close board · prove product</div>
+          <p class="d">Merged + deploy/proof gates → done. Stuck CI/CR → heal or P0. False-done forbidden.</p>
+          <div class="engines">
+            <strong>Surfaces:</strong>
+            <code>pipeline-health</code> (owns merge-babysit + daily drain) ·
+            <code>board-reconcile</code> (watch + closeout + validate + reaper) ·
+            <code>feature-prove</code> / milestone proof
+          </div>
+        </div>
+        <div class="job j4">
+          <div class="n">Job 4 · Intake friction</div>
+          <div class="t">Self-heal the factory inputs</div>
+          <p class="d">Friction becomes clustered work, not board noise. Fleet stays alive overnight.</p>
+          <div class="engines">
+            <strong>Engines:</strong>
+            Brain papercuts only · reconciler clusters ·
+            <code>self-upgrade</code> · disk · one deadman/factory observer ·
+            morning REAL_HUMAN only
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 03 Ladder -->
+    <section class="section-default" id="ladder">
+      <h2><span class="section-num">03</span> One ladder per intent (not five)</h2>
+      <p class="dim">
+        One hierarchy only (2026-07-22). Feature Ship Loop creates a ship-mode
+        North Star with terminal proof; drivers own milestones and cards.
+      </p>
+      <div class="ladder"><span class="ok">KEEP</span>  Brain North Star          <span class="dim">Mode: ship | steady · End state · Terminal verification</span>
+<span class="ok">SHIP</span>  Feature Ship Loop         <span class="dim">creates/reuses ship NS + MILESTONE_REQUEST</span>
+<span class="ok">THEN</span>  Milestone                 <span class="dim">north-star-driver · never pickup</span>
+<span class="ok">THEN</span>  Kind: pr + proof card     <span class="dim">milestone-driver · pickup ships PRs</span>
+<span class="ok">ONE</span>   Terminal product proof    <span class="dim">feature-prove · not "all PRs merged"</span>
+
+<span class="no">DROP</span>  feature-owner cards       <span class="dim">retired 2026-07-22 · do not file new ones</span>
+<span class="no">DROP</span>  program-driver             <span class="dim">superseded · paused</span>
+<span class="no">DROP</span>  Tracker / umbrella cards   <span class="dim">preference-kanban-no-trackers</span></div>
+      <div class="grid-2">
+        <div class="card">
+          <span class="label label-purple">Door · Feature wish</span>
+          <p class="bold">Tom product wish / ship-feature</p>
+          <p class="dim">Create or reuse a <strong>ship</strong> North Star with terminal proof → milestone → PR frontier. Same hierarchy as strategic NS work.</p>
+        </div>
+        <div class="card">
+          <span class="label label-blue">Door · Existing NS</span>
+          <p class="bold">Strategic push on a live North Star</p>
+          <p class="dim"><code>MILESTONE_REQUEST</code> + drivers only. Never invent a parallel feature-owner tree.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 04 Target map -->
+    <section class="section-default" id="target-map">
+      <h2><span class="section-num">04</span> Target map (operator view)</h2>
+      <figure class="map-frame">
+        <svg viewBox="0 0 900 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Target fleet map">
+          <defs>
+            <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#7c6f64"/>
+            </marker>
+            <style>
+              .b { fill: #fbf6ec; stroke: #cfc5b5; stroke-width: 1; }
+              .b-p { fill: #f5eef3; stroke: #8f3f71; }
+              .b-g { fill: #eef5f6; stroke: #076678; }
+              .b-c { fill: #eef4ef; stroke: #427b58; }
+              .b-r { fill: #f7f0e8; stroke: #af3a03; }
+              .b-h { fill: #f7f3e8; stroke: #b57614; }
+              .b-u { fill: #f7eeee; stroke: #9d0006; }
+              .t { font-family: 'IBM Plex Mono', ui-monospace, monospace; fill: #28221f; }
+              .tt { font-size: 12px; font-weight: 700; }
+              .ts { font-size: 10px; fill: #7c6f64; }
+              .tl { font-size: 10px; font-weight: 700; letter-spacing: 0.08em; fill: #076678; }
+              .e { fill: none; stroke: #7c6f64; stroke-width: 1.2; marker-end: url(#arr); }
+              .ed { stroke-dasharray: 4 3; }
+            </style>
+          </defs>
+
+          <text class="t tl" x="24" y="28">TARGET FLEET — 4 JOBS</text>
+
+          <!-- Job 1 -->
+          <rect class="b-p" x="24" y="48" width="160" height="70" rx="2"/>
+          <text class="t tt" x="36" y="72">Tom / Brain intent</text>
+          <text class="t ts" x="36" y="90">North Star · design</text>
+          <text class="t ts" x="36" y="104">ship-feature approve</text>
+
+          <rect class="b-g" x="220" y="40" width="200" height="86" rx="2"/>
+          <text class="t tt" x="232" y="62">1 · GENERATE</text>
+          <text class="t ts" x="232" y="80">outcome driver (MS | FO)</text>
+          <text class="t ts" x="232" y="94">groom-board · papercut-rec</text>
+          <text class="t ts" x="232" y="108">probe/signal rotator entries</text>
+
+          <rect class="b-c" x="460" y="40" width="180" height="86" rx="2"/>
+          <text class="t tt" x="472" y="62">2 · CLAIM</text>
+          <text class="t ts" x="472" y="80">kanban-pickup workers</text>
+          <text class="t ts" x="472" y="94">ONLY product shipper</text>
+          <text class="t ts" x="472" y="108">worktree → merged PR</text>
+
+          <rect class="b-r" x="680" y="40" width="196" height="86" rx="2"/>
+          <text class="t tt" x="692" y="62">3 · RECONCILE</text>
+          <text class="t ts" x="692" y="80">pipeline-health (merge+)</text>
+          <text class="t ts" x="692" y="94">board-reconcile (close+)</text>
+          <text class="t ts" x="692" y="108">feature-prove / MS proof</text>
+
+          <path class="e" d="M184 83 H220"/>
+          <path class="e" d="M420 83 H460"/>
+          <path class="e" d="M640 83 H680"/>
+
+          <!-- Job 4 loop -->
+          <rect class="b-h" x="24" y="170" width="280" height="100" rx="2"/>
+          <text class="t tt" x="36" y="194">4 · FRICTION INTAKE</text>
+          <text class="t ts" x="36" y="214">session / dogfood / CI pain</text>
+          <text class="t ts" x="36" y="228">→ Brain papercut-* only</text>
+          <text class="t ts" x="36" y="242">→ papercut-reconciler clusters</text>
+          <text class="t ts" x="36" y="256">→ pattern PR cards → Job 2</text>
+
+          <rect class="b-h" x="340" y="170" width="260" height="100" rx="2"/>
+          <text class="t tt" x="352" y="194">FLEET KEEP-ALIVE</text>
+          <text class="t ts" x="352" y="214">self-upgrade (install FF)</text>
+          <text class="t ts" x="352" y="228">disk-reclaim (+ worktrees)</text>
+          <text class="t ts" x="352" y="242">one deadman / factory-health</text>
+          <text class="t ts" x="352" y="256">heartbeats (filesystem only)</text>
+
+          <rect class="b-u" x="640" y="170" width="236" height="100" rx="2"/>
+          <text class="t tt" x="652" y="194">TOM SURFACE</text>
+          <text class="t ts" x="652" y="214">approve plan once</text>
+          <text class="t ts" x="652" y="228">morning REAL_HUMAN only</text>
+          <text class="t ts" x="652" y="242">open-decisions · Situations</text>
+          <text class="t ts" x="652" y="256">evening ship-preflight</text>
+
+          <path class="e ed" d="M164 270 V300 H540 V126"/>
+          <path class="e ed" d="M470 170 V140"/>
+
+          <!-- Under the hood strip -->
+          <rect class="b" x="24" y="300" width="852" height="96" rx="2"/>
+          <text class="t tl" x="36" y="322">UNDER THE HOOD (not separate mental products)</text>
+          <text class="t ts" x="36" y="344">board-reconcile = board-closeout₀LLM + kanban-watch + kanban-validate + card-reaper</text>
+          <text class="t ts" x="36" y="360">pipeline-health = merge-babysit + daily drain-open-prs mode + mechanical CI heal</text>
+          <text class="t ts" x="36" y="376">brain-sync = program-rollup + north-star-rollup + consolidate (daily) + hygiene as needed</text>
+          <text class="t ts" x="36" y="392">rotator/miner = dogfood · sentry · smokes · self-improvement as profiles, not peer “products”</text>
+        </svg>
+        <figcaption>Fig — Target operator view. Dashed = feedback / enablement, not second ship path.</figcaption>
+      </figure>
+    </section>
+
+    <!-- 05 Fate table -->
+    <section class="section-default" id="fate">
+      <h2><span class="section-num">05</span> Fate of every current routine</h2>
+      <p class="dim">
+        <span class="count-pill">KEEP</span> named &amp; scheduled ·
+        <span class="count-pill">FOLD</span> into another surface (pause schedule first) ·
+        <span class="count-pill">BACK</span> zero-LLM / internal step ·
+        <span class="count-pill">PAUSE</span> registry off ·
+        <span class="count-pill">DROP</span> remove from ops docs / delete when cold
+      </p>
+      <div style="overflow-x:auto">
+        <table class="ev-table fate">
+          <thead>
+            <tr>
+              <th>Routine</th>
+              <th>Fate</th>
+              <th>Becomes</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>kanban-pickup</code></td>
+              <td class="keep">KEEP</td>
+              <td>Job 2 (sole claim)</td>
+              <td>Workers ok; one conceptual engine</td>
+            </tr>
+            <tr>
+              <td><code>groom-board</code></td>
+              <td class="keep">KEEP</td>
+              <td>Job 1 promote/prune</td>
+              <td>Daily; never ships</td>
+            </tr>
+            <tr>
+              <td><code>papercut-reconciler</code></td>
+              <td class="keep">KEEP</td>
+              <td>Job 4 → Job 1 bridge</td>
+              <td>Sole papercut→card filer; load-bearing</td>
+            </tr>
+            <tr>
+              <td><code>north-star-driver</code></td>
+              <td class="keep">KEEP*</td>
+              <td>Job 1 Door B</td>
+              <td>*Only if NS-scale work is active</td>
+            </tr>
+            <tr>
+              <td><code>milestone-driver</code></td>
+              <td class="keep">KEEP*</td>
+              <td>Job 1 Door B</td>
+              <td>*Pairs with NS door; not for every feature</td>
+            </tr>
+            <tr>
+              <td><code>feature-prove</code></td>
+              <td class="keep">KEEP</td>
+              <td>Job 3 product proof</td>
+              <td>Or fold as mode of board-reconcile later</td>
+            </tr>
+            <tr>
+              <td><code>pipeline-health</code></td>
+              <td class="keep">KEEP (expand)</td>
+              <td>Job 3 merge surface</td>
+              <td>Absorbs babysit + drain modes</td>
+            </tr>
+            <tr>
+              <td><code>merge-babysit</code></td>
+              <td class="fold">FOLD</td>
+              <td>→ pipeline-health hot path</td>
+              <td>Pause separate schedule after merge</td>
+            </tr>
+            <tr>
+              <td><code>drain-open-prs</code></td>
+              <td class="fold">FOLD</td>
+              <td>→ pipeline-health daily mode</td>
+              <td>Wide scan, not a second product</td>
+            </tr>
+            <tr>
+              <td><code>kanban-watch</code></td>
+              <td class="fold">FOLD name</td>
+              <td>→ board-reconcile (LLM)</td>
+              <td>Keep prompt; rename in ops/docs</td>
+            </tr>
+            <tr>
+              <td><code>board-closeout</code></td>
+              <td class="back">BACK</td>
+              <td>0-LLM step of board-reconcile</td>
+              <td>Keep LaunchAgent; not a peer concept</td>
+            </tr>
+            <tr>
+              <td><code>kanban-validate</code></td>
+              <td class="fold">FOLD</td>
+              <td>→ board-reconcile sub-pass</td>
+              <td>Post-merge END STATE once/wake budget</td>
+            </tr>
+            <tr>
+              <td><code>card-reaper</code></td>
+              <td class="fold">FOLD</td>
+              <td>→ closeout / reaper binary</td>
+              <td>Already deterministic; hide from zoo</td>
+            </tr>
+            <tr>
+              <td><code>self-upgrade</code></td>
+              <td class="keep">KEEP</td>
+              <td>Fleet keep-alive</td>
+              <td>Class A; prefer 0-LLM LaunchAgent</td>
+            </tr>
+            <tr>
+              <td><code>disk-reclaim</code></td>
+              <td class="keep">KEEP</td>
+              <td>Fleet keep-alive</td>
+              <td>May absorb worktree prune hourly bits</td>
+            </tr>
+            <tr>
+              <td><code>worktree-cleanup</code></td>
+              <td class="fold">FOLD</td>
+              <td>→ disk/skill daily mode</td>
+              <td>Or keep weekly if still noisy</td>
+            </tr>
+            <tr>
+              <td><code>factory-health</code></td>
+              <td class="keep">KEEP one</td>
+              <td>Fleet observer</td>
+              <td>Merge with fleet-health into one notifier</td>
+            </tr>
+            <tr>
+              <td><code>routine-fleet-health</code></td>
+              <td class="fold">FOLD</td>
+              <td>→ factory-health / deadman</td>
+              <td>One “is the factory alive?” surface</td>
+            </tr>
+            <tr>
+              <td><code>morning-sync</code></td>
+              <td class="keep">KEEP</td>
+              <td>Tom surface</td>
+              <td>Read-only REAL_HUMAN briefing</td>
+            </tr>
+            <tr>
+              <td><code>human-gate-audit</code></td>
+              <td class="keep">KEEP</td>
+              <td>Job 3 / Tom prep</td>
+              <td>False-gate cleanup; daily ok</td>
+            </tr>
+            <tr>
+              <td><code>program-rollup</code></td>
+              <td class="fold">FOLD</td>
+              <td>→ brain-sync hourly</td>
+              <td>Same delimited-block pattern</td>
+            </tr>
+            <tr>
+              <td><code>north-star-rollup</code></td>
+              <td class="fold">FOLD</td>
+              <td>→ brain-sync hourly</td>
+              <td>Dashboard section of same pass</td>
+            </tr>
+            <tr>
+              <td><code>consolidate-brain</code></td>
+              <td class="fold">FOLD</td>
+              <td>→ brain-sync daily heavy</td>
+              <td>Status honesty / archive</td>
+            </tr>
+            <tr>
+              <td><code>north-star-hygiene</code></td>
+              <td class="fold">FOLD</td>
+              <td>→ brain-sync or weekly</td>
+              <td>Orphans only when detected</td>
+            </tr>
+            <tr>
+              <td><code>dogfood-rotate</code></td>
+              <td class="fold">FOLD name</td>
+              <td>rotator profile</td>
+              <td>Keep cadence; not a peer product</td>
+            </tr>
+            <tr>
+              <td><code>sentry-triage</code></td>
+              <td class="fold">FOLD</td>
+              <td>signal-triage rotator</td>
+              <td>Brain registry of sources</td>
+            </tr>
+            <tr>
+              <td><code>self-improvement-loop</code></td>
+              <td class="fold">FOLD</td>
+              <td>session-miner profile</td>
+              <td>Daily tooling upgrades</td>
+            </tr>
+            <tr>
+              <td><code>llms-txt-install-smoke</code></td>
+              <td class="fold">FOLD</td>
+              <td>probe-registry entry</td>
+              <td>Recipe + pass assertion</td>
+            </tr>
+            <tr>
+              <td><code>mini-cutover-health</code></td>
+              <td class="fold">FOLD</td>
+              <td>probe-registry entry</td>
+              <td>Or pause if NS inactive</td>
+            </tr>
+            <tr>
+              <td><code>devops-continuous-improvement</code></td>
+              <td class="fold">FOLD</td>
+              <td>pipeline daily / infra rotator</td>
+              <td>One bounded DevOps unit/day max</td>
+            </tr>
+            <tr>
+              <td><code>repark-shared-checkouts</code></td>
+              <td class="pause">PAUSE</td>
+              <td>hygiene skill only</td>
+              <td>Unless thrash returns</td>
+            </tr>
+            <tr>
+              <td><code>program-driver</code></td>
+              <td class="drop">DROP</td>
+              <td>—</td>
+              <td>Already superseded; remove from ops</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout good">
+        <strong>Target named schedule set (operator-facing)</strong>
+        <code>kanban-pickup</code> ·
+        <code>groom-board</code> ·
+        <code>papercut-reconciler</code> ·
+        <code>north-star-driver</code> + <code>milestone-driver</code> (if NS active) ·
+        <code>pipeline-health</code> ·
+        <code>board-reconcile</code> ·
+        <code>feature-prove</code> ·
+        <code>self-upgrade</code> ·
+        <code>disk-reclaim</code> ·
+        <code>factory-health</code> ·
+        <code>morning-sync</code> ·
+        <code>human-gate-audit</code> ·
+        <code>brain-sync</code> ·
+        rotator profiles (dogfood / signal / miner / probes) as registry entries, not a zoo of peers.
+      </div>
+    </section>
+
+    <!-- 06 Don't cut -->
+    <section class="section-default" id="keep">
+      <h2><span class="section-num">06</span> Do not simplify these away</h2>
+      <div class="keep-list">
+        <div class="keep-item">
+          <strong>Pickup-only claim</strong>
+          <span>Multiple shippers thrash worktrees and timeboxes</span>
+        </div>
+        <div class="keep-item">
+          <strong>Papercut → Brain only</strong>
+          <span>Reconciler monopoly prevented board drowning</span>
+        </div>
+        <div class="keep-item">
+          <strong>Proof ≠ merged</strong>
+          <span>feature-prove / MS proof / validate / Requires-Deploy</span>
+        </div>
+        <div class="keep-item">
+          <strong>self-upgrade</strong>
+          <span>Class A silent outages from stale install</span>
+        </div>
+        <div class="keep-item">
+          <strong>Frontier budget</strong>
+          <span>Idle papercuts must not starve active NS/MS feature frontiers</span>
+        </div>
+        <div class="keep-item">
+          <strong>Situations preflight</strong>
+          <span>Stops “fixing” deliberate freezes (e.g. cloud-sync)</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 07 Plan -->
+    <section class="section-default" id="plan">
+      <h2><span class="section-num">07</span> Two-week cut plan</h2>
+      <div class="phase-grid">
+        <div class="phase">
+          <div class="w">Week 1 · Docs &amp; registry</div>
+          <h3>No behavior risk</h3>
+          <ul>
+            <li>Mark <code>program-driver</code> DROP in README + registry paused</li>
+            <li>Docs: pipeline-health owns babysit + drain</li>
+            <li>Docs: board-reconcile = watch + closeout + validate + reaper</li>
+            <li>Ship this page as the operator cheat sheet</li>
+            <li>Cap concurrent driving FO/MS (policy line)</li>
+          </ul>
+        </div>
+        <div class="phase">
+          <div class="w">Week 2 · Schedules</div>
+          <h3>Pause duplicates</h3>
+          <ul>
+            <li>Pause separate merge-babysit / drain if pipeline covers</li>
+            <li>Single close cadence; closeout stays 0-LLM always-on</li>
+            <li>Merge factory + fleet-health notify into one</li>
+            <li>Fold rollups into one brain-sync schedule</li>
+            <li>Verify heartbeats green for 3+ days</li>
+          </ul>
+        </div>
+        <div class="phase">
+          <div class="w">Later · Engines</div>
+          <h3>Portability design</h3>
+          <ul>
+            <li>Shared rotator / session-miner engines</li>
+            <li>Probes as registry entries (smoke, mini-health)</li>
+            <li>Delete cold prompts after a green week</li>
+            <li>Still: freeze novel engines without Tom go</li>
+          </ul>
+        </div>
+      </div>
+      <div class="callout warn">
+        <strong>Order of operations</strong>
+        Pause schedules before deleting prompts. Prefer dual-run (old + new heartbeat)
+        for one cycle on merge/close paths. Never touch primary brain to “clean up” routines.
+      </div>
+    </section>
+
+    <section class="section-default" id="related">
+      <h2><span class="section-num">08</span> Related</h2>
+      <ul>
+        <li><a href="../routines/README.md">Routine fleet README</a> (live operator guidance)</li>
+        <li><code>docs/routines-kanban/</code> — pickup readiness detail (older guide)</li>
+        <li>Brain: <code>preference-freeze-new-routine-engines</code>, <code>design-routine-fleet-portability</code>, <code>preference-tom-high-autonomy-operating-system</code>, <code>sop-feature-ship-loop</code></li>
+        <li>Operator: <code>last-stack-ship-preflight</code> · <code>kanban pickup explain</code> · <code>last-stack-fleet-deadman</code></li>
+      </ul>
+    </section>
+
+    <footer class="doc-footer">
+      Generated 2026-07-22 · EdgeVector house CSS ·
+      <code>docs/routines-target-fleet.html</code> ·
+      target mental model, not yet the live registry state
+    </footer>
+  </div>
+</body>
+</html>
