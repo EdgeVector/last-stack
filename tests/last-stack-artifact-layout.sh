@@ -3,7 +3,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 tmp="$(mktemp -d)"
-cleanup() { rm -rf "$tmp"; }
+cleanup() {
+  # Frozen artifact trees are chmod a-w; restore write so mktemp cleanup works.
+  chmod -R u+w "$tmp" 2>/dev/null || true
+  rm -rf "$tmp"
+}
 trap cleanup EXIT
 
 fail() {
@@ -64,5 +68,13 @@ backup="$(printf '%s\n' "$result" | sed -n 's/.* backup=\([^ ]*\).*/\1/p')"
 
 second="$(LAST_STACK_LAYOUT_BACKUP_ROOT="$backup_root" "$ROOT/bin/last-stack-activate-artifact-layout")"
 printf '%s\n' "$second" | grep -q 'moved=0' || fail "repeat activation was not idempotent"
+printf '%s\n' "$second" | grep -q 'frozen=' || fail "activation did not report frozen version tree"
+
+# One rule: active version tree is not writable (agents cannot hand-edit).
+resolved="$(cd "$install_root/current" && pwd -P)"
+if touch "$resolved/bin/.write-should-fail" 2>/dev/null; then
+  rm -f "$resolved/bin/.write-should-fail"
+  fail "active artifact version tree remained writable after activation"
+fi
 
 printf 'ok: Last Stack artifact compatibility layout\n'

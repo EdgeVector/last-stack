@@ -20,6 +20,18 @@ TTL=3600  # seconds
 artifact_update_check() {
   command -v host-track >/dev/null 2>&1 || return 1
   command -v jq >/dev/null 2>&1 || return 1
+  # Only apply Host Track status to the live install / artifact tree — never to
+  # fixture checkouts or development worktrees (those use the git path below).
+  # Tests may set LASTSTACK_USE_HOST_TRACK_STATUS=1 to force this path.
+  if [ "${LASTSTACK_USE_HOST_TRACK_STATUS:-0}" != "1" ]; then
+    compat_root="${LAST_STACK_COMPAT_ROOT:-$HOME/.last-stack}"
+    compat_res="$(cd "$compat_root" 2>/dev/null && pwd -P || printf '%s\n' "$compat_root")"
+    case "$ROOT" in
+      "$compat_root"|"$compat_root"/*|"$compat_res"|"$compat_res"/*) ;;
+      */.last-stack/.artifacts/*|*/.artifacts/versions/*|*/.artifacts/current*|*/.last-stack) ;;
+      *) return 1 ;;
+    esac
+  fi
   artifact_status="$(host-track status --json last-stack 2>/dev/null || true)"
   [ "$(printf '%s\n' "$artifact_status" | jq -r '.install_mode // ""' 2>/dev/null)" = "artifact" ] || return 1
   stale="$(printf '%s\n' "$artifact_status" | jq -r '.stale | tostring' 2>/dev/null)"

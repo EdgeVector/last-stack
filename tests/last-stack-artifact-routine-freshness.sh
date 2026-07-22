@@ -12,6 +12,7 @@ fail() {
 }
 
 export HOST_TRACK_TEST_STATE="$tmp/refreshed"
+export LASTSTACK_USE_HOST_TRACK_STATUS=1
 export PATH="$tmp/bin:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
 mkdir -p "$tmp/bin"
 cat > "$tmp/bin/host-track" <<'SH'

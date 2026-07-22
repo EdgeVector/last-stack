@@ -525,6 +525,16 @@ artifact_install_app() {
     mv "$stage" "$target"
   fi
 
+  # Last Stack only: freeze the installed version tree so agents cannot
+  # hand-edit product files through ~/.last-stack compatibility symlinks.
+  # Other artifact apps keep normal modes (post_install / binaries may need +w
+  # bits from the manifest only).
+  if [ "$app" = "last-stack" ] && [ -d "$target" ]; then
+    chmod u+w "$target" 2>/dev/null || true
+    find "$target" \( -type f -o -type d \) -exec chmod a-w {} + 2>/dev/null || \
+      find "$target" \( -type f -o -type d \) -exec chmod a-w {} \; 2>/dev/null || true
+  fi
+
   old_target=""
   [ ! -L "$install_root/current" ] || old_target="$(readlink "$install_root/current")"
   if [ -n "$old_target" ] && [ "$old_target" != "versions/$digest" ]; then
