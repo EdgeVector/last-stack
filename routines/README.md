@@ -50,7 +50,7 @@ stripped out.
    north-star-driver▶ create one bounded milestone from North Star intent    │
    milestone-driver▶ create/link one proof or PR card; reconcile milestone  │
    groom-board    ─▶ promote ready backlog→todo, break up epics, prune junk  │
-   feature-prove  ─▶ when feature-owner slice deps are done, run product proof│
+   feature-prove  ─▶ when NS/milestone terminal deps are done, run product proof│
                  └──────────────────────────────────────────────────────────┘
                           │ (ready `todo` cards)
                           ▼
@@ -143,7 +143,7 @@ one-card-per-fire contract.
 | [`north-star-driver`](north-star-driver.md) | every 6h | Convert one active North Star or approved outcome request into one milestone scaffold; never creates cards. |
 | [`milestone-driver`](milestone-driver.md) | every 6h | Generate/link at most one proof or PR-sized Kanban child, then reconcile one milestone; never implements cards. |
 | [`program-driver`](program-driver.md) | paused compatibility only | Superseded by the two hierarchical drivers; exits without mutation if invoked. |
-| [`feature-prove`](feature-prove.md) | hourly | Product-proof stage for `feature-owner` cards; PASS file or fix-forward / open-decisions. |
+| [`feature-prove`](feature-prove.md) | hourly | Product-proof for ship-mode North Star / milestone terminals; PASS file or fix-forward / open-decisions. No new feature-owner path. |
 | [`program-rollup`](program-rollup.md) | hourly | Mirror the board into the brain's driving index (auto-status block). |
 | [`north-star-rollup`](north-star-rollup.md) | hourly | Roll up cards by `north_star` × column into brain `north-star-dashboard` + local HTML. |
 | [`north-star-hygiene`](north-star-hygiene.md) | daily | Create missing brain North Star projects for orphan card `north_star` fields; clear high-confidence mis-tags; refresh dashboard. |

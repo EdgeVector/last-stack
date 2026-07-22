@@ -155,7 +155,8 @@ proof, and warnings. State changes use explicit proof-gated milestone commands.
   then create one terminal `Kind: validation`
   card in `backlog` before creating implementation work. Use the deterministic
   slug `<milestone-slug>-proof`, matching `--milestone` and `--north-star`, tags
-  `feature-owner,feature-proof,feature-ship,terminal-verification`, and a
+  `feature-proof,terminal-verification,milestone-proof` (do **not** tag
+  `feature-owner` — retired 2026-07-22), and a
   machine-checkable DONE-WHEN such as
   `file ~/.last-stack/feature-proofs/<milestone-slug>.md matches /^PASS/`.
   Copy the milestone's observable acceptance criteria into `## END STATE` and

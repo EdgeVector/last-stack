@@ -28,16 +28,26 @@ allowed-tools:
   - TaskList
 ---
 
-# /ship-feature — scope → design → ask once → drive → prove
+# /ship-feature — scope → design → ask once → North Star → drive → prove
 
 The user hands you a feature and wants confidence it **works**. They do **not**
 want to sit and monitor. Your job is to compress every human decision into one
-batch up front, get a single plan approval, then go fully autonomous: break the
-work into Kanban tasks, drive them to merged PRs, and **loop until you have run
-the real app and watched the feature actually work.**
+batch up front, get a single plan approval, then go fully autonomous on **one
+hierarchy only**:
+
+```
+Brain North Star (Mode: ship + Terminal verification)
+  → Milestone (via north-star-driver)
+    → Kind:pr cards + proof card (via milestone-driver)
+      → pickup merge → product proof (feature-prove / you)
+```
+
+**Do not create `feature-owner` cards** (retired 2026-07-22). Canonical SOP:
+brain `sop-feature-ship-loop` / `preference-feature-ship-loop`.
 
 Treat "it works" as a claim you must *demonstrate*, not assume. Tests passing is
-necessary but not sufficient — the stop condition is the app running the feature.
+necessary but not sufficient — the stop condition is the app running the feature
+(the North Star terminal proof).
 
 ## The contract with the user (their stated preferences — honor them)
 
@@ -149,11 +159,14 @@ Present a concise plan the user can approve in one read:
 Then get a single yes/no. After approval, **do not ask again** unless contract
 #3's "genuinely new blocker" clause fires. Make this the last routine touchpoint.
 
-## Phase 5 — Drive via Kanban
+## Phase 5 — Materialize North Star + drive via hierarchy
 
 Hand the approved plan into the hierarchical routine pipeline. Ship It is the
 intake/orchestration layer; it must not directly create milestones or Kanban
-cards.
+cards. (Brain North Star create/reuse is allowed; board graph creation is not.)
+
+**Do not create `feature-owner` cards** — retired 2026-07-22. One hierarchy only:
+North Star → milestone → Kind:pr + proof.
 
 ### HARD RULE — no bulk board scaffolding (won't-undo)
 
@@ -172,35 +185,49 @@ wrong `driver: program-driver` milestones.
 - Filing header-only PR bodies (`Repo`/`Base` only) into `todo`
 - Setting milestone `--driver program-driver` (superseded; default is
   `last-stack-milestone-driver`)
+- Filing board `feature-owner` validation cards
 
 If the user says "make this a North Star" or "start driving this," do **intent
 only** (NS + `MILESTONE_REQUEST` + targeted driver dispatches), not a full fake
 DAG.
 
-For each independently provable outcome:
+**Required materialization (after plan yes):**
 
-1. Resolve one durable Brain North Star. Reuse a clearly matching active North
-   Star; otherwise create one during approved intake with Tom's strategic end
-   state. Do not invent or broaden strategic intent after approval.
+1. **Create or reuse one Brain North Star** (`type: project`, slug
+   `north-star-<kebab>` when new). Reuse a clearly matching active North Star
+   rather than minting a twin for a tiny delta. Body **must** include:
+
+   - `**Mode:** ship`
+   - `## End state` (Tom-visible product outcome — same words as intake)
+   - `## Terminal verification` with **Card:** `<proof-slug>`, shape, Done means,
+     deploy surface if any
+
+   Do not invent or broaden strategic intent after approval.
+
 2. Append an idempotent request to that North Star using `brain append`:
    `MILESTONE_REQUEST slug=<milestone-slug> status=pending`, followed by the
    approved Outcome and Acceptance text. Never rewrite a large North Star to add
-   the request.
+   the request. Default **one milestone** per feature unless the approved plan
+   has multiple independently provable outcomes.
+
 3. Trigger the North Star routine for the exact request:
    `NORTH_STAR_DRIVER_TARGET=<north-star-slug>` and
    `NORTH_STAR_DRIVER_REQUEST=<milestone-slug>` with
    `routines run last-stack-north-star-driver`. The routine—not Ship It—creates
    the milestone scaffold. If manual dispatch is unavailable, leave the durable
    pending request for its scheduled pass.
+
 4. Confirm the milestone exists and matches the approved North Star/outcome via
    `fkanban milestone detail <milestone-slug> --json`. Expect
    `driver=last-stack-milestone-driver`.
+
 5. Trigger targeted bounded passes with
    `MILESTONE_DRIVER_TARGET=<milestone-slug> routines run last-stack-milestone-driver`
    until the milestone has a linked terminal proof and at least one concrete
    `Kind: pr` frontier, or reports a real blocker. The milestone routine—not
    Ship It—creates and links those cards. Never bypass the routine by writing
    the graph directly.
+
 6. **Acceptance before walk-away:** for each claimed "runnable" PR slug run
    `fkanban pickup explain <slug> --json` and require `ready: true`. Reject
    header-only bodies and `driver: program-driver` milestones.
@@ -208,6 +235,8 @@ For each independently provable outcome:
 Materialization is invalid until `fkanban milestone detail` and
 `fkanban milestone groom --json` confirm the two routine ownership boundaries,
 driver, proof link, child links, North Star agreement, and executable frontier.
+It is also **invalid** if only a tracker or legacy feature-owner exists, or if
+the North Star lacks Terminal verification.
 
 Use the **`kanban` skill** to observe and manage cards after the milestone driver
 has generated them—it already knows this workspace's board, merge, and
@@ -245,7 +274,8 @@ enough to make progress, the user can always interrupt), and on each wake:
    frontier. Do not create a second milestone for the same approved outcome.
 4. **When all milestone slices are merged → VALIDATE** (Phase 7). This is the
    real gate. A milestone completes only after its linked terminal proof passes
-   and `milestone reconcile` accepts completion.
+   and `fkanban milestone state <slug> complete --proof-status passing` is
+   accepted. Then mark the ship-mode North Star done if this was its terminal.
 5. **Re-schedule** the next wakeup unless fully done. **Stop scheduling** once
    validated — that ends the loop cleanly.
 

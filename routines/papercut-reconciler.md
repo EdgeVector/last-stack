@@ -4,12 +4,17 @@ cadence: every 6h
 description: The ONLY filer of papercut board cards. Reads open papercuts and the never-again prevention registry from Brain, clusters them into patterns, and files a few well-scoped cards with compound-regression requirements where applicable. Also mines recent sessions into Brain papercut records first.
 ---
 
-## HARD feature-owner budget (Tom 2026-07-20)
+## HARD ship-outcome budget (Tom 2026-07-22; was feature-owner budget)
 
-While any `feature-owner` card has `STATUS: driving|proving` and unblocked
-not-done `Kind: pr` children, **do not** promote new papercut PR cards into
-`default/todo`. Keep them in backlog or brain-only until the feature frontier
-is stocked. Prefer no-op heartbeat `noop feature-budget-holds`.
+While any **active/proving milestone** (or ship-mode North Star with a
+nonterminal milestone) has unblocked not-done `Kind: pr` children, **do not**
+promote new papercut PR cards into `default/todo`. Keep them in backlog or
+brain-only until the milestone frontier is stocked. Prefer no-op heartbeat
+`noop ship-outcome-budget-holds`.
+
+Do **not** use new `feature-owner` cards for budget; that graph is retired
+(brain `sop-feature-ship-loop`). Legacy feature-owner cards still on the board
+may count as "driving" only until migrated — still do not file new ones.
 
 
 
