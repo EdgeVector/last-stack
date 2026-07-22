@@ -29,7 +29,7 @@ FETCH_FAIL_STATE_FILE="$FETCH_FAIL_STATE_DIR/self-upgrade-fetch-fail.count"
 
 is_stale_status() {
   case "$1" in
-    UPGRADE_AVAILABLE*|GIT_UPDATE_AVAILABLE*) return 0 ;;
+    UPGRADE_AVAILABLE*|GIT_UPDATE_AVAILABLE*|ARTIFACT_UPDATE_AVAILABLE*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -44,10 +44,19 @@ stale_fail() {
     echo "$detail" >&2
     echo "LAST_STACK_ROUTINE_DETAIL_END" >&2
   fi
-  echo "LAST_STACK_ROUTINE_REMEDIATION inspect: cd \"$ROOT\" && git status --short --untracked-files=no && git remote -v" >&2
-  echo "LAST_STACK_ROUTINE_REMEDIATION clean-upgrade: \"$ROOT/bin/last-stack-self-upgrade\"" >&2
-  echo "LAST_STACK_ROUTINE_REMEDIATION manual-ff: cd \"$ROOT\" && git pull --ff-only && ./setup" >&2
-  echo "LAST_STACK_ROUTINE_REMEDIATION dirty-tree: move edits to a separate clone/worktree, then retry" >&2
+  case "$stale_status" in
+    ARTIFACT_UPDATE_AVAILABLE*)
+      echo "LAST_STACK_ROUTINE_REMEDIATION inspect: host-track status --json last-stack" >&2
+      echo "LAST_STACK_ROUTINE_REMEDIATION upgrade: host-track refresh last-stack" >&2
+      echo "LAST_STACK_ROUTINE_REMEDIATION rollback: host-track rollback last-stack" >&2
+      ;;
+    *)
+      echo "LAST_STACK_ROUTINE_REMEDIATION inspect: cd \"$ROOT\" && git status --short --untracked-files=no && git remote -v" >&2
+      echo "LAST_STACK_ROUTINE_REMEDIATION clean-upgrade: \"$ROOT/bin/last-stack-self-upgrade\"" >&2
+      echo "LAST_STACK_ROUTINE_REMEDIATION manual-ff: cd \"$ROOT\" && git pull --ff-only && ./setup" >&2
+      echo "LAST_STACK_ROUTINE_REMEDIATION dirty-tree: move edits to a separate clone/worktree, then retry" >&2
+      ;;
+  esac
   exit 78
 }
 
@@ -125,6 +134,33 @@ defer_fetch_failed_upgrade() {
   fi
   exit 75
 }
+
+if [ "${LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK:-0}" != "1" ] && \
+   command -v host-track >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+  artifact_status="$(host-track status --json last-stack 2>/dev/null || true)"
+  if [ "$(printf '%s\n' "$artifact_status" | jq -r '.install_mode // ""' 2>/dev/null)" = "artifact" ]; then
+    artifact_stale="$(printf '%s\n' "$artifact_status" | jq -r '.stale | tostring' 2>/dev/null)"
+    if [ "$artifact_stale" = "true" ]; then
+      update_status="$("$ROOT/bin/last-stack-update-check" 2>/dev/null || true)"
+      [ -n "$update_status" ] || update_status="ARTIFACT_UPDATE_AVAILABLE"
+      if [ "${LASTSTACK_SELF_UPGRADE_SKIP:-0}" = "1" ]; then
+        stale_fail "$update_status" "Artifact refresh disabled (LASTSTACK_SELF_UPGRADE_SKIP=1)."
+      fi
+      artifact_err="$(mktemp "${TMPDIR:-/tmp}/last-stack-routine-read-artifact.XXXXXX")"
+      if ! host-track refresh last-stack >"$artifact_err" 2>&1; then
+        detail="$(cat "$artifact_err" 2>/dev/null || true)"
+        rm -f "$artifact_err"
+        stale_fail "$update_status" "Artifact refresh failed. $detail"
+      fi
+      rm -f "$artifact_err"
+    fi
+    if ! host-track check last-stack >/dev/null 2>&1; then
+      stale_fail "ARTIFACT_UPDATE_AVAILABLE" "Active artifact verification failed after refresh."
+    fi
+    clear_fetch_fail_streak
+    LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1
+  fi
+fi
 
 if [ "${LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK:-0}" != "1" ] && [ -x "$ROOT/bin/last-stack-update-check" ]; then
   update_status="$("$ROOT/bin/last-stack-update-check" 2>/dev/null || true)"

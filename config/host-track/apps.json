@@ -20,16 +20,23 @@
     },
     {
       "app": "last-stack",
-      "install_mode": "checkout",
-      "kind": "C skill-pack",
+      "install_mode": "artifact",
+      "kind": "artifact skill-pack",
       "command": "host-track",
       "gate": "lastgit",
       "gate_main": "lastdb:///last-stack#main",
-      "gate_remote": "lastgit",
-      "gate_ref": "refs/heads/main",
-      "host_track": "$HOME/.last-stack",
-      "refresh_mode": "last-stack-self-upgrade",
-      "notes": "Refreshes the canonical skill-pack checkout and reruns setup."
+      "artifact_app": "last-stack",
+      "artifact_channel": "stable",
+      "artifact_root": "$HOME/.lastgit/artifacts",
+      "install_root": "$HOME/.last-stack/.artifacts",
+      "post_install": "$HOME/.last-stack/.artifacts/current/setup",
+      "links": [
+        {
+          "source": "bin/host-track",
+          "target": "$HOME/.local/bin/host-track"
+        }
+      ],
+      "notes": "Installs the exact LastGit CI artifact; compatibility paths under ~/.last-stack point through the active immutable bundle."
     },
     {
       "app": "brain",

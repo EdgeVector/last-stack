@@ -34,6 +34,7 @@ producer and compatibility proof are migrated. An artifact entry can set:
   "artifact_app": "my-app",
   "artifact_channel": "stable",
   "install_root": "$HOME/.host-track/apps/my-app",
+  "post_install": "$HOME/.host-track/apps/my-app/current/bin/post-install",
   "links": [
     {"source": "bin/my-app", "target": "$HOME/.local/bin/my-app"}
   ]
@@ -46,6 +47,28 @@ verifies every blob again while copying it, installs under the immutable
 The displaced version remains at `previous` for `host-track rollback`.
 `host-track check` verifies the active payload hashes as well as freshness.
 It refuses to replace a non-symlink command target.
+When configured, `post_install` runs after activation and after rollback with
+`HOST_TRACK_APP`, `HOST_TRACK_INSTALL_ROOT`, and
+`HOST_TRACK_MANIFEST_DIGEST` in its environment. A failed hook leaves the app
+stale (no new stamp), so the refresh agent retries instead of claiming success.
+
+### Last Stack compatibility layout
+
+Last Stack artifacts install below `~/.last-stack/.artifacts`. Its stable code
+paths (`bin`, `skills`, `routines`, `config`, and the other packaged support
+trees) point through `.artifacts/current`, so existing routines and harness
+links keep their established `~/.last-stack/...` paths. Run the one-time,
+recoverable migration only after a verified Last Stack artifact is installed:
+
+```bash
+~/.last-stack/.artifacts/current/bin/last-stack-activate-artifact-layout --dry-run
+~/.last-stack/.artifacts/current/bin/last-stack-activate-artifact-layout
+```
+
+The migration moves displaced code into a timestamped directory under
+`~/.local/state/last-stack/layout-backups`; it leaves `.git`, `launchd`, logs,
+proofs, and other local state untouched. Artifact installs use the Host Track
+refresh agent, so setup removes the retired Git self-upgrade LaunchAgent.
 
 ## Status Shape
 
