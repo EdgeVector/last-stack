@@ -51,7 +51,7 @@ stripped out.
                  ┌──────────────────── the board (kanban) ─────────────────┐
                  │  backlog → todo → doing → done                            │
    north-star-driver▶ create one bounded milestone from North Star intent    │
-   milestone-driver▶ create/link one proof or PR card; reconcile milestone  │
+   milestone-driver▶ gap-fill idle NS milestones (multi-PR next gate, cap 8) │
    groom-board    ─▶ promote ready backlog→todo, break up epics, prune junk  │
    feature-prove  ─▶ when NS/milestone terminal deps are done, run product proof│
                  └──────────────────────────────────────────────────────────┘
@@ -145,7 +145,7 @@ one-card-per-fire contract.
 | [`kanban-validate`](kanban-validate.md) | every 4h (lean), offset from watch | **Proof lane (not pickup):** DONE-WHEN sweep + ONE of (A) post-merge END STATE or (B) backlog `Kind: validation`/`capstone` terminal proof; `done` on pass, or PROOF fail + pickup-ready fix PR on fail. |
 | [`groom-board`](groom-board.md) | daily | Promote ready `backlog`→`todo`, break up epics, prune junk. |
 | [`north-star-driver`](north-star-driver.md) | every 6h | Convert one active North Star or approved outcome request into one milestone scaffold; never creates cards. |
-| [`milestone-driver`](milestone-driver.md) | every 2–6h | Restock factory: promote/file at most one Kind:pr into **todo** when frontier empty/promoteable; deprioritize proof-pending noops; never implements cards. |
+| [`milestone-driver`](milestone-driver.md) | hourly | Portfolio **gap-fill**: for each idle NS milestone (no Kind:pr in todo/doing), file full next-gate PR set (cap 8/run); skip in-flight; never implements cards. |
 | [`program-driver`](program-driver.md) | paused compatibility only | Superseded by the two hierarchical drivers; exits without mutation if invoked. |
 | [`feature-prove`](feature-prove.md) | hourly | Product-proof for ship-mode North Star / milestone terminals; PASS file or fix-forward / open-decisions. No new feature-owner path. |
 | [`program-rollup`](program-rollup.md) | hourly | Mirror the board into the brain's driving index (auto-status block). |

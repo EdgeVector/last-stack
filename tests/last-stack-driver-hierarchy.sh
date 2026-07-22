@@ -30,6 +30,7 @@ require '--driver last-stack-milestone-driver' "$north"
 require 'Do **not** pass `--proof-card`' "$north"
 
 require 'sole routine owner for turning' "$milestone"
+# Historical one-card phrase retained for continuity; gap-fill raises the max via SAFETY_CAP.
 require 'Create at most **one Kanban card** per run.' "$milestone"
 require 'MILESTONE_DRIVER_TARGET' "$milestone"
 require 'Creation inventory gate' "$milestone"
@@ -38,7 +39,6 @@ require 'fkanban list --column todo --json' "$milestone"
 require 'fkanban list --column doing --json' "$milestone"
 require "printf 'CREATION_INVENTORY backlog=%s todo=%s doing=%s nonterminal_milestones=%s" "$milestone"
 require 'Immediately before any `fkanban add`, repeat all four inventory reads' "$milestone"
-require 'noop existing-live-frontier' "$milestone"
 require 'Targeted dispatch is an absolute selection gate' "$milestone"
 require 'Do not select,' "$milestone"
 require 'Skip the portfolio-ranking procedure' "$milestone"
@@ -48,15 +48,20 @@ require 'fkanban milestone state <slug> complete --proof-status passing --json' 
 require 'The CLI rejects this transition unless the proof contract passes.' "$milestone"
 require 'If the milestone has no `proof_card`' "$milestone"
 require '--proof-card <proof-slug> --proof-status pending' "$milestone"
-require 'file exactly one PR-sized child' "$milestone"
 require 'Never implement product code' "$milestone"
-# Factory-fill contract (2026-07-22 tightened): empty todo is starvation; don't
-# burn the pass on proof-only scaffolding under pressure.
-require 'Factory-fill contract' "$milestone"
-require 'idle_hint=starving' "$milestone"
-require 'portfolio-not-feedable' "$milestone"
+
+# Outcome gap-fill contract (Tom 2026-07-22)
+require 'Outcome gap-fill contract' "$milestone"
+require 'SAFETY_CAP=8' "$milestone"
+require 'GAP_FILL IDLE_MILESTONES=' "$milestone"
+require 'SKIPPED_IN_FLIGHT' "$milestone"
+require 'Portfolio scan by default' "$milestone"
+require 'In-flight (skip)' "$milestone"
 require 'Pickup only eats `todo`' "$milestone"
 require 'Body-level stops count as holds' "$milestone"
+require 'idle_hint=starving' "$milestone"
+require 'portfolio-not-feedable' "$milestone"
+require 'as many concrete' "$milestone"
 
 inventory_line="$(grep -nF 'Creation inventory gate' "$milestone" | cut -d: -f1 | head -1)"
 target_line="$(grep -nF 'Targeted dispatch is an absolute selection gate' "$milestone" | cut -d: -f1)"
