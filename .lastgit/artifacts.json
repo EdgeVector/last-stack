@@ -12,6 +12,7 @@
         "hooks",
         "instructions",
         "lib",
+        "launchd",
         "routines",
         "skills",
         "templates"

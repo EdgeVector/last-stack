@@ -11,6 +11,9 @@ fail() {
   exit 1
 }
 
+jq -e '.artifacts[] | select(.app == "last-stack") | .paths | index("launchd")' \
+  "$ROOT/.lastgit/artifacts.json" >/dev/null || fail "artifact bundle omits LaunchAgent templates"
+
 export HOME="$tmp/home"
 compat="$HOME/.last-stack"
 install_root="$compat/.artifacts"
