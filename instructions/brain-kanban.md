@@ -81,6 +81,21 @@ shell-visible CLI and daemon binary agree. The helper never restarts/kills
 - Do NOT create `type: decision` records — that path is broken; append
   decisions to the `decisions-log` reference record instead.
 
+### North Star → milestone → cards (no bulk scaffold)
+
+Operational hierarchy (2026-07-21+):
+
+`North Star → last-stack-north-star-driver → milestone → last-stack-milestone-driver → Kind: pr cards → pickup`
+
+**Won't-undo:** when Tom says "make this a North Star" / "start driving this,"
+do **not** bulk-`fkanban add` milestones and empty PR shells. Write the Brain
+NS + `MILESTONE_REQUEST`, then targeted `routines run last-stack-north-star-driver`
+and `last-stack-milestone-driver`. Milestone default driver is
+`last-stack-milestone-driver`; never set `program-driver` (superseded).
+Kind:pr cards in default/todo need a substantive brief (prefer `## GOAL` +
+`## END STATE`); empty shells are rejected by fkanban and must not be parked as
+`needs_human`. Before claiming "runnable," run `fkanban pickup explain <slug>`.
+
 ### kanban CLI
 
 - `kanban list --column todo --json` / `kanban search "<text>"` /

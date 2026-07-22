@@ -155,6 +155,28 @@ Hand the approved plan into the hierarchical routine pipeline. Ship It is the
 intake/orchestration layer; it must not directly create milestones or Kanban
 cards.
 
+### HARD RULE — no bulk board scaffolding (won't-undo)
+
+After creating or selecting a North Star, **never** bulk-write milestones and
+empty `Kind: pr` shells with `fkanban add` / `fkanban milestone add` in the same
+session. That is what produces hollow cards, false `needs_human` holds, and
+wrong `driver: program-driver` milestones.
+
+**Allowed:**
+- Brain NS create/update + `brain append` of `MILESTONE_REQUEST …`
+- Targeted `routines run last-stack-north-star-driver` / `last-stack-milestone-driver`
+- Observing with `fkanban milestone detail` / `pickup explain`
+
+**Forbidden:**
+- Creating more than zero implementation cards yourself for a new NS outcome
+- Filing header-only PR bodies (`Repo`/`Base` only) into `todo`
+- Setting milestone `--driver program-driver` (superseded; default is
+  `last-stack-milestone-driver`)
+
+If the user says "make this a North Star" or "start driving this," do **intent
+only** (NS + `MILESTONE_REQUEST` + targeted driver dispatches), not a full fake
+DAG.
+
 For each independently provable outcome:
 
 1. Resolve one durable Brain North Star. Reuse a clearly matching active North
@@ -171,13 +193,17 @@ For each independently provable outcome:
    the milestone scaffold. If manual dispatch is unavailable, leave the durable
    pending request for its scheduled pass.
 4. Confirm the milestone exists and matches the approved North Star/outcome via
-   `fkanban milestone detail <milestone-slug> --json`.
+   `fkanban milestone detail <milestone-slug> --json`. Expect
+   `driver=last-stack-milestone-driver`.
 5. Trigger targeted bounded passes with
    `MILESTONE_DRIVER_TARGET=<milestone-slug> routines run last-stack-milestone-driver`
    until the milestone has a linked terminal proof and at least one concrete
    `Kind: pr` frontier, or reports a real blocker. The milestone routine—not
    Ship It—creates and links those cards. Never bypass the routine by writing
    the graph directly.
+6. **Acceptance before walk-away:** for each claimed "runnable" PR slug run
+   `fkanban pickup explain <slug> --json` and require `ready: true`. Reject
+   header-only bodies and `driver: program-driver` milestones.
 
 Materialization is invalid until `fkanban milestone detail` and
 `fkanban milestone groom --json` confirm the two routine ownership boundaries,

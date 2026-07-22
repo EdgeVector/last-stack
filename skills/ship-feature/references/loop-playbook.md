@@ -137,6 +137,10 @@ intermediate event; the app doing the thing is the gate.
   every implementation child is terminal and the linked validation card stores
   terminal machine-readable PASS evidence; never from PR count or a forced or
   evidence-free complete state.
+- **Never bulk-scaffold** milestones/PR shells with direct `fkanban add` after
+  "make this a North Star." That path produced hollow cards and false human
+  gates (schema-lambda-fast-deployment 2026-07-22). Drivers own materialization.
+  Before walk-away: `fkanban pickup explain <slug>` must show `ready: true`.
 
 ## When to break silence (contract #3)
 
