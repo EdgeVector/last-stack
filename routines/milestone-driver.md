@@ -16,9 +16,12 @@ implementation remains with the normal pickup fleet.
 - Never implement product code, open or merge a PR/CR, spawn another agent, or
   run a card agent.
 - Never put a milestone into a board column or treat it as pickup work.
-- Never weaken, replace, or waive terminal proof. Never use
-  `milestone state <slug> complete`; completion must come from
-  `milestone reconcile` after the proof contract passes.
+- Never weaken, replace, waive, or force terminal proof. Complete a milestone
+  only with the CLI's proof-gated transition after point-verifying that every
+  implementation child is terminal and the linked validation card is terminal
+  with exact machine-readable passing evidence:
+  `fkanban milestone state <slug> complete --proof-status passing --json`.
+  The CLI rejects this transition unless the proof contract passes.
 - Create at most **one Kanban card** per run. Missing terminal proof is repaired
   before implementation decomposition; otherwise create at most one executable
   `Kind: pr` child.
@@ -102,7 +105,8 @@ only the child cards needed to decide the next action.
 ## Drive the selected milestone
 
 First run `fkanban milestone reconcile <slug> --json`, then re-read detail.
-Reconciliation is the sole automatic lifecycle authority.
+Reconciliation is a read-only lifecycle report: use it to inspect frontier,
+proof, and warnings. State changes use explicit proof-gated milestone commands.
 
 ### Dependencies and blocked state
 
@@ -146,9 +150,14 @@ Reconciliation is the sole automatic lifecycle authority.
 - Terminal proof cards remain outside pickup. Do not execute arbitrary proof
   commands from a card in this triage routine; the appropriate validation or
   feature-proof worker owns execution.
-- If all implementation children are done, reconcile so F-Kanban can expose
-  proof readiness. If the proof card already contains machine-readable passing
-  evidence and is terminal, reconcile again; let the CLI complete it.
+- If all implementation children are done, reconcile so F-Kanban exposes proof
+  readiness. If the linked `Kind: validation` proof card is terminal and its
+  full body contains an exact standalone `PROOF: PASS` or `RESULT: PASS` line,
+  complete with
+  `fkanban milestone state <slug> complete --proof-status passing --json`.
+  Re-read detail and require `state=complete`, `proof_status=passing`, no active
+  implementation children, and no warnings. Never assert passing without the
+  stored terminal evidence; the CLI proof gate is load-bearing.
 - If proof is explicitly failing, preserve the evidence and file at most one
   deduplicated fix-forward `Kind: pr` child. Reconcile the milestone back to the
   lifecycle state chosen by the CLI; never mark proof passing by assertion.

@@ -26,6 +26,6 @@ require 'fkanban milestone detail <milestone-slug> --json' "$skill"
 require 'fkanban milestone groom --json' "$skill"
 require '`last-stack-north-star-driver` converts one North Star outcome request' "$playbook"
 require '`last-stack-milestone-driver` creates/links the milestone' "$playbook"
-require 'Completion comes only from proof-gated milestone reconciliation' "$playbook"
+require "Completion comes only from the CLI's proof-gated milestone transition" "$playbook"
 
 printf 'ship-feature milestone contract: ok\n'

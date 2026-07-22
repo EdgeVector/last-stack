@@ -133,8 +133,10 @@ intermediate event; the app doing the thing is the gate.
 - Pickup/kanban-agent executes cards. Proof workers record terminal evidence.
 - One North Star may have many milestones over time. Default to one milestone
   for one independently provable approved outcome.
-- Completion comes only from proof-gated milestone reconciliation, never from
-  PR count or a direct forced complete state.
+- Completion comes only from the CLI's proof-gated milestone transition after
+  every implementation child is terminal and the linked validation card stores
+  terminal machine-readable PASS evidence; never from PR count or a forced or
+  evidence-free complete state.
 
 ## When to break silence (contract #3)
 
