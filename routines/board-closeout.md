@@ -22,13 +22,17 @@ This closeout is the always-on, zero-credit answer:
 
 | Condition | Action |
 |-----------|--------|
-| `doing` + PR/CR **merged** | `last-stack-card-closeout` → `done` |
+| `doing` + PR/CR **merged** | `last-stack-card-closeout` → `done` only if any `Requires-Deploy:` gate has terminal success |
 | `doing`, age ≥ 60m, no PR, no live worker, no branch commits | `move todo` |
 | `doing`, age ≥ 60m, no PR, no live worker, **WIP commits** (illegal handoff) | `move todo` (flag `wip-no-pr`; worktree kept) |
 | open PR / live worker / younger than grace | skip |
 
 Durable: brain `preference-kanban-board-closeout-always-on` and
 `preference-kanban-doing-soft-1h-reclaim`.
+
+`Requires-Deploy: deploy-pipeline` is a machine gate, not prose. The closeout
+helper reads `last-stack-pipeline-deploy-scan --json`; pending, missing, or red
+deploy status leaves the card out of `done` even when the PR/CR is merged.
 
 ## Preferred: LaunchAgent (no LLM)
 

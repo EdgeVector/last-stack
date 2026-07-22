@@ -6,9 +6,10 @@
 #     [--pr-url URL] [--branch NAME] [--force]
 #
 # 1. Optionally stamps --pr-url / --branch via add (preserves column).
-# 2. Moves the card to done (with lastdb-retry).
-# 3. Verifies show --json reports column=done; retries once if not.
-# 4. Exits 0 only when the card is in the terminal column.
+# 2. Refuses deploy-gated closeout unless Requires-Deploy has terminal success.
+# 3. Moves the card to done (with lastdb-retry).
+# 4. Verifies show --json reports column=done; retries once if not.
+# 5. Exits 0 only when the card is in the terminal column.
 #
 # Refuse final_column=done in ROUTINE_RESULT unless this helper exits 0.
 set -euo pipefail
@@ -56,6 +57,100 @@ run() {
     "$@"
   fi
 }
+
+card_json="$(run "$board_cli" show "$slug" --json 2>/dev/null || true)"
+if [ -z "$card_json" ]; then
+  echo "last-stack-card-closeout: FAILED card-read-failed slug=$slug" >&2
+  exit 1
+fi
+
+deploy_info="$(CARD_JSON="$card_json" python3 - <<'PY'
+import json, re, sys
+import os
+
+try:
+    raw = json.loads(os.environ.get("CARD_JSON", "{}"))
+except Exception:
+    sys.exit(0)
+card = raw.get("card") if isinstance(raw, dict) else None
+if not isinstance(card, dict):
+    card = raw if isinstance(raw, dict) else {}
+body = str(card.get("body") or "")
+repo = str(card.get("repo") or "")
+if not repo:
+    m = re.search(r"(?im)^\s*Repo:\s*(\S+)\s*$", body)
+    if m:
+        repo = m.group(1)
+repo_name = repo.rsplit("/", 1)[-1] if repo else ""
+print(f"repo={repo_name}")
+seen = set()
+for line in body.splitlines():
+    m = re.match(r"^\s*Requires-Deploy:\s*(.+?)\s*$", line)
+    if not m:
+        continue
+    for part in re.split(r"[, ]+", m.group(1).strip()):
+        if not part:
+            continue
+        if part in seen:
+            continue
+        seen.add(part)
+        print(f"requires={part}")
+PY
+)"
+
+deploy_repo="$(printf '%s\n' "$deploy_info" | sed -n 's/^repo=//p' | head -n 1)"
+deploy_reqs="$(printf '%s\n' "$deploy_info" | sed -n 's/^requires=//p')"
+
+if [ -n "$deploy_reqs" ]; then
+  if [ -z "$deploy_repo" ]; then
+    echo "last-stack-card-closeout: FAILED deploy-gate-missing-repo slug=$slug" >&2
+    exit 1
+  fi
+  if [ ! -x "$self_dir/last-stack-pipeline-deploy-scan" ]; then
+    echo "last-stack-card-closeout: FAILED deploy-scan-missing slug=$slug" >&2
+    exit 1
+  fi
+  deploy_scan_json="$("$self_dir/last-stack-pipeline-deploy-scan" --json 2>/dev/null || true)"
+  if [ -z "$deploy_scan_json" ]; then
+    echo "last-stack-card-closeout: FAILED deploy-scan-empty slug=$slug repo=$deploy_repo" >&2
+    exit 1
+  fi
+  while IFS= read -r deploy_req; do
+    [ -n "$deploy_req" ] || continue
+    if [ "$deploy_req" != "deploy-pipeline" ]; then
+      echo "last-stack-card-closeout: FAILED unsupported-deploy-gate=$deploy_req slug=$slug" >&2
+      exit 1
+    fi
+    gate_status="$(DEPLOY_SCAN_JSON="$deploy_scan_json" DEPLOY_REPO="$deploy_repo" python3 - <<'PY'
+import json, os
+
+repo = os.environ.get("DEPLOY_REPO", "")
+try:
+    rows = json.loads(os.environ.get("DEPLOY_SCAN_JSON", "[]"))
+except Exception:
+    rows = []
+match = None
+for row in rows if isinstance(rows, list) else []:
+    if str(row.get("repo") or "") == repo:
+        match = row
+        break
+if not match:
+    print("missing|true|deploy log missing")
+else:
+    print(f"{match.get('status','')}|{str(bool(match.get('blocked'))).lower()}|{match.get('reason','')}")
+PY
+)"
+    IFS='|' read -r gate_state gate_blocked gate_reason <<EOF
+$gate_status
+EOF
+    if [ "$gate_state" != "success" ] || [ "$gate_blocked" != "false" ]; then
+      echo "last-stack-card-closeout: deploy gate pending slug=$slug repo=$deploy_repo requires=$deploy_req status=${gate_state:-unknown} reason=$gate_reason" >&2
+      exit 1
+    fi
+  done <<EOF
+$deploy_reqs
+EOF
+fi
 
 # Stamp PR/branch without changing column (add preserves existing column).
 if [ -n "$pr_url" ] || [ -n "$branch" ]; then
