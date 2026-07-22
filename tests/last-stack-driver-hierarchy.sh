@@ -25,10 +25,20 @@ require 'Do **not** pass `--proof-card`' "$north"
 require 'sole routine owner for turning' "$milestone"
 require 'Create at most **one Kanban card** per run.' "$milestone"
 require 'MILESTONE_DRIVER_TARGET' "$milestone"
+require 'Targeted dispatch is an absolute gate' "$milestone"
+require 'Do not select,' "$milestone"
+require 'Skip the portfolio-ranking procedure' "$milestone"
 require 'If the milestone has no `proof_card`' "$milestone"
 require '--proof-card <proof-slug> --proof-status pending' "$milestone"
 require 'file exactly one PR-sized child' "$milestone"
 require 'Never implement product code' "$milestone"
+
+target_line="$(grep -nF 'Targeted dispatch is an absolute gate' "$milestone" | cut -d: -f1)"
+portfolio_line="$(grep -nF 'fkanban milestone portfolio --json' "$milestone" | cut -d: -f1)"
+if (( target_line >= portfolio_line )); then
+  printf 'target gate must precede portfolio selection\n' >&2
+  exit 1
+fi
 
 require 'must stay paused' "$program"
 require 'superseded-by-north-star-driver-and-milestone-driver' "$program"
