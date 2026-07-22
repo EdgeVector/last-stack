@@ -12,16 +12,19 @@ loop.
 > If the skills are the rules of the game, the routines are the players who
 > actually show up each turn.
 
-## Three roles (conceptual spine — Tom 2026-07-20)
+## Four Jobs (target fleet — Tom 2026-07-22)
 
-Collapse the routine zoo into **Generate · Claim · Reconcile**. Everything else
-is a specialized generator or backstop.
+Collapse the routine zoo into **Generate · Claim · Reconcile · Intake
+friction**. Everything else is a specialized generator, reconciler mode, or
+backstop. The one-page operator cheat sheet lives at
+[`../docs/routines-target-fleet.html`](../docs/routines-target-fleet.html).
 
 | Role | Job | Ships code? | Examples |
 |------|-----|-------------|----------|
-| **Generate** | File/promote PR-sized work onto the board | No | `program-driver`, `groom-board`, `papercut-reconciler` (sole papercut→card); `pipeline-health` files **Brain papercuts** only for pipeline blocks |
+| **Generate** | File/promote PR-sized work onto the board | No | `north-star-driver`, `milestone-driver`, `groom-board`, `papercut-reconciler` (sole papercut→card); `pipeline-health` files **Brain papercuts** only for pipeline blocks |
 | **Claim** | `pickup claim` → implement → open PR/CR | **Yes** | `kanban-pickup` (+ worker replicas) |
 | **Reconcile** | Advance merges, heal zombies, close done, drive outcome proof | Fixes only | `kanban-watch`, `merge-babysit`, `kanban-validate`, `milestone-driver`, reapers |
+| **Intake friction** | Keep the factory inputs honest | No | Brain papercuts, `self-upgrade`, disk, one deadman/factory observer, `morning-sync` REAL_HUMAN |
 
 Brain = intent · Board = queue · Pickup = only code shipper · Watch = only closer.
 
@@ -46,7 +49,7 @@ stripped out.
                           │                        │
                           ▼                        ▼
                  ┌──────────────────── the board (kanban) ─────────────────┐
-                 │  backlog → todo → doing → review → done                   │
+                 │  backlog → todo → doing → done                            │
    north-star-driver▶ create one bounded milestone from North Star intent    │
    milestone-driver▶ create/link one proof or PR card; reconcile milestone  │
    groom-board    ─▶ promote ready backlog→todo, break up epics, prune junk  │
@@ -92,9 +95,10 @@ The division of labour is deliberate:
 
 The skills assume this pipeline exists. `kanban-agent`'s RECONCILE mode is run
 *by* `kanban-watch`; its WORK mode is executed inline by each scheduled
-`kanban-pickup` worker; the cards it works are promoted *by* `program-driver` /
-`groom-board` and filed *by* the generators. **Ship the skills without the
-routines and the playbook has no engine.** That's why this pack exists.
+`kanban-pickup` worker; the cards it works are promoted *by* `north-star-driver`,
+`milestone-driver`, and `groom-board`, or filed *by* the generators. **Ship the
+skills without the routines and the playbook has no engine.** That's why this
+pack exists.
 
 ### Scaling kanban-pickup workers
 
@@ -151,6 +155,30 @@ one-card-per-fire contract.
 | [`morning-sync`](morning-sync.md) | daily | Surface the short genuinely-human decision set; a read-only briefing. |
 | [`sentry-triage`](sentry-triage.md) | daily | Pull unresolved issues from every configured Sentry project, dedupe, and file actionable fix cards. |
 | [`dogfood-rotate`](dogfood-rotate.md) | hourly | Rotate through the brain-owned dogfood registry; exercise one feature on isolated/dev surfaces; file deduped papercut/blocker cards (files work only). |
+
+### Target Fleet Ownership
+
+`program-driver` is **DROP**. It remains only as paused compatibility and must
+not be configured as a milestone driver. New feature work uses one hierarchy:
+Brain North Star -> `MILESTONE_REQUEST` -> `north-star-driver` ->
+`milestone-driver` -> `Kind: pr` cards for pickup.
+
+`pipeline-health` owns merge-babysit and drain behavior. Keep the old specialized
+prompts available while dual-running, but do not treat them as separate product
+surfaces once the pipeline-health mode covers their proof.
+
+`board-reconcile` is the board close/proof fold: `kanban-watch`, always-on
+zero-LLM board closeout, `kanban-validate`, and the reaper. The LaunchAgent
+closeout stays in place until a steward explicitly approves schedule changes.
+
+Only one feature-driving frontier should be active per North Star/milestone
+pair unless Tom explicitly approves parallelism. Legacy feature-owner/milestone
+trees should be drained or retired, not expanded, so idle papercuts do not starve
+active NS/MS work.
+
+Schedule pause/delete changes are a later steward gate. Docs may describe the
+target shape, but this Week-1 slice must not pause, delete, or rename live
+scheduled routines.
 
 ## Registering a routine as a scheduled agent
 

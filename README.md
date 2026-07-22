@@ -23,11 +23,12 @@ should use the `kanban` names directly.
 
 The companion **routines** (`routines/`) are the *engine* that runs the playbook
 on a schedule: small, parameterized prompts you register as scheduled (cron)
-agents — a self-improvement loop, papercut sweep, machine-hygiene/disk-reclaim, a
-PR drainer, and the kanban/brain driving loop (pickup, watch, groom,
-program-driver, rollup, consolidate, morning-sync). The skills *assume* this
-pipeline exists; the routines provide it. See
-[`routines/README.md`](routines/README.md).
+agents. The operator model is **Generate -> Claim -> Reconcile -> Intake
+friction**: generate PR-sized work, claim and ship it through pickup, reconcile
+merge/proof/board state, and turn fleet friction into Brain records before it
+becomes board work. The skills *assume* this pipeline exists; the routines
+provide it. See [`routines/README.md`](routines/README.md) and the target fleet
+cheat sheet in [`docs/routines-target-fleet.html`](docs/routines-target-fleet.html).
 
 ## Install
 
@@ -199,7 +200,11 @@ preserving project-specific rules where they belong.
 | **session-miner** | Generic engine for mining recent agent session transcripts with profiles for papercuts, incidents, owner-stated knowledge, and tooling friction. |
 
 And the **routines** (`routines/`) — parameterized scheduled-agent templates that
-run the skills on a cadence:
+run the skills on a cadence. Operator-facing ownership is intentionally folded:
+`pipeline-health` owns merge-babysit and drain-style pipeline unblock work, while
+`board-reconcile` is the single board closeout/proof surface made from
+`kanban-watch`, the always-on zero-LLM closeout, `kanban-validate`, and the
+reaper.
 
 | Routine | What it does |
 |---|---|
@@ -209,8 +214,13 @@ run the skills on a cadence:
 | **worktree-cleanup** / **disk-reclaim** | Prune stale worktrees/branches; reclaim disk; keep the machine healthy. |
 | **drain-open-prs** | Drive every open PR across all repos toward zero (merge or close). |
 | **kanban-pickup** / **kanban-watch** / **kanban-validate** | Drain the ready queue; reconcile PRs; run post-merge END STATE validation. |
-| **groom-board** / **program-driver** | Promote ready work into `todo`; keep each program's next card flowing. |
+| **groom-board** / **north-star-driver** / **milestone-driver** | Promote ready work and turn North Star intent into milestones and PR-sized cards. |
 | **program-rollup** / **consolidate-brain** / **morning-sync** | Mirror the board into the brain; keep statuses honest; deliver the daily decision briefing. |
+
+`program-driver` is DROP/superseded: do not use it as a milestone driver and do
+not add new feature-owner cards. New feature or North Star work flows through a
+Brain North Star, `MILESTONE_REQUEST`, `north-star-driver`, and
+`milestone-driver`.
 
 See [`routines/README.md`](routines/README.md) for how routines + skills compose,
 and fill in the `<PLACEHOLDERS>` before scheduling any of them.
@@ -325,10 +335,10 @@ The intended loop, end to end:
 2. **Drive one card to merged** (`kanban-agent` skill, WORK mode). The agent
    claims the card, works in an isolated git worktree, opens a PR, and then
    *drives that PR to MERGED* — re-arming auto-merge, updating a behind branch,
-   rebasing conflicts — before moving the card to `done`, or to `review` with a
-   `BLOCKED: awaiting <validation>` marker when the END STATE requires an async
-   post-merge check. A card is only `done` when its code is actually in the repo
-   and the outcome is proven.
+   rebasing conflicts — before moving the card to `done`, or leaving it in
+   `todo`/`doing` with a clear `BLOCKED:` marker when the END STATE requires an
+   async post-merge check. A card is only `done` when its code is actually in
+   the repo and the outcome is proven.
 3. **Wait on PRs without false failures** (`wait-merge` skill). Interprets PR
    state rather than trusting a watcher's exit code, so transient CI/queue churn
    doesn't look like a failure.
@@ -337,8 +347,8 @@ The intended loop, end to end:
    leaving un-started cards alone.
 5. **Validate post-merge outcomes** (`kanban-agent` skill, VALIDATE mode). A
    scheduled pass runs one dev-only post-merge END STATE check, then moves the
-   card to `done` on pass or `review` with `PROOF:` plus a fix card/blocker on
-   fail.
+   card to `done` on pass or leaves it visibly blocked with `PROOF:` plus a fix
+   card/blocker on fail.
 6. **Close out** (`close-out` skill). After any substantive change: PR from a
    worktree, drive to merged, checkpoint the *why* to the brain (`brain`), and
    file any follow-up as a card (`kanban`).
@@ -351,9 +361,10 @@ Steps 1–6 describe what an agent does *when invoked*. To make the loop
 **self-driving** — so cards get filed, promoted, picked up, and reconciled
 without a human kicking it each time — register the **routines** as scheduled
 agents: generators (`self-improvement-loop`, `papercut-reconciler`) file work,
-`groom-board`/`program-driver` promote it, separate `kanban-pickup` workers
-claim and ship one WORK card each, `kanban-watch`/`drain-open-prs` reconcile
-the stragglers, `kanban-validate`
+`north-star-driver`, `milestone-driver`, and `groom-board` promote it, separate
+`kanban-pickup` workers claim and ship one WORK card each, `pipeline-health`
+and board-reconcile (`kanban-watch` plus closeout/reaper) reconcile the
+stragglers, `kanban-validate`
 runs post-merge END STATE checks, and
 `program-rollup`/`consolidate-brain`/`morning-sync` keep the brain honest and
 surface the short genuinely-human decision set. See
