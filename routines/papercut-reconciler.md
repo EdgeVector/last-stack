@@ -26,6 +26,16 @@ pattern-level cards** (as many as genuinely needed, but clustered — never 1:1
 record→card by default). The pickup pipeline ships the cards; you never ship
 fixes yourself.
 
+**Pipeline producer (Tom, 2026-07-22):** `pipeline-health` no longer files
+board P0s for red/stuck deploys or stuck merges. It files Brain papercuts
+with stable slugs `papercut-pipeline-deploy-<repo>` and
+`papercut-pipeline-stuck-cr-…` (tags `papercut,pipeline,deploy` / `p0`). Treat
+those as first-class OPEN papercuts: cluster by repo/failure class, promote
+**pattern-level** cards when recurrence or severity warrants — not automatic
+1:1 board P0s that monopolize pickup. Prefer durable fix + compound prevention
+over "poll deploy until green" cards. See
+[[preference-pipeline-health-brain-papercuts]].
+
 Read your project's agent-orientation doc and durable memory index first, and
 honor their standing rules. Fetch the shared routine contract and this
 routine's SOP at run start:

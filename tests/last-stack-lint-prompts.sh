@@ -650,6 +650,13 @@ if rg -n 'lastgit/code|code node|both forge nodes|LASTGIT_CODE_SOCKET' "$pipelin
   echo "pipeline-health should not reference the retired LastGit code socket" >&2
   exit 1
 fi
+# 2026-07-22: pipeline blocks escalate as Brain papercuts, not board P0 monopoly.
+grep -q 'papercut-pipeline-deploy-' "$pipeline"
+grep -q 'papercut-reconciler' "$pipeline"
+if rg -n 'FILE a P0 PR card|pickup-ready P0 kanban card|deploy-pipeline-red-<repo>-<YYYYMMDD>' "$pipeline" >/dev/null; then
+  echo "pipeline-health must not file pickup-ready kanban P0 cards for deploys" >&2
+  exit 1
+fi
 
 bad_pipeline_root="$tmp/bad-pipeline-root"
 mkdir -p "$bad_pipeline_root/routines"
