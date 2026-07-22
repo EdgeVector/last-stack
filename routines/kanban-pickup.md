@@ -58,8 +58,9 @@ printf 'TODO_INVENTORY count=%s\n' "$todo_count"
   `noop busy-node no_card_claimed` and EXIT (do not claim, do not idle).
 - If `todo_count` is **0**: do **not** claim a card, do **not** enter idle
   smart-heal, do **not** invent or file work, do **not** start implementation.
-  Heartbeat `noop empty-todo no_card_claimed`, print
-  `ROUTINE_RESULT outcome=noop detail=empty-todo no_card_claimed`, and EXIT.
+  Heartbeat `noop empty-todo no_card_claimed`, print the machine trailer by
+  using the `ROUTINE_RESULT` token followed by
+  `outcome=<noop> detail=empty-todo no_card_claimed`, and EXIT.
   (`doing` cards are already claimed — `kanban-watch` / board-closeout own them.)
 - If `todo_count` is **> 0**, continue with claim selection as usual.
 

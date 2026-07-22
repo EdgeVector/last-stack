@@ -152,8 +152,9 @@ $PROMPT_PATH
 If the reader exits nonzero, do not claim a card and do not enter idle mode.
 Append the normal kanban-pickup heartbeat as:
 \`noop stale-last-stack-install routine-read-failed no_card_claimed\`
-and print the final machine trailer:
-\`ROUTINE_RESULT outcome=noop detail=stale-last-stack-install routine-read-failed no_card_claimed\`.
+and print the final machine trailer by using the \`ROUTINE_RESULT\` token
+followed by
+\`outcome=<noop> detail=stale-last-stack-install routine-read-failed no_card_claimed\`.
 EOF
 }
 
