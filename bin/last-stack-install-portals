@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# Convert ambient LastGit-venue checkouts into portals (thin dirs + bare cache).
+#
+# Existing linked worktrees: ambient is moved to
+#   ~/.cache/edgevector-git/<slug>.legacy-checkout
+# then `git worktree repair` retargets them at the legacy parent.
+# New work uses the portal bare cache via `bin/wt start`.
+#
+# Usage:
+#   last-stack-install-portals [--dry-run] [--only slug1,slug2] [workspace]
+set -euo pipefail
+
+WS="${LAST_STACK_SHARED_WORKSPACE:-$HOME/code/edgevector}"
+CACHE_ROOT="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}"
+TEMPLATE="${LAST_STACK_PORTAL_TEMPLATE:-}"
+DRY=0
+ONLY=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY=1; shift ;;
+    --only) ONLY="${2:-}"; shift 2 ;;
+    --help|-h)
+      echo "usage: last-stack-install-portals [--dry-run] [--only a,b] [workspace]"
+      exit 0
+      ;;
+    *)
+      case "$1" in
+        -*) echo "unknown option: $1" >&2; exit 2 ;;
+        *) WS="$1"; shift ;;
+      esac
+      ;;
+  esac
+done
+
+if [ -z "$TEMPLATE" ]; then
+  for c in \
+    "$HOME/.last-stack/share/portal-template" \
+    "$(cd "$(dirname "$0")/.." && pwd -P)/share/portal-template"
+  do
+    if [ -d "$c" ]; then TEMPLATE="$c"; break; fi
+  done
+fi
+[ -d "$TEMPLATE" ] || { echo "portal template missing" >&2; exit 1; }
+
+GIT=/usr/bin/git
+mkdir -p "$CACHE_ROOT"
+
+in_only() {
+  local slug="$1"
+  [ -z "$ONLY" ] && return 0
+  case ",$ONLY," in *,"$slug",*) return 0;; *) return 1;; esac
+}
+
+convert_one() {
+  local repo="$1"
+  local slug remote venue cache legacy
+  slug="$(basename "$repo")"
+  case "$slug" in -*) return 0;; esac
+  in_only "$slug" || return 0
+
+  if [ -f "$repo/.portal/remote" ]; then
+    printf 'ok   %-24s already a portal\n' "$slug"
+    return 0
+  fi
+  if [ ! -d "$repo/.git" ]; then
+    printf 'skip %-24s not an ambient git checkout\n' "$slug"
+    return 0
+  fi
+
+  venue="$(head -1 "$repo/.last-stack/pr-venue" 2>/dev/null || true)"
+  if [ "$venue" != "lastgit" ]; then
+    printf 'skip %-24s venue=%s (only converting lastgit)\n' "$slug" "${venue:-?}"
+    return 0
+  fi
+
+  remote="lastdb:///$slug"
+  if $GIT -C "$repo" remote get-url lastgit >/dev/null 2>&1; then
+    remote="$($GIT -C "$repo" remote get-url lastgit)"
+  elif $GIT -C "$repo" remote get-url origin >/dev/null 2>&1; then
+    remote="$($GIT -C "$repo" remote get-url origin)"
+  fi
+
+  cache="$CACHE_ROOT/${slug}.git"
+  legacy="$CACHE_ROOT/${slug}.legacy-checkout"
+
+  printf 'plan %-24s remote=%s\n' "$slug" "$remote"
+  if [ "$DRY" = 1 ]; then
+    return 0
+  fi
+
+  # 1) Bare cache from venue (reuse local objects when possible)
+  if [ ! -d "$cache" ]; then
+    printf '  cloning bare cache…\n'
+    if ! $GIT clone --bare --quiet "$remote" "$cache" 2>/dev/null; then
+      # fallback: bare-copy local objects then retarget remote
+      $GIT clone --bare --quiet "$repo" "$cache"
+      $GIT -C "$cache" remote remove origin 2>/dev/null || true
+      $GIT -C "$cache" remote add origin "$remote"
+    fi
+  fi
+  $GIT -C "$cache" remote set-url origin "$remote" 2>/dev/null || \
+    $GIT -C "$cache" remote add origin "$remote" 2>/dev/null || true
+  $GIT -C "$cache" fetch --prune --quiet origin "+refs/heads/main:refs/heads/main" 2>/dev/null \
+    || $GIT -C "$cache" fetch --prune --quiet origin 2>/dev/null \
+    || true
+
+  # 2) Move ambient checkout → legacy (preserve absolute worktree gitdirs)
+  if [ -e "$legacy" ]; then
+    legacy="${legacy}.$(date +%Y%m%d%H%M%S)"
+  fi
+  printf '  move ambient → %s\n' "$legacy"
+  mv "$repo" "$legacy"
+
+  # Repair worktree admin files after the move
+  $GIT -C "$legacy" worktree repair 2>/dev/null || true
+  # Detach legacy from being a "main" work surface: leave as-is for existing WTs
+
+  # 3) Portal at original path
+  mkdir -p "$repo/.portal" "$repo/bin" "$repo/.last-stack"
+  cp "$TEMPLATE/README.md" "$repo/README.md"
+  cp "$TEMPLATE/AGENTS.md" "$repo/AGENTS.md"
+  printf '%s\n' "$slug" >"$repo/.portal/slug"
+  printf '%s\n' "lastgit" >"$repo/.portal/venue"
+  printf '%s\n' "$remote" >"$repo/.portal/remote"
+  printf '%s\n' "$cache" >"$repo/.portal/cache"
+  printf '%s\n' "$legacy" >"$repo/.portal/legacy-checkout"
+  printf 'lastgit\n' >"$repo/.last-stack/pr-venue"
+  cp "$TEMPLATE/bin/wt" "$repo/bin/wt"
+  chmod +x "$repo/bin/wt"
+
+  # Smoke: portal wt path works
+  if command -v last-stack-portal-wt >/dev/null 2>&1; then
+    last-stack-portal-wt --portal "$repo" fetch >/dev/null 2>&1 \
+      && printf 'ok   %-24s portal + cache fetch ok\n' "$slug" \
+      || printf 'ok   %-24s portal installed (cache fetch deferred)\n' "$slug"
+  else
+    printf 'ok   %-24s portal installed\n' "$slug"
+  fi
+}
+
+shopt -s nullglob
+for repo in "$WS"/*; do
+  [ -d "$repo" ] || continue
+  [ -L "$repo" ] && continue
+  convert_one "$repo" || printf 'FLAG %-24s convert failed\n' "$(basename "$repo")"
+done
+
+printf 'PORTALS_INSTALL done workspace=%s cache=%s dry=%s\n' "$WS" "$CACHE_ROOT" "$DRY"
