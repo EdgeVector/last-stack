@@ -7,21 +7,26 @@
   "apps": [
     {
       "app": "lastgit",
-      "install_mode": "checkout",
-      "kind": "A compile",
+      "install_mode": "artifact",
+      "kind": "artifact-bundle",
       "command": "lastgit",
       "gate": "forgejo",
       "gate_main": "http://localhost:3300/EdgeVector/lastgit.git#main",
-      "gate_remote": "origin",
-      "gate_ref": "refs/heads/main",
-      "host_track": "$HOME/.lastgit/host-checkout/lastgit",
-      "refresh": "$HOME/.lastgit/host-checkout/lastgit/.lastgit/refresh-host.sh",
-      "artifact_exemption": {
-        "kind": "bootstrap-recovery",
-        "owner": "Tom",
-        "rationale": "LastGit keeps a checkout-backed recovery path until its own artifact producer and Forgejo-gated bootstrap path are proven."
-      },
-      "notes": "Delegates to LastGit's host refresh script."
+      "artifact_app": "lastgit",
+      "artifact_channel": "stable",
+      "artifact_root": "$HOME/.lastgit/artifacts",
+      "install_root": "$HOME/.host-track/apps/lastgit",
+      "links": [
+        {
+          "source": "dist/lastgit",
+          "target": "$HOME/.local/bin/lastgit"
+        },
+        {
+          "source": "dist/git-remote-lastdb",
+          "target": "$HOME/.local/bin/git-remote-lastdb"
+        }
+      ],
+      "notes": "Verified LastGit self-artifact install; keep source work in isolated repo worktrees, not the Host Track install tree."
     },
     {
       "app": "last-stack",
@@ -45,74 +50,150 @@
     },
     {
       "app": "brain",
-      "install_mode": "checkout",
-      "kind": "B checkout-shim",
+      "install_mode": "artifact",
+      "kind": "artifact-bundle",
       "command": "brain",
-      "gate": "placeholder",
-      "gate_main": "",
-      "gate_remote": "",
-      "gate_ref": "",
-      "host_track": "$HOME/code/edgevector/brain",
-      "artifact_exemption": {
-        "kind": "bootstrap-recovery",
-        "owner": "Tom",
-        "rationale": "Brain is a temporary checkout shim until the artifact migration publishes and installs a verified Brain bundle."
-      },
-      "notes": "Placeholder until brain moves from workspace symlink to host track."
+      "gate": "lastgit",
+      "gate_main": "lastdb:///brain#main",
+      "artifact_app": "brain",
+      "artifact_channel": "stable",
+      "artifact_root": "$HOME/.lastgit/artifacts",
+      "install_root": "$HOME/.host-track/apps/brain",
+      "post_install": "$HOME/.host-track/apps/brain/current/bin/brain-host-track-post-install",
+      "links": [
+        {
+          "source": "bin/brain",
+          "target": "$HOME/.local/bin/brain"
+        },
+        {
+          "source": "bin/brain-mcp",
+          "target": "$HOME/.local/bin/brain-mcp"
+        }
+      ],
+      "notes": "Verified LastGit artifact install; PATH links point into the immutable Host Track artifact bundle."
     },
     {
       "app": "situations",
-      "install_mode": "checkout",
-      "kind": "B checkout-shim",
+      "install_mode": "artifact",
+      "kind": "artifact-bundle",
       "command": "situations",
       "gate": "lastgit",
       "gate_main": "lastdb:///situations#main",
-      "gate_remote": "lastgit",
-      "gate_ref": "refs/heads/main",
-      "host_track": "$HOME/.host-track/situations",
-      "refresh": "$HOME/.last-stack/bin/last-stack-refresh-situations-host-track",
-      "artifact_exemption": {
-        "kind": "bootstrap-recovery",
-        "owner": "Tom",
-        "rationale": "Situations remains checkout-backed while the host-track artifact rollout migrates it to a verified bundle."
-      },
-      "notes": "Fast-forwards the situations host checkout from LastGit and exposes the PATH shim."
+      "artifact_app": "situations",
+      "artifact_channel": "stable",
+      "artifact_root": "$HOME/.lastgit/artifacts",
+      "install_root": "$HOME/.host-track/apps/situations",
+      "links": [
+        {
+          "source": "dist/situations",
+          "target": "$HOME/.local/bin/situations"
+        },
+        {
+          "source": "dist/fsituations",
+          "target": "$HOME/.local/bin/fsituations"
+        }
+      ],
+      "notes": "Verified LastGit artifact install; PATH links point into the immutable Host Track artifact bundle. Upgrade with host-track refresh situations; never develop in the install tree."
     },
     {
       "app": "kanban",
-      "install_mode": "checkout",
-      "kind": "B checkout-shim",
+      "install_mode": "artifact",
+      "kind": "artifact-bundle",
       "command": "kanban",
       "gate": "lastgit",
       "gate_main": "lastdb:///fkanban#main",
-      "gate_remote": "lastgit",
-      "gate_ref": "refs/heads/main",
-      "host_track": "$HOME/.host-track/fkanban",
-      "refresh": "$HOME/.last-stack/bin/last-stack-refresh-fkanban-host-track",
-      "artifact_exemption": {
-        "kind": "bootstrap-recovery",
-        "owner": "Tom",
-        "rationale": "Kanban remains checkout-backed while the host-track artifact rollout migrates F-Kanban to a verified bundle."
-      },
-      "notes": "Kind B host-track checkout; PATH shims point into ~/.host-track/fkanban/bin."
+      "artifact_app": "fkanban",
+      "artifact_channel": "stable",
+      "artifact_root": "$HOME/.lastgit/artifacts",
+      "install_root": "$HOME/.host-track/apps/fkanban",
+      "links": [
+        {
+          "source": "dist/kanban",
+          "target": "$HOME/.local/bin/kanban"
+        },
+        {
+          "source": "dist/fkanban",
+          "target": "$HOME/.local/bin/fkanban"
+        },
+        {
+          "source": "dist/kanban-mcp",
+          "target": "$HOME/.local/bin/kanban-mcp"
+        },
+        {
+          "source": "dist/fkanban-mcp",
+          "target": "$HOME/.local/bin/fkanban-mcp"
+        }
+      ],
+      "notes": "Verified LastGit fkanban artifact install; kanban is the primary command alias."
     },
     {
       "app": "fkanban",
-      "install_mode": "checkout",
-      "kind": "B checkout-shim",
+      "install_mode": "artifact",
+      "kind": "artifact-bundle",
       "command": "fkanban",
       "gate": "lastgit",
       "gate_main": "lastdb:///fkanban#main",
-      "gate_remote": "lastgit",
-      "gate_ref": "refs/heads/main",
-      "host_track": "$HOME/.host-track/fkanban",
-      "refresh": "$HOME/.last-stack/bin/last-stack-refresh-fkanban-host-track",
-      "artifact_exemption": {
-        "kind": "bootstrap-recovery",
-        "owner": "Tom",
-        "rationale": "F-Kanban remains checkout-backed while the host-track artifact rollout migrates it to a verified bundle."
-      },
-      "notes": "First-class alias for the F-Kanban CLI; shares the managed host-track checkout with kanban."
+      "artifact_app": "fkanban",
+      "artifact_channel": "stable",
+      "artifact_root": "$HOME/.lastgit/artifacts",
+      "install_root": "$HOME/.host-track/apps/fkanban",
+      "links": [
+        {
+          "source": "dist/kanban",
+          "target": "$HOME/.local/bin/kanban"
+        },
+        {
+          "source": "dist/fkanban",
+          "target": "$HOME/.local/bin/fkanban"
+        },
+        {
+          "source": "dist/kanban-mcp",
+          "target": "$HOME/.local/bin/kanban-mcp"
+        },
+        {
+          "source": "dist/fkanban-mcp",
+          "target": "$HOME/.local/bin/fkanban-mcp"
+        }
+      ],
+      "notes": "Verified LastGit fkanban artifact install; shares the immutable bundle with the kanban alias."
+    },
+    {
+      "app": "lastdb",
+      "install_mode": "artifact",
+      "kind": "artifact-bundle",
+      "command": "lastdb",
+      "gate": "forgejo",
+      "gate_main": "http://localhost:3300/EdgeVector/fold.git#main",
+      "artifact_app": "lastdb-bundle",
+      "artifact_channel": "stable",
+      "artifact_root": "$HOME/.lastgit/artifacts",
+      "install_root": "$HOME/.host-track/apps/lastdb-bundle",
+      "links": [
+        {
+          "source": "bin/lastdb",
+          "target": "$HOME/.local/bin/lastdb"
+        }
+      ],
+      "notes": "Verified paired LastDB Mini bundle. Live primary upgrades still require lastdb-safe-upgrade; do not overwrite or restart ~/.lastdb directly from Host Track."
+    },
+    {
+      "app": "lastdbd",
+      "install_mode": "artifact",
+      "kind": "artifact-bundle",
+      "command": "lastdbd",
+      "gate": "forgejo",
+      "gate_main": "http://localhost:3300/EdgeVector/fold.git#main",
+      "artifact_app": "lastdb-bundle",
+      "artifact_channel": "stable",
+      "artifact_root": "$HOME/.lastgit/artifacts",
+      "install_root": "$HOME/.host-track/apps/lastdb-bundle",
+      "links": [
+        {
+          "source": "bin/lastdbd",
+          "target": "$HOME/.local/bin/lastdbd"
+        }
+      ],
+      "notes": "Verified paired LastDB Mini daemon bundle. Activation of Tom's primary node remains lastdb-safe-upgrade only."
     }
   ]
 }

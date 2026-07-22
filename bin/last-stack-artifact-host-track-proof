@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  source_dir="$(cd "$(dirname "$SOURCE")" && pwd -P)"
+  link_target="$(readlink "$SOURCE")"
+  case "$link_target" in
+    /*) SOURCE="$link_target" ;;
+    *) SOURCE="$source_dir/$link_target" ;;
+  esac
+done
+ROOT="$(cd "$(dirname "$SOURCE")/.." && pwd -P)"
+
+registry="${HOST_TRACK_REGISTRY:-}"
+proof_path="${LAST_STACK_ARTIFACT_HOST_TRACK_PROOF:-$HOME/.last-stack/feature-proofs/artifact-driven-host-track-registry-cutover.md}"
+json_out=0
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  last-stack-artifact-host-track-proof [--json] [--registry <path>] [--proof <path>]
+
+Runs the Host Track artifact invariant and per-app host-track checks. On success
+writes a PASS proof file for the artifact-driven registry cutover.
+EOF
+}
+
+die() {
+  printf 'artifact-host-track-proof: %s\n' "$*" >&2
+  exit 2
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json) json_out=1; shift ;;
+    --registry) [ "$#" -ge 2 ] || die "--registry requires a value"; registry="$2"; shift 2 ;;
+    --proof) [ "$#" -ge 2 ] || die "--proof requires a value"; proof_path="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    --*) die "unknown flag: $1" ;;
+    *) die "unexpected argument: $1" ;;
+  esac
+done
+
+command -v jq >/dev/null 2>&1 || die "jq is required"
+
+host_track_bin="${HOST_TRACK_BIN:-$ROOT/bin/host-track}"
+invariant_bin="${HOST_TRACK_INVARIANT_BIN:-$ROOT/bin/last-stack-host-track-artifact-invariant}"
+[ -x "$host_track_bin" ] || die "host-track binary is not executable: $host_track_bin"
+[ -x "$invariant_bin" ] || die "artifact invariant binary is not executable: $invariant_bin"
+
+if [ -z "$registry" ]; then
+  if [ -f "$ROOT/config/host-track/apps.json" ]; then
+    registry="$ROOT/config/host-track/apps.json"
+  else
+    registry="$HOME/.local/share/last-stack/config/host-track/apps.json"
+  fi
+fi
+[ -f "$registry" ] || die "registry not found: $registry"
+
+tmp="$(mktemp -d)"
+cleanup() {
+  rm -rf "$tmp"
+}
+trap cleanup EXIT
+
+status_json="$tmp/status.json"
+invariant_json="$tmp/invariant.json"
+check_jsonl="$tmp/checks.jsonl"
+: > "$check_jsonl"
+
+HOST_TRACK_REGISTRY="$registry" "$host_track_bin" status --json > "$status_json"
+if ! HOST_TRACK_REGISTRY="$registry" "$invariant_bin" --json > "$invariant_json"; then
+  if [ "$json_out" -eq 1 ]; then
+    jq -n --arg registry "$registry" --slurpfile status "$status_json" --slurpfile invariant "$invariant_json" \
+      '{ok:false, registry:$registry, status:$status[0], invariant:($invariant[0] // null), error:"artifact-invariant-failed"}'
+  fi
+  exit 1
+fi
+
+while IFS= read -r app; do
+  [ -n "$app" ] || continue
+  if HOST_TRACK_REGISTRY="$registry" "$host_track_bin" check "$app" > "$tmp/check-$app.out" 2> "$tmp/check-$app.err"; then
+    jq -cn --arg app "$app" --arg message "$(cat "$tmp/check-$app.out")" \
+      '{app:$app, ok:true, message:$message}' >> "$check_jsonl"
+  else
+    jq -cn --arg app "$app" --arg message "$(cat "$tmp/check-$app.err")" \
+      '{app:$app, ok:false, message:$message}' >> "$check_jsonl"
+  fi
+done < <(jq -r '.apps[]?.app' "$registry")
+
+failed_checks="$(jq -s '[.[] | select(.ok == false)]' "$check_jsonl")"
+if [ "$(printf '%s\n' "$failed_checks" | jq 'length')" -ne 0 ]; then
+  if [ "$json_out" -eq 1 ]; then
+    jq -n --arg registry "$registry" --slurpfile status "$status_json" --slurpfile invariant "$invariant_json" --slurpfile checks "$check_jsonl" \
+      '{ok:false, registry:$registry, status:$status[0], invariant:$invariant[0], checks:$checks, error:"host-track-check-failed"}'
+  else
+    printf 'FAIL: host-track check failed for app(s): %s\n' "$(printf '%s\n' "$failed_checks" | jq -r 'map(.app) | join(", ")')" >&2
+  fi
+  exit 1
+fi
+
+artifact_count="$(jq '. as $root | [$root.apps[]? | select((.install_mode // $root.defaults.install_mode // "checkout") == "artifact")] | length' "$registry")"
+checked_count="$(jq -s 'length' "$check_jsonl")"
+timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+mkdir -p "$(dirname "$proof_path")"
+{
+  printf 'PASS artifact-driven-host-track-registry-cutover %s\n' "$timestamp"
+  printf '\n'
+  printf 'registry: %s\n' "$registry"
+  printf 'checked_apps: %s\n' "$checked_count"
+  printf 'artifact_apps: %s\n' "$artifact_count"
+  printf '\n'
+  jq -r '.[] | "- " + .app + ": " + .install_mode + " stale=" + (.stale | tostring) + " artifact_app=" + (.artifact_app // "-")' "$status_json"
+} > "$proof_path"
+
+if [ "$json_out" -eq 1 ]; then
+  jq -n --arg registry "$registry" --arg proof "$proof_path" --slurpfile status "$status_json" --slurpfile invariant "$invariant_json" --slurpfile checks "$check_jsonl" \
+    '{ok:true, registry:$registry, proof:$proof, status:$status[0], invariant:$invariant[0], checks:$checks}'
+else
+  printf 'PASS: wrote %s\n' "$proof_path"
+fi

@@ -15,32 +15,34 @@ fail() {
 
 kanban_registry="$(jq -c '.apps[] | select(.app == "kanban")' "$ROOT/config/host-track/apps.json")"
 printf '%s\n' "$kanban_registry" | jq -e '
-  .kind == "B checkout-shim" and
+  .install_mode == "artifact" and
+  .kind == "artifact-bundle" and
   .gate == "lastgit" and
   .gate_main == "lastdb:///fkanban#main" and
-  .gate_remote == "lastgit" and
-  .gate_ref == "refs/heads/main" and
-  .host_track == "$HOME/.host-track/fkanban" and
-  .refresh == "$HOME/.last-stack/bin/last-stack-refresh-fkanban-host-track"
+  .artifact_app == "fkanban" and
+  .artifact_channel == "stable" and
+  .artifact_root == "$HOME/.lastgit/artifacts" and
+  .install_root == "$HOME/.host-track/apps/fkanban" and
+  any(.links[]; .source == "dist/kanban" and .target == "$HOME/.local/bin/kanban")
 ' >/dev/null || fail "default kanban registry entry is not a real host-track target"
 printf '%s\n' "$kanban_registry" | jq -e '.notes | test("Placeholder") | not' >/dev/null \
   || fail "default kanban registry entry still looks like a placeholder"
 
 fkanban_registry="$(jq -c '.apps[] | select(.app == "fkanban")' "$ROOT/config/host-track/apps.json")"
 printf '%s\n' "$fkanban_registry" | jq -e '
-  .kind == "B checkout-shim" and
+  .install_mode == "artifact" and
+  .kind == "artifact-bundle" and
   .command == "fkanban" and
   .gate == "lastgit" and
   .gate_main == "lastdb:///fkanban#main" and
-  .gate_remote == "lastgit" and
-  .gate_ref == "refs/heads/main" and
-  .host_track == "$HOME/.host-track/fkanban" and
-  .refresh == "$HOME/.last-stack/bin/last-stack-refresh-fkanban-host-track"
+  .artifact_app == "fkanban" and
+  .artifact_channel == "stable" and
+  .artifact_root == "$HOME/.lastgit/artifacts" and
+  .install_root == "$HOME/.host-track/apps/fkanban" and
+  any(.links[]; .source == "dist/fkanban" and .target == "$HOME/.local/bin/fkanban")
 ' >/dev/null || fail "default fkanban registry entry is not a real host-track target"
 printf '%s\n' "$fkanban_registry" | jq -e '.notes | test("Placeholder") | not' >/dev/null \
   || fail "default fkanban registry entry still looks like a placeholder"
-test -x "$ROOT/bin/last-stack-refresh-fkanban-host-track" \
-  || fail "fkanban host-track bootstrap wrapper is not executable"
 
 installed_root="$tmp/installed-last-stack"
 mkdir -p "$installed_root/bin" "$installed_root/config/host-track"
@@ -199,15 +201,16 @@ export HOST_TRACK_STAMP_DIR="$stamp_dir"
 default_registry="$ROOT/config/host-track/apps.json"
 jq -e '
   .apps[] | select(.app == "situations")
-  | .gate == "lastgit"
+  | .install_mode == "artifact"
+    and .kind == "artifact-bundle"
+    and .gate == "lastgit"
     and .gate_main == "lastdb:///situations#main"
-    and .gate_remote == "lastgit"
-    and .gate_ref == "refs/heads/main"
-    and .host_track == "$HOME/.host-track/situations"
-    and .refresh == "$HOME/.last-stack/bin/last-stack-refresh-situations-host-track"
+    and .artifact_app == "situations"
+    and .artifact_channel == "stable"
+    and .artifact_root == "$HOME/.lastgit/artifacts"
+    and .install_root == "$HOME/.host-track/apps/situations"
+    and any(.links[]; .source == "dist/situations" and .target == "$HOME/.local/bin/situations")
 ' "$default_registry" >/dev/null || fail "default situations registry is not a real LastGit host-track entry"
-test -x "$ROOT/bin/last-stack-refresh-situations-host-track" \
-  || fail "situations host-track bootstrap wrapper is not executable"
 
 status="$("$ROOT/bin/host-track" status --json fake)"
 printf '%s\n' "$status" | jq -e '.app == "fake"' >/dev/null || fail "status app mismatch"
