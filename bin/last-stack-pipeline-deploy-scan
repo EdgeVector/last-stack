@@ -3,7 +3,7 @@
 # and report repos whose latest terminal state is failure, or pending too long.
 #
 # Usage:
-#   last-stack-pipeline-deploy-scan [--json] [--root <dir>] [--pending-max-s <n>]
+#   last-stack-pipeline-deploy-scan [--json] [--root <dir>] [--pending-max-s <n>] [--tail-bytes <n>]
 #
 # Exit codes:
 #   0  scanned OK (even if some pipelines are blocked — check .blocked)
@@ -18,10 +18,11 @@ set -eu
 json=0
 root="${LASTGIT_DEPLOY_ROOT:-$HOME/.lastgit}"
 pending_max_s=14400
+tail_bytes="${LAST_STACK_DEPLOY_SCAN_TAIL_BYTES:-1048576}"
 
 usage() {
   cat >&2 <<'EOF'
-usage: last-stack-pipeline-deploy-scan [--json] [--root <dir>] [--pending-max-s <seconds>]
+usage: last-stack-pipeline-deploy-scan [--json] [--root <dir>] [--pending-max-s <seconds>] [--tail-bytes <bytes>]
 
 Scans <root>/deploy-*/deploy.log for LastGit deploy-pipeline health.
 Prints human lines by default, or a JSON array with --json.
@@ -39,6 +40,11 @@ while [ "$#" -gt 0 ]; do
     --pending-max-s)
       [ "$#" -ge 2 ] || { usage; exit 2; }
       pending_max_s="$2"
+      shift 2
+      ;;
+    --tail-bytes)
+      [ "$#" -ge 2 ] || { usage; exit 2; }
+      tail_bytes="$2"
       shift 2
       ;;
     -h|--help) usage; exit 0 ;;
@@ -70,6 +76,14 @@ log_mtime() {
   echo 0
 }
 
+last_matching_line() {
+  local log="$1"
+  local pattern="$2"
+  # Production deploy logs can be tens of MB. Keep the shell bounded by reading
+  # only the recent tail and using grep's C implementation for matching.
+  tail -c "$tail_bytes" "$log" 2>/dev/null | grep -aE "$pattern" | tail -n 1 || true
+}
+
 # Collect results as lines: repo|pipe_status|sha|blocked|reason|log|mtime
 results=()
 shopt -s nullglob
@@ -86,22 +100,9 @@ for dir in "$root"/deploy-*/; do
     continue
   fi
 
-  # last success / failure / pending lines (ignore skip / JSON telemetry)
-  last_term=""
-  last_pend=""
-  last_any=""
-  while IFS= read -r line || [ -n "${line:-}" ]; do
-    case "$line" in
-      success\ *|failure\ *)
-        last_term="$line"
-        last_any="$line"
-        ;;
-      pending\ *)
-        last_pend="$line"
-        last_any="$line"
-        ;;
-    esac
-  done <"$log"
+  # Latest deploy event from a bounded tail window (ignore skip / JSON telemetry).
+  last_term="$(last_matching_line "$log" '^(success|failure) ')"
+  last_any="$(last_matching_line "$log" '^(success|failure|pending) ')"
 
   mtime="$(log_mtime "$log")"
   pipe_status="unknown"

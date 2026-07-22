@@ -528,10 +528,15 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
       on concrete PR/branch evidence; when in doubt, do nothing.
       If you need merge-queue membership, do not request `isInMergeQueue` through `gh pr view/list --json`; use `$last_stack/bin/last-stack-gh-pr-queue-state <owner>/<repo> <n>` or `gh api graphql` with explicit owner/name variables for the queue flag and `autoMergeRequest{enabledAt}`. Never use `gh -R <repo> api graphql`.
       - **Merged** (`state=MERGED` / `mergedAt` set for GitHub/Forgejo, or
-        `state=="merged"` with non-empty `merge_oid` for LastGit) → `move <slug>
-        done`. This is the ONLY path to `done` — a verified merged PR/CR. If
-        you can't point at a merged review artifact, it does NOT go to `done`,
-        no matter how the card reads.
+        `state=="merged"` with non-empty `merge_oid` for LastGit) → run
+        `last-stack-card-closeout <slug> --pr-url <url> --branch <branch>`.
+        This is the ONLY path to `done` — a verified merged PR/CR plus any
+        machine gate declared on the card. If the body includes
+        `Requires-Deploy: deploy-pipeline`, the helper must see terminal deploy
+        success via `last-stack-pipeline-deploy-scan --json`; pending/missing/red
+        deploy status leaves the card out of `done`. If you can't point at a
+        merged review artifact, it does NOT go to `done`, no matter how the card
+        reads.
       - **No PR/CR AND no `kanban/<slug>` branch with commits** → column-dependent:
         - In `todo` / `backlog`: UN-STARTED. LEAVE IT EXACTLY WHERE IT IS — never
           move it, never to `done`. (Marking an un-started card `done` silently

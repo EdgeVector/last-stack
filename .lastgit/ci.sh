@@ -38,6 +38,8 @@ bash tests/last-stack-lint-prompts.sh --smoke
 bash tests/last-stack-papercut-reconciler-contract.sh
 bash tests/last-stack-command-modes.sh
 bash tests/last-stack-mini-cutover-health.sh
+bash tests/last-stack-pipeline-deploy-scan.sh
+bash tests/last-stack-deploy-gated-closeout.sh
 bash tests/host-track-artifacts.sh
 bash tests/last-stack-artifact-layout.sh
 bash tests/last-stack-artifact-routine-freshness.sh
