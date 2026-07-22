@@ -221,13 +221,24 @@ Safe properties:
 2. `previous` always retains the last good version after a successful flip.
 3. Install trees are not work surfaces — develop via portals + `wt start`.
 
-`host-track refresh brain` calls `last-stack-refresh-brain-local-safe` →
-`last-stack-safe-upgrade-cli brain` (registry entry). LaunchAgent
-`com.edgevector.host-track-refresh` will pick this up on its poll once the
-registry is live.
+`host-track refresh <app>` for local-safe apps calls
+`last-stack-refresh-local-safe <app>` → `last-stack-safe-upgrade-cli <app>`.
+LaunchAgent `com.edgevector.host-track-refresh` runs `host-track refresh --all`.
 
-Brain is the dogfood app (2026-07-22). Same tool supports situations, routines,
-lastsecrets, configurations.
+**Local-safe apps (2026-07-22):** brain, situations, kanban/fkanban (shared
+install), routines, lastsecrets, configurations.
+
+```bash
+# Upgrade every local-safe CLI
+last-stack-safe-upgrade-all-local
+
+# One app
+last-stack-safe-upgrade-cli situations
+last-stack-safe-upgrade-cli fkanban   # also refreshes kanban PATH links
+```
+
+**Still artifact / special (not local-safe CLI trees):** last-stack, lastgit,
+lastdb/lastdbd Mini (use `lastdb-safe-upgrade` for the primary node).
 
 ## Refresh Agent
 

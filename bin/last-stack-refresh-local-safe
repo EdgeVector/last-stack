@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Host-track refresh entry for any local-safe agent CLI.
+# Usage: last-stack-refresh-local-safe <app> [--force…]
+# App names: brain | situations | kanban | fkanban | routines | lastsecrets | configurations
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd -P)"
+UPGRADE="$ROOT/last-stack-safe-upgrade-cli"
+if [ ! -x "$UPGRADE" ]; then
+  UPGRADE="$(command -v last-stack-safe-upgrade-cli 2>/dev/null || true)"
+fi
+[ -x "$UPGRADE" ] || {
+  echo "last-stack-safe-upgrade-cli not found" >&2
+  exit 127
+}
+app="${1:-}"
+[ -n "$app" ] || {
+  echo "usage: last-stack-refresh-local-safe <app>" >&2
+  exit 2
+}
+shift || true
+# host-track may pass --force; safe-upgrade ignores unknown flags — strip --force
+args=()
+for a in "$@"; do
+  case "$a" in --force) ;; *) args+=("$a") ;; esac
+done
+exec "$UPGRADE" "$app" ${args[@]+"${args[@]}"}
