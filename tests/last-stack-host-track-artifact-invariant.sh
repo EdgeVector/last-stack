@@ -127,6 +127,15 @@ cat > "$HOST_TRACK_REGISTRY" <<EOF
       }
     },
     {
+      "app": "localcli",
+      "install_mode": "local-safe",
+      "kind": "local-safe cli",
+      "command": "localcli",
+      "install_root": "$HOME/apps/localcli",
+      "links": [{"source": "bin/localcli", "target": "$HOME/.local/bin/localcli"}],
+      "notes": "local-safe invariant fixture"
+    },
+    {
       "app": "lastdb",
       "kind": "artifact-bundle",
       "command": "lastdb",
@@ -157,11 +166,25 @@ cp "$tmp/cas/manifests/$digest_one.json" "$tmp/cas/channels/demo/stable.json"
 "$ROOT/bin/host-track" install lastdb >/dev/null
 "$ROOT/bin/host-track" install lastdbd >/dev/null
 
+local_version="$(printf '5%.0s' {1..40})"
+mkdir -p "$HOME/apps/localcli/versions/$local_version/bin"
+printf '#!/usr/bin/env bash\necho localcli\n' > "$HOME/apps/localcli/versions/$local_version/bin/localcli"
+chmod +x "$HOME/apps/localcli/versions/$local_version/bin/localcli"
+ln -s "versions/$local_version" "$HOME/apps/localcli/current"
+ln -s "$HOME/apps/localcli/current/bin/localcli" "$HOME/.local/bin/localcli"
+jq -n \
+  --arg version "$local_version" --arg root "$HOME/apps/localcli" \
+  '{app:"localcli", install_mode:"local-safe", install_root:$root,
+    version_id:$version, current:("versions/" + $version), previous:null,
+    activated_at:"2026-07-22T00:00:00Z"}' \
+  > "$HOST_TRACK_STAMP_DIR/localcli.json"
+
 invariant_json="$("$ROOT/bin/last-stack-host-track-artifact-invariant" --json || true)"
 printf '%s\n' "$invariant_json" | jq -e '
   .ok == true
   and any(.checks[]; .app == "demo" and .ok == true and (.message | test("previous version is restorable")))
   and any(.checks[]; .app == "legacy" and .ok == true and (.message | test("bootstrap-recovery")))
+  and any(.checks[]; .app == "localcli" and .ok == true and (.message | test("local-safe current")))
 ' >/dev/null || {
   printf '%s\n' "$invariant_json" >&2
   fail "valid registry did not satisfy artifact invariant"

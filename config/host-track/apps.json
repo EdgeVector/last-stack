@@ -7,11 +7,13 @@
   "apps": [
     {
       "app": "lastgit",
-      "install_mode": "artifact",
-      "kind": "artifact-bundle",
+      "install_mode": "checkout",
+      "kind": "checkout-shim",
       "command": "lastgit",
       "gate": "forgejo",
       "gate_main": "http://localhost:3300/EdgeVector/lastgit.git#main",
+      "host_track": "$HOME/.lastgit/host-checkout/lastgit",
+      "refresh": "$HOME/.lastgit/host-checkout/lastgit/.lastgit/refresh-host.sh",
       "artifact_app": "lastgit",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -26,7 +28,12 @@
           "target": "$HOME/.local/bin/git-remote-lastdb"
         }
       ],
-      "notes": "Verified LastGit self-artifact install; keep source work in isolated repo worktrees, not the Host Track install tree."
+      "artifact_exemption": {
+        "kind": "bootstrap-recovery",
+        "owner": "platform",
+        "rationale": "LastGit remains checkout-backed so LastGit fixes can still be built when the artifact/CR substrate itself is unhealthy."
+      },
+      "notes": "LastGit is the bootstrap forge and stays checkout-backed until its artifact producer is independent of LastGit itself."
     },
     {
       "app": "last-stack",
@@ -50,11 +57,12 @@
     },
     {
       "app": "brain",
-      "install_mode": "artifact",
-      "kind": "artifact-bundle",
+      "install_mode": "local-safe",
+      "kind": "local-safe cli",
       "command": "brain",
       "gate": "lastgit",
       "gate_main": "lastdb:///brain#main",
+      "refresh": "$HOME/.last-stack/bin/last-stack-refresh-local-safe",
       "artifact_app": "brain",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -69,15 +77,16 @@
           "target": "$HOME/.local/bin/fbrain"
         }
       ],
-      "notes": "Verified Brain artifact install. PATH links brain and fbrain from the same artifact."
+      "notes": "Local-safe CLI install; refresh uses last-stack-safe-upgrade-cli and PATH links brain/fbrain from the active version."
     },
     {
       "app": "situations",
-      "install_mode": "artifact",
-      "kind": "artifact-bundle",
+      "install_mode": "local-safe",
+      "kind": "local-safe cli",
       "command": "situations",
       "gate": "lastgit",
       "gate_main": "lastdb:///situations#main",
+      "refresh": "$HOME/.last-stack/bin/last-stack-refresh-local-safe",
       "artifact_app": "situations",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -92,15 +101,16 @@
           "target": "$HOME/.local/bin/fsituations"
         }
       ],
-      "notes": "Verified Situations artifact install. PATH links situations and fsituations from the same artifact."
+      "notes": "Local-safe CLI install; refresh uses last-stack-safe-upgrade-cli and PATH links situations/fsituations from the active version."
     },
     {
       "app": "kanban",
-      "install_mode": "artifact",
-      "kind": "artifact-bundle",
+      "install_mode": "local-safe",
+      "kind": "local-safe cli",
       "command": "kanban",
       "gate": "lastgit",
       "gate_main": "lastdb:///fkanban#main",
+      "refresh": "$HOME/.last-stack/bin/last-stack-refresh-local-safe",
       "artifact_app": "fkanban",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -111,15 +121,16 @@
           "target": "$HOME/.local/bin/kanban"
         }
       ],
-      "notes": "Shares the verified fkanban artifact bundle with fkanban."
+      "notes": "Local-safe compatibility CLI sharing the fkanban install root."
     },
     {
       "app": "fkanban",
-      "install_mode": "artifact",
-      "kind": "artifact-bundle",
+      "install_mode": "local-safe",
+      "kind": "local-safe cli",
       "command": "fkanban",
       "gate": "lastgit",
       "gate_main": "lastdb:///fkanban#main",
+      "refresh": "$HOME/.last-stack/bin/last-stack-refresh-local-safe",
       "artifact_app": "fkanban",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -130,15 +141,16 @@
           "target": "$HOME/.local/bin/fkanban"
         }
       ],
-      "notes": "Verified fkanban artifact install. The artifact also carries the kanban compatibility CLI."
+      "notes": "Local-safe CLI install; refresh uses last-stack-safe-upgrade-cli and also carries the kanban compatibility CLI."
     },
     {
       "app": "routines",
-      "install_mode": "artifact",
-      "kind": "artifact-bundle",
+      "install_mode": "local-safe",
+      "kind": "local-safe cli",
       "command": "routines",
       "gate": "lastgit",
       "gate_main": "lastdb:///routines#main",
+      "refresh": "$HOME/.last-stack/bin/last-stack-refresh-local-safe",
       "artifact_app": "routines",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -149,15 +161,16 @@
           "target": "$HOME/.local/bin/routines"
         }
       ],
-      "notes": "Verified Routines artifact install."
+      "notes": "Local-safe CLI install; refresh uses last-stack-safe-upgrade-cli."
     },
     {
       "app": "lastsecrets",
-      "install_mode": "artifact",
-      "kind": "artifact-bundle",
+      "install_mode": "local-safe",
+      "kind": "local-safe cli",
       "command": "lastsecrets",
       "gate": "lastgit",
       "gate_main": "lastdb:///lastsecrets#main",
+      "refresh": "$HOME/.last-stack/bin/last-stack-refresh-local-safe",
       "artifact_app": "lastsecrets",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -168,15 +181,16 @@
           "target": "$HOME/.local/bin/lastsecrets"
         }
       ],
-      "notes": "Verified LastSecrets artifact install."
+      "notes": "Local-safe CLI install; refresh uses last-stack-safe-upgrade-cli."
     },
     {
       "app": "configurations",
-      "install_mode": "artifact",
-      "kind": "artifact-bundle",
+      "install_mode": "local-safe",
+      "kind": "local-safe cli",
       "command": "configurations",
       "gate": "lastgit",
       "gate_main": "lastdb:///configurations#main",
+      "refresh": "$HOME/.last-stack/bin/last-stack-refresh-local-safe",
       "artifact_app": "configurations",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -187,12 +201,12 @@
           "target": "$HOME/.local/bin/configurations"
         }
       ],
-      "notes": "Verified Configurations artifact install."
+      "notes": "Local-safe CLI install; refresh uses last-stack-safe-upgrade-cli."
     },
     {
       "app": "lastdb",
-      "install_mode": "artifact",
-      "kind": "artifact-bundle",
+      "install_mode": "checkout",
+      "kind": "safe-upgrade-managed binary",
       "command": "lastdb",
       "gate": "forgejo",
       "gate_main": "http://localhost:3300/EdgeVector/fold.git#main",
@@ -206,12 +220,17 @@
           "target": "$HOME/.local/bin/lastdb"
         }
       ],
-      "notes": "Verified paired LastDB Mini bundle. Live primary upgrades still require lastdb-safe-upgrade; do not overwrite or restart ~/.lastdb directly from Host Track."
+      "artifact_exemption": {
+        "kind": "deployment-only",
+        "owner": "platform",
+        "rationale": "Live primary Mini activation is managed by lastdb-safe-upgrade and ~/.lastdb/current, not generic host-track artifact refresh."
+      },
+      "notes": "LastDB Mini is deployment-managed; live primary upgrades still require lastdb-safe-upgrade and must not be performed by Host Track refresh."
     },
     {
       "app": "lastdbd",
-      "install_mode": "artifact",
-      "kind": "artifact-bundle",
+      "install_mode": "checkout",
+      "kind": "safe-upgrade-managed binary",
       "command": "lastdbd",
       "gate": "forgejo",
       "gate_main": "http://localhost:3300/EdgeVector/fold.git#main",
@@ -225,7 +244,12 @@
           "target": "$HOME/.local/bin/lastdbd"
         }
       ],
-      "notes": "Verified paired LastDB Mini daemon bundle. Activation of Tom's primary node remains lastdb-safe-upgrade only."
+      "artifact_exemption": {
+        "kind": "deployment-only",
+        "owner": "platform",
+        "rationale": "Live primary Mini daemon activation is managed by lastdb-safe-upgrade and ~/.lastdb/current, not generic host-track artifact refresh."
+      },
+      "notes": "LastDB Mini daemon is deployment-managed; activation of Tom's primary node remains lastdb-safe-upgrade only."
     }
   ]
 }

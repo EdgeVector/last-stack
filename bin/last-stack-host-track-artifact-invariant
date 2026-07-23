@@ -142,6 +142,12 @@ add_ok() {
     '{app:$app, ok:true, message:$message}')")
 }
 
+has_app_failure() {
+  local app="$1"
+  [ "${#failures[@]}" -ne 0 ] || return 1
+  printf '%s\n' "${failures[@]}" | grep -q "^$app:"
+}
+
 while IFS= read -r app_json; do
   [ -n "$app_json" ] || continue
   app="$(printf '%s\n' "$app_json" | jq -r '.app // ""')"
@@ -153,6 +159,53 @@ while IFS= read -r app_json; do
   fi
 
   install_mode="$(printf '%s\n' "$status" | jq -r '.install_mode // "checkout"')"
+  if [ "$install_mode" = "local-safe" ]; then
+    version_id="$(printf '%s\n' "$status" | jq -r '.host_head // ""')"
+    install_root="$(printf '%s\n' "$status" | jq -r '.install_root // ""')"
+    exec_path="$(printf '%s\n' "$status" | jq -r '.exec_path // ""')"
+    stale="$(printf '%s\n' "$status" | jq -r '.stale | tostring')"
+    rollback_message="rollback proof: no previous version"
+
+    [ "$stale" = "false" ] || add_failure "$app" "stale" "local-safe app is not fresh"
+    [[ "$version_id" =~ ^[0-9a-f]{40}$ ]] || add_failure "$app" "invalid-local-safe-version" "local-safe version id is missing or malformed"
+    [ -n "$install_root" ] && [ -d "$install_root" ] || add_failure "$app" "missing-install-root" "local-safe install root is missing"
+    [ -L "$install_root/current" ] || add_failure "$app" "missing-current" "local-safe current is not a symlink"
+    if [ -L "$install_root/current" ] && [[ "$version_id" =~ ^[0-9a-f]{40}$ ]] && [ "$(readlink "$install_root/current")" != "versions/$version_id" ]; then
+      add_failure "$app" "current-drift" "local-safe current symlink does not point at the stamped version"
+    fi
+
+    if [ -n "$exec_path" ] && [ -n "$install_root" ]; then
+      resolved_exec="$(real_path "$exec_path" 2>/dev/null || true)"
+      active_prefix="$(real_path "$install_root/current" 2>/dev/null || true)/"
+      case "$resolved_exec" in
+        "$active_prefix"*) ;;
+        *) add_failure "$app" "command-outside-local-safe-version" "command path does not resolve inside the active local-safe version" ;;
+      esac
+    else
+      add_failure "$app" "missing-command" "local-safe command path is missing"
+    fi
+
+    if [ -L "$install_root/previous" ]; then
+      previous_target="$(readlink "$install_root/previous")"
+      case "$previous_target" in
+        versions/*)
+          previous_version="${previous_target#versions/}"
+          if [[ "$previous_version" =~ ^[0-9a-f]{40}$ ]] && [ -d "$install_root/$previous_target" ]; then
+            rollback_message="rollback proof: previous version is restorable"
+          else
+            add_failure "$app" "invalid-rollback-target" "local-safe previous symlink target is not restorable"
+          fi
+          ;;
+        *) add_failure "$app" "invalid-rollback-target" "local-safe previous symlink does not point at versions/<version>" ;;
+      esac
+    fi
+
+    if ! has_app_failure "$app"; then
+      add_ok "$app" "local-safe current; command and stamp verified; $rollback_message"
+    fi
+    continue
+  fi
+
   if [ "$install_mode" != "artifact" ]; then
     exemption_kind="$(printf '%s\n' "$app_json" | jq -r '.artifact_exemption.kind // ""')"
     exemption_owner="$(printf '%s\n' "$app_json" | jq -r '.artifact_exemption.owner // ""')"
@@ -254,7 +307,7 @@ while IFS= read -r app_json; do
     esac
   fi
 
-  if [ "${#failures[@]}" -eq 0 ] || ! printf '%s\n' "${failures[@]}" | grep -q "^$app:"; then
+  if ! has_app_failure "$app"; then
     add_ok "$app" "artifact fresh; provenance and hashes verified; $rollback_message"
   fi
 done < <(printf '%s\n' "$registry_apps")

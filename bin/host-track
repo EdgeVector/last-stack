@@ -184,6 +184,7 @@ status_json_for() {
   local app="$1" json kind command_name gate gate_main host_track_raw host_track refresh_raw refresh_path
   local gate_remote gate_ref notes exec_path host_head host_head_short version gate_tip stale stamp_path
   local install_mode artifact_app artifact_channel artifact_root install_root installed_digest channel_digest
+  local stamp_install_mode stamp_current
 
   json="$(require_app_json "$app")"
   kind="$(field "$json" kind)"
@@ -225,6 +226,33 @@ status_json_for() {
         stale="true"
       fi
     fi
+  elif [ "$install_mode" = "local-safe" ]; then
+    install_root="$(expand_path "$(field "$json" install_root)")"
+    [ -n "$install_root" ] || install_root="$INSTALL_ROOT_DEFAULT/$app"
+    host_track="$install_root/current"
+    stamp_install_mode="$(jq -r '.install_mode // ""' "$stamp_path" 2>/dev/null || true)"
+    host_head="$(jq -r '.version_id // ""' "$stamp_path" 2>/dev/null || true)"
+    gate_tip=""
+    stale="true"
+    if [ "$stamp_install_mode" = "local-safe" ] && [[ "$host_head" =~ ^[0-9a-f]{40}$ ]] && [ -L "$install_root/current" ]; then
+      stamp_current="$(jq -r '.current // ""' "$stamp_path" 2>/dev/null || true)"
+      [ -n "$stamp_current" ] || stamp_current="versions/$host_head"
+      if [ "$(readlink "$install_root/current")" = "$stamp_current" ] && [ -d "$install_root/$stamp_current" ]; then
+        stale="false"
+      fi
+    elif [ -L "$install_root/current" ]; then
+      stamp_current="$(readlink "$install_root/current")"
+      case "$stamp_current" in
+        versions/*)
+          host_head="${stamp_current#versions/}"
+          if [[ "$host_head" =~ ^[0-9a-f]{40}$ ]] && [ -d "$install_root/$stamp_current" ]; then
+            stale="false"
+          fi
+          ;;
+      esac
+    fi
+    host_head_short="${host_head:0:12}"
+    version="$host_head"
   else
     host_head="$(git_head "$host_track")"
     host_head_short="$(git_head_short "$host_track")"
@@ -604,7 +632,7 @@ refresh_app() {
     # Artifact stamps are the provenance record written by artifact_install_app.
     # Replacing one with the projected status shape drops source_oid and other
     # manifest fields, so a no-op refresh must leave it intact.
-    if [ "$install_mode" != "artifact" ]; then
+    if [ "$install_mode" != "artifact" ] && [ "$install_mode" != "local-safe" ]; then
       write_stamp "$app" "$status"
     fi
     return 0
@@ -659,7 +687,9 @@ refresh_app() {
   fi
 
   status="$(status_json_for "$app")"
-  write_stamp "$app" "$status"
+  if [ "$install_mode" != "local-safe" ]; then
+    write_stamp "$app" "$status"
+  fi
 }
 
 install_cmd() {
