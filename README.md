@@ -282,6 +282,11 @@ bin/
                             injected as an HTTP extraHeader when needed
   last-stack-forge-json-jq   control-char-safe jq wrapper for Forgejo API JSON
                             status polls
+  last-stack-forge-runner-lanes
+                            discover/verify merge-gate vs dedicated `heavy`
+                            release/deploy runner capacity (see
+                            docs/forge-runner-lanes.md); proof:
+                            `bin/last-stack-forge-runner-lanes --check`
   last-stack-routine-read   freshness/missing-file guarded routine prompt reader
   last-stack-dogfood-target-checkout
                             select a current dogfood checkout without mutating

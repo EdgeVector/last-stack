@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "description": "Forgejo Actions runner lane policy for EdgeVector local forge. Merge-blocking ci-required stays on the docker/pc + macos-arm64 merge gate; long release/deploy jobs use the dedicated heavy host lane.",
+  "merge_gate": {
+    "purpose": "Pre-merge ci-required only. Keep capacity free for fold/lastgit PR gates.",
+    "labels": [
+      "docker",
+      "ubuntu-latest",
+      "ubuntu-22.04",
+      "macos-arm64",
+      "pc-linux"
+    ],
+    "forbidden_on_lane": [
+      "heavy"
+    ],
+    "local_homes": [
+      "~/.forgejo-runner"
+    ],
+    "expected_global_runners": [
+      "mac-forge-runner",
+      "pc-forge-runner"
+    ],
+    "notes": "Mac merge runner is host-only macos-arm64 after 2026-07-13; PC owns docker/* merge jobs. Do not attach long release/deploy workflows to these labels."
+  },
+  "heavy": {
+    "purpose": "Long-running release and deploy jobs (fold tags, exemem-infra deploys). Never a required pre-merge status.",
+    "labels": [
+      "heavy",
+      "macos"
+    ],
+    "required_labels_any": [
+      "heavy"
+    ],
+    "local_homes": [
+      "~/.forgejo-runner-host",
+      "~/.forgejo-runner-host-exemem-infra"
+    ],
+    "expected_runners": [
+      {
+        "name": "mac-forge-runner-host",
+        "scope": "repo",
+        "repo": "EdgeVector/fold",
+        "capacity": 1,
+        "timeout": "6h"
+      },
+      {
+        "name": "mac-forge-runner-host-exemem-infra",
+        "scope": "repo",
+        "repo": "EdgeVector/exemem-infra",
+        "capacity": 1,
+        "timeout": "6h"
+      }
+    ],
+    "workflow_routing": {
+      "runs_on": [
+        "heavy",
+        "macos"
+      ],
+      "do_not_require_status": [
+        "ci-required"
+      ],
+      "example": "release.yml / deploy jobs: runs-on: heavy (or macos). Leave ci-required needs: limited to merge-gate jobs only."
+    },
+    "notes": "Host-mode runners (label:host). Capacity 1 each so a release does not stack with another long job on the same machine. Repo-scoped registration keeps fold release capacity separate from exemem deploys."
+  },
+  "proof": {
+    "command": "bin/last-stack-forge-runner-lanes --check",
+    "live_command": "bin/last-stack-forge-runner-lanes --check --live",
+    "expected": "heavy_ok=true, merge_gate_has_heavy=false, at least one heavy local home with label heavy and capacity>=1"
+  }
+}
