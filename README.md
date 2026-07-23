@@ -97,7 +97,10 @@ Skills can cheaply check for a new version via `bin/last-stack-update-check`
 `last-stack-self-upgrade` when the install is behind and clean, so routines do
 not stay stuck on `LAST_STACK_ROUTINE_STALE`. Register the
 [`self-upgrade`](routines/self-upgrade.md) routine as a 1–2h backstop. Keep
-`~/.last-stack` free of local edits — develop in a separate clone.
+`~/.last-stack` free of local edits — develop in a portal worktree
+(`./bin/wt start …`), never the install tree. **Where things live:**
+[instructions/run-dev-state-board.md](instructions/run-dev-state-board.md)
+(RUN / DEV / STATE / BOARD).
 
 > **Run `setup` AFTER any gstack setup / `/gstack-upgrade`.** gstack `./setup`
 > re-symlinks its own skills into `~/.claude/skills/<name>`; when a gstack skill

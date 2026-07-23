@@ -1,13 +1,34 @@
 #!/usr/bin/env bash
 # Print the filesystem path of the routine heartbeats log (not LastDB).
+#
+# Prefer the primary log (may be a symlink into ~/.local/state/last-stack).
+# If the primary file is missing but the sandbox fallback exists, print that
+# so readers still find heartbeats after EPERM fallbacks.
 set -euo pipefail
+
 if [ -n "${LAST_STACK_HEARTBEATS_FILE:-}" ]; then
   printf '%s\n' "$LAST_STACK_HEARTBEATS_FILE"
   exit 0
 fi
+
 root="$(cd "$(dirname "$0")/.." && pwd)"
+primary=""
 if [ -d "$root/bin" ]; then
-  printf '%s\n' "$root/logs/routine-heartbeats.log"
+  primary="$root/logs/routine-heartbeats.log"
+else
+  primary="${HOME}/.last-stack/logs/routine-heartbeats.log"
+fi
+
+fallback="${ROUTINES_HOME:-${HOME}/.routines}/routine-heartbeats.log"
+
+if [ -e "$primary" ] || [ ! -e "$fallback" ]; then
+  # Resolve symlink for operators debugging sandbox realpaths.
+  if command -v realpath >/dev/null 2>&1 && [ -e "$primary" ]; then
+    realpath "$primary" 2>/dev/null || printf '%s\n' "$primary"
+  else
+    printf '%s\n' "$primary"
+  fi
   exit 0
 fi
-printf '%s\n' "${HOME}/.last-stack/logs/routine-heartbeats.log"
+
+printf '%s\n' "$fallback"
