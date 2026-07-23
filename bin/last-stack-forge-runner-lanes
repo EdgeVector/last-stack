@@ -1,0 +1,480 @@
+#!/usr/bin/env bash
+# Discover and verify Forgejo Actions runner lanes: merge-gate vs heavy.
+#
+# Usage:
+#   last-stack-forge-runner-lanes [--json] [--check] [--live]
+#     [--config PATH] [--homes DIR[:DIR...]] [--repos owner/name[,...]]
+#
+# Default: local discovery from config + runner homes under $HOME.
+# --check  exit 0 only when a dedicated heavy lane is present and separated
+#          from the merge-gate homes (no `heavy` label on merge-gate homes).
+# --live   also poll Forgejo API (admin + repo runners) when reachable.
+# --json   machine-readable report.
+#
+# Does NOT change merge-gate required statuses. Long release/deploy work must
+# use the heavy/macos host lane, never capacity on docker/pc merge runners.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+CONFIG="${LAST_STACK_FORGE_LANES_CONFIG:-$ROOT/config/forge-runner-lanes.json}"
+JSON=0
+CHECK=0
+LIVE=0
+HOMES_OVERRIDE=""
+REPOS_OVERRIDE=""
+
+usage() {
+  cat <<'EOF' >&2
+usage: last-stack-forge-runner-lanes [--json] [--check] [--live]
+         [--config PATH] [--homes DIR[:DIR...]] [--repos owner/name[,...]]
+
+Discover Forgejo runner capacity for the merge-gate vs dedicated heavy
+release/deploy lane.
+
+  --json     print one JSON object
+  --check    exit non-zero if heavy lane missing or mixed into merge-gate
+  --live     query Forgejo API (needs forgejo-token / FORGE_TOKEN)
+  --config   lane policy JSON (default: <repo>/config/forge-runner-lanes.json)
+  --homes    colon-separated runner home dirs (overrides policy local_homes)
+  --repos    comma-separated owner/name for live repo-scoped runner lookup
+
+Proof (local, offline-friendly when homes exist):
+  bin/last-stack-forge-runner-lanes --check
+
+Live proof (forge up):
+  bin/last-stack-forge-runner-lanes --check --live
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json) JSON=1; shift ;;
+    --check) CHECK=1; shift ;;
+    --live) LIVE=1; shift ;;
+    --config)
+      [ "$#" -ge 2 ] || { usage; exit 2; }
+      CONFIG="$2"
+      shift 2
+      ;;
+    --config=*)
+      CONFIG="${1#--config=}"
+      shift
+      ;;
+    --homes)
+      [ "$#" -ge 2 ] || { usage; exit 2; }
+      HOMES_OVERRIDE="$2"
+      shift 2
+      ;;
+    --homes=*)
+      HOMES_OVERRIDE="${1#--homes=}"
+      shift
+      ;;
+    --repos)
+      [ "$#" -ge 2 ] || { usage; exit 2; }
+      REPOS_OVERRIDE="$2"
+      shift 2
+      ;;
+    --repos=*)
+      REPOS_OVERRIDE="${1#--repos=}"
+      shift
+      ;;
+    -h|--help) usage; exit 0 ;;
+    *)
+      echo "unknown option: $1" >&2
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+if [ ! -f "$CONFIG" ]; then
+  echo "missing lane config: $CONFIG" >&2
+  exit 2
+fi
+
+# Run the classifier in Python so fixture/live paths stay unit-testable without jq.
+export LAST_STACK_FORGE_LANES_CONFIG_PATH="$CONFIG"
+export LAST_STACK_FORGE_LANES_JSON="$JSON"
+export LAST_STACK_FORGE_LANES_CHECK="$CHECK"
+export LAST_STACK_FORGE_LANES_LIVE="$LIVE"
+export LAST_STACK_FORGE_LANES_HOMES_OVERRIDE="$HOMES_OVERRIDE"
+export LAST_STACK_FORGE_LANES_REPOS_OVERRIDE="$REPOS_OVERRIDE"
+export LAST_STACK_FORGE_LANES_HOME="$HOME"
+export FORGE_ROOT="${FORGE_ROOT:-http://localhost:3300}"
+export FORGE_TOKEN="${FORGE_TOKEN:-}"
+
+python3 - <<'PY'
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+config_path = Path(os.environ["LAST_STACK_FORGE_LANES_CONFIG_PATH"])
+want_json = os.environ.get("LAST_STACK_FORGE_LANES_JSON") == "1"
+check = os.environ.get("LAST_STACK_FORGE_LANES_CHECK") == "1"
+live = os.environ.get("LAST_STACK_FORGE_LANES_LIVE") == "1"
+homes_override = os.environ.get("LAST_STACK_FORGE_LANES_HOMES_OVERRIDE") or ""
+repos_override = os.environ.get("LAST_STACK_FORGE_LANES_REPOS_OVERRIDE") or ""
+home = Path(os.environ.get("LAST_STACK_FORGE_LANES_HOME") or os.path.expanduser("~"))
+forge_root = (os.environ.get("FORGE_ROOT") or "http://localhost:3300").rstrip("/")
+
+policy = json.loads(config_path.read_text(encoding="utf-8"))
+merge_labels = {str(x) for x in policy.get("merge_gate", {}).get("labels", [])}
+heavy_labels = {str(x) for x in policy.get("heavy", {}).get("labels", [])}
+heavy_required_any = {
+    str(x) for x in policy.get("heavy", {}).get("required_labels_any", ["heavy"])
+}
+forbidden_on_merge = {
+    str(x) for x in policy.get("merge_gate", {}).get("forbidden_on_lane", ["heavy"])
+}
+
+
+def expand(p: str) -> Path:
+    if p.startswith("~/"):
+        return home / p[2:]
+    if p == "~":
+        return home
+    return Path(p)
+
+
+def parse_yaml_ish_capacity_and_labels(text: str) -> tuple[int | None, list[str]]:
+    """Best-effort parse of forgejo-runner config.yml (no full YAML dep)."""
+    capacity = None
+    # Prefer capacity under the top-level runner: mapping.
+    m = re.search(
+        r"(?ms)^runner:\s*\n.*?(?:^|\n)[ \t]+capacity:\s*(\d+)\s*(?:\n|$)",
+        text,
+    )
+    if not m:
+        m = re.search(r"(?m)^\s*capacity:\s*(\d+)\s*$", text)
+    if m:
+        capacity = int(m.group(1))
+
+    labels: list[str] = []
+    # Only consecutive list items under labels: (no DOTALL — '.' must not
+    # cross newlines or valid_volumes / other keys get absorbed).
+    block = re.search(
+        r"(?m)^[ \t]+labels:\s*\n((?:[ \t]+-[ \t]+[^\n]+\n?)*)",
+        text,
+    )
+    if block:
+        for line in block.group(1).splitlines():
+            lm = re.match(
+                r"[ \t]+-[ \t]+[\"']?([^\"'\n#]+?)[\"']?[ \t]*(?:#.*)?$",
+                line,
+            )
+            if not lm:
+                continue
+            raw = lm.group(1).strip()
+            # label may be "name:host" or "name:docker://..."
+            name = raw.split(":", 1)[0].strip()
+            if name and name not in labels:
+                labels.append(name)
+    return capacity, labels
+
+
+def read_runner_home(path: Path) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "home": str(path),
+        "exists": path.is_dir(),
+        "name": None,
+        "labels": [],
+        "capacity": None,
+        "address": None,
+        "id": None,
+        "lane": "unknown",
+        "errors": [],
+    }
+    if not path.is_dir():
+        entry["errors"].append("missing_home")
+        return entry
+
+    runner_file = path / ".runner"
+    config_file = path / "config.yml"
+    if runner_file.is_file():
+        try:
+            data = json.loads(runner_file.read_text(encoding="utf-8"))
+            entry["name"] = data.get("name")
+            entry["id"] = data.get("id")
+            entry["address"] = data.get("address")
+            raw_labels = data.get("labels") or []
+            parsed = []
+            for lab in raw_labels:
+                if not isinstance(lab, str):
+                    continue
+                parsed.append(lab.split(":", 1)[0].strip())
+            if parsed:
+                entry["labels"] = parsed
+        except Exception as exc:  # noqa: BLE001 — report and continue
+            entry["errors"].append(f"runner_json:{exc}")
+
+    if config_file.is_file():
+        try:
+            text = config_file.read_text(encoding="utf-8")
+            cap, labs = parse_yaml_ish_capacity_and_labels(text)
+            if cap is not None:
+                entry["capacity"] = cap
+            if labs:
+                # config.yml is source of truth for advertised labels at runtime
+                entry["labels"] = labs
+        except Exception as exc:  # noqa: BLE001
+            entry["errors"].append(f"config_yml:{exc}")
+
+    labs_set = set(entry["labels"])
+    has_heavy = bool(labs_set & heavy_required_any) or bool(
+        labs_set & (heavy_labels - merge_labels)
+    )
+    has_merge = bool(labs_set & merge_labels)
+    if has_heavy and has_merge:
+        entry["lane"] = "mixed"
+    elif has_heavy:
+        entry["lane"] = "heavy"
+    elif has_merge:
+        entry["lane"] = "merge_gate"
+    return entry
+
+
+def policy_homes(lane_key: str) -> list[Path]:
+    raw = policy.get(lane_key, {}).get("local_homes") or []
+    return [expand(str(p)) for p in raw]
+
+
+if homes_override:
+    all_homes = [expand(p) for p in homes_override.split(":") if p]
+else:
+    all_homes = policy_homes("merge_gate") + policy_homes("heavy")
+    # de-dupe preserving order
+    seen: set[str] = set()
+    deduped: list[Path] = []
+    for p in all_homes:
+        s = str(p)
+        if s in seen:
+            continue
+        seen.add(s)
+        deduped.append(p)
+    all_homes = deduped
+
+local_runners = [read_runner_home(p) for p in all_homes]
+
+heavy_local = [r for r in local_runners if r["lane"] == "heavy"]
+merge_local = [r for r in local_runners if r["lane"] == "merge_gate"]
+mixed_local = [r for r in local_runners if r["lane"] == "mixed"]
+
+# Separation: no merge-gate (or mixed) home may advertise forbidden heavy labels.
+merge_gate_has_heavy = any(
+    set(r.get("labels") or []) & forbidden_on_merge
+    for r in merge_local + mixed_local
+) or bool(mixed_local)
+
+heavy_capacity = sum(int(r["capacity"] or 0) for r in heavy_local if r.get("exists"))
+heavy_ok_local = any(
+    r.get("exists")
+    and set(r.get("labels") or []) & heavy_required_any
+    and int(r.get("capacity") or 0) >= 1
+    and not (set(r.get("labels") or []) & merge_labels)
+    for r in heavy_local
+)
+
+
+def forge_token() -> str:
+    tok = os.environ.get("FORGE_TOKEN") or ""
+    if tok:
+        return tok
+    try:
+        out = subprocess.check_output(
+            ["security", "find-generic-password", "-s", "forgejo-token", "-w"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        return out.strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def http_json(url: str, token: str) -> Any:
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"token {token}",
+            "Accept": "application/json",
+            "User-Agent": "last-stack-forge-runner-lanes",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+live_report: dict[str, Any] = {
+    "enabled": live,
+    "ok": False,
+    "error": None,
+    "admin_runners": [],
+    "repo_runners": {},
+    "heavy_online": [],
+    "merge_gate_online": [],
+}
+
+if live:
+    token = forge_token()
+    if not token:
+        live_report["error"] = "missing_forge_token"
+    else:
+        try:
+            admin = http_json(f"{forge_root}/api/v1/admin/actions/runners", token)
+            if not isinstance(admin, list):
+                admin = []
+            live_report["admin_runners"] = admin
+
+            repos: list[str] = []
+            if repos_override:
+                repos = [r.strip() for r in repos_override.split(",") if r.strip()]
+            else:
+                for item in policy.get("heavy", {}).get("expected_runners") or []:
+                    repo = item.get("repo")
+                    if repo and repo not in repos:
+                        repos.append(str(repo))
+
+            for repo in repos:
+                try:
+                    rr = http_json(
+                        f"{forge_root}/api/v1/repos/{repo}/actions/runners", token
+                    )
+                    if not isinstance(rr, list):
+                        rr = []
+                    live_report["repo_runners"][repo] = rr
+                except urllib.error.HTTPError as exc:
+                    live_report["repo_runners"][repo] = {
+                        "error": f"http_{exc.code}",
+                    }
+                except Exception as exc:  # noqa: BLE001
+                    live_report["repo_runners"][repo] = {"error": str(exc)}
+
+            def collect(runners: list[Any], into_heavy: list, into_merge: list) -> None:
+                for r in runners:
+                    if not isinstance(r, dict):
+                        continue
+                    labs = set(r.get("labels") or [])
+                    status = str(r.get("status") or "")
+                    row = {
+                        "id": r.get("id"),
+                        "name": r.get("name"),
+                        "status": status,
+                        "labels": list(labs),
+                        "repo_id": r.get("repo_id"),
+                    }
+                    if labs & heavy_required_any:
+                        into_heavy.append(row)
+                    elif labs & merge_labels:
+                        into_merge.append(row)
+
+            collect(admin, live_report["heavy_online"], live_report["merge_gate_online"])
+            for repo, rr in live_report["repo_runners"].items():
+                if isinstance(rr, list):
+                    collect(rr, live_report["heavy_online"], live_report["merge_gate_online"])
+                    for row in live_report["heavy_online"]:
+                        row.setdefault("repo", repo)
+
+            # de-dupe heavy by id
+            seen_ids: set[Any] = set()
+            uniq = []
+            for row in live_report["heavy_online"]:
+                rid = row.get("id")
+                if rid in seen_ids:
+                    continue
+                seen_ids.add(rid)
+                uniq.append(row)
+            live_report["heavy_online"] = uniq
+            live_report["ok"] = True
+        except Exception as exc:  # noqa: BLE001
+            live_report["error"] = str(exc)
+
+heavy_ok_live = False
+if live and live_report.get("ok"):
+    # Presence of a registered heavy-labeled runner is enough; status
+    # vocabulary varies (idle/active/online) across Forgejo versions.
+    heavy_ok_live = bool(live_report.get("heavy_online"))
+
+# Final verdict
+if live:
+    heavy_ok = heavy_ok_local and heavy_ok_live
+else:
+    heavy_ok = heavy_ok_local
+
+separated = (not merge_gate_has_heavy) and heavy_ok_local
+check_ok = heavy_ok and separated and (not merge_gate_has_heavy)
+
+report = {
+    "config": str(config_path),
+    "merge_gate_labels": sorted(merge_labels),
+    "heavy_labels": sorted(heavy_labels),
+    "local_runners": local_runners,
+    "heavy_local_count": len(heavy_local),
+    "merge_local_count": len(merge_local),
+    "mixed_local_count": len(mixed_local),
+    "heavy_capacity": heavy_capacity,
+    "heavy_ok_local": heavy_ok_local,
+    "heavy_ok_live": heavy_ok_live if live else None,
+    "merge_gate_has_heavy": merge_gate_has_heavy,
+    "separated_from_merge_gate": separated,
+    "heavy_ok": heavy_ok,
+    "check_ok": check_ok,
+    "live": live_report if live else {"enabled": False},
+    "routing": policy.get("heavy", {}).get("workflow_routing", {}),
+    "proof": policy.get("proof", {}),
+    "merge_gate_unchanged": True,
+    "notes": [
+        "Merge-blocking status remains ci-required on merge-gate labels only.",
+        "Release/deploy workflows must use runs-on: heavy (or macos host lane).",
+        "Do not add long release/deploy jobs as required pre-merge checks.",
+    ],
+}
+
+if want_json:
+    print(json.dumps(report, indent=2, sort_keys=True))
+else:
+    print("Forge runner lanes")
+    print(f"  config: {config_path}")
+    print(f"  heavy_ok: {str(heavy_ok).lower()}")
+    print(f"  heavy_ok_local: {str(heavy_ok_local).lower()}")
+    print(f"  heavy_capacity: {heavy_capacity}")
+    print(f"  merge_gate_has_heavy: {str(merge_gate_has_heavy).lower()}")
+    print(f"  separated_from_merge_gate: {str(separated).lower()}")
+    print(f"  merge_gate_unchanged: true")
+    print("  local runners:")
+    for r in local_runners:
+        labs = ",".join(r.get("labels") or []) or "-"
+        cap = r.get("capacity")
+        cap_s = str(cap) if cap is not None else "?"
+        exists = "yes" if r.get("exists") else "no"
+        name = r.get("name") or Path(r["home"]).name
+        print(
+            f"    - {name} lane={r.get('lane')} capacity={cap_s} "
+            f"labels=[{labs}] exists={exists} home={r['home']}"
+        )
+    if live:
+        print(f"  live: ok={str(bool(live_report.get('ok'))).lower()} "
+              f"error={live_report.get('error')}")
+        for r in live_report.get("heavy_online") or []:
+            print(
+                f"    heavy-online: {r.get('name')} status={r.get('status')} "
+                f"labels={r.get('labels')} id={r.get('id')}"
+            )
+        for r in live_report.get("merge_gate_online") or []:
+            print(
+                f"    merge-online: {r.get('name')} status={r.get('status')} "
+                f"labels={r.get('labels')} id={r.get('id')}"
+            )
+    print("  routing: release/deploy -> runs-on: heavy|macos (not ci-required)")
+    print(f"  check_ok: {str(check_ok).lower()}")
+
+if check and not check_ok:
+    sys.exit(1)
+sys.exit(0)
+PY
