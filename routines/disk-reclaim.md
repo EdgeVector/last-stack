@@ -56,8 +56,13 @@ continue — do not fail the whole run.
    ```bash
    last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
    . "$last_stack/bin/last-stack-shell-prelude"
-   last_stack_require_tools git curl jq find rm <board-cli>
+   last_stack_require_tools git curl jq find rm bash date basename wc tr df tail ps lsof mkdir mv readlink <board-cli>
    ```
+   After this point, do not run generated shell-heavy cleanup/discovery snippets
+   directly with the ambient scheduled-shell `PATH`. Run them through
+   `last_stack_run_tool "$LAST_STACK_TOOL_BASH" -c '...'` so the snippet
+   inherits `LAST_STACK_PRELUDE_PATH`, or call each tool through
+   `last_stack_run_tool "$LAST_STACK_TOOL_<NAME>" ...`.
 1. **Assess.** `df -h <data volume> | tail -1`; list any build/server processes
    and confirm which one is your live brain/board node so you never touch it.
 2. **Discover repo roots before any repo-level Git command.** The workspace
@@ -65,11 +70,15 @@ continue — do not fail the whole run.
    Enumerate child repos first, then run Git against each repo:
    ```bash
    workspace="<WORKSPACE>"
-   last_stack_run_tool "$LAST_STACK_TOOL_FIND" "$workspace" -mindepth 2 -maxdepth 3 -type d -name .git -prune \
-     | while IFS= read -r git_dir; do
-         repo="${git_dir%/.git}"
-         last_stack_run_tool "$LAST_STACK_TOOL_GIT" -C "$repo" rev-parse --show-toplevel
-       done
+   last_stack_run_tool "$LAST_STACK_TOOL_BASH" -c '
+     set -euo pipefail
+     workspace="$1"
+     find "$workspace" -mindepth 2 -maxdepth 3 -type d -name .git -prune \
+       | while IFS= read -r git_dir; do
+           repo="${git_dir%/.git}"
+           git -C "$repo" rev-parse --show-toplevel
+         done
+   ' sh "$workspace"
    ```
    Use those repo roots to enumerate worktrees across all repos + all worktree
    locations via `git -C "$repo" worktree list --porcelain`; derive each one's
@@ -80,8 +89,9 @@ continue — do not fail the whole run.
    process (verify its command path is inside the worktree and it is NOT your
    node), kill that PID first, then `git worktree remove --force <path>` and
    `git branch -D <branch>`. Then `git worktree prune` per repo. Remove a now-
-   empty worktree parent dir. Use `last_stack_run_tool "$LAST_STACK_TOOL_GIT"`
-   and `last_stack_run_tool "$LAST_STACK_TOOL_RM"` for generated cleanup
+   empty worktree parent dir. Use the bash wrapper above for generated loops, or
+   use `last_stack_run_tool "$LAST_STACK_TOOL_GIT"` and
+   `last_stack_run_tool "$LAST_STACK_TOOL_RM"` for generated one-shot cleanup
    commands in this stripped-shell path.
 3a. **Migrate legacy repo-local `.worktrees/` after the live audit.** Disk
    reclaim must not delete non-removable worktrees just because they live under
