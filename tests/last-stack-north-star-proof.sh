@@ -4,17 +4,20 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$ROOT/bin/last-stack-north-star-proof"
 chmod +x "$BIN" "$ROOT/harness/north-star"/*/run.sh
 
-"$BIN" --list | grep -q north-star-coderings
-"$BIN" --list | grep -q north-star-schema-shared-surface-native-resolver
-"$BIN" --list | grep -q north-star-lastdb-file-blobs-on-demand-sync
-"$BIN" --list | grep -q north-star-laststore-is-document-store-last-db-is-conventions
-"$BIN" --list | grep -q north-star-mini-brain-observability
-"$BIN" --list | grep -q north-star-lastdb-search-as-app
+list_out="$("$BIN" --list)"
+grep -q north-star-coderings <<<"$list_out"
+grep -q north-star-schema-shared-surface-native-resolver <<<"$list_out"
+grep -q north-star-lastdb-file-blobs-on-demand-sync <<<"$list_out"
+grep -q north-star-laststore-is-document-store-last-db-is-conventions <<<"$list_out"
+grep -q north-star-mini-brain-observability <<<"$list_out"
+grep -q north-star-lastdb-search-as-app <<<"$list_out"
+grep -q north-star-cloud-sync-storage-lean <<<"$list_out"
 
 PROOF_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ns-proof-test.XXXXXX")"
 FILE_BLOB_WORK="$(mktemp -d "${TMPDIR:-/tmp}/ns-file-blob-proof-test.XXXXXX")"
 MINI_OBS_WORK="$(mktemp -d "${TMPDIR:-/tmp}/ns-mini-obs-proof-test.XXXXXX")"
-trap 'rm -rf "$PROOF_DIR" "$FILE_BLOB_WORK" "$MINI_OBS_WORK"' EXIT
+CLOUD_SYNC_WORK="$(mktemp -d "${TMPDIR:-/tmp}/ns-cloud-sync-proof-test.XXXXXX")"
+trap 'rm -rf "$PROOF_DIR" "$FILE_BLOB_WORK" "$MINI_OBS_WORK" "$CLOUD_SYNC_WORK"' EXIT
 export NORTH_STAR_PROOF_DIR="$PROOF_DIR"
 export NORTH_STAR_PROOF_MODE=offline
 export EDGEVECTOR_WORKSPACE="${EDGEVECTOR_WORKSPACE:-$HOME/code/edgevector}"
@@ -31,7 +34,7 @@ if command -v lastdb >/dev/null 2>&1; then
 fi
 
 # Structural: all harness scripts exist and bash -n clean
-for s in coderings deliver-slices lastgit metering minimal-node app-ops schema file-blobs-on-demand-sync laststore mini-brain-observability search-as-app; do
+for s in coderings deliver-slices lastgit metering minimal-node app-ops schema file-blobs-on-demand-sync laststore mini-brain-observability search-as-app cloud-sync-storage-lean; do
   bash -n "$ROOT/harness/north-star/$s/run.sh"
 done
 bash -n "$BIN"
@@ -310,5 +313,60 @@ if SEARCH_AS_APP_PROOF_SEARCH_DIR="$search_app" \
   echo "fastembed-in-default-binary fixture unexpectedly passed" >&2
   exit 1
 fi
+
+cloud_fold="$CLOUD_SYNC_WORK/fold"
+mkdir -p "$cloud_fold/fold_db/crates/core/src/sync"
+cat >"$cloud_fold/Cargo.toml" <<'EOF'
+[workspace]
+EOF
+cat >"$cloud_fold/fold_db/crates/core/src/sync/engine.rs" <<'EOF'
+fn should_compact() {
+  let _ = compaction_log_ratio;
+  let _ = last_snapshot_bytes;
+  let _ = min_snapshot_interval;
+  let _ = max_snapshot_interval;
+}
+fn bootstrap_replay() {
+  let _ = FuturesUnordered::new();
+}
+EOF
+cloud_evidence="$CLOUD_SYNC_WORK/evidence.json"
+cat >"$cloud_evidence" <<'EOF'
+{
+  "snapshot_retention": {
+    "source": "fixture://r2/exemem-sync-prod/user/snapshots",
+    "latest_enc_present": true,
+    "snapshot_count": 1,
+    "retention_extra_count": 0
+  },
+  "storage_meter": {
+    "billing_row_bytes": 1048576,
+    "r2_b2_sum_bytes": 1048576,
+    "allowed_delta_bytes": 0,
+    "hard_quota_enforced": false,
+    "sync_rejected_for_quota": false
+  }
+}
+EOF
+CLOUD_SYNC_STORAGE_LEAN_PROOF_FOLD_DIR="$cloud_fold" \
+CLOUD_SYNC_STORAGE_LEAN_PROOF_EVIDENCE_FILE="$cloud_evidence" \
+NORTH_STAR_PROOF_DIR="$PROOF_DIR" \
+  "$BIN" --offline north-star-cloud-sync-storage-lean >"$PROOF_DIR/cloud-sync.out"
+
+cloud_report="$PROOF_DIR/north-star-cloud-sync-storage-lean.md"
+test "$(sed -n '1p' "$cloud_report")" = "PASS"
+grep -q "criterion 1 snapshot retention OK" "$cloud_report"
+grep -q "criterion 2 compaction cadence OK" "$cloud_report"
+grep -q "criterion 3 bootstrap replay OK" "$cloud_report"
+grep -q "criterion 4 storage meter OK" "$cloud_report"
+grep -q "PROOF_VERDICT=PASS" "$PROOF_DIR/cloud-sync.out"
+
+if CLOUD_SYNC_STORAGE_LEAN_PROOF_FOLD_DIR="$cloud_fold" \
+  NORTH_STAR_PROOF_DIR="$PROOF_DIR" \
+  "$BIN" --offline north-star-cloud-sync-storage-lean >"$PROOF_DIR/cloud-sync-missing-evidence.out" 2>&1; then
+  echo "missing live evidence fixture unexpectedly passed" >&2
+  exit 1
+fi
+grep -q "Live evidence is required" "$PROOF_DIR/north-star-cloud-sync-storage-lean.md"
 
 echo "PASS last-stack-north-star-proof"
