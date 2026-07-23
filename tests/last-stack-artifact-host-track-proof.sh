@@ -21,19 +21,26 @@ jq -e '.artifacts[] | select(.app == "last-stack") | .paths | index("bin")' \
 
 jq -e '
   . as $root
-  | [$root.apps[] | select((.install_mode // $root.defaults.install_mode // "checkout") == "checkout")] | length == 0
-' "$default_registry" >/dev/null || fail "default registry still has checkout-backed entries"
+  | all($root.apps[] | select((.install_mode // $root.defaults.install_mode // "checkout") == "checkout");
+      (.artifact_exemption.kind == "deployment-only" or .artifact_exemption.kind == "bootstrap-recovery")
+      and (.artifact_exemption.owner | length > 0)
+      and (.artifact_exemption.rationale | length > 0))
+' "$default_registry" >/dev/null || fail "default registry has checkout entries without documented exemptions"
 
 jq -e '
   def app($name): .apps[] | select(.app == $name);
-  (app("lastgit") | .install_mode == "artifact" and .artifact_app == "lastgit" and (.links | length) >= 2)
-  and (app("brain") | .install_mode == "artifact" and .artifact_app == "brain" and (.links | length) >= 2)
-  and (app("situations") | .install_mode == "artifact" and .artifact_app == "situations" and (.links | length) == 2)
-  and (app("kanban") | .install_mode == "artifact" and .artifact_app == "fkanban" and .install_root == "$HOME/.host-track/apps/fkanban")
-  and (app("fkanban") | .install_mode == "artifact" and .artifact_app == "fkanban" and .install_root == "$HOME/.host-track/apps/fkanban")
-  and (app("lastdb") | .install_mode == "artifact" and .artifact_app == "lastdb-bundle")
-  and (app("lastdbd") | .install_mode == "artifact" and .artifact_app == "lastdb-bundle")
-' "$default_registry" >/dev/null || fail "default registry did not cut over to expected artifact apps"
+  (app("last-stack") | .install_mode == "artifact" and .artifact_app == "last-stack")
+  and (app("lastgit") | .install_mode == "checkout" and .artifact_exemption.kind == "bootstrap-recovery")
+  and (app("brain") | .install_mode == "local-safe" and (.links | length) >= 2)
+  and (app("situations") | .install_mode == "local-safe" and (.links | length) == 2)
+  and (app("kanban") | .install_mode == "local-safe" and .install_root == "$HOME/.host-track/apps/fkanban")
+  and (app("fkanban") | .install_mode == "local-safe" and .install_root == "$HOME/.host-track/apps/fkanban")
+  and (app("routines") | .install_mode == "local-safe")
+  and (app("lastsecrets") | .install_mode == "local-safe")
+  and (app("configurations") | .install_mode == "local-safe")
+  and (app("lastdb") | .install_mode == "checkout" and .artifact_exemption.kind == "deployment-only")
+  and (app("lastdbd") | .install_mode == "checkout" and .artifact_exemption.kind == "deployment-only")
+' "$default_registry" >/dev/null || fail "default registry did not declare expected artifact/local-safe/exempt apps"
 
 export HOME="$tmp/home"
 export HOST_TRACK_REGISTRY="$tmp/registry.json"
