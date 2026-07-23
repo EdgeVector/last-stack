@@ -7,6 +7,11 @@
 # Default log: ~/.last-stack/logs/routine-heartbeats.log
 # Override:    LAST_STACK_HEARTBEATS_FILE=/path/to/file
 #
+# Managed installs may symlink ~/.last-stack/logs →
+# ~/.local/state/last-stack/runtime/logs. Codex routine sandboxes that only
+# allow ~/.last-stack will EPERM on that realpath; we fall back to
+# ~/.routines/routine-heartbeats.log (always in the routines sandbox list).
+#
 # Lines are appended (newest at end). Single-line only.
 set -euo pipefail
 
@@ -28,6 +33,11 @@ default_log() {
   printf '%s\n' "${HOME}/.last-stack/logs/routine-heartbeats.log"
 }
 
+# Sandbox-safe secondary path (routinesd Codex --add-dir includes ~/.routines).
+sandbox_fallback_log() {
+  printf '%s\n' "${ROUTINES_HOME:-${HOME}/.routines}/routine-heartbeats.log"
+}
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -39,6 +49,9 @@ Appends one line to a filesystem log (NOT brain / LastDB).
   Default file:  <last-stack>/logs/routine-heartbeats.log
                  or ~/.last-stack/logs/routine-heartbeats.log
   Override:      LAST_STACK_HEARTBEATS_FILE=/path/to/log
+  Fallback:      $ROUTINES_HOME/routine-heartbeats.log (or ~/.routines/…)
+                 used when the default path is not writable (e.g. Codex sandbox
+                 EPERM through a logs → ~/.local/state/last-stack symlink).
 
   --slug is accepted for backward compatibility and ignored for storage
   (all fleet heartbeats share one file).
@@ -47,6 +60,15 @@ Read with:
   tail -n 200 "$(last-stack-heartbeats-path)"
   # or: cat "$LAST_STACK_HEARTBEATS_FILE"
 EOF
+}
+
+append_line() {
+  local target="$1"
+  local parent
+  parent="$(dirname "$target")"
+  mkdir -p "$parent" || return 1
+  # Append-only — never rewrite the whole file through LastDB.
+  printf '%s\n' "$line" >>"$target"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -100,7 +122,35 @@ case "$line" in
 esac
 
 log_file="$(default_log)"
-mkdir -p "$(dirname "$log_file")"
-# Append-only — never rewrite the whole file through LastDB.
-printf '%s\n' "$line" >>"$log_file"
-echo "appended heartbeat to file ${log_file}${slug:+ (label=$slug)}"
+err_primary=""
+if append_line "$log_file" 2>/tmp/last-stack-heartbeat-err.$$; then
+  rm -f /tmp/last-stack-heartbeat-err.$$
+  echo "appended heartbeat to file ${log_file}${slug:+ (label=$slug)}"
+  exit 0
+fi
+err_primary="$(cat /tmp/last-stack-heartbeat-err.$$ 2>/dev/null || true)"
+rm -f /tmp/last-stack-heartbeat-err.$$
+
+# Explicit override: do not silently redirect elsewhere.
+if [ -n "${LAST_STACK_HEARTBEATS_FILE:-}" ]; then
+  echo "failed to append heartbeat to ${log_file}: ${err_primary:-unknown error}" >&2
+  exit 1
+fi
+
+fallback="$(sandbox_fallback_log)"
+if [ "$fallback" = "$log_file" ]; then
+  echo "failed to append heartbeat to ${log_file}: ${err_primary:-unknown error}" >&2
+  exit 1
+fi
+
+if append_line "$fallback" 2>/tmp/last-stack-heartbeat-err.$$; then
+  rm -f /tmp/last-stack-heartbeat-err.$$
+  echo "appended heartbeat to file ${fallback}${slug:+ (label=$slug)} (fallback; primary ${log_file} not writable: ${err_primary:-EPERM})" >&2
+  echo "appended heartbeat to file ${fallback}${slug:+ (label=$slug)}"
+  exit 0
+fi
+err_fb="$(cat /tmp/last-stack-heartbeat-err.$$ 2>/dev/null || true)"
+rm -f /tmp/last-stack-heartbeat-err.$$
+echo "failed to append heartbeat to ${log_file}: ${err_primary:-unknown error}" >&2
+echo "fallback ${fallback} also failed: ${err_fb:-unknown error}" >&2
+exit 1
