@@ -175,22 +175,39 @@ if { [ "$live_install" -eq 1 ] || [ "${LASTSTACK_USE_HOST_TRACK_STATUS:-0}" = "1
   if [ "$(printf '%s\n' "$artifact_status" | jq -r '.install_mode // ""' 2>/dev/null)" = "artifact" ]; then
     artifact_mode=1
     artifact_stale="$(printf '%s\n' "$artifact_status" | jq -r '.stale | tostring' 2>/dev/null)"
-    if [ "$artifact_stale" = "true" ]; then
-      update_status="$("$ROOT/bin/last-stack-update-check" 2>/dev/null || true)"
-      [ -n "$update_status" ] || update_status="ARTIFACT_UPDATE_AVAILABLE"
+    update_status="$("$ROOT/bin/last-stack-update-check" 2>/dev/null || true)"
+    [ -n "$update_status" ] || update_status="ARTIFACT_UPDATE_AVAILABLE"
+    check_err="$(mktemp "${TMPDIR:-/tmp}/last-stack-routine-read-check.XXXXXX")"
+    if host-track check last-stack >"$check_err" 2>&1; then
+      rm -f "$check_err"
+    else
+      check_detail="$(cat "$check_err" 2>/dev/null || true)"
+      rm -f "$check_err"
+      # Heal even when status.stale=false (content hash mismatch under current version).
+      # Plain refresh now re-stages corrupt versions; --force also re-stages.
       if [ "${LASTSTACK_SELF_UPGRADE_SKIP:-0}" = "1" ]; then
-        stale_fail "$update_status" "Artifact refresh disabled (LASTSTACK_SELF_UPGRADE_SKIP=1)."
+        stale_fail "$update_status" "Artifact check failed and refresh disabled (LASTSTACK_SELF_UPGRADE_SKIP=1). $check_detail"
       fi
       artifact_err="$(mktemp "${TMPDIR:-/tmp}/last-stack-routine-read-artifact.XXXXXX")"
-      if ! host-track refresh last-stack >"$artifact_err" 2>&1; then
+      if [ "$artifact_stale" = "true" ]; then
+        refresh_cmd="host-track refresh last-stack"
+      else
+        # Pointer current but content bad — force re-stage from CAS.
+        refresh_cmd="host-track refresh --force last-stack"
+      fi
+      if ! $refresh_cmd >"$artifact_err" 2>&1; then
         detail="$(cat "$artifact_err" 2>/dev/null || true)"
         rm -f "$artifact_err"
-        stale_fail "$update_status" "Artifact refresh failed. $detail"
+        stale_fail "$update_status" "Artifact refresh failed after check error. check: $check_detail refresh: $detail"
       fi
       rm -f "$artifact_err"
-    fi
-    if ! host-track check last-stack >/dev/null 2>&1; then
-      stale_fail "ARTIFACT_UPDATE_AVAILABLE" "Active artifact verification failed after refresh."
+      check_err="$(mktemp "${TMPDIR:-/tmp}/last-stack-routine-read-check.XXXXXX")"
+      if ! host-track check last-stack >"$check_err" 2>&1; then
+        check_detail="$(cat "$check_err" 2>/dev/null || true)"
+        rm -f "$check_err"
+        stale_fail "ARTIFACT_UPDATE_AVAILABLE" "Active artifact verification still failing after refresh. $check_detail"
+      fi
+      rm -f "$check_err"
     fi
     clear_fetch_fail_streak
     LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1

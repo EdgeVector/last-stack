@@ -103,7 +103,19 @@ if [ -f "$hb" ]; then
   # last pickup line
   last_pickup=$(grep 'kanban-pickup' "$hb" 2>/dev/null | tail -1 || true)
   if printf '%s' "$last_pickup" | grep -q 'stale-last-stack-install'; then
-    add_fail "pickup-heartbeat" "last pickup: stale-last-stack-install"
+    # Historical heartbeat may lag a healed install. Prefer live install truth:
+    # routine-read already ran above; if it OK'd, this is lag not a hard gate.
+    live_install_ok=0
+    for c in "${checks[@]+"${checks[@]}"}"; do
+      case "$c" in
+        OK\|last-stack-routine-read\|*) live_install_ok=1 ;;
+      esac
+    done
+    if [ "$live_install_ok" -eq 1 ]; then
+      add_warn "pickup-heartbeat" "last pickup was stale-last-stack-install, but live install is healthy now (next pickup should claim)"
+    else
+      add_fail "pickup-heartbeat" "last pickup: stale-last-stack-install (and live install still failing)"
+    fi
   elif printf '%s' "$last_pickup" | grep -q 'no_card_claimed'; then
     add_warn "pickup-heartbeat" "last pickup claimed nothing: $(printf '%s' "$last_pickup" | head -c 140)"
   elif [ -n "$last_pickup" ]; then
