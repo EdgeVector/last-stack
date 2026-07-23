@@ -26,3 +26,4 @@ First line is `PASS`, `PASS-OFFLINE`, or `FAIL` for kanban DONE-WHEN matching.
 | file-blobs-on-demand-sync | fold source/test contract + optional narrow cargo tests | same narrow fold proof command on a non-primary checkout |
 | laststore-is-document-store-last-db-is-conventions | Brain record/design contract, fixtureable via `LASTSTORE_PROOF_RECORD_FILE` | same Brain contract against the live record |
 | mini-brain-observability | Fold source contract for `lastdb status`, session/crash attribution, self-metrics, dashboard regen, health alert, and dogfood hooks | same checks against current source; never restarts the primary daemon |
+| exemem-cloud-account | redacted evidence contract via `EXEMEM_CLOUD_ACCOUNT_PROOF_EVIDENCE_FILE` | same evidence file collected from live checkout/account/upgrade/PII probes |

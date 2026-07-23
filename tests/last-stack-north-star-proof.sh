@@ -12,12 +12,14 @@ grep -q north-star-laststore-is-document-store-last-db-is-conventions <<<"$list_
 grep -q north-star-mini-brain-observability <<<"$list_out"
 grep -q north-star-lastdb-search-as-app <<<"$list_out"
 grep -q north-star-cloud-sync-storage-lean <<<"$list_out"
+grep -q north-star-exemem-cloud-account <<<"$list_out"
 
 PROOF_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ns-proof-test.XXXXXX")"
 FILE_BLOB_WORK="$(mktemp -d "${TMPDIR:-/tmp}/ns-file-blob-proof-test.XXXXXX")"
 MINI_OBS_WORK="$(mktemp -d "${TMPDIR:-/tmp}/ns-mini-obs-proof-test.XXXXXX")"
 CLOUD_SYNC_WORK="$(mktemp -d "${TMPDIR:-/tmp}/ns-cloud-sync-proof-test.XXXXXX")"
-trap 'rm -rf "$PROOF_DIR" "$FILE_BLOB_WORK" "$MINI_OBS_WORK" "$CLOUD_SYNC_WORK"' EXIT
+EXEMEM_ACCOUNT_WORK="$(mktemp -d "${TMPDIR:-/tmp}/ns-exemem-account-proof-test.XXXXXX")"
+trap 'rm -rf "$PROOF_DIR" "$FILE_BLOB_WORK" "$MINI_OBS_WORK" "$CLOUD_SYNC_WORK" "$EXEMEM_ACCOUNT_WORK"' EXIT
 export NORTH_STAR_PROOF_DIR="$PROOF_DIR"
 export NORTH_STAR_PROOF_MODE=offline
 export EDGEVECTOR_WORKSPACE="${EDGEVECTOR_WORKSPACE:-$HOME/code/edgevector}"
@@ -34,7 +36,7 @@ if command -v lastdb >/dev/null 2>&1; then
 fi
 
 # Structural: all harness scripts exist and bash -n clean
-for s in coderings deliver-slices lastgit metering minimal-node app-ops schema file-blobs-on-demand-sync laststore mini-brain-observability search-as-app cloud-sync-storage-lean; do
+for s in coderings deliver-slices lastgit metering minimal-node app-ops schema file-blobs-on-demand-sync laststore mini-brain-observability search-as-app cloud-sync-storage-lean exemem-cloud-account; do
   bash -n "$ROOT/harness/north-star/$s/run.sh"
 done
 bash -n "$BIN"
@@ -212,8 +214,66 @@ grep -q "Crash/session attribution" "$mini_obs_report"
 grep -q "Self-metrics history" "$mini_obs_report"
 grep -q "PROOF_VERDICT=PASS-OFFLINE" "$PROOF_DIR/mini-obs.out"
 
+exemem_evidence="$EXEMEM_ACCOUNT_WORK/evidence.json"
+cat >"$exemem_evidence" <<'EOF'
+{
+  "checkout": {
+    "account_landing": true
+  },
+  "plan": {
+    "before_storage_gb": 50,
+    "after_storage_gb": 100,
+    "displayed_storage_gb": 100
+  },
+  "upgrade": {
+    "payment_confirmed": true
+  },
+  "privacy": {
+    "exemem_pii_leak_count": 0,
+    "checked_fields": ["accounts", "profiles", "billing_shadow"]
+  }
+}
+EOF
+
+EXEMEM_CLOUD_ACCOUNT_PROOF_EVIDENCE_FILE="$exemem_evidence" \
+NORTH_STAR_PROOF_DIR="$PROOF_DIR" \
+  "$BIN" --offline north-star-exemem-cloud-account >"$PROOF_DIR/exemem-account.out"
+
+exemem_report="$PROOF_DIR/north-star-exemem-cloud-account.md"
+test "$(sed -n '1p' "$exemem_report")" = "PASS-OFFLINE"
+grep -q "50 GB -> 100 GB" "$exemem_report"
+grep -q "zero persisted PII" "$exemem_report"
+grep -q "PROOF_VERDICT=PASS-OFFLINE" "$PROOF_DIR/exemem-account.out"
+
+bad_exemem_evidence="$EXEMEM_ACCOUNT_WORK/bad-evidence.json"
+cat >"$bad_exemem_evidence" <<'EOF'
+{
+  "checkout": {
+    "account_landing": true
+  },
+  "plan": {
+    "before_storage_gb": 50,
+    "after_storage_gb": 100,
+    "displayed_storage_gb": 100
+  },
+  "upgrade": {
+    "payment_confirmed": true
+  },
+  "privacy": {
+    "exemem_pii_leak_count": 1,
+    "checked_fields": ["accounts"]
+  }
+}
+EOF
+if EXEMEM_CLOUD_ACCOUNT_PROOF_EVIDENCE_FILE="$bad_exemem_evidence" \
+  NORTH_STAR_PROOF_DIR="$PROOF_DIR" \
+  "$BIN" --offline north-star-exemem-cloud-account >"$PROOF_DIR/exemem-account-bad.out" 2>&1; then
+  echo "bad Exemem account evidence unexpectedly passed" >&2
+  exit 1
+fi
+
 SEARCH_AS_APP_WORK="$(mktemp -d "${TMPDIR:-/tmp}/ns-search-as-app-proof-test.XXXXXX")"
-trap 'rm -rf "$PROOF_DIR" "$FILE_BLOB_WORK" "$MINI_OBS_WORK" "$SEARCH_AS_APP_WORK"' EXIT
+trap 'rm -rf "$PROOF_DIR" "$FILE_BLOB_WORK" "$MINI_OBS_WORK" "$CLOUD_SYNC_WORK" "$EXEMEM_ACCOUNT_WORK" "$SEARCH_AS_APP_WORK"' EXIT
 
 search_app="$SEARCH_AS_APP_WORK/search"
 saa_fold="$SEARCH_AS_APP_WORK/fold"
