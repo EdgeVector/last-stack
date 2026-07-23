@@ -79,6 +79,25 @@ Prioritize: repeated heartbeat errors, exit=1 in <10s, chronic
 `memory_unwritable`, daemon skip-cap thrash, missing prompt_path, wrong
 Automation memory paths, Claude/Codex argv regressions, dual ACTIVE schedulers.
 
+### Timeout cluster de-duplication
+
+Do not treat every `exitCode=124` / `timedOut=true` run as the same systemic
+failure just because the escalation signature is identical. Before filing or
+updating a timeout-cluster card, sample at least 2-3 representative run dirs and
+classify the last active operation from `meta.json` plus stdout/stderr tails.
+Split the evidence into cause buckets such as:
+
+- cold compile / long test command still running when the harness ended
+- prompt/transcript runaway or stale memory replay
+- user-interrupted or permission-rejected long tool use
+- socket/backpressure wait
+- missing internal run-budget guard in a routine prompt
+
+Only file one systemic card when the sampled tails point to the same concrete
+cause or shared dependency. If the tails are mixed, file the smallest
+cause-specific card, or update the inbox with `split-required=<cause list>` so
+the generic timeout signature does not hide unrelated work.
+
 ## Step 3 — File cards (deduped)
 Search scoped columns first:
 ```bash
