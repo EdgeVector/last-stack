@@ -51,10 +51,12 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# repo slug → safe-upgrade-cli app name (empty = skip)
-# Only LastGit-venue agent CLIs that use local-safe installs.
+# repo slug → install action (empty = skip)
+# Most LastGit-venue agent CLIs use local-safe installs. Last Stack itself is
+# artifact-backed, so its post-merge action is artifact promotion + host-track.
 map_repo_to_app() {
   case "$1" in
+    last-stack) printf 'artifact:last-stack\n' ;;
     brain) printf 'brain\n' ;;
     situations) printf 'situations\n' ;;
     fkanban|kanban) printf 'fkanban\n' ;;
@@ -66,7 +68,7 @@ map_repo_to_app() {
 }
 
 if [ "$SHOW_MAP" = 1 ]; then
-  for r in brain situations fkanban kanban routines lastsecrets configurations; do
+  for r in last-stack brain situations fkanban kanban routines lastsecrets configurations; do
     printf '%-16s -> %s\n' "$r" "$(map_repo_to_app "$r")"
   done
   exit 0
@@ -149,8 +151,58 @@ is_handled() {
   [ -f "$f" ] && grep -qx "$id" "$f" 2>/dev/null
 }
 
+find_last_stack_manifest() {
+  local repo="$1" oid="$2" artifact_root="${LASTGIT_ARTIFACT_ROOT:-$HOME/.lastgit/artifacts}"
+  local f digest
+  [ -n "$oid" ] || return 1
+  for f in "$artifact_root"/manifests/*.json; do
+    [ -f "$f" ] || continue
+    digest="$(jq -r --arg repo "$repo" --arg oid "$oid" '
+      select(.app == "last-stack" and .repo == $repo and .source_oid == $oid)
+      | .manifest_digest // empty
+    ' "$f" 2>/dev/null || true)"
+    if [ -n "$digest" ]; then
+      printf '%s\n' "$digest"
+      return 0
+    fi
+  done
+  return 1
+}
+
+run_last_stack_artifact_upgrade() {
+  local repo="$1" id="$2" oid="$3" artifact_root="${LASTGIT_ARTIFACT_ROOT:-$HOME/.lastgit/artifacts}"
+  local digest
+  if [ "$DRY_RUN" = 1 ]; then
+    log "DRY_RUN: would promote last-stack artifact and refresh host-track repo=$repo cr=$id oid=$oid"
+    return 0
+  fi
+  digest="$(find_last_stack_manifest "$repo" "$oid" || true)"
+  if [ -z "$digest" ]; then
+    log "ERROR: last-stack artifact manifest missing repo=$repo cr=$id oid=$oid root=$artifact_root"
+    return 1
+  fi
+  log "promoting last-stack artifact repo=$repo cr=$id oid=$oid manifest=$digest ..."
+  lastgit artifact promote \
+    --app last-stack \
+    --channel stable \
+    --manifest "$digest" \
+    --repo "$repo" \
+    --oid "$oid" \
+    --context ci-required \
+    --root "$artifact_root" \
+    --json >/dev/null
+  log "refreshing host-track last-stack from promoted artifact ..."
+  host-track refresh last-stack
+}
+
 run_upgrade() {
-  local app="$1" repo="$2" id="$3"
+  local app="$1" repo="$2" id="$3" oid="${4:-}"
+  case "$app" in
+    artifact:last-stack)
+      run_last_stack_artifact_upgrade "$repo" "$id" "$oid"
+      return
+      ;;
+  esac
   if [ ! -x "$UPGRADE_BIN" ]; then
     log "ERROR: last-stack-safe-upgrade-cli not found; cannot upgrade $app for $repo $id"
     return 1
@@ -169,7 +221,7 @@ run_upgrade() {
 
 handle_departure() {
   # $1=repo $2=cr_id  (left the open set)
-  local repo="$1" id="$2" view state base app attempts
+  local repo="$1" id="$2" view state base app attempts merge_oid head_oid upgrade_oid
   is_handled "$repo" "$id" && return 0
 
   app="$(map_repo_to_app "$repo")"
@@ -195,9 +247,13 @@ handle_departure() {
     return 0
   fi
 
-  if run_upgrade "$app" "$repo" "$id"; then
+  merge_oid="$(printf '%s' "$view" | jq -r '.merge_oid // empty')"
+  head_oid="$(printf '%s' "$view" | jq -r '.head_oid // empty')"
+  upgrade_oid="${merge_oid:-$head_oid}"
+
+  if run_upgrade "$app" "$repo" "$id" "$upgrade_oid"; then
     mark_handled "$repo" "$id"
-    log "OK upgraded app=$app after $repo $id"
+    log "OK upgraded app=$app after $repo $id oid=$upgrade_oid"
     return 0
   fi
 
@@ -205,7 +261,14 @@ handle_departure() {
   log "FAIL upgrade app=$app repo=$repo cr=$id attempt=$attempts/$MAX_ATTEMPTS"
   if [ "$attempts" -ge "$MAX_ATTEMPTS" ]; then
     mark_handled "$repo" "$id"
-    log "GIVE_UP app=$app repo=$repo cr=$id after $attempts attempts (main stays merged; run manually: last-stack-safe-upgrade-cli $app)"
+    case "$app" in
+      artifact:last-stack)
+        log "GIVE_UP app=$app repo=$repo cr=$id after $attempts attempts (main stays merged; promote artifact for oid=$upgrade_oid, then run: host-track refresh last-stack)"
+        ;;
+      *)
+        log "GIVE_UP app=$app repo=$repo cr=$id after $attempts attempts (main stays merged; run manually: last-stack-safe-upgrade-cli $app)"
+        ;;
+    esac
   fi
   return 0
 }

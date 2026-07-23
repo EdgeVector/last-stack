@@ -45,3 +45,4 @@ bash tests/last-stack-artifact-host-track-proof.sh
 bash tests/last-stack-artifact-layout.sh
 bash tests/last-stack-artifact-routine-freshness.sh
 bash tests/last-stack-artifact-one-rule.sh
+bash tests/last-stack-post-merge-safe-upgrade.sh
