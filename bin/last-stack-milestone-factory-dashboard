@@ -1,0 +1,354 @@
+#!/usr/bin/env python3
+"""Milestone factory dashboard — North Star → Milestone → cards by column.
+
+Read-only against fkanban + brain. Writes HTML (and optional JSON) grouping
+live factory work under first-class milestones. Complements
+`last-stack-north-star-dashboard` (NS-only rollup).
+
+Default HTML: ~/code/edgevector/milestone-factory-dashboard.html
+Links docs/ev-house.css (edgevector.org workstation house style).
+"""
+
+from __future__ import annotations
+
+import argparse
+import html
+import json
+import os
+import subprocess
+import sys
+from collections import defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+COLUMNS = ("backlog", "todo", "doing", "done")
+LIVE = ("backlog", "todo", "doing")
+DEFAULT_HTML = Path.home() / "code" / "edgevector" / "milestone-factory-dashboard.html"
+HOUSE_CSS = "docs/ev-house.css"
+CMD_TIMEOUT = 45.0
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def run_json(argv: list[str]) -> Any:
+    try:
+        proc = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=CMD_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"timeout running {' '.join(argv)}") from exc
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"{' '.join(argv)} failed ({proc.returncode}): "
+            f"{(proc.stderr or proc.stdout or '').strip()}"
+        )
+    out = (proc.stdout or "").strip()
+    if not out:
+        return []
+    return json.loads(out)
+
+
+def fetch_live(board: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    cards_raw = run_json(["fkanban", "list", "--board", board, "--json", "--all"])
+    if isinstance(cards_raw, dict):
+        cards = cards_raw.get("cards") or cards_raw.get("items") or []
+    else:
+        cards = cards_raw if isinstance(cards_raw, list) else []
+    ms_raw = run_json(["fkanban", "milestone", "list", "--board", board, "--json"])
+    if isinstance(ms_raw, dict):
+        milestones = ms_raw.get("milestones") or ms_raw.get("items") or []
+    else:
+        milestones = ms_raw if isinstance(ms_raw, list) else []
+    projects = run_json(["brain", "list", "--type", "project", "--json", "--limit", "200"])
+    if not isinstance(projects, list):
+        projects = []
+    return cards, milestones, projects
+
+
+def build_model(
+    cards: list[dict[str, Any]],
+    milestones: list[dict[str, Any]],
+    projects: list[dict[str, Any]],
+) -> dict[str, Any]:
+    ns_titles = {
+        str(p.get("slug")): str(p.get("title") or p.get("slug"))
+        for p in projects
+        if p.get("slug") and ("north-star" in str(p.get("slug")) or "north-star" in str(p.get("tags") or []).lower())
+    }
+    # Also accept any project title for known north_star fields
+    for p in projects:
+        slug = str(p.get("slug") or "")
+        if slug:
+            ns_titles.setdefault(slug, str(p.get("title") or slug))
+
+    by_ms: dict[str, dict[str, Any]] = {}
+    for m in milestones:
+        slug = str(m.get("slug") or "")
+        if not slug:
+            continue
+        by_ms[slug] = {
+            "slug": slug,
+            "title": m.get("title") or slug,
+            "state": m.get("state") or "",
+            "north_star": m.get("north_star") or "",
+            "proof_status": m.get("proof_status") or "",
+            "proof_card": m.get("proof_card") or "",
+            "driver": m.get("driver") or "",
+            "cards": {c: [] for c in COLUMNS},
+        }
+
+    unassigned: list[dict[str, Any]] = []
+    for card in cards:
+        ms = str(card.get("milestone") or "").strip()
+        col = str(card.get("column") or "?")
+        if not ms or ms not in by_ms:
+            unassigned.append(card)
+            continue
+        bucket = by_ms[ms]["cards"]
+        if col not in bucket:
+            bucket[col] = []
+        bucket[col].append(card)
+
+    # Group milestones under North Stars
+    ns_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    orphan_ms: list[dict[str, Any]] = []
+    for m in by_ms.values():
+        ns = str(m.get("north_star") or "").strip()
+        if not ns:
+            orphan_ms.append(m)
+        else:
+            ns_groups[ns].append(m)
+
+    def ms_sort(m: dict[str, Any]) -> tuple[int, str]:
+        order = {"active": 0, "proving": 1, "blocked": 2, "planned": 3, "complete": 8, "abandoned": 9}
+        return (order.get(str(m.get("state")), 5), str(m.get("slug")))
+
+    for ns in ns_groups:
+        ns_groups[ns].sort(key=ms_sort)
+
+    live_unassigned_pr = [
+        c
+        for c in unassigned
+        if str(c.get("column") or "") in LIVE
+        and str(c.get("kind") or "pr") == "pr"
+    ]
+
+    return {
+        "generated_at": now_iso(),
+        "board_total": len(cards),
+        "milestone_count": len(by_ms),
+        "north_star_groups": [
+            {
+                "slug": ns,
+                "title": ns_titles.get(ns, ns),
+                "milestones": ns_groups[ns],
+            }
+            for ns in sorted(ns_groups.keys())
+        ],
+        "orphan_milestones": sorted(orphan_ms, key=ms_sort),
+        "unassigned": {
+            "total": len(unassigned),
+            "live_pr": live_unassigned_pr,
+            "live": [c for c in unassigned if str(c.get("column") or "") in LIVE],
+        },
+    }
+
+
+def render_html(model: dict[str, Any], css_href: str = HOUSE_CSS) -> str:
+    esc = html.escape
+
+    def card_li(c: dict[str, Any]) -> str:
+        slug = esc(str(c.get("slug") or ""))
+        title = esc(str(c.get("title") or ""))
+        kind = esc(str(c.get("kind") or "pr"))
+        pri = esc(str(c.get("priority") or c.get("pri") or "—"))
+        return f'<li class="card"><code>{slug}</code> <span class="kind">{kind}</span> <span class="pri">{pri}</span> — {title}</li>'
+
+    sections = []
+    for ns in model["north_star_groups"]:
+        ms_blocks = []
+        for m in ns["milestones"]:
+            cols_html = []
+            for col in COLUMNS:
+                cards = m["cards"].get(col) or []
+                if not cards and col == "done":
+                    # keep done collapsed if empty
+                    cols_html.append(
+                        f'<div class="col"><h4>{col} (0)</h4><p class="muted">—</p></div>'
+                    )
+                    continue
+                if cards:
+                    body = f"<ul>{''.join(card_li(c) for c in cards)}</ul>"
+                else:
+                    body = '<p class="muted">—</p>'
+                cols_html.append(
+                    f'<div class="col"><h4>{col} ({len(cards)})</h4>{body}</div>'
+                )
+            proof = esc(str(m.get("proof_status") or "—"))
+            state = esc(str(m.get("state") or ""))
+            ms_blocks.append(
+                f"""
+<section class="milestone" data-state="{state}">
+  <header>
+    <h3>{esc(str(m.get("title")))}</h3>
+    <div class="meta"><code>{esc(str(m.get("slug")))}</code>
+      <span class="pill">{state}</span>
+      <span class="pill">proof:{proof}</span>
+    </div>
+  </header>
+  <div class="cols">{''.join(cols_html)}</div>
+</section>"""
+            )
+        sections.append(
+            f"""
+<article class="ns" data-ns="{esc(ns['slug'])}">
+  <h2>{esc(ns['title'])}</h2>
+  <p class="slug"><code>{esc(ns['slug'])}</code> · {len(ns['milestones'])} milestone(s)</p>
+  {''.join(ms_blocks) if ms_blocks else '<p class="muted">No milestones.</p>'}
+</article>"""
+        )
+
+    orphan_html = ""
+    if model["orphan_milestones"]:
+        items = "".join(
+            f"<li><code>{esc(m['slug'])}</code> — {esc(str(m.get('title')))} "
+            f"<span class='pill'>{esc(str(m.get('state')))}</span></li>"
+            for m in model["orphan_milestones"]
+        )
+        orphan_html = f"<section class='orphan'><h2>Milestones without North Star</h2><ul>{items}</ul></section>"
+
+    ua = model["unassigned"]
+    ua_rows = "".join(
+        f"<tr><td><code>{esc(str(c.get('slug')))}</code></td>"
+        f"<td>{esc(str(c.get('column')))}</td>"
+        f"<td>{esc(str(c.get('kind') or 'pr'))}</td>"
+        f"<td>{esc(str(c.get('title') or ''))}</td></tr>"
+        for c in ua["live"]
+    )
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Milestone factory dashboard</title>
+<link rel="stylesheet" href="{esc(css_href)}" />
+<style>
+/* local layout extensions on house system */
+body {{ margin: 0; font: 14px/1.45 system-ui, sans-serif; background: var(--bg, #f4f1ea); color: var(--ink, #1c1917); }}
+header.top {{ background: #1c1917; color: #fafaf9; padding: 24px 28px; }}
+header.top h1 {{ margin: 0 0 6px; font-size: 26px; }}
+header.top p {{ margin: 0; color: #a8a29e; max-width: 900px; }}
+main {{ padding: 20px 28px 48px; max-width: 1400px; margin: 0 auto; }}
+.topline {{ display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }}
+.stat {{ background: #fffdf8; border: 1px solid #d6d3d1; border-radius: 10px; padding: 10px 12px; min-width: 100px; }}
+.stat b {{ display: block; font-size: 22px; }}
+.stat span {{ color: #78716c; font-size: 12px; }}
+.notice {{ border-left: 4px solid #b45309; background: #fffbeb; padding: 10px 12px; border-radius: 8px; margin: 12px 0; color: #78350f; }}
+.ns {{ background: #fffdf8; border: 1px solid #d6d3d1; border-radius: 12px; padding: 14px 16px; margin: 18px 0; }}
+.ns h2 {{ margin: 0 0 4px; font-size: 18px; }}
+.ns .slug {{ color: #78716c; margin: 0 0 12px; font-size: 12px; }}
+.milestone {{ border: 1px solid #e7e5e4; border-radius: 10px; padding: 10px 12px; margin: 10px 0; background: #fff; }}
+.milestone h3 {{ margin: 0 0 4px; font-size: 15px; }}
+.meta {{ display: flex; gap: 8px; flex-wrap: wrap; align-items: center; font-size: 12px; color: #57534e; }}
+.pill {{ border: 1px solid #d6d3d1; border-radius: 999px; padding: 1px 8px; background: #fafaf9; }}
+.cols {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }}
+.col h4 {{ margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: #57534e; }}
+.col ul {{ list-style: none; margin: 0; padding: 0; }}
+.card {{ border: 1px solid #e7e5e4; border-radius: 8px; padding: 6px 8px; margin: 4px 0; font-size: 12px; }}
+.card .kind, .card .pri {{ color: #78716c; }}
+.muted {{ color: #78716c; }}
+table {{ width: 100%; border-collapse: collapse; background: #fffdf8; border: 1px solid #d6d3d1; border-radius: 12px; overflow: hidden; }}
+th, td {{ padding: 8px 10px; border-bottom: 1px solid #e7e5e4; text-align: left; vertical-align: top; }}
+th {{ background: #ebe7df; font-size: 11px; text-transform: uppercase; color: #57534e; }}
+.orphan {{ margin-top: 24px; }}
+@media (max-width: 1000px) {{ .cols {{ grid-template-columns: 1fr 1fr; }} }}
+@media (max-width: 640px) {{ .cols {{ grid-template-columns: 1fr; }} main {{ padding: 12px; }} }}
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Milestone factory dashboard</h1>
+  <p>Generated <code>{esc(model['generated_at'])}</code>. Hierarchy: North Star → Milestone → cards by column.
+  Live Unassigned Kind:pr cards must be backfilled. CLI twin: <code>fkanban list --group-by-milestone</code>.</p>
+</header>
+<main>
+  <div class="topline">
+    <div class="stat"><b>{model['board_total']}</b><span>board cards</span></div>
+    <div class="stat"><b>{model['milestone_count']}</b><span>milestones</span></div>
+    <div class="stat"><b>{len(model['north_star_groups'])}</b><span>NS with milestones</span></div>
+    <div class="stat"><b>{len(ua['live_pr'])}</b><span>live Kind:pr unassigned</span></div>
+  </div>
+  <div class="notice">Unassigned / Operational live Kind:pr count: <b>{len(ua['live_pr'])}</b>
+  (todo/doing should be zero once enforce + backfill land). House CSS: <code>{esc(css_href)}</code>.</div>
+  {''.join(sections)}
+  {orphan_html}
+  <h2>Live unassigned cards</h2>
+  <table>
+    <thead><tr><th>slug</th><th>column</th><th>kind</th><th>title</th></tr></thead>
+    <tbody>{ua_rows if ua_rows else '<tr><td colspan="4" class="muted">None</td></tr>'}</tbody>
+  </table>
+</main>
+</body>
+</html>
+"""
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--board", default="default")
+    p.add_argument("--html", type=Path, nargs="?", const=DEFAULT_HTML, default=None)
+    p.add_argument("--json-out", type=Path)
+    p.add_argument("--css", default=HOUSE_CSS, help="stylesheet href for house style")
+    p.add_argument(
+        "--cards-json",
+        type=Path,
+        help="fixture cards JSON (with --milestones-json)",
+    )
+    p.add_argument("--milestones-json", type=Path)
+    p.add_argument("--projects-json", type=Path)
+    args = p.parse_args(argv)
+
+    try:
+        if args.cards_json and args.milestones_json:
+            cards = json.loads(args.cards_json.read_text(encoding="utf-8"))
+            milestones = json.loads(args.milestones_json.read_text(encoding="utf-8"))
+            projects = (
+                json.loads(args.projects_json.read_text(encoding="utf-8"))
+                if args.projects_json
+                else []
+            )
+            if isinstance(milestones, dict):
+                milestones = milestones.get("milestones") or []
+        else:
+            cards, milestones, projects = fetch_live(args.board)
+        model = build_model(cards, milestones, projects)
+    except Exception as exc:  # noqa: BLE001 — CLI surface
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if args.json_out:
+        args.json_out.write_text(json.dumps(model, indent=2) + "\n", encoding="utf-8")
+        print(f"JSON={args.json_out}", file=sys.stderr)
+
+    html_path = args.html if args.html is not None else DEFAULT_HTML
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+    html_path.write_text(render_html(model, css_href=args.css), encoding="utf-8")
+    print(f"HTML={html_path}", file=sys.stderr)
+
+    print(
+        f"milestones={model['milestone_count']} ns_groups={len(model['north_star_groups'])} "
+        f"live_unassigned_pr={len(model['unassigned']['live_pr'])}"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
