@@ -31,6 +31,7 @@ Known slugs:
   north-star-lastdb-search-as-app
   north-star-cloud-sync-storage-lean
   north-star-exemem-cloud-account
+  north-star-lastdb-cloud-backup-restore-proof
 
 Reports land in $NORTH_STAR_PROOF_DIR (default ~/.last-stack/north-star-proofs/<slug>.md)
 First line is PASS | PASS-OFFLINE | FAIL for DONE-WHEN file matching.
@@ -68,6 +69,7 @@ map_slug_to_script() {
     north-star-lastdb-search-as-app) echo "search-as-app/run.sh" ;;
     north-star-cloud-sync-storage-lean) echo "cloud-sync-storage-lean/run.sh" ;;
     north-star-exemem-cloud-account) echo "exemem-cloud-account/run.sh" ;;
+    north-star-lastdb-cloud-backup-restore-proof) echo "cloud-backup-restore/run.sh" ;;
     *) return 1 ;;
   esac
 }
@@ -86,6 +88,7 @@ ALL_SLUGS=(
   north-star-lastdb-search-as-app
   north-star-cloud-sync-storage-lean
   north-star-exemem-cloud-account
+  north-star-lastdb-cloud-backup-restore-proof
 )
 
 if [ "$LIST" -eq 1 ]; then
