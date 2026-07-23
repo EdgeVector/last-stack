@@ -10,6 +10,23 @@ board, keep rationale in the Brain.
 Prefer the MCP tools (`brain_*`, `kanban_*`) when the servers are connected;
 the CLI below is the fallback and uses the SAME verbs.
 
+### RUN / DEV / STATE / BOARD (won't-undo — 2026-07-23)
+
+**Product code only in DEV worktrees.** Shared install trees are RUN/STATE, not
+git homes. Full map: `instructions/run-dev-state-board.md` and brain
+`concepts-edgevector-run-dev-state-board`.
+
+| | |
+|--|--|
+| **RUN** | host-track current + `~/.local/bin` + daemons — use, don't commit |
+| **DEV** | portal `./bin/wt start` → `~/.fkanban/worktrees/…` — **only** edit/commit path |
+| **STATE** | `~/.lastdb`, `~/.local/state/last-stack/*`, `~/.routines/*` — data/logs/proofs |
+| **BOARD** | brain + fkanban over the socket |
+
+`~/.last-stack` is a **compat root** (mostly symlinks into
+`~/.local/state/last-stack`). Never develop there. Sandbox allowlists must
+include **realpaths** under `~/.local/state/last-stack`, not only `~/.last-stack`.
+
 ### Host-track CLI hygiene
 
 For long-running agent work, prefer installed global CLIs over binaries from a
