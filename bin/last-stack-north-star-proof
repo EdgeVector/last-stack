@@ -29,6 +29,7 @@ Known slugs:
   north-star-laststore-is-document-store-last-db-is-conventions
   north-star-mini-brain-observability
   north-star-lastdb-search-as-app
+  north-star-cloud-sync-storage-lean
 
 Reports land in $NORTH_STAR_PROOF_DIR (default ~/.last-stack/north-star-proofs/<slug>.md)
 First line is PASS | PASS-OFFLINE | FAIL for DONE-WHEN file matching.
@@ -64,6 +65,7 @@ map_slug_to_script() {
     north-star-laststore-is-document-store-last-db-is-conventions) echo "laststore/run.sh" ;;
     north-star-mini-brain-observability) echo "mini-brain-observability/run.sh" ;;
     north-star-lastdb-search-as-app) echo "search-as-app/run.sh" ;;
+    north-star-cloud-sync-storage-lean) echo "cloud-sync-storage-lean/run.sh" ;;
     *) return 1 ;;
   esac
 }
@@ -80,6 +82,7 @@ ALL_SLUGS=(
   north-star-laststore-is-document-store-last-db-is-conventions
   north-star-mini-brain-observability
   north-star-lastdb-search-as-app
+  north-star-cloud-sync-storage-lean
 )
 
 if [ "$LIST" -eq 1 ]; then
