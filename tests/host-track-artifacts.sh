@@ -117,8 +117,25 @@ printf 'tampered install\n' > "$HOME/apps/demo/current/bin/demo"
 if "$ROOT/bin/host-track" check demo >/dev/null 2>&1; then
   fail "tampered active install passed check"
 fi
-cp "$tmp/active-backup" "$HOME/apps/demo/current/bin/demo"
-chmod +x "$HOME/apps/demo/current/bin/demo"
+# Tampered install must name the bad path.
+tamper_err="$("$ROOT/bin/host-track" check demo 2>&1 >/dev/null || true)"
+printf '%s\n' "$tamper_err" | grep -q 'hash mismatch: path=bin/demo' \
+  || fail "check did not name hash-mismatched path (got: $tamper_err)"
+
+# Plain refresh (status.stale=false) must re-stage corrupt content, not no-op.
+"$ROOT/bin/host-track" refresh demo >/dev/null
+"$ROOT/bin/host-track" check demo >/dev/null \
+  || fail "refresh did not heal tampered active install"
+[ "$(demo)" = v1 ] || fail "healed install lost working binary"
+
+# Re-tamper then force-refresh path
+printf 'tampered again\n' > "$HOME/apps/demo/current/bin/demo"
+"$ROOT/bin/host-track" refresh --force demo >/dev/null
+"$ROOT/bin/host-track" check demo >/dev/null \
+  || fail "force refresh did not heal tampered active install"
+
+cp "$tmp/active-backup" "$HOME/apps/demo/current/bin/demo" 2>/dev/null || true
+chmod +x "$HOME/apps/demo/current/bin/demo" 2>/dev/null || true
 
 publish_fixture "$digest_two" "$oid_two" $'#!/usr/bin/env bash\necho v2'
 "$ROOT/bin/host-track" status --json demo | jq -e '.stale == true' >/dev/null \
