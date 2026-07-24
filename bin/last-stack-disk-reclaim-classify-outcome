@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage: last-stack-disk-reclaim-classify-outcome key=value...
+
+Prints: <ok|noop|error> <normalized detail>
+
+Use reason keys to distinguish expected retained state from actionable
+cleanup failures:
+  remove_failed_reason=main_worktree
+  backup_remove_failed_reason=operation_not_permitted
+  copy_remove_failed_reason=operation_not_permitted
+USAGE
+}
+
+leading_int() {
+  case "${1:-}" in
+    "") printf '0' ;;
+    *)
+      value="${1%%[!0-9]*}"
+      printf '%s' "${value:-0}"
+      ;;
+  esac
+}
+
+reclaimed_gb=0
+worktrees_pruned=0
+backups_pruned=0
+lastdb_copies_pruned=0
+ports_reaped=0
+remove_failed=0
+backup_remove_failed=0
+copy_remove_failed=0
+backup_lsof_inconclusive=0
+remove_failed_reason=""
+backup_remove_failed_reason=""
+copy_remove_failed_reason=""
+low_disk=""
+final_free=""
+passthrough=()
+
+for arg in "$@"; do
+  case "$arg" in
+    *=*) ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "last-stack-disk-reclaim-classify-outcome: expected key=value, got: $arg" >&2; exit 2 ;;
+  esac
+
+  key="${arg%%=*}"
+  value="${arg#*=}"
+  case "$key" in
+    reclaimed_gb) reclaimed_gb="$(leading_int "$value")" ;;
+    worktrees_pruned) worktrees_pruned="$(leading_int "$value")" ;;
+    backups_pruned) backups_pruned="$(leading_int "$value")" ;;
+    lastdb_copies_pruned) lastdb_copies_pruned="$(leading_int "$value")" ;;
+    ports_reaped) ports_reaped="$(leading_int "$value")" ;;
+    remove_failed) remove_failed="$(leading_int "$value")" ;;
+    backup_remove_failed) backup_remove_failed="$(leading_int "$value")" ;;
+    copy_remove_failed) copy_remove_failed="$(leading_int "$value")" ;;
+    backup_lsof_inconclusive) backup_lsof_inconclusive="$(leading_int "$value")" ;;
+    remove_failed_reason) remove_failed_reason="$value" ;;
+    backup_remove_failed_reason) backup_remove_failed_reason="$value" ;;
+    copy_remove_failed_reason) copy_remove_failed_reason="$value" ;;
+    low_disk) low_disk="$value"; passthrough+=("$arg") ;;
+    final_free) final_free="$value" ;;
+    kept_*|purge_continuing) passthrough+=("$arg") ;;
+  esac
+done
+
+retained_main_worktree=0
+backup_retained_permission_denied=0
+copy_retained_permission_denied=0
+actionable_remove_failed=0
+
+if [ "$remove_failed" -gt 0 ]; then
+  case "$remove_failed_reason" in
+    main_worktree|main-working-tree|retained_main_worktree|retained-main-worktree)
+      retained_main_worktree="$remove_failed"
+      ;;
+    *)
+      actionable_remove_failed=$((actionable_remove_failed + remove_failed))
+      ;;
+  esac
+fi
+
+if [ "$backup_remove_failed" -gt 0 ]; then
+  case "$backup_remove_failed_reason" in
+    operation_not_permitted|op_not_permitted|permission_denied|sandbox_permission_denied)
+      backup_retained_permission_denied="$backup_remove_failed"
+      ;;
+    *)
+      actionable_remove_failed=$((actionable_remove_failed + backup_remove_failed))
+      ;;
+  esac
+fi
+
+if [ "$copy_remove_failed" -gt 0 ]; then
+  case "$copy_remove_failed_reason" in
+    operation_not_permitted|op_not_permitted|permission_denied|sandbox_permission_denied)
+      copy_retained_permission_denied="$copy_remove_failed"
+      ;;
+    *)
+      actionable_remove_failed=$((actionable_remove_failed + copy_remove_failed))
+      ;;
+  esac
+fi
+
+activity=$((reclaimed_gb + worktrees_pruned + backups_pruned + lastdb_copies_pruned + ports_reaped))
+
+status="noop"
+if [ "$activity" -gt 0 ]; then
+  status="ok"
+fi
+if [ "$actionable_remove_failed" -gt 0 ] || [ -n "$low_disk" ]; then
+  status="error"
+fi
+
+detail=(
+  "reclaimed_gb=$reclaimed_gb"
+  "worktrees_pruned=$worktrees_pruned"
+  "backups_pruned=$backups_pruned"
+  "lastdb_copies_pruned=$lastdb_copies_pruned"
+  "ports_reaped=$ports_reaped"
+  "retained_main_worktree=$retained_main_worktree"
+  "backup_retained_permission_denied=$backup_retained_permission_denied"
+  "copy_retained_permission_denied=$copy_retained_permission_denied"
+  "backup_lsof_inconclusive=$backup_lsof_inconclusive"
+  "actionable_remove_failed=$actionable_remove_failed"
+)
+
+if [ -n "$final_free" ]; then
+  detail+=("final_free=$final_free")
+fi
+if [ "${#passthrough[@]}" -gt 0 ]; then
+  detail+=("${passthrough[@]}")
+fi
+
+printf '%s %s\n' "$status" "${detail[*]}"
