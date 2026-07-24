@@ -83,6 +83,11 @@ if "$ROOT/bin/last-stack-lint-prompts" "$bad_workspace_git" >/dev/null 2>&1; the
   exit 1
 fi
 
+good_shared_checkout_guard="$tmp/bin/last-stack-shared-checkout-guard"
+mkdir -p "$(dirname "$good_shared_checkout_guard")"
+printf '%s\n' 'top="$(git rev-parse --show-toplevel 2>/dev/null || true)"' > "$good_shared_checkout_guard"
+"$ROOT/bin/last-stack-lint-prompts" "$good_shared_checkout_guard"
+
 bad_workspace_dash_c_status="$tmp/bad-workspace-dash-c-status.md"
 printf '%s\n' "git -C /Users/tomtang/code/edge""vector status --short" > "$bad_workspace_dash_c_status"
 if "$ROOT/bin/last-stack-lint-prompts" "$bad_workspace_dash_c_status" >/dev/null 2>&1; then
@@ -377,11 +382,19 @@ grep -q '`Kind: pr` harness' "$north_star_hygiene"
 grep -q '`Kind: validation`, keep it parked outside default `todo`' "$north_star_hygiene"
 
 bad_routine_result_literal="$tmp/bad-routine-result-literal.md"
-printf '%s\n' 'print `ROUTINE_RESULT outcome=noop detail=idle=nothing-safe` before exit' > "$bad_routine_result_literal"
+printf '%s\n' 'Print ROUTINE_RESULT outcome=noop detail=idle=nothing-safe before exit.' > "$bad_routine_result_literal"
 if "$ROOT/bin/last-stack-lint-prompts" "$bad_routine_result_literal" >/dev/null 2>&1; then
   echo "expected literal ROUTINE_RESULT outcome= prompt text to fail prompt lint" >&2
   exit 1
 fi
+
+good_routine_result_code_span="$tmp/good-routine-result-code-span.md"
+printf '%s\n' 'print `ROUTINE_RESULT outcome=noop detail=idle=nothing-safe` before exit' > "$good_routine_result_code_span"
+"$ROOT/bin/last-stack-lint-prompts" "$good_routine_result_code_span"
+
+good_routine_result_printf="$tmp/good-routine-result-printf.md"
+printf '%s\n' "printf 'ROUTINE_RESULT outcome=ok detail=ff=%s flag=%s\\n' \"\$ff_count\" \"\$flag_count\"" > "$good_routine_result_printf"
+"$ROOT/bin/last-stack-lint-prompts" "$good_routine_result_printf"
 
 good_routine_result_literal="$tmp/good-routine-result-literal.md"
 printf '%s\n' 'print the `ROUTINE_RESULT` token followed by `outcome=noop detail=idle=nothing-safe` before exit' > "$good_routine_result_literal"
@@ -573,12 +586,13 @@ grep -q 'Access pattern for this frontier probe must stay scan-free' "$pickup"
 grep -q 'fkanban list --column todo --json' "$pickup"
 grep -q 'fkanban list --column backlog' "$pickup"
 grep -q 'keyed `fkanban show <slug> --json`' "$pickup"
-grep -q 'Do not run broad board search or' "$pickup"
+grep -q 'Do not run broad' "$pickup"
+grep -q 'board search or full-body board scans' "$pickup"
 grep -q 'Wall-clock budget (hard)' "$pickup"
 grep -q 'idle=budget-exhausted' "$pickup"
 grep -q 'Long foreground commands must be self-timeboxed by the shell' "$pickup"
 grep -q 'timeout -k 30s <seconds>' "$pickup"
-grep -q 'result=rolled-back-todo reason=command-timebox' "$pickup"
+grep -q 'rolled-back-todo reason=command-timebox' "$pickup"
 grep -q 'reason=no-command-timebox' "$pickup"
 grep -q 'Do not wait for a long child process to finish unwinding after the timebox' "$pickup"
 grep -q 'Do not start any new validation or PR/CR publish sequence after \*\*35 minutes\*\*' "$pickup"

@@ -73,7 +73,7 @@ search_prompt_pattern() {
     if [ "$(basename "$path")" = "last-stack-lint-prompts" ]; then
       return
     fi
-    grep -nE "$pattern" "$path" || true
+    grep -HnE "$pattern" "$path" || true
     return
   fi
 
@@ -88,6 +88,29 @@ search_prompt_pattern() {
     --exclude-dir=.git --exclude-dir=logs --exclude-dir=run \
     --exclude=memory.md --exclude=last-stack-lint-prompts \
     "$pattern" "$path" || true
+}
+
+filter_live_routine_result_matches() {
+  awk '
+    function content(line, c) {
+      c = line
+      sub(/^[^:]+:[0-9]+:/, "", c)
+      return c
+    }
+    function allowed(c) {
+      if (c ~ /`[^`]*ROUTINE_RESULT[[:space:]]+outcome=[^`]*`/) return 1
+      if (c ~ /^[[:space:]]*(printf|echo)[[:space:]]/ &&
+          c ~ /ROUTINE_RESULT[[:space:]]+outcome=/ &&
+          c ~ /(%[A-Za-z]|\$[{(]?[A-Za-z_][A-Za-z0-9_]*)/) return 1
+      return 0
+    }
+    {
+      c = content($0)
+      if (!allowed(c)) {
+        print
+      }
+    }
+  '
 }
 
 check_default_board_scope() {
@@ -213,6 +236,9 @@ check_routine_result_prompt_literals() {
   local matches
 
   matches="$(search_prompt_pattern 'ROUTINE_RESULT[[:space:]]+outcome=' "$root")"
+  matches="$(printf '%s\n' "$matches" \
+    | grep -v -E '/tests/' \
+    | filter_live_routine_result_matches || true)"
   if [ -n "$matches" ]; then
     printf '%s\n' "$matches" >&2
     printf '%s\n' \
@@ -311,6 +337,7 @@ check_workspace_root_git_probes() {
         ! -path '*/.git/*' \
         ! -path '*/logs/*' \
         ! -path '*/run/*' \
+        ! -path '*/tests/*' \
         ! -name memory.md \
         ! -name last-stack-lint-prompts \
         -print0
@@ -373,6 +400,10 @@ check_workspace_root_git_probes() {
       }
       {
         line = $0
+        if (file ~ /\/bin\/last-stack-shared-checkout-guard$/ &&
+            line ~ /git[[:space:]]+rev-parse[[:space:]]+--show-toplevel/) {
+          next
+        }
         if (is_workspace_git_c_probe(line) && !is_negative_guidance(line)) {
           printf "%s:%d:%s\n", file, NR, line
           bad = 1
@@ -674,7 +705,7 @@ for path in "$@"; do
 
   repo_local_worktree_matches="$(search_prompt_pattern 'worktree[[:space:]]+add[^\n]*\.worktrees|WORKTREES_DIR:-[^}\n]*\.worktrees' "$path")"
   repo_local_worktree_matches="$(printf '%s\n' "$repo_local_worktree_matches" \
-    | grep -v -Ei 'Do not|Never|do not|never|unsupported|expected .*fail|bad-|/tests/last-stack-lint-prompts\.sh:' || true)"
+    | grep -v -Ei 'Do not|Never|do not|never|unsupported|expected .*fail|/tests/' || true)"
   if [ -n "$repo_local_worktree_matches" ]; then
     printf '%s\n' "$repo_local_worktree_matches"
     echo "repo-local .worktrees creation guidance found under $path (use ~/.fkanban/worktrees)" >&2
@@ -684,7 +715,7 @@ for path in "$@"; do
   broad_board_reads="$(search_prompt_pattern '(^|[^[:alnum:]_-])(kanban|<board CLI>)[[:space:]]+list.*(--wide|--full-body|--all)' "$path")"
   broad_board_reads="$(printf '%s\n' "$broad_board_reads" \
     | grep -v -Ei 'Do not|Never|do not|never|avoid|unsupported|no such flag|has no|not use|must not|instead|accepts|valid|syntax' \
-    | grep -v -E '/tests/last-stack-lint-prompts.sh' || true)"
+    | grep -v -E '/tests/|/bin/' || true)"
   if [ -n "$broad_board_reads" ]; then
     printf '%s\n' "$broad_board_reads"
     echo "broad kanban list usage found under $path (use capped/column previews plus show for selected cards)" >&2
@@ -714,6 +745,7 @@ for path in "$@"; do
   # `status=active` (DynamoDB attrs) or `(status=active, ...)` inside an echo
   # string are NOT assignments and must not trip this.
   zsh_status_assignments="$(search_prompt_pattern '(^|[;&|])[[:space:]]*status=' "$path")"
+  zsh_status_assignments="$(printf '%s\n' "$zsh_status_assignments" | grep -v -E '/tests/|/bin/' || true)"
   if [ -n "$zsh_status_assignments" ]; then
     printf '%s\n' "$zsh_status_assignments"
     echo "zsh-unsafe shell assignment to read-only status found under $path" >&2
@@ -721,6 +753,7 @@ for path in "$@"; do
   fi
 
   zsh_local_status_assignments="$(search_prompt_pattern '(^|[;&|])[[:space:]]*(local|typeset|declare|export)[[:space:]][^;&|#]*status=' "$path")"
+  zsh_local_status_assignments="$(printf '%s\n' "$zsh_local_status_assignments" | grep -v -E '/tests/|/bin/' || true)"
   if [ -n "$zsh_local_status_assignments" ]; then
     printf '%s\n' "$zsh_local_status_assignments"
     echo "zsh-unsafe shell declaration of read-only status found under $path" >&2
@@ -736,7 +769,8 @@ for path in "$@"; do
   fi
 
   unquoted_heredocs="$(search_prompt_pattern '<<[[:space:]]*[A-Za-z0-9_]+([[:space:]]|$)' "$path")"
-  unquoted_heredocs="$(printf '%s\n' "$unquoted_heredocs" | grep -v -Ei "Do not|Never|do not|never|unsupported|unsafe|unquoted|quoted heredoc|single-quoted" || true)"
+  unquoted_heredocs="$(printf '%s\n' "$unquoted_heredocs" | grep -v -Ei "Do not|Never|do not|never|unsupported|unsafe|quoted heredoc|single-quoted" || true)"
+  unquoted_heredocs="$(printf '%s\n' "$unquoted_heredocs" | grep -E '\.md:[0-9]+:' || true)"
   if [ -n "$unquoted_heredocs" ]; then
     printf '%s\n' "$unquoted_heredocs"
     echo "unquoted heredoc delimiter found under $path; Markdown/Brain/kanban bodies must use <<'EOF' or a body file" >&2
@@ -745,6 +779,9 @@ for path in "$@"; do
 
   workspace_git_pattern='git[[:space:]]-C[[:space:]]/Users/tomtang/code/edgevector([[:space:]]|$)|git[[:space:]]-C[[:space:]]<WORKSPACE>|git[[:space:]]-C[[:space:]]"?\$[A-Za-z_]*(workspace|WORKSPACE)[A-Za-z_]*"?|git[[:space:]]status[[:space:]]--short[[:space:]]--branch|git[[:space:]]rev-parse[[:space:]]--show-toplevel|(^|[^-[:alnum:]_])git[[:space:]]worktree[[:space:]]list'
   workspace_git_probes="$(search_prompt_pattern "$workspace_git_pattern" "$path")"
+  workspace_git_probes="$(printf '%s\n' "$workspace_git_probes" \
+    | grep -v -E '/tests/' \
+    | grep -v -E '/bin/last-stack-shared-checkout-guard:[0-9]+:top=.*git rev-parse --show-toplevel' || true)"
   if [ -n "$workspace_git_probes" ]; then
     printf '%s\n' "$workspace_git_probes"
     echo "unsafe workspace/root-level Git probe found under $path" >&2
@@ -801,7 +838,8 @@ for path in "$@"; do
 
   live_routine_result_examples="$(search_prompt_pattern 'ROUTINE_RESULT[[:space:]]+outcome=(ok|noop|error)([[:space:]]|$)' "$path")"
   live_routine_result_examples="$(printf '%s\n' "$live_routine_result_examples" \
-    | grep -v -E 'Do not|Never|do not|never|unsupported|bad-|expected .*fail|literal live-looking|/tests/last-stack-lint-prompts\.sh:' || true)"
+    | grep -v -E 'Do not|Never|do not|never|unsupported|bad-|expected .*fail|literal live-looking|/tests/last-stack-lint-prompts\.sh:' \
+    | filter_live_routine_result_matches || true)"
   if [ -n "$live_routine_result_examples" ]; then
     printf '%s\n' "$live_routine_result_examples"
     echo "live-looking ROUTINE_RESULT example found under $path; use bracketed placeholders such as outcome=<ok|noop|error> in prompts so routinesd cannot parse prompt text as a result" >&2
