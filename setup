@@ -426,6 +426,7 @@ write_host_track_refresh_agent_plist() {
   <array>
     <string>$(printf '%s' "$program" | xml_escape)</string>
     <string>refresh</string>
+    <string>--force-if-stale</string>
     <string>--all</string>
   </array>
   <key>EnvironmentVariables</key>

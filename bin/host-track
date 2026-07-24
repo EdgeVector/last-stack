@@ -32,7 +32,7 @@ Usage:
   host-track status [--json] [app]
   host-track which [--json] <app>
   host-track check <app>
-  host-track refresh [--force] (<app>|--all)
+  host-track refresh [--force] [--force-if-stale] (<app>|--all)
   host-track install [--channel candidate|canary|stable] <app>
   host-track rollback <app>
 
@@ -788,11 +788,20 @@ rollback_cmd() {
   rollback_artifact_app "$app"
 }
 
+# Return 0 when an app's installed artifact is behind its channel (status.stale=true).
+# Mirrors `host-track status` so `--force-if-stale` re-stages only apps that need it.
+app_is_stale() {
+  local app="$1" stale
+  stale="$(status_json_for "$app" 2>/dev/null | jq -r '.stale | tostring' 2>/dev/null)"
+  [ "$stale" = "true" ]
+}
+
 refresh_cmd() {
-  local force=0 all=0 app="" failures=0 rc
+  local force=0 force_if_stale=0 all=0 app="" failures=0 rc eff
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --force) force=1; shift ;;
+      --force-if-stale) force_if_stale=1; shift ;;
       --all) all=1; shift ;;
       -h|--help) usage; exit 0 ;;
       --*) die "unknown refresh flag: $1" ;;
@@ -800,10 +809,17 @@ refresh_cmd() {
     esac
   done
 
+  # Plain `refresh` can no-op on a pointer-stale artifact when the local channel
+  # resolver lags what status reports, leaving status.stale=true forever and
+  # blocking every routine that gates on freshness (recurring pickup-fleet stall).
+  # `--force-if-stale` re-stages (force) exactly the apps status still flags stale,
+  # clearing that stuck state without the churn of forcing already-current apps.
   if [ "$all" -eq 1 ]; then
     while IFS= read -r app; do
       [ -n "$app" ] || continue
-      if refresh_app "$app" "$force"; then
+      eff="$force"
+      if [ "$eff" -eq 0 ] && [ "$force_if_stale" -eq 1 ] && app_is_stale "$app"; then eff=1; fi
+      if refresh_app "$app" "$eff"; then
         :
       else
         rc=$?
@@ -815,7 +831,9 @@ refresh_cmd() {
   fi
 
   [ -n "$app" ] || die "refresh requires an app or --all"
-  refresh_app "$app" "$force"
+  eff="$force"
+  if [ "$eff" -eq 0 ] && [ "$force_if_stale" -eq 1 ] && app_is_stale "$app"; then eff=1; fi
+  refresh_app "$app" "$eff"
 }
 
 main() {

@@ -250,6 +250,22 @@ fi
 fresh="$("$ROOT/bin/host-track" status --json fake)"
 printf '%s\n' "$fresh" | jq -e '.stale == false' >/dev/null || fail "refresh did not catch up"
 test -s "$stamp_dir/fake.json" || fail "refresh did not write stamp"
+
+# --force-if-stale forces exactly the apps status flags stale, and no-ops the rest.
+# Guards the recurring pickup-fleet stall where plain refresh no-ops on a stuck-stale
+# artifact, leaving status.stale=true forever.
+printf 'three\n' > "$seed/file.txt"
+git -C "$seed" add file.txt
+git -C "$seed" commit -q -m update2
+git -C "$seed" push -q origin main
+printf '%s\n' "$("$ROOT/bin/host-track" status --json fake)" | jq -e '.stale == true' >/dev/null \
+  || fail "fake not stale before --force-if-stale"
+"$ROOT/bin/host-track" refresh --force-if-stale fake >/dev/null
+printf '%s\n' "$("$ROOT/bin/host-track" status --json fake)" | jq -e '.stale == false' >/dev/null \
+  || fail "--force-if-stale did not catch up a stale app"
+"$ROOT/bin/host-track" refresh --force-if-stale fake >/dev/null \
+  || fail "--force-if-stale errored on an already-current app"
+"$ROOT/bin/host-track" refresh --force-if-stale --all >/dev/null 2>&1 || true
 printf 'dirty\n' > "$last_stack_host/dirty.txt"
 if "$ROOT/bin/host-track" refresh --force last-stack >/dev/null 2>&1; then
   fail "dirty fallback last-stack refresh succeeded"
