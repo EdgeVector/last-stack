@@ -5,8 +5,7 @@ ROOT="$(cd "$(dirname "$0")/../../.." && pwd -P)"
 . "$ROOT/harness/north-star/common.sh"
 
 SLUG=north-star-lastdb-deliver-data-slices
-WS="$(ns_edgevector_workspace)"
-REPO="$WS/discovery"
+REPO="$(ns_repo_path discovery)"
 MODE="$(ns_mode)"
 
 if [ ! -f "$REPO/scripts/dogfood_one_loop.sh" ] || [ ! -f "$REPO/scripts/dogfood_one_loop.py" ]; then
