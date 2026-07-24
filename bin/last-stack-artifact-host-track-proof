@@ -13,8 +13,10 @@ done
 ROOT="$(cd "$(dirname "$SOURCE")/.." && pwd -P)"
 
 registry="${HOST_TRACK_REGISTRY:-}"
-proof_slug="artifact-driven-host-track-registry-cutover"
+proof_slug="artifact-driven-host-track"
+legacy_proof_slug="artifact-driven-host-track-registry-cutover"
 proof_path="${LAST_STACK_ARTIFACT_HOST_TRACK_PROOF:-}"
+proof_path_explicit=0
 json_out=0
 
 usage() {
@@ -36,11 +38,12 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --fleet)
       proof_slug="artifact-driven-host-track-fleet"
+      legacy_proof_slug=""
       shift
       ;;
     --json) json_out=1; shift ;;
     --registry) [ "$#" -ge 2 ] || die "--registry requires a value"; registry="$2"; shift 2 ;;
-    --proof) [ "$#" -ge 2 ] || die "--proof requires a value"; proof_path="$2"; shift 2 ;;
+    --proof) [ "$#" -ge 2 ] || die "--proof requires a value"; proof_path="$2"; proof_path_explicit=1; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     --*) die "unknown flag: $1" ;;
     *) die "unexpected argument: $1" ;;
@@ -122,6 +125,12 @@ mkdir -p "$(dirname "$proof_path")"
   printf '\n'
   jq -r '.[] | "- " + .app + ": " + .install_mode + " stale=" + (.stale | tostring) + " artifact_app=" + (.artifact_app // "-")' "$status_json"
 } > "$proof_path"
+
+if [ "$proof_path_explicit" -eq 0 ] && [ -n "$legacy_proof_slug" ] && [ "$legacy_proof_slug" != "$proof_slug" ]; then
+  legacy_proof_path="$HOME/.last-stack/feature-proofs/$legacy_proof_slug.md"
+  mkdir -p "$(dirname "$legacy_proof_path")"
+  cp "$proof_path" "$legacy_proof_path"
+fi
 
 if [ "$json_out" -eq 1 ]; then
   jq -n --arg registry "$registry" --arg proof "$proof_path" --slurpfile status "$status_json" --slurpfile invariant "$invariant_json" --slurpfile checks "$check_jsonl" \
