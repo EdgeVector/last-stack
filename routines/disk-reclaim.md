@@ -135,6 +135,36 @@ continue — do not fail the whole run.
    copy contains a top-level `*-REPORT.md`/`VALIDATE-REPORT.md`, copy that file
    into `~/.lastdb-test-copies/flip-records/` before deleting the tree.
    Heartbeat token: `lastdb_copies_pruned=<n>`.
+4c. **Classify retained state before choosing the heartbeat token.** Use the
+   deterministic classifier for the final heartbeat:
+   ```bash
+   classify_out="$("$last_stack/bin/last-stack-disk-reclaim-classify-outcome" \
+     reclaimed_gb="$reclaimed_gb" \
+     worktrees_pruned="$worktrees_pruned" \
+     backups_pruned="$backups_pruned" \
+     lastdb_copies_pruned="$lastdb_copies_pruned" \
+     ports_reaped="${ports_reaped:-0}" \
+     remove_failed="${remove_failed:-0}" \
+     remove_failed_reason="${remove_failed_reason:-}" \
+     backup_remove_failed="${backup_remove_failed:-0}" \
+     backup_remove_failed_reason="${backup_remove_failed_reason:-}" \
+     backup_lsof_inconclusive="${backup_lsof_inconclusive:-0}" \
+     copy_remove_failed="${copy_remove_failed:-0}" \
+     copy_remove_failed_reason="${copy_remove_failed_reason:-}" \
+     final_free="$final_free" \
+     ${low_disk_token:-})"
+   heartbeat_status="${classify_out%% *}"
+   heartbeat_detail="${classify_out#* }"
+   ```
+   Expected retained/no-op states must not become recurring `error` heartbeats:
+   dirty/unique/outside/open/protected worktrees, Git refusing
+   `git worktree remove` because a path is a main working tree
+   (`remove_failed_reason=main_worktree`), and backup/scratch deletion blocked
+   by sandbox or filesystem permissions
+   (`*_remove_failed_reason=operation_not_permitted`) are retained state when
+   the disk floor is healthy. Real unexpected deletion failures still set an
+   actionable reason and must remain `error` so the reconciler can file one
+   stable owner signal.
 5. **Disk floor.** If free space < `<your floor, e.g. ~30 GB>`, proactively purge
    the largest reclaimable build-cache dir with an **atomic swap** so an active
    build doesn't see a half-deleted tree: `mv target target.PURGE` → recreate an
@@ -172,11 +202,11 @@ space, and anything left for a human.
 
 > **Heartbeat (LAST action, always — even a bounded no-op).** Call
 > `<last-stack>/bin/last-stack-brain-append-heartbeat --line "disk-reclaim
-> <ISO-ts> <ok|noop|error> <outcome>"`, e.g. `ok reclaimed_gb=<n>
-> worktrees_pruned=<n> backups_pruned=<n> lastdb_copies_pruned=<n>
-> final_free=<free>` (plus `low_disk=<free>` whenever step 6 tripped) on a real
-> reclaim, or `noop reclaimed_gb=0 worktrees_pruned=0` when the run found
-> nothing to remove. Without this call,
+> <ISO-ts> $heartbeat_status $heartbeat_detail"`. Compute
+> `$heartbeat_status` and `$heartbeat_detail` with
+> `last-stack-disk-reclaim-classify-outcome`; do not hand-classify retained
+> dirty/unique/outside/main-worktree or permission-denied backup state as
+> `error`. Without this call,
 > routinesd's outcome classifier has no ok/noop/error token to key on and
 > reports `lastOutcome=unknown` for every finished run regardless of how the
 > run actually went. If the heartbeat helper cannot write because the brain
