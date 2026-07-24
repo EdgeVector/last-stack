@@ -1,3 +1,11 @@
+> **READ FIRST — LastDB access (can't miss):** Before any schema, query, mutation, dual-write, or heal:
+> `brain get concepts-lastdb-agent-access-model`
+> · install: `cat ~/.last-stack/docs/lastdb-agent-access-model.md`
+> · public: https://thelastdb.com/docs/agent-access-model
+> · agents: https://thelastdb.com/llms.txt (section **Access model for agents**)
+>
+> LastDB is **Dynamo-style NoSQL** (HashKey / HashRange), not SQL. Primary vs dual-written secondaries. No full-scan lists.
+
 ## LastDB Brain (brain) + Kanban (kanban)
 
 When a task should survive the current chat, use LastDB rather than chat memory.
