@@ -108,8 +108,20 @@ EOF
 proof="$tmp/proof.md"
 "$ROOT/bin/last-stack-artifact-host-track-proof" --registry "$HOST_TRACK_REGISTRY" --proof "$proof" --json \
   | jq -e '.ok == true and .proof == "'"$proof"'"' >/dev/null || fail "proof helper did not return ok json"
-grep -q '^PASS artifact-driven-host-track-registry-cutover ' "$proof" \
+grep -q '^PASS artifact-driven-host-track ' "$proof" \
   || fail "proof helper did not write PASS proof"
+
+default_home="$tmp/default-home"
+mkdir -p "$default_home"
+HOME="$default_home" "$ROOT/bin/last-stack-artifact-host-track-proof" --registry "$HOST_TRACK_REGISTRY" --json \
+  | jq -e '.ok == true and (.proof | endswith("/.last-stack/feature-proofs/artifact-driven-host-track.md"))' \
+    >/dev/null || fail "default proof helper did not return ok json with canonical proof path"
+grep -q '^PASS artifact-driven-host-track ' \
+  "$default_home/.last-stack/feature-proofs/artifact-driven-host-track.md" \
+  || fail "default proof helper did not write canonical PASS proof"
+grep -q '^PASS artifact-driven-host-track ' \
+  "$default_home/.last-stack/feature-proofs/artifact-driven-host-track-registry-cutover.md" \
+  || fail "default proof helper did not refresh legacy PASS proof alias"
 
 fleet_home="$tmp/fleet-home"
 mkdir -p "$fleet_home"
