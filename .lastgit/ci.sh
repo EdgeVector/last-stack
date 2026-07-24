@@ -31,6 +31,7 @@ bin/last-stack-lint-prompts \
   instructions/brain-kanban.md
 
 bash tests/last-stack-routine-read.sh
+bash tests/last-stack-brain-sync-dashboard-result.sh
 bash tests/last-stack-kanban-done-when-eval.sh
 bash tests/last-stack-driver-hierarchy.sh
 bash tests/last-stack-ship-feature-milestones.sh

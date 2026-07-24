@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""Classify brain-sync rollup dashboard command results.
+
+The scheduled brain-sync routine is LLM-driven, so this helper keeps the
+dashboard-failure outcome stable and testable. It emits exactly the payload
+shape routinesd expects after the ROUTINE_RESULT token.
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from pathlib import Path
+
+
+TRANSIENT_PATTERNS = (
+    "service_timeout",
+    "node did not respond",
+    "too many concurrent reads",
+    "uds_connection_limit",
+    "socket not reachable",
+    "did not accept a connection",
+    "connection refused",
+    "busy-node",
+)
+
+
+def token(value: str) -> str:
+    value = (value or "").strip().lower()
+    value = re.sub(r"[^a-z0-9._:-]+", "-", value)
+    value = value.strip("-")
+    return value or "unknown"
+
+
+def field_value(value: str) -> str:
+    value = (value or "").strip()
+    value = re.sub(r"[^A-Za-z0-9._:-]+", "-", value)
+    value = value.strip("-")
+    return value or "unknown"
+
+
+def read_text(path: str) -> str:
+    if not path:
+        return ""
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def previous_snapshot(path: str) -> tuple[int, str]:
+    if not path:
+        return 0, ""
+    try:
+        data = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0, ""
+    generated = ""
+    for pattern in (
+        r"Generated\s*<code>([^<]+)</code>",
+        r"\*\*Generated:\*\*\s*`([^`]+)`",
+        r"Generated:\s*([0-9TZ:+-]{10,})",
+    ):
+        m = re.search(pattern, data)
+        if m:
+            generated = m.group(1).strip()
+            break
+    return len(data.encode("utf-8")), generated
+
+
+def error_class(stderr_text: str) -> str:
+    text = stderr_text.lower()
+    if "brain list" in text and "socket not reachable" in text:
+        return "brain-list-socket-unreachable"
+    if "brain list" in text and "did not accept a connection" in text:
+        return "brain-list-socket-unreachable"
+    if "brain list" in text:
+        return "brain-list-failed"
+    if "kanban list" in text:
+        return "kanban-list-failed"
+    if "brain put" in text:
+        return "brain-put-failed"
+    if "brain get" in text and ("not found" in text or "missing" in text):
+        return "missing-brain-record"
+    if "no such file" in text or "not found" in text:
+        return "missing-input"
+    if "timed out" in text or "timeout" in text:
+        return "dashboard-timeout"
+    if "command failed" in text:
+        return "command-failed"
+    return "dashboard-failed"
+
+
+def is_transient(stderr_text: str) -> bool:
+    text = stderr_text.lower()
+    return any(pattern in text for pattern in TRANSIENT_PATTERNS)
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--mode", default="rollup")
+    p.add_argument("--rc", type=int, required=True)
+    p.add_argument("--stderr-file", default="")
+    p.add_argument("--previous-html", default="")
+    p.add_argument("--brain-record-missing", action="store_true")
+    return p.parse_args(argv)
+
+
+def main(argv: list[str]) -> int:
+    args = parse_args(argv)
+    mode = token(args.mode)
+    stderr_text = read_text(args.stderr_file)
+    prev_bytes, prev_generated = previous_snapshot(args.previous_html)
+    err = error_class(stderr_text)
+
+    fields = [f"mode={mode}"]
+    if args.rc == 0:
+        fields.append("reason=dashboard-ok")
+        print("outcome=ok detail=" + " ".join(fields))
+        return 0
+
+    if is_transient(stderr_text) and prev_bytes > 0:
+        outcome = "noop"
+        fields.append("reason=dashboard-backpressure-prior-snapshot")
+    else:
+        outcome = "error"
+        fields.append("reason=dashboard-failed")
+        fields.append(f"rc={args.rc}")
+
+    fields.append(f"dashboard_error={err}")
+    if args.brain_record_missing:
+        fields.append("brain_record_missing=1")
+    if prev_bytes > 0:
+        fields.append(f"previous_html_bytes={prev_bytes}")
+    if prev_generated:
+        fields.append(f"previous_generated={field_value(prev_generated)}")
+    print(f"outcome={outcome} detail=" + " ".join(fields))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
