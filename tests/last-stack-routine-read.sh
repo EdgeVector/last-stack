@@ -156,12 +156,18 @@ fi
 
 north_star_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" north-star-rollup)"
 if ! grep -Fq 'timeout 300 "$dash_bin"' <<<"$north_star_prompt" ||
-   ! grep -Fq "reason=dashboard-timeout-prior-snapshot" <<<"$north_star_prompt"; then
+   ! grep -Fq "reason=dashboard-backpressure-prior-snapshot" <<<"$north_star_prompt"; then
   echo "expected north-star-rollup to budget dashboard refresh and soft-noop intact snapshot timeouts" >&2
   exit 1
 fi
-if ! grep -Fq "Dashboard timeout with a usable prior brain record + HTML snapshot" <<<"$north_star_prompt"; then
+if ! grep -Fq "Dashboard timeout/backpressure/socket-unreachable with a usable prior brain" <<<"$north_star_prompt"; then
   echo "expected north-star-rollup exit semantics to keep transient dashboard timeouts out of error" >&2
+  exit 1
+fi
+if ! grep -Fq "last-stack-brain-sync-dashboard-result" <<<"$north_star_prompt" ||
+   ! grep -Fq "dashboard_error=<class>" <<<"$north_star_prompt" ||
+   ! grep -Fq "socket not reachable" <<<"$north_star_prompt"; then
+  echo "expected north-star-rollup to preserve actionable dashboard failure details through the classifier" >&2
   exit 1
 fi
 if ! grep -Fq 's/^\*\*Generated:\*\*[[:space:]]*`\([^`]*\)`.*/\1/p' <<<"$north_star_prompt"; then

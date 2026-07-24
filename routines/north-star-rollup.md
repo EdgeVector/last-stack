@@ -81,13 +81,27 @@ Brain record (stable):
    - applies known NS aliases (e.g. legacy schema roadmap → shared-surface NS)
    - upserts `north-star-dashboard` and writes the HTML file
    If the wrapper returns `124` (timeout) or stderr contains a transient
-   busy-node signal, do **not** turn the fleet red when a previous dashboard
-   snapshot exists and is non-empty. Treat it as load/backpressure: update
-   memory with the timeout, heartbeat
-   `north-star-rollup <ISO-ts> noop reason=dashboard-timeout-prior-snapshot previous_html_bytes=<bytes>`,
-   print `ROUTINE_RESULT outcome=noop detail=reason=dashboard-timeout-prior-snapshot`,
-   and exit. Only use `error` for timeout/crash cases where no prior dashboard
-   artifact exists or confirmation proves the artifact is empty/corrupt.
+   busy-node / socket-unreachable signal (`service_timeout`, "node did not
+   respond", "too many concurrent reads", `uds_connection_limit`,
+   "socket not reachable", "did not accept a connection"), do **not** turn the
+   fleet red when a previous dashboard snapshot exists and is non-empty. Treat
+   it as load/backpressure. Prefer the executable classifier:
+   ```bash
+   "$last_stack/bin/last-stack-brain-sync-dashboard-result" \
+     --mode rollup \
+     --rc "$dashboard_rc" \
+     --stderr-file "$run_dir/dashboard.stderr" \
+     --previous-html "$HOME/code/edgevector/north-star-dashboard.html"
+   ```
+   It returns a complete `outcome=<ok|noop|error> detail=...` payload. Use that
+   payload for the heartbeat and final `ROUTINE_RESULT`. The transient
+   prior-snapshot case must include
+   `reason=dashboard-backpressure-prior-snapshot`, a stable
+   `dashboard_error=<class>` such as `brain-list-socket-unreachable`, and
+   `previous_html_bytes=<bytes>` / `previous_generated=<stamp>` when available.
+   Only use `error` for timeout/crash cases where no prior dashboard artifact
+   exists or confirmation proves the artifact is empty/corrupt; preserve
+   `dashboard_error=<class>` and any prior snapshot context in the error detail.
 3. **Confirm.** Point-read `brain get north-star-dashboard --type reference`
    (or `brain get north-star-dashboard`) and check the body head contains the
    current UTC hour's generated stamp (or today's date). The dashboard markdown
@@ -134,9 +148,10 @@ Brain record (stable):
 - Successful regenerate → success (`ok`)
 - Busy-node / unreachable → success noop (`noop reason=busy-node`) — do not fail
   the routine fleet for a temporary load spike
-- Dashboard timeout with a usable prior brain record + HTML snapshot → success
-  noop (`noop reason=dashboard-timeout-prior-snapshot`) — do not fail the
-  routine fleet when the durable mirror is still available
+- Dashboard timeout/backpressure/socket-unreachable with a usable prior brain
+  record + HTML snapshot → success noop (`noop
+  reason=dashboard-backpressure-prior-snapshot`) — do not fail the routine
+  fleet when the durable mirror is still available
 - Script crash, brain put failure, empty HTML after claimed success → `error`
 
 ## Out of scope
