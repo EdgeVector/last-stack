@@ -174,3 +174,33 @@ Or read `status.request_ops` on `GET /api/status` over the socket. Rankings:
 header `X-LastDB-Client: <name>` (`brain`, `kanban`, `lastgit`, …) — not a
 security boundary; missing → `unknown`. Full playbook:
 `brain get sop-lastdb-request-ops-telemetry --type sop`.
+
+### LastDB access model (won't-undo — Dynamo-style NoSQL)
+
+LastDB is **not SQL**. Treat it as **DynamoDB-shaped NoSQL**: design for
+access patterns (HashKey / HashRange partition+sort), not joins or field
+WHERE filters. A multi-field "record" is assembled at query time from
+per-field tips → atoms.
+
+- **Primary** entity (e.g. Card by slug) = source of truth.
+- **Secondary** schemas (e.g. BoardCards by board + `column#pos#slug`) are
+  **dual-written projections** the app maintains for list queries — not free
+  shared pointers to the primary's molecules.
+- **Do:** HashKey for one entity; board list via product secondary / CLI.
+- **Don't:** full scan as list; fake field-equality filters; bulk secondary
+  heals while primary point-reads are broken.
+
+**Full agent brief (install tree + public):**
+
+```bash
+# On a Last Stack install (after setup):
+cat ~/.last-stack/docs/lastdb-agent-access-model.md
+# Or brain (personal node, if seeded):
+brain get concepts-lastdb-agent-access-model
+```
+
+Public (other machines / strangers' agents):
+
+- https://thelastdb.com/docs/agent-access-model
+- https://thelastdb.com/llms.txt (section "Access model for agents")
+- Source in this repo: `docs/lastdb-agent-access-model.md`
