@@ -50,6 +50,7 @@ grep -q 'New repository venue default: LastGit' "$agents" || fail "LastGit new-r
 grep -q 'brain ask' "$agents" || fail "CLI guidance missing from managed block"
 grep -q 'folddb.sock' "$agents" || fail "transport guidance missing from managed block"
 grep -q 'Dynamo-style NoSQL' "$agents" || fail "LastDB access model missing from managed block"
+grep -q 'READ FIRST' "$agents" || fail "LastDB READ FIRST banner missing from managed block"
 grep -q 'Git commits from isolated worktrees' "$agents" \
   || fail "isolated worktree commit guidance missing from managed block"
 grep -q 'Never run `git add -A` or `git add .` in a shared checkout' "$agents" \

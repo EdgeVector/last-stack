@@ -1,5 +1,8 @@
 # LastDB access model for agents
 
+> **READ FIRST:** This file *is* the brief. Open it before any LastDB schema or query work.
+> Public: https://thelastdb.com/docs/agent-access-model · https://thelastdb.com/llms.txt
+
 **Won't-undo:** treat LastDB as **Dynamo-style NoSQL with access-pattern design**, not SQL and not “mystery novel storage.”
 
 | Durable homes | |
