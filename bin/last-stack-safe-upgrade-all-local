@@ -10,7 +10,7 @@ UPGRADE="$ROOT/last-stack-safe-upgrade-cli"
 }
 
 # kanban/fkanban share one install — only run once as fkanban
-apps=(brain situations fkanban routines lastsecrets configurations)
+apps=(brain situations fkanban routines lastsecrets configurations search)
 fail=0
 for app in "${apps[@]}"; do
   printf '\n======== safe-upgrade %s ========\n' "$app"

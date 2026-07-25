@@ -204,6 +204,30 @@
       "notes": "Local-safe CLI install; refresh uses last-stack-safe-upgrade-cli."
     },
     {
+      "app": "search",
+      "install_mode": "local-safe",
+      "kind": "local-safe cli",
+      "command": "search",
+      "gate": "lastgit",
+      "gate_main": "lastdb:///search#main",
+      "refresh": "$HOME/.last-stack/bin/last-stack-refresh-local-safe",
+      "artifact_app": "search",
+      "artifact_channel": "stable",
+      "artifact_root": "$HOME/.lastgit/artifacts",
+      "install_root": "$HOME/.host-track/apps/search",
+      "links": [
+        {
+          "source": "bin/search",
+          "target": "$HOME/.local/bin/search"
+        },
+        {
+          "source": "bin/search-store",
+          "target": "$HOME/.local/bin/search-store"
+        }
+      ],
+      "notes": "Local-safe Search app CLI; post-install builds search-store (LastStore engine) and PATH-links search + search-store. Keyword plane rebuild: lastdb search-rebuild (Mini) then search drain."
+    },
+    {
       "app": "lastdb",
       "install_mode": "checkout",
       "kind": "safe-upgrade-managed binary",
