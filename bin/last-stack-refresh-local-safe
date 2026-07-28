@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Host-track refresh entry for any local-safe agent CLI.
 # Usage: last-stack-refresh-local-safe <app> [--force…]
-# App names: brain | situations | kanban | fkanban | routines | lastsecrets | configurations
+# App names: brain | situations | kanban | fkanban | routines | lastsecrets | configurations | search
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd -P)"
 UPGRADE="$ROOT/last-stack-safe-upgrade-cli"

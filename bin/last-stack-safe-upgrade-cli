@@ -82,6 +82,14 @@ app_defaults() {
       DEFAULT_SMOKE="configurations_smoke"
       DEFAULT_WRAPPERS="configurations"
       ;;
+    search)
+      DEFAULT_REMOTE="lastdb:///search"
+      DEFAULT_BARE="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/search.git"
+      DEFAULT_LINKS="bin/search:$HOME/.local/bin/search bin/search-store:$HOME/.local/bin/search-store"
+      DEFAULT_BUILD="bun_install"
+      DEFAULT_SMOKE="search_smoke"
+      DEFAULT_WRAPPERS="search"
+      ;;
     *)
       DEFAULT_REMOTE="lastdb:///$app"
       DEFAULT_BARE="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/${app}.git"
@@ -97,7 +105,10 @@ run_bun_install() {
   local root="$1"
   [ -f "$root/package.json" ] || return 0
   command -v bun >/dev/null 2>&1 || die "bun required for $root"
-  if [ -x "$root/bin/brain-host-track-post-install" ]; then
+  # Prefer app-specific host-track post-install hooks (brain, search, …).
+  if [ -x "$root/bin/search-host-track-post-install" ]; then
+    (cd "$root" && ./bin/search-host-track-post-install) || die "search-host-track-post-install failed"
+  elif [ -x "$root/bin/brain-host-track-post-install" ]; then
     (cd "$root" && ./bin/brain-host-track-post-install) || \
       (cd "$root" && bun install --frozen-lockfile --production) || \
       (cd "$root" && bun install --frozen-lockfile) || \
@@ -191,6 +202,20 @@ smoke_configurations() {
   ensure_bin_wrapper "$root" configurations
   PATH="$root/bin:$PATH" configurations --help >/dev/null || die "smoke: configurations --help failed"
   printf 'safe-upgrade-cli: configurations smoke OK\n'
+}
+
+smoke_search() {
+  local root="$1"
+  ensure_bin_wrapper "$root" search
+  [ -x "$root/bin/search" ] || die "smoke: no bin/search in $root"
+  [ -x "$root/bin/search-store" ] || die "smoke: no bin/search-store (post-install cargo build missing)"
+  PATH="$root/bin:$PATH" search status >/dev/null 2>&1 \
+    || PATH="$root/bin:$PATH" search 2>&1 | grep -q 'usage:' \
+    || die "smoke: search did not print status/usage"
+  PATH="$root/bin:$PATH" search-store --help >/dev/null 2>&1 \
+    || PATH="$root/bin:$PATH" search-store 2>&1 | head -1 | grep -q . \
+    || true
+  printf 'safe-upgrade-cli: search smoke OK\n'
 }
 
 smoke_fkanban() {
@@ -346,6 +371,7 @@ main() {
       routines_smoke) smoke_routines "$stage" ;;
       lastsecrets_smoke) smoke_lastsecrets "$stage" ;;
       configurations_smoke) smoke_configurations "$stage" ;;
+      search_smoke) smoke_search "$stage" ;;
       fkanban_smoke) smoke_fkanban "$stage" ;;
       true) true ;;
       *) die "unknown smoke: $DEFAULT_SMOKE" ;;
