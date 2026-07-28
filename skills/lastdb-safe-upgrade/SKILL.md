@@ -5,7 +5,9 @@ description: |
   Tom's primary lastdbd so the live brain is never the first place a bad binary
   fails. ALWAYS: (1) durable offline copy of ~/.lastdb, (2) boot the NEW binary
   only against an ephemeral/CoW copy (never live home first), (3) require GREEN
-  real-data reads, (4) only then venue-aware live install (sidebin+launchd or
+  real-data reads AND RSS under the memory-guard AND the latency bar (real
+  workloads timed vs the current binary — correct-but-slow is RED), (4) only
+  then venue-aware live install (sidebin+launchd or
   brew services) + post-check + Situations notice. Use when Tom says "upgrade
   lastdb", "brew upgrade lastdb", "safe upgrade", "update my brain/database
   binary", "can I upgrade to 0.22.x", "don't brick my data", "new bottle/release",
@@ -81,7 +83,27 @@ proxy is optional later for near-zero client impact.
    env, then the memory-guard LaunchAgent plist, else 6144. Incident 2026-07-22:
    sled-free cutover sat at ~8.5 GiB while the guard killed at 6 GiB → thrash.
    Live post-check re-samples primary RSS the same way.
-7. Do not claim “primary stopped” unless this script actually stopped the
+7. **Latency bar (correct-but-slow is RED):** on the same candidate CoW boot,
+   time real workloads — keyed Board point read (`/api/query`), the scan-shaped
+   `kanban list --column todo` (the op that regressed in 0.23.1), and a real
+   `brain put` upsert (writes only ever land on the throwaway copy). Then boot
+   the **current live binary** on an identical CoW copy and time the same ops
+   as the baseline. Probe nodes boot with the live LaunchAgent's `LASTDB_*`
+   tuning env mirrored in (warm budget etc.), and peak RSS is sampled **under
+   this load** (an idle Last Store node pages out and reads ~10 MiB). **RED**
+   if candidate median > `LASTDB_PROBE_LAT_RATIO` (default 3×) the baseline
+   above a `LASTDB_PROBE_LAT_FLOOR_MS` (1000 ms) noise floor, exceeds
+   `LASTDB_PROBE_LAT_ABS_MAX_MS` (20 s) **when no baseline is measurable**, or
+   is unmeasurable on the candidate while the baseline measured. When candidate
+   AND baseline are both over the ceiling that is pre-existing store slowness:
+   loud WARN, ratio governs (a bar that REDs on the status quo trains everyone
+   to skip it). Incident 2026-07-25/27: the 0.23.1 cutover passed the
+   correctness + RSS bars while scans ran 5–20× slower — the live primary was
+   the first place anyone noticed. Skipping the bar
+   (`LASTDB_PROBE_LAT_SKIP=1`) requires Tom's explicit clearance. Live
+   post-check re-times the point read and warns (`LASTDB_LIVE_LAT_ENFORCE=1`
+   makes it RED).
+8. Do not claim “primary stopped” unless this script actually stopped the
    supervisor for that venue.
 
 ## Do this, in order
@@ -135,11 +157,11 @@ The script:
 | Preflight | Primary home exists, identity.key present, live `/health` ok (if socket up) |
 | Resolve candidate | `brew update` / `--version` tarball / `--candidate` |
 | **1. Backup** | `cp -cR` (APFS) or `cp -a` → `~/.lastdb-backups/pre-<new>-from-<old>-<ts>/` |
-| **2. Probe** | `BIN=<candidate>` CoW smoke harness (never live home) + **RSS settle/sample** vs memory-guard limit |
+| **2. Probe** | `BIN=<candidate>` CoW smoke harness (never live home) + **RSS settle/sample** vs memory-guard limit + **latency bar**: point read / `kanban list` scan / `brain put` write timed on candidate CoW copy vs the current binary on an identical copy |
 | Detect venue | sidebin vs brew |
 | **3. Live** | sidebin atomic install + kickstart **or** brew upgrade/restart |
-| **4. Post-check** | Live `/health`, schemas > 0, Board title, **live peak RSS** vs guard; cutover_s in notice |
-| RED | Exit 1, **keep backup**, primary untouched if probe failed (incl. RSS over guard) |
+| **4. Post-check** | Live `/health`, schemas > 0, Board title, **live peak RSS** vs guard, **live point-read latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency in notice |
+| RED | Exit 1, **keep backup**, primary untouched if probe failed (incl. RSS over guard or latency over bar) |
 
 ### B. If the script is missing or fails open
 
@@ -156,7 +178,8 @@ Always print:
 - Backup path  
 - Probe GREEN/RED (+ first Board title if green)  
 - **Probe peak RSS MiB vs memory-guard limit / fail_at**  
-- Whether live upgrade ran + cutover seconds + live peak RSS  
+- **Latency: candidate vs baseline point/scan/write medians (ms) + boot seconds**  
+- Whether live upgrade ran + cutover seconds + live peak RSS + live point-read ms  
 - Rollback commands (script prints them)
 
 Optional: append a one-liner to brain reference `lastdb-safe-upgrade-log` via
@@ -173,7 +196,7 @@ incident.
 | `VERDICT: GREEN` | Probe + live cutover + live post-check passed | Done |
 | `VERDICT: GREEN_PROBE_ONLY` | Probe passed; primary still on old version | Re-run with `--yes` if Tom wants the upgrade |
 | `VERDICT: ALREADY_CURRENT` | Already on candidate/stable | Nothing to do |
-| `VERDICT: RED` | Candidate cannot serve real data **or** peak RSS exceeds memory-guard bar | **Do not upgrade**; file release-blocker; keep backup. If RSS: fix candidate memory or raise guard only with Tom clearance |
+| `VERDICT: RED` | Candidate cannot serve real data, **or** peak RSS exceeds memory-guard bar, **or** the latency bar failed (candidate regresses vs current binary / over absolute ceiling) | **Do not upgrade**; file release-blocker; keep backup. If RSS: fix candidate memory or raise guard only with Tom clearance. If latency: profile the candidate's read/write paths; `LASTDB_PROBE_LAT_SKIP=1` only with Tom clearance |
 
 ## Rollback
 
@@ -217,4 +240,8 @@ kanban list   # must show real cards
 Incidents: 2026-07-13 wrong-key / 0.22.6 decrypt brick; 2026-07-16 brew upgrade
 failed because primary is sidebin+launchd not brew services; 2026-07-21 Codex
 could not find this skill because it was Claude-only (not in last-stack);
-2026-07-22 post-cutover RSS ~8.5 GiB vs memory-guard 6 GiB thrash (RSS bar added).
+2026-07-22 post-cutover RSS ~8.5 GiB vs memory-guard 6 GiB thrash (RSS bar added);
+2026-07-25/27 the 0.23.1 cutover passed correctness + RSS while scan reads ran
+5-20x slower (HashGroup warm-set thrash) and the read path amplified writes --
+the live primary was the first place anyone noticed (latency bar added). Brain:
+`lastdb-0231-hashgroup-scan-warmset-thrash-read-regression`.

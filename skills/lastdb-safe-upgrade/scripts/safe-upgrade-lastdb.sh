@@ -8,6 +8,12 @@
 #   3. Require GREEN (identity decrypts, schemas load, real Board values)
 #      AND probe RSS stays under the memory-guard ceiling (so live cutover
 #      does not immediately thrash-restart under lastdbd-memory-guard)
+#      AND the LATENCY BAR: real workloads (Board point read, kanban list
+#      scan, brain put write) timed on the candidate's CoW copy must not
+#      regress vs the CURRENT live binary on an identical copy —
+#      correct-but-slow is RED (incident 2026-07-25/27: 0.23.1 passed the
+#      correctness+RSS bars while scans ran 5-20x slower; the live primary
+#      was the first place anyone noticed)
 #   4. Only then venue-aware live install:
 #        sidebin → atomic install under bin-with-upload-cap + launchctl kickstart
 #        brew    → brew upgrade + brew services restart (only if formula installed)
@@ -51,7 +57,7 @@ TARGET_VERSION=""
 WORK=""
 
 usage() {
-  sed -n '2,28p' "$0"
+  sed -n '2,34p' "$0"
   exit 0
 }
 
@@ -81,6 +87,20 @@ RSS_HEADROOM_PCT="${LASTDB_PROBE_RSS_HEADROOM_PCT:-10}"
 # After data-plane ready, wait this long then sample RSS (embeddings finish loading).
 RSS_SETTLE_SECS="${LASTDB_PROBE_RSS_SETTLE_SECS:-45}"
 RSS_SAMPLE_SECS="${LASTDB_PROBE_RSS_SAMPLE_SECS:-15}"
+
+# Latency bar (incident 2026-07-25/27): the 0.23.1 cutover was GREEN on the
+# correctness + RSS bars while scan-shaped reads (kanban list, brain range
+# queries) ran 5-20x slower on the new binary — the live primary was the first
+# place anyone noticed. The probe therefore times real workloads on the
+# candidate's CoW copy AND on an identical copy served by the CURRENT live
+# binary, and fails RED on regression. Correct-but-slow is NOT GREEN.
+LAT_SKIP="${LASTDB_PROBE_LAT_SKIP:-0}"              # 1 = skip bar (Tom clearance only)
+LAT_SAMPLES="${LASTDB_PROBE_LAT_SAMPLES:-3}"        # samples per op; median wins
+LAT_RATIO="${LASTDB_PROBE_LAT_RATIO:-3}"            # RED if cand > ratio x baseline
+LAT_FLOOR_MS="${LASTDB_PROBE_LAT_FLOOR_MS:-1000}"   # ratio bar only applies above this
+LAT_ABS_MAX_MS="${LASTDB_PROBE_LAT_ABS_MAX_MS:-20000}"  # RED when no baseline; WARN when baseline is equally slow
+LAT_OP_TIMEOUT_SECS="${LASTDB_PROBE_LAT_OP_TIMEOUT_SECS:-120}"  # per-sample kill + scored as this
+LIVE_LAT_ENFORCE="${LASTDB_LIVE_LAT_ENFORCE:-0}"    # 1 = live post-check latency is RED, not WARN
 
 cleanup_work() {
   # Never delete durable backups. Only temp fetch dirs under $WORK.
@@ -122,39 +142,213 @@ rss_fail_threshold_mb() {
   echo $((limit * (100 - headroom) / 100))
 }
 
-# Boot candidate on a throwaway CoW of primary; after settle, return peak RSS MiB.
-# Prints progress to stderr via log; stdout is only the integer MiB (or empty on fail).
-# Sets global PROBE_RSS_MB on success for callers.
-probe_candidate_peak_rss_mb() {
-  local bin="$1"
-  local limit_mb fail_at settle sample
-  local copy sock log pid uh i max_rss rss
-  limit_mb="$(resolve_rss_limit_mb)"
-  fail_at="$(rss_fail_threshold_mb "$limit_mb")"
-  settle="${RSS_SETTLE_SECS}"
-  sample="${RSS_SAMPLE_SECS}"
-  log "RSS bar: limit=${limit_mb}MiB fail_at>=${fail_at}MiB (headroom ${RSS_HEADROOM_PCT}%) settle=${settle}s sample=${sample}s"
+# --- latency measurement helpers ---------------------------------------------
+
+now_ms() { perl -MTime::HiRes=time -e 'printf "%d\n", time()*1000'; }
+
+median_of() {
+  # median of the integer args
+  printf '%s\n' "$@" | sort -n \
+    | awk '{a[NR]=$1} END {if (NR==0) {print -1} else if (NR%2) {print a[(NR+1)/2]} else {print int((a[NR/2]+a[NR/2+1])/2)}}'
+}
+
+run_op_with_deadline() {
+  # $1 = seconds; rest = command. Returns 124 if the deadline killed it.
+  local secs="$1"; shift
+  "$@" &
+  local pid=$!
+  ( sleep "$secs"; kill -9 "$pid" 2>/dev/null ) &
+  local killer=$!
+  local rc=0
+  wait "$pid" 2>/dev/null || rc=$?
+  kill "$killer" 2>/dev/null || true
+  wait "$killer" 2>/dev/null || true
+  [ "$rc" -eq 137 ] && return 124
+  return "$rc"
+}
+
+# Latency ops. Each takes one arg and must exit non-zero on failure. These are
+# the REAL workloads: the keyed point read from the smoke bar, the scan-shaped
+# read that regressed in 0.23.1 (kanban list), and a real brain upsert (writes
+# only ever land on the throwaway CoW copy, never the primary).
+op_lat_point() {
+  # $1 = socket path
+  curl -sS --max-time "$LAT_OP_TIMEOUT_SECS" --unix-socket "$1" -H 'Host: localhost' \
+    -H 'Content-Type: application/json' \
+    --data '{"schema_name":"Board","fields":["title"],"filter":{"HashKey":"default"}}' \
+    http://x/api/query 2>/dev/null | jq -e '.ok == true' >/dev/null 2>&1
+}
+
+op_lat_scan() {
+  # $1 = probe copy home
+  env FOLDDB_SOCKET_PATH="$1/data/folddb.sock" LASTDB_HOME="$1" FOLDDB_HOME="$1" \
+    kanban list --column todo --json >/dev/null 2>&1
+}
+
+op_lat_write() {
+  # $1 = probe copy home
+  printf -- '---\ntype: reference\nslug: safe-upgrade-latency-probe-scratch\ntitle: safe-upgrade latency probe scratch\n---\nUpsert from the safe-upgrade latency bar. Only ever written to throwaway CoW probe copies.\n' \
+    | env FBRAIN_FOLDDB_SOCKET="$1/data/folddb.sock" LASTDB_HOME="$1" FOLDDB_HOME="$1" \
+      brain put >/dev/null 2>&1
+}
+
+measure_op_median_ms() {
+  # $1 = op fn, $2 = op arg, $3 = label. stdout: median ms, or -1 unmeasurable.
+  # A sample the deadline kills scores as the full deadline (slow IS the signal).
+  local fn="$1" arg="$2" label="$3"
+  local vals="" t0 t1 rc n=0 i
+  for i in $(seq 1 "$LAT_SAMPLES"); do
+    t0="$(now_ms)"
+    rc=0
+    run_op_with_deadline "$LAT_OP_TIMEOUT_SECS" "$fn" "$arg" || rc=$?
+    t1="$(now_ms)"
+    if [ "$rc" -eq 124 ]; then
+      warn "latency $label: sample $i hit the ${LAT_OP_TIMEOUT_SECS}s deadline"
+      vals="$vals $((LAT_OP_TIMEOUT_SECS * 1000))"
+      n=$((n + 1))
+    elif [ "$rc" -ne 0 ]; then
+      warn "latency $label: sample $i failed (rc=$rc)"
+    else
+      vals="$vals $((t1 - t0))"
+      n=$((n + 1))
+    fi
+  done
+  if [ "$n" -eq 0 ]; then
+    echo "-1"
+    return 0
+  fi
+  # shellcheck disable=SC2086
+  median_of $vals
+}
+
+metric_val() {
+  # $1 = metrics file, $2 = key
+  awk -F= -v k="$2" '$1==k{print $2}' "$1" 2>/dev/null | head -1
+}
+
+live_lastdb_env_pairs() {
+  # LASTDB_* EnvironmentVariables from the live LaunchAgent plist, KEY=VAL per
+  # line, so probe nodes boot with the primary's tuning (warm budget, atom
+  # limit, …). Without this, probes measure default-config behavior the live
+  # node does not have (e2e 2026-07-28: probe scan 43s vs live ~23s purely from
+  # the missing 4 GiB LASTDB_HASH_GROUP_WARM_BYTES). HOME-shaped keys are
+  # excluded — the probe must only ever see its own --data-dir copy.
+  [ -f "$LAUNCHD_PLIST" ] || return 0
+  /usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables' "$LAUNCHD_PLIST" 2>/dev/null \
+    | awk -F' = ' '
+        $1 ~ /^ *LASTDB_/ {
+          key=$1; gsub(/^ +| +$/,"",key)
+          if (key == "LASTDB_HOME" || key == "FOLDDB_HOME" || key == "LASTDB_DATA_DIR") next
+          val=$2; gsub(/^ +| +$/,"",val)
+          if (key != "" && val != "") print key "=" val
+        }'
+}
+
+resolve_baseline_bin() {
+  # The binary the live primary actually runs — launchd plist first, then
+  # sidebin, then PATH. LASTDB_PROBE_BASELINE_BIN overrides.
+  if [ -n "${LASTDB_PROBE_BASELINE_BIN:-}" ]; then
+    [ -x "$LASTDB_PROBE_BASELINE_BIN" ] && echo "$LASTDB_PROBE_BASELINE_BIN"
+    return 0
+  fi
+  local prog
+  prog="$(plutil -extract ProgramArguments.0 raw "$LAUNCHD_PLIST" 2>/dev/null || true)"
+  if [ -n "$prog" ] && [ -x "$prog" ]; then
+    echo "$prog"
+    return 0
+  fi
+  if [ -x "$SIDEBIN_DIR/lastdbd" ]; then
+    echo "$SIDEBIN_DIR/lastdbd"
+    return 0
+  fi
+  command -v lastdbd 2>/dev/null || true
+}
+
+lat_op_within_bar() {
+  # $1 = op label, $2 = candidate ms, $3 = baseline ms (-1 = unmeasured).
+  # rc 0 = within bar; rc 1 = RED.
+  # With a baseline, the RATIO governs: the bar exists to catch regressions the
+  # CANDIDATE introduces. Pre-existing slowness (baseline equally over the
+  # ceiling) is loudly WARNed, not RED — a bar that REDs on the status quo just
+  # trains everyone to skip it. Without a baseline the ceiling is the only
+  # protection, so there it is RED.
+  local op="$1" cand="$2" base="$3"
+  if [ "$cand" = "-1" ] || [ -z "$cand" ]; then
+    if [ -n "$base" ] && [ "$base" != "-1" ]; then
+      log "latency $op RED: unmeasurable on candidate but baseline measured ${base}ms"
+      return 1
+    fi
+    warn "latency $op: unmeasured on candidate and baseline — no bar applied"
+    return 0
+  fi
+  if [ -n "$base" ] && [ "$base" != "-1" ]; then
+    if [ "$cand" -gt "$LAT_FLOOR_MS" ] 2>/dev/null \
+      && awk -v c="$cand" -v b="$base" -v r="$LAT_RATIO" 'BEGIN{exit !(c > b*r)}'; then
+      log "latency $op RED: candidate ${cand}ms > ${LAT_RATIO}x baseline ${base}ms"
+      return 1
+    fi
+    if [ "$cand" -gt "$LAT_ABS_MAX_MS" ] 2>/dev/null; then
+      if [ "$base" -gt "$LAT_ABS_MAX_MS" ] 2>/dev/null; then
+        warn "latency $op: candidate ${cand}ms AND baseline ${base}ms both exceed the ${LAT_ABS_MAX_MS}ms ceiling — pre-existing slowness, not a candidate regression; fix the store, not the upgrade"
+      else
+        warn "latency $op: candidate ${cand}ms over the ${LAT_ABS_MAX_MS}ms ceiling but within ${LAT_RATIO}x of baseline ${base}ms — WATCH it"
+      fi
+    fi
+    log "latency $op GREEN: candidate=${cand}ms baseline=${base}ms (ratio bar ${LAT_RATIO}x above ${LAT_FLOOR_MS}ms)"
+    return 0
+  fi
+  if [ "$cand" -gt "$LAT_ABS_MAX_MS" ] 2>/dev/null; then
+    log "latency $op RED: candidate ${cand}ms > absolute ceiling ${LAT_ABS_MAX_MS}ms (no baseline to compare)"
+    return 1
+  fi
+  log "latency $op GREEN: candidate=${cand}ms (no baseline; abs max ${LAT_ABS_MAX_MS}ms)"
+  return 0
+}
+
+# Boot a lastdbd on a throwaway CoW of the primary; sample peak RSS after
+# settle, then time the latency workload against the copy. Writes key=value
+# metrics (boot_secs, peak_rss_mb, lat_point_ms, lat_scan_ms, lat_write_ms;
+# -1 = unmeasured) to the out file. Non-zero rc = could not boot/serve.
+probe_bin_metrics() {
+  # $1 = lastdbd binary, $2 = label (candidate|baseline), $3 = metrics out file
+  local bin="$1" label="$2" outf="$3"
+  local copy sock blog pid uh i boot_secs max_rss rss
+  local p_ms s_ms w_ms
 
   mkdir -p "$PROBE_ROOT"
-  copy="$PROBE_ROOT/rss-probe-$(date +%s)-$$"
-  log="$copy.boot.log"
+  copy="$PROBE_ROOT/metrics-probe-${label}-$(date +%s)-$$"
+  blog="$copy.boot.log"
   rm -rf "$copy"
-  if ! cp -cR "$PRIMARY_HOME" "$copy" 2>/dev/null; then
-    warn "RSS probe: APFS clone failed"
-    echo ""
+  # Live sockets in the source home make cp exit non-zero even when the clone
+  # is fine (same lesson as the backup step) — judge by essentials, not rc.
+  cp -cR "$PRIMARY_HOME" "$copy" 2>/dev/null || true
+  if [ ! -d "$copy" ] || [ ! -f "$copy/identity.key" ] || [ ! -d "$copy/data" ]; then
+    warn "$label metrics probe: CoW clone incomplete"
+    rm -rf "$copy" "$blog" 2>/dev/null || true
     return 1
   fi
   rm -f "$copy/cloud_sync.json" "$copy/data/"*.sock 2>/dev/null || true
   sock="$copy/data/folddb.sock"
 
-  env -u SENTRY_DSN -u FOLD_SENTRY_DSN "$bin" --data-dir "$copy" >"$log" 2>&1 &
+  # Boot with the live node's LASTDB_* tuning so measurements reflect the
+  # config that will actually serve after cutover.
+  local env_pairs=()
+  while IFS= read -r line; do
+    [ -n "$line" ] && env_pairs+=("$line")
+  done <<EOF_ENV
+$(live_lastdb_env_pairs)
+EOF_ENV
+  if [ "${#env_pairs[@]}" -gt 0 ]; then
+    log "$label metrics probe: mirroring live env: ${env_pairs[*]}"
+  fi
+  env -u SENTRY_DSN -u FOLD_SENTRY_DSN ${env_pairs[@]+"${env_pairs[@]}"} \
+    "$bin" --data-dir "$copy" >"$blog" 2>&1 &
   pid=$!
   uh=""
   for i in $(seq 1 300); do
     if ! kill -0 "$pid" 2>/dev/null; then
-      warn "RSS probe: node exited during boot ($(tail -2 "$log" 2>/dev/null | tr '\n' ' '))"
-      rm -rf "$copy" "$log" 2>/dev/null || true
-      echo ""
+      warn "$label metrics probe: node exited during boot ($(tail -2 "$blog" 2>/dev/null | tr '\n' ' '))"
+      rm -rf "$copy" "$blog" 2>/dev/null || true
       return 1
     fi
     if [ -S "$sock" ]; then
@@ -164,35 +358,72 @@ probe_candidate_peak_rss_mb() {
     sleep 1
   done
   if [ -z "$uh" ]; then
-    warn "RSS probe: identity not ready in 300s"
+    warn "$label metrics probe: identity not ready in 300s"
     kill "$pid" 2>/dev/null || true
     sleep 1
     kill -9 "$pid" 2>/dev/null || true
-    rm -rf "$copy" "$log" 2>/dev/null || true
-    echo ""
+    rm -rf "$copy" "$blog" 2>/dev/null || true
     return 1
   fi
-  log "RSS probe: identity ready after ${i}s; settling ${settle}s for embeddings/load..."
-  sleep "$settle"
+  boot_secs="$i"
+  log "$label metrics probe: identity ready after ${boot_secs}s; settling ${RSS_SETTLE_SECS}s for embeddings/load..."
+  sleep "$RSS_SETTLE_SECS"
+
+  # Latency workload FIRST, sampling RSS after each op: an idle Last Store
+  # node lazy-loads and gets compressed/paged by macOS, so idle RSS reads as
+  # tiny (e2e 2026-07-28: 10 MiB "peak" on a 33G store) and the memory-guard
+  # bar never fires. Peak RSS only means something measured under real load.
   max_rss=0
-  for i in $(seq 1 "$sample"); do
+  sample_rss_into_max() {
+    if kill -0 "$pid" 2>/dev/null; then
+      rss="$(rss_mb_of_pid "$pid")"
+      if [ "$rss" -gt "$max_rss" ] 2>/dev/null; then max_rss="$rss"; fi
+    fi
+  }
+  p_ms=-1; s_ms=-1; w_ms=-1
+  if [ "$LAT_SKIP" != "1" ]; then
+    p_ms="$(measure_op_median_ms op_lat_point "$sock" "$label point-read")"
+    sample_rss_into_max
+    if command -v kanban >/dev/null 2>&1; then
+      s_ms="$(measure_op_median_ms op_lat_scan "$copy" "$label kanban-scan")"
+      sample_rss_into_max
+    else
+      warn "latency: kanban CLI not on PATH — scan op unmeasured"
+    fi
+    if command -v brain >/dev/null 2>&1; then
+      w_ms="$(measure_op_median_ms op_lat_write "$copy" "$label brain-write")"
+      sample_rss_into_max
+    else
+      warn "latency: brain CLI not on PATH — write op unmeasured"
+    fi
+  else
+    warn "$label metrics probe: LAT_SKIP=1 — RSS will be sampled on an IDLE node and may understate load RSS"
+  fi
+  for i in $(seq 1 "$RSS_SAMPLE_SECS"); do
     if ! kill -0 "$pid" 2>/dev/null; then
-      warn "RSS probe: node died during sample window"
+      warn "$label metrics probe: node died during RSS sample window"
       break
     fi
-    rss="$(rss_mb_of_pid "$pid")"
-    if [ "$rss" -gt "$max_rss" ] 2>/dev/null; then max_rss="$rss"; fi
+    sample_rss_into_max
     sleep 1
   done
+  if ! kill -0 "$pid" 2>/dev/null; then
+    rm -rf "$copy" "$blog" 2>/dev/null || true
+    return 1
+  fi
+
   kill "$pid" 2>/dev/null || true
   sleep 2
   kill -9 "$pid" 2>/dev/null || true
-  rm -rf "$copy" "$log" 2>/dev/null || true
-  PROBE_RSS_MB="$max_rss"
-  PROBE_RSS_LIMIT_MB="$limit_mb"
-  PROBE_RSS_FAIL_AT_MB="$fail_at"
-  log "RSS probe: peak_rss_mb=${max_rss} limit_mb=${limit_mb} fail_at_mb=${fail_at}"
-  echo "$max_rss"
+  rm -rf "$copy" "$blog" 2>/dev/null || true
+  {
+    echo "boot_secs=$boot_secs"
+    echo "peak_rss_mb=$max_rss"
+    echo "lat_point_ms=$p_ms"
+    echo "lat_scan_ms=$s_ms"
+    echo "lat_write_ms=$w_ms"
+  } >"$outf"
+  log "$label metrics: boot_s=${boot_secs} peak_rss_mb=${max_rss} point_ms=${p_ms} scan_ms=${s_ms} write_ms=${w_ms}"
   return 0
 }
 
@@ -513,21 +744,22 @@ if [ "$SMOKE_RC" -ne 0 ] || ! grep -q 'VERDICT: GREEN' "$SMOKE_OUT"; then
 fi
 log "data-plane probe GREEN for candidate $CAND_VER"
 
-# RSS bar (memory-guard): candidate must not explode past the live kill ceiling.
-# Incident 2026-07-22: post-cutover ~8.5G RSS vs 6G guard → thrash restarts.
-PROBE_RSS_MB=""
-PROBE_RSS_LIMIT_MB=""
-PROBE_RSS_FAIL_AT_MB=""
+# RSS + latency metrics probe: one CoW boot of the candidate measures both.
+# RSS incident 2026-07-22: post-cutover ~8.5G RSS vs 6G guard → thrash restarts.
+# Latency incident 2026-07-25/27: 0.23.1 correct-but-5-20x-slower passed GREEN.
+log "RSS bar: limit=$(resolve_rss_limit_mb)MiB fail_at>=$(rss_fail_threshold_mb "$(resolve_rss_limit_mb)")MiB (headroom ${RSS_HEADROOM_PCT}%) settle=${RSS_SETTLE_SECS}s sample=${RSS_SAMPLE_SECS}s"
+CAND_METRICS="$WORK/cand.metrics"
 set +e
-PROBE_RSS_MB="$(probe_candidate_peak_rss_mb "$CANDIDATE_BIN" | tail -1)"
-RSS_RC=$?
+probe_bin_metrics "$CANDIDATE_BIN" "candidate" "$CAND_METRICS"
+CAND_METRICS_RC=$?
 set -e
-if [ "$RSS_RC" -ne 0 ] || [ -z "$PROBE_RSS_MB" ]; then
+PROBE_RSS_MB="$(metric_val "$CAND_METRICS" peak_rss_mb)"
+if [ "$CAND_METRICS_RC" -ne 0 ] || [ -z "$PROBE_RSS_MB" ]; then
   echo ""
   echo "VERDICT: RED"
-  echo "REASON: candidate $CAND_VER failed RSS probe (could not measure post-settle RSS on CoW copy)"
+  echo "REASON: candidate $CAND_VER failed the metrics probe (could not boot/serve a CoW copy for RSS + latency measurement)"
   echo "BACKUP: $BACKUP  (kept; primary NOT upgraded)"
-  echo "NEXT:   fix probe/CoW disk; do NOT live-upgrade until RSS bar is measurable"
+  echo "NEXT:   fix probe/CoW disk; do NOT live-upgrade until the RSS + latency bars are measurable"
   exit 1
 fi
 if ! enforce_rss_under_limit "$PROBE_RSS_MB" "probe"; then
@@ -538,14 +770,71 @@ if ! enforce_rss_under_limit "$PROBE_RSS_MB" "probe"; then
   echo "NEXT:   do NOT live-upgrade; raise LASTDBD_RSS_LIMIT_MB only with Tom clearance, or fix candidate memory before cutover"
   exit 1
 fi
-log "probe GREEN for candidate $CAND_VER (data-plane + RSS peak_mb=${PROBE_RSS_MB})"
+CAND_BOOT_SECS="$(metric_val "$CAND_METRICS" boot_secs)"
+CAND_LAT_POINT_MS="$(metric_val "$CAND_METRICS" lat_point_ms)"
+CAND_LAT_SCAN_MS="$(metric_val "$CAND_METRICS" lat_scan_ms)"
+CAND_LAT_WRITE_MS="$(metric_val "$CAND_METRICS" lat_write_ms)"
+
+# Latency baseline: the CURRENT live binary on an identical CoW copy. Same
+# data, same machine, same settle — the binary is the only variable.
+BASE_LAT_POINT_MS="-1"
+BASE_LAT_SCAN_MS="-1"
+BASE_LAT_WRITE_MS="-1"
+BASE_BOOT_SECS=""
+if [ "$LAT_SKIP" != "1" ]; then
+  BASELINE_BIN="$(resolve_baseline_bin)"
+  if [ -n "$BASELINE_BIN" ] && [ -x "$BASELINE_BIN" ]; then
+    log "latency baseline: booting current binary ($BASELINE_BIN) on its own CoW copy"
+    BASE_METRICS="$WORK/base.metrics"
+    set +e
+    probe_bin_metrics "$BASELINE_BIN" "baseline" "$BASE_METRICS"
+    BASE_METRICS_RC=$?
+    set -e
+    if [ "$BASE_METRICS_RC" -eq 0 ]; then
+      BASE_BOOT_SECS="$(metric_val "$BASE_METRICS" boot_secs)"
+      BASE_LAT_POINT_MS="$(metric_val "$BASE_METRICS" lat_point_ms)"
+      BASE_LAT_SCAN_MS="$(metric_val "$BASE_METRICS" lat_scan_ms)"
+      BASE_LAT_WRITE_MS="$(metric_val "$BASE_METRICS" lat_write_ms)"
+    else
+      warn "latency: baseline probe failed — applying absolute ceiling (${LAT_ABS_MAX_MS}ms) only"
+    fi
+  else
+    warn "latency: no baseline binary resolvable — applying absolute ceiling (${LAT_ABS_MAX_MS}ms) only"
+  fi
+
+  # A much slower candidate boot usually means a migration ran on the probe
+  # copy — it will run again at live cutover, so expect a longer restart.
+  if [ -n "$BASE_BOOT_SECS" ] && [ -n "$CAND_BOOT_SECS" ] \
+    && [ "$CAND_BOOT_SECS" -gt $((BASE_BOOT_SECS * 3)) ] 2>/dev/null \
+    && [ "$CAND_BOOT_SECS" -gt $((BASE_BOOT_SECS + 60)) ] 2>/dev/null; then
+    warn "candidate boot ${CAND_BOOT_SECS}s vs baseline ${BASE_BOOT_SECS}s — possible one-time migration; expect a longer live cutover window (not RED by itself)"
+  fi
+
+  LAT_RED=0
+  lat_op_within_bar "point-read (Board title)" "$CAND_LAT_POINT_MS" "$BASE_LAT_POINT_MS" || LAT_RED=1
+  lat_op_within_bar "scan (kanban list)"       "$CAND_LAT_SCAN_MS"  "$BASE_LAT_SCAN_MS"  || LAT_RED=1
+  lat_op_within_bar "write (brain put)"        "$CAND_LAT_WRITE_MS" "$BASE_LAT_WRITE_MS" || LAT_RED=1
+  if [ "$LAT_RED" -ne 0 ]; then
+    echo ""
+    echo "VERDICT: RED"
+    echo "REASON: candidate $CAND_VER fails the latency bar — correct-but-slow is NOT GREEN (incident 2026-07-25/27: 0.23.1 scans ran 5-20x slower and the old bar passed it)"
+    echo "LATENCY: point=${CAND_LAT_POINT_MS}ms(base ${BASE_LAT_POINT_MS}ms) scan=${CAND_LAT_SCAN_MS}ms(base ${BASE_LAT_SCAN_MS}ms) write=${CAND_LAT_WRITE_MS}ms(base ${BASE_LAT_WRITE_MS}ms) ratio-bar=${LAT_RATIO}x floor=${LAT_FLOOR_MS}ms abs-max=${LAT_ABS_MAX_MS}ms"
+    echo "BACKUP: $BACKUP  (kept; primary NOT upgraded)"
+    echo "NEXT:   do NOT live-upgrade; profile the candidate's read/write paths (brain: lastdb-0231-hashgroup-scan-warmset-thrash-read-regression). Re-running with LASTDB_PROBE_LAT_SKIP=1 requires Tom's explicit clearance."
+    exit 1
+  fi
+else
+  warn "latency bar SKIPPED (LASTDB_PROBE_LAT_SKIP=1) — Tom-clearance only; correct-but-slow will NOT be caught"
+fi
+log "probe GREEN for candidate $CAND_VER (data-plane + RSS peak_mb=${PROBE_RSS_MB} + latency point/scan/write=${CAND_LAT_POINT_MS}/${CAND_LAT_SCAN_MS}/${CAND_LAT_WRITE_MS}ms)"
 
 if [ "$PROBE_ONLY" -eq 1 ]; then
   echo ""
   echo "VERDICT: GREEN_PROBE_ONLY"
-  echo "SUMMARY: candidate $CAND_VER boots and serves a CoW of real data; peak_rss_mb=${PROBE_RSS_MB} under guard limit=$(resolve_rss_limit_mb). Primary left on $CURRENT_VER."
+  echo "SUMMARY: candidate $CAND_VER boots and serves a CoW of real data; peak_rss_mb=${PROBE_RSS_MB} under guard limit=$(resolve_rss_limit_mb); latency within bar. Primary left on $CURRENT_VER."
   echo "BACKUP:  $BACKUP"
   echo "RSS:     peak_mb=${PROBE_RSS_MB} limit_mb=$(resolve_rss_limit_mb) fail_at_mb=$(rss_fail_threshold_mb "$(resolve_rss_limit_mb)")"
+  echo "LATENCY: point=${CAND_LAT_POINT_MS}ms(base ${BASE_LAT_POINT_MS}ms) scan=${CAND_LAT_SCAN_MS}ms(base ${BASE_LAT_SCAN_MS}ms) write=${CAND_LAT_WRITE_MS}ms(base ${BASE_LAT_WRITE_MS}ms) boot=${CAND_BOOT_SECS}s(base ${BASE_BOOT_SECS:-?}s)"
   echo "NEXT:    re-run without --probe-only (and --yes if non-interactive) for venue-aware live cutover"
   exit 0
 fi
@@ -652,9 +941,35 @@ if [ -n "${LIVE_RSS_MB:-}" ]; then
   fi
 fi
 
+# Live latency spot-check: the same keyed point read the probe timed, on the
+# live socket. Compared against the candidate's OWN probe numbers (same
+# binary), so a big gap means live is misbehaving (or under heavy client
+# load — which is why this defaults to WARN; LASTDB_LIVE_LAT_ENFORCE=1 → RED).
+LIVE_LAT_POINT_MS="-1"
+if [ "$LAT_SKIP" != "1" ]; then
+  LIVE_LAT_POINT_MS="$(measure_op_median_ms op_lat_point "$PRIMARY_SOCK" "live point-read")"
+  if [ "$LIVE_LAT_POINT_MS" != "-1" ] && [ "${CAND_LAT_POINT_MS:--1}" != "-1" ] \
+    && [ "$LIVE_LAT_POINT_MS" -gt "$LAT_FLOOR_MS" ] 2>/dev/null \
+    && awk -v c="$LIVE_LAT_POINT_MS" -v b="$CAND_LAT_POINT_MS" -v r="$LAT_RATIO" 'BEGIN{exit !(c > b*r)}'; then
+    if [ "$LIVE_LAT_ENFORCE" = "1" ]; then
+      echo ""
+      echo "VERDICT: RED"
+      echo "REASON: live point-read ${LIVE_LAT_POINT_MS}ms is >${LAT_RATIO}x the candidate's probe ${CAND_LAT_POINT_MS}ms after cutover"
+      echo "BACKUP: $BACKUP"
+      echo "BINARY ROLLBACK (preferred first try, sidebin):"
+      echo "  cp -a $SIDEBIN_DIR/lastdbd.bak-pre-* $SIDEBIN_DIR/lastdbd  # pick newest bak"
+      echo "  launchctl kickstart -k gui/\$(id -u)/$LAUNCHD_LABEL"
+      die "live latency far above the candidate's own probe numbers"
+    fi
+    warn "live point-read ${LIVE_LAT_POINT_MS}ms is >${LAT_RATIO}x the candidate's probe ${CAND_LAT_POINT_MS}ms — may be client load; WATCH the primary (LASTDB_LIVE_LAT_ENFORCE=1 makes this RED)"
+  else
+    log "live point-read latency: ${LIVE_LAT_POINT_MS}ms (candidate probe: ${CAND_LAT_POINT_MS:-?}ms)"
+  fi
+fi
+
 CUTOVER_T1="$(date +%s)"
 CUTOVER_SECS=$((CUTOVER_T1 - CUTOVER_T0))
-log "STEP 4/4: live post-check GREEN (schemas=$NSCHEMAS first Board title=\"$QVAL\" cutover_s=$CUTOVER_SECS venue=$VENUE peak_rss_mb=${LIVE_RSS_MB:-unknown})"
+log "STEP 4/4: live post-check GREEN (schemas=$NSCHEMAS first Board title=\"$QVAL\" cutover_s=$CUTOVER_SECS venue=$VENUE peak_rss_mb=${LIVE_RSS_MB:-unknown} live_point_ms=${LIVE_LAT_POINT_MS:-unmeasured})"
 
 # Post a Situations notice so other agents attribute post-upgrade flapping.
 POST_NOTICE=""
@@ -664,7 +979,7 @@ for cand in \
 do
   [ -x "$cand" ] && POST_NOTICE="$cand" && break
 done
-NOTICE_SUMMARY="lastdbd ${CURRENT_VER} → ${INSTALLED} venue=${VENUE} cutover_s=${CUTOVER_SECS}; brief socket blips expected. Do not open a new incident or restart the primary for flapping alone. Design: lastdb-minimal-downtime-cutover."
+NOTICE_SUMMARY="lastdbd ${CURRENT_VER} → ${INSTALLED} venue=${VENUE} cutover_s=${CUTOVER_SECS}; probe latency point/scan/write=${CAND_LAT_POINT_MS:-?}/${CAND_LAT_SCAN_MS:-?}/${CAND_LAT_WRITE_MS:-?}ms (baseline ${BASE_LAT_POINT_MS:-?}/${BASE_LAT_SCAN_MS:-?}/${BASE_LAT_WRITE_MS:-?}ms) live_point_ms=${LIVE_LAT_POINT_MS:-?}; brief socket blips expected. Do not open a new incident or restart the primary for flapping alone. Design: lastdb-minimal-downtime-cutover."
 if [ -n "$POST_NOTICE" ]; then
   if "$POST_NOTICE" \
     --title "LastDB upgraded to ${INSTALLED}" \
@@ -706,6 +1021,7 @@ fi
 echo ""
 echo "VERDICT: GREEN"
 echo "SUMMARY: upgraded lastdbd $CURRENT_VER → $INSTALLED; venue=$VENUE; cutover_s=$CUTOVER_SECS; probe + live Board read OK; probe_rss_mb=${PROBE_RSS_MB:-?} live_rss_mb=${LIVE_RSS_MB:-?} limit_mb=$(resolve_rss_limit_mb); backup at $BACKUP"
+echo "LATENCY: probe point/scan/write=${CAND_LAT_POINT_MS:-?}/${CAND_LAT_SCAN_MS:-?}/${CAND_LAT_WRITE_MS:-?}ms baseline=${BASE_LAT_POINT_MS:-?}/${BASE_LAT_SCAN_MS:-?}/${BASE_LAT_WRITE_MS:-?}ms live_point=${LIVE_LAT_POINT_MS:-?}ms"
 echo ""
 echo "ROLLBACK (binary only, if new binary misbehaves but data is fine):"
 if [ "$VENUE" = "sidebin" ]; then
