@@ -195,19 +195,37 @@ if { [ "$live_install" -eq 1 ] || [ "${LASTSTACK_USE_HOST_TRACK_STATUS:-0}" = "1
         # Pointer current but content bad — force re-stage from CAS.
         refresh_cmd="host-track refresh --force last-stack"
       fi
+      heal_failed=0
       if ! $refresh_cmd >"$artifact_err" 2>&1; then
-        detail="$(cat "$artifact_err" 2>/dev/null || true)"
-        rm -f "$artifact_err"
-        stale_fail "$update_status" "Artifact refresh failed after check error. check: $check_detail refresh: $detail"
+        heal_failed=1
       fi
+      refresh_detail="$(cat "$artifact_err" 2>/dev/null || true)"
       rm -f "$artifact_err"
-      check_err="$(mktemp "${TMPDIR:-/tmp}/last-stack-routine-read-check.XXXXXX")"
-      if ! host-track check last-stack >"$check_err" 2>&1; then
-        check_detail="$(cat "$check_err" 2>/dev/null || true)"
+      if [ "$heal_failed" -eq 0 ]; then
+        check_err="$(mktemp "${TMPDIR:-/tmp}/last-stack-routine-read-check.XXXXXX")"
+        if ! host-track check last-stack >"$check_err" 2>&1; then
+          heal_failed=1
+          check_detail="$(cat "$check_err" 2>/dev/null || true)"
+        fi
         rm -f "$check_err"
-        stale_fail "ARTIFACT_UPDATE_AVAILABLE" "Active artifact verification still failing after refresh. $check_detail"
       fi
-      rm -f "$check_err"
+      if [ "$heal_failed" -eq 1 ]; then
+        if [ "$artifact_stale" = "true" ]; then
+          # Pointer-stale and we could NOT self-heal in this process — e.g. a
+          # sandboxed routine cannot write ~/.local/bin. The installed skill-pack
+          # is a few commits behind but self-consistent (it was passing before it
+          # went stale), so running slightly-older logic is far safer than halting
+          # the entire fleet. The unsandboxed launchd auto-refresh
+          # (`host-track refresh --force-if-stale`) heals the pointer out of band
+          # within ~20 min. Warn loudly and PROCEED instead of blocking — a stale
+          # skill-pack must never be able to stop the factory from shipping.
+          echo "LAST_STACK_ROUTINE_STALE_PROCEED $update_status install pointer-stale; could not self-heal in process (check: $check_detail refresh: $refresh_detail); proceeding on current skill-pack while the out-of-band auto-refresh catches up." >&2
+        else
+          # Pointer current but content still bad after --force → genuine
+          # corruption, not mere staleness. Block so a broken skill-pack never runs.
+          stale_fail "ARTIFACT_UPDATE_AVAILABLE" "Active artifact content verification still failing after forced re-stage; skill-pack appears corrupt. check: $check_detail refresh: $refresh_detail"
+        fi
+      fi
     fi
     clear_fetch_fail_streak
     LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1
