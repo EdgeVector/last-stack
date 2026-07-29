@@ -1,54 +1,56 @@
 ---
 name: open-cutovers-driver
 description: >
-  Drive every live open-cutovers ledger line toward END STATE (ops resume,
-  promote cleanup cards, close resolved lines). Use when Tom says "drive open
-  cutovers", "finish partial migrations", "drain open-cutovers", or when the
-  scheduled open-cutovers-driver routine fires. Reconcile/ops role — not a
-  free-form product builder.
+  GENERIC auto-closer for all half-live cutovers (dual-writes, aborted
+  migrations, half-commit indexes, encoding flips). Advances open-cutovers
+  ledger lines through the phase machine to status=resolved. Use when Tom
+  says "drive open cutovers", "close cutovers", "finish partial migrations",
+  "auto-close cutovers", or when the open-cutovers-driver routine fires.
 ---
 
-# open-cutovers-driver
+# open-cutovers-driver (generic auto-close)
 
-Drive half-live system state to done. Inventory is Brain
-`open-cutovers`; this skill is the agent playbook (same contract as
-`routines/open-cutovers-driver.md`).
+**Want:** every cutover reaches RESOLVED without Tom hunting.
 
-## When to use
+**Contract:** [[preference-open-cutovers-auto-close]] · [[sop-open-cutovers-closeout]]
 
-- "Drive the open cutovers" / "finish the partial migrations"
-- Morning: non-empty open-cutovers and Tom wants progress, not just a report
-- Scheduled routine wake
+## Sole closer
 
-## Contract (won't-undo)
+| | |
+|--|--|
+| Inventory | `brain get open-cutovers` |
+| Closer | this skill / `routines run open-cutovers-driver` |
+| Fence | Situations for long primary jobs |
+| PR unblocks only | kanban pickup |
 
-1. **Only** advance lines from `brain get open-cutovers` with `status=open`.
-2. **One step per cutover per pass** (cap 3).
-3. **Close only on primary END STATE**, not PR merge.
-4. Situation fence for long primary jobs
-   ([[preference-primary-long-job-situation-fence]]).
-5. No empty Kind:pr shells; no primary restarts; no safe-upgrade through mid
-   dual-write without fence + preflight.
+North Stars prove "ledger empty"; they do **not** discover cutovers.
+
+## Intake (any agent starting a cutover)
+
+Before first primary-touching write:
+
+1. Append live `CUTOVER … status=open` with `phase=`, `class=`, `end_state=`, `resume=`
+2. Situation fence if multi-minute / binary-sensitive
+3. `drive=open-cutovers-driver`
 
 ## Run
 
-Follow the full procedure in:
+Follow:
 
 ```text
 ${LAST_STACK_ROOT:-$HOME/.last-stack}/routines/open-cutovers-driver.md
 ```
 
-Or the copy in this last-stack checkout: `routines/open-cutovers-driver.md`.
-
-Quick path:
+or checkout copy `routines/open-cutovers-driver.md`.
 
 ```bash
-brain get open-cutovers --type reference
-# then per live CUTOVER: resume ops / promote card / re-measure / resolve
+brain get open-cutovers
+routines run open-cutovers-driver
 ```
 
-## Related
+## Phases
 
-- Ledger: `brain get open-cutovers`
-- NS: `north-star-open-cutovers-drained`
-- Morning digest surfaces live lines only (does not advance them)
+`OPEN → RUNNING → COMPLETE_DUAL → CLEANUP → PROVED → RESOLVED`  
+(or `ABORT_SAFE → BLOCKED|DEFER → RESOLVED`)
+
+Close only on primary END STATE or explicit DEFER residual.

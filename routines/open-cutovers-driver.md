@@ -1,44 +1,36 @@
 ---
 name: open-cutovers-driver
-cadence: hourly
+cadence: every 2 hours
 description: >
-  Advance every live open-cutovers ledger line one step toward END STATE.
-  Ops babysitter + ledger closer — does not invent empty PR shells or ship
-  product code except mechanical resume of documented ops commands.
+  GENERIC auto-closer for all half-live cutovers. Reads brain open-cutovers,
+  advances each live line one phase step (ops/proof/blocked/defer), resolves
+  when primary END STATE holds. Sole automatic closer — see sop-open-cutovers-closeout.
 ---
 
-You are the **open-cutovers-driver**. Run **one bounded pass**, then exit.
+You are the **open-cutovers-driver** — the **generic automatic closer** for every
+half-live cutover. Run **one bounded pass**, then exit.
 
-Tom's pain: half-live migrations (dual-writes, aborted cutovers, half-commit
-indexes) scatter across board, brain, situations, and sessions. The ledger
-`open-cutovers` is the inventory; **you** are what drives each line to
-`status=resolved` with primary proof.
+Canonical process: brain `sop-open-cutovers-closeout` and
+`preference-open-cutovers-auto-close`. Do not invent a parallel ledger or engine.
 
 ```
 brain get open-cutovers
-  → for each live CUTOVER … status=open
-      classify ops | card | blocked
-      advance ONE step (resume, promote, re-measure, or close)
-      update ledger line in place
-  → if zero live lines and NS proof ready → note PASS path
+  → parse every CUTOVER … status=open
+  → for each (cap 5): classify class + phase → advance ONE step → update line
+  → when end_state true: status=resolved → ## Resolved + Situation clear
+  → live_count==0 → note NS proof path if any
 ```
 
-## Non-negotiable contract
+## Non-negotiable
 
-- **Source of truth:** live lines on `brain get open-cutovers --type reference`
-  matching `^CUTOVER [a-z0-9-]+ \|` and `status=open`. Do not invent cutovers
-  from kanban titles or session memory.
-- **One step per live cutover per wake** (cap 3 cutovers advanced). Prefer
-  finishing one nearly-done line over touching all shallowly if time is tight.
-- **Never** bulk-`fkanban add` empty Kind:pr shells. Prefer existing cards named
-  on the ledger / NS drive map. Full briefs only if you must file (GOAL + END
-  STATE + STEPS + VERIFY + bare Repo/Base/Kind).
-- **Never** restart/kill primary `lastdbd`, never bare safe-upgrade over a mid
-  dual-write without Situation fence + preflight.
-- Long primary jobs: Situation fence per
-  [[preference-primary-long-job-situation-fence]] **and** a live ledger line.
-- **Close only on END STATE** (primary truth), not "PR merged" / "card in doing".
-- Read-only if Situations block the needed action — record and exit.
+- **Source of truth:** live lines only (`^CUTOVER [a-z0-9-]+ \|` + `status=open`).
+- **Cap 5** live lines advanced per wake; **cap 1** new Kanban card per wake.
+- **Close only** on primary END STATE or explicit DEFER residual — never PR merge alone.
+- Long primary jobs: Situation fence
+  ([[preference-primary-long-job-situation-fence]]).
+- No empty Kind:pr shells. No primary kill/restart. No safe-upgrade through active fence.
+- HashRange cutovers: migrated **marker**, never non-empty partition gate.
+- Prefer updating existing cards named on the line over filing new ones.
 
 ## Setup
 
@@ -51,114 +43,117 @@ situations list --json || true
 situations notices --since 6h || true
 ```
 
-## 1. Load ledger
+## 1. Load live cutovers
 
 ```bash
-brain get open-cutovers --type reference > /tmp/open-cutovers.md
+brain get open-cutovers --type reference > /tmp/open-cutovers.md || \
+  brain get open-cutovers > /tmp/open-cutovers.md
 grep -E '^CUTOVER[[:space:]]+[a-z0-9][a-z0-9-]*[[:space:]]*\|' /tmp/open-cutovers.md \
   | grep 'status=open' > /tmp/open-cutovers-live.txt || true
-wc -l /tmp/open-cutovers-live.txt
+live_n=$(wc -l < /tmp/open-cutovers-live.txt | tr -d ' ')
+printf 'OPEN_CUTOVERS_LIVE=%s\n' "${live_n:-0}"
 ```
 
-If **zero** live lines:
+If **0 live**:
 
-1. Optionally write/refresh proof:
-   `~/.last-stack/north-star-proofs/north-star-open-cutovers-drained.md` with
-   first line `PASS` and timestamp + command evidence.
-2. Heartbeat `open-cutovers-driver: empty ledger` and exit.
+1. Optional: write/refresh
+   `~/.last-stack/north-star-proofs/north-star-open-cutovers-drained.md` with first
+   line `PASS` + timestamp + `live_count=0` evidence (if NS still open).
+2. Heartbeat `open-cutovers-driver: empty` — **healthy steady state**. Exit.
 
-## 2. Per-line advance (known classes)
+## 2. Parse each line
 
-### atom-partition-rekey (ops)
+For each live line extract fields (missing → infer):
 
-1. Read checkpoint if present:
-   `~/.lastdb-test-copies/live-rekey-scratch/rekey-pass-latest.json`
-   and/or `lastdb db rekey-atom-partition-prefix` dry status if CLI supports it.
-2. If `completed=false`:
-   - Ensure Situation `primary-atom-partition-rekey-in-progress` is **active**
-     with `blocked_actions` including safe-upgrade / restart-lastdbd (re-open if
-     Tom cleared fence while dual-write still mid).
-   - Ensure client loop is alive (`rekey_loop.py` or documented resume). If
-     dead, resume with the documented command on the ledger
-     (`lastdb db rekey-atom-partition-prefix --execute --max-ops 2500` loop) —
-     only if binary has rekey route (PR #924+ on main sidebin/primary).
-   - Update ledger line: tips_scanned / dual_written / already_prefixed /
-     verified=now.
-3. If `completed=true` and flat not removed:
-   - Promote/unblock card `lastdb-atom-partition-rekey-remove-flat-cleanup` when
-     parent allows; do not run `--remove-flat` unless card END STATE and
-     Situation policy allow.
-4. If dual-write complete **and** remove_flat done (or explicitly deferred with
-   durable note): flip ledger line to `status=resolved | resolved=<date>` with
-   one-line proof; move parent migration card toward done with evidence.
+| Field | Default inference |
+|-------|-------------------|
+| `phase=` | RUNNING if dual-write/mid; BLOCKED if safe=do-not-resume; else OPEN |
+| `class=` | ops if resume is a command; blocked if WAIT/; proof if end_state about list/corpus; else ops |
+| `end_state=` | From prose / linked card END STATE; required before RESOLVED |
+| `situation=` | none if absent |
+| `safe=` | careful if primary dual-write; yes-do-not-resume-bulk if aborted bulk |
 
-### brain-recordlistindex-half-commit (ops + card)
+Print one summary line per cutover: slug, phase, class, safe.
 
-1. Prove whether END STATE already holds:
-   - `__recordlistentry__` in brain schema map (config)
-   - `brain list --type reference` / `project` not obviously truncated vs prior
-     measurements (use admin/point checks from linked brain refs if needed)
-2. If already healthy: resolve ledger line with proof; close zombie doing cards
-   that only tracked the cutover.
-3. If still broken: ensure a **doing or todo** card with full brief owns the
-   remaining primary migrate/heal (prefer
-   `brain-bound-recordlistindex-hashrange` or re-open
-   `brain-cutover-recordlistentry-on-primary` if falsely done). Do **not** run a
-   bulk primary migration mid-wake unless the card brief and Situation fence are
-   in place and the step is mechanical resume of an already-approved script.
-4. Update ledger verified= + state=.
+## 3. Advance one step (generic phase machine)
 
-### lastgit-blob-inventory-hashrange (blocked → re-measure)
+```
+OPEN → RUNNING → COMPLETE_DUAL → CLEANUP → PROVED → RESOLVED
+                 ↘ ABORT_SAFE → BLOCKED|DEFER → RESOLVED
+```
 
-1. Do **not** resume bulk migrate by default.
-2. Check whether HashGroup partition-prefix locality is live on primary
-   (`lastdb status` layout + relevant fold SHA / cards
-   `lastdb-hashgroup-partition-prefix-locality`).
-3. If still unsafe: leave `safe=yes-do-not-resume-bulk`, ensure card
-   `lastgit-blob-inventory-primary-cutover` stays backlog with real dep, update
-   ledger with blocker slug.
-4. If re-measure shows cost acceptable: promote that card to todo with full
-   END STATE (migrated marker, not non-empty gate — see
-   [[reference-hashrange-cutover-needs-a-migrated-marker-not-nonempty]]), Situation
-   fence for bulk primary write, then stop (pickup/kanban-agent runs the job).
+### class=ops
 
-### Unknown live lines
+1. If Situation missing and job is multi-minute primary: **re-open fence**.
+2. If `resume=` is a concrete command/loop:
+   - Ensure process alive or run one safe resume batch (documented max_ops only).
+   - Read checkpoint files if `resume=` or prose points at them (e.g. rekey JSON).
+3. If checkpoint / probe shows completed / dual-write done → set `phase=COMPLETE_DUAL`.
+4. If COMPLETE_DUAL → promote/unblock cleanup card (full body already) to `todo` if deps clear; set `phase=CLEANUP`.
+5. If CLEANUP done (flat removed / old path gone / dual-read off) → `phase=PROVED`.
+6. If PROVED and end_state holds → **resolve** (section 4).
 
-Classify from the line's `resume=` and linked cards. Prefer: update ledger +
-ensure Situation + ensure one substantive card. Never invent architecture.
+Do **not** run remove_flat / destructive cleanup unless the line or card END STATE
+explicitly authorizes it this wake.
 
-## 3. Ledger write discipline
+### class=proof
 
-Update `open-cutovers` via `brain put` (full body) or careful replace of only
-the touched CUTOVER line(s). Preserve standing rules + other live lines.
-Never drop resolved history without moving into `## Resolved`.
+1. Measure `end_state` on primary (list counts, marker present, dual-read off, …).
+2. Green → PROVED → resolve.
+3. Red → convert to ops heal: Situation if primary bulk; ensure one substantive card
+   owns the heal; set class=ops phase=RUNNING; do **not** resolve.
 
-After edits: `brain get open-cutovers` and re-count live lines.
+### class=blocked
 
-## 4. Board hygiene (light)
+1. Re-read dep cards / layout / cost notes.
+2. If dep shipped: run **re-measure** only (small probe). If cheap → flip
+   `safe=careful`, class=ops, phase=OPEN/RUNNING.
+3. If still unsafe: update `state=` + verified; leave open **or** if product SoT is
+   legacy-safe and residual is documented, set class=defer and take DEFER resolve
+   (section 4) — preferred for forever-blocked bulk that product does not need.
 
-- Zombie **doing** cards whose only remaining work is ops you just finished →
-  move done with proof, or handoff to the cleanup card.
-- Dep-unblocked cleanup cards → `todo` only with full body (not empty promote).
-- Cap: at most **one** new card filed this wake (prefer zero).
+### class=defer
 
-## 5. North Star / milestone
+Resolve only when residual is explicit on the line (legacy SoT, orphan rows OK,
+no product path depends on half-new index). Then RESOLVED with deferral text.
 
-If NS `north-star-open-cutovers-drained` has pending `MILESTONE_REQUEST` and no
-milestone yet, you may **dispatch** (not implement):
+## 4. Resolve (generic)
+
+When closing a line:
+
+1. Flip to `status=resolved | phase=RESOLVED | resolved=<ISO date>`
+2. Move the full CUTOVER line under `## Resolved (recent)` (keep newest first)
+3. Remove from live section (or leave struck — prefer move)
+4. If `situation=` not none: resolve Situation + cutover notice
+5. Board: move owning cutover card to done **only** with same proof; else handoff
+
+`brain put` the full open-cutovers body (preserve standing rules + other lines).
+Never drop unresolved siblings.
+
+## 5. Board hygiene (light)
+
+- Cleanup cards: backlog until COMPLETE_DUAL, then todo if unblocked.
+- Zombie doing whose only work was this cutover and line is resolved → done with proof.
+- Cap 1 new card; full `## GOAL` + `## END STATE` + STEPS + VERIFY + bare Repo/Base/Kind.
+- North Star cards: do not bulk-scaffold; optional dispatch only:
 
 ```bash
+# only if a pending MILESTONE_REQUEST exists and milestone missing
 NORTH_STAR_DRIVER_TARGET=north-star-open-cutovers-drained \
-NORTH_STAR_DRIVER_REQUEST=ms-open-cutovers-drain-live-three \
   routines run last-stack-north-star-driver || true
 ```
 
-Do not bulk-scaffold the PR graph yourself.
+## 6. Heartbeat
 
-## 6. Heartbeat + exit
+```
+OPEN_CUTOVERS_LIVE=<n> ADVANCED=<slugs> RESOLVED=<slugs> BLOCKED=<slugs>
+```
 
-Append one heartbeat line: live_count, advanced slugs, closed slugs, blockers.
-Write 5–10 lines automation memory under the routine's memory path if present.
+5–10 lines memory: which phase transitions, any DEFER, any card filed.
 
-Done when each touched live line either advanced one durable step or has an
-explicit blocked reason on the ledger.
+## Exit criteria
+
+Done when every touched live line either advanced one durable phase step, was
+resolved, or has an explicit blocked reason on the ledger with updated `verified=`.
+
+Empty ledger = **success**, not "nothing to do."
