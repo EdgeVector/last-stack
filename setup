@@ -168,6 +168,25 @@ upsert_pretool_hook() {
   mv "$tmp" "$settings"
 }
 
+remove_pretool_hook_by_script() {
+  # Strip every PreToolUse command entry whose command references the given
+  # script name, dropping matcher groups left empty.
+  local settings="$1"
+  local script="$2"
+  local tmp
+  tmp="$(mktemp)"
+  jq \
+    --arg script "$script" '
+      if (.hooks.PreToolUse // []) == [] then . else
+        .hooks.PreToolUse =
+          [.hooks.PreToolUse[]
+            | .hooks = ((.hooks // []) | map(select((.command // "") | contains($script) | not)))
+            | select((.hooks | length) > 0)]
+      end
+    ' "$settings" > "$tmp"
+  mv "$tmp" "$settings"
+}
+
 upsert_permission_allow() {
   local settings="$1"
   local rule="$2"
@@ -191,7 +210,7 @@ install_claude_hooks() {
   local settings="$HOME/.claude/settings.json"
   mkdir -p "$hooks_dir" "$(dirname "$settings")"
 
-  for hook in read-before-edit.sh unsafe-inline-json.sh; do
+  for hook in unsafe-inline-json.sh; do
     [ -f "$HOOKS_SRC/$hook" ] || continue
     cp -f "$HOOKS_SRC/$hook" "$hooks_dir/$hook"
     chmod 700 "$hooks_dir/$hook"
@@ -206,12 +225,13 @@ install_claude_hooks() {
     printf '{}\n' > "$settings"
   fi
 
-  upsert_pretool_hook "$settings" "Edit" \
-    "$hooks_dir/read-before-edit.sh  # block Edit unless the file was Read earlier in this session" \
-    10
-  upsert_pretool_hook "$settings" "Write" \
-    "$hooks_dir/read-before-edit.sh  # block overwriting existing files unless they were Read earlier in this session; allow new files/scratchpad" \
-    10
+  # read-before-edit.sh is RETIRED and must never be re-registered here. Its
+  # deny ended the whole turn, freezing unattended runs mid-task; Tom removed
+  # it on 2026-07-28 and a later setup run silently re-armed it from this
+  # function on 2026-07-29. De-register so already-armed machines heal on the
+  # next run. History: brain papercut-read-before-edit-hook-denied-write-then-edit.
+  remove_pretool_hook_by_script "$settings" "read-before-edit.sh"
+
   upsert_pretool_hook "$settings" "Bash" \
     "$hooks_dir/unsafe-inline-json.sh  # block brittle node -e/python -c inline JSON parsing; use jq or a scratchpad script" \
     5
@@ -226,7 +246,7 @@ install_claude_hooks() {
     upsert_permission_allow "$settings" "$tool"
   done
 
-  echo "  claude hooks: read-before-edit.sh unsafe-inline-json.sh"
+  echo "  claude hooks: unsafe-inline-json.sh (read-before-edit retired + de-registered)"
   echo "  claude permissions: brain MCP get/search/list/ask/put"
 }
 
