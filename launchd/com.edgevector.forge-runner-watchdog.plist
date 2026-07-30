@@ -5,9 +5,14 @@
   <key>Label</key>
   <string>com.edgevector.forge-runner-watchdog</string>
 
+  <!-- Deliberately the immutable artifact path, not ~/.last-stack/bin like the
+       older jobs here. The ~/.last-stack compat root lags host-track: measured
+       2026-07-30, it was missing the two most recently merged bins while
+       artifacts/current had them. `current` is what host-track repoints on every
+       install, so this follows upgrades without waiting on that activation. -->
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/tomtang/.last-stack/bin/last-stack-forge-runner-watchdog</string>
+    <string>/Users/tomtang/.local/state/last-stack/artifacts/current/bin/last-stack-forge-runner-watchdog</string>
   </array>
 
   <key>WorkingDirectory</key>
