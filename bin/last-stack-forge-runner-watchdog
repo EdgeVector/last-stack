@@ -1,0 +1,339 @@
+#!/usr/bin/env bash
+# last-stack-forge-runner-watchdog — page the owner when a CI runner lane is dead.
+#
+# Watches the lanes that, when down, silently stop merges:
+#   heavy      — full-workspace clippy (mac-forge-runner-host[-exemem-infra])
+#   pc-linux   — fold's build_test merge gate (pc-forge-runner on the gaming PC)
+#   merge_gate — mac-forge-runner (docker/ubuntu/macos-arm64)
+#   lastgit    — the `lastgit forge run` supervisor that merges LastGit CRs
+#
+# Why this exists: `last-stack-forge-runner-lanes` defaults to config-on-disk, so
+# it reported heavy_ok=true for the ~2 days (2026-07-28 -> 07-30) both heavy
+# runners were unloaded. Nothing asserted LIVE state on a schedule, and nothing
+# paged. See brain papercut-forge-heavy-runners-unloaded-and-fold-queue-63-deep.
+#
+# Revive policy (standing permission covers crashed runners, NOT deliberate
+# pauses): a lane is auto-revived only when its plist is present and unsuffixed.
+# A `.paused-*` sibling means a human parked it on purpose — report, never revive.
+# Note a bare `launchctl disable` with no marker is NOT distinguishable from a
+# crash; we treat it as revivable and say so in the page.
+#
+# Exit: 0 all lanes healthy (or only deliberately-paused), 1 a lane is down.
+
+set -u
+
+BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Absolute defaults so a launchd run never depends on PATH; overridable so the
+# test suite can stub launchd/forge/ra without touching the real machine.
+LAUNCHCTL="${FORGE_WATCHDOG_LAUNCHCTL:-/bin/launchctl}"
+JQ="${FORGE_WATCHDOG_JQ:-/usr/bin/jq}"
+RA_BIN="${FORGE_WATCHDOG_RA:-$HOME/.local/bin/ra}"
+LANES_BIN="${FORGE_WATCHDOG_LANES:-$BIN_DIR/last-stack-forge-runner-lanes}"
+SITUATIONS_BIN="${FORGE_WATCHDOG_SITUATIONS:-$HOME/.local/bin/situations}"
+PLIST_DIR="${FORGE_WATCHDOG_PLIST_DIR:-$HOME/Library/LaunchAgents}"
+STATE_DIR="${FORGE_WATCHDOG_STATE_DIR:-$HOME/.local/state/last-stack/forge-runner-watchdog}"
+STATE_FILE="$STATE_DIR/state.json"
+LOG_FILE="$STATE_DIR/watchdog.log"
+FORGE_LOG="$HOME/.lastgit/forge-primary/forge.log"
+
+# Re-page cadence for a condition that stays broken (seconds). Page is immediate
+# on a new failure; this only throttles the nagging.
+REPAGE_AFTER="${FORGE_WATCHDOG_REPAGE_AFTER:-14400}"   # 4h
+# forge.log older than this means the LastGit supervisor is not cycling.
+FORGE_LOG_STALE_AFTER="${FORGE_WATCHDOG_FORGE_STALE:-1800}"  # 30m
+
+DRY_RUN=0
+NO_REVIVE=0
+FORCE_PAGE=0
+
+usage() {
+  cat <<'EOF' >&2
+usage: last-stack-forge-runner-watchdog [--dry-run] [--no-revive] [--force-page]
+
+Checks that every CI runner lane is LIVE (not merely configured), revives a
+crashed lane when standing permission allows, and pages the owner via `ra notify`
+only when something is actually down.
+
+  --dry-run     probe and print; never revive, never page
+  --no-revive   page on failure but do not touch launchd
+  --force-page  ignore the re-page cooldown (for testing the channel)
+
+State: $HOME/.local/state/last-stack/forge-runner-watchdog/state.json
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY_RUN=1; shift ;;
+    --no-revive) NO_REVIVE=1; shift ;;
+    --force-page) FORCE_PAGE=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage; exit 2 ;;
+  esac
+done
+
+mkdir -p "$STATE_DIR" 2>/dev/null || true
+[ -f "$STATE_FILE" ] || printf '{}\n' > "$STATE_FILE"
+
+now_epoch() { /bin/date +%s; }
+stamp() { /bin/date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+log() {
+  printf '%s %s\n' "$(stamp)" "$*" >> "$LOG_FILE" 2>/dev/null || true
+  [ "$DRY_RUN" -eq 1 ] && printf '%s\n' "$*"
+  return 0
+}
+
+# --- findings accumulator -----------------------------------------------------
+# Parallel newline-delimited lists (bash 3.2: no associative arrays).
+DOWN_KEYS=""
+DOWN_MSGS=""
+DOWN_NAMES=""
+INFO_MSGS=""
+
+add_down() {  # key, human message, short name (defaults to the key)
+  DOWN_KEYS="${DOWN_KEYS}$1
+"
+  DOWN_MSGS="${DOWN_MSGS}$2
+"
+  DOWN_NAMES="${DOWN_NAMES}${3:-$1}
+"
+}
+
+# Short name for a key, by position in the parallel lists.
+name_for_key() {
+  local want="$1" i=1 k
+  while IFS= read -r k; do
+    [ "$k" = "$want" ] && { printf '%s' "$(printf '%s' "$DOWN_NAMES" | /usr/bin/sed -n "${i}p")"; return 0; }
+    i=$((i + 1))
+  done <<EOF
+$DOWN_KEYS
+EOF
+  printf '%s' "$want"
+}
+add_info() { INFO_MSGS="${INFO_MSGS}$1
+"; }
+
+# --- launchd helpers ----------------------------------------------------------
+
+agent_loaded() {  # label -> 0 if loaded
+  $LAUNCHCTL list 2>/dev/null | /usr/bin/grep -q "[[:space:]]$1\$"
+}
+
+# A lane is "deliberately parked" only when a .paused-* plist exists and the
+# live plist does not. That is the marker a human pause leaves behind.
+deliberately_paused() {  # label
+  local live="$PLIST_DIR/$1.plist"
+  local parked
+  parked="$(/bin/ls "$PLIST_DIR" 2>/dev/null | /usr/bin/grep -c "^$1\.plist\.paused-" || true)"
+  [ ! -f "$live" ] && [ "${parked:-0}" -gt 0 ]
+}
+
+revive_agent() {  # label -> 0 on success
+  local label="$1" plist="$PLIST_DIR/$1.plist"
+  [ -f "$plist" ] || { log "revive $label: no plist at $plist"; return 1; }
+  if [ "$DRY_RUN" -eq 1 ] || [ "$NO_REVIVE" -eq 1 ]; then
+    log "revive $label: skipped (dry-run/no-revive)"
+    return 1
+  fi
+  # `launchctl disable` outlives a plist rename and silently defeats bootstrap,
+  # so enable must come first. This is what made the 07-29 forge-primary restore
+  # look like an opaque I/O error.
+  $LAUNCHCTL enable "gui/$(/usr/bin/id -u)/$label" 2>/dev/null || true
+  $LAUNCHCTL bootstrap "gui/$(/usr/bin/id -u)" "$plist" 2>/dev/null || true
+  /bin/sleep 3
+  agent_loaded "$label"
+}
+
+# Preflight guards shared-system mutation against an active Situation.
+preflight_ok() {
+  local sit="$SITUATIONS_BIN"
+  [ -x "$sit" ] || return 0   # cannot check -> do not block the revive
+  "$sit" preflight --action revive-forge-runner >/dev/null 2>&1
+  local rc=$?
+  [ "$rc" -eq 3 ] && return 1
+  return 0
+}
+
+# --- lane checks --------------------------------------------------------------
+
+check_local_lane() {  # label, human-name, what-it-blocks
+  local label="$1" name="$2" blocks="$3"
+  if agent_loaded "$label"; then
+    return 0
+  fi
+  if deliberately_paused "$label"; then
+    add_info "$name is parked on purpose (.paused-* marker) — not reviving."
+    return 0
+  fi
+  log "$name ($label) is NOT loaded; attempting revive"
+  if preflight_ok && revive_agent "$label"; then
+    add_info "$name was down and has been revived automatically."
+    return 0
+  fi
+  add_down "$label" "$name is DOWN and could not be revived. Blocks: $blocks." "$name"
+  return 1
+}
+
+# 1+2. Local Forgejo runner lanes.
+check_local_lane com.edgevector.forgejo-runner-host \
+  "Forge heavy runner" "full-workspace clippy on every PR"
+check_local_lane com.edgevector.forgejo-runner-host-exemem-infra \
+  "Forge heavy runner (exemem-infra)" "exemem-infra heavy lane"
+check_local_lane com.edgevector.forgejo-runner \
+  "Forge merge-gate runner" "all docker/ubuntu/macos-arm64 CI jobs"
+
+# 3. Live registration, not just a running process. A runner can be up locally
+#    and still not be serving the label the gate needs.
+LIVE_JSON="$STATE_DIR/lanes-live.json"
+if "$LANES_BIN" --live --json > "$LIVE_JSON" 2>/dev/null; then
+  heavy_live="$($JQ -r '.heavy_ok_live // false' "$LIVE_JSON" 2>/dev/null || echo false)"
+  if [ "$heavy_live" != "true" ]; then
+    add_down "heavy-lane-live" \
+      "No runner is LIVE for the 'heavy' label — full-workspace clippy will hang pending on every PR." \
+      "heavy lane"
+  fi
+  # pc-linux is fold's build_test gate: down => fold merges freeze, not slow.
+  pc_status="$($JQ -r '[.live.admin_runners[]? | select(.labels // [] | index("pc-linux")) | .status] | first // "absent"' "$LIVE_JSON" 2>/dev/null || echo absent)"
+  case "$pc_status" in
+    idle|active) : ;;
+    absent) add_down "pc-linux-absent" "pc-linux runner is NOT registered with the forge — fold's build_test merge gate cannot run." "pc-linux gate" ;;
+    *) add_down "pc-linux-offline" "pc-linux runner is '$pc_status' — fold merges will freeze (build_test is pinned to it)." "pc-linux gate" ;;
+  esac
+else
+  add_down "forge-api" "Could not query the Forgejo runner API — forge may be down, or the token is unreadable." "forge API"
+fi
+
+# 4. LastGit forge supervisor: merges every LastGit-native CR. When it stops,
+#    CRs sit green-but-unmerged and each one looks like an independent mystery.
+if [ -f "$FORGE_LOG" ]; then
+  log_mtime="$(/usr/bin/stat -f %m "$FORGE_LOG" 2>/dev/null || echo 0)"
+  age=$(( $(now_epoch) - ${log_mtime:-0} ))
+  if [ "$age" -gt "$FORGE_LOG_STALE_AFTER" ]; then
+    if deliberately_paused com.edgevector.lastgit-forge-primary; then
+      add_info "LastGit forge supervisor is parked on purpose — LastGit CRs will not auto-merge."
+    else
+      check_local_lane com.edgevector.lastgit-forge-primary \
+        "LastGit forge supervisor" "auto-merge for every LastGit-native CR"
+      # Revived or not, a stale log is the symptom worth naming.
+      if [ "$age" -gt "$FORGE_LOG_STALE_AFTER" ]; then
+        add_info "LastGit forge.log had not advanced in $(( age / 60 )) min."
+      fi
+    fi
+  fi
+fi
+
+# --- paging -------------------------------------------------------------------
+
+should_page() {  # key -> 0 if we should page now
+  [ "$FORCE_PAGE" -eq 1 ] && return 0
+  local key="$1" last
+  last="$($JQ -r --arg k "$key" '.[$k].last_paged // 0' "$STATE_FILE" 2>/dev/null || echo 0)"
+  [ $(( $(now_epoch) - ${last:-0} )) -ge "$REPAGE_AFTER" ]
+}
+
+record_state() {  # key, last_paged_epoch
+  local key="$1" paged="$2" tmp="$STATE_FILE.tmp"
+  [ "$DRY_RUN" -eq 1 ] && return 0   # a probe must never rewrite paging history
+  $JQ --arg k "$key" --arg nm "$(name_for_key "$key")" \
+      --argjson p "$paged" --argjson n "$(now_epoch)" \
+    '.[$k] = {last_paged: $p, last_seen: $n, name: $nm}' "$STATE_FILE" > "$tmp" 2>/dev/null \
+    && /bin/mv "$tmp" "$STATE_FILE"
+}
+
+# Prints the friendly name of a cleared key on stdout; exit 0 if it had been failing.
+clear_state() {  # key
+  local key="$1" tmp="$STATE_FILE.tmp" had nm
+  had="$($JQ -r --arg k "$key" 'has($k) | tostring' "$STATE_FILE" 2>/dev/null || echo false)"
+  nm="$($JQ -r --arg k "$key" '.[$k].name // $k' "$STATE_FILE" 2>/dev/null || printf '%s' "$key")"
+  if [ "$DRY_RUN" -eq 0 ]; then
+    $JQ --arg k "$key" 'del(.[$k])' "$STATE_FILE" > "$tmp" 2>/dev/null && /bin/mv "$tmp" "$STATE_FILE"
+  fi
+  [ "$had" = "true" ] || return 1
+  printf '%s' "$nm"
+}
+
+notify() {  # priority, message
+  local prio="$1" msg="$2" ra="$RA_BIN"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf 'WOULD PAGE [%s]: %s\n' "$prio" "$msg"
+    return 0
+  fi
+  [ -x "$ra" ] || { log "PAGE FAILED (no ra): $msg"; return 1; }
+  "$ra" notify "$msg" --priority "$prio" >/dev/null 2>&1 || { log "PAGE FAILED: $msg"; return 1; }
+  log "paged [$prio]: $msg"
+}
+
+# Recovery: anything previously failing that is healthy now.
+RECOVERED=""
+if [ -s "$STATE_FILE" ]; then
+  for key in $($JQ -r 'keys[]?' "$STATE_FILE" 2>/dev/null); do
+    case "$DOWN_KEYS" in
+      *"$key"*) : ;;
+      *) nm="$(clear_state "$key")" && RECOVERED="${RECOVERED}${RECOVERED:+, }$nm" ;;
+    esac
+  done
+fi
+
+if [ -n "$(printf '%s' "$DOWN_KEYS" | /usr/bin/tr -d '[:space:]')" ]; then
+  BODY="🚨 CI runner lane down"
+  while IFS= read -r m; do
+    [ -n "$m" ] && BODY="$BODY
+• $m"
+  done <<EOF
+$DOWN_MSGS
+EOF
+  while IFS= read -r m; do
+    [ -n "$m" ] && BODY="$BODY
+ℹ️ $m"
+  done <<EOF
+$INFO_MSGS
+EOF
+  BODY="$BODY
+
+Auto-revive was attempted where standing permission allows. This one needs a human.
+Check: last-stack-forge-runner-lanes --check --live"
+
+  PAGED_ANY=0
+  while IFS= read -r key; do
+    [ -z "$key" ] && continue
+    if should_page "$key"; then PAGED_ANY=1; fi
+  done <<EOF
+$DOWN_KEYS
+EOF
+
+  if [ "$PAGED_ANY" -eq 1 ]; then
+    notify high "$BODY"
+    NOWP="$(now_epoch)"
+    while IFS= read -r key; do
+      [ -n "$key" ] && record_state "$key" "$NOWP"
+    done <<EOF
+$DOWN_KEYS
+EOF
+  else
+    log "lane(s) still down but within re-page cooldown; not paging"
+    NOWP=0
+    while IFS= read -r key; do
+      [ -n "$key" ] && record_state "$key" \
+        "$($JQ -r --arg k "$key" '.[$k].last_paged // 0' "$STATE_FILE" 2>/dev/null || echo 0)"
+    done <<EOF
+$DOWN_KEYS
+EOF
+  fi
+  exit 1
+fi
+
+# Healthy. Announce recovery once, plus any self-heal we performed, then go quiet.
+if [ -n "$RECOVERED" ]; then
+  notify normal "✅ CI runner lanes healthy again ($RECOVERED). Merges are unblocked."
+elif [ -n "$(printf '%s' "$INFO_MSGS" | /usr/bin/tr -d '[:space:]')" ]; then
+  # Self-healed this run, or a lane is parked on purpose: log it, do not page.
+  while IFS= read -r m; do
+    [ -n "$m" ] && log "info: $m"
+  done <<EOF
+$INFO_MSGS
+EOF
+fi
+
+log "all lanes healthy"
+exit 0
