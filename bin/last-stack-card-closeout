@@ -7,9 +7,11 @@
 #
 # 1. Optionally stamps --pr-url / --branch via add (preserves column).
 # 2. Refuses deploy-gated closeout unless Requires-Deploy has terminal success.
-# 3. Moves the card to done (with lastdb-retry).
-# 4. Verifies show --json reports column=done; retries once if not.
-# 5. Exits 0 only when the card is in the terminal column.
+# 3. Refuses legacy-residue closeout unless latest main has zero marker hits
+#    and the card OUTCOME records that grep-zero proof.
+# 4. Moves the card to done (with lastdb-retry).
+# 5. Verifies show --json reports column=done; retries once if not.
+# 6. Exits 0 only when the card is in the terminal column.
 #
 # Refuse final_column=done in ROUTINE_RESULT unless this helper exits 0.
 set -euo pipefail
@@ -150,6 +152,108 @@ EOF
   done <<EOF
 $deploy_reqs
 EOF
+fi
+
+legacy_info="$(CARD_JSON="$card_json" python3 - <<'PY'
+import json
+import os
+import re
+import shlex
+import sys
+
+try:
+    raw = json.loads(os.environ.get("CARD_JSON", "{}"))
+except Exception:
+    sys.exit(0)
+
+card = raw.get("card") if isinstance(raw, dict) else None
+if not isinstance(card, dict):
+    card = raw if isinstance(raw, dict) else {}
+
+body = str(card.get("body") or "")
+repo = str(card.get("repo") or "")
+if not repo:
+    m = re.search(r"(?im)^\s*Repo:\s*(\S+)\s*$", body)
+    if m:
+        repo = m.group(1)
+
+section_match = re.search(
+    r"(?ims)^##[ \t]+LEGACY[ \t]+(?:RESIDUE|REMOVAL)\b.*?(?=^##[ \t]+|\Z)",
+    body,
+)
+required = bool(section_match)
+print(f"legacy_required={1 if required else 0}")
+if not required:
+    sys.exit(0)
+
+section = section_match.group(0)
+marker_match = re.search(
+    r"(?im)^\s*(?:[-*]\s*)?(?:legacy_markers?|markers?|regex|pattern)\s*[:=]\s*(.+?)\s*$",
+    section,
+)
+regex = ""
+if marker_match:
+    raw_markers = marker_match.group(1).strip()
+    raw_markers = raw_markers.strip("`'\"")
+    if "|" in raw_markers:
+        regex = raw_markers
+    else:
+        parts = [
+            p.strip().strip("`'\"")
+            for p in re.split(r"\s*,\s*|\s+", raw_markers)
+            if p.strip().strip("`'\"")
+        ]
+        regex = "|".join(parts)
+
+repo_match = re.search(r"(?im)^\s*(?:[-*]\s*)?(?:repo|legacy_repo)\s*:\s*(\S+)\s*$", section)
+if repo_match:
+    repo = repo_match.group(1)
+
+outcome_match = re.search(r"(?ims)^##[ \t]+OUTCOME\b.*?(?=^##[ \t]+|\Z)", body)
+outcome = outcome_match.group(0) if outcome_match else ""
+proof = bool(
+    re.search(r"\b0[ \t-]+hits\b", outcome, re.I)
+    and re.search(r"(last-stack-legacy-residue-probe|git[ \t]+grep)", outcome, re.I)
+    and re.search(r"\b[\w./-]+@[0-9a-f]{7,40}\b", outcome, re.I)
+)
+
+print(f"legacy_repo={shlex.quote(repo)}")
+print(f"legacy_regex={shlex.quote(regex)}")
+print(f"legacy_proof={1 if proof else 0}")
+PY
+)"
+
+legacy_required=0
+legacy_repo=""
+legacy_regex=""
+legacy_proof=0
+eval "$legacy_info"
+
+if [ "$legacy_required" = "1" ]; then
+  if [ -z "$legacy_repo" ] || [ -z "$legacy_regex" ]; then
+    echo "last-stack-card-closeout: FAILED legacy-residue-missing-marker slug=$slug" >&2
+    exit 1
+  fi
+  if [ ! -x "$self_dir/last-stack-legacy-residue-probe" ]; then
+    echo "last-stack-card-closeout: FAILED legacy-residue-probe-missing slug=$slug" >&2
+    exit 1
+  fi
+  if [ "$legacy_proof" != "1" ]; then
+    echo "last-stack-card-closeout: FAILED legacy-residue-proof-missing slug=$slug" >&2
+    exit 1
+  fi
+  probe_out="/tmp/last-stack-legacy-residue-probe.$$"
+  set +e
+  "$self_dir/last-stack-legacy-residue-probe" "$legacy_repo" "$legacy_regex" >"$probe_out" 2>&1
+  probe_rc=$?
+  set -e
+  if [ "$probe_rc" -ne 0 ]; then
+    cat "$probe_out" >&2
+    rm -f "$probe_out"
+    echo "last-stack-card-closeout: FAILED legacy-residue-probe-red slug=$slug repo=$legacy_repo regex=$legacy_regex exit=$probe_rc" >&2
+    exit 1
+  fi
+  rm -f "$probe_out"
 fi
 
 # Stamp PR/branch without changing column (add preserves existing column).

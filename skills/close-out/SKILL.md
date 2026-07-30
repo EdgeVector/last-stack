@@ -153,6 +153,31 @@ END STATE). **PR-body `## Proof` blocks and the fold `proof-block` CI check were
 REMOVED 2026-07-03 (Tom: merge-stall churn)** — do not write them, and do not
 block on their absence. A failing validation is still a blocker, not a footnote.
 
+### Legacy-residue gate
+
+If the kanban card has a `## LEGACY RESIDUE` or `## LEGACY REMOVAL` section, or
+the change being closed removed a legacy code path, closeout must prove latest
+fetched `main` has zero source hits before the card reaches `done`.
+
+Use the shared helper, which is portal-aware and probes the committed tree, not
+the dirty checkout:
+
+```bash
+last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+"$last_stack/bin/last-stack-legacy-residue-probe" <repo-or-owner/name> '<regex>'
+```
+
+Exit 0 means zero hits. Append the proof to the card under `## OUTCOME` with
+the repo/ref and command, ending in `0 hits`, for example:
+
+```
+## OUTCOME
+- fold@abc1234: `last-stack-legacy-residue-probe EdgeVector/fold 'old_flag|old_fn'` -> 0 hits
+```
+
+The closeout helper re-runs this gate and refuses `done` if the proof is absent
+or latest `main` still contains source hits.
+
 ## 4. Checkpoint the decision to the brain
 
 Save the *why* / the settled decision / the milestone. Brain = why + decision;
