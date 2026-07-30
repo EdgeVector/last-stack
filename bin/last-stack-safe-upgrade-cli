@@ -85,7 +85,7 @@ app_defaults() {
     search)
       DEFAULT_REMOTE="lastdb:///search"
       DEFAULT_BARE="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/search.git"
-      DEFAULT_LINKS="bin/search:$HOME/.local/bin/search bin/search-store:$HOME/.local/bin/search-store"
+      DEFAULT_LINKS="bin/search:$HOME/.local/bin/search"
       DEFAULT_BUILD="bun_install"
       DEFAULT_SMOKE="search_smoke"
       DEFAULT_WRAPPERS="search"
@@ -208,14 +208,11 @@ smoke_search() {
   local root="$1"
   ensure_bin_wrapper "$root" search
   [ -x "$root/bin/search" ] || die "smoke: no bin/search in $root"
-  [ -x "$root/bin/search-store" ] || die "smoke: no bin/search-store (post-install cargo build missing)"
   PATH="$root/bin:$PATH" search status >/dev/null 2>&1 \
+    || PATH="$root/bin:$PATH" search vector-status >/dev/null 2>&1 \
     || PATH="$root/bin:$PATH" search 2>&1 | grep -q 'usage:' \
     || die "smoke: search did not print status/usage"
-  PATH="$root/bin:$PATH" search-store --help >/dev/null 2>&1 \
-    || PATH="$root/bin:$PATH" search-store 2>&1 | head -1 | grep -q . \
-    || true
-  printf 'safe-upgrade-cli: search smoke OK\n'
+  printf 'safe-upgrade-cli: search smoke OK (semantic CLI)\n'
 }
 
 smoke_fkanban() {

@@ -219,13 +219,9 @@
         {
           "source": "bin/search",
           "target": "$HOME/.local/bin/search"
-        },
-        {
-          "source": "bin/search-store",
-          "target": "$HOME/.local/bin/search-store"
         }
       ],
-      "notes": "Local-safe Search app CLI; post-install builds search-store (LastStore engine) and PATH-links search + search-store. Keyword plane rebuild: lastdb search-rebuild (Mini) then search drain."
+      "notes": "Local-safe Search app CLI (semantic MiniLM only). Post-install runs search-host-track-post-install (JS deps + neural smoke). Bootstrap: search init / online-backfill; Mini may feed inbox via lastdb search-rebuild."
     },
     {
       "app": "lastdb",
