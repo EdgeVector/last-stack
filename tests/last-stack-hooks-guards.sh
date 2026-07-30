@@ -8,120 +8,69 @@ cleanup() {
 }
 trap cleanup EXIT
 
-target="$tmp/example.txt"
-printf 'old\n' > "$target"
-transcript="$tmp/session.jsonl"
-: > "$transcript"
-
-edit_payload() {
-  jq -n \
-    --arg path "$target" \
-    --arg transcript "$transcript" \
-    --arg cwd "$tmp" \
-    '{
-      tool_name: "Edit",
-      cwd: $cwd,
-      transcript_path: $transcript,
-      tool_input: {file_path: $path, old_string: "old", new_string: "new"}
-    }'
-}
-
-if edit_payload | "$ROOT/hooks/read-before-edit.sh" >/tmp/read-before-edit.out 2>/tmp/read-before-edit.err; then
-  echo "expected Edit on an un-Read file to be denied" >&2
+# read-before-edit.sh is retired (2026-07-28): its deny ended the whole turn
+# and froze unattended runs. Setup must not ship it, and must actively strip
+# any registration a previous install left behind — a setup run on 2026-07-29
+# silently re-armed it once already.
+if [ -e "$ROOT/hooks/read-before-edit.sh" ]; then
+  echo "hooks/read-before-edit.sh is retired and must not return to the repo" >&2
   exit 1
 fi
-grep -q 'Read the file first' /tmp/read-before-edit.out
-
-# Transcripts are JSONL: one compact JSON object per line.
-jq -nc --arg path "$target" '{
-  type: "assistant",
-  message: {
-    content: [
-      {type: "tool_use", name: "Read", input: {file_path: $path}}
-    ]
-  }
-}' > "$transcript"
-edit_payload | "$ROOT/hooks/read-before-edit.sh"
-
-# A Read recorded only in a subagent transcript must unblock an Edit whose
-# hook input carries the parent session's transcript_path (subagent tool
-# calls receive the parent path).
-sub_target="$tmp/sub.txt"
-printf 'old\n' > "$sub_target"
-mkdir -p "$tmp/session/subagents"
-jq -nc --arg path "$sub_target" '{
-  type: "assistant",
-  message: {
-    content: [
-      {type: "tool_use", name: "Read", input: {file_path: $path}}
-    ]
-  }
-}' > "$tmp/session/subagents/agent-test.jsonl"
-jq -n \
-  --arg path "$sub_target" \
-  --arg transcript "$transcript" \
-  --arg cwd "$tmp" \
-  '{
-    tool_name: "Edit",
-    cwd: $cwd,
-    transcript_path: $transcript,
-    tool_input: {file_path: $path, old_string: "old", new_string: "new"}
-  }' | "$ROOT/hooks/read-before-edit.sh"
-
-# A malformed transcript line must not hide Reads recorded after it.
-malformed_target="$tmp/malformed.txt"
-printf 'old\n' > "$malformed_target"
-printf 'not json\n' >> "$transcript"
-jq -nc --arg path "$malformed_target" '{
-  type: "assistant",
-  message: {
-    content: [
-      {type: "tool_use", name: "Read", input: {file_path: $path}}
-    ]
-  }
-}' >> "$transcript"
-jq -n \
-  --arg path "$malformed_target" \
-  --arg transcript "$transcript" \
-  --arg cwd "$tmp" \
-  '{
-    tool_name: "Edit",
-    cwd: $cwd,
-    transcript_path: $transcript,
-    tool_input: {file_path: $path, old_string: "old", new_string: "new"}
-  }' | "$ROOT/hooks/read-before-edit.sh"
-
-new_file="$tmp/new.txt"
-jq -n \
-  --arg path "$new_file" \
-  --arg transcript "$transcript" \
-  --arg cwd "$tmp" \
-  '{
-    tool_name: "Write",
-    cwd: $cwd,
-    transcript_path: $transcript,
-    tool_input: {file_path: $path, content: "new"}
-  }' | "$ROOT/hooks/read-before-edit.sh"
-
-if jq -n '{
-    tool_name: "Bash",
-    tool_input: {command: "node -e \"const d=JSON.parse(process.argv[1]); console.log(d.x)\" \"$json\""}
-  }' | "$ROOT/hooks/unsafe-inline-json.sh" >/tmp/unsafe-inline-json.out 2>/tmp/unsafe-inline-json.err; then
-  echo "expected node -e JSON.parse to be denied" >&2
+if grep -q "upsert_pretool_hook.*read-before-edit" "$ROOT/setup"; then
+  echo "setup must not register read-before-edit.sh" >&2
   exit 1
 fi
-grep -q 'use jq' /tmp/unsafe-inline-json.out
-grep -q 'scratchpad' /tmp/unsafe-inline-json.out
-grep -q 'last-stack-json-get' /tmp/unsafe-inline-json.out
 
-jq -n '{
+# The de-registration must remove read-before-edit entries from an armed
+# settings.json while leaving every other hook untouched.
+eval "$(sed -n '/^remove_pretool_hook_by_script()/,/^}/p' "$ROOT/setup")"
+settings_fixture="$tmp/settings.json"
+jq -n '{hooks: {PreToolUse: [
+  {matcher: "Bash", hooks: [
+    {type: "command", command: "/x/hooks/unsafe-inline-json.sh  # keep me", timeout: 5}
+  ]},
+  {matcher: "Edit", hooks: [
+    {type: "command", command: "/x/hooks/read-before-edit.sh  # retired", timeout: 10}
+  ]},
+  {matcher: "Write", hooks: [
+    {type: "command", command: "/x/hooks/read-before-edit.sh  # retired", timeout: 10},
+    {type: "command", command: "/x/hooks/other-guard.sh  # keep me too", timeout: 10}
+  ]}
+]}}' > "$settings_fixture"
+remove_pretool_hook_by_script "$settings_fixture" "read-before-edit.sh"
+jq -e '[.. | strings | select(test("read-before-edit"))] | length == 0' "$settings_fixture" >/dev/null
+jq -e '.hooks.PreToolUse | length == 2' "$settings_fixture" >/dev/null
+jq -e '.hooks.PreToolUse[0].matcher == "Bash" and (.hooks.PreToolUse[0].hooks | length == 1)' "$settings_fixture" >/dev/null
+jq -e '.hooks.PreToolUse[1].matcher == "Write" and .hooks.PreToolUse[1].hooks[0].command == "/x/hooks/other-guard.sh  # keep me too"' "$settings_fixture" >/dev/null
+
+# Settings with no PreToolUse hooks must pass through unchanged.
+jq -n '{model: "fable"}' > "$settings_fixture"
+remove_pretool_hook_by_script "$settings_fixture" "read-before-edit.sh"
+jq -e '. == {model: "fable"}' "$settings_fixture" >/dev/null
+
+# Guard hooks deny via permissionDecision JSON with exit 0 — a deny must
+# reject the tool call WITHOUT ending the turn (no continue:false, no exit 1);
+# blocking denies froze unattended runs mid-task (2026-07-18 and 2026-07-29).
+deny_out="$(jq -n '{
+  tool_name: "Bash",
+  tool_input: {command: "node -e \"const d=JSON.parse(process.argv[1]); console.log(d.x)\" \"$json\""}
+}' | "$ROOT/hooks/unsafe-inline-json.sh")"
+printf '%s' "$deny_out" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null
+printf '%s' "$deny_out" | jq -e '(.continue // true) == true' >/dev/null
+printf '%s' "$deny_out" | grep -q 'use jq'
+printf '%s' "$deny_out" | grep -q 'scratchpad'
+printf '%s' "$deny_out" | grep -q 'last-stack-json-get'
+
+allow_out="$(jq -n '{
   tool_name: "Bash",
   tool_input: {command: "jq -r .x data.json"}
-}' | "$ROOT/hooks/unsafe-inline-json.sh"
+}' | "$ROOT/hooks/unsafe-inline-json.sh")"
+[ -z "$allow_out" ]
 
-jq -n '{
+allow_out="$(jq -n '{
   tool_name: "Bash",
   tool_input: {command: "curl --unix-socket ~/.folddb/data/folddb.sock http://localhost/api/system/auto-identity | last-stack-json-get .app_id"}
-}' | "$ROOT/hooks/unsafe-inline-json.sh"
+}' | "$ROOT/hooks/unsafe-inline-json.sh")"
+[ -z "$allow_out" ]
 
 echo "ok"
