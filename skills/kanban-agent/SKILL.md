@@ -181,6 +181,29 @@ Canonical SOP: brain `sop-done-when-requires-live-symptom-recheck` (generalizes
 the live signal this turn, leave the card in `todo`/`doing` with
 `PROOF: pending live recheck of <signal> on <env>` — do **not** move to `done`.
 
+### Legacy-residue gate
+
+Cards with a `## LEGACY RESIDUE` or `## LEGACY REMOVAL` section cannot move to
+`done` until latest fetched `main` has zero source hits for the section's
+`Markers:` / `Regex:` line. Before closeout, run:
+
+```bash
+git -C <repo> rev-parse --short origin/main
+last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+"$last_stack/bin/last-stack-legacy-residue-probe" <repo-or-owner/name> '<regex>'
+```
+
+Exit 0 means zero hits. Append the proof to the card under `## OUTCOME` with
+the repo/ref and command, ending in `0 hits`, for example:
+
+```
+## OUTCOME
+- fold@abc1234: `last-stack-legacy-residue-probe EdgeVector/fold 'old_flag|old_fn'` -> 0 hits
+```
+
+`last-stack-card-closeout` enforces both the recorded proof and a fresh probe,
+so do not call it for legacy-removal cards until that proof is present.
+
 
 Note: `review` is an **exception** state, not the normal post-PR resting place.
 The happy path is `doing` → (drive PR to merge) → `done`. A card lands in
