@@ -430,7 +430,10 @@ to `review`, append a one-line note explaining what's missing, and exit.
        --pr-url "<pr-or-lastgit-cr-url>" --branch "<branch>"
      ```
      Only treat the unit as board-done when that helper exits 0 (it re-reads
-     `column=done`). Do not trust a bare `move … done` without verification —
+     `column=done` **and** best-effort reclaims the card worktree under
+     `~/.fkanban/worktrees/` — strip `target`/`node_modules`, patch dirty, then
+     `git worktree remove`). Do **not** leave multi‑GB abandoned worktrees after
+     closeout. Do not trust a bare `move … done` without verification —
      concurrent pickups and later `add --pr-url` races have left cards in
      `doing` after a successful move. If the card explicitly requires async
      post-merge validation that cannot finish inside this WORK turn (dev deploy,

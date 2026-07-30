@@ -35,6 +35,12 @@ actions noted below.
 - **NEVER force-remove a worktree that has a live process in it**, and **never kill a
   `claude` agent process.** Removing a worktree out from under a live LastDB server has
   produced a 339 GB orphan-server wedge.
+- **Prefer `bin/last-stack-worktree-reclaim`** (Tom 2026-07-30): strip
+  `target`/`node_modules` always; on card `done` reclaim via
+  `last-stack-card-closeout`; hourly/daily backstop
+  `last-stack-worktree-reclaim --sweep-stale --max-age-hours 48` (dirty → patch
+  under `~/.local/state/last-stack/runtime/worktree-patches/`, then remove). Do
+  not leave multi‑GB abandoned `~/.fkanban/worktrees` piles.
 - **`archive_session` is unavailable in unsupervised mode** (it always prompts). Do not
   attempt it at 3 AM — **enumerate** stale sessions and report instead.
 - **`cargo clean` / removing the shared target BREAKS live builds** — only do it after

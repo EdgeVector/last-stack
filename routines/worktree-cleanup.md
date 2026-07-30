@@ -65,20 +65,21 @@ sandbox refuses the path, note `memory_unwritable=<path>` in the heartbeat and
 continue — do not fail the whole run.
 
 ## 🛑 Hard guardrails — obey exactly (violations cause data loss / outages)
-- NEVER remove a worktree that has **uncommitted changes**
-  (`git -C <wt> status --porcelain` non-empty) OR **unique unmerged commits**
-  (`git -C <wt> cherry origin/<DEFAULT_BRANCH> <branch>` shows any `+`).
-- There is no `review` column. Board columns are only `backlog`, `todo`,
-  `doing`, and `done`.
 - NEVER touch a worktree whose **board card is in `doing`** — read
   the board first (`<board list command>`) and cross-check by intent (a slug may
-  not string-match the worktree/branch name).
+  not string-match the worktree/branch name). Keep any live-cwd worktree.
 - Keep any `salvage-*` / `tombstone-*` / `locked` worktree.
+- There is no `review` column. Board columns are only `backlog`, `todo`,
+  `doing`, and `done`.
 - NEVER kill the process hosting your **brain/board node**, and never kill
   another agent's process. NEVER `stash`/`reset`/`checkout --` in a shared repo.
-- NEVER silently discard dirty source. You may remove only proven generated or
-  cache artifacts, or stale patches whose source branch/PR is proven merged or
-  closed-unneeded. When in doubt, preserve a patch under `/tmp` and report it.
+- **Dirty trees are reclaimable after patch save** (Tom 2026-07-30). Prefer
+  `"$last_stack/bin/last-stack-worktree-reclaim"` which strips
+  `target`/`node_modules`, saves dirty patches under
+  `~/.local/state/last-stack/runtime/worktree-patches/`, then
+  `git worktree remove --force`. Card closeout (`last-stack-card-closeout`)
+  already reclaims the slug's worktree when moving to `done` — this routine
+  is the backstop for abandoned trees.
 - If the board is unreachable or returns `service_timeout`, "node did not
   respond", "too many concurrent reads", or `uds_connection_limit`, do not run
   doctor/init/restart. Treat it as shared backpressure: skip any cleanup whose
@@ -113,20 +114,18 @@ continue — do not fail the whole run.
    each repo, run
    `git -C "$repo" worktree list --porcelain`. Derive each worktree's owning
    repo from `git -C <path> rev-parse --git-common-dir`.
-2. **Classify each worktree.** Compute: its branch, unique-commit count
-   (`git -C <wt> cherry origin/<DEFAULT_BRANCH> <branch>`), dirty-file count
-   (`git -C <wt> status --porcelain`), and whether a live process is cwd'd in it.
-   A worktree is **REMOVABLE only if** it has 0 unique commits AND a clean tree
-   AND its board card is not `doing`. Otherwise LEAVE IT.
+2. **Classify + reclaim via the shared helper (preferred).** Run:
+   ```bash
+   "$last_stack/bin/last-stack-worktree-reclaim" --sweep-stale --max-age-hours 48
+   ```
+   Policy: always strip build caches; keep `doing` + salvage/tombstone/locked +
+   live-cwd; for other trees older than 48h save dirty patch then remove.
    If you store command output in shell variables, do not name one `status`;
    `zsh` treats `status` as a read-only special parameter. Use a specific name
    such as `repo_status` or `git_status`.
-3. **Remove the removable ones.** `last_stack_run_tool "$LAST_STACK_TOOL_GIT" -C
-   <repo> worktree remove --force <path>` then `last_stack_run_tool
-   "$LAST_STACK_TOOL_GIT" -C <repo> branch -D <branch>` for a fully-merged
-   branch. Run `last_stack_run_tool "$LAST_STACK_TOOL_GIT" -C <repo> worktree
-   prune` per repo afterwards. Delete any now-empty
-   worktree parent dir.
+3. **Fallback remove** (only if the helper is missing): same as before —
+   `git worktree remove --force` for clean non-`doing` trees; always strip
+   `target`/`node_modules` even when keeping. `worktree prune` per repo after.
 3a. **Migrate legacy repo-local `.worktrees/` after the live audit.** Once the
    board/lsof checks above have identified what is safe to touch, move remaining
    clean, idle repo-local worktrees into the canonical kanban pool instead of

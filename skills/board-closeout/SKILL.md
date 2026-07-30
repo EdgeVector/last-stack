@@ -49,4 +49,7 @@ board-closeout <ISO> ok|noop closed=N closed_slugs=… rolled_back=N skipped=N f
 - Routine: `last-stack/routines/board-closeout.md`
 - Soft 1h zombies: `preference-kanban-doing-soft-1h-reclaim`
 - Always-on policy: `preference-kanban-board-closeout-always-on`
-- Per-card helper: `last-stack-card-closeout <slug>`
+- Per-card helper: `last-stack-card-closeout <slug>` (moves to `done`, then
+  reclaims `~/.fkanban/worktrees/*<slug>*` via `last-stack-worktree-reclaim`)
+- Worktree reclaim helper: `last-stack-worktree-reclaim --slug <slug>` or
+  `--sweep-stale --max-age-hours 48` (disk-reclaim / worktree-cleanup backstop)

@@ -11,7 +11,9 @@
 #    and the card OUTCOME records that grep-zero proof.
 # 4. Moves the card to done (with lastdb-retry).
 # 5. Verifies show --json reports column=done; retries once if not.
-# 6. Exits 0 only when the card is in the terminal column.
+# 6. Best-effort: reclaim the card's agent worktree (strip target/node_modules,
+#    save dirty patch, git worktree remove) via last-stack-worktree-reclaim.
+# 7. Exits 0 only when the card is in the terminal column.
 #
 # Refuse final_column=done in ROUTINE_RESULT unless this helper exits 0.
 set -euo pipefail

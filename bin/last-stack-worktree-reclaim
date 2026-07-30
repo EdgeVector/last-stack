@@ -1,0 +1,304 @@
+#!/usr/bin/env bash
+# Reclaim agent worktrees under ~/.fkanban/worktrees (and legacy ~/.kanban).
+#
+# Tom 2026-07-30: card closeout and disk-reclaim must not leave multi-GB
+# abandoned checkouts. This helper is the single reclaim path.
+#
+# Usage:
+#   last-stack-worktree-reclaim --slug <slug> [--branch NAME] [--dry-run]
+#   last-stack-worktree-reclaim --path <worktree-path> [--dry-run]
+#   last-stack-worktree-reclaim --sweep-stale [--max-age-hours 48] [--dry-run]
+#
+# Reclaim one worktree:
+#   1. Skip if a live process has cwd inside it (unless --force-live).
+#   2. Strip generated caches: target/, node_modules/, .next/, dist/, build/
+#      (and nested up to depth 4).
+#   3. If the tree is dirty: save a patch under
+#      ~/.local/state/last-stack/runtime/worktree-patches/<name>-<ts>.patch
+#      then remove the worktree anyway (source is recoverable from branch/PR
+#      or the patch).
+#   4. git worktree remove --force (or rm -rf + worktree prune).
+#   5. Best-effort: delete fully-merged local branch.
+#
+# --sweep-stale: reclaim every managed worktree whose board card is NOT in
+# doing and whose directory mtime is older than --max-age-hours (default 48).
+# Always strips build caches even for younger / kept trees.
+#
+# Exit 0 on success (including dry-run / nothing-to-do). Never fails the caller
+# hard for best-effort cleanup of a missing worktree.
+set -euo pipefail
+
+self_dir="$(cd "$(dirname "$0")" && pwd -P)"
+home="${HOME:-/Users/tomtang}"
+worktree_roots=(
+  "${WORKTREES_DIR:-$home/.fkanban/worktrees}"
+  "$home/.kanban/worktrees"
+)
+patch_root="${LAST_STACK_WORKTREE_PATCH_DIR:-$home/.local/state/last-stack/runtime/worktree-patches}"
+mkdir -p "$patch_root" 2>/dev/null || true
+
+slug=""
+branch=""
+path_arg=""
+sweep_stale=0
+max_age_hours=48
+dry_run=0
+force_live=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --slug) slug="${2:-}"; shift 2 ;;
+    --branch) branch="${2:-}"; shift 2 ;;
+    --path) path_arg="${2:-}"; shift 2 ;;
+    --sweep-stale) sweep_stale=1; shift ;;
+    --max-age-hours) max_age_hours="${2:-48}"; shift 2 ;;
+    --dry-run) dry_run=1; shift ;;
+    --force-live) force_live=1; shift ;;
+    -h|--help)
+      sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+if [ -z "$slug" ] && [ -z "$path_arg" ] && [ "$sweep_stale" -eq 0 ]; then
+  echo "usage: last-stack-worktree-reclaim --slug S | --path P | --sweep-stale" >&2
+  exit 2
+fi
+
+log() { printf 'last-stack-worktree-reclaim: %s\n' "$*"; }
+
+has_live_cwd() {
+  local wt="$1"
+  local p cwd
+  # Cheap scan: common agent/build tools only
+  for p in $(pgrep -u "$(id -u)" -f 'cargo|rustc|clippy|bun|node|claude|codex|grok|python|git' 2>/dev/null || true); do
+    cwd=$(lsof -a -p "$p" -d cwd 2>/dev/null | awk 'NR==2 {print $NF}')
+    case "$cwd" in
+      "$wt"|"$wt"/*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+strip_generated() {
+  local wt="$1"
+  local d
+  # top-level + nested (bounded)
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    if [ "$dry_run" -eq 1 ]; then
+      log "dry-run strip $d"
+    else
+      rm -rf "$d" 2>/dev/null || true
+      log "stripped $d"
+    fi
+  done < <(
+    find "$wt" -maxdepth 4 \( \
+      -type d \( -name target -o -name node_modules -o -name .next -o -name dist -o -name build \) \
+      -o -type d -name '__pycache__' \
+    \) 2>/dev/null || true
+  )
+}
+
+save_dirty_patch() {
+  local wt="$1"
+  local name
+  name="$(basename "$wt")"
+  if ! git -C "$wt" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    return 0
+  fi
+  if [ -z "$(git -C "$wt" status --porcelain 2>/dev/null || true)" ]; then
+    return 0
+  fi
+  local ts patch
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  patch="$patch_root/${name}-${ts}.patch"
+  if [ "$dry_run" -eq 1 ]; then
+    log "dry-run would save dirty patch $patch"
+    return 0
+  fi
+  # Best-effort: tracked + untracked as binary-capable patch
+  {
+    git -C "$wt" diff HEAD 2>/dev/null || true
+    git -C "$wt" diff --cached 2>/dev/null || true
+    # untracked as empty-file diffs when possible
+    git -C "$wt" ls-files --others --exclude-standard 2>/dev/null | head -200 | while IFS= read -r f; do
+      [ -f "$wt/$f" ] || continue
+      git -C "$wt" diff --no-index -- /dev/null "$f" 2>/dev/null || true
+    done
+  } >"$patch" 2>/dev/null || true
+  if [ -s "$patch" ]; then
+    log "saved dirty patch $patch bytes=$(wc -c <"$patch" | tr -d ' ')"
+  else
+    rm -f "$patch" 2>/dev/null || true
+    log "dirty but empty patch for $name (generated-only?)"
+  fi
+}
+
+resolve_repo() {
+  local wt="$1"
+  local common repo
+  common=$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+  [ -n "$common" ] || { echo ""; return 0; }
+  case "$common" in
+    */.git) repo=$(dirname "$common") ;;
+    */.git/worktrees/*) repo=$(dirname "$(dirname "$(dirname "$common")")") ;;
+    *) repo=$(dirname "$common") ;;
+  esac
+  echo "$repo"
+}
+
+remove_worktree() {
+  local wt="$1"
+  local repo br
+  [ -d "$wt" ] || return 0
+  if [ "$force_live" -eq 0 ] && has_live_cwd "$wt"; then
+    log "skip live-cwd $wt"
+    return 0
+  fi
+  strip_generated "$wt"
+  save_dirty_patch "$wt"
+  br="$(git -C "$wt" branch --show-current 2>/dev/null || true)"
+  repo="$(resolve_repo "$wt")"
+  if [ "$dry_run" -eq 1 ]; then
+    log "dry-run remove $wt repo=${repo:-none} branch=${br:-none}"
+    return 0
+  fi
+  if [ -n "$repo" ] && [ -d "$repo/.git" ] || [ -f "$repo/.git" ]; then
+    if git -C "$repo" worktree remove --force "$wt" 2>/dev/null; then
+      log "removed worktree $wt"
+    else
+      rm -rf "$wt"
+      git -C "$repo" worktree prune 2>/dev/null || true
+      log "force-rm worktree $wt (pruned $repo)"
+    fi
+    # Best-effort delete merged branch (never force-delete unique WIP)
+    if [ -n "$br" ] && [ "$br" != "main" ] && [ "$br" != "master" ]; then
+      if git -C "$repo" merge-base --is-ancestor "$br" HEAD 2>/dev/null \
+        || git -C "$repo" branch -d "$br" 2>/dev/null; then
+        git -C "$repo" branch -d "$br" 2>/dev/null || true
+        log "deleted branch $br in $repo (if merged)"
+      else
+        # try -d only; do not -D unique work
+        git -C "$repo" branch -d "$br" 2>/dev/null || log "kept branch $br (not fully merged)"
+      fi
+    fi
+  else
+    rm -rf "$wt"
+    log "rm orphan path $wt"
+  fi
+}
+
+find_slug_paths() {
+  local s="$1"
+  local root
+  for root in "${worktree_roots[@]}"; do
+    [ -d "$root" ] || continue
+    # exact and *-kanban-<slug> and *<slug>*
+    for d in "$root"/*; do
+      [ -d "$d" ] || continue
+      name="$(basename "$d")"
+      case "$name" in
+        "$s"|*-kanban-"$s"|*"$s"*) printf '%s\n' "$d" ;;
+      esac
+    done
+  done
+}
+
+doing_slugs() {
+  local cli=""
+  if command -v fkanban >/dev/null 2>&1; then cli=fkanban
+  elif command -v kanban >/dev/null 2>&1; then cli=kanban
+  else
+    return 0
+  fi
+  "$cli" list --column doing --json 2>/dev/null | python3 - <<'PY' 2>/dev/null || true
+import json,sys
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+cards=d.get("cards") if isinstance(d,dict) else d
+if not isinstance(cards,list):
+    cards=[]
+for c in cards:
+    if not isinstance(c,dict):
+        continue
+    s=str(c.get("slug") or "").strip()
+    if s:
+        print(s)
+PY
+}
+
+reclaimed=0
+stripped_only=0
+
+if [ -n "$path_arg" ]; then
+  remove_worktree "$path_arg"
+  reclaimed=1
+fi
+
+if [ -n "$slug" ]; then
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    remove_worktree "$p"
+    reclaimed=$((reclaimed + 1))
+  done < <(find_slug_paths "$slug" | sort -u)
+  # also try branch name if provided
+  if [ -n "$branch" ]; then
+    bsafe="${branch//\//-}"
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      remove_worktree "$p"
+      reclaimed=$((reclaimed + 1))
+    done < <(find_slug_paths "$bsafe" | sort -u)
+  fi
+fi
+
+if [ "$sweep_stale" -eq 1 ]; then
+  # Build doing protect set
+  protect_file="$(mktemp)"
+  doing_slugs >"$protect_file" || true
+  now_epoch="$(date -u +%s)"
+  max_age_sec=$((max_age_hours * 3600))
+  for root in "${worktree_roots[@]}"; do
+    [ -d "$root" ] || continue
+    for d in "$root"/*; do
+      [ -d "$d" ] || continue
+      name="$(basename "$d")"
+      # always strip generated caches (cheap, even for protected)
+      strip_generated "$d"
+      stripped_only=$((stripped_only + 1))
+      # protect doing slugs (substring match)
+      prot=0
+      while IFS= read -r s; do
+        [ -z "$s" ] && continue
+        case "$name" in
+          *"$s"*) prot=1; break ;;
+        esac
+      done <"$protect_file"
+      case "$name" in
+        salvage-*|tombstone-*|locked*) prot=1 ;;
+      esac
+      if [ "$prot" -eq 1 ]; then
+        log "keep protected $name"
+        continue
+      fi
+      # age by directory mtime
+      mtime="$(stat -f %m "$d" 2>/dev/null || stat -c %Y "$d" 2>/dev/null || echo 0)"
+      age=$((now_epoch - mtime))
+      if [ "$age" -lt "$max_age_sec" ]; then
+        log "keep young ${name} age_h=$((age / 3600))"
+        continue
+      fi
+      remove_worktree "$d"
+      reclaimed=$((reclaimed + 1))
+    done
+  done
+  rm -f "$protect_file"
+fi
+
+log "done reclaimed=$reclaimed stripped_paths=$stripped_only dry_run=$dry_run"
+exit 0
