@@ -1,0 +1,14 @@
+# PROFILE=normal — keep open cutovers moving without waiting for morning Tom
+# Advances live brain open-cutovers lines (ops resume + ledger close).
+# :41 avoids crowded pickup :00/:30 and pipeline :01 slots.
+id = "open-cutovers-driver"
+harness = "codex"
+model = "gpt-5.5"
+effort = "medium"
+group = "board"
+rrule = "FREQ=HOURLY;INTERVAL=2;BYMINUTE=41;BYSECOND=0"
+cwd = "/Users/tomtang/code/edgevector"
+status = "active"
+timeout_min = 25
+prompt_path = "/Users/tomtang/.last-stack/routines/open-cutovers-driver.md"
+heartbeat_slug = "routine-heartbeats"
