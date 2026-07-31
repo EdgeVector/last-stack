@@ -600,8 +600,11 @@ if [ ! -s "$scratch/result.json" ]; then
   exit 0
 fi
 
-eval "$(
-  node - "$scratch/result.json" <<'NODE'
+# Write eval script to a file — do NOT nest a heredoc inside $(...), which
+# misparses JS parentheses as closing the command substitution (bash -n / CI
+# failure on last-stack ci-required; also broke reaper at runtime under some
+# shells). Quoted heredoc + source keeps quoting safe.
+node - "$scratch/result.json" <<'NODE' >"$scratch/result_env.sh"
 const fs = require("fs");
 const r = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 function sh(s) { return String(s).replace(/'/g, "'\\''"); }
@@ -619,7 +622,9 @@ if (r.memory_unwritable) console.log("memory_unwritable=1");
 const report = Array.isArray(r.report) ? r.report : [];
 for (const line of report) console.log(`report+=( '${sh(line)}' )`);
 NODE
-)"
+
+# shellcheck disable=SC1090
+. "$scratch/result_env.sh"
 
 finish "$run_status"
 exit 0
