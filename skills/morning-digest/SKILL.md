@@ -107,7 +107,17 @@ Structure — lead with the answer, keep it skimmable:
 - <slug> (<program>) — <one-line reason> · <moving: PR #N auto-merge armed | CI red | dep-blocked behind <slug> | ⚠️ wedged, idle >48h>.
 - Sourced from `blocked-on-engineering:` rollup tokens. If nothing is stuck: "loop is clear." Flag any untracked human gate hiding here.
 
-### By program   ← roll up here, NOT a PR list
+### What shipped overnight (plain English)  ← Tom's preferred read (2026-07-31)
+**Bottom line:** <one breath — speed / safety / cleanup / quiet>.
+
+Then **2–5 everyday categories** (filing cabinet/database, to-do board, code
+shelf, backups/safety net, cleanup — whatever fits the night). Under each: a
+few sentences, **no technical terms**, ELI5. Say what changed and **what
+effect Tom should notice**. Close with **Effect on the database:** one line
+(same data / cheaper writes / cleaner reads / durability still open / nothing
+database-shaped). Prefer short paragraphs over a PR or commit wall.
+
+### By program   ← secondary skim, NOT a PR list
 - **At-rest encryption** — N PRs merged (G1 strict-flip, G4 passphrase params…).
   Where it stands: <1 line>. Next: <1 line>.
 - **App-isolation / UDS** — …
@@ -128,6 +138,8 @@ Skip the healthy auto-merging ones (just note the count).
 ```
 
 Rules of thumb:
+- **ELI5 overnight first.** When Tom asks what shipped, lead with the plain-
+  English categories + database effect; the by-program rollup is secondary.
 - **Feature altitude, not PR altitude.** Tom explicitly asks for "where they are
   relative to features instead of [individual PRs]." A wall of PR titles is a fail.
 - **The "waiting on you" section is the deliverable.** Everything else is context
