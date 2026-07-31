@@ -186,4 +186,60 @@ if echo "$malformed_out" | grep -q 'lastgit-fetch-failed:brain/cr-ms8mz1xt-981a`
   exit 1
 fi
 
+transient_stack="$tmp/transient-stack"
+mkdir -p "$transient_stack/bin"
+cp "$sweep" "$transient_stack/bin/last-stack-board-closeout-sweep"
+cat >"$transient_stack/bin/last-stack-card-closeout" <<'EOF'
+#!/usr/bin/env bash
+echo "service_timeout: board point read failed" >&2
+exit 1
+EOF
+chmod +x "$transient_stack/bin/last-stack-card-closeout" "$transient_stack/bin/last-stack-board-closeout-sweep"
+
+transient_closeout_board="$tmp/transient-closeout-board"
+cat >"$transient_closeout_board" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  list)
+    cat <<'JSON'
+[
+  {
+    "slug": "merged-transient-closeout",
+    "title": "merged but transient closeout failure",
+    "column": "doing",
+    "position": "1",
+    "assignee": "",
+    "tags": [],
+    "pr_url": "lastgit://brain/cr/cr-ms8mz1xt-981a",
+    "branch": "kanban/merged-transient-closeout",
+    "repo": "EdgeVector/brain",
+    "updated_at": "2020-01-01T00:00:00.000Z",
+    "body": "Repo: EdgeVector/brain\nBase: main\nKind: pr\n"
+  }
+]
+JSON
+    ;;
+  *)
+    echo "unexpected transient-closeout-board command: $*" >&2
+    exit 2
+    ;;
+esac
+EOF
+chmod +x "$transient_closeout_board"
+
+transient_closeout_out="$("$transient_stack/bin/last-stack-board-closeout-sweep" \
+  --board-cli "$transient_closeout_board" --grace-min 1 --max-actions 20 2>&1 || true)"
+echo "$transient_closeout_out"
+echo "$transient_closeout_out" | grep -q 'closeout-deferred:merged-transient-closeout' || {
+  echo "FAIL: expected transient closeout to be deferred:" >&2
+  echo "$transient_closeout_out" >&2
+  exit 1
+}
+if echo "$transient_closeout_out" | grep -q 'close-failed:merged-transient-closeout'; then
+  echo "FAIL: transient closeout should not be flagged close-failed:" >&2
+  echo "$transient_closeout_out" >&2
+  exit 1
+fi
+
 echo "ok last-stack-board-closeout-sweep-logic"

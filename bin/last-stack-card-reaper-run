@@ -223,6 +223,25 @@ function run(cmd, args, opts = {}) {
   };
 }
 
+function compactFlag(s) {
+  return String(s || "")
+    .replace(/[^a-zA-Z0-9_.:-]/g, "_")
+    .slice(0, 120);
+}
+
+function isTransientBoardFailure(text) {
+  return /service_timeout|node did not respond|too many concurrent reads|uds_connection_limit|lastdb-sync-outbox-full|max_outbox_entries|folddb\.sock|socket hang up|ECONNRESET|ETIMEDOUT/i
+    .test(String(text || ""));
+}
+
+function noteBoardDeferred(slug, op, out) {
+  const detail = `${out?.stderr || ""} ${out?.error || ""} ${out?.stdout || ""}`;
+  if (!isTransientBoardFailure(detail)) return false;
+  res.flagged.push(`board-${op}-deferred:${slug}`);
+  if (res.status === "ok") res.status = "noop";
+  return true;
+}
+
 function appendMemory(line) {
   if (dryRun) return;
   try {
@@ -344,34 +363,49 @@ function hasLiveDependents(card, cards) {
 
 function getFullBody(slug) {
   const out = run("kanban", ["show", slug, "--json"], {timeout: 60000});
-  if (!out.ok) throw new Error(`kanban show failed for ${slug}: ${out.stderr || out.error}`);
+  if (!out.ok) {
+    if (noteBoardDeferred(slug, "show", out)) return null;
+    throw new Error(`kanban show failed for ${slug}: ${out.stderr || out.error}`);
+  }
   const data = JSON.parse(out.stdout);
   return String(data.body || data.card?.body || "");
 }
 
 function readdBody(slug, body, opts = {}) {
-  if (dryRun) return;
+  if (dryRun) return true;
   const args = ["add", slug];
   if (opts.clearAssignee) args.push("--assignee", "");
   const out = run("kanban", args, {timeout: 60000, input: body});
-  if (!out.ok) throw new Error(`kanban add failed for ${slug}: ${out.stderr || out.error}`);
+  if (!out.ok) {
+    if (noteBoardDeferred(slug, "add", out)) return false;
+    throw new Error(`kanban add failed for ${slug}: ${out.stderr || out.error}`);
+  }
+  return true;
 }
 
 function rmCard(slug) {
-  if (dryRun) return;
+  if (dryRun) return true;
   const out = run("kanban", ["rm", slug], {timeout: 60000});
-  if (!out.ok) throw new Error(`kanban rm failed for ${slug}: ${out.stderr || out.error}`);
+  if (!out.ok) {
+    if (noteBoardDeferred(slug, "rm", out)) return false;
+    throw new Error(`kanban rm failed for ${slug}: ${out.stderr || out.error}`);
+  }
+  return true;
 }
 
 function moveTodo(card) {
-  if (dryRun) return;
+  if (dryRun) return true;
   const slug = String(card.slug);
   const args = ["move", slug, "todo"];
   if (card.block_status || card.blockStatus || (Array.isArray(card.deps) && card.deps.length)) {
     args.push("--force");
   }
   const out = run("kanban", args, {timeout: 60000});
-  if (!out.ok) throw new Error(`kanban move failed for ${slug}: ${out.stderr || out.error}`);
+  if (!out.ok) {
+    if (noteBoardDeferred(slug, "move", out)) return false;
+    throw new Error(`kanban move failed for ${slug}: ${out.stderr || out.error}`);
+  }
+  return true;
 }
 
 function removeWorktree(wt) {
@@ -445,8 +479,9 @@ function killCard(card, rule, col) {
     if (!s.ok) return false;
   }
   const body = dryRun ? String(card.body || "") : getFullBody(slug);
-  readdBody(slug, body + reapNote(rule));
-  rmCard(slug);
+  if (body === null) return false;
+  if (!readdBody(slug, body + reapNote(rule))) return false;
+  if (!rmCard(slug)) return false;
   if (col === "backlog") res.killed.backlog++;
   else if (col === "todo") res.killed.todo++;
   else if (col === "doing") res.killed.doing++;
@@ -463,11 +498,13 @@ function rollbackDoing(card, rule) {
     const s = salvage(slug, card);
     if (!s.ok) return false;
     const body0 = dryRun ? String(card.body || "") : getFullBody(slug);
-    readdBody(slug, body0 + salvageNote(s.branch));
+    if (body0 === null) return false;
+    if (!readdBody(slug, body0 + salvageNote(s.branch))) return false;
   }
   const body = dryRun ? String(card.body || "") : getFullBody(slug);
-  readdBody(slug, body + rollbackNote(rule), {clearAssignee: true});
-  moveTodo(card);
+  if (body === null) return false;
+  if (!readdBody(slug, body + rollbackNote(rule), {clearAssignee: true})) return false;
+  if (!moveTodo(card)) return false;
   if (fs.existsSync(wt) && !isDirtyWorktree(wt)) removeWorktree(wt);
   res.rolled_back++;
   appendMemory(`${iso} rolled_back ${slug} rule=${rule}`);
@@ -584,10 +621,11 @@ try {
   }
 } catch (e) {
   res.status = "error";
-  res.flagged.push(`exception:${String(e.message || e).replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 120)}`);
+  res.flagged.push(`exception:${compactFlag(e.message || e)}`);
 }
 
-if (actions === 0 && res.status === "ok") res.status = "noop";
+if (actions > 0 && res.status === "noop") res.status = "ok";
+else if (actions === 0 && res.status === "ok") res.status = "noop";
 if (dryRun) res.flagged.push("dry-run");
 writeResult();
 NODE

@@ -133,6 +133,20 @@ function run(cmd, args, opts = {}) {
   };
 }
 
+function isTransientBoardFailure(text) {
+  return /service_timeout|node did not respond|too many concurrent reads|uds_connection_limit|lastdb-sync-outbox-full|max_outbox_entries|folddb\.sock|socket hang up|ECONNRESET|ETIMEDOUT/i
+    .test(String(text || ""));
+}
+
+function noteCloseoutDeferred(slug, out) {
+  const detail = `${out?.stderr || ""} ${out?.error || ""} ${out?.stdout || ""}`;
+  if (!isTransientBoardFailure(detail)) return false;
+  res.skipped.push(`${slug}:closeout-transient`);
+  res.flagged.push(`closeout-deferred:${slug}`);
+  if (res.status === "ok") res.status = "noop";
+  return true;
+}
+
 function stripControls(s) {
   return String(s || "").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, " ");
 }
@@ -422,6 +436,7 @@ function closeCard(slug, prUrl, branch) {
     const args = ["move", slug, "done", "--force"];
     const out = run(boardCli, args, { timeout: 60000 });
     if (!out.ok) {
+      if (noteCloseoutDeferred(slug, out)) return false;
       res.flagged.push(`close-failed:${slug}`);
       return false;
     }
@@ -433,6 +448,7 @@ function closeCard(slug, prUrl, branch) {
   if (branch) args.push("--branch", branch);
   const out = run(closeoutBin, args, { timeout: 90000 });
   if (!out.ok) {
+    if (noteCloseoutDeferred(slug, out)) return false;
     res.flagged.push(`close-failed:${slug}`);
     return false;
   }
@@ -557,7 +573,8 @@ function finish() {
   const skipped = res.skipped.length;
   const flags = res.flagged.length ? res.flagged.join(",") : "none";
   let st = res.status;
-  if (st === "ok" && closed === 0 && rolled === 0) st = "noop";
+  if (st === "noop" && (closed > 0 || rolled > 0)) st = "ok";
+  else if (st === "ok" && closed === 0 && rolled === 0) st = "noop";
   const line =
     `board-closeout ${iso} ${st} closed=${closed}` +
     (closed ? ` closed_slugs=${res.closed.join(",")}` : "") +
@@ -607,6 +624,22 @@ def run(cmd, timeout=60):
         return p.returncode == 0, p.stdout or "", p.stderr or ""
     except Exception as e:
         return False, "", str(e)
+
+def transient_board_failure(text):
+    return bool(re.search(
+        r"service_timeout|node did not respond|too many concurrent reads|uds_connection_limit|lastdb-sync-outbox-full|max_outbox_entries|folddb\.sock|socket hang up|ECONNRESET|ETIMEDOUT",
+        str(text or ""),
+        re.I,
+    ))
+
+def note_closeout_deferred(slug, out, err):
+    if not transient_board_failure(f"{out or ''} {err or ''}"):
+        return False
+    res["skipped"].append(f"{slug}:closeout-transient")
+    res["flagged"].append(f"closeout-deferred:{slug}")
+    if res["status"] == "ok":
+        res["status"] = "noop"
+    return True
 
 def strip(s):
     return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", s or "")
@@ -848,8 +881,10 @@ def close_card(slug, url, branch):
             args += ["--pr-url", url]
         if branch:
             args += ["--branch", branch]
-        ok, _, _ = run(args, timeout=90)
+        ok, out, err = run(args, timeout=90)
         if not ok:
+            if note_closeout_deferred(slug, out, err):
+                return False
             res["flagged"].append(f"close-failed:{slug}")
             return False
         res["closed"].append(slug)
@@ -857,8 +892,10 @@ def close_card(slug, url, branch):
         if reclaim_bin.exists():
             run([str(reclaim_bin), "--slug", slug], timeout=120)
         return True
-    ok, _, _ = run([board_cli, "move", slug, "done", "--force"], timeout=60)
+    ok, out, err = run([board_cli, "move", slug, "done", "--force"], timeout=60)
     if not ok:
+        if note_closeout_deferred(slug, out, err):
+            return False
         res["flagged"].append(f"close-failed:{slug}")
         return False
     res["closed"].append(slug)
@@ -948,7 +985,9 @@ rolled = len(res["rolled_back"])
 skipped = len(res["skipped"])
 flags = ",".join(res["flagged"]) if res["flagged"] else "none"
 st = res["status"]
-if st == "ok" and closed == 0 and rolled == 0:
+if st == "noop" and (closed > 0 or rolled > 0):
+    st = "ok"
+elif st == "ok" and closed == 0 and rolled == 0:
     st = "noop"
 line = f"board-closeout {iso} {st} closed={closed}"
 if closed:
