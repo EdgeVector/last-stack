@@ -1,0 +1,305 @@
+#!/usr/bin/env bash
+# last-stack-class-a-heal — zero-LLM Class A (host-track / last-stack install) self-heal.
+#
+# Class A factory freeze: pickup workers noop with
+#   stale-last-stack-install routine-read-failed
+#   stale-last-stack-artifact refresh-failed
+# while todo has work. Board looks healthy; nothing ships.
+#
+# This helper is safe to run from:
+#   - pickup bootstrap (agent-directed, after routine-read fails)
+#   - factory-health auto_fix
+#   - launchd / manual ops
+#
+# It never restarts lastdbd, never force-pushes, never edits product checkouts.
+# Only host-track last-stack install / artifact pointer repair.
+#
+# Usage:
+#   last-stack-class-a-heal [--reason=<tag>] [--dry-run] [--json] [--quiet]
+#
+# Exit:
+#   0  install healthy (already ok, or healed this run)
+#   1  still unhealthy after heal attempts
+#   2  usage / missing host-track
+set -euo pipefail
+
+REASON="manual"
+DRY_RUN=0
+JSON=0
+QUIET=0
+
+usage() {
+  cat <<'USAGE'
+last-stack-class-a-heal — Class A host-track/install self-heal (zero LLM)
+
+Usage:
+  last-stack-class-a-heal [--reason=<tag>] [--dry-run] [--json] [--quiet]
+
+Exit 0 = healthy (or healed). Exit 1 = still broken. Exit 2 = usage/tools.
+USAGE
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --reason=*) REASON="${1#*=}"; shift ;;
+    --reason) REASON="${2:-}"; shift 2 ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --json) JSON=1; shift ;;
+    --quiet|-q) QUIET=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown flag: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+log() {
+  if [ "$QUIET" -eq 0 ]; then
+    printf 'class-a-heal: %s\n' "$*" >&2
+  fi
+}
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
+
+# Prefer PATH host-track; fall back to artifact current so a dangling ~/.local/bin
+# symlink can still be repaired from the real tree when present.
+resolve_host_track() {
+  if command -v host-track >/dev/null 2>&1; then
+    command -v host-track
+    return 0
+  fi
+  for cand in \
+    "$HOME/.local/state/last-stack/artifacts/current/bin/host-track" \
+    "$HOME/.last-stack/bin/host-track" \
+    "$ROOT/bin/host-track"
+  do
+    if [ -x "$cand" ]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+HT="$(resolve_host_track || true)"
+if [ -z "${HT:-}" ]; then
+  log "host-track not found on PATH or known install roots"
+  if [ "$JSON" -eq 1 ]; then
+    printf '{"ok":false,"result":"error","detail":"host-track-missing","reason":"%s"}\n' "$REASON"
+  fi
+  exit 2
+fi
+
+ARTIFACT_ROOT="${LAST_STACK_ARTIFACT_ROOT:-$HOME/.local/state/last-stack/artifacts}"
+CURRENT_LINK="$ARTIFACT_ROOT/current"
+PREVIOUS_LINK="$ARTIFACT_ROOT/previous"
+
+actions=()
+detail=""
+result="ok"
+
+append_action() {
+  actions+=("$1")
+}
+
+# --- 1) Dangling artifacts/current (GC / concurrent install race) ------------
+heal_dangling_current() {
+  [ -L "$CURRENT_LINK" ] || return 0
+  # Resolve without failing if target missing
+  target="$(readlink "$CURRENT_LINK" 2>/dev/null || true)"
+  [ -n "$target" ] || return 0
+  case "$target" in
+    /*) abs="$target" ;;
+    *) abs="$ARTIFACT_ROOT/$target" ;;
+  esac
+  if [ -d "$abs" ] && { [ -x "$abs/bin/host-track" ] || [ -r "$abs/routines/kanban-pickup.md" ]; }; then
+    return 0
+  fi
+  log "dangling artifacts/current -> $target"
+  append_action "dangling-current"
+  if [ ! -L "$PREVIOUS_LINK" ]; then
+    detail="dangling-current-no-previous"
+    return 1
+  fi
+  prev_t="$(readlink "$PREVIOUS_LINK" 2>/dev/null || true)"
+  case "$prev_t" in
+    /*) prev_abs="$prev_t" ;;
+    *) prev_abs="$ARTIFACT_ROOT/$prev_t" ;;
+  esac
+  if [ ! -d "$prev_abs" ]; then
+    detail="dangling-current-previous-also-missing"
+    return 1
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "dry-run: would ln -sfn $prev_t $CURRENT_LINK"
+    append_action "would-repoint-previous"
+    return 0
+  fi
+  ln -sfn "$prev_t" "$CURRENT_LINK"
+  # Re-link common PATH shims if they point into the dead tree
+  for n in host-track last-stack-class-a-heal last-stack-routine-read; do
+    dest="$HOME/.local/bin/$n"
+    if [ -L "$dest" ] || [ ! -e "$dest" ]; then
+      if [ -x "$CURRENT_LINK/bin/$n" ]; then
+        ln -sfn "$CURRENT_LINK/bin/$n" "$dest" 2>/dev/null || true
+      fi
+    fi
+  done
+  append_action "repointed-current-to-previous"
+  # Prefer refreshed host-track after repoint
+  HT="$(resolve_host_track || printf '%s\n' "$HT")"
+  return 0
+}
+
+status_json() {
+  "$HT" status --json last-stack 2>/dev/null || true
+}
+
+is_stale() {
+  local sj="$1"
+  [ "$(printf '%s\n' "$sj" | jq -r '.stale | tostring' 2>/dev/null || echo unknown)" = "true" ]
+}
+
+is_artifact() {
+  local sj="$1"
+  [ "$(printf '%s\n' "$sj" | jq -r '.install_mode // ""' 2>/dev/null)" = "artifact" ]
+}
+
+check_ok() {
+  "$HT" check last-stack >/dev/null 2>&1
+}
+
+routine_read_ok() {
+  # Prefer the install-tree reader so we verify the live prompt path.
+  local reader=""
+  if [ -x "$HOME/.last-stack/bin/last-stack-routine-read" ]; then
+    reader="$HOME/.last-stack/bin/last-stack-routine-read"
+  elif [ -x "$ROOT/bin/last-stack-routine-read" ]; then
+    reader="$ROOT/bin/last-stack-routine-read"
+  elif command -v last-stack-routine-read >/dev/null 2>&1; then
+    reader="$(command -v last-stack-routine-read)"
+  else
+    return 0
+  fi
+  # After a heal we want a real check; allow skip only when explicitly testing.
+  LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=0 \
+    "$reader" kanban-pickup >/dev/null 2>&1
+}
+
+healthy() {
+  local sj
+  sj="$(status_json)"
+  if is_artifact "$sj"; then
+    if is_stale "$sj"; then
+      return 1
+    fi
+    if ! check_ok; then
+      return 1
+    fi
+  fi
+  if ! routine_read_ok; then
+    return 1
+  fi
+  return 0
+}
+
+# --- 2) host-track refresh ladder -------------------------------------------
+run_refresh() {
+  local mode="$1" # force-if-stale | force
+  local args=()
+  case "$mode" in
+    force-if-stale) args=(refresh --force-if-stale last-stack) ;;
+    force) args=(refresh --force last-stack) ;;
+    plain) args=(refresh last-stack) ;;
+    *) return 2 ;;
+  esac
+  append_action "refresh-$mode"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "dry-run: would $HT ${args[*]}"
+    return 0
+  fi
+  if "$HT" "${args[@]}" >/tmp/last-stack-class-a-heal-refresh.$$ 2>&1; then
+    log "refresh $mode ok"
+    rm -f /tmp/last-stack-class-a-heal-refresh.$$
+    return 0
+  fi
+  log "refresh $mode failed: $(head -c 240 /tmp/last-stack-class-a-heal-refresh.$$ 2>/dev/null || true)"
+  rm -f /tmp/last-stack-class-a-heal-refresh.$$
+  return 1
+}
+
+heal_ladder() {
+  local sj
+  sj="$(status_json)"
+  if ! is_artifact "$sj" && [ -n "$sj" ]; then
+    # Non-artifact install: best-effort plain refresh only if host-track knows it.
+    log "install_mode is not artifact; attempting plain refresh"
+    run_refresh plain || true
+    return 0
+  fi
+
+  if is_stale "$sj"; then
+    log "status.stale=true → force-if-stale"
+    run_refresh force-if-stale || true
+    sj="$(status_json)"
+  fi
+
+  if ! check_ok || is_stale "$sj"; then
+    log "check failed or still stale → --force"
+    run_refresh force || true
+  fi
+}
+
+# --- main -------------------------------------------------------------------
+heal_dangling_current || true
+
+if healthy; then
+  result="ok"
+  detail="${detail:-already-healthy}"
+  [ -z "${actions[*]:-}" ] && append_action "noop-healthy"
+else
+  log "install unhealthy (reason=$REASON); running heal ladder"
+  heal_ladder
+  if healthy; then
+    result="healed"
+    detail="${detail:-healed}"
+  else
+    result="error"
+    detail="${detail:-still-unhealthy}"
+  fi
+fi
+
+# Best-effort fleet heartbeat (never fail the helper if brain is busy).
+# Prefer a heartbeat writer that lives under the live install home only — never
+# a worktree ROOT writer that might append into Tom's real log during fixtures.
+if [ "$DRY_RUN" -eq 0 ] && [ -x "${LAST_STACK_COMPAT_ROOT:-$HOME/.last-stack}/bin/last-stack-brain-append-heartbeat" ]; then
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  line="class-a-heal $ts $result reason=$REASON detail=$detail actions=$(IFS=,; echo "${actions[*]:-}")"
+  "${LAST_STACK_COMPAT_ROOT:-$HOME/.last-stack}/bin/last-stack-brain-append-heartbeat" --line "$line" 2>/dev/null || true
+fi
+
+# Page only on hard failure (not on healthy noop).
+if [ "$result" = "error" ] && [ "$DRY_RUN" -eq 0 ] && command -v ra >/dev/null 2>&1; then
+  ra notify "Class A heal FAILED (reason=$REASON detail=$detail). Pickup may be frozen. Run: last-stack-class-a-heal --reason=manual" \
+    --priority high >/dev/null 2>&1 || true
+fi
+
+if [ "$JSON" -eq 1 ]; then
+  # shellcheck disable=SC2086
+  printf '{"ok":%s,"result":"%s","detail":"%s","reason":"%s","actions":[' \
+    "$([ "$result" = "error" ] && echo false || echo true)" \
+    "$result" "$detail" "$REASON"
+  first=1
+  for a in "${actions[@]:-}"; do
+    if [ "$first" -eq 1 ]; then first=0; else printf ','; fi
+    printf '"%s"' "$a"
+  done
+  printf ']}\n'
+else
+  log "result=$result detail=$detail actions=${actions[*]:-}"
+  printf 'LAST_STACK_CLASS_A_HEAL result=%s detail=%s reason=%s\n' "$result" "$detail" "$REASON"
+fi
+
+if [ "$result" = "error" ]; then
+  exit 1
+fi
+exit 0
