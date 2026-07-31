@@ -634,7 +634,10 @@ if [ "$ARTIFACT_INSTALL" -eq 1 ] && \
   fi
   if [ "$need_layout" -eq 1 ]; then
     echo "  activating artifact compatibility layout under $compat_root ..."
+    # Always allow replacing a residual git-owned ~/.last-stack when setup is
+    # installing from the Host Track artifact (the live stack is not a checkout).
     LAST_STACK_SKIP_ARTIFACT_LAYOUT=1 \
+    LAST_STACK_ARTIFACT_LAYOUT_ALLOW_GIT_WORKTREE=1 \
       "$SOURCE_ROOT/bin/last-stack-activate-artifact-layout" || \
       echo "  artifact layout activation failed (non-fatal this run)" >&2
   fi
