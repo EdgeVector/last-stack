@@ -196,8 +196,8 @@ marker_match = re.search(
 regex = ""
 if marker_match:
     raw_markers = marker_match.group(1).strip()
-    # Avoid backticks in this snippet: it runs under bash $(...) and nested `
-    # would close command substitution (same class of bug as card-reaper-run).
+    # Avoid grave-accent chars in this snippet: nested under bash $(...) they
+    # close command substitution (same class of bug as card-reaper-run).
     _q = "'" + '"'
     raw_markers = raw_markers.strip(_q)
     if "|" in raw_markers:
