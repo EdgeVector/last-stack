@@ -20,7 +20,7 @@ notifications do NOT reach this user — do not use it).
   ends. A lingering wakeup after done is noise.
 
 Each wake, in order:
-1. Read the milestone first (`fkanban milestone detail <slug> --json`), then
+1. Read the milestone first (`kanban milestone detail <slug> --json`), then
    inspect only its linked cards and PRs. The milestone is supervisory and is
    never a pickup card.
 2. Triage each in-progress/awaiting task: merged? progressing? wedged? (taxonomy
@@ -28,7 +28,7 @@ Each wake, in order:
 3. Recover wedges. Unblock the next dependency tier. Create fix-forward tasks for
    anything that regressed.
 4. If all implementation cards merged → run Phase 7 validation, record proof
-   on the linked terminal card, and run `fkanban milestone reconcile <slug>`.
+   on the linked terminal card, and run `kanban milestone reconcile <slug>`.
 5. Re-schedule unless done.
 
 ## Reading task state correctly (don't false-positive a wedge)
@@ -137,10 +137,10 @@ intermediate event; the app doing the thing is the gate.
   every implementation child is terminal and the linked validation card stores
   terminal machine-readable PASS evidence; never from PR count or a forced or
   evidence-free complete state.
-- **Never bulk-scaffold** milestones/PR shells with direct `fkanban add` after
+- **Never bulk-scaffold** milestones/PR shells with direct `kanban add` after
   "make this a North Star." That path produced hollow cards and false human
   gates (schema-lambda-fast-deployment 2026-07-22). Drivers own materialization.
-  Before walk-away: `fkanban pickup explain <slug>` must show `ready: true`.
+  Before walk-away: `kanban pickup explain <slug>` must show `ready: true`.
 
 ## When to break silence (contract #3)
 

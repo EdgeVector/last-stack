@@ -107,12 +107,10 @@ full pickup prompt, claiming a card, idle invent, or any other agent work, run:
 \`\`\`bash
 last_stack="\${LAST_STACK_ROOT:-\$HOME/.last-stack}"
 . "\$last_stack/bin/last-stack-shell-prelude"
-"\$last_stack/bin/last-stack-cli-preflight" jq fkanban 2>/dev/null \\
-  || "\$last_stack/bin/last-stack-cli-preflight" jq kanban
+"\$last_stack/bin/last-stack-cli-preflight" jq kanban
 # Zero-LLM closer is fine even when todo is empty (does not start agents).
 "\$last_stack/bin/last-stack-board-closeout-sweep" || true
-board_cli="fkanban"
-command -v fkanban >/dev/null 2>&1 || board_cli="kanban"
+board_cli="kanban"
 if ! "\$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \\
   "\$board_cli" list --column todo --json > /tmp/kanban-pickup-todo.json
 then

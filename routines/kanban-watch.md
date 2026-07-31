@@ -211,7 +211,7 @@ the index.
 
 ```bash
 kanban groom board-cards-heal --apply
-# or: fkanban groom board-cards-heal --apply
+# or: kanban groom board-cards-heal --apply
 ```
 
 - Dry-run first only when debugging; production wakes **apply**.
@@ -228,7 +228,7 @@ If drift reappears after a green heal on the same wake, note
 `EdgeVector/fkanban` (index writer bug) rather than infinite loops.
 
 Also acceptable equivalent: `bun scripts/backfill-board-cards.ts` from the
-fkanban checkout (heavier; prefer `groom board-cards-heal`).
+kanban checkout (heavier; prefer `groom board-cards-heal`).
 
 ## Reclaim zombie `doing` claims (CHEAP, uncapped — ALWAYS, even on pickup failover)
 

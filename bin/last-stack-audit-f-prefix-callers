@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+cd "$ROOT"
+
+paths=(
+  .lastgit/ci.sh
+  CLAUDE.md
+  bin
+  harness
+  hooks
+  instructions
+  routines
+  skills
+  templates
+)
+
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT
+
+rg -n --hidden --glob '!skills/fkanban-card-authoring/**' \
+  --glob '!skills/fkanban-grooming/**' \
+  --glob '!skills/north-star-hygiene/**' \
+  --glob '!bin/last-stack-safe-upgrade-cli' \
+  --glob '!bin/last-stack-safe-upgrade-all-local' \
+  --glob '!bin/last-stack-refresh-fkanban-host-track' \
+  --glob '!bin/last-stack-refresh-local-safe' \
+  --glob '!bin/last-stack-post-merge-safe-upgrade' \
+  --glob '!bin/last-stack-audit-f-prefix-callers' \
+  --glob '!**/.git/**' \
+  '(^|[[:space:];|&({`])(fbrain|fkanban|fsituations)[[:space:]]+(list|show|get|put|ask|search|pickup|milestone|move|add|dep|groom|doctor|init|which|help)\b|command[[:space:]]+-v[[:space:]]+(fbrain|fkanban|fsituations)\b|last-stack-cli-preflight[^\n]*\b(fbrain|fkanban|fsituations)\b|last_stack_require_tools[^\n]*\b(fbrain|fkanban|fsituations)\b|board_cli=(fbrain|fkanban|fsituations)\b' \
+  "${paths[@]}" >"$tmp" || true
+
+if [ -s "$tmp" ]; then
+  cat "$tmp" >&2
+  echo "active f-prefix caller(s) found; use brain, kanban, or situations" >&2
+  exit 1
+fi
+
+echo "active f-prefix caller audit clean"

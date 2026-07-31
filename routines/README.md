@@ -214,7 +214,7 @@ frontmatter suggests a cadence. The pattern every routine follows:
    keeps the restored prelude PATH visible even if the surrounding snippet later
    narrows `PATH`:
    ```bash
-   last_stack_require_tools fkanban
+   last_stack_require_tools kanban
    PATH="/some/intentionally/narrow/path"
    last_stack_run_tool "$LAST_STACK_TOOL_FKANBAN" list --column doing --json
    ```

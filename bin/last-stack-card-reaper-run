@@ -106,8 +106,6 @@ if [ "$skip_preflight" -ne 1 ]; then
     situations_cmd=(situations)
   elif [ -d /Users/tomtang/code/edgevector/situations ]; then
     situations_cmd=(bun --cwd /Users/tomtang/code/edgevector/situations src/cli.ts)
-  elif [ -d /Users/tomtang/code/edgevector/fsituations ]; then
-    situations_cmd=(bun --cwd /Users/tomtang/code/edgevector/fsituations src/cli.ts)
   fi
 
   if [ "${#situations_cmd[@]}" -eq 0 ]; then

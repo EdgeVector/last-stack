@@ -32,10 +32,10 @@ file. Else
 ## What to do each run
 
 1. **Find proving outcomes (preferred — no feature-owner).**
-   - `fkanban milestone portfolio --json` → prefer `state` in
+   - `kanban milestone portfolio --json` → prefer `state` in
      `proving|active` with a non-empty `proof_card` and `proof_status` not
      `passing`.
-   - For each candidate, `fkanban milestone detail <slug> --json` and check
+   - For each candidate, `kanban milestone detail <slug> --json` and check
      whether implementation children are terminal (`done` / cancelled) and the
      proof card is runnable.
    - Optionally: point-read ship-mode North Stars named on those milestones
@@ -55,7 +55,7 @@ file. Else
    that is REAL_HUMAN-only without a fix path.
 
 4. **Load proof card.**
-   `fkanban show <proof_card> --json`. Confirm hard product deps are done. If
+   `kanban show <proof_card> --json`. Confirm hard product deps are done. If
    any hard implementation child is not terminal → heartbeat
    `noop waiting-slices` and EXIT (optionally note frontier for milestone-driver;
    do not implement).
@@ -69,7 +69,7 @@ file. Else
    - **PASS:** Write `~/.last-stack/feature-proofs/<outcome-slug>.md` with first
      line `PASS` and non-secret evidence. Append PROOF section to the proof card.
      Complete the milestone only via proof-gated CLI:
-     `fkanban milestone state <slug> complete --proof-status passing --json`.
+     `kanban milestone state <slug> complete --proof-status passing --json`.
      If this proof is the North Star terminal, mark the ship-mode NS `done`
      per `sop-north-star-terminal-verification` (status command; never wipe body).
      Heartbeat `ok proved milestone=... ns=...`.

@@ -665,10 +665,10 @@ run `last-stack-park-terminal-validation-todo` and EXIT with the helper outcome;
 `feature-prove` / `kanban-watch` own the proof evaluation path.
 
 Access pattern for this frontier probe must stay scan-free: prefer
-`fkanban milestone portfolio --json` (or detail for one active MS) plus scoped
-`fkanban list --column todo --json` and `fkanban list --column backlog --json`.
+`kanban milestone portfolio --json` (or detail for one active MS) plus scoped
+`kanban list --column todo --json` and `kanban list --column backlog --json`.
 Filter for PR cards linked to active milestones / matching `north_star`, then
-keyed `fkanban show <slug> --json` only for a few candidates. Do not run broad
+keyed `kanban show <slug> --json` only for a few candidates. Do not run broad
 board search or full-body board scans from this idle hot path. Legacy
 `feature-owner` tags may still appear on old cards — treat their PR children as
 frontier if still driving, but do not create new owner cards.

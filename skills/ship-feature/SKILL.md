@@ -171,14 +171,14 @@ North Star → milestone → Kind:pr + proof.
 ### HARD RULE — no bulk board scaffolding (won't-undo)
 
 After creating or selecting a North Star, **never** bulk-write milestones and
-empty `Kind: pr` shells with `fkanban add` / `fkanban milestone add` in the same
+empty `Kind: pr` shells with `kanban add` / `kanban milestone add` in the same
 session. That is what produces hollow cards, false `needs_human` holds, and
 wrong `driver: program-driver` milestones.
 
 **Allowed:**
 - Brain NS create/update + `brain append` of `MILESTONE_REQUEST …`
 - Targeted `routines run last-stack-north-star-driver` / `last-stack-milestone-driver`
-- Observing with `fkanban milestone detail` / `pickup explain`
+- Observing with `kanban milestone detail` / `pickup explain`
 
 **Forbidden:**
 - Creating more than zero implementation cards yourself for a new NS outcome
@@ -218,7 +218,7 @@ DAG.
    pending request for its scheduled pass.
 
 4. Confirm the milestone exists and matches the approved North Star/outcome via
-   `fkanban milestone detail <milestone-slug> --json`. Expect
+   `kanban milestone detail <milestone-slug> --json`. Expect
    `driver=last-stack-milestone-driver`.
 
 5. Trigger targeted bounded passes with
@@ -229,11 +229,11 @@ DAG.
    the graph directly.
 
 6. **Acceptance before walk-away:** for each claimed "runnable" PR slug run
-   `fkanban pickup explain <slug> --json` and require `ready: true`. Reject
+   `kanban pickup explain <slug> --json` and require `ready: true`. Reject
    header-only bodies and `driver: program-driver` milestones.
 
-Materialization is invalid until `fkanban milestone detail` and
-`fkanban milestone groom --json` confirm the two routine ownership boundaries,
+Materialization is invalid until `kanban milestone detail` and
+`kanban milestone groom --json` confirm the two routine ownership boundaries,
 driver, proof link, child links, North Star agreement, and executable frontier.
 It is also **invalid** if only a tracker or legacy feature-owner exists, or if
 the North Star lacks Terminal verification.
@@ -274,7 +274,7 @@ enough to make progress, the user can always interrupt), and on each wake:
    frontier. Do not create a second milestone for the same approved outcome.
 4. **When all milestone slices are merged → VALIDATE** (Phase 7). This is the
    real gate. A milestone completes only after its linked terminal proof passes
-   and `fkanban milestone state <slug> complete --proof-status passing` is
+   and `kanban milestone state <slug> complete --proof-status passing` is
    accepted. Then mark the ship-mode North Star done if this was its terminal.
 5. **Re-schedule** the next wakeup unless fully done. **Stop scheduling** once
    validated — that ends the loop cleanly.

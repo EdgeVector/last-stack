@@ -277,7 +277,7 @@ th {{ background: #ebe7df; font-size: 11px; text-transform: uppercase; color: #5
 <header class="top">
   <h1>Milestone factory dashboard</h1>
   <p>Generated <code>{esc(model['generated_at'])}</code>. Hierarchy: North Star → Milestone → cards by column.
-  Live Unassigned Kind:pr cards must be backfilled. CLI twin: <code>fkanban list --group-by-milestone</code>.</p>
+  Live Unassigned Kind:pr cards must be backfilled. CLI twin: <code>kanban list --group-by-milestone</code>.</p>
 </header>
 <main>
   <div class="topline">

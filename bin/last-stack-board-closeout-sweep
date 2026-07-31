@@ -68,9 +68,8 @@ done
 
 if [ -z "$board_cli" ]; then
   if command -v kanban >/dev/null 2>&1; then board_cli=kanban
-  elif command -v fkanban >/dev/null 2>&1; then board_cli=fkanban
   else
-    echo "board-closeout: need kanban or fkanban on PATH" >&2
+    echo "board-closeout: need kanban on PATH" >&2
     exit 2
   fi
 fi
