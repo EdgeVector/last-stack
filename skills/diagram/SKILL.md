@@ -1,11 +1,11 @@
 ---
 name: diagram
 description: |
-  Draw a diagram in Tom's preferred style — a hand-drawn ARCHITECTURAL / draftsman
-  line drawing (thin uniform geometric strokes, poché hatch for "solid"/stored
-  things, dimension lines with ticks, joint marks, monospace small-caps labels,
-  lots of negative space, exactly one accent colour). NOT auto-laid-out
-  Mermaid/Graphviz boxes-and-arrows — those look generic and Tom dislikes them.
+  Draw a diagram in Tom's preferred style — technical black-and-white line
+  drawings (thin uniform geometric strokes, hatch for solid/stored things,
+  dimension lines with ticks, joint marks, plain monospace labels, lots of
+  negative space). NO color, NO accent, NO themed palettes, NO gruvbox, NO
+  EdgeVector house styling. NOT auto-laid-out Mermaid/Graphviz boxes-and-arrows.
   Use whenever Tom asks to "draw a diagram", "make/render/sketch a diagram",
   "diagram this", "show me a diagram", "add a figure", or wants a visual of an
   architecture / flow / data model / system. This is the DEFAULT diagram style;
@@ -26,116 +26,103 @@ triggers:
   - add a figure
 ---
 
-# /diagram — architectural line drawings, hand-authored
+# /diagram — technical black-and-white line drawings
 
-Tom's standing preference: diagrams should look like **a drawing a building
-architect would make** — minimal, very geometric, precise, designed. Reach for
-**hand-authored inline SVG**, never Mermaid/Graphviz auto-layout (he called those
-"kind of ugly"). The reference that set this preference is the LastDB blog post
-`fold_db_website/src/pages/BlogEvolvingALiveSchema.jsx` — open it for a worked
-example of all the pieces below.
+Standing owner preference (Tom, **2026-07-31**): diagrams are **black and white,
+technical, and unstyled** — like an engineering drawing, not a designed theme.
+
+- **No colour** — black ink only (grays only for hatch/secondary labels).
+- **No accent colour**, no gruvbox, no edgevector.org / house CSS tokens.
+- **No decorative styling** — no shadows, gradients, rounded marketing boxes,
+  coloured fills, or themed fonts (no IBM Plex Mono requirement).
+
+Hand-author **inline SVG**. Prefer this over Mermaid/Graphviz auto-layout unless
+Tom asks for something quicker.
+
+Brain: `preference-diagrams-black-and-white-technical`.
 
 ## The aesthetic (non-negotiable)
 
+- **Black and white only** — ink `#000000`, paper/transparent bg, optional gray
+  `#666666` / `#888888` for hatch and secondary captions. Nothing else.
 - **Thin, uniform strokes** — `stroke-width="1"` everywhere. One weight.
 - **Sharp geometry** — square corners, right angles, precise polygons. No rounded
-  blobs, no drop shadows, no gradients, no fills except hatch.
+  blobs, no drop shadows, no gradients, no solid colour fills (hatch only).
 - **Varied shapes, by TYPE** — do NOT make everything a rectangle. Each *kind*
-  of thing gets its own shape (see Shape vocabulary below), used consistently
-  across every figure in the same document. Tom explicitly asked for this
-  (2026-07-16): "I don't want everything to be rectangles."
-- **Poché hatch** for anything "solid" / stored / on-disk (a thin diagonal line
-  pattern — the classic architectural fill). Voids/empties stay outline-only.
-- **Dimension lines** (a span line with short perpendicular end-ticks + a label
-  underneath) to measure/label quantities — like a real drawing.
-- **Joint marks** — a tiny 4×4 filled square where a connector meets a box.
+  of thing gets its own shape (see Shape vocabulary), used consistently across
+  every figure in the same document.
+- **Hatch** for anything "solid" / stored / on-disk (thin diagonal lines — classic
+  technical fill). Voids/empties stay outline-only.
+- **Dimension lines** (span + short perpendicular end-ticks + label) for quantities.
+- **Joint marks** — a tiny 4×4 filled black square where a connector meets a box.
 - **Orthogonal connectors** — right-angle elbows (`polyline`), not diagonal
   swooshes. Arrowheads are small precise triangles, used sparingly.
-- **Monospace labels** in two registers: a primary `UPPERCASE` title
-  (letter-spacing ~1.5) + a lowercase dim caption. Mono font throughout.
-- **Negative space** — align everything to an implicit grid; let it breathe.
-- **One accent colour only**, reserved for the "new"/highlighted element. Every
-  other line is the muted structural colour.
-- A small `figcaption` ("FIG. N — …", uppercase, dim) under each figure.
+- **Plain monospace labels** — `ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`.
+  Primary: `UPPERCASE` title. Secondary: smaller gray caption. No brand fonts.
+- **Negative space** — align to an implicit grid; let it breathe.
+- **Highlight without colour** — thicker stroke (still black), dashed outline, or
+  a simple label — never a second colour.
+- Small `figcaption` ("FIG. N — …") under each figure, plain text.
 
-## Shape vocabulary — shape encodes TYPE (Tom, 2026-07-16)
+## Shape vocabulary — shape encodes TYPE
 
-Different shapes for different types of things. Pick one shape per semantic
-type, keep it consistent across all figures in a document, never let a diagram
-collapse into all-rectangles, and add a small legend row when 3+ shape classes
-appear. House taxonomy — proven in the EVF-DELIVER-001 patent figures
-(`exemem-workspace/docs/corporate/patent_deliver_figures/`, FIG 1 carries the
-legend row). Extend it in the same spirit when a new type appears:
+Different shapes for different types. Pick one shape per semantic type, keep it
+consistent, never collapse into all-rectangles, legend row when 3+ classes:
 
 | shape | means | how to draw |
 |---|---|---|
 | rectangle | ONLY containers / devices / processes / services — never data | `<rect>` outline |
 | cylinder | database / store / persisted bytes | body `<path>` + `<ellipse>` top lid |
-| cut-corner document | data record / spec / definition sheet (schema, contract, config) | `<polygon>` with one corner clipped ~14px + `<polyline>` fold mark; field rows as underlined lines |
-| small square | one atomic data unit (an atom, a log entry) | tiny `<rect>` ~20–34px |
+| cut-corner document | data record / spec / definition sheet | `<polygon>` clipped corner + fold mark |
+| small square | one atomic data unit (atom, log entry) | tiny `<rect>` ~20–34px |
 | diamond | decision / check / human consent gate | 4-point `<polygon>` |
-| hexagon | sealed / encrypted parcel | 6-point `<polygon>`, flat left/right vertices |
-| circle | party / actor / keyholder (incl. apps and services acting as recipients) | `<circle>`; label inside if short, else beside |
-| person glyph | specifically a human (Alice, the approver) | head `<circle>` + shoulders arc |
+| hexagon | sealed / encrypted parcel | 6-point `<polygon>`, flat L/R |
+| circle | party / actor / keyholder | `<circle>` |
+| person glyph | specifically a human | head `<circle>` + shoulders arc |
 | triangle | key / credential | small 3-point `<polygon>` |
-| envelope | payload in transit | rect + `polyline` flap |
+| envelope | payload in transit | rect + flap `polyline` |
 | star | goal / outcome / north star | 10-point `<polygon>` |
 
-Two modifiers compose with ANY shape: **poché hatch** = "holds real data"
-(a poché document = a record that exists; an outline-only hexagon = an
-empty/absent parcel), and a **dashed outline** = "remote / not yours" (a dashed
-cylinder inside a dashed rect reads "someone else's service storing bytes").
-Connectors attach at a shape's natural vertex (hexagon side points, diamond
-tips, a document's straight edge) with the usual 4×4 joint marks.
+Modifiers: **hatch** = holds real data; **dashed outline** = remote / not yours.
+Connectors attach at natural vertices with 4×4 black joint marks.
 
-Snippets (light palette; swap colours per surface):
+Snippets (black ink):
 
 ```
-<!-- cylinder: body path + top lid -->
+<!-- cylinder: body + top lid -->
 <path d="M 64 106 A 50 9 0 0 1 164 106 L 164 148 A 50 9 0 0 1 64 148 Z"
-      fill="url(#poche)" stroke="#3b4a5a" stroke-width="1"/>
-<ellipse cx="114" cy="106" rx="50" ry="9" fill="#fbfaf7" stroke="#3b4a5a" stroke-width="1"/>
+      fill="url(#hatch)" stroke="#000" stroke-width="1"/>
+<ellipse cx="114" cy="106" rx="50" ry="9" fill="#fff" stroke="#000" stroke-width="1"/>
 <!-- document: cut top-right corner + fold mark -->
-<polygon points="192,98 272,98 286,112 286,156 192,156" fill="none" stroke="#3b4a5a" stroke-width="1"/>
-<polyline points="272,98 272,112 286,112" fill="none" stroke="#3b4a5a" stroke-width="1"/>
-<!-- diamond / hexagon / triangle -->
-<polygon points="75,214 175,184 275,214 175,244" fill="none" stroke="#2f6f8f" stroke-width="1"/>
-<polygon points="257,96 373,96 401,136 373,176 257,176 229,136" fill="none" stroke="#3b4a5a" stroke-width="1"/>
-<polygon points="315,32 291,72 339,72" fill="none" stroke="#2f6f8f" stroke-width="1"/>
+<polygon points="192,98 272,98 286,112 286,156 192,156" fill="none" stroke="#000" stroke-width="1"/>
+<polyline points="272,98 272,112 286,112" fill="none" stroke="#000" stroke-width="1"/>
+<!-- diamond / hexagon / triangle — all black -->
+<polygon points="75,214 175,184 275,214 175,244" fill="none" stroke="#000" stroke-width="1"/>
 ```
 
-## Palette
-
-Match the surface you're drawing onto. Pull its CSS variables when embedding in
-a themed app. Absent a given palette, use this draftsman default (gruvbox-dark,
-what LastDB uses):
+## Palette (only this)
 
 | role | colour | use |
 |---|---|---|
-| ink | `#928374` | structural strokes, dimension lines, joints |
-| faint | `#504945` | hatch lines, cell dividers, dashed guides |
-| text | `#ebdbb2` | primary labels |
-| dim | `#928374` | captions, secondary labels |
-| accent | `#83a598` | the ONE highlighted element ("new", "v2", …) |
-| bg | `#282828` | (transparent SVG; the surface provides it) |
+| ink | `#000000` | all strokes, joints, primary labels, arrows |
+| hatch | `#666666` | hatch pattern lines only |
+| dim | `#666666` | captions, secondary labels, dimension text |
+| fill void | `#ffffff` or `none` | open interiors; SVG may stay transparent |
 
-Light/blueprint surface? Invert: ink `#3b4a5a`, faint `#c3cdd6`, text `#1c2733`,
-accent `#2f6f8f`, on a near-white bg. Keep the same grammar.
+**No accent colour. No gruvbox. No blue. No theme tokens.**
+
+If embedding on a dark product UI that already exists, invert only if required for
+legibility: white strokes on black — still pure B&W, no accent.
 
 ## The SVG toolkit (copy + adapt)
-
-Open the SVG with a responsive wrapper and shared `<defs>`:
 
 ```
 <svg viewBox="0 0 660 240" xmlns="http://www.w3.org/2000/svg"
      style="width:100%;height:auto;max-width:660px;display:block;margin:0 auto"
-     font-family="'IBM Plex Mono', monospace">
+     font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
   <defs>
-    <pattern id="poche" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-      <line x1="0" y1="0" x2="0" y2="6" stroke="#504945" stroke-width="1"/>
-    </pattern>
-    <pattern id="cells" width="24" height="40" patternUnits="userSpaceOnUse">
-      <line x1="0" y1="0" x2="0" y2="40" stroke="#504945" stroke-width="1"/>
+    <pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <line x1="0" y1="0" x2="0" y2="6" stroke="#666" stroke-width="1"/>
     </pattern>
   </defs>
   ...
@@ -144,65 +131,40 @@ Open the SVG with a responsive wrapper and shared `<defs>`:
 
 Building blocks:
 
-- **Labeled box** — `<rect x y width height fill="none" stroke="#928374" stroke-width="1"/>`
-  with a centred `UPPERCASE` title (`#ebdbb2`, `font-size="13"`, `letter-spacing="1.5"`,
-  `text-anchor="middle"`) and a dim caption below it (`#928374`, `font-size="11"`).
-  For a "solid/data" box, add a second rect with `fill="url(#poche)"`. For a
-  "cells/fields strip", overlay `fill="url(#cells)"`.
-- **Joint** — `<rect x y width="4" height="4" fill="#928374"/>` at each connection point.
-- **Spine / connector** — straight: `<line .../>`; elbowed: `<polyline points="x1,y1 x1,y2 x2,y2" fill="none" stroke=.../>`.
-  Arrowhead: `<polygon points="tipx,tipy bx,by bx,by2" fill=.../>` (a small triangle).
-- **Dimension line** — span + end-ticks + label:
-  ```
-  <line x1="A" y1="Y" x2="A" y2="Y+14" stroke="#928374"/>   <!-- left tick -->
-  <line x1="B" y1="Y" x2="B" y2="Y+14" stroke="#928374"/>   <!-- right tick -->
-  <line x1="A" y1="Y+7" x2="B" y2="Y+7" stroke="#928374"/>  <!-- span -->
-  <text x="(A+B)/2" y="Y+30" text-anchor="middle" fill="#928374" font-size="10">10 FIELDS — LABEL</text>
-  ```
-  Use the accent colour for the dimension of the highlighted span.
-- **Alignment guide** — faint dashed vertical/horizontal line tying two rows
-  together: `stroke="#504945" stroke-dasharray="2 3"`.
+- **Labeled box** — outline `stroke="#000"`; title `fill="#000"` UPPERCASE;
+  caption `fill="#666"` smaller. Solid/data → `fill="url(#hatch)"`.
+- **Joint** — `<rect width="4" height="4" fill="#000"/>`.
+- **Connector** — `stroke="#000"`; elbow `polyline`; small triangle arrowhead.
+- **Dimension line** — black ticks + span; label `fill="#666"`.
+- **Highlight** — same black, e.g. `stroke-width="2"` or `stroke-dasharray="4 3"`,
+  never a second colour.
 
-Render in a host:
-- **Web / React (JSX):** wrap in a tiny `ArchFigure({svg, caption})` that does
-  `<div dangerouslySetInnerHTML={{__html: svg}} />` + a `<figcaption>` (see the
-  reference post). Keeps the SVG as a plain string — no JSX attribute conversion.
-- **A reply in chat:** deliver it through the `visualize` MCP tool
-  (`mcp__visualize__show_widget`) — pass the raw `<svg …>` as `widget_code` (it
-  auto-detects SVG). Use CSS variables for colours so it themes.
+Render:
+
+- **Web / React:** plain SVG string + `figcaption`.
+- **Chat:** raw `<svg>` if a visualize/widget tool exists; otherwise save `.svg` / inline.
 - **Standalone:** write a `.svg` file.
 
 ## Composition checklist
-- Decide the ONE idea each figure carries; one figure per idea, 2–3 max.
-- Categorize elements by shape (see Shape vocabulary); legend row if 3+ classes.
-- Lay out on a grid; equal margins; consistent box sizes.
-- "Solid/has data" → poché. "Empty/void/new" → outline only (often the accent).
-- Quantities → dimension lines, not prose inside the box.
-- Connectors → orthogonal elbows with joints. Minimise crossings.
-- Labels: UPPERCASE title + dim caption. Keep captions SHORT so they don't
-  collide with a neighbouring box (the #1 mistake — see Verify).
 
-## Verify — render it and LOOK (do not skip)
+- One idea per figure; 2–3 figures max.
+- Shape encodes type; legend if 3+ classes.
+- Grid layout; equal margins.
+- Solid → hatch. Empty → outline only.
+- Quantities → dimension lines.
+- Orthogonal connectors + joints; minimise crossings.
+- Short labels; no collisions.
 
-A diagram you can't see is a diagram you can't trust. After authoring:
+## Verify — render it and LOOK
 
-1. Get it on screen. Web post: dev server (`npm run dev`) + headless browser:
-   ```bash
-   B="$HOME/.claude/skills/gstack/browse/dist/browse"
-   $B viewport 1100x900; $B goto "http://localhost:<port>/<route>"
-   $B screenshot /tmp/fig.png --selector "article figure:nth-of-type(N)"
-   ```
-   Then **Read /tmp/fig.png** and actually look. Standalone SVG: `$B goto file://<abs>.svg` + screenshot. Chat widget: the `visualize` tool renders it for the user directly.
-2. Check for: labels overflowing or colliding with boxes (shorten the caption or
-   move it), text clipped at the viewBox edge, misalignment, the hatch/cells not
-   rendering, an arrow not meeting its box. Fix and re-render until clean.
-3. Only deliver once you've seen it look right.
-
-(On the reference post, the first pass had a caption running into a box; a
-re-screenshot caught it. Always do the second look.)
+1. Screenshot or open the SVG and actually look.
+2. Fix collisions, clipped text, misaligned joints, missing hatch.
+3. Confirm **zero non-B&W colours** (no hex blues/greens/oranges).
+4. Deliver only when it looks clean and technical.
 
 ## Don't
-- Don't fall back to Mermaid/Graphviz/ASCII because it's faster — the whole point
-  is the hand-drawn architectural look.
-- Don't add colour beyond the one accent. Don't add shadows/gradients/rounded
-  corners. Don't crowd it.
+
+- Don't use colour, accents, gruvbox, house CSS, or brand mono fonts.
+- Don't use Mermaid/Graphviz by default when a real technical figure is needed.
+- Don't add shadows, gradients, rounded marketing cards, or decorative chrome.
+- Don't crowd the figure.
