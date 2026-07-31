@@ -158,3 +158,146 @@ fi
 [ ! -e "$HOME/apps/demo/versions/$digest_bad" ] || fail "failed install left an immutable version"
 
 printf 'ok: verified artifact install/refresh/rollback/tamper rejection\n'
+
+# ── track_gate_main: status stale vs main tip; refresh promotes channel ─────
+# Mental model: live skill-pack tracks green main, not a frozen stable pointer.
+# Use app name != last-stack so install does not chmod a-w the version tree.
+MAIN_TIP_FILE="$tmp/main-tip-oid"
+printf '%s' "$(printf 'a%.0s' {1..40})" > "$MAIN_TIP_FILE"
+
+cat > "$tmp/bin/lastgit" <<SH
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = status ]; then
+  tip="\$(cat "$MAIN_TIP_FILE")"
+  jq -n --arg tip "\$tip" \
+    '{repo:"skillpack",refs:[{name:"refs/heads/main",oid:\$tip}]}'
+  exit 0
+fi
+if [ "\${1:-}" = ci ] && [ "\${2:-}" = status ]; then
+  jq -n --arg oid "\${3:-}" '{oid:\$oid,context:"ci-required",state:"success"}'
+  exit 0
+fi
+if [ "\${1:-}" = artifact ] && [ "\${2:-}" = promote ]; then
+  shift 2
+  app="" channel="" manifest="" repo="" oid="" root=""
+  while [ "\$#" -gt 0 ]; do
+    case "\$1" in
+      --app) app="\$2"; shift 2 ;;
+      --channel) channel="\$2"; shift 2 ;;
+      --manifest) manifest="\$2"; shift 2 ;;
+      --repo) repo="\$2"; shift 2 ;;
+      --oid) oid="\$2"; shift 2 ;;
+      --root) root="\$2"; shift 2 ;;
+      --context|--json) shift ;;
+      --context=*) shift ;;
+      *) shift ;;
+    esac
+  done
+  src="\$root/manifests/\$manifest.json"
+  [ -f "\$src" ] || exit 9
+  mkdir -p "\$root/channels/\$app"
+  cp "\$src" "\$root/channels/\$app/\$channel.json"
+  jq -n --arg d "\$manifest" --arg o "\$oid" '{manifest_digest:\$d,source_oid:\$o,promoted:true}'
+  exit 0
+fi
+if [ "\${1:-}" = artifact ] && [ "\${2:-}" = resolve ]; then
+  shift 2
+  app="" channel="" root=""
+  while [ "\$#" -gt 0 ]; do
+    case "\$1" in
+      --app) app="\$2"; shift 2 ;;
+      --channel) channel="\$2"; shift 2 ;;
+      --root) root="\$2"; shift 2 ;;
+      --json) shift ;;
+      *) exit 2 ;;
+    esac
+  done
+  cat "\$root/channels/\$app/\$channel.json"
+  exit 0
+fi
+exit 2
+SH
+chmod +x "$tmp/bin/lastgit"
+
+chmod -R u+w "$HOME/apps" 2>/dev/null || true
+rm -rf "$tmp/cas" "$tmp/stamps" "$HOME/apps" "$HOME/post-install-ran" 2>/dev/null || true
+mkdir -p "$tmp/cas" "$tmp/stamps" "$HOME/apps"
+export HOST_TRACK_STAMP_DIR="$tmp/stamps"
+
+digest_v1="$(printf 'd%.0s' {1..64})"
+digest_v2="$(printf 'e%.0s' {1..64})"
+oid_v1="$(printf 'a%.0s' {1..40})"
+oid_v2="$(printf 'c%.0s' {1..40})"
+
+publish_sp() {
+  local digest="$1" oid="$2" content="$3" payload sha size blob manifest
+  payload="$tmp/payload-sp"
+  printf '%s\n' "$content" > "$payload"
+  sha="$(shasum -a 256 "$payload" | awk '{print $1}')"
+  size="$(wc -c < "$payload" | tr -d ' ')"
+  blob="$tmp/cas/blobs/sha256/${sha:0:2}/$sha"
+  mkdir -p "$(dirname "$blob")" "$tmp/cas/channels/skillpack" "$tmp/cas/manifests" \
+    "$tmp/cas/builds/skillpack/$oid"
+  cp "$payload" "$blob"
+  manifest="$tmp/cas/manifests/$digest.json"
+  jq -n \
+    --arg digest "$digest" --arg oid "$oid" --arg sha "$sha" --argjson size "$size" \
+    '{schema_version: 1, app: "skillpack", repo: "skillpack", source_oid: $oid,
+      platform: "darwin-arm64", created_at: "2026-07-31T00:00:00Z",
+      files: [{path: "bin/demo", sha256: $sha, size: $size, mode: 493}],
+      manifest_digest: $digest}' > "$manifest"
+  cp "$manifest" "$tmp/cas/builds/skillpack/$oid/darwin-arm64.json"
+  cp "$manifest" "$tmp/cas/builds/skillpack/$oid/linux-x64.json"
+}
+
+publish_sp "$digest_v1" "$oid_v1" $'#!/usr/bin/env bash\necho v1'
+cp "$tmp/cas/manifests/$digest_v1.json" "$tmp/cas/channels/skillpack/stable.json"
+publish_sp "$digest_v2" "$oid_v2" $'#!/usr/bin/env bash\necho v2'
+
+cat > "$HOST_TRACK_REGISTRY" <<JSON
+{
+  "defaults": { "install_mode": "artifact", "artifact_channel": "stable" },
+  "apps": [{
+    "app": "skillpack",
+    "kind": "artifact skill-pack",
+    "command": "demo",
+    "gate_main": "lastdb:///skillpack#main",
+    "track_gate_main": true,
+    "artifact_app": "skillpack",
+    "artifact_channel": "stable",
+    "artifact_root": "\$HOME/../cas",
+    "install_root": "\$HOME/apps/skillpack",
+    "post_install": "\$HOME/post-install",
+    "links": [{"source": "bin/demo", "target": "\$HOME/.local/bin/demo"}]
+  }]
+}
+JSON
+
+# Install while main tip == v1 → fresh.
+printf '%s' "$oid_v1" > "$MAIN_TIP_FILE"
+"$ROOT/bin/host-track" install skillpack >/dev/null
+[ "$(demo)" = v1 ] || fail "track-main install did not land v1"
+st="$("$ROOT/bin/host-track" status --json skillpack)"
+printf '%s\n' "$st" | jq -e --arg tip "$oid_v1" '
+  .gate_head == $tip and .stale == false and .host_head == $tip
+' >/dev/null || fail "in-sync main tip should not be stale: $st"
+
+# Advance main tip to v2 (green+published); installed lags → stale.
+printf '%s' "$oid_v2" > "$MAIN_TIP_FILE"
+st_lag="$("$ROOT/bin/host-track" status --json skillpack)"
+printf '%s\n' "$st_lag" | jq -e --arg tip "$oid_v2" --arg old "$oid_v1" '
+  .gate_head == $tip and .stale == true and .host_head == $old
+' >/dev/null || fail "lag vs advanced main tip not reported: $st_lag"
+
+"$ROOT/bin/host-track" refresh skillpack >/dev/null
+[ "$(demo)" = v2 ] || fail "refresh did not install advanced main tip"
+st2="$("$ROOT/bin/host-track" status --json skillpack)"
+printf '%s\n' "$st2" | jq -e --arg tip "$oid_v2" '
+  .stale == false and .host_head == $tip and .gate_head == $tip
+' >/dev/null || fail "after refresh still not tracking main: $st2"
+jq -e --arg tip "$oid_v2" '.source_oid == $tip' \
+  "$tmp/cas/channels/skillpack/stable.json" >/dev/null \
+  || fail "stable channel was not promoted to new main tip"
+
+printf 'ok: track_gate_main promotes green main and reports lag correctly\n'

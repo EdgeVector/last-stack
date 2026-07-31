@@ -58,7 +58,15 @@ stale (no new stamp), so the refresh agent retries instead of claiming success.
 
 ### Last Stack one rule (artifact is the only runtime)
 
-**Runtime install = Host Track CI artifact only. Never a place you develop.**
+**Runtime install = Host Track CI artifact that tracks green main. Never a place you develop.**
+
+Mental model: the live stack **is** main, with a short CI/publish lag. It is
+still an immutable content-addressed artifact (not a git working tree), but
+`host-track refresh last-stack` promotes `stable` to the newest **green +
+published** main oid and installs it. Status `gate_head` is the real main tip;
+`stale=true` means the installed oid is not that tip yet (CI pending, publish
+missing, or refresh not run). Do **not** treat a manually-frozen stable
+pointer as the long-term source of truth.
 
 | Role | Path | Mutable? |
 |------|------|----------|

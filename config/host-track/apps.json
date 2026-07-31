@@ -42,6 +42,7 @@
       "command": "host-track",
       "gate": "lastgit",
       "gate_main": "lastdb:///last-stack#main",
+      "track_gate_main": true,
       "artifact_app": "last-stack",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -53,7 +54,7 @@
           "target": "$HOME/.local/bin/host-track"
         }
       ],
-      "notes": "One rule: runtime is the Host Track CI artifact only. post_install activates ~/.last-stack/{bin,skills,routines,...} → .artifacts/current (immutable). Never develop in the install; use a worktree. Upgrade with: host-track refresh last-stack"
+      "notes": "Runtime is an immutable CI artifact that tracks gate_main (green+published main). host-track refresh promotes stable to that tip then installs. ~/.last-stack/{bin,skills,...} → artifacts/current. Never develop in the install; use a worktree."
     },
     {
       "app": "brain",

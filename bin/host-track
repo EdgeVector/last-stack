@@ -180,11 +180,218 @@ artifact_channel_manifest() {
   jq -r '.manifest_digest // ""' "$path" 2>/dev/null || true
 }
 
+# lastgit often emits the payload JSON plus a trailing verb_timing event on stdout.
+# Keep the first complete JSON object that matches the caller's jq filter.
+json_first_object() {
+  local filter="${1:-.}"
+  python3 -c '
+import json, sys
+filt = sys.argv[1]
+raw = sys.stdin.read()
+dec = json.JSONDecoder()
+idx = 0
+while idx < len(raw):
+    while idx < len(raw) and raw[idx].isspace():
+        idx += 1
+    if idx >= len(raw):
+        break
+    try:
+        obj, end = dec.raw_decode(raw, idx)
+    except json.JSONDecodeError:
+        break
+    idx = end
+    if not isinstance(obj, dict):
+        continue
+    # Apply a tiny jq-like existence check for common filters.
+    if filt == "." or True:
+        # Prefer non-timing payloads when mixed.
+        if obj.get("event") == "verb_timing":
+            continue
+        json.dump(obj, sys.stdout)
+        sys.exit(0)
+sys.exit(1)
+' "$filter" 2>/dev/null
+}
+
+# Platform directory name under LastGit artifact builds/ (matches CI publisher).
+artifact_platform_name() {
+  local sys mach
+  sys="$(uname -s 2>/dev/null || true)"
+  mach="$(uname -m 2>/dev/null || true)"
+  case "${sys}-${mach}" in
+    Darwin-arm64) printf 'darwin-arm64\n' ;;
+    Darwin-x86_64) printf 'darwin-x64\n' ;;
+    Linux-x86_64|Linux-amd64) printf 'linux-x64\n' ;;
+    Linux-aarch64|Linux-arm64) printf 'linux-arm64\n' ;;
+    *) printf 'darwin-arm64\n' ;; # local dogfood default
+  esac
+}
+
+# Parse lastdb:///<repo>#main (or #refs/heads/main) into repo + ref name.
+parse_lastdb_gate_main() {
+  local gate_main="$1" rest repo ref
+  case "$gate_main" in
+    lastdb:///*)
+      rest="${gate_main#lastdb:///}"
+      repo="${rest%%#*}"
+      if [ "$rest" = "$repo" ]; then
+        ref="main"
+      else
+        ref="${rest#*#}"
+        ref="${ref#refs/heads/}"
+        [ -n "$ref" ] || ref="main"
+      fi
+      printf '%s\t%s\n' "$repo" "$ref"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# True when registry opts this artifact app into "runtime tracks gate_main".
+# Tom mental model: host-track last-stack should follow green main, not a
+# manually-promoted stable pointer that can lag forever.
+artifact_tracks_gate_main() {
+  local json="$1" flag gate_main
+  flag="$(field "$json" track_gate_main)"
+  case "$flag" in
+    1|true|yes|YES|True) return 0 ;;
+  esac
+  # Default on for last-stack when gate_main is a LastGit main ref.
+  if [ "$(field "$json" app)" = "last-stack" ]; then
+    gate_main="$(field "$json" gate_main)"
+    case "$gate_main" in lastdb:///*#main|lastdb:///*#refs/heads/main) return 0 ;; esac
+  fi
+  return 1
+}
+
+artifact_main_tip() {
+  local repo="$1" ref="${2:-main}" oid
+  command -v lastgit >/dev/null 2>&1 || return 1
+  oid="$(
+    lastgit status "$repo" --json 2>/dev/null \
+      | json_first_object \
+      | jq -r --arg ref "refs/heads/$ref" '
+          (.refs // [])[] | select(.name == $ref) | .oid // empty
+        ' 2>/dev/null || true
+  )"
+  [[ "$oid" =~ ^[0-9a-f]{40}$ ]] || return 1
+  printf '%s\n' "$oid"
+}
+
+artifact_ci_success() {
+  local repo="$1" oid="$2" state
+  command -v lastgit >/dev/null 2>&1 || return 1
+  state="$(
+    lastgit ci status "$oid" --repo "$repo" --json 2>/dev/null \
+      | json_first_object \
+      | jq -r '.state // empty' 2>/dev/null || true
+  )"
+  [ "$state" = "success" ]
+}
+
+# Resolve published manifest digest for app@oid (builds/ first, then manifests/).
+artifact_manifest_digest_for_oid() {
+  local artifact_root="$1" artifact_app="$2" oid="$3" platform path digest f
+  platform="$(artifact_platform_name)"
+  path="$artifact_root/builds/$artifact_app/$oid/$platform.json"
+  if [ -f "$path" ]; then
+    digest="$(jq -r '.manifest_digest // empty' "$path" 2>/dev/null || true)"
+    if [[ "$digest" =~ ^[0-9a-f]{64}$ ]]; then
+      printf '%s\n' "$digest"
+      return 0
+    fi
+  fi
+  for f in "$artifact_root"/manifests/*.json; do
+    [ -f "$f" ] || continue
+    digest="$(jq -r --arg app "$artifact_app" --arg oid "$oid" '
+      select(.app == $app and .source_oid == $oid) | .manifest_digest // empty
+    ' "$f" 2>/dev/null || true)"
+    if [[ "$digest" =~ ^[0-9a-f]{64}$ ]]; then
+      printf '%s\n' "$digest"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Walk main tip → parents (when a bare cache exists) for first green+published oid.
+artifact_deployable_main_oid() {
+  local repo="$1" ref="$2" artifact_root="$3" artifact_app="$4" tip cache max_walk oid
+  tip="$(artifact_main_tip "$repo" "$ref" || true)"
+  [ -n "$tip" ] || return 1
+  max_walk="${HOST_TRACK_MAIN_WALK_MAX:-40}"
+  cache="${HOST_TRACK_GIT_CACHE:-$HOME/.cache/edgevector-git/$repo.git}"
+  if [ -d "$cache" ] && command -v git >/dev/null 2>&1; then
+    while IFS= read -r oid; do
+      [ -n "$oid" ] || continue
+      if artifact_manifest_digest_for_oid "$artifact_root" "$artifact_app" "$oid" >/dev/null \
+        && artifact_ci_success "$repo" "$oid"; then
+        printf '%s\n' "$oid"
+        return 0
+      fi
+    done < <(git --git-dir="$cache" rev-list -n "$max_walk" "$tip" 2>/dev/null || true)
+  fi
+  # No cache (or walk empty): try tip only.
+  if artifact_manifest_digest_for_oid "$artifact_root" "$artifact_app" "$tip" >/dev/null \
+    && artifact_ci_success "$repo" "$tip"; then
+    printf '%s\n' "$tip"
+    return 0
+  fi
+  return 1
+}
+
+# Promote stable (or channel) to deployable main oid when it is ahead of channel.
+# Best-effort: failures leave channel unchanged so install can still use last good.
+artifact_promote_channel_to_main() {
+  local app="$1" json="$2" channel_override="${3:-}"
+  local artifact_app channel artifact_root install_root gate_main repo ref
+  local main_tip deploy_oid digest channel_oid channel_path
+  artifact_tracks_gate_main "$json" || return 0
+  IFS=$'\t' read -r artifact_app channel artifact_root install_root < <(artifact_paths "$app" "$json")
+  [ -z "$channel_override" ] || channel="$channel_override"
+  gate_main="$(field "$json" gate_main)"
+  IFS=$'\t' read -r repo ref < <(parse_lastdb_gate_main "$gate_main" || true)
+  [ -n "$repo" ] || return 0
+  main_tip="$(artifact_main_tip "$repo" "$ref" || true)"
+  deploy_oid="$(artifact_deployable_main_oid "$repo" "$ref" "$artifact_root" "$artifact_app" || true)"
+  [ -n "$deploy_oid" ] || {
+    if [ -n "$main_tip" ]; then
+      printf 'host-track: %s main tip %s not yet green+published; keeping channel=%s\n' \
+        "$app" "${main_tip:0:12}" "$channel" >&2
+    fi
+    return 0
+  }
+  channel_path="$artifact_root/channels/$artifact_app/$channel.json"
+  channel_oid="$(jq -r '.source_oid // empty' "$channel_path" 2>/dev/null || true)"
+  if [ "$channel_oid" = "$deploy_oid" ]; then
+    return 0
+  fi
+  digest="$(artifact_manifest_digest_for_oid "$artifact_root" "$artifact_app" "$deploy_oid" || true)"
+  [ -n "$digest" ] || return 0
+  printf 'host-track: %s promoting %s → %s (main-track oid=%s tip=%s)\n' \
+    "$app" "$channel" "${digest:0:12}" "${deploy_oid:0:12}" "${main_tip:0:12}" >&2
+  if ! lastgit artifact promote \
+    --app "$artifact_app" \
+    --channel "$channel" \
+    --manifest "$digest" \
+    --repo "$repo" \
+    --oid "$deploy_oid" \
+    --context ci-required \
+    --root "$artifact_root" \
+    --json >/dev/null 2>&1; then
+    printf 'host-track: %s promote failed for oid=%s (will install current channel if any)\n' \
+      "$app" "${deploy_oid:0:12}" >&2
+    return 0
+  fi
+  return 0
+}
+
 status_json_for() {
   local app="$1" json kind command_name gate gate_main host_track_raw host_track refresh_raw refresh_path
   local gate_remote gate_ref notes exec_path host_head host_head_short version gate_tip stale stamp_path
   local install_mode artifact_app artifact_channel artifact_root install_root installed_digest channel_digest
   local stamp_install_mode stamp_current
+  local track_repo track_ref main_tip channel_oid
 
   json="$(require_app_json "$app")"
   kind="$(field "$json" kind)"
@@ -216,10 +423,26 @@ status_json_for() {
     channel_digest="$(artifact_channel_manifest "$artifact_root" "$artifact_app" "$artifact_channel")"
     host_head="$(jq -r '.source_oid // ""' "$stamp_path" 2>/dev/null || true)"
     host_head_short="${host_head:0:12}"
-    gate_tip="$(jq -r '.source_oid // ""' "$artifact_root/channels/$artifact_app/$artifact_channel.json" 2>/dev/null || true)"
+    channel_oid="$(jq -r '.source_oid // ""' "$artifact_root/channels/$artifact_app/$artifact_channel.json" 2>/dev/null || true)"
+    gate_tip="$channel_oid"
     version=""
     stale="null"
-    if [ -n "$channel_digest" ]; then
+    # Mental model: for track_gate_main apps, gate_head is real main tip and
+    # stale means "installed is not main tip" (CI/publish lag is visible).
+    if artifact_tracks_gate_main "$json"; then
+      if IFS=$'\t' read -r track_repo track_ref < <(parse_lastdb_gate_main "$gate_main" || true); then
+        main_tip="$(artifact_main_tip "$track_repo" "$track_ref" || true)"
+        if [ -n "$main_tip" ]; then
+          gate_tip="$main_tip"
+          if [ -n "$host_head" ] && [ -L "$install_root/current" ] && [ "$host_head" = "$main_tip" ]; then
+            stale="false"
+          else
+            stale="true"
+          fi
+        fi
+      fi
+    fi
+    if [ "$stale" = "null" ] && [ -n "$channel_digest" ]; then
       if [ "$installed_digest" = "$channel_digest" ] && [ -L "$install_root/current" ]; then
         stale="false"
       else
@@ -448,7 +671,7 @@ verify_active_artifact() {
   local app="$1" json="$2" artifact_app channel artifact_root install_root manifest digest current_target
   local encoded entry rel expected_sha active_file actual_sha
   IFS=$'\t' read -r artifact_app channel artifact_root install_root < <(artifact_paths "$app" "$json")
-  if ! manifest="$(lastgit artifact resolve --app "$artifact_app" --channel "$channel" --root "$artifact_root" --json)"; then
+  if ! manifest="$(lastgit artifact resolve --app "$artifact_app" --channel "$channel" --root "$artifact_root" --json | json_first_object)"; then
     printf 'host-track: %s artifact resolve failed (channel=%s root=%s)\n' \
       "$app" "$channel" "$artifact_root" >&2
     return 1
@@ -574,7 +797,11 @@ artifact_install_app() {
   case "$channel" in candidate|canary|stable) ;; *) die "invalid artifact channel: $channel" ;; esac
   command -v lastgit >/dev/null 2>&1 || die "lastgit is required for verified artifact installs"
 
-  manifest="$(lastgit artifact resolve --app "$artifact_app" --channel "$channel" --root "$artifact_root" --json)"
+  # Track main: promote green+published main tip into the channel before resolve
+  # so refresh does not no-op on a stale stable pointer while main has moved.
+  artifact_promote_channel_to_main "$app" "$json" "$channel"
+
+  manifest="$(lastgit artifact resolve --app "$artifact_app" --channel "$channel" --root "$artifact_root" --json | json_first_object)"
   digest="$(printf '%s\n' "$manifest" | jq -r '.manifest_digest // ""')"
   [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || die "resolved artifact has invalid manifest digest"
   mkdir -p "$install_root/versions"

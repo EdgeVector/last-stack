@@ -34,6 +34,13 @@ done
   exit 1
 }
 
+# Host Track post_install always sets HOST_TRACK_MANIFEST_DIGEST — allow layout
+# even when ~/.last-stack still has a residual .git owner-mirror. Skipping here
+# is what left bin/ as a real directory lagging the artifact (papercut
+# last-stack-compat-root-bin-lags-host-track-artifact).
+if [ -n "${HOST_TRACK_MANIFEST_DIGEST:-}" ]; then
+  LAST_STACK_ARTIFACT_LAYOUT_ALLOW_GIT_WORKTREE=1
+fi
 if [ "${LAST_STACK_ARTIFACT_LAYOUT_ALLOW_GIT_WORKTREE:-0}" != "1" ] &&
   git -C "$compat_root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   printf 'LAST_STACK_ARTIFACT_LAYOUT result=skipped reason=git-owner-mirror compat=%s current=%s\n' \
