@@ -196,14 +196,17 @@ marker_match = re.search(
 regex = ""
 if marker_match:
     raw_markers = marker_match.group(1).strip()
-    raw_markers = raw_markers.strip("`'\"")
+    # Avoid backticks in this snippet: it runs under bash $(...) and nested `
+    # would close command substitution (same class of bug as card-reaper-run).
+    _q = "'" + '"'
+    raw_markers = raw_markers.strip(_q)
     if "|" in raw_markers:
         regex = raw_markers
     else:
         parts = [
-            p.strip().strip("`'\"")
+            p.strip().strip(_q)
             for p in re.split(r"\s*,\s*|\s+", raw_markers)
-            if p.strip().strip("`'\"")
+            if p.strip().strip(_q)
         ]
         regex = "|".join(parts)
 
