@@ -66,7 +66,7 @@ do not hard-code it as the primary. The legacy TCP port
   routine health checks, and do not treat their `:9001` error as a dead node.
 - Never start/restart/kill a LastDB node to "fix" a `:9001` error — the
   primary node is already running on the socket; restarting it is harmful.
-- Health check (socket-safe): `kanban list` succeeding ⇒ node is up.
+- Health check (socket-safe): `kanban ping` succeeding ⇒ node is up.
 
 ### LastDB Mini binary path hygiene
 
