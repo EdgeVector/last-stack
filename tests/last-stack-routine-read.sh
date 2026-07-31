@@ -176,6 +176,16 @@ if ! grep -Fq 'timeout 300 "$dash_bin"' <<<"$north_star_hygiene_prompt" ||
   exit 1
 fi
 
+brain_sync_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" brain-sync)"
+if ! grep -Fq "name: brain-sync" <<<"$brain_sync_prompt" ||
+   ! grep -Fq "compatibility-shim delegated-to-current-routines" <<<"$brain_sync_prompt" ||
+   ! grep -Fq "program-rollup" <<<"$brain_sync_prompt" ||
+   ! grep -Fq "north-star-rollup" <<<"$brain_sync_prompt" ||
+   ! grep -Fq "consolidate-brain" <<<"$brain_sync_prompt"; then
+  echo "expected brain-sync compatibility prompt to exist and delegate to current rollup routines" >&2
+  exit 1
+fi
+
 if LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" does-not-exist >/dev/null 2>"/tmp/last-stack-routine-read-missing.$$"; then
   echo "expected missing routine to fail" >&2
   exit 1
