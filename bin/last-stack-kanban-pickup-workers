@@ -132,27 +132,50 @@ If \`todo_count\` is 0 (or the todo read failed as busy-node), **stop here**. Do
 not load the full pickup prompt, do not claim, do not invent idle work, do not
 start implementation agents. Only when \`todo_count > 0\` continue to step 2.
 
-## 2) Load authoritative pickup prompt
+## 2) Load authoritative pickup prompt (Class A self-heal on failure)
 
 \`\`\`bash
 last_stack="\${LAST_STACK_ROOT:-\$HOME/.last-stack}"
-"\$last_stack/bin/last-stack-routine-read" kanban-pickup
+rr_out="/tmp/kanban-pickup-prompt.\$\$"
+rr_err="/tmp/kanban-pickup-rr.\$\$"
+if ! "\$last_stack/bin/last-stack-routine-read" kanban-pickup >"\$rr_out" 2>"\$rr_err"; then
+  # Class A: install/host-track freeze. Heal once (zero-LLM), then retry read.
+  if [ -x "\$last_stack/bin/last-stack-class-a-heal" ]; then
+    "\$last_stack/bin/last-stack-class-a-heal" --reason=pickup-bootstrap || true
+  elif command -v host-track >/dev/null 2>&1; then
+    host-track refresh --force-if-stale last-stack 2>/dev/null \\
+      || host-track refresh --force last-stack 2>/dev/null \\
+      || true
+  fi
+  if ! "\$last_stack/bin/last-stack-routine-read" kanban-pickup >"\$rr_out" 2>>"\$rr_err"; then
+    "\$last_stack/bin/last-stack-brain-append-heartbeat" --line \\
+      "kanban-pickup \$(date -u +%Y-%m-%dT%H:%M:%SZ) noop stale-last-stack-install routine-read-failed no_card_claimed" || true
+    printf '%s %s\\n' 'ROUTINE_RESULT' 'outcome=noop detail=stale-last-stack-install routine-read-failed no_card_claimed'
+    rm -f "\$rr_out" "\$rr_err"
+    exit 0
+  fi
+  # Healed mid-fire: next scheduled fire should claim with the new prompt.
+  # Do not claim from a prompt that may still be half-read by the agent mid-turn.
+  "\$last_stack/bin/last-stack-brain-append-heartbeat" --line \\
+    "kanban-pickup \$(date -u +%Y-%m-%dT%H:%M:%SZ) noop stale-last-stack-install healed-before-claim no_card_claimed" || true
+  printf '%s %s\\n' 'ROUTINE_RESULT' 'outcome=noop detail=stale-last-stack-install healed-before-claim no_card_claimed'
+  rm -f "\$rr_out" "\$rr_err"
+  exit 0
+fi
+cat "\$rr_out"
+rm -f "\$rr_out" "\$rr_err"
 \`\`\`
 
-If that command exits 0, treat its stdout as the authoritative prompt for this
-run and follow it completely. The fallback source prompt path used when this
-bootstrap was written was:
+If that command exits 0, treat its **stdout** as the authoritative prompt for
+this run and follow it completely. The fallback source prompt path used when
+this bootstrap was written was:
 
 \`\`\`
 $PROMPT_PATH
 \`\`\`
 
-If the reader exits nonzero, do not claim a card and do not enter idle mode.
-Append the normal kanban-pickup heartbeat as:
-\`noop stale-last-stack-install routine-read-failed no_card_claimed\`
-and print the final machine trailer by using the \`ROUTINE_RESULT\` token
-followed by
-\`outcome=<noop> detail=stale-last-stack-install routine-read-failed no_card_claimed\`.
+If the reader still fails after Class A heal, do not claim a card and do not
+enter idle mode — the heartbeat/trailer above already ended the run.
 EOF
 }
 

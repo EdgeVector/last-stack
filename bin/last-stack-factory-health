@@ -277,6 +277,10 @@ def diagnose_ship(alerts_context: dict[str, Any]) -> list[str]:
     install_stale_hb = int(alerts_context.get("install_stale_heartbeats", 0) or 0)
     if install_behind or install_stale_hb:
         recs.append(
+            "Run zero-LLM Class A heal: `last-stack-class-a-heal --reason=manual` "
+            "(or wait for factory-health auto_fix)."
+        )
+        recs.append(
             "Last Stack install freshness gate is failing — run "
             "`$LAST_STACK_ROOT/bin/last-stack-self-upgrade` and "
             "`last-stack-update-check` (expect UP_TO_DATE)."
@@ -360,13 +364,25 @@ def count_trailing_stale_install_heartbeats(scan_lines: int = 200) -> int:
     # Walk from newest: only count pickup-related lines; stop on first
     # non-stale pickup success/other outcome after we started counting.
     stale_re = re.compile(
-        r"(kanban-pickup|fkanban-pickup|last-stack-fkanban-pickup).*stale-last-stack-install",
+        r"(kanban-pickup|fkanban-pickup|last-stack-fkanban-pickup).*"
+        r"(stale-last-stack-install|stale-last-stack-artifact|"
+        r"routine-read-failed|class-a-heal-failed|refresh-failed)",
+        re.I,
+    )
+    healed_re = re.compile(
+        r"(kanban-pickup|fkanban-pickup|last-stack-fkanban-pickup).*"
+        r"(healed-before-claim|refreshed-before-claim|upgraded-before-claim)",
         re.I,
     )
     pickup_re = re.compile(r"(kanban-pickup|fkanban-pickup|last-stack-fkanban-pickup)", re.I)
     count = 0
     for ln in reversed(lines[-scan_lines:]):
         if not pickup_re.search(ln):
+            continue
+        # A successful Class A heal ends the freeze streak (next fire should claim).
+        if healed_re.search(ln):
+            if count > 0:
+                break
             continue
         if stale_re.search(ln) or (
             "stale-last-stack-install" in ln and "routine-read-failed" in ln
@@ -892,7 +908,10 @@ def format_message(snap: Snapshot, alerts: list[Alert], meta: dict[str, Any]) ->
         for r in a.recommendations[:4]:
             lines.append(f"  → {r}")
         lines.append("")
-    lines.append("Phase: notify only (auto_fix off). Reply / ask agent to apply a fix.")
+    lines.append(
+        "Phase: auto_fix may run class_a_heal on install_stale_* "
+        "(see factory-health.toml [auto_fix])."
+    )
     lines.append("Config: last-stack/config/factory-health.toml")
     return "\n".join(lines).strip()
 
@@ -915,6 +934,22 @@ def maybe_auto_fix(cfg: dict[str, Any], alerts: list[Alert], last_stack: Path, d
     if not allowed:
         return actions
     codes = {a.code for a in alerts}
+    if "class_a_heal" in allowed and codes & {
+        "install_stale_hard",
+        "install_stale_soft",
+    }:
+        bin_path = last_stack / "bin" / "last-stack-class-a-heal"
+        if bin_path.exists():
+            if dry_run:
+                actions.append("would:class_a_heal")
+            else:
+                code, out, err = run(
+                    [str(bin_path), "--reason=factory-health"],
+                    timeout=300,
+                )
+                actions.append(f"class_a_heal:exit={code}")
+                if code != 0 and (err or out):
+                    actions.append(f"class_a_heal:detail={(err or out).strip()[:120]}")
     if "board_closeout" in allowed and codes & {
         "doing_stuck_hard",
         "doing_stuck_soft",

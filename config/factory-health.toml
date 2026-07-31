@@ -25,10 +25,11 @@ quiet_hours = [0, 8]
 quiet_allows_hard = true
 
 [auto_fix]
-# Phase 1 default: message only. Flip per-action when Tom trusts them.
-enabled = false
-# Allowed action ids when enabled: board_closeout, report_only
-actions = []
+# Class A (host-track/install freeze) self-heal is trusted: zero-LLM, bounded,
+# never restarts lastdbd. board_closeout remains opt-in.
+enabled = true
+# Allowed action ids: class_a_heal, board_closeout, report_only
+actions = ["class_a_heal"]
 
 # ── Ship rate ──────────────────────────────────────────────────────────────
 # Compare last completed hour ships to the rolling 24h baseline of hourly ships.

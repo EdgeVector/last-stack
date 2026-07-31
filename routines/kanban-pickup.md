@@ -306,39 +306,51 @@ back to `todo` (or `pending_rollback=` in memory) per transport rules below.
   `last-stack-routine-read`'s auto-upgrade before prompt load. After CLI
   preflight and before any board claim, run:
   ```bash
-  artifact_status="$(host-track status --json last-stack 2>/dev/null || true)"
-  if [ "$(printf '%s\n' "$artifact_status" | jq -r '.install_mode // ""' 2>/dev/null)" = "artifact" ]; then
-    if [ "$(printf '%s\n' "$artifact_status" | jq -r '.stale | tostring' 2>/dev/null)" = "true" ]; then
-      if host-track refresh last-stack >/tmp/last-stack-pickup-artifact-refresh.$$ 2>&1; then
-        stale_detail="stale-last-stack-artifact refreshed-before-claim no_card_claimed"
-      else
-        stale_detail="stale-last-stack-artifact refresh-failed no_card_claimed"
-      fi
-      rm -f /tmp/last-stack-pickup-artifact-refresh.$$
+  # Class A self-heal first (zero-LLM). Heals stale pointer, dangling current,
+  # and failed host-track check. Safe no-op when already healthy.
+  if [ -x "$last_stack/bin/last-stack-class-a-heal" ]; then
+    if ! "$last_stack/bin/last-stack-class-a-heal" --reason=kanban-pickup-prompt-freshness; then
+      stale_detail="stale-last-stack-install class-a-heal-failed no_card_claimed"
       "$last_stack/bin/last-stack-brain-append-heartbeat" --line "kanban-pickup $(date -u +%Y-%m-%dT%H:%M:%SZ) noop $stale_detail" || true
       printf '%s %s\n' 'ROUTINE_RESULT' "outcome=noop detail=$stale_detail"
       exit 0
     fi
-  elif [ -x "$last_stack/bin/last-stack-self-upgrade" ]; then
-    upgrade_check="$("$last_stack/bin/last-stack-self-upgrade" --check-only --reason=kanban-pickup-prompt-freshness 2>&1 || true)"
-    case "$upgrade_check" in
-      *"result=would-upgrade"*)
-        if "$last_stack/bin/last-stack-self-upgrade" --reason=kanban-pickup-prompt-freshness >/tmp/last-stack-pickup-self-upgrade.$$ 2>&1; then
-          stale_detail="stale-last-stack-install upgraded-before-claim no_card_claimed"
+  else
+    artifact_status="$(host-track status --json last-stack 2>/dev/null || true)"
+    if [ "$(printf '%s\n' "$artifact_status" | jq -r '.install_mode // ""' 2>/dev/null)" = "artifact" ]; then
+      if [ "$(printf '%s\n' "$artifact_status" | jq -r '.stale | tostring' 2>/dev/null)" = "true" ]; then
+        if host-track refresh --force-if-stale last-stack >/tmp/last-stack-pickup-artifact-refresh.$$ 2>&1 \
+           || host-track refresh --force last-stack >/tmp/last-stack-pickup-artifact-refresh.$$ 2>&1; then
+          stale_detail="stale-last-stack-artifact refreshed-before-claim no_card_claimed"
         else
-          stale_detail="stale-last-stack-install upgrade-failed no_card_claimed"
+          stale_detail="stale-last-stack-artifact refresh-failed no_card_claimed"
         fi
-        rm -f /tmp/last-stack-pickup-self-upgrade.$$
+        rm -f /tmp/last-stack-pickup-artifact-refresh.$$
         "$last_stack/bin/last-stack-brain-append-heartbeat" --line "kanban-pickup $(date -u +%Y-%m-%dT%H:%M:%SZ) noop $stale_detail" || true
         printf '%s %s\n' 'ROUTINE_RESULT' "outcome=noop detail=$stale_detail"
         exit 0
-        ;;
-    esac
+      fi
+    elif [ -x "$last_stack/bin/last-stack-self-upgrade" ]; then
+      upgrade_check="$("$last_stack/bin/last-stack-self-upgrade" --check-only --reason=kanban-pickup-prompt-freshness 2>&1 || true)"
+      case "$upgrade_check" in
+        *"result=would-upgrade"*)
+          if "$last_stack/bin/last-stack-self-upgrade" --reason=kanban-pickup-prompt-freshness >/tmp/last-stack-pickup-self-upgrade.$$ 2>&1; then
+            stale_detail="stale-last-stack-install upgraded-before-claim no_card_claimed"
+          else
+            stale_detail="stale-last-stack-install upgrade-failed no_card_claimed"
+          fi
+          rm -f /tmp/last-stack-pickup-self-upgrade.$$
+          "$last_stack/bin/last-stack-brain-append-heartbeat" --line "kanban-pickup $(date -u +%Y-%m-%dT%H:%M:%SZ) noop $stale_detail" || true
+          printf '%s %s\n' 'ROUTINE_RESULT' "outcome=noop detail=$stale_detail"
+          exit 0
+          ;;
+      esac
+    fi
   fi
   ```
-  If the upgrade attempt fails, still do not claim a card from a stale prompt:
-  heartbeat `noop stale-last-stack-install upgrade-failed no_card_claimed` and
-  exit. The next scheduled fire can retry after the install is current.
+  If Class A heal fails, still do not claim a card from a bad install:
+  heartbeat `noop stale-last-stack-install class-a-heal-failed no_card_claimed` and
+  exit. The next scheduled fire retries after the out-of-band refresh catches up.
 - Follow the **kanban-agent** skill, **WORK mode**, yourself — that skill is the
   source of truth for the per-card lifecycle. This prompt is selection + the
   no-spawn execution contract. If the active Codex skill registry does not
