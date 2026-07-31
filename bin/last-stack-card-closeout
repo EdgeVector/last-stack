@@ -53,11 +53,34 @@ if [ -x "$self_dir/last-stack-lastdb-retry" ]; then
   retry=( "$self_dir/last-stack-lastdb-retry" --attempts 3 -- )
 fi
 
-run() {
-  if [ "${#retry[@]}" -gt 0 ]; then
-    "${retry[@]}" "$@"
+command_timeout_sec="${LAST_STACK_CARD_CLOSEOUT_COMMAND_TIMEOUT_SEC:-50}"
+case "$command_timeout_sec" in
+  ''|*[!0-9]*) command_timeout_sec=50 ;;
+esac
+if [ "$command_timeout_sec" -lt 1 ]; then
+  command_timeout_sec=1
+fi
+
+timeout_bin=""
+if command -v gtimeout >/dev/null 2>&1; then
+  timeout_bin="gtimeout"
+elif command -v timeout >/dev/null 2>&1; then
+  timeout_bin="timeout"
+fi
+
+with_timeout() {
+  if [ -n "$timeout_bin" ]; then
+    "$timeout_bin" -k 10s "${command_timeout_sec}s" "$@"
   else
     "$@"
+  fi
+}
+
+run() {
+  if [ "${#retry[@]}" -gt 0 ]; then
+    with_timeout "${retry[@]}" "$@"
+  else
+    with_timeout "$@"
   fi
 }
 
@@ -265,7 +288,13 @@ if [ -n "$pr_url" ] || [ -n "$branch" ]; then
   add_args=( "$board_cli" add "$slug" )
   [ -n "$pr_url" ] && add_args+=( --pr-url "$pr_url" )
   [ -n "$branch" ] && add_args+=( --branch "$branch" )
-  run "${add_args[@]}"
+  add_out="$(run "${add_args[@]}" 2>&1)" || {
+    add_rc=$?
+    echo "$add_out" >&2
+    echo "last-stack-card-closeout: FAILED board-add-failed slug=$slug exit=$add_rc" >&2
+    exit 1
+  }
+  [ -z "$add_out" ] || printf '%s\n' "$add_out"
 fi
 
 move_to_done() {
@@ -277,7 +306,7 @@ move_to_done() {
 }
 
 column_of() {
-  "$board_cli" show "$slug" --json 2>/dev/null | python3 -c '
+  run "$board_cli" show "$slug" --json 2>/dev/null | python3 -c '
 import sys, json
 d = json.load(sys.stdin)
 c = d.get("card") or d
