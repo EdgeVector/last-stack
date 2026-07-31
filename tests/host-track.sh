@@ -216,6 +216,27 @@ jq -e '
     and any(.links[]; .source == "dist/situations" and .target == "$HOME/.local/bin/situations")
 ' "$default_registry" >/dev/null || fail "default situations registry is not a real LastGit host-track entry"
 
+remote_status="$(HOME="$tmp/default-home" HOST_TRACK_REGISTRY="$default_registry" "$ROOT/bin/host-track" status --json remote)"
+printf '%s\n' "$remote_status" | jq -e '
+  .app == "remote"
+  and .install_mode == "artifact"
+  and .kind == "artifact cli"
+  and .command == "ra"
+  and .gate == "lastgit"
+  and .gate_main == "lastdb:///remote#main"
+  and .artifact_app == "remote"
+  and .artifact_channel == "stable"
+  and (.artifact_root | endswith("/default-home/.lastgit/artifacts"))
+  and (.install_root | endswith("/default-home/.host-track/apps/remote"))
+  and (.host_track | endswith("/default-home/.host-track/apps/remote/current"))
+' >/dev/null || fail "default remote registry entry is not a real artifact Host Track target"
+jq -e '
+  .apps[] | select(.app == "remote")
+  and any(.links[]?; .source == "bin/ra" and .target == "$HOME/.local/bin/ra")
+  and any(.links[]?; .source == "bin/rad" and .target == "$HOME/.local/bin/rad")
+  and any(.links[]?; .source == "bin/rad-telegram" and .target == "$HOME/.local/bin/rad-telegram")
+' "$default_registry" >/dev/null || fail "default remote registry links are incomplete"
+
 status="$("$ROOT/bin/host-track" status --json fake)"
 printf '%s\n' "$status" | jq -e '.app == "fake"' >/dev/null || fail "status app mismatch"
 printf '%s\n' "$status" | jq -e '.exec_path | endswith("/fakeapp")' >/dev/null || fail "status missing executable"

@@ -224,6 +224,33 @@
       "notes": "Local-safe Search app CLI (semantic MiniLM only). Post-install runs search-host-track-post-install (JS deps + neural smoke). Bootstrap: search init / online-backfill; Mini may feed inbox via lastdb search-rebuild."
     },
     {
+      "app": "remote",
+      "install_mode": "artifact",
+      "kind": "artifact cli",
+      "command": "ra",
+      "gate": "lastgit",
+      "gate_main": "lastdb:///remote#main",
+      "artifact_app": "remote",
+      "artifact_channel": "stable",
+      "artifact_root": "$HOME/.lastgit/artifacts",
+      "install_root": "$HOME/.host-track/apps/remote",
+      "links": [
+        {
+          "source": "bin/ra",
+          "target": "$HOME/.local/bin/ra"
+        },
+        {
+          "source": "bin/rad",
+          "target": "$HOME/.local/bin/rad"
+        },
+        {
+          "source": "bin/rad-telegram",
+          "target": "$HOME/.local/bin/rad-telegram"
+        }
+      ],
+      "notes": "Remote Agent artifact install; refresh links ra/rad/rad-telegram from the promoted LastGit artifact."
+    },
+    {
       "app": "lastdb",
       "install_mode": "checkout",
       "kind": "safe-upgrade-managed binary",
