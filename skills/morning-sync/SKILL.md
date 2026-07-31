@@ -159,9 +159,35 @@ waiting on Tom. Steps:
    plus the generators. If `list_scheduled_tasks` is unavailable in a headless
    run, fall back to `routine-heartbeats` alone and say so.
 
-5. **§4 — What moved overnight (context, keep short).** Reuse
-   `~/.claude/skills/morning-digest/gather.sh 24` and roll up BY PROGRAM (not a
-   PR wall). 1–3 lines per program that changed.
+5. **§4 — What shipped overnight (ELI5, always include).** This is the
+   plain-English overnight story Tom asked for standing (2026-07-31): not a
+   commit wall, not jargon. Reuse
+   `~/.claude/skills/morning-digest/gather.sh 24` plus Situations notices and
+   routine final words, then write **two layers**:
+
+   **A. Plain-English story (required — the part Tom actually reads).**
+   - Open with a **one-breath bottom line** (what kind of day it was: speed-ups,
+     safety fixes, cleanup, a real product feel, or mostly quiet).
+   - Then **2–5 short categories** as small headings or bold labels — e.g.
+     "the filing cabinet / database", "the to-do board", "the code shelf",
+     "backups / safety net", "cleanup". Group work by *what it means for Tom*,
+     not by repo name.
+   - Under each category: a few sentences max, **no technical terms** (no PR
+     numbers, schema names, latency percentiles, or tool flags). Explain like
+     he's five: what changed, and **what effect he should notice** (faster board
+     moves, quieter machine, fewer ghost branches, backup still not fully
+     trusted, etc.).
+   - End §4A with a **one-line "effect on the database"** when anything touched
+     LastDB / brain / board / lastgit storage — same data vs cheaper writes vs
+     cleaner reads vs durability still open. If nothing database-shaped moved,
+     say so in one line.
+   - Prefer a few short paragraphs over a long bullet wall. If overnight was
+     empty, say "quiet night — no meaningful product moves" and skip empty
+     categories.
+
+   **B. Optional tight program rollup (secondary).** After the ELI5 story, a
+   short BY-PROGRAM bullet list (1 line each) is fine for skimming agents/logs —
+   never *instead of* the ELI5 story. No PR wall.
 
 6. **§5 — Usage & Bugs (visibility across the board).** Run the helper
    `~/.claude/skills/morning-sync/usage-bugs.sh` and paste its two blocks
@@ -207,8 +233,22 @@ Brief skeleton:
 
 <output of usage-bugs.sh — the 🐛 Bugs (Sentry) + 📈 Usage (PostHog) blocks, verbatim>
 
-### 📦 Moved overnight (by program)
+### 📦 What shipped overnight (plain English)
+**Bottom line:** <one breath — speed / safety / cleanup / quiet>.
+
+**<Category 1 — everyday name>.** <2–4 sentences, no jargon. What changed and
+what you should notice.>
+
+**<Category 2 …>.** …
+
+**Effect on the database:** <one line — same data, cheaper writes, cleaner
+reads, durability still open, or "nothing database-shaped moved".>
+
+<details><summary>By program (skim)</summary>
+
 - <program> — <1 line>.
+
+</details>
 
 Most things are being driven automatically. Run `/morning-sync` (WORK) only if you
 want to give direction on the §⚠️ items or redirect anything in §🚀.

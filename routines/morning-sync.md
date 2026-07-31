@@ -56,8 +56,23 @@ Lead with a one-line restatement of the goal / top objective, then:
   `todo` card with `Repo:`/`Base:` and no `BLOCKED:` note, surface this as a
   top routine-health alert. Name the top eligible card(s), the last pickup time,
   and say that the ready queue is not being drained.
-- **§📦 Moved overnight** — git activity across your repos in the last 24h, rolled
-  up BY PROGRAM (not by individual PR), short.
+- **§📦 What shipped overnight (plain English — always include).** This is the
+  standing overnight story the human wants every morning (Tom 2026-07-31): not a
+  commit wall and not jargon.
+  1. **Bottom line** in one breath (speed-ups, safety, cleanup, or quiet).
+  2. **2–5 everyday categories** (e.g. filing cabinet/database, to-do board,
+     code shelf, backups/safety net, cleanup) — group by *what it means for the
+     human*, not by repo. Under each: a few sentences max, **no technical
+     terms** (no PR numbers, schema names, latency numbers). Explain like
+     they're five: what changed + **what effect they should notice**.
+  3. **One-line "effect on the database"** when anything touched the brain /
+     board / storage layer (same data vs cheaper writes vs cleaner reads vs
+     durability still open). If nothing database-shaped moved, say so.
+  4. Optional short BY-PROGRAM bullet skim *after* the ELI5 story — never
+     instead of it. If the night was empty: "quiet night" and skip empty
+     categories.
+  Gather via the morning-digest gather helper + Situations notices + routine
+  final words when available; still roll up meaning, not raw commits.
 
 ## Setup
 - If your shell is sandboxed, prepend `$PATH` on every call so your tools resolve.
