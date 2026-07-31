@@ -77,10 +77,14 @@ die() { printf '[safe-upgrade] ERROR: %s\n' "$*" >&2; exit 1; }
 warn() { printf '[safe-upgrade] WARN: %s\n' "$*" >&2; }
 
 # Memory-guard ceiling used by com.tomtang.lastdbd-memory-guard (Tom, 2026-07-14).
-# Env LASTDBD_RSS_LIMIT_MB wins; else LaunchAgent plist; else 6144.
+# Env LASTDBD_RSS_LIMIT_MB wins; else LaunchAgent plist(s); else the resident
+# primary default. Keep the primary daemon's own plist aligned before kickstart
+# so lastdbd does not boot with its lower binary default while the guard allows
+# the larger resident ceiling.
 # Probe/live must stay under this or the guard SIGTERMs primary in a thrash loop
 # (incident after 2026-07-22 sled-free cutover: candidate ~8.5G vs limit 6G).
 MEMORY_GUARD_PLIST="${LASTDBD_MEMORY_GUARD_PLIST:-$HOME/Library/LaunchAgents/com.tomtang.lastdbd-memory-guard.plist}"
+DEFAULT_LASTDBD_RSS_LIMIT_MB="${LASTDBD_DEFAULT_RSS_LIMIT_MB:-12288}"
 # Extra headroom fraction (0–100). Fail probe if RSS >= limit * (100-HEADROOM)/100.
 # Default 10% so live does not sit right on the kill line after settle.
 RSS_HEADROOM_PCT="${LASTDB_PROBE_RSS_HEADROOM_PCT:-10}"
@@ -124,15 +128,46 @@ resolve_rss_limit_mb() {
     echo "$LASTDB_PROBE_RSS_LIMIT_MB"
     return
   fi
+  local from_plist
   if [ -f "$MEMORY_GUARD_PLIST" ]; then
-    local from_plist
     from_plist="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:LASTDBD_RSS_LIMIT_MB' "$MEMORY_GUARD_PLIST" 2>/dev/null || true)"
     if [ -n "$from_plist" ] && [ "$from_plist" -gt 0 ] 2>/dev/null; then
       echo "$from_plist"
       return
     fi
   fi
-  echo 6144
+  if [ -f "$LAUNCHD_PLIST" ]; then
+    from_plist="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:LASTDBD_RSS_LIMIT_MB' "$LAUNCHD_PLIST" 2>/dev/null || true)"
+    if [ -n "$from_plist" ] && [ "$from_plist" -gt 0 ] 2>/dev/null; then
+      echo "$from_plist"
+      return
+    fi
+  fi
+  echo "$DEFAULT_LASTDBD_RSS_LIMIT_MB"
+}
+
+resolve_live_rss_limit_mb() {
+  # Probe-only overrides must not be written back into the live LaunchAgent.
+  local from_plist
+  if [ -n "${LASTDBD_RSS_LIMIT_MB:-}" ]; then
+    echo "$LASTDBD_RSS_LIMIT_MB"
+    return
+  fi
+  if [ -f "$MEMORY_GUARD_PLIST" ]; then
+    from_plist="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:LASTDBD_RSS_LIMIT_MB' "$MEMORY_GUARD_PLIST" 2>/dev/null || true)"
+    if [ -n "$from_plist" ] && [ "$from_plist" -gt 0 ] 2>/dev/null; then
+      echo "$from_plist"
+      return
+    fi
+  fi
+  if [ -f "$LAUNCHD_PLIST" ]; then
+    from_plist="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:LASTDBD_RSS_LIMIT_MB' "$LAUNCHD_PLIST" 2>/dev/null || true)"
+    if [ -n "$from_plist" ] && [ "$from_plist" -gt 0 ] 2>/dev/null; then
+      echo "$from_plist"
+      return
+    fi
+  fi
+  echo "$DEFAULT_LASTDBD_RSS_LIMIT_MB"
 }
 
 rss_fail_threshold_mb() {
@@ -501,6 +536,31 @@ detect_live_venue() {
   [ "$VENUE" = "sidebin" ] && log "launchd label: $LAUNCHD_LABEL"
 }
 
+ensure_primary_launchd_rss_limit() {
+  local limit current
+  if [ ! -f "$LAUNCHD_PLIST" ]; then
+    warn "primary LaunchAgent plist missing ($LAUNCHD_PLIST); cannot stamp LASTDBD_RSS_LIMIT_MB before kickstart"
+    return 0
+  fi
+  limit="$(resolve_live_rss_limit_mb)"
+  if ! [ "$limit" -gt 0 ] 2>/dev/null; then
+    die "invalid LASTDBD_RSS_LIMIT_MB resolved for live LaunchAgent: $limit"
+  fi
+  current="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:LASTDBD_RSS_LIMIT_MB' "$LAUNCHD_PLIST" 2>/dev/null || true)"
+  if [ "$current" = "$limit" ]; then
+    log "primary LaunchAgent LASTDBD_RSS_LIMIT_MB already $limit"
+    return 0
+  fi
+  /usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables' "$LAUNCHD_PLIST" >/dev/null 2>&1 \
+    || /usr/libexec/PlistBuddy -c 'Add :EnvironmentVariables dict' "$LAUNCHD_PLIST"
+  if [ -n "$current" ]; then
+    /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:LASTDBD_RSS_LIMIT_MB $limit" "$LAUNCHD_PLIST"
+  else
+    /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:LASTDBD_RSS_LIMIT_MB string $limit" "$LAUNCHD_PLIST"
+  fi
+  log "stamped primary LaunchAgent LASTDBD_RSS_LIMIT_MB=$limit (was ${current:-unset})"
+}
+
 live_install_sidebin() {
   local dest="$SIDEBIN_DIR"
   local ts cand_cli
@@ -542,6 +602,8 @@ live_install_sidebin() {
     mv -f "$dest/lastdb.new" "$dest/lastdb"
   fi
   log "installed candidate into $dest/lastdbd"
+
+  ensure_primary_launchd_rss_limit
 
   local uid
   uid="$(id -u)"

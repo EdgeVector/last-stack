@@ -31,6 +31,19 @@ grep -q '\.codex/skills/lastdb-safe-upgrade' "$skill_md" || {
 # bash -n on driver
 bash -n "$driver"
 
+grep -q 'DEFAULT_LASTDBD_RSS_LIMIT_MB="${LASTDBD_DEFAULT_RSS_LIMIT_MB:-12288}"' "$driver" || {
+  echo "FAIL: safe-upgrade driver must default the resident primary RSS limit to 12288 MiB" >&2
+  exit 1
+}
+grep -q 'ensure_primary_launchd_rss_limit' "$driver" || {
+  echo "FAIL: safe-upgrade driver must stamp LASTDBD_RSS_LIMIT_MB into the primary LaunchAgent before sidebin kickstart" >&2
+  exit 1
+}
+if grep -q 'else 6144' "$skill_md"; then
+  echo "FAIL: SKILL.md still documents the obsolete 6144 MiB RSS fallback" >&2
+  exit 1
+fi
+
 # setup --host codex would register this name (dry structure check)
 name="$(grep -m1 '^name:' "$skill_md" | sed 's/^name:[[:space:]]*//' | tr -d '[:space:]')"
 [ "$name" = "lastdb-safe-upgrade" ] || {
