@@ -34,17 +34,6 @@ Pattern: $pattern"
   fi
 }
 
-require_absent() {
-  local path="$1" pattern="$2" label="$3"
-  require_file "$path" "$label"
-  if grep -Eiq "$pattern" "$path"; then
-    fail "search-as-app contract regressed: $label
-
-Path: $path
-Pattern (must be ABSENT): $pattern"
-  fi
-}
-
 # 1. Search app scaffold: kernel contract lives outside lastdbd.
 search_readme="$SEARCH_DIR/README.md"
 search_pr_venue="$SEARCH_DIR/.last-stack/pr-venue"
