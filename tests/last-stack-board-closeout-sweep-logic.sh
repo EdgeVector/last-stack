@@ -80,8 +80,18 @@ binwrap="$tmp/bin"
 mkdir -p "$binwrap"
 cat >"$binwrap/lastgit" <<'EOF'
 #!/usr/bin/env bash
-# Pretend CR is still open so we exercise heal + skip path.
 if [ "${1:-}" = "cr" ] && [ "${2:-}" = "view" ]; then
+  if [ "${3:-}" = "brain" ] && [ "${4:-}" = "cr-ms8mz1xt-981a" ]; then
+    cat <<'JSON'
+{"cr":{"state":"merged","id":"cr-ms8mz1xt-981a","merge_oid":"abc123"}}
+JSON
+    exit 0
+  fi
+  if [[ "${4:-}" == *'`'* ]]; then
+    echo "unsanitized cr id: ${4:-}" >&2
+    exit 1
+  fi
+  # Pretend other CRs are still open so we exercise heal + skip path.
   cat <<'JSON'
 {"cr":{"state":"open","id":"cr-mrw0frwz-ea84"}}
 JSON
@@ -130,5 +140,50 @@ echo "$out" | grep -q 'pr-url-healed:deploy-pipeline-red-schema-infra-20260722' 
   echo "FAIL: expected pr-url-healed flag in heartbeat: $out" >&2
   exit 1
 }
+
+malformed_board="$tmp/malformed-board"
+cat >"$malformed_board" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  list)
+    cat <<'JSON'
+[
+  {
+    "slug": "malformed-structured-pr-url",
+    "title": "merged CR with copied markdown punctuation",
+    "column": "doing",
+    "position": "9999999999999",
+    "assignee": "",
+    "tags": [],
+    "pr_url": "lastgit://brain/cr/cr-ms8mz1xt-981a`",
+    "branch": "kanban/malformed-structured-pr-url",
+    "repo": "EdgeVector/brain",
+    "updated_at": "2020-01-01T00:00:00.000Z",
+    "body": "Repo: EdgeVector/brain\nBase: main\nKind: pr\n"
+  }
+]
+JSON
+    ;;
+  *)
+    echo "unexpected malformed-board command: $*" >&2
+    exit 2
+    ;;
+esac
+EOF
+chmod +x "$malformed_board"
+
+malformed_out="$("$sweep" --dry-run --board-cli "$malformed_board" --grace-min 1 --max-actions 20 2>&1 || true)"
+echo "$malformed_out"
+echo "$malformed_out" | grep -q 'closed_slugs=malformed-structured-pr-url' || {
+  echo "FAIL: expected malformed structured pr_url to resolve as merged after sanitizing:" >&2
+  echo "$malformed_out" >&2
+  exit 1
+}
+if echo "$malformed_out" | grep -q 'lastgit-fetch-failed:brain/cr-ms8mz1xt-981a`'; then
+  echo "FAIL: trailing markdown punctuation leaked into LastGit lookup:" >&2
+  echo "$malformed_out" >&2
+  exit 1
+fi
 
 echo "ok last-stack-board-closeout-sweep-logic"

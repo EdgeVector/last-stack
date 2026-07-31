@@ -223,7 +223,8 @@ function extractPrUrlFromBody(body, repo) {
   for (const name of ["PR", "CR"]) {
     const raw = parseBodyHeader(body, name);
     if (!raw) continue;
-    if (/^(https?:\/\/|lastgit:\/\/)/i.test(raw)) return raw;
+    const normalized = normalizePrUrl(raw);
+    if (/^(https?:\/\/|lastgit:\/\/)/i.test(normalized)) return normalized;
     const cr = raw.match(/\b(cr-[A-Za-z0-9_-]+)\b/);
     if (cr) {
       const r = String(repo || "").trim();
@@ -241,13 +242,23 @@ function extractPrUrlFromBody(body, repo) {
     }
     if (inFence) continue;
     const m = line.match(/\blastgit:\/\/[^\s)>\]]+/i);
-    if (m) return m[0].replace(/[.,;]+$/, "");
+    if (m) return normalizePrUrl(m[0]);
   }
   return "";
 }
 
+function normalizePrUrl(raw) {
+  let url = String(raw || "").trim();
+  if (!url) return "";
+  url = url.replace(/^[`<]+/, "");
+  while (/[`)\]}>.,;]+$/.test(url)) {
+    url = url.replace(/[`)\]}>.,;]+$/, "");
+  }
+  return url.trim();
+}
+
 function prUrlOf(card) {
-  const field = String(card.pr_url || card.prUrl || card.pr || "").trim();
+  const field = normalizePrUrl(card.pr_url || card.prUrl || card.pr || "");
   if (field) return field;
   return extractPrUrlFromBody(bodyOf(card), card.repo || card.Repo || "");
 }
@@ -333,6 +344,7 @@ function branchHasCommits(card, wt) {
 }
 
 function classifyPr(url) {
+  url = normalizePrUrl(url);
   if (!url) return { kind: "none" };
   // lastgit://repo/cr/cr-id or lastgit://repo/cr/cr-id
   let m = url.match(/^lastgit:\/\/([^/]+)\/cr\/([^/\s?#]+)/i);
@@ -675,8 +687,9 @@ def extract_pr_url_from_body(body, repo=""):
         raw = parse_body_header(body, name)
         if not raw:
             continue
-        if re.match(r"^(https?://|lastgit://)", raw, re.I):
-            return raw
+        normalized = normalize_pr_url(raw)
+        if re.match(r"^(https?://|lastgit://)", normalized, re.I):
+            return normalized
         cr = re.search(r"\b(cr-[A-Za-z0-9_-]+)\b", raw)
         if cr:
             r = (repo or "").strip()
@@ -695,11 +708,20 @@ def extract_pr_url_from_body(body, repo=""):
             continue
         m = re.search(r"\blastgit://[^\s)>\]]+", line, re.I)
         if m:
-            return re.sub(r"[.,;]+$", "", m.group(0))
+            return normalize_pr_url(m.group(0))
     return ""
 
+def normalize_pr_url(raw):
+    url = str(raw or "").strip()
+    if not url:
+        return ""
+    url = re.sub(r"^[`<]+", "", url)
+    while re.search(r"[`)\]}>.,;]+$", url):
+        url = re.sub(r"[`)\]}>.,;]+$", "", url)
+    return url.strip()
+
 def pr_url(card):
-    field = (card.get("pr_url") or card.get("prUrl") or card.get("pr") or "").strip()
+    field = normalize_pr_url(card.get("pr_url") or card.get("prUrl") or card.get("pr") or "")
     if field:
         return field
     return extract_pr_url_from_body(body_of(card), card.get("repo") or card.get("Repo") or "")
@@ -765,6 +787,7 @@ def has_commits(wt):
     return False
 
 def is_merged(url):
+    url = normalize_pr_url(url)
     if not url:
         return False, "no-pr"
     m = re.match(r"lastgit://([^/]+)/cr/([^/\s?#]+)", url)
