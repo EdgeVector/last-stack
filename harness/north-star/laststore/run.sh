@@ -19,9 +19,7 @@ record_from_file() {
 }
 
 record_from_brain() {
-  if command -v fbrain >/dev/null 2>&1; then
-    fbrain get "$SLUG" --type project
-  elif command -v brain >/dev/null 2>&1; then
+  if command -v brain >/dev/null 2>&1; then
     brain get "$SLUG"
   else
     return 127

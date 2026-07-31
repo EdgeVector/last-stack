@@ -33,10 +33,7 @@ EOF
 sentry_projects_from_signal_sources() {
   local record
   record=""
-  if command -v fbrain >/dev/null 2>&1; then
-    record=$(fbrain get signal-sources --type reference 2>/dev/null || true)
-  fi
-  if [ -z "$record" ] && command -v brain >/dev/null 2>&1; then
+  if command -v brain >/dev/null 2>&1; then
     record=$(brain get signal-sources --type reference 2>/dev/null || true)
   fi
   if [ -z "$record" ]; then

@@ -38,7 +38,7 @@ brain get open-cutovers
 last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 . "$last_stack/bin/last-stack-shell-prelude" 2>/dev/null || true
 command -v brain >/dev/null
-command -v fkanban >/dev/null || command -v kanban >/dev/null
+command -v kanban >/dev/null
 situations list --json || true
 situations notices --since 6h || true
 ```

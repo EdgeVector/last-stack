@@ -80,7 +80,7 @@ card without repair. -->
 - **card_target**: `Repo: <OWNER>/<REPO>; Base: main; tags: probes,<TAG>; priority: P1`
 - **dedupe**: `search board for <FINDING_CATEGORY>; search open PRs for <AREA>; check last <N> verdicts`
 - **card_filing**: `body begins with Repo: <OWNER>/<REPO> and Base: main;
-  fkanban add <slug> --column todo --repo <OWNER>/<REPO> --base main --kind pr
+  kanban add <slug> --column todo --repo <OWNER>/<REPO> --base main --kind pr
   --tags probes,<TAG>`
 - **teardown**: `stop process <PID_FILE>; remove <TMP_DIR>`
 - **skip_policy**: `dependency unavailable, missing credentials, or dev surface down -> heartbeat noop`

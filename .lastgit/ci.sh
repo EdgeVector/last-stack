@@ -35,6 +35,7 @@ bash tests/last-stack-kanban-done-when-eval.sh
 bash tests/last-stack-driver-hierarchy.sh
 bash tests/last-stack-ship-feature-milestones.sh
 bash tests/last-stack-lint-prompts.sh --smoke
+bash tests/last-stack-audit-f-prefix-callers.sh
 bash tests/last-stack-papercut-reconciler-contract.sh
 bash tests/last-stack-command-modes.sh
 bash tests/last-stack-north-star-portal-resolver.sh

@@ -220,9 +220,8 @@ smoke_fkanban() {
   ensure_bin_wrapper "$root" kanban
   ensure_bin_wrapper "$root" fkanban
   PATH="$root/bin:$PATH" kanban list --column todo >/dev/null \
-    || PATH="$root/bin:$PATH" fkanban list --column todo >/dev/null \
-    || die "smoke: kanban/fkanban list failed"
-  printf 'safe-upgrade-cli: fkanban smoke OK\n'
+    || die "smoke: kanban list failed"
+  printf 'safe-upgrade-cli: kanban smoke OK\n'
 }
 
 materialize_from_git() {

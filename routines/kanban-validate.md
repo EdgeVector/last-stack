@@ -56,7 +56,7 @@ filing a fix **card** over landing code in this routine.
   ```bash
   last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
   . "$last_stack/bin/last-stack-shell-prelude"
-  "$last_stack/bin/last-stack-cli-preflight" git curl jq gh kanban fkanban brain
+  "$last_stack/bin/last-stack-cli-preflight" git curl jq gh kanban brain
   ```
 - Read this routine through the guarded reader when the scheduler supports it:
   `"$last_stack/bin/last-stack-routine-read" "kanban-validate"`.
@@ -74,9 +74,7 @@ priority then position is enough per wake).
 
 ```bash
 last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
-board_cli="$(command -v fkanban || command -v kanban)"
-# Prefer fkanban when both exist
-command -v fkanban >/dev/null && board_cli=fkanban
+board_cli="$(command -v kanban)"
 
 # For each non-done card with Kind in validation|tracker|capstone|meta:
 #   extract single-line DONE-WHEN: predicate from body
@@ -141,7 +139,7 @@ Then re-eval the DONE-WHEN. Do not invent new harness slugs not listed by
    - Skip empty-body shells and pure meta "split into children" capstones
      with no VERIFY (e.g. planning-only dogfood shells)
 
-3. **Never** use `fkanban pickup claim` / `kanban pickup claim`. Do not move a
+3. **Never** use `kanban pickup claim` / `kanban pickup claim`. Do not move a
    proof card to `todo` just to "make it pickable."
 
 4. Rank within the chosen pool by priority tags (`p0`→`p3`), then board position.
@@ -187,7 +185,7 @@ a named blocker instead of parking inside the run.
   - clean `Repo:` / `Base:` / `Branch:` headers
   - kanban-agent trigger line
   - narrow GOAL/STEPS/VERIFY and reference to the failed proof slug
-  - optional `fkanban dep add <proof-slug> <fix-slug>` so the proof waits on the fix
+  - optional `kanban dep add <proof-slug> <fix-slug>` so the proof waits on the fix
   Leave the proof card in **`backlog`** (or `todo` if already there) with
   `block_status=none` unless the failure is a true human gate. **Never** move
   to a `review` column. Heartbeat `ok validated=<slug> result=failed fix=<fix-slug>`.

@@ -45,7 +45,7 @@ export PATH="$HOME/.local/bin:$PATH"
 command -v routines >/dev/null || routines() { bun "$HOME/code/edgevector/routines/src/cli.ts" "$@"; }
 ```
 
-Situations: `fsituations list --json` or the workspace fallback. Empty list = OK.
+Situations: `situations list --json` or the workspace fallback. Empty list = OK.
 Socket health: `kanban list --column todo >/dev/null`.
 
 ## Step 1 — Fleet snapshot

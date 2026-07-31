@@ -209,8 +209,7 @@ find_slug_paths() {
 
 doing_slugs() {
   local cli=""
-  if command -v fkanban >/dev/null 2>&1; then cli=fkanban
-  elif command -v kanban >/dev/null 2>&1; then cli=kanban
+  if command -v kanban >/dev/null 2>&1; then cli=kanban
   else
     return 0
   fi

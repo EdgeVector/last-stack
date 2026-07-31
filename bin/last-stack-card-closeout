@@ -41,10 +41,9 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ -z "$board_cli" ]; then
-  if command -v fkanban >/dev/null 2>&1; then board_cli=fkanban
-  elif command -v kanban >/dev/null 2>&1; then board_cli=kanban
+  if command -v kanban >/dev/null 2>&1; then board_cli=kanban
   else
-    echo "last-stack-card-closeout: need fkanban or kanban on PATH" >&2
+    echo "last-stack-card-closeout: need kanban on PATH" >&2
     exit 2
   fi
 fi
