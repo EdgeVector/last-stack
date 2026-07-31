@@ -35,12 +35,20 @@ continue — do not fail the whole run.
   AND is not your live node.
 - NEVER kill an agent process. NEVER `stash`/`reset`/`checkout --` in a shared
   repo.
-- NEVER remove a worktree with uncommitted changes
-  (`git -C <wt> status --porcelain` non-empty) OR unique unmerged commits
-  (`git -C <wt> cherry origin/<DEFAULT_BRANCH> <branch>` shows any `+`). Keep
-  `salvage-*` / `tombstone-*` / `locked` worktrees.
-- NEVER touch a worktree whose board card is in `doing`/`review`. Read the board
-  first (`<board list command>`) and cross-check by intent.
+- NEVER touch a worktree whose board card is in **`doing`**. Read the board
+  first (`<board list command>`) and cross-check by intent. Keep
+  `salvage-*` / `tombstone-*` / `locked` worktrees and any cwd with a live
+  agent/build process.
+- **Dirty is no longer a permanent keep** (Tom 2026-07-30). Abandoned dirty
+  trees were the multi‑tens‑of‑GB fkanban pile. Prefer
+  `bin/last-stack-worktree-reclaim` which: (1) always strips
+  `target`/`node_modules`/`.next`/`dist`/`build`, (2) saves a patch under
+  `~/.local/state/last-stack/runtime/worktree-patches/` when dirty, then
+  (3) `git worktree remove --force`. Do **not** silently discard without a
+  patch when the tree has real source edits — the helper does the patch step.
+- Unique unmerged commits on a non-`doing` tree older than the age gate may
+  still be reclaimed after the patch save; the branch is kept if not fully
+  merged (`branch -d` only, never `-D` unique WIP).
 - NEVER touch the live LastDB home (`~/.lastdb`), any `lastdb-backup-pre-*`
   pinned rollback backup outside `~/.lastdb-backups/`, or an in-place retained
   engine tree while a soak/rollback card is open. LastDB pruning below is scoped
@@ -83,16 +91,17 @@ continue — do not fail the whole run.
    Use those repo roots to enumerate worktrees across all repos + all worktree
    locations via `git -C "$repo" worktree list --porcelain`; derive each one's
    repo from `git -C <path> rev-parse --git-common-dir`.
-3. **Per worktree, compute** branch, unique-commit count, dirty count, and
-   whether a live process runs in it. A worktree is REMOVABLE only if 0 unique
-   commits AND clean AND its card isn't `doing`/`review`. If it has a live orphan
-   process (verify its command path is inside the worktree and it is NOT your
-   node), kill that PID first, then `git worktree remove --force <path>` and
-   `git branch -D <branch>`. Then `git worktree prune` per repo. Remove a now-
-   empty worktree parent dir. Use the bash wrapper above for generated loops, or
-   use `last_stack_run_tool "$LAST_STACK_TOOL_GIT"` and
-   `last_stack_run_tool "$LAST_STACK_TOOL_RM"` for generated one-shot cleanup
-   commands in this stripped-shell path.
+3. **Reclaim worktrees (preferred: helper).** Run the shared reclaim helper
+   first — it encodes the 2026-07-30 policy (strip build caches always; age-gate
+   non-`doing` trees; dirty → patch then remove):
+   ```bash
+   "$last_stack/bin/last-stack-worktree-reclaim" --sweep-stale --max-age-hours 48
+   ```
+   Heartbeat tokens: count lines with `removed worktree` / `stripped` from
+   helper stdout if useful. Fallback if the helper is missing: per worktree,
+   strip `target`/`node_modules`, then remove only when clean + not `doing` +
+   no live cwd. Never leave multi‑GB `target/` dirs behind even when keeping a
+   tree.
 3a. **Migrate legacy repo-local `.worktrees/` after the live audit.** Disk
    reclaim must not delete non-removable worktrees just because they live under
    a checkout. After the board/lsof audit above, run the bounded migration

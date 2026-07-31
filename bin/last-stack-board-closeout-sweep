@@ -426,6 +426,12 @@ function closeCard(slug, prUrl, branch) {
     return false;
   }
   res.closed.push(slug);
+  // last-stack-card-closeout reclaims the worktree after column=done.
+  // Fallback if an older closeout binary is still installed without reclaim:
+  const reclaimBin = path.join(lastStack, "bin", "last-stack-worktree-reclaim");
+  if (fs.existsSync(reclaimBin)) {
+    run(reclaimBin, ["--slug", slug], { timeout: 120000 });
+  }
   return true;
 }
 
@@ -813,6 +819,7 @@ def close_card(slug, url, branch):
     if dry_run:
         res["closed"].append(slug)
         return True
+    reclaim_bin = last_stack / "bin" / "last-stack-worktree-reclaim"
     if closeout_bin.exists():
         args = [str(closeout_bin), slug, "--board-cli", board_cli]
         if url:
@@ -824,12 +831,17 @@ def close_card(slug, url, branch):
             res["flagged"].append(f"close-failed:{slug}")
             return False
         res["closed"].append(slug)
+        # Idempotent: reclaim again if closeout is an older binary without it
+        if reclaim_bin.exists():
+            run([str(reclaim_bin), "--slug", slug], timeout=120)
         return True
     ok, _, _ = run([board_cli, "move", slug, "done", "--force"], timeout=60)
     if not ok:
         res["flagged"].append(f"close-failed:{slug}")
         return False
     res["closed"].append(slug)
+    if reclaim_bin.exists():
+        run([str(reclaim_bin), "--slug", slug], timeout=120)
     return True
 
 def rollback(slug):
