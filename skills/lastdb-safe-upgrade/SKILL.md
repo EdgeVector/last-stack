@@ -80,9 +80,12 @@ proxy is optional later for near-zero client impact.
 6. **RSS bar (memory-guard):** after data-plane GREEN, boot candidate again on a
    CoW copy, settle (~45s), sample peak RSS. **RED** if peak RSS ≥
    `LASTDBD_RSS_LIMIT_MB` minus headroom (default 10%). Limit is read from
-   env, then the memory-guard LaunchAgent plist, else 6144. Incident 2026-07-22:
-   sled-free cutover sat at ~8.5 GiB while the guard killed at 6 GiB → thrash.
-   Live post-check re-samples primary RSS the same way.
+   env, then the memory-guard LaunchAgent plist, then the primary lastdbd
+   LaunchAgent plist, else 12288. Before a sidebin kickstart, the script stamps
+   the primary plist with that live limit so lastdbd does not boot with a lower
+   binary default while the guard enforces the resident ceiling. Incident
+   2026-07-22: sled-free cutover sat at ~8.5 GiB while the guard killed at 6 GiB
+   -> thrash. Live post-check re-samples primary RSS the same way.
 7. **Latency bar (correct-but-slow is RED):** on the same candidate CoW boot,
    time real workloads — keyed Board point read (`/api/query`), the scan-shaped
    `kanban list --column todo` (the op that regressed in 0.23.1), and a real
