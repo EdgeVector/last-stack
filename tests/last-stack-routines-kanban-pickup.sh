@@ -25,5 +25,9 @@ grep -q 'noop empty-todo no_card_claimed' "$pickup"
 grep -q 'Default: `exit`' "$pickup"
 grep -q 'Idle mode: smart-heal' "$pickup"
 grep -q 'opt-in only' "$pickup"
+grep -q 'Hard todo rank before claim' "$pickup"
+grep -q 'last-stack-todo-rank' "$pickup"
+grep -q 'todo-rank-failed no_card_claimed' "$pickup"
+grep -q 'active/proving milestone `Kind: pr` frontier first' "$pickup"
 
 echo ok
