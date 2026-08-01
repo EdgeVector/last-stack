@@ -1,7 +1,7 @@
 ---
 name: groom-board
 cadence: daily
-description: Keep the board healthy and moving — prune scratch/stale cards, promote ready backlog→todo, break epics into PR-sized cards, flag gaps/dups, and align the board to decided brain direction. Triage-only — never ships code.
+description: Keep the board healthy and moving — prune scratch/ghosts, detect body-clobber, promote ready backlog→todo (never park full-brief PRs for missing milestone alone), DONE-WHEN auto-close, break epics, flag gaps/dups, align to brain. Triage-only — never ships code.
 ---
 
 ## NO REVIEW COLUMN (Tom 2026-07-16 — won't-undo)
@@ -125,6 +125,35 @@ fail-closed; errors never auto-close a card.
    `*-scratch` / `*-delete-me` cards. Only delete UNAMBIGUOUS junk — if a card has
    a real title and substantive body, leave it.
 
+2b. **Empty-column ghosts (won't-undo class — 2026-08-01).** Cards that show up
+   in `pickup status` as `missing Repo header` / `malformed-routing` but have
+   **empty `column`**, empty title/body, and `created_by=unknown` are BoardCards
+   ghosts, not real work. Soft-delete them with `rm` when reverse-deps are empty
+   (`blockedBy` / dependents none). Do not invent titles or re-park them into
+   backlog as hollow PRs. Cite count in the digest. Proven incident: interactive
+   groom soft-deleted 54 ghosts 2026-08-01
+   ([[checkpoint-kanban-body-recovery-sprint-20260801]]).
+
+2c. **Body clobber / hollow brief detection (won't-undo class — 2026-08-01).**
+   Point-read any card that is pickup-ready or about to be promoted/parked and
+   treat the body as **unusable** when it:
+   - starts with `import ` / `from collections` / `#!/` and contains
+     `subprocess` / `ASSIGN` (grooming script source replaced the brief), OR
+   - is zero-length while `Kind: pr` and title is non-empty.
+   Actions (bounded, max ~15 cards/run so the pass stays under timeout):
+   - Set `block_status=needs_human` with reason
+     `BODY-CLOBBERED|BODY-EMPTY … recover brief before pickup` (or keep
+     `deferred` if already deferred).
+   - Tag `body-clobbered` / `body-empty`.
+   - Do **not** promote script/empty bodies into `todo`.
+   - Do **not** invent replacement briefs in this routine. Recovery from offline
+     backups is a deliberate human/agent sprint (see checkpoint above), not a
+     every-2h job. Report slugs under ⚠️ Needs a human → body-recovery.
+   Prevention work stays on the board as real Kind:pr cards
+   (`fkanban-body-must-reject-script-source-overwrites-*`,
+   `papercut-fkanban-body-replace-clobber-guard`) — never park those for
+   "missing milestone" alone (see §4a).
+
 3. **Respect gate headers — never promote a gated card.** A backlog card stays in
    backlog if its body opens with `⛔ DO NOT START`, `[BLOCKED]`, `[design-first]`,
    `[deferred…]`, `GATED:`, or declares an unmet dependency ("blocked on
@@ -149,6 +178,20 @@ fail-closed; errors never auto-close a card.
    ready cards (all gated/blocked/tracking), promote nothing and say so — and flag
    that the *generator* routines and/or open human-gates are the real refill
    bottleneck, not a cap.
+
+4a. **Do NOT park substantive PR briefs for missing milestone alone
+   (won't-undo — 2026-08-01).** `pickup status` may label a full-brief PR as
+   `malformed-routing` when milestone linkage is empty. That is a **driver /
+   generator** gap, not a reason to demote `todo → backlog`. Only park out of
+   `todo` when the card is truly unusable for pickup:
+   - hollow / script-clobbered body (§2c), OR
+   - empty `Repo:`/`Base:` that cannot be inferred, OR
+   - intentional gate (`needs_human` / `deferred` / `design_first` with reason), OR
+   - unfinished dependency.
+   If the brief has `## GOAL` + `Repo:` + `Base:` and is Kind:pr, leave it in
+   `todo` (or promote it) and optionally note "missing milestone" in the digest
+   for the milestone-driver — never mass-demote those cards. Incident:
+   groom-board 2026-08-01T20:12Z parked prevention PRs that had full briefs.
 
 5. **Break down epics / oversized cards.** If a backlog card is an `[EPIC]` or
    describes multiple PRs, and its next concrete slice is well-defined and
@@ -176,6 +219,13 @@ fail-closed; errors never auto-close a card.
    Treat recalled memory/brain notes as reflecting what was true when written —
    verify a named file/flag still exists on the default branch before calling a
    card stale.
+
+8. **Time-gated / DONE-WHEN auto-close (backlog + todo).** Each run, sample
+   validation/tracker cards whose body has `DONE-WHEN: date >= YYYY-MM-DD` or
+   pure time soak language (e.g. mini-cutover soak). When the date has elapsed
+   and a quick health probe is green (or the predicate helper returns 0), move
+   to `done` with a `PROOF <ISO>:` line. Do not leave calendar gates sitting for
+   manual morning-sync forever.
 
 ## Guardrails
 - NEVER kill or restart the process hosting your brain/board node.
