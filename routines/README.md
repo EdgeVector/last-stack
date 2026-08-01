@@ -29,6 +29,7 @@ backstop. The one-page operator cheat sheet lives at
 Brain = intent · Board = queue · Pickup = only code shipper · Watch = only closer.
 
 Operator tools: `last-stack-ship-preflight` (walk-away check),
+`last-stack-why-shipping-stopped` (Class A-E stall diagnosis),
 `kanban pickup explain <slug>` (why not claimable),
 `last-stack-fleet-deadman` (out-of-band fleet liveness).
 

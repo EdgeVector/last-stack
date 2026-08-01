@@ -1,0 +1,269 @@
+#!/usr/bin/env python3
+"""Classify why the autonomous shipping loop has stopped."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+
+CLASS_ORDER = ["A", "B", "C", "D", "E"]
+CLASS_META = {
+    "A": {
+        "label": "Fleet cannot claim work",
+        "heal": "Run last-stack-class-a-heal, verify routinesd and disk, then re-run kanban pickup claim.",
+    },
+    "B": {
+        "label": "Claim happens but work never lands",
+        "heal": "Open the named worktree/branch, checkpoint commits, then publish or roll the card back cleanly.",
+    },
+    "C": {
+        "label": "Merge path frozen",
+        "heal": "Inspect the PR/CR status, restore the missing CI/merge gate, then re-arm auto-merge.",
+    },
+    "D": {
+        "label": "Done but product still broken",
+        "heal": "Run the live DONE-WHEN or deploy proof in the original environment before closing the card.",
+    },
+    "E": {
+        "label": "LastDB node/load collapse",
+        "heal": "Name the load with lastdb status/ops; avoid restarts and retry only bounded idempotent board writes.",
+    },
+}
+
+PATTERNS: list[tuple[str, str, str, str]] = [
+    ("A", "stale-install", r"stale-last-stack-install|routine-read-failed|class-a-heal-(failed|timeout)", "install freshness prevents pickup"),
+    ("A", "fleet-dead", r"routinesd.*(not running|missing)|fleet-deadman FAIL|ENOSPC|no space left", "fleet liveness or disk prevents pickup"),
+    ("A", "claim-starved", r"no_card_claimed.*todo_count=[1-9]|queue-blocked|surface-overlap|false empty|pickup.*claimed nothing", "ready queue exists but pickup is not claiming"),
+    ("B", "timebox", r"rolled-back-todo|command-timebox|push-timebox|lastgit-push-timeout|result=in-flight-budget-handoff.*pr=(none|$)", "claimed work did not land"),
+    ("B", "dirty-worktree", r"dirty-worktree|dirty worktree|worktree dirty|shared checkout pollution|shared-checkout pollution|uncommitted changes", "worktree state blocks publish"),
+    ("C", "missing-ci", r"missing-ci|ci-required.*missing|in-flight-ci-(pending|red)|Waiting to run|forge_ci=.*pending", "CI status is absent, pending, or red"),
+    ("C", "merge-blocked", r"merge 405|merge-405|merge_when_checks_succeed|lastgit.*pipeline|merge path", "merge mechanism is stuck"),
+    ("D", "deploy-pending", r"in-flight-deploy-pending|Requires-Deploy|awaiting[-_ ]deploy|deploy gap", "merged work still needs deploy/live proof"),
+    ("D", "live-proof", r"awaiting_safe_upgrade|safe-upgrade.*live|pending live recheck|DONE-WHEN.*pending|host-track stale", "live symptom proof is missing"),
+    ("E", "busy-node", r"busy-node|service_timeout|node did not respond|too many concurrent reads|uds_connection_limit|max_outbox_entries", "LastDB is overloaded or rejecting traffic"),
+]
+
+
+@dataclass
+class Evidence:
+    klass: str
+    code: str
+    source: str
+    detail: str
+    line: str
+
+
+def root_from_script() -> Path:
+    src = Path(__file__)
+    try:
+        src = src.resolve()
+    except OSError:
+        pass
+    return src.parent.parent
+
+
+def default_heartbeats() -> Path:
+    return Path(os.environ.get("LAST_STACK_HEARTBEATS_PATH", str(Path.home() / ".last-stack/logs/routine-heartbeats.log")))
+
+
+def run_cmd(cmd: list[str], timeout_s: float) -> tuple[Optional[int], str, str]:
+    try:
+        proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout_s)
+        return proc.returncode, proc.stdout, proc.stderr
+    except FileNotFoundError as exc:
+        return 127, "", str(exc)
+    except subprocess.TimeoutExpired as exc:
+        out = exc.stdout if isinstance(exc.stdout, str) else ""
+        err = exc.stderr if isinstance(exc.stderr, str) else ""
+        return None, out, err or f"timed out after {timeout_s:g}s"
+
+
+def add_pattern_evidence(evidence: list[Evidence], source: str, text: str) -> None:
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        for klass, code, pattern, detail in PATTERNS:
+            if re.search(pattern, line, re.IGNORECASE):
+                evidence.append(Evidence(klass, code, source, detail, line[:500]))
+                break
+
+
+def read_tail(path: Path, line_limit: int) -> str:
+    if not path.exists():
+        return ""
+    try:
+        lines = path.read_text(errors="replace").splitlines()
+    except OSError:
+        return ""
+    return "\n".join(lines[-line_limit:])
+
+
+def recent_lines(text: str, since_min: int) -> str:
+    if since_min <= 0:
+        return text
+    cutoff = time.time() - since_min * 60
+    kept = []
+    for line in text.splitlines():
+        match = re.search(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z", line)
+        if not match:
+            kept.append(line)
+            continue
+        try:
+            ts = datetime.fromisoformat(match.group(1)).replace(tzinfo=timezone.utc).timestamp()
+        except ValueError:
+            kept.append(line)
+            continue
+        if ts >= cutoff:
+            kept.append(line)
+    return "\n".join(kept)
+
+
+def parse_ndjson_lines(text: str) -> list[dict[str, Any]]:
+    docs = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            docs.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return docs
+
+
+def collect_live_evidence(root: Path, timeout_s: float) -> list[Evidence]:
+    evidence: list[Evidence] = []
+    bin_dir = root / "bin"
+    probes = [
+        ("fleet-deadman", [str(bin_dir / "last-stack-fleet-deadman"), "--check"]),
+        ("ship-preflight", [str(bin_dir / "last-stack-ship-preflight"), "--json"]),
+        ("factory-health", [str(bin_dir / "last-stack-factory-health"), "--dry-run", "--no-notify", "--json"]),
+        ("kanban-pickup-status", ["kanban", "pickup", "status", "--json"]),
+    ]
+    for name, cmd in probes:
+        rc, out, err = run_cmd(cmd, timeout_s)
+        text = "\n".join(part for part in [out, err] if part)
+        if rc is None:
+            klass = "E" if name in {"factory-health", "kanban-pickup-status"} else "A"
+            evidence.append(Evidence(klass, f"{name}-timeout", name, "live probe timed out", f"{cmd[0]} timed out after {timeout_s:g}s"))
+            continue
+        if name == "ship-preflight":
+            for doc in parse_ndjson_lines(out):
+                if doc.get("status") == "FAIL":
+                    check = str(doc.get("check", "ship-preflight"))
+                    detail = str(doc.get("detail", "failed"))
+                    klass = "D" if check == "situations" else "A"
+                    evidence.append(Evidence(klass, f"ship-preflight-{check}", name, detail, detail))
+        elif name == "kanban-pickup-status":
+            try:
+                status = json.loads(out)
+            except json.JSONDecodeError:
+                status = {}
+            ready = status.get("ready")
+            todo = status.get("todo") or status.get("todo_count")
+            if ready == 0 and isinstance(todo, int) and todo > 0:
+                evidence.append(Evidence("A", "pickup-ready-zero", name, "todo exists but no pickup-ready card", f"ready=0 todo={todo}"))
+        elif rc != 0:
+            add_pattern_evidence(evidence, name, text)
+            if not any(e.source == name for e in evidence):
+                klass = "A" if name == "fleet-deadman" else "E"
+                evidence.append(Evidence(klass, f"{name}-failed", name, "live probe failed", text.strip()[:500] or f"exit={rc}"))
+        add_pattern_evidence(evidence, name, text)
+    return evidence
+
+
+def dedupe_evidence(items: list[Evidence]) -> list[Evidence]:
+    seen = set()
+    out = []
+    for item in items:
+        key = (item.klass, item.code, item.source, item.line)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
+
+def choose_primary(evidence: list[Evidence]) -> str:
+    present = {item.klass for item in evidence}
+    for klass in CLASS_ORDER:
+        if klass in present:
+            return klass
+    return "none"
+
+
+def render_json(primary: str, evidence: list[Evidence], elapsed_ms: int) -> str:
+    classes = sorted({item.klass for item in evidence}, key=CLASS_ORDER.index)
+    obj: dict[str, Any] = {
+        "class": primary,
+        "classes": classes,
+        "label": "No stop condition detected" if primary == "none" else CLASS_META[primary]["label"],
+        "heal": "No action needed." if primary == "none" else CLASS_META[primary]["heal"],
+        "evidence": [
+            {
+                "class": item.klass,
+                "code": item.code,
+                "source": item.source,
+                "detail": item.detail,
+                "line": item.line,
+            }
+            for item in evidence[:12]
+        ],
+        "elapsed_ms": elapsed_ms,
+    }
+    return json.dumps(obj, indent=2, sort_keys=True)
+
+
+def render_text(primary: str, evidence: list[Evidence]) -> str:
+    if primary == "none":
+        return "why-shipping-stopped: class=none - no stop condition detected\nheal: no action needed"
+    lines = [
+        f"why-shipping-stopped: class={primary} - {CLASS_META[primary]['label']}",
+        f"heal: {CLASS_META[primary]['heal']}",
+        "evidence:",
+    ]
+    for item in evidence[:5]:
+        lines.append(f"  - Class {item.klass} {item.code} ({item.source}): {item.line}")
+    return "\n".join(lines)
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description="Classify autonomous shipping stalls into Class A-E.")
+    parser.add_argument("--json", action="store_true", help="print structured JSON")
+    parser.add_argument("--no-live", action="store_true", help="only inspect the heartbeat file")
+    parser.add_argument("--heartbeats", type=Path, default=default_heartbeats(), help="heartbeat log path")
+    parser.add_argument("--tail", type=int, default=300, help="heartbeat lines to inspect")
+    parser.add_argument("--since-min", type=int, default=180, help="ignore timestamped heartbeat lines older than this; 0 means all")
+    parser.add_argument("--timeout-s", type=float, default=float(os.environ.get("WHY_SHIPPING_STOPPED_TIMEOUT_S", "8")), help="per live probe timeout")
+    args = parser.parse_args(argv)
+
+    start = time.monotonic()
+    evidence: list[Evidence] = []
+    hb_tail = recent_lines(read_tail(args.heartbeats, args.tail), args.since_min)
+    add_pattern_evidence(evidence, str(args.heartbeats), hb_tail)
+    if not args.no_live:
+        evidence.extend(collect_live_evidence(root_from_script(), args.timeout_s))
+    evidence = dedupe_evidence(evidence)
+    primary = choose_primary(evidence)
+    elapsed_ms = int((time.monotonic() - start) * 1000)
+
+    if args.json:
+        print(render_json(primary, evidence, elapsed_ms))
+    else:
+        print(render_text(primary, evidence))
+    return 0 if primary == "none" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
