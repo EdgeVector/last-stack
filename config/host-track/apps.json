@@ -88,13 +88,9 @@
         {
           "source": "bin/last-stack-pr-venue",
           "target": "$HOME/.local/bin/last-stack-pr-venue"
-        },
-        {
-          "source": "bin/last-stack-brain-append-heartbeat",
-          "target": "$HOME/.local/bin/last-stack-brain-append-heartbeat"
         }
       ],
-      "notes": "Runtime is an immutable CI artifact that tracks gate_main (green+published main). host-track refresh promotes stable to that tip then installs. ~/.last-stack/{bin,skills,...} → artifacts/current. PATH links Class A + pickup bootstrap tools so routinesd (~/.local/bin first) never hits GC'd version pins. Never develop in the install; use a worktree."
+      "notes": "Runtime is an immutable CI artifact that tracks gate_main (green+published main). host-track refresh promotes stable to that tip then installs. ~/.last-stack/{bin,skills,...} \u2192 artifacts/current. PATH links Class A + pickup bootstrap tools so routinesd (~/.local/bin first) never hits GC'd version pins. Never develop in the install; use a worktree."
     },
     {
       "app": "brain",
