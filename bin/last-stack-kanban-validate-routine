@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
-# Install/update the scheduled Feature Ship Loop proof routine.
+# Install/update the scheduled kanban validation proof-lane routine.
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
 ROUTINES_HOME="${ROUTINES_HOME:-$HOME/.routines}"
 REGISTRY_DIR="$ROUTINES_HOME/registry"
-PROMPT_PATH="$ROOT/routines/feature-prove.md"
-ID="last-stack-feature-prove"
+PROMPT_PATH="$ROOT/routines/kanban-validate.md"
+ID="last-stack-fkanban-validate"
 DRY_RUN=0
 
 usage() {
   cat <<'USAGE'
-last-stack-feature-prove-routine [options]
+last-stack-kanban-validate-routine [options]
 
-Writes the routines registry entry for the Feature Ship Loop product-proof
-routine. Re-running is idempotent.
+Writes the routines registry entry for the kanban validation proof lane.
+Re-running is idempotent.
 
 Options:
   --registry-dir <p>  registry directory (default: $ROUTINES_HOME/registry)
-  --prompt-path <p>   feature-prove prompt path (default: this checkout)
-  --id <id>           automation id (default: last-stack-feature-prove)
+  --prompt-path <p>   kanban-validate prompt path (default: this checkout)
+  --id <id>           automation id (default: last-stack-fkanban-validate)
   --dry-run           print target path and contents without writing
   -h, --help          show this help
 USAGE
@@ -86,22 +86,22 @@ if [ "$DRY_RUN" -eq 1 ]; then
 fi
 
 {
-  printf '# Feature Ship Loop product-proof routine.\n'
-  printf '# Sweeps ship-mode North Star/milestone terminals; writes PASS proof or files fix-forward work.\n'
+  printf '# Kanban validation proof lane.\n'
+  printf '# Runs DONE-WHEN sweep plus one bounded post-merge or terminal North Star proof.\n'
   printf 'id = "%s"\n' "$ID"
   printf 'harness = "codex"\n'
   printf 'model = "gpt-5.5"\n'
-  printf 'effort = "high"\n'
-  printf 'rrule = "FREQ=HOURLY;INTERVAL=1;BYMINUTE=40;BYSECOND=0"\n'
+  printf 'effort = "medium"\n'
+  printf 'rrule = "FREQ=HOURLY;INTERVAL=4;BYMINUTE=33;BYSECOND=0"\n'
   printf 'cwd = "/Users/tomtang/code/edgevector"\n'
   printf 'status = "active"\n'
-  printf 'timeout_min = 45\n'
+  printf 'timeout_min = 30\n'
   printf 'prompt_path = "%s"\n' "$PROMPT_PATH"
 } | if [ "$DRY_RUN" -eq 1 ]; then
   cat
 else
   mkdir -p "$REGISTRY_DIR"
-  tmp="$(mktemp "${TMPDIR:-/tmp}/last-stack-feature-prove.XXXXXX")"
+  tmp="$(mktemp "${TMPDIR:-/tmp}/last-stack-kanban-validate.XXXXXX")"
   cat >"$tmp"
   if [ -f "$path" ] && cmp -s "$tmp" "$path"; then
     rm -f "$tmp"

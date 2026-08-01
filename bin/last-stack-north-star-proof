@@ -29,6 +29,7 @@ Known slugs:
   north-star-laststore-is-document-store-last-db-is-conventions
   north-star-mini-brain-observability
   north-star-lastdb-search-as-app
+  north-star-host-track
   north-star-cloud-sync-storage-lean
   north-star-exemem-cloud-account
   north-star-lastdb-cloud-backup-restore-proof
@@ -67,6 +68,7 @@ map_slug_to_script() {
     north-star-laststore-is-document-store-last-db-is-conventions) echo "laststore/run.sh" ;;
     north-star-mini-brain-observability) echo "mini-brain-observability/run.sh" ;;
     north-star-lastdb-search-as-app) echo "search-as-app/run.sh" ;;
+    north-star-host-track) echo "host-track/run.sh" ;;
     north-star-cloud-sync-storage-lean) echo "cloud-sync-storage-lean/run.sh" ;;
     north-star-exemem-cloud-account) echo "exemem-cloud-account/run.sh" ;;
     north-star-lastdb-cloud-backup-restore-proof) echo "cloud-backup-restore/run.sh" ;;
@@ -86,6 +88,7 @@ ALL_SLUGS=(
   north-star-laststore-is-document-store-last-db-is-conventions
   north-star-mini-brain-observability
   north-star-lastdb-search-as-app
+  north-star-host-track
   north-star-cloud-sync-storage-lean
   north-star-exemem-cloud-account
   north-star-lastdb-cloud-backup-restore-proof
