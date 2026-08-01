@@ -178,6 +178,35 @@ fi
 [ "$(demo)" = v1 ] || fail "failed install changed the active version"
 [ ! -e "$HOME/apps/demo/versions/$digest_bad" ] || fail "failed install left an immutable version"
 
+# ── install lock: live holder blocks; dead pid is reclaimed ────────────────
+# Restore a good channel tip first — the previous case left stable pointing at
+# a deliberately corrupt digest so install fails closed.
+publish_fixture "$digest_one" "$oid_one" $'#!/usr/bin/env bash\necho v1'
+lock_dir="${HOST_TRACK_LOCK_DIR:-$HOME/.host-track/locks}"
+mkdir -p "$lock_dir"
+fake_lock="$lock_dir/install-demo.lock.d"
+rm -rf -- "$fake_lock"
+mkdir "$fake_lock"
+# Hold with THIS shell's pid so kill -0 succeeds → no reclaim by pid_dead.
+printf '%s\n' "$$" >"$fake_lock/pid"
+export HOST_TRACK_INSTALL_LOCK_WAIT_S=2
+export HOST_TRACK_INSTALL_LOCK_STALE_S=999999
+set +e
+"$ROOT/bin/host-track" refresh --force demo >/dev/null 2>"$tmp/lock-block.err"
+block_rc=$?
+set -e
+[ "$block_rc" -ne 0 ] || fail "refresh should fail while install lock is held by live pid"
+grep -q 'install lock timeout' "$tmp/lock-block.err" \
+  || fail "expected lock timeout message (got: $(cat "$tmp/lock-block.err"))"
+# Dead pid reclaim
+printf '999999\n' >"$fake_lock/pid"
+export HOST_TRACK_INSTALL_LOCK_WAIT_S=10
+"$ROOT/bin/host-track" refresh --force demo >/dev/null 2>"$tmp/lock-reclaim.err" \
+  || fail "refresh did not reclaim dead-pid lock: $(cat "$tmp/lock-reclaim.err")"
+[ ! -d "$fake_lock" ] || fail "dead-pid lock dir was not reclaimed"
+[ "$(demo)" = v1 ] || fail "after lock-reclaim refresh demo broke"
+unset HOST_TRACK_INSTALL_LOCK_WAIT_S HOST_TRACK_INSTALL_LOCK_STALE_S
+
 printf 'ok: verified artifact install/refresh/rollback/tamper rejection\n'
 
 # ── track_gate_main: status stale vs main tip; refresh promotes channel ─────

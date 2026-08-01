@@ -10,7 +10,13 @@ while [ -L "$SOURCE" ]; do
     *) SOURCE="$source_dir/$link_target" ;;
   esac
 done
-ROOT="$(cd "$(dirname "$SOURCE")/.." && pwd -P)"
+# Prefer an explicit root when re-exec'd from a temp copy so install can rewrite
+# the live tree without unmapping the running script (self-replace safety).
+if [ -n "${HOST_TRACK_ROOT:-}" ] && [ -d "${HOST_TRACK_ROOT}" ]; then
+  ROOT="$HOST_TRACK_ROOT"
+else
+  ROOT="$(cd "$(dirname "$SOURCE")/.." && pwd -P)"
+fi
 if [ -n "${HOST_TRACK_REGISTRY:-}" ]; then
   REGISTRY="$HOST_TRACK_REGISTRY"
   REGISTRY_IS_DEFAULT=0
@@ -24,7 +30,36 @@ fi
 STAMP_DIR="${HOST_TRACK_STAMP_DIR:-$HOME/.host-track/stamps}"
 ARTIFACT_ROOT_DEFAULT="${HOST_TRACK_ARTIFACT_ROOT:-$HOME/.lastgit/artifacts}"
 INSTALL_ROOT_DEFAULT="${HOST_TRACK_INSTALL_ROOT:-$HOME/.host-track/apps}"
+# Serialize install/refresh/rollback so concurrent launchd + post-merge + manual
+# refreshes cannot half-stage a version and then repoint current/PATH at it.
+HOST_TRACK_LOCK_DIR="${HOST_TRACK_LOCK_DIR:-$HOME/.host-track/locks}"
+HOST_TRACK_INSTALL_LOCK_WAIT_S="${HOST_TRACK_INSTALL_LOCK_WAIT_S:-300}"
+HOST_TRACK_INSTALL_LOCK_STALE_S="${HOST_TRACK_INSTALL_LOCK_STALE_S:-900}"
+INSTALL_LOCK_HELD=""
 REGISTRY_SYNC_ATTEMPTED=0
+
+# Re-exec from a private temp copy for install mutations so replacing
+# ~/.local/bin/host-track (or deleting the live versions/* tree mid-restage)
+# cannot unmap the running bash script. ROOT is preserved via HOST_TRACK_ROOT.
+maybe_reexec_for_mutation() {
+  case "${1:-}" in
+    refresh|install|rollback) ;;
+    *) return 0 ;;
+  esac
+  [ -z "${HOST_TRACK_REEXECED:-}" ] || return 0
+  local tmp
+  tmp="$(mktemp "${TMPDIR:-/tmp}/host-track.XXXXXX")"
+  # Prefer the resolved real script content (under versions/…), not a PATH shim.
+  if [ -r "$SOURCE" ]; then
+    cp "$SOURCE" "$tmp"
+  else
+    cp "${BASH_SOURCE[0]}" "$tmp" 2>/dev/null || return 0
+  fi
+  chmod +x "$tmp"
+  export HOST_TRACK_REEXECED=1
+  export HOST_TRACK_ROOT="$ROOT"
+  exec "$tmp" "$@"
+}
 
 usage() {
   cat >&2 <<'EOF'
@@ -45,6 +80,8 @@ EOF
 }
 
 die() {
+  # Always drop the install lock before process exit (RETURN traps do not run on exit).
+  release_install_lock 2>/dev/null || true
   printf 'host-track: %s\n' "$*" >&2
   exit 2
 }
@@ -806,6 +843,158 @@ atomic_symlink() {
   fi
 }
 
+# mkdir-mutex install lock (pid + age reclaim). Same shape as lastgit install-local.lock.d.
+acquire_install_lock() {
+  local app="$1" lock waited=0 mtime now age
+  mkdir -p "$HOST_TRACK_LOCK_DIR"
+  lock="$HOST_TRACK_LOCK_DIR/install-${app}.lock.d"
+  while ! mkdir "$lock" 2>/dev/null; do
+    if [ -d "$lock" ]; then
+      mtime="$(stat -f %m "$lock" 2>/dev/null || stat -c %Y "$lock" 2>/dev/null || echo 0)"
+      now="$(date +%s)"
+      age=$((now - mtime))
+      # Also reclaim if recorded pid is dead (crash without unlock).
+      lock_pid="$(tr -d '[:space:]' <"$lock/pid" 2>/dev/null || true)"
+      pid_dead=0
+      if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
+        pid_dead=1
+      fi
+      if [ "$age" -ge "$HOST_TRACK_INSTALL_LOCK_STALE_S" ] || [ "$pid_dead" -eq 1 ]; then
+        printf 'host-track: reclaiming install lock for %s (age=%ss pid_dead=%s)\n' \
+          "$app" "$age" "$pid_dead" >&2
+        rm -rf -- "$lock" 2>/dev/null || true
+        continue
+      fi
+    fi
+    if [ "$waited" -ge "$HOST_TRACK_INSTALL_LOCK_WAIT_S" ]; then
+      die "install lock timeout for $app after ${HOST_TRACK_INSTALL_LOCK_WAIT_S}s (another host-track install is running)"
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  printf '%s\n' "$$" >"$lock/pid" 2>/dev/null || true
+  printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$lock/started_at" 2>/dev/null || true
+  INSTALL_LOCK_HELD="$lock"
+}
+
+release_install_lock() {
+  if [ -n "${INSTALL_LOCK_HELD:-}" ] && [ -d "$INSTALL_LOCK_HELD" ]; then
+    rm -rf -- "$INSTALL_LOCK_HELD" 2>/dev/null || true
+  fi
+  INSTALL_LOCK_HELD=""
+}
+
+# True when install_root/current resolves to an existing directory with content.
+current_target_is_live() {
+  local install_root="$1" cur abs
+  [ -L "$install_root/current" ] || return 1
+  cur="$(readlink "$install_root/current")"
+  case "$cur" in
+    /*) abs="$cur" ;;
+    *) abs="$install_root/$cur" ;;
+  esac
+  [ -d "$abs" ] || return 1
+  # At least one file under bin/ or a VERSION marker — half-stages often have empty trees.
+  if [ -d "$abs/bin" ] && [ -n "$(ls -A "$abs/bin" 2>/dev/null || true)" ]; then
+    return 0
+  fi
+  [ -f "$abs/VERSION" ] && return 0
+  return 1
+}
+
+# Materialize a fully verified stage directory from the CAS manifest.
+# Prints stage path on stdout. On failure cleans stage and returns non-zero.
+stage_artifact_from_manifest() {
+  local install_root="$1" digest="$2" manifest="$3" artifact_root="$4"
+  local stage encoded entry rel expected_sha mode blob actual_sha mode_octal
+  stage="$(mktemp -d "$install_root/.stage-$digest.XXXXXX")"
+  if ! (
+    set -e
+    while IFS= read -r encoded; do
+      [ -n "$encoded" ] || continue
+      entry="$(printf '%s' "$encoded" | base64_decode)"
+      rel="$(printf '%s\n' "$entry" | jq -r '.path')"
+      expected_sha="$(printf '%s\n' "$entry" | jq -r '.sha256')"
+      mode="$(printf '%s\n' "$entry" | jq -r '.mode')"
+      safe_artifact_relpath "$rel" || die "invalid artifact payload path: $rel"
+      [[ "$expected_sha" =~ ^[0-9a-f]{64}$ ]] || die "invalid artifact blob digest: $rel"
+      blob="$artifact_root/blobs/sha256/${expected_sha:0:2}/$expected_sha"
+      [ -f "$blob" ] || die "artifact blob missing after verification: $rel"
+      actual_sha="$(hash_file "$blob")"
+      [ "$actual_sha" = "$expected_sha" ] || die "artifact blob changed during install: $rel"
+      mkdir -p "$stage/$(dirname "$rel")"
+      cp -p "$blob" "$stage/$rel"
+      mode_octal="$(printf '%o' "$mode")"
+      chmod "$mode_octal" "$stage/$rel"
+      [ "$(hash_file "$stage/$rel")" = "$expected_sha" ] || die "installed artifact verification failed: $rel"
+    done < <(printf '%s\n' "$manifest" | jq -r '.files[] | @base64')
+    # Refuse to promote an empty or bin-less stage (the half-write failure mode).
+    [ -d "$stage/bin" ] || die "staged artifact missing bin/ (incomplete stage)"
+    [ -n "$(ls -A "$stage/bin" 2>/dev/null || true)" ] || die "staged artifact bin/ is empty (incomplete stage)"
+  ); then
+    rm -rf -- "$stage"
+    return 1
+  fi
+  printf '%s\n' "$stage"
+}
+
+# Commit a verified stage into versions/<digest> WITHOUT ever leaving current
+# pointing at a missing directory. If current already points at this digest,
+# park current on previous (when previous is live) before replacing the tree.
+commit_staged_version() {
+  local install_root="$1" digest="$2" stage="$3"
+  local target="$install_root/versions/$digest"
+  local live_cur previous_target switched_away=0 aside=""
+
+  live_cur=""
+  if [ -L "$install_root/current" ]; then
+    live_cur="$(readlink "$install_root/current")"
+  fi
+
+  # If we would replace the tree current points at, move current off it first.
+  if [ -d "$target" ] && [ "$live_cur" = "versions/$digest" ]; then
+    previous_target=""
+    if [ -L "$install_root/previous" ]; then
+      previous_target="$(readlink "$install_root/previous")"
+    fi
+    if [ -n "$previous_target" ] && [ "$previous_target" != "versions/$digest" ] \
+      && [ -d "$install_root/$previous_target" ]; then
+      printf 'host-track: parking current on previous while restaging versions/%s\n' "$digest" >&2
+      atomic_symlink "$previous_target" "$install_root/current"
+      switched_away=1
+    else
+      # No safe previous: rename live target aside (current briefly dangles until
+      # stage is committed and we repoint — window is milliseconds, not a long stage).
+      aside="${target}.old-$$"
+      printf 'host-track: renaming live versions/%s aside before restage\n' "$digest" >&2
+      if ! mv "$target" "$aside"; then
+        rm -rf -- "$stage"
+        die "cannot move live version aside for restage: $target"
+      fi
+      switched_away=1
+    fi
+  fi
+
+  if [ -d "$target" ]; then
+    remove_artifact_version_tree "$target"
+  fi
+  if ! mv "$stage" "$target"; then
+    rm -rf -- "$stage" 2>/dev/null || true
+    # Prefer previous (if we parked) over a dangling current.
+    die "cannot commit staged version to $target"
+  fi
+
+  if [ -n "$aside" ] && [ -d "$aside" ]; then
+    remove_artifact_version_tree "$aside"
+  fi
+
+  # Always ensure current points at the freshly committed digest when we had
+  # to park it, or when this is a brand-new install (caller also sets current).
+  if [ "$switched_away" -eq 1 ]; then
+    atomic_symlink "versions/$digest" "$install_root/current"
+  fi
+}
+
 install_artifact_links() {
   local json="$1" install_root="$2" encoded entry source target_raw target
   while IFS= read -r encoded; do
@@ -908,8 +1097,7 @@ replace_artifact_version_tree() {
 
 artifact_install_app() {
   local app="$1" channel_override="${2:-}" force_restage="${3:-0}" json install_mode artifact_app channel artifact_root install_root
-  local manifest digest stage encoded entry rel expected_sha mode blob target actual_sha mode_octal
-  local old_target stamp_path restage_target
+  local manifest digest stage target old_target stamp_path need_materialize=0
   json="$(require_app_json "$app")"
   install_mode="$(setting "$json" install_mode)"
   [ "$install_mode" = "artifact" ] || die "$app is not registered for artifact installs"
@@ -917,6 +1105,13 @@ artifact_install_app() {
   [ -z "$channel_override" ] || channel="$channel_override"
   case "$channel" in candidate|canary|stable) ;; *) die "invalid artifact channel: $channel" ;; esac
   command -v lastgit >/dev/null 2>&1 || die "lastgit is required for verified artifact installs"
+
+  acquire_install_lock "$app"
+
+  # Always release the lock on any exit path from this function (bash RETURN is
+  # unreliable across re-exec/temp-copy; pair with explicit releases + die()).
+  # shellcheck disable=SC2064
+  trap 'release_install_lock' EXIT
 
   # Track main: promote green+published main tip into the channel before resolve
   # so refresh does not no-op on a stale stable pointer while main has moved.
@@ -927,49 +1122,26 @@ artifact_install_app() {
   [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || die "resolved artifact has invalid manifest digest"
   mkdir -p "$install_root/versions"
   target="$install_root/versions/$digest"
-  restage_target=0
 
-  # Re-stage when forced, missing, or content no longer matches the CAS manifest.
-  # Without this, a single corrupted file under versions/<digest> left status.stale=false
-  # and refresh --force was a no-op — freezing pickup forever.
-  if [ -d "$target" ]; then
-    if [ "$force_restage" = "1" ] || artifact_version_needs_restage "$install_root" "$digest" "$manifest"; then
-      printf 'host-track: %s re-staging versions/%s (corrupt or forced)\n' "$app" "$digest" >&2
-      restage_target=1
-    fi
+  # Materialize when missing, forced, or content no longer matches the CAS
+  # manifest. CRITICAL: never delete the live tree before the stage is complete
+  # (concurrent/half-stage dangle of current + ~/.local/bin).
+  # Without restage-on-corrupt, a single bad file under versions/<digest> left
+  # status.stale=false and refresh --force was a no-op — freezing pickup.
+  if [ ! -d "$target" ]; then
+    need_materialize=1
+  elif [ "$force_restage" = "1" ] || artifact_version_needs_restage "$install_root" "$digest" "$manifest"; then
+    printf 'host-track: %s re-staging versions/%s (corrupt or forced)\n' "$app" "$digest" >&2
+    need_materialize=1
   fi
 
-  if [ ! -d "$target" ] || [ "$restage_target" = "1" ]; then
-    stage="$(mktemp -d "$install_root/.stage-$digest.XXXXXX")"
-    if ! (
-      set -e
-      while IFS= read -r encoded; do
-        [ -n "$encoded" ] || continue
-        entry="$(printf '%s' "$encoded" | base64_decode)"
-        rel="$(printf '%s\n' "$entry" | jq -r '.path')"
-        expected_sha="$(printf '%s\n' "$entry" | jq -r '.sha256')"
-        mode="$(printf '%s\n' "$entry" | jq -r '.mode')"
-        safe_artifact_relpath "$rel" || die "invalid artifact payload path: $rel"
-        [[ "$expected_sha" =~ ^[0-9a-f]{64}$ ]] || die "invalid artifact blob digest: $rel"
-        blob="$artifact_root/blobs/sha256/${expected_sha:0:2}/$expected_sha"
-        [ -f "$blob" ] || die "artifact blob missing after verification: $rel"
-        actual_sha="$(hash_file "$blob")"
-        [ "$actual_sha" = "$expected_sha" ] || die "artifact blob changed during install: $rel"
-        mkdir -p "$stage/$(dirname "$rel")"
-        cp -p "$blob" "$stage/$rel"
-        mode_octal="$(printf '%o' "$mode")"
-        chmod "$mode_octal" "$stage/$rel"
-        [ "$(hash_file "$stage/$rel")" = "$expected_sha" ] || die "installed artifact verification failed: $rel"
-      done < <(printf '%s\n' "$manifest" | jq -r '.files[] | @base64')
-    ); then
-      rm -rf -- "$stage"
+  if [ "$need_materialize" -eq 1 ]; then
+    if ! stage="$(stage_artifact_from_manifest "$install_root" "$digest" "$manifest" "$artifact_root")"; then
+      release_install_lock
+      trap - EXIT
       return 1
     fi
-    if [ "$restage_target" = "1" ]; then
-      replace_artifact_version_tree "$install_root" "$target" "$stage" "$app"
-    else
-      mv "$stage" "$target"
-    fi
+    commit_staged_version "$install_root" "$digest" "$stage"
   fi
 
   # Last Stack only: freeze the installed version tree so agents cannot
@@ -982,14 +1154,48 @@ artifact_install_app() {
       find "$target" \( -type f -o -type d \) -exec chmod a-w {} \; 2>/dev/null || true
   fi
 
+  # Cutover: only after versions/<digest> is complete on disk.
+  # Refuse to activate a non-live tree (defense in depth against empty stages).
+  if [ ! -d "$target/bin" ] || [ -z "$(ls -A "$target/bin" 2>/dev/null || true)" ]; then
+    die "refusing cutover: versions/$digest has empty or missing bin/ (incomplete install)"
+  fi
+
   old_target=""
   [ ! -L "$install_root/current" ] || old_target="$(readlink "$install_root/current")"
   if [ -n "$old_target" ] && [ "$old_target" != "versions/$digest" ]; then
-    atomic_symlink "$old_target" "$install_root/previous"
+    # Only park previous if the old tree still exists (do not write a dangling previous).
+    if [ -d "$install_root/$old_target" ]; then
+      atomic_symlink "$old_target" "$install_root/previous"
+    fi
   fi
   atomic_symlink "versions/$digest" "$install_root/current"
+
+  # PATH links only after current points at a verified tree.
   install_artifact_links "$json" "$install_root"
-  run_artifact_post_install "$app" "$json" "$install_root" "$digest"
+
+  # Post-install may be best-effort for some apps; failures must not leave a
+  # "fresh" stamp on a broken activation.
+  if ! run_artifact_post_install "$app" "$json" "$install_root" "$digest"; then
+    printf 'host-track: %s post-install failed\n' "$app" >&2
+    release_install_lock
+    trap - EXIT
+    return 1
+  fi
+
+  # Stamp only after the active tree verifies (digest match + hashes). Never
+  # stamp a half-install as fresh.
+  if ! verify_active_artifact "$app" "$json"; then
+    printf 'host-track: %s post-cutover verification failed; not stamping fresh\n' "$app" >&2
+    # Attempt rollback to previous if live.
+    if [ -L "$install_root/previous" ] && [ -d "$install_root/$(readlink "$install_root/previous")" ]; then
+      printf 'host-track: %s attempting rollback to previous after failed verify\n' "$app" >&2
+      atomic_symlink "$(readlink "$install_root/previous")" "$install_root/current" || true
+      install_artifact_links "$json" "$install_root" || true
+    fi
+    release_install_lock
+    trap - EXIT
+    return 1
+  fi
 
   stamp_path="$STAMP_DIR/$app.json"
   mkdir -p "$STAMP_DIR"
@@ -1003,6 +1209,9 @@ artifact_install_app() {
       > "$stamp_path"
   printf 'host-track: installed %s channel=%s oid=%s manifest=%s\n' \
     "$app" "$channel" "$(printf '%s\n' "$manifest" | jq -r '.source_oid')" "$digest"
+
+  release_install_lock
+  trap - EXIT
 }
 
 rollback_artifact_app() {
@@ -1011,6 +1220,9 @@ rollback_artifact_app() {
   install_mode="$(setting "$json" install_mode)"
   [ "$install_mode" = "artifact" ] || die "$app is not registered for artifact installs"
   IFS=$'\t' read -r artifact_app channel artifact_root install_root < <(artifact_paths "$app" "$json")
+  acquire_install_lock "$app"
+  # shellcheck disable=SC2064
+  trap 'release_install_lock' EXIT
   [ -L "$install_root/current" ] || die "$app has no current artifact install"
   [ -L "$install_root/previous" ] || die "$app has no previous artifact install"
   current_target="$(readlink "$install_root/current")"
@@ -1033,6 +1245,8 @@ rollback_artifact_app() {
       source_oid: .source_oid, repo: .repo, platform: .platform, rolled_back_at: $rolled_back_at}' \
     "$manifest" > "$stamp_path"
   printf 'host-track: rolled back %s manifest=%s\n' "$app" "$digest"
+  release_install_lock
+  trap - EXIT
 }
 
 refresh_app() {
@@ -1192,6 +1406,10 @@ refresh_cmd() {
 main() {
   need_jq
   [ -f "$REGISTRY" ] || die "registry not found: $REGISTRY"
+
+  # For mutations that rewrite PATH / versions trees, re-exec from a temp copy
+  # so self-replace of ~/.local/bin/host-track cannot unmap this process.
+  maybe_reexec_for_mutation "$@"
 
   case "${1:-}" in
     status) shift; status_cmd "$@" ;;
