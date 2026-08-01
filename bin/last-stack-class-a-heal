@@ -1,0 +1,609 @@
+#!/usr/bin/env bash
+# last-stack-class-a-heal — zero-LLM Class A (host-track / last-stack install) self-heal.
+#
+# Class A factory freeze: pickup workers noop with
+#   stale-last-stack-install routine-read-failed
+#   stale-last-stack-artifact refresh-failed
+# while todo has work. Board looks healthy; nothing ships.
+#
+# This helper is safe to run from:
+#   - pickup bootstrap (agent-directed, after routine-read fails)
+#   - factory-health auto_fix
+#   - launchd / manual ops
+#
+# It never restarts lastdbd, never force-pushes, never edits product checkouts.
+# Only host-track last-stack install / artifact pointer repair + PATH shims.
+#
+# Performance (2026-08-01 flake):
+#   Full healthy() used host-track check (~6s) + routine-read update-check (~8s)
+#   under multi-worker pickup → class-a-heal-timeout / concurrent thrash.
+#   Fast path: status JSON + prompt presence + PATH shims (~1s), single-flight lock.
+#
+# Usage:
+#   last-stack-class-a-heal [--reason=<tag>] [--dry-run] [--json] [--quiet]
+#                          [--full]   # force slow deep check
+#
+# Exit:
+#   0  install healthy (already ok, or healed this run)
+#   1  still unhealthy after heal attempts
+#   2  usage / missing host-track
+set -euo pipefail
+
+REASON="manual"
+DRY_RUN=0
+JSON=0
+QUIET=0
+FORCE_FULL=0
+
+usage() {
+  cat <<'USAGE'
+last-stack-class-a-heal — Class A host-track/install self-heal (zero LLM)
+
+Usage:
+  last-stack-class-a-heal [--reason=<tag>] [--dry-run] [--json] [--quiet] [--full]
+
+Exit 0 = healthy (or healed). Exit 1 = still broken. Exit 2 = usage/tools.
+USAGE
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --reason=*) REASON="${1#*=}"; shift ;;
+    --reason) REASON="${2:-}"; shift 2 ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --json) JSON=1; shift ;;
+    --quiet|-q) QUIET=1; shift ;;
+    --full) FORCE_FULL=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown flag: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+log() {
+  if [ "$QUIET" -eq 0 ]; then
+    printf 'class-a-heal: %s\n' "$*" >&2
+  fi
+}
+
+# Resolve real bin dir even when invoked via ~/.local/bin → artifacts/current/bin
+resolve_bin_dir() {
+  local src="$0" dir link
+  while [ -L "$src" ]; do
+    dir="$(CDPATH= cd -- "$(dirname -- "$src")" && pwd -P)"
+    link="$(readlink "$src")"
+    case "$link" in
+      /*) src="$link" ;;
+      *) src="$dir/$link" ;;
+    esac
+  done
+  CDPATH= cd -- "$(dirname -- "$src")" && pwd -P
+}
+
+BIN_DIR="$(resolve_bin_dir)"
+ROOT="$(CDPATH= cd -- "$BIN_DIR/.." && pwd -P)"
+export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
+
+COMPAT_ROOT="${LAST_STACK_COMPAT_ROOT:-$HOME/.last-stack}"
+ARTIFACT_ROOT="${LAST_STACK_ARTIFACT_ROOT:-$HOME/.local/state/last-stack/artifacts}"
+CURRENT_LINK="$ARTIFACT_ROOT/current"
+PREVIOUS_LINK="$ARTIFACT_ROOT/previous"
+STATE_DIR="${LASTSTACK_CLASS_A_STATE_DIR:-$COMPAT_ROOT/state}"
+LOCK_DIR="$STATE_DIR/class-a-heal.lock"
+CACHE_FILE="$STATE_DIR/class-a-heal.last-ok"
+# Shared healthy stamp TTL for concurrent pickup workers (seconds)
+CACHE_TTL_S="${LASTSTACK_CLASS_A_CACHE_TTL_S:-45}"
+# Max wait for another healer holding the lock
+LOCK_WAIT_S="${LASTSTACK_CLASS_A_LOCK_WAIT_S:-20}"
+
+# Critical tools that must be on ~/.local/bin (routinesd PATH prefers it).
+# Keep in sync with config/host-track/apps.json last-stack links.
+# Note: host-track is included so a GC'd versions/* pin is re-pointed; we never
+# replace a working non-versions symlink or a real file.
+PATH_SHIM_NAMES=(
+  host-track
+  last-stack-class-a-heal
+  last-stack-routine-read
+  last-stack-update-check
+  last-stack-self-upgrade
+  last-stack-shell-prelude
+  last-stack-cli-preflight
+  last-stack-board-closeout-sweep
+  last-stack-factory-health
+  last-stack-pr-venue
+  last-stack-north-star-proof
+  last-stack-lastdb-pressure
+  last-stack-why-stopped
+  last-stack-fold-ci-health
+  last-stack-generator-preflight
+)
+
+actions=()
+detail=""
+result="ok"
+lock_held=0
+
+append_action() {
+  actions+=("$1")
+}
+
+# Prefer PATH host-track; fall back to artifact current so a dangling ~/.local/bin
+# symlink can still be repaired from the real tree when present.
+resolve_host_track() {
+  if command -v host-track >/dev/null 2>&1; then
+    command -v host-track
+    return 0
+  fi
+  for cand in \
+    "$CURRENT_LINK/bin/host-track" \
+    "$COMPAT_ROOT/bin/host-track" \
+    "$ROOT/bin/host-track"
+  do
+    if [ -x "$cand" ]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# --- PATH shims (always; cheap; fixes GC'd version pins) ---------------------
+# Only create missing shims or repair broken / versions/* pins.
+# Never replace a working link or a real binary (tests and hand installs).
+ensure_path_shims() {
+  local n src dest cur_target
+  mkdir -p "$HOME/.local/bin" 2>/dev/null || true
+  for n in "${PATH_SHIM_NAMES[@]}"; do
+    src=""
+    if [ -x "$CURRENT_LINK/bin/$n" ]; then
+      src="$CURRENT_LINK/bin/$n"
+    elif [ -x "$COMPAT_ROOT/bin/$n" ]; then
+      src="$COMPAT_ROOT/bin/$n"
+    elif [ -x "$ROOT/bin/$n" ]; then
+      src="$ROOT/bin/$n"
+    else
+      continue
+    fi
+    dest="$HOME/.local/bin/$n"
+
+    if [ -e "$dest" ] && [ ! -L "$dest" ]; then
+      # Real file (not symlink) — leave alone
+      continue
+    fi
+
+    if [ -L "$dest" ]; then
+      cur_target="$(readlink "$dest" 2>/dev/null || true)"
+      if [ -e "$dest" ]; then
+        # Working symlink: only re-point GC-prone versions/<digest> pins
+        case "$cur_target" in
+          */.local/state/last-stack/artifacts/versions/*|*/artifacts/versions/*)
+            ;;
+          *)
+            continue
+            ;;
+        esac
+      fi
+      # broken link or versions pin → re-point
+      if [ "$DRY_RUN" -eq 1 ]; then
+        append_action "would-relink-$n"
+      else
+        ln -sfn "$src" "$dest" 2>/dev/null || true
+        append_action "relink-$n"
+      fi
+      continue
+    fi
+
+    if [ ! -e "$dest" ]; then
+      if [ "$DRY_RUN" -eq 1 ]; then
+        append_action "would-link-$n"
+      else
+        ln -sfn "$src" "$dest" 2>/dev/null || true
+        append_action "link-$n"
+      fi
+    fi
+  done
+}
+
+# --- Single-flight lock + healthy cache -------------------------------------
+cache_is_fresh_ok() {
+  local age now ts res
+  [ -f "$CACHE_FILE" ] || return 1
+  ts="$(awk -F= '/^ts=/{print $2; exit}' "$CACHE_FILE" 2>/dev/null || true)"
+  [ -n "$ts" ] || return 1
+  now="$(date +%s)"
+  age=$((now - ts))
+  [ "$age" -ge 0 ] && [ "$age" -le "$CACHE_TTL_S" ] || return 1
+  res="$(awk -F= '/^result=/{print $2; exit}' "$CACHE_FILE" 2>/dev/null || true)"
+  case "$res" in
+    ok|healed) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+write_cache() {
+  local r="$1"
+  mkdir -p "$STATE_DIR" 2>/dev/null || true
+  if [ "$DRY_RUN" -eq 1 ]; then
+    return 0
+  fi
+  printf 'ts=%s\nresult=%s\nreason=%s\n' "$(date +%s)" "$r" "$REASON" >"$CACHE_FILE" 2>/dev/null || true
+}
+
+acquire_lock() {
+  local waited=0 owner
+  mkdir -p "$STATE_DIR" 2>/dev/null || true
+  # Reclaim abandoned lock (dead owner PID) — leftover hangs blocked the fleet.
+  if [ -d "$LOCK_DIR" ]; then
+    owner="$(cat "$LOCK_DIR/owner" 2>/dev/null || true)"
+    if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
+      log "clearing dead lock owner=$owner"
+      rm -rf "$LOCK_DIR" 2>/dev/null || true
+      append_action "reclaim-dead-lock"
+    fi
+  fi
+  while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+    # Another healer running — if they just succeeded, share the win
+    if cache_is_fresh_ok; then
+      append_action "shared-cache-ok"
+      return 2 # special: use cache, skip work
+    fi
+    if [ "$waited" -ge "$LOCK_WAIT_S" ]; then
+      log "lock wait exceeded ${LOCK_WAIT_S}s; proceeding without exclusive lock"
+      append_action "lock-wait-timeout"
+      return 1
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  printf '%s\n' "$$" >"$LOCK_DIR/owner" 2>/dev/null || true
+  lock_held=1
+  return 0
+}
+
+release_lock() {
+  if [ "$lock_held" -eq 1 ] && [ -d "$LOCK_DIR" ]; then
+    rm -f "$LOCK_DIR/owner" 2>/dev/null || true
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+    lock_held=0
+  fi
+}
+
+trap release_lock EXIT
+
+# --- health probes ----------------------------------------------------------
+status_json() {
+  "$HT" status --json last-stack 2>/dev/null || true
+}
+
+is_stale() {
+  local sj="$1"
+  [ "$(printf '%s\n' "$sj" | jq -r '.stale | tostring' 2>/dev/null || echo unknown)" = "true" ]
+}
+
+is_artifact() {
+  local sj="$1"
+  [ "$(printf '%s\n' "$sj" | jq -r '.install_mode // ""' 2>/dev/null)" = "artifact" ]
+}
+
+check_ok() {
+  # Slow path (~6s). Prefer status.stale for the common healthy case.
+  "$HT" check last-stack >/dev/null 2>&1
+}
+
+prompt_present() {
+  # Cheap substitute for full routine-read on the fast path.
+  local p
+  for p in \
+    "$COMPAT_ROOT/routines/kanban-pickup.md" \
+    "$CURRENT_LINK/routines/kanban-pickup.md" \
+    "$ROOT/routines/kanban-pickup.md"
+  do
+    if [ -r "$p" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+reader_present() {
+  if [ -x "$COMPAT_ROOT/bin/last-stack-routine-read" ] ||
+    [ -x "$CURRENT_LINK/bin/last-stack-routine-read" ] ||
+    [ -x "$ROOT/bin/last-stack-routine-read" ] ||
+    command -v last-stack-routine-read >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
+routine_read_ok_fast() {
+  # Structural only — no update-check (update-check alone is ~8s).
+  local reader=""
+  if [ -x "$COMPAT_ROOT/bin/last-stack-routine-read" ]; then
+    reader="$COMPAT_ROOT/bin/last-stack-routine-read"
+  elif [ -x "$CURRENT_LINK/bin/last-stack-routine-read" ]; then
+    reader="$CURRENT_LINK/bin/last-stack-routine-read"
+  elif [ -x "$ROOT/bin/last-stack-routine-read" ]; then
+    reader="$ROOT/bin/last-stack-routine-read"
+  elif command -v last-stack-routine-read >/dev/null 2>&1; then
+    reader="$(command -v last-stack-routine-read)"
+  else
+    return 1
+  fi
+  LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 \
+    "$reader" kanban-pickup >/dev/null 2>&1
+}
+
+# Fast healthy: install not stale + prompt+reader present. No host-track check.
+fast_healthy() {
+  local sj
+  sj="$(status_json)"
+  if [ -z "$sj" ]; then
+    return 1
+  fi
+  if is_artifact "$sj"; then
+    if is_stale "$sj"; then
+      return 1
+    fi
+  fi
+  prompt_present || return 1
+  reader_present || return 1
+  return 0
+}
+
+# Deep healthy: includes host-track check + structural routine-read.
+deep_healthy() {
+  local sj
+  sj="$(status_json)"
+  if is_artifact "$sj"; then
+    if is_stale "$sj"; then
+      return 1
+    fi
+    if ! check_ok; then
+      return 1
+    fi
+  fi
+  if ! routine_read_ok_fast; then
+    return 1
+  fi
+  return 0
+}
+
+healthy() {
+  if [ "$FORCE_FULL" -eq 1 ]; then
+    deep_healthy
+    return $?
+  fi
+  fast_healthy
+}
+
+# --- 1) Dangling artifacts/current (GC / concurrent install race) -----------
+heal_dangling_current() {
+  [ -L "$CURRENT_LINK" ] || return 0
+  local target abs prev_t prev_abs n dest
+  target="$(readlink "$CURRENT_LINK" 2>/dev/null || true)"
+  [ -n "$target" ] || return 0
+  case "$target" in
+    /*) abs="$target" ;;
+    *) abs="$ARTIFACT_ROOT/$target" ;;
+  esac
+  if [ -d "$abs" ] && { [ -x "$abs/bin/host-track" ] || [ -r "$abs/routines/kanban-pickup.md" ]; }; then
+    return 0
+  fi
+  log "dangling artifacts/current -> $target"
+  append_action "dangling-current"
+  if [ ! -L "$PREVIOUS_LINK" ]; then
+    detail="dangling-current-no-previous"
+    return 1
+  fi
+  prev_t="$(readlink "$PREVIOUS_LINK" 2>/dev/null || true)"
+  case "$prev_t" in
+    /*) prev_abs="$prev_t" ;;
+    *) prev_abs="$ARTIFACT_ROOT/$prev_t" ;;
+  esac
+  if [ ! -d "$prev_abs" ]; then
+    detail="dangling-current-previous-also-missing"
+    return 1
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "dry-run: would ln -sfn $prev_t $CURRENT_LINK"
+    append_action "would-repoint-previous"
+    return 0
+  fi
+  ln -sfn "$prev_t" "$CURRENT_LINK"
+  ensure_path_shims
+  append_action "repointed-current-to-previous"
+  HT="$(resolve_host_track || printf '%s\n' "$HT")"
+  return 0
+}
+
+# --- 2) host-track refresh ladder -------------------------------------------
+run_refresh() {
+  local mode="$1" # force-if-stale | force
+  local args=()
+  case "$mode" in
+    force-if-stale) args=(refresh --force-if-stale last-stack) ;;
+    force) args=(refresh --force last-stack) ;;
+    plain) args=(refresh last-stack) ;;
+    *) return 2 ;;
+  esac
+  append_action "refresh-$mode"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "dry-run: would $HT ${args[*]}"
+    return 0
+  fi
+  # Cap refresh wall time so multi-worker pickup cannot hang 15–90s on host-track.
+  local refresh_to="${LASTSTACK_CLASS_A_REFRESH_TIMEOUT_S:-60}"
+  local to_bin=""
+  if command -v timeout >/dev/null 2>&1; then to_bin=timeout
+  elif command -v gtimeout >/dev/null 2>&1; then to_bin=gtimeout
+  fi
+  local rc=0
+  if [ -n "$to_bin" ]; then
+    if ! "$to_bin" "$refresh_to" "$HT" "${args[@]}" >/tmp/last-stack-class-a-heal-refresh.$$ 2>&1; then
+      rc=$?
+    fi
+  else
+    if ! "$HT" "${args[@]}" >/tmp/last-stack-class-a-heal-refresh.$$ 2>&1; then
+      rc=$?
+    fi
+  fi
+  if [ "$rc" -eq 0 ]; then
+    log "refresh $mode ok"
+    rm -f /tmp/last-stack-class-a-heal-refresh.$$
+    ensure_path_shims
+    return 0
+  fi
+  if [ "$rc" -eq 124 ] || [ "$rc" -eq 143 ]; then
+    log "refresh $mode timed out after ${refresh_to}s"
+    append_action "refresh-timeout"
+  else
+    log "refresh $mode failed: $(head -c 240 /tmp/last-stack-class-a-heal-refresh.$$ 2>/dev/null || true)"
+  fi
+  rm -f /tmp/last-stack-class-a-heal-refresh.$$
+  return 1
+}
+
+heal_ladder() {
+  local sj
+  sj="$(status_json)"
+  if ! is_artifact "$sj" && [ -n "$sj" ]; then
+    log "install_mode is not artifact; attempting plain refresh"
+    run_refresh plain || true
+    return 0
+  fi
+
+  if is_stale "$sj"; then
+    log "status.stale=true → force-if-stale"
+    run_refresh force-if-stale || true
+    sj="$(status_json)"
+  fi
+
+  # Deep check only on the slow path when status already claims healthy
+  if ! is_stale "$sj"; then
+    if ! prompt_present || ! reader_present; then
+      log "prompt/reader missing → --force"
+      run_refresh force || true
+    elif [ "$FORCE_FULL" -eq 1 ] && ! check_ok; then
+      log "deep check failed → --force"
+      run_refresh force || true
+    fi
+  else
+    log "still stale → --force"
+    run_refresh force || true
+  fi
+}
+
+emit_result() {
+  if [ "$DRY_RUN" -eq 0 ] && [ -x "$COMPAT_ROOT/bin/last-stack-brain-append-heartbeat" ]; then
+    local ts line
+    ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    line="class-a-heal $ts $result reason=$REASON detail=$detail actions=$(IFS=,; echo "${actions[*]:-}")"
+    "$COMPAT_ROOT/bin/last-stack-brain-append-heartbeat" --line "$line" 2>/dev/null || true
+  fi
+
+  if [ "$result" = "error" ] && [ "$DRY_RUN" -eq 0 ] && command -v ra >/dev/null 2>&1; then
+    ra notify "Class A heal FAILED (reason=$REASON detail=$detail). Pickup may be frozen. Run: last-stack-class-a-heal --reason=manual" \
+      --priority high >/dev/null 2>&1 || true
+  fi
+
+  if [ "$JSON" -eq 1 ]; then
+    printf '{"ok":%s,"result":"%s","detail":"%s","reason":"%s","actions":[' \
+      "$([ "$result" = "error" ] && echo false || echo true)" \
+      "$result" "$detail" "$REASON"
+    first=1
+    for a in "${actions[@]:-}"; do
+      if [ "$first" -eq 1 ]; then first=0; else printf ','; fi
+      printf '"%s"' "$a"
+    done
+    printf ']}\n'
+  else
+    log "result=$result detail=$detail actions=${actions[*]:-}"
+    printf 'LAST_STACK_CLASS_A_HEAL result=%s detail=%s reason=%s\n' "$result" "$detail" "$REASON"
+  fi
+}
+
+# --- main -------------------------------------------------------------------
+# Cheap wins first (no lock needed for pure re-link of missing shims)
+ensure_path_shims
+
+HT="$(resolve_host_track || true)"
+if [ -z "${HT:-}" ]; then
+  log "host-track not found on PATH or known install roots"
+  result="error"
+  detail="host-track-missing"
+  if [ "$JSON" -eq 1 ]; then
+    printf '{"ok":false,"result":"error","detail":"host-track-missing","reason":"%s","actions":[]}\n' "$REASON"
+  else
+    printf 'LAST_STACK_CLASS_A_HEAL result=error detail=host-track-missing reason=%s\n' "$REASON"
+  fi
+  exit 2
+fi
+
+# Share a very recent healthy result (multi-worker pickup pile-up).
+# Never trust cache when host-track status says stale (install may have flipped).
+if [ "$FORCE_FULL" -eq 0 ] && [ "$DRY_RUN" -eq 0 ] && cache_is_fresh_ok; then
+  _sj="$(status_json)"
+  if [ -n "$_sj" ] && ! is_stale "$_sj"; then
+    result="ok"
+    detail="cache-fresh-ok"
+    append_action "cache-hit"
+    emit_result
+    exit 0
+  fi
+fi
+
+lock_rc=0
+acquire_lock || lock_rc=$?
+if [ "$lock_rc" -eq 2 ]; then
+  # Another healer finished healthy while we waited
+  result="ok"
+  detail="shared-lock-ok"
+  emit_result
+  exit 0
+fi
+
+# Re-check cache after acquiring lock (winner may have just finished)
+if [ "$FORCE_FULL" -eq 0 ] && [ "$DRY_RUN" -eq 0 ] && cache_is_fresh_ok; then
+  result="ok"
+  detail="cache-fresh-ok-post-lock"
+  append_action "cache-hit"
+  emit_result
+  exit 0
+fi
+
+heal_dangling_current || true
+
+if healthy; then
+  result="ok"
+  detail="${detail:-already-healthy}"
+  # If we only fixed shims, still count as ok
+  if [ -z "${actions[*]:-}" ]; then
+    append_action "noop-healthy"
+  fi
+  write_cache ok
+else
+  log "install unhealthy (reason=$REASON); running heal ladder"
+  heal_ladder
+  ensure_path_shims
+  if healthy; then
+    result="healed"
+    detail="${detail:-healed}"
+    write_cache healed
+  else
+    # One deep verify before failing closed (still skip update-check)
+    if deep_healthy; then
+      result="healed"
+      detail="${detail:-deep-ok}"
+      write_cache healed
+    else
+      result="error"
+      detail="${detail:-still-unhealthy}"
+    fi
+  fi
+fi
+
+emit_result
+
+if [ "$result" = "error" ]; then
+  exit 1
+fi
+exit 0

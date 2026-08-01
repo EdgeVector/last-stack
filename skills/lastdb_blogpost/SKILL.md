@@ -29,8 +29,8 @@ triggers:
 Codifies how a post gets added to **EdgeVector/fold_db_website** (live at
 `https://thelastdb.com/blog`). The site is **React + Vite + react-router**; each
 post is a lazy-loaded page component, listed in a blog index and wired into the
-router. Diagrams are **hand-authored architectural SVG** — Tom's standing
-preference — produced via the **`/diagram` skill** (see §3). **No Mermaid, ever**
+router. Diagrams are **hand-authored black-and-white technical SVG** — Tom's
+standing preference — produced via the **`/diagram` skill** (see §3). **No Mermaid, ever**
 (Tom finds it ugly; this is a hard rule, not a default).
 
 Canonical templates to copy structure/voice from (read one before writing):
@@ -112,21 +112,23 @@ subject you couldn't identify from the post alone gets rewritten (this bit us:
 "Degrade, Don't Die" shipped with "Brain is one of the two apps we build
 LastDB with" and an unexplained "routine", and needed a follow-up fix PR).
 
-## 3. Diagrams — hand-authored architectural SVG (default; use `/diagram`)
+## 3. Diagrams — black-and-white technical SVG (default; use `/diagram`)
 
-**Invoke the `/diagram` skill** and follow it — it carries the full grammar
-(thin uniform strokes, poché hatch for "solid/stored", joint marks, dimension
-lines, mono caps labels, exactly one accent colour). Don't reinvent the style
-here; the `/diagram` skill is the source of truth, and
-`src/pages/BlogEvolvingALiveSchema.jsx` is the worked reference. Use the LastDB
-gruvbox-dark palette (ink `#928374`, faint `#504945`, text `#ebdbb2`, accent
-`#83a598`; transparent bg).
+**Invoke the `/diagram` skill** and follow it — black-and-white technical line
+drawings only (thin uniform strokes, hatch for "solid/stored", joint marks,
+dimension lines, plain mono labels). **No colour, no accent, no gruvbox palette.**
+Don't reinvent the style here; the `/diagram` skill is the source of truth.
+Brain: `preference-diagrams-black-and-white-technical`.
+`src/pages/BlogEvolvingALiveSchema.jsx` is a structural reference for wiring only
+— when drawing **new** figures, use pure B&W ink (`#000` / gray hatch), not that
+post's older coloured palette.
 
 Wiring into the post:
 
 - Define each figure as a backtick **SVG string constant** above the component
   (reuse the `SVG_DEFS` / `SVG_OPEN(viewBox)` helpers from the reference post so
-  the `poché` pattern + responsive `<svg>` wrapper are shared).
+  the hatch pattern + responsive `<svg>` wrapper are shared — recolor defs to
+  black/gray if they still use the old theme colours).
 - Render with the local `ArchFigure` helper:
   `<ArchFigure svg={MY_FIGURE} caption="Fig. N — short caption" />`.
 - Keep the SVG as a plain string (it goes through `dangerouslySetInnerHTML`) —
@@ -164,11 +166,11 @@ A figure you can't see is one you can't trust. The Claude Preview server is
 rooted at the MAIN checkout, not the worktree, so render the figures standalone
 and screenshot them:
 ```bash
-# extract the SVG string consts from the page, drop them on the gruvbox bg
+# extract the SVG string consts from the page, drop them on a plain white bg
 node -e 'const fs=require("fs"); const s=fs.readFileSync("src/pages/Blog<PascalName>.jsx","utf8");
   const b=s.slice(s.indexOf("const SVG_DEFS"), s.indexOf("export default")).replace(/export\s+/g,"");
   const o={}; new Function("out", b+"\nout.figs=[/*list your FIG consts*/].join(\"\");")(o);
-  fs.writeFileSync("/tmp/figs.html",`<body style="background:#282828;padding:24px;width:720px">${o.figs}</body>`);'
+  fs.writeFileSync("/tmp/figs.html",`<body style="background:#fff;padding:24px;width:720px">${o.figs}</body>`);'
 B="$HOME/.claude/skills/gstack/browse/dist/browse"
 $B viewport 760x1100; $B goto "file:///tmp/figs.html"; $B screenshot /tmp/figs.png
 ```

@@ -148,6 +148,27 @@ publish_fixture "$digest_two" "$oid_two" $'#!/usr/bin/env bash\necho v2'
 [ "$(demo)" = v1 ] || fail "rollback did not reactivate v1"
 [ "$(readlink "$HOME/apps/demo/previous")" = "versions/$digest_two" ] || fail "rollback did not retain displaced version"
 
+chmod -R u+w "$HOME/apps/demo/versions/$digest_one" 2>/dev/null || true
+rm -rf "$HOME/apps/demo/versions/$digest_one"
+dangling_status="$("$ROOT/bin/host-track" status --json demo)"
+printf '%s\n' "$dangling_status" | jq -e --arg target "versions/$digest_one" '
+  .stale == true
+  and .artifact_current == $target
+  and (.artifact_problem | contains("dangling current target"))
+  and (.artifact_problem | contains($target))
+' >/dev/null || fail "dangling current was not diagnosed in status: $dangling_status"
+check_err="$("$ROOT/bin/host-track" check demo 2>&1 >/dev/null || true)"
+printf '%s\n' "$check_err" | grep -q "artifact install broken: dangling current target: target=versions/$digest_one" \
+  || fail "check did not distinguish dangling current from PATH failure (got: $check_err)"
+which_err="$("$ROOT/bin/host-track" which demo 2>&1 >/dev/null || true)"
+printf '%s\n' "$which_err" | grep -q "artifact install broken: dangling current target: target=versions/$digest_one" \
+  || fail "which did not distinguish dangling current from PATH failure (got: $which_err)"
+publish_fixture "$digest_one" "$oid_one" $'#!/usr/bin/env bash\necho v1'
+"$ROOT/bin/host-track" refresh --force demo >/dev/null
+"$ROOT/bin/host-track" check demo >/dev/null \
+  || fail "force refresh did not repair dangling current"
+[ "$(demo)" = v1 ] || fail "dangling current repair did not restore v1"
+
 publish_fixture "$digest_bad" "$oid_bad" $'#!/usr/bin/env bash\necho tampered'
 bad_sha="$(jq -r '.files[0].sha256' "$tmp/cas/channels/demo/stable.json")"
 printf 'corrupt\n' > "$tmp/cas/blobs/sha256/${bad_sha:0:2}/$bad_sha"

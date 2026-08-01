@@ -52,9 +52,45 @@
         {
           "source": "bin/host-track",
           "target": "$HOME/.local/bin/host-track"
+        },
+        {
+          "source": "bin/last-stack-class-a-heal",
+          "target": "$HOME/.local/bin/last-stack-class-a-heal"
+        },
+        {
+          "source": "bin/last-stack-routine-read",
+          "target": "$HOME/.local/bin/last-stack-routine-read"
+        },
+        {
+          "source": "bin/last-stack-update-check",
+          "target": "$HOME/.local/bin/last-stack-update-check"
+        },
+        {
+          "source": "bin/last-stack-self-upgrade",
+          "target": "$HOME/.local/bin/last-stack-self-upgrade"
+        },
+        {
+          "source": "bin/last-stack-shell-prelude",
+          "target": "$HOME/.local/bin/last-stack-shell-prelude"
+        },
+        {
+          "source": "bin/last-stack-cli-preflight",
+          "target": "$HOME/.local/bin/last-stack-cli-preflight"
+        },
+        {
+          "source": "bin/last-stack-board-closeout-sweep",
+          "target": "$HOME/.local/bin/last-stack-board-closeout-sweep"
+        },
+        {
+          "source": "bin/last-stack-factory-health",
+          "target": "$HOME/.local/bin/last-stack-factory-health"
+        },
+        {
+          "source": "bin/last-stack-pr-venue",
+          "target": "$HOME/.local/bin/last-stack-pr-venue"
         }
       ],
-      "notes": "Runtime is an immutable CI artifact that tracks gate_main (green+published main). host-track refresh promotes stable to that tip then installs. ~/.last-stack/{bin,skills,...} → artifacts/current. Never develop in the install; use a worktree."
+      "notes": "Runtime is an immutable CI artifact that tracks gate_main (green+published main). host-track refresh promotes stable to that tip then installs. ~/.last-stack/{bin,skills,...} \u2192 artifacts/current. PATH links Class A + pickup bootstrap tools so routinesd (~/.local/bin first) never hits GC'd version pins. Never develop in the install; use a worktree."
     },
     {
       "app": "brain",

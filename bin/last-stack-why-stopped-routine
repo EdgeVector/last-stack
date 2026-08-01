@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Install the scheduled why-stopped Class A–E classifier routine.
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+ROUTINES_HOME="${ROUTINES_HOME:-$HOME/.routines}"
+REGISTRY_DIR="$ROUTINES_HOME/registry"
+PROMPT_PATH="$ROOT/routines/why-stopped.md"
+ID="last-stack-why-stopped"
+DRY_RUN=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --registry-dir) REGISTRY_DIR="$2"; shift 2 ;;
+    --prompt-path) PROMPT_PATH="$2"; shift 2 ;;
+    --id) ID="$2"; shift 2 ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    -h|--help) echo "last-stack-why-stopped-routine [--dry-run]"; exit 0 ;;
+    *) echo "unknown: $1" >&2; exit 2 ;;
+  esac
+done
+
+[ -r "$PROMPT_PATH" ] || { echo "missing prompt: $PROMPT_PATH" >&2; exit 66; }
+
+body=$(cat <<EOF
+# Mechanical Class A–E factory freeze classifier (zero-LLM preferred).
+id = "$ID"
+harness = "codex"
+model = "gpt-5.5"
+effort = "low"
+rrule = "FREQ=HOURLY;INTERVAL=2;BYMINUTE=11;BYSECOND=0"
+cwd = "$HOME/code/edgevector"
+status = "active"
+timeout_min = 15
+prompt_path = "$PROMPT_PATH"
+heartbeat_slug = "routine-heartbeats"
+group = "ops"
+EOF
+)
+
+path="$REGISTRY_DIR/$ID.toml"
+if [ "$DRY_RUN" -eq 1 ]; then
+  printf '%s\n' "--- $path"
+  printf '%s\n' "$body"
+  exit 0
+fi
+mkdir -p "$REGISTRY_DIR"
+tmp="$(mktemp)"
+printf '%s\n' "$body" >"$tmp"
+if [ -f "$path" ] && cmp -s "$tmp" "$path"; then
+  rm -f "$tmp"
+  printf 'unchanged %s\n' "$path"
+else
+  mv "$tmp" "$path"
+  printf 'wrote %s\n' "$path"
+fi
