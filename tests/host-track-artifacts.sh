@@ -207,6 +207,26 @@ export HOST_TRACK_INSTALL_LOCK_WAIT_S=10
 [ "$(demo)" = v1 ] || fail "after lock-reclaim refresh demo broke"
 unset HOST_TRACK_INSTALL_LOCK_WAIT_S HOST_TRACK_INSTALL_LOCK_STALE_S
 
+# ── stage GC: abandoned .stage-* older than max age are removed ────────────
+stale_stage="$HOME/apps/demo/.stage-deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef.XXXX"
+mkdir -p "$stale_stage/bin"
+printf 'orphan\n' >"$stale_stage/bin/x"
+# Age the stage past the GC threshold (touch -t needs local time; use epoch via perl/python).
+python3 - "$stale_stage" <<'PY'
+import os, sys, time
+path = sys.argv[1]
+old = time.time() - 7200  # 2h ago
+os.utime(path, (old, old))
+PY
+export HOST_TRACK_STAGE_GC_MAX_AGE_S=60
+"$ROOT/bin/host-track" refresh --force demo >/dev/null 2>"$tmp/stage-gc.err" \
+  || fail "refresh with stage-gc failed: $(cat "$tmp/stage-gc.err")"
+[ ! -d "$stale_stage" ] || fail "stale .stage-* dir was not garbage-collected"
+grep -q 'gc stale stage dir' "$tmp/stage-gc.err" \
+  || fail "expected stage GC log line (got: $(cat "$tmp/stage-gc.err"))"
+[ "$(demo)" = v1 ] || fail "stage GC refresh broke active demo"
+unset HOST_TRACK_STAGE_GC_MAX_AGE_S
+
 printf 'ok: verified artifact install/refresh/rollback/tamper rejection\n'
 
 # ── track_gate_main: status stale vs main tip; refresh promotes channel ─────
