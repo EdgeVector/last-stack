@@ -108,6 +108,11 @@ output; a stale doc that misled an agent; the same workaround across sessions.
 - Do NOT file board cards in this step.
 
 ## Step 2 — Collect ALL open papercuts and prevention gaps
+- First run the lifecycle closer:
+  `last-stack-papercut-lifecycle-close --limit 200`. It may append
+  `Status: FIXED` to OPEN papercuts whose referenced LastGit CR, Forgejo PR, or
+  GitHub PR is already merged. This keeps healed pipeline papercuts from being
+  clustered again, while preserving the sole papercut→card path.
 - Enumerate papercut records: `brain list --type reference --limit 200` and
   filter slugs starting `papercut-`, plus `brain ask "papercut"` for strays.
 - Read `brain get papercut-prevention-registry --type reference`. This is the
