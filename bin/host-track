@@ -1017,6 +1017,18 @@ commit_staged_version() {
   fi
 }
 
+verify_staged_artifact_links() {
+  local json="$1" stage="$2" encoded entry source
+  while IFS= read -r encoded; do
+    [ -n "$encoded" ] || continue
+    entry="$(printf '%s' "$encoded" | base64_decode)"
+    source="$(printf '%s\n' "$entry" | jq -r '.source // ""')"
+    safe_artifact_relpath "$source" || die "invalid artifact link source: $source"
+    [ -e "$stage/$source" ] || die "staged artifact link source missing: $source"
+    [ ! -L "$stage/$source" ] || die "staged artifact link source is symlink: $source"
+  done < <(printf '%s\n' "$json" | jq -r '.links[]? | @base64')
+}
+
 install_artifact_links() {
   local json="$1" install_root="$2" encoded entry source target_raw target
   while IFS= read -r encoded; do
@@ -1183,6 +1195,12 @@ artifact_install_app() {
 
   if [ "$need_materialize" -eq 1 ]; then
     if ! stage="$(stage_artifact_from_manifest "$install_root" "$digest" "$manifest" "$artifact_root")"; then
+      release_install_lock
+      trap - EXIT
+      return 1
+    fi
+    if ! verify_staged_artifact_links "$json" "$stage"; then
+      rm -rf -- "$stage" 2>/dev/null || true
       release_install_lock
       trap - EXIT
       return 1
