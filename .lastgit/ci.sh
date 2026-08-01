@@ -33,6 +33,7 @@ bin/last-stack-lint-prompts \
 bash tests/last-stack-routine-read.sh
 bash tests/last-stack-class-a-heal.sh
 bash tests/last-stack-factory-hardening.sh
+bash tests/last-stack-todo-rank.sh
 bash tests/last-stack-kanban-done-when-eval.sh
 bash tests/last-stack-driver-hierarchy.sh
 bash tests/last-stack-ship-feature-milestones.sh

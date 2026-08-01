@@ -408,6 +408,28 @@ another work-unit while a prior claimed card only needs rollback reconciliation.
 
 ## Selection rule (form ONE work-unit)
 
+**Hard todo rank before claim:** pickup must not rely on prompt-only
+ship-outcome budget while active/proving milestones have unblocked `Kind: pr`
+frontier. Immediately before `pickup claim`, run the Last Stack wrapper around
+the board's hard ranker:
+
+```bash
+rank_out="/tmp/kanban-pickup-rank.json"
+if ! "$last_stack/bin/last-stack-todo-rank" --board-cli <board CLI> --json >"$rank_out"
+then
+  "$last_stack/bin/last-stack-brain-append-heartbeat" --line \
+    "kanban-pickup $(date -u +%Y-%m-%dT%H:%M:%SZ) noop busy-node todo-rank-failed no_card_claimed" || true
+  printf '%s %s\n' 'ROUTINE_RESULT' \
+    'outcome=noop detail=busy-node todo-rank-failed no_card_claimed'
+  exit 0
+fi
+```
+
+`last-stack-todo-rank` delegates to `<board CLI> rank --mode hard`, which
+orders default/todo as: active/proving milestone `Kind: pr` frontier first,
+then cleared non-frontier work, with papercut/hygiene last. Treat a rank write
+failure as pre-claim backpressure, not as permission to claim from stale order.
+
 **Preferred path (board CLI with `pickup claim`):** let the board pick and
 CAS-claim the next card so you do not reimplement priority / overlap / races:
 

@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# Apply the board's hard todo ranker before pickup claim.
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+
+board_cli="${LAST_STACK_KANBAN:-kanban}"
+board="default"
+column="todo"
+mode="hard"
+json_out=0
+attempts=3
+sleep_ms=750
+
+usage() {
+  cat <<'EOF'
+Usage: last-stack-todo-rank [options]
+
+Apply the board CLI hard ranker so pickup claim sees active/proving milestone
+Kind:pr frontier before unlaned/papercut/hygiene work.
+
+Options:
+  --board-cli <cmd>    board CLI to run (default: $LAST_STACK_KANBAN or kanban)
+  --board <slug>       board to rank (default: default)
+  --column <col>       column to rank (default: todo)
+  --mode <mode>        rank mode passed to board CLI (default: hard)
+  --attempts <n>       LastDB retry attempts (default: 3)
+  --sleep-ms <n>       retry backoff in milliseconds (default: 750)
+  --json               print board rank JSON
+  -h, --help           show this help
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --board-cli)
+      board_cli="${2:?}"
+      shift 2
+      ;;
+    --board-cli=*)
+      board_cli="${1#*=}"
+      shift
+      ;;
+    --board)
+      board="${2:?}"
+      shift 2
+      ;;
+    --board=*)
+      board="${1#*=}"
+      shift
+      ;;
+    --column)
+      column="${2:?}"
+      shift 2
+      ;;
+    --column=*)
+      column="${1#*=}"
+      shift
+      ;;
+    --mode)
+      mode="${2:?}"
+      shift 2
+      ;;
+    --mode=*)
+      mode="${1#*=}"
+      shift
+      ;;
+    --attempts)
+      attempts="${2:?}"
+      shift 2
+      ;;
+    --attempts=*)
+      attempts="${1#*=}"
+      shift
+      ;;
+    --sleep-ms)
+      sleep_ms="${2:?}"
+      shift 2
+      ;;
+    --sleep-ms=*)
+      sleep_ms="${1#*=}"
+      shift
+      ;;
+    --json)
+      json_out=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "last-stack-todo-rank: unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+cmd=("$board_cli" rank --board "$board" --column "$column" --mode "$mode")
+if [ "$json_out" -eq 1 ]; then
+  cmd+=(--json)
+fi
+
+exec "$ROOT/bin/last-stack-lastdb-retry" \
+  --attempts "$attempts" \
+  --sleep-ms "$sleep_ms" \
+  -- "${cmd[@]}"
