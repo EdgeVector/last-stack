@@ -306,10 +306,34 @@ back to `todo` (or `pending_rollback=` in memory) per transport rules below.
   `last-stack-routine-read`'s auto-upgrade before prompt load. After CLI
   preflight and before any board claim, run:
   ```bash
-  # Class A self-heal first (zero-LLM). Heals stale pointer, dangling current,
-  # and failed host-track check. Safe no-op when already healthy.
+  # Class A self-heal first (zero-LLM). Bound wall clock so heal never eats the
+  # whole pickup budget (class-a-heal-timeout flake). On timeout, re-check:
+  # if install is healthy (cache/fast path), CONTINUE to claim.
   if [ -x "$last_stack/bin/last-stack-class-a-heal" ]; then
-    if ! "$last_stack/bin/last-stack-class-a-heal" --reason=kanban-pickup-prompt-freshness; then
+    _heal_bin="$last_stack/bin/last-stack-class-a-heal"
+    _to=""
+    command -v gtimeout >/dev/null 2>&1 && _to="gtimeout -k 5s 45s"
+    command -v timeout >/dev/null 2>&1 && _to="timeout -k 5s 45s"
+    set +e
+    if [ -n "$_to" ]; then
+      $_to "$_heal_bin" --reason=kanban-pickup-prompt-freshness
+      _hc=$?
+    else
+      "$_heal_bin" --reason=kanban-pickup-prompt-freshness
+      _hc=$?
+    fi
+    set -e
+    if [ "${_hc:-0}" -eq 124 ] || [ "${_hc:-0}" -eq 137 ]; then
+      # Timed out — try a quiet re-check; healthy → continue claim.
+      if "$_heal_bin" --reason=kanban-pickup-after-timeout --quiet; then
+        : # install ok despite timeout — proceed
+      else
+        stale_detail="stale-last-stack-install class-a-heal-timeout no_card_claimed"
+        "$last_stack/bin/last-stack-brain-append-heartbeat" --line "kanban-pickup $(date -u +%Y-%m-%dT%H:%M:%SZ) noop $stale_detail" || true
+        printf '%s %s\n' 'ROUTINE_RESULT' "outcome=noop detail=$stale_detail"
+        exit 0
+      fi
+    elif [ "${_hc:-0}" -ne 0 ]; then
       stale_detail="stale-last-stack-install class-a-heal-failed no_card_claimed"
       "$last_stack/bin/last-stack-brain-append-heartbeat" --line "kanban-pickup $(date -u +%Y-%m-%dT%H:%M:%SZ) noop $stale_detail" || true
       printf '%s %s\n' 'ROUTINE_RESULT' "outcome=noop detail=$stale_detail"

@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# last-stack-fold-ci-health — zero-LLM Fold/Forge CI capacity check (Class C).
+#
+# Fold merge gates depend on local Forgejo runners. When the Mac host runner
+# is unloaded or PC WSL is asleep, overnight merges freeze (factory graph
+# fold_ci_fallback).
+#
+# Usage:
+#   last-stack-fold-ci-health [--json] [--page]
+#
+# Exit: 0 ok, 1 degraded/down, 2 usage
+set -euo pipefail
+
+JSON=0
+PAGE=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json) JSON=1; shift ;;
+    --page) PAGE=1; shift ;;
+    -h|--help) echo "last-stack-fold-ci-health [--json] [--page]"; exit 0 ;;
+    *) echo "unknown: $1" >&2; exit 2 ;;
+  esac
+done
+
+uid="$(id -u)"
+agents=(
+  com.edgevector.forgejo-runner
+  com.edgevector.forgejo-runner-host
+  com.edgevector.forgejo-runner-host-exemem-infra
+)
+
+ok=0
+bad=0
+rows=()
+
+for agent in "${agents[@]}"; do
+  if launchctl print "gui/$uid/$agent" >/dev/null 2>&1; then
+    state="$(launchctl print "gui/$uid/$agent" 2>/dev/null | sed -n 's/^[[:space:]]*state = //p' | head -1)"
+    state="${state:-unknown}"
+    if [ "$state" = "running" ]; then
+      ok=$((ok + 1))
+      rows+=("$agent=running")
+    else
+      bad=$((bad + 1))
+      rows+=("$agent=$state")
+    fi
+  else
+    bad=$((bad + 1))
+    rows+=("$agent=missing")
+  fi
+done
+
+# merge-gate runner is required; host heavy is required for fold
+level="ok"
+merge_state="missing"
+for r in "${rows[@]}"; do
+  case "$r" in
+    com.edgevector.forgejo-runner=running) merge_state="running" ;;
+    com.edgevector.forgejo-runner=*) merge_state="${r#com.edgevector.forgejo-runner=}" ;;
+  esac
+done
+if [ "$merge_state" != "running" ]; then
+  level="down"
+elif [ "$bad" -gt 0 ]; then
+  level="degraded"
+fi
+
+detail="$(IFS=,; echo "${rows[*]}")"
+
+if [ "$JSON" -eq 1 ]; then
+  printf '{"level":"%s","ok":%s,"bad":%s,"detail":"%s"}\n' "$level" "$ok" "$bad" "$detail"
+else
+  printf 'FOLD_CI_HEALTH level=%s ok=%s bad=%s detail=%s\n' "$level" "$ok" "$bad" "$detail"
+  if [ "$level" != "ok" ]; then
+    printf 'hint: docs/forge-runner-lanes.md — reload launchd agents; PC WSL runner is the docker merge-gate SPOF overnight\n'
+  fi
+fi
+
+if [ "$PAGE" -eq 1 ] && [ "$level" != "ok" ] && command -v ra >/dev/null 2>&1; then
+  ra notify "Fold CI health $level: $detail" --priority high >/dev/null 2>&1 || true
+fi
+
+# Heartbeat
+if [ -x "$(dirname "$0")/last-stack-brain-append-heartbeat" ]; then
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  "$(dirname "$0")/last-stack-brain-append-heartbeat" --line \
+    "fold-ci-health $ts $level $detail" 2>/dev/null || true
+fi
+
+[ "$level" = "ok" ] && exit 0
+exit 1

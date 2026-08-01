@@ -28,6 +28,10 @@ The ownership chain is strict:
 last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 . "$last_stack/bin/last-stack-shell-prelude"
 "$last_stack/bin/last-stack-cli-preflight" brain kanban situations jq
+# Generator backpressure: shed when LastDB is hot so claim/closeout keep shipping.
+if [ -x "$last_stack/bin/last-stack-generator-preflight" ]; then
+  "$last_stack/bin/last-stack-generator-preflight" north-star-driver || exit 0
+fi
 ```
 
 Run `situations list --json`, then complete the creation inventory gate below.

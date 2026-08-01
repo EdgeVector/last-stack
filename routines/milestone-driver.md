@@ -49,6 +49,10 @@ is `kanban-validate`. Never invent architecture when decomposition is unclear.
 last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 . "$last_stack/bin/last-stack-shell-prelude"
 "$last_stack/bin/last-stack-cli-preflight" jq kanban situations
+# Generator backpressure: shed when LastDB is hot so claim/closeout keep shipping.
+if [ -x "$last_stack/bin/last-stack-generator-preflight" ]; then
+  "$last_stack/bin/last-stack-generator-preflight" milestone-driver || exit 0
+fi
 ```
 
 Run `situations list --json` before board mutations. Respect blocked actions.
