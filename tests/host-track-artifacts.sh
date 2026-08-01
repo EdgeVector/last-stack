@@ -144,6 +144,27 @@ publish_fixture "$digest_two" "$oid_two" $'#!/usr/bin/env bash\necho v2'
 [ "$(demo)" = v2 ] || fail "refresh did not atomically activate v2"
 [ "$(readlink "$HOME/apps/demo/previous")" = "versions/$digest_one" ] || fail "previous version was not retained"
 
+concurrent_pids=()
+for i in 1 2 3 4 5; do
+  HOST_TRACK_INSTALL_LOCK_TIMEOUT_SEC=10 "$ROOT/bin/host-track" refresh --force demo \
+    > "$tmp/concurrent-refresh-$i.out" 2> "$tmp/concurrent-refresh-$i.err" &
+  concurrent_pids+=("$!")
+done
+for pid in "${concurrent_pids[@]}"; do
+  if ! wait "$pid"; then
+    cat "$tmp"/concurrent-refresh-*.err >&2
+    fail "concurrent forced artifact refresh failed"
+  fi
+done
+[ "$(readlink "$HOME/apps/demo/current")" = "versions/$digest_two" ] \
+  || fail "concurrent refresh changed current away from the complete version"
+[ "$(demo)" = v2 ] || fail "concurrent refresh left current/bin unresolved"
+"$ROOT/bin/host-track" check demo >/dev/null \
+  || fail "concurrent refresh left active artifact unverifiable"
+nested_stage_count="$(find "$HOME/apps/demo/versions/$digest_two" -type d -name '.stage-*' | wc -l | tr -d ' ')"
+[ "$nested_stage_count" = "0" ] \
+  || fail "concurrent refresh published a stage directory inside the immutable version"
+
 "$ROOT/bin/host-track" rollback demo >/dev/null
 [ "$(demo)" = v1 ] || fail "rollback did not reactivate v1"
 [ "$(readlink "$HOME/apps/demo/previous")" = "versions/$digest_two" ] || fail "rollback did not retain displaced version"
