@@ -1095,6 +1095,28 @@ replace_artifact_version_tree() {
   mv "$stage" "$target"
 }
 
+# GC abandoned .stage-* dirs left by crashed installs. Never touches versions/*
+# or current/previous. Age default 30m (HOST_TRACK_STAGE_GC_MAX_AGE_S).
+gc_stale_stage_dirs() {
+  local install_root="$1"
+  local max_age_s="${HOST_TRACK_STAGE_GC_MAX_AGE_S:-1800}"
+  local now stage mtime age
+  [ -d "$install_root" ] || return 0
+  now="$(date +%s)"
+  # Portable: only direct children named .stage-*
+  for stage in "$install_root"/.stage-*; do
+    [ -e "$stage" ] || continue
+    [ -d "$stage" ] || continue
+    mtime="$(stat -f %m "$stage" 2>/dev/null || stat -c %Y "$stage" 2>/dev/null || echo 0)"
+    age=$((now - mtime))
+    if [ "$age" -ge "$max_age_s" ]; then
+      printf 'host-track: gc stale stage dir age=%ss path=%s\n' "$age" "$stage" >&2
+      chmod -R u+w "$stage" 2>/dev/null || true
+      rm -rf -- "$stage" 2>/dev/null || true
+    fi
+  done
+}
+
 artifact_install_app() {
   local app="$1" channel_override="${2:-}" force_restage="${3:-0}" json install_mode artifact_app channel artifact_root install_root
   local manifest digest stage target old_target stamp_path need_materialize=0
@@ -1107,6 +1129,8 @@ artifact_install_app() {
   command -v lastgit >/dev/null 2>&1 || die "lastgit is required for verified artifact installs"
 
   acquire_install_lock "$app"
+  # Clean crashed half-stages before materializing a new one.
+  gc_stale_stage_dirs "$install_root"
 
   # Always release the lock on any exit path from this function (bash RETURN is
   # unreliable across re-exec/temp-copy; pair with explicit releases + die()).
