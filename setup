@@ -602,6 +602,16 @@ if [ -x "$SOURCE_ROOT/bin/last-stack-factory-health-install" ]; then
     echo "  factory-health LaunchAgent: install failed (non-fatal)" >&2
 fi
 
+# Terminal product proof routine (Feature Ship Loop) + Class A–E why-stopped.
+if [ -x "$SOURCE_ROOT/bin/last-stack-feature-prove-routine" ]; then
+  "$SOURCE_ROOT/bin/last-stack-feature-prove-routine" || \
+    echo "  feature-prove registry: install failed (non-fatal)" >&2
+fi
+if [ -x "$SOURCE_ROOT/bin/last-stack-why-stopped-routine" ]; then
+  "$SOURCE_ROOT/bin/last-stack-why-stopped-routine" || \
+    echo "  why-stopped registry: install failed (non-fatal)" >&2
+fi
+
 # Zero-LLM self-upgrade healer (every 30m) — checkout installs only.
 # Artifact runtime (one rule): host-track refresh agent is the only upgrader.
 if [ -x "$SOURCE_ROOT/bin/last-stack-self-upgrade-install" ]; then

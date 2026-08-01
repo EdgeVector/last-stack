@@ -16,6 +16,32 @@ Do **not** use new `feature-owner` cards for budget; that graph is retired
 (brain `sop-feature-ship-loop`). Legacy feature-owner cards still on the board
 may count as "driving" only until migrated — still do not file new ones.
 
+## Generator backpressure (Tom 2026-08-01)
+
+Before mining/clustering, shed if LastDB is hot:
+
+```bash
+last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+if [ -x "$last_stack/bin/last-stack-generator-preflight" ]; then
+  "$last_stack/bin/last-stack-generator-preflight" papercut-reconciler || exit 0
+fi
+```
+
+## Papercut lifecycle (auto FIXED / age)
+
+Each pass, **before** filing new cards, spend a short budget on lifecycle:
+
+1. **Heal FIXED when the world already matches:** if an OPEN pipeline papercut
+   (`papercut-pipeline-stuck-cr-*` / `papercut-pipeline-deploy-*`) no longer has a
+   matching open CR/PR on the venue, append `Status: FIXED` + one-line evidence
+   (CR id, check date) via `brain append` — do not re-file a board card.
+2. **Age one-offs:** OPEN papercuts with a single occurrence >14d and no board
+   card may be marked `Status: AGED_OUT` (keep the record; stop clustering).
+3. **Zombie board cards:** if a papercut board card is in todo/doing but its
+   brain record is FIXED, close the card to done with evidence or roll back to
+   backlog with `superseded` — do not leave pickup capacity on fixed friction.
+4. Cap lifecycle actions at **5 records/cards per run** so harvest still runs.
+
 
 
 You are running an unattended routine in `<WORKSPACE>`. You are the **Brain

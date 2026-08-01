@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# last-stack-lastdb-pressure — zero-LLM LastDB load probe for generator backpressure.
+#
+# Generators (NS/MS drivers, papercut-reconciler, pipeline-health) should shed
+# work when the primary node is hot so claim/closeout keep the factory shipping.
+#
+# Usage:
+#   last-stack-lastdb-pressure [--json] [--quiet]
+#   last-stack-lastdb-pressure --hot     # exit 1 if hot, 0 if cool (for shell if)
+#
+# Exit:
+#   0  cool (or --hot and cool)
+#   1  hot  (or --hot and hot)
+#   2  usage / probe unavailable
+set -euo pipefail
+
+JSON=0
+QUIET=0
+HOT_ONLY=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json) JSON=1; shift ;;
+    --quiet|-q) QUIET=1; shift ;;
+    --hot) HOT_ONLY=1; shift ;;
+    -h|--help)
+      cat <<'H'
+last-stack-lastdb-pressure — probe primary LastDB load for generator shed
+
+  --json   machine output
+  --hot    exit 1 if hot, 0 if cool (silent ok for scripts)
+  --quiet  less stderr
+H
+      exit 0
+      ;;
+    *) echo "unknown: $1" >&2; exit 2 ;;
+  esac
+done
+
+log() { [ "$QUIET" -eq 1 ] || printf 'lastdb-pressure: %s\n' "$*" >&2; }
+
+# Thresholds (env-overridable)
+MAX_IN_FLIGHT="${LASTSTACK_PRESSURE_MAX_IN_FLIGHT:-20}"
+MAX_UDS_REJECTS="${LASTSTACK_PRESSURE_MAX_UDS_REJECTS:-1}"
+MAX_QOS_SHEDS="${LASTSTACK_PRESSURE_MAX_QOS_SHEDS:-1}"
+MAX_WARM_PCT="${LASTSTACK_PRESSURE_MAX_WARM_PCT:-95}"
+# If lastdb status fails, treat as hot only when --hot-on-unknown=1
+HOT_ON_UNKNOWN="${LASTSTACK_PRESSURE_HOT_ON_UNKNOWN:-0}"
+
+if ! command -v lastdb >/dev/null 2>&1 && ! command -v lastdbd >/dev/null 2>&1; then
+  log "lastdb CLI missing"
+  [ "$HOT_ONLY" -eq 1 ] && [ "$HOT_ON_UNKNOWN" = "1" ] && exit 1
+  [ "$JSON" -eq 1 ] && printf '{"ok":false,"level":"unknown","reason":"no-cli"}\n'
+  exit 2
+fi
+
+status_txt=""
+if command -v lastdb >/dev/null 2>&1; then
+  status_txt="$(lastdb status 2>/dev/null || true)"
+fi
+if [ -z "$status_txt" ]; then
+  log "lastdb status empty/failed"
+  [ "$HOT_ONLY" -eq 1 ] && [ "$HOT_ON_UNKNOWN" = "1" ] && exit 1
+  [ "$JSON" -eq 1 ] && printf '{"ok":false,"level":"unknown","reason":"status-failed"}\n'
+  exit 2
+fi
+
+# Parse key lines from human status (stable-ish fields)
+in_flight="$(printf '%s\n' "$status_txt" | sed -n 's/.*in_flight=\([0-9][0-9]*\).*/\1/p' | head -1)"
+rejects="$(printf '%s\n' "$status_txt" | sed -n 's/.*rejects=\([0-9][0-9]*\).*/\1/p' | head -1)"
+sheds_i="$(printf '%s\n' "$status_txt" | sed -n 's/.*sheds_i=\([0-9][0-9]*\).*/\1/p' | head -1)"
+sheds_b="$(printf '%s\n' "$status_txt" | sed -n 's/.*sheds_b=\([0-9][0-9]*\).*/\1/p' | head -1)"
+warm_pct="$(printf '%s\n' "$status_txt" | sed -n 's/.*warm=[^/]*\/[^ ]* (\([0-9.][0-9.]*\)%).*/\1/p' | head -1)"
+degraded="$(printf '%s\n' "$status_txt" | grep -c 'degraded=true' || true)"
+
+in_flight="${in_flight:-0}"
+rejects="${rejects:-0}"
+sheds_i="${sheds_i:-0}"
+sheds_b="${sheds_b:-0}"
+warm_pct="${warm_pct:-0}"
+degraded="${degraded:-0}"
+
+reasons=()
+level="cool"
+
+num_gt() {
+  # $1 > $2 as integers (warm_pct may be float — strip)
+  local a b
+  a="${1%%.*}"
+  b="${2%%.*}"
+  [ "${a:-0}" -gt "${b:-0}" ]
+}
+
+if num_gt "$in_flight" "$MAX_IN_FLIGHT"; then
+  reasons+=("in_flight=$in_flight>$MAX_IN_FLIGHT")
+  level="hot"
+fi
+if num_gt "$rejects" "0" && num_gt "$rejects" "$((MAX_UDS_REJECTS - 1))"; then
+  reasons+=("uds_rejects=$rejects")
+  level="hot"
+fi
+if num_gt "$sheds_i" "0" || num_gt "$sheds_b" "0"; then
+  if num_gt "$((sheds_i + sheds_b))" "$((MAX_QOS_SHEDS - 1))"; then
+    reasons+=("qos_sheds_i=$sheds_i sheds_b=$sheds_b")
+    level="hot"
+  fi
+fi
+if num_gt "$warm_pct" "$MAX_WARM_PCT"; then
+  reasons+=("warm_pct=$warm_pct>$MAX_WARM_PCT")
+  level="hot"
+fi
+if [ "$degraded" -gt 0 ]; then
+  reasons+=("sync_degraded")
+  level="hot"
+fi
+
+reason_str="$(IFS=,; echo "${reasons[*]:-}")"
+[ -n "$reason_str" ] || reason_str="ok"
+
+if [ "$JSON" -eq 1 ]; then
+  printf '{"ok":true,"level":"%s","in_flight":%s,"uds_rejects":%s,"sheds_i":%s,"sheds_b":%s,"warm_pct":%s,"reason":"%s"}\n' \
+    "$level" "$in_flight" "$rejects" "$sheds_i" "$sheds_b" "$warm_pct" "$reason_str"
+elif [ "$HOT_ONLY" -eq 0 ]; then
+  printf 'LAST_STACK_LASTDB_PRESSURE level=%s in_flight=%s rejects=%s warm_pct=%s reason=%s\n' \
+    "$level" "$in_flight" "$rejects" "$warm_pct" "$reason_str"
+fi
+
+if [ "$level" = "hot" ]; then
+  log "HOT $reason_str"
+  exit 1
+fi
+log "cool $reason_str"
+exit 0

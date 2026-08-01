@@ -116,6 +116,10 @@ read/write, fail loudly if the resolved path is empty or starts with
    "$last_stack/bin/last-stack-cli-preflight" git curl jq <board-cli> <brain-cli>
    command -v lastgit >/dev/null || { echo "lastgit missing on PATH" >&2; exit 1; }
    command -v brain >/dev/null || { echo "brain missing on PATH" >&2; exit 1; }
+   # Generator backpressure: skip heavy pipeline scans when LastDB is hot.
+   if [ -x "$last_stack/bin/last-stack-generator-preflight" ]; then
+     "$last_stack/bin/last-stack-generator-preflight" pipeline-health || exit 0
+   fi
    ```
 2. Situations preflight (read-only list is enough unless you will mutate CI
    gates): honor any active Situation that freezes pipeline work.

@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# last-stack-generator-preflight — shared shed gate for NS/MS/pipeline/papercut generators.
+# Exit 0 = proceed. Exit 75 = shed (busy/hot). Exit 2 = usage.
+set -euo pipefail
+REASON="${1:-generator}"
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
+
+if [ -x "$ROOT/bin/last-stack-lastdb-pressure" ]; then
+  if ! "$ROOT/bin/last-stack-lastdb-pressure" --hot --quiet 2>/dev/null; then
+    rc=$?
+    if [ "$rc" -eq 1 ]; then
+      ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      if [ -x "$ROOT/bin/last-stack-brain-append-heartbeat" ]; then
+        "$ROOT/bin/last-stack-brain-append-heartbeat" --line \
+          "$REASON $ts noop backpressure lastdb-hot" 2>/dev/null || true
+      fi
+      printf '%s %s\n' 'ROUTINE_RESULT' "outcome=noop detail=backpressure lastdb-hot reason=$REASON"
+      exit 75
+    fi
+  fi
+fi
+exit 0

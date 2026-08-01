@@ -112,6 +112,10 @@ PATH_SHIM_NAMES=(
   last-stack-pr-venue
   last-stack-north-star-proof
   last-stack-brain-append-heartbeat
+  last-stack-lastdb-pressure
+  last-stack-why-stopped
+  last-stack-fold-ci-health
+  last-stack-generator-preflight
 )
 
 actions=()
