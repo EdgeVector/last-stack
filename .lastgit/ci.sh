@@ -45,6 +45,7 @@ bash tests/last-stack-mini-cutover-health.sh
 bash tests/last-stack-pipeline-deploy-scan.sh
 bash tests/last-stack-deploy-gated-closeout.sh
 bash tests/last-stack-legacy-residue-closeout.sh
+bash tests/last-stack-why-shipping-stopped.sh
 bash tests/host-track-artifacts.sh
 bash tests/last-stack-artifact-host-track-proof.sh
 bash tests/last-stack-artifact-layout.sh

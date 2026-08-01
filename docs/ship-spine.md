@@ -3,6 +3,7 @@
 Tools:
 
 - `bin/last-stack-ship-preflight` — exit 0/1 walk-away check
+- `bin/last-stack-why-shipping-stopped` — Class A-E stall diagnosis + heal
 - `bin/last-stack-fleet-deadman` — out-of-band routinesd + heartbeat staleness
 - `kanban pickup explain <slug>` — full readiness path (fkanban)
 
