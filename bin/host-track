@@ -533,6 +533,25 @@ status_json_for() {
     fi
   fi
 
+  # freshness: pickup-facing classification (soft lag ≠ hard-broken).
+  # - hard_broken: artifact_problem or missing/unusable current
+  # - soft_stale: stale=true but install tree is usable (gate ahead / publish lag)
+  # - fresh: stale=false and no problem
+  freshness="fresh"
+  if [ "$install_mode" = "artifact" ]; then
+    if [ -n "$artifact_problem" ]; then
+      freshness="hard_broken"
+    elif [ "$stale" = "true" ]; then
+      if [ -n "$install_root" ] && current_target_is_live "$install_root" 2>/dev/null; then
+        freshness="soft_stale"
+      else
+        freshness="hard_broken"
+      fi
+    fi
+  elif [ "$stale" = "true" ]; then
+    freshness="soft_stale"
+  fi
+
   jq -c -n \
     --arg app "$app" \
     --arg command "$command_name" \
@@ -558,6 +577,7 @@ status_json_for() {
     --arg artifact_current "$artifact_current" \
     --arg artifact_previous "$artifact_previous" \
     --arg artifact_problem "$artifact_problem" \
+    --arg freshness "$freshness" \
     --argjson stale "$stale" \
     '{
       app: $app,
@@ -573,6 +593,7 @@ status_json_for() {
       kind: $kind,
       install_mode: $install_mode,
       stale: $stale,
+      freshness: $freshness,
       stamp: $stamp,
       refresh: ($refresh | select(length > 0) // null),
       artifact_app: ($artifact_app | select(length > 0) // null),
@@ -602,6 +623,7 @@ status_plain_for() {
       "host_head=" + (.host_head // "-"),
       "gate_head=" + (.gate_head // "-"),
       "stale=" + (.stale | tostring),
+      "freshness=" + (.freshness // "-"),
       "notes=" + .notes
     ] | @tsv'
 }

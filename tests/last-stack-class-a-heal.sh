@@ -134,26 +134,50 @@ export FAKE_HT_INITIAL=stale
 rm -f "$FAKE_HT_STATE" "$FAKE_HT_LOG"
 printf 'stale\n' >"$FAKE_HT_STATE"
 
-# --- 1) dry-run on stale does not write healthy ---
+# --- 1) soft-stale usable: stale=true but current+prompt+reader OK → exit 0, no force refresh ---
+# Fixture has live versions/good current + kanban-pickup.md + routine-read shims.
 set +e
 out="$("$HOME/.last-stack/bin/last-stack-class-a-heal" --reason=test --dry-run --json 2>"$tmp/err1")"
 rc=$?
 set -e
-# dry-run does not mutate install, so still-unhealthy → exit 1 is expected.
-case "$rc" in 0|1) ;; *) fail "dry-run unexpected exit $rc out=$out err=$(cat "$tmp/err1")" ;; esac
+[ "$rc" -eq 0 ] || fail "soft-stale dry-run should exit 0; rc=$rc out=$out err=$(cat "$tmp/err1")"
 printf '%s\n' "$out" | grep -q '"reason":"test"' || fail "json missing reason: $out"
-printf '%s\n' "$out" | grep -q 'refresh-force' || fail "dry-run should plan a force refresh: $out"
+printf '%s\n' "$out" | grep -qE 'soft-stale' || fail "expected soft-stale detail/actions: $out"
+# Must NOT thrash force refresh on soft lag alone
+printf '%s\n' "$out" | grep -q 'refresh-force' && fail "soft-stale must not plan force refresh: $out" || true
 
-# --- 2) real heal advances stale → healthy ---
+# --- 2) soft-stale real heal: exit 0 without host-track refresh ---
 rm -f "$FAKE_HT_STATE" "$FAKE_HT_LOG"
 printf 'stale\n' >"$FAKE_HT_STATE"
+: >"$FAKE_HT_LOG"
 set +e
-out2="$("$HOME/.last-stack/bin/last-stack-class-a-heal" --reason=test-heal --json 2>"$tmp/err2")"
+out2="$("$HOME/.last-stack/bin/last-stack-class-a-heal" --reason=test-soft-stale --json 2>"$tmp/err2")"
 rc2=$?
 set -e
-[ "$rc2" -eq 0 ] || fail "heal should exit 0 after refresh; rc=$rc2 out=$out2 err=$(cat "$tmp/err2")"
+[ "$rc2" -eq 0 ] || fail "soft-stale heal should exit 0; rc=$rc2 out=$out2 err=$(cat "$tmp/err2")"
 printf '%s\n' "$out2" | grep -qE '"result":"(healed|ok)"' || fail "expected healed/ok: $out2"
-grep -q 'force-if-stale\|force' "$FAKE_HT_LOG" || fail "expected a force refresh in log: $(cat "$FAKE_HT_LOG")"
+printf '%s\n' "$out2" | grep -qE 'soft-stale' || fail "expected soft-stale signal: $out2"
+# No force refresh when soft-stale-usable
+if [ -s "$FAKE_HT_LOG" ]; then
+  grep -q 'force' "$FAKE_HT_LOG" && fail "soft-stale must not force-refresh: $(cat "$FAKE_HT_LOG")" || true
+fi
+
+# --- 2b) hard-broken (no usable current) still force-refreshes ---
+ln -sfn "versions/gone" "$tmp/artifacts/current"
+rm -f "$FAKE_HT_STATE" "$FAKE_HT_LOG"
+printf 'stale\n' >"$FAKE_HT_STATE"
+: >"$FAKE_HT_LOG"
+# Heal will try repoint dangling → previous (dead) may not help; force refresh
+# still recorded when hard path runs.
+set +e
+out2b="$("$HOME/.last-stack/bin/last-stack-class-a-heal" --reason=test-hard --json 2>"$tmp/err2b")"
+rc2b=$?
+set -e
+# Restore good current for later tests
+ln -sfn "versions/good" "$tmp/artifacts/current"
+# hard path either heals via refresh or fails closed — must not soft-stale-skip
+printf '%s\n' "$out2b" | grep -q 'soft-stale-skip-refresh' \
+  && fail "hard-broken must not soft-stale-skip: $out2b" || true
 
 # --- 3) already healthy is noop ---
 printf 'healthy\n' >"$FAKE_HT_STATE"
@@ -165,18 +189,32 @@ set -e
 [ "$rc3" -eq 0 ] || fail "healthy should exit 0; rc=$rc3"
 printf '%s\n' "$out3" | grep -q '"result":"ok"' || fail "expected result ok: $out3"
 
-# --- 4) refresh fails → exit 1 ---
+# --- 4) soft-stale with refresh disabled still OK (no force path taken) ---
 printf 'stale\n' >"$FAKE_HT_STATE"
-# Drop healthy cache so a prior ok stamp cannot short-circuit a now-stale install
 rm -f "$HOME/.last-stack/state/class-a-heal.last-ok"
 export FAKE_HT_REFRESH_FAIL=1
 set +e
 out4="$("$HOME/.last-stack/bin/last-stack-class-a-heal" --reason=fail --json 2>"$tmp/err4")"
 rc4=$?
 set -e
-[ "$rc4" -eq 1 ] || fail "failed refresh should exit 1; rc=$rc4 out=$out4"
-printf '%s\n' "$out4" | grep -q '"result":"error"' || fail "expected error result: $out4"
+# Soft-stale usable must not depend on refresh succeeding.
+[ "$rc4" -eq 0 ] || fail "soft-stale should exit 0 even if refresh would fail; rc=$rc4 out=$out4"
+printf '%s\n' "$out4" | grep -qE 'soft-stale' || fail "expected soft-stale: $out4"
 unset FAKE_HT_REFRESH_FAIL
+
+# --- 4b) hard-broken + refresh fails → exit 1 ---
+ln -sfn "versions/gone" "$tmp/artifacts/current"
+printf 'stale\n' >"$FAKE_HT_STATE"
+rm -f "$HOME/.last-stack/state/class-a-heal.last-ok"
+export FAKE_HT_REFRESH_FAIL=1
+set +e
+out4b="$("$HOME/.last-stack/bin/last-stack-class-a-heal" --reason=fail-hard --json 2>"$tmp/err4b")"
+rc4b=$?
+set -e
+[ "$rc4b" -eq 1 ] || fail "hard-broken+refresh-fail should exit 1; rc=$rc4b out=$out4b"
+printf '%s\n' "$out4b" | grep -q '"result":"error"' || fail "expected error result: $out4b"
+unset FAKE_HT_REFRESH_FAIL
+ln -sfn "versions/good" "$tmp/artifacts/current"
 
 # --- 5) dangling current repoint ---
 rm -rf "$tmp/artifacts/versions/gone"

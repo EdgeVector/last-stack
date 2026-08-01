@@ -284,6 +284,30 @@ is_artifact() {
   [ "$(printf '%s\n' "$sj" | jq -r '.install_mode // ""' 2>/dev/null)" = "artifact" ]
 }
 
+# Hard-broken signals from host-track status (non-empty artifact_problem).
+has_artifact_problem() {
+  local sj="$1" p
+  p="$(printf '%s\n' "$sj" | jq -r '.artifact_problem // empty' 2>/dev/null || true)"
+  [ -n "$p" ]
+}
+
+# Live current pointer: directory with bin/ content or VERSION (usable skill-pack).
+current_is_usable() {
+  local target abs
+  [ -L "$CURRENT_LINK" ] || return 1
+  target="$(readlink "$CURRENT_LINK" 2>/dev/null || true)"
+  [ -n "$target" ] || return 1
+  case "$target" in
+    /*) abs="$target" ;;
+    *) abs="$ARTIFACT_ROOT/$target" ;;
+  esac
+  [ -d "$abs" ] || return 1
+  if [ -d "$abs/bin" ] && [ -n "$(ls -A "$abs/bin" 2>/dev/null || true)" ]; then
+    return 0
+  fi
+  [ -f "$abs/VERSION" ]
+}
+
 check_ok() {
   # Slow path (~6s). Prefer status.stale for the common healthy case.
   "$HT" check last-stack >/dev/null 2>&1
@@ -332,7 +356,25 @@ routine_read_ok_fast() {
     "$reader" kanban-pickup >/dev/null 2>&1
 }
 
-# Fast healthy: install not stale + prompt+reader present. No host-track check.
+# Soft-stale: gate ahead (stale=true) but install is complete + usable.
+# Design: soft lag must NOT freeze pickup; refresh is background-only.
+soft_stale_usable() {
+  local sj="${1:-}"
+  if [ -z "$sj" ]; then
+    sj="$(status_json)"
+  fi
+  [ -n "$sj" ] || return 1
+  is_artifact "$sj" || return 1
+  is_stale "$sj" || return 1
+  has_artifact_problem "$sj" && return 1
+  current_is_usable || return 1
+  prompt_present || return 1
+  reader_present || return 1
+  return 0
+}
+
+# Fast healthy: fresh install OR soft-stale-usable. Hard-broken fails.
+# No host-track check / no slow refresh on the fast path.
 fast_healthy() {
   local sj
   sj="$(status_json)"
@@ -340,7 +382,15 @@ fast_healthy() {
     return 1
   fi
   if is_artifact "$sj"; then
+    if has_artifact_problem "$sj"; then
+      return 1
+    fi
     if is_stale "$sj"; then
+      # Soft lag behind gate is pickup-OK when current tree is usable.
+      if soft_stale_usable "$sj"; then
+        detail="soft-stale-ok"
+        return 0
+      fi
       return 1
     fi
   fi
@@ -349,19 +399,32 @@ fast_healthy() {
   return 0
 }
 
-# Deep healthy: includes host-track check + structural routine-read.
+# Deep healthy: soft-stale-usable still OK; hard-broken / missing tools fail.
+# host-track check is only required when not soft-stale (check fails on stale).
 deep_healthy() {
   local sj
   sj="$(status_json)"
+  if [ -z "$sj" ]; then
+    return 1
+  fi
   if is_artifact "$sj"; then
-    if is_stale "$sj"; then
+    if has_artifact_problem "$sj"; then
       return 1
     fi
-    if ! check_ok; then
+    if is_stale "$sj"; then
+      soft_stale_usable "$sj" || return 1
+      detail="soft-stale-ok"
+      # Skip check_ok: host-track check intentionally fails when stale=true.
+    elif ! check_ok; then
       return 1
     fi
   fi
   if ! routine_read_ok_fast; then
+    # Soft-stale may have a routine-read that still wants update-check; structural
+    # prompt+reader already proved under soft_stale_usable / fast path.
+    if soft_stale_usable "$sj"; then
+      return 0
+    fi
     return 1
   fi
   return 0
@@ -471,10 +534,26 @@ heal_ladder() {
     return 0
   fi
 
+  # Soft-stale (usable install, gate ahead): do NOT force refresh in the pickup
+  # path. Background host-track-refresh / LaunchAgent owns slow catch-up.
+  if soft_stale_usable "$sj"; then
+    log "soft-stale usable (stale=true, current live) → skip force refresh"
+    detail="soft-stale-ok"
+    append_action "soft-stale-skip-refresh"
+    return 0
+  fi
+
   if is_stale "$sj"; then
-    log "status.stale=true → force-if-stale"
+    log "status.stale=true hard path → force-if-stale"
     run_refresh force-if-stale || true
     sj="$(status_json)"
+  fi
+
+  # After refresh attempt, soft-stale usable is success.
+  if soft_stale_usable "$sj"; then
+    detail="soft-stale-ok"
+    append_action "soft-stale-after-refresh"
+    return 0
   fi
 
   # Deep check only on the slow path when status already claims healthy
@@ -487,7 +566,8 @@ heal_ladder() {
       run_refresh force || true
     fi
   else
-    log "still stale → --force"
+    # Still stale and NOT soft-stale-usable → hard path force once.
+    log "still hard-stale → --force"
     run_refresh force || true
   fi
 }
@@ -539,12 +619,17 @@ if [ -z "${HT:-}" ]; then
 fi
 
 # Share a very recent healthy result (multi-worker pickup pile-up).
-# Never trust cache when host-track status says stale (install may have flipped).
+# Trust cache when status is fresh OR soft-stale-usable. Never trust cache when
+# hard-broken (artifact_problem / unusable current).
 if [ "$FORCE_FULL" -eq 0 ] && [ "$DRY_RUN" -eq 0 ] && cache_is_fresh_ok; then
   _sj="$(status_json)"
-  if [ -n "$_sj" ] && ! is_stale "$_sj"; then
+  if [ -n "$_sj" ] && { ! is_stale "$_sj" || soft_stale_usable "$_sj"; } && ! has_artifact_problem "$_sj"; then
     result="ok"
-    detail="cache-fresh-ok"
+    if soft_stale_usable "$_sj"; then
+      detail="cache-soft-stale-ok"
+    else
+      detail="cache-fresh-ok"
+    fi
     append_action "cache-hit"
     emit_result
     exit 0
