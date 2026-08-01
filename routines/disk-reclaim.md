@@ -133,10 +133,22 @@ continue — do not fail the whole run.
    `pre-*` backup dirs by their trailing timestamp; delete every older one
    (retention set with Tom 2026-07-19 after unbounded backups contributed to
    the ENOSPC that killed routinesd — see brain
-   `papercut-lastdb-backups-unbounded-retention`). Apply the LastDB guardrail
-   above (real dir, realpath outside `~/.lastdb`, `lsof` empty) to each
-   candidate. These dirs are APFS clones: report reclaim as the `df` delta,
-   never the `du` sum. Heartbeat token: `backups_pruned=<n>`.
+   `papercut-lastdb-backups-unbounded-retention`). Before pruning older local
+   backups, confirm the off-machine backup path is currently healthy; if that
+   cannot be proven, retain the older local backups, heartbeat
+   `backup_retention_blocked=off_machine_unverified`, and escalate instead of
+   deleting what may be the only copy.
+
+   Apply the LastDB guardrail above to each candidate: real dir, realpath outside
+   `~/.lastdb`, and open-file safety. Scope `lsof +D` to the newest 3 retained
+   backups plus any candidate newer than 2 days. For older candidates outside
+   the retained set, `lsof` failure or inconclusive output is not a permanent
+   keep: after the realpath and off-machine checks pass, treat
+   `lsof`-inconclusive on a >2-day-old candidate as prunable and report
+   `backup_lsof_inconclusive_pruned=<n>` alongside `backups_pruned=<n>`.
+   A positive open-file hit still protects that candidate. These dirs are APFS
+   clones: report reclaim as the `df` delta, never the `du` sum. Heartbeat
+   token: `backups_pruned=<n>`.
 4b. **Stale LastDB scratch copies.** Delete: `~/.lastdb-test-copies/*` with
    mtime older than 48h (ALWAYS keep `flip-records*` and anything matching
    `pin-*`/`keep-*`); `~/lastdb-ephemeral-*` older than 48h;

@@ -112,6 +112,34 @@ cleanup_work() {
 }
 trap cleanup_work EXIT
 
+backup_essentials_ok() {
+  local root="$1"
+  # identity + data dir required. Storage is either legacy sled (data/db) or
+  # Last Store collections under data/data/ (Mini LASTDB_ENGINE=laststore).
+  [ -f "$root/identity.key" ] && [ -d "$root/data" ] || return 1
+  [ -e "$root/data/db" ] || [ -d "$root/data/data" ] || [ -d "$root/data/laststore" ]
+}
+
+backup_data_is_not_live() {
+  local root="$1" backup_data live_data
+  [ -d "$root" ] && [ ! -L "$root" ] || return 1
+  backup_data="$(cd "$root/data" 2>/dev/null && pwd -P || true)"
+  live_data="$(cd "$PRIMARY_HOME/data" 2>/dev/null && pwd -P || true)"
+  [ -n "$backup_data" ] && [ "$backup_data" != "$live_data" ]
+}
+
+find_reusable_backup() {
+  local cand_ver="$1" current_ver="$2" candidate found
+  found=""
+  for candidate in "$BACKUP_ROOT"/pre-"$cand_ver"-from-"$current_ver"-*; do
+    [ -e "$candidate" ] || continue
+    if backup_essentials_ok "$candidate" && backup_data_is_not_live "$candidate"; then
+      found="$candidate"
+    fi
+  done
+  [ -n "$found" ] && printf '%s\n' "$found"
+}
+
 rss_mb_of_pid() {
   local pid="$1" rss_kb
   rss_kb="$(ps -p "$pid" -o rss= 2>/dev/null | tr -d ' ' || echo 0)"
@@ -743,47 +771,47 @@ fi
 mkdir -p "$BACKUP_ROOT"
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP="$BACKUP_ROOT/pre-${CAND_VER}-from-${CURRENT_VER}-${TS}"
-log "STEP 1/4: durable backup → $BACKUP"
 # Prefer APFS clone for speed. A *live* primary races with the copy:
 #   - UDS sockets under data/*.sock (not copyable)
 #   - CAS blob files that vanish mid-walk
 # Those produce non-zero `cp` exit even when identity + store data are cloned.
 # Treat clone as OK when essential files land; only fall back to rsync when not.
 # Never use bare `cp -a` of a multi-GB live home when disk is tight (fills disk).
-backup_essentials_ok() {
-  local root="$1"
-  # identity + data dir required. Storage is either legacy sled (data/db) or
-  # Last Store collections under data/data/ (Mini LASTDB_ENGINE=laststore).
-  [ -f "$root/identity.key" ] && [ -d "$root/data" ] || return 1
-  [ -e "$root/data/db" ] || [ -d "$root/data/data" ] || [ -d "$root/data/laststore" ]
-}
-set +e
-cp -cR "$PRIMARY_HOME" "$BACKUP" 2>"$WORK/backup.err"
-CP_RC=$?
-set -e
-if backup_essentials_ok "$BACKUP"; then
-  log "backup: APFS clone (cp -cR exit=$CP_RC; live sockets/vanished blobs tolerated)"
-  if [ "$CP_RC" -ne 0 ] && [ -s "$WORK/backup.err" ]; then
-    log "backup: non-fatal cp notes (first 5 lines):"
-    head -5 "$WORK/backup.err" | while IFS= read -r line; do log "  $line"; done
-  fi
+REUSABLE_BACKUP=""
+if [ "$PROBE_ONLY" -eq 1 ]; then
+  REUSABLE_BACKUP="$(find_reusable_backup "$CAND_VER" "$CURRENT_VER")"
+fi
+if [ -n "$REUSABLE_BACKUP" ]; then
+  BACKUP="$REUSABLE_BACKUP"
+  log "STEP 1/4: durable backup → $BACKUP (reusing valid same-version probe backup)"
+  log "backup: reuse existing pre-${CAND_VER}-from-${CURRENT_VER} backup"
 else
-  rm -rf "$BACKUP"
-  mkdir -p "$BACKUP"
-  log "backup: APFS clone incomplete — rsync fallback (excludes *.sock)"
+  log "STEP 1/4: durable backup → $BACKUP"
   set +e
-  rsync -a --exclude='*.sock' "$PRIMARY_HOME/" "$BACKUP/" 2>"$WORK/backup-rsync.err"
-  RSYNC_RC=$?
+  cp -cR "$PRIMARY_HOME" "$BACKUP" 2>"$WORK/backup.err"
+  CP_RC=$?
   set -e
-  backup_essentials_ok "$BACKUP" || die "backup failed (cp exit=$CP_RC rsync exit=$RSYNC_RC); see $WORK/backup.err"
-  log "backup: rsync ok (exit=$RSYNC_RC)"
+  if backup_essentials_ok "$BACKUP"; then
+    log "backup: APFS clone (cp -cR exit=$CP_RC; live sockets/vanished blobs tolerated)"
+    if [ "$CP_RC" -ne 0 ] && [ -s "$WORK/backup.err" ]; then
+      log "backup: non-fatal cp notes (first 5 lines):"
+      head -5 "$WORK/backup.err" | while IFS= read -r line; do log "  $line"; done
+    fi
+  else
+    rm -rf "$BACKUP"
+    mkdir -p "$BACKUP"
+    log "backup: APFS clone incomplete — rsync fallback (excludes *.sock)"
+    set +e
+    rsync -a --exclude='*.sock' "$PRIMARY_HOME/" "$BACKUP/" 2>"$WORK/backup-rsync.err"
+    RSYNC_RC=$?
+    set -e
+    backup_essentials_ok "$BACKUP" || die "backup failed (cp exit=$CP_RC rsync exit=$RSYNC_RC); see $WORK/backup.err"
+    log "backup: rsync ok (exit=$RSYNC_RC)"
+  fi
 fi
 [ -d "$BACKUP" ] || die "backup failed"
 [ ! -L "$BACKUP" ] || die "backup resolved to a symlink (unsafe)"
-# Refuse aliasing live data
-BDATA="$(cd "$BACKUP/data" 2>/dev/null && pwd -P || true)"
-LDATA="$(cd "$PRIMARY_HOME/data" 2>/dev/null && pwd -P || true)"
-[ -n "$BDATA" ] && [ "$BDATA" != "$LDATA" ] || die "backup data dir aliases live primary"
+backup_data_is_not_live "$BACKUP" || die "backup data dir aliases live primary"
 log "backup ok ($(du -sh "$BACKUP" 2>/dev/null | awk '{print $1}'))"
 
 # --- 2) probe candidate on a throwaway CoW of the primary --------------------
