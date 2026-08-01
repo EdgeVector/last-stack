@@ -11,6 +11,9 @@ fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 export PATH="$tmp/bin:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
 mkdir -p "$tmp/bin" "$tmp/home/.local/bin" "$tmp/artifacts/versions/good/bin" \
   "$tmp/artifacts/versions/good/routines" "$tmp/artifacts/versions/dead"
+# Prefer fake host-track from ~/.local/bin (class-a-heal prepends that dir).
+# Without this, ensure_path_shims would install artifact host-track first and
+# bypass the stateful fake used by the fixtures.
 
 # Fake last-stack tree under HOME
 export HOME="$tmp/home"
@@ -91,6 +94,9 @@ case "$cmd" in
 esac
 SH
 chmod +x "$tmp/bin/host-track"
+# Mirror fake host-track into ~/.local/bin so PATH order matches production
+# (heal prepends $HOME/.local/bin) without being overwritten (working link).
+ln -sfn "$tmp/bin/host-track" "$HOME/.local/bin/host-track"
 
 # Fake routine-read that succeeds only when state is healthy
 cat >"$tmp/bin/last-stack-routine-read" <<'SH'
@@ -105,13 +111,22 @@ echo "LAST_STACK_ROUTINE_STALE" >&2
 exit 78
 SH
 chmod +x "$tmp/bin/last-stack-routine-read"
+# Also plant routine-read under artifact current + local/bin for fast path
+ln -sfn "$tmp/bin/last-stack-routine-read" \
+  "$tmp/artifacts/versions/good/bin/last-stack-routine-read"
+ln -sfn "$tmp/bin/last-stack-routine-read" "$HOME/.local/bin/last-stack-routine-read"
 
 # Point HOME/.last-stack/bin to our fakes via a mini root
-mkdir -p "$HOME/.last-stack/bin" "$HOME/.last-stack/routines"
+mkdir -p "$HOME/.last-stack/bin" "$HOME/.last-stack/routines" "$HOME/.last-stack/state"
 cp "$ROOT/bin/last-stack-class-a-heal" "$HOME/.last-stack/bin/"
 chmod +x "$HOME/.last-stack/bin/last-stack-class-a-heal"
 ln -sfn "$tmp/bin/last-stack-routine-read" "$HOME/.last-stack/bin/last-stack-routine-read"
+# class-a-heal on local/bin (working link into fixture copy)
+ln -sfn "$HOME/.last-stack/bin/last-stack-class-a-heal" \
+  "$HOME/.local/bin/last-stack-class-a-heal"
 printf 'name: kanban-pickup\n' >"$HOME/.last-stack/routines/kanban-pickup.md"
+# Prompt also under artifact current for prompt_present()
+printf 'name: kanban-pickup\n' >"$tmp/artifacts/versions/good/routines/kanban-pickup.md"
 
 export FAKE_HT_STATE="$tmp/ht-state"
 export FAKE_HT_LOG="$tmp/ht-log"
@@ -152,6 +167,8 @@ printf '%s\n' "$out3" | grep -q '"result":"ok"' || fail "expected result ok: $ou
 
 # --- 4) refresh fails → exit 1 ---
 printf 'stale\n' >"$FAKE_HT_STATE"
+# Drop healthy cache so a prior ok stamp cannot short-circuit a now-stale install
+rm -f "$HOME/.last-stack/state/class-a-heal.last-ok"
 export FAKE_HT_REFRESH_FAIL=1
 set +e
 out4="$("$HOME/.last-stack/bin/last-stack-class-a-heal" --reason=fail --json 2>"$tmp/err4")"
@@ -188,5 +205,55 @@ grep -q 'class_a_heal' "$ROOT/bin/last-stack-factory-health" \
   || fail "factory-health must implement class_a_heal auto_fix"
 grep -q 'last-stack-class-a-heal' "$ROOT/routines/kanban-pickup.md" \
   || fail "kanban-pickup.md must invoke class-a-heal"
+
+# --- 7) PATH shim repair: broken ~/.local/bin link is re-pointed ---
+printf 'healthy\n' >"$FAKE_HT_STATE"
+mkdir -p "$HOME/.local/bin" "$tmp/artifacts/versions/good/bin"
+# class-a-heal itself lives under HOME/.last-stack/bin for the fixture; also
+# plant a broken local/bin pin that ensure_path_shims must fix for routine-read.
+ln -sfn "/nonexistent/gc-version/bin/last-stack-routine-read" \
+  "$HOME/.local/bin/last-stack-routine-read"
+# Source for re-link: CURRENT_LINK/bin (good artifact)
+ln -sfn "$tmp/bin/last-stack-routine-read" \
+  "$tmp/artifacts/versions/good/bin/last-stack-routine-read"
+set +e
+out7="$("$HOME/.last-stack/bin/last-stack-class-a-heal" --reason=shim --json 2>"$tmp/err7")"
+rc7=$?
+set -e
+[ "$rc7" -eq 0 ] || fail "shim heal exit 0 expected; rc=$rc7 out=$out7 err=$(cat "$tmp/err7")"
+# Link should no longer be dangling
+[ -e "$HOME/.local/bin/last-stack-routine-read" ] \
+  || fail "expected re-linked routine-read; link=$(readlink "$HOME/.local/bin/last-stack-routine-read" 2>/dev/null || true) out=$out7"
+printf '%s\n' "$out7" | grep -qE 'relink-last-stack-routine-read|link-last-stack-routine-read' \
+  || fail "expected relink action in json: $out7"
+
+# --- 8) healthy cache: second call is cache-hit without refresh ---
+printf 'healthy\n' >"$FAKE_HT_STATE"
+: >"$FAKE_HT_LOG"
+set +e
+out8a="$("$HOME/.last-stack/bin/last-stack-class-a-heal" --reason=cache-seed --json 2>/dev/null)"
+out8b="$("$HOME/.last-stack/bin/last-stack-class-a-heal" --reason=cache-hit --json 2>/dev/null)"
+rc8=$?
+set -e
+[ "$rc8" -eq 0 ] || fail "cache-hit should exit 0"
+printf '%s\n' "$out8b" | grep -qE '"result":"ok"' || fail "cache-hit result ok: $out8b"
+# second call should mention cache (or still ok with noop)
+printf '%s\n' "$out8b" | grep -qE 'cache-hit|cache-fresh|noop-healthy|shared' \
+  || fail "expected cache-related action: $out8b (seed=$out8a)"
+# no refresh on cache path
+[ ! -s "$FAKE_HT_LOG" ] || fail "cache-hit must not refresh: $(cat "$FAKE_HT_LOG")"
+
+# --- 9) host-track apps.json must PATH-link class-a + routine-read ---
+apps_json="$ROOT/config/host-track/apps.json"
+command -v jq >/dev/null 2>&1 || fail "jq required for apps.json check"
+jq -e '
+  .apps[]
+  | select(.app == "last-stack")
+  | .links
+  | map(.source)
+  | index("bin/last-stack-class-a-heal")
+  and index("bin/last-stack-routine-read")
+' "$apps_json" >/dev/null \
+  || fail "last-stack host-track links must include class-a-heal + routine-read"
 
 printf 'ok: last-stack-class-a-heal fixtures passed\n'
