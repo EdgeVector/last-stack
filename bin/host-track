@@ -725,6 +725,56 @@ atomic_symlink() {
   fi
 }
 
+HOST_TRACK_INSTALL_LOCKS=()
+HOST_TRACK_LAST_INSTALL_LOCK=""
+
+release_install_locks() {
+  local lock
+  for lock in "${HOST_TRACK_INSTALL_LOCKS[@]:-}"; do
+    [ -n "$lock" ] || continue
+    rm -rf -- "$lock" 2>/dev/null || true
+  done
+}
+trap release_install_locks EXIT
+
+acquire_install_lock() {
+  local install_root="$1" lock deadline owner sleep_cmd
+  mkdir -p "$install_root"
+  lock="$install_root/.host-track-install.lock"
+  deadline=$(( $(date +%s) + ${HOST_TRACK_INSTALL_LOCK_TIMEOUT_SEC:-60} ))
+  while ! mkdir "$lock" 2>/dev/null; do
+    owner="$(cat "$lock/pid" 2>/dev/null || true)"
+    if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
+      rm -rf -- "$lock" 2>/dev/null || true
+      continue
+    fi
+    [ "$(date +%s)" -lt "$deadline" ] || die "timed out waiting for install lock: $install_root"
+    sleep_cmd="${HOST_TRACK_INSTALL_LOCK_SLEEP:-0.1}"
+    sleep "$sleep_cmd"
+  done
+  printf '%s\n' "$$" > "$lock/pid"
+  HOST_TRACK_INSTALL_LOCKS+=("$lock")
+  HOST_TRACK_LAST_INSTALL_LOCK="$lock"
+}
+
+release_install_lock() {
+  local lock="$1"
+  [ -n "$lock" ] || return 0
+  rm -rf -- "$lock"
+}
+
+verify_staged_artifact_links() {
+  local json="$1" stage="$2" encoded entry source
+  while IFS= read -r encoded; do
+    [ -n "$encoded" ] || continue
+    entry="$(printf '%s' "$encoded" | base64_decode)"
+    source="$(printf '%s\n' "$entry" | jq -r '.source // ""')"
+    safe_artifact_relpath "$source" || die "invalid artifact link source: $source"
+    [ -e "$stage/$source" ] || die "staged artifact link source missing: $source"
+    [ ! -L "$stage/$source" ] || die "staged artifact link source is symlink: $source"
+  done < <(printf '%s\n' "$json" | jq -r '.links[]? | @base64')
+}
+
 install_artifact_links() {
   local json="$1" install_root="$2" encoded entry source target_raw target
   while IFS= read -r encoded; do
@@ -788,7 +838,7 @@ remove_artifact_version_tree() {
 artifact_install_app() {
   local app="$1" channel_override="${2:-}" force_restage="${3:-0}" json install_mode artifact_app channel artifact_root install_root
   local manifest digest stage encoded entry rel expected_sha mode blob target actual_sha mode_octal
-  local old_target stamp_path
+  local old_target stamp_path lock_dir
   json="$(require_app_json "$app")"
   install_mode="$(setting "$json" install_mode)"
   [ "$install_mode" = "artifact" ] || die "$app is not registered for artifact installs"
@@ -796,6 +846,8 @@ artifact_install_app() {
   [ -z "$channel_override" ] || channel="$channel_override"
   case "$channel" in candidate|canary|stable) ;; *) die "invalid artifact channel: $channel" ;; esac
   command -v lastgit >/dev/null 2>&1 || die "lastgit is required for verified artifact installs"
+  acquire_install_lock "$install_root"
+  lock_dir="$HOST_TRACK_LAST_INSTALL_LOCK"
 
   # Track main: promote green+published main tip into the channel before resolve
   # so refresh does not no-op on a stale stable pointer while main has moved.
@@ -839,10 +891,15 @@ artifact_install_app() {
         chmod "$mode_octal" "$stage/$rel"
         [ "$(hash_file "$stage/$rel")" = "$expected_sha" ] || die "installed artifact verification failed: $rel"
       done < <(printf '%s\n' "$manifest" | jq -r '.files[] | @base64')
+      verify_staged_artifact_links "$json" "$stage"
     ); then
       rm -rf -- "$stage"
       return 1
     fi
+    if [ -e "$target" ]; then
+      remove_artifact_version_tree "$target"
+    fi
+    [ ! -e "$target" ] || die "artifact version target still exists after re-stage cleanup: $target"
     mv "$stage" "$target"
   fi
 
@@ -877,6 +934,7 @@ artifact_install_app() {
       > "$stamp_path"
   printf 'host-track: installed %s channel=%s oid=%s manifest=%s\n' \
     "$app" "$channel" "$(printf '%s\n' "$manifest" | jq -r '.source_oid')" "$digest"
+  release_install_lock "$lock_dir"
 }
 
 rollback_artifact_app() {
