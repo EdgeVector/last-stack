@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+"""Append-only ledger for the LastDB nightly canary pipeline."""
+import argparse
+import datetime as dt
+import fcntl
+import json
+import os
+import sys
+from pathlib import Path
+
+
+STATES = (
+    "candidate_found",
+    "dogfood_started",
+    "dogfood_green",
+    "dogfood_red",
+    "soak_started",
+    "soak_green",
+    "soak_red",
+    "promote_prepare",
+)
+
+ALLOWED = {
+    "candidate_found": {"dogfood_started"},
+    "dogfood_started": {"dogfood_green", "dogfood_red"},
+    "dogfood_green": {"soak_started"},
+    "dogfood_red": set(),
+    "soak_started": {"soak_green", "soak_red"},
+    "soak_green": {"promote_prepare"},
+    "soak_red": set(),
+    "promote_prepare": set(),
+}
+
+
+def utc_now() -> str:
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def default_state_dir() -> Path:
+    raw = os.environ.get("LAST_STACK_CANARY_PIPELINE_DIR")
+    if raw:
+        return Path(raw).expanduser()
+    return Path.home() / ".local" / "state" / "last-stack" / "canary-pipeline"
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="last-stack-canary-pipeline",
+        description="Record and validate LastDB canary pipeline lifecycle transitions.",
+    )
+    parser.add_argument("--state-dir", type=Path, default=default_state_dir())
+    parser.add_argument("--ledger", type=Path, default=None)
+    parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
+
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    create = sub.add_parser("create", help="create a new candidate at candidate_found")
+    create.add_argument("candidate")
+    create.add_argument("--version", default="")
+    create.add_argument("--source", default="")
+    create.add_argument("--note", default="")
+
+    read = sub.add_parser("read", help="read the current state for one candidate")
+    read.add_argument("candidate")
+
+    advance = sub.add_parser("advance", help="append a valid transition for one candidate")
+    advance.add_argument("candidate")
+    advance.add_argument("state", choices=STATES)
+    advance.add_argument("--note", default="")
+
+    sub.add_parser("list", help="list latest state for every candidate")
+
+    return parser.parse_args(argv)
+
+
+def ledger_path(args: argparse.Namespace) -> Path:
+    if args.ledger is not None:
+        return args.ledger.expanduser()
+    return args.state_dir.expanduser() / "ledger.jsonl"
+
+
+def die(message: str, code: int = 1) -> None:
+    print(f"last-stack-canary-pipeline: {message}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def load_events(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    events = []
+    with path.open("r", encoding="utf-8") as fh:
+        for lineno, line in enumerate(fh, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError as exc:
+                die(f"invalid ledger JSON at {path}:{lineno}: {exc}")
+            if not isinstance(event, dict):
+                die(f"invalid ledger event at {path}:{lineno}: not an object")
+            events.append(event)
+    return events
+
+
+def latest_by_candidate(events: list[dict]) -> dict[str, dict]:
+    latest = {}
+    for event in events:
+        candidate = str(event.get("candidate", ""))
+        if candidate:
+            latest[candidate] = event
+    return latest
+
+
+def append_event(path: Path, event: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n"
+    fd = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
+    try:
+        os.write(fd, payload.encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def lock_and_run(path: Path, fn):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with lock_path.open("a", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        return fn()
+
+
+def current_record(event: dict) -> dict:
+    return {
+        "candidate": event.get("candidate", ""),
+        "state": event.get("state", ""),
+        "version": event.get("version", ""),
+        "source": event.get("source", ""),
+        "updated_at": event.get("ts", ""),
+        "note": event.get("note", ""),
+    }
+
+
+def emit(value, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(value, sort_keys=True, separators=(",", ":")))
+        return
+    if isinstance(value, list):
+        for item in value:
+            print(
+                "candidate={candidate} state={state} version={version} source={source} updated_at={updated_at}".format(
+                    **item
+                )
+            )
+    else:
+        print(
+            "candidate={candidate} state={state} version={version} source={source} updated_at={updated_at}".format(
+                **value
+            )
+        )
+
+
+def create_candidate(path: Path, args: argparse.Namespace) -> dict:
+    def inner() -> dict:
+        latest = latest_by_candidate(load_events(path))
+        if args.candidate in latest:
+            die(f"candidate already exists: {args.candidate}")
+        event = {
+            "ts": utc_now(),
+            "candidate": args.candidate,
+            "state": "candidate_found",
+            "version": args.version,
+            "source": args.source,
+            "note": args.note,
+        }
+        append_event(path, event)
+        return current_record(event)
+
+    return lock_and_run(path, inner)
+
+
+def read_candidate(path: Path, args: argparse.Namespace) -> dict:
+    latest = latest_by_candidate(load_events(path))
+    event = latest.get(args.candidate)
+    if event is None:
+        die(f"candidate not found: {args.candidate}")
+    return current_record(event)
+
+
+def list_candidates(path: Path) -> list[dict]:
+    latest = latest_by_candidate(load_events(path))
+    return [current_record(latest[candidate]) for candidate in sorted(latest)]
+
+
+def advance_candidate(path: Path, args: argparse.Namespace) -> dict:
+    def inner() -> dict:
+        latest = latest_by_candidate(load_events(path))
+        previous = latest.get(args.candidate)
+        if previous is None:
+            die(f"candidate not found: {args.candidate}; create it first")
+        old_state = str(previous.get("state", ""))
+        new_state = args.state
+        if old_state == new_state:
+            die(f"duplicate transition for {args.candidate}: already {new_state}")
+        if new_state not in ALLOWED.get(old_state, set()):
+            allowed = ", ".join(sorted(ALLOWED.get(old_state, set()))) or "none"
+            die(f"invalid transition for {args.candidate}: {old_state} -> {new_state} (allowed: {allowed})")
+        event = {
+            "ts": utc_now(),
+            "candidate": args.candidate,
+            "state": new_state,
+            "previous_state": old_state,
+            "version": previous.get("version", ""),
+            "source": previous.get("source", ""),
+            "note": args.note,
+        }
+        append_event(path, event)
+        return current_record(event)
+
+    return lock_and_run(path, inner)
+
+
+def main(argv: list[str]) -> int:
+    args = parse_args(argv)
+    path = ledger_path(args)
+    if args.command == "create":
+        emit(create_candidate(path, args), args.json)
+    elif args.command == "read":
+        emit(read_candidate(path, args), args.json)
+    elif args.command == "advance":
+        emit(advance_candidate(path, args), args.json)
+    elif args.command == "list":
+        emit(list_candidates(path), args.json)
+    else:
+        die("unknown command", 2)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
