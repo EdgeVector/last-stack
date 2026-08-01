@@ -51,4 +51,14 @@ name="$(grep -m1 '^name:' "$skill_md" | sed 's/^name:[[:space:]]*//' | tr -d '[:
   exit 1
 }
 
+# Candidate-class + live-scan wiring (full unit tests in sibling test file).
+grep -q 'candidate-class-checks.sh' "$driver" || {
+  echo "FAIL: driver must source candidate-class-checks.sh" >&2
+  exit 1
+}
+grep -q 'LIVE_LAT_SCAN_MS\|live_scan_ms' "$driver" || {
+  echo "FAIL: driver must track live scan latency" >&2
+  exit 1
+}
+
 echo "OK: lastdb-safe-upgrade skill packaged for multi-harness setup"

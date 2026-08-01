@@ -95,7 +95,8 @@ proxy is optional later for near-zero client impact.
    tuning env mirrored in (warm budget etc.), and peak RSS is sampled **under
    this load** (an idle Last Store node pages out and reads ~10 MiB). **RED**
    if candidate median > `LASTDB_PROBE_LAT_RATIO` (default 3×) the baseline
-   above a `LASTDB_PROBE_LAT_FLOOR_MS` (1000 ms) noise floor, exceeds
+   above a `LASTDB_PROBE_LAT_FLOOR_MS` (default **250 ms**; was 1000 ms —
+   exclusive CoW scans often sit under 1 s so the ratio never fired), exceeds
    `LASTDB_PROBE_LAT_ABS_MAX_MS` (20 s) **when no baseline is measurable**, or
    is unmeasurable on the candidate while the baseline measured. When candidate
    AND baseline are both over the ceiling that is pre-existing store slowness:
@@ -104,9 +105,24 @@ proxy is optional later for near-zero client impact.
    correctness + RSS bars while scans ran 5–20× slower — the live primary was
    the first place anyone noticed. Skipping the bar
    (`LASTDB_PROBE_LAT_SKIP=1`) requires Tom's explicit clearance. Live
-   post-check re-times the point read and warns (`LASTDB_LIVE_LAT_ENFORCE=1`
-   makes it RED).
-8. Do not claim “primary stopped” unless this script actually stopped the
+   post-check re-times **point-read and `kanban list` scan** vs the candidate's
+   own probe numbers and warns (`LASTDB_LIVE_LAT_ENFORCE=1` makes either RED).
+   Incident 2026-08-01: live point stayed ~113 ms while list hit multi-second→60 s.
+8. **Candidate-class bar (no debug / dirty / oversized):** before backup or
+   probe, refuse candidates that look like a Cargo **debug** build
+   (`…/target/debug/…`), a **-dirty** version stamp (uncommitted tree at
+   build), or a binary **>1.5×** the incumbent size (debug/unstripped).
+   Incident 2026-08-01: primary was cut over to
+   `…/fold-kanban-mhr-delete/target/debug/lastdbd` (`0.23.2-258-…-dirty`);
+   exclusive CoW latency looked GREEN while live contended lists collapsed.
+   Prefer `cargo build --release` (or a release artifact) from **origin/main**
+   / a soaked canary SHA — never a feature-worktree debug binary. Tom-only
+   overrides: `LASTDB_ALLOW_DEBUG_CANDIDATE=1`,
+   `LASTDB_ALLOW_DIRTY_CANDIDATE=1`, `LASTDB_ALLOW_LARGE_CANDIDATE=1`,
+   `LASTDB_CANDIDATE_SIZE_RATIO` (default 1.5). Brain:
+   `incident-20260801-debug-worktree-lastdbd-primary-cutover-latency`,
+   `preference-lastdb-promote-origin-main-not-feature-branch`.
+9. Do not claim “primary stopped” unless this script actually stopped the
    supervisor for that venue.
 
 ## Do this, in order
@@ -140,8 +156,9 @@ bash "$driver" --probe-only
 # Non-interactive after GREEN probe (agents / automation Tom authorized)
 bash "$driver" --yes
 
-# Explicit candidate binary (sidebin install on Tom’s machine)
-bash "$driver" --candidate /path/to/lastdbd --yes
+# Explicit candidate binary (sidebin install on Tom’s machine).
+# MUST be a release build — never …/target/debug/lastdbd or a -dirty stamp.
+bash "$driver" --candidate /path/to/release/lastdbd --yes
 
 # Bottle version via GitHub release tarball then venue-aware live
 bash "$driver" --version 0.22.8 --probe-only
@@ -160,11 +177,12 @@ The script:
 | Preflight | Primary home exists, identity.key present, live `/health` ok (if socket up) |
 | Resolve candidate | `brew update` / `--version` tarball / `--candidate` |
 | **1. Backup** | `cp -cR` (APFS) or `cp -a` → `~/.lastdb-backups/pre-<new>-from-<old>-<ts>/` |
+| **0. Class** | Refuse `target/debug`, `-dirty` version, size ≫ incumbent (before multi-GB backup) |
 | **2. Probe** | `BIN=<candidate>` CoW smoke harness (never live home) + **RSS settle/sample** vs memory-guard limit + **latency bar**: point read / `kanban list` scan / `brain put` write timed on candidate CoW copy vs the current binary on an identical copy |
 | Detect venue | sidebin vs brew |
 | **3. Live** | sidebin atomic install + kickstart **or** brew upgrade/restart |
-| **4. Post-check** | Live `/health`, schemas > 0, Board title, **live peak RSS** vs guard, **live point-read latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency in notice |
-| RED | Exit 1, **keep backup**, primary untouched if probe failed (incl. RSS over guard or latency over bar) |
+| **4. Post-check** | Live `/health`, schemas > 0, Board title, **live peak RSS** vs guard, **live point-read + kanban list latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency in notice |
+| RED | Exit 1, **keep backup**, primary untouched if class/probe failed (incl. debug/dirty/size, RSS over guard, or latency over bar) |
 
 ### B. If the script is missing or fails open
 
@@ -199,7 +217,7 @@ incident.
 | `VERDICT: GREEN` | Probe + live cutover + live post-check passed | Done |
 | `VERDICT: GREEN_PROBE_ONLY` | Probe passed; primary still on old version | Re-run with `--yes` if Tom wants the upgrade |
 | `VERDICT: ALREADY_CURRENT` | Already on candidate/stable | Nothing to do |
-| `VERDICT: RED` | Candidate cannot serve real data, **or** peak RSS exceeds memory-guard bar, **or** the latency bar failed (candidate regresses vs current binary / over absolute ceiling) | **Do not upgrade**; file release-blocker; keep backup. If RSS: fix candidate memory or raise guard only with Tom clearance. If latency: profile the candidate's read/write paths; `LASTDB_PROBE_LAT_SKIP=1` only with Tom clearance |
+| `VERDICT: RED` | Candidate fails **class** bar (debug/dirty/size), **or** cannot serve real data, **or** peak RSS exceeds memory-guard bar, **or** the latency bar failed (candidate regresses vs current binary / over absolute ceiling) | **Do not upgrade**; file release-blocker; keep backup. If class: rebuild `--release` from origin/main (or soaked canary). If RSS: fix candidate memory or raise guard only with Tom clearance. If latency: profile the candidate's read/write paths; `LASTDB_PROBE_LAT_SKIP=1` only with Tom clearance |
 
 ## Rollback
 
@@ -233,6 +251,7 @@ kanban list   # must show real cards
 
 - `brew upgrade lastdb` as a one-liner without this skill when the user cares about data.
 - Point candidate `--data-dir` at live `~/.lastdb` "just to see".
+- Pass `--candidate …/target/debug/lastdbd` or any `-dirty` build to "get a feature SHA on primary" — rebuild `--release` from origin/main (or a soaked canary) instead (incident 2026-08-01).
 - Delete `~/.lastdb-backups/*` as part of a successful upgrade (Tom prunes later).
 - Restart/kill primary on RED.
 - Call `brew upgrade` when formula is not installed and primary is sidebin.
@@ -248,3 +267,8 @@ could not find this skill because it was Claude-only (not in last-stack);
 5-20x slower (HashGroup warm-set thrash) and the read path amplified writes --
 the live primary was the first place anyone noticed (latency bar added). Brain:
 `lastdb-0231-hashgroup-scan-warmset-thrash-read-regression`.
+2026-08-01 primary cut over to a feature-worktree **Cargo debug** binary
+(`…/target/debug/lastdbd`, `…-dirty`); exclusive CoW probe GREEN, live lists
+multi-second→60s until bak rollback (candidate-class bar + live scan post-check
++ lower latency floor). Brain:
+`incident-20260801-debug-worktree-lastdbd-primary-cutover-latency`.

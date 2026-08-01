@@ -14,6 +14,9 @@
 #      correct-but-slow is RED (incident 2026-07-25/27: 0.23.1 passed the
 #      correctness+RSS bars while scans ran 5-20x slower; the live primary
 #      was the first place anyone noticed)
+#      AND the CANDIDATE CLASS BAR (incident 2026-08-01): refuse Cargo
+#      debug paths (target/debug), -dirty version stamps, and binaries
+#      ≫ incumbent size (debug/unstripped) before any backup or probe
 #   4. Only then venue-aware live install:
 #        sidebin → atomic install under bin-with-upload-cap + launchctl kickstart
 #        brew    → brew upgrade + brew services restart (only if formula installed)
@@ -101,10 +104,19 @@ RSS_SAMPLE_SECS="${LASTDB_PROBE_RSS_SAMPLE_SECS:-15}"
 LAT_SKIP="${LASTDB_PROBE_LAT_SKIP:-0}"              # 1 = skip bar (Tom clearance only)
 LAT_SAMPLES="${LASTDB_PROBE_LAT_SAMPLES:-3}"        # samples per op; median wins
 LAT_RATIO="${LASTDB_PROBE_LAT_RATIO:-3}"            # RED if cand > ratio x baseline
-LAT_FLOOR_MS="${LASTDB_PROBE_LAT_FLOOR_MS:-1000}"   # ratio bar only applies above this
+# Floor was 1000ms; exclusive CoW scans often sit under 1s so the ratio bar
+# never fired (incident 2026-08-01: debug cand 670ms vs base 503ms both under
+# floor). 250ms still filters noise while applying 3× to real product ops.
+LAT_FLOOR_MS="${LASTDB_PROBE_LAT_FLOOR_MS:-250}"   # ratio bar only applies above this
 LAT_ABS_MAX_MS="${LASTDB_PROBE_LAT_ABS_MAX_MS:-20000}"  # RED when no baseline; WARN when baseline is equally slow
 LAT_OP_TIMEOUT_SECS="${LASTDB_PROBE_LAT_OP_TIMEOUT_SECS:-120}"  # per-sample kill + scored as this
 LIVE_LAT_ENFORCE="${LASTDB_LIVE_LAT_ENFORCE:-0}"    # 1 = live post-check latency is RED, not WARN
+
+# Candidate class gates (incident 2026-08-01: primary cut over to worktree
+# target/debug/lastdbd …-dirty). Sourced pure helpers.
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
+# shellcheck source=candidate-class-checks.sh
+. "$_SCRIPT_DIR/candidate-class-checks.sh"
 
 cleanup_work() {
   # Never delete durable backups. Only temp fetch dirs under $WORK.
@@ -738,6 +750,38 @@ if [ "$CAND_VER" = "$CURRENT_VER" ] && [ "$PROBE_ONLY" -eq 0 ]; then
   exit 0
 fi
 
+# --- 0) candidate class bar (before multi-GB backup) -------------------------
+# Incident 2026-08-01: agent safe-upgraded
+# ~/.fkanban/worktrees/…/target/debug/lastdbd (0.23.2-258-…-dirty) — exclusive
+# CoW latency looked fine; live contended lists hit multi-second→60s until bak.
+# Refuse debug / dirty / oversized candidates up front (brain:
+# incident-20260801-debug-worktree-lastdbd-primary-cutover-latency).
+BASELINE_FOR_CLASS="$(resolve_baseline_bin 2>/dev/null || true)"
+CLASS_OUT=""
+set +e
+CLASS_OUT="$(assert_candidate_class_ok "$CANDIDATE_BIN" "$CAND_VER" "$BASELINE_FOR_CLASS" 2>&1)"
+CLASS_RC=$?
+set -e
+if [ -n "$CLASS_OUT" ]; then
+  while IFS= read -r line; do
+    case "$line" in
+      WARN:*) warn "${line#WARN: }" ;;
+      RED:*)  log "candidate class $line" ;;
+      *)      log "candidate class: $line" ;;
+    esac
+  done <<< "$CLASS_OUT"
+fi
+if [ "$CLASS_RC" -ne 0 ]; then
+  echo ""
+  echo "VERDICT: RED"
+  echo "REASON: candidate $CAND_VER fails the candidate-class bar (debug path / dirty version / size vs incumbent) — incident 2026-08-01"
+  echo "CANDIDATE: $CANDIDATE_BIN"
+  echo "BASELINE:  ${BASELINE_FOR_CLASS:-none}"
+  echo "NEXT:      cargo build --release -p lastdb_node (or release artifact from origin/main); never target/debug or -dirty. Overrides LASTDB_ALLOW_DEBUG_CANDIDATE / LASTDB_ALLOW_DIRTY_CANDIDATE / LASTDB_ALLOW_LARGE_CANDIDATE require Tom clearance."
+  exit 1
+fi
+log "candidate class GREEN: path/version/size ok (vs baseline ${BASELINE_FOR_CLASS:-none})"
+
 # --- 1) durable offline backup -----------------------------------------------
 
 mkdir -p "$BACKUP_ROOT"
@@ -1003,35 +1047,54 @@ if [ -n "${LIVE_RSS_MB:-}" ]; then
   fi
 fi
 
-# Live latency spot-check: the same keyed point read the probe timed, on the
-# live socket. Compared against the candidate's OWN probe numbers (same
-# binary), so a big gap means live is misbehaving (or under heavy client
-# load — which is why this defaults to WARN; LASTDB_LIVE_LAT_ENFORCE=1 → RED).
+# Live latency spot-check: point-read AND kanban list scan (incident 2026-08-01:
+# live point stayed ~113ms while list went multi-second→60s; point-only missed
+# it). Compared against the candidate's OWN probe numbers (same binary).
+# Defaults to WARN under client load; LASTDB_LIVE_LAT_ENFORCE=1 → RED.
 LIVE_LAT_POINT_MS="-1"
-if [ "$LAT_SKIP" != "1" ]; then
-  LIVE_LAT_POINT_MS="$(measure_op_median_ms op_lat_point "$PRIMARY_SOCK" "live point-read")"
-  if [ "$LIVE_LAT_POINT_MS" != "-1" ] && [ "${CAND_LAT_POINT_MS:--1}" != "-1" ] \
-    && [ "$LIVE_LAT_POINT_MS" -gt "$LAT_FLOOR_MS" ] 2>/dev/null \
-    && awk -v c="$LIVE_LAT_POINT_MS" -v b="$CAND_LAT_POINT_MS" -v r="$LAT_RATIO" 'BEGIN{exit !(c > b*r)}'; then
+LIVE_LAT_SCAN_MS="-1"
+live_lat_check_op() {
+  # $1=label $2=live_ms $3=cand_probe_ms
+  local label="$1" live_ms="$2" cand_ms="$3"
+  if [ "$live_ms" = "-1" ] || [ -z "$live_ms" ]; then
+    warn "live $label latency: unmeasured"
+    return 0
+  fi
+  if [ "${cand_ms:--1}" = "-1" ] || [ -z "$cand_ms" ]; then
+    log "live $label latency: ${live_ms}ms (no candidate probe number to compare)"
+    return 0
+  fi
+  if [ "$live_ms" -gt "$LAT_FLOOR_MS" ] 2>/dev/null \
+    && awk -v c="$live_ms" -v b="$cand_ms" -v r="$LAT_RATIO" 'BEGIN{exit !(c > b*r)}'; then
     if [ "$LIVE_LAT_ENFORCE" = "1" ]; then
       echo ""
       echo "VERDICT: RED"
-      echo "REASON: live point-read ${LIVE_LAT_POINT_MS}ms is >${LAT_RATIO}x the candidate's probe ${CAND_LAT_POINT_MS}ms after cutover"
+      echo "REASON: live $label ${live_ms}ms is >${LAT_RATIO}x the candidate's probe ${cand_ms}ms after cutover"
       echo "BACKUP: $BACKUP"
       echo "BINARY ROLLBACK (preferred first try, sidebin):"
       echo "  cp -a $SIDEBIN_DIR/lastdbd.bak-pre-* $SIDEBIN_DIR/lastdbd  # pick newest bak"
       echo "  launchctl kickstart -k gui/\$(id -u)/$LAUNCHD_LABEL"
-      die "live latency far above the candidate's own probe numbers"
+      die "live $label latency far above the candidate's own probe numbers"
     fi
-    warn "live point-read ${LIVE_LAT_POINT_MS}ms is >${LAT_RATIO}x the candidate's probe ${CAND_LAT_POINT_MS}ms — may be client load; WATCH the primary (LASTDB_LIVE_LAT_ENFORCE=1 makes this RED)"
+    warn "live $label ${live_ms}ms is >${LAT_RATIO}x the candidate's probe ${cand_ms}ms — may be client load; WATCH the primary (LASTDB_LIVE_LAT_ENFORCE=1 makes this RED)"
   else
-    log "live point-read latency: ${LIVE_LAT_POINT_MS}ms (candidate probe: ${CAND_LAT_POINT_MS:-?}ms)"
+    log "live $label latency: ${live_ms}ms (candidate probe: ${cand_ms}ms)"
+  fi
+}
+if [ "$LAT_SKIP" != "1" ]; then
+  LIVE_LAT_POINT_MS="$(measure_op_median_ms op_lat_point "$PRIMARY_SOCK" "live point-read")"
+  live_lat_check_op "point-read" "$LIVE_LAT_POINT_MS" "${CAND_LAT_POINT_MS:--1}"
+  if command -v kanban >/dev/null 2>&1; then
+    LIVE_LAT_SCAN_MS="$(measure_op_median_ms op_lat_scan "$PRIMARY_HOME" "live kanban-scan")"
+    live_lat_check_op "scan (kanban list)" "$LIVE_LAT_SCAN_MS" "${CAND_LAT_SCAN_MS:--1}"
+  else
+    warn "live scan latency: kanban CLI not on PATH — unmeasured"
   fi
 fi
 
 CUTOVER_T1="$(date +%s)"
 CUTOVER_SECS=$((CUTOVER_T1 - CUTOVER_T0))
-log "STEP 4/4: live post-check GREEN (schemas=$NSCHEMAS first Board title=\"$QVAL\" cutover_s=$CUTOVER_SECS venue=$VENUE peak_rss_mb=${LIVE_RSS_MB:-unknown} live_point_ms=${LIVE_LAT_POINT_MS:-unmeasured})"
+log "STEP 4/4: live post-check GREEN (schemas=$NSCHEMAS first Board title=\"$QVAL\" cutover_s=$CUTOVER_SECS venue=$VENUE peak_rss_mb=${LIVE_RSS_MB:-unknown} live_point_ms=${LIVE_LAT_POINT_MS:-unmeasured} live_scan_ms=${LIVE_LAT_SCAN_MS:-unmeasured})"
 
 # Post a Situations notice so other agents attribute post-upgrade flapping.
 POST_NOTICE=""
@@ -1041,7 +1104,7 @@ for cand in \
 do
   [ -x "$cand" ] && POST_NOTICE="$cand" && break
 done
-NOTICE_SUMMARY="lastdbd ${CURRENT_VER} → ${INSTALLED} venue=${VENUE} cutover_s=${CUTOVER_SECS}; probe latency point/scan/write=${CAND_LAT_POINT_MS:-?}/${CAND_LAT_SCAN_MS:-?}/${CAND_LAT_WRITE_MS:-?}ms (baseline ${BASE_LAT_POINT_MS:-?}/${BASE_LAT_SCAN_MS:-?}/${BASE_LAT_WRITE_MS:-?}ms) live_point_ms=${LIVE_LAT_POINT_MS:-?}; brief socket blips expected. Do not open a new incident or restart the primary for flapping alone. Design: lastdb-minimal-downtime-cutover."
+NOTICE_SUMMARY="lastdbd ${CURRENT_VER} → ${INSTALLED} venue=${VENUE} cutover_s=${CUTOVER_SECS}; probe latency point/scan/write=${CAND_LAT_POINT_MS:-?}/${CAND_LAT_SCAN_MS:-?}/${CAND_LAT_WRITE_MS:-?}ms (baseline ${BASE_LAT_POINT_MS:-?}/${BASE_LAT_SCAN_MS:-?}/${BASE_LAT_WRITE_MS:-?}ms) live_point_ms=${LIVE_LAT_POINT_MS:-?} live_scan_ms=${LIVE_LAT_SCAN_MS:-?}; brief socket blips expected. Do not open a new incident or restart the primary for flapping alone. Design: lastdb-minimal-downtime-cutover."
 if [ -n "$POST_NOTICE" ]; then
   if "$POST_NOTICE" \
     --title "LastDB upgraded to ${INSTALLED}" \
@@ -1083,7 +1146,7 @@ fi
 echo ""
 echo "VERDICT: GREEN"
 echo "SUMMARY: upgraded lastdbd $CURRENT_VER → $INSTALLED; venue=$VENUE; cutover_s=$CUTOVER_SECS; probe + live Board read OK; probe_rss_mb=${PROBE_RSS_MB:-?} live_rss_mb=${LIVE_RSS_MB:-?} limit_mb=$(resolve_rss_limit_mb); backup at $BACKUP"
-echo "LATENCY: probe point/scan/write=${CAND_LAT_POINT_MS:-?}/${CAND_LAT_SCAN_MS:-?}/${CAND_LAT_WRITE_MS:-?}ms baseline=${BASE_LAT_POINT_MS:-?}/${BASE_LAT_SCAN_MS:-?}/${BASE_LAT_WRITE_MS:-?}ms live_point=${LIVE_LAT_POINT_MS:-?}ms"
+echo "LATENCY: probe point/scan/write=${CAND_LAT_POINT_MS:-?}/${CAND_LAT_SCAN_MS:-?}/${CAND_LAT_WRITE_MS:-?}ms baseline=${BASE_LAT_POINT_MS:-?}/${BASE_LAT_SCAN_MS:-?}/${BASE_LAT_WRITE_MS:-?}ms live_point=${LIVE_LAT_POINT_MS:-?}ms live_scan=${LIVE_LAT_SCAN_MS:-?}ms"
 echo ""
 echo "ROLLBACK (binary only, if new binary misbehaves but data is fine):"
 if [ "$VENUE" = "sidebin" ]; then
