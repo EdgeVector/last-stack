@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 prompt="$ROOT/routines/papercut-reconciler.md"
 
 grep -q 'papercut-prevention-registry' "$prompt"
+grep -q 'last-stack-papercut-lifecycle-close --limit 200' "$prompt"
 grep -q 'Prevention: MISSING|COVERED|NOT_APPLICABLE' "$prompt"
 grep -q 'compound regression test' "$prompt"
 grep -q 'COMPOUND PREVENTION' "$prompt"

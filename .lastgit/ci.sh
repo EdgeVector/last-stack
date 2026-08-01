@@ -37,6 +37,7 @@ bash tests/last-stack-ship-feature-milestones.sh
 bash tests/last-stack-lint-prompts.sh --smoke
 bash tests/last-stack-audit-f-prefix-callers.sh
 bash tests/last-stack-papercut-reconciler-contract.sh
+bash tests/last-stack-papercut-lifecycle-close.sh
 bash tests/last-stack-command-modes.sh
 bash tests/last-stack-north-star-portal-resolver.sh
 bash tests/last-stack-mini-cutover-health.sh
