@@ -52,7 +52,16 @@ mkdir -p "$HOME"
 export LASTDB_HOME="$HOME/.lastdb"
 unset FOLDDB_HOME || true
 LOG="$FRESH_ROOT/run.log"
-exec > >(tee -a "$LOG") 2>&1
+exec 3>&1 4>&2
+exec >>"$LOG" 2>&1
+emit_json() {
+  if [ "$JSON" -eq 1 ]; then
+    printf "$@" >&3
+  fi
+}
+emit_status() {
+  echo "$*" >&4
+}
 
 echo "=========================================="
 echo "llms-txt install smoke (isolated)"
@@ -79,13 +88,16 @@ fi
 
 if [ "${#FAILS[@]}" -gt 0 ] && printf '%s\n' "${FAILS[@]}" | grep -q '^prereq:'; then
   echo "VERDICT: RED (missing prereqs)" >&2
-  [ "$JSON" -eq 1 ] && printf '{"verdict":"RED","reason":"prereqs","sandbox":"%s"}\n' "$FRESH_ROOT"
+  emit_status "VERDICT: RED (missing prereqs)"
+  emit_json '{"verdict":"RED","reason":"prereqs","sandbox":"%s"}\n' "$FRESH_ROOT"
   exit 1
 fi
 
 # --- last-stack ---
+LAST_STACK_INSTALL_SOURCE="${LAST_STACK_INSTALL_SOURCE:-https://github.com/EdgeVector/last-stack.git}"
 echo ">>> clone last-stack"
-if git clone --depth 1 https://github.com/EdgeVector/last-stack.git "$HOME/.last-stack"; then
+echo "source: $LAST_STACK_INSTALL_SOURCE"
+if git clone --depth 1 "$LAST_STACK_INSTALL_SOURCE" "$HOME/.last-stack"; then
   note_pass "clone:last-stack"
 else
   note_fail "clone:last-stack"
@@ -283,14 +295,17 @@ echo "=========================================="
 echo "PASS (${#PASS[@]}): ${PASS[*]:-none}"
 echo "FAIL (${#FAILS[@]}): ${FAILS[*]:-none}"
 echo "log: $LOG"
+emit_status "log: $LOG"
 echo "=========================================="
 
 if [ "${#FAILS[@]}" -eq 0 ]; then
   echo "VERDICT: GREEN" >&2
-  [ "$JSON" -eq 1 ] && printf '{"verdict":"GREEN","sandbox":"%s","pass":%d}\n' "$FRESH_ROOT" "${#PASS[@]}"
+  emit_status "VERDICT: GREEN"
+  emit_json '{"verdict":"GREEN","sandbox":"%s","pass":%d}\n' "$FRESH_ROOT" "${#PASS[@]}"
   exit 0
 else
   echo "VERDICT: RED" >&2
-  [ "$JSON" -eq 1 ] && printf '{"verdict":"RED","sandbox":"%s","fails":%s}\n' "$FRESH_ROOT" "$(printf '%s\n' "${FAILS[@]}" | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')"
+  emit_status "VERDICT: RED"
+  emit_json '{"verdict":"RED","sandbox":"%s","fails":%s}\n' "$FRESH_ROOT" "$(printf '%s\n' "${FAILS[@]}" | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')"
   exit 1
 fi

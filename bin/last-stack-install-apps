@@ -108,6 +108,38 @@ run_bun_install() {
   bun install --cwd "$dest"
 }
 
+ensure_user_bin() {
+  mkdir -p "$HOME/.local/bin"
+  export PATH="$HOME/.local/bin:${PATH:-}"
+}
+
+link_existing_cli() {
+  local src="$1"
+  local command_name="$2"
+  [ -x "$src" ] || {
+    echo "missing executable for $command_name: $src" >&2
+    return 1
+  }
+  ensure_user_bin
+  ln -snf "$src" "$HOME/.local/bin/$command_name"
+}
+
+write_bun_cli_shim() {
+  local entrypoint="$1"
+  local command_name="$2"
+  [ -f "$entrypoint" ] || {
+    echo "missing Bun CLI entrypoint for $command_name: $entrypoint" >&2
+    return 1
+  }
+  ensure_user_bin
+  cat >"$HOME/.local/bin/$command_name" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+exec bun "$entrypoint" "\$@"
+EOF
+  chmod +x "$HOME/.local/bin/$command_name"
+}
+
 install_lastdb_formula() {
   local tap="edgevector/lastdb"
   local formula="$tap/lastdb"
@@ -139,20 +171,28 @@ link_cli() {
       echo "==> linking kanban CLI"
       # Ensure a user bin dir exists for first-run machines (install-cli creates
       # ~/.local/bin when needed, but put it on PATH for this process too).
-      mkdir -p "$HOME/.local/bin"
-      export PATH="$HOME/.local/bin:${PATH:-}"
+      ensure_user_bin
       (cd "$dest" && bun run install-cli "$HOME/.local/bin")
       ;;
     situations)
       if [ -x "$dest/bin/situations" ]; then
         echo "==> linking situations CLI"
-        mkdir -p "$HOME/.local/bin"
+        ensure_user_bin
         ln -snf "$dest/bin/situations" "$HOME/.local/bin/situations"
       fi
       ;;
-    brain|lastsecrets|org)
-      echo "==> linking $name CLI with bun link"
-      (cd "$dest" && bun link)
+    brain)
+      echo "==> linking brain CLI"
+      link_existing_cli "$dest/bin/brain" brain
+      link_existing_cli "$dest/bin/brain-mcp" brain-mcp
+      ;;
+    lastsecrets)
+      echo "==> linking lastsecrets CLI"
+      write_bun_cli_shim "$dest/src/cli.ts" lastsecrets
+      ;;
+    org)
+      echo "==> linking org CLI"
+      write_bun_cli_shim "$dest/src/cli.ts" org
       ;;
   esac
 }
