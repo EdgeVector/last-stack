@@ -11,6 +11,7 @@ grep -q north-star-lastdb-file-blobs-on-demand-sync <<<"$list_out"
 grep -q north-star-laststore-is-document-store-last-db-is-conventions <<<"$list_out"
 grep -q north-star-mini-brain-observability <<<"$list_out"
 grep -q north-star-lastdb-search-as-app <<<"$list_out"
+grep -q north-star-host-track <<<"$list_out"
 grep -q north-star-cloud-sync-storage-lean <<<"$list_out"
 grep -q north-star-exemem-cloud-account <<<"$list_out"
 
@@ -36,11 +37,57 @@ if command -v lastdb >/dev/null 2>&1; then
 fi
 
 # Structural: all harness scripts exist and bash -n clean
-for s in coderings deliver-slices lastgit metering minimal-node app-ops schema file-blobs-on-demand-sync laststore mini-brain-observability search-as-app cloud-sync-storage-lean exemem-cloud-account; do
+for s in coderings deliver-slices lastgit metering minimal-node app-ops schema file-blobs-on-demand-sync laststore mini-brain-observability search-as-app host-track cloud-sync-storage-lean exemem-cloud-account; do
   bash -n "$ROOT/harness/north-star/$s/run.sh"
 done
 bash -n "$BIN"
 bash -n "$ROOT/harness/north-star/common.sh"
+
+host_track_tmp="$(mktemp -d "${TMPDIR:-/tmp}/ns-host-track-proof-test.XXXXXX")"
+trap 'rm -rf "$PROOF_DIR" "$FILE_BLOB_WORK" "$MINI_OBS_WORK" "$CLOUD_SYNC_WORK" "$EXEMEM_ACCOUNT_WORK" "$host_track_tmp"' EXIT
+cat >"$host_track_tmp/registry.json" <<'JSON'
+{
+  "defaults": {"install_mode": "artifact"},
+  "apps": [{"app": "last-stack", "artifact_app": "last-stack"}]
+}
+JSON
+cat >"$host_track_tmp/host-track" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  status)
+    if [ "${2:-}" = "--json" ]; then
+      printf '[{"app":"last-stack","install_mode":"artifact","stale":false,"artifact_app":"last-stack"}]\n'
+      exit 0
+    fi
+    ;;
+  check)
+    printf 'ok: %s\n' "${2:-unknown}"
+    exit 0
+    ;;
+esac
+exit 2
+SH
+cat >"$host_track_tmp/invariant" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "--json" ]; then
+  printf '{"ok":true,"checks":[]}\n'
+  exit 0
+fi
+exit 2
+SH
+chmod +x "$host_track_tmp/host-track" "$host_track_tmp/invariant"
+HOST_TRACK_REGISTRY="$host_track_tmp/registry.json" \
+HOST_TRACK_BIN="$host_track_tmp/host-track" \
+HOST_TRACK_INVARIANT_BIN="$host_track_tmp/invariant" \
+NORTH_STAR_PROOF_DIR="$PROOF_DIR" \
+  "$BIN" --offline north-star-host-track >"$PROOF_DIR/host-track.out"
+host_track_report="$PROOF_DIR/north-star-host-track.md"
+test -f "$host_track_report"
+head -1 "$host_track_report" | grep -qE '^PASS'
+grep -q "North Star proof.*north-star-host-track" "$host_track_report"
+grep -q "PROOF_VERDICT=PASS-OFFLINE" "$PROOF_DIR/host-track.out"
 
 fold="$FILE_BLOB_WORK/edgevector/fold"
 mkdir -p \

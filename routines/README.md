@@ -119,6 +119,15 @@ The first three workers keep the established 15-minute anchors (`:00`, `:05`,
 so the fleet gets a pickup slot about every 2.5 minutes without changing the
 one-card-per-fire contract.
 
+Install the proof lane separately; it is not a pickup worker and owns bounded
+`Kind: validation` / terminal North Star proof cards:
+
+```bash
+last-stack-kanban-validate-routine \
+  --prompt-path "$HOME/.last-stack/routines/kanban-validate.md"
+ls ~/.routines/registry/last-stack-fkanban-validate.toml
+```
+
 ## The two clusters
 
 ### A. Self-fixing fleet health — portable to any agent fleet
