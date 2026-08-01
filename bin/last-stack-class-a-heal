@@ -111,7 +111,6 @@ PATH_SHIM_NAMES=(
   last-stack-factory-health
   last-stack-pr-venue
   last-stack-north-star-proof
-  last-stack-brain-append-heartbeat
   last-stack-lastdb-pressure
   last-stack-why-stopped
   last-stack-fold-ci-health
@@ -230,8 +229,17 @@ write_cache() {
 }
 
 acquire_lock() {
-  local waited=0
+  local waited=0 owner
   mkdir -p "$STATE_DIR" 2>/dev/null || true
+  # Reclaim abandoned lock (dead owner PID) — leftover hangs blocked the fleet.
+  if [ -d "$LOCK_DIR" ]; then
+    owner="$(cat "$LOCK_DIR/owner" 2>/dev/null || true)"
+    if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
+      log "clearing dead lock owner=$owner"
+      rm -rf "$LOCK_DIR" 2>/dev/null || true
+      append_action "reclaim-dead-lock"
+    fi
+  fi
   while ! mkdir "$LOCK_DIR" 2>/dev/null; do
     # Another healer running — if they just succeeded, share the win
     if cache_is_fresh_ok; then
@@ -422,13 +430,34 @@ run_refresh() {
     log "dry-run: would $HT ${args[*]}"
     return 0
   fi
-  if "$HT" "${args[@]}" >/tmp/last-stack-class-a-heal-refresh.$$ 2>&1; then
+  # Cap refresh wall time so multi-worker pickup cannot hang 15–90s on host-track.
+  local refresh_to="${LASTSTACK_CLASS_A_REFRESH_TIMEOUT_S:-60}"
+  local to_bin=""
+  if command -v timeout >/dev/null 2>&1; then to_bin=timeout
+  elif command -v gtimeout >/dev/null 2>&1; then to_bin=gtimeout
+  fi
+  local rc=0
+  if [ -n "$to_bin" ]; then
+    if ! "$to_bin" "$refresh_to" "$HT" "${args[@]}" >/tmp/last-stack-class-a-heal-refresh.$$ 2>&1; then
+      rc=$?
+    fi
+  else
+    if ! "$HT" "${args[@]}" >/tmp/last-stack-class-a-heal-refresh.$$ 2>&1; then
+      rc=$?
+    fi
+  fi
+  if [ "$rc" -eq 0 ]; then
     log "refresh $mode ok"
     rm -f /tmp/last-stack-class-a-heal-refresh.$$
     ensure_path_shims
     return 0
   fi
-  log "refresh $mode failed: $(head -c 240 /tmp/last-stack-class-a-heal-refresh.$$ 2>/dev/null || true)"
+  if [ "$rc" -eq 124 ] || [ "$rc" -eq 143 ]; then
+    log "refresh $mode timed out after ${refresh_to}s"
+    append_action "refresh-timeout"
+  else
+    log "refresh $mode failed: $(head -c 240 /tmp/last-stack-class-a-heal-refresh.$$ 2>/dev/null || true)"
+  fi
   rm -f /tmp/last-stack-class-a-heal-refresh.$$
   return 1
 }
