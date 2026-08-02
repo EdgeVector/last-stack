@@ -1,0 +1,12 @@
+# PROFILE=normal - paused until the canary pipeline terminal proof passes.
+id = "lastdb-canary-promote-prepare"
+harness = "codex"
+model = "gpt-5.5"
+effort = "medium"
+group = "lastdb-canary"
+rrule = "FREQ=HOURLY;INTERVAL=1;BYMINUTE=35;BYSECOND=0"
+cwd = "/Users/tomtang/code/edgevector"
+status = "paused"
+timeout_min = 20
+prompt_path = "/Users/tomtang/.last-stack/routines/lastdb-canary-promote-prepare.md"
+heartbeat_slug = "routine-heartbeats"

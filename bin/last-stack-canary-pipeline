@@ -52,6 +52,13 @@ def default_state_dir() -> Path:
     return Path.home() / ".local" / "state" / "last-stack" / "canary-pipeline"
 
 
+def default_promote_root() -> Path:
+    raw = os.environ.get("LAST_STACK_CANARY_PROMOTE_DIR")
+    if raw:
+        return Path(raw).expanduser()
+    return Path.home() / ".local" / "state" / "last-stack" / "canary-promote"
+
+
 def add_common_ledger_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--ledger", dest="command_ledger", type=Path, default=None)
 
@@ -100,6 +107,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     add_common_ledger_flags(promote)
     promote.add_argument("--sha", default="")
     promote.add_argument("--dry-run", action="store_true")
+    promote.add_argument("--promote-root", type=Path, default=default_promote_root())
+    promote.add_argument("--no-notify", action="store_true")
 
     proof = sub.add_parser("proof", help="exercise dogfood, soak-watch, and promote-prepare offline")
     proof.add_argument("--dry-run", action="store_true")
@@ -387,6 +396,43 @@ def soak_watch(path: Path, args: argparse.Namespace) -> dict:
 
 
 def promote_prepare(path: Path, args: argparse.Namespace) -> dict:
+    promote_output = ""
+
+    def write_promote_material(event: dict) -> Path:
+        candidate = str(event.get("candidate", ""))
+        evidence = str(event.get("evidence", ""))
+        output_dir = args.promote_root.expanduser() / dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output = output_dir / "PROMOTE.md"
+        output.write_text(
+            "\n".join(
+                [
+                    "# LastDB Canary Promote Prepare",
+                    "",
+                    f"- Generated: {utc_now()}",
+                    f"- Candidate SHA: `{candidate}`",
+                    f"- Ledger: `{path}`",
+                    "- Required state: `soak_green`",
+                    "- Automation pushed stable tag: `false`",
+                    "",
+                    "## Checks Performed",
+                    "",
+                    f"- Confirmed `{candidate}` reached `soak_green` in the canary ledger.",
+                    f"- Soak evidence: `{evidence or 'not-recorded'}`",
+                    "- Wrote promotion material only; no push, artifact-promotion command, or stable tag mutation was run.",
+                    "",
+                    "## Manual Stable Promotion",
+                    "",
+                    f"1. Review this file and the soak ledger for `{candidate}`.",
+                    "2. If Tom approves, promote the stable artifact/tag manually from a supervised shell.",
+                    "3. Record the promotion outcome in the canary ledger.",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return output
+
     def inner() -> dict:
         current = choose_soak_candidate(path, args.sha, {"soak_green", "soak_red", "promote_prepare"})
         state = str(current.get("state", ""))
@@ -404,7 +450,18 @@ def promote_prepare(path: Path, args: argparse.Namespace) -> dict:
     candidate = str(event.get("candidate", ""))
     evidence = str(event.get("evidence", ""))
     if state in {"soak_green", "promote_prepare"}:
-        print(f"PROMOTE_READY ledger={path} sha={candidate} status=ready evidence={evidence}{dry_suffix(args.dry_run)}")
+        output = write_promote_material(event)
+        promote_output = str(output)
+        if not args.dry_run and not args.no_notify:
+            notify_cmd = ["ra", "notify", f"LastDB canary promote-prepare ready for {candidate}: {output}", "--priority", "high"]
+            try:
+                subprocess.run(notify_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            except FileNotFoundError:
+                pass
+        print(
+            f"PROMOTE_READY ledger={path} sha={candidate} status=ready evidence={evidence} "
+            f"output={promote_output}{dry_suffix(args.dry_run)}"
+        )
         return current_record(event)
     print(f"PROMOTE_READY ledger={path} sha={candidate} status=blocked soak_status={state} evidence={evidence}")
     raise SystemExit(1)
@@ -413,31 +470,46 @@ def promote_prepare(path: Path, args: argparse.Namespace) -> dict:
 def proof(args: argparse.Namespace) -> None:
     if not args.dry_run:
         die("proof currently requires --dry-run", 2)
-    with tempfile.TemporaryDirectory(prefix="last-stack-canary-proof.") as tmp:
-        path = Path(tmp) / "ledger.jsonl"
-        sha = "dryrun-canary-sha"
-        dogfood_candidate(
-            path,
-            argparse.Namespace(sha=sha, observed_sha="", version="dry-run", source="proof", dry_run=True),
-        )
-        env = {
-            "LAST_STACK_CANARY_LAUNCHD_CHECK_CMD": "pass",
-            "LAST_STACK_CANARY_MEMORY_CHECK_CMD": "pass",
-            "LAST_STACK_CANARY_BOARD_CHECK_CMD": "pass",
-            "LAST_STACK_CANARY_SITUATION_CHECK_CMD": "pass",
-        }
-        old_env = {key: os.environ.get(key) for key in env}
-        os.environ.update(env)
-        try:
-            soak_watch(path, argparse.Namespace(sha=sha, dry_run=True))
-        finally:
-            for key, value in old_env.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
-        promote_prepare(path, argparse.Namespace(sha=sha, dry_run=True))
-        print(f"CANARY_PIPELINE_PROOF result=ok dry_run=1 ledger={path} no_primary_mutation=1")
+    tmp = tempfile.mkdtemp(prefix="last-stack-canary-proof.")
+    path = Path(tmp) / "ledger.jsonl"
+    promote_root = Path(tmp) / "canary-promote"
+    sha = "dryrun-canary-sha"
+    dogfood_candidate(
+        path,
+        argparse.Namespace(sha=sha, observed_sha="", version="dry-run", source="proof", dry_run=True),
+    )
+    env = {
+        "LAST_STACK_CANARY_LAUNCHD_CHECK_CMD": "pass",
+        "LAST_STACK_CANARY_MEMORY_CHECK_CMD": "pass",
+        "LAST_STACK_CANARY_BOARD_CHECK_CMD": "pass",
+        "LAST_STACK_CANARY_SITUATION_CHECK_CMD": "pass",
+    }
+    old_env = {key: os.environ.get(key) for key in env}
+    os.environ.update(env)
+    try:
+        soak_watch(path, argparse.Namespace(sha=sha, dry_run=True))
+    finally:
+        for key, value in old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    promote_prepare(
+        path,
+        argparse.Namespace(sha=sha, dry_run=True, promote_root=promote_root, no_notify=True),
+    )
+    promote_files = sorted(promote_root.glob("*/PROMOTE.md"))
+    if not promote_files:
+        die("dry-run proof did not write PROMOTE.md")
+    promote_text = promote_files[-1].read_text(encoding="utf-8")
+    if f"Candidate SHA: `{sha}`" not in promote_text:
+        die("dry-run PROMOTE.md did not record the soaked SHA")
+    if "Automation pushed stable tag: `false`" not in promote_text:
+        die("dry-run PROMOTE.md did not record stable-tag safety")
+    print(
+        "CANARY_PIPELINE_PROOF result=ok dry_run=1 "
+        f"ledger={path} promote_output={promote_files[-1]} no_primary_mutation=1 stable_mutation=false"
+    )
 
 
 def main(argv: list[str]) -> int:
