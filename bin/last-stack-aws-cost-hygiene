@@ -1,0 +1,475 @@
+#!/usr/bin/env python3
+"""Monthly AWS cost hygiene probe for EdgeVector account 152335099025.
+
+Read-only Cost Explorer + inventory checks. Emits a human report and optional JSON.
+Exit codes:
+  0  GREEN or YELLOW (completed measurement)
+  1  RED (thresholds breached) — still completed measurement
+  2  usage / tool error (aws missing, CE denied, etc.)
+
+Usage:
+  last-stack-aws-cost-hygiene [--json] [--profile NAME] [--region REGION]
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from dataclasses import asdict, dataclass, field
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Optional
+
+
+# Defaults tuned after 2026-08 AWS cleanup (ECR prune, App Insights cull, PC off).
+# Prior full months were ~$180–220; post-cleanup target ~$40–80.
+THRESHOLDS = {
+    "month_cost_yellow": 100.0,
+    "month_cost_red": 180.0,
+    "daily_avg_yellow": 4.0,
+    "daily_avg_red": 7.0,
+    "ecr_gb_yellow": 20.0,
+    "ecr_gb_red": 50.0,
+    "alarms_yellow": 80,
+    "alarms_red": 150,
+    "nat_gateways_red": 1,  # any NAT is unexpected post-cleanup
+    "provisioned_concurrency_yellow": 1,
+}
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def iso_z(dt: Optional[datetime] = None) -> str:
+    d = dt or utc_now()
+    return d.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def run(cmd: list[str], timeout: float = 90.0) -> tuple[int, str, str]:
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return p.returncode, p.stdout or "", p.stderr or ""
+    except Exception as e:
+        return 1, "", str(e)
+
+
+def aws_json(profile: str, region: str, *args: str, timeout: float = 90.0) -> Any:
+    cmd = ["aws", "--profile", profile, "--region", region, "--output", "json", *args]
+    code, out, err = run(cmd, timeout=timeout)
+    if code != 0:
+        raise RuntimeError(err.strip() or out.strip() or f"aws failed: {' '.join(args[:4])}")
+    if not out.strip():
+        return None
+    return json.loads(out)
+
+
+@dataclass
+class Finding:
+    severity: str  # green|yellow|red|info
+    code: str
+    message: str
+
+
+@dataclass
+class Report:
+    ts: str
+    account: str
+    profile: str
+    verdict: str
+    findings: list[Finding] = field(default_factory=list)
+    metrics: dict[str, Any] = field(default_factory=dict)
+    thresholds: dict[str, Any] = field(default_factory=dict)
+    errors: list[str] = field(default_factory=list)
+
+    def add(self, severity: str, code: str, message: str) -> None:
+        self.findings.append(Finding(severity, code, message))
+
+    def finalize_verdict(self) -> None:
+        if any(f.severity == "red" for f in self.findings) or self.errors:
+            self.verdict = "RED"
+        elif any(f.severity == "yellow" for f in self.findings):
+            self.verdict = "YELLOW"
+        else:
+            self.verdict = "GREEN"
+
+
+def month_bounds(today: date) -> tuple[str, str, str, str]:
+    """Return (prev_start, prev_end, cur_start, cur_end_exclusive) ISO dates."""
+    cur_start = today.replace(day=1)
+    if cur_start.month == 1:
+        prev_start = date(cur_start.year - 1, 12, 1)
+    else:
+        prev_start = date(cur_start.year, cur_start.month - 1, 1)
+    prev_end = cur_start  # exclusive end for prev month
+    cur_end = today + timedelta(days=1)  # exclusive end for MTD
+    return (
+        prev_start.isoformat(),
+        prev_end.isoformat(),
+        cur_start.isoformat(),
+        cur_end.isoformat(),
+    )
+
+
+def ce_total(profile: str, start: str, end: str) -> tuple[float, dict[str, float]]:
+    data = aws_json(
+        profile,
+        "us-east-1",  # CE is global; region flag ignored for service
+        "ce",
+        "get-cost-and-usage",
+        "--time-period",
+        f"Start={start},End={end}",
+        "--granularity",
+        "MONTHLY",
+        "--metrics",
+        "UnblendedCost",
+        "--group-by",
+        "Type=DIMENSION,Key=SERVICE",
+    )
+    total = 0.0
+    by_svc: dict[str, float] = {}
+    for tr in data.get("ResultsByTime") or []:
+        for g in tr.get("Groups") or []:
+            svc = g["Keys"][0]
+            amt = float(g["Metrics"]["UnblendedCost"]["Amount"])
+            by_svc[svc] = by_svc.get(svc, 0.0) + amt
+            total += amt
+    return total, by_svc
+
+
+def ce_daily_avg(profile: str, days: int = 14) -> float:
+    end = date.today() + timedelta(days=1)
+    start = end - timedelta(days=days)
+    data = aws_json(
+        profile,
+        "us-east-1",
+        "ce",
+        "get-cost-and-usage",
+        "--time-period",
+        f"Start={start.isoformat()},End={end.isoformat()}",
+        "--granularity",
+        "DAILY",
+        "--metrics",
+        "UnblendedCost",
+    )
+    amounts = []
+    for tr in data.get("ResultsByTime") or []:
+        amt = float((tr.get("Total") or {}).get("UnblendedCost", {}).get("Amount") or 0)
+        # skip zero-only future partial if any
+        amounts.append(amt)
+    if not amounts:
+        return 0.0
+    return sum(amounts) / len(amounts)
+
+
+def count_alarms(profile: str, region: str) -> tuple[int, int]:
+    total = 0
+    ai = 0
+    token = None
+    while True:
+        args = [
+            "cloudwatch",
+            "describe-alarms",
+            "--max-records",
+            "100",
+        ]
+        if token:
+            args += ["--next-token", token]
+        data = aws_json(profile, region, *args)
+        alarms = data.get("MetricAlarms") or []
+        total += len(alarms)
+        ai += sum(1 for a in alarms if str(a.get("AlarmName", "")).startswith("ApplicationInsights"))
+        token = data.get("NextToken")
+        if not token:
+            break
+    return total, ai
+
+
+def ecr_stats(profile: str, region: str) -> tuple[int, float]:
+    data = aws_json(profile, region, "ecr", "describe-repositories")
+    repos = data.get("repositories") or [] if data else []
+    images = 0
+    bytes_ = 0
+    for repo in repos:
+        name = repo["repositoryName"]
+        token = None
+        while True:
+            args = ["ecr", "describe-images", "--repository-name", name]
+            if token:
+                args += ["--next-token", token]
+            try:
+                page = aws_json(profile, region, *args)
+            except RuntimeError:
+                break
+            details = page.get("imageDetails") or []
+            images += len(details)
+            bytes_ += sum(int(d.get("imageSizeInBytes") or 0) for d in details)
+            token = page.get("nextToken")
+            if not token:
+                break
+    return images, bytes_ / 1e9
+
+
+def count_nat(profile: str, region: str) -> int:
+    data = aws_json(
+        profile,
+        region,
+        "ec2",
+        "describe-nat-gateways",
+        "--filter",
+        "Name=state,Values=available,pending",
+    )
+    return len(data.get("NatGateways") or [])
+
+
+def count_rds(profile: str, region: str) -> int:
+    data = aws_json(profile, region, "rds", "describe-db-instances")
+    return len(data.get("DBInstances") or [])
+
+
+def count_pc(profile: str, region: str) -> list[str]:
+    """Return function:qualifier strings that have provisioned concurrency."""
+    found: list[str] = []
+    data = aws_json(profile, region, "lambda", "list-functions")
+    for fn in data.get("Functions") or []:
+        name = fn["FunctionName"]
+        try:
+            pc = aws_json(
+                profile,
+                region,
+                "lambda",
+                "list-provisioned-concurrency-configs",
+                "--function-name",
+                name,
+            )
+        except RuntimeError:
+            continue
+        for cfg in pc.get("ProvisionedConcurrencyConfigs") or []:
+            found.append(cfg.get("FunctionArn") or name)
+    return found
+
+
+def collect(profile: str) -> Report:
+    rep = Report(
+        ts=iso_z(),
+        account="",
+        profile=profile,
+        verdict="GREEN",
+        thresholds=dict(THRESHOLDS),
+    )
+    try:
+        ident = aws_json(profile, "us-west-2", "sts", "get-caller-identity")
+        rep.account = str(ident.get("Account") or "")
+    except Exception as e:
+        rep.errors.append(f"sts: {e}")
+        rep.finalize_verdict()
+        return rep
+
+    prev_s, prev_e, cur_s, cur_e = month_bounds(date.today())
+    try:
+        prev_total, prev_by = ce_total(profile, prev_s, prev_e)
+        mtd_total, mtd_by = ce_total(profile, cur_s, cur_e)
+        daily = ce_daily_avg(profile, 14)
+    except Exception as e:
+        rep.errors.append(f"cost-explorer: {e}")
+        prev_total = mtd_total = daily = 0.0
+        prev_by = mtd_by = {}
+
+    rep.metrics["prev_month"] = {
+        "start": prev_s,
+        "end_exclusive": prev_e,
+        "unblended_total": round(prev_total, 2),
+        "top_services": sorted(
+            ({"service": k, "usd": round(v, 2)} for k, v in prev_by.items() if v >= 1.0),
+            key=lambda x: -x["usd"],
+        )[:12],
+    }
+    rep.metrics["mtd"] = {
+        "start": cur_s,
+        "end_exclusive": cur_e,
+        "unblended_total": round(mtd_total, 2),
+        "top_services": sorted(
+            ({"service": k, "usd": round(v, 2)} for k, v in mtd_by.items() if v >= 0.5),
+            key=lambda x: -x["usd"],
+        )[:12],
+    }
+    rep.metrics["daily_avg_14d"] = round(daily, 2)
+
+    # Primary cost signal = trailing run-rate (14d avg * 30). Prior full month is
+    # reported but does not RED alone — a cleaned-up account can still show a fat
+    # previous month for one billing cycle after a mid-month cut.
+    run_rate = daily * 30.0
+    rep.metrics["run_rate_30d"] = round(run_rate, 2)
+    if run_rate >= THRESHOLDS["month_cost_red"]:
+        rep.add(
+            "red",
+            "run_rate",
+            f"14d×30 run-rate ${run_rate:.2f}/mo >= red ${THRESHOLDS['month_cost_red']} "
+            f"(prev_month=${prev_total:.2f} mtd=${mtd_total:.2f})",
+        )
+    elif run_rate >= THRESHOLDS["month_cost_yellow"]:
+        rep.add(
+            "yellow",
+            "run_rate",
+            f"14d×30 run-rate ${run_rate:.2f}/mo >= yellow ${THRESHOLDS['month_cost_yellow']} "
+            f"(prev_month=${prev_total:.2f} mtd=${mtd_total:.2f})",
+        )
+    else:
+        rep.add(
+            "green",
+            "run_rate",
+            f"14d×30 run-rate ${run_rate:.2f}/mo ok "
+            f"(prev_month=${prev_total:.2f} mtd=${mtd_total:.2f})",
+        )
+    if prev_total >= THRESHOLDS["month_cost_red"]:
+        rep.add(
+            "info",
+            "prev_month_high",
+            f"Prior full month ${prev_total:.2f} was above red — expected once after cleanup; "
+            "watch next full month",
+        )
+
+    if daily >= THRESHOLDS["daily_avg_red"]:
+        rep.add("red", "daily_avg", f"14d daily avg ${daily:.2f} >= red ${THRESHOLDS['daily_avg_red']}")
+    elif daily >= THRESHOLDS["daily_avg_yellow"]:
+        rep.add("yellow", "daily_avg", f"14d daily avg ${daily:.2f} >= yellow ${THRESHOLDS['daily_avg_yellow']}")
+    else:
+        rep.add("green", "daily_avg", f"14d daily avg ${daily:.2f} ok")
+
+    # inventory
+    ecr_images = 0
+    ecr_gb = 0.0
+    alarms = 0
+    ai_alarms = 0
+    nats = 0
+    rds = 0
+    pc: list[str] = []
+    for region in ("us-east-1", "us-west-2"):
+        try:
+            imgs, gb = ecr_stats(profile, region)
+            ecr_images += imgs
+            ecr_gb += gb
+        except Exception as e:
+            rep.errors.append(f"ecr {region}: {e}")
+        try:
+            t, a = count_alarms(profile, region)
+            alarms += t
+            ai_alarms += a
+        except Exception as e:
+            rep.errors.append(f"alarms {region}: {e}")
+        try:
+            nats += count_nat(profile, region)
+        except Exception as e:
+            rep.errors.append(f"nat {region}: {e}")
+        try:
+            rds += count_rds(profile, region)
+        except Exception as e:
+            rep.errors.append(f"rds {region}: {e}")
+        try:
+            pc.extend(count_pc(profile, region))
+        except Exception as e:
+            rep.errors.append(f"lambda-pc {region}: {e}")
+
+    rep.metrics["ecr"] = {"images": ecr_images, "gb": round(ecr_gb, 2)}
+    rep.metrics["alarms"] = {"total": alarms, "application_insights": ai_alarms}
+    rep.metrics["nat_gateways"] = nats
+    rep.metrics["rds_instances"] = rds
+    rep.metrics["provisioned_concurrency"] = pc
+
+    if ecr_gb >= THRESHOLDS["ecr_gb_red"]:
+        rep.add("red", "ecr", f"ECR storage {ecr_gb:.1f} GB / {ecr_images} images (red>={THRESHOLDS['ecr_gb_red']})")
+    elif ecr_gb >= THRESHOLDS["ecr_gb_yellow"]:
+        rep.add("yellow", "ecr", f"ECR storage {ecr_gb:.1f} GB / {ecr_images} images (yellow>={THRESHOLDS['ecr_gb_yellow']})")
+    else:
+        rep.add("green", "ecr", f"ECR storage {ecr_gb:.1f} GB / {ecr_images} images ok")
+
+    if alarms >= THRESHOLDS["alarms_red"] or ai_alarms > 0:
+        sev = "red" if alarms >= THRESHOLDS["alarms_red"] or ai_alarms > 0 else "yellow"
+        if ai_alarms > 0:
+            sev = "red"
+        rep.add(sev, "alarms", f"CloudWatch alarms total={alarms} application_insights={ai_alarms}")
+    elif alarms >= THRESHOLDS["alarms_yellow"]:
+        rep.add("yellow", "alarms", f"CloudWatch alarms total={alarms}")
+    else:
+        rep.add("green", "alarms", f"CloudWatch alarms total={alarms} ok")
+
+    if nats >= THRESHOLDS["nat_gateways_red"]:
+        rep.add("red", "nat", f"{nats} NAT gateway(s) present (unexpected post-cleanup)")
+    else:
+        rep.add("green", "nat", "No NAT gateways")
+
+    if rds > 0:
+        rep.add("info", "rds", f"{rds} RDS instance(s) present")
+    else:
+        rep.add("green", "rds", "No RDS instances")
+
+    if len(pc) >= THRESHOLDS["provisioned_concurrency_yellow"]:
+        rep.add("yellow", "lambda_pc", f"Provisioned concurrency on: {', '.join(pc[:6])}")
+    else:
+        rep.add("green", "lambda_pc", "No Lambda provisioned concurrency")
+
+    rep.finalize_verdict()
+    return rep
+
+
+def format_human(rep: Report) -> str:
+    lines = [
+        f"aws-cost-hygiene {rep.ts} verdict={rep.verdict} account={rep.account} profile={rep.profile}",
+        f"  prev_month=${rep.metrics.get('prev_month', {}).get('unblended_total', '?')}  "
+        f"mtd=${rep.metrics.get('mtd', {}).get('unblended_total', '?')}  "
+        f"daily_avg_14d=${rep.metrics.get('daily_avg_14d', '?')}",
+        f"  ecr={rep.metrics.get('ecr')}  alarms={rep.metrics.get('alarms')}  "
+        f"nat={rep.metrics.get('nat_gateways')}  rds={rep.metrics.get('rds_instances')}  "
+        f"pc={len(rep.metrics.get('provisioned_concurrency') or [])}",
+        "  findings:",
+    ]
+    for f in rep.findings:
+        lines.append(f"    [{f.severity}] {f.code}: {f.message}")
+    if rep.errors:
+        lines.append("  errors:")
+        for e in rep.errors:
+            lines.append(f"    - {e}")
+    top = (rep.metrics.get("prev_month") or {}).get("top_services") or []
+    if top:
+        lines.append("  prev_month top services:")
+        for row in top[:8]:
+            lines.append(f"    ${row['usd']:8.2f}  {row['service']}")
+    return "\n".join(lines) + "\n"
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--profile", default=os.environ.get("AWS_PROFILE", "default"))
+    ap.add_argument("--region", default=os.environ.get("AWS_DEFAULT_REGION", "us-west-2"))
+    args = ap.parse_args()
+
+    # ensure aws cli present
+    code, _, err = run(["aws", "--version"])
+    if code != 0:
+        print(f"aws cli missing: {err}", file=sys.stderr)
+        return 2
+
+    try:
+        rep = collect(args.profile)
+    except Exception as e:
+        print(f"fatal: {e}", file=sys.stderr)
+        return 2
+
+    if args.json:
+        payload = asdict(rep)
+        print(json.dumps(payload, indent=2))
+    else:
+        print(format_human(rep), end="")
+
+    if rep.errors and rep.verdict == "RED" and not any(f.severity == "red" for f in rep.findings):
+        # pure tool errors
+        return 2
+    if rep.verdict == "RED":
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
