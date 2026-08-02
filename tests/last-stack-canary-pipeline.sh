@@ -74,6 +74,11 @@ grep -q 'DOGFOOD .*result=ok.*no_primary_mutation=1' "$proof_out"
 grep -q 'SOAK .*status=soak_green.*no_primary_mutation=1' "$proof_out"
 grep -q 'PROMOTE_READY .*status=ready.*no_primary_mutation=1' "$proof_out"
 grep -q 'CANARY_PIPELINE_PROOF result=ok dry_run=1' "$proof_out"
+grep -q 'stable_mutation=false' "$proof_out"
+promote_path="$(awk -F 'promote_output=' '/CANARY_PIPELINE_PROOF/ {print $2}' "$proof_out" | awk '{print $1}')"
+test -r "$promote_path"
+grep -q 'Candidate SHA: `dryrun-canary-sha`' "$promote_path"
+grep -q 'Automation pushed stable tag: `false`' "$promote_path"
 if grep -q "$HOME/.lastdb" "$proof_out"; then
   echo "dry-run proof unexpectedly referenced the primary LastDB home" >&2
   exit 1
@@ -103,11 +108,17 @@ LAST_STACK_CANARY_MEMORY_CHECK_CMD=pass \
 LAST_STACK_CANARY_BOARD_CHECK_CMD=pass \
 LAST_STACK_CANARY_SITUATION_CHECK_CMD=pass \
   "$CLI" --state-dir "$green_dir" soak-watch --dry-run --sha sha-green >/dev/null
-"$CLI" --state-dir "$green_dir" promote-prepare --dry-run --sha sha-green >"$tmp/promote.out"
-grep -q 'PROMOTE_READY .*sha=sha-green.*status=ready' "$tmp/promote.out"
+"$CLI" --state-dir "$green_dir" promote-prepare --dry-run --sha sha-green \
+  --promote-root "$tmp/promote-root" >"$tmp/promote.out"
+grep -q 'PROMOTE_READY .*sha=sha-green.*status=ready.*output=' "$tmp/promote.out"
+manual="$(awk -F 'output=' '/PROMOTE_READY/ {print $2}' "$tmp/promote.out" | awk '{print $1}')"
+test -r "$manual"
+grep -q 'Candidate SHA: `sha-green`' "$manual"
 
 grep -q 'lastdb-canary-soak-watch' "$ROOT/config/routines-registry/lastdb-canary-soak-watch.toml"
 grep -q 'status = "paused"' "$ROOT/config/routines-registry/lastdb-canary-soak-watch.toml"
 grep -q 'last-stack-canary-pipeline proof --dry-run' "$ROOT/routines/lastdb-canary-soak-watch.md"
+grep -q 'lastdb-canary-promote-prepare' "$ROOT/config/routines-registry/lastdb-canary-promote-prepare.toml"
+grep -q 'status = "paused"' "$ROOT/config/routines-registry/lastdb-canary-promote-prepare.toml"
 
 echo "PASS last-stack-canary-pipeline"
