@@ -12,7 +12,8 @@
 # Reclaim one worktree:
 #   1. Skip if a live process has cwd inside it (unless --force-live).
 #   2. Strip generated caches: target/, node_modules/, .next/, dist/, build/
-#      (and nested up to depth 4).
+#      (and nested up to depth 4). Directories git TRACKS are kept — some repos
+#      commit prebuilt output under those names on purpose.
 #   3. If the tree is dirty: save a patch under
 #      ~/.local/state/last-stack/runtime/worktree-patches/<name>-<ts>.patch
 #      then remove the worktree anyway (source is recoverable from branch/PR
@@ -84,10 +85,29 @@ has_live_cwd() {
 
 strip_generated() {
   local wt="$1"
-  local d
+  local d tracked
+  local is_repo=0
+  if git -C "$wt" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    is_repo=1
+  fi
   # top-level + nested (bounded)
   while IFS= read -r d; do
     [ -n "$d" ] || continue
+    # A "generated" NAME is not proof the content is generated. Some repos
+    # commit prebuilt output under one of these names on purpose and un-ignore
+    # it explicitly (fkanban/brain/situations all vendor an SDK as
+    # vendor/lastdb-app-sdk/dist, kept tracked by a `!` rule in .gitignore).
+    # Deleting those leaves the worktree permanently dirty with 30-40 tracked
+    # deletions, and the standing "stage the whole worktree with git add -A
+    # before committing" rule would then commit the removal of files the build
+    # needs. Strip only what git does not track.
+    if [ "$is_repo" -eq 1 ]; then
+      tracked="$(git -C "$wt" ls-files -- "$d" 2>/dev/null | head -n 1 || true)"
+      if [ -n "$tracked" ]; then
+        log "kept tracked $d"
+        continue
+      fi
+    fi
     if [ "$dry_run" -eq 1 ]; then
       log "dry-run strip $d"
     else
