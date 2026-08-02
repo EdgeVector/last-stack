@@ -373,6 +373,42 @@ soft_stale_usable() {
   return 0
 }
 
+# Hard-broken: pickup must NOT claim. Missing/corrupt current, artifact_problem,
+# or missing prompt/reader. Soft-stale is NOT hard-broken.
+is_hard_broken() {
+  local sj="${1:-}"
+  if [ -z "$sj" ]; then
+    sj="$(status_json)"
+  fi
+  if [ -z "$sj" ]; then
+    return 0
+  fi
+  if has_artifact_problem "$sj"; then
+    return 0
+  fi
+  if is_artifact "$sj"; then
+    current_is_usable || return 0
+  fi
+  prompt_present || return 0
+  reader_present || return 0
+  return 1
+}
+
+# Fire-and-forget slow refresh (LaunchAgent also runs --force-if-stale --all).
+# Never blocks the pre-claim path; only used after soft-stale-ok classification.
+request_oob_refresh() {
+  if [ "$DRY_RUN" -eq 1 ]; then
+    append_action "would-oob-refresh"
+    return 0
+  fi
+  if [ -z "${HT:-}" ] || [ ! -x "$HT" ]; then
+    return 0
+  fi
+  # shellcheck disable=SC2086
+  ( nohup "$HT" refresh --force-if-stale last-stack >/dev/null 2>&1 & ) 2>/dev/null || true
+  append_action "oob-refresh-started"
+}
+
 # Fast healthy: fresh install OR soft-stale-usable. Hard-broken fails.
 # No host-track check / no slow refresh on the fast path.
 fast_healthy() {
@@ -540,11 +576,15 @@ heal_ladder() {
     log "soft-stale usable (stale=true, current live) → skip force refresh"
     detail="soft-stale-ok"
     append_action "soft-stale-skip-refresh"
+    request_oob_refresh
     return 0
   fi
 
-  if is_stale "$sj"; then
-    log "status.stale=true hard path → force-if-stale"
+  # Hard-broken (or non-usable stale): single-flight refresh under install lock
+  # (host-track serialize). Only one healer holds class-a lock (acquire_lock).
+  if is_hard_broken "$sj" || is_stale "$sj"; then
+    log "hard-broken/hard-stale → force-if-stale (single healer)"
+    append_action "hard-broken-heal"
     run_refresh force-if-stale || true
     sj="$(status_json)"
   fi
