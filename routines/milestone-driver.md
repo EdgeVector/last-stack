@@ -108,8 +108,7 @@ If `MILESTONE_DRIVER_TARGET` is nonempty:
 2. Do not mutate any other milestone.
 3. Still run `gap-report` and **filter** `work_queue` / entries to that slug only.
 4. Skip the portfolio-ranking procedure; drive only that milestone’s promote,
-   decompose, or **complete_proof** action from the report. Targeting never
-   relaxes blockers or the safety cap.
+   decompose, or **complete_proof** action from the report. Targeting never relaxes blockers or the safety cap.
 
 ## Deterministic gap-report (required)
 
