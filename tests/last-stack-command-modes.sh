@@ -18,6 +18,7 @@ while IFS= read -r path; do
 done <<'EOF'
 setup
 bin/last-stack-north-star-completion-check
+bin/last-stack-product-feature-ns-reconcile
 tests/last-stack-command-modes.sh
 EOF
 

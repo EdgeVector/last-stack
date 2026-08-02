@@ -1,0 +1,10 @@
+{
+  "rows": [
+    {
+      "north_star": "north-star-host-track",
+      "ns_status": "in_progress",
+      "terminal_state": "live",
+      "verdict": "in_progress"
+    }
+  ]
+}
