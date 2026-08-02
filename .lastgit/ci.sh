@@ -31,6 +31,8 @@ bin/last-stack-lint-prompts \
   instructions/brain-kanban.md
 
 bash tests/last-stack-routine-read.sh
+bash tests/last-stack-class-a-heal.sh
+bash tests/last-stack-factory-hardening.sh
 bash tests/last-stack-kanban-done-when-eval.sh
 bash tests/last-stack-driver-hierarchy.sh
 bash tests/last-stack-ship-feature-milestones.sh
@@ -49,3 +51,4 @@ bash tests/last-stack-artifact-layout.sh
 bash tests/last-stack-artifact-routine-freshness.sh
 bash tests/last-stack-artifact-one-rule.sh
 bash tests/last-stack-post-merge-safe-upgrade.sh
+bash tests/last-stack-lastdb-safe-upgrade-candidate-class.sh

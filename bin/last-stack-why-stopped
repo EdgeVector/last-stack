@@ -1,0 +1,199 @@
+#!/usr/bin/env bash
+# last-stack-why-stopped — zero-LLM Class A–E factory freeze classifier.
+#
+# Answers "why did shipping stop?" in one line. Optionally runs Class A heal.
+#
+# Classes (factory graph):
+#   A  host-track / last-stack install freeze
+#   B  board claim path dead (empty ready + locks / pickup poison)
+#   C  fold CI / forge runner SPOF
+#   D  merge≠live / terminal proof gap (informational when doing has old PR)
+#   E  LastDB hot (generator/backpressure)
+#
+# Usage:
+#   last-stack-why-stopped [--json] [--heal] [--quiet]
+#
+# Exit: 0 always when classification succeeds; 2 on usage.
+set -euo pipefail
+
+JSON=0
+HEAL=0
+QUIET=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json) JSON=1; shift ;;
+    --heal) HEAL=1; shift ;;
+    --quiet|-q) QUIET=1; shift ;;
+    -h|--help)
+      echo "last-stack-why-stopped [--json] [--heal] [--quiet]"; exit 0 ;;
+    *) echo "unknown: $1" >&2; exit 2 ;;
+  esac
+done
+
+log() { [ "$QUIET" -eq 1 ] || printf 'why-stopped: %s\n' "$*" >&2; }
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
+
+classes=()
+detail=()
+actions=()
+
+# --- Class A: install ---
+class_a=0
+if command -v last-stack-class-a-heal >/dev/null 2>&1; then
+  if ! last-stack-class-a-heal --reason=why-stopped --quiet >/dev/null 2>&1; then
+    class_a=1
+    if [ "$HEAL" -eq 1 ]; then
+      if last-stack-class-a-heal --reason=why-stopped-heal --full >/dev/null 2>&1; then
+        class_a=0
+        detail+=("install was unhealthy; Class A healed")
+        actions+=("class-a-heal-ok")
+      else
+        classes+=("A")
+        detail+=("host-track/install unhealthy; heal failed")
+        actions+=("class-a-heal-failed")
+      fi
+    else
+      classes+=("A")
+      detail+=("host-track/install unhealthy")
+      actions+=("run:last-stack-class-a-heal")
+    fi
+  fi
+elif command -v host-track >/dev/null 2>&1; then
+  st="$(host-track status --json last-stack 2>/dev/null || true)"
+  if [ "$(printf '%s\n' "$st" | jq -r '.stale|tostring' 2>/dev/null)" = "true" ]; then
+    class_a=1
+    classes+=("A")
+    detail+=("host-track stale=true")
+    actions+=("host-track refresh --force-if-stale last-stack")
+  fi
+fi
+
+# --- Class E: LastDB pressure ---
+if command -v last-stack-lastdb-pressure >/dev/null 2>&1; then
+  if ! last-stack-lastdb-pressure --hot --quiet 2>/dev/null; then
+    # exit 1 = hot; exit 2 = unknown — only treat hot
+    rc=$?
+    if [ "$rc" -eq 1 ]; then
+      classes+=("E")
+      detail+=("lastdb pressure hot")
+      actions+=("shed generators; wait for cool")
+    fi
+  fi
+fi
+
+# --- Class C: fold CI / forge runners ---
+fold_ci_down=0
+for agent in com.edgevector.forgejo-runner com.edgevector.forgejo-runner-host; do
+  if ! launchctl print "gui/$(id -u)/$agent" >/dev/null 2>&1; then
+    fold_ci_down=1
+    detail+=("launchd missing $agent")
+  else
+    state="$(launchctl print "gui/$(id -u)/$agent" 2>/dev/null | sed -n 's/^[[:space:]]*state = //p' | head -1)"
+    if [ "$state" != "running" ]; then
+      fold_ci_down=1
+      detail+=("$agent state=$state")
+    fi
+  fi
+done
+if [ "$fold_ci_down" -eq 1 ]; then
+  classes+=("C")
+  actions+=("check forge runners; see last-stack-fold-ci-health")
+fi
+
+# --- Class B: pickup claim path ---
+# Recent heartbeats: trailing stale-install or empty-todo with ready work is harder;
+# use a cheap board ready count when possible.
+ready=0
+todo=0
+doing=0
+if command -v kanban >/dev/null 2>&1; then
+  ps="$(kanban pickup status --json 2>/dev/null || true)"
+  if [ -n "$ps" ]; then
+    ready="$(printf '%s\n' "$ps" | jq -r '.ready // 0' 2>/dev/null || echo 0)"
+  fi
+  # column counts are expensive; skip if board hot
+  if last-stack-lastdb-pressure --hot --quiet 2>/dev/null; then
+    :
+  else
+    todo="$(kanban list --column todo --json 2>/dev/null | jq 'if type=="array" then length else (.cards|length) end' 2>/dev/null || echo 0)"
+    doing="$(kanban list --column doing --json 2>/dev/null | jq 'if type=="array" then length else (.cards|length) end' 2>/dev/null || echo 0)"
+  fi
+fi
+# Trailing pickup poison from heartbeats
+hb="${LAST_STACK_HEARTBEATS_PATH:-$HOME/.last-stack/logs/routine-heartbeats.log}"
+pickup_poison=0
+if [ -f "$hb" ]; then
+  last_pick="$(grep -E 'kanban-pickup|fkanban-pickup' "$hb" 2>/dev/null | tail -1 || true)"
+  case "$last_pick" in
+    *stale-last-stack*|*class-a-heal-failed*|*routine-read-failed*|*class-a-heal-timeout*)
+      pickup_poison=1
+      ;;
+  esac
+fi
+if [ "$pickup_poison" -eq 1 ] || { [ "${ready:-0}" -gt 0 ] 2>/dev/null && [ "${doing:-0}" -eq 0 ] 2>/dev/null && [ "$class_a" -eq 1 ]; }; then
+  classes+=("B")
+  detail+=("pickup claim path stuck (ready=$ready doing=$doing poison=$pickup_poison)")
+  actions+=("heal Class A; check routinesd; kanban pickup claim --dry-run")
+fi
+
+# --- Class D: merge≠live smell ---
+# Heuristic: doing cards with PR older than 3h (closeout lag / proof gap)
+if [ "${doing:-0}" -gt 0 ] 2>/dev/null && command -v kanban >/dev/null 2>&1; then
+  # cheap: if factory-health would soft-alert doing_stuck — skip heavy list here
+  classes_has_d=0
+  if [ "$doing" -ge 3 ]; then
+    classes+=("D")
+    detail+=("doing=$doing may include merge≠live / closeout lag")
+    actions+=("last-stack-board-closeout-sweep; feature-prove")
+    classes_has_d=1
+  fi
+fi
+
+# Deduplicate classes while preserving order
+seen=""
+uniq=()
+if [ "${#classes[@]}" -gt 0 ]; then
+  for c in "${classes[@]}"; do
+    case ",$seen," in
+      *",$c,"*) ;;
+      *) uniq+=("$c"); seen="${seen},${c}" ;;
+    esac
+  done
+fi
+classes=("${uniq[@]+"${uniq[@]}"}")
+
+if [ "${#classes[@]}" -eq 0 ]; then
+  classes=("none")
+  if [ "${#detail[@]}" -eq 0 ]; then
+    detail+=("no Class A–E freeze detected; factory may be idle or healthy")
+  fi
+  if [ "${#actions[@]}" -eq 0 ]; then
+    actions+=("kanban pickup lanes; factory-health")
+  fi
+fi
+
+cls_str="$(IFS=+; echo "${classes[*]}")"
+det_str="$(IFS='; '; echo "${detail[*]}")"
+act_str="$(IFS='; '; echo "${actions[*]}")"
+
+# Heartbeat
+if [ -x "$ROOT/bin/last-stack-brain-append-heartbeat" ]; then
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  "$ROOT/bin/last-stack-brain-append-heartbeat" --line \
+    "why-stopped $ts classes=$cls_str detail=$det_str" 2>/dev/null || true
+fi
+
+if [ "$JSON" -eq 1 ]; then
+  # simple JSON
+  printf '{"classes":"%s","detail":"%s","actions":"%s"}\n' \
+    "$cls_str" "$(printf '%s' "$det_str" | tr '"' "'")" "$(printf '%s' "$act_str" | tr '"' "'")"
+else
+  printf 'WHY_STOPPED classes=%s\n' "$cls_str"
+  printf 'detail: %s\n' "$det_str"
+  printf 'actions: %s\n' "$act_str"
+fi
+
+exit 0
