@@ -1,0 +1,12 @@
+# Paused until the nightly canary pipeline terminal proof passes.
+id = "lastdb-canary-dogfood"
+harness = "codex"
+model = "gpt-5.5"
+effort = "medium"
+group = "ops"
+rrule = "FREQ=DAILY;BYHOUR=3;BYMINUTE=17;BYSECOND=0"
+cwd = "/Users/tomtang/code/edgevector"
+status = "paused"
+timeout_min = 90
+prompt_path = "/Users/tomtang/.last-stack/routines/lastdb-canary-dogfood.md"
+heartbeat_slug = "routine-heartbeats"
