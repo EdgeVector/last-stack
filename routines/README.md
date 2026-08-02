@@ -147,6 +147,7 @@ ls ~/.routines/registry/last-stack-fkanban-validate.toml
 | [`pipeline-health`](pipeline-health.md) | every ~10 min | Keep LastGit CRs and forge (fold / forge-hot) PRs unblocked; fix mechanical issues or file Brain papercuts (`papercut-pipeline-*`) — never board P0 monopoly. |
 | [`merge-babysit`](merge-babysit.md) | every ~15 min | Self-heal stuck LastGit CRs, completing green laggards or filing P0 merge cards without turning transient backend outages into fleet-red runs. |
 | [`drain-open-prs`](drain-open-prs.md) | daily | Drive every open PR across all repos toward zero (merge or close). |
+| [`lastdb-canary-soak-watch`](lastdb-canary-soak-watch.md) | paused | Evaluate a dogfooded LastDB canary SHA, mark the canary ledger `soak_green` / `soak_red`, and leave promote-ready evidence without mutating the primary. |
 
 ### B. The kanban / brain driving loop — pairs 1:1 with the skills
 

@@ -17,9 +17,11 @@ while IFS= read -r path; do
   fi
 done <<'EOF'
 setup
+bin/last-stack-canary-pipeline
 bin/last-stack-north-star-completion-check
 bin/last-stack-product-feature-ns-reconcile
 tests/last-stack-command-modes.sh
+tests/last-stack-canary-pipeline.sh
 EOF
 
 if [ "$fail" -ne 0 ]; then
