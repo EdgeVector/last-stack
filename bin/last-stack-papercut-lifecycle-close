@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+"""Close Brain papercuts whose prevention registry entry is proven covered."""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from dataclasses import dataclass
+
+
+@dataclass
+class Entry:
+    slug: str
+    card: str
+
+
+def run(args: list[str], timeout: int = 20) -> tuple[int, str, str]:
+    proc = subprocess.run(
+        args,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+        check=False,
+    )
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def tool(name: str, env_name: str) -> str | None:
+    override = os.environ.get(env_name)
+    if override:
+        return override
+    return shutil.which(name)
+
+
+def parse_entries(registry: str, limit: int) -> list[Entry]:
+    entries: list[Entry] = []
+    current_slug = ""
+    prevention = ""
+    card = ""
+
+    def flush() -> None:
+        nonlocal current_slug, prevention, card
+        if current_slug.startswith("papercut-") and prevention == "COVERED" and card:
+            entries.append(Entry(current_slug, card))
+        current_slug = ""
+        prevention = ""
+        card = ""
+
+    for raw_line in registry.splitlines():
+        line = raw_line.strip()
+        heading = re.match(r"^#{3,}\s+(.+)$", line)
+        if heading:
+            flush()
+            first = heading.group(1).split()[0].strip("`:,")
+            current_slug = first if first.startswith("papercut-") else ""
+            continue
+        papercut = re.match(r"^-\s*Papercut:\s*`?([^`\s]+)`?", line)
+        if papercut:
+            current_slug = papercut.group(1)
+            continue
+        if re.match(r"^-\s*Prevention:\s*COVERED\b", line):
+            prevention = "COVERED"
+            continue
+        card_match = re.match(r"^-\s*Card:\s*`?([^`\s()]+)`?", line)
+        if card_match:
+            card = card_match.group(1)
+            continue
+    flush()
+    return entries[:limit]
+
+
+def emit(payload: dict[str, object], as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(payload, sort_keys=True))
+        return
+    bits = [f"{key}={value}" for key, value in payload.items() if not isinstance(value, list)]
+    print(" ".join(bits))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--limit", type=int, default=200)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--json", action="store_true", dest="as_json")
+    args = parser.parse_args()
+
+    if args.limit < 1:
+        emit({"ok": False, "reason": "invalid_limit", "limit": args.limit}, args.as_json)
+        return 2
+
+    brain = tool("brain", "LAST_STACK_PAPERCUT_LIFECYCLE_BRAIN")
+    kanban = tool("kanban", "LAST_STACK_PAPERCUT_LIFECYCLE_KANBAN")
+    if not brain or not kanban:
+        missing = ",".join(name for name, path in (("brain", brain), ("kanban", kanban)) if not path)
+        emit({"ok": False, "reason": "lifecycle_dependency_missing", "missing": missing}, args.as_json)
+        return 0
+
+    try:
+        code, registry, err = run([brain, "get", "papercut-prevention-registry", "--type", "reference"])
+    except subprocess.TimeoutExpired:
+        emit({"ok": False, "reason": "registry_read_timeout", "fixed": 0}, args.as_json)
+        return 0
+    if code != 0:
+        emit({"ok": False, "reason": "registry_read_failed", "fixed": 0, "stderr": err[:200]}, args.as_json)
+        return 0
+
+    scanned = 0
+    fixed = 0
+    candidates = parse_entries(registry, args.limit)
+    skipped: list[str] = []
+    now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    for entry in candidates:
+        scanned += 1
+        try:
+            code, card_json, _ = run([kanban, "show", entry.card, "--json"])
+        except subprocess.TimeoutExpired:
+            skipped.append(f"{entry.slug}:card_timeout")
+            continue
+        if code != 0:
+            skipped.append(f"{entry.slug}:card_unreadable")
+            continue
+        try:
+            card = json.loads(card_json)
+        except json.JSONDecodeError:
+            skipped.append(f"{entry.slug}:card_bad_json")
+            continue
+        if card.get("column") != "done":
+            skipped.append(f"{entry.slug}:card_not_done")
+            continue
+
+        try:
+            code, record, _ = run([brain, "get", entry.slug, "--type", "reference"])
+        except subprocess.TimeoutExpired:
+            skipped.append(f"{entry.slug}:record_timeout")
+            continue
+        if code != 0:
+            skipped.append(f"{entry.slug}:record_unreadable")
+            continue
+        if "Status: FIXED" in record:
+            skipped.append(f"{entry.slug}:already_fixed")
+            continue
+
+        if args.dry_run:
+            skipped.append(f"{entry.slug}:dry_run")
+            continue
+
+        note = (
+            f"\n\nStatus: FIXED ({now})\n"
+            f"Lifecycle: card:{entry.card} is done and prevention registry is COVERED; "
+            "closed by last-stack-papercut-lifecycle-close.\n"
+        )
+        try:
+            proc = subprocess.run(
+                [brain, "append", entry.slug, "--type", "reference"],
+                input=note,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=20,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            skipped.append(f"{entry.slug}:append_timeout")
+            continue
+        if proc.returncode != 0:
+            skipped.append(f"{entry.slug}:append_failed")
+            continue
+        fixed += 1
+
+    emit(
+        {
+            "ok": True,
+            "scanned": scanned,
+            "candidates": len(candidates),
+            "fixed": fixed,
+            "dry_run": args.dry_run,
+            "skipped": skipped,
+        },
+        args.as_json,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
