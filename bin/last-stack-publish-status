@@ -212,8 +212,6 @@ print(json.dumps({"app_id": "last-stack", "schema": schema}, separators=(",", ":
 PY
 }
 
-SNAPSHOT_FIELDS_CSV="slug,captured_at,version,install_root,install_head,install_head_short,self_upgrade_result,self_upgrade_line,skill_link_status,skill_link_checked,skill_link_detail,schema_version"
-
 declare_schema() {
   last_stack_lastdb_auto_identity >/dev/null
   local body resp canonical
