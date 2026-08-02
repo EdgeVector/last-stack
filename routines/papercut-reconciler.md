@@ -79,6 +79,26 @@ brain get sop-brain-papercut-reconciler --type sop
 If the SOP conflicts with this prompt, the SOP wins (it carries newer project
 decisions).
 
+## Lifecycle close preflight
+Before Step 1, run the bounded lifecycle closer so already-proven papercuts can
+be marked FIXED before clustering:
+
+```bash
+lifecycle_helper="${LAST_STACK_PAPERCUT_LIFECYCLE_HELPER:-last-stack-papercut-lifecycle-close}"
+lifecycle_result=""
+if command -v "$lifecycle_helper" >/dev/null 2>&1; then
+  lifecycle_result="$("$lifecycle_helper" --limit 200 --json 2>&1)" \
+    || lifecycle_result="lifecycle_helper_failed helper=$lifecycle_helper"
+else
+  lifecycle_result="lifecycle_helper_missing helper=$lifecycle_helper"
+fi
+```
+
+Carry any `lifecycle_helper_missing` or `lifecycle_helper_failed` field into the
+final heartbeat and concise report, then continue the normal file-only
+reconciler pass. Do not invoke the helper directly unless `command -v` succeeds;
+the routine must never bury a shell `command not found` in stderr.
+
 ## Automation memory
 If the scheduled prompt includes an `Automation memory:` path (routinesd
 injects one under `## Dispatch envelope`), read and write **that exact file**.

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Mark OPEN papercuts FIXED when referenced review artifacts already merged."""
+"""Close Brain papercuts whose completed review or prevention evidence is covered."""
 
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -34,6 +36,12 @@ class ReviewRef:
     repo: str
     ident: str
     owner: str = ""
+
+
+@dataclass(frozen=True)
+class RegistryEntry:
+    slug: str
+    card: str
 
 
 def run(argv: list[str], *, stdin: str | None = None, timeout: int = 60) -> subprocess.CompletedProcess[str]:
@@ -107,6 +115,130 @@ def as_items(value: Any) -> list[dict[str, Any]]:
     return []
 
 
+def tool(name: str, env_name: str) -> str | None:
+    override = os.environ.get(env_name)
+    if override:
+        return override
+    return shutil.which(name)
+
+
+def parse_registry_entries(registry: str, limit: int) -> list[RegistryEntry]:
+    entries: list[RegistryEntry] = []
+    current_slug = ""
+    prevention = ""
+    card = ""
+
+    def flush() -> None:
+        nonlocal current_slug, prevention, card
+        if current_slug.startswith("papercut-") and prevention == "COVERED" and card:
+            entries.append(RegistryEntry(current_slug, card))
+        current_slug = ""
+        prevention = ""
+        card = ""
+
+    for raw_line in registry.splitlines():
+        line = raw_line.strip()
+        heading = re.match(r"^#{3,}\s+(.+)$", line)
+        if heading:
+            flush()
+            first = heading.group(1).split()[0].strip("`:,")
+            current_slug = first if first.startswith("papercut-") else ""
+            continue
+        papercut = re.match(r"^-\s*Papercut:\s*`?([^`\s]+)`?", line)
+        if papercut:
+            current_slug = papercut.group(1)
+            continue
+        if re.match(r"^-\s*Prevention:\s*COVERED\b", line):
+            prevention = "COVERED"
+            continue
+        card_match = re.match(r"^-\s*Card:\s*`?([^`\s()]+)`?", line)
+        if card_match:
+            card = card_match.group(1)
+            continue
+    flush()
+    return entries[:limit]
+
+
+def try_registry_close(args: argparse.Namespace, iso: str) -> dict[str, Any] | None:
+    brain = tool(args.brain_bin, "LAST_STACK_PAPERCUT_LIFECYCLE_BRAIN")
+    kanban = tool("kanban", "LAST_STACK_PAPERCUT_LIFECYCLE_KANBAN")
+    if not brain or not kanban:
+        missing = ",".join(name for name, path in (("brain", brain), ("kanban", kanban)) if not path)
+        return {"ok": False, "reason": "lifecycle_dependency_missing", "missing": missing, "scanned": 0, "fixed": 0}
+
+    try:
+        registry_proc = run([brain, "get", "papercut-prevention-registry", "--type", "reference"], timeout=args.read_timeout)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "reason": "registry_read_timeout", "scanned": 0, "fixed": 0}
+    if registry_proc.returncode != 0:
+        return None
+
+    entries = parse_registry_entries(registry_proc.stdout, args.limit)
+    if not entries:
+        return None
+
+    scanned = 0
+    fixed = 0
+    skipped: list[str] = []
+    for entry in entries:
+        scanned += 1
+        try:
+            card_proc = run([kanban, "show", entry.card, "--json"], timeout=args.read_timeout)
+        except subprocess.TimeoutExpired:
+            skipped.append(f"{entry.slug}:card_timeout")
+            continue
+        if card_proc.returncode != 0:
+            skipped.append(f"{entry.slug}:card_unreadable")
+            continue
+        try:
+            card = json.loads(card_proc.stdout)
+        except json.JSONDecodeError:
+            skipped.append(f"{entry.slug}:card_bad_json")
+            continue
+        if card.get("column") != "done":
+            skipped.append(f"{entry.slug}:card_not_done")
+            continue
+
+        try:
+            record_proc = run([brain, "get", entry.slug, "--type", "reference"], timeout=args.read_timeout)
+        except subprocess.TimeoutExpired:
+            skipped.append(f"{entry.slug}:record_timeout")
+            continue
+        if record_proc.returncode != 0:
+            skipped.append(f"{entry.slug}:record_unreadable")
+            continue
+        if "Status: FIXED" in record_proc.stdout:
+            skipped.append(f"{entry.slug}:already_fixed")
+            continue
+        if args.dry_run:
+            skipped.append(f"{entry.slug}:dry_run")
+            continue
+
+        note = (
+            f"\n\nStatus: FIXED ({iso})\n"
+            f"Lifecycle: card:{entry.card} is done and prevention registry is COVERED; "
+            "closed by last-stack-papercut-lifecycle-close.\n"
+        )
+        try:
+            append_proc = run([brain, "append", entry.slug, "--type", "reference"], stdin=note, timeout=args.read_timeout)
+        except subprocess.TimeoutExpired:
+            skipped.append(f"{entry.slug}:append_timeout")
+            continue
+        if append_proc.returncode != 0:
+            skipped.append(f"{entry.slug}:append_failed")
+            continue
+        fixed += 1
+
+    return {
+        "ok": True,
+        "scanned": scanned,
+        "candidates": len(entries),
+        "fixed": fixed,
+        "dry_run": args.dry_run,
+        "skipped": skipped,
+    }
+
+
 def load_records(args: argparse.Namespace) -> list[dict[str, Any]]:
     if args.records_json:
         return as_items(json.loads(Path(args.records_json).read_text(encoding="utf-8")))
@@ -172,8 +304,7 @@ def review_refs(body: str) -> list[ReviewRef]:
         if "github.com" in match.group(0):
             continue
         owner, repo, num = match.group(1), match.group(2), match.group(3)
-        url = f"{owner}/{repo}/pulls/{num}"
-        add(ReviewRef("forge", url, repo, num, owner))
+        add(ReviewRef("forge", f"{owner}/{repo}/pulls/{num}", repo, num, owner))
     return refs
 
 
@@ -185,10 +316,7 @@ def merged_status(args: argparse.Namespace, ref: ReviewRef) -> tuple[bool, str]:
         merge_oid = str(cr.get("merge_oid") or cr.get("mergeOid") or "")
         return state == "merged" or bool(merge_oid), f"lastgit:{ref.repo}/{ref.ident}"
     if ref.kind == "forge":
-        data = run_json(
-            [args.forge_api_bin, f"repos/{ref.owner}/{ref.repo}/pulls/{ref.ident}"],
-            timeout=60,
-        )
+        data = run_json([args.forge_api_bin, f"repos/{ref.owner}/{ref.repo}/pulls/{ref.ident}"], timeout=60)
         state = str(data.get("state") or "").lower() if isinstance(data, dict) else ""
         merged = bool(data.get("merged")) if isinstance(data, dict) else False
         return merged or state == "merged", f"forge:{ref.owner}/{ref.repo}#{ref.ident}"
@@ -236,23 +364,8 @@ def close_record(args: argparse.Namespace, record: dict[str, Any], ref: ReviewRe
         print(line)
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("slug", nargs="*", help="specific papercut slugs; default lists recent references")
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--json", action="store_true", dest="json_out")
-    parser.add_argument("--limit", type=int, default=200)
-    parser.add_argument("--read-timeout", type=int, default=20)
-    parser.add_argument("--records-json")
-    parser.add_argument("--brain-bin", default="brain")
-    parser.add_argument("--lastgit-bin", default="lastgit")
-    parser.add_argument("--forge-api-bin", default="last-stack-forge-api")
-    parser.add_argument("--gh-bin", default="gh")
-    parser.add_argument("--ledger-slug", default="papercut-reconciler-ledger")
-    args = parser.parse_args()
-
-    iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    result = {"checked": 0, "fixed": [], "skipped": [], "errors": []}
+def close_review_records(args: argparse.Namespace, iso: str) -> dict[str, Any]:
+    result: dict[str, Any] = {"ok": True, "checked": 0, "fixed": [], "skipped": [], "errors": []}
     for record in load_records(args):
         slug = str(record.get("slug") or "")
         if not slug.startswith("papercut-"):
@@ -270,7 +383,7 @@ def main() -> int:
         for ref in refs:
             try:
                 merged, detail = merged_status(args, ref)
-            except Exception as exc:  # keep one bad venue read from blocking all candidates
+            except Exception as exc:
                 result["errors"].append({"slug": slug, "ref": ref.url, "error": str(exc)})
                 continue
             if merged:
@@ -280,15 +393,48 @@ def main() -> int:
                 break
         if not fixed:
             result["skipped"].append({"slug": slug, "reason": "review-not-merged"})
+    return result
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("slug", nargs="*", help="specific papercut slugs; default lists recent references")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--json", action="store_true", dest="json_out")
+    parser.add_argument("--limit", type=int, default=200)
+    parser.add_argument("--read-timeout", type=int, default=20)
+    parser.add_argument("--records-json")
+    parser.add_argument("--brain-bin", default="brain")
+    parser.add_argument("--lastgit-bin", default="lastgit")
+    parser.add_argument("--forge-api-bin", default="last-stack-forge-api")
+    parser.add_argument("--gh-bin", default="gh")
+    parser.add_argument("--ledger-slug", default="papercut-reconciler-ledger")
+    args = parser.parse_args()
+
+    if args.limit < 1:
+        payload = {"ok": False, "reason": "invalid_limit", "limit": args.limit}
+        print(json.dumps(payload, sort_keys=True) if args.json_out else "ok=False reason=invalid_limit")
+        return 2
+
+    iso = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    result = None if args.slug or args.records_json else try_registry_close(args, iso)
+    if result is None:
+        result = close_review_records(args, iso)
+
     if args.json_out:
-        print(json.dumps(result, indent=2, sort_keys=True))
+        print(json.dumps(result, sort_keys=True))
     else:
+        fixed = result.get("fixed", [])
+        fixed_count = fixed if isinstance(fixed, int) else len(fixed)
+        checked = result.get("checked", result.get("scanned", 0))
+        skipped = result.get("skipped", [])
         print(
             "papercut-lifecycle-close "
-            f"checked={result['checked']} fixed={len(result['fixed'])} "
-            f"skipped={len(result['skipped'])} errors={len(result['errors'])}"
+            f"checked={checked} fixed={fixed_count} "
+            f"skipped={len(skipped) if isinstance(skipped, list) else 0} "
+            f"errors={len(result.get('errors', [])) if isinstance(result.get('errors', []), list) else 0}"
         )
-    return 1 if result["errors"] and not result["fixed"] else 0
+    return 1 if result.get("errors") and not result.get("fixed") else 0
 
 
 if __name__ == "__main__":
