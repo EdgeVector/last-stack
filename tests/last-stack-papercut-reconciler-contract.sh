@@ -37,6 +37,16 @@ cat >"$fake_bin/brain" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 case "$*" in
+  "get papercut-prevention-registry --type reference")
+    cat <<'EOF'
+### papercut-demo-helper-drift
+- Prevention: COVERED
+- Card: `demo-card`
+EOF
+    ;;
+  "get papercut-demo-helper-drift --type reference")
+    printf 'Status: RECONCILED\n'
+    ;;
   "append papercut-demo-helper-drift --type reference")
     cat >>"$TEST_APPEND_LOG"
     ;;
@@ -49,13 +59,19 @@ case "$*" in
     ;;
 esac
 SH
+cat >"$fake_bin/kanban" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$*" = "show demo-card --json" ] || { echo "unexpected kanban args: $*" >&2; exit 2; }
+printf '{"column":"done"}\n'
+SH
 cat >"$fake_bin/lastgit" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 [ "$*" = "cr view last-stack cr-demo --json" ] || { echo "unexpected lastgit args: $*" >&2; exit 2; }
 printf '{"state":"merged","merge_oid":"abc123"}\n'
 SH
-chmod +x "$fake_bin/brain" "$fake_bin/lastgit"
+chmod +x "$fake_bin/brain" "$fake_bin/kanban" "$fake_bin/lastgit"
 
 export TEST_APPEND_LOG="$tmp/appends.log"
 export TEST_LEDGER_LOG="$tmp/ledger.log"
@@ -64,6 +80,11 @@ out="$(PATH="/usr/bin:/bin" "$helper" --records-json "$records" --brain-bin "$fa
 printf '%s\n' "$out" | jq -e '.checked == 1 and (.fixed | length) == 1 and (.errors | length) == 0' >/dev/null
 grep -q 'Status: FIXED' "$TEST_APPEND_LOG"
 grep -q 'papercut-demo-helper-drift' "$TEST_LEDGER_LOG"
+
+: >"$TEST_APPEND_LOG"
+registry_out="$(LAST_STACK_PAPERCUT_LIFECYCLE_KANBAN="$fake_bin/kanban" PATH="/usr/bin:/bin" "$helper" --brain-bin "$fake_bin/brain" --limit 5 --json)"
+printf '%s\n' "$registry_out" | jq -e '.ok == true and .fixed == 1 and .scanned == 1' >/dev/null
+grep -q 'Status: FIXED' "$TEST_APPEND_LOG"
 
 missing_out="$(
   PATH="/usr/bin:/bin" bash -c '
