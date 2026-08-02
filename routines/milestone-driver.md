@@ -29,10 +29,13 @@ is `kanban-validate`. Never invent architecture when decomposition is unclear.
 - Never implement product code, open or merge a PR/CR, spawn another agent, or
   run a card agent.
 - Never put a milestone into a board column or treat it as pickup work.
-- Never weaken or force terminal proof. Complete only with:
-  `kanban milestone state <slug> complete --proof-status passing --json`
-  when the report (or detail) shows proof PASS evidence and the CLI accepts it.
-  The CLI rejects this transition unless the proof contract passes.
+- Never invent hollow terminal proof. Complete with either:
+  - `kanban milestone state <slug> complete --proof-status passing --json`
+    when a real harness/report shows PASS and the CLI accepts it, or
+  - `kanban milestone state <slug> complete --proof-status not_required --json`
+    when all linked `Kind: pr` work is done and no executable proof exists
+    (preferred over minting empty `Kind: validation` shells).
+  Never force `passing` without evidence.
 - **SAFETY_CAP=8** new or promoted `Kind: pr` cards **total** this run.
   Create at most **one Kanban card** per run. **SUPERSEDED:** multiple cards
   allowed up to SAFETY_CAP when gap-report says so.
@@ -148,10 +151,31 @@ groom rather than guessing.
 For each `work_queue` item with `action=decompose`, until SAFETY_CAP:
 
 1. `kanban milestone detail <slug> --json` + `kanban milestone reconcile <slug> --json`
-2. If the milestone has no `proof_card`, create validation proof in **backlog**
-   (deterministic slug, DONE-WHEN, tags
-   `feature-proof,terminal-verification,milestone-proof`, no `feature-owner`),
-   then update with `--proof-card <proof-slug> --proof-status pending`.
+2. **Do not mint empty proof cards.** Hollow `Kind: validation` shells with a
+   generic DONE-WHEN (or no runnable harness) are forbidden — they clutter
+   backlog, bounce through `needs_human`, and get reaped/recreated without
+   proving anything.
+   - If the milestone already has a live `proof_card`, leave it alone.
+   - If it has **no** `proof_card`, set proof to **not required** (do not invent
+     a validation card):
+     ```bash
+     kanban milestone add <slug> --proof-status not_required --json
+     ```
+     (Only updates proof fields; do not rewrite outcome body.)
+   - **Only** attach/create a `Kind: validation` proof when **all** of these hold:
+     1. A concrete executable check already exists today (registered
+        `last-stack-north-star-proof` harness for the North Star, or an explicit
+        command in the milestone Outcome that can pass/fail without inventing
+        a new harness on this card), and
+     2. `DONE-WHEN` is machine-checkable now (e.g. an existing proof report path
+        or a command whose exit status is the gate), and
+     3. Implementation PRs for this milestone are already done or this pass is
+        *only* wiring proof after a green impl frontier — not "prove someday."
+     Then file **one** validation card in **backlog** (never default `todo`),
+     link with `--proof-card <slug> --proof-status pending`, tags
+     `feature-proof,terminal-verification,milestone-proof` only.
+   - Prefer completing with `proof_status=not_required` when all linked
+     `Kind: pr` cards are `done` and no harness exists, over inventing theater.
 3. From the milestone **Outcome / Acceptance** body (and North Star end state if
    needed), list the **next-gate** PR slices required to make the milestone
    objectively reachable. Prefer multiple small PRs over one epic.
@@ -162,7 +186,8 @@ For each `work_queue` item with `action=decompose`, until SAFETY_CAP:
 5. Each card: full `## GOAL` / `## END STATE` / STEPS / VERIFY / Repo / Base /
    Kind: pr / `--milestone` / `--north-star`.
 6. If you cannot name a concrete next slice without inventing product design:
-   **stop** for that milestone with `needs-decomposition` — do not spam shells.
+   **stop** for that milestone with `needs-decomposition` — do not spam shells
+   (PR or validation).
 
 ### complete_proof
 
@@ -173,7 +198,15 @@ impl done):
 kanban milestone state <slug> complete --proof-status passing --json
 ```
 
-Re-read detail; require `state=complete` and `proof_status=passing`.
+When all linked `Kind: pr` work is done and proof is **not_required** (no
+harness):
+
+```bash
+kanban milestone state <slug> complete --proof-status not_required --json
+```
+
+Re-read detail; require `state=complete` and `proof_status` matching the path
+used (`passing` or `not_required`).
 
 ### Reconciliation note
 

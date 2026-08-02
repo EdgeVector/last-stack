@@ -283,29 +283,35 @@ you would have promoted is papercut while a driving feature exists.
      when the section is clearly closed. Heartbeat `completed=<ns-slug>`.
    - **`terminal_missing` / `definition_incomplete`**: if the NS has a concrete
      end state, **file ONE** terminal card per
-     [[sop-north-star-terminal-verification]], set `north_star` on the card,
-     and append `## Terminal verification` + `**Card:** \`<slug>\`` on the NS
-     body (edit in place; do not regenerate the whole NS). Prefer a pickup-ready
-     `Kind: pr` harness in default `todo`; if the terminal must be
-     `Kind: validation` + `DONE-WHEN`, file or upsert it with `--column backlog`
-     and never preserve/reapply `todo`; park it outside default `todo` so pickup
-     does not see a non-PR blocker. One new terminal card per incomplete NS per
-     run max.
+     [[sop-north-star-terminal-verification]] **only when a runnable check
+     exists today** — prefer a pickup-ready `Kind: pr` harness in default
+     `todo` whose VERIFY implements the proof (or calls a registered
+     `last-stack-north-star-proof` harness). Set `north_star` on the card and
+     append `## Terminal verification` + `**Card:** \`<slug>\`` on the NS body
+     (edit in place; do not regenerate the whole NS).
+     **Do not mint hollow `Kind: validation` shells** with a generic DONE-WHEN
+     and no harness — those clutter backlog, get `needs_human`, and never
+     prove product outcomes. If no harness/command exists yet, either file a
+     `Kind: pr` that *builds* the harness, or leave the NS incomplete without
+     a theater card. One new terminal card per incomplete NS per run max.
    - **`board_drained_ns_open`**: do not invent unrelated papercuts; promote or
-     file only terminal `Kind: pr` harness work for that NS. Park non-PR
-     terminal proof cards outside default `todo`.
+     file only terminal `Kind: pr` harness work for that NS. Do not re-seed
+     empty validation proof cards. Park any legacy non-PR terminal proof cards
+     outside default `todo`.
    - Prefer generating thin-queue work for the **most-behind incomplete** NS
      (highest live pressure or missing terminal), never for `done`/`archived`.
 
    Standing rule: no `Kind: tracker` / umbrella as terminal proof; no date-only
-   `DONE-WHEN` as NS completion. Design: [[design-north-star-completion-contract]].
+   `DONE-WHEN` as NS completion; no empty validation mint. Design:
+   [[design-north-star-completion-contract]].
 
-   **Product-grade proof harnesses:** prefer terminal cards whose VERIFY is
-   `last-stack-north-star-proof <north-star-slug>` (offline default; live via
-   `NORTH_STAR_PROOF_MODE=live`). Reports land in
+   **Product-grade proof harnesses (when they exist):** prefer terminal cards
+   whose VERIFY is `last-stack-north-star-proof <north-star-slug>` (offline
+   default; live via `NORTH_STAR_PROOF_MODE=live`). Reports land in
    `~/.last-stack/north-star-proofs/<slug>.md` with first line `PASS` /
    `PASS-OFFLINE` / `FAIL`. DONE-WHEN:
    `file $HOME/.last-stack/north-star-proofs/<slug>.md matches /^PASS/`.
+   Only file such a card when that harness is already registered for the NS.
 
 ## Guardrails
 - NEVER kill or restart the process hosting your brain/board node.
