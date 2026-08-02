@@ -36,6 +36,7 @@ is `kanban-validate`. Never invent architecture when decomposition is unclear.
     when all linked `Kind: pr` work is done and no executable proof exists
     (preferred over minting empty `Kind: validation` shells).
   Never force `passing` without evidence.
+  The CLI rejects this transition unless the proof contract passes.
 - **SAFETY_CAP=8** new or promoted `Kind: pr` cards **total** this run.
   Create at most **one Kanban card** per run. **SUPERSEDED:** multiple cards
   allowed up to SAFETY_CAP when gap-report says so.
@@ -216,8 +217,8 @@ used (`passing` or `not_required`).
 
 `kanban milestone reconcile <slug> --json` is a **read-only lifecycle report**.
 Use it when decomposing or completing; state changes use explicit milestone
-commands only. The CLI rejects proof transitions unless the proof contract
-passes.
+commands only.
+The CLI rejects this transition unless the proof contract passes.
 
 ## Finish
 
