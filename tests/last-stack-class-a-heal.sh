@@ -294,4 +294,65 @@ jq -e '
 ' "$apps_json" >/dev/null \
   || fail "last-stack host-track links must include class-a-heal + routine-read"
 
+# --- 10) healthy / soft-stale preclaim path is fast (p95 target < 2s) ---
+# Restore known-good current + fake host-track (earlier cases may repoint current).
+ln -sfn "versions/good" "$tmp/artifacts/current"
+ln -sfn "$tmp/bin/host-track" "$HOME/.local/bin/host-track"
+printf 'healthy\n' >"$FAKE_HT_STATE"
+rm -f "$HOME/.last-stack/state/class-a-heal.last-ok"
+: >"$FAKE_HT_LOG"
+t0=$(date +%s)
+set +e
+out10="$("$HOME/.last-stack/bin/last-stack-class-a-heal" --reason=timing --json 2>/dev/null)"
+rc10=$?
+set -e
+t1=$(date +%s)
+elapsed=$((t1 - t0))
+[ "$rc10" -eq 0 ] || fail "timing heal exit 0; rc=$rc10 out=$out10"
+[ "$elapsed" -le 2 ] || fail "healthy preclaim took ${elapsed}s (want ≤2s)"
+# Soft-stale path
+printf 'stale\n' >"$FAKE_HT_STATE"
+rm -f "$HOME/.last-stack/state/class-a-heal.last-ok"
+: >"$FAKE_HT_LOG"
+# Keep fake host-track (not artifact stub) for status.stale=true
+ln -sfn "$tmp/bin/host-track" "$HOME/.local/bin/host-track"
+t0=$(date +%s)
+set +e
+out10b="$("$HOME/.last-stack/bin/last-stack-class-a-heal" --reason=timing-soft --json 2>/dev/null)"
+rc10b=$?
+set -e
+t1=$(date +%s)
+elapsed=$((t1 - t0))
+[ "$rc10b" -eq 0 ] || fail "soft-stale timing exit 0; rc=$rc10b out=$out10b"
+[ "$elapsed" -le 2 ] || fail "soft-stale preclaim took ${elapsed}s (want ≤2s)"
+printf '%s\n' "$out10b" | grep -qE 'soft-stale|oob-refresh' \
+  || fail "soft-stale timing should signal soft-stale/oob: $out10b"
+
+# --- 11) hard-broken: no soft-stale-skip; heal attempts refresh ---
+ln -sfn "versions/gone" "$tmp/artifacts/current"
+printf 'stale\n' >"$FAKE_HT_STATE"
+rm -f "$HOME/.last-stack/state/class-a-heal.last-ok"
+: >"$FAKE_HT_LOG"
+export FAKE_HT_REFRESH_FAIL=1
+set +e
+out11="$("$HOME/.last-stack/bin/last-stack-class-a-heal" --reason=hard-broken --json 2>"$tmp/err11")"
+rc11=$?
+set -e
+[ "$rc11" -eq 1 ] || fail "hard-broken+fail refresh should exit 1; rc=$rc11 out=$out11"
+printf '%s\n' "$out11" | grep -qE 'hard-broken|still-unhealthy|error' \
+  || fail "expected hard-broken/error: $out11"
+printf '%s\n' "$out11" | grep -q 'soft-stale-skip-refresh' \
+  && fail "hard-broken must not soft-stale-skip: $out11" || true
+unset FAKE_HT_REFRESH_FAIL
+ln -sfn "versions/good" "$tmp/artifacts/current"
+
+# --- 12) pickup prompt continues same-fire after heal success (contract) ---
+grep -q 'CONTINUE claim' "$ROOT/routines/kanban-pickup.md" \
+  || fail "kanban-pickup.md must document same-fire CONTINUE after Class A heal"
+grep -q 'hard-broken' "$ROOT/routines/kanban-pickup.md" \
+  || fail "kanban-pickup.md must mention hard-broken gate"
+# Preclaim bound ≤20s (not multi-minute refresh)
+grep -Eq 'timeout -k 3s 20s|gtimeout -k 3s 20s' "$ROOT/routines/kanban-pickup.md" \
+  || fail "preclaim Class A timeout must be 20s-bound"
+
 printf 'ok: last-stack-class-a-heal fixtures passed\n'

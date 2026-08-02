@@ -306,14 +306,19 @@ back to `todo` (or `pending_rollback=` in memory) per transport rules below.
   `last-stack-routine-read`'s auto-upgrade before prompt load. After CLI
   preflight and before any board claim, run:
   ```bash
-  # Class A self-heal first (zero-LLM). Bound wall clock so heal never eats the
-  # whole pickup budget (class-a-heal-timeout flake). On timeout, re-check:
-  # if install is healthy (cache/fast path), CONTINUE to claim.
+  # Class A pre-claim (zero-LLM). Healthy / soft-stale p95 target < 2s.
+  # Hard-broken: heal once (single-flight); on success CONTINUE same fire.
+  # Soft-stale: claim allowed; slow refresh is background-only (LaunchAgent +
+  # class-a-heal oob). Bound wall clock so heal never eats the whole budget.
   if [ -x "$last_stack/bin/last-stack-class-a-heal" ]; then
     _heal_bin="$last_stack/bin/last-stack-class-a-heal"
+    # Prefer tools from artifact current/bin realpath (not ad-hoc checkouts).
+    if [ -x "$last_stack/bin/last-stack-class-a-heal" ]; then
+      _heal_bin="$(cd "$(dirname "$last_stack/bin/last-stack-class-a-heal")" && pwd -P)/last-stack-class-a-heal"
+    fi
     _to=""
-    command -v gtimeout >/dev/null 2>&1 && _to="gtimeout -k 5s 45s"
-    command -v timeout >/dev/null 2>&1 && _to="timeout -k 5s 45s"
+    command -v gtimeout >/dev/null 2>&1 && _to="gtimeout -k 3s 20s"
+    command -v timeout >/dev/null 2>&1 && _to="timeout -k 3s 20s"
     set +e
     if [ -n "$_to" ]; then
       $_to "$_heal_bin" --reason=kanban-pickup-prompt-freshness
@@ -324,9 +329,9 @@ back to `todo` (or `pending_rollback=` in memory) per transport rules below.
     fi
     set -e
     if [ "${_hc:-0}" -eq 124 ] || [ "${_hc:-0}" -eq 137 ]; then
-      # Timed out — try a quiet re-check; healthy → continue claim.
+      # Timed out — quiet re-check; soft-stale/fresh → CONTINUE claim same fire.
       if "$_heal_bin" --reason=kanban-pickup-after-timeout --quiet; then
-        : # install ok despite timeout — proceed
+        : # install ok despite timeout — proceed (same-fire continuation)
       else
         stale_detail="stale-last-stack-install class-a-heal-timeout no_card_claimed"
         "$last_stack/bin/last-stack-brain-append-heartbeat" --line "kanban-pickup $(date -u +%Y-%m-%dT%H:%M:%SZ) noop $stale_detail" || true
@@ -334,47 +339,40 @@ back to `todo` (or `pending_rollback=` in memory) per transport rules below.
         exit 0
       fi
     elif [ "${_hc:-0}" -ne 0 ]; then
+      # Hard-broken and heal failed — do NOT claim.
       stale_detail="stale-last-stack-install class-a-heal-failed no_card_claimed"
       "$last_stack/bin/last-stack-brain-append-heartbeat" --line "kanban-pickup $(date -u +%Y-%m-%dT%H:%M:%SZ) noop $stale_detail" || true
       printf '%s %s\n' 'ROUTINE_RESULT' "outcome=noop detail=$stale_detail"
       exit 0
     fi
+    # exit 0: fresh, soft-stale-ok, or hard-broken just healed → CONTINUE claim.
   else
+    # No class-a-heal binary: soft-stale must not sync-refresh under short budget.
+    # Only block when current is unusable; otherwise continue and let LaunchAgent refresh.
     artifact_status="$(host-track status --json last-stack 2>/dev/null || true)"
     if [ "$(printf '%s\n' "$artifact_status" | jq -r '.install_mode // ""' 2>/dev/null)" = "artifact" ]; then
-      if [ "$(printf '%s\n' "$artifact_status" | jq -r '.stale | tostring' 2>/dev/null)" = "true" ]; then
-        if host-track refresh --force-if-stale last-stack >/tmp/last-stack-pickup-artifact-refresh.$$ 2>&1 \
-           || host-track refresh --force last-stack >/tmp/last-stack-pickup-artifact-refresh.$$ 2>&1; then
-          stale_detail="stale-last-stack-artifact refreshed-before-claim no_card_claimed"
-        else
-          stale_detail="stale-last-stack-artifact refresh-failed no_card_claimed"
-        fi
-        rm -f /tmp/last-stack-pickup-artifact-refresh.$$
+      _fresh="$(printf '%s\n' "$artifact_status" | jq -r '.freshness // empty' 2>/dev/null)"
+      if [ "$_fresh" = "hard_broken" ]; then
+        stale_detail="stale-last-stack-artifact hard-broken no_card_claimed"
         "$last_stack/bin/last-stack-brain-append-heartbeat" --line "kanban-pickup $(date -u +%Y-%m-%dT%H:%M:%SZ) noop $stale_detail" || true
         printf '%s %s\n' 'ROUTINE_RESULT' "outcome=noop detail=$stale_detail"
         exit 0
       fi
+      # soft_stale / fresh / null → continue claim (no sync force-refresh)
     elif [ -x "$last_stack/bin/last-stack-self-upgrade" ]; then
       upgrade_check="$("$last_stack/bin/last-stack-self-upgrade" --check-only --reason=kanban-pickup-prompt-freshness 2>&1 || true)"
       case "$upgrade_check" in
         *"result=would-upgrade"*)
-          if "$last_stack/bin/last-stack-self-upgrade" --reason=kanban-pickup-prompt-freshness >/tmp/last-stack-pickup-self-upgrade.$$ 2>&1; then
-            stale_detail="stale-last-stack-install upgraded-before-claim no_card_claimed"
-          else
-            stale_detail="stale-last-stack-install upgrade-failed no_card_claimed"
-          fi
-          rm -f /tmp/last-stack-pickup-self-upgrade.$$
-          "$last_stack/bin/last-stack-brain-append-heartbeat" --line "kanban-pickup $(date -u +%Y-%m-%dT%H:%M:%SZ) noop $stale_detail" || true
-          printf '%s %s\n' 'ROUTINE_RESULT' "outcome=noop detail=$stale_detail"
-          exit 0
+          # Request upgrade but do not block claim when install is still readable.
+          ( nohup "$last_stack/bin/last-stack-self-upgrade" --reason=kanban-pickup-oob >/dev/null 2>&1 & ) 2>/dev/null || true
           ;;
       esac
     fi
   fi
   ```
-  If Class A heal fails, still do not claim a card from a bad install:
-  heartbeat `noop stale-last-stack-install class-a-heal-failed no_card_claimed` and
-  exit. The next scheduled fire retries after the out-of-band refresh catches up.
+  If Class A heal fails (hard-broken), do not claim: heartbeat
+  `noop stale-last-stack-install class-a-heal-failed no_card_claimed` and exit.
+  Soft-stale and healed-success **continue the same fire** into claim.
 - Follow the **kanban-agent** skill, **WORK mode**, yourself — that skill is the
   source of truth for the per-card lifecycle. This prompt is selection + the
   no-spawn execution contract. If the active Codex skill registry does not
