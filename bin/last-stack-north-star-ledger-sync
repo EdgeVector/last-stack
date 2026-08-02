@@ -1,0 +1,668 @@
+#!/usr/bin/env python3
+"""Mechanical North Star ledger sync (no LLM).
+
+Reconciles Brain North Star `MILESTONE_REQUEST` markers and terminal-proof
+shells with live F-Kanban milestone + card state so the factory can run:
+
+  NS (pending requests) → north-star-driver → milestones
+  → milestone-driver → cards → pickup → PRs → terminal proof → NS done
+
+What this does (apply mode):
+  1. Flip MILESTONE_REQUEST status=pending → done|abandoned when the named
+     kanban milestone is complete|abandoned (in-body rewrite + audit append).
+  2. Create a missing Kind:validation terminal proof shell when
+     ## Terminal verification names a card that is not on the board.
+  3. When Mode:ship, all requests are terminal, no nonterminal milestones under
+     the NS, and the named terminal card is done → set brain project
+     status: done.
+
+Never invents new product milestones from thin air. Never ships code.
+Default is dry-run (report only).
+
+See: design-north-star-completion-contract, sop-north-star-terminal-verification.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+REQUEST_HEADER_RE = re.compile(
+    r"(?im)^##[ \t]+MILESTONE_REQUEST\s*$"
+)
+REQUEST_SLUG_RE = re.compile(r"(?im)^slug\s*=\s*([a-z0-9][a-z0-9._-]*)\s*$")
+REQUEST_STATUS_RE = re.compile(r"(?im)^status\s*=\s*(\w+)\s*$")
+MODE_RE = re.compile(r"(?im)^\*{0,2}Mode:\*{0,2}\s*(ship|steady)\b")
+STATUS_FRONT_RE = re.compile(r"(?im)^status:\s*(\S+)\s*$")
+TERMINAL_SECTION_RE = re.compile(
+    r"^##[ \t]+Terminal verification\b[^\n]*\n(.*?)(?=^##[ \t]|\Z)",
+    re.IGNORECASE | re.MULTILINE | re.DOTALL,
+)
+TERMINAL_CARD_LINE_RE = re.compile(
+    r"(?im)^\s*(?:[-*]\s*)?(?:\*\*)?(?:Card|Terminal card|Capstone(?: card)?)(?:\*\*)?\s*:\s*`?([a-z0-9][a-z0-9._-]*)`?"
+)
+BACKTICK_SLUG_RE = re.compile(r"`([a-z0-9][a-z0-9._-]{2,})`")
+
+NONTERMINAL_MS = {"planned", "active", "blocked", "proving"}
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def run_cmd(
+    args: list[str],
+    *,
+    timeout: float = 60.0,
+    input_text: Optional[str] = None,
+    check: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        args,
+        input=input_text,
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+        check=check,
+    )
+
+
+def brain_get_project(slug: str) -> Optional[str]:
+    """Return full brain get text for a project, or None."""
+    cp = run_cmd(["brain", "get", slug, "--type", "project"], timeout=90)
+    if cp.returncode != 0:
+        return None
+    return cp.stdout
+
+
+def brain_list_projects(limit: int = 100) -> list[dict[str, Any]]:
+    cp = run_cmd(
+        ["brain", "list", "--type", "project", "--limit", str(limit), "--json"],
+        timeout=90,
+    )
+    if cp.returncode != 0 or not cp.stdout.strip():
+        return []
+    try:
+        data = json.loads(cp.stdout)
+    except json.JSONDecodeError:
+        return []
+    if isinstance(data, list):
+        return [x for x in data if isinstance(x, dict)]
+    if isinstance(data, dict):
+        for k in ("items", "records", "projects"):
+            if isinstance(data.get(k), list):
+                return [x for x in data[k] if isinstance(x, dict)]
+    return []
+
+
+def brain_put_project(slug: str, title: str, body: str, status: str, tags: list[str]) -> bool:
+    """Full put of a project record (frontmatter + body)."""
+    tag_line = ", ".join(tags) if tags else ""
+    fm = [
+        "---",
+        "type: project",
+        f"slug: {slug}",
+        f"title: {title}",
+        f"status: {status}",
+    ]
+    if tag_line:
+        fm.append(f"tags: {tag_line}")
+    fm.append("---")
+    fm.append("")
+    payload = "\n".join(fm) + body.lstrip("\n")
+    if not payload.endswith("\n"):
+        payload += "\n"
+    cp = run_cmd(["brain", "put"], input_text=payload, timeout=120)
+    return cp.returncode == 0
+
+
+def brain_append_project(slug: str, chunk: str) -> bool:
+    cp = run_cmd(
+        ["brain", "append", slug, "--type", "project"],
+        input_text=chunk if chunk.endswith("\n") else chunk + "\n",
+        timeout=120,
+    )
+    return cp.returncode == 0
+
+
+def kanban_milestone_show(slug: str) -> Optional[dict[str, Any]]:
+    cp = run_cmd(["kanban", "milestone", "show", slug, "--json"], timeout=60)
+    if cp.returncode != 0 or not cp.stdout.strip():
+        return None
+    try:
+        data = json.loads(cp.stdout)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def kanban_show_card(slug: str) -> Optional[dict[str, Any]]:
+    cp = run_cmd(["kanban", "show", slug, "--json"], timeout=60)
+    if cp.returncode != 0 or not cp.stdout.strip():
+        return None
+    try:
+        data = json.loads(cp.stdout)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def kanban_milestone_portfolio() -> list[dict[str, Any]]:
+    cp = run_cmd(["kanban", "milestone", "portfolio", "--json"], timeout=90)
+    if cp.returncode != 0 or not cp.stdout.strip():
+        return []
+    try:
+        data = json.loads(cp.stdout)
+    except json.JSONDecodeError:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def parse_terminal_card(body: str) -> str:
+    if not body:
+        return ""
+    m = TERMINAL_SECTION_RE.search(body)
+    if not m:
+        return ""
+    section = m.group(1) or ""
+    m2 = TERMINAL_CARD_LINE_RE.search(section)
+    if m2:
+        return m2.group(1).strip()
+    for hit in BACKTICK_SLUG_RE.findall(section):
+        if "-" in hit and not hit.startswith("north-star"):
+            return hit
+    return ""
+
+
+def parse_mode(body: str) -> str:
+    m = MODE_RE.search(body or "")
+    return (m.group(1).lower() if m else "ship")
+
+
+def split_get_output(raw: str) -> tuple[dict[str, str], str]:
+    """Parse `brain get` text into meta fields + body.
+
+    Live CLI shape::
+
+        [project] slug
+        title:      ...
+        status:     in_progress
+        tags:       a, b
+        ...
+        ---
+
+        # body
+    """
+    text = raw or ""
+    meta: dict[str, str] = {}
+    # Optional leading [type] slug line
+    if text.startswith("["):
+        first_nl = text.find("\n")
+        if first_nl >= 0:
+            head = text[1:first_nl]
+            if "]" in head:
+                typ, _, rest = head.partition("]")
+                meta["type"] = typ.strip()
+                slug_guess = rest.strip()
+                if slug_guess:
+                    meta["slug"] = slug_guess
+            text = text[first_nl + 1 :]
+    # Meta until standalone ---
+    if "\n---\n" in text:
+        meta_blob, body = text.split("\n---\n", 1)
+    elif text.startswith("---\n"):
+        # YAML frontmatter form
+        rest = text[4:]
+        end = rest.find("\n---\n")
+        if end >= 0:
+            meta_blob, body = rest[:end], rest[end + 5 :]
+        else:
+            meta_blob, body = rest, ""
+    else:
+        meta_blob, body = text, ""
+    for line in meta_blob.splitlines():
+        if ":" not in line:
+            continue
+        k, v = line.split(":", 1)
+        meta[k.strip().lower()] = v.strip()
+    return meta, body.lstrip("\n")
+
+
+@dataclass
+class MilestoneRequest:
+    slug: str
+    status: str
+    start: int
+    end: int
+    status_span: tuple[int, int]  # absolute indices of status value in body
+
+
+def parse_milestone_requests(body: str) -> list[MilestoneRequest]:
+    out: list[MilestoneRequest] = []
+    headers = list(REQUEST_HEADER_RE.finditer(body))
+    for i, h in enumerate(headers):
+        start = h.start()
+        end = headers[i + 1].start() if i + 1 < len(headers) else len(body)
+        block = body[start:end]
+        sm = REQUEST_SLUG_RE.search(block)
+        if not sm:
+            continue
+        st = REQUEST_STATUS_RE.search(block)
+        status = st.group(1).lower() if st else "pending"
+        if st:
+            # map status value span into absolute body indices
+            abs_start = start + st.start(1)
+            abs_end = start + st.end(1)
+            status_span = (abs_start, abs_end)
+        else:
+            status_span = (-1, -1)
+        out.append(
+            MilestoneRequest(
+                slug=sm.group(1).strip(),
+                status=status,
+                start=start,
+                end=end,
+                status_span=status_span,
+            )
+        )
+    return out
+
+
+def rewrite_request_statuses(
+    body: str, updates: dict[str, str]
+) -> tuple[str, list[str]]:
+    """Rewrite status= values for request slugs. updates: slug -> new_status."""
+    reqs = parse_milestone_requests(body)
+    # apply from end so indices stay valid
+    actions: list[str] = []
+    new_body = body
+    for req in sorted(reqs, key=lambda r: r.status_span[0], reverse=True):
+        if req.slug not in updates:
+            continue
+        new_status = updates[req.slug]
+        if req.status == new_status:
+            continue
+        a, b = req.status_span
+        if a < 0:
+            continue
+        new_body = new_body[:a] + new_status + new_body[b:]
+        actions.append(f"{req.slug}:{req.status}->{new_status}")
+    return new_body, actions
+
+
+@dataclass
+class NsPlan:
+    slug: str
+    title: str
+    status: str
+    mode: str
+    terminal_slug: str
+    request_updates: dict[str, str] = field(default_factory=dict)
+    create_terminal: bool = False
+    mark_ns_done: bool = False
+    notes: list[str] = field(default_factory=list)
+
+
+def plan_ns(
+    slug: str,
+    raw_get: str,
+    milestones_by_slug: dict[str, dict[str, Any]],
+    milestones_by_ns: dict[str, list[dict[str, Any]]],
+) -> NsPlan:
+    meta, body = split_get_output(raw_get)
+    title = meta.get("title") or slug
+    status = (meta.get("status") or "in_progress").lower()
+    mode = parse_mode(body)
+    terminal = parse_terminal_card(body)
+    plan = NsPlan(
+        slug=slug,
+        title=title,
+        status=status,
+        mode=mode,
+        terminal_slug=terminal,
+    )
+
+    if status in {"done", "archived", "completed", "retired"}:
+        plan.notes.append("ns_already_closed")
+        return plan
+
+    reqs = parse_milestone_requests(body)
+    for req in reqs:
+        if req.status not in {"pending", "active", "open"}:
+            continue
+        ms = milestones_by_slug.get(req.slug)
+        if not ms:
+            plan.notes.append(f"request_pending_no_milestone:{req.slug}")
+            continue
+        state = str(ms.get("state") or "").lower()
+        if state == "complete":
+            plan.request_updates[req.slug] = "done"
+        elif state == "abandoned":
+            plan.request_updates[req.slug] = "abandoned"
+
+    if terminal:
+        card = kanban_show_card(terminal)
+        if card is None:
+            plan.create_terminal = True
+            plan.notes.append(f"terminal_missing:{terminal}")
+        else:
+            col = str(card.get("column") or "")
+            plan.notes.append(f"terminal_column:{col}")
+            if col == "done" and mode == "ship":
+                open_after = []
+                for req in reqs:
+                    final = plan.request_updates.get(req.slug, req.status)
+                    if final in {"pending", "active", "open"}:
+                        open_after.append(req.slug)
+                nonterm = [
+                    m
+                    for m in milestones_by_ns.get(slug, [])
+                    if str(m.get("state") or "").lower() in NONTERMINAL_MS
+                ]
+                if not open_after and not nonterm:
+                    plan.mark_ns_done = True
+                    plan.notes.append("eligible_mark_ns_done")
+                else:
+                    if open_after:
+                        plan.notes.append(
+                            "requests_still_open:" + ",".join(open_after[:8])
+                        )
+                    if nonterm:
+                        plan.notes.append(
+                            "nonterminal_milestones:"
+                            + ",".join(
+                                str(m.get("slug")) for m in nonterm[:8]
+                            )
+                        )
+    else:
+        plan.notes.append("no_terminal_named")
+
+    return plan
+
+
+def ensure_terminal_card(
+    *,
+    ns_slug: str,
+    terminal_slug: str,
+    ns_title: str,
+    apply: bool,
+) -> str:
+    if not apply:
+        return f"would_create_terminal:{terminal_slug}"
+    body = f"""Kind: validation
+Repo: EdgeVector/last-stack
+Base: main
+
+DONE-WHEN: file docs/north-star-proofs/{ns_slug}.md matches /PASS|GREEN/
+
+## GOAL
+
+Terminal product proof shell for `{ns_slug}` ({ns_title}).
+
+Auto-created by `last-stack-north-star-ledger-sync` because ## Terminal verification
+named this card and it was missing on the board. Fill the proof harness and mark
+PASS/GREEN in the DONE-WHEN path (or replace DONE-WHEN with the NS-specified
+predicate). Do not treat calendar-only done-when as product proof.
+
+## END STATE
+
+Named terminal card exists, is machine-checkable, and can close the North Star
+when green and all MILESTONE_REQUESTs are done.
+"""
+    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as fh:
+        fh.write(body)
+        path = fh.name
+    try:
+        cp = run_cmd(
+            [
+                "kanban",
+                "add",
+                terminal_slug,
+                "--title",
+                f"Terminal proof: {ns_slug}",
+                "--kind",
+                "validation",
+                "--column",
+                "backlog",
+                "--north-star",
+                ns_slug,
+                "--repo",
+                "EdgeVector/last-stack",
+                "--base",
+                "main",
+                "--created-by",
+                "last-stack-north-star-ledger-sync",
+            ],
+            input_text=Path(path).read_text(),
+            timeout=120,
+        )
+    finally:
+        os.unlink(path)
+    if cp.returncode != 0:
+        return f"error_create_terminal:{terminal_slug}:{cp.stderr.strip()[:200]}"
+    return f"created_terminal:{terminal_slug}"
+
+
+def apply_plan(plan: NsPlan, raw_get: str, *, apply: bool) -> list[str]:
+    actions: list[str] = []
+    meta, body = split_get_output(raw_get)
+    title = plan.title
+    status = plan.status
+    tags_raw = meta.get("tags") or ""
+    tags = [t.strip() for t in re.split(r"[, ]+", tags_raw) if t.strip()]
+
+    new_body = body
+    if plan.request_updates:
+        new_body, rewrites = rewrite_request_statuses(body, plan.request_updates)
+        actions.extend(f"request_flip:{r}" for r in rewrites)
+
+    if plan.create_terminal and plan.terminal_slug:
+        actions.append(
+            ensure_terminal_card(
+                ns_slug=plan.slug,
+                terminal_slug=plan.terminal_slug,
+                ns_title=title,
+                apply=apply,
+            )
+        )
+
+    audit_lines = [
+        "",
+        f"## LEDGER_SYNC {utc_now()}",
+        f"- tool: last-stack-north-star-ledger-sync",
+        f"- apply: {str(apply).lower()}",
+    ]
+    for a in actions:
+        audit_lines.append(f"- {a}")
+    for n in plan.notes:
+        audit_lines.append(f"- note: {n}")
+    audit = "\n".join(audit_lines) + "\n"
+
+    if plan.mark_ns_done:
+        status = "done"
+        actions.append("mark_ns_done")
+
+    if not apply:
+        actions.append("dry_run_no_writes")
+        return actions
+
+    # Prefer full put when we rewrote body or status; else append-only audit.
+    need_put = bool(plan.request_updates) or plan.mark_ns_done
+    if need_put:
+        put_body = new_body.rstrip() + "\n" + audit
+        ok = brain_put_project(plan.slug, title, put_body, status, tags)
+        actions.append("brain_put_ok" if ok else "brain_put_failed")
+    else:
+        ok = brain_append_project(plan.slug, audit)
+        actions.append("brain_append_ok" if ok else "brain_append_failed")
+    return actions
+
+
+def index_milestones(
+    rows: list[dict[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    by_slug: dict[str, dict[str, Any]] = {}
+    by_ns: dict[str, list[dict[str, Any]]] = {}
+    for m in rows:
+        slug = str(m.get("slug") or "")
+        if slug:
+            by_slug[slug] = m
+        ns = str(m.get("north_star") or "")
+        if ns:
+            by_ns.setdefault(ns, []).append(m)
+    return by_slug, by_ns
+
+
+def is_north_star_project(p: dict[str, Any]) -> bool:
+    slug = str(p.get("slug") or "")
+    title = str(p.get("title") or "")
+    tags = p.get("tags") or []
+    if isinstance(tags, str):
+        tags_l = tags.lower()
+    else:
+        tags_l = " ".join(str(t) for t in tags).lower()
+    if slug.startswith("north-star-"):
+        return True
+    if "north-star" in tags_l or "north star" in title.lower():
+        return True
+    if title.startswith("🌟") or "North Star" in title:
+        return True
+    return False
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write brain/board changes (default: dry-run)",
+    )
+    ap.add_argument(
+        "--ns",
+        action="append",
+        default=[],
+        help="Only this North Star slug (repeatable)",
+    )
+    ap.add_argument("--max-ns", type=int, default=20, help="Cap NS processed")
+    ap.add_argument("--json", action="store_true", help="JSON summary on stdout")
+    ap.add_argument(
+        "--self-test",
+        action="store_true",
+        help="Run offline unit tests (no brain/kanban)",
+    )
+    args = ap.parse_args(argv)
+
+    if args.self_test:
+        return 0 if self_test() else 1
+
+    apply = bool(args.apply)
+    portfolio = kanban_milestone_portfolio()
+    by_slug, by_ns = index_milestones(portfolio)
+
+    if args.ns:
+        targets = [{"slug": s} for s in args.ns]
+    else:
+        projects = [p for p in brain_list_projects(100) if is_north_star_project(p)]
+        # prefer in_progress
+        def rank(p: dict[str, Any]) -> tuple[int, str]:
+            st = str(p.get("status") or "").lower()
+            live = 0 if st in {"in_progress", "active", ""} else 1
+            return (live, str(p.get("slug") or ""))
+
+        targets = sorted(projects, key=rank)[: max(1, args.max_ns)]
+
+    reports: list[dict[str, Any]] = []
+    for p in targets:
+        slug = str(p.get("slug") or "")
+        if not slug:
+            continue
+        raw = brain_get_project(slug)
+        if not raw:
+            reports.append({"slug": slug, "error": "brain_get_failed"})
+            continue
+        plan = plan_ns(slug, raw, by_slug, by_ns)
+        actions = apply_plan(plan, raw, apply=apply)
+        reports.append(
+            {
+                "slug": slug,
+                "status": plan.status,
+                "mode": plan.mode,
+                "terminal": plan.terminal_slug,
+                "request_updates": plan.request_updates,
+                "create_terminal": plan.create_terminal,
+                "mark_ns_done": plan.mark_ns_done,
+                "notes": plan.notes,
+                "actions": actions,
+            }
+        )
+
+    if args.json:
+        print(json.dumps({"apply": apply, "reports": reports}, indent=2))
+    else:
+        print(f"last-stack-north-star-ledger-sync apply={apply} n={len(reports)}")
+        for r in reports:
+            print(f"## {r.get('slug')}")
+            for k in (
+                "request_updates",
+                "create_terminal",
+                "mark_ns_done",
+                "notes",
+                "actions",
+                "error",
+            ):
+                if r.get(k):
+                    print(f"  {k}: {r[k]}")
+    return 0
+
+
+def self_test() -> bool:
+    body = """**Mode:** ship
+
+## End state
+- thing
+
+## Terminal verification
+**Card:** `my-ns-terminal-proof`
+
+## MILESTONE_REQUEST
+slug=ms-one
+status=pending
+
+### Outcome
+A
+
+## MILESTONE_REQUEST
+slug=ms-two
+status=pending
+
+### Outcome
+B
+"""
+    reqs = parse_milestone_requests(body)
+    assert len(reqs) == 2, reqs
+    assert reqs[0].slug == "ms-one" and reqs[0].status == "pending"
+    assert parse_terminal_card(body) == "my-ns-terminal-proof"
+    assert parse_mode(body) == "ship"
+    new_body, acts = rewrite_request_statuses(
+        body, {"ms-one": "done", "ms-two": "abandoned"}
+    )
+    assert "status=done" in new_body
+    assert "status=abandoned" in new_body
+    assert len(acts) == 2
+    # no false positive on complete milestone name in prose
+    assert parse_terminal_card("## Terminal verification\nno card here\n") == ""
+    print("self-test ok")
+    return True
+
+
+if __name__ == "__main__":
+    sys.exit(main())

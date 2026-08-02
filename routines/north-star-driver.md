@@ -32,6 +32,13 @@ last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 if [ -x "$last_stack/bin/last-stack-generator-preflight" ]; then
   "$last_stack/bin/last-stack-generator-preflight" north-star-driver || exit 0
 fi
+# Mechanical ledger sync first: flip MILESTONE_REQUEST statuses that already
+# match complete/abandoned milestones, ensure named terminal proof shells exist,
+# and close ship NS when terminal proof is done. Never invents new outcomes.
+if [ -x "$last_stack/bin/last-stack-north-star-ledger-sync" ]; then
+  "$last_stack/bin/last-stack-north-star-ledger-sync" --apply --max-ns 12 \
+    || echo "WARN=north-star-ledger-sync-failed (continuing)"
+fi
 ```
 
 Run `situations list --json`, then complete the creation inventory gate below.
@@ -89,7 +96,11 @@ Use the milestone portfolio captured by the creation inventory gate. Then:
 4. Prefer the oldest explicit approved request marker in a North Star body:
    `MILESTONE_REQUEST slug=<slug> status=pending`, followed by its Outcome and
    Acceptance text.
-5. Otherwise choose one active North Star with no nonterminal milestone and a
+5. **Skip stale pending requests whose milestone already exists and is
+   `complete` or `abandoned`** (`kanban milestone show <slug>`). Those are
+   ledger drift; `last-stack-north-star-ledger-sync` flips them. Do not create a
+   second milestone for a finished outcome.
+6. Otherwise choose one active North Star with no nonterminal milestone and a
    concrete next independently provable outcome already stated in its body or
    active-programs section.
 
