@@ -1,0 +1,19 @@
+[[features]]
+slug = "app_registry"
+title = "App Registry"
+owner = "tom"
+north_star = "north-star-host-track"
+default_enabled = false
+lifecycle = "dogfood_local"
+announce_status = "silent"
+cli_commands = ["app"]
+
+[[features]]
+slug = "bad_public"
+title = "Bad Public"
+owner = "tom"
+north_star = "north-star-host-track"
+default_enabled = true
+lifecycle = "ga"
+announce_status = "ga"
+cli_commands = ["bad"]

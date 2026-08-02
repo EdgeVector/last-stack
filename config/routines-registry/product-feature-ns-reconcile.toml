@@ -1,0 +1,13 @@
+# PROFILE=normal — keep product feature public readiness tied to North Star completion
+# Zero-LLM script; daily off the crowded pickup hours.
+id = "product-feature-ns-reconcile"
+harness = "codex"
+model = "gpt-5.5"
+effort = "low"
+group = "board"
+rrule = "FREQ=DAILY;BYHOUR=7;BYMINUTE=17;BYSECOND=0"
+cwd = "/Users/tomtang/code/edgevector"
+status = "active"
+timeout_min = 15
+prompt_path = "/Users/tomtang/.last-stack/routines/product-feature-ns-reconcile.md"
+heartbeat_slug = "routine-heartbeats"

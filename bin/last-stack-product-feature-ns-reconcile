@@ -1,0 +1,395 @@
+#!/usr/bin/env python3
+"""Reconcile product feature catalog vs North Star completion (zero-LLM).
+
+Incomplete North Stars blacklist *public readiness* (default_enabled / ga /
+public announce). Local dogfood enables are never touched.
+
+Exit: 0 PASS, 1 violations, 2 tool/usage error.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def last_stack_root() -> Path:
+    env = os.environ.get("LAST_STACK_ROOT")
+    if env:
+        return Path(env).resolve()
+    return Path(__file__).resolve().parent.parent
+
+
+def find_catalog(explicit: Optional[str]) -> Optional[Path]:
+    if explicit and Path(explicit).is_file():
+        return Path(explicit)
+    env = os.environ.get("PRODUCT_FEATURE_CATALOG", "").strip()
+    if env and Path(env).is_file():
+        return Path(env)
+    for p in [
+        Path.home()
+        / ".fkanban/worktrees/fold-kanban-product-feature-gates-app-registry/folddb_profile/feature_catalog.toml",
+        Path.home() / "code/edgevector/fold/folddb_profile/feature_catalog.toml",
+        Path("/Users/tomtang/code/edgevector/fold/folddb_profile/feature_catalog.toml"),
+    ]:
+        if p.is_file():
+            return p
+    return None
+
+
+def parse_catalog_toml(text: str) -> list[dict[str, Any]]:
+    body = text.strip()
+    if not body:
+        return []
+    idx = body.find("[[features]]")
+    if idx < 0:
+        return []
+    body = body[idx:]
+    parts = body.split("[[features]]")
+    out: list[dict[str, Any]] = []
+    for raw in parts[1:]:
+        def field(name: str, default: Any = None) -> Any:
+            m = re.search(rf'^{re.escape(name)}\s*=\s*"(.*?)"', raw, re.M)
+            if m:
+                return m.group(1)
+            m = re.search(rf"^{re.escape(name)}\s*=\s*(true|false)", raw, re.M)
+            if m:
+                return m.group(1) == "true"
+            return default
+
+        slug = field("slug") or ""
+        if not slug:
+            continue
+        out.append(
+            {
+                "slug": slug,
+                "title": field("title") or "",
+                "north_star": field("north_star") or "",
+                "default_enabled": bool(field("default_enabled", False)),
+                "lifecycle": field("lifecycle") or "",
+                "announce_status": field("announce_status") or "",
+            }
+        )
+    return out
+
+
+def parse_catalog_from_brain() -> list[dict[str, Any]]:
+    try:
+        r = subprocess.run(
+            ["brain", "get", "reference-product-feature-registry", "--type", "reference"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return []
+    if r.returncode != 0:
+        return []
+    features: list[dict[str, Any]] = []
+    for line in r.stdout.splitlines():
+        if not line.strip().startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 4:
+            continue
+        slug = cells[0].strip("`")
+        if not re.match(r"^[a-z][a-z0-9_]*$", slug):
+            continue
+        lifecycle = cells[1] if len(cells) > 1 else ""
+        announce = cells[2] if len(cells) > 2 else ""
+        default = (
+            str(cells[3]).lower() in {"true", "yes", "on", "1"} if len(cells) > 3 else False
+        )
+        north_star = ""
+        for c in cells:
+            c2 = c.strip("`")
+            if c2.startswith("north-star-"):
+                north_star = c2
+                break
+        features.append(
+            {
+                "slug": slug,
+                "title": slug,
+                "north_star": north_star,
+                "default_enabled": default,
+                "lifecycle": lifecycle,
+                "announce_status": announce,
+            }
+        )
+    return features
+
+
+def load_completion(path: Optional[str]) -> dict[str, dict[str, Any]]:
+    data: Any
+    if path and Path(path).is_file():
+        data = json.loads(Path(path).read_text())
+    else:
+        envp = os.environ.get("PRODUCT_FEATURE_COMPLETION_JSON", "").strip()
+        if envp and Path(envp).is_file():
+            data = json.loads(Path(envp).read_text())
+        else:
+            root = last_stack_root()
+            dash = root / "bin" / "last-stack-north-star-dashboard"
+            dash_cmd = str(dash) if dash.is_file() else "last-stack-north-star-dashboard"
+            with tempfile.NamedTemporaryFile(
+                prefix="ns-completion-", suffix=".json", delete=False
+            ) as tf:
+                out_path = tf.name
+            try:
+                r = subprocess.run(
+                    [
+                        dash_cmd,
+                        "--fetch-bodies",
+                        "--stdout",
+                        "none",
+                        "--completion-json",
+                        out_path,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                    check=False,
+                )
+                if r.returncode != 0:
+                    raise RuntimeError(
+                        f"completion dashboard failed rc={r.returncode}: {(r.stderr or '')[-500:]}"
+                    )
+                data = json.loads(Path(out_path).read_text())
+            finally:
+                Path(out_path).unlink(missing_ok=True)
+
+    rows: list[dict[str, Any]]
+    if isinstance(data, dict):
+        if isinstance(data.get("rows"), list):
+            rows = data["rows"]
+        elif isinstance(data.get("completion"), list):
+            rows = data["completion"]
+        elif isinstance(data.get("north_stars"), list):
+            rows = data["north_stars"]
+        else:
+            rows = []
+            for k, v in data.items():
+                if isinstance(v, dict) and ("verdict" in v or "terminal_state" in v):
+                    row = dict(v)
+                    row.setdefault("north_star", k)
+                    rows.append(row)
+    elif isinstance(data, list):
+        rows = data
+    else:
+        rows = []
+
+    by: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        slug = str(row.get("north_star") or row.get("slug") or "")
+        if slug:
+            by[slug] = row
+    return by
+
+
+def ns_complete(row: Optional[dict[str, Any]]) -> tuple[bool, str]:
+    if not row:
+        return False, "north_star_not_in_completion_report"
+    verdict = str(row.get("verdict") or "")
+    ns_status = str(row.get("ns_status") or row.get("status") or "")
+    terminal_state = str(row.get("terminal_state") or "")
+    if verdict == "closed" or ns_status in {"done", "completed", "archived"}:
+        return True, f"closed verdict={verdict} status={ns_status}"
+    if terminal_state == "done" and ns_status in {"done", "completed", "archived"}:
+        return True, "terminal_done_and_ns_closed"
+    return (
+        False,
+        f"incomplete verdict={verdict} terminal={terminal_state} status={ns_status}",
+    )
+
+
+def public_readiness_claimed(feat: dict[str, Any]) -> bool:
+    if feat.get("default_enabled"):
+        return True
+    if feat.get("lifecycle") == "ga":
+        return True
+    if feat.get("announce_status") in {"public_docs", "ga"}:
+        return True
+    return False
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--stamp", action="store_true")
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--catalog", default="")
+    ap.add_argument("--completion-json", default="")
+    args = ap.parse_args(argv)
+
+    cat_path = find_catalog(args.catalog or None)
+    features: list[dict[str, Any]] = []
+    catalog_source = ""
+    if cat_path:
+        features = parse_catalog_toml(cat_path.read_text())
+        catalog_source = str(cat_path)
+    if not features:
+        features = parse_catalog_from_brain()
+        catalog_source = catalog_source or "brain:reference-product-feature-registry"
+    if not features:
+        print("ERROR: no feature catalog found (set --catalog)", file=sys.stderr)
+        return 2
+
+    try:
+        completion = load_completion(args.completion_json or None)
+    except Exception as e:
+        print(f"ERROR: completion load failed: {e}", file=sys.stderr)
+        return 2
+
+    violations: list[dict[str, Any]] = []
+    blacklisted: list[dict[str, Any]] = []
+    eligible: list[dict[str, Any]] = []
+    ok_rows: list[dict[str, Any]] = []
+
+    for feat in features:
+        slug = feat["slug"]
+        ns = (feat.get("north_star") or "").strip()
+        row = completion.get(ns) if ns else None
+        complete, reason = ns_complete(row)
+        entry = {
+            "slug": slug,
+            "north_star": ns,
+            "lifecycle": feat.get("lifecycle"),
+            "announce_status": feat.get("announce_status"),
+            "default_enabled": feat.get("default_enabled"),
+            "ns_complete": complete,
+            "ns_reason": reason,
+            "blacklisted": not complete,
+        }
+
+        if not ns:
+            violations.append(
+                {
+                    **entry,
+                    "kind": "orphan",
+                    "message": f"{slug}: missing north_star (orphan → cannot go public)",
+                }
+            )
+            blacklisted.append(entry)
+            continue
+
+        if not complete:
+            blacklisted.append(entry)
+            if public_readiness_claimed(feat):
+                violations.append(
+                    {
+                        **entry,
+                        "kind": "public_while_incomplete",
+                        "message": (
+                            f"{slug}: claims public readiness "
+                            f"(default_enabled={feat.get('default_enabled')}, "
+                            f"lifecycle={feat.get('lifecycle')}, "
+                            f"announce={feat.get('announce_status')}) "
+                            f"but North Star {ns} is incomplete ({reason})"
+                        ),
+                    }
+                )
+            else:
+                ok_rows.append({**entry, "status": "correctly_blacklisted"})
+        else:
+            eligible.append(entry)
+            ok_rows.append({**entry, "status": "ns_complete_catalog_ok"})
+
+    report = {
+        "at": utc_now(),
+        "catalog_source": catalog_source,
+        "feature_count": len(features),
+        "blacklisted_count": len(blacklisted),
+        "eligible_count": len(eligible),
+        "violation_count": len(violations),
+        "blacklisted": blacklisted,
+        "eligible_for_ga_ceremony": eligible,
+        "violations": violations,
+        "ok": ok_rows,
+    }
+
+    if args.json:
+        print(json.dumps(report, indent=2))
+    else:
+        status = "FAIL" if violations else "PASS"
+        print(
+            f"product-feature-ns-reconcile {report['at']} {status} "
+            f"features={report['feature_count']} blacklisted={report['blacklisted_count']} "
+            f"eligible={report['eligible_count']} violations={report['violation_count']} "
+            f"catalog={catalog_source}"
+        )
+        for v in violations:
+            print(f"  VIOLATION: {v['message']}")
+        for b in blacklisted:
+            if not any(v.get("slug") == b["slug"] for v in violations):
+                print(f"  blacklist: {b['slug']} ← {b['north_star']} ({b['ns_reason']})")
+        for e in eligible:
+            print(
+                f"  eligible: {e['slug']} ← {e['north_star']} (NS complete; ceremony may flip GA)"
+            )
+
+    if args.stamp and not args.dry_run:
+        if violations:
+            body = (
+                "---\n"
+                "type: reference\n"
+                "slug: papercut-product-feature-ns-reconcile-violations\n"
+                "title: papercut — product feature vs North Star reconcile violations\n"
+                "status: active\n"
+                "tags: [feature-gates, north-star, reconcile]\n"
+                "---\n\n"
+                f"Reconcile FAIL at {report['at']}\n\n"
+                + "\n".join(f"- {v['message']}" for v in violations)
+                + "\n"
+            )
+            try:
+                subprocess.run(
+                    ["brain", "put"],
+                    input=body,
+                    text=True,
+                    capture_output=True,
+                    timeout=60,
+                    check=False,
+                )
+            except Exception:
+                pass
+        else:
+            block = (
+                f"\n\n## Reconcile stamp\n\n```yaml\nat: {report['at']}\n"
+                f"status: PASS\nblacklisted: {report['blacklisted_count']}\n"
+                f"eligible: {report['eligible_count']}\nviolations: 0\n```\n"
+            )
+            try:
+                subprocess.run(
+                    [
+                        "brain",
+                        "append",
+                        "reference-product-feature-registry",
+                        "--type",
+                        "reference",
+                    ],
+                    input=block,
+                    text=True,
+                    capture_output=True,
+                    timeout=60,
+                    check=False,
+                )
+            except Exception:
+                pass
+
+    return 1 if violations else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
