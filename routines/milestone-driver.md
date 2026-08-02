@@ -12,13 +12,19 @@ report.
 
 ```
 kanban milestone gap-report --json
-  → work_queue: [{action:promote, promoteable:[…]}, {action:decompose, …}]
+  → work_queue: [
+      {action:promote, promoteable:[…]},
+      {action:decompose, …},
+      {action:complete_proof, …}   # PASS evidence OR not_required close
+    ]
   → promote steps: kanban move <slug> todo   (no invention)
   → decompose steps: agent files next-gate Kind:pr set for THAT milestone only
+  → complete_proof steps: kanban milestone state complete (--proof-status passing|not_required)
 ```
 
 Implementation remains with `last-stack-fkanban-pickup*`. Proof **execution**
-is `kanban-validate`. Never invent architecture when decomposition is unclear.
+(when a real harness exists) is `kanban-validate`. Never invent architecture when
+decomposition is unclear.
 
 ## Non-negotiable contract
 
@@ -33,10 +39,15 @@ is `kanban-validate`. Never invent architecture when decomposition is unclear.
   - `kanban milestone state <slug> complete --proof-status passing --json`
     when a real harness/report shows PASS and the CLI accepts it, or
   - `kanban milestone state <slug> complete --proof-status not_required --json`
-    when all linked `Kind: pr` work is done and no executable proof exists
-    (preferred over minting empty `Kind: validation` shells).
+    when gap-report says `action=complete_proof` with reason mentioning
+    `not_required` / `no proof card` (all linked `Kind: pr` done; no harness —
+    preferred over minting empty `Kind: validation` shells).
   Never force `passing` without evidence.
   The CLI rejects this transition unless the proof contract passes.
+- **`complete_proof` is a first-class work_queue action.** Do not leave
+  implementation-done milestones hung on `await_proof` when the report already
+  classifies them as `complete_proof`. Process every `complete_proof` entry in
+  the work_queue this run (no safety-cap theft from PR filing).
 - **SAFETY_CAP=8** new or promoted `Kind: pr` cards **total** this run.
   Create at most **one Kanban card** per run. **SUPERSEDED:** multiple cards
   allowed up to SAFETY_CAP when gap-report says so.
@@ -96,9 +107,9 @@ If `MILESTONE_DRIVER_TARGET` is nonempty:
 1. Point-read `kanban milestone detail "$MILESTONE_DRIVER_TARGET" --json`.
 2. Do not mutate any other milestone.
 3. Still run `gap-report` and **filter** `work_queue` / entries to that slug only.
-4. Skip the portfolio-ranking procedure; drive only that milestone’s promote or
-   decompose action from the report. Targeting never relaxes blockers or the
-   safety cap.
+4. Skip the portfolio-ranking procedure; drive only that milestone’s promote,
+   decompose, or **complete_proof** action from the report. Targeting never
+   relaxes blockers or the safety cap.
 
 ## Deterministic gap-report (required)
 
@@ -117,9 +128,13 @@ Meanings (from fkanban code, not your opinion):
 | `idle_promoteable` | promote | `kanban move <slug> todo` for each listed promoteable PR (cap remaining) |
 | `idle_empty` | decompose | File full next-gate Kind:pr set for **that** milestone (agent work) |
 | `idle_blocked` | skip | Do not invent; leave held/hollow/dep-blocked backlog |
-| `proof_pending` | await_proof | Do not invent filler PRs |
-| `proof_ready` | complete_proof | CLI complete if PASS evidence verifies |
+| `proof_pending` | await_proof | Do not invent filler PRs; leave for validate when a real proof card is pending PASS |
+| `proof_ready` | complete_proof | CLI complete: `passing` if PASS evidence, else `not_required` when report reason says so |
 | `complete` / `blocked` / `no_north_star` | skip | Ignore |
+
+**Note:** When all Kind:pr are done and there is **no** proof card (or
+`proof_status=not_required`), gap-report classifies **`proof_ready` +
+`complete_proof`** (not `await_proof`). That is the autonomous close path.
 
 Print:
 
@@ -136,6 +151,9 @@ printf 'GAP_FILL IDLE_MILESTONES=%s SKIPPED_IN_FLIGHT=%s FILED=%s PROMOTED=%s PR
 
 Immediately before any `kanban add`, refresh inventory reads and re-run
 `gap-report` if the board may have changed.
+
+Process **in order**: all `promote` → all `decompose` (until SAFETY_CAP) →
+all `complete_proof` (always; not limited by SAFETY_CAP).
 
 ### Promote (code path — no invention)
 
@@ -194,24 +212,31 @@ For each `work_queue` item with `action=decompose`, until SAFETY_CAP:
    **stop** for that milestone with `needs-decomposition` — do not spam shells
    (PR or validation).
 
-### complete_proof
+### complete_proof (work_queue — do this every run when present)
 
-When an entry is `proof_ready` (or you verified PASS on the proof card after
-impl done):
+For each `work_queue` item with `action=complete_proof` (after promote/decompose
+for that run’s cap, but **always** process complete_proof for the targeted
+milestone or every queue entry):
 
-```bash
-kanban milestone state <slug> complete --proof-status passing --json
-```
+1. `kanban milestone detail <slug> --json` — confirm all implementation children
+   are terminal and note `proof_status` / proof card.
+2. Choose proof path from the **gap-report entry reason** + detail:
+   - If reason/body has machine PASS evidence (or proof card DONE with
+     `PROOF: PASS` / `RESULT: PASS`):
+     ```bash
+     kanban milestone state <slug> complete --proof-status passing --json
+     ```
+   - Else if reason mentions `not_required` or `no proof card` (or detail
+     `proof_status=not_required` and no harness):
+     ```bash
+     kanban milestone state <slug> complete --proof-status not_required --json
+     ```
+   - Else: leave alone (true `await_proof`); do not invent a validation shell.
+3. Re-read detail; require `state=complete` and `proof_status` matching the path
+   used (`passing` or `not_required`). Count as `proof_n+=1` for the GAP_FILL line.
 
-When all linked `Kind: pr` work is done and proof is **not_required** (no
-harness):
-
-```bash
-kanban milestone state <slug> complete --proof-status not_required --json
-```
-
-Re-read detail; require `state=complete` and `proof_status` matching the path
-used (`passing` or `not_required`).
+When an entry is only visible as `proof_ready` outside the queue (old fkanban),
+still run the same complete path for the target slug.
 
 ### Reconciliation note
 
@@ -235,7 +260,8 @@ End with ROUTINE_RESULT:
 `outcome=<ok|noop|error> detail=<one-line>`.
 
 `outcome=ok` only if you promoted ≥1 PR, filed ≥1 Kind:pr, or completed ≥1
-milestone with PASS. Pure gap-report with empty work_queue → `noop portfolio-healthy`.
+milestone (`passing` **or** `not_required`). Pure gap-report with empty
+work_queue → `noop portfolio-healthy`.
 
 If the CLI has no `gap-report` subcommand (old fkanban), fail with
 `outcome=error detail=gap-report-unavailable-upgrade-fkanban` and create nothing.
