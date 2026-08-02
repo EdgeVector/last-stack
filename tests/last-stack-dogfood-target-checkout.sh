@@ -194,6 +194,28 @@ test "$selected" = "$tmp/no-upstream-managed-targets/origin"
 test "$(git -C "$selected" rev-parse HEAD)" = "$(git -C "$tmp/origin.git" rev-parse main)"
 test -f "$tmp/no-upstream-target/local.txt"
 
+mkdir -p "$tmp/fold-portal/.portal"
+printf '%s\n' "$tmp/origin.git" > "$tmp/fold-portal/.portal/remote"
+printf 'fold\n' > "$tmp/fold-portal/.portal/slug"
+printf 'lastgit\n' > "$tmp/fold-portal/.portal/venue"
+printf 'portal sentinel\n' > "$tmp/fold-portal/README.md"
+portal_remote_before="$(cat "$tmp/fold-portal/.portal/remote")"
+portal_readme_before="$(cat "$tmp/fold-portal/README.md")"
+
+portal_resolved="$(LAST_STACK_DOGFOOD_TARGET_ROOTS="$tmp/portal-managed-targets" \
+  "$ROOT/bin/last-stack-dogfood-target-checkout" "$tmp/fold-portal")"
+grep -q $'^TARGET\t.*\tresult=unknown\treason=not-a-git-worktree$' <<< "$portal_resolved"
+grep -q $'^SELECTED\tpath=.*portal-managed-targets/origin.*\tresult=fresh\t' <<< "$portal_resolved"
+grep -q $'\tresult=ok\treason=current-isolated-checkout$' <<< "$portal_resolved"
+
+selected="$(selected_from <<< "$portal_resolved")"
+test "$selected" = "$tmp/portal-managed-targets/origin"
+test "$(git -C "$selected" remote get-url origin)" = "$tmp/origin.git"
+test "$(git -C "$selected" rev-parse HEAD)" = "$(git -C "$tmp/origin.git" rev-parse main)"
+test ! -e "$tmp/fold-portal/.git"
+test "$(cat "$tmp/fold-portal/.portal/remote")" = "$portal_remote_before"
+test "$(cat "$tmp/fold-portal/README.md")" = "$portal_readme_before"
+
 after_head="$(git -C "$tmp/target" rev-parse HEAD)"
 after_upstream="$(git -C "$tmp/target" rev-parse --verify -q '@{u}')"
 after_status="$(git -C "$tmp/target" status --porcelain=v1 --untracked-files=all)"
