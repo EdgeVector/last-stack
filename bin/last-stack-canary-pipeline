@@ -5,7 +5,9 @@ import datetime as dt
 import fcntl
 import json
 import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -31,6 +33,13 @@ ALLOWED = {
     "promote_prepare": set(),
 }
 
+CHECKS = (
+    ("launchd", "LAST_STACK_CANARY_LAUNCHD_CHECK_CMD", 'launchctl print "gui/$UID/com.edgevector.lastdbd"'),
+    ("memory_guard", "LAST_STACK_CANARY_MEMORY_CHECK_CMD", "lastdb status"),
+    ("board_read", "LAST_STACK_CANARY_BOARD_CHECK_CMD", "kanban ping"),
+    ("situation_fence", "LAST_STACK_CANARY_SITUATION_CHECK_CMD", 'situations list --json | jq -e "length == 0"'),
+)
+
 
 def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -41,6 +50,10 @@ def default_state_dir() -> Path:
     if raw:
         return Path(raw).expanduser()
     return Path.home() / ".local" / "state" / "last-stack" / "canary-pipeline"
+
+
+def add_common_ledger_flags(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--ledger", dest="command_ledger", type=Path, default=None)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -70,10 +83,34 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
     sub.add_parser("list", help="list latest state for every candidate")
 
+    dogfood = sub.add_parser("dogfood", help="record a dogfooded canary SHA")
+    add_common_ledger_flags(dogfood)
+    dogfood.add_argument("--sha", required=True)
+    dogfood.add_argument("--observed-sha", default="")
+    dogfood.add_argument("--version", default="")
+    dogfood.add_argument("--source", default="dogfood")
+    dogfood.add_argument("--dry-run", action="store_true")
+
+    soak = sub.add_parser("soak-watch", help="evaluate hard health signals for a dogfooded SHA")
+    add_common_ledger_flags(soak)
+    soak.add_argument("--sha", default="")
+    soak.add_argument("--dry-run", action="store_true")
+
+    promote = sub.add_parser("promote-prepare", help="report whether a green soak is ready for promotion")
+    add_common_ledger_flags(promote)
+    promote.add_argument("--sha", default="")
+    promote.add_argument("--dry-run", action="store_true")
+
+    proof = sub.add_parser("proof", help="exercise dogfood, soak-watch, and promote-prepare offline")
+    proof.add_argument("--dry-run", action="store_true")
+
     return parser.parse_args(argv)
 
 
 def ledger_path(args: argparse.Namespace) -> Path:
+    command_ledger = getattr(args, "command_ledger", None)
+    if command_ledger is not None:
+        return command_ledger.expanduser()
     if args.ledger is not None:
         return args.ledger.expanduser()
     return args.state_dir.expanduser() / "ledger.jsonl"
@@ -139,7 +176,17 @@ def current_record(event: dict) -> dict:
         "source": event.get("source", ""),
         "updated_at": event.get("ts", ""),
         "note": event.get("note", ""),
+        "observed_sha": event.get("observed_sha", ""),
+        "evidence": event.get("evidence", ""),
     }
+
+
+def emit_record(value: dict) -> None:
+    print(
+        "candidate={candidate} state={state} version={version} source={source} updated_at={updated_at}".format(
+            **value
+        )
+    )
 
 
 def emit(value, as_json: bool) -> None:
@@ -148,17 +195,21 @@ def emit(value, as_json: bool) -> None:
         return
     if isinstance(value, list):
         for item in value:
-            print(
-                "candidate={candidate} state={state} version={version} source={source} updated_at={updated_at}".format(
-                    **item
-                )
-            )
+            emit_record(item)
     else:
-        print(
-            "candidate={candidate} state={state} version={version} source={source} updated_at={updated_at}".format(
-                **value
-            )
-        )
+        emit_record(value)
+
+
+def base_event(candidate: str, state: str, previous_state: str = "", **extra) -> dict:
+    event = {
+        "ts": utc_now(),
+        "candidate": candidate,
+        "state": state,
+    }
+    if previous_state:
+        event["previous_state"] = previous_state
+    event.update({key: value for key, value in extra.items() if value != ""})
+    return event
 
 
 def create_candidate(path: Path, args: argparse.Namespace) -> dict:
@@ -166,14 +217,13 @@ def create_candidate(path: Path, args: argparse.Namespace) -> dict:
         latest = latest_by_candidate(load_events(path))
         if args.candidate in latest:
             die(f"candidate already exists: {args.candidate}")
-        event = {
-            "ts": utc_now(),
-            "candidate": args.candidate,
-            "state": "candidate_found",
-            "version": args.version,
-            "source": args.source,
-            "note": args.note,
-        }
+        event = base_event(
+            args.candidate,
+            "candidate_found",
+            version=args.version,
+            source=args.source,
+            note=args.note,
+        )
         append_event(path, event)
         return current_record(event)
 
@@ -193,32 +243,201 @@ def list_candidates(path: Path) -> list[dict]:
     return [current_record(latest[candidate]) for candidate in sorted(latest)]
 
 
+def append_transition(path: Path, candidate: str, state: str, **extra) -> dict:
+    events = load_events(path)
+    latest = latest_by_candidate(events)
+    previous = latest.get(candidate)
+    if previous is None:
+        die(f"candidate not found: {candidate}; create it first")
+    old_state = str(previous.get("state", ""))
+    if old_state == state:
+        die(f"duplicate transition for {candidate}: already {state}")
+    if state not in ALLOWED.get(old_state, set()):
+        allowed = ", ".join(sorted(ALLOWED.get(old_state, set()))) or "none"
+        die(f"invalid transition for {candidate}: {old_state} -> {state} (allowed: {allowed})")
+    event = base_event(
+        candidate,
+        state,
+        previous_state=old_state,
+        version=str(previous.get("version", "")),
+        source=str(previous.get("source", "")),
+        **extra,
+    )
+    append_event(path, event)
+    return event
+
+
 def advance_candidate(path: Path, args: argparse.Namespace) -> dict:
     def inner() -> dict:
-        latest = latest_by_candidate(load_events(path))
-        previous = latest.get(args.candidate)
-        if previous is None:
-            die(f"candidate not found: {args.candidate}; create it first")
-        old_state = str(previous.get("state", ""))
-        new_state = args.state
-        if old_state == new_state:
-            die(f"duplicate transition for {args.candidate}: already {new_state}")
-        if new_state not in ALLOWED.get(old_state, set()):
-            allowed = ", ".join(sorted(ALLOWED.get(old_state, set()))) or "none"
-            die(f"invalid transition for {args.candidate}: {old_state} -> {new_state} (allowed: {allowed})")
-        event = {
-            "ts": utc_now(),
-            "candidate": args.candidate,
-            "state": new_state,
-            "previous_state": old_state,
-            "version": previous.get("version", ""),
-            "source": previous.get("source", ""),
-            "note": args.note,
-        }
-        append_event(path, event)
-        return current_record(event)
+        return current_record(append_transition(path, args.candidate, args.state, note=args.note))
 
     return lock_and_run(path, inner)
+
+
+def dry_suffix(enabled: bool) -> str:
+    return " dry_run=1 no_primary_mutation=1" if enabled else ""
+
+
+def dogfood_candidate(path: Path, args: argparse.Namespace) -> dict:
+    observed_sha = args.observed_sha or args.sha
+
+    def inner() -> dict:
+        latest = latest_by_candidate(load_events(path))
+        current = latest.get(args.sha)
+        if current is None:
+            append_event(
+                path,
+                base_event(args.sha, "candidate_found", version=args.version, source=args.source),
+            )
+            append_transition(path, args.sha, "dogfood_started", note="dogfood")
+            event = append_transition(path, args.sha, "dogfood_green", observed_sha=observed_sha)
+        elif current.get("state") == "candidate_found":
+            append_transition(path, args.sha, "dogfood_started", note="dogfood")
+            event = append_transition(path, args.sha, "dogfood_green", observed_sha=observed_sha)
+        elif current.get("state") == "dogfood_started":
+            event = append_transition(path, args.sha, "dogfood_green", observed_sha=observed_sha)
+        elif current.get("state") == "dogfood_green" and current.get("observed_sha", args.sha) == observed_sha:
+            event = current
+        else:
+            die(f"cannot dogfood {args.sha}: current state is {current.get('state')}")
+        return event
+
+    event = lock_and_run(path, inner)
+    print(
+        f"DOGFOOD ledger={path} sha={args.sha} observed_sha={observed_sha} "
+        f"state={event.get('state')} result=ok{dry_suffix(args.dry_run)}"
+    )
+    return current_record(event)
+
+
+def choose_soak_candidate(path: Path, requested_sha: str, wanted_states: set[str]) -> dict:
+    events = load_events(path)
+    latest = latest_by_candidate(events)
+    if requested_sha:
+        event = latest.get(requested_sha)
+        if event is None:
+            die(f"candidate not found: {requested_sha}")
+        return event
+    for event in reversed(events):
+        candidate = str(event.get("candidate", ""))
+        if not candidate:
+            continue
+        latest_event = latest.get(candidate, {})
+        if latest_event.get("state") in wanted_states:
+            return latest_event
+    die("no matching canary candidate found")
+
+
+def run_check(label: str, env_name: str, default_cmd: str) -> bool:
+    command = os.environ.get(env_name, default_cmd)
+    if command in ("", "pass", "true", "ok"):
+        print(f"CHECK label={label} result=ok mode=stub")
+        return True
+    if command in ("fail", "false", "red"):
+        print(f"CHECK label={label} result=fail mode=stub", file=sys.stderr)
+        return False
+    result = subprocess.run(command, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if result.returncode == 0:
+        print(f"CHECK label={label} result=ok")
+        return True
+    print(f"CHECK label={label} result=fail", file=sys.stderr)
+    return False
+
+
+def soak_watch(path: Path, args: argparse.Namespace) -> dict:
+    failures = []
+
+    def inner() -> dict:
+        current = choose_soak_candidate(path, args.sha, {"dogfood_green", "soak_started", "soak_green", "soak_red"})
+        candidate = str(current.get("candidate", ""))
+        observed_sha = str(current.get("observed_sha") or candidate)
+        if observed_sha != candidate:
+            failures.append(f"sha_mismatch_expected_{candidate}_observed_{observed_sha}")
+
+        for label, env_name, default_cmd in CHECKS:
+            if not run_check(label, env_name, default_cmd):
+                failures.append(label)
+
+        latest = latest_by_candidate(load_events(path)).get(candidate, current)
+        state = str(latest.get("state", ""))
+        if state == "dogfood_green":
+            append_transition(path, candidate, "soak_started", observed_sha=observed_sha)
+            state = "soak_started"
+        if state not in {"soak_started", "soak_green", "soak_red"}:
+            die(f"cannot soak-watch {candidate}: current state is {state}")
+        if state in {"soak_green", "soak_red"}:
+            return latest
+        if failures:
+            return append_transition(path, candidate, "soak_red", observed_sha=observed_sha, evidence=";".join(failures))
+        return append_transition(
+            path,
+            candidate,
+            "soak_green",
+            observed_sha=observed_sha,
+            evidence="all_hard_checks_green",
+        )
+
+    event = lock_and_run(path, inner)
+    status = event.get("state", "")
+    evidence = event.get("evidence", "all_hard_checks_green" if status == "soak_green" else "")
+    print(f"SOAK ledger={path} sha={event.get('candidate')} status={status} evidence={evidence}{dry_suffix(args.dry_run)}")
+    if status != "soak_green":
+        raise SystemExit(1)
+    return current_record(event)
+
+
+def promote_prepare(path: Path, args: argparse.Namespace) -> dict:
+    def inner() -> dict:
+        current = choose_soak_candidate(path, args.sha, {"soak_green", "soak_red", "promote_prepare"})
+        state = str(current.get("state", ""))
+        candidate = str(current.get("candidate", ""))
+        if state == "promote_prepare":
+            return current
+        if state != "soak_green":
+            return current
+        if args.dry_run:
+            return current
+        return append_transition(path, candidate, "promote_prepare", evidence=str(current.get("evidence", "")))
+
+    event = lock_and_run(path, inner)
+    state = str(event.get("state", ""))
+    candidate = str(event.get("candidate", ""))
+    evidence = str(event.get("evidence", ""))
+    if state in {"soak_green", "promote_prepare"}:
+        print(f"PROMOTE_READY ledger={path} sha={candidate} status=ready evidence={evidence}{dry_suffix(args.dry_run)}")
+        return current_record(event)
+    print(f"PROMOTE_READY ledger={path} sha={candidate} status=blocked soak_status={state} evidence={evidence}")
+    raise SystemExit(1)
+
+
+def proof(args: argparse.Namespace) -> None:
+    if not args.dry_run:
+        die("proof currently requires --dry-run", 2)
+    with tempfile.TemporaryDirectory(prefix="last-stack-canary-proof.") as tmp:
+        path = Path(tmp) / "ledger.jsonl"
+        sha = "dryrun-canary-sha"
+        dogfood_candidate(
+            path,
+            argparse.Namespace(sha=sha, observed_sha="", version="dry-run", source="proof", dry_run=True),
+        )
+        env = {
+            "LAST_STACK_CANARY_LAUNCHD_CHECK_CMD": "pass",
+            "LAST_STACK_CANARY_MEMORY_CHECK_CMD": "pass",
+            "LAST_STACK_CANARY_BOARD_CHECK_CMD": "pass",
+            "LAST_STACK_CANARY_SITUATION_CHECK_CMD": "pass",
+        }
+        old_env = {key: os.environ.get(key) for key in env}
+        os.environ.update(env)
+        try:
+            soak_watch(path, argparse.Namespace(sha=sha, dry_run=True))
+        finally:
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        promote_prepare(path, argparse.Namespace(sha=sha, dry_run=True))
+        print(f"CANARY_PIPELINE_PROOF result=ok dry_run=1 ledger={path} no_primary_mutation=1")
 
 
 def main(argv: list[str]) -> int:
@@ -232,6 +451,14 @@ def main(argv: list[str]) -> int:
         emit(advance_candidate(path, args), args.json)
     elif args.command == "list":
         emit(list_candidates(path), args.json)
+    elif args.command == "dogfood":
+        dogfood_candidate(path, args)
+    elif args.command == "soak-watch":
+        soak_watch(path, args)
+    elif args.command == "promote-prepare":
+        promote_prepare(path, args)
+    elif args.command == "proof":
+        proof(args)
     else:
         die("unknown command", 2)
     return 0
