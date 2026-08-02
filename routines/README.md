@@ -137,6 +137,7 @@ ls ~/.routines/registry/last-stack-fkanban-validate.toml
 |---|---|---|
 | [`llms-txt-install-smoke`](llms-txt-install-smoke.md) | daily | Isolated dogfood of https://thelastdb.com/llms.txt first-run install; file cards on RED (never touches primary LastDB). |
 | [`lastdb-install-docs-weekly`](lastdb-install-docs-weekly.md) | weekly | Refresh thelastdb.com install/use docs, ephemeral fresh-install prove, heal-loop until GREEN (budgeted; never primary LastDB). |
+| [`lastdb-canary-dogfood`](lastdb-canary-dogfood.md) | nightly, paused | Resolve a LastDB canary candidate and dogfood the safe-upgrade probe path through the canary ledger; never activates the primary install. |
 | [`self-improvement-loop`](self-improvement-loop.md) | daily | Mine recent agent sessions for recurring friction; upgrade the agent's OWN skills / routines / permission allowlist / docs. The flagship self-fixing loop. |
 | [`papercut-reconciler`](papercut-reconciler.md) | every 6h | The ONLY papercut→card path: harvests session papercuts into Brain, audits the never-again prevention registry, clusters patterns, and files pattern-level cards with compound-regression requirements where applicable (does not ship fixes itself). Agents file papercuts to Brain only, never to the board. |
 | [`devops-continuous-improvement`](devops-continuous-improvement.md) | daily | Inspect CI, merge flow, deployment, testing, and release gates; ship one small DevOps fix or file precise follow-up cards. |
