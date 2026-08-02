@@ -293,7 +293,9 @@ you would have promoted is papercut while a driving feature exists.
      and no harness — those clutter backlog, get `needs_human`, and never
      prove product outcomes. If no harness/command exists yet, either file a
      `Kind: pr` that *builds* the harness, or leave the NS incomplete without
-     a theater card. One new terminal card per incomplete NS per run max.
+     a theater card. If the terminal must be represented before a harness
+     exists, park it outside default `todo` as non-pickup proof state. One new
+     terminal card per incomplete NS per run max.
    - **`board_drained_ns_open`**: do not invent unrelated papercuts; promote or
      file only terminal `Kind: pr` harness work for that NS. Do not re-seed
      empty validation proof cards. Park any legacy non-PR terminal proof cards
