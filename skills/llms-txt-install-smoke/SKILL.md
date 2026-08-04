@@ -31,6 +31,10 @@ This is **not** the real-data Mini boot canary (`lastdb-smoke-test` /
    recurring papercuts). Chat-only summaries evaporate.
 5. Honor `brain get sop-routine-shared-contract --type sop` when invoked from
    a routine (heartbeat LAST, always).
+6. **Foreground only.** Never background `run.sh` / `routine-run.sh`. Never end
+   the agent turn while the smoke is still running. Incomplete / killed /
+   no-`VERDICT` runs are **RED**, never success. (2026-08-04 scheduled fire
+   backgrounded smoke, harness exit 0, no VERDICT — false success.)
 
 ## Preferred path — run the script
 
@@ -39,16 +43,18 @@ From any checkout that has Last Stack skills installed (or from
 
 ```bash
 last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
-# Prefer the skill's own script (works from worktrees too):
-script="$(find "$last_stack/skills/llms-txt-install-smoke" -name run.sh 2>/dev/null | head -1)"
-# Fallback if setup symlinked only SKILL.md:
-script="${script:-$last_stack/skills/llms-txt-install-smoke/run.sh}"
-bash "$script"
-# optional: bash "$script" --keep   # leave sandbox dir for inspection
-# optional: bash "$script" --json   # machine-readable summary on stdout
+# Scheduled routine: mechanical wrapper (VERDICT + RESULT: trailer required)
+bash "$last_stack/skills/llms-txt-install-smoke/routine-run.sh"
+# Interactive / debug:
+# bash "$last_stack/skills/llms-txt-install-smoke/run.sh" --json
+# bash "$last_stack/skills/llms-txt-install-smoke/run.sh" --keep
 ```
 
-The script prints `VERDICT: GREEN` or `VERDICT: RED` and exits 0/1.
+`run.sh` prints `VERDICT: GREEN` or `VERDICT: RED` and exits 0/1.
+`routine-run.sh` additionally prints a `RESULT: ok|error …` trailer and exits
+**2** if no VERDICT line was produced (incomplete).
+
+Wall time is often 8–15 minutes. Block on the single Bash call for ≥40 minutes.
 
 ## What the smoke asserts (GREEN)
 
@@ -74,6 +80,9 @@ The script prints `VERDICT: GREEN` or `VERDICT: RED` and exits 0/1.
    - **Installer** → `EdgeVector/last-stack`
    - **App init** → `EdgeVector/brain` / `fkanban` / `situations`
    - **Daemon/socket** → `EdgeVector/fold` or homebrew-lastdb as appropriate
+   - **Incomplete canary** (no VERDICT / background killed) → `EdgeVector/last-stack`
+     (routine harness / prompt discipline), not product install, unless product
+     steps also failed
 3. File one kanban card with evidence (command + exit + excerpt), tags
    `first-run,llms-txt-smoke`, priority P0/P1 if install is fully broken.
 4. Dedupe: search board for open `llms-txt` / `first-run` cards before filing.
@@ -83,6 +92,7 @@ The script prints `VERDICT: GREEN` or `VERDICT: RED` and exits 0/1.
 - `brew services restart lastdb` / kill primary `lastdbd`
 - Point sandbox tools at real `~/.lastdb/data/folddb.sock`
 - Treat a primary-brain busy timeout as a failed install smoke
+- Background the smoke and treat harness exit 0 as GREEN
 - Ship product fixes from the scheduled routine — **file cards only** when
   running as a routine (interactive use of this skill may fix if Tom asked)
 
