@@ -12,10 +12,11 @@ last-stack-install-apps [options]
 
 Downloads the stable LastDB app stack from public GitHub:
   LastDB daemon (Homebrew), brain, kanban (fkanban), situations, dogfood-graph,
-  org, lastsecrets, search.
+  org, lastsecrets, search, and the optional Kanban Factory theater UI.
 
   org + lastsecrets are required for invite/join ("join my org") onboarding.
   search owns the local semantic MiniLM plane brain/kanban prefer for ask/search.
+  kanban-factory is an optional local animated board UI (Node; no npm install).
 
 Options:
   --dir <path>      clone/update app repos under this directory
@@ -259,6 +260,9 @@ clone_or_update dogfood-graph "https://github.com/EdgeVector/dogfood-graph.git" 
 clone_or_update org "https://github.com/EdgeVector/org.git" || exit 1
 clone_or_update lastsecrets "https://github.com/EdgeVector/lastsecrets.git" || exit 1
 clone_or_update search "https://github.com/EdgeVector/search.git" || exit 1
+# Optional UI: animated live theater for the board (Node; no package install).
+# Soft-fail so a private/unreachable mirror never blocks the core stack.
+clone_or_update kanban-factory "https://github.com/EdgeVector/kanban-factory.git" optional || true
 
 for app in brain kanban situations dogfood-graph org lastsecrets search; do
   run_bun_install "$app"
@@ -279,4 +283,14 @@ printf '  search init   # online semantic index bootstrap (daemon may stay up)\n
 printf '\n'
 printf 'Dogfood Graph is a local app:\n'
 printf '  cd "%s/dogfood-graph" && npm run dev\n\n' "$TARGET_DIR"
+if [ -d "$TARGET_DIR/kanban-factory" ]; then
+  printf 'Kanban Factory (optional animated board theater, Node 18+):\n'
+  printf '  cd "%s/kanban-factory" && node server.mjs\n' "$TARGET_DIR"
+  printf '  # → http://127.0.0.1:4177\n'
+  printf '  # macOS auto-start: ./scripts/install-launchd.sh install\n\n'
+else
+  printf 'Kanban Factory was not installed (optional). Manual:\n'
+  printf '  git clone https://github.com/EdgeVector/kanban-factory.git\n'
+  printf '  cd kanban-factory && node server.mjs\n\n'
+fi
 printf 'Make sure ~/.local/bin and ~/.bun/bin are on PATH if linked commands are not found.\n'
