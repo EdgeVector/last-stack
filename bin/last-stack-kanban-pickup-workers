@@ -256,8 +256,12 @@ write_worker() {
     printf 'status = "active"\n'
     printf 'timeout_min = 45\n'
     # Zero-LLM ready gate: routinesd skips the harness when ready=0 (routines ≥ gate_command).
-    # Path is this install's bin so host-track current updates stay live.
-    printf 'gate_command = "%s/bin/last-stack-kanban-pickup-gate"\n' "$ROOT"
+    # Prefer PATH-resolved install (~/.local/bin after host-track), else this tree's bin.
+    gate_cmd="$ROOT/bin/last-stack-kanban-pickup-gate"
+    if command -v last-stack-kanban-pickup-gate >/dev/null 2>&1; then
+      gate_cmd="$(command -v last-stack-kanban-pickup-gate)"
+    fi
+    printf 'gate_command = "%s"\n' "$gate_cmd"
     printf '# Cap: one WORK unit per fire; capacity comes from separate registry workers, not SpawnAgent fan-out.\n'
     printf '# Prompt path is a freshness bootstrap; it delegates through last-stack-routine-read before claim.\n'
     printf '# gate_command is zero-LLM: skip codex when pickup status ready=0 (todo may still be full).\n'
