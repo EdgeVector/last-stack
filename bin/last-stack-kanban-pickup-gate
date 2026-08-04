@@ -85,13 +85,9 @@ fi
 
 board_cli="kanban"
 if ! command -v kanban >/dev/null 2>&1; then
-  if command -v fkanban >/dev/null 2>&1; then
-    board_cli="fkanban"
-  else
-    hb "kanban-pickup $(iso_now) noop missing-board-cli no_card_claimed"
-    trailer_noop "missing-board-cli no_card_claimed"
-    exit 0
-  fi
+  hb "kanban-pickup $(iso_now) noop missing-board-cli no_card_claimed"
+  trailer_noop "missing-board-cli no_card_claimed"
+  exit 0
 fi
 
 retry_bin=""
