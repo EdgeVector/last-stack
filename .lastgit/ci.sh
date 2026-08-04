@@ -23,6 +23,8 @@ fi
 # budget. Keep the required gate focused on prompt/routine contracts that make
 # routine agents safe, and leave the exhaustive shell fixture suite available
 # through LAST_STACK_CI_FULL=1.
+bin/last-stack-lint-machine-leaks --ci
+
 bin/last-stack-lint-prompts \
   routines/kanban-pickup.md \
   routines/kanban-watch.md \
@@ -39,6 +41,7 @@ bash tests/last-stack-driver-hierarchy.sh
 bash tests/last-stack-north-star-ledger-sync.sh
 bash tests/last-stack-ship-feature-milestones.sh
 bash tests/last-stack-lint-prompts.sh --smoke
+bash tests/last-stack-lint-machine-leaks.sh
 bash tests/last-stack-audit-f-prefix-callers.sh
 bash tests/last-stack-papercut-reconciler-contract.sh
 bash tests/last-stack-papercut-lifecycle-close.sh

@@ -1,0 +1,233 @@
+#!/usr/bin/env bash
+# Fail if Last Stack tree embeds host-machine identity that would ship to
+# other people's installs (public GitHub / last-stack artifact).
+#
+# Modes:
+#   (default)           full scan report; exit 1 if hard findings OR new soft debt
+#   --ci                same gates for LastGit ci-required (quiet pass line)
+#   --report            print all findings; exit 0 always (scheduled health)
+#   --write-baseline    rewrite config/machine-leak-baseline.tsv from soft hits
+#   --json              machine-readable summary on stdout
+#
+# Soft debt (baseline-tracked): host username / absolute home paths that still
+# exist as historical template strings. New paths or rising soft count fail CI.
+# Hard findings (never baselined): personal emails, private VPN IPs, secrets-ish.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+cd "$ROOT"
+
+MODE=gate
+JSON=0
+BASELINE_PATH="${LAST_STACK_MACHINE_LEAK_BASELINE:-$ROOT/config/machine-leak-baseline.tsv}"
+
+usage() {
+  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+  exit 2
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --ci) MODE=gate; shift ;;
+    --report) MODE=report; shift ;;
+    --write-baseline) MODE=write_baseline; shift ;;
+    --json) JSON=1; shift ;;
+    --baseline=*) BASELINE_PATH="${1#*=}"; shift ;;
+    --baseline)
+      BASELINE_PATH="${2:-}"; shift 2 ;;
+    -h|--help) usage ;;
+    *) echo "unknown arg: $1" >&2; usage ;;
+  esac
+done
+
+# Paths never scanned (binary / generated / git)
+exclude_args=(
+  --glob '!.git/**'
+  --glob '!**/node_modules/**'
+  --glob '!**/.bun/**'
+  --glob '!**/dist/**'
+  --glob '!**/target/**'
+  --glob '!config/machine-leak-baseline.tsv'
+  --glob '!bin/last-stack-lint-machine-leaks'
+  --glob '!tests/last-stack-lint-machine-leaks.sh'
+)
+
+# Soft: personal host markers that still litter the tree as install templates.
+# These MUST shrink over time; new files cannot add them.
+SOFT_PATTERNS=(
+  'tomtang'
+  'shiba4life'
+  '/Users/tomtang'
+  '/Users/tom/'
+)
+
+# Hard: never ship, never baseline.
+HARD_PATTERNS=(
+  'tomtang2@'
+  '@gmail\.com'
+  '@yahoo\.'
+  '@icloud\.'
+  '100\.109\.94\.59'
+  'BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY'
+  'ghp_[A-Za-z0-9]{20,}'
+  'github_pat_[A-Za-z0-9_]{20,}'
+  'sk-[A-Za-z0-9]{20,}'
+)
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-machine-leaks.XXXXXX")"
+trap 'rm -rf "$tmpdir"' EXIT
+soft_raw="$tmpdir/soft.tsv"
+hard_raw="$tmpdir/hard.tsv"
+: >"$soft_raw"
+: >"$hard_raw"
+
+scan_pattern() {
+  local kind="$1" pattern="$2" out="$3"
+  # ripgrep: fixed path listing with line numbers
+  if command -v rg >/dev/null 2>&1; then
+    rg -n --hidden --no-heading -e "$pattern" "${exclude_args[@]}" . 2>/dev/null \
+      | while IFS= read -r line; do
+          # line format: path:lineno:content
+          path="${line%%:*}"
+          rest="${line#*:}"
+          lineno="${rest%%:*}"
+          content="${rest#*:}"
+          # skip intentional placeholder docs that only mention the pattern in ban lists
+          case "$path" in
+            config/machine-leak-baseline.tsv|bin/last-stack-lint-machine-leaks|tests/last-stack-lint-machine-leaks.sh) continue ;;
+          esac
+          # normalize content for baseline (collapse whitespace)
+          norm="$(printf '%s' "$content" | tr -s '[:space:]' ' ' | cut -c1-200)"
+          printf '%s\t%s\t%s\t%s\n' "$kind" "$path" "$lineno" "$norm" >>"$out"
+        done || true
+  else
+    echo "last-stack-lint-machine-leaks: requires rg (ripgrep)" >&2
+    exit 2
+  fi
+}
+
+for p in "${SOFT_PATTERNS[@]}"; do
+  scan_pattern soft "$p" "$soft_raw"
+done
+for p in "${HARD_PATTERNS[@]}"; do
+  scan_pattern hard "$p" "$hard_raw"
+done
+
+# Deduplicate soft/hard rows (same path+line from overlapping patterns)
+soft_dedup="$tmpdir/soft_dedup.tsv"
+hard_dedup="$tmpdir/hard_dedup.tsv"
+sort -u "$soft_raw" >"$soft_dedup"
+sort -u "$hard_raw" >"$hard_dedup"
+
+soft_count="$(wc -l <"$soft_dedup" | tr -d ' ')"
+hard_count="$(wc -l <"$hard_dedup" | tr -d ' ')"
+
+# Soft key for baseline: path + content fingerprint (line numbers drift)
+soft_keys="$tmpdir/soft_keys.txt"
+while IFS=$'\t' read -r kind path lineno content; do
+  [ -n "${path:-}" ] || continue
+  fp="$(printf '%s\t%s' "$path" "$content" | shasum -a 256 | awk '{print $1}')"
+  printf '%s\t%s\t%s\n' "$path" "$fp" "$content"
+done <"$soft_dedup" | sort -u >"$soft_keys"
+soft_key_count="$(wc -l <"$soft_keys" | tr -d ' ')"
+
+write_baseline() {
+  mkdir -p "$(dirname "$BASELINE_PATH")"
+  {
+    printf '# machine-leak soft-debt baseline — do not hand-edit unless scrubbing\n'
+    printf '# path\\tcontent_sha256\\tcontent_preview\n'
+    cat "$soft_keys"
+  } >"$BASELINE_PATH"
+  echo "wrote baseline soft_keys=$soft_key_count → $BASELINE_PATH"
+}
+
+if [ "$MODE" = "write_baseline" ]; then
+  write_baseline
+  if [ "$JSON" -eq 1 ]; then
+    printf '{"ok":true,"mode":"write_baseline","soft":%s,"hard":%s,"baseline":"%s"}\n' \
+      "$soft_key_count" "$hard_count" "$BASELINE_PATH"
+  fi
+  exit 0
+fi
+
+# Load baseline keys (path\tfp)
+baseline_keys="$tmpdir/baseline_keys.txt"
+: >"$baseline_keys"
+if [ -f "$BASELINE_PATH" ]; then
+  # shellcheck disable=SC2016
+  awk -F'\t' 'BEGIN{OFS="\t"} /^#/||NF<2{next} {print $1,$2}' "$BASELINE_PATH" | sort -u >"$baseline_keys"
+fi
+baseline_count="$(wc -l <"$baseline_keys" | tr -d ' ')"
+
+new_soft="$tmpdir/new_soft.txt"
+: >"$new_soft"
+while IFS=$'\t' read -r path fp content; do
+  [ -n "${path:-}" ] || continue
+  if ! awk -F'\t' -v p="$path" -v f="$fp" '$1==p && $2==f {found=1} END{exit !found}' "$baseline_keys"; then
+    printf '%s\t%s\t%s\n' "$path" "$fp" "$content" >>"$new_soft"
+  fi
+done <"$soft_keys"
+new_soft_count="$(wc -l <"$new_soft" | tr -d ' ')"
+
+# Soft debt must not grow above baseline size (scrubbing lowers baseline via --write-baseline)
+soft_growth=0
+if [ "$baseline_count" -gt 0 ] && [ "$soft_key_count" -gt "$baseline_count" ]; then
+  soft_growth=1
+fi
+
+if [ "$MODE" = "report" ] || [ "$JSON" -eq 1 ]; then
+  if [ "$JSON" -eq 1 ]; then
+    # compact json
+    python3 - "$soft_key_count" "$hard_count" "$new_soft_count" "$baseline_count" "$soft_growth" <<'PY'
+import json,sys
+soft,hard,new,base,growth = sys.argv[1:6]
+print(json.dumps({
+  "ok": int(hard)==0 and int(new)==0 and growth=="0",
+  "soft_debt": int(soft),
+  "hard_findings": int(hard),
+  "new_soft": int(new),
+  "baseline": int(base),
+  "soft_growth": growth=="1",
+}, sort_keys=True))
+PY
+  else
+    echo "machine-leak-report soft_debt=$soft_key_count hard=$hard_count new_soft=$new_soft_count baseline=$baseline_count"
+    if [ "$hard_count" -gt 0 ]; then
+      echo "== hard findings (never OK) =="
+      head -50 "$hard_dedup"
+    fi
+    if [ "$new_soft_count" -gt 0 ]; then
+      echo "== new soft debt (not in baseline) =="
+      head -50 "$new_soft"
+    fi
+  fi
+  # report mode always 0 for heartbeat tooling
+  [ "$MODE" = "report" ] && exit 0
+fi
+
+# Gate mode
+fail=0
+if [ "$hard_count" -gt 0 ]; then
+  echo "FAIL machine-leak: $hard_count hard finding(s) (emails/private IPs/secrets-like tokens):" >&2
+  head -30 "$hard_dedup" >&2
+  fail=1
+fi
+if [ ! -f "$BASELINE_PATH" ]; then
+  echo "FAIL machine-leak: missing baseline $BASELINE_PATH — run: bin/last-stack-lint-machine-leaks --write-baseline" >&2
+  fail=1
+elif [ "$new_soft_count" -gt 0 ]; then
+  echo "FAIL machine-leak: $new_soft_count new soft host-identity hit(s) not in baseline:" >&2
+  head -40 "$new_soft" >&2
+  echo "Fix the leak, or if intentional product template scrub first. Do not grow personal host paths." >&2
+  fail=1
+elif [ "$soft_growth" -eq 1 ]; then
+  echo "FAIL machine-leak: soft debt grew ($soft_key_count > baseline $baseline_count)" >&2
+  fail=1
+fi
+
+if [ "$fail" -ne 0 ]; then
+  exit 1
+fi
+
+echo "ok last-stack-lint-machine-leaks soft_debt=$soft_key_count hard=0 new=0"
+exit 0
