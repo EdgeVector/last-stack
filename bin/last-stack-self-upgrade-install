@@ -25,8 +25,8 @@ install_agent() {
   mkdir -p "$(dirname "$plist_dst")"
   mkdir -p "$HOME/Library/Logs"
   sed \
-    -e "s|/Users/tomtang/.last-stack|${last_stack}|g" \
-    -e "s|/Users/tomtang|${HOME}|g" \
+    -e "s|/Users/REPLACE/.last-stack|${last_stack}|g" \
+    -e "s|/Users/REPLACE|${HOME}|g" \
     "$plist_src" >"$plist_dst"
   /usr/libexec/PlistBuddy -c "Set :ProgramArguments:0 ${last_stack}/bin/last-stack-self-upgrade" "$plist_dst" 2>/dev/null || true
   /usr/libexec/PlistBuddy -c "Set :ProgramArguments:1 --repair-dirty" "$plist_dst" 2>/dev/null || true

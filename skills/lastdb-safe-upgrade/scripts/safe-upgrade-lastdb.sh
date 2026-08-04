@@ -49,7 +49,7 @@ SMOKE_SH="${LASTDB_SMOKE_SH:-$HOME/code/edgevector/.claude/run-lastdb-mini-smoke
 TAP_REPO="EdgeVector/homebrew-lastdb"
 # Live install venue (see fold/docs/designs/lastdb-minimal-downtime-cutover.md)
 SIDEBIN_DIR="${LASTDB_SIDEBIN_DIR:-$HOME/.lastdb/bin-with-upload-cap}"
-LAUNCHD_LABEL="${LASTDB_LAUNCHD_LABEL:-com.tomtang.lastdbd-primary-506}"
+LAUNCHD_LABEL="${LASTDB_LAUNCHD_LABEL:-com.REPLACE.lastdbd-primary-506}"
 LAUNCHD_PLIST="${LASTDB_LAUNCHD_PLIST:-$HOME/Library/LaunchAgents/${LAUNCHD_LABEL}.plist}"
 
 
@@ -79,14 +79,14 @@ log() { printf '[safe-upgrade] %s\n' "$*"; }
 die() { printf '[safe-upgrade] ERROR: %s\n' "$*" >&2; exit 1; }
 warn() { printf '[safe-upgrade] WARN: %s\n' "$*" >&2; }
 
-# Memory-guard ceiling used by com.tomtang.lastdbd-memory-guard (Tom, 2026-07-14).
+# Memory-guard ceiling used by com.REPLACE.lastdbd-memory-guard (Tom, 2026-07-14).
 # Env LASTDBD_RSS_LIMIT_MB wins; else LaunchAgent plist(s); else the resident
 # primary default. Keep the primary daemon's own plist aligned before kickstart
 # so lastdbd does not boot with its lower binary default while the guard allows
 # the larger resident ceiling.
 # Probe/live must stay under this or the guard SIGTERMs primary in a thrash loop
 # (incident after 2026-07-22 sled-free cutover: candidate ~8.5G vs limit 6G).
-MEMORY_GUARD_PLIST="${LASTDBD_MEMORY_GUARD_PLIST:-$HOME/Library/LaunchAgents/com.tomtang.lastdbd-memory-guard.plist}"
+MEMORY_GUARD_PLIST="${LASTDBD_MEMORY_GUARD_PLIST:-$HOME/Library/LaunchAgents/com.REPLACE.lastdbd-memory-guard.plist}"
 DEFAULT_LASTDBD_RSS_LIMIT_MB="${LASTDBD_DEFAULT_RSS_LIMIT_MB:-12288}"
 # Extra headroom fraction (0–100). Fail probe if RSS >= limit * (100-HEADROOM)/100.
 # Default 10% so live does not sit right on the kill line after settle.

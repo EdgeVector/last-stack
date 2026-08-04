@@ -91,7 +91,7 @@ hand-authored prompt, parameterized):
 
 > You are a senior security reviewer auditing the EdgeVector **`<bucket>`**
 > sprint flagged `[sec-review-later]`. Your dimension: **`<DIMENSION>`**.
-> Repo: `/Users/tomtang/code/edgevector/fold` (cd there; cargo workspace).
+> Repo: `/Users/REPLACE/code/edgevector/fold` (cd there; cargo workspace).
 > Review range: `<range from digest>`. PRs: `<pr list>`.
 > PRIMARY FILES (read the full current file AND the diff): `<files for this dimension>`.
 > HUNT FOR (adversarial — assume a hostile local process / malicious peer):

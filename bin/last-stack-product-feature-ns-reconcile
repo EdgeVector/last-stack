@@ -41,7 +41,7 @@ def find_catalog(explicit: Optional[str]) -> Optional[Path]:
         Path.home()
         / ".fkanban/worktrees/fold-kanban-product-feature-gates-app-registry/folddb_profile/feature_catalog.toml",
         Path.home() / "code/edgevector/fold/folddb_profile/feature_catalog.toml",
-        Path("/Users/tomtang/code/edgevector/fold/folddb_profile/feature_catalog.toml"),
+        Path("/Users/REPLACE/code/edgevector/fold/folddb_profile/feature_catalog.toml"),
     ]:
         if p.is_file():
             return p

@@ -7,24 +7,24 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/tomtang/.last-stack/bin/last-stack-self-upgrade</string>
+    <string>/Users/REPLACE/.last-stack/bin/last-stack-self-upgrade</string>
     <string>--repair-dirty</string>
     <string>--reason=launchd</string>
   </array>
 
   <key>WorkingDirectory</key>
-  <string>/Users/tomtang/.last-stack</string>
+  <string>/Users/REPLACE/.last-stack</string>
 
   <key>EnvironmentVariables</key>
   <dict>
     <key>HOME</key>
-    <string>/Users/tomtang</string>
+    <string>/Users/REPLACE</string>
     <key>USER</key>
-    <string>tomtang</string>
+    <string>REPLACE</string>
     <key>PATH</key>
-    <string>/Users/tomtang/.local/bin:/Users/tomtang/.last-stack/bin:/Users/tomtang/.bun/bin:/Users/tomtang/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <string>/Users/REPLACE/.local/bin:/Users/REPLACE/.last-stack/bin:/Users/REPLACE/.bun/bin:/Users/REPLACE/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>LAST_STACK_ROOT</key>
-    <string>/Users/tomtang/.last-stack</string>
+    <string>/Users/REPLACE/.last-stack</string>
   </dict>
 
   <!-- Every 30 minutes at :12 and :42 — stagger past pickup :00/:20/:40 -->
@@ -48,8 +48,8 @@
   <integer>5</integer>
 
   <key>StandardOutPath</key>
-  <string>/Users/tomtang/Library/Logs/last-stack-self-upgrade.out.log</string>
+  <string>/Users/REPLACE/Library/Logs/last-stack-self-upgrade.out.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/tomtang/Library/Logs/last-stack-self-upgrade.err.log</string>
+  <string>/Users/REPLACE/Library/Logs/last-stack-self-upgrade.err.log</string>
 </dict>
 </plist>

@@ -175,7 +175,7 @@ else
   printf '%s\n' "$DAEMON_SUP" | awk '{print "    • label="$3"  pid="$1"  laststatus="$2}'
   if [ "$NDAEMON" -gt 1 ]; then
     bad "MORE THAN ONE legacy folddb daemon supervisor → drift (the 'couldn't take over' class)."
-    info "Expected: exactly one, label com.folddb.daemon. Legacy com.tomtang.folddb should be gone."
+    info "Expected: exactly one, label com.folddb.daemon. Legacy com.REPLACE.folddb should be gone."
     info "Remove the loser:  launchctl bootout gui/\$(id -u)/<legacy-label>"
     bump 1
   else

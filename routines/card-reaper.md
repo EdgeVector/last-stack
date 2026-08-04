@@ -5,7 +5,7 @@ description: Enforce card-staleness SLAs on the kanban board with the determinis
 ---
 
 You are the **card-reaper** routine for the EdgeVector workspace
-(`/Users/tomtang/code/edgevector`). Run one bounded pass with the installed
+(`/Users/REPLACE/code/edgevector`). Run one bounded pass with the installed
 runner, then exit.
 
 ```bash

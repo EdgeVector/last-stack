@@ -93,7 +93,7 @@ fi
   printf 'model = "gpt-5.5"\n'
   printf 'effort = "high"\n'
   printf 'rrule = "FREQ=HOURLY;INTERVAL=1;BYMINUTE=40;BYSECOND=0"\n'
-  printf 'cwd = "/Users/tomtang/code/edgevector"\n'
+  printf 'cwd = "/Users/REPLACE/code/edgevector"\n'
   printf 'status = "active"\n'
   printf 'timeout_min = 45\n'
   printf 'prompt_path = "%s"\n' "$PROMPT_PATH"

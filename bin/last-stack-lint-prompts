@@ -295,7 +295,7 @@ check_workspace_root_git_probes() {
   # `git ls-remote`, `git rev-parse`) run before a concrete checkout is
   # resolved. The recurring `fatal: not a git repository` class comes from
   # routine/worker preludes that run these from the aggregate workspace root
-  # (`/Users/tomtang/code/edgevector`) instead of `git -C <checkout>` after
+  # (`/Users/REPLACE/code/edgevector`) instead of `git -C <checkout>` after
   # path resolution. A probe is allowed once the same file has established a
   # checkout context earlier: a `git -C`, `worktree add`, `last-stack-repo-op-guard`
   # call, or a `cd`/`pushd` into a non-workspace-root target.
@@ -327,7 +327,7 @@ check_workspace_root_git_probes() {
       function is_workspace_target(t) {
         gsub(/^["'\''`]+|["'\''`]+$/, "", t)
         sub(/\/+$/, "", t)
-        if (t == "/Users/tomtang/code/edgevector") return 1
+        if (t == "/Users/REPLACE/code/edgevector") return 1
         if (t == "<WORKSPACE>") return 1
         if (t ~ /^\$\{?[Ww][Oo][Rr][Kk][Ss][Pp][Aa][Cc][Ee][A-Za-z0-9_]*\}?$/) return 1
         return 0
@@ -743,7 +743,7 @@ for path in "$@"; do
     fail=1
   fi
 
-  workspace_git_pattern='git[[:space:]]-C[[:space:]]/Users/tomtang/code/edgevector([[:space:]]|$)|git[[:space:]]-C[[:space:]]<WORKSPACE>|git[[:space:]]-C[[:space:]]"?\$[A-Za-z_]*(workspace|WORKSPACE)[A-Za-z_]*"?|git[[:space:]]status[[:space:]]--short[[:space:]]--branch|git[[:space:]]rev-parse[[:space:]]--show-toplevel|(^|[^-[:alnum:]_])git[[:space:]]worktree[[:space:]]list'
+  workspace_git_pattern='git[[:space:]]-C[[:space:]]/Users/REPLACE/code/edgevector([[:space:]]|$)|git[[:space:]]-C[[:space:]]<WORKSPACE>|git[[:space:]]-C[[:space:]]"?\$[A-Za-z_]*(workspace|WORKSPACE)[A-Za-z_]*"?|git[[:space:]]status[[:space:]]--short[[:space:]]--branch|git[[:space:]]rev-parse[[:space:]]--show-toplevel|(^|[^-[:alnum:]_])git[[:space:]]worktree[[:space:]]list'
   workspace_git_probes="$(search_prompt_pattern "$workspace_git_pattern" "$path")"
   if [ -n "$workspace_git_probes" ]; then
     printf '%s\n' "$workspace_git_probes"

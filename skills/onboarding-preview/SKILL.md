@@ -51,7 +51,7 @@ From `fold/fold_db_node`, run in the **background** (it's a long-lived dev
 server; first boot does a debug compile, ~30–90s):
 
 ```bash
-cd /Users/tomtang/code/edgevector/fold/fold_db_node
+cd /Users/REPLACE/code/edgevector/fold/fold_db_node
 ./run.sh --local --local-schema --empty-db
 ```
 
@@ -137,7 +137,7 @@ LastDB brain; this throwaway node lives under `/tmp/folddb-slot-9101`).
 If the goal is only to look at / tweak the screens (no real bootstrap):
 
 ```bash
-cd /Users/tomtang/code/edgevector/fold/fold_db_node/src/server/static-react
+cd /Users/REPLACE/code/edgevector/fold/fold_db_node/src/server/static-react
 npm install && npm run dev
 ```
 

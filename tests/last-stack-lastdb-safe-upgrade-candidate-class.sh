@@ -16,10 +16,10 @@ bash -n "$DRIVER"
 
 # --- pure helpers ------------------------------------------------------------
 candidate_path_is_debug \
-  "/Users/tom/.fkanban/worktrees/fold-x/target/debug/lastdbd" \
+  "/Users/ci-runner/.fkanban/worktrees/fold-x/target/debug/lastdbd" \
   || { echo "FAIL: should flag target/debug path" >&2; exit 1; }
 candidate_path_is_debug \
-  "/Users/tom/.lastdb/bin-with-upload-cap/lastdbd" \
+  "/Users/ci-runner/.lastdb/bin-with-upload-cap/lastdbd" \
   && { echo "FAIL: sidebin path must not be debug" >&2; exit 1; }
 candidate_path_is_debug \
   "/tmp/target/release/lastdbd" \

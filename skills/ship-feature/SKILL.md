@@ -337,7 +337,7 @@ is heads-down), default toward:
 ## Hard guardrails (this workspace)
 
 - **Never kill the primary LastDB brain** — that's Tom's brain. Identify
-  it by its socket (`lsof /Users/tomtang/.lastdb/data/folddb.sock`) or process
+  it by its socket (`lsof /Users/REPLACE/.lastdb/data/folddb.sock`) or process
   (`pgrep -fl 'lastdbd|folddb_server'`) before killing any LastDB-like process — the TCP port is
   gone, so a port probe no longer finds it.
 - **Never stash/reset/restore** in a shared repo — other agents share the

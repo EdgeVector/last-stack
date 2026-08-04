@@ -347,15 +347,15 @@ For single-card workers, run the reusable guard before the first repo-scoped
 operation:
 
 ```bash
-workspace="/Users/tomtang/code/edgevector"   # or your rendered <WORKSPACE>
+workspace="/Users/REPLACE/code/edgevector"   # or your rendered <WORKSPACE>
 target_repo="$("$last_stack/bin/last-stack-repo-op-guard" "$target_repo" "$workspace")"
 git -C "$target_repo" rev-parse --show-toplevel
 ```
 
 The guard rejects the aggregate workspace root and requires a concrete child
-checkout such as `/Users/tomtang/code/edgevector/last-stack`,
-`/Users/tomtang/code/edgevector/fold`, or
-`/Users/tomtang/code/edgevector/kanban` before `git` or repo-inferred `gh`
+checkout such as `/Users/REPLACE/code/edgevector/last-stack`,
+`/Users/REPLACE/code/edgevector/fold`, or
+`/Users/REPLACE/code/edgevector/kanban` before `git` or repo-inferred `gh`
 commands run.
 
 When generating Markdown for `brain put`, `kanban add`, `gh --body`, or any
@@ -375,7 +375,7 @@ Creation-style flags belong to `brain <type> new`, not `put`.
 Codex automation prompt skeletons should render the same information directly:
 
 ```text
-Run the Last Stack routine `<routine>`: set `last_stack="<last-stack>"`; source `$last_stack/bin/last-stack-shell-prelude`; run `$last_stack/bin/last-stack-cli-preflight git curl jq gh <board-cli> <brain-cli>`; then read the routine with `$last_stack/bin/last-stack-routine-read "<routine>"` and execute one bounded pass. The reader auto-upgrades a stale install via `last-stack-self-upgrade` before serving the prompt; if it prints `LAST_STACK_ROUTINE_DEFERRED self_upgrade_lock` or `LAST_STACK_ROUTINE_DEFERRED self_upgrade_fetch_failed`, stop before executing stale text and heartbeat a noop/backoff for transient self-upgrade backpressure. If it still prints `LAST_STACK_ROUTINE_STALE` (dirty/diverged install) or `LAST_STACK_ROUTINE_MISSING`, stop before executing stale/absent routine text and heartbeat the failure. Agents do product work in isolated worktrees. If tracked dirt in the disposable install blocks routine-read, self-upgrade, or host-track, authorized remediation is backup-branch plus `git reset --hard lastgit/main` per `[[preference-agents-work-in-worktrees-install-checkout-disposable]]`. Prefer a scheduled `self-upgrade` routine so the install stays current even when other jobs are idle. Automation ID: <automation-id>. Automation memory: ${CODEX_HOME:-$HOME/.codex}/automations/<automation-id>/memory.md. Use workspace `<workspace>` only as a container of child checkouts; before repo-scoped `git` or repo-inferred `gh`, resolve the child repo with `$last_stack/bin/last-stack-repo-op-guard "$target_repo" "<workspace>"` and use examples such as `git -C /Users/tomtang/code/edgevector/<repo> status -sb`, never the workspace root itself. Use board CLI `<board-cli>`, brain CLI `<brain-cli>`, default board `<board>` (the board name is only a `--board` argument for `list` and `add`; `show`, `move`, `rm`, and rank/dep/tag verbs operate on the default board implicitly and reject `--board`), and global CLIs from PATH.
+Run the Last Stack routine `<routine>`: set `last_stack="<last-stack>"`; source `$last_stack/bin/last-stack-shell-prelude`; run `$last_stack/bin/last-stack-cli-preflight git curl jq gh <board-cli> <brain-cli>`; then read the routine with `$last_stack/bin/last-stack-routine-read "<routine>"` and execute one bounded pass. The reader auto-upgrades a stale install via `last-stack-self-upgrade` before serving the prompt; if it prints `LAST_STACK_ROUTINE_DEFERRED self_upgrade_lock` or `LAST_STACK_ROUTINE_DEFERRED self_upgrade_fetch_failed`, stop before executing stale text and heartbeat a noop/backoff for transient self-upgrade backpressure. If it still prints `LAST_STACK_ROUTINE_STALE` (dirty/diverged install) or `LAST_STACK_ROUTINE_MISSING`, stop before executing stale/absent routine text and heartbeat the failure. Agents do product work in isolated worktrees. If tracked dirt in the disposable install blocks routine-read, self-upgrade, or host-track, authorized remediation is backup-branch plus `git reset --hard lastgit/main` per `[[preference-agents-work-in-worktrees-install-checkout-disposable]]`. Prefer a scheduled `self-upgrade` routine so the install stays current even when other jobs are idle. Automation ID: <automation-id>. Automation memory: ${CODEX_HOME:-$HOME/.codex}/automations/<automation-id>/memory.md. Use workspace `<workspace>` only as a container of child checkouts; before repo-scoped `git` or repo-inferred `gh`, resolve the child repo with `$last_stack/bin/last-stack-repo-op-guard "$target_repo" "<workspace>"` and use examples such as `git -C /Users/REPLACE/code/edgevector/<repo> status -sb`, never the workspace root itself. Use board CLI `<board-cli>`, brain CLI `<brain-cli>`, default board `<board>` (the board name is only a `--board` argument for `list` and `add`; `show`, `move`, `rm`, and rank/dep/tag verbs operate on the default board implicitly and reject `--board`), and global CLIs from PATH.
 ```
 
 When a prompt needs PR merge-queue membership, use

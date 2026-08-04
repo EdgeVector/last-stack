@@ -11,7 +11,7 @@ trap cleanup EXIT
 home="$tmp/home/.lastdb"
 link_dir="$tmp/home/.local/bin"
 bin_dir="$tmp/bin-with-upload-cap"
-plist="$tmp/com.tomtang.lastdbd-primary.plist"
+plist="$tmp/com.REPLACE.lastdbd-primary.plist"
 mkdir -p "$home" "$link_dir" "$bin_dir"
 resolved_bin_dir="$(cd "$bin_dir" && pwd -P)"
 
@@ -31,7 +31,7 @@ import sys
 
 plist, bin_dir = sys.argv[1:3]
 data = {
-    "Label": "com.tomtang.lastdbd-primary",
+    "Label": "com.REPLACE.lastdbd-primary",
     "ProgramArguments": [f"{bin_dir}/lastdbd"],
     "EnvironmentVariables": {
         "PATH": f"{bin_dir}:/opt/homebrew/bin:/usr/bin:/bin",

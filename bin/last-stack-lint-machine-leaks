@@ -42,7 +42,9 @@ done
 
 # Paths never scanned (binary / generated / git)
 exclude_args=(
+  --glob '!.git'
   --glob '!.git/**'
+  --glob '!**/.git/**'
   --glob '!**/node_modules/**'
   --glob '!**/.bun/**'
   --glob '!**/dist/**'
@@ -50,15 +52,16 @@ exclude_args=(
   --glob '!config/machine-leak-baseline.tsv'
   --glob '!bin/last-stack-lint-machine-leaks'
   --glob '!tests/last-stack-lint-machine-leaks.sh'
+  --glob '!.portal-worktree'
 )
 
 # Soft: personal host markers that still litter the tree as install templates.
 # These MUST shrink over time; new files cannot add them.
 SOFT_PATTERNS=(
+  # Personal host identity — never ship in public last-stack.
   'tomtang'
   'shiba4life'
   '/Users/tomtang'
-  '/Users/tom/'
 )
 
 # Hard: never ship, never baseline.
