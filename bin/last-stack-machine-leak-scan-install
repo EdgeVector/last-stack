@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Install daily LaunchAgent for machine-leak-scan (zero-LLM).
+set -euo pipefail
+last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+label=com.edgevector.last-stack-machine-leak-scan
+template="$last_stack/templates/launchd/${label}.plist.example"
+# resolve from checkout when developing
+if [ ! -f "$template" ]; then
+  self_root="$(cd "$(dirname "$0")/.." && pwd -P)"
+  template="$self_root/templates/launchd/${label}.plist.example"
+fi
+[ -f "$template" ] || { echo "missing template $template" >&2; exit 2; }
+
+uid="$(id -u)"
+dest_dir="$HOME/Library/LaunchAgents"
+dest="$dest_dir/${label}.plist"
+mkdir -p "$dest_dir" "$HOME/.last-stack/logs"
+
+# Prefer login home (not sandbox)
+home="${HOME}"
+sed \
+  -e "s|/Users/REPLACE|${home}|g" \
+  "$template" >"$dest"
+
+launchctl bootout "gui/$uid/$label" 2>/dev/null || true
+launchctl bootstrap "gui/$uid" "$dest"
+launchctl enable "gui/$uid/$label" 2>/dev/null || true
+# kick once
+launchctl kickstart -k "gui/$uid/$label" 2>/dev/null || true
+echo "installed $dest (daily 09:17 local)"

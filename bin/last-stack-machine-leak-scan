@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Daily/weekly zero-LLM scan: report machine-identity leaks in the Last Stack
+# install tree (public product). Heartbeats always. Escalates only on hard
+# findings or *new* soft debt vs the committed baseline.
+set -euo pipefail
+
+last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+# Prefer artifact/current layout; fall back to this script's tree when running from a checkout.
+if [ -x "$last_stack/bin/last-stack-lint-machine-leaks" ]; then
+  ROOT="$last_stack"
+  # If install is a symlink farm into artifacts, resolve the real product root
+  if [ -d "$last_stack/artifacts/current" ]; then
+    ROOT="$last_stack/artifacts/current"
+  fi
+elif [ -x "$(cd "$(dirname "$0")/.." && pwd -P)/bin/last-stack-lint-machine-leaks" ]; then
+  ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+else
+  echo "machine-leak-scan: last-stack-lint-machine-leaks not found" >&2
+  exit 2
+fi
+
+lint="$ROOT/bin/last-stack-lint-machine-leaks"
+log_dir="${LAST_STACK_LOG_DIR:-$HOME/.last-stack/logs}"
+mkdir -p "$log_dir"
+log="$log_dir/machine-leak-scan.log"
+ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+json_out="$("$lint" --report --json 2>/dev/null || true)"
+# Also run gate for exit semantics (capture)
+set +e
+gate_out="$("$lint" --ci 2>&1)"
+gate_ec=$?
+set -e
+
+soft="$(printf '%s' "$json_out" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("soft_debt",0))' 2>/dev/null || echo '?')"
+hard="$(printf '%s' "$json_out" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("hard_findings",0))' 2>/dev/null || echo '?')"
+new="$(printf '%s' "$json_out" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("new_soft",0))' 2>/dev/null || echo '?')"
+
+status=ok
+if [ "$gate_ec" -ne 0 ]; then
+  status=fail
+fi
+
+printf '%s machine-leak-scan %s soft=%s hard=%s new=%s gate_ec=%s\n' \
+  "$ts" "$status" "$soft" "$hard" "$new" "$gate_ec" | tee -a "$log"
+
+# Optional notify when red (ra if present)
+if [ "$status" = "fail" ] && command -v ra >/dev/null 2>&1; then
+  ra notify "last-stack machine-leak-scan RED soft=$soft hard=$hard new=$new" 2>/dev/null || true
+fi
+
+# Heartbeat file for routinesd / morning digest
+hb_dir="${LAST_STACK_HEARTBEAT_DIR:-$HOME/.last-stack/logs}"
+mkdir -p "$hb_dir"
+printf '%s\n' "$ts machine-leak-scan $status soft=$soft hard=$hard new=$new" \
+  >>"$hb_dir/routine-heartbeats.log" 2>/dev/null || true
+
+exit 0

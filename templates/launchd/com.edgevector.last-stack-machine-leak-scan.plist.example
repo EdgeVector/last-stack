@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.edgevector.last-stack-machine-leak-scan</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/REPLACE/.last-stack/bin/last-stack-machine-leak-scan</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>9</integer>
+    <key>Minute</key>
+    <integer>17</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/Users/REPLACE/.last-stack/logs/machine-leak-scan.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/REPLACE/.last-stack/logs/machine-leak-scan.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/REPLACE</string>
+    <key>PATH</key>
+    <string>/Users/REPLACE/.local/bin:/Users/REPLACE/.last-stack/bin:/Users/REPLACE/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>LAST_STACK_ROOT</key>
+    <string>/Users/REPLACE/.last-stack</string>
+  </dict>
+</dict>
+</plist>
