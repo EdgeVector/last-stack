@@ -127,10 +127,18 @@ cmd_start() {
     $GIT -C "$CACHE" worktree add --quiet -b "$branch" "$path" "refs/heads/${MAIN_REF}"
   fi
 
-  # Drop a small marker so agents know this is the work surface
-  printf 'portal=%s\nslug=%s\nbranch=%s\ncreated=%s\n' \
-    "$PORTAL" "$SLUG" "$branch" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  # Drop a small marker so agents know this is the work surface.
+  # Never write absolute local paths (home dirs leak host usernames into git if
+  # this file is accidentally committed and mirrored to public GitHub).
+  printf 'slug=%s\nbranch=%s\ncreated=%s\n' \
+    "$SLUG" "$branch" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     >"$path/.portal-worktree"
+  # Keep the marker untracked in every worktree.
+  if [ -d "$path/.git" ] || [ -f "$path/.git" ]; then
+    git -C "$path" check-ignore -q .portal-worktree 2>/dev/null || \
+      printf '\n# local agent marker — never commit (machine-local)\n.portal-worktree\n' \
+        >>"$path/.git/info/exclude"
+  fi
 
   printf 'portal-wt: ready\n'
   printf '  portal  %s\n' "$PORTAL"
