@@ -1,7 +1,7 @@
 ---
 name: kanban-pickup
 cadence: every 5 minutes
-description: Drain the ready board queue fast (one unit default, optional second sequential) — YOU perform kanban-agent WORK mode yourself in an isolated worktree and drive to a MERGED PR. No subagents, no collab SpawnAgent, no background harness fan-out. If todo is empty, exit immediately (no claim, no idle invent) to save credits; optional Idle mode smart-heal only when explicitly requested.
+description: Drain the ready board queue fast (one unit default, optional second sequential) — YOU perform kanban-agent WORK mode yourself in an isolated worktree and drive to a MERGED PR. No subagents, no collab SpawnAgent, no background harness fan-out. If ready=0 (including full todo of unclaimable cards), exit immediately (no claim, no idle invent) to save credits; optional Idle mode smart-heal only when explicitly requested.
 ---
 
 ## NO REVIEW COLUMN (Tom 2026-07-16 — won't-undo)
@@ -42,27 +42,32 @@ handoffs do not block surface-overlap or pollute the factory:
 "$last_stack/bin/last-stack-board-closeout-sweep" || true
 ```
 
-**Empty-todo credit gate (won't-undo — Tom 2026-07-22):** right after CLI
-preflight + board-closeout-sweep, and **before** any claim, idle invent, or
-other expensive agent work, cheap-count the ready column:
+**Ready-queue credit gate (won't-undo — Tom 2026-07-22 empty-todo;
+2026-08-04 ready=0):** right after CLI preflight + board-closeout-sweep, and
+**before** any claim, idle invent, or other expensive agent work, run the
+zero-LLM gate (same binary routinesd uses as `gate_command`):
 
 ```bash
-"$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
-  <board CLI> list --column todo --json > /tmp/kanban-pickup-todo.json
-todo_count="$(jq 'length' /tmp/kanban-pickup-todo.json)"
-printf 'TODO_INVENTORY count=%s\n' "$todo_count"
+set +e
+"$last_stack/bin/last-stack-kanban-pickup-gate"
+gate_rc=$?
+set -e
+if [ "$gate_rc" -ne 10 ]; then
+  # Gate already heartbeated + printed ROUTINE_RESULT (empty-todo, ready=0,
+  # busy-node, …). Do not claim, idle invent, or start implementation.
+  exit 0
+fi
 ```
 
-- If the read fails after retries with busy-node signals (`service_timeout`,
-  "node did not respond", "too many concurrent reads"), heartbeat
-  `noop busy-node no_card_claimed` and EXIT (do not claim, do not idle).
-- If `todo_count` is **0**: do **not** claim a card, do **not** enter idle
-  smart-heal, do **not** invent or file work, do **not** start implementation.
-  Heartbeat `noop empty-todo no_card_claimed`, print the machine trailer by
-  using the `ROUTINE_RESULT` token followed by
-  `outcome=<noop> detail=empty-todo no_card_claimed`, and EXIT.
-  (`doing` cards are already claimed — `kanban-watch` / board-closeout own them.)
-- If `todo_count` is **> 0**, continue with claim selection as usual.
+The gate checks **`kanban pickup status --json` → `ready`**, not todo length.
+A full `todo` of unclaimable cards (`ready=0`: unattached-outcome, human-gated,
+blocked-on-dependency, parked/non-work, …) must EXIT without claiming.
+
+- Gate exit **0** → noop skip (trailer already printed).
+- Gate exit **10** → proceed with claim selection as usual.
+- Busy-node / board-read failures are classified by the gate as noop skip.
+
+(`doing` cards are already claimed — `kanban-watch` / board-closeout own them.)
 
 Never heartbeat `in-flight-budget-handoff` with `pr=none` — if no PR/CR URL was
 recorded, roll the card back to `todo` (see wall-clock budget below).
