@@ -144,6 +144,74 @@ for cli in brain kanban situations; do
   fi
 done
 
+# --- brew service home (website path uses `brew services start lastdb`) ---
+# Never start/stop brew services here — only inspect the installed service
+# definition so a poisoned /tmp HOME cannot go GREEN while the isolated
+# daemon path still works.
+echo ">>> inspect brew service home (read-only; no brew services start)"
+assert_brew_service_home() {
+  local brew_prefix plist prog env_home env_lastdb login
+  login="$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | awk '{print $2}' || true)"
+  login="${login:-$REAL_HOME}"
+  brew_prefix="$(brew --prefix edgevector/lastdb/lastdb 2>/dev/null || brew --prefix lastdb 2>/dev/null || true)"
+  if [ -z "$brew_prefix" ] || [ ! -d "$brew_prefix" ]; then
+    note_fail "brew-service:formula not installed (website path needs brew install edgevector/lastdb/lastdb)"
+    return
+  fi
+  plist="$brew_prefix/homebrew.mxcl.lastdb.plist"
+  if [ ! -f "$plist" ]; then
+    note_fail "brew-service:plist missing at $plist"
+    return
+  fi
+  # Reject install-time Dir.home freeze into a temp/sandbox path.
+  env_home="$(plutil -extract EnvironmentVariables.HOME raw "$plist" 2>/dev/null || true)"
+  env_lastdb="$(plutil -extract EnvironmentVariables.LASTDB_HOME raw "$plist" 2>/dev/null || true)"
+  if printf '%s\n' "$env_home" "$env_lastdb" | grep -Eqe '^/tmp/|/var/folders/'; then
+    note_fail "brew-service:plist freezes temp HOME/LASTDB_HOME (HOME=${env_home:-unset} LASTDB_HOME=${env_lastdb:-unset})"
+    return
+  fi
+  if [ -n "$env_home" ] && [ "$env_home" != "$login" ]; then
+    note_fail "brew-service:plist HOME=$env_home is not login home $login"
+    return
+  fi
+  if [ -n "$env_lastdb" ] && [ "$env_lastdb" != "$login/.lastdb" ]; then
+    note_fail "brew-service:plist LASTDB_HOME=$env_lastdb is not $login/.lastdb"
+    return
+  fi
+  prog="$(plutil -extract ProgramArguments.0 raw "$plist" 2>/dev/null || true)"
+  if [ -z "$prog" ]; then
+    note_fail "brew-service:ProgramArguments empty"
+    return
+  fi
+  # Preferred: runtime wrapper (resolves login HOME at start).
+  if [[ "$prog" == *lastdbd-service ]]; then
+    if [ -x "$prog" ] || [ -x "$brew_prefix/bin/lastdbd-service" ]; then
+      note_pass "brew-service:runtime-home-wrapper ($prog)"
+    else
+      note_fail "brew-service:lastdbd-service missing executable at $prog"
+    fi
+    return
+  fi
+  # Legacy: bare lastdbd with no baked temp HOME is acceptable if LASTDB_HOME is
+  # unset (session HOME) or equals login ~/.lastdb.
+  if [[ "$prog" == *lastdbd ]]; then
+    if [ -z "$env_home" ] && [ -z "$env_lastdb" ]; then
+      note_pass "brew-service:legacy-lastdbd no baked HOME (session home at start)"
+      return
+    fi
+    if [ -z "$env_home" ] || [ "$env_home" = "$login" ]; then
+      if [ -z "$env_lastdb" ] || [ "$env_lastdb" = "$login/.lastdb" ]; then
+        note_pass "brew-service:legacy-lastdbd login home ok"
+        return
+      fi
+    fi
+    note_fail "brew-service:legacy-lastdbd unexpected env HOME=${env_home:-unset} LASTDB_HOME=${env_lastdb:-unset}"
+    return
+  fi
+  note_fail "brew-service:unexpected ProgramArguments[0]=$prog"
+}
+assert_brew_service_home
+
 # --- isolated daemon (NOT brew services) ---
 echo ">>> start isolated lastdbd"
 mkdir -p "$LASTDB_HOME"
