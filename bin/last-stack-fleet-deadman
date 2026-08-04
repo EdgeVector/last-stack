@@ -7,13 +7,12 @@ script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
 LAST_STACK_ROOT="$(CDPATH= cd -- "$script_dir/.." && pwd -P)"
 export LAST_STACK_ROOT
 
-CHECK_ONLY=1
 PAGE=0
 STALE_MAX_S="${FLEET_DEADMAN_STALE_S:-1800}"
 for arg in "$@"; do
   case "$arg" in
-    --check) CHECK_ONLY=1 ;;
-    --page) PAGE=1; CHECK_ONLY=0 ;;
+    --check) ;;
+    --page) PAGE=1 ;;
     -h|--help) echo "Usage: last-stack-fleet-deadman [--check|--page]"; exit 0 ;;
   esac
 done
