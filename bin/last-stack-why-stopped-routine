@@ -34,7 +34,7 @@ status = "active"
 timeout_min = 15
 prompt_path = "$PROMPT_PATH"
 heartbeat_slug = "routine-heartbeats"
-group = "ops"
+group = "quality"
 EOF
 )
 
