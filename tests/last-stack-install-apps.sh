@@ -15,7 +15,7 @@ cat >"$stubbin/brew" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 log="${BREW_LOG:?}"
-printf '%s\n' "brew $*" >>"$log"
+printf '%s\n' "HOME=${HOME:-} brew $*" >>"$log"
 case "$1" in
   tap)
     if [ "$#" -eq 1 ]; then
@@ -90,12 +90,31 @@ chmod +x "$stubbin/bun"
 BREW_LOG="$tmp/brew.log" PATH="$stubbin:/usr/bin:/bin" \
   "$ROOT/bin/last-stack-install-apps" --dir "$tmp/apps" --no-link >/tmp/last-stack-install-apps.out
 
-grep -Fxq 'brew tap' "$tmp/brew.log"
-grep -Fxq 'brew tap edgevector/lastdb' "$tmp/brew.log"
-grep -Fxq 'brew trust --tap edgevector/lastdb' "$tmp/brew.log"
-grep -Fxq 'brew install edgevector/lastdb/lastdb' "$tmp/brew.log"
+grep -Eq 'HOME=.+ brew tap( |$)' "$tmp/brew.log"
+grep -Eq 'HOME=.+ brew tap edgevector/lastdb' "$tmp/brew.log"
+grep -Eq 'HOME=.+ brew trust --tap edgevector/lastdb' "$tmp/brew.log"
+grep -Eq 'HOME=.+ brew install edgevector/lastdb/lastdb' "$tmp/brew.log"
 if grep -Eq 'brew trust .*antoniorodr|brew trust .*openclaw|brew trust .*steipete|brew trust .*yakitrak' "$tmp/brew.log"; then
   echo "trusted an unrelated tap" >&2
+  exit 1
+fi
+
+# When process HOME is a sandbox, brew install must run under the login home so
+# the formula service plist never freezes a /tmp/... path.
+sandbox_home="$tmp/sandbox-home"
+mkdir -p "$sandbox_home"
+: >"$tmp/brew-sandbox.log"
+HOME="$sandbox_home" BREW_LOG="$tmp/brew-sandbox.log" PATH="$stubbin:/usr/bin:/bin" \
+  "$ROOT/bin/last-stack-install-apps" --dir "$tmp/apps-sandbox" --no-link >/tmp/last-stack-install-apps-sandbox.out
+login="$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | awk '{print $2}' || true)"
+login="${login:-$(eval echo "~$(id -un)")}"
+if ! grep -Fq "HOME=$login brew install edgevector/lastdb/lastdb" "$tmp/brew-sandbox.log"; then
+  echo "expected brew install under login HOME=$login; got:" >&2
+  cat "$tmp/brew-sandbox.log" >&2
+  exit 1
+fi
+if grep -Fq "HOME=$sandbox_home brew install" "$tmp/brew-sandbox.log"; then
+  echo "brew install ran under sandbox HOME (would poison launchd plist)" >&2
   exit 1
 fi
 

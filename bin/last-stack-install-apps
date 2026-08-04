@@ -140,10 +140,26 @@ EOF
   chmod +x "$HOME/.local/bin/$command_name"
 }
 
+# Login-user home (not process $HOME). Homebrew evaluates Dir.home into the
+# formula service plist at install/reinstall time; running `brew install` under
+# an ephemeral/sandbox HOME freezes that path into the machine-wide service.
+login_home() {
+  local real_home=""
+  real_home="$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | awk '{print $2}' || true)"
+  if [ -z "$real_home" ]; then
+    real_home="$(eval echo "~$(id -un)" 2>/dev/null || true)"
+  fi
+  if [ -z "$real_home" ]; then
+    real_home="${HOME:-}"
+  fi
+  printf '%s\n' "$real_home"
+}
+
 install_lastdb_formula() {
   local tap="edgevector/lastdb"
   local formula="$tap/lastdb"
   local trust_formula="$tap/folddb"
+  local brew_home=""
 
   need brew
   echo "==> installing LastDB daemon"
@@ -157,7 +173,15 @@ install_lastdb_formula() {
     brew trust --formula "$trust_formula"
   fi
 
-  brew install "$formula"
+  brew_home="$(login_home)"
+  if [ -n "$brew_home" ] && [ "${HOME:-}" != "$brew_home" ]; then
+    echo "    note: running brew under login HOME=$brew_home (process HOME=${HOME:-} is not the login home)"
+    # Prevent brew reinstall/service rewrite from baking a sandbox HOME into the
+    # machine-wide launchd plist used by `brew services start lastdb`.
+    HOME="$brew_home" brew install "$formula"
+  else
+    brew install "$formula"
+  fi
 }
 
 link_cli() {

@@ -114,9 +114,11 @@ else
 fi
 
 if [ -x "$HOME/.last-stack/bin/last-stack-install-apps" ]; then
-  # install-apps uses brew (system) + clones into ~/lastdb-apps under sandbox HOME
+  # Apps clone under sandbox HOME. Use --no-brew: this smoke already requires a
+  # system lastdbd on PATH, and brew install under a non-login HOME must never
+  # rewrite the machine-wide launchd service plist (Dir.home freeze).
   set +e
-  "$HOME/.last-stack/bin/last-stack-install-apps"
+  "$HOME/.last-stack/bin/last-stack-install-apps" --no-brew
   APPS_RC=$?
   set -e
   if [ "$APPS_RC" -eq 0 ]; then
