@@ -57,7 +57,8 @@ The script prints `VERDICT: GREEN` or `VERDICT: RED` and exits 0/1.
 | Prereqs | `brew`, `bun` (or installable), `git`, `curl`, `lastdbd` on PATH |
 | last-stack clone | shallow clone of public `EdgeVector/last-stack` into sandbox |
 | setup | `./setup` exit 0 |
-| install-apps | brain + kanban + situations CLIs on sandbox PATH (lastsecrets may skip if private) |
+| install-apps | brain + kanban + situations CLIs on sandbox PATH; uses `--no-brew` so smoke never rewrites the host service plist |
+| brew-service home | **read-only** inspect of installed `homebrew.mxcl.lastdb.plist` (never `brew services start`): no `/tmp` or `/var/folders` freeze of `HOME`/`LASTDB_HOME`; prefer `lastdbd-service` runtime wrapper; legacy bare `lastdbd` only if env is login home or unset |
 | daemon | isolated `lastdbd --data-dir $LASTDB_HOME` serves socket within 30s |
 | health | `curl --unix-socket …/folddb.sock http://localhost/health` → `{"status":"ok"}` |
 | brain first-run bootstrap | `brain init --grant-consent` exit 0 (setup, not a health check); config has **no** `:9001` |
