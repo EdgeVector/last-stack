@@ -226,7 +226,7 @@ incident.
 ```bash
 cp -a ~/.lastdb/bin-with-upload-cap/lastdbd.bak-pre-<ver>-<ts> \
       ~/.lastdb/bin-with-upload-cap/lastdbd
-launchctl kickstart -k gui/$(id -u)/com.tomtang.lastdbd-primary-506
+launchctl kickstart -k gui/$(id -u)/com.REPLACE.lastdbd-primary-506
 kanban list
 ```
 

@@ -71,7 +71,7 @@ Resolved from arguments / env / sensible defaults, in order:
 | Variable | Default | How resolved |
 |---|---|---|
 | `ENV`        | `dev` | First positional arg or `--env`. Accepts `dev` or `prod`. |
-| `USER_HASH`  | required | Second positional arg or `--user-hash`. Must be a stable identifier for this developer (e.g. `tomtang-brain-dev`, `kanban-rust-dev`). Ask if not provided. |
+| `USER_HASH`  | required | Second positional arg or `--user-hash`. Must be a stable identifier for this developer (e.g. `REPLACE-brain-dev`, `kanban-rust-dev`). Ask if not provided. |
 | `HANDLE`     | `$USER_HASH` | `--handle`. Cosmetic; recorded in the local keypair file alongside the key, never sent on the wire. |
 
 If `USER_HASH` is ambiguous (no arg + ambiguous from the prompt), ASK the

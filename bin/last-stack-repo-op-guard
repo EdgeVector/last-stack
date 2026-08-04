@@ -39,7 +39,7 @@ fi
 # Reject a malformed composite path before any filesystem probe. The recurring
 # failure mode is a board row's `Repo: owner/name`, a branch, and a checkout
 # path getting joined into a single whitespace-separated string such as
-# `/Users/tomtang/code/edgevector/fbrain kanban/brain-rename EdgeVector/fbrain`,
+# `/Users/REPLACE/code/edgevector/fbrain kanban/brain-rename EdgeVector/fbrain`,
 # which then cascades into `fatal: not a git repository`. A real checkout path
 # in this workspace never contains whitespace or a newline.
 case "$candidate" in

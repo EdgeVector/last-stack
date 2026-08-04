@@ -298,15 +298,15 @@ to `review`, append a one-line note explaining what's missing, and exit.
    share these repos). The `Repo:` header must resolve to an explicit local Git
    checkout path before any `git` or `gh` command runs. If it is missing,
    ambiguous, points at the aggregate workspace (for example
-   `/Users/tomtang/code/edgevector`), or cannot be resolved to a checkout, move
+   `/Users/REPLACE/code/edgevector`), or cannot be resolved to a checkout, move
    the card in `todo` with a one-line `BLOCKED:` note instead of probing the
    current directory or workspace root. Treat checkout resolution as a hard
    preflight gate and run Git from the resolved checkout, not from the workspace
    container:
    ```bash
    target_repo="<resolved-target-repo-root>"
-   case "$target_repo" in ""|/Users/tomtang/code/edgevector) exit 2 ;; esac
-   target_repo="$("$last_stack/bin/last-stack-repo-op-guard" "$target_repo" "/Users/tomtang/code/edgevector")"
+   case "$target_repo" in ""|/Users/REPLACE/code/edgevector) exit 2 ;; esac
+   target_repo="$("$last_stack/bin/last-stack-repo-op-guard" "$target_repo" "/Users/REPLACE/code/edgevector")"
    "$LAST_STACK_TOOL_GIT" -C "$target_repo" rev-parse --show-toplevel
    cd "$target_repo"
    "$LAST_STACK_TOOL_GIT" fetch origin <base>
@@ -752,7 +752,7 @@ Check the repo's contributor docs (`CONTRIBUTING.md` / `AGENTS.md` /
 - **Never kill a LastDB node you didn't start**; don't `clean`/`reset`/`stash` a
   shared repo — use `git worktree add`.
 - **Never probe the workspace root as a repo.** A container such as
-  `/Users/tomtang/code/edgevector` may only hold child repos. Resolve the card's
+  `/Users/REPLACE/code/edgevector` may only hold child repos. Resolve the card's
   `Repo:` header to a concrete checkout, `cd` there (or use `git -C "$repo"`),
   and use `gh -R <owner>/<repo>` before all Git/GitHub operations. If the repo
   path is not explicit and resolvable, move the card to `backlog` with

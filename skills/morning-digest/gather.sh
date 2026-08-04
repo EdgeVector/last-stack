@@ -11,8 +11,8 @@
 
 set -u
 HOURS="${1:-24}"
-WS="/Users/tomtang/code/edgevector"
-PROJ="/Users/tomtang/.claude/projects/-Users-tomtang-code-edgevector"
+WS="/Users/REPLACE/code/edgevector"
+PROJ="/Users/REPLACE/.claude/projects/-Users-REPLACE-code-edgevector"
 REPOS=(fold schema-infra exemem-infra fold_dev_node kanban)
 
 echo "################################################################"

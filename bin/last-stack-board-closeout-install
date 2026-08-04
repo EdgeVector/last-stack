@@ -30,8 +30,8 @@ install_agent() {
   mkdir -p "$(dirname "$plist_dst")"
   # Rewrite LAST_STACK paths to this install root and HOME if needed.
   sed \
-    -e "s|/Users/tomtang/.last-stack|${last_stack}|g" \
-    -e "s|/Users/tomtang|${HOME}|g" \
+    -e "s|/Users/REPLACE/.last-stack|${last_stack}|g" \
+    -e "s|/Users/REPLACE|${HOME}|g" \
     "$plist_src" >"$plist_dst"
   # Also ensure ProgramArguments points at this install's sweep binary.
   /usr/libexec/PlistBuddy -c "Set :ProgramArguments:0 ${last_stack}/bin/last-stack-board-closeout-sweep" "$plist_dst" 2>/dev/null || true

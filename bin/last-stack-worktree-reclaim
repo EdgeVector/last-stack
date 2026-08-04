@@ -30,7 +30,7 @@
 set -euo pipefail
 
 self_dir="$(cd "$(dirname "$0")" && pwd -P)"
-home="${HOME:-/Users/tomtang}"
+home="${HOME:-/Users/REPLACE}"
 worktree_roots=(
   "${WORKTREES_DIR:-$home/.fkanban/worktrees}"
   "$home/.kanban/worktrees"

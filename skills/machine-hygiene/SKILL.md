@@ -21,7 +21,7 @@ actions noted below.
 
 - **NEVER kill the primary LastDB brain (`lastdbd`, or legacy `folddb_server`).** It's Tom's primary brain with live Chrome
   connections; long uptime is NOT an orphan signal. Identify the primary brain by its live
-  LastDB socket (`lsof /Users/tomtang/.lastdb/data/folddb.sock`), with the old
+  LastDB socket (`lsof /Users/REPLACE/.lastdb/data/folddb.sock`), with the old
   `~/.folddb/data/folddb.sock` path only as a fallback, or by the app process
   (`pgrep -fl 'MacOS/[f]old-app'`) or Mini daemon (`pgrep -fl '[l]astdbd'`) before
   touching any LastDB-like process — the TCP port is gone, so a port probe no longer finds it.
@@ -108,8 +108,8 @@ actions noted below.
 ```bash
 df -h /System/Volumes/Data | tail -1                       # free space
 ps aux | grep -E 'lastdbd|folddb_server' | grep -v grep    # confirm primary brain only
-lsof /Users/tomtang/.lastdb/data/folddb.sock 2>/dev/null   # identify the primary brain by its live socket
-lsof /Users/tomtang/.folddb/data/folddb.sock 2>/dev/null    # stale-path fallback only
+lsof /Users/REPLACE/.lastdb/data/folddb.sock 2>/dev/null   # identify the primary brain by its live socket
+lsof /Users/REPLACE/.folddb/data/folddb.sock 2>/dev/null    # stale-path fallback only
 pgrep -fl 'MacOS/[f]old-app'                               # process fallback for the app-hosted brain
 pgrep -fl '[l]astdbd'                                      # Mini primary brain fallback; socket lsof can be empty
 ```
@@ -206,8 +206,8 @@ not an orphan signal). Known preview ports: **5173** (lastdb-ui), **5178**,
 # Identify the primary brain FIRST so it can never be a kill target:
 brain_pids=$(
   {
-    lsof -t /Users/tomtang/.lastdb/data/folddb.sock 2>/dev/null
-    lsof -t /Users/tomtang/.folddb/data/folddb.sock 2>/dev/null
+    lsof -t /Users/REPLACE/.lastdb/data/folddb.sock 2>/dev/null
+    lsof -t /Users/REPLACE/.folddb/data/folddb.sock 2>/dev/null
     pgrep -f 'MacOS/[f]old-app' 2>/dev/null
     pgrep -f '[l]astdbd' 2>/dev/null
   } | sort -u
@@ -254,8 +254,8 @@ name or uptime (the brain is also a long-lived `lastdb_server`/`fold-app`):
 ```bash
 brain_pids=$(
   {
-    lsof -t /Users/tomtang/.lastdb/data/folddb.sock 2>/dev/null
-    lsof -t /Users/tomtang/.folddb/data/folddb.sock 2>/dev/null
+    lsof -t /Users/REPLACE/.lastdb/data/folddb.sock 2>/dev/null
+    lsof -t /Users/REPLACE/.folddb/data/folddb.sock 2>/dev/null
     pgrep -f 'MacOS/[f]old-app' 2>/dev/null
     pgrep -f '[l]astdbd' 2>/dev/null
   } | sort -u

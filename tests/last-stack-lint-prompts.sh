@@ -72,7 +72,7 @@ fi
 bad_workspace_git="$tmp/bad-workspace-git.md"
 {
   printf '%s\n' "pwd && git stat""us --short --branch"
-  printf '%s\n' "git -C /Users/tomtang/code/edge""vector status --short"
+  printf '%s\n' "git -C /Users/REPLACE/code/edge""vector status --short"
   printf '%s\n' "git -C \"\$workspace_ro""ot\" status --short"
   printf '%s\n' "git -C \"\$workspa""ce_dir\" rev-parse --show-toplevel"
   printf '%s\n' "git work""tree list --porcelain"
@@ -84,14 +84,14 @@ if "$ROOT/bin/last-stack-lint-prompts" "$bad_workspace_git" >/dev/null 2>&1; the
 fi
 
 bad_workspace_dash_c_status="$tmp/bad-workspace-dash-c-status.md"
-printf '%s\n' "git -C /Users/tomtang/code/edge""vector status --short" > "$bad_workspace_dash_c_status"
+printf '%s\n' "git -C /Users/REPLACE/code/edge""vector status --short" > "$bad_workspace_dash_c_status"
 if "$ROOT/bin/last-stack-lint-prompts" "$bad_workspace_dash_c_status" >/dev/null 2>&1; then
   echo "expected git -C aggregate workspace status to fail prompt lint" >&2
   exit 1
 fi
 
 bad_workspace_dash_c_redirected_status="$tmp/bad-workspace-dash-c-redirected-status.md"
-printf '%s\n' "git -C /Users/tomtang/code/edge""vector status --short 2>&1" > "$bad_workspace_dash_c_redirected_status"
+printf '%s\n' "git -C /Users/REPLACE/code/edge""vector status --short 2>&1" > "$bad_workspace_dash_c_redirected_status"
 if "$ROOT/bin/last-stack-lint-prompts" "$bad_workspace_dash_c_redirected_status" >/dev/null 2>&1; then
   echo "expected git -C aggregate workspace status with redirection to fail prompt lint" >&2
   exit 1
@@ -494,7 +494,7 @@ if "$ROOT/bin/last-stack-lint-prompts" "$bad_bare_git_status" >/dev/null 2>&1; t
 fi
 
 bad_workspace_cd_git_branch="$tmp/bad-workspace-cd-git-branch.md"
-printf '%s\n' "cd /Users/tomtang/code/edge""vector" "git bra""nch" > "$bad_workspace_cd_git_branch"
+printf '%s\n' "cd /Users/REPLACE/code/edge""vector" "git bra""nch" > "$bad_workspace_cd_git_branch"
 if "$ROOT/bin/last-stack-lint-prompts" "$bad_workspace_cd_git_branch" >/dev/null 2>&1; then
   echo "expected bare git branch after cd to workspace root to fail prompt lint" >&2
   exit 1

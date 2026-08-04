@@ -9,7 +9,7 @@ export const meta = {
 
 // ── FILL THESE IN from scan.sh digest before running ───────────────────────
 const SPRINT = 'app-isolation'                       // bucket key from the digest
-const REPO = '/Users/tomtang/code/edgevector/fold'
+const REPO = '/Users/REPLACE/code/edgevector/fold'
 const RANGE = 'PASTE_RANGE_FROM_DIGEST'              // <oldest>^..<newest>
 const PRS = 'PASTE_PR_LIST'                          // "#699, #707, …"
 

@@ -31,7 +31,7 @@ fi
 if [ -z "${PRODUCT_FEATURE_CATALOG:-}" ]; then
   for c in \
     "$HOME/.fkanban/worktrees/fold-kanban-product-feature-gates-app-registry/folddb_profile/feature_catalog.toml" \
-    /Users/tomtang/code/edgevector/fold/folddb_profile/feature_catalog.toml
+    /Users/REPLACE/code/edgevector/fold/folddb_profile/feature_catalog.toml
   do
     if [ -f "$c" ]; then export PRODUCT_FEATURE_CATALOG="$c"; break; fi
   done

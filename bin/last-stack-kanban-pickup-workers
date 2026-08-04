@@ -252,7 +252,7 @@ write_worker() {
     printf 'model = "gpt-5.5"\n'
     printf 'effort = "high"\n'
     printf 'rrule = "FREQ=HOURLY;BYMINUTE=%s;BYSECOND=%s"\n' "$byminute" "$second"
-    printf 'cwd = "/Users/tomtang/code/edgevector"\n'
+    printf 'cwd = "/Users/REPLACE/code/edgevector"\n'
     printf 'status = "active"\n'
     printf 'timeout_min = 45\n'
     # Zero-LLM ready gate: routinesd skips the harness when ready=0 (routines ≥ gate_command).
