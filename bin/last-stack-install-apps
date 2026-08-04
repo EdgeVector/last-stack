@@ -12,9 +12,10 @@ last-stack-install-apps [options]
 
 Downloads the stable LastDB app stack from public GitHub:
   LastDB daemon (Homebrew), brain, kanban (fkanban), situations, dogfood-graph,
-  org, lastsecrets.
+  org, lastsecrets, search.
 
   org + lastsecrets are required for invite/join ("join my org") onboarding.
+  search owns the local semantic MiniLM plane brain/kanban prefer for ask/search.
 
 Options:
   --dir <path>      clone/update app repos under this directory
@@ -218,6 +219,15 @@ link_cli() {
       echo "==> linking org CLI"
       write_bun_cli_shim "$dest/src/cli.ts" org
       ;;
+    search)
+      echo "==> linking search CLI"
+      # Prefer committed bin/search (bun entry) when present.
+      if [ -x "$dest/bin/search" ]; then
+        link_existing_cli "$dest/bin/search" search
+      else
+        write_bun_cli_shim "$dest/src/cli.ts" search
+      fi
+      ;;
   esac
 }
 
@@ -248,8 +258,9 @@ clone_or_update situations "https://github.com/EdgeVector/situations.git" || exi
 clone_or_update dogfood-graph "https://github.com/EdgeVector/dogfood-graph.git" || exit 1
 clone_or_update org "https://github.com/EdgeVector/org.git" || exit 1
 clone_or_update lastsecrets "https://github.com/EdgeVector/lastsecrets.git" || exit 1
+clone_or_update search "https://github.com/EdgeVector/search.git" || exit 1
 
-for app in brain kanban situations dogfood-graph org lastsecrets; do
+for app in brain kanban situations dogfood-graph org lastsecrets search; do
   run_bun_install "$app"
   link_cli "$app"
 done
@@ -264,6 +275,7 @@ printf '  kanban init\n'
 printf '  situations init\n'
 printf '  lastsecrets init\n'
 printf '  org init\n'
+printf '  search init   # online semantic index bootstrap (daemon may stay up)\n'
 printf '\n'
 printf 'Dogfood Graph is a local app:\n'
 printf '  cd "%s/dogfood-graph" && npm run dev\n\n' "$TARGET_DIR"
