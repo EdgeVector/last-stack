@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+# Zero-LLM pre-dispatch gate for kanban-pickup workers.
+#
+# Problem: routinesd always boots the harness (codex high-effort). The old
+# empty-todo gate lived *inside* the agent prompt, so a non-empty todo full of
+# unclaimable cards (ready=0: unattached-outcome, human-gated, …) still burned
+# ~5 minutes of high-effort Codex per worker per fire.
+#
+# This script is the cheap outer gate:
+#   - exit 0  → skip harness (noop). Heartbeat + ROUTINE_RESULT already printed.
+#   - exit 10 → proceed to harness (ready work exists).
+#   - exit 2  → usage / hard config error.
+#
+# Invoked by routinesd `gate_command` when present, and also as the first step
+# of the pickup bootstrap prompt (defense in depth on older routinesd).
+set -euo pipefail
+
+self_dir="$(cd "$(dirname "$0")" && pwd -P)"
+if [ -n "${LAST_STACK_ROOT:-}" ] && [ -d "${LAST_STACK_ROOT}/bin" ]; then
+  last_stack="$(cd "$LAST_STACK_ROOT" && pwd -P)"
+else
+  last_stack="$(cd "$self_dir/.." && pwd -P)"
+fi
+if [ -f "$last_stack/bin/last-stack-shell-prelude" ]; then
+  # shellcheck disable=SC1091
+  . "$last_stack/bin/last-stack-shell-prelude"
+fi
+
+usage() {
+  cat <<'USAGE'
+last-stack-kanban-pickup-gate [--json-out PATH]
+
+Zero-LLM credit gate for kanban-pickup. Exit 0 = skip agent; 10 = proceed.
+
+Options:
+  --json-out PATH   write the pickup status JSON (or todo list) to PATH
+  -h, --help        show this help
+USAGE
+}
+
+json_out=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json-out)
+      json_out="${2:-}"
+      shift 2
+      ;;
+    --json-out=*)
+      json_out="${1#*=}"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown flag: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+hb() {
+  local line="$1"
+  if [ -x "$last_stack/bin/last-stack-brain-append-heartbeat" ]; then
+    "$last_stack/bin/last-stack-brain-append-heartbeat" --line "$line" || true
+  fi
+  printf '%s\n' "$line"
+}
+
+trailer_noop() {
+  local detail="$1"
+  printf '%s %s\n' 'ROUTINE_RESULT' "outcome=noop detail=${detail}"
+}
+
+# Closeout is zero-LLM and safe even when the queue is empty.
+if [ -x "$last_stack/bin/last-stack-board-closeout-sweep" ]; then
+  "$last_stack/bin/last-stack-board-closeout-sweep" || true
+elif command -v last-stack-board-closeout-sweep >/dev/null 2>&1; then
+  last-stack-board-closeout-sweep || true
+fi
+
+board_cli="kanban"
+if ! command -v kanban >/dev/null 2>&1; then
+  hb "kanban-pickup $(iso_now) noop missing-board-cli no_card_claimed"
+  trailer_noop "missing-board-cli no_card_claimed"
+  exit 0
+fi
+
+retry_bin=""
+if [ -x "$last_stack/bin/last-stack-lastdb-retry" ]; then
+  retry_bin="$last_stack/bin/last-stack-lastdb-retry"
+elif command -v last-stack-lastdb-retry >/dev/null 2>&1; then
+  retry_bin="last-stack-lastdb-retry"
+fi
+
+run_board() {
+  if [ -n "$retry_bin" ]; then
+    "$retry_bin" --attempts 3 -- "$@"
+  else
+    "$@"
+  fi
+}
+
+tmp_status="$(mktemp "${TMPDIR:-/tmp}/pickup-gate-status.XXXXXX")"
+tmp_todo="$(mktemp "${TMPDIR:-/tmp}/pickup-gate-todo.XXXXXX")"
+cleanup() { rm -f "$tmp_status" "$tmp_todo"; }
+trap cleanup EXIT
+
+# Prefer pickup status (ready count). Fall back to todo length if status fails.
+status_ok=0
+if run_board "$board_cli" pickup status --json >"$tmp_status" 2>/tmp/pickup-gate-status.err; then
+  status_ok=1
+else
+  # busy-node / CLI error on status — try cheap todo list before giving up
+  if ! run_board "$board_cli" list --column todo --json >"$tmp_todo" 2>/tmp/pickup-gate-todo.err; then
+    err="$(cat /tmp/pickup-gate-status.err /tmp/pickup-gate-todo.err 2>/dev/null | tr '\n' ' ' | head -c 200)"
+    case "$err" in
+      *service_timeout*|*did\ not\ respond*|*too\ many\ concurrent*)
+        hb "kanban-pickup $(iso_now) noop busy-node no_card_claimed"
+        trailer_noop "busy-node no_card_claimed"
+        exit 0
+        ;;
+    esac
+    hb "kanban-pickup $(iso_now) noop board-read-failed no_card_claimed"
+    trailer_noop "board-read-failed no_card_claimed"
+    exit 0
+  fi
+fi
+
+if [ -n "$json_out" ]; then
+  if [ "$status_ok" -eq 1 ]; then
+    cp "$tmp_status" "$json_out" || true
+  else
+    cp "$tmp_todo" "$json_out" || true
+  fi
+fi
+
+if [ "$status_ok" -eq 1 ]; then
+  # ready is top-level; counts.pickup-ready is the same signal
+  ready="$(jq -r '(.ready // .counts["pickup-ready"] // 0) | tonumber' "$tmp_status" 2>/dev/null || echo 0)"
+  scanned="$(jq -r '(.scanned // 0) | tonumber' "$tmp_status" 2>/dev/null || echo 0)"
+  # summarize non-ready categories for the heartbeat (compact)
+  blockers="$(jq -r '
+    (.counts // {})
+    | to_entries
+    | map(select(.key != "pickup-ready" and (.value | tonumber) > 0))
+    | map("\(.key):\(.value)")
+    | join(",")
+  ' "$tmp_status" 2>/dev/null || echo "")"
+  todo_count="$(jq -r '
+    [.cards[]? | select((.column // "") == "todo")] | length
+  ' "$tmp_status" 2>/dev/null || echo "?")"
+  printf 'PICKUP_GATE ready=%s scanned=%s todo_approx=%s blockers=%s\n' \
+    "$ready" "$scanned" "$todo_count" "${blockers:-none}"
+
+  # integer compare
+  ready_i=0
+  case "$ready" in
+    ''|*[!0-9]*) ready_i=0 ;;
+    *) ready_i="$ready" ;;
+  esac
+
+  if [ "$ready_i" -eq 0 ]; then
+    detail="no-eligible ready=0"
+    if [ -n "$blockers" ]; then
+      detail="${detail} blockers=${blockers}"
+    fi
+    detail="${detail} no_card_claimed"
+    hb "kanban-pickup $(iso_now) noop ${detail}"
+    trailer_noop "$detail"
+    exit 0
+  fi
+
+  printf 'PICKUP_GATE proceed ready=%s\n' "$ready_i"
+  printf '%s %s\n' 'ROUTINE_RESULT' "outcome=ok detail=proceed ready=${ready_i}"
+  exit 10
+fi
+
+# Fallback path: only todo list available
+todo_count="$(jq 'length' "$tmp_todo" 2>/dev/null || echo 0)"
+printf 'TODO_INVENTORY count=%s\n' "$todo_count"
+todo_i=0
+case "$todo_count" in
+  ''|*[!0-9]*) todo_i=0 ;;
+  *) todo_i="$todo_count" ;;
+esac
+if [ "$todo_i" -eq 0 ]; then
+  hb "kanban-pickup $(iso_now) noop empty-todo no_card_claimed"
+  trailer_noop "empty-todo no_card_claimed"
+  exit 0
+fi
+
+# Todo non-empty but no status → proceed (claim path will re-check eligibility)
+printf 'PICKUP_GATE proceed todo_count=%s status_unavailable\n' "$todo_i"
+printf '%s %s\n' 'ROUTINE_RESULT' "outcome=ok detail=proceed todo_count=${todo_i} status_unavailable"
+exit 10

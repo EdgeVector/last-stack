@@ -14,9 +14,10 @@ printf '%s\n' '---' 'name: kanban-pickup' '---' >"$prompt"
 
 test -f "$bootstrap"
 grep -q 'last-stack-routine-read" kanban-pickup' "$bootstrap"
-grep -q 'Empty-todo credit gate' "$bootstrap"
-grep -q 'list --column todo --json' "$bootstrap"
-grep -q 'empty-todo no_card_claimed' "$bootstrap"
+grep -q 'last-stack-kanban-pickup-gate' "$bootstrap"
+grep -q 'Zero-LLM ready gate' "$bootstrap"
+grep -q 'ready=0' "$bootstrap"
+grep -q 'gate_rc' "$bootstrap"
 grep -q "$prompt" "$bootstrap"
 grep -q 'routine-read-failed no_card_claimed' "$bootstrap"
 
@@ -31,6 +32,8 @@ do
   test -f "$tmp/registry/$id.toml"
   grep -q "id = \"$id\"" "$tmp/registry/$id.toml"
   grep -q "prompt_path = \"$bootstrap\"" "$tmp/registry/$id.toml"
+  grep -q 'gate_command =' "$tmp/registry/$id.toml"
+  grep -q 'last-stack-kanban-pickup-gate' "$tmp/registry/$id.toml"
   grep -q 'freshness bootstrap' "$tmp/registry/$id.toml"
 done
 
@@ -57,6 +60,7 @@ grep -q 'dry-bootstrap.md' <<<"$dry"
 grep -q 'last-stack-routine-read" kanban-pickup' <<<"$dry"
 grep -q 'last-stack-fkanban-pickup-w4.toml' <<<"$dry"
 grep -q 'id = "last-stack-fkanban-pickup-w4"' <<<"$dry"
+grep -q 'gate_command' <<<"$dry"
 test ! -e "$tmp/dry-registry"
 
 echo "ok"
