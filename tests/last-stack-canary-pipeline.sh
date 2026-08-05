@@ -205,5 +205,142 @@ fi
 grep -q 'ANCESTRY stage=promote result=unknown' "$tmp/anc-prom.err"
 grep -q 'refusing to publish without proven ancestry' "$tmp/anc-prom.err"
 
+# --- write-path soak gate --------------------------------------------------
+# Regression for 2026-08-05: the 24h soak's four hard checks were `launchctl
+# print`, `lastdb status`, `kanban ping` and `situations list` — three liveness
+# checks and one human fence. None of them wrote. A candidate whose mutations
+# ran ~4x slower passed all four and would have auto-published as public brew
+# stable. See brain papercut-canary-soak-gate-has-no-write-path-check.
+
+PROBE="$ROOT/bin/last-stack-canary-write-probe"
+test -x "$PROBE" || chmod +x "$PROBE"
+bash -n "$PROBE"
+# The probe must be an idempotent upsert of ONE fixed slug — a probe that
+# accumulated records would grow the store by one row an hour, forever.
+grep -q 'canary-soak-write-probe' "$PROBE"
+# `brain put` exits 2 unless frontmatter both opens AND closes with `---`.
+[ "$(grep -c '^---$' "$PROBE")" = "2" ]
+
+# board_write must be one of the soak checks, not an optional extra.
+grep -q '"board_write"' "$CLI"
+
+soak_once() { # <dir> <extra-env-assignments...>  -> runs a real (non-dry-run) soak-watch
+  local dir="$1"; shift
+  LAST_STACK_CANARY_LIVE_VERSION_CMD=pass \
+    "$CLI" --state-dir "$dir" dogfood --sha "$(basename "$dir")" --version 0.0.1-canary.test \
+    >/dev/null 2>&1
+  env "$@" \
+    LAST_STACK_CANARY_LAUNCHD_CHECK_CMD=pass \
+    LAST_STACK_CANARY_MEMORY_CHECK_CMD="${MEM_CMD:-pass}" \
+    LAST_STACK_CANARY_BOARD_CHECK_CMD=pass \
+    LAST_STACK_CANARY_SITUATION_CHECK_CMD=pass \
+    LAST_STACK_CANARY_SOAK_HOURS=0 \
+    LAST_STACK_CANARY_LIVE_VERSION_CMD=pass \
+    "$CLI" --state-dir "$dir" soak-watch --sha "$(basename "$dir")"
+}
+
+# A write that SUCCEEDS BUT IS SLOW reds the soak. This is the whole point:
+# exit code alone was never the missing signal.
+slow_dir="$tmp/w-slow"
+if soak_once "$slow_dir" \
+     LAST_STACK_CANARY_BOARD_WRITE_CHECK_CMD="sleep 0.3" \
+     LAST_STACK_CANARY_WRITE_MS_MAX=100 \
+     LAST_STACK_CANARY_CHECK_SAMPLES=3 \
+     >"$tmp/w-slow.out" 2>"$tmp/w-slow.err"; then
+  echo "expected a slow write to red the soak" >&2
+  exit 1
+fi
+grep -q 'status=soak_red' "$tmp/w-slow.out"
+grep -q 'CHECK label=board_write result=slow' "$tmp/w-slow.err"
+# The ledger must say WHY — a bare `board_write` would not distinguish a write
+# that errored from one that merely crawled.
+grep -q 'board_write\[slow_median_ms=' "$slow_dir/ledger.jsonl"
+
+# A fast write greens it, and reports the measurement either way.
+# NB: `true`/`pass`/`ok` are STUB keywords that short-circuit before timing —
+# a real command is required to exercise the budget path.
+fast_dir="$tmp/w-fast"
+soak_once "$fast_dir" \
+  LAST_STACK_CANARY_BOARD_WRITE_CHECK_CMD="exit 0" \
+  LAST_STACK_CANARY_WRITE_MS_MAX=60000 \
+  LAST_STACK_CANARY_CHECK_SAMPLES=3 \
+  >"$tmp/w-fast.out" 2>"$tmp/w-fast.err"
+grep -q 'status=soak_green' "$tmp/w-fast.out"
+grep -q 'CHECK label=board_write result=ok median_ms=' "$tmp/w-fast.out"
+
+# One slow sample is load; a slow MEDIAN is the binary. A single outlier among
+# three must not brake a good candidate.
+flap_dir="$tmp/w-flap"
+cat >"$tmp/flappy.sh" <<'FLAP'
+#!/usr/bin/env bash
+n="$(cat "$FLAP_COUNTER" 2>/dev/null || echo 0)"
+echo $((n + 1)) >"$FLAP_COUNTER"
+[ "$n" = "0" ] && sleep 0.4
+exit 0
+FLAP
+chmod +x "$tmp/flappy.sh"
+FLAP_COUNTER="$tmp/flap.count" soak_once "$flap_dir" \
+  FLAP_COUNTER="$tmp/flap.count" \
+  LAST_STACK_CANARY_BOARD_WRITE_CHECK_CMD="$tmp/flappy.sh" \
+  LAST_STACK_CANARY_WRITE_MS_MAX=200 \
+  LAST_STACK_CANARY_CHECK_SAMPLES=3 \
+  >"$tmp/w-flap.out" 2>"$tmp/w-flap.err"
+grep -q 'status=soak_green' "$tmp/w-flap.out"
+
+# A write that ERRORS is distinguishable in the ledger from one that is slow.
+err_dir="$tmp/w-err"
+if soak_once "$err_dir" \
+     LAST_STACK_CANARY_BOARD_WRITE_CHECK_CMD="exit 3" \
+     >"$tmp/w-err.out" 2>"$tmp/w-err.err"; then
+  echo "expected a failing write to red the soak" >&2
+  exit 1
+fi
+grep -q 'board_write\[exit_3\]' "$err_dir/ledger.jsonl"
+
+# --dry-run must NEVER run the mutating probe against a real node, even though
+# no stub was provided for it. Proof runs and CI fixtures depend on this.
+skip_dir="$tmp/w-skip"
+"$CLI" --state-dir "$skip_dir" dogfood --dry-run --sha w-skip >/dev/null
+LAST_STACK_CANARY_LAUNCHD_CHECK_CMD=pass \
+LAST_STACK_CANARY_MEMORY_CHECK_CMD=pass \
+LAST_STACK_CANARY_BOARD_CHECK_CMD=pass \
+LAST_STACK_CANARY_SITUATION_CHECK_CMD=pass \
+LAST_STACK_CANARY_SOAK_HOURS=0 \
+LAST_STACK_CANARY_LIVE_VERSION_CMD=pass \
+  "$CLI" --state-dir "$skip_dir" soak-watch --dry-run --sha w-skip >"$tmp/w-skip.out"
+grep -q 'CHECK label=board_write result=ok mode=dry-run-skip' "$tmp/w-skip.out"
+
+# --- memory guard actually guards memory ------------------------------------
+# `memory_guard` was named for a bar it did not implement: it ran `lastdb
+# status` and read only the exit code. A check that reads as covered but is not
+# is worse than an absent one.
+over_dir="$tmp/m-over"
+if MEM_CMD="printf 'Memory RSS: 20.0 GiB\n'" soak_once "$over_dir" \
+     LASTDBD_RSS_LIMIT_MB=12288 \
+     LAST_STACK_CANARY_BOARD_WRITE_CHECK_CMD=pass \
+     >"$tmp/m-over.out" 2>"$tmp/m-over.err"; then
+  echo "expected RSS over the ceiling to red the soak" >&2
+  exit 1
+fi
+grep -q 'CHECK label=memory_guard result=fail rss_mb=20480' "$tmp/m-over.err"
+grep -q 'memory_guard\[rss_mb=20480_ceiling_mb=11059\]' "$over_dir/ledger.jsonl"
+
+under_dir="$tmp/m-under"
+MEM_CMD="printf 'Memory RSS: 1.56 GiB\n'" soak_once "$under_dir" \
+  LASTDBD_RSS_LIMIT_MB=12288 \
+  LAST_STACK_CANARY_BOARD_WRITE_CHECK_CMD=pass \
+  >"$tmp/m-under.out" 2>"$tmp/m-under.err"
+grep -q 'status=soak_green' "$tmp/m-under.out"
+grep -q 'CHECK label=memory_guard rss_mb=1597 ceiling_mb=11059' "$tmp/m-under.out"
+
+# An older binary that does not print `Memory RSS:` must not brake a soak — but
+# the gap has to be visible rather than silently green.
+quiet_dir="$tmp/m-quiet"
+MEM_CMD="printf 'lastdbd: running\n'" soak_once "$quiet_dir" \
+  LAST_STACK_CANARY_BOARD_WRITE_CHECK_CMD=pass \
+  >"$tmp/m-quiet.out" 2>"$tmp/m-quiet.err"
+grep -q 'status=soak_green' "$tmp/m-quiet.out"
+grep -q 'label=memory_guard note=rss_not_reported' "$tmp/m-quiet.err"
+
 echo "PASS last-stack-canary-pipeline"
 
