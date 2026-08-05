@@ -218,7 +218,9 @@ for that run’s cap, but **always** process complete_proof for the targeted
 milestone or every queue entry):
 
 1. `kanban milestone detail <slug> --json` — confirm all implementation children
-   are terminal and note `proof_status` / proof card.
+   are terminal and note `proof_status` / proof card, plus **`proof_verdict` and
+   `proof_verdict_reason`** (the live re-check of the evidence; see
+   **Proof verdict** below).
 2. Choose proof path from the **gap-report entry reason** + detail:
    - If reason/body has machine PASS evidence (or proof card DONE with
      `PROOF: PASS` / `RESULT: PASS`):
@@ -232,10 +234,52 @@ milestone or every queue entry):
      ```
    - Else: leave alone (true `await_proof`); do not invent a validation shell.
 3. Re-read detail; require `state=complete` and `proof_status` matching the path
-   used (`passing` or `not_required`). Count as `proof_n+=1` for the GAP_FILL line.
+   used (`passing` or `not_required`) **and `proof_verdict` equal to that same
+   value**. Only then count as `proof_n+=1` for the GAP_FILL line.
+   - `proof_verdict=unproven` after a `passing` transition means the gate
+     accepted the transition but the evidence does not currently hold. Do **not**
+     count it. Report `<slug>: unproven (<proof_verdict_reason>)` and remediate
+     per **Proof verdict** below.
 
 When an entry is only visible as `proof_ready` outside the queue (old fkanban),
 still run the same complete path for the target slug.
+
+### Proof verdict — never trust `proof_status` alone
+
+`proof_status` is an **operator assertion** recorded at one past instant;
+`proof_verdict` is the same evidence test re-run **now**, on every read. They
+drift silently, and the stored claim is the one that lies: measured on the live
+board 2026-08-04, **20 milestones claimed `proof_status=passing` and 19 of those
+claims no longer held** — 18 naming a proof card that no longer exists, 1 naming
+one linked elsewhere. All 19 read `state=complete`.
+
+So, everywhere this routine reads a milestone:
+
+- **A milestone is proven only when `proof_verdict=passing`** (or
+  `not_required`). `proof_status=passing` on its own proves nothing.
+- **An already-`complete` milestone whose `proof_verdict=unproven` is NOT
+  proven.** Do not silently count it as done in `gap-report` follow-up or the
+  GAP_FILL line. List it with its `proof_verdict_reason`.
+- Do **not** "fix" it by re-asserting `--proof-status passing`. The verdict is
+  derived and will not change; only restoring real evidence changes it. Route by
+  reason:
+  | `proof_verdict_reason` | remediation |
+  |---|---|
+  | `missing-proof-card` / `no-proof-card` | recreate the validation proof card and relink with `--proof-card` |
+  | `unreadable-proof-card` | `kanban groom board-cards-heal` (sparse row, card is present) |
+  | `proof-card-mismatch` | relink the card to this milestone/board |
+  | `proof-not-terminal` | the proof card is not in its terminal column — finish or move it |
+  | `no-pass-evidence` | the card lost its `PROOF: PASS` / `RESULT: PASS` line or its `DONE-WHEN` file — restore the evidence |
+- Reopening a `complete` milestone whose evidence is gone for good is **Tom's
+  call, not this routine's**. Report it; do not change `state`.
+
+**If `proof_verdict` is absent from `milestone detail --json`**, the installed
+kanban CLI predates it. Treat every `passing` claim as unverifiable and complete
+nothing on the `passing` path this run; report
+`proof-verdict-unavailable — run: host-track refresh --force fkanban`. Note the
+`--force`: for `local-safe` installs a plain `refresh` reports "already current"
+even when the install is behind main
+(`papercut-host-track-local-safe-staleness-is-self-referential`).
 
 ### Reconciliation note
 
