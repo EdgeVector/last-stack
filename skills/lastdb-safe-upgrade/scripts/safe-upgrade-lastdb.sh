@@ -39,7 +39,10 @@
 #
 set -euo pipefail
 
-export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.bun/bin:${PATH:-}"
+# Prefer sidebin primary binary over Homebrew so CURRENT_VER reflects the
+# live LaunchAgent daemon, not whatever brew last linked (canary bottles often
+# land in /opt/homebrew/bin and false-trigger ALREADY_CURRENT).
+export PATH="${LASTDB_SIDEBIN_DIR:-$HOME/.lastdb/bin-with-upload-cap}:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.bun/bin:${PATH:-}"
 
 PRIMARY_HOME="${LASTDB_HOME:-$HOME/.lastdb}"
 PRIMARY_SOCK="$PRIMARY_HOME/data/folddb.sock"
@@ -713,7 +716,11 @@ live_install_brew() {
 [ -f "$PRIMARY_HOME/identity.key" ] || die "no identity.key in $PRIMARY_HOME — refusing upgrade"
 [ -x "$SMOKE_SH" ] || die "smoke harness missing: $SMOKE_SH"
 
-CURRENT_VER="$(lastdbd --version 2>/dev/null | awk '{print $NF}' || true)"
+if [ -x "${LASTDB_SIDEBIN_DIR:-$HOME/.lastdb/bin-with-upload-cap}/lastdbd" ]; then
+  CURRENT_VER="$("${LASTDB_SIDEBIN_DIR:-$HOME/.lastdb/bin-with-upload-cap}/lastdbd" --version 2>/dev/null | awk '{print $NF}' || true)"
+else
+  CURRENT_VER="$(lastdbd --version 2>/dev/null | awk '{print $NF}' || true)"
+fi
 [ -n "$CURRENT_VER" ] || die "cannot read current lastdbd --version (is brew lastdb installed?)"
 log "current lastdbd: $CURRENT_VER"
 log "primary home:    $PRIMARY_HOME ($(du -sh "$PRIMARY_HOME" 2>/dev/null | awk '{print $1}'))"
