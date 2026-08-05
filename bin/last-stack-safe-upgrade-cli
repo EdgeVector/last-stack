@@ -341,9 +341,28 @@ main() {
   else
     version_id="$(materialize_from_git "$stage" "$remote" "$bare" "$ref")"
   fi
-  # normalize id to short-safe
-  version_id="$(printf '%s' "$version_id" | tr -cd 'a-fA-F0-9' | cut -c1-40)"
-  [ -n "$version_id" ] || version_id="v$(date +%Y%m%d%H%M%S)"
+  # Normalize to a restorable local-safe version id (exactly 40 hex chars).
+  # NEVER use `tr -cd 'a-fA-F0-9'` on free-form ids: materialize_from_dir's
+  # `dir-YYYYMMDDHHMMSS` becomes `dYYYYMMDDHHMMSS`, which the host-track
+  # artifact invariant rejects as invalid-rollback-target when parked as
+  # previous (see fix-artifact-host-track-remote-rollback-20260805).
+  raw_version_id="$version_id"
+  version_id="$(printf '%s' "$version_id" | tr 'A-F' 'a-f')"
+  if [[ "$version_id" =~ ^[0-9a-f]{40}$ ]]; then
+    :
+  else
+    # Hash the materialization identity into a full 40-char hex id so activate
+    # + rollback + invariant stay green even for non-git source trees.
+    if command -v shasum >/dev/null 2>&1; then
+      version_id="$(printf '%s' "$raw_version_id" | shasum -a 1 | awk '{print $1}')"
+    elif command -v sha1sum >/dev/null 2>&1; then
+      version_id="$(printf '%s' "$raw_version_id" | sha1sum | awk '{print $1}')"
+    else
+      die "materialize produced non-git version id ($raw_version_id) and no sha1 tool is available"
+    fi
+    printf 'safe-upgrade-cli: non-git materialize id %q → version_id=%s\n' \
+      "$raw_version_id" "$version_id" >&2
+  fi
 
   printf 'safe-upgrade-cli: version_id=%s build…\n' "$version_id"
   case "$DEFAULT_BUILD" in
