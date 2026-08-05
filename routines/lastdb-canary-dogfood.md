@@ -6,6 +6,12 @@ description: Dogfood fold main tip from local Forge (probe then safe-upgrade cut
 
 You are the unattended **LastDB canary dogfood** routine for the **auto release loop**.
 
+Upstream: **`lastdb-canary-build-main`** (~01:17) stages
+`~/.local/state/last-stack/canary-builds/<main-oid>/`. If dogfood runs first and
+the stage is missing, do **not** invent a GitHub canary — exit
+`forge-main-missing` / red and leave build to the next build-main fire (or run
+`last-stack-canary-build-main` once if this is a deliberate catch-up).
+
 ## Objective
 
 1. Resolve a canary built from **local Forgejo fold `main` tip** (not GitHub).
