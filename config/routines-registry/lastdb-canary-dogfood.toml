@@ -1,12 +1,12 @@
-# Paused until the nightly canary pipeline terminal proof passes.
+# Auto release loop: resolve GH canary → probe → live safe-upgrade cutover of primary.
 id = "lastdb-canary-dogfood"
-harness = "codex"
-model = "gpt-5.5"
+harness = "claude"
+model = "sonnet"
 effort = "medium"
-group = "ops"
+group = "dogfood"
 rrule = "FREQ=DAILY;BYHOUR=3;BYMINUTE=17;BYSECOND=0"
 cwd = "/Users/REPLACE/code/edgevector"
-status = "paused"
-timeout_min = 90
+status = "active"
+timeout_min = 120
 prompt_path = "/Users/REPLACE/.last-stack/routines/lastdb-canary-dogfood.md"
 heartbeat_slug = "routine-heartbeats"

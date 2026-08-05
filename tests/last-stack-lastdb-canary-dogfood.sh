@@ -24,7 +24,10 @@ stub="$tmp/safe-upgrade-stub"
 cat >"$stub" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${SAFE_UPGRADE_STUB_LOG:?}"
-printf 'VERDICT: GREEN_PROBE_ONLY\n'
+case " $* " in
+  *" --probe-only "*) printf 'VERDICT: GREEN_PROBE_ONLY\n' ;;
+  *) printf 'VERDICT: GREEN\n' ;;
+esac
 STUB
 chmod +x "$stub"
 
@@ -50,6 +53,23 @@ out="$(
 [ "$(printf '%s\n' "$out" | jq -r '.safe_upgrade')" = "green" ]
 grep -q -- '--probe-only --version 0.24.0-canary.1' "$tmp/safe-upgrade.log"
 
+# cutover: probe then --yes
+: >"$tmp/safe-upgrade.log"
+cut_state="$tmp/cutover-state"
+out="$(
+  LAST_STACK_CANARY_RELEASES_JSON="$release_json" \
+  LAST_STACK_CANARY_SAFE_UPGRADE="$stub" \
+  SAFE_UPGRADE_STUB_LOG="$tmp/safe-upgrade.log" \
+  LAST_STACK_CANARY_SITUATION_CHECK_CMD=pass \
+  LAST_STACK_CANARY_LIVE_VERSION_CMD='echo lastdbd 0.24.0-canary.1' \
+  "$CLI" --state-dir "$cut_state" --cutover --skip-situation-preflight --json
+)"
+[ "$(printf '%s\n' "$out" | jq -r '.mode')" = "cutover" ]
+[ "$(printf '%s\n' "$out" | jq -r '.safe_upgrade')" = "cutover-green" ]
+[ "$(printf '%s\n' "$out" | jq -r '.primary_mutation')" = "true" ]
+grep -q -- '--probe-only --version 0.24.0-canary.1' "$tmp/safe-upgrade.log"
+grep -q -- '--yes --version 0.24.0-canary.1' "$tmp/safe-upgrade.log"
+
 fallback_bin="$tmp/lastdbd"
 cat >"$fallback_bin" <<'BIN'
 #!/usr/bin/env bash
@@ -67,7 +87,7 @@ out="$(
 [ "$(printf '%s\n' "$out" | jq -r '.state')" = "dogfood_green" ]
 
 grep -q '^id = "lastdb-canary-dogfood"$' "$ROOT/config/routines-registry/lastdb-canary-dogfood.toml"
-grep -q '^status = "paused"$' "$ROOT/config/routines-registry/lastdb-canary-dogfood.toml"
+grep -q '^status = "active"$' "$ROOT/config/routines-registry/lastdb-canary-dogfood.toml"
 grep -q 'lastdb-canary-dogfood.md' "$ROOT/config/routines-registry/lastdb-canary-dogfood.toml"
 grep -q 'last-stack-lastdb-canary-dogfood' "$ROOT/routines/lastdb-canary-dogfood.md"
 
