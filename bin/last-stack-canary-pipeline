@@ -186,6 +186,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     create.add_argument("candidate")
     create.add_argument("--version", default="")
     create.add_argument("--source", default="")
+    create.add_argument("--source-git-oid", default="", help="fold main / build commit OID")
     create.add_argument("--note", default="")
 
     read = sub.add_parser("read", help="read the current state for one candidate")
@@ -204,6 +205,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     dogfood.add_argument("--observed-sha", default="")
     dogfood.add_argument("--version", default="")
     dogfood.add_argument("--source", default="dogfood")
+    dogfood.add_argument("--source-git-oid", default="", help="fold main / build commit OID")
     dogfood.add_argument("--dry-run", action="store_true")
 
     soak = sub.add_parser("soak-watch", help="evaluate hard health signals for a dogfooded SHA")
@@ -306,6 +308,7 @@ def current_record(event: dict) -> dict:
         "state": event.get("state", ""),
         "version": event.get("version", ""),
         "source": event.get("source", ""),
+        "source_git_oid": event.get("source_git_oid", ""),
         "updated_at": event.get("ts", ""),
         "note": event.get("note", ""),
         "observed_sha": event.get("observed_sha", ""),
@@ -354,6 +357,7 @@ def create_candidate(path: Path, args: argparse.Namespace) -> dict:
             "candidate_found",
             version=args.version,
             source=args.source,
+            source_git_oid=getattr(args, "source_git_oid", "") or "",
             note=args.note,
         )
         append_event(path, event)
@@ -387,6 +391,9 @@ def append_transition(path: Path, candidate: str, state: str, **extra) -> dict:
     if state not in ALLOWED.get(old_state, set()):
         allowed = ", ".join(sorted(ALLOWED.get(old_state, set()))) or "none"
         die(f"invalid transition for {candidate}: {old_state} -> {state} (allowed: {allowed})")
+    # Preserve source_git_oid across transitions unless the caller overrides it.
+    if "source_git_oid" not in extra and previous.get("source_git_oid"):
+        extra = {**extra, "source_git_oid": previous.get("source_git_oid")}
     event = base_event(
         candidate,
         state,
@@ -415,11 +422,12 @@ def dogfood_candidate(path: Path, args: argparse.Namespace) -> dict:
 
     # Guard BEFORE the ledger records anything: dogfood is the step that cuts the
     # primary over, so a rollback caught here never touches the live node.
-    source_oid = ""
+    source_oid = str(getattr(args, "source_git_oid", "") or "")
     if not args.dry_run:
-        source_oid = assert_not_rollback(
+        guarded = assert_not_rollback(
             args.version, args.sha, strict_unknown=False, stage="dogfood"
         )
+        source_oid = source_oid or guarded
 
     def inner() -> dict:
         latest = latest_by_candidate(load_events(path))
@@ -1089,14 +1097,98 @@ def resolve_stable_tag(canary_version: str) -> str:
     return base
 
 
-def download_canary_assets(version: str, dest: Path) -> dict:
-    """Download GH prerelease assets for version into dest. Returns manifest dict if present."""
+def canary_builds_root() -> Path:
+    env = os.environ.get("LAST_STACK_CANARY_BUILDS_DIR")
+    if env:
+        return Path(env)
+    return Path.home() / ".local" / "state" / "last-stack" / "canary-builds"
+
+
+def stage_local_canary_assets(version: str, dest: Path, *, preferred_oid: str = "") -> dict | None:
+    """Copy a local Forge canary package into dest when one is staged.
+
+    Looks under ~/.local/state/last-stack/canary-builds/<oid>/ for a full
+    package (tar.gz + manifest) or at least a lastdbd + manifest. Returns the
+    manifest dict, or None when nothing usable is staged.
+    """
     dest.mkdir(parents=True, exist_ok=True)
+    builds = canary_builds_root()
+    if not builds.is_dir():
+        return None
+
+    oid = preferred_oid.strip() or canary_source_oid(version)
+    search_dirs: list[Path] = []
+    if oid:
+        search_dirs.append(builds / oid)
+        # short prefixes
+        for child in sorted(builds.iterdir(), reverse=True):
+            if child.is_dir() and (oid.startswith(child.name) or child.name.startswith(oid[:12])):
+                search_dirs.append(child)
+    else:
+        search_dirs.extend(sorted(builds.iterdir(), reverse=True))
+
+    seen: set[Path] = set()
+    for d in search_dirs:
+        if not d.is_dir() or d in seen:
+            continue
+        seen.add(d)
+        man_path = None
+        for name in ("lastdb-aarch64-apple-darwin.manifest.json", "manifest.json"):
+            if (d / name).is_file():
+                man_path = d / name
+                break
+        if man_path is None:
+            continue
+        try:
+            manifest = json.loads(man_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        # Copy package files into dest
+        for item in d.iterdir():
+            if item.is_file():
+                target = dest / item.name
+                target.write_bytes(item.read_bytes())
+        # Normalize manifest name for promote script
+        std = dest / "lastdb-aarch64-apple-darwin.manifest.json"
+        if not std.is_file():
+            std.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        return manifest if isinstance(manifest, dict) else {"source_git_oid": oid}
+    return None
+
+
+def download_canary_assets(version: str, dest: Path, *, preferred_oid: str = "") -> dict:
+    """Resolve canary package assets into dest.
+
+    Prefer a **local Forge-staged** package under canary-builds/ (local-canonical).
+    Fall back to GitHub Releases only as public CDN for the same version tag —
+    never required when local assets are present.
+    """
+    dest.mkdir(parents=True, exist_ok=True)
+    local = stage_local_canary_assets(version, dest, preferred_oid=preferred_oid)
+    if local is not None:
+        return local
+
+    if os.environ.get("LAST_STACK_CANARY_ALLOW_GITHUB", "0") != "1" and not os.environ.get(
+        "LAST_STACK_CANARY_RELEASES_JSON"
+    ):
+        # GH is opt-in for promote asset fetch too; local package is the gate of record.
+        die(
+            f"no local canary package staged for version={version} oid={preferred_oid or 'unknown'}; "
+            f"stage under {canary_builds_root()}/<source_git_oid>/ "
+            "(tar.gz + manifest) or set LAST_STACK_CANARY_ALLOW_GITHUB=1 to fetch the public CDN"
+        )
+
     tag = version if version.startswith("v") else f"v{version}"
-    api = f"https://api.github.com/repos/EdgeVector/homebrew-lastdb/releases/tags/{tag}"
+    api_base = os.environ.get("LAST_STACK_CANARY_ASSET_API_BASE", "https://api.github.com").rstrip("/")
+    repo = os.environ.get("LAST_STACK_CANARY_ASSET_REPO", "EdgeVector/homebrew-lastdb")
+    api = f"{api_base}/repos/{repo}/releases/tags/{tag}"
     import urllib.request
 
-    req = urllib.request.Request(api, headers={"Accept": "application/vnd.github+json"})
+    headers = {"Accept": "application/vnd.github+json"}
+    token = os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(api, headers=headers)
     with urllib.request.urlopen(req, timeout=30) as resp:
         release = json.loads(resp.read().decode("utf-8"))
     assets = release.get("assets") or []
@@ -1107,7 +1199,7 @@ def download_canary_assets(version: str, dest: Path) -> dict:
         if not name or not url:
             continue
         target = dest / name
-        with urllib.request.urlopen(url, timeout=120) as resp:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120) as resp:
             target.write_bytes(resp.read())
         if name.endswith("manifest.json"):
             try:
@@ -1139,8 +1231,10 @@ def find_fold_promote_script() -> Path | None:
 def promote_execute(path: Path, args: argparse.Namespace) -> dict:
     """Auto-promote soak_green canary using local-canonical brew promote path.
 
-    Downloads canary prerelease assets and republishes as the next stable tag via
-    forge-promote-homebrew-stable.sh --publish. Requires GH_TOKEN for publish.
+    Stages local Forge canary package assets (preferred) then republishes as the
+    next stable tag via forge-promote-homebrew-stable.sh --publish. GitHub is
+    only the public bottle CDN; GH asset download is opt-in when no local
+    package is staged. Requires GH_TOKEN for the public CDN publish step.
     """
     auto = os.environ.get("LAST_STACK_CANARY_PROMOTE_AUTO", "0") == "1" or args.force
     if not auto and not args.dry_run:
@@ -1150,6 +1244,7 @@ def promote_execute(path: Path, args: argparse.Namespace) -> dict:
     state = str(current.get("state", ""))
     candidate = str(current.get("candidate", ""))
     version = str(current.get("version") or "")
+    preferred_oid = str(current.get("source_git_oid") or "")
     if state == "promoted":
         print(f"PROMOTE_EXECUTE ledger={path} sha={candidate} status=already_promoted")
         return current_record(current)
@@ -1183,7 +1278,7 @@ def promote_execute(path: Path, args: argparse.Namespace) -> dict:
                     f"- Canary version: `{version}`",
                     f"- Planned stable tag: `{stable_tag}`",
                     "- Automation pushed stable tag: `false` (dry-run)",
-                    "- Would download canary assets and run forge-promote-homebrew-stable.sh --publish",
+                    "- Would stage local Forge canary package (or opt-in GH CDN) and run forge-promote-homebrew-stable.sh --publish",
                     "",
                 ]
             ),
@@ -1203,23 +1298,25 @@ def promote_execute(path: Path, args: argparse.Namespace) -> dict:
         )
 
     try:
-        manifest = download_canary_assets(version, artifact_dir)
+        manifest = download_canary_assets(version, artifact_dir, preferred_oid=preferred_oid)
+    except SystemExit:
+        raise
     except Exception as exc:
-        die(f"failed to download canary assets for {version}: {exc}")
+        die(f"failed to resolve canary assets for {version}: {exc}")
 
-    source_oid = str(manifest.get("source_git_oid") or "")
+    source_oid = str(manifest.get("source_git_oid") or preferred_oid or "")
     promote_sh = find_fold_promote_script()
     if promote_sh is None:
         die("forge-promote-homebrew-stable.sh not found; set LAST_STACK_CANARY_FORGE_PROMOTE")
 
     env = os.environ.copy()
     if not env.get("GH_TOKEN"):
-        # Best-effort: gh auth token
+        # Best-effort: gh auth token (CDN publish only — build is local)
         gh = subprocess.run(["gh", "auth", "token"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if gh.returncode == 0 and gh.stdout.strip():
             env["GH_TOKEN"] = gh.stdout.strip()
     if not env.get("GH_TOKEN"):
-        die("GH_TOKEN required for promote-execute --publish")
+        die("GH_TOKEN required for promote-execute --publish (public bottle CDN only)")
 
     cmd = [
         "bash",
