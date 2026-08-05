@@ -1040,8 +1040,16 @@ install_artifact_links() {
     target="$(expand_path "$target_raw")"
     [ -n "$target" ] || die "artifact link target is required"
     [ -e "$install_root/current/$source" ] || die "artifact link source missing: $source"
+    # Legacy checkout installs left real files in ~/.local/bin (not symlinks).
+    # Backup once and replace with a symlink into the active artifact tree so
+    # artifact cutover can complete (remote ra/rad hit this path).
     if [ -e "$target" ] && [ ! -L "$target" ]; then
-      die "refusing to replace non-symlink artifact target: $target"
+      if [ -d "$target" ]; then
+        die "refusing to replace non-symlink directory artifact target: $target"
+      fi
+      bak="${target}.bak-pre-artifact-$(date -u +%Y%m%dT%H%M%SZ)"
+      printf 'host-track: backing up non-symlink PATH target %s -> %s\n' "$target" "$bak" >&2
+      mv -f "$target" "$bak"
     fi
     atomic_symlink "$install_root/current/$source" "$target"
   done < <(printf '%s\n' "$json" | jq -r '.links[]? | @base64')
@@ -1154,6 +1162,7 @@ gc_stale_stage_dirs() {
 artifact_install_app() {
   local app="$1" channel_override="${2:-}" force_restage="${3:-0}" json install_mode artifact_app channel artifact_root install_root
   local manifest digest stage target old_target stamp_path need_materialize=0
+  local old_digest prev_target prev_digest
   json="$(require_app_json "$app")"
   install_mode="$(setting "$json" install_mode)"
   [ "$install_mode" = "artifact" ] || die "$app is not registered for artifact installs"
@@ -1227,12 +1236,36 @@ artifact_install_app() {
   old_target=""
   [ ! -L "$install_root/current" ] || old_target="$(readlink "$install_root/current")"
   if [ -n "$old_target" ] && [ "$old_target" != "versions/$digest" ]; then
-    # Only park previous if the old tree still exists (do not write a dangling previous).
-    if [ -d "$install_root/$old_target" ]; then
+    # Only park previous when restorable for artifact invariant:
+    # versions/<64-char hex digest> and the tree exists. Timestamp-style or
+    # local-safe leftovers (e.g. versions/d20260804171208) are not restorable —
+    # clear them so last-stack-host-track-artifact-invariant stays green.
+    old_digest="${old_target#versions/}"
+    if [[ "$old_target" == versions/* ]] \
+      && [[ "$old_digest" =~ ^[0-9a-f]{64}$ ]] \
+      && [ -d "$install_root/$old_target" ]; then
       atomic_symlink "$old_target" "$install_root/previous"
+    else
+      if [ -L "$install_root/previous" ] || [ -n "$old_target" ]; then
+        rm -f "$install_root/previous"
+        printf 'host-track: %s cleared unrestorable previous (was %s)\n' \
+          "$app" "$old_target" >&2
+      fi
     fi
   fi
   atomic_symlink "versions/$digest" "$install_root/current"
+  # Scrub any pre-existing invalid previous left by older installs / wrong mode.
+  if [ -L "$install_root/previous" ]; then
+    prev_target="$(readlink "$install_root/previous")"
+    prev_digest="${prev_target#versions/}"
+    if [[ "$prev_target" != versions/* ]] \
+      || [[ ! "$prev_digest" =~ ^[0-9a-f]{64}$ ]] \
+      || [ ! -d "$install_root/$prev_target" ]; then
+      rm -f "$install_root/previous"
+      printf 'host-track: %s cleared unrestorable previous (was %s)\n' \
+        "$app" "$prev_target" >&2
+    fi
+  fi
 
   # PATH links only after current points at a verified tree.
   install_artifact_links "$json" "$install_root"

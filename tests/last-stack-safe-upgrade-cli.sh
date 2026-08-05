@@ -24,30 +24,61 @@ EOF
   printf '%s\n' "$d"
 }
 
-v1="$(mk_ver aaa111 "v1")"
-v2="$(mk_ver bbb222 "v2")"
+# Full 40-char hex ids — same shape host-track artifact invariant requires for
+# local-safe previous to count as restorable.
+V1_ID="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+V2_ID="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+V_BAD="d20260804171208" # legacy timestamp-style (unrestorable)
+v1="$(mk_ver "$V1_ID" "v1")"
+v2="$(mk_ver "$V2_ID" "v2")"
+v_bad="$(mk_ver "$V_BAD" "bad")"
 link="$TMP/bin/toy"
 mkdir -p "$TMP/bin"
 
-"$ACTIVATE" activate --app toy --version-id aaa111 --version-dir "$v1" \
+"$ACTIVATE" activate --app toy --version-id "$V1_ID" --version-dir "$v1" \
   --link "bin/toy:$link"
 out="$("$link")"
 [ "$out" = "v1" ] || { echo "FAIL expected v1 got $out"; exit 1; }
 
-"$ACTIVATE" activate --app toy --version-id bbb222 --version-dir "$v2" \
+"$ACTIVATE" activate --app toy --version-id "$V2_ID" --version-dir "$v2" \
   --link "bin/toy:$link"
 out="$("$link")"
 [ "$out" = "v2" ] || { echo "FAIL expected v2 got $out"; exit 1; }
 
-# previous should be v1
+# previous should be v1 (restorable 40-hex)
 prev="$(readlink "$HOST_TRACK_APPS_ROOT/toy/previous")"
-[ "$prev" = "versions/aaa111" ] || { echo "FAIL previous=$prev"; exit 1; }
+[ "$prev" = "versions/$V1_ID" ] || { echo "FAIL previous=$prev"; exit 1; }
 
 "$ACTIVATE" rollback --app toy --link "bin/toy:$link"
 out="$("$link")"
 [ "$out" = "v1" ] || { echo "FAIL rollback expected v1 got $out"; exit 1; }
 
 cur="$(readlink "$HOST_TRACK_APPS_ROOT/toy/current")"
-[ "$cur" = "versions/aaa111" ] || { echo "FAIL current after rollback=$cur"; exit 1; }
+[ "$cur" = "versions/$V1_ID" ] || { echo "FAIL current after rollback=$cur"; exit 1; }
 
-echo "PASS last-stack-safe-upgrade-cli (activate/rollback)"
+# Pre-existing unrestorable previous is scrubbed on re-activate (same version).
+ln -sfn "versions/$V_BAD" "$HOST_TRACK_APPS_ROOT/toy/previous"
+"$ACTIVATE" activate --app toy --version-id "$V1_ID" --version-dir "$v1" \
+  --link "bin/toy:$link"
+if [ -L "$HOST_TRACK_APPS_ROOT/toy/previous" ]; then
+  prev2="$(readlink "$HOST_TRACK_APPS_ROOT/toy/previous")"
+  [ "$prev2" != "versions/$V_BAD" ] || {
+    echo "FAIL unrestorable previous was retained: $prev2"
+    exit 1
+  }
+fi
+
+# Activate FROM a bad current id → must not park it as previous.
+"$ACTIVATE" activate --app toy --version-id "$V_BAD" --version-dir "$v_bad" \
+  --link "bin/toy:$link"
+"$ACTIVATE" activate --app toy --version-id "$V1_ID" --version-dir "$v1" \
+  --link "bin/toy:$link"
+if [ -L "$HOST_TRACK_APPS_ROOT/toy/previous" ]; then
+  prev3="$(readlink "$HOST_TRACK_APPS_ROOT/toy/previous")"
+  [ "$prev3" != "versions/$V_BAD" ] || {
+    echo "FAIL parked unrestorable previous $prev3"
+    exit 1
+  }
+fi
+
+echo "PASS last-stack-safe-upgrade-cli (activate/rollback + unrestorable previous scrub)"
