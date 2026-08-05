@@ -230,10 +230,12 @@ install-side safe-upgrade so PATH tracks main without stuffing that into CI.
   Discord notify) when the binary is on PATH
 - **Detects merges** like `notify-discord.sh`: fleet open-CR index → open→gone →
   `cr view` → if `state=merged` and base is `main` and repo is mapped → upgrade
-- **Mapped apps:** brain, situations, fkanban/kanban, routines, lastsecrets,
-  configurations
+- **Mapped apps:** last-stack / brain / situations / fkanban|kanban →
+  `host-track refresh` (artifact + `track_gate_main`); routines, lastsecrets,
+  configurations, search → `last-stack-safe-upgrade-cli` while still local-safe
 - **Failure:** log + retry (max 3); **does not unmerge**; operator can run
-  `last-stack-safe-upgrade-cli <app>` manually
+  `host-track refresh <app>` (artifact) or `last-stack-safe-upgrade-cli <app>`
+  (local-safe) manually
 - **State:** `~/.lastgit/post-merge-safe-upgrade/`
 - **Disable:** `LAST_STACK_POST_MERGE_DISABLE=1` on the forge LaunchAgent env
 
@@ -281,24 +283,31 @@ Safe properties:
 2. `previous` always retains the last good version after a successful flip.
 3. Install trees are not work surfaces — develop via portals + `wt start`.
 
-`host-track refresh <app>` for local-safe apps calls
+`host-track refresh <app>` for remaining **local-safe** apps calls
 `last-stack-refresh-local-safe <app>` → `last-stack-safe-upgrade-cli <app>`.
-LaunchAgent `com.edgevector.host-track-refresh` runs `host-track refresh --all`.
+For **artifact** apps it promotes (when `track_gate_main`) and installs the
+channel tip. LaunchAgent `com.edgevector.host-track-refresh` runs
+`host-track refresh --all`.
 
-**Local-safe apps (2026-07-22):** brain, situations, kanban/fkanban (shared
-install), routines, lastsecrets, configurations.
+**Artifact CLIs (producers live):** last-stack, remote, brain, situations,
+kanban/fkanban (shared fkanban install_root). See
+`templates/host-track/README-artifact-producer.md`.
+
+**Still local-safe (await producers):** routines, lastsecrets, configurations,
+search.
 
 ```bash
-# Upgrade every local-safe CLI
+# Upgrade every still-local-safe CLI
 last-stack-safe-upgrade-all-local
 
-# One app
-last-stack-safe-upgrade-cli situations
-last-stack-safe-upgrade-cli fkanban   # also refreshes kanban PATH links
+# One remaining local-safe app
+last-stack-safe-upgrade-cli routines
+last-stack-safe-upgrade-cli lastsecrets
 ```
 
-**Still artifact / special (not local-safe CLI trees):** last-stack, lastgit,
-lastdb/lastdbd Mini (use `lastdb-safe-upgrade` for the primary node).
+**Special exemptions (not Host Track artifact refresh):** lastgit
+(`bootstrap-recovery`), lastdb/lastdbd Mini (`deployment-only` — use
+`lastdb-safe-upgrade` for the primary node).
 
 ## Refresh Agent
 

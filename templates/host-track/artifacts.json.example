@@ -1,0 +1,10 @@
+{
+  "artifacts": [
+    {
+      "app": "APP_SLUG",
+      "paths": [
+        "dist"
+      ]
+    }
+  ]
+}

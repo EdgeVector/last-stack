@@ -31,13 +31,14 @@ jq -e '
   def app($name): .apps[] | select(.app == $name);
   (app("last-stack") | .install_mode == "artifact" and .artifact_app == "last-stack")
   and (app("lastgit") | .install_mode == "checkout" and .artifact_exemption.kind == "bootstrap-recovery")
-  and (app("brain") | .install_mode == "local-safe" and (.links | length) >= 2)
-  and (app("situations") | .install_mode == "local-safe" and (.links | length) == 2)
-  and (app("kanban") | .install_mode == "local-safe" and .install_root == "$HOME/.host-track/apps/fkanban")
-  and (app("fkanban") | .install_mode == "local-safe" and .install_root == "$HOME/.host-track/apps/fkanban")
+  and (app("brain") | .install_mode == "artifact" and .track_gate_main == true and (.links | length) >= 2)
+  and (app("situations") | .install_mode == "artifact" and .track_gate_main == true and (.links | length) == 2)
+  and (app("kanban") | .install_mode == "artifact" and .install_root == "$HOME/.host-track/apps/fkanban")
+  and (app("fkanban") | .install_mode == "artifact" and .install_root == "$HOME/.host-track/apps/fkanban")
   and (app("routines") | .install_mode == "local-safe")
   and (app("lastsecrets") | .install_mode == "local-safe")
   and (app("configurations") | .install_mode == "local-safe")
+  and (app("search") | .install_mode == "local-safe")
   and (app("lastdb") | .install_mode == "checkout" and .artifact_exemption.kind == "deployment-only")
   and (app("lastdbd") | .install_mode == "checkout" and .artifact_exemption.kind == "deployment-only")
 ' "$default_registry" >/dev/null || fail "default registry did not declare expected artifact/local-safe/exempt apps"
