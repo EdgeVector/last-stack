@@ -35,6 +35,70 @@ atomic_symlink() {
   mv -f "$tmp" "$link"
 }
 
+# Local-safe previous must be restorable for host-track artifact invariant:
+# versions/<40-char lowercase hex> and the tree must exist. Timestamp-style
+# leftovers (e.g. versions/d20260804171208 from dir-TIMESTAMP → tr -cd hex)
+# are not restorable — clear them instead of parking.
+is_restorable_local_safe_target() {
+  local install_root="$1" rel_target="$2" version_id
+  case "$rel_target" in
+    versions/*) ;;
+    *) return 1 ;;
+  esac
+  version_id="${rel_target#versions/}"
+  [[ "$version_id" =~ ^[0-9a-f]{40}$ ]] || return 1
+  [ -d "$install_root/$rel_target" ]
+}
+
+clear_unrestorable_previous() {
+  local install_root="$1" previous_target
+  [ -L "$install_root/previous" ] || return 0
+  previous_target="$(readlink "$install_root/previous")"
+  if is_restorable_local_safe_target "$install_root" "$previous_target"; then
+    return 0
+  fi
+  rm -f "$install_root/previous"
+  printf 'safe-activate-cli: cleared unrestorable previous (was %s)\n' "$previous_target" >&2
+}
+
+# Prefer parking a real restorable sibling when previous is missing after scrub
+# (e.g. old current was timestamp-style, but versions/<40-hex> still exists).
+# Newest mtime among restorable dirs other than current wins.
+best_restorable_previous() {
+  local install_root="$1" current_rel="${2:-}" name cand best="" best_mtime=0 mtime
+  [ -d "$install_root/versions" ] || return 1
+  for name in "$install_root"/versions/*; do
+    [ -d "$name" ] || continue
+    cand="versions/$(basename "$name")"
+    [ "$cand" = "$current_rel" ] && continue
+    is_restorable_local_safe_target "$install_root" "$cand" || continue
+    mtime="$(stat -f %m "$name" 2>/dev/null || stat -c %Y "$name" 2>/dev/null || echo 0)"
+    if [ -z "$best" ] || [ "$mtime" -ge "$best_mtime" ]; then
+      best="$cand"
+      best_mtime="$mtime"
+    fi
+  done
+  [ -n "$best" ] || return 1
+  printf '%s\n' "$best"
+}
+
+# After activate: keep a restorable previous when one exists under versions/.
+ensure_restorable_previous() {
+  local install_root="$1" current_rel="$2" previous_target best
+  if [ -L "$install_root/previous" ]; then
+    previous_target="$(readlink "$install_root/previous")"
+    if is_restorable_local_safe_target "$install_root" "$previous_target" \
+      && [ "$previous_target" != "$current_rel" ]; then
+      return 0
+    fi
+    rm -f "$install_root/previous"
+  fi
+  if best="$(best_restorable_previous "$install_root" "$current_rel")"; then
+    atomic_symlink "$best" "$install_root/previous"
+    printf 'safe-activate-cli: parked restorable previous %s\n' "$best" >&2
+  fi
+}
+
 install_root_for() {
   local app="$1"
   printf '%s/%s\n' "$APPS_ROOT" "$app"
@@ -159,9 +223,19 @@ cmd_activate() {
     old_target="$(readlink "$install_root/current")"
   fi
   if [ -n "$old_target" ] && [ "$old_target" != "versions/$version_id" ]; then
-    atomic_symlink "$old_target" "$install_root/previous"
+    if is_restorable_local_safe_target "$install_root" "$old_target"; then
+      atomic_symlink "$old_target" "$install_root/previous"
+    else
+      # Do not park timestamp/malformed previous — invariant would go red.
+      rm -f "$install_root/previous"
+      printf 'safe-activate-cli: not parking unrestorable previous (was %s)\n' "$old_target" >&2
+    fi
   fi
   atomic_symlink "versions/$version_id" "$install_root/current"
+  # Heal any pre-existing bad previous left by older installs, then recover a
+  # restorable sibling so rollback is available (not silent "no previous").
+  clear_unrestorable_previous "$install_root"
+  ensure_restorable_previous "$install_root" "versions/$version_id"
 
   if [ "${#links[@]}" -gt 0 ]; then
     apply_links "$install_root" "${links[@]}"
