@@ -205,6 +205,61 @@ fi
 grep -q 'ANCESTRY stage=promote result=unknown' "$tmp/anc-prom.err"
 grep -q 'refusing to publish without proven ancestry' "$tmp/anc-prom.err"
 
+# --- baseline OID from a canary-BUILD primary ------------------------------
+# Regression for 2026-08-05 (second order): the guard above shipped, but every
+# test injected LAST_STACK_CANARY_RUNNING_OID, so the *resolver* was never
+# exercised — only the comparator. running_source_oid() read the `-g<sha>`
+# describe suffix and nothing else, so on a canary/tag build it returned "",
+# stage=dogfood took the `unknown` branch, and the guard PROCEEDED.
+#
+# That is a fail-open exactly after the guard has already failed once: a bad
+# cutover leaves the primary on a canary build, which is the one state where
+# the guard can no longer see the running commit. Measured on the live primary:
+# `0.23.3-canary.20260801` -> "" here, while its manifest gave 6c742dc6.
+#
+# Hermetic: serve the release manifest over file:// instead of api.github.com.
+stub_manifest() { # <tag> <oid>
+  local dir="$tmp/api/repos/EdgeVector/homebrew-lastdb/releases/tags"
+  mkdir -p "$dir"
+  printf '{"source_git_oid":"%s"}\n' "$2" >"$tmp/api/$1-manifest.json"
+  printf '{"assets":[{"name":"lastdb-manifest.json","browser_download_url":"file://%s/api/%s-manifest.json"}]}\n' \
+    "$tmp" "$1" >"$dir/$1"
+}
+
+# The live binary is a canary build whose commit is the NEWER one.
+stub_manifest "v0.0.1-canary.live" "$NEW_OID"
+
+guard_from_canary_live() { # <candidate_oid> <ledger-suffix>
+  LAST_STACK_CANARY_FOLD_MIRROR="$mirror" \
+  LAST_STACK_CANARY_ASSET_API_BASE="file://$tmp/api" \
+  LAST_STACK_CANARY_LIVE_VERSION_CMD="echo 0.0.1-canary.live" \
+  LAST_STACK_CANARY_SOURCE_OID="$1" \
+    "$CLI" --ledger "$tmp/canb-$2.jsonl" dogfood --sha "canb-$2" --version 0.0.1-canary.test
+}
+
+# A rollback offered to a canary-running primary is REFUSED, not waved through
+# as `unknown`. This is the assertion that fails without the manifest fallback.
+if guard_from_canary_live "$OLD_OID" rollback >"$tmp/canb-rb.out" 2>"$tmp/canb-rb.err"; then
+  echo "expected refusal: canary-build primary must still resolve a baseline" >&2
+  exit 1
+fi
+grep -q 'ANCESTRY stage=dogfood result=REFUSE' "$tmp/canb-rb.err"
+grep -q "baseline\[running\]=$NEW_OID" "$tmp/canb-rb.err"
+test ! -e "$tmp/canb-rollback.jsonl"
+
+# ... and a true descendant is still allowed, so the fallback does not simply
+# block everything once it starts resolving.
+git -C "$seed" commit -q --allow-empty -m newer
+NEWER_OID="$(git -C "$seed" rev-parse HEAD)"
+git -C "$seed" push -q "$mirror" HEAD:refs/heads/main
+guard_from_canary_live "$NEWER_OID" fwd >"$tmp/canb-fwd.out" 2>"$tmp/canb-fwd.err"
+grep -q 'ANCESTRY stage=dogfood result=ok .*relation=descendant' "$tmp/canb-fwd.out"
+
+# The candidate override must NOT leak into the running-binary lookup: if it
+# did, both sides would collapse onto one OID and every rollback would read as
+# `relation=identical` and pass.
+grep -q "baseline\[running\]=$NEW_OID" "$tmp/canb-fwd.out"
+
 # --- write-path soak gate --------------------------------------------------
 # Regression for 2026-08-05: the 24h soak's four hard checks were `launchctl
 # print`, `lastdb status`, `kanban ping` and `situations list` — three liveness

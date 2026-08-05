@@ -662,21 +662,24 @@ def ancestry_guard_enabled() -> bool:
     return os.environ.get("LAST_STACK_CANARY_ANCESTRY_GUARD", "1") != "0"
 
 
-def canary_source_oid(version: str) -> str:
-    """source_git_oid for a canary version, from its manifest asset alone.
+def canary_manifest_oid(version: str) -> str:
+    """source_git_oid for a version, from its release manifest asset alone.
 
     Deliberately does NOT reuse download_canary_assets(): that pulls the whole
     tarball, and the guard has to run *before* we commit to a candidate.
     Returns "" when it cannot be determined.
+
+    Takes NO env override of its own. Callers that accept one apply it
+    themselves, so the *candidate* override can never leak into the
+    *running binary* lookup and collapse both sides of the comparison onto
+    the same OID (which would read as `relation=identical` and pass).
     """
     if not version:
         return ""
-    override = os.environ.get("LAST_STACK_CANARY_SOURCE_OID")
-    if override:
-        return override.strip()
     tag = version if version.startswith("v") else f"v{version}"
     repo = os.environ.get("LAST_STACK_CANARY_ASSET_REPO", "EdgeVector/homebrew-lastdb")
-    api = f"https://api.github.com/repos/{repo}/releases/tags/{tag}"
+    api_base = os.environ.get("LAST_STACK_CANARY_ASSET_API_BASE", "https://api.github.com").rstrip("/")
+    api = f"{api_base}/repos/{repo}/releases/tags/{tag}"
     import urllib.request
 
     headers = {"Accept": "application/vnd.github+json"}
@@ -700,11 +703,28 @@ def canary_source_oid(version: str) -> str:
     return ""
 
 
-def running_source_oid() -> str:
-    """Commit of the live binary, from the `-g<sha>` suffix of `git describe`.
+def canary_source_oid(version: str) -> str:
+    """Candidate OID: the test/operator override, else the release manifest."""
+    override = os.environ.get("LAST_STACK_CANARY_SOURCE_OID")
+    if override:
+        return override.strip()
+    return canary_manifest_oid(version)
 
-    e.g. `0.23.2-409-gee967a073` -> `ee967a073`. Canary/tagged builds carry no
-    suffix; return "" and let the caller treat ancestry as unknown.
+
+def running_source_oid() -> str:
+    """Commit of the live binary.
+
+    First the `-g<sha>` suffix of a `git describe` build
+    (`0.23.2-409-gee967a073` -> `ee967a073`). A canary or tagged build carries
+    no such suffix — but its commit is still knowable, from the same release
+    manifest the candidate side reads, so fall back to that.
+
+    That fallback is the whole point rather than a nicety: a bad cutover leaves
+    the primary running exactly such a canary build, so without it the guard
+    goes blind precisely *after* it has already failed once, and every
+    subsequent dogfood cutover is unguarded (stage=dogfood proceeds on
+    unknown). Measured 2026-08-05 on the primary: live `0.23.3-canary.20260801`
+    resolved to "" here while its manifest gave 6c742dc6.
     """
     override = os.environ.get("LAST_STACK_CANARY_RUNNING_OID")
     if override:
@@ -717,7 +737,7 @@ def running_source_oid() -> str:
         body = tail[1:]
         if all(c in "0123456789abcdef" for c in body.lower()):
             return body
-    return ""
+    return canary_manifest_oid(live)
 
 
 def fold_mirror() -> Path | None:
