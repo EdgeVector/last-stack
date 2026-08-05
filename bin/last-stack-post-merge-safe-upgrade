@@ -61,10 +61,10 @@ map_repo_to_app() {
     brain) printf 'artifact:brain\n' ;;
     situations) printf 'artifact:situations\n' ;;
     fkanban|kanban) printf 'artifact:fkanban\n' ;;
-    routines) printf 'routines\n' ;;
-    lastsecrets) printf 'lastsecrets\n' ;;
-    configurations) printf 'configurations\n' ;;
-    search) printf 'search\n' ;;
+    routines) printf 'artifact:routines\n' ;;
+    lastsecrets) printf 'artifact:lastsecrets\n' ;;
+    configurations) printf 'artifact:configurations\n' ;;
+    search) printf 'artifact:search\n' ;;
     *) printf '\n' ;;
   esac
 }
