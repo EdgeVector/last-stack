@@ -28,11 +28,13 @@ log() { [ "$QUIET" -eq 1 ] || printf 'ship-pipeline-snapshot: %s\n' "$*" >&2; }
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
 # Fixture tests set SHIP_PIPELINE_GAP_SNAPSHOT_FIXTURE=1 and provide a stub
-# board CLI first on PATH — do not force ~/.local/bin ahead of that.
+# board CLI first on PATH — do not force ~/.local/bin or ROOT/bin ahead of
+# that. Appending ROOT/bin would always surface real why-stopped /
+# factory-health and break missing-helper embed assertions.
 if [ "${SHIP_PIPELINE_GAP_SNAPSHOT_FIXTURE:-0}" != "1" ]; then
   export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
 else
-  export PATH="${PATH:-/usr/bin:/bin}:${ROOT}/bin"
+  export PATH="${PATH:-/usr/bin:/bin}"
 fi
 
 BOARD=kanban
@@ -90,7 +92,14 @@ jq -c '
 # --- factory-health / why-stopped (optional) ---
 # Helpers often print a heartbeat line before pretty-printed JSON. Decode the
 # first complete object/array so --slurpfile never sees partial lines.
+#
+# Contract (won't-undo — process-snapshot-embed card):
+# - Valid helper JSON embeds as-is (never silently drop to bare {}).
+# - missing / timeout / non-JSON / non-zero+empty → explicit error object:
+#     {"error":"…","reason":"missing|timeout|parse|exit","helper":"…"}
+# - Snapshot still exits 0 after a completed pass.
 extract_json_value() {
+  # stdout: one JSON value. exit 0 if found, 1 if no complete object/array.
   python3 -c '
 import json, sys
 raw = sys.stdin.read()
@@ -101,26 +110,96 @@ for i, ch in enumerate(raw):
     try:
         obj, _ = dec.raw_decode(raw[i:])
         if isinstance(obj, (dict, list)):
-            json.dump(obj, sys.stdout)
+            json.dump(obj, sys.stdout, separators=(",", ":"))
             sys.stdout.write("\n")
             raise SystemExit(0)
     except Exception:
         continue
-sys.stdout.write("{}\n")
+raise SystemExit(1)
 '
 }
 
-fh='{}'
-if command -v last-stack-factory-health >/dev/null 2>&1; then
-  fh="$(last-stack-factory-health --json 2>/dev/null | extract_json_value || echo '{}')"
-fi
-printf '%s\n' "${fh:-{}}" >"$tmp/fh.json"
+# Emit a compact error object for embed failures (never bare {}).
+embed_error() {
+  # embed_error <helper> <reason> [extra-message]
+  local helper="$1" reason="$2" msg="${3:-}"
+  python3 -c '
+import json, sys
+helper, reason, msg = sys.argv[1], sys.argv[2], sys.argv[3]
+out = {"error": msg or ("helper " + reason), "reason": reason, "helper": helper}
+json.dump(out, sys.stdout, separators=(",", ":"))
+sys.stdout.write("\n")
+' "$helper" "$reason" "$msg"
+}
 
-ws='{}'
-if command -v last-stack-why-stopped >/dev/null 2>&1; then
-  ws="$(last-stack-why-stopped --json --quiet 2>/dev/null | extract_json_value || echo '{}')"
-fi
-printf '%s\n' "${ws:-{}}" >"$tmp/ws.json"
+# Run a helper under a wall-clock budget; write embed JSON to stdout.
+# Usage: capture_helper_embed <name> <timeout_sec> <cmd> [args...]
+capture_helper_embed() {
+  local name="$1" timeout_sec="$2"
+  shift 2
+  local out rc=0 extracted=""
+  local to_bin=""
+
+  if [ "$#" -lt 1 ] || ! command -v "$1" >/dev/null 2>&1; then
+    embed_error "$name" missing "helper not found on PATH"
+    return 0
+  fi
+
+  out="$(mktemp "$tmp/cap.XXXXXX")"
+  if command -v gtimeout >/dev/null 2>&1; then
+    to_bin=gtimeout
+  elif command -v timeout >/dev/null 2>&1; then
+    to_bin=timeout
+  fi
+
+  set +e
+  if [ -n "$to_bin" ]; then
+    "$to_bin" -k 5s "${timeout_sec}s" "$@" >"$out" 2>/dev/null
+    rc=$?
+  else
+    # No timeout binary: still capture; prefer finishing over hanging forever
+    # is the caller's problem — audit routines should install coreutils timeout.
+    "$@" >"$out" 2>/dev/null
+    rc=$?
+  fi
+  set -e
+
+  # GNU timeout: 124; some wrappers: 137 (SIGKILL after -k)
+  if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+    embed_error "$name" timeout "helper timed out after ${timeout_sec}s"
+    return 0
+  fi
+
+  set +e
+  extracted="$(extract_json_value <"$out")"
+  local extract_rc=$?
+  set -e
+
+  if [ "$extract_rc" -eq 0 ] && [ -n "$extracted" ]; then
+    printf '%s\n' "$extracted"
+    return 0
+  fi
+
+  if [ ! -s "$out" ]; then
+    if [ "$rc" -ne 0 ]; then
+      embed_error "$name" exit "helper exit ${rc} with empty stdout"
+    else
+      embed_error "$name" parse "helper produced no JSON"
+    fi
+    return 0
+  fi
+  embed_error "$name" parse "helper output was not valid JSON"
+  return 0
+}
+
+# why-stopped often runs ~60–100s under load (board status + class probes).
+# Budget above measured ~95s so a healthy run embeds instead of false-empty.
+# factory-health is usually <30s; keep a comfortable margin and skip notify.
+fh="$(capture_helper_embed factory_health 90 last-stack-factory-health --json --no-notify)"
+printf '%s\n' "${fh:-$(embed_error factory_health parse 'empty capture')}" >"$tmp/fh.json"
+
+ws="$(capture_helper_embed why_stopped 120 last-stack-why-stopped --json --quiet)"
+printf '%s\n' "${ws:-$(embed_error why_stopped parse 'empty capture')}" >"$tmp/ws.json"
 
 # --- heartbeats: last pickup / closeout / feature-prove ages ---
 hb_file="${LAST_STACK_HEARTBEATS_PATH:-$HOME/.last-stack/logs/routine-heartbeats.log}"
