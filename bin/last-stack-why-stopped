@@ -114,10 +114,8 @@ todo=0
 doing=0
 unattached=0
 ps=""
-if command -v kanban >/dev/null 2>&1 || command -v fkanban >/dev/null 2>&1; then
-  board_cli=kanban
-  command -v kanban >/dev/null 2>&1 || board_cli=fkanban
-  ps="$("$board_cli" pickup status --json 2>/dev/null || true)"
+if command -v kanban >/dev/null 2>&1; then
+  ps="$(kanban pickup status --json 2>/dev/null || true)"
   if [ -n "$ps" ]; then
     ready="$(printf '%s\n' "$ps" | jq -r '.ready // 0' 2>/dev/null || echo 0)"
     unattached="$(printf '%s\n' "$ps" | jq -r '.counts["unattached-outcome"] // 0' 2>/dev/null || echo 0)"
@@ -130,8 +128,8 @@ if command -v kanban >/dev/null 2>&1 || command -v fkanban >/dev/null 2>&1; then
     if command -v last-stack-lastdb-pressure >/dev/null 2>&1 && last-stack-lastdb-pressure --hot --quiet 2>/dev/null; then
       :
     else
-      todo="$("$board_cli" list --column todo --json 2>/dev/null | jq 'if type=="array" then length else (.cards|length) end' 2>/dev/null || echo 0)"
-      doing="$("$board_cli" list --column doing --json 2>/dev/null | jq 'if type=="array" then length else (.cards|length) end' 2>/dev/null || echo 0)"
+      todo="$(kanban list --column todo --json 2>/dev/null | jq 'if type=="array" then length else (.cards|length) end' 2>/dev/null || echo 0)"
+      doing="$(kanban list --column doing --json 2>/dev/null | jq 'if type=="array" then length else (.cards|length) end' 2>/dev/null || echo 0)"
     fi
   fi
 fi

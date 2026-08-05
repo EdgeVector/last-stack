@@ -48,12 +48,10 @@ need() {
 
 need jq || exit 0
 BOARD_CLI=""
-if command -v fkanban >/dev/null 2>&1; then
-  BOARD_CLI=fkanban
-elif command -v kanban >/dev/null 2>&1; then
+if command -v kanban >/dev/null 2>&1; then
   BOARD_CLI=kanban
 else
-  log "no fkanban/kanban on PATH"
+  log "no kanban on PATH"
   exit 0
 fi
 
