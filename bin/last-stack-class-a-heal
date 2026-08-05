@@ -117,6 +117,7 @@ PATH_SHIM_NAMES=(
   last-stack-forge-ci-log
   last-stack-forge-json-jq
   last-stack-factory-health
+  last-stack-ship-pipeline-gap-snapshot
   last-stack-pr-venue
   last-stack-north-star-proof
   last-stack-lastdb-pressure
