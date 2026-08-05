@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+# last-stack-ship-pipeline-gap-snapshot — zero-LLM signals for the ship funnel.
+#
+# Collects North Star → Milestone → PR → shipped health into one JSON blob for
+# the nightly LLM gap-audit routine and for morning-sync consumption.
+#
+# Usage:
+#   last-stack-ship-pipeline-gap-snapshot [--json] [--quiet]
+#
+# Exit 0 after a completed pass (including partial). Exit 2 on usage.
+set -euo pipefail
+
+JSON=1
+QUIET=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json) JSON=1; shift ;;
+    --quiet|-q) QUIET=1; shift ;;
+    -h|--help)
+      echo "last-stack-ship-pipeline-gap-snapshot [--json] [--quiet]"
+      exit 0
+      ;;
+    *) echo "unknown: $1" >&2; exit 2 ;;
+  esac
+done
+
+log() { [ "$QUIET" -eq 1 ] || printf 'ship-pipeline-snapshot: %s\n' "$*" >&2; }
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+# Fixture tests set SHIP_PIPELINE_GAP_SNAPSHOT_FIXTURE=1 and provide a stub
+# board CLI first on PATH — do not force ~/.local/bin ahead of that.
+if [ "${SHIP_PIPELINE_GAP_SNAPSHOT_FIXTURE:-0}" != "1" ]; then
+  export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
+else
+  export PATH="${PATH:-/usr/bin:/bin}:${ROOT}/bin"
+fi
+
+BOARD=kanban
+command -v kanban >/dev/null 2>&1 || BOARD=fkanban
+command -v "$BOARD" >/dev/null 2>&1 || { log "no board CLI"; echo '{}'; exit 0; }
+command -v jq >/dev/null 2>&1 || { log "no jq"; echo '{}'; exit 0; }
+
+ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+# --- pickup / board ---
+"$BOARD" pickup status --json >"$tmp/pickup.json" 2>/dev/null || echo '{}' >"$tmp/pickup.json"
+ready="$(jq -r '.ready // 0' "$tmp/pickup.json" 2>/dev/null || echo 0)"
+unattached="$(jq -r '.counts["unattached-outcome"] // 0' "$tmp/pickup.json" 2>/dev/null || echo 0)"
+human_gated="$(jq -r '.counts["human-gated"] // 0' "$tmp/pickup.json" 2>/dev/null || echo 0)"
+blocked_dep="$(jq -r '.counts["blocked-on-dependency"] // 0' "$tmp/pickup.json" 2>/dev/null || echo 0)"
+parked="$(jq -r '.counts["parked/non-work"] // 0' "$tmp/pickup.json" 2>/dev/null || echo 0)"
+collision="$(jq -r '.counts["collision"] // 0' "$tmp/pickup.json" 2>/dev/null || echo 0)"
+todo_n="$(jq -r '[.cards[]? | select(.column=="todo")] | length' "$tmp/pickup.json" 2>/dev/null || echo 0)"
+doing_n="$(jq -r '[.cards[]? | select(.column=="doing")] | length' "$tmp/pickup.json" 2>/dev/null || echo 0)"
+
+# unattached exemplars (max 8)
+jq -c '[.cards[]? | select(.category=="unattached-outcome") | {slug,repo,reason}] | .[0:8]' \
+  "$tmp/pickup.json" >"$tmp/unattached.json" 2>/dev/null || echo '[]' >"$tmp/unattached.json"
+
+# --- milestones ---
+"$BOARD" milestone list --json >"$tmp/ms.json" 2>/dev/null || echo '[]' >"$tmp/ms.json"
+jq -c '
+  (if type=="array" then . else (.milestones // .items // []) end) as $m
+  | {
+      total: ($m|length),
+      by_state: (
+        reduce $m[]? as $x ({};
+          .[($x.state // "unknown")] = ((.[($x.state // "unknown")] // 0) + 1)
+        )
+      ),
+      active: [$m[]? | select((.state//"")=="active") | {slug, north_star, title: (.title//"")[0:80], proof_status: (.proof_status//.proof//"")}],
+      abandoned: [$m[]? | select((.state//"")=="abandoned") | .slug][0:12],
+      complete_no_proof: [
+        $m[]?
+        | select((.state//"")=="complete")
+        | select((.proof_status//.proof//"") | test("passing|not_required") | not)
+        | .slug
+      ][0:12],
+      active_without_north_star: [
+        $m[]?
+        | select((.state//"") | test("^(active|planned|proving)$"))
+        | select((.north_star//"") | length == 0)
+        | .slug
+      ][0:12]
+    }
+' "$tmp/ms.json" >"$tmp/ms_sum.json" 2>/dev/null || echo '{}' >"$tmp/ms_sum.json"
+
+# --- factory-health / why-stopped (optional) ---
+# Helpers often print a heartbeat line before pretty-printed JSON. Decode the
+# first complete object/array so --slurpfile never sees partial lines.
+extract_json_value() {
+  python3 -c '
+import json, sys
+raw = sys.stdin.read()
+dec = json.JSONDecoder()
+for i, ch in enumerate(raw):
+    if ch not in "{[":
+        continue
+    try:
+        obj, _ = dec.raw_decode(raw[i:])
+        if isinstance(obj, (dict, list)):
+            json.dump(obj, sys.stdout)
+            sys.stdout.write("\n")
+            raise SystemExit(0)
+    except Exception:
+        continue
+sys.stdout.write("{}\n")
+'
+}
+
+fh='{}'
+if command -v last-stack-factory-health >/dev/null 2>&1; then
+  fh="$(last-stack-factory-health --json 2>/dev/null | extract_json_value || echo '{}')"
+fi
+printf '%s\n' "${fh:-{}}" >"$tmp/fh.json"
+
+ws='{}'
+if command -v last-stack-why-stopped >/dev/null 2>&1; then
+  ws="$(last-stack-why-stopped --json --quiet 2>/dev/null | extract_json_value || echo '{}')"
+fi
+printf '%s\n' "${ws:-{}}" >"$tmp/ws.json"
+
+# --- heartbeats: last pickup / closeout / feature-prove ages ---
+hb_file="${LAST_STACK_HEARTBEATS_PATH:-$HOME/.last-stack/logs/routine-heartbeats.log}"
+pickup_last=""
+closeout_last=""
+if [ -f "$hb_file" ]; then
+  pickup_last="$(grep -E 'kanban-pickup|fkanban-pickup' "$hb_file" 2>/dev/null | tail -1 | head -c 200 || true)"
+  closeout_last="$(grep -E 'board-closeout|unattached-heal' "$hb_file" 2>/dev/null | tail -1 | head -c 200 || true)"
+fi
+
+# --- open CRs stuck (lastgit) if available ---
+stuck_crs='[]'
+if command -v lastgit >/dev/null 2>&1; then
+  stuck_raw="$(lastgit stuck --json 2>/dev/null || true)"
+  stuck_crs="$(printf '%s\n' "$stuck_raw" | extract_json_value | jq -c '
+    if type=="array" then .[0:10]
+    elif type=="object" then (.items // .stuck // .crs // []) | if type=="array" then .[0:10] else [] end
+    else [] end
+  ' 2>/dev/null || echo '[]')"
+fi
+printf '%s\n' "${stuck_crs:-[]}" >"$tmp/stuck.json"
+
+# --- recent brain audits (optional presence) ---
+prior_audit=""
+if command -v brain >/dev/null 2>&1; then
+  prior_audit="$(brain get ship-pipeline-gap-audit-latest 2>/dev/null | head -c 500 || true)"
+fi
+
+# Ensure every --slurpfile input is valid JSON (never fail the whole snapshot
+# because one helper printed a heartbeat + partial object).
+for f in "$tmp/pickup.json" "$tmp/unattached.json" "$tmp/ms.json" "$tmp/ms_sum.json" \
+  "$tmp/fh.json" "$tmp/ws.json" "$tmp/stuck.json"; do
+  if [ -f "$f" ] && ! jq -e . "$f" >/dev/null 2>&1; then
+    case "$f" in
+      *unattached*|*stuck*) printf '[]\n' >"$f" ;;
+      *) printf '{}\n' >"$f" ;;
+    esac
+  fi
+done
+
+# Assemble
+jq -n \
+  --arg ts "$ts" \
+  --argjson ready "$ready" \
+  --argjson todo "$todo_n" \
+  --argjson doing "$doing_n" \
+  --argjson unattached "$unattached" \
+  --argjson human_gated "$human_gated" \
+  --argjson blocked_dep "$blocked_dep" \
+  --argjson parked "$parked" \
+  --argjson collision "$collision" \
+  --slurpfile unattached_ex "$tmp/unattached.json" \
+  --slurpfile ms "$tmp/ms_sum.json" \
+  --slurpfile fh "$tmp/fh.json" \
+  --slurpfile ws "$tmp/ws.json" \
+  --slurpfile stuck "$tmp/stuck.json" \
+  --arg pickup_last "$pickup_last" \
+  --arg closeout_last "$closeout_last" \
+  --arg prior_audit_present "$( [ -n "$prior_audit" ] && echo true || echo false )" \
+  '{
+     ts: $ts,
+     funnel: {
+       pickup_ready: $ready,
+       todo: $todo,
+       doing: $doing,
+       unattached_outcome: $unattached,
+       human_gated: $human_gated,
+       blocked_on_dependency: $blocked_dep,
+       parked_non_work: $parked,
+       collision: $collision
+     },
+     unattached_exemplars: ($unattached_ex[0] // []),
+     milestones: ($ms[0] // {}),
+     factory_health: ($fh[0] // {}),
+     why_stopped: ($ws[0] // {}),
+     stuck_crs: ($stuck[0] // []),
+     heartbeats: {
+       last_pickup_line: $pickup_last,
+       last_closeout_or_heal_line: $closeout_last
+     },
+     prior_audit_present: ($prior_audit_present == "true")
+   }'
+
+exit 0

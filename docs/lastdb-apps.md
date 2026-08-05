@@ -94,10 +94,33 @@ lastsecrets init             # bootstrap LastSecrets (needed for org keys)
 org init                     # bootstrap Org (invite/join)
 ```
 
-Join someone's org (after they send an invite file):
+### Org: create and invite (public-key seal)
+
+Preferred path — no Exemem account required. Full write-up:
+https://github.com/EdgeVector/org/blob/main/docs/INVITE.md
 
 ```bash
-org join --from ~/Downloads/something.invite.json
+# Admin (once)
+org create friends --name "Friends"
+
+# Friend (once per machine)
+org receive
+# → send the orgpk1:… line to the admin (clear-channel OK)
+
+# Admin seals to that public key
+org invite friends --to 'orgpk1:PASTE_THEIR_KEY' --agent
+# → paste the orgseal1:… package back to the friend (clear-channel OK)
+
+# Friend joins on the SAME machine that ran org receive
+org join --sealed 'orgseal1:PASTE_PACKAGE'
+org show friends
+```
+
+Fallback only (invite file embeds the raw E2E key — AirDrop/USB, never email):
+
+```bash
+org invite friends --out ~/Desktop/friends.invite.json --agent
+org join --from ~/Downloads/friends.invite.json
 ```
 
 Run Dogfood Graph locally:

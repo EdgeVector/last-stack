@@ -99,6 +99,9 @@ LOCK_WAIT_S="${LASTSTACK_CLASS_A_LOCK_WAIT_S:-20}"
 # Keep in sync with config/host-track/apps.json last-stack links.
 # Note: host-track is included so a GC'd versions/* pin is re-pointed; we never
 # replace a working non-versions symlink or a real file.
+# Forge helpers are Class A: board-closeout resolves last_stack from $0's parent
+# when invoked via ~/.local/bin, so forge-api must live in that same bin dir or
+# closeout flags forge-api-missing and leaves merged Forge PRs stuck in doing.
 PATH_SHIM_NAMES=(
   host-track
   last-stack-class-a-heal
@@ -108,7 +111,14 @@ PATH_SHIM_NAMES=(
   last-stack-shell-prelude
   last-stack-cli-preflight
   last-stack-board-closeout-sweep
+  last-stack-card-closeout
+  last-stack-forge-api
+  last-stack-forge-git
+  last-stack-forge-ci-log
+  last-stack-forge-json-jq
+  last-stack-unattached-outcome-heal
   last-stack-factory-health
+  last-stack-ship-pipeline-gap-snapshot
   last-stack-pr-venue
   last-stack-north-star-proof
   last-stack-lastdb-pressure

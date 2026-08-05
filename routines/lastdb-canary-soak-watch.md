@@ -14,7 +14,8 @@ last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 "$last_stack/bin/last-stack-cli-preflight" jq kanban situations lastdb
 export PATH="$last_stack/bin:$HOME/.local/bin:$PATH"
 export LAST_STACK_CANARY_SOAK_HOURS="${LAST_STACK_CANARY_SOAK_HOURS:-24}"
-export LAST_STACK_CANARY_LAUNCHD_CHECK_CMD="launchctl print gui/$(id -u)/com.tomtang.lastdbd-primary-506"
+# Host sets LASTDB_LAUNCHD_LABEL (no personal username in committed prompts).
+export LAST_STACK_CANARY_LAUNCHD_CHECK_CMD="${LAST_STACK_CANARY_LAUNCHD_CHECK_CMD:-launchctl print gui/$(id -u)/${LASTDB_LAUNCHD_LABEL}}"
 ```
 
 ## Execute
