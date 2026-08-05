@@ -1,0 +1,13 @@
+# Auto release loop step 0: build Forge fold main tip → stage canary-builds/<oid>.
+# Runs before lastdb-canary-dogfood (03:17). Does not cut over primary.
+id = "lastdb-canary-build-main"
+harness = "claude"
+model = "sonnet"
+effort = "medium"
+group = "dogfood"
+rrule = "FREQ=DAILY;BYHOUR=1;BYMINUTE=17;BYSECOND=0"
+cwd = "/Users/REPLACE/code/edgevector"
+status = "active"
+timeout_min = 180
+prompt_path = "/Users/REPLACE/.last-stack/routines/lastdb-canary-build-main.md"
+heartbeat_slug = "routine-heartbeats"

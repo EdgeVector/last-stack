@@ -1,0 +1,313 @@
+#!/usr/bin/env bash
+# Build LastDB Mini from local Forgejo fold `main` tip and stage it for canary dogfood.
+#
+# Completes the auto-release loop:
+#   build-main (this) → dogfood cutover → 24h soak → brew promote
+#
+# Stages under:
+#   ~/.local/state/last-stack/canary-builds/<full-oid>/
+#     lastdb, lastdbd, manifest.json, (optional) lastdb-*.tar.gz + .manifest.json
+#
+# Never touches the primary. Never publishes brew. Never uses GitHub as SoT.
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  last-stack-canary-build-main [--dry-run] [--force] [--skip-build] [--json]
+
+Build fold main tip (Forge origin) and stage binaries for lastdb-canary-dogfood.
+
+Options:
+  --dry-run      Resolve main tip + report; do not build or write stages
+  --force        Rebuild even if a matching stage already exists
+  --skip-build   Reuse worktree target/release (or LAST_STACK_CANARY_BUILD_BIN_DIR)
+  --json         Machine-readable JSON on stdout
+  -h, --help     Show help
+
+Env:
+  LAST_STACK_CANARY_FOLD_MIRROR     bare/clone of fold (default ~/.cache/edgevector-git/fold.git)
+  LAST_STACK_CANARY_BUILDS_DIR      stage root (default ~/.local/state/last-stack/canary-builds)
+  LAST_STACK_CANARY_BUILD_WORKDIR   checkout for cargo (default …/canary-build/fold-worktree)
+  LAST_STACK_CANARY_FETCH_MAIN      1 (default) fetch origin main before resolve
+  LAST_STACK_FORGE_GIT              forge-git wrapper (default last-stack-forge-git)
+  LAST_STACK_CANARY_CARGO_CMD       full cargo command override
+  LAST_STACK_CANARY_BUILD_BIN_DIR   with --skip-build: dir with lastdb/lastdbd
+  LAST_STACK_CANARY_BUILD_KEEP      max staged OIDs to keep (default 5)
+  LAST_STACK_CANARY_TARGET          package triple (default aarch64-apple-darwin)
+EOF
+}
+
+die() {
+  echo "last-stack-canary-build-main: $*" >&2
+  exit 1
+}
+
+log() {
+  echo "last-stack-canary-build-main: $*" >&2
+}
+
+json_escape() {
+  python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()[:-1] if False else sys.argv[1]))' "$1"
+}
+
+dry_run=0
+force=0
+skip_build=0
+as_json=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dry-run) dry_run=1; shift ;;
+    --force) force=1; shift ;;
+    --skip-build) skip_build=1; shift ;;
+    --json) as_json=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+HOME_DIR="${HOME:-$(eval echo ~)}"
+FOLD_MIRROR="${LAST_STACK_CANARY_FOLD_MIRROR:-$HOME_DIR/.cache/edgevector-git/fold.git}"
+BUILDS_DIR="${LAST_STACK_CANARY_BUILDS_DIR:-$HOME_DIR/.local/state/last-stack/canary-builds}"
+WORKDIR="${LAST_STACK_CANARY_BUILD_WORKDIR:-$HOME_DIR/.local/state/last-stack/canary-build/fold-worktree}"
+FETCH_MAIN="${LAST_STACK_CANARY_FETCH_MAIN:-1}"
+FORGE_GIT="${LAST_STACK_FORGE_GIT:-last-stack-forge-git}"
+KEEP="${LAST_STACK_CANARY_BUILD_KEEP:-5}"
+TARGET="${LAST_STACK_CANARY_TARGET:-aarch64-apple-darwin}"
+CARGO_CMD="${LAST_STACK_CANARY_CARGO_CMD:-cargo build --release -p lastdb_node --bin lastdb --bin lastdbd}"
+
+[ -d "$FOLD_MIRROR" ] || die "fold mirror not found: $FOLD_MIRROR (clone/fetch EdgeVector/fold from local Forge first)"
+
+maybe_fetch_main() {
+  if [ "$FETCH_MAIN" != "1" ]; then
+    return 0
+  fi
+  if command -v "$FORGE_GIT" >/dev/null 2>&1; then
+    if "$FORGE_GIT" -C "$FOLD_MIRROR" fetch origin refs/heads/main:refs/heads/main 2>/dev/null; then
+      return 0
+    fi
+  fi
+  git -C "$FOLD_MIRROR" fetch origin refs/heads/main:refs/heads/main 2>/dev/null || true
+}
+
+resolve_main_oid() {
+  if [ -n "${LAST_STACK_CANARY_MAIN_OID:-}" ]; then
+    printf '%s\n' "$LAST_STACK_CANARY_MAIN_OID"
+    return 0
+  fi
+  maybe_fetch_main
+  local ref
+  for ref in refs/heads/main refs/remotes/origin/main; do
+    if git -C "$FOLD_MIRROR" rev-parse --verify -q "$ref^{commit}" >/dev/null 2>&1; then
+      git -C "$FOLD_MIRROR" rev-parse "$ref"
+      return 0
+    fi
+  done
+  die "could not resolve fold main tip in $FOLD_MIRROR"
+}
+
+stage_is_current() {
+  local dir="$1" oid="$2"
+  [ -x "$dir/lastdbd" ] || return 1
+  [ -x "$dir/lastdb" ] || return 1
+  local man=""
+  if [ -f "$dir/manifest.json" ]; then
+    man="$dir/manifest.json"
+  elif [ -f "$dir/lastdb-${TARGET}.manifest.json" ]; then
+    man="$dir/lastdb-${TARGET}.manifest.json"
+  else
+    return 1
+  fi
+  local got
+  got="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("source_git_oid",""))' "$man" 2>/dev/null || true)"
+  [ -n "$got" ] || return 1
+  case "$oid" in
+    "$got"|${got}*) return 0 ;;
+  esac
+  case "$got" in
+    "$oid"|${oid}*) return 0 ;;
+  esac
+  return 1
+}
+
+write_simple_manifest() {
+  local path="$1" oid="$2" lastdb_ver="$3" lastdbd_ver="$4"
+  python3 - "$path" "$oid" "$lastdb_ver" "$lastdbd_ver" <<'PY'
+import json, sys
+path, oid, lv, dv = sys.argv[1:5]
+doc = {
+    "source_git_oid": oid,
+    "lastdb_version": lv,
+    "lastdbd_version": dv,
+    "staged_by": "last-stack-canary-build-main",
+}
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(doc, f, indent=2)
+    f.write("\n")
+PY
+}
+
+prune_old_stages() {
+  local root="$1" keep="$2"
+  [ -d "$root" ] || return 0
+  # shellcheck disable=SC2012
+  local count
+  count="$(ls -1 "$root" 2>/dev/null | wc -l | tr -d ' ')"
+  [ "$count" -gt "$keep" ] || return 0
+  # Delete oldest by mtime first, keep newest $keep
+  ls -1t "$root" | tail -n +"$((keep + 1))" | while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    rm -rf "$root/$name"
+    log "pruned old stage $name"
+  done
+}
+
+ensure_worktree() {
+  local oid="$1"
+  mkdir -p "$(dirname "$WORKDIR")"
+  if [ -d "$WORKDIR/.git" ] || [ -f "$WORKDIR/.git" ]; then
+    # Detached checkout at desired oid
+    git -C "$WORKDIR" fetch --no-tags origin refs/heads/main:refs/remotes/origin/main 2>/dev/null || true
+    # Prefer mirror as remote if worktree came from it
+    if ! git -C "$WORKDIR" cat-file -e "${oid}^{commit}" 2>/dev/null; then
+      git -C "$WORKDIR" fetch "$FOLD_MIRROR" "$oid" 2>/dev/null || \
+        git -C "$FOLD_MIRROR" fetch origin refs/heads/main:refs/heads/main 2>/dev/null || true
+    fi
+    git -C "$WORKDIR" checkout --detach "$oid" 2>/dev/null || {
+      # recreate
+      git -C "$FOLD_MIRROR" worktree remove --force "$WORKDIR" 2>/dev/null || rm -rf "$WORKDIR"
+      git -C "$FOLD_MIRROR" worktree add --detach "$WORKDIR" "$oid"
+    }
+  else
+    rm -rf "$WORKDIR"
+    git -C "$FOLD_MIRROR" worktree add --detach "$WORKDIR" "$oid"
+  fi
+  # Ensure clean enough for non-dirty release binaries
+  git -C "$WORKDIR" reset --hard "$oid"
+  git -C "$WORKDIR" clean -fdx -e target 2>/dev/null || git -C "$WORKDIR" clean -fd
+}
+
+emit_result() {
+  local status="$1" oid="$2" stage="$3" version="$4" note="$5" rebuilt="$6"
+  if [ "$as_json" -eq 1 ]; then
+    python3 - "$status" "$oid" "$stage" "$version" "$note" "$rebuilt" "$dry_run" <<'PY'
+import json, sys
+status, oid, stage, version, note, rebuilt, dry = sys.argv[1:8]
+print(json.dumps({
+    "status": status,
+    "source": "forge-main",
+    "source_git_oid": oid,
+    "stage_dir": stage,
+    "version": version,
+    "note": note,
+    "rebuilt": rebuilt == "1",
+    "dry_run": dry == "1",
+    "primary_mutation": False,
+}, sort_keys=True, separators=(",", ":")))
+PY
+  else
+    echo "canary-build-main status=$status oid=${oid:0:12} stage=$stage version=$version rebuilt=$rebuilt dry_run=$dry_run note=$note"
+  fi
+}
+
+main_oid="$(resolve_main_oid)"
+stage_dir="$BUILDS_DIR/$main_oid"
+log "fold main tip ${main_oid:0:12} (full=$main_oid)"
+
+if [ "$force" -eq 0 ] && stage_is_current "$stage_dir" "$main_oid"; then
+  ver="$("$stage_dir/lastdbd" --version 2>/dev/null | awk '{print $NF}' || echo unknown)"
+  emit_result "already_staged" "$main_oid" "$stage_dir" "$ver" "matching stage present" "0"
+  exit 0
+fi
+
+if [ "$dry_run" -eq 1 ]; then
+  emit_result "would_build" "$main_oid" "$stage_dir" "" "dry-run: would build and stage" "0"
+  exit 0
+fi
+
+bin_dir=""
+if [ "$skip_build" -eq 1 ]; then
+  bin_dir="${LAST_STACK_CANARY_BUILD_BIN_DIR:-}"
+  if [ -z "$bin_dir" ]; then
+    bin_dir="$WORKDIR/target/release"
+  fi
+  [ -x "$bin_dir/lastdbd" ] && [ -x "$bin_dir/lastdb" ] || \
+    die "--skip-build requires lastdb+lastdbd under $bin_dir (or LAST_STACK_CANARY_BUILD_BIN_DIR)"
+else
+  ensure_worktree "$main_oid"
+  log "building in $WORKDIR: $CARGO_CMD"
+  # shellcheck disable=SC2086
+  ( cd "$WORKDIR" && eval "$CARGO_CMD" )
+  bin_dir="$WORKDIR/target/release"
+fi
+
+[ -x "$bin_dir/lastdb" ] || die "missing $bin_dir/lastdb after build"
+[ -x "$bin_dir/lastdbd" ] || die "missing $bin_dir/lastdbd after build"
+
+lastdb_ver="$("$bin_dir/lastdb" --version 2>/dev/null | awk '{print $NF}')"
+lastdbd_ver="$("$bin_dir/lastdbd" --version 2>/dev/null | awk '{print $NF}')"
+[ -n "$lastdb_ver" ] && [ -n "$lastdbd_ver" ] || die "binaries did not report --version"
+[ "$lastdb_ver" = "$lastdbd_ver" ] || die "version skew lastdb=$lastdb_ver lastdbd=$lastdbd_ver"
+case "$lastdb_ver$lastdbd_ver" in
+  *-dirty*) die "refusing -dirty binaries: $lastdb_ver" ;;
+esac
+
+# Prefer describe shortsha embeds main tip when present
+if printf '%s' "$lastdbd_ver" | grep -Eq -- '-g[0-9a-f]{7,}'; then
+  gsha="$(printf '%s' "$lastdbd_ver" | sed -n 's/.*-g\([0-9a-f][0-9a-f]*\).*/\1/p')"
+  case "$main_oid" in
+    ${gsha}*) ;;
+    *)
+      case "$gsha" in
+        ${main_oid:0:${#gsha}}) ;;
+        *) log "warn: binary shortsha -g$gsha does not match main $main_oid (continuing; manifest pins oid)" ;;
+      esac
+      ;;
+  esac
+fi
+
+tmp_stage="$(mktemp -d "${TMPDIR:-/tmp}/canary-stage.XXXXXX")"
+trap 'rm -rf "$tmp_stage"' EXIT
+cp "$bin_dir/lastdb" "$tmp_stage/lastdb"
+cp "$bin_dir/lastdbd" "$tmp_stage/lastdbd"
+chmod +x "$tmp_stage/lastdb" "$tmp_stage/lastdbd"
+write_simple_manifest "$tmp_stage/manifest.json" "$main_oid" "$lastdb_ver" "$lastdbd_ver"
+
+# Optional full Homebrew-shaped package (for promote-execute)
+package_sh=""
+for candidate in \
+  "$WORKDIR/scripts/release/package-lastdb-bundle.sh" \
+  "$HOME_DIR/code/edgevector/fold/scripts/release/package-lastdb-bundle.sh"
+do
+  if [ -f "$candidate" ]; then
+    package_sh="$candidate"
+    break
+  fi
+done
+if [ -n "$package_sh" ]; then
+  if bash "$package_sh" \
+      --target "$TARGET" \
+      --bin-dir "$tmp_stage" \
+      --out-dir "$tmp_stage" \
+      --git-oid "$main_oid" 2>/dev/null; then
+    log "packaged $TARGET bundle into stage"
+  else
+    log "warn: package-lastdb-bundle failed; keeping simple stage (lastdb/lastdbd+manifest)"
+  fi
+fi
+
+mkdir -p "$BUILDS_DIR"
+rm -rf "$stage_dir"
+mkdir -p "$stage_dir"
+# copy contents
+cp -a "$tmp_stage"/. "$stage_dir"/
+# ensure dogfood finds executables at stage root
+[ -x "$stage_dir/lastdbd" ] || die "stage missing lastdbd after copy"
+[ -f "$stage_dir/manifest.json" ] || write_simple_manifest "$stage_dir/manifest.json" "$main_oid" "$lastdb_ver" "$lastdbd_ver"
+
+prune_old_stages "$BUILDS_DIR" "$KEEP"
+
+log "staged $stage_dir version=$lastdbd_ver"
+emit_result "built" "$main_oid" "$stage_dir" "$lastdbd_ver" "staged forge-main for dogfood" "1"
+exit 0
