@@ -134,5 +134,76 @@ LAST_STACK_CANARY_PROMOTE_AUTO=1 \
 grep -q 'PROMOTE_EXECUTE .*status=ready_dry_run' "$tmp/promote-exec.out"
 grep -q 'stable_mutation=false' "$tmp/promote-exec.out"
 
+# --- commit-ancestry guard -------------------------------------------------
+# Regression for 2026-08-05: `0.23.3-canary.20260801` (built Aug 1) replaced
+# `0.23.2-409-gee967a073` (built Aug 4) because semver ordered them. It was a
+# rollback of 196 commits. Hermetic: build a throwaway history, don't depend on
+# the fold mirror being present.
+mirror="$tmp/mirror.git"
+git init -q --bare "$mirror"
+seed="$tmp/seed"
+git init -q "$seed"
+git -C "$seed" config user.email test@example.com
+git -C "$seed" config user.name test
+echo old >"$seed/f"; git -C "$seed" add f; git -C "$seed" commit -qm old
+OLD_OID="$(git -C "$seed" rev-parse HEAD)"
+echo new >"$seed/f"; git -C "$seed" commit -qam new
+NEW_OID="$(git -C "$seed" rev-parse HEAD)"
+git -C "$seed" push -q "$mirror" HEAD:refs/heads/main
+
+guard_dogfood() { # <running_oid> <candidate_oid> <ledger-suffix>
+  LAST_STACK_CANARY_FOLD_MIRROR="$mirror" \
+  LAST_STACK_CANARY_RUNNING_OID="$1" \
+  LAST_STACK_CANARY_SOURCE_OID="$2" \
+    "$CLI" --ledger "$tmp/anc-$3.jsonl" dogfood --sha "anc-$3" --version 0.0.1-canary.test
+}
+
+# A rollback candidate is refused, and nothing is written to the ledger — the
+# primary is never cut over.
+if guard_dogfood "$NEW_OID" "$OLD_OID" rollback >"$tmp/anc-rb.out" 2>"$tmp/anc-rb.err"; then
+  echo "expected ancestry guard to refuse a rollback candidate" >&2
+  exit 1
+fi
+grep -q 'ANCESTRY stage=dogfood result=REFUSE' "$tmp/anc-rb.err"
+grep -q 'commits=1' "$tmp/anc-rb.err"
+test ! -e "$tmp/anc-rollback.jsonl"
+
+# A genuine descendant is allowed, and its source OID lands in the ledger.
+guard_dogfood "$OLD_OID" "$NEW_OID" fwd >"$tmp/anc-fwd.out" 2>"$tmp/anc-fwd.err"
+grep -q 'ANCESTRY stage=dogfood result=ok .*relation=descendant' "$tmp/anc-fwd.out"
+[ "$(jq -r 'select(.state=="candidate_found") | .source_git_oid' "$tmp/anc-fwd.jsonl")" = "$NEW_OID" ]
+
+# Rebuilding the identical commit is not a rollback.
+guard_dogfood "$NEW_OID" "$NEW_OID" same >"$tmp/anc-same.out" 2>&1
+grep -q 'relation=identical' "$tmp/anc-same.out"
+
+# The escape hatch still works, and says so.
+LAST_STACK_CANARY_ANCESTRY_GUARD=0 guard_dogfood "$NEW_OID" "$OLD_OID" off \
+  >"$tmp/anc-off.out" 2>"$tmp/anc-off.err"
+grep -q 'result=skipped reason=guard_disabled' "$tmp/anc-off.err"
+
+# Unknown ancestry: dogfood proceeds (a local cutover is reversible) ...
+LAST_STACK_CANARY_FOLD_MIRROR="$mirror" \
+LAST_STACK_CANARY_RUNNING_OID=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef \
+LAST_STACK_CANARY_SOURCE_OID="$NEW_OID" \
+  "$CLI" --ledger "$tmp/anc-unk.jsonl" dogfood --sha anc-unk --version 0.0.1-canary.test \
+  >"$tmp/anc-unk.out" 2>"$tmp/anc-unk.err"
+grep -q 'result=unknown reason=commit_not_in_mirror' "$tmp/anc-unk.err"
+
+# ... but promote fails closed, because that one is a public release.
+"$CLI" --ledger "$tmp/anc-unk.jsonl" advance anc-unk soak_started >/dev/null
+"$CLI" --ledger "$tmp/anc-unk.jsonl" advance anc-unk soak_green >/dev/null
+if LAST_STACK_CANARY_PROMOTE_AUTO=1 \
+   LAST_STACK_CANARY_LIVE_VERSION_CMD=pass \
+   LAST_STACK_CANARY_RELEASES_URL="http://127.0.0.1:1/none" \
+   LAST_STACK_CANARY_SOURCE_OID="$NEW_OID" \
+     "$CLI" --ledger "$tmp/anc-unk.jsonl" promote-execute \
+     --promote-root "$tmp/anc-promote-root" >"$tmp/anc-prom.out" 2>"$tmp/anc-prom.err"; then
+  echo "expected promote to fail closed on unknown ancestry" >&2
+  exit 1
+fi
+grep -q 'ANCESTRY stage=promote result=unknown' "$tmp/anc-prom.err"
+grep -q 'refusing to publish without proven ancestry' "$tmp/anc-prom.err"
+
 echo "PASS last-stack-canary-pipeline"
 

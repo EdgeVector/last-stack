@@ -374,21 +374,41 @@ def dry_suffix(enabled: bool) -> str:
 def dogfood_candidate(path: Path, args: argparse.Namespace) -> dict:
     observed_sha = args.observed_sha or args.sha
 
+    # Guard BEFORE the ledger records anything: dogfood is the step that cuts the
+    # primary over, so a rollback caught here never touches the live node.
+    source_oid = ""
+    if not args.dry_run:
+        source_oid = assert_not_rollback(
+            args.version, args.sha, strict_unknown=False, stage="dogfood"
+        )
+
     def inner() -> dict:
         latest = latest_by_candidate(load_events(path))
         current = latest.get(args.sha)
         if current is None:
             append_event(
                 path,
-                base_event(args.sha, "candidate_found", version=args.version, source=args.source),
+                base_event(
+                    args.sha,
+                    "candidate_found",
+                    version=args.version,
+                    source=args.source,
+                    source_git_oid=source_oid,
+                ),
             )
             append_transition(path, args.sha, "dogfood_started", note="dogfood")
-            event = append_transition(path, args.sha, "dogfood_green", observed_sha=observed_sha)
+            event = append_transition(
+                path, args.sha, "dogfood_green", observed_sha=observed_sha, source_git_oid=source_oid
+            )
         elif current.get("state") == "candidate_found":
             append_transition(path, args.sha, "dogfood_started", note="dogfood")
-            event = append_transition(path, args.sha, "dogfood_green", observed_sha=observed_sha)
+            event = append_transition(
+                path, args.sha, "dogfood_green", observed_sha=observed_sha, source_git_oid=source_oid
+            )
         elif current.get("state") == "dogfood_started":
-            event = append_transition(path, args.sha, "dogfood_green", observed_sha=observed_sha)
+            event = append_transition(
+                path, args.sha, "dogfood_green", observed_sha=observed_sha, source_git_oid=source_oid
+            )
         elif current.get("state") == "dogfood_green" and current.get("observed_sha", args.sha) == observed_sha:
             event = current
         else:
@@ -435,6 +455,193 @@ def run_check(label: str, env_name: str, default_cmd: str) -> bool:
         return True
     print(f"CHECK label={label} result=fail", file=sys.stderr)
     return False
+
+
+# --- commit-ancestry guard -------------------------------------------------
+# Canary versions are `git describe` builds, so semver is NOT a valid ordering
+# authority: on 2026-08-05 `0.23.3-canary.20260801` (built Aug 1) replaced
+# `0.23.2-409-gee967a073` (built Aug 4) and the pipeline called it an upgrade.
+# It was a strict rollback of 196 commits / 72 merges. Order by commit ancestry
+# instead — the candidate must be a DESCENDANT of the running binary's commit.
+
+
+def ancestry_guard_enabled() -> bool:
+    return os.environ.get("LAST_STACK_CANARY_ANCESTRY_GUARD", "1") != "0"
+
+
+def canary_source_oid(version: str) -> str:
+    """source_git_oid for a canary version, from its manifest asset alone.
+
+    Deliberately does NOT reuse download_canary_assets(): that pulls the whole
+    tarball, and the guard has to run *before* we commit to a candidate.
+    Returns "" when it cannot be determined.
+    """
+    if not version:
+        return ""
+    override = os.environ.get("LAST_STACK_CANARY_SOURCE_OID")
+    if override:
+        return override.strip()
+    tag = version if version.startswith("v") else f"v{version}"
+    repo = os.environ.get("LAST_STACK_CANARY_ASSET_REPO", "EdgeVector/homebrew-lastdb")
+    api = f"https://api.github.com/repos/{repo}/releases/tags/{tag}"
+    import urllib.request
+
+    headers = {"Accept": "application/vnd.github+json"}
+    token = os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        req = urllib.request.Request(api, headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            release = json.loads(resp.read().decode("utf-8"))
+        for asset in release.get("assets") or []:
+            name = asset.get("name") or ""
+            url = asset.get("browser_download_url") or ""
+            if not name.endswith("manifest.json") or not url:
+                continue
+            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=60) as resp:
+                manifest = json.loads(resp.read().decode("utf-8"))
+            return str(manifest.get("source_git_oid") or "")
+    except Exception:
+        return ""
+    return ""
+
+
+def running_source_oid() -> str:
+    """Commit of the live binary, from the `-g<sha>` suffix of `git describe`.
+
+    e.g. `0.23.2-409-gee967a073` -> `ee967a073`. Canary/tagged builds carry no
+    suffix; return "" and let the caller treat ancestry as unknown.
+    """
+    override = os.environ.get("LAST_STACK_CANARY_RUNNING_OID")
+    if override:
+        return override.strip()
+    live = live_version()
+    if not live or live == "__fail__":
+        return ""
+    tail = live.rsplit("-", 1)[-1]
+    if len(tail) >= 8 and tail.startswith("g"):
+        body = tail[1:]
+        if all(c in "0123456789abcdef" for c in body.lower()):
+            return body
+    return ""
+
+
+def fold_mirror() -> Path | None:
+    override = os.environ.get("LAST_STACK_CANARY_FOLD_MIRROR")
+    candidates = [Path(override)] if override else []
+    candidates.append(Path.home() / ".cache/edgevector-git/fold.git")
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def is_descendant(mirror: Path, ancestor: str, descendant: str) -> bool | None:
+    """True/False, or None when either commit is absent from the mirror."""
+    for oid in (ancestor, descendant):
+        probe = subprocess.run(
+            ["git", "-C", str(mirror), "cat-file", "-e", f"{oid}^{{commit}}"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if probe.returncode != 0:
+            return None
+    result = subprocess.run(
+        ["git", "-C", str(mirror), "merge-base", "--is-ancestor", ancestor, descendant],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.returncode == 0
+
+
+def rollback_span(mirror: Path, candidate_oid: str, running_oid: str) -> str:
+    def count(*args: str) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(mirror), "rev-list", "--count", *args],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        return (result.stdout or "").strip() or "?"
+
+    span = f"{candidate_oid}..{running_oid}"
+    return f"commits={count(span)} merges={count('--merges', span)}"
+
+
+def baseline_oid_for(stage: str) -> tuple[str, str]:
+    """(oid, label) of the build the candidate must be a descendant of.
+
+    dogfood cuts the primary over, so the baseline is the RUNNING binary.
+    promote publishes to the public, and by then the running binary *is* the
+    candidate — the meaningful baseline is the current stable release.
+    """
+    if stage == "promote":
+        tag = latest_stable_tag()
+        if not tag:
+            return "", "latest_stable"
+        return canary_source_oid(tag), f"latest_stable={tag}"
+    return running_source_oid(), "running"
+
+
+def assert_not_rollback(version: str, candidate: str, *, strict_unknown: bool, stage: str) -> str:
+    """Refuse a candidate that is not a descendant of its stage baseline.
+
+    Returns the candidate's source OID ("" if undetermined). `strict_unknown`
+    decides the posture when ancestry cannot be established: promote guards a
+    PUBLIC release and fails closed; a local dogfood cutover warns and proceeds.
+    """
+    if not ancestry_guard_enabled():
+        print(f"ANCESTRY stage={stage} result=skipped reason=guard_disabled", file=sys.stderr)
+        return ""
+
+    candidate_oid = canary_source_oid(version or candidate)
+    base_oid, base_label = baseline_oid_for(stage)
+    mirror = fold_mirror()
+
+    unknown = None
+    if not candidate_oid:
+        unknown = "candidate_oid_unavailable"
+    elif not base_oid:
+        unknown = "baseline_oid_unavailable"
+    elif mirror is None:
+        unknown = "fold_mirror_unavailable"
+
+    if unknown is None:
+        if base_oid == candidate_oid:
+            print(
+                f"ANCESTRY stage={stage} result=ok candidate_oid={candidate_oid} "
+                f"baseline[{base_label}]={base_oid} relation=identical"
+            )
+            return candidate_oid
+        verdict = is_descendant(mirror, base_oid, candidate_oid)
+        if verdict is None:
+            unknown = "commit_not_in_mirror"
+        elif not verdict:
+            span = rollback_span(mirror, candidate_oid, base_oid)
+            die(
+                f"ANCESTRY stage={stage} result=REFUSE candidate={candidate} "
+                f"candidate_oid={candidate_oid} baseline[{base_label}]={base_oid} {span}: "
+                "candidate is NOT a descendant of the baseline — this is a "
+                "ROLLBACK, not an upgrade. Semver is not the ordering authority "
+                "for git-describe builds. Override with "
+                "LAST_STACK_CANARY_ANCESTRY_GUARD=0 only with a written reason."
+            )
+        else:
+            print(
+                f"ANCESTRY stage={stage} result=ok candidate_oid={candidate_oid} "
+                f"baseline[{base_label}]={base_oid} relation=descendant"
+            )
+            return candidate_oid
+
+    message = (
+        f"ANCESTRY stage={stage} result=unknown reason={unknown} "
+        f"candidate_oid={candidate_oid or 'none'} baseline[{base_label}]={base_oid or 'none'}"
+    )
+    if strict_unknown:
+        die(f"{message}: refusing to publish without proven ancestry")
+    print(f"{message} (proceeding: local cutover is reversible)", file=sys.stderr)
+    return candidate_oid
 
 
 def soak_watch(path: Path, args: argparse.Namespace) -> dict:
@@ -741,6 +948,10 @@ def promote_execute(path: Path, args: argparse.Namespace) -> dict:
         live = live_version()
         if live and not version_matches(live, version, candidate):
             die(f"refuse promote: live={live} not on canary version={version}")
+        # Defence in depth: re-assert ancestry against the binary this release
+        # would supersede. Fails closed on unknown — a public brew release is
+        # not the place to assume ordering.
+        assert_not_rollback(version, candidate, strict_unknown=True, stage="promote")
 
     stable_tag = resolve_stable_tag(version or candidate)
     output_dir = args.promote_root.expanduser() / dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
