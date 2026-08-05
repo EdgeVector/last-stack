@@ -54,6 +54,7 @@ bash tests/last-stack-deploy-gated-closeout.sh
 bash tests/last-stack-legacy-residue-closeout.sh
 bash tests/last-stack-why-shipping-stopped.sh
 bash tests/host-track-artifacts.sh
+bash tests/host-track-registry-compliance.sh
 bash tests/last-stack-artifact-host-track-proof.sh
 bash tests/last-stack-artifact-layout.sh
 bash tests/last-stack-artifact-routine-freshness.sh

@@ -67,6 +67,7 @@ Usage:
   host-track status [--json] [app]
   host-track which [--json] <app>
   host-track check <app>
+  host-track validate-registry [--json]
   host-track refresh [--force] [--force-if-stale] (<app>|--all)
   host-track install [--channel candidate|canary|stable] <app>
   host-track rollback <app>
@@ -423,6 +424,47 @@ artifact_promote_channel_to_main() {
   return 0
 }
 
+
+# Fleet policy (North Star end-state #6): every registered app is either
+# install_mode=artifact or carries a machine-readable artifact_exemption.
+# local-safe / bare checkout without exemption → registry_compliance=non_compliant
+# (expected red until producers migrate those apps).
+registry_exemption_json() {
+  local json="$1"
+  printf '%s\n' "$json" | jq -c '
+    if (.artifact_exemption | type) == "object" then
+      {
+        kind: (.artifact_exemption.kind // null),
+        owner: (.artifact_exemption.owner // null),
+        rationale: (.artifact_exemption.rationale // null)
+      }
+    else
+      null
+    end
+  '
+}
+
+registry_compliance_for() {
+  local json="$1" install_mode="$2"
+  local kind owner rationale
+  if [ "$install_mode" = "artifact" ]; then
+    printf 'artifact\n'
+    return 0
+  fi
+  kind="$(printf '%s\n' "$json" | jq -r '.artifact_exemption.kind // ""')"
+  owner="$(printf '%s\n' "$json" | jq -r '.artifact_exemption.owner // ""')"
+  rationale="$(printf '%s\n' "$json" | jq -r '.artifact_exemption.rationale // ""')"
+  case "$kind" in
+    deployment-only|bootstrap-recovery)
+      if [ -n "$owner" ] && [ -n "$rationale" ]; then
+        printf 'exempt\n'
+        return 0
+      fi
+      ;;
+  esac
+  printf 'non_compliant\n'
+}
+
 status_json_for() {
   local app="$1" json kind command_name gate gate_main host_track_raw host_track refresh_raw refresh_path
   local gate_remote gate_ref notes exec_path host_head host_head_short version gate_tip stale stamp_path
@@ -552,6 +594,9 @@ status_json_for() {
     freshness="soft_stale"
   fi
 
+  registry_compliance="$(registry_compliance_for "$json" "$install_mode")"
+  artifact_exemption_json="$(registry_exemption_json "$json")"
+
   jq -c -n \
     --arg app "$app" \
     --arg command "$command_name" \
@@ -578,6 +623,8 @@ status_json_for() {
     --arg artifact_previous "$artifact_previous" \
     --arg artifact_problem "$artifact_problem" \
     --arg freshness "$freshness" \
+    --arg registry_compliance "$registry_compliance" \
+    --argjson artifact_exemption "$artifact_exemption_json" \
     --argjson stale "$stale" \
     '{
       app: $app,
@@ -592,6 +639,8 @@ status_json_for() {
       exec_path: ($exec_path | select(length > 0) // null),
       kind: $kind,
       install_mode: $install_mode,
+      registry_compliance: $registry_compliance,
+      artifact_exemption: $artifact_exemption,
       stale: $stale,
       freshness: $freshness,
       stamp: $stamp,
@@ -616,6 +665,8 @@ status_plain_for() {
       "app=" + .app,
       "kind=" + .kind,
       "install_mode=" + .install_mode,
+      "registry_compliance=" + (.registry_compliance // "-"),
+      "exemption_kind=" + ((.artifact_exemption.kind // "-") | tostring),
       "command=" + .command,
       "exec_path=" + (.exec_path // "-"),
       "host_track=" + .host_track,
@@ -1500,6 +1551,86 @@ refresh_cmd() {
   refresh_app "$app" "$eff"
 }
 
+
+# Fail-closed fleet policy: every registered app must be artifact or exempt.
+# Does not require live installs — pure registry scan. local-safe without an
+# exemption is intentionally non_compliant (migration pressure).
+validate_registry_cmd() {
+  local json_out=0 report non_compliant ok_json
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --json) json_out=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      --*) die "unknown validate-registry flag: $1" ;;
+      *) die "validate-registry takes no app argument (scans whole registry)" ;;
+    esac
+  done
+
+  report="$(jq -c --arg registry "$REGISTRY" '
+    . as $root
+    | def mode($app):
+        ($app.install_mode // $root.defaults.install_mode // "checkout");
+      def exemption($app):
+        if ($app.artifact_exemption | type) == "object" then
+          {
+            kind: ($app.artifact_exemption.kind // null),
+            owner: ($app.artifact_exemption.owner // null),
+            rationale: ($app.artifact_exemption.rationale // null)
+          }
+        else null end;
+      def compliance($app):
+        (mode($app)) as $m
+        | if $m == "artifact" then "artifact"
+          else
+            (exemption($app)) as $e
+            | if ($e != null)
+                and (($e.kind == "deployment-only") or ($e.kind == "bootstrap-recovery"))
+                and (($e.owner // "") | length) > 0
+                and (($e.rationale // "") | length) > 0
+              then "exempt"
+              else "non_compliant"
+              end
+          end;
+      ($root.apps // [])
+      | map({
+          app: .app,
+          install_mode: mode(.),
+          registry_compliance: compliance(.),
+          artifact_exemption: exemption(.)
+        }) as $apps
+      | ($apps | map(select(.registry_compliance == "non_compliant")) | length) as $nc
+      | {
+          ok: ($nc == 0),
+          registry: $registry,
+          total: ($apps | length),
+          non_compliant: $nc,
+          policy: "artifact_or_exempt",
+          apps: $apps
+        }
+  ' "$REGISTRY")" || die "validate-registry could not read registry JSON"
+
+  non_compliant="$(printf '%s\n' "$report" | jq -r '.non_compliant')"
+  if [ "$json_out" -eq 1 ]; then
+    printf '%s\n' "$report"
+  else
+    printf 'validate-registry policy=artifact_or_exempt registry=%s total=%s non_compliant=%s\n' \
+      "$(printf '%s\n' "$report" | jq -r '.registry')" \
+      "$(printf '%s\n' "$report" | jq -r '.total')" \
+      "$non_compliant"
+    printf '%s\n' "$report" | jq -r '.apps[] |
+      .app + "\t" + .install_mode + "\t" + .registry_compliance +
+      (if .artifact_exemption then "\t" + (.artifact_exemption.kind // "-") else "\t-" end)'
+    if [ "$non_compliant" = "0" ]; then
+      printf 'ok: every registered app is artifact or exempt\n'
+    else
+      printf 'FAIL: %s app(s) are neither artifact nor exempt\n' "$non_compliant" >&2
+    fi
+  fi
+
+  [ "$non_compliant" = "0" ]
+}
+
+
 main() {
   need_jq
   [ -f "$REGISTRY" ] || die "registry not found: $REGISTRY"
@@ -1512,6 +1643,7 @@ main() {
     status) shift; status_cmd "$@" ;;
     which) shift; which_cmd "$@" ;;
     check) shift; check_cmd "$@" ;;
+    validate-registry) shift; validate_registry_cmd "$@" ;;
     refresh) shift; refresh_cmd "$@" ;;
     install) shift; install_cmd "$@" ;;
     rollback) shift; rollback_cmd "$@" ;;

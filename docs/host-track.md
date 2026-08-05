@@ -17,6 +17,7 @@ host-track refresh --all
 host-track refresh --force last-stack
 host-track install --channel candidate my-app
 host-track rollback my-app
+host-track validate-registry --json
 ```
 
 The default registry lives at `config/host-track/apps.json`. Tests and local
@@ -135,6 +136,57 @@ Each status record reports:
 Artifact-backed records also report `artifact_app`, `artifact_channel`,
 `artifact_root`, `install_root`, `manifest_digest`, and
 `channel_manifest_digest`.
+
+
+## Registry compliance (artifact | exempt | non_compliant)
+
+North Star end-state #6: every registered agent-facing app is either on verified
+`install_mode: artifact` or declares an explicit machine-readable
+`artifact_exemption`. Status and `validate-registry` surface this without a
+separate forever routine.
+
+| `registry_compliance` | Meaning |
+|-----------------------|---------|
+| `artifact` | `install_mode=artifact` |
+| `exempt` | non-artifact with valid `artifact_exemption` (`kind` + `owner` + `rationale`) |
+| `non_compliant` | neither — including current `local-safe` CLIs until producers migrate them |
+
+Allowed exemption `kind` codes (short, machine-readable):
+
+- `bootstrap-recovery` — substrate that must stay checkout-backed so the forge
+  can still be repaired when artifact/CR paths are unhealthy (seed: `lastgit`).
+- `deployment-only` — install/activation is intentionally outside generic Host
+  Track refresh (seed: `lastdb` / `lastdbd` via `lastdb-safe-upgrade`).
+
+### Adding a new exemption (no forever routine)
+
+1. Edit `config/host-track/apps.json` for the app. Keep or set a non-artifact
+   `install_mode` only when artifact mode is genuinely wrong.
+2. Add:
+
+```json
+"artifact_exemption": {
+  "kind": "deployment-only",
+  "owner": "platform",
+  "rationale": "One sentence why Host Track artifact refresh must not own this app."
+}
+```
+
+3. Run the fail-closed policy scan (pure registry; no live installs):
+
+```bash
+host-track validate-registry --json
+# or against a fixture:
+HOST_TRACK_REGISTRY=/path/to/apps.json host-track validate-registry
+```
+
+4. Land via the normal last-stack CR path. Continuous health remains
+   `last-stack-host-track-artifact-invariant` (dogfood-registry recipe): it still
+   accepts `local-safe` install health while `validate-registry` keeps fleet
+   migration pressure visible as `non_compliant`.
+
+Do **not** invent a new scheduled routine for exemption drift. Wire checks into
+`host-track status` / `validate-registry` / the existing invariant dogfood entry.
 
 ## Continuous Artifact Invariant
 
