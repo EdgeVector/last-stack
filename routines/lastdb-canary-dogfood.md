@@ -24,7 +24,8 @@ last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 "$last_stack/bin/last-stack-cli-preflight" git curl jq situations lastdb
 export PATH="$last_stack/bin:$HOME/.local/bin:$PATH"
 export LAST_STACK_CANARY_AUTO_CUTOVER=1
-export LAST_STACK_CANARY_LAUNCHD_CHECK_CMD="launchctl print gui/$(id -u)/com.tomtang.lastdbd-primary-506"
+# Host sets LASTDB_LAUNCHD_LABEL (no personal username in committed prompts).
+export LAST_STACK_CANARY_LAUNCHD_CHECK_CMD="${LAST_STACK_CANARY_LAUNCHD_CHECK_CMD:-launchctl print gui/$(id -u)/${LASTDB_LAUNCHD_LABEL}}"
 ```
 
 ## Execute

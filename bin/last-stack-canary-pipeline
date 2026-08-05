@@ -36,12 +36,14 @@ ALLOWED = {
     "promoted": set(),
 }
 
-# Default launchd is Tom's sidebin primary LaunchAgent (not brew com.edgevector.lastdbd).
+# Default launchd uses LASTDB_LAUNCHD_LABEL from host env (never embed a personal
+# username in committed defaults — machine-leak gate). Sidebin primary is typically
+# not brew com.edgevector.lastdbd; set LASTDB_LAUNCHD_LABEL on the host.
 CHECKS = (
     (
         "launchd",
         "LAST_STACK_CANARY_LAUNCHD_CHECK_CMD",
-        'launchctl print "gui/$(id -u)/com.tomtang.lastdbd-primary-506"',
+        'if [ -z "${LASTDB_LAUNCHD_LABEL:-}" ]; then echo "LASTDB_LAUNCHD_LABEL unset" >&2; exit 1; fi; launchctl print "gui/$(id -u)/$LASTDB_LAUNCHD_LABEL"',
     ),
     ("memory_guard", "LAST_STACK_CANARY_MEMORY_CHECK_CMD", "lastdb status"),
     ("board_read", "LAST_STACK_CANARY_BOARD_CHECK_CMD", "kanban ping"),
