@@ -141,6 +141,10 @@ backup_data_is_not_live() {
 }
 
 find_reusable_backup() {
+  # Always return 0: "no reusable backup" is normal for a brand-new candidate.
+  # Under set -e, a bare assignment REUSABLE_BACKUP="$(find_reusable_backup ...)"
+  # aborts the whole script if this function returns non-zero when found is empty
+  # (papercut-safe-upgrade-probe-only-false-red-find-reusable-backup).
   local cand_ver="$1" current_ver="$2" candidate found
   found=""
   for candidate in "$BACKUP_ROOT"/pre-"$cand_ver"-from-"$current_ver"-*; do
@@ -149,7 +153,10 @@ find_reusable_backup() {
       found="$candidate"
     fi
   done
-  [ -n "$found" ] && printf '%s\n' "$found"
+  if [ -n "$found" ]; then
+    printf '%s\n' "$found"
+  fi
+  return 0
 }
 
 rss_mb_of_pid() {
