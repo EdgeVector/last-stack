@@ -4,7 +4,7 @@
 #
 # Environment:
 #   LAST_STACK_LASTDB_SOCKET / LASTDB_SOCKET_PATH / FOLDDB_SOCKET_PATH
-#   LAST_STACK_LASTDB_NODE_URL (default http://localhost:9001; socket preferred)
+#   LAST_STACK_LASTDB_NODE_URL (default http://127.0.0.1 loopback marker; socket preferred; :9001 retired)
 #   LASTDB_HOME (default ~/.lastdb) — used when no socket env is set
 set -euo pipefail
 
@@ -30,7 +30,13 @@ last_stack_lastdb_socket() {
 }
 
 last_stack_lastdb_node_url() {
-  local url="${LAST_STACK_LASTDB_NODE_URL:-http://localhost:9001}"
+  # Loopback marker only — clients prefer the Unix socket. Never default to :9001.
+  local url="${LAST_STACK_LASTDB_NODE_URL:-http://127.0.0.1}"
+  case "$url" in
+    http://localhost:9001|http://127.0.0.1:9001)
+      url="http://127.0.0.1"
+      ;;
+  esac
   printf '%s\n' "${url%/}"
 }
 
