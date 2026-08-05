@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+# last-stack-unattached-outcome-heal — zero-LLM factory heal.
+#
+# Attaches a live milestone to Kind:pr cards classified unattached-outcome
+# (missing milestone linkage under enforceLivePrMilestone), and backfills
+# structured `surfaces` from a body `Surfaces:` header when present.
+#
+# Why: pickup status can show ready=0 / unattached-outcome while todo is full;
+# workers burn LLM credits and claim nothing. Milestone attachment is out of
+# pickup scope; this job is the dedicated zero-LLM path.
+#
+# Usage:
+#   last-stack-unattached-outcome-heal [--dry-run] [--json] [--max N] [--quiet]
+#
+# Exit: 0 always after a completed pass. Prints one heartbeat-style line.
+set -euo pipefail
+
+DRY=0
+JSON=0
+QUIET=0
+MAX=25
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY=1; shift ;;
+    --json) JSON=1; shift ;;
+    --quiet|-q) QUIET=1; shift ;;
+    --max) MAX="${2:-25}"; shift 2 ;;
+    -h|--help)
+      echo "last-stack-unattached-outcome-heal [--dry-run] [--json] [--max N] [--quiet]"
+      exit 0
+      ;;
+    *) echo "unknown: $1" >&2; exit 2 ;;
+  esac
+done
+
+log() { [ "$QUIET" -eq 1 ] || printf 'unattached-heal: %s\n' "$*" >&2; }
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || {
+    log "missing CLI: $1"
+    return 1
+  }
+}
+
+need jq || exit 0
+BOARD_CLI=""
+if command -v fkanban >/dev/null 2>&1; then
+  BOARD_CLI=fkanban
+elif command -v kanban >/dev/null 2>&1; then
+  BOARD_CLI=kanban
+else
+  log "no fkanban/kanban on PATH"
+  exit 0
+fi
+
+ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+attached=0
+surfaces_fixed=0
+skipped=0
+failed=0
+flagged=()
+
+# Repo → preferred active ops-hygiene milestone (must already exist on board).
+default_ms_for_repo() {
+  case "$1" in
+    EdgeVector/fold) printf '%s\n' "ms-lastdb-read-path-and-write-gate-hygiene" ;;
+    EdgeVector/last-stack) printf '%s\n' "ms-host-track-ops-hygiene-wave2" ;;
+    EdgeVector/lastgit) printf '%s\n' "ms-lastgit-agent-ops-hygiene-aug2026" ;;
+    EdgeVector/fkanban) printf '%s\n' "ms-fkanban-milestone-proof-integrity" ;;
+    EdgeVector/exemem-infra|EdgeVector/exemem-workspace)
+      printf '%s\n' "ms-exemem-hands-off-canary-rollback-proof"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+ps="$("$BOARD_CLI" pickup status --json 2>/dev/null || true)"
+if [ -z "$ps" ]; then
+  log "pickup status failed"
+  printf 'unattached-heal %s error attached=0 surfaces=0 skipped=0 failed=1 flagged=pickup-status\n' "$ts"
+  exit 0
+fi
+
+unattached_count="$(printf '%s\n' "$ps" | jq -r '.counts["unattached-outcome"] // 0' 2>/dev/null || echo 0)"
+# bash 3.2 (macOS): no mapfile — use newline-split arrays.
+slugs=()
+while IFS= read -r _slug; do
+  [ -n "$_slug" ] && slugs+=("$_slug")
+done <<EOF
+$(printf '%s\n' "$ps" | jq -r '
+  .cards[]?
+  | select(.category=="unattached-outcome")
+  | .slug
+' 2>/dev/null || true)
+EOF
+
+# Also backfill surfaces for pickup-ready Kind:pr with empty surfaces but a
+# body Surfaces: header (collision gate is useless without structured fields).
+surface_candidates=()
+while IFS= read -r _slug; do
+  [ -n "$_slug" ] && surface_candidates+=("$_slug")
+done <<EOF
+$(printf '%s\n' "$ps" | jq -r '
+  .cards[]?
+  | select(.category=="pickup-ready" or .category=="unattached-outcome")
+  | .slug
+' 2>/dev/null || true)
+EOF
+
+# Cache milestone → north_star for attach
+ms_json="$("$BOARD_CLI" milestone list --json 2>/dev/null || echo '[]')"
+ms_lookup() {
+  # $1 = preferred slug → prints "slug\tnorth_star\tstate" if usable
+  local want="$1"
+  printf '%s\n' "$ms_json" | jq -r --arg s "$want" '
+    (if type=="array" then . else (.milestones // .items // []) end)[]?
+    | select((.slug // .id // "") == $s)
+    | [(.slug // .id), (.north_star // ""), (.state // "")]
+    | @tsv
+  ' 2>/dev/null | head -1
+}
+
+pick_ms_for_ns() {
+  # Prefer active/planned/proving under north_star; favor *ops-hygiene* slugs.
+  local ns="$1"
+  printf '%s\n' "$ms_json" | jq -r --arg ns "$ns" '
+    (if type=="array" then . else (.milestones // .items // []) end)[]?
+    | select((.north_star // "") == $ns)
+    | select((.state // "") | test("^(active|planned|proving)$"))
+    | [(.slug // .id), (.state // ""), (if ((.slug // .id) | test("ops-hygiene|papercut|hygiene")) then 0 else 1 end)]
+    | @tsv
+  ' 2>/dev/null | sort -t$'\t' -k3,3n | head -1 | cut -f1
+}
+
+attach_one() {
+  local slug="$1"
+  local show ms ns repo state pair
+  show="$("$BOARD_CLI" show "$slug" --json 2>/dev/null || true)"
+  if [ -z "$show" ]; then
+    failed=$((failed + 1))
+    flagged+=("show-failed:$slug")
+    return 0
+  fi
+  ns="$(printf '%s\n' "$show" | jq -r '.north_star // empty' 2>/dev/null || true)"
+  repo="$(printf '%s\n' "$show" | jq -r '.repo // empty' 2>/dev/null || true)"
+  ms="$(printf '%s\n' "$show" | jq -r '.milestone // empty' 2>/dev/null || true)"
+  if [ -n "$ms" ]; then
+    # Field set but still unattached → usually abandoned / missing MS.
+    pair="$(ms_lookup "$ms" || true)"
+    state="$(printf '%s\n' "$pair" | cut -f3)"
+    if [ -n "$pair" ] && [ "$state" != "abandoned" ]; then
+      skipped=$((skipped + 1))
+      return 0
+    fi
+    ms=""
+  fi
+
+  if [ -n "$ns" ]; then
+    ms="$(pick_ms_for_ns "$ns" || true)"
+  fi
+  if [ -z "$ms" ] && [ -n "$repo" ]; then
+    ms="$(default_ms_for_repo "$repo" || true)"
+  fi
+  if [ -z "$ms" ]; then
+    skipped=$((skipped + 1))
+    flagged+=("no-ms:$slug")
+    return 0
+  fi
+  pair="$(ms_lookup "$ms" || true)"
+  if [ -z "$pair" ]; then
+    skipped=$((skipped + 1))
+    flagged+=("ms-missing:$ms")
+    return 0
+  fi
+  state="$(printf '%s\n' "$pair" | cut -f3)"
+  if [ "$state" = "abandoned" ]; then
+    skipped=$((skipped + 1))
+    flagged+=("ms-abandoned:$ms")
+    return 0
+  fi
+  ns_ms="$(printf '%s\n' "$pair" | cut -f2)"
+
+  if [ "$DRY" -eq 1 ]; then
+    log "would attach $slug → milestone=$ms north_star=${ns_ms:-$ns}"
+    attached=$((attached + 1))
+    return 0
+  fi
+
+  args=(add "$slug" --milestone "$ms")
+  if [ -n "$ns_ms" ]; then
+    args+=(--north-star "$ns_ms")
+  fi
+  if "$BOARD_CLI" "${args[@]}" >/dev/null 2>&1; then
+    attached=$((attached + 1))
+    log "attached $slug → $ms"
+  else
+    failed=$((failed + 1))
+    flagged+=("attach-failed:$slug")
+  fi
+}
+
+backfill_surfaces() {
+  local slug="$1"
+  local show body surf line
+  show="$("$BOARD_CLI" show "$slug" --json 2>/dev/null || true)"
+  [ -n "$show" ] || return 0
+  # already structured?
+  if [ "$(printf '%s\n' "$show" | jq -r '(.surfaces // []) | length' 2>/dev/null)" != "0" ]; then
+    return 0
+  fi
+  body="$(printf '%s\n' "$show" | jq -r '.body // empty' 2>/dev/null || true)"
+  [ -n "$body" ] || return 0
+  # Surfaces: a, b, c  OR  Surfaces: multi-line list under header
+  line="$(printf '%s\n' "$body" | sed -n -E 's/^[[:space:]]*[Ss]urfaces:[[:space:]]*//p' | head -1)"
+  if [ -z "$line" ]; then
+    return 0
+  fi
+  # normalize commas/spaces
+  surf="$(printf '%s\n' "$line" | tr ';' ',' | sed 's/[[:space:]]*,[[:space:]]*/,/g' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  [ -n "$surf" ] || return 0
+  if [ "$DRY" -eq 1 ]; then
+    log "would surfaces $slug → $surf"
+    surfaces_fixed=$((surfaces_fixed + 1))
+    return 0
+  fi
+  if "$BOARD_CLI" add "$slug" --surfaces "$surf" >/dev/null 2>&1; then
+    surfaces_fixed=$((surfaces_fixed + 1))
+    log "surfaces $slug → $surf"
+  else
+    flagged+=("surfaces-failed:$slug")
+  fi
+}
+
+n=0
+for slug in "${slugs[@]+"${slugs[@]}"}"; do
+  [ -n "$slug" ] || continue
+  n=$((n + 1))
+  if [ "$n" -gt "$MAX" ]; then
+    flagged+=("max-cap")
+    break
+  fi
+  attach_one "$slug"
+done
+
+for slug in "${surface_candidates[@]+"${surface_candidates[@]}"}"; do
+  [ -n "$slug" ] || continue
+  backfill_surfaces "$slug"
+done
+
+flag_str="none"
+if [ "${#flagged[@]}" -gt 0 ]; then
+  flag_str="$(IFS=,; echo "${flagged[*]}")"
+fi
+
+line="unattached-heal $ts ok attached=$attached surfaces=$surfaces_fixed skipped=$skipped failed=$failed unattached_in=$unattached_count flagged=$flag_str"
+if [ "$DRY" -eq 1 ]; then
+  line="unattached-heal $ts dry-run attached=$attached surfaces=$surfaces_fixed skipped=$skipped failed=$failed unattached_in=$unattached_count flagged=$flag_str"
+fi
+
+if [ -x "$ROOT/bin/last-stack-brain-append-heartbeat" ]; then
+  # Heartbeat helpers sometimes print a confirm line — keep it off stdout so
+  # --json stays machine-parseable.
+  "$ROOT/bin/last-stack-brain-append-heartbeat" --line "$line" >/dev/null 2>&1 || true
+fi
+
+if [ "$JSON" -eq 1 ]; then
+  printf '{"ok":true,"attached":%s,"surfaces":%s,"skipped":%s,"failed":%s,"unattached_in":%s,"flagged":"%s","dry_run":%s}\n' \
+    "$attached" "$surfaces_fixed" "$skipped" "$failed" "$unattached_count" \
+    "$(printf '%s' "$flag_str" | tr '"' "'")" \
+    "$DRY"
+else
+  printf '%s\n' "$line"
+fi
+
+exit 0
