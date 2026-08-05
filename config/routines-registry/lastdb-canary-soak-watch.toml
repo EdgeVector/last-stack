@@ -1,13 +1,12 @@
-# LastDB nightly canary soak watcher.
-# Paused until north-star-lastdb-nightly-canary-pipeline terminal proof passes.
+# Auto release loop: hard health + 24h soak on dogfooded canary.
 id = "lastdb-canary-soak-watch"
-harness = "codex"
-model = "gpt-5.5"
+harness = "claude"
+model = "sonnet"
 effort = "low"
-group = "lastdb-canary"
+group = "ops"
 rrule = "FREQ=HOURLY;INTERVAL=1;BYMINUTE=34;BYSECOND=0"
 cwd = "/Users/REPLACE/code/edgevector"
-status = "paused"
-timeout_min = 10
+status = "active"
+timeout_min = 15
 prompt_path = "/Users/REPLACE/.last-stack/routines/lastdb-canary-soak-watch.md"
 heartbeat_slug = "routine-heartbeats"

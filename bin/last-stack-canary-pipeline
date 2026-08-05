@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """Append-only ledger for the LastDB nightly canary pipeline."""
 import argparse
 import datetime as dt
@@ -20,6 +21,7 @@ STATES = (
     "soak_green",
     "soak_red",
     "promote_prepare",
+    "promoted",
 )
 
 ALLOWED = {
@@ -28,17 +30,82 @@ ALLOWED = {
     "dogfood_green": {"soak_started"},
     "dogfood_red": set(),
     "soak_started": {"soak_green", "soak_red"},
-    "soak_green": {"promote_prepare"},
+    "soak_green": {"promote_prepare", "promoted"},
     "soak_red": set(),
-    "promote_prepare": set(),
+    "promote_prepare": {"promoted"},
+    "promoted": set(),
 }
 
+# Default launchd is Tom's sidebin primary LaunchAgent (not brew com.edgevector.lastdbd).
 CHECKS = (
-    ("launchd", "LAST_STACK_CANARY_LAUNCHD_CHECK_CMD", 'launchctl print "gui/$UID/com.edgevector.lastdbd"'),
+    (
+        "launchd",
+        "LAST_STACK_CANARY_LAUNCHD_CHECK_CMD",
+        'launchctl print "gui/$(id -u)/com.tomtang.lastdbd-primary-506"',
+    ),
     ("memory_guard", "LAST_STACK_CANARY_MEMORY_CHECK_CMD", "lastdb status"),
     ("board_read", "LAST_STACK_CANARY_BOARD_CHECK_CMD", "kanban ping"),
-    ("situation_fence", "LAST_STACK_CANARY_SITUATION_CHECK_CMD", 'situations list --json | jq -e "length == 0"'),
+    (
+        "situation_fence",
+        "LAST_STACK_CANARY_SITUATION_CHECK_CMD",
+        'situations list --json | jq -e "length == 0"',
+    ),
 )
+
+
+def soak_hours() -> float:
+    raw = os.environ.get("LAST_STACK_CANARY_SOAK_HOURS", "24")
+    try:
+        return float(raw)
+    except ValueError:
+        return 24.0
+
+
+def parse_ts(value: str) -> dt.datetime | None:
+    if not value:
+        return None
+    try:
+        if value.endswith("Z"):
+            value = value[:-1] + "+00:00"
+        return dt.datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def event_ts_for_state(path: Path, candidate: str, state: str) -> dt.datetime | None:
+    for event in reversed(load_events(path)):
+        if event.get("candidate") == candidate and event.get("state") == state:
+            return parse_ts(str(event.get("ts", "")))
+    return None
+
+
+def live_version() -> str:
+    cmd = os.environ.get("LAST_STACK_CANARY_LIVE_VERSION_CMD", "lastdbd --version")
+    if cmd in ("", "pass", "skip", "true", "ok"):
+        return ""
+    if cmd in ("fail", "false", "red"):
+        return "__fail__"
+    result = subprocess.run(cmd, shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode != 0:
+        return ""
+    line = (result.stdout or "").strip().splitlines()
+    if not line:
+        return ""
+    return line[-1].split()[-1]
+
+
+def version_matches(live: str, version: str, candidate: str) -> bool:
+    if not live or live == "__fail__":
+        return False
+    needles = [v for v in (version, candidate) if v]
+    # Prefer exact version match; also accept live containing version token.
+    for n in needles:
+        n = n.removeprefix("lastdb-").removeprefix("v")
+        if not n:
+            continue
+        if live == n or n in live:
+            return True
+    return False
 
 
 def utc_now() -> str:
@@ -109,6 +176,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     promote.add_argument("--dry-run", action="store_true")
     promote.add_argument("--promote-root", type=Path, default=default_promote_root())
     promote.add_argument("--no-notify", action="store_true")
+
+    promote_exec = sub.add_parser(
+        "promote-execute",
+        help="auto-promote a soak_green canary to a public stable brew release (local-canonical)",
+    )
+    add_common_ledger_flags(promote_exec)
+    promote_exec.add_argument("--sha", default="")
+    promote_exec.add_argument("--dry-run", action="store_true")
+    promote_exec.add_argument("--promote-root", type=Path, default=default_promote_root())
+    promote_exec.add_argument("--no-notify", action="store_true")
+    promote_exec.add_argument(
+        "--force",
+        action="store_true",
+        help="allow promote without LAST_STACK_CANARY_PROMOTE_AUTO=1",
+    )
 
     proof = sub.add_parser("proof", help="exercise dogfood, soak-watch, and promote-prepare offline")
     proof.add_argument("--dry-run", action="store_true")
@@ -355,13 +437,30 @@ def run_check(label: str, env_name: str, default_cmd: str) -> bool:
 
 def soak_watch(path: Path, args: argparse.Namespace) -> dict:
     failures = []
+    pending = None
 
     def inner() -> dict:
+        nonlocal pending
         current = choose_soak_candidate(path, args.sha, {"dogfood_green", "soak_started", "soak_green", "soak_red"})
         candidate = str(current.get("candidate", ""))
+        version = str(current.get("version") or "")
         observed_sha = str(current.get("observed_sha") or candidate)
-        if observed_sha != candidate:
-            failures.append(f"sha_mismatch_expected_{candidate}_observed_{observed_sha}")
+
+        # Live binary must still be the dogfooded canary (skip in dry-run/stub).
+        if not args.dry_run:
+            live = live_version()
+            if live == "__fail__" or (live and not version_matches(live, version, candidate)):
+                failures.append(
+                    f"live_version_mismatch live={live or 'unknown'} want={version or candidate}"
+                )
+            # observed_sha from cutover is the live version string when set.
+            if observed_sha and observed_sha != candidate and live and observed_sha not in live and live not in observed_sha:
+                if not version_matches(live, version, candidate):
+                    failures.append(f"sha_mismatch_expected_{observed_sha}_live_{live}")
+        else:
+            # Dry-run only: preserve old observed_sha == candidate equality check when set differently.
+            if observed_sha != candidate and not str(current.get("version") or ""):
+                failures.append(f"sha_mismatch_expected_{candidate}_observed_{observed_sha}")
 
         for label, env_name, default_cmd in CHECKS:
             if not run_check(label, env_name, default_cmd):
@@ -377,19 +476,51 @@ def soak_watch(path: Path, args: argparse.Namespace) -> dict:
         if state in {"soak_green", "soak_red"}:
             return latest
         if failures:
-            return append_transition(path, candidate, "soak_red", observed_sha=observed_sha, evidence=";".join(failures))
+            return append_transition(
+                path, candidate, "soak_red", observed_sha=observed_sha, evidence=";".join(failures)
+            )
+
+        # Enforce soak window (default 24h). Dry-run proof uses LAST_STACK_CANARY_SOAK_HOURS=0.
+        hours = soak_hours()
+        started = event_ts_for_state(path, candidate, "soak_started") or event_ts_for_state(
+            path, candidate, "dogfood_green"
+        )
+        now = dt.datetime.now(dt.timezone.utc)
+        if started is not None and hours > 0:
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=dt.timezone.utc)
+            elapsed_h = (now - started).total_seconds() / 3600.0
+            if elapsed_h < hours:
+                pending = {
+                    "candidate": candidate,
+                    "state": "soak_started",
+                    "elapsed_h": elapsed_h,
+                    "need_h": hours,
+                    "evidence": f"soak_pending elapsed_h={elapsed_h:.2f} need_h={hours}",
+                }
+                return latest
+
         return append_transition(
             path,
             candidate,
             "soak_green",
             observed_sha=observed_sha,
-            evidence="all_hard_checks_green",
+            evidence=f"all_hard_checks_green soak_h>={hours}",
         )
 
     event = lock_and_run(path, inner)
+    if pending is not None:
+        print(
+            f"SOAK ledger={path} sha={pending['candidate']} status=soak_pending "
+            f"evidence={pending['evidence']}{dry_suffix(args.dry_run)}"
+        )
+        return current_record(event)
     status = event.get("state", "")
     evidence = event.get("evidence", "all_hard_checks_green" if status == "soak_green" else "")
-    print(f"SOAK ledger={path} sha={event.get('candidate')} status={status} evidence={evidence}{dry_suffix(args.dry_run)}")
+    print(
+        f"SOAK ledger={path} sha={event.get('candidate')} status={status} "
+        f"evidence={evidence}{dry_suffix(args.dry_run)}"
+    )
     if status != "soak_green":
         raise SystemExit(1)
     return current_record(event)
@@ -467,7 +598,291 @@ def promote_prepare(path: Path, args: argparse.Namespace) -> dict:
     raise SystemExit(1)
 
 
+
+def next_stable_tag_from_canary(version: str) -> str:
+    """Map 0.23.4-canary.DATE or 0.23.4 to next public stable vX.Y.Z."""
+    version = version.lstrip("v")
+    base = version.split("-")[0]
+    parts = base.split(".")
+    if len(parts) != 3 or not all(p.isdigit() for p in parts):
+        # Fallback: use date stamp.
+        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d")
+        return f"v0.0.{stamp}"
+    # If this exact stable already exists on GH, callers recompute; default = base as stable.
+    return f"v{parts[0]}.{parts[1]}.{parts[2]}"
+
+
+def latest_stable_tag() -> str | None:
+    url = os.environ.get(
+        "LAST_STACK_CANARY_RELEASES_URL",
+        "https://api.github.com/repos/EdgeVector/homebrew-lastdb/releases?per_page=30",
+    )
+    try:
+        import urllib.request
+
+        req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, list):
+        return None
+    for rel in data:
+        if not isinstance(rel, dict):
+            continue
+        if rel.get("prerelease") or rel.get("draft"):
+            continue
+        tag = str(rel.get("tag_name") or "")
+        if tag.startswith("v") and "-" not in tag:
+            return tag
+    return None
+
+
+def bump_patch(tag: str) -> str:
+    tag = tag.lstrip("v")
+    parts = tag.split(".")
+    if len(parts) != 3 or not all(p.isdigit() for p in parts):
+        return f"v{tag}"
+    return f"v{parts[0]}.{parts[1]}.{int(parts[2]) + 1}"
+
+
+def resolve_stable_tag(canary_version: str) -> str:
+    """Prefer next patch after latest stable if canary base already released."""
+    base = next_stable_tag_from_canary(canary_version)
+    latest = latest_stable_tag()
+    if latest is None:
+        return base
+    # If base <= latest (same or older), bump.
+    def tup(t: str):
+        t = t.lstrip("v")
+        a, b, c = t.split(".")
+        return int(a), int(b), int(c)
+
+    try:
+        if tup(base) <= tup(latest):
+            return bump_patch(latest)
+    except Exception:
+        return bump_patch(latest)
+    return base
+
+
+def download_canary_assets(version: str, dest: Path) -> dict:
+    """Download GH prerelease assets for version into dest. Returns manifest dict if present."""
+    dest.mkdir(parents=True, exist_ok=True)
+    tag = version if version.startswith("v") else f"v{version}"
+    api = f"https://api.github.com/repos/EdgeVector/homebrew-lastdb/releases/tags/{tag}"
+    import urllib.request
+
+    req = urllib.request.Request(api, headers={"Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        release = json.loads(resp.read().decode("utf-8"))
+    assets = release.get("assets") or []
+    manifest = {}
+    for asset in assets:
+        name = asset.get("name") or ""
+        url = asset.get("browser_download_url") or ""
+        if not name or not url:
+            continue
+        target = dest / name
+        with urllib.request.urlopen(url, timeout=120) as resp:
+            target.write_bytes(resp.read())
+        if name.endswith("manifest.json"):
+            try:
+                manifest = json.loads(target.read_text(encoding="utf-8"))
+            except Exception:
+                manifest = {}
+    return manifest
+
+
+def find_fold_promote_script() -> Path | None:
+    env = os.environ.get("LAST_STACK_CANARY_FORGE_PROMOTE")
+    if env and Path(env).is_file():
+        return Path(env)
+    home = Path.home()
+    candidates = [
+        home / "code/edgevector/fold/scripts/release/forge-promote-homebrew-stable.sh",
+    ]
+    # Prefer a recent worktree if portal has no scripts
+    wt_root = home / "code/edgevector/.routine-worktrees"
+    if wt_root.is_dir():
+        for p in sorted(wt_root.glob("*/scripts/release/forge-promote-homebrew-stable.sh"), reverse=True):
+            candidates.append(p)
+    for c in candidates:
+        if c.is_file():
+            return c
+    return None
+
+
+def promote_execute(path: Path, args: argparse.Namespace) -> dict:
+    """Auto-promote soak_green canary using local-canonical brew promote path.
+
+    Downloads canary prerelease assets and republishes as the next stable tag via
+    forge-promote-homebrew-stable.sh --publish. Requires GH_TOKEN for publish.
+    """
+    auto = os.environ.get("LAST_STACK_CANARY_PROMOTE_AUTO", "0") == "1" or args.force
+    if not auto and not args.dry_run:
+        die("promote-execute refuses without LAST_STACK_CANARY_PROMOTE_AUTO=1 (or --force)")
+
+    current = choose_soak_candidate(path, args.sha, {"soak_green", "promote_prepare", "promoted"})
+    state = str(current.get("state", ""))
+    candidate = str(current.get("candidate", ""))
+    version = str(current.get("version") or "")
+    if state == "promoted":
+        print(f"PROMOTE_EXECUTE ledger={path} sha={candidate} status=already_promoted")
+        return current_record(current)
+    if state not in {"soak_green", "promote_prepare"}:
+        print(f"PROMOTE_EXECUTE ledger={path} sha={candidate} status=blocked soak_status={state}")
+        raise SystemExit(1)
+
+    # Live still on canary (skip in dry-run).
+    if not args.dry_run:
+        live = live_version()
+        if live and not version_matches(live, version, candidate):
+            die(f"refuse promote: live={live} not on canary version={version}")
+
+    stable_tag = resolve_stable_tag(version or candidate)
+    output_dir = args.promote_root.expanduser() / dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    report = output_dir / f"PROMOTE-EXECUTE-{stable_tag}.md"
+    artifact_dir = output_dir / f"artifacts-{stable_tag}"
+
+    if args.dry_run:
+        report.write_text(
+            "\n".join(
+                [
+                    "# LastDB Canary Promote Execute (dry-run)",
+                    f"- Generated: {utc_now()}",
+                    f"- Candidate: `{candidate}`",
+                    f"- Canary version: `{version}`",
+                    f"- Planned stable tag: `{stable_tag}`",
+                    "- Automation pushed stable tag: `false` (dry-run)",
+                    "- Would download canary assets and run forge-promote-homebrew-stable.sh --publish",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        print(
+            f"PROMOTE_EXECUTE ledger={path} sha={candidate} status=ready_dry_run "
+            f"stable_tag={stable_tag} output={report} dry_run=1 stable_mutation=false"
+        )
+        return current_record(current)
+
+    # Mark prepare then execute.
+    if state == "soak_green":
+        lock_and_run(
+            path,
+            lambda: append_transition(path, candidate, "promote_prepare", evidence="auto-promote-start"),
+        )
+
+    try:
+        manifest = download_canary_assets(version, artifact_dir)
+    except Exception as exc:
+        die(f"failed to download canary assets for {version}: {exc}")
+
+    source_oid = str(manifest.get("source_git_oid") or "")
+    promote_sh = find_fold_promote_script()
+    if promote_sh is None:
+        die("forge-promote-homebrew-stable.sh not found; set LAST_STACK_CANARY_FORGE_PROMOTE")
+
+    env = os.environ.copy()
+    if not env.get("GH_TOKEN"):
+        # Best-effort: gh auth token
+        gh = subprocess.run(["gh", "auth", "token"], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if gh.returncode == 0 and gh.stdout.strip():
+            env["GH_TOKEN"] = gh.stdout.strip()
+    if not env.get("GH_TOKEN"):
+        die("GH_TOKEN required for promote-execute --publish")
+
+    cmd = [
+        "bash",
+        str(promote_sh),
+        "--publish",
+        "--version-tag",
+        stable_tag,
+        "--artifact-dir",
+        str(artifact_dir),
+        "--proof-report",
+        str(output_dir / f"proof-{stable_tag}.json"),
+    ]
+    if source_oid:
+        cmd.extend(["--source-git-oid", source_oid])
+
+    proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    report.write_text(
+        "\n".join(
+            [
+                "# LastDB Canary Promote Execute",
+                f"- Generated: {utc_now()}",
+                f"- Candidate: `{candidate}`",
+                f"- Canary version: `{version}`",
+                f"- Stable tag: `{stable_tag}`",
+                f"- source_git_oid: `{source_oid or 'unknown'}`",
+                f"- promote_rc: `{proc.returncode}`",
+                f"- Automation pushed stable tag: `{'true' if proc.returncode == 0 else 'false'}`",
+                "",
+                "## stdout",
+                "```",
+                (proc.stdout or "")[-8000:],
+                "```",
+                "",
+                "## stderr",
+                "```",
+                (proc.stderr or "")[-4000:],
+                "```",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    if proc.returncode != 0:
+        print(
+            f"PROMOTE_EXECUTE ledger={path} sha={candidate} status=failed "
+            f"stable_tag={stable_tag} rc={proc.returncode} output={report}"
+        )
+        raise SystemExit(proc.returncode)
+
+    def mark_promoted() -> dict:
+        latest = latest_by_candidate(load_events(path)).get(candidate, {})
+        st = str(latest.get("state", ""))
+        if st == "promoted":
+            return latest
+        if st == "soak_green":
+            append_transition(path, candidate, "promote_prepare", evidence="auto-promote")
+        return append_transition(
+            path,
+            candidate,
+            "promoted",
+            evidence=f"stable_tag={stable_tag}",
+            note=f"promoted {stable_tag}",
+        )
+
+    event = lock_and_run(path, mark_promoted)
+    if not args.no_notify:
+        try:
+            subprocess.run(
+                [
+                    "ra",
+                    "notify",
+                    f"LastDB auto-promoted {candidate} → {stable_tag} (brew public)",
+                    "--priority",
+                    "high",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        except FileNotFoundError:
+            pass
+    print(
+        f"PROMOTE_EXECUTE ledger={path} sha={candidate} status=promoted "
+        f"stable_tag={stable_tag} output={report} stable_mutation=true"
+    )
+    return current_record(event)
+
+
 def proof(args: argparse.Namespace) -> None:
+
     if not args.dry_run:
         die("proof currently requires --dry-run", 2)
     tmp = tempfile.mkdtemp(prefix="last-stack-canary-proof.")
@@ -483,6 +898,8 @@ def proof(args: argparse.Namespace) -> None:
         "LAST_STACK_CANARY_MEMORY_CHECK_CMD": "pass",
         "LAST_STACK_CANARY_BOARD_CHECK_CMD": "pass",
         "LAST_STACK_CANARY_SITUATION_CHECK_CMD": "pass",
+        "LAST_STACK_CANARY_SOAK_HOURS": "0",
+        "LAST_STACK_CANARY_LIVE_VERSION_CMD": "pass",
     }
     old_env = {key: os.environ.get(key) for key in env}
     os.environ.update(env)
@@ -529,6 +946,8 @@ def main(argv: list[str]) -> int:
         soak_watch(path, args)
     elif args.command == "promote-prepare":
         promote_prepare(path, args)
+    elif args.command == "promote-execute":
+        promote_execute(path, args)
     elif args.command == "proof":
         proof(args)
     else:

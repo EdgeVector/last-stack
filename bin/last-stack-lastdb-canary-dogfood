@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve and dogfood a LastDB canary candidate without mutating the primary."""
+"""Resolve a LastDB canary and dogfood it on the primary (probe and/or live cutover)."""
 from __future__ import annotations
 
 import argparse
@@ -23,9 +23,10 @@ ALLOWED = {
     "dogfood_green": {"soak_started"},
     "dogfood_red": set(),
     "soak_started": {"soak_green", "soak_red"},
-    "soak_green": {"promote_prepare"},
+    "soak_green": {"promote_prepare", "promoted"},
     "soak_red": set(),
-    "promote_prepare": set(),
+    "promote_prepare": {"promoted"},
+    "promoted": set(),
 }
 
 
@@ -41,15 +42,29 @@ class Candidate:
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="last-stack-lastdb-canary-dogfood",
-        description="Resolve a LastDB canary candidate and record dogfood preflight state.",
+        description="Resolve a LastDB canary and dogfood it (dry-run / probe-only / live cutover).",
     )
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--dry-run", action="store_true", help="record intended probe-only dogfood; do not run safe-upgrade")
-    mode.add_argument("--live", action="store_true", help="run safe-upgrade --probe-only, never live cutover")
+    mode.add_argument("--dry-run", action="store_true", help="ledger only; do not run safe-upgrade")
+    mode.add_argument(
+        "--live",
+        action="store_true",
+        help="run safe-upgrade --probe-only only (no primary cutover)",
+    )
+    mode.add_argument(
+        "--cutover",
+        action="store_true",
+        help="probe-only then live safe-upgrade --yes on GREEN (mutates primary sidebin)",
+    )
     parser.add_argument("--candidate", help="explicit lastdbd candidate binary")
     parser.add_argument("--version", help="explicit LastDB release version/tag")
     parser.add_argument("--state-dir", type=Path, default=None)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--skip-situation-preflight",
+        action="store_true",
+        help="skip situations preflight (tests only)",
+    )
     return parser.parse_args(argv)
 
 
@@ -71,6 +86,29 @@ def binary_version(path: str) -> str:
     return out.split()[-1] if out else "unknown"
 
 
+def live_version() -> str:
+    cmd = os.environ.get("LAST_STACK_CANARY_LIVE_VERSION_CMD", "lastdbd --version")
+    if cmd in ("", "pass", "skip"):
+        return ""
+    proc = run(["bash", "-lc", cmd], check=False)
+    line = (proc.stdout or "").strip().splitlines()
+    if not line:
+        return ""
+    return line[-1].split()[-1]
+
+
+def situations_clear() -> bool:
+    cmd = os.environ.get(
+        "LAST_STACK_CANARY_SITUATION_CHECK_CMD",
+        'situations list --json | jq -e "length == 0"',
+    )
+    if cmd in ("", "pass", "true", "ok"):
+        return True
+    if cmd in ("fail", "false", "red"):
+        return False
+    return run(["bash", "-lc", cmd], check=False).returncode == 0
+
+
 def load_releases() -> list[dict]:
     raw = os.environ.get("LAST_STACK_CANARY_RELEASES_JSON")
     if raw:
@@ -82,7 +120,7 @@ def load_releases() -> list[dict]:
         )
         try:
             req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with urllib.request.urlopen(req, timeout=15) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
         except Exception:
             data = []
@@ -109,11 +147,7 @@ def candidate_from_release(release: dict) -> Candidate:
 
 
 def resolve_release_candidate() -> Candidate | None:
-    releases = [
-        r
-        for r in load_releases()
-        if bool(r.get("prerelease")) and not bool(r.get("draft"))
-    ]
+    releases = [r for r in load_releases() if bool(r.get("prerelease")) and not bool(r.get("draft"))]
     if not releases:
         return None
     marked = [
@@ -221,22 +255,41 @@ def advance_if_allowed(args: argparse.Namespace, candidate: Candidate, desired: 
     return desired
 
 
-def safe_upgrade_cmd(candidate: Candidate) -> list[str]:
-    safe_upgrade = os.environ.get("LAST_STACK_CANARY_SAFE_UPGRADE", str(SAFE_UPGRADE))
-    return [safe_upgrade, "--probe-only", *candidate.safe_upgrade_args]
+def safe_upgrade_bin() -> str:
+    return os.environ.get("LAST_STACK_CANARY_SAFE_UPGRADE", str(SAFE_UPGRADE))
+
+
+def run_safe_upgrade(args_list: list[str]) -> tuple[bool, str, int]:
+    cmd = [safe_upgrade_bin(), *args_list]
+    proc = run(cmd, check=False)
+    combined = (proc.stdout or "") + (proc.stderr or "")
+    green = proc.returncode == 0 and (
+        "VERDICT: GREEN" in combined
+        or "VERDICT: GREEN_PROBE_ONLY" in combined
+        or "VERDICT: ALREADY_CURRENT" in combined
+    )
+    return green, combined, proc.returncode
+
+
+def mode_name(args: argparse.Namespace) -> str:
+    if args.cutover:
+        return "cutover"
+    if args.live:
+        return "live"
+    return "dry-run"
 
 
 def dogfood(args: argparse.Namespace) -> dict:
     candidate = resolve_candidate(args)
     create_if_missing(args, candidate)
-    started = advance_if_allowed(args, candidate, "dogfood_started", f"{args_mode(args)} source={candidate.source}")
+    advance_if_allowed(args, candidate, "dogfood_started", f"{mode_name(args)} source={candidate.source}")
 
-    if not args.live:
+    if args.dry_run:
         final = advance_if_allowed(
             args,
             candidate,
             "dogfood_green",
-            "dry-run: would run " + " ".join(safe_upgrade_cmd(candidate) or ["safe-upgrade-probe"]),
+            "dry-run: would probe then cutover " + " ".join(candidate.safe_upgrade_args or ["?"]),
         )
         return {
             "candidate": candidate.candidate,
@@ -246,42 +299,138 @@ def dogfood(args: argparse.Namespace) -> dict:
             "state": final,
             "safe_upgrade": "not-run",
             "safe_upgrade_args": list(candidate.safe_upgrade_args),
+            "live_version": live_version() or None,
+            "primary_mutation": False,
         }
 
     if not candidate.safe_upgrade_args:
-        final = advance_if_allowed(args, candidate, "dogfood_red", "live: no executable local-main candidate")
+        final = advance_if_allowed(args, candidate, "dogfood_red", f"{mode_name(args)}: no candidate args")
+        return {
+            "candidate": candidate.candidate,
+            "version": candidate.version,
+            "source": candidate.source,
+            "mode": mode_name(args),
+            "state": final,
+            "safe_upgrade": "not-run-no-candidate",
+            "safe_upgrade_args": [],
+            "primary_mutation": False,
+        }
+
+    if not args.skip_situation_preflight and not situations_clear():
+        final = advance_if_allowed(
+            args,
+            candidate,
+            "dogfood_red",
+            f"{mode_name(args)}: situation fence blocked",
+        )
+        return {
+            "candidate": candidate.candidate,
+            "version": candidate.version,
+            "source": candidate.source,
+            "mode": mode_name(args),
+            "state": final,
+            "safe_upgrade": "blocked-situation",
+            "safe_upgrade_args": list(candidate.safe_upgrade_args),
+            "primary_mutation": False,
+        }
+
+    # Always probe first for live and cutover.
+    probe_args = ["--probe-only", *candidate.safe_upgrade_args]
+    probe_green, _probe_out, probe_rc = run_safe_upgrade(probe_args)
+    if not probe_green:
+        final = advance_if_allowed(
+            args,
+            candidate,
+            "dogfood_red",
+            f"{mode_name(args)}: probe-only red rc={probe_rc}",
+        )
+        return {
+            "candidate": candidate.candidate,
+            "version": candidate.version,
+            "source": candidate.source,
+            "mode": mode_name(args),
+            "state": final,
+            "safe_upgrade": "probe-red",
+            "safe_upgrade_args": list(candidate.safe_upgrade_args),
+            "safe_upgrade_rc": probe_rc,
+            "primary_mutation": False,
+        }
+
+    if args.live and not args.cutover:
+        final = advance_if_allowed(
+            args,
+            candidate,
+            "dogfood_green",
+            f"live: probe-only green rc={probe_rc}",
+        )
         return {
             "candidate": candidate.candidate,
             "version": candidate.version,
             "source": candidate.source,
             "mode": "live",
             "state": final,
-            "safe_upgrade": "not-run-no-candidate",
-            "safe_upgrade_args": [],
+            "safe_upgrade": "green",
+            "safe_upgrade_args": list(candidate.safe_upgrade_args),
+            "safe_upgrade_rc": probe_rc,
+            "primary_mutation": False,
+            "live_version": live_version() or None,
         }
 
-    cmd = safe_upgrade_cmd(candidate)
-    proc = run(cmd, check=False)
-    combined = proc.stdout + proc.stderr
-    green = proc.returncode == 0 and (
-        "VERDICT: GREEN" in combined or "VERDICT: GREEN_PROBE_ONLY" in combined or "VERDICT: ALREADY_CURRENT" in combined
+    # cutover: probe green → live --yes
+    cut_args = ["--yes", *candidate.safe_upgrade_args]
+    cut_green, _cut_out, cut_rc = run_safe_upgrade(cut_args)
+    observed = live_version()
+    if cut_green:
+        note = f"cutover: live safe-upgrade green rc={cut_rc} live={observed or 'unknown'}"
+        final = advance_if_allowed(args, candidate, "dogfood_green", note)
+        # Stamp observed version for soak matching via advance note + dogfood command on pipeline
+        if observed:
+            run(
+                ledger_base(args)
+                + [
+                    "dogfood",
+                    "--sha",
+                    candidate.candidate,
+                    "--observed-sha",
+                    observed,
+                    "--version",
+                    candidate.version,
+                    "--source",
+                    candidate.source,
+                ],
+                check=False,
+            )
+        return {
+            "candidate": candidate.candidate,
+            "version": candidate.version,
+            "source": candidate.source,
+            "mode": "cutover",
+            "state": final,
+            "safe_upgrade": "cutover-green",
+            "safe_upgrade_args": list(candidate.safe_upgrade_args),
+            "safe_upgrade_rc": cut_rc,
+            "primary_mutation": True,
+            "live_version": observed or None,
+        }
+
+    final = advance_if_allowed(
+        args,
+        candidate,
+        "dogfood_red",
+        f"cutover: live safe-upgrade red rc={cut_rc} (probe was green)",
     )
-    desired = "dogfood_green" if green else "dogfood_red"
-    final = advance_if_allowed(args, candidate, desired, f"live: safe-upgrade-probe rc={proc.returncode}")
     return {
         "candidate": candidate.candidate,
         "version": candidate.version,
         "source": candidate.source,
-        "mode": "live",
+        "mode": "cutover",
         "state": final,
-        "safe_upgrade": "green" if green else "red",
+        "safe_upgrade": "cutover-red",
         "safe_upgrade_args": list(candidate.safe_upgrade_args),
-        "safe_upgrade_rc": proc.returncode,
+        "safe_upgrade_rc": cut_rc,
+        "primary_mutation": True,
+        "live_version": observed or None,
     }
-
-
-def args_mode(args: argparse.Namespace) -> str:
-    return "live" if args.live else "dry-run"
 
 
 def emit(result: dict, as_json: bool) -> None:
@@ -289,16 +438,26 @@ def emit(result: dict, as_json: bool) -> None:
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return
     print(
-        "lastdb-canary-dogfood candidate={candidate} state={state} mode={mode} source={source} safe_upgrade={safe_upgrade}".format(
-            **result
+        "lastdb-canary-dogfood candidate={candidate} state={state} mode={mode} "
+        "source={source} safe_upgrade={safe_upgrade} primary_mutation={pm}".format(
+            candidate=result.get("candidate"),
+            state=result.get("state"),
+            mode=result.get("mode"),
+            source=result.get("source"),
+            safe_upgrade=result.get("safe_upgrade"),
+            pm=result.get("primary_mutation"),
         )
     )
 
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
-    if not args.dry_run and not args.live:
-        args.dry_run = True
+    if not args.dry_run and not args.live and not args.cutover:
+        # Scheduled auto path defaults to cutover when CANARY_AUTO_CUTOVER=1
+        if os.environ.get("LAST_STACK_CANARY_AUTO_CUTOVER", "1") == "1":
+            args.cutover = True
+        else:
+            args.dry_run = True
     result = dogfood(args)
     emit(result, args.json)
     return 0 if result.get("state") == "dogfood_green" else 1

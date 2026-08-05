@@ -90,6 +90,8 @@ if LAST_STACK_CANARY_LAUNCHD_CHECK_CMD=pass \
   LAST_STACK_CANARY_MEMORY_CHECK_CMD=pass \
   LAST_STACK_CANARY_BOARD_CHECK_CMD=pass \
   LAST_STACK_CANARY_SITUATION_CHECK_CMD=pass \
+  LAST_STACK_CANARY_SOAK_HOURS=0 \
+  LAST_STACK_CANARY_LIVE_VERSION_CMD=pass \
   "$CLI" --state-dir "$mismatch_dir" soak-watch --dry-run --sha sha-a >"$tmp/mismatch.out"; then
   echo "expected SHA mismatch to mark soak_red" >&2
   exit 1
@@ -102,11 +104,15 @@ LAST_STACK_CANARY_LAUNCHD_CHECK_CMD=pass \
 LAST_STACK_CANARY_MEMORY_CHECK_CMD=pass \
 LAST_STACK_CANARY_BOARD_CHECK_CMD=pass \
 LAST_STACK_CANARY_SITUATION_CHECK_CMD=pass \
+LAST_STACK_CANARY_SOAK_HOURS=0 \
+LAST_STACK_CANARY_LIVE_VERSION_CMD=pass \
   "$CLI" --state-dir "$green_dir" dogfood --dry-run --sha sha-green >/dev/null
 LAST_STACK_CANARY_LAUNCHD_CHECK_CMD=pass \
 LAST_STACK_CANARY_MEMORY_CHECK_CMD=pass \
 LAST_STACK_CANARY_BOARD_CHECK_CMD=pass \
 LAST_STACK_CANARY_SITUATION_CHECK_CMD=pass \
+LAST_STACK_CANARY_SOAK_HOURS=0 \
+LAST_STACK_CANARY_LIVE_VERSION_CMD=pass \
   "$CLI" --state-dir "$green_dir" soak-watch --dry-run --sha sha-green >/dev/null
 "$CLI" --state-dir "$green_dir" promote-prepare --dry-run --sha sha-green \
   --promote-root "$tmp/promote-root" >"$tmp/promote.out"
@@ -116,9 +122,17 @@ test -r "$manual"
 grep -q 'Candidate SHA: `sha-green`' "$manual"
 
 grep -q 'lastdb-canary-soak-watch' "$ROOT/config/routines-registry/lastdb-canary-soak-watch.toml"
-grep -q 'status = "paused"' "$ROOT/config/routines-registry/lastdb-canary-soak-watch.toml"
+grep -q 'status = "active"' "$ROOT/config/routines-registry/lastdb-canary-soak-watch.toml"
 grep -q 'last-stack-canary-pipeline proof --dry-run' "$ROOT/routines/lastdb-canary-soak-watch.md"
 grep -q 'lastdb-canary-promote-prepare' "$ROOT/config/routines-registry/lastdb-canary-promote-prepare.toml"
-grep -q 'status = "paused"' "$ROOT/config/routines-registry/lastdb-canary-promote-prepare.toml"
+grep -q 'status = "active"' "$ROOT/config/routines-registry/lastdb-canary-promote-prepare.toml"
+
+# promote-execute dry-run after soak_green
+LAST_STACK_CANARY_PROMOTE_AUTO=1 \
+  "$CLI" --state-dir "$green_dir" promote-execute --dry-run --sha sha-green \
+  --promote-root "$tmp/promote-exec-root" >"$tmp/promote-exec.out"
+grep -q 'PROMOTE_EXECUTE .*status=ready_dry_run' "$tmp/promote-exec.out"
+grep -q 'stable_mutation=false' "$tmp/promote-exec.out"
 
 echo "PASS last-stack-canary-pipeline"
+
