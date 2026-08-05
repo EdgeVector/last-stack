@@ -56,6 +56,15 @@ Lead with a one-line restatement of the goal / top objective, then:
   `todo` card with `Repo:`/`Base:` and no `BLOCKED:` note, surface this as a
   top routine-health alert. Name the top eligible card(s), the last pickup time,
   and say that the ready queue is not being drained.
+- **§🏭 Ship pipeline (North Star → Milestone → PR → shipped).** Always
+  include. Primary source: brain **`ship-pipeline-gap-audit-latest`** written
+  by the nightly `ship-pipeline-gap-audit` routine. Paste/adapt its
+  **one-line health**, ranked gaps (P0/P1 only unless quiet), and "What morning
+  think should show Tom" bullets. If the record is missing or older than 36h,
+  say so and run a quick `last-stack-ship-pipeline-gap-snapshot --json` (or
+  `kanban pickup status --json` + `last-stack-why-stopped --json`) for a
+  one-paragraph substitute — do not re-run the full nightly audit. Name any
+  process-improvement cards auto-filed overnight.
 - **§📦 What shipped overnight (plain English — always include).** This is the
   standing overnight story the human wants every morning (Tom 2026-07-31): not a
   commit wall and not jargon.
@@ -84,8 +93,9 @@ Lead with a one-line restatement of the goal / top objective, then:
 - Snapshot with bounded reads: read `todo`, `doing`, and `review` as sequential
   `<board CLI> list --column <column> --json` calls; use `show` only for the one
   card whose full body you need. Read the brain's goal note, driving index,
-  `open-decisions`, `routine-heartbeats`, and **`human-gate-audit-latest`**
-  (if present) as targeted records, one at a time.
+  `open-decisions`, `routine-heartbeats`, **`human-gate-audit-latest`**, and
+  **`ship-pipeline-gap-audit-latest`** (if present) as targeted records, one at
+  a time.
 - Also inspect your scheduler/session index if available. For Codex Desktop this
   is typically `$CODEX_HOME/session_index.jsonl` or
   `$HOME/.codex/session_index.jsonl`; compare `last-stack kanban-pickup` against
