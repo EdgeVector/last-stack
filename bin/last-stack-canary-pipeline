@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -47,12 +48,50 @@ CHECKS = (
     ),
     ("memory_guard", "LAST_STACK_CANARY_MEMORY_CHECK_CMD", "lastdb status"),
     ("board_read", "LAST_STACK_CANARY_BOARD_CHECK_CMD", "kanban ping"),
+    # board_write closes the 2026-08-05 hole: every other check above is
+    # liveness or a read, so a candidate that made every mutation on the node
+    # ~4x slower passed all of them and would have auto-published as public
+    # brew stable. See papercut-canary-soak-gate-has-no-write-path-check.
+    (
+        "board_write",
+        "LAST_STACK_CANARY_BOARD_WRITE_CHECK_CMD",
+        "last-stack-canary-write-probe",
+    ),
     (
         "situation_fence",
         "LAST_STACK_CANARY_SITUATION_CHECK_CMD",
         'situations list --json | jq -e "length == 0"',
     ),
 )
+
+# Checks that mutate the primary. Skipped under --dry-run unless the caller
+# explicitly overrides the command, so `proof --dry-run` and the CI fixtures
+# can never write to a real node.
+MUTATING_CHECKS = frozenset({"board_write"})
+
+# label -> (env override, default budget ms, samples). A check with a budget
+# fails when it SUCCEEDS BUT IS TOO SLOW — exit code alone was the whole
+# problem. 0 disables the bound.
+#
+# The 2500ms board_write default discriminates on measured ground truth:
+# a `brain put` round-trip is ~0.55s of CLI/round-trip overhead plus the
+# mutation, so a healthy binary lands ~1.7s (from the 1171ms/call figure in
+# brain lastdb-lock-wait-conflates-three-write-gates) and the 2026-08-05
+# rollback measured 3.9s on 3 of 3 samples. The median of 3 samples is what is
+# compared, so one busy moment cannot brake a good candidate — but a systemic
+# regression has nowhere to hide.
+#
+# Failure asymmetry is deliberate: a false green ships a broken write path to
+# every LastDB user, a false red only parks a candidate until the next nightly
+# supersedes it. Bias to red.
+CHECK_BUDGET_MS = {
+    "board_write": ("LAST_STACK_CANARY_WRITE_MS_MAX", 2500, 3),
+}
+
+# label -> why it failed, for the ledger. A bare `board_write` in the evidence
+# would not say whether the write ERRORED or merely ran slow, and those want
+# different responses from whoever reads the red.
+CHECK_FAILURE_DETAIL: dict[str, str] = {}
 
 
 def soak_hours() -> float:
@@ -441,20 +480,174 @@ def choose_soak_candidate(path: Path, requested_sha: str, wanted_states: set[str
     die("no matching canary candidate found")
 
 
-def run_check(label: str, env_name: str, default_cmd: str) -> bool:
+# --- memory guard ----------------------------------------------------------
+# `memory_guard` ran `lastdb status` and looked only at the exit code. A check
+# named for a bar it does not implement is worse than no check, because the
+# gate reads as covered. Resolve the SAME ceiling safe-upgrade uses
+# (LASTDBD_RSS_LIMIT_MB, then the LaunchAgent plist, then 12288 MB) so the two
+# paths cannot disagree about what "too much memory" means.
+
+
+def rss_limit_mb() -> float:
+    for key in ("LASTDBD_RSS_LIMIT_MB", "LASTDB_PROBE_RSS_LIMIT_MB"):
+        raw = os.environ.get(key)
+        if raw:
+            try:
+                return float(raw)
+            except ValueError:
+                pass
+    label = os.environ.get("LASTDB_LAUNCHD_LABEL", "")
+    if label:
+        plist = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+        if plist.is_file():
+            try:
+                out = subprocess.run(
+                    [
+                        "/usr/libexec/PlistBuddy",
+                        "-c",
+                        "Print :EnvironmentVariables:LASTDBD_RSS_LIMIT_MB",
+                        str(plist),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+                if out.returncode == 0 and out.stdout.strip():
+                    return float(out.stdout.strip())
+            except (ValueError, OSError, subprocess.SubprocessError):
+                pass
+    try:
+        return float(os.environ.get("LASTDBD_DEFAULT_RSS_LIMIT_MB", "12288"))
+    except ValueError:
+        return 12288.0
+
+
+def parse_status_rss_mb(status_text: str) -> float | None:
+    """`Memory RSS: 1.56 GiB` -> 1597.44. Returns None if absent/unparseable."""
+    for line in status_text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("Memory RSS:"):
+            continue
+        parts = stripped.split(":", 1)[1].split()
+        if len(parts) < 2:
+            return None
+        try:
+            value = float(parts[0])
+        except ValueError:
+            return None
+        unit = parts[1].lower()
+        scale = {"b": 1 / (1024 * 1024), "kib": 1 / 1024, "mib": 1.0, "gib": 1024.0, "tib": 1024.0 * 1024}
+        if unit not in scale:
+            return None
+        return value * scale[unit]
+    return None
+
+
+def memory_guard_error(status_text: str) -> str | None:
+    """None when within the ceiling; an evidence string when over it.
+
+    A status output with no `Memory RSS:` line is NOT treated as a failure —
+    an older binary that omits the field should not brake a soak. It is
+    reported so the gap is visible rather than silently green.
+    """
+    rss = parse_status_rss_mb(status_text)
+    if rss is None:
+        print("CHECK label=memory_guard note=rss_not_reported", file=sys.stderr)
+        return None
+    limit = rss_limit_mb()
+    try:
+        headroom = float(os.environ.get("LASTDB_PROBE_RSS_HEADROOM_PCT", "10"))
+    except ValueError:
+        headroom = 10.0
+    ceiling = limit * (100.0 - headroom) / 100.0
+    if ceiling > 0 and rss >= ceiling:
+        return f"rss_mb={rss:.0f}_ceiling_mb={ceiling:.0f}"
+    print(f"CHECK label=memory_guard rss_mb={rss:.0f} ceiling_mb={ceiling:.0f}")
+    return None
+
+
+def check_budget_ms(label: str) -> tuple[float, int]:
+    """(budget_ms, samples) for a check. budget 0 means no latency bound."""
+    spec = CHECK_BUDGET_MS.get(label)
+    if not spec:
+        return 0.0, 1
+    env_name, default_ms, samples = spec
+    raw = os.environ.get(env_name)
+    budget = float(default_ms)
+    if raw:
+        try:
+            budget = float(raw)
+        except ValueError:
+            pass
+    try:
+        samples = max(1, int(os.environ.get("LAST_STACK_CANARY_CHECK_SAMPLES", samples)))
+    except ValueError:
+        pass
+    return budget, samples
+
+
+def run_check(label: str, env_name: str, default_cmd: str, dry_run: bool = False) -> bool:
     command = os.environ.get(env_name, default_cmd)
+    explicit = env_name in os.environ
+    # Never let a dry run (proof, CI fixtures) write to a real node.
+    if dry_run and label in MUTATING_CHECKS and not explicit:
+        print(f"CHECK label={label} result=ok mode=dry-run-skip")
+        return True
     if command in ("", "pass", "true", "ok"):
         print(f"CHECK label={label} result=ok mode=stub")
         return True
     if command in ("fail", "false", "red"):
         print(f"CHECK label={label} result=fail mode=stub", file=sys.stderr)
+        CHECK_FAILURE_DETAIL[label] = "stub_fail"
         return False
-    result = subprocess.run(command, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if result.returncode == 0:
-        print(f"CHECK label={label} result=ok")
+
+    budget_ms, samples = check_budget_ms(label)
+    capture = label == "memory_guard"
+    durations = []
+    for _ in range(samples):
+        started = time.monotonic()
+        result = subprocess.run(
+            command,
+            shell=True,
+            stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True if capture else False,
+        )
+        durations.append((time.monotonic() - started) * 1000.0)
+        if result.returncode != 0:
+            print(f"CHECK label={label} result=fail", file=sys.stderr)
+            CHECK_FAILURE_DETAIL[label] = f"exit_{result.returncode}"
+            return False
+        if capture:
+            evidence = memory_guard_error(result.stdout or "")
+            if evidence is not None:
+                print(f"CHECK label={label} result=fail {evidence}", file=sys.stderr)
+                CHECK_FAILURE_DETAIL[label] = evidence
+                return False
+
+    if budget_ms > 0:
+        # Median, not mean or max: one slow sample is load, a slow median is
+        # the binary. Sorting an odd/even count the same way keeps it simple.
+        ordered = sorted(durations)
+        median = ordered[len(ordered) // 2] if len(ordered) % 2 else (
+            ordered[len(ordered) // 2 - 1] + ordered[len(ordered) // 2]
+        ) / 2
+        if median > budget_ms:
+            print(
+                f"CHECK label={label} result=slow median_ms={median:.0f} "
+                f"budget_ms={budget_ms:.0f} samples={samples}",
+                file=sys.stderr,
+            )
+            CHECK_FAILURE_DETAIL[label] = f"slow_median_ms={median:.0f}_budget_ms={budget_ms:.0f}"
+            return False
+        print(
+            f"CHECK label={label} result=ok median_ms={median:.0f} "
+            f"budget_ms={budget_ms:.0f} samples={samples}"
+        )
         return True
-    print(f"CHECK label={label} result=fail", file=sys.stderr)
-    return False
+
+    print(f"CHECK label={label} result=ok")
+    return True
 
 
 # --- commit-ancestry guard -------------------------------------------------
@@ -672,8 +865,9 @@ def soak_watch(path: Path, args: argparse.Namespace) -> dict:
                 failures.append(f"sha_mismatch_expected_{candidate}_observed_{observed_sha}")
 
         for label, env_name, default_cmd in CHECKS:
-            if not run_check(label, env_name, default_cmd):
-                failures.append(label)
+            if not run_check(label, env_name, default_cmd, dry_run=args.dry_run):
+                detail = CHECK_FAILURE_DETAIL.get(label)
+                failures.append(f"{label}[{detail}]" if detail else label)
 
         latest = latest_by_candidate(load_events(path)).get(candidate, current)
         state = str(latest.get("state", ""))
@@ -1110,6 +1304,7 @@ def proof(args: argparse.Namespace) -> None:
         "LAST_STACK_CANARY_LAUNCHD_CHECK_CMD": "pass",
         "LAST_STACK_CANARY_MEMORY_CHECK_CMD": "pass",
         "LAST_STACK_CANARY_BOARD_CHECK_CMD": "pass",
+        "LAST_STACK_CANARY_BOARD_WRITE_CHECK_CMD": "pass",
         "LAST_STACK_CANARY_SITUATION_CHECK_CMD": "pass",
         "LAST_STACK_CANARY_SOAK_HOURS": "0",
         "LAST_STACK_CANARY_LIVE_VERSION_CMD": "pass",

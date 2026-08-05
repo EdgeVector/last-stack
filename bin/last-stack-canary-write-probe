@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Idempotent write-path probe for the LastDB canary soak gate.
+#
+# WHY THIS EXISTS (2026-08-05): the 24h soak is the last gate before a public
+# Homebrew stable release, and every one of its hard checks was a liveness or a
+# read check — `launchctl print`, `lastdb status`, `kanban ping`, `situations
+# list`. Not one of them wrote. A candidate whose board writes ran ~4s (vs
+# ~1.2s) soaked green on all four while `brain put` took 3.9s on 3 of 3 samples.
+# The write path was the only thing that build broke, and it was the only thing
+# the gate could not see.
+#
+# The probe is ONE upsert of ONE fixed slug. It is idempotent by construction —
+# the same slug, the same constant body, every tick — so repeating it hourly
+# neither grows the store nor changes any meaning. It goes through the ordinary
+# LastDB mutation path, which is exactly the path under test.
+#
+# Passive alternatives were considered and rejected: `lastdb status` reports
+# `app=kanban verb=mutation avg=/p95=`, but on 2026-08-05 that surface read
+# p95=224ms while direct probes measured 3.9s on every sample. An average over
+# a restart-scoped ring is not a trustworthy bar; a timed write is.
+#
+# Prints nothing on success. The CALLER does the timing and enforces the bound
+# (see CHECK_BUDGET_MS in last-stack-canary-pipeline) — keeping the bar in the
+# pipeline means one place decides what "too slow" means.
+set -euo pipefail
+
+SLUG="${LAST_STACK_CANARY_WRITE_PROBE_SLUG:-canary-soak-write-probe}"
+BRAIN="${LAST_STACK_CANARY_BRAIN_CMD:-brain}"
+
+# Frontmatter MUST open and close with standalone `---` lines; `brain put`
+# exits 2 on bare `type:`/`slug:`/`title:` keys without the fences.
+"$BRAIN" put >/dev/null <<EOF
+---
+type: reference
+slug: ${SLUG}
+title: Canary soak write-path probe (constant body; carries no meaning)
+---
+
+Written by the LastDB canary soak gate's \`board_write\` check to time the
+primary's write path. The body is deliberately constant — the only thing that
+matters is how long the mutation takes, not what it says.
+
+Safe to delete at any time; the next soak-watch tick recreates it. Rationale:
+brain \`papercut-canary-soak-gate-has-no-write-path-check\`.
+EOF
