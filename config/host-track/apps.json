@@ -215,12 +215,11 @@
     },
     {
       "app": "routines",
-      "install_mode": "local-safe",
-      "kind": "local-safe cli",
+      "install_mode": "artifact",
+      "kind": "artifact cli",
       "command": "routines",
       "gate": "lastgit",
       "gate_main": "lastdb:///routines#main",
-      "refresh": "$HOME/.last-stack/bin/last-stack-refresh-local-safe",
       "artifact_app": "routines",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -231,16 +230,16 @@
           "target": "$HOME/.local/bin/routines"
         }
       ],
-      "notes": "Local-safe CLI install; refresh uses last-stack-safe-upgrade-cli."
+      "notes": "Routines LastGit artifact install from CI-published dist/routines; track_gate_main promotes stable to green+published main.",
+      "track_gate_main": true
     },
     {
       "app": "lastsecrets",
-      "install_mode": "local-safe",
-      "kind": "local-safe cli",
+      "install_mode": "artifact",
+      "kind": "artifact cli",
       "command": "lastsecrets",
       "gate": "lastgit",
       "gate_main": "lastdb:///lastsecrets#main",
-      "refresh": "$HOME/.last-stack/bin/last-stack-refresh-local-safe",
       "artifact_app": "lastsecrets",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -251,16 +250,16 @@
           "target": "$HOME/.local/bin/lastsecrets"
         }
       ],
-      "notes": "Local-safe CLI install; refresh uses last-stack-safe-upgrade-cli."
+      "notes": "LastSecrets LastGit artifact install from CI-published dist/lastsecrets; track_gate_main promotes stable to green+published main.",
+      "track_gate_main": true
     },
     {
       "app": "configurations",
-      "install_mode": "local-safe",
-      "kind": "local-safe cli",
+      "install_mode": "artifact",
+      "kind": "artifact cli",
       "command": "configurations",
       "gate": "lastgit",
       "gate_main": "lastdb:///configurations#main",
-      "refresh": "$HOME/.last-stack/bin/last-stack-refresh-local-safe",
       "artifact_app": "configurations",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -271,16 +270,16 @@
           "target": "$HOME/.local/bin/configurations"
         }
       ],
-      "notes": "Local-safe CLI install; refresh uses last-stack-safe-upgrade-cli."
+      "notes": "Configurations LastGit artifact install from CI-published dist/configurations; track_gate_main promotes stable to green+published main.",
+      "track_gate_main": true
     },
     {
       "app": "search",
-      "install_mode": "local-safe",
-      "kind": "local-safe cli",
+      "install_mode": "artifact",
+      "kind": "artifact cli",
       "command": "search",
       "gate": "lastgit",
       "gate_main": "lastdb:///search#main",
-      "refresh": "$HOME/.last-stack/bin/last-stack-refresh-local-safe",
       "artifact_app": "search",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -291,7 +290,9 @@
           "target": "$HOME/.local/bin/search"
         }
       ],
-      "notes": "Local-safe Search app CLI (semantic MiniLM only). Post-install runs search-host-track-post-install (JS deps + neural smoke). Bootstrap: search init / online-backfill; Mini may feed inbox via lastdb search-rebuild."
+      "notes": "Search LastGit artifact install (source pack + post_install npm/bun deps + neural smoke); track_gate_main promotes stable to green+published main.",
+      "track_gate_main": true,
+      "post_install": "$HOME/.host-track/apps/search/current/bin/search-host-track-post-install"
     },
     {
       "app": "remote",
