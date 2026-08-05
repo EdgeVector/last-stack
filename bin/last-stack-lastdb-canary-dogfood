@@ -14,8 +14,37 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-LEDGER = ROOT / "bin" / "last-stack-canary-pipeline"
-SAFE_UPGRADE = ROOT / "skills" / "lastdb-safe-upgrade" / "scripts" / "safe-upgrade-lastdb.sh"
+HOME = Path.home()
+
+def _resolve_ledger() -> Path:
+    env = os.environ.get("LAST_STACK_CANARY_PIPELINE")
+    if env:
+        return Path(env)
+    for c in (
+        Path(__file__).resolve().parent / "last-stack-canary-pipeline",
+        HOME / ".local/bin/last-stack-canary-pipeline",
+        HOME / ".last-stack/bin/last-stack-canary-pipeline",
+        ROOT / "bin" / "last-stack-canary-pipeline",
+    ):
+        if c.is_file() and os.access(c, os.X_OK):
+            return c
+    return ROOT / "bin" / "last-stack-canary-pipeline"
+
+def _resolve_safe_upgrade() -> Path:
+    env = os.environ.get("LAST_STACK_CANARY_SAFE_UPGRADE")
+    if env:
+        return Path(env)
+    for c in (
+        HOME / ".claude/skills/lastdb-safe-upgrade/scripts/safe-upgrade-lastdb.sh",
+        HOME / ".last-stack/skills/lastdb-safe-upgrade/scripts/safe-upgrade-lastdb.sh",
+        ROOT / "skills" / "lastdb-safe-upgrade" / "scripts" / "safe-upgrade-lastdb.sh",
+    ):
+        if c.is_file():
+            return c
+    return ROOT / "skills" / "lastdb-safe-upgrade" / "scripts" / "safe-upgrade-lastdb.sh"
+
+LEDGER = _resolve_ledger()
+SAFE_UPGRADE = _resolve_safe_upgrade()
 
 ALLOWED = {
     "candidate_found": {"dogfood_started"},
@@ -212,7 +241,7 @@ def resolve_candidate(args: argparse.Namespace) -> Candidate:
 
 
 def ledger_base(args: argparse.Namespace) -> list[str]:
-    cmd = [str(LEDGER)]
+    cmd = [str(_resolve_ledger())]
     if args.state_dir is not None:
         cmd.extend(["--state-dir", str(args.state_dir)])
     return cmd
@@ -256,7 +285,7 @@ def advance_if_allowed(args: argparse.Namespace, candidate: Candidate, desired: 
 
 
 def safe_upgrade_bin() -> str:
-    return os.environ.get("LAST_STACK_CANARY_SAFE_UPGRADE", str(SAFE_UPGRADE))
+    return str(_resolve_safe_upgrade())
 
 
 def run_safe_upgrade(args_list: list[str]) -> tuple[bool, str, int]:
