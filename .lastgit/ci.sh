@@ -57,6 +57,7 @@ bash tests/host-track-artifacts.sh
 bash tests/host-track-registry-compliance.sh
 bash tests/last-stack-artifact-host-track-proof.sh
 bash tests/last-stack-artifact-layout.sh
+bash tests/last-stack-artifact-layout-mirror-clean.sh
 bash tests/last-stack-artifact-routine-freshness.sh
 bash tests/last-stack-artifact-one-rule.sh
 bash tests/last-stack-post-merge-safe-upgrade.sh
