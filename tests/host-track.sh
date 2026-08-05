@@ -15,12 +15,13 @@ fail() {
 
 kanban_registry="$(jq -c '.apps[] | select(.app == "kanban")' "$ROOT/config/host-track/apps.json")"
 printf '%s\n' "$kanban_registry" | jq -e '
-  .install_mode == "local-safe" and
-  .kind == "local-safe cli" and
+  .install_mode == "artifact" and
+  .kind == "artifact cli" and
   .command == "kanban" and
   .gate == "lastgit" and
   .gate_main == "lastdb:///fkanban#main" and
-  .refresh == "$HOME/.last-stack/bin/last-stack-refresh-local-safe" and
+  .track_gate_main == true and
+  (.refresh | not) and
   .artifact_app == "fkanban" and
   .artifact_channel == "stable" and
   .artifact_root == "$HOME/.lastgit/artifacts" and
@@ -32,12 +33,13 @@ printf '%s\n' "$kanban_registry" | jq -e '.notes | test("Placeholder") | not' >/
 
 fkanban_registry="$(jq -c '.apps[] | select(.app == "fkanban")' "$ROOT/config/host-track/apps.json")"
 printf '%s\n' "$fkanban_registry" | jq -e '
-  .install_mode == "local-safe" and
-  .kind == "local-safe cli" and
+  .install_mode == "artifact" and
+  .kind == "artifact cli" and
   .command == "fkanban" and
   .gate == "lastgit" and
   .gate_main == "lastdb:///fkanban#main" and
-  .refresh == "$HOME/.last-stack/bin/last-stack-refresh-local-safe" and
+  .track_gate_main == true and
+  (.refresh | not) and
   .artifact_app == "fkanban" and
   .artifact_channel == "stable" and
   .artifact_root == "$HOME/.lastgit/artifacts" and
@@ -204,11 +206,12 @@ export HOST_TRACK_STAMP_DIR="$stamp_dir"
 default_registry="$ROOT/config/host-track/apps.json"
 jq -e '
   .apps[] | select(.app == "situations")
-  | .install_mode == "local-safe"
-    and .kind == "local-safe cli"
+  | .install_mode == "artifact"
+    and .kind == "artifact cli"
     and .gate == "lastgit"
     and .gate_main == "lastdb:///situations#main"
-    and .refresh == "$HOME/.last-stack/bin/last-stack-refresh-local-safe"
+    and .track_gate_main == true
+    and (.refresh | not)
     and .artifact_app == "situations"
     and .artifact_channel == "stable"
     and .artifact_root == "$HOME/.lastgit/artifacts"

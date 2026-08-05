@@ -126,36 +126,36 @@
     },
     {
       "app": "brain",
-      "install_mode": "local-safe",
-      "kind": "local-safe cli",
+      "install_mode": "artifact",
+      "kind": "artifact cli",
       "command": "brain",
       "gate": "lastgit",
       "gate_main": "lastdb:///brain#main",
-      "refresh": "$HOME/.last-stack/bin/last-stack-refresh-local-safe",
       "artifact_app": "brain",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
       "install_root": "$HOME/.host-track/apps/brain",
       "links": [
         {
-          "source": "dist/brain",
+          "source": "bin/brain",
           "target": "$HOME/.local/bin/brain"
         },
         {
-          "source": "dist/fbrain",
-          "target": "$HOME/.local/bin/fbrain"
+          "source": "bin/brain-mcp",
+          "target": "$HOME/.local/bin/brain-mcp"
         }
       ],
-      "notes": "Local-safe CLI install; refresh uses last-stack-safe-upgrade-cli and PATH links brain/fbrain from the active version."
+      "notes": "Brain LastGit artifact install; track_gate_main promotes stable to green+published main. post_install runs bun install --frozen-lockfile --production. PATH links brain + brain-mcp.",
+      "track_gate_main": true,
+      "post_install": "$HOME/.host-track/apps/brain/current/bin/brain-host-track-post-install"
     },
     {
       "app": "situations",
-      "install_mode": "local-safe",
-      "kind": "local-safe cli",
+      "install_mode": "artifact",
+      "kind": "artifact cli",
       "command": "situations",
       "gate": "lastgit",
       "gate_main": "lastdb:///situations#main",
-      "refresh": "$HOME/.last-stack/bin/last-stack-refresh-local-safe",
       "artifact_app": "situations",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -170,16 +170,16 @@
           "target": "$HOME/.local/bin/fsituations"
         }
       ],
-      "notes": "Local-safe CLI install; refresh uses last-stack-safe-upgrade-cli and PATH links situations/fsituations from the active version."
+      "notes": "Situations LastGit artifact install from CI-published dist/* binaries; track_gate_main promotes stable to green+published main.",
+      "track_gate_main": true
     },
     {
       "app": "kanban",
-      "install_mode": "local-safe",
-      "kind": "local-safe cli",
+      "install_mode": "artifact",
+      "kind": "artifact cli",
       "command": "kanban",
       "gate": "lastgit",
       "gate_main": "lastdb:///fkanban#main",
-      "refresh": "$HOME/.last-stack/bin/last-stack-refresh-local-safe",
       "artifact_app": "fkanban",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -190,16 +190,16 @@
           "target": "$HOME/.local/bin/kanban"
         }
       ],
-      "notes": "Local-safe compatibility CLI sharing the fkanban install root."
+      "notes": "Kanban compatibility CLI from the fkanban artifact bundle (shared install_root); track_gate_main follows fkanban green+published main.",
+      "track_gate_main": true
     },
     {
       "app": "fkanban",
-      "install_mode": "local-safe",
-      "kind": "local-safe cli",
+      "install_mode": "artifact",
+      "kind": "artifact cli",
       "command": "fkanban",
       "gate": "lastgit",
       "gate_main": "lastdb:///fkanban#main",
-      "refresh": "$HOME/.last-stack/bin/last-stack-refresh-local-safe",
       "artifact_app": "fkanban",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -210,7 +210,8 @@
           "target": "$HOME/.local/bin/fkanban"
         }
       ],
-      "notes": "Local-safe CLI install; refresh uses last-stack-safe-upgrade-cli and also carries the kanban compatibility CLI."
+      "notes": "F-Kanban LastGit artifact install from CI-published dist/* binaries; also carries the kanban compatibility CLI via shared install_root. track_gate_main promotes stable to green+published main.",
+      "track_gate_main": true
     },
     {
       "app": "routines",

@@ -52,17 +52,19 @@ while [ $# -gt 0 ]; do
 done
 
 # repo slug → install action (empty = skip)
-# Most LastGit-venue agent CLIs use local-safe installs. Last Stack itself is
-# artifact-backed, so its post-merge action is artifact promotion + host-track.
+# Artifact-backed apps use `artifact:<host-track-app>` so merge → host-track
+# refresh (track_gate_main promotes stable to green+published main). Remaining
+# local-safe CLIs keep last-stack-safe-upgrade-cli.
 map_repo_to_app() {
   case "$1" in
     last-stack) printf 'artifact:last-stack\n' ;;
-    brain) printf 'brain\n' ;;
-    situations) printf 'situations\n' ;;
-    fkanban|kanban) printf 'fkanban\n' ;;
+    brain) printf 'artifact:brain\n' ;;
+    situations) printf 'artifact:situations\n' ;;
+    fkanban|kanban) printf 'artifact:fkanban\n' ;;
     routines) printf 'routines\n' ;;
     lastsecrets) printf 'lastsecrets\n' ;;
     configurations) printf 'configurations\n' ;;
+    search) printf 'search\n' ;;
     *) printf '\n' ;;
   esac
 }
@@ -213,10 +215,28 @@ run_last_stack_artifact_upgrade() {
 }
 
 run_upgrade() {
-  local app="$1" repo="$2" id="$3" oid="${4:-}"
+  local app="$1" repo="$2" id="$3" oid="${4:-}" ht_app
   case "$app" in
     artifact:last-stack)
       run_last_stack_artifact_upgrade "$repo" "$id" "$oid"
+      return
+      ;;
+    artifact:*)
+      ht_app="${app#artifact:}"
+      if [ "$DRY_RUN" = 1 ]; then
+        log "DRY_RUN: would host-track refresh $ht_app repo=$repo cr=$id"
+        return 0
+      fi
+      if ! command -v host-track >/dev/null 2>&1; then
+        log "ERROR: host-track not found; cannot refresh $ht_app for $repo $id"
+        return 1
+      fi
+      log "refreshing host-track artifact app=$ht_app repo=$repo cr=$id …"
+      if [ -n "$timeout_bin" ]; then
+        "$timeout_bin" "$UPGRADE_TIMEOUT" host-track refresh "$ht_app"
+      else
+        host-track refresh "$ht_app"
+      fi
       return
       ;;
   esac
@@ -281,6 +301,9 @@ handle_departure() {
     case "$app" in
       artifact:last-stack)
         log "GIVE_UP app=$app repo=$repo cr=$id after $attempts attempts (main stays merged; promote artifact for oid=$upgrade_oid, then run: host-track refresh last-stack)"
+        ;;
+      artifact:*)
+        log "GIVE_UP app=$app repo=$repo cr=$id after $attempts attempts (main stays merged; run manually: host-track refresh ${app#artifact:})"
         ;;
       *)
         log "GIVE_UP app=$app repo=$repo cr=$id after $attempts attempts (main stays merged; run manually: last-stack-safe-upgrade-cli $app)"
