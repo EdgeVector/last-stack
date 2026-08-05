@@ -102,6 +102,14 @@
           "target": "$HOME/.local/bin/last-stack-forge-json-jq"
         },
         {
+          "source": "bin/last-stack-unattached-outcome-heal",
+          "target": "$HOME/.local/bin/last-stack-unattached-outcome-heal"
+        },
+        {
+          "source": "bin/last-stack-why-stopped",
+          "target": "$HOME/.local/bin/last-stack-why-stopped"
+        },
+        {
           "source": "bin/last-stack-factory-health",
           "target": "$HOME/.local/bin/last-stack-factory-health"
         },

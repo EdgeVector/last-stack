@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# last-stack-why-stopped — zero-LLM Class A–E factory freeze classifier.
+# last-stack-why-stopped — zero-LLM Class A–F factory freeze classifier.
 #
-# Answers "why did shipping stop?" in one line. Optionally runs Class A heal.
+# Answers "why did shipping stop?" in one line. Optionally runs Class A heal
+# and Class F unattached-outcome heal.
 #
 # Classes (factory graph):
 #   A  host-track / last-stack install freeze
@@ -9,6 +10,8 @@
 #   C  fold CI / forge runner SPOF
 #   D  merge≠live / terminal proof gap (informational when doing has old PR)
 #   E  LastDB hot (generator/backpressure)
+#   F  soft idle — todo full but unclaimable (unattached-outcome / ready=0)
+#      or ready queue with no in-flight work (factory looks healthy, ships nothing)
 #
 # Usage:
 #   last-stack-why-stopped [--json] [--heal] [--quiet]
@@ -109,17 +112,25 @@ fi
 ready=0
 todo=0
 doing=0
+unattached=0
+ps=""
 if command -v kanban >/dev/null 2>&1; then
   ps="$(kanban pickup status --json 2>/dev/null || true)"
   if [ -n "$ps" ]; then
     ready="$(printf '%s\n' "$ps" | jq -r '.ready // 0' 2>/dev/null || echo 0)"
+    unattached="$(printf '%s\n' "$ps" | jq -r '.counts["unattached-outcome"] // 0' 2>/dev/null || echo 0)"
+    # Prefer scanned-active column tallies from status cards when present
+    todo="$(printf '%s\n' "$ps" | jq -r '[.cards[]? | select(.column=="todo")] | length' 2>/dev/null || echo 0)"
+    doing="$(printf '%s\n' "$ps" | jq -r '[.cards[]? | select(.column=="doing")] | length' 2>/dev/null || echo 0)"
   fi
-  # column counts are expensive; skip if board hot
-  if last-stack-lastdb-pressure --hot --quiet 2>/dev/null; then
-    :
-  else
-    todo="$(kanban list --column todo --json 2>/dev/null | jq 'if type=="array" then length else (.cards|length) end' 2>/dev/null || echo 0)"
-    doing="$(kanban list --column doing --json 2>/dev/null | jq 'if type=="array" then length else (.cards|length) end' 2>/dev/null || echo 0)"
+  # column counts fallback if status omitted columns
+  if { [ "${todo:-0}" -eq 0 ] 2>/dev/null && [ "${ready:-0}" -eq 0 ] 2>/dev/null; }; then
+    if command -v last-stack-lastdb-pressure >/dev/null 2>&1 && last-stack-lastdb-pressure --hot --quiet 2>/dev/null; then
+      :
+    else
+      todo="$(kanban list --column todo --json 2>/dev/null | jq 'if type=="array" then length else (.cards|length) end' 2>/dev/null || echo 0)"
+      doing="$(kanban list --column doing --json 2>/dev/null | jq 'if type=="array" then length else (.cards|length) end' 2>/dev/null || echo 0)"
+    fi
   fi
 fi
 # Trailing pickup poison from heartbeats
@@ -152,6 +163,42 @@ if [ "${doing:-0}" -gt 0 ] 2>/dev/null && command -v kanban >/dev/null 2>&1; the
   fi
 fi
 
+# --- Class F: soft idle (looks healthy, ships nothing) ---
+# F1: todo has Kind:pr work that is unclaimable solely due to missing milestone
+# F2: ready queue exists but nothing is in doing (factory paused / workers noop)
+class_f=0
+if [ "${unattached:-0}" -gt 0 ] 2>/dev/null && [ "${todo:-0}" -gt 0 ] 2>/dev/null; then
+  class_f=1
+  detail+=("soft-idle unattached-outcome=$unattached todo≈$todo ready=$ready")
+  actions+=("last-stack-unattached-outcome-heal")
+fi
+if [ "${ready:-0}" -gt 0 ] 2>/dev/null && [ "${doing:-0}" -eq 0 ] 2>/dev/null && [ "$class_a" -eq 0 ] && [ "$pickup_poison" -eq 0 ]; then
+  # Ready work, no in-flight agent — soft freeze unless Class A/B already owns it
+  class_f=1
+  detail+=("soft-idle ready=$ready doing=0 (claimable work, no in-flight)")
+  actions+=("kanban pickup claim --dry-run; check pickup workers active")
+fi
+if [ "$class_f" -eq 1 ]; then
+  classes+=("F")
+  if [ "$HEAL" -eq 1 ]; then
+    heal_bin=""
+    if [ -x "$ROOT/bin/last-stack-unattached-outcome-heal" ]; then
+      heal_bin="$ROOT/bin/last-stack-unattached-outcome-heal"
+    elif command -v last-stack-unattached-outcome-heal >/dev/null 2>&1; then
+      heal_bin="$(command -v last-stack-unattached-outcome-heal)"
+    fi
+    if [ -n "$heal_bin" ] && [ "${unattached:-0}" -gt 0 ] 2>/dev/null; then
+      if "$heal_bin" --quiet >/dev/null 2>&1; then
+        detail+=("Class F unattached-outcome heal ran")
+        actions+=("unattached-outcome-heal-ok")
+      else
+        detail+=("Class F unattached-outcome heal failed")
+        actions+=("unattached-outcome-heal-failed")
+      fi
+    fi
+  fi
+fi
+
 # Deduplicate classes while preserving order
 seen=""
 uniq=()
@@ -168,7 +215,7 @@ classes=("${uniq[@]+"${uniq[@]}"}")
 if [ "${#classes[@]}" -eq 0 ]; then
   classes=("none")
   if [ "${#detail[@]}" -eq 0 ]; then
-    detail+=("no Class A–E freeze detected; factory may be idle or healthy")
+    detail+=("no Class A–F freeze detected; factory may be idle or healthy")
   fi
   if [ "${#actions[@]}" -eq 0 ]; then
     actions+=("kanban pickup lanes; factory-health")
@@ -179,11 +226,11 @@ cls_str="$(IFS=+; echo "${classes[*]}")"
 det_str="$(IFS='; '; echo "${detail[*]}")"
 act_str="$(IFS='; '; echo "${actions[*]}")"
 
-# Heartbeat
+# Heartbeat (never on stdout — --json must stay pure)
 if [ -x "$ROOT/bin/last-stack-brain-append-heartbeat" ]; then
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   "$ROOT/bin/last-stack-brain-append-heartbeat" --line \
-    "why-stopped $ts classes=$cls_str detail=$det_str" 2>/dev/null || true
+    "why-stopped $ts classes=$cls_str detail=$det_str" >/dev/null 2>&1 || true
 fi
 
 if [ "$JSON" -eq 1 ]; then
