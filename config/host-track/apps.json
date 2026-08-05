@@ -82,6 +82,26 @@
           "target": "$HOME/.local/bin/last-stack-board-closeout-sweep"
         },
         {
+          "source": "bin/last-stack-card-closeout",
+          "target": "$HOME/.local/bin/last-stack-card-closeout"
+        },
+        {
+          "source": "bin/last-stack-forge-api",
+          "target": "$HOME/.local/bin/last-stack-forge-api"
+        },
+        {
+          "source": "bin/last-stack-forge-git",
+          "target": "$HOME/.local/bin/last-stack-forge-git"
+        },
+        {
+          "source": "bin/last-stack-forge-ci-log",
+          "target": "$HOME/.local/bin/last-stack-forge-ci-log"
+        },
+        {
+          "source": "bin/last-stack-forge-json-jq",
+          "target": "$HOME/.local/bin/last-stack-forge-json-jq"
+        },
+        {
           "source": "bin/last-stack-factory-health",
           "target": "$HOME/.local/bin/last-stack-factory-health"
         },
@@ -90,7 +110,7 @@
           "target": "$HOME/.local/bin/last-stack-pr-venue"
         }
       ],
-      "notes": "Runtime is an immutable CI artifact that tracks gate_main (green+published main). host-track refresh promotes stable to that tip then installs. ~/.last-stack/{bin,skills,...} \u2192 artifacts/current. PATH links Class A + pickup bootstrap tools so routinesd (~/.local/bin first) never hits GC'd version pins. Never develop in the install; use a worktree."
+      "notes": "Runtime is an immutable CI artifact that tracks gate_main (green+published main). host-track refresh promotes stable to that tip then installs. ~/.last-stack/{bin,skills,...} \u2192 artifacts/current. PATH links Class A + pickup bootstrap + Forge closeout tools (forge-api and friends) so routinesd (~/.local/bin first) never hits GC'd version pins and board-closeout can resolve Forge PRs. Never develop in the install; use a worktree."
     },
     {
       "app": "brain",

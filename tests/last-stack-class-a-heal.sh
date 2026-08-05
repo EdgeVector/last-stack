@@ -281,7 +281,7 @@ printf '%s\n' "$out8b" | grep -qE 'cache-hit|cache-fresh|noop-healthy|shared' \
 # no refresh on cache path
 [ ! -s "$FAKE_HT_LOG" ] || fail "cache-hit must not refresh: $(cat "$FAKE_HT_LOG")"
 
-# --- 9) host-track apps.json must PATH-link class-a + routine-read ---
+# --- 9) host-track apps.json must PATH-link class-a + routine-read + forge closeout ---
 apps_json="$ROOT/config/host-track/apps.json"
 command -v jq >/dev/null 2>&1 || fail "jq required for apps.json check"
 jq -e '
@@ -291,8 +291,17 @@ jq -e '
   | map(.source)
   | index("bin/last-stack-class-a-heal")
   and index("bin/last-stack-routine-read")
+  and index("bin/last-stack-forge-api")
+  and index("bin/last-stack-card-closeout")
+  and index("bin/last-stack-board-closeout-sweep")
 ' "$apps_json" >/dev/null \
-  || fail "last-stack host-track links must include class-a-heal + routine-read"
+  || fail "last-stack host-track links must include class-a-heal + routine-read + forge closeout shims"
+
+# PATH_SHIM_NAMES must stay aligned with host-track forge closeout links
+grep -q 'last-stack-forge-api' "$ROOT/bin/last-stack-class-a-heal" \
+  || fail "class-a-heal PATH_SHIM_NAMES must include last-stack-forge-api"
+grep -q 'last-stack-card-closeout' "$ROOT/bin/last-stack-class-a-heal" \
+  || fail "class-a-heal PATH_SHIM_NAMES must include last-stack-card-closeout"
 
 # --- 10) healthy / soft-stale preclaim path is fast (p95 target < 2s) ---
 # Restore known-good current + fake host-track (earlier cases may repoint current).
