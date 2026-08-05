@@ -1,4 +1,5 @@
-# Auto release loop: resolve GH canary → probe → live safe-upgrade cutover of primary.
+# Auto release loop: resolve Forge fold main tip → probe → live safe-upgrade cutover of primary.
+# GitHub prereleases are opt-in only (LAST_STACK_CANARY_ALLOW_GITHUB=1 + source_git_oid == main).
 id = "lastdb-canary-dogfood"
 harness = "claude"
 model = "sonnet"

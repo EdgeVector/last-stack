@@ -10,15 +10,14 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 state_dir="$tmp/state"
-release_json='[
-  {
-    "tag_name": "v0.24.0-canary.1",
-    "name": "LastDB canary",
-    "prerelease": true,
-    "draft": false,
-    "assets": [{"name": "lastdb-aarch64-apple-darwin.tar.gz"}]
-  }
-]'
+# Hermetic main tip — must not match host-built describe binaries accidentally.
+MAIN_OID="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+# Isolate canary-builds + fold mirror so host state cannot pollute resolution.
+export LAST_STACK_CANARY_MAIN_OID="$MAIN_OID"
+export LAST_STACK_CANARY_FOLD_MIRROR="$tmp/no-fold-mirror"
+export LAST_STACK_CANARY_BUILDS_DIR="$tmp/canary-builds"
+export LAST_STACK_CANARY_FETCH_MAIN=0
+mkdir -p "$LAST_STACK_CANARY_BUILDS_DIR"
 
 stub="$tmp/safe-upgrade-stub"
 cat >"$stub" <<'STUB'
@@ -31,7 +30,72 @@ esac
 STUB
 chmod +x "$stub"
 
+# --- default path: forge-main local binary (trusted override) ---
+fallback_bin="$tmp/lastdbd"
+cat >"$fallback_bin" <<'BIN'
+#!/usr/bin/env bash
+printf 'lastdbd 0.25.0-local-main\n'
+BIN
+chmod +x "$fallback_bin"
+
 out="$(
+  LAST_STACK_CANARY_LOCAL_FALLBACK_BIN="$fallback_bin" \
+  LAST_STACK_CANARY_SAFE_UPGRADE="$stub" \
+  SAFE_UPGRADE_STUB_LOG="$tmp/safe-upgrade.log" \
+  "$CLI" --state-dir "$tmp/fallback-state" --dry-run --json
+)"
+[ "$(printf '%s\n' "$out" | jq -r '.source')" = "forge-main" ]
+[ "$(printf '%s\n' "$out" | jq -r '.safe_upgrade_args[0]')" = "--candidate" ]
+[ "$(printf '%s\n' "$out" | jq -r '.state')" = "dogfood_green" ]
+
+# --- without a local binary: fail closed (no GH by default) ---
+out="$(
+  env -u LAST_STACK_CANARY_LOCAL_FALLBACK_BIN \
+  LAST_STACK_CANARY_SAFE_UPGRADE="$stub" \
+  "$CLI" --state-dir "$tmp/missing-state" --dry-run --json
+)" || true
+[ "$(printf '%s\n' "$out" | jq -r '.source')" = "forge-main-missing" ]
+[ "$(printf '%s\n' "$out" | jq -r '.state')" = "dogfood_red" ]
+[ "$(printf '%s\n' "$out" | jq -r '.safe_upgrade')" = "not-run-no-candidate" ]
+
+# --- stale GH prerelease without source_git_oid matching main: refused ---
+stale_json='[
+  {
+    "tag_name": "v0.23.3-canary.20260801",
+    "name": "stale canary",
+    "prerelease": true,
+    "draft": false,
+    "assets": [{"name": "lastdb-aarch64-apple-darwin.tar.gz"}]
+  }
+]'
+out="$(
+  env -u LAST_STACK_CANARY_LOCAL_FALLBACK_BIN \
+  LAST_STACK_CANARY_RELEASES_JSON="$stale_json" \
+  LAST_STACK_CANARY_SAFE_UPGRADE="$stub" \
+  "$CLI" --state-dir "$tmp/stale-gh-state" --dry-run --json
+)" || true
+[ "$(printf '%s\n' "$out" | jq -r '.source')" = "forge-main-missing" ]
+[ "$(printf '%s\n' "$out" | jq -r '.state')" = "dogfood_red" ]
+
+# --- GH opt-in only when source_git_oid matches main tip ---
+release_json="$(
+  MAIN_OID="$MAIN_OID" python3 - <<'PY'
+import json, os
+print(json.dumps([
+  {
+    "tag_name": "v0.24.0-canary.1",
+    "name": "LastDB canary",
+    "prerelease": True,
+    "draft": False,
+    "source_git_oid": os.environ["MAIN_OID"],
+    "assets": [{"name": "lastdb-aarch64-apple-darwin.tar.gz"}],
+  }
+]))
+PY
+)"
+
+out="$(
+  env -u LAST_STACK_CANARY_LOCAL_FALLBACK_BIN \
   LAST_STACK_CANARY_RELEASES_JSON="$release_json" \
   LAST_STACK_CANARY_SAFE_UPGRADE="$stub" \
   SAFE_UPGRADE_STUB_LOG="$tmp/safe-upgrade.log" \
@@ -45,6 +109,7 @@ out="$(
 [ "$(wc -l <"$state_dir/ledger.jsonl" | tr -d ' ')" = "3" ]
 
 out="$(
+  env -u LAST_STACK_CANARY_LOCAL_FALLBACK_BIN \
   LAST_STACK_CANARY_RELEASES_JSON="$release_json" \
   LAST_STACK_CANARY_SAFE_UPGRADE="$stub" \
   SAFE_UPGRADE_STUB_LOG="$tmp/safe-upgrade.log" \
@@ -57,6 +122,7 @@ grep -q -- '--probe-only --version 0.24.0-canary.1' "$tmp/safe-upgrade.log"
 : >"$tmp/safe-upgrade.log"
 cut_state="$tmp/cutover-state"
 out="$(
+  env -u LAST_STACK_CANARY_LOCAL_FALLBACK_BIN \
   LAST_STACK_CANARY_RELEASES_JSON="$release_json" \
   LAST_STACK_CANARY_SAFE_UPGRADE="$stub" \
   SAFE_UPGRADE_STUB_LOG="$tmp/safe-upgrade.log" \
@@ -70,25 +136,42 @@ out="$(
 grep -q -- '--probe-only --version 0.24.0-canary.1' "$tmp/safe-upgrade.log"
 grep -q -- '--yes --version 0.24.0-canary.1' "$tmp/safe-upgrade.log"
 
-fallback_bin="$tmp/lastdbd"
-cat >"$fallback_bin" <<'BIN'
+# --- local preferred over GH even when GH is allowed ---
+out="$(
+  LAST_STACK_CANARY_LOCAL_FALLBACK_BIN="$fallback_bin" \
+  LAST_STACK_CANARY_RELEASES_JSON="$release_json" \
+  LAST_STACK_CANARY_SAFE_UPGRADE="$stub" \
+  "$CLI" --state-dir "$tmp/prefer-local-state" --dry-run --json
+)"
+[ "$(printf '%s\n' "$out" | jq -r '.source')" = "forge-main" ]
+[ "$(printf '%s\n' "$out" | jq -r '.safe_upgrade_args[0]')" = "--candidate" ]
+
+# --- staged canary-builds/<oid>/lastdbd with matching describe shortsha ---
+stage="$LAST_STACK_CANARY_BUILDS_DIR/$MAIN_OID"
+mkdir -p "$stage"
+staged="$stage/lastdbd"
+cat >"$staged" <<BIN
 #!/usr/bin/env bash
-printf 'lastdbd 0.25.0-local-main\n'
+printf 'lastdbd 0.26.0-1-g${MAIN_OID:0:9}\n'
 BIN
-chmod +x "$fallback_bin"
+chmod +x "$staged"
+# write manifest too
+printf '{"source_git_oid":"%s"}\n' "$MAIN_OID" >"$stage/manifest.json"
 
 out="$(
-  LAST_STACK_CANARY_RELEASES_JSON='[]' \
-  LAST_STACK_CANARY_LOCAL_FALLBACK_BIN="$fallback_bin" \
-  "$CLI" --state-dir "$tmp/fallback-state" --dry-run --json
+  env -u LAST_STACK_CANARY_LOCAL_FALLBACK_BIN \
+  LAST_STACK_CANARY_SAFE_UPGRADE="$stub" \
+  "$CLI" --state-dir "$tmp/staged-state" --dry-run --json
 )"
-[ "$(printf '%s\n' "$out" | jq -r '.source')" = "local-main" ]
-[ "$(printf '%s\n' "$out" | jq -r '.safe_upgrade_args[0]')" = "--candidate" ]
+[ "$(printf '%s\n' "$out" | jq -r '.source')" = "forge-main" ]
+[ "$(printf '%s\n' "$out" | jq -r '.safe_upgrade_args[1]')" = "$staged" ]
 [ "$(printf '%s\n' "$out" | jq -r '.state')" = "dogfood_green" ]
 
 grep -q '^id = "lastdb-canary-dogfood"$' "$ROOT/config/routines-registry/lastdb-canary-dogfood.toml"
 grep -q '^status = "active"$' "$ROOT/config/routines-registry/lastdb-canary-dogfood.toml"
 grep -q 'lastdb-canary-dogfood.md' "$ROOT/config/routines-registry/lastdb-canary-dogfood.toml"
 grep -q 'last-stack-lastdb-canary-dogfood' "$ROOT/routines/lastdb-canary-dogfood.md"
+grep -q 'Forge' "$ROOT/routines/lastdb-canary-dogfood.md"
+grep -q 'forge-main' "$ROOT/routines/lastdb-canary-dogfood.md"
 
 echo "ok last-stack-lastdb-canary-dogfood"

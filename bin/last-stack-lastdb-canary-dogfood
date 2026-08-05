@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
-"""Resolve a LastDB canary and dogfood it on the primary (probe and/or live cutover)."""
+"""Resolve a LastDB canary and dogfood it on the primary (probe and/or live cutover).
+
+Canonical candidate source (Tom 2026-08-05, local-canonical + forge SoT):
+
+  1. Explicit --candidate / --version (operator override)
+  2. **Forge fold `main` tip** — local binary built from that OID
+  3. Optional GitHub prerelease ONLY when LAST_STACK_CANARY_ALLOW_GITHUB=1
+     AND the release manifest's source_git_oid matches fold main tip
+
+GitHub is never the default dogfood path. The 2026-08-05 Aug-1 rollback happened
+because dogfood took the newest GH prerelease by name (semver 0.23.3-canary >
+0.23.2 describe) without checking git ancestry against main.
+"""
 from __future__ import annotations
 
 import argparse
@@ -58,6 +70,9 @@ ALLOWED = {
     "promoted": set(),
 }
 
+# git-describe shortsha is typically 7–12 hex digits after -g
+_DESCRIBE_GSHA = re.compile(r"-g([0-9a-f]{7,40})\b", re.I)
+
 
 @dataclass(frozen=True)
 class Candidate:
@@ -66,12 +81,16 @@ class Candidate:
     source: str
     note: str
     safe_upgrade_args: tuple[str, ...]
+    source_git_oid: str = ""
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="last-stack-lastdb-canary-dogfood",
-        description="Resolve a LastDB canary and dogfood it (dry-run / probe-only / live cutover).",
+        description=(
+            "Resolve a LastDB canary from local Forge fold main (default) and dogfood it "
+            "(dry-run / probe-only / live cutover). GitHub prereleases are opt-in only."
+        ),
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="ledger only; do not run safe-upgrade")
@@ -86,7 +105,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="probe-only then live safe-upgrade --yes on GREEN (mutates primary sidebin)",
     )
     parser.add_argument("--candidate", help="explicit lastdbd candidate binary")
-    parser.add_argument("--version", help="explicit LastDB release version/tag")
+    parser.add_argument("--version", help="explicit LastDB release version/tag (escape hatch)")
     parser.add_argument("--state-dir", type=Path, default=None)
     parser.add_argument("--json", action="store_true")
     parser.add_argument(
@@ -138,6 +157,183 @@ def situations_clear() -> bool:
     return run(["bash", "-lc", cmd], check=False).returncode == 0
 
 
+def github_prerelease_allowed() -> bool:
+    """GitHub prereleases are opt-in. RELEASES_JSON in tests implies allow."""
+    if os.environ.get("LAST_STACK_CANARY_RELEASES_JSON"):
+        return True
+    return os.environ.get("LAST_STACK_CANARY_ALLOW_GITHUB", "0") == "1"
+
+
+def fold_mirror() -> Path | None:
+    override = os.environ.get("LAST_STACK_CANARY_FOLD_MIRROR")
+    candidates = [Path(override)] if override else []
+    candidates.append(HOME / ".cache/edgevector-git/fold.git")
+    for candidate in candidates:
+        if candidate is not None and candidate.is_dir():
+            return candidate
+    return None
+
+
+def maybe_fetch_fold_main(mirror: Path) -> None:
+    """Best-effort refresh of fold main from local Forgejo (origin). Never fatal."""
+    if os.environ.get("LAST_STACK_CANARY_FETCH_MAIN", "1") != "1":
+        return
+    forge_git = os.environ.get("LAST_STACK_FORGE_GIT", "last-stack-forge-git")
+    # Prefer forge-git so localhost:3300 auth works unattended.
+    cmd = [forge_git, "-C", str(mirror), "fetch", "origin", "refs/heads/main:refs/heads/main"]
+    proc = run(cmd, check=False)
+    if proc.returncode == 0:
+        return
+    # Plain git fallback (mirror may already be up to date / have creds).
+    run(["git", "-C", str(mirror), "fetch", "origin", "refs/heads/main:refs/heads/main"], check=False)
+
+
+def fold_main_oid() -> str:
+    """Full OID of fold main tip from the local Forge mirror (or override)."""
+    override = os.environ.get("LAST_STACK_CANARY_MAIN_OID", "").strip()
+    if override:
+        return override
+    mirror = fold_mirror()
+    if mirror is None:
+        return ""
+    maybe_fetch_fold_main(mirror)
+    for ref in ("refs/heads/main", "refs/remotes/origin/main"):
+        proc = run(["git", "-C", str(mirror), "rev-parse", ref], check=False)
+        if proc.returncode == 0:
+            oid = (proc.stdout or "").strip()
+            if re.fullmatch(r"[0-9a-f]{40}", oid):
+                return oid
+    return ""
+
+
+def oid_matches_version(main_oid: str, version: str) -> bool:
+    """True when a git-describe version embeds a shortsha of main_oid."""
+    if not main_oid or not version:
+        return False
+    m = _DESCRIBE_GSHA.search(version)
+    if not m:
+        return False
+    gsha = m.group(1).lower()
+    main = main_oid.lower()
+    return main.startswith(gsha) or gsha.startswith(main[: len(gsha)])
+
+
+def read_manifest_oid(path: Path) -> str:
+    if not path.is_file():
+        return ""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    return str(data.get("source_git_oid") or data.get("git_oid") or "").strip()
+
+
+def candidate_from_local_bin(
+    path: str,
+    *,
+    main_oid: str,
+    trusted: bool,
+    source: str = "forge-main",
+) -> Candidate | None:
+    if not path or not os.access(path, os.X_OK):
+        return None
+    version = sanitize(binary_version(path))
+    manifest_oid = ""
+    # Sibling or parent-dir manifests from package-lastdb-bundle.sh
+    for rel in (
+        Path(path).parent / "lastdb-aarch64-apple-darwin.manifest.json",
+        Path(path).parent / "manifest.json",
+        Path(path).parent.parent / "lastdb-aarch64-apple-darwin.manifest.json",
+    ):
+        manifest_oid = read_manifest_oid(rel)
+        if manifest_oid:
+            break
+
+    if trusted:
+        oid = manifest_oid or main_oid
+        note = f"path={path} trusted=1 main={main_oid[:12] if main_oid else 'unknown'}"
+    else:
+        if main_oid and manifest_oid and not (
+            main_oid.startswith(manifest_oid) or manifest_oid.startswith(main_oid[:12])
+        ):
+            return None
+        if main_oid and not manifest_oid and not oid_matches_version(main_oid, version):
+            return None
+        if not main_oid and not manifest_oid and not oid_matches_version("", version):
+            # No main tip and no describe sha — refuse auto-discovered binaries.
+            return None
+        oid = manifest_oid or main_oid
+        note = f"path={path} main={main_oid[:12] if main_oid else 'unknown'} oid={oid[:12] if oid else 'unknown'}"
+
+    short = (oid or version)[:12] if oid else version
+    return Candidate(
+        candidate=f"lastdb-forge-main-{sanitize(short)}",
+        version=version,
+        source=source,
+        note=note,
+        safe_upgrade_args=("--candidate", path),
+        source_git_oid=oid,
+    )
+
+
+def canary_builds_root() -> Path:
+    env = os.environ.get("LAST_STACK_CANARY_BUILDS_DIR")
+    if env:
+        return Path(env)
+    return HOME / ".local" / "state" / "last-stack" / "canary-builds"
+
+
+def resolve_forge_main_candidate() -> Candidate | None:
+    """Local binary built from fold main tip (Forge SoT). Prefer staged canary-builds."""
+    main_oid = fold_main_oid()
+    trusted_bin = os.environ.get("LAST_STACK_CANARY_LOCAL_FALLBACK_BIN", "").strip()
+    if trusted_bin:
+        cand = candidate_from_local_bin(trusted_bin, main_oid=main_oid, trusted=True)
+        if cand:
+            return cand
+
+    paths: list[str] = []
+    builds = canary_builds_root()
+    if main_oid and builds.is_dir():
+        # Prefer exact main tip directory, then any subdir with matching manifest.
+        tip_dir = builds / main_oid
+        for name in ("lastdbd", "bin/lastdbd"):
+            paths.append(str(tip_dir / name))
+        for child in sorted(builds.iterdir(), reverse=True):
+            if not child.is_dir():
+                continue
+            man = read_manifest_oid(child / "manifest.json") or read_manifest_oid(
+                child / "lastdb-aarch64-apple-darwin.manifest.json"
+            )
+            if man and main_oid and (main_oid.startswith(man) or man.startswith(main_oid[:12])):
+                paths.append(str(child / "lastdbd"))
+                paths.append(str(child / "bin" / "lastdbd"))
+
+    # Worktrees / checkouts (never the empty portal). Prefer fkanban worktrees.
+    home = HOME
+    paths.extend(
+        [
+            str(home / "code/edgevector/fold/target/release/lastdbd"),
+            str(home / "code/edgevector/fold/lastdb_node/target/release/lastdbd"),
+            str(home / "code/edgevector/fold/fold_db/target/release/lastdbd"),
+        ]
+    )
+    wt_root = home / ".fkanban" / "worktrees"
+    if wt_root.is_dir():
+        for p in sorted(wt_root.glob("fold-*/target/release/lastdbd"), reverse=True)[:20]:
+            paths.append(str(p))
+
+    seen: set[str] = set()
+    for path in paths:
+        if path in seen:
+            continue
+        seen.add(path)
+        cand = candidate_from_local_bin(path, main_oid=main_oid, trusted=False)
+        if cand:
+            return cand
+    return None
+
+
 def load_releases() -> list[dict]:
     raw = os.environ.get("LAST_STACK_CANARY_RELEASES_JSON")
     if raw:
@@ -158,24 +354,78 @@ def load_releases() -> list[dict]:
     return [item for item in data if isinstance(item, dict)]
 
 
-def candidate_from_release(release: dict) -> Candidate:
+def release_source_oid(release: dict) -> str:
+    """source_git_oid from a release dict (tests may inject it) or remote manifest."""
+    direct = str(release.get("source_git_oid") or "").strip()
+    if direct:
+        return direct
+    for asset in release.get("assets") or []:
+        if not isinstance(asset, dict):
+            continue
+        name = str(asset.get("name") or "")
+        if not name.endswith("manifest.json"):
+            continue
+        # Inline body for hermetic tests
+        if asset.get("manifest"):
+            try:
+                body = asset["manifest"]
+                if isinstance(body, str):
+                    body = json.loads(body)
+                return str(body.get("source_git_oid") or "").strip()
+            except Exception:
+                return ""
+        url = str(asset.get("browser_download_url") or "")
+        if not url:
+            continue
+        try:
+            req = urllib.request.Request(url, headers={"Accept": "application/octet-stream"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                manifest = json.loads(resp.read().decode("utf-8"))
+            return str(manifest.get("source_git_oid") or "").strip()
+        except Exception:
+            continue
+    return ""
+
+
+def candidate_from_release(release: dict, *, main_oid: str) -> Candidate | None:
     tag = str(release.get("tag_name") or release.get("name") or "").strip()
     version = sanitize(tag)
+    source_oid = release_source_oid(release)
+    # Require main-tip match when we know main. Refuse unknown-oid GH canaries.
+    if main_oid:
+        if not source_oid:
+            return None
+        if not (main_oid.startswith(source_oid) or source_oid.startswith(main_oid[:12])):
+            return None
+    elif not source_oid:
+        # No main tip and no oid — refuse (this is how Aug-1 snuck in).
+        return None
+
     asset_names = []
     for asset in release.get("assets") or []:
         if isinstance(asset, dict):
             asset_names.append(str(asset.get("name") or asset.get("browser_download_url") or ""))
-    note = "tag={tag} assets={assets}".format(tag=tag or "unknown", assets=",".join(asset_names) or "none")
+    note = "tag={tag} assets={assets} source_git_oid={oid} main={main}".format(
+        tag=tag or "unknown",
+        assets=",".join(asset_names) or "none",
+        oid=source_oid[:12] if source_oid else "unknown",
+        main=main_oid[:12] if main_oid else "unknown",
+    )
     return Candidate(
         candidate=f"lastdb-{version}",
         version=version,
         source="github-prerelease-canary",
         note=note,
         safe_upgrade_args=("--version", version),
+        source_git_oid=source_oid,
     )
 
 
-def resolve_release_candidate() -> Candidate | None:
+def resolve_github_canary_for_main() -> Candidate | None:
+    """Opt-in only. Prefer a prerelease whose source_git_oid is fold main tip."""
+    if not github_prerelease_allowed():
+        return None
+    main_oid = fold_main_oid()
     releases = [r for r in load_releases() if bool(r.get("prerelease")) and not bool(r.get("draft"))]
     if not releases:
         return None
@@ -184,37 +434,32 @@ def resolve_release_candidate() -> Candidate | None:
         for r in releases
         if re.search(r"(canary|nightly|pre|rc)", f"{r.get('tag_name','')} {r.get('name','')}", re.I)
     ]
-    return candidate_from_release((marked or releases)[0])
+    for release in marked or releases:
+        cand = candidate_from_release(release, main_oid=main_oid)
+        if cand:
+            return cand
+    return None
 
 
-def resolve_local_candidate() -> Candidate:
-    explicit = os.environ.get("LAST_STACK_CANARY_LOCAL_FALLBACK_BIN", "")
-    paths = [explicit] if explicit else []
-    home = Path.home()
-    paths.extend(
-        [
-            str(home / "code/edgevector/fold/target/release/lastdbd"),
-            str(home / "code/edgevector/fold/lastdb_node/target/release/lastdbd"),
-            str(home / "code/edgevector/fold/fold_db/target/release/lastdbd"),
-        ]
+def missing_forge_main_candidate() -> Candidate:
+    main_oid = fold_main_oid()
+    version = sanitize(os.environ.get("LAST_STACK_CANARY_LOCAL_FALLBACK_VERSION", "forge-main-unbuilt"))
+    note = (
+        "no local lastdbd built from fold main tip; "
+        f"main={main_oid[:12] if main_oid else 'unavailable'}; "
+        "build from Forgejo fold main (package-lastdb-bundle / cargo --release) "
+        "and set LAST_STACK_CANARY_LOCAL_FALLBACK_BIN or stage under "
+        f"{canary_builds_root()}/<oid>/lastdbd. "
+        "GitHub prereleases are not used unless LAST_STACK_CANARY_ALLOW_GITHUB=1 "
+        "and the release source_git_oid matches main tip."
     )
-    for path in paths:
-        if path and os.access(path, os.X_OK):
-            version = sanitize(binary_version(path))
-            return Candidate(
-                candidate=f"lastdb-local-main-{version}",
-                version=version,
-                source="local-main",
-                note=f"path={path}",
-                safe_upgrade_args=("--candidate", path),
-            )
-    version = sanitize(os.environ.get("LAST_STACK_CANARY_LOCAL_FALLBACK_VERSION", "local-main-unbuilt"))
     return Candidate(
-        candidate=f"lastdb-local-main-{version}",
+        candidate=f"lastdb-forge-main-{version}",
         version=version,
-        source="local-main",
-        note="no executable local release candidate found",
+        source="forge-main-missing",
+        note=note,
         safe_upgrade_args=(),
+        source_git_oid=main_oid,
     )
 
 
@@ -237,7 +482,20 @@ def resolve_candidate(args: argparse.Namespace) -> Candidate:
             note=f"version={args.version}",
             safe_upgrade_args=("--version", version),
         )
-    return resolve_release_candidate() or resolve_local_candidate()
+
+    # 1) Local Forge fold main tip (canonical)
+    local = resolve_forge_main_candidate()
+    if local:
+        return local
+
+    # 2) Optional GH prerelease that is *exactly* main tip (CDN package of same SHA)
+    gh = resolve_github_canary_for_main()
+    if gh:
+        return gh
+
+    # 3) Fail closed — never pick a stale GH canary by name alone
+    return missing_forge_main_candidate()
+
 
 
 def ledger_base(args: argparse.Namespace) -> list[str]:
@@ -258,19 +516,19 @@ def create_if_missing(args: argparse.Namespace, candidate: Candidate) -> str:
     state = read_state(args, candidate.candidate)
     if state:
         return state
-    run(
-        ledger_base(args)
-        + [
-            "create",
-            candidate.candidate,
-            "--version",
-            candidate.version,
-            "--source",
-            candidate.source,
-            "--note",
-            candidate.note,
-        ]
-    )
+    cmd = ledger_base(args) + [
+        "create",
+        candidate.candidate,
+        "--version",
+        candidate.version,
+        "--source",
+        candidate.source,
+        "--note",
+        candidate.note,
+    ]
+    if candidate.source_git_oid:
+        cmd.extend(["--source-git-oid", candidate.source_git_oid])
+    run(cmd)
     return "candidate_found"
 
 
@@ -313,37 +571,60 @@ def dogfood(args: argparse.Namespace) -> dict:
     create_if_missing(args, candidate)
     advance_if_allowed(args, candidate, "dogfood_started", f"{mode_name(args)} source={candidate.source}")
 
+    def base_result(**extra) -> dict:
+        out = {
+            "candidate": candidate.candidate,
+            "version": candidate.version,
+            "source": candidate.source,
+            "source_git_oid": candidate.source_git_oid or None,
+            "note": candidate.note,
+            "safe_upgrade_args": list(candidate.safe_upgrade_args),
+        }
+        out.update(extra)
+        return out
+
     if args.dry_run:
+        # Missing candidate is red even in dry-run so scheduled noops are loud.
+        if not candidate.safe_upgrade_args:
+            final = advance_if_allowed(
+                args,
+                candidate,
+                "dogfood_red",
+                f"dry-run: no candidate — {candidate.note}",
+            )
+            return base_result(
+                mode="dry-run",
+                state=final,
+                safe_upgrade="not-run-no-candidate",
+                primary_mutation=False,
+            )
         final = advance_if_allowed(
             args,
             candidate,
             "dogfood_green",
             "dry-run: would probe then cutover " + " ".join(candidate.safe_upgrade_args or ["?"]),
         )
-        return {
-            "candidate": candidate.candidate,
-            "version": candidate.version,
-            "source": candidate.source,
-            "mode": "dry-run",
-            "state": final,
-            "safe_upgrade": "not-run",
-            "safe_upgrade_args": list(candidate.safe_upgrade_args),
-            "live_version": live_version() or None,
-            "primary_mutation": False,
-        }
+        return base_result(
+            mode="dry-run",
+            state=final,
+            safe_upgrade="not-run",
+            live_version=live_version() or None,
+            primary_mutation=False,
+        )
 
     if not candidate.safe_upgrade_args:
-        final = advance_if_allowed(args, candidate, "dogfood_red", f"{mode_name(args)}: no candidate args")
-        return {
-            "candidate": candidate.candidate,
-            "version": candidate.version,
-            "source": candidate.source,
-            "mode": mode_name(args),
-            "state": final,
-            "safe_upgrade": "not-run-no-candidate",
-            "safe_upgrade_args": [],
-            "primary_mutation": False,
-        }
+        final = advance_if_allowed(
+            args,
+            candidate,
+            "dogfood_red",
+            f"{mode_name(args)}: no candidate args — {candidate.note}",
+        )
+        return base_result(
+            mode=mode_name(args),
+            state=final,
+            safe_upgrade="not-run-no-candidate",
+            primary_mutation=False,
+        )
 
     if not args.skip_situation_preflight and not situations_clear():
         final = advance_if_allowed(
@@ -414,21 +695,20 @@ def dogfood(args: argparse.Namespace) -> dict:
         final = advance_if_allowed(args, candidate, "dogfood_green", note)
         # Stamp observed version for soak matching via advance note + dogfood command on pipeline
         if observed:
-            run(
-                ledger_base(args)
-                + [
-                    "dogfood",
-                    "--sha",
-                    candidate.candidate,
-                    "--observed-sha",
-                    observed,
-                    "--version",
-                    candidate.version,
-                    "--source",
-                    candidate.source,
-                ],
-                check=False,
-            )
+            dog_cmd = ledger_base(args) + [
+                "dogfood",
+                "--sha",
+                candidate.candidate,
+                "--observed-sha",
+                observed,
+                "--version",
+                candidate.version,
+                "--source",
+                candidate.source,
+            ]
+            if candidate.source_git_oid:
+                dog_cmd.extend(["--source-git-oid", candidate.source_git_oid])
+            run(dog_cmd, check=False)
         return {
             "candidate": candidate.candidate,
             "version": candidate.version,
