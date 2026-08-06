@@ -1,0 +1,276 @@
+#!/usr/bin/env python3
+"""Classify agent claims against settled Brain canon with open-work exemption.
+
+Deterministic core of Revenant Watch. The session-miner profile (LLM) extracts
+claims + topics from transcripts; this helper decides flag vs skip vs no-flag.
+
+Input JSON (file path or stdin):
+
+{
+  "claims": [
+    {"id": "c1", "text": "...", "topics": ["full-db-react-ui"], "session": "s1"}
+  ],
+  "canon": [
+    {
+      "topic": "full-db-react-ui",
+      "status": "retired",
+      "settled": true,
+      "slug": "preference-example",
+      "priority": "P1"
+    }
+  ],
+  "open_work": [
+    {"slug": "remove-react-app", "topics": ["full-db-react-ui"], "active": true}
+  ]
+}
+
+Statuses that count as settled-dead canon (default):
+  retired, removed, wont-undo, closed, never-again, superseded
+
+Output: JSON array of classifications + optional human summary on stderr when
+--verbose. Exit 0 always on successful parse (classification is data).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from typing import Any
+
+SETTLED_STATUSES = frozenset(
+    {
+        "retired",
+        "removed",
+        "wont-undo",
+        "won't-undo",
+        "closed",
+        "never-again",
+        "superseded",
+        "settled",
+        "dead",
+    }
+)
+
+
+def _norm_topics(raw: Any) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        t = raw.strip().lower()
+        return [t] if t else []
+    out: list[str] = []
+    for item in raw:
+        if item is None:
+            continue
+        t = str(item).strip().lower()
+        if t:
+            out.append(t)
+    return out
+
+
+def _is_settled_canon(entry: dict[str, Any]) -> bool:
+    if entry.get("settled") is True:
+        return True
+    status = str(entry.get("status") or "").strip().lower()
+    return status in SETTLED_STATUSES
+
+
+def _active_open_work(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    active: list[dict[str, Any]] = []
+    for e in entries:
+        if e.get("active") is False:
+            continue
+        # default active when omitted
+        active.append(e)
+    return active
+
+
+def classify(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    claims = payload.get("claims") or []
+    canon = [c for c in (payload.get("canon") or []) if isinstance(c, dict)]
+    open_work = _active_open_work(
+        [o for o in (payload.get("open_work") or []) if isinstance(o, dict)]
+    )
+
+    settled_by_topic: dict[str, list[dict[str, Any]]] = {}
+    for c in canon:
+        if not _is_settled_canon(c):
+            continue
+        for topic in _norm_topics(c.get("topics") or c.get("topic")):
+            settled_by_topic.setdefault(topic, []).append(c)
+
+    open_by_topic: dict[str, list[dict[str, Any]]] = {}
+    for o in open_work:
+        for topic in _norm_topics(o.get("topics") or o.get("topic")):
+            open_by_topic.setdefault(topic, []).append(o)
+
+    results: list[dict[str, Any]] = []
+    for claim in claims:
+        if not isinstance(claim, dict):
+            continue
+        claim_id = str(claim.get("id") or claim.get("claim_id") or "")
+        text = str(claim.get("text") or claim.get("claim") or "")
+        topics = _norm_topics(claim.get("topics") or claim.get("topic"))
+        session = str(claim.get("session") or claim.get("session_id") or "")
+
+        matching_open: list[dict[str, Any]] = []
+        matching_canon: list[dict[str, Any]] = []
+        for topic in topics:
+            matching_open.extend(open_by_topic.get(topic, []))
+            matching_canon.extend(settled_by_topic.get(topic, []))
+
+        # de-dupe open/canon by slug if present
+        def _dedupe(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            seen: set[str] = set()
+            out: list[dict[str, Any]] = []
+            for it in items:
+                key = str(it.get("slug") or id(it))
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(it)
+            return out
+
+        matching_open = _dedupe(matching_open)
+        matching_canon = _dedupe(matching_canon)
+
+        if matching_open:
+            verdict = "skip"
+            reason = "in_flight_open_work"
+            priority = None
+        elif matching_canon:
+            verdict = "flag"
+            reason = "contradicts_settled_canon"
+            # highest listed priority among canon hits (P1 > P2 > P3)
+            pri_rank = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+            best = "P2"
+            best_r = 99
+            for c in matching_canon:
+                p = str(c.get("priority") or "P2").upper()
+                r = pri_rank.get(p, 2)
+                if r < best_r:
+                    best_r = r
+                    best = p
+            priority = best
+        else:
+            verdict = "no_flag"
+            reason = "no_settled_canon_match"
+            priority = None
+
+        results.append(
+            {
+                "id": claim_id,
+                "session": session,
+                "text": text,
+                "topics": topics,
+                "verdict": verdict,
+                "reason": reason,
+                "priority": priority,
+                "open_work": [
+                    {"slug": o.get("slug"), "topics": _norm_topics(o.get("topics") or o.get("topic"))}
+                    for o in matching_open
+                ],
+                "canon": [
+                    {
+                        "slug": c.get("slug"),
+                        "status": c.get("status"),
+                        "topics": _norm_topics(c.get("topics") or c.get("topic")),
+                    }
+                    for c in matching_canon
+                ],
+                "suggested_brain_slug": (
+                    f"revenant-{topics[0].replace('_', '-')}" if verdict == "flag" and topics else None
+                ),
+            }
+        )
+    return results
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Classify Revenant Watch claims against settled canon + open work."
+    )
+    parser.add_argument(
+        "path",
+        nargs="?",
+        help="JSON case file (default: stdin)",
+    )
+    parser.add_argument(
+        "--expect",
+        metavar="VERDICT",
+        help="If set, exit 1 unless every claim has this verdict "
+        "(flag|skip|no_flag). For multi-claim files, all must match.",
+    )
+    parser.add_argument(
+        "--expect-id",
+        action="append",
+        default=[],
+        metavar="ID:VERDICT",
+        help="Per-claim expectation, e.g. a:flag (repeatable)",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print human summary lines to stderr",
+    )
+    args = parser.parse_args(argv)
+
+    if args.path:
+        with open(args.path, encoding="utf-8") as fh:
+            payload = json.load(fh)
+    else:
+        payload = json.load(sys.stdin)
+
+    if not isinstance(payload, dict):
+        print("error: root JSON must be an object", file=sys.stderr)
+        return 2
+
+    results = classify(payload)
+    print(json.dumps(results, indent=2, sort_keys=True))
+
+    if args.verbose:
+        for r in results:
+            print(
+                f"{r.get('id') or '?'}: {r['verdict']} ({r['reason']})"
+                + (f" priority={r['priority']}" if r.get("priority") else ""),
+                file=sys.stderr,
+            )
+
+    expect_map: dict[str, str] = {}
+    for item in args.expect_id:
+        if ":" not in item:
+            print(f"error: bad --expect-id {item!r}, want ID:VERDICT", file=sys.stderr)
+            return 2
+        cid, verd = item.split(":", 1)
+        expect_map[cid.strip()] = verd.strip().lower()
+
+    if args.expect:
+        want = args.expect.strip().lower()
+        for r in results:
+            if r["verdict"] != want:
+                print(
+                    f"error: claim {r.get('id')!r} verdict={r['verdict']} want={want}",
+                    file=sys.stderr,
+                )
+                return 1
+
+    if expect_map:
+        by_id = {str(r.get("id")): r for r in results}
+        for cid, want in expect_map.items():
+            r = by_id.get(cid)
+            if r is None:
+                print(f"error: missing claim id {cid!r}", file=sys.stderr)
+                return 1
+            if r["verdict"] != want:
+                print(
+                    f"error: claim {cid!r} verdict={r['verdict']} want={want}",
+                    file=sys.stderr,
+                )
+                return 1
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

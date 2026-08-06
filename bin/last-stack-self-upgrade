@@ -170,10 +170,73 @@ if [ -z "$local_head" ]; then
   exit 1
 fi
 
+# Paths managed by last-stack-activate-artifact-layout. Keep in sync with that
+# helper's managed_paths list. Residual git owner-mirrors that still have .git
+# after layout activation report mass typechanges/deletes under these names
+# (bin → artifacts/current/bin, etc.). That is expected install state, not a
+# divergent edit — see papercut-last-stack-self-upgrade-artifact-symlink-dirt.
+artifact_layout_managed_top() {
+  case "$1" in
+    VERSION|setup|bin|config|docs|harness|hooks|instructions|lib|routines|skills|templates) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# True when $ROOT/<top> is an intentional layout symlink into artifacts/current.
+is_active_artifact_layout_link() {
+  top="$1"
+  target="$ROOT/$top"
+  [ -L "$target" ] || return 1
+  link="$(readlink "$target" 2>/dev/null || true)"
+  case "$link" in
+    *artifacts/current*|*artifacts/versions/*) return 0 ;;
+  esac
+  return 1
+}
+
+# Relative path from porcelain (tracked or untracked) that is only dirty because
+# artifact layout replaced a tracked tree with a symlink into the active artifact.
+is_expected_artifact_layout_dirt_rel() {
+  rel="$1"
+  # strip optional git quotes
+  case "$rel" in
+    \"*\") rel="${rel#\"}"; rel="${rel%\"}" ;;
+  esac
+  [ -n "$rel" ] || return 1
+  top="${rel%%/*}"
+  artifact_layout_managed_top "$top" || return 1
+  is_active_artifact_layout_link "$top"
+}
+
+porcelain_rel_path() {
+  # "XY path", "XY orig -> path", optional quotes.
+  line="$1"
+  rel="${line#?? }"
+  case "$rel" in
+    *" -> "*) rel="${rel##* -> }" ;;
+  esac
+  case "$rel" in
+    \"*\") rel="${rel#\"}"; rel="${rel%\"}" ;;
+  esac
+  printf '%s\n' "$rel"
+}
+
 dirty_status() {
   # Only tracked modifications/deletes are treated as dirty. Untracked files
   # are handled separately only when the target remote tree tracks that path.
-  git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null || true
+  # Filter intentional artifact-layout typechanges/deletes so residual git
+  # owner-mirrors with active layout do not forever block self-upgrade /
+  # routine-read as error-dirty (mirror lag is separate; host-track owns the
+  # live runtime).
+  git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null |
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      rel="$(porcelain_rel_path "$line")"
+      if is_expected_artifact_layout_dirt_rel "$rel"; then
+        continue
+      fi
+      printf '%s\n' "$line"
+    done || true
 }
 
 dirty_sample() {
@@ -238,7 +301,19 @@ is_known_local_state_path() {
   case "$1" in
     logs/*|proofs/*|feature-proofs/*|north-star-proofs/*|dogfood/*|lastdb-backups/*) return 0 ;;
     launchd/*|config.local-backup-*|config.local-backup-*/*) return 0 ;;
-    *) return 1 ;;
+    # Intentional artifact-layout top-level symlinks (and their git-tracked
+    # children, which disappear from the worktree once the top becomes a link).
+    VERSION|setup|bin|config|docs|harness|hooks|instructions|lib|routines|skills|templates)
+      is_active_artifact_layout_link "$1" && return 0
+      return 1
+      ;;
+    *)
+      top="${1%%/*}"
+      if [ "$top" != "$1" ] && artifact_layout_managed_top "$top" && is_active_artifact_layout_link "$top"; then
+        return 0
+      fi
+      return 1
+      ;;
   esac
 }
 

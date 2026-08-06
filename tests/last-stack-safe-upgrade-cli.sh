@@ -81,4 +81,35 @@ if [ -L "$HOST_TRACK_APPS_ROOT/toy/previous" ]; then
   }
 fi
 
-echo "PASS last-stack-safe-upgrade-cli (activate/rollback + unrestorable previous scrub)"
+# When promoting away from a bad id while a restorable sibling exists under
+# versions/, previous must recover that sibling (not stay empty).
+"$ACTIVATE" activate --app toy --version-id "$V2_ID" --version-dir "$v2" \
+  --link "bin/toy:$link"
+# Force-bad current without a previous, leave V1 as sibling only.
+rm -f "$HOST_TRACK_APPS_ROOT/toy/previous"
+ln -sfn "versions/$V_BAD" "$HOST_TRACK_APPS_ROOT/toy/current"
+# Re-activate V2: previous should become V1 (restorable sibling), not V_BAD.
+"$ACTIVATE" activate --app toy --version-id "$V2_ID" --version-dir "$v2" \
+  --link "bin/toy:$link"
+prev4="$(readlink "$HOST_TRACK_APPS_ROOT/toy/previous" 2>/dev/null || true)"
+[ "$prev4" = "versions/$V1_ID" ] || {
+  echo "FAIL expected restorable sibling previous versions/$V1_ID got ${prev4:-none}"
+  exit 1
+}
+cur4="$(readlink "$HOST_TRACK_APPS_ROOT/toy/current")"
+[ "$cur4" = "versions/$V2_ID" ] || {
+  echo "FAIL current after sibling-heal=$cur4"
+  exit 1
+}
+
+# host-track rollback routes local-safe apps through safe-activate-cli.
+export HOST_TRACK_REGISTRY="$TMP/registry.json"
+cat >"$HOST_TRACK_REGISTRY" <<EOF
+{"apps":[{"app":"toy","install_mode":"local-safe","kind":"local-safe cli","command":"toy","gate_main":"lastdb:///toy#main","install_root":"$HOST_TRACK_APPS_ROOT/toy","links":[{"source":"bin/toy","target":"$link"}]}]}
+EOF
+HOST_TRACK_APPS_ROOT="$HOST_TRACK_APPS_ROOT" HOST_TRACK_STAMP_DIR="$HOST_TRACK_STAMP_DIR" \
+  "$ROOT/bin/host-track" rollback toy
+out="$("$link")"
+[ "$out" = "v1" ] || { echo "FAIL host-track rollback expected v1 got $out"; exit 1; }
+
+echo "PASS last-stack-safe-upgrade-cli (activate/rollback + unrestorable previous scrub + sibling heal)"

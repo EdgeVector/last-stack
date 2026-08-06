@@ -61,6 +61,7 @@ Wall time is often 8–15 minutes. Block on the single Bash call for ≥40 minut
 | Step | Pass criteria |
 |------|----------------|
 | Prereqs | `brew`, `bun` (or installable), `git`, `curl`, `lastdbd` on PATH |
+| Host OBS strip | After sandbox `HOME`/`LASTDB_HOME` are set, `run.sh` unsets host `OBS_SENTRY_*` / `SENTRY_*` so routinesd injectors (e.g. `lastsecrets://` DSN) never reach the isolated `lastdbd`. Brand-new users do not carry those vars. |
 | last-stack clone | shallow clone of public `EdgeVector/last-stack` into sandbox |
 | setup | `./setup` exit 0 |
 | install-apps | brain + kanban + situations CLIs on sandbox PATH; uses `--no-brew` so smoke never rewrites the host service plist |

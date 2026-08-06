@@ -17,6 +17,11 @@
 #      AND the CANDIDATE CLASS BAR (incident 2026-08-01): refuse Cargo
 #      debug paths (target/debug), -dirty version stamps, and binaries
 #      ≫ incumbent size (debug/unstripped) before any backup or probe
+#      AND the CAS MUTATION BAR (LastGit compound): candidate must enforce
+#      `/api/mutation` `expected` preconditions (false → 409 cas_conflict,
+#      refused write does not land). Older nodes ignore expected and write
+#      unconditionally — silent until LastGit ref/CI CAS collapses. Probe
+#      runs on an ephemeral throwaway node of the candidate binary only.
 #   4. Only then venue-aware live install:
 #        sidebin → atomic install under bin-with-upload-cap + launchctl kickstart
 #        brew    → brew upgrade + brew services restart (only if formula installed)
@@ -115,11 +120,16 @@ LAT_ABS_MAX_MS="${LASTDB_PROBE_LAT_ABS_MAX_MS:-20000}"  # RED when no baseline; 
 LAT_OP_TIMEOUT_SECS="${LASTDB_PROBE_LAT_OP_TIMEOUT_SECS:-120}"  # per-sample kill + scored as this
 LIVE_LAT_ENFORCE="${LASTDB_LIVE_LAT_ENFORCE:-0}"    # 1 = live post-check latency is RED, not WARN
 
+# CAS mutation bar (LastGit #217 compound): candidate must honor `expected`
+# preconditions on /api/mutation. LASTDB_PROBE_CAS_SKIP=1 is Tom clearance only.
+CAS_SKIP="${LASTDB_PROBE_CAS_SKIP:-0}"
+
 # Candidate class gates (incident 2026-08-01: primary cut over to worktree
 # target/debug/lastdbd …-dirty). Sourced pure helpers.
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
 # shellcheck source=candidate-class-checks.sh
 . "$_SCRIPT_DIR/candidate-class-checks.sh"
+CAS_PROBE_SH="$_SCRIPT_DIR/cas-mutation-probe.sh"
 
 cleanup_work() {
   # Never delete durable backups. Only temp fetch dirs under $WORK.
@@ -891,6 +901,38 @@ if [ "$SMOKE_RC" -ne 0 ] || ! grep -q 'VERDICT: GREEN' "$SMOKE_OUT"; then
   exit 1
 fi
 log "data-plane probe GREEN for candidate $CAND_VER"
+
+# --- 2b) CAS mutation bar (LastGit compound) ---------------------------------
+# Prove the candidate enforces /api/mutation `expected` on an ephemeral node
+# (never live primary). RED blocks promotion: a CAS-disarmed node makes every
+# LastGit ref write and terminal CI status write unconditional.
+if [ "$CAS_SKIP" = "1" ]; then
+  warn "CAS mutation bar SKIPPED (LASTDB_PROBE_CAS_SKIP=1) — Tom-clearance only; LastGit CAS will not be proven"
+elif [ ! -x "$CAS_PROBE_SH" ] && [ ! -f "$CAS_PROBE_SH" ]; then
+  warn "CAS mutation bar: probe script missing at $CAS_PROBE_SH — treating as SKIP (install last-stack skills)"
+else
+  log "CAS mutation bar: probing candidate $CANDIDATE_BIN on ephemeral throwaway node (not primary)"
+  CAS_OUT="$WORK/cas-probe.out"
+  set +e
+  bash "$CAS_PROBE_SH" --lastdbd "$CANDIDATE_BIN" >"$CAS_OUT" 2>&1
+  CAS_RC=$?
+  set -e
+  cat "$CAS_OUT"
+  if [ "$CAS_RC" -ne 0 ] || grep -q 'VERDICT: RED' "$CAS_OUT"; then
+    echo ""
+    echo "VERDICT: RED"
+    echo "REASON: candidate $CAND_VER failed the CAS mutation bar — promotion is blocked because the node accepted a false CAS precondition (or the probe could not prove enforcement)"
+    echo "CANDIDATE: $CANDIDATE_BIN"
+    echo "BACKUP: $BACKUP  (kept; primary NOT upgraded)"
+    echo "NEXT:   do NOT live-upgrade; fix /api/mutation expected-precondition enforcement before cutover (LastGit ref writes + terminal CI status rely on it). LASTDB_PROBE_CAS_SKIP=1 requires Tom clearance."
+    exit 1
+  fi
+  if grep -q 'VERDICT: SKIP' "$CAS_OUT"; then
+    warn "CAS mutation bar SKIPPED (tools/schema map / LastGit discriminator unavailable) — candidate not proven for LastGit CAS"
+  else
+    log "CAS mutation bar GREEN for candidate $CAND_VER"
+  fi
+fi
 
 # RSS + latency metrics probe: one CoW boot of the candidate measures both.
 # RSS incident 2026-07-22: post-cutover ~8.5G RSS vs 6G guard → thrash restarts.

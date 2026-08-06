@@ -14,6 +14,10 @@ published main oid on `host-track refresh <app>`.
 | brain | source + `bin/*` (no `node_modules`) | `bin/brain`, `bin/brain-mcp` | `post_install` = bun install |
 | situations | `dist/*` compiled bins | `dist/situations`, `dist/fsituations` | CI must build `dist` before gate ends |
 | fkanban / kanban | `dist/*` | `dist/fkanban`, `dist/kanban` | shared install_root |
+| routines | `dist/routines` compiled bin | `dist/routines` | `track_gate_main` |
+| lastsecrets | `dist/lastsecrets` compiled bin | `dist/lastsecrets` | `track_gate_main` |
+| configurations | `dist/configurations` compiled bin | `dist/configurations` | `track_gate_main` |
+| search | source + `bin/*` | `bin/search` | `post_install` npm/bun + neural smoke |
 
 ## Enable a remaining local-safe CLI
 
@@ -34,12 +38,10 @@ published main oid on `host-track refresh <app>`.
 6. Dogfood: `host-track refresh <app>` then `host-track status <app>` shows
    `install_mode=artifact`, `stale=false`.
 
-## Still local-safe (need steps 1–3 first)
+## Remaining local-safe (none of the agent CLIs above)
 
-- routines
-- lastsecrets
-- configurations
-- search (also needs its host-track post-install neural smoke)
+Producer + registry flip landed for routines, lastsecrets, configurations, and
+search. search keeps `post_install` for npm/sharp + neural smoke.
 
 ## Exemptions (do not convert)
 

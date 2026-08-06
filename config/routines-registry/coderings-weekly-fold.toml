@@ -1,0 +1,13 @@
+# CodeRings weekly fold growth scan — DRY-RUN only until store policy is set.
+# Does not write LastDB; does not file material-growth cards.
+# Prompt lives under last-stack/routines (portal-safe; never uses raw portal --repo).
+id = "coderings-weekly-fold"
+harness = "grok"
+model = "grok-4.5"
+fallback      = "grok:grok-4.5"
+rrule = "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=15;BYSECOND=0"
+cwd = "/Users/REPLACE/code/edgevector"
+status = "active"
+timeout_min = 45
+heartbeat_slug = "routine-heartbeats"
+prompt_path = "/Users/REPLACE/.last-stack/routines/coderings-weekly-fold.md"

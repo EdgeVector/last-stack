@@ -126,17 +126,23 @@ status_rogue="$(HOST_TRACK_REGISTRY="$bad_registry" "$ROOT/bin/host-track" statu
 printf '%s\n' "$status_rogue" | jq -e '.registry_compliance == "non_compliant"' >/dev/null \
   || fail "status rogue should be non_compliant: $status_rogue"
 
-# Default registry seeds: lastgit/lastdb exempt; last-stack/remote artifact;
-# local-safe CLIs non_compliant (migration pending — expected red).
+# Default registry seeds: lastgit/lastdb/lastdbd exempt; agent CLIs + last-stack/remote artifact.
 default_report="$(HOST_TRACK_REGISTRY="$ROOT/config/host-track/apps.json" \
   "$ROOT/bin/host-track" validate-registry --json || true)"
 printf '%s\n' "$default_report" | jq -e '
-  any(.apps[]; .app == "lastgit" and .registry_compliance == "exempt")
+  .ok == true and .non_compliant == 0
+  and any(.apps[]; .app == "lastgit" and .registry_compliance == "exempt")
   and any(.apps[]; .app == "lastdb" and .registry_compliance == "exempt")
   and any(.apps[]; .app == "lastdbd" and .registry_compliance == "exempt")
   and any(.apps[]; .app == "last-stack" and .registry_compliance == "artifact")
   and any(.apps[]; .app == "remote" and .registry_compliance == "artifact")
-  and any(.apps[]; .app == "brain" and .registry_compliance == "non_compliant")
+  and any(.apps[]; .app == "brain" and .registry_compliance == "artifact")
+  and any(.apps[]; .app == "situations" and .registry_compliance == "artifact")
+  and any(.apps[]; .app == "fkanban" and .registry_compliance == "artifact")
+  and any(.apps[]; .app == "routines" and .registry_compliance == "artifact")
+  and any(.apps[]; .app == "lastsecrets" and .registry_compliance == "artifact")
+  and any(.apps[]; .app == "configurations" and .registry_compliance == "artifact")
+  and any(.apps[]; .app == "search" and .registry_compliance == "artifact")
 ' >/dev/null || fail "default registry compliance map wrong: $default_report"
 
 printf 'ok: host-track registry compliance\n'

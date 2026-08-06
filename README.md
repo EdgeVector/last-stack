@@ -200,7 +200,7 @@ preserving project-specific rules where they belong.
 | **wait-merge** | Robustly wait for a GitHub PR to merge by interpreting PR *state*, not a watcher's exit code. |
 | **close-out** | The post-change loop: open a PR from a worktree, drive it to merged, checkpoint the decision to the brain, file a follow-up card. |
 | **last-stack-upgrade** | Update the stack in place (clean-only self-upgrade) and re-register the skills. |
-| **session-miner** | Generic engine for mining recent agent session transcripts with profiles for papercuts, incidents, owner-stated knowledge, and tooling friction. |
+| **session-miner** | Generic engine for mining recent agent session transcripts with profiles for papercuts, incidents, owner-stated knowledge, tooling friction, and revenant-watch (settled-dead product truth reanimated; Brain-only). |
 
 And the **routines** (`routines/`) — parameterized scheduled-agent templates that
 run the skills on a cadence. Operator-facing ownership is intentionally folded:
@@ -212,6 +212,7 @@ reaper.
 | Routine | What it does |
 |---|---|
 | **self-improvement-loop** | Mine recent sessions for friction; upgrade the agent's own skills/routines/permissions. |
+| **revenant-watch** | Daily session-miner profile: flag agents reanimating settled-dead product truth (Brain-only ledger; open-work exemption). |
 | **papercut-reconciler** | The ONLY papercut→card path: harvest session papercuts into Brain records, cluster ALL open Brain papercuts into patterns, file pattern-level cards. |
 | **devops-continuous-improvement** | Inspect CI, merge flow, deployment, testing, and release gates; ship one small DevOps fix or file precise cards. |
 | **worktree-cleanup** / **disk-reclaim** | Prune stale worktrees/branches; reclaim disk; keep the machine healthy. |
@@ -380,9 +381,10 @@ surface the short genuinely-human decision set. See
 
 The **session-miner** skill is the shared engine behind transcript-mining
 routines. A scheduled task can become a thin trigger that passes a profile name
-such as `papercuts`, `incidents`, `owner-statements`, or `friction-patterns` plus
-a time window; the skill handles transcript parsing, dedupe, report-only dry
-runs, and profile-specific writes.
+such as `papercuts`, `incidents`, `owner-statements`, `friction-patterns`, or
+`revenant-watch` plus a time window; the skill handles transcript parsing,
+dedupe, report-only dry runs, and profile-specific writes. `revenant-watch`
+writes Brain records only (never kanban cards from the miner itself).
 
 You'll also want the underlying tools installed and a LastDB node running — see
 the **kanban-setup** skill and the `kanban` / `brain` repos.

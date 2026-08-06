@@ -35,13 +35,13 @@ jq -e '
   and (app("situations") | .install_mode == "artifact" and .track_gate_main == true and (.links | length) == 2)
   and (app("kanban") | .install_mode == "artifact" and .install_root == "$HOME/.host-track/apps/fkanban")
   and (app("fkanban") | .install_mode == "artifact" and .install_root == "$HOME/.host-track/apps/fkanban")
-  and (app("routines") | .install_mode == "local-safe")
-  and (app("lastsecrets") | .install_mode == "local-safe")
-  and (app("configurations") | .install_mode == "local-safe")
-  and (app("search") | .install_mode == "local-safe")
+  and (app("routines") | .install_mode == "artifact" and .track_gate_main == true)
+  and (app("lastsecrets") | .install_mode == "artifact" and .track_gate_main == true)
+  and (app("configurations") | .install_mode == "artifact" and .track_gate_main == true)
+  and (app("search") | .install_mode == "artifact" and .track_gate_main == true and (.post_install|length) > 0)
   and (app("lastdb") | .install_mode == "checkout" and .artifact_exemption.kind == "deployment-only")
   and (app("lastdbd") | .install_mode == "checkout" and .artifact_exemption.kind == "deployment-only")
-' "$default_registry" >/dev/null || fail "default registry did not declare expected artifact/local-safe/exempt apps"
+' "$default_registry" >/dev/null || fail "default registry did not declare expected artifact/exempt apps"
 
 export HOME="$tmp/home"
 export HOST_TRACK_REGISTRY="$tmp/registry.json"

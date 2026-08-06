@@ -1,0 +1,233 @@
+#!/usr/bin/env bash
+# last-stack-fleet-channel-freshness-gate — single fleet-rollout acceptance gate.
+#
+# Composes prior Host Track fleet PRs into one machine-checkable report:
+#   1) host-track validate-registry  — every app is artifact or exempt
+#   2) last-stack-host-track-artifact-invariant — selected channel fresh
+#      (stale=false), provenance/hashes, and rollback targets restorable
+#
+# On success writes a PASS proof usable by feature-artifact-driven-host-track
+# / dogfood-registry maintain (North Star end-state #7). Failure messages name
+# the app and invariant code.
+#
+# Does not invent a new forever routine — wire this as a dogfood-registry
+# maintain recipe and/or NS proof step.
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  source_dir="$(cd "$(dirname "$SOURCE")" && pwd -P)"
+  link_target="$(readlink "$SOURCE")"
+  case "$link_target" in
+    /*) SOURCE="$link_target" ;;
+    *) SOURCE="$source_dir/$link_target" ;;
+  esac
+done
+ROOT="$(cd "$(dirname "$SOURCE")/.." && pwd -P)"
+
+registry="${HOST_TRACK_REGISTRY:-}"
+proof_path="${LAST_STACK_FLEET_CHANNEL_FRESHNESS_PROOF:-}"
+proof_path_explicit=0
+json_out=0
+skip_live=0
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  last-stack-fleet-channel-freshness-gate [--json] [--registry <path>] [--proof <path>] [--registry-only]
+
+Fleet rollout acceptance gate (NS end-state #7):
+
+  PASS only when:
+    - every registered app is artifact or exempt (validate-registry)
+    - every artifact channel is fresh (stale=false) and rollback targets resolve
+      (host-track artifact invariant)
+
+  --registry-only   run pure registry policy only (no live installs; CI fixtures)
+  --json            emit a single JSON report
+  --proof <path>    write PASS/FAIL evidence (default:
+                    ~/.last-stack/feature-proofs/artifact-driven-host-track-fleet-gate.md)
+
+Exit 0 only on full PASS (or registry-only PASS when --registry-only).
+EOF
+}
+
+die() {
+  printf 'fleet-channel-freshness-gate: %s\n' "$*" >&2
+  exit 2
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json) json_out=1; shift ;;
+    --registry) [ "$#" -ge 2 ] || die "--registry requires a value"; registry="$2"; shift 2 ;;
+    --proof) [ "$#" -ge 2 ] || die "--proof requires a value"; proof_path="$2"; proof_path_explicit=1; shift 2 ;;
+    --registry-only) skip_live=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    --*) die "unknown flag: $1" ;;
+    *) die "unexpected argument: $1" ;;
+  esac
+done
+
+command -v jq >/dev/null 2>&1 || die "jq is required"
+
+host_track_bin="${HOST_TRACK_BIN:-$ROOT/bin/host-track}"
+invariant_bin="${HOST_TRACK_INVARIANT_BIN:-$ROOT/bin/last-stack-host-track-artifact-invariant}"
+[ -x "$host_track_bin" ] || die "host-track binary is not executable: $host_track_bin"
+[ "$skip_live" -eq 1 ] || [ -x "$invariant_bin" ] || die "artifact invariant binary is not executable: $invariant_bin"
+
+if [ -z "$registry" ]; then
+  if [ -f "$ROOT/config/host-track/apps.json" ]; then
+    registry="$ROOT/config/host-track/apps.json"
+  else
+    registry="$HOME/.local/share/last-stack/config/host-track/apps.json"
+  fi
+fi
+[ -f "$registry" ] || die "registry not found: $registry"
+
+if [ -z "$proof_path" ]; then
+  proof_path="$HOME/.last-stack/feature-proofs/artifact-driven-host-track-fleet-gate.md"
+fi
+
+tmp="$(mktemp -d)"
+cleanup() { rm -rf "$tmp"; }
+trap cleanup EXIT
+
+registry_json="$tmp/registry.json"
+invariant_json="$tmp/invariant.json"
+failures_jsonl="$tmp/failures.jsonl"
+: > "$failures_jsonl"
+
+export HOST_TRACK_REGISTRY="$registry"
+
+# --- step 1: pure registry policy (artifact or exempt) ---
+set +e
+HOST_TRACK_REGISTRY="$registry" "$host_track_bin" validate-registry --json > "$registry_json" 2>"$tmp/registry.err"
+registry_rc=$?
+set -e
+
+if [ ! -s "$registry_json" ]; then
+  die "validate-registry produced no JSON: $(tr '\n' ' ' < "$tmp/registry.err" 2>/dev/null || true)"
+fi
+
+if [ "$registry_rc" -ne 0 ] || [ "$(jq -r '.ok // false' "$registry_json")" != "true" ]; then
+  jq -c '
+    (.apps // [])
+    | map(select(.registry_compliance == "non_compliant"))
+    | .[]
+    | {
+        app: .app,
+        ok: false,
+        code: "non-artifact-without-exemption",
+        message: ("app is neither artifact nor exempt (install_mode=" + (.install_mode // "checkout") + ")")
+      }
+  ' "$registry_json" >> "$failures_jsonl" 2>/dev/null || true
+  if [ ! -s "$failures_jsonl" ]; then
+    jq -cn '{app:"registry", ok:false, code:"validate-registry-failed", message:"host-track validate-registry failed"}' \
+      >> "$failures_jsonl"
+  fi
+fi
+
+# --- step 2: live channel freshness + rollback (unless registry-only) ---
+if [ "$skip_live" -eq 0 ]; then
+  set +e
+  HOST_TRACK_REGISTRY="$registry" "$invariant_bin" --json > "$invariant_json" 2>"$tmp/invariant.err"
+  invariant_rc=$?
+  set -e
+
+  if [ ! -s "$invariant_json" ]; then
+    jq -cn --arg msg "$(tr '\n' ' ' < "$tmp/invariant.err" 2>/dev/null || echo empty)" \
+      '{app:"fleet", ok:false, code:"invariant-no-json", message:("artifact invariant produced no JSON: " + $msg)}' \
+      >> "$failures_jsonl"
+  else
+    jq -c '
+      (.checks // [])
+      | map(select(.ok == false))
+      | .[]
+      | {
+          app: .app,
+          ok: false,
+          code: (.code // "invariant-failed"),
+          message: (.message // "artifact invariant failed")
+        }
+    ' "$invariant_json" >> "$failures_jsonl" 2>/dev/null || true
+    if [ "$invariant_rc" -ne 0 ] && [ ! -s "$failures_jsonl" ]; then
+      jq -cn '{app:"fleet", ok:false, code:"invariant-failed", message:"artifact invariant exited non-zero"}' \
+        >> "$failures_jsonl"
+    fi
+  fi
+else
+  printf '%s\n' '{"ok":true,"checks":[],"skipped":"registry-only"}' > "$invariant_json"
+fi
+
+fail_count="$(jq -s 'length' "$failures_jsonl")"
+gate_ok=false
+if [ "$fail_count" -eq 0 ]; then
+  gate_ok=true
+fi
+
+timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+mode_label="full"
+[ "$skip_live" -eq 1 ] && mode_label="registry-only"
+
+mkdir -p "$(dirname "$proof_path")"
+if [ "$gate_ok" = true ]; then
+  {
+    printf 'PASS artifact-driven-host-track-fleet-gate %s\n' "$timestamp"
+    printf '\n'
+    printf 'mode: %s\n' "$mode_label"
+    printf 'registry: %s\n' "$registry"
+    printf 'policy: artifact_or_exempt + channel_fresh + rollback_targets\n'
+    printf '\n'
+    jq -r '
+      "registry_total: " + ((.total // 0) | tostring) +
+      " non_compliant: " + ((.non_compliant // 0) | tostring)
+    ' "$registry_json"
+    if [ "$skip_live" -eq 0 ]; then
+      printf '\n'
+      jq -r '(.checks // [])[] | "- " + .app + ": " + (if .ok then "ok — " + (.message // "") else "FAIL " + (.code // "") + " — " + (.message // "") end)' \
+        "$invariant_json" 2>/dev/null || true
+    fi
+  } > "$proof_path"
+else
+  {
+    printf 'FAIL artifact-driven-host-track-fleet-gate %s\n' "$timestamp"
+    printf '\n'
+    printf 'mode: %s\n' "$mode_label"
+    printf 'registry: %s\n' "$registry"
+    printf 'failures: %s\n' "$fail_count"
+    printf '\n'
+    jq -s -r '.[] | "- " + .app + ": " + .code + " — " + .message' "$failures_jsonl"
+  } > "$proof_path"
+fi
+
+if [ "$json_out" -eq 1 ]; then
+  jq -n \
+    --arg registry "$registry" \
+    --arg proof "$proof_path" \
+    --arg mode "$mode_label" \
+    --argjson ok "$gate_ok" \
+    --slurpfile registry_report "$registry_json" \
+    --slurpfile invariant_report "$invariant_json" \
+    --slurpfile failures "$failures_jsonl" \
+    '{
+      ok: $ok,
+      mode: $mode,
+      registry: $registry,
+      proof: $proof,
+      policy: "artifact_or_exempt+channel_fresh+rollback_targets",
+      registry_report: $registry_report[0],
+      invariant_report: ($invariant_report[0] // null),
+      failures: $failures
+    }'
+else
+  if [ "$gate_ok" = true ]; then
+    printf 'PASS: fleet channel freshness gate (mode=%s) proof=%s\n' "$mode_label" "$proof_path"
+  else
+    printf 'FAIL: fleet channel freshness gate found %s issue(s)\n' "$fail_count" >&2
+    jq -s -r '.[] | .app + ": " + .code + " — " + .message' "$failures_jsonl" >&2
+    printf 'evidence: %s\n' "$proof_path" >&2
+  fi
+fi
+
+[ "$gate_ok" = true ]

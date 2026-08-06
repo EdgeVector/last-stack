@@ -1,0 +1,15 @@
+# PROFILE=normal — daily Revenant Watch (session-miner profile, not a peer engine)
+# Surveys agent transcripts for settled-dead product truths still being acted on.
+# Brain-only outputs. :17 avoids crowded :00/:06/:30/:45 slots.
+id = "last-stack-revenant-watch"
+harness = "grok"
+model = "grok-4.5"
+fallback = "grok:grok-4.5"
+effort = "medium"
+group = "board"
+rrule = "FREQ=DAILY;BYHOUR=7;BYMINUTE=17;BYSECOND=0"
+cwd = "/Users/REPLACE/code/edgevector"
+status = "active"
+timeout_min = 30
+prompt_path = "/Users/REPLACE/.last-stack/routines/revenant-watch.md"
+heartbeat_slug = "routine-heartbeats"
