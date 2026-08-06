@@ -1,88 +1,83 @@
 ---
 name: lastdb-canary-dogfood
 cadence: nightly
-description: Dogfood fold main tip from local Forge (probe then safe-upgrade cutover of primary).
+description: Start (or resume) the lastdb-canary-release state machine — build fold main, probe, cut over the primary.
 ---
 
-You are the unattended **LastDB canary dogfood** routine for the **auto release loop**.
+You are the unattended **LastDB canary dogfood** routine — the nightly entry
+point of the **auto release loop**.
 
-Upstream: **`lastdb-canary-build-main`** (~01:17) stages
-`~/.local/state/last-stack/canary-builds/<main-oid>/`. If dogfood runs first and
-the stage is missing, do **not** invent a GitHub canary — exit
-`forge-main-missing` / red and leave build to the next build-main fire (or run
-`last-stack-canary-build-main` once if this is a deliberate catch-up).
+You do not drive the phases yourself. The loop is a durable **state machine**
+(`sm`, the `state-machine` app on LastDB): `lastdb-canary-release`, with states
+`BUILD → PROBE → CUTOVER → VERIFY → LEDGER → SOAK ⇄ SOAK_WAIT → PROMOTE`. Your
+job is to **start one execution per fold main tip and tick it**. The machine
+owns the candidate, the fences, the soak clock, and the ledger.
 
-## Objective
-
-1. Resolve a canary built from **local Forgejo fold `main` tip** (not GitHub).
-2. Run **safe-upgrade probe-only** on a CoW copy of the real DB.
-3. On GREEN, run **live safe-upgrade `--yes`** so Tom's **sidebin primary** runs that binary.
-4. Record ledger state (`dogfood_green` / `dogfood_red`).
-
-**Canonical candidate order** (enforced by `last-stack-lastdb-canary-dogfood`):
-
-1. Explicit `--candidate` / `--version` (operator override only)
-2. **`forge-main`** — local `lastdbd` built from fold main tip  
-   (`LAST_STACK_CANARY_LOCAL_FALLBACK_BIN`, or  
-   `~/.local/state/last-stack/canary-builds/<main-oid>/lastdbd`, or a worktree
-   release binary whose git-describe shortsha / manifest `source_git_oid`
-   matches main)
-3. GitHub prerelease **only if** `LAST_STACK_CANARY_ALLOW_GITHUB=1` **and** the
-   release manifest `source_git_oid` equals fold main tip
-
-Do **not** pick “newest canary-named GitHub prerelease” by semver. That path
-rolled the primary back to an Aug-1 build on 2026-08-05.
-
-This **does mutate the primary** on cutover. Respect Situation fences. Never kill
-`lastdbd` outside safe-upgrade.
+Why a machine and not four cron steps: the previous shape re-derived the
+candidate at each stage from "current main tip", so a merge landing between
+BUILD and CUTOVER discarded a good build; and each stage's failure was a
+separate cron with its own idea of state. The machine pins
+`context.candidate` at BUILD and every later step consumes that exact binary.
 
 ## Setup
 
 ```bash
 last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 . "$last_stack/bin/last-stack-shell-prelude"
-"$last_stack/bin/last-stack-cli-preflight" git curl jq situations lastdb
+"$last_stack/bin/last-stack-cli-preflight" git jq situations lastdb sm
 export PATH="$last_stack/bin:$HOME/.local/bin:$PATH"
-export LAST_STACK_CANARY_AUTO_CUTOVER=1
 # Host sets LASTDB_LAUNCHD_LABEL (no personal username in committed prompts).
 export LAST_STACK_CANARY_LAUNCHD_CHECK_CMD="${LAST_STACK_CANARY_LAUNCHD_CHECK_CMD:-launchctl print gui/$(id -u)/${LASTDB_LAUNCHD_LABEL}}"
-# Fold SoT = local Forgejo (mirror origin). Refresh main before resolve (default).
 export LAST_STACK_CANARY_FETCH_MAIN="${LAST_STACK_CANARY_FETCH_MAIN:-1}"
-# Do NOT set LAST_STACK_CANARY_ALLOW_GITHUB unless intentionally packaging the
-# same main tip via the public CDN.
+# Do NOT set LAST_STACK_CANARY_ALLOW_GITHUB unless deliberately packaging the
+# same main tip via the public CDN. GitHub prereleases are never the source of
+# truth: picking the newest canary-named prerelease by semver is what rolled the
+# primary back to an Aug-1 build on 2026-08-05.
+# Do NOT set LAST_STACK_CANARY_PROMOTE_AUTO. v1 prepares and notifies; Tom
+# confirms the public brew publish (Tom, 2026-08-06).
 ```
-
-## Before cutover — ensure a main-tip binary exists
-
-If resolve returns `source=forge-main-missing`, **do not** fall back to GitHub.
-Build from Forge fold main and stage the binary:
-
-```bash
-# example: worktree at origin/main from Forgejo, then
-# cargo build --release -p lastdb_node --bin lastdb --bin lastdbd
-# stage:
-main_oid="$(git -C ~/.cache/edgevector-git/fold.git rev-parse refs/heads/main)"
-mkdir -p "$HOME/.local/state/last-stack/canary-builds/$main_oid"
-cp target/release/lastdbd "$HOME/.local/state/last-stack/canary-builds/$main_oid/lastdbd"
-printf '{"source_git_oid":"%s"}\n' "$main_oid" \
-  >"$HOME/.local/state/last-stack/canary-builds/$main_oid/manifest.json"
-```
-
-Or set `LAST_STACK_CANARY_LOCAL_FALLBACK_BIN=/path/to/lastdbd` for a trusted path.
 
 ## Execute
 
+One execution per main tip. The idempotency key makes a second fire on the same
+tip a no-op rather than a duplicate cutover:
+
 ```bash
-"$last_stack/bin/last-stack-lastdb-canary-dogfood" --cutover --json
+main_oid="$(git -C ~/.cache/edgevector-git/fold.git rev-parse refs/heads/main)"
+sm start lastdb-canary-release \
+  --input "{\"main_oid\":\"$main_oid\"}" \
+  --idempotency-key "canary-$main_oid" \
+  --concurrency-key lastdb-canary-release
+sm tick --definition lastdb-canary-release --cap 6
+sm list --definition lastdb-canary-release --json
 ```
 
-If Situations fence blocks cutover, do **not** force. Exit noop/error with detail.
-If `source=forge-main-missing`, exit error and leave a notice — never invent a GH canary.
+`--concurrency-key` is what keeps two nights from cutting over at once if a
+soak is still running. Never pass `--force`; a refused start means the previous
+execution has not finished, which is the interlock working.
+
+## Reading the result
+
+- `status=running` / `waiting` — the machine is mid-flight. Normal. `SOAK_WAIT`
+  is a 1h timer; the hourly `lastdb-canary-soak-watch` routine ticks it.
+- `state=BUILD` with a failure — no candidate could be built from main tip.
+  That is **not** a verdict on any binary; do not report it as a bad build.
+- `situation_fence needs_human` / `blocked` — a scoped
+  `situations preflight --action lastdb-safe-upgrade` said no. The execution
+  PARKS and retries; do not force it, and cite the Situation slug.
+- `status=failed` at PROBE/CUTOVER/VERIFY — a real candidate really failed.
+  This is the only shape that means "the build is bad."
+
+This routine **does mutate the primary** at CUTOVER, through safe-upgrade only.
+Never kill `lastdbd` yourself.
 
 ## Closeout
 
 ```text
-lastdb-canary-dogfood <ISO-ts> <ok|error> candidate=<id> state=<state> mode=cutover source=<forge-main|…>
+lastdb-canary-dogfood <ISO-ts> <ok|error|noop> exec=<id> state=<state> status=<status> main=<oid12>
 ```
 
-`ROUTINE_RESULT outcome=<ok|error|noop> detail=candidate=… state=… mode=cutover source=… primary_mutation=<true|false>`
+`ROUTINE_RESULT outcome=<ok|error|noop> detail=exec=… state=… status=… main=… primary_mutation=<true|false>`
+
+Use `noop` when the machine is mid-flight or the start was deduped — a loop that
+is working is not an error.

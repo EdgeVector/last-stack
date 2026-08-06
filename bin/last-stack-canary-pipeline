@@ -13,8 +13,17 @@ import time
 from pathlib import Path
 
 
+# `no_candidate` and `blocked_situation` exist so that "we never tested
+# anything" cannot be recorded as "the candidate failed". They used to share
+# `dogfood_red` with a genuine probe regression, which is how two dead nights —
+# one with no staged build, one fenced off by an unrelated codex outage — read
+# in the ledger exactly like a bad binary, and why nobody was paged for either.
+# Both are RETRYABLE, not terminal: tomorrow's run must be able to move the same
+# row forward. Only a real verdict (dogfood_red / soak_red) is terminal.
 STATES = (
     "candidate_found",
+    "no_candidate",
+    "blocked_situation",
     "dogfood_started",
     "dogfood_green",
     "dogfood_red",
@@ -26,8 +35,10 @@ STATES = (
 )
 
 ALLOWED = {
-    "candidate_found": {"dogfood_started"},
-    "dogfood_started": {"dogfood_green", "dogfood_red"},
+    "candidate_found": {"dogfood_started", "no_candidate", "blocked_situation"},
+    "no_candidate": {"candidate_found", "dogfood_started", "blocked_situation"},
+    "blocked_situation": {"candidate_found", "dogfood_started", "no_candidate"},
+    "dogfood_started": {"dogfood_green", "dogfood_red", "no_candidate", "blocked_situation"},
     "dogfood_green": {"soak_started"},
     "dogfood_red": set(),
     "soak_started": {"soak_green", "soak_red"},
@@ -57,10 +68,17 @@ CHECKS = (
         "LAST_STACK_CANARY_BOARD_WRITE_CHECK_CMD",
         "last-stack-canary-write-probe",
     ),
+    # The fence is SCOPED. It used to be `situations list --json | jq -e
+    # "length == 0"` — the mere existence of any open Situation anywhere on the
+    # host. A codex harness usage-limit, open 07-17 through 08-08 and unrelated
+    # to lastdbd, was enough to hard-RED every soak in that window. Situations
+    # already carries scope_systems/blocked_actions and a preflight verb that
+    # evaluates them for one action; ask that instead of counting rows.
+    # See papercut-canary-situation-fence-is-unscoped-any-situation-reds-the-nightly.
     (
         "situation_fence",
         "LAST_STACK_CANARY_SITUATION_CHECK_CMD",
-        'situations list --json | jq -e "length == 0"',
+        "situations preflight --action lastdb-safe-upgrade",
     ),
 )
 
@@ -470,6 +488,10 @@ def dogfood_candidate(path: Path, args: argparse.Namespace) -> dict:
     return current_record(event)
 
 
+class NoActiveCandidate(Exception):
+    """No candidate is soaking. A quiet lane, not a failure."""
+
+
 def choose_soak_candidate(path: Path, requested_sha: str, wanted_states: set[str]) -> dict:
     events = load_events(path)
     latest = latest_by_candidate(events)
@@ -485,7 +507,7 @@ def choose_soak_candidate(path: Path, requested_sha: str, wanted_states: set[str
         latest_event = latest.get(candidate, {})
         if latest_event.get("state") in wanted_states:
             return latest_event
-    die("no matching canary candidate found")
+    raise NoActiveCandidate("no candidate is currently soaking")
 
 
 # --- memory guard ----------------------------------------------------------
@@ -871,7 +893,13 @@ def soak_watch(path: Path, args: argparse.Namespace) -> dict:
 
     def inner() -> dict:
         nonlocal pending
-        current = choose_soak_candidate(path, args.sha, {"dogfood_green", "soak_started", "soak_green", "soak_red"})
+        # Only a LIVE soak is selectable. soak_green/soak_red are terminal, and
+        # including them meant the walk fell through to an already-decided
+        # candidate and re-reported it forever: the 08-05 rollback sat in
+        # soak_red for a day and a half, re-selected hourly, exiting 1 every
+        # time, about a binary that had not been live since the day before.
+        # A terminal verdict is a verdict — do not re-litigate it.
+        current = choose_soak_candidate(path, args.sha, {"dogfood_green", "soak_started"})
         candidate = str(current.get("candidate", ""))
         version = str(current.get("version") or "")
         observed_sha = str(current.get("observed_sha") or candidate)
@@ -939,7 +967,18 @@ def soak_watch(path: Path, args: argparse.Namespace) -> dict:
             evidence=f"all_hard_checks_green soak_h>={hours}",
         )
 
-    event = lock_and_run(path, inner)
+    try:
+        event = lock_and_run(path, inner)
+    except NoActiveCandidate:
+        # Nothing is soaking. That is the steady state between a promote and the
+        # next night's cutover — it is not a failure, and spelling it `exit 1`
+        # made the canary lane permanently red in routine health and therefore
+        # unreadable. A quiet lane must report quiet.
+        print(
+            f"SOAK ledger={path} sha=none status=no_active_candidate "
+            f"evidence=nothing_to_soak{dry_suffix(args.dry_run)}"
+        )
+        return {"candidate": "", "state": "no_active_candidate"}
     if pending is not None:
         print(
             f"SOAK ledger={path} sha={pending['candidate']} status=soak_pending "
@@ -996,7 +1035,10 @@ def promote_prepare(path: Path, args: argparse.Namespace) -> dict:
         return output
 
     def inner() -> dict:
-        current = choose_soak_candidate(path, args.sha, {"soak_green", "soak_red", "promote_prepare"})
+        # soak_red is not a promote input. Selecting it only produced an hourly
+        # `status=blocked soak_status=soak_red` about a candidate that was never
+        # going to promote — noise that outlived the candidate by days.
+        current = choose_soak_candidate(path, args.sha, {"soak_green", "promote_prepare"})
         state = str(current.get("state", ""))
         candidate = str(current.get("candidate", ""))
         if state == "promote_prepare":
@@ -1007,7 +1049,14 @@ def promote_prepare(path: Path, args: argparse.Namespace) -> dict:
             return current
         return append_transition(path, candidate, "promote_prepare", evidence=str(current.get("evidence", "")))
 
-    event = lock_and_run(path, inner)
+    try:
+        event = lock_and_run(path, inner)
+    except NoActiveCandidate:
+        print(
+            f"PROMOTE_READY ledger={path} sha=none status=no_active_candidate "
+            f"evidence=nothing_awaiting_promote{dry_suffix(args.dry_run)}"
+        )
+        return {"candidate": "", "state": "no_active_candidate"}
     state = str(event.get("state", ""))
     candidate = str(event.get("candidate", ""))
     evidence = str(event.get("evidence", ""))
@@ -1240,7 +1289,13 @@ def promote_execute(path: Path, args: argparse.Namespace) -> dict:
     if not auto and not args.dry_run:
         die("promote-execute refuses without LAST_STACK_CANARY_PROMOTE_AUTO=1 (or --force)")
 
-    current = choose_soak_candidate(path, args.sha, {"soak_green", "promote_prepare", "promoted"})
+    # promote-execute is an explicit, publishing action — unlike the watchers it
+    # is not a lane that may legitimately be idle, so "nothing to promote" here
+    # is a real error and stays one.
+    try:
+        current = choose_soak_candidate(path, args.sha, {"soak_green", "promote_prepare", "promoted"})
+    except NoActiveCandidate:
+        die("promote-execute: no candidate has passed soak")
     state = str(current.get("state", ""))
     candidate = str(current.get("candidate", ""))
     version = str(current.get("version") or "")

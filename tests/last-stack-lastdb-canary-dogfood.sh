@@ -58,7 +58,10 @@ out="$(
   "$CLI" --state-dir "$tmp/missing-state" --dry-run --json
 )" || true
 [ "$(printf '%s\n' "$out" | jq -r '.source')" = "forge-main-missing" ]
-[ "$(printf '%s\n' "$out" | jq -r '.state')" = "dogfood_red" ]
+# NOT dogfood_red: nothing was probed, so nothing may be concluded about a
+# binary. Sharing dogfood_red with a real regression is how two dead nights
+# read as bad builds and nobody was paged.
+[ "$(printf '%s\n' "$out" | jq -r '.state')" = "no_candidate" ]
 [ "$(printf '%s\n' "$out" | jq -r '.safe_upgrade')" = "not-run-no-candidate" ]
 
 # --- stale GH prerelease without source_git_oid matching main: refused ---
@@ -78,7 +81,7 @@ out="$(
   "$CLI" --state-dir "$tmp/stale-gh-state" --dry-run --json
 )" || true
 [ "$(printf '%s\n' "$out" | jq -r '.source')" = "forge-main-missing" ]
-[ "$(printf '%s\n' "$out" | jq -r '.state')" = "dogfood_red" ]
+[ "$(printf '%s\n' "$out" | jq -r '.state')" = "no_candidate" ]
 
 # --- GH opt-in only when source_git_oid matches main tip ---
 release_json="$(
@@ -170,11 +173,109 @@ out="$(
 [ "$(printf '%s\n' "$out" | jq -r '.safe_upgrade_args[1]')" = "$staged" ]
 [ "$(printf '%s\n' "$out" | jq -r '.state')" = "dogfood_green" ]
 
+# --- a blocked Situation is `blocked_situation`, never `dogfood_red` ---
+# The fence stopping us says nothing about the candidate. Recording it as a red
+# verdict is what let an unrelated codex outage look like a bad LastDB build.
+out="$(
+  env -u LAST_STACK_CANARY_LOCAL_FALLBACK_BIN \
+  LAST_STACK_CANARY_SAFE_UPGRADE="$stub" \
+  LAST_STACK_CANARY_SITUATION_CHECK_CMD=fail \
+  "$CLI" --state-dir "$tmp/fenced-state" --cutover --json
+)" || true
+[ "$(printf '%s\n' "$out" | jq -r '.state')" = "blocked_situation" ]
+[ "$(printf '%s\n' "$out" | jq -r '.safe_upgrade')" = "blocked-situation" ]
+[ "$(printf '%s\n' "$out" | jq -r '.primary_mutation')" = "false" ]
+
+# --- the default fence is SCOPED preflight, not "any Situation is open" ---
+grep -q 'situations preflight --action lastdb-safe-upgrade' "$CLI"
+! grep -q 'situations list --json | jq -e "length == 0"' "$CLI"
+grep -q 'situations preflight --action lastdb-safe-upgrade' "$LEDGER"
+! grep -q 'situations list --json | jq -e "length == 0"' "$LEDGER"
+
+# --- a staged build one merge behind main tip is still dogfooded ---
+# Tip equality is unwinnable on a repo that merges several times a day: a real
+# ancestor sat staged on the host while the nightly red'd as "unbuilt".
+anc_mirror="$tmp/anc-mirror"
+git init -q "$anc_mirror"
+git -C "$anc_mirror" config user.email t@example.com
+git -C "$anc_mirror" config user.name t
+git -C "$anc_mirror" commit -q --allow-empty -m base
+anc_oid="$(git -C "$anc_mirror" rev-parse HEAD)"
+git -C "$anc_mirror" commit -q --allow-empty -m tip
+tip_oid="$(git -C "$anc_mirror" rev-parse HEAD)"
+
+anc_builds="$tmp/anc-builds"
+mkdir -p "$anc_builds/$anc_oid"
+cat >"$anc_builds/$anc_oid/lastdbd" <<'BIN'
+#!/usr/bin/env bash
+printf 'lastdbd 0.27.0-ancestor\n'
+BIN
+chmod +x "$anc_builds/$anc_oid/lastdbd"
+printf '{"source_git_oid":"%s"}\n' "$anc_oid" >"$anc_builds/$anc_oid/manifest.json"
+
+out="$(
+  env -u LAST_STACK_CANARY_LOCAL_FALLBACK_BIN \
+  LAST_STACK_CANARY_MAIN_OID="$tip_oid" \
+  LAST_STACK_CANARY_FOLD_MIRROR="$anc_mirror" \
+  LAST_STACK_CANARY_BUILDS_DIR="$anc_builds" \
+  LAST_STACK_CANARY_SAFE_UPGRADE="$stub" \
+  "$CLI" --state-dir "$tmp/anc-state" --dry-run --json
+)"
+[ "$(printf '%s\n' "$out" | jq -r '.source')" = "forge-main-ancestor" ]
+[ "$(printf '%s\n' "$out" | jq -r '.state')" = "dogfood_green" ]
+printf '%s\n' "$out" | jq -r '.note' | grep -q 'behind_main=1'
+
+# --- but an ancestor outside the window is refused ---
+out="$(
+  env -u LAST_STACK_CANARY_LOCAL_FALLBACK_BIN \
+  LAST_STACK_CANARY_MAIN_OID="$tip_oid" \
+  LAST_STACK_CANARY_FOLD_MIRROR="$anc_mirror" \
+  LAST_STACK_CANARY_BUILDS_DIR="$anc_builds" \
+  LAST_STACK_CANARY_ANCESTOR_MAX_COMMITS=0 \
+  LAST_STACK_CANARY_SAFE_UPGRADE="$stub" \
+  "$CLI" --state-dir "$tmp/anc-window-state" --dry-run --json
+)" || true
+[ "$(printf '%s\n' "$out" | jq -r '.source')" = "forge-main-missing" ]
+
+# --- a build that is NOT on main's history is never eligible ---
+git -C "$anc_mirror" checkout -q -b side "$anc_oid"
+git -C "$anc_mirror" commit -q --allow-empty -m off-main
+side_oid="$(git -C "$anc_mirror" rev-parse HEAD)"
+git -C "$anc_mirror" checkout -q -
+side_builds="$tmp/side-builds"
+mkdir -p "$side_builds/$side_oid"
+cat >"$side_builds/$side_oid/lastdbd" <<'BIN'
+#!/usr/bin/env bash
+printf 'lastdbd 0.27.0-sidebranch\n'
+BIN
+chmod +x "$side_builds/$side_oid/lastdbd"
+printf '{"source_git_oid":"%s"}\n' "$side_oid" >"$side_builds/$side_oid/manifest.json"
+
+out="$(
+  env -u LAST_STACK_CANARY_LOCAL_FALLBACK_BIN \
+  LAST_STACK_CANARY_MAIN_OID="$tip_oid" \
+  LAST_STACK_CANARY_FOLD_MIRROR="$anc_mirror" \
+  LAST_STACK_CANARY_BUILDS_DIR="$side_builds" \
+  LAST_STACK_CANARY_SAFE_UPGRADE="$stub" \
+  "$CLI" --state-dir "$tmp/side-state" --dry-run --json
+)" || true
+[ "$(printf '%s\n' "$out" | jq -r '.source')" = "forge-main-missing" ]
+
 grep -q '^id = "lastdb-canary-dogfood"$' "$ROOT/config/routines-registry/lastdb-canary-dogfood.toml"
 grep -q '^status = "active"$' "$ROOT/config/routines-registry/lastdb-canary-dogfood.toml"
 grep -q 'lastdb-canary-dogfood.md' "$ROOT/config/routines-registry/lastdb-canary-dogfood.toml"
-grep -q 'last-stack-lastdb-canary-dogfood' "$ROOT/routines/lastdb-canary-dogfood.md"
-grep -q 'Forge' "$ROOT/routines/lastdb-canary-dogfood.md"
-grep -q 'forge-main' "$ROOT/routines/lastdb-canary-dogfood.md"
+# The nightly drives the durable state machine, not the phases by hand.
+dog_md="$ROOT/routines/lastdb-canary-dogfood.md"
+grep -q 'sm start lastdb-canary-release' "$dog_md"
+grep -q 'sm tick --definition lastdb-canary-release' "$dog_md"
+# One execution per main tip, and never two cutovers at once.
+grep -q -- '--idempotency-key' "$dog_md"
+grep -q -- '--concurrency-key lastdb-canary-release' "$dog_md"
+# v1 prepares the public brew promote; it does not publish it.
+grep -q 'Do NOT set LAST_STACK_CANARY_PROMOTE_AUTO' "$dog_md"
+# The soak watch is the machine's clock, and an idle lane is not an error.
+soak_md="$ROOT/routines/lastdb-canary-soak-watch.md"
+grep -q 'sm tick --definition lastdb-canary-release' "$soak_md"
+grep -q 'no_active_candidate' "$soak_md"
 
 echo "ok last-stack-lastdb-canary-dogfood"
