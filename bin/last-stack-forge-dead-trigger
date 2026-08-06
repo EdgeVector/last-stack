@@ -1,0 +1,434 @@
+#!/usr/bin/env bash
+# last-stack-forge-dead-trigger — detect + heal Forgejo "dead CI trigger"
+# after a branch is deleted-and-recreated under an open PR.
+#
+# Failure shape (papercut-forge-recreated-branch-stops-triggering-ci):
+#   1. PR A opens from branch B (often unarmed auto-merge).
+#   2. A sibling PR from the same branch merges with delete_branch_after_merge
+#      → server-side branch B is deleted.
+#   3. A later push recreates B (`* [new branch]`); the open PR still points
+#      at B, but Forgejo never registers a workflow trigger for recreated-B.
+#   4. commits/<sha>/status returns the empty envelope
+#      (state:"", total_count:0) forever. Empty-commit heal does NOT fix this
+#      (that heals a stuck status TASK; here the TRIGGER is dead).
+#   5. Manual fix that works: push the same commits to a FRESH branch name,
+#      open a superseding PR, close the dead one.
+#
+# Subcommands:
+#   classify   Offline pure classifier (fixture JSON) — used by tests.
+#   probe      Live: fetch PR head + status + actions/tasks; classify.
+#   supersede  Live: after a dead-trigger verdict, push head to a fresh branch,
+#              open a new PR, close the dead one (optional --dry-run).
+#
+# Fleet use (pickup / reconcile / pipeline-health / wait-merge):
+#   - After any `[new branch]` surprise on push to a PR's head branch, run
+#     `probe` (or wait up to --min-age-secs then probe) before long status polls.
+#   - On verdict=dead-trigger, run `supersede` (or instruct the agent to).
+#   - Do NOT empty-commit-heal a dead trigger — that only burns cycles.
+#
+# Exit codes:
+#   0  completed (verdict may still be dead-trigger / has-runs / …)
+#   2  usage error
+#   3  transport / API failure that prevented classification
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+export PATH="${ROOT}/bin:${HOME}/.local/bin:${PATH:-/usr/bin:/bin}"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  last-stack-forge-dead-trigger classify --head-sha SHA \
+      --status-json FILE|--status-json - \
+      --tasks-json FILE|--tasks-json - \
+      [--min-age-secs N] [--head-created-epoch N] [--json]
+
+  last-stack-forge-dead-trigger probe --repo owner/name --pr N \
+      [--min-age-secs N] [--json]
+
+  last-stack-forge-dead-trigger supersede --repo owner/name --pr N \
+      --checkout DIR [--fresh-branch NAME] [--dry-run] [--json] \
+      [--min-age-secs N]
+
+Classify a Forgejo PR head as dead-trigger vs has-runs vs pending-wait.
+
+Verdicts:
+  dead-trigger   empty status envelope AND zero actions/tasks for head SHA
+                 AND (when min-age-secs > 0) head is old enough
+  has-runs       at least one status or actions/tasks entry for the head
+  pending-wait   empty so far but head is younger than min-age-secs
+  not-open       PR is not open (probe/supersede only)
+  error          malformed inputs
+
+Env:
+  FORGE_ROOT / FORGE_TOKEN  forwarded to last-stack-forge-api
+EOF
+}
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "missing required CLI: $1" >&2
+    exit 3
+  }
+}
+
+read_json_arg() {
+  # $1 = path or "-" for stdin; prints file contents
+  local src="$1"
+  if [ "$src" = "-" ]; then
+    cat
+  elif [ -f "$src" ]; then
+    cat "$src"
+  else
+    echo "not a file: $src" >&2
+    exit 2
+  fi
+}
+
+# Pure classifier: stdin unused; args are JSON strings + metadata.
+# Prints one JSON object to stdout.
+classify_json() {
+  local head_sha="$1"
+  local status_json="$2"
+  local tasks_json="$3"
+  local min_age_secs="$4"
+  local head_created_epoch="$5"
+  local now_epoch="$6"
+
+  need jq
+
+  export HEAD_SHA="$head_sha"
+  export STATUS_JSON="$status_json"
+  export TASKS_JSON="$tasks_json"
+  export MIN_AGE="$min_age_secs"
+  export HEAD_CREATED="$head_created_epoch"
+  export NOW_EPOCH="$now_epoch"
+  jq -nc '
+    def as_obj($s):
+      (try ($s | fromjson) catch null) as $j
+      | if $j == null then {}
+        elif ($j | type) == "object" then $j
+        elif ($j | type) == "array" then {items: $j}
+        else {}
+        end;
+
+    def status_total($s):
+      if ($s | type) != "object" then 0
+      elif ($s.total_count | type) == "number" then ($s.total_count | tonumber)
+      elif ($s.statuses | type) == "array" then ($s.statuses | length)
+      elif ($s | has("state")) and (($s.state // "") != "") then 1
+      else 0
+      end;
+
+    def status_state($s):
+      if ($s | type) != "object" then ""
+      else ($s.state // "")
+      end;
+
+    def task_list($t):
+      if ($t | type) != "object" then
+        if ($t | type) == "array" then $t else [] end
+      elif ($t.workflow_runs | type) == "array" then $t.workflow_runs
+      elif ($t.tasks | type) == "array" then $t.tasks
+      elif ($t.items | type) == "array" then $t.items
+      else []
+      end;
+
+    def task_sha($task):
+      ($task.head_sha // $task.commit_sha // $task.sha
+        // $task.head.sha // $task.commit.sha // "") | tostring;
+
+    ($ENV.HEAD_SHA // "") as $head
+    | (as_obj($ENV.STATUS_JSON)) as $st
+    | (as_obj($ENV.TASKS_JSON)) as $tk
+    | (status_total($st)) as $st_n
+    | (status_state($st)) as $st_state
+    | (task_list($tk)) as $tasks
+    | ([ $tasks[] | select(task_sha(.) == $head) ] | length) as $task_n
+    | (($ENV.MIN_AGE // "0") | tonumber) as $min_age
+    | (($ENV.HEAD_CREATED // "0") | tonumber) as $created
+    | (($ENV.NOW_EPOCH // "0") | tonumber) as $now
+    | (if $created > 0 and $now > 0 then ($now - $created) else null end) as $age
+    | (if $st_n > 0 or $task_n > 0 then "has-runs"
+       elif $min_age > 0 and $age != null and $age < $min_age then "pending-wait"
+       elif $st_n == 0 and $task_n == 0 then "dead-trigger"
+       else "error"
+       end) as $verdict
+    | {
+        verdict: $verdict,
+        head_sha: $head,
+        status_total_count: $st_n,
+        status_state: $st_state,
+        tasks_for_head: $task_n,
+        head_age_secs: $age,
+        min_age_secs: $min_age,
+        recommendation:
+          (if $verdict == "dead-trigger" then "supersede"
+           elif $verdict == "pending-wait" then "wait-then-reprobe"
+           elif $verdict == "has-runs" then "drive-normal"
+           else "none" end),
+        note:
+          (if $verdict == "dead-trigger" then
+             "empty status + zero actions/tasks for head; empty-commit heal will not fix — supersede to a fresh branch"
+           elif $verdict == "pending-wait" then
+             "no runs yet but head younger than min-age-secs; re-probe later"
+           elif $verdict == "has-runs" then
+             "CI trigger is alive for this head"
+           else "" end)
+      }
+  '
+}
+
+emit() {
+  # $1 = json string; if WANT_JSON=1 print raw else machine line
+  local js="$1"
+  if [ "${WANT_JSON:-0}" -eq 1 ]; then
+    printf '%s\n' "$js"
+  else
+    printf '%s\n' "$js" | jq -r '
+      "forge-dead-trigger verdict=\(.verdict) head=\(.head_sha // "") status_n=\(.status_total_count // 0) tasks_n=\(.tasks_for_head // 0) recommend=\(.recommendation // "none")"
+      + (if .pr then " pr=\(.pr)" else "" end)
+      + (if .repo then " repo=\(.repo)" else "" end)
+      + (if .new_pr then " new_pr=\(.new_pr)" else "" end)
+      + (if .fresh_branch then " fresh_branch=\(.fresh_branch)" else "" end)
+    '
+  fi
+}
+
+cmd_classify() {
+  local head_sha="" status_src="" tasks_src="" min_age=0 head_created=0
+  WANT_JSON=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --head-sha) head_sha="${2:-}"; shift 2 ;;
+      --status-json) status_src="${2:-}"; shift 2 ;;
+      --tasks-json) tasks_src="${2:-}"; shift 2 ;;
+      --min-age-secs) min_age="${2:-0}"; shift 2 ;;
+      --head-created-epoch) head_created="${2:-0}"; shift 2 ;;
+      --json) WANT_JSON=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *) echo "unknown classify arg: $1" >&2; exit 2 ;;
+    esac
+  done
+  [ -n "$head_sha" ] || { echo "--head-sha required" >&2; exit 2; }
+  [ -n "$status_src" ] || { echo "--status-json required" >&2; exit 2; }
+  [ -n "$tasks_src" ] || { echo "--tasks-json required" >&2; exit 2; }
+
+  local status_json tasks_json now
+  status_json="$(read_json_arg "$status_src")"
+  tasks_json="$(read_json_arg "$tasks_src")"
+  now="$(date +%s)"
+  emit "$(classify_json "$head_sha" "$status_json" "$tasks_json" "$min_age" "$head_created" "$now")"
+}
+
+forge_api() {
+  need last-stack-forge-api
+  last-stack-forge-api "$@"
+}
+
+cmd_probe() {
+  local repo="" pr="" min_age=120
+  WANT_JSON=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --repo) repo="${2:-}"; shift 2 ;;
+      --pr) pr="${2:-}"; shift 2 ;;
+      --min-age-secs) min_age="${2:-0}"; shift 2 ;;
+      --json) WANT_JSON=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *) echo "unknown probe arg: $1" >&2; exit 2 ;;
+    esac
+  done
+  [ -n "$repo" ] && [ -n "$pr" ] || { echo "--repo and --pr required" >&2; exit 2; }
+  need jq
+
+  local pr_json head_sha head_branch state created updated now age_epoch
+  if ! pr_json="$(forge_api "repos/$repo/pulls/$pr" 2>/dev/null)"; then
+    echo "forge-dead-trigger: failed to load PR $repo#$pr" >&2
+    exit 3
+  fi
+  state="$(printf '%s\n' "$pr_json" | jq -r '.state // empty')"
+  head_sha="$(printf '%s\n' "$pr_json" | jq -r '.head.sha // empty')"
+  head_branch="$(printf '%s\n' "$pr_json" | jq -r '.head.ref // empty')"
+  created="$(printf '%s\n' "$pr_json" | jq -r '.created_at // .updated_at // empty')"
+  updated="$(printf '%s\n' "$pr_json" | jq -r '.updated_at // empty')"
+  # Prefer head commit push time when present; else PR updated_at.
+  if [ -z "$head_sha" ]; then
+    echo "forge-dead-trigger: PR $repo#$pr has no head.sha" >&2
+    exit 3
+  fi
+  if [ "$state" != "open" ]; then
+    local closed
+    closed="$(jq -nc --arg r "$repo" --argjson p "$pr" --arg s "$state" --arg h "$head_sha" \
+      '{verdict:"not-open",repo:$r,pr:$p,state:$s,head_sha:$h,recommendation:"none",status_total_count:0,tasks_for_head:0,status_state:"",note:"PR is not open"}')"
+    emit "$closed"
+    return 0
+  fi
+
+  local status_json tasks_json
+  status_json="$(forge_api "repos/$repo/commits/$head_sha/status" 2>/dev/null || echo '{}')"
+  # Forgejo tasks list — limit high enough to catch recent heads.
+  tasks_json="$(forge_api "repos/$repo/actions/tasks?limit=100" 2>/dev/null || echo '{"workflow_runs":[]}')"
+
+  # Approximate head age from PR updated_at (ISO8601 → epoch). Best-effort.
+  now="$(date +%s)"
+  age_epoch=0
+  if [ -n "$updated" ]; then
+    # GNU date and BSD date differ; try both.
+    age_epoch="$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "${updated%.*}Z" "+%s" 2>/dev/null \
+      || date -u -d "$updated" "+%s" 2>/dev/null \
+      || echo 0)"
+  fi
+  if [ "${age_epoch:-0}" -eq 0 ] && [ -n "$created" ]; then
+    age_epoch="$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "${created%.*}Z" "+%s" 2>/dev/null \
+      || date -u -d "$created" "+%s" 2>/dev/null \
+      || echo 0)"
+  fi
+
+  local base
+  base="$(classify_json "$head_sha" "$status_json" "$tasks_json" "$min_age" "$age_epoch" "$now")"
+  emit "$(printf '%s\n' "$base" | jq -c --arg r "$repo" --argjson p "$pr" --arg b "$head_branch" \
+    '. + {repo:$r, pr:$p, head_branch:$b}')"
+}
+
+cmd_supersede() {
+  local repo="" pr="" checkout="" fresh="" dry=0 min_age=0
+  WANT_JSON=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --repo) repo="${2:-}"; shift 2 ;;
+      --pr) pr="${2:-}"; shift 2 ;;
+      --checkout) checkout="${2:-}"; shift 2 ;;
+      --fresh-branch) fresh="${2:-}"; shift 2 ;;
+      --min-age-secs) min_age="${2:-0}"; shift 2 ;;
+      --dry-run) dry=1; shift ;;
+      --json) WANT_JSON=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *) echo "unknown supersede arg: $1" >&2; exit 2 ;;
+    esac
+  done
+  [ -n "$repo" ] && [ -n "$pr" ] && [ -n "$checkout" ] || {
+    echo "--repo, --pr, and --checkout required" >&2
+    exit 2
+  }
+  need jq
+  need git
+
+  # Probe first (min-age 0 for explicit supersede — operator already decided).
+  local probe_out verdict head_sha head_branch title body base_branch
+  WANT_JSON=1
+  probe_out="$(cmd_probe --repo "$repo" --pr "$pr" --min-age-secs "$min_age" --json)"
+  WANT_JSON=0
+  verdict="$(printf '%s\n' "$probe_out" | jq -r '.verdict')"
+  head_sha="$(printf '%s\n' "$probe_out" | jq -r '.head_sha // empty')"
+  head_branch="$(printf '%s\n' "$probe_out" | jq -r '.head_branch // empty')"
+
+  if [ "$verdict" != "dead-trigger" ] && [ "$dry" -eq 0 ]; then
+    # Refuse live supersede unless dead-trigger (or dry-run preview).
+    emit "$(printf '%s\n' "$probe_out" | jq -c \
+      '. + {supersede:"refused", reason:("verdict=" + .verdict + " (need dead-trigger)")}')"
+    return 0
+  fi
+
+  local pr_json
+  pr_json="$(forge_api "repos/$repo/pulls/$pr")"
+  title="$(printf '%s\n' "$pr_json" | jq -r '.title // "supersede"')"
+  body="$(printf '%s\n' "$pr_json" | jq -r '.body // ""')"
+  base_branch="$(printf '%s\n' "$pr_json" | jq -r '.base.ref // "main"')"
+  head_sha="$(printf '%s\n' "$pr_json" | jq -r '.head.sha')"
+  head_branch="$(printf '%s\n' "$pr_json" | jq -r '.head.ref')"
+
+  if [ -z "$fresh" ]; then
+    # Keep branch names short-ish; suffix with pr + short sha.
+    fresh="${head_branch}-heal-${pr}-$(printf '%s' "$head_sha" | cut -c1-7)"
+    # Forgejo branch name length / charset safety: strip risky chars.
+    fresh="$(printf '%s' "$fresh" | tr -c 'A-Za-z0-9._/-' '-' | sed 's/--*/-/g' | cut -c1-100)"
+  fi
+
+  if [ "$dry" -eq 1 ]; then
+    emit "$(printf '%s\n' "$probe_out" | jq -c --arg fb "$fresh" --arg t "$title" \
+      --arg base "$base_branch" \
+      '. + {supersede:"dry-run", fresh_branch:$fb, title:$t, base:$base, recommendation:"supersede"}')"
+    return 0
+  fi
+
+  [ -d "$checkout" ] || { echo "checkout not a directory: $checkout" >&2; exit 2; }
+  git -C "$checkout" rev-parse --show-toplevel >/dev/null
+
+  # Ensure we have the head commit, create/reset fresh branch at that OID, push.
+  if ! git -C "$checkout" cat-file -e "${head_sha}^{commit}" 2>/dev/null; then
+    git -C "$checkout" fetch origin "$head_branch" 2>/dev/null \
+      || git -C "$checkout" fetch origin "$head_sha" 2>/dev/null \
+      || true
+  fi
+  if ! git -C "$checkout" cat-file -e "${head_sha}^{commit}" 2>/dev/null; then
+    echo "forge-dead-trigger: head $head_sha not available in checkout $checkout" >&2
+    exit 3
+  fi
+
+  git -C "$checkout" branch -f "$fresh" "$head_sha"
+  # Prefer forge-git helper when available (credential edge cases).
+  if command -v last-stack-forge-git >/dev/null 2>&1; then
+    last-stack-forge-git -C "$checkout" push -u origin "refs/heads/$fresh:refs/heads/$fresh"
+  else
+    git -C "$checkout" push -u origin "refs/heads/$fresh:refs/heads/$fresh"
+  fi
+
+  local new_body body_file create_json new_pr new_url
+  body_file="$(mktemp)"
+  {
+    printf '%s\n\n' "$body"
+    printf '%s\n' "---"
+    printf '%s\n' "Supersedes #$pr: Forgejo CI trigger was dead on recreated branch \`$head_branch\` (empty commits/$head_sha/status + zero actions/tasks). Fresh branch \`$fresh\` so CI can fire."
+    printf '%s\n' "Healed by last-stack-forge-dead-trigger (papercut-forge-recreated-branch-ci-trigger-dead)."
+  } >"$body_file"
+
+  new_body="$(jq -nc --arg t "$title" --arg h "$fresh" --arg b "$base_branch" --rawfile body "$body_file" \
+    '{title:$t, head:$h, base:$b, body:$body}')"
+  rm -f "$body_file"
+
+  create_json="$(forge_api --method POST --data "$new_body" "repos/$repo/pulls")"
+  new_pr="$(printf '%s\n' "$create_json" | jq -r '.number // empty')"
+  new_url="$(printf '%s\n' "$create_json" | jq -r '.html_url // empty')"
+  if [ -z "$new_pr" ]; then
+    echo "forge-dead-trigger: failed to create superseding PR" >&2
+    printf '%s\n' "$create_json" >&2
+    exit 3
+  fi
+
+  # Close the dead PR with a pointer comment.
+  local close_body
+  close_body="$(jq -nc --argjson n "$new_pr" \
+    --arg msg "Closing: CI trigger dead on recreated branch; superseded by #$new_pr (last-stack-forge-dead-trigger)." \
+    '{body:$msg}')"
+  forge_api --method POST --data "$close_body" "repos/$repo/issues/$pr/comments" >/dev/null || true
+  forge_api --method PATCH --data '{"state":"closed"}' "repos/$repo/pulls/$pr" >/dev/null || true
+
+  # Arm auto-merge on the fresh PR so a sibling cannot leave it unarmed.
+  forge_api --method POST \
+    --data '{"Do":"merge","merge_when_checks_succeed":true,"delete_branch_after_merge":true}' \
+    "repos/$repo/pulls/$new_pr/merge" >/dev/null 2>&1 || true
+
+  emit "$(printf '%s\n' "$probe_out" | jq -c \
+    --argjson np "$new_pr" --arg url "$new_url" --arg fb "$fresh" \
+    '. + {supersede:"done", new_pr:$np, new_pr_url:$url, fresh_branch:$fb, recommendation:"drive-new-pr"}')"
+}
+
+main() {
+  local sub="${1:-}"
+  [ -n "$sub" ] || { usage >&2; exit 2; }
+  shift || true
+  case "$sub" in
+    classify) cmd_classify "$@" ;;
+    probe) cmd_probe "$@" ;;
+    supersede) cmd_supersede "$@" ;;
+    -h|--help) usage; exit 0 ;;
+    *)
+      echo "unknown subcommand: $sub" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+}
+
+main "$@"
