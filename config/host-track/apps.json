@@ -349,6 +349,27 @@
       "track_gate_main": true
     },
     {
+      "app": "lastdb-browser",
+      "install_mode": "artifact",
+      "kind": "artifact cli",
+      "command": "lastdb-browser",
+      "gate": "lastgit",
+      "gate_main": "lastdb:///lastdb-browser#main",
+      "artifact_app": "lastdb-browser",
+      "artifact_channel": "stable",
+      "artifact_root": "$HOME/.lastgit/artifacts",
+      "install_root": "$HOME/.host-track/apps/lastdb-browser",
+      "links": [
+        {
+          "source": "bin/lastdb-browser",
+          "target": "$HOME/.local/bin/lastdb-browser"
+        }
+      ],
+      "notes": "LastDB Browser LastGit artifact install (source pack + post_install npm build, same shape as search); track_gate_main promotes stable to green+published main. Interactive schemas -> keys -> record -> atom browser for a local node, served by a zero-dependency Node bridge because a browser cannot open a unix socket. Read-only: every bridge route is a GET or the read-only POST /api/query. post_install builds the UI then deletes node_modules -- nothing is needed at runtime.",
+      "track_gate_main": true,
+      "post_install": "$HOME/.host-track/apps/lastdb-browser/current/bin/lastdb-browser-host-track-post-install"
+    },
+    {
       "app": "lastdb",
       "install_mode": "checkout",
       "kind": "safe-upgrade-managed binary",
