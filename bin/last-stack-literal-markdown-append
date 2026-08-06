@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# Append/write Markdown bodies through CLIs without shell re-expansion.
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  last-stack-literal-markdown-append brain --slug <slug> --type <type> [--body-file <path>|--stdin]
+  last-stack-literal-markdown-append kanban --slug <slug> [--body-file <path>|--stdin] [-- <kanban add flags>]
+
+Reads Markdown as bytes from a file/stdin and passes it to brain/kanban without
+embedding the body in shell-expanded command text. Callers should create body
+files with a quoted heredoc (<<'EOF') or another literal writer.
+
+Environment overrides:
+  LAST_STACK_BRAIN_CMD   brain command path/name
+  LAST_STACK_KANBAN_CMD  kanban command path/name
+EOF
+}
+
+mode="${1:-}"
+[ -n "$mode" ] || { usage >&2; exit 2; }
+shift
+
+slug=""
+type=""
+body_file=""
+stdin_mode=0
+extra_args=()
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --slug)
+      [ "$#" -ge 2 ] || { echo "--slug requires a value" >&2; exit 2; }
+      slug="$2"
+      shift 2
+      ;;
+    --slug=*)
+      slug="${1#*=}"
+      shift
+      ;;
+    --type)
+      [ "$#" -ge 2 ] || { echo "--type requires a value" >&2; exit 2; }
+      type="$2"
+      shift 2
+      ;;
+    --type=*)
+      type="${1#*=}"
+      shift
+      ;;
+    --body-file)
+      [ "$#" -ge 2 ] || { echo "--body-file requires a value" >&2; exit 2; }
+      body_file="$2"
+      shift 2
+      ;;
+    --body-file=*)
+      body_file="${1#*=}"
+      shift
+      ;;
+    --stdin)
+      stdin_mode=1
+      shift
+      ;;
+    --)
+      shift
+      extra_args=("$@")
+      break
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unexpected argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+[ -n "$slug" ] || { echo "--slug is required" >&2; exit 2; }
+if [ -n "$body_file" ] && [ "$stdin_mode" -eq 1 ]; then
+  echo "use either --body-file or --stdin, not both" >&2
+  exit 2
+fi
+
+tmp=""
+cleanup() {
+  [ -z "$tmp" ] || rm -f "$tmp"
+}
+trap cleanup EXIT
+
+if [ "$stdin_mode" -eq 1 ]; then
+  tmp="$(mktemp)"
+  cat >"$tmp"
+  body_file="$tmp"
+fi
+
+[ -n "$body_file" ] || { echo "--body-file or --stdin is required" >&2; exit 2; }
+[ -f "$body_file" ] || { echo "missing body file: $body_file" >&2; exit 66; }
+
+case "$mode" in
+  brain)
+    [ -n "$type" ] || { echo "brain mode requires --type" >&2; exit 2; }
+    [ "${#extra_args[@]}" -eq 0 ] || { echo "brain mode does not accept extra args" >&2; exit 2; }
+    brain_cmd="${LAST_STACK_BRAIN_CMD:-brain}"
+    "$brain_cmd" append "$slug" --type "$type" <"$body_file"
+    ;;
+  kanban)
+    kanban_cmd="${LAST_STACK_KANBAN_CMD:-kanban}"
+    "$kanban_cmd" add "$slug" --body-file "$body_file" "${extra_args[@]}"
+    ;;
+  *)
+    echo "unknown mode: $mode" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

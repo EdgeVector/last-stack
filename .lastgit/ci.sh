@@ -41,6 +41,7 @@ bash tests/last-stack-driver-hierarchy.sh
 bash tests/last-stack-north-star-ledger-sync.sh
 bash tests/last-stack-ship-feature-milestones.sh
 bash tests/last-stack-lint-prompts.sh --smoke
+bash tests/last-stack-literal-markdown-append.sh
 bash tests/last-stack-lint-machine-leaks.sh
 bash tests/last-stack-audit-f-prefix-callers.sh
 bash tests/last-stack-papercut-reconciler-contract.sh
