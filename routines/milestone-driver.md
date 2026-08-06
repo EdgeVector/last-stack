@@ -85,10 +85,18 @@ kanban milestone portfolio --json > /tmp/milestone-driver-portfolio.json
 # `length` so this prompt still works against older host-track builds.
 # NEVER bare `jq length` on an object — that returns key count (3), forever.
 _json_row_count() { jq 'if type == "array" then length else (.total // (.cards | length)) end' "$1"; }
+# Milestone rows carry their own items key: `milestone portfolio` envelopes as
+# `.entries`, `milestone list` as `.milestones`. Bare `.[]` on either object
+# iterates VALUES (array, int, bool) and dies with "Cannot index array with
+# string" — exit 5, empty stdout, an empty count field, and no failed command.
+_nonterminal_milestone_count() {
+  jq '[(if type == "array" then . else (.entries // .milestones // []) end)[]
+       | select(.state != "complete" and .state != "abandoned")] | length' "$1"
+}
 backlog_count="$(_json_row_count /tmp/milestone-driver-backlog.json)"
 todo_count="$(_json_row_count /tmp/milestone-driver-todo.json)"
 doing_count="$(_json_row_count /tmp/milestone-driver-doing.json)"
-milestone_count="$(jq '[.[] | select(.state != "complete" and .state != "abandoned")] | length' /tmp/milestone-driver-portfolio.json)"
+milestone_count="$(_nonterminal_milestone_count /tmp/milestone-driver-portfolio.json)"
 printf 'CREATION_INVENTORY backlog=%s todo=%s doing=%s nonterminal_milestones=%s\n' \
   "$backlog_count" "$todo_count" "$doing_count" "$milestone_count"
 if [ "$todo_count" -eq 0 ]; then idle_hint=starving
