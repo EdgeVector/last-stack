@@ -1,0 +1,347 @@
+#!/usr/bin/env bash
+# Doctor: make "which routine prompt is live" unambiguous.
+#
+# Two prompt roots historically coexist:
+#   1) $LAST_STACK_ROOT/routines/          (product / host-track artifact)
+#   2) $ROUTINES_HOME/prompts/             (local overrides + legacy copies)
+#
+# Agents often edit the dead twin; runtime loads the other. This probe fails
+# closed when:
+#   (a) a basename exists under both roots as real files with different content
+#       (or different inodes when neither is a symlink to the other);
+#   (b) a registry prompt_path is pinned into an immutable
+#       artifacts/versions/<digest>/ tree instead of current / compat root.
+#
+# Policy (single write path):
+#   - Product prompts ship in the last-stack repo under routines/*.md and are
+#     served from ~/.last-stack/routines (artifact current) after install.
+#   - ROUTINES_HOME/prompts may hold local-only prompts OR symlinks into the
+#     last-stack product file (same inode). Never a drifted full copy.
+#   - Registry prompt_path for product routines should point at
+#     $LAST_STACK_ROOT/routines/<name>.md (or a symlink that samefiles it).
+#
+# Usage:
+#   last-stack-routines-prompt-doctor [--json] [--quiet]
+#   last-stack-routines-prompt-doctor --normalize [--dry-run] [--basename NAME ...]
+#
+# Exit: 0 green, 1 findings (or normalize applied with remaining issues),
+#       2 usage.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+LAST_STACK_ROOT="${LAST_STACK_ROOT:-$ROOT}"
+ROUTINES_HOME="${ROUTINES_HOME:-$HOME/.routines}"
+PRODUCT_ROOT="${LAST_STACK_ROUTINES_DIR:-$LAST_STACK_ROOT/routines}"
+LOCAL_ROOT="${ROUTINES_PROMPTS_DIR:-$ROUTINES_HOME/prompts}"
+REGISTRY_DIR="${ROUTINES_REGISTRY_DIR:-$ROUTINES_HOME/registry}"
+
+want_json=0
+want_quiet=0
+want_normalize=0
+want_dry_run=0
+normalize_basenames=()
+
+usage() {
+  sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
+  exit 2
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json) want_json=1; shift ;;
+    --quiet) want_quiet=1; shift ;;
+    --normalize) want_normalize=1; shift ;;
+    --dry-run) want_dry_run=1; shift ;;
+    --basename)
+      shift
+      [ "$#" -gt 0 ] || usage
+      normalize_basenames+=("$1")
+      shift
+      ;;
+    -h|--help) usage ;;
+    *)
+      echo "unknown arg: $1" >&2
+      usage
+      ;;
+  esac
+done
+
+# Default normalize set: active product canaries + milestone-driver (card END STATE).
+if [ "$want_normalize" -eq 1 ] && [ "${#normalize_basenames[@]}" -eq 0 ]; then
+  normalize_basenames=(
+    lastdb-canary-dogfood.md
+    lastdb-canary-soak-watch.md
+    lastdb-canary-promote-prepare.md
+    lastdb-canary-build-main.md
+    milestone-driver.md
+  )
+fi
+
+is_version_pin() {
+  case "$1" in
+    */.local/state/last-stack/artifacts/versions/*|*/artifacts/versions/*|*/.artifacts/versions/*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+expand_user_path() {
+  # Expand leading ~ and /Users/REPLACE (registry template placeholder).
+  local p="$1"
+  p="${p//\/Users\/REPLACE/$HOME}"
+  case "$p" in
+    "~/"*) p="$HOME/${p#~/}" ;;
+    "~") p="$HOME" ;;
+  esac
+  printf '%s\n' "$p"
+}
+
+list_md_basenames() {
+  local dir="$1"
+  [ -d "$dir" ] || return 0
+  # Portable: find -print0 not required; basenames are simple.
+  find "$dir" -maxdepth 1 \( -type f -o -type l \) -name '*.md' 2>/dev/null \
+    | while IFS= read -r f; do
+        base="$(basename "$f")"
+        case "$base" in
+          *.bak|*.bak-*|*.retired*|*.md.bak*) continue ;;
+        esac
+        printf '%s\n' "$base"
+      done
+}
+
+same_inode() {
+  local a="$1" b="$2"
+  [ -e "$a" ] && [ -e "$b" ] || return 1
+  # samefile follows symlinks to the ultimate target.
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$a" "$b" <<'PY'
+import os, sys
+try:
+    sys.exit(0 if os.path.samefile(sys.argv[1], sys.argv[2]) else 1)
+except OSError:
+    sys.exit(1)
+PY
+    return $?
+  fi
+  local ia ib
+  ia="$(stat -f '%i' "$a" 2>/dev/null || stat -c '%i' "$a" 2>/dev/null || echo x)"
+  ib="$(stat -f '%i' "$b" 2>/dev/null || stat -c '%i' "$b" 2>/dev/null || echo y)"
+  [ "$ia" = "$ib" ] && [ "$ia" != "x" ]
+}
+
+content_same() {
+  local a="$1" b="$2"
+  [ -f "$a" ] && [ -f "$b" ] || return 1
+  cmp -s "$a" "$b"
+}
+
+# Collect findings as lines: kind|detail
+findings=()
+append_finding() {
+  findings+=("$1|$2")
+}
+
+scan_twins() {
+  local product local_dir
+  product="$PRODUCT_ROOT"
+  local_dir="$LOCAL_ROOT"
+  [ -d "$product" ] || return 0
+  [ -d "$local_dir" ] || return 0
+
+  local base p l
+  while IFS= read -r base; do
+    [ -n "$base" ] || continue
+    p="$product/$base"
+    l="$local_dir/$base"
+    [ -e "$p" ] && [ -e "$l" ] || continue
+
+    if same_inode "$p" "$l"; then
+      continue
+    fi
+    # Symlink either direction that samefiles already handled; remaining =
+    # two independent nodes. Content-equal is still a latent drift risk
+    # (edit one, the other diverges) — flag as twin-copy.
+    if content_same "$p" "$l"; then
+      append_finding "twin-copy" \
+        "basename=$base product=$p local=$l note=same-content-different-inode prefer-symlink-to-product"
+      continue
+    fi
+    append_finding "twin-divergent" \
+      "basename=$base product=$p local=$l note=content-differs"
+  done < <(comm -12 \
+    <(list_md_basenames "$product" | sort -u) \
+    <(list_md_basenames "$local_dir" | sort -u))
+}
+
+scan_registry_pins() {
+  local reg="$REGISTRY_DIR"
+  [ -d "$reg" ] || return 0
+  local f raw path id
+  for f in "$reg"/*.toml; do
+    [ -f "$f" ] || continue
+    case "$f" in
+      *.bak|*.bak-*|*.toml.bak*) continue ;;
+    esac
+    raw="$(grep -E '^[[:space:]]*prompt_path[[:space:]]*=' "$f" 2>/dev/null | head -1 || true)"
+    [ -n "$raw" ] || continue
+    path="$(printf '%s\n' "$raw" | sed -E 's/^[[:space:]]*prompt_path[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/')"
+    [ -n "$path" ] || continue
+    path="$(expand_user_path "$path")"
+    id="$(basename "$f" .toml)"
+    if is_version_pin "$path"; then
+      append_finding "version-pin" \
+        "id=$id prompt_path=$path note=immutable-artifacts-versions-tree-prefer-current-or-compat-root"
+    fi
+    # If registry points at ROUTINES_HOME twin while product has a different file.
+    local base
+    base="$(basename "$path")"
+    case "$path" in
+      "$LOCAL_ROOT"/*|"$ROUTINES_HOME/prompts"/*)
+        if [ -e "$PRODUCT_ROOT/$base" ] && [ -e "$path" ]; then
+          if ! same_inode "$PRODUCT_ROOT/$base" "$path" && ! content_same "$PRODUCT_ROOT/$base" "$path"; then
+            append_finding "registry-divergent-local" \
+              "id=$id prompt_path=$path product=$PRODUCT_ROOT/$base note=registry-loads-stale-local-twin"
+          fi
+        fi
+        ;;
+    esac
+  done
+}
+
+normalize_one() {
+  local base="$1"
+  local product="$PRODUCT_ROOT/$base"
+  local localf="$LOCAL_ROOT/$base"
+  if [ ! -e "$product" ]; then
+    [ "$want_quiet" -eq 1 ] || echo "normalize skip basename=$base reason=no-product-file" >&2
+    return 0
+  fi
+  mkdir -p "$LOCAL_ROOT"
+  if [ -e "$localf" ] || [ -L "$localf" ]; then
+    if same_inode "$product" "$localf"; then
+      [ "$want_quiet" -eq 1 ] || echo "normalize ok basename=$base already-samefile" >&2
+      return 0
+    fi
+    if [ "$want_dry_run" -eq 1 ]; then
+      echo "normalize dry-run would-replace basename=$base local=$localf -> symlink $product" >&2
+      return 0
+    fi
+    # Backup drifted real file (not a symlink).
+    if [ -f "$localf" ] && [ ! -L "$localf" ]; then
+      local bak
+      bak="${localf}.bak-divergent-$(date -u +%Y%m%dT%H%M%SZ)"
+      mv "$localf" "$bak"
+      echo "normalize backup=$bak" >&2
+    else
+      rm -f "$localf"
+    fi
+  else
+    if [ "$want_dry_run" -eq 1 ]; then
+      echo "normalize dry-run would-create basename=$base -> symlink $product" >&2
+      return 0
+    fi
+  fi
+  ln -s "$product" "$localf"
+  echo "normalize linked basename=$base -> $product" >&2
+}
+
+if [ "$want_normalize" -eq 1 ]; then
+  for base in "${normalize_basenames[@]}"; do
+    # Accept bare name or .md
+    case "$base" in
+      *.md) ;;
+      *) base="${base}.md" ;;
+    esac
+    normalize_one "$base"
+  done
+  # Dry-run never mutates; skip the post-scan fail-closed so scripts can
+  # chain `--normalize --dry-run` without treating planned work as an error.
+  if [ "$want_dry_run" -eq 1 ]; then
+    if [ "$want_json" -eq 1 ]; then
+      printf '%s\n' '{"status":"dry-run","findings":0,"note":"no mutation; re-run without --dry-run"}'
+    elif [ "$want_quiet" -eq 0 ]; then
+      echo "LAST_STACK_ROUTINES_PROMPT_DOCTOR status=dry-run note=no-mutation"
+    fi
+    exit 0
+  fi
+fi
+
+scan_twins
+scan_registry_pins
+
+n_findings="${#findings[@]}"
+status="green"
+if [ "$n_findings" -gt 0 ]; then
+  status="red"
+fi
+
+emit_text() {
+  echo "LAST_STACK_ROUTINES_PROMPT_DOCTOR status=$status findings=$n_findings"
+  echo "  product_root=$PRODUCT_ROOT"
+  echo "  local_root=$LOCAL_ROOT"
+  echo "  registry_dir=$REGISTRY_DIR"
+  local line kind detail
+  for line in "${findings[@]+"${findings[@]}"}"; do
+    [ -n "$line" ] || continue
+    kind="${line%%|*}"
+    detail="${line#*|}"
+    echo "  FINDING kind=$kind $detail"
+  done
+  if [ "$status" = "green" ]; then
+    echo "  ok: no divergent twins; no version-dir prompt_path pins"
+  fi
+}
+
+emit_json() {
+  # Minimal JSON without requiring jq for the happy path structure.
+  if command -v jq >/dev/null 2>&1; then
+    local arr="[]"
+    local line kind detail
+    for line in "${findings[@]+"${findings[@]}"}"; do
+      [ -n "$line" ] || continue
+      kind="${line%%|*}"
+      detail="${line#*|}"
+      arr="$(jq -c --arg k "$kind" --arg d "$detail" '. + [{kind:$k, detail:$d}]' <<<"$arr")"
+    done
+    jq -n \
+      --arg status "$status" \
+      --argjson findings "$n_findings" \
+      --arg product "$PRODUCT_ROOT" \
+      --arg local "$LOCAL_ROOT" \
+      --arg registry "$REGISTRY_DIR" \
+      --argjson items "$arr" \
+      '{status:$status, findings:$findings, product_root:$product, local_root:$local, registry_dir:$registry, items:$items}'
+  else
+    # Fallback: compact single line
+    printf '{"status":"%s","findings":%s,"product_root":"%s","local_root":"%s","registry_dir":"%s","items":[' \
+      "$status" "$n_findings" "$PRODUCT_ROOT" "$LOCAL_ROOT" "$REGISTRY_DIR"
+    local first=1 line kind detail
+    for line in "${findings[@]+"${findings[@]}"}"; do
+      [ -n "$line" ] || continue
+      kind="${line%%|*}"
+      detail="${line#*|}"
+      # escape quotes in detail
+      detail="${detail//\\/\\\\}"
+      detail="${detail//\"/\\\"}"
+      [ "$first" -eq 1 ] || printf ','
+      first=0
+      printf '{"kind":"%s","detail":"%s"}' "$kind" "$detail"
+    done
+    printf ']}\n'
+  fi
+}
+
+if [ "$want_json" -eq 1 ]; then
+  emit_json
+elif [ "$want_quiet" -eq 0 ]; then
+  emit_text
+fi
+
+if [ "$status" = "red" ]; then
+  exit 1
+fi
+exit 0

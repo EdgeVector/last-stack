@@ -125,6 +125,7 @@ PATH_SHIM_NAMES=(
   last-stack-why-stopped
   last-stack-fold-ci-health
   last-stack-generator-preflight
+  last-stack-routines-prompt-doctor
 )
 
 actions=()

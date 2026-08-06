@@ -270,16 +270,48 @@ frontmatter suggests a cadence. The pattern every routine follows:
    `[[preference-agents-work-in-worktrees-install-checkout-disposable]]`.
    Manual fallback: `"$last_stack/bin/last-stack-self-upgrade"` or
    `cd "$last_stack" && git pull --ff-only && ./setup`.
-5. **Budget LastDB reads.** Start with the narrowest data-plane read that proves
+
+5. **One live prompt root per basename (won't-undo).** Product routine prompts
+   live in this repo under `routines/*.md` and are installed to
+   `~/.last-stack/routines/` (host-track artifact `current`). A second tree,
+   `$ROUTINES_HOME/prompts/` (default `~/.routines/prompts/`), may hold
+   *local-only* prompts or **symlinks** into the product file — never a drifted
+   full copy of a product basename. Editing the wrong twin is a recurring
+   silent failure mode.
+
+   - **Write path for product prompts:** edit in a last-stack worktree under
+     `routines/<name>.md`, open a CR, merge, then `host-track refresh last-stack`
+     (or wait for artifact promotion). Do **not** hand-edit
+     `~/.last-stack/routines/*.md` (immutable artifact) or leave a second
+     copy under `~/.routines/prompts/`.
+   - **Registry `prompt_path`:** for product routines, point at
+     `$HOME/.last-stack/routines/<name>.md` (or a path that `samefile`s it).
+     Do not pin into `…/artifacts/versions/<digest>/…` — those trees are GC'd.
+   - **Doctor:** `last-stack-routines-prompt-doctor` (also as
+     `routines doctor` *equivalent* for this class of issue) flags
+     divergent twins and version-dir pins. Exit 1 = red.
+     ```bash
+     last-stack-routines-prompt-doctor          # text
+     last-stack-routines-prompt-doctor --json
+     # Heal known product basenames (canaries + milestone-driver) by replacing
+     # drifted ~/.routines/prompts copies with symlinks into product:
+     last-stack-routines-prompt-doctor --normalize
+     last-stack-routines-prompt-doctor --normalize --basename pipeline-health.md
+     ```
+   - **Policy exemplar:** `pipeline-health.md` under `~/.routines/prompts/` is
+     a symlink to `~/.last-stack/routines/pipeline-health.md`. New product
+     twins should follow that pattern.
+
+6. **Budget LastDB reads.** Start with the narrowest data-plane read that proves
    the node is reachable, such as `<board-cli> list --column todo --json` or a
    targeted `<brain-cli> get <slug> --type <type> --json`. Prefer column/capped
    previews plus `<board-cli> show <slug> --json` for selected cards. Sequence
    Brain and board reads instead of launching broad reads concurrently, and do
    not use `doctor`/`init`/raw TCP probes as routine health gates.
-6. **Do ONE bounded pass**, then **exit**. Never loop, never `sleep`-to-wait.
-7. **Be idempotent and additive.** Re-running should be safe. Default to *not*
+7. **Do ONE bounded pass**, then **exit**. Never loop, never `sleep`-to-wait.
+8. **Be idempotent and additive.** Re-running should be safe. Default to *not*
    acting when in doubt.
-8. **Leave a heartbeat** (optional but recommended) so a silently-failed routine
+9. **Leave a heartbeat** (optional but recommended) so a silently-failed routine
    is visible to `morning-sync` / a health check.
 
 Safe heartbeat append pattern:
