@@ -138,7 +138,18 @@ def live_version() -> str:
     cmd = os.environ.get("LAST_STACK_CANARY_LIVE_VERSION_CMD", "lastdbd --version")
     if cmd in ("", "pass", "skip"):
         return ""
-    proc = run(["bash", "-lc", cmd], check=False)
+    # Bound wall time: a wedged primary/lastdbd must not hang CI for minutes.
+    try:
+        proc = subprocess.run(
+            ["bash", "-lc", cmd],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return ""
     line = (proc.stdout or "").strip().splitlines()
     if not line:
         return ""
@@ -310,18 +321,27 @@ def resolve_forge_main_candidate() -> Candidate | None:
                 paths.append(str(child / "bin" / "lastdbd"))
 
     # Worktrees / checkouts (never the empty portal). Prefer fkanban worktrees.
+    # Skip host scans when CI/tests inject LAST_STACK_CANARY_BUILDS_DIR — that is
+    # the hermetic isolation signal. Globbing ~/.fkanban/worktrees/fold-*/target/**
+    # on a busy machine can hang for minutes and reds every last-stack CR.
     home = HOME
-    paths.extend(
-        [
-            str(home / "code/edgevector/fold/target/release/lastdbd"),
-            str(home / "code/edgevector/fold/lastdb_node/target/release/lastdbd"),
-            str(home / "code/edgevector/fold/fold_db/target/release/lastdbd"),
-        ]
-    )
-    wt_root = home / ".fkanban" / "worktrees"
-    if wt_root.is_dir():
-        for p in sorted(wt_root.glob("fold-*/target/release/lastdbd"), reverse=True)[:20]:
-            paths.append(str(p))
+    hermetic_builds = bool(os.environ.get("LAST_STACK_CANARY_BUILDS_DIR"))
+    if not hermetic_builds:
+        paths.extend(
+            [
+                str(home / "code/edgevector/fold/target/release/lastdbd"),
+                str(home / "code/edgevector/fold/lastdb_node/target/release/lastdbd"),
+                str(home / "code/edgevector/fold/fold_db/target/release/lastdbd"),
+            ]
+        )
+        wt_root = home / ".fkanban" / "worktrees"
+        if wt_root.is_dir():
+            # Narrow glob: only direct fold-* children, not a recursive target walk.
+            for child in sorted(wt_root.glob("fold-*"), reverse=True)[:40]:
+                for rel in ("target/release/lastdbd", "lastdb_node/target/release/lastdbd"):
+                    p = child / rel
+                    if p.is_file():
+                        paths.append(str(p))
 
     seen: set[str] = set()
     for path in paths:
@@ -608,7 +628,9 @@ def dogfood(args: argparse.Namespace) -> dict:
             mode="dry-run",
             state=final,
             safe_upgrade="not-run",
-            live_version=live_version() or None,
+            # dry-run must not touch the live primary (lastdbd --version can wedge
+            # on a busy/broken node and red every last-stack CR).
+            live_version=None,
             primary_mutation=False,
         )
 
