@@ -48,6 +48,23 @@ last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 "$last_stack/bin/last-stack-cli-preflight" brain kanban routines jq 2>/dev/null || true
 ```
 
+### First-week grace (won't-undo for the ship window)
+
+Revenant Watch shipped **2026-08-06**. Tom asked for the first steward
+pass **about a week later**, then weekly forever.
+
+```bash
+# Epoch second for 2026-08-13T15:05:00Z (~Thu 08:05 America/Los_Angeles)
+first_review_epoch=1786633500
+now_epoch="$(date -u +%s)"
+if [ "$now_epoch" -lt "$first_review_epoch" ]; then
+  echo "revenant-watch-weekly-review $(date -u +%Y-%m-%dT%H:%M:%SZ) noop reason=first-week-grace until=2026-08-13T15:05:00Z"
+  exit 0
+fi
+```
+
+If the clock check fails for any reason, continue (fail open into a real review).
+
 ## Step 1 — Operational health (did the daily fire?)
 
 Check the last 7–10 days:
