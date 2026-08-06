@@ -34,6 +34,9 @@ bin/last-stack-lint-prompts \
 
 bash tests/last-stack-routine-read.sh
 bash tests/last-stack-class-a-heal.sh
+bash tests/last-stack-routines-registry-host-paths.sh
+bash tests/last-stack-feature-prove-routine.sh
+bash tests/last-stack-kanban-pickup-workers.sh
 bash tests/last-stack-factory-hardening.sh
 bash tests/last-stack-todo-rank.sh
 bash tests/last-stack-kanban-done-when-eval.sh

@@ -3,11 +3,17 @@
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+# shellcheck source=last-stack-routines-registry-env
+. "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/last-stack-routines-registry-env"
+last_stack_registry_paths_init
+
 ROUTINES_HOME="${ROUTINES_HOME:-$HOME/.routines}"
 REGISTRY_DIR="$ROUTINES_HOME/registry"
-PROMPT_PATH="$ROOT/routines/feature-prove.md"
+# Prefer stable host install prompt; fall back to this tree (tests / first install).
+PROMPT_PATH="$(last_stack_registry_prompt_path feature-prove.md "$ROOT/routines/feature-prove.md")"
 ID="last-stack-feature-prove"
 DRY_RUN=0
+PROMPT_PATH_SET=0
 
 usage() {
   cat <<'USAGE'
@@ -18,7 +24,7 @@ routine. Re-running is idempotent.
 
 Options:
   --registry-dir <p>  registry directory (default: $ROUTINES_HOME/registry)
-  --prompt-path <p>   feature-prove prompt path (default: this checkout)
+  --prompt-path <p>   feature-prove prompt path (default: stable last-stack)
   --id <id>           automation id (default: last-stack-feature-prove)
   --dry-run           print target path and contents without writing
   -h, --help          show this help
@@ -37,10 +43,12 @@ while [ "$#" -gt 0 ]; do
       ;;
     --prompt-path)
       PROMPT_PATH="$2"
+      PROMPT_PATH_SET=1
       shift 2
       ;;
     --prompt-path=*)
       PROMPT_PATH="${1#*=}"
+      PROMPT_PATH_SET=1
       shift
       ;;
     --id)
@@ -79,6 +87,12 @@ if [ ! -r "$PROMPT_PATH" ]; then
   exit 66
 fi
 
+# Host-safe guard: never bake REPLACE or sandbox paths into the live host registry.
+if [ "$DRY_RUN" -eq 0 ]; then
+  last_stack_registry_assert_safe_write "$REGISTRY_DIR" "$PROMPT_PATH" "$REG_CWD" \
+    || exit 3
+fi
+
 path="$REGISTRY_DIR/$ID.toml"
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -93,7 +107,7 @@ fi
   printf 'model = "gpt-5.5"\n'
   printf 'effort = "high"\n'
   printf 'rrule = "FREQ=HOURLY;INTERVAL=1;BYMINUTE=40;BYSECOND=0"\n'
-  printf 'cwd = "/Users/REPLACE/code/edgevector"\n'
+  printf 'cwd = "%s"\n' "$REG_CWD"
   printf 'status = "active"\n'
   printf 'timeout_min = 45\n'
   printf 'prompt_path = "%s"\n' "$PROMPT_PATH"

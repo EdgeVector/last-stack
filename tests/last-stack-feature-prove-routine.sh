@@ -19,6 +19,8 @@ grep -q 'effort = "high"' "$entry"
 grep -q 'rrule = "FREQ=HOURLY;INTERVAL=1;BYMINUTE=40;BYSECOND=0"' "$entry"
 grep -q 'timeout_min = 45' "$entry"
 grep -q "prompt_path = \"$prompt\"" "$entry"
+grep -q 'REPLACE' "$entry" && { echo "feature-prove wrote unsubstituted REPLACE" >&2; exit 1; }
+grep -qE '^cwd = "' "$entry" || { echo "feature-prove missing cwd" >&2; exit 1; }
 
 before="$(cksum "$entry")"
 "$BIN" --registry-dir "$tmp/registry" --prompt-path "$prompt" >/tmp/last-stack-feature-prove-idempotent.$$

@@ -3,9 +3,13 @@
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+# shellcheck source=last-stack-routines-registry-env
+. "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/last-stack-routines-registry-env"
+last_stack_registry_paths_init
+
 ROUTINES_HOME="${ROUTINES_HOME:-$HOME/.routines}"
 REGISTRY_DIR="$ROUTINES_HOME/registry"
-PROMPT_PATH="$ROOT/routines/why-stopped.md"
+PROMPT_PATH="$(last_stack_registry_prompt_path why-stopped.md "$ROOT/routines/why-stopped.md")"
 ID="last-stack-why-stopped"
 DRY_RUN=0
 
@@ -22,6 +26,11 @@ done
 
 [ -r "$PROMPT_PATH" ] || { echo "missing prompt: $PROMPT_PATH" >&2; exit 66; }
 
+if [ "$DRY_RUN" -eq 0 ]; then
+  last_stack_registry_assert_safe_write "$REGISTRY_DIR" "$PROMPT_PATH" "$REG_CWD" \
+    || exit 3
+fi
+
 body=$(cat <<EOF
 # Mechanical Class A–E factory freeze classifier (zero-LLM preferred).
 id = "$ID"
@@ -29,7 +38,7 @@ harness = "codex"
 model = "gpt-5.5"
 effort = "low"
 rrule = "FREQ=HOURLY;INTERVAL=2;BYMINUTE=11;BYSECOND=0"
-cwd = "$HOME/code/edgevector"
+cwd = "$REG_CWD"
 status = "active"
 timeout_min = 15
 prompt_path = "$PROMPT_PATH"
@@ -45,7 +54,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   exit 0
 fi
 mkdir -p "$REGISTRY_DIR"
-tmp="$(mktemp)"
+tmp="$(mktemp "${TMPDIR:-/tmp}/last-stack-why-stopped.XXXXXX")"
 printf '%s\n' "$body" >"$tmp"
 if [ -f "$path" ] && cmp -s "$tmp" "$path"; then
   rm -f "$tmp"
