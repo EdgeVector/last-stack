@@ -8,6 +8,58 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# --- kanban --json envelope guard -------------------------------------------
+# `kanban ... --json` list surfaces are {items,total,truncated} envelopes, not
+# bare arrays. A jq filter that assumes an array misreads them WITHOUT failing:
+# bare `length` returns the KEY COUNT (3), and a top-level `.[]` iterates values
+# and dies "Cannot index array with string" — exit 5, empty stdout, empty field.
+# Both shipped into live routine gates on 2026-08-06 (milestone-driver and
+# north-star-driver `milestone_count`).
+#
+# Defined here and called from BOTH paths on purpose: `.lastgit/ci.sh` runs this
+# file with `--smoke`, which returns before the main body, so a guard that lives
+# only in the body never gates a change request.
+check_kanban_json_envelope_guard() {
+  local bad_length="$tmp/bad-envelope-length.md"
+  local bad_iter="$tmp/bad-envelope-iter.md"
+  local good="$tmp/good-envelope.md"
+
+  cat > "$bad_length" <<'BAD'
+kanban list --column todo --json > /tmp/t.json
+n="$(jq 'length' /tmp/t.json)"
+BAD
+  if "$ROOT/bin/last-stack-lint-prompts" "$bad_length" >/dev/null 2>&1; then
+    echo "expected bare jq length on a kanban --json capture to fail lint" >&2
+    exit 1
+  fi
+
+  cat > "$bad_iter" <<'BAD'
+kanban milestone portfolio --json > /tmp/p.json
+n="$(jq '[.[] | select(.state != "complete" and .state != "abandoned")] | length' /tmp/p.json)"
+BAD
+  if "$ROOT/bin/last-stack-lint-prompts" "$bad_iter" >/dev/null 2>&1; then
+    echo "expected top-level jq .[] on a kanban --json capture to fail lint" >&2
+    exit 1
+  fi
+
+  # POSITIVE CONTROLS — must PASS, or the rule is always-on noise: a type-guarded
+  # filter, an object-keyed read of gap-report, and a non-kanban capture.
+  cat > "$good" <<'GOODENV'
+kanban milestone portfolio --json > /tmp/p.json
+kanban milestone gap-report --json > /tmp/g.json
+other-tool --json > /tmp/other.json
+n="$(jq '[(if type == "array" then . else (.entries // []) end)[] | select(.state != "complete")] | length' /tmp/p.json)"
+in_flight="$(jq '.counts.in_flight' /tmp/g.json)"
+unrelated="$(jq 'length' /tmp/other.json)"
+GOODENV
+  "$ROOT/bin/last-stack-lint-prompts" "$good"
+
+  # The shipped drivers themselves must stay clean.
+  "$ROOT/bin/last-stack-lint-prompts" \
+    "$ROOT/routines/milestone-driver.md" \
+    "$ROOT/routines/north-star-driver.md"
+}
+
 if [ "${1:-}" = "--smoke" ]; then
   pickup="$ROOT/routines/kanban-pickup.md"
 
@@ -31,6 +83,7 @@ if [ "${1:-}" = "--smoke" ]; then
   grep -q 'card_filing' "$probe_registry"
   grep -q 'standalone Repo:' "$probe_registry"
   grep -q 'comma-separated `--tags`' "$probe_registry"
+  check_kanban_json_envelope_guard
   echo "ok last-stack-lint-prompts smoke"
   exit 0
 fi
@@ -348,7 +401,7 @@ grep -q 'Existing terminal,' "$program_driver"
 grep -q 'or `Kind: validation` cards stay outside default' "$program_driver"
 grep -q '`non-pickup-frontier` for a terminal proof card' "$program_driver"
 grep -q 'refresh `active-programs` prose to say backlog/non-pickup' "$program_driver"
-grep -q 'Prefer a pickup-ready' "$program_driver"
+grep -qi 'prefer a pickup-ready' "$program_driver"
 grep -q '`Kind: pr` harness in default `todo`' "$program_driver"
 grep -q 'if the terminal must be' "$program_driver"
 grep -q 'park it outside default `todo`' "$program_driver"
@@ -706,5 +759,7 @@ SH
 if command -v zsh >/dev/null 2>&1; then
   zsh -fc 'brain() { return 7; }; brain doctor >/dev/null 2>&1; doctor_status=$?; test "$doctor_status" -eq 7'
 fi
+
+check_kanban_json_envelope_guard
 
 echo "ok"

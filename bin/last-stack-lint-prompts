@@ -208,6 +208,65 @@ check_pipeline_health_lastgit_socket_inventory() {
   fi
 }
 
+check_kanban_json_envelope_jq() {
+  # `kanban ... --json` list surfaces are completeness envelopes, not bare
+  # arrays, and each carries its own items key: list/search `{cards,...}`,
+  # `board list` `{boards,...}`, `milestone list` `{milestones,...}`,
+  # `milestone portfolio` `{entries,...}`, `milestone groom` `{issues,...}`.
+  #
+  # Two filters misread every one of them WITHOUT failing the command:
+  #   * bare `length` returns the KEY COUNT (3), forever, for any board;
+  #   * a top-level `.[]` iterates VALUES (array, int, bool) and dies with
+  #     "Cannot index array with string" — exit 5, empty stdout, empty count.
+  # Both land as a plausible number or an empty field in a routine gate.
+  #
+  # Require a dual-shape guard (`if type == "array" then . else .<key> end`)
+  # so the prompt keeps working against older host-track builds too.
+  local file="$1"
+  local matches
+
+  matches="$(awk '
+    BEGIN { q = sprintf("%c", 39) }
+    {
+      lines[NR] = $0
+      if ($0 ~ /(kanban|fkanban)[^|>]*--json[ \t]*>/) {
+        t = $0
+        sub(/.*--json[ \t]*>[ \t]*/, "", t)
+        sub(/[ \t;].*$/, "", t)
+        if (t != "") capture[t] = 1
+      }
+    }
+    END {
+      for (i = 1; i <= NR; i++) {
+        line = lines[i]
+        p = index(line, "jq ")
+        if (p == 0) continue
+        if (line ~ /type[ \t]*==/) continue
+        hit = 0
+        for (c in capture) if (index(line, c) > 0) { hit = 1; break }
+        if (!hit) continue
+        rest = substr(line, p + 3)
+        a = index(rest, q)
+        if (a == 0) continue
+        rest = substr(rest, a + 1)
+        b = index(rest, q)
+        if (b == 0) continue
+        f = substr(rest, 1, b - 1)
+        gsub(/^[ \t]+|[ \t]+$/, "", f)
+        if (f == "length" || substr(f, 1, 3) == ".[]" || substr(f, 1, 4) == "[.[]")
+          printf "%s:%d:%s\n", FILENAME, i, line
+      }
+    }
+  ' "$file")"
+
+  if [ -n "$matches" ]; then
+    printf '%s\n' "$matches" >&2
+    printf '%s\n' \
+      "jq filter assumes a bare array from a kanban --json capture; those surfaces are {items,total,truncated} envelopes, so bare 'length' reads the key count (3) and a top-level '.[]' errors out to an empty field. Guard with: if type == \"array\" then . else (.entries // .cards // .milestones // .issues // .boards // []) end" >&2
+    fail=1
+  fi
+}
+
 check_routine_result_prompt_literals() {
   local root="$1"
   local matches
@@ -816,6 +875,7 @@ for path in "$@"; do
   check_raw_markdown_shell_blocks "$path"
   check_default_board_scope "$path"
   check_workspace_root_git_probes "$path"
+  check_kanban_json_envelope_jq "$path"
 done
 
 while IFS= read -r -d '' toml; do
