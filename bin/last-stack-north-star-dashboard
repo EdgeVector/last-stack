@@ -459,13 +459,39 @@ def is_north_star_project(rec: dict[str, Any]) -> bool:
     return False
 
 
-def load_cards_from_file(path: Path) -> list[dict[str, Any]]:
-    data = json.loads(path.read_text(encoding="utf-8"))
+# Both kanban and brain now return `{<rows>, total, truncated}` from `--json`
+# instead of a bare array. Read the rows out of either shape, and treat
+# `truncated` as fatal: a dashboard that silently renders the first page looks
+# correct and is wrong. Callers that want a sample must say so explicitly.
+def unwrap_rows(data: Any, row_keys: tuple[str, ...], *, source: str) -> list[dict[str, Any]]:
     if isinstance(data, list):
         return data
     if isinstance(data, dict):
-        if isinstance(data.get("cards"), list):
-            return data["cards"]
+        for key in row_keys:
+            rows = data.get(key)
+            if isinstance(rows, list):
+                if data.get("truncated"):
+                    raise RuntimeError(
+                        f"{source} returned a truncated page ({len(rows)} of "
+                        f"{data.get('total')}) — refusing to render a partial set"
+                    )
+                return rows
+    raise ValueError(f"unrecognized {source} JSON shape")
+
+
+# Above the live corpus (438 projects on 2026-08-06) with headroom. The
+# truncated check turns growth past this into a loud failure, not a short list.
+PROJECT_LIST_LIMIT = "5000"
+
+CARD_ROW_KEYS = ("cards", "items", "records")
+PROJECT_ROW_KEYS = ("items", "records", "projects")
+
+
+def load_cards_from_file(path: Path) -> list[dict[str, Any]]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(data, dict) and not any(
+        isinstance(data.get(k), list) for k in CARD_ROW_KEYS
+    ):
         # column-keyed maps
         out: list[dict[str, Any]] = []
         for key, val in data.items():
@@ -476,25 +502,33 @@ def load_cards_from_file(path: Path) -> list[dict[str, Any]]:
                     out.append(card)
         if out:
             return out
-    raise ValueError(f"unrecognized cards JSON shape in {path}")
+    try:
+        return unwrap_rows(data, CARD_ROW_KEYS, source=f"cards file {path}")
+    except ValueError:
+        raise ValueError(f"unrecognized cards JSON shape in {path}") from None
 
 
 def load_projects_from_file(path: Path) -> list[dict[str, Any]]:
     data = json.loads(path.read_text(encoding="utf-8"))
-    if isinstance(data, list):
-        return data
-    if isinstance(data, dict) and isinstance(data.get("records"), list):
-        return data["records"]
-    raise ValueError(f"unrecognized projects JSON shape in {path}")
+    try:
+        return unwrap_rows(data, PROJECT_ROW_KEYS, source=f"projects file {path}")
+    except ValueError:
+        raise ValueError(f"unrecognized projects JSON shape in {path}") from None
 
 
 def fetch_live(board: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    cards = run_json(["kanban", "list", "--board", board, "--json", "--all"])
-    if not isinstance(cards, list):
-        raise RuntimeError("kanban list --json did not return a list")
-    projects = run_json(["brain", "list", "--type", "project", "--json", "--limit", "200"])
-    if not isinstance(projects, list):
-        raise RuntimeError("brain list --json did not return a list")
+    cards = unwrap_rows(
+        run_json(["kanban", "list", "--board", board, "--json", "--all"]),
+        CARD_ROW_KEYS,
+        source="kanban list --json --all",
+    )
+    projects = unwrap_rows(
+        run_json(
+            ["brain", "list", "--type", "project", "--json", "--limit", PROJECT_LIST_LIMIT]
+        ),
+        PROJECT_ROW_KEYS,
+        source="brain list --type project --json",
+    )
     return cards, projects
 
 
