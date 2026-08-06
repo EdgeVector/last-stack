@@ -234,8 +234,7 @@ merge-babysit <ISO> ok|noop|error stuck=<n> fixed=<n> filed=<n> reasons=<...>
 ```
 
 Use `ok` when you fixed or filed, including when fallback detection filed
-Brain papercuts. Use `noop` when stuck count was 0 or the first shared
-backend/inventory read is temporarily unreachable. Use `error` only for a real
+Brain papercuts. Use `noop` when stuck count was 0 or the first shared backend/inventory read is temporarily unreachable. Use `error` only for a real
 local routine failure.
 
 ## DONE-WHEN (per wake)
