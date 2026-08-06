@@ -20,6 +20,36 @@ grep -q 'rrule = "FREQ=HOURLY;INTERVAL=1;BYMINUTE=40;BYSECOND=0"' "$entry"
 grep -q 'timeout_min = 45' "$entry"
 grep -q "prompt_path = \"$prompt\"" "$entry"
 
+# cwd must be install-time rendered — never the /Users/REPLACE template.
+if grep -q 'Users/REPLACE' "$entry"; then
+  echo "emitted registry still contains Users/REPLACE:" >&2
+  cat "$entry" >&2
+  exit 1
+fi
+expected_cwd="${LAST_STACK_WORKSPACE:-${HOME%/}/code/edgevector}"
+grep -q "cwd = \"$expected_cwd\"" "$entry"
+
+# dry-run also must not print the unreplaced template
+dry_cwd="$("$BIN" --registry-dir "$tmp/dry-registry-cwd" --prompt-path "$prompt" --dry-run)"
+if grep -q 'Users/REPLACE' <<<"$dry_cwd"; then
+  echo "dry-run output still contains Users/REPLACE:" >&2
+  printf '%s\n' "$dry_cwd" >&2
+  exit 1
+fi
+grep -q "cwd = \"$expected_cwd\"" <<<"$dry_cwd"
+# override via LAST_STACK_WORKSPACE
+override_cwd="$tmp/custom-workspace"
+mkdir -p "$override_cwd"
+override_out="$(
+  LAST_STACK_WORKSPACE="$override_cwd" \
+    "$BIN" --registry-dir "$tmp/registry-override" --prompt-path "$prompt" --dry-run
+)"
+grep -q "cwd = \"$override_cwd\"" <<<"$override_out"
+if grep -q 'Users/REPLACE' <<<"$override_out"; then
+  echo "override dry-run still contains Users/REPLACE" >&2
+  exit 1
+fi
+
 before="$(cksum "$entry")"
 "$BIN" --registry-dir "$tmp/registry" --prompt-path "$prompt" >/tmp/last-stack-feature-prove-idempotent.$$
 after="$(cksum "$entry")"
