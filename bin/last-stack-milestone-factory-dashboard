@@ -5,6 +5,9 @@ Read-only against fkanban + brain. Writes HTML (and optional JSON) grouping
 live factory work under first-class milestones. Complements
 `last-stack-north-star-dashboard` (NS-only rollup).
 
+Opens with a one-screen progress band: every North Star as a single bar row,
+sorted most-active first. Each row links into its (collapsed) detail section.
+
 Default HTML: ~/code/edgevector/milestone-factory-dashboard.html
 Links docs/ev-house.css (edgevector.org workstation house style).
 """
@@ -70,6 +73,66 @@ def fetch_live(board: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], 
     if not isinstance(projects, list):
         projects = []
     return cards, milestones, projects
+
+
+DEAD_MS = ("abandoned",)
+ACTIVE_MS = ("active", "proving")
+
+
+def ns_progress(ms_list: list[dict[str, Any]]) -> dict[str, Any]:
+    """Roll a North Star's milestones into one glanceable progress figure.
+
+    The milestone is the unit of progress, so every non-abandoned milestone
+    carries equal weight. A complete milestone scores 1.0; an incomplete one
+    scores its own done-card ratio (0.0 when it has no cards yet). Cards
+    therefore give partial credit *within* a milestone but can never drag a
+    fully-complete North Star back down — a stray backlog card under an
+    otherwise-finished set is not "0% done".
+
+    Abandoned milestones never count against a North Star; a North Star whose
+    milestones are *all* abandoned is reported as closed, not as 0%.
+    """
+    counts = {c: 0 for c in COLUMNS}
+    live_ms = [m for m in ms_list if str(m.get("state") or "") not in DEAD_MS]
+    score = 0.0
+    for m in live_ms:
+        for col in COLUMNS:
+            counts[col] += len(m["cards"].get(col) or [])
+        m_cards = m["cards"]
+        m_total = sum(len(m_cards.get(col) or []) for col in COLUMNS)
+        if str(m.get("state") or "") == "complete":
+            score += 1.0
+        elif m_total:
+            score += len(m_cards.get("done") or []) / m_total
+
+    total_cards = sum(counts.values())
+    live_cards = sum(counts[c] for c in LIVE)
+    ms_total = len(live_ms)
+    ms_done = sum(1 for m in live_ms if str(m.get("state") or "") == "complete")
+    ms_active = sum(1 for m in live_ms if str(m.get("state") or "") in ACTIVE_MS)
+
+    if not ms_total:
+        status, pct = "closed", 0
+    else:
+        pct = round(100 * score / ms_total)
+        if ms_done == ms_total:
+            status = "done"
+        elif ms_active or live_cards:
+            status = "active"
+        else:
+            status = "idle"
+
+    return {
+        "pct": pct,
+        "status": status,
+        "cards": counts,
+        "cards_total": total_cards,
+        "cards_live": live_cards,
+        "ms_total": ms_total,
+        "ms_done": ms_done,
+        "ms_active": ms_active,
+        "ms_abandoned": len(ms_list) - ms_total,
+    }
 
 
 def build_model(
@@ -140,18 +203,31 @@ def build_model(
         and str(c.get("kind") or "pr") == "pr"
     ]
 
+    groups = [
+        {
+            "slug": ns,
+            "title": ns_titles.get(ns, ns),
+            "milestones": ns_groups[ns],
+            "progress": ns_progress(ns_groups[ns]),
+        }
+        for ns in sorted(ns_groups.keys())
+    ]
+
+    # Band order: what still needs attention first, closest-to-shipping on top.
+    status_rank = {"active": 0, "idle": 1, "done": 2, "closed": 3}
+    groups.sort(
+        key=lambda g: (
+            status_rank.get(g["progress"]["status"], 4),
+            -g["progress"]["pct"],
+            g["slug"],
+        )
+    )
+
     return {
         "generated_at": now_iso(),
         "board_total": len(cards),
         "milestone_count": len(by_ms),
-        "north_star_groups": [
-            {
-                "slug": ns,
-                "title": ns_titles.get(ns, ns),
-                "milestones": ns_groups[ns],
-            }
-            for ns in sorted(ns_groups.keys())
-        ],
+        "north_star_groups": groups,
         "orphan_milestones": sorted(orphan_ms, key=ms_sort),
         "unassigned": {
             "total": len(unassigned),
@@ -159,6 +235,16 @@ def build_model(
             "live": [c for c in unassigned if str(c.get("column") or "") in LIVE],
         },
     }
+
+
+def band_label(title: str, slug: str) -> str:
+    """Strip decorative North Star prefixes so band rows stay scannable."""
+    label = str(title or slug)
+    for prefix in ("🌟 North Star — ", "🌟 North Star - ", "North Star — ", "North Star - "):
+        if label.startswith(prefix):
+            label = label[len(prefix):]
+            break
+    return label.strip() or slug
 
 
 def render_html(model: dict[str, Any], css_href: str = HOUSE_CSS) -> str:
@@ -172,7 +258,34 @@ def render_html(model: dict[str, Any], css_href: str = HOUSE_CSS) -> str:
         return f'<li class="card"><code>{slug}</code> <span class="kind">{kind}</span> <span class="pri">{pri}</span> — {title}</li>'
 
     sections = []
+    band_rows = []
     for ns in model["north_star_groups"]:
+        anchor = "ns-" + str(ns["slug"])
+        pr = ns["progress"]
+        c = pr["cards"]
+        tip = (
+            f"{ns['slug']} · {pr['status']} · {pr['pct']}% · "
+            f"milestones {pr['ms_done']}/{pr['ms_total']} complete"
+            + (f" (+{pr['ms_abandoned']} abandoned)" if pr["ms_abandoned"] else "")
+            + f" · cards backlog {c['backlog']} / todo {c['todo']} / doing {c['doing']} / done {c['done']}"
+        )
+        if pr["status"] == "closed":
+            # every milestone abandoned — no progress to claim, so don't show 100%
+            sub, pct_label, fill = "closed", "—", 0
+        else:
+            fill = max(0, min(100, pr["pct"]))
+            pct_label = f"{pr['pct']}%"
+            sub = f"{pr['ms_done']}/{pr['ms_total']} ms"
+        band_rows.append(
+            f'<a class="nsrow" href="#{esc(anchor)}" data-status="{esc(pr["status"])}" '
+            f'title="{esc(tip)}">'
+            f'<span class="nsname">{esc(band_label(ns["title"], ns["slug"]))}</span>'
+            f'<span class="bar"><i style="width:{fill}%"></i></span>'
+            f'<span class="pct">{esc(pct_label)}</span>'
+            f'<span class="sub">{esc(sub)}</span>'
+            f"</a>"
+        )
+
         ms_blocks = []
         for m in ns["milestones"]:
             cols_html = []
@@ -208,11 +321,17 @@ def render_html(model: dict[str, Any], css_href: str = HOUSE_CSS) -> str:
             )
         sections.append(
             f"""
-<article class="ns" data-ns="{esc(ns['slug'])}">
-  <h2>{esc(ns['title'])}</h2>
-  <p class="slug"><code>{esc(ns['slug'])}</code> · {len(ns['milestones'])} milestone(s)</p>
+<details class="ns" id="{esc(anchor)}" data-ns="{esc(ns['slug'])}" data-status="{esc(pr['status'])}">
+  <summary>
+    <span class="sum-title">{esc(ns['title'])}</span>
+    <span class="sum-bar"><i style="width:{fill}%"></i></span>
+    <span class="sum-pct">{esc(pct_label)}</span>
+  </summary>
+  <p class="slug"><code>{esc(ns['slug'])}</code> · {len(ns['milestones'])} milestone(s)
+    · {pr['ms_done']}/{pr['ms_total']} complete · {pr['cards_live']} live card(s)
+    · {pr['cards']['done']}/{pr['cards_total']} cards done</p>
   {''.join(ms_blocks) if ms_blocks else '<p class="muted">No milestones.</p>'}
-</article>"""
+</details>"""
         )
 
     orphan_html = ""
@@ -252,8 +371,48 @@ main {{ padding: 20px 28px 48px; max-width: 1400px; margin: 0 auto; }}
 .stat b {{ display: block; font-size: 22px; }}
 .stat span {{ color: #78716c; font-size: 12px; }}
 .notice {{ border-left: 4px solid #b45309; background: #fffbeb; padding: 10px 12px; border-radius: 8px; margin: 12px 0; color: #78350f; }}
-.ns {{ background: #fffdf8; border: 1px solid #d6d3d1; border-radius: 12px; padding: 14px 16px; margin: 18px 0; }}
-.ns h2 {{ margin: 0 0 4px; font-size: 18px; }}
+
+/* ── progress band: every North Star, one screen, click through to detail ── */
+.band {{ background: #fffdf8; border: 1px solid #d6d3d1; border-radius: 12px; padding: 12px 14px; margin: 0 0 16px; }}
+.band-head {{ display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }}
+.band-head h2 {{ margin: 0; font-size: 15px; letter-spacing: .02em; text-transform: uppercase; color: #44403c; }}
+.band-head .legend {{ font-size: 11px; color: #78716c; }}
+.band-head .legend b {{ font-weight: 600; color: #57534e; }}
+.band-head .acts {{ margin-left: auto; display: flex; gap: 6px; }}
+.band-head button {{ font: inherit; font-size: 11px; padding: 2px 9px; border-radius: 999px;
+  border: 1px solid #d6d3d1; background: #fafaf9; color: #57534e; cursor: pointer; }}
+.band-head button:hover {{ background: #ebe7df; }}
+.band-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 2px 20px; }}
+.nsrow {{ display: grid; grid-template-columns: minmax(0, 1fr) 76px 32px 56px; align-items: center;
+  gap: 8px; padding: 3px 6px; border-radius: 6px; text-decoration: none; color: inherit; }}
+.nsrow:hover {{ background: #f0ece3; }}
+.nsrow .nsname {{ font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+.nsrow .pct {{ font-size: 11px; text-align: right; font-variant-numeric: tabular-nums; color: #44403c; }}
+.nsrow .sub {{ font-size: 10px; color: #a8a29e; white-space: nowrap; }}
+.bar {{ height: 7px; border-radius: 999px; background: #e7e5e4; overflow: hidden; }}
+.bar i {{ display: block; height: 100%; background: #0f766e; border-radius: 999px; }}
+.nsrow[data-status="idle"] .bar i {{ background: #a8a29e; }}
+.nsrow[data-status="done"] .bar i {{ background: #4d7c0f; }}
+.nsrow[data-status="closed"] {{ opacity: .5; }}
+.nsrow[data-status="closed"] .bar i {{ background: #d6d3d1; }}
+.nsrow:target, .nsrow.hit {{ background: #fef3c7; }}
+
+.ns {{ position: relative; background: #fffdf8; border: 1px solid #d6d3d1; border-radius: 12px; padding: 4px 16px; margin: 10px 0; }}
+.ns[open] {{ padding-bottom: 14px; }}
+.ns > summary {{ display: grid; grid-template-columns: minmax(0, 1fr) 120px 44px; align-items: center;
+  gap: 12px; cursor: pointer; padding: 10px 0; list-style: none; }}
+.ns > summary::-webkit-details-marker {{ display: none; }}
+.ns > summary::before {{ content: "▸"; position: absolute; margin-left: -14px; color: #a8a29e; font-size: 11px; }}
+.ns[open] > summary::before {{ content: "▾"; }}
+.ns > summary:hover {{ color: #0f766e; }}
+.sum-title {{ font-size: 16px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+.sum-bar {{ height: 7px; border-radius: 999px; background: #e7e5e4; overflow: hidden; }}
+.sum-bar i {{ display: block; height: 100%; background: #0f766e; border-radius: 999px; }}
+.ns[data-status="idle"] .sum-bar i {{ background: #a8a29e; }}
+.ns[data-status="done"] .sum-bar i {{ background: #4d7c0f; }}
+.ns[data-status="closed"] .sum-bar i {{ background: #d6d3d1; }}
+.sum-pct {{ font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; color: #57534e; }}
+.ns:target {{ border-color: #0f766e; box-shadow: 0 0 0 3px rgba(15, 118, 110, .14); }}
 .ns .slug {{ color: #78716c; margin: 0 0 12px; font-size: 12px; }}
 .milestone {{ border: 1px solid #e7e5e4; border-radius: 10px; padding: 10px 12px; margin: 10px 0; background: #fff; }}
 .milestone h3 {{ margin: 0 0 4px; font-size: 15px; }}
@@ -286,6 +445,19 @@ th {{ background: #ebe7df; font-size: 11px; text-transform: uppercase; color: #5
     <div class="stat"><b>{len(model['north_star_groups'])}</b><span>NS with milestones</span></div>
     <div class="stat"><b>{len(ua['live_pr'])}</b><span>live Kind:pr unassigned</span></div>
   </div>
+  <section class="band">
+    <div class="band-head">
+      <h2>North Star progress</h2>
+      <span class="legend">% = milestones complete, each unfinished one credited its done-card share
+        · <b>teal</b> active · <b>grey</b> idle · <b>green</b> done · faded closed
+        · click a row for detail</span>
+      <span class="acts">
+        <button type="button" data-all="1">Expand all</button>
+        <button type="button" data-all="0">Collapse all</button>
+      </span>
+    </div>
+    <div class="band-grid">{''.join(band_rows) if band_rows else '<p class="muted">No North Stars with milestones.</p>'}</div>
+  </section>
   <div class="notice">Unassigned / Operational live Kind:pr count: <b>{len(ua['live_pr'])}</b>
   (todo/doing should be zero once enforce + backfill land). House CSS: <code>{esc(css_href)}</code>.</div>
   {''.join(sections)}
@@ -296,6 +468,35 @@ th {{ background: #ebe7df; font-size: 11px; text-transform: uppercase; color: #5
     <tbody>{ua_rows if ua_rows else '<tr><td colspan="4" class="muted">None</td></tr>'}</tbody>
   </table>
 </main>
+<script>
+(function () {{
+  function byHash() {{
+    var id = (location.hash || '').slice(1);
+    return id ? document.getElementById(id) : null;
+  }}
+  function openTarget() {{
+    var el = byHash();
+    if (el && el.tagName === 'DETAILS') {{ el.open = true; }}
+  }}
+  document.addEventListener('click', function (e) {{
+    if (!e.target || !e.target.closest) {{ return; }}
+    var row = e.target.closest('a.nsrow');
+    if (row) {{
+      var d = document.getElementById(row.getAttribute('href').slice(1));
+      if (d) {{ d.open = true; }}
+      return;
+    }}
+    var btn = e.target.closest('.band-head button');
+    if (btn) {{
+      var on = btn.getAttribute('data-all') === '1';
+      var all = document.querySelectorAll('details.ns');
+      for (var i = 0; i < all.length; i++) {{ all[i].open = on; }}
+    }}
+  }});
+  window.addEventListener('hashchange', openTarget);
+  openTarget();
+}})();
+</script>
 </body>
 </html>
 """
