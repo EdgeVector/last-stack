@@ -83,8 +83,13 @@ shell-visible CLI and daemon binary agree. The helper never restarts/kills
 
 - `brain ask "<question>"` — best search (hybrid BM25+vector). Use this first.
 - `brain get <slug>` — fetch one record by slug. There is NO `brain show`.
-- `brain list --type <t> --limit 10` — newest-first listing. Avoid bare
-  `brain list` for health checks; prefer a targeted `get` or `kanban list`.
+- `brain search "<q>"` — discovery sample (optional `--type`, `--limit`). Prefer
+  search/ask over list for finding records.
+- Do **not** use `brain list` as a census or membership instrument — list (and
+  search) under-report; never rank completeness from a page. Health checks:
+  targeted `brain get` or `kanban list` / `kanban ping`, never a typed list
+  sweep. Where a listing is unavoidable, treat any envelope as a SAMPLE page
+  (`truncated` / incomplete) and point-get seeds instead of trusting membership.
 - Types: design task concept preference reference agent project spike sop decision.
 
 ### brain CLI — write

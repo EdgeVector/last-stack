@@ -19,6 +19,35 @@ trap cleanup EXIT
 # Defined here and called from BOTH paths on purpose: `.lastgit/ci.sh` runs this
 # file with `--smoke`, which returns before the main body, so a guard that lives
 # only in the body never gates a change request.
+check_brain_list_census_guard() {
+  # brain list is a SAMPLE — census-shaped uses in prompts must fail lint.
+  local bad="$tmp/bad-brain-list-census.md"
+  local ban_ok="$tmp/ok-brain-list-ban.md"
+  local good="$tmp/ok-brain-search.md"
+
+  cat > "$bad" <<'BAD'
+## Step 2
+- Enumerate papercut records: `brain list --type reference --limit 200` and
+  filter slugs starting `papercut-`.
+BAD
+  if "$ROOT/bin/last-stack-lint-prompts" "$bad" >/dev/null 2>&1; then
+    echo "expected census-shaped brain list --limit 200 to fail lint" >&2
+    exit 1
+  fi
+
+  cat > "$ban_ok" <<'BAN'
+# targeted gets only — do NOT use brain list as a census
+- Do not use `brain list` as a membership instrument.
+BAN
+  "$ROOT/bin/last-stack-lint-prompts" "$ban_ok"
+
+  cat > "$good" <<'GOOD'
+- Discover with `brain search "papercut" --type reference --limit 50 --json`
+- Point-read with `brain get <slug> --type reference`
+GOOD
+  "$ROOT/bin/last-stack-lint-prompts" "$good"
+}
+
 check_kanban_json_envelope_guard() {
   local bad_length="$tmp/bad-envelope-length.md"
   local bad_iter="$tmp/bad-envelope-iter.md"
@@ -84,6 +113,7 @@ if [ "${1:-}" = "--smoke" ]; then
   grep -q 'standalone Repo:' "$probe_registry"
   grep -q 'comma-separated `--tags`' "$probe_registry"
   check_kanban_json_envelope_guard
+  check_brain_list_census_guard
   echo "ok last-stack-lint-prompts smoke"
   exit 0
 fi

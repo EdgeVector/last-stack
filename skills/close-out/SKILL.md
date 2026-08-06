@@ -188,7 +188,8 @@ heredoc so the shell cannot evaluate it.
 
 **If a real DECISION was settled** (a call someone made — a chosen approach, an
 outcome, a gate cleared), record it as its own **`decision` record** so it lands
-in the queryable decision ledger (`brain list --type decision`) with real
+in the queryable decision ledger (`brain get <slug> --type decision`; discover
+with `brain search`/`ask` — never `brain list` as a census) with real
 `program`/`gate_slug`/`decided_by`/`decided_on` columns — NOT as a prose note
 and NEVER by appending to the archived `decisions-log` monolith:
 

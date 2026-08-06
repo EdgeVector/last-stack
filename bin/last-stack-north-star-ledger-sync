@@ -84,7 +84,19 @@ def brain_get_project(slug: str) -> Optional[str]:
     return cp.stdout
 
 
-def brain_list_projects(limit: int = 100) -> list[dict[str, Any]]:
+# Above the live corpus (438 projects on 2026-08-06) with headroom. The
+# truncated check turns growth past this into a loud failure, not a short list.
+PROJECT_LIST_LIMIT = 5000
+
+
+def brain_list_projects(limit: int = PROJECT_LIST_LIMIT) -> list[dict[str, Any]]:
+    """List projects for NS discovery.
+
+    Handles `{items,total,truncated}` envelopes. Refuses truncated pages —
+    silently taking the first N of M (was 100 of 438) is the failure mode this
+    fixes. Prefer board/seed point-reads when possible; this path is only for
+    ranking NS projects when --ns is not set.
+    """
     cp = run_cmd(
         ["brain", "list", "--type", "project", "--limit", str(limit), "--json"],
         timeout=90,
@@ -99,8 +111,15 @@ def brain_list_projects(limit: int = 100) -> list[dict[str, Any]]:
         return [x for x in data if isinstance(x, dict)]
     if isinstance(data, dict):
         for k in ("items", "records", "projects"):
-            if isinstance(data.get(k), list):
-                return [x for x in data[k] if isinstance(x, dict)]
+            rows = data.get(k)
+            if isinstance(rows, list):
+                if data.get("truncated"):
+                    raise RuntimeError(
+                        f"brain list --type project returned a truncated page "
+                        f"({len(rows)} of {data.get('total')}) — refusing "
+                        "partial North Star set; raise limit or pass --ns"
+                    )
+                return [x for x in rows if isinstance(x, dict)]
     return []
 
 
@@ -625,7 +644,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.ns:
         targets = [{"slug": s} for s in args.ns]
     else:
-        projects = [p for p in brain_list_projects(100) if is_north_star_project(p)]
+        projects = [p for p in brain_list_projects() if is_north_star_project(p)]
         # prefer in_progress
         def rank(p: dict[str, Any]) -> tuple[int, str]:
             st = str(p.get("status") or "").lower()
@@ -748,6 +767,29 @@ B
     assert _parse_portfolio_payload({"milestones": bare}) == bare
     assert _parse_portfolio_payload({}) == []
     assert _parse_portfolio_payload("nope") == []
+
+    # brain list envelope: truncated pages must refuse (never silent first-N)
+    def _rows_or_raise(data: Any) -> list[dict[str, Any]]:
+        if isinstance(data, list):
+            return [x for x in data if isinstance(x, dict)]
+        if isinstance(data, dict):
+            for k in ("items", "records", "projects"):
+                rows = data.get(k)
+                if isinstance(rows, list):
+                    if data.get("truncated"):
+                        raise RuntimeError("truncated")
+                    return [x for x in rows if isinstance(x, dict)]
+        return []
+
+    ok_env = {"items": [{"slug": "a"}], "total": 1, "truncated": False}
+    assert _rows_or_raise(ok_env) == [{"slug": "a"}]
+    try:
+        _rows_or_raise(
+            {"items": [{"slug": "a"}], "total": 438, "truncated": True}
+        )
+        raise AssertionError("expected truncated refusal")
+    except RuntimeError as exc:
+        assert "truncated" in str(exc)
 
     # plan_ns must not mark pending when the slug is present after show-hydrate
     body2 = (

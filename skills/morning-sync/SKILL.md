@@ -78,12 +78,14 @@ Two modes. Pick by how you were invoked:
   lines. This is the program work-list.
 - **`decision` records** (brain type `decision`, one record per decision) —
   every call Tom makes, dated, with what it unblocked. The durable memory. WORK
-  writes ONE `decision` record per call (`brain list --type decision`, newest
-  first). This replaced the old monolithic `decisions-log` reference record
-  (archived 2026-07-06 with a tombstone pointer) — appending is now a tiny
-  per-record write, not a full-ledger rewrite. Read a specific one with
-  `brain get <slug> --type decision`; the `program`/`gate_slug`/`decided_by`/
-  `decided_on` columns are queryable fields, not buried in prose.
+  writes ONE `decision` record per call (point write; no list rewrite). This
+  replaced the old monolithic `decisions-log` reference record (archived
+  2026-07-06 with a tombstone pointer). Read a specific one with
+  `brain get <slug> --type decision`. Discover recent decisions with
+  `brain search "decision" --type decision --limit 20` or `brain ask` — never
+  `brain list` as a ledger census (list/search are samples). The
+  `program`/`gate_slug`/`decided_by`/`decided_on` columns are queryable fields,
+  not buried in prose.
 - **`open-decisions`** (brain reference) — the standing queue of pending
   decisions. `kanban-agent` escalates gated next-steps here (Component C); BRIEF
   reads it so a stall becomes a dated line, never silence.
@@ -300,8 +302,9 @@ stands up, `todo` is freshly stocked and the pipeline takes over.
       rm -f "$body_file"
       ```
       This is the permanent memory — "remember all the decisions." Each decision
-      is its own record (`brain list --type decision` shows the whole ledger,
-      newest first); NEVER append to the archived `decisions-log` monolith.
+      is its own record (discover via `brain search`/`ask` + `brain get`; never
+      treat `brain list` as the whole ledger); NEVER append to the archived
+      `decisions-log` monolith.
       Status mapping: a cleared gate you proceed on = `go`; a deferral = `hold`;
       a decision whose work already landed = `done`; a premise that went away =
       `moot`; a call a later one replaced = `superseded`.
