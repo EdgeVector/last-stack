@@ -133,12 +133,21 @@ output; a stale doc that misled an agent; the same workaround across sessions.
   `Status: FIXED` to OPEN papercuts whose referenced LastGit CR, Forgejo PR, or
   GitHub PR is already merged. This keeps healed pipeline papercuts from being
   clustered again, while preserving the sole papercut→card path.
-- Enumerate papercut records: `brain list --type reference --limit 200` and
-  filter slugs starting `papercut-`, plus `brain ask "papercut"` for strays.
-- Read `brain get papercut-prevention-registry --type reference`. This is the
-  compact never-again index for fixed/reconciled papercuts whose prevention
-  coverage still needs review; do not assume `Status: FIXED` means recurrence
-  is impossible.
+- Enumerate papercut records **without a census list** (Tom 2026-08-06:
+  `brain list` is a SAMPLE, not a membership instrument). Seed + discover:
+  1. `brain get papercut-prevention-registry --type reference` and
+     `brain get papercut-reconciler-ledger --type reference` — extract every
+     `papercut-…` slug named there.
+  2. Discovery sample (treat as incomplete): `brain search "papercut" --type
+     reference --limit 50 --json` and/or `brain ask "open papercut"`. Never
+     claim the search page is the full family; handle truncation / empty
+     envelopes as partial.
+  3. Union slug seeds → targeted `brain get <slug> --type reference` (or
+     papercut type when registered) for bodies. Filter to slugs starting
+     `papercut-`.
+- The prevention registry is the compact never-again index for
+  fixed/reconciled papercuts whose prevention coverage still needs review;
+  do not assume `Status: FIXED` means recurrence is impossible.
 - For remediation, skip records whose body says `Status: FIXED` or
   `Status: RECONCILED`, and anything already stamped in the
   `papercut-reconciler-ledger` with a live card. For prevention, retain any

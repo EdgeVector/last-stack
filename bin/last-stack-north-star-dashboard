@@ -479,12 +479,10 @@ def unwrap_rows(data: Any, row_keys: tuple[str, ...], *, source: str) -> list[di
     raise ValueError(f"unrecognized {source} JSON shape")
 
 
-# Above the live corpus (438 projects on 2026-08-06) with headroom. The
-# truncated check turns growth past this into a loud failure, not a short list.
-PROJECT_LIST_LIMIT = "5000"
-
 CARD_ROW_KEYS = ("cards", "items", "records")
 PROJECT_ROW_KEYS = ("items", "records", "projects")
+
+_NS_SLUG_RE = re.compile(r"\bnorth-star-[a-z0-9][a-z0-9._-]*\b")
 
 
 def load_cards_from_file(path: Path) -> list[dict[str, Any]]:
@@ -516,19 +514,75 @@ def load_projects_from_file(path: Path) -> list[dict[str, Any]]:
         raise ValueError(f"unrecognized projects JSON shape in {path}") from None
 
 
+def seed_north_star_slugs(cards: list[dict[str, Any]]) -> set[str]:
+    """Board-first NS membership seeds — never a `brain list` census."""
+    slugs: set[str] = set()
+    for card in cards:
+        raw = str(card.get("north_star") or "").strip()
+        if raw.startswith("[[") and raw.endswith("]]"):
+            raw = raw[2:-2].strip()
+        if raw:
+            slugs.add(raw)
+            slugs.add(normalize_north_star(raw))
+    slugs.update(ALIASES.keys())
+    slugs.update(ALIASES.values())
+    return {s for s in slugs if s}
+
+
+def fetch_project_point(slug: str) -> Optional[dict[str, Any]]:
+    """Point-read one project. Missing/error → None (not an orphan invent)."""
+    try:
+        rec = run_json(["brain", "get", slug, "--type", "project", "--json"])
+    except RuntimeError:
+        return None
+    if not isinstance(rec, dict):
+        return None
+    if rec.get("error"):
+        return None
+    if not rec.get("slug"):
+        return None
+    return rec
+
+
+def fetch_active_program_ns_seeds() -> set[str]:
+    """Optional extra seeds from active-programs body (retired index still ok)."""
+    out: set[str] = set()
+    rec = fetch_project_point("active-programs")
+    if not rec:
+        return out
+    body = str(rec.get("body") or "")
+    out.update(_NS_SLUG_RE.findall(body))
+    return out
+
+
 def fetch_live(board: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Load board cards + North Star projects without a brain-list census.
+
+    Orphan detection is card-driven: unique `north_star` field values (plus
+    known aliases / active-programs mentions) are point-read via `brain get`.
+    A project that exists but is not cited by any card simply does not appear
+    — intentional, and avoids false orphans from a capped `brain list` page.
+    Kanban list envelopes still refuse truncated board pages.
+    """
     cards = unwrap_rows(
         run_json(["kanban", "list", "--board", board, "--json", "--all"]),
         CARD_ROW_KEYS,
         source="kanban list --json --all",
     )
-    projects = unwrap_rows(
-        run_json(
-            ["brain", "list", "--type", "project", "--json", "--limit", PROJECT_LIST_LIMIT]
-        ),
-        PROJECT_ROW_KEYS,
-        source="brain list --type project --json",
-    )
+    slugs = seed_north_star_slugs(cards)
+    slugs.update(fetch_active_program_ns_seeds())
+
+    projects: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for slug in sorted(slugs):
+        rec = fetch_project_point(slug)
+        if not rec:
+            continue
+        key = str(rec.get("slug") or slug)
+        if key in seen:
+            continue
+        seen.add(key)
+        projects.append(rec)
     return cards, projects
 
 

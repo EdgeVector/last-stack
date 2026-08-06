@@ -102,9 +102,15 @@ Use the milestone portfolio captured by the creation inventory gate. Then:
 
 1. If `NORTH_STAR_DRIVER_TARGET` is set, point-read that project with
    `brain get <slug> --type project`.
-2. Otherwise, read the bounded project set with
-   `brain list --type project --limit 100 --json` and the targeted
-   `active-programs` project when present.
+2. Otherwise, **never** use `brain list` as a project census. Seed candidates
+   from access patterns only:
+   - `brain get active-programs --type project` (body may still name NS slugs
+     even if the index is retired — use it as a seed, not a full inventory).
+   - `kanban milestone portfolio --json` → distinct `north_star` fields on
+     nonterminal milestones (envelope: `entries` / dual-shape jq guard).
+   - Optional discovery sample: `brain search "north-star" --type project
+     --limit 30 --json` — treat hits as incomplete, never as membership.
+   Then `brain get <slug> --type project` for each candidate slug. Skip misses.
 3. Ignore done, archived, retired, or definition-incomplete North Stars.
 4. Prefer the oldest explicit approved request marker in a North Star body:
    `MILESTONE_REQUEST slug=<slug> status=pending`, followed by its Outcome and

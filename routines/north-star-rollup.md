@@ -66,8 +66,9 @@ Brain record (stable):
 
 ## Each run — do exactly this
 1. **Preflight.** Confirm `brain` and `kanban` are on PATH. Run a cheap
-   socket-safe read: `kanban list --column todo --json` (or `brain list --type
-   project --limit 1`). On busy-node errors, EXIT with noop.
+   socket-safe read: `kanban list --column todo --json` or `kanban ping` when
+   available. Do **not** use `brain list` for health or inventory (list is a
+   SAMPLE, not a census). On busy-node errors, EXIT with noop.
 2. **Regenerate.** Run:
    ```bash
    timeout 300 "$dash_bin" \
@@ -77,7 +78,8 @@ Brain record (stable):
    ```
    The script:
    - collects board state from the board
-   - lists brain projects, keeps North Stars
+   - point-reads brain projects for each card `north_star` slug (plus known
+     aliases / active-programs seeds) — never `brain list` as membership
    - applies known NS aliases (e.g. legacy schema roadmap → shared-surface NS)
    - upserts `north-star-dashboard` and writes the HTML file
    If the wrapper returns `124` (timeout) or stderr contains a transient
@@ -85,7 +87,8 @@ Brain record (stable):
    snapshot exists and is non-empty. Treat it as load/backpressure: update
    memory with the timeout, heartbeat
    `north-star-rollup <ISO-ts> noop reason=dashboard-timeout-prior-snapshot previous_html_bytes=<bytes>`,
-   print `ROUTINE_RESULT outcome=noop detail=reason=dashboard-timeout-prior-snapshot`,
+   print the machine trailer using the ROUTINE_RESULT token followed by
+   `outcome=<noop> detail=reason=dashboard-timeout-prior-snapshot`,
    and exit. Only use `error` for timeout/crash cases where no prior dashboard
    artifact exists or confirmation proves the artifact is empty/corrupt.
 3. **Confirm.** Point-read `brain get north-star-dashboard --type reference`

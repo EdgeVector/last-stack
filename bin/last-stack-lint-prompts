@@ -208,6 +208,71 @@ check_pipeline_health_lastgit_socket_inventory() {
   fi
 }
 
+check_brain_list_census() {
+  # `brain list` is a SAMPLE, not a membership/census instrument (Tom 2026-08-06).
+  # Production routine prompts and skills must not introduce census-shaped
+  # `brain list` commands (high limits, typed inventory, ranking). Mirror the
+  # revenant-watch ban: discovery uses `brain search`/`ask` + targeted
+  # `brain get` (or board seeds). Prohibition/ban lines are allowed.
+  local root="$1"
+  local files=()
+  local file
+
+  if [ -d "$root" ]; then
+    while IFS= read -r -d '' file; do
+      files+=("$file")
+    done < <(
+      find "$root" \( -path '*/routines/*' -o -path '*/skills/*' \) -type f \
+        ! -path '*/.git/*' \
+        ! -path '*/logs/*' \
+        ! -path '*/run/*' \
+        ! -path '*/tests/*' \
+        ! -name memory.md \
+        ! -name last-stack-lint-prompts \
+        -print0 2>/dev/null
+    )
+  else
+    [ "$(basename "$root")" = "last-stack-lint-prompts" ] && return 0
+    files=("$root")
+  fi
+
+  for file in "${files[@]}"; do
+    [ -f "$file" ] || continue
+    grep -Iq . "$file" || continue
+    awk -v file="$file" '
+      function is_ban_or_neg(line,   lower) {
+        lower = tolower(line)
+        return (lower ~ /(do not|never|must not|ban|avoid|instead of|not use|not a census|sample, not|under-report|is a sample)/)
+      }
+      function is_census_list(line) {
+        # Command-shaped brain list (backticks, code fences, bare shell).
+        if (line !~ /(^|[^[:alnum:]_-]|`|\$\()brain[[:space:]]+list([[:space:]|]|$)/) {
+          return 0
+        }
+        # Any executable brain list with --limit / --type is census-shaped.
+        # Health probes must use kanban ping / board list instead.
+        if (line ~ /--limit[[:space:]]*[0-9]+/) return 1
+        if (line ~ /--type[[:space:]]+[a-zA-Z0-9_-]+/) return 1
+        if (line ~ /(Enumerate|enumerate|inventory|census|rank OPEN|whole ledger|membership)/) return 1
+        # Bare `brain list` as a verb to run is still census-shaped.
+        if (line ~ /(^|[[:space:]`$])brain[[:space:]]+list([[:space:]`|]|$)/) return 1
+        return 0
+      }
+      {
+        if (is_ban_or_neg($0)) next
+        if (is_census_list($0)) {
+          printf "%s:%d:%s\n", file, NR, $0
+          bad = 1
+        }
+      }
+      END { exit bad }
+    ' "$file" || {
+      echo "census-shaped brain list found under $file; use brain search/ask + targeted brain get (or board seeds). brain list is a SAMPLE, not membership" >&2
+      fail=1
+    }
+  done
+}
+
 check_kanban_json_envelope_jq() {
   # `kanban ... --json` list surfaces are completeness envelopes, not bare
   # arrays, and each carries its own items key: list/search `{cards,...}`,
@@ -876,6 +941,7 @@ for path in "$@"; do
   check_default_board_scope "$path"
   check_workspace_root_git_probes "$path"
   check_kanban_json_envelope_jq "$path"
+  check_brain_list_census "$path"
 done
 
 while IFS= read -r -d '' toml; do
