@@ -107,7 +107,10 @@ fi
   printf 'model = "gpt-5.5"\n'
   printf 'effort = "high"\n'
   printf 'rrule = "FREQ=HOURLY;INTERVAL=1;BYMINUTE=40;BYSECOND=0"\n'
-  printf 'cwd = "%s"\n' "$REG_CWD"
+  # Prefer LAST_STACK_WORKSPACE when set (main); else REG_CWD from
+  # last-stack-routines-registry-env (host-safe REPLACE + sandbox HOME).
+  workspace_cwd="${LAST_STACK_WORKSPACE:-$REG_CWD}"
+  printf 'cwd = "%s"\n' "$workspace_cwd"
   printf 'status = "active"\n'
   printf 'timeout_min = 45\n'
   printf 'prompt_path = "%s"\n' "$PROMPT_PATH"
