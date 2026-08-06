@@ -180,24 +180,61 @@ host-track validate-registry --json
 HOST_TRACK_REGISTRY=/path/to/apps.json host-track validate-registry
 ```
 
-4. Land via the normal last-stack CR path. Continuous health remains
-   `last-stack-host-track-artifact-invariant` (dogfood-registry recipe): it still
-   accepts `local-safe` install health while `validate-registry` keeps fleet
-   migration pressure visible as `non_compliant`.
+4. Land via the normal last-stack CR path. Continuous health remains the
+   **fleet channel freshness gate** (below) — wire it as a dogfood-registry
+   maintain recipe, not a new forever routine. `validate-registry` keeps fleet
+   migration pressure visible as `non_compliant`; the live invariant still
+   accepts healthy `local-safe` installs when present.
 
 Do **not** invent a new scheduled routine for exemption drift. Wire checks into
-`host-track status` / `validate-registry` / the existing invariant dogfood entry.
+`host-track status` / `validate-registry` / the fleet gate dogfood entry.
+
+## Fleet channel freshness gate (NS end-state #7)
+
+`bin/last-stack-fleet-channel-freshness-gate` is the **single** machine-checkable
+fleet-rollout acceptance gate for `north-star-artifact-driven-host-track`. It
+composes prior PRs without a hollow Kind:validation shell:
+
+1. `host-track validate-registry` — every registered app is **artifact or exempt**
+2. `last-stack-host-track-artifact-invariant` — every artifact channel is
+   **fresh** (`stale=false`), provenance/hashes hold, and **rollback targets**
+   resolve when `previous` exists
+
+```bash
+# Full live gate (dogfood-registry maintain recipe / non-sandboxed runner)
+bin/last-stack-fleet-channel-freshness-gate
+bin/last-stack-fleet-channel-freshness-gate --json
+
+# Pure registry policy only (CI / fixtures; no live installs)
+bin/last-stack-fleet-channel-freshness-gate --registry-only
+HOST_TRACK_REGISTRY=/path/to/apps.json bin/last-stack-fleet-channel-freshness-gate --registry-only
+```
+
+**PASS evidence** (first line starts with `PASS`):
+
+`~/.last-stack/feature-proofs/artifact-driven-host-track-fleet-gate.md`
+
+Override with `--proof <path>` or `LAST_STACK_FLEET_CHANNEL_FRESHNESS_PROOF`.
+Failure lines name **app + invariant code** (e.g. `situations: stale — …`).
+
+**dogfood-registry maintain recipe (recommended):**
+
+```text
+recipe: last-stack-fleet-channel-freshness-gate
+pass = exit 0 and proof file begins with PASS
+isolation: host-local Host Track installs; never mutates primary brain
+```
 
 ## Continuous Artifact Invariant
 
-`bin/last-stack-host-track-artifact-invariant` is the dogfood-registry recipe
-entry point for Host Track artifact freshness. It inventories every registered
-app, rejects non-artifact installs without a machine-readable exemption, checks
-the selected channel and `stale:false`, verifies exact manifest source
-provenance, rehashes active payload files, confirms command paths resolve inside
-immutable `versions/<manifest>` directories, compares paired `lastdb` and
-`lastdbd` bundle identity when both are registered, and proves rollback state by
-inspecting the `previous` symlink without switching it.
+`bin/last-stack-host-track-artifact-invariant` is the live half of the fleet gate
+(and remains callable alone). It inventories every registered app, rejects
+non-artifact installs without a machine-readable exemption, checks the selected
+channel and `stale:false`, verifies exact manifest source provenance, rehashes
+active payload files, confirms command paths resolve inside immutable
+`versions/<manifest>` directories, compares paired `lastdb` and `lastdbd` bundle
+identity when both are registered, and proves rollback state by inspecting the
+`previous` symlink without switching it.
 
 ```bash
 bin/last-stack-host-track-artifact-invariant
@@ -210,10 +247,13 @@ the artifact-driven registry cutover. It runs Host Track status, the artifact
 invariant, and `host-track check` for every registered app. On success it writes
 `PASS` to
 `~/.last-stack/feature-proofs/artifact-driven-host-track-registry-cutover.md`.
-Run it after refreshing the registry from promoted artifacts:
+Prefer the **fleet channel freshness gate** for the composed fleet acceptance
+check (registry policy + freshness + rollback). Run after refreshing promoted
+artifacts when you need per-app `host-track check` as well:
 
 ```bash
 host-track refresh --all
+bin/last-stack-fleet-channel-freshness-gate
 bin/last-stack-artifact-host-track-proof
 ```
 
