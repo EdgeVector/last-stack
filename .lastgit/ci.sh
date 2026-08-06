@@ -51,6 +51,7 @@ bash tests/last-stack-command-modes.sh
 bash tests/last-stack-north-star-portal-resolver.sh
 bash tests/last-stack-mini-cutover-health.sh
 bash tests/last-stack-pipeline-deploy-scan.sh
+bash tests/last-stack-forge-dead-trigger.sh
 bash tests/last-stack-deploy-gated-closeout.sh
 bash tests/last-stack-legacy-residue-closeout.sh
 bash tests/last-stack-why-shipping-stopped.sh
