@@ -159,38 +159,73 @@ For the chosen CR:
    does not exit - do **not** hang the whole wake waiting for watch to return.
 7. `lastgit cr complete <repo> --once --json`
 
-If product judgment is required: file/update one P0 card (tags
-`pipeline,p0,merge,agent-runnable`), body with CR id + conflict files +
-`BLOCKED:` only for true human gates, rank todo, EXIT.
+If product judgment is required: **do not** mint a default/`todo` `Kind: pr`
+card without milestone + North Star (that shape poisons board pickup —
+`papercut-stuck-merge-cards-block-pickup`). Prefer Brain papercut (below). For a
+true human gate only, file/update one card in **`backlog`** with
+`block_status=needs_human`, tags `pipeline,p0,merge`, body with CR id + conflict
+files + `BLOCKED:`, and **never** leave it as a milestone-less `Kind: pr` in
+`todo`. Then EXIT.
 
-### 4. File the rest
+### 4. Escalate the rest as Brain papercuts (never bare todo Kind:pr)
 
 For every other stuck entry you did not fix, including fallback-detected stuck
-CRs: file or update one deduped P0 kanban card. Dedupe with scoped
-`kanban list --column todo --json` / `kanban list --column doing --json` and
-known slug-pattern `kanban show` checks first; `kanban search` is optional and a
-`full_schema_scan_not_allowed` response is only a fallback signal. Pickup
-reclaim can own the resulting card. Include:
+CRs: **file or update a Brain papercut** (same policy as `pipeline-health` and
+`preference-always-file-papercuts-in-brain`). Do **not** create
+`stuck-lastgit-*` / pipeline P0 `Kind: pr` cards in default `todo` without a
+real milestone + North Star + cold-start body — those cards cause pickup
+`write-guard` no-claims that block unrelated valid work.
 
-```
+```bash
+# Dedupe first: brain get, then put/update in place
+slug="papercut-pipeline-stuck-cr-<repo>-<cr-id-short>"
+# or stable per-repo: papercut-pipeline-stuck-merges-<repo>
+brain get "$slug" --type reference 2>/dev/null || true
+brain put <<'EOF'
+---
+type: reference
+slug: papercut-pipeline-stuck-cr-<repo>-<cr-id-short>
+title: Pipeline: stuck LastGit CR <cr_id> (<reason>)
+tags: [papercut, pipeline, p0, merge, lastgit, owner:last-stack]
+---
+Status: OPEN
+Severity: P0
+Source: merge-babysit
 Repo: EdgeVector/<slug>
-Base: main
-Kind: pr
-Priority: P0
-Tags: pipeline,p0,merge,agent-runnable,lastgit
-
-## GOAL
-Clear stuck LastGit CR <cr_id> (reason=<reason>).
-
-## CONTEXT
-lastgit stuck/fallback scan: <detail>
+CR: lastgit://<slug>/cr/<cr_id>
 head_oid: <oid>
+reason: <reason>
+Checked-at: <ISO>
 
-## STEPS
-1. worktree on head branch
-2. rebase/merge main; resolve mechanical conflicts
-3. .lastgit/ci.sh; push; lastgit cr complete
+## Symptom
+lastgit stuck/fallback scan: <detail>
+
+## Suggested fix
+worktree on head branch → rebase/merge main → .lastgit/ci.sh → push →
+lastgit cr complete --once
+EOF
 ```
+
+Count these as `filed=<n>` in the heartbeat (`filed` means Brain papercuts
+and/or backlog human-gate cards — **not** bare todo Kind:pr).
+
+If you *must* file a pickup-ready board card (rare; only when a live
+milestone already owns the CR's repo work): attach `--north-star` +
+`--milestone`, full `Repo:`/`Base:`/`Kind: pr` + GOAL/CONTEXT/STEPS/VERIFY body,
+and never use an empty/annotation-only body.
+
+### 4b. Heal legacy poison stuck-merge cards (cheap)
+
+Before heartbeat, drain any already-poisoned todo cards left by older
+authoring paths:
+
+```bash
+"$last_stack/bin/last-stack-park-stuck-merge-poison-cards" --board-cli <board CLI> --json || true
+```
+
+The helper point-reads LastGit when possible: closed/merged CRs → `done`;
+malformed milestone-less stuck-status cards → `backlog` (not `needs_human`).
+Include `poison_parked=` / `poison_closed=` in the heartbeat when non-zero.
 
 ### 5. Heartbeat
 
@@ -198,15 +233,16 @@ head_oid: <oid>
 merge-babysit <ISO> ok|noop|error stuck=<n> fixed=<n> filed=<n> reasons=<...>
 ```
 
-Use `ok` when you fixed or filed, including when fallback detection filed cards.
-Use `noop` when stuck count was 0 or the first shared backend/inventory read is
-temporarily unreachable. Use `error` only for a real local routine failure.
+Use `ok` when you fixed or filed, including when fallback detection filed
+Brain papercuts. Use `noop` when stuck count was 0 or the first shared backend/inventory read is temporarily unreachable. Use `error` only for a real
+local routine failure.
 
 ## DONE-WHEN (per wake)
 
 - stuck list empty after complete, OR
 - one mechanical CR advanced (new head and/or merged), OR
-- every remaining stuck CR has a live P0 card
+- every remaining stuck CR has a live Brain papercut (or a pickup-safe board
+  card with milestone + North Star + cold-start body — never a bare todo Kind:pr)
 
 ## Guardrails
 

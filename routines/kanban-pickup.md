@@ -411,6 +411,25 @@ another work-unit while a prior claimed card only needs rollback reconciliation.
 
 ## Selection rule (form ONE work-unit)
 
+**Park stuck-merge poison cards before claim (won't-undo — 2026-08-05):**
+legacy merge-babysit / pipeline paths left bare `Kind: pr` `todo` cards for
+transient stuck CR/PR symptoms (`stuck-lastgit-*`, etc.) without milestone /
+North Star. Those cards poison pickup (`write-guard` / no-claim on unrelated
+valid work). After the ready gate and **before** hard rank / `pickup claim`,
+run the zero-LLM healer once:
+
+```bash
+if [ -x "$last_stack/bin/last-stack-park-stuck-merge-poison-cards" ]; then
+  poison_out="$("$last_stack/bin/last-stack-park-stuck-merge-poison-cards" \
+    --board-cli <board CLI> --json 2>/dev/null || true)"
+  # closed CRs → done; malformed poison shapes → backlog. Never no-claim the
+  # rest of the ready queue because of these cards.
+fi
+```
+
+If the helper parks/closes cards and the ready gate would now be empty, re-run
+`last-stack-kanban-pickup-gate`; exit on gate ≠ 10. Do not invent work.
+
 **Hard todo rank before claim:** pickup must not rely on prompt-only
 ship-outcome budget while active/proving milestones have unblocked `Kind: pr`
 frontier. Immediately before `pickup claim`, run the Last Stack wrapper around
