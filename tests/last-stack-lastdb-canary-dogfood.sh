@@ -196,6 +196,33 @@ out="$(
 )" || true
 [ ! -s "$build_probe" ]
 
+# --- a --dry-run against the REAL ledger writes nothing to it ---
+# The documented "what would tonight pick?" check used to stamp the production
+# ledger with dogfood_green, and the next soak tick then recorded a false
+# soak_red for a candidate that had never been cut over. Both are terminal, so
+# a diagnostic could park the night it was run to inspect.
+real_ledger_dir="$tmp/pretend-production"
+mkdir -p "$real_ledger_dir"
+out="$(
+  env -u LAST_STACK_CANARY_LOCAL_FALLBACK_BIN \
+  LAST_STACK_CANARY_PIPELINE_DIR="$real_ledger_dir" \
+  LAST_STACK_CANARY_SAFE_UPGRADE="$stub" \
+  "$CLI" --dry-run --json
+)" || true
+# No --state-dir was passed, so the run must not have created a ledger at all.
+[ ! -e "$real_ledger_dir/ledger.jsonl" ]
+# It still REPORTS the state it would have reached.
+printf '%s\n' "$out" | jq -e '.state' >/dev/null
+
+# --- but an explicit --state-dir still records (fixtures/proof depend on it) ---
+out="$(
+  LAST_STACK_CANARY_LOCAL_FALLBACK_BIN="$fallback_bin" \
+  LAST_STACK_CANARY_SAFE_UPGRADE="$stub" \
+  "$CLI" --state-dir "$tmp/explicit-state" --dry-run --json
+)"
+[ -s "$tmp/explicit-state/ledger.jsonl" ]
+[ "$(printf '%s\n' "$out" | jq -r '.state')" = "dogfood_green" ]
+
 # --- a blocked Situation is `blocked_situation`, never `dogfood_red` ---
 # The fence stopping us says nothing about the candidate. Recording it as a red
 # verdict is what let an unrelated codex outage look like a bad LastDB build.
