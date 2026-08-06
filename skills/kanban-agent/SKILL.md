@@ -83,7 +83,19 @@ genuinely blocked.
 > branch = `last-stack-forge-api --method POST repos/EdgeVector/<repo>/pulls/<n>/update`; comment =
 > `last-stack-forge-api --method POST --data @comment.json repos/EdgeVector/<repo>/issues/<n>/comments`; close = `last-stack-forge-api --method PATCH --data @close.json repos/EdgeVector/<repo>/pulls/<n>` with
 > `{"state":"closed"}`. No rerun-failed API — push an empty commit to re-trigger
-> a flaky run. The forge has no checks-watch equivalent of the GitHub CLI: hold
+> a flaky run **only when a status task already exists** (stuck task / 405 merge
+> papercut). If `commits/<sha>/status` is the empty envelope (`state:""`,
+> `total_count:0`) **and** `actions/tasks` has zero runs for that head after a
+> branch was deleted-and-recreated under an open PR, the CI **trigger** is dead
+> — empty-commit will never help. Run
+> `"$last_stack/bin/last-stack-forge-dead-trigger" probe --repo … --pr …`
+> and on `verdict=dead-trigger` call `… supersede --checkout <worktree>`
+> (fresh branch + new PR + close dead one). After any push that reports
+> `* [new branch]` on a PR head, probe before long status polls.
+> When opening a Forge PR you must **either** arm auto-merge immediately
+> **or** put `proof in flight — do not arm` in the PR body so reconcile does
+> not merge a sibling from the same branch and delete it out from under you.
+> The forge has no checks-watch equivalent of the GitHub CLI: hold
 > your turn by polling the head-commit status between forward actions instead.
 > All PUBLIC repos (brain, kanban, schema-infra, last-stack, websites, …) keep
 > the normal GitHub `gh` flow unless `last-stack-pr-venue` says `lastgit`;
