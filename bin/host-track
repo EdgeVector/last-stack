@@ -538,29 +538,54 @@ status_json_for() {
       stale="true"
     fi
   elif [ "$install_mode" = "local-safe" ]; then
+    # Live current symlink is source of truth (stamp can lag / lie).
+    # Stale means "installed is not gate_main tip" when tip is knowable —
+    # never self-compare stamp↔symlink (papercut-host-track-local-safe-staleness-is-self-referential).
     install_root="$(expand_path "$(field "$json" install_root)")"
     [ -n "$install_root" ] || install_root="$INSTALL_ROOT_DEFAULT/$app"
     host_track="$install_root/current"
     stamp_install_mode="$(jq -r '.install_mode // ""' "$stamp_path" 2>/dev/null || true)"
     host_head="$(jq -r '.version_id // ""' "$stamp_path" 2>/dev/null || true)"
+    stamp_current="$(jq -r '.current // ""' "$stamp_path" 2>/dev/null || true)"
     gate_tip=""
     stale="true"
-    if [ "$stamp_install_mode" = "local-safe" ] && [[ "$host_head" =~ ^[0-9a-f]{40}$ ]] && [ -L "$install_root/current" ]; then
-      stamp_current="$(jq -r '.current // ""' "$stamp_path" 2>/dev/null || true)"
-      [ -n "$stamp_current" ] || stamp_current="versions/$host_head"
-      if [ "$(readlink "$install_root/current")" = "$stamp_current" ] && [ -d "$install_root/$stamp_current" ]; then
-        stale="false"
-      fi
-    elif [ -L "$install_root/current" ]; then
+    local_safe_install_ok=0
+    if [ -L "$install_root/current" ]; then
       stamp_current="$(readlink "$install_root/current")"
       case "$stamp_current" in
         versions/*)
           host_head="${stamp_current#versions/}"
           if [[ "$host_head" =~ ^[0-9a-f]{40}$ ]] && [ -d "$install_root/$stamp_current" ]; then
-            stale="false"
+            local_safe_install_ok=1
           fi
           ;;
       esac
+    elif [ "$stamp_install_mode" = "local-safe" ] && [[ "$host_head" =~ ^[0-9a-f]{40}$ ]]; then
+      stamp_current="$(jq -r '.current // ""' "$stamp_path" 2>/dev/null || true)"
+      [ -n "$stamp_current" ] || stamp_current="versions/$host_head"
+    fi
+    # Prefer real main tip from gate_main (lastdb:///<repo>#main).
+    if [ -n "$gate_main" ] && IFS=$'\t' read -r track_repo track_ref < <(parse_lastdb_gate_main "$gate_main" || true); then
+      main_tip="$(artifact_main_tip "$track_repo" "$track_ref" || true)"
+      if [ -n "$main_tip" ]; then
+        gate_tip="$main_tip"
+        if [ "$local_safe_install_ok" -eq 1 ] && [ "$host_head" = "$main_tip" ]; then
+          stale="false"
+        else
+          stale="true"
+        fi
+      fi
+    fi
+    # Offline / tip-unknown fallback: integrity of the install only (not lag).
+    if [ -z "$gate_tip" ] && [ "$local_safe_install_ok" -eq 1 ]; then
+      stale="false"
+    fi
+    # Surface restorable previous like artifact status (for proof helpers).
+    if [ -L "$install_root/previous" ]; then
+      artifact_previous="$(readlink "$install_root/previous" || true)"
+    fi
+    if [ -L "$install_root/current" ]; then
+      artifact_current="$(readlink "$install_root/current" || true)"
     fi
     host_head_short="${host_head:0:12}"
     version="$host_head"
@@ -1496,11 +1521,53 @@ install_cmd() {
   artifact_install_app "$app" "$channel"
 }
 
+rollback_local_safe_app() {
+  local app="$1" json install_root activate_bin current_target previous_target
+  local encoded entry source target_raw target link_args=()
+  json="$(require_app_json "$app")"
+  install_root="$(expand_path "$(field "$json" install_root)")"
+  [ -n "$install_root" ] || install_root="$INSTALL_ROOT_DEFAULT/$app"
+  activate_bin="$(command -v last-stack-safe-activate-cli 2>/dev/null || true)"
+  [ -x "$activate_bin" ] || activate_bin="$(cd "$(dirname "$0")" && pwd -P)/last-stack-safe-activate-cli"
+  [ -x "$activate_bin" ] || die "last-stack-safe-activate-cli not found for local-safe rollback"
+  [ -L "$install_root/previous" ] || die "$app has no previous (nothing to roll back to)"
+  previous_target="$(readlink "$install_root/previous")"
+  case "$previous_target" in
+    versions/*) ;;
+    *) die "invalid local-safe previous target: $previous_target" ;;
+  esac
+  previous_id="${previous_target#versions/}"
+  [[ "$previous_id" =~ ^[0-9a-f]{40}$ ]] || die "local-safe previous is not a restorable 40-hex version: $previous_target"
+  [ -d "$install_root/$previous_target" ] || die "previous dir missing: $install_root/$previous_target"
+  while IFS= read -r encoded; do
+    [ -n "$encoded" ] || continue
+    entry="$(printf '%s' "$encoded" | base64_decode)"
+    source="$(printf '%s\n' "$entry" | jq -r '.source // empty')"
+    target_raw="$(printf '%s\n' "$entry" | jq -r '.target // empty')"
+    [ -n "$source" ] && [ -n "$target_raw" ] || continue
+    target="$(expand_path "$target_raw")"
+    link_args+=(--link "$source:$target")
+  done < <(printf '%s\n' "$json" | jq -r '.links[]? | @base64')
+  acquire_install_lock "$app"
+  # shellcheck disable=SC2064
+  trap 'release_install_lock' EXIT
+  "$activate_bin" rollback --app "$app" ${link_args[@]+"${link_args[@]}"}
+  printf 'host-track: rolled back local-safe %s to %s\n' "$app" "$previous_target"
+  release_install_lock
+  trap - EXIT
+}
+
 rollback_cmd() {
-  local app="${1:-}"
+  local app="${1:-}" json install_mode
   [ -n "$app" ] || die "rollback requires an app"
   [ "$#" -eq 1 ] || die "rollback accepts exactly one app"
-  rollback_artifact_app "$app"
+  json="$(require_app_json "$app")"
+  install_mode="$(setting "$json" install_mode)"
+  case "$install_mode" in
+    artifact) rollback_artifact_app "$app" ;;
+    local-safe) rollback_local_safe_app "$app" ;;
+    *) die "$app install_mode=$install_mode does not support rollback (artifact|local-safe)" ;;
+  esac
 }
 
 # Return 0 when an app's installed artifact is behind its channel (status.stale=true).
