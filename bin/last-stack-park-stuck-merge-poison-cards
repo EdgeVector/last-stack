@@ -1,0 +1,286 @@
+#!/usr/bin/env bash
+# Park (or close) stuck-merge / pipeline P0 cards that poison fkanban pickup.
+#
+# Direct Kind:pr todo cards filed for transient stuck CR/PR symptoms without a
+# milestone/North Star (or with empty bodies) cause pickup write-guard no-claims
+# that block unrelated valid work. This helper:
+#   1) closes cards whose underlying CR is point-read closed/merged
+#   2) parks remaining poison-shaped cards to backlog (never needs_human)
+#
+# Intentionally narrow: only todo, only stuck-merge/pipeline-stuck shapes, never
+# parks milestone-linked Kind:pr frontier work that is pickup-ready.
+set -euo pipefail
+
+self_dir="$(cd "$(dirname "$0")" && pwd -P)"
+board_cli=""
+dry_run=0
+json=0
+skip_point_read=0
+
+usage() {
+  cat >&2 <<'EOF'
+usage: last-stack-park-stuck-merge-poison-cards [--board-cli fkanban|kanban]
+                                               [--dry-run] [--json]
+                                               [--skip-point-read]
+
+Reads only the default board's todo column. Parks or closes stuck-merge /
+pipeline-stuck Kind:pr cards that cannot enter doing (missing milestone /
+North Star / cold-start body). Optional LastGit point-read: when a card embeds
+a lastgit CR id and `lastgit cr view` reports closed/merged, move to done.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --board-cli) board_cli="${2:-}"; shift 2 ;;
+    --dry-run) dry_run=1; shift ;;
+    --json) json=1; shift ;;
+    --skip-point-read) skip_point_read=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown arg: $1" >&2; usage; exit 2 ;;
+  esac
+done
+
+if [ -z "$board_cli" ]; then
+  if command -v kanban >/dev/null 2>&1; then board_cli=kanban
+  elif command -v fkanban >/dev/null 2>&1; then board_cli=fkanban
+  else
+    echo "last-stack-park-stuck-merge-poison-cards: need kanban/fkanban on PATH" >&2
+    exit 2
+  fi
+fi
+
+retry=( )
+if [ -x "$self_dir/last-stack-lastdb-retry" ]; then
+  retry=( "$self_dir/last-stack-lastdb-retry" --attempts 3 -- )
+fi
+
+run() {
+  if [ "${#retry[@]}" -gt 0 ]; then
+    "${retry[@]}" "$@"
+  else
+    "$@"
+  fi
+}
+
+todo_json="$(run "$board_cli" list --column todo --json)"
+
+# Classify poison candidates in Python (bash-3.2 portable).
+candidates_json="$(
+  printf '%s\n' "$todo_json" | python3 -c '
+import json
+import re
+import sys
+
+raw = sys.stdin.read()
+try:
+    data = json.loads(raw) if raw.strip() else []
+except Exception:
+    data = []
+if isinstance(data, dict):
+    cards = data.get("cards") or data.get("items") or data.get("todo") or []
+else:
+    cards = data if isinstance(data, list) else []
+
+slug_re = re.compile(
+    r"(?i)^(stuck-lastgit-|stuck-forge-|lastgit-stuck-|stuck-merge-|"
+    r"pipeline-stuck-|stuck-pipeline-)"
+)
+cr_from_slug = re.compile(
+    r"(?i)(?:stuck-lastgit-|lastgit-stuck-)(?P<repo>[a-z0-9._-]+)-cr-(?P<cr>.+)$"
+)
+cr_from_body = re.compile(
+    r"(?i)lastgit://(?P<repo>[a-z0-9._-]+)/cr/(?P<cr>[A-Za-z0-9._-]+)"
+)
+cr_id_line = re.compile(r"(?im)^\s*(?:CR|cr_id|CR-ID):\s*(?P<cr>\S+)\s*$")
+kind_re = re.compile(r"(?im)^\s*Kind:\s*([A-Za-z_-]+)\s*$")
+goal_re = re.compile(r"(?im)^\s*##\s*GOAL\b")
+annotation_only = re.compile(
+    r"(?is)^\s*(?:HANDOFF:|PROGRESS:|BLOCKED:|NEEDS-HUMAN:|PARKED:|PROOF:).*$"
+)
+
+def text(card, key):
+    value = card.get(key) or ""
+    return value if isinstance(value, str) else ""
+
+out = []
+for card in cards:
+    slug = text(card, "slug").strip()
+    if not slug:
+        continue
+    body = text(card, "body")
+    title = text(card, "title")
+    kind = text(card, "kind").strip().lower()
+    if not kind:
+        m = kind_re.search(body)
+        if m:
+            kind = m.group(1).strip().lower()
+    if kind and kind != "pr":
+        continue
+
+    tags = card.get("tags") or []
+    if not isinstance(tags, list):
+        tags = []
+    tags_l = {str(t).lower() for t in tags}
+
+    pipelineish = bool(slug_re.search(slug)) or (
+        "pipeline" in tags_l and ("p0" in tags_l or "merge" in tags_l or "stuck" in tags_l)
+    ) or bool(re.search(r"(?i)\bstuck\b.*\b(cr|pr|merge)\b", title))
+    if not pipelineish:
+        continue
+
+    milestone = text(card, "milestone").strip() or text(card, "milestone_slug").strip()
+    north_star = text(card, "north_star").strip() or text(card, "northStar").strip()
+    has_outcome = bool(milestone or north_star)
+
+    body_stripped = body.strip()
+    empty_or_annotation = (
+        not body_stripped
+        or (annotation_only.match(body_stripped) is not None and not goal_re.search(body))
+        or (len(body_stripped) < 40 and not goal_re.search(body))
+    )
+    cold_start_ok = bool(goal_re.search(body)) and bool(
+        re.search(r"(?im)^\s*Repo:\s*\S+", body)
+    ) and bool(re.search(r"(?im)^\s*Base:\s*\S+", body))
+
+    # Poison = cannot claim: missing outcome linkage, or empty/annotation body.
+    poison = (not has_outcome) or empty_or_annotation or (not cold_start_ok and not has_outcome)
+    if not poison:
+        continue
+
+    repo = ""
+    cr_id = ""
+    m = cr_from_slug.search(slug)
+    if m:
+        repo = m.group("repo")
+        cr_id = m.group("cr")
+    if not cr_id:
+        m = cr_from_body.search(body) or cr_from_body.search(title)
+        if m:
+            repo = m.group("repo")
+            cr_id = m.group("cr")
+    if not cr_id:
+        m = cr_id_line.search(body)
+        if m:
+            cr_id = m.group("cr")
+
+    out.append({
+        "slug": slug,
+        "kind": kind or "pr",
+        "milestone": milestone,
+        "north_star": north_star,
+        "repo": repo,
+        "cr_id": cr_id,
+        "reason": (
+            "missing-outcome" if not has_outcome
+            else "empty-or-annotation-body" if empty_or_annotation
+            else "incomplete-cold-start"
+        ),
+    })
+
+print(json.dumps(out, separators=(",", ":")))
+'
+)"
+
+parked=()
+closed=()
+skipped=()
+reasons_parked=()
+reasons_closed=()
+
+point_read_cr_state() {
+  # prints closed|open|unknown
+  local repo="$1" cr_id="$2"
+  if [ "$skip_point_read" -eq 1 ]; then
+    echo "unknown"
+    return 0
+  fi
+  if [ -z "$repo" ] || [ -z "$cr_id" ]; then
+    echo "unknown"
+    return 0
+  fi
+  if ! command -v lastgit >/dev/null 2>&1; then
+    echo "unknown"
+    return 0
+  fi
+  local view
+  view="$(lastgit cr view "$repo" "$cr_id" --json 2>/dev/null || true)"
+  if [ -z "$view" ]; then
+    echo "unknown"
+    return 0
+  fi
+  printf '%s\n' "$view" | python3 -c '
+import json,sys
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    print("unknown"); raise SystemExit(0)
+state=str(d.get("state") or d.get("status") or "").lower()
+merge_oid=str(d.get("merge_oid") or d.get("merged_oid") or "").strip()
+if state in {"closed","merged"} or merge_oid:
+    print("closed")
+elif state in {"open","draft"}:
+    print("open")
+else:
+    print("unknown")
+' 2>/dev/null || echo "unknown"
+}
+
+n_candidates="$(printf '%s\n' "$candidates_json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+i=0
+while [ "$i" -lt "$n_candidates" ]; do
+  row="$(printf '%s\n' "$candidates_json" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)[int(sys.argv[1])]))' "$i")"
+  slug="$(printf '%s\n' "$row" | python3 -c 'import json,sys; print(json.load(sys.stdin)["slug"])')"
+  repo="$(printf '%s\n' "$row" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("repo") or "")')"
+  cr_id="$(printf '%s\n' "$row" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("cr_id") or "")')"
+  reason="$(printf '%s\n' "$row" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("reason") or "")')"
+
+  state="$(point_read_cr_state "$repo" "$cr_id")"
+  if [ "$state" = "closed" ]; then
+    if [ "$dry_run" -eq 0 ]; then
+      run "$board_cli" mark "$slug" "PARKED: stuck-merge-poison closed-cr repo=${repo:-?} cr=${cr_id:-?} (point-read)" >/dev/null 2>&1 || true
+      run "$board_cli" move "$slug" done >/dev/null 2>&1 || run "$board_cli" move "$slug" backlog >/dev/null 2>&1 || true
+    fi
+    closed+=( "$slug" )
+    reasons_closed+=( "${slug}:closed-cr" )
+  else
+    if [ "$dry_run" -eq 0 ]; then
+      run "$board_cli" mark "$slug" "PARKED: stuck-merge-poison-shape reason=${reason} (file Brain papercut-pipeline-stuck-* instead of todo Kind:pr)" >/dev/null 2>&1 || true
+      # Prefer backlog so pickup never write-guards on this slug again.
+      run "$board_cli" move "$slug" backlog >/dev/null 2>&1 || true
+    fi
+    parked+=( "$slug" )
+    reasons_parked+=( "${slug}:${reason}" )
+  fi
+  i=$((i + 1))
+done
+
+parked_json="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${parked[@]+"${parked[@]}"}")"
+closed_json="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${closed[@]+"${closed[@]}"}")"
+reasons_json="$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${reasons_parked[@]+"${reasons_parked[@]}"}" "${reasons_closed[@]+"${reasons_closed[@]}"}")"
+
+if [ "$json" -eq 1 ]; then
+  PARKED_JSON="$parked_json" CLOSED_JSON="$closed_json" REASONS_JSON="$reasons_json" \
+  SCANNED="$n_candidates" PARKED_N="${#parked[@]}" CLOSED_N="${#closed[@]}" DRY="$dry_run" \
+  python3 - <<'PY'
+import json, os
+print(json.dumps({
+    "scanned_poison": int(os.environ["SCANNED"]),
+    "parked": int(os.environ["PARKED_N"]),
+    "closed": int(os.environ["CLOSED_N"]),
+    "parked_slugs": json.loads(os.environ["PARKED_JSON"]),
+    "closed_slugs": json.loads(os.environ["CLOSED_JSON"]),
+    "reasons": json.loads(os.environ["REASONS_JSON"]),
+    "dry_run": int(os.environ["DRY"]),
+}, separators=(",", ":")))
+PY
+else
+  printf 'scanned_poison=%s parked=%s closed=%s' "$n_candidates" "${#parked[@]}" "${#closed[@]}"
+  if [ "${#parked[@]}" -gt 0 ]; then
+    printf ' parked_slugs=%s' "$(IFS=,; printf '%s' "${parked[*]}")"
+  fi
+  if [ "${#closed[@]}" -gt 0 ]; then
+    printf ' closed_slugs=%s' "$(IFS=,; printf '%s' "${closed[*]}")"
+  fi
+  printf '\n'
+fi

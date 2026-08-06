@@ -662,6 +662,22 @@ if rg -n 'FILE a P0 PR card|pickup-ready P0 kanban card|deploy-pipeline-red-<rep
   exit 1
 fi
 
+# 2026-08-05: merge-babysit must not mint bare todo Kind:pr stuck-merge cards
+# (pickup write-guard poison — papercut-stuck-merge-cards-block-pickup).
+merge_babysit="$ROOT/routines/merge-babysit.md"
+grep -q 'papercut-pipeline-stuck-cr-' "$merge_babysit"
+grep -q 'last-stack-park-stuck-merge-poison-cards' "$merge_babysit"
+grep -q 'preference-always-file-papercuts-in-brain' "$merge_babysit"
+grep -q 'Escalate the rest as Brain papercuts' "$merge_babysit"
+if grep -q '### 4. File the rest' "$merge_babysit"; then
+  echo "merge-babysit must not keep '### 4. File the rest' bare todo Kind:pr authoring" >&2
+  exit 1
+fi
+if grep -q 'file or update one deduped P0 kanban card' "$merge_babysit"; then
+  echo "merge-babysit must not file deduped P0 kanban cards for stuck CRs" >&2
+  exit 1
+fi
+
 bad_pipeline_root="$tmp/bad-pipeline-root"
 mkdir -p "$bad_pipeline_root/routines"
 printf '%s\n' 'LASTGIT_CODE_SOCKET=$HOME/.lastgit/code/data/folddb.sock lastgit list --json' > "$bad_pipeline_root/routines/pipeline-health.md"
