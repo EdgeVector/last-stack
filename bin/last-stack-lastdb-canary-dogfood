@@ -58,9 +58,14 @@ def _resolve_safe_upgrade() -> Path:
 LEDGER = _resolve_ledger()
 SAFE_UPGRADE = _resolve_safe_upgrade()
 
+# Mirrors last-stack-canary-pipeline.ALLOWED — keep the two in step.
+# `no_candidate` / `blocked_situation` are retryable non-verdicts: nothing was
+# tested, so nothing may be concluded about the binary.
 ALLOWED = {
-    "candidate_found": {"dogfood_started"},
-    "dogfood_started": {"dogfood_green", "dogfood_red"},
+    "candidate_found": {"dogfood_started", "no_candidate", "blocked_situation"},
+    "no_candidate": {"candidate_found", "dogfood_started", "blocked_situation"},
+    "blocked_situation": {"candidate_found", "dogfood_started", "no_candidate"},
+    "dogfood_started": {"dogfood_green", "dogfood_red", "no_candidate", "blocked_situation"},
     "dogfood_green": {"soak_started"},
     "dogfood_red": set(),
     "soak_started": {"soak_green", "soak_red"},
@@ -170,9 +175,19 @@ def live_version() -> str:
 
 
 def situations_clear() -> bool:
+    """Scoped Situations preflight for the cutover.
+
+    Was `situations list --json | jq -e "length == 0"`, which stopped the
+    nightly whenever ANY Situation was open anywhere on the host — including a
+    codex harness usage-limit that had nothing to do with lastdbd and sat open
+    for three weeks. Preflight evaluates scope_systems/blocked_actions for this
+    one action, so an unrelated incident no longer parks the release loop while
+    a real upgrade freeze still does.
+    See papercut-canary-situation-fence-is-unscoped-any-situation-reds-the-nightly.
+    """
     cmd = os.environ.get(
         "LAST_STACK_CANARY_SITUATION_CHECK_CMD",
-        'situations list --json | jq -e "length == 0"',
+        "situations preflight --action lastdb-safe-upgrade",
     )
     if cmd in ("", "pass", "true", "ok"):
         return True
@@ -305,6 +320,110 @@ def canary_builds_root() -> Path:
     if env:
         return Path(env)
     return HOME / ".local" / "state" / "last-stack" / "canary-builds"
+
+
+def git_is_ancestor(mirror: Path, ancestor: str, descendant: str) -> bool:
+    proc = run(
+        ["git", "-C", str(mirror), "merge-base", "--is-ancestor", ancestor, descendant],
+        check=False,
+    )
+    return proc.returncode == 0
+
+
+def git_commits_between(mirror: Path, ancestor: str, descendant: str) -> int | None:
+    proc = run(
+        ["git", "-C", str(mirror), "rev-list", "--count", f"{ancestor}..{descendant}"],
+        check=False,
+    )
+    if proc.returncode != 0:
+        return None
+    try:
+        return int((proc.stdout or "").strip())
+    except ValueError:
+        return None
+
+
+def build_main_enabled() -> bool:
+    """Auto-build is on by default; set 0 for hermetic tests and dry-runs."""
+    if os.environ.get("LAST_STACK_CANARY_BUILDS_DIR"):
+        return False  # hermetic isolation signal — never shell out to a real build
+    return os.environ.get("LAST_STACK_CANARY_AUTO_BUILD", "1") == "1"
+
+
+def run_build_main() -> bool:
+    """Stage a build of fold main tip via last-stack-canary-build-main."""
+    cmd = [os.environ.get("LAST_STACK_CANARY_BUILD_MAIN_BIN", "last-stack-canary-build-main"), "--json"]
+    timeout = int(os.environ.get("LAST_STACK_CANARY_BUILD_TIMEOUT_SEC", "10800"))
+    try:
+        proc = run(cmd, check=False, timeout=timeout)
+    except FileNotFoundError:
+        print("dogfood: last-stack-canary-build-main not installed; cannot self-build", file=sys.stderr)
+        return False
+    except subprocess.TimeoutExpired:
+        print(f"dogfood: build-main exceeded {timeout}s", file=sys.stderr)
+        return False
+    if proc.returncode != 0:
+        tail = ((proc.stderr or "") + (proc.stdout or "")).strip().splitlines()[-3:]
+        print(f"dogfood: build-main rc={proc.returncode} {' | '.join(tail)}", file=sys.stderr)
+        return False
+    return True
+
+
+def ancestor_window_commits() -> int:
+    """How far behind main tip a staged build may be and still be dogfooded."""
+    try:
+        return int(os.environ.get("LAST_STACK_CANARY_ANCESTOR_MAX_COMMITS", "25"))
+    except ValueError:
+        return 25
+
+
+def resolve_recent_ancestor_candidate() -> Candidate | None:
+    """Newest staged build that is a real ancestor of main tip, within the window.
+
+    Strictly mainline: a build is eligible only if `git merge-base --is-ancestor`
+    puts it on main's history. A branch build, or a commit main has since had
+    rewritten out from under it, is not an ancestor and is not eligible — this
+    is not a relaxation of the rollback guard, which still runs downstream.
+    """
+    main_oid = fold_main_oid()
+    mirror = fold_mirror()
+    builds = canary_builds_root()
+    if not main_oid or mirror is None or not builds.is_dir():
+        return None
+
+    max_commits = ancestor_window_commits()
+    best: tuple[int, Path, str] | None = None
+    for child in sorted(builds.iterdir(), reverse=True):
+        if not child.is_dir() or not (child / "lastdbd").is_file():
+            continue
+        oid = read_manifest_oid(child / "manifest.json") or read_manifest_oid(
+            child / f"lastdb-{os.environ.get('LAST_STACK_CANARY_TARGET', 'aarch64-apple-darwin')}.manifest.json"
+        )
+        oid = (oid or child.name).strip()
+        if not re.fullmatch(r"[0-9a-f]{7,40}", oid, re.I):
+            continue
+        if not git_is_ancestor(mirror, oid, main_oid):
+            continue
+        behind = git_commits_between(mirror, oid, main_oid)
+        if behind is None or behind > max_commits:
+            continue
+        if best is None or behind < best[0]:
+            best = (behind, child / "lastdbd", oid)
+
+    if best is None:
+        return None
+    behind, path, oid = best
+    return Candidate(
+        candidate=f"lastdb-forge-main-{sanitize(oid[:12])}",
+        version=sanitize(binary_version(str(path))),
+        source="forge-main-ancestor",
+        note=(
+            f"path={path} oid={oid[:12]} main={main_oid[:12]} "
+            f"behind_main={behind} (window={max_commits})"
+        ),
+        safe_upgrade_args=("--candidate", str(path)),
+        source_git_oid=oid,
+    )
 
 
 def resolve_forge_main_candidate() -> Candidate | None:
@@ -521,12 +640,35 @@ def resolve_candidate(args: argparse.Namespace) -> Candidate:
     if local:
         return local
 
-    # 2) Optional GH prerelease that is *exactly* main tip (CDN package of same SHA)
+    # 2) Build it. The gate demanded a build at the exact main tip while nothing
+    #    in the pipeline ever produced one — last-stack-canary-build-main existed
+    #    but no routine called it and dogfood did not either, so both staged
+    #    builds on the host had been placed by hand. fold main moves several
+    #    times a day, so a hand-staged build is stale by construction and the
+    #    nightly red'd on "forge-main-unbuilt" every time. Close the loop here:
+    #    if no build is staged, make one.
+    #    See papercut-canary-dogfood-exact-main-tip-guard-has-no-builder.
+    if build_main_enabled():
+        if run_build_main():
+            local = resolve_forge_main_candidate()
+            if local:
+                return local
+
+    # 3) A staged build that is an ANCESTOR of main tip, within a bounded window.
+    #    Tip equality is unwinnable on a repo with this merge rate: a merge that
+    #    lands between the build and the cutover would otherwise discard a
+    #    perfectly good candidate for being one commit stale. An ancestor is
+    #    real mainline code that simply predates the tip; the delta is recorded.
+    ancestor = resolve_recent_ancestor_candidate()
+    if ancestor:
+        return ancestor
+
+    # 4) Optional GH prerelease that is *exactly* main tip (CDN package of same SHA)
     gh = resolve_github_canary_for_main()
     if gh:
         return gh
 
-    # 3) Fail closed — never pick a stale GH canary by name alone
+    # 5) Fail closed — never pick a stale GH canary by name alone
     return missing_forge_main_candidate()
 
 
@@ -617,12 +759,15 @@ def dogfood(args: argparse.Namespace) -> dict:
         return out
 
     if args.dry_run:
-        # Missing candidate is red even in dry-run so scheduled noops are loud.
+        # A missing candidate stays LOUD — it is still a non-zero exit and still
+        # heartbeats — but it is `no_candidate`, not `dogfood_red`. Loudness and
+        # a false verdict are different things, and conflating them is what made
+        # "nothing was built" indistinguishable from "the build is bad".
         if not candidate.safe_upgrade_args:
             final = advance_if_allowed(
                 args,
                 candidate,
-                "dogfood_red",
+                "no_candidate",
                 f"dry-run: no candidate — {candidate.note}",
             )
             return base_result(
@@ -651,7 +796,7 @@ def dogfood(args: argparse.Namespace) -> dict:
         final = advance_if_allowed(
             args,
             candidate,
-            "dogfood_red",
+            "no_candidate",
             f"{mode_name(args)}: no candidate args — {candidate.note}",
         )
         return base_result(
@@ -665,7 +810,7 @@ def dogfood(args: argparse.Namespace) -> dict:
         final = advance_if_allowed(
             args,
             candidate,
-            "dogfood_red",
+            "blocked_situation",
             f"{mode_name(args)}: situation fence blocked",
         )
         return {

@@ -397,5 +397,33 @@ MEM_CMD="printf 'lastdbd: running\n'" soak_once "$quiet_dir" \
 grep -q 'status=soak_green' "$tmp/m-quiet.out"
 grep -q 'label=memory_guard note=rss_not_reported' "$tmp/m-quiet.err"
 
+# --- an idle lane is a NOOP, not an error ---
+# soak_red used to be selectable, so the watchers latched on an already-decided
+# candidate and exited 1 every hour about a binary that was no longer live.
+idle="$tmp/idle-state"
+mkdir -p "$idle"
+"$CLI" --state-dir "$idle" create dead --version 0.0.1 --source t --note n >/dev/null
+"$CLI" --state-dir "$idle" advance dead dogfood_started --note n >/dev/null
+"$CLI" --state-dir "$idle" advance dead dogfood_green --note n >/dev/null
+"$CLI" --state-dir "$idle" advance dead soak_started --note n >/dev/null
+"$CLI" --state-dir "$idle" advance dead soak_red --note n >/dev/null
+
+out="$("$CLI" --state-dir "$idle" soak-watch --dry-run)"
+rc=$?
+[ "$rc" = "0" ]
+printf '%s\n' "$out" | grep -q 'status=no_active_candidate'
+
+out="$("$CLI" --state-dir "$idle" promote-prepare --dry-run)"
+rc=$?
+[ "$rc" = "0" ]
+printf '%s\n' "$out" | grep -q 'status=no_active_candidate'
+
+# --- a terminal verdict is never re-selected ---
+! printf '%s\n' "$out" | grep -q 'soak_red'
+
+# --- the situation fence default is the SCOPED preflight ---
+grep -q 'situations preflight --action lastdb-safe-upgrade' "$CLI"
+! grep -q 'jq -e "length == 0"' "$CLI"
+
 echo "PASS last-stack-canary-pipeline"
 

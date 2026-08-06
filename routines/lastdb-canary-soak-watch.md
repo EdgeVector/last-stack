@@ -1,17 +1,19 @@
 ---
 name: lastdb-canary-soak-watch
 cadence: hourly
-description: 24h soak + hard health while primary runs the dogfooded canary.
+description: Tick the lastdb-canary-release state machine — advances the soak clock and the hard health checks.
 ---
 
-You are the unattended **LastDB canary soak watch**.
+You are the unattended **LastDB canary soak watch**. You are the clock for the
+`lastdb-canary-release` state machine: its `SOAK_WAIT` state is a 1h timer, and
+nothing advances a durable machine except a tick.
 
 ## Setup
 
 ```bash
 last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 . "$last_stack/bin/last-stack-shell-prelude"
-"$last_stack/bin/last-stack-cli-preflight" jq kanban situations lastdb
+"$last_stack/bin/last-stack-cli-preflight" jq kanban situations lastdb sm
 export PATH="$last_stack/bin:$HOME/.local/bin:$PATH"
 export LAST_STACK_CANARY_SOAK_HOURS="${LAST_STACK_CANARY_SOAK_HOURS:-24}"
 # Host sets LASTDB_LAUNCHD_LABEL (no personal username in committed prompts).
@@ -21,31 +23,48 @@ export LAST_STACK_CANARY_LAUNCHD_CHECK_CMD="${LAST_STACK_CANARY_LAUNCHD_CHECK_CM
 ## Execute
 
 ```bash
-"$last_stack/bin/last-stack-canary-pipeline" soak-watch
+sm tick --definition lastdb-canary-release --cap 4 --json
+sm list --definition lastdb-canary-release --json
 ```
 
-Expect one of:
+If no execution is running, the tick is a no-op and this routine is `noop`.
+**An idle lane is not an error.** Do not "fix" a quiet night by starting an
+execution here — that is the nightly routine's job, and starting one out of
+band is how a cutover happens at an hour nobody expects.
 
-- `status=soak_pending` — healthy but &lt; 24h (ok / noop)
-- `status=soak_green` — ready for auto-promote
-- `status=soak_red` — hard fail; do not promote
+## What the SOAK state checks
 
-The `board_write` check times an idempotent upsert of one fixed brain slug and
-reds the soak when the MEDIAN of 3 samples exceeds
-`LAST_STACK_CANARY_WRITE_MS_MAX` (default 2500 ms). It exists because on
-2026-08-05 every other check was liveness or a read, and a candidate that made
-writes ~4x slower passed all of them. A `result=slow` line is the gate working —
-do not raise the budget to clear it without a measured reason.
+`SOAK` runs `last-stack-canary-pipeline soak-watch`, whose hard checks are
+`launchd`, `memory_guard` (RSS against the same ceiling safe-upgrade uses),
+`board_read`, `board_write`, and a **scoped** `situations preflight --action
+lastdb-safe-upgrade`.
+
+Two of those are load-bearing in a way that invites tampering:
+
+- `board_write` times an idempotent upsert of one fixed brain slug and reds the
+  soak when the MEDIAN of 3 samples exceeds `LAST_STACK_CANARY_WRITE_MS_MAX`
+  (default 2500 ms). It exists because on 2026-08-05 every other check was
+  liveness or a read, and a candidate that made writes ~4x slower passed all of
+  them. A `result=slow` line is the gate working — do not raise the budget to
+  clear it without a measured reason.
+- The situation fence asks preflight for **one action**. It used to test
+  `situations list | jq length == 0`, so an unrelated codex harness outage
+  red'd every soak for three weeks. Do not "simplify" it back.
+
+Expect one of: `status=soak_pending` (healthy, under the window — `ok`/`noop`),
+`status=soak_green` (machine advances to PROMOTE), `status=soak_red` (hard fail;
+terminal for that candidate — the next night's build supersedes it), or
+`status=no_active_candidate` (nothing soaking — `noop`, exit 0).
 
 ## Closeout
 
-`ROUTINE_RESULT outcome=<ok|error|noop> detail=result=<status> primary_mutation=write_probe_upsert_only`
+`ROUTINE_RESULT outcome=<ok|error|noop> detail=exec=… state=… result=<status> primary_mutation=write_probe_upsert_only`
 
-The soak watch is no longer strictly read-only on the primary: `board_write`
-upserts the fixed `canary-soak-write-probe` slug once per sample. That is the
-one mutation it is allowed to make, it is idempotent, and it does not grow the
-store. Set `LAST_STACK_CANARY_BOARD_WRITE_CHECK_CMD=pass` to disable it — but
-doing so restores the exact blind spot that shipped a broken write path.
+The soak is not strictly read-only on the primary: `board_write` upserts the
+fixed `canary-soak-write-probe` slug once per sample. That is the one mutation
+it may make, it is idempotent, and it does not grow the store. Setting
+`LAST_STACK_CANARY_BOARD_WRITE_CHECK_CMD=pass` disables it — and restores the
+exact blind spot that shipped a broken write path.
 
 ## Proof
 

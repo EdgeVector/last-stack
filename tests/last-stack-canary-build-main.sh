@@ -105,7 +105,10 @@ grep -q '^status = "active"$' "$ROOT/config/routines-registry/lastdb-canary-buil
 grep -q 'last-stack-canary-build-main' "$ROOT/routines/lastdb-canary-build-main.md"
 grep -q 'Forge' "$ROOT/routines/lastdb-canary-build-main.md"
 
-# dogfood prompt mentions build stage
-grep -q 'canary-builds' "$ROOT/routines/lastdb-canary-dogfood.md"
+# The nightly no longer stages a build by hand in its prompt — BUILD is the
+# state machine's first state, and it is the machine that pins the candidate.
+# Assert the handoff still exists, in its new home.
+grep -q 'BUILD' "$ROOT/routines/lastdb-canary-dogfood.md"
+grep -q 'context.candidate' "$ROOT/routines/lastdb-canary-dogfood.md"
 
 echo "ok last-stack-canary-build-main"
