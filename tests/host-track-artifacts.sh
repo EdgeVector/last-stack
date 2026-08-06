@@ -392,3 +392,111 @@ jq -e --arg tip "$oid_v2" '.source_oid == $tip' \
   || fail "stable channel was not promoted to new main tip"
 
 printf 'ok: track_gate_main promotes green main and reports lag correctly\n'
+
+# ── dist/* producers (situations/fkanban layout) — no synthetic bin/ ─────────
+# Fleet proof failed with "staged artifact missing bin/ (incomplete stage)" when
+# CAS only published dist/situations + dist/fsituations. Registry links point at
+# dist/*; host-track must accept that as a complete payload.
+dist_app_home="$tmp/dist-app-home"
+mkdir -p "$dist_app_home/.local/bin" "$tmp/cas/channels/sitcli" "$tmp/cas/manifests"
+export HOME="$dist_app_home"
+export PATH="$dist_app_home/.local/bin:$tmp/bin:$PATH"
+export HOST_TRACK_REGISTRY="$tmp/dist-registry.json"
+export HOST_TRACK_STAMP_DIR="$dist_app_home/stamps"
+mkdir -p "$HOST_TRACK_STAMP_DIR"
+
+cat > "$HOST_TRACK_REGISTRY" <<'JSON'
+{
+  "defaults": {
+    "install_mode": "artifact",
+    "artifact_channel": "stable"
+  },
+  "apps": [
+    {
+      "app": "sitcli",
+      "kind": "artifact-bundle",
+      "command": "sitcli",
+      "artifact_app": "sitcli",
+      "artifact_root": "$HOME/../cas",
+      "install_root": "$HOME/apps/sitcli",
+      "links": [
+        {"source": "dist/sitcli", "target": "$HOME/.local/bin/sitcli"}
+      ],
+      "notes": "dist-only payload regression (situations/fkanban shape)"
+    }
+  ]
+}
+JSON
+
+publish_dist_fixture() {
+  local digest="$1" oid="$2" content="$3" payload sha size blob manifest
+  payload="$tmp/dist-payload"
+  printf '%s\n' "$content" > "$payload"
+  sha="$(shasum -a 256 "$payload" | awk '{print $1}')"
+  size="$(wc -c < "$payload" | tr -d ' ')"
+  blob="$tmp/cas/blobs/sha256/${sha:0:2}/$sha"
+  mkdir -p "$(dirname "$blob")"
+  cp "$payload" "$blob"
+  manifest="$tmp/cas/manifests/$digest.json"
+  jq -n \
+    --arg digest "$digest" --arg oid "$oid" --arg sha "$sha" --argjson size "$size" \
+    '{schema_version: 1, app: "sitcli", repo: "EdgeVector/sitcli", source_oid: $oid,
+      platform: "test-arm64", created_at: "2026-08-06T00:00:00Z",
+      files: [{path: "dist/sitcli", sha256: $sha, size: $size, mode: 493}],
+      manifest_digest: $digest}' > "$manifest"
+  cp "$manifest" "$tmp/cas/channels/sitcli/stable.json"
+}
+
+# lastgit stub already on PATH from earlier fixture; ensure resolve still works
+# for sitcli via the same stub shape — re-install a lastgit that serves sitcli.
+cat > "$tmp/bin/lastgit" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "artifact" ] && [ "${2:-}" = "resolve" ]; then
+  app=""
+  channel="stable"
+  root=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --app) app="$2"; shift 2 ;;
+      --channel) channel="$2"; shift 2 ;;
+      --root) root="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  cat "$root/channels/$app/$channel.json"
+  exit 0
+fi
+if [ "${1:-}" = "ci" ] && [ "${2:-}" = "status" ]; then
+  echo '{"state":"success","contexts":[{"context":"ci-required","state":"success"}]}'
+  exit 0
+fi
+echo "unexpected lastgit $*" >&2
+exit 1
+SH
+chmod +x "$tmp/bin/lastgit"
+
+digest_dist="$(printf 'd%.0s' {1..64})"
+oid_dist="$(printf '4%.0s' {1..40})"
+publish_dist_fixture "$digest_dist" "$oid_dist" $'#!/usr/bin/env bash\necho dist-ok'
+
+# Must NOT die with "missing bin/ (incomplete stage)"
+if ! "$ROOT/bin/host-track" install sitcli >/dev/null 2>"$tmp/dist-install.err"; then
+  fail "dist-only install failed (expected complete stage via links): $(cat "$tmp/dist-install.err")"
+fi
+[ "$(readlink "$HOME/apps/sitcli/current")" = "versions/$digest_dist" ] \
+  || fail "dist-only install did not activate versions/$digest_dist"
+[ -x "$HOME/apps/sitcli/current/dist/sitcli" ] \
+  || fail "dist-only payload missing current/dist/sitcli"
+[ ! -d "$HOME/apps/sitcli/current/bin" ] \
+  || fail "dist-only fixture unexpectedly grew a bin/ tree"
+[ "$(sitcli)" = dist-ok ] || fail "dist-only PATH link did not run sitcli"
+"$ROOT/bin/host-track" status --json sitcli | jq -e \
+  --arg d "$digest_dist" \
+  '.install_mode == "artifact" and .stale == false and .manifest_digest == $d' >/dev/null \
+  || fail "dist-only status not fresh after install"
+"$ROOT/bin/host-track" refresh --force-if-stale sitcli >/dev/null 2>"$tmp/dist-refresh.err" \
+  || fail "dist-only refresh failed: $(cat "$tmp/dist-refresh.err")"
+[ "$(sitcli)" = dist-ok ] || fail "dist-only still works after refresh"
+
+printf 'ok: dist-only artifact install/refresh (no synthetic bin/) \n'
