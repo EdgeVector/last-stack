@@ -6,7 +6,7 @@
 #   last-stack-portal-wt start <branch-or-slug>   # fetch venue tip + worktree
 #   last-stack-portal-wt list
 #   last-stack-portal-wt path
-#   last-stack-portal-wt rm <worktree-name>
+#   last-stack-portal-wt rm <branch-or-slug-or-dir>  # same ids as start
 #   last-stack-portal-wt fetch
 set -euo pipefail
 
@@ -15,6 +15,42 @@ CACHE_ROOT="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}"
 WT_ROOT="${WORKTREES_DIR:-$HOME/.fkanban/worktrees}"
 
 die() { printf 'portal-wt: %s\n' "$*" >&2; exit 1; }
+
+# Normalize a start/rm identifier to (branch, dir-basename).
+# Accepts: kanban/foo | foo | SLUG-kanban-foo | absolute/relative path.
+# Branch rule matches cmd_start: bare slug → kanban/<slug>.
+worktree_ids_from_spec() {
+  local spec="$1"
+  local branch name
+  case "$spec" in
+    /*|./*|../*)
+      # Absolute / relative path form — basename only for branch guess.
+      name="$(basename "$spec")"
+      branch=""
+      ;;
+    *)
+      branch="$spec"
+      case "$branch" in
+        */*) ;;
+        *)
+          # If it already looks like a portal-prefixed dir (slug-kanban-…),
+          # do not re-prefix with kanban/.
+          case "$branch" in
+            "${SLUG}-"*) branch="" ;;
+            *) branch="kanban/$branch" ;;
+          esac
+          ;;
+      esac
+      if [ -n "$branch" ]; then
+        name="$(printf '%s' "$branch" | tr '/' '-')"
+        name="${SLUG}-${name}"
+      else
+        name="$spec"
+      fi
+      ;;
+  esac
+  printf '%s\t%s\n' "${branch:-}" "$name"
+}
 
 find_portal() {
   local d="${PORTAL_DIR:-}"
@@ -83,13 +119,111 @@ cmd_list() {
   fi
 }
 
+# Resolve an rm/start identifier to an existing worktree path, or empty.
+# Tries (in order): absolute/relative path, WT_ROOT/<arg>, portal-prefixed
+# basename derived from the same branch rules as start, bare basename.
+resolve_worktree_path() {
+  local spec="$1"
+  local branch name candidate
+  local ids
+  ids="$(worktree_ids_from_spec "$spec")"
+  branch="${ids%%	*}"
+  name="${ids#*	}"
+
+  # 1) literal path (absolute or relative)
+  if [ -e "$spec" ]; then
+    printf '%s\n' "$(cd "$spec" 2>/dev/null && pwd -P || printf '%s' "$spec")"
+    return 0
+  fi
+  # 2) WT_ROOT + exact arg (dir-basename form agents already know)
+  candidate="$WT_ROOT/$spec"
+  if [ -e "$candidate" ]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+  # 3) portal-prefixed name derived from branch/slug (same as start)
+  if [ -n "$name" ]; then
+    candidate="$WT_ROOT/$name"
+    if [ -e "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+# Near-match suggestions when rm cannot resolve. Never claim "already gone"
+# while a same-portal worktree still exists under another name.
+suggest_worktree_near_miss() {
+  local spec="$1"
+  local needle suggestion="" expected=""
+  local ids branch name
+  ids="$(worktree_ids_from_spec "$spec")"
+  branch="${ids%%	*}"
+  name="${ids#*	}"
+  needle="$(printf '%s' "${branch:-$spec}" | tr '/' '-')"
+  expected="$name"
+  # Only suggest basenames that actually exist on disk. Otherwise agents
+  # misread a soft miss as "already cleaned" while multi-GB worktrees remain.
+  local d base base_lc needle_lc token
+  needle_lc="$(printf '%s' "$needle" | tr '[:upper:]' '[:lower:]')"
+  if [ -n "$expected" ] && [ -e "$WT_ROOT/$expected" ]; then
+    suggestion="$expected"
+  fi
+  if [ -z "$suggestion" ] && [ -d "$WT_ROOT" ]; then
+    for d in "$WT_ROOT"/"${SLUG}"-*; do
+      [ -e "$d" ] || continue
+      base="$(basename "$d")"
+      base_lc="$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')"
+      case "$base_lc" in
+        *"$needle_lc"*)
+          suggestion="$base"
+          break
+          ;;
+      esac
+    done
+  fi
+  # Fallback: share a meaningful token (len>=6) from the requested id so a
+  # mistyped suffix still surfaces the live worktree basename.
+  if [ -z "$suggestion" ] && [ -d "$WT_ROOT" ] && [ -n "$needle_lc" ]; then
+    while IFS= read -r token; do
+      [ -n "$token" ] || continue
+      for d in "$WT_ROOT"/"${SLUG}"-*; do
+        [ -e "$d" ] || continue
+        base="$(basename "$d")"
+        base_lc="$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')"
+        case "$base_lc" in
+          *"$token"*)
+            suggestion="$base"
+            break 2
+            ;;
+        esac
+      done
+    done <<EOF
+$(printf '%s' "$needle_lc" | tr '-' '\n' | awk 'length>=6 {print}')
+EOF
+  fi
+  if [ -n "$suggestion" ]; then
+    printf 'portal-wt: worktree not removed for %s\n' "$spec" >&2
+    printf 'portal-wt: no path matched that id; likely basename is %s\n' "$suggestion" >&2
+    printf 'portal-wt: try: wt rm %s\n' "$suggestion" >&2
+    printf 'portal-wt: (NOT cleaned up — disk worktree may still exist)\n' >&2
+  else
+    # Confirmed absence: no same-portal dir matches. Safe "already gone".
+    printf 'portal-wt: worktree already gone for %s (no match under %s/%s-*)\n' \
+      "$spec" "$WT_ROOT" "$SLUG" >&2
+  fi
+}
+
 cmd_rm() {
   read_portal
-  local name="${1:-}"
-  [ -n "$name" ] || die "usage: wt rm <worktree-dir-name>"
-  local path="$WT_ROOT/$name"
-  [ -e "$path" ] || path="$name"
-  [ -e "$path" ] || die "worktree not found: $name"
+  local spec="${1:-}"
+  [ -n "$spec" ] || die "usage: wt rm <branch-or-slug-or-dir>  (same identifiers as wt start)"
+  local path
+  if ! path="$(resolve_worktree_path "$spec")"; then
+    suggest_worktree_near_miss "$spec"
+    exit 1
+  fi
   ensure_cache
   $GIT -C "$CACHE" worktree remove --force "$path" 2>/dev/null \
     || rm -rf "$path"
@@ -133,11 +267,19 @@ cmd_start() {
   printf 'slug=%s\nbranch=%s\ncreated=%s\n' \
     "$SLUG" "$branch" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     >"$path/.portal-worktree"
-  # Keep the marker untracked in every worktree.
+  # Keep the marker untracked in every worktree. Linked worktrees use a
+  # `.git` *file* (not dir); write exclude via git-dir, never path/.git/info.
   if [ -d "$path/.git" ] || [ -f "$path/.git" ]; then
-    git -C "$path" check-ignore -q .portal-worktree 2>/dev/null || \
-      printf '\n# local agent marker — never commit (machine-local)\n.portal-worktree\n' \
-        >>"$path/.git/info/exclude"
+    if ! git -C "$path" check-ignore -q .portal-worktree 2>/dev/null; then
+      gitdir="$(git -C "$path" rev-parse --git-dir 2>/dev/null || true)"
+      if [ -n "${gitdir:-}" ]; then
+        mkdir -p "$gitdir/info" 2>/dev/null || true
+        if [ -d "$gitdir/info" ]; then
+          printf '\n# local agent marker — never commit (machine-local)\n.portal-worktree\n' \
+            >>"$gitdir/info/exclude"
+        fi
+      fi
+    fi
   fi
 
   printf 'portal-wt: ready\n'
