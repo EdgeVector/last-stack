@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+# last-stack-portal-live-checkout — prove a configured repo path is a *live*
+# product checkout before routines grep or run scripts against it.
+#
+# EdgeVector workspace portals (~/code/edgevector/<slug>) are front doors
+# (bin/wt + .portal/, no .git). Routines that assume a portal is a usable
+# checkout fail with bare git errors or silently skip live proof. This helper:
+#
+#   1. Passes through a real git worktree (has .git and rev-parse works).
+#   2. Detects a portal and starts a *dedicated* worktree via portal-wt
+#      (never borrows ~/.fkanban/worktrees from another card).
+#   3. Otherwise fails loudly with a message that includes
+#      "portal, not a checkout" when the path looks portal-shaped, or a
+#      clear missing/unusable path reason otherwise.
+#
+# Usage:
+#   last-stack-portal-live-checkout [--name <slug>] [--] <path>
+#
+# On success (exit 0): prints the absolute live checkout path on stdout.
+# On failure (exit 2 portal / exit 1 other): message on stderr, no path.
+#
+# Env:
+#   LAST_STACK_ROOT / PATH for last-stack-portal-wt (or ROOT/bin sibling).
+#   WORKTREES_DIR — honored by portal-wt for the dedicated worktree root.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+PORTAL_WT="${LAST_STACK_PORTAL_WT:-$ROOT/bin/last-stack-portal-wt}"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  last-stack-portal-live-checkout [--name <slug>] [--] <path>
+
+Resolve <path> to a live product checkout (real git worktree).
+
+  --name <slug>   Worktree purpose name when starting from a portal
+                  (default: portal-live-checkout). Used as the branch/worktree
+                  label so concurrent routines do not collide.
+
+Prints the absolute checkout path on stdout and exits 0.
+Fails non-zero if the path is missing, is a portal that cannot be
+materialized, or is neither a git worktree nor a portal.
+EOF
+}
+
+die() {
+  printf 'last-stack-portal-live-checkout: %s\n' "$*" >&2
+  exit 1
+}
+
+die_portal() {
+  # Contract message for regression fixtures and agent diagnosis.
+  printf 'last-stack-portal-live-checkout: portal, not a checkout — %s\n' "$*" >&2
+  exit 2
+}
+
+is_portal() {
+  local path="$1"
+  [ -d "$path/.portal" ] &&
+    [ -f "$path/.portal/remote" ] &&
+    [ -f "$path/.portal/slug" ]
+}
+
+is_live_git_worktree() {
+  local path="$1"
+  { [ -d "$path/.git" ] || [ -f "$path/.git" ]; } &&
+    git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1
+}
+
+name="portal-live-checkout"
+path=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --name)
+      name="${2:-}"
+      [ -n "$name" ] || die "--name needs a value"
+      shift 2
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      die "unknown arg: $1"
+      ;;
+    *)
+      path="$1"
+      shift
+      break
+      ;;
+  esac
+done
+
+if [ -z "$path" ] && [ "$#" -gt 0 ]; then
+  path="$1"
+  shift
+fi
+[ -n "$path" ] || die "usage: last-stack-portal-live-checkout [--name slug] <path>"
+[ "$#" -eq 0 ] || die "unexpected extra args: $*"
+
+if [ ! -e "$path" ]; then
+  die "path does not exist: $path"
+fi
+
+# Expand to absolute for stable stdout.
+if [ -d "$path" ]; then
+  path="$(cd "$path" && pwd -P)"
+else
+  die "path is not a directory: $path"
+fi
+
+if is_live_git_worktree "$path"; then
+  printf '%s\n' "$path"
+  exit 0
+fi
+
+if is_portal "$path"; then
+  if [ ! -x "$PORTAL_WT" ] && [ ! -f "$PORTAL_WT" ]; then
+    die_portal "portal-wt helper missing at $PORTAL_WT (path=$path)"
+  fi
+  if [ ! -x "$path/bin/wt" ] && [ ! -x "$PORTAL_WT" ]; then
+    die_portal "portal has no bin/wt and portal-wt is unusable (path=$path)"
+  fi
+
+  # Prefer the installed last-stack portal-wt with --portal so we do not depend
+  # on cwd; fall back to the portal's own bin/wt wrapper.
+  start_out=""
+  start_rc=0
+  if [ -x "$PORTAL_WT" ] || [ -f "$PORTAL_WT" ]; then
+    set +e
+    start_out="$(bash "$PORTAL_WT" --portal "$path" start "$name" 2>&1)"
+    start_rc=$?
+    set -e
+  else
+    set +e
+    start_out="$(
+      cd "$path" && ./bin/wt start "$name" 2>&1
+    )"
+    start_rc=$?
+    set -e
+  fi
+
+  if [ "$start_rc" -ne 0 ]; then
+    die_portal "failed to start dedicated worktree name=$name path=$path (rc=$start_rc): $(printf '%s' "$start_out" | tr '\n' ' ' | head -c 400)"
+  fi
+
+  # portal-wt prints "  path    <abs>" or (already exists) the path alone.
+  live="$(
+    printf '%s\n' "$start_out" | awk '
+      /^[[:space:]]*path[[:space:]]+/ {
+        sub(/^[[:space:]]*path[[:space:]]+/, "")
+        print
+        found=1
+        exit
+      }
+      # already-exists form: last non-empty line that looks like an abs path
+      /^\// { last=$0 }
+      END { if (!found && last != "") print last }
+    '
+  )"
+
+  if [ -z "$live" ] || [ ! -d "$live" ]; then
+    die_portal "portal-wt did not return a worktree path for name=$name path=$path"
+  fi
+
+  if ! is_live_git_worktree "$live"; then
+    die_portal "resolved path is still not a git worktree: $live (from portal $path)"
+  fi
+
+  # Guard: never return the portal directory itself.
+  if [ "$live" = "$path" ]; then
+    die_portal "refusing to return portal path as live checkout: $path"
+  fi
+
+  printf '%s\n' "$live"
+  exit 0
+fi
+
+# Not a portal and not a worktree — fail without the portal contract phrase
+# only when it is truly not portal-shaped; if .portal exists partially, use it.
+if [ -d "$path/.portal" ] || [ -x "$path/bin/wt" ]; then
+  die_portal "incomplete portal at $path (missing .portal/remote+slug or unusable)"
+fi
+
+die "not a git worktree and not a portal: $path"
