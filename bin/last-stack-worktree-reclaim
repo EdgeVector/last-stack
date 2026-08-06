@@ -10,7 +10,10 @@
 #   last-stack-worktree-reclaim --sweep-stale [--max-age-hours 48] [--dry-run]
 #
 # Reclaim one worktree:
-#   1. Skip if a live process has cwd inside it (unless --force-live).
+#   1. Skip if the worktree is "live" (unless --force-live). Live means any of:
+#        - a process has cwd inside it
+#        - a process is executing an image under it (e.g. target/release/lastdb)
+#        - recent cargo/node build markers under target/ / node_modules/
 #   2. Strip generated caches: target/, node_modules/, .next/, dist/, build/
 #      (and nested up to depth 4). Directories git TRACKS are kept — some repos
 #      commit prebuilt output under those names on purpose.
@@ -23,7 +26,10 @@
 #
 # --sweep-stale: reclaim every managed worktree whose board card is NOT in
 # doing and whose directory mtime is older than --max-age-hours (default 48).
-# Always strips build caches even for younger / kept trees.
+# Generated-cache strip only runs when disk free space is under the free-floor
+# (LAST_STACK_RECLAIM_FREE_FLOOR_GIB, default 80 GiB) AND the worktree is not
+# live. Age-gated removal still runs when free is abundant, but still refuses
+# to strip/remove live trees.
 #
 # Exit 0 on success (including dry-run / nothing-to-do). Never fails the caller
 # hard for best-effort cleanup of a missing worktree.
@@ -31,12 +37,24 @@ set -euo pipefail
 
 self_dir="$(cd "$(dirname "$0")" && pwd -P)"
 home="${HOME:-/Users/REPLACE}"
-worktree_roots=(
-  "${WORKTREES_DIR:-$home/.fkanban/worktrees}"
-  "$home/.kanban/worktrees"
-)
+# When WORKTREES_DIR is explicitly set (tests / agents), only scan that root so
+# a private fixture never also walks the real ~/.kanban pool.
+if [ -n "${WORKTREES_DIR:-}" ]; then
+  worktree_roots=("$WORKTREES_DIR")
+else
+  worktree_roots=(
+    "$home/.fkanban/worktrees"
+    "$home/.kanban/worktrees"
+  )
+fi
 patch_root="${LAST_STACK_WORKTREE_PATCH_DIR:-$home/.local/state/last-stack/runtime/worktree-patches}"
 mkdir -p "$patch_root" 2>/dev/null || true
+
+# Free GiB at or above this floor → skip broad generated-cache strip in --sweep-stale.
+# Override with LAST_STACK_RECLAIM_FREE_FLOOR_GIB=0 to force strip (tests / emergency).
+free_floor_gib="${LAST_STACK_RECLAIM_FREE_FLOOR_GIB:-80}"
+# Build-marker freshness window (minutes). Fresh fingerprints imply an in-flight build.
+build_fresh_min="${LAST_STACK_RECLAIM_BUILD_FRESH_MIN:-30}"
 
 slug=""
 branch=""
@@ -45,6 +63,10 @@ sweep_stale=0
 max_age_hours=48
 dry_run=0
 force_live=0
+
+# Optional once-per-run live index file (paths of live worktree roots / prefixes).
+# Built for --sweep-stale so we pay O(processes) once, not per worktree.
+live_index=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -70,23 +92,196 @@ fi
 
 log() { printf 'last-stack-worktree-reclaim: %s\n' "$*"; }
 
+# Free space on the data volume hosting $HOME (GiB). macOS df -g; Linux df -BG.
+free_gib_home() {
+  local g
+  if g="$(df -g "$home" 2>/dev/null | awk 'NR==2 {print $4}')"; then
+    case "$g" in
+      ''|*[!0-9]*) ;;
+      *) printf '%s\n' "$g"; return 0 ;;
+    esac
+  fi
+  if g="$(df -BG "$home" 2>/dev/null | awk 'NR==2 {print $4}' | tr -d 'G')"; then
+    case "$g" in
+      ''|*[!0-9]*) ;;
+      *) printf '%s\n' "$g"; return 0 ;;
+    esac
+  fi
+  # Unknown → treat as under pressure so we still reclaim (fail-open for cleanup).
+  printf '0\n'
+}
+
+under_disk_pressure() {
+  local free
+  free="$(free_gib_home)"
+  if [ "${free:-0}" -lt "${free_floor_gib:-80}" ]; then
+    return 0
+  fi
+  return 1
+}
+
+# Normalize a path for prefix matching (strip trailing slash).
+_norm_path() {
+  local p="${1%/}"
+  printf '%s\n' "$p"
+}
+
+# True if $child is $parent or under $parent.
+_path_under() {
+  local parent child
+  parent="$(_norm_path "$1")"
+  child="$(_norm_path "$2")"
+  case "$child" in
+    "$parent"|"$parent"/*) return 0 ;;
+  esac
+  return 1
+}
+
+# Fresh cargo/node build markers under the worktree (cheap liveness signal).
+# Bound depth hard — unbounded find over multi-GB target/ stalls the hourly sweep.
+has_fresh_build_markers() {
+  local wt="$1"
+  local min="${build_fresh_min:-30}"
+  local f
+  # Cargo: .rustc_info.json at target root is rewritten during builds.
+  f="$wt/target/.rustc_info.json"
+  if [ -f "$f" ]; then
+    if find "$f" -mmin "-${min}" 2>/dev/null | head -n 1 | grep -q .; then
+      return 0
+    fi
+  fi
+  # Fingerprint invoked.timestamp (depth-bounded under target/{debug,release}).
+  if [ -d "$wt/target" ]; then
+    if find "$wt/target" -maxdepth 5 -name 'invoked.timestamp' -mmin "-${min}" \
+      2>/dev/null | head -n 1 | grep -q .; then
+      return 0
+    fi
+  fi
+  # Node / Next shallow markers
+  if [ -d "$wt/.next" ] || [ -d "$wt/node_modules" ]; then
+    if find "$wt" -maxdepth 3 \( -name 'BUILD_ID' -o -name '.yarn-integrity' \) \
+      -mmin "-${min}" 2>/dev/null | head -n 1 | grep -q .; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+# Process cwd or command/exe path under worktree.
+# Prefer a prebuilt live_index when present (sweep path). Never per-PID
+# double-lsof — that is O(processes) and timed out at ~minutes on a busy host.
+has_live_process() {
+  local wt="$1"
+  local line
+  wt="$(_norm_path "$wt")"
+
+  if [ -n "${live_index:-}" ] && [ -f "$live_index" ]; then
+    while IFS= read -r line; do
+      [ -z "$line" ] && continue
+      case "$line" in
+        "$wt"|"$wt"/*) return 0 ;;
+      esac
+      # Index may hold a parent path that equals the worktree root.
+      if _path_under "$wt" "$line"; then
+        return 0
+      fi
+    done <"$live_index"
+    return 1
+  fi
+
+  # Single-target path: bulk cwd list (one lsof) + command-line path match.
+  if lsof -nP -a -u "$(id -un)" -d cwd -Fn 2>/dev/null \
+    | awk -v wt="$wt" '
+        /^n/ {
+          p = substr($0, 2)
+          sub(/\/$/, "", p)
+          if (p == wt || index(p, wt "/") == 1) { found = 1 }
+        }
+        END { exit !found }
+      '; then
+    return 0
+  fi
+  # Product binary or build tool with worktree path on argv (absolute path exec).
+  # pgrep -f matches the full command line; covers target/release/<bin> runs
+  # whose cwd is elsewhere.
+  if pgrep -f "$wt" >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
+# Combined live predicate used by every strip/remove path.
+# Keeps the historical name has_live_cwd for callers/tests; semantics are broader.
 has_live_cwd() {
   local wt="$1"
-  local p cwd
-  # Cheap scan: common agent/build tools only
-  for p in $(pgrep -u "$(id -u)" -f 'cargo|rustc|clippy|bun|node|claude|codex|grok|python|git' 2>/dev/null || true); do
-    cwd=$(lsof -a -p "$p" -d cwd 2>/dev/null | awk 'NR==2 {print $NF}')
-    case "$cwd" in
-      "$wt"|"$wt"/*) return 0 ;;
-    esac
-  done
+  [ -d "$wt" ] || return 1
+  if has_live_process "$wt"; then
+    return 0
+  fi
+  if has_fresh_build_markers "$wt"; then
+    return 0
+  fi
   return 1
+}
+
+# One-shot process scan → live_index lines (cwd paths + argv path tokens).
+# Cost: one bulk lsof (cwd) + one ps, not O(processes)×lsof.
+# LAST_STACK_RECLAIM_EXTRA_LIVE_PATHS: colon-separated absolute paths forced live
+# (tests inject a fixture cwd without relying on bulk lsof alone).
+build_live_index() {
+  local out="$1"
+  local root cmd tok extra
+  : >"$out"
+  # Explicit extra live paths (tests / callers).
+  if [ -n "${LAST_STACK_RECLAIM_EXTRA_LIVE_PATHS:-}" ]; then
+    IFS=':' read -r -a _extra_paths <<< "${LAST_STACK_RECLAIM_EXTRA_LIVE_PATHS}"
+    for extra in "${_extra_paths[@]}"; do
+      [ -n "$extra" ] || continue
+      printf '%s\n' "$(_norm_path "$extra")" >>"$out"
+    done
+  fi
+  # All user cwds in one lsof (skip when LAST_STACK_RECLAIM_SKIP_LSOF=1 for
+  # fast unit tests that inject EXTRA_LIVE_PATHS).
+  if [ "${LAST_STACK_RECLAIM_SKIP_LSOF:-0}" != "1" ]; then
+    lsof -nP -a -u "$(id -un)" -d cwd -Fn 2>/dev/null \
+      | awk '/^n/ { p = substr($0, 2); sub(/\/$/, "", p); if (p != "") print p }' \
+      >>"$out" || true
+  fi
+  # Command lines that mention a managed worktree root (absolute-path product
+  # binaries, cargo invocations with explicit manifest paths, etc.).
+  for root in "${worktree_roots[@]}"; do
+    [ -d "$root" ] || continue
+    root="$(_norm_path "$root")"
+    while IFS= read -r cmd; do
+      [ -z "$cmd" ] && continue
+      # Emit space-separated tokens that contain the root prefix.
+      # shellcheck disable=SC2086
+      for tok in $cmd; do
+        case "$tok" in
+          "$root"|"$root"/*)
+            printf '%s\n' "$(_norm_path "$tok")" >>"$out"
+            ;;
+        esac
+      done
+    done < <(ps -axo command= 2>/dev/null | grep -F -- "$root" || true)
+  done
+  if [ -s "$out" ]; then
+    sort -u "$out" -o "$out" 2>/dev/null || true
+  fi
 }
 
 strip_generated() {
   local wt="$1"
   local d tracked
   local is_repo=0
+
+  # Shared call-site guard (won't-undo): every path that deletes target/ must
+  # refuse when the worktree is live. --force-live bypasses for explicit ops.
+  if [ "$force_live" -eq 0 ] && has_live_cwd "$wt"; then
+    log "skip strip live $wt"
+    return 0
+  fi
+
   if git -C "$wt" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     is_repo=1
   fi
@@ -228,6 +423,10 @@ find_slug_paths() {
 }
 
 doing_slugs() {
+  # Tests / offline runs can skip the board round-trip.
+  if [ "${LAST_STACK_RECLAIM_SKIP_BOARD:-0}" = "1" ]; then
+    return 0
+  fi
   local cli=""
   if command -v kanban >/dev/null 2>&1; then cli=kanban
   else
@@ -253,6 +452,8 @@ PY
 
 reclaimed=0
 stripped_only=0
+strip_skipped_live=0
+strip_skipped_pressure=0
 
 if [ -n "$path_arg" ]; then
   remove_worktree "$path_arg"
@@ -282,14 +483,39 @@ if [ "$sweep_stale" -eq 1 ]; then
   doing_slugs >"$protect_file" || true
   now_epoch="$(date -u +%s)"
   max_age_sec=$((max_age_hours * 3600))
+
+  # Once-per-sweep live process index (cwd + exe paths).
+  live_index="$(mktemp)"
+  build_live_index "$live_index" || true
+
+  free_now="$(free_gib_home)"
+  do_strip=1
+  if ! under_disk_pressure; then
+    do_strip=0
+    strip_skipped_pressure=1
+    log "broad_sweep_skipped_disk_pressure free_gib=${free_now} floor_gib=${free_floor_gib}"
+  else
+    log "disk_pressure free_gib=${free_now} floor_gib=${free_floor_gib} strip_enabled=1"
+  fi
+
   for root in "${worktree_roots[@]}"; do
     [ -d "$root" ] || continue
     for d in "$root"/*; do
       [ -d "$d" ] || continue
       name="$(basename "$d")"
-      # always strip generated caches (cheap, even for protected)
-      strip_generated "$d"
-      stripped_only=$((stripped_only + 1))
+
+      # Generated-cache strip: only under disk pressure, and never for live trees.
+      # Guard lives inside strip_generated; we still skip the call when free.
+      if [ "$do_strip" -eq 1 ]; then
+        if [ "$force_live" -eq 0 ] && has_live_cwd "$d"; then
+          log "keep live strip-skip $name"
+          strip_skipped_live=$((strip_skipped_live + 1))
+        else
+          strip_generated "$d"
+          stripped_only=$((stripped_only + 1))
+        fi
+      fi
+
       # protect doing slugs (substring match)
       prot=0
       while IFS= read -r s; do
@@ -301,6 +527,10 @@ if [ "$sweep_stale" -eq 1 ]; then
       case "$name" in
         salvage-*|tombstone-*|locked*) prot=1 ;;
       esac
+      # live process / fresh build: never remove the worktree either
+      if [ "$force_live" -eq 0 ] && has_live_cwd "$d"; then
+        prot=1
+      fi
       if [ "$prot" -eq 1 ]; then
         log "keep protected $name"
         continue
@@ -316,8 +546,9 @@ if [ "$sweep_stale" -eq 1 ]; then
       reclaimed=$((reclaimed + 1))
     done
   done
-  rm -f "$protect_file"
+  rm -f "$protect_file" "$live_index"
+  live_index=""
 fi
 
-log "done reclaimed=$reclaimed stripped_paths=$stripped_only dry_run=$dry_run"
+log "done reclaimed=$reclaimed stripped_paths=$stripped_only strip_skipped_live=$strip_skipped_live strip_skipped_pressure=$strip_skipped_pressure free_floor_gib=$free_floor_gib dry_run=$dry_run"
 exit 0
