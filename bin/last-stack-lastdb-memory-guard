@@ -1,0 +1,320 @@
+#!/bin/bash
+# last-stack-lastdb-memory-guard
+#
+# Soft-restarts the primary LastDB Mini daemon (lastdbd) if the memory it holds
+# exceeds a hard ceiling. Prevents the 2026-07-14 failure mode where cloud-sync
+# download_entries ballooned footprint 0.5 GB -> 74 GB in ~2 minutes, exhausted
+# swap, and tripped the kernel watchdog (panic + reboot).
+#
+# Repo of record. The live copy runs from $LASTDBD_PRIMARY_HOME/monitoring/ via
+# the LaunchAgent in launchd/com.edgevector.lastdb-memory-guard.plist. Edit here,
+# then install; never hand-edit the deployed copy.
+#
+# Scope: ONLY the primary Mini daemon.
+#   (executable named `lastdbd` with no --data-dir, or LASTDB_HOME pointing at
+#    the primary home). Never touches:
+#   - LastGit forge lastdbd (--data-dir ~/.lastgit/...)
+#   - throwaway smoke / temp-home / CoW upgrade-probe nodes
+#   - fold-app desktop binary
+#
+# When the ceiling trips we SIGTERM (graceful), wait, then SIGKILL if needed.
+# launchd KeepAlive restarts the service. The guard is a circuit breaker, not a
+# root-cause fix.
+#
+# ---------------------------------------------------------------------------
+# TWO GAUGES, AND WHY THIS SCRIPT REPORTS BOTH
+#
+# `ps -o rss=` is NOT the memory this process holds. On macOS it excludes
+# compressed pages, and this daemon lives mostly in compressed//malloc memory.
+# Measured on the live primary 2026-08-06:
+#
+#     ps -o rss=          1.47 GiB      <- what this guard has always enforced
+#     phys_footprint      8.70 GiB      <- what the process actually holds
+#     phys_footprint peak 11.11 GiB     <- 92.5% of the 12 GiB ceiling
+#
+# The guard read 12% of its limit while the node had touched 92.5% of it.
+# phys_footprint is the number macOS jetsam and Activity Monitor use, and the
+# unit the 2026-07-14 panic happened in, so it is the correct gauge.
+#
+# It is NOT, however, safe to silently swap the enforced metric: that converts a
+# guard with 8.6x margin into one with 1.38x margin, on a process-killer aimed
+# at the primary brain. The metric and the limit must be chosen together, and
+# that choice is deliberately a human one.
+#
+# So: this script MEASURES footprint always and LOGS both gauges every cycle,
+# but ENFORCES on $LASTDBD_GUARD_METRIC, which defaults to `rss` — today's
+# behaviour, unchanged. When footprint exceeds the limit while enforcing on rss,
+# we emit a `blind_spot` WARN rather than acting: the log tells the truth even
+# while the trigger stays conservative.
+#
+# Ground truth: brain
+#   lastdb-memory-guard-measures-rss-while-the-node-lives-in-phys-footprint-20260803
+# ---------------------------------------------------------------------------
+#
+# Tunables (env):
+#   LASTDBD_GUARD_METRIC     default `rss` — which gauge FIRES the restart.
+#                            `rss`       enforce on ps rss (legacy, 8.6x margin)
+#                            `footprint` enforce on phys_footprint (true usage)
+#   LASTDBD_RSS_LIMIT_MB     default 6144 — ceiling, in MB, for the enforced gauge
+#   LASTDBD_SWAP_WARN_MB     default 20480 — log warning if system swap used exceeds
+#   LASTDBD_GUARD_COOLDOWN_SEC  default 120 — min seconds between restarts
+#   LASTDBD_PRIMARY_HOME     default $HOME/.lastdb
+
+set -eu
+# launchd hands this script a near-empty PATH, so pin a known-good one. Kept
+# overridable for installs whose curl/launchctl live elsewhere (and for the
+# fixtures, which shim these binaries) — the default is the hardened value.
+export PATH="${LASTDBD_GUARD_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}"
+
+GUARD_METRIC="${LASTDBD_GUARD_METRIC:-rss}"
+RSS_LIMIT_MB="${LASTDBD_RSS_LIMIT_MB:-6144}"
+SWAP_WARN_MB="${LASTDBD_SWAP_WARN_MB:-20480}"
+COOLDOWN_SEC="${LASTDBD_GUARD_COOLDOWN_SEC:-120}"
+PRIMARY_HOME="${LASTDBD_PRIMARY_HOME:-$HOME/.lastdb}"
+LOG_DIR="${PRIMARY_HOME}/monitoring"
+LOG="${LOG_DIR}/lastdbd-memory-guard.log"
+STATE="${LOG_DIR}/lastdbd-memory-guard.state"
+SOCKET="${PRIMARY_HOME}/data/folddb.sock"
+PRIMARY_AGENT_LABEL="${LASTDBD_PRIMARY_AGENT_LABEL:-}"
+FALLBACK_AGENT_LABEL="${LASTDBD_FALLBACK_AGENT_LABEL:-homebrew.mxcl.lastdb}"
+mkdir -p "$LOG_DIR"
+
+case "$GUARD_METRIC" in
+  rss|footprint) ;;
+  *)
+    echo "invalid LASTDBD_GUARD_METRIC=$GUARD_METRIC (want rss|footprint)" >&2
+    exit 2
+    ;;
+esac
+
+ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
+log() { echo "$(ts) $*" | tee -a "$LOG" >/dev/null; echo "$(ts) $*"; }
+
+# Resolve primary lastdbd PID.
+#
+# Match on the EXECUTABLE PATH (`ps -o comm=`), never the full argv.
+#
+# Every previous selector matched argv text, and all three were wrong:
+#   1. `lsof -t <unix socket path>` returns nothing on macOS, so the preferred
+#      branch never produced a pid. Had it worked it would have been worse:
+#      lsof on a socket lists connected CLIENTS too, and `head -1` would pick
+#      one of them.
+#   2. The `case */lastdbd) continue ;;` arm matched the real primary and
+#      skipped past it, making the very next arm — the one meant to select the
+#      daemon — unreachable. (`return 0` inside a piped `while` is a subshell
+#      anyway.)
+#   3. The awk fallback took the first process whose command line merely
+#      CONTAINED "lastdbd". Routine agent prompts mention lastdbd in argv, so
+#      on 2026-08-03 this guard was watching `claude -p ...` (202 MB) while the
+#      actual primary sat at 9.5 GB phys_footprint.
+#
+# Selecting a client is not just a blind spot — `restart_primary` SIGTERMs then
+# SIGKILLs whatever pid it is handed, so a mis-selection kills an innocent
+# process and then needlessly kickstarts a healthy primary.
+#
+# Fail closed: emit nothing rather than a guess. A guard that does nothing this
+# cycle is strictly safer than one that kills the wrong process.
+primary_pid() {
+  local p comm args home
+  while read -r p comm; do
+    # Executable path, not argv: a client that merely mentions lastdbd cannot
+    # reach this branch.
+    case "$comm" in
+      */lastdbd) ;;
+      *) continue ;;
+    esac
+    # Reject nodes explicitly homed elsewhere: smoke/temp nodes under /tmp,
+    # LastGit forge nodes, CoW upgrade probes.
+    args=$(ps -p "$p" -o args= 2>/dev/null || true)
+    case "$args" in
+      *--data-dir*) continue ;;
+    esac
+    # Confirm the home really is the primary before handing this pid to a killer.
+    home=$(ps eww -p "$p" 2>/dev/null | tr ' ' '\n' | sed -n 's/^LASTDB_HOME=//p' | head -1 || true)
+    if [ -n "$home" ] && [ "$home" != "$PRIMARY_HOME" ]; then
+      continue
+    fi
+    echo "$p"
+    return 0
+  done <<EOF
+$(ps -Ao pid=,comm=)
+EOF
+  return 0
+}
+
+rss_mb_of() {
+  local pid="$1"
+  local rss_kb
+  rss_kb=$(ps -p "$pid" -o rss= 2>/dev/null | tr -d ' ' || echo 0)
+  if [ -z "$rss_kb" ] || [ "$rss_kb" = "0" ]; then
+    echo 0
+  else
+    echo $((rss_kb / 1024))
+  fi
+}
+
+# Read a unique top-level integer field out of the node's /api/status.
+#
+# The daemon already computes phys_footprint the same way the kernel does and
+# publishes it; asking the node is both cheaper and more accurate than shelling
+# out to vmmap/footprint, which need elevated privileges. Text-extract rather
+# than jq: this runs from launchd with a minimal PATH and must not acquire a
+# dependency to stay armed.
+status_field() {
+  local body="$1" key="$2" v
+  v=$(printf '%s' "$body" | sed -n "s/.*\"${key}\":\([0-9][0-9]*\).*/\1/p" | head -1)
+  if [ -z "$v" ]; then
+    echo ""
+  else
+    echo "$v"
+  fi
+}
+
+# footprint_mb + peak_mb from the primary's own socket. Empty on any failure —
+# callers fall back to rss and say so.
+STATUS_BODY=""
+read_status() {
+  # No pre-check that the socket exists: curl failing IS the unavailable signal,
+  # and one branch that can report "unavailable" is easier to reason about than
+  # two. --max-time bounds this so a wedged node cannot stall the guard.
+  STATUS_BODY=$(curl -s --max-time 5 --unix-socket "$SOCKET" \
+    -H 'X-LastDB-Client: lastdb-memory-guard' \
+    http://localhost/api/status 2>/dev/null || true)
+}
+
+swap_used_mb() {
+  # vm.swapusage: "total = X.00M  used = Y.00M  free = Z.00M"
+  /usr/sbin/sysctl -n vm.swapusage 2>/dev/null \
+    | sed -n 's/.*used = \([0-9.]*\)M.*/\1/p' \
+    | awk '{printf "%d\n", $1+0}'
+}
+
+cooldown_ok() {
+  if [ ! -f "$STATE" ]; then
+    return 0
+  fi
+  local last now
+  last=$(cat "$STATE" 2>/dev/null || echo 0)
+  now=$(date +%s)
+  if [ $((now - last)) -ge "$COOLDOWN_SEC" ]; then
+    return 0
+  fi
+  return 1
+}
+
+mark_restart() {
+  date +%s >"$STATE"
+}
+
+restart_primary() {
+  local pid="$1"
+  local reading="$2"
+  log "RESTART primary lastdbd pid=$pid metric=$metric enforced_mb=$reading limit_mb=$RSS_LIMIT_MB (SIGTERM then kickstart)"
+  mark_restart
+  kill -TERM "$pid" 2>/dev/null || true
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      break
+    fi
+    sleep 1
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    log "SIGKILL pid=$pid (did not exit after SIGTERM)"
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+  # Prefer the LaunchAgent that owns the primary. Never restart
+  # homebrew.mxcl.lastdb while that agent is the intended primary — brew restart
+  # was reintroducing the pre-cap bottle and fighting the LaunchAgent for the
+  # primary home during the 2026-07-14 re-enable.
+  local uid label
+  uid=$(id -u)
+  label="$PRIMARY_AGENT_LABEL"
+  if [ -z "$label" ]; then
+    # Discover the agent that owns the primary rather than hardcoding an
+    # install-specific label: any loaded agent whose label names a lastdbd
+    # primary. Keeps this script portable across installs.
+    label=$(launchctl list 2>/dev/null \
+      | awk '$3 ~ /lastdbd-primary/ { print $3; exit }' || true)
+  fi
+  if [ -n "$label" ] && launchctl print "gui/${uid}/${label}" >/dev/null 2>&1; then
+    log "kickstart agent=$label"
+    launchctl kickstart -k "gui/${uid}/${label}" 2>/dev/null || true
+  elif launchctl print "gui/${uid}/${FALLBACK_AGENT_LABEL}" >/dev/null 2>&1; then
+    log "kickstart agent=$FALLBACK_AGENT_LABEL"
+    launchctl kickstart -k "gui/${uid}/${FALLBACK_AGENT_LABEL}" 2>/dev/null \
+      || brew services restart lastdb 2>/dev/null \
+      || true
+  else
+    # KeepAlive on whichever agent owns the socket should revive; do not force brew.
+    true
+  fi
+  log "kickstart issued; next probe will verify socket"
+}
+
+# --- main ---
+pid=$(primary_pid || true)
+if [ -z "${pid:-}" ]; then
+  log "ok no_primary_lastdbd"
+  exit 0
+fi
+
+rss=$(rss_mb_of "$pid")
+swap=$(swap_used_mb 2>/dev/null || true)
+cmd=$(ps -p "$pid" -o command= 2>/dev/null | head -c 200 || true)
+
+read_status
+footprint_b=$(status_field "$STATUS_BODY" phys_footprint_bytes)
+peak_b=$(status_field "$STATUS_BODY" phys_footprint_peak_bytes)
+if [ -n "$footprint_b" ]; then
+  footprint=$((footprint_b / 1048576))
+else
+  footprint=""
+fi
+if [ -n "$peak_b" ]; then
+  peak=$((peak_b / 1048576))
+else
+  peak=""
+fi
+
+# Choose the enforced reading. Footprint enforcement REQUIRES a live reading —
+# falling back to rss under a footprint policy would silently restore the 6.7x
+# blind spot the policy was chosen to close, so we decline to enforce instead.
+metric="$GUARD_METRIC"
+if [ "$GUARD_METRIC" = "footprint" ] && [ -z "$footprint" ]; then
+  log "warn footprint_unavailable pid=$pid socket=$SOCKET — not enforcing this cycle (rss_mb=$rss)"
+  exit 0
+fi
+if [ "$metric" = "footprint" ]; then
+  enforced="$footprint"
+else
+  enforced="$rss"
+fi
+
+# Every cycle carries both gauges, so the log is a usable footprint time series
+# and never again asserts a reassuring number that is 6.7x off.
+log "ok pid=$pid metric=$metric enforced_mb=$enforced limit_mb=$RSS_LIMIT_MB rss_mb=$rss footprint_mb=${footprint:-unavailable} peak_mb=${peak:-unavailable} swap_mb=${swap:-unknown}"
+
+if [ -n "${swap:-}" ] && [ "$swap" -ge "$SWAP_WARN_MB" ] 2>/dev/null; then
+  log "warn swap_used_mb=$swap (>= $SWAP_WARN_MB) primary_pid=$pid rss_mb=$rss footprint_mb=${footprint:-unavailable}"
+fi
+
+# The blind spot, stated out loud: real usage is over the ceiling but the
+# enforced gauge is not, so the guard is deliberately standing down. This is the
+# line to alert on while LASTDBD_GUARD_METRIC=rss.
+if [ "$metric" = "rss" ] && [ -n "$footprint" ] && [ "$footprint" -ge "$RSS_LIMIT_MB" ] 2>/dev/null; then
+  log "WARN blind_spot pid=$pid footprint_mb=$footprint >= limit_mb=$RSS_LIMIT_MB but enforcing on rss_mb=$rss — guard will NOT fire; see LASTDBD_GUARD_METRIC"
+fi
+
+if [ "$enforced" -lt "$RSS_LIMIT_MB" ]; then
+  exit 0
+fi
+
+if ! cooldown_ok; then
+  log "over_limit pid=$pid metric=$metric enforced_mb=$enforced but cooldown active — skip restart"
+  exit 0
+fi
+
+log "OVER_LIMIT pid=$pid metric=$metric enforced_mb=$enforced limit_mb=$RSS_LIMIT_MB rss_mb=$rss footprint_mb=${footprint:-unavailable} swap_mb=${swap:-unknown} cmd=$cmd"
+restart_primary "$pid" "$enforced"
+exit 0
