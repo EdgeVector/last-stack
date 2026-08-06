@@ -42,6 +42,7 @@ bash tests/last-stack-todo-rank.sh
 bash tests/last-stack-kanban-done-when-eval.sh
 bash tests/last-stack-driver-hierarchy.sh
 bash tests/last-stack-north-star-ledger-sync.sh
+bash tests/last-stack-north-star-proof-registry.sh
 bash tests/last-stack-ship-feature-milestones.sh
 bash tests/last-stack-lint-prompts.sh --smoke
 bash tests/last-stack-routines-prompt-doctor.sh
