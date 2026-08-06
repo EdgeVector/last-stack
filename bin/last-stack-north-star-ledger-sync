@@ -157,6 +157,14 @@ def kanban_show_card(slug: str) -> Optional[dict[str, Any]]:
 
 
 def kanban_milestone_portfolio() -> list[dict[str, Any]]:
+    """Parse `kanban milestone portfolio --json`.
+
+    Accepts the legacy bare array **and** the completeness envelope
+    `{entries, total, truncated}` (fkanban 2026-08-06+). A bare non-list used
+    to collapse to `[]`, which is how undercount became false-positive
+    `request_pending_no_milestone` annotations on North Stars that already had
+    live milestones.
+    """
     cp = run_cmd(["kanban", "milestone", "portfolio", "--json"], timeout=90)
     if cp.returncode != 0 or not cp.stdout.strip():
         return []
@@ -164,7 +172,53 @@ def kanban_milestone_portfolio() -> list[dict[str, Any]]:
         data = json.loads(cp.stdout)
     except json.JSONDecodeError:
         return []
-    return data if isinstance(data, list) else []
+    if isinstance(data, list):
+        return [row for row in data if isinstance(row, dict)]
+    if isinstance(data, dict):
+        for key in ("entries", "milestones"):
+            rows = data.get(key)
+            if isinstance(rows, list):
+                return [row for row in rows if isinstance(row, dict)]
+    return []
+
+
+def kanban_milestone_show(slug: str) -> Optional[dict[str, Any]]:
+    """Point-read one milestone. Authoritative for "does this slug exist?"."""
+    if not slug:
+        return None
+    cp = run_cmd(
+        ["kanban", "milestone", "show", slug, "--json"],
+        timeout=60,
+    )
+    if cp.returncode != 0 or not cp.stdout.strip():
+        return None
+    try:
+        data = json.loads(cp.stdout)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) and data.get("slug") else None
+
+
+def hydrate_milestones_by_show(
+    by_slug: dict[str, dict[str, Any]],
+    wanted: list[str],
+) -> list[str]:
+    """Fill holes in the portfolio index with `milestone show` point-reads.
+
+    Portfolio/list can under-report even when a milestone is live (BoardMilestones
+    index lag, projection gates). Ledger-sync must not write
+    `request_pending_no_milestone` for a slug that `show` returns.
+    Returns the slugs recovered via show (for notes/tests).
+    """
+    recovered: list[str] = []
+    for slug in wanted:
+        if not slug or slug in by_slug:
+            continue
+        shown = kanban_milestone_show(slug)
+        if shown:
+            by_slug[slug] = shown
+            recovered.append(slug)
+    return recovered
 
 
 def parse_terminal_card(body: str) -> str:
@@ -589,7 +643,21 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not raw:
             reports.append({"slug": slug, "error": "brain_get_failed"})
             continue
+        # Point-read every open request slug missing from the portfolio index
+        # BEFORE planning — portfolio undercount must not invent
+        # request_pending_no_milestone for a live milestone.
+        _meta, body = split_get_output(raw)
+        open_req_slugs = [
+            r.slug
+            for r in parse_milestone_requests(body)
+            if r.status in {"pending", "active", "open"}
+        ]
+        recovered = hydrate_milestones_by_show(by_slug, open_req_slugs)
         plan = plan_ns(slug, raw, by_slug, by_ns)
+        if recovered:
+            plan.notes.append(
+                "milestone_show_recovered:" + ",".join(recovered[:12])
+            )
         actions = apply_plan(plan, raw, apply=apply)
         reports.append(
             {
@@ -660,6 +728,42 @@ B
     assert len(acts) == 2
     # no false positive on complete milestone name in prose
     assert parse_terminal_card("## Terminal verification\nno card here\n") == ""
+
+    # portfolio envelope (list or {entries,total,truncated}) both parse
+    # Exercised via the pure parser path by reusing json shapes inline.
+    def _parse_portfolio_payload(data: Any) -> list[dict[str, Any]]:
+        if isinstance(data, list):
+            return [row for row in data if isinstance(row, dict)]
+        if isinstance(data, dict):
+            for key in ("entries", "milestones"):
+                rows = data.get(key)
+                if isinstance(rows, list):
+                    return [row for row in rows if isinstance(row, dict)]
+        return []
+
+    bare = [{"slug": "ms-a", "state": "active"}]
+    env = {"entries": bare, "total": 1, "truncated": False}
+    assert _parse_portfolio_payload(bare) == bare
+    assert _parse_portfolio_payload(env) == bare
+    assert _parse_portfolio_payload({"milestones": bare}) == bare
+    assert _parse_portfolio_payload({}) == []
+    assert _parse_portfolio_payload("nope") == []
+
+    # plan_ns must not mark pending when the slug is present after show-hydrate
+    body2 = (
+        "**Mode:** ship\n\n## Terminal verification\n**Card:** `t`\n\n"
+        "## MILESTONE_REQUEST\nslug=hidden-but-live\nstatus=pending\n\n### Outcome\nX\n"
+    )
+    raw = "title: ns\nstatus: in_progress\n---\n" + body2
+    by_slug: dict[str, dict[str, Any]] = {
+        "hidden-but-live": {"slug": "hidden-but-live", "state": "complete"}
+    }
+    plan = plan_ns("ns", raw, by_slug, {})
+    assert plan.request_updates.get("hidden-but-live") == "done", plan
+    assert not any(
+        n.startswith("request_pending_no_milestone:") for n in plan.notes
+    ), plan.notes
+
     print("self-test ok")
     return True
 
