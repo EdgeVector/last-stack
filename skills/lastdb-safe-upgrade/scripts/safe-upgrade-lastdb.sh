@@ -25,13 +25,15 @@
 #   4. Only then venue-aware live install:
 #        sidebin → atomic install under bin-with-upload-cap + launchctl kickstart
 #        brew    → brew upgrade + brew services restart (only if formula installed)
-#   5. Post-check the LIVE home (incl. live RSS vs guard); print rollback if wrong
+#   5. Post-check the LIVE home (incl. lastdb/lastdbd version parity and live
+#      RSS vs guard); print rollback if wrong
 #
 # Design: fold/docs/designs/lastdb-minimal-downtime-cutover.md
 #
 # NEVER:
 #   - Run the candidate against the live ~/.lastdb before probe is GREEN
 #   - Skip the backup
+#   - Install only lastdbd without the sibling lastdb CLI from the same build
 #   - Kill/restart the primary on a RED probe
 #   - brew upgrade when formula is not installed / primary is sidebin+launchd
 #
@@ -64,6 +66,7 @@ LAUNCHD_PLIST="${LASTDB_LAUNCHD_PLIST:-$HOME/Library/LaunchAgents/${LAUNCHD_LABE
 PROBE_ONLY=0
 ASSUME_YES=0
 CANDIDATE_BIN=""
+CANDIDATE_CLI_BIN=""
 TARGET_VERSION=""
 WORK=""
 
@@ -129,6 +132,8 @@ CAS_SKIP="${LASTDB_PROBE_CAS_SKIP:-0}"
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
 # shellcheck source=candidate-class-checks.sh
 . "$_SCRIPT_DIR/candidate-class-checks.sh"
+# shellcheck source=binary-pair-checks.sh
+. "$_SCRIPT_DIR/binary-pair-checks.sh"
 CAS_PROBE_SH="$_SCRIPT_DIR/cas-mutation-probe.sh"
 
 cleanup_work() {
@@ -623,9 +628,10 @@ ensure_primary_launchd_rss_limit() {
 
 live_install_sidebin() {
   local dest="$SIDEBIN_DIR"
-  local ts cand_cli
+  local ts
   ts="$(date -u +%Y%m%dT%H%M%SZ)"
   [ -x "$CANDIDATE_BIN" ] || die "candidate not executable: $CANDIDATE_BIN"
+  [ -x "$CANDIDATE_CLI_BIN" ] || die "candidate sibling lastdb CLI not executable: $CANDIDATE_CLI_BIN"
   mkdir -p "$dest"
 
   # Single-flight lock
@@ -647,21 +653,16 @@ live_install_sidebin() {
   cp -a "$CANDIDATE_BIN" "$dest/lastdbd.new"
   chmod +x "$dest/lastdbd.new"
 
-  cand_cli="$(dirname "$CANDIDATE_BIN")/lastdb"
-  if [ -x "$cand_cli" ]; then
-    if [ -x "$dest/lastdb" ]; then
-      cp -a "$dest/lastdb" "$dest/lastdb.bak-pre-${CAND_VER}-${ts}" 2>/dev/null || true
-    fi
-    cp -a "$cand_cli" "$dest/lastdb.new"
-    chmod +x "$dest/lastdb.new"
+  if [ -x "$dest/lastdb" ]; then
+    cp -a "$dest/lastdb" "$dest/lastdb.bak-pre-${CAND_VER}-${ts}" 2>/dev/null || true
   fi
+  cp -a "$CANDIDATE_CLI_BIN" "$dest/lastdb.new"
+  chmod +x "$dest/lastdb.new"
 
   # Atomic-ish swap (same directory rename)
   mv -f "$dest/lastdbd.new" "$dest/lastdbd"
-  if [ -f "$dest/lastdb.new" ]; then
-    mv -f "$dest/lastdb.new" "$dest/lastdb"
-  fi
-  log "installed candidate into $dest/lastdbd"
+  mv -f "$dest/lastdb.new" "$dest/lastdb"
+  log "installed candidate into $dest/{lastdb,lastdbd}"
 
   ensure_primary_launchd_rss_limit
 
@@ -795,6 +796,30 @@ fi
 CAND_VER="$("$CANDIDATE_BIN" --version 2>/dev/null | awk '{print $NF}' || true)"
 [ -n "$CAND_VER" ] || die "candidate --version failed"
 log "candidate version: $CAND_VER"
+
+CANDIDATE_CLI_BIN="$(lastdb_sibling_cli_for_daemon "$CANDIDATE_BIN")"
+PAIR_OUT=""
+set +e
+PAIR_OUT="$(assert_lastdb_binary_pair_ok "$CANDIDATE_BIN" "$CANDIDATE_CLI_BIN" "$CAND_VER" "candidate artifact" 2>&1)"
+PAIR_RC=$?
+set -e
+if [ -n "$PAIR_OUT" ]; then
+  while IFS= read -r line; do
+    case "$line" in
+      RED:*) log "binary pair $line" ;;
+      *)     log "binary pair: $line" ;;
+    esac
+  done <<< "$PAIR_OUT"
+fi
+if [ "$PAIR_RC" -ne 0 ]; then
+  echo ""
+  echo "VERDICT: RED"
+  echo "REASON: candidate $CAND_VER failed the binary-pair bar — lastdb and lastdbd must come from the same artifact"
+  echo "CANDIDATE_DAEMON: $CANDIDATE_BIN"
+  echo "CANDIDATE_CLI:    $CANDIDATE_CLI_BIN"
+  echo "NEXT: build/package both lastdb and lastdbd from the same source revision; never promote a daemon-only artifact."
+  exit 1
+fi
 
 if [ "$CAND_VER" = "$CURRENT_VER" ] && [ "$PROBE_ONLY" -eq 0 ]; then
   log "candidate matches current; no upgrade needed"
@@ -1063,15 +1088,35 @@ CUTOVER_T0="$(date +%s)"
 
 if [ "$VENUE" = "sidebin" ]; then
   live_install_sidebin
+  INSTALLED_DAEMON_BIN="$SIDEBIN_DIR/lastdbd"
   INSTALLED="$("$SIDEBIN_DIR/lastdbd" --version 2>/dev/null | awk '{print $NF}' || true)"
+  INSTALLED_CLI_BIN="$SIDEBIN_DIR/lastdb"
 else
   live_install_brew
+  INSTALLED_DAEMON_BIN="$(command -v lastdbd 2>/dev/null || true)"
   INSTALLED="$(lastdbd --version 2>/dev/null | awk '{print $NF}' || true)"
+  INSTALLED_CLI_BIN="$(command -v lastdb 2>/dev/null || true)"
 fi
 
 log "installed lastdbd --version: $INSTALLED"
-[ -n "$INSTALLED" ] || warn "could not read installed --version"
-[ "$INSTALLED" = "$CAND_VER" ] || warn "installed version ($INSTALLED) != candidate ($CAND_VER)"
+[ -n "$INSTALLED" ] || die "could not read installed lastdbd --version"
+[ "$INSTALLED" = "$CAND_VER" ] || die "installed lastdbd version ($INSTALLED) != candidate ($CAND_VER)"
+INSTALLED_PAIR_OUT=""
+set +e
+INSTALLED_PAIR_OUT="$(assert_lastdb_binary_pair_ok "$INSTALLED_DAEMON_BIN" "$INSTALLED_CLI_BIN" "$CAND_VER" "installed live pair" 2>&1)"
+INSTALLED_PAIR_RC=$?
+set -e
+if [ -n "$INSTALLED_PAIR_OUT" ]; then
+  while IFS= read -r line; do
+    case "$line" in
+      RED:*) log "binary pair $line" ;;
+      *)     log "binary pair: $line" ;;
+    esac
+  done <<< "$INSTALLED_PAIR_OUT"
+fi
+[ "$INSTALLED_PAIR_RC" -eq 0 ] || die "installed lastdb/lastdbd version parity check failed"
+INSTALLED_CLI="$(lastdb_binary_version "$INSTALLED_CLI_BIN" || true)"
+log "installed lastdb --version: $INSTALLED_CLI"
 
 # Wait for live socket health
 LIVE_OK=0
@@ -1188,7 +1233,7 @@ for cand in \
 do
   [ -x "$cand" ] && POST_NOTICE="$cand" && break
 done
-NOTICE_SUMMARY="lastdbd ${CURRENT_VER} → ${INSTALLED} venue=${VENUE} cutover_s=${CUTOVER_SECS}; probe latency point/scan/write=${CAND_LAT_POINT_MS:-?}/${CAND_LAT_SCAN_MS:-?}/${CAND_LAT_WRITE_MS:-?}ms (baseline ${BASE_LAT_POINT_MS:-?}/${BASE_LAT_SCAN_MS:-?}/${BASE_LAT_WRITE_MS:-?}ms) live_point_ms=${LIVE_LAT_POINT_MS:-?} live_scan_ms=${LIVE_LAT_SCAN_MS:-?}; brief socket blips expected. Do not open a new incident or restart the primary for flapping alone. Design: lastdb-minimal-downtime-cutover."
+NOTICE_SUMMARY="lastdbd ${CURRENT_VER} → ${INSTALLED} with lastdb=${INSTALLED_CLI:-?} venue=${VENUE} cutover_s=${CUTOVER_SECS}; probe latency point/scan/write=${CAND_LAT_POINT_MS:-?}/${CAND_LAT_SCAN_MS:-?}/${CAND_LAT_WRITE_MS:-?}ms (baseline ${BASE_LAT_POINT_MS:-?}/${BASE_LAT_SCAN_MS:-?}/${BASE_LAT_WRITE_MS:-?}ms) live_point_ms=${LIVE_LAT_POINT_MS:-?} live_scan_ms=${LIVE_LAT_SCAN_MS:-?}; brief socket blips expected. Do not open a new incident or restart the primary for flapping alone. Design: lastdb-minimal-downtime-cutover."
 if [ -n "$POST_NOTICE" ]; then
   if "$POST_NOTICE" \
     --title "LastDB upgraded to ${INSTALLED}" \
@@ -1229,12 +1274,13 @@ fi
 
 echo ""
 echo "VERDICT: GREEN"
-echo "SUMMARY: upgraded lastdbd $CURRENT_VER → $INSTALLED; venue=$VENUE; cutover_s=$CUTOVER_SECS; probe + live Board read OK; probe_rss_mb=${PROBE_RSS_MB:-?} live_rss_mb=${LIVE_RSS_MB:-?} limit_mb=$(resolve_rss_limit_mb); backup at $BACKUP"
+echo "SUMMARY: upgraded lastdbd $CURRENT_VER → $INSTALLED and lastdb → ${INSTALLED_CLI:-?}; venue=$VENUE; cutover_s=$CUTOVER_SECS; probe + live Board read OK; probe_rss_mb=${PROBE_RSS_MB:-?} live_rss_mb=${LIVE_RSS_MB:-?} limit_mb=$(resolve_rss_limit_mb); backup at $BACKUP"
 echo "LATENCY: probe point/scan/write=${CAND_LAT_POINT_MS:-?}/${CAND_LAT_SCAN_MS:-?}/${CAND_LAT_WRITE_MS:-?}ms baseline=${BASE_LAT_POINT_MS:-?}/${BASE_LAT_SCAN_MS:-?}/${BASE_LAT_WRITE_MS:-?}ms live_point=${LIVE_LAT_POINT_MS:-?}ms live_scan=${LIVE_LAT_SCAN_MS:-?}ms"
 echo ""
 echo "ROLLBACK (binary only, if new binary misbehaves but data is fine):"
 if [ "$VENUE" = "sidebin" ]; then
   echo "  cp -a $SIDEBIN_DIR/lastdbd.bak-pre-${CAND_VER}-* $SIDEBIN_DIR/lastdbd   # pick newest bak"
+  echo "  cp -a $SIDEBIN_DIR/lastdb.bak-pre-${CAND_VER}-* $SIDEBIN_DIR/lastdb     # pick matching newest bak"
   echo "  launchctl kickstart -k gui/\$(id -u)/$LAUNCHD_LABEL"
 else
   echo "  brew services stop lastdb"

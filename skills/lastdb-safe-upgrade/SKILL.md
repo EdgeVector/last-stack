@@ -134,7 +134,12 @@ proxy is optional later for near-zero client impact.
    true→200 / false→409 / refused-did-not-land sequence. Skipping
    (`LASTDB_PROBE_CAS_SKIP=1`) requires Tom clearance. Not a routine health
    check and not a live-primary mutation path.
-10. Do not claim “primary stopped” unless this script actually stopped the
+10. **Binary-pair bar (lastdb + lastdbd):** before backup/probe, require a
+    sibling `lastdb` CLI next to the candidate `lastdbd` and require both
+    binaries to report the same version. Sidebin live install copies both
+    binaries from that same artifact and the post-check fails RED if the
+    installed live CLI/daemon pair is skewed.
+11. Do not claim “primary stopped” unless this script actually stopped the
    supervisor for that venue.
 
 ## Do this, in order
@@ -169,7 +174,8 @@ bash "$driver" --probe-only
 bash "$driver" --yes
 
 # Explicit candidate binary (sidebin install on Tom’s machine).
-# MUST be a release build — never …/target/debug/lastdbd or a -dirty stamp.
+# MUST be a release build with sibling /path/to/release/lastdb beside it —
+# never …/target/debug/lastdbd or a -dirty stamp.
 bash "$driver" --candidate /path/to/release/lastdbd --yes
 
 # Bottle version via GitHub release tarball then venue-aware live
