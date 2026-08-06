@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# north-star-slug: north-star-revenant-watch
 # Terminal proof for north-star-revenant-watch / milestone revenant-watch-daily-survey.
 # Three fixtures:
 #   A — removed surface claim → flag

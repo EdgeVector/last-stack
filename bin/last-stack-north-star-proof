@@ -1,11 +1,112 @@
 #!/usr/bin/env bash
 # Run product-grade North Star terminal proof harnesses.
 # Default mode is offline (CI-safe). Set NORTH_STAR_PROOF_MODE=live for full dogfood.
+#
+# THE FOLDER IS THE REGISTRY. Adding a North Star proof means adding ONE
+# directory under harness/north-star/ whose run.sh declares its own slug:
+#
+#     # north-star-slug: north-star-<something>
+#
+# There is no list to update here. This file previously kept two hand-written
+# copies of the directory listing (ALL_SLUGS and a map_slug_to_script case
+# table); they drifted — 16 folders on disk against 15 registered — and an
+# unregistered slug read to the milestone driver as "no proof required", so a
+# North Star could complete unproven. See brain
+# papercut-north-star-proof-runner-hardcoded-slug-registry.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+# Resolve $0 through symlinks before deriving ROOT.
+#
+# ~/.local/bin/last-stack-north-star-proof is a symlink into the artifacts tree.
+# Deriving ROOT from an unresolved $0 pointed it at ~/.local and the runner died
+# on a missing ~/.local/harness/north-star/common.sh — so the PATH-invoked
+# command, which is the one every card CONTEXT names, never worked. Done by hand
+# rather than with `readlink -f`, which is GNU-only (BSD/macOS lacks -f on older
+# releases). See brain papercut-north-star-proof-runner-broken-through-path-symlink.
+resolve_self() {
+  local target="$1" dir link
+  while [ -L "$target" ]; do
+    dir="$(cd "$(dirname "$target")" && pwd -P)"
+    link="$(readlink "$target")"
+    case "$link" in
+      /*) target="$link" ;;
+      *) target="$dir/$link" ;;
+    esac
+  done
+  printf '%s\n' "$target"
+}
+
+SELF="$(resolve_self "$0")"
+ROOT="$(cd "$(dirname "$SELF")/.." && pwd -P)"
+HARNESS_DIR="$ROOT/harness/north-star"
 # shellcheck source=../harness/north-star/common.sh
-. "$ROOT/harness/north-star/common.sh"
+. "$HARNESS_DIR/common.sh"
+
+# Parallel arrays, index-aligned: ALL_SLUGS[i] is proven by ALL_SCRIPTS[i].
+# Parallel arrays rather than an associative array so this keeps working under
+# bash 3.2, which is still what a bare `/bin/bash` is on macOS.
+ALL_SLUGS=()
+ALL_SCRIPTS=()
+
+# Read the slug a harness declares, or nothing if it declares none.
+harness_declared_slug() {
+  sed -n 's/^#[[:space:]]*north-star-slug:[[:space:]]*\([^[:space:]][^[:space:]]*\).*$/\1/p' "$1" | head -n 1
+}
+
+# Build the registry from the filesystem. Fatal on an undeclared or duplicated
+# slug: a proof harness the runner cannot name is the defect this discovery
+# replaced, so it must never degrade to a silent skip.
+discover_harnesses() {
+  local script dir slug i
+  for script in "$HARNESS_DIR"/*/run.sh; do
+    [ -f "$script" ] || continue
+    dir="$(basename "$(dirname "$script")")"
+    slug="$(harness_declared_slug "$script")"
+    if [ -z "$slug" ]; then
+      echo "FAIL: harness/north-star/$dir/run.sh declares no slug." >&2
+      echo "      Add a line: # north-star-slug: north-star-<something>" >&2
+      exit 2
+    fi
+    case "$slug" in
+      north-star-*) ;;
+      *)
+        echo "FAIL: harness/north-star/$dir/run.sh declares '$slug', which is not a north-star-* slug." >&2
+        exit 2
+        ;;
+    esac
+    i=0
+    while [ "$i" -lt "${#ALL_SLUGS[@]}" ]; do
+      if [ "${ALL_SLUGS[$i]}" = "$slug" ]; then
+        echo "FAIL: '$slug' is declared by two harnesses: ${ALL_SCRIPTS[$i]%/run.sh} and $dir." >&2
+        exit 2
+      fi
+      i=$((i + 1))
+    done
+    ALL_SLUGS+=("$slug")
+    ALL_SCRIPTS+=("$dir/run.sh")
+  done
+
+  if [ "${#ALL_SLUGS[@]}" -eq 0 ]; then
+    echo "FAIL: no proof harnesses found under $HARNESS_DIR" >&2
+    exit 2
+  fi
+}
+
+map_slug_to_script() {
+  local i=0
+  while [ "$i" -lt "${#ALL_SLUGS[@]}" ]; do
+    if [ "${ALL_SLUGS[$i]}" = "$1" ]; then
+      printf '%s\n' "${ALL_SCRIPTS[$i]}"
+      return 0
+    fi
+    i=$((i + 1))
+  done
+  return 1
+}
+
+sorted_slugs() {
+  printf '%s\n' "${ALL_SLUGS[@]}" | LC_ALL=C sort
+}
 
 usage() {
   cat <<'U'
@@ -17,27 +118,20 @@ Modes:
   --offline (default)  structural + fixture / unit proofs; never primary brain
   --live               full dogfood when prerequisites exist (still never primary)
 
-Known slugs:
-  north-star-coderings
-  north-star-lastdb-deliver-data-slices
-  north-star-lastgit-native-forge
-  north-star-storage-metering-correctness
-  north-star-lastdb-minimal-node
-  north-star-app-ops-latency
-  north-star-schema-shared-surface-native-resolver
-  north-star-lastdb-file-blobs-on-demand-sync
-  north-star-laststore-is-document-store-last-db-is-conventions
-  north-star-mini-brain-observability
-  north-star-lastdb-search-as-app
-  north-star-host-track
-  north-star-cloud-sync-storage-lean
-  north-star-exemem-cloud-account
-  north-star-lastdb-cloud-backup-restore-proof
+Known slugs (discovered from harness/north-star/*/run.sh):
+U
+  sorted_slugs | sed 's/^/  /'
+  cat <<'U'
+
+To add one: create harness/north-star/<dir>/run.sh with a
+`# north-star-slug: north-star-<something>` line. Nothing else to register.
 
 Reports land in $NORTH_STAR_PROOF_DIR (default ~/.last-stack/north-star-proofs/<slug>.md)
 First line is PASS | PASS-OFFLINE | FAIL for DONE-WHEN file matching.
 U
 }
+
+discover_harnesses
 
 LIST=0
 MODE="${NORTH_STAR_PROOF_MODE:-offline}"
@@ -55,47 +149,8 @@ done
 
 export NORTH_STAR_PROOF_MODE="$MODE"
 
-map_slug_to_script() {
-  case "$1" in
-    north-star-coderings) echo "coderings/run.sh" ;;
-    north-star-lastdb-deliver-data-slices) echo "deliver-slices/run.sh" ;;
-    north-star-lastgit-native-forge) echo "lastgit/run.sh" ;;
-    north-star-storage-metering-correctness) echo "metering/run.sh" ;;
-    north-star-lastdb-minimal-node) echo "minimal-node/run.sh" ;;
-    north-star-app-ops-latency) echo "app-ops/run.sh" ;;
-    north-star-schema-shared-surface-native-resolver) echo "schema/run.sh" ;;
-    north-star-lastdb-file-blobs-on-demand-sync) echo "file-blobs-on-demand-sync/run.sh" ;;
-    north-star-laststore-is-document-store-last-db-is-conventions) echo "laststore/run.sh" ;;
-    north-star-mini-brain-observability) echo "mini-brain-observability/run.sh" ;;
-    north-star-lastdb-search-as-app) echo "search-as-app/run.sh" ;;
-    north-star-host-track) echo "host-track/run.sh" ;;
-    north-star-cloud-sync-storage-lean) echo "cloud-sync-storage-lean/run.sh" ;;
-    north-star-exemem-cloud-account) echo "exemem-cloud-account/run.sh" ;;
-    north-star-lastdb-cloud-backup-restore-proof) echo "cloud-backup-restore/run.sh" ;;
-    *) return 1 ;;
-  esac
-}
-
-ALL_SLUGS=(
-  north-star-coderings
-  north-star-lastdb-deliver-data-slices
-  north-star-lastgit-native-forge
-  north-star-storage-metering-correctness
-  north-star-lastdb-minimal-node
-  north-star-app-ops-latency
-  north-star-schema-shared-surface-native-resolver
-  north-star-lastdb-file-blobs-on-demand-sync
-  north-star-laststore-is-document-store-last-db-is-conventions
-  north-star-mini-brain-observability
-  north-star-lastdb-search-as-app
-  north-star-host-track
-  north-star-cloud-sync-storage-lean
-  north-star-exemem-cloud-account
-  north-star-lastdb-cloud-backup-restore-proof
-)
-
 if [ "$LIST" -eq 1 ]; then
-  printf '%s\n' "${ALL_SLUGS[@]}"
+  sorted_slugs
   exit 0
 fi
 
@@ -107,7 +162,10 @@ fi
 TARGETS=()
 for a in "${ARGS[@]}"; do
   if [ "$a" = "all" ]; then
-    TARGETS=("${ALL_SLUGS[@]}")
+    TARGETS=()
+    while IFS= read -r slug; do
+      TARGETS+=("$slug")
+    done < <(sorted_slugs)
     break
   fi
   TARGETS+=("$a")
@@ -117,10 +175,11 @@ fail=0
 for slug in "${TARGETS[@]}"; do
   rel="$(map_slug_to_script "$slug")" || {
     echo "FAIL: unknown north star slug: $slug" >&2
+    echo "      Known: $(sorted_slugs | tr '\n' ' ')" >&2
     fail=1
     continue
   }
-  script="$ROOT/harness/north-star/$rel"
+  script="$HARNESS_DIR/$rel"
   if [ ! -x "$script" ] && [ -f "$script" ]; then
     chmod +x "$script"
   fi

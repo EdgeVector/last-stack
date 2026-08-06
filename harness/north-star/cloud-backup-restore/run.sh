@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# north-star-slug: north-star-lastdb-cloud-backup-restore-proof
 # Offline North Star proof for cloud backup restore (never primary brain).
 # Emits PASS-OFFLINE when durable evidence of the completed ship is present
 # in brain / SOPs; FAIL when evidence is missing.

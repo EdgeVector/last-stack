@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# north-star-slug: north-star-app-ops-latency
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd -P)"
 # shellcheck source=../common.sh
