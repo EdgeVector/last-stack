@@ -6,7 +6,9 @@ description: |
   fails. ALWAYS: (1) durable offline copy of ~/.lastdb, (2) boot the NEW binary
   only against an ephemeral/CoW copy (never live home first), (3) require GREEN
   real-data reads AND RSS under the memory-guard AND the latency bar (real
-  workloads timed vs the current binary — correct-but-slow is RED), (4) only
+  workloads timed vs the current binary — correct-but-slow is RED) AND the
+  CAS mutation bar (candidate enforces `/api/mutation` `expected` — false
+  precondition → 409; LastGit ref/CI CAS depends on it), (4) only
   then venue-aware live install (sidebin+launchd or
   brew services) + post-check + Situations notice. Use when Tom says "upgrade
   lastdb", "brew upgrade lastdb", "safe upgrade", "update my brain/database
@@ -122,7 +124,17 @@ proxy is optional later for near-zero client impact.
    `LASTDB_CANDIDATE_SIZE_RATIO` (default 1.5). Brain:
    `incident-20260801-debug-worktree-lastdbd-primary-cutover-latency`,
    `preference-lastdb-promote-origin-main-not-feature-branch`.
-9. Do not claim “primary stopped” unless this script actually stopped the
+9. **CAS mutation bar (LastGit compound):** after data-plane GREEN, run
+   `scripts/cas-mutation-probe.sh --lastdbd <candidate>` against an
+   **ephemeral throwaway node** of the candidate only (never live primary).
+   A node that ignores a false `expected` precondition and applies the write
+   is **RED** — promotion is blocked with an actionable failure that names the
+   candidate binary. Reuses LastGit's `test/cas-expected-node-enforced.sh`
+   when present; otherwise a self-contained discriminator with the same
+   true→200 / false→409 / refused-did-not-land sequence. Skipping
+   (`LASTDB_PROBE_CAS_SKIP=1`) requires Tom clearance. Not a routine health
+   check and not a live-primary mutation path.
+10. Do not claim “primary stopped” unless this script actually stopped the
    supervisor for that venue.
 
 ## Do this, in order
@@ -178,11 +190,11 @@ The script:
 | Resolve candidate | `brew update` / `--version` tarball / `--candidate` |
 | **1. Backup** | `cp -cR` (APFS) or `cp -a` → `~/.lastdb-backups/pre-<new>-from-<old>-<ts>/` |
 | **0. Class** | Refuse `target/debug`, `-dirty` version, size ≫ incumbent (before multi-GB backup) |
-| **2. Probe** | `BIN=<candidate>` CoW smoke harness (never live home) + **RSS settle/sample** vs memory-guard limit + **latency bar**: point read / `kanban list` scan / `brain put` write timed on candidate CoW copy vs the current binary on an identical copy |
+| **2. Probe** | `BIN=<candidate>` CoW smoke harness (never live home) + **CAS mutation bar** (ephemeral candidate node: false `expected` → 409) + **RSS settle/sample** vs memory-guard limit + **latency bar**: point read / `kanban list` scan / `brain put` write timed on candidate CoW copy vs the current binary on an identical copy |
 | Detect venue | sidebin vs brew |
 | **3. Live** | sidebin atomic install + kickstart **or** brew upgrade/restart |
 | **4. Post-check** | Live `/health`, schemas > 0, Board title, **live peak RSS** vs guard, **live point-read + kanban list latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency in notice |
-| RED | Exit 1, **keep backup**, primary untouched if class/probe failed (incl. debug/dirty/size, RSS over guard, or latency over bar) |
+| RED | Exit 1, **keep backup**, primary untouched if class/probe failed (incl. debug/dirty/size, CAS-disarmed node, RSS over guard, or latency over bar) |
 
 ### B. If the script is missing or fails open
 
@@ -217,7 +229,7 @@ incident.
 | `VERDICT: GREEN` | Probe + live cutover + live post-check passed | Done |
 | `VERDICT: GREEN_PROBE_ONLY` | Probe passed; primary still on old version | Re-run with `--yes` if Tom wants the upgrade |
 | `VERDICT: ALREADY_CURRENT` | Already on candidate/stable | Nothing to do |
-| `VERDICT: RED` | Candidate fails **class** bar (debug/dirty/size), **or** cannot serve real data, **or** peak RSS exceeds memory-guard bar, **or** the latency bar failed (candidate regresses vs current binary / over absolute ceiling) | **Do not upgrade**; file release-blocker; keep backup. If class: rebuild `--release` from origin/main (or soaked canary). If RSS: fix candidate memory or raise guard only with Tom clearance. If latency: profile the candidate's read/write paths; `LASTDB_PROBE_LAT_SKIP=1` only with Tom clearance |
+| `VERDICT: RED` | Candidate fails **class** bar (debug/dirty/size), **or** cannot serve real data, **or** the **CAS mutation** bar (node accepted a false `expected` precondition), **or** peak RSS exceeds memory-guard bar, **or** the latency bar failed (candidate regresses vs current binary / over absolute ceiling) | **Do not upgrade**; file release-blocker; keep backup. If class: rebuild `--release` from origin/main (or soaked canary). If CAS: fix `/api/mutation` expected enforcement before cutover (`LASTDB_PROBE_CAS_SKIP=1` only with Tom clearance). If RSS: fix candidate memory or raise guard only with Tom clearance. If latency: profile the candidate's read/write paths; `LASTDB_PROBE_LAT_SKIP=1` only with Tom clearance |
 
 ## Rollback
 
