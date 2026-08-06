@@ -1,0 +1,22 @@
+{
+  "name": "A-flag-removed-surface",
+  "description": "Agent rebuilds full-DB React UI after it was retired; no open work.",
+  "claims": [
+    {
+      "id": "a1",
+      "session": "fixture-session-a",
+      "text": "Building the full LastDB binary and packaging the React app for the full-DB desktop UI.",
+      "topics": ["full-db-react-ui"]
+    }
+  ],
+  "canon": [
+    {
+      "topic": "full-db-react-ui",
+      "status": "retired",
+      "settled": true,
+      "slug": "preference-full-db-react-ui-removed",
+      "priority": "P1"
+    }
+  ],
+  "open_work": []
+}

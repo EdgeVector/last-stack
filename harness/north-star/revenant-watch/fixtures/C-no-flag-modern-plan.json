@@ -1,0 +1,29 @@
+{
+  "name": "C-no-flag-modern-plan",
+  "description": "Correct modern plan with no contradiction of settled-dead canon.",
+  "claims": [
+    {
+      "id": "c1",
+      "session": "fixture-session-c",
+      "text": "Ship a headless Mini binary and exercise brain/kanban over the unix socket only.",
+      "topics": ["mini-unix-socket", "headless-mini"]
+    }
+  ],
+  "canon": [
+    {
+      "topic": "full-db-react-ui",
+      "status": "retired",
+      "settled": true,
+      "slug": "preference-full-db-react-ui-removed",
+      "priority": "P1"
+    },
+    {
+      "topic": "legacy-tcp-9001",
+      "status": "retired",
+      "settled": true,
+      "slug": "concepts-edgevector-run-dev-state-board",
+      "priority": "P1"
+    }
+  ],
+  "open_work": []
+}
