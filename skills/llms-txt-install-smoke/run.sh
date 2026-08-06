@@ -50,6 +50,9 @@ export FRESH_ROOT
 export HOME="$FRESH_ROOT/home"
 mkdir -p "$HOME"
 export LASTDB_HOME="$HOME/.lastdb"
+# Force sandbox routines registry — never inherit host ROUTINES_HOME, which would
+# rewrite the live ~/.routines/registry with /tmp/llms-txt-install-smoke paths.
+export ROUTINES_HOME="$HOME/.routines"
 unset FOLDDB_HOME || true
 
 # Host-only observability injectors (routinesd / agent harness) must not reach

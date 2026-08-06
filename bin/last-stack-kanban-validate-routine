@@ -3,9 +3,13 @@
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+# shellcheck source=last-stack-routines-registry-env
+. "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/last-stack-routines-registry-env"
+last_stack_registry_paths_init
+
 ROUTINES_HOME="${ROUTINES_HOME:-$HOME/.routines}"
 REGISTRY_DIR="$ROUTINES_HOME/registry"
-PROMPT_PATH="$ROOT/routines/kanban-validate.md"
+PROMPT_PATH="$(last_stack_registry_prompt_path kanban-validate.md "$ROOT/routines/kanban-validate.md")"
 ID="last-stack-fkanban-validate"
 DRY_RUN=0
 
@@ -18,7 +22,7 @@ Re-running is idempotent.
 
 Options:
   --registry-dir <p>  registry directory (default: $ROUTINES_HOME/registry)
-  --prompt-path <p>   kanban-validate prompt path (default: this checkout)
+  --prompt-path <p>   kanban-validate prompt path (default: stable last-stack)
   --id <id>           automation id (default: last-stack-fkanban-validate)
   --dry-run           print target path and contents without writing
   -h, --help          show this help
@@ -79,6 +83,11 @@ if [ ! -r "$PROMPT_PATH" ]; then
   exit 66
 fi
 
+if [ "$DRY_RUN" -eq 0 ]; then
+  last_stack_registry_assert_safe_write "$REGISTRY_DIR" "$PROMPT_PATH" "$REG_CWD" \
+    || exit 3
+fi
+
 path="$REGISTRY_DIR/$ID.toml"
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -93,7 +102,7 @@ fi
   printf 'model = "gpt-5.5"\n'
   printf 'effort = "medium"\n'
   printf 'rrule = "FREQ=HOURLY;INTERVAL=4;BYMINUTE=33;BYSECOND=0"\n'
-  printf 'cwd = "/Users/REPLACE/code/edgevector"\n'
+  printf 'cwd = "%s"\n' "$REG_CWD"
   printf 'status = "active"\n'
   printf 'timeout_min = 30\n'
   printf 'prompt_path = "%s"\n' "$PROMPT_PATH"

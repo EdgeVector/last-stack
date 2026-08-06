@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# Shared path resolution for last-stack routines registry writers.
+#
+# Prevents three recurring host-registry pollution classes:
+#   1) literal `/Users/REPLACE/...` baked into live TOMLs
+#   2) `/tmp/llms-txt-install-smoke.*` (or other ephemeral HOME) paths written
+#      into the host `~/.routines/registry` because ROUTINES_HOME was inherited
+#   3) versioned host-track artifact paths preferred over the stable
+#      `$HOME/.last-stack/routines/...` compat root
+#
+# Source from generators after ROOT is set:
+#   # shellcheck source=last-stack-routines-registry-env
+#   . "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/last-stack-routines-registry-env"
+#   last_stack_registry_paths_init
+#
+# Then use:
+#   REG_CWD, REG_STABLE_ROOT, ROUTINES_HOME (may be rewritten)
+#   last_stack_registry_prompt_path <name.md> <fallback>
+#   last_stack_registry_assert_safe_write <registry_dir> <path...>
+
+# shellcheck disable=SC2034  # exported for callers
+
+last_stack_login_home() {
+  local real_home=""
+  if [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
+    real_home="$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | awk '{print $2}' || true)"
+  fi
+  if [ -z "$real_home" ]; then
+    real_home="$(eval echo "~$(id -un)" 2>/dev/null || true)"
+  fi
+  if [ -z "$real_home" ]; then
+    real_home="${HOME:-}"
+  fi
+  printf '%s\n' "$real_home"
+}
+
+last_stack_home_is_ephemeral() {
+  case "${HOME:-}" in
+    /tmp/*|/private/tmp/*|*llms-txt-install-smoke*|*install-smoke*)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+# After ROOT is known. Sets REG_LOGIN_HOME, REG_CWD, REG_STABLE_ROOT.
+# May rewrite ROUTINES_HOME when HOME is ephemeral and ROUTINES_HOME points
+# outside the sandbox (the host-pollution path for llms-txt-install-smoke).
+last_stack_registry_paths_init() {
+  REG_LOGIN_HOME="$(last_stack_login_home)"
+
+  if last_stack_home_is_ephemeral; then
+    case "${ROUTINES_HOME:-}" in
+      "${HOME}"|"${HOME}"/*)
+        : # already under sandbox HOME
+        ;;
+      *)
+        # Inherited absolute host ROUTINES_HOME would rewrite live registry
+        # with sandbox ROOT prompt paths. Force sandbox target.
+        export ROUTINES_HOME="${HOME}/.routines"
+        ;;
+    esac
+    REG_CWD="${HOME}/code/edgevector"
+    # Install tree under the sandbox (ROOT), not the host login last-stack.
+    if [ -n "${ROOT:-}" ] && [ -d "${ROOT}" ]; then
+      REG_STABLE_ROOT="$(CDPATH= cd -- "${ROOT}" && pwd -P)"
+    else
+      REG_STABLE_ROOT="${HOME}/.last-stack"
+    fi
+  else
+    REG_CWD="${HOME}/code/edgevector"
+    if [ -n "${LAST_STACK_ROOT:-}" ] && [ -d "${LAST_STACK_ROOT}" ]; then
+      REG_STABLE_ROOT="$(CDPATH= cd -- "${LAST_STACK_ROOT}" && pwd -P)"
+    elif [ -d "${HOME}/.last-stack" ]; then
+      # Prefer the stable compat root (artifact layout symlinks) over a
+      # versioned host-track SOURCE_ROOT that will be GC'd.
+      REG_STABLE_ROOT="$(CDPATH= cd -- "${HOME}/.last-stack" && pwd -P)"
+    elif [ -n "${ROOT:-}" ] && [ -d "${ROOT}" ]; then
+      REG_STABLE_ROOT="$(CDPATH= cd -- "${ROOT}" && pwd -P)"
+    else
+      REG_STABLE_ROOT="${HOME}/.last-stack"
+    fi
+  fi
+}
+
+# Prefer stable install routines/<name> when readable; else fallback (usually
+# ROOT/routines/<name>). Never returns a path containing /Users/REPLACE.
+last_stack_registry_prompt_path() {
+  local name="$1"
+  local fallback="$2"
+  local stable="${REG_STABLE_ROOT}/routines/${name}"
+  if [ -r "$stable" ]; then
+    printf '%s\n' "$stable"
+  else
+    printf '%s\n' "$fallback"
+  fi
+}
+
+# Refuse host-registry writes that embed ephemeral or REPLACE paths.
+# Returns 0 when safe; prints reason and returns 1 when blocked.
+last_stack_registry_assert_safe_write() {
+  local registry_dir="$1"
+  shift
+  local host_reg="${REG_LOGIN_HOME}/.routines"
+  local host_reg_real=""
+  local reg_real=""
+  local p
+
+  # Only guard when the target is (or is under) the login home's live registry.
+  if [ -d "$host_reg" ]; then
+    host_reg_real="$(CDPATH= cd -- "$host_reg" && pwd -P 2>/dev/null || printf '%s' "$host_reg")"
+  else
+    host_reg_real="$host_reg"
+  fi
+  if [ -d "$registry_dir" ]; then
+    reg_real="$(CDPATH= cd -- "$registry_dir" && pwd -P 2>/dev/null || printf '%s' "$registry_dir")"
+  else
+    # Parent may not exist yet; normalize with string match on login path.
+    reg_real="$registry_dir"
+  fi
+
+  case "$reg_real" in
+    "$host_reg_real"|"$host_reg_real"/*|"$host_reg"|"$host_reg"/*|"${REG_LOGIN_HOME}/.routines"|"${REG_LOGIN_HOME}/.routines"/*)
+      for p in "$@"; do
+        case "$p" in
+          *"/Users/REPLACE"*|*"Users/REPLACE"*)
+            echo "refusing host registry write with unsubstituted REPLACE path: $p" >&2
+            return 1
+            ;;
+          /tmp/*|/private/tmp/*|*llms-txt-install-smoke*|*install-smoke*)
+            echo "refusing host registry write with ephemeral sandbox path: $p" >&2
+            return 1
+            ;;
+        esac
+      done
+      ;;
+  esac
+  return 0
+}

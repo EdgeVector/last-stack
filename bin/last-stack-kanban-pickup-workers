@@ -3,9 +3,13 @@
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+# shellcheck source=last-stack-routines-registry-env
+. "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/last-stack-routines-registry-env"
+last_stack_registry_paths_init
+
 ROUTINES_HOME="${ROUTINES_HOME:-$HOME/.routines}"
 REGISTRY_DIR="$ROUTINES_HOME/registry"
-PROMPT_PATH="$ROOT/routines/kanban-pickup.md"
+PROMPT_PATH="$(last_stack_registry_prompt_path kanban-pickup.md "$ROOT/routines/kanban-pickup.md")"
 BOOTSTRAP_PROMPT_PATH="$ROUTINES_HOME/prompts/last-stack-kanban-pickup-bootstrap.md"
 WORKERS=6
 DRY_RUN=0
@@ -243,6 +247,21 @@ write_worker() {
     printf '%s\n' "--- $path"
   fi
 
+  # Resolve gate binary before the write pipe so assert_safe_write can see it.
+  # Prefer PATH install, then stable last-stack root, then this tree.
+  local gate_cmd="$ROOT/bin/last-stack-kanban-pickup-gate"
+  if [ -x "${REG_STABLE_ROOT}/bin/last-stack-kanban-pickup-gate" ]; then
+    gate_cmd="${REG_STABLE_ROOT}/bin/last-stack-kanban-pickup-gate"
+  fi
+  if command -v last-stack-kanban-pickup-gate >/dev/null 2>&1; then
+    gate_cmd="$(command -v last-stack-kanban-pickup-gate)"
+  fi
+
+  if [ "$DRY_RUN" -eq 0 ]; then
+    last_stack_registry_assert_safe_write "$REGISTRY_DIR" "$BOOTSTRAP_PROMPT_PATH" "$REG_CWD" "$gate_cmd" \
+      || return 3
+  fi
+
   {
     printf '# Kanban pickup %s - same no-spawn prompt as the base worker.\n' "$label"
     printf '# %s\n' "$peer_note"
@@ -252,15 +271,10 @@ write_worker() {
     printf 'model = "gpt-5.5"\n'
     printf 'effort = "high"\n'
     printf 'rrule = "FREQ=HOURLY;BYMINUTE=%s;BYSECOND=%s"\n' "$byminute" "$second"
-    printf 'cwd = "/Users/REPLACE/code/edgevector"\n'
+    printf 'cwd = "%s"\n' "$REG_CWD"
     printf 'status = "active"\n'
     printf 'timeout_min = 45\n'
     # Zero-LLM ready gate: routinesd skips the harness when ready=0 (routines ≥ gate_command).
-    # Prefer PATH-resolved install (~/.local/bin after host-track), else this tree's bin.
-    gate_cmd="$ROOT/bin/last-stack-kanban-pickup-gate"
-    if command -v last-stack-kanban-pickup-gate >/dev/null 2>&1; then
-      gate_cmd="$(command -v last-stack-kanban-pickup-gate)"
-    fi
     printf 'gate_command = "%s"\n' "$gate_cmd"
     printf '# Cap: one WORK unit per fire; capacity comes from separate registry workers, not SpawnAgent fan-out.\n'
     printf '# Prompt path is a freshness bootstrap; it delegates through last-stack-routine-read before claim.\n'
