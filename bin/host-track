@@ -982,6 +982,45 @@ release_install_lock() {
   INSTALL_LOCK_HELD=""
 }
 
+# True when a staged/installed version tree has a usable command payload.
+# Complete when ANY of:
+#   - non-empty bin/ (classic last-stack / brain layout)
+#   - VERSION marker
+#   - every registry links[].source exists as a non-symlink path (dist/* CLIs)
+#   - non-empty dist/ with at least one regular file (CAS-only fallback)
+# Half-empty stages fail all of the above. json is optional; pass registry app
+# JSON when available so links[] can authorize dist-only producers (situations,
+# fkanban, kanban, routines).
+artifact_tree_has_payload() {
+  local tree="$1" json="${2:-}" encoded entry source has_links=0
+  [ -d "$tree" ] || return 1
+  if [ -d "$tree/bin" ] && [ -n "$(ls -A "$tree/bin" 2>/dev/null || true)" ]; then
+    return 0
+  fi
+  [ -f "$tree/VERSION" ] && return 0
+  if [ -n "$json" ]; then
+    while IFS= read -r encoded; do
+      [ -n "$encoded" ] || continue
+      has_links=1
+      entry="$(printf '%s' "$encoded" | base64_decode)"
+      source="$(printf '%s\n' "$entry" | jq -r '.source // ""')"
+      [ -n "$source" ] || return 1
+      if [ ! -e "$tree/$source" ] || [ -L "$tree/$source" ]; then
+        return 1
+      fi
+    done < <(printf '%s\n' "$json" | jq -r '.links[]? | @base64')
+    [ "$has_links" -eq 1 ] && return 0
+  fi
+  # dist-only CAS payloads (situations/fkanban) even without registry json at hand.
+  if [ -d "$tree/dist" ]; then
+    for f in "$tree/dist"/*; do
+      [ -e "$f" ] || continue
+      [ -f "$f" ] && [ ! -L "$f" ] && return 0
+    done
+  fi
+  return 1
+}
+
 # True when install_root/current resolves to an existing directory with content.
 current_target_is_live() {
   local install_root="$1" cur abs
@@ -992,18 +1031,16 @@ current_target_is_live() {
     *) abs="$install_root/$cur" ;;
   esac
   [ -d "$abs" ] || return 1
-  # At least one file under bin/ or a VERSION marker — half-stages often have empty trees.
-  if [ -d "$abs/bin" ] && [ -n "$(ls -A "$abs/bin" 2>/dev/null || true)" ]; then
-    return 0
-  fi
-  [ -f "$abs/VERSION" ] && return 0
-  return 1
+  # bin/, VERSION, links sources, or dist/* — half-stages often have empty trees.
+  artifact_tree_has_payload "$abs"
 }
 
 # Materialize a fully verified stage directory from the CAS manifest.
 # Prints stage path on stdout. On failure cleans stage and returns non-zero.
+# Optional 5th arg: registry app JSON so dist/* link sources count as complete
+# (situations/fkanban publish dist/* only — not a synthetic bin/ tree).
 stage_artifact_from_manifest() {
-  local install_root="$1" digest="$2" manifest="$3" artifact_root="$4"
+  local install_root="$1" digest="$2" manifest="$3" artifact_root="$4" json="${5:-}"
   local stage encoded entry rel expected_sha mode blob actual_sha mode_octal
   stage="$(mktemp -d "$install_root/.stage-$digest.XXXXXX")"
   if ! (
@@ -1026,9 +1063,10 @@ stage_artifact_from_manifest() {
       chmod "$mode_octal" "$stage/$rel"
       [ "$(hash_file "$stage/$rel")" = "$expected_sha" ] || die "installed artifact verification failed: $rel"
     done < <(printf '%s\n' "$manifest" | jq -r '.files[] | @base64')
-    # Refuse to promote an empty or bin-less stage (the half-write failure mode).
-    [ -d "$stage/bin" ] || die "staged artifact missing bin/ (incomplete stage)"
-    [ -n "$(ls -A "$stage/bin" 2>/dev/null || true)" ] || die "staged artifact bin/ is empty (incomplete stage)"
+    # Refuse empty / half-write stages. Accept bin/, registry link sources, or dist/*.
+    if ! artifact_tree_has_payload "$stage" "$json"; then
+      die "staged artifact missing command payload (incomplete stage; need bin/, links[].source, or dist/)"
+    fi
   ); then
     rm -rf -- "$stage"
     return 1
@@ -1258,7 +1296,7 @@ artifact_install_app() {
   fi
 
   if [ "$need_materialize" -eq 1 ]; then
-    if ! stage="$(stage_artifact_from_manifest "$install_root" "$digest" "$manifest" "$artifact_root")"; then
+    if ! stage="$(stage_artifact_from_manifest "$install_root" "$digest" "$manifest" "$artifact_root" "$json")"; then
       release_install_lock
       trap - EXIT
       return 1
@@ -1284,8 +1322,9 @@ artifact_install_app() {
 
   # Cutover: only after versions/<digest> is complete on disk.
   # Refuse to activate a non-live tree (defense in depth against empty stages).
-  if [ ! -d "$target/bin" ] || [ -z "$(ls -A "$target/bin" 2>/dev/null || true)" ]; then
-    die "refusing cutover: versions/$digest has empty or missing bin/ (incomplete install)"
+  # Accept bin/, registry link sources (dist/*), or VERSION — not bin/-only.
+  if ! artifact_tree_has_payload "$target" "$json"; then
+    die "refusing cutover: versions/$digest incomplete install (missing command payload)"
   fi
 
   old_target=""
