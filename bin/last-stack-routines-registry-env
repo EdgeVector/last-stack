@@ -43,6 +43,16 @@ last_stack_home_is_ephemeral() {
   return 1
 }
 
+# True when a path lives inside an immutable host-track artifacts/versions/<sha>
+# tree. Those directories are garbage-collected, so nothing durable may point at
+# one — prefer the compat root (~/.last-stack) whose symlinks follow `current`.
+last_stack_registry_is_version_dir() {
+  case "$1" in
+    */artifacts/versions/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # After ROOT is known. Sets REG_LOGIN_HOME, REG_CWD, REG_STABLE_ROOT.
 # May rewrite ROUTINES_HOME when HOME is ephemeral and ROUTINES_HOME points
 # outside the sandbox (the host-pollution path for llms-txt-install-smoke).
@@ -69,7 +79,15 @@ last_stack_registry_paths_init() {
     fi
   else
     REG_CWD="${HOME}/code/edgevector"
-    if [ -n "${LAST_STACK_ROOT:-}" ] && [ -d "${LAST_STACK_ROOT}" ]; then
+    # A path inside artifacts/versions/<sha>/ is NOT stable: host-track GCs old
+    # versions, and a prompt_path pinned there stops tracking merged prompt
+    # changes the moment the next artifact installs. host-track runs
+    # <version>/setup with LAST_STACK_ROOT set to the version being installed,
+    # so trusting it here is how the pin got written on every refresh — the
+    # branch below already documented the intent and this check is what makes
+    # it true. See papercut-routines-prompt-doctor-exists-but-is-never-run.
+    if [ -n "${LAST_STACK_ROOT:-}" ] && [ -d "${LAST_STACK_ROOT}" ] \
+      && ! last_stack_registry_is_version_dir "${LAST_STACK_ROOT}"; then
       REG_STABLE_ROOT="$(CDPATH= cd -- "${LAST_STACK_ROOT}" && pwd -P)"
     elif [ -d "${HOME}/.last-stack" ]; then
       # Prefer the stable compat root (artifact layout symlinks) over a

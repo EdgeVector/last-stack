@@ -117,4 +117,47 @@ if [ -d "$login_home/.routines/registry" ]; then
     || fail "refuse path did not explain itself: $(cat "$tmp/refuse.err")"
 fi
 
+
+# --- a versioned artifact dir must never become REG_STABLE_ROOT ---
+# host-track runs <version>/setup with LAST_STACK_ROOT pointing at the version
+# being installed, so trusting it pinned prompt_path into an artifacts/versions/
+# tree on EVERY refresh. Those dirs are GC'd, and a pinned prompt stops tracking
+# merged prompt changes — silently, because the file still exists for a while.
+# Resolve through /var -> /private/var so comparisons match what pwd -P returns.
+ver_home="$(CDPATH= cd -- "$(mktemp -d)" && pwd -P)"
+mkdir -p "$ver_home/.last-stack/routines"
+mkdir -p "$ver_home/.local/state/last-stack/artifacts/versions/deadbeef/routines"
+printf '# compat\n' >"$ver_home/.last-stack/routines/feature-prove.md"
+printf '# versioned\n' >"$ver_home/.local/state/last-stack/artifacts/versions/deadbeef/routines/feature-prove.md"
+
+resolved="$(
+  HOME="$ver_home" \
+  LAST_STACK_ROOT="$ver_home/.local/state/last-stack/artifacts/versions/deadbeef" \
+  bash -c '
+    . "'"$ROOT"'/bin/last-stack-routines-registry-env"
+    last_stack_registry_paths_init
+    last_stack_registry_prompt_path feature-prove.md /fallback.md
+  '
+)"
+case "$resolved" in
+  */artifacts/versions/*) fail "prompt_path pinned into a GC-able version dir: $resolved" ;;
+esac
+[ "$resolved" = "$ver_home/.last-stack/routines/feature-prove.md" ] \
+  || fail "expected compat root, got $resolved"
+
+# A non-versioned LAST_STACK_ROOT is still honoured.
+mkdir -p "$ver_home/custom-root/routines"
+printf '# custom\n' >"$ver_home/custom-root/routines/feature-prove.md"
+resolved="$(
+  HOME="$ver_home" LAST_STACK_ROOT="$ver_home/custom-root" \
+  bash -c '
+    . "'"$ROOT"'/bin/last-stack-routines-registry-env"
+    last_stack_registry_paths_init
+    last_stack_registry_prompt_path feature-prove.md /fallback.md
+  '
+)"
+[ "$resolved" = "$ver_home/custom-root/routines/feature-prove.md" ] \
+  || fail "non-versioned LAST_STACK_ROOT should win, got $resolved"
+rm -rf "$ver_home"
+
 echo "ok"
