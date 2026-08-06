@@ -73,6 +73,7 @@ bash tests/last-stack-artifact-routine-freshness.sh
 bash tests/last-stack-artifact-one-rule.sh
 bash tests/last-stack-post-merge-safe-upgrade.sh
 bash tests/last-stack-lastdb-safe-upgrade-candidate-class.sh
+bash tests/last-stack-lastdb-safe-upgrade-latency-bar.sh
 bash tests/last-stack-lastdb-safe-upgrade-cas-probe.sh
 bash tests/last-stack-safe-upgrade-backup-dedup.sh
 bash tests/last-stack-lastdb-canary-dogfood.sh

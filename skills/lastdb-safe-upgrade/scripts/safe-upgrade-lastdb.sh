@@ -122,6 +122,13 @@ LAT_FLOOR_MS="${LASTDB_PROBE_LAT_FLOOR_MS:-250}"   # ratio bar only applies abov
 LAT_ABS_MAX_MS="${LASTDB_PROBE_LAT_ABS_MAX_MS:-20000}"  # RED when no baseline; WARN when baseline is equally slow
 LAT_OP_TIMEOUT_SECS="${LASTDB_PROBE_LAT_OP_TIMEOUT_SECS:-120}"  # per-sample kill + scored as this
 LIVE_LAT_ENFORCE="${LASTDB_LIVE_LAT_ENFORCE:-0}"    # 1 = live post-check latency is RED, not WARN
+# Correlated / aggregate term (2026-08-05): per-op 3× alone passed a canary that
+# was slower on EVERY op at 1.6–2.4×. See latency-bar-checks.sh.
+# LASTDB_PROBE_LAT_CORR_SKIP=1 is Tom clearance only.
+export LASTDB_PROBE_LAT_CORR_RATIO="${LASTDB_PROBE_LAT_CORR_RATIO:-1.4}"
+export LASTDB_PROBE_LAT_GEO_MEAN_MAX="${LASTDB_PROBE_LAT_GEO_MEAN_MAX:-1.5}"
+export LASTDB_PROBE_LAT_CORR_MIN_OPS="${LASTDB_PROBE_LAT_CORR_MIN_OPS:-2}"
+export LASTDB_PROBE_LAT_CORR_SKIP="${LASTDB_PROBE_LAT_CORR_SKIP:-0}"
 
 # CAS mutation bar (LastGit #217 compound): candidate must honor `expected`
 # preconditions on /api/mutation. LASTDB_PROBE_CAS_SKIP=1 is Tom clearance only.
@@ -134,6 +141,8 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
 . "$_SCRIPT_DIR/candidate-class-checks.sh"
 # shellcheck source=binary-pair-checks.sh
 . "$_SCRIPT_DIR/binary-pair-checks.sh"
+# shellcheck source=latency-bar-checks.sh
+. "$_SCRIPT_DIR/latency-bar-checks.sh"
 CAS_PROBE_SH="$_SCRIPT_DIR/cas-mutation-probe.sh"
 
 cleanup_work() {
@@ -1026,16 +1035,52 @@ if [ "$LAT_SKIP" != "1" ]; then
   fi
 
   LAT_RED=0
-  lat_op_within_bar "point-read (Board title)" "$CAND_LAT_POINT_MS" "$BASE_LAT_POINT_MS" || LAT_RED=1
-  lat_op_within_bar "scan (kanban list)"       "$CAND_LAT_SCAN_MS"  "$BASE_LAT_SCAN_MS"  || LAT_RED=1
-  lat_op_within_bar "write (brain put)"        "$CAND_LAT_WRITE_MS" "$BASE_LAT_WRITE_MS" || LAT_RED=1
+  LAT_RED_REASON=""
+  lat_op_within_bar "point-read (Board title)" "$CAND_LAT_POINT_MS" "$BASE_LAT_POINT_MS" || {
+    LAT_RED=1
+    LAT_RED_REASON="per-op ratio (single-op ${LAT_RATIO}x bar)"
+  }
+  lat_op_within_bar "scan (kanban list)"       "$CAND_LAT_SCAN_MS"  "$BASE_LAT_SCAN_MS"  || {
+    LAT_RED=1
+    LAT_RED_REASON="per-op ratio (single-op ${LAT_RATIO}x bar)"
+  }
+  lat_op_within_bar "write (brain put)"        "$CAND_LAT_WRITE_MS" "$BASE_LAT_WRITE_MS" || {
+    LAT_RED=1
+    LAT_RED_REASON="per-op ratio (single-op ${LAT_RATIO}x bar)"
+  }
+  # Aggregate term: every-op moderate regression / geo-mean (2026-08-05).
+  # Runs even when per-op is GREEN — that is the hole it closes.
+  set +e
+  CORR_OUT="$(lat_correlated_within_bar \
+    "$CAND_LAT_POINT_MS" "$BASE_LAT_POINT_MS" \
+    "$CAND_LAT_SCAN_MS"  "$BASE_LAT_SCAN_MS" \
+    "$CAND_LAT_WRITE_MS" "$BASE_LAT_WRITE_MS")"
+  CORR_RC=$?
+  set -e
+  if [ -n "$CORR_OUT" ]; then
+    # Mirror pure-helper lines through the driver's log/warn channels.
+    while IFS= read -r corr_line || [ -n "$corr_line" ]; do
+      [ -n "$corr_line" ] || continue
+      case "$corr_line" in
+        *' RED:'*) log "$corr_line" ;;
+        *'SKIPPED'*) warn "$corr_line" ;;
+        *) log "$corr_line" ;;
+      esac
+    done <<EOF
+$CORR_OUT
+EOF
+  fi
+  if [ "$CORR_RC" -ne 0 ]; then
+    LAT_RED=1
+    LAT_RED_REASON="correlated regression (all-ops >=${LASTDB_PROBE_LAT_CORR_RATIO}x and/or geo-mean >${LASTDB_PROBE_LAT_GEO_MEAN_MAX}x)"
+  fi
   if [ "$LAT_RED" -ne 0 ]; then
     echo ""
     echo "VERDICT: RED"
-    echo "REASON: candidate $CAND_VER fails the latency bar — correct-but-slow is NOT GREEN (incident 2026-07-25/27: 0.23.1 scans ran 5-20x slower and the old bar passed it)"
-    echo "LATENCY: point=${CAND_LAT_POINT_MS}ms(base ${BASE_LAT_POINT_MS}ms) scan=${CAND_LAT_SCAN_MS}ms(base ${BASE_LAT_SCAN_MS}ms) write=${CAND_LAT_WRITE_MS}ms(base ${BASE_LAT_WRITE_MS}ms) ratio-bar=${LAT_RATIO}x floor=${LAT_FLOOR_MS}ms abs-max=${LAT_ABS_MAX_MS}ms"
+    echo "REASON: candidate $CAND_VER fails the latency bar (${LAT_RED_REASON:-unknown}) — correct-but-slow is NOT GREEN (incident 2026-07-25/27 single-op; 2026-08-05 correlated moderate regression)"
+    echo "LATENCY: point=${CAND_LAT_POINT_MS}ms(base ${BASE_LAT_POINT_MS}ms) scan=${CAND_LAT_SCAN_MS}ms(base ${BASE_LAT_SCAN_MS}ms) write=${CAND_LAT_WRITE_MS}ms(base ${BASE_LAT_WRITE_MS}ms) ratio-bar=${LAT_RATIO}x floor=${LAT_FLOOR_MS}ms abs-max=${LAT_ABS_MAX_MS}ms corr-ratio=${LASTDB_PROBE_LAT_CORR_RATIO}x geo-mean-max=${LASTDB_PROBE_LAT_GEO_MEAN_MAX}x"
     echo "BACKUP: $BACKUP  (kept; primary NOT upgraded)"
-    echo "NEXT:   do NOT live-upgrade; profile the candidate's read/write paths (brain: lastdb-0231-hashgroup-scan-warmset-thrash-read-regression). Re-running with LASTDB_PROBE_LAT_SKIP=1 requires Tom's explicit clearance."
+    echo "NEXT:   do NOT live-upgrade; profile the candidate's read/write paths (brain: lastdb-0231-hashgroup-scan-warmset-thrash-read-regression, papercut-safe-upgrade-latency-bar-blind-to-correlated-regression). Re-running with LASTDB_PROBE_LAT_SKIP=1 or LASTDB_PROBE_LAT_CORR_SKIP=1 requires Tom's explicit clearance."
     exit 1
   fi
 else
