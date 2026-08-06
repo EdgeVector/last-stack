@@ -287,16 +287,6 @@ tracked_dirty_matches_remote() {
   done
 }
 
-untracked_remote_conflicts_match() {
-  target_head="$1"
-  git -C "$ROOT" ls-files --others --exclude-standard -z 2>/dev/null |
-    while IFS= read -r -d '' rel; do
-      if git -C "$ROOT" cat-file -e "$target_head:$rel" 2>/dev/null; then
-        path_matches_remote "$target_head" "$rel" || exit 1
-      fi
-    done
-}
-
 is_known_local_state_path() {
   case "$1" in
     logs/*|proofs/*|feature-proofs/*|north-star-proofs/*|dogfood/*|lastdb-backups/*) return 0 ;;
