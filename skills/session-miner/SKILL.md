@@ -3,9 +3,10 @@ name: session-miner
 description: |
   Mine recent agent session JSONL transcripts with a named extractor profile.
   Use when a routine asks to scan the last N hours of sessions for papercuts,
-  incidents/prevention, owner-stated durable knowledge, or agent-tooling
-  improvement opportunities, then either report findings or write the profile's
-  outputs to kanban/brain/tooling.
+  incidents/prevention, owner-stated durable knowledge, agent-tooling
+  improvement opportunities, or revenant-watch (settled-dead product truth
+  reanimated), then either report findings or write the profile's outputs to
+  kanban/brain/tooling.
 ---
 
 # Session Miner
@@ -15,7 +16,7 @@ transcripts and turn repeated signals into durable outputs. Invoke it with a
 profile name and a time window:
 
 ```text
-profile=<papercuts|incidents|owner-statements|friction-patterns>
+profile=<papercuts|incidents|owner-statements|friction-patterns|revenant-watch>
 window_hours=<N, default 24>
 mode=<report-only|apply, default report-only>
 project=<workspace key or absolute workspace root, optional>
@@ -187,6 +188,78 @@ Limits: at most two new skills and one new scheduled routine per run unless the
 profile override says otherwise. Never deploy, never touch production, and never
 delete or wholesale rewrite existing tooling.
 
+### `revenant-watch`
+
+Source routine: `last-stack-revenant-watch` (thin daily trigger; North Star
+`north-star-revenant-watch`). Prefer brain overrides:
+`brain get miner-profile-revenant-watch` and `brain get sop-revenant-watch`.
+
+Purpose: Detect **revenants** — agent sessions that treat settled-dead product
+truth as still alive (building a retired surface, reopening a closed North Star
+plane, ignoring a won't-undo standing rule). Conservative: flag only clear
+contradictions of settled Brain canon; never invent product scope.
+
+Candidate signals (require **both** sides):
+
+1. **Settled canon** from Brain (won't-undo preferences, standing agent rules,
+   retired/removed surfaces, closed or abandoned North Stars, explicit "do not
+   build X" decisions in durable records).
+2. **Session evidence** that the agent is actively planning or implementing
+   against that dead truth (tool_use / commits / PR intent that re-creates or
+   extends the retired surface, or assistant plans that treat it as live).
+
+**Open-work exemption (hard skip):** do **not** flag when any of these own the
+area:
+
+- An open kanban card (`todo` / `doing` / non-terminal) with matching repo or
+  surfaces / title / slug topic.
+- An **active** or **proving** North Star / milestone that still owns that
+  product plane.
+- A recent merged PR/CR whose END STATE intentionally revisits the area under
+  a live NS (in-flight evolution, not reanimation).
+
+In-flight work is never a revenant. Prefer false negatives over board/brain
+spam.
+
+Output in `apply` — **Brain only**:
+
+- One `revenant-<topic>` `type: reference` record per clustered topic: evidence
+  (session ids + timestamps, short paraphrase), canon slug(s) contradicted,
+  priority (P0–P3), and a suggested human/agent triage note.
+- One rolling daily priority ledger update, e.g. `revenant-watch-ledger-YYYY-MM-DD`
+  (or append to a stable `revenant-watch-ledger` record if that slug exists),
+  ranking topics for the window.
+
+**Never** file papercut records, kanban cards, PRs, or routine prompt edits from
+this profile. Board work is a later human/agent triage step.
+
+Dedupe keys:
+
+- `revenant-<normalized-topic>` for findings (update in place; do not mint
+  near-duplicates).
+- Ledger row keyed by topic + window day.
+
+Limits: at most 10 new/updated `revenant-*` findings per run; ledger always
+updated when any candidate survives triage. Skip soft-staleness noise (docs
+slightly behind main, optional UI polish on live planes).
+
+Dry-run (report-only) example:
+
+```text
+profile=revenant-watch window_hours=24 mode=report-only
+```
+
+Deterministic classify helper (after extracting claims + topics + open work):
+
+```bash
+bin/last-stack-revenant-classify /path/to/case.json --verbose
+# fixtures + terminal proof: harness/north-star/revenant-watch/run.sh
+```
+
+Survey scope: **all harnesses** session-miner already reaches (Claude/Codex/
+Grok/etc. transcript dirs from workspace-config). Do not add a peer transcript
+pipeline or a new mining engine under `routines/`.
+
 ## Apply Mechanics
 
 For kanban cards, follow the shared contract exactly: clean `Repo:`,
@@ -217,4 +290,5 @@ Always end with:
   `last-stack-papercut-reconciler -> papercuts`,
   `daily-retro-prevention -> incidents`,
   `capture-knowledge-to-brain -> owner-statements`,
-  `daily-self-improvement-loop -> friction-patterns`.
+  `daily-self-improvement-loop -> friction-patterns`,
+  `last-stack-revenant-watch -> revenant-watch` (Brain-only; no board filing).

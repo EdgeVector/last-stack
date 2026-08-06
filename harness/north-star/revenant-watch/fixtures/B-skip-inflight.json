@@ -1,0 +1,28 @@
+{
+  "name": "B-skip-inflight",
+  "description": "Same React claim, but an active card owns the area — in-flight, not a revenant.",
+  "claims": [
+    {
+      "id": "b1",
+      "session": "fixture-session-b",
+      "text": "Building the full LastDB binary and packaging the React app for the full-DB desktop UI.",
+      "topics": ["full-db-react-ui"]
+    }
+  ],
+  "canon": [
+    {
+      "topic": "full-db-react-ui",
+      "status": "retired",
+      "settled": true,
+      "slug": "preference-full-db-react-ui-removed",
+      "priority": "P1"
+    }
+  ],
+  "open_work": [
+    {
+      "slug": "remove-full-db-react-ui",
+      "topics": ["full-db-react-ui"],
+      "active": true
+    }
+  ]
+}
