@@ -368,6 +368,10 @@ metacharacters, it must never be expanded by the shell; substitute only narrow
 placeholders afterward with a controlled command such as `sed`.
 Unquoted heredocs such as `<<EOF` are not allowed for these bodies; use a
 single-quoted delimiter such as `<<'EOF'`.
+For routine Brain/card writes, prefer
+`bin/last-stack-literal-markdown-append` with `--body-file` so Markdown is
+handed to `brain append` or `kanban add --body-file` through literal stdin/file
+plumbing instead of shell-expanded command text.
 
 For `brain put`, pass the schema explicitly (`--type reference`, `--type
 project`, etc.) or include a valid `type:` in frontmatter. Do not pass
