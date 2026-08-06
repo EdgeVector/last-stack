@@ -1,0 +1,15 @@
+# PROFILE=normal — weekly steward for Revenant Watch (not a new mining engine)
+# First natural fire: Thursday 08:05 (≈1 week cadence after 2026-08-06 ship).
+# Reviews daily miner health, finding quality, fixture bar; reports Tom; small fixes.
+id = "last-stack-revenant-watch-weekly-review"
+harness = "grok"
+model = "grok-4.5"
+fallback = "grok:grok-4.5"
+effort = "medium"
+group = "board"
+rrule = "FREQ=WEEKLY;BYDAY=TH;BYHOUR=8;BYMINUTE=5;BYSECOND=0"
+cwd = "/Users/REPLACE/code/edgevector"
+status = "active"
+timeout_min = 35
+prompt_path = "/Users/REPLACE/.last-stack/routines/revenant-watch-weekly-review.md"
+heartbeat_slug = "routine-heartbeats"

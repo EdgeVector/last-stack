@@ -377,7 +377,23 @@ For each non-draft open PR, load checks / status via the forge API (see
 4. **405 merge / stuck status-check** while green → empty-commit push from
    worktree (known Forgejo papercut; see brain
    `papercut-forge-merge-405-stuck-status-check`).
-5. **Human-gated prod cutover** (title/body say so) → leave + papercut only.
+5. **Dead CI trigger after branch recreate** — `commits/<sha>/status` is the
+   empty envelope (`state:""`, `total_count:0`) **and** `actions/tasks` has
+   zero runs for that head, even though the runner is alive on other heads.
+   This is **not** a stuck status task: empty-commit heal does nothing.
+   Detect + supersede with:
+   ```bash
+   "$last_stack/bin/last-stack-forge-dead-trigger" probe \
+     --repo <owner/repo> --pr <n> --min-age-secs 120 --json
+   # verdict=dead-trigger →
+   "$last_stack/bin/last-stack-forge-dead-trigger" supersede \
+     --repo <owner/repo> --pr <n> --checkout <worktree>
+   ```
+   Supersede pushes the same commits to a fresh branch, opens a new PR, closes
+   the dead one, and arms auto-merge on the fresh PR. Source papercut:
+   `papercut-forge-recreated-branch-stops-triggering-ci` /
+   card `papercut-forge-recreated-branch-ci-trigger-dead`.
+6. **Human-gated prod cutover** (title/body say so) → leave + papercut only.
 
 Never use `gh` for forge-hot source-of-truth PRs. Never push the read-only
 GitHub mirror of a forge-hosted repo.

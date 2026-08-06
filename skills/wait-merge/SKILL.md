@@ -69,6 +69,24 @@ A single red check or a `BLOCKED` status on one poll means nothing — CI flaps 
 a merge queue transitions through ugly intermediate states. Only treat
 red/blocked as real if it persists across at least two polls.
 
+### Forgejo: empty status is not "pending"
+
+On Forgejo-venue PRs, `commits/<sha>/status` returning
+`state:""` / `total_count:0` for **many minutes** with zero
+`actions/tasks` for that head is a **dead CI trigger** (branch
+deleted-and-recreated under an open PR) — not a slow pending check.
+Do **not** empty-commit heal it; run:
+
+```bash
+"$last_stack/bin/last-stack-forge-dead-trigger" probe --repo <owner/repo> --pr <n> --json
+# verdict=dead-trigger → supersede (fresh branch + new PR)
+"$last_stack/bin/last-stack-forge-dead-trigger" supersede \
+  --repo <owner/repo> --pr <n> --checkout <worktree>
+```
+
+Then drive the **new** PR number. Empty-commit is only for the stuck
+status-task / merge-405 papercut when tasks already exist.
+
 ## Merge-queue gotcha
 
 For merge-queue repos, `autoMergeRequest` can read **null in the REST/`pr view`

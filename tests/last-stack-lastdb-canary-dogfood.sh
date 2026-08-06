@@ -17,6 +17,9 @@ export LAST_STACK_CANARY_MAIN_OID="$MAIN_OID"
 export LAST_STACK_CANARY_FOLD_MIRROR="$tmp/no-fold-mirror"
 export LAST_STACK_CANARY_BUILDS_DIR="$tmp/canary-builds"
 export LAST_STACK_CANARY_FETCH_MAIN=0
+# Hermetic: never probe host lastdbd / situations during fixture steps.
+export LAST_STACK_CANARY_LIVE_VERSION_CMD=pass
+export LAST_STACK_CANARY_SITUATION_CHECK_CMD=pass
 mkdir -p "$LAST_STACK_CANARY_BUILDS_DIR"
 
 stub="$tmp/safe-upgrade-stub"
