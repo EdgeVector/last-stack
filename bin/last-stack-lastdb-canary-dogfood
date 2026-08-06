@@ -122,14 +122,27 @@ def sanitize(value: str) -> str:
     return value or "unknown"
 
 
-def run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=check)
+def run(
+    cmd: list[str],
+    *,
+    check: bool = True,
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        cmd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=check,
+        timeout=timeout,
+    )
 
 
 def binary_version(path: str) -> str:
+    """Return lastdbd --version tail; never hang CI on a wedged host binary."""
     try:
-        out = run([path, "--version"], check=False).stdout.strip()
-    except OSError:
+        out = run([path, "--version"], check=False, timeout=5).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
         return "unknown"
     return out.split()[-1] if out else "unknown"
 
@@ -310,18 +323,27 @@ def resolve_forge_main_candidate() -> Candidate | None:
                 paths.append(str(child / "bin" / "lastdbd"))
 
     # Worktrees / checkouts (never the empty portal). Prefer fkanban worktrees.
+    # Skip host scans when CI/tests inject LAST_STACK_CANARY_BUILDS_DIR — that is
+    # the hermetic isolation signal. Globbing ~/.fkanban/worktrees/fold-*/target/**
+    # on a busy machine can hang for minutes and reds every last-stack CR.
     home = HOME
-    paths.extend(
-        [
-            str(home / "code/edgevector/fold/target/release/lastdbd"),
-            str(home / "code/edgevector/fold/lastdb_node/target/release/lastdbd"),
-            str(home / "code/edgevector/fold/fold_db/target/release/lastdbd"),
-        ]
-    )
-    wt_root = home / ".fkanban" / "worktrees"
-    if wt_root.is_dir():
-        for p in sorted(wt_root.glob("fold-*/target/release/lastdbd"), reverse=True)[:20]:
-            paths.append(str(p))
+    hermetic_builds = bool(os.environ.get("LAST_STACK_CANARY_BUILDS_DIR"))
+    if not hermetic_builds:
+        paths.extend(
+            [
+                str(home / "code/edgevector/fold/target/release/lastdbd"),
+                str(home / "code/edgevector/fold/lastdb_node/target/release/lastdbd"),
+                str(home / "code/edgevector/fold/fold_db/target/release/lastdbd"),
+            ]
+        )
+        wt_root = home / ".fkanban" / "worktrees"
+        if wt_root.is_dir():
+            # Narrow glob: only direct fold-* children, not a recursive target walk.
+            for child in sorted(wt_root.glob("fold-*"), reverse=True)[:40]:
+                for rel in ("target/release/lastdbd", "lastdb_node/target/release/lastdbd"):
+                    p = child / rel
+                    if p.is_file():
+                        paths.append(str(p))
 
     seen: set[str] = set()
     for path in paths:
