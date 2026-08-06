@@ -56,6 +56,14 @@ grep -q 'candidate-class-checks.sh' "$driver" || {
   echo "FAIL: driver must source candidate-class-checks.sh" >&2
   exit 1
 }
+grep -q 'binary-pair-checks.sh' "$driver" || {
+  echo "FAIL: driver must source binary-pair-checks.sh" >&2
+  exit 1
+}
+grep -q 'lastdb and lastdbd must come from the same artifact' "$driver" || {
+  echo "FAIL: driver must reject daemon-only or version-skewed artifacts" >&2
+  exit 1
+}
 grep -q 'LIVE_LAT_SCAN_MS\|live_scan_ms' "$driver" || {
   echo "FAIL: driver must track live scan latency" >&2
   exit 1
