@@ -173,6 +173,29 @@ out="$(
 [ "$(printf '%s\n' "$out" | jq -r '.safe_upgrade_args[1]')" = "$staged" ]
 [ "$(printf '%s\n' "$out" | jq -r '.state')" = "dogfood_green" ]
 
+# --- --dry-run never shells out to a release build ---
+# The proof harness and every ad-hoc "what would tonight pick?" check run
+# --dry-run; a multi-GB cargo build from one would red every CR that shells it.
+build_probe="$tmp/build-probe"
+build_stub="$tmp/build-main-stub"
+cat >"$build_stub" <<STUB
+#!/usr/bin/env bash
+printf 'ran\n' >>"$build_probe"
+exit 1
+STUB
+chmod +x "$build_stub"
+: >"$build_probe"
+out="$(
+  env -u LAST_STACK_CANARY_LOCAL_FALLBACK_BIN \
+  env -u LAST_STACK_CANARY_BUILDS_DIR \
+  LAST_STACK_CANARY_MAIN_OID="$MAIN_OID" \
+  LAST_STACK_CANARY_FOLD_MIRROR="$tmp/no-fold-mirror" \
+  LAST_STACK_CANARY_BUILD_MAIN_BIN="$build_stub" \
+  LAST_STACK_CANARY_SAFE_UPGRADE="$stub" \
+  "$CLI" --state-dir "$tmp/nobuild-state" --dry-run --json
+)" || true
+[ ! -s "$build_probe" ]
+
 # --- a blocked Situation is `blocked_situation`, never `dogfood_red` ---
 # The fence stopping us says nothing about the candidate. Recording it as a red
 # verdict is what let an unrelated codex outage look like a bad LastDB build.

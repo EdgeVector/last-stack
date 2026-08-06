@@ -648,7 +648,11 @@ def resolve_candidate(args: argparse.Namespace) -> Candidate:
     #    nightly red'd on "forge-main-unbuilt" every time. Close the loop here:
     #    if no build is staged, make one.
     #    See papercut-canary-dogfood-exact-main-tip-guard-has-no-builder.
-    if build_main_enabled():
+    # NOT in --dry-run. A dry-run is what the proof harness and every ad-hoc
+    # "what would tonight pick?" check runs; kicking off a multi-GB release
+    # build from one would be a hostile surprise, and on a busy host it would
+    # red every last-stack CR that shells the proof.
+    if not args.dry_run and build_main_enabled():
         if run_build_main():
             local = resolve_forge_main_candidate()
             if local:
