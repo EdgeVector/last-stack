@@ -21,6 +21,11 @@ Env:
   FORGE_ROOT     forge base URL (default http://localhost:3300)
   FORGE_TOKEN    API token override; otherwise uses keychain forgejo-token
 
+HTTP errors:
+  On non-2xx, prints "HTTP <code> <METHOD> <url>" and the response body to
+  stderr, then exits 1. Never uses curl -f (which discarded the body as
+  curl: (22) and made 409/405 auto-merge failures unactionable).
+
 Run this with a shell that can reach localhost:3300. In sandboxed agent shells,
 TCP to the local forge may be blocked and look like a missing curl binary.
 EOF
@@ -123,25 +128,53 @@ if [[ -z "$token" ]]; then
   exit 1
 fi
 
-curl_args=(-fsS -X "$method" -H "Authorization: token $token" -H "Accept: application/json")
+# Do NOT pass curl -f. A 409/405 from merge auto-arm must keep the response
+# body so agents can name the blocker (pending checks, approvals, stuck status)
+# instead of collapsing to opaque "curl: (22) The requested URL returned error".
+curl_args=(-sS -X "$method" -H "Authorization: token $token" -H "Accept: application/json")
 if [[ -n "$data_arg" ]]; then
   curl_args+=(-H "Content-Type: application/json")
-  if [[ "$data_arg" == @* ]]; then
-    curl_args+=(--data-binary "$data_arg")
-  else
-    curl_args+=(--data-binary "$data_arg")
-  fi
+  curl_args+=(--data-binary "$data_arg")
 fi
 curl_args+=("$url")
+
+body_file="$(mktemp "${TMPDIR:-/tmp}/last-stack-forge-api.XXXXXX")"
+trap 'rm -f "$body_file"' EXIT
+
+set +e
+http_code="$(curl "${curl_args[@]}" -o "$body_file" -w '%{http_code}')"
+curl_rc=$?
+set -e
+
+if [[ "$curl_rc" -ne 0 ]]; then
+  echo "last-stack-forge-api: curl failed rc=$curl_rc method=$method url=$url" >&2
+  if [[ -s "$body_file" ]]; then
+    cat "$body_file" >&2
+    [[ "$(tail -c1 "$body_file" 2>/dev/null || true)" == $'\n' ]] || echo >&2
+  fi
+  exit "$curl_rc"
+fi
+
+# Treat only 2xx as success (Forgejo merge arm returns 200 when pending_merge is set).
+if [[ ! "$http_code" =~ ^2[0-9][0-9]$ ]]; then
+  echo "last-stack-forge-api: HTTP $http_code $method $url" >&2
+  if [[ -s "$body_file" ]]; then
+    cat "$body_file" >&2
+    [[ "$(tail -c1 "$body_file" 2>/dev/null || true)" == $'\n' ]] || echo >&2
+  else
+    echo "(empty response body)" >&2
+  fi
+  exit 1
+fi
 
 if [[ -n "$jq_filter" ]]; then
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   jq_bin="$script_dir/last-stack-forge-json-jq"
   if [[ -x "$jq_bin" ]]; then
-    curl "${curl_args[@]}" | "$jq_bin" "$jq_filter"
+    "$jq_bin" "$jq_filter" <"$body_file"
   else
-    curl "${curl_args[@]}" | jq "$jq_filter"
+    jq "$jq_filter" <"$body_file"
   fi
 else
-  curl "${curl_args[@]}"
+  cat "$body_file"
 fi

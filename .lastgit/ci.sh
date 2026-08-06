@@ -54,6 +54,7 @@ bash tests/last-stack-portal-live-checkout.sh
 bash tests/last-stack-mini-cutover-health.sh
 bash tests/last-stack-pipeline-deploy-scan.sh
 bash tests/last-stack-forge-dead-trigger.sh
+bash tests/last-stack-forge-api.sh
 bash tests/last-stack-deploy-gated-closeout.sh
 bash tests/last-stack-legacy-residue-closeout.sh
 bash tests/last-stack-why-shipping-stopped.sh
