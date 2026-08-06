@@ -51,6 +51,26 @@ export HOME="$FRESH_ROOT/home"
 mkdir -p "$HOME"
 export LASTDB_HOME="$HOME/.lastdb"
 unset FOLDDB_HOME || true
+
+# Host-only observability injectors (routinesd / agent harness) must not reach
+# the isolated lastdbd. Brand-new users following thelastdb.com/llms.txt do not
+# carry OBS_SENTRY_* or SENTRY_* — if we inherit them, the canary is a false
+# RED (e.g. lastdbd panics on lastsecrets:// OBS_SENTRY_DSN locators) even when
+# the public first-run path is fine. Strip known host injectors only; keep
+# PATH so prereq `command -v lastdbd` still finds the real host binary.
+unset OBS_SENTRY_DSN OBS_SENTRY_ENVIRONMENT OBS_SENTRY_RELEASE \
+  OBS_SENTRY_TRACES_SAMPLE_RATE OBS_SENTRY_PROFILES_SAMPLE_RATE \
+  SENTRY_DSN SENTRY_ENVIRONMENT SENTRY_RELEASE SENTRY_TRACES_SAMPLE_RATE \
+  SENTRY_PROFILES_SAMPLE_RATE 2>/dev/null || true
+# Whitelist-safe sweep: drop any remaining OBS_SENTRY_* / SENTRY_* keys.
+while IFS= read -r _obs_key; do
+  [ -n "$_obs_key" ] || continue
+  unset "$_obs_key" 2>/dev/null || true
+done <<EOF
+$(env | awk -F= '/^(OBS_SENTRY_|SENTRY_)/ { print $1 }')
+EOF
+unset _obs_key || true
+
 LOG="$FRESH_ROOT/run.log"
 exec 3>&1 4>&2
 exec >>"$LOG" 2>&1
