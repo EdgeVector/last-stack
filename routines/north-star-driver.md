@@ -63,9 +63,14 @@ kanban list --column backlog --json > /tmp/north-star-driver-backlog.json
 kanban list --column todo --json > /tmp/north-star-driver-todo.json
 kanban list --column doing --json > /tmp/north-star-driver-doing.json
 kanban milestone portfolio --json > /tmp/north-star-driver-milestones.json
-backlog_count="$(jq 'length' /tmp/north-star-driver-backlog.json)"
-todo_count="$(jq 'length' /tmp/north-star-driver-todo.json)"
-doing_count="$(jq 'length' /tmp/north-star-driver-doing.json)"
+# Count rows from list --json. Prefer the envelope's pre-cap `.total`
+# (fkanban kanban-json-envelope-total-truncated); fall back to bare-array
+# `length` so this prompt still works against older host-track builds.
+# NEVER bare `jq length` on an object — that returns key count (3), forever.
+_json_row_count() { jq 'if type == "array" then length else (.total // (.cards | length)) end' "$1"; }
+backlog_count="$(_json_row_count /tmp/north-star-driver-backlog.json)"
+todo_count="$(_json_row_count /tmp/north-star-driver-todo.json)"
+doing_count="$(_json_row_count /tmp/north-star-driver-doing.json)"
 milestone_count="$(jq '[.[] | select(.state != "complete" and .state != "abandoned")] | length' /tmp/north-star-driver-milestones.json)"
 printf 'CREATION_INVENTORY backlog=%s todo=%s doing=%s nonterminal_milestones=%s\n' \
   "$backlog_count" "$todo_count" "$doing_count" "$milestone_count"
