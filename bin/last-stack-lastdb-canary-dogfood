@@ -377,6 +377,25 @@ def ancestor_window_commits() -> int:
         return 25
 
 
+def pinned_oid() -> str:
+    """The oid the CALLING run built, if it named one.
+
+    Set by an orchestrator that has just produced a build and wants that exact
+    artifact probed, rather than whatever `main` points at by the time the probe
+    runs. Exempt from the distance window only; every other guard still applies.
+    """
+    return os.environ.get("LAST_STACK_CANARY_PIN_OID", "").strip().lower()
+
+
+def oid_is_pinned(oid: str) -> bool:
+    """Is `oid` the build the caller pinned? Tolerates short/long oid forms."""
+    pin = pinned_oid()
+    if not pin or not oid:
+        return False
+    a, b = pin, oid.strip().lower()
+    return a.startswith(b[:12]) or b.startswith(a[:12])
+
+
 def resolve_recent_ancestor_candidate() -> Candidate | None:
     """Newest staged build that is a real ancestor of main tip, within the window.
 
@@ -405,7 +424,27 @@ def resolve_recent_ancestor_candidate() -> Candidate | None:
         if not git_is_ancestor(mirror, oid, main_oid):
             continue
         behind = git_commits_between(mirror, oid, main_oid)
-        if behind is None or behind > max_commits:
+        if behind is None:
+            continue
+        # The distance window guards against dogfooding a build that has been
+        # sitting on the host for ages. It must NOT apply to the build the
+        # current run just made: a pipeline that builds, then probes, races
+        # main, and on a busy repo the race is unwinnable — a two-hour build
+        # can watch main move further than the window in the meantime, and the
+        # run then rejects its own artifact.
+        #
+        # That is not hypothetical. Execution exec_a6a032292f5946eb (a cutover
+        # Tom requested, 2026-08-05) built fa42e35e1ed9, probed 1h37m later
+        # against main c3ab2f579005, measured behind_main=29 against a window
+        # of 25, and failed terminal with "no local lastdbd built from fold
+        # main tip" — while its own perfectly good mainline build sat staged.
+        #
+        # `LAST_STACK_CANARY_PIN_OID` lets the caller name the build this run
+        # produced. The ANCESTRY check above still applies to it: a pinned oid
+        # that is not on main's history is still refused, so this widens the
+        # staleness tolerance for one identified build without weakening the
+        # mainline guard. The measured distance is still reported.
+        if behind > max_commits and not oid_is_pinned(oid):
             continue
         if best is None or behind < best[0]:
             best = (behind, child / "lastdbd", oid)
@@ -593,18 +632,64 @@ def resolve_github_canary_for_main() -> Candidate | None:
     return None
 
 
+def nearest_rejected_ancestor() -> tuple[str, int] | None:
+    """The closest staged mainline build that the distance window turned away.
+
+    Purely diagnostic. "Nothing is built" and "something is built and I refused
+    it" are different problems with different fixes, and the note below used to
+    report both as the first one — which sends the reader off to run another
+    build that will age out exactly the same way.
+    """
+    main_oid = fold_main_oid()
+    mirror = fold_mirror()
+    builds = canary_builds_root()
+    if not main_oid or mirror is None or not builds.is_dir():
+        return None
+    best: tuple[str, int] | None = None
+    for child in sorted(builds.iterdir(), reverse=True):
+        if not child.is_dir() or not (child / "lastdbd").is_file():
+            continue
+        oid = read_manifest_oid(child / "manifest.json") or child.name
+        oid = (oid or "").strip()
+        if not re.fullmatch(r"[0-9a-f]{7,40}", oid, re.I):
+            continue
+        if not git_is_ancestor(mirror, oid, main_oid):
+            continue
+        behind = git_commits_between(mirror, oid, main_oid)
+        if behind is None:
+            continue
+        if best is None or behind < best[1]:
+            best = (oid, behind)
+    return best
+
+
 def missing_forge_main_candidate() -> Candidate:
     main_oid = fold_main_oid()
     version = sanitize(os.environ.get("LAST_STACK_CANARY_LOCAL_FALLBACK_VERSION", "forge-main-unbuilt"))
-    note = (
-        "no local lastdbd built from fold main tip; "
-        f"main={main_oid[:12] if main_oid else 'unavailable'}; "
-        "build from Forgejo fold main (package-lastdb-bundle / cargo --release) "
-        "and set LAST_STACK_CANARY_LOCAL_FALLBACK_BIN or stage under "
-        f"{canary_builds_root()}/<oid>/lastdbd. "
-        "GitHub prereleases are not used unless LAST_STACK_CANARY_ALLOW_GITHUB=1 "
-        "and the release source_git_oid matches main tip."
-    )
+    rejected = nearest_rejected_ancestor()
+    if rejected:
+        oid, behind = rejected
+        note = (
+            "a mainline build IS staged but was refused as too far behind: "
+            f"oid={oid[:12]} behind_main={behind} window={ancestor_window_commits()}; "
+            f"main={main_oid[:12] if main_oid else 'unavailable'}. "
+            "Building again will not help if main keeps moving — an orchestrator "
+            "that produced this build should pass LAST_STACK_CANARY_PIN_OID=<oid> "
+            "so its own artifact is exempt from the distance window (ancestry is "
+            "still enforced), or raise LAST_STACK_CANARY_ANCESTOR_MAX_COMMITS."
+        )
+    else:
+        note = (
+            "no local lastdbd built from fold main tip; "
+            f"main={main_oid[:12] if main_oid else 'unavailable'}; "
+            "build from Forgejo fold main (package-lastdb-bundle / cargo --release) "
+            f"and stage under {canary_builds_root()}/<oid>/lastdbd. "
+            "LAST_STACK_CANARY_LOCAL_FALLBACK_BIN also works but is a TRUST "
+            "ESCAPE HATCH: it skips the mainline/oid check entirely, so it can "
+            "cut a non-mainline binary onto the primary. Prefer staging by oid. "
+            "GitHub prereleases are not used unless LAST_STACK_CANARY_ALLOW_GITHUB=1 "
+            "and the release source_git_oid matches main tip."
+        )
     return Candidate(
         candidate=f"lastdb-forge-main-{version}",
         version=version,
