@@ -1192,27 +1192,6 @@ artifact_version_tree_refs() {
   done | paste -sd, -
 }
 
-replace_artifact_version_tree() {
-  local install_root="$1" target="$2" stage="$3" app="$4" refs backup
-  refs="$(artifact_version_tree_refs "$install_root" "$target")"
-  if [ -n "$refs" ]; then
-    backup="$target.replaced-$$-$(date +%s)"
-    chmod -R u+w "$target" 2>/dev/null || true
-    if ! mv "$target" "$backup"; then
-      rm -rf -- "$stage"
-      return 1
-    fi
-    if ! mv "$stage" "$target"; then
-      mv "$backup" "$target" 2>/dev/null || true
-      return 1
-    fi
-    remove_artifact_version_tree "$backup"
-    return 0
-  fi
-  remove_artifact_version_tree "$target" "$install_root" "$app"
-  mv "$stage" "$target"
-}
-
 # GC abandoned .stage-* dirs left by crashed installs. Never touches versions/*
 # or current/previous. Age default 30m (HOST_TRACK_STAGE_GC_MAX_AGE_S).
 gc_stale_stage_dirs() {
