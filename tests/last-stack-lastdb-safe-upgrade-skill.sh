@@ -68,5 +68,13 @@ grep -q 'LIVE_LAT_SCAN_MS\|live_scan_ms' "$driver" || {
   echo "FAIL: driver must track live scan latency" >&2
   exit 1
 }
+grep -q 'latency-bar-checks.sh' "$driver" || {
+  echo "FAIL: driver must source latency-bar-checks.sh (correlated regression term)" >&2
+  exit 1
+}
+grep -q 'lat_correlated_within_bar' "$driver" || {
+  echo "FAIL: driver must call lat_correlated_within_bar" >&2
+  exit 1
+}
 
 echo "OK: lastdb-safe-upgrade skill packaged for multi-harness setup"

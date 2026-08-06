@@ -103,13 +103,24 @@ proxy is optional later for near-zero client impact.
    is unmeasurable on the candidate while the baseline measured. When candidate
    AND baseline are both over the ceiling that is pre-existing store slowness:
    loud WARN, ratio governs (a bar that REDs on the status quo trains everyone
-   to skip it). Incident 2026-07-25/27: the 0.23.1 cutover passed the
-   correctness + RSS bars while scans ran 5–20× slower — the live primary was
-   the first place anyone noticed. Skipping the bar
-   (`LASTDB_PROBE_LAT_SKIP=1`) requires Tom's explicit clearance. Live
+   to skip it). **Correlated / aggregate term (2026-08-05):** the per-op 3× bar
+   alone passed a canary that was slower on **every** op at 1.6–2.4× (point
+   58/24, scan 319/184, write 4646/2904) and then tanked multi-writer writes
+   on the primary. Alongside per-op, the probe REDs when (a) **all** measurable
+   ops regress at ≥ `LASTDB_PROBE_LAT_CORR_RATIO` (default **1.4×**), or
+   (b) the **geometric mean** of cand/base ratios across measurable ops exceeds
+   `LASTDB_PROBE_LAT_GEO_MEAN_MAX` (default **1.5×**). Need at least
+   `LASTDB_PROBE_LAT_CORR_MIN_OPS` (default 2) measurable pairs. Pure helper:
+   `scripts/latency-bar-checks.sh`. Incident 2026-07-25/27: the 0.23.1 cutover
+   passed the correctness + RSS bars while scans ran 5–20× slower — the live
+   primary was the first place anyone noticed. Skipping the whole bar
+   (`LASTDB_PROBE_LAT_SKIP=1`) or only the correlated term
+   (`LASTDB_PROBE_LAT_CORR_SKIP=1`) requires Tom's explicit clearance. Live
    post-check re-times **point-read and `kanban list` scan** vs the candidate's
    own probe numbers and warns (`LASTDB_LIVE_LAT_ENFORCE=1` makes either RED).
    Incident 2026-08-01: live point stayed ~113 ms while list hit multi-second→60 s.
+   Brain: `papercut-safe-upgrade-latency-bar-blind-to-correlated-regression`,
+   `lastdb-canary-cutover-rolled-the-primary-back-four-days-20260805`.
 8. **Candidate-class bar (no debug / dirty / oversized):** before backup or
    probe, refuse candidates that look like a Cargo **debug** build
    (`…/target/debug/…`), a **-dirty** version stamp (uncommitted tree at
@@ -235,7 +246,7 @@ incident.
 | `VERDICT: GREEN` | Probe + live cutover + live post-check passed | Done |
 | `VERDICT: GREEN_PROBE_ONLY` | Probe passed; primary still on old version | Re-run with `--yes` if Tom wants the upgrade |
 | `VERDICT: ALREADY_CURRENT` | Already on candidate/stable | Nothing to do |
-| `VERDICT: RED` | Candidate fails **class** bar (debug/dirty/size), **or** cannot serve real data, **or** the **CAS mutation** bar (node accepted a false `expected` precondition), **or** peak RSS exceeds memory-guard bar, **or** the latency bar failed (candidate regresses vs current binary / over absolute ceiling) | **Do not upgrade**; file release-blocker; keep backup. If class: rebuild `--release` from origin/main (or soaked canary). If CAS: fix `/api/mutation` expected enforcement before cutover (`LASTDB_PROBE_CAS_SKIP=1` only with Tom clearance). If RSS: fix candidate memory or raise guard only with Tom clearance. If latency: profile the candidate's read/write paths; `LASTDB_PROBE_LAT_SKIP=1` only with Tom clearance |
+| `VERDICT: RED` | Candidate fails **class** bar (debug/dirty/size), **or** cannot serve real data, **or** the **CAS mutation** bar (node accepted a false `expected` precondition), **or** peak RSS exceeds memory-guard bar, **or** the latency bar failed (per-op 3×, absolute ceiling, **or correlated** all-ops / geo-mean regression) | **Do not upgrade**; file release-blocker; keep backup. If class: rebuild `--release` from origin/main (or soaked canary). If CAS: fix `/api/mutation` expected enforcement before cutover (`LASTDB_PROBE_CAS_SKIP=1` only with Tom clearance). If RSS: fix candidate memory or raise guard only with Tom clearance. If latency: profile the candidate's read/write paths; `LASTDB_PROBE_LAT_SKIP=1` / `LASTDB_PROBE_LAT_CORR_SKIP=1` only with Tom clearance |
 
 ## Rollback
 
@@ -290,3 +301,8 @@ the live primary was the first place anyone noticed (latency bar added). Brain:
 multi-second→60s until bak rollback (candidate-class bar + live scan post-check
 + lower latency floor). Brain:
 `incident-20260801-debug-worktree-lastdbd-primary-cutover-latency`.
+2026-08-05 canary `0.23.3-canary.20260801` passed per-op 3× while slower on
+every axis (1.6–2.4×) — a 4-day git rollback promoted as a semver "upgrade";
+correlated latency term + canary ancestry/soak-write gates close the hole.
+Brain: `lastdb-canary-cutover-rolled-the-primary-back-four-days-20260805`,
+`papercut-safe-upgrade-latency-bar-blind-to-correlated-regression`.
