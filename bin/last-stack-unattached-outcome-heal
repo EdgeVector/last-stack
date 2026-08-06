@@ -5,6 +5,11 @@
 # (missing milestone linkage under enforceLivePrMilestone), and backfills
 # structured `surfaces` from a body `Surfaces:` header when present.
 #
+# Residuals that cannot be attached (no-ms / ms-missing / ms-abandoned) and
+# still sit in default/todo are demoted to default/backlog so they stop
+# poisoning pickup status as unattached-outcome in the ready queue surface.
+# Attached cards keep their column.
+#
 # Why: pickup status can show ready=0 / unattached-outcome while todo is full;
 # workers burn LLM credits and claim nothing. Milestone attachment is out of
 # pickup scope; this job is the dedicated zero-LLM path.
@@ -58,6 +63,7 @@ fi
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 attached=0
 surfaces_fixed=0
+demoted=0
 skipped=0
 failed=0
 flagged=()
@@ -134,6 +140,47 @@ pick_ms_for_ns() {
   ' 2>/dev/null | sort -t$'\t' -k3,3n | head -1 | cut -f1
 }
 
+# Demote unattachable residuals out of default/todo so they stop inflating
+# soft-idle Class F (unattached-outcome in the claim surface).
+# reason is a short flag token (no-ms / ms-missing:<ms> / ms-abandoned:<ms>).
+demote_residual_from_todo() {
+  local slug="$1"
+  local reason="$2"
+  local show column board note
+  show="$("$BOARD_CLI" show "$slug" --json 2>/dev/null || true)"
+  if [ -z "$show" ]; then
+    return 0
+  fi
+  column="$(printf '%s\n' "$show" | jq -r '.column // empty' 2>/dev/null || true)"
+  board="$(printf '%s\n' "$show" | jq -r '.board // "default"' 2>/dev/null || true)"
+  # Only touch the default board's todo column — never mass-demote healthy or
+  # non-default work, and leave backlog/doing alone.
+  if [ "$column" != "todo" ]; then
+    return 0
+  fi
+  if [ -n "$board" ] && [ "$board" != "default" ]; then
+    return 0
+  fi
+
+  note="PROGRESS: unattached-outcome-heal demoted todo→backlog ($reason) — no live milestone attach path"
+  if [ "$DRY" -eq 1 ]; then
+    log "would demote $slug todo→backlog reason=$reason"
+    demoted=$((demoted + 1))
+    return 0
+  fi
+
+  # Annotate first (idempotent), then move. A mark failure is non-fatal; move
+  # is the healing action that clears todo pollution.
+  "$BOARD_CLI" mark "$slug" "$note" >/dev/null 2>&1 || true
+  if "$BOARD_CLI" move "$slug" backlog >/dev/null 2>&1; then
+    demoted=$((demoted + 1))
+    log "demoted $slug → backlog ($reason)"
+  else
+    failed=$((failed + 1))
+    flagged+=("demote-failed:$slug")
+  fi
+}
+
 attach_one() {
   local slug="$1"
   local show ms ns repo state pair
@@ -166,18 +213,21 @@ attach_one() {
   if [ -z "$ms" ]; then
     skipped=$((skipped + 1))
     flagged+=("no-ms:$slug")
+    demote_residual_from_todo "$slug" "no-ms"
     return 0
   fi
   pair="$(ms_lookup "$ms" || true)"
   if [ -z "$pair" ]; then
     skipped=$((skipped + 1))
     flagged+=("ms-missing:$ms")
+    demote_residual_from_todo "$slug" "ms-missing:$ms"
     return 0
   fi
   state="$(printf '%s\n' "$pair" | cut -f3)"
   if [ "$state" = "abandoned" ]; then
     skipped=$((skipped + 1))
     flagged+=("ms-abandoned:$ms")
+    demote_residual_from_todo "$slug" "ms-abandoned:$ms"
     return 0
   fi
   ns_ms="$(printf '%s\n' "$pair" | cut -f2)"
@@ -254,9 +304,9 @@ if [ "${#flagged[@]}" -gt 0 ]; then
   flag_str="$(IFS=,; echo "${flagged[*]}")"
 fi
 
-line="unattached-heal $ts ok attached=$attached surfaces=$surfaces_fixed skipped=$skipped failed=$failed unattached_in=$unattached_count flagged=$flag_str"
+line="unattached-heal $ts ok attached=$attached surfaces=$surfaces_fixed demoted=$demoted skipped=$skipped failed=$failed unattached_in=$unattached_count flagged=$flag_str"
 if [ "$DRY" -eq 1 ]; then
-  line="unattached-heal $ts dry-run attached=$attached surfaces=$surfaces_fixed skipped=$skipped failed=$failed unattached_in=$unattached_count flagged=$flag_str"
+  line="unattached-heal $ts dry-run attached=$attached surfaces=$surfaces_fixed demoted=$demoted skipped=$skipped failed=$failed unattached_in=$unattached_count flagged=$flag_str"
 fi
 
 if [ -x "$ROOT/bin/last-stack-brain-append-heartbeat" ]; then
@@ -266,8 +316,8 @@ if [ -x "$ROOT/bin/last-stack-brain-append-heartbeat" ]; then
 fi
 
 if [ "$JSON" -eq 1 ]; then
-  printf '{"ok":true,"attached":%s,"surfaces":%s,"skipped":%s,"failed":%s,"unattached_in":%s,"flagged":"%s","dry_run":%s}\n' \
-    "$attached" "$surfaces_fixed" "$skipped" "$failed" "$unattached_count" \
+  printf '{"ok":true,"attached":%s,"surfaces":%s,"demoted":%s,"skipped":%s,"failed":%s,"unattached_in":%s,"flagged":"%s","dry_run":%s}\n' \
+    "$attached" "$surfaces_fixed" "$demoted" "$skipped" "$failed" "$unattached_count" \
     "$(printf '%s' "$flag_str" | tr '"' "'")" \
     "$DRY"
 else
