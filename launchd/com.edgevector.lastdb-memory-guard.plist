@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.edgevector.lastdb-memory-guard</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/REPLACE/.last-stack/bin/last-stack-lastdb-memory-guard</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/REPLACE</string>
+    <key>PATH</key>
+    <string>/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+    <key>LASTDB_HOME</key>
+    <string>/Users/REPLACE/.lastdb</string>
+    <key>LASTDBD_PRIMARY_HOME</key>
+    <string>/Users/REPLACE/.lastdb</string>
+
+    <!-- Which gauge FIRES the restart.
+         `rss` is the legacy behaviour and the current policy: it enforces on a
+         number ~6x smaller than the memory the node actually holds, so the
+         guard has a large margin and effectively never fires.
+         `footprint` enforces on phys_footprint — the gauge macOS jetsam uses
+         and the unit the 2026-07-14 panic happened in — and must only be set
+         together with a deliberately chosen LASTDBD_RSS_LIMIT_MB, because it
+         takes the margin from ~8.6x to ~1.4x.
+         Either way the script MEASURES and LOGS both gauges every cycle. -->
+    <key>LASTDBD_GUARD_METRIC</key>
+    <string>rss</string>
+
+    <key>LASTDBD_RSS_LIMIT_MB</key>
+    <string>12288</string>
+    <key>LASTDBD_SWAP_WARN_MB</key>
+    <string>12288</string>
+  </dict>
+
+  <key>StartInterval</key>
+  <integer>60</integer>
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>Nice</key>
+  <integer>5</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/REPLACE/.lastdb/monitoring/lastdbd-memory-guard.launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/REPLACE/.lastdb/monitoring/lastdbd-memory-guard.launchd.log</string>
+</dict>
+</plist>
