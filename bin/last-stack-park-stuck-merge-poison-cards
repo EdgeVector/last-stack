@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Park (or close) stuck-merge / pipeline P0 cards that poison fkanban pickup.
+# Park (or close) stuck-merge / pipeline P0 cards that poison board pickup.
 #
 # Direct Kind:pr todo cards filed for transient stuck CR/PR symptoms without a
 # milestone/North Star (or with empty bodies) cause pickup write-guard no-claims
@@ -19,7 +19,7 @@ skip_point_read=0
 
 usage() {
   cat >&2 <<'EOF'
-usage: last-stack-park-stuck-merge-poison-cards [--board-cli fkanban|kanban]
+usage: last-stack-park-stuck-merge-poison-cards [--board-cli kanban]
                                                [--dry-run] [--json]
                                                [--skip-point-read]
 
@@ -43,9 +43,8 @@ done
 
 if [ -z "$board_cli" ]; then
   if command -v kanban >/dev/null 2>&1; then board_cli=kanban
-  elif command -v fkanban >/dev/null 2>&1; then board_cli=fkanban
   else
-    echo "last-stack-park-stuck-merge-poison-cards: need kanban/fkanban on PATH" >&2
+    echo "last-stack-park-stuck-merge-poison-cards: need kanban on PATH" >&2
     exit 2
   fi
 fi

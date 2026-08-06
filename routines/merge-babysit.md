@@ -160,7 +160,7 @@ For the chosen CR:
 7. `lastgit cr complete <repo> --once --json`
 
 If product judgment is required: **do not** mint a default/`todo` `Kind: pr`
-card without milestone + North Star (that shape poisons fkanban pickup —
+card without milestone + North Star (that shape poisons board pickup —
 `papercut-stuck-merge-cards-block-pickup`). Prefer Brain papercut (below). For a
 true human gate only, file/update one card in **`backlog`** with
 `block_status=needs_human`, tags `pipeline,p0,merge`, body with CR id + conflict
