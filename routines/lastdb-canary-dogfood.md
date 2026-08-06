@@ -9,7 +9,7 @@ point of the **auto release loop**.
 
 You do not drive the phases yourself. The loop is a durable **state machine**
 (`sm`, the `state-machine` app on LastDB): `lastdb-canary-release`, with states
-`BUILD → PROBE → CUTOVER → VERIFY → LEDGER → SOAK ⇄ SOAK_WAIT → PROMOTE`. Your
+`BUILD → UPGRADE → LEDGER → SOAK ⇄ SOAK_WAIT → PROMOTE → PUBLISH`. Your
 job is to **start one execution per fold main tip and tick it**. The machine
 owns the candidate, the fences, the soak clock, and the ledger.
 
@@ -33,8 +33,9 @@ export LAST_STACK_CANARY_FETCH_MAIN="${LAST_STACK_CANARY_FETCH_MAIN:-1}"
 # same main tip via the public CDN. GitHub prereleases are never the source of
 # truth: picking the newest canary-named prerelease by semver is what rolled the
 # primary back to an Aug-1 build on 2026-08-05.
-# Do NOT set LAST_STACK_CANARY_PROMOTE_AUTO. v1 prepares and notifies; Tom
-# confirms the public brew publish (Tom, 2026-08-06).
+# Do NOT set LAST_STACK_CANARY_PROMOTE_AUTO here. PUBLISH sets it itself, and
+# only after PROMOTE staged a plan for a sha that soaked 24h on the primary.
+# Setting it in the environment would also arm the legacy Python path.
 ```
 
 ## Execute
@@ -56,6 +57,35 @@ sm list --definition lastdb-canary-release --json
 soak is still running. Never pass `--force`; a refused start means the previous
 execution has not finished, which is the interlock working.
 
+## Two machines, one dependency
+
+`UPGRADE` is not a step you run — it starts a CHILD execution of
+**`lastdb-safe-upgrade`** (`PROBE → CUTOVER → VERIFY`) and waits for it. That
+child is a real execution with its own id and history: `sm get <child-id>` and
+`sm history <child-id>` work on it directly, and it is startable on its own for
+an ordinary out-of-band upgrade. The parent drives it, so one tick here is one
+unit of progress for both.
+
+The child id is `<parent-id>-UPGRADE`. When a nightly fails at the cutover, that
+is the execution to read — not this one.
+
+## PUBLISH ships to the public, unattended
+
+Since 2026-08-06 (Tom's decision) `PUBLISH` pushes the stable tag and bumps brew
+with no human step. Two properties are load-bearing and must not be "simplified":
+
+- It publishes `context.ledger_sha` — the sha that soaked on the primary for
+  24h — and never re-derives from current main tip. It refuses to run without
+  that sha or without a completed `PROMOTE`.
+- It is fenced on the action **`lastdb-brew-publish`**, deliberately not the
+  `lastdb-safe-upgrade` action the cutover uses. One switch stops touching the
+  primary; a separate switch stops shipping to the public.
+
+**To stop a publish**, open a Situation whose `blocked_actions` include
+`lastdb-brew-publish`. The state parks and retries rather than failing, so the
+release resumes when the Situation clears. Do not instead edit the definition or
+kill the execution.
+
 ## Reading the result
 
 - `status=running` / `waiting` — the machine is mid-flight. Normal. `SOAK_WAIT`
@@ -65,8 +95,9 @@ execution has not finished, which is the interlock working.
 - `situation_fence needs_human` / `blocked` — a scoped
   `situations preflight --action lastdb-safe-upgrade` said no. The execution
   PARKS and retries; do not force it, and cite the Situation slug.
-- `status=failed` at PROBE/CUTOVER/VERIFY — a real candidate really failed.
-  This is the only shape that means "the build is bad."
+- `status=failed` at UPGRADE — the CHILD `lastdb-safe-upgrade` execution failed
+  at PROBE, CUTOVER, or VERIFY. A real candidate really failed. This is the only
+  shape that means "the build is bad"; read the child execution for the reason.
 
 This routine **does mutate the primary** at CUTOVER, through safe-upgrade only.
 Never kill `lastdbd` yourself.

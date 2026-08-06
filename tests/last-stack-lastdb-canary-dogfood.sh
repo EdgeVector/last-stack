@@ -294,8 +294,16 @@ grep -q 'sm tick --definition lastdb-canary-release' "$dog_md"
 # One execution per main tip, and never two cutovers at once.
 grep -q -- '--idempotency-key' "$dog_md"
 grep -q -- '--concurrency-key lastdb-canary-release' "$dog_md"
-# v1 prepares the public brew promote; it does not publish it.
-grep -q 'Do NOT set LAST_STACK_CANARY_PROMOTE_AUTO' "$dog_md"
+# The env flag must not be armed in the routine — PUBLISH sets it itself, and
+# only behind a completed PROMOTE for a soaked sha.
+grep -q 'Do NOT set LAST_STACK_CANARY_PROMOTE_AUTO here' "$dog_md"
+# UPGRADE is a child execution of the safe-upgrade machine, not inlined steps.
+grep -q 'CHILD execution' "$dog_md"
+grep -q 'lastdb-safe-upgrade' "$dog_md"
+# PUBLISH ships to the public; the kill switch must be documented where the
+# on-call agent will actually look.
+grep -q 'lastdb-brew-publish' "$dog_md"
+grep -q 'blocked_actions' "$dog_md"
 # The soak watch is the machine's clock, and an idle lane is not an error.
 soak_md="$ROOT/routines/lastdb-canary-soak-watch.md"
 grep -q 'sm tick --definition lastdb-canary-release' "$soak_md"
