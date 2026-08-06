@@ -322,6 +322,33 @@
       "notes": "Remote Agent artifact install; refresh links ra/rad/rad-telegram from the promoted LastGit artifact."
     },
     {
+      "app": "state-machine",
+      "install_mode": "artifact",
+      "kind": "artifact cli",
+      "command": "sm",
+      "aliases": [
+        "state-machine"
+      ],
+      "gate": "lastgit",
+      "gate_main": "lastdb:///state-machine-app#main",
+      "artifact_app": "state-machine",
+      "artifact_channel": "stable",
+      "artifact_root": "$HOME/.lastgit/artifacts",
+      "install_root": "$HOME/.host-track/apps/state-machine",
+      "links": [
+        {
+          "source": "dist/sm",
+          "target": "$HOME/.local/bin/sm"
+        },
+        {
+          "source": "dist/state-machine",
+          "target": "$HOME/.local/bin/state-machine"
+        }
+      ],
+      "notes": "State Machine LastGit artifact install from CI-published dist/* binaries; track_gate_main promotes stable to green+published main. sm is the runner for lastdb-canary-release and lastdb-safe-upgrade, so it upgrades the primary and publishes to public brew \u2014 before this entry ~/.local/bin/sm symlinked into the workspace DEV checkout and had no freshness gate at all.",
+      "track_gate_main": true
+    },
+    {
       "app": "lastdb",
       "install_mode": "checkout",
       "kind": "safe-upgrade-managed binary",
