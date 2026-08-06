@@ -149,7 +149,7 @@ separate forever routine.
 |-----------------------|---------|
 | `artifact` | `install_mode=artifact` |
 | `exempt` | non-artifact with valid `artifact_exemption` (`kind` + `owner` + `rationale`) |
-| `non_compliant` | neither — including current `local-safe` CLIs until producers migrate them |
+| `non_compliant` | neither — including any remaining non-exempt non-artifact entries |
 
 Allowed exemption `kind` codes (short, machine-readable):
 
@@ -232,7 +232,7 @@ install-side safe-upgrade so PATH tracks main without stuffing that into CI.
   `cr view` → if `state=merged` and base is `main` and repo is mapped → upgrade
 - **Mapped apps:** last-stack / brain / situations / fkanban|kanban →
   `host-track refresh` (artifact + `track_gate_main`); routines, lastsecrets,
-  configurations, search → `last-stack-safe-upgrade-cli` while still local-safe
+  configurations, search → `host-track refresh` (artifact + track_gate_main)
 - **Failure:** log + retry (max 3); **does not unmerge**; operator can run
   `host-track refresh <app>` (artifact) or `last-stack-safe-upgrade-cli <app>`
   (local-safe) manually
@@ -283,8 +283,7 @@ Safe properties:
 2. `previous` always retains the last good version after a successful flip.
 3. Install trees are not work surfaces — develop via portals + `wt start`.
 
-`host-track refresh <app>` for remaining **local-safe** apps calls
-`last-stack-refresh-local-safe <app>` → `last-stack-safe-upgrade-cli <app>`.
+`host-track refresh <app>` for agent CLIs with `install_mode=artifact` promotes stable via track_gate_main and installs the published build.
 For **artifact** apps it promotes (when `track_gate_main`) and installs the
 channel tip. LaunchAgent `com.edgevector.host-track-refresh` runs
 `host-track refresh --all`.
@@ -297,7 +296,10 @@ kanban/fkanban (shared fkanban install_root). See
 search.
 
 ```bash
-# Upgrade every still-local-safe CLI
+# Upgrade artifact CLIs (examples)
+host-track refresh routines
+host-track refresh lastsecrets
+# Legacy local-safe helper (only if an app is still local-safe):
 last-stack-safe-upgrade-all-local
 
 # One remaining local-safe app

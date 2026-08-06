@@ -57,9 +57,12 @@ bash tests/host-track-artifacts.sh
 bash tests/host-track-registry-compliance.sh
 bash tests/last-stack-artifact-host-track-proof.sh
 bash tests/last-stack-artifact-layout.sh
+bash tests/last-stack-artifact-layout-mirror-clean.sh
 bash tests/last-stack-artifact-routine-freshness.sh
 bash tests/last-stack-artifact-one-rule.sh
 bash tests/last-stack-post-merge-safe-upgrade.sh
 bash tests/last-stack-lastdb-safe-upgrade-candidate-class.sh
+bash tests/last-stack-lastdb-safe-upgrade-cas-probe.sh
+bash tests/last-stack-safe-upgrade-backup-dedup.sh
 bash tests/last-stack-lastdb-canary-dogfood.sh
 bash tests/last-stack-canary-build-main.sh
