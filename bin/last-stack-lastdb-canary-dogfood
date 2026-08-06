@@ -691,7 +691,28 @@ def read_state(args: argparse.Namespace, candidate: str) -> str | None:
     return str(json.loads(proc.stdout).get("state") or "")
 
 
+def ledger_writes_enabled(args: argparse.Namespace) -> bool:
+    """A --dry-run against the REAL ledger must not write to it.
+
+    The dry-run branch stamped `candidate_found → dogfood_started →
+    dogfood_green` on whatever ledger it resolved. With no --state-dir that is
+    production, so the documented "what would tonight pick?" check silently
+    advanced the live pipeline — and the next hourly soak tick then recorded a
+    `soak_red` for a candidate that had never been cut over, because the live
+    binary of course did not match. A read-only-sounding diagnostic could
+    therefore park the night it was run to inspect: dogfood_red and soak_red
+    are terminal, so a real run resolving the same candidate would refuse to
+    advance.
+
+    Fixtures and the proof harness always pass an explicit --state-dir, so they
+    keep the stamp; only an unqualified dry-run against production goes quiet.
+    """
+    return not (args.dry_run and args.state_dir is None)
+
+
 def create_if_missing(args: argparse.Namespace, candidate: Candidate) -> str:
+    if not ledger_writes_enabled(args):
+        return "dry-run"
     state = read_state(args, candidate.candidate)
     if state:
         return state
@@ -712,6 +733,9 @@ def create_if_missing(args: argparse.Namespace, candidate: Candidate) -> str:
 
 
 def advance_if_allowed(args: argparse.Namespace, candidate: Candidate, desired: str, note: str) -> str:
+    if not ledger_writes_enabled(args):
+        # Report the state the run WOULD have reached without recording it.
+        return desired
     state = read_state(args, candidate.candidate) or create_if_missing(args, candidate)
     if state == desired:
         return state
