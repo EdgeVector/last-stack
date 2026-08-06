@@ -54,6 +54,14 @@ check_delete_is_single_write() {
 # Purge emitted no index change (`MutationType::Purge => continue`), so a
 # purged record stayed searchable. Latent while purge was a rare admin verb;
 # user-visible the moment delete routes through it.
+#
+# This reaches past LastDB's own index. The Search app (lastdb:///search) keeps
+# its own FastEmbed vector plane and already drops a vector on
+# IndexChangeKind::Tombstone (src/vector/plane.ts applyBatch -> removeByKey).
+# The consumer is correct; the producer is the break. Land slice A without this
+# and a deleted record's embedding survives in another app's store and keeps
+# being returned by semantic recall with nothing left to hydrate it from —
+# strictly worse than today, which is why B gates A rather than sitting beside it.
 check_purge_updates_search_index() {
   local index="$FOLD/fold_db/crates/core/src/fold_db_core/mutation_manager/index.rs"
   if [ ! -f "$index" ]; then
@@ -80,6 +88,26 @@ check_embedding_ledger_is_honest() {
     return 1
   fi
   append "B2: embedding_rows_deleted is no longer a hardcoded constant"
+  return 0
+}
+
+# --- Gate B3: purge's tombstone DELIVERY is asserted, not just its code path -
+# Removing the `continue` makes gate B green while proving nothing about what
+# reaches the sink. The Search app is a separate process holding a derived copy
+# of deleted content, so the claim that has to hold is delivery: a Purge
+# mutation produces an IndexChangeKind::Tombstone on the index sink for that
+# key. Gate on a named test so the assertion cannot quietly disappear.
+check_purge_tombstone_delivery_tested() {
+  local core="$FOLD/fold_db/crates/core"
+  if [ ! -d "$core" ]; then
+    append "B3: fold_db/crates/core not found at expected path"
+    return 1
+  fi
+  if ! grep -rq 'purge_delivers_tombstone_to_index_sink' "$core" 2>/dev/null; then
+    append "B3: FAIL — no test asserts a Purge delivers IndexChangeKind::Tombstone to the index sink; the Search app's vector plane has no proof it is told"
+    return 1
+  fi
+  append "B3: purge->tombstone delivery to the index sink is asserted by a named test"
   return 0
 }
 
@@ -178,6 +206,7 @@ if [ "$ok" -eq 0 ]; then
   check_delete_is_single_write   || ok=1
   check_purge_updates_search_index || ok=1
   check_embedding_ledger_is_honest || ok=1
+  check_purge_tombstone_delivery_tested || ok=1
   check_tips_compactable         || ok=1
   check_atoms_retire_on_purge    || ok=1
   check_atoms_compactable        || ok=1
