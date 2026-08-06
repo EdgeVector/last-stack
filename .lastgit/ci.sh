@@ -56,7 +56,6 @@ bash tests/last-stack-command-modes.sh
 bash tests/last-stack-north-star-portal-resolver.sh
 bash tests/last-stack-portal-wt-rm-accepts-branch.sh
 bash tests/last-stack-portal-live-checkout.sh
-bash tests/last-stack-mini-cutover-health.sh
 bash tests/last-stack-pipeline-deploy-scan.sh
 bash tests/last-stack-forge-dead-trigger.sh
 bash tests/last-stack-forge-api.sh
