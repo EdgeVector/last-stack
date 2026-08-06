@@ -160,4 +160,32 @@ resolved="$(
   || fail "non-versioned LAST_STACK_ROOT should win, got $resolved"
 rm -rf "$ver_home"
 
+
+# --- the versioned FALLBACK must be normalized too (mid-install race) ---
+# Callers pass "$ROOT/routines/<name>" as the fallback and $ROOT is the version
+# dir for a binary running out of the artifact. When the compat path is briefly
+# unreadable during an install, the readable-check fails and the writer used to
+# emit the versioned fallback — which is why the pin came back on every refresh
+# even after REG_STABLE_ROOT was guarded.
+race_home="$(CDPATH= cd -- "$(mktemp -d)" && pwd -P)"
+mkdir -p "$race_home/.local/state/last-stack/artifacts/versions/cafe01/routines"
+printf '# versioned\n' >"$race_home/.local/state/last-stack/artifacts/versions/cafe01/routines/feature-prove.md"
+# NOTE: no $race_home/.last-stack/routines/feature-prove.md — the compat path is
+# deliberately absent, simulating the swap window.
+resolved="$(
+  HOME="$race_home" \
+  bash -c '
+    . "'"$ROOT"'/bin/last-stack-routines-registry-env"
+    last_stack_registry_paths_init
+    last_stack_registry_prompt_path feature-prove.md \
+      "'"$race_home"'/.local/state/last-stack/artifacts/versions/cafe01/routines/feature-prove.md"
+  '
+)"
+case "$resolved" in
+  */artifacts/versions/*) fail "versioned fallback leaked into prompt_path: $resolved" ;;
+esac
+[ "$resolved" = "$race_home/.last-stack/routines/feature-prove.md" ] \
+  || fail "expected compat path even when unreadable, got $resolved"
+rm -rf "$race_home"
+
 echo "ok"

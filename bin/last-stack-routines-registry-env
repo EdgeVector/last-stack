@@ -107,11 +107,31 @@ last_stack_registry_prompt_path() {
   local name="$1"
   local fallback="$2"
   local stable="${REG_STABLE_ROOT}/routines/${name}"
+  local chosen
+
   if [ -r "$stable" ]; then
-    printf '%s\n' "$stable"
+    chosen="$stable"
   else
-    printf '%s\n' "$fallback"
+    chosen="$fallback"
   fi
+
+  # INVARIANT: never hand back a path inside artifacts/versions/<sha>/.
+  #
+  # Guarding REG_STABLE_ROOT alone was not enough. Callers pass
+  # "$ROOT/routines/<name>" as the fallback, and $ROOT is resolved with pwd -P
+  # from $0 — so for a binary running out of the artifact it IS the version dir.
+  # Mid-install, `~/.last-stack/routines/<name>` is briefly unreadable while
+  # `current` is swapped, the readable-check fails, and the writer emits the
+  # versioned fallback. That is how the pin kept coming back on every refresh
+  # even after the REG_STABLE_ROOT fix.
+  #
+  # Normalizing here makes the invariant hold regardless of which branch won,
+  # and the compat path resolves as soon as the install completes.
+  if last_stack_registry_is_version_dir "$chosen"; then
+    chosen="${HOME}/.last-stack/routines/${name}"
+  fi
+
+  printf '%s\n' "$chosen"
 }
 
 # Refuse host-registry writes that embed ephemeral or REPLACE paths.
