@@ -283,6 +283,84 @@ if [ "$legacy_required" = "1" ]; then
   rm -f "$probe_out"
 fi
 
+# END STATE audit — a card that declares an END STATE is being closed because a
+# PR merged, not because anyone evaluated the END STATE. That is how one card
+# got closed three times in a day on two different PRs while three clauses of
+# its END STATE were still unmet (2026-08-07). Brain:
+# papercut-sunset-card-closed-on-a-docs-only-pr-with-a-pre-fix-probe-measure
+#
+# WHY THIS WARNS INSTEAD OF REFUSING (measured 2026-08-07, do not "tighten"
+# this without re-measuring):
+#   62 cards sampled across todo/doing/done
+#     - 100% declare an `## END STATE`
+#     -   0% carry any `## OUTCOME` section (it is not a live convention)
+#     -   1 card carries a machine-checkable `DONE-WHEN:` predicate
+#   So refusing on missing OUTCOME would block EVERY closure and stop the
+#   factory; gating on DONE-WHEN would cover ~1 card and miss the real bug.
+#   A hard gate becomes correct only once a machine-checkable END STATE
+#   convention exists — until then this makes the gap visible and countable,
+#   which is the precondition for gating it later.
+#
+# Set LAST_STACK_CARD_CLOSEOUT_END_STATE_GATE=1 to make it a hard refusal.
+end_state_gate="${LAST_STACK_CARD_CLOSEOUT_END_STATE_GATE:-0}"
+end_state_info="$(CARD_JSON="$card_json" python3 - <<'PY'
+import json
+import os
+import re
+import sys
+
+try:
+    raw = json.loads(os.environ.get("CARD_JSON", "{}"))
+except Exception:
+    sys.exit(0)
+
+card = raw.get("card") if isinstance(raw, dict) else None
+if not isinstance(card, dict):
+    card = raw if isinstance(raw, dict) else {}
+
+body = str(card.get("body") or "")
+
+has_end_state = bool(
+    re.search(r"(?im)^##[ \t]+END[ \t]+STATE\b", body)
+    or re.search(r"(?im)^\s*DONE-WHEN\s*:", body)
+)
+print(f"end_state_required={1 if has_end_state else 0}")
+if not has_end_state:
+    sys.exit(0)
+
+outcome_match = re.search(r"(?ims)^##[ \t]+OUTCOME\b.*?(?=^##[ \t]+|\Z)", body)
+outcome = outcome_match.group(0) if outcome_match else ""
+claimed = bool(
+    re.search(r"(?i)\bEND[ \t]+STATE\b|\bDONE-WHEN\b", outcome)
+    and re.search(
+        r"(?i)\b(met|unmet|satisfied|verified|proven|holds|confirmed|measured|passed|green)\b",
+        outcome,
+    )
+)
+print(f"end_state_claimed={1 if claimed else 0}")
+PY
+)"
+
+end_state_required=0
+end_state_claimed=0
+eval "$end_state_info"
+
+if [ "$end_state_required" = "1" ] && [ "$end_state_claimed" != "1" ]; then
+  if [ "$end_state_gate" = "1" ]; then
+    echo "last-stack-card-closeout: FAILED end-state-unverified slug=$slug" >&2
+    echo "  This card declares an END STATE. A merged PR is not evidence that it" >&2
+    echo "  holds. Add an ## OUTCOME naming the END STATE and a verdict, or leave" >&2
+    echo "  the card in doing for whoever can evaluate it." >&2
+    exit 1
+  fi
+  echo "last-stack-card-closeout: WARN end-state-unverified slug=$slug — closing on merge without an evaluated END STATE" >&2
+  # Stamp the card so the gap is auditable on the board, not just in a log line
+  # nobody reads. Best-effort: never block closeout on the marker itself.
+  "${retry[@]}" "$board_cli" mark "$slug" \
+    "CLOSED-ON-MERGE $(date -u +%Y-%m-%dT%H:%M:%SZ) — card moved to done because a PR merged; its ## END STATE was NOT evaluated. Re-open if any clause is still unmet. (last-stack-card-closeout end-state audit)" \
+    >/dev/null 2>&1 || true
+fi
+
 # Stamp PR/branch without changing column (add preserves existing column).
 if [ -n "$pr_url" ] || [ -n "$branch" ]; then
   add_args=( "$board_cli" add "$slug" )
