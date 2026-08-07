@@ -59,7 +59,56 @@ SMOKE_SH="${LASTDB_SMOKE_SH:-$HOME/code/edgevector/.claude/run-lastdb-mini-smoke
 TAP_REPO="EdgeVector/homebrew-lastdb"
 # Live install venue (see fold/docs/designs/lastdb-minimal-downtime-cutover.md)
 SIDEBIN_DIR="${LASTDB_SIDEBIN_DIR:-$HOME/.lastdb/bin-with-upload-cap}"
-LAUNCHD_LABEL="${LASTDB_LAUNCHD_LABEL:-com.REPLACE.lastdbd-primary-506}"
+# Resolve the primary's launchd label from the RUNNING system, never from a
+# template default. `com.REPLACE.` is the scrubbed public placeholder (this repo
+# ships installable; see last-stack-machine-leak-scan) — it is not a real label,
+# and kickstarting it is a SILENT NO-OP that leaves the primary on the old
+# binary while every health check still passes.
+#
+# Incident 2026-08-07: safe-upgrade printed "VERDICT: GREEN ... cutover_s=303"
+# having never restarted the daemon, because LASTDB_LAUNCHD_LABEL was unset and
+# the placeholder default was kickstarted. Brain:
+# papercut-safe-upgrade-reports-green-cutover-without-restarting-primary
+resolve_launchd_label() {
+  # 1. Explicit override always wins.
+  if [ -n "${LASTDB_LAUNCHD_LABEL:-}" ]; then
+    printf '%s\n' "$LASTDB_LAUNCHD_LABEL"
+    return 0
+  fi
+  # 2. A loaded job whose label looks like the primary daemon.
+  local found
+  found="$(launchctl list 2>/dev/null \
+    | awk '{print $3}' \
+    | grep -E '\.lastdbd-primary(-[0-9]+)?$' \
+    | grep -v '^com\.REPLACE\.' \
+    | head -1)"
+  if [ -n "$found" ]; then
+    printf '%s\n' "$found"
+    return 0
+  fi
+  # 3. A LaunchAgent plist whose ProgramArguments points at the sidebin daemon.
+  local plist label
+  for plist in "$HOME"/Library/LaunchAgents/*.plist; do
+    [ -f "$plist" ] || continue
+    if /usr/libexec/PlistBuddy -c "Print :ProgramArguments" "$plist" 2>/dev/null \
+        | grep -qF "$SIDEBIN_DIR/lastdbd"; then
+      label="$(basename "$plist" .plist)"
+      case "$label" in
+        *memory-guard*) continue ;;
+      esac
+      printf '%s\n' "$label"
+      return 0
+    fi
+  done
+  return 1
+}
+
+LAUNCHD_LABEL="$(resolve_launchd_label || true)"
+LAUNCHD_LABEL_RESOLVED=1
+if [ -z "$LAUNCHD_LABEL" ]; then
+  LAUNCHD_LABEL="com.REPLACE.lastdbd-primary-506"
+  LAUNCHD_LABEL_RESOLVED=0
+fi
 LAUNCHD_PLIST="${LASTDB_LAUNCHD_PLIST:-$HOME/Library/LaunchAgents/${LAUNCHD_LABEL}.plist}"
 
 
@@ -610,6 +659,27 @@ detect_live_venue() {
   [ "$VENUE" = "sidebin" ] && log "launchd label: $LAUNCHD_LABEL"
 }
 
+# A sidebin live install that cannot name the real launchd job cannot restart
+# the primary. Refuse rather than kickstart into the void — the old daemon keeps
+# serving and every downstream health check passes, so this fails silent.
+assert_launchd_label_usable() {
+  [ "$VENUE" = "sidebin" ] || return 0
+  case "$LAUNCHD_LABEL" in
+    com.REPLACE.*)
+      die "unresolved launchd label ($LAUNCHD_LABEL) — cannot restart primary. Set LASTDB_LAUNCHD_LABEL to the real job (see: launchctl list | grep lastdbd)" ;;
+  esac
+  if [ "$LAUNCHD_LABEL_RESOLVED" != "1" ]; then
+    die "could not resolve the primary launchd label; refusing sidebin live install"
+  fi
+  if ! launchctl list 2>/dev/null | awk '{print $3}' | grep -qx "$LAUNCHD_LABEL"; then
+    die "launchd label $LAUNCHD_LABEL is not a loaded job — kickstart would be a silent no-op"
+  fi
+  if [ ! -f "$LAUNCHD_PLIST" ]; then
+    die "primary LaunchAgent plist missing ($LAUNCHD_PLIST) for resolved label $LAUNCHD_LABEL"
+  fi
+  log "launchd label verified loaded: $LAUNCHD_LABEL"
+}
+
 ensure_primary_launchd_rss_limit() {
   local limit current
   if [ ! -f "$LAUNCHD_PLIST" ]; then
@@ -1131,6 +1201,8 @@ fi
 log "STEP 3/4: live install + supervisor restart (venue=$VENUE)"
 CUTOVER_T0="$(date +%s)"
 
+assert_launchd_label_usable
+
 if [ "$VENUE" = "sidebin" ]; then
   live_install_sidebin
   INSTALLED_DAEMON_BIN="$SIDEBIN_DIR/lastdbd"
@@ -1175,6 +1247,34 @@ for i in $(seq 1 120); do
   sleep 1
 done
 [ "$LIVE_OK" -eq 1 ] || die "live /health not ok after cutover — STOP. Binary rollback: restore $SIDEBIN_DIR/lastdbd.bak-pre-* if sidebin; data backup: $BACKUP"
+
+# THE cutover assertion: the RUNNING daemon must report the candidate version.
+#
+# Everything else in this post-check (health, identity, schemas, Board title,
+# RSS, latency) passes perfectly against the OLD daemon — it is healthy, it is
+# serving, it is simply the wrong binary. Installing the file is not the
+# cutover; replacing the process is. Assert the claim, not a proxy for it.
+#
+# Incident 2026-08-07: printed "VERDICT: GREEN ... cutover_s=303" while pid and
+# uptime were unchanged and /api/status still reported the old build. Brain:
+# papercut-safe-upgrade-reports-green-cutover-without-restarting-primary
+RUNNING_VERSION="$(curl -sS --max-time 15 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' \
+  http://x/api/status 2>/dev/null | jq -r '.status.build.version // empty' || true)"
+if [ -z "$RUNNING_VERSION" ]; then
+  die "live /api/status did not report build.version after cutover — cannot prove the primary restarted onto $INSTALLED; treat as RED"
+fi
+if [ -n "${INSTALLED:-}" ] && [ "$RUNNING_VERSION" != "$INSTALLED" ]; then
+  echo ""
+  echo "VERDICT: RED"
+  echo "REASON: primary did NOT restart onto the candidate — running=$RUNNING_VERSION installed=$INSTALLED"
+  echo "        The binary is installed but the process was never replaced."
+  echo "        Most likely the launchd label is wrong, so kickstart was a no-op."
+  echo "        Resolved label: $LAUNCHD_LABEL (venue=$VENUE)"
+  echo "        Check: launchctl list | grep lastdbd"
+  echo "BACKUP: $BACKUP"
+  die "cutover did not take effect; primary still running $RUNNING_VERSION"
+fi
+log "cutover verified: running daemon reports $RUNNING_VERSION (matches installed candidate)"
 
 # Live data plane spot-check (same bar as smoke: Board titles rehydrate)
 UH="$(curl -sS --max-time 5 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' http://x/api/system/auto-identity 2>/dev/null | jq -r '.user_hash // empty')"
