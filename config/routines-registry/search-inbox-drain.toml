@@ -1,0 +1,14 @@
+# Bounded incremental drain of the Search app IndexChangeBatch inbox.
+# Zero product-code writes — one `search drain --max-files N` call per fire.
+# BYMINUTE offset +3 from the pickup 5-minute grid to avoid crowding it.
+id = "search-inbox-drain"
+harness = "codex"
+model = "gpt-5.5"
+effort = "low"
+group = "search"
+rrule = "FREQ=HOURLY;INTERVAL=1;BYMINUTE=8,23,38,53;BYSECOND=0"
+cwd = "/Users/REPLACE/code/edgevector"
+status = "active"
+timeout_min = 10
+prompt_path = "/Users/REPLACE/.last-stack/routines/search-inbox-drain.md"
+heartbeat_slug = "routine-heartbeats"
