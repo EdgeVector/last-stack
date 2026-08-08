@@ -13,6 +13,16 @@
 #   4. park expiry: a deploy-gated / close-failed park older than
 #      --max-park-hours with no live worker → todo (flag park-expired), so a
 #      parked card can never sit in `doing` forever with nobody driving it.
+#   5. repeated-failure escalation: a slug whose closeout fails for a
+#      NON-transient reason on --escalate-after consecutive passes (default 3)
+#      is stamped once on the board (CLOSE-FAILED-REPEATED, with the last
+#      failure text) and flagged close-failed-escalated:<slug>. A closeout that
+#      can never succeed otherwise repeats in silence — on 2026-08-08 one did,
+#      every few minutes for 10h, on a card that was already merged AND
+#      deployed. Streak state:
+#      ~/.local/state/last-stack/board-closeout/close-failures.json
+#      (BOARD_CLOSEOUT_STATE_DIR overrides). Leaving `doing` clears the streak;
+#      a transient board failure never counts toward it.
 #
 # Protections (do NOT reclaim):
 #   - open / unknown PR on structured pr_url or body header
@@ -29,7 +39,7 @@
 # Usage:
 #   last-stack-board-closeout-sweep [--dry-run] [--grace-min 60] [--max-actions 50]
 #                                   [--board-cli kanban|fkanban] [--skip-zombie]
-#                                   [--max-park-hours 24]
+#                                   [--max-park-hours 24] [--escalate-after 3]
 #
 # Exit 0 always after a completed pass (including noop). Exit 2 on usage error.
 # Prints a single heartbeat line:
@@ -47,6 +57,7 @@ dry_run=0
 grace_min=60
 max_actions=50
 max_park_hours=24
+escalate_after=3
 board_cli=""
 skip_zombie=0
 json_out=0
@@ -60,6 +71,8 @@ while [ "$#" -gt 0 ]; do
     --max-actions=*) max_actions="${1#*=}"; shift ;;
     --max-park-hours) max_park_hours="${2:-}"; shift 2 ;;
     --max-park-hours=*) max_park_hours="${1#*=}"; shift ;;
+    --escalate-after) escalate_after="${2:-}"; shift 2 ;;
+    --escalate-after=*) escalate_after="${1#*=}"; shift ;;
     --board-cli) board_cli="${2:-}"; shift 2 ;;
     --board-cli=*) board_cli="${1#*=}"; shift ;;
     --skip-zombie) skip_zombie=1; shift ;;
@@ -90,6 +103,7 @@ export BOARD_CLOSEOUT_DRY_RUN="$dry_run"
 export BOARD_CLOSEOUT_GRACE_MIN="$grace_min"
 export BOARD_CLOSEOUT_MAX_ACTIONS="$max_actions"
 export BOARD_CLOSEOUT_MAX_PARK_HOURS="$max_park_hours"
+export BOARD_CLOSEOUT_ESCALATE_AFTER="$escalate_after"
 export BOARD_CLOSEOUT_SKIP_ZOMBIE="$skip_zombie"
 export BOARD_CLOSEOUT_JSON="$json_out"
 export PATH="$last_stack/bin:${PATH:-}"
@@ -164,6 +178,89 @@ function noteCloseoutDeferred(slug, out) {
   if (res.status === "ok") res.status = "noop";
   return true;
 }
+
+// Consecutive non-transient closeout failures, per slug, across passes.
+//
+// A closeout that can never succeed used to repeat forever in silence: on
+// 2026-08-08 a merged+deployed fold card was flagged close-failed on EVERY pass
+// for 10h (an unsatisfiable Requires-Deploy gate) and nothing said so anywhere
+// a human looks. Repetition is the signal — after --escalate-after passes the
+// slug is stamped on the board once and flagged distinctly in the heartbeat.
+// Transient board failures never count; the board being sick is not evidence
+// that the CARD is stuck.
+const failStateDir =
+  process.env.BOARD_CLOSEOUT_STATE_DIR ||
+  path.join(home, ".local", "state", "last-stack", "board-closeout");
+const failStatePath = path.join(failStateDir, "close-failures.json");
+const escalateAfter = Math.max(
+  1,
+  parseInt(process.env.BOARD_CLOSEOUT_ESCALATE_AFTER || "3", 10) || 3,
+);
+
+function readFailState() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(failStatePath, "utf8"));
+    return raw && typeof raw === "object" ? raw : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeFailState(state) {
+  if (dryRun) return;
+  try {
+    fs.mkdirSync(failStateDir, { recursive: true });
+    fs.writeFileSync(failStatePath, `${JSON.stringify(state, null, 2)}\n`);
+  } catch {
+    /* best-effort: never fail a sweep on its own bookkeeping */
+  }
+}
+
+const failState = readFailState();
+
+function failureDetail(out) {
+  const text = `${out?.stderr || ""} ${out?.stdout || ""} ${out?.error || ""}`;
+  const lines = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+  return (lines[lines.length - 1] || "closeout failed").slice(0, 220);
+}
+
+function noteCloseFailure(slug, out) {
+  const prev = failState[slug] || { count: 0, first_at: iso, escalated: false };
+  const entry = {
+    count: (prev.count || 0) + 1,
+    first_at: prev.first_at || iso,
+    last_at: iso,
+    last_reason: failureDetail(out),
+    escalated: Boolean(prev.escalated),
+  };
+  failState[slug] = entry;
+  if (entry.count < escalateAfter || entry.escalated) return;
+  entry.escalated = true;
+  res.flagged.push(`close-failed-escalated:${slug}`);
+  if (dryRun) return;
+  // Stamp the board so the jam is visible where the work lives, not only in a
+  // heartbeat line nobody reads. Best-effort — never fail the sweep on it.
+  run(
+    boardCli,
+    [
+      "mark",
+      slug,
+      `CLOSE-FAILED-REPEATED ${iso} — last-stack-board-closeout-sweep could not close this card on ${entry.count} consecutive passes (since ${entry.first_at}). Last failure: ${entry.last_reason}. The closeout is refusing for the same reason every time; this needs a human or a fix to the gate, not more passes.`,
+    ],
+    { timeout: 60000 },
+  );
+}
+
+function clearCloseFailure(slug) {
+  if (failState[slug]) delete failState[slug];
+}
+
+// Slugs seen in `doing` this pass — null until the board actually answered, so
+// a busy node never prunes the streaks it could not observe.
+let seenDoingSlugs = null;
 
 function stripControls(s) {
   return String(s || "").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, " ");
@@ -456,9 +553,11 @@ function closeCard(slug, prUrl, branch) {
     if (!out.ok) {
       if (noteCloseoutDeferred(slug, out)) return false;
       res.flagged.push(`close-failed:${slug}`);
+      noteCloseFailure(slug, out);
       return false;
     }
     res.closed.push(slug);
+    clearCloseFailure(slug);
     return true;
   }
   const args = [slug, "--board-cli", boardCli];
@@ -468,9 +567,11 @@ function closeCard(slug, prUrl, branch) {
   if (!out.ok) {
     if (noteCloseoutDeferred(slug, out)) return false;
     res.flagged.push(`close-failed:${slug}`);
+    noteCloseFailure(slug, out);
     return false;
   }
   res.closed.push(slug);
+  clearCloseFailure(slug);
   // last-stack-card-closeout reclaims the worktree after column=done.
   // Fallback if an older closeout binary is still installed without reclaim:
   const reclaimBin = path.join(lastStack, "bin", "last-stack-worktree-reclaim");
@@ -505,6 +606,7 @@ if (cards === null) {
   finish();
   process.exit(0);
 }
+seenDoingSlugs = new Set(cards.map((c) => String(c.slug || "")));
 
 let actions = 0;
 const graceMs = graceMin * 60 * 1000;
@@ -610,6 +712,14 @@ for (const card of cards) {
 }
 
 function finish() {
+  // A card that left `doing` is no longer failing to close — drop its streak so
+  // a later, unrelated failure starts from zero.
+  if (seenDoingSlugs) {
+    for (const slug of Object.keys(failState)) {
+      if (!seenDoingSlugs.has(slug)) delete failState[slug];
+    }
+  }
+  writeFailState(failState);
   const closed = res.closed.length;
   const rolled = res.rolled_back.length;
   const skipped = res.skipped.length;
@@ -689,6 +799,70 @@ def note_closeout_deferred(slug, out, err):
     if res["status"] == "ok":
         res["status"] = "noop"
     return True
+
+# Consecutive non-transient closeout failures, per slug, across passes. See the
+# node engine for the why: a closeout that can never succeed used to repeat in
+# silence for 10h. Transient board failures never count.
+fail_state_dir = Path(
+    os.environ.get("BOARD_CLOSEOUT_STATE_DIR")
+    or (home / ".local" / "state" / "last-stack" / "board-closeout")
+)
+fail_state_path = fail_state_dir / "close-failures.json"
+escalate_after = max(1, int(os.environ.get("BOARD_CLOSEOUT_ESCALATE_AFTER") or "3"))
+
+def read_fail_state():
+    try:
+        data = json.loads(fail_state_path.read_text())
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+fail_state = read_fail_state()
+# Slugs seen in `doing` this pass — None until the board answered, so a busy
+# node never prunes streaks it could not observe.
+seen_doing_slugs = None
+
+def write_fail_state():
+    if dry_run:
+        return
+    try:
+        fail_state_dir.mkdir(parents=True, exist_ok=True)
+        fail_state_path.write_text(json.dumps(fail_state, indent=2) + "\n")
+    except Exception:
+        pass
+
+def failure_detail(out, err):
+    lines = [l.strip() for l in f"{err or ''}\n{out or ''}".split("\n") if l.strip()]
+    return (lines[-1] if lines else "closeout failed")[:220]
+
+def note_close_failure(slug, out, err):
+    prev = fail_state.get(slug) or {}
+    entry = {
+        "count": int(prev.get("count") or 0) + 1,
+        "first_at": prev.get("first_at") or iso,
+        "last_at": iso,
+        "last_reason": failure_detail(out, err),
+        "escalated": bool(prev.get("escalated")),
+    }
+    fail_state[slug] = entry
+    if entry["count"] < escalate_after or entry["escalated"]:
+        return
+    entry["escalated"] = True
+    res["flagged"].append(f"close-failed-escalated:{slug}")
+    if dry_run:
+        return
+    run(
+        [
+            board_cli,
+            "mark",
+            slug,
+            f"CLOSE-FAILED-REPEATED {iso} — last-stack-board-closeout-sweep could not close this card on {entry['count']} consecutive passes (since {entry['first_at']}). Last failure: {entry['last_reason']}. The closeout is refusing for the same reason every time; this needs a human or a fix to the gate, not more passes.",
+        ],
+        timeout=60,
+    )
+
+def clear_close_failure(slug):
+    fail_state.pop(slug, None)
 
 def strip(s):
     return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", s or "")
@@ -935,8 +1109,10 @@ def close_card(slug, url, branch):
             if note_closeout_deferred(slug, out, err):
                 return False
             res["flagged"].append(f"close-failed:{slug}")
+            note_close_failure(slug, out, err)
             return False
         res["closed"].append(slug)
+        clear_close_failure(slug)
         # Idempotent: reclaim again if closeout is an older binary without it
         if reclaim_bin.exists():
             run([str(reclaim_bin), "--slug", slug], timeout=120)
@@ -946,8 +1122,10 @@ def close_card(slug, url, branch):
         if note_closeout_deferred(slug, out, err):
             return False
         res["flagged"].append(f"close-failed:{slug}")
+        note_close_failure(slug, out, err)
         return False
     res["closed"].append(slug)
+    clear_close_failure(slug)
     if reclaim_bin.exists():
         run([str(reclaim_bin), "--slug", slug], timeout=120)
     return True
@@ -968,10 +1146,13 @@ def rollback(slug):
 
 cards = list_doing()
 if cards is None:
+    # Board unreadable: emit and leave every streak untouched.
+    write_fail_state()
     st = res["status"]
     flags = ",".join(res["flagged"]) if res["flagged"] else "none"
     print(f"board-closeout {iso} {st} closed=0 rolled_back=0 skipped=0 flagged={flags}")
     sys.exit(0)
+seen_doing_slugs = {str(c.get("slug") or "") for c in cards}
 
 actions = 0
 grace_s = grace_min * 60
@@ -1048,6 +1229,13 @@ for card in cards:
 
 closed = len(res["closed"])
 rolled = len(res["rolled_back"])
+# A card that left `doing` is no longer failing to close — drop its streak.
+if seen_doing_slugs is not None:
+    for slug in list(fail_state.keys()):
+        if slug not in seen_doing_slugs:
+            fail_state.pop(slug, None)
+write_fail_state()
+
 skipped = len(res["skipped"])
 flags = ",".join(res["flagged"]) if res["flagged"] else "none"
 st = res["status"]
