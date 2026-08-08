@@ -49,8 +49,11 @@ app_defaults() {
       DEFAULT_WRAPPERS="situations fsituations"
       ;;
     kanban|fkanban)
-      # Shared install root: both commands ship from the fkanban tree
-      INSTALL_APP="fkanban"
+      # Both commands ship from the fkanban tree under ONE host-track app named
+      # `kanban`, which links both. INSTALL_APP is the host-track APP name, not
+      # the repo or the artifact name — `fkanban` here would name a registration
+      # that no longer exists.
+      INSTALL_APP="kanban"
       DEFAULT_REMOTE="lastdb:///fkanban"
       DEFAULT_BARE="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/fkanban.git"
       DEFAULT_LINKS="bin/kanban:$HOME/.local/bin/kanban bin/fkanban:$HOME/.local/bin/fkanban"
