@@ -1,0 +1,311 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+usage: last-stack-org-cloud-membership-dogfood [options]
+
+Prove live org cloud-head membership with two Exemem principals:
+owner grants member -> member can list/presign -> owner revokes member ->
+member gets 403 -> owner still lists -> shared org E2E key is unchanged.
+
+Required:
+  --org-slug SLUG
+  --member-user-hash HASH
+  --owner-api-key-ref lastsecrets://SLUG
+  --member-api-key-ref lastsecrets://SLUG
+  --storage-url URL
+  --owner-socket PATH
+  --artifact PATH
+
+Optional:
+  --org-hash HASH       64-hex cloud head; otherwise read with `org show`
+  --e2e-key-ref REF     default: lastsecrets://org-<org-slug>-e2e
+  --role writer|reader  default: reader
+  --dry-run             validate prerequisites and print the planned phases
+  --help
+
+The API-key options accept LastSecrets locators, never raw values. Secrets are
+retrieved only for the request that needs them, passed to curl over stdin, and
+never written to the proof artifact or command argv. The owner socket must be
+the intended dogfood Mini; this command never starts, stops, or restarts it.
+EOF
+}
+
+org_slug=""
+org_hash=""
+member_user_hash=""
+owner_api_key_ref=""
+member_api_key_ref=""
+e2e_key_ref=""
+storage_url=""
+owner_socket=""
+artifact=""
+role="reader"
+dry_run=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --org-slug) org_slug="${2:-}"; shift 2 ;;
+    --org-hash) org_hash="${2:-}"; shift 2 ;;
+    --member-user-hash) member_user_hash="${2:-}"; shift 2 ;;
+    --owner-api-key-ref) owner_api_key_ref="${2:-}"; shift 2 ;;
+    --member-api-key-ref) member_api_key_ref="${2:-}"; shift 2 ;;
+    --e2e-key-ref) e2e_key_ref="${2:-}"; shift 2 ;;
+    --storage-url) storage_url="${2:-}"; shift 2 ;;
+    --owner-socket) owner_socket="${2:-}"; shift 2 ;;
+    --artifact) artifact="${2:-}"; shift 2 ;;
+    --role) role="${2:-}"; shift 2 ;;
+    --dry-run) dry_run=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+for required_name in org_slug member_user_hash owner_api_key_ref member_api_key_ref storage_url owner_socket artifact; do
+  eval "required_value=\${$required_name}"
+  if [ -z "$required_value" ]; then
+    echo "missing required option: ${required_name//_/-}" >&2
+    exit 2
+  fi
+done
+
+case "$org_slug" in
+  *[!a-z0-9-]*|'') echo "org slug must contain only lowercase letters, digits, and hyphens" >&2; exit 2 ;;
+esac
+case "$member_user_hash" in
+  *[!A-Za-z0-9:_-]*|'') echo "member user hash has an invalid shape" >&2; exit 2 ;;
+esac
+if [ "${#member_user_hash}" -lt 16 ] || [ "${#member_user_hash}" -gt 128 ]; then
+  echo "member user hash must be 16-128 characters" >&2
+  exit 2
+fi
+case "$role" in reader|writer) ;; *) echo "role must be reader or writer" >&2; exit 2 ;; esac
+case "$owner_api_key_ref" in lastsecrets://?*) ;; *) echo "owner API key must be a lastsecrets:// locator" >&2; exit 2 ;; esac
+case "$member_api_key_ref" in lastsecrets://?*) ;; *) echo "member API key must be a lastsecrets:// locator" >&2; exit 2 ;; esac
+if [ -z "$e2e_key_ref" ]; then
+  e2e_key_ref="lastsecrets://org-${org_slug}-e2e"
+fi
+case "$e2e_key_ref" in lastsecrets://?*) ;; *) echo "E2E key must be a lastsecrets:// locator" >&2; exit 2 ;; esac
+case "$storage_url" in
+  https://*|http://localhost*|http://127.0.0.1*|http://\[::1\]*) ;;
+  *) echo "storage URL must use HTTPS (HTTP is allowed only for loopback DEV)" >&2; exit 2 ;;
+esac
+storage_url="${storage_url%/}"
+
+org_bin="${ORG_CLI:-org}"
+lastsecrets_bin="${LASTSECRETS_CLI:-lastsecrets}"
+curl_bin="${CURL_BIN:-curl}"
+jq_bin="${JQ_BIN:-jq}"
+shasum_bin="${SHASUM_BIN:-shasum}"
+for tool in "$org_bin" "$lastsecrets_bin" "$curl_bin" "$jq_bin" "$shasum_bin"; do
+  command -v "$tool" >/dev/null 2>&1 || {
+    echo "required command not found: $tool" >&2
+    exit 2
+  }
+done
+if [ ! -S "$owner_socket" ] && [ "${ORG_CLOUD_MEMBERSHIP_ALLOW_FAKE_SOCKET:-0}" != "1" ]; then
+  echo "owner Mini socket not found: $owner_socket" >&2
+  exit 2
+fi
+
+if [ "$dry_run" -eq 1 ]; then
+  cat <<EOF
+DRY-RUN org cloud membership dogfood
+1. resolve org cloud-head hash on the owner Mini
+2. fingerprint $e2e_key_ref without persisting its value
+3. grant $role access to the member through org/Mini
+4. list and, when a log object exists, presign as the member
+5. revoke the member through org/Mini
+6. require effective HTTP 403 for the member and success for the owner
+7. require the E2E-key fingerprint to be unchanged and write $artifact
+EOF
+  exit 0
+fi
+
+work_dir="$(mktemp -d "${TMPDIR:-/tmp}/org-cloud-membership.XXXXXX")"
+grant_active=0
+cleanup() {
+  cleanup_rc=$?
+  trap - EXIT
+  if [ "$grant_active" -eq 1 ]; then
+    LASTDB_SOCKET_PATH="$owner_socket" ORG_NODE_SOCKET="$owner_socket" \
+      "$org_bin" member revoke "$org_slug" "$member_user_hash" \
+      --socket-path "$owner_socket" >/dev/null 2>&1 || true
+  fi
+  rm -rf "$work_dir"
+  exit "$cleanup_rc"
+}
+trap cleanup EXIT
+
+write_result() {
+  result_first="$1"
+  shift
+  mkdir -p "$(dirname "$artifact")"
+  {
+    printf '%s\n' "$result_first"
+    printf '%s\n' "$@"
+  } >"$work_dir/result"
+  cp "$work_dir/result" "$artifact"
+}
+
+fail() {
+  fail_phase="$1"
+  fail_reason="$2"
+  write_result "FAIL org cloud membership two-principal dogfood" \
+    "phase=$fail_phase" "reason=$fail_reason"
+  echo "FAIL org cloud membership dogfood: phase=$fail_phase reason=$fail_reason" >&2
+  exit 1
+}
+
+secret_slug() {
+  printf '%s\n' "${1#lastsecrets://}"
+}
+
+e2e_fingerprint() {
+  "$lastsecrets_bin" get "$(secret_slug "$e2e_key_ref")" \
+    | "$shasum_bin" -a 256 \
+    | awk '{print $1}'
+}
+
+if [ -z "$org_hash" ]; then
+  set +e
+  LASTDB_SOCKET_PATH="$owner_socket" ORG_NODE_SOCKET="$owner_socket" \
+    "$org_bin" show "$org_slug" --socket-path "$owner_socket" \
+    >"$work_dir/org-show" 2>"$work_dir/org-show.err"
+  org_show_rc=$?
+  set -e
+  [ "$org_show_rc" -eq 0 ] || fail resolve-org "org show failed"
+  org_hash="$(sed -n 's/.*org_hash=\([0-9A-Fa-f][0-9A-Fa-f]*\).*/\1/p' "$work_dir/org-show" | head -n 1)"
+fi
+case "$org_hash" in
+  *[!0-9A-Fa-f]*|'') fail resolve-org "org hash must be 64 hex characters" ;;
+esac
+[ "${#org_hash}" -eq 64 ] || fail resolve-org "org hash must be 64 hex characters"
+org_hash="$(printf '%s' "$org_hash" | tr 'A-F' 'a-f')"
+
+set +e
+e2e_before="$(e2e_fingerprint 2>"$work_dir/e2e-before.err")"
+e2e_before_rc=$?
+set -e
+[ "$e2e_before_rc" -eq 0 ] && [ -n "$e2e_before" ] || fail e2e-before "could not fingerprint E2E key"
+
+set +e
+LASTDB_SOCKET_PATH="$owner_socket" ORG_NODE_SOCKET="$owner_socket" \
+  "$org_bin" member grant "$org_slug" "$member_user_hash" --role "$role" \
+  --socket-path "$owner_socket" >"$work_dir/grant" 2>"$work_dir/grant.err"
+grant_rc=$?
+set -e
+[ "$grant_rc" -eq 0 ] || fail grant "org member grant failed"
+grant_active=1
+
+request_seq=0
+storage_request() {
+  request_ref="$1"
+  request_route="$2"
+  request_body="$3"
+  request_seq=$((request_seq + 1))
+  request_response="$work_dir/response-$request_seq.json"
+  request_code_file="$work_dir/code-$request_seq"
+
+  set +e
+  request_api_key="$($lastsecrets_bin get "$(secret_slug "$request_ref")" 2>"$work_dir/secret-$request_seq.err")"
+  request_secret_rc=$?
+  set -e
+  [ "$request_secret_rc" -eq 0 ] && [ -n "$request_api_key" ] || return 41
+  case "$request_api_key" in *$'\n'*|*$'\r'*) unset request_api_key; return 42 ;; esac
+
+  set +e
+  {
+    printf 'silent\nshow-error\nrequest = "POST"\n'
+    printf 'url = "%s/api/sync/%s"\n' "$storage_url" "$request_route"
+    printf 'header = "Content-Type: application/json"\n'
+    printf 'header = "X-API-Key: %s"\n' "$request_api_key"
+  } | "$curl_bin" --config - --data-binary "@$request_body" \
+    --output "$request_response" --write-out '%{http_code}' >"$request_code_file"
+  request_curl_rc=$?
+  set -e
+  unset request_api_key
+  [ "$request_curl_rc" -eq 0 ] || return 43
+  "$jq_bin" -e . "$request_response" >/dev/null 2>&1 || return 44
+  request_http="$(sed -n '1p' "$request_code_file")"
+  request_body_status="$($jq_bin -r 'if type == "object" then (.statusCode // .status_code // 0) else 0 end' "$request_response")"
+  request_effective="$request_http"
+  case "$request_body_status" in [1-5][0-9][0-9]) request_effective="$request_body_status" ;; esac
+  request_ok="$($jq_bin -r 'if type == "object" then (.ok // true) else true end' "$request_response")"
+  return 0
+}
+
+assert_success() {
+  case "$request_effective" in 2[0-9][0-9]) ;; *) return 1 ;; esac
+  [ "$request_ok" != "false" ]
+}
+
+assert_forbidden() {
+  [ "$request_effective" = "403" ] && return 0
+  request_code="$($jq_bin -r 'if type == "object" then (.code // "") else "" end' "$request_response")"
+  [ "$request_code" = "FORBIDDEN" ]
+}
+
+# shellcheck disable=SC2016 # jq variables expand inside jq, not the shell.
+"$jq_bin" -n --arg org_hash "$org_hash" \
+  '{action:"list_objects", prefix:"log/", org_hash:$org_hash}' \
+  >"$work_dir/list.json"
+storage_request "$member_api_key_ref" list "$work_dir/list.json" \
+  || fail member-list-after-grant "member storage request failed"
+assert_success || fail member-list-after-grant "member did not receive successful list access"
+
+member_access="list-ok"
+log_key="$($jq_bin -r '(.objects // .data.objects // [])[]?.key | select(test("^log/[0-9]+\\.enc$"))' "$request_response" | head -n 1)"
+if [ -n "$log_key" ]; then
+  log_seq="${log_key#log/}"
+  log_seq="${log_seq%.enc}"
+  # shellcheck disable=SC2016 # jq variables expand inside jq, not the shell.
+  "$jq_bin" -n --arg org_hash "$org_hash" --argjson seq "$log_seq" \
+    '{action:"presign_log_download", seq_numbers:[$seq], org_hash:$org_hash}' \
+    >"$work_dir/presign.json"
+  storage_request "$member_api_key_ref" presign "$work_dir/presign.json" \
+    || fail member-presign-after-grant "member presign request failed"
+  assert_success || fail member-presign-after-grant "member did not receive a download presign"
+  member_access="list-and-presign-ok"
+fi
+
+set +e
+LASTDB_SOCKET_PATH="$owner_socket" ORG_NODE_SOCKET="$owner_socket" \
+  "$org_bin" member revoke "$org_slug" "$member_user_hash" \
+  --socket-path "$owner_socket" >"$work_dir/revoke" 2>"$work_dir/revoke.err"
+revoke_rc=$?
+set -e
+[ "$revoke_rc" -eq 0 ] || fail revoke "org member revoke failed"
+grant_active=0
+
+storage_request "$member_api_key_ref" list "$work_dir/list.json" \
+  || fail member-list-after-revoke "member storage request failed"
+assert_forbidden || fail member-list-after-revoke "member did not receive effective HTTP 403"
+
+storage_request "$owner_api_key_ref" list "$work_dir/list.json" \
+  || fail owner-list-after-revoke "owner storage request failed"
+assert_success || fail owner-list-after-revoke "owner lost cloud-head access"
+
+set +e
+e2e_after="$(e2e_fingerprint 2>"$work_dir/e2e-after.err")"
+e2e_after_rc=$?
+set -e
+[ "$e2e_after_rc" -eq 0 ] && [ -n "$e2e_after" ] || fail e2e-after "could not fingerprint E2E key"
+[ "$e2e_before" = "$e2e_after" ] || fail e2e-after "org E2E key changed during membership revoke"
+
+org_hash_fingerprint="$(printf '%s' "$org_hash" | "$shasum_bin" -a 256 | awk '{print $1}')"
+member_fingerprint="$(printf '%s' "$member_user_hash" | "$shasum_bin" -a 256 | awk '{print $1}')"
+write_result "PASS org cloud membership two-principal dogfood" \
+  "org_slug=$org_slug" \
+  "org_hash_fingerprint=$org_hash_fingerprint" \
+  "member_fingerprint=$member_fingerprint" \
+  "grant=ok role=$role" \
+  "member_after_grant=$member_access" \
+  "revoke=ok" \
+  "member_after_revoke=effective-http-403" \
+  "owner_after_revoke=list-ok" \
+  "e2e_key_unchanged=true" \
+  "secret_values_persisted=false"
+
+cat "$artifact"
