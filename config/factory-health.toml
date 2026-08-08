@@ -72,6 +72,27 @@ hard_count = 50
 # Also alert if todo is empty while baseline ship rate was healthy (starvation).
 empty_todo_with_baseline = true
 
+# ── Backlog black hole ─────────────────────────────────────────────────────
+# A card that is Kind:pr, ungated (block_status none), dependency-free AND
+# milestone-less cannot enter default/todo — fkanban's live-PR milestone gate
+# refuses it — so nothing will ever pick it up. It is not parked on purpose and
+# no other check reports it: ship rate stays plausible, todo depth looks merely
+# thin, and the work is simply invisible.
+#
+# Measured 2026-08-08: the board sat at `pickup-ready: 2 of 78` with 21 such
+# cards, the oldest three days old. Nothing alerted, because nothing was
+# looking. This band is that missing instrument.
+#
+# soft_count = 1 on purpose. The healthy value is zero: every one of these is a
+# card someone filed believing it would be worked.
+[backlog]
+enabled = true
+soft_count = 1
+hard_count = 10
+# Ignore cards younger than this — a filer stamping a milestone seconds later is
+# the normal flow, not a black hole.
+min_age_h = 3.0
+
 # ── 24h ship volume ────────────────────────────────────────────────────────
 # Ships in last 24h vs previous 24h (needs history ring; optional soft only).
 [ship_volume]

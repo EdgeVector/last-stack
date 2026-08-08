@@ -149,6 +149,11 @@ class Snapshot:
     max_doing_age_h: float = 0.0
     stale_doing: int = 0
     doing_with_pr: int = 0
+    # Backlog cards that claim to be runnable work but structurally cannot be
+    # claimed — see unreachable_backlog_cards().
+    parked_ungated: int = 0
+    parked_ungated_oldest_h: float = 0.0
+    parked_ungated_slugs: list[str] = field(default_factory=list)
 
 
 def default_config_path(last_stack: Path) -> Path:
@@ -230,6 +235,74 @@ def age_hours(card: dict[str, Any], now: float) -> float:
         except Exception:
             continue
     return 0.0
+
+
+def dep_blocked(card: dict[str, Any]) -> bool:
+    """Is this card actually waiting on an unfinished dependency?
+
+    `deps` lists every dependency the card ever declared, satisfied or not, so
+    it answers "does it have deps", not "is it waiting". `missingDeps` and
+    `blocked` are fkanban's derived truth. Falls back to the raw list only when
+    neither derived field is present (older CLI), where over-reporting a wait is
+    the safer error for a band that is otherwise silent.
+    """
+    if "missingDeps" in card or "blocked" in card:
+        return bool(card.get("missingDeps")) or card.get("blocked") is True
+    return bool(card.get("deps"))
+
+
+def unreachable_backlog_cards(
+    cards: list[dict[str, Any]], now: float, min_age_h: float
+) -> list[tuple[str, float]]:
+    """Backlog cards that claim to be runnable work but can never be claimed.
+
+    fkanban refuses a Kind:pr card into default/todo without a milestone
+    (`live_pr_milestone_required`). A card that is ALSO ungated and
+    dependency-free is therefore not parked for any stated reason — it is
+    simply unreachable, and no other band here notices: ship rate stays
+    plausible, todo depth reads as merely thin, and the work is invisible.
+
+    Kept deliberately narrow so it cannot fire on the legitimate park:
+      - kind pr (empty normalizes to pr, matching fkanban's normalizeKind)
+      - block_status none  → nobody held it on purpose
+      - not dep-blocked    → the dep guard already voices a real wait
+      - no milestone       → the condition that actually strands it
+
+    "Not dep-blocked" reads `missingDeps`/`blocked`, NOT the raw `deps` list. A
+    card whose dependencies are all satisfied still carries them in `deps`, and
+    three of the 19 stranded cards on 2026-08-08 looked like dependency waits
+    under the coarse reading while `missingDeps` was empty and `blocked` false.
+    Treating a satisfied dep as an excuse would have hidden them.
+
+    Body-brief emptiness is NOT checked: `kanban list` returns truncated body
+    previews, and judging a brief from a preview would make this a lying
+    instrument about the one thing it exists to report honestly.
+
+    Returns (slug, age_hours) for each, oldest first.
+    """
+    KINDS = {"pr", "registry", "tracker", "umbrella", "meta", "program", "capstone", "validation"}
+    out: list[tuple[str, float]] = []
+    for c in cards:
+        if str(c.get("column") or "").lower() != "backlog":
+            continue
+        kind = str(c.get("kind") or "").strip().lower()
+        if kind not in KINDS:
+            kind = "pr"  # fkanban normalizeKind: empty/unknown → pr
+        if kind != "pr":
+            continue
+        block = str(c.get("block_status") or c.get("blockStatus") or "").strip().lower()
+        if block and block != "none":
+            continue
+        if dep_blocked(c):
+            continue
+        if str(c.get("milestone") or "").strip():
+            continue
+        age = age_hours(c, now)
+        if age < min_age_h:
+            continue
+        out.append((str(c.get("slug") or "?"), age))
+    out.sort(key=lambda t: -t[1])
+    return out
 
 
 def mean_std(xs: list[float]) -> tuple[float, float]:
@@ -400,6 +473,7 @@ def build_snapshot(
     cards: list[dict[str, Any]],
     factory: Optional[dict[str, Any]],
     use_completed_hour: bool,
+    parked_min_age_h: float = 3.0,
 ) -> tuple[Snapshot, dict[str, Any]]:
     now = time.time()
     cols = {"backlog": 0, "todo": 0, "doing": 0, "done": 0, "review": 0}
@@ -470,6 +544,12 @@ def build_snapshot(
             if k in sc:
                 cols[k] = int(sc[k])
 
+    # Derived from the raw card rows, never from the factory summary — the
+    # summary carries column COUNTS only, and this needs per-card kind /
+    # block_status / deps / milestone. If the board read came back empty this
+    # stays 0 rather than guessing, same as every other card-derived field.
+    parked = unreachable_backlog_cards(cards, now, parked_min_age_h)
+
     snap = Snapshot(
         ts=iso_z(),
         todo=cols["todo"],
@@ -482,6 +562,9 @@ def build_snapshot(
         max_doing_age_h=round(max_age, 2),
         stale_doing=stale,
         doing_with_pr=with_pr,
+        parked_ungated=len(parked),
+        parked_ungated_oldest_h=round(parked[0][1], 2) if parked else 0.0,
+        parked_ungated_slugs=[slug for slug, _ in parked[:5]],
     )
     meta = {
         "hourly": hourly,
@@ -673,6 +756,46 @@ def evaluate(cfg: dict[str, Any], snap: Snapshot, meta: dict[str, Any], state: d
                         "Dry-run: `last-stack-board-closeout-sweep --dry-run`",
                         "Check factory doing lane for multi-hour chips with merged PRs.",
                     ],
+                )
+            )
+
+    # ── backlog black hole ─────────────────────────────────────────────────
+    if cfg_get(cfg, "backlog", "enabled", True) and snap.parked_ungated:
+        soft_b = int(cfg_get(cfg, "backlog", "soft_count", 1))
+        hard_b = int(cfg_get(cfg, "backlog", "hard_count", 10))
+        shown = ", ".join(snap.parked_ungated_slugs)
+        more = snap.parked_ungated - len(snap.parked_ungated_slugs)
+        if more > 0:
+            shown += f", +{more} more"
+        detail = (
+            f"parked_ungated={snap.parked_ungated} oldest={snap.parked_ungated_oldest_h:.1f}h "
+            f"— Kind:pr, no hold, no deps, NO MILESTONE, so `move … todo` refuses them "
+            f"(live_pr_milestone_required) and pickup never sees them. [{shown}]"
+        )
+        recs = [
+            "Confirm with `kanban pickup explain <slug>` — the write-guard names the missing field.",
+            "Stamp a real outcome: `kanban set <slug> --milestone <ms>` then `kanban move <slug> todo`.",
+            "If a card genuinely belongs in backlog, park it honestly "
+            "(`--block-status needs_human/deferred` or a non-pr `--kind`) so the hold is visible.",
+        ]
+        if snap.parked_ungated >= hard_b:
+            alerts.append(
+                Alert(
+                    severity="hard",
+                    code="backlog_unreachable_hard",
+                    title="Backlog is swallowing runnable work",
+                    detail=detail + f" (hard≥{hard_b})",
+                    recommendations=recs,
+                )
+            )
+        elif snap.parked_ungated >= soft_b:
+            alerts.append(
+                Alert(
+                    severity="soft",
+                    code="backlog_unreachable_soft",
+                    title="Runnable cards stranded in backlog",
+                    detail=detail + f" (soft≥{soft_b})",
+                    recommendations=recs,
                 )
             )
 
@@ -897,7 +1020,8 @@ def format_message(snap: Snapshot, alerts: list[Alert], meta: dict[str, Any]) ->
     level = "HARD" if hard else "SOFT"
     lines = [
         f"🏭 Factory health {level} — {snap.ts}",
-        f"board todo={snap.todo} doing={snap.doing} backlog={snap.backlog} done={snap.done}",
+        f"board todo={snap.todo} doing={snap.doing} backlog={snap.backlog} done={snap.done}"
+        + (f" (unreachable={snap.parked_ungated})" if snap.parked_ungated else ""),
         f"ships last_h={snap.ships_last_h:.0f}  24h={snap.ships_24h:.0f} (~{snap.ships_per_hour_24h:.2f}/h)",
         f"doing max_age={snap.max_doing_age_h}h stale={snap.stale_doing} profile={meta.get('routines_profile') or '?'}",
         "",
@@ -1003,7 +1127,12 @@ def main(argv: list[str]) -> int:
         return 0
 
     use_completed = bool(cfg_get(cfg, "general", "use_completed_hour", True))
-    snap, meta = build_snapshot(cards, factory, use_completed)
+    snap, meta = build_snapshot(
+        cards,
+        factory,
+        use_completed,
+        parked_min_age_h=float(cfg_get(cfg, "backlog", "min_age_h", 3.0)),
+    )
     # refresh stale with config soft age for snapshot fields before evaluate mutates
     soft_age = float(cfg_get(cfg, "doing", "soft_max_age_h", 2.0))
     max_age, stale = recompute_stale(meta.get("doing_cards") or [], soft_age)
@@ -1080,7 +1209,8 @@ def main(argv: list[str]) -> int:
     codes = ",".join(a.code for a in alerts) if alerts else "none"
     line = (
         f"factory-health {iso_z()} {severity} alerts={len(alerts)} codes={codes} "
-        f"todo={snap.todo} doing={snap.doing} ships_h={snap.ships_last_h:.0f} "
+        f"todo={snap.todo} doing={snap.doing} parked_ungated={snap.parked_ungated} "
+        f"ships_h={snap.ships_last_h:.0f} "
         f"ships_24h={snap.ships_24h:.0f} max_doing_age_h={snap.max_doing_age_h} "
         f"notified={int(notified)} notify={notify_detail} "
         f"auto_fix={','.join(actions) if actions else 'none'} "

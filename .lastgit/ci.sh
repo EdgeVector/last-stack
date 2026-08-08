@@ -38,6 +38,7 @@ bash tests/last-stack-routines-registry-host-paths.sh
 bash tests/last-stack-feature-prove-routine.sh
 bash tests/last-stack-kanban-pickup-workers.sh
 bash tests/last-stack-factory-hardening.sh
+bash tests/last-stack-factory-health-backlog.sh
 bash tests/last-stack-todo-rank.sh
 bash tests/last-stack-kanban-done-when-eval.sh
 bash tests/last-stack-driver-hierarchy.sh
