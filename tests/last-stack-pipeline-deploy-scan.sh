@@ -53,4 +53,41 @@ else
   echo "pending-repo not blocked (mtime touch may be unsupported) — soft-ok"
 fi
 
+# --repo: a repo WITH a producer reports that producer
+one="$("$SCAN" --json --root "$tmp" --pending-max-s 3600 --repo ok-repo)"
+echo "$one" | jq -e 'type=="array" and length==1 and .[0].repo=="ok-repo" and .[0].status=="success" and .[0].blocked==false' >/dev/null || {
+  echo "expected single ok-repo success row, got $one" >&2
+  exit 1
+}
+
+# --repo: a repo with NO producer, while others are configured, is
+# not-applicable and UNBLOCKED — it does not deploy through this pipeline at
+# all, so gating on it would never be satisfiable.
+na="$("$SCAN" --json --root "$tmp" --repo fold)"
+echo "$na" | jq -e 'type=="array" and length==1 and .[0].repo=="fold" and .[0].status=="not-applicable" and .[0].blocked==false' >/dev/null || {
+  echo "expected fold not-applicable unblocked, got $na" >&2
+  exit 1
+}
+echo "$na" | jq -e '.[0].reason | test("no deploy-pipeline producer for fold")' >/dev/null || {
+  echo "expected an explanatory reason, got $na" >&2
+  exit 1
+}
+
+# --repo: no producers under the root at all is ambiguous (likely a wrong
+# --root) and stays fail-closed.
+empty="$(mktemp -d)"
+unconf="$("$SCAN" --json --root "$empty" --repo fold)"
+rm -rf "$empty"
+echo "$unconf" | jq -e 'type=="array" and length==1 and .[0].repo=="fold" and .[0].status=="unconfigured" and .[0].blocked==true' >/dev/null || {
+  echo "expected fold unconfigured blocked on an empty root, got $unconf" >&2
+  exit 1
+}
+
+# --repo: a repo whose producer is FAILING still blocks
+badrow="$("$SCAN" --json --root "$tmp" --repo bad-repo)"
+echo "$badrow" | jq -e 'type=="array" and length==1 and .[0].blocked==true' >/dev/null || {
+  echo "expected bad-repo still blocked under --repo, got $badrow" >&2
+  exit 1
+}
+
 echo "ok last-stack-pipeline-deploy-scan"
