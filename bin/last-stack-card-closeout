@@ -136,7 +136,13 @@ if [ -n "$deploy_reqs" ]; then
     echo "last-stack-card-closeout: FAILED deploy-scan-missing slug=$slug" >&2
     exit 1
   fi
-  deploy_scan_json="$("$self_dir/last-stack-pipeline-deploy-scan" --json 2>/dev/null || true)"
+  # --repo always yields a row for this repo, including the synthesized
+  # not-applicable / unconfigured states. Fall back to the whole-tree scan when
+  # the installed scanner predates --repo.
+  deploy_scan_json="$("$self_dir/last-stack-pipeline-deploy-scan" --json --repo "$deploy_repo" 2>/dev/null || true)"
+  if [ -z "$deploy_scan_json" ]; then
+    deploy_scan_json="$("$self_dir/last-stack-pipeline-deploy-scan" --json 2>/dev/null || true)"
+  fi
   if [ -z "$deploy_scan_json" ]; then
     echo "last-stack-card-closeout: FAILED deploy-scan-empty slug=$slug repo=$deploy_repo" >&2
     exit 1
@@ -169,6 +175,16 @@ PY
     IFS='|' read -r gate_state gate_blocked gate_reason <<EOF
 $gate_status
 EOF
+    # A repo with no deploy-pipeline producer can never satisfy this gate. Before
+    # 2026-08-08 that read as `missing|blocked` and jammed the card in `doing`
+    # forever — board-closeout flagged close-failed on every pass for 10h, and
+    # the 24h park expiry would then have bounced merged, deployed work back to
+    # todo. Not-applicable is a pass, and it says so out loud.
+    # Brain: papercut-deploy-pipeline-gate-has-no-producer-for-non-lastgit-repos
+    if [ "$gate_state" = "not-applicable" ] && [ "$gate_blocked" = "false" ]; then
+      echo "last-stack-card-closeout: deploy gate not-applicable slug=$slug repo=$deploy_repo requires=$deploy_req reason=$gate_reason" >&2
+      continue
+    fi
     if [ "$gate_state" != "success" ] || [ "$gate_blocked" != "false" ]; then
       echo "last-stack-card-closeout: deploy gate pending slug=$slug repo=$deploy_repo requires=$deploy_req status=${gate_state:-unknown} reason=$gate_reason" >&2
       exit 1

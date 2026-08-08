@@ -4,6 +4,7 @@
 #
 # Usage:
 #   last-stack-pipeline-deploy-scan [--json] [--root <dir>] [--pending-max-s <n>] [--tail-bytes <n>]
+#                                   [--repo <name>]
 #
 # Exit codes:
 #   0  scanned OK (even if some pipelines are blocked — check .blocked)
@@ -13,19 +14,35 @@
 #   - the latest success|failure line is `failure`, OR
 #   - the latest line is `pending` older than --pending-max-s (default 4h)
 #   AND there is no later success.
+#
+# --repo <name> narrows the report to one repo and ALWAYS emits a row for it,
+# so a caller gating on it can tell these three states apart:
+#   - a producer exists       -> success|failure|pending, as scanned
+#   - no producer for <name>, but other repos DO have one under <root>
+#                             -> status=not-applicable, blocked=false.
+#      That repo does not deploy through the LastGit deploy-pipeline at all
+#      (e.g. fold deploys via lastdb-safe-upgrade, last-stack via host-track),
+#      so a gate waiting on it can never be satisfied and must not block.
+#   - no producers under <root> whatsoever
+#                             -> status=unconfigured, blocked=true.
+#      Ambiguous — likely a wrong --root / LASTGIT_DEPLOY_ROOT — so fail closed.
 set -eu
 
 json=0
 root="${LASTGIT_DEPLOY_ROOT:-$HOME/.lastgit}"
 pending_max_s=14400
 tail_bytes="${LAST_STACK_DEPLOY_SCAN_TAIL_BYTES:-1048576}"
+repo_filter=""
 
 usage() {
   cat >&2 <<'EOF'
-usage: last-stack-pipeline-deploy-scan [--json] [--root <dir>] [--pending-max-s <seconds>] [--tail-bytes <bytes>]
+usage: last-stack-pipeline-deploy-scan [--json] [--root <dir>] [--pending-max-s <seconds>] [--tail-bytes <bytes>] [--repo <name>]
 
 Scans <root>/deploy-*/deploy.log for LastGit deploy-pipeline health.
 Prints human lines by default, or a JSON array with --json.
+With --repo <name>, reports only that repo and always emits exactly one row —
+synthesizing status=not-applicable (no producer for it, others configured) or
+status=unconfigured (no producers at all) when it has no deploy log.
 EOF
 }
 
@@ -45,6 +62,11 @@ while [ "$#" -gt 0 ]; do
     --tail-bytes)
       [ "$#" -ge 2 ] || { usage; exit 2; }
       tail_bytes="$2"
+      shift 2
+      ;;
+    --repo)
+      [ "$#" -ge 2 ] || { usage; exit 2; }
+      repo_filter="$2"
       shift 2
       ;;
     -h|--help) usage; exit 0 ;;
@@ -144,6 +166,32 @@ for dir in "$root"/deploy-*/; do
   results+=("$repo|$pipe_status|$sha|$blocked|$reason|$log|$mtime")
 done
 shopt -u nullglob
+
+# --repo: always emit exactly one row for the requested repo, synthesizing the
+# absent-producer states so a gating caller can never sit forever on a row that
+# will never appear. See the header comment for why not-applicable is unblocked
+# while unconfigured is not.
+if [ -n "$repo_filter" ]; then
+  filtered=()
+  configured=()
+  for row in "${results[@]+"${results[@]}"}"; do
+    row_repo="${row%%|*}"
+    configured+=("$row_repo")
+    if [ "$row_repo" = "$repo_filter" ]; then
+      filtered+=("$row")
+    fi
+  done
+  if [ "${#filtered[@]}" -eq 0 ]; then
+    if [ "${#configured[@]}" -gt 0 ]; then
+      others="$(printf '%s,' "${configured[@]}")"
+      others="${others%,}"
+      filtered=("$repo_filter|not-applicable||0|no deploy-pipeline producer for $repo_filter under $root (configured: $others)||0")
+    else
+      filtered=("$repo_filter|unconfigured||1|no deploy-* producers under $root|$root|0")
+    fi
+  fi
+  results=("${filtered[@]}")
+fi
 
 if [ "$json" -eq 1 ]; then
   printf '['
