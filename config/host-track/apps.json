@@ -344,7 +344,8 @@
           "target": "$HOME/.local/bin/rad-telegram"
         }
       ],
-      "notes": "Remote Agent artifact install; refresh links ra/rad/rad-telegram from the promoted LastGit artifact."
+      "notes": "Remote Agent artifact install; refresh links ra/rad/rad-telegram from the promoted LastGit artifact. track_gate_main promotes stable to green+published main — without it the channel sat on a hand-promoted pointer for 8 days and shipped a known-broken ra shim, silently killing every ra notify page.",
+      "track_gate_main": true
     },
     {
       "app": "state-machine",
