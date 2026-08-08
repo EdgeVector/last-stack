@@ -53,6 +53,7 @@ bash tests/last-stack-north-star-proof-registry.sh
 bash tests/last-stack-org-cloud-membership-dogfood.sh
 bash tests/last-stack-ship-feature-milestones.sh
 bash tests/last-stack-lint-prompts.sh --smoke
+bash tests/last-stack-lastdb-access-watch.sh
 bash tests/last-stack-routines-prompt-doctor.sh
 bash tests/last-stack-literal-markdown-append.sh
 bash tests/last-stack-lint-machine-leaks.sh
