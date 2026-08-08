@@ -34,7 +34,28 @@ last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 Exit codes: `0` clean · `1` findings · `2` **unknown** (could not parse, node
 busy, or `lastdb` missing).
 
-- **0** — heartbeat `ok` and exit.
+Alerting runs on the **recent (ring) window** by default. The lifetime table is
+a process-lifetime AVERAGE and therefore **dilutes**: measured 2026-08-08, one
+unchanged read went 26 → 13 → 6 loads/call purely as its call count grew
+175 → 730, clearing the default threshold while still being the worst per-call
+kanban query on the node. Alerting on that average lets a persistent offender
+walk itself out of sight.
+
+Neither window proves absence, so do not read "ok" as "nothing wrong":
+
+- **ring** cannot dilute, but it is a TOP-N table sorted by *total* loads — a
+  high-per-call, low-count read can rank below a heavy mutation and never be
+  printed.
+- **lifetime** dilutes, so a lifetime *finding* is strong evidence (it survived
+  dilution) while a lifetime *clean* is weak.
+
+A clean ring run still prints a **NOTE** for any lifetime row that looks like a
+diluted persistent offender. Treat those as leads, not findings — they do not
+change the exit code. Re-check one with `--window lifetime`, and cross-check by
+cost rather than per-call with `lastdb ops` (Top by total time).
+
+- **0** — heartbeat `ok` and exit. If the run printed dilution NOTEs, name them
+  in the heartbeat line so a recurring lead is visible across weeks.
 - **2** — heartbeat `noop` with the reason. This is NOT a finding and NOT an
   outage. A busy node is load/backpressure. Do not escalate, do not restart, do
   not reindex. Re-runs next cadence.
@@ -60,6 +81,20 @@ widening the existing read. Cite `concepts-lastdb-agent-access-model`.
   scan-shaped read is a design defect in the caller, not node corruption.
 - Never treat exit 2 as clean. The detector refuses to print "ok" from a dump it
   could not parse, precisely so a broken watcher cannot read as a healthy system.
+- Never conclude an offender was FIXED from a clean run alone. The per-call
+  number falls as call count grows even when nothing changed. Confirm a fix with
+  `lastdb ops` total time for that client+schema, not with this detector's
+  threshold.
+
+## Blind spot: writes
+
+This detector reports **reads only** — a mutation legitimately touches many
+shards, and flagging writes would bury the read signal. So it will not surface a
+slow write path even when that is the dominant cost on the node. On 2026-08-08
+`client=kanban kind=mutation schema=39a0424f` ran avg 61s / max 21min and was
+the #2 consumer of node time, invisible to this routine. When the node feels
+slow and this reports clean, read `lastdb ops` **Top by total time** before
+concluding anything.
 
 ## Related
 
