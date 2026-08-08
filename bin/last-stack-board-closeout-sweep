@@ -10,12 +10,17 @@
 #      → last-stack-card-closeout (done; honors Requires-Deploy)
 #   2. empty/no-PR doing, age ≥ grace, no live worker, no branch commits → todo
 #   3. WIP commits + no PR after grace → todo (flag wip-no-pr; worktree kept)
+#   4. park expiry: a deploy-gated / close-failed park older than
+#      --max-park-hours with no live worker → todo (flag park-expired), so a
+#      parked card can never sit in `doing` forever with nobody driving it.
 #
 # Protections (do NOT reclaim):
 #   - open / unknown PR on structured pr_url or body header
 #   - live agent process in the card worktree
 #   - deploy-gated / live-proof park: body Requires-Deploy:, tags
 #     awaiting-deploy|live-proof|deploy-gate, or HANDOFF + Requires-Deploy
+#     (bounded by --max-park-hours, default 24 — the park is a delay, not a
+#     permanent exemption)
 #   - younger than --grace-min (default 60)
 #
 # On heal: empty pr_url + body PR/CR → best-effort
@@ -24,6 +29,7 @@
 # Usage:
 #   last-stack-board-closeout-sweep [--dry-run] [--grace-min 60] [--max-actions 50]
 #                                   [--board-cli kanban|fkanban] [--skip-zombie]
+#                                   [--max-park-hours 24]
 #
 # Exit 0 always after a completed pass (including noop). Exit 2 on usage error.
 # Prints a single heartbeat line:
@@ -40,6 +46,7 @@ fi
 dry_run=0
 grace_min=60
 max_actions=50
+max_park_hours=24
 board_cli=""
 skip_zombie=0
 json_out=0
@@ -51,12 +58,15 @@ while [ "$#" -gt 0 ]; do
     --grace-min=*) grace_min="${1#*=}"; shift ;;
     --max-actions) max_actions="${2:-}"; shift 2 ;;
     --max-actions=*) max_actions="${1#*=}"; shift ;;
+    --max-park-hours) max_park_hours="${2:-}"; shift 2 ;;
+    --max-park-hours=*) max_park_hours="${1#*=}"; shift ;;
     --board-cli) board_cli="${2:-}"; shift 2 ;;
     --board-cli=*) board_cli="${1#*=}"; shift ;;
     --skip-zombie) skip_zombie=1; shift ;;
     --json) json_out=1; shift ;;
     -h|--help)
-      sed -n '2,22p' "$0"
+      # Print the leading comment block; no brittle line-number range.
+      awk 'NR==1 {next} /^#/ {print; next} {exit}' "$0"
       exit 0
       ;;
     *)
@@ -79,6 +89,7 @@ export LAST_STACK_ROOT="$last_stack"
 export BOARD_CLOSEOUT_DRY_RUN="$dry_run"
 export BOARD_CLOSEOUT_GRACE_MIN="$grace_min"
 export BOARD_CLOSEOUT_MAX_ACTIONS="$max_actions"
+export BOARD_CLOSEOUT_MAX_PARK_HOURS="$max_park_hours"
 export BOARD_CLOSEOUT_SKIP_ZOMBIE="$skip_zombie"
 export BOARD_CLOSEOUT_JSON="$json_out"
 export PATH="$last_stack/bin:${PATH:-}"
@@ -96,6 +107,7 @@ const boardCli = process.env.BOARD_CLI || "kanban";
 const dryRun = process.env.BOARD_CLOSEOUT_DRY_RUN === "1";
 const graceMin = Math.max(1, parseInt(process.env.BOARD_CLOSEOUT_GRACE_MIN || "60", 10) || 60);
 const maxActions = Math.max(1, parseInt(process.env.BOARD_CLOSEOUT_MAX_ACTIONS || "50", 10) || 50);
+const maxParkHours = Math.max(1, parseInt(process.env.BOARD_CLOSEOUT_MAX_PARK_HOURS || "24", 10) || 24);
 const skipZombie = process.env.BOARD_CLOSEOUT_SKIP_ZOMBIE === "1";
 const jsonOut = process.env.BOARD_CLOSEOUT_JSON === "1";
 const nowMs = Date.now();
@@ -138,9 +150,15 @@ function isTransientBoardFailure(text) {
     .test(String(text || ""));
 }
 
+// Slugs whose closeout failed on a transient board/service condition this pass.
+// The board itself was unreachable — that is not evidence the CARD is stuck, so
+// park expiry must not reclaim them (the reclaim would use the same sick CLI).
+const closeoutDeferred = new Set();
+
 function noteCloseoutDeferred(slug, out) {
   const detail = `${out?.stderr || ""} ${out?.error || ""} ${out?.stdout || ""}`;
   if (!isTransientBoardFailure(detail)) return false;
+  closeoutDeferred.add(slug);
   res.skipped.push(`${slug}:closeout-transient`);
   res.flagged.push(`closeout-deferred:${slug}`);
   if (res.status === "ok") res.status = "noop";
@@ -490,6 +508,17 @@ if (cards === null) {
 
 let actions = 0;
 const graceMs = graceMin * 60 * 1000;
+const maxParkMs = maxParkHours * 60 * 60 * 1000;
+
+/**
+ * A park (deploy gate, live-proof wait, refused closeout) delays reclaim — it
+ * must not become a permanent exemption. Past --max-park-hours with no live
+ * worker, hand the card back to todo so pickup re-claims and drives it.
+ */
+function parkExpired(age, wt) {
+  if (age < maxParkMs) return false;
+  return !hasLiveWorker(wt);
+}
 
 for (const card of cards) {
   if (actions >= maxActions) {
@@ -524,6 +553,12 @@ for (const card of cards) {
           ensureAwaitingDeployTag(slug, card);
           res.flagged.push(`deploy-parked:${slug}`);
         }
+        // Merged but un-closeable for longer than the park bound: nobody is
+        // driving the remaining gate. Return it to todo for a fresh claim.
+        if (!closeoutDeferred.has(slug) && parkExpired(age, wt)) {
+          res.flagged.push(`park-expired:${slug}`);
+          if (rollbackTodo(slug)) actions++;
+        }
       }
       continue;
     }
@@ -535,6 +570,13 @@ for (const card of cards) {
   // Deploy-gated / live-proof wait without a parseable PR yet: park, do not thrash.
   if (deployParked) {
     ensureAwaitingDeployTag(slug, card);
+    if (parkExpired(age, wt)) {
+      res.flagged.push(`park-expired:${slug}`);
+      if (rollbackTodo(slug)) {
+        actions++;
+        continue;
+      }
+    }
     res.skipped.push(`${slug}:deploy-parked`);
     res.flagged.push(`deploy-parked:${slug}`);
     continue;
@@ -607,6 +649,7 @@ board_cli = os.environ.get("BOARD_CLI", "kanban")
 dry_run = os.environ.get("BOARD_CLOSEOUT_DRY_RUN") == "1"
 grace_min = max(1, int(os.environ.get("BOARD_CLOSEOUT_GRACE_MIN") or "60"))
 max_actions = max(1, int(os.environ.get("BOARD_CLOSEOUT_MAX_ACTIONS") or "50"))
+max_park_hours = max(1, int(os.environ.get("BOARD_CLOSEOUT_MAX_PARK_HOURS") or "24"))
 skip_zombie = os.environ.get("BOARD_CLOSEOUT_SKIP_ZOMBIE") == "1"
 json_out = os.environ.get("BOARD_CLOSEOUT_JSON") == "1"
 now = time.time()
@@ -632,9 +675,15 @@ def transient_board_failure(text):
         re.I,
     ))
 
+# Slugs whose closeout failed on a transient board/service condition this pass.
+# The board itself was unreachable — that is not evidence the CARD is stuck, so
+# park expiry must not reclaim them (the reclaim would use the same sick CLI).
+closeout_deferred = set()
+
 def note_closeout_deferred(slug, out, err):
     if not transient_board_failure(f"{out or ''} {err or ''}"):
         return False
+    closeout_deferred.add(slug)
     res["skipped"].append(f"{slug}:closeout-transient")
     res["flagged"].append(f"closeout-deferred:{slug}")
     if res["status"] == "ok":
@@ -926,6 +975,14 @@ if cards is None:
 
 actions = 0
 grace_s = grace_min * 60
+max_park_s = max_park_hours * 3600
+
+def park_expired(age, wt):
+    """A park delays reclaim; it must not become a permanent exemption."""
+    if age < max_park_s:
+        return False
+    return not live_worker(wt)
+
 for card in cards:
     if actions >= max_actions:
         res["flagged"].append(f"action-capped:{len(cards) - actions}")
@@ -952,11 +1009,20 @@ for card in cards:
                 if deploy_parked or re.search(r"deploy", str(detail or ""), re.I):
                     ensure_awaiting_deploy_tag(slug, card)
                     res["flagged"].append(f"deploy-parked:{slug}")
+                if slug not in closeout_deferred and park_expired(age, wt):
+                    res["flagged"].append(f"park-expired:{slug}")
+                    if rollback(slug):
+                        actions += 1
             continue
         res["skipped"].append(f"{slug}:pr-open-or-unknown")
         continue
     if deploy_parked:
         ensure_awaiting_deploy_tag(slug, card)
+        if park_expired(age, wt):
+            res["flagged"].append(f"park-expired:{slug}")
+            if rollback(slug):
+                actions += 1
+                continue
         res["skipped"].append(f"{slug}:deploy-parked")
         res["flagged"].append(f"deploy-parked:{slug}")
         continue
