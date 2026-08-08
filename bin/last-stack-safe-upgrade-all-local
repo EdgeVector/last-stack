@@ -9,8 +9,10 @@ UPGRADE="$ROOT/last-stack-safe-upgrade-cli"
   exit 127
 }
 
-# kanban/fkanban share one install — only run once as fkanban
-apps=(brain situations fkanban routines lastsecrets configurations search)
+# The fkanban bundle now has ONE host-track registration, named `kanban`, which
+# links both public CLI names. This list used to say `fkanban` because that was
+# the second entry over the same install_root; that entry is gone.
+apps=(brain situations kanban routines lastsecrets configurations search)
 fail=0
 for app in "${apps[@]}"; do
   printf '\n======== safe-upgrade %s ========\n' "$app"

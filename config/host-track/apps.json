@@ -192,29 +192,13 @@
         {
           "source": "dist/kanban",
           "target": "$HOME/.local/bin/kanban"
-        }
-      ],
-      "notes": "Kanban compatibility CLI from the fkanban artifact bundle (shared install_root); track_gate_main follows fkanban green+published main.",
-      "track_gate_main": true
-    },
-    {
-      "app": "fkanban",
-      "install_mode": "artifact",
-      "kind": "artifact cli",
-      "command": "fkanban",
-      "gate": "lastgit",
-      "gate_main": "lastdb:///fkanban#main",
-      "artifact_app": "fkanban",
-      "artifact_channel": "stable",
-      "artifact_root": "$HOME/.lastgit/artifacts",
-      "install_root": "$HOME/.host-track/apps/fkanban",
-      "links": [
+        },
         {
           "source": "dist/fkanban",
           "target": "$HOME/.local/bin/fkanban"
         }
       ],
-      "notes": "F-Kanban LastGit artifact install from CI-published dist/* binaries; also carries the kanban compatibility CLI via shared install_root. track_gate_main promotes stable to green+published main.",
+      "notes": "One registration for the whole fkanban artifact bundle: links BOTH public CLI names (kanban and fkanban) off a single install_root and a single stamp. There used to be a second app entry named `fkanban` pointing at the same install_root; two entries meant two stamps for one bundle, they drifted, and host-track reported the identical binary as fresh under one name and stale under the other. track_gate_main follows fkanban green+published main.",
       "track_gate_main": true
     },
     {
