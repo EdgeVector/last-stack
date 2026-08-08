@@ -92,6 +92,14 @@ PROJECT_LIST_LIMIT = 5000
 def brain_list_projects(limit: int = PROJECT_LIST_LIMIT) -> list[dict[str, Any]]:
     """List projects for NS discovery.
 
+    census-ok: ranking the North Star ledger needs the closed set of project
+    records, not a top-k relevance sample — "which projects exist" is not a
+    question `brain search`/`ask`/`find` can answer, since a project that ranks
+    poorly against every probe still belongs in the ledger. This is the one
+    sanctioned `brain list` census in last-stack (design
+    design-brain-no-enumeration-match-array-retrieval names it explicitly as the
+    caller that keeps `list` alive). Every other caller must use search/get.
+
     Handles `{items,total,truncated}` envelopes. Refuses truncated pages —
     silently taking the first N of M (was 100 of 438) is the failure mode this
     fixes. Prefer board/seed point-reads when possible; this path is only for
@@ -115,6 +123,7 @@ def brain_list_projects(limit: int = PROJECT_LIST_LIMIT) -> list[dict[str, Any]]
             if isinstance(rows, list):
                 if data.get("truncated"):
                     raise RuntimeError(
+                        # census-ok: sanctioned NS-ledger census; message names the real command
                         f"brain list --type project returned a truncated page "
                         f"({len(rows)} of {data.get('total')}) — refusing "
                         "partial North Star set; raise limit or pass --ns"

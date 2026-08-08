@@ -48,6 +48,111 @@ GOOD
   "$ROOT/bin/last-stack-lint-prompts" "$good"
 }
 
+check_banned_access_pattern_guard() {
+  # Siblings of the brain-list census ban. Each of these regressed unnoticed
+  # while only `brain list` was linted.
+  local f
+
+  # --- brain count: a census by another name, and it OVER-reports -----------
+  f="$tmp/bad-brain-count.md"
+  cat > "$f" <<'BAD'
+- Size the ledger: `brain count --type reference`
+BAD
+  if "$ROOT/bin/last-stack-lint-prompts" --access-sweep "$f" >/dev/null 2>&1; then
+    echo "expected brain count to fail lint" >&2
+    exit 1
+  fi
+
+  # --- situations list --all: hard dead, and its error reads as an outage ---
+  f="$tmp/bad-situations-all.md"
+  cat > "$f" <<'BAD'
+- Confirm the fence: `situations list --all --json`
+BAD
+  if "$ROOT/bin/last-stack-lint-prompts" --access-sweep "$f" >/dev/null 2>&1; then
+    echo "expected situations list --all to fail lint" >&2
+    exit 1
+  fi
+
+  # --- kanban list --full-body: hydrates every body -------------------------
+  f="$tmp/bad-kanban-fullbody.md"
+  cat > "$f" <<'BAD'
+- Dump the board: `kanban list --full-body --json`
+BAD
+  if "$ROOT/bin/last-stack-lint-prompts" --access-sweep "$f" >/dev/null 2>&1; then
+    echo "expected kanban list --full-body to fail lint" >&2
+    exit 1
+  fi
+
+  # --- MCP spelling bypasses every shell-shaped regex -----------------------
+  f="$tmp/bad-mcp-brain-list.md"
+  cat > "$f" <<'BAD'
+- Enumerate via `mcp__brain__brain_list(type="project", limit=5000)`
+BAD
+  if "$ROOT/bin/last-stack-lint-prompts" --access-sweep "$f" >/dev/null 2>&1; then
+    echo "expected MCP brain_list to fail lint" >&2
+    exit 1
+  fi
+
+  # --- kanban list --all is a BOUNDED partition read under the board --------
+  # Deliberately allowed BY THIS GATE: over-blocking a legitimate shape is how
+  # a guardrail gets switched off, and last-stack-card-reaper-run depends on it.
+  # (A separate pre-existing check still bans broad list reads in routine
+  # PROMPTS -- that policy is unchanged; this asserts only the access gate.)
+  f="$tmp/ok-kanban-all.md"
+  cat > "$f" <<'OK'
+- Read the board: `kanban list --all --json` then `kanban show <slug> --json`
+OK
+  "$ROOT/bin/last-stack-lint-prompts" --access-sweep "$f"
+
+  # --- prose that BANS the pattern must not be flagged ----------------------
+  f="$tmp/ok-access-ban-prose.md"
+  cat > "$f" <<'OK'
+- Never run `situations list --all` — it is dead and its error reads as an outage.
+- Do not use `brain count`; it over-reports soft-deleted rows.
+OK
+  "$ROOT/bin/last-stack-lint-prompts" --access-sweep "$f"
+
+  # --- audited escape hatch: same line AND the line above -------------------
+  f="$tmp/ok-census-marker.md"
+  cat > "$f" <<'OK'
+- `brain count --type project`  # census-ok: ledger needs the closed set
+- next one is marked by the preceding comment line
+  # census-ok: ledger needs the closed set
+- `brain count --type design`
+OK
+  "$ROOT/bin/last-stack-lint-prompts" --access-sweep "$f"
+
+  # --- a bare marker with NO reason must NOT suppress -----------------------
+  f="$tmp/bad-census-marker-no-reason.md"
+  cat > "$f" <<'BAD'
+- `brain count --type project`  # census-ok:
+BAD
+  if "$ROOT/bin/last-stack-lint-prompts" --access-sweep "$f" >/dev/null 2>&1; then
+    echo "expected bare census-ok: with no reason to still fail lint" >&2
+    exit 1
+  fi
+
+  # --- the failure message must hand back a runnable replacement ------------
+  # A gate that only names the violation reproduces the problem it exists to
+  # stop (brain preference-rejected-access-pattern-errors-return-a-runnable-replacement).
+  f="$tmp/bad-for-hint.md"
+  cat > "$f" <<'BAD'
+- `situations list --all --json`
+BAD
+  # Capture first: `set -o pipefail` would otherwise surface the linter's
+  # intentional exit 1 as the pipeline status and mask the grep result.
+  local hint_out
+  hint_out="$("$ROOT/bin/last-stack-lint-prompts" --access-sweep "$f" 2>&1 || true)"
+  case "$hint_out" in
+    *"situations show <slug>"*) : ;;
+    *)
+      echo "expected the failure message to name a runnable replacement" >&2
+      printf '%s\n' "$hint_out" >&2
+      exit 1
+      ;;
+  esac
+}
+
 check_kanban_json_envelope_guard() {
   local bad_length="$tmp/bad-envelope-length.md"
   local bad_iter="$tmp/bad-envelope-iter.md"
@@ -114,6 +219,10 @@ if [ "${1:-}" = "--smoke" ]; then
   grep -q 'comma-separated `--tags`' "$probe_registry"
   check_kanban_json_envelope_guard
   check_brain_list_census_guard
+  check_banned_access_pattern_guard
+  # The sweep mode is what CI actually invokes over bin/; prove it stays clean
+  # against the live tree, so a legitimate census must carry its marker.
+  "$ROOT/bin/last-stack-lint-prompts" --access-sweep "$ROOT"
   echo "ok last-stack-lint-prompts smoke"
   exit 0
 fi
