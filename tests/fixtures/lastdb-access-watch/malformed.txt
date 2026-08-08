@@ -1,0 +1,4 @@
+Build:  0.23.3-419-g0000000 (daemon and CLI agree)
+Request ops: samples=0 (lifetime) ring=0/256
+Top by warm set residency (renamed table nobody parses):
+  1. client=brain kind=query schema=aaaa1111 residency=0.9

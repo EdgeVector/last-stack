@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+# last-stack-lastdb-access-watch — name scan-shaped reads from live telemetry.
+#
+# WHY THIS EXISTS
+# The CI prompt-lint (`last-stack-lint-prompts --access-sweep`) stops banned
+# access patterns from LANDING in this repo. It cannot see a read issued from an
+# agent session, another repo, or a flag combination nobody thought to lint.
+# Detection has to be based on what the node actually served.
+#
+# THE SIGNAL
+# LastDB is Dynamo-style: Get O(1), range-under-one-hash O(log M), no scan.
+# The physical signature of a scan-shaped read is COLD SHARD LOADS PER CALL — a
+# keyed point read touches ~1 shard; an unkeyed or wide read touches many. That
+# is CLI-independent: it catches a bad access pattern regardless of which verb,
+# repo, or session produced it.
+#
+# NO FALSE GREEN
+# If the expected `lastdb ops` tables cannot be parsed — format drift, busy
+# node, missing binary — this exits non-zero and says so. A parser that matches
+# nothing must never print "clean"; that is how a broken detector reads as a
+# healthy system.
+#
+# Read-only. Touches only the control plane (`lastdb ops`). Never restarts,
+# reindexes, or mutates anything.
+set -euo pipefail
+
+threshold=10
+as_json=0
+ops_file=""
+
+usage() {
+  cat <<'USAGE'
+usage: last-stack-lastdb-access-watch [--threshold N] [--json] [--ops-file PATH]
+
+  --threshold N   flag read ops whose cold-shard-loads-per-call exceeds N
+                  (default 10; a keyed point read is ~1)
+  --json          machine-readable output
+  --ops-file PATH parse a captured `lastdb ops` dump instead of calling the node
+                  (used by the tests; also handy for offline triage)
+
+exit: 0 clean · 1 findings · 2 could not parse / no telemetry
+USAGE
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --threshold) threshold="${2:-}"; shift 2 ;;
+    --threshold=*) threshold="${1#*=}"; shift ;;
+    --json) as_json=1; shift ;;
+    --ops-file) ops_file="${2:-}"; shift 2 ;;
+    --ops-file=*) ops_file="${1#*=}"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+case "$threshold" in
+  ''|*[!0-9]*) echo "--threshold must be a non-negative integer" >&2; exit 2 ;;
+esac
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+raw="$tmp/ops.txt"
+
+if [ -n "$ops_file" ]; then
+  if [ ! -f "$ops_file" ]; then
+    echo "last-stack-lastdb-access-watch: --ops-file not found: $ops_file" >&2
+    exit 2
+  fi
+  cp "$ops_file" "$raw"
+else
+  if ! command -v lastdb >/dev/null 2>&1; then
+    echo "last-stack-lastdb-access-watch: lastdb not on PATH — cannot read telemetry" >&2
+    exit 2
+  fi
+  # `lastdb ops` is a control-plane read over the socket. A busy node is a
+  # load signal, not an outage: report it as unparseable rather than clean, and
+  # never escalate or restart from here.
+  if ! lastdb ops >"$raw" 2>"$tmp/err.txt"; then
+    echo "last-stack-lastdb-access-watch: \`lastdb ops\` failed — treating as UNKNOWN, not clean" >&2
+    head -5 "$tmp/err.txt" >&2 || true
+    exit 2
+  fi
+fi
+
+# Guard against silent format drift: the tables we parse must be present.
+# Without this, a renamed heading would make every run report "clean".
+if ! grep -q 'Top by cold shard loads' "$raw"; then
+  echo "last-stack-lastdb-access-watch: no 'Top by cold shard loads' table in \`lastdb ops\` output." >&2
+  echo "  The output format changed, or telemetry is empty (daemon just restarted)." >&2
+  echo "  Refusing to report clean from an unparsed dump." >&2
+  exit 2
+fi
+
+# Parse the cold-shard-loads tables. Both the ring (recent) and lifetime tables
+# carry client/kind/schema plus a loads-per-call field under different names.
+awk -v threshold="$threshold" '
+  /Top by cold shard loads .* recent ring/   { section = "ring";     next }
+  /Top by cold shard loads .* process lifetime/ { section = "lifetime"; next }
+  /^[[:space:]]*(Top by|Idle long-poll|Slowest recent|App \/ verb)/ { section = ""; next }
+
+  section == "" { next }
+
+  {
+    client = ""; kind = ""; schema = ""; per_call = -1; count = 0
+    for (i = 1; i <= NF; i++) {
+      split($i, kv, "=")
+      if (kv[1] == "client")                              client = kv[2]
+      else if (kv[1] == "kind")                           kind   = kv[2]
+      else if (kv[1] == "schema")                         schema = kv[2]
+      else if (kv[1] == "loads/call_ring")                per_call = kv[2] + 0
+      else if (kv[1] == "loads/call_lifetime")            per_call = kv[2] + 0
+      else if (kv[1] == "ring_count" || kv[1] == "count") count  = kv[2] + 0
+    }
+    if (client == "" || per_call < 0) next
+
+    # Read shapes only. A mutation legitimately touches many shards, and
+    # flagging writes would bury the signal we care about.
+    if (kind != "query") next
+
+    # A single cold call proves nothing — the first read after a restart pays
+    # for the whole warm set. Require repetition before calling it a pattern.
+    if (count < 5) next
+
+    if (per_call > threshold) {
+      printf "%s\t%s\t%s\t%d\t%d\t%s\n", client, kind, schema, per_call, count, section
+    }
+  }
+' "$raw" | sort -t"$(printf '\t')" -k4,4nr > "$tmp/findings.tsv"
+
+n="$(wc -l < "$tmp/findings.tsv" | tr -d ' ')"
+
+if [ "$as_json" -eq 1 ]; then
+  # jq builds the JSON so quoting/escaping is not hand-rolled.
+  if command -v jq >/dev/null 2>&1; then
+    jq -R -s --argjson threshold "$threshold" '
+      split("\n") | map(select(length > 0)) | map(split("\t")) |
+      map({client: .[0], kind: .[1], schema: .[2],
+           loads_per_call: (.[3] | tonumber), count: (.[4] | tonumber),
+           window: .[5]}) |
+      {threshold: $threshold, finding_count: length, findings: .}
+    ' < "$tmp/findings.tsv"
+  else
+    echo "last-stack-lastdb-access-watch: --json needs jq" >&2
+    exit 2
+  fi
+else
+  if [ "$n" -eq 0 ]; then
+    echo "ok last-stack-lastdb-access-watch: no read op above ${threshold} cold shard loads/call"
+  else
+    echo "FINDINGS last-stack-lastdb-access-watch: ${n} read op(s) above ${threshold} cold shard loads/call"
+    echo ""
+    printf '  %-28s %-8s %-18s %8s %8s %s\n' CLIENT KIND SCHEMA LOADS/CALL COUNT WINDOW
+    while IFS="$(printf '\t')" read -r client kind schema per_call count section; do
+      printf '  %-28s %-8s %-18s %8s %8s %s\n' \
+        "$client" "$kind" "$(printf '%.16s' "$schema")" "$per_call" "$count" "$section"
+    done < "$tmp/findings.tsv"
+    cat <<'HINT'
+
+A keyed point read touches ~1 shard. A high loads/call means the read is
+walking a partition (or worse) to answer a question that should be keyed.
+
+  next: identify the caller's access pattern, not the CLI verb —
+        brain get concepts-lastdb-agent-access-model
+  next: design a second schema dual-written by the app (Dynamo GSI idea)
+        keyed for THIS query, rather than widening the existing read.
+
+Do NOT reindex or restart the primary in response to this report.
+HINT
+  fi
+fi
+
+[ "$n" -eq 0 ] || exit 1
+exit 0

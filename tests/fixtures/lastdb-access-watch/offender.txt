@@ -1,0 +1,12 @@
+Build:  0.23.3-419-g0000000 (daemon and CLI agree)
+Request ops: samples=4822 (lifetime) ring=256/256 (recent window for p95 + ring rankings)
+  Top by total time (process lifetime totals; idle long-poll wait excluded):
+  1. client=kanban kind=query schema=39a04240 count=175 sum=30640ms avg=175ms max=6013ms err=0 [lifetime]
+  Top by cold shard loads — recent ring (live read cost; not process lifetime):
+  1. client=sweeper kind=query schema=dddd4444 ring_loads=600 ring_count=20 loads/call_ring=30 sum_ms_ring=9000
+  Top by cold shard loads — process lifetime (NOT a live per-call cost):
+  1. client=brain kind=query schema=aaaa1111 loads=900 count=900 loads/call_lifetime=1 sum=3600ms [lifetime]
+  2. client=kanban kind=query schema=39a04240 loads=4626 count=175 loads/call_lifetime=26 sum=30640ms [lifetime]
+  3. client=oneshot kind=query schema=eeee5555 loads=1533 count=1 loads/call_lifetime=1533 sum=11613ms [lifetime]
+  Idle long-poll wait (client-requested sleep, NOT node work):
+  1. client=lastgit kind=local_watch count=19 waited=571269ms avg=30066ms max=30074ms
