@@ -38,6 +38,7 @@ jq -e '
   and (app("routines") | .install_mode == "artifact" and .track_gate_main == true)
   and (app("lastsecrets") | .install_mode == "artifact" and .track_gate_main == true)
   and (app("configurations") | .install_mode == "artifact" and .track_gate_main == true)
+  and (app("lastseek") | .install_mode == "artifact" and .track_gate_main == true and (.post_install|length) > 0)
   and (app("search") | .install_mode == "artifact" and .track_gate_main == true and (.post_install|length) > 0)
   and (app("lastdb") | .install_mode == "checkout" and .artifact_exemption.kind == "deployment-only")
   and (app("lastdbd") | .install_mode == "checkout" and .artifact_exemption.kind == "deployment-only")
