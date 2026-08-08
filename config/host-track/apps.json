@@ -120,6 +120,10 @@
         {
           "source": "bin/last-stack-pr-venue",
           "target": "$HOME/.local/bin/last-stack-pr-venue"
+        },
+        {
+          "source": "bin/last-stack-lastseek-host-track-post-install",
+          "target": "$HOME/.local/bin/last-stack-lastseek-host-track-post-install"
         }
       ],
       "notes": "Runtime is an immutable CI artifact that tracks gate_main (green+published main). host-track refresh promotes stable to that tip then installs. ~/.last-stack/{bin,skills,...} \u2192 artifacts/current. PATH links Class A + pickup bootstrap + Forge closeout tools (forge-api and friends) so routinesd (~/.local/bin first) never hits GC'd version pins and board-closeout can resolve Forge PRs. Never develop in the install; use a worktree."
@@ -272,6 +276,27 @@
       ],
       "notes": "Configurations LastGit artifact install from CI-published dist/configurations; track_gate_main promotes stable to green+published main.",
       "track_gate_main": true
+    },
+    {
+      "app": "lastseek",
+      "install_mode": "artifact",
+      "kind": "artifact cli",
+      "command": "lastseek",
+      "gate": "lastgit",
+      "gate_main": "lastdb:///lastseek#main",
+      "artifact_app": "lastseek",
+      "artifact_channel": "stable",
+      "artifact_root": "$HOME/.lastgit/artifacts",
+      "install_root": "$HOME/.host-track/apps/lastseek",
+      "links": [
+        {
+          "source": "dist/lastseek",
+          "target": "$HOME/.local/bin/lastseek"
+        }
+      ],
+      "notes": "LastSeek LastGit neural artifact install from CI-published dist/lastseek; track_gate_main promotes stable to green+published main. Model weights remain host state and post_install verifies the five documented bge-small-en-v1.5 files without downloading them.",
+      "track_gate_main": true,
+      "post_install": "$HOME/.local/bin/last-stack-lastseek-host-track-post-install"
     },
     {
       "app": "search",

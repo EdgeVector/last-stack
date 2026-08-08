@@ -49,6 +49,22 @@ printf '%s\n' "$fkanban_registry" | jq -e '
 printf '%s\n' "$fkanban_registry" | jq -e '.notes | test("Placeholder") | not' >/dev/null \
   || fail "default fkanban registry entry still looks like a placeholder"
 
+lastseek_registry="$(jq -c '.apps[] | select(.app == "lastseek")' "$ROOT/config/host-track/apps.json")"
+printf '%s\n' "$lastseek_registry" | jq -e '
+  .install_mode == "artifact" and
+  .kind == "artifact cli" and
+  .command == "lastseek" and
+  .gate == "lastgit" and
+  .gate_main == "lastdb:///lastseek#main" and
+  .track_gate_main == true and
+  .artifact_app == "lastseek" and
+  .artifact_channel == "stable" and
+  .artifact_root == "$HOME/.lastgit/artifacts" and
+  .install_root == "$HOME/.host-track/apps/lastseek" and
+  .post_install == "$HOME/.local/bin/last-stack-lastseek-host-track-post-install" and
+  any(.links[]; .source == "dist/lastseek" and .target == "$HOME/.local/bin/lastseek")
+' >/dev/null || fail "default lastseek registry entry is not a real host-track target"
+
 installed_root="$tmp/installed-last-stack"
 mkdir -p "$installed_root/bin" "$installed_root/config/host-track"
 cp "$ROOT/bin/host-track" "$installed_root/bin/host-track"
