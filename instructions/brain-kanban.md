@@ -122,9 +122,10 @@ Kind:pr cards in default/todo need a substantive brief (prefer `## GOAL` +
 
 - `kanban list --column todo --json` / `kanban search "<text>"` /
   `kanban show <slug>`.
-- `kanban list --full-body --json` is valid for complete board/card bodies.
-  Do not use broad/full-body list reads in routines; use capped or column
-  previews plus `kanban show <slug> --json` for the one selected card.
+- Do not use `kanban list --full-body --json` in routines — it hydrates every
+  card body on top of the partition read. Use capped or column previews plus
+  `kanban show <slug> --json` for the one selected card. The flag is valid and
+  exists for the rare case where you genuinely need every body at once.
   `kanban search` has no `--full-body` / `--full_body` CLI flag; use
   `kanban search "<text>" --json` plus `kanban show <slug> --json`, or MCP
   `kanban_search` with `full_body: true`.

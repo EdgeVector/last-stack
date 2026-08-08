@@ -32,6 +32,12 @@ bin/last-stack-lint-prompts \
   skills/kanban-agent/SKILL.md \
   instructions/brain-kanban.md
 
+# LastDB access-pattern gate over routines/, skills/ AND bin/. The invocation
+# above is deliberately five files; bin/ helpers run against the live primary
+# and are where a banned read regresses unnoticed. This mode is a grep, so it
+# fits the required gate's foreground budget.
+bin/last-stack-lint-prompts --access-sweep .
+
 bash tests/last-stack-routine-read.sh
 bash tests/last-stack-class-a-heal.sh
 bash tests/last-stack-routines-registry-host-paths.sh

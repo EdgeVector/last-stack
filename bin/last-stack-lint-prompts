@@ -3,6 +3,19 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 
+# --access-sweep runs ONLY the LastDB access-pattern gates, over routines/,
+# skills/ and bin/. It exists because the required CI gate invokes this linter
+# on five specific prompt files (tight foreground budget), so a scope extension
+# alone would never fire there — and bin/ helpers are exactly where a banned
+# read regresses unnoticed. This mode is a grep, not a fixture suite, so it fits
+# the budget. Other checks are deliberately excluded: they carry pre-existing
+# hits under bin/ that are out of scope here.
+access_sweep_only=0
+if [ "${1:-}" = "--access-sweep" ]; then
+  access_sweep_only=1
+  shift
+fi
+
 if [ "$#" -eq 0 ]; then
   set -- "$ROOT"
 fi
@@ -208,6 +221,35 @@ check_pipeline_health_lastgit_socket_inventory() {
   fi
 }
 
+# Shared file collection for the LastDB access-pattern gates.
+#
+# Scope is routines/, skills/ AND bin/ — bin/ helpers execute against the live
+# primary and are exactly where a banned read regresses unnoticed.
+#
+# AUDITED ESCAPE HATCH: a line carrying `census-ok: <reason>` passes. A genuine
+# census exists (last-stack-north-star-ledger-sync — "which projects exist" is
+# not a top-k question), and a gate with no legitimate exit gets deleted rather
+# than obeyed. The marker is greppable, so deliberate uses stay auditable, and a
+# bare `census-ok:` with no reason after it does NOT pass.
+collect_access_lint_files() {
+  local root="$1"
+
+  if [ -d "$root" ]; then
+    find "$root" \( -path '*/routines/*' -o -path '*/skills/*' -o -path '*/bin/*' \) -type f \
+      ! -path '*/.git/*' \
+      ! -path '*/logs/*' \
+      ! -path '*/run/*' \
+      ! -path '*/tests/*' \
+      ! -name memory.md \
+      ! -name last-stack-lint-prompts \
+      -print0 2>/dev/null
+    return 0
+  fi
+
+  [ "$(basename "$root")" = "last-stack-lint-prompts" ] && return 0
+  printf '%s\0' "$root"
+}
+
 check_brain_list_census() {
   # `brain list` is a SAMPLE, not a membership/census instrument (Tom 2026-08-06).
   # Production routine prompts and skills must not introduce census-shaped
@@ -218,23 +260,9 @@ check_brain_list_census() {
   local files=()
   local file
 
-  if [ -d "$root" ]; then
-    while IFS= read -r -d '' file; do
-      files+=("$file")
-    done < <(
-      find "$root" \( -path '*/routines/*' -o -path '*/skills/*' \) -type f \
-        ! -path '*/.git/*' \
-        ! -path '*/logs/*' \
-        ! -path '*/run/*' \
-        ! -path '*/tests/*' \
-        ! -name memory.md \
-        ! -name last-stack-lint-prompts \
-        -print0 2>/dev/null
-    )
-  else
-    [ "$(basename "$root")" = "last-stack-lint-prompts" ] && return 0
-    files=("$root")
-  fi
+  while IFS= read -r -d '' file; do
+    files+=("$file")
+  done < <(collect_access_lint_files "$root")
 
   for file in "${files[@]}"; do
     [ -f "$file" ] || continue
@@ -242,7 +270,14 @@ check_brain_list_census() {
     awk -v file="$file" '
       function is_ban_or_neg(line,   lower) {
         lower = tolower(line)
-        return (lower ~ /(do not|never|must not|ban|avoid|instead of|not use|not a census|sample, not|under-report|is a sample)/)
+        # NOTE: the exemption keyword is `banned`, never bare `ban` — "kanban"
+        # contains "ban", so a bare `ban` term silently exempts every line that
+        # mentions the board CLI. That hole was live here until 2026-08-08.
+        return (lower ~ /(do not|never|must not|banned|avoid|instead of|not use|not a census|sample, not|under-report|is a sample)/)
+      }
+      function has_census_ok(line) {
+        # Audited escape hatch; the reason is mandatory.
+        return (line ~ /census-ok:[[:space:]]*[^[:space:]]/)
       }
       function is_census_list(line) {
         # Command-shaped brain list (backticks, code fences, bare shell).
@@ -259,15 +294,128 @@ check_brain_list_census() {
         return 0
       }
       {
-        if (is_ban_or_neg($0)) next
-        if (is_census_list($0)) {
+        # A marker counts on the violating line OR the line immediately above,
+        # so it can live on a normal comment line rather than being crammed
+        # inline. prev_ok carries it forward exactly one line.
+        ok_here = has_census_ok($0)
+        if (!is_ban_or_neg($0) && !ok_here && !prev_ok && is_census_list($0)) {
           printf "%s:%d:%s\n", file, NR, $0
           bad = 1
         }
+        prev_ok = ok_here
       }
       END { exit bad }
     ' "$file" || {
-      echo "census-shaped brain list found under $file; use brain search/ask + targeted brain get (or board seeds). brain list is a SAMPLE, not membership" >&2
+      # A gate that only names the violation reproduces the problem it exists to
+      # stop. Hand back what to run instead.
+      # brain preference-rejected-access-pattern-errors-return-a-runnable-replacement
+      cat >&2 <<'CENSUS_HINT'
+census-shaped `brain list` found (see path:line above).
+`brain list` is a SAMPLE, not membership — it has no completeness contract and
+is not getting one (Tom 2026-08-06).
+
+  try: brain ask "<the question you actually have>"
+  try: brain search "<terms>" --type <T>
+  try: brain get <slug>                       # authoritative for a known slug
+  try: brain find --match "<probe>" --match "<probe>"   # array of semantic probes
+
+For a closed set: brain get a known seed, then crawl linked_from with targeted gets.
+If a top-k answer genuinely will not do, state why on the line:
+  brain list --type <T> --json  # census-ok: <reason>
+CENSUS_HINT
+      fail=1
+    }
+  done
+}
+
+check_banned_lastdb_access_patterns() {
+  # Siblings of the brain-list census ban — same rule, other spellings, each of
+  # which has regressed unnoticed because only `brain list` was linted.
+  #
+  #   brain count            census by another name, and it OVER-reports
+  #                          (soft-deleted rows keep their RecordListEntry).
+  #   situations list --all  HARD DEAD: unfiltered query, rejected by the no-scan
+  #                          guard, and the CLI mistranslates the 400 into
+  #                          "Could not reach LastDB node" — a false outage that
+  #                          has already caused doctor/restart loops on a healthy
+  #                          primary.
+  #   kanban list --full-body  the partition read is fine; hydrating EVERY body on
+  #                          top of it is the shape CLAUDE.md bans in routines.
+  #                          (`--all` alone is a bounded read under the board
+  #                          partition and is deliberately NOT flagged.)
+  #   brain_list / fbrain_list  the MCP spelling bypasses every shell-shaped regex.
+  #
+  # Prohibition/ban prose and `census-ok: <reason>` lines pass.
+  local root="$1"
+  local files=()
+  local file
+
+  while IFS= read -r -d '' file; do
+    files+=("$file")
+  done < <(collect_access_lint_files "$root")
+
+  for file in "${files[@]}"; do
+    [ -f "$file" ] || continue
+    grep -Iq . "$file" || continue
+    awk -v file="$file" '
+      function is_ban_or_neg(line,   lower) {
+        lower = tolower(line)
+        # `banned`, not bare `ban` — see the note in check_brain_list_census:
+        # "kanban" contains "ban" and would exempt every board-CLI line.
+        return (lower ~ /(do not|never|must not|banned|avoid|instead of|not use|no longer|deprecated|is dead|unsupported|forbidden|rejected)/)
+      }
+      function has_census_ok(line) {
+        return (line ~ /census-ok:[[:space:]]*[^[:space:]]/)
+      }
+      function violation(line) {
+        # brain count — executable, command-shaped.
+        if (line ~ /(^|[^[:alnum:]_-]|`|\$\()brain[[:space:]]+count([[:space:]|`]|$)/) {
+          return "brain count"
+        }
+        # situations list --all
+        if (line ~ /(^|[^[:alnum:]_-]|`|\$\()situations[[:space:]]+list([[:space:]]+[^|`]*)?--all([[:space:]|`]|$)/) {
+          return "situations list --all"
+        }
+        # kanban/fkanban list --full-body / --full_body
+        if (line ~ /(^|[^[:alnum:]_-]|`|\$\()f?kanban[[:space:]]+list([[:space:]]+[^|`]*)?--full[-_]body/) {
+          return "kanban list --full-body"
+        }
+        # MCP spelling of the banned verb, as a call rather than an identifier.
+        if (line ~ /(mcp__[[:alnum:]_]*__)?f?brain_list([[:space:]]*[({]|[[:space:]]*$|`)/) {
+          return "brain_list (MCP)"
+        }
+        return ""
+      }
+      {
+        # Marker counts on this line or the one immediately above (see the
+        # matching note in check_brain_list_census).
+        ok_here = has_census_ok($0)
+        if (!is_ban_or_neg($0) && !ok_here && !prev_ok) {
+          v = violation($0)
+          if (v != "") {
+            printf "%s:%d: [%s] %s\n", file, NR, v, $0
+            bad = 1
+          }
+        }
+        prev_ok = ok_here
+      }
+      END { exit bad }
+    ' "$file" || {
+      cat >&2 <<'ACCESS_HINT'
+banned LastDB access pattern found (see path:line above).
+LastDB is Dynamo-style — Get O(1), range-under-hash O(log M), no scan.
+
+  brain count            -> brain find --match "<probe>" / brain search, then count what you got
+                            (count OVER-reports: soft-deleted rows keep their index entry)
+  situations list --all  -> situations list --json          # active set; this works
+                            situations show <slug>          # a specific one, incl. resolved
+  kanban list --full-body-> kanban list --all --json        # whole board, body-free: allowed
+                            kanban show <slug> --json       # the one card you need
+  brain_list (MCP)       -> brain_ask / brain_search / brain_get
+
+If a census is genuinely required, state why on the line:
+  <command>  # census-ok: <reason>
+ACCESS_HINT
       fail=1
     }
   done
@@ -739,6 +887,15 @@ check_raw_markdown_shell_blocks() {
   done
 }
 
+if [ "$access_sweep_only" -eq 1 ]; then
+  for path in "$@"; do
+    check_path_exists "$path" || continue
+    check_brain_list_census "$path"
+    check_banned_lastdb_access_patterns "$path"
+  done
+  exit "$fail"
+fi
+
 for path in "$@"; do
   check_path_exists "$path" || continue
 
@@ -942,6 +1099,7 @@ for path in "$@"; do
   check_workspace_root_git_probes "$path"
   check_kanban_json_envelope_jq "$path"
   check_brain_list_census "$path"
+  check_banned_lastdb_access_patterns "$path"
 done
 
 while IFS= read -r -d '' toml; do
