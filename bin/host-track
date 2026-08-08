@@ -285,20 +285,31 @@ parse_lastdb_gate_main() {
   esac
 }
 
-# True when registry opts this artifact app into "runtime tracks gate_main".
-# Tom mental model: host-track last-stack should follow green main, not a
-# manually-promoted stable pointer that can lag forever.
+# True when this artifact app's runtime tracks gate_main.
+# Tom mental model: Host Track follows green main, not a manually-promoted
+# stable pointer that can lag forever.
+#
+# Default ON for every artifact-mode app gated on a LastGit main ref. This used
+# to be opt-in per app, which meant an app could be registered correctly in
+# every other respect and still silently never advance: `remote` sat on a
+# hand-promoted 2026-07-31 pointer for 8 days, shipping a known-broken `ra`
+# shim, because its entry simply lacked the flag. Opt-in defaults fail quietly
+# in exactly the place nobody looks.
+#
+# Checkout-mode apps are excluded by the install_mode test — lastgit is
+# bootstrap-recovery and lastdb/lastdbd are deployment-only (live primary
+# upgrades must stay on lastdb-safe-upgrade, never a Host Track refresh).
+# An app can still opt out explicitly with "track_gate_main": false.
 artifact_tracks_gate_main() {
   local json="$1" flag gate_main
   flag="$(field "$json" track_gate_main)"
   case "$flag" in
     1|true|yes|YES|True) return 0 ;;
+    0|false|no|NO|False) return 1 ;;
   esac
-  # Default on for last-stack when gate_main is a LastGit main ref.
-  if [ "$(field "$json" app)" = "last-stack" ]; then
-    gate_main="$(field "$json" gate_main)"
-    case "$gate_main" in lastdb:///*#main|lastdb:///*#refs/heads/main) return 0 ;; esac
-  fi
+  [ "$(field "$json" install_mode)" = "artifact" ] || return 1
+  gate_main="$(field "$json" gate_main)"
+  case "$gate_main" in lastdb:///*#main|lastdb:///*#refs/heads/main) return 0 ;; esac
   return 1
 }
 
