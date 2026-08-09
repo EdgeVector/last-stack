@@ -126,6 +126,13 @@ grep -q 'status = "active"' "$ROOT/config/routines-registry/lastdb-canary-soak-w
 grep -q 'last-stack-canary-pipeline proof --dry-run' "$ROOT/routines/lastdb-canary-soak-watch.md"
 grep -q 'lastdb-canary-promote-prepare' "$ROOT/config/routines-registry/lastdb-canary-promote-prepare.toml"
 grep -q 'status = "active"' "$ROOT/config/routines-registry/lastdb-canary-promote-prepare.toml"
+promote_prompt="$ROOT/routines/lastdb-canary-promote-prepare.md"
+grep -q 'last-stack-canary-pipeline" --json list' "$promote_prompt"
+if grep -Eq 'last-stack-canary-pipeline" (list|promote-prepare) --json' "$promote_prompt"; then
+  echo "promote prompt puts global --json after the subcommand" >&2
+  exit 1
+fi
+grep -q 'there are no `status` or' "$promote_prompt"
 
 # promote-execute dry-run after soak_green
 LAST_STACK_CANARY_PROMOTE_AUTO=1 \
@@ -426,4 +433,3 @@ grep -q 'situations preflight --action lastdb-safe-upgrade' "$CLI"
 ! grep -q 'jq -e "length == 0"' "$CLI"
 
 echo "PASS last-stack-canary-pipeline"
-

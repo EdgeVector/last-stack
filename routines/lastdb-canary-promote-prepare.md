@@ -38,6 +38,16 @@ export GH_TOKEN="${GH_TOKEN:-$(gh auth token 2>/dev/null || true)}"
 
 ## Execute
 
+Inspect the ledger only with the canonical JSON form below. `--json` is a
+global flag and must appear before the subcommand; there are no `status` or
+`ledger` subcommands. Do not probe by guessing command shapes.
+
+```bash
+"$last_stack/bin/last-stack-canary-pipeline" --json list
+```
+
+Do not call `promote-prepare` just to inspect state. The routine's action is:
+
 ```bash
 "$last_stack/bin/last-stack-canary-pipeline" promote-execute
 ```
