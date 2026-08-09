@@ -1258,10 +1258,48 @@ done
 # Incident 2026-08-07: printed "VERDICT: GREEN ... cutover_s=303" while pid and
 # uptime were unchanged and /api/status still reported the old build. Brain:
 # papercut-safe-upgrade-reports-green-cutover-without-restarting-primary
-RUNNING_VERSION="$(curl -sS --max-time 15 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' \
-  http://x/api/status 2>/dev/null | jq -r '.status.build.version // empty' || true)"
+#
+# The READ is polled; the MISMATCH is not. These are different claims and the
+# single 15s one-shot this replaces collapsed them:
+#
+#   * "the status route has not answered yet" is no evidence at all about which
+#     binary is running. /health answering ok does NOT mean /api/status can be
+#     served — it walks far more of the node. Measured on Tom's primary across
+#     two real cutovers on 2026-08-09: at a 65 GiB store the first post-restart
+#     /api/status took 22.3s, and at 92 GiB it took over 90s (the same call
+#     returned in 20ms two minutes later). Both were healthy cutovers onto the
+#     correct binary and both were reported RED, whose documented response is
+#     "stop and restore" — so the guard was one compliant operator away from
+#     rolling a good binary off the primary and restarting it a second time to
+#     do it. The window widens as the store grows.
+#   * a version that IS returned and is the OLD one is the 2026-08-07 incident,
+#     it is provable on the first successful read, and waiting cannot change it.
+#     That branch stays immediate, below.
+#
+# Brain: papercut-safe-upgrade-postcheck-red-on-a-successful-cutover-because-the-version-read-does-not-retry
+VERSION_WAIT_S="${LASTDB_POSTCHECK_VERSION_WAIT_S:-300}"
+VERSION_WAIT_START="$(date +%s)"
+VERSION_DEADLINE=$(( VERSION_WAIT_START + VERSION_WAIT_S ))
+VERSION_POLLS=0
+RUNNING_VERSION=""
+while :; do
+  RUNNING_VERSION="$(curl -sS --max-time 15 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' \
+    http://x/api/status 2>/dev/null | jq -r '.status.build.version // empty' || true)"
+  VERSION_POLLS=$(( VERSION_POLLS + 1 ))
+  [ -n "$RUNNING_VERSION" ] && break
+  [ "$(date +%s)" -ge "$VERSION_DEADLINE" ] && break
+  # Say it out loud rather than looking hung: this can legitimately take minutes.
+  if [ "$(( VERSION_POLLS % 4 ))" -eq 1 ]; then
+    log "post-check: /api/status has not reported build.version yet after $(( $(date +%s) - VERSION_WAIT_START ))s (node still warming); waiting up to ${VERSION_WAIT_S}s"
+  fi
+  sleep 5
+done
+VERSION_WAIT_ELAPSED=$(( $(date +%s) - VERSION_WAIT_START ))
 if [ -z "$RUNNING_VERSION" ]; then
-  die "live /api/status did not report build.version after cutover — cannot prove the primary restarted onto $INSTALLED; treat as RED"
+  die "live /api/status did not report build.version within ${VERSION_WAIT_S}s (${VERSION_POLLS} polls) after cutover — cannot prove the primary restarted onto $INSTALLED; treat as RED"
+fi
+if [ "$VERSION_WAIT_ELAPSED" -ge 15 ]; then
+  log "post-check: /api/status reported build.version after ${VERSION_WAIT_ELAPSED}s (${VERSION_POLLS} polls) — a one-shot read would have failed this cutover"
 fi
 if [ -n "${INSTALLED:-}" ] && [ "$RUNNING_VERSION" != "$INSTALLED" ]; then
   echo ""
