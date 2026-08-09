@@ -159,7 +159,7 @@ if [ -x "$HOME/lastdb-apps/brain/bin/brain" ]; then
   export PATH="$HOME/lastdb-apps/brain/bin:$PATH"
 fi
 
-for cli in brain kanban situations; do
+for cli in brain kanban situations search; do
   if command -v "$cli" >/dev/null 2>&1; then
     note_pass "cli:$cli=$(command -v $cli)"
   else
@@ -350,6 +350,18 @@ if command -v situations >/dev/null 2>&1; then
   fi
 fi
 
+if command -v search >/dev/null 2>&1; then
+  set +e
+  search init --quiet
+  rc=$?
+  set -e
+  if [ $rc -eq 0 ]; then
+    note_pass "search:init"
+  else
+    note_fail "search:init exit=$rc"
+  fi
+fi
+
 # --- quick try (llms.txt) ---
 if command -v brain >/dev/null 2>&1; then
   set +e
@@ -380,6 +392,10 @@ if command -v brain >/dev/null 2>&1; then
   if echo "$ask_out$search_out" | grep -qi 'hello\|first note'; then
     note_pass "brain:ask-or-search"
   else
+    echo "--- brain ask output (exit=$ask_rc) ---"
+    printf '%s\n' "$ask_out"
+    echo "--- brain search output (exit=$search_rc) ---"
+    printf '%s\n' "$search_out"
     note_fail "brain:ask-or-search (ask_rc=$ask_rc search_rc=$search_rc)"
   fi
 fi

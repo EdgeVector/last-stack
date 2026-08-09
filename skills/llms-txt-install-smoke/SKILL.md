@@ -12,7 +12,7 @@ description: |
 
 Continuous canary for **new-user install**: does following
 [thelastdb.com/llms.txt](https://thelastdb.com/llms.txt) still produce a
-working Brain + Kanban + Situations stack on macOS Apple Silicon?
+working Brain + Kanban + Situations + Search stack on macOS Apple Silicon?
 
 This is **not** the real-data Mini boot canary (`lastdb-smoke-test` /
 `lastdb-local-smoke-test`). That clones Tom's live data. This one builds a
@@ -64,13 +64,14 @@ Wall time is often 8–15 minutes. Block on the single Bash call for ≥40 minut
 | Host OBS strip | After sandbox `HOME`/`LASTDB_HOME` are set, `run.sh` unsets host `OBS_SENTRY_*` / `SENTRY_*` so routinesd injectors (e.g. `lastsecrets://` DSN) never reach the isolated `lastdbd`. Brand-new users do not carry those vars. |
 | last-stack clone | shallow clone of public `EdgeVector/last-stack` into sandbox |
 | setup | `./setup` exit 0 |
-| install-apps | brain + kanban + situations CLIs on sandbox PATH; uses `--no-brew` so smoke never rewrites the host service plist |
+| install-apps | brain + kanban + situations + search CLIs on sandbox PATH; uses `--no-brew` so smoke never rewrites the host service plist |
 | brew-service home | **read-only** inspect of installed `homebrew.mxcl.lastdb.plist` (never `brew services start`): no `/tmp` or `/var/folders` freeze of `HOME`/`LASTDB_HOME`; prefer `lastdbd-service` runtime wrapper; legacy bare `lastdbd` only if env is login home or unset |
 | daemon | isolated `lastdbd --data-dir $LASTDB_HOME` serves socket within 30s |
 | health | `curl --unix-socket …/folddb.sock http://localhost/health` → `{"status":"ok"}` |
 | brain first-run bootstrap | `brain init --grant-consent` exit 0 (setup, not a health check); config has **no** `:9001` |
 | kanban first-run bootstrap | setup exit 0; `kanban list` shows default board |
 | situations first-run bootstrap | setup exit 0 without pre-declared schema; `situations list` exit 0 |
+| search first-run bootstrap | `search init --quiet` exit 0, matching the public install sequence before semantic retrieval |
 | quick try | `brain concept new` + `brain get hello` succeeds; `brain ask "first note"` or `brain search "first note"` finds the note |
 
 ## On RED
