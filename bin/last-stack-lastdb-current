@@ -20,9 +20,11 @@ Options:
   --bin-dir <path>           Directory containing lastdbd and lastdb.
                              Defaults to the resolved directory of lastdbd on PATH.
   --link-dir <path>          Directory for CLI shims (default: ~/.local/bin)
-  --launch-agent-plist <p>   Rewrite ProgramArguments[0] and PATH entries in p
-                             to use LASTDB_HOME/current. The plist is edited on
-                             disk only; launchctl is never called.
+  --launch-agent-plist <p>   For set, rewrite ProgramArguments[0] and PATH
+                             entries in p to use LASTDB_HOME/current. For
+                             check, verify that they still use current. The
+                             plist is edited on disk only; launchctl is never
+                             called.
   --dry-run                  Print actions without changing files.
   -v, --verbose              Print verification detail.
   -h, --help                 Show help.
@@ -164,6 +166,44 @@ PY
   fi
 }
 
+check_launch_agent_plist() {
+  local plist="$1"
+  local home="$2"
+  local current="$home/current"
+  local current_lastdbd="$current/lastdbd"
+
+  [ -f "$plist" ] || die "launch agent plist not found: $plist"
+  python3 - "$plist" "$current" "$current_lastdbd" <<'PY'
+import plistlib
+import sys
+
+plist, current, current_lastdbd = sys.argv[1:4]
+with open(plist, "rb") as f:
+    data = plistlib.load(f)
+
+args = data.get("ProgramArguments")
+if not isinstance(args, list) or not args:
+    raise SystemExit("plist has no ProgramArguments array")
+if args[0] != current_lastdbd:
+    raise SystemExit(
+        f"ProgramArguments[0] is {args[0]}, expected {current_lastdbd}"
+    )
+
+env = data.get("EnvironmentVariables")
+if isinstance(env, dict) and "PATH" in env:
+    path = str(env["PATH"]).split(":")
+    if not path or path[0] != current:
+        raise SystemExit(f"plist PATH does not begin with {current}")
+    legacy = [
+        p for p in path
+        if p.endswith("/bin-with-upload-cap") or p.endswith("/bin-with-506")
+    ]
+    if legacy:
+        raise SystemExit(f"plist PATH contains non-canonical LastDB path: {legacy[0]}")
+PY
+  [ "$VERBOSE" -eq 0 ] || log "ok launch agent plist -> $current_lastdbd"
+}
+
 check_link() {
   local label="$1"
   local actual="$2"
@@ -249,6 +289,9 @@ case "$cmd" in
       bin_dir="$(resolve_dir "$bin_dir")"
     fi
     check_current "$home" "$bin_dir" "$link_dir"
+    if [ -n "$launch_agent_plist" ]; then
+      check_launch_agent_plist "$launch_agent_plist" "$home"
+    fi
     ;;
   -h|--help)
     usage
