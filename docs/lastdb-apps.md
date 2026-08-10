@@ -81,7 +81,8 @@ The helper creates `~/.lastdb/current` and points
 restarts, kickstarts, or kills `lastdbd`. Safe-upgrade scripts should call it
 after a successful live binary change; pass `--launch-agent-plist <path>` when a
 user LaunchAgent plist should be rewritten to `~/.lastdb/current/lastdbd`
-without reloading the job.
+without reloading the job. Pass the same flag to `check` so it also rejects a
+plist that bypasses `current`.
 
 Initialize the apps:
 

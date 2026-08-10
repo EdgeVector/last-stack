@@ -58,6 +58,7 @@ PATH="$link_dir:/usr/bin:/bin" "$ROOT/bin/last-stack-lastdb-current" check \
   --lastdb-home "$home" \
   --bin-dir "$bin_dir" \
   --link-dir "$link_dir" \
+  --launch-agent-plist "$plist" \
   --verbose
 
 python3 - "$plist" "$home" <<'PY'
@@ -72,6 +73,28 @@ path = data["EnvironmentVariables"]["PATH"].split(":")
 assert path[0] == f"{home}/current"
 assert not any(p.endswith("/bin-with-upload-cap") for p in path)
 PY
+
+python3 - "$plist" "$bin_dir" <<'PY'
+import plistlib
+import sys
+
+plist, bin_dir = sys.argv[1:3]
+with open(plist, "rb") as f:
+    data = plistlib.load(f)
+data["ProgramArguments"][0] = f"{bin_dir}/lastdbd"
+with open(plist, "wb") as f:
+    plistlib.dump(data, f)
+PY
+
+if PATH="$link_dir:/usr/bin:/bin" "$ROOT/bin/last-stack-lastdb-current" check \
+  --lastdb-home "$home" \
+  --bin-dir "$bin_dir" \
+  --link-dir "$link_dir" \
+  --launch-agent-plist "$plist" >"$tmp/plist-check.out" 2>"$tmp/plist-check.err"; then
+  echo "expected non-canonical launch agent path to fail" >&2
+  exit 1
+fi
+grep -q 'ProgramArguments\[0\].*expected.*current/lastdbd' "$tmp/plist-check.err"
 
 bad_link_dir="$tmp/bad-link-dir"
 mkdir -p "$bad_link_dir"
