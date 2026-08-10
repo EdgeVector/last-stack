@@ -242,9 +242,14 @@ fail-closed; errors never auto-close a card.
   epics broken down (new child slugs), and a "⚠️ Needs a human" section listing
   missing-prerequisite gaps, suspected duplicates, possibly-stale-vs-brain cards,
   and any card stuck in doing.
-- Checkpoint a one-paragraph status to the brain (update the existing
-  board-grooming note in place if one exists; else create one) so the next run
-  and `morning-sync` can see what changed.
+- Checkpoint a one-paragraph status to the brain so the next run and
+  `morning-sync` can see what changed. `board-grooming-latest` is a rolling
+  snapshot, not a history log: replace its full body with the fresh digest via
+  `brain put --allow-shrink` (or `allow_shrink: true` through MCP), with complete
+  fenced frontmatter. Never append to this record, and never retry a rejected
+  plain `brain put`; the expected shorter snapshot deliberately triggers the
+  large-record shrink guard. Create the record normally only when it does not
+  exist yet.
 
 > **Heartbeat (optional but recommended).** LAST action, even on a no-op run:
 > call `<last-stack>/bin/last-stack-brain-append-heartbeat --line
