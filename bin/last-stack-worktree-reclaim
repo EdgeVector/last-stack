@@ -67,6 +67,8 @@ force_live=0
 # Optional once-per-run live index file (paths of live worktree roots / prefixes).
 # Built for --sweep-stale so we pay O(processes) once, not per worktree.
 live_index=""
+# Set by has_live_cwd so destructive-path logs explain why a tree was spared.
+live_reason=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -172,39 +174,54 @@ has_fresh_build_markers() {
 # double-lsof — that is O(processes) and timed out at ~minutes on a busy host.
 has_live_process() {
   local wt="$1"
-  local line
+  local reason line
   wt="$(_norm_path "$wt")"
+  live_reason=""
 
   if [ -n "${live_index:-}" ] && [ -f "$live_index" ]; then
-    while IFS= read -r line; do
+    while IFS=$'\t' read -r reason line; do
+      # Accept the old plain-path format when a caller supplies its own index.
+      if [ -z "${line:-}" ]; then
+        line="$reason"
+        reason="live_exec_image"
+      fi
       [ -z "$line" ] && continue
       case "$line" in
-        "$wt"|"$wt"/*) return 0 ;;
+        "$wt"|"$wt"/*)
+          live_reason="${reason:-live_exec_image}"
+          return 0
+          ;;
       esac
       # Index may hold a parent path that equals the worktree root.
       if _path_under "$wt" "$line"; then
+        live_reason="${reason:-live_exec_image}"
         return 0
       fi
     done <"$live_index"
     return 1
   fi
 
-  # Single-target path: bulk cwd list (one lsof) + command-line path match.
-  if lsof -nP -a -u "$(id -un)" -d cwd -Fn 2>/dev/null \
+  # Single-target path: one bulk cwd pass plus command/executable path match.
+  reason="$(lsof -nP -a -u "$(id -un)" -d cwd -Fn 2>/dev/null \
     | awk -v wt="$wt" '
         /^n/ {
           p = substr($0, 2)
           sub(/\/$/, "", p)
-          if (p == wt || index(p, wt "/") == 1) { found = 1 }
+          if (p == wt || index(p, wt "/") == 1) {
+            print "live_cwd"
+            exit
+          }
         }
-        END { exit !found }
-      '; then
+      ' || true)"
+  if [ -n "$reason" ]; then
+    live_reason="$reason"
     return 0
   fi
   # Product binary or build tool with worktree path on argv (absolute path exec).
   # pgrep -f matches the full command line; covers target/release/<bin> runs
   # whose cwd is elsewhere.
   if pgrep -f "$wt" >/dev/null 2>&1; then
+    live_reason="live_exec_image"
     return 0
   fi
   return 1
@@ -214,20 +231,24 @@ has_live_process() {
 # Keeps the historical name has_live_cwd for callers/tests; semantics are broader.
 has_live_cwd() {
   local wt="$1"
+  live_reason=""
   [ -d "$wt" ] || return 1
   if has_live_process "$wt"; then
     return 0
   fi
   if has_fresh_build_markers "$wt"; then
+    live_reason="fresh_build_marker"
     return 0
   fi
   return 1
 }
 
-# One-shot process scan → live_index lines (cwd paths + argv path tokens).
-# Cost: one bulk lsof (cwd) + one ps, not O(processes)×lsof.
+# One-shot process scan → reason<TAB>path index lines.
+# Cost: one bulk lsof (cwd) + one ps pass, not O(processes)×lsof.
 # LAST_STACK_RECLAIM_EXTRA_LIVE_PATHS: colon-separated absolute paths forced live
 # (tests inject a fixture cwd without relying on bulk lsof alone).
+# LAST_STACK_RECLAIM_EXTRA_LIVE_EXEC_PATHS: executable-image fixture paths for
+# constrained test runners whose process table is sandboxed.
 build_live_index() {
   local out="$1"
   local root cmd tok extra
@@ -237,14 +258,21 @@ build_live_index() {
     IFS=':' read -r -a _extra_paths <<< "${LAST_STACK_RECLAIM_EXTRA_LIVE_PATHS}"
     for extra in "${_extra_paths[@]}"; do
       [ -n "$extra" ] || continue
-      printf '%s\n' "$(_norm_path "$extra")" >>"$out"
+      printf 'live_cwd\t%s\n' "$(_norm_path "$extra")" >>"$out"
     done
   fi
-  # All user cwds in one lsof (skip when LAST_STACK_RECLAIM_SKIP_LSOF=1 for
+  if [ -n "${LAST_STACK_RECLAIM_EXTRA_LIVE_EXEC_PATHS:-}" ]; then
+    IFS=':' read -r -a _extra_exec_paths <<< "${LAST_STACK_RECLAIM_EXTRA_LIVE_EXEC_PATHS}"
+    for extra in "${_extra_exec_paths[@]}"; do
+      [ -n "$extra" ] || continue
+      printf 'live_exec_image\t%s\n' "$(_norm_path "$extra")" >>"$out"
+    done
+  fi
+  # All user cwd paths in one lsof (skip when LAST_STACK_RECLAIM_SKIP_LSOF=1 for
   # fast unit tests that inject EXTRA_LIVE_PATHS).
   if [ "${LAST_STACK_RECLAIM_SKIP_LSOF:-0}" != "1" ]; then
     lsof -nP -a -u "$(id -un)" -d cwd -Fn 2>/dev/null \
-      | awk '/^n/ { p = substr($0, 2); sub(/\/$/, "", p); if (p != "") print p }' \
+      | awk '/^n/ { p = substr($0, 2); sub(/\/$/, "", p); if (p != "") print "live_cwd\t" p }' \
       >>"$out" || true
   fi
   # Command lines that mention a managed worktree root (absolute-path product
@@ -259,11 +287,14 @@ build_live_index() {
       for tok in $cmd; do
         case "$tok" in
           "$root"|"$root"/*)
-            printf '%s\n' "$(_norm_path "$tok")" >>"$out"
+            printf 'live_exec_image\t%s\n' "$(_norm_path "$tok")" >>"$out"
             ;;
         esac
       done
-    done < <(ps -axo command= 2>/dev/null | grep -F -- "$root" || true)
+    done < <(
+      { ps -axo comm= 2>/dev/null || true; ps -axo command= 2>/dev/null || true; } \
+        | grep -F -- "$root" || true
+    )
   done
   if [ -s "$out" ]; then
     sort -u "$out" -o "$out" 2>/dev/null || true
@@ -278,7 +309,7 @@ strip_generated() {
   # Shared call-site guard (won't-undo): every path that deletes target/ must
   # refuse when the worktree is live. --force-live bypasses for explicit ops.
   if [ "$force_live" -eq 0 ] && has_live_cwd "$wt"; then
-    log "skip strip live $wt"
+    log "skip strip reason=${live_reason:-live} $wt"
     return 0
   fi
 
@@ -370,7 +401,7 @@ remove_worktree() {
   local repo br
   [ -d "$wt" ] || return 0
   if [ "$force_live" -eq 0 ] && has_live_cwd "$wt"; then
-    log "skip live-cwd $wt"
+    log "skip remove reason=${live_reason:-live} $wt"
     return 0
   fi
   strip_generated "$wt"
@@ -493,7 +524,7 @@ if [ "$sweep_stale" -eq 1 ]; then
   if ! under_disk_pressure; then
     do_strip=0
     strip_skipped_pressure=1
-    log "broad_sweep_skipped_disk_pressure free_gib=${free_now} floor_gib=${free_floor_gib}"
+    log "pressure_skip broad_sweep_skipped_disk_pressure free_gib=${free_now} floor_gib=${free_floor_gib}"
   else
     log "disk_pressure free_gib=${free_now} floor_gib=${free_floor_gib} strip_enabled=1"
   fi
@@ -508,7 +539,7 @@ if [ "$sweep_stale" -eq 1 ]; then
       # Guard lives inside strip_generated; we still skip the call when free.
       if [ "$do_strip" -eq 1 ]; then
         if [ "$force_live" -eq 0 ] && has_live_cwd "$d"; then
-          log "keep live strip-skip $name"
+          log "keep strip-skip reason=${live_reason:-live} $name"
           strip_skipped_live=$((strip_skipped_live + 1))
         else
           strip_generated "$d"
