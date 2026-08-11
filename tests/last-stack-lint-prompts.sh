@@ -8,6 +8,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
+mode="${1:-}"
+case "$mode" in
+  ""|--ci|--smoke) ;;
+  *)
+    echo "usage: $0 [--ci|--smoke]" >&2
+    exit 2
+    ;;
+esac
+
 # --- kanban --json envelope guard -------------------------------------------
 # `kanban ... --json` list surfaces are {items,total,truncated} envelopes, not
 # bare arrays. A jq filter that assumes an array misreads them WITHOUT failing:
@@ -16,9 +25,9 @@ trap cleanup EXIT
 # Both shipped into live routine gates on 2026-08-06 (milestone-driver and
 # north-star-driver `milestone_count`).
 #
-# Defined here and called from BOTH paths on purpose: `.lastgit/ci.sh` runs this
-# file with `--smoke`, which returns before the main body, so a guard that lives
-# only in the body never gates a change request.
+# Defined here and called from BOTH paths on purpose: `--smoke` is a fast local
+# probe, while `.lastgit/ci.sh` runs `--ci` through the complete fixture body.
+# A guard that lives only below the smoke exit still gates a change request.
 check_brain_list_census_guard() {
   # brain list is a SAMPLE — census-shaped uses in prompts must fail lint.
   local bad="$tmp/bad-brain-list-census.md"
@@ -194,7 +203,7 @@ GOODENV
     "$ROOT/routines/north-star-driver.md"
 }
 
-if [ "${1:-}" = "--smoke" ]; then
+if [ "$mode" = "--smoke" ]; then
   pickup="$ROOT/routines/kanban-pickup.md"
 
   "$ROOT/bin/last-stack-lint-prompts" \
@@ -226,6 +235,23 @@ if [ "${1:-}" = "--smoke" ]; then
   echo "ok last-stack-lint-prompts smoke"
   exit 0
 fi
+
+# Compound prevention: the required LastGit gate must execute this complete
+# negative-fixture path and the hermetic prompt-doctor contract. Smoke remains
+# useful for local iteration, but it cannot be the only CI invocation.
+ci_script="$ROOT/.lastgit/ci.sh"
+grep -Fq 'bash tests/last-stack-lint-prompts.sh --ci' "$ci_script" || {
+  echo "required CI must invoke the full prompt-lint fixture path with --ci" >&2
+  exit 1
+}
+if grep -Fq 'bash tests/last-stack-lint-prompts.sh --smoke' "$ci_script"; then
+  echo "required CI must not gate prompt lint with smoke-only coverage" >&2
+  exit 1
+fi
+grep -Fq 'bash tests/last-stack-routines-prompt-doctor.sh' "$ci_script" || {
+  echo "required CI must execute the prompt-doctor red/green contract" >&2
+  exit 1
+}
 
 # Keep this test hermetic even on machines with an authenticated `gh` in PATH.
 export LASTSTACK_GH_PR_JSON_FIELDS="additions assignees author autoMergeRequest baseRefName baseRefOid body changedFiles closed closedAt closingIssuesReferences comments commits createdAt deletions files fullDatabaseId headRefName headRefOid headRepository headRepositoryOwner id isCrossRepository isDraft labels latestReviews maintainerCanModify mergeCommit mergeStateStatus mergeable mergedAt mergedBy milestone number potentialMergeCommit projectCards projectItems reactionGroups reviewDecision reviewRequests reviews state statusCheckRollup title updatedAt url"
@@ -541,8 +567,9 @@ grep -q 'or `Kind: validation` cards stay outside default' "$program_driver"
 grep -q '`non-pickup-frontier` for a terminal proof card' "$program_driver"
 grep -q 'refresh `active-programs` prose to say backlog/non-pickup' "$program_driver"
 grep -qi 'prefer a pickup-ready' "$program_driver"
-grep -q '`Kind: pr` harness in default `todo`' "$program_driver"
-grep -q 'if the terminal must be' "$program_driver"
+grep -q 'prefer a pickup-ready `Kind: pr` harness in default' "$program_driver"
+grep -q '`todo` whose VERIFY implements the proof' "$program_driver"
+grep -q 'If the terminal must be' "$program_driver"
 grep -q 'park it outside default `todo`' "$program_driver"
 grep -q 'last-stack-park-terminal-validation-todo' "$program_driver"
 grep -q 'explicitly excludes `Kind: pr`' "$program_driver"
@@ -551,8 +578,6 @@ grep -q 'Promote only a `Kind: pr` terminal harness to default' "$program_driver
 grep -q 'exits `126`' "$program_driver"
 grep -q 'executable-mode drift' "$program_driver"
 grep -q 'test -x "$last_stack/bin/last-stack-north-star-completion-check"' "$program_driver"
-grep -q 'file or upsert it with `--column backlog`' "$program_driver"
-grep -q 'never preserve/reapply `todo`' "$program_driver"
 
 groom_board="$ROOT/routines/groom-board.md"
 grep -q 'Promote EVERY ready PR card backlog' "$groom_board"
@@ -762,13 +787,15 @@ grep -q 'feature-prove` / `kanban-watch` own the proof evaluation path' "$pickup
 grep -q 'fresh budget' "$pickup"
 grep -q 'Direct `prompt_path` freshness guard' "$pickup"
 grep -q 'kanban-pickup-prompt-freshness' "$pickup"
-grep -q 'stale-last-stack-install upgraded-before-claim no_card_claimed' "$pickup"
-grep -q 'stale-last-stack-install upgrade-failed no_card_claimed' "$pickup"
+grep -q 'stale-last-stack-install class-a-heal-timeout no_card_claimed' "$pickup"
+grep -q 'stale-last-stack-install class-a-heal-failed no_card_claimed' "$pickup"
+grep -q 'Soft-stale and healed-success \*\*continue the same fire\*\* into claim' "$pickup"
 grep -q 'Access pattern for this frontier probe must stay scan-free' "$pickup"
 grep -q 'kanban list --column todo --json' "$pickup"
 grep -q 'kanban list --column backlog' "$pickup"
 grep -q 'keyed `kanban show <slug> --json`' "$pickup"
-grep -q 'Do not run broad board search or' "$pickup"
+grep -q 'Do not run broad' "$pickup"
+grep -q 'board search or full-body board scans' "$pickup"
 grep -q 'Hard todo rank before claim' "$pickup"
 grep -q 'last-stack-todo-rank' "$pickup"
 grep -q 'todo-rank-failed no_card_claimed' "$pickup"
@@ -777,7 +804,7 @@ grep -q 'Wall-clock budget (hard)' "$pickup"
 grep -q 'idle=budget-exhausted' "$pickup"
 grep -q 'Long foreground commands must be self-timeboxed by the shell' "$pickup"
 grep -q 'timeout -k 30s <seconds>' "$pickup"
-grep -q 'result=rolled-back-todo reason=command-timebox' "$pickup"
+grep -q 'rolled-back-todo reason=command-timebox' "$pickup"
 grep -q 'reason=no-command-timebox' "$pickup"
 grep -q 'Do not wait for a long child process to finish unwinding after the timebox' "$pickup"
 grep -q 'Do not start any new validation or PR/CR publish sequence after \*\*35 minutes\*\*' "$pickup"

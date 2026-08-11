@@ -55,7 +55,7 @@ bash tests/last-stack-north-star-proof-ideal-storage-shape.sh
 bash tests/last-stack-org-cloud-membership-dogfood.sh
 bash tests/last-stack-secret-env-run.sh
 bash tests/last-stack-ship-feature-milestones.sh
-bash tests/last-stack-lint-prompts.sh --smoke
+bash tests/last-stack-lint-prompts.sh --ci
 bash tests/last-stack-lastdb-access-watch.sh
 bash tests/last-stack-routines-prompt-doctor.sh
 bash tests/last-stack-literal-markdown-append.sh
