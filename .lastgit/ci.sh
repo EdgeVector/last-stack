@@ -40,6 +40,8 @@ bin/last-stack-lint-prompts --access-sweep .
 
 bash tests/last-stack-routine-read.sh
 bash tests/last-stack-class-a-heal.sh
+bash tests/last-stack-sccache-health.sh
+bash tests/last-stack-shell-prelude.sh
 bash tests/last-stack-routines-registry-host-paths.sh
 bash tests/last-stack-feature-prove-routine.sh
 bash tests/last-stack-why-stopped-routine.sh

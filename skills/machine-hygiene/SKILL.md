@@ -307,7 +307,9 @@ as a kanban card, don't rely on this reaper alone.
 - **Disk floor:** if free space < ~30 GB, run the §3 atomic-swap purge proactively instead
   of waiting for 0 bytes.
 - **Concurrency:** fold no longer has a fixed <=2 build/test-agent cap. Modern
-  kanban worktrees keep their own `target/` and share sccache, but older
+  kanban worktrees keep their own `target/`; Last Stack scheduled shells bypass
+  a host-global sccache wrapper by default because a pinned cache can serialize
+  builds. Older
   kanban/gstack worktrees can still symlink into the shared target and pile on
   disk. If many fold builds are active, report the actual load/disk pressure
   instead of applying the old blanket two-agent throttle.

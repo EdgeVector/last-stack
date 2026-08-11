@@ -1,0 +1,115 @@
+#!/bin/sh
+set -u
+
+usage() {
+  cat >&2 <<'EOF'
+usage: last-stack-sccache-health [--json]
+
+Reports whether the local sccache disk cache is pinned full. Exit 10 means a
+full cache is still active in this shell; exit 0 means healthy, not applicable,
+or safely bypassed with an explicit empty RUSTC_WRAPPER.
+EOF
+  exit 2
+}
+
+format=text
+case "${1:-}" in
+  "") ;;
+  --json) format=json ;;
+  -h|--help) usage ;;
+  *) usage ;;
+esac
+
+threshold="${LAST_STACK_SCCACHE_FULL_PERCENT:-99}"
+case "$threshold" in
+  ''|*[!0-9]*) echo "last-stack-sccache-health: threshold must be an integer from 1 to 100" >&2; exit 2 ;;
+esac
+if [ "$threshold" -lt 1 ] || [ "$threshold" -gt 100 ]; then
+  echo "last-stack-sccache-health: threshold must be an integer from 1 to 100" >&2
+  exit 2
+fi
+
+wrapper_state='unset'
+bypass_active=false
+if [ "${RUSTC_WRAPPER+x}" = x ]; then
+  if [ -z "$RUSTC_WRAPPER" ]; then
+    wrapper_state=empty
+    bypass_active=true
+  else
+    wrapper_state='set'
+  fi
+fi
+
+emit() {
+  state="$1"
+  cache_size="$2"
+  max_cache_size="$3"
+  percent="$4"
+  detail="$5"
+  if [ "$format" = json ]; then
+    printf '{"state":"%s","cache_size":%s,"max_cache_size":%s,"percent":"%s","threshold_percent":%s,"wrapper_state":"%s","bypass_active":%s,"detail":"%s"}\n' \
+      "$state" "$cache_size" "$max_cache_size" "$percent" "$threshold" \
+      "$wrapper_state" "$bypass_active" "$detail"
+  else
+    printf 'SCCACHE_HEALTH state=%s cache_size=%s max_cache_size=%s percent=%s threshold_percent=%s wrapper_state=%s bypass_active=%s detail=%s\n' \
+      "$state" "$cache_size" "$max_cache_size" "$percent" "$threshold" \
+      "$wrapper_state" "$bypass_active" "$detail"
+  fi
+}
+
+sccache_bin="${SCCACHE_BIN:-}"
+if [ -z "$sccache_bin" ]; then
+  sccache_bin="$(command -v sccache 2>/dev/null || true)"
+fi
+if [ -z "$sccache_bin" ] || [ ! -x "$sccache_bin" ]; then
+  emit not_applicable null null 0.00 sccache-not-installed
+  exit 0
+fi
+
+script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
+json_get="$script_dir/last-stack-json-get"
+if [ ! -x "$json_get" ]; then
+  json_get="$(command -v last-stack-json-get 2>/dev/null || true)"
+fi
+
+stats_json="$("$sccache_bin" --show-stats --stats-format json 2>/dev/null)"
+stats_rc=$?
+if [ "$stats_rc" -ne 0 ] || [ -z "$stats_json" ] || [ -z "$json_get" ]; then
+  if [ "$bypass_active" = true ]; then
+    emit bypassed null null 0.00 stats-unavailable-wrapper-bypassed
+    exit 0
+  fi
+  emit unknown null null 0.00 stats-unavailable
+  exit 2
+fi
+
+cache_size="$(printf '%s\n' "$stats_json" | "$json_get" .cache_size 2>/dev/null || true)"
+max_cache_size="$(printf '%s\n' "$stats_json" | "$json_get" .max_cache_size 2>/dev/null || true)"
+case "$cache_size:$max_cache_size" in
+  *[!0-9:]*|:*)
+    if [ "$bypass_active" = true ]; then
+      emit bypassed null null 0.00 invalid-stats-wrapper-bypassed
+      exit 0
+    fi
+    emit unknown null null 0.00 invalid-stats
+    exit 2
+    ;;
+esac
+if [ "$max_cache_size" -eq 0 ]; then
+  emit not_applicable "$cache_size" "$max_cache_size" 0.00 cache-disabled
+  exit 0
+fi
+
+basis_points=$((cache_size * 10000 / max_cache_size))
+percent="$((basis_points / 100)).$(printf '%02d' "$((basis_points % 100))")"
+if [ "$basis_points" -ge $((threshold * 100)) ]; then
+  if [ "$bypass_active" = true ]; then
+    emit bypassed "$cache_size" "$max_cache_size" "$percent" full-cache-wrapper-bypassed
+    exit 0
+  fi
+  emit full "$cache_size" "$max_cache_size" "$percent" use-last-stack-cargo-or-source-shell-prelude
+  exit 10
+fi
+
+emit healthy "$cache_size" "$max_cache_size" "$percent" below-full-threshold
+exit 0
