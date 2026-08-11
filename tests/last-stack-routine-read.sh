@@ -72,6 +72,13 @@ case "$dogfood_prompt" in
     ;;
 esac
 case "$dogfood_prompt" in
+  *"credential-ref: lastsecrets://<slug>"*"last-stack-secret-env-run"*"do not run a credential-free subset"*) ;;
+  *)
+    echo "expected dogfood-rotate prompt to reject incomplete secret-backed recipes" >&2
+    exit 1
+    ;;
+esac
+case "$dogfood_prompt" in
   *"error-dirty"*"warn: last-stack-checkout-dirty"*"noop heartbeat"*"reason=last-stack-checkout-dirty"*) ;;
   *)
     echo "expected dogfood-rotate prompt to treat dirty install checkout as noop, not error" >&2
