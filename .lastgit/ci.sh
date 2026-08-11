@@ -42,6 +42,7 @@ bash tests/last-stack-routine-read.sh
 bash tests/last-stack-class-a-heal.sh
 bash tests/last-stack-routines-registry-host-paths.sh
 bash tests/last-stack-feature-prove-routine.sh
+bash tests/last-stack-why-stopped-routine.sh
 bash tests/last-stack-kanban-pickup-workers.sh
 bash tests/last-stack-factory-hardening.sh
 bash tests/last-stack-factory-health-backlog.sh
