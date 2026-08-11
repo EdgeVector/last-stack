@@ -20,6 +20,10 @@ Included (all **public** on GitHub):
 - **LastSecrets (`lastsecrets`)**: local secret references backed by LastDB
   (raw values never in search indexes). Required by Org for E2E keys. Public
   install source: `https://github.com/EdgeVector/lastsecrets`.
+- **Search (`search`)**: local semantic search app used by Brain and Kanban.
+- **LastDB Browser (`lastdb-browser`)**: read-only local browser for schemas,
+  keys, records, and atoms. The installer builds the UI from the public mirror
+  and links its launcher onto `~/.local/bin`.
 
 Not included in this bundle:
 
@@ -41,7 +45,8 @@ By default the installer:
 - installs the LastDB daemon with Homebrew;
 - clones the public app repos under `~/lastdb-apps`;
 - runs `bun install` in each app repo;
-- links the CLI apps where they expose a command.
+- builds LastDB Browser with its npm lockfile;
+- links the CLI apps and `lastdb-browser` launcher where they expose a command.
 
 Use a different app directory:
 
@@ -94,6 +99,15 @@ situations init              # bootstrap Situations
 lastsecrets init             # bootstrap LastSecrets (needed for org keys)
 org init                     # bootstrap Org (invite/join)
 ```
+
+Open the local data browser after the node is running:
+
+```bash
+lastdb-browser
+```
+
+The launcher uses `~/.lastdb/data/folddb.sock` by default and opens the local
+UI. Set `LASTDB_SOCKET` to use another machine-local socket.
 
 ### Org: create and invite (public-key seal)
 
