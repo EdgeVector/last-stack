@@ -21,6 +21,18 @@ grep -q 'timeout_min = 30' "$entry"
 grep -q "prompt_path = \"$prompt\"" "$entry"
 grep -q 'terminal North Star proof' "$entry"
 
+{
+  printf '%s\n' 'id = "last-stack-fkanban-validate"'
+  printf '%s\n' 'harness = "grok"'
+  printf '%s\n' 'model = "grok-4.5"'
+  printf '%s\n' 'fallback = "claude"'
+} >"$entry"
+"$BIN" --registry-dir "$tmp/registry" --prompt-path "$prompt" >/dev/null
+grep -q 'harness = "grok"' "$entry"
+grep -q 'model = "grok-4.5"' "$entry"
+grep -q 'fallback = "claude"' "$entry"
+grep -q 'effort = "medium"' "$entry"
+
 before="$(cksum "$entry")"
 "$BIN" --registry-dir "$tmp/registry" --prompt-path "$prompt" >/tmp/last-stack-kanban-validate-idempotent.$$
 after="$(cksum "$entry")"

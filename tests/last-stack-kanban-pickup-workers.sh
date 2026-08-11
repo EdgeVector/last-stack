@@ -52,6 +52,20 @@ grep -q 'BYMINUTE=2,17,32,47;BYSECOND=30' "$tmp/registry/last-stack-fkanban-pick
 grep -q 'BYMINUTE=7,22,37,52;BYSECOND=30' "$tmp/registry/last-stack-fkanban-pickup-w5.toml"
 grep -q 'BYMINUTE=12,27,42,57;BYSECOND=30' "$tmp/registry/last-stack-fkanban-pickup-w6.toml"
 
+# Preserve each worker's local runtime routing independently on reinstall.
+worker_entry="$tmp/registry/last-stack-fkanban-pickup-w3.toml"
+{
+  printf '%s\n' 'id = "last-stack-fkanban-pickup-w3"'
+  printf '%s\n' 'harness = "grok"'
+  printf '%s\n' 'model = "grok-4.5"'
+  printf '%s\n' 'fallback = "claude"'
+} >"$worker_entry"
+"$BIN" --workers 6 --registry-dir "$tmp/registry" --prompt-path "$prompt" --bootstrap-path "$bootstrap" >/dev/null
+grep -q 'harness = "grok"' "$worker_entry"
+grep -q 'model = "grok-4.5"' "$worker_entry"
+grep -q 'fallback = "claude"' "$worker_entry"
+grep -q 'BYMINUTE=10,25,40,55;BYSECOND=0' "$worker_entry"
+
 before="$(cksum "$tmp/registry/last-stack-fkanban-pickup-w6.toml")"
 "$BIN" --workers 6 --registry-dir "$tmp/registry" --prompt-path "$prompt" --bootstrap-path "$bootstrap" >/tmp/last-stack-pickup-workers-idempotent.$$
 after="$(cksum "$tmp/registry/last-stack-fkanban-pickup-w6.toml")"

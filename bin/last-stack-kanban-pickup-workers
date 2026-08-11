@@ -13,6 +13,7 @@ PROMPT_PATH="$(last_stack_registry_prompt_path kanban-pickup.md "$ROOT/routines/
 BOOTSTRAP_PROMPT_PATH="$ROUTINES_HOME/prompts/last-stack-kanban-pickup-bootstrap.md"
 WORKERS=6
 DRY_RUN=0
+FORCE_DEFAULTS=0
 
 usage() {
   cat <<'USAGE'
@@ -27,6 +28,7 @@ Options:
   --prompt-path <p>   kanban-pickup prompt path (default: this checkout)
   --bootstrap-path <p> freshness bootstrap prompt path
                        (default: $ROUTINES_HOME/prompts/last-stack-kanban-pickup-bootstrap.md)
+  --force-defaults    replace existing harness/model routing with defaults
   --dry-run           print target paths and contents without writing
   -h, --help          show this help
 USAGE
@@ -68,6 +70,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --dry-run)
       DRY_RUN=1
+      shift
+      ;;
+    --force-defaults)
+      FORCE_DEFAULTS=1
       shift
       ;;
     -h|--help)
@@ -262,13 +268,14 @@ write_worker() {
       || return 3
   fi
 
+  last_stack_registry_runtime_values "$path" codex gpt-5.5 "$FORCE_DEFAULTS"
+
   {
     printf '# Kanban pickup %s - same no-spawn prompt as the base worker.\n' "$label"
     printf '# %s\n' "$peer_note"
     printf '# Staggered slot: +%02d:%02d in each 15-minute cycle. Tom 2026-07-16.\n' "$((offset / 60))" "$second"
     printf 'id = "%s"\n' "$id"
-    printf 'harness = "codex"\n'
-    printf 'model = "gpt-5.5"\n'
+    last_stack_registry_emit_runtime_values
     printf 'effort = "high"\n'
     printf 'rrule = "FREQ=HOURLY;BYMINUTE=%s;BYSECOND=%s"\n' "$byminute" "$second"
     printf 'cwd = "%s"\n' "$REG_CWD"

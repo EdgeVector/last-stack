@@ -14,7 +14,8 @@ printf '%s\n' '---' 'name: feature-prove' '---' >"$prompt"
 entry="$tmp/registry/last-stack-feature-prove.toml"
 test -f "$entry"
 grep -q 'id = "last-stack-feature-prove"' "$entry"
-grep -q 'harness = "codex"' "$entry"
+grep -q 'harness = "grok"' "$entry"
+grep -q 'model = "grok-4.5"' "$entry"
 grep -q 'effort = "high"' "$entry"
 grep -q 'rrule = "FREQ=HOURLY;INTERVAL=1;BYMINUTE=40;BYSECOND=0"' "$entry"
 grep -q 'timeout_min = 45' "$entry"
@@ -39,6 +40,29 @@ if grep -q 'Users/REPLACE' <<<"$dry_cwd"; then
   exit 1
 fi
 grep -q "cwd = \"$expected_cwd\"" <<<"$dry_cwd"
+
+# A reinstall refreshes managed fields without undoing deliberate local
+# runtime routing. Optional fallback routing is preserved too.
+{
+  printf '%s\n' 'id = "last-stack-feature-prove"'
+  printf '%s\n' 'harness = "claude"'
+  printf '%s\n' 'model = "claude-opus-4-1"'
+  printf '%s\n' 'fallback = "grok"'
+} >"$entry"
+"$BIN" --registry-dir "$tmp/registry" --prompt-path "$prompt" >/dev/null
+grep -q 'harness = "claude"' "$entry"
+grep -q 'model = "claude-opus-4-1"' "$entry"
+grep -q 'fallback = "grok"' "$entry"
+grep -q 'effort = "high"' "$entry"
+
+# Explicit force is the only installer path that replaces live routing.
+"$BIN" --registry-dir "$tmp/registry" --prompt-path "$prompt" --force-defaults >/dev/null
+grep -q 'harness = "grok"' "$entry"
+grep -q 'model = "grok-4.5"' "$entry"
+if grep -q '^fallback = ' "$entry"; then
+  echo "feature-prove force-defaults retained fallback" >&2
+  exit 1
+fi
 # override via LAST_STACK_WORKSPACE
 override_cwd="$tmp/custom-workspace"
 mkdir -p "$override_cwd"

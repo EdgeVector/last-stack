@@ -14,6 +14,7 @@ PROMPT_PATH="$(last_stack_registry_prompt_path feature-prove.md "$ROOT/routines/
 ID="last-stack-feature-prove"
 DRY_RUN=0
 PROMPT_PATH_SET=0
+FORCE_DEFAULTS=0
 
 usage() {
   cat <<'USAGE'
@@ -26,6 +27,7 @@ Options:
   --registry-dir <p>  registry directory (default: $ROUTINES_HOME/registry)
   --prompt-path <p>   feature-prove prompt path (default: stable last-stack)
   --id <id>           automation id (default: last-stack-feature-prove)
+  --force-defaults    replace existing harness/model routing with defaults
   --dry-run           print target path and contents without writing
   -h, --help          show this help
 USAGE
@@ -63,6 +65,10 @@ while [ "$#" -gt 0 ]; do
       DRY_RUN=1
       shift
       ;;
+    --force-defaults)
+      FORCE_DEFAULTS=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -94,6 +100,7 @@ if [ "$DRY_RUN" -eq 0 ]; then
 fi
 
 path="$REGISTRY_DIR/$ID.toml"
+last_stack_registry_runtime_values "$path" grok grok-4.5 "$FORCE_DEFAULTS"
 
 if [ "$DRY_RUN" -eq 1 ]; then
   printf '%s\n' "--- $path"
@@ -103,8 +110,7 @@ fi
   printf '# Feature Ship Loop product-proof routine.\n'
   printf '# Sweeps ship-mode North Star/milestone terminals; writes PASS proof or files fix-forward work.\n'
   printf 'id = "%s"\n' "$ID"
-  printf 'harness = "codex"\n'
-  printf 'model = "gpt-5.5"\n'
+  last_stack_registry_emit_runtime_values
   printf 'effort = "high"\n'
   printf 'rrule = "FREQ=HOURLY;INTERVAL=1;BYMINUTE=40;BYSECOND=0"\n'
   # Prefer LAST_STACK_WORKSPACE when set (main); else REG_CWD from

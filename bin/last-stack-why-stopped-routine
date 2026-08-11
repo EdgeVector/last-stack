@@ -12,6 +12,7 @@ REGISTRY_DIR="$ROUTINES_HOME/registry"
 PROMPT_PATH="$(last_stack_registry_prompt_path why-stopped.md "$ROOT/routines/why-stopped.md")"
 ID="last-stack-why-stopped"
 DRY_RUN=0
+FORCE_DEFAULTS=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -19,7 +20,8 @@ while [ "$#" -gt 0 ]; do
     --prompt-path) PROMPT_PATH="$2"; shift 2 ;;
     --id) ID="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
-    -h|--help) echo "last-stack-why-stopped-routine [--dry-run]"; exit 0 ;;
+    --force-defaults) FORCE_DEFAULTS=1; shift ;;
+    -h|--help) echo "last-stack-why-stopped-routine [--dry-run] [--force-defaults]"; exit 0 ;;
     *) echo "unknown: $1" >&2; exit 2 ;;
   esac
 done
@@ -31,11 +33,13 @@ if [ "$DRY_RUN" -eq 0 ]; then
     || exit 3
 fi
 
+path="$REGISTRY_DIR/$ID.toml"
+last_stack_registry_runtime_values "$path" grok grok-4.5 "$FORCE_DEFAULTS"
+
 body=$(cat <<EOF
 # Mechanical Class A–E factory freeze classifier (zero-LLM preferred).
 id = "$ID"
-harness = "codex"
-model = "gpt-5.5"
+$(last_stack_registry_emit_runtime_values)
 effort = "low"
 rrule = "FREQ=HOURLY;INTERVAL=2;BYMINUTE=11;BYSECOND=0"
 cwd = "$REG_CWD"
@@ -47,7 +51,6 @@ group = "quality"
 EOF
 )
 
-path="$REGISTRY_DIR/$ID.toml"
 if [ "$DRY_RUN" -eq 1 ]; then
   printf '%s\n' "--- $path"
   printf '%s\n' "$body"
