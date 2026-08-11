@@ -29,6 +29,7 @@ First line is `PASS`, `PASS-OFFLINE`, or `FAIL` for kanban DONE-WHEN matching.
 | host-track | artifact registry invariant + per-app host-track checks, writing a North Star proof report | same checks against current registry; never edits the install |
 | exemem-cloud-account | redacted evidence contract via `EXEMEM_CLOUD_ACCOUNT_PROOF_EVIDENCE_FILE` | same evidence file collected from live checkout/account/upgrade/PII probes |
 | org-cloud-principal-membership | fixture-proven grant/list/presign/revoke/403/owner/E2E contract | two-principal live Org/Mini + storage-service dogfood using only LastSecrets locators |
+| lastdb-ideal-storage-shape | validates redacted CoW + dogfood evidence for proteins, backup, plane map, status, and fkanban coherence | same evidence contract; evidence collection remains CoW-first and primary-safe |
 
 ## Org cloud principal membership
 
