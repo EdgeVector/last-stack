@@ -67,10 +67,20 @@ if [ "$1" = "clone" ]; then
       printf '#!/bin/sh\nexit 0\n' >"$dest/bin/situations"
       chmod +x "$dest/bin/situations"
       ;;
+    search)
+      mkdir -p "$dest/bin"
+      printf '#!/bin/sh\nexit 0\n' >"$dest/bin/search"
+      chmod +x "$dest/bin/search"
+      ;;
     org|lastsecrets)
       mkdir -p "$dest/src"
       printf '#!/usr/bin/env bun\n' >"$dest/src/cli.ts"
       chmod +x "$dest/src/cli.ts"
+      ;;
+    lastdb-browser)
+      mkdir -p "$dest/bin"
+      printf '#!/bin/sh\nexit 0\n' >"$dest/bin/lastdb-browser"
+      chmod +x "$dest/bin/lastdb-browser"
       ;;
   esac
   printf '{}\n' >"$dest/package.json"
@@ -86,6 +96,33 @@ cat >"$stubbin/bun" <<'EOF'
 exit 0
 EOF
 chmod +x "$stubbin/bun"
+
+cat >"$stubbin/npm" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$1" = "--prefix" ]; then
+  dest="$2"
+  shift 2
+else
+  echo "npm stub requires --prefix" >&2
+  exit 1
+fi
+case "$1" in
+  ci)
+    exit 0
+    ;;
+  run)
+    test "${2:-}" = "build"
+    mkdir -p "$dest/dist"
+    printf '<!doctype html>\n' >"$dest/dist/index.html"
+    ;;
+  *)
+    echo "unexpected npm command: $*" >&2
+    exit 1
+    ;;
+esac
+EOF
+chmod +x "$stubbin/npm"
 
 BREW_LOG="$tmp/brew.log" PATH="$stubbin:/usr/bin:/bin" \
   "$ROOT/bin/last-stack-install-apps" --dir "$tmp/apps" --no-link >/tmp/last-stack-install-apps.out
@@ -124,6 +161,8 @@ HOME="$tmp/home" BREW_LOG="$tmp/brew-link.log" PATH="$stubbin:/usr/bin:/bin" \
 test "$(readlink "$tmp/home/.local/bin/brain")" = "$tmp/apps-link/brain/bin/brain"
 test "$(readlink "$tmp/home/.local/bin/brain-mcp")" = "$tmp/apps-link/brain/bin/brain-mcp"
 test "$(readlink "$tmp/home/.local/bin/situations")" = "$tmp/apps-link/situations/bin/situations"
+test "$(readlink "$tmp/home/.local/bin/lastdb-browser")" = "$tmp/apps-link/lastdb-browser/bin/lastdb-browser"
+test -f "$tmp/apps-link/lastdb-browser/dist/index.html"
 grep -Fq "exec bun \"$tmp/apps-link/org/src/cli.ts\" \"\$@\"" "$tmp/home/.local/bin/org"
 grep -Fq "exec bun \"$tmp/apps-link/lastsecrets/src/cli.ts\" \"\$@\"" "$tmp/home/.local/bin/lastsecrets"
 if grep -Fq 'bun link' /tmp/last-stack-install-apps-link.out; then

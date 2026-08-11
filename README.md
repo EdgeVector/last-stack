@@ -65,8 +65,9 @@ To download the usable LastDB app stack in one pass, run:
 ```
 
 That installs the LastDB daemon and downloads Brain, Kanban, Situations, Dogfood
-Graph, Org, and LastSecrets. LastGit is intentionally excluded until it is
-stable enough for the public bundle. See
+Graph, Org, LastSecrets, Search, and LastDB Browser. The browser launcher is
+linked as `lastdb-browser` and reads the machine's own LastDB socket. LastGit is
+intentionally excluded until it is stable enough for the public bundle. See
 [`docs/lastdb-apps.md`](docs/lastdb-apps.md) for the full guide.
 
 > Prefer to copy skills by hand? Each skill is a self-contained directory under
