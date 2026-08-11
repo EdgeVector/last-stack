@@ -73,4 +73,25 @@ allow_out="$(jq -n '{
 }' | "$ROOT/hooks/unsafe-inline-json.sh")"
 [ -z "$allow_out" ]
 
+# Machine-readable stdout must not absorb stderr before a JSON parser. A
+# warning at byte 1 otherwise makes jq fail with "Invalid numeric literal".
+deny_out="$(jq -n '{
+  tool_name: "Bash",
+  tool_input: {command: "kanban show example --json 2>&1 | jq ."}
+}' | "$ROOT/hooks/unsafe-inline-json.sh")"
+printf '%s' "$deny_out" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null
+printf '%s' "$deny_out" | grep -q 'Keep the streams separate'
+
+deny_out="$(jq -n '{
+  tool_name: "Bash",
+  tool_input: {command: "kanban list --json >cards.json 2>&1; jq . cards.json"}
+}' | "$ROOT/hooks/unsafe-inline-json.sh")"
+printf '%s' "$deny_out" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null
+
+allow_out="$(jq -n '{
+  tool_name: "Bash",
+  tool_input: {command: "kanban show example --json >card.json 2>card.err; jq . card.json"}
+}' | "$ROOT/hooks/unsafe-inline-json.sh")"
+[ -z "$allow_out" ]
+
 echo "ok"

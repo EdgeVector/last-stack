@@ -233,7 +233,7 @@ install_claude_hooks() {
   remove_pretool_hook_by_script "$settings" "read-before-edit.sh"
 
   upsert_pretool_hook "$settings" "Bash" \
-    "$hooks_dir/unsafe-inline-json.sh  # block brittle node -e/python -c inline JSON parsing; use jq or a scratchpad script" \
+    "$hooks_dir/unsafe-inline-json.sh  # keep parsed JSON stdout clean; block brittle inline parsing and merged stderr" \
     5
 
   for tool in \
@@ -246,7 +246,7 @@ install_claude_hooks() {
     upsert_permission_allow "$settings" "$tool"
   done
 
-  echo "  claude hooks: unsafe-inline-json.sh (read-before-edit retired + de-registered)"
+  echo "  claude hooks: unsafe-inline-json.sh (inline parsing + merged JSON stderr guard; read-before-edit retired)"
   echo "  claude permissions: brain MCP get/search/list/ask/put"
 }
 
