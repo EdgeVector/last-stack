@@ -51,8 +51,13 @@ TERMINAL_CARD_LINE_RE = re.compile(
     r"(?im)^\s*(?:[-*]\s*)?(?:\*\*)?(?:Card|Terminal card|Capstone(?: card)?)(?:\*\*)?\s*:\s*`?([a-z0-9][a-z0-9._-]*)`?"
 )
 BACKTICK_SLUG_RE = re.compile(r"`([a-z0-9][a-z0-9._-]{2,})`")
+LEGACY_TERMINAL_DONE_WHEN_RE = re.compile(
+    r"(?im)^DONE-WHEN:\s*file\s+(?:\./)?docs/north-star-proofs/[^\s]+\.md"
+    r"\s+matches\s+/[^\n]+/\s*$"
+)
 
 NONTERMINAL_MS = {"planned", "active", "blocked", "proving"}
+DEFAULT_NORTH_STAR_PROOF_DIR = "$HOME/.last-stack/north-star-proofs"
 
 
 def utc_now() -> str:
@@ -270,6 +275,43 @@ def parse_mode(body: str) -> str:
     return (m.group(1).lower() if m else "ship")
 
 
+def terminal_done_when_predicate(ns_slug: str) -> str:
+    """Return the proof predicate that matches the harness writer default."""
+    return (
+        f"file {DEFAULT_NORTH_STAR_PROOF_DIR}/{ns_slug}.md matches /^PASS/"
+    )
+
+
+def terminal_card_body(ns_slug: str, ns_title: str) -> str:
+    return f"""Kind: validation
+Repo: EdgeVector/last-stack
+Base: main
+
+DONE-WHEN: {terminal_done_when_predicate(ns_slug)}
+
+## GOAL
+
+Terminal product proof shell for `{ns_slug}` ({ns_title}).
+
+Auto-created by `last-stack-north-star-ledger-sync` because ## Terminal verification
+named this card and it was missing on the board. Fill the proof harness and mark
+PASS in the DONE-WHEN path (or replace DONE-WHEN with the NS-specified
+predicate). Do not treat calendar-only done-when as product proof.
+
+## END STATE
+
+Named terminal card exists, is machine-checkable, and can close the North Star
+when green and all MILESTONE_REQUESTs are done.
+"""
+
+
+def rewrite_legacy_terminal_done_when(body: str, ns_slug: str) -> tuple[str, bool]:
+    """Heal the generator's old repo-relative proof predicate, if present."""
+    replacement = f"DONE-WHEN: {terminal_done_when_predicate(ns_slug)}"
+    healed, count = LEGACY_TERMINAL_DONE_WHEN_RE.subn(replacement, body, count=1)
+    return healed, count == 1
+
+
 def split_get_output(raw: str) -> tuple[dict[str, str], str]:
     """Parse `brain get` text into meta fields + body.
 
@@ -390,6 +432,7 @@ class NsPlan:
     terminal_slug: str
     request_updates: dict[str, str] = field(default_factory=dict)
     create_terminal: bool = False
+    terminal_body_update: str = ""
     mark_ns_done: bool = False
     notes: list[str] = field(default_factory=list)
 
@@ -439,6 +482,12 @@ def plan_ns(
         else:
             col = str(card.get("column") or "")
             plan.notes.append(f"terminal_column:{col}")
+            healed_body, changed = rewrite_legacy_terminal_done_when(
+                str(card.get("body") or ""), slug
+            )
+            if changed:
+                plan.terminal_body_update = healed_body
+                plan.notes.append("terminal_done_when_legacy_path")
             if col == "done" and mode == "ship":
                 open_after = []
                 for req in reqs:
@@ -480,26 +529,7 @@ def ensure_terminal_card(
 ) -> str:
     if not apply:
         return f"would_create_terminal:{terminal_slug}"
-    body = f"""Kind: validation
-Repo: EdgeVector/last-stack
-Base: main
-
-DONE-WHEN: file docs/north-star-proofs/{ns_slug}.md matches /PASS|GREEN/
-
-## GOAL
-
-Terminal product proof shell for `{ns_slug}` ({ns_title}).
-
-Auto-created by `last-stack-north-star-ledger-sync` because ## Terminal verification
-named this card and it was missing on the board. Fill the proof harness and mark
-PASS/GREEN in the DONE-WHEN path (or replace DONE-WHEN with the NS-specified
-predicate). Do not treat calendar-only done-when as product proof.
-
-## END STATE
-
-Named terminal card exists, is machine-checkable, and can close the North Star
-when green and all MILESTONE_REQUESTs are done.
-"""
+    body = terminal_card_body(ns_slug, ns_title)
     with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as fh:
         fh.write(body)
         path = fh.name
@@ -534,6 +564,19 @@ when green and all MILESTONE_REQUESTs are done.
     return f"created_terminal:{terminal_slug}"
 
 
+def update_terminal_card_body(terminal_slug: str, body: str, *, apply: bool) -> str:
+    if not apply:
+        return f"would_heal_terminal_done_when:{terminal_slug}"
+    cp = run_cmd(
+        ["kanban", "add", terminal_slug],
+        input_text=body,
+        timeout=120,
+    )
+    if cp.returncode != 0:
+        return f"error_heal_terminal_done_when:{terminal_slug}:{cp.stderr.strip()[:200]}"
+    return f"healed_terminal_done_when:{terminal_slug}"
+
+
 def apply_plan(plan: NsPlan, raw_get: str, *, apply: bool) -> list[str]:
     actions: list[str] = []
     meta, body = split_get_output(raw_get)
@@ -553,6 +596,14 @@ def apply_plan(plan: NsPlan, raw_get: str, *, apply: bool) -> list[str]:
                 ns_slug=plan.slug,
                 terminal_slug=plan.terminal_slug,
                 ns_title=title,
+                apply=apply,
+            )
+        )
+    elif plan.terminal_body_update and plan.terminal_slug:
+        actions.append(
+            update_terminal_card_body(
+                plan.terminal_slug,
+                plan.terminal_body_update,
                 apply=apply,
             )
         )
@@ -695,6 +746,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "terminal": plan.terminal_slug,
                 "request_updates": plan.request_updates,
                 "create_terminal": plan.create_terminal,
+                "heal_terminal_done_when": bool(plan.terminal_body_update),
                 "mark_ns_done": plan.mark_ns_done,
                 "notes": plan.notes,
                 "actions": actions,
@@ -748,6 +800,22 @@ B
     assert reqs[0].slug == "ms-one" and reqs[0].status == "pending"
     assert parse_terminal_card(body) == "my-ns-terminal-proof"
     assert parse_mode(body) == "ship"
+    generated = terminal_card_body("north-star-example", "Example")
+    assert (
+        "DONE-WHEN: file $HOME/.last-stack/north-star-proofs/"
+        "north-star-example.md matches /^PASS/" in generated
+    )
+    assert "docs/north-star-proofs" not in generated
+    legacy = (
+        "Kind: validation\n\nDONE-WHEN: file docs/north-star-proofs/"
+        "north-star-example.md matches /PASS|GREEN/\n"
+    )
+    healed, changed = rewrite_legacy_terminal_done_when(
+        legacy, "north-star-example"
+    )
+    assert changed
+    assert "docs/north-star-proofs" not in healed
+    assert terminal_done_when_predicate("north-star-example") in healed
     new_body, acts = rewrite_request_statuses(
         body, {"ms-one": "done", "ms-two": "abandoned"}
     )
