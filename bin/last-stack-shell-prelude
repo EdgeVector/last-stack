@@ -43,6 +43,26 @@ export PATH
 LAST_STACK_PRELUDE_PATH="$PATH"
 export LAST_STACK_PRELUDE_PATH
 
+# Host-global Cargo config may route every rustc process through sccache. A
+# pinned local cache has repeatedly serialized otherwise-parallel Fold builds,
+# turning ~40 second builds into 15+ minute timeouts. Scheduled agents value a
+# predictable local critical path more than shared compiler-cache hits, so make
+# the safe path the default for shells that opt into this prelude.
+#
+# Callers with a known-good wrapper can set LAST_STACK_RUSTC_WRAPPER. Set
+# LAST_STACK_PRESERVE_RUSTC_WRAPPER=1 only when the inherited wrapper is
+# deliberate and already monitored.
+if [ "${LAST_STACK_PRESERVE_RUSTC_WRAPPER:-0}" != "1" ]; then
+  RUSTC_WRAPPER="${LAST_STACK_RUSTC_WRAPPER:-}"
+  export RUSTC_WRAPPER
+fi
+if [ "${RUSTC_WRAPPER+x}" = x ] && [ -z "$RUSTC_WRAPPER" ]; then
+  LAST_STACK_SCCACHE_BYPASS=1
+else
+  LAST_STACK_SCCACHE_BYPASS=0
+fi
+export LAST_STACK_SCCACHE_BYPASS
+
 if [ "${1:-}" = "--print" ] || [ "${LAST_STACK_SHELL_PRELUDE_PRINT:-}" = "1" ]; then
   printf 'PATH=%s\n' "$PATH"
 fi

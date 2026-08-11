@@ -21,15 +21,35 @@ chmod +x "$fake_global/shim-with-env-bash"
 PATH="/usr/bin:/bin"
 LAST_STACK_GLOBAL_PATH="$fake_global"
 export PATH LAST_STACK_GLOBAL_PATH
+RUSTC_WRAPPER=sccache
+export RUSTC_WRAPPER
 
 . "$ROOT/bin/last-stack-shell-prelude"
 
 command -v gh >/dev/null 2>&1
+test "${RUSTC_WRAPPER+x}" = x
+test -z "$RUSTC_WRAPPER"
+test "$LAST_STACK_SCCACHE_BYPASS" = 1
 last_stack_require_tools gh
 test "$LAST_STACK_TOOL_GH" = "$fake_global/gh"
 last_stack_require_tools shim-with-env-bash
 PATH="$fake_global"
 test "$(last_stack_run_tool "$LAST_STACK_TOOL_SHIM_WITH_ENV_BASH")" = "shim-ok"
+
+LAST_STACK_RUSTC_WRAPPER=known-good-wrapper
+export LAST_STACK_RUSTC_WRAPPER
+. "$ROOT/bin/last-stack-shell-prelude"
+test "$RUSTC_WRAPPER" = known-good-wrapper
+test "$LAST_STACK_SCCACHE_BYPASS" = 0
+unset LAST_STACK_RUSTC_WRAPPER
+
+LAST_STACK_PRESERVE_RUSTC_WRAPPER=1
+RUSTC_WRAPPER=preserved-wrapper
+export LAST_STACK_PRESERVE_RUSTC_WRAPPER RUSTC_WRAPPER
+. "$ROOT/bin/last-stack-shell-prelude"
+test "$RUSTC_WRAPPER" = preserved-wrapper
+test "$LAST_STACK_SCCACHE_BYPASS" = 0
+unset LAST_STACK_PRESERVE_RUSTC_WRAPPER RUSTC_WRAPPER
 
 PATH="/usr/bin:/bin"
 unset LAST_STACK_GLOBAL_PATH

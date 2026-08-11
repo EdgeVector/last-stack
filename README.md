@@ -269,6 +269,12 @@ bin/
   last-stack-deliver-status publish + stage/approve lastdb.slice.v1 to the admin
                             kanban-consumer (routines deliver-status pattern)
   last-stack-shell-prelude  sourceable PATH prelude for scheduled routines
+                            (also bypasses host-global sccache by default for
+                            predictable parallel Cargo builds)
+  last-stack-cargo          Cargo entrypoint that explicitly bypasses a
+                            host-global rustc-wrapper unless opted back in
+  last-stack-sccache-health report pinned-full cache state; exit 10 when the
+                            current shell still routes builds through it
   last-stack-cli-preflight  verify routine-required global CLIs are on PATH
   last-stack-json-get       extract one simple field path from socket/API JSON
                             without relying on jq or inline python/node parsing

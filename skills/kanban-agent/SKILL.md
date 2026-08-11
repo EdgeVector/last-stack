@@ -380,7 +380,12 @@ to `review`, append a one-line note explaining what's missing, and exit.
    >    cards" behavior — a human can still redirect or re-scope any of the
    >    filed cards afterward, but filing them is no longer a human-only step.
 4. **Verify locally** — run the brief's exact VERIFY commands. Green tests are
-   not sufficient if the brief says to run the app — do that too.
+   not sufficient if the brief says to run the app — do that too. For direct
+   host-local Cargo commands, prefer `last-stack-cargo` when installed (or the
+   `RUSTC_WRAPPER=` environment established by `last-stack-shell-prelude`): a
+   pinned global sccache disk cache can serialize Fold builds and turn a
+   sub-minute check into a routine timebox. Callers may opt back into a known-
+   good wrapper with `LAST_STACK_RUSTC_WRAPPER`.
 5. **Open the PR/CR + arm auto-merge**. First route the repo:
    ```bash
    route_json="$("$last_stack/bin/last-stack-pr-venue" --json "<repo>" "$target_repo")"
