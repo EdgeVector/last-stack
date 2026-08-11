@@ -79,6 +79,63 @@ read_portal() {
   MAIN_REF="${PORTAL_MAIN_REF:-main}"
 }
 
+# Return success when a process appears to be using a worktree. This check is
+# intentionally conservative: detaching an idle clean tree is harmless, but a
+# false "idle" result could surprise an active investigation.
+worktree_has_live_process() {
+  local path="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    if lsof -nP +D "$path" 2>/dev/null | awk 'NR > 1 { found = 1; exit } END { exit !found }'; then
+      return 0
+    fi
+  fi
+  if command -v pgrep >/dev/null 2>&1 && pgrep -f "$path" >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
+# A linked worktree may live anywhere on disk, not only under WT_ROOT. Git
+# refuses to update refs/heads/main while any registered worktree has that
+# branch checked out, which turns one abandoned /tmp tree into a fleet-wide
+# portal outage. Enumerate the bare mirror's authoritative worktree registry
+# and detach only pins that are both clean and unused.
+detach_idle_main_worktrees() {
+  local path="" line git_status
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*) path="${line#worktree }" ;;
+      "branch refs/heads/${MAIN_REF}")
+        [ -n "$path" ] || continue
+        if ! git_status="$($GIT -C "$path" status --short 2>/dev/null)"; then
+          printf 'portal-wt: cannot inspect worktree pinning %s: %s\n' \
+            "$MAIN_REF" "$path" >&2
+          continue
+        fi
+        if [ -n "$git_status" ]; then
+          printf 'portal-wt: refusing to detach dirty worktree pinning %s: %s\n' \
+            "$MAIN_REF" "$path" >&2
+          continue
+        fi
+        if worktree_has_live_process "$path"; then
+          printf 'portal-wt: refusing to detach in-use worktree pinning %s: %s\n' \
+            "$MAIN_REF" "$path" >&2
+          continue
+        fi
+        if $GIT -C "$path" checkout --detach --quiet; then
+          printf 'portal-wt: auto-detached clean idle worktree pinning %s: %s\n' \
+            "$MAIN_REF" "$path" >&2
+        else
+          printf 'portal-wt: failed to detach worktree pinning %s: %s\n' \
+            "$MAIN_REF" "$path" >&2
+        fi
+        ;;
+    esac
+  done <<EOF
+$($GIT -C "$CACHE" worktree list --porcelain 2>/dev/null || true)
+EOF
+}
+
 ensure_cache() {
   mkdir -p "$(dirname "$CACHE")"
   if [ ! -d "$CACHE" ]; then
@@ -88,6 +145,7 @@ ensure_cache() {
   fi
   # Always refresh main tip before starting work
   printf 'portal-wt: fetch %s (%s)\n' "$REMOTE" "$MAIN_REF" >&2
+  detach_idle_main_worktrees
   $GIT -C "$CACHE" fetch --prune --quiet origin \
     "+refs/heads/${MAIN_REF}:refs/heads/${MAIN_REF}" 2>/dev/null \
     || $GIT -C "$CACHE" fetch --prune --quiet origin "$MAIN_REF" 2>/dev/null \
