@@ -76,11 +76,20 @@ blocker as a board card and every papercut as a Brain record.
    Features` entry and rotation-log row remain for history. Do not file
    recipe-broken cards for retired entries; select the next eligible supported
    surface instead.
-4. A feature is eligible when its cadence has elapsed since `last_run`, or when
+4. Secret-backed entries are eligible for unattended rotation only when the
+   recipe names a `credential-ref: lastsecrets://<slug>`, a `credential-env:`,
+   and invokes `last-stack-secret-env-run --env <name> --ref <locator> -- ...`
+   at the exact consumer command. A raw credential in the routine environment,
+   a plaintext credential file, or an entry that merely says "mint if absent"
+   is not an autonomous recipe. Mark that entry `auto-rotation: false` under
+   the registry's ineligible section and select the next eligible feature;
+   do not run a credential-free subset and report the skipped live phase as a
+   feature pass.
+5. A feature is eligible when its cadence has elapsed since `last_run`, or when
    it has no log row / `never`.
-5. Pick the stalest eligible feature. For equal staleness, prefer shorter
+6. Pick the stalest eligible feature. For equal staleness, prefer shorter
    cadence, then `build` track over `maintain`.
-6. Dogfood one feature per run. Do not skip a feature just because its prior run
+7. Dogfood one feature per run. Do not skip a feature just because its prior run
    failed; retrying blockers is part of the signal. If the recipe itself is
    structurally impossible, file or reuse a `fix-dogfood-recipe-*` card.
 
@@ -165,6 +174,12 @@ target repo to make it current.
 ## Run The Recipe
 - Follow the selected entry exactly. Feature-specific knowledge belongs in
   `dogfood-registry`, not in this routine.
+- For a supported secret-backed recipe, keep only the `lastsecrets://` locator
+  in Brain and the routine environment. Invoke the consumer through
+  `last-stack-secret-env-run`; the helper resolves the value at exec time and
+  exports it only to the child process, without a plaintext temp file or secret
+  argv. If resolution fails, stop that recipe explicitly rather than silently
+  skipping its credentialed assertions.
 - Use isolated/dev surfaces only. Never use your live primary Brain node as the
   dogfood target — a green socket-only preflight makes the Brain *readable* for
   bookkeeping, but it is never a valid dogfood surface.
