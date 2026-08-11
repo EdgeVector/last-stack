@@ -321,11 +321,19 @@ to `review`, append a one-line note explaining what's missing, and exit.
    target_repo="$("$last_stack/bin/last-stack-repo-op-guard" "$target_repo" "/Users/REPLACE/code/edgevector")"
    "$LAST_STACK_TOOL_GIT" -C "$target_repo" rev-parse --show-toplevel
    cd "$target_repo"
-   "$LAST_STACK_TOOL_GIT" fetch origin <base>
+   "$LAST_STACK_TOOL_GIT" fetch origin +refs/heads/<base>:refs/remotes/origin/<base>
    mkdir -p "${WORKTREES_DIR:-$HOME/.fkanban/worktrees}"
    "$LAST_STACK_TOOL_GIT" worktree add "${WORKTREES_DIR:-$HOME/.fkanban/worktrees}/<slug>" -b kanban/<slug> origin/<base>
    cd "${WORKTREES_DIR:-$HOME/.fkanban/worktrees}/<slug>"
    ```
+   - **Long-command gotcha:** background anything that might run longer than
+     about two minutes and check back, or give it an explicit short timeout;
+     never hold a foreground shell in a hand-written `while ...; sleep ...`
+     poll. For merge waits specifically, prefer `/wait-merge`.
+   - **Worktree-fetch gotcha:** fetch into `FETCH_HEAD` or a remote-tracking
+     ref such as `refs/remotes/origin/<branch>`; never fetch directly into a
+     local branch checked out in this or another worktree (and do not `git
+     pull` that branch merely to compare it with the remote).
    `WORKTREES_DIR` must be outside the shared checkout; never create
    `<target-repo>/.worktrees` or any other repo-local worktree nest.
    If you accidentally started editing in the shared checkout and then restart
