@@ -8,6 +8,14 @@ bash -n "$ROOT/bin/last-stack-lastdb-pressure"
 bash -n "$ROOT/bin/last-stack-why-stopped"
 bash -n "$ROOT/bin/last-stack-fold-ci-health"
 bash -n "$ROOT/bin/last-stack-generator-preflight"
+bash -n "$ROOT/bin/last-stack-kanban-file-pr"
+[ -x "$ROOT/bin/last-stack-kanban-file-pr" ] || chmod +x "$ROOT/bin/last-stack-kanban-file-pr"
+grep -q 'last-stack-kanban-file-pr' "$ROOT/routines/milestone-driver.md" \
+  || fail "milestone-driver missing last-stack-kanban-file-pr"
+grep -q 'last-stack-kanban-file-pr' "$ROOT/routines/dogfood-rotate.md" \
+  || fail "dogfood-rotate missing last-stack-kanban-file-pr"
+grep -q 'last-stack-kanban-file-pr' "$ROOT/routines/kanban-validate.md" \
+  || fail "kanban-validate missing last-stack-kanban-file-pr"
 bash -n "$ROOT/bin/last-stack-why-stopped-routine"
 
 # Pressure probe: should produce a level line (cool or hot) against live node, or exit 2 if CLI missing

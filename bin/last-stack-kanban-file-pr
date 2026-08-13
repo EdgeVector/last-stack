@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+# last-stack-kanban-file-pr — file a pickup-ready Kind:pr card.
+#
+# Generators MUST use this instead of raw `kanban add` for Kind:pr work.
+# Pickup will not claim a card that lacks a live --north-star and
+# --milestone; fkanban refuses Kind:pr in default/todo without a milestone.
+# Raw `kanban add --column todo` without those flags either fails or parks
+# the card as unattached-outcome in backlog.
+#
+# Usage:
+#   last-stack-kanban-file-pr <slug> --title TEXT --repo OWNER/NAME \
+#     --north-star SLUG --milestone SLUG [options] < body.md
+#
+# Options:
+#   --column todo|backlog   default: todo
+#   --base BRANCH           default: main
+#   --kind pr               only pr is accepted (this helper is the PR path)
+#   --priority P0-P3
+#   --tags a,b
+#   --deps a,b
+#   --surfaces a,b
+#   --board BOARD           default: default
+#   --ensure-milestone      create the milestone if it is missing
+#   --board-cli PATH        kanban/fkanban binary (tests)
+#   --dry-run
+#
+# Exit: 0 on file, 2 on usage/validation, 1 on board write failure.
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
+
+usage() {
+  printf '%s\n' \
+    "last-stack-kanban-file-pr <slug> --title TEXT --repo OWNER/NAME --north-star SLUG --milestone SLUG [options] < body.md" >&2
+  exit 2
+}
+
+slug="${1:-}"
+[ -n "$slug" ] && [ "$slug" != "-h" ] && [ "$slug" != "--help" ] || usage
+shift
+
+title=""
+repo=""
+north_star=""
+milestone=""
+column="todo"
+base="main"
+kind="pr"
+priority=""
+tags=""
+deps=""
+surfaces=""
+board="default"
+ensure_ms=0
+board_cli=""
+dry=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --title) title="${2:-}"; shift 2 ;;
+    --repo) repo="${2:-}"; shift 2 ;;
+    --north-star) north_star="${2:-}"; shift 2 ;;
+    --milestone) milestone="${2:-}"; shift 2 ;;
+    --column) column="${2:-}"; shift 2 ;;
+    --base) base="${2:-}"; shift 2 ;;
+    --kind) kind="${2:-}"; shift 2 ;;
+    --priority) priority="${2:-}"; shift 2 ;;
+    --tags) tags="${2:-}"; shift 2 ;;
+    --deps) deps="${2:-}"; shift 2 ;;
+    --surfaces) surfaces="${2:-}"; shift 2 ;;
+    --board) board="${2:-}"; shift 2 ;;
+    --ensure-milestone) ensure_ms=1; shift ;;
+    --board-cli) board_cli="${2:-}"; shift 2 ;;
+    --dry-run) dry=1; shift ;;
+    -h|--help) usage ;;
+    *)
+      printf 'unknown arg: %s\n' "$1" >&2
+      usage
+      ;;
+  esac
+done
+
+die() {
+  printf 'last-stack-kanban-file-pr: %s\n' "$*" >&2
+  exit 2
+}
+
+[ -n "$title" ] || die "missing --title"
+[ -n "$repo" ] || die "missing --repo"
+[ -n "$north_star" ] || die "missing --north-star (pickup will not claim an unattached Kind:pr)"
+[ -n "$milestone" ] || die "missing --milestone (pickup will not claim an unattached Kind:pr)"
+[ "$kind" = "pr" ] || die "only --kind pr is supported (got $kind)"
+case "$column" in
+  todo|backlog) ;;
+  *) die "column must be todo or backlog (got $column)" ;;
+esac
+case "$repo" in
+  */*) ;;
+  *) die "repo must be owner/name (got $repo)" ;;
+esac
+
+if [ -z "$board_cli" ]; then
+  if command -v kanban >/dev/null 2>&1; then
+    board_cli=kanban
+  else
+    die "kanban not on PATH"
+  fi
+fi
+
+body="$(cat || true)"
+[ -n "$body" ] || die "empty body (pipe the brief on stdin)"
+
+# Require a real work brief so default/todo pickup-readiness will accept it.
+printf '%s\n' "$body" | grep -Eq '(^|[[:space:]])##[[:space:]]*GOAL\b|^GOAL:' \
+  || die "body missing ## GOAL (pickup refuses hollow Kind:pr)"
+printf '%s\n' "$body" | grep -Eq '(^|[[:space:]])##[[:space:]]*END STATE\b|^END STATE:|^DONE WHEN:' \
+  || die "body missing ## END STATE (or DONE WHEN)"
+
+# Repo: header must be a clean owner/name token when present.
+header_repo="$(printf '%s\n' "$body" | sed -n -E 's/^Repo:[[:space:]]*//p' | head -1 | tr -d '\r')"
+if [ -n "$header_repo" ] && [ "$header_repo" != "$repo" ]; then
+  die "body Repo: '$header_repo' does not match --repo $repo"
+fi
+
+is_live_ms_state() {
+  case "${1:-}" in
+    active|planned|proving) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+ms_json=""
+ms_json="$("$board_cli" milestone show "$milestone" --json 2>/dev/null || true)"
+ms_state=""
+ms_ns=""
+if [ -n "$ms_json" ]; then
+  ms_state="$(printf '%s\n' "$ms_json" | jq -r '.state // empty' 2>/dev/null || true)"
+  ms_ns="$(printf '%s\n' "$ms_json" | jq -r '.north_star // empty' 2>/dev/null || true)"
+fi
+
+if [ -z "$ms_json" ]; then
+  if [ "$ensure_ms" -ne 1 ]; then
+    die "milestone '$milestone' not found — create it first or pass --ensure-milestone"
+  fi
+  if [ "$dry" -eq 1 ]; then
+    printf 'DRY would create milestone %s --north-star %s --state active\n' \
+      "$milestone" "$north_star"
+  else
+    if ! "$board_cli" milestone add "$milestone" \
+      --title "$title" \
+      --state active \
+      --north-star "$north_star" \
+      --driver last-stack-milestone-driver >/dev/null; then
+      die "failed to create milestone $milestone"
+    fi
+  fi
+  ms_state=active
+  ms_ns="$north_star"
+elif ! is_live_ms_state "$ms_state"; then
+  die "milestone '$milestone' is not live (state=${ms_state:-empty}) — pick an active/planned/proving outcome"
+fi
+
+if [ -n "$ms_ns" ] && [ "$ms_ns" != "$north_star" ]; then
+  die "milestone '$milestone' is under north_star '$ms_ns', not '$north_star'"
+fi
+
+add_args=(
+  add "$slug"
+  --title "$title"
+  --board "$board"
+  --column "$column"
+  --kind pr
+  --repo "$repo"
+  --base "$base"
+  --north-star "$north_star"
+  --milestone "$milestone"
+)
+[ -n "$priority" ] && add_args+=(--priority "$priority")
+[ -n "$tags" ] && add_args+=(--tags "$tags")
+[ -n "$deps" ] && add_args+=(--deps "$deps")
+[ -n "$surfaces" ] && add_args+=(--surfaces "$surfaces")
+
+if [ "$dry" -eq 1 ]; then
+  printf 'DRY %s' "$board_cli"
+  printf ' %q' "${add_args[@]}"
+  printf '\n'
+  exit 0
+fi
+
+if ! printf '%s' "$body" | "$board_cli" "${add_args[@]}"; then
+  printf 'last-stack-kanban-file-pr: kanban add failed for %s\n' "$slug" >&2
+  exit 1
+fi
+
+printf 'filed %s column=%s north_star=%s milestone=%s\n' \
+  "$slug" "$column" "$north_star" "$milestone"
+exit 0

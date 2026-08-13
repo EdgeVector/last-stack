@@ -51,6 +51,8 @@ bash tests/last-stack-factory-health-backlog.sh
 bash tests/last-stack-todo-rank.sh
 bash tests/last-stack-kanban-done-when-eval.sh
 bash tests/last-stack-driver-hierarchy.sh
+bash tests/last-stack-kanban-file-pr.sh
+bash tests/last-stack-unattached-outcome-heal.sh
 bash tests/last-stack-north-star-ledger-sync.sh
 bash tests/last-stack-north-star-proof-registry.sh
 bash tests/last-stack-north-star-proof-ideal-storage-shape.sh

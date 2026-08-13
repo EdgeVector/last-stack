@@ -181,7 +181,10 @@ a named blocker instead of parking inside the run.
   evaluator / north-star-proof report path), move card to **`done`**, heartbeat
   `ok validated=<slug> result=passed`.
 - **FAIL:** append `PROOF: failed <validation> — <observed failure>`, file
-  **one** pickup-ready **`Kind: pr`** fix card with:
+  **one** pickup-ready **`Kind: pr`** fix card via
+  `"$last_stack/bin/last-stack-kanban-file-pr"` (never raw `kanban add`)
+  with `--north-star` and `--milestone` of the failed card's live outcome
+  (`--ensure-milestone` only when that outcome is missing), plus:
   - clean `Repo:` / `Base:` / `Branch:` headers
   - kanban-agent trigger line
   - narrow GOAL/STEPS/VERIFY and reference to the failed proof slug
