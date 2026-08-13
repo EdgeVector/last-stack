@@ -202,7 +202,13 @@ Split every actionable finding by severity:
   slug in the run report and rotation log. Put clear, pickup-ready blockers in `todo`;
   ambiguous or investigation items in `backlog`. Tag cards with `dogfood`,
   the feature slug, a priority tag (`p0`-`p3`), and `blocker`, `recipe`, or
-  another concrete surface tag.
+  another concrete surface tag. File Kind:pr cards with
+  `"$last_stack/bin/last-stack-kanban-file-pr"` — pass `--north-star` and
+  `--milestone` pointing at a **live** (active/planned/proving) outcome.
+  If the feature has no live milestone, create one first (`--ensure-milestone`
+  on the helper) under the feature's North Star. Never raw `kanban add`
+  a Kind:pr into todo/backlog without those flags: pickup classifies that
+  as `unattached-outcome` and will not claim it.
 - **PAPERCUT** (friction, polish, confusing UX, stale recipe wording, flaky
   annoyance that doesn't block the feature): file a Brain record ONLY —
   slug `papercut-<short-topic>`, type `reference`, tag `papercut`, body with

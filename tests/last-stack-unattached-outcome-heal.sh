@@ -202,4 +202,65 @@ if [ -s "$tmp/move.log" ]; then
   fail "backlog residual must not move: $(cat "$tmp/move.log")"
 fi
 
+# --- Case 4: card has NS but no live milestone → create ops MS then attach ---
+: >"$tmp/add.log"
+: >"$tmp/move.log"
+: >"$tmp/mark.log"
+: >"$tmp/ms-add.log"
+cat >"$tmp/bin/kanban" <<SH
+#!/usr/bin/env bash
+set -euo pipefail
+cmd="\${1:-}"
+shift || true
+case "\$cmd" in
+  pickup)
+    cat <<'JSON'
+{"ready":0,"scanned":1,"counts":{"unattached-outcome":1,"pickup-ready":0},"cards":[{"slug":"card-has-ns","category":"unattached-outcome","column":"todo","repo":"EdgeVector/fkanban"}]}
+JSON
+    ;;
+  show)
+    cat <<'JSON'
+{"slug":"card-has-ns","board":"default","column":"todo","north_star":"north-star-kanban-socket-consistency","milestone":"","repo":"EdgeVector/fkanban","surfaces":[],"body":"## GOAL\\nx\\n\\n## END STATE\\ny\\n"}
+JSON
+    ;;
+  milestone)
+    sub="\${1:-}"
+    shift || true
+    if [ "\$sub" = "add" ]; then
+      printf '%s\\n' "\$*" >>"$tmp/ms-add.log"
+      exit 0
+    fi
+    echo '[]'
+    ;;
+  add)
+    printf '%s\\n' "\$*" >>"$tmp/add.log"
+    exit 0
+    ;;
+  move)
+    printf '%s\\n' "\$*" >>"$tmp/move.log"
+    exit 0
+    ;;
+  mark)
+    printf '%s\\n' "\$*" >>"$tmp/mark.log"
+    exit 0
+    ;;
+  *)
+    echo "unexpected kanban \$cmd \$*" >&2
+    exit 1
+    ;;
+esac
+SH
+chmod +x "$tmp/bin/kanban"
+
+out4="$("$bin" --json 2>/dev/null)" || fail "ns-create heal exit non-zero: $out4"
+echo "$out4" | jq -e '.ok == true and .attached >= 1' >/dev/null \
+  || fail "expected create+attach: $out4"
+grep -q 'ms-kanban-socket-consistency-ops' "$tmp/ms-add.log" \
+  || fail "expected ops milestone create: $(cat "$tmp/ms-add.log")"
+grep -q 'card-has-ns --milestone ms-kanban-socket-consistency-ops' "$tmp/add.log" \
+  || fail "expected attach to created ms: $(cat "$tmp/add.log")"
+if [ -s "$tmp/move.log" ]; then
+  fail "create+attach must not demote: $(cat "$tmp/move.log")"
+fi
+
 echo "ok last-stack-unattached-outcome-heal"

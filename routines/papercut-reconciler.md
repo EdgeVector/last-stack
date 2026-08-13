@@ -184,7 +184,11 @@ For each pattern worth fixing now:
   to land and pass, not merely that the implementation merges. Tag
   `papercut,reconciler` plus the repo tag. Use the standard cold-start card
   shape from the shared contract (agent trigger line,
-  `Repo:`/`Base:`/`Branch:`, North Star or END STATE).
+  `Repo:`/`Base:`/`Branch:`, `--north-star`, and `--milestone`).
+  File Kind:pr cards with `"$last_stack/bin/last-stack-kanban-file-pr"`
+  against a live outcome; `--ensure-milestone` if the cluster has no
+  active/planned/proving milestone. Never raw `kanban add` a Kind:pr
+  without those flags (pickup: `unattached-outcome`).
 - File as many pattern cards as the evidence genuinely supports; too ambiguous
   or too large → one `backlog` card with what you know.
 

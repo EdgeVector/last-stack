@@ -218,8 +218,13 @@ For each `work_queue` item with `action=decompose`, until SAFETY_CAP:
    pass until the gate is fully represented or SAFETY_CAP hits:
    - unblocked → `--column todo`
    - dep-held → `--column backlog` + `--deps`
-5. Each card: full `## GOAL` / `## END STATE` / STEPS / VERIFY / Repo / Base /
-   Kind: pr / `--milestone` / `--north-star`.
+5. Each card: file via `"$last_stack/bin/last-stack-kanban-file-pr"` (never
+   raw `kanban add` for Kind:pr). The helper requires `--north-star` (this
+   milestone's North Star) and `--milestone` (this milestone slug), a full
+   `## GOAL` / `## END STATE` / STEPS / VERIFY brief, and a bare `Repo:` /
+   `Base:` / `Kind: pr` header. Unblocked → `--column todo`; dep-held →
+   `--column backlog`. Do not file a Kind:pr that pickup would classify
+   `unattached-outcome`.
 6. If you cannot name a concrete next slice without inventing product design:
    **stop** for that milestone with `needs-decomposition` — do not spam shells
    (PR or validation).

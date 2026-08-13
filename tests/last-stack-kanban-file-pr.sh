@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# Hermetic fixtures for last-stack-kanban-file-pr (no live board writes).
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+bin="$ROOT/bin/last-stack-kanban-file-pr"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
+
+[ -x "$bin" ] || chmod +x "$bin"
+bash -n "$bin" || fail "bash -n"
+
+"$bin" --help >/dev/null 2>&1 && fail "bare --help as slug should be usage"
+"$bin" 2>/dev/null && fail "expected usage failure"
+
+mkdir -p "$tmp/bin"
+: >"$tmp/add.log"
+: >"$tmp/ms-add.log"
+
+cat >"$tmp/bin/kanban" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-}"
+shift || true
+case "$cmd" in
+  milestone)
+    sub="${1:-}"
+    shift || true
+    if [ "$sub" = "show" ]; then
+      slug="${1:-}"
+      case "$slug" in
+        ms-live)
+          printf '{"slug":"ms-live","state":"active","north_star":"ns-a"}\n'
+          ;;
+        ms-done)
+          printf '{"slug":"ms-done","state":"complete","north_star":"ns-a"}\n'
+          ;;
+        ms-other-ns)
+          printf '{"slug":"ms-other-ns","state":"active","north_star":"ns-b"}\n'
+          ;;
+        *)
+          exit 1
+          ;;
+      esac
+    elif [ "$sub" = "add" ]; then
+      printf '%s\n' "$*" >>"${FILE_PR_MS_ADD_LOG:-/tmp/ms-add.log}"
+      exit 0
+    else
+      echo "unexpected milestone $sub $*" >&2
+      exit 1
+    fi
+    ;;
+  add)
+    printf '%s\n' "$*" >>"${FILE_PR_ADD_LOG:-/tmp/add.log}"
+    cat >/dev/null
+    exit 0
+    ;;
+  *)
+    echo "unexpected kanban $cmd $*" >&2
+    exit 1
+    ;;
+esac
+SH
+chmod +x "$tmp/bin/kanban"
+
+export FILE_PR_ADD_LOG="$tmp/add.log"
+export FILE_PR_MS_ADD_LOG="$tmp/ms-add.log"
+# Keep host kanban off PATH; always pass --board-cli so the helper cannot
+# pick up ~/.local/bin/kanban (the helper prepends that dir).
+export PATH="/usr/bin:/bin"
+fake_kanban="$tmp/bin/kanban"
+
+body_ok="$(mktemp "$tmp/body.XXXX")"
+cat >"$body_ok" <<'EOF'
+**Follow the kanban-agent skill — drive this through to a MERGED PR.**
+
+Repo: EdgeVector/last-stack
+Base: main
+Kind: pr
+
+## GOAL
+File pickup-ready cards.
+
+## END STATE
+Generators attach a live north star and milestone at add time.
+EOF
+
+# usage: missing flags
+if "$bin" some-slug --board-cli "$fake_kanban" --title "x" --repo EdgeVector/last-stack <"$body_ok" 2>/dev/null; then
+  fail "should refuse missing --north-star/--milestone"
+fi
+
+# refuse complete milestone
+if "$bin" some-slug --board-cli "$fake_kanban" --title "x" --repo EdgeVector/last-stack \
+  --north-star ns-a --milestone ms-done <"$body_ok" 2>/dev/null; then
+  fail "should refuse complete milestone"
+fi
+
+# refuse NS mismatch
+if "$bin" some-slug --board-cli "$fake_kanban" --title "x" --repo EdgeVector/last-stack \
+  --north-star ns-a --milestone ms-other-ns <"$body_ok" 2>/dev/null; then
+  fail "should refuse north-star mismatch"
+fi
+
+# refuse hollow body
+if printf 'just a note\n' | "$bin" some-slug --board-cli "$fake_kanban" --title "x" --repo EdgeVector/last-stack \
+  --north-star ns-a --milestone ms-live 2>/dev/null; then
+  fail "should refuse hollow body"
+fi
+
+# happy path
+: >"$tmp/add.log"
+out="$("$bin" ship-login --board-cli "$fake_kanban" --title "Ship login" --repo EdgeVector/last-stack \
+  --north-star ns-a --milestone ms-live --priority P1 --tags factory <"$body_ok")" \
+  || fail "happy path failed: $out"
+printf '%s\n' "$out" | grep -q 'filed ship-login column=todo north_star=ns-a milestone=ms-live' \
+  || fail "happy stdout: $out"
+grep -q 'ship-login --title Ship login' "$tmp/add.log" \
+  || fail "add log title: $(cat "$tmp/add.log")"
+grep -q -- '--north-star ns-a' "$tmp/add.log" || fail "add log ns: $(cat "$tmp/add.log")"
+grep -q -- '--milestone ms-live' "$tmp/add.log" || fail "add log ms: $(cat "$tmp/add.log")"
+grep -q -- '--kind pr' "$tmp/add.log" || fail "add log kind: $(cat "$tmp/add.log")"
+grep -q -- '--column todo' "$tmp/add.log" || fail "add log column: $(cat "$tmp/add.log")"
+
+# missing milestone without --ensure-milestone
+if "$bin" new-card --board-cli "$fake_kanban" --title "x" --repo EdgeVector/last-stack \
+  --north-star ns-a --milestone ms-new <"$body_ok" 2>/dev/null; then
+  fail "missing milestone should fail without --ensure-milestone"
+fi
+
+# --ensure-milestone creates then files
+: >"$tmp/add.log"
+: >"$tmp/ms-add.log"
+"$bin" new-card --board-cli "$fake_kanban" --title "New card" --repo EdgeVector/last-stack \
+  --north-star ns-a --milestone ms-new --ensure-milestone <"$body_ok" \
+  || fail "ensure-milestone failed"
+grep -q 'ms-new' "$tmp/ms-add.log" || fail "did not create milestone: $(cat "$tmp/ms-add.log")"
+grep -q -- '--north-star ns-a' "$tmp/ms-add.log" || fail "create missing ns: $(cat "$tmp/ms-add.log")"
+grep -q 'new-card' "$tmp/add.log" || fail "ensure did not add card: $(cat "$tmp/add.log")"
+
+# dry-run does not write
+: >"$tmp/add.log"
+"$bin" ship-login --board-cli "$fake_kanban" --title "Ship login" --repo EdgeVector/last-stack \
+  --north-star ns-a --milestone ms-live --dry-run <"$body_ok" \
+  | grep -q 'DRY' || fail "dry-run missing DRY"
+if [ -s "$tmp/add.log" ]; then
+  fail "dry-run wrote add: $(cat "$tmp/add.log")"
+fi
+
+echo "ok last-stack-kanban-file-pr"
