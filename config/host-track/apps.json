@@ -58,6 +58,10 @@
           "target": "$HOME/.local/bin/last-stack-class-a-heal"
         },
         {
+          "source": "bin/last-stack-papercut-lifecycle-close",
+          "target": "$HOME/.local/bin/last-stack-papercut-lifecycle-close"
+        },
+        {
           "source": "bin/last-stack-routine-read",
           "target": "$HOME/.local/bin/last-stack-routine-read"
         },
@@ -126,7 +130,7 @@
           "target": "$HOME/.local/bin/last-stack-lastseek-host-track-post-install"
         }
       ],
-      "notes": "Runtime is an immutable CI artifact that tracks gate_main (green+published main). host-track refresh promotes stable to that tip then installs. ~/.last-stack/{bin,skills,...} \u2192 artifacts/current. PATH links Class A + pickup bootstrap + Forge closeout tools (forge-api and friends) so routinesd (~/.local/bin first) never hits GC'd version pins and board-closeout can resolve Forge PRs. Never develop in the install; use a worktree."
+      "notes": "Runtime is an immutable CI artifact that tracks gate_main (green+published main). host-track refresh promotes stable to that tip then installs. ~/.last-stack/{bin,skills,...} \u2192 artifacts/current. PATH links Class A + pickup bootstrap + Forge closeout tools (forge-api and friends) so routinesd (~/.local/bin first) never hits GC'd version pins and board-closeout can resolve Forge PRs. Never develop in the install; use a worktree. Also PATH-link last-stack-papercut-lifecycle-close so papercut-reconciler scheduled shells (routinesd PATH often ~/.local/bin-first without sourcing shell-prelude) resolve the lifecycle closer instead of lifecycle_helper_missing."
     },
     {
       "app": "brain",

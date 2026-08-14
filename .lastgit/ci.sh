@@ -67,6 +67,7 @@ bash tests/last-stack-lint-machine-leaks.sh
 bash tests/last-stack-audit-f-prefix-callers.sh
 bash tests/last-stack-papercut-reconciler-contract.sh
 bash tests/last-stack-papercut-lifecycle-close.sh
+bash tests/last-stack-papercut-lifecycle-helper-run-install.sh
 bash tests/last-stack-canary-pipeline.sh
 bash tests/last-stack-command-modes.sh
 bash tests/last-stack-north-star-portal-resolver.sh
