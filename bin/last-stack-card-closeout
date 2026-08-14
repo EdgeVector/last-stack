@@ -372,7 +372,7 @@ if [ "$end_state_required" = "1" ] && [ "$end_state_claimed" != "1" ]; then
   echo "last-stack-card-closeout: WARN end-state-unverified slug=$slug — closing on merge without an evaluated END STATE" >&2
   # Stamp the card so the gap is auditable on the board, not just in a log line
   # nobody reads. Best-effort: never block closeout on the marker itself.
-  "${retry[@]}" "$board_cli" mark "$slug" \
+  run "$board_cli" mark "$slug" \
     "CLOSED-ON-MERGE $(date -u +%Y-%m-%dT%H:%M:%SZ) — card moved to done because a PR merged; its ## END STATE was NOT evaluated. Re-open if any clause is still unmet. (last-stack-card-closeout end-state audit)" \
     >/dev/null 2>&1 || true
 fi

@@ -589,6 +589,26 @@ def build_snapshot(
     return snap, meta
 
 
+def is_deploy_parked(card: dict[str, Any]) -> bool:
+    """Doing cards waiting on a deploy/live-proof gate are not factory stuck.
+
+    Closeout is written to leave these in doing until the deploy gate is
+    terminal. Counting them toward doing_stuck / closeout_stale just pages
+    Tom about work that is correctly parked.
+    """
+    tags = card.get("tags") or []
+    parked = {"awaiting-deploy", "live-proof", "deploy-gate"}
+    for t in tags:
+        if str(t).strip().lower() in parked:
+            return True
+    body = str(card.get("body") or "")
+    return bool(re.search(r"(?im)^requires-deploy\s*:", body))
+
+
+def actionable_doing(doing_cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [c for c in doing_cards if not is_deploy_parked(c)]
+
+
 def recompute_stale(doing_cards: list[dict[str, Any]], soft_age: float) -> tuple[float, int]:
     now = time.time()
     max_age = 0.0
@@ -716,17 +736,19 @@ def evaluate(cfg: dict[str, Any], snap: Snapshot, meta: dict[str, Any], state: d
         soft_count = int(cfg_get(cfg, "doing", "soft_count", 12))
         hard_count = int(cfg_get(cfg, "doing", "hard_count", 20))
 
-        max_age, stale = recompute_stale(meta.get("doing_cards") or [], soft_age)
+        doing_for_stuck = actionable_doing(meta.get("doing_cards") or [])
+        max_age, stale = recompute_stale(doing_for_stuck, soft_age)
         snap.max_doing_age_h = max_age
         snap.stale_doing = stale
         ctx["max_doing_age_h"] = max_age
         ctx["stale_doing"] = stale
+        ctx["actionable_doing"] = len(doing_for_stuck)
 
-        if max_age >= hard_age or stale >= hard_stale_n or snap.doing >= hard_count:
+        if max_age >= hard_age or stale >= hard_stale_n or len(doing_for_stuck) >= hard_count:
             oldest = ""
-            if meta.get("doing_cards"):
+            if doing_for_stuck:
                 now = time.time()
-                best = max(meta["doing_cards"], key=lambda c: age_hours(c, now))
+                best = max(doing_for_stuck, key=lambda c: age_hours(c, now))
                 oldest = f" oldest={best.get('slug')} ({age_hours(best, now):.1f}h)"
             alerts.append(
                 Alert(
@@ -745,7 +767,7 @@ def evaluate(cfg: dict[str, Any], snap: Snapshot, meta: dict[str, Any], state: d
                     + diagnose_ship(ctx),
                 )
             )
-        elif max_age >= soft_age or stale >= soft_stale_n or snap.doing >= soft_count:
+        elif max_age >= soft_age or stale >= soft_stale_n or len(doing_for_stuck) >= soft_count:
             alerts.append(
                 Alert(
                     severity="soft",
@@ -883,7 +905,8 @@ def evaluate(cfg: dict[str, Any], snap: Snapshot, meta: dict[str, Any], state: d
         age_lim = float(cfg_get(cfg, "closeout", "merged_suspect_age_h", 1.5))
         suspects = []
         now = time.time()
-        for c in meta.get("doing_cards") or []:
+        closeout_cards = actionable_doing(meta.get("doing_cards") or [])
+        for c in closeout_cards:
             if not (c.get("pr_url") or c.get("prUrl") or c.get("pr")):
                 continue
             age = age_hours(c, now)
@@ -892,7 +915,7 @@ def evaluate(cfg: dict[str, Any], snap: Snapshot, meta: dict[str, Any], state: d
         hard_age = float(cfg_get(cfg, "doing", "hard_max_age_h", 5.0))
         pr_ages = [
             age_hours(c, now)
-            for c in (meta.get("doing_cards") or [])
+            for c in closeout_cards
             if (c.get("pr_url") or c.get("prUrl") or c.get("pr"))
         ]
         max_pr_age = max(pr_ages) if pr_ages else 0.0
@@ -1033,8 +1056,8 @@ def format_message(snap: Snapshot, alerts: list[Alert], meta: dict[str, Any]) ->
             lines.append(f"  → {r}")
         lines.append("")
     lines.append(
-        "Phase: auto_fix may run class_a_heal on install_stale_* "
-        "(see factory-health.toml [auto_fix])."
+        "Phase: auto_fix may start factory-heal (state-machine) and "
+        "class_a_heal on install_stale_* (see factory-health.toml [auto_fix])."
     )
     lines.append("Config: last-stack/config/factory-health.toml")
     return "\n".join(lines).strip()
@@ -1089,6 +1112,50 @@ def maybe_auto_fix(cfg: dict[str, Any], alerts: list[Alert], last_stack: Path, d
             else:
                 code, out, err = run([str(bin_path)], timeout=180)
                 actions.append(f"board_closeout:exit={code}")
+    if "factory_heal" in allowed and alerts:
+        sm = ""
+        for cand in ("state-machine", "sm"):
+            code_w, out_w, _ = run(["sh", "-c", f"command -v {cand}"], timeout=5)
+            if code_w == 0 and (out_w or "").strip():
+                sm = (out_w or "").strip().splitlines()[0]
+                break
+        if sm:
+            if dry_run:
+                actions.append("would:factory_heal")
+            else:
+                hour = utc_now().strftime("%Y%m%d%H")
+                input_json = json.dumps(
+                    {"source": "factory-health", "codes": sorted(codes)}
+                )
+                start_code, start_out, start_err = run(
+                    [
+                        sm,
+                        "start",
+                        "factory-heal",
+                        "--concurrency-key",
+                        "factory-heal",
+                        "--idempotency-key",
+                        f"factory-heal-{hour}",
+                        "--input",
+                        input_json,
+                    ],
+                    timeout=60,
+                )
+                tick_code, tick_out, tick_err = run(
+                    [sm, "tick", "--definition", "factory-heal", "--cap", "8"],
+                    timeout=300,
+                )
+                actions.append(f"factory_heal:start={start_code} tick={tick_code}")
+                if start_code != 0 and (start_err or start_out):
+                    actions.append(
+                        f"factory_heal:start_detail={(start_err or start_out).strip()[:120]}"
+                    )
+                if tick_code != 0 and (tick_err or tick_out):
+                    actions.append(
+                        f"factory_heal:tick_detail={(tick_err or tick_out).strip()[:120]}"
+                    )
+        else:
+            actions.append("factory_heal:sm-missing")
     return actions
 
 
@@ -1135,7 +1202,9 @@ def main(argv: list[str]) -> int:
     )
     # refresh stale with config soft age for snapshot fields before evaluate mutates
     soft_age = float(cfg_get(cfg, "doing", "soft_max_age_h", 2.0))
-    max_age, stale = recompute_stale(meta.get("doing_cards") or [], soft_age)
+    max_age, stale = recompute_stale(
+        actionable_doing(meta.get("doing_cards") or []), soft_age
+    )
     snap.max_doing_age_h = max_age
     snap.stale_doing = stale
 

@@ -26,10 +26,11 @@ quiet_allows_hard = true
 
 [auto_fix]
 # Class A (host-track/install freeze) self-heal is trusted: zero-LLM, bounded,
-# never restarts lastdbd. board_closeout remains opt-in.
+# never restarts lastdbd. factory_heal starts the state-machine definition
+# that snapshots → closeout/class-a → verify (and files a card if still stuck).
 enabled = true
-# Allowed action ids: class_a_heal, board_closeout, report_only
-actions = ["class_a_heal"]
+# Allowed action ids: class_a_heal, factory_heal, board_closeout, report_only
+actions = ["class_a_heal", "factory_heal"]
 
 # ── Ship rate ──────────────────────────────────────────────────────────────
 # Compare last completed hour ships to the rolling 24h baseline of hourly ships.
