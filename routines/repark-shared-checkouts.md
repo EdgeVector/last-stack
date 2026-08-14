@@ -21,7 +21,8 @@ an incident. Never restart lastdbd/folddb from this routine.
 ## The one job
 
 ```bash
-"$HOME/.last-stack/bin/last-stack-repark-shared-checkouts" || true
+repark_output="$("$HOME/.last-stack/bin/last-stack-repark-shared-checkouts" 2>&1 || true)"
+printf '%s\n' "$repark_output"
 ```
 
 This helper is already safe by design:
@@ -40,12 +41,18 @@ Heartbeat one line via the standard helper:
 
 ```bash
 iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-ff_count="$(<output above>)"   # count how many repos showed ff(N) this run
-flag_count="$(<output above>)" # count how many repos showed FLAG this run
+ff_count="$(printf '%s\n' "$repark_output" | awk '$1 == "ok" && $3 ~ /^ff\(/ { n++ } END { print n + 0 }')"
+flag_count="$(printf '%s\n' "$repark_output" | awk '$1 == "FLAG" { n++ } END { print n + 0 }')"
 "$HOME/.last-stack/bin/last-stack-brain-append-heartbeat" \
   --line "repark-shared-checkouts $iso ok ff=$ff_count flag=$flag_count"
-printf 'ROUTINE_RESULT outcome=ok detail=ff=%s flag=%s\n' "$ff_count" "$flag_count"
+result_token='ROUTINE_RESULT'
+printf '%s outcome=ok detail=ff=%s flag=%s\n' "$result_token" "$ff_count" "$flag_count"
 ```
+
+Use `helper_rc` or `rc` if you need an exit-code variable while debugging.
+Never assign to `status`: zsh reserves it as a read-only parameter. The helper
+normally exits zero and reports per-repo problems as `FLAG` lines, so the
+counts above are the routine's contract.
 
 Use `ok` whenever the command completed (even if it fast-forwarded nothing —
 "nothing to do" is a healthy result, not a noop worth filing anything about).
