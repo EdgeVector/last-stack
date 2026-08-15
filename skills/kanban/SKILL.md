@@ -35,7 +35,7 @@ rules burn a retry (and often a whole routine turn) on hard rejections:
 | `cannot be placed in default/todo with block_status=deferred` (same family for human-gated holds) | Put holds in **`backlog`** with `block_status` + reason. Do **not** park deferred/human-gated work in default `todo`. |
 | `Kind:pr card … cannot enter todo without a milestone` | File Kind:pr via `$LAST_STACK_ROOT/bin/last-stack-kanban-file-pr` with **live** `--north-star` **and** `--milestone` (or `--ensure-milestone`). Raw `kanban add --column todo` without both is refused or becomes `unattached-outcome`. |
 | `cannot carry --pr-url / --branch in default/todo` | Leave `todo` cards claim-ready without in-flight PR fields. Stamp `--pr-url` / `--branch` only after the card is in **`doing`** (or when re-adding mid-claim). |
-| `Milestone "…" not found` | Use the full milestone slug (`fkanban milestone list` / `milestone show`). Never truncate slugs. |
+| `Milestone "…" not found` | Use the full milestone slug (`kanban milestone list` / `milestone show`). Never truncate slugs. |
 
 Quick rules of thumb:
 
