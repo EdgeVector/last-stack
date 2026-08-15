@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+# last-stack-lastdb-ops-offenders — rank live request-ops worst offenders.
+#
+# Read-only. Names who is burning the primary Mini so the daily
+# lastdb-ops-offenders routine can investigate and file cards.
+#
+# Signal: GET /api/status?recent=1 → status.request_ops rankings.
+# Cheap high-count queries and long-poll wait are SKIP, not findings.
+# A dump we cannot parse is UNKNOWN (exit 2), never "clean".
+#
+# Never restart, reindex, or mutate the primary.
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+as_json=0
+ops_file=""
+snapshot_dir="${LAST_STACK_OPS_OFFENDERS_DIR:-}"
+no_snapshot=0
+min_sum_ms=60000
+min_avg_ms=50
+cheap_max_ms=2000
+limit=8
+timeout_s=30
+
+usage() {
+  cat <<'USAGE'
+usage: last-stack-lastdb-ops-offenders [--json] [--ops-file PATH] [--snapshot-dir DIR]
+                                       [--no-snapshot] [--min-sum-ms N] [--limit N]
+
+  --json            machine-readable ranked offenders + skips
+  --ops-file PATH   parse a captured GET /api/status?recent=1 JSON dump
+  --snapshot-dir    where to write latest.json (default: last-stack STATE)
+  --no-snapshot     do not persist a snapshot
+  --min-sum-ms N    ignore rows whose lifetime sum is below N (default 60000)
+  --limit N         max investigate rows (default 8)
+
+Exit: 0 ran (findings or noop) · 2 telemetry unreadable
+USAGE
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json) as_json=1; shift ;;
+    --ops-file) ops_file="${2:-}"; shift 2 ;;
+    --ops-file=*) ops_file="${1#*=}"; shift ;;
+    --snapshot-dir) snapshot_dir="${2:-}"; shift 2 ;;
+    --no-snapshot) no_snapshot=1; shift ;;
+    --min-sum-ms) min_sum_ms="${2:-}"; shift 2 ;;
+    --limit) limit="${2:-}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+case "$min_sum_ms" in ''|*[!0-9]*) echo "--min-sum-ms must be a non-negative integer" >&2; exit 2 ;; esac
+case "$limit" in ''|*[!0-9]*) echo "--limit must be a non-negative integer" >&2; exit 2 ;; esac
+
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-lastdb-ops-offenders.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+raw="$tmp/status.json"
+
+if [ -n "$ops_file" ]; then
+  if [ ! -f "$ops_file" ]; then
+    echo "last-stack-lastdb-ops-offenders: --ops-file not found: $ops_file" >&2
+    exit 2
+  fi
+  cp "$ops_file" "$raw"
+else
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "last-stack-lastdb-ops-offenders: curl not on PATH" >&2
+    exit 2
+  fi
+  socket="${LAST_STACK_LASTDB_SOCKET:-${LASTDB_SOCKET_PATH:-${FOLDDB_SOCKET_PATH:-$HOME/.lastdb/data/folddb.sock}}}"
+  if [ ! -S "$socket" ]; then
+    echo "last-stack-lastdb-ops-offenders: socket not found: $socket" >&2
+    exit 2
+  fi
+  if ! curl -sS --max-time "$timeout_s" --unix-socket "$socket" \
+      'http://localhost/api/status?recent=1' >"$raw" 2>"$tmp/err.txt"; then
+    echo "last-stack-lastdb-ops-offenders: status read failed — UNKNOWN, not clean" >&2
+    head -5 "$tmp/err.txt" >&2 || true
+    exit 2
+  fi
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "last-stack-lastdb-ops-offenders: python3 required" >&2
+  exit 2
+fi
+
+export LAST_STACK_OPS_MIN_SUM_MS="$min_sum_ms"
+export LAST_STACK_OPS_MIN_AVG_MS="$min_avg_ms"
+export LAST_STACK_OPS_CHEAP_MAX_MS="$cheap_max_ms"
+export LAST_STACK_OPS_LIMIT="$limit"
+export LAST_STACK_OPS_RAW="$raw"
+export LAST_STACK_OPS_OUT="$tmp/ranked.json"
+
+python3 - <<'PY'
+import json, os, sys
+
+path = os.environ["LAST_STACK_OPS_RAW"]
+min_sum = int(os.environ["LAST_STACK_OPS_MIN_SUM_MS"])
+min_avg = int(os.environ["LAST_STACK_OPS_MIN_AVG_MS"])
+cheap_max = int(os.environ["LAST_STACK_OPS_CHEAP_MAX_MS"])
+limit = int(os.environ["LAST_STACK_OPS_LIMIT"])
+
+try:
+    raw = open(path, encoding="utf-8").read()
+    data = json.loads(raw)
+except Exception as e:
+    print(f"unreadable json: {e}", file=sys.stderr)
+    sys.exit(2)
+
+if not isinstance(data, dict):
+    print("status payload is not an object", file=sys.stderr)
+    sys.exit(2)
+
+status = data.get("status", data) if isinstance(data.get("status", data), dict) else data
+ro = status.get("request_ops")
+if not isinstance(ro, dict):
+    print("missing status.request_ops", file=sys.stderr)
+    sys.exit(2)
+
+rows = ro.get("top_by_total_ms")
+if not isinstance(rows, list) or not rows:
+    print("request_ops.top_by_total_ms missing or empty (need ?recent=1)", file=sys.stderr)
+    sys.exit(2)
+
+WATCH_KINDS = {"local_watch", "watch", "idle_long_poll", "long_poll"}
+
+def num(v, default=0):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        try:
+            return int(float(v))
+        except (TypeError, ValueError):
+            return default
+
+def phase_top(phase_sums, n=3):
+    if not isinstance(phase_sums, dict):
+        return []
+    ranked = []
+    for name, val in phase_sums.items():
+        us = num(val)
+        ms = us / 1000.0 if name.endswith("_us") else float(us)
+        ranked.append({"phase": name, "ms": int(ms)})
+    ranked.sort(key=lambda x: x["ms"], reverse=True)
+    return ranked[:n]
+
+def classify(row):
+    client = str(row.get("client") or "unknown")
+    kind = str(row.get("kind") or "")
+    schema = str(row.get("schema") or "-")
+    count = max(num(row.get("count")), 0)
+    sum_ms = num(row.get("sum_ms"))
+    max_ms = num(row.get("max_ms"))
+    err = num(row.get("error_count"))
+    avg_ms = int(sum_ms / count) if count else 0
+    rec = {
+        "client": client,
+        "kind": kind,
+        "schema": schema,
+        "count": count,
+        "sum_ms": sum_ms,
+        "avg_ms": avg_ms,
+        "max_ms": max_ms,
+        "error_count": err,
+        "error_statuses": row.get("error_statuses") or {},
+        "phase_top": phase_top(row.get("phase_sums")),
+    }
+    kind_l = kind.lower()
+    if kind_l in WATCH_KINDS or "watch" in kind_l or "long_poll" in kind_l or "long-poll" in kind_l:
+        rec["skip_reason"] = "long_poll"
+        return "skip", rec
+    if count and avg_ms < min_avg and max_ms < cheap_max and err == 0:
+        rec["skip_reason"] = "cheap_count"
+        return "skip", rec
+    if sum_ms < min_sum and err == 0:
+        rec["skip_reason"] = "tiny"
+        return "skip", rec
+    reasons = []
+    if err:
+        reasons.append(f"errors={err}")
+    if avg_ms >= min_avg:
+        reasons.append(f"avg_ms={avg_ms}")
+    if rec["phase_top"]:
+        top = rec["phase_top"][0]
+        reasons.append(f"phase={top['phase']}:{top['ms']}ms")
+    rec["investigate_reason"] = ", ".join(reasons) or f"sum_ms={sum_ms}"
+    return "investigate", rec
+
+offenders = []
+skipped = []
+for row in rows:
+    if not isinstance(row, dict):
+        continue
+    bucket, rec = classify(row)
+    if bucket == "skip":
+        skipped.append(rec)
+    else:
+        offenders.append(rec)
+
+offenders.sort(key=lambda r: r["sum_ms"], reverse=True)
+offenders = offenders[:limit]
+
+out = {
+    "sample_count": ro.get("sample_count"),
+    "ring_capacity": ro.get("ring_capacity"),
+    "offender_count": len(offenders),
+    "offenders": offenders,
+    "skipped": skipped,
+}
+open(os.environ["LAST_STACK_OPS_OUT"], "w", encoding="utf-8").write(json.dumps(out, indent=2) + "\n")
+PY
+rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo "last-stack-lastdb-ops-offenders: could not rank request_ops — UNKNOWN, not clean" >&2
+  exit 2
+fi
+
+if [ "$no_snapshot" -eq 0 ]; then
+  if [ -z "$snapshot_dir" ]; then
+    snapshot_dir="${HOME}/.local/state/last-stack/runtime/lastdb-ops-offenders"
+  fi
+  mkdir -p "$snapshot_dir"
+  cp "$LAST_STACK_OPS_OUT" "$snapshot_dir/latest.json"
+fi
+
+if [ "$as_json" -eq 1 ]; then
+  cat "$LAST_STACK_OPS_OUT"
+  exit 0
+fi
+
+python3 - "$LAST_STACK_OPS_OUT" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+n = data.get("offender_count") or 0
+print(f"last-stack-lastdb-ops-offenders: {n} investigate / {len(data.get('skipped') or [])} skipped (sample_count={data.get('sample_count')})")
+if n:
+    print("")
+    print(f"  {'CLIENT':<16} {'KIND':<14} {'SCHEMA':<18} {'SUM_MS':>10} {'AVG':>6} {'MAX':>6} {'ERR':>5}  WHY")
+    for row in data["offenders"]:
+        print(f"  {row['client']:<16} {row['kind']:<14} {str(row['schema'])[:18]:<18} {row['sum_ms']:>10} {row['avg_ms']:>6} {row['max_ms']:>6} {row['error_count']:>5}  {row.get('investigate_reason','')}")
+    print("")
+    print("next: last-stack-routine-read lastdb-ops-offenders")
+    print("Do NOT restart or kill primary lastdbd.")
+else:
+    print("  (noop — no remaining offender above the cheap/long-poll filters)")
+if data.get("skipped"):
+    print("")
+    print("skipped:")
+    for row in data["skipped"]:
+        print(f"  {row['client']} {row['kind']} {row['schema']} reason={row.get('skip_reason')}")
+PY
+exit 0

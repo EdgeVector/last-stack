@@ -94,7 +94,8 @@ slow write path even when that is the dominant cost on the node. On 2026-08-08
 `client=kanban kind=mutation schema=39a0424f` ran avg 61s / max 21min and was
 the #2 consumer of node time, invisible to this routine. When the node feels
 slow and this reports clean, read `lastdb ops` **Top by total time** before
-concluding anything.
+concluding anything. The daily `lastdb-ops-offenders` routine owns that
+cost-ranked follow-up (writes included) and files improvement cards.
 
 ## Related
 
