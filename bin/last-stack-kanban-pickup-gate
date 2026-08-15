@@ -13,6 +13,11 @@
 #
 # Invoked by routinesd `gate_command` when present, and also as the first step
 # of the pickup bootstrap prompt (defense in depth on older routinesd).
+#
+# Won't-undo (2026-08-15): NEVER run unbounded board-closeout-sweep here.
+# Closeout has its own 15m LaunchAgent. A hung closeout under LastDB load
+# exceeded routinesd's ~120s gate_command timeout, so ready>0 never reached a
+# harness (factory outage: pickup-gate-timeout). Status reads are hard-capped.
 set -euo pipefail
 
 self_dir="$(cd "$(dirname "$0")" && pwd -P)"
@@ -32,9 +37,17 @@ last-stack-kanban-pickup-gate [--json-out PATH]
 
 Zero-LLM credit gate for kanban-pickup. Exit 0 = skip agent; 10 = proceed.
 
+Does not run board-closeout-sweep (LaunchAgent owns closeout). Caps status and
+todo board reads so the gate always finishes under routinesd's gate_command
+timeout (~120s).
+
 Options:
   --json-out PATH   write the pickup status JSON (or todo list) to PATH
   -h, --help        show this help
+
+Env (optional, for tests):
+  LAST_STACK_PICKUP_GATE_STATUS_TIMEOUT_SEC  cap for `pickup status` (default 45)
+  LAST_STACK_PICKUP_GATE_TODO_TIMEOUT_SEC    cap for todo list fallback (default 30)
 USAGE
 }
 
@@ -76,12 +89,20 @@ trailer_noop() {
   printf '%s %s\n' 'ROUTINE_RESULT' "outcome=noop detail=${detail}"
 }
 
-# Closeout is zero-LLM and safe even when the queue is empty.
-if [ -x "$last_stack/bin/last-stack-board-closeout-sweep" ]; then
-  "$last_stack/bin/last-stack-board-closeout-sweep" || true
-elif command -v last-stack-board-closeout-sweep >/dev/null 2>&1; then
-  last-stack-board-closeout-sweep || true
+# Prefer gtimeout (coreutils on macOS) then timeout; empty means no wrapper.
+timeout_bin=""
+if command -v gtimeout >/dev/null 2>&1; then
+  timeout_bin="gtimeout"
+elif command -v timeout >/dev/null 2>&1; then
+  timeout_bin="timeout"
 fi
+
+status_timeout_sec="${LAST_STACK_PICKUP_GATE_STATUS_TIMEOUT_SEC:-45}"
+todo_timeout_sec="${LAST_STACK_PICKUP_GATE_TODO_TIMEOUT_SEC:-30}"
+
+# Closeout is intentionally NOT run here. LaunchAgent
+# com.edgevector.board-closeout owns the 15m zero-LLM sweep. Pickup harness
+# prompts may still call closeout after the ready gate has already decided.
 
 board_cli="kanban"
 if ! command -v kanban >/dev/null 2>&1; then
@@ -97,27 +118,50 @@ elif command -v last-stack-lastdb-retry >/dev/null 2>&1; then
   retry_bin="last-stack-lastdb-retry"
 fi
 
-run_board() {
-  if [ -n "$retry_bin" ]; then
-    "$retry_bin" --attempts 3 -- "$@"
+# Board read with wall-clock cap. Must invoke real executables only (timeout
+# cannot run bash functions). Exit 124/137 = timed out.
+run_board_capped() {
+  local secs="$1"
+  shift
+  set +e
+  if [ -n "$timeout_bin" ] && [ -n "$secs" ] && [ "$secs" -gt 0 ] 2>/dev/null; then
+    if [ -n "$retry_bin" ]; then
+      "$timeout_bin" -k 3s "${secs}s" "$retry_bin" --attempts 3 -- "$@"
+    else
+      "$timeout_bin" -k 3s "${secs}s" "$@"
+    fi
   else
-    "$@"
+    if [ -n "$retry_bin" ]; then
+      "$retry_bin" --attempts 3 -- "$@"
+    else
+      "$@"
+    fi
   fi
+  local rc=$?
+  set -e
+  return "$rc"
 }
 
 tmp_status="$(mktemp "${TMPDIR:-/tmp}/pickup-gate-status.XXXXXX")"
 tmp_todo="$(mktemp "${TMPDIR:-/tmp}/pickup-gate-todo.XXXXXX")"
-cleanup() { rm -f "$tmp_status" "$tmp_todo"; }
+tmp_status_err="$(mktemp "${TMPDIR:-/tmp}/pickup-gate-status-err.XXXXXX")"
+tmp_todo_err="$(mktemp "${TMPDIR:-/tmp}/pickup-gate-todo-err.XXXXXX")"
+cleanup() { rm -f "$tmp_status" "$tmp_todo" "$tmp_status_err" "$tmp_todo_err"; }
 trap cleanup EXIT
 
-# Prefer pickup status (ready count). Fall back to todo length if status fails.
+# Prefer pickup status (ready count). Fall back to todo length if status fails
+# or times out — never hang past status_timeout_sec.
 status_ok=0
-if run_board "$board_cli" pickup status --json >"$tmp_status" 2>/tmp/pickup-gate-status.err; then
+status_rc=0
+if run_board_capped "$status_timeout_sec" \
+  "$board_cli" pickup status --json >"$tmp_status" 2>"$tmp_status_err"; then
   status_ok=1
 else
-  # busy-node / CLI error on status — try cheap todo list before giving up
-  if ! run_board "$board_cli" list --column todo --json >"$tmp_todo" 2>/tmp/pickup-gate-todo.err; then
-    err="$(cat /tmp/pickup-gate-status.err /tmp/pickup-gate-todo.err 2>/dev/null | tr '\n' ' ' | head -c 200)"
+  status_rc=$?
+  # timeout (124/137) or CLI error — try cheap todo list before giving up
+  if ! run_board_capped "$todo_timeout_sec" \
+    "$board_cli" list --column todo --json >"$tmp_todo" 2>"$tmp_todo_err"; then
+    err="$(cat "$tmp_status_err" "$tmp_todo_err" 2>/dev/null | tr '\n' ' ' | head -c 200)"
     case "$err" in
       *service_timeout*|*did\ not\ respond*|*too\ many\ concurrent*)
         hb "kanban-pickup $(iso_now) noop busy-node no_card_claimed"
@@ -125,6 +169,12 @@ else
         exit 0
         ;;
     esac
+    # timeout with empty stderr still counts as board-read-failed / busy
+    if [ "$status_rc" -eq 124 ] || [ "$status_rc" -eq 137 ]; then
+      hb "kanban-pickup $(iso_now) noop busy-node status-timeout no_card_claimed"
+      trailer_noop "busy-node status-timeout no_card_claimed"
+      exit 0
+    fi
     hb "kanban-pickup $(iso_now) noop board-read-failed no_card_claimed"
     trailer_noop "board-read-failed no_card_claimed"
     exit 0
@@ -180,9 +230,9 @@ if [ "$status_ok" -eq 1 ]; then
   exit 10
 fi
 
-# Fallback path: only todo list available
+# Fallback path: only todo list available (status failed or timed out)
 todo_count="$(jq 'length' "$tmp_todo" 2>/dev/null || echo 0)"
-printf 'TODO_INVENTORY count=%s\n' "$todo_count"
+printf 'TODO_INVENTORY count=%s status_unavailable\n' "$todo_count"
 todo_i=0
 case "$todo_count" in
   ''|*[!0-9]*) todo_i=0 ;;
