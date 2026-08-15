@@ -48,6 +48,7 @@ bash tests/last-stack-why-stopped-routine.sh
 bash tests/last-stack-lastdb-ops-offenders.sh
 bash tests/last-stack-lastdb-ops-offenders-routine.sh
 bash tests/last-stack-kanban-pickup-workers.sh
+bash tests/last-stack-pr-reaper-stale-open-heal.sh
 bash tests/last-stack-factory-hardening.sh
 bash tests/last-stack-factory-health-backlog.sh
 bash tests/last-stack-todo-rank.sh
