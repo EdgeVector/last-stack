@@ -13,6 +13,7 @@ trap 'rm -rf "$tmp"' EXIT
 for bin in \
   last-stack-feature-prove-routine \
   last-stack-why-stopped-routine \
+  last-stack-lastdb-ops-offenders-routine \
   last-stack-kanban-validate-routine
 do
   out="$("$ROOT/bin/$bin" --dry-run 2>/dev/null || true)"

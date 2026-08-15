@@ -1,0 +1,75 @@
+{
+  "status": {
+    "request_ops": {
+      "sample_count": 135000,
+      "ring_capacity": 256,
+      "top_by_total_ms": [
+        {
+          "client": "kanban",
+          "kind": "mutation",
+          "schema": "39a0424fa0853",
+          "count": 550,
+          "sum_ms": 5460000,
+          "max_ms": 55000,
+          "error_count": 149,
+          "error_statuses": { "400": 149 },
+          "phase_sums": {
+            "schema_reload_us": 2580000000,
+            "purge_plan_us": 2760000000,
+            "apply_us": 100000
+          }
+        },
+        {
+          "client": "lastgit",
+          "kind": "local_watch",
+          "schema": "-",
+          "count": 1200,
+          "sum_ms": 36000000,
+          "max_ms": 30000,
+          "error_count": 0,
+          "phase_sums": { "wait_us": 36000000000 }
+        },
+        {
+          "client": "kanban",
+          "kind": "query",
+          "schema": "39a0424fa0853",
+          "count": 6183,
+          "sum_ms": 3840000,
+          "max_ms": 1759,
+          "error_count": 0,
+          "phase_sums": { "hydrate_us": 3700000000, "annotate_us": 40000000 }
+        },
+        {
+          "client": "lastgit",
+          "kind": "query",
+          "schema": "PackIndex",
+          "count": 45000,
+          "sum_ms": 630000,
+          "max_ms": 80,
+          "error_count": 0,
+          "phase_sums": { "hydrate_us": 500000000 }
+        },
+        {
+          "client": "brain",
+          "kind": "query",
+          "schema": "Records",
+          "count": 19000,
+          "sum_ms": 38000,
+          "max_ms": 12,
+          "error_count": 0,
+          "phase_sums": { "hydrate_us": 30000000 }
+        }
+      ],
+      "top_by_duration": [
+        {
+          "client": "kanban",
+          "kind": "query",
+          "schema": "39a0424fa0853",
+          "duration_ms": 1759,
+          "rows": 1000,
+          "path": "POST /api/query"
+        }
+      ]
+    }
+  }
+}

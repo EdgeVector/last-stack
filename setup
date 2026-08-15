@@ -611,6 +611,10 @@ if [ -x "$SOURCE_ROOT/bin/last-stack-why-stopped-routine" ]; then
   "$SOURCE_ROOT/bin/last-stack-why-stopped-routine" || \
     echo "  why-stopped registry: install failed (non-fatal)" >&2
 fi
+if [ -x "$SOURCE_ROOT/bin/last-stack-lastdb-ops-offenders-routine" ]; then
+  "$SOURCE_ROOT/bin/last-stack-lastdb-ops-offenders-routine" || \
+    echo "  lastdb-ops-offenders registry: install failed (non-fatal)" >&2
+fi
 
 # Zero-LLM self-upgrade healer (every 30m) — checkout installs only.
 # Artifact runtime (one rule): host-track refresh agent is the only upgrader.

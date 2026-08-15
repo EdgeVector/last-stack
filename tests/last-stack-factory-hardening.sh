@@ -17,6 +17,8 @@ grep -q 'last-stack-kanban-file-pr' "$ROOT/routines/dogfood-rotate.md" \
 grep -q 'last-stack-kanban-file-pr' "$ROOT/routines/kanban-validate.md" \
   || fail "kanban-validate missing last-stack-kanban-file-pr"
 bash -n "$ROOT/bin/last-stack-why-stopped-routine"
+bash -n "$ROOT/bin/last-stack-lastdb-ops-offenders"
+bash -n "$ROOT/bin/last-stack-lastdb-ops-offenders-routine"
 
 # Pressure probe: should produce a level line (cool or hot) against live node, or exit 2 if CLI missing
 set +e
