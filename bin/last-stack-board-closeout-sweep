@@ -8,12 +8,15 @@
 # Actions (CHEAP, uncapped within --max-actions):
 #   1. doing + pr_url (field or body PR:/CR:/lastgit://) whose PR/CR is MERGED
 #      → last-stack-card-closeout (done; honors Requires-Deploy)
-#   2. empty/no-PR doing, age ≥ grace, no live worker, no branch commits → todo
-#   3. WIP commits + no PR after grace → todo (flag wip-no-pr; worktree kept)
-#   4. park expiry: a deploy-gated / close-failed park older than
+#   2. doing + pr_url whose PR/CR is CLOSED (not merged), or body has a
+#      STALE-PR REAP / reaper closed annotation → todo (flag closed-pr;
+#      clear structured pr_url; keep worktree/branch so pickup can reopen)
+#   3. empty/no-PR doing, age ≥ grace, no live worker, no branch commits → todo
+#   4. WIP commits + no PR after grace → todo (flag wip-no-pr; worktree kept)
+#   5. park expiry: a deploy-gated / close-failed park older than
 #      --max-park-hours with no live worker → todo (flag park-expired), so a
 #      parked card can never sit in `doing` forever with nobody driving it.
-#   5. repeated-failure escalation: a slug whose closeout fails for a
+#   6. repeated-failure escalation: a slug whose closeout fails for a
 #      NON-transient reason on --escalate-after consecutive passes (default 3)
 #      is stamped once on the board (CLOSE-FAILED-REPEATED, with the last
 #      failure text) and flagged close-failed-escalated:<slug>. A closeout that
@@ -26,6 +29,7 @@
 #
 # Protections (do NOT reclaim):
 #   - open / unknown PR on structured pr_url or body header
+#     (closed-not-merged is NOT protected — see action 2)
 #   - live agent process in the card worktree
 #   - deploy-gated / live-proof park: body Requires-Deploy:, tags
 #     awaiting-deploy|live-proof|deploy-gate, or HANDOFF + Requires-Deploy
@@ -494,51 +498,94 @@ function classifyPr(url) {
 }
 
 function isMerged(pr) {
-  if (pr.kind === "none") return { merged: false, detail: "no-pr" };
+  // Returns { merged, closed, detail }. closed = terminal closed/abandoned
+  // without merge (Forgejo/GitHub closed, LastGit closed/abandoned/rejected).
+  if (pr.kind === "none") return { merged: false, closed: false, detail: "no-pr" };
   if (pr.kind === "forge") {
     if (!fs.existsSync(forgeApi)) {
       res.flagged.push("forge-api-missing");
-      return { merged: false, detail: "forge-api-missing" };
+      return { merged: false, closed: false, detail: "forge-api-missing" };
     }
     const apiPath = `repos/${pr.owner}/${pr.repo}/pulls/${pr.number}`;
     const out = run(forgeApi, [apiPath], { timeout: 45000 });
     if (!out.ok) {
       res.flagged.push(`forge-fetch-failed:${pr.owner}/${pr.repo}#${pr.number}`);
-      return { merged: false, detail: "forge-fetch-failed" };
+      return { merged: false, closed: false, detail: "forge-fetch-failed" };
     }
     const d = parseJsonLoose(out.stdout);
-    if (!d) return { merged: false, detail: "forge-parse-failed" };
-    const merged = d.merged === true || String(d.state || "").toLowerCase() === "merged";
-    // closed without merged = not our done path
-    return { merged, detail: merged ? `forge#${pr.number}` : `forge#${pr.number}:${d.state || "open"}` };
+    if (!d) return { merged: false, closed: false, detail: "forge-parse-failed" };
+    const state = String(d.state || "").toLowerCase();
+    const merged = d.merged === true || state === "merged";
+    // closed without merged = not our done path — reclaim to todo (reaper path)
+    const closed = !merged && (state === "closed" || state === "rejected");
+    return {
+      merged,
+      closed,
+      detail: merged ? `forge#${pr.number}` : `forge#${pr.number}:${state || "open"}`,
+    };
   }
   if (pr.kind === "lastgit") {
     const out = run("lastgit", ["cr", "view", pr.repo, pr.id, "--json"], { timeout: 45000 });
     if (!out.ok) {
       res.flagged.push(`lastgit-fetch-failed:${pr.repo}/${pr.id}`);
-      return { merged: false, detail: "lastgit-fetch-failed" };
+      return { merged: false, closed: false, detail: "lastgit-fetch-failed" };
     }
     const d = parseJsonLoose(out.stdout);
-    if (!d) return { merged: false, detail: "lastgit-parse-failed" };
+    if (!d) return { merged: false, closed: false, detail: "lastgit-parse-failed" };
     const cr = d.cr || d.change_request || d;
     const state = String(cr.state || cr.status || d.state || "").toLowerCase();
     const mergeOid = cr.merge_oid || cr.mergeOid || d.merge_oid || "";
     const merged = state === "merged" || Boolean(mergeOid);
-    return { merged, detail: merged ? `lastgit:${pr.id}` : `lastgit:${pr.id}:${state || "open"}` };
+    const closed =
+      !merged && (state === "closed" || state === "abandoned" || state === "rejected");
+    return {
+      merged,
+      closed,
+      detail: merged ? `lastgit:${pr.id}` : `lastgit:${pr.id}:${state || "open"}`,
+    };
   }
   if (pr.kind === "github") {
     const out = run("gh", ["pr", "view", pr.number, "-R", `${pr.owner}/${pr.repo}`, "--json", "state,mergedAt"], { timeout: 45000 });
     if (!out.ok) {
       res.flagged.push(`gh-fetch-failed:${pr.owner}/${pr.repo}#${pr.number}`);
-      return { merged: false, detail: "gh-fetch-failed" };
+      return { merged: false, closed: false, detail: "gh-fetch-failed" };
     }
     const d = parseJsonLoose(out.stdout);
-    if (!d) return { merged: false, detail: "gh-parse-failed" };
-    const merged = Boolean(d.mergedAt) || String(d.state || "").toUpperCase() === "MERGED";
-    return { merged, detail: merged ? `gh#${pr.number}` : `gh#${pr.number}:${d.state || "OPEN"}` };
+    if (!d) return { merged: false, closed: false, detail: "gh-parse-failed" };
+    const state = String(d.state || "").toUpperCase();
+    const merged = Boolean(d.mergedAt) || state === "MERGED";
+    const closed = !merged && state === "CLOSED";
+    return {
+      merged,
+      closed,
+      detail: merged ? `gh#${pr.number}` : `gh#${pr.number}:${state || "OPEN"}`,
+    };
   }
   res.flagged.push("pr-url-unparsed");
-  return { merged: false, detail: "unparsed" };
+  return { merged: false, closed: false, detail: "unparsed" };
+}
+
+/** Body annotations left by card-reaper / STALE-PR REAP when forge closed a PR. */
+function bodySignalsClosedPr(card) {
+  const body = bodyOf(card);
+  if (/\bSTALE-PR\s*REAP\b/i.test(body)) return true;
+  if (/\bSTALE_PR_REAP\b/i.test(body)) return true;
+  if (/\breaper:\s*closed\b/i.test(body)) return true;
+  if (/\bPR\s+(?:was\s+)?(?:closed|reaped)\b/i.test(body)) return true;
+  return false;
+}
+
+function isClosedNotMerged(m, card) {
+  if (!m || m.merged) return false;
+  if (m.closed) return true;
+  if (/:(closed|abandoned|rejected)\b/i.test(String(m.detail || ""))) return true;
+  if (bodySignalsClosedPr(card)) return true;
+  return false;
+}
+
+function clearPrUrl(slug) {
+  if (dryRun) return;
+  run(boardCli, ["add", slug, "--pr-url", ""], { timeout: 30000 });
 }
 
 function closeCard(slug, prUrl, branch) {
@@ -662,6 +709,16 @@ for (const card of cards) {
           if (rollbackTodo(slug)) actions++;
         }
       }
+      continue;
+    }
+    // Closed/reaped (not merged): roll back to todo so pickup can reopen work.
+    // Detect via forge/LastGit/gh state, or STALE-PR REAP body annotation when
+    // the remote lookup flakes. Keep worktree/branch; clear structured pr_url.
+    if (isClosedNotMerged(m, card)) {
+      res.flagged.push(`closed-pr:${slug}:${m.detail || "body-reap"}`);
+      clearPrUrl(slug);
+      if (rollbackTodo(slug)) actions++;
+      else res.skipped.push(`${slug}:closed-pr-rollback-failed`);
       continue;
     }
     // Open / unknown PR: leave for watch/merge-babysit. Soft 1h does not reclaim these.
@@ -1043,55 +1100,93 @@ def has_commits(wt):
     return False
 
 def is_merged(url):
+    """Return (merged, closed, detail). closed = terminal closed without merge."""
     url = normalize_pr_url(url)
     if not url:
-        return False, "no-pr"
+        return False, False, "no-pr"
     m = re.match(r"lastgit://([^/]+)/cr/([^/\s?#]+)", url)
     if m:
         repo, cid = m.group(1), m.group(2)
         ok, out, _ = run(["lastgit", "cr", "view", repo, cid, "--json"], timeout=45)
         if not ok:
             res["flagged"].append(f"lastgit-fetch-failed:{repo}/{cid}")
-            return False, "lastgit-fetch-failed"
+            return False, False, "lastgit-fetch-failed"
         try:
             d = json.loads(strip(out))
         except Exception:
-            return False, "lastgit-parse-failed"
+            return False, False, "lastgit-parse-failed"
         cr = d.get("cr") or d.get("change_request") or d
         state = str(cr.get("state") or cr.get("status") or d.get("state") or "").lower()
         merge_oid = cr.get("merge_oid") or cr.get("mergeOid") or d.get("merge_oid") or ""
-        return state == "merged" or bool(merge_oid), f"lastgit:{cid}"
+        merged = state == "merged" or bool(merge_oid)
+        closed = (not merged) and state in ("closed", "abandoned", "rejected")
+        detail = f"lastgit:{cid}" if merged else f"lastgit:{cid}:{state or 'open'}"
+        return merged, closed, detail
     m = re.search(r"/([^/]+)/([^/]+)/pulls?/(\d+)", url)
     if m and "github.com" not in url:
         owner, repo, num = m.group(1), m.group(2), m.group(3)
         if not forge_api.exists():
             res["flagged"].append("forge-api-missing")
-            return False, "forge-api-missing"
+            return False, False, "forge-api-missing"
         ok, out, _ = run([str(forge_api), f"repos/{owner}/{repo}/pulls/{num}"], timeout=45)
         if not ok:
             res["flagged"].append(f"forge-fetch-failed:{owner}/{repo}#{num}")
-            return False, "forge-fetch-failed"
+            return False, False, "forge-fetch-failed"
         try:
             d = json.loads(strip(out))
         except Exception:
-            return False, "forge-parse-failed"
-        merged = d.get("merged") is True or str(d.get("state") or "").lower() == "merged"
-        return merged, f"forge#{num}"
+            return False, False, "forge-parse-failed"
+        state = str(d.get("state") or "").lower()
+        merged = d.get("merged") is True or state == "merged"
+        closed = (not merged) and state in ("closed", "rejected")
+        detail = f"forge#{num}" if merged else f"forge#{num}:{state or 'open'}"
+        return merged, closed, detail
     m = re.search(r"github\.com/([^/]+)/([^/]+)/pull/(\d+)", url)
     if m:
         owner, repo, num = m.group(1), m.group(2), m.group(3)
         ok, out, _ = run(["gh", "pr", "view", num, "-R", f"{owner}/{repo}", "--json", "state,mergedAt"], timeout=45)
         if not ok:
             res["flagged"].append(f"gh-fetch-failed:{owner}/{repo}#{num}")
-            return False, "gh-fetch-failed"
+            return False, False, "gh-fetch-failed"
         try:
             d = json.loads(strip(out))
         except Exception:
-            return False, "gh-parse-failed"
-        merged = bool(d.get("mergedAt")) or str(d.get("state") or "").upper() == "MERGED"
-        return merged, f"gh#{num}"
+            return False, False, "gh-parse-failed"
+        state = str(d.get("state") or "").upper()
+        merged = bool(d.get("mergedAt")) or state == "MERGED"
+        closed = (not merged) and state == "CLOSED"
+        detail = f"gh#{num}" if merged else f"gh#{num}:{state or 'OPEN'}"
+        return merged, closed, detail
     res["flagged"].append("pr-url-unparsed")
-    return False, "unparsed"
+    return False, False, "unparsed"
+
+def body_signals_closed_pr(card):
+    body = body_of(card)
+    if re.search(r"\bSTALE-PR\s*REAP\b", body, re.I):
+        return True
+    if re.search(r"\bSTALE_PR_REAP\b", body, re.I):
+        return True
+    if re.search(r"\breaper:\s*closed\b", body, re.I):
+        return True
+    if re.search(r"\bPR\s+(?:was\s+)?(?:closed|reaped)\b", body, re.I):
+        return True
+    return False
+
+def is_closed_not_merged(merged, closed, detail, card):
+    if merged:
+        return False
+    if closed:
+        return True
+    if re.search(r":(closed|abandoned|rejected)\b", str(detail or ""), re.I):
+        return True
+    if body_signals_closed_pr(card):
+        return True
+    return False
+
+def clear_pr_url(slug):
+    if dry_run:
+        return
+    run([board_cli, "add", slug, "--pr-url", ""], timeout=30)
 
 def close_card(slug, url, branch):
     if dry_run:
@@ -1181,7 +1276,7 @@ for card in cards:
         heal_pr_url(slug, url)
         res["flagged"].append(f"pr-url-healed:{slug}")
     if url:
-        merged, detail = is_merged(url)
+        merged, closed, detail = is_merged(url)
         if merged:
             if close_card(slug, url, branch):
                 actions += 1
@@ -1194,6 +1289,15 @@ for card in cards:
                     res["flagged"].append(f"park-expired:{slug}")
                     if rollback(slug):
                         actions += 1
+            continue
+        # Closed/reaped (not merged) → todo so pickup can reopen (keep worktree).
+        if is_closed_not_merged(merged, closed, detail, card):
+            res["flagged"].append(f"closed-pr:{slug}:{detail or 'body-reap'}")
+            clear_pr_url(slug)
+            if rollback(slug):
+                actions += 1
+            else:
+                res["skipped"].append(f"{slug}:closed-pr-rollback-failed")
             continue
         res["skipped"].append(f"{slug}:pr-open-or-unknown")
         continue

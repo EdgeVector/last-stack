@@ -242,4 +242,199 @@ if echo "$transient_closeout_out" | grep -q 'close-failed:merged-transient-close
   exit 1
 fi
 
+# ── closed (not merged) forge PR → roll back to todo ───────────────────────
+closed_moves="$tmp/closed-moves"
+closed_heals="$tmp/closed-heals"
+: >"$closed_moves"
+: >"$closed_heals"
+
+closed_board="$tmp/closed-board"
+cat >"$closed_board" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-}"
+case "$cmd" in
+  list)
+    cat <<'JSON'
+[
+  {
+    "slug": "reaped-closed-pr-ghost",
+    "title": "doing with forge PR closed by reaper",
+    "column": "doing",
+    "position": "9999999999999",
+    "assignee": "worker",
+    "tags": [],
+    "pr_url": "http://localhost:3300/EdgeVector/fold/pulls/1478",
+    "branch": "kanban/reaped-closed-pr-ghost",
+    "repo": "EdgeVector/fold",
+    "updated_at": "2020-01-01T00:00:00.000Z",
+    "body": "Repo: EdgeVector/fold\nBase: main\nKind: pr\nPR: #1478\n"
+  },
+  {
+    "slug": "still-open-pr",
+    "title": "doing with open forge PR",
+    "column": "doing",
+    "position": "9999999999998",
+    "assignee": "worker",
+    "tags": [],
+    "pr_url": "http://localhost:3300/EdgeVector/fold/pulls/9999",
+    "branch": "kanban/still-open-pr",
+    "repo": "EdgeVector/fold",
+    "updated_at": "2020-01-01T00:00:00.000Z",
+    "body": "Repo: EdgeVector/fold\nBase: main\nKind: pr\n"
+  }
+]
+JSON
+    ;;
+  add)
+    printf '%s\n' "$*" >>"${BOARD_HEALS:?}"
+    ;;
+  move)
+    printf '%s %s %s\n' "${2:-}" "${3:-}" "${4:-}" >>"${BOARD_MOVES:?}"
+    ;;
+  *)
+    echo "unexpected closed-board: $*" >&2
+    exit 2
+    ;;
+esac
+EOF
+chmod +x "$closed_board"
+
+# Forge API mock: #1478 closed not merged; #9999 open
+cat >"$binwrap/last-stack-forge-api" <<'EOF'
+#!/usr/bin/env bash
+path="${1:-}"
+if [[ "$path" == *"/pulls/1478" ]]; then
+  cat <<'JSON'
+{"number":1478,"state":"closed","merged":false,"title":"reaped"}
+JSON
+  exit 0
+fi
+if [[ "$path" == *"/pulls/9999" ]]; then
+  cat <<'JSON'
+{"number":9999,"state":"open","merged":false,"title":"live"}
+JSON
+  exit 0
+fi
+echo "unexpected forge path: $path" >&2
+exit 1
+EOF
+chmod +x "$binwrap/last-stack-forge-api"
+
+# Put mock forge-api on PATH *and* make sweep resolve it via a fake last_stack:
+# the sweep looks for $last_stack/bin/last-stack-forge-api relative to its own
+# install. Copy a thin redirect next to the sweep under a isolated stack root.
+closed_stack="$tmp/closed-stack"
+mkdir -p "$closed_stack/bin"
+cp "$sweep" "$closed_stack/bin/last-stack-board-closeout-sweep"
+cp "$binwrap/last-stack-forge-api" "$closed_stack/bin/last-stack-forge-api"
+chmod +x "$closed_stack/bin/last-stack-board-closeout-sweep" "$closed_stack/bin/last-stack-forge-api"
+
+export BOARD_MOVES="$closed_moves"
+export BOARD_HEALS="$closed_heals"
+closed_out="$("$closed_stack/bin/last-stack-board-closeout-sweep" \
+  --board-cli "$closed_board" --grace-min 1 --max-actions 20 2>&1 || true)"
+echo "$closed_out"
+
+if ! grep -q 'reaped-closed-pr-ghost todo' "$closed_moves"; then
+  echo "FAIL: closed-not-merged PR must roll back to todo:" >&2
+  cat "$closed_moves" >&2
+  echo "out=$closed_out" >&2
+  exit 1
+fi
+if ! echo "$closed_out" | grep -q 'closed-pr:reaped-closed-pr-ghost'; then
+  echo "FAIL: expected closed-pr flag for reaped card: $closed_out" >&2
+  exit 1
+fi
+if ! echo "$closed_out" | grep -qE 'rolled_back=1|rolled_slugs=reaped-closed-pr-ghost'; then
+  echo "FAIL: expected rolled_back for closed PR: $closed_out" >&2
+  exit 1
+fi
+# Open PR must stay skipped, not rolled back (heartbeat only prints skip *count*)
+if grep -q 'still-open-pr todo' "$closed_moves" 2>/dev/null; then
+  echo "FAIL: open PR must not roll back to todo:" >&2
+  cat "$closed_moves" >&2
+  exit 1
+fi
+if ! echo "$closed_out" | grep -q 'skipped=1'; then
+  echo "FAIL: expected skipped=1 for still-open PR (closed one was rolled): $closed_out" >&2
+  exit 1
+fi
+# Structured pr_url should be cleared so pickup reopens cleanly
+if ! grep -q 'reaped-closed-pr-ghost' "$closed_heals"; then
+  echo "FAIL: expected pr_url clear for closed PR:" >&2
+  cat "$closed_heals" >&2
+  exit 1
+fi
+
+# ── STALE-PR REAP body annotation when forge lookup flakes ─────────────────
+reap_moves="$tmp/reap-moves"
+reap_heals="$tmp/reap-heals"
+: >"$reap_moves"
+: >"$reap_heals"
+
+reap_board="$tmp/reap-board"
+cat >"$reap_board" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-}"
+case "$cmd" in
+  list)
+    cat <<'JSON'
+[
+  {
+    "slug": "body-reap-annotation",
+    "title": "forge flaky but body says STALE-PR REAP",
+    "column": "doing",
+    "position": "1",
+    "assignee": "worker",
+    "tags": [],
+    "pr_url": "http://localhost:3300/EdgeVector/fold/pulls/1478",
+    "branch": "kanban/body-reap-annotation",
+    "repo": "EdgeVector/fold",
+    "updated_at": "2020-01-01T00:00:00.000Z",
+    "body": "Repo: EdgeVector/fold\nBase: main\nKind: pr\nPR: #1478\n\nSTALE-PR REAP: forge closed after 1h SLA (Mini gate red).\n"
+  }
+]
+JSON
+    ;;
+  add)
+    printf '%s\n' "$*" >>"${BOARD_HEALS:?}"
+    ;;
+  move)
+    printf '%s %s %s\n' "${2:-}" "${3:-}" "${4:-}" >>"${BOARD_MOVES:?}"
+    ;;
+  *)
+    echo "unexpected reap-board: $*" >&2
+    exit 2
+    ;;
+esac
+EOF
+chmod +x "$reap_board"
+
+# Flaky forge: always fail
+cat >"$closed_stack/bin/last-stack-forge-api" <<'EOF'
+#!/usr/bin/env bash
+echo "forge down" >&2
+exit 1
+EOF
+chmod +x "$closed_stack/bin/last-stack-forge-api"
+
+export BOARD_MOVES="$reap_moves"
+export BOARD_HEALS="$reap_heals"
+reap_out="$("$closed_stack/bin/last-stack-board-closeout-sweep" \
+  --board-cli "$reap_board" --grace-min 1 --max-actions 20 2>&1 || true)"
+echo "$reap_out"
+
+if ! grep -q 'body-reap-annotation todo' "$reap_moves"; then
+  echo "FAIL: STALE-PR REAP body must roll back even when forge flakes:" >&2
+  cat "$reap_moves" >&2
+  echo "out=$reap_out" >&2
+  exit 1
+fi
+if ! echo "$reap_out" | grep -q 'closed-pr:body-reap-annotation'; then
+  echo "FAIL: expected closed-pr flag from body REAP: $reap_out" >&2
+  exit 1
+fi
+
 echo "ok last-stack-board-closeout-sweep-logic"
