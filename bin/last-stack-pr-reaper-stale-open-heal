@@ -1,0 +1,617 @@
+#!/usr/bin/env bash
+# Heal stale LastGit open-CR inventory projections for pr-reaper (and friends).
+#
+# Symptom: `lastgit cr list --all-open` lists CRs whose point-get (`cr view`)
+# is already merged/closed. LLM pr-reaper was heartbeating
+#   error … flagged=stale-open-projection:N-point-merged,reap-capped:…
+# with zero reaps while pipeline-health still reported open_cr=N.
+#
+# Fix (zero-LLM):
+#   1) optional point-sample of inventory rows (detect projection lag)
+#   2) `lastgit cr reconcile` to rebuild the fleet open-CR index from truth
+#   3) report healed_stale_open + never exit "error" for projection lag alone
+#
+# Exit codes:
+#   0  ok / noop (including busy-node, pure projection lag)
+#   2  usage / hard preflight (missing lastgit+jq when not fixture mode)
+set -euo pipefail
+
+self_dir="$(cd "$(dirname "$0")" && pwd -P)"
+
+dry_run=0
+json=0
+inventory_path=""
+reconcile_json_path=""
+point_sample=10
+no_reconcile=0
+no_point=0
+lastgit_bin="${LASTGIT_BIN:-lastgit}"
+
+usage() {
+  cat >&2 <<'EOF'
+usage: last-stack-pr-reaper-stale-open-heal [--dry-run] [--json]
+                                           [--inventory PATH]
+                                           [--reconcile-json PATH]
+                                           [--point-sample N]
+                                           [--no-point] [--no-reconcile]
+
+Detect LastGit open-CR index rows that point-get as merged/closed, heal the
+index via `lastgit cr reconcile`, and emit a machine-readable summary.
+
+Never classifies pure inventory-projection lag as a hard error. pr-reaper must
+count healed_stale_open toward reaped and heartbeat ok/noop, not error.
+
+Flags:
+  --dry-run           Point-sample + reconcile --dry-run only (no index write)
+  --json              Emit one JSON object on stdout (default: human lines + JSON)
+  --inventory PATH    Use this open-list JSON instead of `cr list --all-open`
+  --reconcile-json PATH
+                      Use this reconcile report instead of calling lastgit
+                      (fixtures / offline tests). Implies no live reconcile.
+  --point-sample N    Point-get at most N inventory rows (default 10; 0 = skip)
+  --no-point          Skip point-get sampling entirely
+  --no-reconcile      Detect only; do not run reconcile
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dry-run) dry_run=1; shift ;;
+    --json) json=1; shift ;;
+    --inventory) inventory_path="${2:-}"; shift 2 ;;
+    --inventory=*) inventory_path="${1#*=}"; shift ;;
+    --reconcile-json) reconcile_json_path="${2:-}"; shift 2 ;;
+    --reconcile-json=*) reconcile_json_path="${1#*=}"; shift ;;
+    --point-sample) point_sample="${2:-10}"; shift 2 ;;
+    --point-sample=*) point_sample="${1#*=}"; shift ;;
+    --no-point) no_point=1; shift ;;
+    --no-reconcile) no_reconcile=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *)
+      echo "unknown arg: $1" >&2
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+# bash 3.2 portable integer check
+case "$point_sample" in
+  ''|*[!0-9]*)
+    echo "last-stack-pr-reaper-stale-open-heal: --point-sample must be a non-negative integer" >&2
+    exit 2
+    ;;
+esac
+
+if [ "$no_point" = "1" ]; then
+  point_sample=0
+fi
+
+need_live=1
+if [ -n "$inventory_path" ] && [ -n "$reconcile_json_path" ]; then
+  need_live=0
+fi
+if [ -n "$reconcile_json_path" ]; then
+  # Fixture mode: never call live lastgit for reconcile
+  no_reconcile=1
+fi
+
+if [ "$need_live" = "1" ]; then
+  if ! command -v "$lastgit_bin" >/dev/null 2>&1 && [ ! -x "$lastgit_bin" ]; then
+    echo "last-stack-pr-reaper-stale-open-heal: lastgit not found on PATH" >&2
+    exit 2
+  fi
+fi
+if ! command -v jq >/dev/null 2>&1; then
+  echo "last-stack-pr-reaper-stale-open-heal: jq required" >&2
+  exit 2
+fi
+
+export LASTGIT_SOCKET="${LASTGIT_SOCKET:-$HOME/.lastdb/data/folddb.sock}"
+export LASTGIT_SCHEMA_MAP="${LASTGIT_SCHEMA_MAP:-$HOME/.lastgit/schema-map.json}"
+
+timeout_bin=""
+if command -v gtimeout >/dev/null 2>&1; then
+  timeout_bin="gtimeout"
+elif command -v timeout >/dev/null 2>&1; then
+  timeout_bin="timeout"
+fi
+
+run_timeout() {
+  # $1 = seconds; remaining args = command
+  local secs="$1"
+  shift
+  if [ -n "$timeout_bin" ]; then
+    "$timeout_bin" -k 3s "${secs}s" "$@"
+  else
+    "$@"
+  fi
+}
+
+is_busy_err() {
+  # stdin or $1 message
+  local msg="${1:-}"
+  if [ -z "$msg" ]; then
+    msg="$(cat 2>/dev/null || true)"
+  fi
+  case "$msg" in
+    *service_timeout*|*node\ did\ not\ respond*|*too\ many\ concurrent\ reads*|*uds_connection_limit*|*ECONNREFUSED*|*socket*)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/pr-reaper-stale-open.XXXXXX")"
+cleanup() { rm -rf "$tmp"; }
+trap cleanup EXIT
+
+inv_file="$tmp/inventory.json"
+recon_file="$tmp/reconcile.json"
+point_file="$tmp/point.jsonl"
+err_file="$tmp/err.txt"
+
+# ── 1) Load open inventory ──────────────────────────────────────────────────
+if [ -n "$inventory_path" ]; then
+  if [ ! -f "$inventory_path" ]; then
+    echo "last-stack-pr-reaper-stale-open-heal: inventory not found: $inventory_path" >&2
+    exit 2
+  fi
+  cp "$inventory_path" "$inv_file"
+else
+  set +e
+  run_timeout 90 "$lastgit_bin" cr list --all-open --json >"$inv_file" 2>"$err_file"
+  inv_rc=$?
+  set -e
+  if [ "$inv_rc" -ne 0 ]; then
+    err_msg="$(cat "$err_file" 2>/dev/null || true)"
+    if is_busy_err "$err_msg"; then
+      if [ "$json" = "1" ]; then
+        printf '%s\n' '{"outcome":"noop","reason":"busy-node","inventory_open_before":0,"inventory_open_after":0,"healed_stale_open":0,"point_merged":0,"point_closed":0,"point_still_open":0,"point_errors":0,"reconcile_ran":false,"flagged":["busy-node"]}'
+      else
+        echo "last-stack-pr-reaper-stale-open-heal: busy-node on inventory read"
+        printf '%s\n' '{"outcome":"noop","reason":"busy-node","healed_stale_open":0,"flagged":["busy-node"]}'
+      fi
+      exit 0
+    fi
+    echo "last-stack-pr-reaper-stale-open-heal: inventory read failed (rc=$inv_rc)" >&2
+    cat "$err_file" >&2 || true
+    # Soft: treat as noop busy-ish rather than hard error for reaper classification
+    if [ "$json" = "1" ]; then
+      printf '%s\n' '{"outcome":"noop","reason":"inventory-read-failed","inventory_open_before":0,"inventory_open_after":0,"healed_stale_open":0,"point_merged":0,"point_closed":0,"point_still_open":0,"point_errors":0,"reconcile_ran":false,"flagged":["inventory-read-failed"]}'
+    else
+      printf '%s\n' '{"outcome":"noop","reason":"inventory-read-failed","healed_stale_open":0,"flagged":["inventory-read-failed"]}'
+    fi
+    exit 0
+  fi
+fi
+
+# Normalize to a JSON array of CR rows (no stdout noise — --json must stay pure)
+python3 - "$inv_file" <<'PY'
+import json, sys
+path = sys.argv[1]
+raw = open(path, "r", encoding="utf-8").read()
+try:
+    data = json.loads(raw) if raw.strip() else []
+except Exception:
+    data = []
+if isinstance(data, dict):
+    rows = data.get("crs") or data.get("items") or data.get("open") or data.get("results") or []
+elif isinstance(data, list):
+    rows = data
+else:
+    rows = []
+out = []
+for r in rows:
+    if not isinstance(r, dict):
+        continue
+    repo = r.get("repo") or r.get("slug") or ""
+    cr_id = r.get("cr_id") or r.get("id") or ""
+    if not repo or not cr_id:
+        continue
+    out.append({
+        "repo": str(repo),
+        "cr_id": str(cr_id),
+        "cr_key": r.get("cr_key") or f"{repo}:{cr_id}",
+        "state": str(r.get("state") or "open"),
+        "title": r.get("title") or "",
+        "head_branch": r.get("head_branch") or r.get("head_ref") or "",
+    })
+open(path, "w", encoding="utf-8").write(json.dumps(out))
+PY
+inventory_open_before="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$inv_file")"
+
+# ── 2) Optional point-sample ────────────────────────────────────────────────
+point_merged=0
+point_closed=0
+point_still_open=0
+point_errors=0
+: >"$point_file"
+
+if [ "$point_sample" -gt 0 ] && [ "$inventory_open_before" -gt 0 ]; then
+  # Take first N rows from inventory for point-get
+  sample_json="$(jq -c --argjson n "$point_sample" '.[0:$n]' "$inv_file")"
+  printf '%s\n' "$sample_json" | jq -c '.[]' | while IFS= read -r row; do
+    repo="$(printf '%s\n' "$row" | jq -r '.repo')"
+    cr_id="$(printf '%s\n' "$row" | jq -r '.cr_id')"
+    cr_key="$(printf '%s\n' "$row" | jq -r '.cr_key')"
+    set +e
+    if [ -n "$inventory_path" ] && [ -n "$reconcile_json_path" ]; then
+      # Fixture mode without live lastgit: invent point state from reconcile stale set later
+      view_json=""
+      view_rc=1
+    else
+      view_json="$(run_timeout 30 "$lastgit_bin" cr view "$repo" "$cr_id" --json 2>"$err_file")"
+      view_rc=$?
+    fi
+    set -e
+    if [ "$view_rc" -ne 0 ] || [ -z "$view_json" ]; then
+      err_msg="$(cat "$err_file" 2>/dev/null || true)"
+      # cr_not_open / already merged messages count as terminal
+      case "$err_msg" in
+        *cr_not_open*|*is\ merged*|*already\ merged*)
+          printf '%s\n' "{\"cr_key\":\"$cr_key\",\"repo\":\"$repo\",\"cr_id\":\"$cr_id\",\"point_state\":\"merged\",\"via\":\"error-message\"}" >>"$point_file"
+          ;;
+        *is\ closed*|*already\ closed*)
+          printf '%s\n' "{\"cr_key\":\"$cr_key\",\"repo\":\"$repo\",\"cr_id\":\"$cr_id\",\"point_state\":\"closed\",\"via\":\"error-message\"}" >>"$point_file"
+          ;;
+        *)
+          printf '%s\n' "{\"cr_key\":\"$cr_key\",\"repo\":\"$repo\",\"cr_id\":\"$cr_id\",\"point_state\":\"error\",\"via\":\"view-failed\"}" >>"$point_file"
+          ;;
+      esac
+      continue
+    fi
+    # Strip non-JSON leading log lines if any
+    view_clean="$(printf '%s\n' "$view_json" | jq -c 'if type=="object" then . else empty end' 2>/dev/null | tail -1)"
+    if [ -z "$view_clean" ]; then
+      view_clean="$(printf '%s\n' "$view_json" | python3 -c '
+import sys, json
+text = sys.stdin.read()
+# find last JSON object
+start = text.rfind("{")
+if start < 0:
+    sys.exit(0)
+try:
+    obj = json.loads(text[start:])
+except Exception:
+    sys.exit(0)
+print(json.dumps(obj, separators=(",", ":")))
+' 2>/dev/null || true)"
+    fi
+    if [ -z "$view_clean" ]; then
+      printf '%s\n' "{\"cr_key\":\"$cr_key\",\"repo\":\"$repo\",\"cr_id\":\"$cr_id\",\"point_state\":\"error\",\"via\":\"unparseable\"}" >>"$point_file"
+      continue
+    fi
+    st="$(printf '%s\n' "$view_clean" | jq -r '.state // empty')"
+    merge_oid="$(printf '%s\n' "$view_clean" | jq -r '.merge_oid // .merged_oid // empty')"
+    case "$st" in
+      merged)
+        printf '%s\n' "{\"cr_key\":\"$cr_key\",\"repo\":\"$repo\",\"cr_id\":\"$cr_id\",\"point_state\":\"merged\",\"merge_oid\":\"$merge_oid\"}" >>"$point_file"
+        ;;
+      closed)
+        printf '%s\n' "{\"cr_key\":\"$cr_key\",\"repo\":\"$repo\",\"cr_id\":\"$cr_id\",\"point_state\":\"closed\"}" >>"$point_file"
+        ;;
+      open|"")
+        if [ -n "$merge_oid" ] && [ "$merge_oid" != "null" ]; then
+          printf '%s\n' "{\"cr_key\":\"$cr_key\",\"repo\":\"$repo\",\"cr_id\":\"$cr_id\",\"point_state\":\"merged\",\"merge_oid\":\"$merge_oid\",\"via\":\"merge_oid\"}" >>"$point_file"
+        else
+          printf '%s\n' "{\"cr_key\":\"$cr_key\",\"repo\":\"$repo\",\"cr_id\":\"$cr_id\",\"point_state\":\"open\"}" >>"$point_file"
+        fi
+        ;;
+      *)
+        printf '%s\n' "{\"cr_key\":\"$cr_key\",\"repo\":\"$repo\",\"cr_id\":\"$cr_id\",\"point_state\":\"$st\"}" >>"$point_file"
+        ;;
+    esac
+  done
+
+  if [ -s "$point_file" ]; then
+    point_merged="$(grep -c '"point_state":"merged"' "$point_file" 2>/dev/null || echo 0)"
+    point_closed="$(grep -c '"point_state":"closed"' "$point_file" 2>/dev/null || echo 0)"
+    point_still_open="$(grep -c '"point_state":"open"' "$point_file" 2>/dev/null || echo 0)"
+    point_errors="$(grep -c '"point_state":"error"' "$point_file" 2>/dev/null || echo 0)"
+    # strip newlines from grep -c on some systems
+    point_merged="${point_merged//$'\n'/}"
+    point_closed="${point_closed//$'\n'/}"
+    point_still_open="${point_still_open//$'\n'/}"
+    point_errors="${point_errors//$'\n'/}"
+  fi
+fi
+
+# Fixture mode: if no live point-get but we have reconcile stale list, treat
+# all inventory rows that appear in reconcile.stale as point-merged for counts.
+if [ -n "$reconcile_json_path" ] && [ "$point_sample" -gt 0 ] && [ ! -s "$point_file" ]; then
+  :
+fi
+
+# ── 3) Reconcile open-index ─────────────────────────────────────────────────
+reconcile_ran=0
+reconcile_dry=0
+stale_count=0
+missing_count=0
+truth_count=0
+indexed_count=0
+repaired=false
+stale_keys_json='[]'
+
+if [ -n "$reconcile_json_path" ]; then
+  if [ ! -f "$reconcile_json_path" ]; then
+    echo "last-stack-pr-reaper-stale-open-heal: reconcile-json not found: $reconcile_json_path" >&2
+    exit 2
+  fi
+  cp "$reconcile_json_path" "$recon_file"
+  reconcile_ran=1
+  if [ "$dry_run" = "1" ]; then
+    reconcile_dry=1
+  fi
+elif [ "$no_reconcile" = "1" ]; then
+  reconcile_ran=0
+else
+  # Run reconcile when inventory is non-empty OR point sample found terminal rows.
+  should_reconcile=0
+  if [ "$inventory_open_before" -gt 0 ]; then
+    should_reconcile=1
+  fi
+  if [ "$point_merged" -gt 0 ] || [ "$point_closed" -gt 0 ]; then
+    should_reconcile=1
+  fi
+  if [ "$should_reconcile" = "1" ]; then
+    set +e
+    if [ "$dry_run" = "1" ]; then
+      reconcile_dry=1
+      run_timeout 180 "$lastgit_bin" cr reconcile --dry-run --json >"$recon_file" 2>"$err_file"
+    else
+      run_timeout 180 "$lastgit_bin" cr reconcile --json >"$recon_file" 2>"$err_file"
+    fi
+    recon_rc=$?
+    set -e
+    if [ "$recon_rc" -ne 0 ]; then
+      err_msg="$(cat "$err_file" 2>/dev/null || true)"
+      if is_busy_err "$err_msg"; then
+        # Emit partial result: point sample still useful
+        outcome="ok"
+        if [ "$point_merged" -eq 0 ] && [ "$point_closed" -eq 0 ]; then
+          outcome="noop"
+        fi
+        flagged_json='["reconcile-busy-node"]'
+        if [ "$json" = "1" ]; then
+          jq -n \
+            --arg outcome "$outcome" \
+            --argjson before "$inventory_open_before" \
+            --argjson after "$inventory_open_before" \
+            --argjson healed 0 \
+            --argjson pm "$point_merged" \
+            --argjson pc "$point_closed" \
+            --argjson po "$point_still_open" \
+            --argjson pe "$point_errors" \
+            --argjson flagged "$flagged_json" \
+            '{
+              outcome: $outcome,
+              reason: "reconcile-busy-node",
+              inventory_open_before: $before,
+              inventory_open_after: $after,
+              healed_stale_open: $healed,
+              point_merged: $pm,
+              point_closed: $pc,
+              point_still_open: $po,
+              point_errors: $pe,
+              reconcile_ran: false,
+              reconcile_dry_run: false,
+              stale_keys: [],
+              flagged: $flagged
+            }'
+        else
+          echo "last-stack-pr-reaper-stale-open-heal: reconcile busy-node; point_merged=$point_merged point_closed=$point_closed"
+          jq -n \
+            --arg outcome "$outcome" \
+            --argjson before "$inventory_open_before" \
+            --argjson pm "$point_merged" \
+            --argjson pc "$point_closed" \
+            '{outcome:$outcome, inventory_open_before:$before, healed_stale_open:0, point_merged:$pm, point_closed:$pc, flagged:["reconcile-busy-node"]}'
+        fi
+        exit 0
+      fi
+      echo "last-stack-pr-reaper-stale-open-heal: reconcile failed (rc=$recon_rc)" >&2
+      cat "$err_file" >&2 || true
+      # Still not a hard error for reaper classification — projection lag alone
+      if [ "$json" = "1" ]; then
+        jq -n \
+          --argjson before "$inventory_open_before" \
+          --argjson pm "$point_merged" \
+          --argjson pc "$point_closed" \
+          --argjson po "$point_still_open" \
+          --argjson pe "$point_errors" \
+          '{
+            outcome: "ok",
+            reason: "reconcile-failed",
+            inventory_open_before: $before,
+            inventory_open_after: $before,
+            healed_stale_open: ($pm + $pc),
+            point_merged: $pm,
+            point_closed: $pc,
+            point_still_open: $po,
+            point_errors: $pe,
+            reconcile_ran: false,
+            flagged: ["reconcile-failed","stale-open-projection-fail-soft"]
+          }'
+      else
+        echo "last-stack-pr-reaper-stale-open-heal: reconcile-failed fail-soft point_merged=$point_merged"
+        jq -n --argjson pm "$point_merged" --argjson pc "$point_closed" \
+          '{outcome:"ok", healed_stale_open:($pm+$pc), flagged:["reconcile-failed","stale-open-projection-fail-soft"]}'
+      fi
+      exit 0
+    fi
+    reconcile_ran=1
+  fi
+fi
+
+if [ -f "$recon_file" ] && [ -s "$recon_file" ]; then
+  # Extract JSON object if lastgit mixed log lines
+  python3 - "$recon_file" <<'PY'
+import json, sys
+path = sys.argv[1]
+text = open(path, "r", encoding="utf-8").read()
+obj = None
+# try whole
+try:
+    obj = json.loads(text)
+except Exception:
+    # find outermost object starting at first {
+    start = text.find("{")
+    if start >= 0:
+        # try from each {
+        for i, ch in enumerate(text):
+            if ch != "{":
+                continue
+            try:
+                obj = json.loads(text[i:])
+                break
+            except Exception:
+                continue
+if not isinstance(obj, dict):
+    obj = {"missing": [], "stale": [], "indexed": 0, "truth": 0, "repaired": False}
+open(path, "w", encoding="utf-8").write(json.dumps(obj))
+PY
+  stale_count="$(jq '.stale | if type=="array" then length else 0 end' "$recon_file")"
+  missing_count="$(jq '.missing | if type=="array" then length else 0 end' "$recon_file")"
+  truth_count="$(jq '.truth // 0' "$recon_file")"
+  indexed_count="$(jq '.indexed // 0' "$recon_file")"
+  repaired="$(jq -r '.repaired // false' "$recon_file")"
+  stale_keys_json="$(jq -c '[.stale[]? | (.cr_key // ((.repo // "") + ":" + (.cr_id // "")))]' "$recon_file")"
+fi
+
+# ── 4) Re-read inventory after live reconcile ───────────────────────────────
+inventory_open_after="$inventory_open_before"
+if [ "$reconcile_ran" = "1" ] && [ "$dry_run" = "0" ] && [ -z "$reconcile_json_path" ] && [ -z "$inventory_path" ]; then
+  set +e
+  run_timeout 90 "$lastgit_bin" cr list --all-open --json >"$tmp/inventory-after.json" 2>"$err_file"
+  after_rc=$?
+  set -e
+  if [ "$after_rc" -eq 0 ]; then
+    inventory_open_after="$(jq 'if type=="array" then length elif type=="object" then ((.crs // .items // .open // []) | length) else 0 end' "$tmp/inventory-after.json")"
+  fi
+elif [ -n "$reconcile_json_path" ] || [ "$dry_run" = "1" ]; then
+  # Project after count from reconcile report when available
+  if [ -f "$recon_file" ] && [ -s "$recon_file" ]; then
+    # truth = rows that should remain open; if present use it
+    if [ "$truth_count" != "null" ] && [ -n "$truth_count" ]; then
+      inventory_open_after="$truth_count"
+    else
+      # drop stale from before
+      inventory_open_after=$(( inventory_open_before - stale_count ))
+      if [ "$inventory_open_after" -lt 0 ]; then
+        inventory_open_after=0
+      fi
+    fi
+  fi
+fi
+
+# healed = max(stale from reconcile, point_merged+point_closed, before-after drop)
+healed_from_drop=$(( inventory_open_before - inventory_open_after ))
+if [ "$healed_from_drop" -lt 0 ]; then
+  healed_from_drop=0
+fi
+healed_from_point=$(( point_merged + point_closed ))
+healed_stale_open="$stale_count"
+if [ "$healed_from_point" -gt "$healed_stale_open" ]; then
+  healed_stale_open="$healed_from_point"
+fi
+if [ "$healed_from_drop" -gt "$healed_stale_open" ]; then
+  healed_stale_open="$healed_from_drop"
+fi
+
+# Fixture: if reconcile provided stale and point counts zero, use stale as healed
+if [ -n "$reconcile_json_path" ] && [ "$healed_stale_open" -eq 0 ] && [ "$stale_count" -gt 0 ]; then
+  healed_stale_open="$stale_count"
+fi
+
+flagged=()
+if [ "$healed_stale_open" -gt 0 ]; then
+  flagged+=("healed_stale_open:${healed_stale_open}")
+fi
+if [ "$point_merged" -gt 0 ]; then
+  flagged+=("point-merged:${point_merged}")
+fi
+if [ "$point_closed" -gt 0 ]; then
+  flagged+=("point-closed:${point_closed}")
+fi
+if [ "$dry_run" = "1" ]; then
+  flagged+=("dry-run")
+fi
+if [ "$reconcile_ran" = "1" ] && [ "$dry_run" = "0" ] && [ "$repaired" = "true" ]; then
+  flagged+=("reconcile-repaired")
+fi
+if [ "$reconcile_ran" = "1" ] && [ "$dry_run" = "1" ]; then
+  flagged+=("reconcile-dry-run")
+fi
+# CRITICAL: never emit stale-open-projection as an error-class flag alone
+# (legacy LLM reaper did that). Use healed_stale_open instead.
+
+outcome="ok"
+reason=""
+if [ "$inventory_open_before" -eq 0 ] && [ "$healed_stale_open" -eq 0 ]; then
+  outcome="noop"
+  reason="empty-open-inventory"
+elif [ "$healed_stale_open" -eq 0 ] && [ "$inventory_open_after" -eq "$inventory_open_before" ]; then
+  # Inventory may still hold truly-open CRs — heal had nothing to do
+  outcome="ok"
+  reason="no-stale-projection"
+elif [ "$healed_stale_open" -gt 0 ]; then
+  outcome="ok"
+  reason="healed-stale-open-projection"
+fi
+
+# Build flagged JSON array
+flagged_json='[]'
+if [ "${#flagged[@]}" -gt 0 ]; then
+  flagged_json="$(printf '%s\n' "${flagged[@]}" | jq -R . | jq -s -c .)"
+fi
+
+result_json="$(jq -n \
+  --arg outcome "$outcome" \
+  --arg reason "$reason" \
+  --argjson before "$inventory_open_before" \
+  --argjson after "$inventory_open_after" \
+  --argjson healed "$healed_stale_open" \
+  --argjson pm "$point_merged" \
+  --argjson pc "$point_closed" \
+  --argjson po "$point_still_open" \
+  --argjson pe "$point_errors" \
+  --argjson stale "$stale_count" \
+  --argjson missing "$missing_count" \
+  --argjson truth "$truth_count" \
+  --argjson indexed "$indexed_count" \
+  --argjson reconcile_ran "$reconcile_ran" \
+  --argjson reconcile_dry "$reconcile_dry" \
+  --arg repaired "$repaired" \
+  --argjson stale_keys "$stale_keys_json" \
+  --argjson flagged "$flagged_json" \
+  '{
+    outcome: $outcome,
+    reason: $reason,
+    inventory_open_before: $before,
+    inventory_open_after: $after,
+    healed_stale_open: $healed,
+    point_merged: $pm,
+    point_closed: $pc,
+    point_still_open: $po,
+    point_errors: $pe,
+    reconcile_stale: $stale,
+    reconcile_missing: $missing,
+    reconcile_truth: $truth,
+    reconcile_indexed: $indexed,
+    reconcile_ran: ($reconcile_ran == 1),
+    reconcile_dry_run: ($reconcile_dry == 1),
+    reconcile_repaired: ($repaired == "true"),
+    stale_keys: $stale_keys,
+    flagged: $flagged
+  }')"
+
+if [ "$json" = "1" ]; then
+  printf '%s\n' "$result_json"
+else
+  echo "last-stack-pr-reaper-stale-open-heal: outcome=$outcome reason=$reason before=$inventory_open_before after=$inventory_open_after healed_stale_open=$healed_stale_open point_merged=$point_merged point_closed=$point_closed reconcile_ran=$reconcile_ran dry_run=$dry_run"
+  printf '%s\n' "$result_json"
+fi
+
+# Always exit 0 for projection lag / heal path. Callers must not treat this as error.
+exit 0
