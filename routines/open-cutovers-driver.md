@@ -143,7 +143,7 @@ NORTH_STAR_DRIVER_TARGET=north-star-open-cutovers-drained \
   routines run last-stack-north-star-driver || true
 ```
 
-## 6. Heartbeat
+## 6. Heartbeat + machine result (required)
 
 ```
 OPEN_CUTOVERS_LIVE=<n> ADVANCED=<slugs> RESOLVED=<slugs> BLOCKED=<slugs>
@@ -151,9 +151,27 @@ OPEN_CUTOVERS_LIVE=<n> ADVANCED=<slugs> RESOLVED=<slugs> BLOCKED=<slugs>
 
 5–10 lines memory: which phase transitions, any DEFER, any card filed.
 
+**Every run must end with exactly one fresh machine-result line** so the
+routines harness can score the fire (missing trailers become `outcome=unknown`
+and pollute fleet-health). Print the `ROUTINE_RESULT` token followed by:
+
+```text
+ROUTINE_RESULT outcome=<ok|noop|error> detail=live=<n> advanced=<n> resolved=<n> blocked=<n>
+```
+
+| Result | When |
+|--------|------|
+| **ok** | Advanced or resolved at least one live cutover line, or empty-ledger success with optional NS proof refresh |
+| **noop** | Live lines remain but none advanced (all blocked/deferred with updated `verified=`) |
+| **error** | Unexpected failure (brain/board unusable after retries, partial write without durable ledger update) |
+
+Never print a prior run's machine-result line. Never omit the trailer on a
+"nothing changed" empty ledger — empty ledger is **ok**, not silence.
+
 ## Exit criteria
 
 Done when every touched live line either advanced one durable phase step, was
-resolved, or has an explicit blocked reason on the ledger with updated `verified=`.
+resolved, or has an explicit blocked reason on the ledger with updated `verified=`,
+**and** the machine-result line above has been printed.
 
 Empty ledger = **success**, not "nothing to do."

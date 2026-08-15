@@ -22,7 +22,8 @@ There is **no `review` column**. Board columns are only:
 - Incomplete work: stay in `todo` or `doing`
 - Complete work: `done` only with merge/END-STATE proof
 - Intentional holds: `block_status=needs_human|deferred|design_first` + reason
-  while the card stays in `todo` (or `backlog` if dep-blocked)
+  in **`backlog`** (default `todo` is the pickup claim lane and rejects deferred /
+  human-gated holds — see the kanban skill "Default todo is the pickup claim lane")
 
 Never `kanban move <slug> review`. The live board rejects it. Do not invent
 a review lane on custom boards either.
