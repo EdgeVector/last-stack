@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # last-stack-kanban-file-pr — file a pickup-ready Kind:pr card.
 #
+# The last-stack host-track artifact must publish this helper to ~/.local/bin:
+# routinesd generator shells may use PATH without sourcing shell-prelude.
+#
 # Generators MUST use this instead of raw `kanban add` for Kind:pr work.
 # Pickup will not claim a card that lacks a live --north-star and
 # --milestone; fkanban refuses Kind:pr in default/todo without a milestone.
