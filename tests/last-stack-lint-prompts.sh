@@ -935,4 +935,24 @@ fi
 
 check_kanban_json_envelope_guard
 
+# owner-review-rotate: product-versioned; must not reintroduce whole-type
+# brain list census for owners or papercuts (card
+# routines-owner-review-rotate-still-enumerates-brain).
+owner_review="$ROOT/routines/owner-review-rotate.md"
+test -f "$owner_review"
+if grep -Eq 'List owner charters:.*brain_list|List owner charters:.*brain list' "$owner_review"; then
+  echo "owner-review-rotate must not list owner charters via brain list" >&2
+  exit 1
+fi
+if grep -Eq 'Find its open papercuts:.*brain_list|Find its open papercuts:.*brain list' "$owner_review"; then
+  echo "owner-review-rotate must not find papercuts via brain list" >&2
+  exit 1
+fi
+# Positive contract: ownership-map is the owner set; search/get for papercuts.
+grep -q 'ownership-map' "$owner_review"
+grep -q 'brain search' "$owner_review"
+test -f "$ROOT/config/routines-registry/owner-review-rotate.toml"
+grep -q 'last-stack/routines/owner-review-rotate.md' \
+  "$ROOT/config/routines-registry/owner-review-rotate.toml"
+
 echo "ok"
