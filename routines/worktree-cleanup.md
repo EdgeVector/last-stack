@@ -213,6 +213,23 @@ latest, draft PRs opened or updated, board corrections made, stale artifacts
 removed, GB reclaimed + final free space, and anything left for a human. Include
 the exact residual dirty paths and why each one was intentionally left.
 
+**A no-op must be justified by the pool size, not by free space.** Always report
+`pool_size=<n worktrees>` next to the outcome, and never conclude "clean"
+while that number is large. The 2026-08-15 run reported
+
+> `Routine completed as a no-op: primary repos are clean/current, 215 GiB free,
+> and 84 canonical worktrees remain.`
+
+— which is a no-op declared *in the same sentence as the problem*. 64 of those
+84 were finished scan worktrees with no uncommitted work and no live process,
+all reclaimable that instant. Abundant disk is not evidence the pool is
+healthy; it is only evidence you are not yet in trouble.
+
+If `last-stack-worktree-reclaim` exits **3** / logs `liveness_unavailable=1`,
+it could not read the process table and deliberately did nothing. Heartbeat
+that as `error`, never `noop` — a blind run and a clean machine must not
+produce the same token.
+
 > **Heartbeat (LAST action, always).** Call
 > `<last-stack>/bin/last-stack-brain-append-heartbeat --line "worktree-cleanup
 > <ISO-ts> <ok|noop|error> <one-line-outcome>"`. Use `ok` when any cleanup,
