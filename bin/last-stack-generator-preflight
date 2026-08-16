@@ -7,17 +7,20 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
 export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
 
 if [ -x "$ROOT/bin/last-stack-lastdb-pressure" ]; then
-  if ! "$ROOT/bin/last-stack-lastdb-pressure" --hot --quiet 2>/dev/null; then
-    rc=$?
-    if [ "$rc" -eq 1 ]; then
-      ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      if [ -x "$ROOT/bin/last-stack-brain-append-heartbeat" ]; then
-        "$ROOT/bin/last-stack-brain-append-heartbeat" --line \
-          "$REASON $ts noop backpressure lastdb-hot" 2>/dev/null || true
-      fi
-      printf '%s %s\n' 'ROUTINE_RESULT' "outcome=noop detail=backpressure lastdb-hot reason=$REASON"
-      exit 75
+  # Capture the status BEFORE any negation. `if ! cmd; then rc=$?; fi` reads the
+  # INVERTED status (0), so the shed branch below was unreachable and this gate
+  # always fell through to `exit 0`. `|| rc=$?` is the form that survives set -e.
+  rc=0
+  "$ROOT/bin/last-stack-lastdb-pressure" --hot --quiet 2>/dev/null || rc=$?
+  # Shed on hot (1) only. Probe-unavailable (2) must not shed.
+  if [ "$rc" -eq 1 ]; then
+    ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    if [ -x "$ROOT/bin/last-stack-brain-append-heartbeat" ]; then
+      "$ROOT/bin/last-stack-brain-append-heartbeat" --line \
+        "$REASON $ts noop backpressure lastdb-hot" 2>/dev/null || true
     fi
+    printf '%s %s\n' 'ROUTINE_RESULT' "outcome=noop detail=backpressure lastdb-hot reason=$REASON"
+    exit 75
   fi
 fi
 exit 0
