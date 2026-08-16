@@ -651,8 +651,18 @@ if [ "$sweep_stale" -eq 1 ]; then
         cand="$name"
         i=0
         while [ "$i" -le 3 ]; do
+          # Forward: the directory carries the whole card slug. Slugs are long
+          # and specific, so this needs no length guard.
           case "$name" in *"$s"*) prot=1 ;; esac
-          case "$s" in *"$cand"*) prot=1 ;; esac
+          # Reverse: the card slug carries the directory's tail (dir
+          # `state-machine-factory-heal-state-machine` vs card
+          # `factory-heal-state-machine-def`). Stripping segments shortens the
+          # candidate, so this MUST have a length floor — without one,
+          # `finished-a` strips to `a`, which is a substring of nearly every
+          # slug and protects the entire pool.
+          if [ "${#cand}" -ge 8 ]; then
+            case "$s" in *"$cand"*) prot=1 ;; esac
+          fi
           [ "$prot" -eq 1 ] && break
           case "$cand" in
             *-*) cand="${cand#*-}" ;;

@@ -49,7 +49,17 @@ mk_clean_wt() {
 mk_clean_wt finished-a
 mk_clean_wt finished-b
 
-run() { HOME="$tmp" WORKTREES_DIR="$WT" LAST_STACK_RECLAIM_SKIP_BOARD=1 "$@"; }
+# LAST_STACK_RECLAIM_SKIP_LSOF=1 is the helper's documented test escape hatch:
+# it skips the bulk lsof AND its instrument verification, so liveness reads as
+# available. That is required here — CI itself runs in a sandbox where lsof is
+# denied (`liveness_probe_failed instrument=lsof rows=0`), which correctly
+# trips the new fail-closed path and would make every "was it reclaimed?"
+# assertion below fail for a reason unrelated to what it tests. The fail-closed
+# behaviour gets its own section further down, where the probe runs for real.
+run() {
+  HOME="$tmp" WORKTREES_DIR="$WT" \
+    LAST_STACK_RECLAIM_SKIP_BOARD=1 LAST_STACK_RECLAIM_SKIP_LSOF=1 "$@"
+}
 
 # ---------------------------------------------------------------- 3. finished
 # Finished work must be reclaimed WITHOUT waiting out --max-age-hours.
@@ -72,13 +82,18 @@ fi
 
 # ---------------------------------------------------------------- 1. liveness
 # With lsof denied, the sweep must refuse to remove ANYTHING and exit non-zero.
+# NOTE: deliberately does NOT set SKIP_LSOF — the probe must run for real here.
+# A host that already denies lsof (CI does) reaches the same state without the
+# shim, so this assertion holds in both environments.
 shim="$tmp/shim"
 mkdir -p "$shim"
 printf '#!/bin/sh\nexit 1\n' >"$shim/lsof"
 chmod +x "$shim/lsof"
 
 set +e
-out="$(PATH="$shim:$PATH" run "$bin" --sweep-stale --max-age-hours 0 2>&1)"
+out="$(PATH="$shim:$PATH" HOME="$tmp" WORKTREES_DIR="$WT" \
+  LAST_STACK_RECLAIM_SKIP_BOARD=1 \
+  "$bin" --sweep-stale --max-age-hours 0 2>&1)"
 rc=$?
 set -e
 
@@ -125,10 +140,21 @@ mkdir -p "$WT/repo-alpha-card"
 git -C "$WT/repo-alpha-card" init -q 2>/dev/null
 touch -t 202001010000 "$WT/repo-alpha-card"
 
+# SKIP_LSOF is essential here, not incidental: with liveness unavailable every
+# tree is treated as live and logged "keep protected", so this assertion would
+# pass without the protect set doing any work at all.
 out="$(PATH="$fakebin:$PATH" HOME="$tmp" WORKTREES_DIR="$WT" \
+  LAST_STACK_RECLAIM_SKIP_LSOF=1 \
   "$bin" --sweep-stale --max-age-hours 999999 --dry-run 2>&1 || true)"
 if ! printf '%s' "$out" | grep -q 'keep protected repo-alpha-card'; then
   echo "FAIL: a doing-card worktree was not protected — protect set is empty" >&2
+  printf '%s\n' "$out" >&2
+  exit 1
+fi
+# ...and prove it was the PROTECT SET, not a blind liveness fallback, by
+# confirming an unprotected sibling in the same run was still reclaimed.
+if ! printf '%s' "$out" | grep -q 'reclaim finished finished-a'; then
+  echo "FAIL: protect assertion passed vacuously — nothing was reclaimed in that run" >&2
   printf '%s\n' "$out" >&2
   exit 1
 fi
