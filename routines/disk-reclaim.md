@@ -129,6 +129,28 @@ continue — do not fail the whole run.
    `cargo sweep`/`go clean`/`node_modules` prune equivalent for your stack).
    Confirm any incremental-build cache cap is in effect; note it if not (don't
    change global env unattended).
+3c. **Account for space OUTSIDE your named counters.** `worktrees_pruned` /
+   `backups_pruned` / `lastdb_copies_pruned` describe the categories this
+   routine knows about — they say nothing about the rest of the disk. On
+   2026-08-15 the single largest reclaimable object on the machine was
+   **36 GB of leftover working trees under the git mirror cache**
+   (`~/.cache/edgevector-git/*.legacy-checkout`), invisible to every counter
+   here, while the routine reported a healthy steady `final_free`. Each run,
+   size the top-level directories you do NOT have a counter for, e.g.:
+
+   ```bash
+   du -sh "$HOME/.cache/"* 2>/dev/null | sort -rh | head -10
+   du -sh "$HOME/code/"*/.routine-worktrees 2>/dev/null | sort -rh | head
+   ```
+
+   Report anything above ~5 GB that no counter covers, even when you do not
+   act on it. Two traps observed there:
+   - A directory named like a cache can be **29 working trees holding 20
+     stashes and 213 dirty files**. Check `git status --porcelain` and
+     `git stash list` before treating any of it as disposable.
+   - `du` on such a directory tells you nothing about how much *history* is
+     stored: one 16 GB checkout had a 149 MiB pack and 11 GB of `target/`.
+     Use `git count-objects -vH` before concluding a git cache is large.
 4a. **LastDB backup retention (`~/.lastdb-backups/` ONLY).** Keep the newest 3
    `pre-*` backup dirs by their trailing timestamp; delete every older one
    (retention set with Tom 2026-07-19 after unbounded backups contributed to
@@ -190,6 +212,25 @@ continue — do not fail the whole run.
 ## Output
 Report: GB reclaimed, worktrees pruned (and which were kept and why), final free
 space, and anything left for a human.
+
+**`reclaimed_gb=0` is a claim that needs evidence, not a default.** Before
+emitting a zero, state which of these it was:
+- nothing was eligible (say how many candidates you examined), or
+- something *prevented* you from acting.
+
+The second case must never be reported as `ok`. If the reclaim helper exits
+**3** / logs `liveness_unavailable=1`, it could not read the process table and
+therefore refused to touch anything — heartbeat `error
+liveness_unavailable=1`, not `ok reclaimed_gb=0`. Same for a board read that
+failed (`board_unavailable`) or a `situations preflight` you could not run.
+This distinction is the whole ballgame: for weeks of hourly runs, a blind
+routine and an idle machine emitted the identical line `ok reclaimed_gb=0`,
+while the worktree pool grew to 75 trees and the git cache to 38 GB.
+
+Also report `pool_size=<n worktrees>` every run. A count that climbs across
+consecutive runs is the signal that a *generator* is outpacing this sweep —
+that is a card against the generator (reclaim-on-exit), not a reason to widen
+the sweep.
 
 > **Heartbeat (LAST action, always — even a bounded no-op).** Call
 > `<last-stack>/bin/last-stack-brain-append-heartbeat --line "disk-reclaim

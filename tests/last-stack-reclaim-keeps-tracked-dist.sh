@@ -42,7 +42,16 @@ git -C "$repo" commit -qm init
 
 # HOME is overridden so the legacy ~/.kanban/worktrees root and the patch dir
 # cannot reach the real machine.
+#
+# The free-space floor MUST be forced here. This test asserts that untracked
+# build caches DO get stripped, but stripping is pressure-gated: with the
+# default 80 GiB floor the assertion only holds on a host that happens to be
+# below it. On a roomy machine the sweep logs `pressure_skip`, strips nothing,
+# and the test failed for a reason that has nothing to do with tracked-dist
+# handling. Pinning the floor absurdly high makes "under pressure" true
+# everywhere, so this test measures what it claims to.
 HOME="$tmp" WORKTREES_DIR="$tmp/worktrees" \
+  LAST_STACK_RECLAIM_FREE_FLOOR_GIB=999999 \
   "$bin" --sweep-stale --max-age-hours 999999 >"$tmp/out.log" 2>&1 || true
 
 if [ ! -f "$repo/vendor/sdk/dist/index.js" ]; then
