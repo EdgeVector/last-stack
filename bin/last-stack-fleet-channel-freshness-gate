@@ -122,6 +122,17 @@ if [ "$registry_rc" -ne 0 ] || [ "$(jq -r '.ok // false' "$registry_json")" != "
         message: ("app is neither artifact nor exempt (install_mode=" + (.install_mode // "checkout") + ")")
       }
   ' "$registry_json" >> "$failures_jsonl" 2>/dev/null || true
+  jq -c '
+    (.apps // [])
+    | map(select(.probe_ok == false))
+    | .[]
+    | {
+        app: .app,
+        ok: false,
+        code: "artifact-missing-probes",
+        message: "artifact app has no safe_upgrade.probes"
+      }
+  ' "$registry_json" >> "$failures_jsonl" 2>/dev/null || true
   if [ ! -s "$failures_jsonl" ]; then
     jq -cn '{app:"registry", ok:false, code:"validate-registry-failed", message:"host-track validate-registry failed"}' \
       >> "$failures_jsonl"

@@ -48,14 +48,25 @@ separate intentional exceptions from drift. An artifact entry can set:
 
 `host-track install` asks LastGit to resolve and verify the promoted channel,
 verifies every blob again while copying it, installs under the immutable
-`versions/<manifest-digest>` directory, and atomically switches `current`.
+`versions/<manifest-digest>` directory, **probes that tree while `current`
+still points at last-known-good**. If the app sets `safe_upgrade.soak_hours`
+and a live current exists, refresh parks a `canary` pointer and leaves PATH
+alone; `host-track soak-watch` re-probes and promotes after the window.
+`--activate` (or `soak_hours: 0`, last-stack) flips `current` on GREEN probe.
 The displaced version remains at `previous` for `host-track rollback`.
 `host-track check` verifies the active payload hashes as well as freshness.
 It refuses to replace a non-symlink command target.
-When configured, `post_install` runs after activation and after rollback with
-`HOST_TRACK_APP`, `HOST_TRACK_INSTALL_ROOT`, and
-`HOST_TRACK_MANIFEST_DIGEST` in its environment. A failed hook leaves the app
-stale (no new stamp), so the refresh agent retries instead of claiming success.
+When configured, `post_install` runs on the version tree **before the probe**
+(so bun/npm hooks exist for the smoke) unless the app sets
+`safe_upgrade.post_install_phase` to `after-cutover` (last-stack `setup`,
+which rewrites live links). A failed hook or a RED probe leaves the app
+stale (no new stamp) and does not flip PATH.
+
+Every artifact app must declare `safe_upgrade.probes` — argv relative to the
+version tree. `host-track validate-registry` fails closed when an artifact
+app has none. Brain / kanban / situations also set `"latency": true` so a
+correct-but-much-slower candidate is RED against the current tree. Tom-only
+escape: `HOST_TRACK_PROBE_SKIP=1`. LastDB Mini stays on `lastdb-safe-upgrade`.
 
 ### Last Stack one rule (artifact is the only runtime)
 
@@ -206,7 +217,7 @@ Do **not** invent a new scheduled routine for exemption drift. Wire checks into
 fleet-rollout acceptance gate for `north-star-artifact-driven-host-track`. It
 composes prior PRs without a hollow Kind:validation shell:
 
-1. `host-track validate-registry` — every registered app is **artifact or exempt**
+1. `host-track validate-registry` — every registered app is **artifact or exempt**, and every artifact app declares `safe_upgrade.probes`
 2. `last-stack-host-track-artifact-invariant` — every artifact channel is
    **fresh** (`stale=false`), provenance/hashes hold, and **rollback targets**
    resolve when `previous` exists

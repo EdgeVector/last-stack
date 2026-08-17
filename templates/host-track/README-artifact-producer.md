@@ -34,6 +34,7 @@ published main oid on `host-track refresh <app>`.
    - remove `refresh: last-stack-refresh-local-safe`
    - fix `links[].source` to match packed paths
    - optional `post_install`
+   - required `safe_upgrade.probes` (argv relative to the version tree; `host-track refresh` smokes these before flipping `current`)
 5. Update post-merge map: `map_repo_to_app` → `artifact:<app>`.
 6. Dogfood: `host-track refresh <app>` then `host-track status <app>` shows
    `install_mode=artifact`, `stale=false`.

@@ -29,7 +29,10 @@ cat > "$good_registry" <<'EOF'
       "install_mode": "artifact",
       "install_root": "$HOME/apps/demo",
       "links": [{"source": "bin/demo", "target": "$HOME/.local/bin/demo"}],
-      "notes": "artifact fixture"
+      "notes": "artifact fixture",
+      "safe_upgrade": {
+        "probes": [{"argv": ["bin/demo"], "timeout_s": 10}]
+      }
     },
     {
       "app": "lastgit",
@@ -87,7 +90,7 @@ if ! HOST_TRACK_REGISTRY="$good_registry" "$ROOT/bin/host-track" validate-regist
   cat "$tmp/good.out" >&2
   fail "good registry should pass validate-registry"
 fi
-jq -e '.ok == true and .non_compliant == 0 and .policy == "artifact_or_exempt"' "$tmp/good.out" >/dev/null \
+jq -e '.ok == true and .non_compliant == 0 and .missing_probes == 0 and .policy == "artifact_or_exempt"' "$tmp/good.out" >/dev/null \
   || fail "good report shape wrong: $(cat "$tmp/good.out")"
 jq -e 'any(.apps[]; .app == "lastgit" and .registry_compliance == "exempt" and .artifact_exemption.kind == "bootstrap-recovery")' \
   "$tmp/good.out" >/dev/null || fail "lastgit not exempt in good report"
@@ -145,6 +148,18 @@ printf '%s\n' "$default_report" | jq -e '
   and any(.apps[]; .app == "configurations" and .registry_compliance == "artifact")
   and any(.apps[]; .app == "lastseek" and .registry_compliance == "artifact")
   and any(.apps[]; .app == "search" and .registry_compliance == "artifact")
+  and (.missing_probes == 0)
+  and all(.apps[] | select(.registry_compliance == "artifact"); .probe_ok == true)
 ' >/dev/null || fail "default registry compliance map wrong: $default_report"
+
+# Artifact app without probes fails closed.
+no_probe="$tmp/no-probe.json"
+jq '.apps[0].safe_upgrade = null' "$good_registry" > "$no_probe"
+if HOST_TRACK_REGISTRY="$no_probe" "$ROOT/bin/host-track" validate-registry --json >"$tmp/noprobe.out" 2>"$tmp/noprobe.err"; then
+  cat "$tmp/noprobe.out" "$tmp/noprobe.err" >&2
+  fail "artifact app without probes should fail validate-registry"
+fi
+jq -e '.ok == false and .missing_probes >= 1' "$tmp/noprobe.out" >/dev/null \
+  || fail "missing probes should be counted: $(cat "$tmp/noprobe.out")"
 
 printf 'ok: host-track registry compliance\n'
