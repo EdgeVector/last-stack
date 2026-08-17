@@ -87,10 +87,15 @@ heartbeat() {
 
 finish() {
   local st="$1"
+  local result_flags="none"
+  if [ "${#flagged[@]}" -gt 0 ]; then
+    result_flags="$(IFS=,; echo "${flagged[*]}")"
+  fi
   if [ "${#report[@]}" -gt 0 ]; then
     printf '%s\n' "${report[@]}"
   fi
   heartbeat "$st"
+  printf '%s %s\n' 'ROUTINE_RESULT' "outcome=${st} detail=live=${live} flagged=${result_flags}"
 }
 
 # Always-on merged-PR closeout (survives low-credit when watch is paused).
