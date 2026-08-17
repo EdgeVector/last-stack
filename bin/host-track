@@ -64,7 +64,7 @@ maybe_reexec_for_mutation() {
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  host-track status [--json] [app]
+  host-track status [--json] [--stale] [app]
   host-track which [--json] <app>
   host-track check <app>
   host-track validate-registry [--json]
@@ -180,6 +180,41 @@ gate_head() {
   [ -n "$remote" ] || return 0
   [ -n "$ref" ] || return 0
   git -C "$host_track" ls-remote "$remote" "$ref" 2>/dev/null | awk 'NR == 1 {print $1}' || true
+}
+
+remote_head() {
+  local remote="$1" ref="$2"
+  [ -n "$remote" ] || return 0
+  [ -n "$ref" ] || return 0
+  git ls-remote "$remote" "$ref" 2>/dev/null | awk 'NR == 1 {print $1}' || true
+}
+
+binary_version() {
+  local path="$1"
+  [ -x "$path" ] || return 0
+  # A LastSecrets locator is not itself a Sentry DSN. Version inspection must
+  # remain report-only even when the scheduled shell carries that locator.
+  env -u OBS_SENTRY_DSN "$path" --version 2>/dev/null | sed -n '1p' || true
+}
+
+binary_version_oid() {
+  local version="$1"
+  printf '%s\n' "$version" | sed -nE 's/.*-g([0-9a-fA-F]{7,40})(-dirty)?$/\1/p' | tr 'A-F' 'a-f'
+}
+
+expand_commit_oid() {
+  local cache="$1" oid="$2" expanded
+  [ -n "$cache" ] && [ -n "$oid" ] && [ -d "$cache" ] || return 0
+  expanded="$(git --git-dir="$cache" rev-parse --verify "${oid}^{commit}" 2>/dev/null || true)"
+  case "$expanded" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) printf '%s\n' "$expanded" ;;
+  esac
+}
+
+commit_distance() {
+  local cache="$1" installed="$2" gate="$3"
+  [ -d "$cache" ] && [ -n "$installed" ] && [ -n "$gate" ] || return 0
+  git --git-dir="$cache" rev-list --count "$installed..$gate" 2>/dev/null || true
 }
 
 command_path() {
@@ -482,6 +517,9 @@ status_json_for() {
   local install_mode artifact_app artifact_channel artifact_root install_root installed_digest channel_digest
   local stamp_install_mode stamp_current
   local track_repo track_ref main_tip channel_oid artifact_current artifact_previous artifact_problem
+  local exemption_kind deployment_binary deployment_peer_binary deployment_repo_cache
+  local deployment_version deployment_head deployment_peer_version deployment_peer_head
+  local deployment_pair_match deployment_problem behind_by distance deployment_expanded
 
   json="$(require_app_json "$app")"
   kind="$(field "$json" kind)"
@@ -499,6 +537,7 @@ status_json_for() {
   [ -n "$install_mode" ] || install_mode="checkout"
   exec_path="$(command_path "$command_name")"
   stamp_path="$STAMP_DIR/$app.json"
+  exemption_kind="$(printf '%s\n' "$json" | jq -r '.artifact_exemption.kind // ""')"
 
   artifact_app=""
   artifact_channel=""
@@ -509,6 +548,13 @@ status_json_for() {
   artifact_current=""
   artifact_previous=""
   artifact_problem=""
+  deployment_version=""
+  deployment_head=""
+  deployment_peer_version=""
+  deployment_peer_head=""
+  deployment_pair_match="null"
+  deployment_problem=""
+  behind_by="null"
   if [ "$install_mode" = "artifact" ]; then
     IFS=$'\t' read -r artifact_app artifact_channel artifact_root install_root < <(artifact_paths "$app" "$json")
     host_track="$install_root/current"
@@ -600,6 +646,44 @@ status_json_for() {
     fi
     host_head_short="${host_head:0:12}"
     version="$host_head"
+  elif [ "$exemption_kind" = "deployment-only" ] && [ -n "$(field "$json" deployment_binary)" ]; then
+    deployment_binary="$(expand_path "$(field "$json" deployment_binary)")"
+    deployment_peer_binary="$(expand_path "$(field "$json" deployment_peer_binary)")"
+    deployment_repo_cache="$(expand_path "$(field "$json" deployment_repo_cache)")"
+    deployment_version="$(binary_version "$deployment_binary")"
+    deployment_head="$(binary_version_oid "$deployment_version")"
+    deployment_peer_version="$(binary_version "$deployment_peer_binary")"
+    deployment_peer_head="$(binary_version_oid "$deployment_peer_version")"
+    gate_tip="$(remote_head "$gate_remote" "$gate_ref")"
+    if [ -n "$deployment_repo_cache" ]; then
+      host_head="$(expand_commit_oid "$deployment_repo_cache" "$deployment_head")"
+      [ -n "$host_head" ] || host_head="$deployment_head"
+      if [ -n "$deployment_peer_head" ]; then
+        deployment_expanded="$(expand_commit_oid "$deployment_repo_cache" "$deployment_peer_head")"
+        [ -z "$deployment_expanded" ] || deployment_peer_head="$deployment_expanded"
+      fi
+    else
+      host_head="$deployment_head"
+    fi
+    host_head_short="${host_head:0:12}"
+    version="$deployment_version"
+    exec_path="$deployment_binary"
+    stale="true"
+    if [ -z "$host_head" ]; then
+      deployment_problem="installed binary has no parseable Git version stamp"
+    elif [ -z "$gate_tip" ]; then
+      deployment_problem="published gate head is unavailable"
+    elif [ -z "$deployment_peer_head" ]; then
+      deployment_problem="paired binary has no parseable Git version stamp"
+    elif [ "$host_head" != "$deployment_peer_head" ]; then
+      deployment_pair_match="false"
+      deployment_problem="installed binary pair disagrees"
+    else
+      deployment_pair_match="true"
+      if [ "$host_head" = "$gate_tip" ]; then stale="false"; fi
+      distance="$(commit_distance "$deployment_repo_cache" "$host_head" "$gate_tip")"
+      if [ -n "$distance" ]; then behind_by="$distance"; fi
+    fi
   else
     host_head="$(git_head "$host_track")"
     host_head_short="$(git_head_short "$host_track")"
@@ -626,6 +710,8 @@ status_json_for() {
         freshness="hard_broken"
       fi
     fi
+  elif [ -n "$deployment_problem" ]; then
+    freshness="hard_broken"
   elif [ "$stale" = "true" ]; then
     freshness="soft_stale"
   fi
@@ -658,10 +744,16 @@ status_json_for() {
     --arg artifact_current "$artifact_current" \
     --arg artifact_previous "$artifact_previous" \
     --arg artifact_problem "$artifact_problem" \
+    --arg deployment_version "$deployment_version" \
+    --arg deployment_peer_version "$deployment_peer_version" \
+    --arg deployment_peer_head "$deployment_peer_head" \
+    --arg deployment_problem "$deployment_problem" \
     --arg freshness "$freshness" \
     --arg registry_compliance "$registry_compliance" \
     --argjson artifact_exemption "$artifact_exemption_json" \
     --argjson stale "$stale" \
+    --argjson behind_by "$behind_by" \
+    --argjson binary_pair_match "$deployment_pair_match" \
     '{
       app: $app,
       command: $command,
@@ -678,6 +770,11 @@ status_json_for() {
       registry_compliance: $registry_compliance,
       artifact_exemption: $artifact_exemption,
       stale: $stale,
+      behind_by: $behind_by,
+      binary_pair_match: $binary_pair_match,
+      paired_version: ($deployment_peer_version | select(length > 0) // null),
+      paired_head: ($deployment_peer_head | select(length > 0) // null),
+      deployment_problem: ($deployment_problem | select(length > 0) // null),
       freshness: $freshness,
       stamp: $stamp,
       refresh: ($refresh | select(length > 0) // null),
@@ -709,6 +806,9 @@ status_plain_for() {
       "version=" + (.version // "-"),
       "host_head=" + (.host_head // "-"),
       "gate_head=" + (.gate_head // "-"),
+      "behind_by=" + ((.behind_by // "-") | tostring),
+      "binary_pair_match=" + ((.binary_pair_match // "-") | tostring),
+      "deployment_problem=" + (.deployment_problem // "-"),
       "stale=" + (.stale | tostring),
       "freshness=" + (.freshness // "-"),
       "notes=" + .notes
@@ -720,10 +820,11 @@ list_apps() {
 }
 
 status_cmd() {
-  local json_out=0 app="" statuses=() one
+  local json_out=0 stale_only=0 app="" statuses=() one
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --json) json_out=1; shift ;;
+      --stale) stale_only=1; shift ;;
       -h|--help) usage; exit 0 ;;
       --*) die "unknown status flag: $1" ;;
       *) app="$1"; shift ;;
@@ -732,6 +833,10 @@ status_cmd() {
 
   if [ -n "$app" ]; then
     one="$(status_json_for "$app")"
+    if [ "$stale_only" -eq 1 ] && [ "$(printf '%s\n' "$one" | jq -r '.stale | tostring')" != "true" ]; then
+      if [ "$json_out" -eq 1 ]; then printf 'null\n'; fi
+      return
+    fi
     if [ "$json_out" -eq 1 ]; then
       printf '%s\n' "$one"
     else
@@ -742,7 +847,10 @@ status_cmd() {
 
   while IFS= read -r app; do
     [ -n "$app" ] || continue
-    statuses+=("$(status_json_for "$app")")
+    one="$(status_json_for "$app")"
+    if [ "$stale_only" -eq 0 ] || [ "$(printf '%s\n' "$one" | jq -r '.stale | tostring')" = "true" ]; then
+      statuses+=("$one")
+    fi
   done < <(list_apps)
 
   if [ "$json_out" -eq 1 ]; then
@@ -1452,14 +1560,20 @@ rollback_artifact_app() {
 }
 
 refresh_app() {
-  local app="$1" force="$2" json status stale refresh_path refresh_mode host_track install_mode
+  local app="$1" force="$2" json status stale refresh_path refresh_mode host_track install_mode exemption_kind
   local self_upgrade setup_path
 
   json="$(require_app_json "$app")"
   install_mode="$(setting "$json" install_mode)"
   [ -n "$install_mode" ] || install_mode="checkout"
+  exemption_kind="$(printf '%s\n' "$json" | jq -r '.artifact_exemption.kind // ""')"
   status="$(status_json_for "$app")"
   stale="$(printf '%s\n' "$status" | jq -r '.stale | tostring')"
+
+  if [ "$exemption_kind" = "deployment-only" ]; then
+    printf 'host-track: %s is deployment-only; generic refresh is disabled (use lastdb-safe-upgrade)\n' "$app" >&2
+    return 3
+  fi
 
   if [ "$force" -eq 0 ] && [ "$stale" = "false" ]; then
     # Pointer is current, but content may still be corrupt (hash mismatch).

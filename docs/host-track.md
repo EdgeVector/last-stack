@@ -129,9 +129,16 @@ Each status record reports:
 - `kind`
 - `install_mode`
 - `stale`
+- `behind_by` (commit distance when the installed and gate OIDs are available)
+- `binary_pair_match`, `paired_version`, `paired_head`, and
+  `deployment_problem` for safe-upgrade-managed binary pairs
 - `stamp`
 - `refresh`
 - `notes`
+
+Use `host-track status --stale` (optionally with `--json`) to show only apps
+whose measured `stale` value is true. Unknown measurements are not silently
+included as fresh.
 
 Artifact-backed records also report `artifact_app`, `artifact_channel`,
 `artifact_root`, `install_root`, `manifest_digest`, and
@@ -156,7 +163,11 @@ Allowed exemption `kind` codes (short, machine-readable):
 - `bootstrap-recovery` — substrate that must stay checkout-backed so the forge
   can still be repaired when artifact/CR paths are unhealthy (seed: `lastgit`).
 - `deployment-only` — install/activation is intentionally outside generic Host
-  Track refresh (seed: `lastdb` / `lastdbd` via `lastdb-safe-upgrade`).
+  Track refresh (seed: `lastdb` / `lastdbd` via `lastdb-safe-upgrade`). These
+  apps may still declare report-only `deployment_binary`,
+  `deployment_peer_binary`, and `deployment_repo_cache` fields. Status reads
+  their embedded Git version stamps and the protected gate ref; refresh remains
+  explicitly disabled even when status reports `stale=true`.
 
 ### Adding a new exemption (no forever routine)
 
