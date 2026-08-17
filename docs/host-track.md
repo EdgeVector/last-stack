@@ -292,7 +292,7 @@ install-side safe-upgrade so PATH tracks main without stuffing that into CI.
   Discord notify) when the binary is on PATH
 - **Detects merges** like `notify-discord.sh`: fleet open-CR index → open→gone →
   `cr view` → if `state=merged` and base is `main` and repo is mapped → upgrade
-- **Mapped apps:** last-stack / brain / situations / fkanban|kanban →
+- **Mapped apps:** last-stack / brain / situations / fkanban|kanban (app `kanban`) →
   `host-track refresh` (artifact + `track_gate_main`); routines, lastsecrets,
   configurations, search → `host-track refresh` (artifact + track_gate_main)
 - **Failure:** log + retry (max 3); **does not unmerge**; operator can run
@@ -352,7 +352,7 @@ channel tip. LaunchAgent `com.edgevector.host-track-refresh` runs
 canary promotes after its window without a second job.
 
 **Artifact CLIs (producers live):** last-stack, remote, brain, situations,
-kanban/fkanban (shared fkanban install_root). See
+kanban (shared `fkanban` install_root; public CLI is `kanban` only). See
 `templates/host-track/README-artifact-producer.md`.
 
 **Still local-safe (await producers):** routines, lastsecrets, configurations,
@@ -409,8 +409,8 @@ Uninstall removes the plist and boots out the loaded service:
   app opts in.
 
 The default registry is artifact-backed for `lastgit`, `last-stack`, `brain`,
-`situations`, `kanban`, `fkanban`, `lastdb`, and `lastdbd`. The `kanban` and
-`fkanban` commands share the `fkanban` artifact bundle. The `lastdb` and
+`situations`, `kanban`, `lastdb`, and `lastdbd`. The public board CLI is
+`kanban`; it installs from the `fkanban` artifact bundle. The `lastdb` and
 `lastdbd` commands share the `lastdb-bundle` artifact so the invariant can
 detect CLI/daemon source or manifest skew; live primary activation still goes
 through `lastdb-safe-upgrade`.

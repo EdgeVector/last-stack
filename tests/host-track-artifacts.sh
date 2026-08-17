@@ -500,4 +500,25 @@ fi
   || fail "dist-only refresh failed: $(cat "$tmp/dist-refresh.err")"
 [ "$(sitcli)" = dist-ok ] || fail "dist-only still works after refresh"
 
+# Retired PATH names: unlink leftover shims that still point at this
+# install_root; leave foreign symlinks and regular files alone.
+ln -s "$HOME/apps/sitcli/current/dist/sitcli" "$HOME/.local/bin/sitcli-legacy"
+ln -s /usr/bin/true "$HOME/.local/bin/sitcli-foreign"
+printf 'keep-me\n' > "$HOME/.local/bin/sitcli-plain"
+jq '.apps[0].retired_links = [
+  {"target": "$HOME/.local/bin/sitcli-legacy"},
+  {"target": "$HOME/.local/bin/sitcli-foreign"},
+  {"target": "$HOME/.local/bin/sitcli-plain"}
+]' "$HOST_TRACK_REGISTRY" > "$tmp/dist-registry-retired.json"
+mv "$tmp/dist-registry-retired.json" "$HOST_TRACK_REGISTRY"
+"$ROOT/bin/host-track" install sitcli >/dev/null 2>"$tmp/dist-retire.err" \
+  || fail "install with retired_links failed: $(cat "$tmp/dist-retire.err")"
+[ ! -e "$HOME/.local/bin/sitcli-legacy" ] \
+  || fail "retired link pointing at this install_root was not removed"
+[ -L "$HOME/.local/bin/sitcli-foreign" ] \
+  || fail "retired_links deleted a symlink this install does not own"
+[ -f "$HOME/.local/bin/sitcli-plain" ] && [ ! -L "$HOME/.local/bin/sitcli-plain" ] \
+  || fail "retired_links deleted or replaced a regular file"
+[ "$(sitcli)" = dist-ok ] || fail "live sitcli link broke after retiring leftovers"
+
 printf 'ok: dist-only artifact install/refresh (no synthetic bin/) \n'

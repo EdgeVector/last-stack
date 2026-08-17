@@ -60,9 +60,9 @@ map_repo_to_app() {
     last-stack) printf 'artifact:last-stack\n' ;;
     brain) printf 'artifact:brain\n' ;;
     situations) printf 'artifact:situations\n' ;;
-    # The repo is still `fkanban`; the host-track APP is now `kanban` — one
-    # registration linking both public CLI names. Emitting `artifact:fkanban`
-    # here would name an app that no longer exists in the registry.
+    # The repo is still `fkanban`; the host-track APP and public CLI are
+    # `kanban`. Emitting `artifact:fkanban` would name an app that no longer
+    # exists in the registry.
     fkanban|kanban) printf 'artifact:kanban\n' ;;
     routines) printf 'artifact:routines\n' ;;
     lastsecrets) printf 'artifact:lastsecrets\n' ;;
