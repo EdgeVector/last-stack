@@ -186,6 +186,64 @@ if echo "$malformed_out" | grep -q 'lastgit-fetch-failed:brain/cr-ms8mz1xt-981a`
   exit 1
 fi
 
+# Live (not dry-run) heal of a dirty-nonempty structured pr_url.
+dirty_heals="$tmp/dirty-heals"
+: >"$dirty_heals"
+dirty_board="$tmp/dirty-board"
+cat >"$dirty_board" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  list)
+    cat <<'JSON'
+[
+  {
+    "slug": "dirty-nonempty-pr-url",
+    "title": "open CR with trailing markdown backtick in pr_url",
+    "column": "doing",
+    "position": "1",
+    "assignee": "",
+    "tags": [],
+    "pr_url": "lastgit://last-stack/cr/cr-mskqwa3y-78c9`",
+    "branch": "kanban/dirty-nonempty-pr-url",
+    "repo": "EdgeVector/last-stack",
+    "updated_at": "2020-01-01T00:00:00.000Z",
+    "body": "Repo: EdgeVector/last-stack\nBase: main\nKind: pr\n"
+  }
+]
+JSON
+    ;;
+  add)
+    printf '%s\n' "$*" >>"${BOARD_HEALS:?}"
+    ;;
+  move)
+    ;;
+  *)
+    echo "unexpected dirty-board: $*" >&2
+    exit 2
+    ;;
+esac
+EOF
+chmod +x "$dirty_board"
+export BOARD_HEALS="$dirty_heals"
+dirty_out="$("$sweep" --board-cli "$dirty_board" --grace-min 1 --max-actions 20 2>&1 || true)"
+echo "$dirty_out"
+if ! grep -q 'lastgit://last-stack/cr/cr-mskqwa3y-78c9' "$dirty_heals"; then
+  echo "FAIL: expected dirty-nonempty pr_url heal to the sanitized lastgit URL:" >&2
+  cat "$dirty_heals" >&2
+  echo "out=$dirty_out" >&2
+  exit 1
+fi
+if grep -q 'cr-mskqwa3y-78c9`' "$dirty_heals"; then
+  echo "FAIL: heal restamped the dirty backtick URL:" >&2
+  cat "$dirty_heals" >&2
+  exit 1
+fi
+echo "$dirty_out" | grep -q 'pr-url-healed:dirty-nonempty-pr-url' || {
+  echo "FAIL: expected pr-url-healed for dirty-nonempty field: $dirty_out" >&2
+  exit 1
+}
+
 transient_stack="$tmp/transient-stack"
 mkdir -p "$transient_stack/bin"
 cp "$sweep" "$transient_stack/bin/last-stack-board-closeout-sweep"
