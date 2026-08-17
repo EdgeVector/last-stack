@@ -81,7 +81,8 @@ if ! printf '%s' "$out" | grep -q 'keep fresh fresh-one'; then
 fi
 
 # ---------------------------------------------------------------- 1. liveness
-# With lsof denied, the sweep must refuse to remove ANYTHING and exit non-zero.
+# Hard-closed: lsof denied AND no real board protect set (SKIP_BOARD) must
+# refuse to remove ANYTHING and exit non-zero.
 # NOTE: deliberately does NOT set SKIP_LSOF — the probe must run for real here.
 # A host that already denies lsof (CI does) reaches the same state without the
 # shim, so this assertion holds in both environments.
@@ -98,23 +99,69 @@ rc=$?
 set -e
 
 if [ "$rc" -eq 0 ]; then
-  echo "FAIL: blind run (lsof denied) exited 0 — a no-op must not report success" >&2
+  echo "FAIL: hard-blind run (lsof denied, no board) exited 0 — a no-op must not report success" >&2
   printf '%s\n' "$out" >&2
   exit 1
 fi
 if ! printf '%s' "$out" | grep -q 'liveness_unavailable=1'; then
-  echo "FAIL: blind run did not report liveness_unavailable=1" >&2
+  echo "FAIL: hard-blind run did not report liveness_unavailable=1" >&2
+  printf '%s\n' "$out" >&2
+  exit 1
+fi
+if printf '%s' "$out" | grep -q 'liveness_soft=1'; then
+  echo "FAIL: hard-blind run (no board) must not soft-degrade" >&2
   printf '%s\n' "$out" >&2
   exit 1
 fi
 if printf '%s' "$out" | grep -qE '^last-stack-worktree-reclaim: (remove|reclaim finished)'; then
-  echo "FAIL: blind run removed a worktree despite being unable to prove it idle" >&2
+  echo "FAIL: hard-blind run removed a worktree despite being unable to prove it idle" >&2
   printf '%s\n' "$out" >&2
   exit 1
 fi
 # The trees must still be there.
 if [ ! -d "$WT/finished-a" ]; then
-  echo "FAIL: blind run deleted finished-a" >&2
+  echo "FAIL: hard-blind run deleted finished-a" >&2
+  exit 1
+fi
+
+# Soft-degrade: same denied lsof, but a real board protect set is present.
+# Unprotected finished worktrees must still reclaim; doing-card trees must not.
+fakebin_soft="$tmp/fakebin-soft"
+mkdir -p "$fakebin_soft"
+cat >"$fakebin_soft/kanban" <<'FAKE'
+#!/bin/sh
+printf '{"cards":[{"slug":"doing-keep-me"}]}\n'
+FAKE
+chmod +x "$fakebin_soft/kanban"
+mk_clean_wt doing-keep-me-wt
+# dir name must contain the doing slug for protect matching
+rm -rf "$WT/doing-keep-me-wt"
+mk_clean_wt "repo-doing-keep-me"
+
+set +e
+out="$(PATH="$fakebin_soft:$shim:$PATH" HOME="$tmp" WORKTREES_DIR="$WT" \
+  "$bin" --sweep-stale --max-age-hours 999999 --dry-run 2>&1)"
+rc=$?
+set -e
+
+if [ "$rc" -ne 0 ]; then
+  echo "FAIL: soft-degrade run (lsof denied + board ok) exited $rc — should exit 0" >&2
+  printf '%s\n' "$out" >&2
+  exit 1
+fi
+if ! printf '%s' "$out" | grep -q 'liveness_soft=1'; then
+  echo "FAIL: soft-degrade run did not report liveness_soft=1" >&2
+  printf '%s\n' "$out" >&2
+  exit 1
+fi
+if ! printf '%s' "$out" | grep -q 'reclaim finished finished-a'; then
+  echo "FAIL: soft-degrade did not reclaim unprotected finished-a" >&2
+  printf '%s\n' "$out" >&2
+  exit 1
+fi
+if ! printf '%s' "$out" | grep -q 'keep protected repo-doing-keep-me'; then
+  echo "FAIL: soft-degrade did not protect doing-card worktree" >&2
+  printf '%s\n' "$out" >&2
   exit 1
 fi
 
@@ -159,4 +206,4 @@ if ! printf '%s' "$out" | grep -q 'reclaim finished finished-a'; then
   exit 1
 fi
 
-echo "PASS: liveness fails closed, finished work reclaims promptly, board parse sound"
+echo "PASS: liveness hard-closed without board, soft-degrades with board, finished work reclaims promptly, board parse sound"

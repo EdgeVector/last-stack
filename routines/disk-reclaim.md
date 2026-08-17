@@ -97,6 +97,21 @@ continue — do not fail the whole run.
    ```bash
    "$last_stack/bin/last-stack-worktree-reclaim" --sweep-stale --max-age-hours 48
    ```
+   **Liveness gates (won't-undo — 2026-08-17 free-collapse):** the helper's
+   process probe (`ps`/`lsof`) may fail under a scheduled sandbox while the
+   board still answers. Interpret helper output as:
+   - **Hard stop** (`exit 3`, `liveness_unavailable=1`, no `liveness_soft=1`):
+     process table missing **and** no real board protect set. Do **not** hand-
+     delete worktrees. Heartbeat `error liveness_unavailable=1 …`.
+   - **Soft degrade** (`exit 0`, `liveness_soft=1`): process table missing but
+     board protect is real. The helper still reclaims finished non-`doing`
+     worktrees (no pressure strip). Count `reclaim finished` / `removed`
+     lines as `worktrees_pruned`. Heartbeat `ok liveness_soft=1
+     worktrees_pruned=<n> …` when it reclaimed, or `ok liveness_soft=1
+     worktrees_pruned=0 …` when the protect set + age gate left nothing
+     eligible (that is a real empty result, not a blind abort).
+   - Never treat soft-degrade as a reason to skip backup/scratch retention or
+     free-space escalation below — those steps do not need process inspection.
    Heartbeat tokens: count lines with `removed worktree` / `stripped` from
    helper stdout if useful. Fallback if the helper is missing: per worktree,
    strip `target`/`node_modules`, then remove only when clean + not `doing` +
@@ -219,13 +234,30 @@ emitting a zero, state which of these it was:
 - something *prevented* you from acting.
 
 The second case must never be reported as `ok`. If the reclaim helper exits
-**3** / logs `liveness_unavailable=1`, it could not read the process table and
-therefore refused to touch anything — heartbeat `error
-liveness_unavailable=1`, not `ok reclaimed_gb=0`. Same for a board read that
-failed (`board_unavailable`) or a `situations preflight` you could not run.
+**3** / logs `liveness_unavailable=1` **without** `liveness_soft=1`, it could
+not read the process table **and** had no board protect set — heartbeat
+`error liveness_unavailable=1`, not `ok reclaimed_gb=0`. Soft-degrade
+(`liveness_soft=1`) is different: worktree reclaim may still have run; report
+the measured `worktrees_pruned` and do not hard-error solely for soft
+liveness. Same hard-error rule for a board read that failed
+(`board_unavailable`) or a `situations preflight` you could not run when
+those failures blocked the only remaining safe reclaim path.
 This distinction is the whole ballgame: for weeks of hourly runs, a blind
 routine and an idle machine emitted the identical line `ok reclaimed_gb=0`,
-while the worktree pool grew to 75 trees and the git cache to 38 GB.
+while the worktree pool grew to 75 trees and the git cache to 38 GB. On
+2026-08-16→17 the opposite failure mode appeared: every hourly fire hard-
+aborted on sandbox-denied `ps` (`liveness_unavailable=1 reclaimed_gb=0`)
+while free space fell ~100 GiB with `board_ok=1` — soft-degrade closes that.
+
+**Free-space collapse with zero reclaim (won't-undo):** keep the previous
+run's `final_free` GiB in automation memory (`prev_final_free_gib=<n>`).
+After this run's reclaim steps, if `reclaimed_gb=0` and
+`worktrees_pruned=0` and free dropped by **>20 GiB** vs the previous stored
+value, heartbeat `error free_collapsing_with_zero_reclaim drop_gib=<n>
+final_free=<free> prev_free=<prev>` (plus the usual counters) so
+morning-sync / factory-health see a loud signal — not a silent identical
+hourly red. Always rewrite `prev_final_free_gib` at end of a successful
+assessment even when outcome is error.
 
 Also report `pool_size=<n worktrees>` every run. A count that climbs across
 consecutive runs is the signal that a *generator* is outpacing this sweep —
