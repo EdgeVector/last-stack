@@ -108,6 +108,7 @@ bash tests/last-stack-lastdb-safe-upgrade-candidate-class.sh
 bash tests/last-stack-lastdb-safe-upgrade-latency-bar.sh
 bash tests/last-stack-lastdb-safe-upgrade-cas-probe.sh
 bash tests/last-stack-safe-upgrade-backup-dedup.sh
+bash tests/last-stack-safe-upgrade-backup-retention.sh
 bash tests/last-stack-lastdb-canary-dogfood.sh
 bash tests/last-stack-canary-build-main.sh
 bash tests/last-stack-lastdb-memory-guard.sh

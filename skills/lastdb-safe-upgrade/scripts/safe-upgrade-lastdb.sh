@@ -36,6 +36,10 @@
 #   - Install only lastdbd without the sibling lastdb CLI from the same build
 #   - Kill/restart the primary on a RED probe
 #   - brew upgrade when formula is not installed / primary is sidebin+launchd
+#   - Delete non-routine trees under ~/.lastdb-backups (BROKEN-*, pre-repair-*,
+#     hand-named). After a GREEN cutover only, prune excess routine pre-* trees
+#     beyond LASTDB_BACKUP_KEEP (default 2) + the current run's backup.
+#     LASTDB_BACKUP_KEEP=0 disables pruning entirely.
 #
 # Usage:
 #   safe-upgrade-lastdb.sh                  # resolve → probe → live if green
@@ -43,6 +47,10 @@
 #   safe-upgrade-lastdb.sh --yes            # no confirm prompt before live cutover
 #   safe-upgrade-lastdb.sh --candidate /path/to/lastdbd
 #   safe-upgrade-lastdb.sh --version 0.22.8 # fetch that tap release tarball
+# Env (backup retention):
+#   LASTDB_BACKUP_KEEP=2          # routine pre-* trees to keep after GREEN
+#                                 # cutover (plus current run). 0 = never prune.
+#   LASTDB_BACKUP_PINNED_SCAN=1   # 0 skips preflight identity pin estimate
 #
 set -euo pipefail
 
@@ -54,6 +62,10 @@ export PATH="${LASTDB_SIDEBIN_DIR:-$HOME/.lastdb/bin-with-upload-cap}:$HOME/.loc
 PRIMARY_HOME="${LASTDB_HOME:-$HOME/.lastdb}"
 PRIMARY_SOCK="$PRIMARY_HOME/data/folddb.sock"
 BACKUP_ROOT="${LASTDB_BACKUP_ROOT:-$HOME/.lastdb-backups}"
+# After GREEN cutover: keep this many *prior* routine pre-* trees, plus the
+# current run's backup. 0 disables pruning. Never touches BROKEN-/pre-repair-/hand names.
+LASTDB_BACKUP_KEEP="${LASTDB_BACKUP_KEEP:-2}"
+LASTDB_BACKUP_PINNED_SCAN="${LASTDB_BACKUP_PINNED_SCAN:-1}"
 PROBE_ROOT="${LASTDB_PROBE_ROOT:-$HOME/.lastdb-test-copies}"
 SMOKE_SH="${LASTDB_SMOKE_SH:-$HOME/code/edgevector/.claude/run-lastdb-mini-smoke.sh}"
 TAP_REPO="EdgeVector/homebrew-lastdb"
@@ -233,6 +245,202 @@ find_reusable_backup() {
     printf '%s\n' "$found"
   fi
   return 0
+}
+
+# Routine safe-upgrade backup name: pre-<cand>-from-<cur>-YYYYMMDDTHHMMSSZ
+# Same narrowness as freeze-dir sweeps: require -from- + trailing compact UTC stamp.
+# Excludes BROKEN-*, pre-repair-*, and any hand-named tree.
+# Portable (macOS Bash 3.2): no ${var: -N} substrings.
+is_routine_pre_upgrade_backup() {
+  local base="$1" ts
+  case "$base" in
+    pre-*-from-*) ;;
+    *) return 1 ;;
+  esac
+  ts="$(printf '%s\n' "$base" | sed -n 's/.*-\([0-9]\{8\}T[0-9]\{6\}Z\)$/\1/p')"
+  [ -n "$ts" ] || return 1
+  return 0
+}
+
+# Newest-first list of absolute paths of routine pre-* backups under BACKUP_ROOT.
+# Sorted by trailing compact UTC stamp (not full name — version prefixes differ).
+list_routine_pre_upgrade_backups() {
+  local d base ts
+  [ -d "$BACKUP_ROOT" ] || return 0
+  {
+    for d in "$BACKUP_ROOT"/*; do
+      [ -e "$d" ] || continue
+      [ -d "$d" ] || continue
+      [ ! -L "$d" ] || continue
+      base="$(basename "$d")"
+      is_routine_pre_upgrade_backup "$base" || continue
+      ts="$(printf '%s\n' "$base" | sed -n 's/.*-\([0-9]\{8\}T[0-9]\{6\}Z\)$/\1/p')"
+      printf '%s\t%s\n' "$ts" "$d"
+    done
+  } | LC_ALL=C sort -r | cut -f2-
+}
+
+# Directory containing this driver + backup-pin-bytes.py (BASH_SOURCE-safe).
+_safe_upgrade_scripts_dir() {
+  local src="${BASH_SOURCE[0]:-$0}"
+  # When helpers are sourced into a test harness, BASH_SOURCE[0] is the harness;
+  # callers may export SAFE_UPGRADE_SCRIPTS_DIR to override.
+  if [ -n "${SAFE_UPGRADE_SCRIPTS_DIR:-}" ] && [ -d "$SAFE_UPGRADE_SCRIPTS_DIR" ]; then
+    printf '%s\n' "$SAFE_UPGRADE_SCRIPTS_DIR"
+    return 0
+  fi
+  cd "$(dirname "$src")" && pwd -P
+}
+
+# Human-readable bytes (GiB, one decimal).
+_fmt_gib() {
+  local b="${1:-0}"
+  awk -v b="$b" 'BEGIN { printf "%.1f" , b / (1024*1024*1024) }'
+}
+
+# Preflight inventory: count trees, free disk, optional identity-pinned estimate.
+# `du` is wrong for clones (double-counts); pin estimate uses size+mtime identity.
+report_backup_root_inventory() {
+  local routine=0 other=0 free_b=0 pinned_b="" pin_script free_h pinned_h
+  local d base
+
+  if [ ! -d "$BACKUP_ROOT" ]; then
+    log "backups: root missing ($BACKUP_ROOT) — will create at STEP 1"
+    return 0
+  fi
+
+  for d in "$BACKUP_ROOT"/*; do
+    [ -e "$d" ] || continue
+    [ -d "$d" ] || continue
+    base="$(basename "$d")"
+    if is_routine_pre_upgrade_backup "$base"; then
+      routine=$((routine + 1))
+    else
+      other=$((other + 1))
+      log "backups: non-routine tree present (never auto-pruned): $base"
+    fi
+  done
+
+  free_b="$(df -k "$BACKUP_ROOT" 2>/dev/null | awk 'NR==2 {print $4 * 1024}')"
+  [ -n "$free_b" ] || free_b=0
+  free_h="$(_fmt_gib "$free_b")"
+
+  log "backups: root=$BACKUP_ROOT routine_pre=${routine} other=${other} keep=${LASTDB_BACKUP_KEEP} free_disk=${free_h}GiB"
+
+  if [ "${LASTDB_BACKUP_PINNED_SCAN}" = "0" ] || [ "${LASTDB_BACKUP_PINNED_SCAN}" = "false" ]; then
+    log "backups: pinned-byte scan skipped (LASTDB_BACKUP_PINNED_SCAN=0)"
+    return 0
+  fi
+
+  pin_script="$(_safe_upgrade_scripts_dir)/backup-pin-bytes.py"
+  if [ ! -f "$pin_script" ]; then
+    warn "backups: pin estimator missing ($pin_script); skip pinned-byte report"
+    return 0
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    warn "backups: python3 not on PATH; skip pinned-byte report"
+    return 0
+  fi
+
+  set +e
+  pinned_b="$(python3 "$pin_script" "$PRIMARY_HOME" "$BACKUP_ROOT" 2>/dev/null \
+    | awk '{
+        for (i = 1; i <= NF; i++) {
+          if ($i ~ /^pinned_bytes=/) {
+            sub(/^pinned_bytes=/, "", $i)
+            print $i
+            exit
+          }
+        }
+      }')"
+  set -e
+  case "$pinned_b" in
+    ''|*[!0-9]*)
+      warn "backups: pinned-byte scan produced no number"
+      return 0
+      ;;
+  esac
+  pinned_h="$(_fmt_gib "$pinned_b")"
+  log "backups: identity-pinned ≈ ${pinned_h}GiB (${pinned_b} bytes; size+mtime proxy, ±10%)"
+  if [ "$free_b" -gt 0 ] && [ "$pinned_b" -gt "$free_b" ]; then
+    warn "backups: pinned bytes (${pinned_h}GiB) exceed free disk (${free_h}GiB) — prune or free space before the next cutover grows another clone"
+  fi
+}
+
+# After GREEN live cutover: prune oldest routine pre-* trees beyond KEEP + current.
+# Never deletes the current run's BACKUP. Never deletes non-routine names.
+# LASTDB_BACKUP_KEEP=0 disables pruning entirely.
+prune_excess_pre_upgrade_backups() {
+  local keep protect path base ts_list n kept pruned apparent pin_script tree_bytes
+  protect="${1:-}"
+  keep="${LASTDB_BACKUP_KEEP:-2}"
+
+  case "$keep" in
+    ''|*[!0-9]*)
+      warn "retention: LASTDB_BACKUP_KEEP='$keep' not a non-negative integer — skip prune"
+      return 0
+      ;;
+  esac
+  if [ "$keep" -eq 0 ]; then
+    log "retention: LASTDB_BACKUP_KEEP=0 — pruning disabled"
+    return 0
+  fi
+  if [ ! -d "$BACKUP_ROOT" ]; then
+    return 0
+  fi
+
+  # Collect routine backups newest-first; skip protect (current run).
+  ts_list=""
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    if [ -n "$protect" ] && [ "$path" = "$protect" ]; then
+      continue
+    fi
+    ts_list="${ts_list}${path}"$'\n'
+  done <<EOF
+$(list_routine_pre_upgrade_backups)
+EOF
+
+  n=0
+  kept=0
+  pruned=0
+  pin_script="$(_safe_upgrade_scripts_dir)/backup-pin-bytes.py"
+
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    n=$((n + 1))
+    if [ "$n" -le "$keep" ]; then
+      kept=$((kept + 1))
+      log "retention: keep prior #$n $(basename "$path")"
+      continue
+    fi
+    base="$(basename "$path")"
+    apparent="$(du -sk "$path" 2>/dev/null | awk '{print $1}')"
+    [ -n "$apparent" ] || apparent=0
+    tree_bytes=""
+    if [ -f "$pin_script" ] && command -v python3 >/dev/null 2>&1; then
+      tree_bytes="$(python3 "$pin_script" --tree "$path" 2>/dev/null \
+        | awk '{
+            for (i = 1; i <= NF; i++) {
+              if ($i ~ /^pinned_bytes=/) {
+                sub(/^pinned_bytes=/, "", $i)
+                print $i
+                exit
+              }
+            }
+          }')"
+    fi
+    case "$tree_bytes" in
+      ''|*[!0-9]*) tree_bytes="unknown" ;;
+    esac
+    log "retention: prune $base apparent_du_kib=${apparent} identity_bytes=${tree_bytes}"
+    rm -rf "$path"
+    pruned=$((pruned + 1))
+  done <<EOF
+$ts_list
+EOF
+
+  log "retention: done keep_prior=${kept} pruned=${pruned} protect=$(basename "${protect:-none}") keep_policy=${keep}"
 }
 
 rss_mb_of_pid() {
@@ -824,6 +1032,10 @@ if [ -S "$PRIMARY_SOCK" ]; then
 else
   warn "primary socket not present — service may be stopped; continuing with offline home"
 fi
+
+# Backup inventory (count + free disk + identity-pinned estimate). Cost is
+# visible even when LASTDB_BACKUP_KEEP=0 disables post-cutover pruning.
+report_backup_root_inventory
 
 # --- resolve candidate binary ------------------------------------------------
 
@@ -1454,6 +1666,11 @@ elif command -v situations >/dev/null 2>&1; then
 else
   warn "situations CLI not on PATH — skipped agent-impact notice for this upgrade"
 fi
+
+# Retention: after GREEN cutover only. Never prunes the current run's backup;
+# never prunes BROKEN-/pre-repair-/hand-named trees. KEEP=0 disables.
+log "STEP 4b/4: backup retention (keep=${LASTDB_BACKUP_KEEP}, protect=$(basename "$BACKUP"))"
+prune_excess_pre_upgrade_backups "$BACKUP"
 
 echo ""
 echo "VERDICT: GREEN"
