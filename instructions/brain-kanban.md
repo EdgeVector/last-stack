@@ -62,8 +62,8 @@ do not hard-code it as the primary. The legacy TCP port
 - Data-plane works over the socket: `brain get/put/list/search/ask` and
   `kanban list/add/move` round-trip fine even when `:9001` is refused.
 - Health check (socket-safe): `lastdb status` or `kanban ping`. Either
-  succeeding ⇒ the node is up. Do not run `brain doctor`, `kanban doctor`,
-  or `kanban init` as routine health checks.
+  succeeding ⇒ the node is up.
+- Do not run `brain doctor`, `kanban doctor`, or `kanban init` as a health check.
 - Doctor/init may still print a retired-TCP `:9001` refused error (leftover
   control-plane residue, not a live listener). That is not an outage.
 - Never start/restart/kill a LastDB node because doctor printed `:9001`.
