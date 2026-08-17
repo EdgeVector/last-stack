@@ -20,13 +20,15 @@ chmod +x "$fake_global/shim-with-env-bash"
 
 PATH="/usr/bin:/bin"
 LAST_STACK_GLOBAL_PATH="$fake_global"
-export PATH LAST_STACK_GLOBAL_PATH
+OBS_SENTRY_DSN=lastsecrets://obs-sentry-dsn-routines
+export PATH LAST_STACK_GLOBAL_PATH OBS_SENTRY_DSN
 RUSTC_WRAPPER=sccache
 export RUSTC_WRAPPER
 
 . "$ROOT/bin/last-stack-shell-prelude"
 
 command -v gh >/dev/null 2>&1
+test "${OBS_SENTRY_DSN+x}" != x
 test "${RUSTC_WRAPPER+x}" = x
 test -z "$RUSTC_WRAPPER"
 test "$LAST_STACK_SCCACHE_BYPASS" = 1
@@ -35,6 +37,12 @@ test "$LAST_STACK_TOOL_GH" = "$fake_global/gh"
 last_stack_require_tools shim-with-env-bash
 PATH="$fake_global"
 test "$(last_stack_run_tool "$LAST_STACK_TOOL_SHIM_WITH_ENV_BASH")" = "shim-ok"
+
+OBS_SENTRY_DSN=https://public@example.invalid/1
+export OBS_SENTRY_DSN
+. "$ROOT/bin/last-stack-shell-prelude"
+test "$OBS_SENTRY_DSN" = https://public@example.invalid/1
+unset OBS_SENTRY_DSN
 
 LAST_STACK_RUSTC_WRAPPER=known-good-wrapper
 export LAST_STACK_RUSTC_WRAPPER
