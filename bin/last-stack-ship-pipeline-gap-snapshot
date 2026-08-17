@@ -100,36 +100,22 @@ jq -c '
 # - Snapshot still exits 0 after a completed pass.
 extract_json_value() {
   # stdout: one JSON value. exit 0 if found, 1 if no complete object/array.
-  python3 -c '
-import json, sys
-raw = sys.stdin.read()
-dec = json.JSONDecoder()
-for i, ch in enumerate(raw):
-    if ch not in "{[":
-        continue
-    try:
-        obj, _ = dec.raw_decode(raw[i:])
-        if isinstance(obj, (dict, list)):
-            json.dump(obj, sys.stdout, separators=(",", ":"))
-            sys.stdout.write("\n")
-            raise SystemExit(0)
-    except Exception:
-        continue
-raise SystemExit(1)
-'
+  "$ROOT/bin/last-stack-json-value-extract"
 }
 
 # Emit a compact error object for embed failures (never bare {}).
 embed_error() {
   # embed_error <helper> <reason> [extra-message]
   local helper="$1" reason="$2" msg="${3:-}"
-  python3 -c '
-import json, sys
-helper, reason, msg = sys.argv[1], sys.argv[2], sys.argv[3]
-out = {"error": msg or ("helper " + reason), "reason": reason, "helper": helper}
-json.dump(out, sys.stdout, separators=(",", ":"))
-sys.stdout.write("\n")
-' "$helper" "$reason" "$msg"
+  jq -cn \
+    --arg helper "$helper" \
+    --arg reason "$reason" \
+    --arg msg "$msg" \
+    '{
+      error: (if ($msg | length) > 0 then $msg else "helper " + $reason end),
+      reason: $reason,
+      helper: $helper
+    }'
 }
 
 # Run a helper under a wall-clock budget; write embed JSON to stdout.
