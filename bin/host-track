@@ -1625,7 +1625,7 @@ soak_stamp_path() {
 }
 
 write_soak_stamp() {
-  local app="$1" digest="$2" status="$3" soak_h="$4" checks="${5:-1}" started="${6:-}"
+  local app="$1" digest="$2" status="$3" soak_h="$4" checks="${5:-1}" started="${6:-}" card_slug="${7:-}"
   local now path
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   path="$(soak_stamp_path "$app")"
@@ -1633,12 +1633,16 @@ write_soak_stamp() {
   if [ -z "$started" ]; then
     started="$(date +%s)"
   fi
+  if [ -z "$card_slug" ] && [ -f "$path" ]; then
+    card_slug="$(jq -r '.card_slug // empty' "$path")"
+  fi
   jq -n \
     --arg app "$app" --arg digest "$digest" --arg status "$status" \
     --arg now "$now" --argjson soak "$soak_h" --argjson checks "$checks" \
-    --argjson started "$started" \
+    --argjson started "$started" --arg card "$card_slug" \
     '{app:$app, digest:$digest, status:$status, soak_hours:$soak,
-      started_epoch:$started, last_check_at:$now, checks:$checks}' \
+      started_epoch:$started, last_check_at:$now, checks:$checks,
+      card_slug: (if $card == "" then null else $card end)}' \
     > "$path"
 }
 
@@ -1656,6 +1660,95 @@ park_canary() {
   write_soak_stamp "$app" "$digest" "soaking" "$soak_h" "$checks" "$started"
   printf 'host-track: %s canary parked at versions/%s; soak %sh; current unchanged\n' \
     "$app" "$digest" "$soak_h" >&2
+}
+
+soak_red_repo() {
+  local json="$1" app="$2" gate slug
+  gate="$(field "$json" gate_main)"
+  case "$gate" in
+    lastdb:///*)
+      slug="${gate#lastdb:///}"
+      slug="${slug%%#*}"
+      printf 'EdgeVector/%s\n' "$slug"
+      ;;
+    *)
+      printf 'EdgeVector/%s\n' "$app"
+      ;;
+  esac
+}
+
+soak_red_card_slug() {
+  local app="$1" digest="$2"
+  printf 'soak-red-%s-%s\n' "$app" "${digest:0:12}"
+}
+
+file_soak_red_card() {
+  local app="$1" digest="$2" json="$3"
+  local helper slug repo stamp body
+  [ "${HOST_TRACK_SOAK_FILE_CARD:-1}" != "0" ] || return 0
+  helper="${HOST_TRACK_FILE_PR:-}"
+  if [ -z "$helper" ]; then
+    helper="$(command -v last-stack-kanban-file-pr 2>/dev/null || true)"
+  fi
+  if [ -z "$helper" ] && [ -x "$ROOT/bin/last-stack-kanban-file-pr" ]; then
+    helper="$ROOT/bin/last-stack-kanban-file-pr"
+  fi
+  if [ -z "$helper" ] || [ ! -x "$helper" ]; then
+    printf 'host-track: %s soak RED; last-stack-kanban-file-pr missing, no card\n' \
+      "$app" >&2
+    return 0
+  fi
+  slug="$(soak_red_card_slug "$app" "$digest")"
+  stamp="$(soak_stamp_path "$app")"
+  if [ -f "$stamp" ] && [ "$(jq -r '.card_slug // empty' "$stamp")" = "$slug" ]; then
+    printf 'host-track: %s soak RED; card %s already filed\n' "$app" "$slug" >&2
+    return 0
+  fi
+  repo="$(soak_red_repo "$json" "$app")"
+  body="$(cat <<EOF
+**Follow the kanban-agent skill — drive this through to a MERGED PR.
+A card is only done when its code is actually in the repo.**
+
+Repo: ${repo}
+Base: main
+Kind: pr
+
+## GOAL
+Make the ${app} candidate ${digest} pass host-track soak probes so the
+new copy can go into service. Do not put a failing copy on PATH.
+
+## CONTEXT
+host-track soak-watch rejected this candidate. The live install is
+unchanged (last-known-good). Filed automatically on soak RED.
+
+App: ${app}
+Digest: ${digest}
+
+## END STATE
+host-track soak-watch ${app} is GREEN for this digest, or a later
+good candidate has replaced it. Pickup proves with the VERIFY command.
+
+## VERIFY
+host-track soak-watch ${app}
+# expect soak GREEN or already current — not soak RED
+EOF
+)"
+  if ! printf '%s\n' "$body" | "$helper" "$slug" \
+    --title "Soak RED: ${app} ${digest:0:12} failed safe-upgrade probes" \
+    --repo "$repo" \
+    --base main \
+    --priority P0 \
+    --tags "p0,soak-red,${app}" \
+    --north-star north-star-artifact-driven-host-track \
+    --milestone ms-host-track-app-soak-failures \
+    --ensure-milestone; then
+    printf 'host-track: %s soak RED; card file failed (soak still refuses cutover)\n' \
+      "$app" >&2
+    return 0
+  fi
+  soak_h="$(soak_hours_for "$json")"
+  write_soak_stamp "$app" "$digest" "soak_red" "$soak_h" 1 "" "$slug"
+  printf 'host-track: %s soak RED; filed P0 %s\n' "$app" "$slug" >&2
 }
 
 should_soak() {
@@ -2236,6 +2329,7 @@ soak_watch_one() {
     soak_h="$(soak_hours_for "$json")"
     write_soak_stamp "$app" "$digest" "soak_red" "$soak_h"
     printf 'host-track: %s soak RED; current unchanged\n' "$app" >&2
+    file_soak_red_card "$app" "$digest" "$json"
     return 1
   fi
   stamp="$(soak_stamp_path "$app")"

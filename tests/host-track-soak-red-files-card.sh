@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Safe upgrade is a canary soak: refresh parks canary, soak-watch promotes.
+# Soak RED files one P0 Kind:pr card and does not file again for the same digest.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -15,9 +15,19 @@ fail() {
 export HOME="$tmp/home"
 export HOST_TRACK_REGISTRY="$tmp/registry.json"
 export HOST_TRACK_STAMP_DIR="$tmp/stamps"
-export HOST_TRACK_SOAK_FILE_CARD=0
-export PATH="$HOME/.local/bin:$tmp/bin:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
+export HOST_TRACK_FILE_PR="$tmp/bin/last-stack-kanban-file-pr"
+export PATH="$HOME/.local/bin:$tmp/bin:/usr/bin:/bin"
 mkdir -p "$HOME/.local/bin" "$tmp/bin" "$tmp/cas"
+
+: >"$tmp/file-pr.log"
+cat >"$tmp/bin/last-stack-kanban-file-pr" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"${FILE_PR_LOG:?}"
+cat >/dev/null
+echo "filed $1"
+SH
+chmod +x "$tmp/bin/last-stack-kanban-file-pr"
 
 cat > "$tmp/bin/lastgit" <<'SH'
 #!/usr/bin/env bash
@@ -45,12 +55,13 @@ cat > "$HOST_TRACK_REGISTRY" <<'JSON'
     "app": "demo",
     "kind": "artifact-bundle",
     "command": "demo",
+    "gate_main": "lastdb:///demo#main",
     "artifact_root": "$HOME/../cas",
     "install_root": "$HOME/apps/demo",
     "links": [{"source": "bin/demo", "target": "$HOME/.local/bin/demo"}],
     "safe_upgrade": {
       "soak_hours": 1,
-      "probes": [{"argv": ["bin/demo"], "timeout_s": 10}]
+      "probes": [{"argv": ["bin/demo"], "timeout_s": 10, "output_matches": "ok"}]
     }
   }]
 }
@@ -75,36 +86,39 @@ publish_fixture() {
   cp "$manifest" "$tmp/cas/channels/demo/stable.json"
 }
 
-digest_one="$(printf 'a%.0s' {1..64})"
-digest_two="$(printf 'b%.0s' {1..64})"
-oid_one="$(printf '1%.0s' {1..40})"
-oid_two="$(printf '2%.0s' {1..40})"
+digest_good="$(printf 'a%.0s' {1..64})"
+digest_bad="$(printf 'b%.0s' {1..64})"
+oid_good="$(printf '1%.0s' {1..40})"
+oid_bad="$(printf '2%.0s' {1..40})"
 
-publish_fixture "$digest_one" "$oid_one" $'#!/usr/bin/env bash\necho v1'
+export FILE_PR_LOG="$tmp/file-pr.log"
+export HOST_TRACK_SOAK_FILE_CARD=1
+
+publish_fixture "$digest_good" "$oid_good" $'#!/usr/bin/env bash\necho ok-v1'
 "$ROOT/bin/host-track" install demo >/dev/null
-[ "$(demo)" = v1 ] || fail "first install should activate (no current to soak against)"
 
-publish_fixture "$digest_two" "$oid_two" $'#!/usr/bin/env bash\necho v2'
-"$ROOT/bin/host-track" refresh demo >/dev/null
-[ "$(demo)" = v1 ] || fail "refresh with soak_hours parked canary but flipped PATH: $(demo)"
-[ "$(readlink "$HOME/apps/demo/current")" = "versions/$digest_one" ] \
-  || fail "current should stay on v1 during soak"
-[ "$(readlink "$HOME/apps/demo/canary")" = "versions/$digest_two" ] \
-  || fail "canary should point at v2"
-[ -f "$HOST_TRACK_STAMP_DIR/demo.soak.json" ] || fail "soak stamp missing"
-jq -e '.status == "soaking"' "$HOST_TRACK_STAMP_DIR/demo.soak.json" >/dev/null \
-  || fail "soak stamp not soaking"
+publish_fixture "$digest_bad" "$oid_bad" $'#!/usr/bin/env bash\necho broken\nexit 1'
+"$ROOT/bin/host-track" refresh demo >/dev/null || true
+[ -d "$HOME/apps/demo/versions/$digest_bad" ] || fail "bad version not staged"
+ln -sfn "versions/$digest_bad" "$HOME/apps/demo/canary"
 
-out="$("$ROOT/bin/host-track" soak-watch demo)"
-printf '%s\n' "$out" | grep -q 'soak pending' || fail "early soak-watch should be pending: $out"
-[ "$(demo)" = v1 ] || fail "pending soak flipped live: $(demo)"
+set +e
+"$ROOT/bin/host-track" soak-watch demo >/dev/null 2>"$tmp/red1.err"
+rc1=$?
+set -e
+[ "$rc1" -ne 0 ] || fail "soak-watch should fail on RED"
+grep -q 'filed P0' "$tmp/red1.err" || fail "first RED did not file a card: $(cat "$tmp/red1.err")"
+[ "$(wc -l < "$FILE_PR_LOG" | tr -d ' ')" = 1 ] || fail "expected one file-pr call"
+grep -q -- '--priority P0' "$FILE_PR_LOG" || fail "card was not P0"
+grep -q 'EdgeVector/demo' "$FILE_PR_LOG" || fail "card repo not from gate_main"
+[ "$(demo)" = ok-v1 ] || fail "RED soak changed the live command"
 
-# The LaunchAgent only runs refresh --all; that must promote a ready soak.
-jq '.started_epoch = 0' "$HOST_TRACK_STAMP_DIR/demo.soak.json" > "$tmp/stamp.json"
-mv "$tmp/stamp.json" "$HOST_TRACK_STAMP_DIR/demo.soak.json"
-"$ROOT/bin/host-track" refresh --all >/dev/null
-[ "$(demo)" = v2 ] || fail "refresh --all did not promote after window: $(demo)"
-[ "$(readlink "$HOME/apps/demo/current")" = "versions/$digest_two" ] \
-  || fail "current should be v2 after refresh --all soak tick"
+set +e
+"$ROOT/bin/host-track" soak-watch demo >/dev/null 2>"$tmp/red2.err"
+rc2=$?
+set -e
+[ "$rc2" -ne 0 ] || fail "second soak-watch should still be RED"
+grep -q 'already filed' "$tmp/red2.err" || fail "second RED re-filed: $(cat "$tmp/red2.err")"
+[ "$(wc -l < "$FILE_PR_LOG" | tr -d ' ')" = 1 ] || fail "second RED called file-pr again"
 
-printf 'ok: host-track canary soak\n'
+printf 'ok: soak RED files one P0 card\n'

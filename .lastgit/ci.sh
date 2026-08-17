@@ -110,6 +110,7 @@ bash tests/last-stack-why-shipping-stopped.sh
 bash tests/host-track-artifacts.sh
 bash tests/host-track-safe-upgrade-probe.sh
 bash tests/host-track-canary-soak.sh
+bash tests/host-track-soak-red-files-card.sh
 bash tests/host-track-local-safe-staleness.sh
 bash tests/host-track-deployment-freshness.sh
 bash tests/lastseek-host-track.sh
