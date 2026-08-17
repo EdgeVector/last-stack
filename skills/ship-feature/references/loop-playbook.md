@@ -127,7 +127,8 @@ intermediate event; the app doing the thing is the gate.
 ## Hierarchical driver ownership
 
 - `ship-feature` records the approved outcome request on its Brain North Star
-  and orchestrates targeted routine passes; it does not write milestones/cards.
+  via `last-stack-ship-handoff` (one milestone scaffold; it still must not
+  kanban add cards) and may orchestrate targeted routine passes.
 - `last-stack-north-star-driver` converts one North Star outcome request into
   one milestone scaffold. It never creates or moves cards.
 - `last-stack-milestone-driver` creates/links the milestone's terminal proof and
@@ -142,7 +143,8 @@ intermediate event; the app doing the thing is the gate.
 - **Never bulk-scaffold** milestones/PR shells with direct `kanban add` after
   "make this a North Star." That path produced hollow cards and false human
   gates (schema-lambda-fast-deployment 2026-07-22). Drivers own materialization.
-  Before walk-away: `kanban pickup explain <slug>` must show `ready: true`.
+  Before walk-away: `kanban pickup explain <slug>` must show
+  `eligible_for_claim: true` (not merely `ready: true`).
 
 ## When to break silence (contract #3)
 

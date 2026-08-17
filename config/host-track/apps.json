@@ -70,6 +70,18 @@
           "target": "$HOME/.local/bin/last-stack-kanban-file-pr"
         },
         {
+          "source": "bin/last-stack-design-pack",
+          "target": "$HOME/.local/bin/last-stack-design-pack"
+        },
+        {
+          "source": "bin/last-stack-ship-handoff",
+          "target": "$HOME/.local/bin/last-stack-ship-handoff"
+        },
+        {
+          "source": "bin/last-stack-real-human-notify",
+          "target": "$HOME/.local/bin/last-stack-real-human-notify"
+        },
+        {
           "source": "bin/last-stack-routine-read",
           "target": "$HOME/.local/bin/last-stack-routine-read"
         },

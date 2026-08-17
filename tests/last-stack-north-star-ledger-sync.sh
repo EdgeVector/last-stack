@@ -13,6 +13,20 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin" "$tmp/home/.last-stack/north-star-proofs"
 
+cat >"$tmp/heading.md" <<'EOF'
+## MILESTONE_REQUEST
+slug=foo
+status=pending
+
+### Outcome
+A
+EOF
+printf '%s\n' 'MILESTONE_REQUEST slug=foo status=pending' >"$tmp/oneline.md"
+python3 "$BIN" --parse-body "$tmp/heading.md" >"$tmp/heading.json"
+python3 "$BIN" --parse-body "$tmp/oneline.md" >"$tmp/oneline.json"
+jq -e '.requests == [{"slug":"foo","status":"pending"}]' "$tmp/heading.json" >/dev/null
+jq -e '.requests == []' "$tmp/oneline.json" >/dev/null
+
 cat >"$tmp/bin/brain" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
