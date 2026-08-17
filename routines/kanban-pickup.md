@@ -321,12 +321,14 @@ back to `todo` (or `pending_rollback=` in memory) per transport rules below.
     if [ -x "$last_stack/bin/last-stack-class-a-heal" ]; then
       _heal_bin="$(cd "$(dirname "$last_stack/bin/last-stack-class-a-heal")" && pwd -P)/last-stack-class-a-heal"
     fi
-    _to=""
-    command -v gtimeout >/dev/null 2>&1 && _to="gtimeout -k 3s 20s"
-    command -v timeout >/dev/null 2>&1 && _to="timeout -k 3s 20s"
+    # Invoke timeout as argv words. A scalar `_to="timeout -k 3s 20s"; $_to`
+    # is one command name under zsh (no word-split) and exits 127.
     set +e
-    if [ -n "$_to" ]; then
-      $_to "$_heal_bin" --reason=kanban-pickup-prompt-freshness
+    if command -v gtimeout >/dev/null 2>&1; then
+      gtimeout -k 3s 20s "$_heal_bin" --reason=kanban-pickup-prompt-freshness
+      _hc=$?
+    elif command -v timeout >/dev/null 2>&1; then
+      timeout -k 3s 20s "$_heal_bin" --reason=kanban-pickup-prompt-freshness
       _hc=$?
     else
       "$_heal_bin" --reason=kanban-pickup-prompt-freshness

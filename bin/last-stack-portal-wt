@@ -290,8 +290,14 @@ cmd_rm() {
 }
 
 cmd_start() {
-  read_portal
   local spec="${1:-}"
+  case "$spec" in
+    -h|--help|-?)
+      printf 'usage: wt start <branch-name-or-card-slug>\n'
+      exit 0
+      ;;
+  esac
+  read_portal
   [ -n "$spec" ] || die "usage: wt start <branch-name-or-card-slug>"
   # Accept kanban/foo or bare slug → branch kanban/slug if no slash
   local branch="$spec"
