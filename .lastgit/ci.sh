@@ -69,6 +69,9 @@ bash tests/last-stack-kanban-done-when-eval.sh
 bash tests/last-stack-driver-hierarchy.sh
 bash tests/last-stack-kanban-file-pr.sh
 bash tests/last-stack-kanban-file-pr-host-track-install.sh
+bash tests/last-stack-sanitize-structured-fields.sh
+bash tests/last-stack-board-closeout-sweep-logic.sh
+bash tests/last-stack-card-closeout.sh
 bash tests/last-stack-unattached-outcome-heal.sh
 bash tests/last-stack-north-star-ledger-sync.sh
 bash tests/last-stack-north-star-proof-registry.sh

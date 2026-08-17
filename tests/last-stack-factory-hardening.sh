@@ -16,6 +16,10 @@ grep -q 'last-stack-kanban-file-pr' "$ROOT/routines/dogfood-rotate.md" \
   || fail "dogfood-rotate missing last-stack-kanban-file-pr"
 grep -q 'last-stack-kanban-file-pr' "$ROOT/routines/kanban-validate.md" \
   || fail "kanban-validate missing last-stack-kanban-file-pr"
+grep -q 'last-stack-kanban-file-pr' "$ROOT/routines/kanban-watch.md" \
+  || fail "kanban-watch missing last-stack-kanban-file-pr for Kind:pr filing"
+grep -q 'block-status deferred' "$ROOT/routines/kanban-watch.md" \
+  || fail "kanban-watch missing deferred park for hollow Kind:pr"
 bash -n "$ROOT/bin/last-stack-why-stopped-routine"
 bash -n "$ROOT/bin/last-stack-lastdb-ops-offenders"
 bash -n "$ROOT/bin/last-stack-lastdb-ops-offenders-routine"

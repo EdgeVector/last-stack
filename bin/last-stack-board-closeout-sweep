@@ -684,8 +684,10 @@ for (const card of cards) {
   const wt = worktreeFor(slug);
   const deployParked = isDeployParked(card);
 
-  // Heal empty structured pr_url from body so later soft-reclaim skips this card.
-  if (url && !fieldPr) {
+  // Heal empty OR dirty-nonempty structured pr_url (trailing markdown
+  // punctuation). Lookup already uses normalizePrUrl; the stored field must
+  // match or restamp/pipeline keep treating a merged CR as missing-ci.
+  if (url && fieldPr !== url) {
     healPrUrl(slug, url);
     res.flagged.push(`pr-url-healed:${slug}`);
   }
@@ -1272,7 +1274,7 @@ for card in cards:
     age = age_s(card)
     wt = worktree(slug)
     deploy_parked = is_deploy_parked(card)
-    if url and not field_pr:
+    if url and field_pr != url:
         heal_pr_url(slug, url)
         res["flagged"].append(f"pr-url-healed:{slug}")
     if url:

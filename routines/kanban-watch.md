@@ -23,6 +23,14 @@ FOLLOW the board — advance in-flight work — NOT to author or ship new featur
 code. If the sweep is quiet and you spotted something worth doing, FILE it as a
 card for the `kanban-pickup` + `kanban-agent` pipeline to build.
 
+## Hollow Kind:pr (won't-undo — 2026-08-17)
+
+Never raw-`kanban add` a `Kind: pr` card without both a clean `Repo: owner/name`
+and a live `--milestone`. Use `last-stack-kanban-file-pr`. If Repo or milestone
+is unknown, file `--kind tracker --block-status deferred` in backlog (or do
+not file). A hollow Kind:pr in backlog is invisible to pickup and trips
+factory-health `parked_ungated`.
+
 ## Automation memory
 If the scheduled prompt includes an `Automation memory:` path (routinesd injects
 one under `## Dispatch envelope`), read and write **that exact file**. Prefer it
