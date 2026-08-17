@@ -13,7 +13,7 @@ bash -n "$install"
 "$install" --help >/dev/null 2>&1 || true
 
 # usage / dry-run should not crash when board is unavailable in CI
-if command -v kanban >/dev/null 2>&1 || command -v fkanban >/dev/null 2>&1; then
+if command -v kanban >/dev/null 2>&1; then
   # dry-run is safe; may noop or list — exit 0 either way
   "$bin" --dry-run --max-actions 1 >/dev/null || true
 fi

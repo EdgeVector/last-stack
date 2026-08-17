@@ -240,13 +240,14 @@
         {
           "source": "dist/kanban",
           "target": "$HOME/.local/bin/kanban"
-        },
+        }
+      ],
+      "retired_links": [
         {
-          "source": "dist/fkanban",
           "target": "$HOME/.local/bin/fkanban"
         }
       ],
-      "notes": "One registration for the whole fkanban artifact bundle: links BOTH public CLI names (kanban and fkanban) off a single install_root and a single stamp. There used to be a second app entry named `fkanban` pointing at the same install_root; two entries meant two stamps for one bundle, they drifted, and host-track reported the identical binary as fresh under one name and stale under the other. track_gate_main follows fkanban green+published main.",
+      "notes": "One registration for the fkanban artifact bundle. Public CLI is kanban only. retired_links drops the leftover fkanban PATH symlink on refresh when it still points at this install_root. The LastGit slug and install_root stay fkanban. track_gate_main follows fkanban green+published main.",
       "track_gate_main": true,
       "safe_upgrade": {
         "soak_hours": 1,

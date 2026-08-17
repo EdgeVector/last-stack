@@ -1292,6 +1292,45 @@ install_artifact_links() {
     fi
     atomic_symlink "$install_root/current/$source" "$target"
   done < <(printf '%s\n' "$json" | jq -r '.links[]? | @base64')
+  retire_artifact_links "$json" "$install_root"
+}
+
+# Drop PATH names this app used to install. Only unlink a target that is still
+# a symlink into this install_root — never delete a real file or a link that
+# some other install owns. Live links[] win if a target is listed in both.
+retire_artifact_links() {
+  local json="$1" install_root="$2" encoded entry target_raw target dest live t
+  local -a live_targets=()
+  while IFS= read -r encoded; do
+    [ -n "$encoded" ] || continue
+    entry="$(printf '%s' "$encoded" | base64_decode)"
+    target_raw="$(printf '%s\n' "$entry" | jq -r '.target // ""')"
+    [ -n "$target_raw" ] || continue
+    live_targets+=("$(expand_path "$target_raw")")
+  done < <(printf '%s\n' "$json" | jq -r '.links[]? | @base64')
+  while IFS= read -r encoded; do
+    [ -n "$encoded" ] || continue
+    entry="$(printf '%s' "$encoded" | base64_decode)"
+    target_raw="$(printf '%s\n' "$entry" | jq -r '.target // ""')"
+    target="$(expand_path "$target_raw")"
+    [ -n "$target" ] || continue
+    [ -L "$target" ] || continue
+    live=0
+    for t in "${live_targets[@]+"${live_targets[@]}"}"; do
+      if [ "$t" = "$target" ]; then
+        live=1
+        break
+      fi
+    done
+    [ "$live" -eq 0 ] || continue
+    dest="$(readlink "$target" || true)"
+    case "$dest" in
+      "$install_root"/*)
+        rm -f "$target"
+        printf 'host-track: retired PATH link %s\n' "$target" >&2
+        ;;
+    esac
+  done < <(printf '%s\n' "$json" | jq -r '.retired_links[]? | @base64')
 }
 
 run_artifact_post_install() {

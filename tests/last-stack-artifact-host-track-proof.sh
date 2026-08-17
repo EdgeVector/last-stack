@@ -33,7 +33,7 @@ jq -e '
   and (app("lastgit") | .install_mode == "checkout" and .artifact_exemption.kind == "bootstrap-recovery")
   and (app("brain") | .install_mode == "artifact" and .track_gate_main == true and (.links | length) >= 2)
   and (app("situations") | .install_mode == "artifact" and .track_gate_main == true and (.links | length) == 2)
-  and (app("kanban") | .install_mode == "artifact" and .install_root == "$HOME/.host-track/apps/fkanban" and (.links | length) == 2)
+  and (app("kanban") | .install_mode == "artifact" and .install_root == "$HOME/.host-track/apps/fkanban" and (.links | length) == 1 and any(.links[]; .source == "dist/kanban" and .target == "$HOME/.local/bin/kanban") and (any(.links[]; .target == "$HOME/.local/bin/fkanban") | not) and any(.retired_links[]?; .target == "$HOME/.local/bin/fkanban"))
   and (any(.apps[]; .app == "fkanban") | not)
   and (app("routines") | .install_mode == "artifact" and .track_gate_main == true)
   and (app("lastsecrets") | .install_mode == "artifact" and .track_gate_main == true)

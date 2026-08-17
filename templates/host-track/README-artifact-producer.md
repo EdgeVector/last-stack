@@ -13,7 +13,7 @@ published main oid on `host-track refresh <app>`.
 | remote | source + `bin/*` | `bin/ra`, `bin/rad`, … | artifact CLI |
 | brain | source + `bin/*` (no `node_modules`) | `bin/brain`, `bin/brain-mcp` | `post_install` = bun install |
 | situations | `dist/*` compiled bins | `dist/situations`, `dist/fsituations` | CI must build `dist` before gate ends |
-| fkanban / kanban | `dist/*` | `dist/fkanban`, `dist/kanban` | shared install_root |
+| kanban (artifact `fkanban`) | `dist/*` | `dist/kanban` | shared install_root; `fkanban` is retired from PATH |
 | routines | `dist/routines` compiled bin | `dist/routines` | `track_gate_main` |
 | lastsecrets | `dist/lastsecrets` compiled bin | `dist/lastsecrets` | `track_gate_main` |
 | configurations | `dist/configurations` compiled bin | `dist/configurations` | `track_gate_main` |
