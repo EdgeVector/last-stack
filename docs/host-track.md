@@ -348,7 +348,8 @@ Safe properties:
 `host-track refresh <app>` for agent CLIs with `install_mode=artifact` promotes stable via track_gate_main and installs the published build.
 For **artifact** apps it promotes (when `track_gate_main`) and installs the
 channel tip. LaunchAgent `com.edgevector.host-track-refresh` runs
-`host-track refresh --all`.
+`host-track refresh --all`, which also ticks `soak-watch --all` so a parked
+canary promotes after its window without a second job.
 
 **Artifact CLIs (producers live):** last-stack, remote, brain, situations,
 kanban/fkanban (shared fkanban install_root). See
@@ -380,10 +381,12 @@ last-stack-safe-upgrade-cli lastsecrets
 `~/.last-stack/launchd/com.edgevector.host-track-refresh.plist` and runs:
 
 ```bash
-~/.local/bin/host-track refresh --all
+~/.local/bin/host-track refresh --all   # also runs soak-watch --all
 ```
 
-The safety poll runs every 20 minutes. When the registry has Forgejo-gated apps
+The safety poll runs every 20 minutes. After a GREEN probe it parks `canary`
+when `soak_hours > 0`. The same job re-probes those canaries; after the
+window it flips `current`. When the registry has Forgejo-gated apps
 with local host checkouts, setup also adds existing `<git-dir>/FETCH_HEAD` paths
 as optional `WatchPaths`, so fetch activity can trigger the same refresh command
 without one plist per app. The plist sets a tool-friendly PATH including

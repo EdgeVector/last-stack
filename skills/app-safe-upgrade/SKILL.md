@@ -27,7 +27,7 @@ goes through Host Track.
 # Park the new tree as canary (PATH unchanged after GREEN probe)
 host-track refresh <app>
 
-# Hourly clock: re-probe canary; promote when soak_hours have passed GREEN
+# Same clock as the 20-minute LaunchAgent (refresh --all also soak-watches)
 host-track soak-watch <app>
 host-track soak-watch --all
 
@@ -68,6 +68,7 @@ host-track rollback <app>
 | `soak pending` | Still inside the window and still GREEN | Leave it |
 | `soak GREEN` then `activating` | Window passed; live flipped | Done |
 | `probe GREEN` then `installed …` | First install, last-stack, or `--activate` | Done |
+| `soak RED` + `filed P0 soak-red-…` | Candidate failed; live copy unchanged; one fix card | Pickup drives the card |
 | `probe RED; refusing cutover` | Candidate failed a declared probe | **Do not** skip-probe; file a release-blocker |
 | `already current` | Live matches the channel | Nothing to do |
 | `deployment-only` | LastDB Mini | Use `lastdb-safe-upgrade` |
