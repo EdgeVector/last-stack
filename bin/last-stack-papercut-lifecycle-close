@@ -108,7 +108,7 @@ def as_items(value: Any) -> list[dict[str, Any]]:
     if isinstance(value, list):
         return [item for item in value if isinstance(item, dict)]
     if isinstance(value, dict):
-        for key in ("records", "items", "results"):
+        for key in ("records", "items", "results", "rows"):
             items = value.get(key)
             if isinstance(items, list):
                 return [item for item in items if isinstance(item, dict)]
@@ -200,9 +200,56 @@ def try_registry_close(args: argparse.Namespace, iso: str) -> dict[str, Any] | N
             continue
 
         try:
-            record_proc = run([brain, "get", entry.slug, "--type", "reference"], timeout=args.read_timeout)
+            typed_proc = run(
+                [brain, "get", entry.slug, "--type", "papercut", "--json"],
+                timeout=args.read_timeout,
+            )
         except subprocess.TimeoutExpired:
             skipped.append(f"{entry.slug}:record_timeout")
+            continue
+        typed_record = parse_json_stream(typed_proc.stdout) if typed_proc.returncode == 0 else None
+        if isinstance(typed_record, dict):
+            if str(typed_record.get("status") or "") != "open":
+                skipped.append(f"{entry.slug}:not_open")
+                continue
+            if args.dry_run:
+                skipped.append(f"{entry.slug}:dry_run")
+                continue
+            evidence = (
+                f"card:{entry.card} is done and the prevention registry is COVERED; "
+                "confirmed by last-stack-papercut-lifecycle-close."
+            )
+            try:
+                close_proc = run(
+                    [
+                        brain,
+                        "papercut",
+                        "close",
+                        entry.slug,
+                        "--status",
+                        "fixed",
+                        "--evidence",
+                        evidence,
+                        "--fixed-by",
+                        f"card:{entry.card}",
+                    ],
+                    timeout=args.read_timeout,
+                )
+            except subprocess.TimeoutExpired:
+                skipped.append(f"{entry.slug}:close_timeout")
+                continue
+            if close_proc.returncode != 0:
+                skipped.append(f"{entry.slug}:close_failed")
+                continue
+            fixed += 1
+            continue
+
+        # Transitional fallback for prevention entries not yet migrated to the
+        # typed ledger. New filings never use this path.
+        try:
+            record_proc = run([brain, "get", entry.slug, "--type", "reference"], timeout=args.read_timeout)
+        except subprocess.TimeoutExpired:
+            skipped.append(f"{entry.slug}:legacy_record_timeout")
             continue
         if record_proc.returncode != 0:
             skipped.append(f"{entry.slug}:record_unreadable")
@@ -243,28 +290,32 @@ def load_records(args: argparse.Namespace) -> list[dict[str, Any]]:
     if args.records_json:
         return as_items(json.loads(Path(args.records_json).read_text(encoding="utf-8")))
     if args.slug:
-        return [brain_get(args, slug) for slug in args.slug]
+        records = [brain_get(args, slug) for slug in args.slug]
+        for record in records:
+            record["_typed"] = True
+        return records
     previews = as_items(
         run_json(
             [
                 args.brain_bin,
+                "papercut",
                 "list",
-                "--type",
-                "reference",
-                "--limit",
-                str(args.limit),
+                "--status",
+                "open",
                 "--json",
             ],
             timeout=args.read_timeout,
         )
     )
-    slugs = [str(item.get("slug") or "") for item in previews]
+    slugs = [str(item.get("slug") or "") for item in previews[: args.limit]]
     records: list[dict[str, Any]] = []
     for slug in slugs:
         if not slug.startswith("papercut-"):
             continue
         try:
-            records.append(brain_get(args, slug))
+            record = brain_get(args, slug)
+            record["_typed"] = True
+            records.append(record)
         except Exception as exc:
             print(f"warning: skipped {slug}: {exc}", file=sys.stderr)
     return records
@@ -272,7 +323,7 @@ def load_records(args: argparse.Namespace) -> list[dict[str, Any]]:
 
 def brain_get(args: argparse.Namespace, slug: str) -> dict[str, Any]:
     value = run_json(
-        [args.brain_bin, "get", slug, "--type", "reference", "--json"],
+        [args.brain_bin, "get", slug, "--type", "papercut", "--json"],
         timeout=args.read_timeout,
     )
     if not isinstance(value, dict):
@@ -349,6 +400,31 @@ def append_brain(args: argparse.Namespace, slug: str, text: str) -> None:
 def close_record(args: argparse.Namespace, record: dict[str, Any], ref: ReviewRef, detail: str, iso: str) -> None:
     slug = str(record.get("slug") or "")
     title = str(record.get("title") or slug)
+    if record.get("_typed"):
+        if args.dry_run:
+            return
+        evidence = f"lifecycle closer confirmed {ref.url} is merged ({detail})."
+        proc = run(
+            [
+                args.brain_bin,
+                "papercut",
+                "close",
+                slug,
+                "--status",
+                "fixed",
+                "--evidence",
+                evidence,
+                "--fixed-by",
+                detail,
+            ],
+            timeout=60,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(f"brain papercut close {slug} failed: {proc.stderr.strip()}")
+        ledger = f"{iso} {slug} -> card:none | pattern:lifecycle-auto-close | skip:fixed:{detail}\n"
+        append_brain(args, args.ledger_slug, ledger)
+        return
+
     stamp = (
         f"\nStatus: FIXED ({iso})\n"
         f"Evidence: lifecycle closer confirmed {ref.url} is merged ({detail}).\n"
@@ -372,7 +448,11 @@ def close_review_records(args: argparse.Namespace, iso: str) -> dict[str, Any]:
             continue
         result["checked"] += 1
         body = str(record.get("body") or "")
-        if not status_is_open(body):
+        if record.get("_typed"):
+            is_open = str(record.get("status") or "") == "open"
+        else:
+            is_open = status_is_open(body)
+        if not is_open:
             result["skipped"].append({"slug": slug, "reason": "not-open"})
             continue
         refs = review_refs(body)

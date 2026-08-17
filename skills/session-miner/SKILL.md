@@ -80,9 +80,10 @@ Every profile uses the same triage pass:
 - Prefer repeated patterns across multiple sessions or across days. A severe
   one-off may still qualify for incidents, but routine papercuts and tooling
   improvements should normally recur.
-- Papercut-profile outputs are BRAIN records only (`papercut-<short-topic>`,
-  per `preference-always-file-papercuts-in-brain`, Tom 2026-07-19) — never
-  direct kanban cards; the triage routine cards them.
+- Papercut-profile outputs are typed BRAIN papercuts only, filed through
+  `brain papercut file` (`papercut-<short-topic>`, per
+  `preference-always-file-papercuts-in-brain`, Tom 2026-07-19) — never generic
+  `brain put` and never direct kanban cards; the triage routine cards them.
 - Dedupe before writing. Check live kanban cards, open PRs at the repo venue,
   active card branches/worktrees by exact slug/area, recently merged PRs, and
   any profile ledger. For brain outputs, search first and update in place
@@ -112,9 +113,10 @@ Candidate signals:
 - Flaky or hanging tests, confusing CLI output, stale docs, or repeated manual
   setup.
 
-Output in `apply`: one kanban card per actionable papercut, usually `todo`.
-Use the shared contract card body. Include evidence, recurrence count, suggested
-fix, and a concrete VERIFY line. File ambiguous or large fixes to `backlog`.
+Output in `apply`: one typed Brain papercut per actionable finding through
+`brain papercut file`. Include evidence, recurrence count, suggested fix, and
+never-again coverage. The papercut reconciler—not this profile—clusters and
+files any resulting pattern-level kanban card.
 
 Skip: one-off mistakes, already-known cards, already-merged fixes that still
 pass on current main, and product bugs better covered by a more specific

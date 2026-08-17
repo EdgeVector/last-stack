@@ -219,10 +219,13 @@ continue — do not fail the whole run.
      is already up.
    - **< 30 GiB free:** additionally run the step-5 aggressive purge even if
      it was skipped, tighten step-4a retention to newest 1 for this run only,
-     and upsert brain record `papercut-low-disk-emergency` (type reference)
-     with `df -h` output and the largest remaining consumers so the papercut
-     router files a P0 card. This is the last line of defense — never end a
-     run below 30 GiB silently.
+     and file `papercut-low-disk-emergency` through `brain papercut file`
+     (`--component disk --severity p0 --kind specified-fix`) with a one-line
+     observable symptom plus `df -h`, the largest remaining consumers, and
+     prevention evidence in the body. If the typed record is already open,
+     append the fresh evidence with `brain append ... --type papercut`; never
+     generic `brain put`. The keyed filing must succeed before reporting it as
+     queued. This is the last line of defense — never end below 30 GiB silently.
 
 ## Output
 Report: GB reclaimed, worktrees pruned (and which were kept and why), final free

@@ -34,8 +34,9 @@ improves the tools, not the product.
 
 This is DISTINCT from sibling routines (don't duplicate their jobs):
 - `papercut-reconciler` owns papercut→card conversion. If a finding is a
-  product/dev-process papercut, file it as a Brain record (`papercut-<topic>`,
-  tag `papercut`, `Status: OPEN`) — never file a papercut card directly.
+  product/dev-process papercut, file it through `brain papercut file`
+  (`papercut-<topic>`, typed status `open`) — never use generic `brain put` and
+  never file a papercut card directly. A nonzero filing is not queued work.
 - `consolidate-brain` owns brain status hygiene; `groom-board` owns board
   grooming. Leave those alone.
 Your lane is the AGENT TOOLING itself: "should this repeated workflow become a

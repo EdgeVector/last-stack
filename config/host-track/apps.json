@@ -62,6 +62,10 @@
           "target": "$HOME/.local/bin/last-stack-papercut-lifecycle-close"
         },
         {
+          "source": "bin/last-stack-papercut-queue",
+          "target": "$HOME/.local/bin/last-stack-papercut-queue"
+        },
+        {
           "source": "bin/last-stack-kanban-file-pr",
           "target": "$HOME/.local/bin/last-stack-kanban-file-pr"
         },

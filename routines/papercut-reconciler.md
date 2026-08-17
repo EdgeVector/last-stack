@@ -49,7 +49,7 @@ Papercut Reconciler** — the single component allowed to turn papercuts into
 board cards.
 
 Standing rule (Tom, 2026-07-18): agents and generator routines file papercuts
-as **Brain records only** (`papercut-<topic>`, tag `papercut`). They never file
+as **typed Brain papercuts only**, through `brain papercut file`. They never file
 papercut cards directly — un-clustered papercut cards were drowning the board
 and starving program work. You periodically read ALL open papercut records,
 find the patterns behind them, and file a **small number of well-scoped,
@@ -118,13 +118,24 @@ output; a stale doc that misled an agent; the same workaround across sessions.
   filter by an in-content timestamp; session id ≠ filename → `grep -l "<id>"`;
   in `zsh`, quote globs, append `|| true`, never assign to a variable named
   `status`.
-- For each distinct NEW papercut found, file a Brain record (search first,
-  update in place — no near-duplicate slugs):
-  slug `papercut-<short-topic>`, type `reference`, tag `papercut`, body with
-  `Status: OPEN`, symptom, root cause if known, suggested fix, evidence
+- For each distinct NEW papercut found, use the single filing door below. It
+  performs semantic duplicate detection and atomically participates in the
+  status-keyed queue; do not pre-enumerate records with list/search:
+
+  ```bash
+  brain papercut file papercut-<short-topic> \
+    --component <owner-component> --severity <p0-p3> \
+    --kind <complaint|specified-fix|reconfirmed> \
+    --symptom "<one observable sentence>" --title "<title>" \
+    --body "<evidence and never-again coverage>" --repo <owner/repo>
+  ```
+
+  The body carries root cause if known, suggested fix, evidence
   (sessions/dates/frequency), plus a `## Never-again coverage` section with:
   the failure invariant, current guard/test (or `NONE`), proposed compound
   regression test, and `Prevention: MISSING|COVERED|NOT_APPLICABLE`.
+- A nonzero filing is not queued work. Record it in the `failed` classification
+  and do not report `filed_papercut=` for that slug.
 - Do NOT file board cards in this step.
 
 ## Step 2 — Collect ALL open papercuts and prevention gaps
@@ -133,23 +144,29 @@ output; a stale doc that misled an agent; the same workaround across sessions.
   `Status: FIXED` to OPEN papercuts whose referenced LastGit CR, Forgejo PR, or
   GitHub PR is already merged. This keeps healed pipeline papercuts from being
   clustered again, while preserving the sole papercut→card path.
-- Enumerate papercut records **without a census list** (Tom 2026-08-06:
-  `brain list` is a SAMPLE, not a membership instrument). Seed + discover:
-  1. `brain get papercut-prevention-registry --type reference` and
-     `brain get papercut-reconciler-ledger --type reference` — extract every
-     `papercut-…` slug named there.
-  2. Discovery sample (treat as incomplete): `brain search "papercut" --type
-     reference --limit 50 --json` and/or `brain ask "open papercut"`. Never
-     claim the search page is the full family; handle truncation / empty
-     envelopes as partial.
-  3. Union slug seeds → targeted `brain get <slug> --type reference` (or
-     papercut type when registered) for bodies. Filter to slugs starting
-     `papercut-`.
+- **Mandatory first discovery read.** Snapshot the exact `status=open` keyed
+  partition before reading the prose ledger or registry. This command validates
+  the reader method, exact row count, open-only status, and unique membership;
+  any failure ends the pass `error` rather than false-green:
+
+  ```bash
+  queue_dir="$(mktemp -d)"
+  queue_snapshot="$queue_dir/open.json"
+  last-stack-papercut-queue snapshot --output "$queue_snapshot" --json
+  ```
+
+- `$queue_snapshot` is the complete membership instrument for this pass.
+  `brain list`, `brain search`, and `brain ask` are forbidden for discovery;
+  they rank/sample and cannot answer membership. Use snapshot headers to group
+  by component/severity/title, then hydrate only selected candidates with
+  `brain get <slug> --type papercut` point reads.
+- Read `papercut-prevention-registry` and `papercut-reconciler-ledger` only as
+  lifecycle/card-mapping context. They are not queue seeds and cannot add or
+  remove membership from the snapshot.
 - The prevention registry is the compact never-again index for
   fixed/reconciled papercuts whose prevention coverage still needs review;
   do not assume `Status: FIXED` means recurrence is impossible.
-- For remediation, skip records whose body says `Status: FIXED` or
-  `Status: RECONCILED`, and anything already stamped in the
+- For remediation, typed `status=open` is authoritative. Skip anything already stamped in the
   `papercut-reconciler-ledger` with a live card. For prevention, retain any
   registry entry or papercut section marked `Prevention: MISSING`, even after
   the symptom was fixed or reconciled.
@@ -196,12 +213,38 @@ For each pattern worth fixing now:
 - Append one line per handled papercut to the ledger record
   (`brain append papercut-reconciler-ledger --type reference`), newest on top:
   `<ISO-UTC> <papercut-slug> -> card:<card-slug> | pattern:<name> | skip:<reason>`
-- Append a `Status: RECONCILED → card:<card-slug> (<ISO date>)` line to each
-  papercut record folded into a card (`brain append`, never get→edit→put).
+- Do not change the typed papercut repair status merely because it was carded.
+  `RECONCILED` is routing state in the reconciler ledger; the typed record stays
+  `open` until `brain papercut close` moves it to `fixed`, `verified`,
+  `wontfix`, or `duplicate` with evidence.
 - Append prevention state changes to `papercut-prevention-registry`: papercut
   slug, invariant, compound-test/guard locator, `MISSING|COVERED|NOT_APPLICABLE`,
   evidence, and linked card. Never mark `COVERED` from prose or a merged change
   alone; require a passing executable proof against the original failure path.
+
+## Step 6 — Prove exact accounting (mandatory, LAST before heartbeat)
+
+Classify every slug from `$queue_snapshot` exactly once in four newline files:
+
+- `reconciled`: folded into a card during this pass;
+- `already-handled`: a live existing card/ledger mapping owns it;
+- `deferred`: deliberately left open (one-off, budget hold, or not selected in
+  this bounded pass);
+- `failed`: hydration, dedupe, filing, or lifecycle processing failed.
+
+Then run:
+
+```bash
+last-stack-papercut-queue verify --snapshot "$queue_snapshot" \
+  --reconciled-file "$queue_dir/reconciled" \
+  --deferred-file "$queue_dir/deferred" \
+  --already-handled-file "$queue_dir/already-handled" \
+  --failed-file "$queue_dir/failed" --json
+```
+
+The verifier rejects missing, extra, duplicate, or cross-bucket slugs. It also
+returns nonzero when `failed` is nonempty. Copy its real counts and snapshot
+path into the heartbeat. Never emit `considered=...` from a constant string.
 
 ## Hard constraints (unattended-run safety)
 - FILE, don't ship: no code/doc/settings edits, no branches, no PRs — only
@@ -210,8 +253,9 @@ For each pattern worth fixing now:
 - Bounded single pass, then exit; heartbeat per the shared contract.
 
 ## Output
-End with a concise report: new papercuts harvested into Brain, open papercuts
+End with a concise report: keyed queue snapshot path/count, new typed papercuts harvested into Brain, open papercuts
 and prevention gaps considered, patterns found, compound tests required or
 explicitly not applicable, cards filed/updated (slugs), and what stayed OPEN
-as not-yet-actionable. A quiet run that files nothing is a valid outcome — say
-so plainly.
+as not-yet-actionable. Include the four conservation counts and
+`conserved=true`. A quiet run that files nothing is valid only when every
+discovered slug is still classified and the verifier is green.
