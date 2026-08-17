@@ -4,6 +4,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT"
 
+# Sandboxed macOS runners cannot write Python's default user cache directory.
+# Keep bytecode compilation inside this gate's disposable temp space so every
+# Python helper is checked without depending on host-home permissions.
+CI_PYTHON_CACHE="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-ci-pycache.XXXXXX")"
+export PYTHONPYCACHEPREFIX="$CI_PYTHON_CACHE"
+trap 'rm -rf "$CI_PYTHON_CACHE"' EXIT
+
 for script in setup bin/* hooks/*.sh tests/*.sh .lastgit/ci.sh; do
   [ -f "$script" ] || continue
   first_line="$(sed -n '1p' "$script")"
@@ -77,6 +84,7 @@ bash tests/last-stack-literal-markdown-append.sh
 bash tests/last-stack-lint-machine-leaks.sh
 bash tests/last-stack-audit-f-prefix-callers.sh
 bash tests/last-stack-papercut-reconciler-contract.sh
+bash tests/last-stack-papercut-queue.sh
 # Producer half of the same pipeline: the reconciler contract above guards the
 # only routine that turns papercuts into cards, and nothing guarded the rule
 # telling agents to file them in the first place.

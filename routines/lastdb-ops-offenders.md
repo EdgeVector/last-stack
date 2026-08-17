@@ -24,7 +24,9 @@ last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 - Never restart, kill, or `brew services` primary `lastdbd`.
 - Never treat `:9001` refused as an outage. Socket is the data plane.
 - Never file a papercut as a board card. Papercuts → Brain only
-  (`papercut-<topic>`, `preference-always-file-papercuts-in-brain`).
+  through `brain papercut file` (`papercut-<topic>`,
+  `preference-always-file-papercuts-in-brain`). Never generic `brain put`: the
+  typed command owns dedupe and deterministic queue membership.
 - Never use `kanban list --full-body`. Prefer `kanban show <slug>`.
 - Never treat `kanban list` column membership as truth — point-get with `show`.
 - Never file more than **two** Kind:pr cards in one run. Prefer one.

@@ -17,6 +17,21 @@ grep -q 'Documentation alone is never prevention coverage' "$prompt"
 grep -q 'last-stack-papercut-lifecycle-close' "$prompt"
 grep -q 'lifecycle_helper_missing' "$prompt"
 grep -q 'command -v "$lifecycle_helper"' "$prompt"
+grep -q 'last-stack-papercut-queue snapshot' "$prompt"
+grep -q 'last-stack-papercut-queue verify' "$prompt"
+grep -q 'brain papercut file' "$prompt"
+grep -q 'brain get <slug> --type papercut' "$prompt"
+grep -q 'forbidden for discovery' "$prompt"
+grep -q 'conserved=true' "$prompt"
+grep -q 'Do not change the typed papercut repair status merely because it was carded' "$prompt"
+
+queue_helper="$ROOT/bin/last-stack-papercut-queue"
+[ -x "$queue_helper" ] || { echo "missing executable queue helper" >&2; exit 1; }
+jq -e '
+  .apps[] | select(.app == "last-stack") | .links[] |
+  select(.source == "bin/last-stack-papercut-queue" and
+         .target == "$HOME/.local/bin/last-stack-papercut-queue")
+' "$ROOT/config/host-track/apps.json" >/dev/null
 
 helper="$ROOT/bin/last-stack-papercut-lifecycle-close"
 [ -x "$helper" ] || { echo "missing executable lifecycle helper" >&2; exit 1; }

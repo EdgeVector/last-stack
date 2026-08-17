@@ -111,4 +111,38 @@ if grep -q 'papercut-pipeline-stuck-cr-last-stack-open -> card:none' "$BRAIN_APP
   exit 1
 fi
 
+# Typed path: lifecycle transitions through `brain papercut close`, never a
+# prose Status append. This is the production path after the queue migration.
+cat >"$bin_dir/typed-brain" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  "get papercut-pipeline-stuck-cr-last-stack-typed --type papercut --json")
+    printf '%s\n' '{"slug":"papercut-pipeline-stuck-cr-last-stack-typed","title":"Typed merged CR","body":"Evidence: lastgit://last-stack/cr/cr-merged","status":"open"}'
+    ;;
+  papercut\ close\ papercut-pipeline-stuck-cr-last-stack-typed*)
+    printf 'CLOSE %s\n' "$*" >>"$BRAIN_TYPED_LOG"
+    ;;
+  "append papercut-reconciler-ledger --type reference")
+    cat >>"$BRAIN_TYPED_LOG"
+    ;;
+  *)
+    echo "unexpected typed brain args: $*" >&2
+    exit 2
+    ;;
+esac
+SH
+chmod +x "$bin_dir/typed-brain"
+export BRAIN_TYPED_LOG="$tmp/typed.log"
+: >"$BRAIN_TYPED_LOG"
+PATH="$bin_dir:$PATH" "$ROOT/bin/last-stack-papercut-lifecycle-close" \
+  papercut-pipeline-stuck-cr-last-stack-typed \
+  --brain-bin "$bin_dir/typed-brain" --json >"$tmp/typed.json"
+jq -e '.checked == 1 and (.fixed | length) == 1 and (.errors | length) == 0' "$tmp/typed.json" >/dev/null
+grep -q '^CLOSE papercut close papercut-pipeline-stuck-cr-last-stack-typed --status fixed ' "$BRAIN_TYPED_LOG"
+if grep -q '^Status: FIXED' "$BRAIN_TYPED_LOG"; then
+  echo "typed record was closed by prose append" >&2
+  exit 1
+fi
+
 printf 'ok last-stack-papercut-lifecycle-close\n'

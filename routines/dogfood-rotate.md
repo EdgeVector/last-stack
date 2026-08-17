@@ -221,9 +221,12 @@ Split every actionable finding by severity:
   a Kind:pr into todo/backlog without those flags: pickup classifies that
   as `unattached-outcome` and will not claim it.
 - **PAPERCUT** (friction, polish, confusing UX, stale recipe wording, flaky
-  annoyance that doesn't block the feature): file a Brain record ONLY —
-  slug `papercut-<short-topic>`, type `reference`, tag `papercut`, body with
-  `Status: OPEN`, symptom, suggested fix, evidence. Never file a papercut
+  annoyance that doesn't block the feature): file a typed Brain papercut ONLY
+  through `brain papercut file papercut-<short-topic> --component <owner>
+  --severity <p0-p3> --kind <complaint|specified-fix|reconfirmed> --symptom
+  "<observable>" --title "<title>" --body "<fix, evidence, prevention>"`.
+  Never use generic `brain put`; the filing command owns dedupe and keyed queue
+  membership. Never file a papercut
   card — the `papercut-reconciler` routine clusters Brain papercuts into
   pattern-level cards (standing rule, Tom 2026-07-18).
 - Make each card cold-start-ready:
