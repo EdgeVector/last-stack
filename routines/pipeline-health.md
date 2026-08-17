@@ -394,9 +394,14 @@ Rules:
   wake without new action — still prefer
   `ok deploy_blocked=… already-papercut=…`).
 - Use **`ok`** when you fixed, merged, filed/updated a papercut, or re-armed
-  anything.
-- Use **`error`** for tool/auth failures that prevented the deploy scan or the
-  stuck-merge scan entirely.
+  anything, **and** when the scan completed and still sees stuck/red CRs or PRs.
+  Downstream red CI is the *subject*, not a routine failure. Stamp `ok` with
+  `stuck=…` / `open_cr=…` — never `error` for that.
+- Use **`error`** only for tool/auth failures that prevented the deploy scan or
+  the stuck-merge scan entirely (CLI missing, unusable, timed out before any
+  inventory read).
+- Classify with `last-stack-routine-outcome-classify --observer last-stack-pipeline-health`
+  when in doubt.
 - Prefer `filed_papercut=` over legacy `filed_p0=` (the latter meant board cards;
   do not reintroduce board P0 filing).
 

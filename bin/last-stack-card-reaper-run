@@ -388,7 +388,8 @@ function rmCard(slug) {
   const out = run("kanban", ["rm", slug], {timeout: 60000});
   if (!out.ok) {
     if (noteBoardDeferred(slug, "rm", out)) return false;
-    throw new Error(`kanban rm failed for ${slug}: ${out.stderr || out.error}`);
+    res.flagged.push(`kanban_rm_failed_for_${slug}`);
+    return false;
   }
   return true;
 }

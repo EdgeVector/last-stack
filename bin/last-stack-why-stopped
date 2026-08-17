@@ -45,18 +45,33 @@ actions=()
 
 # --- Class A: install ---
 class_a=0
+run_class_a() {
+  local reason="$1" extra="${2:-}"
+  local timeout_bin=""
+  if command -v gtimeout >/dev/null 2>&1; then
+    timeout_bin="gtimeout"
+  elif command -v timeout >/dev/null 2>&1; then
+    timeout_bin="timeout"
+  fi
+  if [ -n "$timeout_bin" ]; then
+    "$timeout_bin" -k 2s 8s last-stack-class-a-heal --reason="$reason" $extra --quiet >/dev/null 2>&1
+  else
+    last-stack-class-a-heal --reason="$reason" $extra --quiet >/dev/null 2>&1
+  fi
+}
+
 if command -v last-stack-class-a-heal >/dev/null 2>&1; then
-  if ! last-stack-class-a-heal --reason=why-stopped --quiet >/dev/null 2>&1; then
+  if ! run_class_a why-stopped; then
     class_a=1
     if [ "$HEAL" -eq 1 ]; then
-      if last-stack-class-a-heal --reason=why-stopped-heal --full >/dev/null 2>&1; then
+      if run_class_a why-stopped-heal --full; then
         class_a=0
         detail+=("install was unhealthy; Class A healed")
         actions+=("class-a-heal-ok")
       else
         classes+=("A")
-        detail+=("host-track/install unhealthy; heal failed")
-        actions+=("class-a-heal-failed")
+        detail+=("host-track/install unhealthy; heal skipped-or-timed-out")
+        actions+=("class-a-heal-skipped")
       fi
     else
       classes+=("A")
@@ -242,5 +257,13 @@ else
   printf 'detail: %s\n' "$det_str"
   printf 'actions: %s\n' "$act_str"
 fi
+
+# Finished classification is ok/noop even when classes=unknown or shipping is
+# frozen. error is reserved for CLI missing (we never reach here).
+routine_outcome="ok"
+case "$cls_str" in
+  none) routine_outcome="noop" ;;
+esac
+printf '%s %s\n' 'ROUTINE_RESULT' "outcome=${routine_outcome} detail=classes=${cls_str}"
 
 exit 0

@@ -46,6 +46,7 @@ cwd = "$REG_CWD"
 status = "active"
 timeout_min = 15
 prompt_path = "$PROMPT_PATH"
+gate_command = "$ROOT/bin/last-stack-routine-observer-gate last-stack-why-stopped"
 heartbeat_slug = "routine-heartbeats"
 group = "quality"
 EOF

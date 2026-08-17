@@ -116,6 +116,34 @@ case "$north_star_prompt" in
     ;;
 esac
 
+pipeline_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" pipeline-health)"
+if ! grep -Fq "Downstream red CI is the *subject*" <<<"$pipeline_prompt" ||
+   ! grep -Fq "last-stack-routine-outcome-classify --observer last-stack-pipeline-health" <<<"$pipeline_prompt"; then
+  echo "expected pipeline-health to keep downstream red CI out of error" >&2
+  exit 1
+fi
+
+why_stopped_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" why-stopped)"
+if ! grep -Fq "including \`classes=unknown\`" <<<"$why_stopped_prompt" ||
+   ! grep -Fq "last-stack-routine-outcome-classify --observer last-stack-why-stopped" <<<"$why_stopped_prompt"; then
+  echo "expected why-stopped to classify unknown classes as ok, not error" >&2
+  exit 1
+fi
+
+ship_gap_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" ship-pipeline-gap-audit)"
+if ! grep -Fq "health=yellow" <<<"$ship_gap_prompt" ||
+   ! grep -Fq "not a routine failure" <<<"$ship_gap_prompt"; then
+  echo "expected ship-pipeline-gap-audit to keep yellow funnel out of error" >&2
+  exit 1
+fi
+
+worktree_cleanup_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" worktree-cleanup)"
+if ! grep -Fq "reason=cleanup-liveness-unavailable helper_exit=3" <<<"$worktree_cleanup_prompt" ||
+   ! grep -Fq "bounded skip, not a routine crash" <<<"$worktree_cleanup_prompt"; then
+  echo "expected worktree-cleanup to treat liveness-unavailable as noop" >&2
+  exit 1
+fi
+
 merge_babysit_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" merge-babysit)"
 if ! grep -Fq "transient shared backpressure" <<<"$merge_babysit_prompt" ||
    ! grep -Fq "busy-node/backend-unreachable" <<<"$merge_babysit_prompt"; then

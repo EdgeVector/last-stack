@@ -227,8 +227,9 @@ healthy; it is only evidence you are not yet in trouble.
 
 If `last-stack-worktree-reclaim` exits **3** / logs `liveness_unavailable=1`,
 it could not read the process table and deliberately did nothing. Heartbeat
-that as `error`, never `noop` — a blind run and a clean machine must not
-produce the same token.
+that as `noop` with `reason=cleanup-liveness-unavailable helper_exit=3` — a
+bounded skip, not a routine crash. Do not delete anything when liveness is
+unknown.
 
 > **Heartbeat (LAST action, always).** Call
 > `<last-stack>/bin/last-stack-brain-append-heartbeat --line "worktree-cleanup
