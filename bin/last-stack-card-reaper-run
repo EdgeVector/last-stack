@@ -415,7 +415,7 @@ function removeWorktree(wt) {
 }
 
 function reapNote(rule) {
-  return `\n\n## CARD REAP ${iso}\nRule: ${rule}\nRecovery: soft-deleted; recreate via program-driver or restore this body.\n`;
+  return `\n\n## CARD REAP ${iso}\nRule: ${rule}\nRecovery: deleted (hard erase; no trash); recreate via program-driver.\n`;
 }
 
 function rollbackNote(rule) {

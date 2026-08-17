@@ -63,7 +63,7 @@ continue — do not fail the whole run.
   groom-board`, do not run doctor/init/restart, and classify the run as `noop`,
   not `error`.
 - Columns: `backlog → todo → doing → done`. `add <slug>` is an upsert;
-  `rm <slug>` soft-deletes; `move <slug> <column>`.
+  `rm <slug>` deletes (hard erase; no trash); `move <slug> <column>`.
 - Read columns sequentially with `<board CLI> list --column <column> --json` and
   point-read one selected card with `<board CLI> show <slug> --json` when you
   need the full body. Do not use wide/full-body board reads or parallel board
@@ -120,7 +120,7 @@ fail-closed; errors never auto-close a card.
    `NEEDS-HUMAN: non-PR card missing DONE-WHEN`. Never use `DONE-WHEN` to close
    `Kind: pr`.
 
-2. **Prune scratch/test cards.** Soft-delete (`rm`) clear test-harness junk:
+2. **Prune scratch/test cards.** Delete (`rm`) clear test-harness junk:
    `zz-*` slugs, single-letter/placeholder titles, empty bodies, obvious
    `*-scratch` / `*-delete-me` cards. Only delete UNAMBIGUOUS junk — if a card has
    a real title and substantive body, leave it.
@@ -128,7 +128,7 @@ fail-closed; errors never auto-close a card.
 2b. **Empty-column ghosts (won't-undo class — 2026-08-01).** Cards that show up
    in `pickup status` as `missing Repo header` / `malformed-routing` but have
    **empty `column`**, empty title/body, and `created_by=unknown` are BoardCards
-   ghosts, not real work. Soft-delete them with `rm` when reverse-deps are empty
+   ghosts, not real work. Delete them with `rm` when reverse-deps are empty
    (`blockedBy` / dependents none). Do not invent titles or re-park them into
    backlog as hollow PRs. Cite count in the digest. Proven incident: interactive
    groom soft-deleted 54 ghosts 2026-08-01
