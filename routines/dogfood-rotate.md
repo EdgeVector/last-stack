@@ -174,6 +174,17 @@ target repo to make it current.
 ## Run The Recipe
 - Follow the selected entry exactly. Feature-specific knowledge belongs in
   `dogfood-registry`, not in this routine.
+- **molecule-per-key-reads (resource isolation — won't-undo):** run only via
+  `"$last_stack/bin/last-stack-dogfood-molecule-per-key-reads"` (or the
+  underlying `"$last_stack/bin/last-stack-dogfood-resource-isolate"` wrapper).
+  That path fail-closes when free memory / load / primary RSS exceeds the
+  isolation contract, applies CPU/memory caps (cgroup when available; Darwin
+  ulimit + preflight otherwise), uses a dedicated dogfood Fold checkout from
+  `last-stack-dogfood-target-checkout` (never mutates user worktrees), and
+  exercises `indexed_point_lookup` + `indexed_full_read` at 1k/10k/50k/100k.
+  Do **not** bare `cargo bench` on the scheduler host. If isolation preflight
+  blocks, stamp the rotation log `blocked` and file/reuse the isolation
+  blocker — never force the cold build.
 - For a supported secret-backed recipe, keep only the `lastsecrets://` locator
   in Brain and the routine environment. Invoke the consumer through
   `last-stack-secret-env-run`; the helper resolves the value at exec time and
