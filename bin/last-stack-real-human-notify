@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""Page Tom only for REAL_HUMAN open actionable gates.
+
+Reuses factory-health's ra argv: `ra notify <msg> --priority <pri>`.
+Does not notify for NOT_A_BLOCKER / NEEDS_RECOMMENDATION / non-actionable /
+non-open lines. Escalate MCP is not this tool and still does not notify.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+# Same argv shape as last-stack-factory-health.notify_tom
+RA_BIN = os.environ.get("RA_BIN", "ra")
+
+
+def ra_notify(msg: str, priority: str, dry_run: bool) -> tuple[bool, str, list[str]]:
+    argv = [RA_BIN, "notify", msg, "--priority", priority]
+    if dry_run:
+        print(
+            "WOULD " + " ".join(shlex.quote(a) for a in argv),
+            file=sys.stderr,
+        )
+        return True, "dry-run", argv
+    cp = subprocess.run(argv, text=True, capture_output=True, timeout=45)
+    if cp.returncode == 0:
+        return True, (cp.stdout or "ok").strip()[:200], argv
+    return False, (cp.stderr or cp.stdout or f"exit {cp.returncode}")[:300], argv
+
+
+def _norm(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def should_page(line: dict[str, Any]) -> bool:
+    bucket = _norm(line.get("bucket") or line.get("class")).upper()
+    status = _norm(line.get("status")).lower()
+    actionable = line.get("actionable")
+    if isinstance(actionable, str):
+        actionable = actionable.strip().lower() in {"yes", "true", "1"}
+    if status and status not in {"open", "live"}:
+        return False
+    if actionable is False:
+        return False
+    return bucket == "REAL_HUMAN"
+
+
+def load_lines(path: Path) -> list[dict[str, Any]]:
+    raw = path.read_text()
+    stripped = raw.strip()
+    if stripped.startswith("{") or stripped.startswith("["):
+        data = json.loads(stripped)
+        if isinstance(data, dict):
+            rows = data.get("lines") or data.get("gates") or []
+        else:
+            rows = data
+        return [row for row in rows if isinstance(row, dict)]
+
+    lines: list[dict[str, Any]] = []
+    bucket = ""
+    for text_line in raw.splitlines():
+        m = re.match(r"^#{1,3}\s+(REAL_HUMAN|NOT_A_BLOCKER|NEEDS_RECOMMENDATION)\b", text_line)
+        if m:
+            bucket = m.group(1)
+            continue
+        kv = re.match(
+            r"(?i)^\s*(?:-\s*)?(?:`)?([a-z0-9][a-z0-9._-]*)(?:`)?\s*\|"
+            r".*?bucket=(\w+).*?status=(\w+).*?actionable=(\w+)",
+            text_line,
+        )
+        if kv:
+            lines.append(
+                {
+                    "slug": kv.group(1),
+                    "bucket": kv.group(2),
+                    "status": kv.group(3),
+                    "actionable": kv.group(4),
+                    "text": text_line.strip(),
+                }
+            )
+            continue
+        bullet = re.match(
+            r"^\s*-\s+`?([a-z0-9][a-z0-9._-]*)`?(?:\s+[—-]\s+(.*))?$",
+            text_line,
+            re.IGNORECASE,
+        )
+        if bullet and bucket:
+            rest = bullet.group(2) or ""
+            status_m = re.search(r"status=(\w+)", rest, re.I)
+            act_m = re.search(r"actionable=(\w+)", rest, re.I)
+            lines.append(
+                {
+                    "slug": bullet.group(1),
+                    "bucket": bucket,
+                    "status": status_m.group(1) if status_m else "open",
+                    "actionable": act_m.group(1) if act_m else "yes",
+                    "text": rest or bullet.group(1),
+                }
+            )
+    return lines
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument(
+        "--input",
+        required=True,
+        help="JSON {lines:[...]} or markdown audit/ledger fixture",
+    )
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument(
+        "--priority",
+        default="high",
+        help="ra notify --priority (factory-health hard default is high)",
+    )
+    ap.add_argument("--json", action="store_true")
+    args = ap.parse_args(argv)
+
+    rows = load_lines(Path(args.input))
+    paged: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    invoked = 0
+    for row in rows:
+        rec = {
+            "slug": row.get("slug"),
+            "bucket": row.get("bucket"),
+            "status": row.get("status"),
+            "actionable": row.get("actionable"),
+        }
+        if should_page(row):
+            msg = (
+                f"REAL_HUMAN {row.get('slug')}: "
+                f"{row.get('text') or row.get('message') or 'needs Tom'}"
+            )
+            ok, detail, argv_used = ra_notify(msg, args.priority, args.dry_run)
+            rec["paged"] = True
+            rec["ra_argv"] = argv_used
+            rec["notify_ok"] = ok
+            rec["detail"] = detail
+            paged.append(rec)
+            invoked += 1
+        else:
+            rec["paged"] = False
+            skipped.append(rec)
+
+    report = {
+        "paged_count": invoked,
+        "paged": paged,
+        "skipped": skipped,
+        "ra_shape": ["ra", "notify", "<msg>", "--priority", args.priority],
+    }
+    if args.json:
+        print(json.dumps(report, indent=2))
+    else:
+        print(f"real-human-notify paged={invoked} skipped={len(skipped)}")
+        for row in paged:
+            print(f"  PAGE {row.get('slug')}")
+        for row in skipped:
+            print(f"  skip {row.get('slug')} bucket={row.get('bucket')}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

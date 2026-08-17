@@ -692,10 +692,31 @@ def main(argv: Optional[list[str]] = None) -> int:
         action="store_true",
         help="Run offline unit tests (no brain/kanban)",
     )
+    ap.add_argument(
+        "--parse-body",
+        metavar="FILE",
+        help="Parse MILESTONE_REQUEST blocks from FILE (-) and print JSON "
+        "(no brain/kanban). Heading form only.",
+    )
     args = ap.parse_args(argv)
 
     if args.self_test:
         return 0 if self_test() else 1
+
+    if args.parse_body:
+        path = args.parse_body
+        text = sys.stdin.read() if path == "-" else Path(path).read_text()
+        reqs = parse_milestone_requests(text)
+        print(
+            json.dumps(
+                {
+                    "requests": [
+                        {"slug": r.slug, "status": r.status} for r in reqs
+                    ]
+                }
+            )
+        )
+        return 0
 
     apply = bool(args.apply)
     portfolio = kanban_milestone_portfolio()
@@ -798,6 +819,10 @@ B
     reqs = parse_milestone_requests(body)
     assert len(reqs) == 2, reqs
     assert reqs[0].slug == "ms-one" and reqs[0].status == "pending"
+    # One-line form is not a request. Agents used to append this; it is a
+    # silent noop, not an alternate syntax.
+    oneline = "MILESTONE_REQUEST slug=foo status=pending\nOutcome: x\n"
+    assert parse_milestone_requests(oneline) == []
     assert parse_terminal_card(body) == "my-ns-terminal-proof"
     assert parse_mode(body) == "ship"
     generated = terminal_card_body("north-star-example", "Example")

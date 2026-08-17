@@ -42,8 +42,10 @@ Tom (or a vendor/pen) must act. Examples:
 - Irreversible prod cutover with no standing authorization
 
 **Action:** keep `needs_human` (or `deferred` if intentional park). Refresh
-`block_reason` to **one crisp line**. Optionally Discord-page via
-`last-stack-discord-needs-human` if stuck >48h and not already paged this week.
+`block_reason` to **one crisp line**. Page Tom only for this bucket via
+`last-stack-real-human-notify` (factory-health `ra notify <msg> --priority
+high` — not escalate, which does not notify). Dedup with `--dry-run` first
+if unsure; do not page NOT_A_BLOCKER or NEEDS_RECOMMENDATION.
 Do **not** file busywork investigation cards for pure pen/vendor work.
 
 ### B — `NOT_A_BLOCKER`
@@ -210,3 +212,10 @@ Last action:
 - Every C either has a RECOMMENDATION section or an open investigation child
 - Brain `human-gate-audit-latest` updated
 - Heartbeat written
+- REAL_HUMAN open actionable lines passed to `last-stack-real-human-notify`
+  (same `ra notify` argv as factory-health). Non-REAL_HUMAN lines are not paged.
+
+```bash
+# After writing human-gate-audit-latest, page only REAL_HUMAN:
+last-stack-real-human-notify --input /tmp/hga-real-human.json --priority high
+```

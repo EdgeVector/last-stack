@@ -77,6 +77,9 @@ bash tests/last-stack-org-cloud-membership-dogfood.sh
 bash tests/last-stack-dogfood-resource-isolate.sh
 bash tests/last-stack-secret-env-run.sh
 bash tests/last-stack-ship-feature-milestones.sh
+bash tests/last-stack-design-pack.sh
+bash tests/last-stack-ship-handoff.sh
+bash tests/last-stack-real-human-notify.sh
 bash tests/last-stack-lint-prompts.sh --ci
 bash tests/last-stack-lastdb-access-watch.sh
 bash tests/last-stack-routines-prompt-doctor.sh

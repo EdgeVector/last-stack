@@ -45,10 +45,22 @@ Run `situations list --json`, then complete the creation inventory gate below.
 Busy-node/timeouts are a clean noop; never run doctor/init and never restart
 shared infrastructure.
 
-Read optional targeting from the environment:
+Read optional targeting from the environment. **First command after setup
+must print this exact line** (so a skipped env check is visible in the
+transcript):
+
+```bash
+printf 'TARGETING target=%s request=%s\n' \
+  "${NORTH_STAR_DRIVER_TARGET:-}" "${NORTH_STAR_DRIVER_REQUEST:-}"
+```
 
 - `NORTH_STAR_DRIVER_TARGET` — exact Brain North Star slug.
 - `NORTH_STAR_DRIVER_REQUEST` — exact requested milestone slug.
+
+If `NORTH_STAR_DRIVER_TARGET` is set, point-read only that project. If it
+has no parseable `## MILESTONE_REQUEST` heading block, report
+`noop no_parseable_request` and **stop** — do not fall through to untargeted
+selection.
 
 Targeting narrows selection; it never relaxes proof, Situation, or duplication
 checks.
