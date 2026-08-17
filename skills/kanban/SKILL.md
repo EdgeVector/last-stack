@@ -3,7 +3,7 @@ name: kanban
 version: 0.2.0
 description: |
   Manage the kanban board — a kanban over LastDB. File, list, show, move,
-  groom, and soft-delete cards via the kanban CLI. Use when the user wants to
+  groom, and delete cards via the kanban CLI. Use when the user wants to
   "file a kanban task/card", "add to the board", "what's on the board",
   "backlog", "list tasks", "move a card", "show card <slug>", or "groom the
   board". This is the board-CRUD counterpart to the kanban-agent skill (which
@@ -95,7 +95,7 @@ kanban search "<text>" --json      # text search; no --full-body flag
 kanban show <slug> --json          # one card in detail
 kanban add <slug> [flags]          # create OR update a card
 kanban move <slug> <column> [--position N]
-kanban rm <slug>                   # soft-delete
+kanban rm <slug>                   # delete (hard erase; no trash)
 kanban board create <slug> --title ... --columns a,b,c
 kanban board list
 ```
@@ -236,7 +236,7 @@ than describing stale "current state".
 - "What's stuck" → look for cards long in `review` (PR open, not merged) or
   `doing` (claimed, no PR). Surface them; don't silently re-drive — that's the
   kanban-agent reconcile pass's job.
-- Superseded / wrong card → `rm <slug>` (soft delete), or re-`add` to fix it.
+- Superseded / wrong card → `rm <slug>` (deletes; hard erase, no trash), or re-`add` to fix it.
 - A PR card in `done` means its PR **merged** — that's the normal terminal
   state, not a kill. A non-PR card in `done` means its `DONE-WHEN` predicate was
   satisfied and cited by watch/groom.
