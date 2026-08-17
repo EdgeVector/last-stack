@@ -199,7 +199,7 @@ preserving project-specific rules where they belong.
 | **onecontext** | Search prior Codex sessions, with guarded Aline usage and a JSONL fallback when Aline is unavailable. |
 | **registry-rotator** | Generic engine for registry-backed scheduled routines: pick the most-overdue eligible entry, run its recipe, file cards, and stamp the registry log. |
 | **wait-merge** | Robustly wait for a GitHub PR to merge by interpreting PR *state*, not a watcher's exit code. |
-| **close-out** | The post-change loop: open a PR from a worktree, drive it to merged, checkpoint the decision to the brain, file a follow-up card. |
+| **close-out** | The post-change loop: open a PR from a worktree, drive it to merged, file session papercuts, write a full brain report of what was done, file a follow-up card. |
 | **last-stack-upgrade** | Update the stack in place (clean-only self-upgrade) and re-register the skills. |
 | **session-miner** | Generic engine for mining recent agent session transcripts with profiles for papercuts, incidents, owner-stated knowledge, tooling friction, and revenant-watch (settled-dead product truth reanimated; Brain-only). |
 
@@ -366,8 +366,9 @@ The intended loop, end to end:
    card to `done` on pass or leaves it visibly blocked with `PROOF:` plus a fix
    card/blocker on fail.
 6. **Close out** (`close-out` skill). After any substantive change: PR from a
-   worktree, drive to merged, checkpoint the *why* to the brain (`brain`), and
-   file any follow-up as a card (`kanban`).
+   worktree, drive to merged, file session papercuts (`brain papercut file`),
+   write a full *what was done* report to the brain (`brain`), and file any
+   follow-up as a card (`kanban`).
 
 The two halves are deliberate: **the brain records why; the board records
 what's in flight.** Keep decisions in `brain` and active work in `kanban`, and
