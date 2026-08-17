@@ -252,12 +252,39 @@ incident.
 
 **Binary only (sidebin — preferred first try):**
 
+Copy to a temp path in the same dir, ad-hoc re-sign, clear quarantine, assert
+the binary actually runs, and only then **atomically rename** it into place:
+
 ```bash
-cp -a ~/.lastdb/bin-with-upload-cap/lastdbd.bak-pre-<ver>-<ts> \
-      ~/.lastdb/bin-with-upload-cap/lastdbd
+B=~/.lastdb/bin-with-upload-cap
+cp -a $B/lastdbd.bak-pre-<ver>-<ts> $B/.lastdbd.rollback.tmp
+codesign --force --sign - $B/.lastdbd.rollback.tmp
+xattr -c $B/.lastdbd.rollback.tmp
+$B/.lastdbd.rollback.tmp --version    # MUST print a version before proceeding
+mv -f $B/.lastdbd.rollback.tmp $B/lastdbd
 launchctl kickstart -k gui/$(id -u)/com.REPLACE.lastdbd-primary-506
 kanban list
 ```
+
+> **Never `cp -a` straight onto the live `lastdbd` path.** An in-place copy keeps
+> the destination **inode**, macOS still has the cached code signature for that
+> inode from the binary that was just running, the new bytes do not match it, and
+> the kernel kills every exec with `OS_REASON_CODESIGNING` — launchd sits in
+> `state = spawn scheduled` and never runs.
+>
+> This failure is silent in the obvious check: `lastdbd --version` prints
+> **nothing** and returns no visible error, while `shasum -a 256` on the
+> installed file **matches the backup exactly**. Correct bytes + healthy sha +
+> silent exec is the signature. It cost several minutes of primary downtime on
+> 2026-07-27.
+>
+> The `--version` line above is the assertion that catches it — run it on the
+> temp path, before the rename, and never trust sha alone. The forward install
+> in `safe-upgrade-lastdb.sh` was always safe because it writes a new file and
+> renames; only this hand-run rollback used the in-place form, which is exactly
+> backwards from where you want the sharp edge.
+>
+> Papercut: `papercut-lastdb-safe-upgrade-rollback-cp-a-trips-codesigning`.
 
 **Data (only if home corrupted):**
 
