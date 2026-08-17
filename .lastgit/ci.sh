@@ -77,6 +77,10 @@ bash tests/last-stack-literal-markdown-append.sh
 bash tests/last-stack-lint-machine-leaks.sh
 bash tests/last-stack-audit-f-prefix-callers.sh
 bash tests/last-stack-papercut-reconciler-contract.sh
+# Producer half of the same pipeline: the reconciler contract above guards the
+# only routine that turns papercuts into cards, and nothing guarded the rule
+# telling agents to file them in the first place.
+bash tests/last-stack-papercut-filing-contract.sh
 bash tests/last-stack-papercut-lifecycle-close.sh
 bash tests/last-stack-papercut-lifecycle-helper-run-install.sh
 bash tests/last-stack-canary-pipeline.sh
