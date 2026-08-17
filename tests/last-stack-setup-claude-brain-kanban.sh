@@ -34,6 +34,10 @@ grep -q 'New repository venue default: LastGit' "$claude_md" \
 grep -q 'brain ask' "$claude_md" || fail "CLI guidance missing from managed block"
 grep -q 'folddb.sock' "$claude_md" || fail "transport guidance missing from managed block"
 grep -q 'kanban ping' "$claude_md" || fail "socket health check guidance missing from managed block"
+grep -q 'lastdb status' "$claude_md" || fail "lastdb status health check missing from managed block"
+if grep -q 'TCP-only' "$claude_md"; then
+  fail "managed block still calls doctor TCP-only; use lastdb status / kanban ping"
+fi
 grep -q 'claude instructions: brain-kanban block' "$tmp/setup1.out" \
   || fail "setup did not log claude brain-kanban install"
 

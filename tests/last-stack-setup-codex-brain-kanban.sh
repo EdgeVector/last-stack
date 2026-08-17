@@ -50,6 +50,10 @@ grep -q 'New repository venue default: LastGit' "$agents" || fail "LastGit new-r
 grep -q 'brain ask' "$agents" || fail "CLI guidance missing from managed block"
 grep -q 'folddb.sock' "$agents" || fail "transport guidance missing from managed block"
 grep -q 'kanban ping' "$agents" || fail "socket health check guidance missing from managed block"
+grep -q 'lastdb status' "$agents" || fail "lastdb status health check missing from managed block"
+if grep -q 'TCP-only' "$agents"; then
+  fail "managed block still calls doctor TCP-only; use lastdb status / kanban ping"
+fi
 grep -q 'Git commits from isolated worktrees' "$agents" \
   || fail "isolated worktree commit guidance missing from managed block"
 grep -q 'Never run `git add -A` or `git add .` in a shared checkout' "$agents" \
