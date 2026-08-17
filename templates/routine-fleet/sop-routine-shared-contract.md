@@ -66,7 +66,55 @@ Check all configured dedupe surfaces before creating a card:
 When in doubt, update an existing card or report ambiguity instead of filing a
 near-duplicate.
 
-## 5. Scheduled-run shell discipline
+## 5. File papercuts — every agent, every run, and the default is FILE
+
+A papercut is any friction you hit while doing the real work: a tool that
+misbehaves, a check that reports about something it cannot observe, a confusing
+or truncated error, a stale convention, a manual workaround, a doc or comment
+that contradicts what executes, a recipe that no longer runs. Filing them is how
+the system improves; nothing else in this contract collects that signal.
+
+<!-- The project's papercut ledger. Use "none" if the project has not built one. -->
+- **papercut_ledger**: `<PAPERCUT_LEDGER_CLI_OR_NONE>`
+
+<!-- The single routine allowed to turn papercuts into board cards. -->
+- **papercut_reconciler**: `<PAPERCUT_RECONCILER_ROUTINE_OR_NONE>`
+
+Rules, in the order they are usually broken:
+
+1. **The default is FILE, not judge.** You do not have to decide a finding is
+   important, novel, or big enough. The gate is only *"is this a distinct claim
+   someone would want to find?"* A run that files nothing needs an explicit
+   reason, and "it was small", "it is probably already known", and "that one was
+   my own mistake" are not reasons.
+2. **Papercuts go to the brain, never straight to the board.** Only
+   `<PAPERCUT_RECONCILER_ROUTINE_OR_NONE>` promotes them to cards, so it can
+   dedupe and cluster them. Filing a card yourself produces board noise and
+   hides the pattern.
+3. **Search before you file, and read what you find as a REMEDY, not just as
+   precedent.** An existing record may already prescribe the fix, may list the
+   systems checked for exposure, or may be the right place for your evidence.
+   Appending measured evidence to an open record beats filing its near-duplicate.
+4. **A mention is not a filing.** Prose in a checkpoint, a commit message, a PR
+   description, a run summary, or a closure block reaches no triage routine and
+   produces no card. If it is not a record with its own slug, it was not filed.
+5. **Burying a finding inside a record you then CLOSE is worse than not filing
+   it.** An unfiled finding is absent, and absence is honest — someone
+   rediscovers it. A finding written as an aside inside a closed record is
+   *present*: it reads as recorded and is invisible to every open-backlog
+   reader, every count of open work, and every stale-record sweep. **Before
+   closing any record, ask whether its body contains a claim about something
+   OTHER than the thing being closed. If it does, that part needs its own slug
+   before the close lands.**
+6. **File it in the moment.** Friction that stays in one agent's context helps
+   once; a record compounds. Cheap same-session fixes are still encouraged —
+   file it, fix it, then close it with the evidence.
+
+A filed papercut carries enough for the reconciler to card it without you:
+symptom, the exact failing output, how to reproduce, the date measured, the
+affected repo, and a suggested fix if you have one.
+
+## 6. Scheduled-run shell discipline
 
 - Normalize PATH before CLI preflight: `<PATH_PREFIX>`.
 - Run one bounded pass, then exit.
@@ -77,19 +125,19 @@ near-duplicate.
   shell for execution.
 - Use body files or stdin for long text writes.
 
-## 6. Verify against default branch
+## 7. Verify against default branch
 
 Before calling something broken, missing, or stale, fetch the target repo and
 verify against `origin/<BASE_BRANCH>`. Do not make factual reports from a stale
 checkout.
 
-## 7. Delimited block ownership
+## 8. Delimited block ownership
 
 For records with managed blocks such as `<!-- owner:start -->` and
 `<!-- owner:end -->`, only the owning routine edits its block. Read the full
 record before replacing a block and preserve unrelated content byte-for-byte.
 
-## 8. Ground-truth verdicts
+## 9. Ground-truth verdicts
 
 Continuous probes write verdict records with newest-on-top lines:
 
@@ -100,7 +148,7 @@ Continuous probes write verdict records with newest-on-top lines:
 Only a full passing run is green. Skipped, partial, blocked, or harness-broken
 runs are not green.
 
-## 9. Human gates
+## 10. Human gates
 
 Use the project's authoritative decision ledger, not derived summaries, to
 decide whether a human gate is still open.

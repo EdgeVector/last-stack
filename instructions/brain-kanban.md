@@ -103,6 +103,45 @@ shell-visible CLI and daemon binary agree. The helper never restarts/kills
 - Do NOT create `type: decision` records — that path is broken; append
   decisions to the `decisions-log` reference record instead.
 
+### ALWAYS file papercuts — the default is FILE, not judge
+
+A papercut is any friction you hit doing the real work: a tool that misbehaves,
+a confusing or truncated error, a check that reports about something it cannot
+observe, a stale convention, a manual workaround, a doc or comment that
+contradicts what executes. File one whenever you hit one, unprompted.
+
+```bash
+brain papercut file <slug> --component <c> --symptom "<one line>" \
+  --title "<what is wrong>" --severity p0|p1|p2|p3 --body "<symptom, exact
+  output, repro, date, repo, suggested fix>"
+brain papercut close <slug> --status fixed|verified --evidence "<what you
+  checked>" --fixed-by "<repo> #<PR>" --verified-by "<live check you ran>"
+```
+
+- **Do not judge it first.** The gate is "is this a distinct claim someone would
+  want to find?", not "is it big enough" or "is it novel". A session that hits
+  friction and files nothing needs an explicit reason; "small", "probably
+  already known", and "that one was my own mistake" are not reasons.
+- **Brain ONLY — never file a papercut kanban card.** The `papercut-reconciler`
+  routine is the sole papercut→card path so it can dedupe and cluster.
+- **Search first (`brain ask`), and read a hit as a REMEDY, not just as
+  precedent** — an existing record may already prescribe the fix or name the
+  systems checked for exposure. Appending measured evidence to an open record
+  beats filing its near-duplicate.
+- **A mention is not a filing.** Prose in a checkpoint, commit message, PR
+  description, or run summary reaches no routine and produces no card. No slug,
+  not filed.
+- **Burying a finding in a record you then CLOSE is worse than not filing it.**
+  Unfiled is absent, and absence is honest — someone rediscovers it. An aside
+  inside a closed record *reads as recorded* while being invisible to every
+  open-backlog reader, every open-work count, and every stale-record sweep.
+  **Before closing any record, ask whether its body claims something about
+  anything OTHER than what you are closing; if so, that part needs its own slug
+  first.**
+- Cheap same-session fixes are encouraged: file it, fix it, close it with
+  evidence. `--status verified` requires a live check you actually ran — a merge
+  reference is a fact about a repo, not about anything running.
+
 ### North Star → milestone → cards (no bulk scaffold)
 
 Operational hierarchy (2026-07-21+):

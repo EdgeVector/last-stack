@@ -28,6 +28,15 @@ backstop. The one-page operator cheat sheet lives at
 
 Brain = intent · Board = queue · Pickup = only code shipper · Watch = only closer.
 
+**Papercuts have two halves, and only the consumer was ever written down.**
+`papercut-reconciler` is the sole papercut→card path (consumer). The producer is
+*every agent, every run*: file a Brain papercut for any friction you hit, and
+never a board card. The rule lives in `instructions/brain-kanban.md` (injected
+into every harness's global instructions by `setup`) and in
+`sop-routine-shared-contract` §5; `tests/last-stack-papercut-filing-contract.sh`
+gates both. The default is FILE, not judge — a mention in a checkpoint or PR
+description is not a filing.
+
 Operator tools: `last-stack-ship-preflight` (walk-away check),
 `last-stack-why-shipping-stopped` (Class A-E stall diagnosis),
 `kanban pickup explain <slug>` (why not claimable),
