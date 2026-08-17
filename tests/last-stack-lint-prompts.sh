@@ -845,6 +845,15 @@ brain_kanban="$ROOT/instructions/brain-kanban.md"
 grep -q 'Host-track CLI hygiene' "$brain_kanban"
 grep -q 'host-track status' "$brain_kanban"
 grep -q 'lastgit which' "$brain_kanban"
+grep -q 'lastdb status' "$brain_kanban"
+grep -q 'kanban ping' "$brain_kanban"
+if grep -q 'TCP-only' "$brain_kanban"; then
+  echo "instructions/brain-kanban.md still calls doctor TCP-only; health check is lastdb status / kanban ping" >&2
+  exit 1
+fi
+# The required CI gate lints this file as a prompt. Keep doctor/init mentions
+# on a negated line so the health-check ban does not fire.
+"$ROOT/bin/last-stack-lint-prompts" "$brain_kanban"
 
 groom="$ROOT/routines/groom-board.md"
 grep -q 'park it in `backlog` so pickup does not see non-PR' "$groom"

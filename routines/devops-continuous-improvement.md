@@ -53,16 +53,15 @@ below.
    <board-cli> list --board <board> --json >/dev/null
    <brain-cli> get routine-heartbeats --type reference >/dev/null
    ```
-   These reads are the health check. Modern LastDB/Brain/Kanban installs may
-   intentionally serve only over the Unix socket
-   `~/.lastdb/data/folddb.sock`; the retired TCP endpoint
+   These reads, or `lastdb status` / `kanban ping`, are the health check.
+   Modern LastDB/Brain/Kanban installs may intentionally serve only over the
+   Unix socket `~/.lastdb/data/folddb.sock`; the retired TCP endpoint
    `http://127.0.0.1:9001` being refused is not an outage.
 5. Do not use `brain doctor`, `kanban doctor`, or `kanban init` as routine
-   health checks. Some control-plane verbs still exercise TCP-only routes and
-   can print `node not reachable at http://127.0.0.1:9001` even when board and
-   brain reads work over the socket.
+   health checks. Those verbs may still print a leftover `:9001` refused
+   error even when board and brain reads work over the socket.
 6. Never kill, restart, or mutate the process hosting the Brain/Kanban node
-   because of a TCP `:9001` failure. If the socket-backed reads above succeed,
+   because doctor printed `:9001`. If the socket-backed checks above succeed,
    proceed.
 
 ## Inspect
