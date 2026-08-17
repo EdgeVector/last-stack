@@ -203,7 +203,7 @@ The script:
 
 | Step | What |
 |------|------|
-| Preflight | Primary home exists, identity.key present, live `/health` ok (if socket up) |
+| Preflight | Primary home exists, identity.key present, live `/health` ok (if socket up); backup-root inventory (routine vs non-routine count, free disk, identity-pinned bytes) |
 | Resolve candidate | `brew update` / `--version` tarball / `--candidate` |
 | **1. Backup** | `cp -cR` (APFS) or `cp -a` → `~/.lastdb-backups/pre-<new>-from-<old>-<ts>/` |
 | **0. Class** | Refuse `target/debug`, `-dirty` version, size ≫ incumbent (before multi-GB backup) |
@@ -211,6 +211,7 @@ The script:
 | Detect venue | sidebin vs brew |
 | **3. Live** | sidebin atomic install + kickstart **or** brew upgrade/restart |
 | **4. Post-check** | Live `/health`, schemas > 0, Board title, **live peak RSS** vs guard, **live point-read + kanban list latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency in notice |
+| **4b. Retention** | After GREEN only: prune oldest routine `pre-*-from-*-<ts>` trees beyond `LASTDB_BACKUP_KEEP` (default **2**) **plus** the current run's backup. Never auto-prunes `BROKEN-*` / `pre-repair-*` / hand names. `LASTDB_BACKUP_KEEP=0` disables. Prints each prune with measured bytes. |
 | RED | Exit 1, **keep backup**, primary untouched if class/probe failed (incl. debug/dirty/size, CAS-disarmed node, RSS over guard, or latency over bar) |
 
 ### B. If the script is missing or fails open
@@ -308,7 +309,12 @@ kanban list   # must show real cards
 - `brew upgrade lastdb` as a one-liner without this skill when the user cares about data.
 - Point candidate `--data-dir` at live `~/.lastdb` "just to see".
 - Pass `--candidate …/target/debug/lastdbd` or any `-dirty` build to "get a feature SHA on primary" — rebuild `--release` from origin/main (or a soaked canary) instead (incident 2026-08-01).
-- Delete `~/.lastdb-backups/*` as part of a successful upgrade (Tom prunes later).
+- Bulk-delete `~/.lastdb-backups/*` by hand or prune non-routine trees
+  (`BROKEN-*`, `pre-repair-*`, hand-named). After GREEN cutover the driver may
+  prune only excess **routine** `pre-*-from-*-<ts>` trees beyond
+  `LASTDB_BACKUP_KEEP` (default 2) + the current run; `LASTDB_BACKUP_KEEP=0`
+  disables that policy. Existing trees already on disk are a human gate, not
+  something the first install of this policy should sweep.
 - Restart/kill primary on RED.
 - Call `brew upgrade` when formula is not installed and primary is sidebin.
 - Assume the skill lives only under `~/.claude/skills` — Codex/Grok/Factory use their own skills dirs; last-stack setup keeps them in sync.
