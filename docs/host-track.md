@@ -49,7 +49,10 @@ separate intentional exceptions from drift. An artifact entry can set:
 `host-track install` asks LastGit to resolve and verify the promoted channel,
 verifies every blob again while copying it, installs under the immutable
 `versions/<manifest-digest>` directory, **probes that tree while `current`
-still points at last-known-good**, and only then atomically switches `current`.
+still points at last-known-good**. If the app sets `safe_upgrade.soak_hours`
+and a live current exists, refresh parks a `canary` pointer and leaves PATH
+alone; `host-track soak-watch` re-probes and promotes after the window.
+`--activate` (or `soak_hours: 0`, last-stack) flips `current` on GREEN probe.
 The displaced version remains at `previous` for `host-track rollback`.
 `host-track check` verifies the active payload hashes as well as freshness.
 It refuses to replace a non-symlink command target.

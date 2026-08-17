@@ -43,7 +43,7 @@ REGISTRY_SYNC_ATTEMPTED=0
 # cannot unmap the running bash script. ROOT is preserved via HOST_TRACK_ROOT.
 maybe_reexec_for_mutation() {
   case "${1:-}" in
-    refresh|install|rollback) ;;
+    refresh|install|rollback|soak-watch) ;;
     *) return 0 ;;
   esac
   [ -z "${HOST_TRACK_REEXECED:-}" ] || return 0
@@ -68,7 +68,8 @@ Usage:
   host-track which [--json] <app>
   host-track check <app>
   host-track validate-registry [--json]
-  host-track refresh [--force] [--force-if-stale] (<app>|--all)
+  host-track refresh [--force] [--force-if-stale] [--activate] (<app>|--all)
+  host-track soak-watch [<app>|--all]
   host-track install [--channel candidate|canary|stable] <app>
   host-track rollback <app>
 
@@ -80,6 +81,8 @@ Environment:
   HOST_TRACK_PROBE_SKIP=1   Tom-only: skip functional probe (do not use casually)
   HOST_TRACK_PROBE_LAT_RATIO   Candidate vs current latency fail ratio (default 3)
   HOST_TRACK_PROBE_LAT_FLOOR_MS  Ignore latency below this (default 1000)
+  HOST_TRACK_ACTIVATE=1     Flip current after GREEN probe (skip soak)
+  HOST_TRACK_SOAK_HOURS     Override registry soak window
 EOF
 }
 
@@ -1341,7 +1344,7 @@ remove_artifact_version_tree() {
 
 artifact_version_tree_refs() {
   local install_root="$1" target="$2" name link abs
-  for name in current previous; do
+  for name in current previous canary; do
     [ -L "$install_root/$name" ] || continue
     link="$(readlink "$install_root/$name")"
     case "$link" in versions/*) ;; *) continue ;; esac
@@ -1607,13 +1610,67 @@ rollback_current_to_previous() {
   install_artifact_links "$json" "$install_root" || true
 }
 
+soak_hours_for() {
+  local json="$1" env_h
+  env_h="${HOST_TRACK_SOAK_HOURS:-}"
+  if [ -n "$env_h" ]; then
+    printf '%s\n' "$env_h"
+    return
+  fi
+  printf '%s\n' "$json" | jq -r '.safe_upgrade.soak_hours // 0'
+}
+
+soak_stamp_path() {
+  printf '%s/%s.soak.json\n' "$STAMP_DIR" "$1"
+}
+
+write_soak_stamp() {
+  local app="$1" digest="$2" status="$3" soak_h="$4" checks="${5:-1}" started="${6:-}"
+  local now path
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  path="$(soak_stamp_path "$app")"
+  mkdir -p "$STAMP_DIR"
+  if [ -z "$started" ]; then
+    started="$(date +%s)"
+  fi
+  jq -n \
+    --arg app "$app" --arg digest "$digest" --arg status "$status" \
+    --arg now "$now" --argjson soak "$soak_h" --argjson checks "$checks" \
+    --argjson started "$started" \
+    '{app:$app, digest:$digest, status:$status, soak_hours:$soak,
+      started_epoch:$started, last_check_at:$now, checks:$checks}' \
+    > "$path"
+}
+
+park_canary() {
+  local app="$1" install_root="$2" digest="$3" soak_h="$4"
+  atomic_symlink "versions/$digest" "$install_root/canary"
+  write_soak_stamp "$app" "$digest" "soaking" "$soak_h" 1
+  printf 'host-track: %s canary parked at versions/%s; soak %sh; current unchanged\n' \
+    "$app" "$digest" "$soak_h" >&2
+}
+
+should_soak() {
+  local json="$1" install_root="$2" digest="$3" activate_now="$4"
+  local soak_h cur
+  [ "$activate_now" -eq 0 ] || return 1
+  soak_h="$(soak_hours_for "$json")"
+  awk -v h="$soak_h" 'BEGIN { exit !(h+0 > 0) }' || return 1
+  [ -L "$install_root/current" ] || return 1
+  cur="$(readlink "$install_root/current")"
+  [ "$cur" != "versions/$digest" ] || return 1
+  current_target_is_live "$install_root" || return 1
+  return 0
+}
+
 artifact_install_app() {
-  local app="$1" channel_override="${2:-}" force_restage="${3:-0}" json install_mode artifact_app channel artifact_root install_root
+  local app="$1" channel_override="${2:-}" force_restage="${3:-0}" activate_now="${4:-0}" json install_mode artifact_app channel artifact_root install_root
   local manifest digest stage target old_target stamp_path need_materialize=0
-  local old_digest prev_target prev_digest post_install_phase current_dir
+  local old_digest prev_target prev_digest post_install_phase current_dir soak_h
   json="$(require_app_json "$app")"
   install_mode="$(setting "$json" install_mode)"
   [ "$install_mode" = "artifact" ] || die "$app is not registered for artifact installs"
+  [ "${HOST_TRACK_ACTIVATE:-0}" != "1" ] || activate_now=1
   IFS=$'\t' read -r artifact_app channel artifact_root install_root < <(artifact_paths "$app" "$json")
   [ -z "$channel_override" ] || channel="$channel_override"
   case "$channel" in candidate|canary|stable) ;; *) die "invalid artifact channel: $channel" ;; esac
@@ -1703,6 +1760,15 @@ artifact_install_app() {
     release_install_lock
     trap - EXIT
     return 1
+  fi
+
+  # Canary soak: last-known-good stays on PATH. soak-watch promotes later.
+  if should_soak "$json" "$install_root" "$digest" "$activate_now"; then
+    soak_h="$(soak_hours_for "$json")"
+    park_canary "$app" "$install_root" "$digest" "$soak_h"
+    release_install_lock
+    trap - EXIT
+    return 0
   fi
 
   old_target=""
@@ -1988,6 +2054,7 @@ refresh_cmd() {
     case "$1" in
       --force) force=1; shift ;;
       --force-if-stale) force_if_stale=1; shift ;;
+      --activate) export HOST_TRACK_ACTIVATE=1; shift ;;
       --all) all=1; shift ;;
       -h|--help) usage; exit 0 ;;
       --*) die "unknown refresh flag: $1" ;;
@@ -2120,6 +2187,85 @@ validate_registry_cmd() {
 }
 
 
+soak_watch_one() {
+  local app="$1" json install_root canary_rel canary_dir digest soak_h stamp checks started now elapsed need current_dir
+  json="$(require_app_json "$app")"
+  [ "$(setting "$json" install_mode)" = "artifact" ] || return 0
+  IFS=$'\t' read -r _ _ _ install_root < <(artifact_paths "$app" "$json")
+  [ -L "$install_root/canary" ] || {
+    printf 'host-track: %s soak-watch noop (no canary)\n' "$app"
+    return 0
+  }
+  canary_rel="$(readlink "$install_root/canary")"
+  case "$canary_rel" in versions/*) ;; *)
+    printf 'host-track: %s soak-watch invalid canary %s\n' "$app" "$canary_rel" >&2
+    return 1
+  esac
+  canary_dir="$install_root/$canary_rel"
+  [ -d "$canary_dir" ] || {
+    printf 'host-track: %s soak-watch dangling canary %s\n' "$app" "$canary_rel" >&2
+    return 1
+  }
+  digest="${canary_rel#versions/}"
+  if [ -L "$install_root/current" ] && [ "$(readlink "$install_root/current")" = "$canary_rel" ]; then
+    printf 'host-track: %s soak-watch already current\n' "$app"
+    rm -f "$(soak_stamp_path "$app")"
+    return 0
+  fi
+  current_dir=""
+  if [ -L "$install_root/current" ] && current_target_is_live "$install_root"; then
+    current_dir="$install_root/$(readlink "$install_root/current")"
+  fi
+  if ! run_safe_upgrade_probes "$app" "$json" "$canary_dir" "$current_dir"; then
+    soak_h="$(soak_hours_for "$json")"
+    write_soak_stamp "$app" "$digest" "soak_red" "$soak_h"
+    printf 'host-track: %s soak RED; current unchanged\n' "$app" >&2
+    return 1
+  fi
+  stamp="$(soak_stamp_path "$app")"
+  started="$(date +%s)"
+  checks=1
+  if [ -f "$stamp" ]; then
+    started="$(jq -r '.started_epoch // empty' "$stamp")"
+    [ -n "$started" ] || started="$(date +%s)"
+    checks="$(jq -r '.checks // 0' "$stamp")"
+    checks=$((checks + 1))
+  fi
+  soak_h="$(soak_hours_for "$json")"
+  now="$(date +%s)"
+  elapsed=$((now - started))
+  need="$(awk -v h="$soak_h" 'BEGIN { printf "%d", (h+0)*3600 }')"
+  if [ "$elapsed" -lt "$need" ]; then
+    write_soak_stamp "$app" "$digest" "soaking" "$soak_h" "$checks" "$started"
+    printf 'host-track: %s soak pending elapsed=%ss need=%ss checks=%s\n' \
+      "$app" "$elapsed" "$need" "$checks"
+    return 0
+  fi
+  printf 'host-track: %s soak GREEN after %ss; activating\n' "$app" "$elapsed" >&2
+  HOST_TRACK_ACTIVATE=1 artifact_install_app "$app" "" 0 1
+}
+
+soak_watch_cmd() {
+  local all=0 app="" failures=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --all) all=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      --*) die "unknown soak-watch flag: $1" ;;
+      *) app="$1"; shift ;;
+    esac
+  done
+  if [ "$all" -eq 1 ] || [ -z "$app" ]; then
+    while IFS= read -r app; do
+      [ -n "$app" ] || continue
+      soak_watch_one "$app" || failures=$((failures + 1))
+    done < <(list_apps)
+    [ "$failures" -eq 0 ]
+    return
+  fi
+  soak_watch_one "$app"
+}
+
 main() {
   need_jq
   [ -f "$REGISTRY" ] || die "registry not found: $REGISTRY"
@@ -2134,6 +2280,7 @@ main() {
     check) shift; check_cmd "$@" ;;
     validate-registry) shift; validate_registry_cmd "$@" ;;
     refresh) shift; refresh_cmd "$@" ;;
+    soak-watch) shift; soak_watch_cmd "$@" ;;
     install) shift; install_cmd "$@" ;;
     rollback) shift; rollback_cmd "$@" ;;
     -h|--help|"") usage; exit 0 ;;

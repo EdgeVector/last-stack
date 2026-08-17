@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Probe-then-activate every artifact CLI via host-track (not lastgit / LastDB Mini).
-# last-stack is included: its hook runs after cutover; the probe is host-track itself.
+# Canary-soak every artifact CLI via host-track (not lastgit / LastDB Mini).
+# refresh parks canary when soak_hours>0; soak-watch promotes ready ones.
+# last-stack has soak_hours=0 (probe-then-activate; it is the soak runner).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd -P)"
 HT="$ROOT/host-track"
@@ -23,6 +24,13 @@ for app in "${apps[@]}"; do
     fail=1
   fi
 done
+printf '\n======== soak-watch --all ========\n'
+if "$HT" soak-watch --all; then
+  printf 'OK soak-watch\n'
+else
+  printf 'FAIL soak-watch\n' >&2
+  fail=1
+fi
 if [ "$fail" -ne 0 ]; then
   echo "safe-upgrade-all-local: one or more apps failed" >&2
   exit 1

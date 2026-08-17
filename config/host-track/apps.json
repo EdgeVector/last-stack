@@ -140,6 +140,7 @@
       ],
       "notes": "Runtime is an immutable CI artifact that tracks gate_main (green+published main). host-track refresh promotes stable to that tip then installs. ~/.last-stack/{bin,skills,...} \u2192 artifacts/current. PATH links Class A + pickup bootstrap + Forge closeout tools (forge-api and friends) so routinesd (~/.local/bin first) never hits GC'd version pins and board-closeout can resolve Forge PRs. Never develop in the install; use a worktree. Also PATH-link last-stack-papercut-lifecycle-close and last-stack-kanban-file-pr so scheduled shells (routinesd PATH often ~/.local/bin-first without sourcing shell-prelude) resolve the lifecycle closer and the required Kind:pr filing helper.",
       "safe_upgrade": {
+        "soak_hours": 0,
         "post_install_phase": "after-cutover",
         "probes": [
           {"argv": ["bin/host-track", "--help"], "timeout_s": 15},
@@ -172,6 +173,7 @@
       "track_gate_main": true,
       "post_install": "$HOME/.host-track/apps/brain/current/bin/brain-host-track-post-install",
       "safe_upgrade": {
+        "soak_hours": 1,
         "latency": true,
         "probes": [
           {"argv": ["bin/brain", "which"], "timeout_s": 30},
@@ -203,6 +205,7 @@
       "notes": "Situations LastGit artifact install from CI-published dist/* binaries; track_gate_main promotes stable to green+published main.",
       "track_gate_main": true,
       "safe_upgrade": {
+        "soak_hours": 1,
         "latency": true,
         "probes": [
           {"argv": ["dist/situations", "--help"], "timeout_s": 15},
@@ -234,6 +237,7 @@
       "notes": "One registration for the whole fkanban artifact bundle: links BOTH public CLI names (kanban and fkanban) off a single install_root and a single stamp. There used to be a second app entry named `fkanban` pointing at the same install_root; two entries meant two stamps for one bundle, they drifted, and host-track reported the identical binary as fresh under one name and stale under the other. track_gate_main follows fkanban green+published main.",
       "track_gate_main": true,
       "safe_upgrade": {
+        "soak_hours": 1,
         "latency": true,
         "probes": [
           {"argv": ["dist/kanban", "--help"], "timeout_s": 15},
@@ -261,6 +265,7 @@
       "notes": "Routines LastGit artifact install from CI-published dist/routines; track_gate_main promotes stable to green+published main.",
       "track_gate_main": true,
       "safe_upgrade": {
+        "soak_hours": 1,
         "probes": [
           {"argv": ["dist/routines", "--help"], "timeout_s": 15}
         ]
@@ -286,6 +291,7 @@
       "notes": "LastSecrets LastGit artifact install from CI-published dist/lastsecrets; track_gate_main promotes stable to green+published main.",
       "track_gate_main": true,
       "safe_upgrade": {
+        "soak_hours": 1,
         "probes": [
           {
             "argv": ["dist/lastsecrets"],
@@ -316,6 +322,7 @@
       "notes": "Configurations LastGit artifact install from CI-published dist/configurations; track_gate_main promotes stable to green+published main.",
       "track_gate_main": true,
       "safe_upgrade": {
+        "soak_hours": 1,
         "probes": [
           {"argv": ["dist/configurations", "--help"], "timeout_s": 15}
         ]
@@ -342,6 +349,7 @@
       "track_gate_main": true,
       "post_install": "$HOME/.local/bin/last-stack-lastseek-host-track-post-install",
       "safe_upgrade": {
+        "soak_hours": 1,
         "probes": [
           {"argv": ["dist/lastseek", "--help"], "timeout_s": 15}
         ]
@@ -368,6 +376,7 @@
       "track_gate_main": true,
       "post_install": "$HOME/.host-track/apps/search/current/bin/search-host-track-post-install",
       "safe_upgrade": {
+        "soak_hours": 1,
         "probes": [
           {
             "argv": ["bin/search"],
@@ -406,6 +415,7 @@
       "notes": "Remote Agent artifact install; refresh links ra/rad/rad-telegram from the promoted LastGit artifact. track_gate_main promotes stable to green+published main — without it the channel sat on a hand-promoted pointer for 8 days and shipped a known-broken ra shim, silently killing every ra notify page.",
       "track_gate_main": true,
       "safe_upgrade": {
+        "soak_hours": 1,
         "probes": [
           {"argv": ["bin/ra", "--help"], "timeout_s": 15}
         ]
@@ -438,6 +448,7 @@
       "notes": "State Machine LastGit artifact install from CI-published dist/* binaries; track_gate_main promotes stable to green+published main. sm is the runner for lastdb-canary-release and lastdb-safe-upgrade, so it upgrades the primary and publishes to public brew \u2014 before this entry ~/.local/bin/sm symlinked into the workspace DEV checkout and had no freshness gate at all.",
       "track_gate_main": true,
       "safe_upgrade": {
+        "soak_hours": 1,
         "probes": [
           {"argv": ["dist/sm", "--help"], "timeout_s": 15}
         ]
@@ -464,6 +475,7 @@
       "track_gate_main": true,
       "post_install": "$HOME/.host-track/apps/lastdb-browser/current/bin/lastdb-browser-host-track-post-install",
       "safe_upgrade": {
+        "soak_hours": 1,
         "probes": [
           {"argv": ["bin/lastdb-browser", "--help"], "timeout_s": 15}
         ]
