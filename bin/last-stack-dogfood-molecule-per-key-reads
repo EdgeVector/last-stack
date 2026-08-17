@@ -1,0 +1,298 @@
+#!/usr/bin/env bash
+# last-stack-dogfood-molecule-per-key-reads — autonomous recipe for the
+# dogfood-registry feature `molecule-per-key-reads`.
+#
+# Proves the O(1) keyed-read claim by running fold's Criterion groups
+# `indexed_point_lookup` and `indexed_full_read` across the four cardinalities
+# baked into query_path_bench (1k / 10k / 50k / 100k), under
+# last-stack-dogfood-resource-isolate so a cold Fold build cannot share
+# memory-pressure fate with the primary LastDB daemon.
+#
+# How scheduled dogfood obtains a current Fold revision without mutating user
+# worktrees:
+#   1. Prefer an explicit fold checkout path (arg or FOLD_CHECKOUT).
+#   2. Otherwise treat the workspace portal (if any) as a *source-only* path
+#      and resolve via last-stack-dogfood-target-checkout, which may create or
+#      fast-forward a clean dedicated checkout under
+#      ~/.kanban/dogfood-targets (never mutates the user's dirty portal).
+#   3. All cargo/bench work runs only in that selected checkout with a
+#      probe-owned CARGO_TARGET_DIR (~/.cache/fold-molecule-dogfood/target).
+#
+# Usage:
+#   last-stack-dogfood-molecule-per-key-reads [--preflight-only] [--json]
+#       [--fold-checkout PATH] [--skip-bench]
+#
+# Exit:
+#   0  pass (or preflight ok)
+#   1  blocked / fail
+#   2  usage
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+ISOLATE="$ROOT/bin/last-stack-dogfood-resource-isolate"
+TARGET_CHECKOUT="$ROOT/bin/last-stack-dogfood-target-checkout"
+
+JSON=0
+PREFLIGHT_ONLY=0
+SKIP_BENCH=0
+FOLD_CHECKOUT="${FOLD_CHECKOUT:-}"
+TARGET_DIR="${LAST_STACK_MOLECULE_DOGFOOD_TARGET_DIR:-$HOME/.cache/fold-molecule-dogfood/target}"
+# Do not name this GROUPS — bash exposes a readonly GROUPS array of gid membership.
+BENCH_GROUPS="${LAST_STACK_MOLECULE_DOGFOOD_GROUPS:-indexed_point_lookup indexed_full_read}"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  last-stack-dogfood-molecule-per-key-reads [--preflight-only] [--json]
+      [--fold-checkout PATH] [--skip-bench]
+
+Runs the molecule-per-key-reads dogfood recipe under resource isolation.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --preflight-only) PREFLIGHT_ONLY=1; shift ;;
+    --json) JSON=1; shift ;;
+    --fold-checkout) FOLD_CHECKOUT="${2:-}"; shift 2 ;;
+    --skip-bench) SKIP_BENCH=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+done
+
+log() { printf 'molecule-dogfood: %s\n' "$*" >&2; }
+
+emit_kv() {
+  if [ "$JSON" -eq 1 ]; then
+    python3 - "$@" <<'PY'
+import json, sys
+out = {}
+for arg in sys.argv[1:]:
+    if "=" not in arg:
+        continue
+    k, v = arg.split("=", 1)
+    out[k] = v
+print(json.dumps(out, separators=(",", ":")))
+PY
+  else
+    local part
+    printf 'RESULT'
+    for part in "$@"; do
+      printf '\t%s' "$part"
+    done
+    printf '\n'
+  fi
+}
+
+# ---- 1) Isolation preflight (fail closed) ----
+isol_flags=()
+[ "$JSON" -eq 1 ] && isol_flags+=(--json)
+if ! isol_out="$("$ISOLATE" --preflight-only "${isol_flags[@]}")"; then
+  log "resource isolation preflight blocked the recipe"
+  printf '%s\n' "$isol_out"
+  emit_kv "result=blocker" "reason=resource-isolation-preflight" "feature=molecule-per-key-reads"
+  exit 1
+fi
+printf '%s\n' "$isol_out"
+
+if [ "$PREFLIGHT_ONLY" -eq 1 ]; then
+  emit_kv "result=ok" "phase=preflight-only" "feature=molecule-per-key-reads"
+  exit 0
+fi
+
+# ---- 2) Resolve Fold checkout (never mutate user worktrees) ----
+resolve_fold() {
+  local candidate="$1"
+  local out selected
+  if [ -n "$candidate" ] && { [ -d "$candidate/.git" ] || [ -f "$candidate/.git" ]; }; then
+    if [ -x "$TARGET_CHECKOUT" ]; then
+      set +e
+      out="$("$TARGET_CHECKOUT" "$candidate" 2>&1)"
+      tc_rc=$?
+      set -e
+      printf '%s\n' "$out" >&2
+      selected="$(printf '%s\n' "$out" | awk -F '\t' '
+        /^RESULT\t/ {
+          for (i = 1; i <= NF; i++) if ($i ~ /^selected=/) print substr($i, 10)
+        }')"
+      if [ -n "$selected" ] && [ -d "$selected" ]; then
+        printf '%s' "$selected"
+        return 0
+      fi
+      # If helper blocked, only fall back when the source itself is clean+fresh
+      # enough to run (explicit path from operator). Otherwise fail closed.
+      if [ "$tc_rc" -ne 0 ] || printf '%s\n' "$out" | grep -q $'result=blocker'; then
+        if [ "${LAST_STACK_MOLECULE_ALLOW_SOURCE_FALLBACK:-0}" = "1" ]; then
+          printf '%s' "$candidate"
+          return 0
+        fi
+        return 1
+      fi
+    fi
+    # Helper missing: use the candidate path as-is.
+    printf '%s' "$candidate"
+    return 0
+  fi
+  return 1
+}
+
+fold_src="${FOLD_CHECKOUT:-}"
+if [ -z "$fold_src" ]; then
+  for guess in \
+    "${LAST_STACK_FOLD_PORTAL:-$HOME/code/edgevector/fold}" \
+    "$HOME/.kanban/dogfood-targets/fold" \
+    "$HOME/.kanban/dogfood-targets/localhost-3300-EdgeVector-fold"
+  do
+    if [ -e "$guess" ]; then
+      fold_src="$guess"
+      break
+    fi
+  done
+fi
+
+if [ -z "${fold_src:-}" ]; then
+  emit_kv "result=blocker" "reason=no-fold-checkout-candidate" "feature=molecule-per-key-reads"
+  exit 1
+fi
+
+if ! fold_checkout="$(resolve_fold "$fold_src")"; then
+  emit_kv "result=blocker" "reason=no-current-isolated-checkout" "source=${fold_src}" "feature=molecule-per-key-reads"
+  exit 1
+fi
+
+log "selected fold checkout=${fold_checkout}"
+fold_head="$(git -C "$fold_checkout" rev-parse HEAD 2>/dev/null || echo unknown)"
+log "fold HEAD=${fold_head}"
+
+if [ "$SKIP_BENCH" -eq 1 ]; then
+  emit_kv \
+    "result=ok" \
+    "phase=resolved-skip-bench" \
+    "fold_checkout=${fold_checkout}" \
+    "fold_head=${fold_head}" \
+    "groups=${BENCH_GROUPS}" \
+    "cardinalities=1000,10000,50000,100000" \
+    "feature=molecule-per-key-reads"
+  exit 0
+fi
+
+# ---- 3) Run benches under isolation ----
+mkdir -p "$TARGET_DIR"
+export CARGO_TARGET_DIR="$TARGET_DIR"
+export FOLD_DISABLE_NATIVE_INDEX=1
+# Fast measurement for scheduled dogfood; curve shape still preserved.
+export FOLD_BENCH_FAST_GUARD="${FOLD_BENCH_FAST_GUARD:-1}"
+
+# Prefer last-stack-cargo when present (avoids sccache serialization traps).
+cargo_bin="cargo"
+if command -v last-stack-cargo >/dev/null 2>&1; then
+  cargo_bin="last-stack-cargo"
+elif [ -x "$ROOT/bin/last-stack-cargo" ]; then
+  cargo_bin="$ROOT/bin/last-stack-cargo"
+fi
+
+run_group() {
+  local group="$1"
+  log "bench group=${group}"
+  (
+    cd "$fold_checkout"
+    # shellcheck disable=SC2086
+    "$ISOLATE" -- \
+      "$cargo_bin" bench -p fold_db --bench query_path_bench -- "$group"
+  )
+}
+
+failed=0
+# shellcheck disable=SC2086
+for group in $BENCH_GROUPS; do
+  if ! run_group "$group"; then
+    log "group failed: $group"
+    failed=1
+    break
+  fi
+done
+
+if [ "$failed" -ne 0 ]; then
+  emit_kv \
+    "result=fail" \
+    "reason=bench-failed" \
+    "fold_checkout=${fold_checkout}" \
+    "fold_head=${fold_head}" \
+    "feature=molecule-per-key-reads"
+  exit 1
+fi
+
+# ---- 4) Curve shape assertion from criterion estimates when present ----
+# Point lookup should stay flat-ish; full read should climb. We compare
+# median ratios 100k/1k when both estimate files exist.
+assert_curves() {
+  local criterion="$CARGO_TARGET_DIR/criterion"
+  python3 - "$criterion" <<'PY'
+import json, sys, pathlib
+crit = pathlib.Path(sys.argv[1])
+
+def median(group, size):
+    # criterion layout: <group>/<id>/new/estimates.json or base/
+    for sub in ("new", "base"):
+        # ids look like "1000", "Contacts/1000", etc.
+        for path in crit.glob(f"{group}/**/estimates.json"):
+            if path.parent.name != sub:
+                continue
+            # parent of new/base is the case id
+            case_id = path.parent.parent.name
+            if case_id == str(size) or case_id.endswith(f"/{size}") or case_id.endswith(f"-{size}") or case_id.endswith(str(size)):
+                data = json.loads(path.read_text())
+                return float(data["median"]["point_estimate"])
+        # also try direct id path
+        p = crit / group / str(size) / sub / "estimates.json"
+        if p.is_file():
+            data = json.loads(p.read_text())
+            return float(data["median"]["point_estimate"])
+    return None
+
+pl_1k = median("indexed_point_lookup", 1000)
+pl_100k = median("indexed_point_lookup", 100000)
+fr_1k = median("indexed_full_read", 1000)
+fr_100k = median("indexed_full_read", 100000)
+
+if None in (pl_1k, pl_100k, fr_1k, fr_100k):
+    print("curve_assert=fail reason=missing-estimates "
+          f"pl_1k={pl_1k} pl_100k={pl_100k} fr_1k={fr_1k} fr_100k={fr_100k}")
+    sys.exit(1)
+
+pl_ratio = pl_100k / pl_1k if pl_1k > 0 else 999
+fr_ratio = fr_100k / fr_1k if fr_1k > 0 else 0
+# Point lookup must stay effectively flat (<3x across 100x corpus).
+# Full read must climb more than point lookup (divergence).
+ok = pl_ratio < 3.0 and fr_ratio > pl_ratio * 1.5
+print(f"curve_assert={'ok' if ok else 'fail'} pl_ratio={pl_ratio:.3f} fr_ratio={fr_ratio:.3f} "
+      f"pl_1k_ns={pl_1k:.0f} pl_100k_ns={pl_100k:.0f} fr_1k_ns={fr_1k:.0f} fr_100k_ns={fr_100k:.0f}")
+sys.exit(0 if ok else 1)
+PY
+}
+
+curve_out="$(assert_curves 2>&1 || true)"
+log "$curve_out"
+if printf '%s\n' "$curve_out" | grep -q 'curve_assert=fail'; then
+  emit_kv \
+    "result=fail" \
+    "reason=curve-shape" \
+    "detail=${curve_out}" \
+    "fold_checkout=${fold_checkout}" \
+    "fold_head=${fold_head}" \
+    "feature=molecule-per-key-reads"
+  exit 1
+fi
+
+emit_kv \
+  "result=ok" \
+  "phase=bench-complete" \
+  "fold_checkout=${fold_checkout}" \
+  "fold_head=${fold_head}" \
+  "groups=${BENCH_GROUPS}" \
+  "cardinalities=1000,10000,50000,100000" \
+  "cargo_target_dir=${TARGET_DIR}" \
+  "curve=${curve_out}" \
+  "feature=molecule-per-key-reads"
+exit 0

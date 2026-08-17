@@ -67,6 +67,7 @@ bash tests/last-stack-north-star-ledger-sync.sh
 bash tests/last-stack-north-star-proof-registry.sh
 bash tests/last-stack-north-star-proof-ideal-storage-shape.sh
 bash tests/last-stack-org-cloud-membership-dogfood.sh
+bash tests/last-stack-dogfood-resource-isolate.sh
 bash tests/last-stack-secret-env-run.sh
 bash tests/last-stack-ship-feature-milestones.sh
 bash tests/last-stack-lint-prompts.sh --ci
