@@ -94,6 +94,7 @@ bash tests/last-stack-legacy-residue-closeout.sh
 bash tests/last-stack-why-shipping-stopped.sh
 bash tests/host-track-artifacts.sh
 bash tests/host-track-local-safe-staleness.sh
+bash tests/host-track-deployment-freshness.sh
 bash tests/lastseek-host-track.sh
 bash tests/host-track-registry-compliance.sh
 bash tests/last-stack-fleet-channel-freshness-gate.sh
