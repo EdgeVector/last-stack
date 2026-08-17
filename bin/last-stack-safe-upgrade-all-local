@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# Upgrade every local-safe agent CLI (not lastgit/last-stack/lastdb Mini artifacts).
+# Probe-then-activate every artifact CLI via host-track (not lastgit / LastDB Mini).
+# last-stack is included: its hook runs after cutover; the probe is host-track itself.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd -P)"
-UPGRADE="$ROOT/last-stack-safe-upgrade-cli"
-[ -x "$UPGRADE" ] || UPGRADE="$(command -v last-stack-safe-upgrade-cli)"
-[ -x "$UPGRADE" ] || {
-  echo "last-stack-safe-upgrade-cli not found" >&2
+HT="$ROOT/host-track"
+[ -x "$HT" ] || HT="$(command -v host-track)"
+[ -x "$HT" ] || {
+  echo "host-track not found" >&2
   exit 127
 }
 
-# The fkanban bundle now has ONE host-track registration, named `kanban`, which
-# links both public CLI names. This list used to say `fkanban` because that was
-# the second entry over the same install_root; that entry is gone.
-apps=(brain situations kanban routines lastsecrets configurations search)
+# LastDB Mini is deployment-only (lastdb-safe-upgrade). lastgit is bootstrap.
+# Everything else in the default registry is an artifact app with probes.
+apps=(last-stack brain situations kanban routines lastsecrets configurations lastseek search remote state-machine lastdb-browser)
 fail=0
 for app in "${apps[@]}"; do
   printf '\n======== safe-upgrade %s ========\n' "$app"
-  if "$UPGRADE" "$app"; then
+  if "$HT" refresh "$app"; then
     printf 'OK %s\n' "$app"
   else
     printf 'FAIL %s\n' "$app" >&2

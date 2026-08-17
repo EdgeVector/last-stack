@@ -77,6 +77,9 @@ Environment:
   HOST_TRACK_STAMP_DIR  Stamp directory (default: ~/.host-track/stamps)
   HOST_TRACK_ARTIFACT_ROOT  LastGit artifact CAS (default: ~/.lastgit/artifacts)
   HOST_TRACK_INSTALL_ROOT   Immutable app installs (default: ~/.host-track/apps)
+  HOST_TRACK_PROBE_SKIP=1   Tom-only: skip functional probe (do not use casually)
+  HOST_TRACK_PROBE_LAT_RATIO   Candidate vs current latency fail ratio (default 3)
+  HOST_TRACK_PROBE_LAT_FLOOR_MS  Ignore latency below this (default 1000)
 EOF
 }
 
@@ -1371,10 +1374,243 @@ gc_stale_stage_dirs() {
   done
 }
 
+safe_upgrade_post_install_phase() {
+  local json="$1" phase
+  phase="$(printf '%s\n' "$json" | jq -r '.safe_upgrade.post_install_phase // empty')"
+  case "$phase" in
+    before-probe|after-cutover|both) printf '%s\n' "$phase" ;;
+    *) printf 'before-probe\n' ;;
+  esac
+}
+
+now_ms() {
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import time; print(int(time.time()*1000))'
+  elif command -v perl >/dev/null 2>&1; then
+    perl -MTime::HiRes=time -e 'print int(time*1000)'
+  else
+    printf '0\n'
+  fi
+}
+
+run_with_timeout() {
+  local seconds="$1"
+  shift
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$seconds" "$@" <<'PY'
+import subprocess, sys
+sec = int(sys.argv[1])
+cmd = sys.argv[2:]
+try:
+    raise SystemExit(subprocess.run(cmd, timeout=sec).returncode)
+except subprocess.TimeoutExpired:
+    raise SystemExit(124)
+PY
+  elif command -v timeout >/dev/null 2>&1; then
+    timeout "$seconds" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$seconds" "$@"
+  else
+    "$@"
+  fi
+}
+
+resolve_version_rel() {
+  local version_dir="$1" rel="$2"
+  case "$rel" in
+    /*) printf '%s\n' "$rel" ;;
+    *) printf '%s/%s\n' "$version_dir" "$rel" ;;
+  esac
+}
+
+resolve_post_install_hook() {
+  local json="$1" install_root="$2" digest="$3" configured base rewritten version_dir
+  configured="$(expand_path "$(field "$json" post_install)")"
+  [ -n "$configured" ] || return 1
+  version_dir="$install_root/versions/$digest"
+  base="$(basename "$configured")"
+  if [ -n "$base" ] && [ -x "$version_dir/bin/$base" ]; then
+    printf '%s\n' "$version_dir/bin/$base"
+    return 0
+  fi
+  rewritten="${configured//\/current\//\/versions\/$digest\/}"
+  if [ "$rewritten" != "$configured" ] && [ -x "$rewritten" ]; then
+    printf '%s\n' "$rewritten"
+    return 0
+  fi
+  if [ -x "$configured" ]; then
+    printf '%s\n' "$configured"
+    return 0
+  fi
+  return 1
+}
+
+run_artifact_post_install_on_tree() {
+  local app="$1" json="$2" install_root="$3" digest="$4" version_dir="$5" hook
+  [ -n "$(field "$json" post_install)" ] || return 0
+  if ! hook="$(resolve_post_install_hook "$json" "$install_root" "$digest")"; then
+    die "artifact post-install is not executable for $app (digest=$digest)"
+  fi
+  HOST_TRACK_APP="$app" HOST_TRACK_INSTALL_ROOT="$install_root" \
+    HOST_TRACK_MANIFEST_DIGEST="$digest" HOST_TRACK_VERSION_DIR="$version_dir" \
+    LAST_STACK_ROOT="$version_dir" \
+    "$hook"
+}
+
+run_one_probe() {
+  local version_dir="$1" spec="$2"
+  local timeout_s output_matches accept_exit n i rel exe rc out ok e
+  local -a cmd=()
+  timeout_s="$(printf '%s\n' "$spec" | jq -r '.timeout_s // 30')"
+  output_matches="$(printf '%s\n' "$spec" | jq -r '.output_matches // empty')"
+  accept_exit="$(printf '%s\n' "$spec" | jq -r '(.accept_exit // [0]) | map(tostring) | join(" ")')"
+  n="$(printf '%s\n' "$spec" | jq -r '.argv | length')"
+  [ "$n" -ge 1 ] || return 1
+  rel="$(printf '%s\n' "$spec" | jq -r '.argv[0]')"
+  exe="$(resolve_version_rel "$version_dir" "$rel")"
+  [ -e "$exe" ] || {
+    printf 'host-track: probe argv[0] missing: %s\n' "$exe" >&2
+    return 1
+  }
+  cmd=("$exe")
+  i=1
+  while [ "$i" -lt "$n" ]; do
+    cmd+=("$(printf '%s\n' "$spec" | jq -r --argjson i "$i" '.argv[$i]')")
+    i=$((i + 1))
+  done
+  out="$(mktemp "${TMPDIR:-/tmp}/host-track-probe.XXXXXX")"
+  set +e
+  (
+    cd "$version_dir"
+    PATH="$version_dir/bin:$version_dir/dist:${PATH}"
+    HOST_TRACK_PROBE=1
+    export HOST_TRACK_PROBE
+    run_with_timeout "$timeout_s" "${cmd[@]}"
+  ) >"$out" 2>&1
+  rc=$?
+  set -e
+  ok=0
+  for e in $accept_exit; do
+    if [ "$rc" = "$e" ]; then
+      ok=1
+      break
+    fi
+  done
+  if [ -n "$output_matches" ]; then
+    grep -q -- "$output_matches" "$out" || ok=0
+  fi
+  if [ "$ok" -ne 1 ]; then
+    printf 'host-track: probe RED cmd=%s rc=%s\n' "${cmd[*]}" "$rc" >&2
+    sed -n '1,40p' "$out" >&2
+    rm -f "$out"
+    return 1
+  fi
+  rm -f "$out"
+  return 0
+}
+
+time_one_probe_ms() {
+  local version_dir="$1" spec="$2" start end
+  start="$(now_ms)"
+  [ "$start" != "0" ] || { printf '\n'; return 1; }
+  if run_one_probe "$version_dir" "$spec"; then
+    end="$(now_ms)"
+    printf '%s\n' "$((end - start))"
+    return 0
+  fi
+  printf '\n'
+  return 1
+}
+
+first_link_source() {
+  local json="$1"
+  printf '%s\n' "$json" | jq -r '.links[0].source // empty'
+}
+
+run_safe_upgrade_probes() {
+  local app="$1" json="$2" version_dir="$3" current_dir="${4:-}"
+  local skip="${HOST_TRACK_PROBE_SKIP:-0}"
+  local encoded spec n i candidate_ms baseline_ms ratio floor
+  local latency_on
+
+  if [ "$skip" = "1" ]; then
+    printf 'host-track: %s probe SKIPPED (HOST_TRACK_PROBE_SKIP=1)\n' "$app" >&2
+    return 0
+  fi
+
+  n="$(printf '%s\n' "$json" | jq -r '.safe_upgrade.probes // [] | length')"
+  if [ "$n" -eq 0 ]; then
+    if [ "${REGISTRY_IS_DEFAULT:-0}" = "1" ]; then
+      printf 'host-track: %s has no safe_upgrade.probes; refuse to activate\n' "$app" >&2
+      return 1
+    fi
+    rel="$(first_link_source "$json")"
+    if [ -n "$rel" ] && [ -e "$version_dir/$rel" ] && [ -x "$version_dir/$rel" ]; then
+      printf 'host-track: %s custom registry has no probes; existence check OK (%s)\n' \
+        "$app" "$rel" >&2
+      return 0
+    fi
+    printf 'host-track: %s custom registry has no probes and no executable link source\n' \
+      "$app" >&2
+    return 1
+  fi
+
+  printf 'host-track: %s probing %s (%s checks) …\n' "$app" "$version_dir" "$n" >&2
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    spec="$(printf '%s\n' "$json" | jq -c --argjson i "$i" '.safe_upgrade.probes[$i]')"
+    if ! run_one_probe "$version_dir" "$spec"; then
+      return 1
+    fi
+    i=$((i + 1))
+  done
+
+  latency_on="$(printf '%s\n' "$json" | jq -r '.safe_upgrade.latency // false | tostring')"
+  if [ "$latency_on" = "true" ] && [ -n "$current_dir" ] && [ -d "$current_dir" ] \
+    && [ "$current_dir" != "$version_dir" ]; then
+    spec="$(printf '%s\n' "$json" | jq -c '.safe_upgrade.probes[-1]')"
+    ratio="${HOST_TRACK_PROBE_LAT_RATIO:-$(printf '%s\n' "$json" | jq -r '.safe_upgrade.latency_ratio // 3')}"
+    floor="${HOST_TRACK_PROBE_LAT_FLOOR_MS:-$(printf '%s\n' "$json" | jq -r '.safe_upgrade.latency_floor_ms // 1000')}"
+    candidate_ms="$(time_one_probe_ms "$version_dir" "$spec" || true)"
+    baseline_ms="$(time_one_probe_ms "$current_dir" "$spec" || true)"
+    if [ -n "$candidate_ms" ] && [ -n "$baseline_ms" ]; then
+      printf 'host-track: %s latency candidate=%sms baseline=%sms ratio=%s floor=%sms\n' \
+        "$app" "$candidate_ms" "$baseline_ms" "$ratio" "$floor" >&2
+      if [ "$candidate_ms" -gt "$floor" ] && [ "$baseline_ms" -gt 0 ]; then
+        ratio_i="${ratio%%.*}"
+        [ -n "$ratio_i" ] || ratio_i=3
+        if [ "$candidate_ms" -gt $((baseline_ms * ratio_i)) ]; then
+          printf 'host-track: %s latency RED candidate=%sms > %sx baseline=%sms\n' \
+            "$app" "$candidate_ms" "$ratio_i" "$baseline_ms" >&2
+          return 1
+        fi
+      fi
+    else
+      printf 'host-track: %s latency unmeasurable; continuing on correctness\n' "$app" >&2
+    fi
+  fi
+
+  printf 'host-track: %s probe GREEN\n' "$app" >&2
+  return 0
+}
+
+rollback_current_to_previous() {
+  local app="$1" install_root="$2" digest="$3" json="$4"
+  local prev
+  [ -L "$install_root/current" ] || return 0
+  [ "$(readlink "$install_root/current")" = "versions/$digest" ] || return 0
+  [ -L "$install_root/previous" ] || return 0
+  prev="$(readlink "$install_root/previous")"
+  [ -d "$install_root/$prev" ] || return 0
+  printf 'host-track: %s rolling current back to %s after RED probe\n' "$app" "$prev" >&2
+  atomic_symlink "$prev" "$install_root/current"
+  install_artifact_links "$json" "$install_root" || true
+}
+
 artifact_install_app() {
   local app="$1" channel_override="${2:-}" force_restage="${3:-0}" json install_mode artifact_app channel artifact_root install_root
   local manifest digest stage target old_target stamp_path need_materialize=0
-  local old_digest prev_target prev_digest
+  local old_digest prev_target prev_digest post_install_phase current_dir
   json="$(require_app_json "$app")"
   install_mode="$(setting "$json" install_mode)"
   [ "$install_mode" = "artifact" ] || die "$app is not registered for artifact installs"
@@ -1446,6 +1682,29 @@ artifact_install_app() {
     die "refusing cutover: versions/$digest incomplete install (missing command payload)"
   fi
 
+  # Probe the candidate tree BEFORE flipping current/PATH. Last known-good
+  # stays live unless this is a restage of the already-active digest.
+  post_install_phase="$(safe_upgrade_post_install_phase "$json")"
+  current_dir=""
+  if [ -L "$install_root/current" ] && current_target_is_live "$install_root"; then
+    current_dir="$install_root/$(readlink "$install_root/current")"
+  fi
+  if [ "$post_install_phase" = "before-probe" ] || [ "$post_install_phase" = "both" ]; then
+    if ! run_artifact_post_install_on_tree "$app" "$json" "$install_root" "$digest" "$target"; then
+      printf 'host-track: %s pre-probe post-install failed\n' "$app" >&2
+      release_install_lock
+      trap - EXIT
+      return 1
+    fi
+  fi
+  if ! run_safe_upgrade_probes "$app" "$json" "$target" "$current_dir"; then
+    printf 'host-track: %s probe RED; refusing cutover (current unchanged)\n' "$app" >&2
+    rollback_current_to_previous "$app" "$install_root" "$digest" "$json"
+    release_install_lock
+    trap - EXIT
+    return 1
+  fi
+
   old_target=""
   [ ! -L "$install_root/current" ] || old_target="$(readlink "$install_root/current")"
   if [ -n "$old_target" ] && [ "$old_target" != "versions/$digest" ]; then
@@ -1483,13 +1742,15 @@ artifact_install_app() {
   # PATH links only after current points at a verified tree.
   install_artifact_links "$json" "$install_root"
 
-  # Post-install may be best-effort for some apps; failures must not leave a
-  # "fresh" stamp on a broken activation.
-  if ! run_artifact_post_install "$app" "$json" "$install_root" "$digest"; then
-    printf 'host-track: %s post-install failed\n' "$app" >&2
-    release_install_lock
-    trap - EXIT
-    return 1
+  # Last-stack setup (and any after-cutover hook) still runs against current.
+  # Other apps already ran post_install on the version tree before the probe.
+  if [ "$post_install_phase" = "after-cutover" ] || [ "$post_install_phase" = "both" ]; then
+    if ! run_artifact_post_install "$app" "$json" "$install_root" "$digest"; then
+      printf 'host-track: %s post-install failed\n' "$app" >&2
+      release_install_lock
+      trap - EXIT
+      return 1
+    fi
   fi
 
   # Stamp only after the active tree verifies (digest match + hashes). Never
@@ -1801,20 +2062,30 @@ validate_registry_cmd() {
               else "non_compliant"
               end
           end;
+      def probe_ok($app):
+        if compliance($app) != "artifact" then true
+        else
+          ((.safe_upgrade.probes // []) | length) > 0
+          and all(.safe_upgrade.probes[]?; ((.argv // []) | length) > 0)
+        end;
       ($root.apps // [])
       | map({
           app: .app,
           install_mode: mode(.),
           registry_compliance: compliance(.),
-          artifact_exemption: exemption(.)
+          artifact_exemption: exemption(.),
+          probe_ok: probe_ok(.)
         }) as $apps
       | ($apps | map(select(.registry_compliance == "non_compliant")) | length) as $nc
+      | ($apps | map(select(.probe_ok == false)) | length) as $mp
       | {
-          ok: ($nc == 0),
+          ok: (($nc == 0) and ($mp == 0)),
           registry: $registry,
           total: ($apps | length),
           non_compliant: $nc,
+          missing_probes: $mp,
           policy: "artifact_or_exempt",
+          probe_policy: "artifact_apps_have_probes",
           apps: $apps
         }
   ' "$REGISTRY")" || die "validate-registry could not read registry JSON"
@@ -1823,21 +2094,29 @@ validate_registry_cmd() {
   if [ "$json_out" -eq 1 ]; then
     printf '%s\n' "$report"
   else
-    printf 'validate-registry policy=artifact_or_exempt registry=%s total=%s non_compliant=%s\n' \
+    printf 'validate-registry policy=artifact_or_exempt registry=%s total=%s non_compliant=%s missing_probes=%s\n' \
       "$(printf '%s\n' "$report" | jq -r '.registry')" \
       "$(printf '%s\n' "$report" | jq -r '.total')" \
-      "$non_compliant"
+      "$non_compliant" \
+      "$(printf '%s\n' "$report" | jq -r '.missing_probes')"
     printf '%s\n' "$report" | jq -r '.apps[] |
       .app + "\t" + .install_mode + "\t" + .registry_compliance +
-      (if .artifact_exemption then "\t" + (.artifact_exemption.kind // "-") else "\t-" end)'
-    if [ "$non_compliant" = "0" ]; then
-      printf 'ok: every registered app is artifact or exempt\n'
+      (if .artifact_exemption then "\t" + (.artifact_exemption.kind // "-") else "\t-" end) +
+      "\tprobe=" + (if .probe_ok then "ok" else "MISSING" end)'
+    if [ "$non_compliant" = "0" ] && [ "$(printf '%s\n' "$report" | jq -r '.missing_probes')" = "0" ]; then
+      printf 'ok: every registered app is artifact or exempt and artifact apps declare probes\n'
     else
-      printf 'FAIL: %s app(s) are neither artifact nor exempt\n' "$non_compliant" >&2
+      if [ "$non_compliant" != "0" ]; then
+        printf 'FAIL: %s app(s) are neither artifact nor exempt\n' "$non_compliant" >&2
+      fi
+      if [ "$(printf '%s\n' "$report" | jq -r '.missing_probes')" != "0" ]; then
+        printf 'FAIL: %s artifact app(s) have no safe_upgrade.probes\n' \
+          "$(printf '%s\n' "$report" | jq -r '.missing_probes')" >&2
+      fi
     fi
   fi
 
-  [ "$non_compliant" = "0" ]
+  [ "$(printf '%s\n' "$report" | jq -r '.ok')" = "true" ]
 }
 
 
