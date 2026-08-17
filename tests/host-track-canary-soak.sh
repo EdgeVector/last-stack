@@ -98,11 +98,12 @@ out="$("$ROOT/bin/host-track" soak-watch demo)"
 printf '%s\n' "$out" | grep -q 'soak pending' || fail "early soak-watch should be pending: $out"
 [ "$(demo)" = v1 ] || fail "pending soak flipped live: $(demo)"
 
+# The LaunchAgent only runs refresh --all; that must promote a ready soak.
 jq '.started_epoch = 0' "$HOST_TRACK_STAMP_DIR/demo.soak.json" > "$tmp/stamp.json"
 mv "$tmp/stamp.json" "$HOST_TRACK_STAMP_DIR/demo.soak.json"
-"$ROOT/bin/host-track" soak-watch demo >/dev/null
-[ "$(demo)" = v2 ] || fail "soak-watch did not promote after window: $(demo)"
+"$ROOT/bin/host-track" refresh --all >/dev/null
+[ "$(demo)" = v2 ] || fail "refresh --all did not promote after window: $(demo)"
 [ "$(readlink "$HOME/apps/demo/current")" = "versions/$digest_two" ] \
-  || fail "current should be v2 after soak promote"
+  || fail "current should be v2 after refresh --all soak tick"
 
 printf 'ok: host-track canary soak\n'

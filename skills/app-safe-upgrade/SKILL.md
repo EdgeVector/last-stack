@@ -27,7 +27,7 @@ goes through Host Track.
 # Park the new tree as canary (PATH unchanged after GREEN probe)
 host-track refresh <app>
 
-# Hourly clock: re-probe canary; promote when soak_hours have passed GREEN
+# Same clock as the 20-minute LaunchAgent (refresh --all also soak-watches)
 host-track soak-watch <app>
 host-track soak-watch --all
 

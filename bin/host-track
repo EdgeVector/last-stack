@@ -1644,8 +1644,16 @@ write_soak_stamp() {
 
 park_canary() {
   local app="$1" install_root="$2" digest="$3" soak_h="$4"
+  local stamp started checks
   atomic_symlink "versions/$digest" "$install_root/canary"
-  write_soak_stamp "$app" "$digest" "soaking" "$soak_h" 1
+  stamp="$(soak_stamp_path "$app")"
+  started=""
+  checks=1
+  if [ -f "$stamp" ] && [ "$(jq -r '.digest // empty' "$stamp")" = "$digest" ]; then
+    started="$(jq -r '.started_epoch // empty' "$stamp")"
+    checks="$(jq -r '.checks // 1' "$stamp")"
+  fi
+  write_soak_stamp "$app" "$digest" "soaking" "$soak_h" "$checks" "$started"
   printf 'host-track: %s canary parked at versions/%s; soak %sh; current unchanged\n' \
     "$app" "$digest" "$soak_h" >&2
 }
@@ -2079,6 +2087,11 @@ refresh_cmd() {
         [ "$rc" -eq 3 ] || failures=$((failures + 1))
       fi
     done < <(list_apps)
+    # The 20-minute LaunchAgent only runs `refresh --all`. Tick soaks here so
+    # parked canaries promote without a second scheduled job.
+    if [ "${HOST_TRACK_ACTIVATE:-0}" != "1" ] && [ "${HOST_TRACK_SKIP_SOAK_WATCH:-0}" != "1" ]; then
+      soak_watch_cmd --all || failures=$((failures + 1))
+    fi
     [ "$failures" -eq 0 ]
     return
   fi
@@ -2087,6 +2100,9 @@ refresh_cmd() {
   eff="$force"
   if [ "$eff" -eq 0 ] && [ "$force_if_stale" -eq 1 ] && app_is_stale "$app"; then eff=1; fi
   refresh_app "$app" "$eff"
+  if [ "${HOST_TRACK_ACTIVATE:-0}" != "1" ] && [ "${HOST_TRACK_SKIP_SOAK_WATCH:-0}" != "1" ]; then
+    soak_watch_one "$app"
+  fi
 }
 
 
