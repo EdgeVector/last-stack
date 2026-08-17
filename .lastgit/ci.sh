@@ -95,6 +95,9 @@ bash tests/last-stack-papercut-queue.sh
 # only routine that turns papercuts into cards, and nothing guarded the rule
 # telling agents to file them in the first place.
 bash tests/last-stack-papercut-filing-contract.sh
+# Close-out is the last-chance producer for those same papercuts, plus the
+# full LastDB report of what the session actually did.
+bash tests/last-stack-closeout-skill-contract.sh
 bash tests/last-stack-papercut-lifecycle-close.sh
 bash tests/last-stack-papercut-lifecycle-helper-run-install.sh
 bash tests/last-stack-canary-pipeline.sh
