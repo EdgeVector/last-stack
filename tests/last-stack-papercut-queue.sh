@@ -108,4 +108,27 @@ for producer in \
   }
 done
 
+# One unprefixed live slug must not fail-close the whole snapshot
+# (papercut-last-stack-queue-rejects-valid-unprefixed-typed-slugs).
+cat >"$tmp/brain-mixed" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$*" = "papercut list --status open --json" ] || exit 2
+printf '%s\n' '{"rows":[{"slug":"papercut-a","status":"open"},{"slug":"brain-bare-unprefixed","status":"open"},{"slug":"papercut-b","status":"open"}],"total":3,"method":"method: status-keyed papercut index (one keyed partition)"}'
+SH
+chmod +x "$tmp/brain-mixed"
+mixed="$tmp/mixed.json"
+mixed_out="$($ROOT/bin/last-stack-papercut-queue snapshot --brain-bin "$tmp/brain-mixed" --output "$mixed" --json 2>"$tmp/mixed.err")"
+printf '%s\n' "$mixed_out" | jq -e '.ok and .discovered == 2 and .quarantined == 1' >/dev/null
+jq -e '.ok and .discovered == 2 and (.rows | length) == 2 and (.quarantined | length) == 1 and .quarantined[0].slug == "brain-bare-unprefixed"' "$mixed" >/dev/null
+grep -q 'quarantined 1 slug' "$tmp/mixed.err"
+printf 'papercut-a\n' >"$tmp/mixed-reconciled"
+printf 'papercut-b\n' >"$tmp/mixed-deferred"
+: >"$tmp/mixed-already"
+: >"$tmp/mixed-failed"
+$ROOT/bin/last-stack-papercut-queue verify --snapshot "$mixed" \
+  --reconciled-file "$tmp/mixed-reconciled" --deferred-file "$tmp/mixed-deferred" \
+  --already-handled-file "$tmp/mixed-already" --failed-file "$tmp/mixed-failed" --json \
+  | jq -e '.ok and .conserved and .discovered == 2' >/dev/null
+
 printf 'ok last-stack-papercut-queue\n'

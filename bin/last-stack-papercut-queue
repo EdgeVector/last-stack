@@ -39,7 +39,11 @@ def parse_json_stream(raw: str) -> dict[str, Any]:
     raise ValueError("brain did not return a papercut-list JSON object")
 
 
-def validate_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
+def is_safe_papercut_slug(slug: object) -> bool:
+    return isinstance(slug, str) and slug.startswith("papercut-") and slug != "papercut-"
+
+
+def validate_queue(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     method = payload.get("method")
     rows = payload.get("rows")
     total = payload.get("total")
@@ -50,16 +54,23 @@ def validate_queue(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(total, int) or total != len(rows):
         raise ValueError(f"total/rows mismatch: total={total!r} rows={len(rows)}")
     slugs: set[str] = set()
+    accepted: list[dict[str, Any]] = []
+    quarantined: list[dict[str, Any]] = []
     for row in rows:
         slug = row.get("slug")
-        if not isinstance(slug, str) or not slug.startswith("papercut-"):
-            raise ValueError(f"invalid papercut slug in queue: {slug!r}")
+        if not is_safe_papercut_slug(slug):
+            quarantined.append({
+                "slug": slug if isinstance(slug, str) else None,
+                "reason": "missing-papercut-prefix",
+            })
+            continue
         if row.get("status") != "open":
             raise ValueError(f"non-open row in open queue: {slug} status={row.get('status')!r}")
         if slug in slugs:
             raise ValueError(f"duplicate papercut queue membership: {slug}")
-        slugs.add(slug)
-    return rows
+        slugs.add(str(slug))
+        accepted.append(row)
+    return accepted, quarantined
 
 
 def write_atomic(path: Path, payload: dict[str, Any]) -> None:
@@ -94,7 +105,7 @@ def snapshot(args: argparse.Namespace) -> int:
         return 1
     try:
         source = parse_json_stream(proc.stdout)
-        rows = validate_queue(source)
+        rows, quarantined = validate_queue(source)
     except ValueError as error:
         print(f"papercut queue invalid: {error}", file=sys.stderr)
         return 1
@@ -105,6 +116,7 @@ def snapshot(args: argparse.Namespace) -> int:
         "fetched_at": fetched_at,
         "method": source["method"],
         "discovered": len(rows),
+        "quarantined": quarantined,
         "rows": rows,
     }
     write_atomic(Path(args.output), receipt)
@@ -113,10 +125,17 @@ def snapshot(args: argparse.Namespace) -> int:
         "phase": "snapshot",
         "snapshot": str(Path(args.output).resolve()),
         "discovered": len(rows),
+        "quarantined": len(quarantined),
         "method": source["method"],
     }
+    if quarantined:
+        print(
+            f"papercut queue quarantined {len(quarantined)} slug(s) missing papercut- prefix",
+            file=sys.stderr,
+        )
     print(json.dumps(result, sort_keys=True) if args.json else (
-        f"papercut-queue snapshot={result['snapshot']} discovered={len(rows)} method=status-keyed"
+        f"papercut-queue snapshot={result['snapshot']} discovered={len(rows)} "
+        f"quarantined={len(quarantined)} method=status-keyed"
     ))
     return 0
 
@@ -138,7 +157,7 @@ def read_slug_file(path: str) -> list[str]:
 def verify(args: argparse.Namespace) -> int:
     try:
         receipt = json.loads(Path(args.snapshot).read_text(encoding="utf-8"))
-        rows = validate_queue({
+        rows, _quarantined = validate_queue({
             "method": receipt.get("method"),
             "rows": receipt.get("rows"),
             "total": receipt.get("discovered"),
