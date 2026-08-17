@@ -5,13 +5,32 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 bin="$ROOT/bin/last-stack-ship-pipeline-gap-snapshot"
+extract="$ROOT/bin/last-stack-json-value-extract"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 
 [ -f "$bin" ] || fail "missing bin"
+[ -f "$extract" ] || fail "missing JSON value extractor"
 chmod +x "$bin"
+chmod +x "$extract"
 "$bin" --help >/dev/null || fail "help"
+
+# Routine Bash policy rejects inline Python/Node JSON parsing. Keep the shell
+# entrypoint policy-compatible and exercise the script-file parser directly.
+if grep -Eq '(python3?|node)[[:space:]]+(-[^[:space:]]*[ce][^[:space:]]*|-c|-e)[[:space:]]' "$bin"; then
+  fail "snapshot contains policy-blocked inline interpreter code"
+fi
+parsed="$(printf '%s\n' \
+  'helper heartbeat before JSON' \
+  '{' \
+  '  "status": "ok",' \
+  '  "items": [1, 2]' \
+  '}' \
+  'ignored trailing output' \
+  | "$extract")" || fail "script-file parser rejected noisy pretty JSON"
+printf '%s\n' "$parsed" | jq -e '.status == "ok" and .items == [1, 2]' >/dev/null \
+  || fail "script-file parser output: $parsed"
 
 export PATH="$tmp/bin:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
 export SHIP_PIPELINE_GAP_SNAPSHOT_FIXTURE=1

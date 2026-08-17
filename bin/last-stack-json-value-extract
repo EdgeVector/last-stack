@@ -1,0 +1,25 @@
+#!/usr/bin/python3
+"""Emit the first complete JSON object or array found on stdin."""
+import json
+import sys
+
+
+def main() -> int:
+    raw = sys.stdin.read()
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(raw):
+        if char not in "{[":
+            continue
+        try:
+            value, _ = decoder.raw_decode(raw[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, (dict, list)):
+            json.dump(value, sys.stdout, separators=(",", ":"))
+            sys.stdout.write("\n")
+            return 0
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
