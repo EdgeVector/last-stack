@@ -43,6 +43,15 @@ export PATH
 LAST_STACK_PRELUDE_PATH="$PATH"
 export LAST_STACK_PRELUDE_PATH
 
+# A LastSecrets locator is a reference, not a Sentry DSN. Routine launchers
+# that need Sentry must resolve the locator at the child-process boundary with
+# last-stack-secret-env-run. Leaving the unresolved locator exported makes
+# every ordinary CLI initialize observability, warn, or fail before it can
+# produce machine-readable output.
+case "${OBS_SENTRY_DSN:-}" in
+  lastsecrets://*) unset OBS_SENTRY_DSN ;;
+esac
+
 # Host-global Cargo config may route every rustc process through sccache. A
 # pinned local cache has repeatedly serialized otherwise-parallel Fold builds,
 # turning ~40 second builds into 15+ minute timeouts. Scheduled agents value a
