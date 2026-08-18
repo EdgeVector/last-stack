@@ -10,7 +10,9 @@ description: |
   CAS mutation bar (candidate enforces `/api/mutation` `expected` — false
   precondition → 409; LastGit ref/CI CAS depends on it), (4) only
   then venue-aware live install (sidebin+launchd or
-  brew services) + post-check + Situations notice. Use when Tom says "upgrade
+  brew services) + post-check + Situations notice, with the **durability
+  canary** bracketing the restart (sentinels acked pre-cutover must read back
+  post-cutover — a stale nonce is RED; no skip flag). Use when Tom says "upgrade
   lastdb", "brew upgrade lastdb", "safe upgrade", "update my brain/database
   binary", "can I upgrade to 0.22.x", "don't brick my data", "new bottle/release",
   or whenever an agent would otherwise brew-upgrade or point a candidate lastdbd
@@ -155,6 +157,22 @@ proxy is optional later for near-zero client impact.
     installed live CLI/daemon pair is skewed.
 11. Do not claim “primary stopped” unless this script actually stopped the
    supervisor for that venue.
+12. **Durability canary (acked writes survive the restart):** immediately
+    before any live change, the driver upserts
+    `lastdb-safe-upgrade-durability-canary-1..N` (default N=4) through the
+    ordinary `brain put` path on the **live primary**, each carrying a
+    run-unique nonce, and reads each back. After the cutover it re-reads them
+    on the new daemon. A sentinel that reads back with the PREVIOUS run's
+    nonce is **RED**: the old daemon acknowledged a write the new daemon does
+    not have — the exact loss shape of
+    `papercut-lastdb-acked-write-lost-loom-terminal-status-regressed`
+    (2026-08-18: two read-back-confirmed loom terminal-status writes vanished
+    across a restart whose shutdown "did not complete its clean drain").
+    Unreadable sentinels after `LASTDB_DURABILITY_READ_WAIT_S` (default 120s)
+    are also RED — durability UNPROVEN. Rolling back the binary does not
+    recover lost writes; a RED here means audit recent writes across apps
+    before trusting the store. **There is deliberately no skip flag.**
+    Tunables: `LASTDB_DURABILITY_CANARY_N`, `LASTDB_DURABILITY_READ_WAIT_S`.
 
 ## Do this, in order
 
@@ -212,8 +230,8 @@ The script:
 | **0. Class** | Refuse `target/debug`, `-dirty` version, size ≫ incumbent (before multi-GB backup) |
 | **2. Probe** | `BIN=<candidate>` CoW smoke harness (never live home) + **CAS mutation bar** (ephemeral candidate node: false `expected` → 409) + **RSS settle/sample** vs memory-guard limit + **latency bar**: point read / `kanban list` scan / `brain put` write timed on candidate CoW copy vs the current binary on an identical copy |
 | Detect venue | sidebin vs brew |
-| **3. Live** | sidebin atomic install + kickstart **or** brew upgrade/restart |
-| **4. Post-check** | Live `/health`, schemas > 0, Board title, **live peak RSS** vs guard, **live point-read + kanban list latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency in notice |
+| **3. Live** | **durability canary armed** (N run-unique sentinels acked + read back on the old daemon, before any live change), then sidebin atomic install + kickstart **or** brew upgrade/restart |
+| **4. Post-check** | Live `/health`, schemas > 0, Board title, **durability canary read-back** (stale nonce → RED, no skip flag), **live peak RSS** vs guard, **live point-read + kanban list latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency + durability in notice |
 | **4b. Release** | After GREEN, delete the rollback point and its empty root. GREEN probe-only and operator abort release it too. |
 | RED | Exit 1, retain the one rollback point, print its path, TTL, and cleanup owner; primary untouched if class/probe failed |
 
@@ -250,7 +268,7 @@ incident.
 | `VERDICT: GREEN` | Probe + live cutover + live post-check passed | Done |
 | `VERDICT: GREEN_PROBE_ONLY` | Probe passed; primary still on old version | Re-run with `--yes` if Tom wants the upgrade |
 | `VERDICT: ALREADY_CURRENT` | Already on candidate/stable | Nothing to do |
-| `VERDICT: RED` | Candidate fails **class** bar (debug/dirty/size), **or** cannot serve real data, **or** the **CAS mutation** bar (node accepted a false `expected` precondition), **or** peak RSS exceeds memory-guard bar, **or** the latency bar failed (per-op 3×, absolute ceiling, **or correlated** all-ops / geo-mean regression) | **Do not upgrade**; file release-blocker; use the one retained rollback point only if recovery is required. The next safe-upgrade run reclaims it. |
+| `VERDICT: RED` | Candidate fails **class** bar (debug/dirty/size), **or** cannot serve real data, **or** the **CAS mutation** bar (node accepted a false `expected` precondition), **or** peak RSS exceeds memory-guard bar, **or** the latency bar failed (per-op 3×, absolute ceiling, **or correlated** all-ops / geo-mean regression), **or** the **durability canary** failed post-cutover (stale/unreadable sentinel — acked writes did not provably survive the restart) | **Do not upgrade**; file release-blocker; use the one retained rollback point only if recovery is required. The next safe-upgrade run reclaims it. A durability RED after cutover additionally means: audit recent writes across apps — rollback does not recover lost writes. |
 
 ## Rollback
 

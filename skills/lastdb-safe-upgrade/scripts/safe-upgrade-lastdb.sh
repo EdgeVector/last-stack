@@ -402,6 +402,101 @@ op_lat_write() {
       brain put >/dev/null 2>&1
 }
 
+# ---------------------------------------------------------------------------
+# Durability canary: an acked write must survive the cutover restart.
+#
+# 2026-08-18: two loom execution terminal-status writes were acknowledged and
+# READ BACK on the live primary (23:08–23:12Z), then vanished — the rows
+# regressed to their previous version. The defer cap was 0, and the next
+# safe-upgrade cutover recorded "did not complete its clean drain". Every bar
+# in this script would have passed GREEN over that loss: health, version,
+# schemas, Board title, RSS, and latency are liveness/read checks, and the
+# latency write probe only touches throwaway CoW copies. Nothing asserted that
+# a write acked by the OLD daemon is still there when the NEW daemon serves.
+# Brain: papercut-lastdb-acked-write-lost-loom-terminal-status-regressed.
+#
+# Mechanism: immediately before any live change, upsert N fixed-slug sentinels
+# through the ordinary app write path (brain put), each carrying a run-unique
+# nonce, and read each back. After the cutover, read them again on the new
+# daemon. A sentinel whose body carries the PREVIOUS run's nonce is exactly
+# the observed loss shape (last write to a key dropped, prior version
+# survives). Fixed slugs keep the store flat; N spreads sentinels across hash
+# groups because the loss was per-key, not per-interval. There is deliberately
+# no skip flag — a durability bar that can be skipped recurs silently.
+# ---------------------------------------------------------------------------
+DURABILITY_N="${LASTDB_DURABILITY_CANARY_N:-4}"
+DURABILITY_READ_WAIT_S="${LASTDB_DURABILITY_READ_WAIT_S:-120}"
+DURABILITY_SLUG_PREFIX="lastdb-safe-upgrade-durability-canary"
+DURABILITY_NONCE=""
+
+durability_slug() { printf '%s-%d' "$DURABILITY_SLUG_PREFIX" "$1"; }
+
+durability_read_body() {
+  # $1 = slug. stdout: the record as brain prints it (empty on any failure).
+  run_op_with_deadline 15 env FBRAIN_FOLDDB_SOCKET="$PRIMARY_SOCK" \
+    LASTDB_HOME="$PRIMARY_HOME" FOLDDB_HOME="$PRIMARY_HOME" \
+    brain get "$1" 2>/dev/null || true
+}
+
+durability_write_sentinels() {
+  # Runs BEFORE any live change; a failure here aborts a not-yet-started
+  # cutover, which is the honest outcome — an upgrade whose durability bar
+  # cannot arm must not proceed to the restart that bar exists to judge.
+  DURABILITY_NONCE="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  local i slug
+  for i in $(seq 1 "$DURABILITY_N"); do
+    slug="$(durability_slug "$i")"
+    printf -- '---\ntype: reference\nslug: %s\ntitle: safe-upgrade durability canary %d (constant slug; nonce changes per run)\n---\nnonce: %s#%d\n\nWritten by lastdb-safe-upgrade immediately before the cutover restart and\nread back after it. A stale nonce after an upgrade means the primary lost an\nacknowledged write across the restart. Safe to keep; carries no other\nmeaning. Rationale: brain\npapercut-lastdb-acked-write-lost-loom-terminal-status-regressed.\n' \
+      "$slug" "$i" "$DURABILITY_NONCE" "$i" \
+      | env FBRAIN_FOLDDB_SOCKET="$PRIMARY_SOCK" LASTDB_HOME="$PRIMARY_HOME" FOLDDB_HOME="$PRIMARY_HOME" \
+        brain put >/dev/null 2>&1 \
+      || die "durability canary: pre-cutover write of $slug failed — aborting before any live change (the canary must arm to prove the cutover keeps acked writes)"
+    durability_read_body "$slug" | grep -qF "nonce: ${DURABILITY_NONCE}#${i}" \
+      || die "durability canary: pre-cutover read-back of $slug did not return this run's nonce — primary already unhealthy; aborting before any live change"
+  done
+  log "durability canary: armed — $DURABILITY_N sentinels written and read back on the old daemon (nonce $DURABILITY_NONCE)"
+}
+
+durability_verify_after_cutover() {
+  # Same read-vs-mismatch split as the version assertion above: a read that
+  # has not answered yet says nothing (node may still be warming — retry until
+  # the deadline), while a read that SUCCEEDS with a stale nonce is a proven
+  # acked-write loss and cannot improve by waiting.
+  local deadline=$(( $(date +%s) + DURABILITY_READ_WAIT_S ))
+  local i slug body lost="" unreadable=""
+  for i in $(seq 1 "$DURABILITY_N"); do
+    slug="$(durability_slug "$i")"
+    while :; do
+      body="$(durability_read_body "$slug")"
+      if [ -n "$body" ]; then
+        printf '%s' "$body" | grep -qF "nonce: ${DURABILITY_NONCE}#${i}" \
+          || lost="$lost $slug"
+        break
+      fi
+      if [ "$(date +%s)" -ge "$deadline" ]; then
+        unreadable="$unreadable $slug"
+        break
+      fi
+      sleep 2
+    done
+  done
+  if [ -n "$lost" ] || [ -n "$unreadable" ]; then
+    echo ""
+    echo "VERDICT: RED"
+    [ -n "$lost" ] && \
+      echo "REASON: acked-write durability regression — sentinel(s)$lost read back with a STALE nonce after cutover: the old daemon acknowledged these writes and the new daemon does not have them (loss class: papercut-lastdb-acked-write-lost-loom-terminal-status-regressed)"
+    [ -n "$unreadable" ] && \
+      echo "REASON: durability sentinel(s)$unreadable unreadable ${DURABILITY_READ_WAIT_S}s after cutover — durability of the cutover is UNPROVEN"
+    echo "BACKUP: $BACKUP"
+    echo "BINARY ROLLBACK (preferred first try, sidebin):"
+    echo "  cp -a $SIDEBIN_DIR/lastdbd.bak-pre-* $SIDEBIN_DIR/lastdbd  # pick newest bak"
+    echo "  launchctl kickstart -k gui/\$(id -u)/$LAUNCHD_LABEL"
+    echo "NOTE: rolling back the binary does NOT recover the lost writes; it stops the bleeding. Audit recent writes on other apps before trusting the store."
+    die "durability canary failed after cutover — acked writes did not survive the restart"
+  fi
+  log "durability canary: $DURABILITY_N/$DURABILITY_N sentinels survived the cutover (nonce $DURABILITY_NONCE)"
+}
+
 measure_op_median_ms() {
   # $1 = op fn, $2 = op arg, $3 = label. stdout: median ms, or -1 unmeasurable.
   # A sample the deadline kills scores as the full deadline (slow IS the signal).
@@ -1236,6 +1331,11 @@ fi
 # --- 4) live upgrade (venue-aware) -------------------------------------------
 
 log "STEP 3/4: live install + supervisor restart (venue=$VENUE)"
+
+# Arm the durability canary before any live change and before the cutover
+# clock starts, so cutover_s stays comparable to historical runs.
+durability_write_sentinels
+
 CUTOVER_T0="$(date +%s)"
 
 assert_launchd_label_usable
@@ -1362,6 +1462,15 @@ QOK="$(echo "$QRES" | jq -r '.ok // empty' 2>/dev/null || true)"
 QVAL="$(echo "$QRES" | jq -r '.results[0].fields.title // .results[0].title // empty' 2>/dev/null || true)"
 [ "$QOK" = "true" ] && [ -n "$QVAL" ] || die "live Board query failed after cutover — treat as RED; restore from $BACKUP"
 
+# Attribution aid for a durability RED: say whether the old daemon drained
+# cleanly. Warn-only — the canary below is the authority, not this string.
+DRAIN_LINE="$(run_op_with_deadline 15 "$INSTALLED_CLI_BIN" status 2>/dev/null | grep -i 'did not complete its clean drain' || true)"
+[ -n "$DRAIN_LINE" ] && warn "previous daemon session did not complete its clean drain — if the durability canary goes RED, this restart is the prime suspect"
+
+# Durability canary read-back: every sentinel the OLD daemon acked must read
+# back with THIS run's nonce on the NEW daemon.
+durability_verify_after_cutover
+
 # Live RSS vs memory-guard (settle briefly — embeddings may still be loading).
 log "live RSS settle ${RSS_SETTLE_SECS}s then sample ${RSS_SAMPLE_SECS}s..."
 sleep "$RSS_SETTLE_SECS"
@@ -1443,7 +1552,7 @@ fi
 
 CUTOVER_T1="$(date +%s)"
 CUTOVER_SECS=$((CUTOVER_T1 - CUTOVER_T0))
-log "STEP 4/4: live post-check GREEN (schemas=$NSCHEMAS first Board title=\"$QVAL\" cutover_s=$CUTOVER_SECS venue=$VENUE peak_rss_mb=${LIVE_RSS_MB:-unknown} live_point_ms=${LIVE_LAT_POINT_MS:-unmeasured} live_scan_ms=${LIVE_LAT_SCAN_MS:-unmeasured})"
+log "STEP 4/4: live post-check GREEN (schemas=$NSCHEMAS first Board title=\"$QVAL\" cutover_s=$CUTOVER_SECS venue=$VENUE peak_rss_mb=${LIVE_RSS_MB:-unknown} live_point_ms=${LIVE_LAT_POINT_MS:-unmeasured} live_scan_ms=${LIVE_LAT_SCAN_MS:-unmeasured} durability=${DURABILITY_N}/${DURABILITY_N})"
 
 # Post a Situations notice so other agents attribute post-upgrade flapping.
 POST_NOTICE=""
@@ -1453,7 +1562,7 @@ for cand in \
 do
   [ -x "$cand" ] && POST_NOTICE="$cand" && break
 done
-NOTICE_SUMMARY="lastdbd ${CURRENT_VER} → ${INSTALLED} with lastdb=${INSTALLED_CLI:-?} venue=${VENUE} cutover_s=${CUTOVER_SECS}; probe latency point/scan/write=${CAND_LAT_POINT_MS:-?}/${CAND_LAT_SCAN_MS:-?}/${CAND_LAT_WRITE_MS:-?}ms (baseline ${BASE_LAT_POINT_MS:-?}/${BASE_LAT_SCAN_MS:-?}/${BASE_LAT_WRITE_MS:-?}ms) live_point_ms=${LIVE_LAT_POINT_MS:-?} live_scan_ms=${LIVE_LAT_SCAN_MS:-?}; brief socket blips expected. Do not open a new incident or restart the primary for flapping alone. Design: lastdb-minimal-downtime-cutover."
+NOTICE_SUMMARY="lastdbd ${CURRENT_VER} → ${INSTALLED} with lastdb=${INSTALLED_CLI:-?} venue=${VENUE} cutover_s=${CUTOVER_SECS}; probe latency point/scan/write=${CAND_LAT_POINT_MS:-?}/${CAND_LAT_SCAN_MS:-?}/${CAND_LAT_WRITE_MS:-?}ms (baseline ${BASE_LAT_POINT_MS:-?}/${BASE_LAT_SCAN_MS:-?}/${BASE_LAT_WRITE_MS:-?}ms) live_point_ms=${LIVE_LAT_POINT_MS:-?} live_scan_ms=${LIVE_LAT_SCAN_MS:-?} durability=${DURABILITY_N}/${DURABILITY_N}; brief socket blips expected. Do not open a new incident or restart the primary for flapping alone. Design: lastdb-minimal-downtime-cutover."
 if [ -n "$POST_NOTICE" ]; then
   if "$POST_NOTICE" \
     --title "LastDB upgraded to ${INSTALLED}" \
