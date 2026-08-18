@@ -62,7 +62,7 @@ out="$("$ROOT/bin/last-stack-card-reaper-run" \
   --now 2026-07-20T13:31:08Z)"
 
 printf '%s\n' "$out" | grep -q '^would_kill stale-todo: todo stale >72h with no progress; age=121.5h$'
-printf '%s\n' "$out" | grep -q '^card-reaper 2026-07-20T13:31:08Z ok live=5 killed=<backlog=0,todo=1,doing=0> rolled_back=0 salvaged=0 exempt_needs_human=1 flagged=live-dependent-protected:stale-child,needs-human-aging:human-blocked-old,dry-run$'
+printf '%s\n' "$out" | grep -q '^card-reaper 2026-07-20T13:31:08Z ok live=5 killed=<backlog=0,todo=1,doing=0> rolled_back=0 parked=0 salvaged=0 exempt_needs_human=1 flagged=live-dependent-protected:stale-child,needs-human-aging:human-blocked-old,dry-run$'
 ! printf '%s\n' "$out" | grep -q '^would_kill stale-child:'
 test ! -e "$tmp/memory.md"
 
@@ -112,8 +112,47 @@ transient_out="$(PATH="$fake_bin:$PATH" LAST_STACK_ROOT="$tmp/no-last-stack" "$R
   --memory "$tmp/transient-memory.md" \
   --now 2026-07-20T13:31:08Z)"
 
-printf '%s\n' "$transient_out" | grep -q '^card-reaper 2026-07-20T13:31:08Z noop live=1 killed=<backlog=0,todo=0,doing=0> rolled_back=0 salvaged=0 exempt_needs_human=0 flagged=board-add-deferred:transient-add$'
+printf '%s\n' "$transient_out" | grep -q '^card-reaper 2026-07-20T13:31:08Z noop live=1 killed=<backlog=0,todo=0,doing=0> rolled_back=0 parked=0 salvaged=0 exempt_needs_human=0 flagged=board-add-deferred:transient-add$'
 ! printf '%s\n' "$transient_out" | grep -q 'exception:kanban_add_failed'
 test ! -e "$tmp/transient-memory.md"
+
+doing_board="$tmp/doing-board.json"
+cat >"$doing_board" <<'JSON'
+[
+  {
+    "slug": "first-dead-doing",
+    "title": "First dead doing",
+    "column": "doing",
+    "created_at": "2026-07-20T11:31:08Z"
+  },
+  {
+    "slug": "churn-after-rollback",
+    "title": "Churn after rollback",
+    "column": "doing",
+    "assignee": "grok",
+    "created_at": "2026-07-20T08:31:08Z"
+  },
+  {
+    "slug": "doing-squatter",
+    "title": "Doing squatter",
+    "column": "doing",
+    "created_at": "2026-07-19T07:31:08Z"
+  }
+]
+JSON
+printf '%s\n' "2026-07-20T12:00:00Z rolled_back churn-after-rollback rule=doing dead claim >60m; age=3.5h" >"$tmp/doing-memory.md"
+
+doing_out="$("$ROOT/bin/last-stack-card-reaper-run" \
+  --dry-run \
+  --skip-preflight \
+  --board-json "$doing_board" \
+  --memory "$tmp/doing-memory.md" \
+  --now 2026-07-20T13:31:08Z)"
+
+printf '%s\n' "$doing_out" | grep -q '^would_roll_back first-dead-doing: doing dead claim >60m; age=2.0h$'
+printf '%s\n' "$doing_out" | grep -q '^would_park_backlog churn-after-rollback: doing churn after prior rollback; age=5.0h$'
+printf '%s\n' "$doing_out" | grep -q '^would_kill doing-squatter: doing squatter >24h; age=30.0h$'
+! printf '%s\n' "$doing_out" | grep -q '^would_kill churn-after-rollback:'
+printf '%s\n' "$doing_out" | grep -q '^card-reaper 2026-07-20T13:31:08Z ok live=3 killed=<backlog=0,todo=0,doing=1> rolled_back=1 parked=1 salvaged=0 exempt_needs_human=0 flagged=dry-run$'
 
 echo "ok last-stack-card-reaper-run"
