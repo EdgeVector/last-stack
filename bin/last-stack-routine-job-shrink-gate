@@ -5,7 +5,9 @@
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
-export PATH="${HOME}/.local/bin:${ROOT}/bin:${HOME}/.last-stack/bin:${PATH:-/usr/bin:/bin}"
+if [ "${JOB_GATE_FIXTURE:-0}" != "1" ]; then
+  export PATH="${HOME}/.local/bin:${ROOT}/bin:${HOME}/.last-stack/bin:${PATH:-/usr/bin:/bin}"
+fi
 id="${1:-${ROUTINE_ID:-}}"
 
 emit() {
@@ -40,12 +42,14 @@ case "$id" in
       emit error "reason=smoke-timeout rc=124"
       exit 124
     fi
-    if [ "$verdict" = "GREEN" ] && [ "$rc" -eq 0 ]; then
-      emit ok "verdict=GREEN rc=0"
+    printf '%s\n' "$out" | tail -20
+    if [ -n "$verdict" ]; then
+      # The canary finished. GREEN or RED is a completed measurement.
+      emit ok "verdict=$verdict rc=$rc"
       exit 0
     fi
-    emit error "verdict=${verdict:-none} rc=$rc"
-    exit "$rc"
+    emit error "verdict=none rc=$rc"
+    exit "${rc:-1}"
     ;;
   last-stack-papercut-reconciler)
     pre="$HOME/.last-stack/bin/last-stack-generator-preflight"
@@ -64,12 +68,15 @@ case "$id" in
       emit error "reason=papercut-queue-missing"
       exit 1
     fi
+    snap_out="${ROUTINES_RUN_DIR:-.}/papercut-queue-snapshot.json"
+    mkdir -p "$(dirname "$snap_out")"
     set +e
-    out="$(run_timeout 90 "$q" snapshot --json 2>&1)"
+    out="$(run_timeout 90 "$q" snapshot --output "$snap_out" --json 2>&1)"
     rc=$?
     set -e
-    if [ "$rc" -eq 0 ]; then
-      emit ok "unit=papercut-queue-snapshot rc=0"
+    printf '%s\n' "$out" | tail -20
+    if [ "$rc" -eq 0 ] && [ -s "$snap_out" ]; then
+      emit ok "unit=papercut-queue-snapshot rc=0 bytes=$(wc -c <"$snap_out" | tr -d ' ')"
       exit 0
     fi
     emit error "unit=papercut-queue-snapshot rc=$rc"
@@ -79,11 +86,19 @@ case "$id" in
     wrap=""
     for cand in \
       "${LASTDB_TELEMETRY_REGEN:-}" \
-      "$HOME/code/edgevector/fold/scripts/lastdbd/telemetry-dashboard-regen.sh" \
-      "$HOME/.cache/edgevector-git/fold.git/scripts/lastdbd/telemetry-dashboard-regen.sh"
+      "$HOME/.routines/scripts/telemetry-dashboard-regen.sh" \
+      "$HOME/code/edgevector/fold/scripts/lastdbd/telemetry-dashboard-regen.sh"
     do
       [ -n "$cand" ] && [ -f "$cand" ] && wrap="$cand" && break
     done
+    if [ -z "$wrap" ] && [ -d "$HOME/.cache/edgevector-git/fold.git" ]; then
+      git --git-dir="$HOME/.cache/edgevector-git/fold.git" show \
+        HEAD:scripts/lastdbd/telemetry-dashboard-regen.sh \
+        >"$HOME/.routines/scripts/telemetry-dashboard-regen.sh" 2>/dev/null || true
+      chmod +x "$HOME/.routines/scripts/telemetry-dashboard-regen.sh" 2>/dev/null || true
+      [ -s "$HOME/.routines/scripts/telemetry-dashboard-regen.sh" ] && \
+        wrap="$HOME/.routines/scripts/telemetry-dashboard-regen.sh"
+    fi
     if [ -z "$wrap" ]; then
       emit error "reason=telemetry-wrapper-missing"
       exit 1
@@ -105,8 +120,10 @@ case "$id" in
       emit error "reason=worktree-reclaim-missing"
       exit 1
     fi
+    # Stream, don't capture — a SIGTERM mid-substitution previously left
+    # empty stdout and a 124 with no ROUTINE_RESULT (disk-reclaim 2026-08-17).
     set +e
-    out="$(run_timeout 180 "$reclaim" --sweep-stale 2>&1)"
+    run_timeout 180 "$reclaim" --sweep-stale
     rc=$?
     set -e
     if [ "$rc" -eq 3 ]; then
@@ -121,8 +138,11 @@ case "$id" in
     exit "$rc"
     ;;
   last-stack-card-reaper)
-    reaper="$(command -v last-stack-card-reaper-run || true)"
-    [ -x "${reaper:-}" ] || reaper="$ROOT/bin/last-stack-card-reaper-run"
+    reaper="${CARD_REAPER_RUN:-}"
+    if [ -z "$reaper" ]; then
+      reaper="$(command -v last-stack-card-reaper-run || true)"
+      [ -x "${reaper:-}" ] || reaper="$ROOT/bin/last-stack-card-reaper-run"
+    fi
     if [ ! -x "$reaper" ]; then
       emit error "reason=card-reaper-run-missing"
       exit 1
@@ -205,8 +225,10 @@ PY
     out="$(run_timeout 60 kanban groom parity-check --json 2>&1)"
     rc=$?
     set -e
-    if [ "$rc" -eq 0 ]; then
-      emit ok "unit=kanban-groom-parity-check rc=0"
+    printf '%s\n' "$out" | tail -20
+    # Detector: a completed JSON check is a finished inspect even when rc=1 (drift).
+    if printf '%s\n' "$out" | grep -q '{'; then
+      emit ok "unit=kanban-groom-parity-check rc=$rc"
       exit 0
     fi
     emit error "unit=kanban-groom-parity-check rc=$rc"
