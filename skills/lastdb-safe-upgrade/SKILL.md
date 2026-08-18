@@ -3,7 +3,7 @@ name: lastdb-safe-upgrade
 description: |
   REQUIRED path for ANY primary LastDB Mini version change. Safely upgrade
   Tom's primary lastdbd so the live brain is never the first place a bad binary
-  fails. ALWAYS: (1) durable offline copy of ~/.lastdb, (2) boot the NEW binary
+  fails. ALWAYS: (1) one ephemeral CoW rollback point outside $HOME, (2) boot the NEW binary
   only against an ephemeral/CoW copy (never live home first), (3) require GREEN
   real-data reads AND RSS under the memory-guard AND the latency bar (real
   workloads timed vs the current binary — correct-but-slow is RED) AND the
@@ -71,12 +71,15 @@ proxy is optional later for near-zero client impact.
 
 1. **Never** run a candidate `lastdbd` with `--data-dir` pointing at the **live**
    `~/.lastdb` until a probe against a **copy** is GREEN.
-2. **Always** create a **durable** backup under `~/.lastdb-backups/` first
-   (kept after success; not deleted by the harness).
+2. **Always** create exactly one ephemeral CoW rollback point under the system
+   temp directory. Release it on GREEN (including GREEN probe-only or operator
+   abort); on RED retain it for the printed TTL, owned by the next safe-upgrade
+   run, which reclaims it before creating another. Never write rollback copies
+   under `$HOME`.
 3. **Never** restart/upgrade on a RED probe.
 4. **Never** kill the primary unattended outside this skill's live step; if live
    post-check fails after upgrade, **stop and restore** (binary bak and/or data
-   backup) — do not improvise.
+   retained rollback point) — do not improvise.
 5. Probe bar = smoke bar: identity decrypts, `/api/schemas` > 0, `Board` query
    returns real **title values** (counts alone are not proof).
 6. **RSS bar (memory-guard):** after data-plane GREEN, boot candidate again on a
@@ -203,16 +206,16 @@ The script:
 
 | Step | What |
 |------|------|
-| Preflight | Primary home exists, identity.key present, live `/health` ok (if socket up); backup-root inventory (routine vs non-routine count, free disk, identity-pinned bytes) |
+| Preflight | Primary home exists, identity.key present, live `/health` ok (if socket up) |
 | Resolve candidate | `brew update` / `--version` tarball / `--candidate` |
-| **1. Backup** | `cp -cR` (APFS) or `cp -a` → `~/.lastdb-backups/pre-<new>-from-<old>-<ts>/` |
+| **1. Rollback point** | `cp -cR` (APFS only; no full-copy fallback) → `${TMPDIR}/lastdb-safe-upgrade-rollback-<uid>/pre-<new>-from-<old>-<ts>/`; reclaim the prior retained point first |
 | **0. Class** | Refuse `target/debug`, `-dirty` version, size ≫ incumbent (before multi-GB backup) |
 | **2. Probe** | `BIN=<candidate>` CoW smoke harness (never live home) + **CAS mutation bar** (ephemeral candidate node: false `expected` → 409) + **RSS settle/sample** vs memory-guard limit + **latency bar**: point read / `kanban list` scan / `brain put` write timed on candidate CoW copy vs the current binary on an identical copy |
 | Detect venue | sidebin vs brew |
 | **3. Live** | sidebin atomic install + kickstart **or** brew upgrade/restart |
 | **4. Post-check** | Live `/health`, schemas > 0, Board title, **live peak RSS** vs guard, **live point-read + kanban list latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency in notice |
-| **4b. Retention** | After GREEN only: prune oldest routine `pre-*-from-*-<ts>` trees beyond `LASTDB_BACKUP_KEEP` (default **2**) **plus** the current run's backup. Never auto-prunes `BROKEN-*` / `pre-repair-*` / hand names. `LASTDB_BACKUP_KEEP=0` disables. Prints each prune with measured bytes. |
-| RED | Exit 1, **keep backup**, primary untouched if class/probe failed (incl. debug/dirty/size, CAS-disarmed node, RSS over guard, or latency over bar) |
+| **4b. Release** | After GREEN, delete the rollback point and its empty root. GREEN probe-only and operator abort release it too. |
+| RED | Exit 1, retain the one rollback point, print its path, TTL, and cleanup owner; primary untouched if class/probe failed |
 
 ### B. If the script is missing or fails open
 
@@ -226,7 +229,7 @@ Always print:
 
 - Current version → candidate version  
 - Venue (sidebin / brew)  
-- Backup path  
+- Rollback path and whether it was released or retained (TTL + cleanup owner)
 - Probe GREEN/RED (+ first Board title if green)  
 - **Probe peak RSS MiB vs memory-guard limit / fail_at**  
 - **Latency: candidate vs baseline point/scan/write medians (ms) + boot seconds**  
@@ -247,7 +250,7 @@ incident.
 | `VERDICT: GREEN` | Probe + live cutover + live post-check passed | Done |
 | `VERDICT: GREEN_PROBE_ONLY` | Probe passed; primary still on old version | Re-run with `--yes` if Tom wants the upgrade |
 | `VERDICT: ALREADY_CURRENT` | Already on candidate/stable | Nothing to do |
-| `VERDICT: RED` | Candidate fails **class** bar (debug/dirty/size), **or** cannot serve real data, **or** the **CAS mutation** bar (node accepted a false `expected` precondition), **or** peak RSS exceeds memory-guard bar, **or** the latency bar failed (per-op 3×, absolute ceiling, **or correlated** all-ops / geo-mean regression) | **Do not upgrade**; file release-blocker; keep backup. If class: rebuild `--release` from origin/main (or soaked canary). If CAS: fix `/api/mutation` expected enforcement before cutover (`LASTDB_PROBE_CAS_SKIP=1` only with Tom clearance). If RSS: fix candidate memory or raise guard only with Tom clearance. If latency: profile the candidate's read/write paths; `LASTDB_PROBE_LAT_SKIP=1` / `LASTDB_PROBE_LAT_CORR_SKIP=1` only with Tom clearance |
+| `VERDICT: RED` | Candidate fails **class** bar (debug/dirty/size), **or** cannot serve real data, **or** the **CAS mutation** bar (node accepted a false `expected` precondition), **or** peak RSS exceeds memory-guard bar, **or** the latency bar failed (per-op 3×, absolute ceiling, **or correlated** all-ops / geo-mean regression) | **Do not upgrade**; file release-blocker; use the one retained rollback point only if recovery is required. The next safe-upgrade run reclaims it. |
 
 ## Rollback
 
@@ -287,19 +290,19 @@ kanban list
 >
 > Papercut: `papercut-lastdb-safe-upgrade-rollback-cp-a-trips-codesigning`.
 
-**Data (only if home corrupted):**
+**Data (only if home corrupted and the run is RED):**
 
 ```bash
 # stop primary supervisor, then:
 mv ~/.lastdb ~/.lastdb.broken-$(date +%Y%m%dT%H%M%S)
-cp -a ~/.lastdb-backups/pre-<ver>-from-<old>-<ts> ~/.lastdb
+cp -a <printed-ephemeral-rollback-path> ~/.lastdb
 # restart supervisor (kickstart or brew services start)
 kanban list   # must show real cards
 ```
 
 ## Related skills / harnesses
 
-- **`lastdb-smoke-test`** — probe-only CoW canary (no backup, no live install).  
+- **`lastdb-smoke-test`** — probe-only CoW canary (no persistent backup, no live install).
   Safe-upgrade **calls** its harness for step 2.
 - **`brain-doctor`** — if primary is already wedged **before** upgrade; fix health first.
 - Design: **`lastdb-minimal-downtime-cutover`** (venue + optional proxy phase).
@@ -309,12 +312,10 @@ kanban list   # must show real cards
 - `brew upgrade lastdb` as a one-liner without this skill when the user cares about data.
 - Point candidate `--data-dir` at live `~/.lastdb` "just to see".
 - Pass `--candidate …/target/debug/lastdbd` or any `-dirty` build to "get a feature SHA on primary" — rebuild `--release` from origin/main (or a soaked canary) instead (incident 2026-08-01).
-- Bulk-delete `~/.lastdb-backups/*` by hand or prune non-routine trees
-  (`BROKEN-*`, `pre-repair-*`, hand-named). After GREEN cutover the driver may
-  prune only excess **routine** `pre-*-from-*-<ts>` trees beyond
-  `LASTDB_BACKUP_KEEP` (default 2) + the current run; `LASTDB_BACKUP_KEEP=0`
-  disables that policy. Existing trees already on disk are a human gate, not
-  something the first install of this policy should sweep.
+- Put a rollback or probe copy under `$HOME` (`~/.lastdb-backups`,
+  `~/.lastdb-test-copies`, sibling `.bak` homes). Existing legacy trees are a
+  separate human-owned cleanup decision; the driver neither uses nor sweeps
+  them.
 - Restart/kill primary on RED.
 - Call `brew upgrade` when formula is not installed and primary is sidebin.
 - Assume the skill lives only under `~/.claude/skills` — Codex/Grok/Factory use their own skills dirs; last-stack setup keeps them in sync.
