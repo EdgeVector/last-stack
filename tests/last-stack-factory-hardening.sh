@@ -6,6 +6,7 @@ fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 
 bash -n "$ROOT/bin/last-stack-lastdb-pressure"
 bash -n "$ROOT/bin/last-stack-why-stopped"
+bash -n "$ROOT/bin/last-stack-why-stopped-loom"
 bash -n "$ROOT/bin/last-stack-fold-ci-health"
 bash -n "$ROOT/bin/last-stack-generator-preflight"
 bash -n "$ROOT/bin/last-stack-kanban-file-pr"
@@ -77,6 +78,8 @@ grep -q 'Papercut lifecycle' "$ROOT/routines/papercut-reconciler.md" \
 grep -q 'class-a-heal-timeout' "$ROOT/routines/kanban-pickup.md" \
   || fail "kanban-pickup missing timeout polish"
 [ -f "$ROOT/routines/why-stopped.md" ] || fail "why-stopped prompt missing"
+grep -q 'last-stack-why-stopped-loom' "$ROOT/routines/why-stopped.md" \
+  || fail "why-stopped prompt missing loom hook"
 [ -x "$ROOT/bin/last-stack-feature-prove-routine" ] || fail "feature-prove installer missing"
 
 printf 'ok: factory-hardening smoke passed\n'
