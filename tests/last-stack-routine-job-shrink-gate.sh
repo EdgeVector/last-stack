@@ -44,4 +44,26 @@ case "$out" in
   *) fail "missing reaper should error: $out" ;;
 esac
 
+# Smoke: RED (missing binary / failed canary) is error, not ok.
+cat >"$tmp/smoke-red.sh" <<'SH'
+#!/usr/bin/env bash
+echo "VERDICT: RED"
+echo "REASON: lastdbd binary not found/executable at /no/such/lastdbd"
+exit 1
+SH
+chmod +x "$tmp/smoke-red.sh"
+out="$(LASTDB_MINI_SMOKE_SH="$tmp/smoke-red.sh" LASTDB_MINI_SMOKE_BIN="$tmp/no-lastdbd" "$bin" lastdb-local-smoke-test 2>&1 || true)"
+printf '%s\n' "$out" | grep -q 'ROUTINE_RESULT outcome=error' || fail "RED smoke must be error: $out"
+printf '%s\n' "$out" | grep -q 'verdict=RED' || fail "RED smoke must keep verdict: $out"
+
+cat >"$tmp/smoke-green.sh" <<'SH'
+#!/usr/bin/env bash
+echo "VERDICT: GREEN"
+echo "SUMMARY: fixture green"
+exit 0
+SH
+chmod +x "$tmp/smoke-green.sh"
+out="$(LASTDB_MINI_SMOKE_SH="$tmp/smoke-green.sh" LASTDB_MINI_SMOKE_BIN="$tmp/no-lastdbd" "$bin" lastdb-local-smoke-test)"
+printf '%s\n' "$out" | grep -q 'ROUTINE_RESULT outcome=ok detail=verdict=GREEN' || fail "GREEN smoke must be ok: $out"
+
 echo "ok"
