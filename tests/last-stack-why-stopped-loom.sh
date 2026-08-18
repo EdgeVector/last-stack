@@ -94,4 +94,9 @@ rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "failed exec should exit 3, got $rc"
 
+# --status reads the stamp written on the failed exec
+st="$("$BIN" --status)"
+printf '%s\n' "$st" | grep -q '"status": "failed"' || fail "status stamp missing failed: $st"
+printf '%s\n' "$st" | grep -q '"missing": false' || fail "status should see stamp: $st"
+
 echo ok
