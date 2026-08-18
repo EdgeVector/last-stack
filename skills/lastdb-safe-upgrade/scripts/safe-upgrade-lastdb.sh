@@ -28,7 +28,7 @@
 #      CAS-flipped backup/latest. Never point the candidate at live ~/.lastdb
 #      for that upload. A mock object store is not DEV.
 #   4. Only then venue-aware live install:
-#        sidebin → atomic install under bin-with-upload-cap + launchctl kickstart
+#        sidebin → atomic install + launchd bootout/bootstrap job-definition reload
 #        brew    → brew upgrade + brew services restart (only if formula installed)
 #   5. Post-check the LIVE home (incl. lastdb/lastdbd version parity and live
 #      RSS vs guard); print rollback if wrong
@@ -188,6 +188,7 @@ LAT_FLOOR_MS="${LASTDB_PROBE_LAT_FLOOR_MS:-250}"   # ratio bar only applies abov
 LAT_ABS_MAX_MS="${LASTDB_PROBE_LAT_ABS_MAX_MS:-20000}"  # RED when no baseline; WARN when baseline is equally slow
 LAT_OP_TIMEOUT_SECS="${LASTDB_PROBE_LAT_OP_TIMEOUT_SECS:-120}"  # per-sample kill + scored as this
 LIVE_LAT_ENFORCE="${LASTDB_LIVE_LAT_ENFORCE:-0}"    # 1 = live post-check latency is RED, not WARN
+LIVE_CONFIG_ENFORCE="${LASTDB_LIVE_CONFIG_ENFORCE:-0}" # 1 = missing plist env keys are RED
 # Correlated / aggregate term (2026-08-05): per-op 3× alone passed a canary that
 # was slower on EVERY op at 1.6–2.4×. See latency-bar-checks.sh.
 # LASTDB_PROBE_LAT_CORR_SKIP=1 is Tom clearance only.
@@ -211,6 +212,8 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
 . "$_SCRIPT_DIR/latency-bar-checks.sh"
 # shellcheck source=dev-photograph-stamp-gate.sh
 . "$_SCRIPT_DIR/dev-photograph-stamp-gate.sh"
+# shellcheck source=launchd-job-checks.sh
+. "$_SCRIPT_DIR/launchd-job-checks.sh"
 CAS_PROBE_SH="$_SCRIPT_DIR/cas-mutation-probe.sh"
 
 if [ "${CHECK_DEV_STAMP:-0}" -eq 1 ]; then
@@ -836,7 +839,7 @@ detect_live_venue() {
 }
 
 # A sidebin live install that cannot name the real launchd job cannot restart
-# the primary. Refuse rather than kickstart into the void — the old daemon keeps
+# the primary. Refuse rather than reload into the void — the old daemon keeps
 # serving and every downstream health check passes, so this fails silent.
 assert_launchd_label_usable() {
   [ "$VENUE" = "sidebin" ] || return 0
@@ -848,7 +851,7 @@ assert_launchd_label_usable() {
     die "could not resolve the primary launchd label; refusing sidebin live install"
   fi
   if ! launchctl list 2>/dev/null | awk '{print $3}' | grep -qx "$LAUNCHD_LABEL"; then
-    die "launchd label $LAUNCHD_LABEL is not a loaded job — kickstart would be a silent no-op"
+    die "launchd label $LAUNCHD_LABEL is not a loaded job — job reload would target the wrong service"
   fi
   if [ ! -f "$LAUNCHD_PLIST" ]; then
     die "primary LaunchAgent plist missing ($LAUNCHD_PLIST) for resolved label $LAUNCHD_LABEL"
@@ -859,7 +862,7 @@ assert_launchd_label_usable() {
 ensure_primary_launchd_rss_limit() {
   local limit current
   if [ ! -f "$LAUNCHD_PLIST" ]; then
-    warn "primary LaunchAgent plist missing ($LAUNCHD_PLIST); cannot stamp LASTDBD_RSS_LIMIT_MB before kickstart"
+    warn "primary LaunchAgent plist missing ($LAUNCHD_PLIST); cannot stamp LASTDBD_RSS_LIMIT_MB before job reload"
     return 0
   fi
   limit="$(resolve_live_rss_limit_mb)"
@@ -924,21 +927,12 @@ live_install_sidebin() {
   local uid
   uid="$(id -u)"
   CUTOVER_T0="$(date +%s)"
-  if launchctl print "gui/${uid}/${LAUNCHD_LABEL}" >/dev/null 2>&1; then
-    log "launchctl kickstart -k gui/${uid}/${LAUNCHD_LABEL}"
-    launchctl kickstart -k "gui/${uid}/${LAUNCHD_LABEL}" \
-      || warn "kickstart failed; will poll socket / try direct start"
-  else
-    warn "launchd job not loaded; bootstrapping $LAUNCHD_PLIST"
-    if [ -f "$LAUNCHD_PLIST" ]; then
-      launchctl bootstrap "gui/${uid}" "$LAUNCHD_PLIST" 2>/dev/null \
-        || launchctl load "$LAUNCHD_PLIST" 2>/dev/null \
-        || true
-      launchctl kickstart "gui/${uid}/${LAUNCHD_LABEL}" 2>/dev/null || true
-    fi
+  if ! lastdb_launchd_reload_job \
+    launchctl "gui/${uid}" "$LAUNCHD_LABEL" "$LAUNCHD_PLIST"; then
+    die "launchd job-definition reload failed; primary may be stopped. Inspect: launchctl print gui/${uid}/${LAUNCHD_LABEL}"
   fi
 
-  # Wait for the kickstarted instance's socket. Recovery after an unclean
+  # Wait for the reloaded instance's socket. Recovery after an unclean
   # prior exit can take 60-90s+, and starting a SECOND lastdbd against the
   # live home while the launchd one is still booting is exactly what produced
   # the 2026-07-17 boot storm (3 instances in 20s + "database is locked"
@@ -960,6 +954,17 @@ live_install_sidebin() {
       >>"${LASTDB_MANUAL_LOG:-/opt/homebrew/var/log/lastdb/lastdbd.manual-cutover.log}" 2>&1 &
   fi
   rm -f "$lock"
+}
+
+resolve_live_primary_pid() {
+  local pid=""
+  if [ -S "$PRIMARY_SOCK" ]; then
+    pid="$(lsof -t "$PRIMARY_SOCK" 2>/dev/null | head -1 || true)"
+  fi
+  if [ -z "$pid" ]; then
+    pid="$(pgrep -f "$SIDEBIN_DIR/lastdbd\$|$SIDEBIN_DIR/lastdbd " 2>/dev/null | head -1 || true)"
+  fi
+  printf '%s\n' "$pid"
 }
 
 live_install_brew() {
@@ -1374,7 +1379,7 @@ if [ "$ASSUME_YES" -eq 0 ]; then
   echo "Probe GREEN. About to perform LIVE cutover (venue=$VENUE):"
   if [ "$VENUE" = "sidebin" ]; then
     echo "  atomic install → $SIDEBIN_DIR/lastdbd"
-    echo "  launchctl kickstart -k gui/\$(id -u)/$LAUNCHD_LABEL"
+    echo "  launchctl bootout + bootstrap reload of $LAUNCHD_PLIST"
   else
     echo "  brew upgrade edgevector/lastdb/lastdb"
     echo "  brew services restart lastdb"
@@ -1512,6 +1517,21 @@ if [ -n "${INSTALLED:-}" ] && [ "$RUNNING_VERSION" != "$INSTALLED" ]; then
 fi
 log "cutover verified: running daemon reports $RUNNING_VERSION (matches installed candidate)"
 
+# The file on disk and launchd's cached job definition are separate state.
+# Prove every configured EnvironmentVariables key exists in the new process;
+# report key names only so no secret or tuning value reaches logs.
+LIVE_PID="$(resolve_live_primary_pid)"
+if [ "$VENUE" = "sidebin" ]; then
+  if [ -z "$LIVE_PID" ]; then
+    if [ "$LIVE_CONFIG_ENFORCE" = "1" ]; then
+      die "live config drift check could not resolve the primary pid"
+    fi
+    warn "LIVE_CONFIG_DRIFT=unmeasured reason=primary-pid-unresolved (LASTDB_LIVE_CONFIG_ENFORCE=1 makes this RED)"
+  elif ! lastdb_live_config_drift_check "$LAUNCHD_PLIST" "$LIVE_PID"; then
+    die "live process is missing LaunchAgent EnvironmentVariables keys (LASTDB_LIVE_CONFIG_ENFORCE=1)"
+  fi
+fi
+
 # Live data plane spot-check (same bar as smoke: Board titles rehydrate)
 UH="$(curl -sS --max-time 5 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' http://x/api/system/auto-identity 2>/dev/null | jq -r '.user_hash // empty')"
 [ -n "$UH" ] || die "live auto-identity empty after cutover — treat as RED; consider restore from $BACKUP"
@@ -1535,12 +1555,8 @@ durability_verify_after_cutover
 # Live RSS vs memory-guard (settle briefly — embeddings may still be loading).
 log "live RSS settle ${RSS_SETTLE_SECS}s then sample ${RSS_SAMPLE_SECS}s..."
 sleep "$RSS_SETTLE_SECS"
-LIVE_PID=""
-if [ -S "$PRIMARY_SOCK" ]; then
-  LIVE_PID="$(lsof -t "$PRIMARY_SOCK" 2>/dev/null | head -1 || true)"
-fi
 if [ -z "${LIVE_PID:-}" ]; then
-  LIVE_PID="$(pgrep -f "$SIDEBIN_DIR/lastdbd\$|$SIDEBIN_DIR/lastdbd " 2>/dev/null | head -1 || true)"
+  LIVE_PID="$(resolve_live_primary_pid)"
 fi
 LIVE_RSS_MB=0
 if [ -n "${LIVE_PID:-}" ]; then
