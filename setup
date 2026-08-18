@@ -591,14 +591,17 @@ install_shared_checkout_guards
 install_host_track_refresh_agent
 
 # Zero-LLM board closeout (merged PR/CR → done) — survives low-credit watch pause.
+# Point LaunchAgents at the stable public root, not SOURCE_ROOT's version hash.
 if [ -x "$SOURCE_ROOT/bin/last-stack-board-closeout-install" ]; then
-  "$SOURCE_ROOT/bin/last-stack-board-closeout-install" install || \
+  LAST_STACK_PUBLIC_ROOT="${LAST_STACK_PUBLIC_ROOT:-$HOME/.last-stack}" \
+    "$SOURCE_ROOT/bin/last-stack-board-closeout-install" install || \
     echo "  board-closeout LaunchAgent: install failed (non-fatal)" >&2
 fi
 
 # Hourly factory health (bands + ra notify).
 if [ -x "$SOURCE_ROOT/bin/last-stack-factory-health-install" ]; then
-  "$SOURCE_ROOT/bin/last-stack-factory-health-install" install || \
+  LAST_STACK_PUBLIC_ROOT="${LAST_STACK_PUBLIC_ROOT:-$HOME/.last-stack}" \
+    "$SOURCE_ROOT/bin/last-stack-factory-health-install" install || \
     echo "  factory-health LaunchAgent: install failed (non-fatal)" >&2
 fi
 

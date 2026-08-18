@@ -65,6 +65,7 @@ bash tests/last-stack-kanban-pickup-workers.sh
 bash tests/last-stack-pr-reaper-stale-open-heal.sh
 bash tests/last-stack-factory-hardening.sh
 bash tests/last-stack-factory-health-backlog.sh
+bash tests/last-stack-launchagent-stable-path.sh
 bash tests/last-stack-todo-rank.sh
 bash tests/last-stack-kanban-done-when-eval.sh
 bash tests/last-stack-driver-hierarchy.sh
