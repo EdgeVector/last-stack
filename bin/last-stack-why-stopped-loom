@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# last-stack-why-stopped-loom — factory freeze classifier via the loom graph.
+#
+# Same flags / stdout contract as last-stack-why-stopped:
+#   last-stack-why-stopped-loom [--json] [--heal] [--quiet]
+#
+# Exit:
+#   0  classified (including classes=none / unknown)
+#   2  usage
+#   3  loom unavailable — caller should fall back to last-stack-why-stopped
+set -euo pipefail
+
+JSON=0
+HEAL=0
+QUIET=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json) JSON=1; shift ;;
+    --heal) HEAL=1; shift ;;
+    --quiet|-q) QUIET=1; shift ;;
+    -h|--help)
+      echo "last-stack-why-stopped-loom [--json] [--heal] [--quiet]"
+      exit 0
+      ;;
+    *) echo "unknown: $1" >&2; exit 2 ;;
+  esac
+done
+
+log() { [ "$QUIET" -eq 1 ] || printf 'why-stopped-loom: %s\n' "$*" >&2; }
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
+
+if ! command -v loom >/dev/null 2>&1; then
+  log "loom not on PATH"
+  exit 3
+fi
+if ! loom ping >/dev/null 2>&1; then
+  log "loom ping failed"
+  exit 3
+fi
+
+exe="$(command -v loom)"
+real="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$exe")"
+install_root="$(dirname "$(dirname "$real")")"
+
+defs=""
+for cand in \
+  "${LOOM_DEFS:-}" \
+  "$install_root/definitions" \
+  "${HOME}/.loom/definitions"; do
+  if [ -n "$cand" ] && [ -f "$cand/why-stopped.json" ] && [ -f "$cand/why-stopped-probe.json" ]; then
+    defs="$cand"
+    break
+  fi
+done
+if [ -z "$defs" ]; then
+  log "why-stopped definitions not found"
+  exit 3
+fi
+
+if [ -z "${LOOM_SCRIPTS:-}" ] || [ ! -f "${LOOM_SCRIPTS}/loom-why-classify.sh" ]; then
+  if [ -f "$install_root/scripts/loom-why-classify.sh" ]; then
+    export LOOM_SCRIPTS="$install_root/scripts"
+  fi
+fi
+if [ ! -f "${LOOM_SCRIPTS:-}/loom-why-classify.sh" ]; then
+  log "loom-why-classify.sh not in LOOM_SCRIPTS=${LOOM_SCRIPTS:-unset}"
+  exit 3
+fi
+
+if ! loom publish "$defs/why-stopped.json" >/dev/null 2>&1; then
+  log "loom publish why-stopped failed"
+  exit 3
+fi
+if ! loom publish "$defs/why-stopped-probe.json" >/dev/null 2>&1; then
+  log "loom publish why-stopped-probe failed"
+  exit 3
+fi
+
+if [ "$HEAL" -eq 1 ]; then
+  export LOOM_WHY_HEAL=1
+else
+  unset LOOM_WHY_HEAL || true
+fi
+
+key="${LOOM_WHY_KEY:-why-stopped-$(date -u +%Y%m%dT%H)}"
+input='{"probes":["install","node","forge","pickup"]}'
+log "loom run why-stopped --key $key"
+
+set +e
+view="$(loom run why-stopped --key "$key" --input "$input" 2>/dev/null)"
+lrc=$?
+set -e
+if [ "$lrc" -ne 0 ] || [ -z "$view" ]; then
+  log "loom run failed rc=$lrc"
+  exit 3
+fi
+
+parsed="$(printf '%s\n' "$view" | python3 -c '
+import json, sys
+text = sys.stdin.read()
+status = ""
+ctx = {}
+for line in text.splitlines():
+    if line.startswith("status:"):
+        status = line.split(":", 1)[1].strip()
+    elif line.startswith("context."):
+        key, _, rest = line.partition(":")
+        key = key[len("context."):]
+        rest = rest.strip()
+        try:
+            ctx[key] = json.loads(rest)
+        except Exception:
+            ctx[key] = rest.strip("\"")
+classes = str(ctx.get("classes") or "unknown")
+detail = str(ctx.get("detail") or "")
+actions = str(ctx.get("actions") or "")
+heal = str(ctx.get("heal") or "")
+print(json.dumps({
+    "status": status,
+    "classes": classes,
+    "detail": detail,
+    "actions": actions,
+    "heal": heal,
+}))
+')"
+
+status="$(printf '%s\n' "$parsed" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))')"
+if [ "$status" != "succeeded" ]; then
+  log "loom exec status=$status"
+  exit 3
+fi
+
+cls_str="$(printf '%s\n' "$parsed" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("classes","unknown"))')"
+det_str="$(printf '%s\n' "$parsed" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("detail",""))')"
+act_str="$(printf '%s\n' "$parsed" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("actions",""))')"
+
+if [ -x "$ROOT/bin/last-stack-brain-append-heartbeat" ]; then
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  "$ROOT/bin/last-stack-brain-append-heartbeat" --line \
+    "why-stopped $ts classes=$cls_str detail=$det_str engine=loom" >/dev/null 2>&1 || true
+fi
+
+if [ "$JSON" -eq 1 ]; then
+  printf '{"classes":"%s","detail":"%s","actions":"%s","engine":"loom"}\n' \
+    "$cls_str" "$(printf '%s' "$det_str" | tr '"' "'")" "$(printf '%s' "$act_str" | tr '"' "'")"
+else
+  printf 'WHY_STOPPED classes=%s engine=loom\n' "$cls_str"
+  printf 'detail: %s\n' "$det_str"
+  printf 'actions: %s\n' "$act_str"
+fi
+
+routine_outcome="ok"
+case "$cls_str" in
+  none) routine_outcome="noop" ;;
+esac
+printf '%s %s\n' 'ROUTINE_RESULT' "outcome=${routine_outcome} detail=classes=${cls_str}"
+exit 0

@@ -5,7 +5,8 @@ description: Zero-LLM Class A–E factory freeze classifier — one-line why shi
 ---
 
 You are **why-stopped** — a **mechanical** factory diagnostic. Prefer the
-zero-LLM CLI; do not burn a long agent budget re-deriving Class A–E.
+zero-LLM loom graph (parallel install/node/forge/pickup probes); fall back
+to the one-shot CLI. Do not burn a long agent budget re-deriving Class A–E.
 
 ## Setup
 
@@ -17,10 +18,18 @@ last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 
 ## Run (bounded)
 
-1. **Classify + best-effort Class A heal:**
+1. **Classify + best-effort Class A heal** via loom, then the one-shot CLI
+   if loom is missing or the graph fails (exit 3):
    ```bash
-   "$last_stack/bin/last-stack-why-stopped" --heal --json | tee /tmp/why-stopped.json
+   if ! "$last_stack/bin/last-stack-why-stopped-loom" --heal --json \
+        | tee /tmp/why-stopped.json
+   then
+     "$last_stack/bin/last-stack-why-stopped" --heal --json \
+       | tee /tmp/why-stopped.json
+   fi
    ```
+   Same `--key` within an hour (`why-stopped-YYYYmmddTHH`) resumes the
+   existing exec — do not invent a second key.
 2. **If classes include E (LastDB hot):** do **not** start generators or broad
    board scans. Heartbeat and EXIT.
 3. **If classes include C (fold CI):** run
