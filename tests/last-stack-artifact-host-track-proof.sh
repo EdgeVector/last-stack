@@ -40,6 +40,7 @@ jq -e '
   and (app("configurations") | .install_mode == "artifact" and .track_gate_main == true)
   and (app("lastseek") | .install_mode == "artifact" and .track_gate_main == true and (.post_install|length) > 0)
   and (app("search") | .install_mode == "artifact" and .track_gate_main == true and (.post_install|length) > 0)
+  and (app("loom") | .install_mode == "artifact" and .track_gate_main == true and any(.links[]; .source == "dist/loom" and .target == "$HOME/.local/bin/loom"))
   and (app("lastdb") | .install_mode == "checkout" and .artifact_exemption.kind == "deployment-only")
   and (app("lastdbd") | .install_mode == "checkout" and .artifact_exemption.kind == "deployment-only")
 ' "$default_registry" >/dev/null || fail "default registry did not declare expected artifact/exempt apps"

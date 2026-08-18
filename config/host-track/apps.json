@@ -468,6 +468,32 @@
       }
     },
     {
+      "app": "loom",
+      "install_mode": "artifact",
+      "kind": "artifact cli",
+      "command": "loom",
+      "gate": "lastgit",
+      "gate_main": "lastdb:///loom#main",
+      "artifact_app": "loom",
+      "artifact_channel": "stable",
+      "artifact_root": "$HOME/.lastgit/artifacts",
+      "install_root": "$HOME/.host-track/apps/loom",
+      "links": [
+        {
+          "source": "dist/loom",
+          "target": "$HOME/.local/bin/loom"
+        }
+      ],
+      "notes": "loom LastGit artifact install from CI-published dist/loom plus scripts/. track_gate_main promotes stable to green+published main. Do not symlink ~/.local/bin/loom at a DEV worktree.",
+      "track_gate_main": true,
+      "safe_upgrade": {
+        "soak_hours": 1,
+        "probes": [
+          {"argv": ["dist/loom", "ping"], "timeout_s": 15}
+        ]
+      }
+    },
+    {
       "app": "lastdb-browser",
       "install_mode": "artifact",
       "kind": "artifact cli",

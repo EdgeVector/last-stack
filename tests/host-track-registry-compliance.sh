@@ -148,6 +148,7 @@ printf '%s\n' "$default_report" | jq -e '
   and any(.apps[]; .app == "configurations" and .registry_compliance == "artifact")
   and any(.apps[]; .app == "lastseek" and .registry_compliance == "artifact")
   and any(.apps[]; .app == "search" and .registry_compliance == "artifact")
+  and any(.apps[]; .app == "loom" and .registry_compliance == "artifact")
   and (.missing_probes == 0)
   and all(.apps[] | select(.registry_compliance == "artifact"); .probe_ok == true)
 ' >/dev/null || fail "default registry compliance map wrong: $default_report"
