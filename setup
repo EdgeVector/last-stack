@@ -507,6 +507,39 @@ install_host_track_refresh_agent() {
   fi
 }
 
+install_routines_cli() {
+  local routines_bin=""
+  if [ "${LAST_STACK_SKIP_ROUTINES_INSTALL:-0}" = "1" ]; then
+    echo "  routines CLI: skipped (LAST_STACK_SKIP_ROUTINES_INSTALL=1)"
+    return 0
+  fi
+
+  routines_bin="$(command -v routines 2>/dev/null || true)"
+  [ -x "$routines_bin" ] || routines_bin="$HOME/.local/bin/routines"
+  if [ -x "$routines_bin" ] && "$routines_bin" --help >/dev/null 2>&1; then
+    echo "  routines CLI: already installed ($routines_bin)"
+    return 0
+  fi
+
+  # Test/sandbox HOME values must never clone into or relink the login user's
+  # real app tree. Production callers can override only for a deliberate
+  # hermetic install proof.
+  if ! host_track_real_home_matches && [ "${LAST_STACK_ROUTINES_FORCE_INSTALL:-0}" != "1" ]; then
+    echo "  routines CLI: install skipped for non-login HOME"
+    return 0
+  fi
+
+  local installer
+  installer="${LAST_STACK_ROUTINES_INSTALLER:-$SOURCE_ROOT/bin/last-stack-install-routines}"
+  [ -x "$installer" ] || {
+    echo "routines CLI installer is missing or not executable: $installer" >&2
+    return 1
+  }
+
+  echo "  routines CLI: installing ..."
+  "$installer"
+}
+
 # ── Register every skills/<name>/SKILL.md into a target skills dir ────────────
 register_into() {
   local skills_dir="$1"
@@ -587,6 +620,7 @@ echo "Installing The Last Stack (v$(cat "$SOURCE_ROOT/VERSION")) ..."
 [ "$INSTALL_OPENCODE" -eq 1 ] && register_into "$HOME/.config/opencode/skills" "opencode"
 [ "$INSTALL_OPENCODE" -eq 1 ] && upsert_brain_kanban_block "$HOME/.config/opencode/AGENTS.md" "opencode"
 install_host_track_shim
+install_routines_cli
 install_shared_checkout_guards
 install_host_track_refresh_agent
 

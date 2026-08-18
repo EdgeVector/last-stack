@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Install the Routines CLI required by the Last Stack playbook. Starting the
+# routines daemon is intentionally separate: that begins scheduled agent work.
+set -euo pipefail
+
+INSTALL_ROOT="${LAST_STACK_ROUTINES_INSTALL_ROOT:-${LASTDB_APPS_DIR:-$HOME/lastdb-apps}/routines}"
+PUBLIC_REMOTE="${LAST_STACK_ROUTINES_REMOTE:-https://github.com/EdgeVector/routines.git}"
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "routines install requires $1" >&2
+    exit 127
+  }
+}
+
+ensure_link() {
+  local source="$1"
+  [ -x "$source" ] || {
+    echo "routines executable is missing after install: $source" >&2
+    exit 1
+  }
+  mkdir -p "$HOME/.local/bin"
+  ln -snf "$source" "$HOME/.local/bin/routines"
+}
+
+# Internal LastGit-enabled installs should consume the verified compiled
+# artifact. Public installs fall back to the read-only GitHub source mirror.
+if command -v host-track >/dev/null 2>&1 && command -v lastgit >/dev/null 2>&1; then
+  if host-track refresh routines; then
+    routines_bin="$(command -v routines 2>/dev/null || true)"
+    [ -x "$routines_bin" ] || routines_bin="$HOME/.local/bin/routines"
+    [ -x "$routines_bin" ] || {
+      echo "host-track reported success but the routines executable is missing" >&2
+      exit 1
+    }
+    "$routines_bin" --help >/dev/null
+    echo "routines CLI installed through Host Track"
+    exit 0
+  fi
+  echo "Host Track could not install routines; falling back to the public mirror" >&2
+fi
+
+need git
+need bun
+
+if [ -d "$INSTALL_ROOT/.git" ]; then
+  echo "updating routines in $INSTALL_ROOT"
+  git -C "$INSTALL_ROOT" pull --ff-only
+elif [ -e "$INSTALL_ROOT" ]; then
+  echo "refusing to overwrite non-git routines path: $INSTALL_ROOT" >&2
+  exit 1
+else
+  echo "cloning routines into $INSTALL_ROOT"
+  mkdir -p "$(dirname "$INSTALL_ROOT")"
+  git clone "$PUBLIC_REMOTE" "$INSTALL_ROOT"
+fi
+
+bun install --cwd "$INSTALL_ROOT" --frozen-lockfile --production
+ensure_link "$INSTALL_ROOT/bin/routines"
+PATH="$HOME/.local/bin:${PATH:-}" routines --help >/dev/null
+echo "routines CLI installed at $HOME/.local/bin/routines"
+echo "Run 'routines install-daemon' separately to start scheduled agent work."

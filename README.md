@@ -41,7 +41,9 @@ git clone https://github.com/EdgeVector/last-stack ~/.last-stack && ~/.last-stac
 `setup` auto-detects which agent harnesses you have (Claude Code, Codex,
 Factory, OpenCode) and registers every skill into each one. The skills stay in
 the cloned repo; each harness gets a directory with a symlinked `SKILL.md`, so a
-later `git pull` updates every installed skill at once.
+later `git pull` updates every installed skill at once. It also installs the
+companion `routines` CLI automatically. Starting scheduled agent work remains
+explicit: run `routines install-daemon` when you are ready to enable the fleet.
 
 For Claude Code, `setup` also installs the bundled safety hooks and allowlists
 the `brain` MCP read tools plus `brain_put` in `~/.claude/settings.json`, so
