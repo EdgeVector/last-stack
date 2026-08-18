@@ -14,6 +14,9 @@ Included (all **public** on GitHub):
   `EdgeVector/fkanban`).
 - **Situations (`situations`)**: active operational posture and preflight
   checks for agents.
+- **Routines (`routines`)**: scheduler and dispatcher for the Last Stack routine
+  fleet. The bundle installs the CLI; starting its daemon remains an explicit
+  operator action because that begins scheduled agent work.
 - **Dogfood Graph**: LastDB-native manual dogfood planning and evidence.
 - **Org (`org`)**: org membership, shared org databases, invite/join. Public
   install source: `https://github.com/EdgeVector/org`.
@@ -98,6 +101,7 @@ kanban init                  # bootstrap Kanban
 situations init              # bootstrap Situations
 lastsecrets init             # bootstrap LastSecrets (needed for org keys)
 org init                     # bootstrap Org (invite/join)
+routines install-daemon      # optional: start scheduled agent routines
 ```
 
 Open the local data browser after the node is running:
@@ -169,6 +173,7 @@ cd ~/lastdb-apps
 git clone https://github.com/EdgeVector/brain.git
 git clone https://github.com/EdgeVector/fkanban.git kanban
 git clone https://github.com/EdgeVector/situations.git
+git clone https://github.com/EdgeVector/routines.git
 git clone https://github.com/EdgeVector/dogfood-graph.git
 git clone https://github.com/EdgeVector/org.git
 git clone https://github.com/EdgeVector/lastsecrets.git
@@ -177,7 +182,7 @@ git clone https://github.com/EdgeVector/lastsecrets.git
 Install dependencies:
 
 ```bash
-for app in brain kanban situations dogfood-graph org lastsecrets; do
+for app in brain kanban situations routines dogfood-graph org lastsecrets; do
   bun install --cwd "$HOME/lastdb-apps/$app"
 done
 ```
@@ -188,6 +193,7 @@ Link commands:
 cd ~/lastdb-apps/brain && bun link
 cd ~/lastdb-apps/kanban && bun run install-cli
 ln -snf ~/lastdb-apps/situations/bin/situations ~/.local/bin/situations
+ln -snf ~/lastdb-apps/routines/bin/routines ~/.local/bin/routines
 cd ~/lastdb-apps/org && bun link
 cd ~/lastdb-apps/lastsecrets && bun link
 ```
