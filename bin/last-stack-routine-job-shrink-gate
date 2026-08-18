@@ -33,8 +33,11 @@ case "$id" in
       emit error "reason=smoke-script-missing path=$smoke"
       exit 1
     fi
+    # Fold portal has no target/release/lastdbd. Drive the installed Mini
+    # binary — a missing or RED canary is a failed job, not ok.
+    bin="${LASTDB_MINI_SMOKE_BIN:-$HOME/.lastdb/current/lastdbd}"
     set +e
-    out="$(run_timeout 180 bash "$smoke" 2>&1)"
+    out="$(run_timeout 600 env BIN="$bin" bash "$smoke" 2>&1)"
     rc=$?
     set -e
     verdict="$(printf '%s\n' "$out" | sed -n 's/^VERDICT:[[:space:]]*//p' | tail -1)"
@@ -43,12 +46,11 @@ case "$id" in
       exit 124
     fi
     printf '%s\n' "$out" | tail -20
-    if [ -n "$verdict" ]; then
-      # The canary finished. GREEN or RED is a completed measurement.
-      emit ok "verdict=$verdict rc=$rc"
+    if [ "$verdict" = "GREEN" ]; then
+      emit ok "verdict=GREEN rc=$rc bin=$bin"
       exit 0
     fi
-    emit error "verdict=none rc=$rc"
+    emit error "verdict=${verdict:-none} rc=$rc bin=$bin"
     exit "${rc:-1}"
     ;;
   last-stack-papercut-reconciler)
