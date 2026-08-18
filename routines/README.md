@@ -37,6 +37,13 @@ into every harness's global instructions by `setup`) and in
 gates both. The default is FILE, not judge — a mention in a checkpoint or PR
 description is not a filing.
 
+**Every routine ends with close-out (Tom, 2026-08-17).** The last work step of
+every routine prompt is the close-out skill (`../skills/close-out/SKILL.md`):
+write the brain closeout report of the run and file brain papercuts for
+friction hit, then emit the heartbeat + `ROUTINE_RESULT` trailer as the final
+output. The "Close-out (always the LAST step)" section at the bottom of each
+prompt carries the exact wording; keep it when adapting a template.
+
 Operator tools: `last-stack-ship-preflight` (walk-away check),
 `last-stack-why-shipping-stopped` (Class A-E stall diagnosis),
 `kanban pickup explain <slug>` (why not claimable),
