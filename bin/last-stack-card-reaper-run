@@ -69,6 +69,7 @@ killed_backlog=0
 killed_todo=0
 killed_doing=0
 rolled_back=0
+parked=0
 salvaged=0
 exempt_needs_human=0
 memory_unwritable=0
@@ -86,9 +87,9 @@ heartbeat() {
       flags="$flags,memory_unwritable=$mem"
     fi
   fi
-  printf 'card-reaper %s %s live=%s killed=<backlog=%s,todo=%s,doing=%s> rolled_back=%s salvaged=%s exempt_needs_human=%s flagged=%s\n' \
+  printf 'card-reaper %s %s live=%s killed=<backlog=%s,todo=%s,doing=%s> rolled_back=%s parked=%s salvaged=%s exempt_needs_human=%s flagged=%s\n' \
     "$now_iso" "$st" "$live" "$killed_backlog" "$killed_todo" "$killed_doing" \
-    "$rolled_back" "$salvaged" "$exempt_needs_human" "$flags"
+    "$rolled_back" "$parked" "$salvaged" "$exempt_needs_human" "$flags"
 }
 
 finish() {
@@ -208,6 +209,7 @@ const res = {
   live: 0,
   killed: {backlog: 0, todo: 0, doing: 0},
   rolled_back: 0,
+  parked: 0,
   salvaged: 0,
   exempt_needs_human: 0,
   flagged: [],
@@ -414,10 +416,10 @@ function rmCard(slug) {
   return true;
 }
 
-function moveTodo(card) {
+function moveColumn(card, column) {
   if (dryRun) return true;
   const slug = String(card.slug);
-  const args = ["move", slug, "todo"];
+  const args = ["move", slug, column];
   if (card.block_status || card.blockStatus || (Array.isArray(card.deps) && card.deps.length)) {
     args.push("--force");
   }
@@ -427,6 +429,14 @@ function moveTodo(card) {
     throw new Error(`kanban move failed for ${slug}: ${out.stderr || out.error}`);
   }
   return true;
+}
+
+function moveTodo(card) {
+  return moveColumn(card, "todo");
+}
+
+function moveBacklog(card) {
+  return moveColumn(card, "backlog");
 }
 
 function removeWorktree(wt) {
@@ -441,6 +451,10 @@ function reapNote(rule) {
 
 function rollbackNote(rule) {
   return `\n\n## CARD REAP ${iso}\nRule: ${rule}\nAction: stale in-flight state stripped; rolled back to todo for pickup.\n`;
+}
+
+function parkNote(rule) {
+  return `\n\n## CARD REAP ${iso}\nRule: ${rule}\nAction: remount after rollback parked to backlog; card kept (not deleted).\n`;
 }
 
 function salvageNote(branch) {
@@ -533,6 +547,27 @@ function rollbackDoing(card, rule) {
   return true;
 }
 
+function parkDoingToBacklog(card, rule) {
+  const slug = String(card.slug);
+  const wt = worktreePath(slug);
+  if (fs.existsSync(wt) && isDirtyWorktree(wt)) {
+    const s = salvage(slug, card);
+    if (!s.ok) return false;
+    const body0 = dryRun ? String(card.body || "") : getFullBody(slug);
+    if (body0 === null) return false;
+    if (!readdBody(slug, body0 + salvageNote(s.branch))) return false;
+  }
+  const body = dryRun ? String(card.body || "") : getFullBody(slug);
+  if (body === null) return false;
+  if (!readdBody(slug, body + parkNote(rule), {clearAssignee: true})) return false;
+  if (!moveBacklog(card)) return false;
+  if (fs.existsSync(wt) && !isDirtyWorktree(wt)) removeWorktree(wt);
+  res.parked++;
+  appendMemory(`${iso} parked ${slug} rule=${rule}`);
+  res.report.push(`${dryRun ? "would_park_backlog" : "parked_backlog"} ${slug}: ${rule}`);
+  return true;
+}
+
 let cards = [];
 try {
   cards = parseBoard(fs.readFileSync(boardPath, "utf8"));
@@ -547,6 +582,7 @@ res.live = cards.filter((c) => String(c.column || "").toLowerCase() !== "done").
 const byOrder = cards.filter((c) => c && c.slug)
   .sort((a, b) => dateMs(a.created_at || a.createdAt) - dateMs(b.created_at || b.createdAt));
 let actions = 0;
+const parkedThisRun = new Set();
 const startedMs = Date.now();
 const budgetMs = Number(process.env.CARD_REAPER_BUDGET_MS || 120000);
 function overBudget() { return Date.now() - startedMs > budgetMs; }
@@ -584,9 +620,13 @@ try {
     let memText = "";
     try { if (fs.existsSync(mem)) memText = fs.readFileSync(mem, "utf8"); } catch { res.memory_unwritable = true; }
     const churn = memText.includes(`rolled_back ${slug}`);
-    if (dead && (hrs >= 24 || churn)) {
-      const rule = churn ? `doing churn after prior rollback; age=${hrs.toFixed(1)}h` : `doing squatter >24h; age=${hrs.toFixed(1)}h`;
-      if (killCard(card, rule, "doing")) actions++;
+    if (dead && churn) {
+      if (parkDoingToBacklog(card, `doing churn after prior rollback; age=${hrs.toFixed(1)}h`)) {
+        parkedThisRun.add(slug);
+        actions++;
+      }
+    } else if (dead && hrs >= 24) {
+      if (killCard(card, `doing squatter >24h; age=${hrs.toFixed(1)}h`, "doing")) actions++;
     } else if (dead && hrs >= 1) {
       if (rollbackDoing(card, `doing dead claim >60m; age=${hrs.toFixed(1)}h`)) actions++;
     }
@@ -634,6 +674,7 @@ try {
       break;
     }
     const slug = String(card.slug);
+    if (parkedThisRun.has(slug)) continue;
     if (isNeedsHuman(card)) {
       if (ageHours(card) > 168) {
         res.exempt_needs_human++;
@@ -686,6 +727,7 @@ console.log(`killed_backlog='${sh(r.killed?.backlog ?? 0)}'`);
 console.log(`killed_todo='${sh(r.killed?.todo ?? 0)}'`);
 console.log(`killed_doing='${sh(r.killed?.doing ?? 0)}'`);
 console.log(`rolled_back='${sh(r.rolled_back ?? 0)}'`);
+console.log(`parked='${sh(r.parked ?? 0)}'`);
 console.log(`salvaged='${sh(r.salvaged ?? 0)}'`);
 console.log(`exempt_needs_human='${sh(r.exempt_needs_human ?? 0)}'`);
 const flagged = Array.isArray(r.flagged) ? r.flagged : [];
