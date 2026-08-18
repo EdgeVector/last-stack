@@ -3,6 +3,12 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 last_stack="${LAST_STACK_ROOT:-$ROOT}"
+# Overlay install lives at ~/.local/bin; only fall back to the host last-stack
+# tree when the caller did not pin LAST_STACK_ROOT (tests pin a tmp root).
+if [ -z "${LAST_STACK_ROOT:-}" ] && [ ! -x "$last_stack/bin/last-stack-git-commit" ] && \
+   [ -x "${HOME}/.last-stack/bin/last-stack-git-commit" ]; then
+  last_stack="${HOME}/.last-stack"
+fi
 if [ -f "$last_stack/bin/last-stack-shell-prelude" ]; then
   # shellcheck disable=SC1091
   . "$last_stack/bin/last-stack-shell-prelude"
@@ -87,15 +93,24 @@ heartbeat() {
 
 finish() {
   local st="$1"
+  local result_flags="none"
+  if [ "${#flagged[@]}" -gt 0 ]; then
+    result_flags="$(IFS=,; echo "${flagged[*]}")"
+  fi
   if [ "${#report[@]}" -gt 0 ]; then
     printf '%s\n' "${report[@]}"
   fi
   heartbeat "$st"
+  printf '%s %s\n' 'ROUTINE_RESULT' "outcome=${st} detail=live=${live} flagged=${result_flags}"
 }
 
 # Always-on merged-PR closeout (survives low-credit when watch is paused).
 if [ -x "$last_stack/bin/last-stack-board-closeout-sweep" ] && [ "$dry_run" -ne 1 ]; then
-  "$last_stack/bin/last-stack-board-closeout-sweep" >>"$scratch/board-closeout.log" 2>&1 || true
+  if command -v timeout >/dev/null 2>&1; then
+    timeout -k 5s 45s "$last_stack/bin/last-stack-board-closeout-sweep" >>"$scratch/board-closeout.log" 2>&1 || true
+  else
+    "$last_stack/bin/last-stack-board-closeout-sweep" >>"$scratch/board-closeout.log" 2>&1 || true
+  fi
 fi
 
 if [ "$skip_preflight" -ne 1 ]; then
@@ -308,16 +323,21 @@ function branchHasRecentCommit(card, hours) {
   return out.ok && out.stdout.trim().length > 0;
 }
 
+// One ps pass, not per-tree `lsof +D` (that recurse can eat the 300s gate).
+let _psCache = null;
 function hasLiveProcess(wt) {
-  if (!fs.existsSync(wt)) return false;
-  const out = run("lsof", ["+D", wt], {timeout: 30000});
-  return out.ok && out.stdout.trim().length > 0;
+  if (!wt || !fs.existsSync(wt)) return false;
+  if (_psCache === null) {
+    const out = run("ps", ["-ax", "-o", "command="], {timeout: 15000});
+    _psCache = out.ok ? out.stdout.split("\n") : [];
+  }
+  return _psCache.some((line) => line.includes(wt) && !/\b(rg|grep)\b/.test(line));
 }
 
 function newestMtimeMs(dir) {
   let newest = 0;
   function walk(p, depth = 0) {
-    if (depth > 12) return;
+    if (depth > 4) return;
     let entries;
     try { entries = fs.readdirSync(p, {withFileTypes: true}); } catch { return; }
     for (const e of entries) {
@@ -388,7 +408,8 @@ function rmCard(slug) {
   const out = run("kanban", ["rm", slug], {timeout: 60000});
   if (!out.ok) {
     if (noteBoardDeferred(slug, "rm", out)) return false;
-    throw new Error(`kanban rm failed for ${slug}: ${out.stderr || out.error}`);
+    res.flagged.push(`kanban_rm_failed_for_${slug}`);
+    return false;
   }
   return true;
 }
@@ -526,9 +547,16 @@ res.live = cards.filter((c) => String(c.column || "").toLowerCase() !== "done").
 const byOrder = cards.filter((c) => c && c.slug)
   .sort((a, b) => dateMs(a.created_at || a.createdAt) - dateMs(b.created_at || b.createdAt));
 let actions = 0;
+const startedMs = Date.now();
+const budgetMs = Number(process.env.CARD_REAPER_BUDGET_MS || 120000);
+function overBudget() { return Date.now() - startedMs > budgetMs; }
 
 try {
   for (const card of byOrder.filter((c) => String(c.column || "").toLowerCase() === "doing")) {
+    if (overBudget()) {
+      res.flagged.push("time-budget");
+      break;
+    }
     if (actions >= 10) {
       res.flagged.push(`reap-capped:${Math.max(0, byOrder.length - actions)}`);
       break;
@@ -565,6 +593,10 @@ try {
   }
 
   for (const card of byOrder.filter((c) => String(c.column || "").toLowerCase() === "todo")) {
+    if (overBudget()) {
+      res.flagged.push("time-budget");
+      break;
+    }
     if (actions >= 10) {
       res.flagged.push(`reap-capped:${Math.max(0, byOrder.length - actions)}`);
       break;
@@ -593,6 +625,10 @@ try {
   }
 
   for (const card of byOrder.filter((c) => String(c.column || "").toLowerCase() === "backlog")) {
+    if (overBudget()) {
+      res.flagged.push("time-budget");
+      break;
+    }
     if (actions >= 10) {
       res.flagged.push(`reap-capped:${Math.max(0, byOrder.length - actions)}`);
       break;

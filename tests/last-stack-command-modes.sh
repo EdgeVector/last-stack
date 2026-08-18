@@ -19,6 +19,9 @@ done <<'EOF'
 setup
 bin/last-stack-canary-pipeline
 bin/last-stack-north-star-completion-check
+bin/last-stack-routine-outcome-classify
+bin/last-stack-routine-observer-gate
+bin/last-stack-routine-job-shrink-gate
 bin/last-stack-product-feature-ns-reconcile
 tests/last-stack-command-modes.sh
 tests/last-stack-canary-pipeline.sh

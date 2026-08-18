@@ -202,13 +202,19 @@ heals run.
 Emit plain text:
 
 ```
-ship-pipeline-gap-audit <ISO-UTC> ok health=<green|yellow|red> gaps=<n> filed=<n> healed=<n>
-ROUTINE_RESULT outcome=ok detail=health=<…> gaps=<n> filed=<n>
+ship-pipeline-gap-audit <ISO-UTC> <ok|noop|error> health=<green|yellow|red> gaps=<n> filed=<n> healed=<n>
 ```
 
+Print the `ROUTINE_RESULT` token followed by
+`outcome=<ok|noop|error> detail=<same-one-line-outcome>`.
+
 Use `noop` only if the funnel is GREEN and nothing was written beyond a brief
-"still green" latest record. Use `error` only if the run itself failed (no
-snapshot, brain put refused).
+"still green" latest record. Use `ok` when the audit completed, including
+`health=yellow` or `health=red` with gaps filed. Use `error` only if the run
+itself failed (CLI missing, no snapshot *and* empty prior, brain put refused).
+A yellow/red funnel is the *subject*, not a routine failure. Classify with
+`last-stack-routine-outcome-classify --observer last-stack-ship-pipeline-gap-audit`
+when in doubt.
 
 ## Standing rules
 

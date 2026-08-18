@@ -33,15 +33,17 @@ last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 
 ## Heartbeat / result
 
-Prefer the CLI’s own heartbeat. Print:
+Prefer the CLI’s own heartbeat. Classify the stamp with
+`last-stack-routine-outcome-classify --observer last-stack-why-stopped`
+(or print the `ROUTINE_RESULT` token followed by
+`outcome=<ok|noop|error> detail=<same-one-line-outcome>`).
 
-```text
-ROUTINE_RESULT outcome=<ok|noop|error> detail=classes=<A+E|none|...>
-```
-
-- `ok` — classified and ran a useful action (heal / page)
-- `noop` — classified healthy or only informational
+- `ok` — classified (including `classes=unknown` or any Class A–F set)
+- `noop` — classified healthy (`classes=none`) or only informational
 - `error` — CLI missing or unusable
+
+A finished classification is never `error` just because shipping is
+frozen or the class set is unknown. Downstream red is the *subject*.
 
 ## Rules
 
