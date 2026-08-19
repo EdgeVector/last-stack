@@ -23,7 +23,7 @@ This closeout is the always-on, zero-credit answer:
 | Condition | Action |
 |-----------|--------|
 | `doing` + PR/CR **merged** (field **or** body `PR:`/`CR:`/`lastgit://`) | heal empty `pr_url` if needed; `last-stack-card-closeout` → `done` only if any `Requires-Deploy:` gate has terminal success |
-| `doing` + deploy-parked (`Requires-Deploy:`, tags `awaiting-deploy`/`live-proof`/`deploy-gate`, or live-proof wait notes) | **skip reclaim**; stamp `awaiting-deploy`; leave in `doing` |
+| `doing` + deploy-parked (`Requires-Deploy:`, tags `awaiting-deploy`/`live-proof`/`deploy-gate`/`needs-safe-upgrade`/`awaiting-validation`, or live-proof wait notes) | stamp `awaiting-deploy`; **demote to `backlog`** with `block_status=deferred` (not todo; not left in doing) |
 | `doing`, age ≥ 60m, no PR, no live worker, no branch commits | `move todo` |
 | `doing`, age ≥ 60m, no PR, no live worker, **WIP commits** (illegal handoff) | `move todo` (flag `wip-no-pr`; worktree kept) |
 | open PR / live worker / younger than grace | skip |
@@ -35,7 +35,9 @@ Durable: brain `preference-kanban-board-closeout-always-on` and
 helper reads `last-stack-pipeline-deploy-scan --json`; pending, missing, or red
 deploy status leaves the card out of `done` even when the PR/CR is merged — and
 **does not** roll the card back to `todo` (that thrash is banned for deploy
-parks). The sweep lists doing with `--full-body` so body headers are visible.
+parks). Instead the sweep demotes the card to `backlog` with
+`block_status=deferred`. The sweep lists doing with `--full-body` so body
+headers are visible.
 
 ## Preferred: LaunchAgent (no LLM)
 
@@ -77,5 +79,6 @@ LaunchAgent is healthy:
 
 - Never SIGKILL agents for age.
 - Never move open-PR cards to `todo` just because they are old.
+- Never leave deploy-parked cards in `doing` (demote to `backlog` + deferred).
 - Never force-merge. Only board column reconciliation after a verified merge.
 - Busy-node / socket errors → heartbeat `noop flagged=busy-node`, exit 0.
