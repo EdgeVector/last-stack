@@ -91,4 +91,32 @@ describe("initSentry", () => {
     expect(redacted.extra.token).toBe("[redacted]");
     expect(redacted.extra.safe).toBe("value");
   });
+
+  test("treats lastsecrets locators as invalid without initializing", async () => {
+    const sentry = mockSentry();
+
+    const result = await initSentry({
+      service: "routine-runner",
+      env: { OBS_SENTRY_DSN: "lastsecrets://obs-sentry-dsn-routines" },
+      sentryModule: sentry.module,
+      installProcessHandlers: false,
+    });
+
+    expect(result).toEqual({ enabled: false, reason: "invalid_dsn" });
+    expect(sentry.calls).toHaveLength(0);
+  });
+
+  test("treats garbage DSN strings as invalid without initializing", async () => {
+    const sentry = mockSentry();
+
+    const result = await initSentry({
+      service: "routine-runner",
+      env: { OBS_SENTRY_DSN: "not-a-sentry-dsn" },
+      sentryModule: sentry.module,
+      installProcessHandlers: false,
+    });
+
+    expect(result).toEqual({ enabled: false, reason: "invalid_dsn" });
+    expect(sentry.calls).toHaveLength(0);
+  });
 });

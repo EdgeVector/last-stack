@@ -55,6 +55,7 @@ bash tests/last-stack-reclaim-liveness-and-finished-work.sh
 bash tests/last-stack-class-a-heal.sh
 bash tests/last-stack-sccache-health.sh
 bash tests/last-stack-shell-prelude.sh
+bash tests/last-stack-obs-sentry-locator.sh
 bash tests/last-stack-install-routines.sh
 bash tests/last-stack-routines-registry-host-paths.sh
 bash tests/last-stack-feature-prove-routine.sh

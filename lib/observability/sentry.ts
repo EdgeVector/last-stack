@@ -10,8 +10,59 @@ export type SentryInitOptions = {
 };
 
 export type SentryInitResult =
-  | { enabled: false; reason: "disabled" | "missing_dsn" }
+  | { enabled: false; reason: "disabled" | "missing_dsn" | "invalid_dsn" }
   | { enabled: true; service: string; environment?: string; release?: string };
+
+/**
+ * Parse OBS_SENTRY_DSN without calling Sentry.init.
+ *
+ * Invalid values (empty, lastsecrets:// locators, non-http(s), unparseable)
+ * return null so callers disable Sentry instead of letting @sentry/core print
+ * `Invalid Sentry Dsn` or panic. Routine/agent shells inherit unresolved
+ * locators from routinesd; those must never reach the SDK or stdout.
+ */
+export function parseObsSentryDsn(raw: string): string | null {
+  const dsn = raw.trim();
+  if (!dsn) return null;
+
+  if (dsn.startsWith("lastsecrets://") || dsn.startsWith("lastsecrets:")) {
+    return null;
+  }
+
+  if (!/^https?:\/\//i.test(dsn)) {
+    return null;
+  }
+
+  const DSN_RE =
+    /^(?:https?):\/\/(?:[\w.-]+)(?::[\w.-]+)?@((?:\[[:.%\w]+\]|[\w.-]+))(?::\d+)?\/(.+)$/i;
+  if (!DSN_RE.test(dsn)) {
+    return null;
+  }
+
+  return dsn;
+}
+
+function debugObsEnabled(env: Record<string, string | undefined>): boolean {
+  const flag = env.OBS_SENTRY_DEBUG ?? env.OBS_DEBUG ?? "";
+  return flag === "1" || flag.toLowerCase() === "true";
+}
+
+function warnInvalidDsn(
+  dsnEnv: string,
+  raw: string,
+  env: Record<string, string | undefined>,
+): void {
+  // Default path is silent. A lastsecrets locator is expected in routine
+  // shells; printing it on every CLI is what poisons `2>&1 | jq` pipelines.
+  if (!debugObsEnabled(env)) return;
+  const hint =
+    raw.startsWith("lastsecrets://") || raw.startsWith("lastsecrets:")
+      ? "lastsecrets locator (not a Sentry DSN)"
+      : "not a valid https Sentry DSN";
+  process.stderr.write(
+    `observability: ${dsnEnv} is ${hint}; Sentry disabled. Resolve the secret in a process wrapper or unset the var.\n`,
+  );
+}
 
 export type SentryModule = {
   init(options: {
@@ -48,9 +99,15 @@ export async function initSentry(options: SentryInitOptions): Promise<SentryInit
     return { enabled: false, reason: "disabled" };
   }
 
-  const dsn = env[dsnEnv]?.trim();
-  if (!dsn) {
+  const dsnRaw = env[dsnEnv]?.trim();
+  if (!dsnRaw) {
     return { enabled: false, reason: "missing_dsn" };
+  }
+
+  const dsn = parseObsSentryDsn(dsnRaw);
+  if (!dsn) {
+    warnInvalidDsn(dsnEnv, dsnRaw, env);
+    return { enabled: false, reason: "invalid_dsn" };
   }
 
   const sentry = options.sentryModule ?? (await loadSentryModule());
