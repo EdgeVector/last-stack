@@ -89,5 +89,11 @@ grep -q 'sop-routines-registry-canonical' "$ROOT/routines/fleet-performance.md" 
   || fail "fleet-performance prompt missing canonical-registry SOP"
 grep -q 'ROUTINES_HOME' "$ROOT/routines/fleet-performance.md" \
   || fail "fleet-performance prompt missing live registry path"
+grep -q 'New releases — working well' "$ROOT/routines/morning-sync.md" \
+  || fail "morning-sync prompt missing new-releases live-proof section"
+grep -q 'not-on-this-machine-yet' "$ROOT/routines/morning-sync.md" \
+  || fail "morning-sync new-releases section missing host-track lag verdict"
+grep -q 'New releases — working well' "$ROOT/skills/morning-sync/SKILL.md" \
+  || fail "morning-sync skill missing new-releases live-proof section"
 
 printf 'ok: factory-hardening smoke passed\n'

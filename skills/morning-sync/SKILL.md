@@ -1,9 +1,10 @@
 ---
 name: morning-sync
 description: >-
-  The repeatable morning ritual: surface every decision waiting on Tom, capture
-  his answers durably, and turn each answer into board movement so the existing
-  pickup→agent pipeline drives the unblocked features to completion. Two modes —
+  The repeatable morning ritual: surface decisions waiting on Tom, prove that
+  last night's new releases actually work on this machine, and turn his answers
+  into board movement so the pickup→agent pipeline drives unblocked features.
+  Two modes —
   BRIEF (read-only; assemble + deliver the ranked decision queue, run by the
   scheduled morning-sync routine each day at 7:00) and WORK (interactive; walk
   Tom through the decisions one at a time, write each as its own brain
@@ -18,11 +19,12 @@ description: >-
 
 # morning-sync — decisions in, completed features out
 
-The job: make Tom's morning hour the highest-leverage hour of the day. Most
-EdgeVector programs are not starved for ideas — they're stalled on **decisions
-only Tom can make** (enable a gate, run a cutover, scope a fuzzy next-move). This
-skill surfaces every one of those decisions sharply, remembers his answer
-forever, and turns the answer into work the rest of the pipeline executes.
+The job: make Tom's morning hour the highest-leverage hour of the day. He needs
+two facts, not a blocker wall: **did last night's new releases actually work**,
+and **is there a decision only he can make**. Merged is not working. This skill
+proves the former with cheap live probes, surfaces the latter sharply, remembers
+his answer forever, and turns the answer into work the rest of the pipeline
+executes.
 
 It is the missing **edge** of the existing pipeline, not a replacement:
 
@@ -161,6 +163,21 @@ waiting on Tom. Steps:
    plus the generators. If `list_scheduled_tasks` is unavailable in a headless
    run, fall back to `routine-heartbeats` alone and say so.
 
+4b. **§3b — New releases — working well? (always include).** Distinct from §3
+   (did a fire succeed) and §4 (ELI5 story). Of the things that *newly became
+   true* in the last ~36h, is each actually true **on this machine right now**?
+   Cap 5. Cheap live probes only. BRIEF stays read-only — do not heal.
+
+   Discover: brain closeouts for today+yesterday; the latest
+   `last-stack-fleet-performance` memory slice; `host-track status` `host_head`
+   vs the closeout merge_oid. "CR merged" / "CI green" is not the probe.
+   If feature-prove already wrote PASS today for the same claim, cite that.
+
+   Each line: **claim** · **verdict** · **probe**. Verdicts: `working` |
+   `not-on-this-machine-yet` (merged upstream, live RUN/host_head/registry
+   lag) | `broken` (live machine contradicts the claim). If nothing new
+   landed: "no new releases in the window."
+
 5. **§4 — What shipped overnight (ELI5, always include).** This is the
    plain-English overnight story Tom asked for standing (2026-07-31): not a
    commit wall, not jargon. Reuse
@@ -232,6 +249,12 @@ Brief skeleton:
 
 ### 🩺 Routine health
 - <routine> last ran <when> — <ok | DID NOT RUN | error: …>
+
+### 🔬 New releases — working well?
+- <claim> — **working** · <probe you ran>
+- <claim> — **not on this machine yet** · lastgit/main `<oid>` vs host_head `<oid>`
+- <claim> — **broken** · <one line of live evidence>
+- (or: no new releases in the window)
 
 <output of usage-bugs.sh — the 🐛 Bugs (Sentry) + 📈 Usage (PostHog) blocks, verbatim>
 
