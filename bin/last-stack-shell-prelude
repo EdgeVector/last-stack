@@ -158,5 +158,13 @@ last_stack_run_tool() {
     return 127
   fi
 
+  # Re-strip locators in case a later snippet re-exported one after prelude.
+  case "${OBS_SENTRY_DSN:-}" in
+    lastsecrets://*|lastsecrets:*)
+      env -u OBS_SENTRY_DSN PATH="${LAST_STACK_PRELUDE_PATH:-$PATH}" "$@"
+      return
+      ;;
+  esac
+
   PATH="${LAST_STACK_PRELUDE_PATH:-$PATH}" "$@"
 }
