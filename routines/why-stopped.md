@@ -54,6 +54,20 @@ Prefer the CLI’s own heartbeat. Classify the stamp with
 A finished classification is never `error` just because shipping is
 frozen or the class set is unknown. Downstream red is the *subject*.
 
+In the final tool call, also write the same verdict to the authoritative
+sink; do not rely on final prose or the legacy trailer alone:
+
+```bash
+outcome_line="<ok|noop|error> <one-line-outcome>"
+if [ -n "${ROUTINES_RUN_DIR:-}" ]; then
+  printf '%s\n' "$outcome_line" > "$ROUTINES_RUN_DIR/outcome.txt"
+fi
+```
+
+Replace both placeholders with the real verdict. Write this sink after the
+heartbeat and before the final response. A valid sink makes routinesd report
+`outcomeSource="sink"` even when the harness omits or reformats final text.
+
 ## Rules
 
 - Never restart primary lastdbd or forgejo.

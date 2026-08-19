@@ -168,7 +168,9 @@ DONE-WHEN: file <path> matches /<regex>/
 ```
 
 The reconciler and groomer evaluate predicates with
-`bin/last-stack-kanban-done-when-eval` when Last Stack is installed. Satisfied
+`"$LAST_STACK_ROOT/bin/last-stack-kanban-done-when-eval"` when Last Stack is
+installed (host-track also PATH-links it into `~/.local/bin` for sandboxed
+`~/.local/bin`-first shells). Satisfied
 predicates move the non-PR card to `done` with evidence; false or pending
 predicates stay quiet; malformed predicates become a visible card-authoring
 issue. Predicate evaluation is read-only and fail-closed.
@@ -689,7 +691,8 @@ Scheduled entrypoint: routine `kanban-validate` /
 
 0. **Cheap DONE-WHEN first (when Last Stack is installed).** For non-PR kinds
    (`validation|tracker|capstone|meta`), evaluate single-line `DONE-WHEN:` with
-   `bin/last-stack-kanban-done-when-eval`. Satisfied → `PROOF` + `done`. Pending
+   `"$LAST_STACK_ROOT/bin/last-stack-kanban-done-when-eval"`. Satisfied →
+   `PROOF` + `done`. Pending
    → continue. Malformed → surface authoring debt. For
    `file ~/.last-stack/north-star-proofs/<slug>.md matches /^PASS/` predicates,
    you may run `bin/last-stack-north-star-proof --offline <ns-slug>` once (or

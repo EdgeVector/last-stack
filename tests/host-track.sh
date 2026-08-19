@@ -207,6 +207,14 @@ export HOST_TRACK_STAMP_DIR="$stamp_dir"
 
 default_registry="$ROOT/config/host-track/apps.json"
 jq -e '
+  .apps[] | select(.app == "last-stack")
+  | any(.links[];
+      .source == "bin/last-stack-kanban-done-when-eval"
+      and .target == "$HOME/.local/bin/last-stack-kanban-done-when-eval")
+' "$default_registry" >/dev/null \
+  || fail "last-stack host-track registry must PATH-link last-stack-kanban-done-when-eval into ~/.local/bin"
+
+jq -e '
   .apps[] | select(.app == "situations")
   | .install_mode == "artifact"
     and .kind == "artifact cli"
