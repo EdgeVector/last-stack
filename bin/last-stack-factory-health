@@ -592,17 +592,31 @@ def build_snapshot(
 def is_deploy_parked(card: dict[str, Any]) -> bool:
     """Doing cards waiting on a deploy/live-proof gate are not factory stuck.
 
-    Closeout is written to leave these in doing until the deploy gate is
-    terminal. Counting them toward doing_stuck / closeout_stale just pages
-    Tom about work that is correctly parked.
+    Closeout demotes these to backlog with deferred, but a pickup fire can
+    still leave one in doing until the next sweep. Counting them toward
+    doing_stuck / closeout_stale pages Tom about work that is correctly parked.
     """
     tags = card.get("tags") or []
-    parked = {"awaiting-deploy", "live-proof", "deploy-gate"}
+    parked = {
+        "awaiting-deploy",
+        "live-proof",
+        "deploy-gate",
+        "needs-safe-upgrade",
+        "awaiting-validation",
+    }
     for t in tags:
         if str(t).strip().lower() in parked:
             return True
     body = str(card.get("body") or "")
-    return bool(re.search(r"(?im)^requires-deploy\s*:", body))
+    if re.search(r"(?im)^requires-deploy\s*:", body):
+        return True
+    if re.search(r"\b(LIVE PROOF|deploy-pipeline proof|awaiting deploy)\b", body, re.I) and re.search(
+        r"\b(pending|do not mark done|returning the card|leave(?:ing)? this card)\b",
+        body,
+        re.I,
+    ):
+        return True
+    return False
 
 
 def actionable_doing(doing_cards: list[dict[str, Any]]) -> list[dict[str, Any]]:

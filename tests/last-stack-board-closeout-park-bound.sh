@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# Proof: a deploy-gated park is a DELAY, not a permanent exemption.
+# Proof: deploy-parked doing cards leave WIP immediately (backlog + deferred).
 #
 # A card tagged awaiting-deploy with no resolvable PR used to sit in `doing`
-# forever — nothing reclaimed it, so a card whose worker was paused stayed
-# parked indefinitely. --max-park-hours bounds that park.
+# and inflate factory-health doing_stuck_hard. Closeout now demotes those
+# cards to backlog. --max-park-hours still bounds NON-deploy close-failed
+# parks; deploy parks are not sent to todo (pickup thrash).
 #
 # Asserts, on both engines (node + python3 fallback):
-#   1. parked card older than the bound  → moved to todo, flagged park-expired
-#   2. parked card younger than the bound → left in doing, flagged deploy-parked
-#   3. transient board failure            → NEVER park-expired (board was sick,
-#                                           not the card)
+#   1. parked card (old or fresh) → moved to backlog, flagged deploy-parked-demoted
+#   2. parked card is NOT rolled back to todo
+#   3. transient board failure    → NEVER demoted/expired (board was sick,
+#                                   not the card)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -61,7 +62,7 @@ JSON
   move)
     printf '%s %s\n' "${2:-}" "${3:-}" >>"${BOARD_MOVES:?}"
     ;;
-  add|tag)
+  add|tag|set|mark)
     : ;;
   *)
     echo "unexpected: $*" >&2
@@ -101,18 +102,23 @@ for engine in node python3; do
     --max-park-hours 24 --max-actions 20 2>&1 || true)"
   echo "[$engine] $out"
 
-  # 1. Old park is bounded — reclaimed to todo.
-  echo "$out" | grep -q 'park-expired:parked-old' || {
-    echo "FAIL[$engine]: expected park-expired for parked-old: $out" >&2
+  # 1. Old park leaves doing via backlog, not todo.
+  echo "$out" | grep -q 'deploy-parked-demoted:parked-old' || {
+    echo "FAIL[$engine]: expected deploy-parked-demoted for parked-old: $out" >&2
     exit 1
   }
-  grep -q '^parked-old todo$' "$moves" || {
-    echo "FAIL[$engine]: expected parked-old moved to todo:" >&2
+  grep -q '^parked-old backlog$' "$moves" || {
+    echo "FAIL[$engine]: expected parked-old moved to backlog:" >&2
     cat "$moves" >&2
     exit 1
   }
+  if grep -q '^parked-old todo$' "$moves"; then
+    echo "FAIL[$engine]: parked-old was rolled back to todo:" >&2
+    cat "$moves" >&2
+    exit 1
+  fi
 
-  # 2. Fresh park still protected — the bound must not become a stampede.
+  # 2. Fresh park is demoted immediately — it must not sit in doing.
   if echo "$out" | grep -q 'park-expired:parked-fresh'; then
     echo "FAIL[$engine]: fresh park was expired: $out" >&2
     exit 1
@@ -122,17 +128,27 @@ for engine in node python3; do
     cat "$moves" >&2
     exit 1
   fi
-  echo "$out" | grep -q 'deploy-parked:parked-fresh' || {
-    echo "FAIL[$engine]: expected parked-fresh to stay deploy-parked: $out" >&2
+  grep -q '^parked-fresh backlog$' "$moves" || {
+    echo "FAIL[$engine]: expected parked-fresh moved to backlog:" >&2
+    cat "$moves" >&2
+    exit 1
+  }
+  echo "$out" | grep -q 'deploy-parked-demoted:parked-fresh' || {
+    echo "FAIL[$engine]: expected parked-fresh to be demoted: $out" >&2
     exit 1
   }
 
-  # 3. A huge bound must disable expiry entirely (regression guard on parsing).
+  # 3. Deploy parks must not be expired to todo even with a tiny bound.
   : >"$moves"
   wide="$("${run_env[@]}" "$sweep" --board-cli "$board" --grace-min 1 \
-    --max-park-hours 999999 --max-actions 20 2>&1 || true)"
+    --max-park-hours 1 --max-actions 20 2>&1 || true)"
   if echo "$wide" | grep -q 'park-expired:'; then
-    echo "FAIL[$engine]: --max-park-hours 999999 still expired a park: $wide" >&2
+    echo "FAIL[$engine]: deploy-parked card was park-expired to todo: $wide" >&2
+    exit 1
+  fi
+  if grep -q ' todo$' "$moves"; then
+    echo "FAIL[$engine]: deploy-parked card moved to todo:" >&2
+    cat "$moves" >&2
     exit 1
   fi
 done
@@ -176,7 +192,7 @@ JSON
   move)
     printf '%s %s\n' "${2:-}" "${3:-}" >>"${BOARD_MOVES:?}"
     ;;
-  add|tag)
+  add|tag|set|mark)
     : ;;
   *)
     echo "unexpected: $*" >&2

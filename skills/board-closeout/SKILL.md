@@ -29,7 +29,7 @@ last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 Heartbeat line shape:
 
 ```text
-board-closeout <ISO> ok|noop closed=N closed_slugs=… rolled_back=N skipped=N flagged=…
+board-closeout <ISO> ok|noop closed=N closed_slugs=… rolled_back=N demoted=N skipped=N flagged=…
 ```
 
 ## What it will not do
@@ -37,9 +37,12 @@ board-closeout <ISO> ok|noop closed=N closed_slugs=… rolled_back=N skipped=N f
 - Kill live agent processes
 - Reclaim cards with an **open** PR/CR (field **or** body `PR:` / `CR:` /
   `lastgit://…` — empty structured `pr_url` is healed from the body when found)
-- Reclaim **deploy-parked** cards: `Requires-Deploy:` body header, tags
-  `awaiting-deploy` / `live-proof` / `deploy-gate`, or live-proof wait notes.
-  Those stay in `doing` until the deploy gate is terminal (closeout → done).
+- Leave **open** in-flight PR/CR cards in `doing`.
+- **Demote deploy-parked** cards out of WIP: `Requires-Deploy:` body header,
+  tags `awaiting-deploy` / `live-proof` / `deploy-gate` / `needs-safe-upgrade`
+  / `awaiting-validation`, or live-proof wait notes. Those go to `backlog`
+  with `block_status=deferred` (not todo). A later validate/safe-upgrade pass
+  closes them to `done` when the deploy gate is terminal.
 - Open PRs for you — WIP-with-commits-but-no-`pr_url` after grace is rolled
   back to **`todo`** (flag `wip-no-pr:<slug>`; worktree kept) so pickup can
   resume. That state is a pickup contract violation (`handoff` requires a URL).

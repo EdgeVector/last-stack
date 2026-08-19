@@ -13,10 +13,15 @@
 #      clear structured pr_url; keep worktree/branch so pickup can reopen)
 #   3. empty/no-PR doing, age ≥ grace, no live worker, no branch commits → todo
 #   4. WIP commits + no PR after grace → todo (flag wip-no-pr; worktree kept)
-#   5. park expiry: a deploy-gated / close-failed park older than
+#   5. deploy-parked doing cards (Requires-Deploy:, tags awaiting-deploy /
+#      live-proof / deploy-gate / needs-safe-upgrade / awaiting-validation, or
+#      live-proof wait notes) → backlog + block_status=deferred (flag
+#      deploy-parked-demoted). They must not inflate factory doing_stuck_hard.
+#      Open in-flight PR/CR cards are NOT demoted.
+#   6. park expiry: a NON-deploy close-failed park older than
 #      --max-park-hours with no live worker → todo (flag park-expired), so a
 #      parked card can never sit in `doing` forever with nobody driving it.
-#   6. repeated-failure escalation: a slug whose closeout fails for a
+#   7. repeated-failure escalation: a slug whose closeout fails for a
 #      NON-transient reason on --escalate-after consecutive passes (default 3)
 #      is stamped once on the board (CLOSE-FAILED-REPEATED, with the last
 #      failure text) and flagged close-failed-escalated:<slug>. A closeout that
@@ -27,15 +32,12 @@
 #      (BOARD_CLOSEOUT_STATE_DIR overrides). Leaving `doing` clears the streak;
 #      a transient board failure never counts toward it.
 #
-# Protections (do NOT reclaim):
+# Protections (do NOT reclaim to todo):
 #   - open / unknown PR on structured pr_url or body header
 #     (closed-not-merged is NOT protected — see action 2)
 #   - live agent process in the card worktree
-#   - deploy-gated / live-proof park: body Requires-Deploy:, tags
-#     awaiting-deploy|live-proof|deploy-gate, or HANDOFF + Requires-Deploy
-#     (bounded by --max-park-hours, default 24 — the park is a delay, not a
-#     permanent exemption)
 #   - younger than --grace-min (default 60)
+# Deploy-gated parks are demoted to backlog (action 5), not left in doing.
 #
 # On heal: empty pr_url + body PR/CR → best-effort
 #   `<board> add <slug> --pr-url <url>` so later soft reclaim skips the card.
@@ -47,7 +49,7 @@
 #
 # Exit 0 always after a completed pass (including noop). Exit 2 on usage error.
 # Prints a single heartbeat line:
-#   board-closeout <ISO> ok|noop closed=<n> rolled_back=<n> skipped=<n> flagged=...
+#   board-closeout <ISO> ok|noop closed=<n> rolled_back=<n> demoted=<n> skipped=<n> flagged=...
 set -euo pipefail
 
 self_dir="$(cd "$(dirname "$0")" && pwd -P)"
@@ -143,6 +145,7 @@ const res = {
   status: "ok",
   closed: [],
   rolled_back: [],
+  demoted: [],
   skipped: [],
   flagged: [],
 };
@@ -411,10 +414,20 @@ function tagList(card) {
     .filter(Boolean);
 }
 
-/** Deploy-gated / live-proof park: leave in doing; do not zombie-reclaim. */
+/** Deploy-gated / live-proof / safe-upgrade park: demote out of doing. */
 function isDeployParked(card) {
   const tags = tagList(card);
-  if (tags.some((t) => ["awaiting-deploy", "live-proof", "deploy-gate"].includes(t))) {
+  if (
+    tags.some((t) =>
+      [
+        "awaiting-deploy",
+        "live-proof",
+        "deploy-gate",
+        "needs-safe-upgrade",
+        "awaiting-validation",
+      ].includes(t),
+    )
+  ) {
     return true;
   }
   const body = bodyOf(card);
@@ -648,6 +661,51 @@ function rollbackTodo(slug) {
   return true;
 }
 
+/**
+ * Deploy/live-proof waits are a human/validate gate, not factory WIP.
+ * Demote them to backlog with deferred so doing_stuck_hard stays honest.
+ * Do not send them to todo — that is the pickup thrash path.
+ */
+function demoteDeployParked(slug, card) {
+  ensureAwaitingDeployTag(slug, card);
+  if (dryRun) {
+    res.demoted.push(slug);
+    res.flagged.push(`deploy-parked:${slug}`);
+    res.flagged.push(`deploy-parked-demoted:${slug}`);
+    return true;
+  }
+  const reason =
+    "deploy-parked: awaiting deploy/safe-upgrade/live-proof; not factory WIP";
+  run(
+    boardCli,
+    ["set", slug, "--block-status", "deferred", "--block-reason", reason],
+    { timeout: 45000 },
+  );
+  run(
+    boardCli,
+    [
+      "mark",
+      slug,
+      `PARKED: ${iso} — closeout demoted deploy/live-proof wait from doing to backlog (WIP accounting). Deploy/safe-upgrade remains a human gate.`,
+    ],
+    { timeout: 45000 },
+  );
+  let out = run(boardCli, ["move", slug, "backlog", "--force"], { timeout: 60000 });
+  if (!out.ok) {
+    out = run(boardCli, ["move", slug, "backlog"], { timeout: 60000 });
+    if (!out.ok) {
+      res.flagged.push(`demote-failed:${slug}`);
+      return false;
+    }
+  }
+  run(boardCli, ["add", slug, "--assignee", ""], { timeout: 30000 });
+  clearCloseFailure(slug);
+  res.demoted.push(slug);
+  res.flagged.push(`deploy-parked:${slug}`);
+  res.flagged.push(`deploy-parked-demoted:${slug}`);
+  return true;
+}
+
 const cards = listDoing();
 if (cards === null) {
   finish();
@@ -698,15 +756,23 @@ for (const card of cards) {
     if (m.merged) {
       if (closeCard(slug, url, branch)) actions++;
       else {
-        // Deploy gate pending / closeout refused — park in doing, do not reclaim.
+        // Deploy-parked merged cards are a human/validate gate, not WIP.
+        // Demote to backlog instead of leaving them to inflate doing_stuck_hard.
+        const parkedClose =
+          deployParked || /deploy/i.test(String(m.detail || ""));
+        if (!closeoutDeferred.has(slug) && parkedClose) {
+          if (demoteDeployParked(slug, card)) {
+            actions++;
+            continue;
+          }
+        }
         res.skipped.push(`${slug}:close-failed`);
-        if (deployParked || /deploy/i.test(String(m.detail || ""))) {
+        if (parkedClose) {
           ensureAwaitingDeployTag(slug, card);
           res.flagged.push(`deploy-parked:${slug}`);
         }
-        // Merged but un-closeable for longer than the park bound: nobody is
-        // driving the remaining gate. Return it to todo for a fresh claim.
-        if (!closeoutDeferred.has(slug) && parkExpired(age, wt)) {
+        // Non-deploy close-failed parks still expire back to todo.
+        if (!closeoutDeferred.has(slug) && !parkedClose && parkExpired(age, wt)) {
           res.flagged.push(`park-expired:${slug}`);
           if (rollbackTodo(slug)) actions++;
         }
@@ -728,16 +794,14 @@ for (const card of cards) {
     continue;
   }
 
-  // Deploy-gated / live-proof wait without a parseable PR yet: park, do not thrash.
+  // Deploy-gated / live-proof wait without a parseable PR: demote out of WIP.
+  // Do not roll to todo (pickup thrash) and do not leave in doing.
   if (deployParked) {
-    ensureAwaitingDeployTag(slug, card);
-    if (parkExpired(age, wt)) {
-      res.flagged.push(`park-expired:${slug}`);
-      if (rollbackTodo(slug)) {
-        actions++;
-        continue;
-      }
+    if (demoteDeployParked(slug, card)) {
+      actions++;
+      continue;
     }
+    ensureAwaitingDeployTag(slug, card);
     res.skipped.push(`${slug}:deploy-parked`);
     res.flagged.push(`deploy-parked:${slug}`);
     continue;
@@ -781,16 +845,19 @@ function finish() {
   writeFailState(failState);
   const closed = res.closed.length;
   const rolled = res.rolled_back.length;
+  const demoted = res.demoted.length;
   const skipped = res.skipped.length;
   const flags = res.flagged.length ? res.flagged.join(",") : "none";
   let st = res.status;
-  if (st === "noop" && (closed > 0 || rolled > 0)) st = "ok";
-  else if (st === "ok" && closed === 0 && rolled === 0) st = "noop";
+  if (st === "noop" && (closed > 0 || rolled > 0 || demoted > 0)) st = "ok";
+  else if (st === "ok" && closed === 0 && rolled === 0 && demoted === 0) st = "noop";
   const line =
     `board-closeout ${iso} ${st} closed=${closed}` +
     (closed ? ` closed_slugs=${res.closed.join(",")}` : "") +
     ` rolled_back=${rolled}` +
     (rolled ? ` rolled_slugs=${res.rolled_back.join(",")}` : "") +
+    ` demoted=${demoted}` +
+    (demoted ? ` demoted_slugs=${res.demoted.join(",")}` : "") +
     ` skipped=${skipped} flagged=${flags}`;
   console.log(line);
   if (jsonOut) {
@@ -828,7 +895,7 @@ worktree_roots = [home / ".kanban" / "worktrees", home / ".fkanban" / "worktrees
 forge_api = last_stack / "bin" / "last-stack-forge-api"
 closeout_bin = last_stack / "bin" / "last-stack-card-closeout"
 
-res = {"status": "ok", "closed": [], "rolled_back": [], "skipped": [], "flagged": []}
+res = {"status": "ok", "closed": [], "rolled_back": [], "demoted": [], "skipped": [], "flagged": []}
 
 def run(cmd, timeout=60):
     try:
@@ -1054,7 +1121,16 @@ def tag_list(card):
 
 def is_deploy_parked(card):
     tags = tag_list(card)
-    if any(t in ("awaiting-deploy", "live-proof", "deploy-gate") for t in tags):
+    if any(
+        t in (
+            "awaiting-deploy",
+            "live-proof",
+            "deploy-gate",
+            "needs-safe-upgrade",
+            "awaiting-validation",
+        )
+        for t in tags
+    ):
         return True
     body = body_of(card)
     if parse_body_header(body, "Requires-Deploy"):
@@ -1241,6 +1317,41 @@ def rollback(slug):
     res["rolled_back"].append(slug)
     return True
 
+def demote_deploy_parked(slug, card):
+    """Deploy/live-proof waits are a human/validate gate, not factory WIP."""
+    ensure_awaiting_deploy_tag(slug, card)
+    if dry_run:
+        res["demoted"].append(slug)
+        res["flagged"].append(f"deploy-parked:{slug}")
+        res["flagged"].append(f"deploy-parked-demoted:{slug}")
+        return True
+    reason = "deploy-parked: awaiting deploy/safe-upgrade/live-proof; not factory WIP"
+    run(
+        [board_cli, "set", slug, "--block-status", "deferred", "--block-reason", reason],
+        timeout=45,
+    )
+    run(
+        [
+            board_cli,
+            "mark",
+            slug,
+            f"PARKED: {iso} — closeout demoted deploy/live-proof wait from doing to backlog (WIP accounting). Deploy/safe-upgrade remains a human gate.",
+        ],
+        timeout=45,
+    )
+    ok, _, _ = run([board_cli, "move", slug, "backlog", "--force"], timeout=60)
+    if not ok:
+        ok, _, _ = run([board_cli, "move", slug, "backlog"], timeout=60)
+        if not ok:
+            res["flagged"].append(f"demote-failed:{slug}")
+            return False
+    run([board_cli, "add", slug, "--assignee", ""], timeout=30)
+    clear_close_failure(slug)
+    res["demoted"].append(slug)
+    res["flagged"].append(f"deploy-parked:{slug}")
+    res["flagged"].append(f"deploy-parked-demoted:{slug}")
+    return True
+
 cards = list_doing()
 if cards is None:
     # Board unreadable: emit and leave every streak untouched.
@@ -1283,11 +1394,22 @@ for card in cards:
             if close_card(slug, url, branch):
                 actions += 1
             else:
+                parked_close = deploy_parked or bool(
+                    re.search(r"deploy", str(detail or ""), re.I)
+                )
+                if slug not in closeout_deferred and parked_close:
+                    if demote_deploy_parked(slug, card):
+                        actions += 1
+                        continue
                 res["skipped"].append(f"{slug}:close-failed")
-                if deploy_parked or re.search(r"deploy", str(detail or ""), re.I):
+                if parked_close:
                     ensure_awaiting_deploy_tag(slug, card)
                     res["flagged"].append(f"deploy-parked:{slug}")
-                if slug not in closeout_deferred and park_expired(age, wt):
+                if (
+                    slug not in closeout_deferred
+                    and not parked_close
+                    and park_expired(age, wt)
+                ):
                     res["flagged"].append(f"park-expired:{slug}")
                     if rollback(slug):
                         actions += 1
@@ -1304,12 +1426,10 @@ for card in cards:
         res["skipped"].append(f"{slug}:pr-open-or-unknown")
         continue
     if deploy_parked:
+        if demote_deploy_parked(slug, card):
+            actions += 1
+            continue
         ensure_awaiting_deploy_tag(slug, card)
-        if park_expired(age, wt):
-            res["flagged"].append(f"park-expired:{slug}")
-            if rollback(slug):
-                actions += 1
-                continue
         res["skipped"].append(f"{slug}:deploy-parked")
         res["flagged"].append(f"deploy-parked:{slug}")
         continue
@@ -1335,6 +1455,7 @@ for card in cards:
 
 closed = len(res["closed"])
 rolled = len(res["rolled_back"])
+demoted = len(res["demoted"])
 # A card that left `doing` is no longer failing to close — drop its streak.
 if seen_doing_slugs is not None:
     for slug in list(fail_state.keys()):
@@ -1345,9 +1466,9 @@ write_fail_state()
 skipped = len(res["skipped"])
 flags = ",".join(res["flagged"]) if res["flagged"] else "none"
 st = res["status"]
-if st == "noop" and (closed > 0 or rolled > 0):
+if st == "noop" and (closed > 0 or rolled > 0 or demoted > 0):
     st = "ok"
-elif st == "ok" and closed == 0 and rolled == 0:
+elif st == "ok" and closed == 0 and rolled == 0 and demoted == 0:
     st = "noop"
 line = f"board-closeout {iso} {st} closed={closed}"
 if closed:
@@ -1355,6 +1476,9 @@ if closed:
 line += f" rolled_back={rolled}"
 if rolled:
     line += f" rolled_slugs={','.join(res['rolled_back'])}"
+line += f" demoted={demoted}"
+if demoted:
+    line += f" demoted_slugs={','.join(res['demoted'])}"
 line += f" skipped={skipped} flagged={flags}"
 print(line)
 if json_out:

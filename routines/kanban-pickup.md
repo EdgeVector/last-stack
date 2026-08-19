@@ -189,15 +189,17 @@ agent workspace. At the beginning of the run, record `run_started_epoch=$(date
   deploy propagation, mirror polling, CI completion, etc.), stop watching when
   fewer than **10 minutes** remain. If the END STATE is proven, close out the
   card immediately. If it is still pending:
-  - **Deploy / live-proof wait (won't-undo thrash ban):** leave the card in
-    **`doing`** (do **not** roll back to `todo`). Ensure structured `pr_url` +
-    `branch` are stamped when a CR/PR exists, append observed state + a
-    `Requires-Deploy: deploy-pipeline` line when the END STATE depends on
-    deploy, and `tag add <slug> awaiting-deploy`. Heartbeat
+  - **Deploy / live-proof wait (won't-undo thrash ban):** do **not** roll
+    back to `todo`. Stamp structured `pr_url` + `branch` when a CR/PR exists,
+    append observed state + a `Requires-Deploy: deploy-pipeline` line when
+    the END STATE depends on deploy, and `tag add <slug> awaiting-deploy`.
+    Then demote the card to **`backlog`** with `block_status=deferred` and a
+    park reason so it does not inflate factory `doing_stuck_hard`. Heartbeat
     `ok cards=1 worked=<slug> result=in-flight-deploy-pending pr=<url|none>
-    final_column=doing reason=watch-budget-reserved`. Board-closeout skips
-    reclaim for deploy-parked cards and only moves them to `done` when the
-    deploy gate is terminal.
+    final_column=backlog reason=watch-budget-reserved`. Board-closeout
+    demotes leftover deploy-parked `doing` cards the same way (it does **not**
+    skip them in WIP). A later validate/safe-upgrade pass closes them to
+    `done` when the deploy gate is terminal.
   - **Other external waits without a PR/CR and without deploy gate:** append
     observed state, move/leave in `todo` as appropriate, heartbeat
     `ok cards=1 worked=<slug> result=rolled-back-todo reason=watch-budget-reserved`.
