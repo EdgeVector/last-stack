@@ -34,14 +34,16 @@ if [ "$DRY_RUN" -eq 0 ]; then
 fi
 
 path="$REGISTRY_DIR/$ID.toml"
-last_stack_registry_runtime_values "$path" grok grok-4.5 "$FORCE_DEFAULTS"
+last_stack_registry_runtime_values "$path" grok grok-4.5 "$FORCE_DEFAULTS" difficulty
+last_stack_registry_rrule "$path" \
+  "FREQ=HOURLY;INTERVAL=2;BYMINUTE=11;BYSECOND=0" "$FORCE_DEFAULTS"
 
 body=$(cat <<EOF
 # Mechanical Class A–E factory freeze classifier (loom graph, CLI fallback).
 id = "$ID"
 $(last_stack_registry_emit_runtime_values)
 effort = "low"
-rrule = "FREQ=HOURLY;INTERVAL=2;BYMINUTE=11;BYSECOND=0"
+rrule = "$REG_RUNTIME_RRULE"
 cwd = "$REG_CWD"
 status = "active"
 timeout_min = 15
