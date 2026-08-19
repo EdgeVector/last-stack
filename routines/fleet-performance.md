@@ -11,8 +11,9 @@ or add **at most one** missing routine. You do not fix product code, do
 not groom the board, and do not mine session transcripts for new skills.
 
 Each run starts cold. Honor `brain get sop-routine-shared-contract --type sop`
-(heartbeat LAST, FILE papercuts to brain only, Kind:pr via
-`last-stack-kanban-file-pr`, no Mini restart, no `sleep` polls).
+and `brain get sop-routines-registry-canonical --type sop` (heartbeat LAST,
+FILE papercuts to brain only, Kind:pr via `last-stack-kanban-file-pr`, no Mini
+restart, no `sleep` polls).
 
 ## Lane (do not duplicate)
 
@@ -64,6 +65,11 @@ difficulty matrix). Never `routines-profile apply grok-default-20260818`.
    crashed.
 6. Caps per run: **≤3 registry mutations**, **≤1 new routine**, **1
    `routines-profile save`** before the first mutation. Prefer a quiet day.
+7. **Canonical registry:** `${ROUTINES_HOME:-$HOME/.routines}/registry/<id>.toml`
+   is the only live file. Edit it. Do **not** re-run
+   `last-stack-*-routine` / pickup-workers installers to persist a slice
+   (they seed *missing* files only; `--force-defaults` would undo the
+   slice). Do **not** `routines route`.
 
 ## Step 1 — Measure
 
@@ -100,14 +106,26 @@ last 2 days (read automation memory).
 
 ## Step 2 — Apply (registry)
 
+The file you edit is:
+
+```bash
+reg="${ROUTINES_HOME:-$HOME/.routines}/registry"
+# one file per id, e.g. $reg/last-stack-feature-prove.toml
+```
+
+That directory is the canonical live registry. `routinesd` and
+`routines list` read it. Host-track refresh / last-stack setup will not
+rewrite an existing TOML.
+
 Before any write:
 
 ```bash
 routines-profile save fleet-performance-$(date -u +%Y%m%d)
 ```
 
-Mutations (edit TOML in place, keep comments; or `routines pause` /
-`routines resume` for status only):
+Mutations (edit `$reg/<id>.toml` in place, keep comments and unrelated
+keys; or `routines pause` / `routines resume` for status only). Never
+re-run an installer afterward:
 
 | Finding | Action |
 |---|---|
@@ -131,11 +149,14 @@ it:
 2. Author a real prompt (frontmatter + bounded steps + close-out + heartbeat).
 3. Land it in EdgeVector/last-stack via an isolated worktree + LastGit CR
    (`last-stack-pr-venue`, `lastgit cr create … --auto-merge`), **and**
-   write a live registry TOML with `difficulty` (no pin) + prompt_path.
-4. Use an installer in `bin/last-stack-<id>-routine` only to seed a missing
-   first-install TOML. The live `~/.routines/registry` file is canonical;
-   host-track refresh must not rewrite it. Never `git add -A` in a shared
-   checkout.
+   write the live TOML yourself:
+   `${ROUTINES_HOME:-$HOME/.routines}/registry/<id>.toml` with
+   `difficulty` (no pin) + `prompt_path` at
+   `$HOME/.last-stack/routines/<name>.md`.
+4. Optional installer `bin/last-stack-<id>-routine` **only** so a missing
+   file can be seeded on first install / other machines. Do not write an
+   installer that rewrites existing files. Never `git add -A` in a shared
+   checkout. Never re-run the installer after writing the live TOML.
 5. If you cannot land the last-stack CR this run, **file** one Kind:pr card
    with `last-stack-kanban-file-pr` (live `--north-star` + `--milestone`)
    containing the full prompt in the body — do **not** leave an untracked
