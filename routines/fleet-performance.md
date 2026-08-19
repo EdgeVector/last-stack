@@ -132,8 +132,10 @@ it:
 3. Land it in EdgeVector/last-stack via an isolated worktree + LastGit CR
    (`last-stack-pr-venue`, `lastgit cr create … --auto-merge`), **and**
    write a live registry TOML with `difficulty` (no pin) + prompt_path.
-4. Use an installer in `bin/last-stack-<id>-routine` if the new job should
-   survive host-track refresh. Never `git add -A` in a shared checkout.
+4. Use an installer in `bin/last-stack-<id>-routine` only to seed a missing
+   first-install TOML. The live `~/.routines/registry` file is canonical;
+   host-track refresh must not rewrite it. Never `git add -A` in a shared
+   checkout.
 5. If you cannot land the last-stack CR this run, **file** one Kind:pr card
    with `last-stack-kanban-file-pr` (live `--north-star` + `--milestone`)
    containing the full prompt in the body — do **not** leave an untracked

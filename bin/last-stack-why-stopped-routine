@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the scheduled why-stopped Class A–E classifier routine.
+# Seed the scheduled why-stopped Class A–E classifier routine when missing.
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
@@ -34,16 +34,16 @@ if [ "$DRY_RUN" -eq 0 ]; then
 fi
 
 path="$REGISTRY_DIR/$ID.toml"
-last_stack_registry_runtime_values "$path" grok grok-4.5 "$FORCE_DEFAULTS" difficulty
-last_stack_registry_rrule "$path" \
-  "FREQ=HOURLY;INTERVAL=2;BYMINUTE=11;BYSECOND=0" "$FORCE_DEFAULTS"
+if [ "$DRY_RUN" -eq 0 ] && last_stack_registry_skip_if_exists "$path" "$FORCE_DEFAULTS"; then
+  exit 0
+fi
 
 body=$(cat <<EOF
 # Mechanical Class A–E factory freeze classifier (loom graph, CLI fallback).
 id = "$ID"
-$(last_stack_registry_emit_runtime_values)
+difficulty = "normal"
 effort = "low"
-rrule = "$REG_RUNTIME_RRULE"
+rrule = "FREQ=HOURLY;INTERVAL=2;BYMINUTE=11;BYSECOND=0"
 cwd = "$REG_CWD"
 status = "active"
 timeout_min = 15

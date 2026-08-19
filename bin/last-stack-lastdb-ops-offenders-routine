@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the daily lastdb-ops-offenders Generate routine.
+# Seed the daily lastdb-ops-offenders Generate routine when missing.
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
@@ -34,17 +34,17 @@ if [ "$DRY_RUN" -eq 0 ]; then
 fi
 
 path="$REGISTRY_DIR/$ID.toml"
-last_stack_registry_runtime_values "$path" grok grok-4.5 "$FORCE_DEFAULTS" difficulty
-last_stack_registry_rrule "$path" \
-  "FREQ=DAILY;BYHOUR=8;BYMINUTE=40;BYSECOND=0" "$FORCE_DEFAULTS"
+if [ "$DRY_RUN" -eq 0 ] && last_stack_registry_skip_if_exists "$path" "$FORCE_DEFAULTS"; then
+  exit 0
+fi
 
 body=$(cat <<EOF
 # Daily lastdb ops worst-offender → investigate → file ≤2 improvement cards.
 # Generate-only. Pickup ships. Not a new engine (sentry-triage shape).
 id = "$ID"
-$(last_stack_registry_emit_runtime_values)
+difficulty = "normal"
 effort = "medium"
-rrule = "$REG_RUNTIME_RRULE"
+rrule = "FREQ=DAILY;BYHOUR=8;BYMINUTE=40;BYSECOND=0"
 cwd = "$REG_CWD"
 status = "active"
 timeout_min = 30

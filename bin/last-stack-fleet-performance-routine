@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# Install/update the daily fleet-performance registry entry.
-# Emits difficulty-only routing (no harness/model/pin) so host-track refresh
-# does not re-pin the live matrix fleet.
+# Seed the daily fleet-performance registry entry when missing.
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
@@ -15,22 +13,21 @@ PROMPT_PATH="$(last_stack_registry_prompt_path fleet-performance.md "$ROOT/routi
 ID="last-stack-fleet-performance"
 DRY_RUN=0
 FORCE_DEFAULTS=0
-PROMPT_PATH_SET=0
 
 usage() {
   cat <<'USAGE'
 last-stack-fleet-performance-routine [options]
 
-Writes the routines registry entry for the daily fleet-performance auditor.
-Re-running is idempotent and preserves live rrule/difficulty/status unless
---force-defaults is passed.
+Seeds the routines registry entry for the daily fleet-performance auditor.
+An existing file is the canonical registry and is left alone.
+Pass --force-defaults to replace it with compiled defaults.
 
 Options:
   --registry-dir <p>  registry directory (default: $ROUTINES_HOME/registry)
   --prompt-path <p>   prompt path (default: stable last-stack)
   --id <id>           automation id (default: last-stack-fleet-performance)
-  --force-defaults    replace live rrule/difficulty/status with compiled defaults
-  --dry-run           print target path and contents without writing
+  --force-defaults    replace an existing file with compiled defaults
+  --dry-run           print compiled defaults without writing
   -h, --help          show this help
 USAGE
 }
@@ -39,8 +36,8 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --registry-dir) REGISTRY_DIR="$2"; shift 2 ;;
     --registry-dir=*) REGISTRY_DIR="${1#*=}"; shift ;;
-    --prompt-path) PROMPT_PATH="$2"; PROMPT_PATH_SET=1; shift 2 ;;
-    --prompt-path=*) PROMPT_PATH="${1#*=}"; PROMPT_PATH_SET=1; shift ;;
+    --prompt-path) PROMPT_PATH="$2"; shift 2 ;;
+    --prompt-path=*) PROMPT_PATH="${1#*=}"; shift ;;
     --id) ID="$2"; shift 2 ;;
     --id=*) ID="${1#*=}"; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
@@ -68,20 +65,9 @@ if [ "$DRY_RUN" -eq 0 ]; then
 fi
 
 path="$REGISTRY_DIR/$ID.toml"
-DEFAULT_DIFFICULTY="normal"
-DEFAULT_RRULE="FREQ=DAILY;BYHOUR=7;BYMINUTE=10;BYSECOND=0"
-DEFAULT_STATUS="active"
-DIFFICULTY="$DEFAULT_DIFFICULTY"
-RRULE="$DEFAULT_RRULE"
-STATUS="$DEFAULT_STATUS"
-
-if [ "$FORCE_DEFAULTS" -eq 0 ] && [ -f "$path" ]; then
-  existing="$(last_stack_registry_toml_string "$path" difficulty)"
-  [ -z "$existing" ] || DIFFICULTY="$existing"
-  existing="$(last_stack_registry_toml_string "$path" rrule)"
-  [ -z "$existing" ] || RRULE="$existing"
-  existing="$(last_stack_registry_toml_string "$path" status)"
-  [ -z "$existing" ] || STATUS="$existing"
+if [ "$DRY_RUN" -eq 0 ] && last_stack_registry_skip_if_exists "$path" "$FORCE_DEFAULTS"; then
+  printf 'configured %s in %s\n' "$ID" "$REGISTRY_DIR"
+  exit 0
 fi
 
 workspace_cwd="${LAST_STACK_WORKSPACE:-$REG_CWD}"
@@ -90,11 +76,11 @@ body=$(cat <<EOF
 # Daily fleet-performance auditor: measure outcomes, apply a small cadence /
 # difficulty / status slice, or add one missing routine. Matrix-routed.
 id = "$ID"
-difficulty = "$DIFFICULTY"
+difficulty = "normal"
 effort = "medium"
-rrule = "$RRULE"
+rrule = "FREQ=DAILY;BYHOUR=7;BYMINUTE=10;BYSECOND=0"
 cwd = "$workspace_cwd"
-status = "$STATUS"
+status = "active"
 timeout_min = 30
 prompt_path = "$PROMPT_PATH"
 heartbeat_slug = "routine-heartbeats"

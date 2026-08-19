@@ -38,7 +38,7 @@ printf '%s\n' "$dry" | grep -q 'REPLACE' && { echo "dry-run contains REPLACE" >&
 printf '%s\n' "$dry" | grep -q "cwd = \"$expected_cwd\""
 test ! -e "$tmp/dry-registry"
 
-# Reinstall preserves a live cadence/difficulty/status slice.
+# Reinstall leaves a live cadence/difficulty/status slice byte-for-byte alone.
 {
   printf '%s\n' 'id = "last-stack-fleet-performance"'
   printf '%s\n' 'difficulty = "fast"'
@@ -46,12 +46,15 @@ test ! -e "$tmp/dry-registry"
   printf '%s\n' 'status = "paused"'
   printf '%s\n' "prompt_path = \"$prompt\""
 } >"$entry"
+before="$(cksum "$entry")"
 "$BIN" --registry-dir "$tmp/registry" --prompt-path "$prompt" >/dev/null
+after="$(cksum "$entry")"
+test "$before" = "$after"
 grep -q 'difficulty = "fast"' "$entry"
 grep -q 'rrule = "FREQ=DAILY;BYHOUR=16;BYMINUTE=5;BYSECOND=0"' "$entry"
 grep -q 'status = "paused"' "$entry"
-if grep -qE '^(harness|model|pin) ' "$entry"; then
-  echo "reinstall reintroduced pin/harness:" >&2
+if grep -qE '^(harness|model|pin|effort) ' "$entry"; then
+  echo "reinstall mutated a live file:" >&2
   cat "$entry" >&2
   exit 1
 fi

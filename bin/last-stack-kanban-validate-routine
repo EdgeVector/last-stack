@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install/update the scheduled kanban validation proof-lane routine.
+# Seed the scheduled kanban validation proof-lane routine when missing.
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
@@ -18,15 +18,16 @@ usage() {
   cat <<'USAGE'
 last-stack-kanban-validate-routine [options]
 
-Writes the routines registry entry for the kanban validation proof lane.
-Re-running is idempotent.
+Seeds the routines registry entry for the kanban validation proof lane.
+An existing file is the canonical registry and is left alone.
+Pass --force-defaults to replace it with compiled defaults.
 
 Options:
   --registry-dir <p>  registry directory (default: $ROUTINES_HOME/registry)
   --prompt-path <p>   kanban-validate prompt path (default: stable last-stack)
   --id <id>           automation id (default: last-stack-fkanban-validate)
-  --force-defaults    replace existing harness/model routing with defaults
-  --dry-run           print target path and contents without writing
+  --force-defaults    replace an existing file with compiled defaults
+  --dry-run           print compiled defaults without writing
   -h, --help          show this help
 USAGE
 }
@@ -95,7 +96,10 @@ if [ "$DRY_RUN" -eq 0 ]; then
 fi
 
 path="$REGISTRY_DIR/$ID.toml"
-last_stack_registry_runtime_values "$path" codex gpt-5.5 "$FORCE_DEFAULTS"
+if [ "$DRY_RUN" -eq 0 ] && last_stack_registry_skip_if_exists "$path" "$FORCE_DEFAULTS"; then
+  printf 'configured %s in %s\n' "$ID" "$REGISTRY_DIR"
+  exit 0
+fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
   printf '%s\n' "--- $path"
@@ -105,7 +109,8 @@ fi
   printf '# Kanban validation proof lane.\n'
   printf '# Runs DONE-WHEN sweep plus one bounded post-merge or terminal North Star proof.\n'
   printf 'id = "%s"\n' "$ID"
-  last_stack_registry_emit_runtime_values
+  printf 'harness = "codex"\n'
+  printf 'model = "gpt-5.5"\n'
   printf 'effort = "medium"\n'
   printf 'rrule = "FREQ=HOURLY;INTERVAL=4;BYMINUTE=33;BYSECOND=0"\n'
   printf 'cwd = "%s"\n' "$REG_CWD"
