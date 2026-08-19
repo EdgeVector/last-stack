@@ -22,6 +22,11 @@
 #      refused write does not land). Older nodes ignore expected and write
 #      unconditionally — silent until LastGit ref/CI CAS collapses. Probe
 #      runs on an ephemeral throwaway node of the candidate binary only.
+#      AND the DEV PHOTOGRAPH STAMP GATE (Tom 2026-08-19): live cutover is
+#      refused unless an ephemeral/CoW copy of real data uploaded a
+#      photograph to DEV (not the primary's production backup home) and
+#      CAS-flipped backup/latest. Never point the candidate at live ~/.lastdb
+#      for that upload. A mock object store is not DEV.
 #   4. Only then venue-aware live install:
 #        sidebin → atomic install under bin-with-upload-cap + launchctl kickstart
 #        brew    → brew upgrade + brew services restart (only if formula installed)
@@ -45,6 +50,7 @@
 #   safe-upgrade-lastdb.sh --yes            # no confirm prompt before live cutover
 #   safe-upgrade-lastdb.sh --candidate /path/to/lastdbd
 #   safe-upgrade-lastdb.sh --version 0.22.8 # fetch that tap release tarball
+#   safe-upgrade-lastdb.sh --check-dev-stamp  # refuse/allow live based on DEV photograph receipt only
 # Env (ephemeral rollback):
 #   LASTDB_ROLLBACK_ROOT=<path>    # defaults under TMPDIR, never under $HOME
 #   LASTDB_ROLLBACK_TTL_HOURS=24   # RED retention contract; next run reclaims
@@ -121,6 +127,7 @@ LAUNCHD_PLIST="${LASTDB_LAUNCHD_PLIST:-$HOME/Library/LaunchAgents/${LAUNCHD_LABE
 
 PROBE_ONLY=0
 ASSUME_YES=0
+CHECK_DEV_STAMP=0
 CANDIDATE_BIN=""
 CANDIDATE_CLI_BIN=""
 TARGET_VERSION=""
@@ -137,6 +144,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --probe-only) PROBE_ONLY=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
+    --check-dev-stamp) CHECK_DEV_STAMP=1; shift ;;
     --candidate) CANDIDATE_BIN="$2"; shift 2 ;;
     --version) TARGET_VERSION="$2"; shift 2 ;;
     -h|--help) usage ;;
@@ -201,7 +209,28 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
 . "$_SCRIPT_DIR/binary-pair-checks.sh"
 # shellcheck source=latency-bar-checks.sh
 . "$_SCRIPT_DIR/latency-bar-checks.sh"
+# shellcheck source=dev-photograph-stamp-gate.sh
+. "$_SCRIPT_DIR/dev-photograph-stamp-gate.sh"
 CAS_PROBE_SH="$_SCRIPT_DIR/cas-mutation-probe.sh"
+
+if [ "${CHECK_DEV_STAMP:-0}" -eq 1 ]; then
+  DEV_STAMP_OUT=""
+  set +e
+  DEV_STAMP_OUT="$(assert_dev_photograph_stamp_ok "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" 2>&1)"
+  DEV_STAMP_RC=$?
+  set -e
+  if [ -n "$DEV_STAMP_OUT" ]; then
+    printf '%s\n' "$DEV_STAMP_OUT"
+  fi
+  if [ "$DEV_STAMP_RC" -ne 0 ]; then
+    echo "VERDICT: RED"
+    echo "REASON: live cutover refused — DEV photograph stamp is missing or RED (ephemeral/CoW + DEV upload + CAS latest required; never live ~/.lastdb; never production backup home)"
+    exit 1
+  fi
+  echo "VERDICT: GREEN"
+  echo "SUMMARY: DEV photograph stamp receipt is GREEN; live cutover is allowed to proceed (this flag does not install)"
+  exit 0
+fi
 
 release_rollback_point() {
   [ "${ROLLBACK_READY:-0}" -eq 1 ] || return 0
@@ -1299,6 +1328,38 @@ if [ "$PROBE_ONLY" -eq 1 ]; then
   echo "LATENCY: point=${CAND_LAT_POINT_MS}ms(base ${BASE_LAT_POINT_MS}ms) scan=${CAND_LAT_SCAN_MS}ms(base ${BASE_LAT_SCAN_MS}ms) write=${CAND_LAT_WRITE_MS}ms(base ${BASE_LAT_WRITE_MS}ms) boot=${CAND_BOOT_SECS}s(base ${BASE_BOOT_SECS:-?}s)"
   echo "NEXT:    re-run without --probe-only (and --yes if non-interactive) for venue-aware live cutover"
   exit 0
+fi
+
+# --- 2b) DEV photograph stamp gate (Tom 2026-08-19) --------------------------
+# Live cutover is refused unless an ephemeral/CoW copy already uploaded a
+# photograph to DEV and CAS-flipped backup/latest. LASTDB_PROBE_DEV_STAMP_SKIP=1
+# is Tom clearance only.
+if [ "${LASTDB_PROBE_DEV_STAMP_SKIP:-0}" = "1" ]; then
+  warn "DEV photograph stamp SKIPPED (LASTDB_PROBE_DEV_STAMP_SKIP=1) — Tom-clearance only; live cutover will not prove backup-to-DEV"
+else
+  DEV_STAMP_OUT=""
+  set +e
+  DEV_STAMP_OUT="$(assert_dev_photograph_stamp_ok "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" 2>&1)"
+  DEV_STAMP_RC=$?
+  set -e
+  if [ -n "$DEV_STAMP_OUT" ]; then
+    while IFS= read -r line; do
+      case "$line" in
+        WARN:*) warn "${line#WARN: }" ;;
+        RED:*)  log "DEV photograph stamp $line" ;;
+        *)      log "DEV photograph stamp: $line" ;;
+      esac
+    done <<< "$DEV_STAMP_OUT"
+  fi
+  if [ "$DEV_STAMP_RC" -ne 0 ]; then
+    echo ""
+    echo "VERDICT: RED"
+    echo "REASON: live cutover refused — DEV photograph stamp is missing or RED. Boot the candidate on an ephemeral/CoW copy of real data, upload the photograph to DEV (not the primary production backup home), and record a GREEN stamp. Never point the candidate at live ~/.lastdb."
+    echo "RECEIPT: $(dev_stamp_receipt_path)"
+    echo "NEXT:    run the DEV photograph stamp (lastdb connect --env dev on the CoW, then lastdb cloud snapshot) then re-run this driver."
+    exit 1
+  fi
+  log "DEV photograph stamp GREEN ($(dev_stamp_receipt_path))"
 fi
 
 # --- 3) human confirm before touching live -----------------------------------

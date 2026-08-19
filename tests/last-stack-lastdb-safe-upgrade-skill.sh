@@ -76,5 +76,17 @@ grep -q 'lat_correlated_within_bar' "$driver" || {
   echo "FAIL: driver must call lat_correlated_within_bar" >&2
   exit 1
 }
+grep -q 'dev-photograph-stamp-gate.sh' "$driver" || {
+  echo "FAIL: driver must source dev-photograph-stamp-gate.sh" >&2
+  exit 1
+}
+grep -q 'assert_dev_photograph_stamp_ok' "$driver" || {
+  echo "FAIL: driver must call assert_dev_photograph_stamp_ok before live cutover" >&2
+  exit 1
+}
+grep -qi 'DEV photograph' "$skill_md" || {
+  echo "FAIL: SKILL.md must require a DEV photograph stamp before live cutover" >&2
+  exit 1
+}
 
 echo "OK: lastdb-safe-upgrade skill packaged for multi-harness setup"

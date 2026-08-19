@@ -8,7 +8,10 @@ description: |
   real-data reads AND RSS under the memory-guard AND the latency bar (real
   workloads timed vs the current binary — correct-but-slow is RED) AND the
   CAS mutation bar (candidate enforces `/api/mutation` `expected` — false
-  precondition → 409; LastGit ref/CI CAS depends on it), (4) only
+  precondition → 409; LastGit ref/CI CAS depends on it), AND a GREEN
+  **DEV photograph stamp** (ephemeral/CoW of real data uploads the
+  photograph to DEV — not the primary's production backup home — and
+  CAS-flips backup/latest; never live `~/.lastdb` first), (4) only
   then venue-aware live install (sidebin+launchd or
   brew services) + post-check + Situations notice, with the **durability
   canary** bracketing the restart (sentinels acked pre-cutover must read back
@@ -173,6 +176,21 @@ proxy is optional later for near-zero client impact.
     recover lost writes; a RED here means audit recent writes across apps
     before trusting the store. **There is deliberately no skip flag.**
     Tunables: `LASTDB_DURABILITY_CANARY_N`, `LASTDB_DURABILITY_READ_WAIT_S`.
+13. **DEV photograph stamp (required before live cutover — Tom 2026-08-19,
+    this is the SOP for all upgrades):** after the other probe bars, live
+    install is **refused** unless an **ephemeral/CoW copy of real data**
+    (never live `~/.lastdb`) uploaded a cloud-backup **photograph** to
+    **DEV** (Exemem `https://ygyu7ritx8.execute-api.us-west-2.amazonaws.com`,
+    not the primary's production backup home
+    `jdsx4ixk2i.execute-api.us-east-1.amazonaws.com`) and CAS-flipped
+    `backup/latest` (committed snapshot counter ≥ 1). A mock object store is
+    not DEV. Strip prod `cloud_sync.json` on the CoW, connect `--env dev`
+    with a DEV-only invite, then `lastdb cloud snapshot`. Record a GREEN
+    receipt; `scripts/dev-photograph-stamp-gate.sh` / `--check-dev-stamp`
+    refuse live when the receipt is missing, RED, aimed at production, or
+    used the live home. Skip (`LASTDB_PROBE_DEV_STAMP_SKIP=1`) is Tom
+    clearance only. Brain: `preference-lastdb-upgrade-ephemeral-probe-first`,
+    `sop-lastdb-safe-upgrade`.
 
 ## Do this, in order
 
@@ -212,6 +230,9 @@ bash "$driver" --candidate /path/to/release/lastdbd --yes
 
 # Bottle version via GitHub release tarball then venue-aware live
 bash "$driver" --version 0.22.8 --probe-only
+
+# Refuse/allow live based only on the DEV photograph stamp receipt
+bash "$driver" --check-dev-stamp
 ```
 
 Or, after last-stack is installed:
@@ -230,6 +251,7 @@ The script:
 | **0. Class** | Refuse `target/debug`, `-dirty` version, size ≫ incumbent (before multi-GB backup) |
 | **2. Probe** | `BIN=<candidate>` CoW smoke harness (never live home) + **CAS mutation bar** (ephemeral candidate node: false `expected` → 409) + **RSS settle/sample** vs memory-guard limit + **latency bar**: point read / `kanban list` scan / `brain put` write timed on candidate CoW copy vs the current binary on an identical copy |
 | Detect venue | sidebin vs brew |
+| **2b. DEV photograph stamp** | Live cutover **refused** without a GREEN receipt: ephemeral/CoW (never `~/.lastdb`) uploaded the photograph to **DEV** (not the primary's production backup home) and CAS-flipped `backup/latest`. `--check-dev-stamp` exercises this gate alone. |
 | **3. Live** | **durability canary armed** (N run-unique sentinels acked + read back on the old daemon, before any live change), then sidebin atomic install + kickstart **or** brew upgrade/restart |
 | **4. Post-check** | Live `/health`, schemas > 0, Board title, **durability canary read-back** (stale nonce → RED, no skip flag), **live peak RSS** vs guard, **live point-read + kanban list latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency + durability in notice |
 | **4b. Release** | After GREEN, delete the rollback point and its empty root. GREEN probe-only and operator abort release it too. |
@@ -268,7 +290,7 @@ incident.
 | `VERDICT: GREEN` | Probe + live cutover + live post-check passed | Done |
 | `VERDICT: GREEN_PROBE_ONLY` | Probe passed; primary still on old version | Re-run with `--yes` if Tom wants the upgrade |
 | `VERDICT: ALREADY_CURRENT` | Already on candidate/stable | Nothing to do |
-| `VERDICT: RED` | Candidate fails **class** bar (debug/dirty/size), **or** cannot serve real data, **or** the **CAS mutation** bar (node accepted a false `expected` precondition), **or** peak RSS exceeds memory-guard bar, **or** the latency bar failed (per-op 3×, absolute ceiling, **or correlated** all-ops / geo-mean regression), **or** the **durability canary** failed post-cutover (stale/unreadable sentinel — acked writes did not provably survive the restart) | **Do not upgrade**; file release-blocker; use the one retained rollback point only if recovery is required. The next safe-upgrade run reclaims it. A durability RED after cutover additionally means: audit recent writes across apps — rollback does not recover lost writes. |
+| `VERDICT: RED` | Candidate fails **class** bar (debug/dirty/size), **or** cannot serve real data, **or** the **CAS mutation** bar (node accepted a false `expected` precondition), **or** peak RSS exceeds memory-guard bar, **or** the latency bar failed (per-op 3×, absolute ceiling, **or correlated** all-ops / geo-mean regression), **or** the **DEV photograph stamp** is missing/RED (no ephemeral/CoW upload to DEV, or the receipt names production / live `~/.lastdb`), **or** the **durability canary** failed post-cutover (stale/unreadable sentinel — acked writes did not provably survive the restart) | **Do not upgrade**; file release-blocker; use the one retained rollback point only if recovery is required. The next safe-upgrade run reclaims it. A durability RED after cutover additionally means: audit recent writes across apps — rollback does not recover lost writes. |
 
 ## Rollback
 
@@ -329,6 +351,10 @@ kanban list   # must show real cards
 
 - `brew upgrade lastdb` as a one-liner without this skill when the user cares about data.
 - Point candidate `--data-dir` at live `~/.lastdb` "just to see".
+- Upload a CoW/ephemeral photograph into the primary's **production** backup
+  home, or treat a mock object-store "stamp" as the DEV photograph gate.
+- Live cutover without a GREEN DEV photograph stamp (CAS `latest` on DEV
+  from an ephemeral/CoW copy of real data).
 - Pass `--candidate …/target/debug/lastdbd` or any `-dirty` build to "get a feature SHA on primary" — rebuild `--release` from origin/main (or a soaked canary) instead (incident 2026-08-01).
 - Put a rollback or probe copy under `$HOME` (`~/.lastdb-backups`,
   `~/.lastdb-test-copies`, sibling `.bak` homes). Existing legacy trees are a
