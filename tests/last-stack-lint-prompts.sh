@@ -579,6 +579,17 @@ grep -q 'exits `126`' "$program_driver"
 grep -q 'executable-mode drift' "$program_driver"
 grep -q 'test -x "$last_stack/bin/last-stack-north-star-completion-check"' "$program_driver"
 
+why_stopped="$ROOT/routines/why-stopped.md"
+grep -q 'ROUTINES_RUN_DIR/outcome.txt' "$why_stopped"
+grep -q 'outcomeSource="sink"' "$why_stopped"
+
+agent_skill="$ROOT/skills/kanban-agent/SKILL.md"
+grep -Fq '$LAST_STACK_ROOT/bin/last-stack-kanban-done-when-eval' "$agent_skill"
+if grep -Fq '`bin/last-stack-kanban-done-when-eval`' "$agent_skill"; then
+  echo "kanban-agent skill still documents a bare bin/ last-stack-kanban-done-when-eval path" >&2
+  exit 1
+fi
+
 groom_board="$ROOT/routines/groom-board.md"
 grep -q 'Promote EVERY ready PR card backlog' "$groom_board"
 grep -q 'a card is ready when it is' "$groom_board"
