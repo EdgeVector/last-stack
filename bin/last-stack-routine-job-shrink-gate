@@ -33,9 +33,18 @@ case "$id" in
       emit error "reason=smoke-script-missing path=$smoke"
       exit 1
     fi
-    # Fold portal has no target/release/lastdbd. Drive the installed Mini
-    # binary — a missing or RED canary is a failed job, not ok.
-    bin="${LASTDB_MINI_SMOKE_BIN:-$HOME/.lastdb/current/lastdbd}"
+    # Fold portal has no target/release/lastdbd. Prefer a staged canary
+    # binary; never cargo. LASTDB_MINI_SMOKE_BIN wins for tests/overrides.
+    bin="${LASTDB_MINI_SMOKE_BIN:-}"
+    if [ -z "$bin" ]; then
+      resolve="${LAST_STACK_CANARY_RESOLVE_BIN:-$ROOT/bin/last-stack-canary-resolve-lastdbd}"
+      if [ -x "$resolve" ]; then
+        bin="$("$resolve" --json --allow-newest --allow-current 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("lastdbd") or "")' 2>/dev/null || true)"
+      fi
+    fi
+    if [ -z "$bin" ]; then
+      bin="${LASTDB_CURRENT_BIN:-$HOME/.lastdb/current/lastdbd}"
+    fi
     set +e
     out="$(run_timeout 600 env BIN="$bin" bash "$smoke" 2>&1)"
     rc=$?
