@@ -155,6 +155,55 @@ if [[ "$curl_rc" -ne 0 ]]; then
   exit "$curl_rc"
 fi
 
+# A merge 405 is TWO conditions wearing one message, and Forgejo's own body
+# ("Please try again later") names the wrong one. Read `mergeable` and say which:
+#
+#   mergeable: true   -> the status-check task is stuck. The documented
+#                        empty-commit heal applies.
+#   mergeable: false  -> the branch genuinely does not merge. The heal is a
+#                        no-op; rebuild the branch on current base.
+#
+# Without this an agent reads "Please try again later" as transient, retries,
+# then reaches for the one 405 heal anybody has written down. Both responses are
+# wrong for an unmergeable branch and neither terminates. Cost of not printing
+# it, from the transcript on brain
+# `papercut-lastgit-merge-405-can-mean-unmergeable-not-a-stuck-status-check`:
+# 12 merge attempts, one pointless empty commit, one CI cycle.
+#
+# One extra GET, only on the exact 405-on-merge-POST it partitions. It never
+# changes the exit code or the body already printed — a diagnosis line, not a
+# retry.
+merge_405_verdict() {
+  local pr_url="${url%/merge}" pr_num="${url##*/pulls/}" pr_body mergeable
+  pr_num="${pr_num%%/*}"
+  pr_body="$(curl -sS -X GET -H "Authorization: token $token" -H "Accept: application/json" "$pr_url" 2>/dev/null || true)"
+  if [[ -z "$pr_body" ]]; then
+    echo "last-stack-forge-api: could not read PR #$pr_num to tell a stuck status check from an unmergeable branch." >&2
+    return
+  fi
+  # No jq dependency on the error path: the wrapper must stay useful on a host
+  # where jq is missing, which is exactly the host where this is hardest to
+  # diagnose by hand.
+  if [[ "$pr_body" =~ \"mergeable\"[[:space:]]*:[[:space:]]*(true|false) ]]; then
+    mergeable="${BASH_REMATCH[1]}"
+  else
+    mergeable="unknown"
+  fi
+  case "$mergeable" in
+    false)
+      echo "last-stack-forge-api: PR #$pr_num has mergeable=false — this 405 is a REAL CONFLICT, not a stuck status check." >&2
+      echo "last-stack-forge-api: the empty-commit heal cannot fix it. Rebuild the branch on the current base and re-apply." >&2
+      ;;
+    true)
+      echo "last-stack-forge-api: PR #$pr_num has mergeable=true — the branch merges, so the block is on the status-check side." >&2
+      echo "last-stack-forge-api: with required checks green this is the stuck status-check task; the empty-commit heal applies." >&2
+      ;;
+    *)
+      echo "last-stack-forge-api: PR #$pr_num response carries no \`mergeable\` field; cannot partition this 405." >&2
+      ;;
+  esac
+}
+
 # Treat only 2xx as success (Forgejo merge arm returns 200 when pending_merge is set).
 if [[ ! "$http_code" =~ ^2[0-9][0-9]$ ]]; then
   echo "last-stack-forge-api: HTTP $http_code $method $url" >&2
@@ -163,6 +212,9 @@ if [[ ! "$http_code" =~ ^2[0-9][0-9]$ ]]; then
     [[ "$(tail -c1 "$body_file" 2>/dev/null || true)" == $'\n' ]] || echo >&2
   else
     echo "(empty response body)" >&2
+  fi
+  if [[ "$http_code" == "405" && "$method" == "POST" && "$url" == */pulls/*/merge ]]; then
+    merge_405_verdict
   fi
   exit 1
 fi
