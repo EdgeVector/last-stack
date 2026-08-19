@@ -123,7 +123,12 @@ pack exists.
 separate ids and locks, all pointing at the same no-spawn prompt. Do not add
 in-process fan-out or detached agent launches to the prompt.
 
-Use the helper to write the base worker plus w2-w6 idempotently:
+`~/.routines/registry/*.toml` is the one canonical live registry. Installers
+seed a missing file and otherwise leave it alone — host-track refresh does
+not merge or rewrite an existing TOML. `--force-defaults` is the only hatch
+that replaces a live file with compiled defaults.
+
+Use the helper to seed the base worker plus w2-w6 when those files are missing:
 
 ```bash
 last-stack-kanban-pickup-workers --workers 6 \

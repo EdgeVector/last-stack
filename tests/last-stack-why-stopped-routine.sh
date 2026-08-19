@@ -25,11 +25,14 @@ fi
   printf '%s\n' 'difficulty = "fast"'
   printf '%s\n' 'rrule = "FREQ=DAILY;BYHOUR=9;BYMINUTE=11;BYSECOND=0"'
 } >"$entry"
+before="$(cksum "$entry")"
 "$BIN" --registry-dir "$tmp/registry" --prompt-path "$prompt" >/dev/null
+after="$(cksum "$entry")"
+test "$before" = "$after"
 grep -q 'difficulty = "fast"' "$entry"
 grep -q 'rrule = "FREQ=DAILY;BYHOUR=9;BYMINUTE=11;BYSECOND=0"' "$entry"
-if grep -qE '^(harness|model|pin) ' "$entry"; then
-  echo "why-stopped rewrite reintroduced harness/model/pin:" >&2
+if grep -qE '^(harness|model|pin|effort) ' "$entry"; then
+  echo "why-stopped rewrite mutated a live file:" >&2
   cat "$entry" >&2
   exit 1
 fi
@@ -40,12 +43,18 @@ fi
   printf '%s\n' 'model = "claude-sonnet-4-5"'
   printf '%s\n' 'fallback = "grok"'
 } >"$entry"
+before="$(cksum "$entry")"
 "$BIN" --registry-dir "$tmp/registry" --prompt-path "$prompt" >/dev/null
+after="$(cksum "$entry")"
+test "$before" = "$after"
 grep -q 'harness = "claude"' "$entry"
 grep -q 'model = "claude-sonnet-4-5"' "$entry"
 grep -q 'fallback = "grok"' "$entry"
-grep -q 'difficulty = "normal"' "$entry"
-grep -q 'heartbeat_slug = "routine-heartbeats"' "$entry"
+if grep -qE '^(difficulty|heartbeat_slug) ' "$entry"; then
+  echo "why-stopped skip-if-exists merged compiled fields into leftover:" >&2
+  cat "$entry" >&2
+  exit 1
+fi
 
 "$BIN" --registry-dir "$tmp/registry" --prompt-path "$prompt" --force-defaults >/dev/null
 grep -q 'difficulty = "normal"' "$entry"

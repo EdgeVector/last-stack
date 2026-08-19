@@ -40,12 +40,15 @@ fi
   printf '%s\n' 'difficulty = "hard"'
   printf '%s\n' 'rrule = "FREQ=DAILY;BYHOUR=16;BYMINUTE=40;BYSECOND=0"'
 } >"$entry"
+before="$(cksum "$entry")"
 "$BIN" --registry-dir "$tmp/registry" --prompt-path "$prompt" >/dev/null
-grep -q 'difficulty = "hard"' "$entry" || fail "should preserve live difficulty"
+after="$(cksum "$entry")"
+test "$before" = "$after" || fail "existing live file must be left alone"
+grep -q 'difficulty = "hard"' "$entry" || fail "should leave live difficulty"
 grep -q 'rrule = "FREQ=DAILY;BYHOUR=16;BYMINUTE=40;BYSECOND=0"' "$entry" \
-  || fail "should preserve live rrule"
-if grep -qE '^(harness|model|pin) ' "$entry"; then
-  fail "ops-offenders rewrite reintroduced harness/model/pin"
+  || fail "should leave live rrule"
+if grep -qE '^(harness|model|pin|effort) ' "$entry"; then
+  fail "ops-offenders rewrite mutated a live file"
 fi
 
 {
@@ -54,11 +57,16 @@ fi
   printf '%s\n' 'model = "claude-sonnet-4-5"'
   printf '%s\n' 'fallback = "grok"'
 } >"$entry"
+before="$(cksum "$entry")"
 "$BIN" --registry-dir "$tmp/registry" --prompt-path "$prompt" >/dev/null
-grep -q 'harness = "claude"' "$entry" || fail "should preserve existing harness"
-grep -q 'model = "claude-sonnet-4-5"' "$entry" || fail "should preserve existing model"
-grep -q 'fallback = "grok"' "$entry" || fail "should preserve fallback"
-grep -q 'difficulty = "normal"' "$entry" || fail "difficulty-mode rewrite should emit difficulty"
+after="$(cksum "$entry")"
+test "$before" = "$after" || fail "harness leftover must be left alone"
+grep -q 'harness = "claude"' "$entry" || fail "should leave existing harness"
+grep -q 'model = "claude-sonnet-4-5"' "$entry" || fail "should leave existing model"
+grep -q 'fallback = "grok"' "$entry" || fail "should leave fallback"
+if grep -qE '^(difficulty|effort) ' "$entry"; then
+  fail "ops-offenders skip-if-exists merged compiled fields into leftover"
+fi
 
 "$BIN" --registry-dir "$tmp/registry" --prompt-path "$prompt" --force-defaults >/dev/null
 grep -q 'difficulty = "normal"' "$entry" || fail "force-defaults should restore difficulty"
