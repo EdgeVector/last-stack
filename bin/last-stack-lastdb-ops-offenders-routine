@@ -34,7 +34,9 @@ if [ "$DRY_RUN" -eq 0 ]; then
 fi
 
 path="$REGISTRY_DIR/$ID.toml"
-last_stack_registry_runtime_values "$path" grok grok-4.5 "$FORCE_DEFAULTS"
+last_stack_registry_runtime_values "$path" grok grok-4.5 "$FORCE_DEFAULTS" difficulty
+last_stack_registry_rrule "$path" \
+  "FREQ=DAILY;BYHOUR=8;BYMINUTE=40;BYSECOND=0" "$FORCE_DEFAULTS"
 
 body=$(cat <<EOF
 # Daily lastdb ops worst-offender → investigate → file ≤2 improvement cards.
@@ -42,7 +44,7 @@ body=$(cat <<EOF
 id = "$ID"
 $(last_stack_registry_emit_runtime_values)
 effort = "medium"
-rrule = "FREQ=DAILY;BYHOUR=8;BYMINUTE=40;BYSECOND=0"
+rrule = "$REG_RUNTIME_RRULE"
 cwd = "$REG_CWD"
 status = "active"
 timeout_min = 30

@@ -21,13 +21,14 @@ usage() {
 last-stack-feature-prove-routine [options]
 
 Writes the routines registry entry for the Feature Ship Loop product-proof
-routine. Re-running is idempotent.
+routine. Re-running is idempotent and preserves live rrule/difficulty (and
+any existing harness/model/pin keys) unless --force-defaults is passed.
 
 Options:
   --registry-dir <p>  registry directory (default: $ROUTINES_HOME/registry)
   --prompt-path <p>   feature-prove prompt path (default: stable last-stack)
   --id <id>           automation id (default: last-stack-feature-prove)
-  --force-defaults    replace existing harness/model routing with defaults
+  --force-defaults    replace live rrule/difficulty with compiled defaults
   --dry-run           print target path and contents without writing
   -h, --help          show this help
 USAGE
@@ -100,7 +101,9 @@ if [ "$DRY_RUN" -eq 0 ]; then
 fi
 
 path="$REGISTRY_DIR/$ID.toml"
-last_stack_registry_runtime_values "$path" grok grok-4.5 "$FORCE_DEFAULTS"
+last_stack_registry_runtime_values "$path" grok grok-4.5 "$FORCE_DEFAULTS" difficulty
+last_stack_registry_rrule "$path" \
+  "FREQ=DAILY;BYHOUR=10;BYMINUTE=40;BYSECOND=0" "$FORCE_DEFAULTS"
 
 if [ "$DRY_RUN" -eq 1 ]; then
   printf '%s\n' "--- $path"
@@ -112,7 +115,7 @@ fi
   printf 'id = "%s"\n' "$ID"
   last_stack_registry_emit_runtime_values
   printf 'effort = "high"\n'
-  printf 'rrule = "FREQ=HOURLY;INTERVAL=1;BYMINUTE=40;BYSECOND=0"\n'
+  printf 'rrule = "%s"\n' "$REG_RUNTIME_RRULE"
   # Prefer LAST_STACK_WORKSPACE when set (main); else REG_CWD from
   # last-stack-routines-registry-env (host-safe REPLACE + sandbox HOME).
   workspace_cwd="${LAST_STACK_WORKSPACE:-$REG_CWD}"
