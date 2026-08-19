@@ -81,5 +81,9 @@ grep -q 'class-a-heal-timeout' "$ROOT/routines/kanban-pickup.md" \
 grep -q 'last-stack-why-stopped-loom' "$ROOT/routines/why-stopped.md" \
   || fail "why-stopped prompt missing loom hook"
 [ -x "$ROOT/bin/last-stack-feature-prove-routine" ] || fail "feature-prove installer missing"
+[ -x "$ROOT/bin/last-stack-fleet-performance-routine" ] || fail "fleet-performance installer missing"
+[ -f "$ROOT/routines/fleet-performance.md" ] || fail "fleet-performance prompt missing"
+grep -qi 'routines route' "$ROOT/routines/fleet-performance.md" \
+  || fail "fleet-performance prompt missing no-route rule"
 
 printf 'ok: factory-hardening smoke passed\n'

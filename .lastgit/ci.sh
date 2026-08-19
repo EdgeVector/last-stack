@@ -58,6 +58,7 @@ bash tests/last-stack-shell-prelude.sh
 bash tests/last-stack-install-routines.sh
 bash tests/last-stack-routines-registry-host-paths.sh
 bash tests/last-stack-feature-prove-routine.sh
+bash tests/last-stack-fleet-performance-routine.sh
 bash tests/last-stack-why-stopped-routine.sh
 bash tests/last-stack-why-stopped-loom.sh
 bash tests/last-stack-lastdb-ops-offenders.sh
