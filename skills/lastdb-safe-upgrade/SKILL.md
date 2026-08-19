@@ -57,7 +57,7 @@ Primary may be supervised in either of two ways:
 
 | Venue | How primary runs | Live install |
 |-------|------------------|--------------|
-| **sidebin** (Tom’s default) | LaunchAgent → `~/.lastdb/bin-with-upload-cap/lastdbd` | Atomic install into that dir + `launchctl kickstart -k` |
+| **sidebin** (Tom’s default) | LaunchAgent → `~/.lastdb/bin-with-upload-cap/lastdbd` | Atomic install into that dir + `launchctl bootout` / `bootstrap` job reload |
 | **brew** | `brew services` + Cellar formula | `brew upgrade` + `brew services restart` |
 
 The script **detects venue** (LaunchAgent `ProgramArguments`, formula installed,
@@ -67,6 +67,10 @@ installed — that was the 2026-07-16 failure mode.
 Design: `fold/docs/designs/lastdb-minimal-downtime-cutover.md`.
 
 Env overrides: `LASTDB_SIDEBIN_DIR`, `LASTDB_LAUNCHD_LABEL`, `LASTDB_LAUNCHD_PLIST`.
+The sidebin path reloads the LaunchAgent job definition so plist environment
+edits take effect; `kickstart` alone only restarts the cached definition. The
+live post-check names configured keys absent from the new process, and
+`LASTDB_LIVE_CONFIG_ENFORCE=1` makes any such drift RED.
 
 **Hot swap:** a single-process image swap always needs a brief restart. “Seamless”
 here means **prepared cutover after GREEN CoW**, not zero downtime. A socket
@@ -191,6 +195,12 @@ proxy is optional later for near-zero client impact.
     used the live home. Skip (`LASTDB_PROBE_DEV_STAMP_SKIP=1`) is Tom
     clearance only. Brain: `preference-lastdb-upgrade-ephemeral-probe-first`,
     `sop-lastdb-safe-upgrade`.
+14. **LaunchAgent config parity:** sidebin cutover uses `bootout` then
+    `bootstrap` so the plist job definition is re-read. It falls back to
+    `kickstart -k` only when those launchctl verbs are unavailable. After the
+    new daemon is serving, compare plist `EnvironmentVariables` key names with
+    the running process environment (never print values). Missing keys are a
+    loud WARN; `LASTDB_LIVE_CONFIG_ENFORCE=1` makes them RED.
 
 ## Do this, in order
 
@@ -252,8 +262,8 @@ The script:
 | **2. Probe** | `BIN=<candidate>` CoW smoke harness (never live home) + **CAS mutation bar** (ephemeral candidate node: false `expected` → 409) + **RSS settle/sample** vs memory-guard limit + **latency bar**: point read / `kanban list` scan / `brain put` write timed on candidate CoW copy vs the current binary on an identical copy |
 | Detect venue | sidebin vs brew |
 | **2b. DEV photograph stamp** | Live cutover **refused** without a GREEN receipt: ephemeral/CoW (never `~/.lastdb`) uploaded the photograph to **DEV** (not the primary's production backup home) and CAS-flipped `backup/latest`. `--check-dev-stamp` exercises this gate alone. |
-| **3. Live** | **durability canary armed** (N run-unique sentinels acked + read back on the old daemon, before any live change), then sidebin atomic install + kickstart **or** brew upgrade/restart |
-| **4. Post-check** | Live `/health`, schemas > 0, Board title, **durability canary read-back** (stale nonce → RED, no skip flag), **live peak RSS** vs guard, **live point-read + kanban list latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency + durability in notice |
+| **3. Live** | **durability canary armed** (N run-unique sentinels acked + read back on the old daemon, before any live change), then sidebin atomic install + LaunchAgent job-definition reload **or** brew upgrade/restart |
+| **4. Post-check** | Live `/health`, schemas > 0, Board title, **LaunchAgent config parity** (missing process env keys WARN; `LASTDB_LIVE_CONFIG_ENFORCE=1` → RED), **durability canary read-back** (stale nonce → RED, no skip flag), **live peak RSS** vs guard, **live point-read + kanban list latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency + durability in notice |
 | **4b. Release** | After GREEN, delete the rollback point and its empty root. GREEN probe-only and operator abort release it too. |
 | RED | Exit 1, retain the one rollback point, print its path, TTL, and cleanup owner; primary untouched if class/probe failed |
 

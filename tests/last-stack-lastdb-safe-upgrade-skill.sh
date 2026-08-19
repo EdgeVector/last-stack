@@ -36,7 +36,7 @@ grep -q 'DEFAULT_LASTDBD_RSS_LIMIT_MB="${LASTDBD_DEFAULT_RSS_LIMIT_MB:-12288}"' 
   exit 1
 }
 grep -q 'ensure_primary_launchd_rss_limit' "$driver" || {
-  echo "FAIL: safe-upgrade driver must stamp LASTDBD_RSS_LIMIT_MB into the primary LaunchAgent before sidebin kickstart" >&2
+  echo "FAIL: safe-upgrade driver must stamp LASTDBD_RSS_LIMIT_MB into the primary LaunchAgent before sidebin job reload" >&2
   exit 1
 }
 if grep -q 'else 6144' "$skill_md"; then
