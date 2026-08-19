@@ -85,5 +85,9 @@ grep -q 'last-stack-why-stopped-loom' "$ROOT/routines/why-stopped.md" \
 [ -f "$ROOT/routines/fleet-performance.md" ] || fail "fleet-performance prompt missing"
 grep -qi 'routines route' "$ROOT/routines/fleet-performance.md" \
   || fail "fleet-performance prompt missing no-route rule"
+grep -q 'sop-routines-registry-canonical' "$ROOT/routines/fleet-performance.md" \
+  || fail "fleet-performance prompt missing canonical-registry SOP"
+grep -q 'ROUTINES_HOME' "$ROOT/routines/fleet-performance.md" \
+  || fail "fleet-performance prompt missing live registry path"
 
 printf 'ok: factory-hardening smoke passed\n'
