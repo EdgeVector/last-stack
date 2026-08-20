@@ -1,7 +1,7 @@
 ---
 name: close-out
-version: 0.3.0
-description: Run the full close-out loop after finishing a substantive change — worktree PR + auto-merge, file session papercuts, write a full brain report of what was done, and file a kanban follow-up card. Use after landing any code/doc change or settled decision, or when the close-out backstop hook fires. These steps are standing-authorized; do them without asking.
+version: 0.4.0
+description: Run the full close-out loop after finishing a substantive change — worktree PR + auto-merge, file session papercuts, write a full brain report of what was done, update superseded brain records and stale kanban cards, and file a kanban follow-up card. Use after landing any code/doc change or settled decision, or when the close-out backstop hook fires. These steps are standing-authorized; do them without asking.
 allowed-tools:
   - Bash
   - Read
@@ -24,8 +24,8 @@ mechanical parts. Only stop for a genuine fork (branch base? dev vs prod? a
 design choice).
 
 Run the steps that apply to what you just did. Skip ones that don't. Do **not**
-skip papercut filing or the full brain report on a substantive session — those
-are the two LastDB writes this loop exists to force. See
+skip papercut filing, the full brain report, or the superseded-record pass on a
+substantive session — those LastDB writes are why this loop exists. See
 `preference-always-file-papercuts-in-brain` and
 `preference-always-save-to-brain-when-done`.
 
@@ -97,16 +97,11 @@ git -C "$WT" push -u origin "$BR"
 gh pr create --repo <owner>/<repo> --base main --head "$BR" --title "..." --body "..."
 ```
 
-**Every PR body carries a `## Proof` block** — nothing lands unproven (SOP
-`sop-autonomous-acceptance-gate`). Keep it proportional to blast radius:
-
-```
-## Proof
-- Claim:    <the user-visible capability this makes work, one sentence>
-- Tier:     <no-behavior-change | unit+negative | user-visible-roundtrip>
-- How:      <exact command(s) / test name(s), or the acceptance script path>
-- Verified: <what — other than me — confirmed it: CI job, a fresh agent that ran the app>
-```
+Proof lives on the **kanban card** (`VERIFY` / `END STATE`) and in the closeout
+report below, not in a PR-body `## Proof` block. Those blocks and the fold
+`proof-block` CI check were removed 2026-07-03 (Tom: merge-stall churn). Do not
+write them, and do not block on their absence. Produce the proof at the tier
+§3 demands.
 
 ## 2. Auto-merge and babysit to MERGED
 
@@ -258,6 +253,11 @@ tags: [closeout]
 ## Follow-ups
 <kanban slugs filed in the next step, or none>
 
+## Stale records updated
+- <brain-slug> — <one line>
+- <kanban-slug> — <one line>
+- none — <explicit reason if this session replaced no live fact>
+
 ## Leftovers
 <what was not done, and why it is safe to leave>
 EOF
@@ -316,7 +316,51 @@ brain put <slug> --type project < "$body_file"
 rm -f "$body_file"
 ```
 
-## 6. File a kanban card for anything that closes later
+## 6. Update superseded brain records and stale kanban cards
+
+Close-out is the last chance to stop a later agent from following a fact this
+session replaced. A new closeout report that sits next to an unpatched
+preference still teaches the old fact. Scope the pass to **this session's
+facts**. Do not run a full-brain census (`brain list` is not a membership
+instrument). Daily `last-stack-consolidate-brain` only flips statuses; it does
+not rewrite stale bodies. For a larger truth-drift pass see
+`checkpoint-brain-consolidation-truth-drift-20260808`.
+
+### Brain
+
+1. Name the facts this session replaced (old path, old command, old status,
+   old venue, old column, old writer path).
+2. `brain ask` each fact (limit ~8). Point-get every hit that still reads as
+   current instruction.
+3. For each record that still teaches the old fact:
+   - If the whole record is replaced: `brain status <slug> superseded --type
+     preference` (or `archived` for reference / sop / project as appropriate).
+   - Always `brain append` a dated `## SUPERSEDED YYYY-MM-DD` block that states
+     the new fact and the replacing slug.
+   - Never get→edit→put a large record. `brain get` windows at ~40K chars; a
+     re-put truncates what you did not see.
+4. Point-get every write. Listing it in chat is not a write.
+5. Dated incident narratives that name old paths *as history* stay. Only
+   correct records that teach the old fact as current instruction.
+
+### Kanban
+
+1. Search the default board for cards that name the old fact, the old blocker,
+   or a CR/PR this session merged (`kanban search`, then `kanban show` the
+   hits). Also re-read the card you just drove.
+2. If a `Kind: pr` card's PR/CR is merged and VERIFY / END STATE holds, close
+   it with `last-stack-card-closeout` (not a bare `move done`).
+3. If a non-PR card's `DONE-WHEN` already holds, evaluate with
+   `last-stack-kanban-done-when-eval`, append `PROOF`, then move `done`.
+4. If body text still says `BLOCKED` on a dependency that is now `done`, append
+   `RESOLVED YYYY-MM-DD:` and drop the stale block claim.
+5. Do not mark a card `done` because it is old or quiet. Do not clear a real
+   `needs_human` gate.
+
+Record every slug you updated in the closeout report under **Stale records
+updated**.
+
+## 7. File a kanban card for anything that closes later
 
 If the work leaves a follow-up that closes by elapsed time or by someone else
 (a verification window, a prod cutover, a human gate), file it so it's not
@@ -343,7 +387,7 @@ include `Repo:`/`Base:` headers; use `Kind: registry` or `Kind: tracker` plus
 the same ownership headers for non-PR follow-ups. `--body` replaces the whole
 body (dump + concatenate first if you mean to append).
 
-## 7. Update memory if the fact is durable
+## 8. Update memory if the fact is durable
 
 If you learned something cross-session (a corrected assumption, a new standing
 rule), record it where your agent keeps durable memory. Don't duplicate what the
@@ -352,10 +396,12 @@ repo/git already records.
 ---
 
 **Self-check before you consider the work done:** Is there a routed PR/CR? Is it
-on auto-merge and being driven to merged? Does the PR carry a verified `## Proof`
-block at the right tier — and for user-visible/stateful work, did an acceptance
-check actually run the app and pass (round trip across a restart, plus a negative
-case)? Were session papercuts filed with `brain papercut file` (or is there an
-explicit none-reason)? Did `brain get` return the full closeout report? Is every
-deferred follow-up a card? If any answer is "no" and the step applies — do it
-now.
+on auto-merge and being driven to merged? Did you produce proof at the §3 tier
+— and for user-visible/stateful work, did an acceptance check actually run the
+app and pass (round trip across a restart, plus a negative case)? Were session
+papercuts filed with `brain papercut file` (or is there an explicit none-reason)?
+Did `brain get` return the full closeout report? Did you `brain ask` for the
+facts this session replaced and update every live record that still taught the
+old fact? Did you search kanban for cards this session made stale and close or
+annotate them with proof? Is every deferred follow-up a card? If any answer is
+"no" and the step applies — do it now.
