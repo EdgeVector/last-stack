@@ -639,6 +639,14 @@ if [ -x "$SOURCE_ROOT/bin/last-stack-factory-health-install" ]; then
     echo "  factory-health LaunchAgent: install failed (non-fatal)" >&2
 fi
 
+# Hourly Brain and Routines admin SPA deliveries. Recipient identity remains in
+# ~/.lastdb/admin-deliver-recipient.env; no key material enters a plist.
+if [ -x "$SOURCE_ROOT/bin/last-stack-admin-deliver-install" ]; then
+  LAST_STACK_PUBLIC_ROOT="${LAST_STACK_PUBLIC_ROOT:-$HOME/.last-stack}" \
+    "$SOURCE_ROOT/bin/last-stack-admin-deliver-install" install || \
+    echo "  admin deliverer LaunchAgents: install failed (non-fatal)" >&2
+fi
+
 # Seed missing registry TOMLs only. Existing ~/.routines/registry entries are
 # the canonical live registry and are not rewritten on host-track refresh.
 if [ -x "$SOURCE_ROOT/bin/last-stack-feature-prove-routine" ]; then
