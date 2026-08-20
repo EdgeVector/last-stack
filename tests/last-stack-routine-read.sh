@@ -130,6 +130,13 @@ if ! grep -Fq "including \`classes=unknown\`" <<<"$why_stopped_prompt" ||
   exit 1
 fi
 
+whats_wrong_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" whats-wrong)"
+if ! grep -Fq "coverage.exceptions" <<<"$whats_wrong_prompt" ||
+   ! grep -Fq "last-stack-routine-outcome-classify --observer last-stack-whats-wrong" <<<"$whats_wrong_prompt"; then
+  echo "expected whats-wrong to keep remaining red rows out of error" >&2
+  exit 1
+fi
+
 ship_gap_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" ship-pipeline-gap-audit)"
 if ! grep -Fq "health=yellow" <<<"$ship_gap_prompt" ||
    ! grep -Fq "not a routine failure" <<<"$ship_gap_prompt"; then

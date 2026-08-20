@@ -649,6 +649,10 @@ if [ -x "$SOURCE_ROOT/bin/last-stack-why-stopped-routine" ]; then
   "$SOURCE_ROOT/bin/last-stack-why-stopped-routine" || \
     echo "  why-stopped registry: install failed (non-fatal)" >&2
 fi
+if [ -x "$SOURCE_ROOT/bin/last-stack-whats-wrong-routine" ]; then
+  "$SOURCE_ROOT/bin/last-stack-whats-wrong-routine" || \
+    echo "  whats-wrong registry: install failed (non-fatal)" >&2
+fi
 if [ -x "$SOURCE_ROOT/bin/last-stack-lastdb-ops-offenders-routine" ]; then
   "$SOURCE_ROOT/bin/last-stack-lastdb-ops-offenders-routine" || \
     echo "  lastdb-ops-offenders registry: install failed (non-fatal)" >&2

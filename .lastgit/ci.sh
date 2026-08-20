@@ -115,6 +115,8 @@ bash tests/last-stack-portal-wt-start-help.sh
 bash tests/last-stack-pickup-zsh-timeout.sh
 bash tests/last-stack-portal-live-checkout.sh
 bash tests/last-stack-pipeline-deploy-scan.sh
+bash tests/last-stack-whats-wrong-loom.sh
+bash tests/last-stack-whats-wrong-routine.sh
 bash tests/last-stack-forge-dead-trigger.sh
 bash tests/last-stack-forge-api.sh
 bash tests/last-stack-deploy-gated-closeout.sh

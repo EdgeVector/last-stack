@@ -138,6 +138,10 @@
           "target": "$HOME/.local/bin/last-stack-why-stopped"
         },
         {
+          "source": "bin/last-stack-whats-wrong-loom",
+          "target": "$HOME/.local/bin/last-stack-whats-wrong-loom"
+        },
+        {
           "source": "bin/last-stack-factory-health",
           "target": "$HOME/.local/bin/last-stack-factory-health"
         },

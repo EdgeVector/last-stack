@@ -172,6 +172,7 @@ ls ~/.routines/registry/last-stack-fkanban-validate.toml
 | [`drain-open-prs`](drain-open-prs.md) | daily | Drive every open PR across all repos toward zero (merge or close). |
 | [`lastdb-canary-soak-watch`](lastdb-canary-soak-watch.md) | paused | Evaluate a dogfooded LastDB canary SHA, mark the canary ledger `soak_green` / `soak_red`, and leave promote-ready evidence without mutating the primary. |
 | [`lastdb-ops-offenders`](lastdb-ops-offenders.md) | daily | Rank live `lastdb ops` worst offenders, skip long-poll/cheap-count noise, investigate the rest, file ≤2 pickup-ready improvement cards. |
+| [`whats-wrong`](whats-wrong.md) | hourly (:23) | EV OPS What's wrong panel (`http://127.0.0.1:7733` `coverage.exceptions`): one loom heal agent per row, Brain papercuts, full closeout. |
 
 ### B. The kanban / brain driving loop — pairs 1:1 with the skills
 
