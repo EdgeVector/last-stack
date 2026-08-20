@@ -19,8 +19,9 @@ The fleet has three layers:
    `sop-routine-shared-contract`. Routines cite it for heartbeat, dedupe,
    guardrails, papercut filing, shell discipline, and validation rules.
 
-When the project has a dedicated config app, store config-class records there
-and keep the brain copies as pointers. The bootstrap shape stays the same:
+When the project has a dedicated Config app, store config-class records there.
+Brain may keep rationale pointers, but must not remain a silent fallback for a
+`configurations://` source. The bootstrap shape stays the same:
 engines read named records through the configured source instead of editing
 engine skills or routine prompts.
 

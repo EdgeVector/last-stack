@@ -955,24 +955,37 @@ fi
 
 check_kanban_json_envelope_guard
 
-# owner-review-rotate: product-versioned; must not reintroduce whole-type
-# brain list census for owners or papercuts (card
+# owner-review-rotate: thin trigger over a Config-backed registry. It must not
+# grow project roster/triage policy or whole-type Brain census reads again (card
 # routines-owner-review-rotate-still-enumerates-brain).
 owner_review="$ROOT/routines/owner-review-rotate.md"
 test -f "$owner_review"
-if grep -Eq 'List owner charters:.*brain_list|List owner charters:.*brain list' "$owner_review"; then
-  echo "owner-review-rotate must not list owner charters via brain list" >&2
+if grep -Eq 'brain[_ ]list|ownership-map|owner-fold|brain search' "$owner_review"; then
+  echo "owner-review-rotate must remain a thin Config-backed trigger" >&2
   exit 1
 fi
-if grep -Eq 'Find its open papercuts:.*brain_list|Find its open papercuts:.*brain list' "$owner_review"; then
-  echo "owner-review-rotate must not find papercuts via brain list" >&2
+grep -q 'registry-rotator' "$owner_review"
+grep -q 'registry=configurations://owner-review-rotate' "$owner_review"
+
+owner_review_config="$ROOT/config/configurations/owner-review-rotate.md"
+test -f "$owner_review_config"
+if grep -Eq 'brain[_ ]list|--status active' "$owner_review_config"; then
+  echo "owner review Config must not enumerate Brain owners or papercuts" >&2
   exit 1
 fi
-# Positive contract: ownership-map is the owner set; search/get for papercuts.
-grep -q 'ownership-map' "$owner_review"
-grep -q 'brain search' "$owner_review"
+grep -q '^## Recipe: owner-review$' "$owner_review_config"
+grep -q '^charter: owner-fold$' "$owner_review_config"
+grep -q '^cadence: 1d$' "$owner_review_config"
+grep -q '^<!-- rotation-log:start' "$owner_review_config"
+grep -q 'brain search' "$owner_review_config"
+grep -q 'brain get' "$owner_review_config"
 test -f "$ROOT/config/routines-registry/owner-review-rotate.toml"
 grep -q 'last-stack/routines/owner-review-rotate.md' \
   "$ROOT/config/routines-registry/owner-review-rotate.toml"
+
+# The generic engine must preserve the app boundary and stamp the same Config
+# document it selected from.
+grep -q 'configurations get <slug> --json' "$ROOT/skills/registry-rotator/SKILL.md"
+grep -q 'configurations put' "$ROOT/skills/registry-rotator/SKILL.md"
 
 echo "ok"
