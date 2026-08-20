@@ -83,6 +83,8 @@ bash tests/last-stack-board-closeout-sweep-logic.sh
 bash tests/last-stack-board-closeout-sweep.sh
 bash tests/last-stack-card-reaper-run.sh
 bash tests/last-stack-card-closeout.sh
+bash tests/last-stack-skill-frontmatter-yaml.sh
+bash tests/last-stack-routines-host-track-post-install.sh
 bash tests/last-stack-unattached-outcome-heal.sh
 bash tests/last-stack-north-star-ledger-sync.sh
 bash tests/last-stack-north-star-proof-registry.sh

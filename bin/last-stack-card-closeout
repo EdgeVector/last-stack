@@ -386,10 +386,8 @@ if [ "$end_state_required" = "1" ] && [ "$end_state_claimed" != "1" ]; then
 fi
 
 # Stamp PR/branch without changing column (add preserves existing column).
-# Restamp is best-effort: this helper is post-merge closeout. A metadata
-# add failure must not leave a merged CR card in doing (2026-08-17:
-# trailing-backtick pr_url + NS mismatch made add fail after two CLOSED-ON-MERGE
-# stamps; the card bounced doing↔done).
+# todo/backlog cannot carry --pr-url/--branch; claim doing first.
+# After done, restamp again and fail closed if the requested fields are missing.
 if [ -n "$pr_url" ]; then
   merge_probe="$self_dir/last-stack-card-closeout-merge-probe"
   if [ -x "$merge_probe" ]; then
@@ -402,28 +400,6 @@ if [ -n "$pr_url" ]; then
   fi
 fi
 
-if [ -n "$pr_url" ] || [ -n "$branch" ]; then
-  add_args=( "$board_cli" add "$slug" )
-  [ -n "$pr_url" ] && add_args+=( --pr-url "$pr_url" )
-  [ -n "$branch" ] && add_args+=( --branch "$branch" )
-  # kanban add waits 2s for stdin body when none is passed. Close stdin so
-  # restamp of --pr-url/--branch cannot hang (papercut-kanban-add-stdin-timeout-in-closeout).
-  add_out="$(run "${add_args[@]}" </dev/null 2>&1)" || {
-    add_rc=$?
-    echo "$add_out" >&2
-    echo "last-stack-card-closeout: WARN board-add-failed slug=$slug exit=$add_rc (restamp skipped; still moving to done)" >&2
-  }
-  [ -z "$add_out" ] || printf '%s\n' "$add_out"
-fi
-
-move_to_done() {
-  if [ "$force" -eq 1 ]; then
-    run "$board_cli" move "$slug" done --force
-  else
-    run "$board_cli" move "$slug" done
-  fi
-}
-
 column_of() {
   run "$board_cli" show "$slug" --json 2>/dev/null | python3 -c '
 import sys, json
@@ -433,17 +409,92 @@ print(c.get("column") or "")
 ' 2>/dev/null || true
 }
 
-move_to_done || true
+field_of() {
+  local key="$1"
+  run "$board_cli" show "$slug" --json 2>/dev/null | python3 -c '
+import sys, json
+key = sys.argv[1]
+d = json.load(sys.stdin)
+c = d.get("card") or d
+v = c.get(key)
+print("" if v is None else v)
+' "$key" 2>/dev/null || true
+}
+
+move_to() {
+  local dest="$1"
+  if [ "$force" -eq 1 ]; then
+    run "$board_cli" move "$slug" "$dest" --force
+  else
+    run "$board_cli" move "$slug" "$dest"
+  fi
+}
+
+restamp_fields() {
+  if [ -z "$pr_url" ] && [ -z "$branch" ]; then
+    return 0
+  fi
+  local add_args add_out add_rc
+  add_args=( "$board_cli" add "$slug" )
+  [ -n "$pr_url" ] && add_args+=( --pr-url "$pr_url" )
+  [ -n "$branch" ] && add_args+=( --branch "$branch" )
+  # kanban add waits 2s for stdin body when none is passed. Close stdin so
+  # restamp of --pr-url/--branch cannot hang (papercut-kanban-add-stdin-timeout-in-closeout).
+  add_out="$(run "${add_args[@]}" </dev/null 2>&1)" || {
+    add_rc=$?
+    echo "$add_out" >&2
+    echo "last-stack-card-closeout: WARN board-add-failed slug=$slug exit=$add_rc" >&2
+    return 0
+  }
+  [ -z "$add_out" ] || printf '%s\n' "$add_out"
+}
+
+claim_doing_if_needed() {
+  local col
+  col="$(column_of)"
+  case "$col" in
+    todo|backlog)
+      move_to doing || true
+      ;;
+  esac
+}
+
+verify_linkage() {
+  [ -n "$pr_url" ] || [ -n "$branch" ] || return 0
+  local got_url got_branch
+  got_url="$(field_of pr_url)"
+  got_branch="$(field_of branch)"
+  if [ -n "$pr_url" ] && [ "$got_url" != "$pr_url" ]; then
+    echo "last-stack-card-closeout: FAILED linkage-missing slug=$slug wanted_pr_url=$pr_url got_pr_url=$got_url" >&2
+    return 1
+  fi
+  if [ -n "$branch" ] && [ "$got_branch" != "$branch" ]; then
+    echo "last-stack-card-closeout: FAILED linkage-missing slug=$slug wanted_branch=$branch got_branch=$got_branch" >&2
+    return 1
+  fi
+  return 0
+}
+
+claim_doing_if_needed
+restamp_fields
+
+move_to done || true
 col="$(column_of)"
 if [ "$col" != "done" ]; then
   echo "last-stack-card-closeout: column=$col after first move; retrying with --force" >&2
   force=1
-  move_to_done || true
+  move_to done || true
   col="$(column_of)"
 fi
 
 if [ "$col" != "done" ]; then
   echo "last-stack-card-closeout: FAILED column=$col (wanted done) slug=$slug" >&2
+  exit 1
+fi
+
+# done may carry --pr-url/--branch even when todo rejected the first restamp.
+restamp_fields
+if ! verify_linkage; then
   exit 1
 fi
 

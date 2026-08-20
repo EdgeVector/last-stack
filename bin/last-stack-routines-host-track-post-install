@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# After host-track flips routines current, reload the LaunchAgent so the live
+# daemon matches the new immutable artifact. PATH `routines` is not enough.
+set -euo pipefail
+
+routines_bin=""
+if [ -n "${HOST_TRACK_VERSION_DIR:-}" ] && [ -x "${HOST_TRACK_VERSION_DIR}/dist/routines" ]; then
+  routines_bin="${HOST_TRACK_VERSION_DIR}/dist/routines"
+elif [ -n "${HOST_TRACK_INSTALL_ROOT:-}" ] && [ -x "${HOST_TRACK_INSTALL_ROOT}/current/dist/routines" ]; then
+  routines_bin="${HOST_TRACK_INSTALL_ROOT}/current/dist/routines"
+elif command -v routines >/dev/null 2>&1; then
+  routines_bin="$(command -v routines)"
+fi
+
+if [ -z "$routines_bin" ] || [ ! -x "$routines_bin" ]; then
+  echo "routines post-install: no routines binary" >&2
+  exit 1
+fi
+
+out="$(mktemp "${TMPDIR:-/tmp}/routines-post-install.XXXXXX")"
+set +e
+"$routines_bin" install-daemon >"$out" 2>&1
+rc=$?
+set -e
+if [ "$rc" -eq 0 ]; then
+  printf 'routines post-install: install-daemon ok (%s)\n' "$routines_bin"
+  rm -f "$out"
+  exit 0
+fi
+if grep -qiE 'operation not permitted|not authorized|EPERM' "$out"; then
+  echo "routines post-install: WARN could not reload LaunchAgent (permission). PATH current is the new artifact. Run: routines install-daemon" >&2
+  cat "$out" >&2 || true
+  rm -f "$out"
+  exit 0
+fi
+echo "routines post-install: install-daemon failed rc=$rc" >&2
+cat "$out" >&2 || true
+rm -f "$out"
+exit 1

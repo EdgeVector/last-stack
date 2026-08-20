@@ -156,6 +156,10 @@
         {
           "source": "bin/last-stack-lastseek-host-track-post-install",
           "target": "$HOME/.local/bin/last-stack-lastseek-host-track-post-install"
+        },
+        {
+          "source": "bin/last-stack-routines-host-track-post-install",
+          "target": "$HOME/.local/bin/last-stack-routines-host-track-post-install"
         }
       ],
       "notes": "Runtime is an immutable CI artifact that tracks gate_main (green+published main). host-track refresh promotes stable to that tip then installs. ~/.last-stack/{bin,skills,...} \u2192 artifacts/current. PATH links Class A + pickup bootstrap + Forge closeout tools (forge-api and friends) so routinesd (~/.local/bin first) never hits GC'd version pins and board-closeout can resolve Forge PRs. Never develop in the install; use a worktree. Also PATH-link last-stack-papercut-lifecycle-close, last-stack-kanban-file-pr, and last-stack-kanban-done-when-eval so scheduled shells (routinesd PATH often ~/.local/bin-first without sourcing shell-prelude) resolve the lifecycle closer, the required Kind:pr filing helper, and the non-PR DONE-WHEN evaluator.",
@@ -283,10 +287,12 @@
           "target": "$HOME/.local/bin/routines"
         }
       ],
-      "notes": "Routines LastGit artifact install from CI-published dist/routines; track_gate_main promotes stable to green+published main.",
+      "notes": "Routines LastGit artifact install from CI-published dist/routines; track_gate_main promotes stable to green+published main. post_install reloads the LaunchAgent so current and routinesd stay on the same digest.",
       "track_gate_main": true,
+      "post_install": "$HOME/.local/bin/last-stack-routines-host-track-post-install",
       "safe_upgrade": {
         "soak_hours": 1,
+        "post_install_phase": "after-cutover",
         "probes": [
           {"argv": ["dist/routines", "--help"], "timeout_s": 15}
         ]
