@@ -32,7 +32,9 @@ live = os.environ.get("LOOM_WHATS_WRONG_LIVE") == "1" or os.environ.get("LOOM_LI
 def emit(payload, line):
     print("LOOM_CONTEXT_PATCH:" + json.dumps(payload, separators=(",", ":")))
     print(line)
-    print("PASS")
+    # Join captures the last non-prefix stdout line as the branch result.
+    # PASS last would collapse every branch to {"stdout":"PASS"}.
+    print(json.dumps(payload, separators=(",", ":")))
 
 if not live:
     emit(
