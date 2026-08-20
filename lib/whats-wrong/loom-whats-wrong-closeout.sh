@@ -36,24 +36,32 @@ def as_dict(v):
     return {}
 
 healed, remaining, filed = [], [], []
-for r in results if isinstance(results, list) else []:
+item_ids = []
+for it in items if isinstance(items, list) else []:
+    if isinstance(it, dict) and it.get("id"):
+        item_ids.append(str(it.get("id")))
+
+for i, r in enumerate(results if isinstance(results, list) else []):
     row = as_dict(r)
-    # join may wrap child context
     if "heal_status" not in row:
-        for key in ("result", "output", "context"):
-            inner = as_dict(row.get(key)) if isinstance(row, dict) else {}
-            if inner.get("heal_status") or inner.get("id"):
-                row = inner
+        for key in ("result", "output", "context", "stdout"):
+            inner = row.get(key) if isinstance(row, dict) else None
+            parsed = as_dict(inner) if not isinstance(inner, dict) else inner
+            if parsed.get("heal_status") or parsed.get("id"):
+                row = parsed
                 break
-    hid = str(row.get("id") or "")
-    st = str(row.get("heal_status") or "unknown")
+    hid = str(row.get("id") or (item_ids[i] if i < len(item_ids) else ""))
+    st = str(row.get("heal_status") or "")
     pc = str(row.get("papercut") or "")
     if st == "healed":
         healed.append(hid or "?")
     else:
-        remaining.append(hid or "?")
+        remaining.append(hid or (item_ids[i] if i < len(item_ids) else "?"))
         if pc:
             filed.append(pc)
+
+if not results and item_ids:
+    remaining = list(item_ids)
 
 skip_brain = os.environ.get("WHATS_WRONG_SKIP_BRAIN") == "1" or os.environ.get("WHATS_WRONG_DRY") == "1"
 now = datetime.datetime.now(datetime.timezone.utc)
