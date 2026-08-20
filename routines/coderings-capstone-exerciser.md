@@ -26,6 +26,19 @@ running scripts against a configured repo path, **prove it is live** with
 Never silent-skip live proof. Never borrow another card's
 `~/.fkanban/worktrees/*` worktree as `--repo`.
 
+## Isolated scratch (won't-undo)
+
+Scheduled Codex `exec` defaults to read-only unless the harness passes
+`--sandbox workspace-write`. Host `/tmp` is still denied even then. Never
+`mkdir /tmp/...` for the fixture store. Pin scratch under the run dir (already
+an `--add-dir` root) and talk to LastDB only at the real unix socket
+`$HOME/.lastdb/data/folddb.sock`. Socket EPERM is a sandbox deny, not a dead
+node — do **not** restart `lastdbd`.
+
+If the exercise cannot create its isolated work root (`skip_reason=sandbox_unwritable_work_root`
+or `EPERM mkdir`), **outcome=noop** (tooling deny), not `error`. Do not file
+`coderings-capstone-exerciser-fail` for a sandbox deny.
+
 ## Procedure
 1. `situations list` (or equivalent). If a fence blocks this routine, report blocked and exit cleanly.
 2. Resolve a live CodeRings checkout, then run the exercise:
@@ -34,33 +47,41 @@ Never silent-skip live proof. Never borrow another card's
    . "$last_stack/bin/last-stack-shell-prelude"
    "$last_stack/bin/last-stack-cli-preflight" bun git jq
 
+   scratch="${ROUTINES_RUN_DIR:-.}/scratch"
+   mkdir -p "$scratch"
+   export TMPDIR="$scratch" TMP="$scratch" TEMP="$scratch"
+   export CODERINGS_CAPSTONE_WORK_ROOT="$scratch/capstone-work"
+   mkdir -p "$CODERINGS_CAPSTONE_WORK_ROOT"
+
    CODERINGS_PORTAL="${CODERINGS_PORTAL:-$HOME/code/edgevector/coderings}"
    CODERINGS_WT="$("$last_stack/bin/last-stack-portal-live-checkout" \
      --name coderings-capstone-exerciser \
      "$CODERINGS_PORTAL")"
    cd "$CODERINGS_WT"
-   bun src/cli.ts capstone exercise --json
+   bun src/cli.ts capstone exercise --json --work-root "$CODERINGS_CAPSTONE_WORK_ROOT"
    ```
    Prefer the memory-store default. Do **not** point at Tom's primary `~/.lastdb`
    unless the CLI's documented isolated-node path is explicit and safe.
 3. Interpret the JSON result:
-   - **GREEN**: continue to optional prove-fold (step 4); then heartbeat ok; no card; one-line report; stop.
-   - **RED / failure**: file or refresh one deduplicated kanban card
+   - **GREEN** (`ok: true`): continue to optional prove-fold (step 4); then heartbeat ok; no card; one-line report; stop.
+   - **SKIP / sandbox deny** (`skipped: true` / `skip_reason=sandbox_unwritable_work_root` / `EPERM mkdir`): heartbeat noop; **do not** file the fail card; stop.
+   - **RED / failure** (exercise ran and assertions failed): file or refresh one deduplicated kanban card
      `coderings-capstone-exerciser-fail` with the failure evidence; heartbeat;
      stop. Do not open drive-by PRs.
 4. **Optional prove-fold (when exercise is green)** — still **must not silent-skip**:
    ```bash
    FOLD_PORTAL="${FOLD_PORTAL:-$HOME/code/edgevector/fold}"
+   prove_err="$scratch/prove-fold-resolve.err"
    set +e
    FOLD_LIVE="$("$last_stack/bin/last-stack-portal-live-checkout" \
      --name coderings-prove-fold \
-     "$FOLD_PORTAL" 2>/tmp/prove-fold-resolve.err)"
+     "$FOLD_PORTAL" 2>"$prove_err")"
    resolve_rc=$?
    set -e
    if [ "$resolve_rc" -ne 0 ] || [ -z "${FOLD_LIVE:-}" ]; then
      # Loud report — not a silent skip. Exercise green still ends the routine ok.
-     echo "prove-fold: portal resolve failed (see /tmp/prove-fold-resolve.err); not running bare git against portal"
-     cat /tmp/prove-fold-resolve.err 2>/dev/null || true
+     echo "prove-fold: portal resolve failed (see $prove_err); not running bare git against portal"
+     cat "$prove_err" 2>/dev/null || true
    else
      # Guard: never pass a portal directory to --repo
      if [ -d "$FOLD_LIVE/.portal" ] && [ ! -e "$FOLD_LIVE/.git" ]; then
