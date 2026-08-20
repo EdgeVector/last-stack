@@ -52,6 +52,21 @@ WHATS_WRONG_SKIP_BRAIN=1 LOOM_INPUT='{"item":{"id":"x","label":"X"}}' \
   "$ROOT/lib/whats-wrong/loom-whats-wrong-heal.sh" | grep -q 'stand-in' \
   || fail "heal stand-in missing"
 
+# mechanical load path (no grok)
+mech_out="$(
+  LOOM_WHATS_WRONG_LIVE=1 WHATS_WRONG_MECHANICAL_ONLY=1 \
+    LOOM_INPUT='{"item":{"id":"machine.load","label":"CPU load"}}' \
+    "$ROOT/lib/whats-wrong/loom-whats-wrong-heal.sh"
+)"
+printf '%s\n' "$mech_out" | grep -q 'mechanical' || fail "mechanical heal missing: $mech_out"
+printf '%s\n' "$mech_out" | python3 -c 'import json,sys
+d=None
+for line in sys.stdin:
+    line=line.strip()
+    if line.startswith("{") and "heal_status" in line:
+        d=json.loads(line)
+assert d and d.get("id")=="machine.load" and d.get("heal_status") in ("healed","noop"), d'
+
 # --- no loom → exit 3 ---
 set +e
 HOME="$tmp" PATH="/usr/bin:/bin" LAST_STACK_WHATS_WRONG_STAMP="$tmp/stamp2.json" \
