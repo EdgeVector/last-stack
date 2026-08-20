@@ -112,4 +112,49 @@ printf '%s\n' "$mout" | grep -q '"outcome":"ok"' || fail "json missing outcome=o
 printf '%s\n' "$mout" | grep -q 'exceptions=2' || fail "json missing detail: $mout"
 printf '%s\n' "$mout" | grep -q 'ROUTINE_RESULT' || fail "missing ROUTINE_RESULT: $mout"
 
+# --- hung loom child is SIGTERM'd; wrapper still emits ROUTINE_RESULT ---
+cat >"$tmp/bin/loom" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-}"
+case "$cmd" in
+  ping) echo ok; exit 0 ;;
+  publish) echo "published $(basename "$2" .json)"; exit 0 ;;
+  run)
+    printf '%s\n' "$$" >"${HANG_PID_FILE:?}"
+    exec sleep 86400
+    ;;
+  *) echo "unexpected $*" >&2; exit 2 ;;
+esac
+SH
+chmod 755 "$tmp/bin/loom"
+export LAST_STACK_WHATS_WRONG_STAMP="$tmp/stamp-hang.json"
+export LAST_STACK_WHATS_WRONG_LOOM_TIMEOUT_SEC=1
+export HANG_PID_FILE="$tmp/hang.pid"
+export WHATS_WRONG_SNAPSHOT_FILE="$tmp/snap.json"
+export LOOM_WHATS_WRONG_KEY="whats-wrong-hang-key"
+hang_start="$(date +%s)"
+set +e
+hout="$("$BIN" --json --quiet --no-heal)"
+hrc=$?
+hang_end="$(date +%s)"
+set -e
+hang_sec=$((hang_end - hang_start))
+[ "$hang_sec" -lt 20 ] || fail "hung loom wrapper took ${hang_sec}s, expected <20"
+[ "$hrc" -eq 3 ] || fail "hung loom should exit 3, got $hrc out=$hout"
+printf '%s\n' "$hout" | grep -q 'ROUTINE_RESULT' || fail "hung loom missing ROUTINE_RESULT: $hout"
+printf '%s\n' "$hout" | grep -q 'outcome=error' || fail "hung loom missing outcome=error: $hout"
+printf '%s\n' "$hout" | grep -q 'exceptions=2' || fail "hung loom missing exceptions count: $hout"
+printf '%s\n' "$hout" | grep -q 'healed=0' || fail "hung loom missing healed count: $hout"
+printf '%s\n' "$hout" | grep -q 'loom-timeout=' || fail "hung loom missing timeout marker: $hout"
+if [ -f "$tmp/hang.pid" ]; then
+  hpid="$(cat "$tmp/hang.pid")"
+  if [ -n "$hpid" ] && kill -0 "$hpid" 2>/dev/null; then
+    kill -9 "$hpid" 2>/dev/null || true
+    fail "hung loom pid $hpid still alive after wrapper"
+  fi
+else
+  fail "hung loom did not write pid file"
+fi
+
 echo "ok"
