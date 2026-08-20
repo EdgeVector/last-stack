@@ -289,7 +289,7 @@
       ],
       "notes": "Routines LastGit artifact install from CI-published dist/routines; track_gate_main promotes stable to green+published main. post_install reloads the LaunchAgent so current and routinesd stay on the same digest.",
       "track_gate_main": true,
-      "post_install": "$HOME/.local/bin/last-stack-routines-host-track-post-install",
+      "post_install": "$HOME/.local/state/last-stack/artifacts/current/bin/last-stack-routines-host-track-post-install",
       "safe_upgrade": {
         "soak_hours": 1,
         "post_install_phase": "after-cutover",

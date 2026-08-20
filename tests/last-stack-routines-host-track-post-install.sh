@@ -16,7 +16,7 @@ command -v jq >/dev/null 2>&1 || {
 jq -e '
   .apps[]
   | select(.app == "routines")
-  | .post_install == "$HOME/.local/bin/last-stack-routines-host-track-post-install"
+  | .post_install == "$HOME/.local/state/last-stack/artifacts/current/bin/last-stack-routines-host-track-post-install"
     and .safe_upgrade.post_install_phase == "after-cutover"
 ' "$apps" >/dev/null \
   || {
