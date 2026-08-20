@@ -151,10 +151,11 @@ needs to weigh in on §⚠️ or redirect §🚀.
 
 > **Companion interactive mode (optional).** Many fleets pair this read-only BRIEF
 > with an interactive WORK mode the human triggers by hand: walk them through the
-> §⚠️ decisions one at a time, write each answer to a durable `decisions-log` in
-> the brain, and execute it onto the board (clear a gate to `todo`, scope a
-> program into a card, or record a hold). That keeps the decision-capture loop ON
-> TOP of `program-driver`/`groom-board`/`kanban-pickup` without replacing them.
+> §⚠️ decisions one at a time, write each answer as its own `type: decision`
+> record in the brain, and execute it onto the board (clear a gate to `todo`,
+> scope a North Star into a card, or record a hold). That keeps the
+> decision-capture loop ON TOP of `last-stack-north-star-driver` /
+> `last-stack-milestone-driver` / `kanban-pickup` without replacing them.
 
 ## Close-out (always the LAST step)
 

@@ -101,8 +101,11 @@ shell-visible CLI and daemon binary agree. The helper never restarts/kills
 - `brain append <slug> --type <t>` — grow a big record's body (also stdin);
   never get→edit→put a large record (get windows at ~40K chars, a re-put
   truncates what you didn't see).
-- Do NOT create `type: decision` records — that path is broken; append
-  decisions to the `decisions-log` reference record instead.
+- Write a settled call as its own `type: decision` record (`brain put` with
+  `type: decision` and real `program` / `gate_slug` / `decided_by` /
+  `decided_on` columns). Do NOT append to the archived `decisions-log`
+  monolith. That path retired 2026-07-06
+  (`decision-2026-07-06-decisions-log-migrated-to-decision-type`).
 
 ### ALWAYS file papercuts — the default is FILE, not judge
 
