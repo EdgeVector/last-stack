@@ -16,7 +16,8 @@ for bin in \
   last-stack-whats-wrong-routine \
   last-stack-lastdb-ops-offenders-routine \
   last-stack-kanban-validate-routine \
-  last-stack-fleet-performance-routine
+  last-stack-fleet-performance-routine \
+  last-stack-dogfood-rotate-routine
 do
   out="$("$ROOT/bin/$bin" --dry-run 2>/dev/null || true)"
   printf '%s\n' "$out" | grep -q 'REPLACE' && fail "$bin dry-run still contains REPLACE"

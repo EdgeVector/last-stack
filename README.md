@@ -260,7 +260,9 @@ reference such as `registry=configurations://owner-review-rotate`.
 `dogfood-rotate` is that shape: `bin/last-stack-dogfood-rotate-gate` selects
 only entries whose start contract is met (`eligible`, `timeout_sec`,
 `requires`, `command`) and skips compile / missing-binary / ineligible
-recipes before any LLM turn.
+recipes before any LLM turn. Scheduled fires set `gate_command` to
+`last-stack-dogfood-rotate-gate --routines-dispatch` so the recipe starts
+zero-LLM (no Codex `recommended_plugins` / Grok skill inventory preamble).
 
 ## Repo layout
 

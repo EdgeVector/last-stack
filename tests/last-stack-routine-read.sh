@@ -99,6 +99,17 @@ case "$dogfood_prompt" in
     exit 1
     ;;
 esac
+if ! grep -Fq "Do not list plugins" <<<"$dogfood_prompt" ||
+   ! grep -Fq "recommended_plugins" <<<"$dogfood_prompt" ||
+   ! grep -Fq "available_commands" <<<"$dogfood_prompt"; then
+  echo "expected dogfood-rotate prompt to skip plugin/skill preamble" >&2
+  exit 1
+fi
+if ! grep -Fq -- "--routines-dispatch" <<<"$dogfood_prompt" ||
+   ! grep -Fq "gate_command" <<<"$dogfood_prompt"; then
+  echo "expected dogfood-rotate prompt to name routines-dispatch gate_command" >&2
+  exit 1
+fi
 
 self_improvement_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" self-improvement-loop)"
 if ! grep -Fq "do not echo raw machine-result trailers" <<<"$self_improvement_prompt" ||
