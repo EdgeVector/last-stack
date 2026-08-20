@@ -390,11 +390,25 @@ fi
 # add failure must not leave a merged CR card in doing (2026-08-17:
 # trailing-backtick pr_url + NS mismatch made add fail after two CLOSED-ON-MERGE
 # stamps; the card bounced doing↔done).
+if [ -n "$pr_url" ]; then
+  merge_probe="$self_dir/last-stack-card-closeout-merge-probe"
+  if [ -x "$merge_probe" ]; then
+    if ! merge_out="$(run "$merge_probe" "$pr_url" 2>&1)"; then
+      echo "$merge_out" >&2
+      echo "last-stack-card-closeout: FAILED unmerged-review slug=$slug pr_url=$pr_url" >&2
+      echo "  Kind:pr is only done when the review artifact is merged." >&2
+      exit 1
+    fi
+  fi
+fi
+
 if [ -n "$pr_url" ] || [ -n "$branch" ]; then
   add_args=( "$board_cli" add "$slug" )
   [ -n "$pr_url" ] && add_args+=( --pr-url "$pr_url" )
   [ -n "$branch" ] && add_args+=( --branch "$branch" )
-  add_out="$(run "${add_args[@]}" 2>&1)" || {
+  # kanban add waits 2s for stdin body when none is passed. Close stdin so
+  # restamp of --pr-url/--branch cannot hang (papercut-kanban-add-stdin-timeout-in-closeout).
+  add_out="$(run "${add_args[@]}" </dev/null 2>&1)" || {
     add_rc=$?
     echo "$add_out" >&2
     echo "last-stack-card-closeout: WARN board-add-failed slug=$slug exit=$add_rc (restamp skipped; still moving to done)" >&2

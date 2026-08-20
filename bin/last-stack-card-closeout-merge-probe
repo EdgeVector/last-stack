@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Exit 0 if the review artifact at $1 is merged. Exit 1 otherwise.
+# lastgit://<slug>/cr/<id> | Forgejo .../pulls/<n> | GitHub .../pull/<n>
+set -euo pipefail
+url="${1:-}"
+if [ -z "$url" ]; then
+  echo "usage: last-stack-card-closeout-merge-probe <pr-url>" >&2
+  exit 2
+fi
+
+case "$url" in
+  lastgit://*)
+    rest="${url#lastgit://}"
+    slug="${rest%%/cr/*}"
+    cr_id="${rest##*/cr/}"
+    cr_id="${cr_id%%[\`]*}"
+    if ! command -v lastgit >/dev/null 2>&1; then
+      echo "merge-probe: lastgit not on PATH for $url" >&2
+      exit 1
+    fi
+    json="$(lastgit cr view "$slug" "$cr_id" --json 2>/dev/null || true)"
+    python3 -c '
+import json,sys
+raw=sys.stdin.read().strip()
+if not raw:
+    sys.exit(1)
+try:
+    d=json.loads(raw)
+except Exception:
+    sys.exit(1)
+state=str(d.get("state") or "").lower()
+oid=str(d.get("merge_oid") or d.get("mergeOid") or "")
+if state=="merged" and oid:
+    sys.exit(0)
+sys.exit(1)
+' <<<"$json"
+    ;;
+  */pulls/*)
+    path="${url#*://}"
+    path="${path#*/}"  # drop host
+    # EdgeVector/fold/pulls/1590
+    repo="${path%%/pulls/*}"
+    n="${path##*/pulls/}"
+    n="${n%%[\?/]*}"
+    api="${HOME}/.last-stack/bin/last-stack-forge-api"
+    if [ ! -x "$api" ]; then
+      echo "merge-probe: last-stack-forge-api missing for $url" >&2
+      exit 1
+    fi
+    merged="$("$api" --jq -r '.merged' "repos/${repo}/pulls/${n}" 2>/dev/null || true)"
+    [ "$merged" = "true" ]
+    ;;
+  */pull/*)
+    # https://github.com/owner/repo/pull/N
+    path="${url#*github.com/}"
+    repo="${path%%/pull/*}"
+    n="${path##*/pull/}"
+    n="${n%%[\?/]*}"
+    if ! command -v gh >/dev/null 2>&1; then
+      echo "merge-probe: gh not on PATH for $url" >&2
+      exit 1
+    fi
+    json="$(gh -R "$repo" pr view "$n" --json state,mergedAt 2>/dev/null || true)"
+    python3 -c '
+import json,sys
+raw=sys.stdin.read().strip()
+if not raw:
+    sys.exit(1)
+d=json.loads(raw)
+if str(d.get("state") or "").upper()=="MERGED" and d.get("mergedAt"):
+    sys.exit(0)
+sys.exit(1)
+' <<<"$json"
+    ;;
+  *)
+    echo "merge-probe: unrecognized review URL $url" >&2
+    exit 1
+    ;;
+esac
