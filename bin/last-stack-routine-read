@@ -175,10 +175,29 @@ if { [ "$live_install" -eq 1 ] || [ "${LASTSTACK_USE_HOST_TRACK_STATUS:-0}" = "1
   if [ "$(printf '%s\n' "$artifact_status" | jq -r '.install_mode // ""' 2>/dev/null)" = "artifact" ]; then
     artifact_mode=1
     artifact_stale="$(printf '%s\n' "$artifact_status" | jq -r '.stale | tostring' 2>/dev/null)"
+    artifact_freshness="$(printf '%s\n' "$artifact_status" | jq -r '.freshness // ""' 2>/dev/null)"
+    local_manifest="$(printf '%s\n' "$artifact_status" | jq -r '.manifest_digest // ""' 2>/dev/null)"
+    channel_manifest="$(printf '%s\n' "$artifact_status" | jq -r '.channel_manifest_digest // ""' 2>/dev/null)"
     update_status="$("$ROOT/bin/last-stack-update-check" 2>/dev/null || true)"
     [ -n "$update_status" ] || update_status="ARTIFACT_UPDATE_AVAILABLE"
+    # Soft-stale: live tree is the latest published artifact, unpublished
+    # main is ahead. host-track check still exits 1, and refresh only
+    # reinstalls the same digest (~45s setup, twice). Pickup times out
+    # before claim. Skip that no-op refresh; LaunchAgent heals when main
+    # is actually green+published.
+    skip_noop_refresh=0
+    if [ "$artifact_stale" = "true" ]; then
+      if [ "$artifact_freshness" = "soft_stale" ]; then
+        skip_noop_refresh=1
+      elif [ -n "$local_manifest" ] && [ "$local_manifest" = "$channel_manifest" ]; then
+        skip_noop_refresh=1
+      fi
+    fi
     check_err="$(mktemp "${TMPDIR:-/tmp}/last-stack-routine-read-check.XXXXXX")"
-    if host-track check last-stack >"$check_err" 2>&1; then
+    if [ "$skip_noop_refresh" -eq 1 ]; then
+      rm -f "$check_err"
+      echo "LAST_STACK_ROUTINE_STALE_PROCEED $update_status freshness=${artifact_freshness:-unknown} local_manifest=${local_manifest:0:12} channel_manifest=${channel_manifest:0:12}; skipping no-op host-track refresh (unpublished main ahead of published stable)." >&2
+    elif host-track check last-stack >"$check_err" 2>&1; then
       rm -f "$check_err"
     else
       check_detail="$(cat "$check_err" 2>/dev/null || true)"

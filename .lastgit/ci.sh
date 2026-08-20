@@ -46,6 +46,7 @@ bin/last-stack-lint-prompts \
 bin/last-stack-lint-prompts --access-sweep .
 
 bash tests/last-stack-routine-read.sh
+bash tests/last-stack-routine-read-proceed-on-stale.sh
 # Reclaim safety belongs in the REQUIRED gate, not only under
 # LAST_STACK_CI_FULL=1: this covers a liveness check that once failed OPEN
 # (a sandbox denying ps/lsof made every worktree look idle) and a board parse

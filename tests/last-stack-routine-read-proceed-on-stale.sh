@@ -66,4 +66,34 @@ set -e
 [ "$rc2" -ne 0 ] || fail "corrupt skill-pack was allowed to proceed instead of blocking"
 grep -q 'LAST_STACK_ROUTINE_STALE ' "$tmp/err2" || fail "corrupt case did not hard-block via stale_fail"
 
-printf 'ok: routine-read proceeds on stale-but-valid, blocks on corrupt\n'
+# --- Scenario 3: soft-stale, check fails, refresh would be a no-op ---
+# Live 2026-08-20: host-track check exits 1 while local==channel digest
+# because unpublished main is ahead. Refresh reinstalls the same artifact
+# (~45s) and pickup times out. Must skip refresh and proceed.
+cat > "$tmp/bin/host-track" <<SH
+#!/usr/bin/env bash
+set -euo pipefail
+case "\${1:-}" in
+  status)
+    jq -n '{app:"last-stack",install_mode:"artifact",stale:true,freshness:"soft_stale",
+            manifest_digest:"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            channel_manifest_digest:"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}'
+    ;;
+  refresh) echo refreshed >"$tmp/refresh.ran"; echo "host-track: installed last-stack"; exit 0 ;;
+  check)   echo "host-track: last-stack stale" >&2; exit 1 ;;
+  *) exit 2 ;;
+esac
+SH
+chmod +x "$tmp/bin/host-track"
+
+set +e
+out3="$("$ROOT/bin/last-stack-routine-read" kanban-watch 2>"$tmp/err3")"
+rc3=$?
+set -e
+[ "$rc3" -eq 0 ] || fail "soft-stale routine-read blocked (exit $rc3)"
+[ ! -f "$tmp/refresh.ran" ] || fail "soft-stale path invoked a no-op host-track refresh"
+grep -q 'LAST_STACK_ROUTINE_STALE_PROCEED' "$tmp/err3" || fail "soft-stale did not emit proceed warning"
+printf '%s\n' "$out3" | grep -q 'card_batch_limit' || fail "soft-stale did not return the prompt"
+grep -q 'skipping no-op host-track refresh' "$tmp/err3" || fail "soft-stale proceed warning missing no-op skip"
+
+printf 'ok: routine-read proceeds on stale-but-valid, blocks on corrupt, skips no-op refresh\n'
