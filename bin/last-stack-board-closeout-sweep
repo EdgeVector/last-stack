@@ -48,8 +48,10 @@
 #                                   [--max-park-hours 24] [--escalate-after 3]
 #
 # Exit 0 always after a completed pass (including noop). Exit 2 on usage error.
-# Prints a single heartbeat line:
+# Prints one compact JSON object, then a heartbeat line (heartbeat is last):
+#   {"kind":"board-closeout","status":"noop",...}
 #   board-closeout <ISO> ok|noop closed=<n> rolled_back=<n> demoted=<n> skipped=<n> flagged=...
+# Never exec the engine: a chained/sourced caller must survive this helper.
 set -euo pipefail
 
 self_dir="$(cd "$(dirname "$0")" && pwd -P)"
@@ -115,8 +117,25 @@ export BOARD_CLOSEOUT_JSON="$json_out"
 export PATH="$last_stack/bin:${PATH:-}"
 
 # Prefer node (matches card-reaper); fall back to python3.
+# Do NOT exec: merge-babysit / card-reaper chain this helper then keep running.
+_engine_out="$(mktemp "${TMPDIR:-/tmp}/board-closeout.out.XXXXXX")"
+_engine_err="$(mktemp "${TMPDIR:-/tmp}/board-closeout.err.XXXXXX")"
+_emit_closeout_result() {
+  if grep -q '^board-closeout ' "$_engine_out" 2>/dev/null; then
+    cat "$_engine_out"
+    cat "$_engine_err" >&2 || true
+  else
+    cat "$_engine_out"
+    cat "$_engine_err" >&2 || true
+    _iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '%s\n' "{\"kind\":\"board-closeout\",\"status\":\"error\",\"iso\":\"$_iso\",\"closed\":0,\"rolled_back\":0,\"demoted\":0,\"skipped\":0,\"flagged\":[\"engine-silent\"]}"
+    printf 'board-closeout %s error closed=0 rolled_back=0 demoted=0 skipped=0 flagged=engine-silent\n' "$_iso"
+  fi
+  rm -f "$_engine_out" "$_engine_err"
+}
+
 if command -v node >/dev/null 2>&1; then
-  exec node - "$last_stack" <<'NODE'
+  node - "$last_stack" >"$_engine_out" 2>"$_engine_err" <<'NODE' || true
 const fs = require("fs");
 const path = require("path");
 const cp = require("child_process");
@@ -859,9 +878,21 @@ function finish() {
     ` demoted=${demoted}` +
     (demoted ? ` demoted_slugs=${res.demoted.join(",")}` : "") +
     ` skipped=${skipped} flagged=${flags}`;
-  console.log(line);
+  const payload = {
+    kind: "board-closeout",
+    status: st,
+    iso,
+    closed,
+    rolled_back: rolled,
+    demoted,
+    skipped,
+    flagged: res.flagged,
+  };
+  // Unbuffered: a timeout/kill used to drop fully-buffered console.log.
+  fs.writeSync(1, JSON.stringify(payload) + "\n");
+  fs.writeSync(1, line + "\n");
   if (jsonOut) {
-    console.log(JSON.stringify({ ...res, status: st, iso }, null, 2));
+    fs.writeSync(1, JSON.stringify({ ...res, status: st, iso }, null, 2) + "\n");
   }
   // Heartbeat best-effort
   const hb = path.join(lastStack, "bin", "last-stack-brain-append-heartbeat");
@@ -873,10 +904,12 @@ function finish() {
 finish();
 process.exit(0);
 NODE
+  _emit_closeout_result
+  exit 0
 fi
 
 # Python fallback
-exec python3 - "$last_stack" <<'PY'
+python3 - "$last_stack" >"$_engine_out" 2>"$_engine_err" <<'PY' || true
 import json, os, re, subprocess, sys, time
 from pathlib import Path
 
@@ -1480,11 +1513,24 @@ line += f" demoted={demoted}"
 if demoted:
     line += f" demoted_slugs={','.join(res['demoted'])}"
 line += f" skipped={skipped} flagged={flags}"
-print(line)
+payload = {
+    "kind": "board-closeout",
+    "status": st,
+    "iso": iso,
+    "closed": closed,
+    "rolled_back": rolled,
+    "demoted": demoted,
+    "skipped": skipped,
+    "flagged": res["flagged"],
+}
+print(json.dumps(payload, separators=(",", ":")), flush=True)
+print(line, flush=True)
 if json_out:
-    print(json.dumps({**res, "status": st, "iso": iso}, indent=2))
+    print(json.dumps({**res, "status": st, "iso": iso}, indent=2), flush=True)
 hb = last_stack / "bin" / "last-stack-brain-append-heartbeat"
 if not dry_run and hb.exists():
     run([str(hb), "--line", line], timeout=30)
 sys.exit(0)
 PY
+_emit_closeout_result
+exit 0

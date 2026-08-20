@@ -11,14 +11,19 @@ runner, then exit.
 ```bash
 last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 . "$last_stack/bin/last-stack-shell-prelude"
-# Merged PR/CR → done first (card-reaper still skips any pr_url for reaps).
-"$last_stack/bin/last-stack-board-closeout-sweep" || true
+# Isolate closeout: this helper must not exec-replace the chain. The reaper
+# runner also runs it and is the outcome source.
+( "$last_stack/bin/last-stack-board-closeout-sweep" || true )
 "$last_stack/bin/last-stack-card-reaper-run"
 ```
 
 After the commands exit, make your final response the final
 `card-reaper ...` heartbeat line printed by the reaper (optionally prefix with
-the `board-closeout …` line). Nothing else.
+the `board-closeout …` line) plus the `ROUTINE_RESULT` trailer. Never invent
+`runner-no-heartbeat` when the runner printed those lines, wrote
+`$ROUTINES_RUN_DIR/scratch/result.json`, or wrote `outcome.txt`. Copy the
+runner's trailer into `outcome.txt`; do not replace a completed pass with
+`error`.
 
 ## Close-out (always the LAST step)
 
