@@ -345,12 +345,16 @@ instructions/brain-kanban.md
                         as a managed block into each harness's global
                         instructions file (`~/.claude/CLAUDE.md`,
                         `~/.codex/AGENTS.md`, `~/.factory/AGENTS.md`,
-                        `~/.config/opencode/AGENTS.md`) and registers the
+                        `~/.config/opencode/AGENTS.md`, `~/.grok/AGENTS.md`) and registers the
                         brain/kanban MCP servers for Codex (with a PATH env so
                         GUI-spawned servers can find bun); also records the
                         creation-time default that new repos start in LastGit
                         while existing venue choices remain unchanged until
                         explicitly migrated
+instructions/asd-ste100.md
+                        ASD-STE100 writing rule (Tom, 2026-08-20). Setup
+                        upserts it next to the brain-kanban block so every
+                        harness agent writes conversation and documents in STE.
 routines/<name>.md      one parameterized scheduled-agent template per routine
 routines/README.md      how routines + skills compose; how to register them
 templates/routine-fleet/

@@ -46,6 +46,7 @@ fi
 # ── AGENTS.md: managed block present, user content preserved ──────────────────
 grep -q 'keep me' "$agents" || fail "user AGENTS.md content was clobbered"
 grep -q 'last-stack:brain-kanban:start' "$agents" || fail "managed block missing from AGENTS.md"
+grep -q 'last-stack:asd-ste100:start' "$agents" || fail "asd-ste100 block missing from AGENTS.md"
 grep -q 'New repository venue default: LastGit' "$agents" || fail "LastGit new-repo default missing from AGENTS.md"
 grep -q 'brain ask' "$agents" || fail "CLI guidance missing from managed block"
 grep -q 'folddb.sock' "$agents" || fail "transport guidance missing from managed block"
