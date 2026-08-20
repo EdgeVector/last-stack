@@ -253,6 +253,10 @@ cards per `sop-routine-shared-contract`, and rewrites only the rotation-log row
 for the selected entry. Scheduled tasks should be thin triggers that pass a
 registry slug such as `registry=dogfood-registry` or an explicit Config
 reference such as `registry=configurations://owner-review-rotate`.
+`dogfood-rotate` is that shape: `bin/last-stack-dogfood-rotate-gate` selects
+only entries whose start contract is met (`eligible`, `timeout_sec`,
+`requires`, `command`) and skips compile / missing-binary / ineligible
+recipes before any LLM turn.
 
 ## Repo layout
 
