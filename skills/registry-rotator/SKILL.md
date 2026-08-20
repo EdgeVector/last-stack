@@ -2,7 +2,8 @@
 name: registry-rotator
 description: |
   Generic scheduled-routine engine for registry-backed rotations. Given a
-  registry record slug, pick the eligible entry with the largest overdue ratio
+  Brain or Config registry reference, pick the eligible entry with the largest
+  overdue ratio
   (age divided by cadence), run its recipe, file cards per the shared routine
   contract, stamp only the registry rotation-log block, and heartbeat. Supports
   dry-run mode for selection and stamp-diff verification.
@@ -20,11 +21,12 @@ ship code, open worktrees, open PRs, or spawn agents.
 
 Required:
 
-- `registry=<slug>`: the brain record holding the registry.
+- `registry=<slug-or-app-ref>`: the registry record. A bare slug names a Brain
+  record; `configurations://<slug>` names a Config document.
 
 Optional:
 
-- `type=<type>`: brain type for the registry. Default: `project`.
+- `type=<type>`: Brain type for a bare-slug registry. Default: `project`.
 - `mode=dry-run|run`: default `run`. Dry run computes the selected entry and
   prints the rotation-log diff it would write, but makes no brain, board, repo,
   or external-service mutations.
@@ -41,8 +43,9 @@ If `registry` is missing, stop and report the missing argument.
    `git`, `curl`, `jq`, `kanban`, and `brain`.
 2. Fetch `sop-routine-shared-contract` and honor it. If this skill conflicts
    with that SOP, the SOP wins.
-3. Load project configuration from the declared config source. Until F-Config is
-   present, read these brain shim records:
+3. Load project configuration from the declared config source. Prefer
+   `configurations get <slug> --json` for `configurations://` sources. Until
+   Config is present, read these brain shim records:
    `workspace-config`, `repo-venue-map`, and any registry-specific mapping record
    named by the entry. Use these records for workspace roots, checkout paths,
    worktree roots, repo venues, merge mechanisms, CI gate names, and hands-off
@@ -53,7 +56,7 @@ If `registry` is missing, stop and report the missing argument.
 
 ## Registry Shape
 
-A registry is a Markdown brain record with:
+A registry is a Markdown Brain record or Config document with:
 
 - One entry per rotatable unit, normally headed as `### <entry-slug> ...`.
 - Entry fields for `track`, `cadence`, `recipe`, `pass =`, and `isolation`.
@@ -74,6 +77,18 @@ Treat the block names `rotation-log:start` and `rotation-log:end` as the write
 boundary. Preserve all bytes outside that block. If the block is missing,
 malformed, or has no row for the selected entry, file or report a registry-fix
 card instead of rewriting the whole record.
+
+A registry may define a record-owned recipe template as
+`## Recipe: <name>`. An entry with `recipe: <name>` dispatches that template
+with only the fields declared on that entry. This keeps repeated execution
+policy in the project record while the trigger and engine stay generic.
+
+For a Config registry, load the document with
+`configurations get <slug> --json`. Preserve its `title`, `kind`, and `project`
+metadata for write-back; the Markdown `body` is the registry text. A
+missing Config document is an error. Never fall back from a missing
+`configurations://` reference to a same-named Brain record, because that would
+silently restore the project/config boundary the caller explicitly retired.
 
 ## Select One Entry
 
@@ -128,6 +143,8 @@ Recipe forms, in order of preference:
   or scratch location. Evaluate the `pass =` assertion against real output,
   artifacts, exit codes, and logs named by the entry. Exit 0 alone is not a pass
   unless the assertion says so.
+- **Registry-owned recipe template**: execute the matching `## Recipe: <name>`
+  with the selected entry fields as its inputs.
 - **Inline steps**: follow the entry's steps exactly, using the configured
   workspace/repo information and the entry's isolation rule.
 
@@ -172,17 +189,20 @@ mapping exists, file a registry/config fix card instead of guessing.
 
 ## Stamp The Rotation Log
 
-After recipe dispatch and card filing, re-read the full registry body. Replace
+After recipe dispatch and card filing, re-read the full registry body from the
+same app and reference used at selection. Replace
 only the selected entry's table row inside the `rotation-log:start/end` block:
 
 - `last_run`: current UTC date as `YYYY-MM-DD`;
 - `result`: one of `pass`, `fail`, `blocked`, or `recipe-broken`;
 - `cards filed`: comma-separated card slugs, or `--` when none were filed.
 
-Preserve every other row and all prose. Write back with `brain put` using the
-same slug and type. Do not use append for the registry. If the record changed
-under you and the selected row can no longer be matched safely, stop, heartbeat
-`error`, and report the concurrent edit.
+Preserve every other row and all prose. For a bare Brain slug, write back with
+`brain put` using the same slug and type. For `configurations://<slug>`, write
+the updated body with `configurations put`, preserving the document's title,
+kind, and project. Do not use append for the registry. If the record
+changed under you and the selected row can no longer be matched safely, stop,
+heartbeat `error`, and report the concurrent edit.
 
 ## Heartbeat And Report
 
