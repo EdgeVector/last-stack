@@ -74,6 +74,15 @@ if ! ls "$localp"/twin.md.bak-divergent-* >/dev/null 2>&1; then
   exit 1
 fi
 
+# Product seed for the capstone canary must load the last-stack prompt, not a
+# drifted ~/.routines/prompts twin (prompt-doctor registry-divergent-local).
+seed="$ROOT/config/routines-registry/coderings-capstone-exerciser.toml"
+[ -f "$seed" ] || { echo "fail: missing $seed" >&2; exit 1; }
+grep -q 'prompt_path = "/Users/REPLACE/.last-stack/routines/coderings-capstone-exerciser.md"' "$seed" \
+  || { echo "fail: capstone seed prompt_path must be last-stack product file" >&2; exit 1; }
+grep -q '\.routines/prompts/coderings-capstone-exerciser' "$seed" \
+  && { echo "fail: capstone seed still points at drifted local prompt twin" >&2; exit 1; }
+
 # --- red: same-content twin-copy (latent drift) ---
 printf 'name: copy\nSAME\n' >"$product/copy.md"
 printf 'name: copy\nSAME\n' >"$localp/copy.md"

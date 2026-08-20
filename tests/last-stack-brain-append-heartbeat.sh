@@ -35,4 +35,14 @@ grep -q 'no-brain' "$LAST_STACK_HEARTBEATS_FILE"
 path_out="$("$ROOT/bin/last-stack-heartbeats-path")"
 [ "$path_out" = "$LAST_STACK_HEARTBEATS_FILE" ]
 
+# Must not require host /tmp (Codex sandbox EPERM). Capture stderr in-process
+# even when TMPDIR is a missing/unwritable path.
+blocked="$tmp/blocked-tmp"
+mkdir -p "$blocked"
+chmod 000 "$blocked"
+export TMPDIR="$blocked"
+"$ROOT/bin/last-stack-brain-append-heartbeat" --line "no-host-tmp"
+grep -q 'no-host-tmp' "$LAST_STACK_HEARTBEATS_FILE"
+chmod 700 "$blocked"
+
 echo "ok"

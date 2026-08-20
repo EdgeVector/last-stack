@@ -1,0 +1,12 @@
+# CodeRings continuous pipeline canary (memory-store exerciser).
+# Safe: no primary-brain writes. GREEN stays quiet; RED files
+# coderings-capstone-exerciser-fail. Prompt is the last-stack product file —
+# never a drifted ~/.routines/prompts twin.
+id = "coderings-capstone-exerciser"
+difficulty = "normal"
+rrule = "FREQ=DAILY;BYHOUR=7;BYMINUTE=15;BYSECOND=0"
+cwd = "/Users/REPLACE/code/edgevector/coderings"
+status = "active"
+timeout_min = 25
+heartbeat_slug = "routine-heartbeats"
+prompt_path = "/Users/REPLACE/.last-stack/routines/coderings-capstone-exerciser.md"

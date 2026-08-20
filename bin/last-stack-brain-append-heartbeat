@@ -71,6 +71,19 @@ append_line() {
   printf '%s\n' "$line" >>"$target"
 }
 
+# Capture helper stderr in-process. Do not write /tmp/last-stack-heartbeat-err.$$
+# — scheduled Codex sandbox denies host /tmp even when ~/.routines is writable.
+capture_append() {
+  local target="$1"
+  local out rc
+  set +e
+  out="$(append_line "$target" 2>&1)"
+  rc=$?
+  set -e
+  printf '%s\n' "$out"
+  return "$rc"
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --slug)
@@ -123,13 +136,10 @@ esac
 
 log_file="$(default_log)"
 err_primary=""
-if append_line "$log_file" 2>/tmp/last-stack-heartbeat-err.$$; then
-  rm -f /tmp/last-stack-heartbeat-err.$$
+if err_primary="$(capture_append "$log_file")"; then
   echo "appended heartbeat to file ${log_file}${slug:+ (label=$slug)}"
   exit 0
 fi
-err_primary="$(cat /tmp/last-stack-heartbeat-err.$$ 2>/dev/null || true)"
-rm -f /tmp/last-stack-heartbeat-err.$$
 
 # Explicit override: do not silently redirect elsewhere.
 if [ -n "${LAST_STACK_HEARTBEATS_FILE:-}" ]; then
@@ -143,14 +153,12 @@ if [ "$fallback" = "$log_file" ]; then
   exit 1
 fi
 
-if append_line "$fallback" 2>/tmp/last-stack-heartbeat-err.$$; then
-  rm -f /tmp/last-stack-heartbeat-err.$$
+err_fb=""
+if err_fb="$(capture_append "$fallback")"; then
   echo "appended heartbeat to file ${fallback}${slug:+ (label=$slug)} (fallback; primary ${log_file} not writable: ${err_primary:-EPERM})" >&2
   echo "appended heartbeat to file ${fallback}${slug:+ (label=$slug)}"
   exit 0
 fi
-err_fb="$(cat /tmp/last-stack-heartbeat-err.$$ 2>/dev/null || true)"
-rm -f /tmp/last-stack-heartbeat-err.$$
 echo "failed to append heartbeat to ${log_file}: ${err_primary:-unknown error}" >&2
 echo "fallback ${fallback} also failed: ${err_fb:-unknown error}" >&2
 exit 1
