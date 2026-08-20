@@ -105,8 +105,10 @@ waiting on Tom. Steps:
 1. **Snapshot.** Read `todo`, `doing`, and `review` with sequential
    `kanban list --column <column> --json` calls (counts + card previews). Then
    read targeted brain records one at a time: `brain get active-programs`,
-   `brain get open-decisions --type reference`, and `brain get
-   routine-heartbeats --type reference`.
+   `brain get open-decisions --type reference`, `brain get
+   routine-heartbeats --type reference`, and `brain get
+   routine-reds-recheck-latest --type reference` (paste its table into §🩺
+   when present and newer than 36h).
 
 2. **§1 — Decisions that GENUINELY need you (keep it SHORT).** Per Tom's standing
    correction (`feedback_autonomous_drive_dev_not_gated`), most old "gates" are NOT
@@ -162,13 +164,17 @@ waiting on Tom. Steps:
    `groom-kanban-board`, `kanban-pickup`, `kanban-watch`, `program-rollup`,
    plus the generators. If `list_scheduled_tasks` is unavailable in a headless
    run, fall back to `routine-heartbeats` alone and say so.
+   Also `brain get routine-reds-recheck-latest --type reference` and paste its
+   table into §🩺 when it exists and is <36h old (Tom 2026-08-20: fleet reds
+   recheck belongs in morning-sync, not only a side chat).
 
 4b. **§3b — New releases — working well? (always include).** Distinct from §3
    (did a fire succeed) and §4 (ELI5 story). Of the things that *newly became
    true* in the last ~36h, is each actually true **on this machine right now**?
    Cap 5. Cheap live probes only. BRIEF stays read-only — do not heal.
 
-   Discover: brain closeouts for today+yesterday; the latest
+   Discover: brain closeouts for today+yesterday; **`routine-reds-recheck-latest`**
+   (point-get; fleet reds Tom asked to recheck); the latest
    `last-stack-fleet-performance` memory slice; `host-track status` `host_head`
    vs the closeout merge_oid. "CR merged" / "CI green" is not the probe.
    If feature-prove already wrote PASS today for the same claim, cite that.
@@ -249,6 +255,7 @@ Brief skeleton:
 
 ### 🩺 Routine health
 - <routine> last ran <when> — <ok | DID NOT RUN | error: …>
+- If `routine-reds-recheck-latest` exists: paste its table (working / pending / paused on purpose / still red).
 
 ### 🔬 New releases — working well?
 - <claim> — **working** · <probe you ran>
