@@ -1,6 +1,5 @@
-# Daily ownership review — papercut triage per owner charter.
-# Prompt is product-versioned under last-stack/routines (not ~/.routines/prompts).
-# Generate/triage only. Pickup ships code.
+# Daily Config-backed ownership rotation. The prompt is only a thin trigger for
+# registry-rotator; project facts live in configurations://owner-review-rotate.
 id = "owner-review-rotate"
 harness = "grok"
 model = "grok-4.5"

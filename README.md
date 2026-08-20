@@ -242,8 +242,8 @@ and [`templates/routine-fleet/`](templates/routine-fleet/).
 ### Registry Rotator Records
 
 The **registry-rotator** skill expects each project registry to be a Markdown
-record with one rotatable entry per heading, entry fields for `track`,
-`cadence`, `recipe`, `pass =`, and `isolation`, and a single
+Brain record or Config document with one rotatable entry per heading, entry
+fields for `track`, `cadence`, `recipe`, `pass =`, and `isolation`, and a single
 `rotation-log:start/end` table with `feature`, `last_run`, `result`, and
 `cards filed` columns. The engine reads project paths and venues from the
 project's config source (`workspace-config` / `repo-venue-map` while those are
@@ -251,10 +251,12 @@ still interim brain shims), selects the eligible entry with the largest
 `age / cadence` overdue ratio, dispatches that entry's recipe, files kanban
 cards per `sop-routine-shared-contract`, and rewrites only the rotation-log row
 for the selected entry. Scheduled tasks should be thin triggers that pass a
-registry slug such as `registry=dogfood-registry`. `dogfood-rotate` is that
-shape: `bin/last-stack-dogfood-rotate-gate` selects only entries whose start
-contract is met (`eligible`, `timeout_sec`, `requires`, `command`) and skips
-compile / missing-binary / ineligible recipes before any LLM turn.
+registry slug such as `registry=dogfood-registry` or an explicit Config
+reference such as `registry=configurations://owner-review-rotate`.
+`dogfood-rotate` is that shape: `bin/last-stack-dogfood-rotate-gate` selects
+only entries whose start contract is met (`eligible`, `timeout_sec`,
+`requires`, `command`) and skips compile / missing-binary / ineligible
+recipes before any LLM turn.
 
 ## Repo layout
 
