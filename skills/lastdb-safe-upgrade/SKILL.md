@@ -354,6 +354,15 @@ kanban list   # must show real cards
 
 - **`lastdb-smoke-test`** — probe-only CoW canary (no persistent backup, no live install).
   Safe-upgrade **calls** its harness for step 2.
+- **Write-path CoW probe (Table 5 / T0 ack):** `scripts/write-path-cow-probe.sh`
+  clones the live home with `cp -cR` into `${TMPDIR}` (never `--data-dir ~/.lastdb`),
+  reuses `live_lastdb_env_pairs()`, strips prod `cloud_sync.json`, and classifies
+  a warm BoardCards mutation. Incumbent-shaped samples (seconds-scale ack,
+  persist/T2 on the request, Purge in the batch) are **RED**. Table 5 GREEN is
+  persist spawn-only, `sync_capture` encode-only, `purge_barrier` ≈ 0, warm
+  p50 < 50 ms / p95 < 100 ms. This probe does not replace safe-upgrade; it is
+  the extra write-path bar. `LASTDB_RESIDENT_MAX_DEFERRED_BYTES` on the live
+  plist stays 0 until full GREEN plus Tom.
 - **`brain-doctor`** — if primary is already wedged **before** upgrade; fix health first.
 - Design: **`lastdb-minimal-downtime-cutover`** (venue + optional proxy phase).
 
