@@ -92,26 +92,42 @@ heartbeat() {
     "$rolled_back" "$parked" "$salvaged" "$exempt_needs_human" "$flags"
 }
 
+_emitted=0
 finish() {
   local st="$1"
   local result_flags="none"
+  if [ "$_emitted" = "1" ]; then
+    return 0
+  fi
+  _emitted=1
   if [ "${#flagged[@]}" -gt 0 ]; then
     result_flags="$(IFS=,; echo "${flagged[*]}")"
   fi
   if [ "${#report[@]}" -gt 0 ]; then
     printf '%s\n' "${report[@]}"
   fi
+  # Closeout was isolated (subshell + log) so a noop/exec cannot swallow this
+  # runner. Re-emit its heartbeat now, then the required reaper trailer.
+  if [ -s "$scratch/board-closeout.log" ]; then
+    grep '^board-closeout ' "$scratch/board-closeout.log" | tail -1 || true
+  fi
   heartbeat "$st"
   printf '%s %s\n' 'ROUTINE_RESULT' "outcome=${st} detail=live=${live} flagged=${result_flags}"
+  printf '%s\n' "${st} live=${live} flagged=${result_flags}" >"$run_dir/outcome.txt" || true
 }
 
+trap 'finish "${run_status:-error}"' EXIT
+
 # Always-on merged-PR closeout (survives low-credit when watch is paused).
+# Isolate in a subshell so an exec/exit inside the helper cannot replace us.
 if [ -x "$last_stack/bin/last-stack-board-closeout-sweep" ] && [ "$dry_run" -ne 1 ]; then
-  if command -v timeout >/dev/null 2>&1; then
-    timeout -k 5s 45s "$last_stack/bin/last-stack-board-closeout-sweep" >>"$scratch/board-closeout.log" 2>&1 || true
-  else
-    "$last_stack/bin/last-stack-board-closeout-sweep" >>"$scratch/board-closeout.log" 2>&1 || true
-  fi
+  (
+    if command -v timeout >/dev/null 2>&1; then
+      timeout -k 5s 45s "$last_stack/bin/last-stack-board-closeout-sweep" || true
+    else
+      "$last_stack/bin/last-stack-board-closeout-sweep" || true
+    fi
+  ) >"$scratch/board-closeout.log" 2>&1 || true
 fi
 
 if [ "$skip_preflight" -ne 1 ]; then
