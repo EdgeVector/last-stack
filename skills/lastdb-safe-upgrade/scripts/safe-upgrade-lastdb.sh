@@ -210,6 +210,8 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
 . "$_SCRIPT_DIR/binary-pair-checks.sh"
 # shellcheck source=latency-bar-checks.sh
 . "$_SCRIPT_DIR/latency-bar-checks.sh"
+# shellcheck source=live-lastdb-env.sh
+. "$_SCRIPT_DIR/live-lastdb-env.sh"
 # shellcheck source=dev-photograph-stamp-gate.sh
 . "$_SCRIPT_DIR/dev-photograph-stamp-gate.sh"
 # shellcheck source=launchd-job-checks.sh
@@ -563,23 +565,8 @@ metric_val() {
   awk -F= -v k="$2" '$1==k{print $2}' "$1" 2>/dev/null | head -1
 }
 
-live_lastdb_env_pairs() {
-  # LASTDB_* EnvironmentVariables from the live LaunchAgent plist, KEY=VAL per
-  # line, so probe nodes boot with the primary's tuning (warm budget, atom
-  # limit, …). Without this, probes measure default-config behavior the live
-  # node does not have (e2e 2026-07-28: probe scan 43s vs live ~23s purely from
-  # the missing 4 GiB LASTDB_HASH_GROUP_WARM_BYTES). HOME-shaped keys are
-  # excluded — the probe must only ever see its own --data-dir copy.
-  [ -f "$LAUNCHD_PLIST" ] || return 0
-  /usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables' "$LAUNCHD_PLIST" 2>/dev/null \
-    | awk -F' = ' '
-        $1 ~ /^ *LASTDB_/ {
-          key=$1; gsub(/^ +| +$/,"",key)
-          if (key == "LASTDB_HOME" || key == "FOLDDB_HOME" || key == "LASTDB_DATA_DIR") next
-          val=$2; gsub(/^ +| +$/,"",val)
-          if (key != "" && val != "") print key "=" val
-        }'
-}
+# live_lastdb_env_pairs is defined in live-lastdb-env.sh (shared with the
+# write-path CoW probe). Never invent a second env-mirror.
 
 resolve_baseline_bin() {
   # The binary the live primary actually runs — launchd plist first, then
