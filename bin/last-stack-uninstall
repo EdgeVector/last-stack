@@ -41,16 +41,16 @@ remove_from() {
   return 0
 }
 
-remove_brain_kanban_block() {
-  # Strip the setup-managed brain-kanban block from a harness instructions file.
-  local file="$1" label="$2"
+remove_managed_instruction_block() {
+  # Strip one setup-managed block (brain-kanban or asd-ste100) from a harness file.
+  local file="$1" label="$2" name="$3"
   [ -f "$file" ] || return 0
-  grep -q 'last-stack:brain-kanban:start' "$file" || return 0
+  grep -q "last-stack:${name}:start" "$file" || return 0
   local tmp
   tmp="$(mktemp)"
-  awk '
-    /last-stack:brain-kanban:start/ { ib = 1; next }
-    /last-stack:brain-kanban:end/   { ib = 0; next }
+  awk -v s="last-stack:${name}:start" -v e="last-stack:${name}:end" '
+    index($0, s) { ib = 1; next }
+    index($0, e) { ib = 0; next }
     !ib { lines[++n] = $0 }
     END {
       while (n > 0 && lines[n] == "") n--
@@ -58,7 +58,12 @@ remove_brain_kanban_block() {
     }
   ' "$file" > "$tmp"
   mv "$tmp" "$file"
-  echo "  $label: removed brain-kanban instructions block"
+  echo "  $label: removed ${name} instructions block"
+}
+
+remove_harness_instruction_blocks() {
+  remove_managed_instruction_block "$1" "$2" "brain-kanban"
+  remove_managed_instruction_block "$1" "$2" "asd-ste100"
 }
 
 real_home_matches() {
@@ -84,13 +89,14 @@ remove_from "$HOME/.claude/skills"          "claude"
 remove_from "$HOME/.codex/skills"           "codex"
 remove_from "$HOME/.factory/skills"         "factory"
 remove_from "$HOME/.config/opencode/skills" "opencode"
+remove_harness_instruction_blocks "$HOME/.claude/CLAUDE.md"          "claude"
+remove_harness_instruction_blocks "$HOME/.codex/AGENTS.md"           "codex"
+remove_harness_instruction_blocks "$HOME/.factory/AGENTS.md"         "factory"
+remove_harness_instruction_blocks "$HOME/.config/opencode/AGENTS.md" "opencode"
+remove_harness_instruction_blocks "$HOME/.grok/AGENTS.md"            "grok"
 remove_from "$HOME/.gemini/config/skills"   "agy"
-remove_brain_kanban_block "$HOME/.claude/CLAUDE.md"          "claude"
-remove_brain_kanban_block "$HOME/.codex/AGENTS.md"           "codex"
-remove_brain_kanban_block "$HOME/.factory/AGENTS.md"         "factory"
-remove_brain_kanban_block "$HOME/.config/opencode/AGENTS.md" "opencode"
-remove_brain_kanban_block "$HOME/.gemini/GEMINI.md"          "agy"
-remove_brain_kanban_block "$HOME/.gemini/config/GEMINI.md"   "agy (config)"
+remove_harness_instruction_blocks "$HOME/.gemini/GEMINI.md"          "agy"
+remove_harness_instruction_blocks "$HOME/.gemini/config/GEMINI.md"   "agy (config)"
 remove_host_track_refresh_agent
 echo "Done. (This repo at $ROOT is left in place — delete it to fully remove."
 echo "       MCP server entries in ~/.codex/config.toml and"

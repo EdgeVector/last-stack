@@ -45,9 +45,9 @@ lost concurrent edit under last-write-wins), state it as accepted cost.
 
 ## Pass 2 — prose
 
-- ASD-STE100: one meaning per word, active voice, short sentences, no
-  `-ing` as verb or noun, no perfect tense, no idiom, no comparison unless
-  the user asked for ELI5.
+- Apply `instructions/asd-ste100.md` (injected into every harness). One meaning
+  per word, active voice, short sentences, no `-ing` as verb or noun, no
+  perfect tense, no idiom. Permit one comparison only when Tom asked for ELI5.
 - Same word for the same thing for the whole page (stamp, overlay, cloud
   list, photograph, history key).
 - Org case: Alice and Bob, one shared head. Personal multi-device is the
