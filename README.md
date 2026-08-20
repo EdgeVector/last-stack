@@ -205,6 +205,7 @@ preserving project-specific rules where they belong.
 | **registry-rotator** | Generic engine for registry-backed scheduled routines: pick the most-overdue eligible entry, run its recipe, file cards, and stamp the registry log. |
 | **wait-merge** | Robustly wait for a GitHub PR to merge by interpreting PR *state*, not a watcher's exit code. |
 | **close-out** | The post-change loop: open a PR from a worktree, drive it to merged, file session papercuts, write a full brain report of what was done, file a follow-up card. |
+| **fix-it** | Find and land the permanent fix: producer-side class change, residue gone, original live signal rechecked. |
 | **last-stack-upgrade** | Update the stack in place (clean-only self-upgrade) and re-register the skills. |
 | **session-miner** | Generic engine for mining recent agent session transcripts with profiles for papercuts, incidents, owner-stated knowledge, tooling friction, and revenant-watch (settled-dead product truth reanimated; Brain-only). |
 
@@ -378,6 +379,9 @@ The intended loop, end to end:
 The two halves are deliberate: **the brain records why; the board records
 what's in flight.** Keep decisions in `brain` and active work in `kanban`, and
 the agent always has both context and a worklist.
+
+When a defect keeps returning, or the user asks **what's the permanent fix**,
+use the **fix-it** skill. Do not add a temporary repair at the consumer.
 
 Steps 1–6 describe what an agent does *when invoked*. To make the loop
 **self-driving** — so cards get filed, promoted, picked up, and reconciled
