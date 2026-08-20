@@ -152,5 +152,6 @@ bash tests/last-stack-lastdb-canary-dogfood.sh
 bash tests/last-stack-canary-build-main.sh
 bash tests/last-stack-canary-resolve-lastdbd.sh
 bash tests/last-stack-dogfood-rotate-gate.sh
+bash tests/last-stack-dogfood-rotate-routine.sh
 bash tests/last-stack-lastdb-memory-guard.sh
 bash tests/last-stack-generator-shed-gate.sh

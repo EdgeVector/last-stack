@@ -154,5 +154,20 @@ printf '%s\n' "$out_disc" | grep -q $'^SKIPPED\tfeature=schema-service-dev-propo
 printf '%s\n' "$out_disc" | grep -q $'^SELECTED\tfeature=discovery-full-bar-slice\t' \
   || fail "discovery with staged lastdbd should select: $out_disc"
 
+# --routines-dispatch is the skip-harness producer: ROUTINE_RESULT + exit 0,
+# never a cargo SELECTED command.
+export LAST_STACK_DOGFOOD_GATE_SKIP_HEARTBEAT=1
+dispatch_ok="$("$GATE" --registry-file "$tmp/registry.md" --now 2026-08-20T00:00:00Z --routines-dispatch --cwd "$tmp")"
+printf '%s\n' "$dispatch_ok" | grep -q $'^SELECTED\tfeature=schema-service-dev-propose\t' \
+  || fail "dispatch should select runnable recipe: $dispatch_ok"
+printf '%s\n' "$dispatch_ok" | grep -q 'ROUTINE_RESULT outcome=ok detail=feature=schema-service-dev-propose result=pass cards=0' \
+  || fail "dispatch must emit skip-harness trailer: $dispatch_ok"
+printf '%s\n' "$dispatch_ok" | grep -q 'command=cargo' && fail "dispatch SELECTED must never contain cargo: $dispatch_ok"
+
+dispatch_noop="$("$GATE" --registry-file "$tmp/compile-only.md" --now 2026-08-20T00:00:00Z --routines-dispatch)"
+printf '%s\n' "$dispatch_noop" | grep -q 'ROUTINE_RESULT outcome=noop detail=feature=- result=no-runnable-entry cards=0' \
+  || fail "compile-only dispatch must noop-skip harness: $dispatch_noop"
+printf '%s\n' "$dispatch_noop" | grep -q '^SELECTED' && fail "compile-only dispatch must not SELECT: $dispatch_noop"
+
 python3 -m py_compile "$GATE"
 echo OK last-stack-dogfood-rotate-gate

@@ -193,7 +193,7 @@ ls ~/.routines/registry/last-stack-fkanban-validate.toml
 | [`morning-sync`](morning-sync.md) | daily | Surface the short genuinely-human decision set; a read-only briefing. Includes §🏭 from nightly ship-pipeline gap audit. |
 | [`ship-pipeline-gap-audit`](ship-pipeline-gap-audit.md) | nightly | Audit North Star → Milestone → PR → shipped; write brain `ship-pipeline-gap-audit-latest`; auto-file ≤3 easy process-improvement cards. |
 | [`sentry-triage`](sentry-triage.md) | daily | Pull unresolved issues from every configured Sentry project, dedupe, and file actionable fix cards. |
-| [`dogfood-rotate`](dogfood-rotate.md) | hourly | Rotate through the brain-owned dogfood registry; exercise one feature on isolated/dev surfaces; file deduped papercut/blocker cards (files work only). |
+| [`dogfood-rotate`](dogfood-rotate.md) | daily | Thin trigger: `last-stack-dogfood-rotate-gate --routines-dispatch` selects and runs one startable recipe zero-LLM (skips plugin/skill preamble); files work only. |
 
 ### Target Fleet Ownership
 

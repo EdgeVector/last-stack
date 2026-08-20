@@ -1,0 +1,13 @@
+# Thin trigger over dogfood-registry. gate_command starts the recipe zero-LLM
+# so Codex/Grok never spend the timeout listing plugins or skills.
+id = "dogfood-rotate"
+difficulty = "normal"
+effort = "high"
+rrule = "FREQ=DAILY;BYHOUR=11;BYMINUTE=0;BYSECOND=0"
+cwd = "/Users/REPLACE/code/edgevector"
+status = "active"
+timeout_min = 30
+prompt_path = "/Users/REPLACE/.last-stack/routines/dogfood-rotate.md"
+gate_command = "/Users/REPLACE/.last-stack/bin/last-stack-dogfood-rotate-gate --routines-dispatch"
+heartbeat_slug = "routine-heartbeats"
+group = "dogfood"

@@ -4,13 +4,23 @@ cadence: daily
 description: Thin trigger over dogfood-registry. A start-contract gate selects one runnable entry; recipes that cannot start are skipped, never compiled.
 ---
 
-You are the **dogfood-rotate** routine. Each run starts cold. Run the
-**start-contract gate first**. Do not improvise a Fold build. Do not `cargo
-build`. Files work only; never ships fixes.
+You are the **dogfood-rotate** routine. Each run starts cold.
+
+**FIRST ACTION (won't-undo):** run `$LAST_STACK_ROOT/bin/last-stack-dogfood-rotate-gate`
+(or honor `--routines-dispatch` when this fire is already inside that gate).
+Do not list plugins, skills, `available_commands`, `recommended_plugins`, or
+Vercel/Codex plugin inventories. Start the selected recipe immediately. Do not
+improvise a Fold build. Do not `cargo build`. Files work only; never ships
+fixes.
 
 This is a thin trigger over the **registry-rotator** engine plus
 `last-stack-dogfood-rotate-gate`. Project recipes live in Brain
 `dogfood-registry`, not in this prompt.
+
+**Zero-LLM dispatch:** scheduled fires MUST set registry
+`gate_command = "$LAST_STACK_ROOT/bin/last-stack-dogfood-rotate-gate --routines-dispatch"`
+so routinesd starts the recipe (or honest `no-runnable-entry`) without booting
+Codex/Grok. That is the class skip for plugin/skill preamble.
 
 **Shared contract:** fetch `brain get sop-routine-shared-contract --type sop`
 at run start and honor it — heartbeat LAST always, primary-brain guardrail,
@@ -79,9 +89,9 @@ of the gate, not an error.
 
 If `SELECTED feature=<slug> … command=<cmd>`, run **exactly that command**
 under the printed `timeout_sec` (or `last-stack-dogfood-rotate-gate --run`
-when the command is a last-stack helper / self-contained script). Never
-append `cargo build`. Never open a fold worktree to compile. If the command
-contains `cargo`, treat it as gate failure, heartbeat `error
+/ `--routines-dispatch` when the command is a last-stack helper / self-contained
+script). Never append `cargo build`. Never open a fold worktree to compile. If
+the command contains `cargo`, treat it as gate failure, heartbeat `error
 reason=selected-command-contains-cargo`, and stop.
 
 ## After the command
