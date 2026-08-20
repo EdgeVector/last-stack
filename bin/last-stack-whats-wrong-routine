@@ -38,8 +38,18 @@ if [ "$DRY_RUN" -eq 0 ] && last_stack_registry_skip_if_exists "$path" "$FORCE_DE
   exit 0
 fi
 
+# Routinesd skips the LLM harness when gate_command is set. The gate MUST be
+# the healer itself — observer-gate --status only rereads the last stamp and
+# never fans out (measured 2026-08-20: 1.3s "ok remaining=2" while What's wrong
+# stayed red). Pin the stable compat path, never artifacts/versions/<sha>.
+GATE="${REG_STABLE_ROOT}/bin/last-stack-whats-wrong-loom"
+if last_stack_registry_is_version_dir "$GATE"; then
+  GATE="${HOME}/.last-stack/bin/last-stack-whats-wrong-loom"
+fi
+
 body=$(cat <<EOF
 # Hourly EV OPS What's wrong healer — one loom agent per coverage.exceptions row.
+# gate_command is the wrapper (zero extra LLM). Routinesd will skip the prompt.
 id = "$ID"
 difficulty = "normal"
 effort = "high"
@@ -48,7 +58,7 @@ cwd = "$REG_CWD"
 status = "active"
 timeout_min = 45
 prompt_path = "$PROMPT_PATH"
-gate_command = "$ROOT/bin/last-stack-routine-observer-gate last-stack-whats-wrong"
+gate_command = "$GATE"
 heartbeat_slug = "routine-heartbeats"
 group = "quality"
 EOF

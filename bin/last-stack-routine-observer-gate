@@ -34,14 +34,35 @@ detail="${ROUTINE_OBSERVER_DETAIL:-}"
 exit_code=0
 
 if [ -z "$detail" ] && [ "$id" = "last-stack-why-stopped" ]; then
-  why="$ROOT/bin/last-stack-why-stopped"
-  if [ -x "$why" ]; then
-    # No --heal: Class A heal can hang; classification itself is the job.
-    out="$("$why" --json 2>/dev/null || true)"
+  # Prefer the loom wrapper so the EV OPS why-loom stamp stays fresh.
+  # The CLI path never writes that stamp; a 4.5h-stale stamp is a dashboard x.
+  why_loom="$ROOT/bin/last-stack-why-stopped-loom"
+  if [ -x "${HOME}/.last-stack/bin/last-stack-why-stopped-loom" ]; then
+    why_loom="${HOME}/.last-stack/bin/last-stack-why-stopped-loom"
+  fi
+  if [ -x "$why_loom" ]; then
+    set +e
+    if command -v timeout >/dev/null 2>&1; then
+      out="$(timeout -k 2s 120s "$why_loom" --json --quiet 2>/dev/null)"
+    else
+      out="$("$why_loom" --json --quiet 2>/dev/null)"
+    fi
+    set -e
     cls="$(printf '%s\n' "$out" | sed -n 's/.*"classes":"\([^"]*\)".*/\1/p' | head -1)"
-    detail="classes=${cls:-unknown}"
-  else
-    detail="classes=unknown"
+    if [ -n "$cls" ]; then
+      detail="classes=${cls}"
+    fi
+  fi
+  if [ -z "$detail" ]; then
+    why="$ROOT/bin/last-stack-why-stopped"
+    if [ -x "$why" ]; then
+      # No --heal: Class A heal can hang; classification itself is the job.
+      out="$("$why" --json 2>/dev/null || true)"
+      cls="$(printf '%s\n' "$out" | sed -n 's/.*"classes":"\([^"]*\)".*/\1/p' | head -1)"
+      detail="classes=${cls:-unknown}"
+    else
+      detail="classes=unknown"
+    fi
   fi
 fi
 
@@ -101,31 +122,18 @@ except Exception:
   fi
 fi
 
-if [ -z "$detail" ] && [ "$id" = "last-stack-whats-wrong" ]; then
+if [ "$id" = "last-stack-whats-wrong" ]; then
+  # If this gate is the scheduled command, it must RUN the healer, not reread
+  # a stamp. --status was a 1.3s noop that left What's wrong red (2026-08-20).
   ww="$ROOT/bin/last-stack-whats-wrong-loom"
-  if [ -x "$ww" ]; then
-    set +e
-    if command -v timeout >/dev/null 2>&1; then
-      raw="$(timeout -k 2s 20s "$ww" --status 2>/dev/null)"
-      rc=$?
-    else
-      raw="$("$ww" --status 2>/dev/null)"
-      rc=$?
-    fi
-    set -e
-    if [ "$rc" -eq 124 ]; then
-      detail="busy-node status-timeout"
-    else
-      detail="$(printf '%s\n' "$raw" | python3 -c 'import json,sys
-try:
-  d=json.load(sys.stdin)
-  print(d.get("detail") or d.get("outcome") or "exceptions=unknown")
-except Exception:
-  print("exceptions=unknown")' 2>/dev/null || echo exceptions=unknown)"
-    fi
-  else
-    detail="cli missing"
+  if [ -x "${HOME}/.last-stack/bin/last-stack-whats-wrong-loom" ]; then
+    ww="${HOME}/.last-stack/bin/last-stack-whats-wrong-loom"
   fi
+  if [ -x "$ww" ]; then
+    exec "$ww" --json
+  fi
+  printf '%s %s\n' 'ROUTINE_RESULT' 'outcome=error detail=cli missing'
+  exit 0
 fi
 
 if [ "$id" = "routine-fleet-health" ]; then

@@ -17,7 +17,11 @@ grep -q 'id = "last-stack-whats-wrong"' "$entry"
 grep -q 'rrule = "FREQ=HOURLY;INTERVAL=1;BYMINUTE=23;BYSECOND=0"' "$entry"
 grep -q 'timeout_min = 45' "$entry"
 grep -q "prompt_path = \"$prompt\"" "$entry"
-grep -q 'last-stack-routine-observer-gate last-stack-whats-wrong' "$entry"
+grep -q 'bin/last-stack-whats-wrong-loom' "$entry"
+if grep -q 'observer-gate last-stack-whats-wrong' "$entry"; then
+  echo "gate_command must be the healer, not observer-gate --status" >&2
+  exit 1
+fi
 
 before="$(cksum "$entry")"
 "$BIN" --registry-dir "$tmp/registry" --prompt-path "$prompt" >/dev/null
