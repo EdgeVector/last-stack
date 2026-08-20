@@ -51,6 +51,9 @@ Lead with a one-line restatement of the goal / top objective, then:
   but un-carded.
 - **§🩺 Routine health** — from your scheduler's last-run timestamps + the
   `routine-heartbeats` note; flag any routine stale-vs-cadence or errored.
+  If `brain get routine-reds-recheck-latest --type reference` exists and is
+  newer than 36h, paste its table here (fleet reds Tom asked to recheck —
+  working / pending next fire / paused on purpose / still red). Do not omit it.
   Treat `kanban-pickup` as critical: if it has no scheduler session or
   `routine-heartbeats` entry within the last 2 hours AND there is any eligible
   `todo` card with `Repo:`/`Base:` and no `BLOCKED:` note, surface this as a
@@ -66,7 +69,8 @@ Lead with a one-line restatement of the goal / top objective, then:
   Discover, cheapest first:
   1. Brain closeouts from the last 36h (`brain ask "closeout <YYYYMMDD>"` for
      today and yesterday). Prefer a claimed user-visible capability, skip
-     drive-by refactors.
+     drive-by refactors. Always also `brain get routine-reds-recheck-latest
+     --type reference` (paste the table into §🩺).
   2. The latest dated slice in
      `${ROUTINES_HOME:-$HOME/.routines}/memory/last-stack-fleet-performance/memory.md`.
   3. `host-track status` for apps that moved: `host_head` vs the closeout
@@ -127,9 +131,9 @@ Lead with a one-line restatement of the goal / top objective, then:
 - Snapshot with bounded reads: read `todo`, `doing`, and `review` as sequential
   `<board CLI> list --column <column> --json` calls; use `show` only for the one
   card whose full body you need. Read the brain's goal note, driving index,
-  `open-decisions`, `routine-heartbeats`, **`human-gate-audit-latest`**, and
-  **`ship-pipeline-gap-audit-latest`** (if present) as targeted records, one at
-  a time.
+  `open-decisions`, `routine-heartbeats`, **`human-gate-audit-latest`**,
+  **`ship-pipeline-gap-audit-latest`**, and **`routine-reds-recheck-latest`**
+  (if present) as targeted records, one at a time.
 - Also inspect your scheduler/session index if available. For Codex Desktop this
   is typically `$CODEX_HOME/session_index.jsonl` or
   `$HOME/.codex/session_index.jsonl`; compare `last-stack kanban-pickup` against
