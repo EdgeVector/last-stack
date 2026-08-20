@@ -69,6 +69,19 @@ blocked-on-dependency, parked/non-work, …) must EXIT without claiming.
 
 (`doing` cards are already claimed — `kanban-watch` / board-closeout own them.)
 
+**WORK policy (won't-undo — Tom 2026-08-20):** after the gate proceeds, and
+before a WORK fire on a claimed slug, run:
+
+```bash
+"$last_stack/bin/last-stack-pickup-work-policy" --slug "$SLUG" --json
+```
+
+The helper forbids WORK on a cooldown slug (max 2 WORK fires per slug per 6
+hours without a new commit). `action=skip` → do not start WORK on that slug;
+pick the next ready card or exit. `action=reconcile` → leave the card for
+`kanban-watch`; pickup does not reconcile. `action=work` → claim and implement.
+A distinct pickup-ready slug with no timebox history remains claimable.
+
 Never heartbeat `in-flight-budget-handoff` with `pr=none` — if no PR/CR URL was
 recorded, roll the card back to `todo` (see wall-clock budget below).
 

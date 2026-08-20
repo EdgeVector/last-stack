@@ -289,7 +289,7 @@ write_worker() {
     printf 'gate_command = "%s"\n' "$gate_cmd"
     printf '# Cap: one WORK unit per fire; capacity comes from separate registry workers, not SpawnAgent fan-out.\n'
     printf '# Prompt path is a freshness bootstrap; it delegates through last-stack-routine-read before claim.\n'
-    printf '# gate_command is zero-LLM: skip codex when pickup status ready=0 (todo may still be full).\n'
+    printf '# gate_command is zero-LLM: skip when ready=0 or status unavailable (never proceed from todo count).\n'
     printf 'prompt_path = "%s"\n' "$BOOTSTRAP_PROMPT_PATH"
   } | if [ "$DRY_RUN" -eq 1 ]; then
     cat
