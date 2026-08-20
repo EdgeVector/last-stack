@@ -89,6 +89,20 @@ case "${1:-}" in
 esac
 EOF
 chmod +x "$restamp_board"
+stub_bin="$restamp_tmp/stub-bin"
+mkdir -p "$stub_bin"
+cat >"$stub_bin/lastgit" <<'EOF'
+#!/usr/bin/env bash
+# lastgit cr view <slug> <id> --json
+if [ "${1:-}" = "cr" ] && [ "${2:-}" = "view" ]; then
+  printf '{"state":"merged","merge_oid":"abc123"}\n'
+  exit 0
+fi
+echo "unexpected lastgit $*" >&2
+exit 2
+EOF
+chmod +x "$stub_bin/lastgit"
+export PATH="$stub_bin:$PATH"
 export REESTAMP_MOVES="$restamp_moves"
 export REESTAMP_ADDS="$restamp_adds"
 export REESTAMP_COL="$restamp_tmp/col"
@@ -122,6 +136,65 @@ grep -q 'lastgit://last-stack/cr/cr-mskqwa3y-78c9' "$restamp_adds" || {
   cat "$restamp_adds" >&2
   exit 1
 }
+
+# Closed unmerged review must not move Kind:pr to done.
+unmerged_tmp="$(mktemp -d)"
+unmerged_board="$unmerged_tmp/board"
+unmerged_moves="$unmerged_tmp/moves"
+: >"$unmerged_moves"
+cat >"$unmerged_board" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+col_file="${UNMERGED_COL:?}"
+[ -f "$col_file" ] || echo doing >"$col_file"
+case "${1:-}" in
+  show)
+    printf '{"slug":"%s","column":"%s","body":"Repo: EdgeVector/fold\\nKind: pr\\n"}\n' "${2:-}" "$(cat "$col_file")"
+    ;;
+  add)
+    exit 0
+    ;;
+  move)
+    printf '%s %s\n' "${2:-}" "${3:-}" >>"${UNMERGED_MOVES:?}"
+    printf '%s\n' "${3:-}" >"$col_file"
+    exit 0
+    ;;
+  *)
+    echo "unexpected unmerged board: $*" >&2
+    exit 2
+    ;;
+esac
+EOF
+chmod +x "$unmerged_board"
+cat >"$stub_bin/lastgit" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "cr" ] && [ "${2:-}" = "view" ]; then
+  printf '{"state":"closed","merge_oid":""}\n'
+  exit 0
+fi
+exit 2
+EOF
+export UNMERGED_MOVES="$unmerged_moves"
+export UNMERGED_COL="$unmerged_tmp/col"
+echo doing >"$UNMERGED_COL"
+set +e
+unmerged_out="$("$bin" unmerged-card --board-cli "$unmerged_board" --pr-url 'lastgit://fold/cr/cr-notmerged' 2>&1)"
+unmerged_rc=$?
+set -e
+if [ "$unmerged_rc" -eq 0 ]; then
+  echo "FAIL: closeout must refuse an unmerged CR:" >&2
+  echo "$unmerged_out" >&2
+  exit 1
+fi
+echo "$unmerged_out" | grep -q 'FAILED unmerged-review' || {
+  echo "FAIL: expected unmerged-review failure: $unmerged_out" >&2
+  exit 1
+}
+if [ -s "$unmerged_moves" ]; then
+  echo "FAIL: unmerged closeout must not move the card:" >&2
+  cat "$unmerged_moves" >&2
+  exit 1
+fi
 
 # If fkanban is available and board works, optional live smoke is skipped here
 # (routines CI should not thrash Tom's board).
