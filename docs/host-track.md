@@ -72,13 +72,15 @@ escape: `HOST_TRACK_PROBE_SKIP=1`. LastDB Mini stays on `lastdb-safe-upgrade`.
 
 **Runtime install = Host Track CI artifact that tracks green main. Never a place you develop.**
 
-Mental model: the live stack **is** main, with a short CI/publish lag. It is
-still an immutable content-addressed artifact (not a git working tree), but
-`host-track refresh last-stack` promotes `stable` to the newest **green +
-published** main oid and installs it. Status `gate_head` is the real main tip;
-`stale=true` means the installed oid is not that tip yet (CI pending, publish
-missing, or refresh not run). Do **not** treat a manually-frozen stable
-pointer as the long-term source of truth.
+Mental model: the live stack tracks the **published** channel. `host-track
+refresh last-stack` promotes `stable` to the newest **green + published** main
+oid and installs it. Status `gate_head` is that published channel oid.
+`stale=true` means the live digest is not the channel, or the tree is
+unusable. `main_unpublished=true` means lastgit `main` is ahead of the
+channel (CI pending or the package is not published yet). Pickup, `check`,
+and `last-stack-update-check` use only the on-channel question. The
+LaunchAgent (not pickup) promotes when a deployable oid exists. Do **not**
+treat unpublished `main` as a stale install.
 
 | Role | Path | Mutable? |
 |------|------|----------|
@@ -139,7 +141,9 @@ Each status record reports:
 - `exec_path`
 - `kind`
 - `install_mode`
-- `stale`
+- `stale` (artifact: live digest ≠ published channel, or unusable tree)
+- `main_unpublished` (artifact: lastgit main tip ≠ published channel oid)
+- `freshness` (`fresh` | `soft_stale` | `hard_broken`)
 - `behind_by` (commit distance when the installed and gate OIDs are available)
 - `binary_pair_match`, `paired_version`, `paired_head`, and
   `deployment_problem` for safe-upgrade-managed binary pairs

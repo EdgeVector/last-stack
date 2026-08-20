@@ -46,6 +46,7 @@ bin/last-stack-lint-prompts \
 bin/last-stack-lint-prompts --access-sweep .
 
 bash tests/last-stack-routine-read.sh
+bash tests/last-stack-routine-read-proceed-on-stale.sh
 # Reclaim safety belongs in the REQUIRED gate, not only under
 # LAST_STACK_CI_FULL=1: this covers a liveness check that once failed OPEN
 # (a sandbox denying ps/lsof made every worktree look idle) and a board parse
@@ -125,6 +126,7 @@ bash tests/last-stack-board-closeout-escalation.sh
 bash tests/last-stack-legacy-residue-closeout.sh
 bash tests/last-stack-why-shipping-stopped.sh
 bash tests/host-track-artifacts.sh
+bash tests/host-track-on-channel-unpublished-main.sh
 bash tests/host-track-safe-upgrade-probe.sh
 bash tests/host-track-canary-soak.sh
 bash tests/host-track-soak-red-files-card.sh
