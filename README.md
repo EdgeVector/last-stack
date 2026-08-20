@@ -12,7 +12,7 @@ top of [LastDB](https://thelastdb.com) and its two companion tools:
 The skills are written for agent harnesses that load
 [Agent Skills](https://docs.claude.com/en/docs/agents-and-tools/agent-skills)
 (a `SKILL.md` per skill, discovered by the agent and invoked by name) — e.g.
-Claude Code, Codex, Factory, OpenCode. They give an agent a consistent playbook
+Claude Code, Codex, Factory, OpenCode, Antigravity CLI (`agy`). They give an agent a consistent playbook
 for filing tasks, driving a single task to a merged pull request, waiting on PRs
 robustly, and closing out finished work.
 
@@ -39,9 +39,11 @@ git clone https://github.com/EdgeVector/last-stack ~/.last-stack && ~/.last-stac
 ```
 
 `setup` auto-detects which agent harnesses you have (Claude Code, Codex,
-Factory, OpenCode) and registers every skill into each one. The skills stay in
-the cloned repo; each harness gets a directory with a symlinked `SKILL.md`, so a
-later `git pull` updates every installed skill at once. It also installs the
+Factory, OpenCode, Antigravity CLI/`agy`) and registers every skill into each
+one. Host-track last-stack `post_install` runs this with `--host auto`. The
+skills stay in the cloned repo; each harness gets a directory with a
+symlinked `SKILL.md`, so a later `git pull` updates every installed skill at
+once. It also installs the
 companion `routines` CLI automatically. Starting scheduled agent work remains
 explicit: run `routines install-daemon` when you are ready to enable the fleet.
 
@@ -53,7 +55,7 @@ declines.
 Options:
 
 ```bash
-~/.last-stack/setup --host claude   # install for one harness only
+~/.last-stack/setup --host claude   # claude | codex | factory | opencode | agy | auto
 ~/.last-stack/setup --local         # vendor into ./.claude/skills (this project only)
 ~/.last-stack/setup --uninstall     # remove the registered skills
 ```
@@ -345,9 +347,10 @@ instructions/brain-kanban.md
                         as a managed block into each harness's global
                         instructions file (`~/.claude/CLAUDE.md`,
                         `~/.codex/AGENTS.md`, `~/.factory/AGENTS.md`,
-                        `~/.config/opencode/AGENTS.md`) and registers the
-                        brain/kanban MCP servers for Codex (with a PATH env so
-                        GUI-spawned servers can find bun); also records the
+                        `~/.config/opencode/AGENTS.md`, `~/.gemini/GEMINI.md`,
+                        `~/.gemini/config/GEMINI.md`) and registers the
+                        brain/kanban MCP servers for Codex and agy (with a PATH
+                        env so GUI-spawned servers can find bun); also records the
                         creation-time default that new repos start in LastGit
                         while existing venue choices remain unchanged until
                         explicitly migrated
