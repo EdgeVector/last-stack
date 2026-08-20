@@ -1,0 +1,413 @@
+#!/usr/bin/env python3
+"""Select and optionally run one dogfood-registry entry by start contract.
+
+Scheduled dogfood-rotate must not spend an LLM turn compiling. This gate is the
+producer: entries that need cargo, a missing staged lastdbd, or a missing
+LastSecrets locator are SKIPPED, never SELECTED. A compile recipe cannot become
+the selected command.
+
+Usage:
+  last-stack-dogfood-rotate-gate --registry-file PATH [--now ISO] [--run]
+      [--cwd DIR] [--resolver-bin PATH]
+
+Exit:
+  0  selected, ran, or honest noop (no-runnable-entry)
+  1  gate error
+  2  usage
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+from datetime import datetime, timezone
+from typing import Any
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CARGO_BUILD_RE = re.compile(r"\bcargo\s+build\b", re.I)
+HEADING_RE = re.compile(r"^###\s+([a-z0-9][a-z0-9_-]*)\b", re.I)
+CADENCE_IN_HEADING_RE = re.compile(r"cadence:\s*([0-9]+(?:\.[0-9]+)?\s*[hd]|weekly|[0-9]+\s*days?)", re.I)
+FIELD_RE = re.compile(
+    r"^(?:[-*]\s+)?(?:\*\*)?(eligible|auto-rotation|timeout_sec|requires|command|cadence)(?:\*\*)?\s*[:=]\s*(.+?)\s*$",
+    re.I,
+)
+RETIRED_HEADING_RE = re.compile(
+    r"^##\s+(Retired\s*/\s*ineligible|Manual\s*/\s*rig-required)",
+    re.I,
+)
+FEATURES_HEADING_RE = re.compile(r"^##\s+Features\b", re.I)
+BULLET_SLUG_RE = re.compile(r"^[-*]\s+\*\*([a-z0-9][a-z0-9_-]*)\*\*", re.I)
+
+
+def die(msg: str, code: int = 1) -> None:
+    print(f"last-stack-dogfood-rotate-gate: {msg}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def parse_cadence_hours(raw: str | None) -> float:
+    if not raw:
+        return 24.0
+    text = raw.strip().lower()
+    if text == "weekly":
+        return 168.0
+    m = re.match(r"^([0-9]+(?:\.[0-9]+)?)\s*h(?:ours?)?$", text)
+    if m:
+        return float(m.group(1))
+    m = re.match(r"^([0-9]+(?:\.[0-9]+)?)\s*d(?:ays?)?$", text)
+    if m:
+        return float(m.group(1)) * 24.0
+    m = re.match(r"^([0-9]+)\s*days?$", text)
+    if m:
+        return float(m.group(1)) * 24.0
+    return 24.0
+
+
+def parse_bool(raw: str | None, default: bool = True) -> bool:
+    if raw is None:
+        return default
+    return raw.strip().strip("`").lower() not in {"false", "no", "0", "off"}
+
+
+def strip_value(raw: str) -> str:
+    text = raw.strip().strip("*").strip()
+    if text.startswith("`") and text.endswith("`") and len(text) >= 2:
+        text = text[1:-1].strip()
+    text = text.strip("`").strip("*").strip()
+    return text.rstrip(".")
+
+
+def parse_now(raw: str | None) -> datetime:
+    if not raw:
+        return datetime.now(timezone.utc)
+    text = raw.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError as exc:
+        die(f"invalid --now: {raw} ({exc})")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def extract_registry_body(text: str) -> str:
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith("# "):
+            return "\n".join(lines[i:])
+    return text
+
+
+def parse_rotation_log(text: str) -> dict[str, dict[str, str]]:
+    rows: dict[str, dict[str, str]] = {}
+    in_block = False
+    for line in text.splitlines():
+        if "rotation-log:start" in line:
+            in_block = True
+            continue
+        if "rotation-log:end" in line:
+            break
+        if not in_block or not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        feature = cells[0]
+        if feature in {"feature", "---"} or set(feature) <= {"-"}:
+            continue
+        rows[feature] = {
+            "last_run": cells[1] if len(cells) > 1 else "",
+            "result": cells[2] if len(cells) > 2 else "",
+            "cards": cells[3] if len(cells) > 3 else "",
+        }
+    return rows
+
+
+def parse_entries(text: str) -> tuple[list[dict[str, Any]], set[str]]:
+    entries: list[dict[str, Any]] = []
+    retired_slugs: set[str] = set()
+    section = "other"
+    current: dict[str, Any] | None = None
+
+    def flush() -> None:
+        nonlocal current
+        if current is not None:
+            entries.append(current)
+            current = None
+
+    for line in text.splitlines():
+        if FEATURES_HEADING_RE.match(line):
+            flush()
+            section = "features"
+            continue
+        if RETIRED_HEADING_RE.match(line):
+            flush()
+            section = "retired"
+            continue
+        if line.startswith("## "):
+            flush()
+            section = "other"
+            continue
+        heading = HEADING_RE.match(line)
+        if heading:
+            flush()
+            slug = heading.group(1)
+            cadence_m = CADENCE_IN_HEADING_RE.search(line)
+            current = {
+                "slug": slug,
+                "section": section,
+                "cadence": cadence_m.group(1) if cadence_m else "24h",
+                "eligible": "true",
+                "auto_rotation": "true",
+                "timeout_sec": "180",
+                "requires": "none",
+                "command": "",
+            }
+            if section == "retired":
+                retired_slugs.add(slug)
+            continue
+        if section == "retired":
+            bullet = BULLET_SLUG_RE.match(line)
+            if bullet:
+                retired_slugs.add(bullet.group(1))
+        if current is None:
+            continue
+        field = FIELD_RE.match(line.strip())
+        if not field:
+            continue
+        key = field.group(1).lower().replace("-", "_")
+        value = strip_value(field.group(2))
+        if key == "auto_rotation":
+            current["auto_rotation"] = value
+        elif key == "timeout_sec":
+            current["timeout_sec"] = value
+        else:
+            current[key] = value
+    flush()
+    return entries, retired_slugs
+
+
+def command_requires_compile(command: str, requires: str) -> bool:
+    tokens = [t.strip().lower() for t in requires.split(",") if t.strip()]
+    if "compile" in tokens or "cargo" in tokens:
+        return True
+    return bool(CARGO_BUILD_RE.search(command or ""))
+
+
+def parse_timeout(raw: str) -> int:
+    try:
+        n = int(float(raw))
+    except ValueError:
+        return 180
+    return max(1, n)
+
+
+def overdue_ratio(last_run: str, cadence_hours: float, now: datetime) -> float:
+    text = (last_run or "").strip()
+    if text in {"", "--", "-", "never", "— never"}:
+        return float("inf")
+    try:
+        last = datetime.strptime(text[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return float("inf")
+    age_hours = (now - last).total_seconds() / 3600.0
+    if cadence_hours <= 0:
+        cadence_hours = 24.0
+    return age_hours / cadence_hours
+
+
+def require_met(token: str, args: argparse.Namespace) -> tuple[bool, str]:
+    item = token.strip()
+    if not item or item.lower() in {"none", "ok"}:
+        return True, "none"
+    if item.lower() in {"compile", "cargo"}:
+        return False, "requires-compile"
+    if item.lower() == "staged-lastdbd":
+        override = os.environ.get("LAST_STACK_DOGFOOD_GATE_STAGED_LASTDBD")
+        if override is not None:
+            if override.strip() in {"1", "true", "yes"}:
+                return True, "staged-lastdbd"
+            return False, "need_build"
+        resolver = args.resolver_bin or os.path.join(ROOT, "bin", "last-stack-canary-resolve-lastdbd")
+        if not os.path.isfile(resolver):
+            return False, "need_build"
+        try:
+            proc = subprocess.run(
+                [resolver, "--json", "--allow-newest", "--allow-current"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False, "need_build"
+        if proc.returncode == 0:
+            return True, "staged-lastdbd"
+        return False, "need_build"
+    if item.startswith("lastsecrets://"):
+        override = os.environ.get("LAST_STACK_DOGFOOD_GATE_SECRETS")
+        if override is not None:
+            if override.strip() in {"1", "true", "yes"}:
+                return True, item
+            return False, "missing-secret"
+        return False, "missing-secret"
+    return False, f"unknown-requires:{item}"
+
+
+def kv_line(kind: str, **fields: Any) -> str:
+    parts = [kind]
+    for key, value in fields.items():
+        if value is None:
+            continue
+        text = str(value).replace("\t", " ").replace("\n", " ")
+        parts.append(f"{key}={text}")
+    return "\t".join(parts)
+
+
+def load_registry(args: argparse.Namespace) -> str:
+    if args.registry_file:
+        try:
+            with open(args.registry_file, encoding="utf-8") as fh:
+                return fh.read()
+        except OSError as exc:
+            die(f"cannot read --registry-file: {exc}")
+    brain = args.brain_bin or "brain"
+    try:
+        proc = subprocess.run(
+            [brain, "get", "dogfood-registry", "--type", "project"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except OSError as exc:
+        die(f"brain get failed: {exc}")
+    if proc.returncode != 0:
+        die(f"brain get dogfood-registry failed: {proc.stderr.strip() or proc.stdout.strip()}")
+    return proc.stdout
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="last-stack-dogfood-rotate-gate")
+    parser.add_argument("--registry-file")
+    parser.add_argument("--brain-bin")
+    parser.add_argument("--resolver-bin")
+    parser.add_argument("--now")
+    parser.add_argument("--run", action="store_true")
+    parser.add_argument("--cwd")
+    args = parser.parse_args(argv)
+
+    now = parse_now(args.now)
+    body = extract_registry_body(load_registry(args))
+    entries, retired_slugs = parse_entries(body)
+    log_rows = parse_rotation_log(body)
+
+    candidates: list[dict[str, Any]] = []
+    for entry in entries:
+        slug = entry["slug"]
+        command = entry.get("command") or ""
+        requires = entry.get("requires") or "none"
+        eligible = parse_bool(entry.get("eligible"), True)
+        auto_rot = parse_bool(entry.get("auto_rotation"), True)
+        if entry.get("section") == "retired" or slug in retired_slugs:
+            print(kv_line("SKIPPED", feature=slug, reason="ineligible"))
+            continue
+        if not eligible or not auto_rot:
+            print(kv_line("SKIPPED", feature=slug, reason="ineligible"))
+            continue
+        if command_requires_compile(command, requires):
+            print(kv_line("SKIPPED", feature=slug, reason="requires-compile"))
+            continue
+        if not command.strip():
+            print(kv_line("SKIPPED", feature=slug, reason="recipe-broken-no-command"))
+            continue
+        unmet = None
+        for token in [t.strip() for t in requires.split(",") if t.strip()]:
+            ok, reason = require_met(token, args)
+            if not ok:
+                unmet = reason
+                break
+        if unmet:
+            print(kv_line("SKIPPED", feature=slug, reason=unmet))
+            continue
+        cadence_hours = parse_cadence_hours(entry.get("cadence"))
+        last_run = (log_rows.get(slug) or {}).get("last_run") or ""
+        ratio = overdue_ratio(last_run, cadence_hours, now)
+        if ratio < 1.0:
+            print(kv_line("SKIPPED", feature=slug, reason="not-due", overdue=f"{ratio:.3f}"))
+            continue
+        candidates.append(
+            {
+                "slug": slug,
+                "command": command.strip(),
+                "timeout_sec": parse_timeout(entry.get("timeout_sec") or "180"),
+                "overdue": ratio,
+                "cadence_hours": cadence_hours,
+            }
+        )
+
+    if not candidates:
+        print(kv_line("RESULT", outcome="noop", detail="no-runnable-entry"))
+        return 0
+
+    candidates.sort(key=lambda c: (-(999999.0 if c["overdue"] == float("inf") else c["overdue"]), c["slug"]))
+    chosen = candidates[0]
+    overdue_s = "inf" if chosen["overdue"] == float("inf") else f"{chosen['overdue']:.3f}"
+    if CARGO_BUILD_RE.search(chosen["command"]):
+        print(kv_line("SKIPPED", feature=chosen["slug"], reason="requires-compile"))
+        print(kv_line("RESULT", outcome="noop", detail="no-runnable-entry"))
+        return 0
+    print(
+        kv_line(
+            "SELECTED",
+            feature=chosen["slug"],
+            overdue=overdue_s,
+            timeout_sec=chosen["timeout_sec"],
+            command=chosen["command"],
+        )
+    )
+    if not args.run:
+        print(
+            kv_line(
+                "RESULT",
+                outcome="ok",
+                detail=f"selected={chosen['slug']}",
+            )
+        )
+        return 0
+
+    cwd = args.cwd or os.getcwd()
+    try:
+        proc = subprocess.run(
+            ["bash", "-c", chosen["command"]],
+            check=False,
+            cwd=cwd,
+            timeout=chosen["timeout_sec"],
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            kv_line(
+                "RESULT",
+                outcome="ok",
+                detail=f"feature={chosen['slug']} result=blocked reason=timeout",
+            )
+        )
+        return 0
+    except OSError as exc:
+        die(f"failed to run selected command: {exc}")
+    result = "pass" if proc.returncode == 0 else "fail"
+    print(
+        kv_line(
+            "RESULT",
+            outcome="ok",
+            detail=f"feature={chosen['slug']} result={result} exit={proc.returncode}",
+        )
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

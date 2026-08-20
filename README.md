@@ -251,7 +251,10 @@ still interim brain shims), selects the eligible entry with the largest
 `age / cadence` overdue ratio, dispatches that entry's recipe, files kanban
 cards per `sop-routine-shared-contract`, and rewrites only the rotation-log row
 for the selected entry. Scheduled tasks should be thin triggers that pass a
-registry slug such as `registry=dogfood-registry`.
+registry slug such as `registry=dogfood-registry`. `dogfood-rotate` is that
+shape: `bin/last-stack-dogfood-rotate-gate` selects only entries whose start
+contract is met (`eligible`, `timeout_sec`, `requires`, `command`) and skips
+compile / missing-binary / ineligible recipes before any LLM turn.
 
 ## Repo layout
 
