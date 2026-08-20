@@ -149,6 +149,10 @@ Payload (all non-secret):
 ~/.last-stack/bin/last-stack-deliver-status --approve  # stage + send
 ```
 
+Brain and Routines admin tabs have dedicated hourly deliverers. See
+[`docs/admin-deliverers.md`](docs/admin-deliverers.md) for install, dry-run,
+RUN-home, and LaunchAgent details.
+
 v1 **reuses the existing kanban-consumer identity** (schema-agnostic deliver).
 Mailbox poll + `openDelivery` stay on the admin consumer side (exemem-infra);
 this repo only owns publish + stage/approve on Mini.
