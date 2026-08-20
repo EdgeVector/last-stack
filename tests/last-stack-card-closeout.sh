@@ -54,7 +54,8 @@ EOF
   rm -f /tmp/card-closeout-slow.$$
 fi
 
-# Restamp add failure must not block move-to-done (merged-CR closeout).
+# Restamp add failure must still move to done (merged-CR closeout), then
+# fail closed when the requested pr_url is not on the card.
 restamp_tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp:-}" "$restamp_tmp"' EXIT
 restamp_board="$restamp_tmp/board"
@@ -111,13 +112,17 @@ set +e
 restamp_out="$("$bin" restamp-card --board-cli "$restamp_board" --pr-url 'lastgit://last-stack/cr/cr-mskqwa3y-78c9`' 2>&1)"
 restamp_rc=$?
 set -e
-if [ "$restamp_rc" -ne 0 ]; then
-  echo "FAIL: card-closeout should still exit 0 when restamp add fails:" >&2
+if [ "$restamp_rc" -eq 0 ]; then
+  echo "FAIL: card-closeout must not report ok when restamp leaves empty/wrong pr_url:" >&2
   echo "$restamp_out" >&2
   exit 1
 fi
 echo "$restamp_out" | grep -q 'WARN board-add-failed' || {
   echo "FAIL: expected restamp WARN: $restamp_out" >&2
+  exit 1
+}
+echo "$restamp_out" | grep -q 'FAILED linkage-missing' || {
+  echo "FAIL: expected linkage-missing after restamp add failure: $restamp_out" >&2
   exit 1
 }
 grep -q 'restamp-card done' "$restamp_moves" || {
@@ -195,6 +200,92 @@ if [ -s "$unmerged_moves" ]; then
   cat "$unmerged_moves" >&2
   exit 1
 fi
+
+# todo cannot carry --pr-url; helper claims doing, restamps, then restamps after done.
+todo_tmp="$(mktemp -d)"
+todo_board="$todo_tmp/board"
+todo_moves="$todo_tmp/moves"
+todo_col="$todo_tmp/col"
+todo_url="$todo_tmp/pr_url"
+: >"$todo_moves"
+echo todo >"$todo_col"
+: >"$todo_url"
+cat >"$todo_board" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+col_file="${TODO_COL:?}"
+url_file="${TODO_URL:?}"
+case "${1:-}" in
+  show)
+    col="$(cat "$col_file")"
+    url="$(cat "$url_file")"
+    printf '{"slug":"%s","column":"%s","pr_url":"%s","branch":"","body":"Repo: EdgeVector/fold\\nKind: pr\\n"}\n' "${2:-}" "$col" "$url"
+    ;;
+  add)
+    col="$(cat "$col_file")"
+    if [ "$col" = "todo" ] || [ "$col" = "backlog" ]; then
+      echo "cannot carry --pr-url in default/$col" >&2
+      exit 1
+    fi
+    # persist last --pr-url value
+    prev=""
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "--pr-url" ]; then
+        prev="${2:-}"
+        shift 2
+        continue
+      fi
+      shift
+    done
+    printf '%s\n' "$prev" >"$url_file"
+    exit 0
+    ;;
+  move)
+    printf '%s %s\n' "${2:-}" "${3:-}" >>"${TODO_MOVES:?}"
+    printf '%s\n' "${3:-}" >"$col_file"
+    exit 0
+    ;;
+  *)
+    echo "unexpected todo board: $*" >&2
+    exit 2
+    ;;
+esac
+EOF
+chmod +x "$todo_board"
+export TODO_MOVES="$todo_moves"
+export TODO_COL="$todo_col"
+export TODO_URL="$todo_url"
+cat >"$stub_bin/lastgit" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "cr" ] && [ "${2:-}" = "view" ]; then
+  printf '{"state":"merged","merge_oid":"def456"}\n'
+  exit 0
+fi
+exit 2
+EOF
+set +e
+todo_out="$("$bin" todo-link-card --board-cli "$todo_board" --pr-url 'lastgit://fold/cr/cr-linked' 2>&1)"
+todo_rc=$?
+set -e
+if [ "$todo_rc" -ne 0 ]; then
+  echo "FAIL: todo start should restamp after claiming doing:" >&2
+  echo "$todo_out" >&2
+  exit 1
+fi
+grep -q 'todo-link-card doing' "$todo_moves" || {
+  echo "FAIL: expected claim doing from todo:" >&2
+  cat "$todo_moves" >&2
+  exit 1
+}
+grep -q 'todo-link-card done' "$todo_moves" || {
+  echo "FAIL: expected move to done:" >&2
+  cat "$todo_moves" >&2
+  exit 1
+}
+[ "$(cat "$todo_url")" = "lastgit://fold/cr/cr-linked" ] || {
+  echo "FAIL: expected persisted pr_url, got $(cat "$todo_url")" >&2
+  exit 1
+}
 
 # If fkanban is available and board works, optional live smoke is skipped here
 # (routines CI should not thrash Tom's board).
