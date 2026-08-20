@@ -17,6 +17,7 @@ id="${1:-${ROUTINE_ID:-}}"
 case "$id" in
   last-stack-pipeline-health|pipeline-health) id="last-stack-pipeline-health" ;;
   last-stack-why-stopped|why-stopped) id="last-stack-why-stopped" ;;
+  last-stack-whats-wrong|whats-wrong) id="last-stack-whats-wrong" ;;
   last-stack-ship-pipeline-gap-audit|ship-pipeline-gap-audit) id="last-stack-ship-pipeline-gap-audit" ;;
   routine-fleet-health) ;;
   ""|-h|--help)
@@ -97,6 +98,33 @@ except Exception:
     fi
   else
     detail="health=yellow gaps=0 snapshot=empty"
+  fi
+fi
+
+if [ -z "$detail" ] && [ "$id" = "last-stack-whats-wrong" ]; then
+  ww="$ROOT/bin/last-stack-whats-wrong-loom"
+  if [ -x "$ww" ]; then
+    set +e
+    if command -v timeout >/dev/null 2>&1; then
+      raw="$(timeout -k 2s 20s "$ww" --status 2>/dev/null)"
+      rc=$?
+    else
+      raw="$("$ww" --status 2>/dev/null)"
+      rc=$?
+    fi
+    set -e
+    if [ "$rc" -eq 124 ]; then
+      detail="busy-node status-timeout"
+    else
+      detail="$(printf '%s\n' "$raw" | python3 -c 'import json,sys
+try:
+  d=json.load(sys.stdin)
+  print(d.get("detail") or d.get("outcome") or "exceptions=unknown")
+except Exception:
+  print("exceptions=unknown")' 2>/dev/null || echo exceptions=unknown)"
+    fi
+  else
+    detail="cli missing"
   fi
 fi
 

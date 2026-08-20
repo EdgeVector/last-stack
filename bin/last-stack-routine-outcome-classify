@@ -29,6 +29,8 @@ OBSERVERS = frozenset(
         "last-stack-ship-pipeline-gap-audit",
         "ship-pipeline-gap-audit",
         "routine-fleet-health",
+        "last-stack-whats-wrong",
+        "whats-wrong",
     }
 )
 
@@ -58,6 +60,9 @@ DOWNSTREAM_MARKERS = (
     "node did not respond",
     "gaps=",
     "deploy_blocked=",
+    "exceptions=",
+    "healed=",
+    "remaining=",
 )
 
 NOOP_MARKERS = (
@@ -66,6 +71,7 @@ NOOP_MARKERS = (
     "classes=none",
     "health=green",
     "reds=0",
+    "exceptions=0",
 )
 
 

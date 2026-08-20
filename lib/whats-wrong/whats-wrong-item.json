@@ -1,0 +1,25 @@
+{
+  "name": "whats-wrong-item",
+  "version": "1",
+  "start_at": "HEAL",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "item": {},
+      "index": { "type": "integer" },
+      "dashboard": { "type": "string" }
+    }
+  },
+  "states": {
+    "HEAL": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-whats-wrong-heal.sh\""],
+      "effects": "idempotent",
+      "timeout_sec": 720,
+      "next": "DONE",
+      "on_error": "FAILED"
+    },
+    "DONE": { "type": "succeed" },
+    "FAILED": { "type": "fail" }
+  }
+}

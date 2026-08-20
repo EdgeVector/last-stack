@@ -7,6 +7,8 @@ fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 bash -n "$ROOT/bin/last-stack-lastdb-pressure"
 bash -n "$ROOT/bin/last-stack-why-stopped"
 bash -n "$ROOT/bin/last-stack-why-stopped-loom"
+bash -n "$ROOT/bin/last-stack-whats-wrong-loom"
+bash -n "$ROOT/bin/last-stack-whats-wrong-routine"
 bash -n "$ROOT/bin/last-stack-fold-ci-health"
 bash -n "$ROOT/bin/last-stack-generator-preflight"
 bash -n "$ROOT/bin/last-stack-kanban-file-pr"
@@ -80,6 +82,9 @@ grep -q 'class-a-heal-timeout' "$ROOT/routines/kanban-pickup.md" \
 [ -f "$ROOT/routines/why-stopped.md" ] || fail "why-stopped prompt missing"
 grep -q 'last-stack-why-stopped-loom' "$ROOT/routines/why-stopped.md" \
   || fail "why-stopped prompt missing loom hook"
+[ -f "$ROOT/routines/whats-wrong.md" ] || fail "whats-wrong prompt missing"
+grep -q 'last-stack-whats-wrong-loom' "$ROOT/routines/whats-wrong.md" \
+  || fail "whats-wrong prompt missing loom hook"
 [ -x "$ROOT/bin/last-stack-feature-prove-routine" ] || fail "feature-prove installer missing"
 [ -x "$ROOT/bin/last-stack-fleet-performance-routine" ] || fail "fleet-performance installer missing"
 [ -f "$ROOT/routines/fleet-performance.md" ] || fail "fleet-performance prompt missing"

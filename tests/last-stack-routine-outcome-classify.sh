@@ -15,6 +15,12 @@ got="$("$bin" --observer last-stack-pipeline-health --exit 0 --detail 'open_cr=2
 got="$("$bin" --observer last-stack-why-stopped --exit 0 --detail 'classes=unknown')"
 [ "$got" = "ok" ] || fail "why-stopped classes=unknown should be ok, got $got"
 
+got="$("$bin" --observer last-stack-whats-wrong --exit 0 --detail 'exceptions=2 remaining=1')"
+[ "$got" = "ok" ] || fail "whats-wrong remaining red should be ok, got $got"
+
+got="$("$bin" --observer last-stack-whats-wrong --exit 0 --detail 'exceptions=0')"
+[ "$got" = "noop" ] || fail "whats-wrong empty list should be noop, got $got"
+
 got="$("$bin" --observer last-stack-ship-pipeline-gap-audit --exit 0 --detail 'health=yellow gaps=3 filed=1')"
 [ "$got" = "ok" ] || fail "ship-pipeline yellow should be ok, got $got"
 
