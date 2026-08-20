@@ -251,8 +251,9 @@ unset HOST_TRACK_STAGE_GC_MAX_AGE_S
 
 printf 'ok: verified artifact install/refresh/rollback/tamper rejection\n'
 
-# ── track_gate_main: status stale vs main tip; refresh promotes channel ─────
-# Mental model: live skill-pack tracks green main, not a frozen stable pointer.
+# ── track_gate_main: on-channel vs unpublished main; refresh promotes ─────
+# stale = live digest equals published channel. main_unpublished = lastgit
+# main is ahead of that channel. Refresh promotes a green+published tip.
 # Use app name != last-stack so install does not chmod a-w the version tree.
 MAIN_TIP_FILE="$tmp/main-tip-oid"
 printf '%s' "$(printf 'a%.0s' {1..40})" > "$MAIN_TIP_FILE"
@@ -366,33 +367,45 @@ cat > "$HOST_TRACK_REGISTRY" <<JSON
 }
 JSON
 
-# Install while main tip == v1 → fresh.
+# Install while main tip == v1 → on channel, not unpublished.
 printf '%s' "$oid_v1" > "$MAIN_TIP_FILE"
 "$ROOT/bin/host-track" install skillpack >/dev/null
 [ "$(demo)" = v1 ] || fail "track-main install did not land v1"
 st="$("$ROOT/bin/host-track" status --json skillpack)"
 printf '%s\n' "$st" | jq -e --arg tip "$oid_v1" '
   .gate_head == $tip and .stale == false and .host_head == $tip
+  and .main_unpublished == false and .freshness == "fresh"
 ' >/dev/null || fail "in-sync main tip should not be stale: $st"
+"$ROOT/bin/host-track" check skillpack >/dev/null \
+  || fail "in-sync main tip failed check"
 
-# Advance main tip to v2 (green+published); installed lags → stale.
+# Advance main tip to v2 (green+published). Status stays on-channel.
+# Lag is main_unpublished. Pickup check must stay 0. Refresh installs v2.
 printf '%s' "$oid_v2" > "$MAIN_TIP_FILE"
 st_lag="$("$ROOT/bin/host-track" status --json skillpack)"
-printf '%s\n' "$st_lag" | jq -e --arg tip "$oid_v2" --arg old "$oid_v1" '
-  .gate_head == $tip and .stale == true and .host_head == $old
-' >/dev/null || fail "lag vs advanced main tip not reported: $st_lag"
+printf '%s\n' "$st_lag" | jq -e --arg old "$oid_v1" --arg ch "$digest_v1" '
+  .gate_head == $old
+  and .host_head == $old
+  and .stale == false
+  and .main_unpublished == true
+  and .freshness == "soft_stale"
+  and .manifest_digest == $ch
+' >/dev/null || fail "on-channel unpublished-main lag not reported: $st_lag"
+"$ROOT/bin/host-track" check skillpack >/dev/null \
+  || fail "on-channel unpublished-main failed check"
 
 "$ROOT/bin/host-track" refresh skillpack >/dev/null
 [ "$(demo)" = v2 ] || fail "refresh did not install advanced main tip"
 st2="$("$ROOT/bin/host-track" status --json skillpack)"
 printf '%s\n' "$st2" | jq -e --arg tip "$oid_v2" '
   .stale == false and .host_head == $tip and .gate_head == $tip
+  and .main_unpublished == false and .freshness == "fresh"
 ' >/dev/null || fail "after refresh still not tracking main: $st2"
 jq -e --arg tip "$oid_v2" '.source_oid == $tip' \
   "$tmp/cas/channels/skillpack/stable.json" >/dev/null \
   || fail "stable channel was not promoted to new main tip"
 
-printf 'ok: track_gate_main promotes green main and reports lag correctly\n'
+printf 'ok: track_gate_main promotes green main and reports unpublished-main lag\n'
 
 # ── dist/* producers (situations/fkanban layout) — no synthetic bin/ ─────────
 # Fleet proof failed with "staged artifact missing bin/ (incomplete stage)" when

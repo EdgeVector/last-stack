@@ -526,6 +526,7 @@ status_json_for() {
   local exemption_kind deployment_binary deployment_peer_binary deployment_repo_cache
   local deployment_version deployment_head deployment_peer_version deployment_peer_head
   local deployment_pair_match deployment_problem behind_by distance deployment_expanded
+  local main_unpublished freshness
 
   json="$(require_app_json "$app")"
   kind="$(field "$json" kind)"
@@ -554,6 +555,7 @@ status_json_for() {
   artifact_current=""
   artifact_previous=""
   artifact_problem=""
+  main_unpublished="false"
   deployment_version=""
   deployment_head=""
   deployment_peer_version=""
@@ -572,25 +574,22 @@ status_json_for() {
     host_head="$(jq -r '.source_oid // ""' "$stamp_path" 2>/dev/null || true)"
     host_head_short="${host_head:0:12}"
     channel_oid="$(jq -r '.source_oid // ""' "$artifact_root/channels/$artifact_app/$artifact_channel.json" 2>/dev/null || true)"
+    # gate_head for check/stale is the published channel oid, not lastgit main.
+    # Unpublished main is main_unpublished. Pickup must not wait on that lag.
     gate_tip="$channel_oid"
     version=""
     stale="null"
-    # Mental model: for track_gate_main apps, gate_head is real main tip and
-    # stale means "installed is not main tip" (CI/publish lag is visible).
-    if artifact_tracks_gate_main "$json"; then
-      if IFS=$'\t' read -r track_repo track_ref < <(parse_lastdb_gate_main "$gate_main" || true); then
-        main_tip="$(artifact_main_tip "$track_repo" "$track_ref" || true)"
-        if [ -n "$main_tip" ]; then
-          gate_tip="$main_tip"
-          if [ -n "$host_head" ] && [ -L "$install_root/current" ] && [ "$host_head" = "$main_tip" ]; then
-            stale="false"
-          else
-            stale="true"
-          fi
-        fi
+    main_unpublished="false"
+    main_tip=""
+    # Report unpublished main whenever gate_main is knowable. Auto-promote
+    # still requires track_gate_main; pickup must not wait on that opt-in.
+    if [ -n "$gate_main" ] && IFS=$'\t' read -r track_repo track_ref < <(parse_lastdb_gate_main "$gate_main" || true); then
+      main_tip="$(artifact_main_tip "$track_repo" "$track_ref" || true)"
+      if [ -n "$main_tip" ] && [ -n "$channel_oid" ] && [ "$main_tip" != "$channel_oid" ]; then
+        main_unpublished="true"
       fi
     fi
-    if [ "$stale" = "null" ] && [ -n "$channel_digest" ]; then
+    if [ -n "$channel_digest" ]; then
       if [ "$installed_digest" = "$channel_digest" ] && [ -L "$install_root/current" ]; then
         stale="false"
       else
@@ -703,8 +702,8 @@ status_json_for() {
 
   # freshness: pickup-facing classification (soft lag ≠ hard-broken).
   # - hard_broken: artifact_problem or missing/unusable current
-  # - soft_stale: stale=true but install tree is usable (gate ahead / publish lag)
-  # - fresh: stale=false and no problem
+  # - soft_stale: on channel, and lastgit main has no published package yet
+  # - fresh: on channel and main is the published channel oid
   freshness="fresh"
   if [ "$install_mode" = "artifact" ]; then
     if [ -n "$artifact_problem" ]; then
@@ -715,6 +714,8 @@ status_json_for() {
       else
         freshness="hard_broken"
       fi
+    elif [ "${main_unpublished:-false}" = "true" ]; then
+      freshness="soft_stale"
     fi
   elif [ -n "$deployment_problem" ]; then
     freshness="hard_broken"
@@ -758,6 +759,7 @@ status_json_for() {
     --arg registry_compliance "$registry_compliance" \
     --argjson artifact_exemption "$artifact_exemption_json" \
     --argjson stale "$stale" \
+    --argjson main_unpublished "$main_unpublished" \
     --argjson behind_by "$behind_by" \
     --argjson binary_pair_match "$deployment_pair_match" \
     '{
@@ -776,6 +778,7 @@ status_json_for() {
       registry_compliance: $registry_compliance,
       artifact_exemption: $artifact_exemption,
       stale: $stale,
+      main_unpublished: $main_unpublished,
       behind_by: $behind_by,
       binary_pair_match: $binary_pair_match,
       paired_version: ($deployment_peer_version | select(length > 0) // null),
@@ -816,6 +819,7 @@ status_plain_for() {
       "binary_pair_match=" + ((.binary_pair_match // "-") | tostring),
       "deployment_problem=" + (.deployment_problem // "-"),
       "stale=" + (.stale | tostring),
+      "main_unpublished=" + ((.main_unpublished // false) | tostring),
       "freshness=" + (.freshness // "-"),
       "notes=" + .notes
     ] | @tsv'
@@ -2034,6 +2038,11 @@ refresh_app() {
   install_mode="$(setting "$json" install_mode)"
   [ -n "$install_mode" ] || install_mode="checkout"
   exemption_kind="$(printf '%s\n' "$json" | jq -r '.artifact_exemption.kind // ""')"
+  # Promote a deployable main oid even when the live tree is already on channel.
+  # Else LaunchAgent --force-if-stale no-ops and never catches a published tip.
+  if [ "$install_mode" = "artifact" ]; then
+    artifact_promote_channel_to_main "$app" "$json" ""
+  fi
   status="$(status_json_for "$app")"
   stale="$(printf '%s\n' "$status" | jq -r '.stale | tostring')"
 

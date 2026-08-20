@@ -37,6 +37,12 @@ artifact_update_check() {
   stale="$(printf '%s\n' "$artifact_status" | jq -r '.stale | tostring' 2>/dev/null)"
   local_manifest="$(printf '%s\n' "$artifact_status" | jq -r '.manifest_digest // ""' 2>/dev/null)"
   channel_manifest="$(printf '%s\n' "$artifact_status" | jq -r '.channel_manifest_digest // ""' 2>/dev/null)"
+  # On channel: live digest equals published channel. Unpublished main is not
+  # an update. Pickup must see UP_TO_DATE in that case.
+  if [ -n "$local_manifest" ] && [ "$local_manifest" = "$channel_manifest" ]; then
+    printf 'UP_TO_DATE\n'
+    return 0
+  fi
   case "$stale" in
     false) printf 'UP_TO_DATE\n' ;;
     true) printf 'ARTIFACT_UPDATE_AVAILABLE  local_manifest=%s channel_manifest=%s\n' \
