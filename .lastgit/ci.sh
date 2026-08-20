@@ -68,6 +68,9 @@ bash tests/last-stack-why-stopped-loom.sh
 bash tests/last-stack-lastdb-ops-offenders.sh
 bash tests/last-stack-lastdb-ops-offenders-routine.sh
 bash tests/last-stack-kanban-pickup-workers.sh
+bash tests/last-stack-kanban-pickup-gate.sh
+bash tests/last-stack-pickup-work-policy.sh
+bash tests/last-stack-routines-kanban-pickup.sh
 bash tests/last-stack-kanban-validate-routine.sh
 bash tests/last-stack-pr-reaper-stale-open-heal.sh
 bash tests/last-stack-factory-hardening.sh

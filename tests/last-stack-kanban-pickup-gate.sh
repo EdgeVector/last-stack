@@ -74,7 +74,10 @@ end_epoch="$(date +%s)"
 set -e
 elapsed=$((end_epoch - start_epoch))
 test "$rc" -eq 10 || { echo "case2 expected rc=10 got $rc"; echo "$out"; exit 1; }
-printf '%s\n' "$out" | grep -q 'proceed ready=3' || { echo "missing proceed"; echo "$out"; exit 1; }
+printf '%s\n' "$out" | grep -q 'PICKUP_GATE_PROCEED ready=3' || { echo "missing PICKUP_GATE_PROCEED"; echo "$out"; exit 1; }
+if printf '%s\n' "$out" | grep -q 'ROUTINE_RESULT outcome=ok'; then
+  echo "case2 must not print ROUTINE_RESULT outcome=ok"; echo "$out"; exit 1
+fi
 if [ "$elapsed" -ge 30 ]; then
   echo "case2 hung closeout still delayed gate: elapsed=${elapsed}s (want <30)" >&2
   echo "$out"
@@ -85,8 +88,7 @@ if [ "$elapsed" -ge 120 ]; then
   exit 1
 fi
 
-# Case 3: status hangs; todo fallback has items → proceed under status timeout.
-# Use a 2s status cap so the test stays fast.
+# Case 3: status hangs; todo has items → skip (fail-closed), never proceed-ok.
 cat >"$tmp/path/kanban" <<'S'
 #!/bin/sh
 if [ "$1" = pickup ] && [ "$2" = status ]; then
@@ -94,8 +96,7 @@ if [ "$1" = pickup ] && [ "$2" = status ]; then
   exit 0
 fi
 if [ "$1" = list ]; then
-  # todo list shape used by gate fallback: JSON array length
-  printf '%s\n' '[{"slug":"a","column":"todo"},{"slug":"b","column":"todo"}]'
+  printf '%s\n' '{"cards":[{"slug":"a","column":"todo"},{"slug":"b","column":"todo"}],"total":2}'
   exit 0
 fi
 exit 1
@@ -111,9 +112,15 @@ if command -v gtimeout >/dev/null 2>&1 || command -v timeout >/dev/null 2>&1; th
   end_epoch="$(date +%s)"
   set -e
   elapsed=$((end_epoch - start_epoch))
-  test "$rc" -eq 10 || { echo "case3 expected rc=10 got $rc"; echo "$out"; exit 1; }
-  printf '%s\n' "$out" | grep -q 'status_unavailable' || {
-    echo "case3 missing status_unavailable fallback"; echo "$out"; exit 1
+  test "$rc" -eq 0 || { echo "case3 expected rc=0 got $rc"; echo "$out"; exit 1; }
+  if printf '%s\n' "$out" | grep -q 'ROUTINE_RESULT outcome=ok'; then
+    echo "case3 must not print ROUTINE_RESULT outcome=ok"; echo "$out"; exit 1
+  fi
+  printf '%s\n' "$out" | grep -q 'err_class=' || {
+    echo "case3 missing err_class"; echo "$out"; exit 1
+  }
+  printf '%s\n' "$out" | grep -q 'status_rc=' || {
+    echo "case3 missing status_rc"; echo "$out"; exit 1
   }
   if [ "$elapsed" -ge 30 ]; then
     echo "case3 status timeout path too slow: elapsed=${elapsed}s" >&2
@@ -125,5 +132,43 @@ else
 fi
 unset LAST_STACK_PICKUP_GATE_STATUS_TIMEOUT_SEC
 unset LAST_STACK_PICKUP_GATE_TODO_TIMEOUT_SEC
+
+# Case 4: status fails immediately; todo is non-empty → skip, no proceed-ok.
+cat >"$tmp/path/kanban" <<'S'
+#!/bin/sh
+if [ "$1" = pickup ] && [ "$2" = status ]; then
+  echo "service_timeout: node did not respond within 30000ms" >&2
+  exit 1
+fi
+if [ "$1" = list ]; then
+  printf '%s\n' '{"cards":[{"slug":"a","column":"todo"},{"slug":"b","column":"todo"},{"slug":"c","column":"todo"}],"total":3}'
+  exit 0
+fi
+exit 1
+S
+chmod +x "$tmp/path/kanban"
+set +e
+out="$("$GATE" 2>&1)"
+rc=$?
+set -e
+test "$rc" -eq 0 || { echo "case4 expected rc=0 got $rc"; echo "$out"; exit 1; }
+if printf '%s\n' "$out" | grep -q 'ROUTINE_RESULT outcome=ok'; then
+  echo "case4 must not print ROUTINE_RESULT outcome=ok"; echo "$out"; exit 1
+fi
+if printf '%s\n' "$out" | grep -q 'PICKUP_GATE proceed todo_count='; then
+  echo "case4 must not proceed from todo count"; echo "$out"; exit 1
+fi
+printf '%s\n' "$out" | grep -q 'ROUTINE_RESULT outcome=noop' || {
+  echo "case4 missing noop trailer"; echo "$out"; exit 1
+}
+printf '%s\n' "$out" | grep -q 'err_class=busy-node' || {
+  echo "case4 missing err_class=busy-node"; echo "$out"; exit 1
+}
+printf '%s\n' "$out" | grep -q 'status_rc=1' || {
+  echo "case4 missing status_rc=1"; echo "$out"; exit 1
+}
+printf '%s\n' "$out" | grep -q 'todo_rc=0' || {
+  echo "case4 missing todo_rc=0"; echo "$out"; exit 1
+}
 
 echo ok

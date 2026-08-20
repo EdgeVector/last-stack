@@ -195,6 +195,50 @@ def dedupe_evidence(items: list[Evidence]) -> list[Evidence]:
     return out
 
 
+B_PICKUP_MARKERS = ("command-timebox", "in-flight-budget-handoff", "rolled-back-todo")
+A_PICKUP_MARKERS = ("no_card_claimed", "board-read-failed", "claimed nothing", "busy-node", "stale-last-stack-install")
+
+
+def classify_pickup_line(line: str) -> Optional[str]:
+    if "kanban-pickup " not in line:
+        return None
+    lower = line.lower()
+    for marker in B_PICKUP_MARKERS:
+        if marker in lower:
+            return "B"
+    for marker in A_PICKUP_MARKERS:
+        if marker in lower:
+            return "A"
+    return None
+
+
+def pickup_window_lines(hb_tail: str, limit: int = 10) -> list[str]:
+    lines = [ln for ln in hb_tail.splitlines() if "kanban-pickup " in ln]
+    return lines[-limit:]
+
+
+def pickup_ab_override(evidence: list[Evidence], hb_tail: str) -> Optional[str]:
+    present = {item.klass for item in evidence}
+    if present & {"C", "D", "E"}:
+        return None
+    a = 0
+    b = 0
+    extra: list[Evidence] = []
+    for line in pickup_window_lines(hb_tail):
+        kind = classify_pickup_line(line)
+        if kind == "B":
+            b += 1
+            extra.append(Evidence("B", "pickup-window-handoff", "pickup-window", "pickup line is a timebox or handoff", line[:500]))
+        elif kind == "A":
+            a += 1
+            extra.append(Evidence("A", "pickup-window-noop", "pickup-window", "pickup line is a no-op", line[:500]))
+    # Keep window votes (including the last no-op) inside the printed evidence cap.
+    evidence[0:0] = extra
+    if b >= 3 and b > a:
+        return "B"
+    return None
+
+
 def choose_primary(evidence: list[Evidence]) -> str:
     present = {item.klass for item in evidence}
     for klass in CLASS_ORDER:
@@ -254,8 +298,9 @@ def main(argv: list[str]) -> int:
     add_pattern_evidence(evidence, str(args.heartbeats), hb_tail)
     if not args.no_live:
         evidence.extend(collect_live_evidence(root_from_script(), args.timeout_s))
+    override = pickup_ab_override(evidence, hb_tail)
     evidence = dedupe_evidence(evidence)
-    primary = choose_primary(evidence)
+    primary = override if override else choose_primary(evidence)
     elapsed_ms = int((time.monotonic() - start) * 1000)
 
     if args.json:
