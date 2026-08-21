@@ -21,8 +21,14 @@
 set -euo pipefail
 
 self_dir="$(cd "$(dirname "$0")" && pwd -P)"
+# Prefer a logical install root. `pwd -P` follows ~/.last-stack/bin into the
+# immutable host-track artifacts/versions/* tree. Heartbeat then tries to
+# mkdir version/logs, gets EPERM in a Codex sandbox, and older gates mixed
+# that write error into a board-read skip.
 if [ -n "${LAST_STACK_ROOT:-}" ] && [ -d "${LAST_STACK_ROOT}/bin" ]; then
-  last_stack="$(cd "$LAST_STACK_ROOT" && pwd -P)"
+  last_stack="${LAST_STACK_ROOT}"
+elif [ -x "${HOME}/.last-stack/bin/last-stack-kanban-pickup-gate" ]; then
+  last_stack="${HOME}/.last-stack"
 else
   last_stack="$(cd "$self_dir/.." && pwd -P)"
 fi
@@ -92,11 +98,20 @@ trailer_noop() {
 }
 
 # Prefer gtimeout (coreutils on macOS) then timeout; empty means no wrapper.
+# Probe exec: Homebrew gtimeout often sits outside the Codex workspace-write
+# allow list. `command -v` succeeds, then the wrapper exits 126, both board
+# reads "fail" in <1s, and the inner gate skip-exits a run the outer gate
+# already allowed. Only keep a timeout binary that can actually run `true`.
 timeout_bin=""
 if command -v gtimeout >/dev/null 2>&1; then
   timeout_bin="gtimeout"
 elif command -v timeout >/dev/null 2>&1; then
   timeout_bin="timeout"
+fi
+if [ -n "$timeout_bin" ]; then
+  if ! "$timeout_bin" 1s true >/dev/null 2>&1 && ! "$timeout_bin" 1 true >/dev/null 2>&1; then
+    timeout_bin=""
+  fi
 fi
 
 status_timeout_sec="${LAST_STACK_PICKUP_GATE_STATUS_TIMEOUT_SEC:-45}"
@@ -121,10 +136,13 @@ elif command -v last-stack-lastdb-retry >/dev/null 2>&1; then
 fi
 
 # Board read with wall-clock cap. Must invoke real executables only (timeout
-# cannot run bash functions). Exit 124/137 = timed out.
+# cannot run bash functions). Exit 124/137 = timed out. Exit 126/127 = the
+# timeout wrapper itself could not exec — fall back to unwrapped kanban so a
+# sandbox that blocks Homebrew gtimeout does not look like a dead board.
 run_board_capped() {
   local secs="$1"
   shift
+  local rc=0
   set +e
   if [ -n "$timeout_bin" ] && [ -n "$secs" ] && [ "$secs" -gt 0 ] 2>/dev/null; then
     if [ -n "$retry_bin" ]; then
@@ -132,14 +150,23 @@ run_board_capped() {
     else
       "$timeout_bin" -k 3s "${secs}s" "$@"
     fi
+    rc=$?
+    if [ "$rc" -eq 126 ] || [ "$rc" -eq 127 ]; then
+      if [ -n "$retry_bin" ]; then
+        "$retry_bin" --attempts 3 -- "$@"
+      else
+        "$@"
+      fi
+      rc=$?
+    fi
   else
     if [ -n "$retry_bin" ]; then
       "$retry_bin" --attempts 3 -- "$@"
     else
       "$@"
     fi
+    rc=$?
   fi
-  local rc=$?
   set -e
   return "$rc"
 }
@@ -161,7 +188,13 @@ classify_err_class() {
     *service_timeout*|*did\ not\ respond*|*too\ many\ concurrent*)
       err_class="busy-node"
       ;;
-    *No\ such\ file*|*folddb.sock*|*socket*)
+    *folddb.sock*|*socket*gone*|*socket*unavailable*|*socket*unreachable*)
+      err_class="absent-sock"
+      ;;
+    *Permission\ denied*|*Operation\ not\ permitted*|*cannot\ execute*)
+      err_class="sandbox-exec"
+      ;;
+    *No\ such\ file*)
       err_class="absent-sock"
       ;;
   esac
