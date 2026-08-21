@@ -58,7 +58,20 @@ terminal for that candidate — the next night's build supersedes it), or
 
 ## Closeout
 
-`ROUTINE_RESULT outcome=<ok|error|noop> detail=exec=… state=… result=<status> primary_mutation=write_probe_upsert_only`
+After the sink, print the legacy `ROUTINE_RESULT` token with the same verdict.
+Add `detail=exec=… state=… result=<status>
+primary_mutation=write_probe_upsert_only` on that line.
+
+Write the heartbeat first. Then write exactly one actual verdict line to the
+authoritative sink. The sink must start with `ok `, `noop `, or `error `. Do
+not put a shell assignment in the sink. A locked tick uses this command:
+
+```bash
+printf '%s\n' 'noop exec=locked state=BUILD_START result=concurrent_tick_owner' > "$ROUTINES_RUN_DIR/outcome.txt"
+```
+
+Write the sink after the heartbeat and before the legacy trailer. Verify that
+the first sink word is the actual verdict.
 
 The soak is not strictly read-only on the primary: `board_write` upserts the
 fixed `canary-soak-write-probe` slug once per sample. That is the one mutation
