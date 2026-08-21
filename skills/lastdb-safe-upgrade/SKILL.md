@@ -83,7 +83,7 @@ proxy is optional later for near-zero client impact.
    CoW copy, settle (~45s), sample peak RSS. **RED** if peak RSS ≥
    `LASTDBD_RSS_LIMIT_MB` minus headroom (default 10%). Limit is read from
    env, then the memory-guard LaunchAgent plist, then the primary lastdbd
-   LaunchAgent plist, else 12288. Before a sidebin kickstart, the script stamps
+   LaunchAgent plist, else 16384. Before a sidebin kickstart, the script stamps
    the primary plist with that live limit so lastdbd does not boot with a lower
    binary default while the guard enforces the resident ceiling. Incident
    2026-07-22: sled-free cutover sat at ~8.5 GiB while the guard killed at 6 GiB

@@ -3,10 +3,8 @@
 #
 # The guard is a process-killer aimed at the primary brain, so the properties
 # under test are mostly about when it does NOT fire:
-#   - default enforcement is still rss (the metric change must not smuggle in a
-#     behaviour change while the limit policy is undecided)
-#   - the blind spot — footprint over the ceiling, rss under it — is logged and
-#     NOT acted on
+#   - default enforcement is footprint at the ratified 16 GiB limit
+#   - steady-state footprint below that limit causes no action
 #   - footprint enforcement refuses to fall back to rss when the node is
 #     unreachable, because that silently restores the 6.7x blind spot
 set -euo pipefail
@@ -91,69 +89,80 @@ if LASTDBD_GUARD_METRIC=bogus "$GUARD" >/dev/null 2>&1; then
   fail "invalid LASTDBD_GUARD_METRIC should exit non-zero"
 fi
 
-# --- 2. default enforcement is rss: footprint way over, rss under -> no kill -
-# This is the whole point of the change landing in two halves. 8.7 GiB
-# footprint against a 6 GiB ceiling must NOT fire while the metric is rss.
+# --- 2. default policy uses footprint at 16 GiB and keeps steady state safe --
 reset
 FAKE_RSS_KB=$((1500 * 1024)) \
-FAKE_FOOTPRINT_BYTES=$((8700 * MB)) \
-FAKE_PEAK_BYTES=$((11110 * MB)) \
-LASTDBD_RSS_LIMIT_MB=6144 \
-  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 under rss enforcement"
+FAKE_FOOTPRINT_BYTES=$((9000 * MB)) \
+FAKE_PEAK_BYTES=$((12500 * MB)) \
+FAKE_SWAP_MB=25000 \
+  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 below the default limit"
 
-restarted && fail "rss enforcement must not restart when only footprint is over"
-grep -q 'metric=rss' "$LOG" || fail "log should record the enforced metric"
-grep -q 'footprint_mb=8700' "$LOG" || fail "log should carry the footprint gauge"
-grep -q 'peak_mb=11110' "$LOG" || fail "log should carry the footprint peak"
+restarted && fail "default footprint policy must not restart at steady state"
+grep -q 'metric=footprint' "$LOG" || fail "default metric should be footprint"
+grep -q 'limit_mb=16384' "$LOG" || fail "default limit should be 16384 MiB"
+grep -q 'footprint_mb=9000' "$LOG" || fail "log should carry the footprint gauge"
+grep -q 'peak_mb=12500' "$LOG" || fail "log should carry the footprint peak"
 grep -q 'rss_mb=1500' "$LOG" || fail "log should still carry rss"
-grep -q 'WARN blind_spot' "$LOG" || fail "blind spot must be logged when footprint >= limit under rss"
+grep -q 'swap_mb=' "$LOG" || fail "log should carry swap for diagnosis"
+grep -q 'warn swap_used' "$LOG" && fail "swap use alone must not raise an alert"
 
-# --- 3. no blind-spot warning when footprint is genuinely under the ceiling --
+# --- 3. default policy fires when footprint exceeds 16 GiB -------------------
 reset
 FAKE_RSS_KB=$((1500 * 1024)) \
-FAKE_FOOTPRINT_BYTES=$((3000 * MB)) \
-FAKE_PEAK_BYTES=$((3200 * MB)) \
-LASTDBD_RSS_LIMIT_MB=6144 \
-  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 when both gauges are under"
-grep -q 'blind_spot' "$LOG" && fail "must not cry blind spot when footprint is under the limit"
+FAKE_FOOTPRINT_BYTES=$((17000 * MB)) \
+FAKE_PEAK_BYTES=$((17100 * MB)) \
+  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 after a restart"
+restarted || fail "default footprint policy must restart above 16 GiB"
+grep -q 'OVER_LIMIT.*metric=footprint.*enforced_mb=17000.*limit_mb=16384' "$LOG" \
+  || fail "over-limit line should record the default footprint policy"
 
-# --- 4. footprint enforcement fires on the true gauge ------------------------
+# --- 4. an explicit footprint limit override still applies -------------------
 reset
 FAKE_RSS_KB=$((1500 * 1024)) \
 FAKE_FOOTPRINT_BYTES=$((8700 * MB)) \
 FAKE_PEAK_BYTES=$((11110 * MB)) \
 LASTDBD_RSS_LIMIT_MB=6144 \
-LASTDBD_GUARD_METRIC=footprint \
   "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 after a restart"
 restarted || fail "footprint enforcement must restart when footprint exceeds the limit"
 grep -q 'OVER_LIMIT.*metric=footprint.*enforced_mb=8700' "$LOG" \
   || fail "over-limit line should name the footprint gauge and reading"
 
-# --- 5. footprint enforcement declines rather than falling back to rss -------
+# --- 5. default footprint policy declines rather than falling back to rss -----
 # Falling back would silently restore the blind spot the policy closed.
 reset
 FAKE_NODE_DOWN=1 \
 FAKE_RSS_KB=$((1500 * 1024)) \
-LASTDBD_RSS_LIMIT_MB=6144 \
-LASTDBD_GUARD_METRIC=footprint \
   "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 when it declines to enforce"
 restarted && fail "must not restart on an unavailable footprint reading"
 grep -q 'footprint_unavailable' "$LOG" || fail "declining to enforce must be logged"
 
-# --- 6. rss enforcement still fires on rss, exactly as before ----------------
+# --- 6. explicit rss compatibility mode exposes its blind spot ----------------
+reset
+FAKE_RSS_KB=$((1500 * 1024)) \
+FAKE_FOOTPRINT_BYTES=$((8700 * MB)) \
+FAKE_PEAK_BYTES=$((11110 * MB)) \
+LASTDBD_RSS_LIMIT_MB=6144 \
+LASTDBD_GUARD_METRIC=rss \
+  "$GUARD" >/dev/null 2>&1 || fail "rss compatibility mode should exit 0"
+restarted && fail "rss mode must not restart when only footprint is over"
+grep -q 'WARN blind_spot' "$LOG" || fail "rss blind spot must be logged"
+
+# --- 7. explicit rss compatibility mode still fires on rss -------------------
 reset
 FAKE_RSS_KB=$((7000 * 1024)) \
 FAKE_FOOTPRINT_BYTES=$((9000 * MB)) \
 FAKE_PEAK_BYTES=$((11110 * MB)) \
 LASTDBD_RSS_LIMIT_MB=6144 \
+LASTDBD_GUARD_METRIC=rss \
   "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 after an rss restart"
 restarted || fail "rss enforcement must still fire when rss exceeds the limit"
 
-# --- 7. node unreachable under rss enforcement: still guards on rss ----------
+# --- 8. node unreachable under explicit rss mode still guards on rss ----------
 reset
 FAKE_NODE_DOWN=1 \
 FAKE_RSS_KB=$((7000 * 1024)) \
 LASTDBD_RSS_LIMIT_MB=6144 \
+LASTDBD_GUARD_METRIC=rss \
   "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 with node unreachable"
 restarted || fail "rss enforcement must not depend on the status socket"
 grep -q 'footprint_mb=unavailable' "$LOG" || fail "unavailable footprint should be stated, not omitted"

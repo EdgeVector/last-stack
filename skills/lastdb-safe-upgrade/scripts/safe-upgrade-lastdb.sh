@@ -98,7 +98,7 @@ warn() { printf '[safe-upgrade] WARN: %s\n' "$*" >&2; }
 # Probe/live must stay under this or the guard SIGTERMs primary in a thrash loop
 # (incident after 2026-07-22 sled-free cutover: candidate ~8.5G vs limit 6G).
 MEMORY_GUARD_PLIST="${LASTDBD_MEMORY_GUARD_PLIST:-$HOME/Library/LaunchAgents/com.REPLACE.lastdbd-memory-guard.plist}"
-DEFAULT_LASTDBD_RSS_LIMIT_MB="${LASTDBD_DEFAULT_RSS_LIMIT_MB:-12288}"
+DEFAULT_LASTDBD_RSS_LIMIT_MB="${LASTDBD_DEFAULT_RSS_LIMIT_MB:-16384}"
 # Extra headroom fraction (0–100). Fail probe if RSS >= limit * (100-HEADROOM)/100.
 # Default 10% so live does not sit right on the kill line after settle.
 RSS_HEADROOM_PCT="${LASTDB_PROBE_RSS_HEADROOM_PCT:-10}"
