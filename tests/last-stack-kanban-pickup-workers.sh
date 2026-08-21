@@ -35,6 +35,7 @@ do
   grep -q 'gate_command =' "$tmp/registry/$id.toml"
   grep -q 'last-stack-kanban-pickup-gate' "$tmp/registry/$id.toml"
   grep -q 'freshness bootstrap' "$tmp/registry/$id.toml"
+  grep -q 'timeout_min = 180' "$tmp/registry/$id.toml"
   grep -q 'REPLACE' "$tmp/registry/$id.toml" && {
     echo "pickup worker $id still contains REPLACE" >&2
     exit 1

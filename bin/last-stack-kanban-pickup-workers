@@ -284,7 +284,8 @@ write_worker() {
     printf 'rrule = "FREQ=HOURLY;BYMINUTE=%s;BYSECOND=%s"\n' "$byminute" "$second"
     printf 'cwd = "%s"\n' "$REG_CWD"
     printf 'status = "active"\n'
-    printf 'timeout_min = 45\n'
+    # 3h upper bound — Tom 2026-08-20 (decision-2026-08-20-pickup-three-hour-budget)
+    printf 'timeout_min = 180\n'
     # Zero-LLM ready gate: routinesd skips the harness when ready=0 (routines ≥ gate_command).
     printf 'gate_command = "%s"\n' "$gate_cmd"
     printf '# Cap: one WORK unit per fire; capacity comes from separate registry workers, not SpawnAgent fan-out.\n'
