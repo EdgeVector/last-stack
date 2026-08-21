@@ -28,6 +28,7 @@ grep -q 'last-stack-self-upgrade" --check-only --reason=kanban-pickup-prompt-fre
 grep -q 'stale-last-stack-install class-a-heal-failed no_card_claimed' "$pickup"
 grep -q 'stale-last-stack-install class-a-heal-timeout no_card_claimed' "$pickup"
 grep -q 'Ready-queue credit gate' "$pickup"
+grep -q 'gateProceeded' "$pickup"
 grep -q 'last-stack-kanban-pickup-gate' "$pickup"
 grep -q 'ready=0' "$pickup"
 grep -q 'last-stack-pickup-work-policy' "$pickup"

@@ -57,7 +57,17 @@ set -e
 if [ "$gate_rc" -ne 10 ]; then
   # Gate already heartbeated + printed ROUTINE_RESULT (empty-todo, ready=0,
   # busy-node, …). Do not claim, idle invent, or start implementation.
-  exit 0
+  # Exception: routinesd already ran gate_command and set gateProceeded.
+  # The inner sandbox re-run must not veto that fire.
+  proceeded=0
+  if [ -n "${ROUTINES_RUN_DIR:-}" ] && [ -f "$ROUTINES_RUN_DIR/meta.json" ]; then
+    if grep -q '"gateProceeded": true' "$ROUTINES_RUN_DIR/meta.json"; then
+      proceeded=1
+    fi
+  fi
+  if [ "$proceeded" -ne 1 ]; then
+    exit 0
+  fi
 fi
 ```
 

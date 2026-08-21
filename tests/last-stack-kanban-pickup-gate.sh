@@ -172,13 +172,13 @@ printf '%s\n' "$out" | grep -q 'todo_rc=0' || {
 }
 
 # Case 5: PATH gtimeout cannot exec (Codex sandbox / Homebrew outside allow
-# list). Board status still returns ready>0 — must proceed, not
-# board-read-failed.
+# list). Live inner runs often return rc=1 plus Permission denied, not 126.
+# Board status still returns ready>0 — must proceed, not board-read-failed.
 mkdir -p "$tmp/badtimeout"
 cat >"$tmp/badtimeout/gtimeout" <<'S'
 #!/bin/sh
 echo "gtimeout: Operation not permitted" >&2
-exit 126
+exit 1
 S
 chmod +x "$tmp/badtimeout/gtimeout"
 cat >"$tmp/path/kanban" <<'S'
