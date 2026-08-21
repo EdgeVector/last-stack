@@ -514,7 +514,7 @@ def choose_soak_candidate(path: Path, requested_sha: str, wanted_states: set[str
 # `memory_guard` ran `lastdb status` and looked only at the exit code. A check
 # named for a bar it does not implement is worse than no check, because the
 # gate reads as covered. Resolve the SAME ceiling safe-upgrade uses
-# (LASTDBD_RSS_LIMIT_MB, then the LaunchAgent plist, then 12288 MB) so the two
+# (LASTDBD_RSS_LIMIT_MB, then the LaunchAgent plist, then 16384 MB) so the two
 # paths cannot disagree about what "too much memory" means.
 
 
@@ -547,9 +547,9 @@ def rss_limit_mb() -> float:
             except (ValueError, OSError, subprocess.SubprocessError):
                 pass
     try:
-        return float(os.environ.get("LASTDBD_DEFAULT_RSS_LIMIT_MB", "12288"))
+        return float(os.environ.get("LASTDBD_DEFAULT_RSS_LIMIT_MB", "16384"))
     except ValueError:
-        return 12288.0
+        return 16384.0
 
 
 def parse_status_rss_mb(status_text: str) -> float | None:
