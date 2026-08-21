@@ -127,8 +127,18 @@ set +e
 gate_rc=\$?
 set -e
 # 0 = skip (noop trailer already printed). 10 = proceed. other = treat as skip.
+# Outer routinesd gate_command already decided proceed (meta.gateProceeded).
+# An inner Codex sandbox re-run of the same gate must not skip-exit that fire.
 if [ "\$gate_rc" -ne 10 ]; then
-  exit 0
+  proceeded=0
+  if [ -n "\${ROUTINES_RUN_DIR:-}" ] && [ -f "\$ROUTINES_RUN_DIR/meta.json" ]; then
+    if grep -q '"gateProceeded": true' "\$ROUTINES_RUN_DIR/meta.json"; then
+      proceeded=1
+    fi
+  fi
+  if [ "\$proceeded" -ne 1 ]; then
+    exit 0
+  fi
 fi
 \`\`\`
 
