@@ -171,4 +171,72 @@ printf '%s\n' "$out" | grep -q 'todo_rc=0' || {
   echo "case4 missing todo_rc=0"; echo "$out"; exit 1
 }
 
+# Case 5: PATH gtimeout cannot exec (Codex sandbox / Homebrew outside allow
+# list). Board status still returns ready>0 — must proceed, not
+# board-read-failed.
+mkdir -p "$tmp/badtimeout"
+cat >"$tmp/badtimeout/gtimeout" <<'S'
+#!/bin/sh
+echo "gtimeout: Operation not permitted" >&2
+exit 126
+S
+chmod +x "$tmp/badtimeout/gtimeout"
+cat >"$tmp/path/kanban" <<'S'
+#!/bin/sh
+if [ "$1" = pickup ] && [ "$2" = status ]; then
+  printf '%s\n' '{"scanned":10,"ready":3,"counts":{"pickup-ready":3},"cards":[]}'
+  exit 0
+fi
+exit 1
+S
+chmod +x "$tmp/path/kanban"
+PATH="$tmp/badtimeout:$tmp/path:$PATH"
+export PATH
+set +e
+out="$("$GATE" 2>&1)"
+rc=$?
+set -e
+test "$rc" -eq 10 || { echo "case5 expected rc=10 got $rc"; echo "$out"; exit 1; }
+printf '%s\n' "$out" | grep -q 'PICKUP_GATE_PROCEED ready=3' || {
+  echo "case5 missing PICKUP_GATE_PROCEED"; echo "$out"; exit 1
+}
+if printf '%s\n' "$out" | grep -q 'board-read-failed'; then
+  echo "case5 must not skip as board-read-failed"; echo "$out"; exit 1
+fi
+
+# Case 6: preferred heartbeat artifact log path is not writable; fallback
+# heartbeat works; board status ready>0 — must proceed.
+# Restore a working timeout-free PATH (keep fake kanban).
+PATH="$tmp/path:/usr/bin:/bin"
+export PATH
+ro_root="$tmp/artifact-ro"
+mkdir -p "$ro_root/bin" "$ro_root/logs" "$tmp/routines"
+cp "$ROOT/bin/last-stack-brain-append-heartbeat" "$ro_root/bin/"
+: >"$ro_root/bin/last-stack-shell-prelude"
+cp "$LAST_STACK_ROOT/bin/last-stack-lastdb-retry" "$ro_root/bin/"
+chmod +x "$ro_root/bin/last-stack-brain-append-heartbeat" \
+  "$ro_root/bin/last-stack-lastdb-retry"
+chmod 555 "$ro_root/logs"
+export LAST_STACK_ROOT="$ro_root"
+export ROUTINES_HOME="$tmp/routines"
+unset LAST_STACK_HEARTBEATS_FILE
+set +e
+out="$("$GATE" 2>&1)"
+rc=$?
+set -e
+test "$rc" -eq 10 || { echo "case6 expected rc=10 got $rc"; echo "$out"; exit 1; }
+printf '%s\n' "$out" | grep -q 'PICKUP_GATE_PROCEED ready=3' || {
+  echo "case6 missing PICKUP_GATE_PROCEED"; echo "$out"; exit 1
+}
+if printf '%s\n' "$out" | grep -q 'board-read-failed'; then
+  echo "case6 must not classify heartbeat EPERM as board-read-failed"
+  echo "$out"
+  exit 1
+fi
+if ! printf '%s\n' "$out" | grep -q 'fallback'; then
+  # Heartbeat may write via ROUTINES_HOME fallback; require that skip-on-board
+  # did not fire. Fallback text is best-effort evidence.
+  :
+fi
+
 echo ok
