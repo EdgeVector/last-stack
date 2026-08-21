@@ -123,7 +123,15 @@ grep -q 'Candidate SHA: `sha-green`' "$manual"
 
 grep -q 'lastdb-canary-soak-watch' "$ROOT/config/routines-registry/lastdb-canary-soak-watch.toml"
 grep -q 'status = "active"' "$ROOT/config/routines-registry/lastdb-canary-soak-watch.toml"
-grep -q 'last-stack-canary-pipeline proof --dry-run' "$ROOT/routines/lastdb-canary-soak-watch.md"
+soak_prompt="$ROOT/routines/lastdb-canary-soak-watch.md"
+grep -q 'last-stack-canary-pipeline proof --dry-run' "$soak_prompt"
+grep -Fq 'noop exec=locked state=BUILD_START result=concurrent_tick_owner' "$soak_prompt"
+grep -Fq 'The sink must start with `ok `, `noop `, or `error `' "$soak_prompt"
+grep -Fq 'Do not put a shell assignment in the sink' "$soak_prompt"
+if grep -Eq 'ROUTINE_RESULT[[:space:]]+outcome=' "$soak_prompt"; then
+  echo "canary soak prompt contains a result-shaped trailer literal" >&2
+  exit 1
+fi
 grep -q 'lastdb-canary-promote-prepare' "$ROOT/config/routines-registry/lastdb-canary-promote-prepare.toml"
 grep -q 'status = "active"' "$ROOT/config/routines-registry/lastdb-canary-promote-prepare.toml"
 promote_prompt="$ROOT/routines/lastdb-canary-promote-prepare.md"
