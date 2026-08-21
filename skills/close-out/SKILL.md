@@ -370,17 +370,26 @@ tracked only in your head.
 cat > /tmp/kanban-follow-up.md <<'EOF'
 Repo: <owner>/<repo>
 Base: main
-Branch: kanban/<valid-slug>
 Kind: pr
 
 ## GOAL
 ...
 
+## END STATE
+...
+
 ## VERIFY
 ...
 EOF
-kanban add <valid-slug> --title "<title>" --column todo --tags <...> --repo <owner>/<repo> --base main --branch kanban/<valid-slug> --kind pr < /tmp/kanban-follow-up.md
+last-stack-kanban-file-pr <valid-slug> \
+  --title "<title>" --repo <owner>/<repo> \
+  --north-star "<live-ns>" --milestone "<live-ms>" \
+  --column todo --tags <...> < /tmp/kanban-follow-up.md
 ```
+
+Kind:pr follow-ups go through `last-stack-kanban-file-pr` so the settled-decision
+check runs. Do not pass `--skip-decision-check`. If the helper refuses, rewrite
+the brief so it honors the named records, or do not file.
 
 Slugs must be lowercase `[a-z0-9-_]`, start with a letter/digit. The body must
 include `Repo:`/`Base:` headers; use `Kind: registry` or `Kind: tracker` plus

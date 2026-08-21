@@ -13,8 +13,13 @@ bash -n "$ROOT/bin/last-stack-fold-ci-health"
 bash -n "$ROOT/bin/last-stack-generator-preflight"
 bash -n "$ROOT/bin/last-stack-kanban-file-pr"
 [ -x "$ROOT/bin/last-stack-kanban-file-pr" ] || chmod +x "$ROOT/bin/last-stack-kanban-file-pr"
+python3 -m py_compile "$ROOT/bin/last-stack-kanban-decision-check"
+grep -q 'last-stack-kanban-decision-check' "$ROOT/bin/last-stack-kanban-file-pr" \
+  || fail "file-pr missing last-stack-kanban-decision-check"
 grep -q 'last-stack-kanban-file-pr' "$ROOT/routines/milestone-driver.md" \
   || fail "milestone-driver missing last-stack-kanban-file-pr"
+grep -q 'last-stack-kanban-decision-check' "$ROOT/routines/milestone-driver.md" \
+  || fail "milestone-driver missing last-stack-kanban-decision-check"
 grep -q 'last-stack-kanban-file-pr' "$ROOT/routines/dogfood-rotate.md" \
   || fail "dogfood-rotate missing last-stack-kanban-file-pr"
 grep -q 'last-stack-kanban-file-pr' "$ROOT/routines/kanban-validate.md" \

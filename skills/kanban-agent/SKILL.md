@@ -359,18 +359,15 @@ to `review`, append a one-line note explaining what's missing, and exit.
    > 2. For each remaining piece, file a new card with the standard brief
    >    shape (`Repo:`/`Base:`/`Branch:`/`Kind:` header, `GOAL`/`CONTEXT`/
    >    `STEPS`/`VERIFY`/`OUT OF SCOPE`) so a future pickup can work it
-   >    without you:
+   >    without you. Use `last-stack-kanban-file-pr` (not raw `kanban add`)
+   >    so the settled-decision check runs. Copy `--north-star` and
+   >    `--milestone` from the parent card. If the helper refuses a conflict,
+   >    rewrite the brief so it honors the named records, or do not file:
    >    ```bash
-   >    kanban add <new-slug> --title "<short title>" --column todo \
-   >      --repo "<owner/name>" --priority <P0-P3> --body "$(cat <<'EOF'
-   >    Repo: <owner/name>
-   >    Base: <base>
-   >    Kind: pr
-   >
-   >    ## GOAL
-   >    ...
-   >    EOF
-   >    )"
+   >    last-stack-kanban-file-pr <new-slug> \
+   >      --title "<short title>" --repo "<owner/name>" \
+   >      --north-star "<parent-ns>" --milestone "<parent-ms>" \
+   >      --column todo --priority <P0-P3> < /tmp/<new-slug>-body.md
    >    ```
    > 3. **Wire dependencies so pickup doesn't grab out-of-order work:** if a
    >    new card needs the piece you're about to land first, add the edge
