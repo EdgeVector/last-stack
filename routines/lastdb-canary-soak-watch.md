@@ -63,8 +63,10 @@ Add `detail=exec=… state=… result=<status>
 primary_mutation=write_probe_upsert_only` on that line.
 
 Write the heartbeat first. Then write exactly one actual verdict line to the
-authoritative sink. The sink must start with `ok `, `noop `, or `error `. Do
-not put a shell assignment in the sink. A locked tick uses this command:
+authoritative sink. The sink must start with `ok `, `noop `, or `error `.
+Do not put a shell assignment in the sink.
+
+A locked tick uses this command:
 
 ```bash
 printf '%s\n' 'noop exec=locked state=BUILD_START result=concurrent_tick_owner' > "$ROUTINES_RUN_DIR/outcome.txt"
