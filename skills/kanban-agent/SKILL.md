@@ -499,8 +499,8 @@ to `review`, append a one-line note explaining what's missing, and exit.
    If the routine prompt has `run_started_epoch` / `run_timeout_min`, recompute
    elapsed/remaining before every fetch/rebase, push, validation retry, CI poll,
    `lastgit ci status`, `lastgit cr complete`, or merge-closeout command. Once
-   the routine's published-artifact stop line is reached (for kanban-pickup, 35
-   minutes elapsed or fewer than 10 minutes remain), leave the card in `doing`
+   the routine's published-artifact stop line is reached (for kanban-pickup,
+   fewer than 10 minutes remain), leave the card in `doing`
    with the recorded PR/CR URL and exit with the routine's in-flight handoff
    heartbeat/trailer instead of trying one more LastGit status or completer
    action.
