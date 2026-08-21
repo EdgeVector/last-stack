@@ -43,8 +43,16 @@ command -v "$BOARD" >/dev/null 2>&1 || { log "no board CLI"; echo '{}'; exit 0; 
 command -v jq >/dev/null 2>&1 || { log "no jq"; echo '{}'; exit 0; }
 
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-tmp="$(mktemp -d)"
+tmp_parent="${TMPDIR:-${TMP:-${TEMP:-/tmp}}}"
+tmp="$(mktemp -d "${tmp_parent%/}/ship-pipeline-gap-snapshot.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
+
+# Keep every helper-owned temporary file inside this snapshot workspace. This
+# also gives helpers one portable directory when the routine supplies only one
+# of the three common temporary-directory variables.
+export TMPDIR="$tmp"
+export TMP="$tmp"
+export TEMP="$tmp"
 
 # --- pickup / board ---
 "$BOARD" pickup status --json >"$tmp/pickup.json" 2>/dev/null || echo '{}' >"$tmp/pickup.json"

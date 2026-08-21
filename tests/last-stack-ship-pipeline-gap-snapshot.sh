@@ -37,6 +37,11 @@ export SHIP_PIPELINE_GAP_SNAPSHOT_FIXTURE=1
 # Keep real helpers off PATH so factory-health/why-stopped/lastgit don't run
 # unless this test installs stubs under $tmp/bin.
 mkdir -p "$tmp/bin"
+routine_tmp="$tmp/routine-tmp"
+mkdir -p "$routine_tmp"
+export TMPDIR="$routine_tmp"
+export TMP="$routine_tmp"
+export TEMP="$routine_tmp"
 command -v jq >/dev/null || fail "jq required"
 command -v python3 >/dev/null || fail "python3 required"
 
@@ -88,7 +93,9 @@ cat >"$tmp/bin/last-stack-why-stopped" <<'SH'
 # Simulate a long-running classifier that still prints pure JSON on --json.
 # Heartbeat-style noise on stderr must not break embed.
 echo "why-stopped: probing..." >&2
-printf '%s\n' '{"classes":"D+F","detail":"doing=8 unattached-outcome=3","actions":"closeout"}'
+[ "$TMPDIR" = "$TMP" ] && [ "$TMPDIR" = "$TEMP" ] || exit 8
+probe="$(mktemp "${TMPDIR}/why-stopped.XXXXXX")"
+printf '{"classes":"D+F","detail":"doing=8 unattached-outcome=3","actions":"closeout","temp_path":"%s"}\n' "$probe"
 exit 0
 SH
 chmod +x "$tmp/bin/last-stack-why-stopped"
@@ -97,20 +104,24 @@ cat >"$tmp/bin/last-stack-factory-health" <<'SH'
 #!/usr/bin/env bash
 # factory-health prints a human heartbeat line on stdout BEFORE JSON.
 echo "factory-health 2026-08-05T00:00:00Z ok alerts=0 factory=up"
-printf '%s\n' '{"snapshot":{"todo":2,"doing":1},"alerts":[],"status":"ok"}'
+[ "$TMPDIR" = "$TMP" ] && [ "$TMPDIR" = "$TEMP" ] || exit 8
+probe="$(mktemp "${TMPDIR}/factory-health.XXXXXX")"
+printf '{"snapshot":{"todo":2,"doing":1},"alerts":[],"status":"ok","temp_path":"%s"}\n' "$probe"
 exit 0
 SH
 chmod +x "$tmp/bin/last-stack-factory-health"
 
 out="$("$bin" --json --quiet 2>/dev/null)" || fail "run failed (good JSON)"
-echo "$out" | jq -e '
+echo "$out" | jq -e --arg routine_tmp "$routine_tmp" '
   .why_stopped.classes == "D+F"
   and .why_stopped.detail == "doing=8 unattached-outcome=3"
+  and (.why_stopped.temp_path | startswith($routine_tmp + "/ship-pipeline-gap-snapshot."))
   and (.why_stopped | has("error") | not)
 ' >/dev/null || fail "why_stopped good embed: $out"
-echo "$out" | jq -e '
+echo "$out" | jq -e --arg routine_tmp "$routine_tmp" '
   .factory_health.status == "ok"
   and .factory_health.snapshot.todo == 2
+  and (.factory_health.temp_path | startswith($routine_tmp + "/ship-pipeline-gap-snapshot."))
   and (.factory_health | has("error") | not)
 ' >/dev/null || fail "factory_health good embed: $out"
 
