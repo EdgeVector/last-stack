@@ -78,6 +78,10 @@
           "target": "$HOME/.local/bin/last-stack-design-pack"
         },
         {
+          "source": "bin/last-stack-kanban-decision-check",
+          "target": "$HOME/.local/bin/last-stack-kanban-decision-check"
+        },
+        {
           "source": "bin/last-stack-ship-handoff",
           "target": "$HOME/.local/bin/last-stack-ship-handoff"
         },
@@ -162,7 +166,7 @@
           "target": "$HOME/.local/bin/last-stack-routines-host-track-post-install"
         }
       ],
-      "notes": "Runtime is an immutable CI artifact that tracks gate_main (green+published main). host-track refresh promotes stable to that tip then installs. ~/.last-stack/{bin,skills,...} \u2192 artifacts/current. PATH links Class A + pickup bootstrap + Forge closeout tools (forge-api and friends) so routinesd (~/.local/bin first) never hits GC'd version pins and board-closeout can resolve Forge PRs. Never develop in the install; use a worktree. Also PATH-link last-stack-papercut-lifecycle-close, last-stack-kanban-file-pr, and last-stack-kanban-done-when-eval so scheduled shells (routinesd PATH often ~/.local/bin-first without sourcing shell-prelude) resolve the lifecycle closer, the required Kind:pr filing helper, and the non-PR DONE-WHEN evaluator.",
+      "notes": "Runtime is an immutable CI artifact that tracks gate_main (green+published main). host-track refresh promotes stable to that tip then installs. ~/.last-stack/{bin,skills,...} \u2192 artifacts/current. PATH links Class A + pickup bootstrap + Forge closeout tools (forge-api and friends) so routinesd (~/.local/bin first) never hits GC'd version pins and board-closeout can resolve Forge PRs. Never develop in the install; use a worktree. Also PATH-link last-stack-papercut-lifecycle-close, last-stack-kanban-file-pr, last-stack-kanban-decision-check, and last-stack-kanban-done-when-eval so scheduled shells (routinesd PATH often ~/.local/bin-first without sourcing shell-prelude) resolve the lifecycle closer, the required Kind:pr filing helper, its settled-decision check, and the non-PR DONE-WHEN evaluator.",
       "safe_upgrade": {
         "soak_hours": 0,
         "post_install_phase": "after-cutover",

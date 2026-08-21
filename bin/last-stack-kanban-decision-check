@@ -1,0 +1,333 @@
+#!/usr/bin/env python3
+"""Bounded check: a new kanban card must not contradict settled brain records.
+
+Search is candidate slugs only (never membership). Each candidate is
+point-got. Mechanical invariants fire only when that slug was retrieved
+and got. Semantic honor of the listed slugs stays with the filing agent.
+
+Exit: 0 honor/clear, 2 conflict or usage, 1 brain failure (fail closed).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+SEARCH_SLUG_RE = re.compile(r"(?im)^(?:\s*\d+\.\s+)?([a-z][a-z0-9-]{2,})\b")
+DECISION_CHECK_RE = re.compile(
+    r"(?ms)^##[ \t]*DECISION-CHECK\b.*?(?=^##[ \t]|\Z)"
+)
+GOAL_RE = re.compile(
+    r"(?im)^(?:##[ \t]*)?GOAL:?[ \t]*\n?(.*?)(?=^##[ \t]|\Z)"
+)
+
+# Fire only when the slug is in the retrieved, point-got set.
+INVARIANTS = (
+    {
+        "slug": "preference-kanban-no-trackers-no-human-gates",
+        "kind_forbid": ("tracker", "umbrella"),
+        "reason": (
+            "preference-kanban-no-trackers-no-human-gates: "
+            "do not file Kind:tracker or Kind:umbrella"
+        ),
+    },
+    {
+        "slug": "preference-kanban-no-review-column",
+        "column_forbid": ("review",),
+        "body_re": (
+            r"(?i)(?:add|restore|create|invent)\s+(?:a\s+)?review column"
+            r"|kanban move \S+ review"
+        ),
+        "reason": (
+            "preference-kanban-no-review-column: "
+            "columns are backlog, todo, doing, done"
+        ),
+    },
+)
+
+TYPES = ("decision", "design", "preference")
+SEARCH_LIMIT = 8
+POINT_GET_CAP = 8
+QUERY_CAP = 300
+
+
+class Brain:
+    def __init__(self, bin_name: str, fixture_dir: Path | None) -> None:
+        self.bin_name = bin_name
+        self.fixture_dir = fixture_dir
+        self.gets: list[str] = []
+        self.searches: list[str] = []
+        self.failed = False
+        self.fail_detail = ""
+
+    def get(self, slug: str) -> str | None:
+        self.gets.append(slug)
+        if self.fixture_dir is not None:
+            path = self.fixture_dir / "get" / f"{slug}.txt"
+            if not path.is_file():
+                return None
+            return path.read_text()
+        cp = subprocess.run(
+            [self.bin_name, "get", slug],
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+        if cp.returncode != 0:
+            return None
+        return cp.stdout
+
+    def search(self, query: str) -> list[dict]:
+        self.searches.append(query)
+        if self.fixture_dir is not None:
+            json_path = self.fixture_dir / "search.json"
+            if json_path.is_file():
+                try:
+                    data = json.loads(json_path.read_text())
+                except json.JSONDecodeError:
+                    self.failed = True
+                    self.fail_detail = "fixture search.json is not JSON"
+                    return []
+                if isinstance(data, list):
+                    return [x for x in data if isinstance(x, dict)]
+                self.failed = True
+                self.fail_detail = "fixture search.json is not a list"
+                return []
+            text_path = self.fixture_dir / "search.txt"
+            if text_path.is_file():
+                return [
+                    {"slug": m.group(1), "type": "", "title": "", "snippet": ""}
+                    for m in (
+                        SEARCH_SLUG_RE.match(line.strip())
+                        for line in text_path.read_text().splitlines()
+                    )
+                    if m
+                ]
+            return []
+        cp = subprocess.run(
+            [
+                self.bin_name,
+                "search",
+                query,
+                "--type",
+                "decision",
+                "--type",
+                "design",
+                "--type",
+                "preference",
+                "--limit",
+                str(SEARCH_LIMIT),
+                "--json",
+            ],
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+        if cp.returncode != 0:
+            self.failed = True
+            self.fail_detail = (cp.stderr or cp.stdout or "brain search failed").strip()
+            return []
+        try:
+            data = json.loads(cp.stdout or "[]")
+        except json.JSONDecodeError:
+            self.failed = True
+            self.fail_detail = "brain search --json is not JSON"
+            return []
+        if isinstance(data, dict) and data.get("error"):
+            self.failed = True
+            self.fail_detail = str(data.get("error"))
+            return []
+        if not isinstance(data, list):
+            self.failed = True
+            self.fail_detail = "brain search --json is not a list"
+            return []
+        return [x for x in data if isinstance(x, dict)]
+
+
+def goal_excerpt(body: str) -> str:
+    m = GOAL_RE.search(body)
+    if not m:
+        return ""
+    return " ".join(m.group(1).split())
+
+
+def build_query(title: str, body: str) -> str:
+    parts = [title.strip(), goal_excerpt(body)]
+    q = " ".join(p for p in parts if p)
+    if len(q) > QUERY_CAP:
+        q = q[:QUERY_CAP].rsplit(" ", 1)[0]
+    return q or title.strip() or "kanban card"
+
+
+def apply_invariants(
+    got_slugs: set[str], kind: str, column: str, body: str
+) -> list[dict]:
+    hits: list[dict] = []
+    kind_l = (kind or "").strip().lower()
+    column_l = (column or "").strip().lower()
+    for inv in INVARIANTS:
+        slug = inv["slug"]
+        if slug not in got_slugs:
+            continue
+        if kind_l and kind_l in inv.get("kind_forbid", ()):
+            hits.append({"slug": slug, "reason": inv["reason"]})
+            continue
+        if column_l and column_l in inv.get("column_forbid", ()):
+            hits.append({"slug": slug, "reason": inv["reason"]})
+            continue
+        body_re = inv.get("body_re")
+        if body_re and re.search(body_re, body):
+            hits.append({"slug": slug, "reason": inv["reason"]})
+    return hits
+
+
+def stamp_block(verdict: str, slugs: list[str], when: str) -> str:
+    slug_line = ", ".join(slugs) if slugs else "none"
+    return (
+        f"## DECISION-CHECK\n"
+        f"date: {when}\n"
+        f"verdict: {verdict}\n"
+        f"slugs: {slug_line}\n"
+    )
+
+
+def inject_stamp(body: str, stamp: str) -> str:
+    stripped = DECISION_CHECK_RE.sub("", body).rstrip() + "\n\n"
+    return stripped + stamp
+
+
+def assemble(
+    title: str,
+    body: str,
+    kind: str,
+    column: str,
+    brain: Brain,
+) -> dict:
+    query = build_query(title, body)
+    hits = brain.search(query)
+    if brain.failed:
+        return {
+            "ok": False,
+            "verdict": "error",
+            "slugs": [],
+            "conflicts": [],
+            "records": [],
+            "query": query,
+            "error": brain.fail_detail,
+            "stamp": "",
+            "search_is_membership": False,
+        }
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for hit in hits:
+        slug = str(hit.get("slug") or "").strip()
+        rec_type = str(hit.get("type") or "").strip().lower()
+        if not slug or slug in seen:
+            continue
+        if rec_type and rec_type not in TYPES:
+            continue
+        seen.add(slug)
+        candidates.append(slug)
+        if len(candidates) >= POINT_GET_CAP:
+            break
+
+    records: list[dict] = []
+    got_slugs: list[str] = []
+    for slug in candidates:
+        raw = brain.get(slug)
+        rec = {"slug": slug, "got": raw is not None}
+        if raw is not None:
+            rec["gist"] = "\n".join(raw.splitlines()[:24])
+            got_slugs.append(slug)
+        records.append(rec)
+
+    conflicts = apply_invariants(set(got_slugs), kind, column, body)
+    if conflicts:
+        verdict = "conflict"
+    elif got_slugs:
+        verdict = "honor"
+    else:
+        verdict = "clear"
+
+    when = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    stamp = stamp_block(verdict, got_slugs, when)
+    return {
+        "ok": verdict != "conflict",
+        "verdict": verdict,
+        "slugs": got_slugs,
+        "conflicts": conflicts,
+        "records": records,
+        "query": query,
+        "error": "",
+        "stamp": stamp,
+        "search_is_membership": False,
+        "point_gets": brain.gets,
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--title", default="", help="Card title")
+    ap.add_argument("--kind", default="pr")
+    ap.add_argument("--column", default="todo")
+    ap.add_argument("--inject", action="store_true", help="Print body + stamp")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument(
+        "--fixture-dir",
+        help="Offline brain: get/<slug>.txt and search.json (no live node)",
+    )
+    ap.add_argument(
+        "--brain",
+        default=os.environ.get("BRAIN_BIN", "brain"),
+        help="brain CLI (ignored when --fixture-dir is set)",
+    )
+    args = ap.parse_args(argv)
+
+    body = sys.stdin.read()
+    fixture = Path(args.fixture_dir) if args.fixture_dir else None
+    if fixture is None:
+        env_fix = os.environ.get("LAST_STACK_DECISION_FIXTURE", "")
+        if env_fix:
+            fixture = Path(env_fix)
+    brain = Brain(args.brain, fixture)
+    pack = assemble(args.title, body, args.kind, args.column, brain)
+
+    if pack["verdict"] == "error":
+        print(f"last-stack-kanban-decision-check: {pack['error']}", file=sys.stderr)
+        if args.json:
+            print(json.dumps(pack, indent=2))
+        return 1
+
+    if pack["verdict"] == "conflict":
+        for c in pack["conflicts"]:
+            print(
+                f"last-stack-kanban-decision-check: conflict {c['slug']}: {c['reason']}",
+                file=sys.stderr,
+            )
+        if args.json:
+            print(json.dumps(pack, indent=2))
+        elif args.inject:
+            # Do not print a body on conflict — callers must not file it.
+            pass
+        else:
+            sys.stdout.write(pack["stamp"])
+        return 2
+
+    if args.inject:
+        sys.stdout.write(inject_stamp(body, pack["stamp"]))
+    elif args.json:
+        print(json.dumps(pack, indent=2))
+    else:
+        sys.stdout.write(pack["stamp"])
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

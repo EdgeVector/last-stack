@@ -170,6 +170,13 @@ Kind:pr cards in default/todo need a substantive brief (prefer `## GOAL` +
 `## END STATE`); empty shells are rejected by fkanban and must not be parked as
 `needs_human`. Before claiming "runnable," run `kanban pickup explain <slug>`.
 
+**Won't-undo — 2026-08-20:** a new Kind:pr card must not contradict a settled
+brain decision, design, or preference. File Kind:pr with
+`last-stack-kanban-file-pr` (it runs `last-stack-kanban-decision-check` and
+stamps `## DECISION-CHECK`). If the stamp lists slugs, point-get them and
+honor them in the brief, or do not file. Do not pass `--skip-decision-check`.
+Raw `kanban add` for Kind:pr skips this gate.
+
 ### kanban CLI
 
 - `kanban list --column todo --json` / `kanban search "<text>"` /

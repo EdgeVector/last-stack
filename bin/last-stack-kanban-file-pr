@@ -25,9 +25,12 @@
 #   --board BOARD           default: default
 #   --ensure-milestone      create the milestone if it is missing
 #   --board-cli PATH        kanban/fkanban binary (tests)
+#   --decision-fixture DIR  offline brain for last-stack-kanban-decision-check
+#   --skip-decision-check   tests/operator only — generators must not pass this
 #   --dry-run
 #
 # Exit: 0 on file, 2 on usage/validation, 1 on board write failure.
+# A decision-check conflict is exit 2 and does not write the card.
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
@@ -58,6 +61,8 @@ board="default"
 ensure_ms=0
 board_cli=""
 dry=0
+decision_fixture=""
+skip_decision_check=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -75,6 +80,8 @@ while [ "$#" -gt 0 ]; do
     --board) board="${2:-}"; shift 2 ;;
     --ensure-milestone) ensure_ms=1; shift ;;
     --board-cli) board_cli="${2:-}"; shift 2 ;;
+    --decision-fixture) decision_fixture="${2:-}"; shift 2 ;;
+    --skip-decision-check) skip_decision_check=1; shift ;;
     --dry-run) dry=1; shift ;;
     -h|--help) usage ;;
     *)
@@ -124,6 +131,37 @@ printf '%s\n' "$body" | grep -Eq '(^|[[:space:]])##[[:space:]]*END STATE\b|^END 
 header_repo="$(printf '%s\n' "$body" | sed -n -E 's/^Repo:[[:space:]]*//p' | head -1 | tr -d '\r')"
 if [ -n "$header_repo" ] && [ "$header_repo" != "$repo" ]; then
   die "body Repo: '$header_repo' does not match --repo $repo"
+fi
+
+# Settled design/decision/preference check. Fail closed: do not file a card
+# that contradicts a retrieved record, and do not file if the check cannot run.
+if [ "$skip_decision_check" -ne 1 ]; then
+  check_bin="$ROOT/bin/last-stack-kanban-decision-check"
+  [ -x "$check_bin" ] || die "missing $check_bin"
+  check_args=(--title "$title" --kind "$kind" --column "$column" --inject)
+  if [ -n "$decision_fixture" ]; then
+    check_args+=(--fixture-dir "$decision_fixture")
+  elif [ -n "${LAST_STACK_DECISION_FIXTURE:-}" ]; then
+    check_args+=(--fixture-dir "$LAST_STACK_DECISION_FIXTURE")
+  fi
+  check_err="$(mktemp "${TMPDIR:-/tmp}/last-stack-decision-check.XXXXXX")"
+  set +e
+  injected="$(printf '%s' "$body" | "$check_bin" "${check_args[@]}" 2>"$check_err")"
+  check_rc=$?
+  set -e
+  if [ "$check_rc" -ne 0 ]; then
+    if [ -s "$check_err" ]; then
+      cat "$check_err" >&2
+    fi
+    rm -f "$check_err"
+    if [ "$check_rc" -eq 2 ]; then
+      die "decision-check refused this card (conflicts with a settled brain record)"
+    fi
+    die "decision-check failed (exit $check_rc) — not filing"
+  fi
+  rm -f "$check_err"
+  [ -n "$injected" ] || die "decision-check returned an empty body"
+  body="$injected"
 fi
 
 is_live_ms_state() {

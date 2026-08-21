@@ -44,6 +44,17 @@ Quick rules of thumb:
 3. **In-flight PR linkage** → `doing` + `--pr-url`/`--branch`.
 4. **Non-PR trackers** → `Kind: tracker|validation|meta` + `DONE-WHEN:`; still need clean `Repo:`/`Base:` headers; do not force them into the Kind:pr helper path.
 
+## Settled decisions before file (won't-undo — 2026-08-20)
+
+A new Kind:pr card must not contradict a settled brain record.
+
+- **Producer:** `last-stack-kanban-file-pr` runs `last-stack-kanban-decision-check` and stamps `## DECISION-CHECK`. A mechanical conflict exits 2 and does not write the card.
+- **Scope:** brain `type: decision`, `type: design`, and `type: preference`. Search is candidate slugs only. Each slug is point-got.
+- **Honor:** if the stamp lists slugs, read those records (`brain get <slug>`). Rewrite the brief so it follows them, or do not file.
+- **Do not** pass `--skip-decision-check` from a generator or routine. That flag is tests/operator only.
+- Raw `kanban add` / MCP `fkanban_add` for Kind:pr skips this gate. Use `last-stack-kanban-file-pr`.
+- Metadata-only upserts (`--pr-url`, `--branch` on a live card) are not a create. Do not re-run the helper for those.
+
 `--force` waives the gate for operator override only — unattended routines and
 generator agents must not use it to hide unattached or deferred work.
 
