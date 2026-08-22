@@ -85,6 +85,13 @@ case "$cmd" in
   ping) echo ok; exit 0 ;;
   publish) echo "published $(basename "$2" .json)"; exit 0 ;;
   run)
+    shift
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --input) printf '%s\n' "$2" >"${LOOM_CAPTURE_INPUT:?}"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
     cat <<'VIEW'
 lx-ww-1
 lx-ww-1
@@ -101,8 +108,10 @@ SH
 chmod 755 "$tmp/bin/loom"
 export HOME="$tmp"
 export PATH="$tmp/bin:/usr/bin:/bin"
+export WHATS_WRONG_SNAPSHOT_FILE="$tmp/snap.json"
 export LAST_STACK_WHATS_WRONG_STAMP="$tmp/stamp3.json"
 export LOOM_WHATS_WRONG_KEY="whats-wrong-test-key"
+export LOOM_CAPTURE_INPUT="$tmp/loom-input.json"
 set +e
 mout="$("$BIN" --json --quiet --no-heal)"
 mrc=$?
@@ -111,6 +120,29 @@ set -e
 printf '%s\n' "$mout" | grep -q '"outcome":"ok"' || fail "json missing outcome=ok: $mout"
 printf '%s\n' "$mout" | grep -q 'exceptions=2' || fail "json missing detail: $mout"
 printf '%s\n' "$mout" | grep -q 'ROUTINE_RESULT' || fail "missing ROUTINE_RESULT: $mout"
+python3 - "$LOOM_CAPTURE_INPUT" <<'PY' || fail "normal loom input lacks snapshot items"
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as fh:
+    doc = json.load(fh)
+assert doc.get("count") == 2, doc
+assert [row.get("id") for row in doc.get("items", [])] == [
+    "ship.why-stopped-loom",
+    "machine.disk-lastdb",
+], doc
+PY
+
+export WHATS_WRONG_SNAPSHOT_FILE="$empty"
+export LAST_STACK_WHATS_WRONG_STAMP="$tmp/stamp-empty-loom.json"
+export LOOM_WHATS_WRONG_KEY="whats-wrong-empty-test-key"
+export LOOM_CAPTURE_INPUT="$tmp/loom-empty-input.json"
+"$BIN" --json --quiet --no-heal >/dev/null
+python3 - "$LOOM_CAPTURE_INPUT" <<'PY' || fail "empty loom input lacks an empty items array"
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as fh:
+    doc = json.load(fh)
+assert doc.get("count") == 0, doc
+assert doc.get("items") == [], doc
+PY
 
 # --- hung loom child is SIGTERM'd; wrapper still emits ROUTINE_RESULT ---
 cat >"$tmp/bin/loom" <<'SH'
