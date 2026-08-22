@@ -219,7 +219,20 @@ fi
 if [ -z "$KEY" ]; then
   KEY="${LOOM_WHATS_WRONG_KEY:-whats-wrong-$(date -u +%Y%m%dT%H)}"
 fi
-input="$(python3 -c 'import json,os; print(json.dumps({"dashboard": os.environ.get("WHATS_WRONG_DASHBOARD") or "http://127.0.0.1:7733"}))')"
+listed_input="$(list_exceptions)" || {
+  log "snapshot failed"
+  write_stamp unavailable "" "snapshot-failed" "$KEY" "error"
+  exit 3
+}
+input="$(printf '%s\n' "$listed_input" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+print(json.dumps({
+    "dashboard": d.get("dashboard") or "http://127.0.0.1:7733",
+    "items": d.get("exceptions") or [],
+    "count": int(d.get("count") or 0),
+}, separators=(",", ":")))
+')"
 
 # Under routines GATE_TIMEOUT_CAP_MS (15m). Leave headroom for snapshot + trailer.
 TIMEOUT_SEC="${LAST_STACK_WHATS_WRONG_LOOM_TIMEOUT_SEC:-780}"

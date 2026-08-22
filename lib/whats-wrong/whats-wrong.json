@@ -1,6 +1,6 @@
 {
   "name": "whats-wrong",
-  "version": "1",
+  "version": "2",
   "start_at": "LIST",
   "max_depth": 2,
   "node_budget": 80,
@@ -8,8 +8,11 @@
     "type": "object",
     "properties": {
       "dashboard": { "type": "string" },
-      "max_items": { "type": "integer" }
-    }
+      "max_items": { "type": "integer" },
+      "items": { "type": "array", "items": { "type": "object" } },
+      "count": { "type": "integer" }
+    },
+    "required": ["items"]
   },
   "states": {
     "LIST": {
