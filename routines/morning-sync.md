@@ -39,14 +39,30 @@ Lead with a one-line restatement of the goal / top objective, then:
   NOT approval requests.
 - **§⚠️ "Genuinely needs you"** — ONLY the human set: prod cutovers / public
   launches (irreversible, outward), shipping NEW capability to END USERS,
-  brand/naming/tagline, business/legal, a genuinely-novel architecture fork. Plus
-  `open-decisions` escalations + the driving index's `needs-human` /
-  `blocked-needs-human` lines. Prefer brain **`human-gate-audit-latest`**
-  (written by routine `human-gate-audit`) as the pre-classified source:
-  use its **REAL_HUMAN** and **Waiting on recommendation** sections; ignore
-  holds already marked NOT_A_BLOCKER / cleared. Dedup by slug. Do NOT list
+  brand/naming/tagline, business/legal, a genuinely-novel architecture fork.
+  Use `open-decisions`, structured board holds, and
+  **`human-gate-audit-latest`** to discover candidates. Dedup by slug. Do NOT list
   dev-enable / security-review / design-first cards here — those are being
   driven. **If §⚠️ is empty, say so — that's the goal.**
+
+  **Candidate caches are not current truth.** `human-gate-audit-latest`,
+  `morning-sync-brief-latest`, and every dated reconciliation record are
+  discovery aids only. Never hard-code or require a dated human-gate state
+  slug. A rolling `latest` record is also only a cache.
+
+  Before you surface each candidate:
+
+  1. Point-read the live card.
+  2. Point-read its current Brain decision. Use `gate_slug`, an exact decision
+     slug in the block reason, or `brain ask "<card-slug> decision"` followed by
+     a point get.
+  3. Check the decision status, `hold-until`, dependencies, and fresh safe
+     evidence.
+  4. Suppress answered, resolved, deferred, unripe, and agent-first items.
+  5. Surface only an open, actionable choice that safe agent work cannot answer.
+
+  Give the background, options, risk, and a recommendation for each surviving
+  choice. A raw `needs_human` label or a prior digest line is never sufficient.
 - **§🧩 Needs scoping** — active programs with no card whose next move is concrete
   but un-carded.
 - **§🩺 Routine health** — from your scheduler's last-run timestamps + the
@@ -128,9 +144,9 @@ Lead with a one-line restatement of the goal / top objective, then:
   respond", or "too many concurrent reads" as busy-node backpressure: STOP,
   report `busy-node skipped morning-sync`, and do not run doctor/init or restart
   anything.
-- Snapshot with bounded reads: read `todo`, `doing`, and `review` as sequential
+- Snapshot with bounded reads: read `backlog`, `todo`, and `doing` as sequential
   `<board CLI> list --column <column> --json` calls; use `show` only for the one
-  card whose full body you need. Read the brain's goal note, driving index,
+  card whose full body you need. Read the current North Star and milestone state,
   `open-decisions`, `routine-heartbeats`, **`human-gate-audit-latest`**,
   **`ship-pipeline-gap-audit-latest`**, and **`routine-reds-recheck-latest`**
   (if present) as targeted records, one at a time.

@@ -136,6 +136,18 @@ waiting on Tom. Steps:
    If this list is empty, say so plainly — that's the goal, it means everything is
    being driven.
 
+   **Do not trust a snapshot as current state.** `open-decisions`,
+   `human-gate-audit-latest`, `morning-sync-brief-latest`, and dated
+   reconciliation records can discover candidates. None can prove that a
+   candidate is still actionable. Never hard-code or require a dated human-gate
+   state slug.
+
+   For each candidate, point-read the live card and its current Brain decision.
+   Check the decision status, `hold-until`, dependencies, and fresh safe evidence.
+   Remove answered, resolved, deferred, unripe, and agent-first items. Surface a
+   choice only when one current human action remains after those checks. Give the
+   background, options, risk, and a recommendation before the question.
+
    **§0 — What I'm driving (autonomously).** Before §1, a short list of the
    dev/security/design work program-driver promoted or generated toward the North
    Star this cycle — so Tom can SEE progress and redirect if any of it is wrong,

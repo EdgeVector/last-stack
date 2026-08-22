@@ -74,6 +74,7 @@ bash tests/last-stack-routines-kanban-pickup.sh
 bash tests/last-stack-kanban-validate-routine.sh
 bash tests/last-stack-pr-reaper-stale-open-heal.sh
 bash tests/last-stack-factory-hardening.sh
+bash tests/morning-sync-live-human-gate-reconcile.sh
 bash tests/last-stack-factory-health-backlog.sh
 bash tests/last-stack-launchagent-stable-path.sh
 bash tests/last-stack-todo-rank.sh
