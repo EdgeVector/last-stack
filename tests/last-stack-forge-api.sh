@@ -196,4 +196,29 @@ if [[ "$err_out" == *"mergeable="* ]]; then
   exit 1
 fi
 
-echo "ok last-stack-forge-api error-body + 2xx path + 405 mergeable partition"
+# --- Case 5: --jq takes the FILTER, never jq's own output flags ---
+# `--jq -r '.merged' <path>` used -r AS the filter and rejected the real filter
+# as an extra argument. Callers that hid stderr then read every Forgejo PR as
+# unmerged. Reject the flag by name instead of failing three arguments later.
+set +e
+jqflag_out="$("$API" --jq -r '.merged' repos/EdgeVector/fold/ok 2>&1 >/dev/null)"
+rc=$?
+set -e
+if [[ "$rc" -eq 0 ]]; then
+  echo "FAIL: expected non-zero exit for --jq -r" >&2
+  exit 1
+fi
+if [[ "$jqflag_out" != *"--jq takes the jq FILTER"* ]]; then
+  echo "FAIL: --jq -r did not name the mistake" >&2
+  echo "got: $jqflag_out" >&2
+  exit 1
+fi
+
+# A real filter must still work and print a scalar raw (no -r needed).
+jq_ok="$("$API" --jq '.ok' repos/EdgeVector/fold/ok)"
+if [[ "$jq_ok" != "true" ]]; then
+  echo "FAIL: --jq '.ok' should print bare true, got: $jq_ok" >&2
+  exit 1
+fi
+
+echo "ok last-stack-forge-api error-body + 2xx path + 405 mergeable partition + --jq flag guard"
