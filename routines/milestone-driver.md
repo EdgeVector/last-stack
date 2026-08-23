@@ -222,7 +222,10 @@ For each `work_queue` item with `action=decompose`, until SAFETY_CAP:
    raw `kanban add` for Kind:pr). The helper requires `--north-star` (this
    milestone's North Star) and `--milestone` (this milestone slug), a full
    `## GOAL` / `## END STATE` / STEPS / VERIFY brief, and a bare `Repo:` /
-   `Base:` / `Kind: pr` header. Unblocked → `--column todo`; dep-held →
+   `Base:` / `Kind: pr` header. It also runs `last-stack-kanban-decision-check`
+   and stamps `## DECISION-CHECK`. A conflict is a refuse — rewrite the brief
+   so it honors the named records, or skip that slice. Do not pass
+   `--skip-decision-check`. Unblocked → `--column todo`; dep-held →
    `--column backlog`. Do not file a Kind:pr that pickup would classify
    `unattached-outcome`.
 6. If you cannot name a concrete next slice without inventing product design:

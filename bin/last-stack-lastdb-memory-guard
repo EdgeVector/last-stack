@@ -36,27 +36,23 @@
 # phys_footprint is the number macOS jetsam and Activity Monitor use, and the
 # unit the 2026-07-14 panic happened in, so it is the correct gauge.
 #
-# It is NOT, however, safe to silently swap the enforced metric: that converts a
-# guard with 8.6x margin into one with 1.38x margin, on a process-killer aimed
-# at the primary brain. The metric and the limit must be chosen together, and
-# that choice is deliberately a human one.
+# Tom chose a 16 GiB limit on 2026-08-08. The guard therefore defaults to
+# phys_footprint and 16384 MiB as one policy. The old 12 GiB limit was below an
+# observed 12.25 GiB peak and could have caused a restart loop.
 #
-# So: this script MEASURES footprint always and LOGS both gauges every cycle,
-# but ENFORCES on $LASTDBD_GUARD_METRIC, which defaults to `rss` — today's
-# behaviour, unchanged. When footprint exceeds the limit while enforcing on rss,
-# we emit a `blind_spot` WARN rather than acting: the log tells the truth even
-# while the trigger stays conservative.
+# The script still measures and logs both gauges every cycle. Operators can set
+# LASTDBD_GUARD_METRIC=rss for a deliberate compatibility rollback, but that
+# restores the blind spot and emits a warning when footprint crosses the limit.
 #
 # Ground truth: brain
 #   lastdb-memory-guard-measures-rss-while-the-node-lives-in-phys-footprint-20260803
 # ---------------------------------------------------------------------------
 #
 # Tunables (env):
-#   LASTDBD_GUARD_METRIC     default `rss` — which gauge FIRES the restart.
+#   LASTDBD_GUARD_METRIC     default `footprint` — which gauge FIRES the restart.
 #                            `rss`       enforce on ps rss (legacy, 8.6x margin)
 #                            `footprint` enforce on phys_footprint (true usage)
-#   LASTDBD_RSS_LIMIT_MB     default 6144 — ceiling, in MB, for the enforced gauge
-#   LASTDBD_SWAP_WARN_MB     default 20480 — log warning if system swap used exceeds
+#   LASTDBD_RSS_LIMIT_MB     default 16384 — ceiling, in MB, for the enforced gauge
 #   LASTDBD_GUARD_COOLDOWN_SEC  default 120 — min seconds between restarts
 #   LASTDBD_PRIMARY_HOME     default $HOME/.lastdb
 
@@ -66,9 +62,8 @@ set -eu
 # fixtures, which shim these binaries) — the default is the hardened value.
 export PATH="${LASTDBD_GUARD_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}"
 
-GUARD_METRIC="${LASTDBD_GUARD_METRIC:-rss}"
-RSS_LIMIT_MB="${LASTDBD_RSS_LIMIT_MB:-6144}"
-SWAP_WARN_MB="${LASTDBD_SWAP_WARN_MB:-20480}"
+GUARD_METRIC="${LASTDBD_GUARD_METRIC:-footprint}"
+RSS_LIMIT_MB="${LASTDBD_RSS_LIMIT_MB:-16384}"
 COOLDOWN_SEC="${LASTDBD_GUARD_COOLDOWN_SEC:-120}"
 PRIMARY_HOME="${LASTDBD_PRIMARY_HOME:-$HOME/.lastdb}"
 LOG_DIR="${PRIMARY_HOME}/monitoring"
@@ -295,13 +290,9 @@ fi
 # and never again asserts a reassuring number that is 6.7x off.
 log "ok pid=$pid metric=$metric enforced_mb=$enforced limit_mb=$RSS_LIMIT_MB rss_mb=$rss footprint_mb=${footprint:-unavailable} peak_mb=${peak:-unavailable} swap_mb=${swap:-unknown}"
 
-if [ -n "${swap:-}" ] && [ "$swap" -ge "$SWAP_WARN_MB" ] 2>/dev/null; then
-  log "warn swap_used_mb=$swap (>= $SWAP_WARN_MB) primary_pid=$pid rss_mb=$rss footprint_mb=${footprint:-unavailable}"
-fi
-
-# The blind spot, stated out loud: real usage is over the ceiling but the
-# enforced gauge is not, so the guard is deliberately standing down. This is the
-# line to alert on while LASTDBD_GUARD_METRIC=rss.
+# Keep the old RSS policy explicit and visible when an operator selects it.
+# Swap remains in the status line for diagnosis, but swap use does not trigger
+# an alert or restart. On macOS, swap use alone is not a capacity signal.
 if [ "$metric" = "rss" ] && [ -n "$footprint" ] && [ "$footprint" -ge "$RSS_LIMIT_MB" ] 2>/dev/null; then
   log "WARN blind_spot pid=$pid footprint_mb=$footprint >= limit_mb=$RSS_LIMIT_MB but enforcing on rss_mb=$rss — guard will NOT fire; see LASTDBD_GUARD_METRIC"
 fi

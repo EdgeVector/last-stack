@@ -9,66 +9,41 @@ the primary `lastdbd` when it holds too much memory. It exists because of the
 Until this file existed the script lived only at
 `$LASTDB_HOME/monitoring/lastdbd-memory-guard.sh`, with no repo of record.
 
-## The two gauges
+## The gauges
 
-`ps -o rss=` is not the memory this process holds. On macOS it excludes
-compressed pages, and the daemon lives mostly there. Measured on the live
-primary, 2026-08-06:
+`ps -o rss=` does not show all memory that the process holds. On macOS, it
+excludes compressed pages. The daemon uses many compressed pages.
 
-| gauge | reading | % of the 12 GiB ceiling |
+| Gauge | Value on 2026-08-06 | Percent of the old 12 GiB limit |
 |---|---|---|
-| `ps -o rss=` (what the guard enforces) | 1.47 GiB | 12% |
+| `ps -o rss=` | 1.47 GiB | 12% |
 | `phys_footprint` | 8.75 GiB | 73% |
-| `phys_footprint` peak | 11.11 GiB | **92.5%** |
+| `phys_footprint` peak | 11.11 GiB | 92.5% |
 
-`phys_footprint` is the gauge macOS jetsam and Activity Monitor use, and the
-unit the 2026-07-14 panic happened in. The guard has been reading a number
-~6x smaller than the one that kills the machine, so it cannot fire until true
-footprint is ~6.7x the limit.
+macOS jetsam and Activity Monitor use `phys_footprint`. The 2026-07-14 failure
+also occurred in this unit. RSS was approximately six times smaller.
 
-The daemon already computes and publishes `phys_footprint_bytes` on
-`/api/status`, so the guard asks the node over its own socket rather than
-shelling out to `vmmap`/`footprint`, which need elevated privileges.
+The daemon publishes `phys_footprint_bytes` on `/api/status`. The guard reads
+this value from the Unix socket. It does not require elevated privileges.
 
-## Why the metric did not simply get swapped
+## The policy
 
-Enforcing on footprint takes the margin from ~8.6x to ~1.4x, on a
-process-killer aimed at the primary brain. **The metric and the limit have to
-be chosen together**, and that is a human call — see the kanban card
-`lastdb-memory-guard-metric-is-rss-not-footprint`.
+Tom chose `phys_footprint` and a 16 GiB limit on 2026-08-08. The metric and
+limit form one policy. See `decision-2026-08-08-memory-guard-footprint-16gib-limit`.
 
-So the script measures footprint always and logs both gauges every cycle, but
-enforces on `LASTDBD_GUARD_METRIC`, which defaults to `rss` — today's behaviour,
-unchanged. Every cycle now emits a line like:
+The guard defaults to that policy. It logs both gauges and the swap value on
+each cycle. A normal line has this form:
 
 ```
-ok pid=73208 metric=rss enforced_mb=1472 limit_mb=12288 rss_mb=1472 footprint_mb=8957 peak_mb=11372 swap_mb=4096
+ok pid=73208 metric=footprint enforced_mb=8957 limit_mb=16384 rss_mb=1472 footprint_mb=8957 peak_mb=12544 swap_mb=4096
 ```
 
-and when real usage crosses the ceiling while the enforced gauge has not:
+The guard does not alert only because swap use is high. macOS swap use alone
+does not show available memory capacity.
 
-```
-WARN blind_spot pid=… footprint_mb=12401 >= limit_mb=12288 but enforcing on rss_mb=1502 — guard will NOT fire
-```
-
-That WARN is the line to alert on while the policy is undecided, and the
-`footprint_mb` series is the evidence needed to pick a limit.
-
-## Choosing the policy
-
-One of:
-
-- **raise `LASTDBD_RSS_LIMIT_MB`** to fit a ~9 GiB steady state with headroom,
-  then set `LASTDBD_GUARD_METRIC=footprint`;
-- **lower the charged budgets** (`LASTDB_HASH_GROUP_WARM_BYTES=4 GiB` +
-  resident graph 2 GiB) so steady-state footprint drops, then enforce on
-  footprint at the current ceiling;
-- **accept restarts at the current ceiling** — enforce on footprint at
-  12,288 MB, ~1.4x over observed steady state.
-
-Whatever is chosen, the guard's threshold and the node's own
-`memory_budget.rs` projection should agree; today they disagree by 6.7x and
-nothing reconciles them.
+An operator can set `LASTDBD_GUARD_METRIC=rss` for a compatibility rollback.
+This setting restores the blind spot. The guard writes a `blind_spot` warning
+if footprint then exceeds the limit.
 
 ## Install
 
@@ -93,16 +68,14 @@ launchctl list | awk '$3 ~ /lastdbd-memory-guard/ { print $3 }'
 
 | env | default | meaning |
 |---|---|---|
-| `LASTDBD_GUARD_METRIC` | `rss` | which gauge fires the restart (`rss` \| `footprint`) |
-| `LASTDBD_RSS_LIMIT_MB` | `6144` | ceiling, in MB, for the enforced gauge |
-| `LASTDBD_SWAP_WARN_MB` | `20480` | log a warning above this much system swap |
+| `LASTDBD_GUARD_METRIC` | `footprint` | gauge that causes the restart (`rss` or `footprint`) |
+| `LASTDBD_RSS_LIMIT_MB` | `16384` | limit, in MiB, for the selected gauge |
 | `LASTDBD_GUARD_COOLDOWN_SEC` | `120` | minimum seconds between restarts |
 | `LASTDBD_PRIMARY_HOME` | `$HOME/.lastdb` | primary home; also locates the socket and logs |
 | `LASTDBD_PRIMARY_AGENT_LABEL` | discovered | LaunchAgent to kickstart after a kill |
 | `LASTDBD_GUARD_PATH` | hardened list | `PATH` the guard pins for itself under launchd |
 
-Under `LASTDBD_GUARD_METRIC=footprint` the guard **declines to enforce** for a
-cycle if the node is unreachable, rather than falling back to `rss` — a silent
-fallback would restore the 6.7x blind spot the policy was chosen to close.
+If the node is unavailable, the guard does not use RSS as a substitute for
+footprint. It writes a warning and takes no action for that cycle.
 
 Fixtures: `tests/last-stack-lastdb-memory-guard.sh` (in the required CI gate).

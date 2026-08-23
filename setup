@@ -2,14 +2,15 @@
 # The Last Stack — setup / installer
 #
 # Registers each skill in skills/ into whatever agent harnesses you have
-# installed (Claude Code, Codex, Factory/droid, OpenCode). Skills stay in this
-# repo; the harness gets a real directory with a symlinked SKILL.md, so a later
-# `git pull` updates every installed skill at once.
+# installed (Claude Code, Codex, Factory/droid, OpenCode, Antigravity CLI/agy).
+# Skills stay in this repo; the harness gets a real directory with a
+# symlinked SKILL.md, so a later `git pull` updates every installed skill at
+# once. Host-track last-stack post_install runs this with --host auto.
 #
 # Usage:
 #   ./setup                 # auto-detect harnesses, install where present
-#   ./setup --host claude   # claude | codex | factory | opencode | auto
-#   ./setup --local         # install into ./.claude/skills (project-vendored)
+#   ./setup --host claude   # claude | codex | factory | opencode | grok | agy | auto
+#   ./setup --local         # install into ./.claude/skills (this project only)
 #   ./setup --uninstall     # remove installed skill links (see bin/last-stack-uninstall)
 #
 # Re-running is idempotent.
@@ -250,28 +251,33 @@ install_claude_hooks() {
   echo "  claude permissions: brain MCP get/search/list/ask/put"
 }
 
-# ── Brain/Kanban wiring: usage instructions + Codex MCP registration ──────────
+# ── Harness instruction blocks (brain-kanban + ASD-STE100) ────────────────────
 # Managed block targets:
 #   Claude Code → ~/.claude/CLAUDE.md
 #   Codex       → ~/.codex/AGENTS.md
 #   Factory     → ~/.factory/AGENTS.md
 #   OpenCode    → ~/.config/opencode/AGENTS.md
+#   Grok        → ~/.grok/AGENTS.md
+#   Antigravity CLI (agy) → ~/.gemini/GEMINI.md and ~/.gemini/config/GEMINI.md
 BK_START='<!-- last-stack:brain-kanban:start (managed by last-stack setup; edits inside are overwritten) -->'
 BK_END='<!-- last-stack:brain-kanban:end -->'
+STE_START='<!-- last-stack:asd-ste100:start (managed by last-stack setup; edits inside are overwritten) -->'
+STE_END='<!-- last-stack:asd-ste100:end -->'
 
-upsert_brain_kanban_block() {
-  # $1 = harness instructions file (e.g. ~/.claude/CLAUDE.md, ~/.codex/AGENTS.md)
-  # $2 = label
+upsert_managed_md_block() {
+  # $1 file  $2 label  $3 src  $4 start  $5 end  $6 log-name
   local file="$1"
   local label="$2"
-  local src="$SOURCE_ROOT/instructions/brain-kanban.md"
+  local src="$3"
+  local start="$4"
+  local end="$5"
+  local logname="$6"
   [ -f "$src" ] || return 0
   mkdir -p "$(dirname "$file")"
   [ -f "$file" ] || : > "$file"
   local tmp
   tmp="$(mktemp)"
-  # Drop any previous managed block (and trailing blank lines), keep user content.
-  awk -v s="$BK_START" -v e="$BK_END" '
+  awk -v s="$start" -v e="$end" '
     $0 == s { ib = 1; next }
     $0 == e { ib = 0; next }
     !ib { lines[++n] = $0 }
@@ -282,12 +288,72 @@ upsert_brain_kanban_block() {
   ' "$file" > "$tmp"
   [ -s "$tmp" ] && echo "" >> "$tmp"
   {
-    printf '%s\n' "$BK_START"
+    printf '%s\n' "$start"
     cat "$src"
-    printf '%s\n' "$BK_END"
+    printf '%s\n' "$end"
   } >> "$tmp"
   mv "$tmp" "$file"
-  echo "  ${label} instructions: brain-kanban block -> $file"
+  echo "  ${label} instructions: ${logname} block -> $file"
+}
+
+upsert_brain_kanban_block() {
+  upsert_managed_md_block "$1" "$2" \
+    "$SOURCE_ROOT/instructions/brain-kanban.md" \
+    "$BK_START" "$BK_END" "brain-kanban"
+}
+
+upsert_asd_ste100_block() {
+  upsert_managed_md_block "$1" "$2" \
+    "$SOURCE_ROOT/instructions/asd-ste100.md" \
+    "$STE_START" "$STE_END" "asd-ste100"
+}
+
+strip_managed_md_block() {
+  # $1 file  $2 start  $3 end
+  local file="$1"
+  local start="$2"
+  local end="$3"
+  [ -f "$file" ] || return 0
+  local tmp
+  tmp="$(mktemp)"
+  awk -v s="$start" -v e="$end" '
+    $0 == s { ib = 1; next }
+    $0 == e { ib = 0; next }
+    !ib { lines[++n] = $0 }
+    END {
+      while (n > 0 && lines[n] == "") n--
+      for (i = 1; i <= n; i++) print lines[i]
+    }
+  ' "$file" > "$tmp"
+  mv "$tmp" "$file"
+}
+
+append_managed_md_block() {
+  # $1 file  $2 src  $3 start  $4 end
+  local file="$1"
+  local src="$2"
+  local start="$3"
+  local end="$4"
+  [ -f "$src" ] || return 0
+  {
+    echo ""
+    printf '%s\n' "$start"
+    cat "$src"
+    printf '%s\n' "$end"
+  } >> "$file"
+}
+
+upsert_harness_instruction_blocks() {
+  # Strip both blocks, then append in a stable order so re-runs are byte-identical.
+  local file="$1"
+  local label="$2"
+  mkdir -p "$(dirname "$file")"
+  [ -f "$file" ] || : > "$file"
+  strip_managed_md_block "$file" "$BK_START" "$BK_END"
+  strip_managed_md_block "$file" "$STE_START" "$STE_END"
+  append_managed_md_block "$file" "$SOURCE_ROOT/instructions/brain-kanban.md" "$BK_START" "$BK_END"
+  append_managed_md_block "$file" "$SOURCE_ROOT/instructions/asd-ste100.md" "$STE_START" "$STE_END"
+  echo "  ${label} instructions: brain-kanban + asd-ste100 -> $file"
 }
 
 ensure_codex_mcp_servers() {
@@ -337,6 +403,104 @@ ensure_codex_mcp_servers() {
     echo "  codex mcp: added ${added[*]} to $cfg"
   else
     echo "  codex mcp: brain + kanban already registered"
+  fi
+}
+
+agy_detected() {
+  command -v agy >/dev/null 2>&1 && return 0
+  [ -x "$HOME/.local/bin/agy" ] && return 0
+  [ -d "$HOME/.gemini/antigravity-cli" ] && return 0
+  return 1
+}
+
+ensure_agy_mcp_servers() {
+  # agy reads ~/.gemini/config/mcp_config.json. An empty file is invalid JSON
+  # and blocks later `agy mcp add`. Heal that, then upsert brain + kanban
+  # without clobbering other servers. Prefer brain-mcp (Claude-shaped) over
+  # `brain mcp` because that is the dedicated stdio entrypoint.
+  local cfg="$HOME/.gemini/config/mcp_config.json"
+  local mcp_path="$HOME/.bun/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  local added=()
+  mkdir -p "$(dirname "$cfg")"
+  if [ ! -s "$cfg" ]; then
+    printf '{}\n' > "$cfg"
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "  agy mcp: skipped settings write (jq not found)" >&2
+    return 0
+  fi
+  if ! jq -e . "$cfg" >/dev/null 2>&1; then
+    echo "  agy mcp: $cfg is not JSON; skipped" >&2
+    return 0
+  fi
+
+  local brain_cmd="" brain_args='[]'
+  if [ -x "$HOME/.local/bin/brain-mcp" ]; then
+    brain_cmd="$HOME/.local/bin/brain-mcp"
+  elif command -v brain-mcp >/dev/null 2>&1; then
+    brain_cmd="$(command -v brain-mcp)"
+  elif [ -x "$HOME/.local/bin/brain" ]; then
+    brain_cmd="$HOME/.local/bin/brain"
+    brain_args='["mcp"]'
+  elif command -v brain >/dev/null 2>&1; then
+    brain_cmd="$(command -v brain)"
+    brain_args='["mcp"]'
+  fi
+
+  local kanban_cmd=""
+  if [ -x "$HOME/.local/bin/kanban" ]; then
+    kanban_cmd="$HOME/.local/bin/kanban"
+  elif command -v kanban >/dev/null 2>&1; then
+    kanban_cmd="$(command -v kanban)"
+  fi
+
+  local tmp
+  tmp="$(mktemp)"
+  if [ -n "$brain_cmd" ]; then
+    if jq -e '.mcpServers.brain.command? // empty | length > 0' "$cfg" >/dev/null 2>&1; then
+      :
+    else
+      jq --arg cmd "$brain_cmd" --argjson args "$brain_args" --arg path "$mcp_path" '
+        .mcpServers //= {}
+        | .mcpServers.brain = {
+            command: $cmd,
+            disabled: false,
+            env: { PATH: $path }
+          }
+        | if ($args | length) > 0 then .mcpServers.brain.args = $args else . end
+      ' "$cfg" > "$tmp"
+      mv "$tmp" "$cfg"
+      added+=("brain")
+    fi
+  else
+    echo "  agy mcp: brain CLI not found; skipped its MCP registration" >&2
+  fi
+
+  tmp="$(mktemp)"
+  if [ -n "$kanban_cmd" ]; then
+    if jq -e '.mcpServers.kanban.command? // empty | length > 0' "$cfg" >/dev/null 2>&1; then
+      :
+    else
+      jq --arg cmd "$kanban_cmd" --arg path "$mcp_path" '
+        .mcpServers //= {}
+        | .mcpServers.kanban = {
+            command: $cmd,
+            args: ["mcp"],
+            disabled: false,
+            env: { PATH: $path }
+          }
+      ' "$cfg" > "$tmp"
+      mv "$tmp" "$cfg"
+      added+=("kanban")
+    fi
+  else
+    echo "  agy mcp: kanban CLI not found; skipped its MCP registration" >&2
+  fi
+
+  if [ ${#added[@]} -gt 0 ]; then
+    echo "  agy mcp: added ${added[*]} to $cfg"
+  else
+    echo "  agy mcp: brain + kanban already registered"
   fi
 }
 
@@ -589,36 +753,45 @@ if [ "$LOCAL_INSTALL" -eq 1 ]; then
 fi
 
 # ── Detect which harnesses are present ────────────────────────────────────────
-INSTALL_CLAUDE=0; INSTALL_CODEX=0; INSTALL_FACTORY=0; INSTALL_OPENCODE=0
+INSTALL_CLAUDE=0; INSTALL_CODEX=0; INSTALL_FACTORY=0; INSTALL_OPENCODE=0; INSTALL_GROK=0; INSTALL_AGY=0
 case "$HOST" in
   claude)   INSTALL_CLAUDE=1 ;;
   codex)    INSTALL_CODEX=1 ;;
   factory)  INSTALL_FACTORY=1 ;;
   opencode) INSTALL_OPENCODE=1 ;;
+  grok)     INSTALL_GROK=1 ;;
+  agy)      INSTALL_AGY=1 ;;
   auto)
     { command -v claude   >/dev/null 2>&1 || [ -d "$HOME/.claude" ]; } && INSTALL_CLAUDE=1
     { command -v codex    >/dev/null 2>&1 || [ -d "$HOME/.codex" ]; }  && INSTALL_CODEX=1
     { command -v droid    >/dev/null 2>&1 || [ -d "$HOME/.factory" ]; } && INSTALL_FACTORY=1
     { command -v opencode >/dev/null 2>&1 || [ -d "$HOME/.config/opencode" ]; } && INSTALL_OPENCODE=1
+    { command -v grok     >/dev/null 2>&1 || [ -d "$HOME/.grok" ]; } && INSTALL_GROK=1
+    agy_detected && INSTALL_AGY=1
     # Nothing detected → default to Claude Code.
-    if [ $((INSTALL_CLAUDE+INSTALL_CODEX+INSTALL_FACTORY+INSTALL_OPENCODE)) -eq 0 ]; then
+    if [ $((INSTALL_CLAUDE+INSTALL_CODEX+INSTALL_FACTORY+INSTALL_OPENCODE+INSTALL_GROK+INSTALL_AGY)) -eq 0 ]; then
       INSTALL_CLAUDE=1
     fi
     ;;
-  *) echo "unknown --host: $HOST (use claude|codex|factory|opencode|auto)" >&2; exit 2 ;;
+  *) echo "unknown --host: $HOST (use claude|codex|factory|opencode|grok|agy|auto)" >&2; exit 2 ;;
 esac
 
 echo "Installing The Last Stack (v$(cat "$SOURCE_ROOT/VERSION")) ..."
 [ "$INSTALL_CLAUDE"   -eq 1 ] && register_into "$HOME/.claude/skills"          "claude"
 [ "$INSTALL_CLAUDE"   -eq 1 ] && install_claude_hooks
-[ "$INSTALL_CLAUDE"   -eq 1 ] && upsert_brain_kanban_block "$HOME/.claude/CLAUDE.md" "claude"
+[ "$INSTALL_CLAUDE"   -eq 1 ] && upsert_harness_instruction_blocks "$HOME/.claude/CLAUDE.md" "claude"
 [ "$INSTALL_CODEX"    -eq 1 ] && register_into "$HOME/.codex/skills"           "codex"
-[ "$INSTALL_CODEX"    -eq 1 ] && upsert_brain_kanban_block "$HOME/.codex/AGENTS.md" "codex"
+[ "$INSTALL_CODEX"    -eq 1 ] && upsert_harness_instruction_blocks "$HOME/.codex/AGENTS.md" "codex"
 [ "$INSTALL_CODEX"    -eq 1 ] && ensure_codex_mcp_servers
 [ "$INSTALL_FACTORY"  -eq 1 ] && register_into "$HOME/.factory/skills"         "factory"
-[ "$INSTALL_FACTORY"  -eq 1 ] && upsert_brain_kanban_block "$HOME/.factory/AGENTS.md" "factory"
+[ "$INSTALL_FACTORY"  -eq 1 ] && upsert_harness_instruction_blocks "$HOME/.factory/AGENTS.md" "factory"
 [ "$INSTALL_OPENCODE" -eq 1 ] && register_into "$HOME/.config/opencode/skills" "opencode"
-[ "$INSTALL_OPENCODE" -eq 1 ] && upsert_brain_kanban_block "$HOME/.config/opencode/AGENTS.md" "opencode"
+[ "$INSTALL_OPENCODE" -eq 1 ] && upsert_harness_instruction_blocks "$HOME/.config/opencode/AGENTS.md" "opencode"
+[ "$INSTALL_GROK"     -eq 1 ] && upsert_harness_instruction_blocks "$HOME/.grok/AGENTS.md" "grok"
+[ "$INSTALL_AGY"      -eq 1 ] && register_into "$HOME/.gemini/config/skills"  "agy"
+[ "$INSTALL_AGY"      -eq 1 ] && upsert_harness_instruction_blocks "$HOME/.gemini/GEMINI.md" "agy"
+[ "$INSTALL_AGY"      -eq 1 ] && upsert_harness_instruction_blocks "$HOME/.gemini/config/GEMINI.md" "agy (config)"
+[ "$INSTALL_AGY"      -eq 1 ] && ensure_agy_mcp_servers
 install_host_track_shim
 install_routines_cli
 install_shared_checkout_guards
@@ -723,6 +896,7 @@ if [ -x "$guard" ]; then
   [ "$INSTALL_CODEX"    -eq 1 ] && guard_dirs+=("$HOME/.codex/skills")
   [ "$INSTALL_FACTORY"  -eq 1 ] && guard_dirs+=("$HOME/.factory/skills")
   [ "$INSTALL_OPENCODE" -eq 1 ] && guard_dirs+=("$HOME/.config/opencode/skills")
+  [ "$INSTALL_AGY"      -eq 1 ] && guard_dirs+=("$HOME/.gemini/config/skills")
   [ ${#guard_dirs[@]} -gt 0 ] && "$guard" --quiet "${guard_dirs[@]}" || true
 fi
 

@@ -12,7 +12,7 @@ top of [LastDB](https://thelastdb.com) and its two companion tools:
 The skills are written for agent harnesses that load
 [Agent Skills](https://docs.claude.com/en/docs/agents-and-tools/agent-skills)
 (a `SKILL.md` per skill, discovered by the agent and invoked by name) — e.g.
-Claude Code, Codex, Factory, OpenCode. They give an agent a consistent playbook
+Claude Code, Codex, Factory, OpenCode, Antigravity CLI (`agy`). They give an agent a consistent playbook
 for filing tasks, driving a single task to a merged pull request, waiting on PRs
 robustly, and closing out finished work.
 
@@ -39,9 +39,11 @@ git clone https://github.com/EdgeVector/last-stack ~/.last-stack && ~/.last-stac
 ```
 
 `setup` auto-detects which agent harnesses you have (Claude Code, Codex,
-Factory, OpenCode) and registers every skill into each one. The skills stay in
-the cloned repo; each harness gets a directory with a symlinked `SKILL.md`, so a
-later `git pull` updates every installed skill at once. It also installs the
+Factory, OpenCode, Antigravity CLI/`agy`) and registers every skill into each
+one. Host-track last-stack `post_install` runs this with `--host auto`. The
+skills stay in the cloned repo; each harness gets a directory with a
+symlinked `SKILL.md`, so a later `git pull` updates every installed skill at
+once. It also installs the
 companion `routines` CLI automatically. Starting scheduled agent work remains
 explicit: run `routines install-daemon` when you are ready to enable the fleet.
 
@@ -53,7 +55,7 @@ declines.
 Options:
 
 ```bash
-~/.last-stack/setup --host claude   # install for one harness only
+~/.last-stack/setup --host claude   # claude | codex | factory | opencode | agy | auto
 ~/.last-stack/setup --local         # vendor into ./.claude/skills (this project only)
 ~/.last-stack/setup --uninstall     # remove the registered skills
 ```
@@ -208,7 +210,7 @@ preserving project-specific rules where they belong.
 | **onecontext** | Search prior Codex sessions, with guarded Aline usage and a JSONL fallback when Aline is unavailable. |
 | **registry-rotator** | Generic engine for registry-backed scheduled routines: pick the most-overdue eligible entry, run its recipe, file cards, and stamp the registry log. |
 | **wait-merge** | Robustly wait for a GitHub PR to merge by interpreting PR *state*, not a watcher's exit code. |
-| **close-out** | The post-change loop: open a PR from a worktree, drive it to merged, file session papercuts, write a full brain report of what was done, file a follow-up card. |
+| **close-out** | The post-change loop: open a PR from a worktree, drive it to merged, file session papercuts, write a full brain report of what was done, update superseded brain records and stale kanban cards, file a follow-up card. |
 | **fix-it** | Find and land the permanent fix: producer-side class change, residue gone, original live signal rechecked. |
 | **last-stack-upgrade** | Update the stack in place (clean-only self-upgrade) and re-register the skills. |
 | **session-miner** | Generic engine for mining recent agent session transcripts with profiles for papercuts, incidents, owner-stated knowledge, tooling friction, and revenant-watch (settled-dead product truth reanimated; Brain-only). |
@@ -345,12 +347,18 @@ instructions/brain-kanban.md
                         as a managed block into each harness's global
                         instructions file (`~/.claude/CLAUDE.md`,
                         `~/.codex/AGENTS.md`, `~/.factory/AGENTS.md`,
-                        `~/.config/opencode/AGENTS.md`) and registers the
-                        brain/kanban MCP servers for Codex (with a PATH env so
-                        GUI-spawned servers can find bun); also records the
+                        `~/.config/opencode/AGENTS.md`, `~/.grok/AGENTS.md`,
+                        `~/.gemini/GEMINI.md`, and `~/.gemini/config/GEMINI.md`)
+                        and registers the brain/kanban MCP servers for Codex and
+                        agy (with a PATH env so GUI-spawned servers can find bun);
+                        also records the
                         creation-time default that new repos start in LastGit
                         while existing venue choices remain unchanged until
                         explicitly migrated
+instructions/asd-ste100.md
+                        ASD-STE100 writing rule (Tom, 2026-08-20). Setup
+                        upserts it next to the brain-kanban block so every
+                        harness agent writes conversation and documents in STE.
 routines/<name>.md      one parameterized scheduled-agent template per routine
 routines/README.md      how routines + skills compose; how to register them
 templates/routine-fleet/
@@ -384,8 +392,9 @@ The intended loop, end to end:
    card/blocker on fail.
 6. **Close out** (`close-out` skill). After any substantive change: PR from a
    worktree, drive to merged, file session papercuts (`brain papercut file`),
-   write a full *what was done* report to the brain (`brain`), and file any
-   follow-up as a card (`kanban`).
+   write a full *what was done* report to the brain (`brain`), update
+   superseded brain records and stale kanban cards, and file any follow-up as
+   a card (`kanban`).
 
 The two halves are deliberate: **the brain records why; the board records
 what's in flight.** Keep decisions in `brain` and active work in `kanban`, and

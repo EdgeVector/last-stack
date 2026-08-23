@@ -105,8 +105,10 @@ waiting on Tom. Steps:
 1. **Snapshot.** Read `todo`, `doing`, and `review` with sequential
    `kanban list --column <column> --json` calls (counts + card previews). Then
    read targeted brain records one at a time: `brain get active-programs`,
-   `brain get open-decisions --type reference`, and `brain get
-   routine-heartbeats --type reference`.
+   `brain get open-decisions --type reference`, `brain get
+   routine-heartbeats --type reference`, and `brain get
+   routine-reds-recheck-latest --type reference` (paste its table into §🩺
+   when present and newer than 36h).
 
 2. **§1 — Decisions that GENUINELY need you (keep it SHORT).** Per Tom's standing
    correction (`feedback_autonomous_drive_dev_not_gated`), most old "gates" are NOT
@@ -133,6 +135,18 @@ waiting on Tom. Steps:
    + options, and **waiting since** (mark `🔴 STALE` if > 7 days). Rank by leverage.
    If this list is empty, say so plainly — that's the goal, it means everything is
    being driven.
+
+   **Do not trust a snapshot as current state.** `open-decisions`,
+   `human-gate-audit-latest`, `morning-sync-brief-latest`, and dated
+   reconciliation records can discover candidates. None can prove that a
+   candidate is still actionable. Never hard-code or require a dated human-gate
+   state slug.
+
+   For each candidate, point-read the live card and its current Brain decision.
+   Check the decision status, `hold-until`, dependencies, and fresh safe evidence.
+   Remove answered, resolved, deferred, unripe, and agent-first items. Surface a
+   choice only when one current human action remains after those checks. Give the
+   background, options, risk, and a recommendation before the question.
 
    **§0 — What I'm driving (autonomously).** Before §1, a short list of the
    dev/security/design work program-driver promoted or generated toward the North
@@ -162,13 +176,17 @@ waiting on Tom. Steps:
    `groom-kanban-board`, `kanban-pickup`, `kanban-watch`, `program-rollup`,
    plus the generators. If `list_scheduled_tasks` is unavailable in a headless
    run, fall back to `routine-heartbeats` alone and say so.
+   Also `brain get routine-reds-recheck-latest --type reference` and paste its
+   table into §🩺 when it exists and is <36h old (Tom 2026-08-20: fleet reds
+   recheck belongs in morning-sync, not only a side chat).
 
 4b. **§3b — New releases — working well? (always include).** Distinct from §3
    (did a fire succeed) and §4 (ELI5 story). Of the things that *newly became
    true* in the last ~36h, is each actually true **on this machine right now**?
    Cap 5. Cheap live probes only. BRIEF stays read-only — do not heal.
 
-   Discover: brain closeouts for today+yesterday; the latest
+   Discover: brain closeouts for today+yesterday; **`routine-reds-recheck-latest`**
+   (point-get; fleet reds Tom asked to recheck); the latest
    `last-stack-fleet-performance` memory slice; `host-track status` `host_head`
    vs the closeout merge_oid. "CR merged" / "CI green" is not the probe.
    If feature-prove already wrote PASS today for the same claim, cite that.
@@ -249,6 +267,7 @@ Brief skeleton:
 
 ### 🩺 Routine health
 - <routine> last ran <when> — <ok | DID NOT RUN | error: …>
+- If `routine-reds-recheck-latest` exists: paste its table (working / pending / paused on purpose / still red).
 
 ### 🔬 New releases — working well?
 - <claim> — **working** · <probe you ran>

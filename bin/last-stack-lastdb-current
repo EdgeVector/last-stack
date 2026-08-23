@@ -123,7 +123,7 @@ rewrite_launch_agent_plist() {
   local tmp
 
   [ -f "$plist" ] || die "launch agent plist not found: $plist"
-  tmp="$(mktemp)"
+  tmp="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack.XXXXXX")"
   python3 - "$plist" "$tmp" "$current" "$current_lastdbd" <<'PY'
 import plistlib
 import sys

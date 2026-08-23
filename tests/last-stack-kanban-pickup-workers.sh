@@ -18,6 +18,7 @@ grep -q 'last-stack-kanban-pickup-gate' "$bootstrap"
 grep -q 'Zero-LLM ready gate' "$bootstrap"
 grep -q 'ready=0' "$bootstrap"
 grep -q 'gate_rc' "$bootstrap"
+grep -q 'gateProceeded' "$bootstrap"
 grep -q "$prompt" "$bootstrap"
 grep -q 'routine-read-failed no_card_claimed' "$bootstrap"
 
@@ -35,6 +36,7 @@ do
   grep -q 'gate_command =' "$tmp/registry/$id.toml"
   grep -q 'last-stack-kanban-pickup-gate' "$tmp/registry/$id.toml"
   grep -q 'freshness bootstrap' "$tmp/registry/$id.toml"
+  grep -q 'timeout_min = 180' "$tmp/registry/$id.toml"
   grep -q 'REPLACE' "$tmp/registry/$id.toml" && {
     echo "pickup worker $id still contains REPLACE" >&2
     exit 1
@@ -97,6 +99,7 @@ fi
 dry="$("$BIN" --workers 4 --registry-dir "$tmp/dry-registry" --prompt-path "$prompt" --bootstrap-path "$tmp/dry-bootstrap.md" --dry-run)"
 grep -q 'dry-bootstrap.md' <<<"$dry"
 grep -q 'last-stack-routine-read" kanban-pickup' <<<"$dry"
+grep -q 'gateProceeded' <<<"$dry"
 grep -q 'last-stack-fkanban-pickup-w4.toml' <<<"$dry"
 grep -q 'id = "last-stack-fkanban-pickup-w4"' <<<"$dry"
 grep -q 'gate_command' <<<"$dry"

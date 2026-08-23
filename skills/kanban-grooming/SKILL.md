@@ -1,6 +1,6 @@
 ---
 name: kanban-grooming
-description: Use when auditing or grooming Kanban board health: dependency-stub reconciliation, stale generated blockers, malformed Repo/Base/Kind headers, stale review/doing placement, superseded trackers, pickup-ready counts, unblock accounting, or human-gate classification. For the full three-bucket needs_human audit (REAL_HUMAN / NOT_A_BLOCKER / NEEDS_RECOMMENDATION), prefer routine human-gate-audit. Triage-only; never ships feature code.
+description: "Use when auditing or grooming Kanban board health: dependency-stub reconciliation, stale generated blockers, malformed Repo/Base/Kind headers, stale review/doing placement, superseded trackers, pickup-ready counts, unblock accounting, or human-gate classification. For the full three-bucket needs_human audit (REAL_HUMAN / NOT_A_BLOCKER / NEEDS_RECOMMENDATION), prefer routine human-gate-audit. Triage-only; never ships feature code."
 ---
 
 ## NO REVIEW COLUMN (Tom 2026-07-16 — won't-undo)

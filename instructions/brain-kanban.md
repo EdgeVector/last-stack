@@ -101,8 +101,11 @@ shell-visible CLI and daemon binary agree. The helper never restarts/kills
 - `brain append <slug> --type <t>` — grow a big record's body (also stdin);
   never get→edit→put a large record (get windows at ~40K chars, a re-put
   truncates what you didn't see).
-- Do NOT create `type: decision` records — that path is broken; append
-  decisions to the `decisions-log` reference record instead.
+- Write a settled call as its own `type: decision` record (`brain put` with
+  `type: decision` and real `program` / `gate_slug` / `decided_by` /
+  `decided_on` columns). Do NOT append to the archived `decisions-log`
+  monolith. That path retired 2026-07-06
+  (`decision-2026-07-06-decisions-log-migrated-to-decision-type`).
 
 ### ALWAYS file papercuts — the default is FILE, not judge
 
@@ -166,6 +169,13 @@ and `last-stack-milestone-driver`. Milestone default driver is
 Kind:pr cards in default/todo need a substantive brief (prefer `## GOAL` +
 `## END STATE`); empty shells are rejected by fkanban and must not be parked as
 `needs_human`. Before claiming "runnable," run `kanban pickup explain <slug>`.
+
+**Won't-undo — 2026-08-20:** a new Kind:pr card must not contradict a settled
+brain decision, design, or preference. File Kind:pr with
+`last-stack-kanban-file-pr` (it runs `last-stack-kanban-decision-check` and
+stamps `## DECISION-CHECK`). If the stamp lists slugs, point-get them and
+honor them in the brief, or do not file. Do not pass `--skip-decision-check`.
+Raw `kanban add` for Kind:pr skips this gate.
 
 ### kanban CLI
 

@@ -186,13 +186,25 @@ continue — do not fail the whole run.
    A positive open-file hit still protects that candidate. These dirs are APFS
    clones: report reclaim as the `df` delta, never the `du` sum. Heartbeat
    token: `backups_pruned=<n>`.
-4b. **Stale LastDB scratch copies.** Delete: `~/.lastdb-test-copies/*` with
-   mtime older than 48h (ALWAYS keep `flip-records*` and anything matching
-   `pin-*`/`keep-*`); `~/lastdb-ephemeral-*` older than 48h;
-   `~/.lastdb.broken-*` older than 7 days. Same guardrail per candidate. If a
-   copy contains a top-level `*-REPORT.md`/`VALIDATE-REPORT.md`, copy that file
-   into `~/.lastdb-test-copies/flip-records/` before deleting the tree.
-   Heartbeat token: `lastdb_copies_pruned=<n>`.
+4b. **Stale LastDB scratch copies (helper — never raw `rm`).** Run:
+   ```bash
+   "$last_stack/bin/last-stack-scratch-reclaim" --execute
+   ```
+   The helper encodes the whole 4b contract: scope
+   (`~/.lastdb-test-copies/*` >48h, `~/lastdb-ephemeral-*` >48h,
+   `~/.lastdb.broken-*` >7d), the keep names (`flip-records*`, `pin-*`,
+   `keep-*`), the per-candidate guardrail (real dir, realpath outside
+   `~/.lastdb`, empty `lsof +D`, not named in a doing card — board
+   unreadable fails CLOSED), and the `*-REPORT.md` salvage into
+   `flip-records/` before deletion. Do NOT issue `rm -rf` for these paths
+   yourself: the managed execution policy rejects agent-issued `rm -rf`
+   command lines, which is exactly why audited candidates sat undeleted for
+   days (papercut-disk-reclaim-deletion-policy-blocks-approved-candidates).
+   Map the helper's `scratch_reclaimed=<n>` to the heartbeat token
+   `lastdb_copies_pruned=<n>`; carry `scratch_delete_failed` /
+   `scratch_board_unavailable` / `scratch_lsof_unavailable` into the
+   heartbeat unchanged when present — a block is an `error`, not
+   `ok reclaimed_gb=0`.
 5. **Disk floor.** If free space < `<your floor, e.g. ~30 GB>`, proactively purge
    the largest reclaimable build-cache dir with an **atomic swap** so an active
    build doesn't see a half-deleted tree: `mv target target.PURGE` → recreate an

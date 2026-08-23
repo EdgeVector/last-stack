@@ -31,8 +31,8 @@ grep -q '\.codex/skills/lastdb-safe-upgrade' "$skill_md" || {
 # bash -n on driver
 bash -n "$driver"
 
-grep -q 'DEFAULT_LASTDBD_RSS_LIMIT_MB="${LASTDBD_DEFAULT_RSS_LIMIT_MB:-12288}"' "$driver" || {
-  echo "FAIL: safe-upgrade driver must default the resident primary RSS limit to 12288 MiB" >&2
+grep -q 'DEFAULT_LASTDBD_RSS_LIMIT_MB="${LASTDBD_DEFAULT_RSS_LIMIT_MB:-16384}"' "$driver" || {
+  echo "FAIL: safe-upgrade driver must default the resident primary memory limit to 16384 MiB" >&2
   exit 1
 }
 grep -q 'ensure_primary_launchd_rss_limit' "$driver" || {

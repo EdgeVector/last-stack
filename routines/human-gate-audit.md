@@ -127,6 +127,17 @@ Also include cards whose body still has a top-level `NEEDS-HUMAN:` /
 
 For each hold, assign **exactly one** bucket A/B/C with a one-line why.
 
+The prior audit and every dated reconciliation record are candidate caches,
+not current truth. Never hard-code or require a dated human-gate state slug.
+
+Before bucket A, point-read the live card and the current Brain decision. Use
+`gate_slug`, an exact decision slug in the block reason, or a targeted Brain
+ask followed by a point get. Check the decision status, `hold-until`,
+dependencies, and fresh safe evidence.
+
+An answered decision, an active hold, an unripe action, or an agent-first check
+cannot enter REAL_HUMAN. Record its current disposition in the digest instead.
+
 Heuristics (prefer proof over labels):
 
 | Signal | Bucket |
@@ -184,8 +195,8 @@ Upsert reference record `human-gate-audit-latest` (or append to existing):
 - `child` → parent `slug`
 ```
 
-`morning-sync` and humans should read this first for "what do I actually need
-to decide?"
+`morning-sync` can use this digest to discover candidates. It must reconcile
+each candidate against live card and decision state before it asks Tom.
 
 ### 5. Heartbeat
 

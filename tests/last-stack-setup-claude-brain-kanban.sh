@@ -29,6 +29,8 @@ printf '## My own notes\nkeep me\n' > "$claude_md"
 # ── CLAUDE.md: managed block present, user content preserved ──────────────────
 grep -q 'keep me' "$claude_md" || fail "user CLAUDE.md content was clobbered"
 grep -q 'last-stack:brain-kanban:start' "$claude_md" || fail "managed block missing from CLAUDE.md"
+grep -q 'last-stack:asd-ste100:start' "$claude_md" || fail "asd-ste100 block missing from CLAUDE.md"
+grep -q 'Write to Tom in ASD-STE100' "$claude_md" || fail "ASD-STE100 rule missing from CLAUDE.md"
 grep -q 'New repository venue default: LastGit' "$claude_md" \
   || fail "LastGit new-repo default missing from CLAUDE.md"
 grep -q 'brain ask' "$claude_md" || fail "CLI guidance missing from managed block"
@@ -38,14 +40,16 @@ grep -q 'lastdb status' "$claude_md" || fail "lastdb status health check missing
 if grep -q 'TCP-only' "$claude_md"; then
   fail "managed block still calls doctor TCP-only; use lastdb status / kanban ping"
 fi
-grep -q 'claude instructions: brain-kanban block' "$tmp/setup1.out" \
-  || fail "setup did not log claude brain-kanban install"
+grep -q 'claude instructions: brain-kanban + asd-ste100' "$tmp/setup1.out" \
+  || fail "setup did not log claude brain-kanban + asd-ste100 install"
 
 # ── Idempotence: re-run changes nothing, block appears exactly once ───────────
 cp "$claude_md" "$tmp/claude.before"
 "$ROOT/setup" --host claude > /dev/null 2>&1 || fail "second setup run exited non-zero"
 [ "$(grep -c 'last-stack:brain-kanban:start' "$claude_md")" -eq 1 ] \
   || fail "managed block duplicated on re-run"
+[ "$(grep -c 'last-stack:asd-ste100:start' "$claude_md")" -eq 1 ] \
+  || fail "asd-ste100 block duplicated on re-run"
 cmp -s "$claude_md" "$tmp/claude.before" || fail "CLAUDE.md changed on re-run"
 
 # ── Uninstall removes the managed block but keeps user content ────────────────
@@ -53,6 +57,9 @@ cmp -s "$claude_md" "$tmp/claude.before" || fail "CLAUDE.md changed on re-run"
 grep -q 'keep me' "$claude_md" || fail "uninstall clobbered user CLAUDE.md content"
 if grep -q 'last-stack:brain-kanban:start' "$claude_md"; then
   fail "uninstall left the managed block in CLAUDE.md"
+fi
+if grep -q 'last-stack:asd-ste100:start' "$claude_md"; then
+  fail "uninstall left the asd-ste100 block in CLAUDE.md"
 fi
 
 echo "ok: setup wires claude brain/kanban instructions idempotently"

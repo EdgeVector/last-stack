@@ -16,7 +16,7 @@ paths=(
   templates
 )
 
-tmp="$(mktemp)"
+tmp="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT
 
 rg -n --hidden --glob '!skills/fkanban-card-authoring/**' \

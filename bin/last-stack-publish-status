@@ -106,8 +106,8 @@ last_stack_build_health_fields() {
   fi
 
   upgrade_bin="$install_root/bin/last-stack-self-upgrade"
-  tmp_out="$(mktemp)"
-  tmp_err="$(mktemp)"
+  tmp_out="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack.XXXXXX")"
+  tmp_err="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack.XXXXXX")"
   if [ -x "$upgrade_bin" ]; then
     # --check-only is non-mutating; exit code may be 0 even for would-upgrade.
     set +e
@@ -126,8 +126,8 @@ last_stack_build_health_fields() {
   rm -f "$tmp_out" "$tmp_err"
 
   skill_bin="$install_root/bin/last-stack-verify-skill-links"
-  tmp_out="$(mktemp)"
-  tmp_err="$(mktemp)"
+  tmp_out="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack.XXXXXX")"
+  tmp_err="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack.XXXXXX")"
   skill_checked="0"
   skill_detail=""
   skill_status="unknown"

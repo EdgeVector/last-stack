@@ -14,9 +14,11 @@ bash -n "$bin" || fail "bash -n"
 "$bin" --help >/dev/null 2>&1 && fail "bare --help as slug should be usage"
 "$bin" 2>/dev/null && fail "expected usage failure"
 
-mkdir -p "$tmp/bin"
+mkdir -p "$tmp/bin" "$tmp/empty-fixture"
 : >"$tmp/add.log"
 : >"$tmp/ms-add.log"
+: >"$tmp/add.body"
+export LAST_STACK_DECISION_FIXTURE="$tmp/empty-fixture"
 
 cat >"$tmp/bin/kanban" <<'SH'
 #!/usr/bin/env bash
@@ -53,7 +55,7 @@ case "$cmd" in
     ;;
   add)
     printf '%s\n' "$*" >>"${FILE_PR_ADD_LOG:-/tmp/add.log}"
-    cat >/dev/null
+    cat >"${FILE_PR_ADD_BODY:-/tmp/add.body}"
     exit 0
     ;;
   *)
@@ -66,6 +68,7 @@ chmod +x "$tmp/bin/kanban"
 
 export FILE_PR_ADD_LOG="$tmp/add.log"
 export FILE_PR_MS_ADD_LOG="$tmp/ms-add.log"
+export FILE_PR_ADD_BODY="$tmp/add.body"
 # Keep host kanban off PATH; always pass --board-cli so the helper cannot
 # pick up ~/.local/bin/kanban (the helper prepends that dir).
 export PATH="/usr/bin:/bin"
@@ -122,6 +125,9 @@ grep -q -- '--north-star ns-a' "$tmp/add.log" || fail "add log ns: $(cat "$tmp/a
 grep -q -- '--milestone ms-live' "$tmp/add.log" || fail "add log ms: $(cat "$tmp/add.log")"
 grep -q -- '--kind pr' "$tmp/add.log" || fail "add log kind: $(cat "$tmp/add.log")"
 grep -q -- '--column todo' "$tmp/add.log" || fail "add log column: $(cat "$tmp/add.log")"
+grep -q '## DECISION-CHECK' "$tmp/add.body" || fail "missing DECISION-CHECK stamp: $(cat "$tmp/add.body")"
+grep -q 'verdict: clear' "$tmp/add.body" || fail "empty fixture should stamp clear: $(cat "$tmp/add.body")"
+grep -q 'slugs: none' "$tmp/add.body" || fail "empty fixture slugs: $(cat "$tmp/add.body")"
 
 # missing milestone without --ensure-milestone
 if "$bin" new-card --board-cli "$fake_kanban" --title "x" --repo EdgeVector/last-stack \
@@ -146,6 +152,46 @@ grep -q 'new-card' "$tmp/add.log" || fail "ensure did not add card: $(cat "$tmp/
   | grep -q 'DRY' || fail "dry-run missing DRY"
 if [ -s "$tmp/add.log" ]; then
   fail "dry-run wrote add: $(cat "$tmp/add.log")"
+fi
+
+# conflict: retrieved no-review-column + GOAL that restores the review column
+conflict_fix="$tmp/conflict-fixture"
+mkdir -p "$conflict_fix/get"
+cat >"$conflict_fix/search.json" <<'EOF'
+[{"slug":"preference-kanban-no-review-column","score":1.0,"type":"preference","title":"no review column","snippet":""}]
+EOF
+cat >"$conflict_fix/get/preference-kanban-no-review-column.txt" <<'EOF'
+[preference] preference-kanban-no-review-column
+title:      no review column
+---
+Kanban columns are backlog, todo, doing, done. No review column.
+EOF
+body_conflict="$(mktemp "$tmp/body-conflict.XXXX")"
+cat >"$body_conflict" <<'EOF'
+**Follow the kanban-agent skill — drive this through to a MERGED PR.**
+
+Repo: EdgeVector/last-stack
+Base: main
+Kind: pr
+
+## GOAL
+Add a review column to the default board.
+
+## END STATE
+Agents park unfinished PRs in review.
+EOF
+: >"$tmp/add.log"
+set +e
+conflict_out="$("$bin" bad-review --board-cli "$fake_kanban" --title "Add a review column" \
+  --repo EdgeVector/last-stack --north-star ns-a --milestone ms-live \
+  --decision-fixture "$conflict_fix" <"$body_conflict" 2>&1)"
+conflict_rc=$?
+set -e
+[ "$conflict_rc" -eq 2 ] || fail "conflict should exit 2, got $conflict_rc: $conflict_out"
+printf '%s\n' "$conflict_out" | grep -q 'decision-check refused' \
+  || fail "conflict stdout missing refuse: $conflict_out"
+if [ -s "$tmp/add.log" ]; then
+  fail "conflict wrote add: $(cat "$tmp/add.log")"
 fi
 
 echo "ok last-stack-kanban-file-pr"

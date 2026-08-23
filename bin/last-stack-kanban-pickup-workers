@@ -127,8 +127,18 @@ set +e
 gate_rc=\$?
 set -e
 # 0 = skip (noop trailer already printed). 10 = proceed. other = treat as skip.
+# Outer routinesd gate_command already decided proceed (meta.gateProceeded).
+# An inner Codex sandbox re-run of the same gate must not skip-exit that fire.
 if [ "\$gate_rc" -ne 10 ]; then
-  exit 0
+  proceeded=0
+  if [ -n "\${ROUTINES_RUN_DIR:-}" ] && [ -f "\$ROUTINES_RUN_DIR/meta.json" ]; then
+    if grep -q '"gateProceeded": true' "\$ROUTINES_RUN_DIR/meta.json"; then
+      proceeded=1
+    fi
+  fi
+  if [ "\$proceeded" -ne 1 ]; then
+    exit 0
+  fi
 fi
 \`\`\`
 
@@ -284,12 +294,13 @@ write_worker() {
     printf 'rrule = "FREQ=HOURLY;BYMINUTE=%s;BYSECOND=%s"\n' "$byminute" "$second"
     printf 'cwd = "%s"\n' "$REG_CWD"
     printf 'status = "active"\n'
-    printf 'timeout_min = 45\n'
+    # 3h upper bound — Tom 2026-08-20 (decision-2026-08-20-pickup-three-hour-budget)
+    printf 'timeout_min = 180\n'
     # Zero-LLM ready gate: routinesd skips the harness when ready=0 (routines ≥ gate_command).
     printf 'gate_command = "%s"\n' "$gate_cmd"
     printf '# Cap: one WORK unit per fire; capacity comes from separate registry workers, not SpawnAgent fan-out.\n'
     printf '# Prompt path is a freshness bootstrap; it delegates through last-stack-routine-read before claim.\n'
-    printf '# gate_command is zero-LLM: skip codex when pickup status ready=0 (todo may still be full).\n'
+    printf '# gate_command is zero-LLM: skip when ready=0 or status unavailable (never proceed from todo count).\n'
     printf 'prompt_path = "%s"\n' "$BOOTSTRAP_PROMPT_PATH"
   } | if [ "$DRY_RUN" -eq 1 ]; then
     cat

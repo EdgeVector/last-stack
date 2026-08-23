@@ -37,7 +37,8 @@ bin/last-stack-lint-prompts \
   routines/kanban-watch.md \
   routines/pipeline-health.md \
   skills/kanban-agent/SKILL.md \
-  instructions/brain-kanban.md
+  instructions/brain-kanban.md \
+  instructions/asd-ste100.md
 
 # LastDB access-pattern gate over routines/, skills/ AND bin/. The invocation
 # above is deliberately five files; bin/ helpers run against the live primary
@@ -53,6 +54,11 @@ bash tests/last-stack-routine-read-proceed-on-stale.sh
 # that silently returned an empty protect set. Both are silent-data-loss
 # shapes, and both were invisible for weeks. Runs in a few seconds.
 bash tests/last-stack-reclaim-liveness-and-finished-work.sh
+# Same family: the guarded scratch-copy deletion (disk-reclaim step 4b) and
+# the bare-mktemp ban that keeps every helper usable inside the scheduled
+# sandbox (bare mktemp resolves to the sandbox-denied Darwin temp dir).
+bash tests/last-stack-scratch-reclaim.sh
+bash tests/last-stack-no-bare-mktemp.sh
 bash tests/last-stack-class-a-heal.sh
 bash tests/last-stack-sccache-health.sh
 bash tests/last-stack-shell-prelude.sh
@@ -67,9 +73,13 @@ bash tests/last-stack-why-stopped-loom.sh
 bash tests/last-stack-lastdb-ops-offenders.sh
 bash tests/last-stack-lastdb-ops-offenders-routine.sh
 bash tests/last-stack-kanban-pickup-workers.sh
+bash tests/last-stack-kanban-pickup-gate.sh
+bash tests/last-stack-pickup-work-policy.sh
+bash tests/last-stack-routines-kanban-pickup.sh
 bash tests/last-stack-kanban-validate-routine.sh
 bash tests/last-stack-pr-reaper-stale-open-heal.sh
 bash tests/last-stack-factory-hardening.sh
+bash tests/morning-sync-live-human-gate-reconcile.sh
 bash tests/last-stack-factory-health-backlog.sh
 bash tests/last-stack-launchagent-stable-path.sh
 bash tests/last-stack-todo-rank.sh
@@ -77,11 +87,14 @@ bash tests/last-stack-kanban-done-when-eval.sh
 bash tests/last-stack-driver-hierarchy.sh
 bash tests/last-stack-kanban-file-pr.sh
 bash tests/last-stack-kanban-file-pr-host-track-install.sh
+bash tests/last-stack-kanban-decision-check.sh
 bash tests/last-stack-sanitize-structured-fields.sh
 bash tests/last-stack-board-closeout-sweep-logic.sh
 bash tests/last-stack-board-closeout-sweep.sh
 bash tests/last-stack-card-reaper-run.sh
 bash tests/last-stack-card-closeout.sh
+bash tests/last-stack-skill-frontmatter-yaml.sh
+bash tests/last-stack-routines-host-track-post-install.sh
 bash tests/last-stack-unattached-outcome-heal.sh
 bash tests/last-stack-north-star-ledger-sync.sh
 bash tests/last-stack-north-star-proof-registry.sh
@@ -124,6 +137,10 @@ bash tests/last-stack-whats-wrong-loom.sh
 bash tests/last-stack-whats-wrong-routine.sh
 bash tests/last-stack-forge-dead-trigger.sh
 bash tests/last-stack-forge-api.sh
+# Consumer half of the same wrapper contract: the merge probe is the only
+# caller whose failure mode was a SILENT wrong answer (every Forgejo PR read
+# as unmerged for days because a bad --jq call was hidden by 2>/dev/null).
+bash tests/last-stack-card-closeout-merge-probe.sh
 bash tests/last-stack-deploy-gated-closeout.sh
 bash tests/last-stack-board-closeout-escalation.sh
 bash tests/last-stack-legacy-residue-closeout.sh

@@ -70,7 +70,7 @@ if [ -z "$registry" ]; then
 fi
 [ -f "$registry" ] || die "registry not found: $registry"
 
-tmp="$(mktemp -d)"
+tmp="$(mktemp -d "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack.XXXXXX")"
 cleanup() {
   rm -rf "$tmp"
 }

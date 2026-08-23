@@ -818,7 +818,9 @@ grep -q 'timeout -k 30s <seconds>' "$pickup"
 grep -q 'rolled-back-todo reason=command-timebox' "$pickup"
 grep -q 'reason=no-command-timebox' "$pickup"
 grep -q 'Do not wait for a long child process to finish unwinding after the timebox' "$pickup"
-grep -q 'Do not start any new validation or PR/CR publish sequence after \*\*35 minutes\*\*' "$pickup"
+grep -q 'Do not start any new validation or PR/CR publish sequence when remaining time' "$pickup"
+grep -q 'is under \*\*20 minutes\*\*' "$pickup"
+grep -q 'TIMEOUT_MIN:-180' "$pickup"
 grep -q 'LastGit missing-CI is a handoff condition' "$pickup"
 grep -q 'hand-build or manually publish the status from pickup' "$pickup"
 grep -q 'result=in-flight-ci-pending' "$pickup"
@@ -862,6 +864,12 @@ if grep -q 'TCP-only' "$brain_kanban"; then
   echo "instructions/brain-kanban.md still calls doctor TCP-only; health check is lastdb status / kanban ping" >&2
   exit 1
 fi
+if grep -q 'Do NOT create `type: decision` records — that path is broken' "$brain_kanban"; then
+  echo "instructions/brain-kanban.md still forbids typed decision writes; that path retired 2026-07-06" >&2
+  exit 1
+fi
+grep -q 'type: decision' "$brain_kanban" \
+  || { echo "instructions/brain-kanban.md lost typed decision writes" >&2; exit 1; }
 # The required CI gate lints this file as a prompt. Keep doctor/init mentions
 # on a negated line so the health-check ban does not fire.
 "$ROOT/bin/last-stack-lint-prompts" "$brain_kanban"

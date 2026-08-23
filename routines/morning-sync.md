@@ -39,18 +39,37 @@ Lead with a one-line restatement of the goal / top objective, then:
   NOT approval requests.
 - **§⚠️ "Genuinely needs you"** — ONLY the human set: prod cutovers / public
   launches (irreversible, outward), shipping NEW capability to END USERS,
-  brand/naming/tagline, business/legal, a genuinely-novel architecture fork. Plus
-  `open-decisions` escalations + the driving index's `needs-human` /
-  `blocked-needs-human` lines. Prefer brain **`human-gate-audit-latest`**
-  (written by routine `human-gate-audit`) as the pre-classified source:
-  use its **REAL_HUMAN** and **Waiting on recommendation** sections; ignore
-  holds already marked NOT_A_BLOCKER / cleared. Dedup by slug. Do NOT list
+  brand/naming/tagline, business/legal, a genuinely-novel architecture fork.
+  Use `open-decisions`, structured board holds, and
+  **`human-gate-audit-latest`** to discover candidates. Dedup by slug. Do NOT list
   dev-enable / security-review / design-first cards here — those are being
   driven. **If §⚠️ is empty, say so — that's the goal.**
+
+  **Candidate caches are not current truth.** `human-gate-audit-latest`,
+  `morning-sync-brief-latest`, and every dated reconciliation record are
+  discovery aids only. Never hard-code or require a dated human-gate state
+  slug. A rolling `latest` record is also only a cache.
+
+  Before you surface each candidate:
+
+  1. Point-read the live card.
+  2. Point-read its current Brain decision. Use `gate_slug`, an exact decision
+     slug in the block reason, or `brain ask "<card-slug> decision"` followed by
+     a point get.
+  3. Check the decision status, `hold-until`, dependencies, and fresh safe
+     evidence.
+  4. Suppress answered, resolved, deferred, unripe, and agent-first items.
+  5. Surface only an open, actionable choice that safe agent work cannot answer.
+
+  Give the background, options, risk, and a recommendation for each surviving
+  choice. A raw `needs_human` label or a prior digest line is never sufficient.
 - **§🧩 Needs scoping** — active programs with no card whose next move is concrete
   but un-carded.
 - **§🩺 Routine health** — from your scheduler's last-run timestamps + the
   `routine-heartbeats` note; flag any routine stale-vs-cadence or errored.
+  If `brain get routine-reds-recheck-latest --type reference` exists and is
+  newer than 36h, paste its table here (fleet reds Tom asked to recheck —
+  working / pending next fire / paused on purpose / still red). Do not omit it.
   Treat `kanban-pickup` as critical: if it has no scheduler session or
   `routine-heartbeats` entry within the last 2 hours AND there is any eligible
   `todo` card with `Repo:`/`Base:` and no `BLOCKED:` note, surface this as a
@@ -66,7 +85,8 @@ Lead with a one-line restatement of the goal / top objective, then:
   Discover, cheapest first:
   1. Brain closeouts from the last 36h (`brain ask "closeout <YYYYMMDD>"` for
      today and yesterday). Prefer a claimed user-visible capability, skip
-     drive-by refactors.
+     drive-by refactors. Always also `brain get routine-reds-recheck-latest
+     --type reference` (paste the table into §🩺).
   2. The latest dated slice in
      `${ROUTINES_HOME:-$HOME/.routines}/memory/last-stack-fleet-performance/memory.md`.
   3. `host-track status` for apps that moved: `host_head` vs the closeout
@@ -124,12 +144,12 @@ Lead with a one-line restatement of the goal / top objective, then:
   respond", or "too many concurrent reads" as busy-node backpressure: STOP,
   report `busy-node skipped morning-sync`, and do not run doctor/init or restart
   anything.
-- Snapshot with bounded reads: read `todo`, `doing`, and `review` as sequential
+- Snapshot with bounded reads: read `backlog`, `todo`, and `doing` as sequential
   `<board CLI> list --column <column> --json` calls; use `show` only for the one
-  card whose full body you need. Read the brain's goal note, driving index,
-  `open-decisions`, `routine-heartbeats`, **`human-gate-audit-latest`**, and
-  **`ship-pipeline-gap-audit-latest`** (if present) as targeted records, one at
-  a time.
+  card whose full body you need. Read the current North Star and milestone state,
+  `open-decisions`, `routine-heartbeats`, **`human-gate-audit-latest`**,
+  **`ship-pipeline-gap-audit-latest`**, and **`routine-reds-recheck-latest`**
+  (if present) as targeted records, one at a time.
 - Also inspect your scheduler/session index if available. For Codex Desktop this
   is typically `$CODEX_HOME/session_index.jsonl` or
   `$HOME/.codex/session_index.jsonl`; compare `last-stack kanban-pickup` against
@@ -147,10 +167,11 @@ needs to weigh in on §⚠️ or redirect §🚀.
 
 > **Companion interactive mode (optional).** Many fleets pair this read-only BRIEF
 > with an interactive WORK mode the human triggers by hand: walk them through the
-> §⚠️ decisions one at a time, write each answer to a durable `decisions-log` in
-> the brain, and execute it onto the board (clear a gate to `todo`, scope a
-> program into a card, or record a hold). That keeps the decision-capture loop ON
-> TOP of `program-driver`/`groom-board`/`kanban-pickup` without replacing them.
+> §⚠️ decisions one at a time, write each answer as its own `type: decision`
+> record in the brain, and execute it onto the board (clear a gate to `todo`,
+> scope a North Star into a card, or record a hold). That keeps the
+> decision-capture loop ON TOP of `last-stack-north-star-driver` /
+> `last-stack-milestone-driver` / `kanban-pickup` without replacing them.
 
 ## Close-out (always the LAST step)
 

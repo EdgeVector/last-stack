@@ -66,6 +66,16 @@ while [[ $# -gt 0 ]]; do
       ;;
     --jq)
       [[ $# -ge 2 ]] || { echo "missing value for $1" >&2; exit 2; }
+      # --jq takes the FILTER itself, not jq's own output flags. Callers that
+      # wrote `--jq -r '.merged' <path>` silently had `-r` used as the filter
+      # and the real filter rejected as an extra argument. Name the mistake.
+      case "$2" in
+        -r|--raw-output|-c|--compact-output|-j|--join-output|-e|--exit-status|-s|--slurp|-n|--null-input|-S|--sort-keys)
+          echo "--jq takes the jq FILTER, not the jq flag '$2'." >&2
+          echo "  use: --jq '.merged'   (output is already raw for scalars)" >&2
+          exit 2
+          ;;
+      esac
       jq_filter="$2"
       shift 2
       ;;

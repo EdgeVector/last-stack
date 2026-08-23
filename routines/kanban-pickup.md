@@ -26,13 +26,15 @@ spawn sub-agents, collab workers, Task tools, or background
 `codex exec --ephemeral`) cannot keep collab children alive; fan-out was
 silently dropping workers while cards sat stranded in `doing`.
 
-**Throughput model (Tom 2026-07-14 — drain faster):** scheduled every ~5 minutes.
-Default **one** work-unit per fire. If that unit merges with **≥35 minutes**
-of session budget remaining and another non-overlapping eligible card exists,
-you MAY claim and complete **one second** unit in the same run (still no
-spawn/fan-out — sequential only). Prefer correctness; never strand a card in
-`doing` without finishing or rolling it back to `todo`. If a prior run is
-still in-flight (single-flight lock), this fire is skipped.
+**Throughput model (Tom 2026-07-14 — drain faster; 3h bound Tom 2026-08-20):**
+scheduled every ~5 minutes. Session upper bound is **180 minutes** — enough
+for one work unit to finish (claim, implement, PR/CR, merge). Default **one**
+work-unit per fire. If that unit merges with **≥35 minutes** of session budget
+remaining and another non-overlapping eligible card exists, you MAY claim and
+complete **one second** unit in the same run (still no spawn/fan-out —
+sequential only). Prefer correctness; never strand a card in `doing` without
+finishing or rolling it back to `todo`. If a prior run is still in-flight
+(single-flight lock), this fire is skipped.
 
 **Board closeout first (prevents stuck multi-hour `doing`):** immediately after
 CLI preflight, before any claim, run the deterministic closer so already-merged
@@ -55,7 +57,17 @@ set -e
 if [ "$gate_rc" -ne 10 ]; then
   # Gate already heartbeated + printed ROUTINE_RESULT (empty-todo, ready=0,
   # busy-node, …). Do not claim, idle invent, or start implementation.
-  exit 0
+  # Exception: routinesd already ran gate_command and set gateProceeded.
+  # The inner sandbox re-run must not veto that fire.
+  proceeded=0
+  if [ -n "${ROUTINES_RUN_DIR:-}" ] && [ -f "$ROUTINES_RUN_DIR/meta.json" ]; then
+    if grep -q '"gateProceeded": true' "$ROUTINES_RUN_DIR/meta.json"; then
+      proceeded=1
+    fi
+  fi
+  if [ "$proceeded" -ne 1 ]; then
+    exit 0
+  fi
 fi
 ```
 
@@ -69,6 +81,19 @@ blocked-on-dependency, parked/non-work, …) must EXIT without claiming.
 
 (`doing` cards are already claimed — `kanban-watch` / board-closeout own them.)
 
+**WORK policy (won't-undo — Tom 2026-08-20):** after the gate proceeds, and
+before a WORK fire on a claimed slug, run:
+
+```bash
+"$last_stack/bin/last-stack-pickup-work-policy" --slug "$SLUG" --json
+```
+
+The helper forbids WORK on a cooldown slug (max 2 WORK fires per slug per 6
+hours without a new commit). `action=skip` → do not start WORK on that slug;
+pick the next ready card or exit. `action=reconcile` → leave the card for
+`kanban-watch`; pickup does not reconcile. `action=work` → claim and implement.
+A distinct pickup-ready slug with no timebox history remains claimable.
+
 Never heartbeat `in-flight-budget-handoff` with `pr=none` — if no PR/CR URL was
 recorded, roll the card back to `todo` (see wall-clock budget below).
 
@@ -76,7 +101,7 @@ recorded, roll the card back to `todo` (see wall-clock budget below).
 record a local start timestamp:
 ```bash
 run_started_epoch="$(date +%s)"
-run_timeout_min="${ROUTINES_TIMEOUT_MIN:-${TIMEOUT_MIN:-45}}"
+run_timeout_min="${ROUTINES_TIMEOUT_MIN:-${TIMEOUT_MIN:-180}}"
 ```
 Before starting any optional work after the first claimed unit — including a
 second pickup unit, or idle smart-heal that would file **and immediately claim**
@@ -128,10 +153,11 @@ agent workspace. At the beginning of the run, record `run_started_epoch=$(date
 
 - Do not start an idle implementation unless elapsed time is under **10
   minutes** and the chosen change is plausibly shippable within **25 minutes**.
-- Do not start any new validation or PR/CR publish sequence after **35 minutes**
-  elapsed. Instead, move any claimed-but-unpublished card back to `todo` (or
-  leave a file-only card in `todo`), heartbeat `noop idle=budget-exhausted`,
-  print the machine trailer by using the `ROUTINE_RESULT` token followed by
+- Do not start any new validation or PR/CR publish sequence when remaining time
+  is under **20 minutes**. Instead, move any claimed-but-unpublished card back
+  to `todo` (or leave a file-only card in `todo`), heartbeat
+  `noop idle=budget-exhausted`, print the machine trailer by using the
+  `ROUTINE_RESULT` token followed by
   `outcome=noop detail=idle=budget-exhausted`, and EXIT.
 - Before every foreground watcher, deploy wait, sync drain, or other END STATE
   proof that can run for minutes, recompute elapsed/remaining budget. Only start
@@ -154,14 +180,14 @@ agent workspace. At the beginning of the run, record `run_started_epoch=$(date
   `rolled-back-todo reason=command-timebox`), print the machine trailer using
   the `ROUTINE_RESULT` token, and EXIT.
   Do not wait for a long child process to finish unwinding after the timebox.
-- If elapsed time reaches **45 minutes** before a PR/CR URL has been recorded,
-  stop immediately after checkpoint/memory note best-effort (hand off if any
-  branch/commits; clean todo rollback only if empty). Do not launch a final
-  multi-command publish block near the harness timeout; the next scheduled fire
-  can reclaim cleanly.
-- If a PR/CR URL has been recorded and elapsed time reaches **35 minutes** (or
-  fewer than **10 minutes** remain), stop immediately after one best-effort card
-  update / memory note. Leave the card in `doing` with the recorded `pr_url` and
+- If remaining time is under **10 minutes** (or elapsed time reaches **170
+  minutes**) before a PR/CR URL has been recorded, stop immediately after
+  checkpoint/memory note best-effort (hand off if any branch/commits; clean todo
+  rollback only if empty). Do not launch a final multi-command publish block
+  near the harness timeout; the next scheduled fire can reclaim cleanly.
+- If a PR/CR URL has been recorded, keep driving merge until remaining time is
+  under **10 minutes**. Then stop immediately after one best-effort card update
+  / memory note. Leave the card in `doing` with the recorded `pr_url` and
   `branch`, heartbeat
   `ok cards=1 worked=<slug> result=in-flight-budget-handoff pr=<url>
   final_column=doing`, print the `ROUTINE_RESULT` token followed by
@@ -169,7 +195,7 @@ agent workspace. At the beginning of the run, record `run_started_epoch=$(date
   and EXIT.
   Do not start another fetch, rebase, push, validation retry, CI poll, manual
   LastGit status publication, `lastgit cr complete`, or merge-closeout command
-  after the 35-minute publish stop line; `kanban-watch` or a later pickup fire
+  after the 10-minute remaining stop line; `kanban-watch` or a later pickup fire
   can reconcile a visible in-flight PR/CR, but routinesd cannot recover a killed
   foreground process cleanly.
 - LastGit missing-CI is a handoff condition, not pickup work. After a LastGit CR
@@ -620,8 +646,8 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
      `lastgit ci status`, `lastgit cr complete`, or merge-closeout polling),
      recompute elapsed/remaining budget from
      `run_started_epoch` / `run_timeout_min`. If a PR/CR URL and branch are
-     already recorded and either elapsed time is **35 minutes or more** or fewer
-     than **10 minutes** remain, do not continue the publish/merge loop.
+     already recorded and fewer than **10 minutes** remain, do not continue the
+     publish/merge loop.
      Heartbeat `ok cards=1 worked=<slug>
      result=in-flight-budget-handoff pr=<url> final_column=doing`, print
      the `ROUTINE_RESULT` token followed by `outcome=<ok>

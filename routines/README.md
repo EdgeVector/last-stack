@@ -34,7 +34,8 @@ Brain = intent · Board = queue · Pickup = only code shipper · Watch = only cl
 never a board card. The rule lives in `instructions/brain-kanban.md` (injected
 into every harness's global instructions by `setup`) and in
 `sop-routine-shared-contract` §5; `tests/last-stack-papercut-filing-contract.sh`
-gates both. The default is FILE, not judge — a mention in a checkpoint or PR
+gates both. Write to Tom in ASD-STE100; that rule lives in
+`instructions/asd-ste100.md` and setup injects it the same way. The default is FILE, not judge — a mention in a checkpoint or PR
 description is not a filing.
 
 **Every routine ends with close-out (Tom, 2026-08-17).** The last work step of

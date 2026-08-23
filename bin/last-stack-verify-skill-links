@@ -70,7 +70,8 @@ if [ ${#DIRS[@]} -eq 0 ]; then
     "$HOME/.claude/skills" \
     "$HOME/.codex/skills" \
     "$HOME/.factory/skills" \
-    "$HOME/.config/opencode/skills"
+    "$HOME/.config/opencode/skills" \
+    "$HOME/.gemini/config/skills"
   do
     [ -d "$d" ] && DIRS+=("$d")
   done

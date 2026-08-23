@@ -89,7 +89,7 @@ esac
 dilution_floor=$(( threshold / 4 ))
 [ "$dilution_floor" -lt 1 ] && dilution_floor=1
 
-tmp="$(mktemp -d)"
+tmp="$(mktemp -d "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 raw="$tmp/ops.txt"
 

@@ -21,8 +21,14 @@
 set -euo pipefail
 
 self_dir="$(cd "$(dirname "$0")" && pwd -P)"
+# Prefer a logical install root. `pwd -P` follows ~/.last-stack/bin into the
+# immutable host-track artifacts/versions/* tree. Heartbeat then tries to
+# mkdir version/logs, gets EPERM in a Codex sandbox, and older gates mixed
+# that write error into a board-read skip.
 if [ -n "${LAST_STACK_ROOT:-}" ] && [ -d "${LAST_STACK_ROOT}/bin" ]; then
-  last_stack="$(cd "$LAST_STACK_ROOT" && pwd -P)"
+  last_stack="${LAST_STACK_ROOT}"
+elif [ -x "${HOME}/.last-stack/bin/last-stack-kanban-pickup-gate" ]; then
+  last_stack="${HOME}/.last-stack"
 else
   last_stack="$(cd "$self_dir/.." && pwd -P)"
 fi
@@ -39,7 +45,9 @@ Zero-LLM credit gate for kanban-pickup. Exit 0 = skip agent; 10 = proceed.
 
 Does not run board-closeout-sweep (LaunchAgent owns closeout). Caps status and
 todo board reads so the gate always finishes under routinesd's gate_command
-timeout (~120s).
+timeout (~120s). Todo list is diagnostic only. Status unavailable always skips.
+Never proceed from todo count. Proceed prints PICKUP_GATE_PROCEED, not
+ROUTINE_RESULT outcome=ok.
 
 Options:
   --json-out PATH   write the pickup status JSON (or todo list) to PATH
@@ -90,11 +98,20 @@ trailer_noop() {
 }
 
 # Prefer gtimeout (coreutils on macOS) then timeout; empty means no wrapper.
+# Probe exec: Homebrew gtimeout often sits outside the Codex workspace-write
+# allow list. `command -v` succeeds, then the wrapper exits 126, both board
+# reads "fail" in <1s, and the inner gate skip-exits a run the outer gate
+# already allowed. Only keep a timeout binary that can actually run `true`.
 timeout_bin=""
 if command -v gtimeout >/dev/null 2>&1; then
   timeout_bin="gtimeout"
 elif command -v timeout >/dev/null 2>&1; then
   timeout_bin="timeout"
+fi
+if [ -n "$timeout_bin" ]; then
+  if ! "$timeout_bin" 1s true >/dev/null 2>&1 && ! "$timeout_bin" 1 true >/dev/null 2>&1; then
+    timeout_bin=""
+  fi
 fi
 
 status_timeout_sec="${LAST_STACK_PICKUP_GATE_STATUS_TIMEOUT_SEC:-45}"
@@ -119,10 +136,13 @@ elif command -v last-stack-lastdb-retry >/dev/null 2>&1; then
 fi
 
 # Board read with wall-clock cap. Must invoke real executables only (timeout
-# cannot run bash functions). Exit 124/137 = timed out.
+# cannot run bash functions). Exit 124/137 = timed out. Exit 126/127 = the
+# timeout wrapper itself could not exec — fall back to unwrapped kanban so a
+# sandbox that blocks Homebrew gtimeout does not look like a dead board.
 run_board_capped() {
   local secs="$1"
   shift
+  local rc=0
   set +e
   if [ -n "$timeout_bin" ] && [ -n "$secs" ] && [ "$secs" -gt 0 ] 2>/dev/null; then
     if [ -n "$retry_bin" ]; then
@@ -130,14 +150,27 @@ run_board_capped() {
     else
       "$timeout_bin" -k 3s "${secs}s" "$@"
     fi
+    rc=$?
+    # 126/127 = wrapper cannot exec. rc=1 with a live kanban is often the
+    # same sandbox (Homebrew gtimeout denied, or timeout spawn of retry).
+    # Do not treat those as a dead board: run kanban without the wrapper.
+    # Keep 124/137 as real wall-clock timeouts (fail closed).
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] && [ "$rc" -ne 137 ]; then
+      if [ -n "$retry_bin" ]; then
+        "$retry_bin" --attempts 3 -- "$@"
+      else
+        "$@"
+      fi
+      rc=$?
+    fi
   else
     if [ -n "$retry_bin" ]; then
       "$retry_bin" --attempts 3 -- "$@"
     else
       "$@"
     fi
+    rc=$?
   fi
-  local rc=$?
   set -e
   return "$rc"
 }
@@ -149,102 +182,115 @@ tmp_todo_err="$(mktemp "${TMPDIR:-/tmp}/pickup-gate-todo-err.XXXXXX")"
 cleanup() { rm -f "$tmp_status" "$tmp_todo" "$tmp_status_err" "$tmp_todo_err"; }
 trap cleanup EXIT
 
-# Prefer pickup status (ready count). Fall back to todo length if status fails
-# or times out — never hang past status_timeout_sec.
+# Prefer pickup status (ready count). A failed or timed-out status always
+# skips. The todo list is diagnostic only — never a proceed signal.
+classify_err_class() {
+  local status_rc="$1"
+  local err="$2"
+  local err_class="board-read-failed"
+  case "$err" in
+    *service_timeout*|*did\ not\ respond*|*too\ many\ concurrent*)
+      err_class="busy-node"
+      ;;
+    *folddb.sock*|*socket*gone*|*socket*unavailable*|*socket*unreachable*)
+      err_class="absent-sock"
+      ;;
+    *Permission\ denied*|*Operation\ not\ permitted*|*cannot\ execute*)
+      err_class="sandbox-exec"
+      ;;
+    *No\ such\ file*)
+      err_class="absent-sock"
+      ;;
+  esac
+  if [ "$status_rc" -eq 124 ] || [ "$status_rc" -eq 137 ]; then
+    if [ "$err_class" = "board-read-failed" ]; then
+      err_class="status-timeout"
+    fi
+  fi
+  printf '%s\n' "$err_class"
+}
+
+skip_status_unavailable() {
+  local status_rc="$1"
+  local todo_rc="$2"
+  local err="$3"
+  local err_class
+  err_class="$(classify_err_class "$status_rc" "$err")"
+  local detail="${err_class} no_card_claimed err_class=${err_class} status_rc=${status_rc} todo_rc=${todo_rc}"
+  if [ "$err_class" = "status-timeout" ]; then
+    detail="busy-node status-timeout no_card_claimed err_class=${err_class} status_rc=${status_rc} todo_rc=${todo_rc}"
+  elif [ "$err_class" = "busy-node" ]; then
+    detail="busy-node no_card_claimed err_class=${err_class} status_rc=${status_rc} todo_rc=${todo_rc}"
+  fi
+  hb "kanban-pickup $(iso_now) noop ${detail}"
+  trailer_noop "$detail"
+  exit 0
+}
+
 status_ok=0
 status_rc=0
+todo_rc=0
 if run_board_capped "$status_timeout_sec" \
   "$board_cli" pickup status --json >"$tmp_status" 2>"$tmp_status_err"; then
   status_ok=1
 else
   status_rc=$?
-  # timeout (124/137) or CLI error — try cheap todo list before giving up
-  if ! run_board_capped "$todo_timeout_sec" \
+  if run_board_capped "$todo_timeout_sec" \
     "$board_cli" list --column todo --json >"$tmp_todo" 2>"$tmp_todo_err"; then
-    err="$(cat "$tmp_status_err" "$tmp_todo_err" 2>/dev/null | tr '\n' ' ' | head -c 200)"
-    case "$err" in
-      *service_timeout*|*did\ not\ respond*|*too\ many\ concurrent*)
-        hb "kanban-pickup $(iso_now) noop busy-node no_card_claimed"
-        trailer_noop "busy-node no_card_claimed"
-        exit 0
-        ;;
-    esac
-    # timeout with empty stderr still counts as board-read-failed / busy
-    if [ "$status_rc" -eq 124 ] || [ "$status_rc" -eq 137 ]; then
-      hb "kanban-pickup $(iso_now) noop busy-node status-timeout no_card_claimed"
-      trailer_noop "busy-node status-timeout no_card_claimed"
-      exit 0
-    fi
-    hb "kanban-pickup $(iso_now) noop board-read-failed no_card_claimed"
-    trailer_noop "board-read-failed no_card_claimed"
-    exit 0
+    todo_rc=0
+  else
+    todo_rc=$?
   fi
 fi
 
 if [ -n "$json_out" ]; then
   if [ "$status_ok" -eq 1 ]; then
     cp "$tmp_status" "$json_out" || true
-  else
+  elif [ -s "$tmp_todo" ]; then
     cp "$tmp_todo" "$json_out" || true
   fi
 fi
 
-if [ "$status_ok" -eq 1 ]; then
-  # ready is top-level; counts.pickup-ready is the same signal
-  ready="$(jq -r '(.ready // .counts["pickup-ready"] // 0) | tonumber' "$tmp_status" 2>/dev/null || echo 0)"
-  scanned="$(jq -r '(.scanned // 0) | tonumber' "$tmp_status" 2>/dev/null || echo 0)"
-  # summarize non-ready categories for the heartbeat (compact)
-  blockers="$(jq -r '
-    (.counts // {})
-    | to_entries
-    | map(select(.key != "pickup-ready" and (.value | tonumber) > 0))
-    | map("\(.key):\(.value)")
-    | join(",")
-  ' "$tmp_status" 2>/dev/null || echo "")"
-  todo_count="$(jq -r '
-    [.cards[]? | select((.column // "") == "todo")] | length
-  ' "$tmp_status" 2>/dev/null || echo "?")"
-  printf 'PICKUP_GATE ready=%s scanned=%s todo_approx=%s blockers=%s\n' \
-    "$ready" "$scanned" "$todo_count" "${blockers:-none}"
-
-  # integer compare
-  ready_i=0
-  case "$ready" in
-    ''|*[!0-9]*) ready_i=0 ;;
-    *) ready_i="$ready" ;;
-  esac
-
-  if [ "$ready_i" -eq 0 ]; then
-    detail="no-eligible ready=0"
-    if [ -n "$blockers" ]; then
-      detail="${detail} blockers=${blockers}"
-    fi
-    detail="${detail} no_card_claimed"
-    hb "kanban-pickup $(iso_now) noop ${detail}"
-    trailer_noop "$detail"
-    exit 0
-  fi
-
-  printf 'PICKUP_GATE proceed ready=%s\n' "$ready_i"
-  printf '%s %s\n' 'ROUTINE_RESULT' "outcome=ok detail=proceed ready=${ready_i}"
-  exit 10
+if [ "$status_ok" -ne 1 ]; then
+  err="$(cat "$tmp_status_err" "$tmp_todo_err" 2>/dev/null | tr '\n' ' ' | head -c 200)"
+  skip_status_unavailable "$status_rc" "$todo_rc" "$err"
 fi
 
-# Fallback path: only todo list available (status failed or timed out)
-todo_count="$(jq 'length' "$tmp_todo" 2>/dev/null || echo 0)"
-printf 'TODO_INVENTORY count=%s status_unavailable\n' "$todo_count"
-todo_i=0
-case "$todo_count" in
-  ''|*[!0-9]*) todo_i=0 ;;
-  *) todo_i="$todo_count" ;;
+# ready is top-level; counts.pickup-ready is the same signal
+ready="$(jq -r '(.ready // .counts["pickup-ready"] // 0) | tonumber' "$tmp_status" 2>/dev/null || echo 0)"
+scanned="$(jq -r '(.scanned // 0) | tonumber' "$tmp_status" 2>/dev/null || echo 0)"
+# summarize non-ready categories for the heartbeat (compact)
+blockers="$(jq -r '
+  (.counts // {})
+  | to_entries
+  | map(select(.key != "pickup-ready" and (.value | tonumber) > 0))
+  | map("\(.key):\(.value)")
+  | join(",")
+' "$tmp_status" 2>/dev/null || echo "")"
+todo_count="$(jq -r '
+  [.cards[]? | select((.column // "") == "todo")] | length
+' "$tmp_status" 2>/dev/null || echo "?")"
+printf 'PICKUP_GATE ready=%s scanned=%s todo_approx=%s blockers=%s\n' \
+  "$ready" "$scanned" "$todo_count" "${blockers:-none}"
+
+# integer compare
+ready_i=0
+case "$ready" in
+  ''|*[!0-9]*) ready_i=0 ;;
+  *) ready_i="$ready" ;;
 esac
-if [ "$todo_i" -eq 0 ]; then
-  hb "kanban-pickup $(iso_now) noop empty-todo no_card_claimed"
-  trailer_noop "empty-todo no_card_claimed"
+
+if [ "$ready_i" -eq 0 ]; then
+  detail="no-eligible ready=0"
+  if [ -n "$blockers" ]; then
+    detail="${detail} blockers=${blockers}"
+  fi
+  detail="${detail} no_card_claimed"
+  hb "kanban-pickup $(iso_now) noop ${detail}"
+  trailer_noop "$detail"
   exit 0
 fi
 
-# Todo non-empty but no status → proceed (claim path will re-check eligibility)
-printf 'PICKUP_GATE proceed todo_count=%s status_unavailable\n' "$todo_i"
-printf '%s %s\n' 'ROUTINE_RESULT' "outcome=ok detail=proceed todo_count=${todo_i} status_unavailable"
+printf 'PICKUP_GATE proceed ready=%s\n' "$ready_i"
+printf 'PICKUP_GATE_PROCEED ready=%s\n' "$ready_i"
 exit 10

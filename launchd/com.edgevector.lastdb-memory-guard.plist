@@ -22,22 +22,13 @@
     <key>LASTDBD_PRIMARY_HOME</key>
     <string>/Users/REPLACE/.lastdb</string>
 
-    <!-- Which gauge FIRES the restart.
-         `rss` is the legacy behaviour and the current policy: it enforces on a
-         number ~6x smaller than the memory the node actually holds, so the
-         guard has a large margin and effectively never fires.
-         `footprint` enforces on phys_footprint — the gauge macOS jetsam uses
-         and the unit the 2026-07-14 panic happened in — and must only be set
-         together with a deliberately chosen LASTDBD_RSS_LIMIT_MB, because it
-         takes the margin from ~8.6x to ~1.4x.
-         Either way the script MEASURES and LOGS both gauges every cycle. -->
+    <!-- Tom chose phys_footprint with a 16 GiB limit on 2026-08-08.
+         Keep this metric and limit together. The script logs both gauges. -->
     <key>LASTDBD_GUARD_METRIC</key>
-    <string>rss</string>
+    <string>footprint</string>
 
     <key>LASTDBD_RSS_LIMIT_MB</key>
-    <string>12288</string>
-    <key>LASTDBD_SWAP_WARN_MB</key>
-    <string>12288</string>
+    <string>16384</string>
   </dict>
 
   <key>StartInterval</key>
