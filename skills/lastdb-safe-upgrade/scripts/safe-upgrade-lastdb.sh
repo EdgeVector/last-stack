@@ -64,7 +64,15 @@ export PATH="${LASTDB_SIDEBIN_DIR:-$HOME/.lastdb/bin-with-upload-cap}:$HOME/.loc
 
 PRIMARY_HOME="${LASTDB_HOME:-$HOME/.lastdb}"
 PRIMARY_SOCK="$PRIMARY_HOME/data/folddb.sock"
-ROLLBACK_ROOT="${LASTDB_ROLLBACK_ROOT:-${LASTDB_BACKUP_ROOT:-${TMPDIR:-/tmp}/lastdb-safe-upgrade-rollback-${UID:-$(id -u)}}}"
+# routinesd dispatch sets TMPDIR under $HOME/.routines/runs/<run>/scratch; the
+# rollback root must stay off HOME (prepare_rollback_root dies on it), so the
+# TMPDIR-derived default only applies when it resolves outside the real HOME.
+_rollback_default_tmp="${TMPDIR:-/tmp}"
+_rollback_home_real="$(cd "$HOME" && pwd -P)"
+case "$(cd "$_rollback_default_tmp" 2>/dev/null && pwd -P || printf '%s' "$_rollback_default_tmp")" in
+  "$_rollback_home_real"|"$_rollback_home_real"/*) _rollback_default_tmp="/tmp" ;;
+esac
+ROLLBACK_ROOT="${LASTDB_ROLLBACK_ROOT:-${LASTDB_BACKUP_ROOT:-${_rollback_default_tmp}/lastdb-safe-upgrade-rollback-${UID:-$(id -u)}}}"
 ROLLBACK_TTL_HOURS="${LASTDB_ROLLBACK_TTL_HOURS:-24}"
 # Resolved under this run's WORK directory after mktemp unless explicitly set.
 PROBE_ROOT="${LASTDB_PROBE_ROOT:-}"
