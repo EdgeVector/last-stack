@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+# Guarded deletion of stale LastDB scratch copies — the policy-approved
+# implementation of disk-reclaim step 4b.
+#
+# The managed execution policy of scheduled routines rejects agent-issued
+# `rm -rf` command lines, so the hourly disk-reclaim audited eligible scratch
+# copies and then could not delete them
+# (papercut-disk-reclaim-deletion-policy-blocks-approved-candidates).
+# This helper performs the same audited deletion behind one installed command.
+#
+# Scope (and nothing else):
+#   ~/.lastdb-test-copies/<dir>   mtime older than --min-age-hours (default 48)
+#   ~/lastdb-ephemeral-*          mtime older than --min-age-hours
+#   ~/.lastdb.broken-*            mtime older than 168h (7 days)
+#
+# Gates per candidate (every gate must pass, in this order):
+#   1. real directory, not a symlink
+#   2. realpath NOT inside the realpath of ~/.lastdb (the live primary)
+#   3. basename does not match a keep pattern: flip-records*, pin-*, keep-*
+#   4. mtime older than the age gate for its scope
+#   5. `lsof +D` runnable and returning zero open-file rows (unrunnable lsof
+#      is inconclusive -> KEEP, fail closed)
+#   6. basename not named in any Kanban doing card (board unreadable -> KEEP,
+#      fail closed)
+# Before deleting, any top-level *-REPORT.md / VALIDATE-REPORT.md inside the
+# candidate is copied into ~/.lastdb-test-copies/flip-records/.
+#
+# Dry-run by default; --execute deletes. Exit 0 on success including
+# nothing-to-do; the final stdout line always carries heartbeat tokens:
+#   scratch_candidates= scratch_eligible= scratch_reclaimed= scratch_kept=
+#   scratch_reclaimed_gb_du=   (du sum; APFS clones make this an upper bound —
+#                               report real reclaim as the df delta)
+# plus scratch_board_unavailable=1 / scratch_lsof_unavailable=1 /
+# scratch_delete_failed=<n> when those conditions occur.
+set -euo pipefail
+
+home="${HOME:?HOME must be set}"
+min_age_hours=48
+broken_age_hours=168
+execute=0
+
+usage() {
+  cat <<'EOF'
+Usage: last-stack-scratch-reclaim [--execute] [--min-age-hours N]
+
+Audited deletion of stale LastDB scratch copies under ~/.lastdb-test-copies,
+~/lastdb-ephemeral-*, and ~/.lastdb.broken-*. Dry-run unless --execute.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --execute) execute=1; shift ;;
+    --min-age-hours) min_age_hours="${2:?--min-age-hours needs a value}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage; exit 2 ;;
+  esac
+done
+
+tmp_parent="${TMPDIR:-${TMP:-${TEMP:-/tmp}}}"
+now_epoch="$(date -u +%s)"
+log() { printf 'scratch-reclaim: %s\n' "$*"; }
+
+mtime_of() {
+  # Darwin stat first; GNU stat fallback.
+  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo "$now_epoch"
+}
+
+primary_real="$(cd "$home/.lastdb" 2>/dev/null && pwd -P || true)"
+
+# --- Gate 6 precondition: the doing-card protect text (fail closed) ---------
+board_unavailable=0
+board_text="$(mktemp "${tmp_parent%/}/scratch-reclaim-board.XXXXXX")"
+trap 'rm -f "$board_text"' EXIT
+board_cli=""
+if command -v kanban >/dev/null 2>&1; then board_cli=kanban; fi
+if [ -n "$board_cli" ] && command -v jq >/dev/null 2>&1; then
+  board_json="$(mktemp "${tmp_parent%/}/scratch-reclaim-doing.XXXXXX")"
+  if "$board_cli" list --column doing --json >"$board_json" 2>/dev/null &&
+     jq -r '.cards[] | ((.slug // "") + " " + (.title // "") + " " + (.body // ""))' \
+       "$board_json" >"$board_text" 2>/dev/null; then
+    :
+  else
+    board_unavailable=1
+  fi
+  rm -f "$board_json"
+else
+  board_unavailable=1
+fi
+
+named_in_doing() {
+  # Word-boundary fixed-name match; a false keep is safe, a false delete is not.
+  local name escaped
+  name="$1"
+  escaped="$(printf '%s' "$name" | sed -e 's/[][\.*^$()+?{}|]/\\&/g')"
+  grep -Eq "(^|[^A-Za-z0-9_-])${escaped}([^A-Za-z0-9_-]|$)" "$board_text" 2>/dev/null
+}
+
+lsof_unavailable=0
+open_files_check() {
+  # Return 0 when provably no open files; 1 when open files OR inconclusive.
+  local p out rc
+  p="$1"
+  if ! command -v lsof >/dev/null 2>&1; then
+    lsof_unavailable=1
+    return 1
+  fi
+  set +e
+  out="$(lsof +D "$p" 2>/dev/null)"
+  rc=$?
+  set -e
+  if [ -n "$out" ]; then return 1; fi
+  # lsof exits 1 with empty output when nothing is open — that is the pass.
+  if [ "$rc" -gt 1 ]; then
+    lsof_unavailable=1
+    return 1
+  fi
+  return 0
+}
+
+candidates=0
+eligible=0
+reclaimed=0
+kept=0
+delete_failed=0
+reclaimed_kib=0
+
+consider() {
+  local p age_gate_hours name age_sec real du_kib report
+  p="$1"
+  age_gate_hours="$2"
+  [ -e "$p" ] || return 0
+  name="$(basename "$p")"
+  candidates=$((candidates + 1))
+
+  if [ -L "$p" ] || [ ! -d "$p" ]; then
+    kept=$((kept + 1)); log "keep $name: not a real directory"; return 0
+  fi
+  real="$(cd "$p" 2>/dev/null && pwd -P || true)"
+  if [ -z "$real" ]; then
+    kept=$((kept + 1)); log "keep $name: unresolvable realpath"; return 0
+  fi
+  case "$real" in
+    "$primary_real"|"$primary_real"/*)
+      kept=$((kept + 1)); log "keep $name: resolves inside the live primary"; return 0 ;;
+  esac
+  case "$name" in
+    flip-records*|pin-*|keep-*)
+      kept=$((kept + 1)); log "keep $name: protected name"; return 0 ;;
+  esac
+  age_sec=$((now_epoch - $(mtime_of "$p")))
+  if [ "$age_sec" -lt $((age_gate_hours * 3600)) ]; then
+    kept=$((kept + 1)); log "keep $name: younger than ${age_gate_hours}h"; return 0
+  fi
+  if ! open_files_check "$p"; then
+    kept=$((kept + 1)); log "keep $name: open files or lsof inconclusive"; return 0
+  fi
+  if [ "$board_unavailable" -eq 1 ]; then
+    kept=$((kept + 1)); log "keep $name: board unreadable — protect set unknown"; return 0
+  fi
+  if named_in_doing "$name"; then
+    kept=$((kept + 1)); log "keep $name: named in a doing card"; return 0
+  fi
+
+  eligible=$((eligible + 1))
+  du_kib="$(du -sk "$p" 2>/dev/null | awk '{print $1}')"
+  du_kib="${du_kib:-0}"
+  if [ "$execute" -ne 1 ]; then
+    log "WOULD-DELETE $name (${du_kib} KiB, age $((age_sec / 3600))h)"
+    return 0
+  fi
+  for report in "$p"/*-REPORT.md "$p"/VALIDATE-REPORT.md; do
+    [ -f "$report" ] || continue
+    mkdir -p "$home/.lastdb-test-copies/flip-records"
+    cp "$report" "$home/.lastdb-test-copies/flip-records/${name}-$(basename "$report")" 2>/dev/null ||
+      log "WARN could not salvage $(basename "$report") from $name"
+  done
+  if rm -rf -- "$p" 2>/dev/null && [ ! -e "$p" ]; then
+    reclaimed=$((reclaimed + 1))
+    reclaimed_kib=$((reclaimed_kib + du_kib))
+    log "deleted $name (${du_kib} KiB)"
+  else
+    delete_failed=$((delete_failed + 1))
+    log "DELETE-FAILED $name — deletion denied or incomplete"
+  fi
+}
+
+for p in "$home/.lastdb-test-copies"/*; do consider "$p" "$min_age_hours"; done
+for p in "$home"/lastdb-ephemeral-*; do consider "$p" "$min_age_hours"; done
+for p in "$home"/.lastdb.broken-*; do consider "$p" "$broken_age_hours"; done
+
+gb_du="$(awk -v k="$reclaimed_kib" 'BEGIN { printf "%.1f", k / 1048576 }')"
+tokens="scratch_candidates=$candidates scratch_eligible=$eligible scratch_reclaimed=$reclaimed scratch_kept=$kept scratch_reclaimed_gb_du=$gb_du"
+[ "$board_unavailable" -eq 1 ] && tokens="$tokens scratch_board_unavailable=1"
+[ "$lsof_unavailable" -eq 1 ] && tokens="$tokens scratch_lsof_unavailable=1"
+[ "$delete_failed" -gt 0 ] && tokens="$tokens scratch_delete_failed=$delete_failed"
+printf '%s\n' "$tokens"

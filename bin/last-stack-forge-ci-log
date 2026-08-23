@@ -123,7 +123,7 @@ web_user="tom"
 web_pass="$(security find-generic-password -s forgejo-admin -w 2>/dev/null || true)"
 [ -n "$web_pass" ] || { echo "no forgejo-admin password in keychain (security find-generic-password -s forgejo-admin -w)" >&2; exit 3; }
 
-cookie="$(mktemp)"
+cookie="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack.XXXXXX")"
 trap 'rm -f "$cookie"' EXIT
 curl -fsS -c "$cookie" "$ROOT/user/login" -o /dev/null
 csrf="$(awk '/_csrf/{v=$7} END{print v}' "$cookie")"

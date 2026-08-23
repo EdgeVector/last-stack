@@ -131,7 +131,7 @@ bump_attempt() {
   touch "$f"
   c="$(attempt_count "$repo" "$id")"
   c=$((c + 1))
-  tmp="$(mktemp)"
+  tmp="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack.XXXXXX")"
   awk -v id="$id" -v c="$c" '
     $1==id {next}
     {print}

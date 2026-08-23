@@ -90,7 +90,7 @@ cleanup() {
 trap cleanup EXIT
 
 if [ "$stdin_mode" -eq 1 ]; then
-  tmp="$(mktemp)"
+  tmp="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack.XXXXXX")"
   cat >"$tmp"
   body_file="$tmp"
 fi
