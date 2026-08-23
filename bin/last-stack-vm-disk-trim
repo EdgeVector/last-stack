@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+# Return sparse VM disk overhang to the host volume — the owned, recurring
+# implementation of the trim that no counter used to cover.
+#
+# Space deleted INSIDE the colima/Docker VM never comes back to the host APFS
+# volume until something trims it. On 2026-08-23 one manual `fstrim -a` inside
+# the VM returned 79.6 GiB to the host. The hourly disk-reclaim only sizes
+# ~/.cache (step 3c) and cannot see that sink, so the overhang grew with fold
+# CI activity and nothing owned it.
+#
+# Guard rails (every one of them is a hard gate, in this order):
+#   1. throttle      — one trim per --min-interval-hours (default 168h/weekly)
+#   2. free ceiling   — with --free-below-gib N, skip when host free >= N GiB
+#   3. docker CLI     — absent -> clean noop, exit 0
+#   4. docker daemon  — unreachable/denied (routine sandbox) -> clean noop
+#   5. image local    — `docker image inspect` must already have it; this
+#                       helper NEVER pulls unattended, and passes --pull=never
+#                       to `docker run` as defence in depth
+#
+# Reclaim is reported as the host `df` delta, never as anything the VM says:
+# the VM's own numbers describe VM blocks, not host bytes.
+#
+# Exit 0 on success and on every skip. Exit 1 only when the trim itself failed.
+# The final stdout line always carries heartbeat tokens:
+#   vm_trim_status=<trimmed|skipped|dry-run|error> vm_trimmed_gb=<n>
+#   [vm_trim_skipped=<reason>] [vm_trim_error=<reason>]
+set -euo pipefail
+
+home="${HOME:?HOME must be set}"
+state_dir="${LAST_STACK_STATE_DIR:-$home/.local/state/last-stack}/vm-disk-trim"
+stamp_file="$state_dir/last-run"
+image="${LAST_STACK_VM_TRIM_IMAGE:-alpine}"
+min_interval_hours=168
+free_below_gib=0
+docker_timeout_sec=60
+trim_timeout_sec=900
+dry_run=0
+force=0
+
+usage() {
+  cat <<'EOF'
+Usage: last-stack-vm-disk-trim [options]
+
+  --dry-run                report what would run; touch nothing
+  --force                  ignore the interval throttle
+  --min-interval-hours N   throttle window (default 168 = weekly)
+  --free-below-gib N       only trim when host free space is under N GiB
+  --image NAME             trim image, must already be local (default alpine)
+  --trim-timeout-sec N     bound on the fstrim run (default 900)
+
+Runs `fstrim -a` inside the docker VM so blocks freed in the VM return to the
+host volume. Never pulls an image. Prints heartbeat tokens on the last line.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dry-run) dry_run=1; shift ;;
+    --force) force=1; shift ;;
+    --min-interval-hours) min_interval_hours="${2:?--min-interval-hours needs a value}"; shift 2 ;;
+    --free-below-gib) free_below_gib="${2:?--free-below-gib needs a value}"; shift 2 ;;
+    --image) image="${2:?--image needs a value}"; shift 2 ;;
+    --trim-timeout-sec) trim_timeout_sec="${2:?--trim-timeout-sec needs a value}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+done
+
+log() { printf 'vm-disk-trim: %s\n' "$*"; }
+
+emit() {
+  # $1 = status, $2 = trimmed GiB, $3 = optional extra token
+  local tokens="vm_trim_status=$1 vm_trimmed_gb=$2"
+  [ -n "${3:-}" ] && tokens="$tokens $3"
+  printf '%s\n' "$tokens"
+}
+
+# Bounded foreground run. A hung docker daemon must not eat a routine budget.
+run_bounded() {
+  local secs="$1"; shift
+  if command -v gtimeout >/dev/null 2>&1; then
+    gtimeout -k 10s "${secs}s" "$@"
+  elif command -v timeout >/dev/null 2>&1; then
+    timeout -k 10s "${secs}s" "$@"
+  else
+    "$@"
+  fi
+}
+
+# Host free space in KiB on the volume that holds $HOME. -P keeps one row per
+# filesystem even when the device name is long.
+free_kib() {
+  df -Pk "$home" 2>/dev/null | awk 'NR == 2 { print $4 }'
+}
+
+now_epoch="$(date -u +%s)"
+
+# --- Gate 1: throttle ------------------------------------------------------
+if [ "$force" -ne 1 ] && [ -f "$stamp_file" ]; then
+  last_epoch="$(awk 'NR == 1 { print $1 + 0 }' "$stamp_file" 2>/dev/null || echo 0)"
+  age_sec=$((now_epoch - last_epoch))
+  if [ "$last_epoch" -gt 0 ] && [ "$age_sec" -lt $((min_interval_hours * 3600)) ]; then
+    log "skip: trimmed $((age_sec / 3600))h ago, under the ${min_interval_hours}h interval"
+    emit skipped 0 "vm_trim_skipped=throttled"
+    exit 0
+  fi
+fi
+
+# --- Gate 2: free-space ceiling -------------------------------------------
+before_kib="$(free_kib)"
+before_kib="${before_kib:-0}"
+if [ "$free_below_gib" -gt 0 ]; then
+  free_gib=$((before_kib / 1048576))
+  if [ "$free_gib" -ge "$free_below_gib" ]; then
+    log "skip: ${free_gib} GiB free is at or above the ${free_below_gib} GiB ceiling"
+    emit skipped 0 "vm_trim_skipped=free-above-ceiling"
+    exit 0
+  fi
+fi
+
+# --- Gate 3: docker CLI ----------------------------------------------------
+if ! command -v docker >/dev/null 2>&1; then
+  log "skip: no docker CLI on PATH"
+  emit skipped 0 "vm_trim_skipped=no-docker"
+  exit 0
+fi
+
+# --- Gate 4: docker daemon responds ---------------------------------------
+if ! run_bounded "$docker_timeout_sec" docker info >/dev/null 2>&1; then
+  log "skip: docker daemon unreachable (stopped VM, or a sandbox denying the socket)"
+  emit skipped 0 "vm_trim_skipped=docker-unreachable"
+  exit 0
+fi
+
+# --- Gate 5: image already local (never pull unattended) -------------------
+if ! run_bounded "$docker_timeout_sec" docker image inspect "$image" >/dev/null 2>&1; then
+  log "skip: image '$image' is not local; this helper never pulls unattended"
+  emit skipped 0 "vm_trim_skipped=image-not-local"
+  exit 0
+fi
+
+if [ "$dry_run" -eq 1 ]; then
+  log "would run fstrim -a in the VM via '$image' (host free ${before_kib} KiB)"
+  emit dry-run 0 "vm_trim_would_run=1"
+  exit 0
+fi
+
+# --pull=never keeps the no-unattended-pull guarantee even if the inspect above
+# ever races with an image prune.
+if ! run_bounded "$trim_timeout_sec" docker run --rm --privileged --pid=host \
+  --pull=never "$image" nsenter -t 1 -m -u -n -i fstrim -a >/dev/null 2>&1; then
+  log "ERROR: the in-VM fstrim did not complete"
+  emit error 0 "vm_trim_error=fstrim-failed"
+  exit 1
+fi
+
+after_kib="$(free_kib)"
+after_kib="${after_kib:-$before_kib}"
+delta_kib=$((after_kib - before_kib))
+[ "$delta_kib" -lt 0 ] && delta_kib=0
+trimmed_gb="$(awk -v k="$delta_kib" 'BEGIN { printf "%.1f", k / 1048576 }')"
+
+mkdir -p "$state_dir" 2>/dev/null || true
+printf '%s\n' "$now_epoch" >"$stamp_file" 2>/dev/null ||
+  log "WARN could not write the throttle stamp $stamp_file"
+
+log "trimmed the VM disk; host free rose by ${trimmed_gb} GiB"
+emit trimmed "$trimmed_gb"

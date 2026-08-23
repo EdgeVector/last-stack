@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.edgevector.vm-disk-trim</string>
+
+  <!-- A LaunchAgent, not a routine step: the scheduled routine sandbox may not
+       reach the docker socket, and this reclaim needs the host session. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/REPLACE/.last-stack/bin/last-stack-vm-disk-trim</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/REPLACE/code/edgevector</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/REPLACE</string>
+    <key>USER</key>
+    <string>REPLACE</string>
+    <key>PATH</key>
+    <string>/Users/REPLACE/.local/bin:/Users/REPLACE/.last-stack/bin:/Users/REPLACE/.bun/bin:/Users/REPLACE/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>LAST_STACK_ROOT</key>
+    <string>/Users/REPLACE/.last-stack</string>
+  </dict>
+
+  <!-- Every 24h; the helper's own 168h throttle stamp decides when a fire
+       actually trims, so a missed week still trims on the next wake. -->
+  <key>StartInterval</key>
+  <integer>86400</integer>
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>Nice</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/REPLACE/Library/Logs/vm-disk-trim.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/REPLACE/Library/Logs/vm-disk-trim.err.log</string>
+</dict>
+</plist>

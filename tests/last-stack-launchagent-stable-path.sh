@@ -45,13 +45,18 @@ cp "$ROOT/bin/last-stack-board-closeout-install" "$version/bin/"
 cp "$ROOT/lib/last-stack-launchd-agent.sh" "$version/lib/"
 cp "$ROOT/launchd/com.edgevector.factory-health.plist" "$version/launchd/"
 cp "$ROOT/launchd/com.edgevector.board-closeout.plist" "$version/launchd/"
+cp "$ROOT/bin/last-stack-vm-disk-trim-install" "$version/bin/"
+cp "$ROOT/launchd/com.edgevector.vm-disk-trim.plist" "$version/launchd/"
 printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-factory-health"
 printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-board-closeout-sweep"
+printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-vm-disk-trim"
 chmod +x \
   "$version/bin/last-stack-factory-health-install" \
   "$version/bin/last-stack-board-closeout-install" \
   "$version/bin/last-stack-factory-health" \
-  "$version/bin/last-stack-board-closeout-sweep"
+  "$version/bin/last-stack-board-closeout-sweep" \
+  "$version/bin/last-stack-vm-disk-trim-install" \
+  "$version/bin/last-stack-vm-disk-trim"
 
 # A fake launchctl that would pollute the real gui domain if called.
 mkdir -p "$tmp/path"
@@ -100,6 +105,27 @@ esac
 out="$("$version/bin/last-stack-board-closeout-install" install)" || fail "second closeout install failed"
 printf '%s\n' "$out" | grep -q 'already current, skipped launchctl' \
   || fail "closeout expected already current, got: $out"
+
+# 3b. vm-disk-trim same contract. This agent runs `docker run --privileged
+# --pid=host`, so a version-pinned program path would silently keep trimming
+# from a stale tree after every refresh.
+out="$("$version/bin/last-stack-vm-disk-trim-install" install)" || fail "vm-disk-trim install failed"
+printf '%s\n' "$out" | grep -q 'launchctl skipped' || fail "vm-disk-trim expected skip, got: $out"
+vplist="$HOME/Library/LaunchAgents/com.edgevector.vm-disk-trim.plist"
+vprog="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$vplist")"
+[ "$vprog" = "$compat/bin/last-stack-vm-disk-trim" ] || fail "vm-disk-trim program=$vprog"
+case "$vprog" in
+  */artifacts/versions/*) fail "vm-disk-trim still version-pinned: $vprog" ;;
+esac
+vuser="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:USER' "$vplist")"
+[ "$vuser" = "testuser" ] || fail "vm-disk-trim USER leftover REPLACE: $vuser"
+out="$("$version/bin/last-stack-vm-disk-trim-install" install)" || fail "second vm-disk-trim install failed"
+printf '%s\n' "$out" | grep -q 'already current, skipped launchctl' \
+  || fail "vm-disk-trim expected already current, got: $out"
+: >"$LAUNCHCTL_LOG"
+"$version/bin/last-stack-vm-disk-trim-install" uninstall >/dev/null
+[ ! -f "$vplist" ] || fail "vm-disk-trim uninstall left the plist"
+[ ! -s "$LAUNCHCTL_LOG" ] || fail "vm-disk-trim uninstall called launchctl: $(cat "$LAUNCHCTL_LOG")"
 
 # 4. Foreign HOME + default domain must not call launchctl (gui-domain leak).
 unset LAST_STACK_LAUNCHD_DOMAIN
