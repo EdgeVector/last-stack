@@ -273,8 +273,11 @@ bin/
                             predictable parallel Cargo builds)
   last-stack-cargo          Cargo entrypoint that explicitly bypasses a
                             host-global rustc-wrapper unless opted back in
-  last-stack-sccache-health report pinned-full cache state; exit 10 when the
-                            current shell still routes builds through it
+  last-stack-sccache-health report a cache that cannot pay for the wrapper it
+                            costs: pinned full (state=full) or failing its
+                            stores so it can never fill (state=degraded); exit
+                            10 when the current shell still routes builds
+                            through it
   last-stack-cli-preflight  verify routine-required global CLIs are on PATH
   last-stack-json-get       extract one simple field path from socket/API JSON
                             without relying on jq or inline python/node parsing
