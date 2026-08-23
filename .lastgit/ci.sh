@@ -62,6 +62,11 @@ bash tests/last-stack-no-bare-mktemp.sh
 bash tests/last-stack-class-a-heal.sh
 bash tests/last-stack-sccache-health.sh
 bash tests/last-stack-shell-prelude.sh
+# The Bash PreToolUse guards run on every agent tool call, and a regression
+# there denies work fleet-wide rather than failing one run. The merged-stream
+# guard produced 97 distinct denials in one 24h window while its only test
+# sat behind LAST_STACK_CI_FULL=1. ~4s.
+bash tests/last-stack-hooks-guards.sh
 bash tests/last-stack-brain-append-heartbeat.sh
 bash tests/last-stack-obs-sentry-locator.sh
 bash tests/last-stack-install-routines.sh

@@ -289,9 +289,21 @@
         {
           "source": "dist/routines",
           "target": "$HOME/.local/bin/routines"
+        },
+        {
+          "source": "dist/probes/north-star-rollup-gate.sh",
+          "target": "$HOME/.local/bin/routines-north-star-rollup-gate"
+        },
+        {
+          "source": "dist/probes/cloud-sync-health-fix-gate.sh",
+          "target": "$HOME/.local/bin/routines-cloud-sync-health-fix-gate"
+        },
+        {
+          "source": "dist/probes/lastdb-local-smoke-gate.sh",
+          "target": "$HOME/.local/bin/routines-lastdb-local-smoke-gate"
         }
       ],
-      "notes": "Routines LastGit artifact install from CI-published dist/routines; track_gate_main promotes stable to green+published main. post_install reloads the LaunchAgent so current and routinesd stay on the same digest.",
+      "notes": "Routines LastGit artifact install from CI-published dist/routines; track_gate_main promotes stable to green+published main. post_install reloads the LaunchAgent so current and routinesd stay on the same digest. The zero-LLM gate scripts ship at dist/probes/*.sh and get PATH names here, so routinesd gate_command entries resolve to a file the artifact contains.",
       "track_gate_main": true,
       "post_install": "$HOME/.local/state/last-stack/artifacts/current/bin/last-stack-routines-host-track-post-install",
       "safe_upgrade": {
