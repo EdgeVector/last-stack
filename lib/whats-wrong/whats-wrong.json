@@ -1,0 +1,50 @@
+{
+  "name": "whats-wrong",
+  "version": "1",
+  "start_at": "LIST",
+  "max_depth": 2,
+  "node_budget": 80,
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "dashboard": { "type": "string" },
+      "max_items": { "type": "integer" }
+    }
+  },
+  "states": {
+    "LIST": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-whats-wrong-list.sh\""],
+      "effects": "none",
+      "timeout_sec": 60,
+      "next": "FANOUT",
+      "on_error": "FAILED"
+    },
+    "FANOUT": {
+      "type": "map",
+      "over": "items",
+      "definition": "whats-wrong-item",
+      "fanout": "heals",
+      "max_parallel": 3,
+      "input_from_context": ["dashboard"],
+      "next": "GATHER"
+    },
+    "GATHER": {
+      "type": "join",
+      "fanout": "heals",
+      "policy": "best_effort",
+      "result_key": "heal_results",
+      "next": "CLOSEOUT"
+    },
+    "CLOSEOUT": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-whats-wrong-closeout.sh\""],
+      "effects": "idempotent",
+      "timeout_sec": 120,
+      "next": "DONE",
+      "on_error": "FAILED"
+    },
+    "DONE": { "type": "succeed" },
+    "FAILED": { "type": "fail" }
+  }
+}

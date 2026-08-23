@@ -1,0 +1,280 @@
+#!/usr/bin/env bash
+# Bounded real work unit for scheduled last-stack jobs. Invokes the shipped
+# helper for <id> and stamps ROUTINE_RESULT from that helper's actual exit
+# and output. Never invents ok/noop for a failed or skipped job.
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+if [ "${JOB_GATE_FIXTURE:-0}" != "1" ]; then
+  export PATH="${HOME}/.local/bin:${ROOT}/bin:${HOME}/.last-stack/bin:${PATH:-/usr/bin:/bin}"
+fi
+id="${1:-${ROUTINE_ID:-}}"
+
+emit() {
+  printf '%s %s\n' 'ROUTINE_RESULT' "outcome=$1 detail=$2"
+}
+
+run_timeout() {
+  local secs="$1"
+  shift
+  if command -v gtimeout >/dev/null 2>&1; then
+    gtimeout -k 5s "${secs}s" "$@"
+  elif command -v timeout >/dev/null 2>&1; then
+    timeout -k 5s "${secs}s" "$@"
+  else
+    "$@"
+  fi
+}
+
+case "$id" in
+  lastdb-local-smoke-test)
+    smoke="${LASTDB_MINI_SMOKE_SH:-$HOME/code/edgevector/.claude/run-lastdb-mini-smoke.sh}"
+    if [ ! -x "$smoke" ]; then
+      emit error "reason=smoke-script-missing path=$smoke"
+      exit 1
+    fi
+    # Fold portal has no target/release/lastdbd. Prefer a staged canary
+    # binary; never cargo. LASTDB_MINI_SMOKE_BIN wins for tests/overrides.
+    bin="${LASTDB_MINI_SMOKE_BIN:-}"
+    if [ -z "$bin" ]; then
+      resolve="${LAST_STACK_CANARY_RESOLVE_BIN:-$ROOT/bin/last-stack-canary-resolve-lastdbd}"
+      if [ -x "$resolve" ]; then
+        bin="$("$resolve" --json --allow-newest --allow-current 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("lastdbd") or "")' 2>/dev/null || true)"
+      fi
+    fi
+    if [ -z "$bin" ]; then
+      bin="${LASTDB_CURRENT_BIN:-$HOME/.lastdb/current/lastdbd}"
+    fi
+    set +e
+    out="$(run_timeout 600 env BIN="$bin" bash "$smoke" 2>&1)"
+    rc=$?
+    set -e
+    verdict="$(printf '%s\n' "$out" | sed -n 's/^VERDICT:[[:space:]]*//p' | tail -1)"
+    if [ "$rc" -eq 124 ]; then
+      emit error "reason=smoke-timeout rc=124"
+      exit 124
+    fi
+    printf '%s\n' "$out" | tail -20
+    if [ "$verdict" = "GREEN" ]; then
+      emit ok "verdict=GREEN rc=$rc bin=$bin"
+      exit 0
+    fi
+    emit error "verdict=${verdict:-none} rc=$rc bin=$bin"
+    exit "${rc:-1}"
+    ;;
+  last-stack-papercut-reconciler)
+    pre="$HOME/.last-stack/bin/last-stack-generator-preflight"
+    if [ -x "$pre" ]; then
+      set +e
+      "$pre" papercut-reconciler
+      pre_rc=$?
+      set -e
+      if [ "$pre_rc" -ne 0 ]; then
+        emit noop "reason=generator-preflight-shed rc=$pre_rc"
+        exit 0
+      fi
+    fi
+    q="$HOME/.last-stack/bin/last-stack-papercut-queue"
+    if [ ! -x "$q" ]; then
+      emit error "reason=papercut-queue-missing"
+      exit 1
+    fi
+    snap_out="${ROUTINES_RUN_DIR:-.}/papercut-queue-snapshot.json"
+    mkdir -p "$(dirname "$snap_out")"
+    set +e
+    out="$(run_timeout 90 "$q" snapshot --output "$snap_out" --json 2>&1)"
+    rc=$?
+    set -e
+    printf '%s\n' "$out" | tail -20
+    if [ "$rc" -eq 0 ] && [ -s "$snap_out" ]; then
+      emit ok "unit=papercut-queue-snapshot rc=0 bytes=$(wc -c <"$snap_out" | tr -d ' ')"
+      exit 0
+    fi
+    emit error "unit=papercut-queue-snapshot rc=$rc"
+    exit "$rc"
+    ;;
+  lastdbd-mini-telemetry-dashboard-refresh)
+    wrap=""
+    for cand in \
+      "${LASTDB_TELEMETRY_REGEN:-}" \
+      "$HOME/.routines/scripts/telemetry-dashboard-regen.sh" \
+      "$HOME/code/edgevector/fold/scripts/lastdbd/telemetry-dashboard-regen.sh"
+    do
+      [ -n "$cand" ] && [ -f "$cand" ] && wrap="$cand" && break
+    done
+    if [ -z "$wrap" ] && [ -d "$HOME/.cache/edgevector-git/fold.git" ]; then
+      git --git-dir="$HOME/.cache/edgevector-git/fold.git" show \
+        HEAD:scripts/lastdbd/telemetry-dashboard-regen.sh \
+        >"$HOME/.routines/scripts/telemetry-dashboard-regen.sh" 2>/dev/null || true
+      chmod +x "$HOME/.routines/scripts/telemetry-dashboard-regen.sh" 2>/dev/null || true
+      [ -s "$HOME/.routines/scripts/telemetry-dashboard-regen.sh" ] && \
+        wrap="$HOME/.routines/scripts/telemetry-dashboard-regen.sh"
+    fi
+    if [ -z "$wrap" ]; then
+      emit error "reason=telemetry-wrapper-missing"
+      exit 1
+    fi
+    set +e
+    last="$(run_timeout 60 env LASTDB_HOME="${LASTDB_HOME:-$HOME/.lastdb}" bash "$wrap" 2>&1 | tail -1)"
+    rc=$?
+    set -e
+    case "$last" in
+      DASHBOARD_SKIP=*) emit noop "reason=$last"; exit 0 ;;
+      DASHBOARD_HTML=*) emit ok "published=$last"; exit 0 ;;
+    esac
+    emit error "reason=telemetry-wrapper-failed rc=$rc last=${last:-empty}"
+    exit "${rc:-1}"
+    ;;
+  last-stack-worktree-cleanup|last-stack-disk-reclaim)
+    reclaim="$HOME/.last-stack/bin/last-stack-worktree-reclaim"
+    if [ ! -x "$reclaim" ]; then
+      emit error "reason=worktree-reclaim-missing"
+      exit 1
+    fi
+    # Stream, don't capture — a SIGTERM mid-substitution previously left
+    # empty stdout and a 124 with no ROUTINE_RESULT (disk-reclaim 2026-08-17).
+    set +e
+    run_timeout 180 "$reclaim" --sweep-stale
+    rc=$?
+    set -e
+    if [ "$rc" -eq 3 ]; then
+      emit noop "reason=cleanup-liveness-unavailable helper_exit=3"
+      exit 0
+    fi
+    if [ "$rc" -eq 0 ]; then
+      emit ok "unit=worktree-reclaim-sweep rc=0"
+      exit 0
+    fi
+    emit error "unit=worktree-reclaim-sweep rc=$rc"
+    exit "$rc"
+    ;;
+  last-stack-card-reaper)
+    reaper="${CARD_REAPER_RUN:-}"
+    if [ -z "$reaper" ]; then
+      reaper="$(command -v last-stack-card-reaper-run || true)"
+      [ -x "${reaper:-}" ] || reaper="$ROOT/bin/last-stack-card-reaper-run"
+    fi
+    if [ ! -x "$reaper" ]; then
+      emit error "reason=card-reaper-run-missing"
+      exit 1
+    fi
+    set +e
+    out="$(run_timeout 180 "$reaper" 2>&1)"
+    rc=$?
+    set -e
+    trailer="$(printf '%s\n' "$out" | grep '^ROUTINE_RESULT ' | tail -1 || true)"
+    if [ -n "$trailer" ]; then
+      printf '%s\n' "$trailer"
+      exit "$rc"
+    fi
+    if [ "$rc" -eq 0 ]; then
+      emit ok "unit=card-reaper-run rc=0"
+      exit 0
+    fi
+    emit error "unit=card-reaper-run rc=$rc"
+    exit "$rc"
+    ;;
+  dogfood-rotate)
+    # Real bounded unit: load the registry and run one eligibility/preflight
+    # plus the last selected feature's health probe if present.
+    if command -v last-stack-generator-preflight >/dev/null 2>&1; then
+      set +e
+      last-stack-generator-preflight dogfood-rotate
+      pre_rc=$?
+      set -e
+      if [ "$pre_rc" -ne 0 ]; then
+        emit noop "reason=generator-preflight-shed rc=$pre_rc"
+        exit 0
+      fi
+    fi
+    if ! command -v brain >/dev/null 2>&1; then
+      emit error "reason=brain-cli-missing"
+      exit 1
+    fi
+    set +e
+    reg="$(run_timeout 45 brain get dogfood-registry --type project 2>&1)"
+    rc=$?
+    set -e
+    if [ "$rc" -ne 0 ] || [ -z "$reg" ]; then
+      emit error "reason=dogfood-registry-unreadable rc=$rc"
+      exit "${rc:-1}"
+    fi
+    # If last rotate left a schema-service health file, re-probe that feature.
+    health=""
+    for f in $(ls -td "$HOME/.routines/runs/dogfood-rotate"/*/schema-service-health.json 2>/dev/null | head -1); do
+      health="$f"
+    done
+    if [ -n "$health" ] && command -v python3 >/dev/null 2>&1; then
+      set +e
+      python3 - "$health" <<'PY'
+import json,sys
+p=sys.argv[1]
+try:
+    d=json.load(open(p))
+except Exception as e:
+    print("unreadable", e); sys.exit(1)
+ok=d.get("ok") or d.get("healthy") or d.get("status") in ("ok","healthy","pass")
+print("schema-service-health ok=%s" % bool(ok))
+sys.exit(0 if ok else 1)
+PY
+      probe_rc=$?
+      set -e
+      if [ "$probe_rc" -ne 0 ]; then
+        emit error "feature=schema-service-dev-propose result=fail registry=ok"
+        exit 1
+      fi
+    fi
+    emit ok "unit=dogfood-registry-read bytes=${#reg}"
+    exit 0
+    ;;
+  kanban-parity-check)
+    if ! command -v kanban >/dev/null 2>&1; then
+      emit error "reason=kanban-cli-missing"
+      exit 1
+    fi
+    set +e
+    out="$(run_timeout 60 kanban groom parity-check --json 2>&1)"
+    rc=$?
+    set -e
+    printf '%s\n' "$out" | tail -20
+    # Detector: a completed JSON check is a finished inspect even when rc=1 (drift).
+    if printf '%s\n' "$out" | grep -q '{'; then
+      emit ok "unit=kanban-groom-parity-check rc=$rc"
+      exit 0
+    fi
+    emit error "unit=kanban-groom-parity-check rc=$rc"
+    exit "$rc"
+    ;;
+  aws-cost-hygiene)
+    bin="$(command -v last-stack-aws-cost-hygiene || true)"
+    [ -x "${bin:-}" ] || bin="$HOME/.last-stack/bin/last-stack-aws-cost-hygiene"
+    if [ ! -x "$bin" ]; then
+      emit error "reason=aws-cost-hygiene-missing"
+      exit 1
+    fi
+    set +e
+    out="$(run_timeout 180 "$bin" --json 2>&1)"
+    rc=$?
+    set -e
+    # 0 GREEN/YELLOW completed; 1 RED thresholds but measurement completed.
+    if [ "$rc" -eq 0 ] || [ "$rc" -eq 1 ]; then
+      emit ok "unit=aws-cost-hygiene rc=$rc"
+      exit 0
+    fi
+    emit error "unit=aws-cost-hygiene rc=$rc"
+    exit "$rc"
+    ;;
+  last-stack-north-star-rollup)
+    gate="${NORTH_STAR_ROLLUP_GATE:-$HOME/.routines/scripts/north-star-rollup-gate.sh}"
+    if [ ! -f "$gate" ]; then
+      emit error "reason=north-star-rollup-gate-missing"
+      exit 1
+    fi
+    NORTH_STAR_ROLLUP_OUTER_TIMEOUT_SEC=90 bash "$gate"
+    exit $?
+    ;;
+  *)
+    echo "usage: last-stack-routine-job-shrink-gate <routine-id>" >&2
+    exit 2
+    ;;
+esac

@@ -1,0 +1,369 @@
+#!/usr/bin/env bash
+# last-stack-whats-wrong-loom — hourly EV OPS "What's wrong" healer via loom.
+#
+# Reads http://127.0.0.1:7733/api/snapshot coverage.exceptions and fans one
+# loom child execution per row. Same-hour --key resumes the existing exec.
+#
+#   last-stack-whats-wrong-loom [--json] [--quiet] [--dry-run] [--no-heal] [--status]
+#   last-stack-whats-wrong-loom --key whats-wrong-YYYYmmddTHH
+#
+# loom run is wall-clock bounded (default 780s, LAST_STACK_WHATS_WRONG_LOOM_TIMEOUT_SEC).
+# A stuck child is SIGTERM'd (then SIGKILL) so it cannot eat routines'
+# GATE_TIMEOUT_CAP_MS (15m) with empty logs. The wrapper still emits
+# ROUTINE_RESULT with exceptions/healed counts.
+#
+# Exit:
+#   0  ran (including exceptions=0 noop) or --status/--dry-run printed
+#   2  usage
+#   3  loom / snapshot / definitions unavailable / loom-timeout
+set -euo pipefail
+
+JSON=0
+QUIET=0
+STATUS=0
+DRY=0
+HEAL=1
+KEY=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json) JSON=1; shift ;;
+    --quiet|-q) QUIET=1; shift ;;
+    --status) STATUS=1; shift ;;
+    --dry-run) DRY=1; shift ;;
+    --no-heal) HEAL=0; shift ;;
+    --heal) HEAL=1; shift ;;
+    --key) KEY="${2:-}"; shift 2 ;;
+    --key=*) KEY="${1#*=}"; shift ;;
+    -h|--help)
+      echo "last-stack-whats-wrong-loom [--json] [--quiet] [--dry-run] [--no-heal] [--status] [--key KEY]"
+      exit 0
+      ;;
+    *) echo "unknown: $1" >&2; exit 2 ;;
+  esac
+done
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
+STAMP="${LAST_STACK_WHATS_WRONG_STAMP:-$HOME/.last-stack/state/whats-wrong-loom.json}"
+
+log() { [ "$QUIET" -eq 1 ] || printf 'whats-wrong-loom: %s\n' "$*" >&2; }
+
+write_stamp() {
+  mkdir -p "$(dirname "$STAMP")"
+  ST="$1" EX="${2:-}" DT="${3:-}" KY="${4:-}" OC="${5:-}" LAST_STACK_WHATS_WRONG_STAMP="$STAMP" python3 -c '
+import json, os, datetime
+p = os.environ["LAST_STACK_WHATS_WRONG_STAMP"]
+doc = {
+  "ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+  "status": os.environ.get("ST", ""),
+  "exec_id": os.environ.get("EX", ""),
+  "detail": os.environ.get("DT", ""),
+  "key": os.environ.get("KY", ""),
+  "outcome": os.environ.get("OC", ""),
+  "engine": "loom",
+}
+open(p, "w").write(json.dumps(doc) + "\n")
+'
+}
+
+print_status() {
+  LAST_STACK_WHATS_WRONG_STAMP="$STAMP" python3 -c '
+import json, os, sys, datetime
+p = os.environ["LAST_STACK_WHATS_WRONG_STAMP"]
+if not os.path.isfile(p):
+    print(json.dumps({"ok": False, "missing": True, "status": "", "ageH": 99.0}))
+    sys.exit(0)
+try:
+    d = json.load(open(p))
+except Exception:
+    print(json.dumps({"ok": False, "missing": True, "status": "parse", "ageH": 99.0}))
+    sys.exit(0)
+ts = d.get("ts") or ""
+try:
+    t = datetime.datetime.strptime(ts.replace("Z",""), "%Y-%m-%dT%H:%M:%S").replace(tzinfo=datetime.timezone.utc)
+    age_h = (datetime.datetime.now(datetime.timezone.utc) - t).total_seconds() / 3600.0
+except Exception:
+    age_h = 99.0
+status = str(d.get("status") or "")
+print(json.dumps({
+    "ok": status == "succeeded",
+    "missing": False,
+    "status": status,
+    "ageH": round(age_h, 4),
+    "exec_id": d.get("exec_id") or "",
+    "detail": d.get("detail") or "",
+    "key": d.get("key") or "",
+    "outcome": d.get("outcome") or "",
+}))
+'
+}
+
+if [ "$STATUS" -eq 1 ]; then
+  print_status
+  exit 0
+fi
+
+list_exceptions() {
+  WHATS_WRONG_DASHBOARD="${WHATS_WRONG_DASHBOARD:-http://127.0.0.1:7733}" \
+  python3 -c '
+import json, os, sys, urllib.request
+snap_file = os.environ.get("WHATS_WRONG_SNAPSHOT_FILE") or ""
+dash = (os.environ.get("WHATS_WRONG_DASHBOARD") or "http://127.0.0.1:7733").rstrip("/")
+url = os.environ.get("WHATS_WRONG_SNAPSHOT_URL") or (dash + "/api/snapshot")
+try:
+    if snap_file:
+        snap = json.load(open(snap_file))
+    else:
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=45) as resp:
+            snap = json.loads(resp.read().decode("utf-8"))
+except Exception as e:
+    print(json.dumps({"ok": False, "error": str(e)}))
+    sys.exit(3)
+exc = (snap.get("coverage") or {}).get("exceptions") or []
+if not isinstance(exc, list):
+    exc = []
+rows = [r for r in exc if isinstance(r, dict) and r.get("id")]
+print(json.dumps({"ok": True, "count": len(rows), "exceptions": rows, "dashboard": dash}))
+'
+}
+
+if [ "$DRY" -eq 1 ]; then
+  listed="$(list_exceptions)" || {
+    log "snapshot failed"
+    write_stamp unavailable "" "snapshot-failed" "${KEY:-}" "error"
+    exit 3
+  }
+  if [ "$JSON" -eq 1 ]; then
+    printf '%s\n' "$listed"
+  else
+    printf '%s\n' "$listed" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+print("whats-wrong dry-run count=%s" % d.get("count"))
+for r in d.get("exceptions") or []:
+    print("  %s  L=%s F=%s T=%s  %s" % (r.get("id"), r.get("L"), r.get("F"), r.get("T"), r.get("why") or r.get("detail") or ""))
+'
+  fi
+  n="$(printf '%s\n' "$listed" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("count",0))')"
+  oc="noop"
+  [ "${n:-0}" = "0" ] || oc="ok"
+  write_stamp dry-run "" "exceptions=${n}" "${KEY:-}" "$oc"
+  printf '%s %s\n' 'ROUTINE_RESULT' "outcome=${oc} detail=exceptions=${n}"
+  exit 0
+fi
+
+if ! command -v loom >/dev/null 2>&1; then
+  log "loom not on PATH"
+  write_stamp unavailable "" "loom-missing" "${KEY:-}" "error"
+  exit 3
+fi
+if ! loom ping >/dev/null 2>&1; then
+  log "loom ping failed"
+  write_stamp unavailable "" "loom-ping-failed" "${KEY:-}" "error"
+  exit 3
+fi
+
+exe="$(command -v loom)"
+real="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$exe")"
+install_root="$(dirname "$(dirname "$real")")"
+
+defs=""
+scripts=""
+for cand in \
+  "${LOOM_DEFS:-}" \
+  "$ROOT/lib/whats-wrong" \
+  "$install_root/definitions" \
+  "${HOME}/.loom/definitions"; do
+  if [ -n "$cand" ] && [ -f "$cand/whats-wrong.json" ] && [ -f "$cand/whats-wrong-item.json" ]; then
+    defs="$cand"
+    break
+  fi
+done
+for cand in \
+  "${LOOM_SCRIPTS:-}" \
+  "$ROOT/lib/whats-wrong" \
+  "$install_root/scripts" \
+  "${HOME}/.loom/scripts"; do
+  if [ -n "$cand" ] && [ -f "$cand/loom-whats-wrong-list.sh" ] && [ -f "$cand/loom-whats-wrong-heal.sh" ]; then
+    scripts="$cand"
+    break
+  fi
+done
+if [ -z "$defs" ] || [ -z "$scripts" ]; then
+  log "whats-wrong definitions/scripts not found"
+  write_stamp unavailable "" "defs-missing" "${KEY:-}" "error"
+  exit 3
+fi
+export LOOM_SCRIPTS="$scripts"
+
+if ! loom publish "$defs/whats-wrong.json" >/dev/null 2>&1; then
+  log "loom publish whats-wrong failed"
+  write_stamp unavailable "" "publish-failed" "${KEY:-}" "error"
+  exit 3
+fi
+if ! loom publish "$defs/whats-wrong-item.json" >/dev/null 2>&1; then
+  log "loom publish whats-wrong-item failed"
+  write_stamp unavailable "" "publish-failed" "${KEY:-}" "error"
+  exit 3
+fi
+
+if [ "$HEAL" -eq 1 ]; then
+  export LOOM_WHATS_WRONG_LIVE=1
+  export LOOM_LIVE=1
+else
+  unset LOOM_WHATS_WRONG_LIVE || true
+fi
+
+if [ -z "$KEY" ]; then
+  KEY="${LOOM_WHATS_WRONG_KEY:-whats-wrong-$(date -u +%Y%m%dT%H)}"
+fi
+input="$(python3 -c 'import json,os; print(json.dumps({"dashboard": os.environ.get("WHATS_WRONG_DASHBOARD") or "http://127.0.0.1:7733"}))')"
+
+# Under routines GATE_TIMEOUT_CAP_MS (15m). Leave headroom for snapshot + trailer.
+TIMEOUT_SEC="${LAST_STACK_WHATS_WRONG_LOOM_TIMEOUT_SEC:-780}"
+case "$TIMEOUT_SEC" in
+  ''|*[!0-9]*) TIMEOUT_SEC=780 ;;
+esac
+[ "$TIMEOUT_SEC" -ge 1 ] || TIMEOUT_SEC=780
+
+count_exceptions() {
+  listed="$(list_exceptions 2>/dev/null)" || listed=""
+  printf '%s\n' "$listed" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(int(d.get("count") or 0))
+except Exception:
+    print(0)
+' 2>/dev/null || echo 0
+}
+
+emit_result() {
+  local oc="$1"
+  local det="$2"
+  if [ "$JSON" -eq 1 ]; then
+    printf '{"outcome":"%s","detail":"%s","engine":"loom","key":"%s"}\n' \
+      "$oc" "$(printf '%s' "$det" | tr '"' "'")" "$KEY"
+  else
+    printf 'WHATS_WRONG outcome=%s engine=loom\n' "$oc"
+    printf 'detail: %s\n' "$det"
+  fi
+  printf '%s %s\n' 'ROUTINE_RESULT' "outcome=${oc} detail=${det}"
+}
+
+log "loom run whats-wrong --key $KEY timeout=${TIMEOUT_SEC}s"
+export LAST_STACK_WHATS_WRONG_LOOM_TIMEOUT_SEC="$TIMEOUT_SEC"
+export LOOM_WHATS_WRONG_RUN_KEY="$KEY"
+export LOOM_WHATS_WRONG_RUN_INPUT="$input"
+set +e
+view="$(python3 -c '
+import os, signal, subprocess, sys, time
+sec = int(os.environ["LAST_STACK_WHATS_WRONG_LOOM_TIMEOUT_SEC"])
+argv = [
+    "loom", "run", "whats-wrong",
+    "--key", os.environ["LOOM_WHATS_WRONG_RUN_KEY"],
+    "--input", os.environ["LOOM_WHATS_WRONG_RUN_INPUT"],
+]
+p = subprocess.Popen(argv, start_new_session=True)
+try:
+    rc = p.wait(timeout=sec)
+    if rc is None:
+        raise SystemExit(1)
+    raise SystemExit(rc if rc >= 0 else 124)
+except subprocess.TimeoutExpired:
+    try:
+        os.killpg(p.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    t0 = time.time()
+    while time.time() - t0 < 5:
+        if p.poll() is not None:
+            break
+        time.sleep(0.05)
+    if p.poll() is None:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            p.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+    raise SystemExit(124)
+')"
+lrc=$?
+set -e
+if [ "$lrc" -ne 0 ] || [ -z "$view" ]; then
+  n="$(count_exceptions)"
+  if [ "$lrc" -eq 124 ]; then
+    det="exceptions=${n} healed=0 loom-timeout=${TIMEOUT_SEC}s"
+    log "loom run timed out after ${TIMEOUT_SEC}s"
+    write_stamp timed-out "" "$det" "$KEY" "error"
+  else
+    det="exceptions=${n} healed=0 loom-run-failed rc=${lrc}"
+    log "loom run failed rc=$lrc"
+    write_stamp failed "" "$det" "$KEY" "error"
+  fi
+  emit_result error "$det"
+  exit 3
+fi
+
+parsed="$(printf '%s\n' "$view" | python3 -c '
+import json, sys
+text = sys.stdin.read()
+status = ""
+ctx = {}
+exec_id = ""
+for i, line in enumerate(text.splitlines()):
+    if i == 0 and line.strip() and not line.startswith("status:") and not line.startswith("context."):
+        exec_id = line.strip()
+    if line.startswith("status:"):
+        status = line.split(":", 1)[1].strip()
+    elif line.startswith("context."):
+        key, _, rest = line.partition(":")
+        key = key[len("context."):]
+        rest = rest.strip()
+        try:
+            ctx[key] = json.loads(rest)
+        except Exception:
+            ctx[key] = rest.strip("\"")
+print(json.dumps({
+    "status": status,
+    "exec_id": exec_id,
+    "outcome": str(ctx.get("outcome") or ""),
+    "detail": str(ctx.get("detail") or ""),
+    "count": ctx.get("count"),
+}))
+')"
+
+run_status="$(printf '%s\n' "$parsed" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))')"
+exec_id="$(printf '%s\n' "$parsed" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("exec_id",""))')"
+det_str="$(printf '%s\n' "$parsed" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("detail",""))')"
+oc_str="$(printf '%s\n' "$parsed" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("outcome",""))')"
+if [ "$run_status" != "succeeded" ]; then
+  n="$(count_exceptions)"
+  [ -n "$det_str" ] || det_str="exceptions=${n} healed=0 status=${run_status:-failed}"
+  log "loom exec status=$run_status"
+  write_stamp "${run_status:-failed}" "$exec_id" "$det_str" "$KEY" "error"
+  emit_result error "$det_str"
+  exit 3
+fi
+
+if [ -z "$oc_str" ]; then
+  oc_str="ok"
+fi
+if [ -z "$det_str" ]; then
+  det_str="ran"
+fi
+write_stamp succeeded "$exec_id" "$det_str" "$KEY" "$oc_str"
+
+if [ -x "$ROOT/bin/last-stack-brain-append-heartbeat" ]; then
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  "$ROOT/bin/last-stack-brain-append-heartbeat" --line \
+    "whats-wrong $ts $oc_str $det_str engine=loom" >/dev/null 2>&1 || true
+fi
+
+emit_result "$oc_str" "$det_str"
+exit 0

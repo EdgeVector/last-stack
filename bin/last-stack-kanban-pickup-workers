@@ -19,8 +19,10 @@ usage() {
   cat <<'USAGE'
 last-stack-kanban-pickup-workers [options]
 
-Writes idempotent routines registry entries for separate kanban-pickup workers.
+Seeds missing routines registry entries for separate kanban-pickup workers.
 The workers all use the same no-spawn prompt, but have distinct ids and locks.
+Existing worker TOMLs are the canonical registry and are left alone.
+Pass --force-defaults to replace them with compiled defaults.
 
 Options:
   --workers <n>       number of workers to configure, 3..6 (default: 6)
@@ -28,8 +30,8 @@ Options:
   --prompt-path <p>   kanban-pickup prompt path (default: this checkout)
   --bootstrap-path <p> freshness bootstrap prompt path
                        (default: $ROUTINES_HOME/prompts/last-stack-kanban-pickup-bootstrap.md)
-  --force-defaults    replace existing harness/model routing with defaults
-  --dry-run           print target paths and contents without writing
+  --force-defaults    replace existing worker files with compiled defaults
+  --dry-run           print compiled defaults without writing
   -h, --help          show this help
 USAGE
 }
@@ -142,7 +144,7 @@ the full pickup prompt or start implementation. Only when the gate exits 10
 last_stack="\${LAST_STACK_ROOT:-\$HOME/.last-stack}"
 rr_out="/tmp/kanban-pickup-prompt.\$\$"
 rr_err="/tmp/kanban-pickup-rr.\$\$"
-if ! "\$last_stack/bin/last-stack-routine-read" kanban-pickup >"\$rr_out" 2>"\$rr_err"; then
+if ! LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "\$last_stack/bin/last-stack-routine-read" kanban-pickup >"\$rr_out" 2>"\$rr_err"; then
   # Class A: install/host-track freeze. Heal once (zero-LLM), then retry read.
   if [ -x "\$last_stack/bin/last-stack-class-a-heal" ]; then
     "\$last_stack/bin/last-stack-class-a-heal" --reason=pickup-bootstrap || true
@@ -151,7 +153,7 @@ if ! "\$last_stack/bin/last-stack-routine-read" kanban-pickup >"\$rr_out" 2>"\$r
       || host-track refresh --force last-stack 2>/dev/null \\
       || true
   fi
-  if ! "\$last_stack/bin/last-stack-routine-read" kanban-pickup >"\$rr_out" 2>>"\$rr_err"; then
+  if ! LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "\$last_stack/bin/last-stack-routine-read" kanban-pickup >"\$rr_out" 2>>"\$rr_err"; then
     "\$last_stack/bin/last-stack-brain-append-heartbeat" --line \\
       "kanban-pickup \$(date -u +%Y-%m-%dT%H:%M:%SZ) noop stale-last-stack-install routine-read-failed no_card_claimed" || true
     printf '%s %s\\n' 'ROUTINE_RESULT' 'outcome=noop detail=stale-last-stack-install routine-read-failed no_card_claimed'
@@ -266,16 +268,18 @@ write_worker() {
   if [ "$DRY_RUN" -eq 0 ]; then
     last_stack_registry_assert_safe_write "$REGISTRY_DIR" "$BOOTSTRAP_PROMPT_PATH" "$REG_CWD" "$gate_cmd" \
       || return 3
+    if last_stack_registry_skip_if_exists "$path" "$FORCE_DEFAULTS"; then
+      return 0
+    fi
   fi
-
-  last_stack_registry_runtime_values "$path" codex gpt-5.5 "$FORCE_DEFAULTS"
 
   {
     printf '# Kanban pickup %s - same no-spawn prompt as the base worker.\n' "$label"
     printf '# %s\n' "$peer_note"
     printf '# Staggered slot: +%02d:%02d in each 15-minute cycle. Tom 2026-07-16.\n' "$((offset / 60))" "$second"
     printf 'id = "%s"\n' "$id"
-    last_stack_registry_emit_runtime_values
+    printf 'harness = "codex"\n'
+    printf 'model = "gpt-5.5"\n'
     printf 'effort = "high"\n'
     printf 'rrule = "FREQ=HOURLY;BYMINUTE=%s;BYSECOND=%s"\n' "$byminute" "$second"
     printf 'cwd = "%s"\n' "$REG_CWD"

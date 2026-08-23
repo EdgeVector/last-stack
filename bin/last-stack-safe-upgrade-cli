@@ -49,17 +49,16 @@ app_defaults() {
       DEFAULT_WRAPPERS="situations fsituations"
       ;;
     kanban|fkanban)
-      # Both commands ship from the fkanban tree under ONE host-track app named
-      # `kanban`, which links both. INSTALL_APP is the host-track APP name, not
-      # the repo or the artifact name — `fkanban` here would name a registration
-      # that no longer exists.
+      # The repo/artifact is still `fkanban`; the host-track APP and public CLI
+      # are `kanban`. INSTALL_APP is the host-track APP name, not the repo —
+      # `fkanban` here would name a registration that no longer exists.
       INSTALL_APP="kanban"
       DEFAULT_REMOTE="lastdb:///fkanban"
       DEFAULT_BARE="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/fkanban.git"
-      DEFAULT_LINKS="bin/kanban:$HOME/.local/bin/kanban bin/fkanban:$HOME/.local/bin/fkanban"
+      DEFAULT_LINKS="bin/kanban:$HOME/.local/bin/kanban"
       DEFAULT_BUILD="bun_install"
       DEFAULT_SMOKE="fkanban_smoke"
-      DEFAULT_WRAPPERS="kanban fkanban"
+      DEFAULT_WRAPPERS="kanban"
       ;;
     routines)
       DEFAULT_REMOTE="lastdb:///routines"
@@ -221,7 +220,6 @@ smoke_search() {
 smoke_fkanban() {
   local root="$1"
   ensure_bin_wrapper "$root" kanban
-  ensure_bin_wrapper "$root" fkanban
   PATH="$root/bin:$PATH" kanban list --column todo >/dev/null \
     || die "smoke: kanban list failed"
   printf 'safe-upgrade-cli: kanban smoke OK\n'

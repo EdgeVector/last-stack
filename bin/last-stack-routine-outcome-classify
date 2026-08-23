@@ -1,0 +1,236 @@
+#!/usr/bin/python3
+"""Classify scheduled-routine last-run outcomes without LastDB/kanban I/O.
+
+Observer / auditor routines (pipeline-health, why-stopped, ship-pipeline-gap-audit,
+routine-fleet-health) report the *subject* they inspected. A completed inspection
+of downstream red CRs/PRs, classes=unknown, yellow pipeline health, or a busy
+LastDB node is ok/noop — never error.
+
+Usage:
+  last-stack-routine-outcome-classify --observer ID --exit N --detail TEXT
+      [--timed-out 0|1] [--emit-result]
+  last-stack-routine-outcome-classify --status-json FILE [--json] [--emit-result]
+
+Exit 0 after a successful classify. Exit 2 on usage.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from typing import Any
+
+OBSERVERS = frozenset(
+    {
+        "last-stack-pipeline-health",
+        "pipeline-health",
+        "last-stack-why-stopped",
+        "why-stopped",
+        "last-stack-ship-pipeline-gap-audit",
+        "ship-pipeline-gap-audit",
+        "routine-fleet-health",
+        "last-stack-whats-wrong",
+        "whats-wrong",
+    }
+)
+
+HEALTHY_OUTCOMES = frozenset({"ok", "noop"})
+
+INSPECTION_FAIL_MARKERS = (
+    "cli missing",
+    "cli unusable",
+    "wrapper crashed",
+    "routines cli down",
+    "status-json-unreadable",
+    "no snapshot and empty",
+)
+
+DOWNSTREAM_MARKERS = (
+    "stuck=",
+    "open_cr=",
+    "open_forge=",
+    "classes=",
+    "health=yellow",
+    "health=red",
+    "health=green",
+    "busy-node",
+    "status-timeout",
+    "service_timeout",
+    "too many concurrent reads",
+    "node did not respond",
+    "gaps=",
+    "deploy_blocked=",
+    "exceptions=",
+    "healed=",
+    "remaining=",
+)
+
+NOOP_MARKERS = (
+    "busy-node",
+    "status-timeout",
+    "classes=none",
+    "health=green",
+    "reds=0",
+    "exceptions=0",
+)
+
+
+def is_observer(routine_id: str) -> bool:
+    return routine_id in OBSERVERS
+
+
+def _contains_any(text: str, markers: tuple[str, ...]) -> bool:
+    lowered = text.lower()
+    return any(marker.lower() in lowered for marker in markers)
+
+
+def classify_observer(exit_code: int | None, detail: str, timed_out: bool) -> str:
+    """Return ok|noop|error for a finished observer/auditor inspection."""
+    if timed_out or exit_code == 124:
+        return "error"
+    if _contains_any(detail, INSPECTION_FAIL_MARKERS):
+        return "error"
+    if exit_code not in (0, None):
+        return "error"
+    if _contains_any(detail, NOOP_MARKERS) and not _contains_any(
+        detail, ("stuck=", "gaps=", "classes=unknown", "health=yellow", "health=red")
+    ):
+        return "noop"
+    # Completed inspection of downstream red/yellow/unknown is success.
+    if _contains_any(detail, DOWNSTREAM_MARKERS) or detail.strip() == "":
+        if _contains_any(detail, ("classes=none", "health=green", "reds=0")):
+            return "noop"
+        return "ok"
+    return "ok"
+
+
+def classify_row(row: dict[str, Any]) -> dict[str, Any]:
+    routine_id = str(row.get("id") or "")
+    status = str(row.get("status") or "")
+    running = bool(row.get("running"))
+    last_outcome = row.get("lastOutcome")
+    last_exit = row.get("lastExit")
+    detail = str(row.get("lastOutcomeDetail") or "")
+    timed_out = last_exit == 124 or "timed out" in detail.lower()
+
+    result: dict[str, Any] = {
+        "id": routine_id,
+        "status": status,
+        "running": running,
+        "lastOutcome": last_outcome,
+        "lastExit": last_exit,
+        "observer": is_observer(routine_id),
+        "skipped": False,
+        "healthy": False,
+        "classified": None,
+        "true_red": False,
+        "relabel": False,
+    }
+    if status != "active" or running:
+        result["skipped"] = True
+        result["healthy"] = True
+        return result
+
+    if is_observer(routine_id):
+        classified = classify_observer(last_exit, detail, timed_out)
+        result["classified"] = classified
+        result["healthy"] = classified in HEALTHY_OUTCOMES
+        result["relabel"] = (
+            last_outcome not in HEALTHY_OUTCOMES and classified in HEALTHY_OUTCOMES
+        )
+        result["true_red"] = classified not in HEALTHY_OUTCOMES
+        return result
+
+    exit_ok = last_exit in (0, None)
+    outcome_ok = last_outcome in HEALTHY_OUTCOMES
+    result["classified"] = last_outcome if outcome_ok and exit_ok else "error"
+    result["healthy"] = bool(outcome_ok and exit_ok)
+    result["true_red"] = not result["healthy"]
+    return result
+
+
+def classify_status(payload: dict[str, Any]) -> dict[str, Any]:
+    rows = payload.get("rows") or payload.get("entries") or []
+    classified = [classify_row(row) for row in rows]
+    active = [c for c in classified if not c["skipped"]]
+    reds = [c for c in active if c["true_red"]]
+    relabeled = [c for c in active if c["relabel"]]
+    return {
+        "active": len(active),
+        "true_reds": len(reds),
+        "relabeled": len(relabeled),
+        "healthy": len(reds) == 0,
+        "red_ids": [c["id"] for c in reds],
+        "relabel_ids": [c["id"] for c in relabeled],
+        "rows": classified,
+    }
+
+
+def emit_result(outcome: str, detail: str) -> None:
+    print(f"ROUTINE_RESULT outcome={outcome} detail={detail}")
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument("--observer")
+    parser.add_argument("--exit", dest="exit_code", type=int, default=0)
+    parser.add_argument("--detail", default="")
+    parser.add_argument("--timed-out", dest="timed_out", default="0")
+    parser.add_argument("--status-json")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--emit-result", action="store_true")
+    args = parser.parse_args(argv)
+
+    if args.status_json:
+        with open(args.status_json, encoding="utf-8") as fh:
+            payload = json.load(fh)
+        summary = classify_status(payload)
+        if args.json:
+            print(json.dumps(summary, indent=2, sort_keys=True))
+        else:
+            print(
+                f"active={summary['active']} true_reds={summary['true_reds']} "
+                f"relabeled={summary['relabeled']} healthy={str(summary['healthy']).lower()}"
+            )
+            if summary["red_ids"]:
+                print("red_ids=" + ",".join(summary["red_ids"]))
+            if summary["relabel_ids"]:
+                print("relabel_ids=" + ",".join(summary["relabel_ids"]))
+        if args.emit_result:
+            if summary["healthy"]:
+                outcome = "noop" if summary["true_reds"] == 0 and summary["relabeled"] == 0 else "ok"
+            else:
+                outcome = "ok"
+            emit_result(
+                outcome,
+                f"reds={summary['true_reds']} relabeled={summary['relabeled']}",
+            )
+        return 0
+
+    if not args.observer:
+        print("usage: provide --observer or --status-json", file=sys.stderr)
+        return 2
+
+    timed_out = str(args.timed_out).lower() in {"1", "true", "yes"}
+    outcome = classify_observer(args.exit_code, args.detail, timed_out)
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "id": args.observer,
+                    "outcome": outcome,
+                    "exit": args.exit_code,
+                    "timed_out": timed_out,
+                }
+            )
+        )
+    else:
+        print(outcome)
+    if args.emit_result:
+        detail = args.detail.strip() or f"observer={args.observer}"
+        emit_result(outcome, detail)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

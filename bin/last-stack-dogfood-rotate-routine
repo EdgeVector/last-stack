@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+# Seed the scheduled dogfood-rotate routine when missing, and optionally
+# upsert gate_command on an existing file.
+#
+# The gate is zero-LLM: routinesd must not boot Codex/Grok just to dump
+# recommended_plugins / available_commands / Vercel skills. Existing files
+# are canonical (status, rrule, harness stay put) unless --force-defaults
+# or --ensure-gate-command.
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/.."
+ROOT="$(CDPATH= cd -- "$ROOT" && pwd -P)"
+# shellcheck source=last-stack-routines-registry-env
+. "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/last-stack-routines-registry-env"
+last_stack_registry_paths_init
+
+ROUTINES_HOME="${ROUTINES_HOME:-$HOME/.routines}"
+REGISTRY_DIR="$ROUTINES_HOME/registry"
+PROMPT_PATH="$(last_stack_registry_prompt_path dogfood-rotate.md "$ROOT/routines/dogfood-rotate.md")"
+ID="dogfood-rotate"
+DRY_RUN=0
+FORCE_DEFAULTS=0
+ENSURE_GATE=0
+
+usage() {
+  cat <<'USAGE'
+last-stack-dogfood-rotate-routine [options]
+
+Seeds ~/.routines/registry/dogfood-rotate.toml when missing.
+Existing files are left alone unless --force-defaults or --ensure-gate-command.
+
+Options:
+  --registry-dir <p>       registry directory (default: $ROUTINES_HOME/registry)
+  --prompt-path <p>        dogfood-rotate prompt path (default: stable last-stack)
+  --id <id>                automation id (default: dogfood-rotate)
+  --ensure-gate-command    upsert gate_command on an existing file; keep other fields
+  --force-defaults         replace an existing file with compiled defaults
+  --dry-run                print compiled defaults without writing
+  -h, --help               show this help
+USAGE
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --registry-dir)
+      REGISTRY_DIR="$2"
+      shift 2
+      ;;
+    --registry-dir=*)
+      REGISTRY_DIR="${1#*=}"
+      shift
+      ;;
+    --prompt-path)
+      PROMPT_PATH="$2"
+      shift 2
+      ;;
+    --prompt-path=*)
+      PROMPT_PATH="${1#*=}"
+      shift
+      ;;
+    --id)
+      ID="$2"
+      shift 2
+      ;;
+    --id=*)
+      ID="${1#*=}"
+      shift
+      ;;
+    --ensure-gate-command)
+      ENSURE_GATE=1
+      shift
+      ;;
+    --force-defaults)
+      FORCE_DEFAULTS=1
+      shift
+      ;;
+    --dry-run)
+      DRY_RUN=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown flag: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+case "$ID" in
+  ""|*/*)
+    echo "unsafe automation id: $ID" >&2
+    exit 2
+    ;;
+esac
+
+if [ ! -r "$PROMPT_PATH" ]; then
+  echo "prompt path is not readable: $PROMPT_PATH" >&2
+  exit 66
+fi
+
+if [ "$DRY_RUN" -eq 0 ]; then
+  last_stack_registry_assert_safe_write "$REGISTRY_DIR" "$PROMPT_PATH" "$REG_CWD" \
+    || exit 3
+fi
+
+GATE="${REG_STABLE_ROOT}/bin/last-stack-dogfood-rotate-gate --routines-dispatch"
+if last_stack_registry_is_version_dir "$GATE"; then
+  GATE="${HOME}/.last-stack/bin/last-stack-dogfood-rotate-gate --routines-dispatch"
+fi
+
+path="$REGISTRY_DIR/$ID.toml"
+
+upsert_gate_command() {
+  local src="$1"
+  local dest="$2"
+  local wanted="$3"
+  python3 - "$src" "$dest" "$wanted" <<'PY'
+import sys
+src, dest, wanted = sys.argv[1], sys.argv[2], sys.argv[3]
+line = f'gate_command = "{wanted}"'
+try:
+    text = open(src, encoding="utf-8").read()
+except OSError as exc:
+    raise SystemExit(f"cannot read {src}: {exc}")
+lines = text.splitlines()
+out = []
+replaced = False
+for raw in lines:
+    stripped = raw.strip()
+    if stripped.startswith("gate_command"):
+        out.append(line)
+        replaced = True
+    else:
+        out.append(raw)
+if not replaced:
+    if out and out[-1] != "":
+        out.append("")
+    out.append("# Zero-LLM: start the recipe without Codex/Grok plugin preamble.")
+    out.append(line)
+body = "\n".join(out) + "\n"
+with open(dest, "w", encoding="utf-8") as fh:
+    fh.write(body)
+PY
+}
+
+if [ "$DRY_RUN" -eq 0 ] && [ "$FORCE_DEFAULTS" -eq 0 ] && [ -f "$path" ]; then
+  if [ "$ENSURE_GATE" -eq 1 ]; then
+    if grep -Fq 'last-stack-dogfood-rotate-gate --routines-dispatch' "$path"; then
+      printf 'unchanged %s\n' "$path"
+      exit 0
+    fi
+    tmp="$(mktemp "${TMPDIR:-/tmp}/last-stack-dogfood-rotate-gate.XXXXXX")"
+    upsert_gate_command "$path" "$tmp" "$GATE"
+    mv "$tmp" "$path"
+    printf 'updated-gate %s\n' "$path"
+    exit 0
+  fi
+  printf 'unchanged %s\n' "$path"
+  exit 0
+fi
+
+body=$(cat <<EOF
+# Thin trigger over dogfood-registry. gate_command starts the recipe zero-LLM
+# so Codex/Grok never spend the timeout listing plugins or skills.
+id = "$ID"
+difficulty = "normal"
+effort = "high"
+rrule = "FREQ=DAILY;BYHOUR=11;BYMINUTE=0;BYSECOND=0"
+cwd = "$REG_CWD"
+status = "active"
+timeout_min = 30
+prompt_path = "$PROMPT_PATH"
+gate_command = "$GATE"
+heartbeat_slug = "routine-heartbeats"
+group = "dogfood"
+EOF
+)
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  printf '%s\n' "--- $path"
+  printf '%s\n' "$body"
+  exit 0
+fi
+
+mkdir -p "$REGISTRY_DIR"
+tmp="$(mktemp "${TMPDIR:-/tmp}/last-stack-dogfood-rotate.XXXXXX")"
+printf '%s\n' "$body" >"$tmp"
+if [ -f "$path" ] && cmp -s "$tmp" "$path"; then
+  rm -f "$tmp"
+  printf 'unchanged %s\n' "$path"
+else
+  mv "$tmp" "$path"
+  printf 'wrote %s\n' "$path"
+fi
+
+printf 'configured %s in %s\n' "$ID" "$REGISTRY_DIR"

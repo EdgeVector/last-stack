@@ -1,0 +1,60 @@
+{
+  "rows": [
+    {
+      "id": "last-stack-pipeline-health",
+      "status": "active",
+      "running": false,
+      "lastOutcome": "error",
+      "lastExit": 0,
+      "lastOutcomeDetail": "open_cr=2 stuck=fold:1570:red"
+    },
+    {
+      "id": "last-stack-why-stopped",
+      "status": "active",
+      "running": false,
+      "lastOutcome": "error",
+      "lastExit": 0,
+      "lastOutcomeDetail": "classes=unknown"
+    },
+    {
+      "id": "last-stack-ship-pipeline-gap-audit",
+      "status": "active",
+      "running": false,
+      "lastOutcome": "error",
+      "lastExit": 0,
+      "lastOutcomeDetail": "health=yellow gaps=3 filed=1"
+    },
+    {
+      "id": "routine-fleet-health",
+      "status": "active",
+      "running": false,
+      "lastOutcome": "error",
+      "lastExit": 0,
+      "lastOutcomeDetail": "busy-node status-timeout"
+    },
+    {
+      "id": "lastdb-local-smoke-test",
+      "status": "active",
+      "running": false,
+      "lastOutcome": "error",
+      "lastExit": 124,
+      "lastOutcomeDetail": "timed out"
+    },
+    {
+      "id": "dogfood-rotate",
+      "status": "active",
+      "running": false,
+      "lastOutcome": "error",
+      "lastExit": 1,
+      "lastOutcomeDetail": "feature=schema-service-dev-propose result=fail"
+    },
+    {
+      "id": "kanban-parity-check",
+      "status": "active",
+      "running": false,
+      "lastOutcome": "ok",
+      "lastExit": 0,
+      "lastOutcomeDetail": "unit=kanban-groom-parity-check rc=1"
+    }
+  ]
+}

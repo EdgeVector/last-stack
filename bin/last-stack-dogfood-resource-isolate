@@ -1,0 +1,439 @@
+#!/usr/bin/env bash
+# last-stack-dogfood-resource-isolate — fail-closed host safety + limited exec
+# for heavy dogfood recipes (cargo bench, cold builds, large corpora).
+#
+# The primary LastDB daemon must never share memory-pressure fate with a
+# scheduled dogfood cold Fold build or Criterion run. This helper:
+#   1. Proves isolation is available (local hard limits and/or off-host runner)
+#   2. Refuses when the host is already under pressure (load / free memory /
+#      primary near its memory guard)
+#   3. Applies CPU and memory caps to the child when running locally
+#   4. Snapshots primary lastdbd identity before/after so callers can assert
+#      the daemon was undisturbed
+#
+# Usage:
+#   last-stack-dogfood-resource-isolate --preflight-only [--json]
+#   last-stack-dogfood-resource-isolate [--json] -- <command> [args...]
+#
+# Exit codes:
+#   0  ok (preflight passed; command ran successfully when present)
+#   1  host unsafe / isolation unproven / command failed
+#   2  usage error
+#
+# Env (overridable):
+#   LAST_STACK_DOGFOOD_MIN_FREE_MIB          default 8192
+#   LAST_STACK_DOGFOOD_MAX_LOAD_PER_CPU      default 1.25 (1m load / ncpu)
+#   LAST_STACK_DOGFOOD_MAX_PRIMARY_RSS_MIB   default 10240
+#   LAST_STACK_DOGFOOD_CPU_SECONDS           default 7200 (ulimit -t)
+#   LAST_STACK_DOGFOOD_MEM_MIB               default 12288 (cgroup MemoryMax / Linux)
+#   LAST_STACK_DOGFOOD_CPU_QUOTA_PCT         default 200 (cgroup CPUQuota)
+#   LAST_STACK_DOGFOOD_NICE                 default 10
+#   LAST_STACK_DOGFOOD_OFFHOST_CMD          if set, run as: eval "$cmd" with
+#                                           DOGFOOD_CMD / DOGFOOD_CMD_B64
+#   LAST_STACK_DOGFOOD_ALLOW_UNISOLATED=1   NEVER for scheduled dogfood; tests only
+#   LAST_STACK_DOGFOOD_SKIP_PRIMARY_CHECK=1 tests only
+#   LAST_STACK_DOGFOOD_PRIMARY_HOME         default $HOME/.lastdb
+set -euo pipefail
+
+JSON=0
+PREFLIGHT_ONLY=0
+PRIMARY_HOME="${LAST_STACK_DOGFOOD_PRIMARY_HOME:-${LASTDBD_PRIMARY_HOME:-$HOME/.lastdb}}"
+MIN_FREE_MIB="${LAST_STACK_DOGFOOD_MIN_FREE_MIB:-8192}"
+MAX_LOAD_PER_CPU="${LAST_STACK_DOGFOOD_MAX_LOAD_PER_CPU:-1.25}"
+MAX_PRIMARY_RSS_MIB="${LAST_STACK_DOGFOOD_MAX_PRIMARY_RSS_MIB:-10240}"
+CPU_SECONDS="${LAST_STACK_DOGFOOD_CPU_SECONDS:-7200}"
+MEM_MIB="${LAST_STACK_DOGFOOD_MEM_MIB:-12288}"
+CPU_QUOTA_PCT="${LAST_STACK_DOGFOOD_CPU_QUOTA_PCT:-200}"
+NICE_LEVEL="${LAST_STACK_DOGFOOD_NICE:-10}"
+ALLOW_UNISOLATED="${LAST_STACK_DOGFOOD_ALLOW_UNISOLATED:-0}"
+SKIP_PRIMARY="${LAST_STACK_DOGFOOD_SKIP_PRIMARY_CHECK:-0}"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  last-stack-dogfood-resource-isolate --preflight-only [--json]
+  last-stack-dogfood-resource-isolate [--json] -- <command> [args...]
+
+Fail-closed host safety preflight + resource-limited exec for heavy dogfood.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --preflight-only) PREFLIGHT_ONLY=1; shift ;;
+    --json) JSON=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    --) shift; break ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+CMD=("$@")
+
+emit() {
+  # key=value pairs → one RESULT line (tab-separated) or JSON object
+  if [ "$JSON" -eq 1 ]; then
+    python3 - "$@" <<'PY'
+import json, sys
+out = {}
+for arg in sys.argv[1:]:
+    if "=" not in arg:
+        continue
+    k, v = arg.split("=", 1)
+    out[k] = v
+print(json.dumps(out, separators=(",", ":")))
+PY
+  else
+    local first=1
+    local part
+    printf 'RESULT'
+    for part in "$@"; do
+      printf '\t%s' "$part"
+    done
+    printf '\n'
+  fi
+}
+
+ncpu() {
+  if command -v nproc >/dev/null 2>&1; then
+    nproc
+  elif command -v getconf >/dev/null 2>&1; then
+    getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1
+  else
+    sysctl -n hw.ncpu 2>/dev/null || echo 1
+  fi
+}
+
+# Free memory in MiB. Prefer memory_pressure (macOS), then /proc/meminfo.
+free_mib() {
+  if command -v memory_pressure >/dev/null 2>&1; then
+    # "System-wide memory free percentage: 44%" style + total from sysctl
+    local pct total_bytes free_calc
+    pct="$(memory_pressure -Q 2>/dev/null | sed -n 's/.*free percentage: *\([0-9][0-9]*\).*/\1/p' | head -1)"
+    total_bytes="$(sysctl -n hw.memsize 2>/dev/null || echo 0)"
+    if [ -n "${pct:-}" ] && [ "${total_bytes:-0}" -gt 0 ]; then
+      free_calc=$(( (total_bytes / 1024 / 1024) * pct / 100 ))
+      printf '%s' "$free_calc"
+      return 0
+    fi
+  fi
+  if [ -r /proc/meminfo ]; then
+    awk '/^MemAvailable:/ {print int($2/1024); exit}' /proc/meminfo
+    return 0
+  fi
+  # vm_stat fallback (pages free + speculative + inactive*0.5)
+  if command -v vm_stat >/dev/null 2>&1; then
+    python3 - <<'PY'
+import re, subprocess
+out = subprocess.check_output(["vm_stat"], text=True)
+page = 4096
+m = re.search(r"page size of (\d+)", out)
+if m:
+    page = int(m.group(1))
+def pages(label):
+    m = re.search(rf"{label}:\s+(\d+)", out)
+    return int(m.group(1)) if m else 0
+free = pages(r"Pages free") + pages(r"Pages speculative") + pages(r"Pages inactive") // 2
+print(int(free * page / 1024 / 1024))
+PY
+    return 0
+  fi
+  printf '0'
+}
+
+load1() {
+  # First field of uptime load average
+  if command -v sysctl >/dev/null 2>&1; then
+    sysctl -n vm.loadavg 2>/dev/null | awk '{print $2; exit}'
+  else
+    awk '{print $1; exit}' /proc/loadavg 2>/dev/null || uptime | sed -n 's/.*load average[s]*: \([0-9.][0-9.]*\).*/\1/p'
+  fi
+}
+
+# Primary lastdbd pid by executable path (never argv text).
+primary_pid() {
+  [ "$SKIP_PRIMARY" = "1" ] && return 1
+  local p comm status_out
+  # The scheduled macOS sandbox may deny `ps` even though the socket-backed
+  # CLI can still identify the daemon. Prefer that stable operator surface so
+  # the safety proof does not silently degrade to "primary absent".
+  if command -v lastdb >/dev/null 2>&1; then
+    status_out="$(LASTDB_HOME="$PRIMARY_HOME" lastdb status 2>/dev/null || true)"
+    p="$(printf '%s\n' "$status_out" | sed -n 's/.*(pid \([0-9][0-9]*\),.*/\1/p' | head -1)"
+    if [ -n "${p:-}" ]; then
+      printf '%s' "$p"
+      return 0
+    fi
+  fi
+  while read -r p comm; do
+    case "$comm" in
+      */lastdbd|lastdbd)
+        # Prefer process whose cwd/home is primary — soft check via lsof socket
+        if [ -S "${PRIMARY_HOME}/data/folddb.sock" ]; then
+          if command -v lsof >/dev/null 2>&1; then
+            if lsof -nP -a -p "$p" -U 2>/dev/null | grep -q "folddb.sock"; then
+              printf '%s' "$p"
+              return 0
+            fi
+          fi
+        fi
+        # Fallback: first lastdbd without --data-dir in argv
+        if ps -p "$p" -o args= 2>/dev/null | grep -vq -- '--data-dir'; then
+          printf '%s' "$p"
+          return 0
+        fi
+        ;;
+    esac
+  done < <(ps -axo pid=,comm= 2>/dev/null)
+  return 1
+}
+
+primary_rss_mib() {
+  local pid="$1"
+  local kb
+  kb="$(ps -o rss= -p "$pid" 2>/dev/null | tr -d ' ')"
+  if [ -z "$kb" ] && [ -r "/proc/$pid/status" ]; then
+    kb="$(awk '/^VmRSS:/ {print $2; exit}' "/proc/$pid/status")"
+  fi
+  [ -n "$kb" ] || { printf '0'; return 1; }
+  printf '%s' "$((kb / 1024))"
+}
+
+primary_etime() {
+  local pid="$1"
+  ps -o etime= -p "$pid" 2>/dev/null | tr -d ' '
+}
+
+# Isolation backend discovery.
+# prints: backend=<name> proven=1|0 detail=...
+discover_isolation() {
+  if [ -n "${LAST_STACK_DOGFOOD_OFFHOST_CMD:-}" ]; then
+    printf 'backend=offhost proven=1 detail=offhost-cmd-set'
+    return 0
+  fi
+  if command -v systemd-run >/dev/null 2>&1 && [ -d /sys/fs/cgroup ]; then
+    printf 'backend=systemd-run-cgroup proven=1 detail=MemoryMax=%sM,CPUQuota=%s%%' "$MEM_MIB" "$CPU_QUOTA_PCT"
+    return 0
+  fi
+  # Local macOS/Darwin has no per-process hard memory boundary available to
+  # this helper. A host preflight is useful, but it is not isolation: the cold
+  # build can still consume memory after the snapshot and pressure lastdbd.
+  # Scheduled heavy dogfood therefore needs an off-host runner on Darwin.
+  if [ "$(uname -s)" = "Darwin" ]; then
+    printf 'backend=darwin-no-hard-memory-boundary proven=0 detail=require-LAST_STACK_DOGFOOD_OFFHOST_CMD'
+    return 0
+  fi
+  # Generic Unix may provide a real inherited virtual-memory ceiling even
+  # without systemd. Prove the shell accepts it before advertising isolation.
+  if ( ulimit -v "$((MEM_MIB * 1024))" ) 2>/dev/null; then
+    printf 'backend=ulimit-v-nice proven=1 detail=vm_limit=%sMiB,cpu_ulimit=%ss,nice=%s' \
+      "$MEM_MIB" "$CPU_SECONDS" "$NICE_LEVEL"
+    return 0
+  fi
+  printf 'backend=no-hard-memory-boundary proven=0 detail=require-offhost-or-cgroup'
+  return 0
+}
+
+float_gt() {
+  # true if $1 > $2
+  awk -v a="$1" -v b="$2" 'BEGIN { exit !(a > b) }'
+}
+
+run_preflight() {
+  local cpus load free_mib pid rss_mib etime isol_line backend proven detail
+  local reasons=()
+  local ok=1
+
+  cpus="$(ncpu)"
+  load="$(load1)"
+  free_mib="$(free_mib)"
+  free_mib="${free_mib:-0}"
+  load="${load:-0}"
+  cpus="${cpus:-1}"
+
+  isol_line="$(discover_isolation)"
+  backend="$(printf '%s' "$isol_line" | sed -n 's/.*backend=\([^ ]*\).*/\1/p')"
+  proven="$(printf '%s' "$isol_line" | sed -n 's/.*proven=\([01]\).*/\1/p')"
+  detail="$(printf '%s' "$isol_line" | sed -n 's/.*detail=\(.*\)/\1/p')"
+
+  if [ "${proven:-0}" != "1" ] && [ "$ALLOW_UNISOLATED" != "1" ]; then
+    reasons+=("isolation-unproven")
+    ok=0
+  fi
+
+  # free memory
+  if [ "${free_mib:-0}" -lt "$MIN_FREE_MIB" ]; then
+    reasons+=("free_mib=${free_mib}<${MIN_FREE_MIB}")
+    ok=0
+  fi
+
+  # load per cpu
+  local max_load
+  max_load="$(awk -v c="$cpus" -v f="$MAX_LOAD_PER_CPU" 'BEGIN { printf "%.3f", c * f }')"
+  if float_gt "$load" "$max_load"; then
+    reasons+=("load1=${load}>${max_load} (${cpus} cpus * ${MAX_LOAD_PER_CPU})")
+    ok=0
+  fi
+
+  pid=""
+  rss_mib="0"
+  etime=""
+  if [ "$SKIP_PRIMARY" != "1" ]; then
+    if pid="$(primary_pid)"; then
+      rss_mib="$(primary_rss_mib "$pid" || true)"
+      rss_mib="${rss_mib:-0}"
+      etime="$(primary_etime "$pid" || true)"
+      if [ "${rss_mib:-0}" -gt "$MAX_PRIMARY_RSS_MIB" ]; then
+        reasons+=("primary_rss_mib=${rss_mib}>${MAX_PRIMARY_RSS_MIB}")
+        ok=0
+      fi
+    else
+      # A host with no primary socket is a throwaway/CI surface. A live socket
+      # whose PID cannot be observed is different: the before/after safety
+      # proof is unavailable, so fail closed.
+      pid=""
+      rss_mib="0"
+      etime=""
+      if [ -S "${PRIMARY_HOME}/data/folddb.sock" ]; then
+        reasons+=("primary-pid-unobservable")
+        ok=0
+      fi
+    fi
+  fi
+
+  local reason_joined="none"
+  if [ "${#reasons[@]}" -gt 0 ]; then
+    reason_joined="$(IFS=','; echo "${reasons[*]}")"
+  fi
+
+  local result="ok"
+  [ "$ok" -eq 1 ] || result="blocker"
+
+  emit \
+    "result=${result}" \
+    "isolation_backend=${backend:-unknown}" \
+    "isolation_proven=${proven:-0}" \
+    "isolation_detail=${detail:-}" \
+    "free_mib=${free_mib}" \
+    "min_free_mib=${MIN_FREE_MIB}" \
+    "load1=${load}" \
+    "max_load1=${max_load}" \
+    "ncpu=${cpus}" \
+    "primary_pid=${pid:-}" \
+    "primary_rss_mib=${rss_mib}" \
+    "primary_etime=${etime:-}" \
+    "reason=${reason_joined}"
+
+  [ "$ok" -eq 1 ]
+}
+
+apply_local_limits_and_exec() {
+  # Apply best-effort local limits then exec command.
+  # Prefer systemd-run cgroup when available (true MemoryMax).
+  if [ -n "${LAST_STACK_DOGFOOD_OFFHOST_CMD:-}" ]; then
+    # Off-host runner: pass the command as env for the remote template.
+    local joined b64
+    joined="$(printf '%q ' "${CMD[@]}")"
+    if command -v base64 >/dev/null 2>&1; then
+      b64="$(printf '%s' "$joined" | base64 | tr -d '\n')"
+    else
+      b64=""
+    fi
+    DOGFOOD_CMD="$joined" DOGFOOD_CMD_B64="$b64" \
+      bash -c "${LAST_STACK_DOGFOOD_OFFHOST_CMD}"
+    return $?
+  fi
+
+  if command -v systemd-run >/dev/null 2>&1 && [ -d /sys/fs/cgroup ]; then
+    # Transient scope with hard memory + CPU caps.
+    systemd-run --user --collect --wait --quiet \
+      -p "MemoryMax=${MEM_MIB}M" \
+      -p "CPUQuota=${CPU_QUOTA_PCT}%" \
+      -p "TasksMax=4096" \
+      --working-directory="$(pwd)" \
+      --setenv=PATH="$PATH" \
+      --setenv=HOME="$HOME" \
+      --setenv=CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-}" \
+      --setenv=FOLD_BENCH_FAST_GUARD="${FOLD_BENCH_FAST_GUARD:-}" \
+      --setenv=FOLD_DISABLE_NATIVE_INDEX="${FOLD_DISABLE_NATIVE_INDEX:-}" \
+      --setenv=RUSTC_WRAPPER="${RUSTC_WRAPPER:-}" \
+      -- "${CMD[@]}"
+    return $?
+  fi
+
+  # ulimit + nice (Darwin / generic). Memory hard-cap is the preflight contract.
+  (
+    ulimit -t "$CPU_SECONDS" 2>/dev/null || true
+    # Best-effort data segment / virtual memory caps where the platform honors them.
+    if ulimit -v "$((MEM_MIB * 1024))" 2>/dev/null; then
+      :
+    fi
+    if command -v nice >/dev/null 2>&1; then
+      exec nice -n "$NICE_LEVEL" "${CMD[@]}"
+    else
+      exec "${CMD[@]}"
+    fi
+  )
+}
+
+# ---- main ----
+if ! preflight_out="$(run_preflight)"; then
+  printf '%s\n' "$preflight_out"
+  exit 1
+fi
+printf '%s\n' "$preflight_out"
+
+if [ "$PREFLIGHT_ONLY" -eq 1 ]; then
+  exit 0
+fi
+
+if [ "${#CMD[@]}" -eq 0 ]; then
+  echo "last-stack-dogfood-resource-isolate: missing command after --" >&2
+  exit 2
+fi
+
+# Re-parse primary snapshot from preflight for after-check
+pre_pid="$(printf '%s\n' "$preflight_out" | tr '\t' '\n' | sed -n 's/^primary_pid=//p' | head -1)"
+pre_etime="$(printf '%s\n' "$preflight_out" | tr '\t' '\n' | sed -n 's/^primary_etime=//p' | head -1)"
+
+set +e
+apply_local_limits_and_exec
+cmd_rc=$?
+set -e
+
+post_pid=""
+post_etime=""
+if [ "$SKIP_PRIMARY" != "1" ]; then
+  post_pid="$(primary_pid || true)"
+  if [ -n "${post_pid:-}" ]; then
+    post_etime="$(primary_etime "$post_pid" || true)"
+  fi
+fi
+
+primary_unchanged=1
+if [ -n "${pre_pid:-}" ]; then
+  if [ "${post_pid:-}" != "$pre_pid" ]; then
+    primary_unchanged=0
+  fi
+fi
+
+emit \
+  "result=$([ "$cmd_rc" -eq 0 ] && [ "$primary_unchanged" -eq 1 ] && echo ok || echo fail)" \
+  "cmd_rc=${cmd_rc}" \
+  "primary_pid_before=${pre_pid:-}" \
+  "primary_pid_after=${post_pid:-}" \
+  "primary_etime_before=${pre_etime:-}" \
+  "primary_etime_after=${post_etime:-}" \
+  "primary_unchanged=${primary_unchanged}"
+
+if [ "$cmd_rc" -ne 0 ]; then
+  exit "$cmd_rc"
+fi
+if [ "$primary_unchanged" -ne 1 ]; then
+  echo "last-stack-dogfood-resource-isolate: primary lastdbd pid changed during run" >&2
+  exit 1
+fi
+exit 0

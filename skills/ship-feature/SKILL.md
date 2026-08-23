@@ -103,6 +103,22 @@ whether tasks can run in parallel (mind the workspace's resource limits; fold no
 longer has a fixed two-agent build/test cap, but high-concurrency Rust builds
 still need disk/load awareness; see references).
 
+## Phase 1.5 — Design pack (required)
+
+Before proposing a design, assemble the existing corpus. `brain search` /
+`brain ask` are **candidate slugs only**, never membership.
+
+```bash
+last-stack-design-pack --topic "<feature paragraph>" --out /tmp/design-pack.md
+```
+
+Do not enter Phase 2 until that command exits 0 and the pack is in context.
+The pack always point-gets the standing LastDB / autonomy slugs, then
+point-gets search/ask hits, then crawls one hop of `linked_from`. A LastDB-shaped
+topic whose pack is missing `concepts-lastdb-canonical-model` or
+`concepts-lastdb-agent-access-model` is a failed pack — do not invent a table
+design to paper over it.
+
 ## Phase 2 — Design
 
 Produce a tight implementation design:
@@ -161,9 +177,11 @@ Then get a single yes/no. After approval, **do not ask again** unless contract
 
 ## Phase 5 — Materialize North Star + drive via hierarchy
 
-Hand the approved plan into the hierarchical routine pipeline. Ship It is the
-intake/orchestration layer; it must not directly create milestones or Kanban
-cards. (Brain North Star create/reuse is allowed; board graph creation is not.)
+Hand the approved plan into the hierarchical routine pipeline. After plan yes,
+**run `last-stack-ship-handoff`** — do not improvise the six-step checklist.
+Ship It calls last-stack-ship-handoff; it still must not kanban add cards.
+(The handoff CLI creates exactly one milestone scaffold. Implementation cards
+stay with `last-stack-milestone-driver`.)
 
 **Do not create `feature-owner` cards** — retired 2026-07-22. One hierarchy only:
 North Star → milestone → Kind:pr + proof.
@@ -171,13 +189,15 @@ North Star → milestone → Kind:pr + proof.
 ### HARD RULE — no bulk board scaffolding (won't-undo)
 
 After creating or selecting a North Star, **never** bulk-write milestones and
-empty `Kind: pr` shells with `kanban add` / `kanban milestone add` in the same
-session. That is what produces hollow cards, false `needs_human` holds, and
-wrong `driver: program-driver` milestones.
+empty `Kind: pr` shells with `kanban add` in the same session. That is what
+produces hollow cards, false `needs_human` holds, and wrong
+`driver: program-driver` milestones.
 
 **Allowed:**
-- Brain NS create/update + `brain append` of `MILESTONE_REQUEST …`
-- Targeted `routines run last-stack-north-star-driver` / `last-stack-milestone-driver`
+- `last-stack-ship-handoff` (NS + heading-form `## MILESTONE_REQUEST` + one
+  milestone + wait on `eligible_for_claim`)
+- Targeted `routines run last-stack-north-star-driver` /
+  `last-stack-milestone-driver` when handoff is unavailable
 - Observing with `kanban milestone detail` / `pickup explain`
 
 **Forbidden:**
@@ -186,51 +206,66 @@ wrong `driver: program-driver` milestones.
 - Setting milestone `--driver program-driver` (superseded; default is
   `last-stack-milestone-driver`)
 - Filing board `feature-owner` validation cards
+- Appending the one-line form `MILESTONE_REQUEST slug=… status=pending` —
+  `last-stack-north-star-ledger-sync` does not parse it
 
 If the user says "make this a North Star" or "start driving this," do **intent
-only** (NS + `MILESTONE_REQUEST` + targeted driver dispatches), not a full fake
-DAG.
+only** (`last-stack-ship-handoff` or NS + heading `## MILESTONE_REQUEST` +
+targeted driver dispatches), not a full fake DAG.
 
 **Required materialization (after plan yes):**
 
-1. **Create or reuse one Brain North Star** (`type: project`, slug
-   `north-star-<kebab>` when new). Reuse a clearly matching active North Star
-   rather than minting a twin for a tiny delta. Body **must** include:
+```bash
+last-stack-ship-handoff \
+  --north-star <north-star-slug> \
+  --milestone <milestone-slug> \
+  --title "<bounded outcome>" \
+  --outcome "<observable result>" \
+  --acceptance "<objective proof>" \
+  --end-state "<Tom-visible product outcome>" \
+  --create-ns
+```
 
-   - `**Mode:** ship`
-   - `## End state` (Tom-visible product outcome — same words as intake)
-   - `## Terminal verification` with **Card:** `<proof-slug>`, shape, Done means,
-     deploy surface if any
+The CLI:
 
-   Do not invent or broaden strategic intent after approval.
+1. Creates or reuses one Brain North Star (`type: project`, slug
+   `north-star-<kebab>` when new) with `**Mode:** ship`, `## End state`, and
+   `## Terminal verification` (**Card:** `<proof-slug>`).
+2. Appends an idempotent heading-form request (the only shape the ledger
+   parser accepts):
 
-2. Append an idempotent request to that North Star using `brain append`:
-   `MILESTONE_REQUEST slug=<milestone-slug> status=pending`, followed by the
-   approved Outcome and Acceptance text. Never rewrite a large North Star to add
-   the request. Default **one milestone** per feature unless the approved plan
-   has multiple independently provable outcomes.
+   ```markdown
+   ## MILESTONE_REQUEST
+   slug=<milestone-slug>
+   status=pending
 
-3. Trigger the North Star routine for the exact request:
-   `NORTH_STAR_DRIVER_TARGET=<north-star-slug>` and
-   `NORTH_STAR_DRIVER_REQUEST=<milestone-slug>` with
-   `routines run last-stack-north-star-driver`. The routine—not Ship It—creates
-   the milestone scaffold. If manual dispatch is unavailable, leave the durable
-   pending request for its scheduled pass.
+   ### Outcome
+   …
 
-4. Confirm the milestone exists and matches the approved North Star/outcome via
-   `kanban milestone detail <milestone-slug> --json`. Expect
-   `driver=last-stack-milestone-driver`.
+   ### Acceptance
+   …
+   ```
 
-5. Trigger targeted bounded passes with
+   Never rewrite a large North Star to add the request. Default **one
+   milestone** per feature unless the approved plan has multiple independently
+   provable outcomes.
+
+3. Creates exactly one milestone scaffold (`driver=last-stack-milestone-driver`).
+   Confirm with `kanban milestone detail <milestone-slug> --json`.
+4. Optionally dispatches
+   `NORTH_STAR_DRIVER_TARGET=<north-star-slug>` /
+   `NORTH_STAR_DRIVER_REQUEST=<milestone-slug>`
+   `routines run last-stack-north-star-driver` when the milestone is missing
+   and handoff cannot write it, and
    `MILESTONE_DRIVER_TARGET=<milestone-slug> routines run last-stack-milestone-driver`
-   until the milestone has a linked terminal proof and at least one concrete
-   `Kind: pr` frontier, or reports a real blocker. The milestone routine—not
-   Ship It—creates and links those cards. Never bypass the routine by writing
-   the graph directly.
-
-6. **Acceptance before walk-away:** for each claimed "runnable" PR slug run
-   `kanban pickup explain <slug> --json` and require `ready: true`. Reject
+   until a Kind:pr frontier exists. The milestone routine—not
+   Ship It—creates and links those cards.
+5. **Acceptance before walk-away:** `kanban pickup explain <slug> --json`
+   must report `eligible_for_claim: true` (not merely `ready: true`). Reject
    header-only bodies and `driver: program-driver` milestones.
+
+If handoff cannot run, leave the durable pending `## MILESTONE_REQUEST` for
+its scheduled pass and do not walk away.
 
 Materialization is invalid until `kanban milestone detail` and
 `kanban milestone groom --json` confirm the two routine ownership boundaries,

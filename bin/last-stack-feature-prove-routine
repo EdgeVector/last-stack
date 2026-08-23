@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install/update the scheduled Feature Ship Loop proof routine.
+# Seed the scheduled Feature Ship Loop proof routine when missing.
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
@@ -13,22 +13,22 @@ REGISTRY_DIR="$ROUTINES_HOME/registry"
 PROMPT_PATH="$(last_stack_registry_prompt_path feature-prove.md "$ROOT/routines/feature-prove.md")"
 ID="last-stack-feature-prove"
 DRY_RUN=0
-PROMPT_PATH_SET=0
 FORCE_DEFAULTS=0
 
 usage() {
   cat <<'USAGE'
 last-stack-feature-prove-routine [options]
 
-Writes the routines registry entry for the Feature Ship Loop product-proof
-routine. Re-running is idempotent.
+Seeds the routines registry entry for the Feature Ship Loop product-proof
+routine. An existing file is the canonical registry and is left alone.
+Pass --force-defaults to replace it with compiled defaults.
 
 Options:
   --registry-dir <p>  registry directory (default: $ROUTINES_HOME/registry)
   --prompt-path <p>   feature-prove prompt path (default: stable last-stack)
   --id <id>           automation id (default: last-stack-feature-prove)
-  --force-defaults    replace existing harness/model routing with defaults
-  --dry-run           print target path and contents without writing
+  --force-defaults    replace an existing file with compiled defaults
+  --dry-run           print compiled defaults without writing
   -h, --help          show this help
 USAGE
 }
@@ -45,12 +45,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --prompt-path)
       PROMPT_PATH="$2"
-      PROMPT_PATH_SET=1
       shift 2
       ;;
     --prompt-path=*)
       PROMPT_PATH="${1#*=}"
-      PROMPT_PATH_SET=1
       shift
       ;;
     --id)
@@ -100,7 +98,12 @@ if [ "$DRY_RUN" -eq 0 ]; then
 fi
 
 path="$REGISTRY_DIR/$ID.toml"
-last_stack_registry_runtime_values "$path" grok grok-4.5 "$FORCE_DEFAULTS"
+if [ "$DRY_RUN" -eq 0 ] && last_stack_registry_skip_if_exists "$path" "$FORCE_DEFAULTS"; then
+  printf 'configured %s in %s\n' "$ID" "$REGISTRY_DIR"
+  exit 0
+fi
+
+workspace_cwd="${LAST_STACK_WORKSPACE:-$REG_CWD}"
 
 if [ "$DRY_RUN" -eq 1 ]; then
   printf '%s\n' "--- $path"
@@ -110,12 +113,9 @@ fi
   printf '# Feature Ship Loop product-proof routine.\n'
   printf '# Sweeps ship-mode North Star/milestone terminals; writes PASS proof or files fix-forward work.\n'
   printf 'id = "%s"\n' "$ID"
-  last_stack_registry_emit_runtime_values
+  printf 'difficulty = "normal"\n'
   printf 'effort = "high"\n'
-  printf 'rrule = "FREQ=HOURLY;INTERVAL=1;BYMINUTE=40;BYSECOND=0"\n'
-  # Prefer LAST_STACK_WORKSPACE when set (main); else REG_CWD from
-  # last-stack-routines-registry-env (host-safe REPLACE + sandbox HOME).
-  workspace_cwd="${LAST_STACK_WORKSPACE:-$REG_CWD}"
+  printf 'rrule = "FREQ=DAILY;BYHOUR=10;BYMINUTE=40;BYSECOND=0"\n'
   printf 'cwd = "%s"\n' "$workspace_cwd"
   printf 'status = "active"\n'
   printf 'timeout_min = 45\n'

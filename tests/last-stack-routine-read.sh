@@ -72,6 +72,13 @@ case "$dogfood_prompt" in
     ;;
 esac
 case "$dogfood_prompt" in
+  *"credential-ref: lastsecrets://<slug>"*"last-stack-secret-env-run"*"do not run a credential-free subset"*) ;;
+  *)
+    echo "expected dogfood-rotate prompt to reject incomplete secret-backed recipes" >&2
+    exit 1
+    ;;
+esac
+case "$dogfood_prompt" in
   *"error-dirty"*"warn: last-stack-checkout-dirty"*"noop heartbeat"*"reason=last-stack-checkout-dirty"*) ;;
   *)
     echo "expected dogfood-rotate prompt to treat dirty install checkout as noop, not error" >&2
@@ -92,6 +99,17 @@ case "$dogfood_prompt" in
     exit 1
     ;;
 esac
+if ! grep -Fq "Do not list plugins" <<<"$dogfood_prompt" ||
+   ! grep -Fq "recommended_plugins" <<<"$dogfood_prompt" ||
+   ! grep -Fq "available_commands" <<<"$dogfood_prompt"; then
+  echo "expected dogfood-rotate prompt to skip plugin/skill preamble" >&2
+  exit 1
+fi
+if ! grep -Fq -- "--routines-dispatch" <<<"$dogfood_prompt" ||
+   ! grep -Fq "gate_command" <<<"$dogfood_prompt"; then
+  echo "expected dogfood-rotate prompt to name routines-dispatch gate_command" >&2
+  exit 1
+fi
 
 self_improvement_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" self-improvement-loop)"
 if ! grep -Fq "do not echo raw machine-result trailers" <<<"$self_improvement_prompt" ||
@@ -108,6 +126,41 @@ case "$north_star_prompt" in
     exit 1
     ;;
 esac
+
+pipeline_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" pipeline-health)"
+if ! grep -Fq "Downstream red CI is the *subject*" <<<"$pipeline_prompt" ||
+   ! grep -Fq "last-stack-routine-outcome-classify --observer last-stack-pipeline-health" <<<"$pipeline_prompt"; then
+  echo "expected pipeline-health to keep downstream red CI out of error" >&2
+  exit 1
+fi
+
+why_stopped_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" why-stopped)"
+if ! grep -Fq "including \`classes=unknown\`" <<<"$why_stopped_prompt" ||
+   ! grep -Fq "last-stack-routine-outcome-classify --observer last-stack-why-stopped" <<<"$why_stopped_prompt"; then
+  echo "expected why-stopped to classify unknown classes as ok, not error" >&2
+  exit 1
+fi
+
+whats_wrong_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" whats-wrong)"
+if ! grep -Fq "coverage.exceptions" <<<"$whats_wrong_prompt" ||
+   ! grep -Fq "last-stack-routine-outcome-classify --observer last-stack-whats-wrong" <<<"$whats_wrong_prompt"; then
+  echo "expected whats-wrong to keep remaining red rows out of error" >&2
+  exit 1
+fi
+
+ship_gap_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" ship-pipeline-gap-audit)"
+if ! grep -Fq "health=yellow" <<<"$ship_gap_prompt" ||
+   ! grep -Fq "not a routine failure" <<<"$ship_gap_prompt"; then
+  echo "expected ship-pipeline-gap-audit to keep yellow funnel out of error" >&2
+  exit 1
+fi
+
+worktree_cleanup_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" worktree-cleanup)"
+if ! grep -Fq "reason=cleanup-liveness-unavailable helper_exit=3" <<<"$worktree_cleanup_prompt" ||
+   ! grep -Fq "bounded skip, not a routine crash" <<<"$worktree_cleanup_prompt"; then
+  echo "expected worktree-cleanup to treat liveness-unavailable as noop" >&2
+  exit 1
+fi
 
 merge_babysit_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" merge-babysit)"
 if ! grep -Fq "transient shared backpressure" <<<"$merge_babysit_prompt" ||

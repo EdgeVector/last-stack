@@ -58,13 +58,22 @@ class H(BaseHTTPRequestHandler):
         # Any non-merge GET is success — proves 2xx still prints body.
         if "/merge" in self.path:
             self._send(405, json.dumps({"message": "method not allowed"}))
+        elif self.path.endswith("/pulls/405"):
+            self._send(200, json.dumps({"number": 405, "mergeable": False, "state": "open"}))
+        elif self.path.endswith("/pulls/406"):
+            self._send(200, json.dumps({"number": 406, "mergeable": True, "state": "open"}))
         else:
             self._send(200, body200)
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
         _ = self.rfile.read(length) if length else b""
-        if "/merge" in self.path:
+        if self.path.endswith("/pulls/405/merge"):
+            # Forgejo's real 405 body. It reads as transient and names nothing.
+            self._send(405, json.dumps({"message": "Please try again later"}))
+        elif self.path.endswith("/pulls/406/merge"):
+            self._send(405, json.dumps({"message": "Please try again later"}))
+        elif "/merge" in self.path:
             # Simulate Forgejo auto-merge arm while required checks pending.
             self._send(409, body409)
         else:
@@ -137,4 +146,54 @@ if [[ "$ok_out" != *'"pending_merge":true'* ]] && [[ "$ok_out" != *'"ok":true'* 
   exit 1
 fi
 
-echo "ok last-stack-forge-api error-body + 2xx path"
+# --- Case 3: a merge 405 must say WHICH 405 it is ---
+# Forgejo answers 405 {"message":"Please try again later"} both for a stuck
+# status-check task (heal: empty commit) and for a branch that genuinely does
+# not merge (heal: rebuild). Only `mergeable` separates them, and reading the
+# body alone sends you to the wrong heal — see brain
+# `papercut-lastgit-merge-405-can-mean-unmergeable-not-a-stuck-status-check`.
+set +e
+conflict_out="$("$API" --method POST --data '{"Do":"squash"}' \
+  repos/EdgeVector/fold/pulls/405/merge 2>&1 >/dev/null)"
+rc=$?
+set -e
+if [[ "$rc" -eq 0 ]]; then
+  echo "FAIL: expected non-zero exit on HTTP 405, got 0" >&2
+  exit 1
+fi
+if [[ "$conflict_out" != *"Please try again later"* ]]; then
+  echo "FAIL: 405 body no longer surfaced" >&2
+  echo "got: $conflict_out" >&2
+  exit 1
+fi
+if [[ "$conflict_out" != *"mergeable=false"* || "$conflict_out" != *"REAL CONFLICT"* ]]; then
+  echo "FAIL: 405 on an unmergeable PR did not name mergeable=false" >&2
+  echo "got: $conflict_out" >&2
+  exit 1
+fi
+if [[ "$conflict_out" != *"empty-commit heal cannot fix it"* ]]; then
+  echo "FAIL: 405 verdict did not rule out the documented heal" >&2
+  echo "got: $conflict_out" >&2
+  exit 1
+fi
+
+set +e
+stuck_out="$("$API" --method POST --data '{"Do":"squash"}' \
+  repos/EdgeVector/fold/pulls/406/merge 2>&1 >/dev/null)"
+set -e
+if [[ "$stuck_out" != *"mergeable=true"* || "$stuck_out" != *"empty-commit heal applies"* ]]; then
+  echo "FAIL: 405 on a mergeable PR did not point at the stuck status-check heal" >&2
+  echo "got: $stuck_out" >&2
+  exit 1
+fi
+
+# --- Case 4: the verdict must not fire on any other failure ---
+# A 409 auto-merge arm is a different condition with a different remedy; adding
+# a merge-conflict line to it would be the same confusion in reverse.
+if [[ "$err_out" == *"mergeable="* ]]; then
+  echo "FAIL: 409 path emitted a 405 mergeable verdict" >&2
+  echo "got: $err_out" >&2
+  exit 1
+fi
+
+echo "ok last-stack-forge-api error-body + 2xx path + 405 mergeable partition"

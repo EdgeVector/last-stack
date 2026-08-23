@@ -3,7 +3,7 @@ name: kanban
 version: 0.2.0
 description: |
   Manage the kanban board — a kanban over LastDB. File, list, show, move,
-  groom, and soft-delete cards via the kanban CLI. Use when the user wants to
+  groom, and delete cards via the kanban CLI. Use when the user wants to
   "file a kanban task/card", "add to the board", "what's on the board",
   "backlog", "list tasks", "move a card", "show card <slug>", or "groom the
   board". This is the board-CRUD counterpart to the kanban-agent skill (which
@@ -16,13 +16,36 @@ description: |
 There is **no `review` column**. Board columns are only:
 `backlog → todo → doing → done`.
 
-- Incomplete work: stay in `todo` or `doing`
+- Incomplete work that is still agent-actionable: stay in `todo` or `doing`
 - Complete work: `done` only with merge/END-STATE proof
-- Intentional holds: `block_status=needs_human|deferred|design_first` + reason
-  while the card stays in `todo` (or `backlog` if dep-blocked)
+- Intentional holds: set `block_status=needs_human|deferred|design_first` + reason
+  and park in **`backlog`** (not the default pickup `todo` lane — see below)
 
 Never `kanban move <slug> review`. The live board rejects it. Do not invent
 a review lane on custom boards either.
+
+## Default `todo` is the pickup claim lane (won't-undo — 2026-08-15)
+
+On the **default** board, `todo` is the autonomous pickup lane. The CLI/MCP
+enforces pickup-readiness on writes into that lane. Agents that ignore these
+rules burn a retry (and often a whole routine turn) on hard rejections:
+
+| Rejection (real CLI/MCP error) | Correct action |
+|---|---|
+| `cannot be placed in default/todo with block_status=deferred` (same family for human-gated holds) | Put holds in **`backlog`** with `block_status` + reason. Do **not** park deferred/human-gated work in default `todo`. |
+| `Kind:pr card … cannot enter todo without a milestone` | File Kind:pr via `$LAST_STACK_ROOT/bin/last-stack-kanban-file-pr` with **live** `--north-star` **and** `--milestone` (or `--ensure-milestone`). Raw `kanban add --column todo` without both is refused or becomes `unattached-outcome`. |
+| `cannot carry --pr-url / --branch in default/todo` | Leave `todo` cards claim-ready without in-flight PR fields. Stamp `--pr-url` / `--branch` only after the card is in **`doing`** (or when re-adding mid-claim). |
+| `Milestone "…" not found` | Use the full milestone slug (`kanban milestone list` / `milestone show`). Never truncate slugs. |
+
+Quick rules of thumb:
+
+1. **Pickup-ready Kind:pr** → always `last-stack-kanban-file-pr` (not raw `kanban add`).
+2. **Human/deferred hold** → `backlog` + `block_status` + reason.
+3. **In-flight PR linkage** → `doing` + `--pr-url`/`--branch`.
+4. **Non-PR trackers** → `Kind: tracker|validation|meta` + `DONE-WHEN:`; still need clean `Repo:`/`Base:` headers; do not force them into the Kind:pr helper path.
+
+`--force` waives the gate for operator override only — unattended routines and
+generator agents must not use it to hide unattached or deferred work.
 
 
 # kanban — board management
@@ -72,7 +95,7 @@ kanban search "<text>" --json      # text search; no --full-body flag
 kanban show <slug> --json          # one card in detail
 kanban add <slug> [flags]          # create OR update a card
 kanban move <slug> <column> [--position N]
-kanban rm <slug>                   # soft-delete
+kanban rm <slug>                   # delete (hard erase; no trash)
 kanban board create <slug> --title ... --columns a,b,c
 kanban board list
 ```
@@ -213,7 +236,7 @@ than describing stale "current state".
 - "What's stuck" → look for cards long in `review` (PR open, not merged) or
   `doing` (claimed, no PR). Surface them; don't silently re-drive — that's the
   kanban-agent reconcile pass's job.
-- Superseded / wrong card → `rm <slug>` (soft delete), or re-`add` to fix it.
+- Superseded / wrong card → `rm <slug>` (deletes; hard erase, no trash), or re-`add` to fix it.
 - A PR card in `done` means its PR **merged** — that's the normal terminal
   state, not a kill. A non-PR card in `done` means its `DONE-WHEN` predicate was
   satisfied and cited by watch/groom.

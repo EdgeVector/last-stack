@@ -28,6 +28,22 @@ backstop. The one-page operator cheat sheet lives at
 
 Brain = intent · Board = queue · Pickup = only code shipper · Watch = only closer.
 
+**Papercuts have two halves, and only the consumer was ever written down.**
+`papercut-reconciler` is the sole papercut→card path (consumer). The producer is
+*every agent, every run*: file a Brain papercut for any friction you hit, and
+never a board card. The rule lives in `instructions/brain-kanban.md` (injected
+into every harness's global instructions by `setup`) and in
+`sop-routine-shared-contract` §5; `tests/last-stack-papercut-filing-contract.sh`
+gates both. The default is FILE, not judge — a mention in a checkpoint or PR
+description is not a filing.
+
+**Every routine ends with close-out (Tom, 2026-08-17).** The last work step of
+every routine prompt is the close-out skill (`../skills/close-out/SKILL.md`):
+write the brain closeout report of the run and file brain papercuts for
+friction hit, then emit the heartbeat + `ROUTINE_RESULT` trailer as the final
+output. The "Close-out (always the LAST step)" section at the bottom of each
+prompt carries the exact wording; keep it when adapting a template.
+
 Operator tools: `last-stack-ship-preflight` (walk-away check),
 `last-stack-why-shipping-stopped` (Class A-E stall diagnosis),
 `kanban pickup explain <slug>` (why not claimable),
@@ -107,7 +123,12 @@ pack exists.
 separate ids and locks, all pointing at the same no-spawn prompt. Do not add
 in-process fan-out or detached agent launches to the prompt.
 
-Use the helper to write the base worker plus w2-w6 idempotently:
+`~/.routines/registry/*.toml` is the one canonical live registry. Installers
+seed a missing file and otherwise leave it alone — host-track refresh does
+not merge or rewrite an existing TOML. `--force-defaults` is the only hatch
+that replaces a live file with compiled defaults.
+
+Use the helper to seed the base worker plus w2-w6 when those files are missing:
 
 ```bash
 last-stack-kanban-pickup-workers --workers 6 \
@@ -150,6 +171,8 @@ ls ~/.routines/registry/last-stack-fkanban-validate.toml
 | [`merge-babysit`](merge-babysit.md) | every ~15 min | Self-heal stuck LastGit CRs, completing green laggards or filing P0 merge cards without turning transient backend outages into fleet-red runs. |
 | [`drain-open-prs`](drain-open-prs.md) | daily | Drive every open PR across all repos toward zero (merge or close). |
 | [`lastdb-canary-soak-watch`](lastdb-canary-soak-watch.md) | paused | Evaluate a dogfooded LastDB canary SHA, mark the canary ledger `soak_green` / `soak_red`, and leave promote-ready evidence without mutating the primary. |
+| [`lastdb-ops-offenders`](lastdb-ops-offenders.md) | daily | Rank live `lastdb ops` worst offenders, skip long-poll/cheap-count noise, investigate the rest, file ≤2 pickup-ready improvement cards. |
+| [`whats-wrong`](whats-wrong.md) | hourly (:23) | EV OPS What's wrong panel (`http://127.0.0.1:7733` `coverage.exceptions`): one loom heal agent per row, Brain papercuts, full closeout. |
 
 ### B. The kanban / brain driving loop — pairs 1:1 with the skills
 
@@ -170,7 +193,7 @@ ls ~/.routines/registry/last-stack-fkanban-validate.toml
 | [`morning-sync`](morning-sync.md) | daily | Surface the short genuinely-human decision set; a read-only briefing. Includes §🏭 from nightly ship-pipeline gap audit. |
 | [`ship-pipeline-gap-audit`](ship-pipeline-gap-audit.md) | nightly | Audit North Star → Milestone → PR → shipped; write brain `ship-pipeline-gap-audit-latest`; auto-file ≤3 easy process-improvement cards. |
 | [`sentry-triage`](sentry-triage.md) | daily | Pull unresolved issues from every configured Sentry project, dedupe, and file actionable fix cards. |
-| [`dogfood-rotate`](dogfood-rotate.md) | hourly | Rotate through the brain-owned dogfood registry; exercise one feature on isolated/dev surfaces; file deduped papercut/blocker cards (files work only). |
+| [`dogfood-rotate`](dogfood-rotate.md) | daily | Thin trigger: `last-stack-dogfood-rotate-gate --routines-dispatch` selects and runs one startable recipe zero-LLM (skips plugin/skill preamble); files work only. |
 
 ### Target Fleet Ownership
 

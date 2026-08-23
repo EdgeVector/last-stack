@@ -43,6 +43,35 @@ export PATH
 LAST_STACK_PRELUDE_PATH="$PATH"
 export LAST_STACK_PRELUDE_PATH
 
+# A LastSecrets locator is a reference, not a Sentry DSN. Routine launchers
+# that need Sentry must resolve the locator at the child-process boundary with
+# last-stack-secret-env-run. Leaving the unresolved locator exported makes
+# every ordinary CLI initialize observability, warn, or fail before it can
+# produce machine-readable output.
+case "${OBS_SENTRY_DSN:-}" in
+  lastsecrets://*) unset OBS_SENTRY_DSN ;;
+esac
+
+# Host-global Cargo config may route every rustc process through sccache. A
+# pinned local cache has repeatedly serialized otherwise-parallel Fold builds,
+# turning ~40 second builds into 15+ minute timeouts. Scheduled agents value a
+# predictable local critical path more than shared compiler-cache hits, so make
+# the safe path the default for shells that opt into this prelude.
+#
+# Callers with a known-good wrapper can set LAST_STACK_RUSTC_WRAPPER. Set
+# LAST_STACK_PRESERVE_RUSTC_WRAPPER=1 only when the inherited wrapper is
+# deliberate and already monitored.
+if [ "${LAST_STACK_PRESERVE_RUSTC_WRAPPER:-0}" != "1" ]; then
+  RUSTC_WRAPPER="${LAST_STACK_RUSTC_WRAPPER:-}"
+  export RUSTC_WRAPPER
+fi
+if [ "${RUSTC_WRAPPER+x}" = x ] && [ -z "$RUSTC_WRAPPER" ]; then
+  LAST_STACK_SCCACHE_BYPASS=1
+else
+  LAST_STACK_SCCACHE_BYPASS=0
+fi
+export LAST_STACK_SCCACHE_BYPASS
+
 if [ "${1:-}" = "--print" ] || [ "${LAST_STACK_SHELL_PRELUDE_PRINT:-}" = "1" ]; then
   printf 'PATH=%s\n' "$PATH"
 fi
@@ -128,6 +157,14 @@ last_stack_run_tool() {
     echo "Usage: last_stack_run_tool <tool-path> [args...]" >&2
     return 127
   fi
+
+  # Re-strip locators in case a later snippet re-exported one after prelude.
+  case "${OBS_SENTRY_DSN:-}" in
+    lastsecrets://*|lastsecrets:*)
+      env -u OBS_SENTRY_DSN PATH="${LAST_STACK_PRELUDE_PATH:-$PATH}" "$@"
+      return
+      ;;
+  esac
 
   PATH="${LAST_STACK_PRELUDE_PATH:-$PATH}" "$@"
 }

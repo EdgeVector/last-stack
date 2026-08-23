@@ -202,13 +202,19 @@ heals run.
 Emit plain text:
 
 ```
-ship-pipeline-gap-audit <ISO-UTC> ok health=<green|yellow|red> gaps=<n> filed=<n> healed=<n>
-ROUTINE_RESULT outcome=ok detail=health=<…> gaps=<n> filed=<n>
+ship-pipeline-gap-audit <ISO-UTC> <ok|noop|error> health=<green|yellow|red> gaps=<n> filed=<n> healed=<n>
 ```
 
+Print the `ROUTINE_RESULT` token followed by
+`outcome=<ok|noop|error> detail=<same-one-line-outcome>`.
+
 Use `noop` only if the funnel is GREEN and nothing was written beyond a brief
-"still green" latest record. Use `error` only if the run itself failed (no
-snapshot, brain put refused).
+"still green" latest record. Use `ok` when the audit completed, including
+`health=yellow` or `health=red` with gaps filed. Use `error` only if the run
+itself failed (CLI missing, no snapshot *and* empty prior, brain put refused).
+A yellow/red funnel is the *subject*, not a routine failure. Classify with
+`last-stack-routine-outcome-classify --observer last-stack-ship-pipeline-gap-audit`
+when in doubt.
 
 ## Standing rules
 
@@ -219,3 +225,21 @@ snapshot, brain put refused).
   "latest" slugs.
 - Tom sees this via **morning-sync** §🏭 — keep the "What morning think should
   show Tom" section ELI5-friendly.
+
+## Close-out (always the LAST step)
+
+End every run with the **close-out skill**
+(`$LAST_STACK_ROOT/skills/close-out/SKILL.md`, trigger `/close-out`), then emit
+the heartbeat + `ROUTINE_RESULT` trailer as the final output (contract §1).
+The close-out skill makes two brain writes; do not skip them:
+
+1. **Brain report** — write the closeout report of what this run did (what
+   changed, findings, decisions) per `preference-always-save-to-brain-when-done`.
+   On a pure noop run, the heartbeat line may serve as the report.
+2. **Papercuts → Brain** — file a `papercut-<topic>` brain record for every
+   friction hit this run (BRAIN ONLY, never a board card; search first, update
+   in place) per `preference-always-file-papercuts-in-brain`.
+
+Skip close-out steps that do not apply to this routine (for example PR or card
+steps on a read-only pass). Never skip the two brain writes when the run did
+substantive work or hit friction.

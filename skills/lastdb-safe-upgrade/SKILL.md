@@ -3,14 +3,19 @@ name: lastdb-safe-upgrade
 description: |
   REQUIRED path for ANY primary LastDB Mini version change. Safely upgrade
   Tom's primary lastdbd so the live brain is never the first place a bad binary
-  fails. ALWAYS: (1) durable offline copy of ~/.lastdb, (2) boot the NEW binary
+  fails. ALWAYS: (1) one ephemeral CoW rollback point outside $HOME, (2) boot the NEW binary
   only against an ephemeral/CoW copy (never live home first), (3) require GREEN
   real-data reads AND RSS under the memory-guard AND the latency bar (real
   workloads timed vs the current binary — correct-but-slow is RED) AND the
   CAS mutation bar (candidate enforces `/api/mutation` `expected` — false
-  precondition → 409; LastGit ref/CI CAS depends on it), (4) only
+  precondition → 409; LastGit ref/CI CAS depends on it), AND a GREEN
+  **DEV photograph stamp** (ephemeral/CoW of real data uploads the
+  photograph to DEV — not the primary's production backup home — and
+  CAS-flips backup/latest; never live `~/.lastdb` first), (4) only
   then venue-aware live install (sidebin+launchd or
-  brew services) + post-check + Situations notice. Use when Tom says "upgrade
+  brew services) + post-check + Situations notice, with the **durability
+  canary** bracketing the restart (sentinels acked pre-cutover must read back
+  post-cutover — a stale nonce is RED; no skip flag). Use when Tom says "upgrade
   lastdb", "brew upgrade lastdb", "safe upgrade", "update my brain/database
   binary", "can I upgrade to 0.22.x", "don't brick my data", "new bottle/release",
   or whenever an agent would otherwise brew-upgrade or point a candidate lastdbd
@@ -52,7 +57,7 @@ Primary may be supervised in either of two ways:
 
 | Venue | How primary runs | Live install |
 |-------|------------------|--------------|
-| **sidebin** (Tom’s default) | LaunchAgent → `~/.lastdb/bin-with-upload-cap/lastdbd` | Atomic install into that dir + `launchctl kickstart -k` |
+| **sidebin** (Tom’s default) | LaunchAgent → `~/.lastdb/bin-with-upload-cap/lastdbd` | Atomic install into that dir + `launchctl bootout` / `bootstrap` job reload |
 | **brew** | `brew services` + Cellar formula | `brew upgrade` + `brew services restart` |
 
 The script **detects venue** (LaunchAgent `ProgramArguments`, formula installed,
@@ -62,6 +67,10 @@ installed — that was the 2026-07-16 failure mode.
 Design: `fold/docs/designs/lastdb-minimal-downtime-cutover.md`.
 
 Env overrides: `LASTDB_SIDEBIN_DIR`, `LASTDB_LAUNCHD_LABEL`, `LASTDB_LAUNCHD_PLIST`.
+The sidebin path reloads the LaunchAgent job definition so plist environment
+edits take effect; `kickstart` alone only restarts the cached definition. The
+live post-check names configured keys absent from the new process, and
+`LASTDB_LIVE_CONFIG_ENFORCE=1` makes any such drift RED.
 
 **Hot swap:** a single-process image swap always needs a brief restart. “Seamless”
 here means **prepared cutover after GREEN CoW**, not zero downtime. A socket
@@ -71,12 +80,15 @@ proxy is optional later for near-zero client impact.
 
 1. **Never** run a candidate `lastdbd` with `--data-dir` pointing at the **live**
    `~/.lastdb` until a probe against a **copy** is GREEN.
-2. **Always** create a **durable** backup under `~/.lastdb-backups/` first
-   (kept after success; not deleted by the harness).
+2. **Always** create exactly one ephemeral CoW rollback point under the system
+   temp directory. Release it on GREEN (including GREEN probe-only or operator
+   abort); on RED retain it for the printed TTL, owned by the next safe-upgrade
+   run, which reclaims it before creating another. Never write rollback copies
+   under `$HOME`.
 3. **Never** restart/upgrade on a RED probe.
 4. **Never** kill the primary unattended outside this skill's live step; if live
    post-check fails after upgrade, **stop and restore** (binary bak and/or data
-   backup) — do not improvise.
+   retained rollback point) — do not improvise.
 5. Probe bar = smoke bar: identity decrypts, `/api/schemas` > 0, `Board` query
    returns real **title values** (counts alone are not proof).
 6. **RSS bar (memory-guard):** after data-plane GREEN, boot candidate again on a
@@ -152,6 +164,43 @@ proxy is optional later for near-zero client impact.
     installed live CLI/daemon pair is skewed.
 11. Do not claim “primary stopped” unless this script actually stopped the
    supervisor for that venue.
+12. **Durability canary (acked writes survive the restart):** immediately
+    before any live change, the driver upserts
+    `lastdb-safe-upgrade-durability-canary-1..N` (default N=4) through the
+    ordinary `brain put` path on the **live primary**, each carrying a
+    run-unique nonce, and reads each back. After the cutover it re-reads them
+    on the new daemon. A sentinel that reads back with the PREVIOUS run's
+    nonce is **RED**: the old daemon acknowledged a write the new daemon does
+    not have — the exact loss shape of
+    `papercut-lastdb-acked-write-lost-loom-terminal-status-regressed`
+    (2026-08-18: two read-back-confirmed loom terminal-status writes vanished
+    across a restart whose shutdown "did not complete its clean drain").
+    Unreadable sentinels after `LASTDB_DURABILITY_READ_WAIT_S` (default 120s)
+    are also RED — durability UNPROVEN. Rolling back the binary does not
+    recover lost writes; a RED here means audit recent writes across apps
+    before trusting the store. **There is deliberately no skip flag.**
+    Tunables: `LASTDB_DURABILITY_CANARY_N`, `LASTDB_DURABILITY_READ_WAIT_S`.
+13. **DEV photograph stamp (required before live cutover — Tom 2026-08-19,
+    this is the SOP for all upgrades):** after the other probe bars, live
+    install is **refused** unless an **ephemeral/CoW copy of real data**
+    (never live `~/.lastdb`) uploaded a cloud-backup **photograph** to
+    **DEV** (Exemem `https://ygyu7ritx8.execute-api.us-west-2.amazonaws.com`,
+    not the primary's production backup home
+    `jdsx4ixk2i.execute-api.us-east-1.amazonaws.com`) and CAS-flipped
+    `backup/latest` (committed snapshot counter ≥ 1). A mock object store is
+    not DEV. Strip prod `cloud_sync.json` on the CoW, connect `--env dev`
+    with a DEV-only invite, then `lastdb cloud snapshot`. Record a GREEN
+    receipt; `scripts/dev-photograph-stamp-gate.sh` / `--check-dev-stamp`
+    refuse live when the receipt is missing, RED, aimed at production, or
+    used the live home. Skip (`LASTDB_PROBE_DEV_STAMP_SKIP=1`) is Tom
+    clearance only. Brain: `preference-lastdb-upgrade-ephemeral-probe-first`,
+    `sop-lastdb-safe-upgrade`.
+14. **LaunchAgent config parity:** sidebin cutover uses `bootout` then
+    `bootstrap` so the plist job definition is re-read. It falls back to
+    `kickstart -k` only when those launchctl verbs are unavailable. After the
+    new daemon is serving, compare plist `EnvironmentVariables` key names with
+    the running process environment (never print values). Missing keys are a
+    loud WARN; `LASTDB_LIVE_CONFIG_ENFORCE=1` makes them RED.
 
 ## Do this, in order
 
@@ -191,6 +240,9 @@ bash "$driver" --candidate /path/to/release/lastdbd --yes
 
 # Bottle version via GitHub release tarball then venue-aware live
 bash "$driver" --version 0.22.8 --probe-only
+
+# Refuse/allow live based only on the DEV photograph stamp receipt
+bash "$driver" --check-dev-stamp
 ```
 
 Or, after last-stack is installed:
@@ -205,13 +257,15 @@ The script:
 |------|------|
 | Preflight | Primary home exists, identity.key present, live `/health` ok (if socket up) |
 | Resolve candidate | `brew update` / `--version` tarball / `--candidate` |
-| **1. Backup** | `cp -cR` (APFS) or `cp -a` → `~/.lastdb-backups/pre-<new>-from-<old>-<ts>/` |
+| **1. Rollback point** | `cp -cR` (APFS only; no full-copy fallback) → `${TMPDIR}/lastdb-safe-upgrade-rollback-<uid>/pre-<new>-from-<old>-<ts>/`; reclaim the prior retained point first |
 | **0. Class** | Refuse `target/debug`, `-dirty` version, size ≫ incumbent (before multi-GB backup) |
 | **2. Probe** | `BIN=<candidate>` CoW smoke harness (never live home) + **CAS mutation bar** (ephemeral candidate node: false `expected` → 409) + **RSS settle/sample** vs memory-guard limit + **latency bar**: point read / `kanban list` scan / `brain put` write timed on candidate CoW copy vs the current binary on an identical copy |
 | Detect venue | sidebin vs brew |
-| **3. Live** | sidebin atomic install + kickstart **or** brew upgrade/restart |
-| **4. Post-check** | Live `/health`, schemas > 0, Board title, **live peak RSS** vs guard, **live point-read + kanban list latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency in notice |
-| RED | Exit 1, **keep backup**, primary untouched if class/probe failed (incl. debug/dirty/size, CAS-disarmed node, RSS over guard, or latency over bar) |
+| **2b. DEV photograph stamp** | Live cutover **refused** without a GREEN receipt: ephemeral/CoW (never `~/.lastdb`) uploaded the photograph to **DEV** (not the primary's production backup home) and CAS-flipped `backup/latest`. `--check-dev-stamp` exercises this gate alone. |
+| **3. Live** | **durability canary armed** (N run-unique sentinels acked + read back on the old daemon, before any live change), then sidebin atomic install + LaunchAgent job-definition reload **or** brew upgrade/restart |
+| **4. Post-check** | Live `/health`, schemas > 0, Board title, **LaunchAgent config parity** (missing process env keys WARN; `LASTDB_LIVE_CONFIG_ENFORCE=1` → RED), **durability canary read-back** (stale nonce → RED, no skip flag), **live peak RSS** vs guard, **live point-read + kanban list latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency + durability in notice |
+| **4b. Release** | After GREEN, delete the rollback point and its empty root. GREEN probe-only and operator abort release it too. |
+| RED | Exit 1, retain the one rollback point, print its path, TTL, and cleanup owner; primary untouched if class/probe failed |
 
 ### B. If the script is missing or fails open
 
@@ -225,7 +279,7 @@ Always print:
 
 - Current version → candidate version  
 - Venue (sidebin / brew)  
-- Backup path  
+- Rollback path and whether it was released or retained (TTL + cleanup owner)
 - Probe GREEN/RED (+ first Board title if green)  
 - **Probe peak RSS MiB vs memory-guard limit / fail_at**  
 - **Latency: candidate vs baseline point/scan/write medians (ms) + boot seconds**  
@@ -246,33 +300,69 @@ incident.
 | `VERDICT: GREEN` | Probe + live cutover + live post-check passed | Done |
 | `VERDICT: GREEN_PROBE_ONLY` | Probe passed; primary still on old version | Re-run with `--yes` if Tom wants the upgrade |
 | `VERDICT: ALREADY_CURRENT` | Already on candidate/stable | Nothing to do |
-| `VERDICT: RED` | Candidate fails **class** bar (debug/dirty/size), **or** cannot serve real data, **or** the **CAS mutation** bar (node accepted a false `expected` precondition), **or** peak RSS exceeds memory-guard bar, **or** the latency bar failed (per-op 3×, absolute ceiling, **or correlated** all-ops / geo-mean regression) | **Do not upgrade**; file release-blocker; keep backup. If class: rebuild `--release` from origin/main (or soaked canary). If CAS: fix `/api/mutation` expected enforcement before cutover (`LASTDB_PROBE_CAS_SKIP=1` only with Tom clearance). If RSS: fix candidate memory or raise guard only with Tom clearance. If latency: profile the candidate's read/write paths; `LASTDB_PROBE_LAT_SKIP=1` / `LASTDB_PROBE_LAT_CORR_SKIP=1` only with Tom clearance |
+| `VERDICT: RED` | Candidate fails **class** bar (debug/dirty/size), **or** cannot serve real data, **or** the **CAS mutation** bar (node accepted a false `expected` precondition), **or** peak RSS exceeds memory-guard bar, **or** the latency bar failed (per-op 3×, absolute ceiling, **or correlated** all-ops / geo-mean regression), **or** the **DEV photograph stamp** is missing/RED (no ephemeral/CoW upload to DEV, or the receipt names production / live `~/.lastdb`), **or** the **durability canary** failed post-cutover (stale/unreadable sentinel — acked writes did not provably survive the restart) | **Do not upgrade**; file release-blocker; use the one retained rollback point only if recovery is required. The next safe-upgrade run reclaims it. A durability RED after cutover additionally means: audit recent writes across apps — rollback does not recover lost writes. |
 
 ## Rollback
 
 **Binary only (sidebin — preferred first try):**
 
+Copy to a temp path in the same dir, ad-hoc re-sign, clear quarantine, assert
+the binary actually runs, and only then **atomically rename** it into place:
+
 ```bash
-cp -a ~/.lastdb/bin-with-upload-cap/lastdbd.bak-pre-<ver>-<ts> \
-      ~/.lastdb/bin-with-upload-cap/lastdbd
+B=~/.lastdb/bin-with-upload-cap
+cp -a $B/lastdbd.bak-pre-<ver>-<ts> $B/.lastdbd.rollback.tmp
+codesign --force --sign - $B/.lastdbd.rollback.tmp
+xattr -c $B/.lastdbd.rollback.tmp
+$B/.lastdbd.rollback.tmp --version    # MUST print a version before proceeding
+mv -f $B/.lastdbd.rollback.tmp $B/lastdbd
 launchctl kickstart -k gui/$(id -u)/com.REPLACE.lastdbd-primary-506
 kanban list
 ```
 
-**Data (only if home corrupted):**
+> **Never `cp -a` straight onto the live `lastdbd` path.** An in-place copy keeps
+> the destination **inode**, macOS still has the cached code signature for that
+> inode from the binary that was just running, the new bytes do not match it, and
+> the kernel kills every exec with `OS_REASON_CODESIGNING` — launchd sits in
+> `state = spawn scheduled` and never runs.
+>
+> This failure is silent in the obvious check: `lastdbd --version` prints
+> **nothing** and returns no visible error, while `shasum -a 256` on the
+> installed file **matches the backup exactly**. Correct bytes + healthy sha +
+> silent exec is the signature. It cost several minutes of primary downtime on
+> 2026-07-27.
+>
+> The `--version` line above is the assertion that catches it — run it on the
+> temp path, before the rename, and never trust sha alone. The forward install
+> in `safe-upgrade-lastdb.sh` was always safe because it writes a new file and
+> renames; only this hand-run rollback used the in-place form, which is exactly
+> backwards from where you want the sharp edge.
+>
+> Papercut: `papercut-lastdb-safe-upgrade-rollback-cp-a-trips-codesigning`.
+
+**Data (only if home corrupted and the run is RED):**
 
 ```bash
 # stop primary supervisor, then:
 mv ~/.lastdb ~/.lastdb.broken-$(date +%Y%m%dT%H%M%S)
-cp -a ~/.lastdb-backups/pre-<ver>-from-<old>-<ts> ~/.lastdb
+cp -a <printed-ephemeral-rollback-path> ~/.lastdb
 # restart supervisor (kickstart or brew services start)
 kanban list   # must show real cards
 ```
 
 ## Related skills / harnesses
 
-- **`lastdb-smoke-test`** — probe-only CoW canary (no backup, no live install).  
+- **`lastdb-smoke-test`** — probe-only CoW canary (no persistent backup, no live install).
   Safe-upgrade **calls** its harness for step 2.
+- **Write-path CoW probe (Table 5 / T0 ack):** `scripts/write-path-cow-probe.sh`
+  clones the live home with `cp -cR` into `${TMPDIR}` (never `--data-dir ~/.lastdb`),
+  reuses `live_lastdb_env_pairs()`, strips prod `cloud_sync.json`, and classifies
+  a warm BoardCards mutation. Incumbent-shaped samples (seconds-scale ack,
+  persist/T2 on the request, Purge in the batch) are **RED**. Table 5 GREEN is
+  persist spawn-only, `sync_capture` encode-only, `purge_barrier` ≈ 0, warm
+  p50 < 50 ms / p95 < 100 ms. This probe does not replace safe-upgrade; it is
+  the extra write-path bar. `LASTDB_RESIDENT_MAX_DEFERRED_BYTES` on the live
+  plist stays 0 until full GREEN plus Tom.
 - **`brain-doctor`** — if primary is already wedged **before** upgrade; fix health first.
 - Design: **`lastdb-minimal-downtime-cutover`** (venue + optional proxy phase).
 
@@ -280,8 +370,15 @@ kanban list   # must show real cards
 
 - `brew upgrade lastdb` as a one-liner without this skill when the user cares about data.
 - Point candidate `--data-dir` at live `~/.lastdb` "just to see".
+- Upload a CoW/ephemeral photograph into the primary's **production** backup
+  home, or treat a mock object-store "stamp" as the DEV photograph gate.
+- Live cutover without a GREEN DEV photograph stamp (CAS `latest` on DEV
+  from an ephemeral/CoW copy of real data).
 - Pass `--candidate …/target/debug/lastdbd` or any `-dirty` build to "get a feature SHA on primary" — rebuild `--release` from origin/main (or a soaked canary) instead (incident 2026-08-01).
-- Delete `~/.lastdb-backups/*` as part of a successful upgrade (Tom prunes later).
+- Put a rollback or probe copy under `$HOME` (`~/.lastdb-backups`,
+  `~/.lastdb-test-copies`, sibling `.bak` homes). Existing legacy trees are a
+  separate human-owned cleanup decision; the driver neither uses nor sweeps
+  them.
 - Restart/kill primary on RED.
 - Call `brew upgrade` when formula is not installed and primary is sidebin.
 - Assume the skill lives only under `~/.claude/skills` — Codex/Grok/Factory use their own skills dirs; last-stack setup keeps them in sync.

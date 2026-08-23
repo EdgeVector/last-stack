@@ -27,11 +27,18 @@ grep -q 'terminal North Star proof' "$entry"
   printf '%s\n' 'model = "grok-4.5"'
   printf '%s\n' 'fallback = "claude"'
 } >"$entry"
+before="$(cksum "$entry")"
 "$BIN" --registry-dir "$tmp/registry" --prompt-path "$prompt" >/dev/null
+after="$(cksum "$entry")"
+test "$before" = "$after"
 grep -q 'harness = "grok"' "$entry"
 grep -q 'model = "grok-4.5"' "$entry"
 grep -q 'fallback = "claude"' "$entry"
-grep -q 'effort = "medium"' "$entry"
+if grep -qE '^(effort|rrule) ' "$entry"; then
+  echo "kanban-validate skip-if-exists merged compiled fields into leftover:" >&2
+  cat "$entry" >&2
+  exit 1
+fi
 
 before="$(cksum "$entry")"
 "$BIN" --registry-dir "$tmp/registry" --prompt-path "$prompt" >/tmp/last-stack-kanban-validate-idempotent.$$

@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Deliver one admin SPA snapshot through the existing Brain/Routines CLIs.
+set -euo pipefail
+
+mode="${1:-}"
+case "$mode" in
+  brain|routines) shift ;;
+  *)
+    echo "usage: last-stack-admin-deliver brain|routines [--dry-run|--approve] [cli options]" >&2
+    exit 2
+    ;;
+esac
+
+recipient_env="${ADMIN_DELIVER_RECIPIENT_ENV:-$HOME/.lastdb/admin-deliver-recipient.env}"
+if [ -f "$recipient_env" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$recipient_env"
+  set +a
+elif [ "${1:-}" = "--approve" ]; then
+  echo "admin-deliver: recipient identity file missing: $recipient_env" >&2
+  exit 1
+fi
+
+case "$mode" in
+  brain) exec brain admin-snapshot deliver "$@" ;;
+  routines) exec routines deliver-status "$@" ;;
+esac

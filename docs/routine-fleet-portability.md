@@ -17,10 +17,11 @@ The fleet has three layers:
    `signal-sources`, and `probe-registry`.
 3. **Shared routine contract** is the project SOP named
    `sop-routine-shared-contract`. Routines cite it for heartbeat, dedupe,
-   guardrails, shell discipline, and validation rules.
+   guardrails, papercut filing, shell discipline, and validation rules.
 
-When the project has a dedicated config app, store config-class records there
-and keep the brain copies as pointers. The bootstrap shape stays the same:
+When the project has a dedicated Config app, store config-class records there.
+Brain may keep rationale pointers, but must not remain a silent fallback for a
+`configurations://` source. The bootstrap shape stays the same:
 engines read named records through the configured source instead of editing
 engine skills or routine prompts.
 
@@ -84,7 +85,7 @@ engine skills or routine prompts.
 | `tag-repo-map.md` | Conservative tag to `Repo:` mapping for groom and program-driver routines. |
 | `signal-sources.md` | Error, usage, and alert feeds with secret locators, triage thresholds, repo routing, and dedupe ledgers. |
 | `probe-registry.md` | Continuous sentinel recipes, pass assertions, isolation rules, verdict records, and card targets. |
-| `sop-routine-shared-contract.md` | Shared heartbeat, dedupe, guardrail, shell, verification, block-ownership, verdict, and human-gate rules. |
+| `sop-routine-shared-contract.md` | Shared heartbeat, dedupe, guardrail, papercut-filing, shell, verification, block-ownership, verdict, and human-gate rules. |
 
 ## Dry-Run Checklist
 

@@ -97,6 +97,21 @@ continue — do not fail the whole run.
    ```bash
    "$last_stack/bin/last-stack-worktree-reclaim" --sweep-stale --max-age-hours 48
    ```
+   **Liveness gates (won't-undo — 2026-08-17 free-collapse):** the helper's
+   process probe (`ps`/`lsof`) may fail under a scheduled sandbox while the
+   board still answers. Interpret helper output as:
+   - **Hard stop** (`exit 3`, `liveness_unavailable=1`, no `liveness_soft=1`):
+     process table missing **and** no real board protect set. Do **not** hand-
+     delete worktrees. Heartbeat `error liveness_unavailable=1 …`.
+   - **Soft degrade** (`exit 0`, `liveness_soft=1`): process table missing but
+     board protect is real. The helper still reclaims finished non-`doing`
+     worktrees (no pressure strip). Count `reclaim finished` / `removed`
+     lines as `worktrees_pruned`. Heartbeat `ok liveness_soft=1
+     worktrees_pruned=<n> …` when it reclaimed, or `ok liveness_soft=1
+     worktrees_pruned=0 …` when the protect set + age gate left nothing
+     eligible (that is a real empty result, not a blind abort).
+   - Never treat soft-degrade as a reason to skip backup/scratch retention or
+     free-space escalation below — those steps do not need process inspection.
    Heartbeat tokens: count lines with `removed worktree` / `stripped` from
    helper stdout if useful. Fallback if the helper is missing: per worktree,
    strip `target`/`node_modules`, then remove only when clean + not `doing` +
@@ -129,6 +144,28 @@ continue — do not fail the whole run.
    `cargo sweep`/`go clean`/`node_modules` prune equivalent for your stack).
    Confirm any incremental-build cache cap is in effect; note it if not (don't
    change global env unattended).
+3c. **Account for space OUTSIDE your named counters.** `worktrees_pruned` /
+   `backups_pruned` / `lastdb_copies_pruned` describe the categories this
+   routine knows about — they say nothing about the rest of the disk. On
+   2026-08-15 the single largest reclaimable object on the machine was
+   **36 GB of leftover working trees under the git mirror cache**
+   (`~/.cache/edgevector-git/*.legacy-checkout`), invisible to every counter
+   here, while the routine reported a healthy steady `final_free`. Each run,
+   size the top-level directories you do NOT have a counter for, e.g.:
+
+   ```bash
+   du -sh "$HOME/.cache/"* 2>/dev/null | sort -rh | head -10
+   du -sh "$HOME/code/"*/.routine-worktrees 2>/dev/null | sort -rh | head
+   ```
+
+   Report anything above ~5 GB that no counter covers, even when you do not
+   act on it. Two traps observed there:
+   - A directory named like a cache can be **29 working trees holding 20
+     stashes and 213 dirty files**. Check `git status --porcelain` and
+     `git stash list` before treating any of it as disposable.
+   - `du` on such a directory tells you nothing about how much *history* is
+     stored: one 16 GB checkout had a 149 MiB pack and 11 GB of `target/`.
+     Use `git count-objects -vH` before concluding a git cache is large.
 4a. **LastDB backup retention (`~/.lastdb-backups/` ONLY).** Keep the newest 3
    `pre-*` backup dirs by their trailing timestamp; delete every older one
    (retention set with Tom 2026-07-19 after unbounded backups contributed to
@@ -182,10 +219,13 @@ continue — do not fail the whole run.
      is already up.
    - **< 30 GiB free:** additionally run the step-5 aggressive purge even if
      it was skipped, tighten step-4a retention to newest 1 for this run only,
-     and upsert brain record `papercut-low-disk-emergency` (type reference)
-     with `df -h` output and the largest remaining consumers so the papercut
-     router files a P0 card. This is the last line of defense — never end a
-     run below 30 GiB silently.
+     and file `papercut-low-disk-emergency` through `brain papercut file`
+     (`--component disk --severity p0 --kind specified-fix`) with a one-line
+     observable symptom plus `df -h`, the largest remaining consumers, and
+     prevention evidence in the body. If the typed record is already open,
+     append the fresh evidence with `brain append ... --type papercut`; never
+     generic `brain put`. The keyed filing must succeed before reporting it as
+     queued. This is the last line of defense — never end below 30 GiB silently.
 
 ## Operator flags — what protects a live build, and how to override it
 
@@ -226,6 +266,42 @@ Both guards are proven by `tests/last-stack-worktree-reclaim.sh` and
 Report: GB reclaimed, worktrees pruned (and which were kept and why), final free
 space, and anything left for a human.
 
+**`reclaimed_gb=0` is a claim that needs evidence, not a default.** Before
+emitting a zero, state which of these it was:
+- nothing was eligible (say how many candidates you examined), or
+- something *prevented* you from acting.
+
+The second case must never be reported as `ok`. If the reclaim helper exits
+**3** / logs `liveness_unavailable=1` **without** `liveness_soft=1`, it could
+not read the process table **and** had no board protect set — heartbeat
+`error liveness_unavailable=1`, not `ok reclaimed_gb=0`. Soft-degrade
+(`liveness_soft=1`) is different: worktree reclaim may still have run; report
+the measured `worktrees_pruned` and do not hard-error solely for soft
+liveness. Same hard-error rule for a board read that failed
+(`board_unavailable`) or a `situations preflight` you could not run when
+those failures blocked the only remaining safe reclaim path.
+This distinction is the whole ballgame: for weeks of hourly runs, a blind
+routine and an idle machine emitted the identical line `ok reclaimed_gb=0`,
+while the worktree pool grew to 75 trees and the git cache to 38 GB. On
+2026-08-16→17 the opposite failure mode appeared: every hourly fire hard-
+aborted on sandbox-denied `ps` (`liveness_unavailable=1 reclaimed_gb=0`)
+while free space fell ~100 GiB with `board_ok=1` — soft-degrade closes that.
+
+**Free-space collapse with zero reclaim (won't-undo):** keep the previous
+run's `final_free` GiB in automation memory (`prev_final_free_gib=<n>`).
+After this run's reclaim steps, if `reclaimed_gb=0` and
+`worktrees_pruned=0` and free dropped by **>20 GiB** vs the previous stored
+value, heartbeat `error free_collapsing_with_zero_reclaim drop_gib=<n>
+final_free=<free> prev_free=<prev>` (plus the usual counters) so
+morning-sync / factory-health see a loud signal — not a silent identical
+hourly red. Always rewrite `prev_final_free_gib` at end of a successful
+assessment even when outcome is error.
+
+Also report `pool_size=<n worktrees>` every run. A count that climbs across
+consecutive runs is the signal that a *generator* is outpacing this sweep —
+that is a card against the generator (reclaim-on-exit), not a reason to widen
+the sweep.
+
 > **Heartbeat (LAST action, always — even a bounded no-op).** Call
 > `<last-stack>/bin/last-stack-brain-append-heartbeat --line "disk-reclaim
 > <ISO-ts> <ok|noop|error> <outcome>"`, e.g. `ok reclaimed_gb=<n>
@@ -238,3 +314,21 @@ space, and anything left for a human.
 > run actually went. If the heartbeat helper cannot write because the brain
 > socket is unavailable, still print the heartbeat line so the run's stdout
 > carries the token.
+
+## Close-out (always the LAST step)
+
+End every run with the **close-out skill**
+(`$LAST_STACK_ROOT/skills/close-out/SKILL.md`, trigger `/close-out`), then emit
+the heartbeat + `ROUTINE_RESULT` trailer as the final output (contract §1).
+The close-out skill makes two brain writes; do not skip them:
+
+1. **Brain report** — write the closeout report of what this run did (what
+   changed, findings, decisions) per `preference-always-save-to-brain-when-done`.
+   On a pure noop run, the heartbeat line may serve as the report.
+2. **Papercuts → Brain** — file a `papercut-<topic>` brain record for every
+   friction hit this run (BRAIN ONLY, never a board card; search first, update
+   in place) per `preference-always-file-papercuts-in-brain`.
+
+Skip close-out steps that do not apply to this routine (for example PR or card
+steps on a read-only pass). Never skip the two brain writes when the run did
+substantive work or hit friction.

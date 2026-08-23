@@ -36,7 +36,7 @@ grep -q 'DEFAULT_LASTDBD_RSS_LIMIT_MB="${LASTDBD_DEFAULT_RSS_LIMIT_MB:-12288}"' 
   exit 1
 }
 grep -q 'ensure_primary_launchd_rss_limit' "$driver" || {
-  echo "FAIL: safe-upgrade driver must stamp LASTDBD_RSS_LIMIT_MB into the primary LaunchAgent before sidebin kickstart" >&2
+  echo "FAIL: safe-upgrade driver must stamp LASTDBD_RSS_LIMIT_MB into the primary LaunchAgent before sidebin job reload" >&2
   exit 1
 }
 if grep -q 'else 6144' "$skill_md"; then
@@ -74,6 +74,18 @@ grep -q 'latency-bar-checks.sh' "$driver" || {
 }
 grep -q 'lat_correlated_within_bar' "$driver" || {
   echo "FAIL: driver must call lat_correlated_within_bar" >&2
+  exit 1
+}
+grep -q 'dev-photograph-stamp-gate.sh' "$driver" || {
+  echo "FAIL: driver must source dev-photograph-stamp-gate.sh" >&2
+  exit 1
+}
+grep -q 'assert_dev_photograph_stamp_ok' "$driver" || {
+  echo "FAIL: driver must call assert_dev_photograph_stamp_ok before live cutover" >&2
+  exit 1
+}
+grep -qi 'DEV photograph' "$skill_md" || {
+  echo "FAIL: SKILL.md must require a DEV photograph stamp before live cutover" >&2
   exit 1
 }
 

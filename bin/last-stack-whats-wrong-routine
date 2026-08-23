@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Seed the scheduled EV OPS "What's wrong" loom healer when missing.
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+# shellcheck source=last-stack-routines-registry-env
+. "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/last-stack-routines-registry-env"
+last_stack_registry_paths_init
+
+ROUTINES_HOME="${ROUTINES_HOME:-$HOME/.routines}"
+REGISTRY_DIR="$ROUTINES_HOME/registry"
+PROMPT_PATH="$(last_stack_registry_prompt_path whats-wrong.md "$ROOT/routines/whats-wrong.md")"
+ID="last-stack-whats-wrong"
+DRY_RUN=0
+FORCE_DEFAULTS=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --registry-dir) REGISTRY_DIR="$2"; shift 2 ;;
+    --prompt-path) PROMPT_PATH="$2"; shift 2 ;;
+    --id) ID="$2"; shift 2 ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --force-defaults) FORCE_DEFAULTS=1; shift ;;
+    -h|--help) echo "last-stack-whats-wrong-routine [--dry-run] [--force-defaults]"; exit 0 ;;
+    *) echo "unknown: $1" >&2; exit 2 ;;
+  esac
+done
+
+[ -r "$PROMPT_PATH" ] || { echo "missing prompt: $PROMPT_PATH" >&2; exit 66; }
+
+if [ "$DRY_RUN" -eq 0 ]; then
+  last_stack_registry_assert_safe_write "$REGISTRY_DIR" "$PROMPT_PATH" "$REG_CWD" \
+    || exit 3
+fi
+
+path="$REGISTRY_DIR/$ID.toml"
+if [ "$DRY_RUN" -eq 0 ] && last_stack_registry_skip_if_exists "$path" "$FORCE_DEFAULTS"; then
+  exit 0
+fi
+
+# Routinesd skips the LLM harness when gate_command is set. The gate MUST be
+# the healer itself — observer-gate --status only rereads the last stamp and
+# never fans out (measured 2026-08-20: 1.3s "ok remaining=2" while What's wrong
+# stayed red). Pin the stable compat path, never artifacts/versions/<sha>.
+GATE="${REG_STABLE_ROOT}/bin/last-stack-whats-wrong-loom"
+if last_stack_registry_is_version_dir "$GATE"; then
+  GATE="${HOME}/.last-stack/bin/last-stack-whats-wrong-loom"
+fi
+
+body=$(cat <<EOF
+# Hourly EV OPS What's wrong healer — one loom agent per coverage.exceptions row.
+# gate_command is the wrapper (zero extra LLM). Routinesd will skip the prompt.
+id = "$ID"
+difficulty = "normal"
+effort = "high"
+rrule = "FREQ=HOURLY;INTERVAL=1;BYMINUTE=23;BYSECOND=0"
+cwd = "$REG_CWD"
+status = "active"
+timeout_min = 45
+prompt_path = "$PROMPT_PATH"
+gate_command = "$GATE"
+heartbeat_slug = "routine-heartbeats"
+group = "quality"
+EOF
+)
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  printf '%s\n' "--- $path"
+  printf '%s\n' "$body"
+  exit 0
+fi
+mkdir -p "$REGISTRY_DIR"
+tmp="$(mktemp "${TMPDIR:-/tmp}/last-stack-whats-wrong.XXXXXX")"
+printf '%s\n' "$body" >"$tmp"
+if [ -f "$path" ] && cmp -s "$tmp" "$path"; then
+  rm -f "$tmp"
+  printf 'unchanged %s\n' "$path"
+else
+  mv "$tmp" "$path"
+  printf 'wrote %s\n' "$path"
+fi

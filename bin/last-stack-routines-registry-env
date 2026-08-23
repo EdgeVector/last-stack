@@ -16,9 +16,12 @@
 # Then use:
 #   REG_CWD, REG_STABLE_ROOT, ROUTINES_HOME (may be rewritten)
 #   last_stack_registry_prompt_path <name.md> <fallback>
-#   last_stack_registry_runtime_values <path> <default-harness> <default-model> <force-defaults>
-#   last_stack_registry_emit_runtime_values
+#   last_stack_registry_skip_if_exists <path> <force-defaults>
 #   last_stack_registry_assert_safe_write <registry_dir> <path...>
+#
+# Canonical live registry is ~/.routines/registry (or ROUTINES_HOME/registry).
+# Installers seed a missing TOML and otherwise leave the file alone. There is
+# no field merge. --force-defaults is the only rewrite hatch.
 
 # shellcheck disable=SC2034  # exported for callers
 
@@ -136,55 +139,17 @@ last_stack_registry_prompt_path() {
   printf '%s\n' "$chosen"
 }
 
-# Read one non-empty, quoted top-level TOML string. Registry writers only use
-# this for the small runtime-routing fields below; malformed/empty values fall
-# back to the installer's defaults.
-last_stack_registry_toml_string() {
+# Live registry TOMLs are canonical. Seed only when the file is missing.
+# --force-defaults (1) is the explicit rewrite hatch.
+# Returns 0 when the caller must not write (and already printed "unchanged").
+last_stack_registry_skip_if_exists() {
   local path="$1"
-  local key="$2"
-  [ -f "$path" ] || return 0
-  awk -v wanted="$key" '
-    $1 == wanted && $2 == "=" {
-      value = $0
-      sub(/^[^=]*=[[:space:]]*"/, "", value)
-      sub(/".*$/, "", value)
-      if (length(value) > 0) {
-        print value
-        exit
-      }
-    }
-  ' "$path"
-}
-
-# Preserve deliberate local harness/model/fallback routing across idempotent
-# installer refreshes. Callers may opt back into their compiled defaults with
-# --force-defaults. Sets REG_RUNTIME_{HARNESS,MODEL,FALLBACK} for the emitter.
-last_stack_registry_runtime_values() {
-  local path="$1"
-  local default_harness="$2"
-  local default_model="$3"
-  local force_defaults="${4:-0}"
-  local existing=""
-
-  REG_RUNTIME_HARNESS="$default_harness"
-  REG_RUNTIME_MODEL="$default_model"
-  REG_RUNTIME_FALLBACK=""
-
+  local force_defaults="${2:-0}"
   if [ "$force_defaults" -eq 0 ] && [ -f "$path" ]; then
-    existing="$(last_stack_registry_toml_string "$path" harness)"
-    [ -z "$existing" ] || REG_RUNTIME_HARNESS="$existing"
-    existing="$(last_stack_registry_toml_string "$path" model)"
-    [ -z "$existing" ] || REG_RUNTIME_MODEL="$existing"
-    REG_RUNTIME_FALLBACK="$(last_stack_registry_toml_string "$path" fallback)"
+    printf 'unchanged %s\n' "$path"
+    return 0
   fi
-}
-
-last_stack_registry_emit_runtime_values() {
-  printf 'harness = "%s"\n' "$REG_RUNTIME_HARNESS"
-  printf 'model = "%s"\n' "$REG_RUNTIME_MODEL"
-  if [ -n "$REG_RUNTIME_FALLBACK" ]; then
-    printf 'fallback = "%s"\n' "$REG_RUNTIME_FALLBACK"
-  fi
+  return 1
 }
 
 # Refuse host-registry writes that embed ephemeral or REPLACE paths.

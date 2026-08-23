@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+
+# Predictable Cargo entrypoint for local agent builds. An explicit empty
+# RUSTC_WRAPPER overrides a host-global rustc-wrapper in ~/.cargo/config.toml.
+# Opt back into a monitored wrapper with LAST_STACK_RUSTC_WRAPPER.
+cargo_bin="${LAST_STACK_REAL_CARGO:-}"
+if [ -z "$cargo_bin" ]; then
+  cargo_bin="$(command -v cargo 2>/dev/null || true)"
+fi
+if [ -z "$cargo_bin" ] || [ ! -x "$cargo_bin" ]; then
+  echo "last-stack-cargo: cargo is not installed or not executable" >&2
+  exit 127
+fi
+
+RUSTC_WRAPPER="${LAST_STACK_RUSTC_WRAPPER:-}"
+export RUSTC_WRAPPER
+exec "$cargo_bin" "$@"

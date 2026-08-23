@@ -70,7 +70,8 @@ Upgrade The Last Stack in place and re-register the skills.
 - Re-running `./setup` is idempotent; it refreshes the SKILL.md links so every
   installed harness picks up the new version.
 - This only updates The Last Stack's own skills — it never touches skills you
-  added yourself.
+  added yourself. Other apps (kanban, brain, …) use the **app-safe-upgrade**
+  skill (`host-track refresh <app>`), not this one.
 - **Run this (or Last Stack `./setup`) AFTER any gstack setup / `/gstack-upgrade`.**
   gstack `./setup` re-symlinks its skills into `~/.claude/skills/<name>` and, when
   a gstack skill shares a name with a Last Stack one (e.g. gstack's mermaid

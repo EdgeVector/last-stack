@@ -175,57 +175,25 @@ if { [ "$live_install" -eq 1 ] || [ "${LASTSTACK_USE_HOST_TRACK_STATUS:-0}" = "1
   if [ "$(printf '%s\n' "$artifact_status" | jq -r '.install_mode // ""' 2>/dev/null)" = "artifact" ]; then
     artifact_mode=1
     artifact_stale="$(printf '%s\n' "$artifact_status" | jq -r '.stale | tostring' 2>/dev/null)"
+    artifact_freshness="$(printf '%s\n' "$artifact_status" | jq -r '.freshness // ""' 2>/dev/null)"
+    local_manifest="$(printf '%s\n' "$artifact_status" | jq -r '.manifest_digest // ""' 2>/dev/null)"
+    channel_manifest="$(printf '%s\n' "$artifact_status" | jq -r '.channel_manifest_digest // ""' 2>/dev/null)"
     update_status="$("$ROOT/bin/last-stack-update-check" 2>/dev/null || true)"
     [ -n "$update_status" ] || update_status="ARTIFACT_UPDATE_AVAILABLE"
+    # Claim path must not run host-track refresh. LaunchAgent does promote
+    # and install. A check fail during pickup is either publish lag (proceed)
+    # or a tree that is not usable (fail closed).
     check_err="$(mktemp "${TMPDIR:-/tmp}/last-stack-routine-read-check.XXXXXX")"
     if host-track check last-stack >"$check_err" 2>&1; then
       rm -f "$check_err"
     else
       check_detail="$(cat "$check_err" 2>/dev/null || true)"
       rm -f "$check_err"
-      # Heal even when status.stale=false (content hash mismatch under current version).
-      # Plain refresh now re-stages corrupt versions; --force also re-stages.
-      if [ "${LASTSTACK_SELF_UPGRADE_SKIP:-0}" = "1" ]; then
-        stale_fail "$update_status" "Artifact check failed and refresh disabled (LASTSTACK_SELF_UPGRADE_SKIP=1). $check_detail"
+      artifact_problem="$(printf '%s\n' "$artifact_status" | jq -r '.artifact_problem // empty' 2>/dev/null || true)"
+      if [ "$artifact_stale" = "false" ] || [ -n "$artifact_problem" ]; then
+        stale_fail "ARTIFACT_UPDATE_AVAILABLE" "check failed and the install is not usable. $check_detail"
       fi
-      artifact_err="$(mktemp "${TMPDIR:-/tmp}/last-stack-routine-read-artifact.XXXXXX")"
-      if [ "$artifact_stale" = "true" ]; then
-        refresh_cmd="host-track refresh last-stack"
-      else
-        # Pointer current but content bad — force re-stage from CAS.
-        refresh_cmd="host-track refresh --force last-stack"
-      fi
-      heal_failed=0
-      if ! $refresh_cmd >"$artifact_err" 2>&1; then
-        heal_failed=1
-      fi
-      refresh_detail="$(cat "$artifact_err" 2>/dev/null || true)"
-      rm -f "$artifact_err"
-      if [ "$heal_failed" -eq 0 ]; then
-        check_err="$(mktemp "${TMPDIR:-/tmp}/last-stack-routine-read-check.XXXXXX")"
-        if ! host-track check last-stack >"$check_err" 2>&1; then
-          heal_failed=1
-          check_detail="$(cat "$check_err" 2>/dev/null || true)"
-        fi
-        rm -f "$check_err"
-      fi
-      if [ "$heal_failed" -eq 1 ]; then
-        if [ "$artifact_stale" = "true" ]; then
-          # Pointer-stale and we could NOT self-heal in this process — e.g. a
-          # sandboxed routine cannot write ~/.local/bin. The installed skill-pack
-          # is a few commits behind but self-consistent (it was passing before it
-          # went stale), so running slightly-older logic is far safer than halting
-          # the entire fleet. The unsandboxed launchd auto-refresh
-          # (`host-track refresh --force-if-stale`) heals the pointer out of band
-          # within ~20 min. Warn loudly and PROCEED instead of blocking — a stale
-          # skill-pack must never be able to stop the factory from shipping.
-          echo "LAST_STACK_ROUTINE_STALE_PROCEED $update_status install pointer-stale; could not self-heal in process (check: $check_detail refresh: $refresh_detail); proceeding on current skill-pack while the out-of-band auto-refresh catches up." >&2
-        else
-          # Pointer current but content still bad after --force → genuine
-          # corruption, not mere staleness. Block so a broken skill-pack never runs.
-          stale_fail "ARTIFACT_UPDATE_AVAILABLE" "Active artifact content verification still failing after forced re-stage; skill-pack appears corrupt. check: $check_detail refresh: $refresh_detail"
-        fi
-      fi
+      echo "LAST_STACK_ROUTINE_STALE_PROCEED $update_status freshness=${artifact_freshness:-unknown} local_manifest=${local_manifest:0:12} channel_manifest=${channel_manifest:0:12}; claim path does not run host-track refresh. $check_detail" >&2
     fi
     clear_fetch_fail_streak
     LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1

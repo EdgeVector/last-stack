@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# Zero-LLM closer for observer/auditor routines. Completes the inspection
+# and stamps ok/noop — never error just because the subject is red/yellow.
+#
+# Usage:
+#   last-stack-routine-observer-gate <routine-id>
+# Env:
+#   ROUTINE_FLEET_STATUS_JSON  optional status JSON (skips `routines status`)
+#   ROUTINE_OBSERVER_DETAIL    optional precomputed detail (skips live I/O)
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+classify="$ROOT/bin/last-stack-routine-outcome-classify"
+[ -x "$classify" ] || { echo "missing $classify" >&2; exit 1; }
+
+id="${1:-${ROUTINE_ID:-}}"
+case "$id" in
+  last-stack-pipeline-health|pipeline-health) id="last-stack-pipeline-health" ;;
+  last-stack-why-stopped|why-stopped) id="last-stack-why-stopped" ;;
+  last-stack-whats-wrong|whats-wrong) id="last-stack-whats-wrong" ;;
+  last-stack-ship-pipeline-gap-audit|ship-pipeline-gap-audit) id="last-stack-ship-pipeline-gap-audit" ;;
+  routine-fleet-health) ;;
+  ""|-h|--help)
+    echo "usage: last-stack-routine-observer-gate <routine-id>" >&2
+    exit 2
+    ;;
+  *)
+    echo "unknown observer: $id" >&2
+    exit 2
+    ;;
+esac
+
+detail="${ROUTINE_OBSERVER_DETAIL:-}"
+exit_code=0
+
+if [ -z "$detail" ] && [ "$id" = "last-stack-why-stopped" ]; then
+  # Prefer the loom wrapper so the EV OPS why-loom stamp stays fresh.
+  # The CLI path never writes that stamp; a 4.5h-stale stamp is a dashboard x.
+  why_loom="$ROOT/bin/last-stack-why-stopped-loom"
+  if [ -x "${HOME}/.last-stack/bin/last-stack-why-stopped-loom" ]; then
+    why_loom="${HOME}/.last-stack/bin/last-stack-why-stopped-loom"
+  fi
+  if [ -x "$why_loom" ]; then
+    set +e
+    if command -v timeout >/dev/null 2>&1; then
+      out="$(timeout -k 2s 120s "$why_loom" --json --quiet 2>/dev/null)"
+    else
+      out="$("$why_loom" --json --quiet 2>/dev/null)"
+    fi
+    set -e
+    cls="$(printf '%s\n' "$out" | sed -n 's/.*"classes":"\([^"]*\)".*/\1/p' | head -1)"
+    if [ -n "$cls" ]; then
+      detail="classes=${cls}"
+    fi
+  fi
+  if [ -z "$detail" ]; then
+    why="$ROOT/bin/last-stack-why-stopped"
+    if [ -x "$why" ]; then
+      # No --heal: Class A heal can hang; classification itself is the job.
+      out="$("$why" --json 2>/dev/null || true)"
+      cls="$(printf '%s\n' "$out" | sed -n 's/.*"classes":"\([^"]*\)".*/\1/p' | head -1)"
+      detail="classes=${cls:-unknown}"
+    else
+      detail="classes=unknown"
+    fi
+  fi
+fi
+
+if [ -z "$detail" ] && [ "$id" = "last-stack-pipeline-health" ]; then
+  if command -v lastgit >/dev/null 2>&1; then
+    set +e
+    if command -v timeout >/dev/null 2>&1; then
+      stuck="$(timeout -k 2s 20s lastgit stuck --json --min-age-min 10 2>/dev/null)"
+      rc=$?
+    else
+      stuck="$(lastgit stuck --json --min-age-min 10 2>/dev/null)"
+      rc=$?
+    fi
+    set -e
+    if [ "$rc" -eq 124 ]; then
+      detail="busy-node status-timeout"
+    else
+      n="$(printf '%s\n' "$stuck" | python3 -c 'import json,sys
+try:
+  d=json.load(sys.stdin)
+  items=d if isinstance(d,list) else d.get("items") or d.get("stuck") or []
+  print(len(items) if isinstance(items,list) else 0)
+except Exception:
+  print(0)' 2>/dev/null || echo 0)"
+      detail="open_cr=${n} stuck=inventory-scanned"
+    fi
+  else
+    detail="open_cr=0 stuck=lastgit-missing"
+  fi
+fi
+
+if [ -z "$detail" ] && [ "$id" = "last-stack-ship-pipeline-gap-audit" ]; then
+  snap="$ROOT/bin/last-stack-ship-pipeline-gap-snapshot"
+  if [ -x "$snap" ]; then
+    set +e
+    if command -v timeout >/dev/null 2>&1; then
+      raw="$(timeout -k 2s 25s "$snap" --json --quiet 2>/dev/null)"
+      rc=$?
+    else
+      raw="$("$snap" --json --quiet 2>/dev/null)"
+      rc=$?
+    fi
+    set -e
+    if [ "$rc" -eq 124 ]; then
+      detail="busy-node status-timeout"
+    else
+      health="$(printf '%s\n' "$raw" | python3 -c 'import json,sys
+try:
+  d=json.load(sys.stdin)
+  print(d.get("health") or d.get("color") or "yellow")
+except Exception:
+  print("yellow")' 2>/dev/null || echo yellow)"
+      detail="health=${health} gaps=0 snapshot=gate"
+    fi
+  else
+    detail="health=yellow gaps=0 snapshot=empty"
+  fi
+fi
+
+if [ "$id" = "last-stack-whats-wrong" ]; then
+  # If this gate is the scheduled command, it must RUN the healer, not reread
+  # a stamp. --status was a 1.3s noop that left What's wrong red (2026-08-20).
+  ww="$ROOT/bin/last-stack-whats-wrong-loom"
+  if [ -x "${HOME}/.last-stack/bin/last-stack-whats-wrong-loom" ]; then
+    ww="${HOME}/.last-stack/bin/last-stack-whats-wrong-loom"
+  fi
+  if [ -x "$ww" ]; then
+    exec "$ww" --json
+  fi
+  printf '%s %s\n' 'ROUTINE_RESULT' 'outcome=error detail=cli missing'
+  exit 0
+fi
+
+if [ "$id" = "routine-fleet-health" ]; then
+  status_json="${ROUTINE_FLEET_STATUS_JSON:-}"
+  tmp=""
+  if [ -z "$status_json" ]; then
+    tmp="$(mktemp "${TMPDIR:-/tmp}/fleet-status.XXXXXX")"
+    if command -v routines >/dev/null 2>&1; then
+      set +e
+      if command -v timeout >/dev/null 2>&1; then
+        timeout -k 2s 30s routines status --json >"$tmp" 2>/dev/null
+        rc=$?
+      else
+        routines status --json >"$tmp" 2>/dev/null
+        rc=$?
+      fi
+      set -e
+      if [ "$rc" -ne 0 ] || [ ! -s "$tmp" ]; then
+        printf '%s %s\n' 'ROUTINE_RESULT' 'outcome=error detail=status-json-unreadable'
+        [ -n "$tmp" ] && rm -f "$tmp"
+        exit 0
+      fi
+      status_json="$tmp"
+    else
+      printf '%s %s\n' 'ROUTINE_RESULT' 'outcome=error detail=status-json-unreadable'
+      rm -f "$tmp"
+      exit 0
+    fi
+  fi
+  "$classify" --status-json "$status_json" --emit-result
+  [ -n "$tmp" ] && rm -f "$tmp"
+  exit 0
+fi
+
+"$classify" --observer "$id" --exit "$exit_code" --detail "$detail" --emit-result
+exit 0

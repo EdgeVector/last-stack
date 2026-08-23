@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# Install / uninstall / inspect the Brain and Routines admin deliverers.
+set -euo pipefail
+
+self="$0"
+self_root="$(cd "$(dirname "$self")/.." && pwd)"
+# shellcheck source=../lib/last-stack-launchd-agent.sh
+. "$self_root/lib/last-stack-launchd-agent.sh"
+
+program="last-stack-admin-deliver"
+last_stack="$(last_stack_agent_stable_root "$self" "$program")"
+cmd="${1:-status}"
+selection="${2:-all}"
+
+each_mode() {
+  case "$selection" in
+    all) printf '%s\n' brain routines ;;
+    brain|routines) printf '%s\n' "$selection" ;;
+    *) echo "unknown deliverer: $selection (use brain|routines|all)" >&2; exit 2 ;;
+  esac
+}
+
+mode_label() {
+  case "$1" in
+    brain) printf '%s\n' com.edgevector.admin-brain-snapshot ;;
+    routines) printf '%s\n' com.edgevector.admin-routines-status ;;
+  esac
+}
+
+mode_home() {
+  case "$1" in
+    brain) printf '%s\n' "$HOME/.local/share/edgevector/admin-brain-snapshot" ;;
+    routines) printf '%s\n' "$HOME/.local/share/edgevector/admin-routines-status" ;;
+  esac
+}
+
+write_run_home() {
+  local mode="$1" run_home label
+  run_home="$(mode_home "$mode")"
+  label="$(mode_label "$mode")"
+  mkdir -p "$run_home/launchd"
+  cat >"$run_home/run.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+exec "$last_stack/bin/$program" "$mode" --approve "\$@"
+EOF
+  chmod 0755 "$run_home/run.sh"
+  cat >"$run_home/README.md" <<EOF
+# ${mode} admin SPA deliverer
+
+- LaunchAgent: \`${label}\`
+- Cadence: hourly
+- Runner: \`${run_home}/run.sh\`
+- Recipient identity: \`~/.lastdb/admin-deliver-recipient.env\`
+- Logs: \`${run_home}/deliver.log\` and \`deliver.err.log\`
+
+Dry-run without staging or sending:
+
+\`$last_stack/bin/$program $mode --dry-run\`
+EOF
+}
+
+install_one() {
+  local mode="$1" label run_home plist_src plist_dst rendered
+  label="$(mode_label "$mode")"
+  run_home="$(mode_home "$mode")"
+  plist_src="$self_root/launchd/${label}.plist"
+  [ -f "$plist_src" ] || plist_src="$last_stack/launchd/${label}.plist"
+  plist_dst="${ADMIN_DELIVER_PLIST_DIR:-$HOME/Library/LaunchAgents}/${label}.plist"
+  [ -e "$last_stack/bin/$program" ] || [ -x "$self_root/bin/$program" ] || {
+    echo "missing executable: $last_stack/bin/$program" >&2
+    exit 1
+  }
+  [ -f "$plist_src" ] || { echo "missing plist: $plist_src" >&2; exit 1; }
+  write_run_home "$mode"
+  rendered="$(mktemp "${TMPDIR:-/tmp}/${label}.plist.XXXXXX")"
+  last_stack_agent_render_plist "$plist_src" "$rendered" "$last_stack"
+  last_stack_agent_commit_plist "$label" "$plist_dst" "$rendered" "$mode admin deliverer"
+  cp "$plist_dst" "$run_home/launchd/${label}.plist"
+}
+
+uninstall_one() {
+  local mode="$1" label plist_dst
+  label="$(mode_label "$mode")"
+  plist_dst="${ADMIN_DELIVER_PLIST_DIR:-$HOME/Library/LaunchAgents}/${label}.plist"
+  last_stack_agent_uninstall "$label" "$plist_dst" "$mode admin deliverer"
+}
+
+status_one() {
+  local mode="$1" label run_home plist_dst uid
+  label="$(mode_label "$mode")"
+  run_home="$(mode_home "$mode")"
+  plist_dst="${ADMIN_DELIVER_PLIST_DIR:-$HOME/Library/LaunchAgents}/${label}.plist"
+  printf '%s: runner=%s plist=%s\n' "$mode" "$run_home/run.sh" "$plist_dst"
+  [ -f "$plist_dst" ] && echo "$mode: plist present" || echo "$mode: plist missing"
+  if last_stack_agent_should_touch_launchd "$plist_dst" && command -v launchctl >/dev/null 2>&1; then
+    uid="$(id -u)"
+    launchctl print "gui/${uid}/${label}" 2>/dev/null | head -25 || echo "$mode: launchctl not loaded"
+  fi
+}
+
+case "$cmd" in
+  install) each_mode | while IFS= read -r mode; do install_one "$mode"; done ;;
+  uninstall) each_mode | while IFS= read -r mode; do uninstall_one "$mode"; done ;;
+  status) each_mode | while IFS= read -r mode; do status_one "$mode"; done ;;
+  run-once)
+    [ "$selection" != all ] || { echo "run-once requires brain or routines" >&2; exit 2; }
+    shift 2
+    exec "$last_stack/bin/$program" "$selection" "$@"
+    ;;
+  -h|--help) sed -n '2,8p' "$0" ;;
+  *) echo "usage: $0 install|uninstall|status [brain|routines|all]" >&2; exit 2 ;;
+esac

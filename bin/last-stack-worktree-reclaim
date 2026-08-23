@@ -61,6 +61,12 @@ branch=""
 path_arg=""
 sweep_stale=0
 max_age_hours=48
+# Grace period before a CLEAN, idle, unprotected worktree is reclaimable.
+# Finished work does not become safe to delete by aging — it is already safe.
+# Age is only a proxy for "might still be in use", and we have better signals
+# (doing-card, live process, fresh build markers, dirty tree). This short grace
+# exists purely to avoid racing a worktree created seconds before the sweep.
+min_age_minutes="${LAST_STACK_RECLAIM_MIN_AGE_MIN:-60}"
 dry_run=0
 force_live=0
 
@@ -69,6 +75,27 @@ force_live=0
 live_index=""
 # Set by has_live_cwd so destructive-path logs explain why a tree was spared.
 live_reason=""
+# 1 when the process-inspection instruments (lsof/ps) did not work this run.
+# Hard-closed behaviour (no board protect set): every tree is treated as live
+# and nothing is removed. Soft-degrade (board read succeeded this run): keep
+# board protect + fresh build markers, skip process-based live checks, still
+# reclaim finished non-doing worktrees. See build_live_index / has_live_cwd.
+# A sandbox that denies ps/lsof previously produced an EMPTY index, which is
+# indistinguishable from "the machine is idle" — so every worktree looked
+# reclaimable until fail-closed landed. The soft path exists because the
+# scheduled disk-reclaim harness runs under a sandbox that denies ps while
+# board reads still work (2026-08-17: free space collapsed ~100 GiB while
+# hourly runs hard-aborted with liveness_unavailable=1 reclaimed_gb=0).
+liveness_unavailable=0
+# 1 when soft-degrade is active (liveness probe failed but board protect is real).
+liveness_soft=0
+# 1 when the board could not be read, so the doing-card protect set is empty
+# for lack of knowledge rather than lack of active work. The fast reclaim path
+# is disabled in that case; only the conservative age gate applies.
+board_unavailable=0
+# 1 only after a successful board list this run (not SKIP_BOARD, not a failed read).
+# Soft-degrade requires this: without a real protect set we stay hard-closed.
+board_read_ok=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -77,6 +104,7 @@ while [ "$#" -gt 0 ]; do
     --path) path_arg="${2:-}"; shift 2 ;;
     --sweep-stale) sweep_stale=1; shift ;;
     --max-age-hours) max_age_hours="${2:-48}"; shift 2 ;;
+    --min-age-minutes) min_age_minutes="${2:-60}"; shift 2 ;;
     --dry-run) dry_run=1; shift ;;
     --force-live) force_live=1; shift ;;
     -h|--help)
@@ -233,6 +261,21 @@ has_live_cwd() {
   local wt="$1"
   live_reason=""
   [ -d "$wt" ] || return 1
+  # Process table missing:
+  #   hard (no board_read_ok): fail CLOSED — treat everything as live.
+  #   soft (board_read_ok): only fresh build markers count as live; process
+  #   checks are skipped. Board protect covers doing cards separately.
+  if [ "$liveness_unavailable" -eq 1 ]; then
+    if [ "${liveness_soft:-0}" -eq 1 ]; then
+      if has_fresh_build_markers "$wt"; then
+        live_reason="fresh_build_marker"
+        return 0
+      fi
+      return 1
+    fi
+    live_reason="liveness_unavailable"
+    return 0
+  fi
   if has_live_process "$wt"; then
     return 0
   fi
@@ -241,6 +284,17 @@ has_live_cwd() {
     return 0
   fi
   return 1
+}
+
+# True when the worktree has nothing uncommitted to lose (no modified, staged,
+# or untracked files). Used to decide whether a tree still needs the long
+# conservative age gate or can be reclaimed on the short grace period.
+# A non-repo path is NOT treated as clean — we cannot inspect it, so it keeps
+# the conservative path.
+worktree_is_clean() {
+  local wt="$1"
+  git -C "$wt" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+  [ -z "$(git -C "$wt" status --porcelain 2>/dev/null)" ]
 }
 
 # One-shot process scan → reason<TAB>path index lines.
@@ -270,10 +324,30 @@ build_live_index() {
   fi
   # All user cwd paths in one lsof (skip when LAST_STACK_RECLAIM_SKIP_LSOF=1 for
   # fast unit tests that inject EXTRA_LIVE_PATHS).
+  #
+  # Instrument verification (won't-undo): `lsof`/`ps` failures were previously
+  # swallowed by `2>/dev/null || true`, leaving an EMPTY index that reads
+  # exactly like a machine with nothing running. Under a sandbox that denies
+  # them (observed: `ps_denied=1`, `ps_unavailable=sandbox` in the
+  # last-stack-disk-reclaim heartbeats) every worktree would classify as idle.
+  # A live process ALWAYS has a cwd, so zero cwd rows means the probe failed,
+  # never that the host is idle. Same for a ps that cannot see even itself.
   if [ "${LAST_STACK_RECLAIM_SKIP_LSOF:-0}" != "1" ]; then
-    lsof -nP -a -u "$(id -un)" -d cwd -Fn 2>/dev/null \
-      | awk '/^n/ { p = substr($0, 2); sub(/\/$/, "", p); if (p != "") print "live_cwd\t" p }' \
-      >>"$out" || true
+    lsof_rows=0
+    lsof_rows="$(
+      lsof -nP -a -u "$(id -un)" -d cwd -Fn 2>/dev/null \
+        | awk '/^n/ { p = substr($0, 2); sub(/\/$/, "", p); if (p != "") print "live_cwd\t" p }' \
+        | tee -a "$out" | wc -l | tr -d ' '
+    )" || lsof_rows=0
+    if [ "${lsof_rows:-0}" -eq 0 ]; then
+      liveness_unavailable=1
+      log "liveness_probe_failed instrument=lsof rows=0 (cannot prove any tree is idle)"
+    fi
+    # ps must at least see this very process.
+    if ! ps -axo pid= 2>/dev/null | grep -q '[0-9]'; then
+      liveness_unavailable=1
+      log "liveness_probe_failed instrument=ps (cannot enumerate processes)"
+    fi
   fi
   # Command lines that mention a managed worktree root (absolute-path product
   # binaries, cargo invocations with explicit manifest paths, etc.).
@@ -455,18 +529,48 @@ find_slug_paths() {
 
 doing_slugs() {
   # Tests / offline runs can skip the board round-trip.
+  # Empty protect set is intentional here — keep board_unavailable=0 so the
+  # finished-work reclaim path still runs. Soft-degrade must NOT arm
+  # (board_read_ok stays 0) because there is no real protect set.
   if [ "${LAST_STACK_RECLAIM_SKIP_BOARD:-0}" = "1" ]; then
+    board_read_ok=0
     return 0
   fi
   local cli=""
   if command -v kanban >/dev/null 2>&1; then cli=kanban
   else
+    # No board CLI: protect set is unknown, not proven empty.
+    board_unavailable=1
+    board_read_ok=0
     return 0
   fi
-  "$cli" list --column doing --json 2>/dev/null | python3 - <<'PY' 2>/dev/null || true
+  # Read the board into a FILE, never a pipe into `python3 -`.
+  # Won't-undo: `... --json | python3 - <<'PY'` is broken — the heredoc IS
+  # stdin, so it supplies the program and `json.load(sys.stdin)` then reads an
+  # exhausted stream, raises, and the `except: sys.exit(0)` swallows it. That
+  # silently produced an EMPTY protect set on every run, so no doing-card
+  # worktree was ever protected. shellcheck catches this as SC2259.
+  local tmp
+  tmp="$(mktemp)" || return 0
+  if ! "$cli" list --column doing --json >"$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    # A board we cannot read is not a board with nothing in it.
+    log "WARNING doing_slugs: board read failed — protect set empty, sweeping conservatively"
+    board_unavailable=1
+    board_read_ok=0
+    return 0
+  fi
+  board_read_ok=1
+  board_unavailable=0
+  if command -v jq >/dev/null 2>&1; then
+    jq -r '(if type=="object" then (.cards // []) else . end)[]? | .slug // empty' \
+      "$tmp" 2>/dev/null || true
+  else
+    python3 - "$tmp" <<'PY' 2>/dev/null || true
 import json,sys
 try:
-    d=json.load(sys.stdin)
+    with open(sys.argv[1]) as fh:
+        d=json.load(fh)
 except Exception:
     sys.exit(0)
 cards=d.get("cards") if isinstance(d,dict) else d
@@ -479,6 +583,8 @@ for c in cards:
     if s:
         print(s)
 PY
+  fi
+  rm -f "$tmp"
 }
 
 reclaimed=0
@@ -514,14 +620,37 @@ if [ "$sweep_stale" -eq 1 ]; then
   doing_slugs >"$protect_file" || true
   now_epoch="$(date -u +%s)"
   max_age_sec=$((max_age_hours * 3600))
+  min_age_sec=$((min_age_minutes * 60))
 
   # Once-per-sweep live process index (cwd + exe paths).
   live_index="$(mktemp)"
   build_live_index "$live_index" || true
+  if [ "$liveness_unavailable" -eq 1 ]; then
+    if [ "${board_read_ok:-0}" -eq 1 ]; then
+      # Soft-degrade: process table missing but doing-card protect set is real.
+      # Still reclaim finished non-doing trees; do not strip caches under
+      # pressure (rebuild cost without process proof is the wrong trade).
+      liveness_soft=1
+      log "SOFT_DEGRADE process inspection unavailable; board protect active — reclaim finished non-doing trees only (no pressure strip)"
+    else
+      log "REFUSING broad sweep: process inspection unavailable and board protect unavailable — cannot prove any worktree is idle"
+    fi
+  fi
 
   free_now="$(free_gib_home)"
+  # The pressure floor governs stripping caches out from under work we are
+  # KEEPING — that trades disk for an expensive rebuild, so it should wait for
+  # real pressure. It must NOT govern stripping a worktree that is idle and
+  # unprotected: that tree's target/ is pure waste at any disk level, and
+  # gating it on scarcity is why an hourly sweep sat at reclaimed=0 with 195
+  # GiB free while the pool grew unbounded.
   do_strip=1
-  if ! under_disk_pressure; then
+  if [ "${liveness_soft:-0}" -eq 1 ]; then
+    # Soft path: never strip under pressure without process proof.
+    do_strip=0
+    strip_skipped_pressure=1
+    log "pressure_skip soft_liveness free_gib=${free_now} floor_gib=${free_floor_gib}"
+  elif ! under_disk_pressure; then
     do_strip=0
     strip_skipped_pressure=1
     log "pressure_skip broad_sweep_skipped_disk_pressure free_gib=${free_now} floor_gib=${free_floor_gib}"
@@ -536,7 +665,9 @@ if [ "$sweep_stale" -eq 1 ]; then
       name="$(basename "$d")"
 
       # Generated-cache strip: only under disk pressure, and never for live trees.
-      # Guard lives inside strip_generated; we still skip the call when free.
+      # Pressure-gating is deliberate — stripping a tree we KEEP costs its owner
+      # a full rebuild, so it waits for real scarcity. Removal of finished work
+      # below is NOT pressure-gated; that is the part that bounds the pool.
       if [ "$do_strip" -eq 1 ]; then
         if [ "$force_live" -eq 0 ] && has_live_cwd "$d"; then
           log "keep strip-skip reason=${live_reason:-live} $name"
@@ -547,13 +678,40 @@ if [ "$sweep_stale" -eq 1 ]; then
         fi
       fi
 
-      # protect doing slugs (substring match)
+      # Protect doing slugs. Matching is deliberately generous in BOTH
+      # directions: worktree names are "<repo>-[kanban-]<card-slug>" but the
+      # card slug often carries a suffix the directory does not
+      # (observed: dir `state-machine-factory-heal-state-machine` vs card
+      # `factory-heal-state-machine-def`). A one-directional substring test
+      # missed that and reclaimed an active card's checkout. Try the name with
+      # up to three leading "<token>-" segments stripped, and accept
+      # containment either way.
       prot=0
       while IFS= read -r s; do
         [ -z "$s" ] && continue
-        case "$name" in
-          *"$s"*) prot=1; break ;;
-        esac
+        cand="$name"
+        i=0
+        while [ "$i" -le 3 ]; do
+          # Forward: the directory carries the whole card slug. Slugs are long
+          # and specific, so this needs no length guard.
+          case "$name" in *"$s"*) prot=1 ;; esac
+          # Reverse: the card slug carries the directory's tail (dir
+          # `state-machine-factory-heal-state-machine` vs card
+          # `factory-heal-state-machine-def`). Stripping segments shortens the
+          # candidate, so this MUST have a length floor — without one,
+          # `finished-a` strips to `a`, which is a substring of nearly every
+          # slug and protects the entire pool.
+          if [ "${#cand}" -ge 8 ]; then
+            case "$s" in *"$cand"*) prot=1 ;; esac
+          fi
+          [ "$prot" -eq 1 ] && break
+          case "$cand" in
+            *-*) cand="${cand#*-}" ;;
+            *) break ;;
+          esac
+          i=$((i + 1))
+        done
+        [ "$prot" -eq 1 ] && break
       done <"$protect_file"
       case "$name" in
         salvage-*|tombstone-*|locked*) prot=1 ;;
@@ -569,8 +727,31 @@ if [ "$sweep_stale" -eq 1 ]; then
       # age by directory mtime
       mtime="$(stat -f %m "$d" 2>/dev/null || stat -c %Y "$d" 2>/dev/null || echo 0)"
       age=$((now_epoch - mtime))
+
+      # Short grace: never race a worktree created moments before this sweep,
+      # whose owning process may not have opened it yet.
+      if [ "$age" -lt "$min_age_sec" ]; then
+        log "keep fresh ${name} age_min=$((age / 60)) grace_min=${min_age_minutes}"
+        continue
+      fi
+
+      # Finished work is reclaimable NOW. By this point the tree is not
+      # protected (no doing-card, not salvage/tombstone/locked) and not live.
+      # If it also has nothing uncommitted, waiting for it to reach
+      # --max-age-hours does not make deletion safer — it only lets the pool
+      # grow. This is what let a generator producing ~10 worktrees/hour
+      # outrun an hourly sweep whose population was permanently "young".
+      if [ "$board_unavailable" -eq 0 ] && worktree_is_clean "$d"; then
+        log "reclaim finished ${name} age_h=$((age / 3600)) clean=1"
+        remove_worktree "$d"
+        reclaimed=$((reclaimed + 1))
+        continue
+      fi
+
+      # Dirty tree: keep the conservative age gate. remove_worktree still saves
+      # a patch first, but give a human the full window to notice it.
       if [ "$age" -lt "$max_age_sec" ]; then
-        log "keep young ${name} age_h=$((age / 3600))"
+        log "keep dirty ${name} age_h=$((age / 3600)) (waiting out max_age_hours=${max_age_hours})"
         continue
       fi
       remove_worktree "$d"
@@ -581,5 +762,18 @@ if [ "$sweep_stale" -eq 1 ]; then
   live_index=""
 fi
 
-log "done reclaimed=$reclaimed stripped_paths=$stripped_only strip_skipped_live=$strip_skipped_live strip_skipped_pressure=$strip_skipped_pressure free_floor_gib=$free_floor_gib dry_run=$dry_run"
+log "done reclaimed=$reclaimed stripped_paths=$stripped_only strip_skipped_live=$strip_skipped_live strip_skipped_pressure=$strip_skipped_pressure liveness_unavailable=$liveness_unavailable liveness_soft=$liveness_soft board_read_ok=$board_read_ok free_floor_gib=$free_floor_gib min_age_min=$min_age_minutes dry_run=$dry_run"
+
+# Hard stop only when process inspection failed AND we lack a real board protect
+# set. Soft-degrade (board_read_ok) already reclaimed finished non-doing trees
+# above and must exit 0 so disk-reclaim can report worktrees_pruned>0.
+# A blind no-board no-op must not report success — `ok reclaimed_gb=0` is
+# indistinguishable from "nothing to do", which is how this went unnoticed.
+if [ "$liveness_unavailable" -eq 1 ] && [ "${liveness_soft:-0}" -eq 0 ]; then
+  log "exit=3 liveness_unavailable — grant this run ps/lsof, pass --force-live, or ensure board protect is readable for soft-degrade"
+  exit 3
+fi
+if [ "${liveness_soft:-0}" -eq 1 ]; then
+  log "exit=0 liveness_soft=1 reclaimed=$reclaimed"
+fi
 exit 0

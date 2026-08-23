@@ -48,26 +48,39 @@ separate intentional exceptions from drift. An artifact entry can set:
 
 `host-track install` asks LastGit to resolve and verify the promoted channel,
 verifies every blob again while copying it, installs under the immutable
-`versions/<manifest-digest>` directory, and atomically switches `current`.
+`versions/<manifest-digest>` directory, **probes that tree while `current`
+still points at last-known-good**. If the app sets `safe_upgrade.soak_hours`
+and a live current exists, refresh parks a `canary` pointer and leaves PATH
+alone; `host-track soak-watch` re-probes and promotes after the window.
+`--activate` (or `soak_hours: 0`, last-stack) flips `current` on GREEN probe.
 The displaced version remains at `previous` for `host-track rollback`.
 `host-track check` verifies the active payload hashes as well as freshness.
 It refuses to replace a non-symlink command target.
-When configured, `post_install` runs after activation and after rollback with
-`HOST_TRACK_APP`, `HOST_TRACK_INSTALL_ROOT`, and
-`HOST_TRACK_MANIFEST_DIGEST` in its environment. A failed hook leaves the app
-stale (no new stamp), so the refresh agent retries instead of claiming success.
+When configured, `post_install` runs on the version tree **before the probe**
+(so bun/npm hooks exist for the smoke) unless the app sets
+`safe_upgrade.post_install_phase` to `after-cutover` (last-stack `setup`,
+which rewrites live links). A failed hook or a RED probe leaves the app
+stale (no new stamp) and does not flip PATH.
+
+Every artifact app must declare `safe_upgrade.probes` — argv relative to the
+version tree. `host-track validate-registry` fails closed when an artifact
+app has none. Brain / kanban / situations also set `"latency": true` so a
+correct-but-much-slower candidate is RED against the current tree. Tom-only
+escape: `HOST_TRACK_PROBE_SKIP=1`. LastDB Mini stays on `lastdb-safe-upgrade`.
 
 ### Last Stack one rule (artifact is the only runtime)
 
 **Runtime install = Host Track CI artifact that tracks green main. Never a place you develop.**
 
-Mental model: the live stack **is** main, with a short CI/publish lag. It is
-still an immutable content-addressed artifact (not a git working tree), but
-`host-track refresh last-stack` promotes `stable` to the newest **green +
-published** main oid and installs it. Status `gate_head` is the real main tip;
-`stale=true` means the installed oid is not that tip yet (CI pending, publish
-missing, or refresh not run). Do **not** treat a manually-frozen stable
-pointer as the long-term source of truth.
+Mental model: the live stack tracks the **published** channel. `host-track
+refresh last-stack` promotes `stable` to the newest **green + published** main
+oid and installs it. Status `gate_head` is that published channel oid.
+`stale=true` means the live digest is not the channel, or the tree is
+unusable. `main_unpublished=true` means lastgit `main` is ahead of the
+channel (CI pending or the package is not published yet). Pickup, `check`,
+and `last-stack-update-check` use only the on-channel question. The
+LaunchAgent (not pickup) promotes when a deployable oid exists. Do **not**
+treat unpublished `main` as a stale install.
 
 | Role | Path | Mutable? |
 |------|------|----------|
@@ -128,10 +141,19 @@ Each status record reports:
 - `exec_path`
 - `kind`
 - `install_mode`
-- `stale`
+- `stale` (artifact: live digest ≠ published channel, or unusable tree)
+- `main_unpublished` (artifact: lastgit main tip ≠ published channel oid)
+- `freshness` (`fresh` | `soft_stale` | `hard_broken`)
+- `behind_by` (commit distance when the installed and gate OIDs are available)
+- `binary_pair_match`, `paired_version`, `paired_head`, and
+  `deployment_problem` for safe-upgrade-managed binary pairs
 - `stamp`
 - `refresh`
 - `notes`
+
+Use `host-track status --stale` (optionally with `--json`) to show only apps
+whose measured `stale` value is true. Unknown measurements are not silently
+included as fresh.
 
 Artifact-backed records also report `artifact_app`, `artifact_channel`,
 `artifact_root`, `install_root`, `manifest_digest`, and
@@ -156,7 +178,11 @@ Allowed exemption `kind` codes (short, machine-readable):
 - `bootstrap-recovery` — substrate that must stay checkout-backed so the forge
   can still be repaired when artifact/CR paths are unhealthy (seed: `lastgit`).
 - `deployment-only` — install/activation is intentionally outside generic Host
-  Track refresh (seed: `lastdb` / `lastdbd` via `lastdb-safe-upgrade`).
+  Track refresh (seed: `lastdb` / `lastdbd` via `lastdb-safe-upgrade`). These
+  apps may still declare report-only `deployment_binary`,
+  `deployment_peer_binary`, and `deployment_repo_cache` fields. Status reads
+  their embedded Git version stamps and the protected gate ref; refresh remains
+  explicitly disabled even when status reports `stale=true`.
 
 ### Adding a new exemption (no forever routine)
 
@@ -195,7 +221,7 @@ Do **not** invent a new scheduled routine for exemption drift. Wire checks into
 fleet-rollout acceptance gate for `north-star-artifact-driven-host-track`. It
 composes prior PRs without a hollow Kind:validation shell:
 
-1. `host-track validate-registry` — every registered app is **artifact or exempt**
+1. `host-track validate-registry` — every registered app is **artifact or exempt**, and every artifact app declares `safe_upgrade.probes`
 2. `last-stack-host-track-artifact-invariant` — every artifact channel is
    **fresh** (`stale=false`), provenance/hashes hold, and **rollback targets**
    resolve when `previous` exists
@@ -270,7 +296,7 @@ install-side safe-upgrade so PATH tracks main without stuffing that into CI.
   Discord notify) when the binary is on PATH
 - **Detects merges** like `notify-discord.sh`: fleet open-CR index → open→gone →
   `cr view` → if `state=merged` and base is `main` and repo is mapped → upgrade
-- **Mapped apps:** last-stack / brain / situations / fkanban|kanban →
+- **Mapped apps:** last-stack / brain / situations / fkanban|kanban (app `kanban`) →
   `host-track refresh` (artifact + `track_gate_main`); routines, lastsecrets,
   configurations, search → `host-track refresh` (artifact + track_gate_main)
 - **Failure:** log + retry (max 3); **does not unmerge**; operator can run
@@ -326,10 +352,11 @@ Safe properties:
 `host-track refresh <app>` for agent CLIs with `install_mode=artifact` promotes stable via track_gate_main and installs the published build.
 For **artifact** apps it promotes (when `track_gate_main`) and installs the
 channel tip. LaunchAgent `com.edgevector.host-track-refresh` runs
-`host-track refresh --all`.
+`host-track refresh --all`, which also ticks `soak-watch --all` so a parked
+canary promotes after its window without a second job.
 
 **Artifact CLIs (producers live):** last-stack, remote, brain, situations,
-kanban/fkanban (shared fkanban install_root). See
+kanban (shared `fkanban` install_root; public CLI is `kanban` only). See
 `templates/host-track/README-artifact-producer.md`.
 
 **Still local-safe (await producers):** routines, lastsecrets, configurations,
@@ -358,10 +385,12 @@ last-stack-safe-upgrade-cli lastsecrets
 `~/.last-stack/launchd/com.edgevector.host-track-refresh.plist` and runs:
 
 ```bash
-~/.local/bin/host-track refresh --all
+~/.local/bin/host-track refresh --all   # also runs soak-watch --all
 ```
 
-The safety poll runs every 20 minutes. When the registry has Forgejo-gated apps
+The safety poll runs every 20 minutes. After a GREEN probe it parks `canary`
+when `soak_hours > 0`. The same job re-probes those canaries; after the
+window it flips `current`. When the registry has Forgejo-gated apps
 with local host checkouts, setup also adds existing `<git-dir>/FETCH_HEAD` paths
 as optional `WatchPaths`, so fetch activity can trigger the same refresh command
 without one plist per app. The plist sets a tool-friendly PATH including
@@ -384,8 +413,8 @@ Uninstall removes the plist and boots out the loaded service:
   app opts in.
 
 The default registry is artifact-backed for `lastgit`, `last-stack`, `brain`,
-`situations`, `kanban`, `fkanban`, `lastdb`, and `lastdbd`. The `kanban` and
-`fkanban` commands share the `fkanban` artifact bundle. The `lastdb` and
+`situations`, `kanban`, `lastdb`, and `lastdbd`. The public board CLI is
+`kanban`; it installs from the `fkanban` artifact bundle. The `lastdb` and
 `lastdbd` commands share the `lastdb-bundle` artifact so the invariant can
 detect CLI/daemon source or manifest skew; live primary activation still goes
 through `lastdb-safe-upgrade`.

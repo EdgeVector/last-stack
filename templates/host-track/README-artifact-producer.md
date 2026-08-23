@@ -13,7 +13,7 @@ published main oid on `host-track refresh <app>`.
 | remote | source + `bin/*` | `bin/ra`, `bin/rad`, … | artifact CLI |
 | brain | source + `bin/*` (no `node_modules`) | `bin/brain`, `bin/brain-mcp` | `post_install` = bun install |
 | situations | `dist/*` compiled bins | `dist/situations`, `dist/fsituations` | CI must build `dist` before gate ends |
-| fkanban / kanban | `dist/*` | `dist/fkanban`, `dist/kanban` | shared install_root |
+| kanban (artifact `fkanban`) | `dist/*` | `dist/kanban` | shared install_root; `fkanban` is retired from PATH |
 | routines | `dist/routines` compiled bin | `dist/routines` | `track_gate_main` |
 | lastsecrets | `dist/lastsecrets` compiled bin | `dist/lastsecrets` | `track_gate_main` |
 | configurations | `dist/configurations` compiled bin | `dist/configurations` | `track_gate_main` |
@@ -34,6 +34,7 @@ published main oid on `host-track refresh <app>`.
    - remove `refresh: last-stack-refresh-local-safe`
    - fix `links[].source` to match packed paths
    - optional `post_install`
+   - required `safe_upgrade.probes` (argv relative to the version tree; `host-track refresh` smokes these before flipping `current`)
 5. Update post-merge map: `map_repo_to_app` → `artifact:<app>`.
 6. Dogfood: `host-track refresh <app>` then `host-track status <app>` shows
    `install_mode=artifact`, `stale=false`.

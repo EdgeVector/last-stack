@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # PreToolUse hook on Bash. Blocks brittle inline JSON parsing through
-# node -e / python -c quoting, where fleet transcripts repeatedly show failures.
+# node -e / python -c quoting and machine-readable JSON streams polluted by
+# merged stderr, where fleet transcripts repeatedly show failures.
 set -u
 
 input="$(cat)" || exit 0
@@ -31,6 +32,7 @@ emit_deny() {
 matches_node_json=0
 matches_python_json=0
 matches_python_fstring_index=0
+matches_merged_json_stderr=0
 
 if printf '%s' "$cmd" | grep -qE '(^|[[:space:];&|])node[[:space:]]+(-[[:alnum:]]*[e][[:alnum:]]*|-e)[[:space:]]' \
   && printf '%s' "$cmd" | grep -q 'JSON\.parse'; then
@@ -45,6 +47,20 @@ fi
 if printf '%s' "$cmd" | grep -qE '(^|[[:space:];&|])python3?[[:space:]]+(-[[:alnum:]]*[c][[:alnum:]]*|-c)[[:space:]]' \
   && printf '%s' "$cmd" | grep -qE 'f["'\''][^"'\'']*\[\\?["'\''][^"'\'']+\\?["'\'']\]'; then
   matches_python_fstring_index=1
+fi
+
+if printf '%s' "$cmd" | grep -q -- '--json' \
+  && printf '%s' "$cmd" | grep -qE '(^|[[:space:]])(2?>&1|&>)[[:space:]]*' \
+  && printf '%s' "$cmd" | grep -qE '(^|[[:space:];&|/])(jq|last-stack-json-get|last-stack-forge-json-jq)([[:space:]]|$)'; then
+  matches_merged_json_stderr=1
+fi
+
+if [ "$matches_merged_json_stderr" -eq 1 ]; then
+  emit_deny "BLOCKED: stderr is being merged into machine-readable JSON before parsing.
+
+This command combines --json, a JSON parser, and 2>&1 or &>. Warnings or progress text then become byte 1 of the parser input; fleet sessions repeatedly failed with jq 'Invalid numeric literal' this way.
+
+Keep the streams separate: write stdout to the JSON pipe/file and stderr to its own file (or leave stderr visible). Example: command --json >data.json 2>command.err; jq . data.json."
 fi
 
 if [ "$matches_node_json" -eq 0 ] && [ "$matches_python_json" -eq 0 ] && [ "$matches_python_fstring_index" -eq 0 ]; then

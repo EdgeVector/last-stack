@@ -189,15 +189,17 @@ agent workspace. At the beginning of the run, record `run_started_epoch=$(date
   deploy propagation, mirror polling, CI completion, etc.), stop watching when
   fewer than **10 minutes** remain. If the END STATE is proven, close out the
   card immediately. If it is still pending:
-  - **Deploy / live-proof wait (won't-undo thrash ban):** leave the card in
-    **`doing`** (do **not** roll back to `todo`). Ensure structured `pr_url` +
-    `branch` are stamped when a CR/PR exists, append observed state + a
-    `Requires-Deploy: deploy-pipeline` line when the END STATE depends on
-    deploy, and `tag add <slug> awaiting-deploy`. Heartbeat
+  - **Deploy / live-proof wait (won't-undo thrash ban):** do **not** roll
+    back to `todo`. Stamp structured `pr_url` + `branch` when a CR/PR exists,
+    append observed state + a `Requires-Deploy: deploy-pipeline` line when
+    the END STATE depends on deploy, and `tag add <slug> awaiting-deploy`.
+    Then demote the card to **`backlog`** with `block_status=deferred` and a
+    park reason so it does not inflate factory `doing_stuck_hard`. Heartbeat
     `ok cards=1 worked=<slug> result=in-flight-deploy-pending pr=<url|none>
-    final_column=doing reason=watch-budget-reserved`. Board-closeout skips
-    reclaim for deploy-parked cards and only moves them to `done` when the
-    deploy gate is terminal.
+    final_column=backlog reason=watch-budget-reserved`. Board-closeout
+    demotes leftover deploy-parked `doing` cards the same way (it does **not**
+    skip them in WIP). A later validate/safe-upgrade pass closes them to
+    `done` when the deploy gate is terminal.
   - **Other external waits without a PR/CR and without deploy gate:** append
     observed state, move/leave in `todo` as appropriate, heartbeat
     `ok cards=1 worked=<slug> result=rolled-back-todo reason=watch-budget-reserved`.
@@ -321,12 +323,14 @@ back to `todo` (or `pending_rollback=` in memory) per transport rules below.
     if [ -x "$last_stack/bin/last-stack-class-a-heal" ]; then
       _heal_bin="$(cd "$(dirname "$last_stack/bin/last-stack-class-a-heal")" && pwd -P)/last-stack-class-a-heal"
     fi
-    _to=""
-    command -v gtimeout >/dev/null 2>&1 && _to="gtimeout -k 3s 20s"
-    command -v timeout >/dev/null 2>&1 && _to="timeout -k 3s 20s"
+    # Invoke timeout as argv words. A scalar `_to="timeout -k 3s 20s"; $_to`
+    # is one command name under zsh (no word-split) and exits 127.
     set +e
-    if [ -n "$_to" ]; then
-      $_to "$_heal_bin" --reason=kanban-pickup-prompt-freshness
+    if command -v gtimeout >/dev/null 2>&1; then
+      gtimeout -k 3s 20s "$_heal_bin" --reason=kanban-pickup-prompt-freshness
+      _hc=$?
+    elif command -v timeout >/dev/null 2>&1; then
+      timeout -k 3s 20s "$_heal_bin" --reason=kanban-pickup-prompt-freshness
       _hc=$?
     else
       "$_heal_bin" --reason=kanban-pickup-prompt-freshness
@@ -865,3 +869,21 @@ any, final column (`done` / human-gated `backlog` / rolled-back `todo`); or idle
 ## LastDB access
 
 Do not full-scan LastDB schemas on hot paths. Prefer column-scoped `kanban list --column` and keyed reads. See `docs/lastdb-no-product-scan.md`.
+
+## Close-out (always the LAST step)
+
+End every run with the **close-out skill**
+(`$LAST_STACK_ROOT/skills/close-out/SKILL.md`, trigger `/close-out`), then emit
+the heartbeat + `ROUTINE_RESULT` trailer as the final output (contract §1).
+The close-out skill makes two brain writes; do not skip them:
+
+1. **Brain report** — write the closeout report of what this run did (what
+   changed, findings, decisions) per `preference-always-save-to-brain-when-done`.
+   On a pure noop run, the heartbeat line may serve as the report.
+2. **Papercuts → Brain** — file a `papercut-<topic>` brain record for every
+   friction hit this run (BRAIN ONLY, never a board card; search first, update
+   in place) per `preference-always-file-papercuts-in-brain`.
+
+Skip close-out steps that do not apply to this routine (for example PR or card
+steps on a read-only pass). Never skip the two brain writes when the run did
+substantive work or hit friction.

@@ -39,9 +39,34 @@ chmod +x "$tmp/bin/host-track"
 before="$($ROOT/bin/last-stack-update-check)"
 case "$before" in ARTIFACT_UPDATE_AVAILABLE*) ;; *) fail "artifact update check did not report promoted update" ;; esac
 
-prompt="$($ROOT/bin/last-stack-routine-read kanban-watch)"
-[ -f "$HOST_TRACK_TEST_STATE" ] || fail "routine reader did not refresh the stale artifact"
-printf '%s\n' "$prompt" | grep -q 'card_batch_limit' || fail "routine reader did not return the prompt after refresh"
-[ "$($ROOT/bin/last-stack-update-check)" = UP_TO_DATE ] || fail "artifact update check did not become fresh"
+prompt="$($ROOT/bin/last-stack-routine-read kanban-watch 2>"$tmp/rr.err")"
+[ ! -f "$HOST_TRACK_TEST_STATE" ] || fail "claim path must not run host-track refresh"
+printf '%s\n' "$prompt" | grep -q 'card_batch_limit' || fail "routine reader did not return the prompt"
+grep -q 'LAST_STACK_ROUTINE_STALE_PROCEED' "$tmp/rr.err" || fail "off-channel reader did not proceed without refresh"
+[ "$($ROOT/bin/last-stack-update-check)" != UP_TO_DATE ] || fail "off-channel update-check must not be UP_TO_DATE"
 
-printf 'ok: artifact-backed routine freshness and refresh\n'
+# On-channel matching digest is UP_TO_DATE even if a caller still marks stale.
+rm -f "$HOST_TRACK_TEST_STATE"
+cat > "$tmp/bin/host-track" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  status)
+    jq -n '{app:"last-stack",install_mode:"artifact",stale:true,main_unpublished:true,
+            freshness:"soft_stale",
+            manifest_digest:"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            channel_manifest_digest:"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}'
+    ;;
+  refresh)
+    echo "refresh must not run on matching digest" >&2
+    exit 1
+    ;;
+  check) exit 0 ;;
+  *) exit 2 ;;
+esac
+SH
+chmod +x "$tmp/bin/host-track"
+[ "$($ROOT/bin/last-stack-update-check)" = UP_TO_DATE ] \
+  || fail "matching local==channel digest must be UP_TO_DATE"
+
+printf 'ok: artifact-backed routine reader does not refresh on claim path\n'

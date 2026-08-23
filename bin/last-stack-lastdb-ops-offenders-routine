@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Seed the daily lastdb-ops-offenders Generate routine when missing.
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+# shellcheck source=last-stack-routines-registry-env
+. "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/last-stack-routines-registry-env"
+last_stack_registry_paths_init
+
+ROUTINES_HOME="${ROUTINES_HOME:-$HOME/.routines}"
+REGISTRY_DIR="$ROUTINES_HOME/registry"
+PROMPT_PATH="$(last_stack_registry_prompt_path lastdb-ops-offenders.md "$ROOT/routines/lastdb-ops-offenders.md")"
+ID="last-stack-lastdb-ops-offenders"
+DRY_RUN=0
+FORCE_DEFAULTS=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --registry-dir) REGISTRY_DIR="$2"; shift 2 ;;
+    --prompt-path) PROMPT_PATH="$2"; shift 2 ;;
+    --id) ID="$2"; shift 2 ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --force-defaults) FORCE_DEFAULTS=1; shift ;;
+    -h|--help) echo "last-stack-lastdb-ops-offenders-routine [--dry-run] [--force-defaults]"; exit 0 ;;
+    *) echo "unknown: $1" >&2; exit 2 ;;
+  esac
+done
+
+[ -r "$PROMPT_PATH" ] || { echo "missing prompt: $PROMPT_PATH" >&2; exit 66; }
+
+if [ "$DRY_RUN" -eq 0 ]; then
+  last_stack_registry_assert_safe_write "$REGISTRY_DIR" "$PROMPT_PATH" "$REG_CWD" \
+    || exit 3
+fi
+
+path="$REGISTRY_DIR/$ID.toml"
+if [ "$DRY_RUN" -eq 0 ] && last_stack_registry_skip_if_exists "$path" "$FORCE_DEFAULTS"; then
+  exit 0
+fi
+
+body=$(cat <<EOF
+# Daily lastdb ops worst-offender → investigate → file ≤2 improvement cards.
+# Generate-only. Pickup ships. Not a new engine (sentry-triage shape).
+id = "$ID"
+difficulty = "normal"
+effort = "medium"
+rrule = "FREQ=DAILY;BYHOUR=8;BYMINUTE=40;BYSECOND=0"
+cwd = "$REG_CWD"
+status = "active"
+timeout_min = 30
+prompt_path = "$PROMPT_PATH"
+heartbeat_slug = "routine-heartbeats"
+group = "quality"
+EOF
+)
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  printf '%s\n' "--- $path"
+  printf '%s\n' "$body"
+  exit 0
+fi
+mkdir -p "$REGISTRY_DIR"
+tmp="$(mktemp "${TMPDIR:-/tmp}/last-stack-lastdb-ops-offenders.XXXXXX")"
+printf '%s\n' "$body" >"$tmp"
+if [ -f "$path" ] && cmp -s "$tmp" "$path"; then
+  rm -f "$tmp"
+  printf 'unchanged %s\n' "$path"
+else
+  mv "$tmp" "$path"
+  printf 'wrote %s\n' "$path"
+fi

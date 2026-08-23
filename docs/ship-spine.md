@@ -2,6 +2,9 @@
 
 Tools:
 
+- `bin/last-stack-design-pack` — required blueprint pack before proposing a design
+- `bin/last-stack-ship-handoff` — post-approval NS + heading `## MILESTONE_REQUEST` + one milestone; walk away only on `eligible_for_claim: true`
+- `bin/last-stack-real-human-notify` — page Tom for REAL_HUMAN only via `ra notify` (same argv as factory-health)
 - `bin/last-stack-ship-preflight` — exit 0/1 walk-away check
 - `bin/last-stack-why-shipping-stopped` — Class A-E stall diagnosis + heal
 - `bin/last-stack-fleet-deadman` — out-of-band routinesd + heartbeat staleness

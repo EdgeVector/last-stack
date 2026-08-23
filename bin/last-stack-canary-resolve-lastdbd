@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# Resolve an already-built lastdbd (and sibling lastdb when present) for the
+# daily LastDB canaries. Never compiles. Scheduled lastdb-local-smoke-test and
+# backup-restore-probe must call this instead of cargo.
+#
+# Lookup order:
+#   1. ~/.lastdb-test-copies/lastdbd-smoke-staged-<shortsha>
+#   2. ~/.local/state/last-stack/canary-builds/<full-oid>/{lastdbd,lastdb}
+#   3. --allow-newest: newest canary-builds/*/lastdbd (sha_drift=true)
+#   4. --allow-current: ~/.lastdb/current/lastdbd (source=primary-current)
+#
+# Exit 0 = found; 2 = need_build (no usable binary); 1 = usage/error.
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  last-stack-canary-resolve-lastdbd [--json] [--allow-newest] [--allow-current]
+
+Resolve a pre-built lastdbd for daily canaries. Never compiles.
+
+Options:
+  --json           Machine-readable JSON on stdout
+  --allow-newest   If the exact fold-main SHA is not staged, use the newest
+                   canary-builds/*/lastdbd (reports sha_drift=true)
+  --allow-current  Last resort: ~/.lastdb/current/lastdbd
+  -h, --help       Show help
+
+Env:
+  LAST_STACK_CANARY_FOLD_MIRROR    fold git mirror (default ~/.cache/edgevector-git/fold.git)
+  LAST_STACK_CANARY_BUILDS_DIR     canary stage root (default ~/.local/state/last-stack/canary-builds)
+  LAST_STACK_SMOKE_STAGED_DIR      smoke-staged copies (default ~/.lastdb-test-copies)
+  LAST_STACK_CANARY_MAIN_OID       test override for fold main tip
+  LAST_STACK_CANARY_FETCH_MAIN     1 (default) fetch origin main before resolve
+  LASTDB_CURRENT_BIN               primary lastdbd (default ~/.lastdb/current/lastdbd)
+EOF
+}
+
+die() {
+  echo "last-stack-canary-resolve-lastdbd: $*" >&2
+  exit 1
+}
+
+as_json=0
+allow_newest=0
+allow_current=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json) as_json=1; shift ;;
+    --allow-newest) allow_newest=1; shift ;;
+    --allow-current) allow_current=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+HOME_DIR="${HOME:-$(eval echo ~)}"
+FOLD_MIRROR="${LAST_STACK_CANARY_FOLD_MIRROR:-$HOME_DIR/.cache/edgevector-git/fold.git}"
+BUILDS_DIR="${LAST_STACK_CANARY_BUILDS_DIR:-$HOME_DIR/.local/state/last-stack/canary-builds}"
+STAGED_DIR="${LAST_STACK_SMOKE_STAGED_DIR:-$HOME_DIR/.lastdb-test-copies}"
+FETCH_MAIN="${LAST_STACK_CANARY_FETCH_MAIN:-1}"
+CURRENT_BIN="${LASTDB_CURRENT_BIN:-$HOME_DIR/.lastdb/current/lastdbd}"
+
+maybe_fetch_main() {
+  if [ "$FETCH_MAIN" != "1" ]; then
+    return 0
+  fi
+  [ -d "$FOLD_MIRROR" ] || return 0
+  git -C "$FOLD_MIRROR" fetch origin refs/heads/main:refs/heads/main 2>/dev/null || true
+}
+
+resolve_main_oid() {
+  if [ -n "${LAST_STACK_CANARY_MAIN_OID:-}" ]; then
+    printf '%s\n' "$LAST_STACK_CANARY_MAIN_OID"
+    return 0
+  fi
+  [ -d "$FOLD_MIRROR" ] || die "fold mirror not found: $FOLD_MIRROR"
+  maybe_fetch_main
+  local ref
+  for ref in refs/heads/main refs/remotes/origin/main; do
+    if git -C "$FOLD_MIRROR" rev-parse --verify -q "$ref^{commit}" >/dev/null 2>&1; then
+      git -C "$FOLD_MIRROR" rev-parse "$ref"
+      return 0
+    fi
+  done
+  die "could not resolve fold main tip in $FOLD_MIRROR"
+}
+
+sibling_lastdb() {
+  local lastdbd="$1"
+  local dir
+  dir="$(dirname "$lastdbd")"
+  if [ -x "$dir/lastdb" ]; then
+    printf '%s\n' "$dir/lastdb"
+  fi
+}
+
+emit() {
+  local status="$1" lastdbd="$2" source="$3" wanted="$4" resolved="$5" drift="$6" note="$7"
+  local lastdb
+  lastdb="$(sibling_lastdb "$lastdbd")"
+  if [ "$as_json" -eq 1 ]; then
+    python3 - "$status" "$lastdbd" "$lastdb" "$source" "$wanted" "$resolved" "$drift" "$note" <<'PY'
+import json, sys
+status, lastdbd, lastdb, source, wanted, resolved, drift, note = sys.argv[1:9]
+print(json.dumps({
+    "status": status,
+    "lastdbd": lastdbd or None,
+    "lastdb": lastdb or None,
+    "source": source or None,
+    "wanted_oid": wanted,
+    "resolved_oid": resolved or None,
+    "sha_drift": drift == "1",
+    "note": note,
+    "primary_mutation": False,
+}, sort_keys=True, separators=(",", ":")))
+PY
+  else
+    echo "status=$status lastdbd=${lastdbd:-} source=${source:-} wanted=${wanted:0:12} resolved=${resolved:0:12} sha_drift=$drift note=$note"
+  fi
+}
+
+oid="$(resolve_main_oid)"
+short="${oid:0:9}"
+
+smoke_staged="$STAGED_DIR/lastdbd-smoke-staged-$short"
+if [ -x "$smoke_staged" ]; then
+  emit ok "$smoke_staged" smoke-staged "$oid" "$oid" 0 "exact smoke-staged binary"
+  exit 0
+fi
+
+exact_stage="$BUILDS_DIR/$oid/lastdbd"
+if [ -x "$exact_stage" ]; then
+  emit ok "$exact_stage" canary-builds "$oid" "$oid" 0 "exact canary-builds stage"
+  exit 0
+fi
+
+if [ "$allow_newest" -eq 1 ] && [ -d "$BUILDS_DIR" ]; then
+  newest=""
+  newest_oid=""
+  # Newest directory by mtime that actually contains an executable lastdbd.
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    if [ -x "$BUILDS_DIR/$name/lastdbd" ]; then
+      newest="$BUILDS_DIR/$name/lastdbd"
+      newest_oid="$name"
+      break
+    fi
+  done < <(ls -1t "$BUILDS_DIR" 2>/dev/null || true)
+  if [ -n "$newest" ]; then
+    emit ok "$newest" canary-builds-newest "$oid" "$newest_oid" 1 "newest staged lastdbd; fold main moved"
+    exit 0
+  fi
+fi
+
+if [ "$allow_current" -eq 1 ] && [ -x "$CURRENT_BIN" ]; then
+  emit ok "$CURRENT_BIN" primary-current "$oid" "" 1 "primary current lastdbd; no staged build"
+  exit 0
+fi
+
+emit need_build "" "" "$oid" "" 0 "no staged or current lastdbd; do not cargo"
+exit 2

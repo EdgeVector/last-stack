@@ -1,0 +1,15 @@
+# Daily lastdb ops worst-offender → investigate → file ≤2 improvement cards.
+# Generate-only. Pickup ships. Not a new engine (sentry-triage shape).
+# :40 avoids crowded :00/:17/:20/:30/:45 slots; after owner-lastdb-operations.
+id = "last-stack-lastdb-ops-offenders"
+harness = "grok"
+model = "grok-4.5"
+fallback = "grok:grok-4.5"
+effort = "medium"
+group = "quality"
+rrule = "FREQ=DAILY;BYHOUR=8;BYMINUTE=40;BYSECOND=0"
+cwd = "/Users/REPLACE/code/edgevector"
+status = "active"
+timeout_min = 30
+prompt_path = "/Users/REPLACE/.last-stack/routines/lastdb-ops-offenders.md"
+heartbeat_slug = "routine-heartbeats"

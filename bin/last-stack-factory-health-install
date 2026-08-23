@@ -1,61 +1,62 @@
 #!/usr/bin/env bash
 # Install / uninstall / status / run-once the factory-health LaunchAgent (hourly).
+#
+# Writes a stable public path (~/.last-stack or artifacts/current) into the
+# plist — never a version hash — and skips launchctl when the plist is unchanged.
 set -euo pipefail
 
-self_dir="$(cd "$(dirname "$0")" && pwd -P)"
-last_stack="$(cd "$self_dir/.." && pwd -P)"
+self="$0"
+self_root="$(cd "$(dirname "$self")/.." && pwd)"
+# shellcheck source=../lib/last-stack-launchd-agent.sh
+. "$self_root/lib/last-stack-launchd-agent.sh"
+
+program="last-stack-factory-health"
 label="com.edgevector.factory-health"
-plist_src="$last_stack/launchd/${label}.plist"
+last_stack="$(last_stack_agent_stable_root "$self" "$program")"
+plist_src="$self_root/launchd/${label}.plist"
+if [ ! -f "$plist_src" ]; then
+  plist_src="$last_stack/launchd/${label}.plist"
+fi
 plist_dst="${FACTORY_HEALTH_PLIST:-$HOME/Library/LaunchAgents/${label}.plist}"
-uid="$(id -u)"
-domain="gui/${uid}"
 cmd="${1:-status}"
 
 install_agent() {
-  chmod +x "$last_stack/bin/last-stack-factory-health" 2>/dev/null || true
-  [ -x "$last_stack/bin/last-stack-factory-health" ] || {
-    echo "missing $last_stack/bin/last-stack-factory-health" >&2
+  chmod +x "$last_stack/bin/$program" 2>/dev/null || true
+  [ -e "$last_stack/bin/$program" ] || [ -x "$self_root/bin/$program" ] || {
+    echo "missing $last_stack/bin/$program" >&2
     exit 1
   }
   [ -f "$plist_src" ] || {
     echo "missing $plist_src" >&2
     exit 1
   }
-  mkdir -p "$(dirname "$plist_dst")"
-  sed \
-    -e "s|/Users/REPLACE/.last-stack|${last_stack}|g" \
-    -e "s|/Users/REPLACE|${HOME}|g" \
-    "$plist_src" >"$plist_dst"
-  /usr/libexec/PlistBuddy -c "Set :ProgramArguments:0 ${last_stack}/bin/last-stack-factory-health" "$plist_dst" 2>/dev/null || true
-  /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:LAST_STACK_ROOT ${last_stack}" "$plist_dst" 2>/dev/null || true
-  /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:FACTORY_HEALTH_CONFIG ${last_stack}/config/factory-health.toml" "$plist_dst" 2>/dev/null || true
-
-  if command -v launchctl >/dev/null 2>&1; then
-    launchctl bootout "${domain}/${label}" >/dev/null 2>&1 || true
-    if launchctl bootstrap "$domain" "$plist_dst" >/dev/null 2>&1; then
-      launchctl enable "${domain}/${label}" >/dev/null 2>&1 || true
-      launchctl kickstart -k "${domain}/${label}" >/dev/null 2>&1 || true
-      echo "factory-health: loaded ${label} (hourly)"
-    else
-      echo "factory-health: plist at $plist_dst (bootstrap failed)" >&2
-    fi
-  else
-    echo "factory-health: plist written $plist_dst"
-  fi
+  rendered="$(mktemp "${TMPDIR:-/tmp}/factory-health.plist.XXXXXX")"
+  last_stack_agent_render_plist "$plist_src" "$rendered" "$last_stack"
+  last_stack_agent_commit_plist "$label" "$plist_dst" "$rendered" "factory-health"
 }
 
 uninstall_agent() {
-  launchctl bootout "${domain}/${label}" >/dev/null 2>&1 || true
-  rm -f "$plist_dst"
-  echo "factory-health: uninstalled"
+  last_stack_agent_uninstall "$label" "$plist_dst" "factory-health"
 }
 
 status_agent() {
-  echo "bin: $last_stack/bin/last-stack-factory-health"
+  echo "bin: $last_stack/bin/$program"
   echo "config: $last_stack/config/factory-health.toml"
   echo "plist: $plist_dst"
   [ -f "$plist_dst" ] && echo "plist: present" || echo "plist: missing"
-  launchctl print "${domain}/${label}" 2>/dev/null | head -25 || echo "launchctl: not loaded"
+  if [ -f "$plist_dst" ]; then
+    prog="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$plist_dst" 2>/dev/null || true)"
+    echo "program: ${prog:-unknown}"
+    case "$prog" in
+      */artifacts/versions/*) echo "program: VERSION-PINNED (will re-toast on refresh)" ;;
+    esac
+  fi
+  if last_stack_agent_should_touch_launchd "$plist_dst" && command -v launchctl >/dev/null 2>&1; then
+    uid="$(id -u)"
+    launchctl print "gui/${uid}/${label}" 2>/dev/null | head -25 || echo "launchctl: not loaded"
+  else
+    echo "launchctl: skipped"
+  fi
   if [ -f "$HOME/Library/Logs/factory-health.out.log" ]; then
     echo "--- last log ---"
     tail -5 "$HOME/Library/Logs/factory-health.out.log" || true
@@ -66,7 +67,12 @@ case "$cmd" in
   install) install_agent ;;
   uninstall) uninstall_agent ;;
   status) status_agent ;;
-  run-once) exec "$last_stack/bin/last-stack-factory-health" "${@:2}" ;;
+  run-once)
+    if [ -x "$last_stack/bin/$program" ]; then
+      exec "$last_stack/bin/$program" "${@:2}"
+    fi
+    exec "$self_root/bin/$program" "${@:2}"
+    ;;
   -h|--help) sed -n '2,6p' "$0" ;;
   *) echo "usage: $0 install|uninstall|status|run-once" >&2; exit 2 ;;
 esac

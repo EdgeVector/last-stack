@@ -68,7 +68,15 @@ skipped=0
 failed=0
 flagged=()
 
-# Repo → preferred active ops-hygiene milestone (must already exist on board).
+is_live_ms_state() {
+  case "${1:-}" in
+    active|planned|proving) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Repo → preferred ops-hygiene milestone. Still validated as live after lookup;
+# complete/abandoned defaults are ignored so we do not attach to a finished outcome.
 default_ms_for_repo() {
   case "$1" in
     EdgeVector/fold) printf '%s\n' "ms-lastdb-read-path-and-write-gate-hygiene" ;;
@@ -80,6 +88,14 @@ default_ms_for_repo() {
       ;;
     *) return 1 ;;
   esac
+}
+
+# Stable live ops milestone under a North Star when none exists yet.
+ops_ms_slug_for_ns() {
+  local ns="$1"
+  local rest
+  rest="${ns#north-star-}"
+  printf 'ms-%s-ops\n' "$rest"
 }
 
 ps="$("$BOARD_CLI" pickup status --json 2>/dev/null || true)"
@@ -183,7 +199,7 @@ demote_residual_from_todo() {
 
 attach_one() {
   local slug="$1"
-  local show ms ns repo state pair
+  local show ms ns repo state pair created_ms ns_ms
   show="$("$BOARD_CLI" show "$slug" --json 2>/dev/null || true)"
   if [ -z "$show" ]; then
     failed=$((failed + 1))
@@ -194,10 +210,10 @@ attach_one() {
   repo="$(printf '%s\n' "$show" | jq -r '.repo // empty' 2>/dev/null || true)"
   ms="$(printf '%s\n' "$show" | jq -r '.milestone // empty' 2>/dev/null || true)"
   if [ -n "$ms" ]; then
-    # Field set but still unattached → usually abandoned / missing MS.
+    # Field set but still unattached → usually abandoned / missing / complete MS.
     pair="$(ms_lookup "$ms" || true)"
     state="$(printf '%s\n' "$pair" | cut -f3)"
-    if [ -n "$pair" ] && [ "$state" != "abandoned" ]; then
+    if [ -n "$pair" ] && is_live_ms_state "$state"; then
       skipped=$((skipped + 1))
       return 0
     fi
@@ -209,6 +225,45 @@ attach_one() {
   fi
   if [ -z "$ms" ] && [ -n "$repo" ]; then
     ms="$(default_ms_for_repo "$repo" || true)"
+    if [ -n "$ms" ]; then
+      pair="$(ms_lookup "$ms" || true)"
+      state="$(printf '%s\n' "$pair" | cut -f3)"
+      if [ -z "$pair" ] || ! is_live_ms_state "$state"; then
+        ms=""
+      fi
+    fi
+  fi
+  # Have a North Star but no live milestone: mint a stable ops outcome so the
+  # card can enter todo instead of rotting as unattached-outcome.
+  created_ms=0
+  if [ -z "$ms" ] && [ -n "$ns" ]; then
+    ms="$(ops_ms_slug_for_ns "$ns")"
+    pair="$(ms_lookup "$ms" || true)"
+    state="$(printf '%s\n' "$pair" | cut -f3)"
+    if [ -n "$pair" ] && is_live_ms_state "$state"; then
+      :
+    elif [ -n "$pair" ] && ! is_live_ms_state "$state"; then
+      ms="${ms}-$(date -u +%Y-%m)"
+      pair=""
+    fi
+    if [ -z "$pair" ]; then
+      if [ "$DRY" -eq 1 ]; then
+        log "would create milestone $ms --north-star $ns"
+        created_ms=1
+      elif "$BOARD_CLI" milestone add "$ms" \
+        --title "Ops work for $ns" \
+        --state active \
+        --north-star "$ns" \
+        --driver last-stack-milestone-driver >/dev/null 2>&1; then
+        created_ms=1
+        log "created milestone $ms under $ns"
+      else
+        skipped=$((skipped + 1))
+        flagged+=("ms-create-failed:$ms")
+        demote_residual_from_todo "$slug" "ms-create-failed:$ms"
+        return 0
+      fi
+    fi
   fi
   if [ -z "$ms" ]; then
     skipped=$((skipped + 1))
@@ -216,21 +271,25 @@ attach_one() {
     demote_residual_from_todo "$slug" "no-ms"
     return 0
   fi
-  pair="$(ms_lookup "$ms" || true)"
-  if [ -z "$pair" ]; then
-    skipped=$((skipped + 1))
-    flagged+=("ms-missing:$ms")
-    demote_residual_from_todo "$slug" "ms-missing:$ms"
-    return 0
+  if [ "$created_ms" -eq 1 ]; then
+    ns_ms="$ns"
+  else
+    pair="$(ms_lookup "$ms" || true)"
+    if [ -z "$pair" ]; then
+      skipped=$((skipped + 1))
+      flagged+=("ms-missing:$ms")
+      demote_residual_from_todo "$slug" "ms-missing:$ms"
+      return 0
+    fi
+    state="$(printf '%s\n' "$pair" | cut -f3)"
+    if ! is_live_ms_state "$state"; then
+      skipped=$((skipped + 1))
+      flagged+=("ms-not-live:$ms")
+      demote_residual_from_todo "$slug" "ms-not-live:$ms"
+      return 0
+    fi
+    ns_ms="$(printf '%s\n' "$pair" | cut -f2)"
   fi
-  state="$(printf '%s\n' "$pair" | cut -f3)"
-  if [ "$state" = "abandoned" ]; then
-    skipped=$((skipped + 1))
-    flagged+=("ms-abandoned:$ms")
-    demote_residual_from_todo "$slug" "ms-abandoned:$ms"
-    return 0
-  fi
-  ns_ms="$(printf '%s\n' "$pair" | cut -f2)"
 
   if [ "$DRY" -eq 1 ]; then
     log "would attach $slug → milestone=$ms north_star=${ns_ms:-$ns}"

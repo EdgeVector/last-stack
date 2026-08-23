@@ -67,6 +67,11 @@ if [ "$1" = "clone" ]; then
       printf '#!/bin/sh\nexit 0\n' >"$dest/bin/situations"
       chmod +x "$dest/bin/situations"
       ;;
+    routines)
+      mkdir -p "$dest/bin"
+      printf '#!/bin/sh\nexit 0\n' >"$dest/bin/routines"
+      chmod +x "$dest/bin/routines"
+      ;;
     search)
       mkdir -p "$dest/bin"
       printf '#!/bin/sh\nexit 0\n' >"$dest/bin/search"
@@ -161,6 +166,7 @@ HOME="$tmp/home" BREW_LOG="$tmp/brew-link.log" PATH="$stubbin:/usr/bin:/bin" \
 test "$(readlink "$tmp/home/.local/bin/brain")" = "$tmp/apps-link/brain/bin/brain"
 test "$(readlink "$tmp/home/.local/bin/brain-mcp")" = "$tmp/apps-link/brain/bin/brain-mcp"
 test "$(readlink "$tmp/home/.local/bin/situations")" = "$tmp/apps-link/situations/bin/situations"
+test "$(readlink "$tmp/home/.local/bin/routines")" = "$tmp/apps-link/routines/bin/routines"
 test "$(readlink "$tmp/home/.local/bin/lastdb-browser")" = "$tmp/apps-link/lastdb-browser/bin/lastdb-browser"
 test -f "$tmp/apps-link/lastdb-browser/dist/index.html"
 grep -Fq "exec bun \"$tmp/apps-link/org/src/cli.ts\" \"\$@\"" "$tmp/home/.local/bin/org"

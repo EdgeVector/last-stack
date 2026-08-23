@@ -48,6 +48,14 @@ if [ -z "$board_cli" ]; then
   fi
 fi
 
+sanitize_lib="$self_dir/../lib/sanitize_structured_fields.py"
+if [ -n "$pr_url" ] && [ -f "$sanitize_lib" ]; then
+  cleaned="$(python3 "$sanitize_lib" pr-url "$pr_url" 2>/dev/null || true)"
+  if [ -n "$cleaned" ]; then
+    pr_url="$cleaned"
+  fi
+fi
+
 retry=( )
 if [ -x "$self_dir/last-stack-lastdb-retry" ]; then
   retry=( "$self_dir/last-stack-lastdb-retry" --attempts 3 -- )
@@ -372,12 +380,16 @@ if [ "$end_state_required" = "1" ] && [ "$end_state_claimed" != "1" ]; then
   echo "last-stack-card-closeout: WARN end-state-unverified slug=$slug — closing on merge without an evaluated END STATE" >&2
   # Stamp the card so the gap is auditable on the board, not just in a log line
   # nobody reads. Best-effort: never block closeout on the marker itself.
-  "${retry[@]}" "$board_cli" mark "$slug" \
+  run "$board_cli" mark "$slug" \
     "CLOSED-ON-MERGE $(date -u +%Y-%m-%dT%H:%M:%SZ) — card moved to done because a PR merged; its ## END STATE was NOT evaluated. Re-open if any clause is still unmet. (last-stack-card-closeout end-state audit)" \
     >/dev/null 2>&1 || true
 fi
 
 # Stamp PR/branch without changing column (add preserves existing column).
+# Restamp is best-effort: this helper is post-merge closeout. A metadata
+# add failure must not leave a merged CR card in doing (2026-08-17:
+# trailing-backtick pr_url + NS mismatch made add fail after two CLOSED-ON-MERGE
+# stamps; the card bounced doing↔done).
 if [ -n "$pr_url" ] || [ -n "$branch" ]; then
   add_args=( "$board_cli" add "$slug" )
   [ -n "$pr_url" ] && add_args+=( --pr-url "$pr_url" )
@@ -385,8 +397,7 @@ if [ -n "$pr_url" ] || [ -n "$branch" ]; then
   add_out="$(run "${add_args[@]}" 2>&1)" || {
     add_rc=$?
     echo "$add_out" >&2
-    echo "last-stack-card-closeout: FAILED board-add-failed slug=$slug exit=$add_rc" >&2
-    exit 1
+    echo "last-stack-card-closeout: WARN board-add-failed slug=$slug exit=$add_rc (restamp skipped; still moving to done)" >&2
   }
   [ -z "$add_out" ] || printf '%s\n' "$add_out"
 fi

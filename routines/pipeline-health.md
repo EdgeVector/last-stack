@@ -170,65 +170,30 @@ fi
 For each **blocked** entry (`blocked=true`, or human scan shows latest
 terminal `failure`, or `pending` older than **4 hours**):
 
-1. **Dedupe in Brain (not the board):**
+1. **Point-check typed Brain state (not the board):**
    ```bash
    slug="papercut-pipeline-deploy-<repo>"   # stable per repo — update in place
-   brain get "$slug" --type reference 2>/dev/null || true
-   brain ask "papercut pipeline deploy <repo>" 2>/dev/null || true
+   brain get "$slug" --type papercut 2>/dev/null || true
    ```
-   If an OPEN record exists, **append** a dated evidence line (sha, log path,
-   status, reason) via `brain append` (never get→edit→put a large body).
-   If FIXED/RECONCILED but the deploy is red again, reopen with a new
-   `Status: OPEN` append + fresh evidence (same slug preferred).
+   If an `open` typed record exists, **append** a dated evidence line (sha, log
+   path, status, reason) with `brain append "$slug" --type papercut`. If its
+   typed status is terminal, this is a recurrence: file a new occurrence slug
+   (for example suffix the UTC date/hour); never reopen a verified record.
 
-2. **No open papercut** → **FILE a Brain papercut** immediately (CHEAP).
-   Use `brain put` with YAML frontmatter on stdin (search first so you reuse
-   the stable slug):
+2. **No open papercut** → file it through the only supported door:
 
-```yaml
----
-type: reference
-slug: papercut-pipeline-deploy-<repo>
-title: "Pipeline: <repo> deploy-pipeline red/stuck"
-tags: [papercut, pipeline, deploy, p0]
----
-
-Status: OPEN
-Severity: P0
-Source: pipeline-health
-Repo: EdgeVector/<repo>
-Owner-hint: last-stack / schema-infra deploy path as appropriate
-
-## Symptom
-LastGit post-merge deploy-pipeline for <repo> is failure or stuck pending.
-- sha: <sha>
-- status: <failure|pending>
-- reason: <reason from scan>
-- log: ~/.lastgit/deploy-<repo>/deploy.log
-- checked_at: <ISO-UTC>
-
-## Why this is a papercut (not a board P0)
-Pipeline recovery often needs multi-hour host deploy proof and/or unsandboxed
-launchd ops. Filing direct kanban P0s monopolizes pickup without finishing.
-Brain + papercut-reconciler owns promotion to board work.
-
-## Suggested fix shape
-1. Read deploy log tail + scratch under ~/.lastgit/deploy-<repo>/scratch.
-2. Mechanical code/config fix in isolated worktree if needed; merge via venue.
-3. Ensure deploy watcher LaunchAgent is healthy (unsandboxed host if required).
-4. Confirm deploy log shows `success <new-sha> deploy-pipeline`.
-
-## Never-again coverage
-- Failure invariant: a red/stuck post-merge deploy must not silently starve
-  feature pickup via perpetual P0 board monopoly, and must not leave main
-  undeployed without a durable OPEN papercut.
-- Current guard/test: NONE (pipeline-health brain-papercut path)
-- Prevention: MISSING until a compound probe exists for deploy-green + no thrash
-
-## Evidence
-- pipeline-health wake <ISO-UTC>
-- scan JSON / log excerpt …
+```bash
+brain papercut file "$slug" --component pipeline --severity p0 \
+  --kind specified-fix \
+  --symptom "LastGit post-merge deploy for <repo> is red or stuck pending" \
+  --title "Pipeline: <repo> deploy-pipeline red/stuck" \
+  --repo "EdgeVector/<repo>" --tag papercut --tag pipeline --tag deploy --tag p0 \
+  --body "<sha, status, reason, log path, checked_at, suggested fix, and never-again coverage>"
 ```
+
+   The command performs semantic dedupe and keyed queue membership. A nonzero
+   exit is not a filing; report `papercut_file_failed=<slug>` and do not emit
+   `filed_papercut=` for it.
 
 3. Prefer spending the **heavy** unit on the oldest blocked deploy **only if**
    a mechanical fix fits this wake. Otherwise file/update the papercut and exit.
@@ -237,9 +202,9 @@ Brain + papercut-reconciler owns promotion to board work.
 
 Record in automation memory: `deploy_blocked=<repo:sha:…>` and
 `filed_papercut=<slug[,…]>` / `updated_papercut=<slug[,…]>`; clear
-`deploy_blocked` when scan shows unblocked. When a deploy goes green, append
-`Status: FIXED (<ISO>)` to the papercut if you confirmed success this wake
-(or leave it for reconciler if unsure).
+`deploy_blocked` when scan shows unblocked. When a deploy goes green, use
+`brain papercut close <slug> --status fixed --evidence "<live deploy proof>"
+--fixed-by "<change reference>"`; never append a prose status.
 
 **Do not heartbeat `noop` if any deploy is blocked** unless you already
 filed/updated the Brain papercut (or fixed) every blocked entry this wake
@@ -429,9 +394,14 @@ Rules:
   wake without new action — still prefer
   `ok deploy_blocked=… already-papercut=…`).
 - Use **`ok`** when you fixed, merged, filed/updated a papercut, or re-armed
-  anything.
-- Use **`error`** for tool/auth failures that prevented the deploy scan or the
-  stuck-merge scan entirely.
+  anything, **and** when the scan completed and still sees stuck/red CRs or PRs.
+  Downstream red CI is the *subject*, not a routine failure. Stamp `ok` with
+  `stuck=…` / `open_cr=…` — never `error` for that.
+- Use **`error`** only for tool/auth failures that prevented the deploy scan or
+  the stuck-merge scan entirely (CLI missing, unusable, timed out before any
+  inventory read).
+- Classify with `last-stack-routine-outcome-classify --observer last-stack-pipeline-health`
+  when in doubt.
 - Prefer `filed_papercut=` over legacy `filed_p0=` (the latter meant board cards;
   do not reintroduce board P0 filing).
 
@@ -444,3 +414,21 @@ End with a short report: open CR count per LastGit socket, open forge PR count,
 **deploy-pipeline blocked list**, what you merged/fixed/nudged, which
 **Brain papercuts** you filed/updated, what is still stuck and why, any daemon
 concerns. Then exit.
+
+## Close-out (always the LAST step)
+
+End every run with the **close-out skill**
+(`$LAST_STACK_ROOT/skills/close-out/SKILL.md`, trigger `/close-out`), then emit
+the heartbeat + `ROUTINE_RESULT` trailer as the final output (contract §1).
+The close-out skill makes two brain writes; do not skip them:
+
+1. **Brain report** — write the closeout report of what this run did (what
+   changed, findings, decisions) per `preference-always-save-to-brain-when-done`.
+   On a pure noop run, the heartbeat line may serve as the report.
+2. **Papercuts → Brain** — file a `papercut-<topic>` brain record for every
+   friction hit this run (BRAIN ONLY, never a board card; search first, update
+   in place) per `preference-always-file-papercuts-in-brain`.
+
+Skip close-out steps that do not apply to this routine (for example PR or card
+steps on a read-only pass). Never skip the two brain writes when the run did
+substantive work or hit friction.

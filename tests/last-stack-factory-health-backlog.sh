@@ -129,6 +129,37 @@ check("silent when healthy", [a.code for a in codes_for(band, clean)], [])
 check("respects enabled=false",
       [a.code for a in codes_for({"enabled": False}, snap)], [])
 
+# Deploy-parked doing cards are in-flight, not factory-stuck.
+parked = {
+    "slug": "invite-link",
+    "column": "doing",
+    "tags": ["awaiting-deploy"],
+    "pr_url": "",
+    "position": str(int((NOW - 20 * 3600) * 1000)),
+}
+live_pr = {
+    "slug": "open-pr",
+    "column": "doing",
+    "tags": ["p1"],
+    "pr_url": "http://localhost:3300/EdgeVector/fold/pulls/1478",
+    "position": str(int((NOW - 3 * 3600) * 1000)),
+}
+check("parked is parked", fh.is_deploy_parked(parked), True)
+check("open pr is not parked", fh.is_deploy_parked(live_pr), False)
+check("actionable drops parked",
+      [c["slug"] for c in fh.actionable_doing([parked, live_pr])], ["open-pr"])
+upgrade = dict(parked)
+upgrade["slug"] = "needs-safe-upgrade"
+upgrade["tags"] = ["needs-safe-upgrade"]
+check("needs-safe-upgrade is parked", fh.is_deploy_parked(upgrade), True)
+awaiting = dict(parked)
+awaiting["slug"] = "awaiting-validation"
+awaiting["tags"] = ["awaiting-validation"]
+check("awaiting-validation is parked", fh.is_deploy_parked(awaiting), True)
+check("actionable drops extra park tags",
+      [c["slug"] for c in fh.actionable_doing([parked, live_pr, upgrade, awaiting])],
+      ["open-pr"])
+
 if fails:
     for f in fails:
         print("FAIL " + f, file=sys.stderr)

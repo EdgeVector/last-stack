@@ -41,7 +41,9 @@ git clone https://github.com/EdgeVector/last-stack ~/.last-stack && ~/.last-stac
 `setup` auto-detects which agent harnesses you have (Claude Code, Codex,
 Factory, OpenCode) and registers every skill into each one. The skills stay in
 the cloned repo; each harness gets a directory with a symlinked `SKILL.md`, so a
-later `git pull` updates every installed skill at once.
+later `git pull` updates every installed skill at once. It also installs the
+companion `routines` CLI automatically. Starting scheduled agent work remains
+explicit: run `routines install-daemon` when you are ready to enable the fleet.
 
 For Claude Code, `setup` also installs the bundled safety hooks and allowlists
 the `brain` MCP read tools plus `brain_put` in `~/.claude/settings.json`, so
@@ -64,11 +66,14 @@ To download the usable LastDB app stack in one pass, run:
 ~/.last-stack/bin/last-stack-install-apps
 ```
 
-That installs the LastDB daemon and downloads Brain, Kanban, Situations, Dogfood
-Graph, Org, LastSecrets, Search, and LastDB Browser. The browser launcher is
-linked as `lastdb-browser` and reads the machine's own LastDB socket. LastGit is
-intentionally excluded until it is stable enough for the public bundle. See
-[`docs/lastdb-apps.md`](docs/lastdb-apps.md) for the full guide.
+That installs the LastDB daemon and downloads Brain, Kanban, Situations,
+Routines, Dogfood Graph, Org, LastSecrets, Search, and LastDB Browser. The
+`routines` CLI is linked alongside the other commands; installing its daemon is
+an explicit follow-up because it starts scheduled agent work. The browser
+launcher is linked as `lastdb-browser` and reads the machine's own LastDB
+socket. LastGit is intentionally excluded until it is stable enough for the
+public bundle. See [`docs/lastdb-apps.md`](docs/lastdb-apps.md) for the full
+guide.
 
 > Prefer to copy skills by hand? Each skill is a self-contained directory under
 > `skills/` — `cp -R skills/<name> ~/.claude/skills/`. `setup` just automates that
@@ -144,6 +149,10 @@ Payload (all non-secret):
 ~/.last-stack/bin/last-stack-deliver-status --approve  # stage + send
 ```
 
+Brain and Routines admin tabs have dedicated hourly deliverers. See
+[`docs/admin-deliverers.md`](docs/admin-deliverers.md) for install, dry-run,
+RUN-home, and LaunchAgent details.
+
 v1 **reuses the existing kanban-consumer identity** (schema-agnostic deliver).
 Mailbox poll + `openDelivery` stay on the admin consumer side (exemem-infra);
 this repo only owns publish + stage/approve on Mini.
@@ -199,7 +208,8 @@ preserving project-specific rules where they belong.
 | **onecontext** | Search prior Codex sessions, with guarded Aline usage and a JSONL fallback when Aline is unavailable. |
 | **registry-rotator** | Generic engine for registry-backed scheduled routines: pick the most-overdue eligible entry, run its recipe, file cards, and stamp the registry log. |
 | **wait-merge** | Robustly wait for a GitHub PR to merge by interpreting PR *state*, not a watcher's exit code. |
-| **close-out** | The post-change loop: open a PR from a worktree, drive it to merged, checkpoint the decision to the brain, file a follow-up card. |
+| **close-out** | The post-change loop: open a PR from a worktree, drive it to merged, file session papercuts, write a full brain report of what was done, file a follow-up card. |
+| **fix-it** | Find and land the permanent fix: producer-side class change, residue gone, original live signal rechecked. |
 | **last-stack-upgrade** | Update the stack in place (clean-only self-upgrade) and re-register the skills. |
 | **session-miner** | Generic engine for mining recent agent session transcripts with profiles for papercuts, incidents, owner-stated knowledge, tooling friction, and revenant-watch (settled-dead product truth reanimated; Brain-only). |
 
@@ -236,8 +246,8 @@ and [`templates/routine-fleet/`](templates/routine-fleet/).
 ### Registry Rotator Records
 
 The **registry-rotator** skill expects each project registry to be a Markdown
-record with one rotatable entry per heading, entry fields for `track`,
-`cadence`, `recipe`, `pass =`, and `isolation`, and a single
+Brain record or Config document with one rotatable entry per heading, entry
+fields for `track`, `cadence`, `recipe`, `pass =`, and `isolation`, and a single
 `rotation-log:start/end` table with `feature`, `last_run`, `result`, and
 `cards filed` columns. The engine reads project paths and venues from the
 project's config source (`workspace-config` / `repo-venue-map` while those are
@@ -245,7 +255,14 @@ still interim brain shims), selects the eligible entry with the largest
 `age / cadence` overdue ratio, dispatches that entry's recipe, files kanban
 cards per `sop-routine-shared-contract`, and rewrites only the rotation-log row
 for the selected entry. Scheduled tasks should be thin triggers that pass a
-registry slug such as `registry=dogfood-registry`.
+registry slug such as `registry=dogfood-registry` or an explicit Config
+reference such as `registry=configurations://owner-review-rotate`.
+`dogfood-rotate` is that shape: `bin/last-stack-dogfood-rotate-gate` selects
+only entries whose start contract is met (`eligible`, `timeout_sec`,
+`requires`, `command`) and skips compile / missing-binary / ineligible
+recipes before any LLM turn. Scheduled fires set `gate_command` to
+`last-stack-dogfood-rotate-gate --routines-dispatch` so the recipe starts
+zero-LLM (no Codex `recommended_plugins` / Grok skill inventory preamble).
 
 ## Repo layout
 
@@ -269,6 +286,12 @@ bin/
   last-stack-deliver-status publish + stage/approve lastdb.slice.v1 to the admin
                             kanban-consumer (routines deliver-status pattern)
   last-stack-shell-prelude  sourceable PATH prelude for scheduled routines
+                            (also bypasses host-global sccache by default for
+                            predictable parallel Cargo builds)
+  last-stack-cargo          Cargo entrypoint that explicitly bypasses a
+                            host-global rustc-wrapper unless opted back in
+  last-stack-sccache-health report pinned-full cache state; exit 10 when the
+                            current shell still routes builds through it
   last-stack-cli-preflight  verify routine-required global CLIs are on PATH
   last-stack-json-get       extract one simple field path from socket/API JSON
                             without relying on jq or inline python/node parsing
@@ -360,12 +383,16 @@ The intended loop, end to end:
    card to `done` on pass or leaves it visibly blocked with `PROOF:` plus a fix
    card/blocker on fail.
 6. **Close out** (`close-out` skill). After any substantive change: PR from a
-   worktree, drive to merged, checkpoint the *why* to the brain (`brain`), and
-   file any follow-up as a card (`kanban`).
+   worktree, drive to merged, file session papercuts (`brain papercut file`),
+   write a full *what was done* report to the brain (`brain`), and file any
+   follow-up as a card (`kanban`).
 
 The two halves are deliberate: **the brain records why; the board records
 what's in flight.** Keep decisions in `brain` and active work in `kanban`, and
 the agent always has both context and a worklist.
+
+When a defect keeps returning, or the user asks **what's the permanent fix**,
+use the **fix-it** skill. Do not add a temporary repair at the consumer.
 
 Steps 1–6 describe what an agent does *when invoked*. To make the loop
 **self-driving** — so cards get filed, promoted, picked up, and reconciled

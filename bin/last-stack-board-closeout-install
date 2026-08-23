@@ -1,74 +1,65 @@
 #!/usr/bin/env bash
 # Install / uninstall / status the zero-LLM board-closeout LaunchAgent.
 #
+# Writes a stable public path (~/.last-stack or artifacts/current) into the
+# plist — never a version hash — and skips launchctl when the plist is unchanged.
+#
 # Usage:
 #   last-stack-board-closeout-install install|uninstall|status|run-once
 set -euo pipefail
 
-self_dir="$(cd "$(dirname "$0")" && pwd -P)"
-last_stack="$(cd "$self_dir/.." && pwd -P)"
-label="com.edgevector.board-closeout"
-plist_src="$last_stack/launchd/${label}.plist"
-plist_dst="${BOARD_CLOSEOUT_PLIST:-$HOME/Library/LaunchAgents/${label}.plist}"
-uid="$(id -u)"
-domain="gui/${uid}"
+self="$0"
+self_root="$(cd "$(dirname "$self")/.." && pwd)"
+# shellcheck source=../lib/last-stack-launchd-agent.sh
+. "$self_root/lib/last-stack-launchd-agent.sh"
 
+program="last-stack-board-closeout-sweep"
+label="com.edgevector.board-closeout"
+last_stack="$(last_stack_agent_stable_root "$self" "$program")"
+plist_src="$self_root/launchd/${label}.plist"
+if [ ! -f "$plist_src" ]; then
+  plist_src="$last_stack/launchd/${label}.plist"
+fi
+plist_dst="${BOARD_CLOSEOUT_PLIST:-$HOME/Library/LaunchAgents/${label}.plist}"
 cmd="${1:-status}"
 
 install_agent() {
-  if [ ! -x "$last_stack/bin/last-stack-board-closeout-sweep" ]; then
-    chmod +x "$last_stack/bin/last-stack-board-closeout-sweep" 2>/dev/null || true
-  fi
-  if [ ! -x "$last_stack/bin/last-stack-board-closeout-sweep" ]; then
-    echo "missing executable: $last_stack/bin/last-stack-board-closeout-sweep" >&2
+  chmod +x "$last_stack/bin/$program" 2>/dev/null || true
+  [ -e "$last_stack/bin/$program" ] || [ -x "$self_root/bin/$program" ] || {
+    echo "missing executable: $last_stack/bin/$program" >&2
     exit 1
-  fi
-  if [ ! -f "$plist_src" ]; then
+  }
+  [ -f "$plist_src" ] || {
     echo "missing plist: $plist_src" >&2
     exit 1
-  fi
-  mkdir -p "$(dirname "$plist_dst")"
-  # Rewrite LAST_STACK paths to this install root and HOME if needed.
-  sed \
-    -e "s|/Users/REPLACE/.last-stack|${last_stack}|g" \
-    -e "s|/Users/REPLACE|${HOME}|g" \
-    "$plist_src" >"$plist_dst"
-  # Also ensure ProgramArguments points at this install's sweep binary.
-  /usr/libexec/PlistBuddy -c "Set :ProgramArguments:0 ${last_stack}/bin/last-stack-board-closeout-sweep" "$plist_dst" 2>/dev/null || true
-  /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:LAST_STACK_ROOT ${last_stack}" "$plist_dst" 2>/dev/null || true
-
-  if command -v launchctl >/dev/null 2>&1; then
-    launchctl bootout "${domain}/${label}" >/dev/null 2>&1 || true
-    if launchctl bootstrap "$domain" "$plist_dst" >/dev/null 2>&1; then
-      launchctl enable "${domain}/${label}" >/dev/null 2>&1 || true
-      launchctl kickstart -k "${domain}/${label}" >/dev/null 2>&1 || true
-      echo "board-closeout: loaded ${label} (every 15m)"
-    else
-      echo "board-closeout: plist written to $plist_dst (launchctl bootstrap failed)" >&2
-    fi
-  else
-    echo "board-closeout: plist written to $plist_dst (no launchctl)"
-  fi
+  }
+  rendered="$(mktemp "${TMPDIR:-/tmp}/board-closeout.plist.XXXXXX")"
+  last_stack_agent_render_plist "$plist_src" "$rendered" "$last_stack"
+  last_stack_agent_commit_plist "$label" "$plist_dst" "$rendered" "board-closeout"
 }
 
 uninstall_agent() {
-  if command -v launchctl >/dev/null 2>&1; then
-    launchctl bootout "${domain}/${label}" >/dev/null 2>&1 || true
-  fi
-  rm -f "$plist_dst"
-  echo "board-closeout: uninstalled ${label}"
+  last_stack_agent_uninstall "$label" "$plist_dst" "board-closeout"
 }
 
 status_agent() {
-  echo "sweep: $last_stack/bin/last-stack-board-closeout-sweep"
+  echo "sweep: $last_stack/bin/$program"
   echo "plist: $plist_dst"
   if [ -f "$plist_dst" ]; then
     echo "plist: present"
+    prog="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$plist_dst" 2>/dev/null || true)"
+    echo "program: ${prog:-unknown}"
+    case "$prog" in
+      */artifacts/versions/*) echo "program: VERSION-PINNED (will re-toast on refresh)" ;;
+    esac
   else
     echo "plist: missing"
   fi
-  if command -v launchctl >/dev/null 2>&1; then
-    launchctl print "${domain}/${label}" 2>/dev/null | head -30 || echo "launchctl: not loaded"
+  if last_stack_agent_should_touch_launchd "$plist_dst" && command -v launchctl >/dev/null 2>&1; then
+    uid="$(id -u)"
+    launchctl print "gui/${uid}/${label}" 2>/dev/null | head -30 || echo "launchctl: not loaded"
+  else
+    echo "launchctl: skipped"
   fi
   if [ -f "$HOME/Library/Logs/board-closeout.out.log" ]; then
     echo "--- last log lines ---"
@@ -81,7 +72,10 @@ case "$cmd" in
   uninstall) uninstall_agent ;;
   status) status_agent ;;
   run-once)
-    exec "$last_stack/bin/last-stack-board-closeout-sweep" "${@:2}"
+    if [ -x "$last_stack/bin/$program" ]; then
+      exec "$last_stack/bin/$program" "${@:2}"
+    fi
+    exec "$self_root/bin/$program" "${@:2}"
     ;;
   -h|--help)
     sed -n '2,8p' "$0"

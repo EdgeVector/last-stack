@@ -49,12 +49,24 @@ import { initSentry } from "./lib/observability/sentry";
 await initSentry({ service: "routinesd" });
 ```
 
-The helper is a no-op when `OBS_SENTRY_DSN` is unset. When a DSN is present, the
-consuming repo must provide `@sentry/node`; the helper initializes the SDK with
-`service`, `environment`, and `release` tags, installs process handlers for
-uncaught exceptions and unhandled rejections, and redacts common secret-bearing
-request headers and event extras before send. Tests can inject `sentryModule` to
-avoid network calls.
+The helper is a no-op when `OBS_SENTRY_DSN` is unset. An unresolved
+`lastsecrets://` locator or any other non-https DSN is also a no-op
+(`reason=invalid_dsn`) and **does not print** on the default path — that
+warning is what poisons agent `cmd --json 2>&1 | jq` pipelines. Set
+`OBS_SENTRY_DEBUG=1` to emit the locator diagnostic on **stderr only**.
+When a real https DSN is present, the consuming repo must provide
+`@sentry/node`; the helper initializes the SDK with `service`,
+`environment`, and `release` tags, installs process handlers for
+uncaught exceptions and unhandled rejections, and redacts common
+secret-bearing request headers and event extras before send. Tests can
+inject `sentryModule` to avoid network calls.
+
+Launchers that would otherwise export `OBS_SENTRY_DSN=lastsecrets://…`
+into agent/CLI children should either resolve the locator first
+(`last-stack-secret-env-run`) or wrap the child with
+`last-stack-obs-exec` so the locator never reaches the child. The
+shell prelude also unsets unresolved locators for sourced routine
+snippets.
 
 ## Triage Reader
 

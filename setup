@@ -233,7 +233,7 @@ install_claude_hooks() {
   remove_pretool_hook_by_script "$settings" "read-before-edit.sh"
 
   upsert_pretool_hook "$settings" "Bash" \
-    "$hooks_dir/unsafe-inline-json.sh  # block brittle node -e/python -c inline JSON parsing; use jq or a scratchpad script" \
+    "$hooks_dir/unsafe-inline-json.sh  # keep parsed JSON stdout clean; block brittle inline parsing and merged stderr" \
     5
 
   for tool in \
@@ -246,7 +246,7 @@ install_claude_hooks() {
     upsert_permission_allow "$settings" "$tool"
   done
 
-  echo "  claude hooks: unsafe-inline-json.sh (read-before-edit retired + de-registered)"
+  echo "  claude hooks: unsafe-inline-json.sh (inline parsing + merged JSON stderr guard; read-before-edit retired)"
   echo "  claude permissions: brain MCP get/search/list/ask/put"
 }
 
@@ -507,6 +507,39 @@ install_host_track_refresh_agent() {
   fi
 }
 
+install_routines_cli() {
+  local routines_bin=""
+  if [ "${LAST_STACK_SKIP_ROUTINES_INSTALL:-0}" = "1" ]; then
+    echo "  routines CLI: skipped (LAST_STACK_SKIP_ROUTINES_INSTALL=1)"
+    return 0
+  fi
+
+  routines_bin="$(command -v routines 2>/dev/null || true)"
+  [ -x "$routines_bin" ] || routines_bin="$HOME/.local/bin/routines"
+  if [ -x "$routines_bin" ] && "$routines_bin" --help >/dev/null 2>&1; then
+    echo "  routines CLI: already installed ($routines_bin)"
+    return 0
+  fi
+
+  # Test/sandbox HOME values must never clone into or relink the login user's
+  # real app tree. Production callers can override only for a deliberate
+  # hermetic install proof.
+  if ! host_track_real_home_matches && [ "${LAST_STACK_ROUTINES_FORCE_INSTALL:-0}" != "1" ]; then
+    echo "  routines CLI: install skipped for non-login HOME"
+    return 0
+  fi
+
+  local installer
+  installer="${LAST_STACK_ROUTINES_INSTALLER:-$SOURCE_ROOT/bin/last-stack-install-routines}"
+  [ -x "$installer" ] || {
+    echo "routines CLI installer is missing or not executable: $installer" >&2
+    return 1
+  }
+
+  echo "  routines CLI: installing ..."
+  "$installer"
+}
+
 # ── Register every skills/<name>/SKILL.md into a target skills dir ────────────
 register_into() {
   local skills_dir="$1"
@@ -587,22 +620,35 @@ echo "Installing The Last Stack (v$(cat "$SOURCE_ROOT/VERSION")) ..."
 [ "$INSTALL_OPENCODE" -eq 1 ] && register_into "$HOME/.config/opencode/skills" "opencode"
 [ "$INSTALL_OPENCODE" -eq 1 ] && upsert_brain_kanban_block "$HOME/.config/opencode/AGENTS.md" "opencode"
 install_host_track_shim
+install_routines_cli
 install_shared_checkout_guards
 install_host_track_refresh_agent
 
 # Zero-LLM board closeout (merged PR/CR → done) — survives low-credit watch pause.
+# Point LaunchAgents at the stable public root, not SOURCE_ROOT's version hash.
 if [ -x "$SOURCE_ROOT/bin/last-stack-board-closeout-install" ]; then
-  "$SOURCE_ROOT/bin/last-stack-board-closeout-install" install || \
+  LAST_STACK_PUBLIC_ROOT="${LAST_STACK_PUBLIC_ROOT:-$HOME/.last-stack}" \
+    "$SOURCE_ROOT/bin/last-stack-board-closeout-install" install || \
     echo "  board-closeout LaunchAgent: install failed (non-fatal)" >&2
 fi
 
 # Hourly factory health (bands + ra notify).
 if [ -x "$SOURCE_ROOT/bin/last-stack-factory-health-install" ]; then
-  "$SOURCE_ROOT/bin/last-stack-factory-health-install" install || \
+  LAST_STACK_PUBLIC_ROOT="${LAST_STACK_PUBLIC_ROOT:-$HOME/.last-stack}" \
+    "$SOURCE_ROOT/bin/last-stack-factory-health-install" install || \
     echo "  factory-health LaunchAgent: install failed (non-fatal)" >&2
 fi
 
-# Terminal product proof routine (Feature Ship Loop) + Class A–E why-stopped.
+# Hourly Brain and Routines admin SPA deliveries. Recipient identity remains in
+# ~/.lastdb/admin-deliver-recipient.env; no key material enters a plist.
+if [ -x "$SOURCE_ROOT/bin/last-stack-admin-deliver-install" ]; then
+  LAST_STACK_PUBLIC_ROOT="${LAST_STACK_PUBLIC_ROOT:-$HOME/.last-stack}" \
+    "$SOURCE_ROOT/bin/last-stack-admin-deliver-install" install || \
+    echo "  admin deliverer LaunchAgents: install failed (non-fatal)" >&2
+fi
+
+# Seed missing registry TOMLs only. Existing ~/.routines/registry entries are
+# the canonical live registry and are not rewritten on host-track refresh.
 if [ -x "$SOURCE_ROOT/bin/last-stack-feature-prove-routine" ]; then
   "$SOURCE_ROOT/bin/last-stack-feature-prove-routine" || \
     echo "  feature-prove registry: install failed (non-fatal)" >&2
@@ -610,6 +656,18 @@ fi
 if [ -x "$SOURCE_ROOT/bin/last-stack-why-stopped-routine" ]; then
   "$SOURCE_ROOT/bin/last-stack-why-stopped-routine" || \
     echo "  why-stopped registry: install failed (non-fatal)" >&2
+fi
+if [ -x "$SOURCE_ROOT/bin/last-stack-whats-wrong-routine" ]; then
+  "$SOURCE_ROOT/bin/last-stack-whats-wrong-routine" || \
+    echo "  whats-wrong registry: install failed (non-fatal)" >&2
+fi
+if [ -x "$SOURCE_ROOT/bin/last-stack-lastdb-ops-offenders-routine" ]; then
+  "$SOURCE_ROOT/bin/last-stack-lastdb-ops-offenders-routine" || \
+    echo "  lastdb-ops-offenders registry: install failed (non-fatal)" >&2
+fi
+if [ -x "$SOURCE_ROOT/bin/last-stack-fleet-performance-routine" ]; then
+  "$SOURCE_ROOT/bin/last-stack-fleet-performance-routine" || \
+    echo "  fleet-performance registry: install failed (non-fatal)" >&2
 fi
 
 # Zero-LLM self-upgrade healer (every 30m) — checkout installs only.

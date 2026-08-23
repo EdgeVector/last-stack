@@ -73,4 +73,11 @@ case "$out" in
 esac
 git -C "$collision_repo" rev-parse --verify -q "refs/heads/salvage/shared-checkout-$date_slug-1" >/dev/null
 
+prompt="$ROOT/routines/repark-shared-checkouts.md"
+grep -q 'repark_output=' "$prompt"
+grep -q 'Never assign to `status`' "$prompt"
+grep -q 'awk.*\^ff\\(' "$prompt"
+grep -q 'awk.*FLAG' "$prompt"
+grep -q "result_token='ROUTINE_RESULT'" "$prompt"
+
 echo "ok last-stack-repark-shared-checkouts"

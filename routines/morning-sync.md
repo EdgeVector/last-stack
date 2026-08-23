@@ -1,7 +1,7 @@
 ---
 name: morning-sync
 cadence: daily
-description: Deliver a daily briefing — progress being driven (§🚀) + the SHORT genuinely-human decision set (§⚠️) + scoping/health/overnight. Read-only; autonomy-first framing.
+description: Deliver a daily briefing — progress being driven (§🚀) + genuinely-human decisions (§⚠️) + whether last night's new releases actually work on this machine (§🔬) + scoping/health/overnight. Read-only; autonomy-first framing.
 ---
 
 Produce and DELIVER the daily briefing. This is READ-ONLY — do not move cards,
@@ -56,6 +56,40 @@ Lead with a one-line restatement of the goal / top objective, then:
   `todo` card with `Repo:`/`Base:` and no `BLOCKED:` note, surface this as a
   top routine-health alert. Name the top eligible card(s), the last pickup time,
   and say that the ready queue is not being drained.
+- **§🔬 New releases — working well?** Always include. This is distinct from
+  §🩺 (did a scheduled fire succeed) and §📦 (ELI5 story of what landed).
+  Question: of the things that *newly became true* in the last ~36h, is each
+  actually true **on this machine right now**? "CR merged" / "CI green" is not
+  the answer. Cap **5** items. Cheap live probes only; do not start apps,
+  run full acceptance, or heal (BRIEF is read-only).
+
+  Discover, cheapest first:
+  1. Brain closeouts from the last 36h (`brain ask "closeout <YYYYMMDD>"` for
+     today and yesterday). Prefer a claimed user-visible capability, skip
+     drive-by refactors.
+  2. The latest dated slice in
+     `${ROUTINES_HOME:-$HOME/.routines}/memory/last-stack-fleet-performance/memory.md`.
+  3. `host-track status` for apps that moved: `host_head` vs the closeout
+     merge_oid. Lastgit/main ahead of the live RUN tree is
+     `not-on-this-machine-yet`, not working.
+  4. If `feature-prove` already wrote PASS today for the same claim, cite that
+     PASS instead of re-proving.
+
+  Each item is one line: **claim** · **verdict** · **probe you ran**.
+  Verdicts:
+  - `working` — live probe matches the claim
+  - `not-on-this-machine-yet` — merged upstream; live host_head / RUN file /
+    registry TOML does not have it yet (name both refs)
+  - `broken` — live machine contradicts the claim (restomp, parse error, last
+    harness fire error after the merge). One line of evidence; do not fix.
+
+  Probe examples (pick one per claim): `routines doctor` parse-error count;
+  live `~/.routines/registry/<id>.toml` still has the sliced `rrule`;
+  `routines list --json` includes an id that had been dropped; last
+  `~/.routines/runs/<id>/*/meta.json` outcome *after* the merge; the live
+  `prompt_path` file contains a new SOP slug.
+
+  If nothing new landed: one line "no new releases in the window."
 - **§🏭 Ship pipeline (North Star → Milestone → PR → shipped).** Always
   include. Primary source: brain **`ship-pipeline-gap-audit-latest`** written
   by the nightly `ship-pipeline-gap-audit` routine. Paste/adapt its
@@ -117,3 +151,21 @@ needs to weigh in on §⚠️ or redirect §🚀.
 > the brain, and execute it onto the board (clear a gate to `todo`, scope a
 > program into a card, or record a hold). That keeps the decision-capture loop ON
 > TOP of `program-driver`/`groom-board`/`kanban-pickup` without replacing them.
+
+## Close-out (always the LAST step)
+
+End every run with the **close-out skill**
+(`$LAST_STACK_ROOT/skills/close-out/SKILL.md`, trigger `/close-out`), then emit
+the heartbeat + `ROUTINE_RESULT` trailer as the final output (contract §1).
+The close-out skill makes two brain writes; do not skip them:
+
+1. **Brain report** — write the closeout report of what this run did (what
+   changed, findings, decisions) per `preference-always-save-to-brain-when-done`.
+   On a pure noop run, the heartbeat line may serve as the report.
+2. **Papercuts → Brain** — file a `papercut-<topic>` brain record for every
+   friction hit this run (BRAIN ONLY, never a board card; search first, update
+   in place) per `preference-always-file-papercuts-in-brain`.
+
+Skip close-out steps that do not apply to this routine (for example PR or card
+steps on a read-only pass). Never skip the two brain writes when the run did
+substantive work or hit friction.

@@ -14,6 +14,7 @@ fail() {
 export HOME="$tmp/home"
 export HOST_TRACK_REGISTRY="$tmp/registry.json"
 export HOST_TRACK_STAMP_DIR="$tmp/stamps"
+export HOST_TRACK_SOAK_FILE_CARD=0
 export PATH="$HOME/.local/bin:$tmp/bin:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
 mkdir -p "$HOME/.local/bin" "$tmp/bin" "$tmp/cas"
 cat > "$HOME/post-install" <<'SH'
@@ -250,8 +251,9 @@ unset HOST_TRACK_STAGE_GC_MAX_AGE_S
 
 printf 'ok: verified artifact install/refresh/rollback/tamper rejection\n'
 
-# ── track_gate_main: status stale vs main tip; refresh promotes channel ─────
-# Mental model: live skill-pack tracks green main, not a frozen stable pointer.
+# ── track_gate_main: on-channel vs unpublished main; refresh promotes ─────
+# stale = live digest equals published channel. main_unpublished = lastgit
+# main is ahead of that channel. Refresh promotes a green+published tip.
 # Use app name != last-stack so install does not chmod a-w the version tree.
 MAIN_TIP_FILE="$tmp/main-tip-oid"
 printf '%s' "$(printf 'a%.0s' {1..40})" > "$MAIN_TIP_FILE"
@@ -365,33 +367,45 @@ cat > "$HOST_TRACK_REGISTRY" <<JSON
 }
 JSON
 
-# Install while main tip == v1 → fresh.
+# Install while main tip == v1 → on channel, not unpublished.
 printf '%s' "$oid_v1" > "$MAIN_TIP_FILE"
 "$ROOT/bin/host-track" install skillpack >/dev/null
 [ "$(demo)" = v1 ] || fail "track-main install did not land v1"
 st="$("$ROOT/bin/host-track" status --json skillpack)"
 printf '%s\n' "$st" | jq -e --arg tip "$oid_v1" '
   .gate_head == $tip and .stale == false and .host_head == $tip
+  and .main_unpublished == false and .freshness == "fresh"
 ' >/dev/null || fail "in-sync main tip should not be stale: $st"
+"$ROOT/bin/host-track" check skillpack >/dev/null \
+  || fail "in-sync main tip failed check"
 
-# Advance main tip to v2 (green+published); installed lags → stale.
+# Advance main tip to v2 (green+published). Status stays on-channel.
+# Lag is main_unpublished. Pickup check must stay 0. Refresh installs v2.
 printf '%s' "$oid_v2" > "$MAIN_TIP_FILE"
 st_lag="$("$ROOT/bin/host-track" status --json skillpack)"
-printf '%s\n' "$st_lag" | jq -e --arg tip "$oid_v2" --arg old "$oid_v1" '
-  .gate_head == $tip and .stale == true and .host_head == $old
-' >/dev/null || fail "lag vs advanced main tip not reported: $st_lag"
+printf '%s\n' "$st_lag" | jq -e --arg old "$oid_v1" --arg ch "$digest_v1" '
+  .gate_head == $old
+  and .host_head == $old
+  and .stale == false
+  and .main_unpublished == true
+  and .freshness == "soft_stale"
+  and .manifest_digest == $ch
+' >/dev/null || fail "on-channel unpublished-main lag not reported: $st_lag"
+"$ROOT/bin/host-track" check skillpack >/dev/null \
+  || fail "on-channel unpublished-main failed check"
 
 "$ROOT/bin/host-track" refresh skillpack >/dev/null
 [ "$(demo)" = v2 ] || fail "refresh did not install advanced main tip"
 st2="$("$ROOT/bin/host-track" status --json skillpack)"
 printf '%s\n' "$st2" | jq -e --arg tip "$oid_v2" '
   .stale == false and .host_head == $tip and .gate_head == $tip
+  and .main_unpublished == false and .freshness == "fresh"
 ' >/dev/null || fail "after refresh still not tracking main: $st2"
 jq -e --arg tip "$oid_v2" '.source_oid == $tip' \
   "$tmp/cas/channels/skillpack/stable.json" >/dev/null \
   || fail "stable channel was not promoted to new main tip"
 
-printf 'ok: track_gate_main promotes green main and reports lag correctly\n'
+printf 'ok: track_gate_main promotes green main and reports unpublished-main lag\n'
 
 # ── dist/* producers (situations/fkanban layout) — no synthetic bin/ ─────────
 # Fleet proof failed with "staged artifact missing bin/ (incomplete stage)" when
@@ -498,5 +512,26 @@ fi
 "$ROOT/bin/host-track" refresh --force-if-stale sitcli >/dev/null 2>"$tmp/dist-refresh.err" \
   || fail "dist-only refresh failed: $(cat "$tmp/dist-refresh.err")"
 [ "$(sitcli)" = dist-ok ] || fail "dist-only still works after refresh"
+
+# Retired PATH names: unlink leftover shims that still point at this
+# install_root; leave foreign symlinks and regular files alone.
+ln -s "$HOME/apps/sitcli/current/dist/sitcli" "$HOME/.local/bin/sitcli-legacy"
+ln -s /usr/bin/true "$HOME/.local/bin/sitcli-foreign"
+printf 'keep-me\n' > "$HOME/.local/bin/sitcli-plain"
+jq '.apps[0].retired_links = [
+  {"target": "$HOME/.local/bin/sitcli-legacy"},
+  {"target": "$HOME/.local/bin/sitcli-foreign"},
+  {"target": "$HOME/.local/bin/sitcli-plain"}
+]' "$HOST_TRACK_REGISTRY" > "$tmp/dist-registry-retired.json"
+mv "$tmp/dist-registry-retired.json" "$HOST_TRACK_REGISTRY"
+"$ROOT/bin/host-track" install sitcli >/dev/null 2>"$tmp/dist-retire.err" \
+  || fail "install with retired_links failed: $(cat "$tmp/dist-retire.err")"
+[ ! -e "$HOME/.local/bin/sitcli-legacy" ] \
+  || fail "retired link pointing at this install_root was not removed"
+[ -L "$HOME/.local/bin/sitcli-foreign" ] \
+  || fail "retired_links deleted a symlink this install does not own"
+[ -f "$HOME/.local/bin/sitcli-plain" ] && [ ! -L "$HOME/.local/bin/sitcli-plain" ] \
+  || fail "retired_links deleted or replaced a regular file"
+[ "$(sitcli)" = dist-ok ] || fail "live sitcli link broke after retiring leftovers"
 
 printf 'ok: dist-only artifact install/refresh (no synthetic bin/) \n'

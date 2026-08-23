@@ -143,7 +143,7 @@ NORTH_STAR_DRIVER_TARGET=north-star-open-cutovers-drained \
   routines run last-stack-north-star-driver || true
 ```
 
-## 6. Heartbeat
+## 6. Heartbeat + machine result (required)
 
 ```
 OPEN_CUTOVERS_LIVE=<n> ADVANCED=<slugs> RESOLVED=<slugs> BLOCKED=<slugs>
@@ -151,9 +151,45 @@ OPEN_CUTOVERS_LIVE=<n> ADVANCED=<slugs> RESOLVED=<slugs> BLOCKED=<slugs>
 
 5–10 lines memory: which phase transitions, any DEFER, any card filed.
 
+**Every run must end with exactly one fresh machine-result line** so the
+routines harness can score the fire (missing trailers become `outcome=unknown`
+and pollute fleet-health). Print the `ROUTINE_RESULT` token followed by:
+
+```text
+ROUTINE_RESULT outcome=<ok|noop|error> detail=live=<n> advanced=<n> resolved=<n> blocked=<n>
+```
+
+| Result | When |
+|--------|------|
+| **ok** | Advanced or resolved at least one live cutover line, or empty-ledger success with optional NS proof refresh |
+| **noop** | Live lines remain but none advanced (all blocked/deferred with updated `verified=`) |
+| **error** | Unexpected failure (brain/board unusable after retries, partial write without durable ledger update) |
+
+Never print a prior run's machine-result line. Never omit the trailer on a
+"nothing changed" empty ledger — empty ledger is **ok**, not silence.
+
 ## Exit criteria
 
 Done when every touched live line either advanced one durable phase step, was
-resolved, or has an explicit blocked reason on the ledger with updated `verified=`.
+resolved, or has an explicit blocked reason on the ledger with updated `verified=`,
+**and** the machine-result line above has been printed.
 
 Empty ledger = **success**, not "nothing to do."
+
+## Close-out (always the LAST step)
+
+End every run with the **close-out skill**
+(`$LAST_STACK_ROOT/skills/close-out/SKILL.md`, trigger `/close-out`), then emit
+the heartbeat + `ROUTINE_RESULT` trailer as the final output (contract §1).
+The close-out skill makes two brain writes; do not skip them:
+
+1. **Brain report** — write the closeout report of what this run did (what
+   changed, findings, decisions) per `preference-always-save-to-brain-when-done`.
+   On a pure noop run, the heartbeat line may serve as the report.
+2. **Papercuts → Brain** — file a `papercut-<topic>` brain record for every
+   friction hit this run (BRAIN ONLY, never a board card; search first, update
+   in place) per `preference-always-file-papercuts-in-brain`.
+
+Skip close-out steps that do not apply to this routine (for example PR or card
+steps on a read-only pass). Never skip the two brain writes when the run did
+substantive work or hit friction.

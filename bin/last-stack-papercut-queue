@@ -1,0 +1,234 @@
+#!/usr/bin/env python3
+"""Snapshot and verify the deterministic Brain papercut work queue."""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+
+EXPECTED_METHOD = "status-keyed papercut index"
+
+
+def parse_json_stream(raw: str) -> dict[str, Any]:
+    decoder = json.JSONDecoder()
+    index = 0
+    values: list[Any] = []
+    while index < len(raw):
+        while index < len(raw) and raw[index].isspace():
+            index += 1
+        if index >= len(raw):
+            break
+        try:
+            value, end = decoder.raw_decode(raw, index)
+        except json.JSONDecodeError:
+            index += 1
+            continue
+        values.append(value)
+        index = end
+    for value in values:
+        if isinstance(value, dict) and isinstance(value.get("rows"), list):
+            return value
+    raise ValueError("brain did not return a papercut-list JSON object")
+
+
+def is_safe_papercut_slug(slug: object) -> bool:
+    return isinstance(slug, str) and slug.startswith("papercut-") and slug != "papercut-"
+
+
+def validate_queue(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    method = payload.get("method")
+    rows = payload.get("rows")
+    total = payload.get("total")
+    if not isinstance(method, str) or EXPECTED_METHOD not in method:
+        raise ValueError("reader is not the status-keyed papercut index")
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        raise ValueError("rows is not an object array")
+    if not isinstance(total, int) or total != len(rows):
+        raise ValueError(f"total/rows mismatch: total={total!r} rows={len(rows)}")
+    slugs: set[str] = set()
+    accepted: list[dict[str, Any]] = []
+    quarantined: list[dict[str, Any]] = []
+    for row in rows:
+        slug = row.get("slug")
+        if not is_safe_papercut_slug(slug):
+            quarantined.append({
+                "slug": slug if isinstance(slug, str) else None,
+                "reason": "missing-papercut-prefix",
+            })
+            continue
+        if row.get("status") != "open":
+            raise ValueError(f"non-open row in open queue: {slug} status={row.get('status')!r}")
+        if slug in slugs:
+            raise ValueError(f"duplicate papercut queue membership: {slug}")
+        slugs.add(str(slug))
+        accepted.append(row)
+    return accepted, quarantined
+
+
+def write_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
+            handle.write("\n")
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def snapshot(args: argparse.Namespace) -> int:
+    proc = subprocess.run(
+        [args.brain_bin, "papercut", "list", "--status", "open", "--json"],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=args.timeout,
+    )
+    if proc.returncode != 0:
+        print(
+            f"papercut queue read failed ({proc.returncode}): {proc.stderr.strip() or proc.stdout.strip()}",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        source = parse_json_stream(proc.stdout)
+        rows, quarantined = validate_queue(source)
+    except ValueError as error:
+        print(f"papercut queue invalid: {error}", file=sys.stderr)
+        return 1
+    fetched_at = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    receipt = {
+        "version": 1,
+        "ok": True,
+        "fetched_at": fetched_at,
+        "method": source["method"],
+        "discovered": len(rows),
+        "quarantined": quarantined,
+        "rows": rows,
+    }
+    write_atomic(Path(args.output), receipt)
+    result = {
+        "ok": True,
+        "phase": "snapshot",
+        "snapshot": str(Path(args.output).resolve()),
+        "discovered": len(rows),
+        "quarantined": len(quarantined),
+        "method": source["method"],
+    }
+    if quarantined:
+        print(
+            f"papercut queue quarantined {len(quarantined)} slug(s) missing papercut- prefix",
+            file=sys.stderr,
+        )
+    print(json.dumps(result, sort_keys=True) if args.json else (
+        f"papercut-queue snapshot={result['snapshot']} discovered={len(rows)} "
+        f"quarantined={len(quarantined)} method=status-keyed"
+    ))
+    return 0
+
+
+def read_slug_file(path: str) -> list[str]:
+    values: list[str] = []
+    for raw in Path(path).read_text(encoding="utf-8").splitlines():
+        slug = raw.strip()
+        if not slug or slug.startswith("#"):
+            continue
+        if not slug.startswith("papercut-"):
+            raise ValueError(f"invalid classified slug in {path}: {slug!r}")
+        values.append(slug)
+    if len(values) != len(set(values)):
+        raise ValueError(f"duplicate slug inside classification file: {path}")
+    return values
+
+
+def verify(args: argparse.Namespace) -> int:
+    try:
+        receipt = json.loads(Path(args.snapshot).read_text(encoding="utf-8"))
+        rows, _quarantined = validate_queue({
+            "method": receipt.get("method"),
+            "rows": receipt.get("rows"),
+            "total": receipt.get("discovered"),
+        })
+    except (OSError, json.JSONDecodeError, ValueError) as error:
+        print(f"papercut queue receipt invalid: {error}", file=sys.stderr)
+        return 1
+    try:
+        classified = {
+            "reconciled": read_slug_file(args.reconciled_file),
+            "deferred": read_slug_file(args.deferred_file),
+            "already_handled": read_slug_file(args.already_handled_file),
+            "failed": read_slug_file(args.failed_file),
+        }
+    except (OSError, ValueError) as error:
+        print(f"papercut queue classification invalid: {error}", file=sys.stderr)
+        return 1
+    owners: dict[str, str] = {}
+    overlap: list[str] = []
+    for bucket, slugs in classified.items():
+        for slug in slugs:
+            if slug in owners:
+                overlap.append(slug)
+            else:
+                owners[slug] = bucket
+    expected = {str(row["slug"]) for row in rows}
+    actual = set(owners)
+    missing = sorted(expected - actual)
+    extra = sorted(actual - expected)
+    counts = {bucket: len(slugs) for bucket, slugs in classified.items()}
+    accounted = len(actual)
+    discovered = len(expected)
+    conserved = not missing and not extra and not overlap
+    result = {
+        "ok": conserved and counts["failed"] == 0,
+        "phase": "verify",
+        "snapshot": str(Path(args.snapshot).resolve()),
+        "discovered": discovered,
+        **counts,
+        "accounted": accounted,
+        "conserved": conserved,
+        "missing": missing,
+        "extra": extra,
+        "overlap": sorted(set(overlap)),
+    }
+    print(json.dumps(result, sort_keys=True) if args.json else " ".join(
+        ["papercut-queue"] + [f"{key}={value}" for key, value in result.items() if key != "phase"]
+    ))
+    return 0 if result["ok"] else 1
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    snapshot_parser = sub.add_parser("snapshot")
+    snapshot_parser.add_argument("--output", required=True)
+    snapshot_parser.add_argument("--brain-bin", default="brain")
+    snapshot_parser.add_argument("--timeout", type=int, default=60)
+    snapshot_parser.add_argument("--json", action="store_true")
+    snapshot_parser.set_defaults(func=snapshot)
+    verify_parser = sub.add_parser("verify")
+    verify_parser.add_argument("--snapshot", required=True)
+    verify_parser.add_argument("--reconciled-file", required=True)
+    verify_parser.add_argument("--deferred-file", required=True)
+    verify_parser.add_argument("--already-handled-file", required=True)
+    verify_parser.add_argument("--failed-file", required=True)
+    verify_parser.add_argument("--json", action="store_true")
+    verify_parser.set_defaults(func=verify)
+    args = parser.parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

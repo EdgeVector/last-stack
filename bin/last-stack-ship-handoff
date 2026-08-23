@@ -1,0 +1,343 @@
+#!/usr/bin/env python3
+"""One post-approval verb: NS + heading MILESTONE_REQUEST + one milestone.
+
+Walk-away success requires kanban pickup explain eligible_for_claim=true
+(not merely ready=true). Does not kanban add cards.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from typing import Any
+
+REQUEST_HEADER_RE = re.compile(r"(?im)^##[ \t]+MILESTONE_REQUEST\s*$")
+REQUEST_SLUG_RE = re.compile(r"(?im)^slug\s*=\s*([a-z0-9][a-z0-9._-]*)\s*$")
+
+
+def run(
+    argv: list[str],
+    *,
+    input_text: str | None = None,
+    timeout: float = 90.0,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        argv,
+        input=input_text,
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+    )
+
+
+def heading_request(slug: str, outcome: str, acceptance: str) -> str:
+    return (
+        f"## MILESTONE_REQUEST\n"
+        f"slug={slug}\n"
+        f"status=pending\n"
+        f"\n"
+        f"### Outcome\n"
+        f"{outcome.strip()}\n"
+        f"\n"
+        f"### Acceptance\n"
+        f"{acceptance.strip()}\n"
+    )
+
+
+def ns_body(
+    *,
+    end_state: str,
+    proof_card: str,
+    request: str,
+) -> str:
+    return (
+        f"**Mode:** ship\n"
+        f"\n"
+        f"## End state\n"
+        f"{end_state.strip()}\n"
+        f"\n"
+        f"## Terminal verification\n"
+        f"- **Card:** `{proof_card}`\n"
+        f"- **Shape:** pr harness\n"
+        f"- **Done means:** {end_state.strip()}\n"
+        f"\n"
+        f"{request}"
+    )
+
+
+def has_request_for(body: str, slug: str) -> bool:
+    headers = list(REQUEST_HEADER_RE.finditer(body))
+    for i, h in enumerate(headers):
+        start = h.start()
+        end = headers[i + 1].start() if i + 1 < len(headers) else len(body)
+        block = body[start:end]
+        sm = REQUEST_SLUG_RE.search(block)
+        if sm and sm.group(1) == slug:
+            return True
+    return False
+
+
+def parse_json(text: str) -> Any:
+    text = text.strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
+class Tools:
+    def __init__(self) -> None:
+        self.brain = os.environ.get("BRAIN_BIN", "brain")
+        self.kanban = os.environ.get("KANBAN_BIN", "kanban")
+        self.routines = os.environ.get("ROUTINES_BIN", "routines")
+        self.milestone_adds = 0
+
+    def brain_get(self, slug: str) -> str | None:
+        cp = run([self.brain, "get", slug, "--type", "project"])
+        if cp.returncode != 0:
+            return None
+        return cp.stdout
+
+    def brain_put(self, slug: str, title: str, body: str) -> None:
+        text = (
+            f"---\n"
+            f"type: project\n"
+            f"slug: {slug}\n"
+            f"title: {title}\n"
+            f"status: in_progress\n"
+            f"---\n\n"
+            f"{body}"
+        )
+        cp = run([self.brain, "put", slug, "--type", "project"], input_text=text)
+        if cp.returncode != 0:
+            raise RuntimeError(f"brain put failed: {cp.stderr or cp.stdout}")
+
+    def brain_append(self, slug: str, text: str) -> None:
+        cp = run(
+            [self.brain, "append", slug, "--type", "project"],
+            input_text=text,
+        )
+        if cp.returncode != 0:
+            raise RuntimeError(f"brain append failed: {cp.stderr or cp.stdout}")
+
+    def milestone_show(self, slug: str) -> dict | None:
+        cp = run([self.kanban, "milestone", "show", slug, "--json"])
+        if cp.returncode != 0:
+            return parse_json(cp.stdout)
+        return parse_json(cp.stdout) or {}
+
+    def milestone_add(
+        self,
+        slug: str,
+        *,
+        title: str,
+        outcome: str,
+        acceptance: str,
+        north_star: str,
+    ) -> None:
+        argv = [
+            self.kanban,
+            "milestone",
+            "add",
+            slug,
+            "--title",
+            title,
+            "--body",
+            f"Outcome: {outcome}. Acceptance: {acceptance}.",
+            "--state",
+            "planned",
+            "--north-star",
+            north_star,
+            "--driver",
+            "last-stack-milestone-driver",
+            "--proof-status",
+            "pending",
+        ]
+        cp = run(argv)
+        self.milestone_adds += 1
+        if cp.returncode != 0:
+            raise RuntimeError(
+                f"kanban milestone add failed: {cp.stderr or cp.stdout}"
+            )
+
+    def milestone_detail(self, slug: str) -> dict:
+        cp = run([self.kanban, "milestone", "detail", slug, "--json"])
+        data = parse_json(cp.stdout)
+        if cp.returncode != 0 or not isinstance(data, dict):
+            raise RuntimeError(
+                f"kanban milestone detail failed: {cp.stderr or cp.stdout}"
+            )
+        return data
+
+    def pickup_explain(self, slug: str) -> dict:
+        cp = run([self.kanban, "pickup", "explain", slug, "--json"])
+        data = parse_json(cp.stdout)
+        if not isinstance(data, dict):
+            raise RuntimeError(
+                f"kanban pickup explain failed: {cp.stderr or cp.stdout}"
+            )
+        return data
+
+    def dispatch_milestone_driver(self, slug: str) -> int:
+        env = os.environ.copy()
+        env["MILESTONE_DRIVER_TARGET"] = slug
+        cp = subprocess.run(
+            [self.routines, "run", "last-stack-milestone-driver"],
+            text=True,
+            capture_output=True,
+            timeout=300,
+            env=env,
+        )
+        return cp.returncode
+
+
+def frontier_slugs(detail: dict, explicit: str | None) -> list[str]:
+    if explicit:
+        return [explicit]
+    kids = detail.get("children") or detail.get("cards") or []
+    out: list[str] = []
+    if isinstance(kids, list):
+        for row in kids:
+            if not isinstance(row, dict):
+                continue
+            kind = str(row.get("kind") or "").lower()
+            if kind and kind != "pr":
+                continue
+            slug = str(row.get("slug") or "").strip()
+            if slug:
+                out.append(slug)
+    return out
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--north-star", required=True)
+    ap.add_argument("--milestone", required=True)
+    ap.add_argument("--title", default="")
+    ap.add_argument("--outcome", required=True)
+    ap.add_argument("--acceptance", required=True)
+    ap.add_argument("--end-state", default="")
+    ap.add_argument("--proof-card", default="")
+    ap.add_argument("--create-ns", action="store_true")
+    ap.add_argument(
+        "--skip-driver",
+        action="store_true",
+        help="Do not routines-run milestone-driver (tests / already fueled)",
+    )
+    ap.add_argument(
+        "--wait-ready",
+        type=float,
+        default=0.0,
+        help="Seconds to poll pickup explain (0 = one shot)",
+    )
+    ap.add_argument("--frontier", default="", help="PR slug to explain")
+    ap.add_argument("--json", action="store_true")
+    args = ap.parse_args(argv)
+
+    tools = Tools()
+    title = args.title or args.milestone
+    end_state = args.end_state or args.outcome
+    proof_card = args.proof_card or f"{args.milestone}-proof"
+    request = heading_request(args.milestone, args.outcome, args.acceptance)
+
+    existing = tools.brain_get(args.north_star)
+    if existing is None:
+        if not args.create_ns:
+            print(
+                f"error: North Star {args.north_star} missing; pass --create-ns",
+                file=sys.stderr,
+            )
+            return 2
+        tools.brain_put(
+            args.north_star,
+            title,
+            ns_body(
+                end_state=end_state,
+                proof_card=proof_card,
+                request=request,
+            ),
+        )
+        appended = True
+    else:
+        if not has_request_for(existing, args.milestone):
+            tools.brain_append(args.north_star, "\n" + request)
+            appended = True
+        else:
+            appended = False
+
+    shown = tools.milestone_show(args.milestone)
+    created_ms = False
+    if not shown:
+        tools.milestone_add(
+            args.milestone,
+            title=title,
+            outcome=args.outcome,
+            acceptance=args.acceptance,
+            north_star=args.north_star,
+        )
+        created_ms = True
+
+    if not args.skip_driver:
+        tools.dispatch_milestone_driver(args.milestone)
+
+    deadline = time.time() + max(0.0, args.wait_ready)
+    explain: dict | None = None
+    frontier = args.frontier
+    last_err = ""
+    while True:
+        try:
+            detail = tools.milestone_detail(args.milestone)
+            slugs = frontier_slugs(detail, frontier or None)
+            if not slugs:
+                last_err = "no frontier Kind:pr on milestone"
+            else:
+                frontier = slugs[0]
+                explain = tools.pickup_explain(frontier)
+                if explain.get("eligible_for_claim") is True:
+                    break
+                last_err = (
+                    f"eligible_for_claim={explain.get('eligible_for_claim')} "
+                    f"ready={explain.get('ready')}"
+                )
+        except RuntimeError as exc:
+            last_err = str(exc)
+        if time.time() >= deadline:
+            break
+        time.sleep(min(2.0, max(0.05, deadline - time.time())))
+
+    eligible = bool(explain and explain.get("eligible_for_claim") is True)
+    report = {
+        "north_star": args.north_star,
+        "milestone": args.milestone,
+        "request_appended": appended,
+        "request_heading": True,
+        "milestone_add_count": tools.milestone_adds,
+        "milestone_created": created_ms,
+        "frontier": frontier,
+        "eligible_for_claim": eligible,
+        "ready": bool(explain.get("ready")) if explain else False,
+        "explain": explain,
+        "error": None if eligible else last_err or "not eligible_for_claim",
+    }
+    if args.json:
+        print(json.dumps(report, indent=2))
+    else:
+        print(
+            f"ship-handoff ns={args.north_star} ms={args.milestone} "
+            f"adds={tools.milestone_adds} eligible={eligible} "
+            f"frontier={frontier or '-'}"
+        )
+        if not eligible:
+            print(f"WALK_AWAY_REFUSED {report['error']}", file=sys.stderr)
+    return 0 if eligible else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

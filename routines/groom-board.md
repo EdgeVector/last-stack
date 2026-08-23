@@ -63,7 +63,7 @@ continue — do not fail the whole run.
   groom-board`, do not run doctor/init/restart, and classify the run as `noop`,
   not `error`.
 - Columns: `backlog → todo → doing → done`. `add <slug>` is an upsert;
-  `rm <slug>` soft-deletes; `move <slug> <column>`.
+  `rm <slug>` deletes (hard erase; no trash); `move <slug> <column>`.
 - Read columns sequentially with `<board CLI> list --column <column> --json` and
   point-read one selected card with `<board CLI> show <slug> --json` when you
   need the full body. Do not use wide/full-body board reads or parallel board
@@ -120,7 +120,7 @@ fail-closed; errors never auto-close a card.
    `NEEDS-HUMAN: non-PR card missing DONE-WHEN`. Never use `DONE-WHEN` to close
    `Kind: pr`.
 
-2. **Prune scratch/test cards.** Soft-delete (`rm`) clear test-harness junk:
+2. **Prune scratch/test cards.** Delete (`rm`) clear test-harness junk:
    `zz-*` slugs, single-letter/placeholder titles, empty bodies, obvious
    `*-scratch` / `*-delete-me` cards. Only delete UNAMBIGUOUS junk — if a card has
    a real title and substantive body, leave it.
@@ -128,7 +128,7 @@ fail-closed; errors never auto-close a card.
 2b. **Empty-column ghosts (won't-undo class — 2026-08-01).** Cards that show up
    in `pickup status` as `missing Repo header` / `malformed-routing` but have
    **empty `column`**, empty title/body, and `created_by=unknown` are BoardCards
-   ghosts, not real work. Soft-delete them with `rm` when reverse-deps are empty
+   ghosts, not real work. Delete them with `rm` when reverse-deps are empty
    (`blockedBy` / dependents none). Do not invent titles or re-park them into
    backlog as hollow PRs. Cite count in the digest. Proven incident: interactive
    groom soft-deleted 54 ghosts 2026-08-01
@@ -259,3 +259,21 @@ fail-closed; errors never auto-close a card.
 > heartbeat line and print the `ROUTINE_RESULT` token followed by
 > `outcome=<noop> detail=<board-socket-unavailable>` so routinesd records a
 > graceful skip instead of auto-filing a P0 error.
+
+## Close-out (always the LAST step)
+
+End every run with the **close-out skill**
+(`$LAST_STACK_ROOT/skills/close-out/SKILL.md`, trigger `/close-out`), then emit
+the heartbeat + `ROUTINE_RESULT` trailer as the final output (contract §1).
+The close-out skill makes two brain writes; do not skip them:
+
+1. **Brain report** — write the closeout report of what this run did (what
+   changed, findings, decisions) per `preference-always-save-to-brain-when-done`.
+   On a pure noop run, the heartbeat line may serve as the report.
+2. **Papercuts → Brain** — file a `papercut-<topic>` brain record for every
+   friction hit this run (BRAIN ONLY, never a board card; search first, update
+   in place) per `preference-always-file-papercuts-in-brain`.
+
+Skip close-out steps that do not apply to this routine (for example PR or card
+steps on a read-only pass). Never skip the two brain writes when the run did
+substantive work or hit friction.

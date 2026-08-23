@@ -1,0 +1,22 @@
+#!/bin/sh
+# Strip unresolved LastSecrets Sentry locators, then exec.
+#
+# routinesd / LaunchAgents often export OBS_SENTRY_DSN=lastsecrets://… into
+# agent and CLI children. That value is a secret reference, not a DSN.
+# Child CLIs that initialize Sentry then warn or panic. Resolve the locator
+# at the process-wrapper boundary with last-stack-secret-env-run when Sentry
+# should stay on; otherwise leave the var unset.
+set -eu
+
+if [ "$#" -eq 0 ]; then
+  echo "usage: last-stack-obs-exec <command> [args...]" >&2
+  exit 2
+fi
+
+case "${OBS_SENTRY_DSN:-}" in
+  lastsecrets://*|lastsecrets:*)
+    unset OBS_SENTRY_DSN
+    ;;
+esac
+
+exec "$@"

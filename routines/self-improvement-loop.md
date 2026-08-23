@@ -34,8 +34,9 @@ improves the tools, not the product.
 
 This is DISTINCT from sibling routines (don't duplicate their jobs):
 - `papercut-reconciler` owns papercut→card conversion. If a finding is a
-  product/dev-process papercut, file it as a Brain record (`papercut-<topic>`,
-  tag `papercut`, `Status: OPEN`) — never file a papercut card directly.
+  product/dev-process papercut, file it through `brain papercut file`
+  (`papercut-<topic>`, typed status `open`) — never use generic `brain put` and
+  never file a papercut card directly. A nonzero filing is not queued work.
 - `consolidate-brain` owns brain status hygiene; `groom-board` owns board
   grooming. Leave those alone.
 Your lane is the AGENT TOOLING itself: "should this repeated workflow become a
@@ -176,3 +177,21 @@ heartbeat and print exactly one fresh machine-result line for this run. Use the
 `ROUTINE_RESULT` token followed by
 `outcome=<ok|noop|error> detail=<one-line-outcome>`; never print raw prior
 machine-result lines from mined logs.
+
+## Close-out (always the LAST step)
+
+End every run with the **close-out skill**
+(`$LAST_STACK_ROOT/skills/close-out/SKILL.md`, trigger `/close-out`), then emit
+the heartbeat + `ROUTINE_RESULT` trailer as the final output (contract §1).
+The close-out skill makes two brain writes; do not skip them:
+
+1. **Brain report** — write the closeout report of what this run did (what
+   changed, findings, decisions) per `preference-always-save-to-brain-when-done`.
+   On a pure noop run, the heartbeat line may serve as the report.
+2. **Papercuts → Brain** — file a `papercut-<topic>` brain record for every
+   friction hit this run (BRAIN ONLY, never a board card; search first, update
+   in place) per `preference-always-file-papercuts-in-brain`.
+
+Skip close-out steps that do not apply to this routine (for example PR or card
+steps on a read-only pass). Never skip the two brain writes when the run did
+substantive work or hit friction.

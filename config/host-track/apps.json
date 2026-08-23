@@ -58,6 +58,34 @@
           "target": "$HOME/.local/bin/last-stack-class-a-heal"
         },
         {
+          "source": "bin/last-stack-papercut-lifecycle-close",
+          "target": "$HOME/.local/bin/last-stack-papercut-lifecycle-close"
+        },
+        {
+          "source": "bin/last-stack-papercut-queue",
+          "target": "$HOME/.local/bin/last-stack-papercut-queue"
+        },
+        {
+          "source": "bin/last-stack-kanban-file-pr",
+          "target": "$HOME/.local/bin/last-stack-kanban-file-pr"
+        },
+        {
+          "source": "bin/last-stack-kanban-done-when-eval",
+          "target": "$HOME/.local/bin/last-stack-kanban-done-when-eval"
+        },
+        {
+          "source": "bin/last-stack-design-pack",
+          "target": "$HOME/.local/bin/last-stack-design-pack"
+        },
+        {
+          "source": "bin/last-stack-ship-handoff",
+          "target": "$HOME/.local/bin/last-stack-ship-handoff"
+        },
+        {
+          "source": "bin/last-stack-real-human-notify",
+          "target": "$HOME/.local/bin/last-stack-real-human-notify"
+        },
+        {
           "source": "bin/last-stack-routine-read",
           "target": "$HOME/.local/bin/last-stack-routine-read"
         },
@@ -110,6 +138,10 @@
           "target": "$HOME/.local/bin/last-stack-why-stopped"
         },
         {
+          "source": "bin/last-stack-whats-wrong-loom",
+          "target": "$HOME/.local/bin/last-stack-whats-wrong-loom"
+        },
+        {
           "source": "bin/last-stack-factory-health",
           "target": "$HOME/.local/bin/last-stack-factory-health"
         },
@@ -126,7 +158,15 @@
           "target": "$HOME/.local/bin/last-stack-lastseek-host-track-post-install"
         }
       ],
-      "notes": "Runtime is an immutable CI artifact that tracks gate_main (green+published main). host-track refresh promotes stable to that tip then installs. ~/.last-stack/{bin,skills,...} \u2192 artifacts/current. PATH links Class A + pickup bootstrap + Forge closeout tools (forge-api and friends) so routinesd (~/.local/bin first) never hits GC'd version pins and board-closeout can resolve Forge PRs. Never develop in the install; use a worktree."
+      "notes": "Runtime is an immutable CI artifact that tracks gate_main (green+published main). host-track refresh promotes stable to that tip then installs. ~/.last-stack/{bin,skills,...} \u2192 artifacts/current. PATH links Class A + pickup bootstrap + Forge closeout tools (forge-api and friends) so routinesd (~/.local/bin first) never hits GC'd version pins and board-closeout can resolve Forge PRs. Never develop in the install; use a worktree. Also PATH-link last-stack-papercut-lifecycle-close, last-stack-kanban-file-pr, and last-stack-kanban-done-when-eval so scheduled shells (routinesd PATH often ~/.local/bin-first without sourcing shell-prelude) resolve the lifecycle closer, the required Kind:pr filing helper, and the non-PR DONE-WHEN evaluator.",
+      "safe_upgrade": {
+        "soak_hours": 0,
+        "post_install_phase": "after-cutover",
+        "probes": [
+          {"argv": ["bin/host-track", "--help"], "timeout_s": 15},
+          {"argv": ["bin/host-track", "validate-registry"], "timeout_s": 30}
+        ]
+      }
     },
     {
       "app": "brain",
@@ -151,7 +191,15 @@
       ],
       "notes": "Brain LastGit artifact install; track_gate_main promotes stable to green+published main. post_install runs bun install --frozen-lockfile --production. PATH links brain + brain-mcp.",
       "track_gate_main": true,
-      "post_install": "$HOME/.host-track/apps/brain/current/bin/brain-host-track-post-install"
+      "post_install": "$HOME/.host-track/apps/brain/current/bin/brain-host-track-post-install",
+      "safe_upgrade": {
+        "soak_hours": 1,
+        "latency": true,
+        "probes": [
+          {"argv": ["bin/brain", "which"], "timeout_s": 30},
+          {"argv": ["bin/brain", "get", "sop-edgevector-portals"], "timeout_s": 60}
+        ]
+      }
     },
     {
       "app": "situations",
@@ -175,7 +223,15 @@
         }
       ],
       "notes": "Situations LastGit artifact install from CI-published dist/* binaries; track_gate_main promotes stable to green+published main.",
-      "track_gate_main": true
+      "track_gate_main": true,
+      "safe_upgrade": {
+        "soak_hours": 1,
+        "latency": true,
+        "probes": [
+          {"argv": ["dist/situations", "--help"], "timeout_s": 15},
+          {"argv": ["dist/situations", "list"], "timeout_s": 45}
+        ]
+      }
     },
     {
       "app": "kanban",
@@ -192,14 +248,23 @@
         {
           "source": "dist/kanban",
           "target": "$HOME/.local/bin/kanban"
-        },
+        }
+      ],
+      "retired_links": [
         {
-          "source": "dist/fkanban",
           "target": "$HOME/.local/bin/fkanban"
         }
       ],
-      "notes": "One registration for the whole fkanban artifact bundle: links BOTH public CLI names (kanban and fkanban) off a single install_root and a single stamp. There used to be a second app entry named `fkanban` pointing at the same install_root; two entries meant two stamps for one bundle, they drifted, and host-track reported the identical binary as fresh under one name and stale under the other. track_gate_main follows fkanban green+published main.",
-      "track_gate_main": true
+      "notes": "One registration for the fkanban artifact bundle. Public CLI is kanban only. retired_links drops the leftover fkanban PATH symlink on refresh when it still points at this install_root. The LastGit slug and install_root stay fkanban. track_gate_main follows fkanban green+published main.",
+      "track_gate_main": true,
+      "safe_upgrade": {
+        "soak_hours": 1,
+        "latency": true,
+        "probes": [
+          {"argv": ["dist/kanban", "--help"], "timeout_s": 15},
+          {"argv": ["dist/kanban", "list", "--column", "todo"], "timeout_s": 45}
+        ]
+      }
     },
     {
       "app": "routines",
@@ -219,7 +284,13 @@
         }
       ],
       "notes": "Routines LastGit artifact install from CI-published dist/routines; track_gate_main promotes stable to green+published main.",
-      "track_gate_main": true
+      "track_gate_main": true,
+      "safe_upgrade": {
+        "soak_hours": 1,
+        "probes": [
+          {"argv": ["dist/routines", "--help"], "timeout_s": 15}
+        ]
+      }
     },
     {
       "app": "lastsecrets",
@@ -239,7 +310,18 @@
         }
       ],
       "notes": "LastSecrets LastGit artifact install from CI-published dist/lastsecrets; track_gate_main promotes stable to green+published main.",
-      "track_gate_main": true
+      "track_gate_main": true,
+      "safe_upgrade": {
+        "soak_hours": 1,
+        "probes": [
+          {
+            "argv": ["dist/lastsecrets"],
+            "timeout_s": 15,
+            "accept_exit": [0, 1, 2],
+            "output_matches": "lastsecrets"
+          }
+        ]
+      }
     },
     {
       "app": "configurations",
@@ -259,7 +341,13 @@
         }
       ],
       "notes": "Configurations LastGit artifact install from CI-published dist/configurations; track_gate_main promotes stable to green+published main.",
-      "track_gate_main": true
+      "track_gate_main": true,
+      "safe_upgrade": {
+        "soak_hours": 1,
+        "probes": [
+          {"argv": ["dist/configurations", "--help"], "timeout_s": 15}
+        ]
+      }
     },
     {
       "app": "lastseek",
@@ -280,7 +368,13 @@
       ],
       "notes": "LastSeek LastGit neural artifact install from CI-published dist/lastseek; track_gate_main promotes stable to green+published main. Model weights remain host state and post_install verifies the five documented bge-small-en-v1.5 files without downloading them.",
       "track_gate_main": true,
-      "post_install": "$HOME/.local/bin/last-stack-lastseek-host-track-post-install"
+      "post_install": "$HOME/.local/bin/last-stack-lastseek-host-track-post-install",
+      "safe_upgrade": {
+        "soak_hours": 1,
+        "probes": [
+          {"argv": ["dist/lastseek", "--help"], "timeout_s": 15}
+        ]
+      }
     },
     {
       "app": "search",
@@ -301,7 +395,18 @@
       ],
       "notes": "Search LastGit artifact install (source pack + post_install npm/bun deps + neural smoke); track_gate_main promotes stable to green+published main.",
       "track_gate_main": true,
-      "post_install": "$HOME/.host-track/apps/search/current/bin/search-host-track-post-install"
+      "post_install": "$HOME/.host-track/apps/search/current/bin/search-host-track-post-install",
+      "safe_upgrade": {
+        "soak_hours": 1,
+        "probes": [
+          {
+            "argv": ["bin/search"],
+            "timeout_s": 20,
+            "accept_exit": [0, 1, 2],
+            "output_matches": "usage:"
+          }
+        ]
+      }
     },
     {
       "app": "remote",
@@ -329,7 +434,13 @@
         }
       ],
       "notes": "Remote Agent artifact install; refresh links ra/rad/rad-telegram from the promoted LastGit artifact. track_gate_main promotes stable to green+published main — without it the channel sat on a hand-promoted pointer for 8 days and shipped a known-broken ra shim, silently killing every ra notify page.",
-      "track_gate_main": true
+      "track_gate_main": true,
+      "safe_upgrade": {
+        "soak_hours": 1,
+        "probes": [
+          {"argv": ["bin/ra", "--help"], "timeout_s": 15}
+        ]
+      }
     },
     {
       "app": "state-machine",
@@ -356,7 +467,39 @@
         }
       ],
       "notes": "State Machine LastGit artifact install from CI-published dist/* binaries; track_gate_main promotes stable to green+published main. sm is the runner for lastdb-canary-release and lastdb-safe-upgrade, so it upgrades the primary and publishes to public brew \u2014 before this entry ~/.local/bin/sm symlinked into the workspace DEV checkout and had no freshness gate at all.",
-      "track_gate_main": true
+      "track_gate_main": true,
+      "safe_upgrade": {
+        "soak_hours": 1,
+        "probes": [
+          {"argv": ["dist/sm", "--help"], "timeout_s": 15}
+        ]
+      }
+    },
+    {
+      "app": "loom",
+      "install_mode": "artifact",
+      "kind": "artifact cli",
+      "command": "loom",
+      "gate": "lastgit",
+      "gate_main": "lastdb:///loom#main",
+      "artifact_app": "loom",
+      "artifact_channel": "stable",
+      "artifact_root": "$HOME/.lastgit/artifacts",
+      "install_root": "$HOME/.host-track/apps/loom",
+      "links": [
+        {
+          "source": "dist/loom",
+          "target": "$HOME/.local/bin/loom"
+        }
+      ],
+      "notes": "loom LastGit artifact install from CI-published dist/loom plus scripts/. track_gate_main promotes stable to green+published main. Do not symlink ~/.local/bin/loom at a DEV worktree.",
+      "track_gate_main": true,
+      "safe_upgrade": {
+        "soak_hours": 1,
+        "probes": [
+          {"argv": ["dist/loom", "ping"], "timeout_s": 15}
+        ]
+      }
     },
     {
       "app": "lastdb-browser",
@@ -377,7 +520,13 @@
       ],
       "notes": "LastDB Browser LastGit artifact install (source pack + post_install npm build, same shape as search); track_gate_main promotes stable to green+published main. Interactive schemas -> keys -> record -> atom browser for a local node, served by a zero-dependency Node bridge because a browser cannot open a unix socket. Read-only: every bridge route is a GET or the read-only POST /api/query. post_install builds the UI then deletes node_modules -- nothing is needed at runtime.",
       "track_gate_main": true,
-      "post_install": "$HOME/.host-track/apps/lastdb-browser/current/bin/lastdb-browser-host-track-post-install"
+      "post_install": "$HOME/.host-track/apps/lastdb-browser/current/bin/lastdb-browser-host-track-post-install",
+      "safe_upgrade": {
+        "soak_hours": 1,
+        "probes": [
+          {"argv": ["bin/lastdb-browser", "--help"], "timeout_s": 15}
+        ]
+      }
     },
     {
       "app": "lastdb",
@@ -386,6 +535,11 @@
       "command": "lastdb",
       "gate": "forgejo",
       "gate_main": "http://localhost:3300/EdgeVector/fold.git#main",
+      "gate_remote": "http://localhost:3300/EdgeVector/fold.git",
+      "gate_ref": "refs/heads/main",
+      "deployment_binary": "$HOME/.lastdb/current/lastdb",
+      "deployment_peer_binary": "$HOME/.lastdb/current/lastdbd",
+      "deployment_repo_cache": "$HOME/.cache/edgevector-git/fold.git",
       "artifact_app": "lastdb-bundle",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -410,6 +564,11 @@
       "command": "lastdbd",
       "gate": "forgejo",
       "gate_main": "http://localhost:3300/EdgeVector/fold.git#main",
+      "gate_remote": "http://localhost:3300/EdgeVector/fold.git",
+      "gate_ref": "refs/heads/main",
+      "deployment_binary": "$HOME/.lastdb/current/lastdbd",
+      "deployment_peer_binary": "$HOME/.lastdb/current/lastdb",
+      "deployment_repo_cache": "$HOME/.cache/edgevector-git/fold.git",
       "artifact_app": "lastdb-bundle",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",

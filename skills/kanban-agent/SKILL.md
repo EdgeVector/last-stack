@@ -22,7 +22,8 @@ There is **no `review` column**. Board columns are only:
 - Incomplete work: stay in `todo` or `doing`
 - Complete work: `done` only with merge/END-STATE proof
 - Intentional holds: `block_status=needs_human|deferred|design_first` + reason
-  while the card stays in `todo` (or `backlog` if dep-blocked)
+  in **`backlog`** (default `todo` is the pickup claim lane and rejects deferred /
+  human-gated holds — see the kanban skill "Default todo is the pickup claim lane")
 
 Never `kanban move <slug> review`. The live board rejects it. Do not invent
 a review lane on custom boards either.
@@ -167,7 +168,9 @@ DONE-WHEN: file <path> matches /<regex>/
 ```
 
 The reconciler and groomer evaluate predicates with
-`bin/last-stack-kanban-done-when-eval` when Last Stack is installed. Satisfied
+`"$LAST_STACK_ROOT/bin/last-stack-kanban-done-when-eval"` when Last Stack is
+installed (host-track also PATH-links it into `~/.local/bin` for sandboxed
+`~/.local/bin`-first shells). Satisfied
 predicates move the non-PR card to `done` with evidence; false or pending
 predicates stay quiet; malformed predicates become a visible card-authoring
 issue. Predicate evaluation is read-only and fail-closed.
@@ -321,11 +324,19 @@ to `review`, append a one-line note explaining what's missing, and exit.
    target_repo="$("$last_stack/bin/last-stack-repo-op-guard" "$target_repo" "/Users/REPLACE/code/edgevector")"
    "$LAST_STACK_TOOL_GIT" -C "$target_repo" rev-parse --show-toplevel
    cd "$target_repo"
-   "$LAST_STACK_TOOL_GIT" fetch origin <base>
+   "$LAST_STACK_TOOL_GIT" fetch origin +refs/heads/<base>:refs/remotes/origin/<base>
    mkdir -p "${WORKTREES_DIR:-$HOME/.fkanban/worktrees}"
    "$LAST_STACK_TOOL_GIT" worktree add "${WORKTREES_DIR:-$HOME/.fkanban/worktrees}/<slug>" -b kanban/<slug> origin/<base>
    cd "${WORKTREES_DIR:-$HOME/.fkanban/worktrees}/<slug>"
    ```
+   - **Long-command gotcha:** background anything that might run longer than
+     about two minutes and check back, or give it an explicit short timeout;
+     never hold a foreground shell in a hand-written `while ...; sleep ...`
+     poll. For merge waits specifically, prefer `/wait-merge`.
+   - **Worktree-fetch gotcha:** fetch into `FETCH_HEAD` or a remote-tracking
+     ref such as `refs/remotes/origin/<branch>`; never fetch directly into a
+     local branch checked out in this or another worktree (and do not `git
+     pull` that branch merely to compare it with the remote).
    `WORKTREES_DIR` must be outside the shared checkout; never create
    `<target-repo>/.worktrees` or any other repo-local worktree nest.
    If you accidentally started editing in the shared checkout and then restart
@@ -380,7 +391,12 @@ to `review`, append a one-line note explaining what's missing, and exit.
    >    cards" behavior — a human can still redirect or re-scope any of the
    >    filed cards afterward, but filing them is no longer a human-only step.
 4. **Verify locally** — run the brief's exact VERIFY commands. Green tests are
-   not sufficient if the brief says to run the app — do that too.
+   not sufficient if the brief says to run the app — do that too. For direct
+   host-local Cargo commands, prefer `last-stack-cargo` when installed (or the
+   `RUSTC_WRAPPER=` environment established by `last-stack-shell-prelude`): a
+   pinned global sccache disk cache can serialize Fold builds and turn a
+   sub-minute check into a routine timebox. Callers may opt back into a known-
+   good wrapper with `LAST_STACK_RUSTC_WRAPPER`.
 5. **Open the PR/CR + arm auto-merge**. First route the repo:
    ```bash
    route_json="$("$last_stack/bin/last-stack-pr-venue" --json "<repo>" "$target_repo")"
@@ -675,7 +691,8 @@ Scheduled entrypoint: routine `kanban-validate` /
 
 0. **Cheap DONE-WHEN first (when Last Stack is installed).** For non-PR kinds
    (`validation|tracker|capstone|meta`), evaluate single-line `DONE-WHEN:` with
-   `bin/last-stack-kanban-done-when-eval`. Satisfied → `PROOF` + `done`. Pending
+   `"$LAST_STACK_ROOT/bin/last-stack-kanban-done-when-eval"`. Satisfied →
+   `PROOF` + `done`. Pending
    → continue. Malformed → surface authoring debt. For
    `file ~/.last-stack/north-star-proofs/<slug>.md matches /^PASS/` predicates,
    you may run `bin/last-stack-north-star-proof --offline <ns-slug>` once (or

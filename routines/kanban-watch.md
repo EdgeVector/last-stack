@@ -23,6 +23,14 @@ FOLLOW the board — advance in-flight work — NOT to author or ship new featur
 code. If the sweep is quiet and you spotted something worth doing, FILE it as a
 card for the `kanban-pickup` + `kanban-agent` pipeline to build.
 
+## Hollow Kind:pr (won't-undo — 2026-08-17)
+
+Never raw-`kanban add` a `Kind: pr` card without both a clean `Repo: owner/name`
+and a live `--milestone`. Use `last-stack-kanban-file-pr`. If Repo or milestone
+is unknown, file `--kind tracker --block-status deferred` in backlog (or do
+not file). A hollow Kind:pr in backlog is invisible to pickup and trips
+factory-health `parked_ungated`.
+
 ## Automation memory
 If the scheduled prompt includes an `Automation memory:` path (routinesd injects
 one under `## Dispatch envelope`), read and write **that exact file**. Prefer it
@@ -696,3 +704,21 @@ card you filed (or that you found nothing). Then exit.
 > Use `noop`, not `error`, for expected no-action external blockers such as
 > busy-node backpressure or `board-socket-unreachable` where no reconcile can be
 > safely attempted and a tracker card already exists.
+
+## Close-out (always the LAST step)
+
+End every run with the **close-out skill**
+(`$LAST_STACK_ROOT/skills/close-out/SKILL.md`, trigger `/close-out`), then emit
+the heartbeat + `ROUTINE_RESULT` trailer as the final output (contract §1).
+The close-out skill makes two brain writes; do not skip them:
+
+1. **Brain report** — write the closeout report of what this run did (what
+   changed, findings, decisions) per `preference-always-save-to-brain-when-done`.
+   On a pure noop run, the heartbeat line may serve as the report.
+2. **Papercuts → Brain** — file a `papercut-<topic>` brain record for every
+   friction hit this run (BRAIN ONLY, never a board card; search first, update
+   in place) per `preference-always-file-papercuts-in-brain`.
+
+Skip close-out steps that do not apply to this routine (for example PR or card
+steps on a read-only pass). Never skip the two brain writes when the run did
+substantive work or hit friction.

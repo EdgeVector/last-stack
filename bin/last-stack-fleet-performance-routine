@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# Seed the daily fleet-performance registry entry when missing.
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+# shellcheck source=last-stack-routines-registry-env
+. "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/last-stack-routines-registry-env"
+last_stack_registry_paths_init
+
+ROUTINES_HOME="${ROUTINES_HOME:-$HOME/.routines}"
+REGISTRY_DIR="$ROUTINES_HOME/registry"
+PROMPT_PATH="$(last_stack_registry_prompt_path fleet-performance.md "$ROOT/routines/fleet-performance.md")"
+ID="last-stack-fleet-performance"
+DRY_RUN=0
+FORCE_DEFAULTS=0
+
+usage() {
+  cat <<'USAGE'
+last-stack-fleet-performance-routine [options]
+
+Seeds the routines registry entry for the daily fleet-performance auditor.
+An existing file is the canonical registry and is left alone.
+Pass --force-defaults to replace it with compiled defaults.
+
+Options:
+  --registry-dir <p>  registry directory (default: $ROUTINES_HOME/registry)
+  --prompt-path <p>   prompt path (default: stable last-stack)
+  --id <id>           automation id (default: last-stack-fleet-performance)
+  --force-defaults    replace an existing file with compiled defaults
+  --dry-run           print compiled defaults without writing
+  -h, --help          show this help
+USAGE
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --registry-dir) REGISTRY_DIR="$2"; shift 2 ;;
+    --registry-dir=*) REGISTRY_DIR="${1#*=}"; shift ;;
+    --prompt-path) PROMPT_PATH="$2"; shift 2 ;;
+    --prompt-path=*) PROMPT_PATH="${1#*=}"; shift ;;
+    --id) ID="$2"; shift 2 ;;
+    --id=*) ID="${1#*=}"; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --force-defaults) FORCE_DEFAULTS=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown flag: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+case "$ID" in
+  ""|*/*)
+    echo "unsafe automation id: $ID" >&2
+    exit 2
+    ;;
+esac
+
+if [ ! -r "$PROMPT_PATH" ]; then
+  echo "prompt path is not readable: $PROMPT_PATH" >&2
+  exit 66
+fi
+
+if [ "$DRY_RUN" -eq 0 ]; then
+  last_stack_registry_assert_safe_write "$REGISTRY_DIR" "$PROMPT_PATH" "$REG_CWD" \
+    || exit 3
+fi
+
+path="$REGISTRY_DIR/$ID.toml"
+if [ "$DRY_RUN" -eq 0 ] && last_stack_registry_skip_if_exists "$path" "$FORCE_DEFAULTS"; then
+  printf 'configured %s in %s\n' "$ID" "$REGISTRY_DIR"
+  exit 0
+fi
+
+workspace_cwd="${LAST_STACK_WORKSPACE:-$REG_CWD}"
+
+body=$(cat <<EOF
+# Daily fleet-performance auditor: measure outcomes, apply a small cadence /
+# difficulty / status slice, or add one missing routine. Matrix-routed.
+id = "$ID"
+difficulty = "normal"
+effort = "medium"
+rrule = "FREQ=DAILY;BYHOUR=7;BYMINUTE=10;BYSECOND=0"
+cwd = "$workspace_cwd"
+status = "active"
+timeout_min = 30
+prompt_path = "$PROMPT_PATH"
+heartbeat_slug = "routine-heartbeats"
+group = "ops"
+EOF
+)
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  printf '%s\n' "--- $path"
+  printf '%s\n' "$body"
+  exit 0
+fi
+
+mkdir -p "$REGISTRY_DIR"
+tmp="$(mktemp "${TMPDIR:-/tmp}/last-stack-fleet-performance.XXXXXX")"
+printf '%s\n' "$body" >"$tmp"
+if [ -f "$path" ] && cmp -s "$tmp" "$path"; then
+  rm -f "$tmp"
+  printf 'unchanged %s\n' "$path"
+else
+  mv "$tmp" "$path"
+  printf 'wrote %s\n' "$path"
+fi
+printf 'configured %s in %s\n' "$ID" "$REGISTRY_DIR"

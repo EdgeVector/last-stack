@@ -26,28 +26,14 @@ printf '%s\n' "$kanban_registry" | jq -e '
   .artifact_channel == "stable" and
   .artifact_root == "$HOME/.lastgit/artifacts" and
   .install_root == "$HOME/.host-track/apps/fkanban" and
-  any(.links[]; .source == "dist/kanban" and .target == "$HOME/.local/bin/kanban")
+  any(.links[]; .source == "dist/kanban" and .target == "$HOME/.local/bin/kanban") and
+  (any(.links[]; .target == "$HOME/.local/bin/fkanban") | not) and
+  any(.retired_links[]?; .target == "$HOME/.local/bin/fkanban")
 ' >/dev/null || fail "default kanban registry entry is not a real host-track target"
 printf '%s\n' "$kanban_registry" | jq -e '.notes | test("Placeholder") | not' >/dev/null \
   || fail "default kanban registry entry still looks like a placeholder"
-
-fkanban_registry="$(jq -c '.apps[] | select(.app == "fkanban")' "$ROOT/config/host-track/apps.json")"
-printf '%s\n' "$fkanban_registry" | jq -e '
-  .install_mode == "artifact" and
-  .kind == "artifact cli" and
-  .command == "fkanban" and
-  .gate == "lastgit" and
-  .gate_main == "lastdb:///fkanban#main" and
-  .track_gate_main == true and
-  (.refresh | not) and
-  .artifact_app == "fkanban" and
-  .artifact_channel == "stable" and
-  .artifact_root == "$HOME/.lastgit/artifacts" and
-  .install_root == "$HOME/.host-track/apps/fkanban" and
-  any(.links[]; .source == "dist/fkanban" and .target == "$HOME/.local/bin/fkanban")
-' >/dev/null || fail "default fkanban registry entry is not a real host-track target"
-printf '%s\n' "$fkanban_registry" | jq -e '.notes | test("Placeholder") | not' >/dev/null \
-  || fail "default fkanban registry entry still looks like a placeholder"
+jq -e 'any(.apps[]; .app == "fkanban") | not' "$ROOT/config/host-track/apps.json" >/dev/null \
+  || fail "fkanban must not be a separate host-track app"
 
 lastseek_registry="$(jq -c '.apps[] | select(.app == "lastseek")' "$ROOT/config/host-track/apps.json")"
 printf '%s\n' "$lastseek_registry" | jq -e '
@@ -220,6 +206,14 @@ export HOST_TRACK_REGISTRY="$registry"
 export HOST_TRACK_STAMP_DIR="$stamp_dir"
 
 default_registry="$ROOT/config/host-track/apps.json"
+jq -e '
+  .apps[] | select(.app == "last-stack")
+  | any(.links[];
+      .source == "bin/last-stack-kanban-done-when-eval"
+      and .target == "$HOME/.local/bin/last-stack-kanban-done-when-eval")
+' "$default_registry" >/dev/null \
+  || fail "last-stack host-track registry must PATH-link last-stack-kanban-done-when-eval into ~/.local/bin"
+
 jq -e '
   .apps[] | select(.app == "situations")
   | .install_mode == "artifact"

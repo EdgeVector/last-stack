@@ -57,6 +57,12 @@ are enabled. -->
 <!-- Where scheduled routine prompt/config files live. -->
 - **scheduled_tasks_dir**: `<SCHEDULED_TASKS_DIR>`
 
+<!-- How agents file a papercut. Use "none" if the project has no ledger yet. -->
+- **papercut_ledger**: `<PAPERCUT_LEDGER_CLI_OR_NONE>`
+
+<!-- The ONLY routine allowed to promote papercuts to board cards. -->
+- **papercut_reconciler**: `<PAPERCUT_RECONCILER_ROUTINE_OR_NONE>`
+
 <!-- Repos or paths agents may inspect but must not push or mutate. -->
 - **archived_or_hands_off_repos**: `<REPO_OR_PATH_1>, <REPO_OR_PATH_2>`
 

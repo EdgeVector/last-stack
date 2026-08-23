@@ -1,0 +1,12 @@
+# Daily Config-backed ownership rotation. The prompt is only a thin trigger for
+# registry-rotator; project facts live in configurations://owner-review-rotate.
+id = "owner-review-rotate"
+harness = "grok"
+model = "grok-4.5"
+fallback = "grok:grok-4.5"
+rrule = "FREQ=DAILY;BYHOUR=8;BYMINUTE=45;BYSECOND=0"
+cwd = "/Users/REPLACE/code/edgevector"
+status = "active"
+timeout_min = 45
+heartbeat_slug = "routine-heartbeats"
+prompt_path = "/Users/REPLACE/.last-stack/routines/owner-review-rotate.md"

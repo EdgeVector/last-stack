@@ -114,6 +114,9 @@ cat > "$HOST_TRACK_REGISTRY" <<EOF
       "command": "demo",
       "install_root": "$HOME/apps/demo",
       "links": [{"source": "bin/demo", "target": "$HOME/.local/bin/demo"}],
+      "safe_upgrade": {
+        "probes": [{"argv": ["bin/demo"], "timeout_s": 10}]
+      },
       "notes": "fleet gate fixture"
     },
     {

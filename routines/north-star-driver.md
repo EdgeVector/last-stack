@@ -45,10 +45,22 @@ Run `situations list --json`, then complete the creation inventory gate below.
 Busy-node/timeouts are a clean noop; never run doctor/init and never restart
 shared infrastructure.
 
-Read optional targeting from the environment:
+Read optional targeting from the environment. **First command after setup
+must print this exact line** (so a skipped env check is visible in the
+transcript):
+
+```bash
+printf 'TARGETING target=%s request=%s\n' \
+  "${NORTH_STAR_DRIVER_TARGET:-}" "${NORTH_STAR_DRIVER_REQUEST:-}"
+```
 
 - `NORTH_STAR_DRIVER_TARGET` — exact Brain North Star slug.
 - `NORTH_STAR_DRIVER_REQUEST` — exact requested milestone slug.
+
+If `NORTH_STAR_DRIVER_TARGET` is set, point-read only that project. If it
+has no parseable `## MILESTONE_REQUEST` heading block, report
+`noop no_parseable_request` and **stop** — do not fall through to untargeted
+selection.
 
 Targeting narrows selection; it never relaxes proof, Situation, or duplication
 checks.
@@ -155,3 +167,21 @@ Write a short automation-memory note when the dispatch envelope supplies a
 memory path. Append one heartbeat naming the North Star, milestone, and
 `created` or `noop`. End with the `ROUTINE_RESULT` token followed by
 `outcome=<ok|noop|error> detail=<one-line-outcome>`, then stop.
+
+## Close-out (always the LAST step)
+
+End every run with the **close-out skill**
+(`$LAST_STACK_ROOT/skills/close-out/SKILL.md`, trigger `/close-out`), then emit
+the heartbeat + `ROUTINE_RESULT` trailer as the final output (contract §1).
+The close-out skill makes two brain writes; do not skip them:
+
+1. **Brain report** — write the closeout report of what this run did (what
+   changed, findings, decisions) per `preference-always-save-to-brain-when-done`.
+   On a pure noop run, the heartbeat line may serve as the report.
+2. **Papercuts → Brain** — file a `papercut-<topic>` brain record for every
+   friction hit this run (BRAIN ONLY, never a board card; search first, update
+   in place) per `preference-always-file-papercuts-in-brain`.
+
+Skip close-out steps that do not apply to this routine (for example PR or card
+steps on a read-only pass). Never skip the two brain writes when the run did
+substantive work or hit friction.

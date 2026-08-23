@@ -14,12 +14,16 @@ printf '%s\n' '---' 'name: feature-prove' '---' >"$prompt"
 entry="$tmp/registry/last-stack-feature-prove.toml"
 test -f "$entry"
 grep -q 'id = "last-stack-feature-prove"' "$entry"
-grep -q 'harness = "grok"' "$entry"
-grep -q 'model = "grok-4.5"' "$entry"
+grep -q 'difficulty = "normal"' "$entry"
 grep -q 'effort = "high"' "$entry"
-grep -q 'rrule = "FREQ=HOURLY;INTERVAL=1;BYMINUTE=40;BYSECOND=0"' "$entry"
+grep -q 'rrule = "FREQ=DAILY;BYHOUR=10;BYMINUTE=40;BYSECOND=0"' "$entry"
 grep -q 'timeout_min = 45' "$entry"
 grep -q "prompt_path = \"$prompt\"" "$entry"
+if grep -qE '^(harness|model|pin) ' "$entry"; then
+  echo "fresh feature-prove must not emit harness/model/pin:" >&2
+  cat "$entry" >&2
+  exit 1
+fi
 grep -q 'REPLACE' "$entry" && { echo "feature-prove wrote unsubstituted REPLACE" >&2; exit 1; }
 grep -qE '^cwd = "' "$entry" || { echo "feature-prove missing cwd" >&2; exit 1; }
 
@@ -41,26 +45,54 @@ if grep -q 'Users/REPLACE' <<<"$dry_cwd"; then
 fi
 grep -q "cwd = \"$expected_cwd\"" <<<"$dry_cwd"
 
-# A reinstall refreshes managed fields without undoing deliberate local
-# runtime routing. Optional fallback routing is preserved too.
+# A reinstall leaves an existing file byte-for-byte alone — no merge, no
+# extra keys filled in, no harness/model reintroduced.
+{
+  printf '%s\n' 'id = "last-stack-feature-prove"'
+  printf '%s\n' 'difficulty = "normal"'
+  printf '%s\n' 'rrule = "FREQ=DAILY;BYHOUR=10;BYMINUTE=40;BYSECOND=0"'
+  printf '%s\n' 'hands_off = "yes"'
+} >"$entry"
+before="$(cksum "$entry")"
+skip_out="$("$BIN" --registry-dir "$tmp/registry" --prompt-path "$prompt")"
+after="$(cksum "$entry")"
+test "$before" = "$after"
+printf '%s\n' "$skip_out" | grep -F -q "unchanged $entry"
+grep -q 'hands_off = "yes"' "$entry"
+if grep -qE '^(harness|model|pin|effort) ' "$entry"; then
+  echo "feature-prove rewrite mutated a live file:" >&2
+  cat "$entry" >&2
+  exit 1
+fi
+
+# Existing harness/model leftover is also left alone (no difficulty merge).
 {
   printf '%s\n' 'id = "last-stack-feature-prove"'
   printf '%s\n' 'harness = "claude"'
   printf '%s\n' 'model = "claude-opus-4-1"'
   printf '%s\n' 'fallback = "grok"'
+  printf '%s\n' 'rrule = "FREQ=HOURLY;INTERVAL=1;BYMINUTE=40;BYSECOND=0"'
 } >"$entry"
+before="$(cksum "$entry")"
 "$BIN" --registry-dir "$tmp/registry" --prompt-path "$prompt" >/dev/null
+after="$(cksum "$entry")"
+test "$before" = "$after"
 grep -q 'harness = "claude"' "$entry"
 grep -q 'model = "claude-opus-4-1"' "$entry"
 grep -q 'fallback = "grok"' "$entry"
-grep -q 'effort = "high"' "$entry"
+if grep -qE '^(difficulty|effort) ' "$entry"; then
+  echo "feature-prove skip-if-exists merged compiled fields into leftover:" >&2
+  cat "$entry" >&2
+  exit 1
+fi
 
-# Explicit force is the only installer path that replaces live routing.
+# Explicit force restores compiled daily+difficulty and drops pin keys.
 "$BIN" --registry-dir "$tmp/registry" --prompt-path "$prompt" --force-defaults >/dev/null
-grep -q 'harness = "grok"' "$entry"
-grep -q 'model = "grok-4.5"' "$entry"
-if grep -q '^fallback = ' "$entry"; then
-  echo "feature-prove force-defaults retained fallback" >&2
+grep -q 'difficulty = "normal"' "$entry"
+grep -q 'rrule = "FREQ=DAILY;BYHOUR=10;BYMINUTE=40;BYSECOND=0"' "$entry"
+if grep -qE '^(harness|model|pin|fallback) ' "$entry"; then
+  echo "feature-prove force-defaults retained harness/model/pin/fallback" >&2
+  cat "$entry" >&2
   exit 1
 fi
 # override via LAST_STACK_WORKSPACE
