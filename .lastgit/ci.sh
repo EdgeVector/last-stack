@@ -58,6 +58,11 @@ bash tests/last-stack-reclaim-liveness-and-finished-work.sh
 # the bare-mktemp ban that keeps every helper usable inside the scheduled
 # sandbox (bare mktemp resolves to the sandbox-denied Darwin temp dir).
 bash tests/last-stack-scratch-reclaim.sh
+# Same reclaim family, one layer down: the VM sparse-disk trim runs
+# `docker run --privileged --pid=host`. Its guard rails must fail CLOSED (no
+# docker, unreachable daemon, non-local image) and must never pull an image
+# unattended on a disk-pressure path. Runs in under a second against stubs.
+bash tests/last-stack-vm-disk-trim.sh
 bash tests/last-stack-no-bare-mktemp.sh
 bash tests/last-stack-class-a-heal.sh
 bash tests/last-stack-sccache-health.sh

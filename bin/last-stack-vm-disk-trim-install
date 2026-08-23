@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# Install / uninstall / status the VM sparse-disk trim LaunchAgent.
+#
+# Writes a stable public path (~/.last-stack or artifacts/current) into the
+# plist — never a version hash — and skips launchctl when the plist is unchanged.
+#
+# Usage:
+#   last-stack-vm-disk-trim-install install|uninstall|status|run-once
+set -euo pipefail
+
+self="$0"
+self_root="$(cd "$(dirname "$self")/.." && pwd)"
+# shellcheck source=../lib/last-stack-launchd-agent.sh
+. "$self_root/lib/last-stack-launchd-agent.sh"
+
+program="last-stack-vm-disk-trim"
+label="com.edgevector.vm-disk-trim"
+last_stack="$(last_stack_agent_stable_root "$self" "$program")"
+plist_src="$self_root/launchd/${label}.plist"
+if [ ! -f "$plist_src" ]; then
+  plist_src="$last_stack/launchd/${label}.plist"
+fi
+plist_dst="${VM_DISK_TRIM_PLIST:-$HOME/Library/LaunchAgents/${label}.plist}"
+cmd="${1:-status}"
+
+install_agent() {
+  chmod +x "$last_stack/bin/$program" 2>/dev/null || true
+  [ -e "$last_stack/bin/$program" ] || [ -x "$self_root/bin/$program" ] || {
+    echo "missing executable: $last_stack/bin/$program" >&2
+    exit 1
+  }
+  [ -f "$plist_src" ] || {
+    echo "missing plist: $plist_src" >&2
+    exit 1
+  }
+  rendered="$(mktemp "${TMPDIR:-/tmp}/vm-disk-trim.plist.XXXXXX")"
+  last_stack_agent_render_plist "$plist_src" "$rendered" "$last_stack"
+  last_stack_agent_commit_plist "$label" "$plist_dst" "$rendered" "vm-disk-trim"
+}
+
+uninstall_agent() {
+  last_stack_agent_uninstall "$label" "$plist_dst" "vm-disk-trim"
+}
+
+status_agent() {
+  echo "trim: $last_stack/bin/$program"
+  echo "plist: $plist_dst"
+  if [ -f "$plist_dst" ]; then
+    echo "plist: present"
+    prog="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$plist_dst" 2>/dev/null || true)"
+    echo "program: ${prog:-unknown}"
+    case "$prog" in
+      */artifacts/versions/*) echo "program: VERSION-PINNED (will re-toast on refresh)" ;;
+    esac
+  else
+    echo "plist: missing"
+  fi
+  stamp="${LAST_STACK_STATE_DIR:-$HOME/.local/state/last-stack}/vm-disk-trim/last-run"
+  if [ -f "$stamp" ]; then
+    echo "last trim: $(awk 'NR == 1 { print $1 }' "$stamp")"
+  else
+    echo "last trim: never"
+  fi
+  if last_stack_agent_should_touch_launchd "$plist_dst" && command -v launchctl >/dev/null 2>&1; then
+    uid="$(id -u)"
+    launchctl print "gui/${uid}/${label}" 2>/dev/null | head -30 || echo "launchctl: not loaded"
+  else
+    echo "launchctl: skipped"
+  fi
+  if [ -f "$HOME/Library/Logs/vm-disk-trim.out.log" ]; then
+    echo "--- last log lines ---"
+    tail -5 "$HOME/Library/Logs/vm-disk-trim.out.log" 2>/dev/null || true
+  fi
+}
+
+case "$cmd" in
+  install) install_agent ;;
+  uninstall) uninstall_agent ;;
+  status) status_agent ;;
+  run-once)
+    if [ -x "$last_stack/bin/$program" ]; then
+      exec "$last_stack/bin/$program" "${@:2}"
+    fi
+    exec "$self_root/bin/$program" "${@:2}"
+    ;;
+  -h|--help)
+    sed -n '2,8p' "$0"
+    ;;
+  *)
+    echo "usage: $0 install|uninstall|status|run-once" >&2
+    exit 2
+    ;;
+esac
