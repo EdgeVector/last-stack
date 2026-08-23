@@ -239,6 +239,41 @@ continue — do not fail the whole run.
      generic `brain put`. The keyed filing must succeed before reporting it as
      queued. This is the last line of defense — never end below 30 GiB silently.
 
+## Operator flags — what protects a live build, and how to override it
+
+`bin/last-stack-worktree-reclaim` refuses to strip a worktree's build caches
+when the tree looks live. Four predicates decide that, and each one names itself
+in the log so an agent can see why a path was spared.
+
+| log reason | what it detected |
+|---|---|
+| `live_cwd` | a running process has its cwd inside the worktree |
+| `live_exec_image` | a running process's executable image lives under the tree's `target/` |
+| `fresh_build_marker` | cargo fingerprints under `target/` are newer than the freshness window |
+| `pressure_skip` | the volume is not under disk pressure, so no broad strip ran at all |
+
+| variable | default | effect |
+|---|---|---|
+| `LAST_STACK_RECLAIM_FREE_FLOOR_GIB` | `80` | Free GiB below which a broad generated-cache strip is allowed. At or above the floor the sweep logs `pressure_skip broad_sweep_skipped_disk_pressure` and strips nothing. Set `0` to never strip on pressure grounds; set very high to force stripping. |
+| `LAST_STACK_RECLAIM_BUILD_FRESH_MIN` | see script | Minutes a cargo fingerprint counts as a live build. |
+| `LAST_STACK_RECLAIM_SKIP_BOARD` | unset | Skip the board read that protects `doing` worktrees. Tests only. |
+| `LAST_STACK_RECLAIM_SKIP_LSOF` | unset | Skip the `lsof` cwd sweep. Tests only, or when process inspection is unavailable. |
+| `LAST_STACK_RECLAIM_EXTRA_LIVE_PATHS` | unset | Extra paths to treat as `live_cwd`. |
+| `LAST_STACK_RECLAIM_EXTRA_LIVE_EXEC_PATHS` | unset | Extra executable images to treat as `live_exec_image`. |
+
+CAUTION: `LAST_STACK_RECLAIM_FREE_FLOOR_GIB` reads as a threshold to strip
+BELOW, not above. A high value means "always under pressure", so a high value
+strips more, not less. `0` means the volume is never under pressure.
+
+The `SKIP_*` flags exist for the fixtures and for a host where process
+inspection is unavailable. Do not set them in a scheduled run: without process
+proof the sweep cannot see a live build, and stripping then deletes build
+outputs from under it.
+
+Both guards are proven by `tests/last-stack-worktree-reclaim.sh` and
+`tests/last-stack-disk-reclaim-stripped-path.sh`, which run in the required
+`.lastgit/ci.sh` gate rather than only under `LAST_STACK_CI_FULL=1`.
+
 ## Output
 Report: GB reclaimed, worktrees pruned (and which were kept and why), final free
 space, and anything left for a human.
