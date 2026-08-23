@@ -89,7 +89,7 @@ if [ -z "$proof_path" ]; then
   proof_path="$HOME/.last-stack/feature-proofs/artifact-driven-host-track-fleet-gate.md"
 fi
 
-tmp="$(mktemp -d)"
+tmp="$(mktemp -d "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack.XXXXXX")"
 cleanup() { rm -rf "$tmp"; }
 trap cleanup EXIT
 

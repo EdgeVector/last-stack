@@ -79,8 +79,8 @@ last_rc=1
 combined=""
 
 while [ "$attempt" -le "$attempts" ]; do
-  tmp_out="$(mktemp)"
-  tmp_err="$(mktemp)"
+  tmp_out="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack.XXXXXX")"
+  tmp_err="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack.XXXXXX")"
   set +e
   "$@" >"$tmp_out" 2>"$tmp_err"
   last_rc=$?

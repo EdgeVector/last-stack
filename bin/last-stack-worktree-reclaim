@@ -551,7 +551,7 @@ doing_slugs() {
   # silently produced an EMPTY protect set on every run, so no doing-card
   # worktree was ever protected. shellcheck catches this as SC2259.
   local tmp
-  tmp="$(mktemp)" || return 0
+  tmp="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack.XXXXXX")" || return 0
   if ! "$cli" list --column doing --json >"$tmp" 2>/dev/null; then
     rm -f "$tmp"
     # A board we cannot read is not a board with nothing in it.
@@ -616,14 +616,14 @@ fi
 
 if [ "$sweep_stale" -eq 1 ]; then
   # Build doing protect set
-  protect_file="$(mktemp)"
+  protect_file="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack.XXXXXX")"
   doing_slugs >"$protect_file" || true
   now_epoch="$(date -u +%s)"
   max_age_sec=$((max_age_hours * 3600))
   min_age_sec=$((min_age_minutes * 60))
 
   # Once-per-sweep live process index (cwd + exe paths).
-  live_index="$(mktemp)"
+  live_index="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack.XXXXXX")"
   build_live_index "$live_index" || true
   if [ "$liveness_unavailable" -eq 1 ]; then
     if [ "${board_read_ok:-0}" -eq 1 ]; then

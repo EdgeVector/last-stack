@@ -375,7 +375,7 @@ cmd_supersede() {
   fi
 
   local new_body body_file create_json new_pr new_url
-  body_file="$(mktemp)"
+  body_file="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack.XXXXXX")"
   {
     printf '%s\n\n' "$body"
     printf '%s\n' "---"

@@ -54,6 +54,11 @@ bash tests/last-stack-routine-read-proceed-on-stale.sh
 # that silently returned an empty protect set. Both are silent-data-loss
 # shapes, and both were invisible for weeks. Runs in a few seconds.
 bash tests/last-stack-reclaim-liveness-and-finished-work.sh
+# Same family: the guarded scratch-copy deletion (disk-reclaim step 4b) and
+# the bare-mktemp ban that keeps every helper usable inside the scheduled
+# sandbox (bare mktemp resolves to the sandbox-denied Darwin temp dir).
+bash tests/last-stack-scratch-reclaim.sh
+bash tests/last-stack-no-bare-mktemp.sh
 bash tests/last-stack-class-a-heal.sh
 bash tests/last-stack-sccache-health.sh
 bash tests/last-stack-shell-prelude.sh

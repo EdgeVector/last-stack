@@ -47,7 +47,7 @@ remove_managed_instruction_block() {
   [ -f "$file" ] || return 0
   grep -q "last-stack:${name}:start" "$file" || return 0
   local tmp
-  tmp="$(mktemp)"
+  tmp="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack.XXXXXX")"
   awk -v s="last-stack:${name}:start" -v e="last-stack:${name}:end" '
     index($0, s) { ib = 1; next }
     index($0, e) { ib = 0; next }
