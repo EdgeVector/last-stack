@@ -10,7 +10,14 @@
 #      → last-stack-card-closeout (done; honors Requires-Deploy)
 #   2. doing + pr_url whose PR/CR is CLOSED (not merged), or body has a
 #      STALE-PR REAP / reaper closed annotation → todo (flag closed-pr;
-#      clear structured pr_url; keep worktree/branch so pickup can reopen)
+#      clear structured pr_url; keep worktree/branch so pickup can reopen).
+#      FIRST the git ref decides: `lastgit cr close` can race the auto-merger
+#      and rewrite a merged CR to state=closed with an empty merge_oid, and
+#      that corrupt record is durable. When the card branch head is already an
+#      ancestor of its base ref, the card closes to `done` instead
+#      (flag merge-proof-close) and the corrupt pr_url stays cleared. An
+#      unresolvable branch or base ref is `unknown`, keeps the rollback, and
+#      flags merge-proof-unknown so an operator can see why.
 #   3. empty/no-PR doing, age ≥ grace, no live worker, no branch commits → todo
 #   4. WIP commits + no PR after grace → todo (flag wip-no-pr; worktree kept)
 #   5. deploy-parked doing cards (Requires-Deploy:, tags awaiting-deploy /
@@ -46,6 +53,12 @@
 #   last-stack-board-closeout-sweep [--dry-run] [--grace-min 60] [--max-actions 50]
 #                                   [--board-cli kanban|fkanban] [--skip-zombie]
 #                                   [--max-park-hours 24] [--escalate-after 3]
+#
+# Env:
+#   BOARD_CLOSEOUT_ENGINE=node|python3|auto  pin one engine (default auto:
+#     node when present, else python3). An unknown value exits 2 rather than
+#     silently picking one. Tests use it to prove both engines agree.
+#   BOARD_CLOSEOUT_STATE_DIR                 override the streak state dir.
 #
 # Exit 0 always after a completed pass (including noop). Exit 2 on usage error.
 # Prints one compact JSON object, then a heartbeat line (heartbeat is last):
