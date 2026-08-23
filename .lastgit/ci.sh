@@ -137,6 +137,10 @@ bash tests/last-stack-whats-wrong-loom.sh
 bash tests/last-stack-whats-wrong-routine.sh
 bash tests/last-stack-forge-dead-trigger.sh
 bash tests/last-stack-forge-api.sh
+# Consumer half of the same wrapper contract: the merge probe is the only
+# caller whose failure mode was a SILENT wrong answer (every Forgejo PR read
+# as unmerged for days because a bad --jq call was hidden by 2>/dev/null).
+bash tests/last-stack-card-closeout-merge-probe.sh
 bash tests/last-stack-deploy-gated-closeout.sh
 bash tests/last-stack-board-closeout-escalation.sh
 bash tests/last-stack-legacy-residue-closeout.sh
