@@ -10,7 +10,14 @@
 #      → last-stack-card-closeout (done; honors Requires-Deploy)
 #   2. doing + pr_url whose PR/CR is CLOSED (not merged), or body has a
 #      STALE-PR REAP / reaper closed annotation → todo (flag closed-pr;
-#      clear structured pr_url; keep worktree/branch so pickup can reopen)
+#      clear structured pr_url; keep worktree/branch so pickup can reopen).
+#      FIRST the git ref decides: `lastgit cr close` can race the auto-merger
+#      and rewrite a merged CR to state=closed with an empty merge_oid, and
+#      that corrupt record is durable. When the card branch head is already an
+#      ancestor of its base ref, the card closes to `done` instead
+#      (flag merge-proof-close) and the corrupt pr_url stays cleared. An
+#      unresolvable branch or base ref is `unknown`, keeps the rollback, and
+#      flags merge-proof-unknown so an operator can see why.
 #   3. empty/no-PR doing, age ≥ grace, no live worker, no branch commits → todo
 #   4. WIP commits + no PR after grace → todo (flag wip-no-pr; worktree kept)
 #   5. deploy-parked doing cards (Requires-Deploy:, tags awaiting-deploy /
@@ -46,6 +53,12 @@
 #   last-stack-board-closeout-sweep [--dry-run] [--grace-min 60] [--max-actions 50]
 #                                   [--board-cli kanban|fkanban] [--skip-zombie]
 #                                   [--max-park-hours 24] [--escalate-after 3]
+#
+# Env:
+#   BOARD_CLOSEOUT_ENGINE=node|python3|auto  pin one engine (default auto:
+#     node when present, else python3). An unknown value exits 2 rather than
+#     silently picking one. Tests use it to prove both engines agree.
+#   BOARD_CLOSEOUT_STATE_DIR                 override the streak state dir.
 #
 # Exit 0 always after a completed pass (including noop). Exit 2 on usage error.
 # Prints one compact JSON object, then a heartbeat line (heartbeat is last):
@@ -134,7 +147,22 @@ _emit_closeout_result() {
   rm -f "$_engine_out" "$_engine_err"
 }
 
-if command -v node >/dev/null 2>&1; then
+# BOARD_CLOSEOUT_ENGINE pins one engine so a test can prove both behave the
+# same. Unset/auto keeps the historical preference (node, then python3).
+_engine_pref="${BOARD_CLOSEOUT_ENGINE:-auto}"
+case "$_engine_pref" in
+  node|python3|python|auto) : ;;
+  *)
+    echo "board-closeout: BOARD_CLOSEOUT_ENGINE must be node|python3|auto (got '$_engine_pref')" >&2
+    exit 2
+    ;;
+esac
+if [ "$_engine_pref" = "node" ] && ! command -v node >/dev/null 2>&1; then
+  echo "board-closeout: BOARD_CLOSEOUT_ENGINE=node but node is not on PATH" >&2
+  exit 2
+fi
+
+if [ "$_engine_pref" != "python3" ] && [ "$_engine_pref" != "python" ] && command -v node >/dev/null 2>&1; then
   node - "$last_stack" >"$_engine_out" 2>"$_engine_err" <<'NODE' || true
 const fs = require("fs");
 const path = require("path");
@@ -607,6 +635,61 @@ function bodySignalsClosedPr(card) {
   return false;
 }
 
+/**
+ * Is the card branch head already an ancestor of its base ref?
+ *
+ * A closed-not-merged review artifact is NOT proof the work is unshipped:
+ * `lastgit cr close` can race the auto-merger and rewrite a merged CR to
+ * state=closed with an empty merge_oid, and that corrupt record is durable.
+ * The git ref outranks the record when the two disagree.
+ *
+ * Returns true (proven ancestor), false (proven NOT an ancestor), or
+ * "unknown" when no checkout or no ref resolves. Never guess true — an
+ * unknown must keep the historical rollback behaviour.
+ */
+function repoDirsFor(card, wt) {
+  const dirs = [];
+  if (wt && fs.existsSync(wt)) dirs.push(wt);
+  const repo = String(card.repo || card.Repo || "").trim();
+  const name = repo.includes("/") ? repo.split("/").pop() : repo;
+  if (name) {
+    // Portal repos keep no checkout; their bare mirror still has both refs.
+    dirs.push(path.join(os.homedir(), ".cache", "edgevector-git", `${name}.git`));
+    dirs.push(path.join(os.homedir(), "code", "edgevector", name));
+  }
+  return dirs.filter((d) => d && fs.existsSync(d));
+}
+
+function resolveRef(dir, candidates) {
+  for (const ref of candidates) {
+    if (!ref) continue;
+    const out = run("git", ["-C", dir, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { timeout: 15000 });
+    if (out.ok && out.stdout.trim()) return out.stdout.trim();
+  }
+  return "";
+}
+
+function branchMergedIntoBase(card, wt) {
+  const branch =
+    String(card.branch || "").trim() || parseBodyHeader(bodyOf(card), "Branch");
+  if (!branch) return "unknown";
+  const base =
+    String(card.base || card.Base || "").trim() ||
+    parseBodyHeader(bodyOf(card), "Base") ||
+    "main";
+  for (const dir of repoDirsFor(card, wt)) {
+    const head = resolveRef(dir, [branch, `origin/${branch}`, `refs/heads/${branch}`]);
+    if (!head) continue;
+    const baseOid = resolveRef(dir, [`origin/${base}`, base, `refs/heads/${base}`]);
+    if (!baseOid) continue;
+    const anc = run("git", ["-C", dir, "merge-base", "--is-ancestor", head, baseOid], { timeout: 20000 });
+    if (anc.status === 0) return true;
+    if (anc.status === 1) return false;
+    // Any other status is a git error, not an answer.
+  }
+  return "unknown";
+}
+
 function isClosedNotMerged(m, card) {
   if (!m || m.merged) return false;
   if (m.closed) return true;
@@ -802,7 +885,21 @@ for (const card of cards) {
     // Detect via forge/LastGit/gh state, or STALE-PR REAP body annotation when
     // the remote lookup flakes. Keep worktree/branch; clear structured pr_url.
     if (isClosedNotMerged(m, card)) {
+      // The record says closed; the git ref decides. A branch already merged
+      // into base is shipped work — closing it here stops pickup from
+      // re-manufacturing it as ready work on the next fire.
+      const proof = branchMergedIntoBase(card, wt);
+      if (proof === true) {
+        res.flagged.push(`merge-proof-close:${slug}`);
+        // Keep the structured pr_url empty: the stored CR record is corrupt,
+        // so restamping it would re-arm this same loop.
+        clearPrUrl(slug);
+        if (closeCard(slug, "", branch)) actions++;
+        else res.skipped.push(`${slug}:merge-proof-close-failed`);
+        continue;
+      }
       res.flagged.push(`closed-pr:${slug}:${m.detail || "body-reap"}`);
+      if (proof === "unknown") res.flagged.push(`merge-proof-unknown:${slug}`);
       clearPrUrl(slug);
       if (rollbackTodo(slug)) actions++;
       else res.skipped.push(`${slug}:closed-pr-rollback-failed`);
@@ -839,6 +936,22 @@ for (const card of cards) {
     res.skipped.push(`${slug}:live-worker`);
     continue;
   }
+  // STALE-PR REAP body annotation with no parseable URL is the same class:
+  // the reaped record must not outrank a branch that already reached base.
+  if (bodySignalsClosedPr(card)) {
+    const reapProof = branchMergedIntoBase(card, wt);
+    if (reapProof === true) {
+      res.flagged.push(`merge-proof-close:${slug}`);
+      if (closeCard(slug, "", branch)) {
+        actions++;
+        continue;
+      }
+      res.skipped.push(`${slug}:merge-proof-close-failed`);
+      continue;
+    }
+    if (reapProof === "unknown") res.flagged.push(`merge-proof-unknown:${slug}`);
+  }
+
   if (branchHasCommits(card, wt)) {
     // Pickup contract: never leave doing without a PR/CR after budget.
     // Roll back to todo so the next fire can reopen/finish the PR; keep worktree.
@@ -1283,6 +1396,73 @@ def body_signals_closed_pr(card):
         return True
     return False
 
+def repo_dirs_for(card, wt):
+    dirs = []
+    if wt and Path(wt).is_dir():
+        dirs.append(Path(wt))
+    repo = str(card.get("repo") or card.get("Repo") or "").strip()
+    name = repo.split("/")[-1] if "/" in repo else repo
+    if name:
+        # Portal repos keep no checkout; their bare mirror still has both refs.
+        dirs.append(home / ".cache" / "edgevector-git" / f"{name}.git")
+        dirs.append(home / "code" / "edgevector" / name)
+    return [d for d in dirs if d.exists()]
+
+def resolve_ref(d, candidates):
+    for ref in candidates:
+        if not ref:
+            continue
+        ok, out, _ = run(
+            ["git", "-C", str(d), "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+            timeout=15,
+        )
+        if ok and out.strip():
+            return out.strip()
+    return ""
+
+def branch_merged_into_base(card, wt):
+    """Is the card branch head already an ancestor of its base ref?
+
+    A closed-not-merged review artifact is NOT proof the work is unshipped:
+    `lastgit cr close` can race the auto-merger and rewrite a merged CR to
+    state=closed with an empty merge_oid, and that corrupt record is durable.
+    The git ref outranks the record when the two disagree.
+
+    Returns True (proven ancestor), False (proven NOT an ancestor), or None
+    when no checkout or no ref resolves. Never guess True — an unknown must
+    keep the historical rollback behaviour.
+    """
+    branch = str(card.get("branch") or "").strip() or parse_body_header(body_of(card), "Branch")
+    if not branch:
+        return None
+    base = (
+        str(card.get("base") or card.get("Base") or "").strip()
+        or parse_body_header(body_of(card), "Base")
+        or "main"
+    )
+    for d in repo_dirs_for(card, wt):
+        head = resolve_ref(d, [branch, f"origin/{branch}", f"refs/heads/{branch}"])
+        if not head:
+            continue
+        base_oid = resolve_ref(d, [f"origin/{base}", base, f"refs/heads/{base}"])
+        if not base_oid:
+            continue
+        try:
+            pr = subprocess.run(
+                ["git", "-C", str(d), "merge-base", "--is-ancestor", head, base_oid],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+        except Exception:
+            continue
+        if pr.returncode == 0:
+            return True
+        if pr.returncode == 1:
+            return False
+        # Any other status is a git error, not an answer.
+    return None
+
 def is_closed_not_merged(merged, closed, detail, card):
     if merged:
         return False
@@ -1449,7 +1629,23 @@ for card in cards:
             continue
         # Closed/reaped (not merged) → todo so pickup can reopen (keep worktree).
         if is_closed_not_merged(merged, closed, detail, card):
+            # The record says closed; the git ref decides. A branch already
+            # merged into base is shipped work — closing it here stops pickup
+            # from re-manufacturing it as ready work on the next fire.
+            proof = branch_merged_into_base(card, wt)
+            if proof is True:
+                res["flagged"].append(f"merge-proof-close:{slug}")
+                # Keep the structured pr_url empty: the stored CR record is
+                # corrupt, so restamping it would re-arm this same loop.
+                clear_pr_url(slug)
+                if close_card(slug, "", branch):
+                    actions += 1
+                else:
+                    res["skipped"].append(f"{slug}:merge-proof-close-failed")
+                continue
             res["flagged"].append(f"closed-pr:{slug}:{detail or 'body-reap'}")
+            if proof is None:
+                res["flagged"].append(f"merge-proof-unknown:{slug}")
             clear_pr_url(slug)
             if rollback(slug):
                 actions += 1
@@ -1475,6 +1671,20 @@ for card in cards:
     if live_worker(wt):
         res["skipped"].append(f"{slug}:live-worker")
         continue
+    # STALE-PR REAP body annotation with no parseable URL is the same class:
+    # the reaped record must not outrank a branch that already reached base.
+    if body_signals_closed_pr(card):
+        reap_proof = branch_merged_into_base(card, wt)
+        if reap_proof is True:
+            res["flagged"].append(f"merge-proof-close:{slug}")
+            if close_card(slug, "", branch):
+                actions += 1
+                continue
+            res["skipped"].append(f"{slug}:merge-proof-close-failed")
+            continue
+        if reap_proof is None:
+            res["flagged"].append(f"merge-proof-unknown:{slug}")
+
     if has_commits(wt):
         # Pickup contract: no PR after grace → todo (worktree kept).
         res["flagged"].append(f"wip-no-pr:{slug}")
