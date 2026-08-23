@@ -648,7 +648,11 @@ probe_bin_metrics() {
   local p_ms s_ms w_ms
 
   mkdir -p "$PROBE_ROOT"
-  copy="$PROBE_ROOT/metrics-probe-${label}-$(date +%s)-$$"
+  # Leaf must stay short: the node refuses a data dir over 82 bytes (103-byte
+  # sockaddr_un limit minus socket name + atomic temp sibling), and
+  # "metrics-probe-<label>-<epoch>-<pid>" overshot it by 2 bytes even from
+  # /tmp (observed 2026-08-23). $$ keeps the per-run uniqueness.
+  copy="$PROBE_ROOT/mp-${label}-$$"
   blog="$copy.boot.log"
   rm -rf "$copy"
   # Live sockets in the source home make cp exit non-zero even when the clone
