@@ -156,4 +156,58 @@ echo "$out" | jq -e '
   and (.factory_health | has("error"))
 ' >/dev/null || fail "factory_health exit contract: $out"
 
+# --- Case 5: invoked THROUGH a symlink, ROOT still finds its own helpers ---
+#
+# The live install is a symlink:
+#   ~/.local/bin/<name> -> ~/.local/state/last-stack/artifacts/current/bin/<name>
+# ROOT used to be `dirname "$0"/..` with no symlink resolution, so it became
+# ~/.local — and `$ROOT/bin/last-stack-json-value-extract` pointed at
+# ~/.local/bin, where that helper is not installed. `extract_json_value` then
+# exited 127 for every call, `capture_helper_embed` fell through to
+# `embed_error … parse`, and the snapshot exited 0 reporting
+#   {"error":"helper output was not valid JSON","reason":"parse"}
+# for factory_health and why_stopped and an empty stuck_crs. The nightly
+# ship-pipeline-gap-audit read real data as missing data and looked clean.
+#
+# THE HELPER STUB MUST BE PRESENT AND MUST PRINT VALID JSON. A first draft of
+# this case removed the stubs and asserted reason=missing, and it passed against
+# the UNFIXED script — because `capture_helper_embed` checks `command -v` first
+# and returns `missing` before `extract_json_value` is ever called. With no
+# extraction there is no ROOT to get wrong, and the case was about nothing.
+# Present stub + valid JSON is what forces the extractor to run: a broken ROOT
+# degrades that to reason=parse, a correct one embeds the object.
+#
+# The link deliberately lives in a directory that does NOT contain the
+# extractor — a link dir that happened to hold it would pass with the bug in
+# place, which is precisely how ~/.local/bin hides this for every OTHER helper.
+link_dir="$tmp/installed/bin"
+mkdir -p "$link_dir"
+ln -s "$bin" "$link_dir/last-stack-ship-pipeline-gap-snapshot"
+[ -e "$link_dir/last-stack-json-value-extract" ] \
+  && fail "fixture broken: extractor must NOT sit beside the symlink"
+
+cat >"$tmp/bin/last-stack-factory-health" <<'SH'
+#!/usr/bin/env bash
+echo "factory-health: probing..." >&2
+printf '{"status":"ok","snapshot":{"todo":1}}\n'
+exit 0
+SH
+chmod +x "$tmp/bin/last-stack-factory-health"
+
+cat >"$tmp/bin/last-stack-why-stopped" <<'SH'
+#!/usr/bin/env bash
+printf '{"classes":"A","detail":"stub","actions":"none"}\n'
+exit 0
+SH
+chmod +x "$tmp/bin/last-stack-why-stopped"
+
+out="$("$link_dir/last-stack-ship-pipeline-gap-snapshot" --json --quiet 2>/dev/null)" \
+  || fail "run failed (through symlink)"
+echo "$out" | jq -e '
+  .factory_health.status == "ok"
+  and (.factory_health | has("error") | not)
+  and .why_stopped.classes == "A"
+  and (.why_stopped | has("error") | not)
+' >/dev/null || fail "symlinked run must resolve its own extractor, got: $out"
+
 echo "ok last-stack-ship-pipeline-gap-snapshot"
