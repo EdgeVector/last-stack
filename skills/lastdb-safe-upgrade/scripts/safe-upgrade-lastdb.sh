@@ -1003,7 +1003,16 @@ fi
 
 # --- resolve candidate binary ------------------------------------------------
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/lastdb-safe-upgrade.XXXXXX")"
+# Probe copies boot live nodes with Unix sockets under WORK. A routinesd
+# TMPDIR under $HOME/.routines/runs/<run>/scratch is deep enough to push the
+# probe socket path over the 103-byte sockaddr_un limit (observed 2026-08-23:
+# "data dir ... is too deep to host a Unix control socket"), so the
+# TMPDIR-derived WORK base gets the same off-HOME fallback as ROLLBACK_ROOT.
+_work_tmp="${TMPDIR:-/tmp}"
+case "$(cd "$_work_tmp" 2>/dev/null && pwd -P || printf '%s' "$_work_tmp")" in
+  "$_rollback_home_real"|"$_rollback_home_real"/*) _work_tmp="/tmp" ;;
+esac
+WORK="$(mktemp -d "${_work_tmp}/lastdb-safe-upgrade.XXXXXX")"
 [ -n "$PROBE_ROOT" ] || PROBE_ROOT="$WORK/probes"
 export LASTDB_PROBE_ROOT="$PROBE_ROOT"
 CAND_DIR="$WORK/cand"
