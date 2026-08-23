@@ -91,3 +91,13 @@ bash tests/last-stack-safe-upgrade-backup-dedup.sh
 bash tests/last-stack-lastdb-canary-dogfood.sh
 bash tests/last-stack-canary-build-main.sh
 bash tests/last-stack-lastdb-memory-guard.sh
+
+# Reclaim live-guard fixture. This one is in the REQUIRED gate, not the
+# LAST_STACK_CI_FULL suite, because the failure it catches destroys a
+# developer's build outputs under an in-flight build -- and the guard is a set
+# of predicates (live cwd, live exec image under target/, fresh build marker,
+# disk-pressure floor) that a later edit can silently narrow. It runs in about
+# four seconds: it skips lsof and board reads, injects the live paths, and uses
+# `sleep` as the fixture process, so it fits the foreground budget.
+bash tests/last-stack-worktree-reclaim.sh
+bash tests/last-stack-disk-reclaim-stripped-path.sh
