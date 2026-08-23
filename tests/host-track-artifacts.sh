@@ -535,3 +535,69 @@ mv "$tmp/dist-registry-retired.json" "$HOST_TRACK_REGISTRY"
 [ "$(sitcli)" = dist-ok ] || fail "live sitcli link broke after retiring leftovers"
 
 printf 'ok: dist-only artifact install/refresh (no synthetic bin/) \n'
+
+# ── nested dist/probes/* gate links (routines shape) ─────────────────────────
+# routines ships its zero-LLM gate scripts at dist/probes/*.sh and gives each a
+# PATH name. Two things must hold: a nested link source installs, and a stale
+# dangling symlink already sitting on the PATH target is replaced in place (not
+# backed up, not fatal). The live host carried a dangling
+# routines-lastdb-local-smoke-gate for days because no links[] entry owned it.
+publish_gate_fixture() {
+  local digest="$1" oid="$2" cli_content="$3" gate_content="$4"
+  local cli_sha cli_size gate_sha gate_size manifest
+  printf '%s\n' "$cli_content" > "$tmp/gate-cli"
+  printf '%s\n' "$gate_content" > "$tmp/gate-probe"
+  cli_sha="$(shasum -a 256 "$tmp/gate-cli" | awk '{print $1}')"
+  gate_sha="$(shasum -a 256 "$tmp/gate-probe" | awk '{print $1}')"
+  cli_size="$(wc -c < "$tmp/gate-cli" | tr -d ' ')"
+  gate_size="$(wc -c < "$tmp/gate-probe" | tr -d ' ')"
+  mkdir -p "$tmp/cas/blobs/sha256/${cli_sha:0:2}" "$tmp/cas/blobs/sha256/${gate_sha:0:2}"
+  cp "$tmp/gate-cli" "$tmp/cas/blobs/sha256/${cli_sha:0:2}/$cli_sha"
+  cp "$tmp/gate-probe" "$tmp/cas/blobs/sha256/${gate_sha:0:2}/$gate_sha"
+  manifest="$tmp/cas/manifests/$digest.json"
+  jq -n \
+    --arg digest "$digest" --arg oid "$oid" \
+    --arg cli_sha "$cli_sha" --argjson cli_size "$cli_size" \
+    --arg gate_sha "$gate_sha" --argjson gate_size "$gate_size" \
+    '{schema_version: 1, app: "sitcli", repo: "EdgeVector/sitcli", source_oid: $oid,
+      platform: "test-arm64", created_at: "2026-08-23T00:00:00Z",
+      files: [
+        {path: "dist/sitcli", sha256: $cli_sha, size: $cli_size, mode: 493},
+        {path: "dist/probes/sitcli-gate.sh", sha256: $gate_sha, size: $gate_size, mode: 493}
+      ],
+      manifest_digest: $digest}' > "$manifest"
+  cp "$manifest" "$tmp/cas/channels/sitcli/stable.json"
+}
+
+digest_gate="$(printf 'e%.0s' {1..64})"
+oid_gate="$(printf '5%.0s' {1..40})"
+publish_gate_fixture "$digest_gate" "$oid_gate" \
+  $'#!/usr/bin/env bash\necho dist-ok' \
+  $'#!/usr/bin/env bash\necho gate-ok'
+
+# Stale PATH name from a previous layout: points at a path this build removed.
+ln -s "$HOME/apps/sitcli/current/scripts/sitcli-gate.sh" "$HOME/.local/bin/sitcli-gate"
+[ ! -e "$HOME/.local/bin/sitcli-gate" ] || fail "fixture symlink is not dangling"
+
+jq '.apps[0].links += [
+  {"source": "dist/probes/sitcli-gate.sh", "target": "$HOME/.local/bin/sitcli-gate"}
+]' "$HOST_TRACK_REGISTRY" > "$tmp/gate-registry.json"
+mv "$tmp/gate-registry.json" "$HOST_TRACK_REGISTRY"
+
+"$ROOT/bin/host-track" install sitcli >/dev/null 2>"$tmp/gate-install.err" \
+  || fail "install with nested dist/probes link failed: $(cat "$tmp/gate-install.err")"
+
+[ -L "$HOME/.local/bin/sitcli-gate" ] \
+  || fail "gate PATH name is not a symlink after install"
+[ -x "$HOME/.local/bin/sitcli-gate" ] \
+  || fail "gate PATH name does not resolve to an executable file"
+case "$(readlink "$HOME/.local/bin/sitcli-gate")" in
+  */current/dist/probes/sitcli-gate.sh) ;;
+  *) fail "dangling gate symlink was not repointed into current/dist/probes: $(readlink "$HOME/.local/bin/sitcli-gate")" ;;
+esac
+[ "$(sitcli-gate)" = gate-ok ] || fail "gate script did not run from PATH"
+[ -z "$(find "$HOME/.local/bin" -name 'sitcli-gate.bak-pre-artifact-*' -print -quit)" ] \
+  || fail "install backed up a dangling symlink instead of replacing it"
+[ "$(sitcli)" = dist-ok ] || fail "primary dist link broke after adding a gate link"
+
+printf 'ok: nested dist/probes gate links install and replace dangling PATH names\n'
