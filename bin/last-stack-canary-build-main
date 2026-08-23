@@ -77,6 +77,13 @@ KEEP="${LAST_STACK_CANARY_BUILD_KEEP:-5}"
 TARGET="${LAST_STACK_CANARY_TARGET:-aarch64-apple-darwin}"
 CARGO_CMD="${LAST_STACK_CANARY_CARGO_CMD:-cargo build --release -p lastdb_node --bin lastdb --bin lastdbd}"
 
+# routinesd dispatch shells carry a stripped PATH without ~/.cargo/bin, so the
+# default CARGO_CMD dies with exit 127 before the build starts.
+case ":$PATH:" in
+  *":$HOME_DIR/.cargo/bin:"*) ;;
+  *) export PATH="$HOME_DIR/.cargo/bin:$PATH" ;;
+esac
+
 [ -d "$FOLD_MIRROR" ] || die "fold mirror not found: $FOLD_MIRROR (clone/fetch EdgeVector/fold from local Forge first)"
 
 maybe_fetch_main() {
