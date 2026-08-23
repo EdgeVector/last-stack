@@ -26,7 +26,34 @@ done
 
 log() { [ "$QUIET" -eq 1 ] || printf 'ship-pipeline-snapshot: %s\n' "$*" >&2; }
 
-ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+# Resolve this script through its symlink chain BEFORE taking the dirname.
+#
+# The live install is a symlink: ~/.local/bin/last-stack-ship-pipeline-gap-snapshot
+# -> ~/.local/state/last-stack/artifacts/current/bin/<same name>. Taking
+# `dirname` of the link path gives ~/.local/bin, which is itself a real
+# directory, so `cd -P` had nothing left to resolve and ROOT became ~/.local.
+# `$ROOT/bin` was then ~/.local/bin — a directory with no
+# last-stack-json-value-extract in it.
+#
+# Nothing failed loudly. `extract_json_value` exited 127, the embed layer read
+# that as "helper output was not valid JSON", and the snapshot exited 0 with
+#   {"error":"helper output was not valid JSON","reason":"parse",...}
+# for factory_health and why_stopped and an empty stuck_crs. The nightly
+# ship-pipeline-gap-audit had been reading real data as missing data since the
+# artifact install landed — a blind audit that reported cleanly.
+#
+# `readlink -f` is not available on macOS, so walk the chain by hand.
+# `${BASH_SOURCE[0]}` rather than `$0`, matching the wrapper this repo already
+# generates in last-stack-safe-upgrade-cli: it is the real file even when the
+# script is sourced or invoked under another name.
+_self="${BASH_SOURCE[0]}"
+while [ -h "$_self" ]; do
+  _dir="$(CDPATH= cd -P -- "$(dirname -- "$_self")" && pwd)"
+  _self="$(readlink -- "$_self")"
+  case "$_self" in /*) ;; *) _self="$_dir/$_self" ;; esac
+done
+ROOT="$(CDPATH= cd -- "$(dirname -- "$_self")/.." && pwd -P)"
+unset _self _dir
 # Fixture tests set SHIP_PIPELINE_GAP_SNAPSHOT_FIXTURE=1 and provide a stub
 # board CLI first on PATH — do not force ~/.local/bin or ROOT/bin ahead of
 # that. Appending ROOT/bin would always surface real why-stopped /
