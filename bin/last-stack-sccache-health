@@ -5,9 +5,22 @@ usage() {
   cat >&2 <<'EOF'
 usage: last-stack-sccache-health [--json]
 
-Reports whether the local sccache disk cache is pinned full. Exit 10 means a
-full cache is still active in this shell; exit 0 means healthy, not applicable,
-or safely bypassed with an explicit empty RUSTC_WRAPPER.
+Reports whether the local sccache disk cache still earns the wrapper it costs.
+Exit 10 means a cache that cannot pay for itself is still active in this shell,
+either because it is pinned full (state=full) or because its writes keep
+failing, so it can never fill (state=degraded). Exit 0 means healthy, not
+applicable, or safely bypassed with an explicit empty RUSTC_WRAPPER.
+
+A degraded cache is the quieter failure: it reads as far below the full
+threshold while every compile misses and every store fails, so the wrapper is
+pure overhead. Measured on this fleet 2026-08-23: 9259 compiles, 9315 cache
+write errors, 0 cache hits, last successful cache write 11 hours earlier, with
+the cache only 22% full.
+
+Tunables:
+  LAST_STACK_SCCACHE_FULL_PERCENT      full threshold, default 99
+  LAST_STACK_SCCACHE_ERROR_PERCENT     degraded write-error threshold, default 50
+  LAST_STACK_SCCACHE_MIN_SAMPLE        compiles needed before degraded, default 50
 EOF
   exit 2
 }
@@ -29,6 +42,20 @@ if [ "$threshold" -lt 1 ] || [ "$threshold" -gt 100 ]; then
   exit 2
 fi
 
+error_threshold="${LAST_STACK_SCCACHE_ERROR_PERCENT:-50}"
+case "$error_threshold" in
+  ''|*[!0-9]*) echo "last-stack-sccache-health: error threshold must be an integer from 1 to 100" >&2; exit 2 ;;
+esac
+if [ "$error_threshold" -lt 1 ] || [ "$error_threshold" -gt 100 ]; then
+  echo "last-stack-sccache-health: error threshold must be an integer from 1 to 100" >&2
+  exit 2
+fi
+
+min_sample="${LAST_STACK_SCCACHE_MIN_SAMPLE:-50}"
+case "$min_sample" in
+  ''|*[!0-9]*) echo "last-stack-sccache-health: min sample must be a non-negative integer" >&2; exit 2 ;;
+esac
+
 wrapper_state='unset'
 bypass_active=false
 if [ "${RUSTC_WRAPPER+x}" = x ]; then
@@ -40,6 +67,10 @@ if [ "${RUSTC_WRAPPER+x}" = x ]; then
   fi
 fi
 
+write_errors=null
+compilations=null
+error_percent=0.00
+
 emit() {
   state="$1"
   cache_size="$2"
@@ -47,12 +78,14 @@ emit() {
   percent="$4"
   detail="$5"
   if [ "$format" = json ]; then
-    printf '{"state":"%s","cache_size":%s,"max_cache_size":%s,"percent":"%s","threshold_percent":%s,"wrapper_state":"%s","bypass_active":%s,"detail":"%s"}\n' \
+    printf '{"state":"%s","cache_size":%s,"max_cache_size":%s,"percent":"%s","threshold_percent":%s,"write_errors":%s,"compilations":%s,"error_percent":"%s","error_threshold_percent":%s,"wrapper_state":"%s","bypass_active":%s,"detail":"%s"}\n' \
       "$state" "$cache_size" "$max_cache_size" "$percent" "$threshold" \
+      "$write_errors" "$compilations" "$error_percent" "$error_threshold" \
       "$wrapper_state" "$bypass_active" "$detail"
   else
-    printf 'SCCACHE_HEALTH state=%s cache_size=%s max_cache_size=%s percent=%s threshold_percent=%s wrapper_state=%s bypass_active=%s detail=%s\n' \
+    printf 'SCCACHE_HEALTH state=%s cache_size=%s max_cache_size=%s percent=%s threshold_percent=%s write_errors=%s compilations=%s error_percent=%s error_threshold_percent=%s wrapper_state=%s bypass_active=%s detail=%s\n' \
       "$state" "$cache_size" "$max_cache_size" "$percent" "$threshold" \
+      "$write_errors" "$compilations" "$error_percent" "$error_threshold" \
       "$wrapper_state" "$bypass_active" "$detail"
   fi
 }
@@ -100,6 +133,28 @@ if [ "$max_cache_size" -eq 0 ]; then
   exit 0
 fi
 
+# Store-failure sample. A cache whose writes fail can never fill, so it stays
+# far below the full threshold while every compile still pays wrapper cost.
+# Missing counters (older sccache, or a stub) leave the sample unknown and skip
+# the degraded check rather than inventing a verdict.
+raw_write_errors="$(printf '%s\n' "$stats_json" | "$json_get" .stats.cache_write_errors 2>/dev/null || true)"
+raw_compilations="$(printf '%s\n' "$stats_json" | "$json_get" .stats.compilations 2>/dev/null || true)"
+sample_known=false
+case "$raw_write_errors:$raw_compilations" in
+  ''|*[!0-9:]*|:*|*:) ;;
+  *) sample_known=true ;;
+esac
+if [ "$sample_known" = true ]; then
+  write_errors="$raw_write_errors"
+  compilations="$raw_compilations"
+  if [ "$compilations" -gt 0 ]; then
+    error_basis_points=$((write_errors * 10000 / compilations))
+    error_percent="$((error_basis_points / 100)).$(printf '%02d' "$((error_basis_points % 100))")"
+  else
+    error_basis_points=0
+  fi
+fi
+
 basis_points=$((cache_size * 10000 / max_cache_size))
 percent="$((basis_points / 100)).$(printf '%02d' "$((basis_points % 100))")"
 if [ "$basis_points" -ge $((threshold * 100)) ]; then
@@ -108,6 +163,16 @@ if [ "$basis_points" -ge $((threshold * 100)) ]; then
     exit 0
   fi
   emit full "$cache_size" "$max_cache_size" "$percent" use-last-stack-cargo-or-source-shell-prelude
+  exit 10
+fi
+
+if [ "$sample_known" = true ] && [ "$compilations" -ge "$min_sample" ] \
+  && [ "${error_basis_points:-0}" -ge $((error_threshold * 100)) ]; then
+  if [ "$bypass_active" = true ]; then
+    emit bypassed "$cache_size" "$max_cache_size" "$percent" degraded-cache-wrapper-bypassed
+    exit 0
+  fi
+  emit degraded "$cache_size" "$max_cache_size" "$percent" use-last-stack-cargo-or-source-shell-prelude
   exit 10
 fi
 
