@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Run a command that emits machine-readable JSON, keeping stdout and stderr in
+# separate files, then report what landed.
+#
+# Why this exists. The Bash PreToolUse guard `hooks/unsafe-inline-json.sh`
+# denies `<cmd> --json >out.json 2>&1` followed by a parser reading out.json,
+# because a warning or progress line becomes byte 1 of the parser's input and
+# jq fails with "Invalid numeric literal". The deny is correct. But it left
+# agents to hand-roll `>file 2>errfile` plumbing on every call, and the fleet
+# kept reaching for the merged form instead: 57 genuine denials in the 24h
+# window ending 2026-08-24T13:40Z, after the statement-scoped guard was
+# installed and with zero surviving false positives. That is an ergonomics
+# gap, not a guard defect. One call replaces the plumbing.
+#
+#   last-stack-json-capture <outfile> <cmd> [args...]
+#
+# stdout -> <outfile>, stderr -> <outfile>.err, and a status line on stdout so
+# the transcript shows what happened. Exits with the command's exit status, so
+# `||` and `set -e` behave as if the command ran bare.
+#
+# Argument order note: the card that asked for this helper sketched
+# `<cmd...> <outfile>`. A trailing outfile cannot be told apart from a trailing
+# command argument, so the outfile comes first. `--` before the command is
+# accepted and ignored.
+#
+# Card: hook-unsafe-inline-json-residual-cross-statement-and-merge-habit-20260824
+set -u
+
+usage() {
+  cat >&2 <<'USAGE'
+usage: last-stack-json-capture <outfile> [--] <cmd> [args...]
+
+  stdout -> <outfile>          (clean JSON, safe to parse)
+  stderr -> <outfile>.err      (warnings, progress, diagnostics)
+
+Exits with the wrapped command's exit status.
+
+  last-stack-json-capture /tmp/cards.json kanban list --column todo --json
+  jq -r '.cards[].slug' /tmp/cards.json
+USAGE
+  return 2
+}
+
+[ "$#" -ge 2 ] || { usage; exit 2; }
+
+out="$1"
+shift
+[ "${1:-}" = "--" ] && shift
+[ "$#" -ge 1 ] || { usage; exit 2; }
+
+case "$out" in
+  -h|--help) usage; exit 2 ;;
+esac
+
+err="$out.err"
+
+out_dir="$(dirname "$out")"
+if [ ! -d "$out_dir" ]; then
+  printf 'last-stack-json-capture: no such directory: %s\n' "$out_dir" >&2
+  exit 2
+fi
+
+# The whole point of the helper: two destinations, never merged.
+"$@" >"$out" 2>"$err"
+rc=$?
+
+bytes=0
+[ -f "$out" ] && bytes="$(wc -c <"$out" | tr -d '[:space:]')"
+err_bytes=0
+[ -f "$err" ] && err_bytes="$(wc -c <"$err" | tr -d '[:space:]')"
+
+# Report whether the captured stdout actually parses. An exit-0 command that
+# wrote nothing (or wrote a prompt) is the failure this helper should surface
+# at capture time rather than at the parser three statements later.
+valid=unknown
+if command -v jq >/dev/null 2>&1; then
+  if [ "$bytes" -gt 0 ] && jq -e . "$out" >/dev/null 2>&1; then
+    valid=yes
+  else
+    valid=no
+  fi
+fi
+
+printf 'json-capture rc=%s json=%s bytes=%s out=%s stderr_bytes=%s err=%s\n' \
+  "$rc" "$valid" "$bytes" "$out" "$err_bytes" "$err"
+
+if [ "$valid" = "no" ] && [ "$err_bytes" -gt 0 ]; then
+  printf 'json-capture: stdout did not parse as JSON; first stderr line: %s\n' \
+    "$(head -n 1 "$err")" >&2
+fi
+
+exit "$rc"

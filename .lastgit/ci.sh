@@ -72,6 +72,10 @@ bash tests/last-stack-shell-prelude.sh
 # guard produced 97 distinct denials in one 24h window while its only test
 # sat behind LAST_STACK_CI_FULL=1. ~4s.
 bash tests/last-stack-hooks-guards.sh
+# The safe-capture helper the guard's deny text now points agents at. If it
+# regresses, the deny message advertises a broken escape route on every
+# blocked call. Runs in well under a second against local stubs.
+bash tests/last-stack-json-capture.sh
 bash tests/last-stack-brain-append-heartbeat.sh
 bash tests/last-stack-obs-sentry-locator.sh
 bash tests/last-stack-install-routines.sh

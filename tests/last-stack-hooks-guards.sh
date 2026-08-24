@@ -189,6 +189,43 @@ assert_deny \
   "kanban show example --json 2>&1 | jq .  # json-guard-ok:" \
   "escape hatch with no reason"
 
+# ── pins, not proof ─────────────────────────────────────────────────────────
+# Card hook-unsafe-inline-json-residual-cross-statement-and-merge-habit-20260824
+# claimed these two shapes still false-positive after the 2026-08-23 statement
+# scoping. They do not: both pass against the hook as it already stands, so
+# these cases prove nothing about a fix and are here only to PIN the behaviour
+# (see brain lastdb-a-test-that-cannot-fail-on-the-old-code-proves-nothing).
+#
+# What actually explained the card's "denial volume did not drop" measurement:
+# the fix merged 2026-08-23T13:53Z but was not installed to
+# ~/.claude/hooks/ until 2026-08-24T04:38Z. Every denial in that ~15h window
+# ran the OLD hook. Replaying all recorded denials through the current hook:
+# 87/87 in the merge-to-install window and 57/57 after install still deny
+# correctly, and zero surviving false positives were found.
+pickup_preflight="$(cat <<'CMD'
+last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+. "$last_stack/bin/last-stack-shell-prelude" 2>/dev/null || true
+date +%s > /tmp/pickup-start.epoch
+"$last_stack/bin/last-stack-cli-preflight" git curl jq gh kanban brain 2>&1 | tail -3
+situations list --json 2>&1 | head -40
+CMD
+)"
+assert_allow "$pickup_preflight" "earlier unrelated 2>&1 lines, no parser on the JSON"
+
+host_track_probe="$(cat <<'CMD'
+kanban --version 2>&1
+which kanban 2>&1
+host-track status --json 2>/tmp/hts.err > /tmp/hts.json || echo "host-track-status-exit=$?"
+jq -r '.apps[]?' /tmp/hts.json 2>/dev/null
+CMD
+)"
+assert_allow "$host_track_probe" "JSON statement separates its own streams"
+
+# The helper that replaces hand-rolled plumbing must never trip the guard.
+assert_allow \
+  "last-stack-json-capture /tmp/cards.json kanban list --column todo --json; jq -r '.cards[].slug' /tmp/cards.json" \
+  "last-stack-json-capture keeps the streams apart"
+
 # Heredoc stripping must not blind the inline-parse checks to real commands.
 assert_deny \
   "python3 -c \"import json; d = json.loads(open('x').read()); print(d)\"" \

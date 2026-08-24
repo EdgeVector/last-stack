@@ -238,7 +238,14 @@ Matched statement: $merged_stmt
 
 It carries --json and merges stderr into stdout, and $merged_how. Warnings or progress text then become byte 1 of the parser input; fleet sessions repeatedly failed with jq 'Invalid numeric literal' this way.
 
-Keep the streams separate: write stdout to the JSON pipe/file and stderr to its own file (or leave stderr visible). Example: command --json >data.json 2>command.err; jq . data.json.
+Keep the streams separate: write stdout to the JSON pipe/file and stderr to its own file (or leave stderr visible).
+
+Easiest fix, one call instead of hand-rolled plumbing:
+  last-stack-json-capture /tmp/data.json <command> --json
+  jq . /tmp/data.json
+It writes stdout to the file, stderr to <file>.err, reports whether the capture parsed, and exits with the command's status.
+
+Or by hand: command --json >data.json 2>command.err; jq . data.json.
 
 Only this statement was matched — a merged redirect on some other command in the same script is not a hit. If the merge really is correct here, append a reason: # json-guard-ok: <why>"
 fi
