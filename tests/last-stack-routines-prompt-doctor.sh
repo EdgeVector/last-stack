@@ -152,4 +152,113 @@ if [ ! -L "$localp/lastdb-canary-dogfood.md" ]; then
   exit 1
 fi
 
+# --- green: freshness bootstrap is the intended design, not drift ---
+# routinesd dispatches a small local prompt whose body loads the product prompt
+# through last-stack-routine-read. It is SUPPOSED to differ from
+# routines/<name>.md. Flagging it red is what kept this doctor advisory: a gate
+# that fires on a correct install cannot be enforced.
+printf 'name: boot\nFULL PRODUCT BODY\nmany lines\n' >"$product/boot.md"
+printf 'name: boot\nRead it with "$last_stack/bin/last-stack-routine-read" boot\n' >"$localp/boot.md"
+cat >"$reg/boot.toml" <<EOF
+id = "boot"
+prompt_path = "$localp/boot.md"
+EOF
+if ! "$DOC" --quiet; then
+  echo "fail: freshness bootstrap must not be reported as drift" >&2
+  "$DOC" >&2 || true
+  exit 1
+fi
+# ...and it must not be silently rewritten into a symlink either.
+"$DOC" --normalize-findings --quiet || true
+if [ -L "$localp/boot.md" ]; then
+  echo "fail: normalize must not clobber a freshness bootstrap" >&2
+  exit 1
+fi
+rm -f "$reg/boot.toml" "$localp/boot.md" "$product/boot.md"
+
+# --- --normalize-findings heals exactly what scanned red ---
+# Registered routine resolving a drifted full copy: heal it.
+printf 'name: reg\nNEW PRODUCT BODY\n' >"$product/reg-drift.md"
+printf 'name: reg\nSTALE LOCAL FULL COPY\n' >"$localp/reg-drift.md"
+cat >"$reg/reg-drift.toml" <<EOF
+id = "reg-drift"
+prompt_path = "$localp/reg-drift.md"
+EOF
+# An unregistered local-only prompt is legitimate and must survive untouched.
+printf 'name: localonly\nHAND WRITTEN LOCAL ONLY\n' >"$localp/local-only.md"
+
+set +e
+"$DOC" --quiet
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || { echo "fail: expected red before normalize-findings" >&2; exit 1; }
+
+"$DOC" --normalize-findings --quiet
+if ! "$DOC" --quiet; then
+  echo "fail: expected green after --normalize-findings" >&2
+  "$DOC" >&2 || true
+  exit 1
+fi
+[ -L "$localp/reg-drift.md" ] || {
+  echo "fail: registered drift was not relinked to product" >&2
+  exit 1
+}
+ls "$localp"/reg-drift.md.bak-divergent-* >/dev/null 2>&1 || {
+  echo "fail: drifted copy must be backed up, not destroyed" >&2
+  exit 1
+}
+if [ -L "$localp/local-only.md" ] || ls "$localp"/local-only.md.bak-* >/dev/null 2>&1; then
+  echo "fail: --normalize-findings touched an unregistered local-only prompt" >&2
+  exit 1
+fi
+rm -f "$reg/reg-drift.toml" "$localp"/reg-drift.md* "$product/reg-drift.md" "$localp/local-only.md"
+
+# --- normalize refuses to create a GC-eligible versions symlink ---
+# host-track runs <version>/setup with LAST_STACK_ROOT set to the version being
+# installed. If normalize trusted that, it would trade a drifted copy for a
+# dangling one the next GC.
+vtmp="$tmp/vpin"
+vproduct="$vtmp/artifacts/versions/deadbeef0123/routines"
+vlocal="$vtmp/rh/prompts"
+vreg="$vtmp/rh/registry"
+mkdir -p "$vproduct" "$vlocal" "$vreg"
+printf 'name: v\nPRODUCT\n' >"$vproduct/v.md"
+printf 'name: v\nSTALE LOCAL\n' >"$vlocal/v.md"
+cat >"$vreg/v.toml" <<EOF
+id = "v"
+prompt_path = "$vlocal/v.md"
+EOF
+set +e
+vout="$(LAST_STACK_ROOT="$vtmp/artifacts/versions/deadbeef0123" \
+  LAST_STACK_ROUTINES_DIR="$vproduct" \
+  ROUTINES_PROMPTS_DIR="$vlocal" \
+  ROUTINES_REGISTRY_DIR="$vreg" \
+  "$DOC" --normalize-findings 2>&1)"
+vrc=$?
+set -e
+[ "$vrc" -ne 0 ] || { echo "fail: version-pin normalize must fail closed" >&2; exit 1; }
+printf '%s\n' "$vout" | grep -q 'kind=normalize-refused' || {
+  echo "fail: missing normalize-refused finding" >&2
+  printf '%s\n' "$vout" >&2
+  exit 1
+}
+if [ -L "$vlocal/v.md" ]; then
+  echo "fail: normalize created a symlink into a GC-eligible versions tree" >&2
+  exit 1
+fi
+
+# --- enforcement contract: something must actually RUN the doctor ---
+# The doctor shipped, was PATH-shimmed, and was never invoked; red stayed
+# advisory for weeks. Keep a caller wired.
+heal="$ROOT/bin/last-stack-class-a-heal"
+[ -f "$heal" ] || { echo "fail: missing $heal" >&2; exit 1; }
+grep -Fq -- '--normalize-findings' "$heal" || {
+  echo "fail: class-a-heal must run the prompt doctor heal, not only PATH-shim it" >&2
+  exit 1
+}
+grep -Fq 'ensure_single_live_prompt_root' "$heal" || {
+  echo "fail: class-a-heal lost the single-live-prompt-root enforcement step" >&2
+  exit 1
+}
+
 echo "ok last-stack-routines-prompt-doctor"

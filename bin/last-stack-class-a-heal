@@ -214,6 +214,67 @@ ensure_path_shims() {
   done
 }
 
+# --- Single live prompt root (enforce prompt-doctor, do not just report) ----
+# last-stack-routines-prompt-doctor shipped, was PATH-shimmed above, and then
+# nothing ever ran it -- so a registered routine could execute a stale local
+# full copy of its prompt indefinitely while every gate stayed green. That is
+# the "doctor exists but is never run" defect; reporting is not enforcement.
+#
+# Heal, do not fail: this runs on the pre-claim path for the whole routine
+# fleet, so turning prompt drift into a hard stop would halt shipping over a
+# condition we can simply correct. --normalize-findings only touches prompts a
+# REGISTERED routine actually resolves to a drifted full copy, backs the copy
+# up, and refuses to link into a GC-eligible artifacts/versions tree.
+ensure_single_live_prompt_root() {
+  local doc=""
+  local cand
+  for cand in \
+    "$CURRENT_LINK/bin/last-stack-routines-prompt-doctor" \
+    "$COMPAT_ROOT/bin/last-stack-routines-prompt-doctor" \
+    "$ROOT/bin/last-stack-routines-prompt-doctor"
+  do
+    if [ -x "$cand" ]; then doc="$cand"; break; fi
+  done
+  [ -n "$doc" ] || return 0
+
+  # Resolve prompts against the stable compat root. host-track runs
+  # <version>/setup with LAST_STACK_ROOT set to the version being installed;
+  # inheriting that here is how a version pin gets written.
+  local product_root="$COMPAT_ROOT/routines"
+  [ -d "$product_root" ] || return 0
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    append_action "would-normalize-prompt-root"
+    return 0
+  fi
+
+  local to_bin=""
+  if command -v timeout >/dev/null 2>&1; then to_bin=timeout
+  elif command -v gtimeout >/dev/null 2>&1; then to_bin=gtimeout
+  fi
+  local out="" rc=0
+  if [ -n "$to_bin" ]; then
+    out="$(LAST_STACK_ROUTINES_DIR="$product_root" \
+      "$to_bin" "${LASTSTACK_CLASS_A_PROMPT_DOCTOR_TIMEOUT_S:-10}" \
+      "$doc" --normalize-findings --quiet 2>&1)" || rc=$?
+  else
+    out="$(LAST_STACK_ROUTINES_DIR="$product_root" \
+      "$doc" --normalize-findings --quiet 2>&1)" || rc=$?
+  fi
+
+  if printf '%s\n' "$out" | grep -q 'normalize linked'; then
+    local n
+    n="$(printf '%s\n' "$out" | grep -c 'normalize linked' || true)"
+    log "prompt-doctor normalized $n drifted local prompt(s)"
+    append_action "normalized-prompt-root-$n"
+  elif [ "$rc" -ne 0 ]; then
+    # Still red after the heal (or refused). Visible, never fatal here.
+    log "prompt-doctor still red after normalize (rc=$rc)"
+    append_action "prompt-root-still-red"
+  fi
+  return 0
+}
+
 # --- Single-flight lock + healthy cache -------------------------------------
 cache_is_fresh_ok() {
   local age now ts res
@@ -655,6 +716,9 @@ emit_result() {
 # --- main -------------------------------------------------------------------
 # Cheap wins first (no lock needed for pure re-link of missing shims)
 ensure_path_shims
+# Runs BEFORE the healthy/cache fast paths on purpose: a cache hit must not be
+# able to skip prompt enforcement, or the gate is only as live as the cache.
+ensure_single_live_prompt_root || true
 
 HT="$(resolve_host_track || true)"
 if [ -z "${HT:-}" ]; then
