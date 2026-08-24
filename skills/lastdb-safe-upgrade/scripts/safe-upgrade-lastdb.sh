@@ -164,6 +164,20 @@ log() { printf '[safe-upgrade] %s\n' "$*"; }
 die() { printf '[safe-upgrade] ERROR: %s\n' "$*" >&2; exit 1; }
 warn() { printf '[safe-upgrade] WARN: %s\n' "$*" >&2; }
 
+# An unloaded primary is a total factory outage — brain, board, Situations,
+# LastGit CI and every routine go dark at once — so it pages instead of only
+# writing a log line nobody reads until morning. Same argv as
+# last-stack-real-human-notify / factory-health.
+page_human() {
+  local msg="$1" ra_bin="${RA_BIN:-ra}"
+  command -v "$ra_bin" >/dev/null 2>&1 || {
+    warn "cannot page: $ra_bin not on PATH — $msg"
+    return 0
+  }
+  "$ra_bin" notify "$msg" --priority high >/dev/null 2>&1 \
+    || warn "page failed via $ra_bin — $msg"
+}
+
 # Memory-guard ceiling used by com.REPLACE.lastdbd-memory-guard (Tom, 2026-07-14).
 # Env LASTDBD_RSS_LIMIT_MB wins; else LaunchAgent plist(s); else the resident
 # primary default. Keep the primary daemon's own plist aligned before kickstart
@@ -267,6 +281,7 @@ retain_rollback_point() {
 cleanup_work() {
   local rc=$?
   [ -n "${WORK:-}" ] && [ -d "$WORK" ] && rm -rf "$WORK"
+  [ -n "${CUTOVER_LOCK:-}" ] && rm -f "$CUTOVER_LOCK"
   if [ "${ROLLBACK_READY:-0}" -eq 1 ]; then
     if [ "$rc" -eq 0 ]; then
       release_rollback_point
@@ -902,6 +917,10 @@ live_install_sidebin() {
     rm -f "$lock"
   fi
   echo "$$ $CAND_VER $ts" >"$lock"
+  # Release on ANY exit path. Recurrences 2 and 3 both leaked this lock because
+  # `die` exits before the rm at the end of this function, and the next run then
+  # refused to start for 10 minutes behind a lock whose owner was long gone.
+  CUTOVER_LOCK="$lock"
 
   if [ -x "$dest/lastdbd" ]; then
     cp -a "$dest/lastdbd" "$dest/lastdbd.bak-pre-${CAND_VER}-${ts}"
@@ -928,7 +947,8 @@ live_install_sidebin() {
   CUTOVER_T0="$(date +%s)"
   if ! lastdb_launchd_reload_job \
     launchctl "gui/${uid}" "$LAUNCHD_LABEL" "$LAUNCHD_PLIST"; then
-    die "launchd job-definition reload failed; primary may be stopped. Inspect: launchctl print gui/${uid}/${LAUNCHD_LABEL}"
+    page_human "safe-upgrade: primary lastdbd is UNLOADED — bootstrap retries exhausted for ${LAUNCHD_LABEL}. Recover: launchctl bootstrap gui/${uid} ${LAUNCHD_PLIST}"
+    die "launchd job-definition reload failed after bootstrap retries; the primary is UNLOADED. Recover: launchctl bootstrap gui/${uid} ${LAUNCHD_PLIST} then launchctl print gui/${uid}/${LAUNCHD_LABEL}"
   fi
 
   # Wait for the reloaded instance's socket. Recovery after an unclean
