@@ -201,6 +201,29 @@ proxy is optional later for near-zero client impact.
     new daemon is serving, compare plist `EnvironmentVariables` key names with
     the running process environment (never print values). Missing keys are a
     loud WARN; `LASTDB_LIVE_CONFIG_ENFORCE=1` makes them RED.
+15. **Bootstrap retries — an EIO is a race, not a verdict.** A `bootstrap`
+    right after a successful `bootout` can fail with
+    `Bootstrap failed: 5: Input/output error`. Treating that as terminal left
+    the primary UNLOADED three times; the third, unattended, ran 4h34m and
+    took brain, board, Situations, LastGit CI and every routine down with it
+    (`papercut-lastdb-safe-upgrade-bootout-bootstrap-left-primary-unloaded`).
+    So the driver retries `bootstrap` with backoff — `2 5 15 30 30 30`
+    seconds, override with `LASTDB_LAUNCHD_BOOTSTRAP_RETRY_DELAYS`.
+
+    CAUTION: launchd returns that SAME EIO for a job that is *already*
+    bootstrapped. The exit code cannot tell recovery from outage. Success is
+    decided by `launchctl print <domain>/<label>`, never by the exit status.
+
+    Two more consequences, both load-bearing:
+    - A `bootout` that fails while the job is **already unloaded** is not an
+      error — that is the state a repair run starts from, so the driver logs
+      `LASTDB_LAUNCHD_BOOTOUT=already-unloaded` and continues. A `bootout`
+      that fails while the job is still loaded stays fatal.
+    - When every retry is exhausted the driver prints
+      `LASTDB_LAUNCHD_RECOVERY=<the exact launchctl bootstrap command>`,
+      releases `.cutover.lock`, and pages through `ra notify --priority high`
+      before it dies. An unloaded primary is a total factory outage, not a log
+      line.
 
 ## Do this, in order
 

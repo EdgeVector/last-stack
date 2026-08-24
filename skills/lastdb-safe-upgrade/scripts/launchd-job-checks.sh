@@ -1,9 +1,24 @@
 #!/usr/bin/env bash
 # Pure-ish launchd helpers for safe-upgrade. No work runs when this file is sourced.
 
+lastdb_launchd_job_loaded() {
+  # The ONLY sound success signal for bootstrap. launchd answers the same
+  # `Bootstrap failed: 5: Input/output error` for "already bootstrapped" as for
+  # the post-bootout race, so an exit code cannot tell recovery from failure.
+  local launchctl_bin="$1" service="$2"
+  "$launchctl_bin" print "$service" >/dev/null 2>&1
+}
+
 lastdb_launchd_reload_job() {
   # Reload the job definition so plist EnvironmentVariables take effect.
   # Args: launchctl-bin domain label plist
+  #
+  # An EIO on the bootstrap right after a successful bootout is a launchd race,
+  # not a terminal state. Treating it as terminal left the primary UNLOADED
+  # three times, the last for 4h34m unattended, with the whole shipping stack
+  # dark (papercut-lastdb-safe-upgrade-bootout-bootstrap-left-primary-unloaded).
+  # So: retry bootstrap with backoff, and decide success by asking launchd
+  # whether the job is loaded.
   local launchctl_bin="$1" domain="$2" label="$3" plist="$4"
   local service="${domain}/${label}"
 
@@ -11,17 +26,44 @@ lastdb_launchd_reload_job() {
     && "$launchctl_bin" help bootstrap >/dev/null 2>&1; then
     printf 'LASTDB_LAUNCHD_RESTART_PATH=job-reload service=%s plist=%s\n' \
       "$service" "$plist"
-    "$launchctl_bin" bootout "$service" || {
-      printf 'LASTDB_LAUNCHD_RELOAD=failed step=bootout service=%s\n' "$service" >&2
-      return 1
-    }
-    "$launchctl_bin" bootstrap "$domain" "$plist" || {
-      printf 'LASTDB_LAUNCHD_RELOAD=failed step=bootstrap domain=%s plist=%s\n' \
-        "$domain" "$plist" >&2
-      return 1
-    }
-    printf 'LASTDB_LAUNCHD_RELOAD=ok service=%s\n' "$service"
-    return 0
+
+    if ! "$launchctl_bin" bootout "$service"; then
+      # bootout also fails when the job is ALREADY unloaded — which is exactly
+      # the state a repair run starts from. Abort only if it is still loaded.
+      if lastdb_launchd_job_loaded "$launchctl_bin" "$service"; then
+        printf 'LASTDB_LAUNCHD_RELOAD=failed step=bootout service=%s\n' "$service" >&2
+        return 1
+      fi
+      printf 'LASTDB_LAUNCHD_BOOTOUT=already-unloaded service=%s\n' "$service"
+    fi
+
+    local delays_spec="${LASTDB_LAUNCHD_BOOTSTRAP_RETRY_DELAYS:-2 5 15 30 30 30}"
+    set -- $delays_spec
+    local attempt=0 rc=0 delay=""
+    while :; do
+      attempt=$((attempt + 1))
+      rc=0
+      "$launchctl_bin" bootstrap "$domain" "$plist" || rc=$?
+      if lastdb_launchd_job_loaded "$launchctl_bin" "$service"; then
+        if [ "$attempt" -gt 1 ]; then
+          printf 'LASTDB_LAUNCHD_BOOTSTRAP=recovered attempts=%s service=%s\n' \
+            "$attempt" "$service"
+        fi
+        printf 'LASTDB_LAUNCHD_RELOAD=ok service=%s\n' "$service"
+        return 0
+      fi
+      [ "$#" -gt 0 ] || break
+      delay="$1"; shift
+      printf 'LASTDB_LAUNCHD_BOOTSTRAP=retry attempt=%s rc=%s next_delay_s=%s service=%s\n' \
+        "$attempt" "$rc" "$delay" "$service" >&2
+      sleep "$delay"
+    done
+
+    printf 'LASTDB_LAUNCHD_RELOAD=failed step=bootstrap domain=%s plist=%s attempts=%s\n' \
+      "$domain" "$plist" "$attempt" >&2
+    printf 'LASTDB_LAUNCHD_RECOVERY=%s bootstrap %s %s\n' \
+      "$launchctl_bin" "$domain" "$plist" >&2
+    return 1
   fi
 
   printf 'LASTDB_LAUNCHD_RESTART_PATH=kickstart service=%s reason=bootout-bootstrap-unavailable\n' \
