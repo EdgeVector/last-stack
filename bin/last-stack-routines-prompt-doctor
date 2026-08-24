@@ -23,6 +23,11 @@
 # Usage:
 #   last-stack-routines-prompt-doctor [--json] [--quiet]
 #   last-stack-routines-prompt-doctor --normalize [--dry-run] [--basename NAME ...]
+#   last-stack-routines-prompt-doctor --normalize-findings [--dry-run]
+#
+# --normalize-findings heals exactly what this run measured red, instead of a
+# hardcoded basename list: every prompt a REGISTERED routine actually resolves
+# to a drifted local full copy. Unregistered local-only prompts are untouched.
 #
 # Exit: 0 green, 1 findings (or normalize applied with remaining issues),
 #       2 usage.
@@ -38,6 +43,7 @@ REGISTRY_DIR="${ROUTINES_REGISTRY_DIR:-$ROUTINES_HOME/registry}"
 want_json=0
 want_quiet=0
 want_normalize=0
+want_from_findings=0
 want_dry_run=0
 normalize_basenames=()
 
@@ -51,6 +57,7 @@ while [ "$#" -gt 0 ]; do
     --json) want_json=1; shift ;;
     --quiet) want_quiet=1; shift ;;
     --normalize) want_normalize=1; shift ;;
+    --normalize-findings) want_normalize=1; want_from_findings=1; shift ;;
     --dry-run) want_dry_run=1; shift ;;
     --basename)
       shift
@@ -67,7 +74,8 @@ while [ "$#" -gt 0 ]; do
 done
 
 # Default normalize set: active product canaries + milestone-driver (card END STATE).
-if [ "$want_normalize" -eq 1 ] && [ "${#normalize_basenames[@]}" -eq 0 ]; then
+if [ "$want_normalize" -eq 1 ] && [ "$want_from_findings" -eq 0 ] \
+  && [ "${#normalize_basenames[@]}" -eq 0 ]; then
   normalize_basenames=(
     lastdb-canary-dogfood.md
     lastdb-canary-soak-watch.md
@@ -86,6 +94,24 @@ is_version_pin() {
       return 1
       ;;
   esac
+}
+
+is_bootstrap_prompt() {
+  # A *freshness bootstrap* is a deliberately small local prompt whose body
+  # loads the authoritative product prompt at dispatch time:
+  #
+  #     "$last_stack/bin/last-stack-routine-read" <name>
+  #
+  # It is SUPPOSED to differ from routines/<name>.md — delegating is the whole
+  # point, and routinesd ships this shape so a merged prompt fix reaches the
+  # next fire without reinstalling the registry. Reporting it as drift made the
+  # doctor red on correct installs, which is exactly why its red stayed
+  # advisory: a gate that fires on the intended design cannot be enforced.
+  # Only the LOCAL side is ever classified this way; a drifted full copy still
+  # fails closed.
+  local f="$1"
+  [ -f "$f" ] || return 1
+  grep -Fq 'last-stack-routine-read' "$f" 2>/dev/null
 }
 
 expand_user_path() {
@@ -162,6 +188,10 @@ scan_twins() {
     if same_inode "$p" "$l"; then
       continue
     fi
+    # Intended delegation, not drift. See is_bootstrap_prompt.
+    if is_bootstrap_prompt "$l"; then
+      continue
+    fi
     # Symlink either direction that samefiles already handled; remaining =
     # two independent nodes. Content-equal is still a latent drift risk
     # (edit one, the other diverges) — flag as twin-copy.
@@ -201,7 +231,8 @@ scan_registry_pins() {
     base="$(basename "$path")"
     case "$path" in
       "$LOCAL_ROOT"/*|"$ROUTINES_HOME/prompts"/*)
-        if [ -e "$PRODUCT_ROOT/$base" ] && [ -e "$path" ]; then
+        if [ -e "$PRODUCT_ROOT/$base" ] && [ -e "$path" ] \
+          && ! is_bootstrap_prompt "$path"; then
           if ! same_inode "$PRODUCT_ROOT/$base" "$path" && ! content_same "$PRODUCT_ROOT/$base" "$path"; then
             append_finding "registry-divergent-local" \
               "id=$id prompt_path=$path product=$PRODUCT_ROOT/$base note=registry-loads-stale-local-twin"
@@ -219,6 +250,19 @@ normalize_one() {
   if [ ! -e "$product" ]; then
     [ "$want_quiet" -eq 1 ] || echo "normalize skip basename=$base reason=no-product-file" >&2
     return 0
+  fi
+  # Fail closed rather than trade a drifted copy for a dangling one: host-track
+  # GCs artifacts/versions/<digest>/, so a symlink into that tree is the
+  # version-pin defect this same doctor reports. A caller running inside a
+  # version dir (host-track invokes <version>/setup with LAST_STACK_ROOT set to
+  # the version being installed) must not be able to write that pin.
+  if is_version_pin "$product"; then
+    [ "$want_quiet" -eq 1 ] || echo "normalize refuse basename=$base reason=product-root-is-version-pin product=$product" >&2
+    # Surface the refusal as a finding so a heal that declined to run cannot
+    # read as a clean pass.
+    append_finding "normalize-refused" \
+      "basename=$base product=$product note=product-root-is-version-pin-would-create-gc-eligible-symlink"
+    return 1
   fi
   mkdir -p "$LOCAL_ROOT"
   if [ -e "$localf" ] || [ -L "$localf" ]; then
@@ -249,14 +293,49 @@ normalize_one() {
   echo "normalize linked basename=$base -> $product" >&2
 }
 
+if [ "$want_normalize" -eq 1 ] && [ "$want_from_findings" -eq 1 ]; then
+  # Measure first, then heal exactly what was measured. Scanning twice is the
+  # point: the post-heal scan below is what decides the exit code, so a heal
+  # that silently failed still reports red.
+  scan_twins
+  scan_registry_pins
+  _line=""
+  _kind=""
+  _base=""
+  for _line in "${findings[@]+"${findings[@]}"}"; do
+    [ -n "$_line" ] || continue
+    _kind="${_line%%|*}"
+    case "$_kind" in
+      twin-divergent|registry-divergent-local) ;;
+      *) continue ;;
+    esac
+    # detail carries either `basename=<n> ...` or `... prompt_path=<path> ...`
+    _base="$(printf '%s\n' "${_line#*|}" | sed -nE 's/.*basename=([^ ]+).*/\1/p')"
+    if [ -z "$_base" ]; then
+      _base="$(printf '%s\n' "${_line#*|}" | sed -nE 's/.*prompt_path=([^ ]+).*/\1/p')"
+      _base="${_base##*/}"
+    fi
+    [ -n "$_base" ] || continue
+    case " ${normalize_basenames[*]-} " in
+      *" $_base "*) continue ;;
+    esac
+    normalize_basenames+=("$_base")
+  done
+  findings=()
+  if [ "${#normalize_basenames[@]}" -eq 0 ] && [ "$want_quiet" -eq 0 ]; then
+    echo "normalize-findings: nothing measured red; no prompt heal needed" >&2
+  fi
+fi
+
 if [ "$want_normalize" -eq 1 ]; then
-  for base in "${normalize_basenames[@]}"; do
+  normalize_rc=0
+  for base in "${normalize_basenames[@]+"${normalize_basenames[@]}"}"; do
     # Accept bare name or .md
     case "$base" in
       *.md) ;;
       *) base="${base}.md" ;;
     esac
-    normalize_one "$base"
+    normalize_one "$base" || normalize_rc=1
   done
   # Dry-run never mutates; skip the post-scan fail-closed so scripts can
   # chain `--normalize --dry-run` without treating planned work as an error.
