@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Print the process environment with secret-shaped values redacted.
+#
+# Use this instead of `env`, `printenv`, or `env | grep -E 'CARGO|RUST|FOLD'`
+# in any routine or agent diagnostic. A bare `env` is what put a raw
+# OpenRouter credential into a run log and a chat transcript on 2026-08-18
+# (brain papercut-routine-shell-exports-raw-openrouter-secret).
+#
+# Usage:
+#   last-stack-env-dump                    # every variable, masked
+#   last-stack-env-dump CARGO RUST FOLD    # only names matching any pattern
+#
+# Filters are extended regular expressions matched against the variable NAME
+# only, so a filter can never widen what the mask covers.
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+masker="$root/bin/last-stack-mask-secrets"
+
+if [ ! -x "$masker" ]; then
+  echo "last-stack-env-dump: missing $masker; refusing to print a raw environment" >&2
+  exit 127
+fi
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  exit 0
+fi
+
+# Build the name filter before printing anything, so a bad pattern fails
+# before a single value reaches stdout.
+name_filter=""
+for pattern in "$@"; do
+  # Validate against empty input: exit 0/1 means the pattern compiled,
+  # exit >1 means it is malformed. Catch it before any value is printed.
+  set +e
+  grep -Eq "$pattern" </dev/null
+  pattern_rc=$?
+  set -e
+  if [ "$pattern_rc" -gt 1 ]; then
+    echo "last-stack-env-dump: invalid pattern: $pattern" >&2
+    exit 2
+  fi
+  if [ -z "$name_filter" ]; then
+    name_filter="$pattern"
+  else
+    name_filter="$name_filter|$pattern"
+  fi
+done
+
+# `env -0` keeps values containing newlines from splitting into fake
+# assignments that the mask would then not recognise.
+emit() {
+  env -0 | while IFS= read -r -d '' entry; do
+    name="${entry%%=*}"
+    if [ -n "$name_filter" ]; then
+      printf '%s' "$name" | grep -Eq "$name_filter" || continue
+    fi
+    # Collapse embedded newlines so one variable stays one line.
+    printf '%s\n' "${entry//$'\n'/\\n}"
+  done | LC_ALL=C sort
+}
+
+emit | "$masker"
