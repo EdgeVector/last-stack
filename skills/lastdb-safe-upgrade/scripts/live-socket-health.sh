@@ -14,14 +14,43 @@ live_unix_socket_listener_pid() {
   [ -n "$sock" ] && [ -S "$sock" ] || return 1
   local pid=""
   # CAUTION: `lsof -t -U -- "$sock"` lists EVERY unix socket on the host
-  # (path is ignored). Use the path-only form.
+  # (path is ignored). Use the path-only form. Sandboxed CI may hide lsof.
   pid="$(lsof -t -- "$sock" 2>/dev/null | awk 'NR==1 { print; exit }')"
   [ -n "$pid" ] || return 1
   printf '%s\n' "$pid"
 }
 
+live_unix_socket_connect_ok() {
+  # rc 0 = a process is accepting connects (live listener).
+  # Leftover inode: ConnectionRefusedError.
+  local sock="$1"
+  [ -n "$sock" ] && [ -S "$sock" ] || return 1
+  command -v python3 >/dev/null 2>&1 || return 1
+  python3 - "$sock" <<'PY'
+import socket
+import sys
+
+path = sys.argv[1]
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.settimeout(1.0)
+try:
+    s.connect(path)
+except (ConnectionRefusedError, FileNotFoundError, OSError):
+    sys.exit(1)
+finally:
+    s.close()
+sys.exit(0)
+PY
+}
+
 live_unix_socket_has_listener() {
   local sock="$1"
+  [ -n "$sock" ] && [ -S "$sock" ] || return 1
+  # Connect is the listener bar. lsof is a fallback when python3 is missing;
+  # sandboxed CI can hide lsof even while a listener is bound.
+  if live_unix_socket_connect_ok "$sock"; then
+    return 0
+  fi
   live_unix_socket_listener_pid "$sock" >/dev/null
 }
 

@@ -121,7 +121,15 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   sleep 0.1
 done
 [ -S "$listen" ] || fail "listen-only fixture must exist"
-live_unix_socket_has_listener "$listen" || fail "listen-only socket must have a listener pid"
+have_listen=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if live_unix_socket_has_listener "$listen"; then
+    have_listen=1
+    break
+  fi
+  sleep 0.1
+done
+[ "$have_listen" -eq 1 ] || fail "listen-only socket must have a listener"
 live_unix_socket_is_healthy "$listen" && fail "listen-only socket must not pass /health"
 out="$(unlink_stale_unix_socket "$listen")"
 printf '%s\n' "$out" | grep -q 'LIVE_SOCK=keep' || fail "must not unlink a live listener: $out"
