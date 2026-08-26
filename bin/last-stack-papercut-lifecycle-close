@@ -27,6 +27,13 @@ TRANSIENT_ERRORS = (
 LASTGIT_RE = re.compile(r"\blastgit://([^/\s)>\]]+)/cr/([^/\s)>\]]+)")
 FORGE_RE = re.compile(r"https?://[^/\s)>\]]+/([^/\s)>\]]+)/([^/\s)>\]]+)/pulls?/(\d+)")
 GITHUB_RE = re.compile(r"https?://github\.com/([^/\s)>\]]+)/([^/\s)>\]]+)/pull/(\d+)")
+PIPELINE_STUCK_SLUG_RE = re.compile(r"^papercut-pipeline-stuck-(cr|forge|pr)-")
+STUCK_CR_SLUG_RE = re.compile(r"^papercut-pipeline-stuck-cr-(.+)-cr-([a-z0-9]+)$")
+STUCK_FORGE_SLUG_RE = re.compile(r"^papercut-pipeline-stuck-forge-(.+)-(\d+)$")
+STUCK_PR_SLUG_RE = re.compile(r"^papercut-pipeline-stuck-pr-(.+)-(\d+)$")
+CR_FULL_RE = re.compile(r"\b(cr-[0-9a-z]{6,12}-[0-9a-z]{2,8})\b")
+REPO_HEADER_RE = re.compile(r"(?im)^Repo:\s*(\S+)")
+FORGE_VENUE_REPOS = frozenset({"fold", "lastgit", "exemem-infra", "exemem-workspace"})
 
 
 @dataclass(frozen=True)
@@ -285,11 +292,15 @@ def load_records(args: argparse.Namespace) -> list[dict[str, Any]]:
             timeout=args.read_timeout,
         )
     )
-    slugs = [str(item.get("slug") or "") for item in previews[: args.limit]]
+    slugs = [str(item.get("slug") or "") for item in previews if str(item.get("slug") or "").startswith("papercut-")]
+    # Prefer the pipeline-stuck cluster so --limit 200 covers it instead of
+    # the first page of unrelated open papercuts (the registry path used to
+    # return after 3 COVERED rows and never reach this list at all).
+    stuck = [slug for slug in slugs if PIPELINE_STUCK_SLUG_RE.match(slug)]
+    rest = [slug for slug in slugs if slug not in set(stuck)]
+    ordered = stuck + rest
     records: list[dict[str, Any]] = []
-    for slug in slugs:
-        if not slug.startswith("papercut-"):
-            continue
+    for slug in ordered[: args.limit]:
         try:
             record = brain_get(args, slug)
             record["_typed"] = True
@@ -316,7 +327,14 @@ def status_is_open(body: str) -> bool:
     return statuses[-1] == "OPEN"
 
 
-def review_refs(body: str) -> list[ReviewRef]:
+def repo_token(raw: str) -> str:
+    token = raw.strip().rstrip("/")
+    if "/" in token:
+        token = token.rsplit("/", 1)[-1]
+    return token.strip()
+
+
+def review_refs(body: str, slug: str = "") -> list[ReviewRef]:
     refs: list[ReviewRef] = []
     seen: set[str] = set()
 
@@ -334,6 +352,35 @@ def review_refs(body: str) -> list[ReviewRef]:
             continue
         owner, repo, num = match.group(1), match.group(2), match.group(3)
         add(ReviewRef("forge", f"{owner}/{repo}/pulls/{num}", repo, num, owner))
+
+    header_repo = repo_token(REPO_HEADER_RE.search(body).group(1)) if REPO_HEADER_RE.search(body) else ""
+    stuck_cr = STUCK_CR_SLUG_RE.match(slug)
+    if stuck_cr:
+        repo = stuck_cr.group(1)
+        short = stuck_cr.group(2)
+        ident = f"cr-{short}"
+        for full in CR_FULL_RE.findall(body):
+            if full == ident or full.startswith(f"cr-{short}-"):
+                ident = full
+                break
+        add(ReviewRef("lastgit", f"lastgit://{repo}/cr/{ident}", repo, ident))
+    stuck_forge = STUCK_FORGE_SLUG_RE.match(slug)
+    if stuck_forge:
+        repo = stuck_forge.group(1)
+        num = stuck_forge.group(2)
+        add(ReviewRef("forge", f"EdgeVector/{repo}/pulls/{num}", repo, num, "EdgeVector"))
+    stuck_pr = STUCK_PR_SLUG_RE.match(slug)
+    if stuck_pr:
+        repo = stuck_pr.group(1)
+        num = stuck_pr.group(2)
+        owner = "EdgeVector"
+        if repo in FORGE_VENUE_REPOS:
+            add(ReviewRef("forge", f"{owner}/{repo}/pulls/{num}", repo, num, owner))
+        else:
+            add(ReviewRef("github", f"https://github.com/{owner}/{repo}/pull/{num}", repo, num, owner))
+    if header_repo and not stuck_cr and not stuck_forge and not stuck_pr:
+        for full in CR_FULL_RE.findall(body):
+            add(ReviewRef("lastgit", f"lastgit://{header_repo}/cr/{full}", header_repo, full))
     return refs
 
 
@@ -408,12 +455,21 @@ def close_record(args: argparse.Namespace, record: dict[str, Any], ref: ReviewRe
 
 
 def close_review_records(args: argparse.Namespace, iso: str) -> dict[str, Any]:
-    result: dict[str, Any] = {"ok": True, "checked": 0, "fixed": [], "skipped": [], "errors": []}
+    result: dict[str, Any] = {
+        "ok": True,
+        "checked": 0,
+        "fixed": [],
+        "skipped": [],
+        "errors": [],
+        "pipeline_stuck_checked": 0,
+    }
     for record in load_records(args):
         slug = str(record.get("slug") or "")
         if not slug.startswith("papercut-"):
             continue
         result["checked"] += 1
+        if PIPELINE_STUCK_SLUG_RE.match(slug):
+            result["pipeline_stuck_checked"] += 1
         body = str(record.get("body") or "")
         if record.get("_typed"):
             is_open = str(record.get("status") or "") == "open"
@@ -422,7 +478,7 @@ def close_review_records(args: argparse.Namespace, iso: str) -> dict[str, Any]:
         if not is_open:
             result["skipped"].append({"slug": slug, "reason": "not-open"})
             continue
-        refs = review_refs(body)
+        refs = review_refs(body, slug)
         if not refs:
             result["skipped"].append({"slug": slug, "reason": "no-review-ref"})
             continue
@@ -441,6 +497,44 @@ def close_review_records(args: argparse.Namespace, iso: str) -> dict[str, Any]:
         if not fixed:
             result["skipped"].append({"slug": slug, "reason": "review-not-merged"})
     return result
+
+
+def _fixed_count(value: Any) -> int:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, list):
+        return len(value)
+    return 0
+
+
+def merge_default_results(registry: dict[str, Any], review: dict[str, Any]) -> dict[str, Any]:
+    """Keep the registry COVERED closer and still walk open review refs.
+
+    Returning only the registry payload used to hide the pipeline-stuck
+    cluster: scanned stayed at 3 COVERED rows and close_review_records
+    never ran.
+    """
+    reg_scanned = int(registry.get("scanned") or 0)
+    rev_checked = int(review.get("checked") or 0)
+    skipped: list[Any] = []
+    if isinstance(registry.get("skipped"), list):
+        skipped.extend(registry["skipped"])
+    if isinstance(review.get("skipped"), list):
+        skipped.extend(review["skipped"])
+    errors = review.get("errors") if isinstance(review.get("errors"), list) else []
+    return {
+        "ok": bool(registry.get("ok", True)) and bool(review.get("ok", True)),
+        "scanned": reg_scanned + rev_checked,
+        "checked": rev_checked,
+        "fixed": _fixed_count(registry.get("fixed")) + _fixed_count(review.get("fixed")),
+        "skipped": skipped,
+        "errors": errors,
+        "dry_run": bool(registry.get("dry_run") or review.get("dry_run")),
+        "registry_scanned": reg_scanned,
+        "review_checked": rev_checked,
+        "pipeline_stuck_checked": int(review.get("pipeline_stuck_checked") or 0),
+        "fixed_refs": review.get("fixed") if isinstance(review.get("fixed"), list) else [],
+    }
 
 
 def main() -> int:
@@ -464,9 +558,25 @@ def main() -> int:
         return 2
 
     iso = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    result = None if args.slug or args.records_json else try_registry_close(args, iso)
-    if result is None:
+    if args.slug or args.records_json:
         result = close_review_records(args, iso)
+    else:
+        registry_result = try_registry_close(args, iso)
+        try:
+            review_result = close_review_records(args, iso)
+        except Exception as exc:
+            review_result = {
+                "ok": False,
+                "checked": 0,
+                "fixed": [],
+                "skipped": [],
+                "errors": [{"error": str(exc)}],
+                "pipeline_stuck_checked": 0,
+            }
+        if registry_result is None:
+            result = review_result
+        else:
+            result = merge_default_results(registry_result, review_result)
 
     if args.json_out:
         print(json.dumps(result, sort_keys=True))
