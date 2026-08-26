@@ -50,6 +50,7 @@ sm start lastdb-canary-release \
   --idempotency-key "canary-$main_oid" \
   --concurrency-key lastdb-canary-release
 sm tick --definition lastdb-canary-release --cap 6
+"$last_stack/bin/last-stack-canary-loom" --start --json
 sm list --definition lastdb-canary-release --json
 ```
 
@@ -98,6 +99,15 @@ kill the execution.
 - `status=failed` at UPGRADE — the CHILD `lastdb-safe-upgrade` execution failed
   at PROBE, CUTOVER, or VERIFY. A real candidate really failed. This is the only
   shape that means "the build is bad"; read the child execution for the reason.
+  Then run the loom healer (do not stop at a kanban card):
+
+  ```bash
+  "$last_stack/bin/last-stack-canary-red-loom" --json
+  ```
+
+  The graph investigates, merges a fix, and retries the canary upgrade up to
+  3 times. Same `--key` (`canary-red-<exec_id>`) resumes. Do not skip the
+  probe bar. Do not restart lastdbd.
 
 This routine **does mutate the primary** at CUTOVER, through safe-upgrade only.
 Never kill `lastdbd` yourself.

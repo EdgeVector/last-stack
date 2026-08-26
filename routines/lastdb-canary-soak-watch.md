@@ -25,12 +25,32 @@ export LAST_STACK_CANARY_LAUNCHD_CHECK_CMD="${LAST_STACK_CANARY_LAUNCHD_CHECK_CM
 ```bash
 sm tick --definition lastdb-canary-release --cap 4 --json
 sm list --definition lastdb-canary-release --json
+"$last_stack/bin/last-stack-canary-loom" --json
 ```
+
+The loom graph `lastdb-canary-release` is the scheduler. `sm tick` stays
+during the cutover so a host with only sm still advances. After Host Track
+refresh, `last-stack-canary-loom` resumes the same `--key` (WAIT parks).
+Do not start a new candidate here.
 
 If no execution is running, the tick is a no-op and this routine is `noop`.
 **An idle lane is not an error.** Do not "fix" a quiet night by starting an
 execution here — that is the nightly routine's job, and starting one out of
 band is how a cutover happens at an hour nobody expects.
+
+## When the tick closes FAILED
+
+A RED probe or soak is not a card. After `sm tick` returns a terminal fail,
+run the loom healer so an agent investigates, merges a fix, and retries the
+canary upgrade (cap 3). Same `--key` resumes:
+
+```bash
+"$last_stack/bin/last-stack-canary-red-loom" --json
+```
+
+The healer is also a dedicated hourly gate at :36
+(`lastdb-canary-red-heal`). This wake starts it immediately so a RED at :34
+does not wait. Do not skip the probe bar. Do not restart lastdbd.
 
 ## What the SOAK state checks
 

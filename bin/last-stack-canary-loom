@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# last-stack-canary-loom — tick the lastdb-canary-release loom graph.
+# One key per candidate. WAIT parks; this command resumes.
+#
+#   last-stack-canary-loom [--json] [--quiet] [--dry-run] [--no-heal] [--status]
+#   last-stack-canary-loom --start [--oid SHA]
+#
+# Exit: 0 ran/noop, 2 usage, 3 loom unavailable.
+set -euo pipefail
+
+JSON=0
+QUIET=0
+STATUS=0
+DRY=0
+HEAL=1
+START=0
+OID=""
+KEY=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json) JSON=1; shift ;;
+    --quiet|-q) QUIET=1; shift ;;
+    --status) STATUS=1; shift ;;
+    --dry-run) DRY=1; shift ;;
+    --no-heal) HEAL=0; shift ;;
+    --heal) HEAL=1; shift ;;
+    --start) START=1; shift ;;
+    --oid) OID="${2:-}"; shift 2 ;;
+    --key) KEY="${2:-}"; shift 2 ;;
+    -h|--help)
+      echo "last-stack-canary-loom [--json] [--dry-run] [--no-heal] [--start] [--oid SHA] [--key KEY]"
+      exit 0
+      ;;
+    *) echo "unknown: $1" >&2; exit 2 ;;
+  esac
+done
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
+STAMP="${LAST_STACK_CANARY_LOOM_STAMP:-$HOME/.last-stack/state/canary-loom.json}"
+
+log() { [ "$QUIET" -eq 1 ] || printf 'canary-loom: %s\n' "$*" >&2; }
+
+write_stamp() {
+  mkdir -p "$(dirname "$STAMP")"
+  ST="$1" KY="${2:-}" OC="${3:-}" DT="${4:-}" LAST_STACK_CANARY_LOOM_STAMP="$STAMP" python3 -c '
+import json, os, datetime
+p = os.environ["LAST_STACK_CANARY_LOOM_STAMP"]
+doc = {
+  "ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+  "status": os.environ.get("ST", ""),
+  "key": os.environ.get("KY", ""),
+  "outcome": os.environ.get("OC", ""),
+  "detail": os.environ.get("DT", ""),
+  "engine": "loom",
+}
+open(p, "w").write(json.dumps(doc) + "\n")
+'
+}
+
+if [ "$STATUS" -eq 1 ]; then
+  LAST_STACK_CANARY_LOOM_STAMP="$STAMP" python3 -c '
+import json, os
+p = os.environ["LAST_STACK_CANARY_LOOM_STAMP"]
+if not os.path.isfile(p):
+    print(json.dumps({"ok": False, "missing": True}))
+else:
+    print(open(p).read().strip())
+'
+  exit 0
+fi
+
+resolve_oid() {
+  if [ -n "$OID" ]; then
+    printf '%s\n' "$OID"
+    return
+  fi
+  git -C "${HOME}/.cache/edgevector-git/fold.git" rev-parse refs/heads/main 2>/dev/null || true
+}
+
+if [ -z "$KEY" ]; then
+  if [ -f "$STAMP" ]; then
+    KEY="$(python3 -c 'import json,os,sys; print(json.load(open(os.environ["LAST_STACK_CANARY_LOOM_STAMP"])).get("key") or "")' 2>/dev/null || true)"
+  fi
+fi
+export LAST_STACK_CANARY_LOOM_STAMP="$STAMP"
+
+if [ "$START" -eq 1 ]; then
+  oid="$(resolve_oid)"
+  [ -n "$oid" ] || { echo "canary-loom: no main oid" >&2; exit 3; }
+  KEY="canary-${oid}"
+  OID="$oid"
+fi
+
+if [ "$DRY" -eq 1 ]; then
+  det="key=${KEY:-} start=${START} oid=${OID:-}"
+  oc="noop"
+  [ "$START" -eq 1 ] && oc="ok"
+  write_stamp dry-run "$KEY" "$oc" "$det"
+  if [ "$JSON" -eq 1 ]; then
+    printf '{"outcome":"%s","detail":"%s","engine":"loom","key":"%s"}\n' "$oc" "$det" "$KEY"
+  else
+    printf 'canary-loom dry-run %s\n' "$det"
+  fi
+  printf '%s %s\n' 'ROUTINE_RESULT' "outcome=${oc} detail=${det}"
+  exit 0
+fi
+
+if [ -z "$KEY" ]; then
+  write_stamp idle "" "noop" "no-key"
+  printf '%s %s\n' 'ROUTINE_RESULT' "outcome=noop detail=no-key"
+  exit 0
+fi
+
+if ! command -v loom >/dev/null 2>&1; then
+  log "loom not on PATH"
+  write_stamp unavailable "$KEY" "error" "loom-missing"
+  exit 3
+fi
+if ! loom ping >/dev/null 2>&1; then
+  log "loom ping failed"
+  write_stamp unavailable "$KEY" "error" "loom-ping-failed"
+  exit 3
+fi
+
+exe="$(command -v loom)"
+real="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$exe")"
+install_root="$(dirname "$(dirname "$real")")"
+defs=""
+scripts=""
+for cand in "${LOOM_DEFS:-}" "$ROOT/lib/canary-loom" "$install_root/definitions"; do
+  [ -n "$cand" ] && [ -f "$cand/lastdb-canary-release.json" ] && defs="$cand" && break
+done
+for cand in "${LOOM_SCRIPTS:-}" "$ROOT/lib/canary-loom" "$install_root/scripts"; do
+  [ -n "$cand" ] && [ -f "$cand/loom-canary-step.sh" ] && scripts="$cand" && break
+done
+if [ -z "$defs" ] || [ -z "$scripts" ]; then
+  log "lastdb-canary-release definitions/scripts not found"
+  write_stamp unavailable "$KEY" "error" "defs-missing"
+  exit 3
+fi
+export LOOM_SCRIPTS="$scripts"
+if [ "$HEAL" -eq 1 ]; then
+  export LOOM_CANARY_LIVE=1
+  export LOOM_LIVE=1
+  export LOOM_CANARY_RED_LIVE=1
+else
+  unset LOOM_CANARY_LIVE LOOM_LIVE LOOM_CANARY_RED_LIVE || true
+fi
+
+loom publish "$defs/lastdb-canary-release.json" >/dev/null
+input="$(OID="${OID:-}" python3 -c 'import json,os; print(json.dumps({"main_oid":os.environ.get("OID") or "","max_attempts":3},separators=(",",":")))')"
+
+log "loom run lastdb-canary-release --key $KEY"
+view="$(loom run lastdb-canary-release --key "$KEY" --input "$input" || true)"
+status="$(printf '%s\n' "$view" | awk -F': ' '/^status:/{print $2; exit}')"
+state="$(printf '%s\n' "$view" | awk -F': ' '/^state:/{print $2; exit}')"
+det="key=${KEY} status=${status} state=${state}"
+oc="ok"
+[ "$status" = "succeeded" ] || [ "$status" = "waiting" ] || [ "$status" = "parked" ] || [ "$status" = "running" ] || oc="error"
+[ "$status" = "failed" ] && oc="error"
+write_stamp "${status:-unknown}" "$KEY" "$oc" "$det"
+if [ "$JSON" -eq 1 ]; then
+  printf '{"outcome":"%s","detail":"%s","engine":"loom","key":"%s","status":"%s"}\n' \
+    "$oc" "$det" "$KEY" "$status"
+else
+  printf 'CANARY_LOOM outcome=%s %s\n' "$oc" "$det"
+fi
+printf '%s %s\n' 'ROUTINE_RESULT' "outcome=${oc} detail=${det}"
+[ "$oc" = "error" ] && exit 3
+exit 0

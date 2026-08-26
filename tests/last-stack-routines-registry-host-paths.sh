@@ -14,6 +14,7 @@ for bin in \
   last-stack-feature-prove-routine \
   last-stack-why-stopped-routine \
   last-stack-whats-wrong-routine \
+  last-stack-canary-red-heal-routine \
   last-stack-lastdb-ops-offenders-routine \
   last-stack-kanban-validate-routine \
   last-stack-fleet-performance-routine \
