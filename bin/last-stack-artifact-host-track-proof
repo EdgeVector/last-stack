@@ -103,6 +103,25 @@ done < <(jq -r '.apps[]?.app' "$registry")
 
 failed_checks="$(jq -s '[.[] | select(.ok == false)]' "$check_jsonl")"
 if [ "$(printf '%s\n' "$failed_checks" | jq 'length')" -ne 0 ]; then
+  # A FAIL must land in the proof file: DONE-WHEN evaluators read this file,
+  # and leaving the previous PASS in place lets a stale green satisfy them
+  # indefinitely (papercut-artifact-host-track-proof-fail-leaves-stale-pass-file:
+  # a 21-day-old PASS kept closing the North Star while the live check failed).
+  timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  mkdir -p "$(dirname "$proof_path")"
+  {
+    printf 'FAIL %s %s\n' "$proof_slug" "$timestamp"
+    printf '\n'
+    printf 'failed_apps: %s\n' "$(printf '%s\n' "$failed_checks" | jq -r 'map(.app) | join(", ")')"
+    printf 'registry: %s\n' "$registry"
+    printf '\n'
+    jq -r '.[] | "- " + .app + ": " + (if .ok then "ok" else "FAIL" end) + " — " + (.message | gsub("\n"; " "))' <(jq -s '.' "$check_jsonl")
+  } > "$proof_path"
+  if [ "$proof_path_explicit" -eq 0 ] && [ -n "$legacy_proof_slug" ] && [ "$legacy_proof_slug" != "$proof_slug" ]; then
+    legacy_proof_path="$HOME/.last-stack/feature-proofs/$legacy_proof_slug.md"
+    mkdir -p "$(dirname "$legacy_proof_path")"
+    cp "$proof_path" "$legacy_proof_path"
+  fi
   if [ "$json_out" -eq 1 ]; then
     jq -n --arg registry "$registry" --slurpfile status "$status_json" --slurpfile invariant "$invariant_json" --slurpfile checks "$check_jsonl" \
       '{ok:false, registry:$registry, status:$status[0], invariant:$invariant[0], checks:$checks, error:"host-track-check-failed"}'

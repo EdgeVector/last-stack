@@ -904,6 +904,7 @@ which_cmd() {
 
 check_cmd() {
   local app="${1:-}" status exec_path stale json install_mode artifact_problem
+  local exemption_kind deployment_problem
   [ -n "$app" ] || die "check requires an app"
   status="$(status_json_for "$app")"
   exec_path="$(printf '%s\n' "$status" | jq -r '.exec_path // ""')"
@@ -921,8 +922,21 @@ check_cmd() {
     return 1
   fi
   if [ "$stale" = "true" ]; then
-    printf 'host-track: %s stale\n' "$app" >&2
-    return 1
+    exemption_kind="$(printf '%s\n' "$status" | jq -r '.artifact_exemption.kind // ""')"
+    deployment_problem="$(printf '%s\n' "$status" | jq -r '.deployment_problem // ""')"
+    if [ "$exemption_kind" = "deployment-only" ] && [ -z "$deployment_problem" ]; then
+      # Deployment-managed binaries (lastdb-safe-upgrade owns activation)
+      # trail gate main by design between supervised upgrades: gate main
+      # moves on every merge while the primary only moves on a proven
+      # cutover, so stale=true is the steady state, not a defect. `check`
+      # treats it as informational; a real deployment_problem (pair
+      # mismatch, unparseable stamp, missing gate head) still fails, and
+      # `status` keeps reporting stale/behind_by for visibility.
+      printf 'host-track: %s deployment-managed; trails gate by design (stale informational)\n' "$app"
+    else
+      printf 'host-track: %s stale\n' "$app" >&2
+      return 1
+    fi
   fi
   if [ "$install_mode" = "artifact" ] && ! verify_active_artifact "$app" "$json"; then
     # verify_active_artifact already printed path/reason to stderr

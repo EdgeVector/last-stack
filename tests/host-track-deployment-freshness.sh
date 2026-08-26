@@ -88,6 +88,11 @@ printf '%s\n' "$stale_status" | jq -e \
     and .freshness == "soft_stale"
   ' >/dev/null || fail "deployment-only lag was not measured: $stale_status"
 
+check_out="$("$ROOT/bin/host-track" check lastdbd)" \
+  || fail "check failed a healthy deployment-only app that merely trails gate"
+printf '%s\n' "$check_out" | grep -q 'stale informational' \
+  || fail "check did not explain deployment-managed staleness: $check_out"
+
 stale_list="$("$ROOT/bin/host-track" status --stale --json)"
 printf '%s\n' "$stale_list" | jq -e \
   'length == 1 and .[0].app == "lastdbd"' >/dev/null \
@@ -110,6 +115,13 @@ printf '%s\n' "$pair_status" | jq -e \
    and .stale == true
    and .freshness == "hard_broken"' >/dev/null \
   || fail "binary-pair mismatch was not surfaced: $pair_status"
+
+set +e
+"$ROOT/bin/host-track" check lastdbd >/dev/null 2>&1
+pair_check_rc=$?
+set -e
+[ "$pair_check_rc" -ne 0 ] \
+  || fail "check passed a deployment pair mismatch; deployment_problem must still fail"
 
 write_binary "$current/lastdbd" "${gate_oid:0:12}" lastdbd
 fresh_status="$("$ROOT/bin/host-track" status --json lastdbd)"
