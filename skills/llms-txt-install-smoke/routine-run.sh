@@ -55,7 +55,9 @@ if [ -z "$VERDICT_LINE" ]; then
   exit 2
 fi
 
-if echo "$VERDICT_LINE" | grep -q 'GREEN'; then
+# Anchored: the RED verdict now carries a trailing step list, so a loose
+# substring match could be spoofed by a step name into a false GREEN.
+if echo "$VERDICT_LINE" | grep -q '^VERDICT: GREEN'; then
   # Prefer pass counts from the script footer when present.
   PASS_LINE="$(
     { cat "$TMP.stderr" 2>/dev/null; } | grep -E '^PASS \(' | tail -n1 || true

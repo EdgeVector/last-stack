@@ -32,6 +32,16 @@ done
 REAL_HOME="${REAL_HOME:-$(eval echo "~$(id -un)")}"
 export PATH="/opt/homebrew/bin:/usr/local/bin:${REAL_HOME}/.bun/bin:${REAL_HOME}/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
+# Bounded-command helpers (run_bounded / fail_steps_summary). Sourced after PATH
+# so the timeout-binary probe sees the same PATH the smoke itself uses.
+SMOKE_SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=lib-bounded.sh
+. "$SMOKE_SKILL_DIR/lib-bounded.sh"
+
+# Per-call bound for the quick-try block. One hung brain/search call must fail
+# that step, not consume the whole routine budget.
+QUICK_TRY_TIMEOUT="${QUICK_TRY_TIMEOUT:-60}"
+
 FAILS=()
 PASS=()
 note_pass() { PASS+=("$1"); echo "  OK  $1" >&2; }
@@ -352,11 +362,13 @@ fi
 
 if command -v search >/dev/null 2>&1; then
   set +e
-  search init --quiet
+  run_bounded "$QUICK_TRY_TIMEOUT" search init --quiet
   rc=$?
   set -e
   if [ $rc -eq 0 ]; then
     note_pass "search:init"
+  elif [ $rc -eq 124 ]; then
+    note_fail "search:init timeout=${QUICK_TRY_TIMEOUT}s"
   else
     note_fail "search:init exit=$rc"
   fi
@@ -365,32 +377,38 @@ fi
 # --- quick try (llms.txt) ---
 if command -v brain >/dev/null 2>&1; then
   set +e
-  brain concept new hello --title "Hello" --body "my first note"
+  run_bounded "$QUICK_TRY_TIMEOUT" brain concept new hello --title "Hello" --body "my first note"
   rc=$?
   set -e
   if [ $rc -eq 0 ]; then
     note_pass "brain:concept-new"
+  elif [ $rc -eq 124 ]; then
+    note_fail "brain:concept-new timeout=${QUICK_TRY_TIMEOUT}s"
   else
     note_fail "brain:concept-new exit=$rc"
   fi
   set +e
-  get_out=$(brain get hello 2>&1)
+  get_out=$(run_bounded "$QUICK_TRY_TIMEOUT" brain get hello 2>&1)
   rc=$?
   set -e
   if [ $rc -eq 0 ] && echo "$get_out" | grep -qi 'first note\|Hello'; then
     note_pass "brain:get-hello"
+  elif [ $rc -eq 124 ]; then
+    note_fail "brain:get-hello timeout=${QUICK_TRY_TIMEOUT}s"
   else
     note_fail "brain:get-hello"
   fi
   # Prefer concrete term; allow search fallback if ask index lags
   set +e
-  ask_out=$(brain ask "first note" 2>&1)
+  ask_out=$(run_bounded "$QUICK_TRY_TIMEOUT" brain ask "first note" 2>&1)
   ask_rc=$?
-  search_out=$(brain search "first note" 2>&1)
+  search_out=$(run_bounded "$QUICK_TRY_TIMEOUT" brain search "first note" 2>&1)
   search_rc=$?
   set -e
   if echo "$ask_out$search_out" | grep -qi 'hello\|first note'; then
     note_pass "brain:ask-or-search"
+  elif [ $ask_rc -eq 124 ] || [ $search_rc -eq 124 ]; then
+    note_fail "brain:ask-or-search timeout=${QUICK_TRY_TIMEOUT}s (ask_rc=$ask_rc search_rc=$search_rc)"
   else
     echo "--- brain ask output (exit=$ask_rc) ---"
     printf '%s\n' "$ask_out"
@@ -404,6 +422,11 @@ echo "=========================================="
 echo "PASS (${#PASS[@]}): ${PASS[*]:-none}"
 echo "FAIL (${#FAILS[@]}): ${FAILS[*]:-none}"
 echo "log: $LOG"
+# The PASS/FAIL footer used to reach the log only, so the routine agent (and
+# routine-run.sh, which greps for these lines) saw a bare verdict with no step
+# names. Mirror both onto the status stream.
+emit_status "PASS (${#PASS[@]})"
+emit_status "FAIL (${#FAILS[@]}): ${FAILS[*]:-none}"
 emit_status "log: $LOG"
 echo "=========================================="
 
@@ -413,8 +436,9 @@ if [ "${#FAILS[@]}" -eq 0 ]; then
   emit_json '{"verdict":"GREEN","sandbox":"%s","pass":%d}\n' "$FRESH_ROOT" "${#PASS[@]}"
   exit 0
 else
-  echo "VERDICT: RED" >&2
-  emit_status "VERDICT: RED"
-  emit_json '{"verdict":"RED","sandbox":"%s","fails":%s}\n' "$FRESH_ROOT" "$(printf '%s\n' "${FAILS[@]}" | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')"
+  FAIL_STEPS="$(fail_steps_summary "${FAILS[@]}")"
+  echo "VERDICT: RED ${FAIL_STEPS}" >&2
+  emit_status "VERDICT: RED ${FAIL_STEPS}"
+  emit_json '{"verdict":"RED","sandbox":"%s","steps":"%s","fails":%s}\n' "$FRESH_ROOT" "$FAIL_STEPS" "$(printf '%s\n' "${FAILS[@]}" | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')"
   exit 1
 fi
