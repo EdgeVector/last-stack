@@ -88,6 +88,8 @@ bash tests/last-stack-feature-prove-routine.sh
 bash tests/last-stack-fleet-performance-routine.sh
 bash tests/last-stack-why-stopped-routine.sh
 bash tests/last-stack-why-stopped-loom.sh
+# Class A must not fire on class-a-heal wrapper timeout when heal exits 0.
+bash tests/last-stack-why-stopped-class-a-timeout.sh
 bash tests/last-stack-lastdb-ops-offenders.sh
 bash tests/last-stack-lastdb-ops-offenders-routine.sh
 bash tests/last-stack-kanban-pickup-workers.sh
