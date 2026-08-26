@@ -79,3 +79,9 @@ If the node is unavailable, the guard does not use RSS as a substitute for
 footprint. It writes a warning and takes no action for that cycle.
 
 Fixtures: `tests/last-stack-lastdb-memory-guard.sh` (in the required CI gate).
+
+## Companion host guards
+
+GUI apps, cargo test binaries, and host pressure alerts live in
+`docs/host-memory-guards.md`. Those jobs do not restart `lastdbd` and do
+not change the 16 GiB footprint policy on this page.

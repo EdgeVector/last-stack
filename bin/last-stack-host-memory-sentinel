@@ -1,0 +1,123 @@
+#!/bin/bash
+# last-stack-host-memory-sentinel
+#
+# Detection layer for host memory incidents. Pages Tom (ra notify) and posts a
+# Situations notice within minutes of trouble, WITH attribution — instead of
+# the incident being discovered by feel hours later.
+#
+# Born from 2026-08-22: an afternoon jetsam storm (22 GiB cargo test binary,
+# 14 events) and an evening 38.5 GB swap crush (VM oversubscription + lastdbd
+# footprint balloons) were both discovered by the user, not by tooling.
+# Brain: papercut-fold-test-binary-22gib-rss-jetsam-storm-20260822,
+#        papercut-tart-laststack-dogfood-vm-left-running-holds-29gb.
+#
+# Repo of record. The live copy runs from the installed Last Stack bin via
+# launchd/com.edgevector.host-memory-sentinel.plist. Edit here, then install;
+# never hand-edit a copy under ~/.lastdb/monitoring.
+#
+# This sentinel only OBSERVES and ALERTS. It never kills anything. The kill
+# guards are separate: last-stack-lastdb-memory-guard (primary lastdbd,
+# phys_footprint@16GiB), last-stack-testbin-memory-guard (cargo test
+# binaries, 8 GiB), and last-stack-gui-app-memory-guard (Activity Monitor, 8 GiB).
+#
+# Checks, each with an independent 2h alert cooldown:
+#   jetsam  — a JetsamEvent diagnostic report newer than the last one seen
+#   swap    — system swap used >= SENTINEL_SWAP_ALERT_MB (default 20480)
+#   freepct — memory_pressure free percentage <= SENTINEL_FREE_PCT_ALERT (8)
+#
+# Every alert appends the top-3 memory holders (top -o mem: MEM + CMPRS) so
+# the page names the offender.
+#
+# Tunables (env):
+#   SENTINEL_SWAP_ALERT_MB   default 20480
+#   SENTINEL_FREE_PCT_ALERT  default 8
+#   SENTINEL_COOLDOWN_SEC    default 7200
+#   SENTINEL_DRY_RUN         set 1 to log alerts without paging
+#   SENTINEL_LOG_DIR         default $HOME/.lastdb/monitoring
+#   SENTINEL_JETSAM_DIR      default /Library/Logs/DiagnosticReports
+#   SENTINEL_RA              default $HOME/.local/bin/ra
+#   SENTINEL_SITUATIONS      default $HOME/.local/bin/situations
+#   SENTINEL_PATH            PATH pin under launchd
+
+set -u
+export PATH="${SENTINEL_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}"
+
+SWAP_ALERT_MB="${SENTINEL_SWAP_ALERT_MB:-20480}"
+FREE_PCT_ALERT="${SENTINEL_FREE_PCT_ALERT:-8}"
+COOLDOWN_SEC="${SENTINEL_COOLDOWN_SEC:-7200}"
+DRY_RUN="${SENTINEL_DRY_RUN:-0}"
+LOG_DIR="${SENTINEL_LOG_DIR:-${HOME}/.lastdb/monitoring}"
+LOG="${LOG_DIR}/host-memory-sentinel.log"
+STATE_DIR="${LOG_DIR}/host-memory-sentinel.state"
+JETSAM_DIR="${SENTINEL_JETSAM_DIR:-/Library/Logs/DiagnosticReports}"
+RA_BIN="${SENTINEL_RA:-$HOME/.local/bin/ra}"
+SITUATIONS_BIN="${SENTINEL_SITUATIONS:-$HOME/.local/bin/situations}"
+mkdir -p "$LOG_DIR" "$STATE_DIR"
+
+ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
+log() { echo "$(ts) $*" | tee -a "$LOG" >/dev/null; echo "$(ts) $*"; }
+
+cooldown_ok() {
+  local key="$1" f="$STATE_DIR/last-alert-$key" last now
+  last=$(cat "$f" 2>/dev/null || echo 0)
+  now=$(date +%s)
+  [ $((now - last)) -ge "$COOLDOWN_SEC" ]
+}
+
+mark_alert() { date +%s > "$STATE_DIR/last-alert-$1"; }
+
+top_holders() {
+  top -l 1 -o mem -n 3 -stats pid,command,mem,cmprs 2>/dev/null \
+    | tail -3 | awk '{printf "%s %s mem=%s cmprs=%s; ", $1, $2, $3, $4}'
+}
+
+alert() {
+  local key="$1" msg="$2"
+  if ! cooldown_ok "$key"; then
+    log "alert_suppressed key=$key (cooldown) $msg"
+    return 0
+  fi
+  mark_alert "$key"
+  local full="[host-memory-sentinel] $msg | top: $(top_holders)"
+  log "ALERT key=$key $full"
+  if [ "$DRY_RUN" = "1" ]; then
+    log "DRY_RUN: page + notice skipped"
+    return 0
+  fi
+  "$RA_BIN" notify "$full" --priority high >/dev/null 2>&1 || true
+  "$SITUATIONS_BIN" notice \
+    --title "host memory: $msg" --kind other --system host-memory \
+    --actor "routine:last-stack-host-memory-sentinel" \
+    >/dev/null 2>&1 || true
+}
+
+# --- check 1: new jetsam report ---
+newest_jetsam=$(ls -t "$JETSAM_DIR"/JetsamEvent-*.ips 2>/dev/null | head -1)
+if [ -n "$newest_jetsam" ]; then
+  seen=$(cat "$STATE_DIR/last-jetsam" 2>/dev/null || echo "")
+  if [ -z "$seen" ]; then
+    # first run: baseline silently, do not alert on history
+    echo "$newest_jetsam" > "$STATE_DIR/last-jetsam"
+  elif [ "$newest_jetsam" != "$seen" ]; then
+    echo "$newest_jetsam" > "$STATE_DIR/last-jetsam"
+    largest=$(grep -m1 -o '"largestProcess"[^,]*' "$newest_jetsam" 2>/dev/null | cut -d'"' -f4)
+    alert jetsam "kernel jetsam event $(basename "$newest_jetsam") largestProcess=${largest:-unknown}"
+  fi
+fi
+
+# --- check 2: swap ---
+swap_mb=$(sysctl -n vm.swapusage 2>/dev/null \
+  | sed -n 's/.*used = \([0-9.]*\)M.*/\1/p' | awk '{printf "%d", $1+0}')
+if [ -n "$swap_mb" ] && [ "$swap_mb" -ge "$SWAP_ALERT_MB" ] 2>/dev/null; then
+  alert swap "swap_used_mb=$swap_mb >= $SWAP_ALERT_MB"
+fi
+
+# --- check 3: free percentage ---
+free_pct=$(memory_pressure -Q 2>/dev/null \
+  | sed -n 's/.*free percentage: \([0-9]*\)%.*/\1/p')
+if [ -n "$free_pct" ] && [ "$free_pct" -le "$FREE_PCT_ALERT" ] 2>/dev/null; then
+  alert freepct "memory_free_pct=$free_pct <= $FREE_PCT_ALERT"
+fi
+
+log "ok swap_mb=${swap_mb:-unknown} free_pct=${free_pct:-unknown}"
+exit 0
