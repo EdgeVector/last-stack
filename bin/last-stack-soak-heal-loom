@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# last-stack-soak-heal-loom — tick the heal-soak loom graph for one app.
+# Kicked by host-track soak-watch on soak RED. One run per INCIDENT: the
+# idempotency key is the open soak-red card slug, so a repeated kick (each
+# 20-min tick) resumes the existing execution, and a red soak of a heal fix
+# re-enters the same bounded run instead of resetting the ×3 budget.
+#
+#   last-stack-soak-heal-loom --app <app> --digest <digest> --key <card-slug>
+#       [--json] [--quiet] [--dry-run] [--live]
+#
+# Exit: 0 ran/noop, 2 usage, 3 loom unavailable (host-track tolerates 3 —
+# the P0 card is already filed; heal is best-effort on top).
+set -euo pipefail
+
+APP=""
+DIGEST=""
+KEY=""
+JSON=0
+QUIET=0
+DRY=0
+LIVE="${LAST_STACK_SOAK_HEAL_LIVE:-1}"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --app) APP="${2:-}"; shift 2 ;;
+    --digest) DIGEST="${2:-}"; shift 2 ;;
+    --key) KEY="${2:-}"; shift 2 ;;
+    --json) JSON=1; shift ;;
+    --quiet|-q) QUIET=1; shift ;;
+    --dry-run) DRY=1; shift ;;
+    --live) LIVE=1; shift ;;
+    --no-live) LIVE=0; shift ;;
+    -h|--help)
+      sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    *) echo "soak-heal-loom: unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+[ -n "$APP" ] || { echo "soak-heal-loom: --app required" >&2; exit 2; }
+[ -n "$KEY" ] || KEY="soak-red-$APP-${DIGEST:0:12}"
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
+STAMP="${LAST_STACK_SOAK_HEAL_STAMP:-$HOME/.last-stack/state/soak-heal-$APP.json}"
+
+log() { [ "$QUIET" -eq 1 ] || printf 'soak-heal-loom: %s\n' "$*" >&2; }
+
+write_stamp() {
+  mkdir -p "$(dirname "$STAMP")"
+  jq -n --arg status "$1" --arg key "${2:-}" --arg outcome "${3:-}" --arg detail "${4:-}" \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg app "$APP" \
+    '{ts:$ts, app:$app, status:$status, key:$key, outcome:$outcome, detail:$detail, engine:"loom"}' \
+    > "$STAMP"
+}
+
+if [ "$DRY" -eq 1 ]; then
+  det="app=$APP digest=${DIGEST:0:12} key=$KEY live=$LIVE"
+  write_stamp dry-run "$KEY" noop "$det"
+  [ "$JSON" -eq 1 ] && printf '{"outcome":"noop","key":"%s","dry_run":true}\n' "$KEY" \
+    || log "dry-run $det"
+  exit 0
+fi
+
+if ! command -v loom >/dev/null 2>&1; then
+  log "loom not on PATH"
+  write_stamp unavailable "$KEY" error "loom-missing"
+  exit 3
+fi
+if ! loom ping >/dev/null 2>&1; then
+  log "loom ping failed"
+  write_stamp unavailable "$KEY" error "loom-ping-failed"
+  exit 3
+fi
+
+exe="$(command -v loom)"
+real="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$exe")"
+install_root="$(dirname "$(dirname "$real")")"
+defs=""
+scripts=""
+for cand in "${LOOM_SOAK_DEFS:-}" "$ROOT/lib/soak-loom" "$install_root/definitions"; do
+  [ -n "$cand" ] && [ -f "$cand/heal-soak.json" ] && defs="$cand" && break
+done
+for cand in "${LOOM_SCRIPTS:-}" "$ROOT/lib/soak-loom" "$install_root/scripts"; do
+  [ -n "$cand" ] && [ -f "$cand/loom-soak-collect.sh" ] && scripts="$cand" && break
+done
+if [ -z "$defs" ] || [ -z "$scripts" ]; then
+  log "heal-soak definition/scripts not found"
+  write_stamp unavailable "$KEY" error "defs-missing"
+  exit 3
+fi
+export LOOM_SCRIPTS="$scripts"
+if [ "$LIVE" -eq 1 ]; then
+  export LOOM_LIVE=1
+  export LOOM_SOAK_HEAL_LIVE=1
+else
+  unset LOOM_LIVE LOOM_SOAK_HEAL_LIVE || true
+fi
+
+loom publish "$defs/heal-soak.json" >/dev/null
+
+input="$(jq -cn --arg app "$APP" --arg digest "$DIGEST" --arg card "$KEY" \
+  '{app:$app, digest:$digest, card:$card, max_attempts:3}')"
+
+log "loom run heal-soak --key $KEY"
+view="$(loom run heal-soak --key "$KEY" --input "$input" || true)"
+status="$(printf '%s\n' "$view" | awk -F': ' '/^status:/{print $2; exit}')"
+det="app=$APP key=$KEY status=${status:-unknown}"
+oc="ok"
+case "${status:-}" in
+  succeeded|waiting|parked|running) oc="ok" ;;
+  failed) oc="error" ;;
+  *) oc="error" ;;
+esac
+write_stamp "${status:-unknown}" "$KEY" "$oc" "$det"
+[ "$JSON" -eq 1 ] && printf '{"outcome":"%s","key":"%s","status":"%s"}\n' "$oc" "$KEY" "${status:-unknown}" \
+  || log "SOAK_HEAL outcome=$oc $det"
+[ "$oc" = "error" ] && exit 3
+exit 0

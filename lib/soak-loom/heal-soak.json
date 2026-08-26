@@ -1,0 +1,73 @@
+{
+  "name": "heal-soak",
+  "version": "1",
+  "start_at": "COLLECT",
+  "max_depth": 2,
+  "node_budget": 40,
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "app": { "type": "string" },
+      "digest": { "type": "string" },
+      "card": { "type": "string" },
+      "max_attempts": { "type": "integer" }
+    },
+    "required": ["app"]
+  },
+  "states": {
+    "COLLECT": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-soak-collect.sh\""],
+      "effects": "none",
+      "timeout_sec": 120,
+      "next": "DECIDE",
+      "on_error": "FAILED"
+    },
+    "DECIDE": {
+      "type": "choice",
+      "path": "verdict",
+      "map": {
+        "green": "DONE",
+        "soaking": "WAIT_SOAK",
+        "exhausted": "REPORT"
+      },
+      "default": "FIX"
+    },
+    "WAIT_SOAK": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-soak-wait.sh\""],
+      "effects": "none",
+      "timeout_sec": 5400,
+      "next": "COLLECT",
+      "on_error": "COLLECT"
+    },
+    "FIX": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-soak-fix.sh\""],
+      "effects": "checked",
+      "check": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-soak-check-fix.sh\""],
+      "timeout_sec": 3600,
+      "next": "REDEPLOY",
+      "on_error": "COLLECT"
+    },
+    "REDEPLOY": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-soak-redeploy.sh\""],
+      "effects": "checked",
+      "check": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-soak-check-canary.sh\""],
+      "timeout_sec": 1800,
+      "next": "COLLECT",
+      "on_error": "COLLECT"
+    },
+    "REPORT": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-soak-report.sh\""],
+      "effects": "idempotent",
+      "timeout_sec": 120,
+      "next": "FAILED",
+      "on_error": "FAILED"
+    },
+    "DONE": { "type": "succeed" },
+    "FAILED": { "type": "fail" }
+  }
+}
