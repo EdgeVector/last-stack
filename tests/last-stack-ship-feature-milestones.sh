@@ -23,20 +23,22 @@ forbid() {
   fi
 }
 
-require 'North Star → milestone → Kanban routine' "$skill"
+# Factory contract (2026-08-26): loom ship-feature v4 is the engine; the
+# legacy North Star → milestone pipeline survives only as the non-github
+# venue fallback.
+require 'loom run ship-feature --key <key>' "$skill"
+require 'design-approval --payload' "$skill"
+require 'Never signal an approval the user did not give' "$skill"
+require 'last-stack-pr-venue <owner/repo> <repo-root>' "$skill"
+require 'proof_command' "$skill"
+require 'force_drift_until_rev' "$skill"
+require 'ship-<feature-kebab>-<yyyymmdd>' "$skill"
 require 'last-stack-design-pack' "$skill"
-require 'must not kanban add cards' "$skill"
-require '## MILESTONE_REQUEST' "$skill"
-require 'slug=<milestone-slug>' "$skill"
-require 'status=pending' "$skill"
+# Fallback pointers must survive so non-github venues still have a path.
+require 'sop-feature-ship-loop' "$skill"
 require 'last-stack-ship-handoff' "$skill"
+require '## MILESTONE_REQUEST' "$skill"
 require 'eligible_for_claim: true' "$skill"
-require 'routines run last-stack-north-star-driver' "$skill"
-require 'NORTH_STAR_DRIVER_TARGET=<north-star-slug>' "$skill"
-require 'MILESTONE_DRIVER_TARGET=<milestone-slug> routines run last-stack-milestone-driver' "$skill"
-require 'The milestone routine—not' "$skill"
-require 'kanban milestone detail <milestone-slug> --json' "$skill"
-require 'kanban milestone groom --json' "$skill"
 require '`last-stack-north-star-driver` converts one North Star outcome request' "$playbook"
 require '`last-stack-milestone-driver` creates/links the milestone' "$playbook"
 require "Completion comes only from the CLI's proof-gated milestone transition" "$playbook"
