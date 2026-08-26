@@ -238,6 +238,8 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
 . "$_SCRIPT_DIR/dev-photograph-stamp-gate.sh"
 # shellcheck source=launchd-job-checks.sh
 . "$_SCRIPT_DIR/launchd-job-checks.sh"
+# shellcheck source=live-socket-health.sh
+. "$_SCRIPT_DIR/live-socket-health.sh"
 CAS_PROBE_SH="$_SCRIPT_DIR/cas-mutation-probe.sh"
 
 if [ "${CHECK_DEV_STAMP:-0}" -eq 1 ]; then
@@ -1059,26 +1061,43 @@ live_install_sidebin() {
     die "launchd job-definition reload failed after bootstrap retries; the primary is UNLOADED. Recover: launchctl bootstrap gui/${uid} ${LAUNCHD_PLIST} then launchctl print gui/${uid}/${LAUNCHD_LABEL}"
   fi
 
-  # Wait for the reloaded instance's socket. Recovery after an unclean
-  # prior exit can take 60-90s+, and starting a SECOND lastdbd against the
-  # live home while the launchd one is still booting is exactly what produced
-  # the 2026-07-17 boot storm (3 instances in 20s + "database is locked"
-  # failures; card lastdb-safe-upgrade-cutover-supervisor-race). While the
-  # launchd job exists, KeepAlive owns respawns — NEVER direct-start a rival.
+  # Wait for a LIVE listener + /health. A leftover folddb.sock inode is
+  # still `-S` after bootout; waiting only for the inode reports
+  # "socket up after 0s" and then the post-check curls a dead listener
+  # (2026-08-26: bootstrap EIO, leftover sock dated hours earlier, RED).
+  # Unlink the leftover only when nothing holds it. Recovery after an
+  # unclean prior exit can take 60-90s+. Starting a SECOND lastdbd
+  # against the live home while the launchd one is still booting is the
+  # 2026-07-17 boot storm (card lastdb-safe-upgrade-cutover-supervisor-race).
+  # While the launchd job exists, KeepAlive owns respawns — NEVER
+  # direct-start a rival.
   local wait_secs="${LASTDB_CUTOVER_SOCKET_WAIT_SECS:-180}"
-  local waited=0
-  while [ ! -S "$PRIMARY_SOCK" ] && [ "$waited" -lt "$wait_secs" ]; do
-    sleep 2
-    waited=$((waited + 2))
-  done
-  if [ -S "$PRIMARY_SOCK" ]; then
-    log "socket up after ${waited}s"
+  local sock_wait_out="" sock_wait_rc=0
+  set +e
+  sock_wait_out="$(wait_for_live_unix_socket_health "$PRIMARY_SOCK" "$wait_secs" 2>&1)"
+  sock_wait_rc=$?
+  set -e
+  if [ -n "$sock_wait_out" ]; then
+    while IFS= read -r line; do
+      [ -n "$line" ] && log "$line"
+    done <<< "$sock_wait_out"
+  fi
+  if [ "$sock_wait_rc" -eq 0 ]; then
+    :
   elif launchctl print "gui/${uid}/${LAUNCHD_LABEL}" >/dev/null 2>&1; then
-    warn "socket still missing after ${wait_secs}s but launchd job is loaded — NOT direct-starting a second daemon (lock fight). Inspect: launchctl print gui/${uid}/${LAUNCHD_LABEL}; tail ~/.lastdb/last_boot_error.txt"
+    warn "listener/health still missing after ${wait_secs}s but launchd job is loaded — NOT direct-starting a second daemon (lock fight). Inspect: launchctl print gui/${uid}/${LAUNCHD_LABEL}; tail ~/.lastdb/last_boot_error.txt"
   else
-    warn "no launchd job and no socket after ${wait_secs}s; starting $dest/lastdbd --data-dir $PRIMARY_HOME once"
+    warn "no launchd job and no healthy socket after ${wait_secs}s; starting $dest/lastdbd --data-dir $PRIMARY_HOME once"
     nohup "$dest/lastdbd" --data-dir "$PRIMARY_HOME" \
       >>"${LASTDB_MANUAL_LOG:-/opt/homebrew/var/log/lastdb/lastdbd.manual-cutover.log}" 2>&1 &
+    set +e
+    sock_wait_out="$(wait_for_live_unix_socket_health "$PRIMARY_SOCK" "$wait_secs" 2>&1)"
+    set -e
+    if [ -n "$sock_wait_out" ]; then
+      while IFS= read -r line; do
+        [ -n "$line" ] && log "$line"
+      done <<< "$sock_wait_out"
+    fi
   fi
   rm -f "$lock"
 }
@@ -1576,12 +1595,11 @@ fi
 INSTALLED_CLI="$(lastdb_binary_version "$INSTALLED_CLI_BIN" || true)"
 log "installed lastdb --version: $INSTALLED_CLI"
 
-# Wait for live socket health
+# Wait for live socket health. A leftover inode without a listener is not
+# healthy — require pid + /health, same bar as live_install_sidebin.
 LIVE_OK=0
 for i in $(seq 1 120); do
-  if [ -S "$PRIMARY_SOCK" ] \
-    && curl -sS --max-time 3 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' http://x/health 2>/dev/null \
-      | grep -q '"status":"ok"'; then
+  if live_unix_socket_is_healthy "$PRIMARY_SOCK"; then
     LIVE_OK=1
     break
   fi

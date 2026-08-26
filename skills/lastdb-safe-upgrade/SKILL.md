@@ -221,6 +221,15 @@ proxy is optional later for near-zero client impact.
       before it dies. An unloaded primary is a total factory outage, not a log
       line.
 
+16. **Leftover socket is not up.** After `bootout`, a leftover `folddb.sock`
+    inode still passes `[ -S sock ]` with no listener. Waiting only for the
+    inode reports `socket up after 0s`, then the live `/health` poll spends
+    its whole budget on a dead file (2026-08-26: bootstrap EIO, leftover sock
+    from hours earlier, `VERDICT: RED`). The driver unlinks that leftover
+    **only when no process holds it**, then waits until a listener pid **and**
+    `/health` are ok. Helper: `scripts/live-socket-health.sh`. Brain:
+    `papercut-lastdb-safe-upgrade-stale-socket-health-after-bootout`.
+
 ## Do this, in order
 
 ### A. Prefer the driver script (default)
