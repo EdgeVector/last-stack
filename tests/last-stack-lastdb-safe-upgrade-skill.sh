@@ -100,5 +100,13 @@ grep -qi 'DEV photograph' "$skill_md" || {
   echo "FAIL: SKILL.md must require a DEV photograph stamp before live cutover" >&2
   exit 1
 }
+grep -q 'live-socket-health.sh' "$driver" || {
+  echo "FAIL: driver must source live-socket-health.sh" >&2
+  exit 1
+}
+grep -q 'wait_for_live_unix_socket_health' "$driver" || {
+  echo "FAIL: driver must wait for listener + /health after launchd reload" >&2
+  exit 1
+}
 
 echo "OK: lastdb-safe-upgrade skill packaged for multi-harness setup"
