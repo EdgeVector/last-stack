@@ -18,7 +18,10 @@ if [ ! -f "$RUN_SH" ]; then
 fi
 
 # Capture everything; run.sh prints VERDICT on stderr and optional JSON on stdout.
-TMP="$(mktemp -t llms-txt-routine-run.XXXXXX)"
+# Use an explicit ${TMPDIR:-/tmp} template. Darwin prefix-only mktemp selects
+# /var/folders/... which the Codex/routine sandbox denies
+# (papercut-last-stack-ci-bare-mktemp-denied-in-codex-sandbox).
+TMP="$(mktemp "${TMPDIR:-/tmp}/llms-txt-routine-run.XXXXXX")"
 trap 'rm -f "$TMP"' EXIT
 
 set +e
