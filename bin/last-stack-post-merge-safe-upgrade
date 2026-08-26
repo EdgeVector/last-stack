@@ -351,14 +351,114 @@ poll_fleet() {
   mv "$tmp_open" "$open_path"
 }
 
+# --- convergence tail --------------------------------------------------------
+# A main tip used to get its CI record and published build only when the NEXT
+# CR merged, so a quiet repo stranded its last merge as main_unpublished
+# (papercut-post-merge-pass-certifies-previous-merge-quiet-repo-strands-tip;
+# measured 2026-08-26: situations merged 15:04Z, certified 10h later, and only
+# because new work arrived). This tail certifies a stranded tip in place: when
+# a mapped repo's main tip has had no ci-required record for CONVERGE_AFTER
+# seconds, run one bounded hand watcher pass for that ref, then refresh the
+# app so promote/park proceed. Status writes are CAS'd server-side, so racing
+# the forge is safe; --allow-duplicate-coverage is the documented escape hatch
+# for exactly this hand-run.
+
+CONVERGE="${LAST_STACK_POST_MERGE_CONVERGE:-1}"
+CONVERGE_AFTER="${LAST_STACK_POST_MERGE_CONVERGE_AFTER:-300}"
+CONVERGE_TIMEOUT="${LAST_STACK_POST_MERGE_CONVERGE_TIMEOUT:-600}"
+CONVERGE_INTERVAL="${LAST_STACK_POST_MERGE_CONVERGE_INTERVAL:-300}"
+
+converge_repos() {
+  printf 'last-stack\nbrain\nsituations\nfkanban\nroutines\nlastsecrets\nconfigurations\nsearch\n'
+}
+
+tip_seen_path() { printf '%s/%s.tip-seen\n' "$STATE_DIR" "$1"; }
+
+converge_one() {
+  local repo="$1" app tip state seen_file seen_tip seen_epoch now
+  app="$(map_repo_to_app "$repo")"
+  [ -n "$app" ] || return 0
+  tip="$(lastgit ref "$repo" main 2>/dev/null | awk '{print $1}')"
+  [ -n "$tip" ] || return 0
+  state="$(lastgit ci status "$tip" --repo "$repo" --json 2>/dev/null \
+    | jq -r '.state // empty' 2>/dev/null || true)"
+  seen_file="$(tip_seen_path "$repo")"
+  if [ -n "$state" ]; then
+    rm -f "$seen_file"
+    return 0
+  fi
+  now="$(date +%s)"
+  seen_tip=""
+  seen_epoch=""
+  if [ -f "$seen_file" ]; then
+    seen_tip="$(awk '{print $1}' "$seen_file")"
+    seen_epoch="$(awk '{print $2}' "$seen_file")"
+  fi
+  if [ "$seen_tip" != "$tip" ]; then
+    # First sighting: give the forge its own window before hand-running.
+    printf '%s %s\n' "$tip" "$now" >"$seen_file"
+    return 0
+  fi
+  if [ $((now - ${seen_epoch:-$now})) -lt "$CONVERGE_AFTER" ]; then
+    return 0
+  fi
+  if [ "$DRY_RUN" = 1 ]; then
+    log "DRY_RUN: would converge $repo tip=$tip (uncertified ${CONVERGE_AFTER}s+)"
+    return 0
+  fi
+  log "converge $repo tip=$tip: uncertified for ${CONVERGE_AFTER}s+; hand watcher pass"
+  if [ -n "$timeout_bin" ]; then
+    "$timeout_bin" "$CONVERGE_TIMEOUT" lastgit ci watch --repo "$repo" \
+      --ref refs/heads/main --timeout-ms "$((CONVERGE_TIMEOUT * 1000))" \
+      --allow-duplicate-coverage >/dev/null 2>&1 || {
+      log "converge $repo: hand watcher pass did not finish (forge may own it)"
+      return 0
+    }
+  else
+    lastgit ci watch --repo "$repo" --ref refs/heads/main \
+      --timeout-ms "$((CONVERGE_TIMEOUT * 1000))" \
+      --allow-duplicate-coverage >/dev/null 2>&1 || {
+      log "converge $repo: hand watcher pass did not finish (forge may own it)"
+      return 0
+    }
+  fi
+  rm -f "$seen_file"
+  case "$app" in
+    artifact:*)
+      log "converge $repo: refreshing ${app#artifact:} after tip certification"
+      host-track refresh "${app#artifact:}" >/dev/null 2>&1 \
+        || log "converge $repo: refresh failed (next tick retries)"
+      ;;
+  esac
+  log "converged $repo tip=$tip"
+}
+
+converge_pass() {
+  [ "$CONVERGE" = "1" ] || return 0
+  command -v lastgit >/dev/null 2>&1 || return 0
+  local marker now last repo
+  marker="$STATE_DIR/last-converge-epoch"
+  now="$(date +%s)"
+  last="$(cat "$marker" 2>/dev/null || printf 0)"
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  [ $((now - last)) -ge "$CONVERGE_INTERVAL" ] || return 0
+  printf '%s\n' "$now" >"$marker"
+  while IFS= read -r repo; do
+    [ -n "$repo" ] || continue
+    converge_one "$repo" || true
+  done < <(converge_repos)
+}
+
 log "start mode=all state_dir=$STATE_DIR interval=${INTERVAL}s once=$ONCE upgrade=${UPGRADE_BIN:-MISSING} dry_run=$DRY_RUN"
 
 if [ "$ONCE" = 1 ]; then
   poll_fleet
+  converge_pass || true
   exit 0
 fi
 
 while true; do
   poll_fleet || true
+  converge_pass || true
   sleep "$INTERVAL"
 done
