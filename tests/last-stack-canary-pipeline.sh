@@ -121,6 +121,8 @@ manual="$(awk -F 'output=' '/PROMOTE_READY/ {print $2}' "$tmp/promote.out" | awk
 test -r "$manual"
 grep -q 'Candidate SHA: `sha-green`' "$manual"
 
+grep -q 'last-stack-canary-red-loom' "$ROOT/routines/lastdb-canary-soak-watch.md" \
+  || { echo "soak-watch prompt missing canary-red-loom hook" >&2; exit 1; }
 grep -q 'lastdb-canary-soak-watch' "$ROOT/config/routines-registry/lastdb-canary-soak-watch.toml"
 grep -q 'status = "active"' "$ROOT/config/routines-registry/lastdb-canary-soak-watch.toml"
 soak_prompt="$ROOT/routines/lastdb-canary-soak-watch.md"

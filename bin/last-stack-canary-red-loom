@@ -1,0 +1,439 @@
+#!/usr/bin/env bash
+# last-stack-canary-red-loom — when a LastDB canary goes RED, run a loom graph
+# that investigates, lands a fix, and retries the upgrade up to 3 times.
+#
+#   last-stack-canary-red-loom [--json] [--quiet] [--dry-run] [--no-heal] [--status]
+#   last-stack-canary-red-loom --exec exec_… [--key canary-red-exec_…]
+#
+# Same-key resume: a repeated --key returns the existing loom execution.
+# Default live heal. --no-heal runs stand-in nodes (no grok/claude, no sm start).
+#
+# Exit:
+#   0  ran (including idle noop / in-flight resume)
+#   2  usage
+#   3  loom unavailable, defs missing, or bounded run with no progress
+set -euo pipefail
+
+JSON=0
+QUIET=0
+STATUS=0
+DRY=0
+HEAL=1
+KEY=""
+EXEC_ID=""
+LOOKBACK_H="${LAST_STACK_CANARY_RED_LOOKBACK_HOURS:-12}"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json) JSON=1; shift ;;
+    --quiet|-q) QUIET=1; shift ;;
+    --status) STATUS=1; shift ;;
+    --dry-run) DRY=1; shift ;;
+    --no-heal) HEAL=0; shift ;;
+    --heal) HEAL=1; shift ;;
+    --exec) EXEC_ID="${2:-}"; shift 2 ;;
+    --exec=*) EXEC_ID="${1#*=}"; shift ;;
+    --key) KEY="${2:-}"; shift 2 ;;
+    --key=*) KEY="${1#*=}"; shift ;;
+    --lookback-hours) LOOKBACK_H="${2:-}"; shift 2 ;;
+    -h|--help)
+      echo "last-stack-canary-red-loom [--json] [--quiet] [--dry-run] [--no-heal] [--status] [--exec ID] [--key KEY]"
+      exit 0
+      ;;
+    *) echo "unknown: $1" >&2; exit 2 ;;
+  esac
+done
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
+STAMP="${LAST_STACK_CANARY_RED_STAMP:-$HOME/.last-stack/state/canary-red-loom.json}"
+
+log() { [ "$QUIET" -eq 1 ] || printf 'canary-red-loom: %s\n' "$*" >&2; }
+
+write_stamp() {
+  mkdir -p "$(dirname "$STAMP")"
+  ST="$1" EX="${2:-}" DT="${3:-}" KY="${4:-}" OC="${5:-}" LAST_STACK_CANARY_RED_STAMP="$STAMP" python3 -c '
+import json, os, datetime
+p = os.environ["LAST_STACK_CANARY_RED_STAMP"]
+doc = {
+  "ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+  "status": os.environ.get("ST", ""),
+  "exec_id": os.environ.get("EX", ""),
+  "detail": os.environ.get("DT", ""),
+  "key": os.environ.get("KY", ""),
+  "outcome": os.environ.get("OC", ""),
+  "engine": "loom",
+}
+open(p, "w").write(json.dumps(doc) + "\n")
+'
+}
+
+print_status() {
+  LAST_STACK_CANARY_RED_STAMP="$STAMP" python3 -c '
+import json, os, datetime
+p = os.environ["LAST_STACK_CANARY_RED_STAMP"]
+if not os.path.isfile(p):
+    print(json.dumps({"ok": False, "missing": True, "status": "", "ageH": 99.0}))
+    raise SystemExit(0)
+try:
+    d = json.load(open(p))
+except Exception:
+    print(json.dumps({"ok": False, "missing": True, "status": "parse", "ageH": 99.0}))
+    raise SystemExit(0)
+ts = d.get("ts") or ""
+try:
+    t = datetime.datetime.strptime(ts.replace("Z",""), "%Y-%m-%dT%H:%M:%S").replace(tzinfo=datetime.timezone.utc)
+    age_h = (datetime.datetime.now(datetime.timezone.utc) - t).total_seconds() / 3600.0
+except Exception:
+    age_h = 99.0
+status = str(d.get("status") or "")
+print(json.dumps({
+    "ok": status in ("succeeded", "running", "idle"),
+    "missing": False,
+    "status": status,
+    "ageH": round(age_h, 4),
+    "exec_id": d.get("exec_id") or "",
+    "detail": d.get("detail") or "",
+    "key": d.get("key") or "",
+    "outcome": d.get("outcome") or "",
+}))
+'
+}
+
+if [ "$STATUS" -eq 1 ]; then
+  print_status
+  exit 0
+fi
+
+pick_failed() {
+  LOOKBACK_H="$LOOKBACK_H" EXEC_ID="$EXEC_ID" SM_LIST_FILE="${CANARY_RED_SM_LIST_FILE:-}" python3 -c '
+import json, os, sys
+from datetime import datetime, timezone, timedelta
+
+want = (os.environ.get("EXEC_ID") or "").strip()
+lookback_h = os.environ.get("LOOKBACK_H") or "12"
+try:
+    lookback_h = float(lookback_h)
+except ValueError:
+    lookback_h = 12.0
+path = os.environ.get("SM_LIST_FILE") or ""
+if path:
+    try:
+        rows = json.load(open(path))
+    except Exception as e:
+        print(json.dumps({"ok": False, "error": str(e)}))
+        raise SystemExit(3)
+else:
+    import subprocess
+    try:
+        p = subprocess.run(
+            ["sm", "list", "--definition", "lastdb-canary-release", "--json"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception as e:
+        print(json.dumps({"ok": False, "error": str(e)}))
+        raise SystemExit(3)
+    if p.returncode != 0:
+        print(json.dumps({"ok": False, "error": (p.stderr or p.stdout or "sm list failed").strip()}))
+        raise SystemExit(3)
+    try:
+        rows = json.loads(p.stdout)
+    except json.JSONDecodeError:
+        print(json.dumps({"ok": False, "error": "sm list json parse failed"}))
+        raise SystemExit(3)
+if not isinstance(rows, list):
+    rows = []
+
+def parse_ts(s):
+    s = str(s or "").replace("Z", "")
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+now = datetime.now(timezone.utc)
+cutoff = now - timedelta(hours=lookback_h)
+parsed = []
+for r in rows:
+    if not isinstance(r, dict):
+        continue
+    rid = str(r.get("id") or "")
+    status = str(r.get("status") or "")
+    ts = parse_ts(r.get("updatedAt") or r.get("updated_at") or "")
+    parsed.append((ts or datetime.fromtimestamp(0, tz=timezone.utc), rid, status, r))
+parsed.sort(key=lambda t: t[0], reverse=True)
+
+if want:
+    hit = next((r for _, rid, _, r in parsed if rid == want), None)
+    if hit is None:
+        print(json.dumps({"ok": True, "idle": True, "reason": "exec_not_listed", "exec_id": want}))
+        raise SystemExit(0)
+    print(json.dumps({"ok": True, "idle": False, "exec_id": want, "status": hit.get("status"), "state": hit.get("state")}))
+    raise SystemExit(0)
+
+if not parsed:
+    print(json.dumps({"ok": True, "idle": True, "reason": "no_executions"}))
+    raise SystemExit(0)
+
+newest = parsed[0][3]
+nstatus = str(newest.get("status") or "")
+if nstatus in ("running", "waiting"):
+    print(json.dumps({"ok": True, "idle": True, "reason": "lane_busy", "exec_id": newest.get("id"), "status": nstatus}))
+    raise SystemExit(0)
+if nstatus != "failed":
+    print(json.dumps({"ok": True, "idle": True, "reason": "newest_not_failed", "exec_id": newest.get("id"), "status": nstatus}))
+    raise SystemExit(0)
+nts = parsed[0][0]
+if nts < cutoff:
+    print(json.dumps({"ok": True, "idle": True, "reason": "failed_too_old", "exec_id": newest.get("id")}))
+    raise SystemExit(0)
+print(json.dumps({
+    "ok": True,
+    "idle": False,
+    "exec_id": newest.get("id"),
+    "status": nstatus,
+    "state": newest.get("state"),
+    "updatedAt": newest.get("updatedAt") or "",
+}))
+'
+}
+
+picked="$(pick_failed)" || {
+  log "sm list failed"
+  write_stamp unavailable "" "sm-list-failed" "${KEY:-}" "error"
+  exit 3
+}
+
+idle="$(printf '%s\n' "$picked" | python3 -c 'import json,sys
+d=json.load(sys.stdin)
+print("1" if d.get("idle") else "0")
+')"
+picked_id="$(printf '%s\n' "$picked" | python3 -c 'import json,sys
+d=json.load(sys.stdin)
+print(d.get("exec_id") or "")
+')"
+picked_reason="$(printf '%s\n' "$picked" | python3 -c 'import json,sys
+d=json.load(sys.stdin)
+print(d.get("reason") or "")
+')"
+
+if [ "$DRY" -eq 1 ]; then
+  if [ "$JSON" -eq 1 ]; then
+    printf '%s\n' "$picked"
+  else
+    printf 'canary-red dry-run idle=%s exec=%s reason=%s\n' \
+      "$idle" "${picked_id:-}" "${picked_reason:-}"
+  fi
+  oc="noop"
+  [ "$idle" = "1" ] || oc="ok"
+  write_stamp dry-run "${picked_id:-}" "idle=${idle} reason=${picked_reason}" "${KEY:-}" "$oc"
+  printf '%s %s\n' 'ROUTINE_RESULT' "outcome=${oc} detail=idle=${idle} exec=${picked_id:-} reason=${picked_reason}"
+  exit 0
+fi
+
+if [ "$idle" = "1" ]; then
+  write_stamp idle "${picked_id:-}" "reason=${picked_reason}" "${KEY:-}" "noop"
+  if [ "$JSON" -eq 1 ]; then
+    printf '%s\n' "$picked"
+  else
+    printf 'canary-red idle reason=%s exec=%s\n' "${picked_reason:-}" "${picked_id:-}"
+  fi
+  printf '%s %s\n' 'ROUTINE_RESULT' "outcome=noop detail=idle reason=${picked_reason} exec=${picked_id:-}"
+  exit 0
+fi
+
+if ! command -v loom >/dev/null 2>&1; then
+  log "loom not on PATH"
+  write_stamp unavailable "${picked_id}" "loom-missing" "${KEY:-}" "error"
+  exit 3
+fi
+if ! loom ping >/dev/null 2>&1; then
+  log "loom ping failed"
+  write_stamp unavailable "${picked_id}" "loom-ping-failed" "${KEY:-}" "error"
+  exit 3
+fi
+
+exe="$(command -v loom)"
+real="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$exe")"
+install_root="$(dirname "$(dirname "$real")")"
+
+defs=""
+scripts=""
+for cand in \
+  "${LOOM_DEFS:-}" \
+  "$ROOT/lib/canary-red" \
+  "$install_root/definitions" \
+  "${HOME}/.loom/definitions"; do
+  if [ -n "$cand" ] && [ -f "$cand/canary-red-heal.json" ]; then
+    defs="$cand"
+    break
+  fi
+done
+for cand in \
+  "${LOOM_SCRIPTS:-}" \
+  "$ROOT/lib/canary-red" \
+  "$install_root/scripts" \
+  "${HOME}/.loom/scripts"; do
+  if [ -n "$cand" ] && [ -f "$cand/loom-canary-collect.sh" ] && [ -f "$cand/loom-canary-heal.sh" ]; then
+    scripts="$cand"
+    break
+  fi
+done
+if [ -z "$defs" ] || [ -z "$scripts" ]; then
+  log "canary-red definitions/scripts not found"
+  write_stamp unavailable "${picked_id}" "defs-missing" "${KEY:-}" "error"
+  exit 3
+fi
+export LOOM_SCRIPTS="$scripts"
+
+if ! loom publish "$defs/canary-red-heal.json" >/dev/null 2>&1; then
+  log "loom publish canary-red-heal failed"
+  write_stamp unavailable "${picked_id}" "publish-failed" "${KEY:-}" "error"
+  exit 3
+fi
+
+if [ "$HEAL" -eq 1 ]; then
+  export LOOM_CANARY_RED_LIVE=1
+  export LOOM_LIVE=1
+else
+  unset LOOM_CANARY_RED_LIVE || true
+fi
+
+if [ -z "$KEY" ]; then
+  KEY="${LOOM_CANARY_RED_KEY:-canary-red-${picked_id}}"
+fi
+
+input="$(PICKED_ID="$picked_id" python3 -c '
+import json, os
+print(json.dumps({
+    "exec_id": os.environ["PICKED_ID"],
+    "max_attempts": 3,
+}, separators=(",", ":")))
+')"
+
+TIMEOUT_SEC="${LAST_STACK_CANARY_RED_LOOM_TIMEOUT_SEC:-2400}"
+case "$TIMEOUT_SEC" in
+  ''|*[!0-9]*) TIMEOUT_SEC=2400 ;;
+esac
+[ "$TIMEOUT_SEC" -ge 1 ] || TIMEOUT_SEC=2400
+export LAST_STACK_CANARY_RED_LOOM_TIMEOUT_SEC="$TIMEOUT_SEC"
+
+emit_result() {
+  local oc="$1"
+  local det="$2"
+  if [ "$JSON" -eq 1 ]; then
+    printf '{"outcome":"%s","detail":"%s","engine":"loom","key":"%s","exec_id":"%s"}\n' \
+      "$oc" "$(printf '%s' "$det" | tr '"' "'")" "$KEY" "$picked_id"
+  else
+    printf 'CANARY_RED outcome=%s engine=loom exec=%s\n' "$oc" "$picked_id"
+    printf 'detail: %s\n' "$det"
+  fi
+  printf '%s %s\n' 'ROUTINE_RESULT' "outcome=${oc} detail=${det}"
+}
+
+log "loom run canary-red-heal --key $KEY exec=$picked_id timeout=${TIMEOUT_SEC}s"
+
+export LOOM_CANARY_RED_RUN_KEY="$KEY"
+export LOOM_CANARY_RED_RUN_INPUT="$input"
+
+set +e
+view="$(
+  python3 -c '
+import os, signal, subprocess, sys
+argv = [
+    "loom", "run", "canary-red-heal",
+    "--key", os.environ["LOOM_CANARY_RED_RUN_KEY"],
+    "--input", os.environ["LOOM_CANARY_RED_RUN_INPUT"],
+]
+p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                     text=True, start_new_session=True)
+try:
+    out, err = p.communicate(timeout=int(os.environ.get("LAST_STACK_CANARY_RED_LOOM_TIMEOUT_SEC", "2400")))
+except subprocess.TimeoutExpired:
+    try:
+        os.killpg(p.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        out, err = p.communicate(timeout=5)
+    except Exception:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        raise SystemExit(124)
+    raise SystemExit(124)
+sys.stdout.write(out or "")
+if p.returncode not in (0, None):
+    sys.stderr.write(err or "")
+    raise SystemExit(p.returncode or 1)
+' 
+)"
+rc=$?
+set -e
+
+parse_view() {
+  python3 -c '
+import json, sys
+text = sys.stdin.read()
+status = ""
+ctx = {}
+exec_id = ""
+for i, line in enumerate(text.splitlines()):
+    if i == 0 and line.strip() and not line.startswith("status:") and not line.startswith("context.") and not line.startswith("state:"):
+        exec_id = line.strip()
+    if line.startswith("status:"):
+        status = line.split(":", 1)[1].strip()
+    elif line.startswith("context."):
+        key, _, rest = line.partition(":")
+        key = key[len("context."):]
+        rest = rest.strip()
+        try:
+            ctx[key] = json.loads(rest)
+        except Exception:
+            ctx[key] = rest.strip("\"")
+print(json.dumps({
+    "status": status,
+    "loom_id": exec_id,
+    "verdict": str(ctx.get("verdict") or ""),
+    "attempt": ctx.get("attempt"),
+    "outcome": str(ctx.get("outcome") or ""),
+    "detail": str(ctx.get("detail") or ""),
+    "heal_status": str(ctx.get("heal_status") or ""),
+}))
+'
+}
+
+if [ "$rc" -eq 124 ]; then
+  write_stamp timed-out "$picked_id" "loom-timeout=${TIMEOUT_SEC}" "$KEY" "error"
+  emit_result error "exec=${picked_id} loom-timeout=${TIMEOUT_SEC}s key=${KEY}"
+  exit 3
+fi
+
+parsed="$(printf '%s\n' "$view" | parse_view)"
+loom_status="$(printf '%s\n' "$parsed" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status") or "")')"
+verdict="$(printf '%s\n' "$parsed" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("verdict") or "")')"
+heal_status="$(printf '%s\n' "$parsed" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("heal_status") or "")')"
+loom_id="$(printf '%s\n' "$parsed" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("loom_id") or "")')"
+
+det="exec=${picked_id} loom=${loom_id} status=${loom_status} verdict=${verdict} heal=${heal_status} key=${KEY}"
+if [ "$loom_status" = "succeeded" ] || [ "$verdict" = "green" ]; then
+  write_stamp succeeded "$picked_id" "$det" "$KEY" "ok"
+  emit_result ok "$det"
+  exit 0
+fi
+if [ "$loom_status" = "running" ] || [ "$loom_status" = "waiting" ] || [ "$loom_status" = "parked" ]; then
+  write_stamp running "$picked_id" "$det" "$KEY" "ok"
+  emit_result ok "$det"
+  exit 0
+fi
+if [ "$verdict" = "idle" ]; then
+  write_stamp idle "$picked_id" "$det" "$KEY" "noop"
+  emit_result noop "$det"
+  exit 0
+fi
+write_stamp "${loom_status:-failed}" "$picked_id" "$det" "$KEY" "error"
+emit_result error "$det"
+exit 3

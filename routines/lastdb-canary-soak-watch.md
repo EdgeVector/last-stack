@@ -32,6 +32,20 @@ If no execution is running, the tick is a no-op and this routine is `noop`.
 execution here — that is the nightly routine's job, and starting one out of
 band is how a cutover happens at an hour nobody expects.
 
+## When the tick closes FAILED
+
+A RED probe or soak is not a card. After `sm tick` returns a terminal fail,
+run the loom healer so an agent investigates, merges a fix, and retries the
+canary upgrade (cap 3). Same `--key` resumes:
+
+```bash
+"$last_stack/bin/last-stack-canary-red-loom" --json
+```
+
+The healer is also a dedicated hourly gate at :36
+(`lastdb-canary-red-heal`). This wake starts it immediately so a RED at :34
+does not wait. Do not skip the probe bar. Do not restart lastdbd.
+
 ## What the SOAK state checks
 
 `SOAK` runs `last-stack-canary-pipeline soak-watch`, whose hard checks are
