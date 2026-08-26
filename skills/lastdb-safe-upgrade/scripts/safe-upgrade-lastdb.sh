@@ -1140,10 +1140,24 @@ fi
 # probe socket path over the 103-byte sockaddr_un limit (observed 2026-08-23:
 # "data dir ... is too deep to host a Unix control socket"), so the
 # TMPDIR-derived WORK base gets the same off-HOME fallback as ROLLBACK_ROOT.
+# Darwin TMPDIR under /var/folders/... is also too long (observed 2026-08-26:
+# grok-goal scratch 56-byte prefix → folddb-full.sock 133 bytes). Mini refuses
+# a data dir over 82 bytes. Fall back to /tmp when the prefix cannot fit
+# /lastdb-safe-upgrade.XXXXXX/probes/smoke/copy-<epoch>-<pid>/data.
 _work_tmp="${TMPDIR:-/tmp}"
 case "$(cd "$_work_tmp" 2>/dev/null && pwd -P || printf '%s' "$_work_tmp")" in
   "$_rollback_home_real"|"$_rollback_home_real"/*) _work_tmp="/tmp" ;;
 esac
+# 70 bytes reserved for /lastdb-safe-upgrade.XXXXXX/probes/smoke/copy-.../data
+if [ "${#_work_tmp}" -gt 12 ]; then
+  log "probe WORK prefix ${_work_tmp} is ${#_work_tmp} bytes; using /tmp for sockaddr_un"
+  _work_tmp="/tmp"
+fi
+# An inherited LASTDB_PROBE_ROOT from a prior failed run can be equally long.
+if [ -n "$PROBE_ROOT" ] && [ "${#PROBE_ROOT}" -gt 40 ]; then
+  warn "ignoring inherited LASTDB_PROBE_ROOT (${#PROBE_ROOT} bytes) — too deep for Unix sockets"
+  PROBE_ROOT=""
+fi
 WORK="$(mktemp -d "${_work_tmp}/lastdb-safe-upgrade.XXXXXX")"
 [ -n "$PROBE_ROOT" ] || PROBE_ROOT="$WORK/probes"
 export LASTDB_PROBE_ROOT="$PROBE_ROOT"
