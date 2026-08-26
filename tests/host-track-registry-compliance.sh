@@ -31,7 +31,11 @@ cat > "$good_registry" <<'EOF'
       "links": [{"source": "bin/demo", "target": "$HOME/.local/bin/demo"}],
       "notes": "artifact fixture",
       "safe_upgrade": {
-        "probes": [{"argv": ["bin/demo"], "timeout_s": 10}]
+        "soak_hours": 1,
+        "probes": [
+          {"argv": ["bin/demo"], "timeout_s": 10},
+          {"argv": ["bin/demo", "read"], "timeout_s": 10}
+        ]
       }
     },
     {
@@ -162,5 +166,49 @@ if HOST_TRACK_REGISTRY="$no_probe" "$ROOT/bin/host-track" validate-registry --js
 fi
 jq -e '.ok == false and .missing_probes >= 1' "$tmp/noprobe.out" >/dev/null \
   || fail "missing probes should be counted: $(cat "$tmp/noprobe.out")"
+
+# Soak-by-default: an artifact app resolving to soak 0 without a written
+# reason fails closed; the same entry with soak_exempt_reason passes.
+soak_zero="$tmp/soak-zero.json"
+jq '.apps[0].safe_upgrade.soak_hours = 0' "$good_registry" > "$soak_zero"
+if HOST_TRACK_REGISTRY="$soak_zero" "$ROOT/bin/host-track" validate-registry --json >"$tmp/soakzero.out" 2>/dev/null; then
+  cat "$tmp/soakzero.out" >&2
+  fail "artifact app with soak 0 and no reason should fail validate-registry"
+fi
+jq -e '.ok == false and .missing_soak >= 1' "$tmp/soakzero.out" >/dev/null \
+  || fail "missing_soak should be counted: $(cat "$tmp/soakzero.out")"
+
+soak_waived="$tmp/soak-waived.json"
+jq '.apps[0].safe_upgrade.soak_exempt_reason = "test fixture opts out on purpose"' "$soak_zero" > "$soak_waived"
+HOST_TRACK_REGISTRY="$soak_waived" "$ROOT/bin/host-track" validate-registry --json >"$tmp/soakwaived.out" \
+  || fail "soak 0 with a written reason should pass: $(cat "$tmp/soakwaived.out")"
+
+# Inherited default: no per-app soak_hours + defaults.safe_upgrade.soak_hours=1
+# resolves to soaking (no missing_soak).
+soak_inherit="$tmp/soak-inherit.json"
+jq 'del(.apps[0].safe_upgrade.soak_hours) | .defaults.safe_upgrade = {"soak_hours": 1, "min_checks": 3}' \
+  "$good_registry" > "$soak_inherit"
+HOST_TRACK_REGISTRY="$soak_inherit" "$ROOT/bin/host-track" validate-registry --json >"$tmp/soakinherit.out" \
+  || fail "inherited soak default should pass: $(cat "$tmp/soakinherit.out")"
+jq -e 'any(.apps[]; .app == "demo" and .resolved_soak_hours == 1)' "$tmp/soakinherit.out" >/dev/null \
+  || fail "demo should resolve inherited soak: $(cat "$tmp/soakinherit.out")"
+
+# Probe depth: one probe with no waiver fails; a written waiver passes.
+thin="$tmp/thin.json"
+jq '.apps[0].safe_upgrade.probes = [{"argv": ["bin/demo"], "timeout_s": 10}]' "$good_registry" > "$thin"
+if HOST_TRACK_REGISTRY="$thin" "$ROOT/bin/host-track" validate-registry --json >"$tmp/thin.out" 2>/dev/null; then
+  cat "$tmp/thin.out" >&2
+  fail "artifact app with one probe and no waiver should fail validate-registry"
+fi
+jq -e '.ok == false and .thin_probes >= 1' "$tmp/thin.out" >/dev/null \
+  || fail "thin_probes should be counted: $(cat "$tmp/thin.out")"
+thin_waived="$tmp/thin-waived.json"
+jq '.apps[0].safe_upgrade.probe_waiver_reason = "no cheap read verb in the fixture"' "$thin" > "$thin_waived"
+HOST_TRACK_REGISTRY="$thin_waived" "$ROOT/bin/host-track" validate-registry --json >/dev/null \
+  || fail "one probe with a written waiver should pass"
+
+# The shipped registry satisfies the new policies too.
+printf '%s\n' "$default_report" | jq -e '.missing_soak == 0 and .thin_probes == 0' >/dev/null \
+  || fail "default registry should have no missing_soak/thin_probes: $default_report"
 
 printf 'ok: host-track registry compliance\n'

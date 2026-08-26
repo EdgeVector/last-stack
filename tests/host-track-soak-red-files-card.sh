@@ -118,7 +118,7 @@ set +e
 rc2=$?
 set -e
 [ "$rc2" -ne 0 ] || fail "second soak-watch should still be RED"
-grep -q 'already filed' "$tmp/red2.err" || fail "second RED re-filed: $(cat "$tmp/red2.err")"
+grep -q 'incident card .* already open' "$tmp/red2.err" || fail "second RED re-filed: $(cat "$tmp/red2.err")"
 [ "$(wc -l < "$FILE_PR_LOG" | tr -d ' ')" = 1 ] || fail "second RED called file-pr again"
 
 printf 'ok: soak RED files one P0 card\n'

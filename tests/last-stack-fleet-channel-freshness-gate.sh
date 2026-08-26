@@ -115,7 +115,10 @@ cat > "$HOST_TRACK_REGISTRY" <<EOF
       "install_root": "$HOME/apps/demo",
       "links": [{"source": "bin/demo", "target": "$HOME/.local/bin/demo"}],
       "safe_upgrade": {
-        "probes": [{"argv": ["bin/demo"], "timeout_s": 10}]
+        "soak_hours": 0,
+        "soak_exempt_reason": "fixture installs must flip immediately",
+        "probes": [{"argv": ["bin/demo"], "timeout_s": 10}],
+        "probe_waiver_reason": "fixture binary has no read verb"
       },
       "notes": "fleet gate fixture"
     },
