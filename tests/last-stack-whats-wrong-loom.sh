@@ -162,6 +162,8 @@ SH
 chmod 755 "$tmp/bin/loom"
 export LAST_STACK_WHATS_WRONG_STAMP="$tmp/stamp-hang.json"
 export LAST_STACK_WHATS_WRONG_LOOM_TIMEOUT_SEC=1
+# The post-bound readback re-attaches to the same hanging mock, so bound it too.
+export LAST_STACK_WHATS_WRONG_LOOM_READBACK_SEC=2
 export HANG_PID_FILE="$tmp/hang.pid"
 export WHATS_WRONG_SNAPSHOT_FILE="$tmp/snap.json"
 export LOOM_WHATS_WRONG_KEY="whats-wrong-hang-key"
@@ -177,7 +179,12 @@ hang_sec=$((hang_end - hang_start))
 printf '%s\n' "$hout" | grep -q 'ROUTINE_RESULT' || fail "hung loom missing ROUTINE_RESULT: $hout"
 printf '%s\n' "$hout" | grep -q 'outcome=error' || fail "hung loom missing outcome=error: $hout"
 printf '%s\n' "$hout" | grep -q 'exceptions=2' || fail "hung loom missing exceptions count: $hout"
-printf '%s\n' "$hout" | grep -q 'healed=0' || fail "hung loom missing healed count: $hout"
+# A loom that never answers leaves the heal count UNMEASURED. Printing 0 for
+# it is what made a working healer read as broken for six days
+# (papercut-whats-wrong-loom-780s-healed-zero-20260820) — an unmeasured value
+# must not be rendered as a measured one.
+printf '%s\n' "$hout" | grep -q 'healed=unknown' || fail "hung loom must report healed=unknown, not a fabricated 0: $hout"
+printf '%s\n' "$hout" | grep -q 'readback=unavailable' || fail "hung loom missing readback marker: $hout"
 printf '%s\n' "$hout" | grep -q 'loom-timeout=' || fail "hung loom missing timeout marker: $hout"
 if [ -f "$tmp/hang.pid" ]; then
   hpid="$(cat "$tmp/hang.pid")"
@@ -188,5 +195,110 @@ if [ -f "$tmp/hang.pid" ]; then
 else
   fail "hung loom did not write pid file"
 fi
+
+# --- bound fires AFTER heals landed → measured healed>=1, outcome=ok ---
+# The CLOSEOUT node writes context.detail/context.healed and only runs at the
+# end of the graph, so a bounded run has neither. context.heal_results is
+# appended per heal agent, which is the only count a bounded run can report.
+cat >"$tmp/bin/loom" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-}"
+case "$cmd" in
+  ping) echo ok; exit 0 ;;
+  publish) echo "published $(basename "$2" .json)"; exit 0 ;;
+  show)
+    cat <<'VIEW'
+lx-ww-partial
+status: running
+context.heal_results: [{"id":"machine.disk-lastdb","heal_status":"healed"},{"id":"ship.why-stopped-loom","heal_status":"noop"}]
+VIEW
+    exit 0
+    ;;
+  run)
+    # First call hangs (the bounded run). The wrapper kills it, then reads the
+    # execution back; `--key` is idempotent so this returns the same exec.
+    if [ -f "${PARTIAL_MARK:?}" ]; then
+      cat <<'VIEW'
+lx-ww-partial
+status: running
+context.heal_results: [{"id":"machine.disk-lastdb","heal_status":"healed"},{"id":"ship.why-stopped-loom","heal_status":"noop"}]
+VIEW
+      exit 0
+    fi
+    printf 'started\n' >"$PARTIAL_MARK"
+    exec sleep 86400
+    ;;
+  *) echo "unexpected $*" >&2; exit 2 ;;
+esac
+SH
+chmod 755 "$tmp/bin/loom"
+export LAST_STACK_WHATS_WRONG_STAMP="$tmp/stamp-partial.json"
+export LAST_STACK_WHATS_WRONG_LOOM_TIMEOUT_SEC=1
+export LAST_STACK_WHATS_WRONG_LOOM_READBACK_SEC=20
+export PARTIAL_MARK="$tmp/partial.mark"
+export WHATS_WRONG_SNAPSHOT_FILE="$tmp/snap.json"
+export LOOM_WHATS_WRONG_KEY="whats-wrong-partial-key"
+set +e
+pout="$("$BIN" --json --quiet --no-heal)"
+prc=$?
+set -e
+[ "$prc" -eq 0 ] || fail "bound-after-heals should exit 0, got $prc out=$pout"
+printf '%s\n' "$pout" | grep -q 'outcome":"ok"' || fail "bound-after-heals must be ok: $pout"
+printf '%s\n' "$pout" | grep -q 'healed=1' || fail "bound-after-heals must report the measured heal: $pout"
+printf '%s\n' "$pout" | grep -q 'partial=1' || fail "bound-after-heals missing partial marker: $pout"
+python3 - "$LAST_STACK_WHATS_WRONG_STAMP" <<'PY' || fail "partial stamp not written as ok"
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+assert d.get("outcome") == "ok", d
+assert d.get("status") == "timed-out-partial", d
+PY
+unset PARTIAL_MARK
+
+# --- bound fires with a measured ZERO → still red (no masking) ---
+cat >"$tmp/bin/loom" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-}"
+case "$cmd" in
+  ping) echo ok; exit 0 ;;
+  publish) echo "published $(basename "$2" .json)"; exit 0 ;;
+  show)
+    cat <<'VIEW'
+lx-ww-stuck
+status: running
+context.heal_results: []
+VIEW
+    exit 0
+    ;;
+  run)
+    if [ -f "${STUCK_MARK:?}" ]; then
+      cat <<'VIEW'
+lx-ww-stuck
+status: running
+context.heal_results: []
+VIEW
+      exit 0
+    fi
+    printf 'started\n' >"$STUCK_MARK"
+    exec sleep 86400
+    ;;
+  *) echo "unexpected $*" >&2; exit 2 ;;
+esac
+SH
+chmod 755 "$tmp/bin/loom"
+export LAST_STACK_WHATS_WRONG_STAMP="$tmp/stamp-stuck.json"
+export STUCK_MARK="$tmp/stuck.mark"
+export LOOM_WHATS_WRONG_KEY="whats-wrong-stuck-key"
+set +e
+sout="$("$BIN" --json --quiet --no-heal)"
+src=$?
+set -e
+[ "$src" -eq 3 ] || fail "a genuinely stuck loom must stay red, got exit $src out=$sout"
+printf '%s\n' "$sout" | grep -q 'outcome":"error"' || fail "stuck loom must be error: $sout"
+printf '%s\n' "$sout" | grep -q 'healed=0' || fail "stuck loom must report the measured zero: $sout"
+printf '%s\n' "$sout" | grep -q 'measured=1' || fail "stuck loom must mark the zero as measured: $sout"
+unset STUCK_MARK
+unset LAST_STACK_WHATS_WRONG_LOOM_READBACK_SEC
 
 echo "ok"

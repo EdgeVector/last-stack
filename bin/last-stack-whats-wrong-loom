@@ -12,10 +12,21 @@
 # GATE_TIMEOUT_CAP_MS (15m) with empty logs. The wrapper still emits
 # ROUTINE_RESULT with exceptions/healed counts.
 #
+# On that bound the wrapper MEASURES what the run healed; it does not assume
+# zero. The CLOSEOUT node is what writes context.detail/context.healed, and it
+# only runs at the end of the graph, so a bounded run has no detail line — but
+# context.heal_results is appended per heal agent as it finishes, and that is
+# the ground truth. Reporting a hardcoded healed=0 made a working healer look
+# broken for six days (papercut-whats-wrong-loom-780s-healed-zero-20260820)
+# and hid the heals that did land. When the readback itself is unavailable the
+# count is `unknown`, never `0`: an unmeasured value must not be printed as a
+# measured one.
+#
 # Exit:
-#   0  ran (including exceptions=0 noop) or --status/--dry-run printed
+#   0  ran (including exceptions=0 noop), bounded run with heals, or
+#      --status/--dry-run printed
 #   2  usage
-#   3  loom / snapshot / definitions unavailable / loom-timeout
+#   3  loom / snapshot / definitions unavailable / loom-timeout with no heals
 set -euo pipefail
 
 JSON=0
@@ -241,6 +252,145 @@ case "$TIMEOUT_SEC" in
 esac
 [ "$TIMEOUT_SEC" -ge 1 ] || TIMEOUT_SEC=780
 
+# Budget for the post-timeout readback. Small and separate from TIMEOUT_SEC:
+# it runs *after* the main bound has already fired, so it eats the headroom
+# left under routines' GATE_TIMEOUT_CAP_MS (15m), not the heal budget.
+READBACK_SEC="${LAST_STACK_WHATS_WRONG_LOOM_READBACK_SEC:-45}"
+case "$READBACK_SEC" in
+  ''|*[!0-9]*) READBACK_SEC=45 ;;
+esac
+[ "$READBACK_SEC" -ge 1 ] || READBACK_SEC=45
+
+# Parse a `loom run` / `loom show` view on stdin into one JSON line.
+# Shared by the success path and the timeout readback so the two cannot drift
+# in what they consider a heal.
+parse_loom_view() {
+  python3 -c '
+import json, sys
+text = sys.stdin.read()
+status = ""
+ctx = {}
+exec_id = ""
+for i, line in enumerate(text.splitlines()):
+    if i == 0 and line.strip() and not line.startswith("status:") and not line.startswith("context."):
+        exec_id = line.strip()
+    if line.startswith("status:"):
+        status = line.split(":", 1)[1].strip()
+    elif line.startswith("context."):
+        key, _, rest = line.partition(":")
+        key = key[len("context."):]
+        rest = rest.strip()
+        try:
+            ctx[key] = json.loads(rest)
+        except Exception:
+            ctx[key] = rest.strip("\"")
+
+
+def as_dict(v):
+    if isinstance(v, dict):
+        return v
+    if isinstance(v, str):
+        try:
+            parsed = json.loads(v)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+# `healed` is what CLOSEOUT writes, and CLOSEOUT only runs at the end of the
+# graph. `heal_results` is appended per agent, so it is the only count a
+# bounded run can report. Prefer the finished list, fall back to the live one.
+healed = ctx.get("healed")
+if isinstance(healed, list):
+    healed_n = len(healed)
+else:
+    results = ctx.get("heal_results")
+    if isinstance(results, list):
+        healed_n = 0
+        for row in results:
+            row = as_dict(row)
+            if "heal_status" not in row:
+                for key in ("result", "output", "context", "stdout"):
+                    inner = as_dict(row.get(key))
+                    if inner.get("heal_status") or inner.get("id"):
+                        row = inner
+                        break
+            if str(row.get("heal_status") or "") == "healed":
+                healed_n += 1
+    else:
+        healed_n = None
+
+print(json.dumps({
+    "status": status,
+    "exec_id": exec_id,
+    "outcome": str(ctx.get("outcome") or ""),
+    "detail": str(ctx.get("detail") or ""),
+    "count": ctx.get("count"),
+    "healed_n": healed_n,
+}))
+'
+}
+
+json_field() {
+  # $1 = field name; JSON on stdin. Empty string when absent/null.
+  JSON_FIELD_NAME="$1" python3 -c '
+import json, os, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+v = d.get(os.environ["JSON_FIELD_NAME"])
+print("" if v is None else v)
+'
+}
+
+# Read back the bounded execution to find out what it actually healed.
+#
+# `loom show <ID>` is the direct read, but the exec id only reaches us if loom
+# printed it before the kill. `loom run --key` is idempotent by contract — a
+# repeated key returns the EXISTING execution rather than starting a second one
+# — so it is the fallback read, not a second run. Both are bounded: this runs
+# after the main budget is already spent.
+readback_view() {
+  rb_exec_id="$1"
+  if [ -n "$rb_exec_id" ]; then
+    RB_ID="$rb_exec_id" RB_SEC="$READBACK_SEC" python3 -c '
+import os, subprocess, sys
+try:
+    p = subprocess.run(["loom", "show", os.environ["RB_ID"]],
+                       capture_output=True, text=True,
+                       timeout=int(os.environ["RB_SEC"]))
+except Exception:
+    raise SystemExit(1)
+if p.returncode != 0 or not p.stdout.strip():
+    raise SystemExit(1)
+sys.stdout.write(p.stdout)
+' 2>/dev/null && return 0
+  fi
+  RB_SEC="$READBACK_SEC" python3 -c '
+import os, signal, subprocess, sys
+argv = [
+    "loom", "run", "whats-wrong",
+    "--key", os.environ["LOOM_WHATS_WRONG_RUN_KEY"],
+    "--input", os.environ["LOOM_WHATS_WRONG_RUN_INPUT"],
+]
+p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                     text=True, start_new_session=True)
+try:
+    out, _ = p.communicate(timeout=int(os.environ["RB_SEC"]))
+except subprocess.TimeoutExpired:
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    raise SystemExit(1)
+if p.returncode != 0 or not out.strip():
+    raise SystemExit(1)
+sys.stdout.write(out)
+' 2>/dev/null
+}
+
 count_exceptions() {
   listed="$(list_exceptions 2>/dev/null)" || listed=""
   printf '%s\n' "$listed" | python3 -c '
@@ -311,50 +461,63 @@ set -e
 if [ "$lrc" -ne 0 ] || [ -z "$view" ]; then
   n="$(count_exceptions)"
   if [ "$lrc" -eq 124 ]; then
-    det="exceptions=${n} healed=0 loom-timeout=${TIMEOUT_SEC}s"
     log "loom run timed out after ${TIMEOUT_SEC}s"
-    write_stamp timed-out "" "$det" "$KEY" "error"
-  else
-    det="exceptions=${n} healed=0 loom-run-failed rc=${lrc}"
-    log "loom run failed rc=$lrc"
-    write_stamp failed "" "$det" "$KEY" "error"
+    # loom may have printed the exec id before the kill; that makes the
+    # readback a direct `loom show` instead of a re-attach.
+    partial_id="$(printf '%s\n' "$view" | parse_loom_view | json_field exec_id)"
+    rb="$(readback_view "$partial_id" 2>/dev/null || true)"
+    healed_n=""
+    rb_exec=""
+    if [ -n "$rb" ]; then
+      rb_parsed="$(printf '%s\n' "$rb" | parse_loom_view)"
+      healed_n="$(printf '%s\n' "$rb_parsed" | json_field healed_n)"
+      rb_exec="$(printf '%s\n' "$rb_parsed" | json_field exec_id)"
+    fi
+    [ -n "$rb_exec" ] || rb_exec="$partial_id"
+
+    if [ -z "$healed_n" ]; then
+      # Unmeasured. Say so — printing 0 here is what made a working healer
+      # look broken for six days.
+      det="exceptions=${n} healed=unknown loom-timeout=${TIMEOUT_SEC}s readback=unavailable"
+      log "loom readback unavailable; healed count unknown"
+      write_stamp timed-out "$rb_exec" "$det" "$KEY" "error"
+      emit_result error "$det"
+      exit 3
+    fi
+    if [ "$healed_n" -ge 1 ]; then
+      # The bound outran the graph, not the healer. Heals landed, so this hour
+      # did its job; reporting error here is what buried the signal.
+      det="exceptions=${n} healed=${healed_n} loom-timeout=${TIMEOUT_SEC}s partial=1"
+      log "loom bound fired after ${healed_n} heal(s); reporting ok"
+      write_stamp timed-out-partial "$rb_exec" "$det" "$KEY" "ok"
+      if [ -x "$ROOT/bin/last-stack-brain-append-heartbeat" ]; then
+        ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        "$ROOT/bin/last-stack-brain-append-heartbeat" --line \
+          "whats-wrong $ts ok $det engine=loom" >/dev/null 2>&1 || true
+      fi
+      emit_result ok "$det"
+      exit 0
+    fi
+    # Measured zero: the bound fired and nothing healed. Still red — the card
+    # is explicit that a genuinely stuck loom run must not be masked.
+    det="exceptions=${n} healed=0 loom-timeout=${TIMEOUT_SEC}s measured=1"
+    write_stamp timed-out "$rb_exec" "$det" "$KEY" "error"
+    emit_result error "$det"
+    exit 3
   fi
+  det="exceptions=${n} healed=0 loom-run-failed rc=${lrc}"
+  log "loom run failed rc=$lrc"
+  write_stamp failed "" "$det" "$KEY" "error"
   emit_result error "$det"
   exit 3
 fi
 
-parsed="$(printf '%s\n' "$view" | python3 -c '
-import json, sys
-text = sys.stdin.read()
-status = ""
-ctx = {}
-exec_id = ""
-for i, line in enumerate(text.splitlines()):
-    if i == 0 and line.strip() and not line.startswith("status:") and not line.startswith("context."):
-        exec_id = line.strip()
-    if line.startswith("status:"):
-        status = line.split(":", 1)[1].strip()
-    elif line.startswith("context."):
-        key, _, rest = line.partition(":")
-        key = key[len("context."):]
-        rest = rest.strip()
-        try:
-            ctx[key] = json.loads(rest)
-        except Exception:
-            ctx[key] = rest.strip("\"")
-print(json.dumps({
-    "status": status,
-    "exec_id": exec_id,
-    "outcome": str(ctx.get("outcome") or ""),
-    "detail": str(ctx.get("detail") or ""),
-    "count": ctx.get("count"),
-}))
-')"
+parsed="$(printf '%s\n' "$view" | parse_loom_view)"
 
-run_status="$(printf '%s\n' "$parsed" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))')"
-exec_id="$(printf '%s\n' "$parsed" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("exec_id",""))')"
-det_str="$(printf '%s\n' "$parsed" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("detail",""))')"
-oc_str="$(printf '%s\n' "$parsed" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("outcome",""))')"
+run_status="$(printf '%s\n' "$parsed" | json_field status)"
+exec_id="$(printf '%s\n' "$parsed" | json_field exec_id)"
+det_str="$(printf '%s\n' "$parsed" | json_field detail)"
+oc_str="$(printf '%s\n' "$parsed" | json_field outcome)"
 if [ "$run_status" != "succeeded" ]; then
   n="$(count_exceptions)"
   [ -n "$det_str" ] || det_str="exceptions=${n} healed=0 status=${run_status:-failed}"
