@@ -39,53 +39,143 @@ log() { [ "$QUIET" -eq 1 ] || printf 'why-stopped: %s\n' "$*" >&2; }
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
 export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
 
+# Test seams (product defaults keep live CLI names).
+CLASS_A_HEAL_BIN="${LASTSTACK_CLASS_A_HEAL_BIN:-last-stack-class-a-heal}"
+HOST_TRACK_BIN="${LASTSTACK_WHY_STOPPED_HOST_TRACK_BIN:-host-track}"
+KANBAN_BIN="${LASTSTACK_WHY_STOPPED_KANBAN_BIN:-kanban}"
+CLASS_A_TIMEOUT_S="${LASTSTACK_WHY_STOPPED_CLASS_A_TIMEOUT_S:-8}"
+
 classes=()
 detail=()
 actions=()
 
+have_cmd() {
+  local c="$1"
+  [ -n "$c" ] || return 1
+  [ -x "$c" ] && return 0
+  command -v "$c" >/dev/null 2>&1
+}
+
+# Hard-broken / hard-stale only. Soft-stale (stale=true, usable current) is
+# not Class A — see design-last-stack-class-a-atomic-install-soft-stale.
+host_track_hard_unhealthy() {
+  local st freshness problem
+  have_cmd "$HOST_TRACK_BIN" || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  st="$("$HOST_TRACK_BIN" status --json last-stack 2>/dev/null || true)"
+  [ -n "$st" ] || return 1
+  freshness="$(printf '%s\n' "$st" | jq -r '.freshness // empty' 2>/dev/null || true)"
+  problem="$(printf '%s\n' "$st" | jq -r '.artifact_problem // empty' 2>/dev/null || true)"
+  case "$freshness" in
+    hard_broken|hard-broken|hard_stale|hard-stale) return 0 ;;
+  esac
+  if [ -n "$problem" ] && [ "$problem" != "null" ]; then
+    return 0
+  fi
+  return 1
+}
+
+parse_heal_result() {
+  printf '%s\n' "${1:-}" | awk '{
+    for (i = 1; i <= NF; i++) {
+      if ($i ~ /^result=/) {
+        split($i, a, "=")
+        print a[2]
+        exit
+      }
+    }
+  }'
+}
+
 # --- Class A: install ---
+# Wrapper timeout (timeout -k 2s 8s) is NOT Class A by itself. Heal exit 0
+# (already-healthy, prompt-root-still-red, healed) is not Class A. Class A
+# fires on heal result=error / exit 1, or host-track hard-broken / hard-stale.
 class_a=0
+CLASS_A_HEAL_RC=0
+CLASS_A_HEAL_OUT=""
+
 run_class_a() {
   local reason="$1" extra="${2:-}"
   local timeout_bin=""
+  local -a cmd
+  CLASS_A_HEAL_RC=0
+  CLASS_A_HEAL_OUT=""
   if command -v gtimeout >/dev/null 2>&1; then
     timeout_bin="gtimeout"
   elif command -v timeout >/dev/null 2>&1; then
     timeout_bin="timeout"
   fi
-  if [ -n "$timeout_bin" ]; then
-    "$timeout_bin" -k 2s 8s last-stack-class-a-heal --reason="$reason" $extra --quiet >/dev/null 2>&1
-  else
-    last-stack-class-a-heal --reason="$reason" $extra --quiet >/dev/null 2>&1
+  cmd=("$CLASS_A_HEAL_BIN" --reason="$reason")
+  if [ -n "$extra" ]; then
+    cmd+=("$extra")
   fi
+  cmd+=(--quiet)
+  set +e
+  if [ -n "$timeout_bin" ]; then
+    CLASS_A_HEAL_OUT="$("$timeout_bin" -k 2s "${CLASS_A_TIMEOUT_S}s" "${cmd[@]}" 2>/dev/null)"
+  else
+    CLASS_A_HEAL_OUT="$("${cmd[@]}" 2>/dev/null)"
+  fi
+  CLASS_A_HEAL_RC=$?
+  set -e
+  return 0
 }
 
-if command -v last-stack-class-a-heal >/dev/null 2>&1; then
-  if ! run_class_a why-stopped; then
+# 0 = Class A (unhealthy). 1 = not Class A.
+class_a_from_heal_probe() {
+  local heal_result
+  heal_result="$(parse_heal_result "$CLASS_A_HEAL_OUT")"
+  if [ "$CLASS_A_HEAL_RC" -eq 0 ]; then
+    return 1
+  fi
+  # GNU timeout: 124. kill -9 after -k grace: 137.
+  if [ "$CLASS_A_HEAL_RC" -eq 124 ] || [ "$CLASS_A_HEAL_RC" -eq 137 ]; then
+    host_track_hard_unhealthy && return 0
+    return 1
+  fi
+  if [ "$heal_result" = "error" ] || [ "$CLASS_A_HEAL_RC" -eq 1 ]; then
+    return 0
+  fi
+  host_track_hard_unhealthy && return 0
+  return 1
+}
+
+emit_class_a() {
+  classes+=("A")
+  if [ "$CLASS_A_HEAL_RC" -eq 124 ] || [ "$CLASS_A_HEAL_RC" -eq 137 ]; then
+    detail+=("host-track/install hard-broken (heal timed out)")
+  else
+    detail+=("host-track/install unhealthy")
+  fi
+  actions+=("run:last-stack-class-a-heal")
+}
+
+if have_cmd "$CLASS_A_HEAL_BIN"; then
+  run_class_a why-stopped
+  if class_a_from_heal_probe; then
     class_a=1
     if [ "$HEAL" -eq 1 ]; then
-      if run_class_a why-stopped-heal --full; then
+      run_class_a why-stopped-heal --full
+      if class_a_from_heal_probe; then
+        emit_class_a
+        detail+=("heal skipped-or-failed")
+        actions+=("class-a-heal-skipped")
+      else
         class_a=0
         detail+=("install was unhealthy; Class A healed")
         actions+=("class-a-heal-ok")
-      else
-        classes+=("A")
-        detail+=("host-track/install unhealthy; heal skipped-or-timed-out")
-        actions+=("class-a-heal-skipped")
       fi
     else
-      classes+=("A")
-      detail+=("host-track/install unhealthy")
-      actions+=("run:last-stack-class-a-heal")
+      emit_class_a
     fi
   fi
-elif command -v host-track >/dev/null 2>&1; then
-  st="$(host-track status --json last-stack 2>/dev/null || true)"
-  if [ "$(printf '%s\n' "$st" | jq -r '.stale|tostring' 2>/dev/null)" = "true" ]; then
+elif have_cmd "$HOST_TRACK_BIN"; then
+  if host_track_hard_unhealthy; then
     class_a=1
     classes+=("A")
-    detail+=("host-track stale=true")
-    actions+=("host-track refresh --force-if-stale last-stack")
+    detail+=("host-track hard-broken/hard-stale")
+    actions+=("host-track refresh --force last-stack")
   fi
 fi
 
@@ -129,8 +219,8 @@ todo=0
 doing=0
 unattached=0
 ps=""
-if command -v kanban >/dev/null 2>&1; then
-  ps="$(kanban pickup status --json 2>/dev/null || true)"
+if have_cmd "$KANBAN_BIN"; then
+  ps="$("$KANBAN_BIN" pickup status --json 2>/dev/null || true)"
   if [ -n "$ps" ]; then
     ready="$(printf '%s\n' "$ps" | jq -r '.ready // 0' 2>/dev/null || echo 0)"
     unattached="$(printf '%s\n' "$ps" | jq -r '.counts["unattached-outcome"] // 0' 2>/dev/null || echo 0)"
@@ -143,8 +233,8 @@ if command -v kanban >/dev/null 2>&1; then
     if command -v last-stack-lastdb-pressure >/dev/null 2>&1 && last-stack-lastdb-pressure --hot --quiet 2>/dev/null; then
       :
     else
-      todo="$(kanban list --column todo --json 2>/dev/null | jq 'if type=="array" then length else (.cards|length) end' 2>/dev/null || echo 0)"
-      doing="$(kanban list --column doing --json 2>/dev/null | jq 'if type=="array" then length else (.cards|length) end' 2>/dev/null || echo 0)"
+      todo="$("$KANBAN_BIN" list --column todo --json 2>/dev/null | jq 'if type=="array" then length else (.cards|length) end' 2>/dev/null || echo 0)"
+      doing="$("$KANBAN_BIN" list --column doing --json 2>/dev/null | jq 'if type=="array" then length else (.cards|length) end' 2>/dev/null || echo 0)"
     fi
   fi
 fi
@@ -167,7 +257,7 @@ fi
 
 # --- Class D: merge≠live smell ---
 # Heuristic: doing cards with PR older than 3h (closeout lag / proof gap)
-if [ "${doing:-0}" -gt 0 ] 2>/dev/null && command -v kanban >/dev/null 2>&1; then
+if [ "${doing:-0}" -gt 0 ] 2>/dev/null && have_cmd "$KANBAN_BIN"; then
   # cheap: if factory-health would soft-alert doing_stuck — skip heavy list here
   classes_has_d=0
   if [ "$doing" -ge 3 ]; then
@@ -242,7 +332,7 @@ det_str="$(IFS='; '; echo "${detail[*]}")"
 act_str="$(IFS='; '; echo "${actions[*]}")"
 
 # Heartbeat (never on stdout — --json must stay pure)
-if [ -x "$ROOT/bin/last-stack-brain-append-heartbeat" ]; then
+if [ "${LASTSTACK_WHY_STOPPED_NO_HEARTBEAT:-0}" != "1" ] && [ -x "$ROOT/bin/last-stack-brain-append-heartbeat" ]; then
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   "$ROOT/bin/last-stack-brain-append-heartbeat" --line \
     "why-stopped $ts classes=$cls_str detail=$det_str" >/dev/null 2>&1 || true
