@@ -20,3 +20,5 @@ printf '%s\n' "$out2" | grep -q 'canary-abc123' || fail "start dry-run missing k
 LOOM_INPUT='{"main_oid":"abc","max_attempts":3}' "$ROOT/lib/canary-loom/loom-canary-step.sh" PROBE | grep -q 'verdict":"green"' \
   || fail "stand-in probe not green"
 echo ok
+
+[ -f "$ROOT/lib/canary-loom/lastdb-safe-upgrade.json" ] || fail "graph A missing"

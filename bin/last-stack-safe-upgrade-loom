@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Start or resume Loom graph A (lastdb-safe-upgrade). No soak. No promote.
+set -euo pipefail
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
+KEY=""
+CAND=""
+NOHEAL=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --key) KEY="${2:-}"; shift 2 ;;
+    --candidate) CAND="${2:-}"; shift 2 ;;
+    --no-heal|--stand-in) NOHEAL=1; shift ;;
+    -h|--help) echo "last-stack-safe-upgrade-loom --candidate PATH [--key KEY]"; exit 0 ;;
+    *) echo "unknown: $1" >&2; exit 2 ;;
+  esac
+done
+[ -n "$CAND" ] || [ "$NOHEAL" -eq 1 ] || { echo "need --candidate" >&2; exit 2; }
+KEY="${KEY:-su-$(basename "$CAND")}"
+defs=""
+scripts=""
+for c in "$ROOT/lib/canary-loom" "$(dirname "$(dirname "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$(command -v loom)")")")/definitions"; do
+  [ -f "$c/lastdb-safe-upgrade.json" ] && defs="$c" && break
+done
+for c in "$ROOT/lib/canary-loom" "$(dirname "$(dirname "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$(command -v loom)")")")/scripts"; do
+  [ -f "$c/loom-safe-upgrade-step.sh" ] && scripts="$c" && break
+done
+[ -n "$defs" ] && [ -n "$scripts" ] || { echo "graph A defs missing" >&2; exit 3; }
+export LOOM_SCRIPTS="$scripts"
+if [ "$NOHEAL" -eq 1 ]; then unset LOOM_LIVE LOOM_CANARY_LIVE || true
+else export LOOM_LIVE=1 LOOM_CANARY_LIVE=1
+fi
+loom publish "$defs/lastdb-safe-upgrade.json" >/dev/null
+input="$(python3 -c 'import json,os; print(json.dumps({"candidate":os.environ.get("C","")}))' )"
+C="$CAND" input="$(CAND="$CAND" python3 -c 'import json,os; print(json.dumps({"candidate":os.environ["CAND"]},separators=(",",":")))')"
+loom run lastdb-safe-upgrade --key "$KEY" --input "$input"
