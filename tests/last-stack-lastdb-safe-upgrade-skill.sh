@@ -76,6 +76,18 @@ grep -q 'lat_correlated_within_bar' "$driver" || {
   echo "FAIL: driver must call lat_correlated_within_bar" >&2
   exit 1
 }
+grep -q 'lat_apply_like_to_like_bars' "$driver" || {
+  echo "FAIL: driver must call lat_apply_like_to_like_bars" >&2
+  exit 1
+}
+grep -q 'lat_cold_point_ms' "$driver" || {
+  echo "FAIL: driver must record lat_cold_point_ms" >&2
+  exit 1
+}
+grep -q 'lat_hot_point_ms' "$driver" || {
+  echo "FAIL: driver must record lat_hot_point_ms" >&2
+  exit 1
+}
 grep -q 'dev-photograph-stamp-gate.sh' "$driver" || {
   echo "FAIL: driver must source dev-photograph-stamp-gate.sh" >&2
   exit 1

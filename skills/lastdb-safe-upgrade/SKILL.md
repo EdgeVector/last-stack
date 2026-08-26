@@ -100,38 +100,34 @@ proxy is optional later for near-zero client impact.
    binary default while the guard enforces the resident ceiling. Incident
    2026-07-22: sled-free cutover sat at ~8.5 GiB while the guard killed at 6 GiB
    -> thrash. Live post-check re-samples primary RSS the same way.
-7. **Latency bar (correct-but-slow is RED):** on the same candidate CoW boot,
-   time real workloads — keyed Board point read (`/api/query`), the scan-shaped
-   `kanban list --column todo` (the op that regressed in 0.23.1), and a real
-   `brain put` upsert (writes only ever land on the throwaway copy). Then boot
-   the **current live binary** on an identical CoW copy and time the same ops
-   as the baseline. Probe nodes boot with the live LaunchAgent's `LASTDB_*`
-   tuning env mirrored in (warm budget etc.), and peak RSS is sampled **under
-   this load** (an idle Last Store node pages out and reads ~10 MiB). **RED**
-   if candidate median > `LASTDB_PROBE_LAT_RATIO` (default 3×) the baseline
-   above a `LASTDB_PROBE_LAT_FLOOR_MS` (default **250 ms**; was 1000 ms —
-   exclusive CoW scans often sit under 1 s so the ratio never fired), exceeds
-   `LASTDB_PROBE_LAT_ABS_MAX_MS` (20 s) **when no baseline is measurable**, or
-   is unmeasurable on the candidate while the baseline measured. When candidate
-   AND baseline are both over the ceiling that is pre-existing store slowness:
-   loud WARN, ratio governs (a bar that REDs on the status quo trains everyone
-   to skip it). **Correlated / aggregate term (2026-08-05):** the per-op 3× bar
-   alone passed a canary that was slower on **every** op at 1.6–2.4× (point
-   58/24, scan 319/184, write 4646/2904) and then tanked multi-writer writes
-   on the primary. Alongside per-op, the probe REDs when (a) **all** measurable
-   ops regress at ≥ `LASTDB_PROBE_LAT_CORR_RATIO` (default **1.4×**), or
-   (b) the **geometric mean** of cand/base ratios across measurable ops exceeds
-   `LASTDB_PROBE_LAT_GEO_MEAN_MAX` (default **1.5×**). Need at least
-   `LASTDB_PROBE_LAT_CORR_MIN_OPS` (default 2) measurable pairs. Pure helper:
-   `scripts/latency-bar-checks.sh`. Incident 2026-07-25/27: the 0.23.1 cutover
-   passed the correctness + RSS bars while scans ran 5–20× slower — the live
-   primary was the first place anyone noticed. Skipping the whole bar
+7. **Latency bar (correct-but-slow is RED):** clone **two** CoWs and boot
+   candidate and baseline to identity-ready **before** any timed query.
+   **Cold** = first Board point-read (and scan, if measured) after that
+   daemon reaches identity-ready. **Hot** = median after settle plus one
+   discarded warmup sample on that same daemon. Write is hot-only. Compare
+   **like with like only**: cold vs cold, hot vs hot. A mixed pair (cold
+   candidate vs hot baseline, including the 2026-08-26 354 ms vs 50 ms
+   shape) must not RED. Pairs where both times are under
+   `LASTDB_PROBE_LAT_FLOOR_MS` (default **250 ms**) are noise, not a ratio.
+   **RED** if a like-to-like candidate time > `LASTDB_PROBE_LAT_RATIO`
+   (default 3×) the same-thermal baseline above the floor, exceeds
+   `LASTDB_PROBE_LAT_ABS_MAX_MS` (20 s) **when no baseline is measurable**,
+   or is unmeasurable on the candidate while the baseline measured.
+   **Correlated / aggregate term (2026-08-05) uses the HOT triple only:**
+   RED when (a) **all** measurable hot ops regress at ≥
+   `LASTDB_PROBE_LAT_CORR_RATIO` (default **1.4×**), or (b) the **geometric
+   mean** of hot cand/base ratios exceeds `LASTDB_PROBE_LAT_GEO_MEAN_MAX`
+   (default **1.5×**). Need at least `LASTDB_PROBE_LAT_CORR_MIN_OPS`
+   (default 2) measurable pairs. Pure helper: `scripts/latency-bar-checks.sh`.
+   Probe nodes boot with the live LaunchAgent's `LASTDB_*` tuning; peak RSS
+   is sampled under the hot load. Skipping the whole bar
    (`LASTDB_PROBE_LAT_SKIP=1`) or only the correlated term
    (`LASTDB_PROBE_LAT_CORR_SKIP=1`) requires Tom's explicit clearance. Live
-   post-check re-times **point-read and `kanban list` scan** vs the candidate's
-   own probe numbers and warns (`LASTDB_LIVE_LAT_ENFORCE=1` makes either RED).
-   Incident 2026-08-01: live point stayed ~113 ms while list hit multi-second→60 s.
-   Brain: `papercut-safe-upgrade-latency-bar-blind-to-correlated-regression`,
+   post-check re-times **hot point-read and `kanban list` scan** vs the
+   candidate's own hot probe numbers (`LASTDB_LIVE_LAT_ENFORCE=1` makes
+   either RED). Brain:
+   `papercut-safe-upgrade-latency-bar-blind-to-correlated-regression`,
+   `papercut-safe-upgrade-point-read-bar-cold-first-boot-vs-subfloor-baseline`,
    `lastdb-canary-cutover-rolled-the-primary-back-four-days-20260805`.
 8. **Candidate-class bar (no debug / dirty / oversized):** before backup or
    probe, refuse candidates that look like a Cargo **debug** build
@@ -282,7 +278,7 @@ The script:
 | Resolve candidate | `brew update` / `--version` tarball / `--candidate` |
 | **1. Rollback point** | `cp -cR` (APFS only; no full-copy fallback) → `${TMPDIR}/lastdb-safe-upgrade-rollback-<uid>/pre-<new>-from-<old>-<ts>/`; reclaim the prior retained point first |
 | **0. Class** | Refuse `target/debug`, `-dirty` version, size ≫ incumbent (before multi-GB backup) |
-| **2. Probe** | `BIN=<candidate>` CoW smoke harness (never live home) + **CAS mutation bar** (ephemeral candidate node: false `expected` → 409) + **RSS settle/sample** vs memory-guard limit + **latency bar**: point read / `kanban list` scan / `brain put` write timed on candidate CoW copy vs the current binary on an identical copy |
+| **2. Probe** | `BIN=<candidate>` CoW smoke harness (never live home) + **CAS mutation bar** (ephemeral candidate node: false `expected` → 409) + **RSS settle/sample** vs memory-guard limit + **latency bar**: cold then hot Board point-read / scan (like-to-like vs baseline CoW); hot `brain put` write; geo-mean on the hot triple only |
 | Detect venue | sidebin vs brew |
 | **2b. DEV photograph stamp** | Live cutover **refused** without a GREEN receipt: ephemeral/CoW (never `~/.lastdb`) uploaded the photograph to **DEV** (not the primary's production backup home) and CAS-flipped `backup/latest`. `--check-dev-stamp` exercises this gate alone. |
 | **3. Live** | **durability canary armed** (N run-unique sentinels acked + read back on the old daemon, before any live change), then sidebin atomic install + LaunchAgent job-definition reload **or** brew upgrade/restart |
@@ -305,7 +301,7 @@ Always print:
 - Rollback path and whether it was released or retained (TTL + cleanup owner)
 - Probe GREEN/RED (+ first Board title if green)  
 - **Probe peak RSS MiB vs memory-guard limit / fail_at**  
-- **Latency: candidate vs baseline point/scan/write medians (ms) + boot seconds**  
+- **Latency: cold point/scan and hot point/scan/write, candidate vs baseline (ms) + boot seconds**  
 - Whether live upgrade ran + cutover seconds + live peak RSS + live point-read ms  
 - Rollback commands (script prints them)
 

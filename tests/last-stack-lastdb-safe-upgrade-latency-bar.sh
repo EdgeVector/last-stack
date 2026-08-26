@@ -91,9 +91,9 @@ set -e
 [ "$RC" -eq 0 ] || fail "single-op moderate without aggregate should GREEN corr; out=$OUT"
 
 # --- geo-mean only (mixed, not all at 1.4) ------------------------------------
-# 2.5, 1.4, 1.3 → geo ≈ 1.66 > 1.5; not all >= 1.4 (1.3 is under)
+# Over-floor: 500/200=2.5, 280/200=1.4, 3900/3000=1.3 → geo ≈ 1.66 > 1.5
 set +e
-OUT="$(lat_correlated_within_bar 60 24 280 200 3900 3000 2>&1)"
+OUT="$(lat_correlated_within_bar 500 200 280 200 3900 3000 2>&1)"
 RC=$?
 set -e
 [ "$RC" -ne 0 ] || fail "geo-mean-only case must RED; out=$OUT"
@@ -101,8 +101,9 @@ echo "$OUT" | grep -q 'geometric mean' \
   || fail "expected geo-mean reason; out=$OUT"
 
 # --- insufficient measurable pairs: no aggregate applied ---------------------
+# 58/24 both under floor (noise); only 319/184 remains → 1 pair.
 set +e
-OUT="$(lat_correlated_within_bar 58 24 -1 -1 -1 -1 2>&1)"
+OUT="$(lat_correlated_within_bar 58 24 319 184 -1 -1 2>&1)"
 RC=$?
 set -e
 [ "$RC" -eq 0 ] || fail "single measurable pair should skip aggregate; out=$OUT"
@@ -128,9 +129,56 @@ grep -q 'LASTDB_PROBE_LAT_CORR_RATIO' "$DRIVER" \
   || fail "driver must expose LASTDB_PROBE_LAT_CORR_RATIO"
 grep -q 'LASTDB_PROBE_LAT_GEO_MEAN_MAX' "$DRIVER" \
   || fail "driver must expose LASTDB_PROBE_LAT_GEO_MEAN_MAX"
+grep -q 'lat_apply_like_to_like_bars' "$DRIVER" \
+  || fail "driver must call lat_apply_like_to_like_bars"
+grep -q 'lat_cold_point_ms\|cold point' "$DRIVER" \
+  || fail "driver must record named cold point times"
+grep -q 'lat_hot_point_ms\|hot point' "$DRIVER" \
+  || fail "driver must record named hot point times"
+grep -q 'mixed thermal' "$DRIVER" "$CHECKS" \
+  || fail "helpers must name mixed thermal skip"
 
 # --- skill docs mention the aggregate term -----------------------------------
 grep -q 'LASTDB_PROBE_LAT_CORR_RATIO\|correlated' "$SKILL_MD" \
   || fail "SKILL.md must document the correlated latency term"
+grep -qi 'cold' "$SKILL_MD" && grep -qi 'hot' "$SKILL_MD" \
+  || fail "SKILL.md must name cold and hot as distinct probe outputs"
 
-echo "OK: correlated latency bar (Aug-5 numbers RED; healthy GREEN)"
+# --- (a) mixed pair 354 cold vs 50 hot must not RED --------------------------
+export LASTDB_PROBE_LAT_FLOOR_MS=250
+export LASTDB_PROBE_LAT_RATIO=3
+set +e
+OUT="$(lat_op_like_to_like_within_bar "point-read" 354 50 cold hot 2>&1)"
+RC=$?
+set -e
+[ "$RC" -eq 0 ] || fail "mixed 354-cold/50-hot must not RED; out=$OUT"
+echo "$OUT" | grep -q 'mixed thermal skipped' \
+  || fail "expected mixed thermal skip; out=$OUT"
+
+# --- (b) hot 437/387 + 2463/2636 + non-7x hot point GREEN --------------------
+set +e
+OUT="$(lat_apply_like_to_like_bars \
+  354 354 -1 -1 \
+  300 250 437 387 2463 2636 2>&1)"
+RC=$?
+set -e
+[ "$RC" -eq 0 ] || fail "hot like-to-like non-7x must GREEN; out=$OUT"
+echo "$OUT" | grep -q 'GREEN' || fail "expected GREEN in like-to-like; out=$OUT"
+
+# --- (c) Aug-5 remaining over-floor pairs still RED --------------------------
+# 58/24 both under floor (noise); 319/184 and 4646/2904 remain.
+set +e
+OUT="$(lat_correlated_within_bar 58 24 319 184 4646 2904 2>&1)"
+RC=$?
+set -e
+[ "$RC" -ne 0 ] || fail "Aug-5 over-floor pairs must still RED; out=$OUT"
+
+# --- (d) cold-vs-cold 5–20× first-query still RED ----------------------------
+set +e
+OUT="$(lat_op_like_to_like_within_bar "cold point-read" 5000 250 cold cold 2>&1)"
+RC=$?
+set -e
+[ "$RC" -ne 0 ] || fail "cold-vs-cold 20x must RED; out=$OUT"
+echo "$OUT" | grep -q 'RED:' || fail "expected cold RED; out=$OUT"
+
+echo "OK: correlated latency bar (Aug-5 numbers RED; healthy GREEN; cold/hot like-to-like)"
