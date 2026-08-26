@@ -240,8 +240,8 @@ It carries --json and merges stderr into stdout, and $merged_how. Warnings or pr
 
 Keep the streams separate: write stdout to the JSON pipe/file and stderr to its own file (or leave stderr visible).
 
-Easiest fix, one call instead of hand-rolled plumbing:
-  last-stack-json-capture /tmp/data.json <command> --json
+Easiest fix, one call instead of hand-rolled plumbing (use the install path; a fresh routine shell does not have this helper on PATH until host-track links ~/.local/bin or the shell sources last-stack-shell-prelude):
+  \"\$HOME/.last-stack/bin/last-stack-json-capture\" /tmp/data.json <command> --json
   jq . /tmp/data.json
 It writes stdout to the file, stderr to <file>.err, reports whether the capture parsed, and exits with the command's status.
 
@@ -258,4 +258,4 @@ emit_deny "BLOCKED: unsafe inline JSON parsing in Bash.
 
 This command uses node -e / python -c with JSON.parse, json.load/json.loads, or a fragile f-string [\"...\"] index. That quoting pattern is a recurring fleet failure.
 
-Hint: for socket/API JSON, pipe to last-stack-json-get .field after sourcing last-stack-shell-prelude. For richer parsing, use jq when available or write a small .py file in scratchpad and run the file. Avoid -c/-e JSON quoting."
+Hint: for socket/API JSON, pipe to \"\$HOME/.last-stack/bin/last-stack-json-get\" .field (or source last-stack-shell-prelude first). For richer parsing, use jq when available or write a small .py file in scratchpad and run the file. Avoid -c/-e JSON quoting."
