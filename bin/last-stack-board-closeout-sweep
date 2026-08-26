@@ -9,17 +9,21 @@
 #   1. doing + pr_url (field or body PR:/CR:/lastgit://) whose PR/CR is MERGED
 #      → last-stack-card-closeout (done; honors Requires-Deploy)
 #   2. doing + pr_url whose PR/CR is CLOSED (not merged), or body has a
-#      STALE-PR REAP / reaper closed annotation → todo (flag closed-pr;
-#      clear structured pr_url; keep worktree/branch so pickup can reopen).
-#      FIRST the git ref decides: `lastgit cr close` can race the auto-merger
-#      and rewrite a merged CR to state=closed with an empty merge_oid, and
-#      that corrupt record is durable. When the card branch head is already an
-#      ancestor of its base ref, the card closes to `done` instead
-#      (flag merge-proof-close) and the corrupt pr_url stays cleared. An
-#      unresolvable branch or base ref is `unknown`, keeps the rollback, and
-#      flags merge-proof-unknown so an operator can see why.
+#      STALE-PR REAP / reaper closed annotation → todo (flag closed-pr),
+#      AFTER freshest-evidence resolution:
+#      (a) latest HANDOFF names a newer OPEN PR/CR → keep doing, restore
+#          that PR/branch (flag open-handoff-preserved).
+#      (b) git ref: branch already an ancestor of base → done
+#          (flag merge-proof-close); corrupt pr_url stays cleared.
+#      (c) otherwise rollback and clear BOTH pr_url and branch in one write
+#          (flag closed-cr-cleared) so a healed closed CR cannot re-enter
+#          pickup as ready. Keep the worktree on disk.
+#      An unresolvable branch or base ref is `unknown`, keeps the rollback,
+#      and flags merge-proof-unknown so an operator can see why.
 #   3. empty/no-PR doing, age ≥ grace, no live worker, no branch commits → todo
-#   4. WIP commits + no PR after grace → todo (flag wip-no-pr; worktree kept)
+#   4. WIP commits + no PR after grace → todo (flag wip-no-pr; worktree kept),
+#      EXCEPT a structured branch plus a HANDOFF/verified commit checkpoint
+#      keeps doing (flag checkpoint-handoff).
 #   5. deploy-parked doing cards (Requires-Deploy:, tags awaiting-deploy /
 #      live-proof / deploy-gate / needs-safe-upgrade / awaiting-validation, or
 #      live-proof wait notes) → backlog + block_status=deferred (flag
@@ -42,6 +46,8 @@
 # Protections (do NOT reclaim to todo):
 #   - open / unknown PR on structured pr_url or body header
 #     (closed-not-merged is NOT protected — see action 2)
+#   - latest HANDOFF names a newer open PR/CR than the structured pr_url
+#   - structured branch + HANDOFF/verified commit checkpoint (no pr_url)
 #   - live agent process in the card worktree
 #   - younger than --grace-min (default 60)
 # Deploy-gated parks are demoted to backlog (action 5), not left in doing.
@@ -698,6 +704,104 @@ function isClosedNotMerged(m, card) {
   return false;
 }
 
+function latestHandoffLine(body) {
+  let inFence = false;
+  let last = "";
+  for (const line of String(body || "").split("\n")) {
+    if (/^[ \t]*```/.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    if (/^[ \t]*HANDOFF:/i.test(line)) last = line;
+  }
+  return last;
+}
+
+function extractReviewUrlFromText(text, structuredUrl) {
+  const t = String(text || "");
+  let m = t.match(/\blastgit:\/\/[^\s)>\]]+/i);
+  if (m) return normalizePrUrl(m[0]);
+  m = t.match(/https?:\/\/[^\s)>\]]+\/(?:pulls?|pull)\/\d+/i);
+  if (m) return normalizePrUrl(m[0]);
+  m = t.match(/\bpr=([^\s]+)/i);
+  if (m) {
+    const v = normalizePrUrl(m[1]);
+    if (/^(https?:\/\/|lastgit:\/\/)/i.test(v)) return v;
+  }
+  const numMatch =
+    t.match(/\/(?:pulls?|pull)\/(\d+)/i) ||
+    t.match(/#(\d{2,6})\b/) ||
+    t.match(/\bPR\s+#?(\d{2,6})\b/i);
+  const num = numMatch ? numMatch[1] : "";
+  if (num && structuredUrl && /\/(?:pulls?|pull)\/\d+/i.test(structuredUrl)) {
+    return normalizePrUrl(
+      String(structuredUrl).replace(/\/(?:pulls?|pull)\/\d+/i, (seg) =>
+        /pulls/i.test(seg) ? `/pulls/${num}` : `/pull/${num}`,
+      ),
+    );
+  }
+  return "";
+}
+
+function handoffBranch(line) {
+  const m = String(line || "").match(/\bbranch=([^\s,;]+)/i);
+  if (!m) return "";
+  return m[1].replace(/^[`<]+/, "").replace(/[`>.,;]+$/g, "");
+}
+
+function handoffCommit(line) {
+  const m = String(line || "").match(/\bcommit=([0-9a-f]{7,40})\b/i);
+  return m ? m[1] : "";
+}
+
+function isOpenReview(m) {
+  if (!m || m.merged || m.closed) return false;
+  const d = String(m.detail || "");
+  if (/fetch-failed|unparsed|missing|parse-failed/i.test(d)) return false;
+  if (/:(closed|abandoned|rejected)\b/i.test(d)) return false;
+  return true;
+}
+
+function newerHandoffReview(card, structuredUrl) {
+  const line = latestHandoffLine(bodyOf(card));
+  if (!line) return null;
+  const handoffUrl = extractReviewUrlFromText(line, structuredUrl);
+  if (!handoffUrl) return null;
+  if (normalizePrUrl(handoffUrl) === normalizePrUrl(structuredUrl || "")) return null;
+  const pr = classifyPr(handoffUrl);
+  const m = isMerged(pr);
+  return { url: handoffUrl, branch: handoffBranch(line), m };
+}
+
+function restoreStructured(slug, prUrl, branch) {
+  if (dryRun) return;
+  const args = ["add", slug];
+  if (prUrl) args.push("--pr-url", prUrl);
+  if (branch) args.push("--branch", branch);
+  if (args.length === 2) return;
+  run(boardCli, args, { timeout: 45000 });
+}
+
+function clearClosedArtifact(slug) {
+  if (dryRun) return;
+  run(boardCli, ["add", slug, "--pr-url", "", "--branch", ""], { timeout: 30000 });
+}
+
+function hasHandoffCheckpoint(card, wt) {
+  const fieldBranch = String(card.branch || "").trim();
+  if (!fieldBranch) return false;
+  const line = latestHandoffLine(bodyOf(card));
+  if (!line) return false;
+  const commit = handoffCommit(line);
+  if (commit && wt && fs.existsSync(wt)) {
+    const out = run("git", ["-C", wt, "cat-file", "-t", commit], { timeout: 15000 });
+    if (out.ok && /commit/.test(String(out.stdout).trim())) return true;
+  }
+  if (commit) return true;
+  return branchHasCommits(card, wt);
+}
+
 function clearPrUrl(slug) {
   if (dryRun) return;
   run(boardCli, ["add", slug, "--pr-url", ""], { timeout: 30000 });
@@ -844,18 +948,18 @@ for (const card of cards) {
   const wt = worktreeFor(slug);
   const deployParked = isDeployParked(card);
 
-  // Heal empty OR dirty-nonempty structured pr_url (trailing markdown
-  // punctuation). Lookup already uses normalizePrUrl; the stored field must
-  // match or restamp/pipeline keep treating a merged CR as missing-ci.
-  if (url && fieldPr !== url) {
-    healPrUrl(slug, url);
-    res.flagged.push(`pr-url-healed:${slug}`);
-  }
+  // Do not heal/stamp a sanitized URL until we know the review is still
+  // open or merged. Healing a closed CR first is what let pickup reclaim
+  // the closed artifact.
 
   if (url) {
     const pr = classifyPr(url);
     const m = isMerged(pr);
     if (m.merged) {
+      if (fieldPr !== url) {
+        healPrUrl(slug, url);
+        res.flagged.push(`pr-url-healed:${slug}`);
+      }
       if (closeCard(slug, url, branch)) actions++;
       else {
         // Deploy-parked merged cards are a human/validate gate, not WIP.
@@ -881,9 +985,7 @@ for (const card of cards) {
       }
       continue;
     }
-    // Closed/reaped (not merged): roll back to todo so pickup can reopen work.
-    // Detect via forge/LastGit/gh state, or STALE-PR REAP body annotation when
-    // the remote lookup flakes. Keep worktree/branch; clear structured pr_url.
+    // Closed/reaped (not merged): resolve freshest evidence before rollback.
     if (isClosedNotMerged(m, card)) {
       // The record says closed; the git ref decides. A branch already merged
       // into base is shipped work — closing it here stops pickup from
@@ -898,14 +1000,36 @@ for (const card of cards) {
         else res.skipped.push(`${slug}:merge-proof-close-failed`);
         continue;
       }
+      const newer = newerHandoffReview(card, url);
+      if (newer && newer.m.merged) {
+        res.flagged.push(`open-handoff-preserved:${slug}`);
+        restoreStructured(slug, newer.url, newer.branch || branch);
+        if (closeCard(slug, newer.url, newer.branch || branch)) actions++;
+        else res.skipped.push(`${slug}:close-failed`);
+        continue;
+      }
+      if (newer && isOpenReview(newer.m)) {
+        res.flagged.push(`open-handoff-preserved:${slug}`);
+        restoreStructured(slug, newer.url, newer.branch || branch);
+        res.skipped.push(`${slug}:open-handoff-newer-pr`);
+        continue;
+      }
+      if (fieldPr && fieldPr !== url) {
+        res.flagged.push(`pr-url-healed:${slug}`);
+      }
       res.flagged.push(`closed-pr:${slug}:${m.detail || "body-reap"}`);
       if (proof === "unknown") res.flagged.push(`merge-proof-unknown:${slug}`);
-      clearPrUrl(slug);
+      res.flagged.push(`closed-cr-cleared:${slug}`);
+      clearClosedArtifact(slug);
       if (rollbackTodo(slug)) actions++;
       else res.skipped.push(`${slug}:closed-pr-rollback-failed`);
       continue;
     }
     // Open / unknown PR: leave for watch/merge-babysit. Soft 1h does not reclaim these.
+    if (fieldPr !== url) {
+      healPrUrl(slug, url);
+      res.flagged.push(`pr-url-healed:${slug}`);
+    }
     res.skipped.push(`${slug}:pr-open-or-unknown`);
     continue;
   }
@@ -952,6 +1076,13 @@ for (const card of cards) {
     if (reapProof === "unknown") res.flagged.push(`merge-proof-unknown:${slug}`);
   }
 
+  if (hasHandoffCheckpoint(card, wt)) {
+    // Pickup Checkpoint-before-timebox: structured branch + HANDOFF/verified
+    // commit is in-progress work, not an empty zombie.
+    res.flagged.push(`checkpoint-handoff:${slug}`);
+    res.skipped.push(`${slug}:checkpoint-handoff`);
+    continue;
+  }
   if (branchHasCommits(card, wt)) {
     // Pickup contract: never leave doing without a PR/CR after budget.
     // Roll back to todo so the next fire can reopen/finish the PR; keep worktree.
@@ -1474,6 +1605,115 @@ def is_closed_not_merged(merged, closed, detail, card):
         return True
     return False
 
+def latest_handoff_line(body):
+    in_fence = False
+    last = ""
+    for line in str(body or "").splitlines():
+        if re.match(r"^[ \t]*```", line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if re.match(r"^[ \t]*HANDOFF:", line, re.I):
+            last = line
+    return last
+
+def extract_review_url_from_text(text, structured_url=""):
+    t = str(text or "")
+    m = re.search(r"\blastgit://[^\s)>\]]+", t, re.I)
+    if m:
+        return normalize_pr_url(m.group(0))
+    m = re.search(r"https?://[^\s)>\]]+/(?:pulls?|pull)/\d+", t, re.I)
+    if m:
+        return normalize_pr_url(m.group(0))
+    m = re.search(r"\bpr=([^\s]+)", t, re.I)
+    if m:
+        v = normalize_pr_url(m.group(1))
+        if re.match(r"^(https?://|lastgit://)", v, re.I):
+            return v
+    num_m = (
+        re.search(r"/(?:pulls?|pull)/(\d+)", t, re.I)
+        or re.search(r"#(\d{2,6})\b", t)
+        or re.search(r"\bPR\s+#?(\d{2,6})\b", t, re.I)
+    )
+    num = num_m.group(1) if num_m else ""
+    if num and structured_url and re.search(r"/(?:pulls?|pull)/\d+", structured_url, re.I):
+        def _repl(seg):
+            return f"/pulls/{num}" if re.search(r"pulls", seg.group(0), re.I) else f"/pull/{num}"
+        return normalize_pr_url(re.sub(r"/(?:pulls?|pull)/\d+", _repl, structured_url, count=1, flags=re.I))
+    return ""
+
+def handoff_branch(line):
+    m = re.search(r"\bbranch=([^\s,;]+)", str(line or ""), re.I)
+    if not m:
+        return ""
+    return re.sub(r"^[`<]+", "", re.sub(r"[`>.,;]+$", "", m.group(1)))
+
+def handoff_commit(line):
+    m = re.search(r"\bcommit=([0-9a-f]{7,40})\b", str(line or ""), re.I)
+    return m.group(1) if m else ""
+
+def is_open_review(merged, closed, detail):
+    if merged or closed:
+        return False
+    d = str(detail or "")
+    if re.search(r"fetch-failed|unparsed|missing|parse-failed", d, re.I):
+        return False
+    if re.search(r":(closed|abandoned|rejected)\b", d, re.I):
+        return False
+    return True
+
+def newer_handoff_review(card, structured_url):
+    line = latest_handoff_line(body_of(card))
+    if not line:
+        return None
+    handoff_url = extract_review_url_from_text(line, structured_url)
+    if not handoff_url:
+        return None
+    if normalize_pr_url(handoff_url) == normalize_pr_url(structured_url or ""):
+        return None
+    merged, closed, detail = is_merged(handoff_url)
+    return {
+        "url": handoff_url,
+        "branch": handoff_branch(line),
+        "merged": merged,
+        "closed": closed,
+        "detail": detail,
+    }
+
+def restore_structured(slug, pr_url_val, branch):
+    if dry_run:
+        return
+    args = [board_cli, "add", slug]
+    if pr_url_val:
+        args += ["--pr-url", pr_url_val]
+    if branch:
+        args += ["--branch", branch]
+    if len(args) == 3:
+        return
+    run(args, timeout=45)
+
+def clear_closed_artifact(slug):
+    if dry_run:
+        return
+    run([board_cli, "add", slug, "--pr-url", "", "--branch", ""], timeout=30)
+
+def has_handoff_checkpoint(card, wt):
+    field_branch = str(card.get("branch") or "").strip()
+    if not field_branch:
+        return False
+    line = latest_handoff_line(body_of(card))
+    if not line:
+        return False
+    commit = handoff_commit(line)
+    if commit and wt:
+        ok, out, _ = run(["git", "-C", str(wt), "cat-file", "-t", commit], timeout=15)
+        if ok and "commit" in (out or "").strip():
+            return True
+    if commit:
+        return True
+    return has_commits(wt)
+
 def clear_pr_url(slug):
     if dry_run:
         return
@@ -1598,12 +1838,15 @@ for card in cards:
     age = age_s(card)
     wt = worktree(slug)
     deploy_parked = is_deploy_parked(card)
-    if url and field_pr != url:
-        heal_pr_url(slug, url)
-        res["flagged"].append(f"pr-url-healed:{slug}")
+    # Do not heal/stamp a sanitized URL until we know the review is still
+    # open or merged. Healing a closed CR first is what let pickup reclaim
+    # the closed artifact.
     if url:
         merged, closed, detail = is_merged(url)
         if merged:
+            if field_pr != url:
+                heal_pr_url(slug, url)
+                res["flagged"].append(f"pr-url-healed:{slug}")
             if close_card(slug, url, branch):
                 actions += 1
             else:
@@ -1627,7 +1870,7 @@ for card in cards:
                     if rollback(slug):
                         actions += 1
             continue
-        # Closed/reaped (not merged) → todo so pickup can reopen (keep worktree).
+        # Closed/reaped (not merged): resolve freshest evidence before rollback.
         if is_closed_not_merged(merged, closed, detail, card):
             # The record says closed; the git ref decides. A branch already
             # merged into base is shipped work — closing it here stops pickup
@@ -1643,15 +1886,35 @@ for card in cards:
                 else:
                     res["skipped"].append(f"{slug}:merge-proof-close-failed")
                 continue
+            newer = newer_handoff_review(card, url)
+            if newer and newer["merged"]:
+                res["flagged"].append(f"open-handoff-preserved:{slug}")
+                restore_structured(slug, newer["url"], newer["branch"] or branch)
+                if close_card(slug, newer["url"], newer["branch"] or branch):
+                    actions += 1
+                else:
+                    res["skipped"].append(f"{slug}:close-failed")
+                continue
+            if newer and is_open_review(newer["merged"], newer["closed"], newer["detail"]):
+                res["flagged"].append(f"open-handoff-preserved:{slug}")
+                restore_structured(slug, newer["url"], newer["branch"] or branch)
+                res["skipped"].append(f"{slug}:open-handoff-newer-pr")
+                continue
+            if field_pr and field_pr != url:
+                res["flagged"].append(f"pr-url-healed:{slug}")
             res["flagged"].append(f"closed-pr:{slug}:{detail or 'body-reap'}")
             if proof is None:
                 res["flagged"].append(f"merge-proof-unknown:{slug}")
-            clear_pr_url(slug)
+            res["flagged"].append(f"closed-cr-cleared:{slug}")
+            clear_closed_artifact(slug)
             if rollback(slug):
                 actions += 1
             else:
                 res["skipped"].append(f"{slug}:closed-pr-rollback-failed")
             continue
+        if field_pr != url:
+            heal_pr_url(slug, url)
+            res["flagged"].append(f"pr-url-healed:{slug}")
         res["skipped"].append(f"{slug}:pr-open-or-unknown")
         continue
     if deploy_parked:
@@ -1685,6 +1948,12 @@ for card in cards:
         if reap_proof is None:
             res["flagged"].append(f"merge-proof-unknown:{slug}")
 
+    if has_handoff_checkpoint(card, wt):
+        # Pickup Checkpoint-before-timebox: structured branch + HANDOFF/verified
+        # commit is in-progress work, not an empty zombie.
+        res["flagged"].append(f"checkpoint-handoff:{slug}")
+        res["skipped"].append(f"{slug}:checkpoint-handoff")
+        continue
     if has_commits(wt):
         # Pickup contract: no PR after grace → todo (worktree kept).
         res["flagged"].append(f"wip-no-pr:{slug}")
