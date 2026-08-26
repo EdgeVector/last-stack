@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-"""Decide skip / reconcile / work for one pickup slug (zero-LLM)."""
+"""Decide skip / reconcile / work / closeout for one pickup slug (zero-LLM).
+
+PR-liveness is owned by `kanban pickup work-policy`:
+  open            → reconcile
+  merged          → closeout
+  closed-unmerged → work
+  none            → work (then cooldown skip may apply)
+  unknown         → reconcile (fail closed)
+
+This wrapper used to treat any non-empty pr_url as reconcile, which parked
+cards whose review artifact was already closed and unmerged.
+"""
 
 from __future__ import annotations
 
@@ -16,6 +27,7 @@ from typing import Any, Optional
 
 ISO_RE = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z")
 COMMIT_RE = re.compile(r"\bcommit=([0-9a-fA-F]{7,40})\b")
+KANBAN_ACTIONS = frozenset({"work", "reconcile", "closeout"})
 
 
 def default_heartbeats() -> Path:
@@ -92,8 +104,133 @@ def last_handoff_sha(lines: list[str], slug: str) -> str:
     return ""
 
 
+def action_from_state(state: str) -> str:
+    s = (state or "").strip().lower().replace("_", "-")
+    if s in ("none", "closed-unmerged", "closed"):
+        return "work"
+    if s == "merged":
+        return "closeout"
+    return "reconcile"
+
+
+def empty_liveness(pr_url: str, state: str) -> dict[str, Any]:
+    action = action_from_state(state)
+    notes = {
+        "none": "no pr_url; fresh WORK",
+        "open": "PR/CR is open; reconcile (not pickup WORK)",
+        "merged": "PR/CR is merged; close out the card",
+        "closed-unmerged": "PR/CR is closed and unmerged; treat as no PR (fresh WORK)",
+        "unknown": "PR/CR liveness unknown; fail-closed reconcile",
+    }
+    return {
+        "pr_url": pr_url,
+        "state": state,
+        "venue": "unknown",
+        "action": action,
+        "note": notes.get(state, notes["unknown"]),
+    }
+
+
+def fixture_pr_policy(card: dict[str, Any], pr_url: str) -> tuple[str, dict[str, Any], bool]:
+    """Classify a --card-json fixture without calling live kanban."""
+    pl = card.get("pr_liveness")
+    if isinstance(pl, dict):
+        state = str(pl.get("state") or "").strip() or ("none" if not pr_url else "unknown")
+        action = pl.get("action")
+        if action not in KANBAN_ACTIONS:
+            action = action_from_state(state)
+        liveness = {
+            "pr_url": str(pl.get("pr_url") or pr_url),
+            "state": state,
+            "venue": str(pl.get("venue") or "unknown"),
+            "action": action,
+            "note": str(pl.get("note") or empty_liveness(pr_url, state)["note"]),
+        }
+        stale = bool(pl.get("stale_pr_url")) or state == "closed-unmerged"
+        return str(action), liveness, stale
+
+    state_raw = card.get("pr_state") or card.get("prState")
+    if isinstance(state_raw, str) and state_raw.strip():
+        state = state_raw.strip().lower().replace("_", "-")
+        if state == "closed":
+            merged = card.get("merged")
+            state = "merged" if merged is True else "closed-unmerged"
+        action = action_from_state(state)
+        return action, empty_liveness(pr_url, state), state == "closed-unmerged"
+
+    if not pr_url:
+        return "work", empty_liveness("", "none"), False
+    return "reconcile", empty_liveness(pr_url, "unknown"), False
+
+
+def load_kanban_report(
+    slug: str,
+    kanban_bin: Optional[str],
+    kanban_json: Optional[Path],
+) -> Optional[dict[str, Any]]:
+    if kanban_json is not None:
+        try:
+            raw = json.loads(kanban_json.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        return raw if isinstance(raw, dict) else None
+
+    if not kanban_bin:
+        return None
+
+    try:
+        proc = subprocess.run(
+            [kanban_bin, "pickup", "work-policy", slug, "--json"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        raw = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def action_from_kanban_report(report: dict[str, Any], pr_url: str) -> tuple[str, dict[str, Any], bool]:
+    pl = report.get("pr_liveness")
+    liveness: dict[str, Any]
+    if isinstance(pl, dict):
+        state = str(pl.get("state") or "").strip() or ("none" if not pr_url else "unknown")
+        action = pl.get("action")
+        if action not in KANBAN_ACTIONS:
+            action = report.get("action")
+        if action not in KANBAN_ACTIONS:
+            action = action_from_state(state)
+        liveness = {
+            "pr_url": str(pl.get("pr_url") or report.get("pr_url") or pr_url),
+            "state": state,
+            "venue": str(pl.get("venue") or "unknown"),
+            "action": action,
+            "note": str(pl.get("note") or empty_liveness(pr_url, state)["note"]),
+        }
+        stale = bool(report.get("stale_pr_url")) or state == "closed-unmerged"
+        return str(action), liveness, stale
+
+    action = report.get("action")
+    if action not in KANBAN_ACTIONS:
+        action = action_from_state("unknown" if pr_url else "none")
+    state = "none" if not pr_url else ("open" if action == "reconcile" else (
+        "merged" if action == "closeout" else "closed-unmerged"
+    ))
+    return str(action), empty_liveness(pr_url, state), action == "work" and bool(pr_url)
+
+
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description="Pickup WORK policy: skip, reconcile, or work.")
+    parser = argparse.ArgumentParser(
+        description="Pickup WORK policy: skip, reconcile, work, or closeout."
+    )
     parser.add_argument("--slug", required=True)
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--heartbeats", type=Path, default=default_heartbeats())
@@ -102,6 +239,17 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--card-json", type=Path, default=None)
     parser.add_argument("--head-sha", default="")
     parser.add_argument("--handoff-sha", default="")
+    parser.add_argument(
+        "--kanban-bin",
+        default=None,
+        help="kanban CLI (default: kanban when not using --card-json)",
+    )
+    parser.add_argument(
+        "--kanban-json",
+        type=Path,
+        default=None,
+        help="Fixture JSON for `kanban pickup work-policy --json` output",
+    )
     args = parser.parse_args(argv)
 
     slug = args.slug
@@ -134,11 +282,39 @@ def main(argv: list[str]) -> int:
     head_sha = args.head_sha
     new_commit = bool(head_sha and handoff_sha and head_sha != handoff_sha)
 
-    action = "work"
-    if pr_url:
-        action = "reconcile"
-    elif work_count >= args.max_work and not new_commit:
+    kanban_bin = args.kanban_bin
+    if kanban_bin is None and args.card_json is None and args.kanban_json is None:
+        kanban_bin = "kanban"
+
+    report = load_kanban_report(slug, kanban_bin, args.kanban_json)
+    source = "cooldown"
+    liveness: dict[str, Any]
+    stale_pr_url = False
+    if report is not None:
+        action, liveness, stale_pr_url = action_from_kanban_report(report, pr_url)
+        source = "kanban"
+        kanban_pr = report.get("pr_url")
+        if isinstance(kanban_pr, str) and kanban_pr.strip():
+            pr_url = kanban_pr.strip()
+        elif liveness.get("pr_url"):
+            pr_url = str(liveness["pr_url"]).strip()
+    elif args.card_json is not None:
+        action, liveness, stale_pr_url = fixture_pr_policy(card, pr_url)
+        source = "fixture"
+    elif pr_url:
+        action, liveness, stale_pr_url = (
+            "reconcile",
+            empty_liveness(pr_url, "unknown"),
+            False,
+        )
+        source = "fail-closed"
+    else:
+        action = "work"
+        liveness = empty_liveness("", "none")
+
+    if not pr_url and work_count >= args.max_work and not new_commit:
         action = "skip"
+        source = "cooldown"
 
     obj = {
         "slug": slug,
@@ -150,6 +326,9 @@ def main(argv: list[str]) -> int:
         "since_min": args.since_min,
         "head_sha": head_sha or None,
         "handoff_sha": handoff_sha or None,
+        "source": source,
+        "stale_pr_url": stale_pr_url,
+        "pr_liveness": liveness,
     }
     if args.json:
         print(json.dumps(obj, indent=2, sort_keys=True))
