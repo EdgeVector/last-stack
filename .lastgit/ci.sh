@@ -130,6 +130,7 @@ bash tests/last-stack-unattached-outcome-heal.sh
 bash tests/last-stack-north-star-ledger-sync.sh
 bash tests/last-stack-north-star-proof-registry.sh
 bash tests/last-stack-north-star-proof-ideal-storage-shape.sh
+bash tests/last-stack-north-star-proof-exemem-cloud-account.sh
 bash tests/last-stack-org-cloud-membership-dogfood.sh
 bash tests/last-stack-dogfood-resource-isolate.sh
 bash tests/last-stack-secret-env-run.sh
