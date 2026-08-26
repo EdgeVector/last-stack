@@ -244,37 +244,9 @@ def try_registry_close(args: argparse.Namespace, iso: str) -> dict[str, Any] | N
             fixed += 1
             continue
 
-        # Transitional fallback for prevention entries not yet migrated to the
-        # typed ledger. New filings never use this path.
-        try:
-            record_proc = run([brain, "get", entry.slug, "--type", "reference"], timeout=args.read_timeout)
-        except subprocess.TimeoutExpired:
-            skipped.append(f"{entry.slug}:legacy_record_timeout")
-            continue
-        if record_proc.returncode != 0:
-            skipped.append(f"{entry.slug}:record_unreadable")
-            continue
-        if "Status: FIXED" in record_proc.stdout:
-            skipped.append(f"{entry.slug}:already_fixed")
-            continue
-        if args.dry_run:
-            skipped.append(f"{entry.slug}:dry_run")
-            continue
-
-        note = (
-            f"\n\nStatus: FIXED ({iso})\n"
-            f"Lifecycle: card:{entry.card} is done and prevention registry is COVERED; "
-            "closed by last-stack-papercut-lifecycle-close.\n"
-        )
-        try:
-            append_proc = run([brain, "append", entry.slug, "--type", "reference"], stdin=note, timeout=args.read_timeout)
-        except subprocess.TimeoutExpired:
-            skipped.append(f"{entry.slug}:append_timeout")
-            continue
-        if append_proc.returncode != 0:
-            skipped.append(f"{entry.slug}:append_failed")
-            continue
-        fixed += 1
+        # Typed ledger miss: do not fall back to a prose Status: FIXED append.
+        # That leaves queryable status=open while the body looks healed.
+        skipped.append(f"{entry.slug}:untyped_skipped")
 
     return {
         "ok": True,
@@ -288,7 +260,13 @@ def try_registry_close(args: argparse.Namespace, iso: str) -> dict[str, Any] | N
 
 def load_records(args: argparse.Namespace) -> list[dict[str, Any]]:
     if args.records_json:
-        return as_items(json.loads(Path(args.records_json).read_text(encoding="utf-8")))
+        records = as_items(json.loads(Path(args.records_json).read_text(encoding="utf-8")))
+        for record in records:
+            if not str(record.get("status") or ""):
+                body = str(record.get("body") or "")
+                record["status"] = "open" if status_is_open(body) else "fixed"
+            record["_typed"] = True
+        return records
     if args.slug:
         records = [brain_get(args, slug) for slug in args.slug]
         for record in records:
@@ -400,37 +378,26 @@ def append_brain(args: argparse.Namespace, slug: str, text: str) -> None:
 def close_record(args: argparse.Namespace, record: dict[str, Any], ref: ReviewRef, detail: str, iso: str) -> None:
     slug = str(record.get("slug") or "")
     title = str(record.get("title") or slug)
-    if record.get("_typed"):
-        if args.dry_run:
-            return
-        evidence = f"lifecycle closer confirmed {ref.url} is merged ({detail})."
-        proc = run(
-            [
-                args.brain_bin,
-                "papercut",
-                "close",
-                slug,
-                "--status",
-                "fixed",
-                "--evidence",
-                evidence,
-                "--fixed-by",
-                detail,
-            ],
-            timeout=60,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(f"brain papercut close {slug} failed: {proc.stderr.strip()}")
-        ledger = f"{iso} {slug} -> card:none | pattern:lifecycle-auto-close | skip:fixed:{detail}\n"
-        append_brain(args, args.ledger_slug, ledger)
+    if args.dry_run:
         return
-
-    stamp = (
-        f"\nStatus: FIXED ({iso})\n"
-        f"Evidence: lifecycle closer confirmed {ref.url} is merged ({detail}).\n"
-        "Lifecycle-Closer: last-stack-papercut-lifecycle-close\n"
+    evidence = f"lifecycle closer confirmed {ref.url} is merged ({detail})."
+    proc = run(
+        [
+            args.brain_bin,
+            "papercut",
+            "close",
+            slug,
+            "--status",
+            "fixed",
+            "--evidence",
+            evidence,
+            "--fixed-by",
+            detail,
+        ],
+        timeout=60,
     )
-    append_brain(args, slug, stamp)
+    if proc.returncode != 0:
+        raise RuntimeError(f"brain papercut close {slug} failed: {proc.stderr.strip()}")
     ledger = f"{iso} {slug} -> card:none | pattern:lifecycle-auto-close | skip:fixed:{detail}\n"
     append_brain(args, args.ledger_slug, ledger)
     line = f"fixed {slug} via {detail}: {title}"

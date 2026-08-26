@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""File or append one stable stuck-CR papercut. Never mint a per-CR sibling."""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import subprocess
+import sys
+from typing import Any
+
+
+PER_CR_SLUG = re.compile(r"^papercut-pipeline-stuck-cr-")
+
+
+def run(argv: list[str], *, stdin: str | None = None, timeout: int = 60) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        argv,
+        input=stdin,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=timeout,
+        env=os.environ,
+    )
+
+
+def parse_json_stream(raw: str) -> Any | None:
+    decoder = json.JSONDecoder()
+    idx = 0
+    candidates: list[Any] = []
+    while idx < len(raw):
+        while idx < len(raw) and raw[idx].isspace():
+            idx += 1
+        if idx >= len(raw):
+            break
+        try:
+            value, end = decoder.raw_decode(raw, idx)
+        except json.JSONDecodeError:
+            idx += 1
+            continue
+        candidates.append(value)
+        idx = end
+    if not candidates:
+        return None
+    for value in candidates:
+        if isinstance(value, dict) and value.get("event") != "verb_timing":
+            return value
+    return candidates[0]
+
+
+def repo_token(repo: str) -> str:
+    token = repo.strip().rstrip("/")
+    if "/" in token:
+        token = token.rsplit("/", 1)[-1]
+    token = re.sub(r"[^a-z0-9-]+", "-", token.lower()).strip("-")
+    if not token:
+        raise ValueError("repo token is empty")
+    return token
+
+
+def stable_slug(repo: str) -> str:
+    return f"papercut-pipeline-stuck-merges-{repo_token(repo)}"
+
+
+def typed_get(brain: str, slug: str) -> dict[str, Any] | None:
+    proc = run([brain, "get", slug, "--type", "papercut", "--json"], timeout=60)
+    if proc.returncode != 0:
+        return None
+    value = parse_json_stream(proc.stdout)
+    return value if isinstance(value, dict) else None
+
+
+def is_open(record: dict[str, Any] | None) -> bool:
+    return bool(record) and str(record.get("status") or "") == "open"
+
+
+def emit(payload: dict[str, Any], as_json: bool) -> int:
+    if as_json:
+        print(json.dumps(payload, sort_keys=True))
+    else:
+        print(
+            "pipeline-stuck-papercut "
+            f"action={payload.get('action')} slug={payload.get('slug')} "
+            f"cr={payload.get('cr_id')}"
+        )
+    return 0 if payload.get("ok") else 1
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--repo", required=True)
+    parser.add_argument("--cr-id", required=True)
+    parser.add_argument("--evidence", required=True)
+    parser.add_argument("--root-cause-slug")
+    parser.add_argument("--candidate-slug", action="append", default=[])
+    parser.add_argument("--brain-bin", default="brain")
+    parser.add_argument("--json", action="store_true", dest="json_out")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+
+    repo = repo_token(args.repo)
+    cr_id = args.cr_id.strip()
+    if not cr_id:
+        return emit({"ok": False, "reason": "empty_cr_id"}, args.json_out)
+
+    file_slug = args.root_cause_slug.strip() if args.root_cause_slug else stable_slug(repo)
+    if PER_CR_SLUG.match(file_slug):
+        file_slug = stable_slug(repo)
+
+    iso = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    note = (
+        f"{iso} stuck CR {cr_id} repo={repo}\n"
+        f"{args.evidence.strip()}\n"
+    )
+
+    candidates: list[str] = []
+    for slug in [*args.candidate_slug, args.root_cause_slug or "", file_slug]:
+        slug = slug.strip()
+        if slug and slug not in candidates:
+            candidates.append(slug)
+
+    for slug in candidates:
+        record = typed_get(args.brain_bin, slug)
+        if not is_open(record):
+            continue
+        if args.dry_run:
+            return emit(
+                {"ok": True, "action": "append", "slug": slug, "cr_id": cr_id, "dry_run": True},
+                args.json_out,
+            )
+        proc = run(
+            [args.brain_bin, "append", slug, "--type", "papercut"],
+            stdin=note,
+            timeout=60,
+        )
+        if proc.returncode != 0:
+            return emit(
+                {
+                    "ok": False,
+                    "action": "append",
+                    "slug": slug,
+                    "cr_id": cr_id,
+                    "reason": "append_failed",
+                    "error": proc.stderr.strip(),
+                },
+                args.json_out,
+            )
+        return emit(
+            {"ok": True, "action": "append", "slug": slug, "cr_id": cr_id},
+            args.json_out,
+        )
+
+    title = f"Pipeline: stuck LastGit CRs in {repo}"
+    symptom = f"LastGit CR {cr_id} in {repo} is stuck without a converging root-cause papercut"
+    body = (
+        f"Status: OPEN\n"
+        f"Source: last-stack-pipeline-stuck-papercut-file\n"
+        f"Repo: EdgeVector/{repo}\n"
+        f"CR: lastgit://{repo}/cr/{cr_id}\n"
+        f"Checked-at: {iso}\n\n"
+        f"## Symptom\n{args.evidence.strip()}\n"
+    )
+    if args.dry_run:
+        return emit(
+            {"ok": True, "action": "file", "slug": file_slug, "cr_id": cr_id, "dry_run": True},
+            args.json_out,
+        )
+    proc = run(
+        [
+            args.brain_bin,
+            "papercut",
+            "file",
+            file_slug,
+            "--component",
+            "pipeline",
+            "--severity",
+            "p0",
+            "--kind",
+            "specified-fix",
+            "--symptom",
+            symptom,
+            "--title",
+            title,
+            "--repo",
+            f"EdgeVector/{repo}",
+            "--tag",
+            "papercut",
+            "--tag",
+            "pipeline",
+            "--tag",
+            "p0",
+            "--body",
+            body,
+        ],
+        timeout=60,
+    )
+    if proc.returncode != 0:
+        return emit(
+            {
+                "ok": False,
+                "action": "file",
+                "slug": file_slug,
+                "cr_id": cr_id,
+                "reason": "file_failed",
+                "error": (proc.stderr or proc.stdout).strip(),
+            },
+            args.json_out,
+        )
+    return emit(
+        {"ok": True, "action": "file", "slug": file_slug, "cr_id": cr_id},
+        args.json_out,
+    )
+
+
+if __name__ == "__main__":
+    sys.exit(main())

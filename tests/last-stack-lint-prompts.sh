@@ -911,6 +911,7 @@ fi
 # 2026-07-22: pipeline blocks escalate as Brain papercuts, not board P0 monopoly.
 grep -q 'papercut-pipeline-deploy-' "$pipeline"
 grep -q 'papercut-reconciler' "$pipeline"
+grep -q 'last-stack-pipeline-stuck-papercut-file' "$pipeline"
 if rg -n 'FILE a P0 PR card|pickup-ready P0 kanban card|deploy-pipeline-red-<repo>-<YYYYMMDD>' "$pipeline" >/dev/null; then
   echo "pipeline-health must not file pickup-ready kanban P0 cards for deploys" >&2
   exit 1
@@ -920,6 +921,7 @@ fi
 # (pickup write-guard poison — papercut-stuck-merge-cards-block-pickup).
 merge_babysit="$ROOT/routines/merge-babysit.md"
 grep -q 'papercut-pipeline-stuck-cr-' "$merge_babysit"
+grep -q 'last-stack-pipeline-stuck-papercut-file' "$merge_babysit"
 grep -q 'last-stack-park-stuck-merge-poison-cards' "$merge_babysit"
 grep -q 'preference-always-file-papercuts-in-brain' "$merge_babysit"
 grep -q 'Escalate the rest as Brain papercuts' "$merge_babysit"

@@ -9,6 +9,7 @@ trap cleanup EXIT
 
 grep -q 'papercut-prevention-registry' "$prompt"
 grep -q 'last-stack-papercut-lifecycle-close --limit 200' "$prompt"
+grep -q 'brain papercut close --status fixed' "$prompt"
 grep -q 'Prevention: MISSING|COVERED|NOT_APPLICABLE' "$prompt"
 grep -q 'compound regression test' "$prompt"
 grep -q 'COMPOUND PREVENTION' "$prompt"
@@ -59,11 +60,11 @@ case "$*" in
 - Card: `demo-card`
 EOF
     ;;
-  "get papercut-demo-helper-drift --type reference")
-    printf 'Status: RECONCILED\n'
+  "get papercut-demo-helper-drift --type papercut --json")
+    printf '%s\n' '{"slug":"papercut-demo-helper-drift","title":"Demo helper drift","status":"open","body":"Evidence: lastgit://last-stack/cr/cr-demo"}'
     ;;
-  "append papercut-demo-helper-drift --type reference")
-    cat >>"$TEST_APPEND_LOG"
+  papercut\ close\ papercut-demo-helper-drift*)
+    printf 'CLOSE %s\n' "$*" >>"$TEST_CLOSE_LOG"
     ;;
   "append papercut-reconciler-ledger --type reference")
     cat >>"$TEST_LEDGER_LOG"
@@ -88,18 +89,20 @@ printf '{"state":"merged","merge_oid":"abc123"}\n'
 SH
 chmod +x "$fake_bin/brain" "$fake_bin/kanban" "$fake_bin/lastgit"
 
-export TEST_APPEND_LOG="$tmp/appends.log"
+export TEST_CLOSE_LOG="$tmp/close.log"
 export TEST_LEDGER_LOG="$tmp/ledger.log"
+: >"$TEST_CLOSE_LOG"
+: >"$TEST_LEDGER_LOG"
 
 out="$(PATH="/usr/bin:/bin" "$helper" --records-json "$records" --brain-bin "$fake_bin/brain" --lastgit-bin "$fake_bin/lastgit" --json)"
 printf '%s\n' "$out" | jq -e '.checked == 1 and (.fixed | length) == 1 and (.errors | length) == 0' >/dev/null
-grep -q 'Status: FIXED' "$TEST_APPEND_LOG"
+grep -q '^CLOSE papercut close papercut-demo-helper-drift --status fixed ' "$TEST_CLOSE_LOG"
 grep -q 'papercut-demo-helper-drift' "$TEST_LEDGER_LOG"
 
-: >"$TEST_APPEND_LOG"
+: >"$TEST_CLOSE_LOG"
 registry_out="$(LAST_STACK_PAPERCUT_LIFECYCLE_KANBAN="$fake_bin/kanban" PATH="/usr/bin:/bin" "$helper" --brain-bin "$fake_bin/brain" --limit 5 --json)"
 printf '%s\n' "$registry_out" | jq -e '.ok == true and .fixed == 1 and .scanned == 1' >/dev/null
-grep -q 'Status: FIXED' "$TEST_APPEND_LOG"
+grep -q '^CLOSE papercut close papercut-demo-helper-drift --status fixed ' "$TEST_CLOSE_LOG"
 
 missing_out="$(
   PATH="/usr/bin:/bin" bash -c '

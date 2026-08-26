@@ -33,6 +33,10 @@ mkdir -p "$bin_dir"
 cat >"$bin_dir/brain" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "${1:-}" = papercut ] && [ "${2:-}" = close ]; then
+  printf 'CLOSE %s\n' "$*" >>"$BRAIN_APPEND_LOG"
+  exit 0
+fi
 if [ "$1" = append ]; then
   slug="$2"
   cat >>"$BRAIN_APPEND_LOG"
@@ -103,8 +107,11 @@ PY
 PATH="$bin_dir:$PATH" "$ROOT/bin/last-stack-papercut-lifecycle-close" \
   --records-json "$tmp/records.json" \
   --json >"$tmp/live.json"
-grep -q 'Status: FIXED' "$BRAIN_APPEND_LOG"
-grep -q 'Lifecycle-Closer: last-stack-papercut-lifecycle-close' "$BRAIN_APPEND_LOG"
+grep -q '^CLOSE papercut close papercut-pipeline-stuck-cr-last-stack-merged --status fixed ' "$BRAIN_APPEND_LOG"
+if grep -q '^Status: FIXED' "$BRAIN_APPEND_LOG"; then
+  echo "untyped records-json path appended Status: FIXED" >&2
+  exit 1
+fi
 grep -q 'papercut-pipeline-stuck-cr-last-stack-merged -> card:none | pattern:lifecycle-auto-close | skip:fixed:lastgit:last-stack/cr-merged' "$BRAIN_APPEND_LOG"
 if grep -q 'papercut-pipeline-stuck-cr-last-stack-open -> card:none' "$BRAIN_APPEND_LOG"; then
   echo "open CR was marked fixed" >&2

@@ -33,8 +33,9 @@ Each pass, **before** filing new cards, spend a short budget on lifecycle:
 
 1. **Heal FIXED when the world already matches:** if an OPEN pipeline papercut
    (`papercut-pipeline-stuck-cr-*` / `papercut-pipeline-deploy-*`) no longer has a
-   matching open CR/PR on the venue, append `Status: FIXED` + one-line evidence
-   (CR id, check date) via `brain append` — do not re-file a board card.
+   matching open CR/PR on the venue, run `last-stack-papercut-lifecycle-close`
+   so it calls `brain papercut close --status fixed`. Do **not** append
+   `Status: FIXED` via `brain append` — that leaves typed `status=open`.
 2. **Age one-offs:** OPEN papercuts with a single occurrence >14d and no board
    card may be marked `Status: AGED_OUT` (keep the record; stop clustering).
 3. **Zombie board cards:** if a papercut board card is in todo/doing but its
@@ -140,10 +141,10 @@ output; a stale doc that misled an agent; the same workaround across sessions.
 
 ## Step 2 — Collect ALL open papercuts and prevention gaps
 - First run the lifecycle closer:
-  `last-stack-papercut-lifecycle-close --limit 200`. It may append
-  `Status: FIXED` to OPEN papercuts whose referenced LastGit CR, Forgejo PR, or
-  GitHub PR is already merged. This keeps healed pipeline papercuts from being
-  clustered again, while preserving the sole papercut→card path.
+  `last-stack-papercut-lifecycle-close --limit 200`. It calls
+  `brain papercut close --status fixed` for OPEN papercuts whose referenced
+  LastGit CR, Forgejo PR, or GitHub PR is already merged. Do not treat a body
+  line `Status: FIXED` as closed — the typed `status` field is the queue key.
 - **Mandatory first discovery read.** Snapshot the exact `status=open` keyed
   partition before reading the prose ledger or registry. This command validates
   the reader method, exact row count, open-only status, and unique membership;
