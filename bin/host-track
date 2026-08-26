@@ -1584,6 +1584,12 @@ run_one_probe() {
     PATH="$version_dir/bin:$version_dir/dist:${PATH}"
     HOST_TRACK_PROBE=1
     export HOST_TRACK_PROBE
+    # Probes run in the CANDIDATE's own context. The reexec wrapper exports
+    # HOST_TRACK_ROOT (and callers may pin HOST_TRACK_REGISTRY); inherited,
+    # they make a candidate binary resolve the LIVE tree's registry, which
+    # deadlocks any validator-tightening self-upgrade
+    # (papercut-host-track-probe-env-leak-self-upgrade-deadlock).
+    unset HOST_TRACK_ROOT HOST_TRACK_REEXECED HOST_TRACK_REGISTRY
     run_with_timeout "$timeout_s" "${cmd[@]}"
   ) >"$out" 2>&1
   rc=$?
