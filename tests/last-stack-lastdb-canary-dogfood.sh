@@ -314,18 +314,20 @@ out="$(
 grep -q '^id = "lastdb-canary-dogfood"$' "$ROOT/config/routines-registry/lastdb-canary-dogfood.toml"
 grep -q '^status = "active"$' "$ROOT/config/routines-registry/lastdb-canary-dogfood.toml"
 grep -q 'lastdb-canary-dogfood.md' "$ROOT/config/routines-registry/lastdb-canary-dogfood.toml"
-# The nightly drives the durable state machine, not the phases by hand.
+# The nightly starts Loom graph B only. Graph B starts graph A as a child.
+# Do not sm start from this prompt (CR cr-mtancr1s-783d).
 dog_md="$ROOT/routines/lastdb-canary-dogfood.md"
-grep -q 'sm start lastdb-canary-release' "$dog_md"
-grep -q 'sm tick --definition lastdb-canary-release' "$dog_md"
-# One execution per main tip, and never two cutovers at once.
-grep -q -- '--idempotency-key' "$dog_md"
-grep -q -- '--concurrency-key lastdb-canary-release' "$dog_md"
+grep -q 'last-stack-canary-loom' "$dog_md"
+grep -q -- '--start' "$dog_md"
+grep -q 'Do not `sm start`' "$dog_md"
+# One execution per main tip via the canary-<oid> loom key.
+grep -q -- '--key' "$dog_md"
+grep -q 'canary-<oid>' "$dog_md"
 # The env flag must not be armed in the routine — PUBLISH sets it itself, and
 # only behind a completed PROMOTE for a soaked sha.
 grep -q 'Do NOT set LAST_STACK_CANARY_PROMOTE_AUTO here' "$dog_md"
 # UPGRADE is a child execution of the safe-upgrade machine, not inlined steps.
-grep -q 'CHILD execution' "$dog_md"
+grep -qi 'child execution' "$dog_md"
 grep -q 'lastdb-safe-upgrade' "$dog_md"
 # PUBLISH ships to the public; the kill switch must be documented where the
 # on-call agent will actually look.
