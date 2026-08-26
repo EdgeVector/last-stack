@@ -30,8 +30,8 @@ actions noted below.
   port + cmdline, never by a generic process name.
 - **NEVER stash/reset/`checkout --` in a shared repo.** Multiple agents share these
   checkouts. Use worktrees, never destroy uncommitted work.
-- **NEVER touch in-progress kanban work.** Tasks in `in_progress`/`review` on the kanban
-  board (and their `~/.cline/worktrees/<id>` worktrees + branches) are off-limits.
+- **NEVER touch in-progress kanban work.** Cards in `doing`/`todo` on the kanban
+  board (and their `~/.fkanban/worktrees/<slug>` worktrees + branches) are off-limits.
 - **NEVER force-remove a worktree that has a live process in it**, and **never kill a
   `claude` agent process.** Removing a worktree out from under a live LastDB server has
   produced a 339 GB orphan-server wedge.
@@ -52,20 +52,32 @@ actions noted below.
   schema-infra, brain, edgevector-website, fold_db_website, homebrew-folddb,
   exemem-workspace, edgevector-org-github, demo-repository). The umbrella `edgevector`
   dir is itself a stray git repo wrapper — leave it alone.
-- **Worktrees live in FIVE places** — check all each run, and authoritatively enumerate
-  via `git -C <repo> worktree list --porcelain` for fold / brain / fold_dev_node /
-  schema-infra / exemem-infra / exemem-workspace (don't trust a single dir listing): (1)
-  **kanban worktrees** `~/.kanban/worktrees/<slug>/` (protected if the card is
-  `DOING`/`REVIEW`; `~/.cline/worktrees/` is the legacy/empty predecessor); (2) gstack
+- **Worktrees live in FIVE places** — check all each run. Do not trust a single
+  dir listing. Hot repos (fold, last-stack, and any other
+  `~/code/edgevector/<repo>` with `.portal/` and no `.git`) are thin portals.
+  `git -C ~/code/edgevector/<repo> worktree list` failing with "not a git
+  repository" is the portal design working, not breakage. The authoritative
+  registry is the bare mirror:
+  `git -C ~/.cache/edgevector-git/<repo>.git worktree list --porcelain`.
+  Run that for fold / last-stack / brain / fold_dev_node / schema-infra /
+  exemem-infra / exemem-workspace (and any other cached
+  `~/.cache/edgevector-git/<repo>.git`). The mirror lists every registered
+  worktree, including ones added from paths **outside**
+  `~/.fkanban/worktrees/` (for example `/private/tmp/...`). A worktree that
+  pins `main` on an arbitrary path is the case that blocks fleet-wide
+  `wt fetch` — put it on the sweep checklist. The five places: (1)
+  **kanban worktrees** `~/.fkanban/worktrees/<slug>/` (protected if the card is
+  in `doing` or `todo`; `~/.cline/worktrees/` is the legacy/empty predecessor); (2) gstack
   agent worktrees `fold/.claude/worktrees/<name>` and `fold_dev_node/.claude/worktrees/<name>`
   (live idle procs → archive the session to free them; two `agent-*` ones are `locked` WIP —
   never touch); (3) **top-level sibling worktrees** `~/code/edgevector/<name>` (e.g.
   `fold-superset-tray`, `fold-aws-runtime-pin`) AND `~/code/edgevector-worktrees/<name>`
   (`app-sec/*`, `app-run/*`, plus some `exemem-workspace` doc worktrees like `nmsr-correct`);
   (4) **`~/code/edgevector/.worktrees/<name>`** — a legacy repo-local location
-  that must be migrated to `~/.kanban/worktrees/` after live/dirty audit (e.g.
+  that must be migrated to `~/.fkanban/worktrees/` after live/dirty audit (e.g.
   `schema-naming-ingestion-method`). The siblings are the easiest to miss — find them via
-  `git -C <path> worktree list`. `~/code/edgevector/.worktrees` and any
+  the bare-mirror `worktree list` above, not via `git -C ~/code/edgevector/<repo>`.
+  `~/code/edgevector/.worktrees` and any
   repo-local `.worktrees/` directory are legacy/violation locations: enumerate
   them for cleanup, but do not create new agent work there. The canonical agent
   location is `~/.fkanban/worktrees`. NOTE: a worktree's parent dir does NOT identify its repo — derive the
@@ -114,10 +126,10 @@ pgrep -fl 'MacOS/[f]old-app'                               # process fallback fo
 pgrep -fl '[l]astdbd'                                      # Mini primary brain fallback; socket lsof can be empty
 ```
 Read the kanban board to learn what's protected (Cline kanban is DEPRECATED — the active
-board is **kanban**): `cd ~/code/edgevector/kanban && bun src/cli.ts list`. Protect any
-card in `DOING`/`REVIEW` (and their `~/.kanban/worktrees/<slug>` worktrees + branches).
+board is **kanban**): `kanban list`. Protect any
+card in `doing`/`todo` (and their `~/.fkanban/worktrees/<slug>` worktrees + branches).
 Card slugs don't always string-match the worktree dir/branch name — cross-check by intent
-(e.g. REVIEW card `app-iso-schema-infra-dev-deploy` ↔ worktree `schema-infra-app-iso-dev-deploy`
+(e.g. `doing` card `app-iso-schema-infra-dev-deploy` ↔ worktree `schema-infra-app-iso-dev-deploy`
 on branch `app-iso/dev-deploy-code-signature`). `~/.cline/worktrees/` is now empty/legacy.
 
 ### 2. Git hygiene (safe, always do)
@@ -183,7 +195,7 @@ line.
   ```bash
   "$HOME/.last-stack/bin/last-stack-migrate-repo-local-worktrees" \
     --workspace "$HOME/code/edgevector" \
-    --dest "${WORKTREES_DIR:-$HOME/.kanban/worktrees}" || true
+    --dest "${WORKTREES_DIR:-$HOME/.fkanban/worktrees}" || true
   ```
   Include every `FLAG ... kept ...` line in the report; those are protected
   residuals, not cleanup failures.
@@ -231,7 +243,7 @@ done
 Guardrails: skip any PID in `brain_pids` (the live `~/.lastdb/data/folddb.sock` brain,
 with `~/.folddb/data/folddb.sock` only as a fallback, the `MacOS/fold-app` process,
 or the post-2026-07-12 `lastdbd` Mini primary),
-skip a port whose owning session is still live or whose cwd is a `DOING`/`REVIEW`
+skip a port whose owning session is still live or whose cwd is a `doing`/`todo`
 kanban worktree, and log every PID + port + cmdline reaped (and every one spared
 and why). After reaping, a fresh `preview_start name=lastdb-ui` should bind
 cleanly while the primary LastDB brain (socket still live) is untouched.
