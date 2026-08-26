@@ -39,9 +39,9 @@ PY
 
 # 1) fleet supervisor covers last-stack
 cat >"$tmp/forge-all.txt" <<'PS'
-19711 bash /Users/tomtang/.lastgit/host-checkout/lastgit/.lastgit/forge-run.sh
+19711 bash /Users/ci-runner/.lastgit/host-checkout/lastgit/.lastgit/forge-run.sh
 19766 lastgit forge run --all --context ci-required --exit-on-stale-binary
-32094 /Users/tomtang/.local/bin/lastgit ci watch --repo lastseek --context artifact-release --ref refs/heads/main --keep-alive
+32094 /Users/ci-runner/.local/bin/lastgit ci watch --repo lastseek --context artifact-release --ref refs/heads/main --keep-alive
 PS
 rc="$(classify "$tmp/forge-all.txt")"
 [ "$rc" = "0" ] || fail "forge-all exit $rc"
