@@ -104,6 +104,9 @@ deny_out="$(jq -n '{
 }' | "$ROOT/hooks/unsafe-inline-json.sh")"
 printf '%s' "$deny_out" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null
 printf '%s' "$deny_out" | grep -q 'Keep the streams separate'
+# papercut-last-stack-json-capture-helper-does-not-exist: the suggested
+# one-liner must be invocable in a fresh routine shell (no prelude).
+printf '%s' "$deny_out" | grep -q '.last-stack/bin/last-stack-json-capture'
 
 deny_out="$(jq -n '{
   tool_name: "Bash",
@@ -225,6 +228,17 @@ assert_allow "$host_track_probe" "JSON statement separates its own streams"
 assert_allow \
   "last-stack-json-capture /tmp/cards.json kanban list --column todo --json; jq -r '.cards[].slug' /tmp/cards.json" \
   "last-stack-json-capture keeps the streams apart"
+assert_allow \
+  "\"\$HOME/.last-stack/bin/last-stack-json-capture\" /tmp/cards.json kanban list --column todo --json; jq -r '.cards[].slug' /tmp/cards.json" \
+  "install-path last-stack-json-capture keeps the streams apart"
+
+# Host-track must PATH-link the JSON helpers the hook recommends, same class
+# as last-stack-kanban-done-when-eval (fresh routine PATH is ~/.local/bin first).
+jq -e '
+  def app($name): .apps[] | select(.app == $name);
+  (app("last-stack") | any(.links[]; .source == "bin/last-stack-json-capture" and .target == "$HOME/.local/bin/last-stack-json-capture"))
+  and (app("last-stack") | any(.links[]; .source == "bin/last-stack-json-get" and .target == "$HOME/.local/bin/last-stack-json-get"))
+' "$ROOT/config/host-track/apps.json" >/dev/null
 
 # Heredoc stripping must not blind the inline-parse checks to real commands.
 assert_deny \
