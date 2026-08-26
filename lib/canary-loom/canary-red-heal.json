@@ -1,0 +1,72 @@
+{
+  "name": "canary-red-heal",
+  "version": "1",
+  "start_at": "COLLECT",
+  "max_depth": 2,
+  "node_budget": 40,
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "exec_id": { "type": "string" },
+      "max_attempts": { "type": "integer" },
+      "lookback_hours": { "type": "integer" }
+    }
+  },
+  "states": {
+    "COLLECT": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-canary-collect.sh\""],
+      "effects": "none",
+      "timeout_sec": 120,
+      "next": "DECIDE",
+      "on_error": "FAILED"
+    },
+    "DECIDE": {
+      "type": "choice",
+      "path": "verdict",
+      "map": {
+        "green": "DONE",
+        "idle": "DONE",
+        "blocked": "REPORT",
+        "exhausted": "REPORT"
+      },
+      "default": "HEAL"
+    },
+    "HEAL": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-canary-heal.sh\""],
+      "effects": "checked",
+      "check": [
+        "/bin/bash",
+        "-c",
+        "exec \"$LOOM_SCRIPTS/loom-canary-check-fix.sh\""
+      ],
+      "timeout_sec": 3600,
+      "next": "RETRY",
+      "on_error": "RETRY"
+    },
+    "RETRY": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-canary-retry-upgrade.sh\""],
+      "effects": "checked",
+      "check": [
+        "/bin/bash",
+        "-c",
+        "exec \"$LOOM_SCRIPTS/loom-canary-check-retry.sh\""
+      ],
+      "timeout_sec": 7200,
+      "next": "DECIDE",
+      "on_error": "DECIDE"
+    },
+    "REPORT": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-canary-report.sh\""],
+      "effects": "idempotent",
+      "timeout_sec": 120,
+      "next": "FAILED",
+      "on_error": "FAILED"
+    },
+    "DONE": { "type": "succeed" },
+    "FAILED": { "type": "fail" }
+  }
+}

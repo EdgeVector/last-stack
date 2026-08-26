@@ -50,6 +50,7 @@ sm start lastdb-canary-release \
   --idempotency-key "canary-$main_oid" \
   --concurrency-key lastdb-canary-release
 sm tick --definition lastdb-canary-release --cap 6
+"$last_stack/bin/last-stack-canary-loom" --start --json
 sm list --definition lastdb-canary-release --json
 ```
 

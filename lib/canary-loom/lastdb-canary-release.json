@@ -1,0 +1,176 @@
+{
+  "name": "lastdb-canary-release",
+  "version": "1",
+  "start_at": "BUILD_START",
+  "max_depth": 2,
+  "node_budget": 80,
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "main_oid": { "type": "string" },
+      "max_attempts": { "type": "integer" },
+      "dry_run": { "type": "boolean" }
+    }
+  },
+  "states": {
+    "BUILD_START": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-canary-step.sh\" BUILD_START"],
+      "effects": "none",
+      "timeout_sec": 120,
+      "next": "BUILD_POLL",
+      "on_error": "FAILED"
+    },
+    "BUILD_POLL": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-canary-step.sh\" BUILD_POLL"],
+      "effects": "none",
+      "timeout_sec": 120,
+      "next": "DECIDE_BUILD",
+      "on_error": "FAILED"
+    },
+    "DECIDE_BUILD": {
+      "type": "choice",
+      "path": "build_next",
+      "map": {
+        "BUILD_WAIT": "BUILD_WAIT",
+        "BUILD_COLLECT": "BUILD_COLLECT",
+        "FAILED": "FAILED"
+      },
+      "default": "BUILD_WAIT"
+    },
+    "BUILD_WAIT": {
+      "type": "wait",
+      "until": "duration:2m",
+      "next": "BUILD_POLL"
+    },
+    "BUILD_COLLECT": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-canary-step.sh\" BUILD_COLLECT"],
+      "effects": "none",
+      "timeout_sec": 300,
+      "next": "PROBE",
+      "on_error": "FAILED"
+    },
+    "PROBE": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-canary-step.sh\" PROBE"],
+      "effects": "none",
+      "timeout_sec": 7200,
+      "next": "DECIDE_PROBE",
+      "on_error": "HEAL"
+    },
+    "DECIDE_PROBE": {
+      "type": "choice",
+      "path": "verdict",
+      "map": {
+        "green": "CUTOVER",
+        "red": "HEAL",
+        "blocked": "REPORT",
+        "exhausted": "REPORT",
+        "idle": "DONE"
+      },
+      "default": "HEAL"
+    },
+    "CUTOVER": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-canary-step.sh\" CUTOVER"],
+      "effects": "checked",
+      "check": [
+        "/bin/bash",
+        "-c",
+        "exec \"$LOOM_SCRIPTS/loom-canary-check-cutover.sh\""
+      ],
+      "timeout_sec": 3600,
+      "next": "VERIFY",
+      "on_error": "FAILED"
+    },
+    "VERIFY": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-canary-step.sh\" VERIFY"],
+      "effects": "none",
+      "timeout_sec": 180,
+      "next": "SOAK",
+      "on_error": "FAILED"
+    },
+    "SOAK": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-canary-step.sh\" SOAK"],
+      "effects": "idempotent",
+      "timeout_sec": 900,
+      "next": "DECIDE_SOAK",
+      "on_error": "HEAL"
+    },
+    "DECIDE_SOAK": {
+      "type": "choice",
+      "path": "soak_status",
+      "map": {
+        "green": "PROMOTE",
+        "red": "HEAL",
+        "pending": "SOAK_WAIT",
+        "exhausted": "REPORT",
+        "blocked": "REPORT"
+      },
+      "default": "SOAK_WAIT"
+    },
+    "SOAK_WAIT": {
+      "type": "wait",
+      "until": "duration:1h",
+      "next": "SOAK"
+    },
+    "HEAL": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-canary-heal.sh\""],
+      "effects": "checked",
+      "check": [
+        "/bin/bash",
+        "-c",
+        "exec \"$LOOM_SCRIPTS/loom-canary-check-fix.sh\""
+      ],
+      "timeout_sec": 3600,
+      "next": "RETRY_PREP",
+      "on_error": "RETRY_PREP"
+    },
+    "RETRY_PREP": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-canary-step.sh\" RETRY_PREP"],
+      "effects": "none",
+      "timeout_sec": 60,
+      "next": "DECIDE_RETRY",
+      "on_error": "REPORT"
+    },
+    "DECIDE_RETRY": {
+      "type": "choice",
+      "path": "verdict",
+      "map": {
+        "exhausted": "REPORT",
+        "blocked": "REPORT",
+        "green": "CUTOVER"
+      },
+      "default": "BUILD_START"
+    },
+    "PROMOTE": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-canary-step.sh\" PROMOTE"],
+      "effects": "checked",
+      "check": [
+        "/bin/bash",
+        "-c",
+        "exec \"$LOOM_SCRIPTS/loom-canary-check-cutover.sh\""
+      ],
+      "timeout_sec": 3600,
+      "next": "DONE",
+      "on_error": "FAILED"
+    },
+    "REPORT": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-canary-report.sh\""],
+      "effects": "idempotent",
+      "timeout_sec": 120,
+      "next": "FAILED",
+      "on_error": "FAILED"
+    },
+    "DONE": { "type": "succeed" },
+    "FAILED": { "type": "fail" }
+  }
+}

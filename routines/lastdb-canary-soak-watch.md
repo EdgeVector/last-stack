@@ -25,7 +25,13 @@ export LAST_STACK_CANARY_LAUNCHD_CHECK_CMD="${LAST_STACK_CANARY_LAUNCHD_CHECK_CM
 ```bash
 sm tick --definition lastdb-canary-release --cap 4 --json
 sm list --definition lastdb-canary-release --json
+"$last_stack/bin/last-stack-canary-loom" --json
 ```
+
+The loom graph `lastdb-canary-release` is the scheduler. `sm tick` stays
+during the cutover so a host with only sm still advances. After Host Track
+refresh, `last-stack-canary-loom` resumes the same `--key` (WAIT parks).
+Do not start a new candidate here.
 
 If no execution is running, the tick is a no-op and this routine is `noop`.
 **An idle lane is not an error.** Do not "fix" a quiet night by starting an
