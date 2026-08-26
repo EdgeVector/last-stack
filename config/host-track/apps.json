@@ -2,7 +2,12 @@
   "defaults": {
     "install_mode": "artifact",
     "artifact_channel": "stable",
-    "artifact_root": "$HOME/.lastgit/artifacts"
+    "artifact_root": "$HOME/.lastgit/artifacts",
+    "safe_upgrade": {
+      "soak_hours": 1,
+      "min_checks": 3,
+      "post_flip_ticks": 2
+    }
   },
   "apps": [
     {
@@ -180,7 +185,6 @@
       ],
       "notes": "Runtime is an immutable CI artifact that tracks gate_main (green+published main). host-track refresh promotes stable to that tip then installs. ~/.last-stack/{bin,skills,...} \u2192 artifacts/current. PATH links Class A + pickup bootstrap + Forge closeout tools (forge-api and friends) so routinesd (~/.local/bin first) never hits GC'd version pins and board-closeout can resolve Forge PRs. Never develop in the install; use a worktree. Also PATH-link last-stack-papercut-lifecycle-close, last-stack-kanban-file-pr, last-stack-kanban-decision-check, last-stack-kanban-done-when-eval, last-stack-json-capture, and last-stack-json-get so scheduled shells (routinesd PATH often ~/.local/bin-first without sourcing shell-prelude) resolve the lifecycle closer, the required Kind:pr filing helper, its settled-decision check, the non-PR DONE-WHEN evaluator, and the JSON stdout/stderr capture helpers the unsafe-inline-json hook recommends.",
       "safe_upgrade": {
-        "soak_hours": 0,
         "post_install_phase": "after-cutover",
         "probes": [
           {"argv": ["bin/host-track", "--help"], "timeout_s": 15},
@@ -322,7 +326,8 @@
         "soak_hours": 1,
         "post_install_phase": "after-cutover",
         "probes": [
-          {"argv": ["dist/routines", "--help"], "timeout_s": 15}
+          {"argv": ["dist/routines", "--help"], "timeout_s": 15},
+          {"argv": ["dist/routines", "list"], "timeout_s": 20}
         ]
       }
     },
@@ -353,7 +358,8 @@
             "timeout_s": 15,
             "accept_exit": [0, 1, 2],
             "output_matches": "lastsecrets"
-          }
+          },
+          {"argv": ["dist/lastsecrets", "schema-json"], "timeout_s": 15}
         ]
       }
     },
@@ -379,7 +385,8 @@
       "safe_upgrade": {
         "soak_hours": 1,
         "probes": [
-          {"argv": ["dist/configurations", "--help"], "timeout_s": 15}
+          {"argv": ["dist/configurations", "--help"], "timeout_s": 15},
+          {"argv": ["dist/configurations", "kinds"], "timeout_s": 15}
         ]
       }
     },
@@ -407,7 +414,8 @@
         "soak_hours": 1,
         "probes": [
           {"argv": ["dist/lastseek", "--help"], "timeout_s": 15}
-        ]
+        ],
+        "probe_waiver_reason": "status/query hammer the node (papercut: lastseek status became the top node consumer); no cheap local read verb yet"
       }
     },
     {
@@ -438,7 +446,8 @@
             "timeout_s": 20,
             "accept_exit": [0, 1, 2],
             "output_matches": "usage:"
-          }
+          },
+          {"argv": ["bin/search", "status"], "timeout_s": 25}
         ]
       }
     },
@@ -472,7 +481,8 @@
       "safe_upgrade": {
         "soak_hours": 1,
         "probes": [
-          {"argv": ["bin/ra", "--help"], "timeout_s": 15}
+          {"argv": ["bin/ra", "--help"], "timeout_s": 15},
+          {"argv": ["bin/ra", "which", "--json"], "timeout_s": 15}
         ]
       }
     },
@@ -505,7 +515,8 @@
       "safe_upgrade": {
         "soak_hours": 1,
         "probes": [
-          {"argv": ["dist/sm", "--help"], "timeout_s": 15}
+          {"argv": ["dist/sm", "--help"], "timeout_s": 15},
+          {"argv": ["dist/sm", "schema-json", "--type", "all"], "timeout_s": 15}
         ]
       }
     },
@@ -531,6 +542,7 @@
       "safe_upgrade": {
         "soak_hours": 1,
         "probes": [
+          {"argv": ["dist/loom", "--help"], "timeout_s": 15},
           {"argv": ["dist/loom", "ping"], "timeout_s": 15}
         ]
       }
@@ -559,7 +571,8 @@
         "soak_hours": 1,
         "probes": [
           {"argv": ["bin/lastdb-browser", "--help"], "timeout_s": 15}
-        ]
+        ],
+        "probe_waiver_reason": "server-only binary; post_install builds the UI and runs its smoke — no CLI read verb"
       }
     },
     {

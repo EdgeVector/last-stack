@@ -186,6 +186,10 @@ bash tests/host-track-local-safe-staleness.sh
 bash tests/host-track-deployment-freshness.sh
 bash tests/lastseek-host-track.sh
 bash tests/host-track-registry-compliance.sh
+# Soak gate correctness: min_checks counting, one-incident heal keying across
+# digests, post-flip rollback. A regression here silently flips a bad binary
+# onto PATH fleet-wide — same silent-cutover family as the tests above.
+bash tests/host-track-soak-gate.sh
 bash tests/last-stack-fleet-channel-freshness-gate.sh
 bash tests/last-stack-artifact-host-track-proof.sh
 bash tests/last-stack-artifact-layout.sh

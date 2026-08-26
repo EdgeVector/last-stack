@@ -154,6 +154,19 @@ setting() {
   printf '%s\n' "$value"
 }
 
+safe_upgrade_setting() {
+  # .safe_upgrade.<key> from the app entry, else .defaults.safe_upgrade.<key>.
+  # An explicit 0/false in the entry wins over the default (only absence
+  # inherits) — opting out must stay expressible.
+  local json="$1" key="$2" fallback="${3:-}" value
+  value="$(printf '%s\n' "$json" | jq -r --arg key "$key" '.safe_upgrade[$key] // "" | tostring')"
+  if [ -z "$value" ]; then
+    value="$(jq -r --arg key "$key" '.defaults.safe_upgrade[$key] // "" | tostring' "$REGISTRY")"
+  fi
+  [ -n "$value" ] || value="$fallback"
+  printf '%s\n' "$value"
+}
+
 git_head() {
   local path="$1"
   [ -n "$path" ] || return 0
@@ -526,7 +539,7 @@ status_json_for() {
   local exemption_kind deployment_binary deployment_peer_binary deployment_repo_cache
   local deployment_version deployment_head deployment_peer_version deployment_peer_head
   local deployment_pair_match deployment_problem behind_by distance deployment_expanded
-  local main_unpublished freshness
+  local main_unpublished freshness soak_state soak_checks soak_min post_flip_ticks_left
 
   json="$(require_app_json "$app")"
   kind="$(field "$json" kind)"
@@ -556,6 +569,10 @@ status_json_for() {
   artifact_previous=""
   artifact_problem=""
   main_unpublished="false"
+  soak_state=""
+  soak_checks="null"
+  soak_min="null"
+  post_flip_ticks_left="null"
   deployment_version=""
   deployment_head=""
   deployment_peer_version=""
@@ -598,6 +615,18 @@ status_json_for() {
     fi
     if [ -n "$artifact_problem" ]; then
       stale="true"
+    fi
+    # Soak state: a parked canary is the system working, not staleness.
+    if [ -L "$install_root/canary" ] && [ -f "$(soak_stamp_path "$app")" ]; then
+      soak_state="$(jq -r '.status // ""' "$(soak_stamp_path "$app")" 2>/dev/null || true)"
+      soak_checks="$(jq -r '.checks // 0' "$(soak_stamp_path "$app")" 2>/dev/null || true)"
+      [[ "$soak_checks" =~ ^[0-9]+$ ]] || soak_checks="null"
+      soak_min="$(min_checks_for "$json")"
+      [[ "$soak_min" =~ ^[0-9]+$ ]] || soak_min="null"
+    fi
+    if [ -f "$(post_flip_stamp_path "$app")" ]; then
+      post_flip_ticks_left="$(jq -r '.ticks_left // 0' "$(post_flip_stamp_path "$app")" 2>/dev/null || true)"
+      [[ "$post_flip_ticks_left" =~ ^[0-9]+$ ]] || post_flip_ticks_left="null"
     fi
   elif [ "$install_mode" = "local-safe" ]; then
     # Live current symlink is source of truth (stamp can lag / lie).
@@ -757,6 +786,10 @@ status_json_for() {
     --arg deployment_problem "$deployment_problem" \
     --arg freshness "$freshness" \
     --arg registry_compliance "$registry_compliance" \
+    --arg soak_state "$soak_state" \
+    --argjson soak_checks "$soak_checks" \
+    --argjson soak_min_checks "$soak_min" \
+    --argjson post_flip_ticks_left "$post_flip_ticks_left" \
     --argjson artifact_exemption "$artifact_exemption_json" \
     --argjson stale "$stale" \
     --argjson main_unpublished "$main_unpublished" \
@@ -785,6 +818,10 @@ status_json_for() {
       paired_head: ($deployment_peer_head | select(length > 0) // null),
       deployment_problem: ($deployment_problem | select(length > 0) // null),
       freshness: $freshness,
+      soak_state: ($soak_state | select(length > 0) // null),
+      soak_checks: $soak_checks,
+      soak_min_checks: $soak_min_checks,
+      post_flip_ticks_left: $post_flip_ticks_left,
       stamp: $stamp,
       refresh: ($refresh | select(length > 0) // null),
       artifact_app: ($artifact_app | select(length > 0) // null),
@@ -821,6 +858,8 @@ status_plain_for() {
       "stale=" + (.stale | tostring),
       "main_unpublished=" + ((.main_unpublished // false) | tostring),
       "freshness=" + (.freshness // "-"),
+      "soak=" + (if .soak_state then .soak_state + ":" + ((.soak_checks // 0) | tostring) + "/" + ((.soak_min_checks // 0) | tostring) else "-" end),
+      "post_flip=" + ((.post_flip_ticks_left // "-") | tostring),
       "notes=" + .notes
     ] | @tsv'
 }
@@ -1674,11 +1713,57 @@ soak_hours_for() {
     printf '%s\n' "$env_h"
     return
   fi
-  printf '%s\n' "$json" | jq -r '.safe_upgrade.soak_hours // 0'
+  # Inherited from .defaults.safe_upgrade so soak is default-ON for the
+  # fleet; an entry opts out with an explicit 0 plus soak_exempt_reason
+  # (validate-registry enforces the reason).
+  safe_upgrade_setting "$json" soak_hours 0
+}
+
+min_checks_for() {
+  # Green soak-watch checks required before a flip. Code fallback is 1
+  # (the pre-defaults behavior); the shipped registry default is 3.
+  safe_upgrade_setting "$1" min_checks 1
+}
+
+post_flip_ticks_for() {
+  # Ticks of probing against the NEW current after a flip. Code fallback 0
+  # (no watch); the shipped registry default is 2.
+  safe_upgrade_setting "$1" post_flip_ticks 0
 }
 
 soak_stamp_path() {
   printf '%s/%s.soak.json\n' "$STAMP_DIR" "$1"
+}
+
+archive_soak_stamp() {
+  # Soak history survives: move the live stamp aside instead of deleting it.
+  local app="$1" outcome="${2:-}" path dest digest
+  path="$(soak_stamp_path "$app")"
+  [ -f "$path" ] || return 0
+  digest="$(jq -r '.digest // "unknown"' "$path" 2>/dev/null || printf 'unknown')"
+  mkdir -p "$STAMP_DIR/soak-history"
+  dest="$STAMP_DIR/soak-history/${app}-${digest:0:12}-$(date -u +%Y%m%dT%H%M%SZ).soak.json"
+  if [ -n "$outcome" ]; then
+    jq --arg outcome "$outcome" '. + {outcome: $outcome}' "$path" > "$dest" 2>/dev/null || cp "$path" "$dest"
+  else
+    cp "$path" "$dest"
+  fi
+  rm -f "$path"
+}
+
+post_flip_stamp_path() {
+  printf '%s/%s.postflip.json\n' "$STAMP_DIR" "$1"
+}
+
+write_post_flip_stamp() {
+  local app="$1" digest="$2" json="$3" ticks
+  ticks="$(post_flip_ticks_for "$json")"
+  awk -v t="$ticks" 'BEGIN { exit !(t+0 > 0) }' || return 0
+  mkdir -p "$STAMP_DIR"
+  jq -n --arg app "$app" --arg digest "$digest" --argjson ticks "$ticks" \
+    --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{app:$app, digest:$digest, ticks_left:$ticks, flipped_at:$now}' \
+    > "$(post_flip_stamp_path "$app")"
 }
 
 write_soak_stamp() {
@@ -1755,12 +1840,17 @@ file_soak_red_card() {
       "$app" >&2
     return 0
   fi
-  slug="$(soak_red_card_slug "$app" "$digest")"
   stamp="$(soak_stamp_path "$app")"
-  if [ -f "$stamp" ] && [ "$(jq -r '.card_slug // empty' "$stamp")" = "$slug" ]; then
-    printf 'host-track: %s soak RED; card %s already filed\n' "$app" "$slug" >&2
+  # One card per INCIDENT, not per digest: parking a successor canary keeps
+  # the open card_slug in the stamp, and a red soak of a heal fix belongs to
+  # the same incident (same heal key, same bounded attempt budget). The
+  # incident closes when a green soak archives the stamp.
+  slug="$(jq -r '.card_slug // empty' "$stamp" 2>/dev/null || true)"
+  if [ -n "$slug" ]; then
+    printf 'host-track: %s soak RED; incident card %s already open\n' "$app" "$slug" >&2
     return 0
   fi
+  slug="$(soak_red_card_slug "$app" "$digest")"
   repo="$(soak_red_repo "$json" "$app")"
   body="$(cat <<EOF
 **Follow the kanban-agent skill — drive this through to a MERGED PR.
@@ -1806,6 +1896,67 @@ EOF
   soak_h="$(soak_hours_for "$json")"
   write_soak_stamp "$app" "$digest" "soak_red" "$soak_h" 1 "" "$slug"
   printf 'host-track: %s soak RED; filed P0 %s\n' "$app" "$slug" >&2
+}
+
+kick_heal_soak() {
+  # Bounded self-heal on soak RED. One loom run per open incident: the
+  # idempotency key is the card slug minted at the FIRST red digest, so a
+  # red soak of the heal's own fix re-enters the same run as the next
+  # attempt instead of resetting the attempt budget with every new digest.
+  local app="$1" digest="$2" json="$3" runner slug
+  [ "${HOST_TRACK_SOAK_HEAL:-1}" != "0" ] || return 0
+  runner="${HOST_TRACK_SOAK_HEAL_RUNNER:-}"
+  if [ -z "$runner" ]; then
+    runner="$(command -v last-stack-soak-heal-loom 2>/dev/null || true)"
+  fi
+  if [ -z "$runner" ] && [ -x "$ROOT/bin/last-stack-soak-heal-loom" ]; then
+    runner="$ROOT/bin/last-stack-soak-heal-loom"
+  fi
+  if [ -z "$runner" ] || [ ! -x "$runner" ]; then
+    printf 'host-track: %s soak RED; heal runner missing, card only\n' "$app" >&2
+    return 0
+  fi
+  slug="$(jq -r '.card_slug // empty' "$(soak_stamp_path "$app")" 2>/dev/null || true)"
+  [ -n "$slug" ] || slug="$(soak_red_card_slug "$app" "$digest")"
+  "$runner" --app "$app" --digest "$digest" --key "$slug" --quiet \
+    || printf 'host-track: %s heal kick failed (soak still refuses cutover)\n' "$app" >&2
+  return 0
+}
+
+post_flip_watch_one() {
+  # Probe the NEW current for post_flip_ticks ticks after a flip. Red rolls
+  # current back to previous automatically, files the card, kicks heal.
+  local app="$1" json path digest ticks install_root current_dir
+  json="$(require_app_json "$app")"
+  [ "$(setting "$json" install_mode)" = "artifact" ] || return 0
+  path="$(post_flip_stamp_path "$app")"
+  [ -f "$path" ] || return 0
+  digest="$(jq -r '.digest // empty' "$path")"
+  ticks="$(jq -r '.ticks_left // 0' "$path")"
+  IFS=$'\t' read -r _ _ _ install_root < <(artifact_paths "$app" "$json")
+  if [ ! -L "$install_root/current" ] \
+    || [ "$(readlink "$install_root/current")" != "versions/$digest" ]; then
+    # current moved on (newer flip or rollback); this watch no longer applies.
+    rm -f "$path"
+    return 0
+  fi
+  current_dir="$install_root/versions/$digest"
+  if ! run_safe_upgrade_probes "$app" "$json" "$current_dir" ""; then
+    printf 'host-track: %s post-flip RED; rolling back to previous\n' "$app" >&2
+    rollback_current_to_previous "$app" "$install_root" "$digest" "$json"
+    file_soak_red_card "$app" "$digest" "$json"
+    kick_heal_soak "$app" "$digest" "$json"
+    rm -f "$path"
+    return 1
+  fi
+  ticks=$((ticks - 1))
+  if [ "$ticks" -le 0 ]; then
+    printf 'host-track: %s post-flip watch complete for %s\n' "$app" "${digest:0:12}"
+    rm -f "$path"
+  else
+    jq --argjson t "$ticks" '.ticks_left = $t' "$path" > "$path.tmp" && mv "$path.tmp" "$path"
+    printf 'host-track: %s post-flip watch green; ticks_left=%s\n' "$app" "$ticks"
+  fi
 }
 
 should_soak() {
@@ -2306,24 +2457,52 @@ validate_registry_cmd() {
           ((.safe_upgrade.probes // []) | length) > 0
           and all(.safe_upgrade.probes[]?; ((.argv // []) | length) > 0)
         end;
+      def resolved_soak($app):
+        # Same resolution safe_upgrade_setting uses: entry wins, absence inherits.
+        ($app.safe_upgrade.soak_hours // $root.defaults.safe_upgrade.soak_hours // 0);
+      def soak_ok($app):
+        # Artifact apps soak by default; an explicit 0 needs a written reason.
+        if compliance($app) != "artifact" then true
+        else
+          (resolved_soak($app) > 0)
+          or ((($app.safe_upgrade.soak_exempt_reason // "") | length) > 0)
+        end;
+      def probe_depth_ok($app):
+        # Self-check plus one real read verb (>=2 probes), or a written waiver
+        # for apps with no cheap read verb (server-only binaries, node-heavy
+        # status verbs).
+        if compliance($app) != "artifact" then true
+        else
+          ((($app.safe_upgrade.probes // []) | length) >= 2)
+          or ((($app.safe_upgrade.probe_waiver_reason // "") | length) > 0)
+        end;
       ($root.apps // [])
       | map({
           app: .app,
           install_mode: mode(.),
           registry_compliance: compliance(.),
           artifact_exemption: exemption(.),
-          probe_ok: probe_ok(.)
+          probe_ok: probe_ok(.),
+          soak_ok: soak_ok(.),
+          resolved_soak_hours: resolved_soak(.),
+          probe_depth_ok: probe_depth_ok(.)
         }) as $apps
       | ($apps | map(select(.registry_compliance == "non_compliant")) | length) as $nc
       | ($apps | map(select(.probe_ok == false)) | length) as $mp
+      | ($apps | map(select(.soak_ok == false)) | length) as $ms
+      | ($apps | map(select(.probe_depth_ok == false)) | length) as $tp
       | {
-          ok: (($nc == 0) and ($mp == 0)),
+          ok: (($nc == 0) and ($mp == 0) and ($ms == 0) and ($tp == 0)),
           registry: $registry,
           total: ($apps | length),
           non_compliant: $nc,
           missing_probes: $mp,
+          missing_soak: $ms,
+          thin_probes: $tp,
           policy: "artifact_or_exempt",
           probe_policy: "artifact_apps_have_probes",
+          soak_policy: "artifact_apps_soak_or_written_reason",
+          probe_depth_policy: "two_probes_or_written_waiver",
           apps: $apps
         }
   ' "$REGISTRY")" || die "validate-registry could not read registry JSON"
@@ -2332,17 +2511,21 @@ validate_registry_cmd() {
   if [ "$json_out" -eq 1 ]; then
     printf '%s\n' "$report"
   else
-    printf 'validate-registry policy=artifact_or_exempt registry=%s total=%s non_compliant=%s missing_probes=%s\n' \
+    printf 'validate-registry policy=artifact_or_exempt registry=%s total=%s non_compliant=%s missing_probes=%s missing_soak=%s thin_probes=%s\n' \
       "$(printf '%s\n' "$report" | jq -r '.registry')" \
       "$(printf '%s\n' "$report" | jq -r '.total')" \
       "$non_compliant" \
-      "$(printf '%s\n' "$report" | jq -r '.missing_probes')"
+      "$(printf '%s\n' "$report" | jq -r '.missing_probes')" \
+      "$(printf '%s\n' "$report" | jq -r '.missing_soak')" \
+      "$(printf '%s\n' "$report" | jq -r '.thin_probes')"
     printf '%s\n' "$report" | jq -r '.apps[] |
       .app + "\t" + .install_mode + "\t" + .registry_compliance +
       (if .artifact_exemption then "\t" + (.artifact_exemption.kind // "-") else "\t-" end) +
-      "\tprobe=" + (if .probe_ok then "ok" else "MISSING" end)'
-    if [ "$non_compliant" = "0" ] && [ "$(printf '%s\n' "$report" | jq -r '.missing_probes')" = "0" ]; then
-      printf 'ok: every registered app is artifact or exempt and artifact apps declare probes\n'
+      "\tprobe=" + (if .probe_ok then "ok" else "MISSING" end) +
+      "\tsoak=" + (if .soak_ok then ((.resolved_soak_hours | tostring) + "h") else "MISSING" end) +
+      "\tdepth=" + (if .probe_depth_ok then "ok" else "THIN" end)'
+    if [ "$(printf '%s\n' "$report" | jq -r '.ok')" = "true" ]; then
+      printf 'ok: every app is artifact or exempt; artifact apps declare probes, soak (or a reason), and probe depth (or a waiver)\n'
     else
       if [ "$non_compliant" != "0" ]; then
         printf 'FAIL: %s app(s) are neither artifact nor exempt\n' "$non_compliant" >&2
@@ -2350,6 +2533,14 @@ validate_registry_cmd() {
       if [ "$(printf '%s\n' "$report" | jq -r '.missing_probes')" != "0" ]; then
         printf 'FAIL: %s artifact app(s) have no safe_upgrade.probes\n' \
           "$(printf '%s\n' "$report" | jq -r '.missing_probes')" >&2
+      fi
+      if [ "$(printf '%s\n' "$report" | jq -r '.missing_soak')" != "0" ]; then
+        printf 'FAIL: %s artifact app(s) resolve to soak 0 with no soak_exempt_reason\n' \
+          "$(printf '%s\n' "$report" | jq -r '.missing_soak')" >&2
+      fi
+      if [ "$(printf '%s\n' "$report" | jq -r '.thin_probes')" != "0" ]; then
+        printf 'FAIL: %s artifact app(s) have <2 probes and no probe_waiver_reason\n' \
+          "$(printf '%s\n' "$report" | jq -r '.thin_probes')" >&2
       fi
     fi
   fi
@@ -2359,7 +2550,7 @@ validate_registry_cmd() {
 
 
 soak_watch_one() {
-  local app="$1" json install_root canary_rel canary_dir digest soak_h stamp checks started now elapsed need current_dir
+  local app="$1" json install_root canary_rel canary_dir digest soak_h min_checks stamp checks started now elapsed need current_dir
   json="$(require_app_json "$app")"
   [ "$(setting "$json" install_mode)" = "artifact" ] || return 0
   IFS=$'\t' read -r _ _ _ install_root < <(artifact_paths "$app" "$json")
@@ -2380,7 +2571,7 @@ soak_watch_one() {
   digest="${canary_rel#versions/}"
   if [ -L "$install_root/current" ] && [ "$(readlink "$install_root/current")" = "$canary_rel" ]; then
     printf 'host-track: %s soak-watch already current\n' "$app"
-    rm -f "$(soak_stamp_path "$app")"
+    archive_soak_stamp "$app" "activated"
     return 0
   fi
   current_dir=""
@@ -2392,6 +2583,7 @@ soak_watch_one() {
     write_soak_stamp "$app" "$digest" "soak_red" "$soak_h"
     printf 'host-track: %s soak RED; current unchanged\n' "$app" >&2
     file_soak_red_card "$app" "$digest" "$json"
+    kick_heal_soak "$app" "$digest" "$json"
     return 1
   fi
   stamp="$(soak_stamp_path "$app")"
@@ -2404,17 +2596,26 @@ soak_watch_one() {
     checks=$((checks + 1))
   fi
   soak_h="$(soak_hours_for "$json")"
+  min_checks="$(min_checks_for "$json")"
   now="$(date +%s)"
   elapsed=$((now - started))
   need="$(awk -v h="$soak_h" 'BEGIN { printf "%d", (h+0)*3600 }')"
-  if [ "$elapsed" -lt "$need" ]; then
+  # The gate counts as well as waits: a canary that sat out the window with
+  # soak-watch down must not flip on its first and only green check.
+  if [ "$elapsed" -lt "$need" ] || [ "$checks" -lt "$min_checks" ]; then
     write_soak_stamp "$app" "$digest" "soaking" "$soak_h" "$checks" "$started"
-    printf 'host-track: %s soak pending elapsed=%ss need=%ss checks=%s\n' \
-      "$app" "$elapsed" "$need" "$checks"
+    printf 'host-track: %s soak pending elapsed=%ss need=%ss checks=%s/%s\n' \
+      "$app" "$elapsed" "$need" "$checks" "$min_checks"
     return 0
   fi
-  printf 'host-track: %s soak GREEN after %ss; activating\n' "$app" "$elapsed" >&2
-  HOST_TRACK_ACTIVATE=1 artifact_install_app "$app" "" 0 1
+  printf 'host-track: %s soak GREEN after %ss (checks=%s/%s); activating\n' \
+    "$app" "$elapsed" "$checks" "$min_checks" >&2
+  if HOST_TRACK_ACTIVATE=1 artifact_install_app "$app" "" 0 1; then
+    archive_soak_stamp "$app" "activated"
+    write_post_flip_stamp "$app" "$digest" "$json"
+  else
+    return 1
+  fi
 }
 
 soak_watch_cmd() {
@@ -2431,11 +2632,14 @@ soak_watch_cmd() {
     while IFS= read -r app; do
       [ -n "$app" ] || continue
       soak_watch_one "$app" || failures=$((failures + 1))
+      post_flip_watch_one "$app" || failures=$((failures + 1))
     done < <(list_apps)
     [ "$failures" -eq 0 ]
     return
   fi
-  soak_watch_one "$app"
+  soak_watch_one "$app" || failures=$((failures + 1))
+  post_flip_watch_one "$app" || failures=$((failures + 1))
+  [ "$failures" -eq 0 ]
 }
 
 main() {
