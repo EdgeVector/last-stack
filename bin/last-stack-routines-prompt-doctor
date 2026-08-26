@@ -27,7 +27,12 @@
 #
 # --normalize-findings heals exactly what this run measured red, instead of a
 # hardcoded basename list: every prompt a REGISTERED routine actually resolves
-# to a drifted local full copy. Unregistered local-only prompts are untouched.
+# to a local full copy, whether it has already diverged (twin-divergent) or is
+# still byte-identical to the product file (twin-copy). Healing twin-copy is
+# strictly the safer half: the content matches, so linking loses nothing, and
+# it is the only state a prompt can be in the moment it first gains a tracked
+# product twin. Leaving it red meant every newly-tracked prompt stayed red
+# until someone hand-linked it. Unregistered local-only prompts are untouched.
 #
 # Exit: 0 green, 1 findings (or normalize applied with remaining issues),
 #       2 usage.
@@ -306,7 +311,7 @@ if [ "$want_normalize" -eq 1 ] && [ "$want_from_findings" -eq 1 ]; then
     [ -n "$_line" ] || continue
     _kind="${_line%%|*}"
     case "$_kind" in
-      twin-divergent|registry-divergent-local) ;;
+      twin-divergent|twin-copy|registry-divergent-local) ;;
       *) continue ;;
     esac
     # detail carries either `basename=<n> ...` or `... prompt_path=<path> ...`

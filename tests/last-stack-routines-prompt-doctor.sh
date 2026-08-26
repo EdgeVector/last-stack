@@ -100,6 +100,22 @@ printf '%s\n' "$out" | grep -q 'kind=twin-copy' || {
   echo "$out" >&2
   exit 1
 }
+# --- normalize-findings heals the twin-copy too ---
+# Identical content means linking loses nothing, and twin-copy is the state
+# EVERY prompt starts in the moment it first gains a tracked product twin
+# (local copy already there, product file newly installed). Healing only
+# twin-divergent left those red until someone hand-linked them.
+"$DOC" --normalize-findings
+if ! "$DOC" --quiet; then
+  echo "fail: expected green after normalize-findings healed twin-copy" >&2
+  "$DOC" >&2 || true
+  exit 1
+fi
+if [ ! -L "$localp/copy.md" ]; then
+  echo "fail: normalize-findings did not symlink twin-copy local -> product" >&2
+  ls -la "$localp/copy.md" >&2
+  exit 1
+fi
 rm -f "$localp/copy.md"
 
 # --- red: version-dir pin in registry ---
