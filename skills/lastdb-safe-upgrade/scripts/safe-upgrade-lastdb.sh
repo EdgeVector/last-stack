@@ -583,6 +583,32 @@ measure_op_median_ms() {
   median_of $vals
 }
 
+measure_op_once_ms() {
+  # $1 = op fn, $2 = op arg, $3 = label. stdout: one sample ms, or -1.
+  local fn="$1" arg="$2" label="$3"
+  local t0 t1 rc=0
+  t0="$(now_ms)"
+  run_op_with_deadline "$LAT_OP_TIMEOUT_SECS" "$fn" "$arg" || rc=$?
+  t1="$(now_ms)"
+  if [ "$rc" -eq 124 ]; then
+    warn "latency $label: sample hit the ${LAT_OP_TIMEOUT_SECS}s deadline"
+    echo $((LAT_OP_TIMEOUT_SECS * 1000))
+    return 0
+  fi
+  if [ "$rc" -ne 0 ]; then
+    warn "latency $label: sample failed (rc=$rc)"
+    echo "-1"
+    return 0
+  fi
+  echo $((t1 - t0))
+}
+
+discard_op_warmup() {
+  local fn="$1" arg="$2" label="$3"
+  run_op_with_deadline "$LAT_OP_TIMEOUT_SECS" "$fn" "$arg" >/dev/null 2>&1 || true
+  log "latency $label: discarded warmup sample"
+}
+
 metric_val() {
   # $1 = metrics file, $2 = key
   awk -F= -v k="$2" '$1==k{print $2}' "$1" 2>/dev/null | head -1
@@ -612,78 +638,48 @@ resolve_baseline_bin() {
 }
 
 lat_op_within_bar() {
-  # $1 = op label, $2 = candidate ms, $3 = baseline ms (-1 = unmeasured).
-  # rc 0 = within bar; rc 1 = RED.
-  # With a baseline, the RATIO governs: the bar exists to catch regressions the
-  # CANDIDATE introduces. Pre-existing slowness (baseline equally over the
-  # ceiling) is loudly WARNed, not RED — a bar that REDs on the status quo just
-  # trains everyone to skip it. Without a baseline the ceiling is the only
-  # protection, so there it is RED.
-  local op="$1" cand="$2" base="$3"
-  if [ "$cand" = "-1" ] || [ -z "$cand" ]; then
-    if [ -n "$base" ] && [ "$base" != "-1" ]; then
-      log "latency $op RED: unmeasurable on candidate but baseline measured ${base}ms"
-      return 1
-    fi
-    warn "latency $op: unmeasured on candidate and baseline — no bar applied"
-    return 0
+  # Wrapper: default hot-vs-hot. Prefer lat_op_like_to_like_within_bar.
+  local op="$1" cand="$2" base="$3" c_th="${4:-hot}" b_th="${5:-hot}"
+  local out rc=0
+  export LASTDB_PROBE_LAT_FLOOR_MS="${LAT_FLOOR_MS}"
+  export LASTDB_PROBE_LAT_RATIO="${LAT_RATIO}"
+  export LASTDB_PROBE_LAT_ABS_MAX_MS="${LAT_ABS_MAX_MS}"
+  out="$(lat_op_like_to_like_within_bar "$op" "$cand" "$base" "$c_th" "$b_th")" || rc=$?
+  if [ -n "$out" ]; then
+    case "$out" in
+      *' RED:'*) log "$out" ;;
+      *'mixed thermal'*) log "$out" ;;
+      *WATCH*|*pre-existing*) warn "$out" ;;
+      *) log "$out" ;;
+    esac
   fi
-  if [ -n "$base" ] && [ "$base" != "-1" ]; then
-    if [ "$cand" -gt "$LAT_FLOOR_MS" ] 2>/dev/null \
-      && awk -v c="$cand" -v b="$base" -v r="$LAT_RATIO" 'BEGIN{exit !(c > b*r)}'; then
-      log "latency $op RED: candidate ${cand}ms > ${LAT_RATIO}x baseline ${base}ms"
-      return 1
-    fi
-    if [ "$cand" -gt "$LAT_ABS_MAX_MS" ] 2>/dev/null; then
-      if [ "$base" -gt "$LAT_ABS_MAX_MS" ] 2>/dev/null; then
-        warn "latency $op: candidate ${cand}ms AND baseline ${base}ms both exceed the ${LAT_ABS_MAX_MS}ms ceiling — pre-existing slowness, not a candidate regression; fix the store, not the upgrade"
-      else
-        warn "latency $op: candidate ${cand}ms over the ${LAT_ABS_MAX_MS}ms ceiling but within ${LAT_RATIO}x of baseline ${base}ms — WATCH it"
-      fi
-    fi
-    log "latency $op GREEN: candidate=${cand}ms baseline=${base}ms (ratio bar ${LAT_RATIO}x above ${LAT_FLOOR_MS}ms)"
-    return 0
-  fi
-  if [ "$cand" -gt "$LAT_ABS_MAX_MS" ] 2>/dev/null; then
-    log "latency $op RED: candidate ${cand}ms > absolute ceiling ${LAT_ABS_MAX_MS}ms (no baseline to compare)"
-    return 1
-  fi
-  log "latency $op GREEN: candidate=${cand}ms (no baseline; abs max ${LAT_ABS_MAX_MS}ms)"
-  return 0
+  return "$rc"
 }
 
-# Boot a lastdbd on a throwaway CoW of the primary; sample peak RSS after
-# settle, then time the latency workload against the copy. Writes key=value
-# metrics (boot_secs, peak_rss_mb, lat_point_ms, lat_scan_ms, lat_write_ms;
-# -1 = unmeasured) to the out file. Non-zero rc = could not boot/serve.
-probe_bin_metrics() {
-  # $1 = lastdbd binary, $2 = label (candidate|baseline), $3 = metrics out file
-  local bin="$1" label="$2" outf="$3"
-  local copy sock blog pid uh i boot_secs max_rss rss
-  local p_ms s_ms w_ms
-
+# Leaf must stay short: the node refuses a data dir over 82 bytes (103-byte
+# sockaddr_un limit minus socket name + atomic temp sibling). $$ keeps uniqueness.
+clone_probe_home() {
+  local label="$1" copy
   mkdir -p "$PROBE_ROOT"
-  # Leaf must stay short: the node refuses a data dir over 82 bytes (103-byte
-  # sockaddr_un limit minus socket name + atomic temp sibling), and
-  # "metrics-probe-<label>-<epoch>-<pid>" overshot it by 2 bytes even from
-  # /tmp (observed 2026-08-23). $$ keeps the per-run uniqueness.
   copy="$PROBE_ROOT/mp-${label}-$$"
-  blog="$copy.boot.log"
   rm -rf "$copy"
-  # Live sockets in the source home make cp exit non-zero even when the clone
-  # is fine (same lesson as the backup step) — judge by essentials, not rc.
   cp -cR "$PRIMARY_HOME" "$copy" 2>/dev/null || true
   if [ ! -d "$copy" ] || [ ! -f "$copy/identity.key" ] || [ ! -d "$copy/data" ]; then
     warn "$label metrics probe: CoW clone incomplete"
-    rm -rf "$copy" "$blog" 2>/dev/null || true
+    rm -rf "$copy" 2>/dev/null || true
     return 1
   fi
   rm -f "$copy/cloud_sync.json" "$copy/data/"*.sock 2>/dev/null || true
-  sock="$copy/data/folddb.sock"
+  printf '%s\n' "$copy"
+}
 
-  # Boot with the live node's LASTDB_* tuning so measurements reflect the
-  # config that will actually serve after cutover.
+# Start lastdbd on $1=bin $2=copy $3=label. Sets LAST_PROBE_PID/SOCK/BLOG/BOOT.
+start_probe_node() {
+  local bin="$1" copy="$2" label="$3"
+  local blog sock pid uh i
   local env_pairs=()
+  blog="$copy.boot.log"
+  sock="$copy/data/folddb.sock"
   while IFS= read -r line; do
     [ -n "$line" ] && env_pairs+=("$line")
   done <<EOF_ENV
@@ -716,65 +712,177 @@ EOF_ENV
     rm -rf "$copy" "$blog" 2>/dev/null || true
     return 1
   fi
-  boot_secs="$i"
-  log "$label metrics probe: identity ready after ${boot_secs}s; settling ${RSS_SETTLE_SECS}s for embeddings/load..."
-  sleep "$RSS_SETTLE_SECS"
+  log "$label metrics probe: identity ready after ${i}s"
+  LAST_PROBE_PID="$pid"
+  LAST_PROBE_SOCK="$sock"
+  LAST_PROBE_BLOG="$blog"
+  LAST_PROBE_BOOT="$i"
+  return 0
+}
 
-  # Latency workload FIRST, sampling RSS after each op: an idle Last Store
-  # node lazy-loads and gets compressed/paged by macOS, so idle RSS reads as
-  # tiny (e2e 2026-07-28: 10 MiB "peak" on a 33G store) and the memory-guard
-  # bar never fires. Peak RSS only means something measured under real load.
-  max_rss=0
-  sample_rss_into_max() {
-    if kill -0 "$pid" 2>/dev/null; then
-      rss="$(rss_mb_of_pid "$pid")"
-      if [ "$rss" -gt "$max_rss" ] 2>/dev/null; then max_rss="$rss"; fi
-    fi
-  }
-  p_ms=-1; s_ms=-1; w_ms=-1
-  if [ "$LAT_SKIP" != "1" ]; then
-    p_ms="$(measure_op_median_ms op_lat_point "$sock" "$label point-read")"
-    sample_rss_into_max
-    if command -v kanban >/dev/null 2>&1; then
-      s_ms="$(measure_op_median_ms op_lat_scan "$copy" "$label kanban-scan")"
-      sample_rss_into_max
-    else
-      warn "latency: kanban CLI not on PATH — scan op unmeasured"
-    fi
-    if command -v brain >/dev/null 2>&1; then
-      w_ms="$(measure_op_median_ms op_lat_write "$copy" "$label brain-write")"
-      sample_rss_into_max
-    else
-      warn "latency: brain CLI not on PATH — write op unmeasured"
-    fi
-  else
-    warn "$label metrics probe: LAT_SKIP=1 — RSS will be sampled on an IDLE node and may understate load RSS"
-  fi
-  for i in $(seq 1 "$RSS_SAMPLE_SECS"); do
-    if ! kill -0 "$pid" 2>/dev/null; then
-      warn "$label metrics probe: node died during RSS sample window"
-      break
-    fi
-    sample_rss_into_max
-    sleep 1
-  done
-  if ! kill -0 "$pid" 2>/dev/null; then
-    rm -rf "$copy" "$blog" 2>/dev/null || true
-    return 1
-  fi
-
+stop_probe_node() {
+  local pid="$1" copy="$2" blog="$3"
+  [ -n "$pid" ] || return 0
   kill "$pid" 2>/dev/null || true
   sleep 2
   kill -9 "$pid" 2>/dev/null || true
   rm -rf "$copy" "$blog" 2>/dev/null || true
+}
+
+# Boot candidate and baseline CoWs together. Cold fetch = first query after
+# identity-ready. Hot = median after settle + one discarded warmup. Write is
+# hot-only. Writes cand/base metric files with lat_cold_* / lat_hot_* keys.
+probe_like_to_like_metrics() {
+  local cand_bin="$1" base_bin="$2" cand_out="$3" base_out="$4"
+  local c_copy b_copy c_pid b_pid c_sock b_sock c_blog b_blog c_boot b_boot
+  local max_rss rss i
+  local c_cold_pt=-1 b_cold_pt=-1 c_cold_sc=-1 b_cold_sc=-1
+  local c_hot_pt=-1 b_hot_pt=-1 c_hot_sc=-1 b_hot_sc=-1 c_hot_wr=-1 b_hot_wr=-1
+
+  c_copy="$(clone_probe_home c)" || return 1
+  if [ -n "$base_bin" ] && [ -x "$base_bin" ]; then
+    b_copy="$(clone_probe_home b)" || {
+      rm -rf "$c_copy" 2>/dev/null || true
+      return 1
+    }
+  else
+    b_copy=""
+  fi
+
+  if ! start_probe_node "$cand_bin" "$c_copy" "candidate"; then
+    rm -rf "$b_copy" 2>/dev/null || true
+    return 1
+  fi
+  c_pid="$LAST_PROBE_PID"
+  c_sock="$LAST_PROBE_SOCK"
+  c_blog="$LAST_PROBE_BLOG"
+  c_boot="$LAST_PROBE_BOOT"
+
+  b_pid=""
+  b_sock=""
+  b_blog=""
+  b_boot=""
+  if [ -n "$b_copy" ]; then
+    if start_probe_node "$base_bin" "$b_copy" "baseline"; then
+      b_pid="$LAST_PROBE_PID"
+      b_sock="$LAST_PROBE_SOCK"
+      b_blog="$LAST_PROBE_BLOG"
+      b_boot="$LAST_PROBE_BOOT"
+    else
+      warn "latency: baseline probe failed to boot — applying absolute ceiling only"
+      b_copy=""
+    fi
+  fi
+
+  max_rss=0
+  sample_cand_rss() {
+    if [ -n "$c_pid" ] && kill -0 "$c_pid" 2>/dev/null; then
+      rss="$(rss_mb_of_pid "$c_pid")"
+      if [ "$rss" -gt "$max_rss" ] 2>/dev/null; then max_rss="$rss"; fi
+    fi
+  }
+
+  if [ "$LAT_SKIP" != "1" ]; then
+    # Cold: first query after identity-ready, interleaved, no settle yet.
+    if [ -n "$b_sock" ] && [ $((RANDOM % 2)) -eq 0 ]; then
+      b_cold_pt="$(measure_op_once_ms op_lat_point "$b_sock" "baseline cold point-read")"
+      c_cold_pt="$(measure_op_once_ms op_lat_point "$c_sock" "candidate cold point-read")"
+    else
+      c_cold_pt="$(measure_op_once_ms op_lat_point "$c_sock" "candidate cold point-read")"
+      if [ -n "$b_sock" ]; then
+        b_cold_pt="$(measure_op_once_ms op_lat_point "$b_sock" "baseline cold point-read")"
+      fi
+    fi
+    sample_cand_rss
+    if command -v kanban >/dev/null 2>&1; then
+      if [ -n "$b_copy" ] && [ $((RANDOM % 2)) -eq 0 ]; then
+        b_cold_sc="$(measure_op_once_ms op_lat_scan "$b_copy" "baseline cold scan")"
+        c_cold_sc="$(measure_op_once_ms op_lat_scan "$c_copy" "candidate cold scan")"
+      else
+        c_cold_sc="$(measure_op_once_ms op_lat_scan "$c_copy" "candidate cold scan")"
+        if [ -n "$b_copy" ]; then
+          b_cold_sc="$(measure_op_once_ms op_lat_scan "$b_copy" "baseline cold scan")"
+        fi
+      fi
+      sample_cand_rss
+    else
+      warn "latency: kanban CLI not on PATH — scan op unmeasured"
+    fi
+
+    log "latency: settling ${RSS_SETTLE_SECS}s then discarding one warmup sample per node"
+    sleep "$RSS_SETTLE_SECS"
+    discard_op_warmup op_lat_point "$c_sock" "candidate hot warmup point"
+    [ -n "$b_sock" ] && discard_op_warmup op_lat_point "$b_sock" "baseline hot warmup point"
+    if command -v kanban >/dev/null 2>&1; then
+      discard_op_warmup op_lat_scan "$c_copy" "candidate hot warmup scan"
+      [ -n "$b_copy" ] && discard_op_warmup op_lat_scan "$b_copy" "baseline hot warmup scan"
+    fi
+
+    c_hot_pt="$(measure_op_median_ms op_lat_point "$c_sock" "candidate hot point-read")"
+    [ -n "$b_sock" ] && b_hot_pt="$(measure_op_median_ms op_lat_point "$b_sock" "baseline hot point-read")"
+    sample_cand_rss
+    if command -v kanban >/dev/null 2>&1; then
+      c_hot_sc="$(measure_op_median_ms op_lat_scan "$c_copy" "candidate hot scan")"
+      [ -n "$b_copy" ] && b_hot_sc="$(measure_op_median_ms op_lat_scan "$b_copy" "baseline hot scan")"
+      sample_cand_rss
+    fi
+    if command -v brain >/dev/null 2>&1; then
+      c_hot_wr="$(measure_op_median_ms op_lat_write "$c_copy" "candidate hot write")"
+      [ -n "$b_copy" ] && b_hot_wr="$(measure_op_median_ms op_lat_write "$b_copy" "baseline hot write")"
+      sample_cand_rss
+    else
+      warn "latency: brain CLI not on PATH — write op unmeasured"
+    fi
+  else
+    warn "latency bar SKIPPED (LAT_SKIP=1) — RSS sampled after settle only"
+    sleep "$RSS_SETTLE_SECS"
+  fi
+
+  for i in $(seq 1 "$RSS_SAMPLE_SECS"); do
+    if ! kill -0 "$c_pid" 2>/dev/null; then
+      warn "candidate metrics probe: node died during RSS sample window"
+      break
+    fi
+    sample_cand_rss
+    sleep 1
+  done
+
+  if ! kill -0 "$c_pid" 2>/dev/null; then
+    stop_probe_node "$c_pid" "$c_copy" "$c_blog"
+    stop_probe_node "$b_pid" "$b_copy" "$b_blog"
+    return 1
+  fi
+
   {
-    echo "boot_secs=$boot_secs"
+    echo "boot_secs=$c_boot"
     echo "peak_rss_mb=$max_rss"
-    echo "lat_point_ms=$p_ms"
-    echo "lat_scan_ms=$s_ms"
-    echo "lat_write_ms=$w_ms"
-  } >"$outf"
-  log "$label metrics: boot_s=${boot_secs} peak_rss_mb=${max_rss} point_ms=${p_ms} scan_ms=${s_ms} write_ms=${w_ms}"
+    echo "lat_cold_point_ms=$c_cold_pt"
+    echo "lat_cold_scan_ms=$c_cold_sc"
+    echo "lat_hot_point_ms=$c_hot_pt"
+    echo "lat_hot_scan_ms=$c_hot_sc"
+    echo "lat_hot_write_ms=$c_hot_wr"
+    echo "lat_point_ms=$c_hot_pt"
+    echo "lat_scan_ms=$c_hot_sc"
+    echo "lat_write_ms=$c_hot_wr"
+  } >"$cand_out"
+  if [ -n "$base_out" ]; then
+    {
+      echo "boot_secs=${b_boot:--1}"
+      echo "lat_cold_point_ms=$b_cold_pt"
+      echo "lat_cold_scan_ms=$b_cold_sc"
+      echo "lat_hot_point_ms=$b_hot_pt"
+      echo "lat_hot_scan_ms=$b_hot_sc"
+      echo "lat_hot_write_ms=$b_hot_wr"
+      echo "lat_point_ms=$b_hot_pt"
+      echo "lat_scan_ms=$b_hot_sc"
+      echo "lat_write_ms=$b_hot_wr"
+    } >"$base_out"
+  fi
+  log "candidate metrics: boot_s=${c_boot} peak_rss_mb=${max_rss} cold_point_ms=${c_cold_pt} cold_scan_ms=${c_cold_sc} hot_point_ms=${c_hot_pt} hot_scan_ms=${c_hot_sc} hot_write_ms=${c_hot_wr}"
+  log "baseline metrics: boot_s=${b_boot:--} cold_point_ms=${b_cold_pt} cold_scan_ms=${b_cold_sc} hot_point_ms=${b_hot_pt} hot_scan_ms=${b_hot_sc} hot_write_ms=${b_hot_wr}"
+
+  stop_probe_node "$c_pid" "$c_copy" "$c_blog"
+  stop_probe_node "$b_pid" "$b_copy" "$b_blog"
   return 0
 }
 
@@ -1032,10 +1140,24 @@ fi
 # probe socket path over the 103-byte sockaddr_un limit (observed 2026-08-23:
 # "data dir ... is too deep to host a Unix control socket"), so the
 # TMPDIR-derived WORK base gets the same off-HOME fallback as ROLLBACK_ROOT.
+# Darwin TMPDIR under /var/folders/... is also too long (observed 2026-08-26:
+# grok-goal scratch 56-byte prefix → folddb-full.sock 133 bytes). Mini refuses
+# a data dir over 82 bytes. Fall back to /tmp when the prefix cannot fit
+# /lastdb-safe-upgrade.XXXXXX/probes/smoke/copy-<epoch>-<pid>/data.
 _work_tmp="${TMPDIR:-/tmp}"
 case "$(cd "$_work_tmp" 2>/dev/null && pwd -P || printf '%s' "$_work_tmp")" in
   "$_rollback_home_real"|"$_rollback_home_real"/*) _work_tmp="/tmp" ;;
 esac
+# 70 bytes reserved for /lastdb-safe-upgrade.XXXXXX/probes/smoke/copy-.../data
+if [ "${#_work_tmp}" -gt 12 ]; then
+  log "probe WORK prefix ${_work_tmp} is ${#_work_tmp} bytes; using /tmp for sockaddr_un"
+  _work_tmp="/tmp"
+fi
+# An inherited LASTDB_PROBE_ROOT from a prior failed run can be equally long.
+if [ -n "$PROBE_ROOT" ] && [ "${#PROBE_ROOT}" -gt 40 ]; then
+  warn "ignoring inherited LASTDB_PROBE_ROOT (${#PROBE_ROOT} bytes) — too deep for Unix sockets"
+  PROBE_ROOT=""
+fi
 WORK="$(mktemp -d "${_work_tmp}/lastdb-safe-upgrade.XXXXXX")"
 [ -n "$PROBE_ROOT" ] || PROBE_ROOT="$WORK/probes"
 export LASTDB_PROBE_ROOT="$PROBE_ROOT"
@@ -1231,13 +1353,19 @@ else
   fi
 fi
 
-# RSS + latency metrics probe: one CoW boot of the candidate measures both.
-# RSS incident 2026-07-22: post-cutover ~8.5G RSS vs 6G guard → thrash restarts.
-# Latency incident 2026-07-25/27: 0.23.1 correct-but-5-20x-slower passed GREEN.
+# RSS + like-to-like cold/hot latency. Clone both CoWs, boot both to
+# identity-ready, cold fetch, settle + warmup, then hot medians.
+# RSS incident 2026-07-22; latency 2026-07-25/27; mixed-thermal 2026-08-26.
 log "RSS bar: limit=$(resolve_rss_limit_mb)MiB fail_at>=$(rss_fail_threshold_mb "$(resolve_rss_limit_mb)")MiB (headroom ${RSS_HEADROOM_PCT}%) settle=${RSS_SETTLE_SECS}s sample=${RSS_SAMPLE_SECS}s"
 CAND_METRICS="$WORK/cand.metrics"
+BASE_METRICS="$WORK/base.metrics"
+BASELINE_BIN=""
+if [ "$LAT_SKIP" != "1" ]; then
+  BASELINE_BIN="$(resolve_baseline_bin)"
+fi
+log "latency: like-to-like cold+hot probe (candidate first identity, baseline sibling CoW)"
 set +e
-probe_bin_metrics "$CANDIDATE_BIN" "candidate" "$CAND_METRICS"
+probe_like_to_like_metrics "$CANDIDATE_BIN" "$BASELINE_BIN" "$CAND_METRICS" "$BASE_METRICS"
 CAND_METRICS_RC=$?
 set -e
 PROBE_RSS_MB="$(metric_val "$CAND_METRICS" peak_rss_mb)"
@@ -1258,39 +1386,29 @@ if ! enforce_rss_under_limit "$PROBE_RSS_MB" "probe"; then
   exit 1
 fi
 CAND_BOOT_SECS="$(metric_val "$CAND_METRICS" boot_secs)"
-CAND_LAT_POINT_MS="$(metric_val "$CAND_METRICS" lat_point_ms)"
-CAND_LAT_SCAN_MS="$(metric_val "$CAND_METRICS" lat_scan_ms)"
-CAND_LAT_WRITE_MS="$(metric_val "$CAND_METRICS" lat_write_ms)"
+CAND_LAT_COLD_POINT_MS="$(metric_val "$CAND_METRICS" lat_cold_point_ms)"
+CAND_LAT_COLD_SCAN_MS="$(metric_val "$CAND_METRICS" lat_cold_scan_ms)"
+CAND_LAT_POINT_MS="$(metric_val "$CAND_METRICS" lat_hot_point_ms)"
+CAND_LAT_SCAN_MS="$(metric_val "$CAND_METRICS" lat_hot_scan_ms)"
+CAND_LAT_WRITE_MS="$(metric_val "$CAND_METRICS" lat_hot_write_ms)"
+BASE_LAT_COLD_POINT_MS="$(metric_val "$BASE_METRICS" lat_cold_point_ms)"
+BASE_LAT_COLD_SCAN_MS="$(metric_val "$BASE_METRICS" lat_cold_scan_ms)"
+BASE_LAT_POINT_MS="$(metric_val "$BASE_METRICS" lat_hot_point_ms)"
+BASE_LAT_SCAN_MS="$(metric_val "$BASE_METRICS" lat_hot_scan_ms)"
+BASE_LAT_WRITE_MS="$(metric_val "$BASE_METRICS" lat_hot_write_ms)"
+BASE_BOOT_SECS="$(metric_val "$BASE_METRICS" boot_secs)"
+[ -n "$CAND_LAT_COLD_POINT_MS" ] || CAND_LAT_COLD_POINT_MS="-1"
+[ -n "$CAND_LAT_COLD_SCAN_MS" ] || CAND_LAT_COLD_SCAN_MS="-1"
+[ -n "$CAND_LAT_POINT_MS" ] || CAND_LAT_POINT_MS="-1"
+[ -n "$CAND_LAT_SCAN_MS" ] || CAND_LAT_SCAN_MS="-1"
+[ -n "$CAND_LAT_WRITE_MS" ] || CAND_LAT_WRITE_MS="-1"
+[ -n "$BASE_LAT_COLD_POINT_MS" ] || BASE_LAT_COLD_POINT_MS="-1"
+[ -n "$BASE_LAT_COLD_SCAN_MS" ] || BASE_LAT_COLD_SCAN_MS="-1"
+[ -n "$BASE_LAT_POINT_MS" ] || BASE_LAT_POINT_MS="-1"
+[ -n "$BASE_LAT_SCAN_MS" ] || BASE_LAT_SCAN_MS="-1"
+[ -n "$BASE_LAT_WRITE_MS" ] || BASE_LAT_WRITE_MS="-1"
 
-# Latency baseline: the CURRENT live binary on an identical CoW copy. Same
-# data, same machine, same settle — the binary is the only variable.
-BASE_LAT_POINT_MS="-1"
-BASE_LAT_SCAN_MS="-1"
-BASE_LAT_WRITE_MS="-1"
-BASE_BOOT_SECS=""
 if [ "$LAT_SKIP" != "1" ]; then
-  BASELINE_BIN="$(resolve_baseline_bin)"
-  if [ -n "$BASELINE_BIN" ] && [ -x "$BASELINE_BIN" ]; then
-    log "latency baseline: booting current binary ($BASELINE_BIN) on its own CoW copy"
-    BASE_METRICS="$WORK/base.metrics"
-    set +e
-    probe_bin_metrics "$BASELINE_BIN" "baseline" "$BASE_METRICS"
-    BASE_METRICS_RC=$?
-    set -e
-    if [ "$BASE_METRICS_RC" -eq 0 ]; then
-      BASE_BOOT_SECS="$(metric_val "$BASE_METRICS" boot_secs)"
-      BASE_LAT_POINT_MS="$(metric_val "$BASE_METRICS" lat_point_ms)"
-      BASE_LAT_SCAN_MS="$(metric_val "$BASE_METRICS" lat_scan_ms)"
-      BASE_LAT_WRITE_MS="$(metric_val "$BASE_METRICS" lat_write_ms)"
-    else
-      warn "latency: baseline probe failed — applying absolute ceiling (${LAT_ABS_MAX_MS}ms) only"
-    fi
-  else
-    warn "latency: no baseline binary resolvable — applying absolute ceiling (${LAT_ABS_MAX_MS}ms) only"
-  fi
-
-  # A much slower candidate boot usually means a migration ran on the probe
-  # copy — it will run again at live cutover, so expect a longer restart.
   if [ -n "$BASE_BOOT_SECS" ] && [ -n "$CAND_BOOT_SECS" ] \
     && [ "$CAND_BOOT_SECS" -gt $((BASE_BOOT_SECS * 3)) ] 2>/dev/null \
     && [ "$CAND_BOOT_SECS" -gt $((BASE_BOOT_SECS + 60)) ] 2>/dev/null; then
@@ -1299,57 +1417,49 @@ if [ "$LAT_SKIP" != "1" ]; then
 
   LAT_RED=0
   LAT_RED_REASON=""
-  lat_op_within_bar "point-read (Board title)" "$CAND_LAT_POINT_MS" "$BASE_LAT_POINT_MS" || {
-    LAT_RED=1
-    LAT_RED_REASON="per-op ratio (single-op ${LAT_RATIO}x bar)"
-  }
-  lat_op_within_bar "scan (kanban list)"       "$CAND_LAT_SCAN_MS"  "$BASE_LAT_SCAN_MS"  || {
-    LAT_RED=1
-    LAT_RED_REASON="per-op ratio (single-op ${LAT_RATIO}x bar)"
-  }
-  lat_op_within_bar "write (brain put)"        "$CAND_LAT_WRITE_MS" "$BASE_LAT_WRITE_MS" || {
-    LAT_RED=1
-    LAT_RED_REASON="per-op ratio (single-op ${LAT_RATIO}x bar)"
-  }
-  # Aggregate term: every-op moderate regression / geo-mean (2026-08-05).
-  # Runs even when per-op is GREEN — that is the hole it closes.
+  # like-to-like cold/hot per-op + lat_correlated_within_bar on the HOT triple
+  export LASTDB_PROBE_LAT_FLOOR_MS="${LAT_FLOOR_MS}"
+  export LASTDB_PROBE_LAT_RATIO="${LAT_RATIO}"
+  export LASTDB_PROBE_LAT_ABS_MAX_MS="${LAT_ABS_MAX_MS}"
   set +e
-  CORR_OUT="$(lat_correlated_within_bar \
+  LIKE_OUT="$(lat_apply_like_to_like_bars \
+    "$CAND_LAT_COLD_POINT_MS" "$BASE_LAT_COLD_POINT_MS" \
+    "$CAND_LAT_COLD_SCAN_MS" "$BASE_LAT_COLD_SCAN_MS" \
     "$CAND_LAT_POINT_MS" "$BASE_LAT_POINT_MS" \
-    "$CAND_LAT_SCAN_MS"  "$BASE_LAT_SCAN_MS" \
+    "$CAND_LAT_SCAN_MS" "$BASE_LAT_SCAN_MS" \
     "$CAND_LAT_WRITE_MS" "$BASE_LAT_WRITE_MS")"
-  CORR_RC=$?
+  LIKE_RC=$?
   set -e
-  if [ -n "$CORR_OUT" ]; then
-    # Mirror pure-helper lines through the driver's log/warn channels.
-    while IFS= read -r corr_line || [ -n "$corr_line" ]; do
-      [ -n "$corr_line" ] || continue
-      case "$corr_line" in
-        *' RED:'*) log "$corr_line" ;;
-        *'SKIPPED'*) warn "$corr_line" ;;
-        *) log "$corr_line" ;;
+  if [ -n "$LIKE_OUT" ]; then
+    while IFS= read -r like_line || [ -n "$like_line" ]; do
+      [ -n "$like_line" ] || continue
+      case "$like_line" in
+        *' RED:'*) log "$like_line"; LAT_RED=1 ;;
+        *'SKIPPED'*) warn "$like_line" ;;
+        *'mixed thermal'*) log "$like_line" ;;
+        *) log "$like_line" ;;
       esac
     done <<EOF
-$CORR_OUT
+$LIKE_OUT
 EOF
   fi
-  if [ "$CORR_RC" -ne 0 ]; then
+  if [ "$LIKE_RC" -ne 0 ]; then
     LAT_RED=1
-    LAT_RED_REASON="correlated regression (all-ops >=${LASTDB_PROBE_LAT_CORR_RATIO}x and/or geo-mean >${LASTDB_PROBE_LAT_GEO_MEAN_MAX}x)"
+    LAT_RED_REASON="like-to-like cold/hot bar (per-op ${LAT_RATIO}x and/or hot geo-mean)"
   fi
   if [ "$LAT_RED" -ne 0 ]; then
     echo ""
     echo "VERDICT: RED"
-    echo "REASON: candidate $CAND_VER fails the latency bar (${LAT_RED_REASON:-unknown}) — correct-but-slow is NOT GREEN (incident 2026-07-25/27 single-op; 2026-08-05 correlated moderate regression)"
-    echo "LATENCY: point=${CAND_LAT_POINT_MS}ms(base ${BASE_LAT_POINT_MS}ms) scan=${CAND_LAT_SCAN_MS}ms(base ${BASE_LAT_SCAN_MS}ms) write=${CAND_LAT_WRITE_MS}ms(base ${BASE_LAT_WRITE_MS}ms) ratio-bar=${LAT_RATIO}x floor=${LAT_FLOOR_MS}ms abs-max=${LAT_ABS_MAX_MS}ms corr-ratio=${LASTDB_PROBE_LAT_CORR_RATIO}x geo-mean-max=${LASTDB_PROBE_LAT_GEO_MEAN_MAX}x"
+    echo "REASON: candidate $CAND_VER fails the latency bar (${LAT_RED_REASON:-unknown}) — correct-but-slow is NOT GREEN (incident 2026-07-25/27 single-op; 2026-08-05 correlated moderate regression; 2026-08-26 mixed-thermal)"
+    echo "LATENCY: cold_point=${CAND_LAT_COLD_POINT_MS}ms(base ${BASE_LAT_COLD_POINT_MS}ms) cold_scan=${CAND_LAT_COLD_SCAN_MS}ms(base ${BASE_LAT_COLD_SCAN_MS}ms) hot_point=${CAND_LAT_POINT_MS}ms(base ${BASE_LAT_POINT_MS}ms) hot_scan=${CAND_LAT_SCAN_MS}ms(base ${BASE_LAT_SCAN_MS}ms) hot_write=${CAND_LAT_WRITE_MS}ms(base ${BASE_LAT_WRITE_MS}ms) ratio-bar=${LAT_RATIO}x floor=${LAT_FLOOR_MS}ms abs-max=${LAT_ABS_MAX_MS}ms corr-ratio=${LASTDB_PROBE_LAT_CORR_RATIO}x geo-mean-max=${LASTDB_PROBE_LAT_GEO_MEAN_MAX}x"
     echo "BACKUP: $BACKUP  (kept; primary NOT upgraded)"
-    echo "NEXT:   do NOT live-upgrade; profile the candidate's read/write paths (brain: lastdb-0231-hashgroup-scan-warmset-thrash-read-regression, papercut-safe-upgrade-latency-bar-blind-to-correlated-regression). Re-running with LASTDB_PROBE_LAT_SKIP=1 or LASTDB_PROBE_LAT_CORR_SKIP=1 requires Tom's explicit clearance."
+    echo "NEXT:   do NOT live-upgrade; profile the candidate's read/write paths (brain: lastdb-0231-hashgroup-scan-warmset-thrash-read-regression, papercut-safe-upgrade-point-read-bar-cold-first-boot-vs-subfloor-baseline). Re-running with LASTDB_PROBE_LAT_SKIP=1 or LASTDB_PROBE_LAT_CORR_SKIP=1 requires Tom's explicit clearance."
     exit 1
   fi
 else
   warn "latency bar SKIPPED (LASTDB_PROBE_LAT_SKIP=1) — Tom-clearance only; correct-but-slow will NOT be caught"
 fi
-log "probe GREEN for candidate $CAND_VER (data-plane + RSS peak_mb=${PROBE_RSS_MB} + latency point/scan/write=${CAND_LAT_POINT_MS}/${CAND_LAT_SCAN_MS}/${CAND_LAT_WRITE_MS}ms)"
+log "probe GREEN for candidate $CAND_VER (data-plane + RSS peak_mb=${PROBE_RSS_MB} + cold_point/scan=${CAND_LAT_COLD_POINT_MS}/${CAND_LAT_COLD_SCAN_MS}ms hot_point/scan/write=${CAND_LAT_POINT_MS}/${CAND_LAT_SCAN_MS}/${CAND_LAT_WRITE_MS}ms)"
 
 if [ "$PROBE_ONLY" -eq 1 ]; then
   release_rollback_point
@@ -1358,7 +1468,7 @@ if [ "$PROBE_ONLY" -eq 1 ]; then
   echo "SUMMARY: candidate $CAND_VER boots and serves a CoW of real data; peak_rss_mb=${PROBE_RSS_MB} under guard limit=$(resolve_rss_limit_mb); latency within bar. Primary left on $CURRENT_VER."
   echo "ROLLBACK: released (probe GREEN; primary untouched)"
   echo "RSS:     peak_mb=${PROBE_RSS_MB} limit_mb=$(resolve_rss_limit_mb) fail_at_mb=$(rss_fail_threshold_mb "$(resolve_rss_limit_mb)")"
-  echo "LATENCY: point=${CAND_LAT_POINT_MS}ms(base ${BASE_LAT_POINT_MS}ms) scan=${CAND_LAT_SCAN_MS}ms(base ${BASE_LAT_SCAN_MS}ms) write=${CAND_LAT_WRITE_MS}ms(base ${BASE_LAT_WRITE_MS}ms) boot=${CAND_BOOT_SECS}s(base ${BASE_BOOT_SECS:-?}s)"
+  echo "LATENCY: cold_point=${CAND_LAT_COLD_POINT_MS}ms(base ${BASE_LAT_COLD_POINT_MS}ms) cold_scan=${CAND_LAT_COLD_SCAN_MS}ms(base ${BASE_LAT_COLD_SCAN_MS}ms) hot_point=${CAND_LAT_POINT_MS}ms(base ${BASE_LAT_POINT_MS}ms) hot_scan=${CAND_LAT_SCAN_MS}ms(base ${BASE_LAT_SCAN_MS}ms) hot_write=${CAND_LAT_WRITE_MS}ms(base ${BASE_LAT_WRITE_MS}ms) boot=${CAND_BOOT_SECS}s(base ${BASE_BOOT_SECS:-?}s)"
   echo "NEXT:    re-run without --probe-only (and --yes if non-interactive) for venue-aware live cutover"
   exit 0
 fi

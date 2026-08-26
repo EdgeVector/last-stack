@@ -23,8 +23,49 @@
 #   LASTDB_PROBE_LAT_GEO_MEAN_MAX    default 1.5
 #   LASTDB_PROBE_LAT_CORR_MIN_OPS    default 2
 #   LASTDB_PROBE_LAT_CORR_SKIP       1 = no-op GREEN (Tom clearance only)
+#   LASTDB_PROBE_LAT_FLOOR_MS        default 250 (or LAT_FLOOR_MS)
+#   LASTDB_PROBE_LAT_RATIO           default 3   (or LAT_RATIO)
+#   LASTDB_PROBE_LAT_ABS_MAX_MS      default 20000 (or LAT_ABS_MAX_MS)
+#
+# Thermal: cold = first query after identity-ready; hot = after settle +
+# discarded warmup. Like-to-like only. A mixed pair (cold vs hot) must not RED.
+# Pairs where both times are under the floor are noise, not a ratio.
+# Geo-mean uses the HOT triple only (driver passes hot times in).
 #
 # bash 3.2 compatible (macOS /bin/bash) — no namerefs, no nested functions.
+
+lat_floor_ms() {
+  printf '%s\n' "${LASTDB_PROBE_LAT_FLOOR_MS:-${LAT_FLOOR_MS:-250}}"
+}
+
+lat_ratio_n() {
+  printf '%s\n' "${LASTDB_PROBE_LAT_RATIO:-${LAT_RATIO:-3}}"
+}
+
+lat_abs_max_ms() {
+  printf '%s\n' "${LASTDB_PROBE_LAT_ABS_MAX_MS:-${LAT_ABS_MAX_MS:-20000}}"
+}
+
+# rc 0 = both positive integers and both <= floor (noise).
+lat_pair_both_under_floor() {
+  local cand="${1:-}" base="${2:-}" floor
+  floor="$(lat_floor_ms)"
+  lat_pair_measurable "$cand" "$base" || return 1
+  [ "$cand" -le "$floor" ] 2>/dev/null || return 1
+  [ "$base" -le "$floor" ] 2>/dev/null || return 1
+  return 0
+}
+
+# rc 0 = both cold or both hot (non-empty).
+lat_thermal_same() {
+  local c="${1:-}" b="${2:-}"
+  [ -n "$c" ] && [ -n "$b" ] || return 1
+  [ "$c" = "$b" ] || return 1
+  case "$c" in
+    cold|hot) return 0 ;;
+  esac
+  return 1
+}
 
 # rc 0 = measurable positive pair; rc 1 = not
 lat_pair_measurable() {
@@ -69,6 +110,8 @@ lat_geo_mean() {
 _lat_corr_append_pair() {
   local label="$1" cand="$2" base="$3" ratio
   lat_pair_measurable "$cand" "$base" || return 0
+  # Both under the floor is noise, not a ratio (2026-08-26 50ms baseline).
+  lat_pair_both_under_floor "$cand" "$base" && return 0
   ratio="$(lat_ratio "$cand" "$base")"
   [ -n "$ratio" ] || return 0
   _LAT_CORR_RATIOS="${_LAT_CORR_RATIOS:+$_LAT_CORR_RATIOS }$ratio"
@@ -146,4 +189,109 @@ lat_correlated_within_bar() {
       "$_LAT_CORR_N_REGRESS" "$_LAT_CORR_N_MEAS" "$_LAT_CORR_RATIO" "$_LAT_CORR_DETAILS"
   fi
   return 0
+}
+
+# Per-op 3× like-to-like. $1=op $2=cand_ms $3=base_ms $4=cand_thermal $5=base_thermal
+# Mixed thermal must not RED. Both-under-floor is GREEN noise.
+# rc 0 = within bar; rc 1 = RED. Prints one line to stdout.
+lat_op_like_to_like_within_bar() {
+  local op="$1" cand="$2" base="$3" c_th="${4:-}" b_th="${5:-}"
+  local floor ratio absmax
+  floor="$(lat_floor_ms)"
+  ratio="$(lat_ratio_n)"
+  absmax="$(lat_abs_max_ms)"
+
+  if [ -n "$c_th" ] || [ -n "$b_th" ]; then
+    if ! lat_thermal_same "$c_th" "$b_th"; then
+      printf 'latency %s mixed thermal skipped (cand=%s base=%s; not a bar input)\n' \
+        "$op" "${c_th:-unset}" "${b_th:-unset}"
+      return 0
+    fi
+  fi
+
+  if [ "$cand" = "-1" ] || [ -z "$cand" ]; then
+    if [ -n "$base" ] && [ "$base" != "-1" ]; then
+      printf 'latency %s RED: unmeasurable on candidate but baseline measured %sms\n' "$op" "$base"
+      return 1
+    fi
+    printf 'latency %s: unmeasured on candidate and baseline — no bar applied\n' "$op"
+    return 0
+  fi
+
+  if [ -n "$base" ] && [ "$base" != "-1" ]; then
+    if lat_pair_both_under_floor "$cand" "$base"; then
+      printf 'latency %s GREEN: candidate=%sms baseline=%sms (both under %sms floor — noise)\n' \
+        "$op" "$cand" "$base" "$floor"
+      return 0
+    fi
+    if [ "$cand" -gt "$floor" ] 2>/dev/null \
+      && awk -v c="$cand" -v b="$base" -v r="$ratio" 'BEGIN{exit !(c > b*r)}'; then
+      printf 'latency %s RED: candidate %sms > %sx baseline %sms (%s-vs-%s)\n' \
+        "$op" "$cand" "$ratio" "$base" "${c_th:-hot}" "${b_th:-hot}"
+      return 1
+    fi
+    if [ "$cand" -gt "$absmax" ] 2>/dev/null; then
+      if [ "$base" -gt "$absmax" ] 2>/dev/null; then
+        printf 'latency %s: candidate %sms AND baseline %sms both exceed the %sms ceiling — pre-existing slowness\n' \
+          "$op" "$cand" "$base" "$absmax"
+      else
+        printf 'latency %s: candidate %sms over the %sms ceiling but within %sx of baseline %sms — WATCH\n' \
+          "$op" "$cand" "$absmax" "$ratio" "$base"
+      fi
+    fi
+    printf 'latency %s GREEN: candidate=%sms baseline=%sms (ratio bar %sx above %sms, %s-vs-%s)\n' \
+      "$op" "$cand" "$base" "$ratio" "$floor" "${c_th:-hot}" "${b_th:-hot}"
+    return 0
+  fi
+  if [ "$cand" -gt "$absmax" ] 2>/dev/null; then
+    printf 'latency %s RED: candidate %sms > absolute ceiling %sms (no baseline to compare)\n' \
+      "$op" "$cand" "$absmax"
+    return 1
+  fi
+  printf 'latency %s GREEN: candidate=%sms (no baseline; abs max %sms)\n' "$op" "$cand" "$absmax"
+  return 0
+}
+
+# Full probe bars. Args:
+#   $1..$4  cold cand/base point, cold cand/base scan
+#   $5..$10 hot cand/base point, hot cand/base scan, hot cand/base write
+# Write is hot-only. Geo-mean uses the hot triple only.
+# rc 0 = all like-to-like GREEN; rc 1 = RED.
+lat_apply_like_to_like_bars() {
+  local cold_c_pt="$1" cold_b_pt="$2" cold_c_sc="$3" cold_b_sc="$4"
+  local hot_c_pt="$5" hot_b_pt="$6" hot_c_sc="$7" hot_b_sc="$8"
+  local hot_c_wr="$9" hot_b_wr="${10}"
+  local red=0 out rc
+
+  out="$(lat_op_like_to_like_within_bar "cold point-read" "$cold_c_pt" "$cold_b_pt" cold cold)"
+  rc=$?
+  printf '%s\n' "$out"
+  [ "$rc" -eq 0 ] || red=1
+
+  out="$(lat_op_like_to_like_within_bar "cold scan" "$cold_c_sc" "$cold_b_sc" cold cold)"
+  rc=$?
+  printf '%s\n' "$out"
+  [ "$rc" -eq 0 ] || red=1
+
+  out="$(lat_op_like_to_like_within_bar "hot point-read" "$hot_c_pt" "$hot_b_pt" hot hot)"
+  rc=$?
+  printf '%s\n' "$out"
+  [ "$rc" -eq 0 ] || red=1
+
+  out="$(lat_op_like_to_like_within_bar "hot scan" "$hot_c_sc" "$hot_b_sc" hot hot)"
+  rc=$?
+  printf '%s\n' "$out"
+  [ "$rc" -eq 0 ] || red=1
+
+  out="$(lat_op_like_to_like_within_bar "hot write" "$hot_c_wr" "$hot_b_wr" hot hot)"
+  rc=$?
+  printf '%s\n' "$out"
+  [ "$rc" -eq 0 ] || red=1
+
+  out="$(lat_correlated_within_bar "$hot_c_pt" "$hot_b_pt" "$hot_c_sc" "$hot_b_sc" "$hot_c_wr" "$hot_b_wr")"
+  rc=$?
+  printf '%s\n' "$out"
+  [ "$rc" -eq 0 ] || red=1
+
+  [ "$red" -eq 0 ]
 }
