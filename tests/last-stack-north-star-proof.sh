@@ -320,6 +320,30 @@ if EXEMEM_CLOUD_ACCOUNT_PROOF_EVIDENCE_FILE="$bad_exemem_evidence" \
   exit 1
 fi
 
+existing_paid_evidence="$EXEMEM_ACCOUNT_WORK/existing-paid.json"
+cat >"$existing_paid_evidence" <<'EOF'
+{
+  "checkout": {
+    "account_url_present": true
+  },
+  "upgrade": {
+    "existing_paid_account": true,
+    "path_reachable": true
+  },
+  "privacy": {
+    "exemem_pii_leak_count": 0,
+    "checked_fields": ["accounts", "profiles"]
+  }
+}
+EOF
+EXEMEM_CLOUD_ACCOUNT_PROOF_EVIDENCE_FILE="$existing_paid_evidence" \
+NORTH_STAR_PROOF_DIR="$PROOF_DIR" \
+  "$BIN" --offline north-star-exemem-cloud-account >"$PROOF_DIR/exemem-account-paid.out"
+existing_paid_report="$PROOF_DIR/north-star-exemem-cloud-account.md"
+test "$(sed -n '1p' "$existing_paid_report")" = "PASS-OFFLINE"
+grep -q "existing paid account" "$existing_paid_report"
+grep -q "PROOF_VERDICT=PASS-OFFLINE" "$PROOF_DIR/exemem-account-paid.out"
+
 SEARCH_AS_APP_WORK="$(mktemp -d "${TMPDIR:-/tmp}/ns-search-as-app-proof-test.XXXXXX")"
 trap 'rm -rf "$PROOF_DIR" "$FILE_BLOB_WORK" "$MINI_OBS_WORK" "$CLOUD_SYNC_WORK" "$EXEMEM_ACCOUNT_WORK" "$SEARCH_AS_APP_WORK"' EXIT
 
