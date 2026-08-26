@@ -193,6 +193,7 @@ bash tests/last-stack-artifact-layout-mirror-clean.sh
 bash tests/last-stack-artifact-routine-freshness.sh
 bash tests/last-stack-artifact-one-rule.sh
 bash tests/last-stack-post-merge-safe-upgrade.sh
+bash tests/last-stack-post-merge-convergence.sh
 bash tests/last-stack-lastdb-safe-upgrade-launchd-job.sh
 bash tests/last-stack-lastdb-safe-upgrade-candidate-class.sh
 bash tests/last-stack-lastdb-safe-upgrade-latency-bar.sh
