@@ -9,6 +9,62 @@ lastdb_launchd_job_loaded() {
   "$launchctl_bin" print "$service" >/dev/null 2>&1
 }
 
+lastdb_launchd_job_pid() {
+  # Parse `pid = N` from `launchctl print`. Empty when the job is unloaded
+  # or still in spawn scheduled with no process.
+  local launchctl_bin="$1" service="$2"
+  "$launchctl_bin" print "$service" 2>/dev/null | awk '
+    $1 == "pid" && $2 == "=" {
+      gsub(/;/, "", $3)
+      print $3
+      exit
+    }
+  '
+}
+
+lastdb_launchd_job_state() {
+  local launchctl_bin="$1" service="$2"
+  "$launchctl_bin" print "$service" 2>/dev/null | awk '
+    $1 == "state" && $2 == "=" {
+      gsub(/;/, "", $3)
+      print $3
+      exit
+    }
+  '
+}
+
+lastdb_require_supervised_primary() {
+  # GREEN bar for sidebin: launchctl print must succeed, the job must have a
+  # pid, and that pid must be the live listener when a live pid is known.
+  # A leftover listener plus `nohup lastdbd --data-dir ~/.lastdb` is not GREEN
+  # (papercut-lastdb-safe-upgrade-fallback-start-leaves-launchd-unloaded).
+  # Args: launchctl-bin service [live-pid]
+  local launchctl_bin="$1" service="$2" live_pid="${3:-}"
+  local job_pid="" state=""
+
+  if ! lastdb_launchd_job_loaded "$launchctl_bin" "$service"; then
+    printf 'PRIMARY_LAUNCHD_JOB=unloaded service=%s live_pid=%s\n' \
+      "$service" "${live_pid:-unset}" >&2
+    return 1
+  fi
+
+  job_pid="$(lastdb_launchd_job_pid "$launchctl_bin" "$service")"
+  state="$(lastdb_launchd_job_state "$launchctl_bin" "$service")"
+  if [ -z "$job_pid" ]; then
+    printf 'PRIMARY_LAUNCHD_JOB=not-running service=%s state=%s live_pid=%s\n' \
+      "$service" "${state:-unknown}" "${live_pid:-unset}" >&2
+    return 1
+  fi
+  if [ -n "$live_pid" ] && [ "$live_pid" != "$job_pid" ]; then
+    printf 'PRIMARY_LAUNCHD_JOB=unsupervised service=%s job_pid=%s live_pid=%s\n' \
+      "$service" "$job_pid" "$live_pid" >&2
+    return 1
+  fi
+  printf 'PRIMARY_LAUNCHD_JOB=ok service=%s pid=%s state=%s\n' \
+    "$service" "$job_pid" "${state:-running}"
+  return 0
+}
+
 lastdb_launchd_reload_job() {
   # Reload the job definition so plist EnvironmentVariables take effect.
   # Args: launchctl-bin domain label plist

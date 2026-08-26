@@ -33,9 +33,16 @@ case "${1:-}" in
     exit 0
     ;;
   print)
-    [ -n "$loaded_file" ] || exit 0
-    [ -e "$loaded_file" ] && exit 0
-    exit 113
+    if [ -n "$loaded_file" ] && [ ! -e "$loaded_file" ]; then
+      exit 113
+    fi
+    printf '%s = {\n' "${2:-gui/501/com.test.lastdbd}"
+    printf '\tstate = %s\n' "${FAKE_PRINT_STATE:-running}"
+    if [ "${FAKE_OMIT_PID:-0}" != "1" ]; then
+      printf '\tpid = %s\n' "${FAKE_PRINT_PID:-59155}"
+    fi
+    printf '}\n'
+    exit 0
     ;;
   bootout)
     [ "${FAKE_BOOTOUT_FAIL:-0}" = "1" ] && exit 68
@@ -202,6 +209,97 @@ set -e
 grep -q 'launchd-job-checks.sh' "$DRIVER"
 grep -q 'LASTDB_LIVE_CONFIG_ENFORCE' "$SKILL_MD"
 grep -q 'bootout.*bootstrap\|bootout.*then.*bootstrap' "$SKILL_MD"
+grep -q 'lastdb_require_supervised_primary' "$DRIVER" \
+  || { echo "FAIL: driver must refuse GREEN unless launchd owns the live pid" >&2; exit 1; }
+grep -q 'listener only — not GREEN' "$DRIVER" \
+  || { echo "FAIL: fallback nohup must be marked not GREEN" >&2; exit 1; }
+grep -q 'retrying LaunchAgent bootstrap so KeepAlive owns lastdbd' "$DRIVER" \
+  || { echo "FAIL: unloaded job after wait must retry bootstrap before nohup" >&2; exit 1; }
+grep -q 'A nohup start is not GREEN' "$SKILL_MD" \
+  || { echo "FAIL: SKILL.md must refuse GREEN for an unsupervised nohup start" >&2; exit 1; }
+
+# The live VERDICT GREEN (not --check-dev-stamp) must sit after the
+# supervised-primary bar so a leftover listener cannot print GREEN.
+live_green_line="$(awk '/^echo "VERDICT: GREEN"$/{print NR}' "$DRIVER" | tail -1)"
+require_line="$(awk '/lastdb_require_supervised_primary/{print NR; exit}' "$DRIVER")"
+[ -n "$live_green_line" ] && [ -n "$require_line" ] \
+  || { echo "FAIL: could not locate live GREEN / supervised-primary lines" >&2; exit 1; }
+[ "$require_line" -lt "$live_green_line" ] \
+  || { echo "FAIL: lastdb_require_supervised_primary must run before live VERDICT GREEN" >&2; exit 1; }
+# LIVE_CONFIG_DRIFT must still name missing keys even when the job is unloaded.
+drift_line="$(awk '/lastdb_live_config_drift_check/{print NR; exit}' "$DRIVER")"
+[ -n "$drift_line" ] && [ "$drift_line" -lt "$require_line" ] \
+  || { echo "FAIL: LIVE_CONFIG_DRIFT must run before the supervised-primary RED" >&2; exit 1; }
+
+# --- GREEN bar: leftover listener + nohup pid is not enough -----------------
+# 2026-08-26: bootout EIO, LASTDB_LAUNCHD_RELOAD=ok, 180s unhealthy, job then
+# unloaded, nohup start, /health after 4s, VERDICT GREEN, pid PPID=1.
+: >"$FAKE_LAUNCHCTL_LOG"
+rm -f "$FAKE_LOADED_FILE"
+set +e
+unloaded_out="$(lastdb_require_supervised_primary \
+  "$TMP/launchctl" gui/501/com.test.lastdbd 59155 2>&1)"
+unloaded_rc=$?
+set -e
+[ "$unloaded_rc" -ne 0 ] \
+  || { echo "FAIL: unloaded job + leftover listener pid must not count as GREEN; out=$unloaded_out" >&2; exit 1; }
+grep -q 'PRIMARY_LAUNCHD_JOB=unloaded' <<<"$unloaded_out" \
+  || { echo "FAIL: unloaded bar must name PRIMARY_LAUNCHD_JOB=unloaded: $unloaded_out" >&2; exit 1; }
+
+: >"$FAKE_LOADED_FILE"
+export FAKE_PRINT_PID=59155
+ok_out="$(lastdb_require_supervised_primary \
+  "$TMP/launchctl" gui/501/com.test.lastdbd 59155 2>&1)"
+grep -q 'PRIMARY_LAUNCHD_JOB=ok' <<<"$ok_out" \
+  || { echo "FAIL: matching launchd pid must pass: $ok_out" >&2; exit 1; }
+grep -q 'pid=59155' <<<"$ok_out" \
+  || { echo "FAIL: ok line must name the job pid: $ok_out" >&2; exit 1; }
+
+export FAKE_PRINT_PID=111
+set +e
+rival_out="$(lastdb_require_supervised_primary \
+  "$TMP/launchctl" gui/501/com.test.lastdbd 59155 2>&1)"
+rival_rc=$?
+set -e
+[ "$rival_rc" -ne 0 ] \
+  || { echo "FAIL: launchd pid != live pid must not count as GREEN; out=$rival_out" >&2; exit 1; }
+grep -q 'PRIMARY_LAUNCHD_JOB=unsupervised' <<<"$rival_out" \
+  || { echo "FAIL: rival pid must name unsupervised: $rival_out" >&2; exit 1; }
+
+unset FAKE_PRINT_PID
+export FAKE_OMIT_PID=1
+set +e
+spawn_out="$(lastdb_require_supervised_primary \
+  "$TMP/launchctl" gui/501/com.test.lastdbd 59155 2>&1)"
+spawn_rc=$?
+set -e
+unset FAKE_OMIT_PID
+[ "$spawn_rc" -ne 0 ] \
+  || { echo "FAIL: loaded job with no pid must not count as GREEN; out=$spawn_out" >&2; exit 1; }
+grep -q 'PRIMARY_LAUNCHD_JOB=not-running' <<<"$spawn_out" \
+  || { echo "FAIL: missing pid must name not-running: $spawn_out" >&2; exit 1; }
+
+# Parser fixture: real launchctl print shape (tabs, "pid = N").
+cat >"$TMP/print-fixture.txt" <<'EOF'
+gui/501/com.example.lastdbd-primary-506 = {
+	active count = 1
+	path = /tmp/LaunchAgents/com.example.lastdbd-primary-506.plist
+	state = running
+
+	program = /tmp/lastdb/bin-with-upload-cap/lastdbd
+	pid = 59155
+	immediate reason = launched
+}
+EOF
+parsed_pid="$(awk '
+  $1 == "pid" && $2 == "=" {
+    gsub(/;/, "", $3)
+    print $3
+    exit
+  }
+' "$TMP/print-fixture.txt")"
+[ "$parsed_pid" = "59155" ] \
+  || { echo "FAIL: pid parser missed launchctl print shape; got=$parsed_pid" >&2; exit 1; }
 
 
 # --- Driver: the cutover lock is released on EVERY exit path -----------------
@@ -252,4 +350,4 @@ grep -B2 'die "launchd job-definition reload failed' "$DRIVER" | grep -q 'page_h
 grep -q 'RA_BIN' "$DRIVER" \
   || { echo "FAIL: page_human must use the ra notify argv the fleet already uses" >&2; exit 1; }
 
-echo "PASS: lastdb-safe-upgrade retries bootstrap, releases the cutover lock, and detects config drift"
+echo "PASS: lastdb-safe-upgrade retries bootstrap, refuses GREEN while launchd is unloaded, releases the cutover lock, and detects config drift"
