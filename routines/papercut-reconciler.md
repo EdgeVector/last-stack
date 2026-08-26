@@ -145,6 +145,11 @@ output; a stale doc that misled an agent; the same workaround across sessions.
   `brain papercut close --status fixed` for OPEN papercuts whose referenced
   LastGit CR, Forgejo PR, or GitHub PR is already merged. Do not treat a body
   line `Status: FIXED` as closed — the typed `status` field is the queue key.
+  The helper still walks the status-keyed open queue after the prevention
+  registry COVERED pass, and prefers `pipeline-stuck-(cr|forge|pr)-*` slugs
+  under `--limit`. A COVERED registry of a few cards must not skip that
+  cluster. Pipeline-stuck slugs themselves are review refs (LastGit CR id,
+  Forgejo PR number, GitHub PR number) even when the body has no URL.
 - **Mandatory first discovery read.** Snapshot the exact `status=open` keyed
   partition before reading the prose ledger or registry. This command validates
   the reader method, exact row count, open-only status, and unique membership;
