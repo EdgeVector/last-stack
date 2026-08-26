@@ -1084,19 +1084,44 @@ live_install_sidebin() {
   fi
   if [ "$sock_wait_rc" -eq 0 ]; then
     :
-  elif launchctl print "gui/${uid}/${LAUNCHD_LABEL}" >/dev/null 2>&1; then
+  elif lastdb_launchd_job_loaded launchctl "gui/${uid}/${LAUNCHD_LABEL}"; then
     warn "listener/health still missing after ${wait_secs}s but launchd job is loaded — NOT direct-starting a second daemon (lock fight). Inspect: launchctl print gui/${uid}/${LAUNCHD_LABEL}; tail ~/.lastdb/last_boot_error.txt"
   else
-    warn "no launchd job and no healthy socket after ${wait_secs}s; starting $dest/lastdbd --data-dir $PRIMARY_HOME once"
-    nohup "$dest/lastdbd" --data-dir "$PRIMARY_HOME" \
-      >>"${LASTDB_MANUAL_LOG:-/opt/homebrew/var/log/lastdb/lastdbd.manual-cutover.log}" 2>&1 &
-    set +e
-    sock_wait_out="$(wait_for_live_unix_socket_health "$PRIMARY_SOCK" "$wait_secs" 2>&1)"
-    set -e
-    if [ -n "$sock_wait_out" ]; then
-      while IFS= read -r line; do
-        [ -n "$line" ] && log "$line"
-      done <<< "$sock_wait_out"
+    # LASTDB_LAUNCHD_RELOAD=ok can still leave the job unloaded by the end of
+    # the 180s wait (EIO race, then KeepAlive never took the process). Retry
+    # bootstrap before any nohup --data-dir start so KeepAlive owns lastdbd.
+    # decision-2026-08-23-unattended-lastdbd-bootstrap-self-heal.
+    warn "no launchd job and no healthy socket after ${wait_secs}s; retrying LaunchAgent bootstrap so KeepAlive owns lastdbd"
+    if lastdb_launchd_reload_job \
+      launchctl "gui/${uid}" "$LAUNCHD_LABEL" "$LAUNCHD_PLIST"; then
+      set +e
+      sock_wait_out="$(wait_for_live_unix_socket_health "$PRIMARY_SOCK" "$wait_secs" 2>&1)"
+      sock_wait_rc=$?
+      set -e
+      if [ -n "$sock_wait_out" ]; then
+        while IFS= read -r line; do
+          [ -n "$line" ] && log "$line"
+        done <<< "$sock_wait_out"
+      fi
+    else
+      warn "bootstrap retry exhausted; job still unloaded"
+    fi
+    if [ "$sock_wait_rc" -ne 0 ] \
+      && ! lastdb_launchd_job_loaded launchctl "gui/${uid}/${LAUNCHD_LABEL}"; then
+      warn "no launchd job after bootstrap retry; starting $dest/lastdbd --data-dir $PRIMARY_HOME once (listener only — not GREEN)"
+      nohup "$dest/lastdbd" --data-dir "$PRIMARY_HOME" \
+        >>"${LASTDB_MANUAL_LOG:-/opt/homebrew/var/log/lastdb/lastdbd.manual-cutover.log}" 2>&1 &
+      set +e
+      sock_wait_out="$(wait_for_live_unix_socket_health "$PRIMARY_SOCK" "$wait_secs" 2>&1)"
+      sock_wait_rc=$?
+      set -e
+      if [ -n "$sock_wait_out" ]; then
+        while IFS= read -r line; do
+          [ -n "$line" ] && log "$line"
+        done <<< "$sock_wait_out"
+      fi
+    elif [ "$sock_wait_rc" -ne 0 ]; then
+      warn "listener/health still missing after bootstrap retry but launchd job is loaded — NOT direct-starting a second daemon (lock fight). Inspect: launchctl print gui/${uid}/${LAUNCHD_LABEL}; tail ~/.lastdb/last_boot_error.txt"
     fi
   fi
   rm -f "$lock"
@@ -1780,6 +1805,38 @@ if [ "$LAT_SKIP" != "1" ]; then
     live_lat_check_op "scan (kanban list)" "$LIVE_LAT_SCAN_MS" "${CAND_LAT_SCAN_MS:--1}"
   else
     warn "live scan latency: kanban CLI not on PATH — unmeasured"
+  fi
+fi
+
+# A leftover listener + nohup --data-dir start can look healthy and still leave
+# the LaunchAgent unloaded (PPID=1). That is not GREEN. LIVE_CONFIG_DRIFT above
+# still names missing plist env keys. Bootstrap the job, or stay RED.
+if [ "$VENUE" = "sidebin" ]; then
+  _uid="$(id -u)"
+  _svc="gui/${_uid}/${LAUNCHD_LABEL}"
+  if [ -z "${LIVE_PID:-}" ]; then
+    LIVE_PID="$(resolve_live_primary_pid)"
+  fi
+  set +e
+  SUPERVISED_OUT="$(lastdb_require_supervised_primary launchctl "$_svc" "${LIVE_PID:-}" 2>&1)"
+  SUPERVISED_RC=$?
+  set -e
+  if [ -n "$SUPERVISED_OUT" ]; then
+    if [ "$SUPERVISED_RC" -eq 0 ]; then
+      log "$SUPERVISED_OUT"
+    else
+      warn "$SUPERVISED_OUT"
+    fi
+  fi
+  if [ "$SUPERVISED_RC" -ne 0 ]; then
+    echo ""
+    echo "VERDICT: RED"
+    echo "REASON: primary LaunchAgent is unloaded or is not the live pid — a nohup --data-dir start is not GREEN"
+    echo "        service=$_svc live_pid=${LIVE_PID:-unset}"
+    echo "        Recover: launchctl bootstrap gui/${_uid} ${LAUNCHD_PLIST}"
+    echo "        Then: launchctl print $_svc  # must show state=running and this pid"
+    echo "BACKUP: $BACKUP"
+    die "primary LaunchAgent is not supervising the live daemon; KeepAlive does not own lastdbd"
   fi
 fi
 
