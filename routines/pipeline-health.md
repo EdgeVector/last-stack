@@ -264,14 +264,27 @@ Younger than 10 minutes with CI still running → leave it (normal lag).
 
 **Stuck merges → Brain papercut (not board P0):** any STUCK CR is
 pipeline-critical. If you cannot clear it this wake (heavy budget spent or
-needs human), file/update:
+needs human), call the filer helper so two CRs that share one outage stay
+on one open papercut:
 
-- slug: `papercut-pipeline-stuck-cr-<repo>-<cr-id-short>` (or append to a
-  stable `papercut-pipeline-stuck-merges-<repo>` if many)
-- tags: `papercut,pipeline,p0`
-- body: CR id, head oid, CI excerpt, first-seen age, why still open
+```bash
+root_slug="papercut-pipeline-stuck-merges-<repo>"
+# If a named open root-cause record already exists (forge-primary down,
+# watcher crashloop, …), pass it instead of minting a sibling:
+#   --root-cause-slug papercut-lastgit-forge-primary-and-host-refresh-down-since-0727-pause
+#   --candidate-slug "$root_slug"
+last-stack-pipeline-stuck-papercut-file \
+  --repo "<repo>" --cr-id "<cr_id>" \
+  --root-cause-slug "$root_slug" \
+  --evidence "<CR id, head oid, CI excerpt, first-seen age, why still open>" \
+  --json
+```
 
-Do not leave stuck merges only in the heartbeat with no Brain record.
+Do **not** file `papercut-pipeline-stuck-cr-<repo>-<cr-id-short>`. That 1:1
+slug is the producer that grew the open queue. The helper appends to an
+open root-cause record when one exists; otherwise it files the stable
+per-repo slug. Do not leave stuck merges only in the heartbeat with no
+Brain record.
 
 ### LastGit actions
 1. **Green + auto_merge** →

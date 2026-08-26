@@ -66,6 +66,10 @@
           "target": "$HOME/.local/bin/last-stack-papercut-queue"
         },
         {
+          "source": "bin/last-stack-pipeline-stuck-papercut-file",
+          "target": "$HOME/.local/bin/last-stack-pipeline-stuck-papercut-file"
+        },
+        {
           "source": "bin/last-stack-kanban-file-pr",
           "target": "$HOME/.local/bin/last-stack-kanban-file-pr"
         },

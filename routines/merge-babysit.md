@@ -177,33 +177,13 @@ real milestone + North Star + cold-start body — those cards cause pickup
 `write-guard` no-claims that block unrelated valid work.
 
 ```bash
-# Dedupe first: brain get, then put/update in place
-slug="papercut-pipeline-stuck-cr-<repo>-<cr-id-short>"
-# or stable per-repo: papercut-pipeline-stuck-merges-<repo>
-brain get "$slug" --type reference 2>/dev/null || true
-brain put <<'EOF'
----
-type: reference
-slug: papercut-pipeline-stuck-cr-<repo>-<cr-id-short>
-title: Pipeline: stuck LastGit CR <cr_id> (<reason>)
-tags: [papercut, pipeline, p0, merge, lastgit, owner:last-stack]
----
-Status: OPEN
-Severity: P0
-Source: merge-babysit
-Repo: EdgeVector/<slug>
-CR: lastgit://<slug>/cr/<cr_id>
-head_oid: <oid>
-reason: <reason>
-Checked-at: <ISO>
-
-## Symptom
-lastgit stuck/fallback scan: <detail>
-
-## Suggested fix
-worktree on head branch → rebase/merge main → .lastgit/ci.sh → push →
-lastgit cr complete --once
-EOF
+# Same door as pipeline-health. Never mint papercut-pipeline-stuck-cr-<repo>-<cr-id-short>
+# and never `brain put` a type:reference stand-in.
+last-stack-pipeline-stuck-papercut-file \
+  --repo "<slug>" --cr-id "<cr_id>" \
+  --root-cause-slug "papercut-pipeline-stuck-merges-<slug>" \
+  --evidence "head_oid=<oid> reason=<reason> Checked-at=<ISO> <detail>" \
+  --json
 ```
 
 Count these as `filed=<n>` in the heartbeat (`filed` means Brain papercuts
