@@ -1,0 +1,14 @@
+{
+  "id": "9000000002",
+  "level": "fatal",
+  "count": "1",
+  "userCount": 1,
+  "firstSeen": "2026-05-28T12:00:00.000000Z",
+  "lastSeen": "2026-05-28T12:00:00Z",
+  "title": "panic: data loss while flushing the write-ahead log",
+  "culprit": "fold_db_node::wal in flush",
+  "metadata": {
+    "type": "panic",
+    "value": "data loss while flushing the write-ahead log"
+  }
+}

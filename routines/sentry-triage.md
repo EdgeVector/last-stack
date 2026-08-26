@@ -82,22 +82,63 @@ Capture per issue: `id`, `title`, `level`, `count`, `userCount`, `firstSeen`,
 
 ## Step 2 - Drop Noise
 
-Exclude any issue whose title or metadata indicates a test or wiring probe:
+Drop Sentry sample events first. Sentry seeds one sample event into every new
+project, so each project you add to the `signal-sources` matrix otherwise mints
+one bad card. Fetch the latest event and drop the issue when either holds:
+
+- the event has the tag `sample_event` set (authoritative and
+  language-independent — prefer this test), or
+- the event `message` matches `this is an example` case-insensitively.
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "https://sentry.io/api/0/organizations/edge-vector/issues/<id>/events/latest/" \
+  >/tmp/sentry.latest.$$.json
+jq -r '[.tags[]? | select(.key == "sample_event") | .value] | join(",")' \
+  /tmp/sentry.latest.$$.json
+```
+
+A sample event carries `culprit = ../../sentry/scripts/views.js in poll` and
+`url = http://example.com/foo`. Those are corroboration, not the test.
+
+Then exclude any issue whose title or metadata indicates a test or wiring probe:
 match case-insensitively on `smoke test`, `synthetic`, `telemetry wiring`,
 `DSN validation`, `(ignore)`, and `verification`.
 
 Drop `level:info` and `level:debug` unless volume is high and clearly a real
 defect.
 
+Steps 2 and 3 are one decision. Run the helper instead of re-deriving the rules
+by hand — it is the executable form of this policy and it is regression-tested
+(`tests/last-stack-sentry-triage-classify.sh`):
+
+```bash
+"$last_stack/bin/last-stack-sentry-triage-classify" \
+  --issue /tmp/sentry.issue.$$.json \
+  --latest-event /tmp/sentry.latest.$$.json --json
+```
+
+It prints `{"verdict": "drop|P1|P2|P3", "reason": ..., "file": true|false}`.
+File the issue only when `file` is true. If the helper is unavailable, apply the
+rules below by hand and keep the same order.
+
 ## Step 3 - Triage And Prioritize
 
-Compute a priority per surviving issue:
+Evaluate these rules in order per surviving issue. The first rule that matches
+wins. Evaluate the suppression rule BEFORE the `P1` rule: a priority ladder that
+tests `P1` first can never reach the suppression rule.
 
-- `P1`: `error`/`fatal` and high volume, `userCount >= 1`, or `lastSeen` within
-  24h.
-- `P2`: other recent `error`/`fatal` issues with moderate volume.
-- `P3`: single-occurrence or stale issues. Do not file individually unless the
-  issue looks like crash or data-loss risk.
+1. **Suppress as `P3`, do not file:** `count == 1` and `lastSeen` is older than
+   60 days. Exception: file it when the issue indicates a crash, data-loss, or
+   corruption risk.
+2. **`P1`:** `level` is `error` or `fatal`, and one of `count >= 25`,
+   `userCount >= 5`, or `lastSeen` within 24h.
+3. **`P2`:** every other surviving `error` or `fatal` issue.
+4. **`P3`:** everything else that survived Step 2. Do not file individually.
+
+Do not use `userCount >= 1` as the `P1` volume test. Almost every real issue has
+at least one affected user, so that clause makes `P1` match everything and makes
+every later rule unreachable. Rules 1 and 2 use measured thresholds instead.
 
 Order P1 before P2. Cap at the top 8 issues per run and note any deferred.
 

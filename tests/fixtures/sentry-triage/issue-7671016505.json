@@ -1,0 +1,18 @@
+{
+  "id": "7671016505",
+  "level": "error",
+  "count": "106",
+  "userCount": 0,
+  "firstSeen": "2026-08-14T01:49:38.134999Z",
+  "lastSeen": "2026-08-24T07:40:28Z",
+  "title": "measured physical footprint exceeds the process guard; new deferred writes are disabled and persist inline",
+  "culprit": "",
+  "metadata": {
+    "title": "measured physical footprint exceeds the process guard; new deferred writes are disabled and persist inline",
+    "sdk": {
+      "name": "sentry.rust",
+      "name_normalized": "sentry.rust"
+    },
+    "initial_priority": 75
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "title": "ApiError: Internal error: Failed to list inbox objects: auth error: authentication failed — re-authenticate (HTTP 401: {\"code\":\"AUTH_FAILED\",\"error\":\"Session token expired\",\"ok\":false,\"statusCode\":401})",
+  "message": "",
+  "tags": [
+    {
+      "key": "environment",
+      "value": "production"
+    },
+    {
+      "key": "handled",
+      "value": "yes"
+    },
+    {
+      "key": "level",
+      "value": "error"
+    }
+  ]
+}

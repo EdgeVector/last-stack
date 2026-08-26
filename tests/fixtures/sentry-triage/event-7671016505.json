@@ -1,0 +1,14 @@
+{
+  "title": "measured physical footprint exceeds the process guard; new deferred writes are disabled and persist inline",
+  "message": "measured physical footprint exceeds the process guard; new deferred writes are disabled and persist inline",
+  "tags": [
+    {
+      "key": "environment",
+      "value": "production"
+    },
+    {
+      "key": "level",
+      "value": "error"
+    }
+  ]
+}

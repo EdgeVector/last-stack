@@ -1,0 +1,18 @@
+{
+  "id": "7535210070",
+  "level": "error",
+  "count": "1",
+  "userCount": 1,
+  "firstSeen": "2026-06-07T16:35:10.089000Z",
+  "lastSeen": "2026-06-07T16:35:10Z",
+  "title": "TypeError: Object [object Object] has no method 'updateFrom'",
+  "culprit": "../../sentry/scripts/views.js in poll",
+  "metadata": {
+    "value": "Object [object Object] has no method 'updateFrom'",
+    "type": "TypeError",
+    "filename": "../../sentry/scripts/views.js",
+    "function": "poll",
+    "in_app_frame_mix": "mixed",
+    "initial_priority": 75
+  }
+}

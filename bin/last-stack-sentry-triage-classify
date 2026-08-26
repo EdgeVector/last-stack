@@ -1,0 +1,215 @@
+#!/usr/bin/python3
+"""Classify one Sentry issue for the sentry-triage routine. No network, no LastDB.
+
+The routine prompt used to carry this policy as prose, and two defects hid there
+for weeks (card sentry-triage-drop-sample-events-and-fix-unreachable-p3-rule):
+
+  1. The noise filter matched only title keywords, so Sentry's own seeded sample
+     event survived into triage and minted a bad card. Sentry seeds one sample
+     event per NEW project, so every project added to the signal-sources matrix
+     reproduced it.
+  2. The priority ladder tested P1 first with the clause `userCount >= 1`. That
+     clause is true for essentially every real issue, so P1 always matched and
+     the P3 single/stale suppression below it was unreachable. A single
+     occurrence, 80-day-stale issue was filed as P1 for exactly this reason.
+
+Prose cannot be regression-tested. This helper can, so the policy lives here and
+the prompt calls it.
+
+Usage:
+  last-stack-sentry-triage-classify --issue FILE [--latest-event FILE] [--json]
+  last-stack-sentry-triage-classify --issue FILE --now 2026-08-26T00:00:00Z
+
+--issue         JSON from /api/0/organizations/<org>/issues/<id>/
+--latest-event  JSON from that issue's /events/latest/ (optional but preferred:
+                the sample_event tag only exists on the event, not the issue)
+--now           ISO-8601 override for the staleness clock (testing)
+
+Prints `<verdict> <reason>` on stdout. Verdicts:
+  drop  - Step 2 noise; do not triage
+  P1    - file first
+  P2    - file
+  P3    - do not file individually
+Exit 0 after a successful classify. Exit 2 on usage/parse failure.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from datetime import datetime, timezone
+
+# Step 2 title/metadata noise markers, matched case-insensitively.
+NOISE_MARKERS = (
+    "smoke test",
+    "synthetic",
+    "telemetry wiring",
+    "dsn validation",
+    "(ignore)",
+    "verification",
+)
+
+# Step 2 sample-event message fallback, used when the tag is absent.
+SAMPLE_MESSAGE_MARKER = "this is an example"
+
+# Step 3 thresholds. Each one is a measured bar, not a tautology.
+STALE_SUPPRESS_DAYS = 60
+P1_COUNT = 25
+P1_USER_COUNT = 5
+P1_RECENT_HOURS = 24
+
+SEVERE_LEVELS = frozenset({"error", "fatal"})
+
+# Step 3 rule 1 escape hatch: a lone stale event still files when it smells like
+# a crash or a durability defect.
+RISK_MARKERS = (
+    "crash",
+    "panic",
+    "segfault",
+    "sigsegv",
+    "data loss",
+    "data-loss",
+    "dataloss",
+    "corrupt",
+    "checksum",
+    "fsync",
+)
+
+
+def parse_ts(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    text = value.strip().replace("Z", "+00:00")
+    # Sentry emits 6-digit microseconds on some fields and none on others.
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def load_json(path: str) -> dict:
+    with open(path, encoding="utf-8") as handle:
+        data = json.load(handle)
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: expected a JSON object")
+    return data
+
+
+def event_tag(event: dict, key: str) -> str | None:
+    for tag in event.get("tags") or ():
+        if isinstance(tag, dict) and tag.get("key") == key:
+            value = tag.get("value")
+            return str(value) if value is not None else ""
+    return None
+
+
+def event_message(event: dict) -> str:
+    parts = [event.get("message") or "", event.get("title") or ""]
+    for entry in event.get("entries") or ():
+        if isinstance(entry, dict) and entry.get("type") == "message":
+            data = entry.get("data") or {}
+            parts.append(str(data.get("formatted") or data.get("message") or ""))
+    return " ".join(parts)
+
+
+def issue_text(issue: dict) -> str:
+    metadata = issue.get("metadata") or {}
+    parts = [issue.get("title") or "", issue.get("culprit") or ""]
+    if isinstance(metadata, dict):
+        parts.extend(str(v) for v in metadata.values() if v is not None)
+    return " ".join(parts)
+
+
+def looks_risky(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in RISK_MARKERS)
+
+
+def classify(issue: dict, event: dict | None, now: datetime) -> tuple[str, str]:
+    # --- Step 2: drop noise -------------------------------------------------
+    if event is not None:
+        tag = event_tag(event, "sample_event")
+        if tag is not None and tag.lower() not in ("", "no", "false", "0"):
+            return "drop", "sample-event-tag"
+        if SAMPLE_MESSAGE_MARKER in event_message(event).lower():
+            return "drop", "sample-event-message"
+
+    text = issue_text(issue)
+    if SAMPLE_MESSAGE_MARKER in text.lower():
+        return "drop", "sample-event-message"
+
+    lowered = text.lower()
+    for marker in NOISE_MARKERS:
+        if marker in lowered:
+            return "drop", f"noise-marker:{marker.replace(' ', '-')}"
+
+    level = str(issue.get("level") or "").lower()
+    count = int(issue.get("count") or 0)
+    if level in ("info", "debug") and count < P1_COUNT:
+        return "drop", f"low-level:{level}"
+
+    # --- Step 3: ordered ladder, suppression BEFORE P1 ----------------------
+    user_count = int(issue.get("userCount") or 0)
+    last_seen = parse_ts(issue.get("lastSeen"))
+    stale_days = (now - last_seen).total_seconds() / 86400.0 if last_seen else 0.0
+
+    # Rule 1 runs first on purpose. Placed after P1 it is unreachable.
+    if count <= 1 and stale_days > STALE_SUPPRESS_DAYS:
+        if not looks_risky(text):
+            return "P3", f"single-occurrence-stale:{stale_days:.0f}d"
+
+    if level in SEVERE_LEVELS:
+        if count >= P1_COUNT:
+            return "P1", f"volume:{count}"
+        if user_count >= P1_USER_COUNT:
+            return "P1", f"users:{user_count}"
+        if last_seen and (now - last_seen).total_seconds() <= P1_RECENT_HOURS * 3600:
+            return "P1", "recent:24h"
+        return "P2", f"severe:{level}"
+
+    return "P3", f"low-signal:{level or 'unknown'}"
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument("--issue", required=True)
+    parser.add_argument("--latest-event", default=None)
+    parser.add_argument("--now", default=None)
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+
+    try:
+        issue = load_json(args.issue)
+        event = load_json(args.latest_event) if args.latest_event else None
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"last-stack-sentry-triage-classify: {exc}", file=sys.stderr)
+        return 2
+
+    if args.now:
+        now = parse_ts(args.now)
+        if now is None:
+            print(f"last-stack-sentry-triage-classify: bad --now {args.now}", file=sys.stderr)
+            return 2
+    else:
+        now = datetime.now(timezone.utc)
+
+    verdict, reason = classify(issue, event, now)
+
+    if args.json:
+        print(json.dumps({
+            "id": str(issue.get("id") or ""),
+            "verdict": verdict,
+            "reason": reason,
+            "file": verdict in ("P1", "P2"),
+        }, sort_keys=True))
+    else:
+        print(f"{verdict} {reason}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -78,6 +78,10 @@ bash tests/last-stack-hooks-guards.sh
 bash tests/last-stack-json-capture.sh
 bash tests/last-stack-brain-append-heartbeat.sh
 bash tests/last-stack-obs-sentry-locator.sh
+# sentry-triage Step 2/3 policy. It used to be prose in the prompt, where two
+# defects (no sample-event drop, unreachable P3 rule) minted a bad card that
+# cost a pickup slot. The policy is executable now, so pin it here. <1s.
+bash tests/last-stack-sentry-triage-classify.sh
 bash tests/last-stack-install-routines.sh
 bash tests/last-stack-routines-registry-host-paths.sh
 bash tests/last-stack-feature-prove-routine.sh
