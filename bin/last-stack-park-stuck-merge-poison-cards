@@ -64,10 +64,69 @@ run() {
 
 todo_json="$(run "$board_cli" list --column todo --json)"
 
+# BoardCards list projections store no body. Hydrate pipeline-shaped
+# candidates with keyed `show` before the empty-body test, or every
+# pipeline P0 with a north_star classifies as empty-or-annotation-body.
+# papercut-poison-helper-parks-full-body-missing-ci-card.
+show_dir="$(mktemp -d "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/poison-show.XXXXXX")"
+cleanup_show_dir() { rm -rf "$show_dir"; }
+trap cleanup_show_dir EXIT
+
+hydrate_slugs="$(
+  printf '%s\n' "$todo_json" | python3 -c '
+import json, re, sys
+raw = sys.stdin.read()
+try:
+    data = json.loads(raw) if raw.strip() else []
+except Exception:
+    data = []
+if isinstance(data, dict):
+    cards = data.get("cards") or data.get("items") or data.get("todo") or []
+else:
+    cards = data if isinstance(data, list) else []
+slug_re = re.compile(
+    r"(?i)^(stuck-lastgit-|stuck-forge-|lastgit-stuck-|stuck-merge-|"
+    r"pipeline-stuck-|stuck-pipeline-)"
+)
+kind_re = re.compile(r"(?im)^\s*Kind:\s*([A-Za-z_-]+)\s*$")
+def text(card, key):
+    value = card.get(key) or ""
+    return value if isinstance(value, str) else ""
+for card in cards:
+    slug = text(card, "slug").strip()
+    if not slug:
+        continue
+    body = text(card, "body")
+    title = text(card, "title")
+    kind = text(card, "kind").strip().lower()
+    if not kind:
+        m = kind_re.search(body)
+        if m:
+            kind = m.group(1).strip().lower()
+    if kind and kind != "pr":
+        continue
+    tags = card.get("tags") or []
+    if not isinstance(tags, list):
+        tags = []
+    tags_l = {str(t).lower() for t in tags}
+    pipelineish = bool(slug_re.search(slug)) or (
+        "pipeline" in tags_l and ("p0" in tags_l or "merge" in tags_l or "stuck" in tags_l)
+    ) or bool(re.search(r"(?i)\bstuck\b.*\b(cr|pr|merge)\b", title))
+    if pipelineish:
+        print(slug)
+'
+)"
+
+printf '%s\n' "$hydrate_slugs" | while IFS= read -r slug; do
+  [ -n "$slug" ] || continue
+  run "$board_cli" show "$slug" --json >"$show_dir/$slug.json" 2>/dev/null || true
+done
+
 # Classify poison candidates in Python (bash-3.2 portable).
 candidates_json="$(
-  printf '%s\n' "$todo_json" | python3 -c '
+  printf '%s\n' "$todo_json" | POISON_SHOW_DIR="$show_dir" python3 -c '
 import json
+import os
 import re
 import sys
 
@@ -102,8 +161,37 @@ def text(card, key):
     value = card.get(key) or ""
     return value if isinstance(value, str) else ""
 
+def overlay_show(card):
+    slug = text(card, "slug").strip()
+    show_dir = os.environ.get("POISON_SHOW_DIR") or ""
+    if not slug or not show_dir:
+        return card
+    path = os.path.join(show_dir, slug + ".json")
+    if not os.path.isfile(path):
+        return card
+    try:
+        with open(path, encoding="utf-8") as fh:
+            shown = json.load(fh)
+    except Exception:
+        return card
+    if not isinstance(shown, dict):
+        return card
+    merged = dict(card)
+    body = shown.get("body")
+    if isinstance(body, str) and body.strip():
+        merged["body"] = body
+    for key in ("milestone", "north_star", "northStar", "milestone_slug", "kind"):
+        value = shown.get(key)
+        if isinstance(value, str) and value.strip():
+            merged[key] = value
+    tags = shown.get("tags")
+    if isinstance(tags, list) and tags:
+        merged["tags"] = tags
+    return merged
+
 out = []
 for card in cards:
+    card = overlay_show(card)
     slug = text(card, "slug").strip()
     if not slug:
         continue

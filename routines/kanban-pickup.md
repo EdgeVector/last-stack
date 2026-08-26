@@ -204,7 +204,10 @@ agent workspace. At the beginning of the run, record `run_started_epoch=$(date
   status, do **not** hand-build or manually publish the status from pickup, do
   **not** start another watcher, and do **not** keep polling. Ensure a P0
   `pipeline` / `missing-ci` card exists for the affected CR if one is not already
-  present, then heartbeat
+  present. Before filing a last-stack `ci-required` *watcher* card, run
+  `last-stack-lastgit-ci-coverage`. If it reports `covered=true`, the fleet
+  supervisor already publishes `ci-required`; append a lastgit papercut for
+  the missed head instead of a new last-stack watcher unit. Then heartbeat
   `ok cards=1 worked=<slug> result=in-flight-ci-pending pr=<url>
   final_column=doing`, print the `ROUTINE_RESULT` token followed by
   `outcome=ok detail=worked=<slug> result=in-flight-ci-pending pr=<url>`, and

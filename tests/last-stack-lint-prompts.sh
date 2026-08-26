@@ -912,6 +912,8 @@ fi
 grep -q 'papercut-pipeline-deploy-' "$pipeline"
 grep -q 'papercut-reconciler' "$pipeline"
 grep -q 'last-stack-pipeline-stuck-papercut-file' "$pipeline"
+grep -q 'last-stack-lastgit-ci-coverage' "$pipeline"
+grep -q 'forge run --all --context ci-required' "$pipeline"
 if rg -n 'FILE a P0 PR card|pickup-ready P0 kanban card|deploy-pipeline-red-<repo>-<YYYYMMDD>' "$pipeline" >/dev/null; then
   echo "pipeline-health must not file pickup-ready kanban P0 cards for deploys" >&2
   exit 1

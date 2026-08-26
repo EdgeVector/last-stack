@@ -72,8 +72,31 @@ cmd="${1:-}"
 shift || true
 case "$cmd" in
   list)
-    # list --column todo --json
-    cat "$todo"
+    # list --column todo --json  (BoardCards: bodies may be empty)
+    if [ "${STUB_STRIP_LIST_BODY:-0}" = "1" ]; then
+      python3 - "$todo" <<'PY'
+import json, sys
+cards = json.load(open(sys.argv[1]))
+for card in cards:
+    card["body"] = ""
+print(json.dumps(cards))
+PY
+    else
+      cat "$todo"
+    fi
+    ;;
+  show)
+    slug="${1:-}"
+    python3 - "$todo" "$slug" <<'PY'
+import json, sys
+cards = json.load(open(sys.argv[1]))
+slug = sys.argv[2]
+for card in cards:
+    if card.get("slug") == slug:
+        print(json.dumps(card))
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
     ;;
   mark)
     # mark <slug> "<line>"
@@ -158,6 +181,23 @@ import json,sys
 d=json.load(sys.stdin)
 assert d["closed"] == 0, d
 assert "stuck-lastgit-brain-cr-closeddemo" in d["parked_slugs"], d
+'
+
+# List projections store no body. A full-brief pipeline P0 with north_star
+# must stay unparked when show hydrates the real body.
+: >"$log"
+empty_list="$(
+  STUB_LOG="$log" STUB_TODO_JSON="$todo_json" STUB_STRIP_LIST_BODY=1 \
+    "$helper" --board-cli "$stub" --json --skip-point-read
+)"
+echo "$empty_list" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+parked=set(d["parked_slugs"])
+assert "good-milestone-frontier-pr" not in parked, d
+assert "ordinary-product-pr" not in parked, d
+assert "stuck-lastgit-last-stack-cr-ms6hdcc1-44bc" in parked, d
+print("hydrate-from-show ok", d)
 '
 
 echo ok
