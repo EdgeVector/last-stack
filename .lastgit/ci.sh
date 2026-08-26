@@ -92,6 +92,12 @@ bash tests/last-stack-lastdb-ops-offenders.sh
 bash tests/last-stack-lastdb-ops-offenders-routine.sh
 bash tests/last-stack-kanban-pickup-workers.sh
 bash tests/last-stack-kanban-pickup-gate.sh
+# last-stack ci-required is forge run --all, not a per-repo ci watch.
+# Pickup kept filing last-stack watcher cards because pgrep missed the fleet
+# supervisor. Pin the classifier in the required gate.
+bash tests/last-stack-lastgit-ci-coverage.sh
+# Poison park must hydrate bodies via keyed show; list projections have none.
+bash tests/last-stack-park-stuck-merge-poison-cards.sh
 bash tests/last-stack-pickup-work-policy.sh
 bash tests/last-stack-routines-kanban-pickup.sh
 bash tests/last-stack-kanban-validate-routine.sh
