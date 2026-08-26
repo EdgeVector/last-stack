@@ -89,10 +89,14 @@ before a WORK fire on a claimed slug, run:
 ```
 
 The helper forbids WORK on a cooldown slug (max 2 WORK fires per slug per 6
-hours without a new commit). `action=skip` → do not start WORK on that slug;
+hours without a new commit). It delegates PR-liveness to
+`kanban pickup work-policy`: open → reconcile, merged → closeout,
+closed-unmerged / none → work. `action=skip` → do not start WORK on that slug;
 pick the next ready card or exit. `action=reconcile` → leave the card for
-`kanban-watch`; pickup does not reconcile. `action=work` → claim and implement.
-A distinct pickup-ready slug with no timebox history remains claimable.
+`kanban-watch`; pickup does not reconcile. `action=closeout` → leave the card
+for board-closeout / `kanban-watch`; do not start WORK. `action=work` → claim
+and implement. A distinct pickup-ready slug with no timebox history remains
+claimable.
 
 Never heartbeat `in-flight-budget-handoff` with `pr=none` — if no PR/CR URL was
 recorded, roll the card back to `todo` (see wall-clock budget below).
