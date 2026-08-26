@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# Install / uninstall / status the host-side memory guards (gui-app, testbin)
+# and the alert-only host-memory sentinel.
+#
+# Writes a stable public path (~/.last-stack or artifacts/current) into each
+# plist — never a version hash — and skips launchctl when the plist is unchanged.
+#
+# Does not touch the primary lastdbd process, the lastdbd memory-guard agent,
+# or ~/.lastdb data. Logs still land under $HOME/.lastdb/monitoring once the
+# agents run on a real home.
+#
+# Usage:
+#   last-stack-host-memory-guards-install install|uninstall|status
+set -euo pipefail
+
+self="$0"
+self_root="$(cd "$(dirname "$self")/.." && pwd)"
+# shellcheck source=../lib/last-stack-launchd-agent.sh
+. "$self_root/lib/last-stack-launchd-agent.sh"
+
+# Any of the three programs proves the public root is usable.
+program="last-stack-gui-app-memory-guard"
+last_stack="$(last_stack_agent_stable_root "$self" "$program")"
+cmd="${1:-status}"
+plist_dir="${HOST_MEMORY_GUARDS_PLIST_DIR:-$HOME/Library/LaunchAgents}"
+
+agents() {
+  printf '%s %s\n' last-stack-gui-app-memory-guard com.edgevector.gui-app-memory-guard
+  printf '%s %s\n' last-stack-testbin-memory-guard com.edgevector.testbin-memory-guard
+  printf '%s %s\n' last-stack-host-memory-sentinel com.edgevector.host-memory-sentinel
+}
+
+# Retire leftover per-user copies that ran scripts from ~/.lastdb/monitoring.
+# Match the job suffix, skip the packaged com.edgevector labels, never touch
+# a lastdbd guard.
+legacy_plists() {
+  local dest base
+  for dest in \
+    "${plist_dir}/"*gui-app-memory-guard.plist \
+    "${plist_dir}/"*testbin-memory-guard.plist \
+    "${plist_dir}/"*host-memory-sentinel.plist; do
+    [ -f "$dest" ] || continue
+    base="$(basename "$dest" .plist)"
+    case "$base" in
+      com.edgevector.*) continue ;;
+      *lastdb*) continue ;;
+    esac
+    printf '%s\n' "$base"
+  done
+}
+
+assert_not_lastdb() {
+  case "$1" in
+    *lastdb*)
+      echo "refusing to touch lastdb agent label: $1" >&2
+      exit 1
+      ;;
+  esac
+}
+
+retire_legacy() {
+  local label dest
+  while IFS= read -r label; do
+    [ -n "$label" ] || continue
+    assert_not_lastdb "$label"
+    dest="${plist_dir}/${label}.plist"
+    if last_stack_agent_should_touch_launchd "$dest"; then
+      last_stack_agent_uninstall "$label" "$dest" "legacy ${label}"
+    else
+      rm -f "$dest"
+    fi
+  done <<EOF
+$(legacy_plists)
+EOF
+}
+
+install_one() {
+  local bin="$1" label="$2" plist_src plist_dst rendered
+  assert_not_lastdb "$label"
+  plist_src="$self_root/launchd/${label}.plist"
+  if [ ! -f "$plist_src" ]; then
+    plist_src="$last_stack/launchd/${label}.plist"
+  fi
+  plist_dst="${plist_dir}/${label}.plist"
+  chmod +x "$last_stack/bin/$bin" 2>/dev/null || true
+  [ -e "$last_stack/bin/$bin" ] || [ -x "$self_root/bin/$bin" ] || {
+    echo "missing executable: $last_stack/bin/$bin" >&2
+    exit 1
+  }
+  [ -f "$plist_src" ] || {
+    echo "missing plist: $plist_src" >&2
+    exit 1
+  }
+  rendered="$(mktemp "${TMPDIR:-/tmp}/${label}.plist.XXXXXX")"
+  last_stack_agent_render_plist "$plist_src" "$rendered" "$last_stack"
+  last_stack_agent_commit_plist "$label" "$plist_dst" "$rendered" "$label"
+}
+
+install_agent() {
+  retire_legacy
+  while read -r bin label; do
+    [ -n "${bin:-}" ] || continue
+    install_one "$bin" "$label"
+  done <<EOF
+$(agents)
+EOF
+}
+
+uninstall_agent() {
+  while read -r bin label; do
+    [ -n "${bin:-}" ] || continue
+    assert_not_lastdb "$label"
+    last_stack_agent_uninstall "$label" "${plist_dir}/${label}.plist" "$label"
+  done <<EOF
+$(agents)
+EOF
+}
+
+status_agent() {
+  echo "root: $last_stack"
+  echo "plist_dir: $plist_dir"
+  while read -r bin label; do
+    [ -n "${bin:-}" ] || continue
+    echo "--- $label ---"
+    echo "bin: $last_stack/bin/$bin"
+    if [ -f "${plist_dir}/${label}.plist" ]; then
+      echo "plist: present"
+      prog="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:1' "${plist_dir}/${label}.plist" 2>/dev/null || true)"
+      echo "program: ${prog:-unknown}"
+      case "$prog" in
+        */artifacts/versions/*) echo "program: VERSION-PINNED (will re-toast on refresh)" ;;
+      esac
+    else
+      echo "plist: missing"
+    fi
+  done <<EOF
+$(agents)
+EOF
+  if last_stack_agent_should_touch_launchd "${plist_dir}/com.edgevector.gui-app-memory-guard.plist" \
+     && command -v launchctl >/dev/null 2>&1; then
+    uid="$(id -u)"
+    while read -r bin label; do
+      [ -n "${bin:-}" ] || continue
+      launchctl print "gui/${uid}/${label}" 2>/dev/null | head -8 \
+        || echo "launchctl: ${label} not loaded"
+    done <<EOF
+$(agents)
+EOF
+  else
+    echo "launchctl: skipped"
+  fi
+}
+
+case "$cmd" in
+  install) install_agent ;;
+  uninstall) uninstall_agent ;;
+  status) status_agent ;;
+  -h|--help) sed -n '2,14p' "$0" ;;
+  *) echo "usage: $0 install|uninstall|status" >&2; exit 2 ;;
+esac

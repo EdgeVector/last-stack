@@ -203,6 +203,7 @@ bash tests/last-stack-canary-resolve-lastdbd.sh
 bash tests/last-stack-dogfood-rotate-gate.sh
 bash tests/last-stack-dogfood-rotate-routine.sh
 bash tests/last-stack-lastdb-memory-guard.sh
+bash tests/last-stack-host-memory-guards.sh
 bash tests/last-stack-generator-shed-gate.sh
 
 # Reclaim live-guard fixture. This one is in the REQUIRED gate, not the

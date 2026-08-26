@@ -1,0 +1,139 @@
+#!/bin/bash
+# last-stack-gui-app-memory-guard
+#
+# Kills an allowlisted runaway GUI app before it jetsam-storms the machine.
+# Companion to last-stack-lastdb-memory-guard (primary lastdbd only),
+# last-stack-testbin-memory-guard (cargo deps binaries only), and
+# last-stack-host-memory-sentinel (alerts, never kills).
+#
+# Born from the 2026-08-24 incident: Activity Monitor held 70.5 GiB and drove
+# 13 jetsam events 08:40-10:46 PT on a 36 GB machine; the machine went down
+# and rebooted at 11:12:27. No kill guard covered GUI apps. Brain:
+# papercut-jetsam-guard-gap-gui-apps-activity-monitor-70gb-crash-20260824.
+#
+# Repo of record. The live copy runs from the installed Last Stack bin via
+# launchd/com.edgevector.gui-app-memory-guard.plist. Edit here, then install;
+# never hand-edit a copy under ~/.lastdb/monitoring.
+#
+# Scope: fail-closed EXACT match on the executable path (`ps -o comm=`, never
+# argv) against a fixed allowlist of apps that are SAFE TO KILL (viewer apps
+# with no unsaved user data). Nothing outside the allowlist can ever match.
+# Start list: Activity Monitor only. Add a new app only with its full comm
+# path and a Tom decision on why a kill loses nothing.
+#
+# Gauge: max(ps rss, top mem footprint) — rss alone misses compressed pages.
+#
+# Tunables (env):
+#   GUI_GUARD_LIMIT_MB     default 8192 — per-process ceiling (rss OR footprint)
+#   GUI_GUARD_MAX_KILLS    default 1    — per-run cap
+#   GUI_GUARD_DRY_RUN      set to 1 to log OVER_LIMIT without killing
+#   GUI_GUARD_ALLOWLIST    newline-separated exact comm paths (default: Activity Monitor)
+#   GUI_GUARD_LOG_DIR      default $HOME/.lastdb/monitoring
+#   GUI_GUARD_PATH         PATH pin under launchd
+
+set -u
+export PATH="${GUI_GUARD_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin}"
+
+LIMIT_MB="${GUI_GUARD_LIMIT_MB:-8192}"
+MAX_KILLS="${GUI_GUARD_MAX_KILLS:-1}"
+DRY_RUN="${GUI_GUARD_DRY_RUN:-0}"
+LOG_DIR="${GUI_GUARD_LOG_DIR:-${HOME}/.lastdb/monitoring}"
+LOG="${LOG_DIR}/gui-app-memory-guard.log"
+mkdir -p "$LOG_DIR"
+
+# Exact comm paths this guard may ever kill. One per line.
+DEFAULT_ALLOWLIST="/System/Applications/Utilities/Activity Monitor.app/Contents/MacOS/Activity Monitor"
+ALLOWLIST="${GUI_GUARD_ALLOWLIST:-$DEFAULT_ALLOWLIST}"
+
+ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
+log() { echo "$(ts) $*" | tee -a "$LOG" >/dev/null; echo "$(ts) $*"; }
+
+rss_mb_of() {
+  local rss_kb
+  rss_kb=$(ps -p "$1" -o rss= 2>/dev/null | tr -d ' ' || echo 0)
+  if [ -z "$rss_kb" ] || [ "$rss_kb" = "0" ]; then
+    echo 0
+  else
+    echo $((rss_kb / 1024))
+  fi
+}
+
+to_mb() {
+  local v="$1"
+  v="${v%+}"; v="${v%-}"
+  case "$v" in
+    *G) echo $(( ${v%G} * 1024 )) ;;
+    *M) echo "${v%M}" ;;
+    *K) echo 1 ;;
+    ''|*[!0-9]*) echo 0 ;;
+    *) echo $(( v / 1048576 )) ;;
+  esac
+}
+
+collect_candidates() {
+  ps -Ao pid=,comm= | while read -r pid comm; do
+    # Never match the primary daemon, even if someone widens the allowlist.
+    case "$comm" in
+      */lastdbd) continue ;;
+    esac
+    while IFS= read -r allowed; do
+      [ -z "$allowed" ] && continue
+      if [ "$comm" = "$allowed" ]; then
+        echo "$pid $comm"
+      fi
+    done <<ALLOW
+$ALLOWLIST
+ALLOW
+  done
+}
+candidates=$(collect_candidates)
+
+snapshot=""
+if [ -n "$candidates" ]; then
+  snapshot=$(top -l 1 -stats pid,mem 2>/dev/null || true)
+fi
+
+kills=0
+watched=0
+while read -r pid comm; do
+  [ -z "${pid:-}" ] && continue
+  watched=$((watched + 1))
+  rss=$(rss_mb_of "$pid")
+  mem_raw=$(printf '%s\n' "$snapshot" | awk -v p="$pid" '$1 == p {print $2; exit}')
+  mem_mb=$(to_mb "${mem_raw:-}")
+  enforced=$rss
+  if [ "$mem_mb" -gt "$enforced" ] 2>/dev/null; then
+    enforced=$mem_mb
+  fi
+  if [ "$enforced" -lt "$LIMIT_MB" ] 2>/dev/null; then
+    continue
+  fi
+  if [ "$kills" -ge "$MAX_KILLS" ]; then
+    log "over_limit pid=$pid enforced_mb=$enforced but max_kills=$MAX_KILLS reached — skip"
+    continue
+  fi
+  if [ "$DRY_RUN" = "1" ]; then
+    log "DRY_RUN would kill pid=$pid enforced_mb=$enforced rss_mb=$rss footprint_mb=$mem_mb limit_mb=$LIMIT_MB comm=$comm"
+    continue
+  fi
+  log "OVER_LIMIT killing pid=$pid enforced_mb=$enforced rss_mb=$rss footprint_mb=$mem_mb limit_mb=$LIMIT_MB comm=$comm"
+  kills=$((kills + 1))
+  kill -TERM "$pid" 2>/dev/null || true
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      break
+    fi
+    sleep 1
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    log "SIGKILL pid=$pid (did not exit after SIGTERM)"
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+done <<EOF
+$candidates
+EOF
+
+if [ "$kills" -eq 0 ]; then
+  log "ok watched=$watched limit_mb=$LIMIT_MB"
+fi
+exit 0

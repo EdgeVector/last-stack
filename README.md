@@ -342,6 +342,15 @@ bin/
   last-stack-lastdb-current maintain ~/.lastdb/current plus ~/.local/bin
                             lastdb/lastdbd/folddb shims; optionally rewrite a
                             LaunchAgent plist without restarting lastdbd
+  last-stack-gui-app-memory-guard
+                            8 GiB fail-closed kill for Activity Monitor
+  last-stack-testbin-memory-guard
+                            8 GiB fail-closed kill for cargo deps test binaries
+  last-stack-host-memory-sentinel
+                            alert-only jetsam/swap/free-pct sentinel
+  last-stack-host-memory-guards-install
+                            install the three host-side LaunchAgents; never
+                            touches the primary lastdbd process
   last-stack-uninstall      remove the registered skills
 skills/<name>/SKILL.md  one directory per skill
   (includes lastdb-safe-upgrade — multi-harness Mini safe upgrade)

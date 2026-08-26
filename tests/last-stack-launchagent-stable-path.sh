@@ -47,16 +47,27 @@ cp "$ROOT/launchd/com.edgevector.factory-health.plist" "$version/launchd/"
 cp "$ROOT/launchd/com.edgevector.board-closeout.plist" "$version/launchd/"
 cp "$ROOT/bin/last-stack-vm-disk-trim-install" "$version/bin/"
 cp "$ROOT/launchd/com.edgevector.vm-disk-trim.plist" "$version/launchd/"
+cp "$ROOT/bin/last-stack-host-memory-guards-install" "$version/bin/"
+cp "$ROOT/launchd/com.edgevector.gui-app-memory-guard.plist" "$version/launchd/"
+cp "$ROOT/launchd/com.edgevector.testbin-memory-guard.plist" "$version/launchd/"
+cp "$ROOT/launchd/com.edgevector.host-memory-sentinel.plist" "$version/launchd/"
 printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-factory-health"
 printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-board-closeout-sweep"
 printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-vm-disk-trim"
+printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-gui-app-memory-guard"
+printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-testbin-memory-guard"
+printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-host-memory-sentinel"
 chmod +x \
   "$version/bin/last-stack-factory-health-install" \
   "$version/bin/last-stack-board-closeout-install" \
   "$version/bin/last-stack-factory-health" \
   "$version/bin/last-stack-board-closeout-sweep" \
   "$version/bin/last-stack-vm-disk-trim-install" \
-  "$version/bin/last-stack-vm-disk-trim"
+  "$version/bin/last-stack-vm-disk-trim" \
+  "$version/bin/last-stack-host-memory-guards-install" \
+  "$version/bin/last-stack-gui-app-memory-guard" \
+  "$version/bin/last-stack-testbin-memory-guard" \
+  "$version/bin/last-stack-host-memory-sentinel"
 
 # A fake launchctl that would pollute the real gui domain if called.
 mkdir -p "$tmp/path"
@@ -126,6 +137,36 @@ printf '%s\n' "$out" | grep -q 'already current, skipped launchctl' \
 "$version/bin/last-stack-vm-disk-trim-install" uninstall >/dev/null
 [ ! -f "$vplist" ] || fail "vm-disk-trim uninstall left the plist"
 [ ! -s "$LAUNCHCTL_LOG" ] || fail "vm-disk-trim uninstall called launchctl: $(cat "$LAUNCHCTL_LOG")"
+
+# 3c. host-memory-guards same contract (three plists, bash + script argv).
+# A version-pinned path would drop crash protection after every refresh.
+out="$("$version/bin/last-stack-host-memory-guards-install" install)" \
+  || fail "host-memory-guards install failed"
+printf '%s\n' "$out" | grep -q 'launchctl skipped' \
+  || fail "host-memory-guards expected skip, got: $out"
+hplist="$HOME/Library/LaunchAgents/com.edgevector.gui-app-memory-guard.plist"
+hprog="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:1' "$hplist")"
+[ "$hprog" = "$compat/bin/last-stack-gui-app-memory-guard" ] \
+  || fail "gui-app-memory-guard program=$hprog"
+case "$hprog" in
+  */artifacts/versions/*) fail "gui-app-memory-guard still version-pinned: $hprog" ;;
+esac
+tplist="$HOME/Library/LaunchAgents/com.edgevector.testbin-memory-guard.plist"
+tprog="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:1' "$tplist")"
+[ "$tprog" = "$compat/bin/last-stack-testbin-memory-guard" ] \
+  || fail "testbin-memory-guard program=$tprog"
+splist="$HOME/Library/LaunchAgents/com.edgevector.host-memory-sentinel.plist"
+sprog="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:1' "$splist")"
+[ "$sprog" = "$compat/bin/last-stack-host-memory-sentinel" ] \
+  || fail "host-memory-sentinel program=$sprog"
+out="$("$version/bin/last-stack-host-memory-guards-install" install)" \
+  || fail "second host-memory-guards install failed"
+printf '%s\n' "$out" | grep -q 'already current, skipped launchctl' \
+  || fail "host-memory-guards expected already current, got: $out"
+: >"$LAUNCHCTL_LOG"
+"$version/bin/last-stack-host-memory-guards-install" uninstall >/dev/null
+[ ! -f "$hplist" ] || fail "host-memory-guards uninstall left a plist"
+[ ! -s "$LAUNCHCTL_LOG" ] || fail "host-memory-guards uninstall called launchctl: $(cat "$LAUNCHCTL_LOG")"
 
 # 4. Foreign HOME + default domain must not call launchctl (gui-domain leak).
 unset LAST_STACK_LAUNCHD_DOMAIN
