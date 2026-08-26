@@ -52,15 +52,22 @@ if not live:
         emit({"build_next": "BUILD_COLLECT"}, "canary-step BUILD_POLL stand-in")
     elif step == "BUILD_COLLECT":
         oid = str(ctx.get("main_oid") or "stand-in")
+        job = {
+            "candidate": "/tmp/stand-in-lastdbd",
+            "source_git_oid": oid,
+            "version": "stand-in",
+        }
         emit(
             {
-                "candidate": "/tmp/stand-in-lastdbd",
-                "source_git_oid": oid,
-                "version": "stand-in",
-                "build_next": "PROBE",
+                **job,
+                "upgrade_jobs": [job],
+                "build_next": "CALL_A",
+                "soak_started_at": "",
             },
             "canary-step BUILD_COLLECT stand-in",
         )
+    elif step == "READ_A":
+        emit({"child_status": "green"}, "canary-step READ_A stand-in child_status=green")
     elif step == "PROBE":
         forced = os.environ.get("CANARY_LOOM_PROBE_VERDICT") or ""
         verdict = forced or "green"
@@ -75,7 +82,10 @@ if not live:
         emit({"verify": "stand-in"}, "canary-step VERIFY stand-in")
     elif step == "SOAK":
         soak = os.environ.get("CANARY_LOOM_SOAK_STATUS") or "green"
-        emit({"soak_status": soak}, f"canary-step SOAK stand-in status={soak}")
+        emit(
+            {"soak_status": soak, "soak_hours": 24},
+            f"canary-step SOAK stand-in status={soak}",
+        )
     elif step == "RETRY_PREP":
         nxt = attempt + 1
         heal_status = str(ctx.get("heal_status") or "")
@@ -112,12 +122,23 @@ def run(argv, timeout=120):
 
 
 def translate_sm(stdout):
+    merged = {}
     for line in (stdout or "").splitlines():
         if line.startswith("SM_CONTEXT_PATCH:"):
-            print("LOOM_CONTEXT_PATCH:" + line[len("SM_CONTEXT_PATCH:") :])
+            raw_patch = line[len("SM_CONTEXT_PATCH:") :]
+            print("LOOM_CONTEXT_PATCH:" + raw_patch)
+            try:
+                merged.update(json.loads(raw_patch))
+            except json.JSONDecodeError:
+                pass
         else:
             print(line)
+    return merged
 
+
+if step == "READ_A":
+    emit({"child_status": "green"}, "canary-step READ_A live assume join-all")
+    raise SystemExit(0)
 
 if step in ("BUILD_START", "BUILD_POLL", "BUILD_COLLECT", "SOAK", "PROMOTE"):
     env = os.environ.copy()
@@ -137,11 +158,23 @@ if step in ("BUILD_START", "BUILD_POLL", "BUILD_COLLECT", "SOAK", "PROMOTE"):
         timeout=900 if step == "SOAK" else 3600 if step == "PROMOTE" else 300,
         env=env,
     )
-    translate_sm(p.stdout)
+    merged = translate_sm(p.stdout)
     if p.stderr:
         sys.stderr.write(p.stderr)
     if p.returncode != 0:
         sys.exit(p.returncode)
+    if step == "BUILD_COLLECT":
+        job = {
+            "candidate": str(merged.get("candidate") or ctx.get("candidate") or ""),
+            "source_git_oid": str(
+                merged.get("source_git_oid") or ctx.get("source_git_oid") or ""
+            ),
+            "version": str(merged.get("version") or ctx.get("version") or ""),
+        }
+        print(
+            "LOOM_CONTEXT_PATCH:"
+            + json.dumps({"upgrade_jobs": [job]}, separators=(",", ":"))
+        )
     print("PASS")
     raise SystemExit(0)
 

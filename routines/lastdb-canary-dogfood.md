@@ -44,24 +44,17 @@ One execution per main tip. The idempotency key makes a second fire on the same
 tip a no-op rather than a duplicate cutover:
 
 ```bash
-main_oid="$(git -C ~/.cache/edgevector-git/fold.git rev-parse refs/heads/main)"
-sm start lastdb-canary-release \
-  --input "{\"main_oid\":\"$main_oid\"}" \
-  --idempotency-key "canary-$main_oid" \
-  --concurrency-key lastdb-canary-release
-sm tick --definition lastdb-canary-release --cap 6
 "$last_stack/bin/last-stack-canary-loom" --start --json
-sm list --definition lastdb-canary-release --json
 ```
 
-`--concurrency-key` is what keeps two nights from cutting over at once if a
-soak is still running. Never pass `--force`; a refused start means the previous
-execution has not finished, which is the interlock working.
+This starts Loom graph B (`lastdb-canary-release`) only. Graph B starts a
+**child execution** of graph A (`lastdb-safe-upgrade`). Do not `sm start`.
+Do not call `safe-upgrade-lastdb.sh` from this routine. The same `--key`
+(`canary-<oid>`) is the interlock: a second fire on the same tip resumes.
 
-## Two machines, one dependency
+## Two Loom graphs
 
-`UPGRADE` is not a step you run — it starts a CHILD execution of
-**`lastdb-safe-upgrade`** (`PROBE → CUTOVER → VERIFY`) and waits for it. That
+Graph B does not probe. It starts graph A (`PROBE → CUTOVER → VERIFY`) and waits for it. That
 child is a real execution with its own id and history: `sm get <child-id>` and
 `sm history <child-id>` work on it directly, and it is startable on its own for
 an ordinary out-of-band upgrade. The parent drives it, so one tick here is one

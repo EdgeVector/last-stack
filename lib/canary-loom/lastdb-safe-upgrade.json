@@ -1,0 +1,59 @@
+{
+  "name": "lastdb-safe-upgrade",
+  "version": "1",
+  "start_at": "PROBE",
+  "max_depth": 1,
+  "node_budget": 20,
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "candidate": { "type": "string" },
+      "version": { "type": "string" },
+      "source_git_oid": { "type": "string" },
+      "item": {}
+    }
+  },
+  "states": {
+    "PROBE": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-safe-upgrade-step.sh\" PROBE"],
+      "effects": "none",
+      "timeout_sec": 7200,
+      "next": "DECIDE",
+      "on_error": "FAILED"
+    },
+    "DECIDE": {
+      "type": "choice",
+      "path": "verdict",
+      "map": {
+        "green": "CUTOVER",
+        "red": "FAILED",
+        "blocked": "FAILED"
+      },
+      "default": "FAILED"
+    },
+    "CUTOVER": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-safe-upgrade-step.sh\" CUTOVER"],
+      "effects": "checked",
+      "check": [
+        "/bin/bash",
+        "-c",
+        "exec \"$LOOM_SCRIPTS/loom-canary-check-cutover.sh\""
+      ],
+      "timeout_sec": 3600,
+      "next": "VERIFY",
+      "on_error": "FAILED"
+    },
+    "VERIFY": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-safe-upgrade-step.sh\" VERIFY"],
+      "effects": "none",
+      "timeout_sec": 180,
+      "next": "DONE",
+      "on_error": "FAILED"
+    },
+    "DONE": { "type": "succeed" },
+    "FAILED": { "type": "fail" }
+  }
+}
