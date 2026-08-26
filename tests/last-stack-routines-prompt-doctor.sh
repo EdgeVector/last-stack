@@ -277,4 +277,37 @@ grep -Fq 'ensure_single_live_prompt_root' "$heal" || {
   exit 1
 }
 
+# --- product root reached through a SYMLINK (the shipping layout) ---
+# In artifact install mode ~/.last-stack/routines is a symlink into
+# artifacts/current/routines. `find <symlink> -maxdepth 1` without -L yields
+# the symlink itself and zero *.md, so every twin scan compared against an
+# empty set and the doctor reported green no matter how badly prompts drifted.
+# This case fails against that bug and passes with `find -L`.
+sym_real="$tmp/sym-product-real/routines"
+sym_local="$tmp/sym-home/prompts"
+sym_reg="$tmp/sym-home/registry"
+mkdir -p "$sym_real" "$sym_local" "$sym_reg"
+ln -s "$sym_real" "$tmp/sym-routines-link"
+
+printf 'name: drifted\nPRODUCT\n' >"$sym_real/drifted.md"
+printf 'name: drifted\nLOCAL_STALE\n' >"$sym_local/drifted.md"
+
+set +e
+out="$(LAST_STACK_ROUTINES_DIR="$tmp/sym-routines-link" \
+       ROUTINES_PROMPTS_DIR="$sym_local" \
+       ROUTINES_REGISTRY_DIR="$sym_reg" \
+       "$DOC" 2>&1)"
+rc=$?
+set -e
+if [ "$rc" -eq 0 ]; then
+  echo "fail: doctor blind through a symlinked product root (needs find -L)" >&2
+  echo "$out" >&2
+  exit 1
+fi
+printf '%s\n' "$out" | grep -q 'kind=twin-divergent' || {
+  echo "fail: expected twin-divergent through a symlinked product root" >&2
+  echo "$out" >&2
+  exit 1
+}
+
 echo "ok last-stack-routines-prompt-doctor"

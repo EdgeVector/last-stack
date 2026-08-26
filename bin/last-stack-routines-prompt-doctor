@@ -134,7 +134,12 @@ list_md_basenames() {
   local dir="$1"
   [ -d "$dir" ] || return 0
   # Portable: find -print0 not required; basenames are simple.
-  find "$dir" -maxdepth 1 \( -type f -o -type l \) -name '*.md' 2>/dev/null \
+  # -L is load-bearing: in artifact install mode ~/.last-stack/routines is a
+  # SYMLINK into artifacts/current/routines. Without -L, find treats the
+  # symlink as the single entry, enumerates zero .md files, and every twin scan
+  # compares against an empty set -- so the doctor reported green unconditionally
+  # on the only layout that ships.
+  find -L "$dir" -maxdepth 1 \( -type f -o -type l \) -name '*.md' 2>/dev/null \
     | while IFS= read -r f; do
         base="$(basename "$f")"
         case "$base" in
