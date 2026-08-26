@@ -1,0 +1,14 @@
+{
+  "title": "TypeError: Object [object Object] has no method 'updateFrom'",
+  "message": "This is an example React exception",
+  "tags": [
+    {
+      "key": "level",
+      "value": "error"
+    },
+    {
+      "key": "sample_event",
+      "value": "yes"
+    }
+  ]
+}

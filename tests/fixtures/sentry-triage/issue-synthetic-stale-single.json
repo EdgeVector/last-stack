@@ -1,0 +1,14 @@
+{
+  "id": "9000000001",
+  "level": "error",
+  "count": "1",
+  "userCount": 1,
+  "firstSeen": "2026-05-28T12:00:00.000000Z",
+  "lastSeen": "2026-05-28T12:00:00Z",
+  "title": "TypeError: cannot read property 'id' of undefined",
+  "culprit": "src/panel/list.tsx in render",
+  "metadata": {
+    "type": "TypeError",
+    "value": "cannot read property 'id' of undefined"
+  }
+}

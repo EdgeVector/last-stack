@@ -1,0 +1,22 @@
+{
+  "id": "7605584694",
+  "level": "error",
+  "count": "1",
+  "userCount": 1,
+  "firstSeen": "2026-07-11T15:04:44.673000Z",
+  "lastSeen": "2026-07-11T15:04:44Z",
+  "title": "ApiError: Internal error: Failed to list inbox objects: auth error: authentication failed — re-authenticate (HTTP 401: {\"code\":\"AUTH_FAILED\",\"error\":\"Session token expired\",\"ok\":false,\"statusCode\":401})",
+  "culprit": "fromResponse(folddb://localhost/assets/index-UzSPFKZs.js)",
+  "metadata": {
+    "value": "Internal error: Failed to list inbox objects: auth error: authentication failed — re-authenticate (HTTP 401: {\"code\":\"AUTH_FAILED\",\"error\":\"Session token expired\",\"ok\":false,\"statusCode\":401})",
+    "type": "ApiError",
+    "filename": "folddb://localhost/assets/index-UzSPFKZs.js",
+    "function": "fromResponse",
+    "in_app_frame_mix": "in-app-only",
+    "sdk": {
+      "name": "sentry.javascript.react",
+      "name_normalized": "sentry.javascript.react"
+    },
+    "initial_priority": 75
+  }
+}
