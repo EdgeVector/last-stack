@@ -39,15 +39,21 @@ s.close()
 PY
 
 cat >"$TMP/listen_only.py" <<'PY'
-import os, signal, socket, sys, time
+import os, socket, sys
 path = sys.argv[1]
 if os.path.exists(path):
     os.unlink(path)
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.bind(path)
-s.listen(1)
+s.listen(16)
+s.settimeout(0.5)
 print("ready", flush=True)
-signal.pause()
+while True:
+    try:
+        conn, _unused = s.accept()
+        conn.close()
+    except socket.timeout:
+        continue
 PY
 
 cat >"$TMP/http_ok.py" <<'PY'
