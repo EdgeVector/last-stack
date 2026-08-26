@@ -2,12 +2,13 @@
 name: ship-feature
 description: |
   Take a feature the user wants to "make sure works" and drive it to done
-  autonomously: scope how much work it is, design it, surface ALL open
-  questions at once with ELI5 explanations + recommendations, get one plan
-  approval, then hand the outcome to the North Star → milestone → Kanban routine
-  pipeline and drive it unattended until the feature is validated by ACTUALLY
-  RUNNING THE APP, not just passing tests.
-  Batch every decision up front, then work until proof or a genuinely new blocker.
+  through the loom software factory: kick off the ship-feature v4 graph, which
+  designs the feature (design artifact + ideal state + decisions), hard-parks
+  at a human approval gate, then ships automatically — parallel slices, live
+  proof on the real surface, and a review that deep-dives on drift and loops a
+  gap-addressing plan back through design and re-approval. The skill is the
+  human-side driver: compose the input, relay the gate, signal the user's
+  answer, babysit to DONE, and independently verify the proof.
   Use this when the user says "make sure this feature works", "ship this
   feature", "/ship-feature ...", "drive this to done", "I want X to work and
   I don't want to babysit it", "automate building and validating a feature",
@@ -28,361 +29,211 @@ allowed-tools:
   - TaskList
 ---
 
-# /ship-feature — scope → design → ask once → North Star → drive → prove
+# /ship-feature — the loom factory drives it: design → gate → ship → review
 
 The user hands you a feature and wants confidence it **works**. They do **not**
-want to sit and monitor. Your job is to compress every human decision into one
-batch up front, get a single plan approval, then go fully autonomous on **one
-hierarchy only**:
+want to sit and monitor. Since 2026-08-26 the engine for this is **loom's
+`ship-feature` v4 graph** (brain: `north-star-factory-on-loom`,
+`design-loom-agent-orchestrator` § "Factory on loom"):
 
 ```
-Brain North Star (Mode: ship + Terminal verification)
-  → Milestone (via north-star-driver)
-    → Kind:pr cards + proof card (via milestone-driver)
-      → pickup merge → product proof (feature-prove / you)
+DESIGN → APPROVE (human gate, hard park)
+  → DECOMPOSE → map(ship-slice: PR → CI → merge) → join
+    → PROVE_LIVE (real surface) → REVIEW
+      → pass → CLOSE_OUT (brain record) → DONE
+      → drift/blocker → DEEP DIVE → new plan → DESIGN delta → re-approve → ship again
 ```
 
-**Do not create `feature-owner` cards** (retired 2026-07-22). Canonical SOP:
-brain `sop-feature-ship-loop` / `preference-feature-ship-loop`.
+Your job is the human side of that machine: compose a correct kickoff, relay
+the gate to the user, execute THEIR answer as a `loom signal`, babysit to
+`DONE`, and verify the proof yourself. The graph does the designing, the
+shipping, the reviewing, and writes its own closeout.
 
-Treat "it works" as a claim you must *demonstrate*, not assume. Tests passing is
-necessary but not sufficient — the stop condition is the app running the feature
-(the North Star terminal proof).
+Treat "it works" as a claim you must *demonstrate*, not assume. The stop
+condition is the graph's `PROVE_LIVE` passing on the real surface — and you
+re-running that proof independently.
 
-## The contract with the user (their stated preferences — honor them)
+## The contract with the user (honor it)
 
-1. **All open questions surfaced at once**, up front, each with an ELI5
-   explanation, a recommendation, and the recommended option first.
-2. **One plan approval**, then **fully autonomous** to completion.
-3. **Quiet until done or blocked** — only interrupt them when finished, stuck,
-   or you hit a *new* decision you genuinely could not have asked up front.
-4. **Validation = the app actually runs the feature.** Not "tests green," not
-   "PR merged." Those are intermediate events, not the finish line.
+1. **One gate, up front.** The graph's DESIGN node batches the decisions into
+   the design artifact; the user approves once per revision. Do not drip
+   questions around the gate.
+2. **After the yes, fully autonomous.** No node asks the user anything until
+   the walk finishes or a drift loop parks a new revision.
+3. **Quiet until done, blocked, or re-parked.** A drift re-park is a
+   legitimate interruption — it is a new revision that needs a new approval.
+4. **Validation = the live surface.** `proof_command` green, verified by you
+   as well as by the graph. Tests and merges are intermediate events.
 
-If you ever feel tempted to ask a question mid-loop, first ask yourself: *could
-I have anticipated this during scoping?* If yes, you broke contract #1 — make a
-reasonable call using the decision principles below and keep going. Only surface
-mid-loop for things that were genuinely unknowable up front (e.g. a design
-choice that only appears once a dependency's real behavior is observed).
+## Venue check (do this FIRST)
 
----
+The ship-slice scripts ship through `gh`. Today the factory handles repos
+whose PR venue is **github** only:
+
+```bash
+last-stack-pr-venue <owner/repo> <repo-root>   # github | forgejo | lastgit
+```
+
+- `github` → factory path (this skill, below).
+- `forgejo` / `lastgit` → **fallback**: the legacy North Star → milestone →
+  cards pipeline (see "Legacy fallback" at the end). Do not force the factory
+  onto a venue its scripts cannot ship to.
 
 ## Phase 0 — Intake & baseline
 
-The feature description is in the invocation (`/ship-feature <description>`). If
-it's missing or one word, ask for a one-paragraph description of what "working"
-looks like — that's the only thing you cannot proceed without.
+The feature description is in the invocation. If it is missing or one word,
+ask for a one-paragraph description of what "working" looks like.
 
-**Before scoping, check whether it already works.** The user said "make sure it
-works" — maybe it already does. Establish a baseline:
+**Check whether it already works.** Identify the repo, `git fetch`, read
+`origin/<base>`, and try the feature's entry point. If it already works, show
+the proof and stop — do not manufacture work. If it partially works, the gap
+is your brief.
 
-- Identify the repo/crate involved (default cwd; the user works under
-  `~/code/edgevector/` — see that workspace's CLAUDE.md for which dir is real
-  vs. an archived snapshot).
-- `git fetch` and read `origin/<base>` state, not just local — local checkouts
-  here lag origin/main routinely.
-- Try to exercise the feature as it stands (see Phase 6 validation method). If
-  it already works, say so, show the proof, and stop. Don't manufacture work.
+Preflight the factory:
 
-If it partially works, note exactly what's missing — that *is* your scope.
+```bash
+loom ping                        # node reachable
+```
 
-## Phase 1 — Scope (how much work?)
+If `loom` is missing or the node is down, do not improvise — check
+`~/.local/bin/loom` (host-track artifact) and the node per the workspace
+CLAUDE.md, or use the legacy fallback and say so.
 
-Delegate the investigation; don't read the whole tree yourself. Spawn an
-`Explore` agent (or `Plan` agent for design-heavy features) to answer:
+## Phase 1 — Compose the kickoff input
 
-- What exists today vs. what the feature needs.
-- The concrete change surface: files, modules, schemas, lambdas, configs.
-- Dependencies and ordering — what must land before what.
-- How the feature is *exercised* (entry point, command, endpoint, UI path) —
-  you need this for validation, so capture it now.
-- Rough size: is this one PR or several? Sequential or parallelizable?
-
-Land on an honest size estimate: number of tasks, rough dependency graph, and
-whether tasks can run in parallel (mind the workspace's resource limits; fold no
-longer has a fixed two-agent build/test cap, but high-concurrency Rust builds
-still need disk/load awareness; see references).
-
-## Phase 1.5 — Design pack (required)
-
-Before proposing a design, assemble the existing corpus. `brain search` /
-`brain ask` are **candidate slugs only**, never membership.
+For a LastDB-shaped feature, pull the design corpus BEFORE writing the brief,
+so the brief cannot contradict settled designs:
 
 ```bash
 last-stack-design-pack --topic "<feature paragraph>" --out /tmp/design-pack.md
 ```
 
-Do not enter Phase 2 until that command exits 0 and the pack is in context.
-The pack always point-gets the standing LastDB / autonomy slugs, then
-point-gets search/ask hits, then crawls one hop of `linked_from`. A LastDB-shaped
-topic whose pack is missing `concepts-lastdb-canonical-model` or
-`concepts-lastdb-agent-access-model` is a failed pack — do not invent a table
-design to paper over it.
+Three fields carry the whole feature. Get them right; the graph does the rest.
 
-## Phase 2 — Design
+- **brief** — one done-looking paragraph: the outcome, not the steps.
+- **proof_command** — a shell command that checks the LIVE surface and exits 0
+  only when the feature works. Prefer one greppable token. This is the
+  feature's definition of done; a weak proof is a false completion waiting to
+  happen.
+- **repo / base** — `owner/name` with a local checkout; base defaults `main`.
 
-Produce a tight implementation design:
+**Input rules (the node scripts extract fields with sed):**
 
-- Decompose into **Kanban-task-sized units** — each independently landable as
-  one PR, each with a clear acceptance check.
-- Define the **F-Kanban milestone graph**. Create one milestone per independently
-  provable product outcome; default to one milestone for one approved feature.
-  Use milestone dependencies only when the approved plan contains multiple
-  outcomes that must land in sequence.
-- Define the **acceptance criteria** centered on running the app: "when X is
-  done, running `<command/endpoint/path>` produces `<observable result>`."
-- Note risks and the validation plan (how you'll prove the whole thing at the
-  end).
+- No double quotes inside `brief` or `proof_command`. Single quotes are fine.
+- `force_drift_until_rev` is a loop-exercise flag for tests. Never set it for
+  a real feature.
 
-Keep the design in memory / a scratch doc; you'll present its essence at the
-approval gate. For EdgeVector, design docs belong in
-`exemem-workspace/docs/<subdir>/` if the user wants a durable copy.
+Pick a deterministic key: `ship-<feature-kebab>-<yyyymmdd>`. The same key
+always resumes the same execution — never mint a second key for a retry.
 
-## Phase 3 — Surface ALL open questions, at once, ELI5
-
-This is the heart of the contract. Collect **every** decision, ambiguity, and
-fork from Phases 0–2 into a single batch and present them with `AskUserQuestion`.
-
-Rules for the batch:
-
-- **Consolidate ruthlessly.** `AskUserQuestion` shows up to 4 questions per
-  call. Pick the 4 highest-leverage decisions — the ones that actually change
-  what you build. Roll trivia into your own defaults. If more than 4 are truly
-  load-bearing, make consecutive `AskUserQuestion` calls with **no work in
-  between** so it reads as one sitting — never drip questions across the loop.
-- **Every option gets an ELI5.** Write the `description` as if explaining to a
-  smart person outside the codebase: what this choice means and the tradeoff,
-  in plain words, no jargon. Avoid acronyms unless you expand them.
-- **Recommend.** Put your recommended option **first** and append
-  `(Recommended)` to its label. The user picked all-recommended-defaults before;
-  make the safe path the obvious one.
-- **Only real decisions.** If you can answer it yourself from the code or a
-  sensible default, do — don't pad the batch with questions you could resolve.
-
-If there are genuinely zero open questions, skip straight to Phase 4 and say so.
-
-## Phase 4 — One plan approval gate
-
-Present a concise plan the user can approve in one read:
-
-- One-line restatement of the feature and what "done" will look like.
-- The task list (titles + one-line each) with the dependency order.
-- The milestone outcome(s), owning North Star when one already exists, and the
-  terminal proof card for each milestone.
-- How long-ish / how many agents, and the validation you'll run at the end.
-- The answers from Phase 3 folded in.
-
-Then get a single yes/no. After approval, **do not ask again** unless contract
-#3's "genuinely new blocker" clause fires. Make this the last routine touchpoint.
-
-## Phase 5 — Materialize North Star + drive via hierarchy
-
-Hand the approved plan into the hierarchical routine pipeline. After plan yes,
-**run `last-stack-ship-handoff`** — do not improvise the six-step checklist.
-Ship It calls last-stack-ship-handoff; it still must not kanban add cards.
-(The handoff CLI creates exactly one milestone scaffold. Implementation cards
-stay with `last-stack-milestone-driver`.)
-
-**Do not create `feature-owner` cards** — retired 2026-07-22. One hierarchy only:
-North Star → milestone → Kind:pr + proof.
-
-### HARD RULE — no bulk board scaffolding (won't-undo)
-
-After creating or selecting a North Star, **never** bulk-write milestones and
-empty `Kind: pr` shells with `kanban add` in the same session. That is what
-produces hollow cards, false `needs_human` holds, and wrong
-`driver: program-driver` milestones.
-
-**Allowed:**
-- `last-stack-ship-handoff` (NS + heading-form `## MILESTONE_REQUEST` + one
-  milestone + wait on `eligible_for_claim`)
-- Targeted `routines run last-stack-north-star-driver` /
-  `last-stack-milestone-driver` when handoff is unavailable
-- Observing with `kanban milestone detail` / `pickup explain`
-
-**Forbidden:**
-- Creating more than zero implementation cards yourself for a new NS outcome
-- Filing header-only PR bodies (`Repo`/`Base` only) into `todo`
-- Setting milestone `--driver program-driver` (superseded; default is
-  `last-stack-milestone-driver`)
-- Filing board `feature-owner` validation cards
-- Appending the one-line form `MILESTONE_REQUEST slug=… status=pending` —
-  `last-stack-north-star-ledger-sync` does not parse it
-
-If the user says "make this a North Star" or "start driving this," do **intent
-only** (`last-stack-ship-handoff` or NS + heading `## MILESTONE_REQUEST` +
-targeted driver dispatches), not a full fake DAG.
-
-**Required materialization (after plan yes):**
+## Phase 2 — Kick off, park at the gate
 
 ```bash
-last-stack-ship-handoff \
-  --north-star <north-star-slug> \
-  --milestone <milestone-slug> \
-  --title "<bounded outcome>" \
-  --outcome "<observable result>" \
-  --acceptance "<objective proof>" \
-  --end-state "<Tom-visible product outcome>" \
-  --create-ns
+LOOM_LIVE=1 loom run ship-feature --key <key> --input '{"repo":"<owner/name>","base":"<base>","brief":"<paragraph>","proof_command":"<check>"}'
 ```
 
-The CLI:
+Expect `status: parked`, `state: AWAIT_APPROVAL`, `design_rev: 1`. The DESIGN
+node has written the design artifact (path in `context.artifact_url`, under
+`~/.loom/designs/`) and GATE_OPEN has put the gate line on the brain
+`open-decisions` ledger with the exact resume command.
 
-1. Creates or reuses one Brain North Star (`type: project`, slug
-   `north-star-<kebab>` when new) with `**Mode:** ship`, `## End state`, and
-   `## Terminal verification` (**Card:** `<proof-slug>`).
-2. Appends an idempotent heading-form request (the only shape the ledger
-   parser accepts):
+Anything else is a defect: diagnose with `loom show <execution-id>`, fix or
+file, do not push past it.
 
-   ```markdown
-   ## MILESTONE_REQUEST
-   slug=<milestone-slug>
-   status=pending
+## Phase 3 — The gate (the user decides; you are their hands)
 
-   ### Outcome
-   …
+**Interactive session (the normal case):** present the design to the user —
+the artifact, the ideal state, the decisions with recommendations — and get
+one answer with `AskUserQuestion` (approve / revise). Then execute it:
 
-   ### Acceptance
-   …
-   ```
+```bash
+loom signal <execution-id> design-approval --payload '{"approval":"approve"}'
+# or:
+loom signal <execution-id> design-approval --payload '{"approval":"revise","plan":"<their notes>"}'
+```
 
-   Never rewrite a large North Star to add the request. Default **one
-   milestone** per feature unless the approved plan has multiple independently
-   provable outcomes.
+A revise re-runs DESIGN with the notes and parks a new revision — relay it and
+ask again.
 
-3. Creates exactly one milestone scaffold (`driver=last-stack-milestone-driver`).
-   Confirm with `kanban milestone detail <milestone-slug> --json`.
-4. Optionally dispatches
-   `NORTH_STAR_DRIVER_TARGET=<north-star-slug>` /
-   `NORTH_STAR_DRIVER_REQUEST=<milestone-slug>`
-   `routines run last-stack-north-star-driver` when the milestone is missing
-   and handoff cannot write it, and
-   `MILESTONE_DRIVER_TARGET=<milestone-slug> routines run last-stack-milestone-driver`
-   until a Kind:pr frontier exists. The milestone routine—not
-   Ship It—creates and links those cards.
-5. **Acceptance before walk-away:** `kanban pickup explain <slug> --json`
-   must report `eligible_for_claim: true` (not merely `ready: true`). Reject
-   header-only bodies and `driver: program-driver` milestones.
+**User not present / headless invocation:** STOP at the park. The gate line on
+`open-decisions` is the surface; morning-sync will bring it to the user. Never
+signal an approval the user did not give. There is no autonomous path through
+this gate — that is the design, not a limitation.
 
-If handoff cannot run, leave the durable pending `## MILESTONE_REQUEST` for
-its scheduled pass and do not walk away.
+## Phase 4 — Babysit to DONE
 
-Materialization is invalid until `kanban milestone detail` and
-`kanban milestone groom --json` confirm the two routine ownership boundaries,
-driver, proof link, child links, North Star agreement, and executable frontier.
-It is also **invalid** if only a tracker or legacy feature-owner exists, or if
-the North Star lacks Terminal verification.
+The approval signal itself drives the automatic pass in-process — run it with
+a long timeout in the background. Then watch:
 
-Use the **`kanban` skill** to observe and manage cards after the milestone driver
-has generated them—it already knows this workspace's board, merge, and
-babysitting mechanics. For each slice:
+```bash
+loom show <execution-id>
+```
 
-- **Every task prompt MUST start with a header telling the agent to follow the
-  `kanban-agent` skill and see it through to a merged PR** — without it the
-  agent finishes locally and never opens a PR. Example header:
-  > Follow the kanban-agent skill — see this through to a merged PR.
-- Write self-contained prompts: paths, the acceptance check, the base branch.
-  Verify `origin/<base>` before referencing "current state."
-- Respect dependency order — don't create a task whose prerequisite hasn't
-  merged unless they're genuinely independent.
-- Respect resource limits (fold: no fixed <=2 build/test cap; use the repo's
-  worktree-concurrency proof when changing the test harness, and watch disk/load
-  before launching many Rust builds).
+- **`status: parked` again** → a drift loop fired. `context.plan` holds the
+  deep dive's gap-addressing plan and `context.artifact_url` the revision
+  delta. Relay to the user, get the next answer, signal again (Phase 3).
+- **`status: failed`** → read the failing node and `last_error`. A replayable
+  node (`effects: none`/`idempotent`) retries by re-running the SAME
+  `loom run … --key <key>` command. A parked `checked` node has its evidence
+  attached — resolve it honestly, never by forcing state.
+- **Interrupted / node restarted** (safe-upgrade cutovers happen) → the replay
+  contract holds: re-run the same `loom run … --key <key>`. Completed nodes
+  are cached; only the in-flight frontier re-runs.
+- **Poll cadence:** ScheduleWakeup ~1200s while a pass runs unattended. Do not
+  use the Monitor tool.
 
-Then enter the loop. See `references/loop-playbook.md` for the full driving and
-recovery playbook — read it before/while you start the loop.
+## Phase 5 — Verify and report
 
-## Phase 6 — Loop until validated (unattended)
+`status: succeeded` is the graph's claim; verify it yourself before repeating
+it:
 
-You are now heads-down. Drive with a **ScheduleWakeup heartbeat** — do **not**
-use the Monitor tool (its notifications don't reach this user). Kanban agents run
-as separate sessions, so you must poll: schedule a wakeup (default ~1200s — long
-enough to make progress, the user can always interrupt), and on each wake:
+1. Run `proof_command` yourself against the live surface — paste the result.
+2. Confirm the merged PR(s) exist (`context.slice_results`, `gh pr list`).
+3. Confirm the graph's own closeout record exists:
+   `brain get closeout-loom-<execution-id-lowercased>`.
 
-1. **Read board + PR state** (via the kanban skill). Which tasks merged? Which
-   are in progress, stuck, or wedged?
-2. **Recover wedges** (see references — there's a whole taxonomy: API-400
-   thinking wedge, 529 wedge, bg-notification wedge, killed-task wedge, etc.).
-   Recovery is usually trash + recreate the task, never a server restart.
-3. **Unblock the next tier** — when a prerequisite merges, create the dependent
-   task or let `last-stack-milestone-driver` promote the existing linked
-   frontier. Do not create a second milestone for the same approved outcome.
-4. **When all milestone slices are merged → VALIDATE** (Phase 7). This is the
-   real gate. A milestone completes only after its linked terminal proof passes
-   and `kanban milestone state <slug> complete --proof-status passing` is
-   accepted. Then mark the ship-mode North Star done if this was its terminal.
-5. **Re-schedule** the next wakeup unless fully done. **Stop scheduling** once
-   validated — that ends the loop cleanly.
+Then send the one proactive report: the feature, the pasted proof, the PRs,
+the execution id, anything decided autonomously, and follow-ups flagged. If
+you gave up instead: how far, what blocks, and the smallest decision needed.
 
-Keep silent across heartbeats (contract #3) unless something needs the user.
+## Decision principles (autonomous calls between gates)
 
-## Phase 7 — Validation: run the real app
-
-This is the stop condition. **Pull the merged code and actually run it.**
-
-- Prefer the **`verify`** skill (purpose-built: run the app, observe behavior,
-  confirm the change does what it should) or the **`run`** skill (launch/drive
-  the project's app). Use the entry point you captured in Phase 1.
-- Observe the feature producing its expected, observable result — the
-  acceptance criteria from Phase 2.
-- For services/endpoints: hit the real endpoint and check the response. For
-  CLIs: run the command and check output. For LastDB-node work: exercise via
-  the running node — **never against Tom's primary LastDB brain** unless explicitly
-  told; spin an ephemeral node (the app-identity-dogfood skill shows the
-  pattern).
-
-**If validation passes:** stop the loop, write the final report (Phase 8).
-
-**If validation fails:** this is expected sometimes. Diagnose, file a
-fix-forward Kanban task (with the trigger header), and **keep looping**. A
-failed validation is not a question for the user — it's just more work. Only
-surface to the user if you're truly stuck (same task fails validation ~3 times
-with no path forward, or a decision appears that you couldn't have foreseen).
-
-## Phase 8 — Report (the one proactive ping)
-
-When validated, send one clear summary:
-
-- ✅ The feature, and the **proof it works** (the command/endpoint you ran and
-  the observable result — paste it).
-- The PRs that landed (links).
-- Anything you decided autonomously that's worth knowing.
-- Any follow-ups you flagged but didn't do.
-
-If you had to give up, report instead: how far you got, exactly what's blocking,
-and the smallest decision you need from the user to continue.
-
----
-
-## Decision principles (for autonomous calls during the loop)
-
-When you must decide without the user (contract #1 said ask up front; the loop
-is heads-down), default toward:
-
-1. **Reversible over irreversible** — prefer choices easy to undo.
-2. **Smallest change that satisfies the acceptance check** — don't gold-plate.
-3. **Match the surrounding code** — its conventions over your preferences.
-4. **Dev/ephemeral over prod** — never touch prod when a plan is in flight; do a
-   clean cutover only when the model is final (the user is firm on this).
-5. **Proper fix over quick patch** — durable (CDK+redeploy, PR, source change)
-   over band-aids (env overrides, monkey-patches).
-6. **When genuinely blocked on the user's call** — that's the only time you
-   break silence mid-loop.
+1. Reversible over irreversible.
+2. Smallest change that satisfies the proof.
+3. Match the surrounding code.
+4. Dev/ephemeral over prod — never touch prod while a plan is in flight.
+5. Proper fix over quick patch. A defect the walk exposes in the factory
+   itself gets fixed and merged (loom repo, venue lastgit), papercut filed —
+   the factory debugging itself is normal operation.
+6. Only the gate breaks silence.
 
 ## Hard guardrails (this workspace)
 
-- **Never kill the primary LastDB brain** — that's Tom's brain. Identify
-  it by its socket (`lsof /Users/REPLACE/.lastdb/data/folddb.sock`) or process
-  (`pgrep -fl 'lastdbd|folddb_server'`) before killing any LastDB-like process — the TCP port is
-  gone, so a port probe no longer finds it.
-- **Never stash/reset/restore** in a shared repo — other agents share the
-  worktree. Use `git worktree add` instead.
-- **Don't touch archived predecessor repos** (`fold_db/`, `schema_service/`,
-  `fold_db_node/` as standalone dirs) — use the `fold/` monorepo.
-- **Don't restart the kanban server unattended** — it kills every live agent
-  across all workspaces. Trash-and-recreate clears a wedge without a restart.
-- **A non-zero-exit Bash call cancels queued tool calls** in scheduled/headless
-  runs — append `|| true`, one logical step per call.
+- **Never kill the primary LastDB brain** (`lastdbd` on
+  `~/.lastdb/data/folddb.sock`). A refused socket during a walk is usually a
+  safe-upgrade cutover — wait, then resume with the same key.
+- **Never signal an approval the user did not give.** The gate is the product.
+- **Never stash/reset in a shared checkout**; worktrees only.
+- Input fields must not contain double quotes (sed extraction in node
+  scripts).
+- Push to `lastdb:///` remotes with `--no-thin` and clone-verify before
+  opening a CR (poisoned thin-pack papercut).
 
-See `references/loop-playbook.md` for the detailed driving + wedge-recovery
-procedures and the relevant memory pointers.
+## Legacy fallback — North Star → milestone → cards
+
+Use ONLY when the venue check says `forgejo`/`lastgit`, or loom is genuinely
+unavailable. The flow is the pre-factory pipeline; its SOP of record is brain
+`sop-feature-ship-loop`:
+
+- One hierarchy: Brain North Star (`Mode: ship`, `## Terminal verification`)
+  → milestone → Kind:pr + proof cards → pickup → product proof.
+- Materialize with `last-stack-ship-handoff` (heading-form
+  `## MILESTONE_REQUEST` only). **No bulk board scaffolding, no
+  feature-owner cards, no cards created by this skill** — the milestone
+  driver creates them.
+- Walk-away gate: `kanban pickup explain <slug> --json` reports
+  `eligible_for_claim: true`.
+- Drive and recover with `references/loop-playbook.md`.
+
+Follow-up on record: teaching the ship-slice scripts the forgejo and lastgit
+venues retires this fallback (see the factory North Star).
