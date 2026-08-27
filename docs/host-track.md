@@ -396,6 +396,25 @@ as optional `WatchPaths`, so fetch activity can trigger the same refresh command
 without one plist per app. The plist sets a tool-friendly PATH including
 `~/.local/bin`, `~/.bun/bin`, Homebrew, and system directories.
 
+The same poll resumes active `ship-soak` Loom executions for each app. The
+registration lives under `~/.local/state/last-stack/soak-loom/ship-soak`.
+It stores the app, key, execution ID, and status. It does not store graph
+input. Each app tick resumes at most 32 active executions. A terminal
+execution stays in the registry as inactive evidence.
+
+Start a live run with an approved input file:
+
+```bash
+last-stack-ship-soak-loom \
+  --app loom \
+  --key host-track-soak-20260827 \
+  --input-file /path/to/approved-ship-soak-input.json
+```
+
+The `heal-soak` graph uses the same Host Track poll. Its wait node records a
+20-minute Loom timer. A repeated red tick resumes the same incident key and
+keeps the three-attempt limit.
+
 Uninstall removes the plist and boots out the loaded service:
 
 ```bash

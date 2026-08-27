@@ -19,11 +19,16 @@ RUNNER="$ROOT/bin/last-stack-soak-heal-loom"
 # --- graph shape ------------------------------------------------------------
 jq -e '
   .name == "heal-soak"
+  and .version == "2"
   and .start_at == "COLLECT"
   and (.states.DECIDE.type == "choice")
   and (.states.DECIDE.map.green == "DONE")
   and (.states.DECIDE.map.exhausted == "REPORT")
   and (.states.DECIDE.default == "FIX")
+  and (.states.WAIT_SOAK.type == "wait")
+  and (.states.WAIT_SOAK.until == "duration:20m")
+  and (.states.WAIT_SOAK.next == "COLLECT")
+  and (.states.WAIT_SOAK.command == null)
   and (.states.FIX.effects == "checked")
   and (.states.DONE.type == "succeed")
   and (.states.FAILED.type == "fail")

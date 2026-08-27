@@ -33,7 +33,7 @@ EOF
   chmod +x "$install_root/versions/$d/bin/probe"
 done
 
-# Card + heal stubs record their argv.
+# Card, heal, and ship-soak stubs record their argv.
 cat > "$tmp/file-pr-stub" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$tmp/file-pr-calls"
@@ -44,9 +44,15 @@ cat > "$tmp/heal-stub" <<EOF
 printf '%s\n' "\$*" >> "$tmp/heal-calls"
 exit 0
 EOF
-chmod +x "$tmp/file-pr-stub" "$tmp/heal-stub"
+cat > "$tmp/ship-soak-tick-stub" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$tmp/ship-soak-tick-calls"
+exit 0
+EOF
+chmod +x "$tmp/file-pr-stub" "$tmp/heal-stub" "$tmp/ship-soak-tick-stub"
 export HOST_TRACK_FILE_PR="$tmp/file-pr-stub"
 export HOST_TRACK_SOAK_HEAL_RUNNER="$tmp/heal-stub"
+export HOST_TRACK_SHIP_SOAK_TICK_RUNNER="$tmp/ship-soak-tick-stub"
 
 registry="$tmp/registry.json"
 cat > "$registry" <<EOF
@@ -94,6 +100,8 @@ printf '%s\n' "$out" | grep -q 'soak pending .* checks=2/3' \
   || fail "expected pending at checks=2/3, got: $out"
 [ "$(readlink "$install_root/current")" = "versions/digestaaaa" ] \
   || fail "current must not flip below min_checks"
+grep -q -- '--app demo --quiet' "$tmp/ship-soak-tick-calls" \
+  || fail "each Host Track tick should resume ship-soak runs for its app"
 
 # --- 2. checks reach min over an elapsed window → activation attempted -----
 out="$(ht soak-watch demo 2>&1)" || true
@@ -106,6 +114,7 @@ jq -n --argjson started "$old_epoch" \
   '{app:"demo", digest:"digestbbbb", status:"soaking", soak_hours:1,
     started_epoch:$started, checks:1}' > "$stamp"
 touch "$tmp/probe-red"
+ship_ticks_before_red="$(wc -l < "$tmp/ship-soak-tick-calls" | tr -d ' ')"
 if ht soak-watch demo >"$tmp/red.out" 2>&1; then
   fail "red soak should exit nonzero: $(cat "$tmp/red.out")"
 fi
@@ -114,6 +123,8 @@ slug="$(jq -r '.card_slug' "$stamp")"
 [ "$slug" = "soak-red-demo-digestbbbb" ] || fail "unexpected incident slug: $slug"
 grep -q -- "--key $slug" "$tmp/heal-calls" || fail "heal kick should use the card slug key"
 [ "$(wc -l < "$tmp/file-pr-calls")" -eq 1 ] || fail "exactly one card filing expected"
+[ "$(wc -l < "$tmp/ship-soak-tick-calls" | tr -d ' ')" -eq $((ship_ticks_before_red + 1)) ] \
+  || fail "a red Host Track tick should still resume ship-soak"
 
 # --- 4. incident keying: a successor digest's red joins the SAME incident --
 ln -sfn versions/digestcccc "$install_root/canary"
@@ -165,4 +176,4 @@ out="$(ht soak-watch demo 2>&1)" || fail "already-current tick should pass: $out
 ls "$HOST_TRACK_STAMP_DIR/soak-history/" | grep -q '^demo-digestbbbb' \
   || fail "archived stamp missing from soak-history"
 
-printf 'ok: host-track soak gate, incident keying, post-flip watch\n'
+printf 'ok: host-track soak gate, incident keying, Loom resume, post-flip watch\n'

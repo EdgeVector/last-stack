@@ -41,9 +41,10 @@ done
 [ -n "$APP" ] || { echo "soak-heal-loom: --app required" >&2; exit 2; }
 [ -n "$KEY" ] || KEY="soak-red-$APP-${DIGEST:0:12}"
 
-ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)"
 export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
-STAMP="${LAST_STACK_SOAK_HEAL_STAMP:-$HOME/.last-stack/state/soak-heal-$APP.json}"
+STATE_ROOT="${LAST_STACK_STATE_ROOT:-$HOME/.local/state/last-stack}"
+STAMP="${LAST_STACK_SOAK_HEAL_STAMP:-$STATE_ROOT/soak-loom/heal-soak-$APP.json}"
 
 log() { [ "$QUIET" -eq 1 ] || printf 'soak-heal-loom: %s\n' "$*" >&2; }
 
@@ -58,8 +59,11 @@ write_stamp() {
 if [ "$DRY" -eq 1 ]; then
   det="app=$APP digest=${DIGEST:0:12} key=$KEY live=$LIVE"
   write_stamp dry-run "$KEY" noop "$det"
-  [ "$JSON" -eq 1 ] && printf '{"outcome":"noop","key":"%s","dry_run":true}\n' "$KEY" \
-    || log "dry-run $det"
+  if [ "$JSON" -eq 1 ]; then
+    printf '{"outcome":"noop","key":"%s","dry_run":true}\n' "$KEY"
+  else
+    log "dry-run $det"
+  fi
   exit 0
 fi
 
@@ -114,7 +118,10 @@ case "${status:-}" in
   *) oc="error" ;;
 esac
 write_stamp "${status:-unknown}" "$KEY" "$oc" "$det"
-[ "$JSON" -eq 1 ] && printf '{"outcome":"%s","key":"%s","status":"%s"}\n' "$oc" "$KEY" "${status:-unknown}" \
-  || log "SOAK_HEAL outcome=$oc $det"
+if [ "$JSON" -eq 1 ]; then
+  printf '{"outcome":"%s","key":"%s","status":"%s"}\n' "$oc" "$KEY" "${status:-unknown}"
+else
+  log "SOAK_HEAL outcome=$oc $det"
+fi
 [ "$oc" = "error" ] && exit 3
 exit 0

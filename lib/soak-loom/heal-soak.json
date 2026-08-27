@@ -1,6 +1,6 @@
 {
   "name": "heal-soak",
-  "version": "1",
+  "version": "2",
   "start_at": "COLLECT",
   "max_depth": 2,
   "node_budget": 40,
@@ -34,12 +34,9 @@
       "default": "FIX"
     },
     "WAIT_SOAK": {
-      "type": "agent",
-      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-soak-wait.sh\""],
-      "effects": "none",
-      "timeout_sec": 5400,
-      "next": "COLLECT",
-      "on_error": "COLLECT"
+      "type": "wait",
+      "until": "duration:20m",
+      "next": "COLLECT"
     },
     "FIX": {
       "type": "agent",
