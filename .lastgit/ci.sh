@@ -160,6 +160,7 @@ bash tests/last-stack-pipeline-stuck-papercut-file.sh
 bash tests/last-stack-canary-pipeline.sh
 bash tests/last-stack-soak-heal-loom.sh
 bash tests/last-stack-ship-soak-loom.sh
+bash tests/last-stack-ship-soak-host-track-install.sh
 bash tests/last-stack-command-modes.sh
 bash tests/last-stack-north-star-portal-resolver.sh
 bash tests/last-stack-portal-wt-fetch-detaches-idle-main.sh

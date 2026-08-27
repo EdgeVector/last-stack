@@ -68,12 +68,13 @@ map_repo_to_app() {
     lastsecrets) printf 'artifact:lastsecrets\n' ;;
     configurations) printf 'artifact:configurations\n' ;;
     search) printf 'artifact:search\n' ;;
+    loom) printf 'artifact:loom\n' ;;
     *) printf '\n' ;;
   esac
 }
 
 if [ "$SHOW_MAP" = 1 ]; then
-  for r in last-stack brain situations fkanban kanban routines lastsecrets configurations; do
+  for r in last-stack brain situations fkanban kanban routines lastsecrets configurations loom; do
     printf '%-16s -> %s\n' "$r" "$(map_repo_to_app "$r")"
   done
   exit 0

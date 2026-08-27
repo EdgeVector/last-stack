@@ -18,7 +18,7 @@ TICK="$ROOT/bin/last-stack-ship-soak-tick"
 mkdir -p "$tmp/bin" "$tmp/definitions" "$tmp/scripts" "$tmp/state" "$tmp/home"
 printf '{}\n' > "$tmp/definitions/land-cr.json"
 printf '{}\n' > "$tmp/definitions/ship-soak.json"
-touch "$tmp/scripts/loom-ship-soak-verify.sh" "$tmp/scripts/loom-land-cr-implement.sh"
+touch "$tmp/scripts/loom-ship-soak-verify.sh" "$tmp/scripts/loom-implement.sh"
 printf 'waiting\n' > "$tmp/status"
 printf 'SOAK_WAIT\n' > "$tmp/state-name"
 

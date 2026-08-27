@@ -107,7 +107,7 @@ for cand in "${LOOM_SHIP_DEFS:-}" "$install_root/definitions"; do
 done
 for cand in "${LOOM_SHIP_SCRIPTS:-}" "$install_root/scripts"; do
   [ -n "$cand" ] && [ -f "$cand/loom-ship-soak-verify.sh" ] \
-    && [ -f "$cand/loom-land-cr-implement.sh" ] && scripts="$cand" && break
+    && [ -f "$cand/loom-implement.sh" ] && scripts="$cand" && break
 done
 if [ -z "$defs" ] || [ -z "$scripts" ]; then
   log "ship-soak definition or scripts not found"

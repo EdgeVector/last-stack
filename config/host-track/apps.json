@@ -59,6 +59,14 @@
           "target": "$HOME/.local/bin/host-track"
         },
         {
+          "source": "bin/last-stack-ship-soak-loom",
+          "target": "$HOME/.local/bin/last-stack-ship-soak-loom"
+        },
+        {
+          "source": "bin/last-stack-ship-soak-tick",
+          "target": "$HOME/.local/bin/last-stack-ship-soak-tick"
+        },
+        {
           "source": "bin/last-stack-class-a-heal",
           "target": "$HOME/.local/bin/last-stack-class-a-heal"
         },
