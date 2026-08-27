@@ -14,6 +14,8 @@ fail() {
 map_out="$("$ROOT/bin/last-stack-post-merge-safe-upgrade" --map)"
 printf '%s\n' "$map_out" | grep -q '^last-stack[[:space:]]*-> artifact:last-stack$' \
   || fail "last-stack is not mapped to the artifact-backed post-merge action"
+printf '%s\n' "$map_out" | grep -q '^loom[[:space:]]*-> artifact:loom$' \
+  || fail "loom is not mapped to the artifact-backed post-merge action"
 
 mkdir -p "$tmp/bin" "$tmp/state"
 cat >"$tmp/bin/lastgit" <<'SH'
