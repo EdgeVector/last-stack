@@ -129,6 +129,7 @@ bash tests/last-stack-routines-host-track-post-install.sh
 bash tests/last-stack-unattached-outcome-heal.sh
 bash tests/last-stack-north-star-ledger-sync.sh
 bash tests/last-stack-north-star-proof-registry.sh
+bash tests/last-stack-north-star-proof-io-free.sh
 bash tests/last-stack-north-star-proof-ideal-storage-shape.sh
 bash tests/last-stack-north-star-proof-exemem-cloud-account.sh
 bash tests/last-stack-org-cloud-membership-dogfood.sh
