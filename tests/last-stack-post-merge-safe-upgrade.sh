@@ -27,6 +27,20 @@ if [ "$1" = cr ] && [ "$2" = list ] && [ "${3:-}" = --all-open ]; then
   exit 0
 fi
 
+if [ "$1" = cr ] && [ "$2" = view ] && [ "$3" = loom ] && [ "$4" = cr-loom ]; then
+  cat <<'JSON'
+{
+  "cr_id": "cr-loom",
+  "repo": "loom",
+  "state": "merged",
+  "base_ref": "refs/heads/main",
+  "head_oid": "3333333333333333333333333333333333333333",
+  "merge_oid": "4444444444444444444444444444444444444444"
+}
+JSON
+  exit 0
+fi
+
 if [ "$1" = cr ] && [ "$2" = view ] && [ "$3" = last-stack ] && [ "$4" = cr-test ]; then
   cat <<'JSON'
 {
@@ -46,7 +60,7 @@ exit 2
 SH
 chmod +x "$tmp/bin/lastgit"
 
-printf 'last-stack:cr-test\n' >"$tmp/state/fleet.open"
+printf 'last-stack:cr-test\nloom:cr-loom\n' >"$tmp/state/fleet.open"
 
 PATH="$tmp/bin:$PATH" \
   LAST_STACK_POST_MERGE_DRY_RUN=1 \
@@ -57,5 +71,12 @@ grep -q 'DRY_RUN: would promote last-stack artifact and refresh host-track repo=
   "$tmp/post-merge.log" || fail "dry-run log did not promote the merge OID"
 grep -qx 'cr-test' "$tmp/state/last-stack.handled" \
   || fail "last-stack CR was not marked handled after artifact action"
+
+# A merged Loom CR must take the artifact promotion + host-track refresh path,
+# not the unsupported-repo silent-handled path (which never logs an action).
+grep -q 'DRY_RUN: would host-track refresh loom repo=loom cr=cr-loom' \
+  "$tmp/post-merge.log" || fail "loom merge did not take the host-track refresh path"
+grep -qx 'cr-loom' "$tmp/state/loom.handled" \
+  || fail "loom CR was not marked handled after artifact action"
 
 printf 'ok: last-stack post-merge artifact upgrade\n'

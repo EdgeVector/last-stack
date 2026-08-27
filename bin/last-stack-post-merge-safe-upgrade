@@ -74,7 +74,7 @@ map_repo_to_app() {
 }
 
 if [ "$SHOW_MAP" = 1 ]; then
-  for r in last-stack brain situations fkanban kanban routines lastsecrets configurations loom; do
+  for r in last-stack brain situations fkanban kanban routines lastsecrets configurations search loom; do
     printf '%-16s -> %s\n' "$r" "$(map_repo_to_app "$r")"
   done
   exit 0
