@@ -57,6 +57,8 @@ LEGACY_TERMINAL_DONE_WHEN_RE = re.compile(
 )
 
 NONTERMINAL_MS = {"planned", "active", "blocked", "proving"}
+# MILESTONE_REQUEST status values that still advertise work to a reader.
+REQUEST_LIVE = {"pending", "active", "open"}
 DEFAULT_NORTH_STAR_PROOF_DIR = "$HOME/.last-stack/north-star-proofs"
 
 
@@ -458,11 +460,25 @@ def plan_ns(
 
     if status in {"done", "archived", "completed", "retired"}:
         plan.notes.append("ns_already_closed")
+        # A closed North Star cannot own a live request. Leaving the marker at
+        # status=pending makes the ledger advertise work that nobody may do:
+        # north-star-driver re-selects the NS and noops `inactive-north-star`,
+        # and a human re-derives the same dead end by hand every pass. Flip to
+        # `superseded` — not `done` (nothing was delivered) and not
+        # `abandoned` (nobody dropped it); the North Star closed around it.
+        for req in parse_milestone_requests(body):
+            if req.status in REQUEST_LIVE:
+                plan.request_updates[req.slug] = "superseded"
+        if plan.request_updates:
+            plan.notes.append(
+                "closed_ns_requests_superseded:"
+                + ",".join(sorted(plan.request_updates)[:8])
+            )
         return plan
 
     reqs = parse_milestone_requests(body)
     for req in reqs:
-        if req.status not in {"pending", "active", "open"}:
+        if req.status not in REQUEST_LIVE:
             continue
         ms = milestones_by_slug.get(req.slug)
         if not ms:
@@ -492,7 +508,7 @@ def plan_ns(
                 open_after = []
                 for req in reqs:
                     final = plan.request_updates.get(req.slug, req.status)
-                    if final in {"pending", "active", "open"}:
+                    if final in REQUEST_LIVE:
                         open_after.append(req.slug)
                 nonterm = [
                     m
@@ -750,7 +766,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         open_req_slugs = [
             r.slug
             for r in parse_milestone_requests(body)
-            if r.status in {"pending", "active", "open"}
+            if r.status in REQUEST_LIVE
         ]
         recovered = hydrate_milestones_by_show(by_slug, open_req_slugs)
         plan = plan_ns(slug, raw, by_slug, by_ns)
@@ -907,6 +923,44 @@ B
     assert not any(
         n.startswith("request_pending_no_milestone:") for n in plan.notes
     ), plan.notes
+
+    # A CLOSED North Star must not keep advertising a live request. Measured
+    # 2026-08-27: north-star-code-atlas is `done` and still carries
+    # `status=pending` for a milestone that does not exist, so the driver
+    # re-selects it and noops `inactive-north-star` every pass.
+    closed_body = (
+        "**Mode:** ship\n\n"
+        "## MILESTONE_REQUEST\nslug=ms-never-built\nstatus=pending\n\n"
+        "### Outcome\nX\n"
+    )
+    closed_raw = "title: ns\nstatus: done\n---\n" + closed_body
+    closed_plan = plan_ns("ns-closed", closed_raw, {}, {})
+    assert "ns_already_closed" in closed_plan.notes, closed_plan.notes
+    assert closed_plan.request_updates == {"ms-never-built": "superseded"}, (
+        closed_plan.request_updates
+    )
+    assert any(
+        n.startswith("closed_ns_requests_superseded:")
+        for n in closed_plan.notes
+    ), closed_plan.notes
+    rewritten, flips = rewrite_request_statuses(
+        closed_body, closed_plan.request_updates
+    )
+    assert "status=superseded" in rewritten, rewritten
+    assert "status=pending" not in rewritten, rewritten
+    assert flips, flips
+    # A request already flipped is not rewritten a second time.
+    _again, again_flips = rewrite_request_statuses(
+        rewritten, closed_plan.request_updates
+    )
+    assert again_flips == [], again_flips
+    # A closed NS with nothing pending stays an append-only pass.
+    quiet_raw = "title: ns\nstatus: archived\n---\n**Mode:** ship\n"
+    quiet_plan = plan_ns("ns-quiet", quiet_raw, {}, {})
+    assert quiet_plan.request_updates == {}, quiet_plan.request_updates
+    assert not any(
+        n.startswith("closed_ns_requests_superseded:") for n in quiet_plan.notes
+    ), quiet_plan.notes
 
     print("self-test ok")
     return True
