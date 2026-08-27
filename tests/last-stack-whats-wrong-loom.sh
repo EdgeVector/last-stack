@@ -430,4 +430,72 @@ unset LAST_STACK_WHATS_WRONG_LOOM_RETRY_ATTEMPTS
 unset RUN_COUNT_FILE
 unset LAST_STACK_HEARTBEATS_FILE
 
+# --- bound fires on a graph that has not healed yet → readback=live, not
+# --- readback=unavailable ---
+# 2026-08-27T20:23Z: the pass bounded out at 780 s and reported
+# `healed=unknown loom-timeout=780s readback=unavailable`. The readback had in
+# fact WORKED — `loom show lx-20260827T202319.881-74483-1` answered rc=0 in
+# ~30 ms with `status: running` / `state: GATHER`. The execution simply had
+# neither `healed` nor `heal_results` yet, because the graph was still parked
+# before its first heal. Reporting that as an unavailable readback sends the
+# operator to look for a broken loom and destroys the one fact worth having:
+# WHERE the graph is stuck.
+cat >"$tmp/bin/loom" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-}"
+case "$cmd" in
+  ping) echo ok; exit 0 ;;
+  publish) echo "published $(basename "$2" .json)"; exit 0 ;;
+  show)
+    cat <<'VIEW'
+lx-ww-live
+status: running
+state: GATHER
+context.count: 2
+VIEW
+    exit 0
+    ;;
+  run)
+    # loom prints the execution id, then the graph parks. The wrapper's bound
+    # fires, and the id it already saw makes the readback a direct `loom show`.
+    printf 'lx-ww-live\n'
+    exec sleep 86400
+    ;;
+  *) echo "unexpected $*" >&2; exit 2 ;;
+esac
+SH
+chmod 755 "$tmp/bin/loom"
+export LAST_STACK_WHATS_WRONG_STAMP="$tmp/stamp-live.json"
+export LAST_STACK_WHATS_WRONG_LOOM_TIMEOUT_SEC=1
+export LAST_STACK_WHATS_WRONG_LOOM_READBACK_SEC=5
+export LOOM_WHATS_WRONG_KEY="whats-wrong-live-key"
+export WHATS_WRONG_SNAPSHOT_FILE="$tmp/snap.json"
+set +e
+lout="$("$BIN" --json --quiet --no-heal)"
+lrc_live=$?
+set -e
+[ "$lrc_live" -eq 3 ] || fail "a still-running bounded graph stays red, got exit $lrc_live out=$lout"
+printf '%s\n' "$lout" | grep -q 'readback=live' \
+  || fail "a readback that answered must not be reported as unavailable: $lout"
+printf '%s\n' "$lout" | grep -q 'exec-status=running' \
+  || fail "readback=live must name the execution status: $lout"
+printf '%s\n' "$lout" | grep -q 'exec-state=GATHER' \
+  || fail "readback=live must name where the graph is parked: $lout"
+printf '%s\n' "$lout" | grep -q 'healed=unknown' \
+  || fail "an unwritten heal count stays unknown, never a fabricated 0: $lout"
+if printf '%s\n' "$lout" | grep -q 'readback=unavailable'; then
+  fail "readback=unavailable must not appear when the read worked: $lout"
+fi
+python3 - "$LAST_STACK_WHATS_WRONG_STAMP" <<'PYLIVE' || fail "live-readback stamp wrong"
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+assert d.get("outcome") == "error", d
+assert d.get("status") == "timed-out", d
+assert d.get("exec_id") == "lx-ww-live", d
+PYLIVE
+unset LAST_STACK_WHATS_WRONG_LOOM_TIMEOUT_SEC
+unset LAST_STACK_WHATS_WRONG_LOOM_READBACK_SEC
+
+
 echo "ok"
