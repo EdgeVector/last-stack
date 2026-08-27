@@ -261,6 +261,45 @@ case "$READBACK_SEC" in
 esac
 [ "$READBACK_SEC" -ge 1 ] || READBACK_SEC=45
 
+# Retry budget for a `loom run` that fails FAST on a retryable LastDB answer.
+#
+# persist_queue_full is the case this exists for: the node returns 503 with
+# `"retryable":true` and `retry after drain`, loom exits 1 in a few seconds,
+# and the hour's heal pass used to end there — 5.5 s of a 780 s budget, twice
+# in a row on 2026-08-27
+# (papercut-whats-wrong-loom-no-retry-on-retryable-lastdb-503).
+#
+# Retrying is safe because `loom run --key` is idempotent by contract: the same
+# key re-attaches to the existing execution instead of starting a second one.
+# The retries share the ONE wall-clock deadline below, so this cannot push the
+# gate past routines' GATE_TIMEOUT_CAP_MS.
+RETRY_ATTEMPTS="${LAST_STACK_WHATS_WRONG_LOOM_RETRY_ATTEMPTS:-3}"
+case "$RETRY_ATTEMPTS" in
+  ''|*[!0-9]*) RETRY_ATTEMPTS=3 ;;
+esac
+[ "$RETRY_ATTEMPTS" -ge 1 ] || RETRY_ATTEMPTS=3
+
+RETRY_SLEEP_SEC="${LAST_STACK_WHATS_WRONG_LOOM_RETRY_SLEEP_SEC:-10}"
+case "$RETRY_SLEEP_SEC" in
+  ''|*[!0-9]*) RETRY_SLEEP_SEC=10 ;;
+esac
+[ "$RETRY_SLEEP_SEC" -ge 1 ] || RETRY_SLEEP_SEC=10
+
+# Same transient set as last-stack-lastdb-retry. Structural rejects
+# (max_outbox_entries) and agent rate limits are NOT retried.
+is_transient_lastdb_flap() {
+  printf '%s' "${1:-}" | grep -Eiq \
+    'persist_queue_full|persist queue full|retry after drain|"retryable":[[:space:]]*true|service_timeout|node did not respond|too many concurrent reads|uds_connection_limit|connection refused|ECONNRESET|temporarily at capacity' \
+    || return 1
+  if printf '%s' "${1:-}" | grep -Eiq 'max_outbox_entries|outbox.?full'; then
+    return 1
+  fi
+  if printf '%s' "${1:-}" | grep -Eiq 'rate.?limit|429|limit reached'; then
+    return 1
+  fi
+  return 0
+}
+
 # Parse a `loom run` / `loom show` view on stdin into one JSON line.
 # Shared by the success path and the timeout readback so the two cannot drift
 # in what they consider a heal.
@@ -416,12 +455,28 @@ emit_result() {
   printf '%s %s\n' 'ROUTINE_RESULT' "outcome=${oc} detail=${det}"
 }
 
-log "loom run whats-wrong --key $KEY timeout=${TIMEOUT_SEC}s"
-export LAST_STACK_WHATS_WRONG_LOOM_TIMEOUT_SEC="$TIMEOUT_SEC"
+log "loom run whats-wrong --key $KEY timeout=${TIMEOUT_SEC}s attempts=${RETRY_ATTEMPTS}"
 export LOOM_WHATS_WRONG_RUN_KEY="$KEY"
 export LOOM_WHATS_WRONG_RUN_INPUT="$input"
-set +e
-view="$(python3 -c '
+
+loom_err_file="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack-whats-wrong.XXXXXX")"
+trap 'rm -f "$loom_err_file"' EXIT
+
+# ONE deadline for the whole attempt sequence. Each attempt is handed only the
+# time still left, so N retries cost the same wall clock as no retries.
+loom_deadline=$(( $(date -u +%s) + TIMEOUT_SEC ))
+attempt=1
+view=""
+lrc=0
+
+while :; do
+  remaining=$(( loom_deadline - $(date -u +%s) ))
+  [ "$remaining" -ge 1 ] || remaining=1
+  export LAST_STACK_WHATS_WRONG_LOOM_TIMEOUT_SEC="$remaining"
+
+  : >"$loom_err_file"
+  set +e
+  view="$(python3 -c '
 import os, signal, subprocess, sys, time
 sec = int(os.environ["LAST_STACK_WHATS_WRONG_LOOM_TIMEOUT_SEC"])
 argv = [
@@ -455,9 +510,29 @@ except subprocess.TimeoutExpired:
         except subprocess.TimeoutExpired:
             pass
     raise SystemExit(124)
-')"
-lrc=$?
-set -e
+' 2>"$loom_err_file")"
+  lrc=$?
+  set -e
+  # Keep the operator-visible stream identical to the pre-retry wrapper.
+  cat "$loom_err_file" >&2 || true
+  loom_err="$(cat "$loom_err_file" 2>/dev/null || true)"
+
+  # Success, or the wall-clock bound fired (that has its own reporting path).
+  if { [ "$lrc" -eq 0 ] && [ -n "$view" ]; } || [ "$lrc" -eq 124 ]; then
+    break
+  fi
+
+  if [ "$attempt" -lt "$RETRY_ATTEMPTS" ] \
+     && is_transient_lastdb_flap "$loom_err" \
+     && [ "$(( loom_deadline - $(date -u +%s) ))" -gt "$(( RETRY_SLEEP_SEC + 5 ))" ]; then
+    log "loom run rc=${lrc} is a retryable LastDB answer; attempt $((attempt + 1))/${RETRY_ATTEMPTS} in ${RETRY_SLEEP_SEC}s"
+    sleep "$RETRY_SLEEP_SEC"
+    attempt=$((attempt + 1))
+    continue
+  fi
+  break
+done
+
 if [ "$lrc" -ne 0 ] || [ -z "$view" ]; then
   n="$(count_exceptions)"
   if [ "$lrc" -eq 124 ]; then
@@ -505,8 +580,8 @@ if [ "$lrc" -ne 0 ] || [ -z "$view" ]; then
     emit_result error "$det"
     exit 3
   fi
-  det="exceptions=${n} healed=0 loom-run-failed rc=${lrc}"
-  log "loom run failed rc=$lrc"
+  det="exceptions=${n} healed=0 loom-run-failed rc=${lrc} attempts=${attempt}"
+  log "loom run failed rc=$lrc after ${attempt} attempt(s)"
   write_stamp failed "" "$det" "$KEY" "error"
   emit_result error "$det"
   exit 3

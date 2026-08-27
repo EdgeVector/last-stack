@@ -301,4 +301,133 @@ printf '%s\n' "$sout" | grep -q 'measured=1' || fail "stuck loom must mark the z
 unset STUCK_MARK
 unset LAST_STACK_WHATS_WRONG_LOOM_READBACK_SEC
 
+# --- a RETRYABLE LastDB answer is retried, not reported as the hour's result ---
+# On 2026-08-27 the 18:23Z and 19:23Z passes each died in ~5 s of a 780 s budget
+# because `loom run` hit one HTTP 503 persist_queue_full. The node itself
+# labelled that answer `"retryable":true` / `retry after drain`, and the wrapper
+# retried nothing
+# (papercut-whats-wrong-loom-no-retry-on-retryable-lastdb-503).
+# `loom run --key` is idempotent, so a retry re-attaches rather than starting a
+# second execution.
+cat >"$tmp/bin/loom" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-}"
+case "$cmd" in
+  ping) echo ok; exit 0 ;;
+  publish) echo "published $(basename "$2" .json)"; exit 0 ;;
+  run)
+    nfile="${RUN_COUNT_FILE:?}"
+    n=$(cat "$nfile" 2>/dev/null || echo 0)
+    n=$((n + 1))
+    printf '%s\n' "$n" >"$nfile"
+    if [ "$n" -lt 2 ]; then
+      echo 'Error: mutation on LoomAgent -> HTTP 503: {"error":"persist_queue_full","kind":"bytes","message":"persist queue full for schema '"'"'6fcb6bd1'"'"' (bytes); retry after drain","ok":false,"retryable":true}' >&2
+      exit 1
+    fi
+    cat <<'VIEW'
+lx-ww-retry
+status: succeeded
+state: DONE
+context.outcome: "ok"
+context.detail: "exceptions=2 healed=1 remaining=1"
+VIEW
+    exit 0
+    ;;
+  *) echo "unexpected $*" >&2; exit 2 ;;
+esac
+SH
+chmod 755 "$tmp/bin/loom"
+export LAST_STACK_WHATS_WRONG_STAMP="$tmp/stamp-retry.json"
+export LAST_STACK_WHATS_WRONG_LOOM_TIMEOUT_SEC=60
+export LAST_STACK_WHATS_WRONG_LOOM_RETRY_SLEEP_SEC=1
+export LAST_STACK_WHATS_WRONG_LOOM_RETRY_ATTEMPTS=3
+export LAST_STACK_HEARTBEATS_FILE="$tmp/heartbeats.log"
+export RUN_COUNT_FILE="$tmp/run-count-retry"
+export LOOM_WHATS_WRONG_KEY="whats-wrong-retry-key"
+export WHATS_WRONG_SNAPSHOT_FILE="$tmp/snap.json"
+set +e
+rout="$("$BIN" --json --quiet --no-heal)"
+rrc=$?
+set -e
+[ "$rrc" -eq 0 ] || fail "retryable 503 must be retried to success, got exit $rrc out=$rout"
+printf '%s\n' "$rout" | grep -q 'outcome":"ok"' || fail "retried run must be ok: $rout"
+printf '%s\n' "$rout" | grep -q 'healed=1' || fail "retried run lost the heal detail: $rout"
+[ "$(cat "$RUN_COUNT_FILE")" = "2" ] \
+  || fail "expected 2 loom run attempts, got $(cat "$RUN_COUNT_FILE")"
+
+# --- a NON-retryable answer is not thrashed ---
+cat >"$tmp/bin/loom" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-}"
+case "$cmd" in
+  ping) echo ok; exit 0 ;;
+  publish) echo "published $(basename "$2" .json)"; exit 0 ;;
+  run)
+    nfile="${RUN_COUNT_FILE:?}"
+    n=$(cat "$nfile" 2>/dev/null || echo 0)
+    n=$((n + 1))
+    printf '%s\n' "$n" >"$nfile"
+    echo 'Error: mutation on LoomAgent -> HTTP 400: {"error":"bad_request","ok":false,"retryable":false}' >&2
+    exit 1
+    ;;
+  *) echo "unexpected $*" >&2; exit 2 ;;
+esac
+SH
+chmod 755 "$tmp/bin/loom"
+export LAST_STACK_WHATS_WRONG_STAMP="$tmp/stamp-noretry.json"
+export RUN_COUNT_FILE="$tmp/run-count-noretry"
+export LOOM_WHATS_WRONG_KEY="whats-wrong-noretry-key"
+set +e
+nrout="$("$BIN" --json --quiet --no-heal)"
+nrrc=$?
+set -e
+[ "$nrrc" -eq 3 ] || fail "non-retryable failure must stay red, got exit $nrrc out=$nrout"
+[ "$(cat "$RUN_COUNT_FILE")" = "1" ] \
+  || fail "non-retryable failure must not be retried, got $(cat "$RUN_COUNT_FILE") attempts"
+printf '%s\n' "$nrout" | grep -q 'attempts=1' \
+  || fail "failure detail must report the attempt count: $nrout"
+
+# --- retries share ONE wall-clock deadline; they cannot extend the gate ---
+# routines caps a gate_command at GATE_TIMEOUT_CAP_MS regardless of timeout_min,
+# so an attempt loop that restarted the budget each time would be killed
+# externally and lose its ROUTINE_RESULT trailer entirely.
+cat >"$tmp/bin/loom" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-}"
+case "$cmd" in
+  ping) echo ok; exit 0 ;;
+  publish) echo "published $(basename "$2" .json)"; exit 0 ;;
+  run)
+    nfile="${RUN_COUNT_FILE:?}"
+    n=$(cat "$nfile" 2>/dev/null || echo 0)
+    printf '%s\n' "$((n + 1))" >"$nfile"
+    echo 'Error: HTTP 503: {"error":"persist_queue_full","retryable":true}' >&2
+    exit 1
+    ;;
+  *) echo "unexpected $*" >&2; exit 2 ;;
+esac
+SH
+chmod 755 "$tmp/bin/loom"
+export LAST_STACK_WHATS_WRONG_STAMP="$tmp/stamp-budget.json"
+export RUN_COUNT_FILE="$tmp/run-count-budget"
+export LOOM_WHATS_WRONG_KEY="whats-wrong-budget-key"
+export LAST_STACK_WHATS_WRONG_LOOM_TIMEOUT_SEC=8
+export LAST_STACK_WHATS_WRONG_LOOM_RETRY_SLEEP_SEC=1
+export LAST_STACK_WHATS_WRONG_LOOM_RETRY_ATTEMPTS=9
+budget_start="$(date +%s)"
+set +e
+"$BIN" --json --quiet --no-heal >/dev/null 2>&1
+set -e
+budget_sec=$(( $(date +%s) - budget_start ))
+[ "$budget_sec" -le 20 ] \
+  || fail "retry loop ran ${budget_sec}s against an 8s budget; the deadline is not shared"
+unset LAST_STACK_WHATS_WRONG_LOOM_TIMEOUT_SEC
+unset LAST_STACK_WHATS_WRONG_LOOM_RETRY_SLEEP_SEC
+unset LAST_STACK_WHATS_WRONG_LOOM_RETRY_ATTEMPTS
+unset RUN_COUNT_FILE
+unset LAST_STACK_HEARTBEATS_FILE
+
 echo "ok"
