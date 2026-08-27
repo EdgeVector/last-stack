@@ -2,6 +2,8 @@
 # Graph A steps. Default stand-in. LOOM_LIVE=1 calls safe-upgrade-lastdb.sh.
 set -euo pipefail
 step="${1:?step}"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
+export LOOM_LASTDB_FRESHNESS_SCRIPT="${LOOM_LASTDB_FRESHNESS_SCRIPT:-$SCRIPT_DIR/lastdb-candidate-freshness.py}"
 
 python3 - "$step" <<'PY'
 import json, os, subprocess, sys
@@ -19,12 +21,48 @@ if isinstance(item, dict):
 
 live = os.environ.get("LOOM_CANARY_LIVE") == "1" or os.environ.get("LOOM_LIVE") == "1"
 cand = str(ctx.get("candidate") or "")
+version = str(ctx.get("version") or "")
+source_git_oid = str(ctx.get("source_git_oid") or "")
 
 
 def emit(payload, line="PASS"):
     print("LOOM_CONTEXT_PATCH:" + json.dumps(payload, separators=(",", ":")))
     print(line)
     print("PASS")
+
+
+def check_freshness():
+    script = os.environ.get("LOOM_LASTDB_FRESHNESS_SCRIPT") or ""
+    if not script or not os.path.isfile(script):
+        return {
+            "ok": False,
+            "relation": "unknown",
+            "reason": f"freshness helper missing: {script}",
+        }
+    cmd = [sys.executable, script, "--candidate", cand]
+    if version:
+        cmd.extend(["--candidate-version", version])
+    if source_git_oid:
+        cmd.extend(["--candidate-source-oid", source_git_oid])
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    lines = [line for line in (p.stdout or "").splitlines() if line.strip()]
+    try:
+        result = json.loads(lines[-1]) if lines else {}
+    except json.JSONDecodeError:
+        result = {}
+    if not isinstance(result, dict):
+        result = {}
+    result.setdefault("ok", False)
+    result.setdefault("relation", "unknown")
+    result.setdefault(
+        "reason",
+        (p.stderr or "").strip() or f"freshness helper returned rc={p.returncode}",
+    )
+    print(
+        "safe-upgrade freshness "
+        f"relation={result['relation']} reason={result['reason']}"
+    )
+    return result
 
 
 if not live:
@@ -50,6 +88,24 @@ if step == "PROBE":
     if not cand:
         emit({"verdict": "red"}, "su PROBE no candidate")
         raise SystemExit(0)
+    freshness = check_freshness()
+    relation = str(freshness.get("relation") or "unknown")
+    if freshness.get("ok") and relation == "current":
+        emit(
+            {"verdict": "current", "freshness": relation},
+            "su PROBE candidate already current",
+        )
+        raise SystemExit(0)
+    if not freshness.get("ok") or relation != "forward":
+        emit(
+            {
+                "verdict": "red",
+                "freshness": relation,
+                "last_error": str(freshness.get("reason") or "ancestry unproved"),
+            },
+            f"su PROBE freshness={relation} refused",
+        )
+        raise SystemExit(0)
     p = subprocess.run(
         ["bash", skill, "--candidate", cand, "--probe-only"],
         capture_output=True, text=True, timeout=7200,
@@ -62,10 +118,26 @@ if step == "PROBE":
     raise SystemExit(0)
 
 if step == "CUTOVER":
+    freshness = check_freshness()
+    relation = str(freshness.get("relation") or "unknown")
+    if freshness.get("ok") and relation == "current":
+        emit(
+            {"cutover": "already-current", "verdict": "green", "freshness": relation},
+            "su CUTOVER candidate became current; no live change",
+        )
+        raise SystemExit(0)
+    if not freshness.get("ok") or relation != "forward":
+        sys.stderr.write(
+            "safe-upgrade CUTOVER refused: "
+            f"freshness={relation} reason={freshness.get('reason') or 'ancestry unproved'}\n"
+        )
+        raise SystemExit(1)
     print('LOOM_EFFECT_INTENT:{"kind":"deploy","target":"lastdb-safe-upgrade"}')
+    cutover_env = os.environ.copy()
+    cutover_env["LASTDB_SAFE_UPGRADE_VIA_LOOM"] = "1"
     p = subprocess.run(
         ["bash", skill, "--candidate", cand, "--yes"],
-        capture_output=True, text=True, timeout=3600,
+        capture_output=True, text=True, timeout=3600, env=cutover_env,
     )
     sys.stdout.write(p.stdout or "")
     sys.stderr.write(p.stderr or "")

@@ -135,7 +135,7 @@ done
 for cand in "${LOOM_SCRIPTS:-}" "$ROOT/lib/canary-loom" "$install_root/scripts"; do
   [ -n "$cand" ] && [ -f "$cand/loom-canary-step.sh" ] && scripts="$cand" && break
 done
-if [ -z "$defs" ] || [ -z "$scripts" ]; then
+if [ -z "$defs" ] || [ -z "$scripts" ] || [ ! -f "$defs/lastdb-safe-upgrade.json" ]; then
   log "lastdb-canary-release definitions/scripts not found"
   write_stamp unavailable "$KEY" "error" "defs-missing"
   exit 3
@@ -149,6 +149,12 @@ else
   unset LOOM_CANARY_LIVE LOOM_LIVE LOOM_CANARY_RED_LIVE || true
 fi
 
+# Publish the child first. The parent CALL_A node resolves the named definition
+# from LastDB, so publishing only the parent can leave an older cutover graph
+# active after the local artifact changes.
+loom validate "$defs/lastdb-safe-upgrade.json" >/dev/null
+loom validate "$defs/lastdb-canary-release.json" >/dev/null
+loom publish "$defs/lastdb-safe-upgrade.json" >/dev/null
 loom publish "$defs/lastdb-canary-release.json" >/dev/null
 input="$(OID="${OID:-}" python3 -c 'import json,os; print(json.dumps({"main_oid":os.environ.get("OID") or "","max_attempts":3},separators=(",",":")))')"
 

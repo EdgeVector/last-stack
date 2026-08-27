@@ -124,23 +124,33 @@ out="$(
 [ "$(printf '%s\n' "$out" | jq -r '.safe_upgrade')" = "green" ]
 grep -q -- '--probe-only --version 0.24.0-canary.1' "$tmp/safe-upgrade.log"
 
-# cutover: probe then --yes
+# cutover: one Loom graph owns the probe and live step
 : >"$tmp/safe-upgrade.log"
+loom_stub="$tmp/safe-upgrade-loom-stub"
+cat >"$loom_stub" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"${SAFE_UPGRADE_LOOM_STUB_LOG:?}"
+printf '%s\n' '{"outcome":"ok","status":"succeeded","state":"DONE","execution":"lx-test","graph":"lastdb-safe-upgrade"}'
+STUB
+chmod +x "$loom_stub"
 cut_state="$tmp/cutover-state"
 out="$(
-  env -u LAST_STACK_CANARY_LOCAL_FALLBACK_BIN \
-  LAST_STACK_CANARY_RELEASES_JSON="$release_json" \
+  LAST_STACK_CANARY_LOCAL_FALLBACK_BIN="$fallback_bin" \
   LAST_STACK_CANARY_SAFE_UPGRADE="$stub" \
+  LAST_STACK_CANARY_SAFE_UPGRADE_LOOM="$loom_stub" \
   SAFE_UPGRADE_STUB_LOG="$tmp/safe-upgrade.log" \
+  SAFE_UPGRADE_LOOM_STUB_LOG="$tmp/safe-upgrade-loom.log" \
   LAST_STACK_CANARY_SITUATION_CHECK_CMD=pass \
-  LAST_STACK_CANARY_LIVE_VERSION_CMD='echo lastdbd 0.24.0-canary.1' \
+  LAST_STACK_CANARY_LIVE_VERSION_CMD='echo lastdbd 0.25.0-local-main' \
   "$CLI" --state-dir "$cut_state" --cutover --skip-situation-preflight --json
 )"
 [ "$(printf '%s\n' "$out" | jq -r '.mode')" = "cutover" ]
-[ "$(printf '%s\n' "$out" | jq -r '.safe_upgrade')" = "cutover-green" ]
+[ "$(printf '%s\n' "$out" | jq -r '.safe_upgrade')" = "loom-cutover-green" ]
 [ "$(printf '%s\n' "$out" | jq -r '.primary_mutation')" = "true" ]
-grep -q -- '--probe-only --version 0.24.0-canary.1' "$tmp/safe-upgrade.log"
-grep -q -- '--yes --version 0.24.0-canary.1' "$tmp/safe-upgrade.log"
+[ ! -s "$tmp/safe-upgrade.log" ]
+grep -q -- "--candidate $fallback_bin" "$tmp/safe-upgrade-loom.log"
+grep -q -- "--source-git-oid $MAIN_OID" "$tmp/safe-upgrade-loom.log"
 
 # --- local preferred over GH even when GH is allowed ---
 out="$(

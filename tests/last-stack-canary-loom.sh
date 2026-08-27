@@ -24,7 +24,7 @@ cat > "$mock_home/.local/bin/loom" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 case "${1:-}" in
-  ping|publish) exit 0 ;;
+  ping|publish|validate) exit 0 ;;
   run)
     case "${FAKE_LOOM_MODE:-success}" in
       success)

@@ -1,36 +1,171 @@
 #!/usr/bin/env bash
-# Start or resume Loom graph A (lastdb-safe-upgrade). No soak. No promote.
+# Start or resume the Loom lastdb-safe-upgrade graph. No soak. No promotion.
 set -euo pipefail
+
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
 export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
+
 KEY=""
 CAND=""
-NOHEAL=0
+SOURCE_OID=""
+STAND_IN=0
+DRY_RUN=0
+AS_JSON=0
+
+usage() {
+  cat <<'EOF'
+Usage:
+  last-stack-safe-upgrade-loom --candidate PATH [--source-git-oid OID] [--json]
+  last-stack-safe-upgrade-loom --dry-run --candidate PATH [--source-git-oid OID] [--json]
+
+The launcher derives one immutable execution key from the candidate source OID.
+It refuses live use when source ancestry cannot be identified.
+EOF
+}
+
+die() {
+  printf 'last-stack-safe-upgrade-loom: %s\n' "$*" >&2
+  exit 2
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --key) KEY="${2:-}"; shift 2 ;;
     --candidate) CAND="${2:-}"; shift 2 ;;
-    --no-heal|--stand-in) NOHEAL=1; shift ;;
-    -h|--help) echo "last-stack-safe-upgrade-loom --candidate PATH [--key KEY]"; exit 0 ;;
-    *) echo "unknown: $1" >&2; exit 2 ;;
+    --source-git-oid) SOURCE_OID="${2:-}"; shift 2 ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --json) AS_JSON=1; shift ;;
+    --no-heal|--stand-in) STAND_IN=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "unknown argument: $1" ;;
   esac
 done
-[ -n "$CAND" ] || [ "$NOHEAL" -eq 1 ] || { echo "need --candidate" >&2; exit 2; }
-KEY="${KEY:-su-$(basename "$CAND")}"
+
+if [ "$STAND_IN" -eq 0 ]; then
+  [ -n "$CAND" ] || die "--candidate is required"
+  [ -x "$CAND" ] || die "candidate is not executable: $CAND"
+fi
+
+candidate_version="stand-in"
+if [ "$STAND_IN" -eq 0 ]; then
+  candidate_version="$("$CAND" --version 2>/dev/null | awk '{print $NF}' || true)"
+  [ -n "$candidate_version" ] || die "candidate version is unreadable"
+fi
+
+read_manifest_oid() {
+  local path="$1" candidate="" value=""
+  for candidate in \
+    "$(dirname "$path")/manifest.json" \
+    "$(dirname "$path")/lastdb-aarch64-apple-darwin.manifest.json" \
+    "$(dirname "$(dirname "$path")")/manifest.json" \
+    "$(dirname "$(dirname "$path")")/lastdb-aarch64-apple-darwin.manifest.json"
+  do
+    [ -f "$candidate" ] || continue
+    value="$(jq -r '.source_git_oid // .git_oid // empty' "$candidate" 2>/dev/null || true)"
+    [ -n "$value" ] && { printf '%s\n' "$value"; return 0; }
+  done
+  return 1
+}
+
+if [ "$STAND_IN" -eq 1 ]; then
+  SOURCE_OID="stand-in"
+elif [ -z "$SOURCE_OID" ]; then
+  SOURCE_OID="$(read_manifest_oid "$CAND" || true)"
+fi
+if [ "$STAND_IN" -eq 0 ] && [ -z "$SOURCE_OID" ]; then
+  SOURCE_OID="$(printf '%s\n' "$candidate_version" | sed -n 's/.*-g\([0-9a-fA-F][0-9a-fA-F]*\).*/\1/p')"
+fi
+
+fold_git="${LASTDB_SAFE_UPGRADE_FOLD_GIT_DIR:-$HOME/.cache/edgevector-git/fold.git}"
+if [ "$STAND_IN" -eq 0 ]; then
+  case "$SOURCE_OID" in
+    ''|*[!0-9a-fA-F]*) die "candidate source Git OID is required" ;;
+  esac
+  [ "${#SOURCE_OID}" -ge 7 ] && [ "${#SOURCE_OID}" -le 40 ] \
+    || die "candidate source Git OID must contain 7 to 40 hexadecimal characters"
+  if [ "${#SOURCE_OID}" -lt 40 ]; then
+    [ -d "$fold_git" ] || die "Fold mirror is required to resolve short source OID $SOURCE_OID"
+    SOURCE_OID="$(git -C "$fold_git" rev-parse --verify "${SOURCE_OID}^{commit}" 2>/dev/null || true)"
+  fi
+  printf '%s\n' "$SOURCE_OID" | grep -Eq '^[0-9a-fA-F]{40}$' \
+    || die "candidate source Git OID does not resolve to one commit"
+  SOURCE_OID="$(printf '%s' "$SOURCE_OID" | tr 'A-F' 'a-f')"
+fi
+
+expected_key="safe-upgrade-${SOURCE_OID}"
+if [ -n "$KEY" ] && [ "$KEY" != "$expected_key" ]; then
+  die "--key must equal $expected_key so different candidates cannot share one execution"
+fi
+KEY="$expected_key"
+
+input="$(jq -cn \
+  --arg candidate "$CAND" \
+  --arg version "$candidate_version" \
+  --arg source_git_oid "$SOURCE_OID" \
+  '{candidate:$candidate,version:$version,source_git_oid:$source_git_oid}')"
+
+emit_json() {
+  local outcome="$1" status="$2" state="$3" execution="$4"
+  jq -cn \
+    --arg outcome "$outcome" \
+    --arg status "$status" \
+    --arg state "$state" \
+    --arg execution "$execution" \
+    --arg key "$KEY" \
+    --arg candidate "$CAND" \
+    --arg version "$candidate_version" \
+    --arg source_git_oid "$SOURCE_OID" \
+    '{outcome:$outcome,status:$status,state:$state,execution:$execution,key:$key,candidate:$candidate,version:$version,source_git_oid:$source_git_oid,graph:"lastdb-safe-upgrade"}'
+}
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  if [ "$AS_JSON" -eq 1 ]; then
+    emit_json "noop" "dry-run" "PROBE" ""
+  else
+    printf 'last-stack-safe-upgrade-loom dry-run graph=lastdb-safe-upgrade key=%s source_git_oid=%s\n' "$KEY" "$SOURCE_OID"
+  fi
+  exit 0
+fi
+
+command -v loom >/dev/null 2>&1 || die "loom is not installed"
+loom ping >/dev/null 2>&1 || die "loom cannot reach LastDB"
+
+exe="$(command -v loom)"
+real="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$exe")"
+install_root="$(dirname "$(dirname "$real")")"
 defs=""
 scripts=""
-for c in "$ROOT/lib/canary-loom" "$(dirname "$(dirname "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$(command -v loom)")")")/definitions"; do
-  [ -f "$c/lastdb-safe-upgrade.json" ] && defs="$c" && break
+for candidate in "${LOOM_DEFS:-}" "$ROOT/lib/canary-loom" "$install_root/definitions"; do
+  [ -n "$candidate" ] && [ -f "$candidate/lastdb-safe-upgrade.json" ] && defs="$candidate" && break
 done
-for c in "$ROOT/lib/canary-loom" "$(dirname "$(dirname "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$(command -v loom)")")")/scripts"; do
-  [ -f "$c/loom-safe-upgrade-step.sh" ] && scripts="$c" && break
+for candidate in "${LOOM_SCRIPTS:-}" "$ROOT/lib/canary-loom" "$install_root/scripts"; do
+  [ -n "$candidate" ] && [ -f "$candidate/loom-safe-upgrade-step.sh" ] && scripts="$candidate" && break
 done
-[ -n "$defs" ] && [ -n "$scripts" ] || { echo "graph A defs missing" >&2; exit 3; }
+[ -n "$defs" ] && [ -n "$scripts" ] || die "lastdb-safe-upgrade graph files are missing"
+
 export LOOM_SCRIPTS="$scripts"
-if [ "$NOHEAL" -eq 1 ]; then unset LOOM_LIVE LOOM_CANARY_LIVE || true
-else export LOOM_LIVE=1 LOOM_CANARY_LIVE=1
+if [ "$STAND_IN" -eq 1 ]; then
+  unset LOOM_LIVE LOOM_CANARY_LIVE || true
+else
+  export LOOM_LIVE=1 LOOM_CANARY_LIVE=1
 fi
+
+loom validate "$defs/lastdb-safe-upgrade.json" >/dev/null
 loom publish "$defs/lastdb-safe-upgrade.json" >/dev/null
-input="$(python3 -c 'import json,os; print(json.dumps({"candidate":os.environ.get("C","")}))' )"
-C="$CAND" input="$(CAND="$CAND" python3 -c 'import json,os; print(json.dumps({"candidate":os.environ["CAND"]},separators=(",",":")))')"
-loom run lastdb-safe-upgrade --key "$KEY" --input "$input"
+
+set +e
+view="$(loom run lastdb-safe-upgrade --key "$KEY" --input "$input")"
+loom_rc=$?
+set -e
+execution="$(printf '%s\n' "$view" | awk '/^lx-/{print; exit}')"
+status="$(printf '%s\n' "$view" | awk -F': ' '/^status:/{print $2; exit}')"
+state="$(printf '%s\n' "$view" | awk -F': ' '/^state:/{print $2; exit}')"
+outcome="error"
+[ "$loom_rc" -eq 0 ] && [ "$status" = "succeeded" ] && outcome="ok"
+
+if [ "$AS_JSON" -eq 1 ]; then
+  emit_json "$outcome" "${status:-unknown}" "${state:-unknown}" "$execution"
+else
+  printf '%s\n' "$view"
+fi
+[ "$outcome" = "ok" ] || exit 3

@@ -33,7 +33,9 @@ release is broken — fail on the ephemeral copy; keep live on last known-good u
 GREEN. Brain: `preference-lastdb-upgrade-ephemeral-probe-first`,
 `sop-lastdb-safe-upgrade`.
 
-This skill is the **only** allowed path for upgrading that binary on this machine.
+This skill and its Loom `lastdb-safe-upgrade` graph are the **only** allowed
+path for a live binary change on this machine. The shell driver remains the
+probe and cutover implementation. It refuses a live cutover outside Loom.
 
 ## Install location (all harnesses)
 
@@ -240,7 +242,32 @@ proxy is optional later for near-zero client impact.
 
 ## Do this, in order
 
-### A. Prefer the driver script (default)
+### A. Use Loom for every live cutover
+
+Start the graph with an explicit release candidate. The launcher reads the
+candidate source commit, creates one execution key for that commit, and checks
+Git ancestry before the probe and immediately before the cutover.
+
+```bash
+last-stack-safe-upgrade-loom \
+  --candidate /path/to/release/lastdbd \
+  --source-git-oid <full-fold-commit>
+```
+
+The sibling `lastdb` binary and the bundle manifest must be next to `lastdbd`.
+An equal candidate finishes as a no-op. An older, divergent, or unknown source
+commit fails closed. Do not resume an execution for a different source commit.
+
+The nightly path uses the parent graph:
+
+```bash
+last-stack-canary-loom --start --oid <full-fold-main-commit>
+```
+
+The parent graph builds the candidate and calls `lastdb-safe-upgrade` as a Loom
+child. Do not call the cutover driver from a routine or an agent.
+
+### B. Use the driver only for probe-only work
 
 Resolve the skill root (first hit wins), then run the script:
 
@@ -260,21 +287,15 @@ done
 [ -n "$skill_root" ] || { echo "lastdb-safe-upgrade skill not installed; run ~/.last-stack/setup --host auto" >&2; exit 1; }
 driver="$skill_root/scripts/safe-upgrade-lastdb.sh"
 
-# Full path: probe then upgrade if green (interactive confirm)
-bash "$driver"
-
 # Probe only (no live install)
 bash "$driver" --probe-only
 
-# Non-interactive after GREEN probe (agents / automation Tom authorized)
-bash "$driver" --yes
-
-# Explicit candidate binary (sidebin install on Tom’s machine).
+# Explicit candidate probe.
 # MUST be a release build with sibling /path/to/release/lastdb beside it —
 # never …/target/debug/lastdbd or a -dirty stamp.
-bash "$driver" --candidate /path/to/release/lastdbd --yes
+bash "$driver" --candidate /path/to/release/lastdbd --probe-only
 
-# Bottle version via GitHub release tarball then venue-aware live
+# Bottle version probe only
 bash "$driver" --version 0.22.8 --probe-only
 
 # Refuse/allow live based only on the DEV photograph stamp receipt
@@ -303,13 +324,13 @@ The script:
 | **4b. Release** | After GREEN, delete the rollback point and its empty root. GREEN probe-only and operator abort release it too. |
 | RED | Exit 1, retain the one rollback point, print its path, TTL, and cleanup owner; primary untouched if class/probe failed |
 
-### B. If the script is missing or fails open
+### C. If the graph or script is missing or fails open
 
-Do **not** hand-roll a weaker path. Fix the script or stop. If the skill is
-missing on this harness, run `~/.last-stack/setup --host auto` (clean install
-tree only — never dirty `~/.last-stack` by hand).
+Do **not** hand-roll a weaker path. Fix the graph or script, or stop. If the
+skill is missing on this harness, run `~/.last-stack/setup --host auto` (clean
+install tree only — never dirty `~/.last-stack` by hand).
 
-### C. Report to Tom
+### D. Report to Tom
 
 Always print:
 
@@ -334,7 +355,7 @@ incident.
 | Output | Meaning | Action |
 |--------|---------|--------|
 | `VERDICT: GREEN` | Probe + live cutover + live post-check passed | Done |
-| `VERDICT: GREEN_PROBE_ONLY` | Probe passed; primary still on old version | Re-run with `--yes` if Tom wants the upgrade |
+| `VERDICT: GREEN_PROBE_ONLY` | Probe passed; primary still on old version | Start `last-stack-safe-upgrade-loom` with the candidate and source commit if Tom wants the upgrade |
 | `VERDICT: ALREADY_CURRENT` | Already on candidate/stable | Nothing to do |
 | `VERDICT: RED` | Candidate fails **class** bar (debug/dirty/size), **or** cannot serve real data, **or** the **CAS mutation** bar (node accepted a false `expected` precondition), **or** peak RSS exceeds memory-guard bar, **or** the latency bar failed (per-op 3×, absolute ceiling, **or correlated** all-ops / geo-mean regression), **or** the **DEV photograph stamp** is missing/RED (no ephemeral/CoW upload to DEV, or the receipt names production / live `~/.lastdb`), **or** the **durability canary** failed post-cutover (stale/unreadable sentinel — acked writes did not provably survive the restart), **or** the primary LaunchAgent is unloaded / is not the live pid after a nohup `--data-dir` start | **Do not upgrade**; file release-blocker; use the one retained rollback point only if recovery is required. The next safe-upgrade run reclaims it. A durability RED after cutover additionally means: audit recent writes across apps — rollback does not recover lost writes. An unloaded LaunchAgent additionally means: `launchctl bootstrap gui/$(id -u) <plist>` then `launchctl print` must show `state=running` and the live pid. |
 
@@ -405,6 +426,7 @@ kanban list   # must show real cards
 ## Never
 
 - `brew upgrade lastdb` as a one-liner without this skill when the user cares about data.
+- Run `safe-upgrade-lastdb.sh` without `--probe-only` outside a Loom execution.
 - Point candidate `--data-dir` at live `~/.lastdb` "just to see".
 - Upload a CoW/ephemeral photograph into the primary's **production** backup
   home, or treat a mock object-store "stamp" as the DEV photograph gate.
