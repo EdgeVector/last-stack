@@ -308,6 +308,7 @@ parse_loom_view() {
 import json, sys
 text = sys.stdin.read()
 status = ""
+state = ""
 ctx = {}
 exec_id = ""
 for i, line in enumerate(text.splitlines()):
@@ -315,6 +316,8 @@ for i, line in enumerate(text.splitlines()):
         exec_id = line.strip()
     if line.startswith("status:"):
         status = line.split(":", 1)[1].strip()
+    elif line.startswith("state:"):
+        state = line.split(":", 1)[1].strip()
     elif line.startswith("context."):
         key, _, rest = line.partition(":")
         key = key[len("context."):]
@@ -362,6 +365,7 @@ else:
 
 print(json.dumps({
     "status": status,
+    "state": state,
     "exec_id": exec_id,
     "outcome": str(ctx.get("outcome") or ""),
     "detail": str(ctx.get("detail") or ""),
@@ -543,12 +547,30 @@ if [ "$lrc" -ne 0 ] || [ -z "$view" ]; then
     rb="$(readback_view "$partial_id" 2>/dev/null || true)"
     healed_n=""
     rb_exec=""
+    rb_status=""
+    rb_state=""
     if [ -n "$rb" ]; then
       rb_parsed="$(printf '%s\n' "$rb" | parse_loom_view)"
       healed_n="$(printf '%s\n' "$rb_parsed" | json_field healed_n)"
       rb_exec="$(printf '%s\n' "$rb_parsed" | json_field exec_id)"
+      rb_status="$(printf '%s\n' "$rb_parsed" | json_field status)"
+      rb_state="$(printf '%s\n' "$rb_parsed" | json_field state)"
     fi
     [ -n "$rb_exec" ] || rb_exec="$partial_id"
+
+    if [ -z "$healed_n" ] && [ -n "$rb" ]; then
+      # The readback WORKED. A graph that has not reached its first heal yet
+      # carries neither `healed` nor `heal_results`, so healed_n is absent —
+      # that is a fact about the EXECUTION, not about the read. Reporting
+      # `readback=unavailable` here sent operators to look for a broken loom
+      # when `loom show` answers in ~30 ms and names where the graph is
+      # parked. Say what was read.
+      det="exceptions=${n} healed=unknown loom-timeout=${TIMEOUT_SEC}s readback=live exec-status=${rb_status:-unknown} exec-state=${rb_state:-unknown}"
+      log "loom readback live: exec ${rb_exec} status=${rb_status:-unknown} state=${rb_state:-unknown}; no heal count written yet"
+      write_stamp timed-out "$rb_exec" "$det" "$KEY" "error"
+      emit_result error "$det"
+      exit 3
+    fi
 
     if [ -z "$healed_n" ]; then
       # Unmeasured. Say so — printing 0 here is what made a working healer
