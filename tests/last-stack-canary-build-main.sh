@@ -52,7 +52,24 @@ cat >"$stub_bin/lastdbd" <<BIN
 #!/usr/bin/env bash
 printf 'lastdbd 0.99.0-1-g${MAIN_OID:0:9}\n'
 BIN
+
+# A historical lastdb+lastdbd pair is not a complete restore-probe stage.
 chmod +x "$stub_bin/lastdb" "$stub_bin/lastdbd"
+set +e
+incomplete_out="$(
+  LAST_STACK_CANARY_BUILD_BIN_DIR="$stub_bin" \
+  "$CLI" --skip-build --json 2>&1
+)"
+incomplete_rc=$?
+set -e
+[ "$incomplete_rc" -ne 0 ]
+printf '%s\n' "$incomplete_out" | grep -q 'lastdb_restore_probe'
+
+cat >"$stub_bin/lastdb_restore_probe" <<'BIN'
+#!/usr/bin/env bash
+exit 0
+BIN
+chmod +x "$stub_bin/lastdb" "$stub_bin/lastdbd" "$stub_bin/lastdb_restore_probe"
 
 out="$(
   LAST_STACK_CANARY_BUILD_BIN_DIR="$stub_bin" \
@@ -61,6 +78,8 @@ out="$(
 [ "$(printf '%s\n' "$out" | jq -r '.status')" = "built" ]
 [ "$(printf '%s\n' "$out" | jq -r '.rebuilt')" = "true" ]
 [ -x "$builds/$MAIN_OID/lastdbd" ]
+[ -x "$builds/$MAIN_OID/lastdb" ]
+[ -x "$builds/$MAIN_OID/lastdb_restore_probe" ]
 [ -f "$builds/$MAIN_OID/manifest.json" ]
 man_oid="$(jq -r .source_git_oid "$builds/$MAIN_OID/manifest.json")"
 [ "$man_oid" = "$MAIN_OID" ]

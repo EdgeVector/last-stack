@@ -6,7 +6,8 @@
 #
 # Stages under:
 #   ~/.local/state/last-stack/canary-builds/<full-oid>/
-#     lastdb, lastdbd, manifest.json, (optional) lastdb-*.tar.gz + .manifest.json
+#     lastdb, lastdbd, lastdb_restore_probe, manifest.json,
+#     (optional) lastdb-*.tar.gz + .manifest.json
 #
 # Never touches the primary. Never publishes brew. Never uses GitHub as SoT.
 set -euo pipefail
@@ -32,7 +33,7 @@ Env:
   LAST_STACK_CANARY_FETCH_MAIN      1 (default) fetch origin main before resolve
   LAST_STACK_FORGE_GIT              forge-git wrapper (default last-stack-forge-git)
   LAST_STACK_CANARY_CARGO_CMD       full cargo command override
-  LAST_STACK_CANARY_BUILD_BIN_DIR   with --skip-build: dir with lastdb/lastdbd
+  LAST_STACK_CANARY_BUILD_BIN_DIR   with --skip-build: dir with all three binaries
   LAST_STACK_CANARY_BUILD_KEEP      max staged OIDs to keep (default 5)
   LAST_STACK_CANARY_TARGET          package triple (default aarch64-apple-darwin)
 EOF
@@ -75,7 +76,7 @@ FETCH_MAIN="${LAST_STACK_CANARY_FETCH_MAIN:-1}"
 FORGE_GIT="${LAST_STACK_FORGE_GIT:-last-stack-forge-git}"
 KEEP="${LAST_STACK_CANARY_BUILD_KEEP:-5}"
 TARGET="${LAST_STACK_CANARY_TARGET:-aarch64-apple-darwin}"
-CARGO_CMD="${LAST_STACK_CANARY_CARGO_CMD:-cargo build --release -p lastdb_node --bin lastdb --bin lastdbd}"
+CARGO_CMD="${LAST_STACK_CANARY_CARGO_CMD:-cargo build --release -p lastdb_node --bin lastdb --bin lastdbd --bin lastdb_restore_probe}"
 
 # routinesd dispatch shells carry a stripped PATH without ~/.cargo/bin, so the
 # default CARGO_CMD dies with exit 127 before the build starts.
@@ -118,6 +119,7 @@ stage_is_current() {
   local dir="$1" oid="$2"
   [ -x "$dir/lastdbd" ] || return 1
   [ -x "$dir/lastdb" ] || return 1
+  [ -x "$dir/lastdb_restore_probe" ] || return 1
   local man=""
   if [ -f "$dir/manifest.json" ]; then
     man="$dir/manifest.json"
@@ -239,8 +241,9 @@ if [ "$skip_build" -eq 1 ]; then
   if [ -z "$bin_dir" ]; then
     bin_dir="$WORKDIR/target/release"
   fi
-  [ -x "$bin_dir/lastdbd" ] && [ -x "$bin_dir/lastdb" ] || \
-    die "--skip-build requires lastdb+lastdbd under $bin_dir (or LAST_STACK_CANARY_BUILD_BIN_DIR)"
+  [ -x "$bin_dir/lastdbd" ] && [ -x "$bin_dir/lastdb" ] && \
+    [ -x "$bin_dir/lastdb_restore_probe" ] || \
+    die "--skip-build requires lastdb+lastdbd+lastdb_restore_probe under $bin_dir (or LAST_STACK_CANARY_BUILD_BIN_DIR)"
 else
   ensure_worktree "$main_oid"
   log "building in $WORKDIR: $CARGO_CMD"
@@ -251,6 +254,7 @@ fi
 
 [ -x "$bin_dir/lastdb" ] || die "missing $bin_dir/lastdb after build"
 [ -x "$bin_dir/lastdbd" ] || die "missing $bin_dir/lastdbd after build"
+[ -x "$bin_dir/lastdb_restore_probe" ] || die "missing $bin_dir/lastdb_restore_probe after build"
 
 lastdb_ver="$("$bin_dir/lastdb" --version 2>/dev/null | awk '{print $NF}')"
 lastdbd_ver="$("$bin_dir/lastdbd" --version 2>/dev/null | awk '{print $NF}')"
@@ -278,7 +282,8 @@ tmp_stage="$(mktemp -d "${TMPDIR:-/tmp}/canary-stage.XXXXXX")"
 trap 'rm -rf "$tmp_stage"' EXIT
 cp "$bin_dir/lastdb" "$tmp_stage/lastdb"
 cp "$bin_dir/lastdbd" "$tmp_stage/lastdbd"
-chmod +x "$tmp_stage/lastdb" "$tmp_stage/lastdbd"
+cp "$bin_dir/lastdb_restore_probe" "$tmp_stage/lastdb_restore_probe"
+chmod +x "$tmp_stage/lastdb" "$tmp_stage/lastdbd" "$tmp_stage/lastdb_restore_probe"
 write_simple_manifest "$tmp_stage/manifest.json" "$main_oid" "$lastdb_ver" "$lastdbd_ver"
 
 # Optional full Homebrew-shaped package (for promote-execute)
@@ -311,6 +316,8 @@ mkdir -p "$stage_dir"
 cp -a "$tmp_stage"/. "$stage_dir"/
 # ensure dogfood finds executables at stage root
 [ -x "$stage_dir/lastdbd" ] || die "stage missing lastdbd after copy"
+[ -x "$stage_dir/lastdb" ] || die "stage missing lastdb after copy"
+[ -x "$stage_dir/lastdb_restore_probe" ] || die "stage missing lastdb_restore_probe after copy"
 [ -f "$stage_dir/manifest.json" ] || write_simple_manifest "$stage_dir/manifest.json" "$main_oid" "$lastdb_ver" "$lastdbd_ver"
 
 prune_old_stages "$BUILDS_DIR" "$KEEP"

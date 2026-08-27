@@ -242,7 +242,7 @@ def require_met(token: str, args: argparse.Namespace) -> tuple[bool, str]:
             return False, "need_build"
         try:
             proc = subprocess.run(
-                [resolver, "--json", "--allow-newest", "--allow-current"],
+                [resolver, "--json", "--allow-newest", "--allow-current", "--allow-daemon-only"],
                 check=False,
                 capture_output=True,
                 text=True,
