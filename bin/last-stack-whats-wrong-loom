@@ -289,7 +289,7 @@ esac
 # (max_outbox_entries) and agent rate limits are NOT retried.
 is_transient_lastdb_flap() {
   printf '%s' "${1:-}" | grep -Eiq \
-    'persist_queue_full|persist queue full|retry after drain|"retryable":[[:space:]]*true|service_timeout|node did not respond|too many concurrent reads|uds_connection_limit|connection refused|ECONNRESET|temporarily at capacity' \
+    'persist_queue_full|persist queue full|retry after drain|"retryable":[[:space:]]*true|service_timeout|node did not respond|too many concurrent reads|uds_connection_limit|connection refused|ECONNRESET|EPIPE|[Bb]roken pipe|os error 32|temporarily at capacity' \
     || return 1
   if printf '%s' "${1:-}" | grep -Eiq 'max_outbox_entries|outbox.?full'; then
     return 1

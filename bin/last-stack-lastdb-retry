@@ -67,7 +67,7 @@ fi
 is_transient_flap() {
   local text="$1"
   printf '%s' "$text" | grep -Eiq \
-    'service_timeout|node did not respond|too many concurrent reads|uds_connection_limit|connection refused|Was there a typo in the url or port|ECONNRESET|socket.*(gone|unavailable|unreachable)|temporarily at capacity|resource has been exhausted|persist_queue_full|persist queue full|retry after drain|"retryable":[[:space:]]*true' \
+    'service_timeout|node did not respond|too many concurrent reads|uds_connection_limit|connection refused|Was there a typo in the url or port|ECONNRESET|EPIPE|[Bb]roken pipe|os error 32|socket.*(gone|unavailable|unreachable)|temporarily at capacity|resource has been exhausted|persist_queue_full|persist queue full|retry after drain|"retryable":[[:space:]]*true' \
     || return 1
   # Structural write reject — do not thrash
   if printf '%s' "$text" | grep -Eiq 'max_outbox_entries|lastdb-sync-outbox-full|outbox.?full'; then

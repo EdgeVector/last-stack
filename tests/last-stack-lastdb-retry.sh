@@ -128,5 +128,30 @@ set +e
 set -e
 assert "retryable:false not retried (1 attempt)" test "$(cat "$RETRY_COUNT_FILE")" = "1"
 
+# 7) a broken pipe on the unix socket IS retried.
+#    2026-08-27T21:38Z: `last-stack-whats-wrong` lost a whole hourly heal pass
+#    to one line — `Error: Broken pipe (os error 32)` from `loom run`, rc=1,
+#    reported as `exceptions=8 healed=0 loom-run-failed rc=1`. A broken pipe on
+#    the UDS is the same family as ECONNRESET, which this matcher already
+#    treats as transient; `loom ping` answered ok immediately afterwards. The
+#    Rust wording carries no errno name, so match the text AND `os error 32`.
+cat >"$tmpdir/broken_pipe.sh" <<'SH'
+#!/usr/bin/env bash
+n=$(cat "$RETRY_COUNT_FILE" 2>/dev/null || echo 0)
+n=$((n + 1))
+printf '%s\n' "$n" >"$RETRY_COUNT_FILE"
+if [ "$n" -lt 2 ]; then
+  echo 'Error: Broken pipe (os error 32)' >&2
+  exit 1
+fi
+echo ok
+SH
+chmod +x "$tmpdir/broken_pipe.sh"
+export RETRY_COUNT_FILE="$tmpdir/count6"
+assert "retries a broken pipe then succeeds" \
+  "$BIN" --attempts 3 --sleep-ms 50 -- "$tmpdir/broken_pipe.sh"
+assert "broken pipe took 2 attempts" test "$(cat "$RETRY_COUNT_FILE")" = "2"
+
+
 echo "PASS=$pass FAIL=$fail"
 test "$fail" -eq 0
