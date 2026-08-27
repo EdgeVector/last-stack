@@ -18,12 +18,14 @@ set -euo pipefail
 repo="last-stack"
 context="ci-required"
 ps_file=""
+launchctl_file=""
 json=0
 
 usage() {
   cat >&2 <<'EOF'
 usage: last-stack-lastgit-ci-coverage [--repo last-stack] [--context ci-required]
-                                      [--ps-file PATH] [--json]
+                                      [--ps-file PATH] [--launchctl-file PATH]
+                                      [--json]
 EOF
 }
 
@@ -32,6 +34,7 @@ while [ "$#" -gt 0 ]; do
     --repo) repo="${2:-}"; shift 2 ;;
     --context) context="${2:-}"; shift 2 ;;
     --ps-file) ps_file="${2:-}"; shift 2 ;;
+    --launchctl-file) launchctl_file="${2:-}"; shift 2 ;;
     --json) json=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown arg: $1" >&2; usage; exit 2 ;;
@@ -44,9 +47,13 @@ if [ -z "$repo" ] || [ -z "$context" ]; then
 fi
 
 ps_tmp=""
+launchctl_tmp=""
 cleanup_ps_tmp() {
   if [ -n "$ps_tmp" ]; then
     rm -f "$ps_tmp"
+  fi
+  if [ -n "$launchctl_tmp" ]; then
+    rm -f "$launchctl_tmp"
   fi
 }
 trap cleanup_ps_tmp EXIT
@@ -55,13 +62,22 @@ if [ -n "$ps_file" ]; then
   trap - EXIT
 else
   ps_tmp="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack-ci-coverage.XXXXXX")"
-  ps -axww -o pid=,command= >"$ps_tmp" 2>/dev/null || true
+  ps -axww -o pid=,command= >"$ps_tmp" 2>/dev/null || : >"$ps_tmp"
+fi
+
+if [ -n "$launchctl_file" ]; then
+  launchctl_tmp="$launchctl_file"
+elif [ -z "$ps_file" ] && command -v launchctl >/dev/null 2>&1; then
+  launchctl_tmp="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack-ci-launchctl.XXXXXX")"
+  launchctl print "gui/$(id -u)/com.edgevector.lastgit-forge-primary" \
+    >"$launchctl_tmp" 2>/dev/null || : >"$launchctl_tmp"
 fi
 
 export COVERAGE_REPO="$repo"
 export COVERAGE_CONTEXT="$context"
 export COVERAGE_JSON="$json"
 export COVERAGE_PS_FILE="$ps_tmp"
+export COVERAGE_LAUNCHCTL_FILE="$launchctl_tmp"
 python3 - <<'PY'
 import json
 import os
@@ -71,6 +87,7 @@ repo = os.environ["COVERAGE_REPO"]
 want_context = os.environ["COVERAGE_CONTEXT"]
 want_json = os.environ.get("COVERAGE_JSON") == "1"
 ps_path = os.environ["COVERAGE_PS_FILE"]
+launchctl_path = os.environ.get("COVERAGE_LAUNCHCTL_FILE", "")
 default_context = "ci-required"
 
 def tokens(line):
@@ -124,6 +141,7 @@ def pid_and_cmd(line):
     return pid, cmd
 
 forge = []
+launchd_forge = []
 repo_watch = []
 ref_watch = []
 
@@ -161,12 +179,28 @@ for raw in lines:
         else:
             repo_watch.append(row)
 
-covered_by_forge = bool(forge)
+if launchctl_path:
+    with open(launchctl_path, encoding="utf-8") as fh:
+        launchctl_text = fh.read()
+    if (
+        "com.edgevector.lastgit-forge-primary" in launchctl_text
+        and "state = running" in launchctl_text
+        and ".lastgit/forge-run.sh" in launchctl_text
+    ):
+        launchd_forge.append({
+            "label": "com.edgevector.lastgit-forge-primary",
+            "scope": "all",
+        })
+
+covered_by_forge = bool(forge or launchd_forge)
 duplicate = covered_by_forge and bool(repo_watch)
 orphan_only = (not covered_by_forge) and bool(repo_watch)
 covered = covered_by_forge or orphan_only
 if covered_by_forge:
-    supervisor = "forge-run-all" if any(row["scope"] == "all" for row in forge) else "forge-run-repos"
+    if forge:
+        supervisor = "forge-run-all" if any(row["scope"] == "all" for row in forge) else "forge-run-repos"
+    else:
+        supervisor = "launchd-forge-primary"
 elif orphan_only:
     supervisor = "orphan-ci-watch"
 else:
@@ -193,6 +227,7 @@ payload = {
     "supervisor": supervisor,
     "duplicate_repo_watch": duplicate,
     "forge": forge,
+    "launchd_forge": launchd_forge,
     "repo_watch": repo_watch,
     "ref_watch": ref_watch,
     "detail": detail,
