@@ -9,6 +9,12 @@
 #   - rate-limit / 429 (agent must stop)
 #   - claim_conflict / successful non-zero business outcomes
 #
+# persist_queue_full IS transient. The node answers it with
+# `"retryable":true` and `retry after drain`, and the queue drains on its own.
+# It was missing from the matcher until 2026-08-27, so a caller that asked for
+# 30 attempts got exactly one
+# (papercut-last-stack-lastdb-retry-does-not-match-persist-queue-full).
+#
 # Exit: propagates the last command exit code. On final failure after retries
 # still returns that exit code (caller decides noop vs error).
 
@@ -61,7 +67,7 @@ fi
 is_transient_flap() {
   local text="$1"
   printf '%s' "$text" | grep -Eiq \
-    'service_timeout|node did not respond|too many concurrent reads|uds_connection_limit|connection refused|Was there a typo in the url or port|ECONNRESET|socket.*(gone|unavailable|unreachable)|temporarily at capacity|resource has been exhausted' \
+    'service_timeout|node did not respond|too many concurrent reads|uds_connection_limit|connection refused|Was there a typo in the url or port|ECONNRESET|socket.*(gone|unavailable|unreachable)|temporarily at capacity|resource has been exhausted|persist_queue_full|persist queue full|retry after drain|"retryable":[[:space:]]*true' \
     || return 1
   # Structural write reject — do not thrash
   if printf '%s' "$text" | grep -Eiq 'max_outbox_entries|lastdb-sync-outbox-full|outbox.?full'; then

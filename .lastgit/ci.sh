@@ -170,6 +170,11 @@ bash tests/last-stack-pickup-zsh-timeout.sh
 bash tests/last-stack-portal-live-checkout.sh
 bash tests/last-stack-pipeline-deploy-scan.sh
 bash tests/last-stack-whats-wrong-loom.sh
+# The shared LastDB retry matcher decides whether a routine survives node
+# backpressure. A silent narrowing of it turns every transient 503 into a
+# red routine, so the fixture belongs in the required gate, not the
+# LAST_STACK_CI_FULL suite. It runs in about a second (no node, no sleep).
+bash tests/last-stack-lastdb-retry.sh
 bash tests/last-stack-whats-wrong-routine.sh
 bash tests/last-stack-forge-dead-trigger.sh
 bash tests/last-stack-forge-api.sh
