@@ -186,11 +186,14 @@ prose mistakes) — clear the card field instead if the slug is garbage.
 ### 5. Refresh dashboard
 
 ```bash
-timeout 300 "$dash_bin" \
+timeout 900 "$dash_bin" \
   --put-brain \
   --html "${NORTH_STAR_HTML:-$HOME/code/edgevector/north-star-dashboard.html}" \
   --stdout none
 ```
+
+The 15-minute command budget stays inside the hygiene routine's 30-minute run
+budget and gives a loaded database three times the prior refresh budget.
 
 If this refresh times out or reports transient busy-node/backpressure after the
 detected hygiene writes already succeeded, confirm a previous dashboard brain

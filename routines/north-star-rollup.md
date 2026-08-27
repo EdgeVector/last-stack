@@ -71,11 +71,13 @@ Brain record (stable):
    SAMPLE, not a census). On busy-node errors, EXIT with noop.
 2. **Regenerate.** Run:
    ```bash
-   timeout 300 "$dash_bin" \
+   timeout 900 "$dash_bin" \
      --put-brain \
      --html "$HOME/code/edgevector/north-star-dashboard.html" \
      --stdout none
    ```
+   This 15-minute command budget leaves five minutes in the routine's
+   20-minute run budget for confirmation, close-out, and the final heartbeat.
    The script:
    - collects board state from the board
    - point-reads brain projects for each card `north_star` slug (plus known

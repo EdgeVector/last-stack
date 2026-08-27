@@ -53,11 +53,13 @@ Read the skill file fully before acting:
    confirmed mistags → refresh dashboard with `--put-brain --html`).
    Wrap the final dashboard refresh in a command budget:
    ```bash
-   timeout 300 "$dash_bin" \
+   timeout 900 "$dash_bin" \
      --put-brain \
      --html "${NORTH_STAR_HTML:-$HOME/code/edgevector/north-star-dashboard.html}" \
      --stdout none
    ```
+   The 15-minute command budget stays inside the routine's 30-minute run
+   budget and gives a loaded database three times the prior refresh budget.
    If the dashboard refresh times out or reports transient busy-node/backpressure
    after all detected hygiene writes already succeeded, do **not** convert the
    hygiene pass to `error`. Verify the prior dashboard brain record or HTML
