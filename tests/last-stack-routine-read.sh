@@ -208,7 +208,7 @@ if ! grep -Fq "There is no \`review\` column" <<<"$worktree_cleanup_prompt" ||
 fi
 
 north_star_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" north-star-rollup)"
-if ! grep -Fq 'timeout 300 "$dash_bin"' <<<"$north_star_prompt" ||
+if ! grep -Fq 'timeout 900 "$dash_bin"' <<<"$north_star_prompt" ||
    ! grep -Fq "reason=dashboard-timeout-prior-snapshot" <<<"$north_star_prompt"; then
   echo "expected north-star-rollup to budget dashboard refresh and soft-noop intact snapshot timeouts" >&2
   exit 1
@@ -223,7 +223,7 @@ if ! grep -Fq 's/^\*\*Generated:\*\*[[:space:]]*`\([^`]*\)`.*/\1/p' <<<"$north_s
 fi
 
 north_star_hygiene_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" north-star-hygiene)"
-if ! grep -Fq 'timeout 300 "$dash_bin"' <<<"$north_star_hygiene_prompt" ||
+if ! grep -Fq 'timeout 900 "$dash_bin"' <<<"$north_star_hygiene_prompt" ||
    ! grep -Fq "reason=dashboard-refresh-timeout-prior-snapshot" <<<"$north_star_hygiene_prompt"; then
   echo "expected north-star-hygiene to budget dashboard refresh and keep refresh-only timeouts out of error" >&2
   exit 1
