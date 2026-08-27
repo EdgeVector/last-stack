@@ -45,12 +45,13 @@
 #     RED retains it temporarily and the next run reclaims it before cloning.
 #
 # Usage:
-#   safe-upgrade-lastdb.sh                  # resolve → probe → live if green
 #   safe-upgrade-lastdb.sh --probe-only     # rollback point + probe only (no live install)
-#   safe-upgrade-lastdb.sh --yes            # no confirm prompt before live cutover
-#   safe-upgrade-lastdb.sh --candidate /path/to/lastdbd
+#   safe-upgrade-lastdb.sh --candidate /path/to/lastdbd --probe-only
 #   safe-upgrade-lastdb.sh --version 0.22.8 # fetch that tap release tarball
 #   safe-upgrade-lastdb.sh --check-dev-stamp  # refuse/allow live based on DEV photograph receipt only
+#
+# Live cutovers run only as a Loom lastdb-safe-upgrade graph node. Use
+# last-stack-safe-upgrade-loom --candidate /path/to/lastdbd.
 # Env (ephemeral rollback):
 #   LASTDB_ROLLBACK_ROOT=<path>    # defaults under TMPDIR, never under $HOME
 #   LASTDB_ROLLBACK_TTL_HOURS=24   # RED retention contract; next run reclaims
@@ -163,6 +164,13 @@ done
 log() { printf '[safe-upgrade] %s\n' "$*"; }
 die() { printf '[safe-upgrade] ERROR: %s\n' "$*" >&2; exit 1; }
 warn() { printf '[safe-upgrade] WARN: %s\n' "$*" >&2; }
+
+if [ "$PROBE_ONLY" -eq 0 ] && [ "$CHECK_DEV_STAMP" -eq 0 ]; then
+  [ "${LASTDB_SAFE_UPGRADE_VIA_LOOM:-0}" = "1" ] \
+    || die "live cutover requires the Loom lastdb-safe-upgrade graph; use last-stack-safe-upgrade-loom --candidate PATH"
+  [ -n "${LOOM_EXEC_ID:-}" ] \
+    || die "live cutover requires a Loom execution id; direct driver bypass is refused"
+fi
 
 # An unloaded primary is a total factory outage — brain, board, Situations,
 # LastGit CI and every routine go dark at once — so it pages instead of only
@@ -1513,7 +1521,7 @@ if [ "$PROBE_ONLY" -eq 1 ]; then
   echo "ROLLBACK: released (probe GREEN; primary untouched)"
   echo "RSS:     peak_mb=${PROBE_RSS_MB} limit_mb=$(resolve_rss_limit_mb) fail_at_mb=$(rss_fail_threshold_mb "$(resolve_rss_limit_mb)")"
   echo "LATENCY: cold_point=${CAND_LAT_COLD_POINT_MS}ms(base ${BASE_LAT_COLD_POINT_MS}ms) cold_scan=${CAND_LAT_COLD_SCAN_MS}ms(base ${BASE_LAT_COLD_SCAN_MS}ms) hot_point=${CAND_LAT_POINT_MS}ms(base ${BASE_LAT_POINT_MS}ms) hot_scan=${CAND_LAT_SCAN_MS}ms(base ${BASE_LAT_SCAN_MS}ms) hot_write=${CAND_LAT_WRITE_MS}ms(base ${BASE_LAT_WRITE_MS}ms) boot=${CAND_BOOT_SECS}s(base ${BASE_BOOT_SECS:-?}s)"
-  echo "NEXT:    re-run without --probe-only (and --yes if non-interactive) for venue-aware live cutover"
+  echo "NEXT:    run last-stack-safe-upgrade-loom --candidate $CANDIDATE_BIN --source-git-oid <full-fold-commit>"
   exit 0
 fi
 

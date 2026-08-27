@@ -1,6 +1,6 @@
 {
   "name": "lastdb-safe-upgrade",
-  "version": "1",
+  "version": "2",
   "start_at": "PROBE",
   "max_depth": 1,
   "node_budget": 20,
@@ -27,6 +27,7 @@
       "path": "verdict",
       "map": {
         "green": "CUTOVER",
+        "current": "DONE",
         "red": "FAILED",
         "blocked": "FAILED"
       },

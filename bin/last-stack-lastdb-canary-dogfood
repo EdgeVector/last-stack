@@ -55,8 +55,24 @@ def _resolve_safe_upgrade() -> Path:
             return c
     return ROOT / "skills" / "lastdb-safe-upgrade" / "scripts" / "safe-upgrade-lastdb.sh"
 
+
+def _resolve_safe_upgrade_loom() -> Path:
+    env = os.environ.get("LAST_STACK_CANARY_SAFE_UPGRADE_LOOM")
+    if env:
+        return Path(env)
+    for candidate in (
+        Path(__file__).resolve().parent / "last-stack-safe-upgrade-loom",
+        HOME / ".local" / "bin" / "last-stack-safe-upgrade-loom",
+        HOME / ".last-stack" / "bin" / "last-stack-safe-upgrade-loom",
+        ROOT / "bin" / "last-stack-safe-upgrade-loom",
+    ):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return ROOT / "bin" / "last-stack-safe-upgrade-loom"
+
 LEDGER = _resolve_ledger()
 SAFE_UPGRADE = _resolve_safe_upgrade()
+SAFE_UPGRADE_LOOM = _resolve_safe_upgrade_loom()
 
 # Mirrors last-stack-canary-pipeline.ALLOWED — keep the two in step.
 # `no_candidate` / `blocked_situation` are retryable non-verdicts: nothing was
@@ -107,10 +123,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     mode.add_argument(
         "--cutover",
         action="store_true",
-        help="probe-only then live safe-upgrade --yes on GREEN (mutates primary sidebin)",
+        help="run the Loom safe-upgrade graph (the graph probes before any primary cutover)",
     )
     parser.add_argument("--candidate", help="explicit lastdbd candidate binary")
     parser.add_argument("--version", help="explicit LastDB release version/tag (escape hatch)")
+    parser.add_argument("--source-git-oid", help="source commit for an explicit candidate")
     parser.add_argument("--state-dir", type=Path, default=None)
     parser.add_argument("--json", action="store_true")
     parser.add_argument(
@@ -265,6 +282,34 @@ def read_manifest_oid(path: Path) -> str:
     except Exception:
         return ""
     return str(data.get("source_git_oid") or data.get("git_oid") or "").strip()
+
+
+def explicit_candidate_source_oid(path: str, supplied: str | None) -> str:
+    if supplied:
+        return supplied.strip()
+    binary = Path(path)
+    for manifest in (
+        binary.parent / "manifest.json",
+        binary.parent / "lastdb-aarch64-apple-darwin.manifest.json",
+        binary.parent.parent / "manifest.json",
+        binary.parent.parent / "lastdb-aarch64-apple-darwin.manifest.json",
+    ):
+        oid = read_manifest_oid(manifest)
+        if oid:
+            return oid
+    match = _DESCRIBE_GSHA.search(binary_version(path))
+    if not match:
+        return ""
+    short = match.group(1)
+    mirror = fold_mirror()
+    if mirror is None:
+        return short
+    proc = run(
+        ["git", "-C", str(mirror), "rev-parse", "--verify", f"{short}^{{commit}}"],
+        check=False,
+    )
+    resolved = (proc.stdout or "").strip()
+    return resolved if proc.returncode == 0 else short
 
 
 def candidate_from_local_bin(
@@ -703,12 +748,14 @@ def missing_forge_main_candidate() -> Candidate:
 def resolve_candidate(args: argparse.Namespace) -> Candidate:
     if args.candidate:
         version = sanitize(binary_version(args.candidate))
+        source_oid = explicit_candidate_source_oid(args.candidate, args.source_git_oid)
         return Candidate(
             candidate=f"lastdb-explicit-{version}",
             version=version,
             source="explicit-candidate",
             note=f"path={args.candidate}",
             safe_upgrade_args=("--candidate", args.candidate),
+            source_git_oid=source_oid,
         )
     if args.version:
         version = sanitize(args.version)
@@ -718,6 +765,7 @@ def resolve_candidate(args: argparse.Namespace) -> Candidate:
             source="explicit-version",
             note=f"version={args.version}",
             safe_upgrade_args=("--version", version),
+            source_git_oid=(args.source_git_oid or "").strip(),
         )
 
     # 1) Local Forge fold main tip (canonical)
@@ -846,6 +894,32 @@ def run_safe_upgrade(args_list: list[str]) -> tuple[bool, str, int]:
     return green, combined, proc.returncode
 
 
+def run_safe_upgrade_loom(candidate: Candidate) -> tuple[bool, str, int]:
+    if len(candidate.safe_upgrade_args) != 2 or candidate.safe_upgrade_args[0] != "--candidate":
+        return False, "Loom live cutover requires an explicit candidate binary", 2
+    cmd = [
+        str(_resolve_safe_upgrade_loom()),
+        "--candidate",
+        candidate.safe_upgrade_args[1],
+        "--json",
+    ]
+    if candidate.source_git_oid:
+        cmd.extend(["--source-git-oid", candidate.source_git_oid])
+    proc = run(cmd, check=False)
+    combined = (proc.stdout or "") + (proc.stderr or "")
+    try:
+        payload = json.loads((proc.stdout or "").strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError):
+        payload = {}
+    green = (
+        proc.returncode == 0
+        and payload.get("outcome") == "ok"
+        and payload.get("status") == "succeeded"
+        and payload.get("graph") == "lastdb-safe-upgrade"
+    )
+    return green, combined, proc.returncode
+
+
 def mode_name(args: argparse.Namespace) -> str:
     if args.cutover:
         return "cutover"
@@ -919,6 +993,23 @@ def dogfood(args: argparse.Namespace) -> dict:
             primary_mutation=False,
         )
 
+    if args.cutover and (
+        len(candidate.safe_upgrade_args) != 2
+        or candidate.safe_upgrade_args[0] != "--candidate"
+    ):
+        final = advance_if_allowed(
+            args,
+            candidate,
+            "no_candidate",
+            "cutover: Loom requires an explicit candidate binary with source evidence",
+        )
+        return base_result(
+            mode="cutover",
+            state=final,
+            safe_upgrade="not-run-loom-requires-candidate",
+            primary_mutation=False,
+        )
+
     if not args.skip_situation_preflight and not situations_clear():
         final = advance_if_allowed(
             args,
@@ -937,7 +1028,63 @@ def dogfood(args: argparse.Namespace) -> dict:
             "primary_mutation": False,
         }
 
-    # Always probe first for live and cutover.
+    # Every primary change goes through the Loom safe-upgrade graph. The graph
+    # owns the ancestry checks, probe, second ancestry check, and cutover.
+    if args.cutover:
+        cut_green, _cut_out, cut_rc = run_safe_upgrade_loom(candidate)
+        observed = live_version()
+        if cut_green:
+            note = f"cutover: Loom safe-upgrade green rc={cut_rc} live={observed or 'unknown'}"
+            final = advance_if_allowed(args, candidate, "dogfood_green", note)
+            if observed:
+                dog_cmd = ledger_base(args) + [
+                    "dogfood",
+                    "--sha",
+                    candidate.candidate,
+                    "--observed-sha",
+                    observed,
+                    "--version",
+                    candidate.version,
+                    "--source",
+                    candidate.source,
+                ]
+                if candidate.source_git_oid:
+                    dog_cmd.extend(["--source-git-oid", candidate.source_git_oid])
+                run(dog_cmd, check=False)
+            return {
+                "candidate": candidate.candidate,
+                "version": candidate.version,
+                "source": candidate.source,
+                "mode": "cutover",
+                "state": final,
+                "safe_upgrade": "loom-cutover-green",
+                "safe_upgrade_args": list(candidate.safe_upgrade_args),
+                "safe_upgrade_rc": cut_rc,
+                "primary_mutation": True,
+                "live_version": observed or None,
+            }
+
+        final = advance_if_allowed(
+            args,
+            candidate,
+            "dogfood_red",
+            f"cutover: Loom safe-upgrade red rc={cut_rc}",
+        )
+        return {
+            "candidate": candidate.candidate,
+            "version": candidate.version,
+            "source": candidate.source,
+            "mode": "cutover",
+            "state": final,
+            "safe_upgrade": "loom-cutover-red",
+            "safe_upgrade_args": list(candidate.safe_upgrade_args),
+            "safe_upgrade_rc": cut_rc,
+            "primary_mutation": False,
+            "live_version": observed or None,
+        }
+
+    # Probe-only mode can call the driver directly because it cannot change the
+    # primary. Live cutovers cannot reach this branch.
     probe_args = ["--probe-only", *candidate.safe_upgrade_args]
     probe_green, _probe_out, probe_rc = run_safe_upgrade(probe_args)
     if not probe_green:
@@ -959,7 +1106,7 @@ def dogfood(args: argparse.Namespace) -> dict:
             "primary_mutation": False,
         }
 
-    if args.live and not args.cutover:
+    if args.live:
         final = advance_if_allowed(
             args,
             candidate,
@@ -979,60 +1126,7 @@ def dogfood(args: argparse.Namespace) -> dict:
             "live_version": live_version() or None,
         }
 
-    # cutover: probe green → live --yes
-    cut_args = ["--yes", *candidate.safe_upgrade_args]
-    cut_green, _cut_out, cut_rc = run_safe_upgrade(cut_args)
-    observed = live_version()
-    if cut_green:
-        note = f"cutover: live safe-upgrade green rc={cut_rc} live={observed or 'unknown'}"
-        final = advance_if_allowed(args, candidate, "dogfood_green", note)
-        # Stamp observed version for soak matching via advance note + dogfood command on pipeline
-        if observed:
-            dog_cmd = ledger_base(args) + [
-                "dogfood",
-                "--sha",
-                candidate.candidate,
-                "--observed-sha",
-                observed,
-                "--version",
-                candidate.version,
-                "--source",
-                candidate.source,
-            ]
-            if candidate.source_git_oid:
-                dog_cmd.extend(["--source-git-oid", candidate.source_git_oid])
-            run(dog_cmd, check=False)
-        return {
-            "candidate": candidate.candidate,
-            "version": candidate.version,
-            "source": candidate.source,
-            "mode": "cutover",
-            "state": final,
-            "safe_upgrade": "cutover-green",
-            "safe_upgrade_args": list(candidate.safe_upgrade_args),
-            "safe_upgrade_rc": cut_rc,
-            "primary_mutation": True,
-            "live_version": observed or None,
-        }
-
-    final = advance_if_allowed(
-        args,
-        candidate,
-        "dogfood_red",
-        f"cutover: live safe-upgrade red rc={cut_rc} (probe was green)",
-    )
-    return {
-        "candidate": candidate.candidate,
-        "version": candidate.version,
-        "source": candidate.source,
-        "mode": "cutover",
-        "state": final,
-        "safe_upgrade": "cutover-red",
-        "safe_upgrade_args": list(candidate.safe_upgrade_args),
-        "safe_upgrade_rc": cut_rc,
-        "primary_mutation": True,
-        "live_version": observed or None,
-    }
+    raise AssertionError("non-dry dogfood mode must select probe-only or cutover")
 
 
 def emit(result: dict, as_json: bool) -> None:

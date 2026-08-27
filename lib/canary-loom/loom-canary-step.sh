@@ -178,47 +178,6 @@ if step in ("BUILD_START", "BUILD_POLL", "BUILD_COLLECT", "SOAK", "PROMOTE"):
     print("PASS")
     raise SystemExit(0)
 
-if step == "PROBE":
-    cand = str(ctx.get("candidate") or "")
-    if not cand:
-        emit({"verdict": "red", "last_error": "no candidate"}, "canary-step PROBE no candidate")
-        raise SystemExit(0)
-    skill = os.path.expanduser(
-        "~/.last-stack/skills/lastdb-safe-upgrade/scripts/safe-upgrade-lastdb.sh"
-    )
-    p = run(["bash", skill, "--candidate", cand, "--probe-only"], timeout=7200)
-    text = (p.stdout or "") + "\n" + (p.stderr or "")
-    sys.stdout.write(p.stdout or "")
-    sys.stderr.write(p.stderr or "")
-    verdict = "green" if "VERDICT: GREEN" in text or "VERDICT: GREEN_PROBE_ONLY" in text else "red"
-    if exhausted() and verdict == "red":
-        verdict = "exhausted"
-    emit({"verdict": verdict, "probe_rc": p.returncode}, f"canary-step PROBE verdict={verdict}")
-    raise SystemExit(0)
-
-if step == "CUTOVER":
-    cand = str(ctx.get("candidate") or "")
-    skill = os.path.expanduser(
-        "~/.last-stack/skills/lastdb-safe-upgrade/scripts/safe-upgrade-lastdb.sh"
-    )
-    print('LOOM_EFFECT_INTENT:{"kind":"deploy","target":"lastdb-safe-upgrade"}')
-    p = run(["bash", skill, "--candidate", cand, "--yes"], timeout=3600)
-    sys.stdout.write(p.stdout or "")
-    sys.stderr.write(p.stderr or "")
-    if p.returncode != 0:
-        sys.exit(p.returncode)
-    print('LOOM_EFFECT_DONE:{"kind":"deploy","target":"lastdb-safe-upgrade"}')
-    emit({"cutover": "live"}, "canary-step CUTOVER live")
-    raise SystemExit(0)
-
-if step == "VERIFY":
-    p = run(["kanban", "list", "--column", "todo"], timeout=120)
-    if p.returncode != 0:
-        sys.stderr.write(p.stderr or "")
-        sys.exit(p.returncode)
-    emit({"verify": "live"}, "canary-step VERIFY live")
-    raise SystemExit(0)
-
 if step == "RETRY_PREP":
     nxt = attempt + 1
     heal_status = str(ctx.get("heal_status") or "")

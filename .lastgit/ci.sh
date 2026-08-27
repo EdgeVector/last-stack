@@ -91,6 +91,7 @@ bash tests/last-stack-why-stopped-loom.sh
 bash tests/last-stack-canary-red-heal-routine.sh
 bash tests/last-stack-canary-red-loom.sh
 bash tests/last-stack-canary-loom.sh
+bash tests/last-stack-lastdb-safe-upgrade-loom-only.sh
 # Class A must not fire on class-a-heal wrapper timeout when heal exits 0.
 bash tests/last-stack-why-stopped-class-a-timeout.sh
 bash tests/last-stack-lastdb-ops-offenders.sh
