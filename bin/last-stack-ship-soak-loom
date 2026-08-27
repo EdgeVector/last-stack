@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+# Start or resume one ship-soak execution. A repeated key returns and advances
+# the same Loom execution. The state record contains no graph input.
+set -euo pipefail
+
+APP=""
+KEY=""
+INPUT=""
+INPUT_FILE=""
+JSON=0
+QUIET=0
+DRY=0
+RESUME=0
+LIVE="${LAST_STACK_SHIP_SOAK_LIVE:-1}"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --app) APP="${2:-}"; shift 2 ;;
+    --key) KEY="${2:-}"; shift 2 ;;
+    --input) INPUT="${2:-}"; shift 2 ;;
+    --input-file) INPUT_FILE="${2:-}"; shift 2 ;;
+    --resume) RESUME=1; shift ;;
+    --json) JSON=1; shift ;;
+    --quiet|-q) QUIET=1; shift ;;
+    --dry-run) DRY=1; shift ;;
+    --live) LIVE=1; shift ;;
+    --no-live) LIVE=0; shift ;;
+    -h|--help)
+      sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    *) printf 'ship-soak-loom: unknown arg: %s\n' "$1" >&2; exit 2 ;;
+  esac
+done
+
+[ -n "$APP" ] || { printf 'ship-soak-loom: --app required\n' >&2; exit 2; }
+[ -n "$KEY" ] || { printf 'ship-soak-loom: --key required\n' >&2; exit 2; }
+if [ -n "$INPUT" ] && [ -n "$INPUT_FILE" ]; then
+  printf 'ship-soak-loom: use --input or --input-file, not both\n' >&2
+  exit 2
+fi
+if [ "$RESUME" -eq 0 ] && [ -z "$INPUT" ] && [ -z "$INPUT_FILE" ]; then
+  printf 'ship-soak-loom: a new run requires --input or --input-file\n' >&2
+  exit 2
+fi
+
+ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)"
+export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
+STATE_ROOT="${LAST_STACK_STATE_ROOT:-$HOME/.local/state/last-stack}"
+STATE_DIR="${LAST_STACK_SHIP_SOAK_STATE_DIR:-$STATE_ROOT/soak-loom/ship-soak}"
+
+log() { [ "$QUIET" -eq 1 ] || printf 'ship-soak-loom: %s\n' "$*" >&2; }
+
+key_digest() {
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$KEY" | shasum -a 256 | awk '{print $1}'
+  else
+    printf '%s' "$KEY" | sha256sum | awk '{print $1}'
+  fi
+}
+
+write_registration() {
+  local execution_id="$1" status="$2" state="$3" active="$4"
+  local path tmp
+  mkdir -p "$STATE_DIR"
+  path="$STATE_DIR/$(key_digest).json"
+  tmp="$(mktemp "$STATE_DIR/.registration.XXXXXX")"
+  jq -n \
+    --arg app "$APP" --arg key "$KEY" --arg execution_id "$execution_id" \
+    --arg status "$status" --arg state "$state" \
+    --arg updated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --argjson active "$active" \
+    '{schema_version:1, app:$app, key:$key, execution_id:$execution_id,
+      status:$status, state:$state, active:$active, updated_at:$updated_at}' \
+    > "$tmp"
+  mv "$tmp" "$path"
+}
+
+if [ "$DRY" -eq 1 ]; then
+  write_registration "" dry-run "" false
+  if [ "$JSON" -eq 1 ]; then
+    jq -cn --arg app "$APP" --arg key "$KEY" '{outcome:"noop", app:$app, key:$key, dry_run:true}'
+  else
+    log "dry-run app=$APP key=$KEY live=$LIVE"
+  fi
+  exit 0
+fi
+
+command -v jq >/dev/null 2>&1 || { log "jq not on PATH"; exit 3; }
+if ! command -v loom >/dev/null 2>&1; then
+  log "loom not on PATH"
+  exit 3
+fi
+if ! loom ping >/dev/null 2>&1; then
+  log "loom ping failed"
+  exit 3
+fi
+
+exe="$(command -v loom)"
+real="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$exe")"
+install_root="$(dirname "$(dirname "$real")")"
+defs=""
+scripts=""
+for cand in "${LOOM_SHIP_DEFS:-}" "$install_root/definitions"; do
+  [ -n "$cand" ] && [ -f "$cand/ship-soak.json" ] && [ -f "$cand/land-cr.json" ] \
+    && defs="$cand" && break
+done
+for cand in "${LOOM_SHIP_SCRIPTS:-}" "$install_root/scripts"; do
+  [ -n "$cand" ] && [ -f "$cand/loom-ship-soak-verify.sh" ] \
+    && [ -f "$cand/loom-land-cr-implement.sh" ] && scripts="$cand" && break
+done
+if [ -z "$defs" ] || [ -z "$scripts" ]; then
+  log "ship-soak definition or scripts not found"
+  exit 3
+fi
+
+export LOOM_SCRIPTS="$scripts"
+if [ "$LIVE" -eq 1 ]; then
+  export LOOM_LIVE=1
+else
+  unset LOOM_LIVE || true
+fi
+
+if [ "$RESUME" -eq 0 ]; then
+  loom publish "$defs/land-cr.json" >/dev/null
+  loom publish "$defs/ship-soak.json" >/dev/null
+fi
+
+if [ -n "$INPUT_FILE" ]; then
+  [ -f "$INPUT_FILE" ] || { log "input file not found: $INPUT_FILE"; exit 2; }
+  INPUT="$(<"$INPUT_FILE")"
+fi
+[ -n "$INPUT" ] || INPUT='{}'
+printf '%s\n' "$INPUT" | jq -e . >/dev/null || { log "input is not valid JSON"; exit 2; }
+
+log "loom run ship-soak --key $KEY"
+set +e
+view="$(loom run ship-soak --key "$KEY" --input "$INPUT" 2>&1)"
+rc=$?
+set -e
+execution_id="$(printf '%s\n' "$view" | awk '/^lx-[[:alnum:].-]+$/ {print; exit} /^id: / {sub(/^id: /, ""); print; exit}')"
+status="$(printf '%s\n' "$view" | awk -F': ' '/^status:/{print $2; exit}')"
+state="$(printf '%s\n' "$view" | awk -F': ' '/^state:/{print $2; exit}')"
+active=true
+case "$status" in
+  succeeded|failed|cancelled) active=false ;;
+esac
+if [ -n "$execution_id" ]; then
+  write_registration "$execution_id" "${status:-unknown}" "${state:-unknown}" "$active"
+fi
+
+outcome=ok
+if [ "$rc" -ne 0 ] || [ -z "$execution_id" ]; then
+  outcome=error
+fi
+case "$status" in failed|cancelled) outcome=error ;; esac
+if [ "$JSON" -eq 1 ]; then
+  jq -cn --arg outcome "$outcome" --arg app "$APP" --arg key "$KEY" \
+    --arg execution_id "$execution_id" --arg status "${status:-unknown}" \
+    --arg state "${state:-unknown}" \
+    '{outcome:$outcome, app:$app, key:$key, execution_id:$execution_id,
+      status:$status, state:$state}'
+else
+  log "SHIP_SOAK outcome=$outcome app=$APP key=$KEY execution=${execution_id:-unknown} status=${status:-unknown}"
+fi
+[ "$outcome" = ok ] || { printf '%s\n' "$view" >&2; exit 3; }
+exit 0

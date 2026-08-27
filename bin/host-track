@@ -1929,6 +1929,24 @@ kick_heal_soak() {
   return 0
 }
 
+kick_ship_soak_runs() {
+  # The Host Track tick is the sole scheduler for active ship-soak runs. The
+  # helper resumes only records for this app and applies its own hard bound.
+  local app="$1" runner
+  [ "${HOST_TRACK_SHIP_SOAK_RESUME:-1}" != "0" ] || return 0
+  runner="${HOST_TRACK_SHIP_SOAK_TICK_RUNNER:-}"
+  if [ -z "$runner" ]; then
+    runner="$(command -v last-stack-ship-soak-tick 2>/dev/null || true)"
+  fi
+  if [ -z "$runner" ] && [ -x "$ROOT/bin/last-stack-ship-soak-tick" ]; then
+    runner="$ROOT/bin/last-stack-ship-soak-tick"
+  fi
+  [ -n "$runner" ] && [ -x "$runner" ] || return 0
+  "$runner" --app "$app" --quiet \
+    || printf 'host-track: %s ship-soak resume failed (soak gate unchanged)\n' "$app" >&2
+  return 0
+}
+
 post_flip_watch_one() {
   # Probe the NEW current for post_flip_ticks ticks after a flip. Red rolls
   # current back to previous automatically, files the card, kicks heal.
@@ -2639,12 +2657,14 @@ soak_watch_cmd() {
       [ -n "$app" ] || continue
       soak_watch_one "$app" || failures=$((failures + 1))
       post_flip_watch_one "$app" || failures=$((failures + 1))
+      kick_ship_soak_runs "$app"
     done < <(list_apps)
     [ "$failures" -eq 0 ]
     return
   fi
   soak_watch_one "$app" || failures=$((failures + 1))
   post_flip_watch_one "$app" || failures=$((failures + 1))
+  kick_ship_soak_runs "$app"
   [ "$failures" -eq 0 ]
 }
 

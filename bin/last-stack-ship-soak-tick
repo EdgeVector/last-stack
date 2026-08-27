@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Resume each active ship-soak run for one Host Track app. The caller provides
+# the schedule. This helper has a hard per-tick bound.
+set -euo pipefail
+
+APP=""
+QUIET=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --app) APP="${2:-}"; shift 2 ;;
+    --quiet|-q) QUIET=1; shift ;;
+    -h|--help)
+      sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    *) printf 'ship-soak-tick: unknown arg: %s\n' "$1" >&2; exit 2 ;;
+  esac
+done
+[ -n "$APP" ] || { printf 'ship-soak-tick: --app required\n' >&2; exit 2; }
+
+ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)"
+STATE_ROOT="${LAST_STACK_STATE_ROOT:-$HOME/.local/state/last-stack}"
+STATE_DIR="${LAST_STACK_SHIP_SOAK_STATE_DIR:-$STATE_ROOT/soak-loom/ship-soak}"
+MAX="${LAST_STACK_SHIP_SOAK_TICK_MAX:-32}"
+case "$MAX" in ''|*[!0-9]*) printf 'ship-soak-tick: invalid tick bound: %s\n' "$MAX" >&2; exit 2 ;; esac
+[ "$MAX" -gt 0 ] || { printf 'ship-soak-tick: tick bound must be positive\n' >&2; exit 2; }
+
+log() { [ "$QUIET" -eq 1 ] || printf 'ship-soak-tick: %s\n' "$*" >&2; }
+
+runner="${LAST_STACK_SHIP_SOAK_RUNNER:-}"
+if [ -z "$runner" ]; then
+  runner="$(command -v last-stack-ship-soak-loom 2>/dev/null || true)"
+fi
+if [ -z "$runner" ] && [ -x "$ROOT/bin/last-stack-ship-soak-loom" ]; then
+  runner="$ROOT/bin/last-stack-ship-soak-loom"
+fi
+if [ -z "$runner" ] || [ ! -x "$runner" ]; then
+  log "ship-soak runner missing"
+  exit 3
+fi
+[ -d "$STATE_DIR" ] || exit 0
+
+seen=0
+failures=0
+for path in "$STATE_DIR"/*.json; do
+  [ -f "$path" ] || continue
+  [ "$seen" -lt "$MAX" ] || break
+  if ! jq -e --arg app "$APP" '.schema_version == 1 and .active == true and .app == $app' \
+    "$path" >/dev/null 2>&1; then
+    continue
+  fi
+  key="$(jq -r '.key // empty' "$path")"
+  [ -n "$key" ] || continue
+  seen=$((seen + 1))
+  "$runner" --app "$APP" --key "$key" --resume --quiet \
+    || failures=$((failures + 1))
+done
+log "app=$APP resumed=$seen failures=$failures max=$MAX"
+[ "$failures" -eq 0 ] || exit 3
+exit 0
