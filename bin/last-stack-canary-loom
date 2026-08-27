@@ -153,17 +153,46 @@ loom publish "$defs/lastdb-canary-release.json" >/dev/null
 input="$(OID="${OID:-}" python3 -c 'import json,os; print(json.dumps({"main_oid":os.environ.get("OID") or "","max_attempts":3},separators=(",",":")))')"
 
 log "loom run lastdb-canary-release --key $KEY"
-view="$(loom run lastdb-canary-release --key "$KEY" --input "$input" || true)"
+run_log_dir="${ROUTINES_RUN_DIR:-$(dirname "$STAMP")}"
+stdout_log="${LAST_STACK_CANARY_LOOM_STDOUT_LOG:-$run_log_dir/canary-loom.stdout.log}"
+stderr_log="${LAST_STACK_CANARY_LOOM_STDERR_LOG:-$run_log_dir/canary-loom.stderr.log}"
+mkdir -p "$(dirname "$stdout_log")" "$(dirname "$stderr_log")"
+set +e
+view="$(loom run lastdb-canary-release --key "$KEY" --input "$input" 2>"$stderr_log")"
+loom_rc=$?
+set -e
+printf '%s\n' "$view" > "$stdout_log"
+exec_id="$(printf '%s\n' "$view" | awk '/^lx-/{print; exit}')"
 status="$(printf '%s\n' "$view" | awk -F': ' '/^status:/{print $2; exit}')"
 state="$(printf '%s\n' "$view" | awk -F': ' '/^state:/{print $2; exit}')"
-det="key=${KEY} status=${status} state=${state}"
-oc="ok"
-[ "$status" = "succeeded" ] || [ "$status" = "waiting" ] || [ "$status" = "parked" ] || [ "$status" = "running" ] || oc="error"
-[ "$status" = "failed" ] && oc="error"
-write_stamp "${status:-unknown}" "$KEY" "$oc" "$det"
+rendered_status="${status:-unknown}"
+rendered_state="${state:-unknown}"
+det="exec=${exec_id:-none} key=${KEY} status=${rendered_status} state=${rendered_state} loom_rc=${loom_rc}"
+case "$status" in
+  succeeded|waiting|parked|running) oc="ok" ;;
+  *) oc="error" ;;
+esac
+[ "$loom_rc" -eq 0 ] || oc="error"
+if [ "$oc" = "error" ]; then
+  error_line="$(sed -n '1p' "$stderr_log" | tr '\r\n' '  ' | cut -c1-240)"
+  if [ -z "$error_line" ]; then
+    error_line="$(printf '%s\n' "$view" | awk '/^node .* failed:/{print; exit}' | cut -c1-240)"
+  fi
+  [ -z "$error_line" ] || det="$det error=$error_line"
+fi
+write_stamp "$rendered_status" "$KEY" "$oc" "$det"
 if [ "$JSON" -eq 1 ]; then
-  printf '{"outcome":"%s","detail":"%s","engine":"loom","key":"%s","status":"%s"}\n' \
-    "$oc" "$det" "$KEY" "$status"
+  OC="$oc" DT="$det" KY="$KEY" ST="$rendered_status" EX="${exec_id:-}" python3 -c '
+import json, os
+print(json.dumps({
+  "outcome": os.environ["OC"],
+  "detail": os.environ["DT"],
+  "engine": "loom",
+  "key": os.environ["KY"],
+  "status": os.environ["ST"],
+  "execution": os.environ["EX"],
+}, separators=(",", ":")))
+'
 else
   printf 'CANARY_LOOM outcome=%s %s\n' "$oc" "$det"
 fi
