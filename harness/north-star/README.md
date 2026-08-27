@@ -30,6 +30,7 @@ First line is `PASS`, `PASS-OFFLINE`, or `FAIL` for kanban DONE-WHEN matching.
 | exemem-cloud-account | redacted evidence contract via `EXEMEM_CLOUD_ACCOUNT_PROOF_EVIDENCE_FILE`, or CLI drive against `EXEMEM_CLOUD_ACCOUNT_LASTDB_HOME` (never `~/.lastdb`; never pays) | `lastdb cloud status` + `lastdb cloud account --json --no-open` on a throwaway connected home; upgrade is help-only (decision-2026-08-17: existing paid account, no fresh checkout) |
 | org-cloud-principal-membership | fixture-proven grant/list/presign/revoke/403/owner/E2E contract | two-principal live Org/Mini + storage-service dogfood using only LastSecrets locators |
 | lastdb-ideal-storage-shape | validates redacted CoW + dogfood evidence for proteins, backup, plane map, status, and fkanban coherence | same evidence contract; evidence collection remains CoW-first and primary-safe |
+| lastdb-io-free-commit-and-barrierless-purge | validates the Fold-generated isolated-copy evidence, warm apply-gate p99, reverse-index audit, and zero purge barriers | requires the same evidence to carry a PASS verdict after safe live cutover |
 
 ## Org cloud principal membership
 
