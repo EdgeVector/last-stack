@@ -240,15 +240,15 @@ fi
 # negative-fixture path and the hermetic prompt-doctor contract. Smoke remains
 # useful for local iteration, but it cannot be the only CI invocation.
 ci_script="$ROOT/.lastgit/ci.sh"
-grep -Fq 'bash tests/last-stack-lint-prompts.sh --ci' "$ci_script" || {
-  echo "required CI must invoke the full prompt-lint fixture path with --ci" >&2
+grep -Fq 'ci_test tests/last-stack-lint-prompts.sh --ci' "$ci_script" || {
+  echo "required CI must schedule the full prompt-lint fixture path with --ci" >&2
   exit 1
 }
-if grep -Fq 'bash tests/last-stack-lint-prompts.sh --smoke' "$ci_script"; then
+if grep -Eq '^(bash|ci_test) tests/last-stack-lint-prompts.sh --smoke$' "$ci_script"; then
   echo "required CI must not gate prompt lint with smoke-only coverage" >&2
   exit 1
 fi
-grep -Fq 'bash tests/last-stack-routines-prompt-doctor.sh' "$ci_script" || {
+grep -Fq 'ci_test tests/last-stack-routines-prompt-doctor.sh' "$ci_script" || {
   echo "required CI must execute the prompt-doctor red/green contract" >&2
   exit 1
 }
