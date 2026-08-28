@@ -14,6 +14,7 @@ LOCK_STALE_S="${LAST_STACK_READY_BUFFER_LOCK_STALE_S:-3600}"
 DRY_RUN=0
 JSON=0
 LOCK_HELD=0
+LOCK_RECLAIMED=0
 STATE_TMP=""
 
 usage() {
@@ -40,12 +41,15 @@ emit() {
       --arg ready "$ready" \
       --argjson threshold "$THRESHOLD" \
       --argjson cooldown_s "$COOLDOWN_S" \
+      --argjson lock_reclaimed "$LOCK_RECLAIMED" \
       '{result:$result,action:$action,detail:$detail,
         ready:(if $ready == "" then null else ($ready | tonumber) end),
-        threshold:$threshold,cooldown_s:$cooldown_s}'
+        threshold:$threshold,cooldown_s:$cooldown_s,
+        lock_reclaimed:($lock_reclaimed == 1)}'
   else
-    printf 'READY_BUFFER result=%s action=%s ready=%s threshold=%s detail=%s\n' \
-      "$result" "$action" "${ready:-unknown}" "$THRESHOLD" "$detail"
+    printf 'READY_BUFFER result=%s action=%s ready=%s threshold=%s lock_reclaimed=%s detail=%s\n' \
+      "$result" "$action" "${ready:-unknown}" "$THRESHOLD" \
+      "$LOCK_RECLAIMED" "$detail"
   fi
 }
 
@@ -122,6 +126,7 @@ if ! mkdir "$LOCK_DIR" 2>/dev/null; then
     emit ok none controller-busy "$ready"
     exit 0
   fi
+  LOCK_RECLAIMED=1
 fi
 LOCK_HELD=1
 printf '%s\n' "$$" >"$LOCK_DIR/pid"
