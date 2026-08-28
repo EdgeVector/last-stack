@@ -357,9 +357,8 @@ poll_fleet() {
 # CR merged, so a quiet repo stranded its last merge as main_unpublished
 # (papercut-post-merge-pass-certifies-previous-merge-quiet-repo-strands-tip).
 # A ref watcher cannot recover that tip after its cursor passes the merge event.
-# Instead, run one repo-scoped forge pass with fresh state. Its cold event read
-# includes the exact current main object, while existing terminal statuses make
-# every older event a cheap skip. Re-read the exact tip status before refresh.
+# Run the exact object directly instead. The command does not read or advance a
+# ref-event cursor. Re-read the exact tip status before refresh.
 
 CONVERGE="${LAST_STACK_POST_MERGE_CONVERGE:-1}"
 CONVERGE_AFTER="${LAST_STACK_POST_MERGE_CONVERGE_AFTER:-300}"
@@ -374,7 +373,7 @@ tip_seen_path() { printf '%s/%s.tip-seen\n' "$STATE_DIR" "$1"; }
 
 converge_one() {
   local repo="$1" app ht_app ht_status eligible tip state seen_file seen_tip seen_epoch now
-  local attempt_key attempts forge_state forge_rc current_tip
+  local attempt_key attempts ci_rc current_tip
   app="$(map_repo_to_app "$repo")"
   case "$app" in
     artifact:*) ht_app="${app#artifact:}" ;;
@@ -434,29 +433,25 @@ converge_one() {
     return 0
   fi
   if [ "$DRY_RUN" = 1 ]; then
-    log "DRY_RUN: would forge-run exact current tip repo=$repo tip=$tip (unpublished ${CONVERGE_AFTER}s+)"
+    log "DRY_RUN: would run ci-required for exact current tip repo=$repo tip=$tip (unpublished ${CONVERGE_AFTER}s+)"
     return 0
   fi
 
-  forge_state="$(mktemp -d "$STATE_DIR/converge-$repo.XXXXXX")"
-  log "converge $repo tip=$tip: unpublished for ${CONVERGE_AFTER}s+; fresh repo-scoped forge pass"
+  log "converge $repo tip=$tip: unpublished for ${CONVERGE_AFTER}s+; exact-object ci run"
   set +e
   if [ -n "$timeout_bin" ]; then
-    "$timeout_bin" "$((CONVERGE_TIMEOUT + 30))" lastgit forge run \
-      --repos "$repo" --context ci-required --once \
-      --max-concurrency 1 --max-per-repo-concurrency 1 \
+    "$timeout_bin" "$((CONVERGE_TIMEOUT + 30))" lastgit ci run \
+      --repo "$repo" --oid "$tip" --context ci-required \
       --timeout-ms "$((CONVERGE_TIMEOUT * 1000))" \
-      --state-dir "$forge_state" >>"$LOG" 2>&1
-    forge_rc=$?
+      --json >>"$LOG" 2>&1
+    ci_rc=$?
   else
-    lastgit forge run --repos "$repo" --context ci-required --once \
-      --max-concurrency 1 --max-per-repo-concurrency 1 \
+    lastgit ci run --repo "$repo" --oid "$tip" --context ci-required \
       --timeout-ms "$((CONVERGE_TIMEOUT * 1000))" \
-      --state-dir "$forge_state" >>"$LOG" 2>&1
-    forge_rc=$?
+      --json >>"$LOG" 2>&1
+    ci_rc=$?
   fi
   set -e
-  rm -rf "$forge_state"
 
   state="$(lastgit ci status "$tip" --repo "$repo" --json 2>/dev/null \
     | jq -r '.state // empty' 2>/dev/null || true)"
@@ -480,7 +475,7 @@ converge_one() {
       ;;
     *)
       attempts="$(bump_attempt "$repo" "$attempt_key")"
-      log "converge $repo: forge pass rc=$forge_rc left state=${state:-missing} attempt=$attempts/$MAX_ATTEMPTS"
+      log "converge $repo: exact ci run rc=$ci_rc left state=${state:-missing} attempt=$attempts/$MAX_ATTEMPTS"
       if [ "$attempts" -ge "$MAX_ATTEMPTS" ]; then
         log "GIVE_UP converge repo=$repo tip=$tip after $attempts attempts; status remains ${state:-missing}"
       fi
