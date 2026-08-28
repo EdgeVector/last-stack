@@ -183,6 +183,10 @@
           "target": "$HOME/.local/bin/last-stack-factory-ready-buffer-controller"
         },
         {
+          "source": "bin/last-stack-factory-ready-buffer-install",
+          "target": "$HOME/.local/bin/last-stack-factory-ready-buffer-install"
+        },
+        {
           "source": "bin/last-stack-ship-pipeline-gap-snapshot",
           "target": "$HOME/.local/bin/last-stack-ship-pipeline-gap-snapshot"
         },

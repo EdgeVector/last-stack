@@ -40,6 +40,15 @@ status="$(
 grep -Fq 'interval_s: 1800' <<<"$status"
 grep -Fq 'legacy_plist: absent' <<<"$status"
 grep -Fq 'legacy_script: absent' <<<"$status"
+jq -e '
+  .apps[]
+  | select(.app == "last-stack")
+  | .links
+  | any(
+      .source == "bin/last-stack-factory-ready-buffer-install"
+      and .target == "$HOME/.local/bin/last-stack-factory-ready-buffer-install"
+    )
+' "$ROOT/config/host-track/apps.json" >/dev/null
 
 python3 - "$ROOT/bin/last-stack-factory-health" <<'PY'
 import importlib.machinery
