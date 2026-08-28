@@ -174,6 +174,7 @@ bash tests/last-stack-portal-wt-rm-accepts-branch.sh
 bash tests/last-stack-portal-wt-start-help.sh
 bash tests/last-stack-pickup-zsh-timeout.sh
 bash tests/last-stack-portal-live-checkout.sh
+bash tests/last-stack-pipeline-health-gate.sh
 bash tests/last-stack-pipeline-deploy-scan.sh
 bash tests/last-stack-whats-wrong-loom.sh
 # The shared LastDB retry matcher decides whether a routine survives node

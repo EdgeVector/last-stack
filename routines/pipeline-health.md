@@ -68,6 +68,16 @@ You are the **agent backstop** when daemons stall, CI goes red, deploys fail,
 merges conflict, or auto-merge drops — especially anything open **longer than
 ~10 minutes** with no progress.
 
+## Zero-agent gate
+
+Scheduled runs use `last-stack-pipeline-health-gate` before the full agent.
+The gate runs a full agent at least once per hour. Between those passes, it
+checks LastGit, Forgejo, and deploy state every ten minutes.
+
+The gate skips the agent only when all required reads succeed and all three
+inventories are quiet. A blocked item, an old open change, or an uncertain
+read starts this full routine. The gate does not bypass CI or deploy checks.
+
 ## Automation memory
 If the scheduled prompt includes an `Automation memory:` path, read and write
 that exact file. Otherwise use
