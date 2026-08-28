@@ -26,6 +26,8 @@ probe_timeout="$(jq -er '.states.PROBE.timeout_sec | numbers' "$GRAPH")"
 cutover_timeout="$(jq -er '.states.CUTOVER.timeout_sec | numbers' "$GRAPH")"
 [ "$cutover_timeout" -ge "$probe_timeout" ] \
   || fail "CUTOVER timeout must cover every check that PROBE runs"
+[ "$cutover_timeout" -ge 7200 ] \
+  || fail "CUTOVER timeout cannot cover the measured real-data safety pass"
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-safe-upgrade-loom.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
