@@ -88,8 +88,12 @@ printf '%s\n' 99999999 >"$stale_state.lock/pid"
 printf '%s\n' 1000 >"$stale_state.lock/started"
 out="$(run_controller 0 "$stale_state" 5000)"
 [ "$(printf '%s\n' "$out" | jq -r .action)" = run ]
+[ "$(printf '%s\n' "$out" | jq -r .lock_reclaimed)" = true ]
 [ ! -e "$stale_state.lock" ]
 [ "$(wc -l < "$TMP/routines.log" | tr -d ' ')" -eq 4 ]
+
+out="$(run_controller 3 "$TMP/state/no-lock-recovery" 5000)"
+[ "$(printf '%s\n' "$out" | jq -r .lock_reclaimed)" = false ]
 
 grep -q 'MILESTONE_DRIVER_SAFETY_CAP:-8' "$ROOT/routines/milestone-driver.md"
 grep -q 'ready-buffer controller sets this value to 1' "$ROOT/routines/milestone-driver.md"
