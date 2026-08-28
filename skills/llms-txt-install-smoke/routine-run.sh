@@ -23,9 +23,15 @@ fi
 # (papercut-last-stack-ci-bare-mktemp-denied-in-codex-sandbox).
 TMP="$(mktemp "${TMPDIR:-/tmp}/llms-txt-routine-run.XXXXXX")"
 trap 'rm -f "$TMP"' EXIT
+if [ -n "${ROUTINES_RUN_DIR:-}" ]; then
+  FAILURE_LOG="$ROUTINES_RUN_DIR/smoke-run.log"
+else
+  FAILURE_LOG="$TMP.run.log"
+fi
 
 set +e
-bash "$RUN_SH" --json >"$TMP.stdout" 2>"$TMP.stderr"
+LLMS_TXT_SMOKE_FAILURE_LOG="$FAILURE_LOG" \
+  bash "$RUN_SH" --json >"$TMP.stdout" 2>"$TMP.stderr"
 EC=$?
 set -e
 
@@ -72,6 +78,9 @@ fi
 FAIL_LINE="$(
   { cat "$TMP.stderr" 2>/dev/null; } | grep -E '^FAIL \(' | tail -n1 || true
 )"
+if [ -f "$FAILURE_LOG" ]; then
+  echo "routine-run.sh: failure log preserved at $FAILURE_LOG" >&2
+fi
 echo "RESULT: error RED ${FAIL_LINE:-verdict=RED} exit=$EC"
 # Normalize RED to exit 1 even if run.sh used another non-zero.
 exit 1

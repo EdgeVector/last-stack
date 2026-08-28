@@ -67,6 +67,18 @@ got="$(fail_steps_summary "brain:get-hello" "brain:get-hello timeout=60s")"
 got="$(fail_steps_summary)"
 [ -z "$got" ] || fail "empty summary must be empty; got '$got'"
 
+# --- preserve_failure_log ---------------------------------------------------
+log_tmp="$(mktemp -d "${TMPDIR:-/tmp}/llms-smoke-log-test.XXXXXX")"
+printf 'install-apps failed at clone\n' >"$log_tmp/source.log"
+preserve_failure_log "$log_tmp/source.log" "$log_tmp/preserved.log" \
+  || fail "failure log copy returned nonzero"
+grep -qF 'install-apps failed at clone' "$log_tmp/preserved.log" \
+  || fail "failure log copy lost the detailed output"
+if preserve_failure_log "$log_tmp/missing.log" "$log_tmp/unexpected.log"; then
+  fail "missing source log must return nonzero"
+fi
+rm -rf "$log_tmp"
+
 # --- run.sh wiring: every quick-try call is bounded -------------------------
 for call in \
   'run_bounded "$QUICK_TRY_TIMEOUT" search init --quiet' \
@@ -102,12 +114,46 @@ grep -qF 'emit_status "VERDICT: RED ${FAIL_STEPS}"' "$RUN" \
   || fail "RED verdict must name the failing step on the status stream"
 grep -qF 'emit_status "FAIL (${#FAILS[@]}): ${FAILS[*]:-none}"' "$RUN" \
   || fail "FAIL footer must reach the status stream for routine-run.sh"
+grep -qF 'preserve_failure_log "$LOG" "$LLMS_TXT_SMOKE_FAILURE_LOG"' "$RUN" \
+  || fail "run.sh must copy the detailed RED log before sandbox cleanup"
 
 # --- wrapper: GREEN match is anchored, RED verdict with steps still parses ---
 grep -qF "grep -q '^VERDICT: GREEN'" "$WRAPPER" \
   || fail "wrapper GREEN match must be anchored"
+grep -qF 'LLMS_TXT_SMOKE_FAILURE_LOG="$FAILURE_LOG"' "$WRAPPER" \
+  || fail "wrapper must pass a durable failure-log destination to run.sh"
+grep -qF 'failure log preserved at $FAILURE_LOG' "$WRAPPER" \
+  || fail "wrapper must report the durable failure-log path"
 printf 'VERDICT: RED brain:ask-or-search\n' \
   | grep -qE '^VERDICT: (GREEN|RED)' \
   || fail "wrapper verdict grep must still match a RED line carrying steps"
+
+# A RED wrapper run keeps the detailed log in the routine run directory.
+wrapper_tmp="$(mktemp -d "${TMPDIR:-/tmp}/llms-smoke-wrapper-test.XXXXXX")"
+mkdir -p "$wrapper_tmp/run"
+cp "$WRAPPER" "$wrapper_tmp/routine-run.sh"
+cat >"$wrapper_tmp/run.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'install-apps clone failed\n' >"${LLMS_TXT_SMOKE_FAILURE_LOG:?}"
+printf '{"verdict":"RED","steps":"install-apps"}\n'
+printf 'FAIL (1): install-apps exit=1\n' >&2
+printf 'VERDICT: RED install-apps\n' >&2
+exit 1
+EOF
+chmod +x "$wrapper_tmp/run.sh"
+set +e
+ROUTINES_RUN_DIR="$wrapper_tmp/run" TMPDIR="$wrapper_tmp/run" \
+  bash "$wrapper_tmp/routine-run.sh" \
+  >"$wrapper_tmp/wrapper.stdout" 2>"$wrapper_tmp/wrapper.stderr"
+wrapper_rc=$?
+set -e
+[ "$wrapper_rc" -eq 1 ] || fail "RED wrapper must exit 1; got $wrapper_rc"
+grep -qF 'install-apps clone failed' "$wrapper_tmp/run/smoke-run.log" \
+  || fail "RED wrapper did not retain the detailed log"
+grep -qF "failure log preserved at $wrapper_tmp/run/smoke-run.log" \
+  "$wrapper_tmp/wrapper.stderr" \
+  || fail "RED wrapper did not report the retained log path"
+rm -rf "$wrapper_tmp"
 
 echo "OK llms-txt-install-smoke-bounded"

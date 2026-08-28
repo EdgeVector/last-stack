@@ -90,3 +90,14 @@ fail_steps_summary() {
   done
   printf '%s' "$out"
 }
+
+# preserve_failure_log <source> <destination>
+# Copy a RED run's detailed log out of the disposable sandbox before cleanup.
+preserve_failure_log() {
+  local source_log="$1"
+  local destination_log="$2"
+
+  [ -n "$destination_log" ] || return 1
+  [ -f "$source_log" ] || return 1
+  cp "$source_log" "$destination_log"
+}
