@@ -37,7 +37,9 @@ cat >"$fake_bin/last-stack-forge-api" <<'EOF'
 case "${STUB_FORGE_MODE:-quiet}" in
   quiet) printf '%s\n' '[]' ;;
   young) printf '%s\n' '[{"draft":false,"created_at":"1970-01-01T00:15:00Z"}]' ;;
+  young-offset) printf '%s\n' '[{"draft":false,"created_at":"1970-01-01T02:15:00.123+02:00"}]' ;;
   old) printf '%s\n' '[{"draft":false,"created_at":"1970-01-01T00:00:00Z"}]' ;;
+  old-offset) printf '%s\n' '[{"draft":false,"created_at":"1969-12-31T17:00:00-07:00"}]' ;;
   draft) printf '%s\n' '[{"draft":true,"created_at":"1970-01-01T00:00:00Z"}]' ;;
   malformed) printf '%s\n' '{}' ;;
   error) exit 1 ;;
@@ -134,8 +136,16 @@ export STUB_FORGE_MODE=young
 run_case forge-young 0 'ROUTINE_RESULT outcome=noop'
 
 reset_modes
+export STUB_FORGE_MODE=young-offset
+run_case forge-young-offset 0 'ROUTINE_RESULT outcome=noop'
+
+reset_modes
 export STUB_FORGE_MODE=old
 run_case forge-old 10 'reason=forge-open-2'
+
+reset_modes
+export STUB_FORGE_MODE=old-offset
+run_case forge-old-offset 10 'reason=forge-open-2'
 
 reset_modes
 export STUB_FORGE_MODE=draft
