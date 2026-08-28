@@ -38,7 +38,7 @@ if command -v lastdb >/dev/null 2>&1; then
 fi
 
 # Structural: all harness scripts exist and bash -n clean
-for s in coderings deliver-slices lastgit metering minimal-node app-ops schema file-blobs-on-demand-sync laststore mini-brain-observability search-as-app host-track cloud-sync-storage-lean exemem-cloud-account ideal-storage-shape; do
+for s in coderings deliver-slices lastgit metering minimal-node app-ops schema file-blobs-on-demand-sync laststore mini-brain-observability search-as-app host-track cloud-sync-storage-lean exemem-cloud-account ideal-storage-shape org-cloud-membership; do
   bash -n "$ROOT/harness/north-star/$s/run.sh"
 done
 bash -n "$BIN"

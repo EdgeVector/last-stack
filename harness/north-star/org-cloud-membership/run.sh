@@ -19,7 +19,13 @@ write_report() {
 }
 
 if [ "$MODE" = "offline" ]; then
-  if bash "$ROOT/tests/last-stack-org-cloud-membership-dogfood.sh" >/dev/null; then
+  fixture="$ROOT/harness/north-star/org-cloud-membership/offline-fixture.sh"
+  if [ ! -f "$fixture" ]; then
+    write_report "FAIL org cloud membership harness contract" \
+      "offline fixture missing under packed harness/ tree"
+    exit 1
+  fi
+  if bash "$fixture" >/dev/null; then
     write_report "PASS-OFFLINE org cloud membership harness contract" \
       "live_product_proof=false" \
       "fixture_contract=grant-member-list-presign-revoke-403-owner-list-e2e-unchanged" \

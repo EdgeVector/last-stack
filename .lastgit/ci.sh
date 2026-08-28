@@ -135,6 +135,7 @@ bash tests/last-stack-north-star-proof-io-free.sh
 bash tests/last-stack-north-star-proof-ideal-storage-shape.sh
 bash tests/last-stack-north-star-proof-exemem-cloud-account.sh
 bash tests/last-stack-org-cloud-membership-dogfood.sh
+bash tests/last-stack-org-cloud-offline-artifact-fixture.sh
 bash tests/last-stack-dogfood-resource-isolate.sh
 bash tests/last-stack-secret-env-run.sh
 bash tests/last-stack-ship-feature-milestones.sh
