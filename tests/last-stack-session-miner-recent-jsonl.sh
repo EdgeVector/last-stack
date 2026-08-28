@@ -30,7 +30,9 @@ python3 "$HELPER" \
 [ "$(jq -r .files_in_window "$scratch/summary.json")" = "1" ]
 [ "$(jq -r .records_in_window "$scratch/summary.json")" = "2" ]
 [ "$(jq -r .sessions_in_window "$scratch/summary.json")" = "1" ]
+[ "$(jq -r .unwindowed_file_count "$scratch/summary.json")" = "1" ]
 [ "$(jq -r '.unwindowed_files | length' "$scratch/summary.json")" = "1" ]
+[ "$(jq -r .unwindowed_files_truncated "$scratch/summary.json")" = "false" ]
 [ "$(wc -l <"$scratch/recent.jsonl" | tr -d ' ')" = "2" ]
 rg -q 'new-marker-one' "$scratch/recent.jsonl"
 rg -q 'new-marker-two' "$scratch/recent.jsonl"

@@ -11,6 +11,8 @@ import sys
 
 TIMESTAMP_KEYS = ("timestamp", "time", "created_at", "createdAt")
 SESSION_KEYS = ("session_id", "sessionId", "conversation_id", "conversationId")
+MAX_UNTIMESTAMPED_RECORDS = 1000
+UNWINDOWED_FILE_SAMPLE = 20
 
 
 def parse_timestamp(value):
@@ -85,6 +87,17 @@ def root_arg(value):
     return label, path
 
 
+def include_arg(value):
+    if "=" not in value:
+        raise argparse.ArgumentTypeError("include must use LABEL=GLOB")
+    label, pattern = value.split("=", 1)
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", label):
+        raise argparse.ArgumentTypeError("include label contains invalid characters")
+    if not pattern:
+        raise argparse.ArgumentTypeError("include glob must not be empty")
+    return label, pattern
+
+
 def iso_z(value):
     return value.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -95,6 +108,7 @@ def arguments():
     window.add_argument("--hours", type=float, default=24.0)
     window.add_argument("--since")
     parser.add_argument("--root", action="append", type=root_arg, required=True)
+    parser.add_argument("--include", action="append", type=include_arg, default=[])
     parser.add_argument("--records-output", type=pathlib.Path)
     return parser.parse_args()
 
@@ -130,22 +144,34 @@ def main():
         "sessions_in_window": 0,
         "parse_errors": 0,
         "records_without_timestamp": 0,
+        "unwindowed_file_count": 0,
         "unwindowed_files": [],
+        "unwindowed_files_truncated": False,
     }
     sessions = set()
+    includes = {}
+    root_labels = {label for label, _ in args.root}
+    for label, pattern in args.include:
+        if label not in root_labels:
+            print(f"include label has no matching root: {label}", file=sys.stderr)
+            return 2
+        includes.setdefault(label, []).append(pattern)
 
     try:
         for label, root in args.root:
             if not root.is_dir():
                 print(f"transcript root does not exist: {root}", file=sys.stderr)
                 return 2
-            summary["roots"].append({"harness": label, "path": str(root)})
-            for path in root.rglob("*.jsonl"):
+            patterns = includes.get(label, ["*.jsonl"])
+            summary["roots"].append({"harness": label, "path": str(root), "include": patterns})
+            paths = {path for pattern in patterns for path in root.rglob(pattern)}
+            for path in sorted(paths):
                 if output_path and path.resolve() == output_path.resolve():
                     continue
                 summary["files_scanned"] += 1
                 file_has_timestamp = False
                 file_has_recent_record = False
+                file_untimestamped_records = 0
                 file_sessions = set()
                 for line in reverse_lines(path):
                     try:
@@ -156,6 +182,9 @@ def main():
                     timestamp = record_timestamp(record)
                     if not timestamp:
                         summary["records_without_timestamp"] += 1
+                        file_untimestamped_records += 1
+                        if not file_has_timestamp and file_untimestamped_records >= MAX_UNTIMESTAMPED_RECORDS:
+                            break
                         continue
                     file_has_timestamp = True
                     if timestamp < cutoff:
@@ -176,7 +205,9 @@ def main():
                         }
                         output_handle.write(json.dumps(envelope, ensure_ascii=False, separators=(",", ":")) + "\n")
                 if not file_has_timestamp:
-                    summary["unwindowed_files"].append(str(path))
+                    summary["unwindowed_file_count"] += 1
+                    if len(summary["unwindowed_files"]) < UNWINDOWED_FILE_SAMPLE:
+                        summary["unwindowed_files"].append(str(path))
                 elif file_has_recent_record:
                     if file_sessions:
                         sessions.update((label, session_id) for session_id in file_sessions)
@@ -187,6 +218,9 @@ def main():
             output_handle.close()
 
     summary["sessions_in_window"] = len(sessions)
+    summary["unwindowed_files_truncated"] = (
+        summary["unwindowed_file_count"] > len(summary["unwindowed_files"])
+    )
     json.dump(summary, sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")
     return 0

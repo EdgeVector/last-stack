@@ -71,9 +71,11 @@ jq . "$scratch/summary.json"
 ```
 
 Add one `--root "<harness>=<path>"` argument for each configured harness. The
-helper reports files without record timestamps as `unwindowed_files`. Do not
-use a file mtime to force those files into the window. Use a harness index or a
-targeted OneContext query when the transcript format has no timestamps.
+helper reports files without record timestamps as `unwindowed_files`. Add an
+`--include "<harness>=<glob>"` argument when a root contains more than one JSONL
+format. For example, use `--include "grok=prompt_history.jsonl"` for a Grok
+session root. Do not use a file mtime to force files into the window. Use a
+harness index or a targeted OneContext query when a format has no timestamps.
 
 Parse `recent.jsonl` structurally. Each line contains `harness`, `path`,
 `timestamp`, and `record`. Remove the scratch directory after the report.
