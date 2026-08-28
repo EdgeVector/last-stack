@@ -74,6 +74,23 @@ out="$(run_controller 0 "$TMP/state/cooldown" 2001)"
 [ "$(printf '%s\n' "$out" | jq -r .detail)" = cooldown ]
 [ "$(wc -l < "$TMP/routines.log" | tr -d ' ')" -eq 3 ]
 
+live_state="$TMP/state/live-lock"
+mkdir -p "$live_state.lock"
+printf '%s\n' "$$" >"$live_state.lock/pid"
+printf '%s\n' 1000 >"$live_state.lock/started"
+out="$(run_controller 0 "$live_state" 5000)"
+[ "$(printf '%s\n' "$out" | jq -r .detail)" = controller-busy ]
+[ "$(wc -l < "$TMP/routines.log" | tr -d ' ')" -eq 3 ]
+
+stale_state="$TMP/state/stale-lock"
+mkdir -p "$stale_state.lock"
+printf '%s\n' 99999999 >"$stale_state.lock/pid"
+printf '%s\n' 1000 >"$stale_state.lock/started"
+out="$(run_controller 0 "$stale_state" 5000)"
+[ "$(printf '%s\n' "$out" | jq -r .action)" = run ]
+[ ! -e "$stale_state.lock" ]
+[ "$(wc -l < "$TMP/routines.log" | tr -d ' ')" -eq 4 ]
+
 grep -q 'MILESTONE_DRIVER_SAFETY_CAP:-8' "$ROOT/routines/milestone-driver.md"
 grep -q 'ready-buffer controller sets this value to 1' "$ROOT/routines/milestone-driver.md"
 grep -q 'Create at most \*\*one Kanban card\*\* per run.' "$ROOT/routines/milestone-driver.md"
