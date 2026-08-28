@@ -65,6 +65,7 @@ set +e
 "$LOOM_BIN" reap \
   --older-than-secs 300 \
   --resume-limit 1 \
+  --resume-timeout-secs 60 \
   --json >"$OUT_FILE" 2>"$ERR_FILE"
 loom_rc=$?
 set -e
@@ -86,7 +87,8 @@ jq -cn \
   --rawfile stderr "$ERR_FILE" \
   '{status:$status,started_at:$started_at,finished_at:$finished_at,
     exit_code:$exit_code,loom_bin:$loom_bin,
-    command:["reap","--older-than-secs","300","--resume-limit","1","--json"],
+    command:["reap","--older-than-secs","300","--resume-limit","1",
+      "--resume-timeout-secs","60","--json"],
     report:(try ($stdout | fromjson) catch null),stdout:$stdout,stderr:$stderr}' \
   >"$RESULT_TMP"
 mv "$RESULT_TMP" "$RESULT_FILE"

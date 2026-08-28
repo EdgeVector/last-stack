@@ -30,13 +30,14 @@ run_reaper() {
 
 out="$(run_reaper)" || fail "success pass failed"
 [ "$(cat "$MOCK_LOOM_CALLS")" = \
-  'reap --older-than-secs 300 --resume-limit 1 --json' ] \
+  'reap --older-than-secs 300 --resume-limit 1 --resume-timeout-secs 60 --json' ] \
   || fail "unsafe Loom arguments: $(cat "$MOCK_LOOM_CALLS")"
 printf '%s\n' "$out" | jq -e \
   --arg loom "$home/.local/bin/loom" \
   '.status == "ok" and .exit_code == 0 and .loom_bin == $loom
    and .report.resumed == 1
-   and .command == ["reap","--older-than-secs","300","--resume-limit","1","--json"]' \
+   and .command == ["reap","--older-than-secs","300","--resume-limit","1",
+     "--resume-timeout-secs","60","--json"]' \
   >/dev/null || fail "bad success result: $out"
 jq -e '.status == "ok" and .report.scanned == 2' \
   "$state/last-stack/loom-reaper/result.json" >/dev/null \

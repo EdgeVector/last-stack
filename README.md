@@ -161,7 +161,7 @@ or inspect it with `last-stack-factory-ready-buffer-install`. The installer
 removes the retired host-local idle ladder only after the shipped job loads.
 
 The Loom reaper runs each hour without an LLM. It uses the Host Track Loom
-binary, a five-minute grace, and a one-resume cap. The runner prevents overlap
+binary, a five-minute grace, a one-resume cap, and a 60-second resume timeout. The runner prevents overlap
 and writes its last result to
 `~/.local/state/last-stack/loom-reaper/result.json`. Use
 `last-stack-loom-reaper-install` to install or inspect the LaunchAgent.
