@@ -1,6 +1,6 @@
 {
   "name": "lastdb-safe-upgrade",
-  "version": "2",
+  "version": "3",
   "start_at": "PROBE",
   "max_depth": 1,
   "node_budget": 20,
@@ -42,7 +42,7 @@
         "-c",
         "exec \"$LOOM_SCRIPTS/loom-canary-check-cutover.sh\""
       ],
-      "timeout_sec": 3600,
+      "timeout_sec": 10800,
       "next": "VERIFY",
       "on_error": "FAILED"
     },
