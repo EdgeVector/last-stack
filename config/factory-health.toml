@@ -73,6 +73,14 @@ hard_count = 50
 # Also alert if todo is empty while baseline ship rate was healthy (starvation).
 empty_todo_with_baseline = true
 
+# ── Pickup-ready buffer ───────────────────────────────────────────────────
+# The 30-minute controller acts below three ready cards. Alert only after the
+# ready count stays at zero for one hour and milestone gap-report still names a
+# safe promote or decompose action.
+[ready_buffer]
+enabled = true
+zero_alert_after_s = 3600
+
 # ── Backlog black hole ─────────────────────────────────────────────────────
 # A card that is Kind:pr, ungated (block_status none), dependency-free AND
 # milestone-less cannot enter default/todo — fkanban's live-PR milestone gate
