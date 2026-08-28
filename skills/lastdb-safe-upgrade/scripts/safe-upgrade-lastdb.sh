@@ -248,6 +248,8 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
 . "$_SCRIPT_DIR/launchd-job-checks.sh"
 # shellcheck source=live-socket-health.sh
 . "$_SCRIPT_DIR/live-socket-health.sh"
+# shellcheck source=owner-lock.sh
+. "$_SCRIPT_DIR/owner-lock.sh"
 CAS_PROBE_SH="$_SCRIPT_DIR/cas-mutation-probe.sh"
 
 if [ "${CHECK_DEV_STAMP:-0}" -eq 1 ]; then
@@ -288,6 +290,10 @@ retain_rollback_point() {
   warn "rollback: RED retained at $BACKUP ttl_hours=$ROLLBACK_TTL_HOURS cleanup_owner=next-lastdb-safe-upgrade-run"
 }
 
+OWNER_LOCK_DIR="${LASTDB_SAFE_UPGRADE_OWNER_LOCK_DIR:-/tmp/lastdb-safe-upgrade-owner-${UID:-$(id -u)}.lock.d}"
+OWNER_LOCK_TOKEN="$$.$RANDOM.$(date +%s 2>/dev/null || echo 0)"
+OWNER_LOCK_HELD=0
+
 cleanup_work() {
   local rc=$?
   [ -n "${WORK:-}" ] && [ -d "$WORK" ] && rm -rf "$WORK"
@@ -299,6 +305,11 @@ cleanup_work() {
       retain_rollback_point
     fi
   fi
+  if type safe_upgrade_owner_lock_release >/dev/null 2>&1; then
+    safe_upgrade_owner_lock_release "$OWNER_LOCK_DIR" "$OWNER_LOCK_TOKEN" "$OWNER_LOCK_HELD" \
+      || warn "owner lock release failed: $OWNER_LOCK_DIR"
+  fi
+  return "$rc"
 }
 trap cleanup_work EXIT
 
@@ -1161,6 +1172,15 @@ live_install_brew() {
 }
 
 # --- preflight ---------------------------------------------------------------
+
+OWNER_LOCK_MODE="live"
+[ "$PROBE_ONLY" -eq 1 ] && OWNER_LOCK_MODE="probe-only"
+if ! safe_upgrade_owner_lock_acquire \
+    "$OWNER_LOCK_DIR" "$OWNER_LOCK_TOKEN" "$$" "${CANDIDATE_BIN:-${TARGET_VERSION:-auto}}" "$OWNER_LOCK_MODE"; then
+  die "another LastDB safe-upgrade process owns the host-wide safety lane"
+fi
+OWNER_LOCK_HELD=1
+log "owner lock acquired: $OWNER_LOCK_DIR pid=$$ mode=$OWNER_LOCK_MODE"
 
 [ -d "$PRIMARY_HOME" ] || die "primary home missing: $PRIMARY_HOME"
 [ -f "$PRIMARY_HOME/identity.key" ] || die "no identity.key in $PRIMARY_HOME — refusing upgrade"

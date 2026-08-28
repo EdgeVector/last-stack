@@ -19,15 +19,15 @@ bash -n "$LAUNCHER"
 bash -n "$DRIVER"
 python3 -m py_compile "$FRESH" "$DOGFOOD"
 
-[ "$(jq -r .version "$GRAPH")" = "2" ] || fail "safe-upgrade graph version did not advance"
+[ "$(jq -r .version "$GRAPH")" = "3" ] || fail "safe-upgrade graph version did not advance"
 [ "$(jq -r '.states.DECIDE.map.current' "$GRAPH")" = "DONE" ] \
   || fail "equal candidate does not finish as a no-op"
-probe_timeout="$(jq -r '.states.PROBE.timeout_sec' "$GRAPH")"
-cutover_timeout="$(jq -r '.states.CUTOVER.timeout_sec' "$GRAPH")"
+probe_timeout="$(jq -er '.states.PROBE.timeout_sec | numbers' "$GRAPH")"
+cutover_timeout="$(jq -er '.states.CUTOVER.timeout_sec | numbers' "$GRAPH")"
 [ "$cutover_timeout" -ge "$probe_timeout" ] \
-  || fail "checked cutover timeout is shorter than the required probe timeout"
+  || fail "CUTOVER timeout must cover every check that PROBE runs"
 [ "$cutover_timeout" -ge 7200 ] \
-  || fail "checked cutover timeout cannot cover the measured real-data safety pass"
+  || fail "CUTOVER timeout cannot cover the measured real-data safety pass"
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-safe-upgrade-loom.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
