@@ -11,6 +11,15 @@ fail() {
   exit 1
 }
 
+jq -e '
+  .apps[]
+  | select(.app == "last-stack")
+  | any(.links[];
+      .source == "bin/last-stack-post-merge-safe-upgrade"
+      and .target == "$HOME/.local/bin/last-stack-post-merge-safe-upgrade")
+' "$ROOT/config/host-track/apps.json" >/dev/null \
+  || fail "last-stack registry does not publish the post-merge worker"
+
 map_out="$("$ROOT/bin/last-stack-post-merge-safe-upgrade" --map)"
 printf '%s\n' "$map_out" | grep -q '^last-stack[[:space:]]*-> artifact:last-stack$' \
   || fail "last-stack is not mapped to the artifact-backed post-merge action"
