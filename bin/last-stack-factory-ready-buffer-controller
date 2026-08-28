@@ -1,0 +1,132 @@
+#!/bin/sh
+set -eu
+
+BOARD_CLI="${LAST_STACK_READY_BUFFER_BOARD_CLI:-kanban}"
+ROUTINES_CLI="${LAST_STACK_READY_BUFFER_ROUTINES_CLI:-routines}"
+DRIVER_ID="${LAST_STACK_READY_BUFFER_DRIVER_ID:-last-stack-milestone-driver}"
+THRESHOLD="${LAST_STACK_READY_BUFFER_THRESHOLD:-3}"
+COOLDOWN_S="${LAST_STACK_READY_BUFFER_COOLDOWN_S:-1800}"
+NOW_EPOCH="${LAST_STACK_READY_BUFFER_NOW_EPOCH:-$(date +%s)}"
+STATE_ROOT="${LAST_STACK_READY_BUFFER_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/last-stack}"
+STATE_FILE="${LAST_STACK_READY_BUFFER_STATE_FILE:-$STATE_ROOT/factory-ready-buffer-controller.last-run}"
+LOCK_DIR="${LAST_STACK_READY_BUFFER_LOCK_DIR:-$STATE_FILE.lock}"
+DRY_RUN=0
+JSON=0
+LOCK_HELD=0
+STATE_TMP=""
+
+usage() {
+  cat <<'EOF'
+Usage: last-stack-factory-ready-buffer-controller [--dry-run] [--json]
+
+Read `kanban pickup status --json`. Run the milestone driver once when the
+pickup-ready count is below three. A successful run starts a 30-minute
+cooldown and gives the driver a one-card safety cap.
+EOF
+}
+
+emit() {
+  result="$1"
+  action="$2"
+  detail="$3"
+  ready="${4:-}"
+
+  if [ "$JSON" -eq 1 ]; then
+    jq -cn \
+      --arg result "$result" \
+      --arg action "$action" \
+      --arg detail "$detail" \
+      --arg ready "$ready" \
+      --argjson threshold "$THRESHOLD" \
+      --argjson cooldown_s "$COOLDOWN_S" \
+      '{result:$result,action:$action,detail:$detail,
+        ready:(if $ready == "" then null else ($ready | tonumber) end),
+        threshold:$threshold,cooldown_s:$cooldown_s}'
+  else
+    printf 'READY_BUFFER result=%s action=%s ready=%s threshold=%s detail=%s\n' \
+      "$result" "$action" "${ready:-unknown}" "$THRESHOLD" "$detail"
+  fi
+}
+
+cleanup() {
+  if [ -n "$STATE_TMP" ] && [ -f "$STATE_TMP" ]; then
+    rm "$STATE_TMP"
+  fi
+  if [ "$LOCK_HELD" -eq 1 ]; then
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT HUP INT TERM
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY_RUN=1 ;;
+    --json) JSON=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) printf 'unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
+case "$THRESHOLD:$COOLDOWN_S:$NOW_EPOCH" in
+  *[!0-9:]*|:*|*::*|*:) emit error none invalid-numeric-config; exit 2 ;;
+esac
+[ "$THRESHOLD" -gt 0 ] || { emit error none invalid-threshold; exit 2; }
+
+if ! pickup_json="$($BOARD_CLI pickup status --json 2>/dev/null)"; then
+  emit error none board-unreadable
+  exit 1
+fi
+
+if ! ready="$(printf '%s\n' "$pickup_json" | jq -er '
+  .ready
+  | select(type == "number" and . >= 0 and floor == .)
+  | tostring
+' 2>/dev/null)"; then
+  emit error none board-unreadable
+  exit 1
+fi
+
+if [ "$ready" -ge "$THRESHOLD" ]; then
+  emit ok none threshold-satisfied "$ready"
+  exit 0
+fi
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  emit ok would-run below-threshold "$ready"
+  exit 0
+fi
+
+mkdir -p "$(dirname "$STATE_FILE")"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  emit ok none controller-busy "$ready"
+  exit 0
+fi
+LOCK_HELD=1
+
+last_run=0
+if [ -f "$STATE_FILE" ]; then
+  last_run="$(sed -n '1p' "$STATE_FILE")"
+  case "$last_run" in
+    ''|*[!0-9]*) last_run=0 ;;
+  esac
+fi
+
+elapsed=$((NOW_EPOCH - last_run))
+if [ "$last_run" -gt 0 ] && [ "$elapsed" -ge 0 ] && [ "$elapsed" -lt "$COOLDOWN_S" ]; then
+  emit ok none cooldown "$ready"
+  exit 0
+fi
+
+if ! MILESTONE_DRIVER_SAFETY_CAP=1 \
+  MILESTONE_DRIVER_TRIGGER=ready-buffer-controller \
+  "$ROUTINES_CLI" run "$DRIVER_ID" --quiet; then
+  emit error run driver-failed "$ready"
+  exit 1
+fi
+
+STATE_TMP="$STATE_FILE.tmp.$$"
+printf '%s\n' "$NOW_EPOCH" > "$STATE_TMP"
+mv "$STATE_TMP" "$STATE_FILE"
+STATE_TMP=""
+emit ok run driver-selected "$ready"

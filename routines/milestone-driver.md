@@ -48,9 +48,11 @@ decomposition is unclear.
   implementation-done milestones hung on `await_proof` when the report already
   classifies them as `complete_proof`. Process every `complete_proof` entry in
   the work_queue this run (no safety-cap theft from PR filing).
-- **SAFETY_CAP=8** new or promoted `Kind: pr` cards **total** this run.
-  Create at most **one Kanban card** per run. **SUPERSEDED:** multiple cards
-  allowed up to SAFETY_CAP when gap-report says so.
+- **SAFETY_CAP=8** new or promoted `Kind: pr` cards **total** this run by
+  default. Set `safety_cap="${MILESTONE_DRIVER_SAFETY_CAP:-8}"` during setup.
+  The ready-buffer controller sets this value to 1. Reject values outside 1–8.
+  Ready-buffer rule: Create at most **one Kanban card** per run. The controller
+  enforces that rule with `safety_cap=1`. Other passes can use `safety_cap`.
 - Keep `validation` / `capstone` / `tracker` / `meta` / `program` out of `todo`.
 - **New unblocked `Kind: pr` → `todo`.** Backlog only if dep-held.
 - Full briefs only: `## GOAL` + `## END STATE` + STEPS + VERIFY + bare `Repo:` /
@@ -64,6 +66,15 @@ decomposition is unclear.
 last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 . "$last_stack/bin/last-stack-shell-prelude"
 "$last_stack/bin/last-stack-cli-preflight" jq kanban situations
+safety_cap="${MILESTONE_DRIVER_SAFETY_CAP:-8}"
+case "$safety_cap" in
+  ''|*[!0-9]*|0|[9-9]|[1-9][0-9]*)
+    result_token='ROUTINE_RESULT'
+    printf '%s outcome=noop detail=invalid-safety-cap value=%s\n' \
+      "$result_token" "$safety_cap"
+    exit 0
+    ;;
+esac
 # Generator backpressure: shed when LastDB is hot so claim/closeout keep shipping.
 if [ -x "$last_stack/bin/last-stack-generator-preflight" ]; then
   "$last_stack/bin/last-stack-generator-preflight" milestone-driver || exit 0
@@ -154,7 +165,7 @@ Print:
 printf 'GAP_FILL IDLE_MILESTONES=%s SKIPPED_IN_FLIGHT=%s FILED=%s PROMOTED=%s PROOF_ONLY=%s SAFETY_CAP=%s CAP_HIT=%s\n' \
   "$(( $(jq '.counts.idle_promoteable + .counts.idle_empty' /tmp/milestone-gap-report.json) ))" \
   "$(jq '.counts.in_flight' /tmp/milestone-gap-report.json)" \
-  "$filed_n" "$promoted_n" "$proof_n" "8" "$cap_hit"
+  "$filed_n" "$promoted_n" "$proof_n" "$safety_cap" "$cap_hit"
 ```
 
 (Compute `filed_n` / `promoted_n` as you go.)
@@ -164,12 +175,12 @@ printf 'GAP_FILL IDLE_MILESTONES=%s SKIPPED_IN_FLIGHT=%s FILED=%s PROMOTED=%s PR
 Immediately before any `kanban add`, refresh inventory reads and re-run
 `gap-report` if the board may have changed.
 
-Process **in order**: all `promote` → all `decompose` (until SAFETY_CAP) →
+Process **in order**: all `promote` → all `decompose` (until `safety_cap`) →
 all `complete_proof` (always; not limited by SAFETY_CAP).
 
 ### Promote (code path — no invention)
 
-For each `work_queue` item with `action=promote`, until SAFETY_CAP:
+For each `work_queue` item with `action=promote`, until `safety_cap`:
 
 ```bash
 kanban move "$pr_slug" todo --json
@@ -183,7 +194,7 @@ groom rather than guessing.
 
 ### Decompose (agent path — only idle_empty)
 
-For each `work_queue` item with `action=decompose`, until SAFETY_CAP:
+For each `work_queue` item with `action=decompose`, until `safety_cap`:
 
 1. `kanban milestone detail <slug> --json` + `kanban milestone reconcile <slug> --json`
 2. **Do not mint empty proof cards.** Hollow `Kind: validation` shells with a
@@ -215,7 +226,7 @@ For each `work_queue` item with `action=decompose`, until SAFETY_CAP:
    needed), list the **next-gate** PR slices required to make the milestone
    objectively reachable. Prefer multiple small PRs over one epic.
 4. Search for duplicate slugs before add. **File every next-gate PR** in this
-   pass until the gate is fully represented or SAFETY_CAP hits:
+   pass until the gate is fully represented or `safety_cap` hits:
    - unblocked → `--column todo`
    - dep-held → `--column backlog` + `--deps`
 5. Each card: file via `"$last_stack/bin/last-stack-kanban-file-pr"` (never
