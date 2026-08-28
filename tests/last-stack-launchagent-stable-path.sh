@@ -42,6 +42,9 @@ ln -s "$install_root/current/launchd" "$compat/launchd"
 
 cp "$ROOT/bin/last-stack-factory-health-install" "$version/bin/"
 cp "$ROOT/bin/last-stack-board-closeout-install" "$version/bin/"
+cp "$ROOT/bin/last-stack-admin-deliver-install" "$version/bin/"
+cp "$ROOT/bin/last-stack-factory-ready-buffer-install" "$version/bin/"
+cp "$ROOT/bin/last-stack-loom-reaper-install" "$version/bin/"
 cp "$ROOT/lib/last-stack-launchd-agent.sh" "$version/lib/"
 cp "$ROOT/launchd/com.edgevector.factory-health.plist" "$version/launchd/"
 cp "$ROOT/launchd/com.edgevector.board-closeout.plist" "$version/launchd/"
@@ -60,6 +63,9 @@ printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-host-memory-sentinel"
 chmod +x \
   "$version/bin/last-stack-factory-health-install" \
   "$version/bin/last-stack-board-closeout-install" \
+  "$version/bin/last-stack-admin-deliver-install" \
+  "$version/bin/last-stack-factory-ready-buffer-install" \
+  "$version/bin/last-stack-loom-reaper-install" \
   "$version/bin/last-stack-factory-health" \
   "$version/bin/last-stack-board-closeout-sweep" \
   "$version/bin/last-stack-vm-disk-trim-install" \
@@ -68,6 +74,23 @@ chmod +x \
   "$version/bin/last-stack-gui-app-memory-guard" \
   "$version/bin/last-stack-testbin-memory-guard" \
   "$version/bin/last-stack-host-memory-sentinel"
+
+# Host Track exposes these commands through ~/.local/bin links. Every command
+# must resolve that link before it loads the sibling library from the artifact.
+public_bin="$tmp/public-bin"
+mkdir -p "$public_bin"
+for installer in \
+  last-stack-admin-deliver-install \
+  last-stack-board-closeout-install \
+  last-stack-factory-health-install \
+  last-stack-factory-ready-buffer-install \
+  last-stack-host-memory-guards-install \
+  last-stack-loom-reaper-install \
+  last-stack-vm-disk-trim-install; do
+  ln -s "$version/bin/$installer" "$public_bin/$installer"
+  "$public_bin/$installer" --help >/dev/null \
+    || fail "$installer failed through a public symlink"
+done
 
 # A fake launchctl that would pollute the real gui domain if called.
 mkdir -p "$tmp/path"

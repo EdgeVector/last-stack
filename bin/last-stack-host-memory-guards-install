@@ -13,8 +13,13 @@
 #   last-stack-host-memory-guards-install install|uninstall|status
 set -euo pipefail
 
-self="$0"
-self_root="$(cd "$(dirname "$self")/.." && pwd)"
+self="${BASH_SOURCE[0]}"
+while [ -h "$self" ]; do
+  self_dir="$(cd -P "$(dirname "$self")" && pwd)"
+  self="$(readlink "$self")"
+  case "$self" in /*) ;; *) self="$self_dir/$self" ;; esac
+done
+self_root="$(cd -P "$(dirname "$self")/.." && pwd)"
 # shellcheck source=../lib/last-stack-launchd-agent.sh
 . "$self_root/lib/last-stack-launchd-agent.sh"
 
