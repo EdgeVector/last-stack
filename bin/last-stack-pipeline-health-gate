@@ -212,11 +212,19 @@ for forge_file in $forge_files; do
   set +e
   # shellcheck disable=SC2016  # jq expands $now, $created, and $age
   count="$("$jq_bin" -r --argjson now "$now_epoch" --argjson age "$((min_age_min * 60))" '
+    def rfc3339_epoch:
+      capture("^(?<day>[0-9]{4}-[0-9]{2}-[0-9]{2})T(?<clock>[0-9]{2}:[0-9]{2}:[0-9]{2})(?<fraction>\\.[0-9]+)?(?<zone>Z|[+-][0-9]{2}:[0-9]{2})$")
+      | ((.day + "T" + .clock + "Z") | fromdateiso8601) as $wall
+      | if .zone == "Z" then $wall
+        else (.zone | capture("(?<sign>[+-])(?<hour>[0-9]{2}):(?<minute>[0-9]{2})")) as $offset
+        | (($offset.hour | tonumber) * 3600 + ($offset.minute | tonumber) * 60) as $seconds
+        | if $offset.sign == "+" then $wall - $seconds else $wall + $seconds end
+        end;
     [
       .[]
       | select((.draft // false) == false)
       | (.created_at // null) as $created
-      | (try ($created | fromdateiso8601) catch null) as $created_epoch
+      | (try ($created | rfc3339_epoch) catch null) as $created_epoch
       | if $created_epoch == null then error("created_at")
         else select(($now - $created_epoch) >= $age)
         end
