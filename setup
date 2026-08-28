@@ -805,6 +805,14 @@ if [ -x "$SOURCE_ROOT/bin/last-stack-board-closeout-install" ]; then
     echo "  board-closeout LaunchAgent: install failed (non-fatal)" >&2
 fi
 
+# Hourly zero-LLM Loom recovery. The runner fixes the five-minute grace and
+# one-resume cap, and it calls the Host Track binary through ~/.local/bin.
+if [ -x "$SOURCE_ROOT/bin/last-stack-loom-reaper-install" ]; then
+  LAST_STACK_PUBLIC_ROOT="${LAST_STACK_PUBLIC_ROOT:-$HOME/.last-stack}" \
+    "$SOURCE_ROOT/bin/last-stack-loom-reaper-install" install || \
+    echo "  loom-reaper LaunchAgent: install failed (non-fatal)" >&2
+fi
+
 # Weekly VM sparse-disk trim (returns in-VM freed blocks to the host volume).
 # A LaunchAgent, not a routine step: the scheduled routine sandbox may not
 # reach the docker socket. The helper self-throttles to one trim per week.

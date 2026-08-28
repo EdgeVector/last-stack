@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.edgevector.loom-reaper</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/REPLACE/.last-stack/bin/last-stack-loom-reaper-run</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/REPLACE/code/edgevector</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/REPLACE</string>
+    <key>USER</key>
+    <string>REPLACE</string>
+    <key>PATH</key>
+    <string>/Users/REPLACE/.local/bin:/Users/REPLACE/.last-stack/bin:/Users/REPLACE/.bun/bin:/Users/REPLACE/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>LAST_STACK_ROOT</key>
+    <string>/Users/REPLACE/.last-stack</string>
+  </dict>
+
+  <key>StartInterval</key>
+  <integer>3600</integer>
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>Nice</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/REPLACE/.local/state/last-stack/loom-reaper/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/REPLACE/.local/state/last-stack/loom-reaper/launchd.err.log</string>
+</dict>
+</plist>

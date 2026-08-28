@@ -125,6 +125,7 @@ bash tests/last-stack-board-closeout-sweep-logic.sh
 bash tests/last-stack-board-closeout-sweep.sh
 bash tests/last-stack-board-closeout-merge-proof-guard.sh
 bash tests/last-stack-board-closeout-evidence-freshness.sh
+bash tests/last-stack-loom-reaper.sh
 bash tests/last-stack-card-reaper-run.sh
 bash tests/last-stack-card-closeout.sh
 bash tests/last-stack-skill-frontmatter-yaml.sh
