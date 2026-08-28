@@ -61,23 +61,31 @@ Window: the LAST 24 HOURS of sessions. If that yields little signal (fewer than
   Note: a full-text transcript *search* tool may require interactive approval
   and be blocked in unattended runs — if so, read/grep the raw transcript files
   directly instead.
+- Use the `session-miner` skill with `profile=friction-patterns` for the full
+  multi-harness window. Its `scripts/recent-jsonl.py` helper bounds the corpus
+  by record timestamps before any transcript search. Do not build a peer scan.
 - For Codex/Aline history, the canonical agent path is the installed
-  `onecontext` skill. Do not tell agents to run an `aline` CLI unless
+  `onecontext` skill. Use it for a targeted deep search after the window scan.
+  Do not tell agents to run an `aline` CLI unless
   `command -v aline` succeeds in the expected agent shell. Guard any direct
   `aline search ...` suggestion like this:
   ```bash
   if command -v aline >/dev/null 2>&1; then
     aline search "<pattern>"
   else
-    sessions_root="${CODEX_HOME:-$HOME/.codex}/sessions"
-    cutoff_iso="$(date -u -v-24H '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -d '24 hours ago' '+%Y-%m-%dT%H:%M:%SZ')"
-    find "$sessions_root" -type f -name '*.jsonl' -print0 |
-      xargs -0 jq -r --arg cutoff "$cutoff_iso" 'select((.timestamp // .time // .created_at // "") >= $cutoff) | @json' 2>/dev/null |
-      rg -i "<pattern>" || true
+    last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+    scratch="$(mktemp -d "${TMPDIR:-/tmp}/session-miner.XXXXXX")"
+    python3 "$last_stack/skills/session-miner/scripts/recent-jsonl.py" \
+      --hours 24 \
+      --root "codex=${CODEX_HOME:-$HOME/.codex}/sessions" \
+      --records-output "$scratch/recent.jsonl" \
+      >"$scratch/summary.json"
+    rg -i "<pattern>" "$scratch/recent.jsonl" || true
+    rm -rf "$scratch"
   fi
   ```
   If the installed `onecontext` skill recommends Aline commands but the binary
-  is absent, skip the stale command and use the raw transcript fallback above.
+  is absent, skip the stale command and use the bounded fallback above.
 - Common transcript-grepping gotchas to plan around: (a) file mtimes can be
   unreliable if an indexer bulk-touches old files — filter by an in-content
   timestamp field, not `-mtime`; (b) a harness session id may not equal the

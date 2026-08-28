@@ -39,7 +39,8 @@ dedupe and safety checks.
    the routine provides.
 3. Resolve the transcript directory from config. For Claude Code projects this
    is usually `~/.claude/projects/<encoded-project>/`. Treat file mtimes as
-   advisory only: filter sessions by the JSONL line `timestamp` field.
+   advisory only. Use `scripts/recent-jsonl.py` to filter records by the JSONL
+   timestamp before the extractor reads transcript text.
 4. Load the extractor profile. Prefer `brain get miner-profile-<profile>`
    when that record exists; otherwise use the embedded reference profiles below.
    A brain profile may override: profile name, purpose, input selectors,
@@ -53,6 +54,31 @@ dedupe and safety checks.
    from prompts that mention error words as examples.
 
 ## Transcript Handling
+
+First, create a windowed scratch corpus. This helper reads each JSONL file from
+the end and stops after the first record before the cutoff. It does not print
+transcript text or prior routine result tokens to the terminal.
+
+```bash
+last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+scratch="$(mktemp -d "${TMPDIR:-/tmp}/session-miner.XXXXXX")"
+python3 "$last_stack/skills/session-miner/scripts/recent-jsonl.py" \
+  --hours "${window_hours:-24}" \
+  --root "codex=${CODEX_HOME:-$HOME/.codex}/sessions" \
+  --records-output "$scratch/recent.jsonl" \
+  >"$scratch/summary.json"
+jq . "$scratch/summary.json"
+```
+
+Add one `--root "<harness>=<path>"` argument for each configured harness. The
+helper reports files without record timestamps as `unwindowed_files`. Add an
+`--include "<harness>=<glob>"` argument when a root contains more than one JSONL
+format. For example, use `--include "grok=prompt_history.jsonl"` for a Grok
+session root. Do not use a file mtime to force files into the window. Use a
+harness index or a targeted OneContext query when a format has no timestamps.
+
+Parse `recent.jsonl` structurally. Each line contains `harness`, `path`,
+`timestamp`, and `record`. Remove the scratch directory after the report.
 
 For each transcript file, build a compact session summary:
 
