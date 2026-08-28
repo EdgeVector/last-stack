@@ -95,6 +95,28 @@ emit_json() {
 emit_status() {
   echo "$*" >&4
 }
+DAEMON_PID=""
+cleanup() {
+  local exit_rc=$?
+  if [ -n "$DAEMON_PID" ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
+    kill "$DAEMON_PID" 2>/dev/null || true
+    wait "$DAEMON_PID" 2>/dev/null || true
+  fi
+  if [ "$exit_rc" -ne 0 ] && [ -n "${LLMS_TXT_SMOKE_FAILURE_LOG:-}" ]; then
+    if preserve_failure_log "$LOG" "$LLMS_TXT_SMOKE_FAILURE_LOG"; then
+      echo "failure log preserved: $LLMS_TXT_SMOKE_FAILURE_LOG" >&4
+    else
+      echo "warning: could not preserve failure log at $LLMS_TXT_SMOKE_FAILURE_LOG" >&4
+    fi
+  fi
+  if [ "$KEEP" -eq 0 ]; then
+    rm -rf "$FRESH_ROOT"
+  else
+    echo "sandbox kept at $FRESH_ROOT" >&2
+  fi
+  return "$exit_rc"
+}
+trap cleanup EXIT
 
 echo "=========================================="
 echo "llms-txt install smoke (isolated)"
@@ -250,18 +272,6 @@ echo ">>> start isolated lastdbd"
 mkdir -p "$LASTDB_HOME"
 lastdbd --data-dir "$LASTDB_HOME" >"$FRESH_ROOT/lastdbd.out" 2>"$FRESH_ROOT/lastdbd.err" &
 DAEMON_PID=$!
-cleanup() {
-  if kill -0 "$DAEMON_PID" 2>/dev/null; then
-    kill "$DAEMON_PID" 2>/dev/null || true
-    wait "$DAEMON_PID" 2>/dev/null || true
-  fi
-  if [ "$KEEP" -eq 0 ]; then
-    rm -rf "$FRESH_ROOT"
-  else
-    echo "sandbox kept at $FRESH_ROOT" >&2
-  fi
-}
-trap cleanup EXIT
 
 SOCK="$LASTDB_HOME/data/folddb.sock"
 ready=0
