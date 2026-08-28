@@ -98,9 +98,19 @@ publish_fixture() {
 digest_good="$(printf 'a%.0s' {1..64})"
 digest_bad="$(printf 'b%.0s' {1..64})"
 digest_transient="$(printf 'c%.0s' {1..64})"
+digest_shared="$(printf 'd%.0s' {1..64})"
 oid_good="$(printf '1%.0s' {1..40})"
 oid_bad="$(printf '2%.0s' {1..40})"
 oid_transient="$(printf '3%.0s' {1..40})"
+oid_shared="$(printf '4%.0s' {1..40})"
+
+publish_fixture "$digest_bad" "$oid_bad" $'#!/usr/bin/env bash\necho broken\nexit 1'
+if "$ROOT/bin/host-track" install demo >/dev/null 2>"$tmp/first-red.err"; then
+  fail "a RED first install should fail closed"
+fi
+grep -q 'candidate exhausted and no incumbent control is available' "$tmp/first-red.err" \
+  || fail "first install did not report the missing incumbent control"
+[ ! -L "$HOME/apps/demo/current" ] || fail "RED first install created current"
 
 publish_fixture "$digest_good" "$oid_good" $'#!/usr/bin/env bash\necho ok-v1'
 "$ROOT/bin/host-track" install demo >/dev/null \
@@ -109,7 +119,7 @@ publish_fixture "$digest_good" "$oid_good" $'#!/usr/bin/env bash\necho ok-v1'
 [ "$(readlink "$HOME/apps/demo/current")" = "versions/$digest_good" ] \
   || fail "first install current pointer wrong"
 
-publish_fixture "$digest_transient" "$oid_transient" $'#!/usr/bin/env bash\nmarker="$HOME/transient-probe-count"\ncount="$(cat "$marker" 2>/dev/null || printf 0)"\ncount=$((count + 1))\nprintf "%s\\n" "$count" >"$marker"\nif [ "$count" -eq 1 ]; then echo transient >&2; exit 1; fi\necho ok-v2'
+publish_fixture "$digest_transient" "$oid_transient" $'#!/usr/bin/env bash\nif [ -e "$HOME/shared-probe-down" ]; then echo shared-down >&2; exit 1; fi\nmarker="$HOME/transient-probe-count"\ncount="$(cat "$marker" 2>/dev/null || printf 0)"\ncount=$((count + 1))\nprintf "%s\\n" "$count" >"$marker"\nif [ "$count" -eq 1 ]; then echo transient >&2; exit 1; fi\necho ok-v2'
 "$ROOT/bin/host-track" refresh demo >/dev/null 2>"$tmp/transient.err" \
   || fail "a transient probe failure should recover"
 grep -q 'probe attempt 1/3 failed' "$tmp/transient.err" \
@@ -122,6 +132,28 @@ grep -q 'probe recovered attempt=2/3' "$tmp/transient.err" \
 [ "$(readlink "$HOME/apps/demo/current")" = "versions/$digest_transient" ] \
   || fail "recovered candidate current pointer wrong"
 
+publish_fixture "$digest_shared" "$oid_shared" $'#!/usr/bin/env bash\nif [ -e "$HOME/shared-probe-down" ]; then echo shared-down >&2; exit 1; fi\necho ok-v3'
+HOST_TRACK_SOAK_HOURS=1 "$ROOT/bin/host-track" refresh demo >/dev/null \
+  || fail "shared-control candidate should park for soak"
+[ "$(readlink "$HOME/apps/demo/canary")" = "versions/$digest_shared" ] \
+  || fail "shared-control candidate did not park as canary"
+checks_before="$(jq -r '.checks' "$HOST_TRACK_STAMP_DIR/demo.soak.json")"
+touch "$HOME/shared-probe-down"
+HOST_TRACK_SOAK_HOURS=1 "$ROOT/bin/host-track" soak-watch demo \
+  >/dev/null 2>"$tmp/inconclusive.err" \
+  || fail "shared candidate and incumbent failure should stay inconclusive"
+grep -q 'probe INCONCLUSIVE; candidate and incumbent both failed' "$tmp/inconclusive.err" \
+  || fail "shared failure did not report an inconclusive probe: $(cat "$tmp/inconclusive.err")"
+grep -q 'soak probe inconclusive; current and soak state unchanged' "$tmp/inconclusive.err" \
+  || fail "shared failure did not preserve the soak: $(cat "$tmp/inconclusive.err")"
+[ "$(jq -r '.status' "$HOST_TRACK_STAMP_DIR/demo.soak.json")" = soaking ] \
+  || fail "shared failure marked the soak RED"
+[ "$(jq -r '.checks' "$HOST_TRACK_STAMP_DIR/demo.soak.json")" = "$checks_before" ] \
+  || fail "inconclusive probe counted as green"
+[ "$(readlink "$HOME/apps/demo/current")" = "versions/$digest_transient" ] \
+  || fail "inconclusive probe changed current"
+rm -f "$HOME/shared-probe-down"
+
 publish_fixture "$digest_bad" "$oid_bad" $'#!/usr/bin/env bash\necho broken\nexit 1'
 if "$ROOT/bin/host-track" refresh demo >/dev/null 2>"$tmp/red.err"; then
   fail "RED probe refresh should fail closed"
@@ -129,8 +161,12 @@ fi
 grep -q 'probe attempt 1/3 failed' "$tmp/red.err" || fail "persistent failure missed attempt 1"
 grep -q 'probe attempt 2/3 failed' "$tmp/red.err" || fail "persistent failure missed attempt 2"
 grep -q 'probe attempt 3/3 failed' "$tmp/red.err" || fail "persistent failure missed attempt 3"
-grep -q 'probe RED after 3 attempts' "$tmp/red.err" \
-  || fail "refresh did not report final probe RED: $(cat "$tmp/red.err")"
+grep -q 'probe exhausted after 3 attempts' "$tmp/red.err" \
+  || fail "refresh did not report exhausted retries: $(cat "$tmp/red.err")"
+grep -q 'incumbent control GREEN; confirming candidate' "$tmp/red.err" \
+  || fail "refresh did not compare the incumbent: $(cat "$tmp/red.err")"
+grep -q 'probe RED; candidate failed while incumbent passed' "$tmp/red.err" \
+  || fail "refresh did not report a candidate-only RED: $(cat "$tmp/red.err")"
 [ "$(demo)" = ok-v2 ] || fail "RED probe changed the live command: $(demo)"
 [ "$(readlink "$HOME/apps/demo/current")" = "versions/$digest_transient" ] \
   || fail "RED probe flipped current"

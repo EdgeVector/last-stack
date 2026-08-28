@@ -23,12 +23,13 @@ artifact_root="$tmp/artifacts"
 mkdir -p "$install_root/versions/digestaaaa" "$install_root/versions/digestbbbb" \
   "$install_root/versions/digestcccc" "$artifact_root"
 
-# Probe stub: green unless $tmp/probe-red exists.
+# Probe stub: a shared marker fails every version; a digest marker fails one.
 for d in digestaaaa digestbbbb digestcccc; do
   mkdir -p "$install_root/versions/$d/bin"
   cat > "$install_root/versions/$d/bin/probe" <<EOF
 #!/usr/bin/env bash
-[ ! -f "$tmp/probe-red" ]
+[ ! -f "$tmp/probe-shared-red" ]
+[ ! -f "$tmp/probe-red-$d" ]
 EOF
   chmod +x "$install_root/versions/$d/bin/probe"
 done
@@ -113,7 +114,7 @@ rm -f "$stamp"
 jq -n --argjson started "$old_epoch" \
   '{app:"demo", digest:"digestbbbb", status:"soaking", soak_hours:1,
     started_epoch:$started, checks:1}' > "$stamp"
-touch "$tmp/probe-red"
+touch "$tmp/probe-red-digestbbbb"
 ship_ticks_before_red="$(wc -l < "$tmp/ship-soak-tick-calls" | tr -d ' ')"
 if ht soak-watch demo >"$tmp/red.out" 2>&1; then
   fail "red soak should exit nonzero: $(cat "$tmp/red.out")"
@@ -128,6 +129,7 @@ grep -q -- "--key $slug" "$tmp/heal-calls" || fail "heal kick should use the car
 
 # --- 4. incident keying: a successor digest's red joins the SAME incident --
 ln -sfn versions/digestcccc "$install_root/canary"
+touch "$tmp/probe-red-digestcccc"
 # park_canary path preserved card_slug via write_soak_stamp; emulate the
 # successor park the way refresh does: new digest, no explicit slug.
 jq -n --argjson started "$old_epoch" --arg slug "$slug" \
@@ -144,7 +146,7 @@ tail -1 "$tmp/heal-calls" | grep -q -- "--key $slug" \
   || fail "heal key drifted across digests: $(tail -1 "$tmp/heal-calls")"
 
 # --- 5. post-flip watch: green decrements; red rolls back to previous ------
-rm -f "$tmp/probe-red" "$stamp"
+rm -f "$tmp/probe-red-digestbbbb" "$tmp/probe-red-digestcccc" "$stamp"
 rm -f "$install_root/canary"
 ln -sfn versions/digestbbbb "$install_root/current"
 ln -sfn versions/digestaaaa "$install_root/previous"
@@ -155,7 +157,7 @@ out="$(ht soak-watch demo 2>&1)" || fail "green post-flip tick should pass: $out
 printf '%s\n' "$out" | grep -q 'post-flip watch green; ticks_left=1' \
   || fail "expected ticks_left=1, got: $out"
 
-touch "$tmp/probe-red"
+touch "$tmp/probe-red-digestbbbb"
 if ht soak-watch demo >"$tmp/pf.out" 2>&1; then
   fail "red post-flip should exit nonzero: $(cat "$tmp/pf.out")"
 fi
@@ -166,7 +168,7 @@ grep -q 'post-flip RED; rolling back to previous' "$tmp/pf.out" \
 [ ! -f "$postflip" ] || fail "post-flip stamp should be cleared after rollback"
 
 # --- 6. green soak activation archives the stamp (incident closes) ---------
-rm -f "$tmp/probe-red"
+rm -f "$tmp/probe-red-digestbbbb"
 ln -sfn versions/digestbbbb "$install_root/canary"
 ln -sfn versions/digestbbbb "$install_root/current"
 jq -n '{app:"demo", digest:"digestbbbb", status:"soaking", soak_hours:1,
