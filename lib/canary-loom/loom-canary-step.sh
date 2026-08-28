@@ -38,6 +38,15 @@ def exhausted():
     return attempt >= max_attempts
 
 
+def next_revision(name):
+    current = ctx.get(name) or 0
+    try:
+        current = int(current)
+    except (TypeError, ValueError):
+        current = 0
+    return current + 1
+
+
 if not live:
     if step == "BUILD_START":
         emit(
@@ -49,7 +58,13 @@ if not live:
             "canary-step BUILD_START stand-in",
         )
     elif step == "BUILD_POLL":
-        emit({"build_next": "BUILD_COLLECT"}, "canary-step BUILD_POLL stand-in")
+        emit(
+            {
+                "build_next": "BUILD_COLLECT",
+                "build_poll_revision": next_revision("build_poll_revision"),
+            },
+            "canary-step BUILD_POLL stand-in",
+        )
     elif step == "BUILD_COLLECT":
         oid = str(ctx.get("main_oid") or "stand-in")
         job = {
@@ -83,7 +98,11 @@ if not live:
     elif step == "SOAK":
         soak = os.environ.get("CANARY_LOOM_SOAK_STATUS") or "green"
         emit(
-            {"soak_status": soak, "soak_hours": 24},
+            {
+                "soak_status": soak,
+                "soak_hours": 24,
+                "soak_poll_revision": next_revision("soak_poll_revision"),
+            },
             f"canary-step SOAK stand-in status={soak}",
         )
     elif step == "RETRY_PREP":
@@ -163,6 +182,22 @@ if step in ("BUILD_START", "BUILD_POLL", "BUILD_COLLECT", "SOAK", "PROMOTE"):
         sys.stderr.write(p.stderr)
     if p.returncode != 0:
         sys.exit(p.returncode)
+    if step == "BUILD_POLL":
+        print(
+            "LOOM_CONTEXT_PATCH:"
+            + json.dumps(
+                {"build_poll_revision": next_revision("build_poll_revision")},
+                separators=(",", ":"),
+            )
+        )
+    elif step == "SOAK":
+        print(
+            "LOOM_CONTEXT_PATCH:"
+            + json.dumps(
+                {"soak_poll_revision": next_revision("soak_poll_revision")},
+                separators=(",", ":"),
+            )
+        )
     if step == "BUILD_COLLECT":
         job = {
             "candidate": str(merged.get("candidate") or ctx.get("candidate") or ""),

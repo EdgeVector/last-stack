@@ -6,6 +6,8 @@ fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 bash -n "$BIN"
 bash -n "$ROOT/lib/canary-loom/loom-canary-step.sh"
 [ -f "$ROOT/lib/canary-loom/lastdb-canary-release.json" ] || fail "graph missing"
+[ "$(jq -r .version "$ROOT/lib/canary-loom/lastdb-canary-release.json")" = "3" ] \
+  || fail "canary graph version did not advance"
 grep -q 'last-stack-canary-loom' "$ROOT/routines/lastdb-canary-soak-watch.md" \
   || fail "soak-watch missing loom tick"
 if grep -q 'sm tick --definition lastdb-canary-release' "$ROOT/routines/lastdb-canary-soak-watch.md"; then
@@ -51,6 +53,29 @@ case "${1:-}" in
 esac
 SH
 chmod 755 "$mock_home/.local/bin/loom"
+cat > "$mock_home/.local/bin/sm-canary-release-step" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  BUILD_POLL) printf '%s\n' 'SM_CONTEXT_PATCH:{"build_next":"BUILD_WAIT"}' ;;
+  SOAK) printf '%s\n' 'SM_CONTEXT_PATCH:{"soak_status":"pending"}' ;;
+  *) exit 2 ;;
+esac
+SH
+chmod 755 "$mock_home/.local/bin/sm-canary-release-step"
+
+# Every external poll changes its context input. Loom then cannot adopt the
+# prior successful result when the graph returns from its timed wait.
+poll_out="$(PATH="$mock_home/.local/bin:$PATH" HOME="$mock_home" LOOM_LIVE=1 \
+  LOOM_INPUT='{"build_poll_revision":7}' \
+  "$ROOT/lib/canary-loom/loom-canary-step.sh" BUILD_POLL)"
+printf '%s\n' "$poll_out" | grep -q 'LOOM_CONTEXT_PATCH:{"build_poll_revision":8}' \
+  || fail "live build poll did not advance its context revision: $poll_out"
+soak_out="$(PATH="$mock_home/.local/bin:$PATH" HOME="$mock_home" LOOM_LIVE=1 \
+  LOOM_INPUT='{"soak_poll_revision":11}' \
+  "$ROOT/lib/canary-loom/loom-canary-step.sh" SOAK)"
+printf '%s\n' "$soak_out" | grep -q 'LOOM_CONTEXT_PATCH:{"soak_poll_revision":12}' \
+  || fail "live soak poll did not advance its context revision: $soak_out"
 
 export LAST_STACK_CANARY_LOOM_STDOUT_LOG="$tmp/loom.stdout.log"
 export LAST_STACK_CANARY_LOOM_STDERR_LOG="$tmp/loom.stderr.log"
