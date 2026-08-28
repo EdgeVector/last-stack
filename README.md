@@ -160,6 +160,12 @@ minutes. It selects one milestone-driver pass below three ready cards. Install
 or inspect it with `last-stack-factory-ready-buffer-install`. The installer
 removes the retired host-local idle ladder only after the shipped job loads.
 
+The Loom reaper runs each hour without an LLM. It uses the Host Track Loom
+binary, a five-minute grace, a one-resume cap, and a 60-second resume timeout. The runner prevents overlap
+and writes its last result to
+`~/.local/state/last-stack/loom-reaper/result.json`. Use
+`last-stack-loom-reaper-install` to install or inspect the LaunchAgent.
+
 v1 **reuses the existing kanban-consumer identity** (schema-agnostic deliver).
 Mailbox poll + `openDelivery` stay on the admin consumer side (exemem-infra);
 this repo only owns publish + stage/approve on Mini.

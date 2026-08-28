@@ -1,0 +1,101 @@
+#!/bin/sh
+# Run one bounded Loom recovery pass and keep a dashboard-readable result.
+set -eu
+
+LOOM_BIN="${LAST_STACK_LOOM_REAPER_LOOM_BIN:-$HOME/.local/bin/loom}"
+STATE_ROOT="${LAST_STACK_LOOM_REAPER_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/last-stack/loom-reaper}"
+RESULT_FILE="${LAST_STACK_LOOM_REAPER_RESULT_FILE:-$STATE_ROOT/result.json}"
+LOCK_DIR="${LAST_STACK_LOOM_REAPER_LOCK_DIR:-$STATE_ROOT/run.lock}"
+LOCK_HELD=0
+OUT_FILE=""
+ERR_FILE=""
+RESULT_TMP=""
+
+cleanup() {
+  [ -z "$OUT_FILE" ] || rm -f "$OUT_FILE"
+  [ -z "$ERR_FILE" ] || rm -f "$ERR_FILE"
+  [ -z "$RESULT_TMP" ] || rm -f "$RESULT_TMP"
+  if [ "$LOCK_HELD" -eq 1 ]; then
+    rm -f "$LOCK_DIR/owner"
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT HUP INT TERM
+
+emit_locked() {
+  jq -cn \
+    --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg loom_bin "$LOOM_BIN" \
+    '{status:"locked",at:$at,exit_code:0,loom_bin:$loom_bin,
+      detail:"another Loom reaper pass owns the lock"}'
+}
+
+mkdir -p "$STATE_ROOT" "$(dirname "$RESULT_FILE")"
+
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  owner="$(sed -n '1p' "$LOCK_DIR/owner" 2>/dev/null || true)"
+  case "$owner" in
+    ''|*[!0-9]*)
+      emit_locked
+      exit 0
+      ;;
+    *)
+      if kill -0 "$owner" 2>/dev/null; then
+        emit_locked
+        exit 0
+      fi
+      ;;
+  esac
+  rm -f "$LOCK_DIR/owner" 2>/dev/null || true
+  rmdir "$LOCK_DIR" 2>/dev/null || true
+  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    emit_locked
+    exit 0
+  fi
+fi
+LOCK_HELD=1
+printf '%s\n' "$$" >"$LOCK_DIR/owner"
+
+OUT_FILE="$STATE_ROOT/reap.out.$$"
+ERR_FILE="$STATE_ROOT/reap.err.$$"
+RESULT_TMP="$RESULT_FILE.tmp.$$"
+
+started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+set +e
+"$LOOM_BIN" reap \
+  --older-than-secs 300 \
+  --resume-limit 1 \
+  --resume-timeout-secs 60 \
+  --json >"$OUT_FILE" 2>"$ERR_FILE"
+loom_rc=$?
+set -e
+finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+if [ "$loom_rc" -eq 0 ]; then
+  result_status=ok
+else
+  result_status=error
+fi
+
+jq -cn \
+  --arg status "$result_status" \
+  --arg started_at "$started_at" \
+  --arg finished_at "$finished_at" \
+  --arg loom_bin "$LOOM_BIN" \
+  --argjson exit_code "$loom_rc" \
+  --rawfile stdout "$OUT_FILE" \
+  --rawfile stderr "$ERR_FILE" \
+  '{status:$status,started_at:$started_at,finished_at:$finished_at,
+    exit_code:$exit_code,loom_bin:$loom_bin,
+    command:["reap","--older-than-secs","300","--resume-limit","1",
+      "--resume-timeout-secs","60","--json"],
+    report:(try ($stdout | fromjson) catch null),stdout:$stdout,stderr:$stderr}' \
+  >"$RESULT_TMP"
+mv "$RESULT_TMP" "$RESULT_FILE"
+RESULT_TMP=""
+
+cat "$RESULT_FILE"
+if [ "$loom_rc" -ne 0 ] && [ -s "$ERR_FILE" ]; then
+  cat "$ERR_FILE" >&2
+fi
+exit "$loom_rc"
