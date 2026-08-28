@@ -1559,14 +1559,18 @@ run_artifact_post_install_on_tree() {
 }
 
 run_one_probe() {
-  local version_dir="$1" spec="$2"
+  local version_dir="$1" spec="$2" attempts_override="${3:-}"
   local timeout_s output_matches accept_exit attempts retry_delay_s attempt
   local n i rel exe rc out ok e
   local -a cmd=()
   timeout_s="$(printf '%s\n' "$spec" | jq -r '.timeout_s // 30')"
   output_matches="$(printf '%s\n' "$spec" | jq -r '.output_matches // empty')"
   accept_exit="$(printf '%s\n' "$spec" | jq -r '(.accept_exit // [0]) | map(tostring) | join(" ")')"
-  attempts="${HOST_TRACK_PROBE_ATTEMPTS:-$(printf '%s\n' "$spec" | jq -r '.attempts // 3')}"
+  if [ -n "$attempts_override" ]; then
+    attempts="$attempts_override"
+  else
+    attempts="${HOST_TRACK_PROBE_ATTEMPTS:-$(printf '%s\n' "$spec" | jq -r '.attempts // 3')}"
+  fi
   retry_delay_s="${HOST_TRACK_PROBE_RETRY_DELAY_S:-$(printf '%s\n' "$spec" | jq -r '.retry_delay_s // 1')}"
   case "$attempts" in ''|*[!0-9]*) attempts=3 ;; esac
   case "$retry_delay_s" in ''|*[!0-9]*) retry_delay_s=1 ;; esac
@@ -1629,13 +1633,48 @@ run_one_probe() {
     sed -n '1,40p' "$out" >&2
     rm -f "$out"
     if [ "$attempt" -ge "$attempts" ]; then
-      printf 'host-track: probe RED after %s attempts cmd=%s\n' \
+      printf 'host-track: probe exhausted after %s attempts cmd=%s\n' \
         "$attempts" "${cmd[*]}" >&2
       return 1
     fi
     sleep "$retry_delay_s"
     attempt=$((attempt + 1))
   done
+  return 1
+}
+
+run_probe_with_incumbent_control() {
+  local app="$1" candidate_dir="$2" incumbent_dir="$3" spec="$4"
+
+  if run_one_probe "$candidate_dir" "$spec"; then
+    return 0
+  fi
+
+  if [ -z "$incumbent_dir" ] || [ ! -d "$incumbent_dir" ] \
+    || [ "$incumbent_dir" = "$candidate_dir" ]; then
+    printf 'host-track: %s probe RED; candidate exhausted and no incumbent control is available\n' \
+      "$app" >&2
+    return 1
+  fi
+
+  printf 'host-track: %s candidate probe exhausted; checking incumbent control\n' \
+    "$app" >&2
+  if ! run_one_probe "$incumbent_dir" "$spec" 1; then
+    printf 'host-track: %s probe INCONCLUSIVE; candidate and incumbent both failed\n' \
+      "$app" >&2
+    return 2
+  fi
+
+  printf 'host-track: %s incumbent control GREEN; confirming candidate\n' \
+    "$app" >&2
+  if run_one_probe "$candidate_dir" "$spec" 1; then
+    printf 'host-track: %s candidate probe recovered after incumbent control\n' \
+      "$app" >&2
+    return 0
+  fi
+
+  printf 'host-track: %s probe RED; candidate failed while incumbent passed\n' \
+    "$app" >&2
   return 1
 }
 
@@ -1689,8 +1728,10 @@ run_safe_upgrade_probes() {
   i=0
   while [ "$i" -lt "$n" ]; do
     spec="$(printf '%s\n' "$json" | jq -c --argjson i "$i" '.safe_upgrade.probes[$i]')"
-    if ! run_one_probe "$version_dir" "$spec"; then
-      return 1
+    if run_probe_with_incumbent_control "$app" "$version_dir" "$current_dir" "$spec"; then
+      :
+    else
+      return $?
     fi
     i=$((i + 1))
   done
@@ -1975,7 +2016,7 @@ kick_ship_soak_runs() {
 post_flip_watch_one() {
   # Probe the NEW current for post_flip_ticks ticks after a flip. Red rolls
   # current back to previous automatically, files the card, kicks heal.
-  local app="$1" json path digest ticks install_root current_dir
+  local app="$1" json path digest ticks install_root current_dir incumbent_dir probe_rc
   json="$(require_app_json "$app")"
   [ "$(setting "$json" install_mode)" = "artifact" ] || return 0
   path="$(post_flip_stamp_path "$app")"
@@ -1990,7 +2031,23 @@ post_flip_watch_one() {
     return 0
   fi
   current_dir="$install_root/versions/$digest"
-  if ! run_safe_upgrade_probes "$app" "$json" "$current_dir" ""; then
+  incumbent_dir=""
+  if [ -L "$install_root/previous" ]; then
+    incumbent_dir="$install_root/$(readlink "$install_root/previous")"
+    [ -d "$incumbent_dir" ] || incumbent_dir=""
+  fi
+  probe_rc=0
+  if run_safe_upgrade_probes "$app" "$json" "$current_dir" "$incumbent_dir"; then
+    :
+  else
+    probe_rc=$?
+  fi
+  if [ "$probe_rc" -eq 2 ]; then
+    printf 'host-track: %s post-flip probe inconclusive; ticks_left=%s unchanged\n' \
+      "$app" "$ticks" >&2
+    return 0
+  fi
+  if [ "$probe_rc" -ne 0 ]; then
     printf 'host-track: %s post-flip RED; rolling back to previous\n' "$app" >&2
     rollback_current_to_previous "$app" "$install_root" "$digest" "$json"
     file_soak_red_card "$app" "$digest" "$json"
@@ -2024,7 +2081,7 @@ should_soak() {
 artifact_install_app() {
   local app="$1" channel_override="${2:-}" force_restage="${3:-0}" activate_now="${4:-0}" json install_mode artifact_app channel artifact_root install_root
   local manifest digest stage target old_target stamp_path need_materialize=0
-  local old_digest prev_target prev_digest post_install_phase current_dir soak_h
+  local old_digest prev_target prev_digest post_install_phase current_dir soak_h probe_rc
   json="$(require_app_json "$app")"
   install_mode="$(setting "$json" install_mode)"
   [ "$install_mode" = "artifact" ] || die "$app is not registered for artifact installs"
@@ -2112,7 +2169,20 @@ artifact_install_app() {
       return 1
     fi
   fi
-  if ! run_safe_upgrade_probes "$app" "$json" "$target" "$current_dir"; then
+  probe_rc=0
+  if run_safe_upgrade_probes "$app" "$json" "$target" "$current_dir"; then
+    :
+  else
+    probe_rc=$?
+  fi
+  if [ "$probe_rc" -eq 2 ]; then
+    printf 'host-track: %s probe inconclusive; current unchanged; retry on next refresh\n' \
+      "$app" >&2
+    release_install_lock
+    trap - EXIT
+    return 0
+  fi
+  if [ "$probe_rc" -ne 0 ]; then
     printf 'host-track: %s probe RED; refusing cutover (current unchanged)\n' "$app" >&2
     rollback_current_to_previous "$app" "$install_root" "$digest" "$json"
     release_install_lock
@@ -2599,7 +2669,7 @@ validate_registry_cmd() {
 
 
 soak_watch_one() {
-  local app="$1" json install_root canary_rel canary_dir digest soak_h min_checks stamp checks started now elapsed need current_dir
+  local app="$1" json install_root canary_rel canary_dir digest soak_h min_checks stamp checks started now elapsed need current_dir probe_rc
   json="$(require_app_json "$app")"
   [ "$(setting "$json" install_mode)" = "artifact" ] || return 0
   IFS=$'\t' read -r _ _ _ install_root < <(artifact_paths "$app" "$json")
@@ -2627,7 +2697,18 @@ soak_watch_one() {
   if [ -L "$install_root/current" ] && current_target_is_live "$install_root"; then
     current_dir="$install_root/$(readlink "$install_root/current")"
   fi
-  if ! run_safe_upgrade_probes "$app" "$json" "$canary_dir" "$current_dir"; then
+  probe_rc=0
+  if run_safe_upgrade_probes "$app" "$json" "$canary_dir" "$current_dir"; then
+    :
+  else
+    probe_rc=$?
+  fi
+  if [ "$probe_rc" -eq 2 ]; then
+    printf 'host-track: %s soak probe inconclusive; current and soak state unchanged\n' \
+      "$app" >&2
+    return 0
+  fi
+  if [ "$probe_rc" -ne 0 ]; then
     soak_h="$(soak_hours_for "$json")"
     write_soak_stamp "$app" "$digest" "soak_red" "$soak_h"
     printf 'host-track: %s soak RED; current unchanged\n' "$app" >&2
