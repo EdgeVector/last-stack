@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# Install, remove, inspect, or run the factory ready-buffer LaunchAgent.
+set -euo pipefail
+
+self="$0"
+self_root="$(cd "$(dirname "$self")/.." && pwd)"
+# shellcheck source=../lib/last-stack-launchd-agent.sh
+. "$self_root/lib/last-stack-launchd-agent.sh"
+
+program="last-stack-factory-ready-buffer-controller"
+label="com.edgevector.factory-ready-buffer"
+last_stack="$(last_stack_agent_stable_root "$self" "$program")"
+plist_src="$self_root/launchd/${label}.plist"
+if [ ! -f "$plist_src" ]; then
+  plist_src="$last_stack/launchd/${label}.plist"
+fi
+plist_dst="${FACTORY_READY_BUFFER_PLIST:-$HOME/Library/LaunchAgents/${label}.plist}"
+legacy_label="com.edgevector.idle-ladder"
+legacy_plist="${FACTORY_READY_BUFFER_LEGACY_PLIST:-$HOME/Library/LaunchAgents/${legacy_label}.plist}"
+legacy_script="${FACTORY_READY_BUFFER_LEGACY_SCRIPT:-$HOME/.routines/bin/last-stack-idle-ladder.sh}"
+cmd="${1:-status}"
+
+ensure_loaded() {
+  last_stack_agent_should_touch_launchd "$plist_dst" || return 0
+  command -v launchctl >/dev/null 2>&1 || return 1
+  local uid domain
+  uid="$(id -u)"
+  domain="${LAST_STACK_LAUNCHD_DOMAIN:-gui/${uid}}"
+  if ! launchctl print "${domain}/${label}" >/dev/null 2>&1; then
+    launchctl bootstrap "$domain" "$plist_dst" >/dev/null 2>&1 || return 1
+    launchctl enable "${domain}/${label}" >/dev/null 2>&1 || true
+    launchctl kickstart -k "${domain}/${label}" >/dev/null 2>&1 || true
+  fi
+  launchctl print "${domain}/${label}" >/dev/null 2>&1
+}
+
+retire_legacy() {
+  local uid domain removed=0
+  uid="$(id -u)"
+  domain="${LAST_STACK_LAUNCHD_DOMAIN:-gui/${uid}}"
+  if last_stack_agent_should_touch_launchd "$legacy_plist" \
+    && command -v launchctl >/dev/null 2>&1; then
+    launchctl bootout "${domain}/${legacy_label}" >/dev/null 2>&1 || true
+  fi
+  if [ -f "$legacy_plist" ]; then
+    rm -f "$legacy_plist"
+    removed=1
+  fi
+  if [ -f "$legacy_script" ]; then
+    rm -f "$legacy_script"
+    removed=1
+  fi
+  if [ "$removed" -eq 1 ]; then
+    echo "factory-ready-buffer: retired legacy idle ladder"
+  else
+    echo "factory-ready-buffer: legacy idle ladder absent"
+  fi
+}
+
+install_agent() {
+  chmod +x "$last_stack/bin/$program" 2>/dev/null || true
+  [ -e "$last_stack/bin/$program" ] || [ -x "$self_root/bin/$program" ] || {
+    echo "missing executable: $last_stack/bin/$program" >&2
+    exit 1
+  }
+  [ -f "$plist_src" ] || {
+    echo "missing plist: $plist_src" >&2
+    exit 1
+  }
+  rendered="$(mktemp "${TMPDIR:-/tmp}/factory-ready-buffer.plist.XXXXXX")"
+  last_stack_agent_render_plist "$plist_src" "$rendered" "$last_stack"
+  last_stack_agent_commit_plist "$label" "$plist_dst" "$rendered" "factory-ready-buffer"
+  if ! ensure_loaded; then
+    echo "factory-ready-buffer: new LaunchAgent is not loaded; legacy path remains" >&2
+    exit 1
+  fi
+  retire_legacy
+}
+
+uninstall_agent() {
+  last_stack_agent_uninstall "$label" "$plist_dst" "factory-ready-buffer"
+}
+
+status_agent() {
+  echo "controller: $last_stack/bin/$program"
+  echo "plist: $plist_dst"
+  if [ -f "$plist_dst" ]; then
+    echo "plist: present"
+    prog="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$plist_dst" 2>/dev/null || true)"
+    interval="$(/usr/libexec/PlistBuddy -c 'Print :StartInterval' "$plist_dst" 2>/dev/null || true)"
+    echo "program: ${prog:-unknown}"
+    echo "interval_s: ${interval:-unknown}"
+  else
+    echo "plist: missing"
+  fi
+  [ -f "$legacy_plist" ] && echo "legacy_plist: present" || echo "legacy_plist: absent"
+  [ -f "$legacy_script" ] && echo "legacy_script: present" || echo "legacy_script: absent"
+  if last_stack_agent_should_touch_launchd "$plist_dst" \
+    && command -v launchctl >/dev/null 2>&1; then
+    uid="$(id -u)"
+    launchctl print "gui/${uid}/${label}" 2>/dev/null | head -25 \
+      || echo "launchctl: not loaded"
+  else
+    echo "launchctl: skipped"
+  fi
+}
+
+case "$cmd" in
+  install) install_agent ;;
+  uninstall) uninstall_agent ;;
+  status) status_agent ;;
+  run-once)
+    if [ -x "$last_stack/bin/$program" ]; then
+      exec "$last_stack/bin/$program" "${@:2}"
+    fi
+    exec "$self_root/bin/$program" "${@:2}"
+    ;;
+  -h|--help)
+    echo "usage: $0 install|uninstall|status|run-once"
+    ;;
+  *)
+    echo "usage: $0 install|uninstall|status|run-once" >&2
+    exit 2
+    ;;
+esac

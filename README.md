@@ -155,6 +155,11 @@ Brain and Routines admin tabs have dedicated hourly deliverers. See
 [`docs/admin-deliverers.md`](docs/admin-deliverers.md) for install, dry-run,
 RUN-home, and LaunchAgent details.
 
+The factory ready-buffer controller checks the pickup-ready count every 30
+minutes. It selects one milestone-driver pass below three ready cards. Install
+or inspect it with `last-stack-factory-ready-buffer-install`. The installer
+removes the retired host-local idle ladder only after the shipped job loads.
+
 v1 **reuses the existing kanban-consumer identity** (schema-agnostic deliver).
 Mailbox poll + `openDelivery` stay on the admin consumer side (exemem-infra);
 this repo only owns publish + stage/approve on Mini.

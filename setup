@@ -821,6 +821,14 @@ if [ -x "$SOURCE_ROOT/bin/last-stack-factory-health-install" ]; then
     echo "  factory-health LaunchAgent: install failed (non-fatal)" >&2
 fi
 
+# Demand-based ready buffer (zero LLM). The installer loads the shipped
+# controller before it removes the old host-local idle ladder.
+if [ -x "$SOURCE_ROOT/bin/last-stack-factory-ready-buffer-install" ]; then
+  LAST_STACK_PUBLIC_ROOT="${LAST_STACK_PUBLIC_ROOT:-$HOME/.last-stack}" \
+    "$SOURCE_ROOT/bin/last-stack-factory-ready-buffer-install" install || \
+    echo "  factory-ready-buffer LaunchAgent: install failed (non-fatal)" >&2
+fi
+
 # Host-side memory guards (GUI Activity Monitor, cargo test binaries, sentinel).
 # Does not touch the primary lastdbd process or its 16 GiB footprint guard.
 if [ -x "$SOURCE_ROOT/bin/last-stack-host-memory-guards-install" ]; then

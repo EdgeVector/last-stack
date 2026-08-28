@@ -139,6 +139,7 @@ class Alert:
 @dataclass
 class Snapshot:
     ts: str
+    pickup_ready: int = -1
     todo: int = 0
     doing: int = 0
     backlog: int = 0
@@ -213,6 +214,47 @@ def list_cards(board_cli: str) -> list[dict[str, Any]]:
                 if isinstance(data.get(k), list):
                     return data[k]
     return []
+
+
+def pickup_ready_count(board_cli: str) -> Optional[int]:
+    """Read the supported pickup-ready count. Return None on any bad read."""
+    code, out, _ = run([board_cli, "pickup", "status", "--json"], timeout=120)
+    if code != 0:
+        return None
+    try:
+        value = parse_json(out).get("ready")
+    except Exception:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value < 0 or int(value) != value:
+        return None
+    return int(value)
+
+
+def safe_milestone_frontier(board_cli: str) -> tuple[Optional[bool], str]:
+    """Report whether gap-report exposes work that the driver can safely add."""
+    code, out, err = run(
+        [board_cli, "milestone", "gap-report", "--json"], timeout=120
+    )
+    if code != 0:
+        return None, (err or out or f"exit {code}").strip()[:160]
+    try:
+        data = parse_json(out)
+    except Exception:
+        return None, "malformed gap-report"
+    queue = data.get("work_queue") if isinstance(data, dict) else None
+    if not isinstance(queue, list):
+        return None, "gap-report has no work_queue"
+    safe = [
+        str(item.get("slug") or item.get("milestone") or "?")
+        for item in queue
+        if isinstance(item, dict)
+        and str(item.get("action") or "") in {"promote", "decompose"}
+    ]
+    if safe:
+        return True, ",".join(safe[:5])
+    return False, "no promote or decompose action"
 
 
 def age_hours(card: dict[str, Any], now: float) -> float:
@@ -645,6 +687,45 @@ def evaluate(cfg: dict[str, Any], snap: Snapshot, meta: dict[str, Any], state: d
         "max_doing_age_h": snap.max_doing_age_h,
         "routines_profile": meta.get("routines_profile") or "",
     }
+
+    # ── pickup-ready buffer ───────────────────────────────────────────────
+    # The controller acts every 30 minutes below three ready cards. This band
+    # reports a controller failure only after two hourly observations prove a
+    # sustained zero while gap-report still exposes a safe generator action.
+    if cfg_get(cfg, "ready_buffer", "enabled", True):
+        zero_key = "ready_buffer_zero_since_epoch"
+        ready = snap.pickup_ready
+        frontier = meta.get("safe_milestone_frontier")
+        now_epoch = float(meta.get("now_epoch") or time.time())
+        wait_s = int(cfg_get(cfg, "ready_buffer", "zero_alert_after_s", 3600))
+        if ready == 0 and frontier is True:
+            try:
+                since = float(streaks.get(zero_key) or now_epoch)
+            except (TypeError, ValueError):
+                since = now_epoch
+            if since > now_epoch:
+                since = now_epoch
+            streaks[zero_key] = since
+            elapsed = max(0, int(now_epoch - since))
+            if elapsed >= wait_s:
+                alerts.append(
+                    Alert(
+                        severity="hard",
+                        code="ready_buffer_zero_sustained",
+                        title="Pickup-ready buffer stayed empty",
+                        detail=(
+                            f"pickup_ready=0 for {elapsed}s; safe milestone frontier="
+                            f"{meta.get('safe_milestone_frontier_detail') or 'present'}"
+                        ),
+                        recommendations=[
+                            "Check com.edgevector.factory-ready-buffer and its logs.",
+                            "Run `last-stack-factory-ready-buffer-install status`.",
+                            "Run the controller once after the board read is healthy.",
+                        ],
+                    )
+                )
+        else:
+            streaks.pop(zero_key, None)
 
     # ── ship rate ──────────────────────────────────────────────────────────
     if cfg_get(cfg, "ship_rate", "enabled", True):
@@ -1214,6 +1295,11 @@ def main(argv: list[str]) -> int:
         use_completed,
         parked_min_age_h=float(cfg_get(cfg, "backlog", "min_age_h", 3.0)),
     )
+    ready = pickup_ready_count(board_cli)
+    snap.pickup_ready = ready if ready is not None else -1
+    frontier, frontier_detail = safe_milestone_frontier(board_cli)
+    meta["safe_milestone_frontier"] = frontier
+    meta["safe_milestone_frontier_detail"] = frontier_detail
     # refresh stale with config soft age for snapshot fields before evaluate mutates
     soft_age = float(cfg_get(cfg, "doing", "soft_max_age_h", 2.0))
     max_age, stale = recompute_stale(
@@ -1292,7 +1378,8 @@ def main(argv: list[str]) -> int:
     codes = ",".join(a.code for a in alerts) if alerts else "none"
     line = (
         f"factory-health {iso_z()} {severity} alerts={len(alerts)} codes={codes} "
-        f"todo={snap.todo} doing={snap.doing} parked_ungated={snap.parked_ungated} "
+        f"ready={snap.pickup_ready} todo={snap.todo} doing={snap.doing} "
+        f"parked_ungated={snap.parked_ungated} "
         f"ships_h={snap.ships_last_h:.0f} "
         f"ships_24h={snap.ships_24h:.0f} max_doing_age_h={snap.max_doing_age_h} "
         f"notified={int(notified)} notify={notify_detail} "
