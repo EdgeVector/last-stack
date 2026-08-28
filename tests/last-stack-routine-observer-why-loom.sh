@@ -5,8 +5,8 @@ tmp="$(mktemp -d "${TMPDIR:-/tmp}/observer-why-loom.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/root/bin" "$tmp/home/.last-stack/bin"
 cp "$ROOT/bin/last-stack-routine-observer-gate" "$tmp/root/bin/"
-grep -q 'LAST_STACK_WHY_STOPPED_LOOM_TIMEOUT_SEC:-300' "$tmp/root/bin/last-stack-routine-observer-gate" || {
-  echo "why-stopped Loom timeout is not a bounded five-minute default" >&2
+grep -q 'LAST_STACK_WHY_STOPPED_LOOM_TIMEOUT_SEC:-600' "$tmp/root/bin/last-stack-routine-observer-gate" || {
+  echo "why-stopped Loom timeout is not a bounded ten-minute default" >&2
   exit 1
 }
 

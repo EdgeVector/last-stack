@@ -41,11 +41,11 @@ if [ -z "$detail" ] && [ "$id" = "last-stack-why-stopped" ]; then
     why_loom="${HOME}/.last-stack/bin/last-stack-why-stopped-loom"
   fi
   if [ -x "$why_loom" ]; then
-    loom_timeout="${LAST_STACK_WHY_STOPPED_LOOM_TIMEOUT_SEC:-300}"
+    loom_timeout="${LAST_STACK_WHY_STOPPED_LOOM_TIMEOUT_SEC:-600}"
     case "$loom_timeout" in
-      ''|*[!0-9]*) loom_timeout=300 ;;
+      ''|*[!0-9]*) loom_timeout=600 ;;
     esac
-    [ "$loom_timeout" -ge 1 ] || loom_timeout=300
+    [ "$loom_timeout" -ge 1 ] || loom_timeout=600
     set +e
     if command -v timeout >/dev/null 2>&1; then
       out="$(timeout -k 2s "${loom_timeout}s" "$why_loom" --json --quiet 2>/dev/null)"
