@@ -41,16 +41,28 @@ if [ -z "$detail" ] && [ "$id" = "last-stack-why-stopped" ]; then
     why_loom="${HOME}/.last-stack/bin/last-stack-why-stopped-loom"
   fi
   if [ -x "$why_loom" ]; then
+    loom_timeout="${LAST_STACK_WHY_STOPPED_LOOM_TIMEOUT_SEC:-300}"
+    case "$loom_timeout" in
+      ''|*[!0-9]*) loom_timeout=300 ;;
+    esac
+    [ "$loom_timeout" -ge 1 ] || loom_timeout=300
     set +e
     if command -v timeout >/dev/null 2>&1; then
-      out="$(timeout -k 2s 120s "$why_loom" --json --quiet 2>/dev/null)"
+      out="$(timeout -k 2s "${loom_timeout}s" "$why_loom" --json --quiet 2>/dev/null)"
+      loom_rc=$?
     else
       out="$("$why_loom" --json --quiet 2>/dev/null)"
+      loom_rc=$?
     fi
     set -e
     cls="$(printf '%s\n' "$out" | sed -n 's/.*"classes":"\([^"]*\)".*/\1/p' | head -1)"
     if [ -n "$cls" ]; then
       detail="classes=${cls}"
+    else
+      # The fallback still supplies useful factory classes, but it does not
+      # prove the Loom path or refresh why-stopped-loom.json. Keep the routine
+      # outcome red so a failed Loom probe cannot hide behind fallback success.
+      exit_code=1
     fi
   fi
   if [ -z "$detail" ]; then
@@ -59,9 +71,9 @@ if [ -z "$detail" ] && [ "$id" = "last-stack-why-stopped" ]; then
       # No --heal: Class A heal can hang; classification itself is the job.
       out="$("$why" --json 2>/dev/null || true)"
       cls="$(printf '%s\n' "$out" | sed -n 's/.*"classes":"\([^"]*\)".*/\1/p' | head -1)"
-      detail="classes=${cls:-unknown}"
+      detail="classes=${cls:-unknown} loom=unavailable rc=${loom_rc:-missing}"
     else
-      detail="classes=unknown"
+      detail="classes=unknown loom=unavailable rc=${loom_rc:-missing}"
     fi
   fi
 fi
