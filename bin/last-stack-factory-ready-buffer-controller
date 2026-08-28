@@ -10,6 +10,7 @@ NOW_EPOCH="${LAST_STACK_READY_BUFFER_NOW_EPOCH:-$(date +%s)}"
 STATE_ROOT="${LAST_STACK_READY_BUFFER_STATE_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/last-stack}"
 STATE_FILE="${LAST_STACK_READY_BUFFER_STATE_FILE:-$STATE_ROOT/factory-ready-buffer-controller.last-run}"
 LOCK_DIR="${LAST_STACK_READY_BUFFER_LOCK_DIR:-$STATE_FILE.lock}"
+LOCK_STALE_S="${LAST_STACK_READY_BUFFER_LOCK_STALE_S:-3600}"
 DRY_RUN=0
 JSON=0
 LOCK_HELD=0
@@ -53,6 +54,7 @@ cleanup() {
     rm "$STATE_TMP"
   fi
   if [ "$LOCK_HELD" -eq 1 ]; then
+    rm -f "$LOCK_DIR/pid" "$LOCK_DIR/started"
     rmdir "$LOCK_DIR" 2>/dev/null || true
   fi
 }
@@ -68,10 +70,11 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
-case "$THRESHOLD:$COOLDOWN_S:$NOW_EPOCH" in
+case "$THRESHOLD:$COOLDOWN_S:$NOW_EPOCH:$LOCK_STALE_S" in
   *[!0-9:]*|:*|*::*|*:) emit error none invalid-numeric-config; exit 2 ;;
 esac
 [ "$THRESHOLD" -gt 0 ] || { emit error none invalid-threshold; exit 2; }
+[ "$LOCK_STALE_S" -gt 0 ] || { emit error none invalid-lock-stale; exit 2; }
 
 if ! pickup_json="$($BOARD_CLI pickup status --json 2>/dev/null)"; then
   emit error none board-unreadable
@@ -99,10 +102,30 @@ fi
 
 mkdir -p "$(dirname "$STATE_FILE")"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-  emit ok none controller-busy "$ready"
-  exit 0
+  lock_pid="$(sed -n '1p' "$LOCK_DIR/pid" 2>/dev/null || true)"
+  lock_started="$(sed -n '1p' "$LOCK_DIR/started" 2>/dev/null || true)"
+  case "$lock_pid:$lock_started" in
+    *[!0-9:]*|:*|*::*|*:)
+      emit ok none controller-busy "$ready"
+      exit 0
+      ;;
+  esac
+  lock_age=$((NOW_EPOCH - lock_started))
+  if kill -0 "$lock_pid" 2>/dev/null \
+    || [ "$lock_age" -lt 0 ] \
+    || [ "$lock_age" -lt "$LOCK_STALE_S" ]; then
+    emit ok none controller-busy "$ready"
+    exit 0
+  fi
+  rm -f "$LOCK_DIR/pid" "$LOCK_DIR/started"
+  if ! rmdir "$LOCK_DIR" 2>/dev/null || ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    emit ok none controller-busy "$ready"
+    exit 0
+  fi
 fi
 LOCK_HELD=1
+printf '%s\n' "$$" >"$LOCK_DIR/pid"
+printf '%s\n' "$NOW_EPOCH" >"$LOCK_DIR/started"
 
 last_run=0
 if [ -f "$STATE_FILE" ]; then
