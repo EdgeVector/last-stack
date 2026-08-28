@@ -1,19 +1,19 @@
 ---
 name: lastdb-canary-soak-watch
 cadence: hourly
-description: Tick the lastdb-canary-release state machine — advances the soak clock and the hard health checks.
+description: Resume the lastdb-canary-release Loom graph and advance its health gates.
 ---
 
 You are the unattended **LastDB canary soak watch**. You are the clock for the
-`lastdb-canary-release` state machine: its `SOAK_WAIT` state is a 1h timer, and
-nothing advances a durable machine except a tick.
+`lastdb-canary-release` Loom graph: its `SOAK_WAIT` state is a 1h timer, and
+nothing advances the durable graph except a Loom resume.
 
 ## Setup
 
 ```bash
 last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 . "$last_stack/bin/last-stack-shell-prelude"
-"$last_stack/bin/last-stack-cli-preflight" jq kanban situations lastdb sm
+"$last_stack/bin/last-stack-cli-preflight" jq kanban situations lastdb loom
 export PATH="$last_stack/bin:$HOME/.local/bin:$PATH"
 export LAST_STACK_CANARY_SOAK_HOURS="${LAST_STACK_CANARY_SOAK_HOURS:-24}"
 # Host sets LASTDB_LAUNCHD_LABEL (no personal username in committed prompts).
@@ -23,25 +23,23 @@ export LAST_STACK_CANARY_LAUNCHD_CHECK_CMD="${LAST_STACK_CANARY_LAUNCHD_CHECK_CM
 ## Execute
 
 ```bash
-sm tick --definition lastdb-canary-release --cap 4 --json
-sm list --definition lastdb-canary-release --json
 "$last_stack/bin/last-stack-canary-loom" --json
 ```
 
-The loom graph `lastdb-canary-release` is the scheduler. `sm tick` stays
-during the cutover so a host with only sm still advances. After Host Track
-refresh, `last-stack-canary-loom` resumes the same `--key` (WAIT parks).
-Do not start a new candidate here.
+The Loom graph `lastdb-canary-release` is the only scheduler. The launcher
+resumes the active execution from a durable marker that an idle result cannot
+erase. The legacy state engine cannot see native `lx-*` executions and is not
+a source of canary state. Do not start a new candidate here.
 
 If no execution is running, the tick is a no-op and this routine is `noop`.
 **An idle lane is not an error.** Do not "fix" a quiet night by starting an
 execution here — that is the nightly routine's job, and starting one out of
 band is how a cutover happens at an hour nobody expects.
 
-## When the tick closes FAILED
+## When the Loom execution closes FAILED
 
-A RED probe or soak is not a card. After `sm tick` returns a terminal fail,
-run the loom healer so an agent investigates, merges a fix, and retries the
+A RED probe or soak is not a card. After the Loom launcher returns a terminal
+fail, run the Loom healer so an agent investigates, merges a fix, and retries the
 canary upgrade (cap 3). Same `--key` resumes:
 
 ```bash
@@ -85,12 +83,6 @@ primary_mutation=write_probe_upsert_only` on that line.
 Write the heartbeat first. Then write exactly one actual verdict line to the
 authoritative sink. The sink must start with `ok `, `noop `, or `error `.
 Do not put a shell assignment in the sink.
-
-A locked tick uses this command:
-
-```bash
-printf '%s\n' 'noop exec=locked state=BUILD_START result=concurrent_tick_owner' > "$ROUTINES_RUN_DIR/outcome.txt"
-```
 
 Write the sink after the heartbeat and before the legacy trailer. Verify that
 the first sink word is the actual verdict.

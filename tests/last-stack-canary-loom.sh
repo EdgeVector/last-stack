@@ -8,11 +8,15 @@ bash -n "$ROOT/lib/canary-loom/loom-canary-step.sh"
 [ -f "$ROOT/lib/canary-loom/lastdb-canary-release.json" ] || fail "graph missing"
 grep -q 'last-stack-canary-loom' "$ROOT/routines/lastdb-canary-soak-watch.md" \
   || fail "soak-watch missing loom tick"
+if grep -q 'sm tick --definition lastdb-canary-release' "$ROOT/routines/lastdb-canary-soak-watch.md"; then
+  fail "soak-watch still ticks the legacy state engine"
+fi
 grep -q 'last-stack-canary-loom' "$ROOT/routines/lastdb-canary-dogfood.md" \
   || fail "dogfood missing loom start"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-canary-loom.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 export LAST_STACK_CANARY_LOOM_STAMP="$tmp/stamp.json"
+export LAST_STACK_CANARY_LOOM_ACTIVE="$tmp/active.json"
 out="$("$BIN" --dry-run --json --quiet)"
 printf '%s\n' "$out" | grep -q 'ROUTINE_RESULT' || fail "missing ROUTINE_RESULT: $out"
 out2="$("$BIN" --dry-run --start --oid abc123 --json --quiet)"
@@ -26,6 +30,7 @@ set -euo pipefail
 case "${1:-}" in
   ping|publish|validate) exit 0 ;;
   run)
+    printf '%s\n' "$*" >>"${FAKE_LOOM_CALLS:?}"
     case "${FAKE_LOOM_MODE:-success}" in
       success)
         printf '%s\n' lx-test-canary 'status: running' 'state: BUILD_WAIT'
@@ -37,6 +42,9 @@ case "${1:-}" in
         printf '%s\n' 'loom transport denied: "state root"' >&2
         exit 9
         ;;
+      terminal)
+        printf '%s\n' lx-test-terminal 'status: succeeded' 'state: DONE'
+        ;;
     esac
     ;;
   *) exit 2 ;;
@@ -46,11 +54,46 @@ chmod 755 "$mock_home/.local/bin/loom"
 
 export LAST_STACK_CANARY_LOOM_STDOUT_LOG="$tmp/loom.stdout.log"
 export LAST_STACK_CANARY_LOOM_STDERR_LOG="$tmp/loom.stderr.log"
+export FAKE_LOOM_CALLS="$tmp/loom.calls"
+: >"$FAKE_LOOM_CALLS"
 out3="$(HOME="$mock_home" FAKE_LOOM_MODE=success "$BIN" --key canary-test --json --quiet)"
 printf '%s\n' "$out3" | head -1 | jq -e '.outcome == "ok" and .execution == "lx-test-canary" and .status == "running"' >/dev/null \
   || fail "success result missing execution: $out3"
 grep -q 'state: BUILD_WAIT' "$LAST_STACK_CANARY_LOOM_STDOUT_LOG" \
   || fail "loom stdout was not preserved"
+jq -e '.key == "canary-test" and .execution == "lx-test-canary" and .status == "running"' \
+  "$LAST_STACK_CANARY_LOOM_ACTIVE" >/dev/null \
+  || fail "active execution marker was not written"
+
+# Losing the mutable last-result stamp must not lose the native Loom resume key.
+rm -f "$LAST_STACK_CANARY_LOOM_STAMP"
+: >"$FAKE_LOOM_CALLS"
+out_resume="$(HOME="$mock_home" FAKE_LOOM_MODE=success "$BIN" --json --quiet)"
+printf '%s\n' "$out_resume" | head -1 | jq -e '.outcome == "ok" and .key == "canary-test"' >/dev/null \
+  || fail "active marker did not recover the resume key: $out_resume"
+grep -q 'run lastdb-canary-release --key canary-test' "$FAKE_LOOM_CALLS" \
+  || fail "recovered key was not passed to Loom"
+
+# A terminal execution clears the active marker. A later tick is a true idle noop.
+HOME="$mock_home" FAKE_LOOM_MODE=terminal "$BIN" --key canary-test --json --quiet >/dev/null
+[ ! -e "$LAST_STACK_CANARY_LOOM_ACTIVE" ] || fail "terminal execution left an active marker"
+rm -f "$LAST_STACK_CANARY_LOOM_STAMP"
+: >"$FAKE_LOOM_CALLS"
+out_idle="$(HOME="$mock_home" FAKE_LOOM_MODE=success "$BIN" --json --quiet)"
+printf '%s\n' "$out_idle" | grep -q 'outcome=noop detail=no-key' \
+  || fail "true idle lane did not return no-key: $out_idle"
+[ ! -s "$FAKE_LOOM_CALLS" ] || fail "idle lane called Loom without a resume key"
+
+# A damaged active marker is an error. It must not look like a true idle lane.
+printf '%s\n' '{"status":"running","key":""}' >"$LAST_STACK_CANARY_LOOM_ACTIVE"
+set +e
+out_invalid="$(HOME="$mock_home" FAKE_LOOM_MODE=success "$BIN" --json --quiet)"
+rc_invalid=$?
+set -e
+[ "$rc_invalid" -eq 3 ] || fail "invalid active marker returned $rc_invalid, expected 3"
+printf '%s\n' "$out_invalid" | head -1 | jq -e '.outcome == "error" and .detail == "active-marker-invalid"' >/dev/null \
+  || fail "invalid active marker was not structured: $out_invalid"
+rm -f "$LAST_STACK_CANARY_LOOM_ACTIVE"
 
 set +e
 out4="$(HOME="$mock_home" FAKE_LOOM_MODE=failed "$BIN" --key canary-failed --json --quiet)"
