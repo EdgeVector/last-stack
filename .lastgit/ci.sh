@@ -275,6 +275,7 @@ ci_test tests/last-stack-lastdb-safe-upgrade-cas-probe.sh
 ci_test tests/last-stack-lastdb-write-path-cow-probe.sh
 ci_test tests/last-stack-safe-upgrade-backup-dedup.sh
 ci_test tests/last-stack-safe-upgrade-backup-retention.sh
+ci_test tests/last-stack-lastdb-safe-upgrade-owner-lock.sh
 ci_test tests/last-stack-lastdb-canary-dogfood.sh
 ci_test tests/last-stack-canary-build-main.sh
 ci_test tests/last-stack-canary-resolve-lastdbd.sh

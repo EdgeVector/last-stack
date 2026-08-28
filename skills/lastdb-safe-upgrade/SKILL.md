@@ -427,6 +427,9 @@ kanban list   # must show real cards
 
 - `brew upgrade lastdb` as a one-liner without this skill when the user cares about data.
 - Run `safe-upgrade-lastdb.sh` without `--probe-only` outside a Loom execution.
+- Start a second safe-upgrade while another probe or cutover owns the host-wide
+  safety lock. Wait for the first owner to exit. The lock covers rollback
+  cleanup, the real-data probe, and the live cutover.
 - Point candidate `--data-dir` at live `~/.lastdb` "just to see".
 - Upload a CoW/ephemeral photograph into the primary's **production** backup
   home, or treat a mock object-store "stamp" as the DEV photograph gate.
