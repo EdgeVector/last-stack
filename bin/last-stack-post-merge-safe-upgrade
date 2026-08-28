@@ -355,14 +355,11 @@ poll_fleet() {
 # --- convergence tail --------------------------------------------------------
 # A main tip used to get its CI record and published build only when the NEXT
 # CR merged, so a quiet repo stranded its last merge as main_unpublished
-# (papercut-post-merge-pass-certifies-previous-merge-quiet-repo-strands-tip;
-# measured 2026-08-26: situations merged 15:04Z, certified 10h later, and only
-# because new work arrived). This tail certifies a stranded tip in place: when
-# a mapped repo's main tip has had no ci-required record for CONVERGE_AFTER
-# seconds, run one bounded hand watcher pass for that ref, then refresh the
-# app so promote/park proceed. Status writes are CAS'd server-side, so racing
-# the forge is safe; --allow-duplicate-coverage is the documented escape hatch
-# for exactly this hand-run.
+# (papercut-post-merge-pass-certifies-previous-merge-quiet-repo-strands-tip).
+# A ref watcher cannot recover that tip after its cursor passes the merge event.
+# Instead, run one repo-scoped forge pass with fresh state. Its cold event read
+# includes the exact current main object, while existing terminal statuses make
+# every older event a cheap skip. Re-read the exact tip status before refresh.
 
 CONVERGE="${LAST_STACK_POST_MERGE_CONVERGE:-1}"
 CONVERGE_AFTER="${LAST_STACK_POST_MERGE_CONVERGE_AFTER:-300}"
@@ -376,18 +373,45 @@ converge_repos() {
 tip_seen_path() { printf '%s/%s.tip-seen\n' "$STATE_DIR" "$1"; }
 
 converge_one() {
-  local repo="$1" app tip state seen_file seen_tip seen_epoch now
+  local repo="$1" app ht_app ht_status eligible tip state seen_file seen_tip seen_epoch now
+  local attempt_key attempts forge_state forge_rc current_tip
   app="$(map_repo_to_app "$repo")"
-  [ -n "$app" ] || return 0
+  case "$app" in
+    artifact:*) ht_app="${app#artifact:}" ;;
+    *) return 0 ;;
+  esac
+
+  seen_file="$(tip_seen_path "$repo")"
+  ht_status="$(host-track status --json "$ht_app" 2>/dev/null || true)"
+  eligible="$(printf '%s\n' "$ht_status" | jq -r '
+    if .install_mode == "artifact"
+      and .stale == false
+      and .main_unpublished == true
+    then "1" else "0" end
+  ' 2>/dev/null || printf 0)"
+  if [ "$eligible" != 1 ]; then
+    rm -f "$seen_file"
+    return 0
+  fi
+
   tip="$(lastgit ref "$repo" main 2>/dev/null | awk '{print $1}')"
   [ -n "$tip" ] || return 0
   state="$(lastgit ci status "$tip" --repo "$repo" --json 2>/dev/null \
     | jq -r '.state // empty' 2>/dev/null || true)"
-  seen_file="$(tip_seen_path "$repo")"
-  if [ -n "$state" ]; then
-    rm -f "$seen_file"
-    return 0
-  fi
+  case "$state" in
+    success)
+      rm -f "$seen_file"
+      log "converge $repo tip=$tip: status already success; refreshing $ht_app"
+      host-track refresh "$ht_app" >/dev/null 2>&1 \
+        || log "converge $repo: refresh failed (next tick retries)"
+      return 0
+      ;;
+    failure)
+      rm -f "$seen_file"
+      log "converge $repo tip=$tip: ci-required failure is visible; not retrying a terminal verdict"
+      return 0
+      ;;
+  esac
   now="$(date +%s)"
   seen_tip=""
   seen_epoch=""
@@ -403,35 +427,65 @@ converge_one() {
   if [ $((now - ${seen_epoch:-$now})) -lt "$CONVERGE_AFTER" ]; then
     return 0
   fi
-  if [ "$DRY_RUN" = 1 ]; then
-    log "DRY_RUN: would converge $repo tip=$tip (uncertified ${CONVERGE_AFTER}s+)"
+  attempt_key="tip-$tip"
+  attempts="$(attempt_count "$repo" "$attempt_key")"
+  if [ "$attempts" -ge "$MAX_ATTEMPTS" ]; then
+    log "GIVE_UP converge repo=$repo tip=$tip after $attempts attempts; ci state=${state:-missing} remains visible"
     return 0
   fi
-  log "converge $repo tip=$tip: uncertified for ${CONVERGE_AFTER}s+; hand watcher pass"
-  if [ -n "$timeout_bin" ]; then
-    "$timeout_bin" "$CONVERGE_TIMEOUT" lastgit ci watch --repo "$repo" \
-      --ref refs/heads/main --timeout-ms "$((CONVERGE_TIMEOUT * 1000))" \
-      --allow-duplicate-coverage >/dev/null 2>&1 || {
-      log "converge $repo: hand watcher pass did not finish (forge may own it)"
-      return 0
-    }
-  else
-    lastgit ci watch --repo "$repo" --ref refs/heads/main \
-      --timeout-ms "$((CONVERGE_TIMEOUT * 1000))" \
-      --allow-duplicate-coverage >/dev/null 2>&1 || {
-      log "converge $repo: hand watcher pass did not finish (forge may own it)"
-      return 0
-    }
+  if [ "$DRY_RUN" = 1 ]; then
+    log "DRY_RUN: would forge-run exact current tip repo=$repo tip=$tip (unpublished ${CONVERGE_AFTER}s+)"
+    return 0
   fi
-  rm -f "$seen_file"
-  case "$app" in
-    artifact:*)
-      log "converge $repo: refreshing ${app#artifact:} after tip certification"
-      host-track refresh "${app#artifact:}" >/dev/null 2>&1 \
+
+  forge_state="$(mktemp -d "$STATE_DIR/converge-$repo.XXXXXX")"
+  log "converge $repo tip=$tip: unpublished for ${CONVERGE_AFTER}s+; fresh repo-scoped forge pass"
+  set +e
+  if [ -n "$timeout_bin" ]; then
+    "$timeout_bin" "$((CONVERGE_TIMEOUT + 30))" lastgit forge run \
+      --repos "$repo" --context ci-required --once \
+      --max-concurrency 1 --max-per-repo-concurrency 1 \
+      --timeout-ms "$((CONVERGE_TIMEOUT * 1000))" \
+      --state-dir "$forge_state" >>"$LOG" 2>&1
+    forge_rc=$?
+  else
+    lastgit forge run --repos "$repo" --context ci-required --once \
+      --max-concurrency 1 --max-per-repo-concurrency 1 \
+      --timeout-ms "$((CONVERGE_TIMEOUT * 1000))" \
+      --state-dir "$forge_state" >>"$LOG" 2>&1
+    forge_rc=$?
+  fi
+  set -e
+  rm -rf "$forge_state"
+
+  state="$(lastgit ci status "$tip" --repo "$repo" --json 2>/dev/null \
+    | jq -r '.state // empty' 2>/dev/null || true)"
+  case "$state" in
+    success)
+      current_tip="$(lastgit ref "$repo" main 2>/dev/null | awk '{print $1}')"
+      if [ "$current_tip" != "$tip" ]; then
+        rm -f "$seen_file"
+        log "converge $repo: main moved during gate old=$tip current=$current_tip; next tick owns current"
+        return 0
+      fi
+      rm -f "$seen_file"
+      log "converge $repo: exact tip certified; refreshing $ht_app"
+      host-track refresh "$ht_app" >/dev/null 2>&1 \
         || log "converge $repo: refresh failed (next tick retries)"
+      log "converged $repo tip=$tip"
+      ;;
+    failure)
+      rm -f "$seen_file"
+      log "FAIL converge repo=$repo tip=$tip state=failure; terminal ci-required verdict remains visible"
+      ;;
+    *)
+      attempts="$(bump_attempt "$repo" "$attempt_key")"
+      log "converge $repo: forge pass rc=$forge_rc left state=${state:-missing} attempt=$attempts/$MAX_ATTEMPTS"
+      if [ "$attempts" -ge "$MAX_ATTEMPTS" ]; then
+        log "GIVE_UP converge repo=$repo tip=$tip after $attempts attempts; status remains ${state:-missing}"
+      fi
       ;;
   esac
-  log "converged $repo tip=$tip"
 }
 
 converge_pass() {

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Convergence tail: a stranded main tip (no ci-required record) gets one
-# bounded hand watcher pass + a refresh — but only after the forge's own
-# window, only once per tip, and never when the tip is certified. All stubs.
+# A quiet repository's exact main tip gets a real gate run. The fixture uses a
+# real Git remote and executes its checked-out .lastgit/ci.sh; no stub grants a
+# success verdict without that gate.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -16,87 +16,207 @@ fail() {
 
 WORKER="$ROOT/bin/last-stack-post-merge-safe-upgrade"
 state="$tmp/state"
-mkdir -p "$tmp/bin" "$state"
+remote="$tmp/quiet.git"
+seed="$tmp/seed"
+mkdir -p "$tmp/bin" "$tmp/status" "$tmp/artifacts" "$state"
+git init -q --bare "$remote"
+git init -q "$seed"
+git -C "$seed" checkout -q -b main
+git -C "$seed" config user.name fixture
+git -C "$seed" config user.email fixture@example.invalid
+git -C "$seed" remote add origin "$remote"
+mkdir -p "$seed/.lastgit"
 
-# lastgit stub: fixture-driven tip + ci state; records watch calls.
-cat > "$tmp/bin/lastgit" <<EOF
+cat >"$seed/.lastgit/ci.sh" <<'SH'
 #!/usr/bin/env bash
-case "\$1" in
-  cr) [ "\$2" = list ] && { echo '[]'; exit 0; }; exit 0 ;;
-  ref) cat "$tmp/tip-\$2" 2>/dev/null || exit 1 ;;
-  ci)
-    case "\$2" in
-      status)
-        if [ -f "$tmp/certified-\$5" ]; then
-          echo '{"state":"success"}'
-        else
-          echo 'null'
-        fi
-        ;;
-      watch)
-        printf '%s\n' "\$*" >> "$tmp/watch-calls"
-        touch "$tmp/certified-\$4"
-        ;;
-    esac
+set -euo pipefail
+oid="$(git rev-parse HEAD)"
+printf '%s\n' "$oid" >>"$QUIET_GATE_LOG"
+[ ! -f FAIL_GATE ] || exit 23
+printf '%s\n' "$oid" >"$QUIET_ARTIFACT_ROOT/$oid"
+SH
+chmod +x "$seed/.lastgit/ci.sh"
+printf 'initial\n' >"$seed/payload.txt"
+git -C "$seed" add -A
+git -C "$seed" commit -qm initial
+git -C "$seed" push -q origin main
+
+push_tip() {
+  local label="$1" gate_result="${2:-pass}"
+  printf '%s\n' "$label" >>"$seed/payload.txt"
+  if [ "$gate_result" = fail ]; then
+    printf 'fail\n' >"$seed/FAIL_GATE"
+  else
+    rm -f "$seed/FAIL_GATE"
+  fi
+  git -C "$seed" add -A
+  git -C "$seed" commit -qm "$label"
+  git -C "$seed" push -q origin main
+  git -C "$seed" rev-parse HEAD
+}
+
+cat >"$tmp/bin/lastgit" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-}:${2:-}" in
+  cr:list)
+    printf '[]\n'
+    exit 0
+    ;;
+  ci:status)
+    oid="$3"
+    if [ -f "$QUIET_STATUS_DIR/$oid" ]; then
+      state="$(cat "$QUIET_STATUS_DIR/$oid")"
+      printf '{"state":"%s"}\n' "$state"
+    else
+      printf 'null\n'
+    fi
+    exit 0
+    ;;
+  forge:run)
+    repo=""
+    run_state=""
+    shift 2
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --repos) repo="$2"; shift 2 ;;
+        --state-dir) run_state="$2"; shift 2 ;;
+        --context|--max-concurrency|--max-per-repo-concurrency|--timeout-ms) shift 2 ;;
+        --once) shift ;;
+        *) shift ;;
+      esac
+    done
+    [ "$repo" = situations ] || exit 2
+    [ -n "$run_state" ] || exit 2
+    [ ! -f "$run_state/situations.cursor" ] || exit 2
+    oid="$(git --git-dir="$QUIET_REMOTE" rev-parse refs/heads/main)"
+    printf '%s %s %s\n' "$repo" "$oid" "$run_state" >>"$QUIET_FORGE_LOG"
+    remaining="$(cat "$QUIET_FORGE_FAILS" 2>/dev/null || printf 0)"
+    if [ "$remaining" -gt 0 ]; then
+      printf '%s\n' "$((remaining - 1))" >"$QUIET_FORGE_FAILS"
+      exit 75
+    fi
+    checkout="$(mktemp -d "${TMPDIR:-/tmp}/quiet-forge.XXXXXX")"
+    git clone -q "$QUIET_REMOTE" "$checkout"
+    git -C "$checkout" checkout -q --detach "$oid"
+    if (cd "$checkout" && .lastgit/ci.sh); then
+      printf 'success\n' >"$QUIET_STATUS_DIR/$oid"
+    else
+      printf 'failure\n' >"$QUIET_STATUS_DIR/$oid"
+    fi
+    rm -rf "$checkout"
+    exit 0
     ;;
 esac
-exit 0
-EOF
-# host-track stub records refreshes.
-cat > "$tmp/bin/host-track" <<EOF
-#!/usr/bin/env bash
-printf '%s\n' "\$*" >> "$tmp/refresh-calls"
-exit 0
-EOF
-chmod +x "$tmp/bin/lastgit" "$tmp/bin/host-track"
-touch "$tmp/watch-calls" "$tmp/refresh-calls"
 
-# Only the situations repo has a tip in this fixture; the others are silent.
-printf '%s\trefs/heads/main\tpoint\n' "abc123def456abc123def456abc123def456abc1" \
-  > "$tmp/tip-situations"
+if [ "${1:-}" = ref ] && [ "${3:-}" = main ] && [ "${2:-}" = situations ]; then
+  oid="$(git --git-dir="$QUIET_REMOTE" rev-parse refs/heads/main)"
+  printf '%s\trefs/heads/main\tpoint\n' "$oid"
+  exit 0
+fi
+exit 1
+SH
+
+cat >"$tmp/bin/host-track" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = status ] && [ "${2:-}" = --json ]; then
+  app="${3:-}"
+  mode="$(cat "$QUIET_HOST_MODE" 2>/dev/null || printf fresh)"
+  if [ "$app" != situations ]; then mode=fresh; fi
+  case "$mode" in
+    eligible) printf '{"install_mode":"artifact","stale":false,"main_unpublished":true}\n' ;;
+    stale) printf '{"install_mode":"artifact","stale":true,"main_unpublished":true}\n' ;;
+    *) printf '{"install_mode":"artifact","stale":false,"main_unpublished":false}\n' ;;
+  esac
+  exit 0
+fi
+if [ "${1:-}" = refresh ]; then
+  printf '%s\n' "$*" >>"$QUIET_REFRESH_LOG"
+  printf 'fresh\n' >"$QUIET_HOST_MODE"
+  exit 0
+fi
+exit 2
+SH
+chmod +x "$tmp/bin/lastgit" "$tmp/bin/host-track"
+touch "$tmp/gate.log" "$tmp/forge.log" "$tmp/refresh.log"
+printf '0\n' >"$tmp/forge-fails"
 
 run_worker() {
   env PATH="$tmp/bin:/usr/bin:/bin" \
+    QUIET_REMOTE="$remote" \
+    QUIET_STATUS_DIR="$tmp/status" \
+    QUIET_ARTIFACT_ROOT="$tmp/artifacts" \
+    QUIET_GATE_LOG="$tmp/gate.log" \
+    QUIET_FORGE_LOG="$tmp/forge.log" \
+    QUIET_FORGE_FAILS="$tmp/forge-fails" \
+    QUIET_REFRESH_LOG="$tmp/refresh.log" \
+    QUIET_HOST_MODE="$tmp/host-mode" \
     LAST_STACK_POST_MERGE_STATE_DIR="$state" \
     LAST_STACK_POST_MERGE_CONVERGE=1 \
     LAST_STACK_POST_MERGE_CONVERGE_AFTER=60 \
     LAST_STACK_POST_MERGE_CONVERGE_INTERVAL=0 \
+    LAST_STACK_POST_MERGE_CONVERGE_TIMEOUT=20 \
+    LAST_STACK_POST_MERGE_MAX_ATTEMPTS=2 \
     "$WORKER" --once --all "$state" >/dev/null 2>&1 || true
 }
 
-# Pass 1: first sighting — records the tip, does NOT hand-run the watcher.
+backdate_tip() {
+  local tip="$1"
+  printf '%s %s\n' "$tip" "$(( $(date +%s) - 3600 ))" >"$state/situations.tip-seen"
+}
+
+# The quiet tip has no later ref event. First sight waits; the next eligible
+# pass runs its checked-out gate, records success, and refreshes the app.
+tip1="$(git -C "$seed" rev-parse HEAD)"
+printf 'eligible\n' >"$tmp/host-mode"
 run_worker
-[ ! -s "$tmp/watch-calls" ] || fail "first sighting must not hand-run the watcher"
 [ -f "$state/situations.tip-seen" ] || fail "first sighting should record the tip"
-
-# Pass 2 inside the window: still no watch.
+[ ! -s "$tmp/forge.log" ] || fail "first sighting must not run the forge"
+backdate_tip "$tip1"
 run_worker
-[ ! -s "$tmp/watch-calls" ] || fail "inside the forge window must not hand-run"
+grep -q "^situations $tip1 " "$tmp/forge.log" || fail "forge pass did not target the exact quiet tip"
+grep -qx "$tip1" "$tmp/gate.log" || fail "the real fixture gate did not run at the exact tip"
+[ -f "$tmp/artifacts/$tip1" ] || fail "the real gate did not publish its artifact"
+[ "$(cat "$tmp/status/$tip1")" = success ] || fail "the exact tip did not receive success"
+grep -q '^refresh situations$' "$tmp/refresh.log" || fail "successful certification did not refresh"
 
-# Backdate the sighting past CONVERGE_AFTER: pass 3 certifies + refreshes.
-tip="$(awk '{print $1}' "$state/situations.tip-seen")"
-printf '%s %s\n' "$tip" "$(( $(date +%s) - 3600 ))" > "$state/situations.tip-seen"
+# stale=true is not the quiet-tip state. It must not start a forge pass.
+tip2="$(push_tip second)"
+printf 'stale\n' >"$tmp/host-mode"
+before="$(wc -l <"$tmp/forge.log" | tr -d ' ')"
 run_worker
-grep -q -- '--repo situations' "$tmp/watch-calls" || fail "stranded tip should get a hand watcher pass"
-grep -q -- '--allow-duplicate-coverage' "$tmp/watch-calls" || fail "hand run must use the documented escape hatch"
-grep -q 'refresh situations' "$tmp/refresh-calls" || fail "certified tip should refresh the app"
-[ ! -f "$state/situations.tip-seen" ] || fail "converged tip should clear the sighting"
+[ "$(wc -l <"$tmp/forge.log" | tr -d ' ')" = "$before" ] || fail "stale app ran convergence"
+[ ! -f "$state/situations.tip-seen" ] || fail "ineligible state retained a sighting"
 
-# Pass 4: tip now certified — nothing more happens.
-: > "$tmp/watch-calls"
+# A transport failure with no terminal status retries only to the configured
+# cap. Each retry gets a fresh state directory, so no moved cursor can skip it.
+tip3="$(push_tip retry)"
+printf 'eligible\n' >"$tmp/host-mode"
+printf '2\n' >"$tmp/forge-fails"
 run_worker
-[ ! -s "$tmp/watch-calls" ] || fail "certified tip must not re-run the watcher"
+backdate_tip "$tip3"
+run_worker
+run_worker
+after_two="$(wc -l <"$tmp/forge.log" | tr -d ' ')"
+run_worker
+[ "$(wc -l <"$tmp/forge.log" | tr -d ' ')" = "$after_two" ] || fail "retry cap allowed a third forge pass"
+grep -q "GIVE_UP converge repo=situations tip=$tip3 after 2 attempts" "$state/post-merge.log" \
+  || fail "retry exhaustion was not visible"
 
-# DRY_RUN: stranded again, but only logs.
-rm -f "$tmp/certified-$tip"
-printf '%s %s\n' "$tip" "$(( $(date +%s) - 3600 ))" > "$state/situations.tip-seen"
-env PATH="$tmp/bin:/usr/bin:/bin" \
-  LAST_STACK_POST_MERGE_STATE_DIR="$state" \
-  LAST_STACK_POST_MERGE_CONVERGE=1 \
-  LAST_STACK_POST_MERGE_CONVERGE_AFTER=60 \
-  LAST_STACK_POST_MERGE_CONVERGE_INTERVAL=0 \
-  LAST_STACK_POST_MERGE_DRY_RUN=1 \
-  "$WORKER" --once --all "$state" >/dev/null 2>&1 || true
-[ ! -s "$tmp/watch-calls" ] || fail "DRY_RUN must not hand-run the watcher"
+# A real gate failure writes a terminal failure and never refreshes or reruns.
+tip4="$(push_tip terminal-failure fail)"
+printf 'eligible\n' >"$tmp/host-mode"
+printf '0\n' >"$tmp/forge-fails"
+run_worker
+backdate_tip "$tip4"
+refresh_before="$(wc -l <"$tmp/refresh.log" | tr -d ' ')"
+run_worker
+[ "$(cat "$tmp/status/$tip4")" = failure ] || fail "failing gate was not visible as failure"
+forge_before="$(wc -l <"$tmp/forge.log" | tr -d ' ')"
+run_worker
+[ "$(wc -l <"$tmp/forge.log" | tr -d ' ')" = "$forge_before" ] || fail "terminal failure reran"
+[ "$(wc -l <"$tmp/refresh.log" | tr -d ' ')" = "$refresh_before" ] || fail "terminal failure refreshed"
 
-printf 'ok: post-merge convergence tail\n'
+printf 'ok: post-merge convergence certifies the exact quiet main tip\n'
