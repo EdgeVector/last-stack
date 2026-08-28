@@ -88,6 +88,7 @@ bash tests/last-stack-feature-prove-routine.sh
 bash tests/last-stack-fleet-performance-routine.sh
 bash tests/last-stack-why-stopped-routine.sh
 bash tests/last-stack-why-stopped-loom.sh
+bash tests/last-stack-routine-observer-why-loom.sh
 bash tests/last-stack-canary-red-heal-routine.sh
 bash tests/last-stack-canary-red-loom.sh
 bash tests/last-stack-canary-loom.sh
