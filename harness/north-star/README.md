@@ -31,6 +31,7 @@ First line is `PASS`, `PASS-OFFLINE`, or `FAIL` for kanban DONE-WHEN matching.
 | org-cloud-principal-membership | fixture-proven grant/list/presign/revoke/403/owner/E2E contract | two-principal live Org/Mini + storage-service dogfood using only LastSecrets locators |
 | lastdb-ideal-storage-shape | validates redacted CoW + dogfood evidence for proteins, backup, plane map, status, and fkanban coherence | same evidence contract; evidence collection remains CoW-first and primary-safe |
 | lastdb-io-free-commit-and-barrierless-purge | validates the Fold-generated isolated-copy evidence, warm apply-gate p99, reverse-index audit, and zero purge barriers | requires the same evidence to carry a PASS verdict after safe live cutover |
+| lastdb-uuid-hash-group-addressing | validates Fold source contracts and the immutable 11M-document CoW migration proof | runs focused new-home, legacy-read, warm-set, group-backup, and as-is restore tests; preserves the later Tom-authorized primary sync configuration |
 
 ## Org cloud principal membership
 
