@@ -76,5 +76,6 @@ out="$(run_controller 0 "$TMP/state/cooldown" 2001)"
 
 grep -q 'MILESTONE_DRIVER_SAFETY_CAP:-8' "$ROOT/routines/milestone-driver.md"
 grep -q 'ready-buffer controller sets this value to 1' "$ROOT/routines/milestone-driver.md"
+grep -q 'Create at most \*\*one Kanban card\*\* per run.' "$ROOT/routines/milestone-driver.md"
 
 echo "ok: ready-buffer controller"

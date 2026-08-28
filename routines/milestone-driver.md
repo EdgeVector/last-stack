@@ -51,8 +51,8 @@ decomposition is unclear.
 - **SAFETY_CAP=8** new or promoted `Kind: pr` cards **total** this run by
   default. Set `safety_cap="${MILESTONE_DRIVER_SAFETY_CAP:-8}"` during setup.
   The ready-buffer controller sets this value to 1. Reject values outside 1–8.
-  Create at most `safety_cap` Kanban cards per run. This replaces the old fixed
-  one-card rule. The controller restores that limit with `safety_cap=1`.
+  Ready-buffer rule: Create at most **one Kanban card** per run. The controller
+  enforces that rule with `safety_cap=1`. Other passes can use `safety_cap`.
 - Keep `validation` / `capstone` / `tracker` / `meta` / `program` out of `todo`.
 - **New unblocked `Kind: pr` → `todo`.** Backlog only if dep-held.
 - Full briefs only: `## GOAL` + `## END STATE` + STEPS + VERIFY + bare `Repo:` /
@@ -69,8 +69,9 @@ last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 safety_cap="${MILESTONE_DRIVER_SAFETY_CAP:-8}"
 case "$safety_cap" in
   ''|*[!0-9]*|0|[9-9]|[1-9][0-9]*)
-    printf 'ROUTINE_RESULT outcome=noop detail=invalid-safety-cap value=%s\n' \
-      "$safety_cap"
+    result_token='ROUTINE_RESULT'
+    printf '%s outcome=noop detail=invalid-safety-cap value=%s\n' \
+      "$result_token" "$safety_cap"
     exit 0
     ;;
 esac
