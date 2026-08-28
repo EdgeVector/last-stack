@@ -39,6 +39,7 @@ done
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
 export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
 STAMP="${LAST_STACK_CANARY_LOOM_STAMP:-$HOME/.last-stack/state/canary-loom.json}"
+ACTIVE="${LAST_STACK_CANARY_LOOM_ACTIVE:-$(dirname "$STAMP")/canary-loom-active.json}"
 
 log() { [ "$QUIET" -eq 1 ] || printf 'canary-loom: %s\n' "$*" >&2; }
 
@@ -55,8 +56,31 @@ doc = {
   "detail": os.environ.get("DT", ""),
   "engine": "loom",
 }
-open(p, "w").write(json.dumps(doc) + "\n")
+tmp = f"{p}.tmp.{os.getpid()}"
+open(tmp, "w").write(json.dumps(doc) + "\n")
+os.replace(tmp, p)
 '
+}
+
+write_active() {
+  mkdir -p "$(dirname "$ACTIVE")"
+  active_tmp="$(mktemp "$(dirname "$ACTIVE")/.canary-loom-active.XXXXXX")"
+  jq -cn \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg key "$1" \
+    --arg execution "$2" \
+    --arg status "$3" \
+    --arg state "$4" \
+    '{ts:$ts,key:$key,execution:$execution,status:$status,state:$state,engine:"loom"}' \
+    >"$active_tmp"
+  mv "$active_tmp" "$ACTIVE"
+}
+
+clear_active() {
+  [ -f "$ACTIVE" ] || return 0
+  active_key="$(jq -r '.key // empty' "$ACTIVE" 2>/dev/null || true)"
+  [ -z "$active_key" ] || [ "$active_key" = "$1" ] || return 0
+  rm -f "$ACTIVE"
 }
 
 if [ "$STATUS" -eq 1 ]; then
@@ -79,12 +103,31 @@ resolve_oid() {
   git -C "${HOME}/.cache/edgevector-git/fold.git" rev-parse refs/heads/main 2>/dev/null || true
 }
 
-if [ -z "$KEY" ]; then
-  if [ -f "$STAMP" ]; then
-    KEY="$(python3 -c 'import json,os,sys; print(json.load(open(os.environ["LAST_STACK_CANARY_LOOM_STAMP"])).get("key") or "")' 2>/dev/null || true)"
+export LAST_STACK_CANARY_LOOM_STAMP="$STAMP"
+
+# The active marker is separate from the last-result stamp. A true idle check
+# may replace the last result, but it must never erase the only resume key for
+# a native Loom execution.
+if [ -z "$KEY" ] && [ -f "$ACTIVE" ]; then
+  KEY="$(jq -r '.key // empty' "$ACTIVE" 2>/dev/null || true)"
+  if [ -z "$KEY" ]; then
+    write_stamp invalid "" "error" "active-marker-invalid"
+    if [ "$JSON" -eq 1 ]; then
+      jq -cn '{outcome:"error",detail:"active-marker-invalid",engine:"loom",key:"",status:"invalid",execution:""}'
+    else
+      printf '%s\n' 'CANARY_LOOM outcome=error detail=active-marker-invalid'
+    fi
+    printf '%s %s\n' 'ROUTINE_RESULT' "outcome=error detail=active-marker-invalid"
+    exit 3
   fi
 fi
-export LAST_STACK_CANARY_LOOM_STAMP="$STAMP"
+if [ -z "$KEY" ] && [ -f "$STAMP" ]; then
+  stamp_status="$(jq -r '.status // empty' "$STAMP" 2>/dev/null || true)"
+  case "$stamp_status" in
+    succeeded|failed|cancelled|idle|dry-run) ;;
+    *) KEY="$(jq -r '.key // empty' "$STAMP" 2>/dev/null || true)" ;;
+  esac
+fi
 
 if [ "$START" -eq 1 ]; then
   oid="$(resolve_oid)"
@@ -186,7 +229,17 @@ if [ "$oc" = "error" ]; then
   fi
   [ -z "$error_line" ] || det="$det error=$error_line"
 fi
+case "$status" in
+  waiting|parked|running)
+    write_active "$KEY" "${exec_id:-}" "$rendered_status" "$rendered_state"
+    ;;
+esac
 write_stamp "$rendered_status" "$KEY" "$oc" "$det"
+case "$status" in
+  succeeded|failed|cancelled)
+    clear_active "$KEY"
+    ;;
+esac
 if [ "$JSON" -eq 1 ]; then
   OC="$oc" DT="$det" KY="$KEY" ST="$rendered_status" EX="${exec_id:-}" python3 -c '
 import json, os

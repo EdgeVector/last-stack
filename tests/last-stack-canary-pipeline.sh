@@ -127,7 +127,7 @@ grep -q 'lastdb-canary-soak-watch' "$ROOT/config/routines-registry/lastdb-canary
 grep -q 'status = "active"' "$ROOT/config/routines-registry/lastdb-canary-soak-watch.toml"
 soak_prompt="$ROOT/routines/lastdb-canary-soak-watch.md"
 grep -q 'last-stack-canary-pipeline proof --dry-run' "$soak_prompt"
-grep -Fq 'noop exec=locked state=BUILD_START result=concurrent_tick_owner' "$soak_prompt"
+grep -Fq 'The legacy state engine cannot see native `lx-*` executions' "$soak_prompt"
 grep -Fq 'The sink must start with `ok `, `noop `, or `error `' "$soak_prompt"
 grep -Fq 'Do not put a shell assignment in the sink' "$soak_prompt"
 if grep -Eq 'ROUTINE_RESULT[[:space:]]+outcome=' "$soak_prompt"; then

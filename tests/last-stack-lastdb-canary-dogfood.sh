@@ -343,9 +343,13 @@ grep -q 'lastdb-safe-upgrade' "$dog_md"
 # on-call agent will actually look.
 grep -q 'lastdb-brew-publish' "$dog_md"
 grep -q 'blocked_actions' "$dog_md"
-# The soak watch is the machine's clock, and an idle lane is not an error.
+# The soak watch is the Loom clock, and an idle lane is not an error.
 soak_md="$ROOT/routines/lastdb-canary-soak-watch.md"
-grep -q 'sm tick --definition lastdb-canary-release' "$soak_md"
+grep -q 'last-stack-canary-loom' "$soak_md"
+if grep -q 'sm tick --definition lastdb-canary-release' "$soak_md"; then
+  echo "soak-watch still ticks the legacy state engine" >&2
+  exit 1
+fi
 grep -q 'no_active_candidate' "$soak_md"
 
 echo "ok last-stack-lastdb-canary-dogfood"
