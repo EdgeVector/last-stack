@@ -51,19 +51,23 @@ set -e
 mkdir -p "$builds/$MAIN_OID"
 printf '#!/bin/sh\necho lastdbd staged\n' >"$builds/$MAIN_OID/lastdbd"
 printf '#!/bin/sh\necho lastdb staged\n' >"$builds/$MAIN_OID/lastdb"
-chmod +x "$builds/$MAIN_OID/lastdbd" "$builds/$MAIN_OID/lastdb"
+printf '#!/bin/sh\necho restore probe staged\n' >"$builds/$MAIN_OID/lastdb_restore_probe"
+chmod +x "$builds/$MAIN_OID/lastdbd" "$builds/$MAIN_OID/lastdb" "$builds/$MAIN_OID/lastdb_restore_probe"
 
 out="$("$CLI" --json)"
 [ "$(printf '%s\n' "$out" | jq -r .status)" = "ok" ] || fail "exact stage: $out"
 [ "$(printf '%s\n' "$out" | jq -r .source)" = "canary-builds" ] || fail "exact source: $out"
 [ "$(printf '%s\n' "$out" | jq -r .lastdbd)" = "$builds/$MAIN_OID/lastdbd" ] || fail "exact lastdbd: $out"
 [ "$(printf '%s\n' "$out" | jq -r .lastdb)" = "$builds/$MAIN_OID/lastdb" ] || fail "exact lastdb: $out"
+[ "$(printf '%s\n' "$out" | jq -r .lastdb_restore_probe)" = "$builds/$MAIN_OID/lastdb_restore_probe" ] || fail "exact probe: $out"
 [ "$(printf '%s\n' "$out" | jq -r .sha_drift)" = "false" ] || fail "exact drift: $out"
 
 # --- smoke-staged wins over canary-builds ---
 printf '#!/bin/sh\necho lastdbd smoke\n' >"$staged/lastdbd-smoke-staged-$SHORT"
 chmod +x "$staged/lastdbd-smoke-staged-$SHORT"
 out="$("$CLI" --json)"
+[ "$(printf '%s\n' "$out" | jq -r .source)" = "canary-builds" ] || fail "strict resolve accepted daemon-only smoke stage: $out"
+out="$("$CLI" --json --allow-daemon-only)"
 [ "$(printf '%s\n' "$out" | jq -r .source)" = "smoke-staged" ] || fail "smoke-staged win: $out"
 [ "$(printf '%s\n' "$out" | jq -r .lastdbd)" = "$staged/lastdbd-smoke-staged-$SHORT" ] || fail "smoke path: $out"
 
@@ -81,7 +85,7 @@ rc=$?
 set -e
 [ "$rc" -eq 2 ] || fail "no-fallback should need_build: $out"
 
-out="$("$CLI" --json --allow-newest)"
+out="$("$CLI" --json --allow-newest --allow-daemon-only)"
 [ "$(printf '%s\n' "$out" | jq -r .status)" = "ok" ] || fail "newest status: $out"
 [ "$(printf '%s\n' "$out" | jq -r .source)" = "canary-builds-newest" ] || fail "newest source: $out"
 [ "$(printf '%s\n' "$out" | jq -r .sha_drift)" = "true" ] || fail "newest drift: $out"
@@ -98,10 +102,24 @@ rc=$?
 set -e
 [ "$rc" -eq 2 ] || fail "newest-empty should need_build: $out"
 
-out="$("$CLI" --json --allow-newest --allow-current)"
+out="$("$CLI" --json --allow-newest --allow-current --allow-daemon-only)"
 [ "$(printf '%s\n' "$out" | jq -r .source)" = "primary-current" ] || fail "current source: $out"
 [ "$(printf '%s\n' "$out" | jq -r .lastdbd)" = "$current_dir/lastdbd" ] || fail "current path: $out"
 [ "$(printf '%s\n' "$out" | jq -r .sha_drift)" = "true" ] || fail "current drift: $out"
+
+# --- backup restore contract requires all three current executables ---
+set +e
+out="$("$CLI" --json --allow-newest --allow-current 2>/dev/null)"
+rc=$?
+set -e
+[ "$rc" -eq 2 ] || fail "incomplete current stage must need_build: $out"
+
+printf '#!/bin/sh\necho lastdb current\n' >"$current_dir/lastdb"
+printf '#!/bin/sh\necho restore probe current\n' >"$current_dir/lastdb_restore_probe"
+chmod +x "$current_dir/lastdb" "$current_dir/lastdb_restore_probe"
+out="$("$CLI" --json --allow-newest --allow-current)"
+[ "$(printf '%s\n' "$out" | jq -r .source)" = "primary-current" ] || fail "complete current source: $out"
+[ "$(printf '%s\n' "$out" | jq -r .lastdb_restore_probe)" = "$current_dir/lastdb_restore_probe" ] || fail "complete current probe: $out"
 
 # --- never cargo: helper has no cargo invocation ---
 if grep -n 'cargo ' "$CLI" | grep -v 'Never compiles' >/dev/null; then

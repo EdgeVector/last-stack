@@ -63,7 +63,7 @@ stale copy here would silently regress the procedure.
 ## Never
 
 - `cargo build` / `cargo test` in this scheduled canary. Resolve a pre-built
-  `lastdbd` with `last-stack-canary-resolve-lastdbd --json --allow-newest --allow-current`
+  `lastdbd` with `last-stack-canary-resolve-lastdbd --json --allow-newest --allow-current --allow-daemon-only`
   (exact smoke-staged SHA, then `canary-builds/<oid>`, then newest stage, then
   `~/.lastdb/current/lastdbd`). If status is `need_build`, stamp
   `noop reason=no-staged-lastdbd` and stop — `lastdb-canary-build-main` is the

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Resolve an already-built lastdbd (and sibling lastdb when present) for the
-# daily LastDB canaries. Never compiles. Scheduled lastdb-local-smoke-test and
-# backup-restore-probe must call this instead of cargo.
+# Resolve an already-built LastDB canary stage. The default contract requires
+# lastdbd, lastdb, and lastdb_restore_probe from one directory. The local smoke
+# can opt into historical daemon-only stages. Never compiles.
 #
 # Lookup order:
 #   1. ~/.lastdb-test-copies/lastdbd-smoke-staged-<shortsha>
-#   2. ~/.local/state/last-stack/canary-builds/<full-oid>/{lastdbd,lastdb}
+#   2. ~/.local/state/last-stack/canary-builds/<full-oid>/
 #   3. --allow-newest: newest canary-builds/*/lastdbd (sha_drift=true)
 #   4. --allow-current: ~/.lastdb/current/lastdbd (source=primary-current)
 #
@@ -16,6 +16,7 @@ usage() {
   cat <<'EOF'
 Usage:
   last-stack-canary-resolve-lastdbd [--json] [--allow-newest] [--allow-current]
+                                     [--allow-daemon-only]
 
 Resolve a pre-built lastdbd for daily canaries. Never compiles.
 
@@ -24,6 +25,9 @@ Options:
   --allow-newest   If the exact fold-main SHA is not staged, use the newest
                    canary-builds/*/lastdbd (reports sha_drift=true)
   --allow-current  Last resort: ~/.lastdb/current/lastdbd
+  --allow-daemon-only
+                   Accept a candidate with only lastdbd. Use only for the
+                   local daemon smoke test. Backup restore must stay strict.
   -h, --help       Show help
 
 Env:
@@ -44,12 +48,14 @@ die() {
 as_json=0
 allow_newest=0
 allow_current=0
+allow_daemon_only=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --json) as_json=1; shift ;;
     --allow-newest) allow_newest=1; shift ;;
     --allow-current) allow_current=1; shift ;;
+    --allow-daemon-only) allow_daemon_only=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -96,18 +102,39 @@ sibling_lastdb() {
   fi
 }
 
+sibling_restore_probe() {
+  local lastdbd="$1"
+  local dir
+  dir="$(dirname "$lastdbd")"
+  if [ -x "$dir/lastdb_restore_probe" ]; then
+    printf '%s\n' "$dir/lastdb_restore_probe"
+  fi
+}
+
+candidate_ready() {
+  local lastdbd="$1"
+  [ -x "$lastdbd" ] || return 1
+  if [ "$allow_daemon_only" -eq 1 ]; then
+    return 0
+  fi
+  [ -x "$(dirname "$lastdbd")/lastdb" ] || return 1
+  [ -x "$(dirname "$lastdbd")/lastdb_restore_probe" ] || return 1
+}
+
 emit() {
   local status="$1" lastdbd="$2" source="$3" wanted="$4" resolved="$5" drift="$6" note="$7"
-  local lastdb
+  local lastdb restore_probe
   lastdb="$(sibling_lastdb "$lastdbd")"
+  restore_probe="$(sibling_restore_probe "$lastdbd")"
   if [ "$as_json" -eq 1 ]; then
-    python3 - "$status" "$lastdbd" "$lastdb" "$source" "$wanted" "$resolved" "$drift" "$note" <<'PY'
+    python3 - "$status" "$lastdbd" "$lastdb" "$restore_probe" "$source" "$wanted" "$resolved" "$drift" "$note" <<'PY'
 import json, sys
-status, lastdbd, lastdb, source, wanted, resolved, drift, note = sys.argv[1:9]
+status, lastdbd, lastdb, restore_probe, source, wanted, resolved, drift, note = sys.argv[1:10]
 print(json.dumps({
     "status": status,
     "lastdbd": lastdbd or None,
     "lastdb": lastdb or None,
+    "lastdb_restore_probe": restore_probe or None,
     "source": source or None,
     "wanted_oid": wanted,
     "resolved_oid": resolved or None,
@@ -125,13 +152,13 @@ oid="$(resolve_main_oid)"
 short="${oid:0:9}"
 
 smoke_staged="$STAGED_DIR/lastdbd-smoke-staged-$short"
-if [ -x "$smoke_staged" ]; then
+if candidate_ready "$smoke_staged"; then
   emit ok "$smoke_staged" smoke-staged "$oid" "$oid" 0 "exact smoke-staged binary"
   exit 0
 fi
 
 exact_stage="$BUILDS_DIR/$oid/lastdbd"
-if [ -x "$exact_stage" ]; then
+if candidate_ready "$exact_stage"; then
   emit ok "$exact_stage" canary-builds "$oid" "$oid" 0 "exact canary-builds stage"
   exit 0
 fi
@@ -142,7 +169,7 @@ if [ "$allow_newest" -eq 1 ] && [ -d "$BUILDS_DIR" ]; then
   # Newest directory by mtime that actually contains an executable lastdbd.
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    if [ -x "$BUILDS_DIR/$name/lastdbd" ]; then
+    if candidate_ready "$BUILDS_DIR/$name/lastdbd"; then
       newest="$BUILDS_DIR/$name/lastdbd"
       newest_oid="$name"
       break
@@ -154,10 +181,10 @@ if [ "$allow_newest" -eq 1 ] && [ -d "$BUILDS_DIR" ]; then
   fi
 fi
 
-if [ "$allow_current" -eq 1 ] && [ -x "$CURRENT_BIN" ]; then
+if [ "$allow_current" -eq 1 ] && candidate_ready "$CURRENT_BIN"; then
   emit ok "$CURRENT_BIN" primary-current "$oid" "" 1 "primary current lastdbd; no staged build"
   exit 0
 fi
 
-emit need_build "" "" "$oid" "" 0 "no staged or current lastdbd; do not cargo"
+emit need_build "" "" "$oid" "" 0 "no complete staged binary set; do not cargo"
 exit 2

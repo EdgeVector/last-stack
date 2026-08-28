@@ -39,7 +39,7 @@ case "$id" in
     if [ -z "$bin" ]; then
       resolve="${LAST_STACK_CANARY_RESOLVE_BIN:-$ROOT/bin/last-stack-canary-resolve-lastdbd}"
       if [ -x "$resolve" ]; then
-        bin="$("$resolve" --json --allow-newest --allow-current 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("lastdbd") or "")' 2>/dev/null || true)"
+        bin="$("$resolve" --json --allow-newest --allow-current --allow-daemon-only 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("lastdbd") or "")' 2>/dev/null || true)"
       fi
     fi
     if [ -z "$bin" ]; then
