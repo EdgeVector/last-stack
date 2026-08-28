@@ -1,0 +1,248 @@
+#!/usr/bin/env bash
+# Zero-agent pre-dispatch gate for pipeline-health.
+#
+# The full agent still runs at least once per hour. Between those deep passes,
+# this gate checks the cheap merge and deploy inventories every ten minutes.
+# It skips the harness only when every read succeeds and every inventory is
+# quiet. Any uncertainty exits 10 so routinesd starts the full agent.
+set -euo pipefail
+
+self_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
+if [ -n "${LAST_STACK_ROOT:-}" ] && [ -d "${LAST_STACK_ROOT}/bin" ]; then
+  last_stack="$LAST_STACK_ROOT"
+elif [ -d "${HOME}/.last-stack/bin" ]; then
+  last_stack="${HOME}/.last-stack"
+else
+  last_stack="$(CDPATH='' cd -- "$self_dir/.." && pwd -P)"
+fi
+
+export PATH="${HOME}/.local/bin:${last_stack}/bin:${PATH:-/usr/bin:/bin}"
+
+usage() {
+  cat <<'USAGE'
+last-stack-pipeline-health-gate
+
+Exit 0 prints a noop result and skips the full agent.
+Exit 10 asks routinesd to start the full pipeline-health agent.
+
+Environment:
+  LAST_STACK_PIPELINE_GATE_DEEP_MAX_AGE_SEC  deep-pass interval (default 3600)
+  LAST_STACK_PIPELINE_GATE_MIN_AGE_MIN       stuck merge age (default 10)
+  LAST_STACK_PIPELINE_GATE_TIMEOUT_SEC       per-read cap (default 20)
+  LAST_STACK_PIPELINE_GATE_DEPLOY_TAIL_BYTES deploy log tail (default 16777216)
+  LAST_STACK_PIPELINE_GATE_FORGE_REPOS       comma list (default fold,lastgit)
+USAGE
+}
+
+case "${1:-}" in
+  "") ;;
+  -h|--help) usage; exit 0 ;;
+  *) usage >&2; exit 2 ;;
+esac
+
+iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+positive_int() {
+  case "$1" in
+    ''|*[!0-9]*|0) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+deep_max_age="${LAST_STACK_PIPELINE_GATE_DEEP_MAX_AGE_SEC:-3600}"
+min_age_min="${LAST_STACK_PIPELINE_GATE_MIN_AGE_MIN:-10}"
+timeout_sec="${LAST_STACK_PIPELINE_GATE_TIMEOUT_SEC:-20}"
+deploy_tail_bytes="${LAST_STACK_PIPELINE_GATE_DEPLOY_TAIL_BYTES:-16777216}"
+forge_repos="${LAST_STACK_PIPELINE_GATE_FORGE_REPOS:-EdgeVector/fold,EdgeVector/lastgit}"
+
+positive_int "$deep_max_age" || { echo "invalid deep max age: $deep_max_age" >&2; exit 2; }
+positive_int "$min_age_min" || { echo "invalid minimum age: $min_age_min" >&2; exit 2; }
+positive_int "$timeout_sec" || { echo "invalid timeout: $timeout_sec" >&2; exit 2; }
+positive_int "$deploy_tail_bytes" || { echo "invalid deploy tail bytes: $deploy_tail_bytes" >&2; exit 2; }
+
+IFS=',' read -r -a forge_repo_list <<<"$forge_repos"
+[ "${#forge_repo_list[@]}" -gt 0 ] || { echo "forge repo list is empty" >&2; exit 2; }
+for repo in "${forge_repo_list[@]}"; do
+  case "$repo" in
+    */*) ;;
+    *) echo "invalid Forgejo repo: $repo" >&2; exit 2 ;;
+  esac
+done
+
+now_epoch="${LAST_STACK_PIPELINE_GATE_NOW_EPOCH:-$(date -u +%s)}"
+positive_int "$now_epoch" || { echo "invalid current epoch: $now_epoch" >&2; exit 2; }
+
+routines_home="${ROUTINES_HOME:-${HOME}/.routines}"
+state_dir="${LAST_STACK_PIPELINE_GATE_STATE_DIR:-${routines_home}/state/pipeline-health-gate}"
+deep_stamp="${state_dir}/last-deep-epoch"
+
+stamp_deep() {
+  mkdir -p "$state_dir" 2>/dev/null || return 0
+  local tmp_stamp="${deep_stamp}.tmp.$$"
+  if printf '%s\n' "$now_epoch" >"$tmp_stamp" 2>/dev/null; then
+    mv "$tmp_stamp" "$deep_stamp" 2>/dev/null || rm -f "$tmp_stamp"
+  else
+    rm -f "$tmp_stamp"
+  fi
+}
+
+proceed() {
+  local reason="$1"
+  stamp_deep
+  printf 'PIPELINE_HEALTH_GATE_PROCEED reason=%s\n' "$reason"
+  exit 10
+}
+
+heartbeat() {
+  local line="$1"
+  local helper="${last_stack}/bin/last-stack-brain-append-heartbeat"
+  if [ -x "$helper" ]; then
+    "$helper" --line "$line" >/dev/null 2>&1 || true
+  fi
+  printf '%s\n' "$line"
+}
+
+last_deep=0
+if [ -f "$deep_stamp" ]; then
+  last_deep="$(head -n 1 "$deep_stamp" 2>/dev/null || echo 0)"
+fi
+case "$last_deep" in
+  ''|*[!0-9]*) last_deep=0 ;;
+esac
+deep_age=$((now_epoch - last_deep))
+if [ "$last_deep" -eq 0 ] || [ "$deep_age" -lt 0 ] || [ "$deep_age" -ge "$deep_max_age" ]; then
+  proceed "deep-pulse-due"
+fi
+
+timeout_bin="${LAST_STACK_PIPELINE_GATE_TIMEOUT_BIN:-}"
+if [ -z "$timeout_bin" ]; then
+  if command -v gtimeout >/dev/null 2>&1; then
+    timeout_bin="$(command -v gtimeout)"
+  elif command -v timeout >/dev/null 2>&1; then
+    timeout_bin="$(command -v timeout)"
+  fi
+fi
+[ -n "$timeout_bin" ] && [ -x "$timeout_bin" ] || proceed "timeout-tool-missing"
+
+lastgit_bin="${LAST_STACK_PIPELINE_GATE_LASTGIT_BIN:-$(command -v lastgit 2>/dev/null || true)}"
+forge_api="${LAST_STACK_PIPELINE_GATE_FORGE_API_BIN:-${last_stack}/bin/last-stack-forge-api}"
+deploy_scan="${LAST_STACK_PIPELINE_GATE_DEPLOY_SCAN_BIN:-${last_stack}/bin/last-stack-pipeline-deploy-scan}"
+jq_bin="${LAST_STACK_PIPELINE_GATE_JQ_BIN:-$(command -v jq 2>/dev/null || true)}"
+
+[ -n "$lastgit_bin" ] && [ -x "$lastgit_bin" ] || proceed "lastgit-missing"
+[ -x "$forge_api" ] || proceed "forge-api-missing"
+[ -x "$deploy_scan" ] || proceed "deploy-scan-missing"
+[ -n "$jq_bin" ] && [ -x "$jq_bin" ] || proceed "jq-missing"
+
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/pipeline-health-gate.XXXXXX")"
+# shellcheck disable=SC2329  # invoked by the EXIT trap
+cleanup() { rm -rf "$tmp"; }
+trap cleanup EXIT
+
+run_capped() {
+  local out="$1"
+  local err="$2"
+  shift 2
+  "$timeout_bin" -k 2s "${timeout_sec}s" "$@" >"$out" 2>"$err"
+}
+
+# Run the independent checks together. A quiet live pass then costs the
+# slowest read, not the sum of all reads.
+run_capped "$tmp/lastgit.json" "$tmp/lastgit.err" \
+  "$lastgit_bin" stuck --json --min-age-min "$min_age_min" --no-probe-merge --no-verify &
+lastgit_pid=$!
+run_capped "$tmp/deploy.json" "$tmp/deploy.err" \
+  "$deploy_scan" --json --tail-bytes "$deploy_tail_bytes" &
+deploy_pid=$!
+
+forge_pids=""
+forge_files=""
+forge_index=0
+for repo in "${forge_repo_list[@]}"; do
+  forge_index=$((forge_index + 1))
+  forge_file="$tmp/forge-${forge_index}.json"
+  run_capped "$forge_file" "$tmp/forge-${forge_index}.err" \
+    "$forge_api" "repos/${repo}/pulls?state=open&limit=50" &
+  forge_pids="${forge_pids} $!"
+  forge_files="${forge_files} ${forge_file}"
+done
+
+set +e
+wait "$lastgit_pid"
+lastgit_rc=$?
+wait "$deploy_pid"
+deploy_rc=$?
+forge_rc=0
+for pid in $forge_pids; do
+  wait "$pid"
+  rc=$?
+  [ "$rc" -eq 0 ] || forge_rc="$rc"
+done
+set -e
+
+[ "$lastgit_rc" -eq 0 ] || proceed "lastgit-read-rc-${lastgit_rc}"
+[ "$deploy_rc" -eq 0 ] || proceed "deploy-read-rc-${deploy_rc}"
+[ "$forge_rc" -eq 0 ] || proceed "forge-read-rc-${forge_rc}"
+
+if ! "$jq_bin" -e '
+  type == "object"
+  and (.stuck | type == "array")
+  and (.unreadable_repos == null or (.unreadable_repos | type) == "array")
+  and all(.stuck[]; (.age_min | type) == "number")
+' "$tmp/lastgit.json" >/dev/null 2>&1; then
+  proceed "lastgit-json-invalid"
+fi
+
+unreadable_count="$("$jq_bin" -r '(.unreadable_repos // []) | length' "$tmp/lastgit.json")"
+[ "$unreadable_count" -eq 0 ] || proceed "lastgit-unreadable-${unreadable_count}"
+if "$jq_bin" -e '.index_drift != null' "$tmp/lastgit.json" >/dev/null 2>&1; then
+  proceed "lastgit-index-drift"
+fi
+
+# shellcheck disable=SC2016  # jq expands $min
+lastgit_stuck="$("$jq_bin" -r --argjson min "$min_age_min" \
+  '[.stuck[] | select(.age_min >= $min)] | length' "$tmp/lastgit.json")"
+[ "$lastgit_stuck" -eq 0 ] || proceed "lastgit-stuck-${lastgit_stuck}"
+
+forge_open=0
+for forge_file in $forge_files; do
+  if ! "$jq_bin" -e 'type == "array"' "$forge_file" >/dev/null 2>&1; then
+    proceed "forge-json-invalid"
+  fi
+  set +e
+  # shellcheck disable=SC2016  # jq expands $now, $created, and $age
+  count="$("$jq_bin" -r --argjson now "$now_epoch" --argjson age "$((min_age_min * 60))" '
+    [
+      .[]
+      | select((.draft // false) == false)
+      | (.created_at // null) as $created
+      | (try ($created | fromdateiso8601) catch null) as $created_epoch
+      | if $created_epoch == null then error("created_at")
+        else select(($now - $created_epoch) >= $age)
+        end
+    ] | length
+  ' "$forge_file" 2>/dev/null)"
+  count_rc=$?
+  set -e
+  [ "$count_rc" -eq 0 ] || proceed "forge-created-at-invalid"
+  forge_open=$((forge_open + count))
+done
+[ "$forge_open" -eq 0 ] || proceed "forge-open-${forge_open}"
+
+if ! "$jq_bin" -e '
+  type == "array"
+  and length > 0
+  and all(.[]; (.blocked | type) == "boolean")
+' "$tmp/deploy.json" >/dev/null 2>&1; then
+  proceed "deploy-json-invalid"
+fi
+
+deploy_unknown="$("$jq_bin" -r '[.[] | select(.status == "unknown" or .status == "missing" or .status == "unconfigured")] | length' "$tmp/deploy.json")"
+[ "$deploy_unknown" -eq 0 ] || proceed "deploy-unknown-${deploy_unknown}"
+deploy_blocked="$("$jq_bin" -r '[.[] | select(.blocked == true)] | length' "$tmp/deploy.json")"
+[ "$deploy_blocked" -eq 0 ] || proceed "deploy-blocked-${deploy_blocked}"
+
+detail="quiet-gate lastgit_stuck=0 open_forge=0 deploy_blocked=0 deep_age_s=${deep_age}"
+heartbeat "pipeline-health $(iso_now) noop ${detail}"
+printf 'ROUTINE_RESULT outcome=noop detail=%s\n' "$detail"
+exit 0
