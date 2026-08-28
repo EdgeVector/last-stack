@@ -59,6 +59,10 @@
           "target": "$HOME/.local/bin/host-track"
         },
         {
+          "source": "bin/last-stack-post-merge-safe-upgrade",
+          "target": "$HOME/.local/bin/last-stack-post-merge-safe-upgrade"
+        },
+        {
           "source": "bin/last-stack-ship-soak-loom",
           "target": "$HOME/.local/bin/last-stack-ship-soak-loom"
         },
