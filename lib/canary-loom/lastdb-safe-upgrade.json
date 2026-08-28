@@ -42,7 +42,7 @@
         "-c",
         "exec \"$LOOM_SCRIPTS/loom-canary-check-cutover.sh\""
       ],
-      "timeout_sec": 3600,
+      "timeout_sec": 7200,
       "next": "VERIFY",
       "on_error": "FAILED"
     },
