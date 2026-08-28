@@ -79,6 +79,8 @@ Environment:
   HOST_TRACK_ARTIFACT_ROOT  LastGit artifact CAS (default: ~/.lastgit/artifacts)
   HOST_TRACK_INSTALL_ROOT   Immutable app installs (default: ~/.host-track/apps)
   HOST_TRACK_PROBE_SKIP=1   Tom-only: skip functional probe (do not use casually)
+  HOST_TRACK_PROBE_ATTEMPTS  Probe attempts after a transient failure (default 3, max 5)
+  HOST_TRACK_PROBE_RETRY_DELAY_S  Delay between probe attempts (default 1, max 10)
   HOST_TRACK_PROBE_LAT_RATIO   Candidate vs current latency fail ratio (default 3)
   HOST_TRACK_PROBE_LAT_FLOOR_MS  Ignore latency below this (default 1000)
   HOST_TRACK_ACTIVATE=1     Flip current after GREEN probe (skip soak)
@@ -1558,11 +1560,19 @@ run_artifact_post_install_on_tree() {
 
 run_one_probe() {
   local version_dir="$1" spec="$2"
-  local timeout_s output_matches accept_exit n i rel exe rc out ok e
+  local timeout_s output_matches accept_exit attempts retry_delay_s attempt
+  local n i rel exe rc out ok e
   local -a cmd=()
   timeout_s="$(printf '%s\n' "$spec" | jq -r '.timeout_s // 30')"
   output_matches="$(printf '%s\n' "$spec" | jq -r '.output_matches // empty')"
   accept_exit="$(printf '%s\n' "$spec" | jq -r '(.accept_exit // [0]) | map(tostring) | join(" ")')"
+  attempts="${HOST_TRACK_PROBE_ATTEMPTS:-$(printf '%s\n' "$spec" | jq -r '.attempts // 3')}"
+  retry_delay_s="${HOST_TRACK_PROBE_RETRY_DELAY_S:-$(printf '%s\n' "$spec" | jq -r '.retry_delay_s // 1')}"
+  case "$attempts" in ''|*[!0-9]*) attempts=3 ;; esac
+  case "$retry_delay_s" in ''|*[!0-9]*) retry_delay_s=1 ;; esac
+  [ "$attempts" -ge 1 ] || attempts=1
+  [ "$attempts" -le 5 ] || attempts=5
+  [ "$retry_delay_s" -le 10 ] || retry_delay_s=10
   n="$(printf '%s\n' "$spec" | jq -r '.argv | length')"
   [ "$n" -ge 1 ] || return 1
   rel="$(printf '%s\n' "$spec" | jq -r '.argv[0]')"
@@ -1577,41 +1587,56 @@ run_one_probe() {
     cmd+=("$(printf '%s\n' "$spec" | jq -r --argjson i "$i" '.argv[$i]')")
     i=$((i + 1))
   done
-  out="$(mktemp "${TMPDIR:-/tmp}/host-track-probe.XXXXXX")"
-  set +e
-  (
-    cd "$version_dir"
-    PATH="$version_dir/bin:$version_dir/dist:${PATH}"
-    HOST_TRACK_PROBE=1
-    export HOST_TRACK_PROBE
-    # Probes run in the CANDIDATE's own context. The reexec wrapper exports
-    # HOST_TRACK_ROOT (and callers may pin HOST_TRACK_REGISTRY); inherited,
-    # they make a candidate binary resolve the LIVE tree's registry, which
-    # deadlocks any validator-tightening self-upgrade
-    # (papercut-host-track-probe-env-leak-self-upgrade-deadlock).
-    unset HOST_TRACK_ROOT HOST_TRACK_REEXECED HOST_TRACK_REGISTRY
-    run_with_timeout "$timeout_s" "${cmd[@]}"
-  ) >"$out" 2>&1
-  rc=$?
-  set -e
-  ok=0
-  for e in $accept_exit; do
-    if [ "$rc" = "$e" ]; then
-      ok=1
-      break
+  attempt=1
+  while [ "$attempt" -le "$attempts" ]; do
+    out="$(mktemp "${TMPDIR:-/tmp}/host-track-probe.XXXXXX")"
+    set +e
+    (
+      cd "$version_dir"
+      PATH="$version_dir/bin:$version_dir/dist:${PATH}"
+      HOST_TRACK_PROBE=1
+      export HOST_TRACK_PROBE
+      # Probes run in the CANDIDATE's own context. The reexec wrapper exports
+      # HOST_TRACK_ROOT (and callers may pin HOST_TRACK_REGISTRY); inherited,
+      # they make a candidate binary resolve the LIVE tree's registry, which
+      # deadlocks any validator-tightening self-upgrade
+      # (papercut-host-track-probe-env-leak-self-upgrade-deadlock).
+      unset HOST_TRACK_ROOT HOST_TRACK_REEXECED HOST_TRACK_REGISTRY
+      run_with_timeout "$timeout_s" "${cmd[@]}"
+    ) >"$out" 2>&1
+    rc=$?
+    set -e
+    ok=0
+    for e in $accept_exit; do
+      if [ "$rc" = "$e" ]; then
+        ok=1
+        break
+      fi
+    done
+    if [ -n "$output_matches" ]; then
+      grep -q -- "$output_matches" "$out" || ok=0
     fi
-  done
-  if [ -n "$output_matches" ]; then
-    grep -q -- "$output_matches" "$out" || ok=0
-  fi
-  if [ "$ok" -ne 1 ]; then
-    printf 'host-track: probe RED cmd=%s rc=%s\n' "${cmd[*]}" "$rc" >&2
+    if [ "$ok" -eq 1 ]; then
+      rm -f "$out"
+      if [ "$attempt" -gt 1 ]; then
+        printf 'host-track: probe recovered attempt=%s/%s cmd=%s\n' \
+          "$attempt" "$attempts" "${cmd[*]}" >&2
+      fi
+      return 0
+    fi
+    printf 'host-track: probe attempt %s/%s failed cmd=%s rc=%s\n' \
+      "$attempt" "$attempts" "${cmd[*]}" "$rc" >&2
     sed -n '1,40p' "$out" >&2
     rm -f "$out"
-    return 1
-  fi
-  rm -f "$out"
-  return 0
+    if [ "$attempt" -ge "$attempts" ]; then
+      printf 'host-track: probe RED after %s attempts cmd=%s\n' \
+        "$attempts" "${cmd[*]}" >&2
+      return 1
+    fi
+    sleep "$retry_delay_s"
+    attempt=$((attempt + 1))
+  done
+  return 1
 }
 
 time_one_probe_ms() {

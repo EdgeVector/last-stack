@@ -16,6 +16,7 @@ export HOME="$tmp/home"
 export HOST_TRACK_REGISTRY="$tmp/registry.json"
 export HOST_TRACK_STAMP_DIR="$tmp/stamps"
 export HOST_TRACK_SOAK_FILE_CARD=0
+export HOST_TRACK_PROBE_RETRY_DELAY_S=0
 export PATH="$HOME/.local/bin:$tmp/bin:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
 mkdir -p "$HOME/.local/bin" "$tmp/bin" "$tmp/cas"
 
@@ -96,8 +97,10 @@ publish_fixture() {
 
 digest_good="$(printf 'a%.0s' {1..64})"
 digest_bad="$(printf 'b%.0s' {1..64})"
+digest_transient="$(printf 'c%.0s' {1..64})"
 oid_good="$(printf '1%.0s' {1..40})"
 oid_bad="$(printf '2%.0s' {1..40})"
+oid_transient="$(printf '3%.0s' {1..40})"
 
 publish_fixture "$digest_good" "$oid_good" $'#!/usr/bin/env bash\necho ok-v1'
 "$ROOT/bin/host-track" install demo >/dev/null \
@@ -106,19 +109,36 @@ publish_fixture "$digest_good" "$oid_good" $'#!/usr/bin/env bash\necho ok-v1'
 [ "$(readlink "$HOME/apps/demo/current")" = "versions/$digest_good" ] \
   || fail "first install current pointer wrong"
 
+publish_fixture "$digest_transient" "$oid_transient" $'#!/usr/bin/env bash\nmarker="$HOME/transient-probe-count"\ncount="$(cat "$marker" 2>/dev/null || printf 0)"\ncount=$((count + 1))\nprintf "%s\\n" "$count" >"$marker"\nif [ "$count" -eq 1 ]; then echo transient >&2; exit 1; fi\necho ok-v2'
+"$ROOT/bin/host-track" refresh demo >/dev/null 2>"$tmp/transient.err" \
+  || fail "a transient probe failure should recover"
+grep -q 'probe attempt 1/3 failed' "$tmp/transient.err" \
+  || fail "transient failure did not name attempt 1/3: $(cat "$tmp/transient.err")"
+grep -q 'probe recovered attempt=2/3' "$tmp/transient.err" \
+  || fail "transient probe did not report recovery: $(cat "$tmp/transient.err")"
+! grep -q 'probe RED' "$tmp/transient.err" \
+  || fail "transient recovery still reported RED: $(cat "$tmp/transient.err")"
+[ "$(demo)" = ok-v2 ] || fail "recovered candidate did not activate: $(demo)"
+[ "$(readlink "$HOME/apps/demo/current")" = "versions/$digest_transient" ] \
+  || fail "recovered candidate current pointer wrong"
+
 publish_fixture "$digest_bad" "$oid_bad" $'#!/usr/bin/env bash\necho broken\nexit 1'
 if "$ROOT/bin/host-track" refresh demo >/dev/null 2>"$tmp/red.err"; then
   fail "RED probe refresh should fail closed"
 fi
-grep -q 'probe RED' "$tmp/red.err" || fail "refresh did not report probe RED: $(cat "$tmp/red.err")"
-[ "$(demo)" = ok-v1 ] || fail "RED probe changed the live command: $(demo)"
-[ "$(readlink "$HOME/apps/demo/current")" = "versions/$digest_good" ] \
+grep -q 'probe attempt 1/3 failed' "$tmp/red.err" || fail "persistent failure missed attempt 1"
+grep -q 'probe attempt 2/3 failed' "$tmp/red.err" || fail "persistent failure missed attempt 2"
+grep -q 'probe attempt 3/3 failed' "$tmp/red.err" || fail "persistent failure missed attempt 3"
+grep -q 'probe RED after 3 attempts' "$tmp/red.err" \
+  || fail "refresh did not report final probe RED: $(cat "$tmp/red.err")"
+[ "$(demo)" = ok-v2 ] || fail "RED probe changed the live command: $(demo)"
+[ "$(readlink "$HOME/apps/demo/current")" = "versions/$digest_transient" ] \
   || fail "RED probe flipped current"
 [ ! -e "$HOME/.local/bin/demo" ] || [ "$(readlink "$HOME/.local/bin/demo")" = "$HOME/apps/demo/current/bin/demo" ] \
   || true
 # PATH still points at current (good tree).
 [ "$(readlink "$HOME/.local/bin/demo")" = "$HOME/apps/demo/current/bin/demo" ] \
-  || [ "$(readlink "$HOME/.local/bin/demo")" = "$HOME/apps/demo/versions/$digest_good/bin/demo" ] \
+  || [ "$(readlink "$HOME/.local/bin/demo")" = "$HOME/apps/demo/versions/$digest_transient/bin/demo" ] \
   || fail "PATH link left the good tree"
 
 # Bad version may exist on disk (staged) but must not be current.
