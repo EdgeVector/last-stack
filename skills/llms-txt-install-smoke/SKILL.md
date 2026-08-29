@@ -74,6 +74,33 @@ Wall time is often 8–15 minutes. Block on the single Bash call for ≥40 minut
 | search first-run bootstrap | `search init --quiet` exit 0, matching the public install sequence before semantic retrieval |
 | quick try | `brain concept new` + `brain get hello` succeeds; `brain ask "first note"` or `brain search "first note"` finds the note |
 
+## Time bounds
+
+The smoke runs in one foreground call. The agent Bash tool kills a foreground
+call at 600 seconds. A killed run gives no `VERDICT:` line, so it tells you
+nothing. Two mechanisms prevent that.
+
+**One global budget.** `run.sh` arms a deadline at start. Every bounded call
+gets the smaller of its own bound and the time left. When the budget is spent,
+each remaining call gets a one-second bound and fails immediately, so the run
+always reaches its footer and prints a real `VERDICT: RED`.
+
+**Live breadcrumbs.** `run.sh` sends ordinary output to a log inside the
+disposable sandbox. Step markers and each OK/FAIL line also go to the real
+stderr with an elapsed-seconds stamp. A killed run therefore still names the
+last step it reached.
+
+| Variable | Default | What it bounds |
+|---|---|---|
+| `SMOKE_TOTAL_BUDGET_SECS` | 540 | The whole run. Set 0 to disable for interactive debugging. |
+| `INSTALL_TIMEOUT` | 240 | Each of clone, setup, install-apps. |
+| `APP_INIT_TIMEOUT` | 120 | Each brain/kanban/situations init and list. |
+| `QUICK_TRY_TIMEOUT` | 60 | Each quick-try call. |
+
+CAUTION: raise `SMOKE_TOTAL_BUDGET_SECS` above 570 only when you run the smoke
+outside the agent tool. Inside it, a larger budget returns the run to the
+silent-kill failure this design removes.
+
 ## On RED
 
 1. Capture the script log path from stderr/stdout.
