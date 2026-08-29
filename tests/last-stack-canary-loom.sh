@@ -69,13 +69,17 @@ chmod 755 "$mock_home/.local/bin/sm-canary-release-step"
 poll_out="$(PATH="$mock_home/.local/bin:$PATH" HOME="$mock_home" LOOM_LIVE=1 \
   LOOM_INPUT='{"build_poll_revision":7}' \
   "$ROOT/lib/canary-loom/loom-canary-step.sh" BUILD_POLL)"
-printf '%s\n' "$poll_out" | grep -q 'LOOM_CONTEXT_PATCH:{"build_poll_revision":8}' \
-  || fail "live build poll did not advance its context revision: $poll_out"
+printf '%s\n' "$poll_out" | grep -q 'LOOM_CONTEXT_PATCH:{"build_next":"BUILD_WAIT","build_poll_revision":8}' \
+  || fail "live build poll did not store its decision with its revision: $poll_out"
+[ "$(printf '%s\n' "$poll_out" | grep -c '^LOOM_CONTEXT_PATCH:')" -eq 1 ] \
+  || fail "live build poll emitted split context patches: $poll_out"
 soak_out="$(PATH="$mock_home/.local/bin:$PATH" HOME="$mock_home" LOOM_LIVE=1 \
   LOOM_INPUT='{"soak_poll_revision":11}' \
   "$ROOT/lib/canary-loom/loom-canary-step.sh" SOAK)"
-printf '%s\n' "$soak_out" | grep -q 'LOOM_CONTEXT_PATCH:{"soak_poll_revision":12}' \
-  || fail "live soak poll did not advance its context revision: $soak_out"
+printf '%s\n' "$soak_out" | grep -q 'LOOM_CONTEXT_PATCH:{"soak_status":"pending","soak_poll_revision":12}' \
+  || fail "live soak poll did not store its decision with its revision: $soak_out"
+[ "$(printf '%s\n' "$soak_out" | grep -c '^LOOM_CONTEXT_PATCH:')" -eq 1 ] \
+  || fail "live soak poll emitted split context patches: $soak_out"
 
 export LAST_STACK_CANARY_LOOM_STDOUT_LOG="$tmp/loom.stdout.log"
 export LAST_STACK_CANARY_LOOM_STDERR_LOG="$tmp/loom.stderr.log"
