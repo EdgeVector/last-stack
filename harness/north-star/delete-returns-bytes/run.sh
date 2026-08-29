@@ -112,17 +112,24 @@ check_purge_tombstone_delivery_tested() {
 }
 
 # --- Gate D1: the tips plane is compactable -------------------------------
+compact_allowlist_block() {
+  local source="$1"
+  sed -n '/^[[:space:]]*pub const COMPACT_ALLOWLIST:/,/^[[:space:]]*];/p' "$source"
+}
+
 check_tips_compactable() {
   local ls_mod="$FOLD/fold_db/crates/core/src/storage/laststore/mod.rs"
   if [ ! -f "$ls_mod" ]; then
     append "D1: storage/laststore/mod.rs not found at expected path"
     return 1
   fi
-  if ! grep -A3 'COMPACT_ALLOWLIST' "$ls_mod" | grep -q '"tips"'; then
+  local allowlist
+  allowlist="$(compact_allowlist_block "$ls_mod")"
+  if [ -z "$allowlist" ] || ! grep -qE '^[[:space:]]*"tips",[[:space:]]*$' <<<"$allowlist"; then
     append "D1: FAIL — tips is not on COMPACT_ALLOWLIST; the largest plane cannot be compacted"
     return 1
   fi
-  append "D1: tips is on the compaction allowlist"
+  append "D1: tips is in the declared COMPACT_ALLOWLIST value"
   return 0
 }
 
@@ -160,22 +167,56 @@ check_atoms_retire_on_purge() {
   return "$ok"
 }
 
-# --- Gate D3: the atoms plane can actually be compacted locally ------------
-# `atoms` defaults to never_compact: true in laststore options — write-once
-# backup material. Local bytes cannot return until that is lifted (gated on the
-# receipt path above, never independently of it).
+# --- Gate D3: atom compact uses the receipt-backed owner path ---------------
+# Ordinary LastStore compaction must keep `atoms.never_compact = true`. The
+# owner admin path is the exception: atoms must be on the Fold allowlist, and
+# that path must compact only after it records retirement provenance. The
+# manifest must accept the named purge receipt and still reject any unexplained
+# keep-set shrink.
 check_atoms_compactable() {
+  local ls_mod="$FOLD/fold_db/crates/core/src/storage/laststore/mod.rs"
   local opts="$FOLD/vendor/laststore/src/options.rs"
-  if [ ! -f "$opts" ]; then
-    append "D3: vendor/laststore/src/options.rs not found at expected path"
+  local manifest="$FOLD/fold_db/crates/core/src/storage/laststore/backup_manifest.rs"
+  if [ ! -f "$ls_mod" ] || [ ! -f "$opts" ] || [ ! -f "$manifest" ]; then
+    append "D3: receipt-gated atom compact sources are not all present at the expected paths"
     return 1
   fi
-  if grep -A4 'ATOMS_COLLECTION.to_string()' "$opts" | grep -qE 'never_compact:\s*true'; then
-    append "D3: FAIL — atoms is still unconditionally never_compact; local atom bytes cannot return"
-    return 1
+
+  local ok=0 allowlist atom_policy
+  allowlist="$(compact_allowlist_block "$ls_mod")"
+  atom_policy="$(sed -n '/ATOMS_COLLECTION.to_string()/,/^[[:space:]]*);/p' "$opts")"
+
+  if [ -z "$atom_policy" ] || ! grep -qE 'never_compact:[[:space:]]*true' <<<"$atom_policy"; then
+    append "D3a: FAIL — ordinary atom compaction is not protected by atoms.never_compact"
+    ok=1
+  else
+    append "D3a: ordinary atom compaction stays disabled by atoms.never_compact"
   fi
-  append "D3: the atoms never_compact default is no longer unconditional"
-  return 0
+  if [ -z "$allowlist" ] || ! grep -qE '^[[:space:]]*"atoms",[[:space:]]*$' <<<"$allowlist"; then
+    append "D3b: FAIL — atoms is not in the declared COMPACT_ALLOWLIST value"
+    ok=1
+  else
+    append "D3b: the owner compact allowlist admits atoms"
+  fi
+  if ! grep -q 'compact_atoms_with_retirement_provenance' "$ls_mod"; then
+    append "D3c: FAIL — the atom owner path does not call compact_atoms_with_retirement_provenance"
+    ok=1
+  else
+    append "D3c: the atom owner path records retirement provenance before compact"
+  fi
+  if ! grep -q 'new_purged_atom_retirement' "$manifest"; then
+    append "D3d: FAIL — the manifest does not carry the purge retirement receipt"
+    ok=1
+  else
+    append "D3d: the manifest carries the named purge retirement receipt"
+  fi
+  if ! grep -q 'rollback/truncation attack suspected' "$manifest"; then
+    append "D3e: FAIL — unreceipted atom keep-set shrink is not refused"
+    ok=1
+  else
+    append "D3e: unreceipted atom keep-set shrink remains refused"
+  fi
+  return "$ok"
 }
 
 # --- Live mode: the byte measurement --------------------------------------
