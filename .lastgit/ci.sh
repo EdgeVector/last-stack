@@ -196,6 +196,7 @@ ci_test tests/last-stack-dogfood-resource-isolate.sh
 ci_test tests/last-stack-secret-env-run.sh
 ci_test tests/last-stack-ship-feature-milestones.sh
 ci_test tests/last-stack-fix-it-skill.sh
+ci_test tests/last-stack-incident-analysis-skill.sh
 ci_test tests/last-stack-design-pack.sh
 ci_test tests/last-stack-ship-handoff.sh
 ci_test tests/last-stack-real-human-notify.sh

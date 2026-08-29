@@ -223,6 +223,7 @@ preserving project-specific rules where they belong.
 | **wait-merge** | Robustly wait for a GitHub PR to merge by interpreting PR *state*, not a watcher's exit code. |
 | **close-out** | The post-change loop: open a PR from a worktree, drive it to merged, file session papercuts, write a full brain report of what was done, update superseded brain records and stale kanban cards, file a follow-up card. |
 | **fix-it** | Find and land the permanent fix: producer-side class change, residue gone, original live signal rechecked. |
+| **incident-analysis** | Explain what happened with an evidence-backed Five Whys chain, clear cause layers, and mapped corrective actions. |
 | **last-stack-upgrade** | Update the stack in place (clean-only self-upgrade) and re-register the skills. |
 | **session-miner** | Generic engine for mining recent agent session transcripts with profiles for papercuts, incidents, owner-stated knowledge, tooling friction, and revenant-watch (settled-dead product truth reanimated; Brain-only). |
 
