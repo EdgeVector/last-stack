@@ -145,7 +145,6 @@ def translate_sm(stdout):
     for line in (stdout or "").splitlines():
         if line.startswith("SM_CONTEXT_PATCH:"):
             raw_patch = line[len("SM_CONTEXT_PATCH:") :]
-            print("LOOM_CONTEXT_PATCH:" + raw_patch)
             try:
                 merged.update(json.loads(raw_patch))
             except json.JSONDecodeError:
@@ -182,22 +181,11 @@ if step in ("BUILD_START", "BUILD_POLL", "BUILD_COLLECT", "SOAK", "PROMOTE"):
         sys.stderr.write(p.stderr)
     if p.returncode != 0:
         sys.exit(p.returncode)
+    patch = dict(merged)
     if step == "BUILD_POLL":
-        print(
-            "LOOM_CONTEXT_PATCH:"
-            + json.dumps(
-                {"build_poll_revision": next_revision("build_poll_revision")},
-                separators=(",", ":"),
-            )
-        )
+        patch["build_poll_revision"] = next_revision("build_poll_revision")
     elif step == "SOAK":
-        print(
-            "LOOM_CONTEXT_PATCH:"
-            + json.dumps(
-                {"soak_poll_revision": next_revision("soak_poll_revision")},
-                separators=(",", ":"),
-            )
-        )
+        patch["soak_poll_revision"] = next_revision("soak_poll_revision")
     if step == "BUILD_COLLECT":
         job = {
             "candidate": str(merged.get("candidate") or ctx.get("candidate") or ""),
@@ -206,9 +194,11 @@ if step in ("BUILD_START", "BUILD_POLL", "BUILD_COLLECT", "SOAK", "PROMOTE"):
             ),
             "version": str(merged.get("version") or ctx.get("version") or ""),
         }
+        patch["upgrade_jobs"] = [job]
+    if patch:
         print(
             "LOOM_CONTEXT_PATCH:"
-            + json.dumps({"upgrade_jobs": [job]}, separators=(",", ":"))
+            + json.dumps(patch, separators=(",", ":"))
         )
     print("PASS")
     raise SystemExit(0)
