@@ -9,14 +9,41 @@ ROOT="$(cd "$(dirname "$0")/../../.." && pwd -P)"
 
 SLUG=north-star-lastdb-io-free-commit-and-barrierless-purge
 MODE="$(ns_mode)"
-EVIDENCE="${IO_FREE_COMMIT_PROOF_EVIDENCE_FILE:-$(ns_proof_dir)/$SLUG.md}"
+
+# The evidence file is Fold's OUTPUT and this harness's INPUT. It must never be
+# the same file as the report this harness writes. It used to default to
+# "$(ns_proof_dir)/$SLUG.md", which is exactly the path ns_write_report writes,
+# so every run read the evidence, passed, and then overwrote that evidence with
+# its own summary. The next run parsed the summary, found none of the measured
+# lines, and failed. The verdict oscillated PASS-OFFLINE -> FAIL with no product
+# change, and the first run of the pair was self-certifying: its "isolated proof
+# verdict" note was reading a verdict this harness had written itself.
+EVIDENCE="${IO_FREE_COMMIT_PROOF_EVIDENCE_FILE:-$(ns_proof_dir)/$SLUG.fold-evidence.md}"
+REPORT="$(ns_proof_dir)/$SLUG.md"
+
+# Compare resolved paths rather than the raw strings: an override may reach the
+# report through a different but equivalent spelling. Done by hand because
+# `readlink -f` is GNU-only and macOS still ships a /bin/bash without it.
+abs_path() {
+  local p="$1" dir base
+  dir="$(dirname "$p")"
+  base="$(basename "$p")"
+  if [ -d "$dir" ]; then
+    printf '%s/%s\n' "$(cd "$dir" && pwd -P)" "$base"
+  else
+    printf '%s\n' "$p"
+  fi
+}
+
 notes=()
 failed=0
 
 pass_note() { notes+=("$1: PASS"); }
 fail_note() { notes+=("$1: FAIL"); failed=1; }
 
-if [ ! -f "$EVIDENCE" ]; then
+if [ "$(abs_path "$EVIDENCE")" = "$(abs_path "$REPORT")" ]; then
+  fail_note "evidence file $EVIDENCE is this harness's own report; point IO_FREE_COMMIT_PROOF_EVIDENCE_FILE at Fold's evidence"
+elif [ ! -f "$EVIDENCE" ]; then
   fail_note "Fold terminal evidence exists at $EVIDENCE"
 else
   verdict="$(sed -n '1p' "$EVIDENCE")"
