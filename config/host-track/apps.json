@@ -254,6 +254,35 @@
       }
     },
     {
+      "app": "reconciler",
+      "install_mode": "artifact",
+      "kind": "artifact cli",
+      "command": "reconciler",
+      "gate": "lastgit",
+      "gate_main": "lastdb:///reconciler#main",
+      "artifact_app": "reconciler",
+      "artifact_channel": "stable",
+      "artifact_root": "$HOME/.lastgit/artifacts",
+      "install_root": "$HOME/.host-track/apps/reconciler",
+      "links": [
+        {
+          "source": "src/cli.ts",
+          "target": "$HOME/.local/bin/reconciler"
+        }
+      ],
+      "notes": "Reconciler uses the immutable LastGit artifact. Host Track follows the green published main source OID, installs locked production dependencies, and links only the artifact CLI.",
+      "track_gate_main": true,
+      "post_install": "$HOME/.host-track/apps/reconciler/current/bin/reconciler-host-track-post-install",
+      "safe_upgrade": {
+        "soak_hours": 1,
+        "latency": true,
+        "probes": [
+          {"argv": ["src/cli.ts", "status", "--owner"], "timeout_s": 45},
+          {"argv": ["src/cli.ts", "schemas"], "timeout_s": 30}
+        ]
+      }
+    },
+    {
       "app": "situations",
       "install_mode": "artifact",
       "kind": "artifact cli",
