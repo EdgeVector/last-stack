@@ -1,21 +1,35 @@
 #!/usr/bin/env bash
-# Install / uninstall / status / run-once the zero-LLM self-upgrade LaunchAgent.
-# Heals ~/.last-stack without waiting for Codex pickup to open routine-read.
+# Install / uninstall / status / proof / run-once the zero-LLM self-upgrade
+# LaunchAgent.
+#
+# Writes a stable public path (~/.last-stack or artifacts/current) into the
+# plist and uses the shared LaunchAgent guard for all launchctl calls.
 set -euo pipefail
 
-self_dir="$(cd "$(dirname "$0")" && pwd -P)"
-last_stack="$(cd "$self_dir/.." && pwd -P)"
+self="${BASH_SOURCE[0]}"
+while [ -h "$self" ]; do
+  self_dir="$(cd -P "$(dirname "$self")" && pwd)"
+  self="$(readlink "$self")"
+  case "$self" in /*) ;; *) self="$self_dir/$self" ;; esac
+done
+self_root="$(cd -P "$(dirname "$self")/.." && pwd)"
+# shellcheck source=../lib/last-stack-launchd-agent.sh
+. "$self_root/lib/last-stack-launchd-agent.sh"
+
+program="last-stack-self-upgrade"
 label="com.edgevector.last-stack-self-upgrade"
-plist_src="$last_stack/launchd/${label}.plist"
+last_stack="$(last_stack_agent_stable_root "$self" "$program")"
+plist_src="$self_root/launchd/${label}.plist"
+if [ ! -f "$plist_src" ]; then
+  plist_src="$last_stack/launchd/${label}.plist"
+fi
 plist_dst="${LAST_STACK_SELF_UPGRADE_PLIST:-$HOME/Library/LaunchAgents/${label}.plist}"
-uid="$(id -u)"
-domain="gui/${uid}"
 cmd="${1:-status}"
 
 install_agent() {
-  chmod +x "$last_stack/bin/last-stack-self-upgrade" 2>/dev/null || true
-  [ -x "$last_stack/bin/last-stack-self-upgrade" ] || {
-    echo "missing $last_stack/bin/last-stack-self-upgrade" >&2
+  chmod +x "$last_stack/bin/$program" 2>/dev/null || true
+  [ -e "$last_stack/bin/$program" ] || [ -x "$self_root/bin/$program" ] || {
+    echo "missing $last_stack/bin/$program" >&2
     exit 1
   }
   [ -f "$plist_src" ] || {
@@ -24,52 +38,76 @@ install_agent() {
   }
   mkdir -p "$(dirname "$plist_dst")"
   mkdir -p "$HOME/Library/Logs"
-  sed \
-    -e "s|/Users/REPLACE/.last-stack|${last_stack}|g" \
-    -e "s|/Users/REPLACE|${HOME}|g" \
-    "$plist_src" >"$plist_dst"
-  /usr/libexec/PlistBuddy -c "Set :ProgramArguments:0 ${last_stack}/bin/last-stack-self-upgrade" "$plist_dst" 2>/dev/null || true
-  /usr/libexec/PlistBuddy -c "Set :ProgramArguments:1 --repair-dirty" "$plist_dst" 2>/dev/null || true
-  /usr/libexec/PlistBuddy -c "Set :ProgramArguments:2 --reason=launchd" "$plist_dst" 2>/dev/null || true
-  /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:LAST_STACK_ROOT ${last_stack}" "$plist_dst" 2>/dev/null || true
-  /usr/libexec/PlistBuddy -c "Set :WorkingDirectory ${last_stack}" "$plist_dst" 2>/dev/null || true
-
-  if command -v launchctl >/dev/null 2>&1; then
-    launchctl bootout "${domain}/${label}" >/dev/null 2>&1 || true
-    if launchctl bootstrap "$domain" "$plist_dst" >/dev/null 2>&1; then
-      launchctl enable "${domain}/${label}" >/dev/null 2>&1 || true
-      launchctl kickstart -k "${domain}/${label}" >/dev/null 2>&1 || true
-      echo "last-stack-self-upgrade: loaded ${label} (every 30m)"
-    else
-      echo "last-stack-self-upgrade: plist at $plist_dst (bootstrap failed)" >&2
-    fi
-  else
-    echo "last-stack-self-upgrade: plist written $plist_dst"
-  fi
+  rendered="$(mktemp "${TMPDIR:-/tmp}/last-stack-self-upgrade.plist.XXXXXX")"
+  last_stack_agent_render_plist "$plist_src" "$rendered" "$last_stack"
+  last_stack_agent_commit_plist \
+    "$label" "$plist_dst" "$rendered" "last-stack-self-upgrade"
 }
 
 uninstall_agent() {
-  launchctl bootout "${domain}/${label}" >/dev/null 2>&1 || true
-  rm -f "$plist_dst"
-  echo "last-stack-self-upgrade: uninstalled"
+  last_stack_agent_uninstall "$label" "$plist_dst" "last-stack-self-upgrade"
 }
 
 status_agent() {
-  echo "bin: $last_stack/bin/last-stack-self-upgrade"
+  echo "bin: $last_stack/bin/$program"
   echo "plist: $plist_dst"
-  [ -f "$plist_dst" ] && echo "plist: present" || echo "plist: missing"
-  launchctl print "${domain}/${label}" 2>/dev/null | head -25 || echo "launchctl: not loaded"
+  if [ -f "$plist_dst" ]; then
+    echo "plist: present"
+    plist_program="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$plist_dst" 2>/dev/null || true)"
+    echo "program: ${plist_program:-unknown}"
+    case "$plist_program" in
+      */artifacts/versions/*) echo "program: VERSION-PINNED (will re-toast on refresh)" ;;
+    esac
+  else
+    echo "plist: missing"
+  fi
+  if last_stack_agent_should_touch_launchd "$plist_dst" && command -v launchctl >/dev/null 2>&1; then
+    uid="$(id -u)"
+    launchctl print "gui/${uid}/${label}" 2>/dev/null | head -25 || echo "launchctl: not loaded"
+  else
+    echo "launchctl: skipped"
+  fi
   if [ -f "$HOME/Library/Logs/last-stack-self-upgrade.out.log" ]; then
     echo "--- last log ---"
     tail -8 "$HOME/Library/Logs/last-stack-self-upgrade.out.log" || true
   fi
 }
 
+proof_agent() {
+  if [ ! -f "$plist_dst" ]; then
+    echo "proof: missing plist $plist_dst" >&2
+    return 1
+  fi
+  plist_program="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$plist_dst" 2>/dev/null || true)"
+  if [ "$plist_program" != "$last_stack/bin/$program" ]; then
+    echo "proof: unexpected program=${plist_program:-missing} expected=$last_stack/bin/$program" >&2
+    return 1
+  fi
+  if last_stack_agent_should_touch_launchd "$plist_dst"; then
+    if ! command -v launchctl >/dev/null 2>&1; then
+      echo "proof: launchctl unavailable" >&2
+      return 1
+    fi
+    uid="$(id -u)"
+    if ! launchctl print "gui/${uid}/${label}" >/dev/null 2>&1; then
+      echo "proof: service not loaded label=$label" >&2
+      return 1
+    fi
+  fi
+  echo "proof: ok label=$label program=$plist_program"
+}
+
 case "$cmd" in
   install) install_agent ;;
   uninstall) uninstall_agent ;;
   status) status_agent ;;
-  run-once) exec "$last_stack/bin/last-stack-self-upgrade" --reason=launchd-run-once "${@:2}" ;;
-  -h|--help) sed -n '2,5p' "$0" ;;
-  *) echo "usage: $0 install|uninstall|status|run-once" >&2; exit 2 ;;
+  proof) proof_agent ;;
+  run-once)
+    if [ -x "$last_stack/bin/$program" ]; then
+      exec "$last_stack/bin/$program" --reason=launchd-run-once "${@:2}"
+    fi
+    exec "$self_root/bin/$program" --reason=launchd-run-once "${@:2}"
+    ;;
+  -h|--help) sed -n '2,7p' "$0" ;;
+  *) echo "usage: $0 install|uninstall|status|proof|run-once" >&2; exit 2 ;;
 esac

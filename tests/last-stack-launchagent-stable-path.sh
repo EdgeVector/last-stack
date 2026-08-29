@@ -42,12 +42,14 @@ ln -s "$install_root/current/launchd" "$compat/launchd"
 
 cp "$ROOT/bin/last-stack-factory-health-install" "$version/bin/"
 cp "$ROOT/bin/last-stack-board-closeout-install" "$version/bin/"
+cp "$ROOT/bin/last-stack-self-upgrade-install" "$version/bin/"
 cp "$ROOT/bin/last-stack-admin-deliver-install" "$version/bin/"
 cp "$ROOT/bin/last-stack-factory-ready-buffer-install" "$version/bin/"
 cp "$ROOT/bin/last-stack-loom-reaper-install" "$version/bin/"
 cp "$ROOT/lib/last-stack-launchd-agent.sh" "$version/lib/"
 cp "$ROOT/launchd/com.edgevector.factory-health.plist" "$version/launchd/"
 cp "$ROOT/launchd/com.edgevector.board-closeout.plist" "$version/launchd/"
+cp "$ROOT/launchd/com.edgevector.last-stack-self-upgrade.plist" "$version/launchd/"
 cp "$ROOT/bin/last-stack-vm-disk-trim-install" "$version/bin/"
 cp "$ROOT/launchd/com.edgevector.vm-disk-trim.plist" "$version/launchd/"
 cp "$ROOT/bin/last-stack-host-memory-guards-install" "$version/bin/"
@@ -56,6 +58,7 @@ cp "$ROOT/launchd/com.edgevector.testbin-memory-guard.plist" "$version/launchd/"
 cp "$ROOT/launchd/com.edgevector.host-memory-sentinel.plist" "$version/launchd/"
 printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-factory-health"
 printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-board-closeout-sweep"
+printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-self-upgrade"
 printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-vm-disk-trim"
 printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-gui-app-memory-guard"
 printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-testbin-memory-guard"
@@ -63,11 +66,13 @@ printf '#!/bin/sh\nexit 0\n' >"$version/bin/last-stack-host-memory-sentinel"
 chmod +x \
   "$version/bin/last-stack-factory-health-install" \
   "$version/bin/last-stack-board-closeout-install" \
+  "$version/bin/last-stack-self-upgrade-install" \
   "$version/bin/last-stack-admin-deliver-install" \
   "$version/bin/last-stack-factory-ready-buffer-install" \
   "$version/bin/last-stack-loom-reaper-install" \
   "$version/bin/last-stack-factory-health" \
   "$version/bin/last-stack-board-closeout-sweep" \
+  "$version/bin/last-stack-self-upgrade" \
   "$version/bin/last-stack-vm-disk-trim-install" \
   "$version/bin/last-stack-vm-disk-trim" \
   "$version/bin/last-stack-host-memory-guards-install" \
@@ -86,6 +91,7 @@ for installer in \
   last-stack-factory-ready-buffer-install \
   last-stack-host-memory-guards-install \
   last-stack-loom-reaper-install \
+  last-stack-self-upgrade-install \
   last-stack-vm-disk-trim-install; do
   ln -s "$version/bin/$installer" "$public_bin/$installer"
   "$public_bin/$installer" --help >/dev/null \
@@ -97,6 +103,7 @@ mkdir -p "$tmp/path"
 cat >"$tmp/path/launchctl" <<'EOF'
 #!/bin/sh
 echo "launchctl $*" >>"${LAUNCHCTL_LOG:?}"
+[ "${1:-}" != "print" ] || [ "${FAKE_LAUNCHCTL_PRINT_FAIL:-0}" != "1" ] || exit 1
 exit 0
 EOF
 chmod +x "$tmp/path/launchctl"
@@ -139,6 +146,39 @@ esac
 out="$("$version/bin/last-stack-board-closeout-install" install)" || fail "second closeout install failed"
 printf '%s\n' "$out" | grep -q 'already current, skipped launchctl' \
   || fail "closeout expected already current, got: $out"
+
+# 3a. self-upgrade uses the same stable-root and launchctl-skip contract.
+out="$("$version/bin/last-stack-self-upgrade-install" install)" \
+  || fail "self-upgrade install failed"
+printf '%s\n' "$out" | grep -q 'launchctl skipped' \
+  || fail "self-upgrade expected skip, got: $out"
+suplist="$HOME/Library/LaunchAgents/com.edgevector.last-stack-self-upgrade.plist"
+suprog="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$suplist")"
+[ "$suprog" = "$compat/bin/last-stack-self-upgrade" ] \
+  || fail "self-upgrade program=$suprog"
+case "$suprog" in
+  */artifacts/versions/*) fail "self-upgrade still version-pinned: $suprog" ;;
+esac
+out="$("$version/bin/last-stack-self-upgrade-install" proof)" \
+  || fail "self-upgrade proof failed under domain=none"
+printf '%s\n' "$out" | grep -q 'proof: ok label=com.edgevector.last-stack-self-upgrade' \
+  || fail "self-upgrade proof output=$out"
+out="$("$version/bin/last-stack-self-upgrade-install" install)" \
+  || fail "second self-upgrade install failed"
+printf '%s\n' "$out" | grep -q 'already current, skipped launchctl' \
+  || fail "self-upgrade expected already current, got: $out"
+for skip_mode in skip off; do
+  export LAST_STACK_LAUNCHD_DOMAIN="$skip_mode"
+  : >"$LAUNCHCTL_LOG"
+  rm -f "$suplist"
+  out="$("$version/bin/last-stack-self-upgrade-install" install)" \
+    || fail "self-upgrade install failed for domain=$skip_mode"
+  printf '%s\n' "$out" | grep -q 'launchctl skipped' \
+    || fail "self-upgrade domain=$skip_mode did not skip launchctl: $out"
+  [ ! -s "$LAUNCHCTL_LOG" ] \
+    || fail "self-upgrade domain=$skip_mode called launchctl: $(cat "$LAUNCHCTL_LOG")"
+done
+export LAST_STACK_LAUNCHD_DOMAIN=none
 
 # 3b. vm-disk-trim same contract. This agent runs `docker run --privileged
 # --pid=host`, so a version-pinned program path would silently keep trimming
@@ -201,11 +241,56 @@ out="$("$version/bin/last-stack-factory-health-install" install)" || fail "forei
 [ ! -s "$LAUNCHCTL_LOG" ] || fail "launchctl leaked into real gui domain: $(cat "$LAUNCHCTL_LOG")"
 printf '%s\n' "$out" | grep -q 'launchctl skipped' || fail "foreign home should skip launchctl, got: $out"
 
+rm -f "$suplist"
+out="$("$version/bin/last-stack-self-upgrade-install" install)" \
+  || fail "foreign-home self-upgrade install failed"
+[ ! -s "$LAUNCHCTL_LOG" ] \
+  || fail "self-upgrade launchctl leaked into real gui domain: $(cat "$LAUNCHCTL_LOG")"
+printf '%s\n' "$out" | grep -q 'launchctl skipped' \
+  || fail "foreign-home self-upgrade should skip launchctl, got: $out"
+
+# 4b. Simulate the uid's real home. Only the self-upgrade label may load.
+cat >"$tmp/path/dscl" <<'EOF'
+#!/bin/sh
+printf 'NFSHomeDirectory: %s\n' "${FAKE_REAL_HOME:?}"
+EOF
+chmod +x "$tmp/path/dscl"
+export FAKE_REAL_HOME="$HOME"
+: >"$LAUNCHCTL_LOG"
+rm -f "$suplist"
+out="$("$version/bin/last-stack-self-upgrade-install" install)" \
+  || fail "real-home self-upgrade install failed"
+printf '%s\n' "$out" | grep -q 'loaded com.edgevector.last-stack-self-upgrade' \
+  || fail "real-home self-upgrade did not load: $out"
+[ "$(wc -l <"$LAUNCHCTL_LOG" | tr -d ' ')" = "4" ] \
+  || fail "real-home self-upgrade launchctl call count: $(cat "$LAUNCHCTL_LOG")"
+if grep -v 'com.edgevector.last-stack-self-upgrade' "$LAUNCHCTL_LOG" >/dev/null; then
+  fail "real-home self-upgrade loaded another label: $(cat "$LAUNCHCTL_LOG")"
+fi
+: >"$LAUNCHCTL_LOG"
+out="$("$version/bin/last-stack-self-upgrade-install" proof)" \
+  || fail "real-home self-upgrade proof failed"
+printf '%s\n' "$out" | grep -q 'proof: ok label=com.edgevector.last-stack-self-upgrade' \
+  || fail "real-home self-upgrade proof output=$out"
+grep -q "launchctl print gui/$(id -u)/com.edgevector.last-stack-self-upgrade" \
+  "$LAUNCHCTL_LOG" || fail "proof did not query the intended label: $(cat "$LAUNCHCTL_LOG")"
+export FAKE_LAUNCHCTL_PRINT_FAIL=1
+if out="$("$version/bin/last-stack-self-upgrade-install" proof 2>&1)"; then
+  fail "self-upgrade proof passed while the service was missing"
+fi
+printf '%s\n' "$out" | grep -q 'proof: service not loaded label=com.edgevector.last-stack-self-upgrade' \
+  || fail "missing-service proof was not clear: $out"
+unset FAKE_LAUNCHCTL_PRINT_FAIL
+
 # 5. Uninstall with domain=none removes plist and still does not call launchctl.
 export LAST_STACK_LAUNCHD_DOMAIN=none
 : >"$LAUNCHCTL_LOG"
 "$version/bin/last-stack-factory-health-install" uninstall >/dev/null
 [ ! -f "$plist" ] || fail "uninstall left factory-health plist"
 [ ! -s "$LAUNCHCTL_LOG" ] || fail "uninstall called launchctl: $(cat "$LAUNCHCTL_LOG")"
+"$version/bin/last-stack-self-upgrade-install" uninstall >/dev/null
+[ ! -f "$suplist" ] || fail "uninstall left self-upgrade plist"
+[ ! -s "$LAUNCHCTL_LOG" ] \
+  || fail "self-upgrade uninstall called launchctl: $(cat "$LAUNCHCTL_LOG")"
 
 echo "ok last-stack-launchagent-stable-path"
