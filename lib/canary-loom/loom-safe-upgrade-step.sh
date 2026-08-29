@@ -4,6 +4,7 @@ set -euo pipefail
 step="${1:?step}"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
 export LOOM_LASTDB_FRESHNESS_SCRIPT="${LOOM_LASTDB_FRESHNESS_SCRIPT:-$SCRIPT_DIR/lastdb-candidate-freshness.py}"
+export LOOM_SAFE_UPGRADE_GRAPH="${LOOM_SAFE_UPGRADE_GRAPH:-$SCRIPT_DIR/lastdb-safe-upgrade.json}"
 
 python3 - "$step" <<'PY'
 import json, os, subprocess, sys
@@ -29,6 +30,18 @@ def emit(payload, line="PASS"):
     print("LOOM_CONTEXT_PATCH:" + json.dumps(payload, separators=(",", ":")))
     print(line)
     print("PASS")
+
+
+def node_timeout(node):
+    graph_path = os.environ.get("LOOM_SAFE_UPGRADE_GRAPH") or ""
+    if not graph_path or not os.path.isfile(graph_path):
+        raise RuntimeError(f"safe-upgrade graph missing: {graph_path}")
+    with open(graph_path, encoding="utf-8") as handle:
+        graph = json.load(handle)
+    value = graph.get("states", {}).get(node, {}).get("timeout_sec")
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise RuntimeError(f"safe-upgrade graph has invalid {node} timeout: {value}")
+    return value
 
 
 def check_freshness():
@@ -108,7 +121,7 @@ if step == "PROBE":
         raise SystemExit(0)
     p = subprocess.run(
         ["bash", skill, "--candidate", cand, "--probe-only"],
-        capture_output=True, text=True, timeout=7200,
+        capture_output=True, text=True, timeout=node_timeout("PROBE"),
     )
     sys.stdout.write(p.stdout or "")
     sys.stderr.write(p.stderr or "")
@@ -137,7 +150,7 @@ if step == "CUTOVER":
     cutover_env["LASTDB_SAFE_UPGRADE_VIA_LOOM"] = "1"
     p = subprocess.run(
         ["bash", skill, "--candidate", cand, "--yes"],
-        capture_output=True, text=True, timeout=3600, env=cutover_env,
+        capture_output=True, text=True, timeout=node_timeout("CUTOVER"), env=cutover_env,
     )
     sys.stdout.write(p.stdout or "")
     sys.stderr.write(p.stderr or "")

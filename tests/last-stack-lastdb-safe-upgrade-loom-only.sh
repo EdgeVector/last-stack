@@ -28,6 +28,13 @@ cutover_timeout="$(jq -er '.states.CUTOVER.timeout_sec | numbers' "$GRAPH")"
   || fail "CUTOVER timeout must cover every check that PROBE runs"
 [ "$cutover_timeout" -ge 7200 ] \
   || fail "CUTOVER timeout cannot cover the measured real-data safety pass"
+grep -q 'timeout=node_timeout("PROBE")' "$STEP" \
+  || fail "PROBE wrapper timeout does not come from the graph"
+grep -q 'timeout=node_timeout("CUTOVER")' "$STEP" \
+  || fail "CUTOVER wrapper timeout does not come from the graph"
+if grep -Eq 'timeout=(3600|7200)' "$STEP"; then
+  fail "safe-upgrade wrapper retains a timeout separate from the graph"
+fi
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-safe-upgrade-loom.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
