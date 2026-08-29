@@ -250,6 +250,8 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
 . "$_SCRIPT_DIR/live-socket-health.sh"
 # shellcheck source=owner-lock.sh
 . "$_SCRIPT_DIR/owner-lock.sh"
+# shellcheck source=deadline.sh
+. "$_SCRIPT_DIR/deadline.sh"
 CAS_PROBE_SH="$_SCRIPT_DIR/cas-mutation-probe.sh"
 
 if [ "${CHECK_DEV_STAMP:-0}" -eq 1 ]; then
@@ -438,21 +440,6 @@ median_of() {
   # median of the integer args
   printf '%s\n' "$@" | sort -n \
     | awk '{a[NR]=$1} END {if (NR==0) {print -1} else if (NR%2) {print a[(NR+1)/2]} else {print int((a[NR/2]+a[NR/2+1])/2)}}'
-}
-
-run_op_with_deadline() {
-  # $1 = seconds; rest = command. Returns 124 if the deadline killed it.
-  local secs="$1"; shift
-  "$@" &
-  local pid=$!
-  ( sleep "$secs"; kill -9 "$pid" 2>/dev/null ) &
-  local killer=$!
-  local rc=0
-  wait "$pid" 2>/dev/null || rc=$?
-  kill "$killer" 2>/dev/null || true
-  wait "$killer" 2>/dev/null || true
-  [ "$rc" -eq 137 ] && return 124
-  return "$rc"
 }
 
 # Latency ops. Each takes one arg and must exit non-zero on failure. These are
