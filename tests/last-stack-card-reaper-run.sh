@@ -116,6 +116,134 @@ printf '%s\n' "$transient_out" | grep -q '^card-reaper 2026-07-20T13:31:08Z noop
 ! printf '%s\n' "$transient_out" | grep -q 'exception:kanban_add_failed'
 test ! -e "$tmp/transient-memory.md"
 
+reference_board="$tmp/reference-board.json"
+cat >"$reference_board" <<'JSON'
+[
+  {
+    "slug": "missing-dependency",
+    "title": "Missing dependency projection",
+    "column": "todo",
+    "created_at": "2026-07-15T12:00:00Z",
+    "body": "## END STATE\nDone."
+  },
+  {
+    "slug": "protected-dependency",
+    "title": "Protected dependency",
+    "column": "todo",
+    "created_at": "2026-07-15T12:00:00Z",
+    "body": "## END STATE\nDone."
+  },
+  {
+    "slug": "live-dependent",
+    "title": "Live dependent",
+    "column": "todo",
+    "created_at": "2026-07-20T13:00:00Z",
+    "deps": ["protected-dependency"]
+  }
+]
+JSON
+
+reference_bin="$tmp/reference-bin"
+mkdir -p "$reference_bin"
+cat >"$reference_bin/kanban" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}:${2:-}" in
+  show:missing-dependency)
+    echo 'kanban: No card with slug "missing-dependency"' >&2
+    exit 1
+    ;;
+  show:*)
+    echo "unexpected show for protected card: $*" >&2
+    exit 2
+    ;;
+  *)
+    echo "unexpected kanban command: $*" >&2
+    exit 2
+    ;;
+esac
+EOF
+chmod +x "$reference_bin/kanban"
+
+reference_out="$(PATH="$reference_bin:$PATH" LAST_STACK_ROOT="$tmp/no-last-stack" "$ROOT/bin/last-stack-card-reaper-run" \
+  --skip-preflight \
+  --board-json "$reference_board" \
+  --memory "$tmp/reference-memory.md" \
+  --now 2026-07-20T13:31:08Z)"
+
+printf '%s\n' "$reference_out" | grep -q '^card-reaper 2026-07-20T13:31:08Z noop live=3 killed=<backlog=0,todo=0,doing=0> rolled_back=0 parked=0 salvaged=0 exempt_needs_human=0 flagged=stale-dependency-ref:missing-dependency,live-dependent-protected:protected-dependency$'
+! printf '%s\n' "$reference_out" | grep -q 'exception:kanban_show_failed'
+! printf '%s\n' "$reference_out" | grep -q '^would_kill protected-dependency:'
+! printf '%s\n' "$reference_out" | grep -q '^killed protected-dependency:'
+
+unexpected_bin="$tmp/unexpected-bin"
+mkdir -p "$unexpected_bin"
+cat >"$unexpected_bin/kanban" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "permission denied by unexpected board fault" >&2
+exit 1
+EOF
+chmod +x "$unexpected_bin/kanban"
+
+unexpected_out="$(PATH="$unexpected_bin:$PATH" LAST_STACK_ROOT="$tmp/no-last-stack" "$ROOT/bin/last-stack-card-reaper-run" \
+  --skip-preflight \
+  --board-json "$transient_board" \
+  --memory "$tmp/unexpected-memory.md" \
+  --now 2026-07-20T13:31:08Z)"
+
+printf '%s\n' "$unexpected_out" | grep -q '^card-reaper 2026-07-20T13:31:08Z error '
+printf '%s\n' "$unexpected_out" | grep -q 'flagged=exception:kanban_show_failed_for_transient-add:'
+
+promotion_board="$tmp/promotion-board.json"
+cat >"$promotion_board" <<'JSON'
+[
+  {
+    "slug": "papercut-invalid-promotion",
+    "title": "Papercut promotion",
+    "column": "todo",
+    "created_at": "2026-07-15T12:00:00Z",
+    "body": "## END STATE\nDone."
+  }
+]
+JSON
+
+promotion_bin="$tmp/promotion-bin"
+mkdir -p "$promotion_bin"
+cat >"$promotion_bin/kanban" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  show)
+    printf '%s\n' '{"slug":"papercut-invalid-promotion","body":"## END STATE\\nDone."}'
+    ;;
+  add)
+    cat >/dev/null
+    echo 'kanban: Card North Star: north-star-typed-papercuts is not active' >&2
+    exit 1
+    ;;
+  rm|move)
+    echo "unexpected mutation after validation rejection: $*" >&2
+    exit 2
+    ;;
+  *)
+    echo "unexpected kanban command: $*" >&2
+    exit 2
+    ;;
+esac
+EOF
+chmod +x "$promotion_bin/kanban"
+
+promotion_out="$(PATH="$promotion_bin:$PATH" LAST_STACK_ROOT="$tmp/no-last-stack" "$ROOT/bin/last-stack-card-reaper-run" \
+  --skip-preflight \
+  --board-json "$promotion_board" \
+  --memory "$tmp/promotion-memory.md" \
+  --now 2026-07-20T13:31:08Z)"
+
+printf '%s\n' "$promotion_out" | grep -q '^card-reaper 2026-07-20T13:31:08Z noop live=1 killed=<backlog=0,todo=0,doing=0> rolled_back=0 parked=0 salvaged=0 exempt_needs_human=0 flagged=papercut-promotion-validation:papercut-invalid-promotion$'
+! printf '%s\n' "$promotion_out" | grep -q 'exception:kanban_add_failed'
+test ! -e "$tmp/promotion-memory.md"
+
 doing_board="$tmp/doing-board.json"
 cat >"$doing_board" <<'JSON'
 [
