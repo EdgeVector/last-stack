@@ -144,6 +144,7 @@ printf '%s\n' "$default_report" | jq -e '
   and any(.apps[]; .app == "last-stack" and .registry_compliance == "artifact")
   and any(.apps[]; .app == "remote" and .registry_compliance == "artifact")
   and any(.apps[]; .app == "brain" and .registry_compliance == "artifact")
+  and any(.apps[]; .app == "reconciler" and .registry_compliance == "artifact")
   and any(.apps[]; .app == "situations" and .registry_compliance == "artifact")
   and any(.apps[]; .app == "kanban" and .registry_compliance == "artifact")
   and (any(.apps[]; .app == "fkanban") | not)
