@@ -41,11 +41,58 @@ SMOKE_SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # Per-call bound for the quick-try block. One hung brain/search call must fail
 # that step, not consume the whole routine budget.
 QUICK_TRY_TIMEOUT="${QUICK_TRY_TIMEOUT:-60}"
+# Per-call bound for the app init/list calls. `brain init` bootstraps 25 node
+# schemas and is where the 2026-08-29 run stalled; it is slower than a quick-try
+# verb but must still be a step that can fail, not a hang.
+APP_INIT_TIMEOUT="${APP_INIT_TIMEOUT:-120}"
+# Per-call bound for the heavy install steps (clone, setup, install-apps).
+INSTALL_TIMEOUT="${INSTALL_TIMEOUT:-240}"
+# The one global budget. 540s leaves a minute of footer/cleanup margin under the
+# agent Bash tool's hard 600s foreground cap, which is what killed the run that
+# filed this: no VERDICT line, nothing to report, no way to tell a hang from a
+# slow host. Set 0 to disable for interactive debugging.
+SMOKE_TOTAL_BUDGET_SECS="${SMOKE_TOTAL_BUDGET_SECS:-540}"
+smoke_deadline_init "$SMOKE_TOTAL_BUDGET_SECS"
 
 FAILS=()
 PASS=()
-note_pass() { PASS+=("$1"); echo "  OK  $1" >&2; }
-note_fail() { FAILS+=("$1"); echo "  FAIL $1" >&2; }
+# Every step marker and result goes to fd 4 (the REAL stderr) as well as the
+# log. `exec >>"$LOG" 2>&1` below sends ordinary output to a file inside the
+# disposable sandbox, so a killed run used to leave the caller nothing at all —
+# the 2026-08-29 recurrence had to be reconstructed from a leftover sandbox that
+# only survived because the EXIT trap never ran. Live breadcrumbs mean the tool
+# result itself names the last step reached and how long the run had been going.
+live() { echo "$*" >&4; echo "$*"; }
+step() { live "[$(smoke_elapsed)s] >>> $1"; }
+note_pass() { PASS+=("$1"); live "[$(smoke_elapsed)s]   OK  $1"; }
+note_fail() { FAILS+=("$1"); live "[$(smoke_elapsed)s]   FAIL $1"; }
+
+# bounded_step <fail-label> <bound> <command...>
+# Run a step under the smaller of its own bound and the global budget, then
+# record pass/fail. A fired bound is reported as an explicit timeout so a hang
+# never reads as an ordinary nonzero exit.
+bounded_step() {
+  local label="$1" bound="$2"
+  shift 2
+  local effective rc=0
+  if smoke_deadline_exceeded; then
+    note_fail "$label budget-exhausted (global ${SMOKE_TOTAL_BUDGET_SECS}s spent)"
+    return 124
+  fi
+  effective="$(smoke_bounded_remaining "$bound")"
+  set +e
+  run_bounded "$effective" "$@"
+  rc=$?
+  set -e
+  if [ "$rc" -eq 0 ]; then
+    note_pass "$label"
+  elif [ "$rc" -eq 124 ]; then
+    note_fail "$label timeout=${effective}s"
+  else
+    note_fail "$label exit=$rc"
+  fi
+  return "$rc"
+}
 
 require_cmd() {
   if command -v "$1" >/dev/null 2>&1; then
@@ -131,7 +178,7 @@ require_cmd lastdbd
 
 # Bun: install into sandbox if missing; allow pre-existing system bun
 if ! command -v bun >/dev/null 2>&1; then
-  echo ">>> installing bun (sandbox-aware)"
+  step "installing bun (sandbox-aware)"
   curl -fsSL https://bun.sh/install | bash || true
 fi
 export PATH="$HOME/.bun/bin:${REAL_HOME}/.bun/bin:$HOME/.local/bin:$PATH"
@@ -150,37 +197,25 @@ fi
 
 # --- last-stack ---
 LAST_STACK_INSTALL_SOURCE="${LAST_STACK_INSTALL_SOURCE:-https://github.com/EdgeVector/last-stack.git}"
-echo ">>> clone last-stack"
+step "clone last-stack"
 echo "source: $LAST_STACK_INSTALL_SOURCE"
-if git clone --depth 1 "$LAST_STACK_INSTALL_SOURCE" "$HOME/.last-stack"; then
-  note_pass "clone:last-stack"
-else
-  note_fail "clone:last-stack"
-fi
+bounded_step "clone:last-stack" "$INSTALL_TIMEOUT" \
+  git clone --depth 1 "$LAST_STACK_INSTALL_SOURCE" "$HOME/.last-stack" || true
 
+step "setup"
 if [ -x "$HOME/.last-stack/setup" ]; then
-  if "$HOME/.last-stack/setup"; then
-    note_pass "setup"
-  else
-    note_fail "setup (exit $?)"
-  fi
+  bounded_step "setup" "$INSTALL_TIMEOUT" "$HOME/.last-stack/setup" || true
 else
   note_fail "setup missing"
 fi
 
+step "install-apps"
 if [ -x "$HOME/.last-stack/bin/last-stack-install-apps" ]; then
   # Apps clone under sandbox HOME. Use --no-brew: this smoke already requires a
   # system lastdbd on PATH, and brew install under a non-login HOME must never
   # rewrite the machine-wide launchd service plist (Dir.home freeze).
-  set +e
-  "$HOME/.last-stack/bin/last-stack-install-apps" --no-brew
-  APPS_RC=$?
-  set -e
-  if [ "$APPS_RC" -eq 0 ]; then
-    note_pass "install-apps"
-  else
-    note_fail "install-apps exit=$APPS_RC"
-  fi
+  bounded_step "install-apps" "$INSTALL_TIMEOUT" \
+    "$HOME/.last-stack/bin/last-stack-install-apps" --no-brew || true
 else
   note_fail "install-apps missing"
 fi
@@ -203,7 +238,7 @@ done
 # Never start/stop brew services here — only inspect the installed service
 # definition so a poisoned /tmp HOME cannot go GREEN while the isolated
 # daemon path still works.
-echo ">>> inspect brew service home (read-only; no brew services start)"
+step "inspect brew service home (read-only; no brew services start)"
 assert_brew_service_home() {
   local brew_prefix plist prog env_home env_lastdb login
   login="$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | awk '{print $2}' || true)"
@@ -268,7 +303,7 @@ assert_brew_service_home() {
 assert_brew_service_home
 
 # --- isolated daemon (NOT brew services) ---
-echo ">>> start isolated lastdbd"
+step "start isolated lastdbd"
 mkdir -p "$LASTDB_HOME"
 lastdbd --data-dir "$LASTDB_HOME" >"$FRESH_ROOT/lastdbd.out" 2>"$FRESH_ROOT/lastdbd.err" &
 DAEMON_PID=$!
@@ -299,16 +334,12 @@ if [ -S "$SOCK" ]; then
 fi
 
 # --- app inits ---
+step "app inits"
 if command -v brain >/dev/null 2>&1; then
-  set +e
-  brain init --grant-consent
-  rc=$?
-  set -e
-  if [ $rc -eq 0 ]; then
-    note_pass "brain:init"
-  else
-    note_fail "brain:init exit=$rc"
-  fi
+  # This is where the 2026-08-29 run died: `brain init` declares 25 node-owned
+  # schemas and had no bound at all, so a slow or wedged bootstrap consumed the
+  # whole foreground cap and the run produced no verdict.
+  bounded_step "brain:init" "$APP_INIT_TIMEOUT" brain init --grant-consent || true
   if [ -f "$HOME/.brain/config.json" ]; then
     if grep -q ':9001' "$HOME/.brain/config.json"; then
       note_fail "brain:config still contains :9001 (retired TCP)"
@@ -319,24 +350,9 @@ if command -v brain >/dev/null 2>&1; then
 fi
 
 if command -v kanban >/dev/null 2>&1; then
-  set +e
-  kanban init
-  rc=$?
-  set -e
-  if [ $rc -eq 0 ]; then
-    note_pass "kanban:init"
-  else
-    note_fail "kanban:init exit=$rc"
-  fi
-  set +e
-  kanban list >/tmp/kanban-list.out 2>&1
-  rc=$?
-  set -e
-  if [ $rc -eq 0 ]; then
-    note_pass "kanban:list"
-  else
-    note_fail "kanban:list exit=$rc"
-  fi
+  bounded_step "kanban:init" "$APP_INIT_TIMEOUT" kanban init || true
+  bounded_step "kanban:list" "$APP_INIT_TIMEOUT" \
+    sh -c 'kanban list >/tmp/kanban-list.out 2>&1' || true
   if [ -f "$HOME/.kanban/config.json" ] && grep -q ':9001' "$HOME/.kanban/config.json"; then
     note_fail "kanban:config still contains :9001"
   elif [ -f "$HOME/.kanban/config.json" ]; then
@@ -345,24 +361,9 @@ if command -v kanban >/dev/null 2>&1; then
 fi
 
 if command -v situations >/dev/null 2>&1; then
-  set +e
-  situations init
-  rc=$?
-  set -e
-  if [ $rc -eq 0 ]; then
-    note_pass "situations:init"
-  else
-    note_fail "situations:init exit=$rc"
-  fi
-  set +e
-  situations list >/tmp/sit-list.out 2>&1
-  rc=$?
-  set -e
-  if [ $rc -eq 0 ]; then
-    note_pass "situations:list"
-  else
-    note_fail "situations:list exit=$rc"
-  fi
+  bounded_step "situations:init" "$APP_INIT_TIMEOUT" situations init || true
+  bounded_step "situations:list" "$APP_INIT_TIMEOUT" \
+    sh -c 'situations list >/tmp/sit-list.out 2>&1' || true
   if [ -f "$HOME/.situations/config.json" ] && grep -q ':9001' "$HOME/.situations/config.json"; then
     note_fail "situations:config still contains :9001"
   elif [ -f "$HOME/.situations/config.json" ]; then
@@ -372,7 +373,7 @@ fi
 
 if command -v search >/dev/null 2>&1; then
   set +e
-  run_bounded "$QUICK_TRY_TIMEOUT" search init --quiet
+  run_bounded "$(smoke_bounded_remaining "$QUICK_TRY_TIMEOUT")" search init --quiet
   rc=$?
   set -e
   if [ $rc -eq 0 ]; then
@@ -387,7 +388,7 @@ fi
 # --- quick try (llms.txt) ---
 if command -v brain >/dev/null 2>&1; then
   set +e
-  run_bounded "$QUICK_TRY_TIMEOUT" brain concept new hello --title "Hello" --body "my first note"
+  run_bounded "$(smoke_bounded_remaining "$QUICK_TRY_TIMEOUT")" brain concept new hello --title "Hello" --body "my first note"
   rc=$?
   set -e
   if [ $rc -eq 0 ]; then
@@ -398,7 +399,7 @@ if command -v brain >/dev/null 2>&1; then
     note_fail "brain:concept-new exit=$rc"
   fi
   set +e
-  get_out=$(run_bounded "$QUICK_TRY_TIMEOUT" brain get hello 2>&1)
+  get_out=$(run_bounded "$(smoke_bounded_remaining "$QUICK_TRY_TIMEOUT")" brain get hello 2>&1)
   rc=$?
   set -e
   if [ $rc -eq 0 ] && echo "$get_out" | grep -qi 'first note\|Hello'; then
@@ -410,9 +411,9 @@ if command -v brain >/dev/null 2>&1; then
   fi
   # Prefer concrete term; allow search fallback if ask index lags
   set +e
-  ask_out=$(run_bounded "$QUICK_TRY_TIMEOUT" brain ask "first note" 2>&1)
+  ask_out=$(run_bounded "$(smoke_bounded_remaining "$QUICK_TRY_TIMEOUT")" brain ask "first note" 2>&1)
   ask_rc=$?
-  search_out=$(run_bounded "$QUICK_TRY_TIMEOUT" brain search "first note" 2>&1)
+  search_out=$(run_bounded "$(smoke_bounded_remaining "$QUICK_TRY_TIMEOUT")" brain search "first note" 2>&1)
   search_rc=$?
   set -e
   if echo "$ask_out$search_out" | grep -qi 'hello\|first note'; then

@@ -8,6 +8,16 @@
 # quick-try call now goes through run_bounded so a hang degrades into a normal
 # timed-out FAIL that still reaches the RED footer.
 #
+# A per-call bound alone is not enough. The 2026-08-29 recurrence stalled
+# EARLIER than quick-try — inside `brain init`'s node-schema bootstrap — and the
+# whole run was killed by the agent tool's hard 10-minute foreground cap with no
+# VERDICT line at all. Per-call bounds cannot prevent that: N calls each under
+# their own bound still sum past the cap. So the smoke also carries ONE global
+# deadline (smoke_deadline_init) and clamps every bounded call to the time left
+# under it (smoke_bounded_remaining). Once the budget is spent every remaining
+# call gets the floor bound and fails fast, so the script always reaches its
+# footer and prints a real VERDICT: RED instead of dying mute.
+#
 # Sourced by run.sh; exercised directly by
 # tests/llms-txt-install-smoke-bounded.sh.
 
@@ -23,6 +33,75 @@ smoke_timeout_bin() {
 
 # Tests force the fallback path with SMOKE_TIMEOUT_BIN= (set but empty).
 SMOKE_TIMEOUT_BIN="${SMOKE_TIMEOUT_BIN-$(smoke_timeout_bin)}"
+
+# --- global deadline --------------------------------------------------------
+#
+# The floor a clamped bound is never reduced below. One second is enough for a
+# call that is going to fail fast anyway, and keeps `run_bounded` from being
+# handed a zero or negative bound once the budget is spent.
+SMOKE_MIN_BOUND="${SMOKE_MIN_BOUND:-1}"
+
+# smoke_deadline_init [total_seconds]
+# Start the one global budget for this run. Called once, early, by run.sh.
+# With no argument (or 0) the deadline is disabled and every clamp is a no-op,
+# which is what an interactive `run.sh --keep` debugging session wants.
+smoke_deadline_init() {
+  SMOKE_STARTED_EPOCH="$(date +%s)"
+  SMOKE_TOTAL_BUDGET="${1:-0}"
+  export SMOKE_STARTED_EPOCH SMOKE_TOTAL_BUDGET
+}
+
+# smoke_elapsed
+# Whole seconds since smoke_deadline_init. Zero before it is called, so a
+# breadcrumb helper can use it unconditionally.
+smoke_elapsed() {
+  if [ -z "${SMOKE_STARTED_EPOCH:-}" ]; then
+    printf '0'
+    return 0
+  fi
+  printf '%s' "$(( $(date +%s) - SMOKE_STARTED_EPOCH ))"
+}
+
+# smoke_remaining
+# Seconds left under the global deadline; 0 once spent. Prints a very large
+# number when no deadline is armed, so callers can compare without special
+# casing the disabled mode.
+smoke_remaining() {
+  if [ -z "${SMOKE_TOTAL_BUDGET:-}" ] || [ "${SMOKE_TOTAL_BUDGET:-0}" -le 0 ]; then
+    printf '%s' 999999
+    return 0
+  fi
+  local left=$(( SMOKE_TOTAL_BUDGET - $(smoke_elapsed) ))
+  if [ "$left" -lt 0 ]; then
+    left=0
+  fi
+  printf '%s' "$left"
+}
+
+# smoke_deadline_exceeded
+# True (0) once the global budget is spent. Used for the breadcrumb that
+# explains why the tail of the run is failing in one second each.
+smoke_deadline_exceeded() {
+  [ "$(smoke_remaining)" -le 0 ]
+}
+
+# smoke_bounded_remaining <requested_seconds>
+# The bound to actually pass to run_bounded: the smaller of what the caller
+# asked for and what is left of the global budget, never under SMOKE_MIN_BOUND.
+# This is what keeps a sum of individually-bounded calls from overrunning the
+# foreground cap.
+smoke_bounded_remaining() {
+  local requested="$1"
+  local left
+  left="$(smoke_remaining)"
+  if [ "$left" -lt "$requested" ]; then
+    requested="$left"
+  fi
+  if [ "$requested" -lt "$SMOKE_MIN_BOUND" ]; then
+    requested="$SMOKE_MIN_BOUND"
+  fi
+  printf '%s' "$requested"
+}
 
 # run_bounded <seconds> <command> [args...]
 # Returns 124 when the bound fired, otherwise the command's own exit status.
