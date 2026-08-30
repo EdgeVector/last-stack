@@ -208,9 +208,21 @@ if ! grep -Fq "There is no \`review\` column" <<<"$worktree_cleanup_prompt" ||
 fi
 
 north_star_prompt="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" north-star-rollup)"
-if ! grep -Fq 'timeout 900 "$dash_bin"' <<<"$north_star_prompt" ||
+if ! grep -Fq 'bin/last-stack-north-star-dashboard-run' <<<"$north_star_prompt" ||
+   ! grep -Fq -- '--timeout 900' <<<"$north_star_prompt" ||
    ! grep -Fq "reason=dashboard-timeout-prior-snapshot" <<<"$north_star_prompt"; then
-  echo "expected north-star-rollup to budget dashboard refresh and soft-noop intact snapshot timeouts" >&2
+  echo "expected north-star-rollup to budget the dashboard refresh through the durable-status wrapper and soft-noop intact snapshot timeouts" >&2
+  exit 1
+fi
+# A bare call puts the exit status only in the tool result, so a lost tool
+# result reads as silence -- assert the wrapper is used, not just present.
+if grep -Fq 'timeout 900 "$dash_bin"' <<<"$north_star_prompt"; then
+  echo "expected north-star-rollup to stop calling the dashboard binary bare; the exit status must survive a lost tool result" >&2
+  exit 1
+fi
+if ! grep -Fq "dashboard_status" <<<"$north_star_prompt" ||
+   ! grep -Fq "last-run.env" <<<"$north_star_prompt"; then
+  echo "expected north-star-rollup to classify the run from the durable status file, not from the tool result" >&2
   exit 1
 fi
 if ! grep -Fq "Dashboard timeout with a usable prior brain record + HTML snapshot" <<<"$north_star_prompt"; then
