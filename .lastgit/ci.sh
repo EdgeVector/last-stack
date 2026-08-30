@@ -326,3 +326,15 @@ ci_test tests/last-stack-papercut-lifecycle-close-ref-extraction.sh
 #
 # APPENDED (see the note above): ci_test shards by list position.
 ci_test tests/last-stack-lastdb-safe-upgrade-client-header.sh
+
+# The north-star dashboard refresh and its durable-status wrapper. Both scripts
+# landed with cr-mtfv3lau-fa2b but were never named here, so required CI only
+# lint-checked them (the tests/*.sh globs above are shellcheck and `bash -n`, not
+# execution). That left the silent-exit fix ungated: an edit to
+# bin/last-stack-north-star-dashboard-run could restore a mute exit and still
+# merge green. Both are hermetic — fake generators, a temp status file, no
+# network, no brain write — and finish in a few seconds.
+#
+# APPENDED (see the note above): ci_test shards by list position.
+ci_test tests/last-stack-north-star-dashboard.sh
+ci_test tests/last-stack-north-star-dashboard-run.sh
