@@ -80,6 +80,10 @@ JSON
 
 export LAST_STACK_CANARY_RED_STAMP="$tmp/stamp.json"
 export CANARY_RED_LOOM_LIST_FILE="$tmp/loom-list.json"
+# No heal execution has run for any of these reds. Keeping the fixture explicit
+# stops the gate from reading the live loom node during the test.
+printf '%s\n' '[]' >"$tmp/heal-empty.json"
+export CANARY_RED_LOOM_HEAL_LIST_FILE="$tmp/heal-empty.json"
 
 out="$("$BIN" --dry-run --json --quiet)"
 printf '%s\n' "$out" | grep -q 'lx-20260830T030901.571-75984-1' \
@@ -97,6 +101,120 @@ idle_out="$(CANARY_RED_LOOM_LIST_FILE="$tmp/loom-idle.json" "$BIN" --dry-run --j
 printf '%s\n' "$idle_out" | python3 -c 'import json,sys
 d,_=json.JSONDecoder().raw_decode(sys.stdin.read())
 assert d.get("idle") is True and d.get("reason")=="lane_busy", d'
+
+# --- a newer cancelled row must not mask an older failed one ---
+# The lister defaults to one row, and `pick_failed` used to test only that row.
+# Seven reds sat unhealed behind a single cancelled execution.
+cat >"$tmp/masked.json" <<JSON
+[
+  {
+    "id": "lx-20260830T140407.992-49336-1",
+    "definition_name": "lastdb-canary-release",
+    "status": "cancelled",
+    "state": "CANCELLED",
+    "updated_at": "$(now_iso 0.5)"
+  },
+  {
+    "id": "lx-20260830T030901.571-75984-1",
+    "definition_name": "lastdb-canary-release",
+    "status": "failed",
+    "state": "FAILED",
+    "updated_at": "$(now_iso 2)"
+  },
+  {
+    "id": "lx-20260829T030901.571-75984-1",
+    "definition_name": "lastdb-canary-release",
+    "status": "failed",
+    "state": "FAILED",
+    "updated_at": "$(now_iso 3)"
+  }
+]
+JSON
+masked_out="$(CANARY_RED_LOOM_LIST_FILE="$tmp/masked.json" "$BIN" --dry-run --json --quiet)"
+printf '%s\n' "$masked_out" | python3 -c 'import json,sys
+d,_=json.JSONDecoder().raw_decode(sys.stdin.read())
+assert d.get("ok") is True and d.get("idle") is False, d
+assert d.get("exec_id")=="lx-20260830T030901.571-75984-1", d
+assert d.get("candidates")==2, d'
+
+# The gate must still ask the lister for more than one row.
+grep -q -- '--limit "\$LIST_LIMIT"' "$BIN" \
+  || fail "gate still lists the lane without a row limit"
+
+# --- a red whose heal already ended is skipped, not relaunched hourly ---
+cat >"$tmp/heal-terminal.json" <<JSON
+[
+  {
+    "id": "lx-20260830T040000.000-1-1",
+    "definition_name": "canary-red-heal",
+    "status": "failed",
+    "state": "FAILED",
+    "idempotency_key": "canary-red-lx-20260830T030901.571-75984-1",
+    "updated_at": "$(now_iso 1)"
+  }
+]
+JSON
+healed_out="$(CANARY_RED_LOOM_LIST_FILE="$tmp/masked.json" \
+  CANARY_RED_LOOM_HEAL_LIST_FILE="$tmp/heal-terminal.json" \
+  "$BIN" --dry-run --json --quiet)"
+printf '%s\n' "$healed_out" | python3 -c 'import json,sys
+d,_=json.JSONDecoder().raw_decode(sys.stdin.read())
+assert d.get("ok") is True and d.get("idle") is False, d
+assert d.get("exec_id")=="lx-20260829T030901.571-75984-1", d
+assert d.get("skipped_healed")==["lx-20260830T030901.571-75984-1"], d'
+
+# Every red in the window already healed to a terminal state: idle, with the
+# reason named, rather than a spent key relaunched every hour.
+cat >"$tmp/heal-all.json" <<JSON
+[
+  {
+    "id": "lx-20260830T040000.000-1-1",
+    "definition_name": "canary-red-heal",
+    "status": "failed",
+    "state": "FAILED",
+    "idempotency_key": "canary-red-lx-20260830T030901.571-75984-1",
+    "updated_at": "$(now_iso 1)"
+  },
+  {
+    "id": "lx-20260830T040000.000-1-2",
+    "definition_name": "canary-red-heal",
+    "status": "succeeded",
+    "state": "DONE",
+    "idempotency_key": "canary-red-lx-20260829T030901.571-75984-1",
+    "updated_at": "$(now_iso 1)"
+  }
+]
+JSON
+allhealed_out="$(CANARY_RED_LOOM_LIST_FILE="$tmp/masked.json" \
+  CANARY_RED_LOOM_HEAL_LIST_FILE="$tmp/heal-all.json" \
+  "$BIN" --dry-run --json --quiet)"
+printf '%s\n' "$allhealed_out" | python3 -c 'import json,sys
+d,_=json.JSONDecoder().raw_decode(sys.stdin.read())
+assert d.get("idle") is True and d.get("reason")=="heal_already_terminal", d'
+
+# A nonterminal heal does not block a relaunch under the same resume key.
+cat >"$tmp/heal-running.json" <<JSON
+[{"id":"lx-20260830T040000.000-1-1","definition_name":"canary-red-heal","status":"running","state":"HEAL","idempotency_key":"canary-red-lx-20260830T030901.571-75984-1","updated_at":"$(now_iso 1)"}]
+JSON
+running_heal_out="$(CANARY_RED_LOOM_LIST_FILE="$tmp/masked.json" \
+  CANARY_RED_LOOM_HEAL_LIST_FILE="$tmp/heal-running.json" \
+  "$BIN" --dry-run --json --quiet)"
+printf '%s\n' "$running_heal_out" | python3 -c 'import json,sys
+d,_=json.JSONDecoder().raw_decode(sys.stdin.read())
+assert d.get("exec_id")=="lx-20260830T030901.571-75984-1", d'
+
+# --- no failed row in the window is idle, and says which row it saw ---
+cat >"$tmp/green.json" <<JSON
+[{"id":"lx-20260830T050000.000-1-1","definition_name":"lastdb-canary-release","status":"succeeded","state":"DONE","updated_at":"$(now_iso 1)"}]
+JSON
+green_out="$(CANARY_RED_LOOM_LIST_FILE="$tmp/green.json" "$BIN" --dry-run --json --quiet)"
+printf '%s\n' "$green_out" | python3 -c 'import json,sys
+d,_=json.JSONDecoder().raw_decode(sys.stdin.read())
+assert d.get("idle") is True and d.get("reason")=="no_failed_in_window", d'
+
+# The lister must carry the resume key, or gate 2 cannot recover one.
+grep -q 'idempotency_key' "$LISTER" \
+  || fail "lister drops idempotency_key from the row"
 
 # --- an empty listing is an ERROR, never a quiet lane ---
 printf '%s\n' '[]' >"$tmp/empty.json"

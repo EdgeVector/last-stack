@@ -87,9 +87,12 @@ api() {
   curl -s --unix-socket "$SOCK" -H "X-LastDB-Client: last-stack-loom-exec" "$@"
 }
 
-FIELDS='["id","definition_name","status","state","created_at","updated_at"]'
+# idempotency_key rides on the narrow row: it is the resume key a caller needs
+# to re-enter a parked execution, and it is the only place a hand-made key
+# (one no `canary-<oid>` reconstruction can guess) survives.
+FIELDS='["id","definition_name","status","state","created_at","updated_at","idempotency_key"]'
 if [ "$FULL" -eq 1 ]; then
-  FIELDS='["id","definition_name","status","state","created_at","updated_at","input_json","last_error","hot_context_patch_json","parent_execution_id"]'
+  FIELDS='["id","definition_name","status","state","created_at","updated_at","idempotency_key","input_json","last_error","hot_context_patch_json","parent_execution_id"]'
 fi
 
 # One point query per execution id, on loom's primary key layout.
