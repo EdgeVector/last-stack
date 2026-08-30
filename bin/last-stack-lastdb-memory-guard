@@ -55,6 +55,8 @@
 #   LASTDBD_RSS_LIMIT_MB     default 16384 — ceiling, in MB, for the enforced gauge
 #   LASTDBD_GUARD_COOLDOWN_SEC  default 120 — min seconds between restarts
 #   LASTDBD_PRIMARY_HOME     default $HOME/.lastdb
+#   LASTDBD_GUARD_RESTART_WAIT_SEC default 30 — wait for the replacement PID
+#   LASTDBD_GUARD_NOTICE_CMD default situations — notice CLI or absolute path
 
 set -eu
 # launchd hands this script a near-empty PATH, so pin a known-good one. Kept
@@ -65,9 +67,11 @@ export PATH="${LASTDBD_GUARD_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/b
 GUARD_METRIC="${LASTDBD_GUARD_METRIC:-footprint}"
 RSS_LIMIT_MB="${LASTDBD_RSS_LIMIT_MB:-16384}"
 COOLDOWN_SEC="${LASTDBD_GUARD_COOLDOWN_SEC:-120}"
+RESTART_WAIT_SEC="${LASTDBD_GUARD_RESTART_WAIT_SEC:-30}"
 PRIMARY_HOME="${LASTDBD_PRIMARY_HOME:-$HOME/.lastdb}"
 LOG_DIR="${PRIMARY_HOME}/monitoring"
 LOG="${LOG_DIR}/lastdbd-memory-guard.log"
+EVENT_LOG="${LASTDBD_GUARD_EVENT_LOG:-${LOG_DIR}/lastdbd-memory-guard-events.jsonl}"
 STATE="${LOG_DIR}/lastdbd-memory-guard.state"
 SOCKET="${PRIMARY_HOME}/data/folddb.sock"
 PRIMARY_AGENT_LABEL="${LASTDBD_PRIMARY_AGENT_LABEL:-}"
@@ -84,6 +88,14 @@ esac
 
 ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 log() { echo "$(ts) $*" | tee -a "$LOG" >/dev/null; echo "$(ts) $*"; }
+
+event() {
+  # Values passed here are numeric or controlled tokens. Keep this dependency
+  # free because the guard runs before the node and its toolchain are healthy.
+  printf '{"ts":"%s","event":"%s","old_pid":%s,"new_pid":%s,"metric":"%s","enforced_mb":%s,"limit_mb":%s,"rss_mb":%s,"footprint_mb":%s,"peak_mb":%s,"build":"%s"}\n' \
+    "$(ts)" "$1" "$2" "$3" "$metric" "$enforced" "$RSS_LIMIT_MB" \
+    "$rss" "${footprint:-0}" "${peak:-0}" "${build:-unknown}" >>"$EVENT_LOG"
+}
 
 # Resolve primary lastdbd PID.
 #
@@ -165,6 +177,12 @@ status_field() {
   fi
 }
 
+status_build() {
+  local body="$1" v
+  v=$(printf '%s' "$body" | sed -n 's/.*"build":{[^}]*"version":"\([^"]*\)".*/\1/p' | head -1)
+  printf '%s\n' "${v:-unknown}"
+}
+
 # footprint_mb + peak_mb from the primary's own socket. Empty on any failure —
 # callers fall back to rss and say so.
 STATUS_BODY=""
@@ -175,6 +193,48 @@ read_status() {
   STATUS_BODY=$(curl -s --max-time 5 --unix-socket "$SOCKET" \
     -H 'X-LastDB-Client: lastdb-memory-guard' \
     http://localhost/api/status 2>/dev/null || true)
+}
+
+identity() {
+  local identity_pid start build_value
+  identity_pid=$(primary_pid || true)
+  if [ -z "$identity_pid" ]; then
+    return 1
+  fi
+  read_status
+  start=$(status_field "$STATUS_BODY" process_start_ts)
+  build_value=$(status_build "$STATUS_BODY")
+  if [ -z "$start" ]; then
+    return 1
+  fi
+  printf 'pid=%s process_start_ts=%s build=%s\n' "$identity_pid" "$start" "$build_value"
+}
+
+post_restart_notice() {
+  local old_pid="$1" new_pid="$2" build_value="$3" notice_cmd
+  notice_cmd="${LASTDBD_GUARD_NOTICE_CMD:-}"
+  if [ -z "$notice_cmd" ]; then
+    if [ -x "$HOME/.local/bin/situations" ]; then
+      notice_cmd="$HOME/.local/bin/situations"
+    else
+      notice_cmd="situations"
+    fi
+  fi
+  if "$notice_cmd" notice \
+    --slug "lastdb-memory-guard-restart-$(date -u +%Y%m%dT%H%M%SZ)-${new_pid}" \
+    --title "LastDB memory guard restarted the primary" \
+    --kind restart \
+    --system lastdbd \
+    --system primary-brain \
+    --actor service:lastdb-memory-guard \
+    --severity-hint warn \
+    --expires-hours 24 \
+    --summary "physical footprint ${enforced} MiB exceeded ${RSS_LIMIT_MB} MiB; pid ${old_pid} -> ${new_pid}; build ${build_value}" \
+    >/dev/null 2>&1; then
+    log "notice posted old_pid=$old_pid new_pid=$new_pid build=$build_value"
+  else
+    log "WARN notice_failed old_pid=$old_pid new_pid=$new_pid build=$build_value event_log=$EVENT_LOG"
+  fi
 }
 
 swap_used_mb() {
@@ -204,6 +264,7 @@ mark_restart() {
 restart_primary() {
   local pid="$1"
   local reading="$2"
+  event restart_requested "$pid" null
   log "RESTART primary lastdbd pid=$pid metric=$metric enforced_mb=$reading limit_mb=$RSS_LIMIT_MB (SIGTERM then kickstart)"
   mark_restart
   kill -TERM "$pid" 2>/dev/null || true
@@ -244,10 +305,40 @@ restart_primary() {
     # KeepAlive on whichever agent owns the socket should revive; do not force brew.
     true
   fi
-  log "kickstart issued; next probe will verify socket"
+  local new_pid="" new_identity="" new_build="$build" waited=0
+  while [ "$waited" -lt "$RESTART_WAIT_SEC" ]; do
+    # A new process alone is not enough for the notice path. Wait until its
+    # socket answers and supplies a start time, so the notice write has a live
+    # LastDB endpoint and records the replacement build.
+    new_identity=$(identity || true)
+    new_pid=$(printf '%s\n' "$new_identity" | sed -n 's/.*pid=\([^ ]*\).*/\1/p')
+    new_build=$(printf '%s\n' "$new_identity" | sed -n 's/.*build=\([^ ]*\).*/\1/p')
+    if [ -n "$new_pid" ] && [ "$new_pid" != "$pid" ]; then
+      break
+    fi
+    new_pid=""
+    sleep 1
+    waited=$((waited + 1))
+  done
+  if [ -n "$new_pid" ]; then
+    event restart_observed "$pid" "$new_pid"
+    post_restart_notice "$pid" "$new_pid" "${new_build:-$build}"
+    log "kickstart verified old_pid=$pid new_pid=$new_pid"
+  else
+    log "WARN kickstart_unverified old_pid=$pid wait_sec=$RESTART_WAIT_SEC event_log=$EVENT_LOG"
+  fi
 }
 
 # --- main ---
+if [ "${1:-}" = "--identity" ]; then
+  identity
+  exit $?
+fi
+if [ "$#" -ne 0 ]; then
+  echo "usage: last-stack-lastdb-memory-guard [--identity]" >&2
+  exit 2
+fi
+
 pid=$(primary_pid || true)
 if [ -z "${pid:-}" ]; then
   log "ok no_primary_lastdbd"
@@ -261,6 +352,7 @@ cmd=$(ps -p "$pid" -o command= 2>/dev/null | head -c 200 || true)
 read_status
 footprint_b=$(status_field "$STATUS_BODY" phys_footprint_bytes)
 peak_b=$(status_field "$STATUS_BODY" phys_footprint_peak_bytes)
+build=$(status_build "$STATUS_BODY")
 if [ -n "$footprint_b" ]; then
   footprint=$((footprint_b / 1048576))
 else

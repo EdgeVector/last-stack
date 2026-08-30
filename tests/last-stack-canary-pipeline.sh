@@ -303,6 +303,7 @@ soak_once() { # <dir> <extra-env-assignments...>  -> runs a real (non-dry-run) s
     "$CLI" --state-dir "$dir" dogfood --sha "$(basename "$dir")" --version 0.0.1-canary.test \
     >/dev/null 2>&1
   env "$@" \
+    LAST_STACK_CANARY_PRIMARY_IDENTITY_CMD="printf 'pid=4242 process_start_ts=1234 build=0.0.1-canary.test\\n'" \
     LAST_STACK_CANARY_LAUNCHD_CHECK_CMD=pass \
     LAST_STACK_CANARY_MEMORY_CHECK_CMD="${MEM_CMD:-pass}" \
     LAST_STACK_CANARY_BOARD_CHECK_CMD=pass \
@@ -340,6 +341,37 @@ soak_once "$fast_dir" \
   >"$tmp/w-fast.out" 2>"$tmp/w-fast.err"
 grep -q 'status=soak_green' "$tmp/w-fast.out"
 grep -q 'CHECK label=board_write result=ok median_ms=' "$tmp/w-fast.out"
+
+# A primary restart invalidates the uninterrupted soak even when the exact
+# approved build remains live and every health check passes.
+restart_dir="$tmp/w-restart"
+LAST_STACK_CANARY_LIVE_VERSION_CMD=pass \
+  "$CLI" --state-dir "$restart_dir" dogfood --sha w-restart --version 0.0.1-canary.test \
+  >/dev/null 2>&1
+LAST_STACK_CANARY_PRIMARY_IDENTITY_CMD="printf 'pid=4242 process_start_ts=1234 build=0.0.1-canary.test\\n'" \
+LAST_STACK_CANARY_LAUNCHD_CHECK_CMD=pass \
+LAST_STACK_CANARY_MEMORY_CHECK_CMD=pass \
+LAST_STACK_CANARY_BOARD_CHECK_CMD=pass \
+LAST_STACK_CANARY_BOARD_WRITE_CHECK_CMD=pass \
+LAST_STACK_CANARY_SITUATION_CHECK_CMD=pass \
+LAST_STACK_CANARY_SOAK_HOURS=24 \
+LAST_STACK_CANARY_LIVE_VERSION_CMD=pass \
+  "$CLI" --state-dir "$restart_dir" soak-watch --sha w-restart >/dev/null
+if LAST_STACK_CANARY_PRIMARY_IDENTITY_CMD="printf 'pid=4243 process_start_ts=2345 build=0.0.1-canary.test\\n'" \
+   LAST_STACK_CANARY_LAUNCHD_CHECK_CMD=pass \
+   LAST_STACK_CANARY_MEMORY_CHECK_CMD=pass \
+   LAST_STACK_CANARY_BOARD_CHECK_CMD=pass \
+   LAST_STACK_CANARY_BOARD_WRITE_CHECK_CMD=pass \
+   LAST_STACK_CANARY_SITUATION_CHECK_CMD=pass \
+   LAST_STACK_CANARY_SOAK_HOURS=24 \
+   LAST_STACK_CANARY_LIVE_VERSION_CMD=pass \
+     "$CLI" --state-dir "$restart_dir" soak-watch --sha w-restart \
+     >"$tmp/w-restart.out" 2>"$tmp/w-restart.err"; then
+  echo "expected a primary PID change to red the soak" >&2
+  exit 1
+fi
+grep -q 'status=soak_red' "$tmp/w-restart.out"
+grep -q 'primary_restarted\[pid=4242->4243_start=1234->2345\]' "$restart_dir/ledger.jsonl"
 
 # One slow sample is load; a slow MEDIAN is the binary. A single outlier among
 # three must not brake a good candidate.
