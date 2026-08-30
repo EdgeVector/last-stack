@@ -220,7 +220,7 @@ for _ in $(seq 1 80); do
 done
 [ -n "$ok" ] || fail_red "$LASTDBD_BIN" "candidate socket never came up"
 
-UH="$(curl -fsS --unix-socket "$SOCK" -H "Host: localhost" \
+UH="$(curl -fsS --unix-socket "$SOCK" -H "Host: localhost" -H "X-LastDB-Client: last-stack-cas-probe" \
   http://x/api/system/auto-identity | jq -r '.user_hash // empty')"
 [ -n "$UH" ] && [ "$UH" != "null" ] || fail_red "$LASTDBD_BIN" "candidate has no auto-identity"
 
