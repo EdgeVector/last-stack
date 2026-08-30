@@ -448,7 +448,7 @@ median_of() {
 # only ever land on the throwaway CoW copy, never the primary).
 op_lat_point() {
   # $1 = socket path
-  curl -sS --max-time "$LAT_OP_TIMEOUT_SECS" --unix-socket "$1" -H 'Host: localhost' \
+  curl -sS --max-time "$LAT_OP_TIMEOUT_SECS" --unix-socket "$1" -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
     -H 'Content-Type: application/json' \
     --data '{"schema_name":"Board","fields":["title"],"filter":{"HashKey":"default"}}' \
     http://x/api/query 2>/dev/null | jq -e '.ok == true' >/dev/null 2>&1
@@ -707,7 +707,7 @@ EOF_ENV
       return 1
     fi
     if [ -S "$sock" ]; then
-      uh="$(curl -sS --max-time 3 --unix-socket "$sock" -H 'Host: localhost' http://x/api/system/auto-identity 2>/dev/null | jq -r '.user_hash // empty' 2>/dev/null || true)"
+      uh="$(curl -sS --max-time 3 --unix-socket "$sock" -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' http://x/api/system/auto-identity 2>/dev/null | jq -r '.user_hash // empty' 2>/dev/null || true)"
       [ -n "$uh" ] && break
     fi
     sleep 1
@@ -1183,7 +1183,7 @@ log "current lastdbd: $CURRENT_VER"
 log "primary home:    $PRIMARY_HOME ($(du -sh "$PRIMARY_HOME" 2>/dev/null | awk '{print $1}'))"
 
 if [ -S "$PRIMARY_SOCK" ]; then
-  if ! curl -sS --max-time 5 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' http://x/health \
+  if ! curl -sS --max-time 5 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' http://x/health \
     | grep -q '"status":"ok"'; then
     die "primary socket exists but /health is not ok — fix the live brain before upgrading"
   fi
@@ -1682,7 +1682,7 @@ VERSION_DEADLINE=$(( VERSION_WAIT_START + VERSION_WAIT_S ))
 VERSION_POLLS=0
 RUNNING_VERSION=""
 while :; do
-  RUNNING_VERSION="$(curl -sS --max-time 15 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' \
+  RUNNING_VERSION="$(curl -sS --max-time 15 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
     http://x/api/status 2>/dev/null | jq -r '.status.build.version // empty' || true)"
   VERSION_POLLS=$(( VERSION_POLLS + 1 ))
   [ -n "$RUNNING_VERSION" ] && break
@@ -1729,11 +1729,11 @@ if [ "$VENUE" = "sidebin" ]; then
 fi
 
 # Live data plane spot-check (same bar as smoke: Board titles rehydrate)
-UH="$(curl -sS --max-time 5 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' http://x/api/system/auto-identity 2>/dev/null | jq -r '.user_hash // empty')"
+UH="$(curl -sS --max-time 5 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' http://x/api/system/auto-identity 2>/dev/null | jq -r '.user_hash // empty')"
 [ -n "$UH" ] || die "live auto-identity empty after cutover — treat as RED; consider restore from $BACKUP"
-NSCHEMAS="$(curl -sS --max-time 30 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' http://x/api/schemas 2>/dev/null | jq -r '.schemas|length // 0')"
+NSCHEMAS="$(curl -sS --max-time 30 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' http://x/api/schemas 2>/dev/null | jq -r '.schemas|length // 0')"
 [ "${NSCHEMAS:-0}" -gt 0 ] || die "live /api/schemas empty after cutover — treat as RED; restore from $BACKUP"
-QRES="$(curl -sS --max-time 30 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' -H 'Content-Type: application/json' \
+QRES="$(curl -sS --max-time 30 --unix-socket "$PRIMARY_SOCK" -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' -H 'Content-Type: application/json' \
   --data '{"schema_name":"Board","fields":["title"],"filter":{"HashKey":"default"}}' http://x/api/query 2>/dev/null || true)"
 QOK="$(echo "$QRES" | jq -r '.ok // empty' 2>/dev/null || true)"
 QVAL="$(echo "$QRES" | jq -r '.results[0].fields.title // .results[0].title // empty' 2>/dev/null || true)"

@@ -57,7 +57,7 @@ live_unix_socket_has_listener() {
 live_unix_socket_health_ok() {
   local sock="$1"
   [ -n "$sock" ] && [ -S "$sock" ] || return 1
-  curl -sS --max-time 3 --unix-socket "$sock" -H 'Host: localhost' \
+  curl -sS --max-time 3 --unix-socket "$sock" -H 'Host: localhost' -H 'X-LastDB-Client: lastdb-safe-upgrade' \
     http://x/health 2>/dev/null | grep -q '"status":"ok"'
 }
 

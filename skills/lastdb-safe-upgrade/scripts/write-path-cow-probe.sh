@@ -85,7 +85,7 @@ else:
 curl_sock() {
   local sock="$1" path="$2"
   shift 2
-  curl -sS --max-time 15 --unix-socket "$sock" -H 'Host: localhost' "$@" "http://x${path}"
+  curl -sS --max-time 15 --unix-socket "$sock" -H 'Host: localhost' -H 'X-LastDB-Client: write-path-cow-probe' "$@" "http://x${path}"
 }
 
 live_identity() {

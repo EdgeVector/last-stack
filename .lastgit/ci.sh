@@ -317,3 +317,11 @@ ci_test tests/llms-txt-install-smoke-bounded.sh
 #
 # APPENDED (see the note above): ci_test shards by list position.
 ci_test tests/last-stack-papercut-lifecycle-close-ref-extraction.sh
+
+# Socket self-identification for the lastdb-safe-upgrade skill. Unlabelled curl
+# traffic lands in the client=unknown row of `lastdb ops`, and an upgrade probe
+# that cannot be named is an offender nobody can rule out during a slow node.
+# Static grep over joined continuation lines; no node, milliseconds.
+#
+# APPENDED (see the note above): ci_test shards by list position.
+ci_test tests/last-stack-lastdb-safe-upgrade-client-header.sh
