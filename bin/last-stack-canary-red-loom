@@ -111,6 +111,13 @@ fi
 # (papercut-canary-red-heal-lists-retired-sm-not-loom).
 CANARY_LANE_ORCHESTRATOR="loom"
 CANARY_LANE_DEFINITION="${LAST_STACK_CANARY_DEFINITION:-lastdb-canary-release}"
+CANARY_RED_HEAL_DEFINITION="${LAST_STACK_CANARY_RED_HEAL_DEFINITION:-canary-red-heal}"
+CANARY_RED_KEY_PREFIX="canary-red-"
+LIST_LIMIT="${LAST_STACK_CANARY_RED_LIST_LIMIT:-25}"
+case "$LIST_LIMIT" in
+  ''|*[!0-9]*) LIST_LIMIT=25 ;;
+esac
+[ "$LIST_LIMIT" -ge 1 ] || LIST_LIMIT=25
 
 list_executions() {
   if [ -n "${CANARY_RED_LOOM_LIST_FILE:-}" ]; then
@@ -123,17 +130,36 @@ list_executions() {
   if [ -n "$EXEC_ID" ]; then
     "$ROOT/bin/last-stack-loom-exec-latest" --exec "$EXEC_ID"
   else
+    # --limit defaults to 1 in the lister, and one row is not a window: any
+    # newer cancelled/succeeded execution then masks every older FAILED one
+    # (papercut-canary-red-heal-newest-execution-masks-older-failed).
     "$ROOT/bin/last-stack-loom-exec-latest" \
-      --definition "$CANARY_LANE_DEFINITION" --window-hours "$window_h"
+      --definition "$CANARY_LANE_DEFINITION" --window-hours "$window_h" \
+      --limit "$LIST_LIMIT"
   fi
 }
 
+# The heal graph's executions, keyed by `canary-red-<lane exec id>`. Read only
+# when the lane is actually red, so a quiet tick still costs one listing.
+list_heal_executions() {
+  if [ -n "${CANARY_RED_LOOM_HEAL_LIST_FILE:-}" ]; then
+    cat "$CANARY_RED_LOOM_HEAL_LIST_FILE"
+    return 0
+  fi
+  window_h="$(awk -v h="$LOOKBACK_H" 'BEGIN { w = h * 2; if (w < 24) w = 24; printf "%d", w }')"
+  "$ROOT/bin/last-stack-loom-exec-latest" \
+    --definition "$CANARY_RED_HEAL_DEFINITION" --window-hours "$window_h" \
+    --limit "$LIST_LIMIT"
+}
+
 pick_failed() {
-  LOOKBACK_H="$LOOKBACK_H" EXEC_ID="$EXEC_ID" LOOM_ROWS_FILE="$1" python3 -c '
+  LOOKBACK_H="$LOOKBACK_H" EXEC_ID="$EXEC_ID" LOOM_ROWS_FILE="$1" \
+  LOOM_HEAL_ROWS_FILE="${2:-}" KEY_PREFIX="$CANARY_RED_KEY_PREFIX" python3 -c '
 import json, os, sys
 from datetime import datetime, timezone, timedelta
 
 want = (os.environ.get("EXEC_ID") or "").strip()
+key_prefix = os.environ.get("KEY_PREFIX") or "canary-red-"
 lookback_h = os.environ.get("LOOKBACK_H") or "12"
 try:
     lookback_h = float(lookback_h)
@@ -149,6 +175,27 @@ except Exception as e:
     raise SystemExit(3)
 if not isinstance(rows, list):
     rows = []
+
+# Heal executions already ended for these keys. A red whose heal is terminal
+# needs a new key, not another hourly launch under the old one
+# (papercut-canary-red-heal-failed-key-never-rotates owns that rotation).
+TERMINAL = ("succeeded", "failed", "cancelled")
+healed_keys = set()
+heal_path = os.environ.get("LOOM_HEAL_ROWS_FILE") or ""
+if heal_path:
+    try:
+        with open(heal_path) as fh:
+            heal_rows = json.load(fh)
+    except Exception:
+        heal_rows = []
+    if isinstance(heal_rows, list):
+        for r in heal_rows:
+            if not isinstance(r, dict):
+                continue
+            if str(r.get("status") or "") in TERMINAL:
+                k = str(r.get("idempotency_key") or "")
+                if k:
+                    healed_keys.add(k)
 
 def parse_ts(s):
     s = str(s or "").replace("Z", "")
@@ -198,20 +245,45 @@ if nts < cutoff:
         "lookback_hours": lookback_h,
     }))
     raise SystemExit(4)
+# The newest row still decides whether the lane is live. Healing underneath a
+# running execution would fight it.
 if nstatus in ("running", "waiting"):
     print(json.dumps({"ok": True, "idle": True, "reason": "lane_busy", "exec_id": nid, "status": nstatus}))
     raise SystemExit(0)
-if nstatus != "failed":
-    print(json.dumps({"ok": True, "idle": True, "reason": "newest_not_failed", "exec_id": nid, "status": nstatus}))
+
+# Beyond that, the newest row does not have to be the failed one. Pick the
+# newest FAILED execution inside the window; a later cancelled or succeeded
+# row no longer masks it.
+failed = [(ts, rid, r) for ts, rid, status, r in parsed
+          if status == "failed" and ts >= cutoff]
+if not failed:
+    print(json.dumps({"ok": True, "idle": True, "reason": "no_failed_in_window",
+                      "exec_id": nid, "status": nstatus, "scanned": len(parsed)}))
     raise SystemExit(0)
-print(json.dumps({
-    "ok": True,
-    "idle": False,
-    "exec_id": nid,
-    "status": nstatus,
-    "state": newest.get("state"),
-    "updatedAt": newest.get("updated_at") or newest.get("updatedAt") or "",
-}))
+
+skipped = []
+for ts, rid, r in failed:
+    if (key_prefix + rid) in healed_keys:
+        skipped.append(rid)
+        continue
+    print(json.dumps({
+        "ok": True,
+        "idle": False,
+        "exec_id": rid,
+        "status": "failed",
+        "state": r.get("state"),
+        "updatedAt": r.get("updated_at") or r.get("updatedAt") or "",
+        "candidates": len(failed),
+        "skipped_healed": skipped,
+    }))
+    raise SystemExit(0)
+
+# Every red in the window already had its heal run to a terminal state. Say so
+# instead of relaunching a spent key every hour.
+print(json.dumps({"ok": True, "idle": True, "reason": "heal_already_terminal",
+                  "exec_id": failed[0][1], "status": "failed",
+                  "skipped_healed": skipped}))
+raise SystemExit(0)
 '
 }
 
@@ -230,7 +302,8 @@ else:
 }
 
 rows_file="$(mktemp "${TMPDIR:-/tmp}/canary-red-rows.XXXXXX")"
-trap 'rm -f "$rows_file"' EXIT
+heal_rows_file="$(mktemp "${TMPDIR:-/tmp}/canary-red-heal-rows.XXXXXX")"
+trap 'rm -f "$rows_file" "$heal_rows_file"' EXIT
 
 if ! list_executions >"$rows_file" 2>/dev/null; then
   log "$CANARY_LANE_ORCHESTRATOR execution listing failed"
@@ -241,6 +314,19 @@ fi
 
 picked_rc=0
 picked="$(pick_failed "$rows_file")" || picked_rc=$?
+
+# Second pass only when the first found a red. The heal listing is one more
+# loom read, and a quiet lane must not pay for it every tick.
+if [ -n "$picked" ] && [ "$(json_field ok "$picked")" = "1" ] \
+   && [ -z "$(json_field idle "$picked")" ] && [ -z "$EXEC_ID" ]; then
+  if list_heal_executions >"$heal_rows_file" 2>/dev/null; then
+    picked_rc=0
+    picked="$(pick_failed "$rows_file" "$heal_rows_file")" || picked_rc=$?
+  else
+    log "heal execution listing failed; healing the newest unmasked red"
+  fi
+fi
+
 if [ -z "$picked" ]; then
   log "$CANARY_LANE_ORCHESTRATOR execution listing unreadable"
   write_stamp unavailable "" "loom-list-unreadable" "${KEY:-}" "error"
@@ -352,7 +438,7 @@ else
 fi
 
 if [ -z "$KEY" ]; then
-  KEY="${LOOM_CANARY_RED_KEY:-canary-red-${picked_id}}"
+  KEY="${LOOM_CANARY_RED_KEY:-${CANARY_RED_KEY_PREFIX}${picked_id}}"
 fi
 
 input="$(PICKED_ID="$picked_id" python3 -c '

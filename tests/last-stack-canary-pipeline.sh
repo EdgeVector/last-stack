@@ -342,22 +342,30 @@ grep -q 'CHECK label=board_write result=ok median_ms=' "$tmp/w-fast.out"
 
 # One slow sample is load; a slow MEDIAN is the binary. A single outlier among
 # three must not brake a good candidate.
+#
+# The two fast samples are real `bash` spawns, so the budget has to clear a
+# loaded host, not an idle one. At a 200ms budget with a 0.4s outlier this
+# assertion failed about 1 run in 5 standalone, and every run under the four
+# parallel CI shards: a fast spawn crossed 200ms, so the MEDIAN was a fast
+# sample that read as slow. The gap is what the test is about, so widen it —
+# 2s outlier against a 1s budget keeps the same meaning with room for load.
 flap_dir="$tmp/w-flap"
 cat >"$tmp/flappy.sh" <<'FLAP'
 #!/usr/bin/env bash
 n="$(cat "$FLAP_COUNTER" 2>/dev/null || echo 0)"
 echo $((n + 1)) >"$FLAP_COUNTER"
-[ "$n" = "0" ] && sleep 0.4
+[ "$n" = "0" ] && sleep 2
 exit 0
 FLAP
 chmod +x "$tmp/flappy.sh"
 FLAP_COUNTER="$tmp/flap.count" soak_once "$flap_dir" \
   FLAP_COUNTER="$tmp/flap.count" \
   LAST_STACK_CANARY_BOARD_WRITE_CHECK_CMD="$tmp/flappy.sh" \
-  LAST_STACK_CANARY_WRITE_MS_MAX=200 \
+  LAST_STACK_CANARY_WRITE_MS_MAX=1000 \
   LAST_STACK_CANARY_CHECK_SAMPLES=3 \
   >"$tmp/w-flap.out" 2>"$tmp/w-flap.err"
-grep -q 'status=soak_green' "$tmp/w-flap.out"
+grep -q 'status=soak_green' "$tmp/w-flap.out" \
+  || { echo "flap median assertion failed: $(cat "$tmp/w-flap.err")" >&2; exit 1; }
 
 # A write that ERRORS is distinguishable in the ledger from one that is slow.
 err_dir="$tmp/w-err"

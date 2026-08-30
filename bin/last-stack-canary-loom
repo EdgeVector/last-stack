@@ -66,6 +66,9 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
 export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
 STAMP="${LAST_STACK_CANARY_LOOM_STAMP:-$HOME/.last-stack/state/canary-loom.json}"
 ACTIVE="${LAST_STACK_CANARY_LOOM_ACTIVE:-$(dirname "$STAMP")/canary-loom-active.json}"
+CANARY_LOOM_DEFINITION="${LAST_STACK_CANARY_DEFINITION:-lastdb-canary-release}"
+CANARY_LOOM_DISCOVER_WINDOW_H="${LAST_STACK_CANARY_LOOM_DISCOVER_WINDOW_HOURS:-72}"
+CANARY_LOOM_DISCOVER_LIMIT="${LAST_STACK_CANARY_LOOM_DISCOVER_LIMIT:-25}"
 
 log() { [ "$QUIET" -eq 1 ] || printf 'canary-loom: %s\n' "$*" >&2; }
 
@@ -149,10 +152,77 @@ if [ -z "$KEY" ] && [ -f "$ACTIVE" ]; then
 fi
 if [ -z "$KEY" ] && [ -f "$STAMP" ]; then
   stamp_status="$(jq -r '.status // empty' "$STAMP" 2>/dev/null || true)"
+  # `idle` is NOT terminal for key discovery. An idle tick writes an empty key,
+  # and treating that as the end of the search is what made the no-key state
+  # absorbing (papercut-canary-loom-active-marker-loss-returns-no-key).
   case "$stamp_status" in
-    succeeded|failed|cancelled|idle|dry-run) ;;
+    succeeded|failed|cancelled|dry-run) ;;
     *) KEY="$(jq -r '.key // empty' "$STAMP" 2>/dev/null || true)" ;;
   esac
+fi
+
+# Both local files are caches of a fact loom owns. When they are empty, ask
+# loom: any execution of this definition still in waiting/running carries its
+# own resume key in `idempotency_key`. A hand-made key (one no `canary-<oid>`
+# reconstruction can guess) is only recoverable this way.
+discover_key_from_loom() {
+  if [ -n "${CANARY_LOOM_LIST_FILE:-}" ]; then
+    cat "$CANARY_LOOM_LIST_FILE"
+    return 0
+  fi
+  "$ROOT/bin/last-stack-loom-exec-latest" \
+    --definition "$CANARY_LOOM_DEFINITION" \
+    --window-hours "$CANARY_LOOM_DISCOVER_WINDOW_H" \
+    --limit "$CANARY_LOOM_DISCOVER_LIMIT"
+}
+
+pick_live_key() {
+  LOOM_ROWS_FILE="$1" python3 -c '
+import json, os
+path = os.environ.get("LOOM_ROWS_FILE") or ""
+try:
+    with open(path) as fh:
+        rows = json.load(fh)
+except Exception:
+    rows = []
+if not isinstance(rows, list):
+    rows = []
+live = [r for r in rows if isinstance(r, dict)
+        and str(r.get("status") or "") in ("waiting", "running")
+        and str(r.get("idempotency_key") or "")]
+live.sort(key=lambda r: str(r.get("updated_at") or r.get("updatedAt") or ""), reverse=True)
+if live:
+    print(json.dumps({
+        "key": str(live[0].get("idempotency_key") or ""),
+        "execution": str(live[0].get("id") or live[0].get("exec_id") or ""),
+        "status": str(live[0].get("status") or ""),
+        "state": str(live[0].get("state") or ""),
+    }, separators=(",", ":")))
+else:
+    print("{}")
+'
+}
+
+discovered_execution=""
+discovered_status=""
+discovered_state=""
+if [ -z "$KEY" ] && [ "$START" -eq 0 ] && [ "$RECOVER" -eq 0 ] && [ "$DRY" -eq 0 ]; then
+  discover_file="$(mktemp "${TMPDIR:-/tmp}/canary-loom-discover.XXXXXX")"
+  if discover_key_from_loom >"$discover_file" 2>/dev/null; then
+    discovered="$(pick_live_key "$discover_file")"
+    KEY="$(printf '%s\n' "$discovered" | jq -r '.key // empty')"
+    discovered_execution="$(printf '%s\n' "$discovered" | jq -r '.execution // empty')"
+    discovered_status="$(printf '%s\n' "$discovered" | jq -r '.status // empty')"
+    discovered_state="$(printf '%s\n' "$discovered" | jq -r '.state // empty')"
+    if [ -n "$KEY" ]; then
+      log "recovered resume key from loom: key=$KEY exec=${discovered_execution:-none}"
+      write_active "$KEY" "$discovered_execution" \
+        "${discovered_status:-unknown}" "${discovered_state:-unknown}"
+    fi
+  else
+    log "loom execution listing failed during key discovery"
+  fi
+  rm -f "$discover_file"
 fi
 
 if [ "$START" -eq 1 ]; then

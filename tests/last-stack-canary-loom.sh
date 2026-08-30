@@ -45,6 +45,10 @@ tmp="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-canary-loom.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 export LAST_STACK_CANARY_LOOM_STAMP="$tmp/stamp.json"
 export LAST_STACK_CANARY_LOOM_ACTIVE="$tmp/active.json"
+# Key discovery asks loom for its own executions. Default the fixture to an
+# empty listing so no test reaches the live node.
+printf '%s\n' '[]' >"$tmp/discover-empty.json"
+export CANARY_LOOM_LIST_FILE="$tmp/discover-empty.json"
 out="$("$BIN" --dry-run --json --quiet)"
 printf '%s\n' "$out" | grep -q 'ROUTINE_RESULT' || fail "missing ROUTINE_RESULT: $out"
 out2="$("$BIN" --dry-run --start --oid abc123 --json --quiet)"
@@ -234,6 +238,65 @@ out_idle="$(HOME="$mock_home" FAKE_LOOM_MODE=success "$BIN" --json --quiet)"
 printf '%s\n' "$out_idle" | grep -q 'outcome=noop detail=no-key' \
   || fail "true idle lane did not return no-key: $out_idle"
 [ ! -s "$FAKE_LOOM_CALLS" ] || fail "idle lane called Loom without a resume key"
+
+# --- both local files gone, execution still parked: loom holds the key ---
+# The key below is hand-made, so no `canary-<oid>` reconstruction finds it.
+# lx-20260830T140407.992-49336-1 sat waiting in SOAK_WAIT under exactly this
+# shape while two hourly ticks reported the lane idle.
+cat >"$tmp/discover-live.json" <<'JSON'
+[
+  {
+    "id": "lx-20260830T120000.000-1-1",
+    "definition_name": "lastdb-canary-release",
+    "status": "succeeded",
+    "state": "DONE",
+    "idempotency_key": "canary-oldoid",
+    "updated_at": "2026-08-30T12:00:00.000Z"
+  },
+  {
+    "id": "lx-20260830T140407.992-49336-1",
+    "definition_name": "lastdb-canary-release",
+    "status": "waiting",
+    "state": "SOAK_WAIT",
+    "idempotency_key": "io-free-closeout-recover-9beb85ca8-v2",
+    "updated_at": "2026-08-30T14:04:07.992Z"
+  }
+]
+JSON
+rm -f "$LAST_STACK_CANARY_LOOM_ACTIVE" "$LAST_STACK_CANARY_LOOM_STAMP"
+: >"$FAKE_LOOM_CALLS"
+out_discover="$(HOME="$mock_home" FAKE_LOOM_MODE=success \
+  CANARY_LOOM_LIST_FILE="$tmp/discover-live.json" "$BIN" --json --quiet)"
+printf '%s\n' "$out_discover" | head -1 \
+  | jq -e '.outcome == "ok" and .key == "io-free-closeout-recover-9beb85ca8-v2"' >/dev/null \
+  || fail "gate did not adopt the parked execution's key from loom: $out_discover"
+grep -q 'run lastdb-canary-release --key io-free-closeout-recover-9beb85ca8-v2' \
+  "$FAKE_LOOM_CALLS" \
+  || fail "discovered key was not passed to Loom: $(cat "$FAKE_LOOM_CALLS")"
+
+# An `idle` stamp with an empty key must not end the search either.
+write_idle_stamp() { printf '%s\n' '{"ts":"2026-08-30T17:00:00Z","status":"idle","key":"","outcome":"noop","detail":"no-key","engine":"loom"}' >"$LAST_STACK_CANARY_LOOM_STAMP"; }
+rm -f "$LAST_STACK_CANARY_LOOM_ACTIVE"
+write_idle_stamp
+: >"$FAKE_LOOM_CALLS"
+out_after_idle="$(HOME="$mock_home" FAKE_LOOM_MODE=success \
+  CANARY_LOOM_LIST_FILE="$tmp/discover-live.json" "$BIN" --json --quiet)"
+printf '%s\n' "$out_after_idle" | head -1 \
+  | jq -e '.key == "io-free-closeout-recover-9beb85ca8-v2"' >/dev/null \
+  || fail "an idle stamp made the no-key state absorbing: $out_after_idle"
+
+# Discovery only adopts a live execution. A terminal-only listing stays idle.
+cat >"$tmp/discover-terminal.json" <<'JSON'
+[{"id":"lx-20260830T120000.000-1-1","definition_name":"lastdb-canary-release","status":"succeeded","state":"DONE","idempotency_key":"canary-oldoid","updated_at":"2026-08-30T12:00:00.000Z"}]
+JSON
+rm -f "$LAST_STACK_CANARY_LOOM_ACTIVE" "$LAST_STACK_CANARY_LOOM_STAMP"
+: >"$FAKE_LOOM_CALLS"
+out_terminal_only="$(HOME="$mock_home" FAKE_LOOM_MODE=success \
+  CANARY_LOOM_LIST_FILE="$tmp/discover-terminal.json" "$BIN" --json --quiet)"
+printf '%s\n' "$out_terminal_only" | grep -q 'outcome=noop detail=no-key' \
+  || fail "a terminal-only listing was adopted as a resume key: $out_terminal_only"
+[ ! -s "$FAKE_LOOM_CALLS" ] || fail "terminal-only listing still ran Loom"
+rm -f "$LAST_STACK_CANARY_LOOM_ACTIVE" "$LAST_STACK_CANARY_LOOM_STAMP"
 
 # A damaged active marker is an error. It must not look like a true idle lane.
 printf '%s\n' '{"status":"running","key":""}' >"$LAST_STACK_CANARY_LOOM_ACTIVE"
