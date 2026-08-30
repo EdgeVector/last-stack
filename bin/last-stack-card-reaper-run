@@ -19,7 +19,36 @@ skip_preflight=0
 board_json=""
 now_iso=""
 mem="${CARD_REAPER_MEMORY:-$HOME/.routines/memory/last-stack-card-reaper/memory.md}"
-run_dir="${ROUTINES_RUN_DIR:-${CARD_REAPER_RUN_DIR:-}}"
+# routinesd's outcome sink is claimed ONLY when this process IS the
+# last-stack-card-reaper run. routinesd exports ROUTINES_RUN_DIR into every
+# routine harness, so a test or an ad-hoc call made from inside some OTHER
+# routine (a pickup worker running the last-stack CI gate) inherits a run dir
+# it does not own. Writing outcome.txt there overwrites that routine's verdict
+# with this runner's, and routinesd then reports the host routine on the
+# reaper's result — in either direction: a false error over real work, or a
+# false ok that masks a real failure. Measured 5 times across 3 routines
+# between 2026-07-21 and 2026-08-30. See brain papercut
+# papercut-card-reaper-test-fixture-overwrites-host-routine-outcome-sink.
+#
+# CARD_REAPER_RUN_DIR is an explicit, unconditional claim (direct callers and
+# tests). An inherited ROUTINES_RUN_DIR is honoured only when its parent
+# directory is named for this routine, which is the ~/.routines/runs/<id>/<ts>
+# layout routinesd creates. Anything else falls through to a private mktemp
+# dir below, so scratch/ does not litter a foreign run either.
+#
+# Deliberately NOT gated on --dry-run: the scheduled routine may legitimately
+# run dry and still owes routinesd an outcome. A missing outcome.txt is its own
+# regression (papercut-card-reaper-runner-no-artifacts-20260828).
+readonly CARD_REAPER_ROUTINE_ID="last-stack-card-reaper"
+run_dir="${CARD_REAPER_RUN_DIR:-}"
+run_dir_disowned=""
+if [ -z "$run_dir" ] && [ -n "${ROUTINES_RUN_DIR:-}" ]; then
+  if [ "$(basename "$(dirname "${ROUTINES_RUN_DIR%/}")")" = "$CARD_REAPER_ROUTINE_ID" ]; then
+    run_dir="$ROUTINES_RUN_DIR"
+  else
+    run_dir_disowned="$ROUTINES_RUN_DIR"
+  fi
+fi
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -47,6 +76,12 @@ EOF
 done
 
 if [ -z "$run_dir" ]; then
+  if [ -n "$run_dir_disowned" ]; then
+    # Say so. A silent fallback here is how the sink hijack stayed invisible
+    # for six weeks: the host routine simply reported the reaper's verdict.
+    printf 'card-reaper: ROUTINES_RUN_DIR=%s belongs to another routine; writing results to a private dir instead\n' \
+      "$run_dir_disowned" >&2
+  fi
   run_dir="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-card-reaper.XXXXXX")"
 fi
 scratch="$run_dir/scratch"
