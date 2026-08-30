@@ -143,6 +143,13 @@ def run(argv: list[str], *, stdin: str | None = None, timeout: int = 60) -> subp
             proc.communicate(timeout=KILL_DRAIN_SECONDS)
         except subprocess.TimeoutExpired:
             pass
+        # A call the budget cut short is a budget stop, not a read timeout.
+        # Callers handle the two differently: a read timeout skips one slug and
+        # continues, which would spin through the rest of the list once the
+        # budget is gone.
+        if DEADLINE.remaining() <= 0:
+            DEADLINE.exhausted = True
+            raise BudgetExhausted(f"budget of {DEADLINE.seconds}s exhausted") from None
         raise
     except BaseException:
         _kill_tree(proc)
@@ -362,9 +369,18 @@ def load_records(args: argparse.Namespace) -> list[dict[str, Any]]:
             record["_typed"] = True
         return records
     if args.slug:
-        records = [brain_get(args, slug) for slug in args.slug]
-        for record in records:
+        records = []
+        for index, slug in enumerate(args.slug):
+            if DEADLINE.expired():
+                DEADLINE.unread = len(args.slug) - index
+                print(
+                    f"warning: budget exhausted; {DEADLINE.unread} of {len(args.slug)} slugs unread",
+                    file=sys.stderr,
+                )
+                break
+            record = brain_get(args, slug)
             record["_typed"] = True
+            records.append(record)
         return records
     previews = as_items(
         run_json(
@@ -755,7 +771,19 @@ def main() -> int:
 
     iso = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     if args.slug or args.records_json:
-        result = close_review_records(args, iso)
+        # The explicit-slug path must obey the same invariant as the default
+        # one: always terminate, always print a result.
+        try:
+            result = close_review_records(args, iso)
+        except BudgetExhausted as exc:
+            result = {
+                "ok": True,
+                "checked": 0,
+                "fixed": [],
+                "skipped": [{"slug": "", "reason": "budget-exhausted", "detail": str(exc)}],
+                "errors": [],
+                "pipeline_stuck_checked": 0,
+            }
     else:
         try:
             registry_result = try_registry_close(args, iso)

@@ -108,4 +108,25 @@ assert d.get("budget_exhausted") is False, f"disabled budget must never exhaust:
 PY
 echo "ok: --budget-seconds 0 disables the budget"
 
+# --- case 4: the explicit-slug path obeys the same invariant.
+# It does not go through the status-keyed list, so it needs its own guard: a
+# budget-shortened call raises TimeoutExpired, which this path does not catch,
+# and the pass died with a traceback and no JSON.
+make_brain 3
+
+set +e
+PATH="$bin_dir:$PATH" timeout 60 "$HELPER" \
+  papercut-a papercut-b papercut-c papercut-d \
+  --budget-seconds 4 --read-timeout 10 --json >"$tmp/slug.json" 2>"$tmp/slug.err"
+rc=$?
+set -e
+[ "$rc" -ne 124 ] || fail "slug path: pass did not terminate inside 60s"
+[ -s "$tmp/slug.json" ] || fail "slug path: pass printed no JSON (rc=$rc): $(tail -3 "$tmp/slug.err")"
+python3 - "$tmp/slug.json" <<'PY2'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("budget_exhausted") is True, f"slug path did not report the budget: {d!r}"
+PY2
+echo "ok: explicit-slug path stops at the budget and still reports"
+
 echo "PASS last-stack-papercut-lifecycle-close-budget"
