@@ -83,6 +83,10 @@ SH
 cat >"$tmp/bin/situations" <<'SH'
 #!/usr/bin/env bash
 printf 'situations %s\n' "$*" >>"$FAKE_ACTION_LOG"
+case " $* " in
+  *" --actor agent:lastdb-memory-guard "*) ;;
+  *) exit 2 ;;
+esac
 SH
 
 chmod +x "$tmp/bin/"*
@@ -133,7 +137,7 @@ grep -q '"event":"restart_requested".*"old_pid":4242.*"new_pid":null' "$EVENT_LO
   || fail "restart request should be durable before the signal"
 grep -q '"event":"restart_observed".*"old_pid":4242.*"new_pid":4243' "$EVENT_LOG" \
   || fail "replacement pid should be durable after restart"
-grep -q 'situations notice .*--kind restart.*pid 4242 -> 4243' "$FAKE_ACTION_LOG" \
+grep -q 'situations notice .*--actor agent:lastdb-memory-guard.*pid 4242 -> 4243' "$FAKE_ACTION_LOG" \
   || fail "a forced restart should post an attributed Situations notice"
 
 # --- 4. an explicit footprint limit override still applies -------------------

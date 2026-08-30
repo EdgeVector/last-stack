@@ -226,7 +226,7 @@ post_restart_notice() {
     --kind restart \
     --system lastdbd \
     --system primary-brain \
-    --actor service:lastdb-memory-guard \
+    --actor agent:lastdb-memory-guard \
     --severity-hint warn \
     --expires-hours 24 \
     --summary "physical footprint ${enforced} MiB exceeded ${RSS_LIMIT_MB} MiB; pid ${old_pid} -> ${new_pid}; build ${build_value}" \
