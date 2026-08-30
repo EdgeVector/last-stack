@@ -152,14 +152,51 @@ output; a stale doc that misled an agent; the same workaround across sessions.
   Forgejo PR number, GitHub PR number) even when the body has no URL.
 - **Mandatory first discovery read.** Snapshot the exact `status=open` keyed
   partition before reading the prose ledger or registry. This command validates
-  the reader method, exact row count, open-only status, and unique membership;
-  any failure ends the pass `error` rather than false-green:
+  the reader method, exact row count, open-only status, and unique membership:
 
   ```bash
   queue_dir="$(mktemp -d)"
   queue_snapshot="$queue_dir/open.json"
+  set +e
   last-stack-papercut-queue snapshot --output "$queue_snapshot" --json
+  snapshot_rc=$?
+  set -e
   ```
+
+- **Read `snapshot_rc`. The two failure modes are not the same outcome.**
+
+  | rc | meaning | outcome |
+  |---|---|---|
+  | 0 | queue read and validated | continue the pass |
+  | 3 | queue could not be read — a dependency is degraded | **`noop`**, EXIT |
+  | 1 (any other) | the queue itself is invalid | `error`, EXIT |
+
+  rc=3 carries `reason` (`status-index-incomplete`, `brain-unavailable`) plus
+  `detail`/`hint`, and writes **no** snapshot file. Nothing was read and
+  nothing was mutated, so it is an external blocker, exactly like `busy-node`
+  — not a routine fault. Reporting `error` here says the reconciler is broken
+  when it is not, and buries the real owner of the fix under a routine-error
+  card. Do this and EXIT:
+
+  ```bash
+  if [ "$snapshot_rc" -eq 3 ]; then
+    # Append the recurrence to the brain papercut that OWNS the repair, so the
+    # condition keeps accruing evidence instead of vanishing into a noop.
+    #   papercut-brain-papercut-status-index-incomplete-blocks-file-20260828
+    heartbeat "noop queue_snapshot_unavailable=<reason> no_board_mutation"
+    printf '%s %s\n' 'ROUTINE_RESULT' \
+      'outcome=noop detail=queue_snapshot_unavailable=<reason> no_board_mutation'
+    exit 0
+  fi
+  ```
+
+  Do **not** run `fbrain reindex --papercut-status-index` from this routine to
+  clear rc=3. It is an admin/offline rebuild of the primary brain's index and
+  is not a scheduled routine's call to make.
+
+  rc=1 still ends the pass `error` rather than false-green: an invalid queue
+  (wrong reader method, row/total mismatch, a non-open row, duplicate
+  membership) means the instrument is lying, and that must never be silent.
 
 - `$queue_snapshot` is the complete membership instrument for this pass.
   `brain list`, `brain search`, and `brain ask` are forbidden for discovery;
