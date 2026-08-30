@@ -1,0 +1,44 @@
+{
+  "checkout": {
+    "account_url_present": true
+  },
+  "plan": {
+    "displayed_storage_gb": 1024
+  },
+  "privacy": {
+    "checked_fields": [
+      "account",
+      "account.auth",
+      "account.auth.expires_at",
+      "account.auth.expires_in_seconds",
+      "account.auth.token",
+      "account.auth.token_type",
+      "account.status",
+      "account.status.access_allowed",
+      "account.status.has_subscription",
+      "account.status.ok",
+      "account.status.paid_quota_bytes",
+      "account.status.plan",
+      "account.status.price_cents",
+      "account.status.storage",
+      "account.status.storage.database_bytes",
+      "account.status.storage.databases",
+      "account.status.storage.databases.database_bytes",
+      "account.status.storage.databases.file_reference_bytes",
+      "account.status.storage.databases.kind",
+      "account.status.storage.databases.scope",
+      "account.status.storage.databases.used_bytes",
+      "account.status.storage.file_reference_bytes",
+      "account.status.storage.quota_bytes",
+      "account.status.storage.used_bytes",
+      "account.user_hash",
+      "ok",
+      "url"
+    ],
+    "exemem_pii_leak_count": 0
+  },
+  "upgrade": {
+    "existing_paid_account": true,
+    "path_reachable": true
+  }
+}
