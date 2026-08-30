@@ -1,17 +1,38 @@
 {
   "name": "lastdb-canary-release",
-  "version": "4",
-  "start_at": "BUILD_START",
+  "version": "5",
+  "start_at": "DECIDE_ENTRY",
   "max_depth": 2,
   "node_budget": 80,
   "input_schema": {
     "type": "object",
     "properties": {
       "main_oid": { "type": "string" },
-      "max_attempts": { "type": "integer" }
+      "max_attempts": { "type": "integer" },
+      "recovery_mode": { "type": "string" },
+      "recovery_child_execution": { "type": "string" },
+      "recovery_candidate": { "type": "string" },
+      "recovery_source_git_oid": { "type": "string" },
+      "recovery_version": { "type": "string" }
     }
   },
   "states": {
+    "DECIDE_ENTRY": {
+      "type": "choice",
+      "path": "recovery_mode",
+      "map": {
+        "verified-live": "RECOVER_LIVE"
+      },
+      "default": "BUILD_START"
+    },
+    "RECOVER_LIVE": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-canary-step.sh\" RECOVER_LIVE"],
+      "effects": "none",
+      "timeout_sec": 120,
+      "next": "LEDGER",
+      "on_error": "FAILED"
+    },
     "BUILD_START": {
       "type": "agent",
       "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-canary-step.sh\" BUILD_START"],
@@ -145,6 +166,14 @@
       "map": {
         "exhausted": "REPORT",
         "blocked": "REPORT"
+      },
+      "default": "DECIDE_RETRY_ROUTE"
+    },
+    "DECIDE_RETRY_ROUTE": {
+      "type": "choice",
+      "path": "recovery_mode",
+      "map": {
+        "verified-live": "REPORT"
       },
       "default": "BUILD_START"
     },
