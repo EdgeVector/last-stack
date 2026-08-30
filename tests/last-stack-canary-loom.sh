@@ -6,11 +6,19 @@ fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 bash -n "$BIN"
 bash -n "$ROOT/lib/canary-loom/loom-canary-step.sh"
 [ -f "$ROOT/lib/canary-loom/lastdb-canary-release.json" ] || fail "graph missing"
-[ "$(jq -r .version "$ROOT/lib/canary-loom/lastdb-canary-release.json")" = "4" ] \
+[ "$(jq -r .version "$ROOT/lib/canary-loom/lastdb-canary-release.json")" = "5" ] \
   || fail "canary graph version did not advance"
-jq -e '.states.DECIDE_A.map.green == "LEDGER" and
+jq -e '.start_at == "DECIDE_ENTRY" and
+       .states.DECIDE_ENTRY.map["verified-live"] == "RECOVER_LIVE" and
+       .states.DECIDE_ENTRY.default == "BUILD_START" and
+       .states.RECOVER_LIVE.next == "LEDGER" and
+       .states.RECOVER_LIVE.on_error == "FAILED" and
+       .states.DECIDE_A.map.green == "LEDGER" and
        .states.LEDGER.next == "SOAK" and
-       .states.LEDGER.effects == "idempotent"' \
+       .states.LEDGER.effects == "idempotent" and
+       .states.DECIDE_RETRY.default == "DECIDE_RETRY_ROUTE" and
+       .states.DECIDE_RETRY_ROUTE.map["verified-live"] == "REPORT" and
+       .states.DECIDE_RETRY_ROUTE.default == "BUILD_START"' \
   "$ROOT/lib/canary-loom/lastdb-canary-release.json" >/dev/null \
   || fail "green child does not record the dogfood ledger before soak"
 grep -q 'last-stack-canary-loom' "$ROOT/routines/lastdb-canary-soak-watch.md" \
@@ -54,6 +62,22 @@ case "${1:-}" in
         ;;
     esac
     ;;
+  show)
+    [ "${2:-}" = lx-recovery-child ] || exit 2
+    printf '%s\n' \
+      lx-recovery-child \
+      'status: succeeded' \
+      'state: DONE' \
+      "context.candidate: \"${RECOVERY_STAGE:?}/lastdbd\"" \
+      'context.cutover: "live"' \
+      "context.source_git_oid: \"${RECOVERY_OID:?}\"" \
+      'context.verdict: "green"' \
+      'context.verify: "live"' \
+      "context.version: \"${RECOVERY_VERSION:?}\"" \
+      'node CUTOVER#1 succeeded: {"stdout":"PASS"}' \
+      'node PROBE#1 succeeded: {"stdout":"PASS"}' \
+      'node VERIFY#1 succeeded: {"stdout":"PASS"}'
+    ;;
   *) exit 2 ;;
 esac
 SH
@@ -69,6 +93,72 @@ case "${1:-}" in
 esac
 SH
 chmod 755 "$mock_home/.local/bin/sm-canary-release-step"
+
+recovery_stage="$tmp/recovery-stage"
+recovery_current="$mock_home/.lastdb/current"
+mkdir -p "$recovery_stage" "$recovery_current"
+recovery_oid=0123456789abcdef0123456789abcdef01234567
+recovery_version=0.0.0-g012345678
+export RECOVERY_STAGE="$recovery_stage"
+export RECOVERY_OID="$recovery_oid"
+export RECOVERY_VERSION="$recovery_version"
+for name in lastdb lastdbd; do
+  cat >"$recovery_stage/$name" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = status ]; then
+  printf '%s\n' '{"running":true,"daemon_status":"running","build_agreement":"agree","cli_build":"$recovery_version","daemon_build":"$recovery_version"}'
+else
+  printf '%s %s\n' '$name' '$recovery_version'
+fi
+SH
+  chmod 755 "$recovery_stage/$name"
+  cp "$recovery_stage/$name" "$recovery_current/$name"
+done
+cat >"$recovery_stage/manifest.json" <<JSON
+{"source_git_oid":"$recovery_oid","lastdb_version":"$recovery_version","lastdbd_version":"$recovery_version","staged_by":"test"}
+JSON
+recovery_input="$(jq -cn \
+  --arg mode verified-live \
+  --arg child lx-recovery-child \
+  --arg candidate "$recovery_stage/lastdbd" \
+  --arg oid "$recovery_oid" \
+  --arg version "$recovery_version" \
+  '{recovery_mode:$mode,recovery_child_execution:$child,recovery_candidate:$candidate,recovery_source_git_oid:$oid,recovery_version:$version}')"
+recovery_out="$(PATH="$mock_home/.local/bin:$PATH" HOME="$mock_home" LOOM_LIVE=1 \
+  LOOM_INPUT="$recovery_input" \
+  "$ROOT/lib/canary-loom/loom-canary-step.sh" RECOVER_LIVE)"
+printf '%s\n' "$recovery_out" | grep -q '"recovery_verified":true' \
+  || fail "verified-live recovery did not produce a receipt: $recovery_out"
+printf '%s\n' "$recovery_out" | grep -q '"child_status":"green"' \
+  || fail "verified-live recovery did not preserve the green child: $recovery_out"
+printf '%s\n' "$recovery_out" | grep -q '"recovery_no_mutation":true' \
+  || fail "verified-live recovery did not assert its no-mutation route: $recovery_out"
+if printf '%s\n' "$recovery_out" | grep -q 'upgrade_jobs'; then
+  fail "verified-live recovery exposed an upgrade job: $recovery_out"
+fi
+
+assert_recovery_refused() {
+  local label="$1" input_json="$2"
+  set +e
+  local refusal
+  refusal="$(PATH="$mock_home/.local/bin:$PATH" HOME="$mock_home" LOOM_LIVE=1 \
+    LOOM_INPUT="$input_json" \
+    "$ROOT/lib/canary-loom/loom-canary-step.sh" RECOVER_LIVE 2>&1)"
+  local rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "$label recovery mismatch was accepted"
+  printf '%s\n' "$refusal" | grep -q 'RECOVER_LIVE refused' \
+    || fail "$label recovery mismatch lacked a refusal: $refusal"
+}
+
+assert_recovery_refused missing-child "$(printf '%s' "$recovery_input" | jq 'del(.recovery_child_execution)')"
+assert_recovery_refused wrong-child "$(printf '%s' "$recovery_input" | jq '.recovery_child_execution="lx-other-child"')"
+assert_recovery_refused wrong-source "$(printf '%s' "$recovery_input" | jq '.recovery_source_git_oid="0123456789abcdef0123456789abcdef01234568"')"
+assert_recovery_refused wrong-version "$(printf '%s' "$recovery_input" | jq '.recovery_version="0.0.1-g012345678"')"
+assert_recovery_refused wrong-candidate "$(printf '%s' "$recovery_input" | jq '.recovery_candidate="/tmp/missing-lastdbd"')"
+printf '# mismatch\n' >>"$recovery_current/lastdbd"
+assert_recovery_refused wrong-installed-bytes "$recovery_input"
+cp "$recovery_stage/lastdbd" "$recovery_current/lastdbd"
 
 # Every external poll changes its context input. Loom then cannot adopt the
 # prior successful result when the graph returns from its timed wait.
