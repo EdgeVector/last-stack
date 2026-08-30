@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# last-stack-loom-exec-latest — resolve loom executions from loom's own records.
+#
+#   last-stack-loom-exec-latest --definition <name> [--window-hours H]
+#                               [--max-probe N] [--max-pages N] [--limit N]
+#   last-stack-loom-exec-latest --exec <lx-id>
+#
+# Prints a JSON array of execution rows, newest first:
+#   [{"id","definition_name","status","state","created_at","updated_at"}]
+#
+# The lane that produces these rows is orchestrated by loom, so the listing
+# reads loom's LoomExecution schema over the LastDB socket. The retired
+# state-machine (`sm`) holds a frozen copy of a lane that stopped issuing
+# `exec_*` ids; reading it reports a quiet lane while loom is red.
+#
+# LoomExecutionByStatus would be the cheap partition read, but it is declared
+# and not maintained (loom-dashboard.sh carries the same note), so this walks
+# keys-only pages and point-queries only the ids whose embedded start stamp is
+# inside the window. Execution ids sort by start time, so the walk runs newest
+# first and stops at the first row of the wanted definition.
+#
+# Exit:
+#   0  read succeeded (the array may be empty)
+#   2  usage
+#   3  loom records unreadable (no socket, no schema map, list failed)
+set -euo pipefail
+
+DEFINITION=""
+EXEC_ID=""
+WINDOW_H="${LAST_STACK_LOOM_EXEC_WINDOW_HOURS:-36}"
+MAX_PROBE="${LAST_STACK_LOOM_EXEC_MAX_PROBE:-250}"
+MAX_PAGES="${LAST_STACK_LOOM_EXEC_MAX_PAGES:-20}"
+LIMIT=1
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --definition) DEFINITION="${2:-}"; shift 2 ;;
+    --definition=*) DEFINITION="${1#*=}"; shift ;;
+    --exec) EXEC_ID="${2:-}"; shift 2 ;;
+    --exec=*) EXEC_ID="${1#*=}"; shift ;;
+    --window-hours) WINDOW_H="${2:-}"; shift 2 ;;
+    --window-hours=*) WINDOW_H="${1#*=}"; shift ;;
+    --max-probe) MAX_PROBE="${2:-}"; shift 2 ;;
+    --max-probe=*) MAX_PROBE="${1#*=}"; shift ;;
+    --max-pages) MAX_PAGES="${2:-}"; shift 2 ;;
+    --max-pages=*) MAX_PAGES="${1#*=}"; shift ;;
+    --limit) LIMIT="${2:-}"; shift 2 ;;
+    --limit=*) LIMIT="${1#*=}"; shift ;;
+    --json) shift ;;
+    -h|--help)
+      echo "last-stack-loom-exec-latest --definition <name> [--window-hours H] [--max-probe N] [--limit N]"
+      echo "last-stack-loom-exec-latest --exec <lx-id>"
+      exit 0
+      ;;
+    *) echo "unknown: $1" >&2; exit 2 ;;
+  esac
+done
+
+if [ -z "$DEFINITION" ] && [ -z "$EXEC_ID" ]; then
+  echo "last-stack-loom-exec-latest: --definition or --exec is required" >&2
+  exit 2
+fi
+
+SOCK="${LOOM_SOCKET:-$HOME/.lastdb/data/folddb.sock}"
+MAP="${LOOM_SCHEMA_MAP:-$HOME/.loom/schema-hashes.json}"
+
+die3() { printf 'last-stack-loom-exec-latest: %s\n' "$1" >&2; exit 3; }
+
+command -v jq >/dev/null 2>&1 || die3 "jq is not on PATH"
+[ -S "$SOCK" ] || die3 "loom node socket not found at $SOCK"
+[ -f "$MAP" ] || die3 "loom schema map missing at $MAP — run: loom init"
+
+EXEC_SCHEMA="$(jq -r '.LoomExecution // empty' "$MAP")"
+[ -n "$EXEC_SCHEMA" ] || die3 "LoomExecution not in $MAP — run: loom init"
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-loom-exec.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+
+api() {
+  curl -s --unix-socket "$SOCK" -H "X-LastDB-Client: last-stack-loom-exec" "$@"
+}
+
+# One point query per execution id, on loom's primary key layout.
+point_get() {
+  api -H "Content-Type: application/json" -X POST http://localhost/api/query \
+    -d "{\"schema_name\":\"$EXEC_SCHEMA\",\"fields\":[\"id\",\"definition_name\",\"status\",\"state\",\"created_at\",\"updated_at\"],\"filter\":{\"HashKey\":\"$1\"},\"limit\":1,\"offset\":0}" \
+    2>/dev/null | jq -c '.results[0].fields // empty' 2>/dev/null || true
+}
+
+if [ -n "$EXEC_ID" ]; then
+  row="$(point_get "$EXEC_ID")"
+  if [ -z "$row" ]; then
+    printf '[]\n'
+  else
+    printf '%s\n' "$row" | jq -s '.'
+  fi
+  exit 0
+fi
+
+# Ids embed their start stamp (lx-<YYYYmmdd>T<HHMMSS.mmm>-<pid>-<n>), so the
+# window filter runs on the key alone — no point query for an old execution.
+cutoff="$(date -u -v-"${WINDOW_H}"H +%Y%m%dT%H%M%S 2>/dev/null \
+  || date -u -d "-${WINDOW_H} hours" +%Y%m%dT%H%M%S)"
+
+: >"$work/ids.txt"
+cursor=""
+page=0
+while [ "$page" -lt "$MAX_PAGES" ]; do
+  if [ -n "$cursor" ]; then
+    enc="$(jq -rn --arg c "$cursor" '$c|@uri')"
+    url="http://localhost/api/list?schema=$EXEC_SCHEMA&limit=500&cursor=$enc"
+  else
+    url="http://localhost/api/list?schema=$EXEC_SCHEMA&limit=500"
+  fi
+  api "$url" >"$work/page.json" || die3 "api/list failed"
+  jq -e '.list.keys' "$work/page.json" >/dev/null 2>&1 || die3 "api/list returned no key page"
+  jq -r '.list.keys[].hash' "$work/page.json" >>"$work/ids.txt"
+  trunc="$(jq -r '.list.truncated // false' "$work/page.json")"
+  cursor="$(jq -r '.list.next_cursor // empty' "$work/page.json" | tr -d '\000')"
+  page=$((page + 1))
+  [ "$trunc" = "true" ] && [ -n "$cursor" ] || break
+done
+
+# Keep the ids inside the window, newest first.
+awk -F- -v cutoff="$cutoff" '
+  /^lx-/ { if ($2 >= cutoff) print $2 "\t" $0 }
+' "$work/ids.txt" | sort -r | cut -f2 | head -n "$MAX_PROBE" >"$work/candidates.txt"
+
+: >"$work/rows.jsonl"
+matched=0
+while IFS= read -r id; do
+  [ -n "$id" ] || continue
+  row="$(point_get "$id")"
+  [ -n "$row" ] || continue
+  name="$(printf '%s\n' "$row" | jq -r '.definition_name // ""')"
+  [ "$name" = "$DEFINITION" ] || continue
+  printf '%s\n' "$row" >>"$work/rows.jsonl"
+  matched=$((matched + 1))
+  [ "$matched" -lt "$LIMIT" ] || break
+done <"$work/candidates.txt"
+
+jq -s '.' "$work/rows.jsonl"

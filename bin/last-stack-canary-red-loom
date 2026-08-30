@@ -6,7 +6,7 @@
 #   last-stack-canary-red-loom --exec exec_… [--key canary-red-exec_…]
 #
 # Same-key resume: a repeated --key returns the existing loom execution.
-# Default live heal. --no-heal runs stand-in nodes (no grok/claude, no sm start).
+# Default live heal. --no-heal runs stand-in nodes (no live agent, no retry).
 #
 # Exit:
 #   0  ran (including idle noop / in-flight resume)
@@ -105,8 +105,31 @@ if [ "$STATUS" -eq 1 ]; then
   exit 0
 fi
 
+# The lane is orchestrated by loom, so the gate must list loom's own
+# executions. `sm` holds a retired copy of the lane that stopped issuing ids on
+# 2026-08-26; reading it reports a quiet lane while loom is red
+# (papercut-canary-red-heal-lists-retired-sm-not-loom).
+CANARY_LANE_ORCHESTRATOR="loom"
+CANARY_LANE_DEFINITION="${LAST_STACK_CANARY_DEFINITION:-lastdb-canary-release}"
+
+list_executions() {
+  if [ -n "${CANARY_RED_LOOM_LIST_FILE:-}" ]; then
+    cat "$CANARY_RED_LOOM_LIST_FILE"
+    return 0
+  fi
+  # Probe wider than the verdict window: an execution can start before the
+  # lookback and fail inside it. The age test still runs on updated_at.
+  window_h="$(awk -v h="$LOOKBACK_H" 'BEGIN { w = h * 2; if (w < 24) w = 24; printf "%d", w }')"
+  if [ -n "$EXEC_ID" ]; then
+    "$ROOT/bin/last-stack-loom-exec-latest" --exec "$EXEC_ID"
+  else
+    "$ROOT/bin/last-stack-loom-exec-latest" \
+      --definition "$CANARY_LANE_DEFINITION" --window-hours "$window_h"
+  fi
+}
+
 pick_failed() {
-  LOOKBACK_H="$LOOKBACK_H" EXEC_ID="$EXEC_ID" SM_LIST_FILE="${CANARY_RED_SM_LIST_FILE:-}" python3 -c '
+  LOOKBACK_H="$LOOKBACK_H" EXEC_ID="$EXEC_ID" LOOM_ROWS_FILE="$1" python3 -c '
 import json, os, sys
 from datetime import datetime, timezone, timedelta
 
@@ -116,31 +139,14 @@ try:
     lookback_h = float(lookback_h)
 except ValueError:
     lookback_h = 12.0
-path = os.environ.get("SM_LIST_FILE") or ""
-if path:
-    try:
-        rows = json.load(open(path))
-    except Exception as e:
-        print(json.dumps({"ok": False, "error": str(e)}))
-        raise SystemExit(3)
-else:
-    import subprocess
-    try:
-        p = subprocess.run(
-            ["sm", "list", "--definition", "lastdb-canary-release", "--json"],
-            capture_output=True, text=True, timeout=30,
-        )
-    except Exception as e:
-        print(json.dumps({"ok": False, "error": str(e)}))
-        raise SystemExit(3)
-    if p.returncode != 0:
-        print(json.dumps({"ok": False, "error": (p.stderr or p.stdout or "sm list failed").strip()}))
-        raise SystemExit(3)
-    try:
-        rows = json.loads(p.stdout)
-    except json.JSONDecodeError:
-        print(json.dumps({"ok": False, "error": "sm list json parse failed"}))
-        raise SystemExit(3)
+
+path = os.environ.get("LOOM_ROWS_FILE") or ""
+try:
+    with open(path) as fh:
+        rows = json.load(fh)
+except Exception as e:
+    print(json.dumps({"ok": False, "reason": "listing_unreadable", "error": str(e)}))
+    raise SystemExit(3)
 if not isinstance(rows, list):
     rows = []
 
@@ -159,9 +165,9 @@ parsed = []
 for r in rows:
     if not isinstance(r, dict):
         continue
-    rid = str(r.get("id") or "")
+    rid = str(r.get("id") or r.get("exec_id") or "")
     status = str(r.get("status") or "")
-    ts = parse_ts(r.get("updatedAt") or r.get("updated_at") or "")
+    ts = parse_ts(r.get("updated_at") or r.get("updatedAt") or "")
     parsed.append((ts or datetime.fromtimestamp(0, tz=timezone.utc), rid, status, r))
 parsed.sort(key=lambda t: t[0], reverse=True)
 
@@ -173,51 +179,95 @@ if want:
     print(json.dumps({"ok": True, "idle": False, "exec_id": want, "status": hit.get("status"), "state": hit.get("state")}))
     raise SystemExit(0)
 
+# A listing with nothing inside the window is a broken listing, not a quiet
+# lane. Reporting it as idle is what hid two REDs for four days.
 if not parsed:
-    print(json.dumps({"ok": True, "idle": True, "reason": "no_executions"}))
-    raise SystemExit(0)
+    print(json.dumps({"ok": False, "reason": "no_executions_in_window", "lookback_hours": lookback_h}))
+    raise SystemExit(4)
 
 newest = parsed[0][3]
+nid = str(newest.get("id") or newest.get("exec_id") or "")
 nstatus = str(newest.get("status") or "")
-if nstatus in ("running", "waiting"):
-    print(json.dumps({"ok": True, "idle": True, "reason": "lane_busy", "exec_id": newest.get("id"), "status": nstatus}))
-    raise SystemExit(0)
-if nstatus != "failed":
-    print(json.dumps({"ok": True, "idle": True, "reason": "newest_not_failed", "exec_id": newest.get("id"), "status": nstatus}))
-    raise SystemExit(0)
 nts = parsed[0][0]
 if nts < cutoff:
-    print(json.dumps({"ok": True, "idle": True, "reason": "failed_too_old", "exec_id": newest.get("id")}))
+    print(json.dumps({
+        "ok": False,
+        "reason": "listing_stale",
+        "exec_id": nid,
+        "updated_at": newest.get("updated_at") or newest.get("updatedAt") or "",
+        "lookback_hours": lookback_h,
+    }))
+    raise SystemExit(4)
+if nstatus in ("running", "waiting"):
+    print(json.dumps({"ok": True, "idle": True, "reason": "lane_busy", "exec_id": nid, "status": nstatus}))
+    raise SystemExit(0)
+if nstatus != "failed":
+    print(json.dumps({"ok": True, "idle": True, "reason": "newest_not_failed", "exec_id": nid, "status": nstatus}))
     raise SystemExit(0)
 print(json.dumps({
     "ok": True,
     "idle": False,
-    "exec_id": newest.get("id"),
+    "exec_id": nid,
     "status": nstatus,
     "state": newest.get("state"),
-    "updatedAt": newest.get("updatedAt") or "",
+    "updatedAt": newest.get("updated_at") or newest.get("updatedAt") or "",
 }))
 '
 }
 
-picked="$(pick_failed)" || {
-  log "sm list failed"
-  write_stamp unavailable "" "sm-list-failed" "${KEY:-}" "error"
-  exit 3
+json_field() {
+  printf '%s\n' "$2" | JSON_FIELD="$1" python3 -c '
+import json, os, sys
+d = json.load(sys.stdin)
+v = d.get(os.environ["JSON_FIELD"])
+if v is True:
+    print("1")
+elif v is False or v is None:
+    print("")
+else:
+    print(v)
+'
 }
 
-idle="$(printf '%s\n' "$picked" | python3 -c 'import json,sys
-d=json.load(sys.stdin)
-print("1" if d.get("idle") else "0")
-')"
-picked_id="$(printf '%s\n' "$picked" | python3 -c 'import json,sys
-d=json.load(sys.stdin)
-print(d.get("exec_id") or "")
-')"
-picked_reason="$(printf '%s\n' "$picked" | python3 -c 'import json,sys
-d=json.load(sys.stdin)
-print(d.get("reason") or "")
-')"
+rows_file="$(mktemp "${TMPDIR:-/tmp}/canary-red-rows.XXXXXX")"
+trap 'rm -f "$rows_file"' EXIT
+
+if ! list_executions >"$rows_file" 2>/dev/null; then
+  log "$CANARY_LANE_ORCHESTRATOR execution listing failed"
+  write_stamp unavailable "" "loom-list-failed" "${KEY:-}" "error"
+  printf '%s %s\n' 'ROUTINE_RESULT' "outcome=error detail=loom-list-failed"
+  exit 3
+fi
+
+picked_rc=0
+picked="$(pick_failed "$rows_file")" || picked_rc=$?
+if [ -z "$picked" ]; then
+  log "$CANARY_LANE_ORCHESTRATOR execution listing unreadable"
+  write_stamp unavailable "" "loom-list-unreadable" "${KEY:-}" "error"
+  printf '%s %s\n' 'ROUTINE_RESULT' "outcome=error detail=loom-list-unreadable"
+  exit 3
+fi
+
+picked_ok="$(json_field ok "$picked")"
+picked_reason="$(json_field reason "$picked")"
+picked_id="$(json_field exec_id "$picked")"
+
+if [ "$picked_ok" != "1" ]; then
+  # No usable row inside the window. Fail loudly: a blind healer must not
+  # report a red lane as quiet.
+  log "listing has no ${CANARY_LANE_DEFINITION} execution in the window (${picked_reason:-unknown})"
+  write_stamp unavailable "${picked_id:-}" "reason=${picked_reason:-unknown}" "${KEY:-}" "error"
+  if [ "$JSON" -eq 1 ]; then
+    printf '%s\n' "$picked"
+  else
+    printf 'canary-red error reason=%s exec=%s\n' "${picked_reason:-unknown}" "${picked_id:-}"
+  fi
+  printf '%s %s\n' 'ROUTINE_RESULT' "outcome=error detail=reason=${picked_reason:-unknown} exec=${picked_id:-}"
+  exit 3
+fi
+
+idle="$(json_field idle "$picked")"
+[ -n "$idle" ] || idle="0"
 
 if [ "$DRY" -eq 1 ]; then
   if [ "$JSON" -eq 1 ]; then
