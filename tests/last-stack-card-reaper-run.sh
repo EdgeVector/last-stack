@@ -2,6 +2,15 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+
+# This suite drives the REAL runner, which writes routinesd's outcome sink at
+# $ROUTINES_RUN_DIR/outcome.txt. routinesd exports that variable into every
+# routine harness, so when the CI gate runs from inside a routine the fixtures
+# below would land in that routine's sink and routinesd would report it on this
+# test's verdict. Observed 5 times across 3 routines. Never inherit it: each
+# case names the run dir it wants.
+unset ROUTINES_RUN_DIR CARD_REAPER_RUN_DIR
+
 tmp="$(mktemp -d)"
 cleanup() {
   rm -rf "$tmp"
@@ -288,7 +297,10 @@ printf '%s\n' "$doing_out" | grep -q '^ROUTINE_RESULT outcome=ok'
 # ROUTINE_RESULT. A completed pass must not become outcome=error
 # flagged=runner-no-heartbeat (scheduled run 2026-08-20T14-30-57-829Z).
 noop_stack="$tmp/noop-stack"
-mkdir -p "$noop_stack/bin" "$tmp/run"
+# Shaped like a real routinesd run dir: .../runs/<routine-id>/<timestamp>.
+# The runner claims the sink only when the parent is named for it.
+run_owned="$tmp/routines/runs/last-stack-card-reaper/2026-07-20T13-31-08-000Z"
+mkdir -p "$noop_stack/bin" "$run_owned"
 cat >"$noop_stack/bin/last-stack-board-closeout-sweep" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' '{"kind":"board-closeout","status":"noop","iso":"2026-07-20T13:31:08Z","closed":0,"rolled_back":0,"demoted":0,"skipped":0,"flagged":[]}'
@@ -339,7 +351,7 @@ JSON
 chain_out="$(
   PATH="$reap_bin:$PATH" \
   LAST_STACK_ROOT="$noop_stack" \
-  ROUTINES_RUN_DIR="$tmp/run" \
+  ROUTINES_RUN_DIR="$run_owned" \
   CARD_REAPER_MEMORY="$tmp/pass-memory.md" \
   bash -c '
     set -uo pipefail
@@ -362,8 +374,45 @@ if printf '%s\n' "$chain_out" | grep -q 'outcome=error'; then
   printf '%s\n' "$chain_out" >&2
   exit 1
 fi
-test -s "$tmp/run/outcome.txt"
-grep -q '^ok ' "$tmp/run/outcome.txt"
-test -s "$tmp/run/scratch/result.json"
+test -s "$run_owned/outcome.txt"
+grep -q '^ok ' "$run_owned/outcome.txt"
+test -s "$run_owned/scratch/result.json"
+
+# Regression: a run dir belonging to ANOTHER routine must be left untouched.
+# This is the defect itself — the runner used to accept any inherited
+# ROUTINES_RUN_DIR as proof of ownership, so running this very suite inside a
+# pickup worker overwrote that worker's outcome with a fixture verdict.
+foreign="$tmp/routines/runs/last-stack-fkanban-pickup-w3/2026-08-30T13-40-09-658Z"
+mkdir -p "$foreign"
+foreign_out="$(ROUTINES_RUN_DIR="$foreign" "$ROOT/bin/last-stack-card-reaper-run" \
+  --dry-run \
+  --skip-preflight \
+  --board-json "$board" \
+  --memory "$tmp/foreign-memory.md" \
+  --now 2026-07-20T13:31:08Z 2>"$tmp/foreign.err")"
+
+# The run itself still works and still reports on stdout ...
+printf '%s\n' "$foreign_out" | grep -q '^ROUTINE_RESULT outcome=ok'
+# ... it just does not touch a sink it does not own, nor litter scratch/ there.
+if [ -e "$foreign/outcome.txt" ]; then
+  echo "FAIL: runner wrote outcome.txt into a foreign routine's run dir:" >&2
+  cat "$foreign/outcome.txt" >&2
+  exit 1
+fi
+test ! -e "$foreign/scratch"
+# And it says so, rather than falling back silently.
+grep -q 'belongs to another routine' "$tmp/foreign.err"
+
+# An explicit CARD_REAPER_RUN_DIR is still an unconditional claim, so direct
+# callers and tests keep a way to name the sink they want.
+explicit="$tmp/explicit-run"
+mkdir -p "$explicit"
+CARD_REAPER_RUN_DIR="$explicit" "$ROOT/bin/last-stack-card-reaper-run" \
+  --dry-run \
+  --skip-preflight \
+  --board-json "$board" \
+  --memory "$tmp/explicit-memory.md" \
+  --now 2026-07-20T13:31:08Z >/dev/null
+test -s "$explicit/outcome.txt"
 
 echo "ok last-stack-card-reaper-run"
