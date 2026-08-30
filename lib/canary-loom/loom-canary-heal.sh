@@ -44,14 +44,71 @@ if not live:
     emit(payload, f"canary-heal stand-in exec={exec_id or '-'} attempt={attempt}")
     sys.exit(0)
 
-agent = None
-for cand in ("grok", "claude"):
-    if shutil.which(cand):
-        agent = cand
-        break
+def blocked_harnesses():
+    """Harnesses an active Situation forbids dispatching to.
+
+    routinesd honours `harness-outage-*` through its fallback chain, but this
+    node re-execs a harness itself, so it must read the same source. A harness
+    in usage-limit outage answers 402 and prints no HEAL_RESULT line, which the
+    fallback below records as "agent produced no HEAL_RESULT line" — a true
+    statement that names neither the outage nor the cause
+    (papercut-canary-heal-adapter-dispatches-grok-during-active-harness-outage).
+
+    Fails OPEN: an unreadable Situations list must never stop a heal, because
+    the lane is already red when this node runs.
+    """
+    exe = shutil.which("situations")
+    if not exe:
+        return set(), ""
+    try:
+        p = subprocess.run(
+            [exe, "list", "--json"], capture_output=True, text=True, timeout=30
+        )
+        rows = json.loads(p.stdout or "[]")
+    except Exception:
+        return set(), ""
+    if not isinstance(rows, list):
+        return set(), ""
+    blocked, slugs = set(), []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("status") != "active":
+            continue
+        for action in row.get("blocked_actions") or []:
+            a = str(action)
+            if a.startswith("dispatch-") and a.endswith("-agents"):
+                blocked.add(a[len("dispatch-") : -len("-agents")])
+                slugs.append(str(row.get("slug") or ""))
+    return blocked, ",".join(sorted(s for s in slugs if s))
+
+
+CANDIDATES = ("grok", "claude")
+fenced, outage_slugs = blocked_harnesses()
+on_path = [c for c in CANDIDATES if shutil.which(c)]
+agent = next((c for c in on_path if c not in fenced), None)
 if not agent:
+    if on_path:
+        # Every harness we could run is fenced by an active outage. Say so, so
+        # the execution record explains itself instead of blaming the agent.
+        payload = {
+            "heal_status": "blocked",
+            "diagnosis": (
+                "every heal harness is fenced by an active Situation: "
+                f"{'/'.join(on_path)} blocked by {outage_slugs or 'harness outage'}"
+            ),
+            "repo": "",
+            "pr_url": "",
+            "merge_sha": "",
+            "attempt": attempt,
+        }
+        emit(payload, f"canary-heal fenced exec={exec_id or '-'} harnesses={'/'.join(on_path)}")
+        sys.exit(0)
     print("loom-canary-heal: grok/claude not on PATH", file=sys.stderr)
     sys.exit(2)
+if fenced:
+    print(
+        f"loom-canary-heal: skipping fenced harness(es) {'/'.join(sorted(fenced))}; using {agent}",
+        file=sys.stderr,
+    )
 
 cwd = os.environ.get("CANARY_RED_CWD") or os.path.expanduser("~/code/edgevector")
 prompt = textwrap.dedent(f"""
@@ -143,6 +200,7 @@ heal = {
     "merge_sha": "",
     "attempt": attempt,
 }
+found = False
 for line in text.splitlines():
     line = line.strip()
     if not line.startswith("HEAL_RESULT"):
@@ -154,7 +212,21 @@ for line in text.splitlines():
         continue
     if isinstance(parsed, dict):
         heal.update({k: parsed.get(k, heal.get(k)) for k in heal})
+        found = True
         break
+
+if not found:
+    # "agent produced no HEAL_RESULT line" is true but names no cause, so every
+    # reader re-derives it from the harness. Carry the agent's own last words.
+    tail = [ln.strip() for ln in text.splitlines() if ln.strip()][-3:]
+    if tail:
+        joined = " | ".join(tail)
+        if len(joined) > 400:
+            joined = joined[:397] + "..."
+        heal["diagnosis"] = (
+            f"agent produced no HEAL_RESULT line (agent={agent}, rc={proc.returncode}); "
+            f"last output: {joined}"
+        )
 
 status = str(heal.get("heal_status") or "blocked")
 if status not in ("fixed", "blocked", "noop"):
