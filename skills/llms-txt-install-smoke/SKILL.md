@@ -54,7 +54,9 @@ bash "$last_stack/skills/llms-txt-install-smoke/routine-run.sh"
 `routine-run.sh` additionally prints a `RESULT: ok|error …` trailer and exits
 **2** if no VERDICT line was produced (incomplete).
 
-Wall time is often 8–15 minutes. Block on the single Bash call for ≥40 minutes.
+Wall time is 6–9 minutes. The whole design fits under the agent Bash tool's
+hard 600-second foreground cap, so give that single call the tool maximum
+(600000 ms) — not a longer figure the tool cannot honor.
 
 ## What the smoke asserts (GREEN)
 
@@ -90,12 +92,28 @@ disposable sandbox. Step markers and each OK/FAIL line also go to the real
 stderr with an elapsed-seconds stamp. A killed run therefore still names the
 last step it reached.
 
+**An outer backstop.** `routine-run.sh` runs `run.sh` under one wrapper bound
+(570s) above the internal budget and below the tool cap, so an unbounded new
+step still ends in a `RESULT:` trailer.
+
+**Cheap teardown.** The `VERDICT` prints before cleanup, so a slow teardown
+spends the caller's remaining cap after the answer already exists. A 2026-08-30
+reproduction reached `VERDICT: RED` at 376s and was killed at 570s still inside
+`rm -rf` of the sandbox, so the caller read a timeout instead of the verdict.
+The daemon stop is bounded, and the sandbox is renamed aside — one inode
+operation — with its removal detached. A directory that survives anyway is
+reaped at the start of a later run.
+
 | Variable | Default | What it bounds |
 |---|---|---|
 | `SMOKE_TOTAL_BUDGET_SECS` | 540 | The whole run. Set 0 to disable for interactive debugging. |
 | `INSTALL_TIMEOUT` | 240 | Each of clone, setup, install-apps. |
 | `APP_INIT_TIMEOUT` | 120 | Each brain/kanban/situations init and list. |
 | `QUICK_TRY_TIMEOUT` | 60 | Each quick-try call. |
+| `SMOKE_WRAPPER_TIMEOUT_SECS` | 570 | `routine-run.sh`'s outer backstop on the whole of `run.sh`. |
+| `SMOKE_DAEMON_STOP_SECS` | 15 | Waiting for the isolated `lastdbd` to exit during teardown. |
+| `SMOKE_SANDBOX_RM_SECS` | 45 | Fallback inline `rm -rf`, used only when the rename fails. |
+| `SMOKE_SANDBOX_REAP_MINS` | 120 | Age above which a leftover sandbox is reaped at start. |
 
 CAUTION: raise `SMOKE_TOTAL_BUDGET_SECS` above 570 only when you run the smoke
 outside the agent tool. Inside it, a larger budget returns the run to the

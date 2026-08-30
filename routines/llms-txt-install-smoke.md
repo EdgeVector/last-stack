@@ -30,9 +30,14 @@ The smoke **must** complete inside **one foreground Bash tool call**.
 `exitCode=0` / `outcome=unknown` with **no VERDICT and no heartbeat**. That is
 a fake success. Incomplete smoke = **error RED incomplete**, never ok.
 
-Smoke wall time is typically **8–15 minutes**. Use a long block/timeout on that
-single Bash call (at least **40 minutes** / 2400000ms). Do not split the smoke
-across tools.
+Smoke wall time is **6–9 minutes**. The agent Bash tool kills a foreground call
+at **600 seconds**, and it silently clamps a larger request down to that cap, so
+a "40 minute" timeout buys nothing and only hides the real limit. Give the single
+Bash call the tool maximum (**600000ms**) and do not split the smoke across tools.
+
+`run.sh` is built for that cap: one 540s internal budget, a 570s outer backstop
+in `routine-run.sh`, and bounded teardown. A run that still hits the cap is a
+real defect in the smoke — report it, do not raise the number.
 
 ## Do this
 
