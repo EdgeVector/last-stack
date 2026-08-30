@@ -83,6 +83,19 @@ if not live:
         )
     elif step == "READ_A":
         emit({"child_status": "green"}, "canary-step READ_A stand-in child_status=green")
+    elif step == "LEDGER":
+        oid = str(ctx.get("source_git_oid") or ctx.get("main_oid") or "stand-in")
+        version = str(ctx.get("version") or oid)
+        emit(
+            {
+                "phase_next": "SOAK",
+                "ledger_sha": version,
+                "source_git_oid": oid,
+                "version": version,
+                "last_note": f"dogfood ledger recorded sha={version}",
+            },
+            "canary-step LEDGER stand-in",
+        )
     elif step == "PROBE":
         forced = os.environ.get("CANARY_LOOM_PROBE_VERDICT") or ""
         verdict = forced or "green"
@@ -158,7 +171,7 @@ if step == "READ_A":
     emit({"child_status": "green"}, "canary-step READ_A live assume join-all")
     raise SystemExit(0)
 
-if step in ("BUILD_START", "BUILD_POLL", "BUILD_COLLECT", "SOAK", "PROMOTE"):
+if step in ("BUILD_START", "BUILD_POLL", "BUILD_COLLECT", "LEDGER", "SOAK", "PROMOTE"):
     env = os.environ.copy()
     env["SM_CONTEXT_JSON"] = json.dumps(ctx)
     env["SM_EXEC_ID"] = os.environ.get("LOOM_EXEC_ID") or "loom-unknown"
@@ -168,6 +181,7 @@ if step in ("BUILD_START", "BUILD_POLL", "BUILD_COLLECT", "SOAK", "PROMOTE"):
         "BUILD_START": "BUILD_START",
         "BUILD_POLL": "BUILD_POLL",
         "BUILD_COLLECT": "BUILD_COLLECT",
+        "LEDGER": "LEDGER",
     }[step]
     p = subprocess.run(
         ["sm-canary-release-step", sm_step],
