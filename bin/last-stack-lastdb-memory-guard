@@ -6,9 +6,10 @@
 # download_entries ballooned footprint 0.5 GB -> 74 GB in ~2 minutes, exhausted
 # swap, and tripped the kernel watchdog (panic + reboot).
 #
-# Repo of record. The live copy runs from $LASTDBD_PRIMARY_HOME/monitoring/ via
-# the LaunchAgent in launchd/com.edgevector.lastdb-memory-guard.plist. Edit here,
-# then install; never hand-edit the deployed copy.
+# Repo of record. The LaunchAgent in launchd/com.edgevector.lastdb-memory-guard.plist
+# runs the installed copy at ~/.last-stack/bin/, which Host Track activates from
+# this file. Only the logs live under $LASTDBD_PRIMARY_HOME/monitoring/. Edit
+# here, then install; never hand-edit the deployed copy.
 #
 # Scope: ONLY the primary Mini daemon.
 #   (executable named `lastdbd` with no --data-dir, or LASTDB_HOME pointing at
@@ -210,8 +211,21 @@ identity() {
   printf 'pid=%s process_start_ts=%s build=%s\n' "$identity_pid" "$start" "$build_value"
 }
 
+# Slug for the restart notice.
+#
+# Situations validates every slug against ^[a-z0-9][a-z0-9_-]*$ and rejects the
+# write outright. `date -u +%Y%m%dT%H%M%SZ` emits an uppercase T and Z, so every
+# notice this guard ever tried to post was rejected as invalid_slug — silently,
+# because the call discarded stderr. Two live restarts on 2026-08-30 (20:10Z and
+# 21:25Z) logged `notice_failed` and a human had to hand-post the evidence.
+# Fold the timestamp to lowercase; keep the shape so old slugs still sort.
+notice_slug() {
+  printf 'lastdb-memory-guard-restart-%s-%s\n' \
+    "$(date -u +%Y%m%dT%H%M%SZ | tr 'A-Z' 'a-z')" "$1"
+}
+
 post_restart_notice() {
-  local old_pid="$1" new_pid="$2" build_value="$3" notice_cmd
+  local old_pid="$1" new_pid="$2" build_value="$3" notice_cmd slug out rc
   notice_cmd="${LASTDBD_GUARD_NOTICE_CMD:-}"
   if [ -z "$notice_cmd" ]; then
     if [ -x "$HOME/.local/bin/situations" ]; then
@@ -220,8 +234,13 @@ post_restart_notice() {
       notice_cmd="situations"
     fi
   fi
-  if "$notice_cmd" notice \
-    --slug "lastdb-memory-guard-restart-$(date -u +%Y%m%dT%H%M%SZ)-${new_pid}" \
+  slug="$(notice_slug "$new_pid")"
+  # Keep the reason. Discarding stderr is what let a wrong diagnosis ship: the
+  # 2026-08-30 attribution fix changed the actor while the real reject was the
+  # slug, and nothing on disk could contradict it.
+  set +e
+  out=$("$notice_cmd" notice \
+    --slug "$slug" \
     --title "LastDB memory guard restarted the primary" \
     --kind restart \
     --system lastdbd \
@@ -230,10 +249,13 @@ post_restart_notice() {
     --severity-hint warn \
     --expires-hours 24 \
     --summary "physical footprint ${enforced} MiB exceeded ${RSS_LIMIT_MB} MiB; pid ${old_pid} -> ${new_pid}; build ${build_value}" \
-    >/dev/null 2>&1; then
-    log "notice posted old_pid=$old_pid new_pid=$new_pid build=$build_value"
+    2>&1)
+  rc=$?
+  set -e
+  if [ "$rc" -eq 0 ]; then
+    log "notice posted slug=$slug old_pid=$old_pid new_pid=$new_pid build=$build_value"
   else
-    log "WARN notice_failed old_pid=$old_pid new_pid=$new_pid build=$build_value event_log=$EVENT_LOG"
+    log "WARN notice_failed rc=$rc slug=$slug old_pid=$old_pid new_pid=$new_pid build=$build_value event_log=$EVENT_LOG reason=$(printf '%s' "$out" | tr '\n' ' ' | head -c 300)"
   fi
 }
 
