@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -62,16 +63,98 @@ class RegistryEntry:
     card: str
 
 
+class BudgetExhausted(RuntimeError):
+    """The pass used its whole wall-clock budget and must stop at a boundary."""
+
+
+class Deadline:
+    """One monotonic budget for the whole pass.
+
+    Per-call timeouts alone do not bound a pass: `--limit 200` with a 20s read
+    timeout and two retries is a 200-minute worst case, all-or-nothing, with no
+    partial result. A loaded node turned that into a run that outlived its
+    caller and printed nothing. Every call clamps to what is left here, and the
+    pass stops at a record boundary and still reports.
+    """
+
+    def __init__(self, seconds: float | None) -> None:
+        self.seconds = seconds
+        self.exhausted = False
+        self.unread = 0
+        self._start = time.monotonic()
+
+    def remaining(self) -> float:
+        if self.seconds is None:
+            return float("inf")
+        return self.seconds - (time.monotonic() - self._start)
+
+    def expired(self) -> bool:
+        if self.remaining() > 0:
+            return False
+        self.exhausted = True
+        return True
+
+    def clamp(self, timeout: int) -> float:
+        left = self.remaining()
+        if left <= 0:
+            self.exhausted = True
+            raise BudgetExhausted(f"budget of {self.seconds}s exhausted")
+        return min(float(timeout), left)
+
+
+DEADLINE = Deadline(None)
+# A killed child gets this long to release the pipe before we abandon its output.
+KILL_DRAIN_SECONDS = 5
+
+
+def _kill_tree(proc: subprocess.Popen[str]) -> None:
+    """Kill the child and anything it spawned.
+
+    `subprocess.run` kills only the direct child and then drains the pipe with
+    no timeout. A grandchild that inherited stdout keeps that pipe open, so the
+    drain never returns. Killing the session and bounding the drain closes both
+    halves of that trap.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+
+
 def run(argv: list[str], *, stdin: str | None = None, timeout: int = 60) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    limit = DEADLINE.clamp(timeout)
+    proc = subprocess.Popen(
         argv,
-        input=stdin,
+        stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        capture_output=True,
-        check=False,
-        timeout=timeout,
         env=os.environ,
+        start_new_session=True,
     )
+    try:
+        out, err = proc.communicate(input=stdin, timeout=limit)
+    except subprocess.TimeoutExpired:
+        _kill_tree(proc)
+        try:
+            proc.communicate(timeout=KILL_DRAIN_SECONDS)
+        except subprocess.TimeoutExpired:
+            pass
+        # A call the budget cut short is a budget stop, not a read timeout.
+        # Callers handle the two differently: a read timeout skips one slug and
+        # continues, which would spin through the rest of the list once the
+        # budget is gone.
+        if DEADLINE.remaining() <= 0:
+            DEADLINE.exhausted = True
+            raise BudgetExhausted(f"budget of {DEADLINE.seconds}s exhausted") from None
+        raise
+    except BaseException:
+        _kill_tree(proc)
+        raise
+    return subprocess.CompletedProcess(argv, proc.returncode, out, err)
 
 
 def is_transient(text: str) -> bool:
@@ -286,9 +369,18 @@ def load_records(args: argparse.Namespace) -> list[dict[str, Any]]:
             record["_typed"] = True
         return records
     if args.slug:
-        records = [brain_get(args, slug) for slug in args.slug]
-        for record in records:
+        records = []
+        for index, slug in enumerate(args.slug):
+            if DEADLINE.expired():
+                DEADLINE.unread = len(args.slug) - index
+                print(
+                    f"warning: budget exhausted; {DEADLINE.unread} of {len(args.slug)} slugs unread",
+                    file=sys.stderr,
+                )
+                break
+            record = brain_get(args, slug)
             record["_typed"] = True
+            records.append(record)
         return records
     previews = as_items(
         run_json(
@@ -311,11 +403,26 @@ def load_records(args: argparse.Namespace) -> list[dict[str, Any]]:
     rest = [slug for slug in slugs if slug not in set(stuck)]
     ordered = stuck + rest
     records: list[dict[str, Any]] = []
-    for slug in ordered[: args.limit]:
+    selected = ordered[: args.limit]
+    for index, slug in enumerate(selected):
+        if DEADLINE.expired():
+            DEADLINE.unread = len(selected) - index
+            print(
+                f"warning: budget exhausted; {DEADLINE.unread} of {len(selected)} slugs unread",
+                file=sys.stderr,
+            )
+            break
         try:
             record = brain_get(args, slug)
             record["_typed"] = True
             records.append(record)
+        except BudgetExhausted:
+            DEADLINE.unread = len(selected) - index
+            print(
+                f"warning: budget exhausted; {DEADLINE.unread} of {len(selected)} slugs unread",
+                file=sys.stderr,
+            )
+            break
         except Exception as exc:
             print(f"warning: skipped {slug}: {exc}", file=sys.stderr)
     return records
@@ -538,7 +645,13 @@ def close_review_records(args: argparse.Namespace, iso: str) -> dict[str, Any]:
         "errors": [],
         "pipeline_stuck_checked": 0,
     }
-    for record in load_records(args):
+    records = load_records(args)
+    for index, record in enumerate(records):
+        if DEADLINE.expired():
+            result["skipped"].append(
+                {"slug": "", "reason": "budget-exhausted", "unprocessed": len(records) - index}
+            )
+            break
         slug = str(record.get("slug") or "")
         if not slug.startswith("papercut-"):
             continue
@@ -565,11 +678,18 @@ def close_review_records(args: argparse.Namespace, iso: str) -> dict[str, Any]:
         for ref in refs:
             try:
                 merged, detail = merged_status(args, ref)
+            except BudgetExhausted:
+                result["skipped"].append({"slug": slug, "reason": "budget-exhausted"})
+                return result
             except Exception as exc:
                 result["errors"].append({"slug": slug, "ref": ref.url, "error": str(exc)})
                 continue
             if merged:
-                close_record(args, record, ref, detail, iso)
+                try:
+                    close_record(args, record, ref, detail, iso)
+                except BudgetExhausted:
+                    result["skipped"].append({"slug": slug, "reason": "budget-exhausted-before-close"})
+                    return result
                 result["fixed"].append({"slug": slug, "ref": ref.url, "detail": detail})
                 fixed = True
                 break
@@ -623,6 +743,12 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", dest="json_out")
     parser.add_argument("--limit", type=int, default=200)
     parser.add_argument("--read-timeout", type=int, default=20)
+    parser.add_argument(
+        "--budget-seconds",
+        type=int,
+        default=300,
+        help="overall wall-clock budget for the pass; 0 disables the budget",
+    )
     parser.add_argument("--records-json")
     parser.add_argument("--brain-bin", default="brain")
     parser.add_argument("--lastgit-bin", default="lastgit")
@@ -635,14 +761,45 @@ def main() -> int:
         payload = {"ok": False, "reason": "invalid_limit", "limit": args.limit}
         print(json.dumps(payload, sort_keys=True) if args.json_out else "ok=False reason=invalid_limit")
         return 2
+    if args.budget_seconds < 0:
+        payload = {"ok": False, "reason": "invalid_budget", "budget_seconds": args.budget_seconds}
+        print(json.dumps(payload, sort_keys=True) if args.json_out else "ok=False reason=invalid_budget")
+        return 2
+
+    global DEADLINE
+    DEADLINE = Deadline(float(args.budget_seconds) if args.budget_seconds > 0 else None)
 
     iso = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     if args.slug or args.records_json:
-        result = close_review_records(args, iso)
+        # The explicit-slug path must obey the same invariant as the default
+        # one: always terminate, always print a result.
+        try:
+            result = close_review_records(args, iso)
+        except BudgetExhausted as exc:
+            result = {
+                "ok": True,
+                "checked": 0,
+                "fixed": [],
+                "skipped": [{"slug": "", "reason": "budget-exhausted", "detail": str(exc)}],
+                "errors": [],
+                "pipeline_stuck_checked": 0,
+            }
     else:
-        registry_result = try_registry_close(args, iso)
+        try:
+            registry_result = try_registry_close(args, iso)
+        except BudgetExhausted:
+            registry_result = None
         try:
             review_result = close_review_records(args, iso)
+        except BudgetExhausted as exc:
+            review_result = {
+                "ok": True,
+                "checked": 0,
+                "fixed": [],
+                "skipped": [{"slug": "", "reason": "budget-exhausted", "detail": str(exc)}],
+                "errors": [],
+                "pipeline_stuck_checked": 0,
+            }
         except Exception as exc:
             review_result = {
                 "ok": False,
@@ -657,6 +814,10 @@ def main() -> int:
         else:
             result = merge_default_results(registry_result, review_result)
 
+    result["budget_seconds"] = args.budget_seconds
+    result["budget_exhausted"] = DEADLINE.exhausted
+    result["unread"] = DEADLINE.unread
+
     if args.json_out:
         print(json.dumps(result, sort_keys=True))
     else:
@@ -669,6 +830,11 @@ def main() -> int:
             f"checked={checked} fixed={fixed_count} "
             f"skipped={len(skipped) if isinstance(skipped, list) else 0} "
             f"errors={len(result.get('errors', [])) if isinstance(result.get('errors', []), list) else 0}"
+            + (
+                f" budget_exhausted=true unread={DEADLINE.unread}"
+                if DEADLINE.exhausted
+                else ""
+            )
         )
     return 1 if result.get("errors") and not result.get("fixed") else 0
 

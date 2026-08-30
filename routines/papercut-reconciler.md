@@ -84,12 +84,26 @@ decisions).
 Before Step 1, run the bounded lifecycle closer so already-proven papercuts can
 be marked FIXED before clustering:
 
+The helper carries its own wall-clock budget. Pass it explicitly so this step
+cannot eat the routine's 30-minute timeout, and keep stderr out of the JSON —
+the helper writes `budget exhausted; N of M slugs unread` to stderr, and merging
+that into stdout makes byte 1 of the parser input a warning.
+
 ```bash
 lifecycle_helper="${LAST_STACK_PAPERCUT_LIFECYCLE_HELPER:-last-stack-papercut-lifecycle-close}"
+lifecycle_dir="$(mktemp -d)"
 lifecycle_result=""
 if command -v "$lifecycle_helper" >/dev/null 2>&1; then
-  lifecycle_result="$("$lifecycle_helper" --limit 200 --json 2>&1)" \
-    || lifecycle_result="lifecycle_helper_failed helper=$lifecycle_helper"
+  set +e
+  "$lifecycle_helper" --limit 200 --budget-seconds 300 --json \
+    >"$lifecycle_dir/lifecycle.json" 2>"$lifecycle_dir/lifecycle.err"
+  lifecycle_rc=$?
+  set -e
+  if [ -s "$lifecycle_dir/lifecycle.json" ]; then
+    lifecycle_result="$(cat "$lifecycle_dir/lifecycle.json")"
+  else
+    lifecycle_result="lifecycle_helper_failed helper=$lifecycle_helper rc=$lifecycle_rc"
+  fi
 else
   lifecycle_result="lifecycle_helper_missing helper=$lifecycle_helper"
 fi
@@ -99,6 +113,12 @@ Carry any `lifecycle_helper_missing` or `lifecycle_helper_failed` field into the
 final heartbeat and concise report, then continue the normal file-only
 reconciler pass. Do not invoke the helper directly unless `command -v` succeeds;
 the routine must never bury a shell `command not found` in stderr.
+
+**`budget_exhausted: true` in the JSON is not a failure.** It means the pass
+closed what it could reach and left `unread` slugs for the next run. Report it
+as `lifecycle_budget_exhausted=<unread>` and continue. A pass that exhausts its
+budget on every run is the signal to raise `--budget-seconds` or lower
+`--limit`, not to treat the step as broken.
 
 ## Automation memory
 If the scheduled prompt includes an `Automation memory:` path (routinesd
