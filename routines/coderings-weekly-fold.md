@@ -86,3 +86,35 @@ path) to `--repo`. Resolve a real checkout or the bare mirror first.
 - No primary-brain restarts. Snapshots go through the coderings CLI store path only.
 - Never use `$HOME/code/edgevector/fold` (or any portal path) as `--repo`.
   False-green scans against empty portals are a hard fail.
+
+## Close-out (always the LAST step)
+
+Steps 4 and 5 above report the result to a reader. Neither reports it to the
+fleet. Without the block below, `routines status` records this run as
+`outcome=unknown` with `outcomeSource=none` no matter what the scan found, and
+the heartbeat line still reads `ok` because it carries the exit code — two
+surfaces disagreeing, with the confident one measuring nothing.
+
+In the final tool call, write the verdict to the authoritative sink; do not
+rely on final prose or the legacy trailer alone:
+
+```bash
+outcome_line="<ok|noop|error> <one-line-outcome>"
+if [ -n "${ROUTINES_RUN_DIR:-}" ]; then
+  printf '%s\n' "$outcome_line" > "$ROUTINES_RUN_DIR/outcome.txt"
+fi
+```
+
+Replace both placeholders with the real verdict. Use `ok` when the scan
+completed (whether or not growth was material), `noop` when it was skipped for
+a stated reason, and `error` when it could not run. Include the severity, the
+scanned commit and whether a card was filed — the same three facts step 4 asks
+for. Write the sink after the heartbeat, then emit the heartbeat line plus the
+`ROUTINE_RESULT` trailer as the final output (contract §1).
+
+Then run the **close-out skill**
+(`$LAST_STACK_ROOT/skills/close-out/SKILL.md`, trigger `/close-out`). Its two
+brain writes are not optional on a substantive run: the closeout report of what
+this run did, and a `papercut-<topic>` brain record for every friction hit
+(BRAIN ONLY, never a board card; search first, update in place). On a pure noop
+run the heartbeat line may serve as the report.

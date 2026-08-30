@@ -208,6 +208,7 @@ ci_test tests/last-stack-real-human-notify.sh
 ci_test tests/last-stack-lint-prompts.sh --ci
 ci_test tests/last-stack-lastdb-access-watch.sh
 ci_test tests/last-stack-routines-prompt-doctor.sh
+ci_test tests/last-stack-routine-prompt-outcome-contract.sh
 ci_test tests/last-stack-literal-markdown-append.sh
 ci_test tests/last-stack-lint-machine-leaks.sh
 ci_test tests/last-stack-audit-f-prefix-callers.sh
