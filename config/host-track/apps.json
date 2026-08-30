@@ -374,9 +374,13 @@
         {
           "source": "dist/probes/lastdb-local-smoke-gate.sh",
           "target": "$HOME/.local/bin/routines-lastdb-local-smoke-gate"
+        },
+        {
+          "source": "dist/probes/llms-txt-install-smoke-gate.sh",
+          "target": "$HOME/.local/bin/routines-llms-txt-install-smoke-gate"
         }
       ],
-      "notes": "Routines LastGit artifact install from CI-published dist/routines; track_gate_main promotes stable to green+published main. post_install reloads the LaunchAgent so current and routinesd stay on the same digest. The zero-LLM gate scripts ship at dist/probes/*.sh and get PATH names here, so routinesd gate_command entries resolve to a file the artifact contains.",
+      "notes": "Routines LastGit artifact install from CI-published dist/routines; track_gate_main promotes stable to green+published main. post_install reloads the LaunchAgent so current and routinesd stay on the same digest. The zero-LLM gate scripts ship at dist/probes/*.sh and get PATH names here, so routinesd gate_command entries resolve to a file the artifact contains. links[] is a literal enumeration - host-track does not glob dist/probes - so a probe added in the routines repo gets NO PATH name until it is listed here. The failure is silent: the file installs, no link appears, and a registry gate_command naming it exits 127. llms-txt-install-smoke-gate.sh shipped 2026-08-30T06:20Z and sat unlinked until 2026-08-30T15:10Z for exactly this reason. When you add a probe to the routines repo, add its link entry here in the same change.",
       "track_gate_main": true,
       "post_install": "$HOME/.local/state/last-stack/artifacts/current/bin/last-stack-routines-host-track-post-install",
       "safe_upgrade": {
