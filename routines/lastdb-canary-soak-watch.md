@@ -22,6 +22,10 @@ export LAST_STACK_CANARY_LAUNCHD_CHECK_CMD="${LAST_STACK_CANARY_LAUNCHD_CHECK_CM
 
 ## Execute
 
+Scheduled runs first use `last-stack-canary-soak-watch-gate`. The gate runs
+the Loom tick without a model. A failed tick stays RED. The dedicated healer
+runs at :36 with its 90-minute cap. An uncertain tick starts this full agent.
+
 ```bash
 "$last_stack/bin/last-stack-canary-loom" --json
 ```
@@ -35,6 +39,10 @@ If no execution is running, the tick is a no-op and this routine is `noop`.
 **An idle lane is not an error.** Do not "fix" a quiet night by starting an
 execution here — that is the nightly routine's job, and starting one out of
 band is how a cutover happens at an hour nobody expects.
+
+If the gate started this agent after an error, read
+`$ROUTINES_RUN_DIR/canary-soak-gate.out` before the retry. Preserve that file
+as the first failed-tick evidence.
 
 ## When the Loom execution closes FAILED
 

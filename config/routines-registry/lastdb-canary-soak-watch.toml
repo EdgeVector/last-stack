@@ -9,4 +9,5 @@ cwd = "/Users/REPLACE/code/edgevector"
 status = "active"
 timeout_min = 15
 prompt_path = "/Users/REPLACE/.last-stack/routines/lastdb-canary-soak-watch.md"
+gate_command = "/Users/REPLACE/.last-stack/bin/last-stack-canary-soak-watch-gate"
 heartbeat_slug = "routine-heartbeats"

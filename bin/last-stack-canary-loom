@@ -168,7 +168,7 @@ fi
 discover_key_from_loom() {
   if [ -n "${CANARY_LOOM_LIST_FILE:-}" ]; then
     cat "$CANARY_LOOM_LIST_FILE"
-    return 0
+    return $?
   fi
   "$ROOT/bin/last-stack-loom-exec-latest" \
     --definition "$CANARY_LOOM_DEFINITION" \
@@ -178,15 +178,15 @@ discover_key_from_loom() {
 
 pick_live_key() {
   LOOM_ROWS_FILE="$1" python3 -c '
-import json, os
+import json, os, sys
 path = os.environ.get("LOOM_ROWS_FILE") or ""
 try:
     with open(path) as fh:
         rows = json.load(fh)
 except Exception:
-    rows = []
+    raise SystemExit(2)
 if not isinstance(rows, list):
-    rows = []
+    raise SystemExit(2)
 live = [r for r in rows if isinstance(r, dict)
         and str(r.get("status") or "") in ("waiting", "running")
         and str(r.get("idempotency_key") or "")]
@@ -206,21 +206,27 @@ else:
 discovered_execution=""
 discovered_status=""
 discovered_state=""
+discovery_failed=0
 if [ -z "$KEY" ] && [ "$START" -eq 0 ] && [ "$RECOVER" -eq 0 ] && [ "$DRY" -eq 0 ]; then
   discover_file="$(mktemp "${TMPDIR:-/tmp}/canary-loom-discover.XXXXXX")"
   if discover_key_from_loom >"$discover_file" 2>/dev/null; then
-    discovered="$(pick_live_key "$discover_file")"
-    KEY="$(printf '%s\n' "$discovered" | jq -r '.key // empty')"
-    discovered_execution="$(printf '%s\n' "$discovered" | jq -r '.execution // empty')"
-    discovered_status="$(printf '%s\n' "$discovered" | jq -r '.status // empty')"
-    discovered_state="$(printf '%s\n' "$discovered" | jq -r '.state // empty')"
-    if [ -n "$KEY" ]; then
-      log "recovered resume key from loom: key=$KEY exec=${discovered_execution:-none}"
-      write_active "$KEY" "$discovered_execution" \
-        "${discovered_status:-unknown}" "${discovered_state:-unknown}"
+    if discovered="$(pick_live_key "$discover_file")"; then
+      KEY="$(printf '%s\n' "$discovered" | jq -r '.key // empty')"
+      discovered_execution="$(printf '%s\n' "$discovered" | jq -r '.execution // empty')"
+      discovered_status="$(printf '%s\n' "$discovered" | jq -r '.status // empty')"
+      discovered_state="$(printf '%s\n' "$discovered" | jq -r '.state // empty')"
+      if [ -n "$KEY" ]; then
+        log "recovered resume key from loom: key=$KEY exec=${discovered_execution:-none}"
+        write_active "$KEY" "$discovered_execution" \
+          "${discovered_status:-unknown}" "${discovered_state:-unknown}"
+      fi
+    else
+      log "loom execution listing returned invalid JSON during key discovery"
+      discovery_failed=1
     fi
   else
     log "loom execution listing failed during key discovery"
+    discovery_failed=1
   fi
   rm -f "$discover_file"
 fi
@@ -244,6 +250,17 @@ if [ "$DRY" -eq 1 ]; then
   fi
   printf '%s %s\n' 'ROUTINE_RESULT' "outcome=${oc} detail=${det}"
   exit 0
+fi
+
+if [ -z "$KEY" ] && [ "$discovery_failed" -eq 1 ]; then
+  write_stamp unavailable "" "error" "loom-list-unreadable"
+  if [ "$JSON" -eq 1 ]; then
+    jq -cn '{outcome:"error",detail:"loom-list-unreadable",engine:"loom",key:"",status:"unavailable",execution:""}'
+  else
+    printf '%s\n' 'CANARY_LOOM outcome=error detail=loom-list-unreadable'
+  fi
+  printf '%s %s\n' 'ROUTINE_RESULT' 'outcome=error detail=loom-list-unreadable'
+  exit 3
 fi
 
 if [ -z "$KEY" ]; then
