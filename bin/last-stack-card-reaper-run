@@ -267,8 +267,45 @@ function isTransientBoardFailure(text) {
     .test(String(text || ""));
 }
 
+function boardFailureDetail(out) {
+  return `${out?.stderr || ""} ${out?.error || ""} ${out?.stdout || ""}`;
+}
+
+function isMissingCardDetail(detail) {
+  return /no card with slug/i.test(String(detail || ""));
+}
+
+function noteMissingCardReference(slug, detail) {
+  if (!isMissingCardDetail(detail)) return false;
+  const flag = `stale-dependency-ref:${slug}`;
+  if (!res.flagged.includes(flag)) res.flagged.push(flag);
+  return true;
+}
+
+function notePapercutPromotionValidation(slug, out) {
+  if (!String(slug).startsWith("papercut-")) return false;
+  const detail = boardFailureDetail(out);
+  if (!/card north star:|card validation|invalid card|decision-check|missing .*section/i.test(detail)) {
+    return false;
+  }
+  const flag = `papercut-promotion-validation:${slug}`;
+  if (!res.flagged.includes(flag)) res.flagged.push(flag);
+  return true;
+}
+
+function withCardGuard(card, fn) {
+  try {
+    return fn();
+  } catch (e) {
+    const slug = String(card?.slug || "unknown");
+    const msg = e && e.message ? String(e.message) : String(e);
+    if (noteMissingCardReference(slug, msg)) return false;
+    throw e;
+  }
+}
+
 function noteBoardDeferred(slug, op, out) {
-  const detail = `${out?.stderr || ""} ${out?.error || ""} ${out?.stdout || ""}`;
+  const detail = boardFailureDetail(out);
   if (!isTransientBoardFailure(detail)) return false;
   res.flagged.push(`board-${op}-deferred:${slug}`);
   if (res.status === "ok") res.status = "noop";
@@ -403,6 +440,7 @@ function getFullBody(slug) {
   const out = run("kanban", ["show", slug, "--json"], {timeout: 60000});
   if (!out.ok) {
     if (noteBoardDeferred(slug, "show", out)) return null;
+    if (noteMissingCardReference(slug, boardFailureDetail(out))) return null;
     throw new Error(`kanban show failed for ${slug}: ${out.stderr || out.error}`);
   }
   const data = JSON.parse(out.stdout);
@@ -416,6 +454,7 @@ function readdBody(slug, body, opts = {}) {
   const out = run("kanban", args, {timeout: 60000, input: body});
   if (!out.ok) {
     if (noteBoardDeferred(slug, "add", out)) return false;
+    if (notePapercutPromotionValidation(slug, out)) return false;
     throw new Error(`kanban add failed for ${slug}: ${out.stderr || out.error}`);
   }
   return true;
@@ -637,14 +676,14 @@ try {
     try { if (fs.existsSync(mem)) memText = fs.readFileSync(mem, "utf8"); } catch { res.memory_unwritable = true; }
     const churn = memText.includes(`rolled_back ${slug}`);
     if (dead && churn) {
-      if (parkDoingToBacklog(card, `doing churn after prior rollback; age=${hrs.toFixed(1)}h`)) {
+      if (withCardGuard(card, () => parkDoingToBacklog(card, `doing churn after prior rollback; age=${hrs.toFixed(1)}h`))) {
         parkedThisRun.add(slug);
         actions++;
       }
     } else if (dead && hrs >= 24) {
-      if (killCard(card, `doing squatter >24h; age=${hrs.toFixed(1)}h`, "doing")) actions++;
+      if (withCardGuard(card, () => killCard(card, `doing squatter >24h; age=${hrs.toFixed(1)}h`, "doing"))) actions++;
     } else if (dead && hrs >= 1) {
-      if (rollbackDoing(card, `doing dead claim >60m; age=${hrs.toFixed(1)}h`)) actions++;
+      if (withCardGuard(card, () => rollbackDoing(card, `doing dead claim >60m; age=${hrs.toFixed(1)}h`))) actions++;
     }
   }
 
@@ -676,7 +715,7 @@ try {
     }
     const hrs = ageHours(card);
     if (hrs >= 72 && !hasProgressSignal(card, 72)) {
-      if (killCard(card, `todo stale >72h with no progress; age=${hrs.toFixed(1)}h`, "todo")) actions++;
+      if (withCardGuard(card, () => killCard(card, `todo stale >72h with no progress; age=${hrs.toFixed(1)}h`, "todo"))) actions++;
     }
   }
 
@@ -709,12 +748,17 @@ try {
     }
     const hrs = ageHours(card);
     if (hrs >= 168) {
-      if (killCard(card, `backlog stale >7d; age=${(hrs / 24).toFixed(1)}d`, "backlog")) actions++;
+      if (withCardGuard(card, () => killCard(card, `backlog stale >7d; age=${(hrs / 24).toFixed(1)}d`, "backlog"))) actions++;
     }
   }
 } catch (e) {
-  res.status = "error";
-  res.flagged.push(`exception:${compactFlag(e.message || e)}`);
+  const msg = e && e.message ? String(e.message) : String(e);
+  const slugMatch = /(?:show|add|move) failed for ([^:]+):/i.exec(msg);
+  const slug = slugMatch ? slugMatch[1].trim() : "unknown";
+  if (!noteMissingCardReference(slug, msg)) {
+    res.status = "error";
+    res.flagged.push(`exception:${compactFlag(msg)}`);
+  }
 }
 
 if (actions > 0 && res.status === "noop") res.status = "ok";
