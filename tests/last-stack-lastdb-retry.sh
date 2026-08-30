@@ -111,6 +111,32 @@ assert "retries persist_queue_full then succeeds" \
   test "$(printf '%s' "$out" | tail -n 1)" = "ok-on-attempt-3"
 assert "persist_queue_full took 3 attempts" test "$(cat "$RETRY_COUNT_FILE")" = "3"
 
+# 5b) the bounded post-ack CAPTURE queue is the same backpressure typed as a
+#     400 with no `"retryable": true`. Case 6 below proves a bare 400 is NOT
+#     retried, which is why this shape needs its own match: on 2026-08-30T08:23Z
+#     `loom run ... attempts=3` ended `rc=1 after 1 attempt(s)` on this exact
+#     string and last-stack-whats-wrong recorded outcome=error.
+cat >"$tmpdir/capture_queue.sh" <<'SH'
+#!/usr/bin/env bash
+nfile="${RETRY_COUNT_FILE:?}"
+n=$(cat "$nfile" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" >"$nfile"
+if [ "$n" -lt 3 ]; then
+  echo "lx-20260830T083641.548-20943-1"
+  echo 'Error: mutation on LoomExecution -> HTTP 400: "Invalid data: Storage backend error: mutation capture queue remained full for 100ms; retry before local commit"' >&2
+  exit 1
+fi
+echo "ok-on-attempt-$n"
+exit 0
+SH
+chmod +x "$tmpdir/capture_queue.sh"
+export RETRY_COUNT_FILE="$tmpdir/count4b"
+out="$("$BIN" --attempts 3 --sleep-ms 50 -- "$tmpdir/capture_queue.sh")"
+assert "retries capture-queue-full 400 then succeeds" \
+  test "$(printf '%s' "$out" | tail -n 1)" = "ok-on-attempt-3"
+assert "capture-queue-full took 3 attempts" test "$(cat "$RETRY_COUNT_FILE")" = "3"
+
 # 6) a node answer that says retryable:false is NOT retried
 cat >"$tmpdir/not_retryable.sh" <<'SH'
 #!/usr/bin/env bash
