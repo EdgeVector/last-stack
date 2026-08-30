@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# A HEAL-node-spawned agent exports the ambient live-loom contract; scrub it
+# so every invocation below controls its own LOOM_* env.
+unset LOOM_LIVE LOOM_CANARY_LIVE LOOM_CANARY_RED_LIVE \
+  LOOM_EXEC_ID LOOM_INPUT LOOM_IDEMPOTENCY_KEY LOOM_SCRIPTS || true
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 FRESH="$ROOT/lib/canary-loom/lastdb-candidate-freshness.py"
 STEP="$ROOT/lib/canary-loom/loom-safe-upgrade-step.sh"

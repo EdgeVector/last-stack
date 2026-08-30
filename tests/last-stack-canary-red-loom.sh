@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# A HEAL-node-spawned agent exports the ambient live-loom contract
+# (LOOM_LIVE=1 etc.), and `lastgit ci run` from such an agent inherits it —
+# observed 2026-08-30: the stand-in assertions below went live in CI. This
+# suite must exercise the stand-in paths regardless of ambient env.
+unset LOOM_LIVE LOOM_CANARY_LIVE LOOM_CANARY_RED_LIVE \
+  LOOM_EXEC_ID LOOM_INPUT LOOM_IDEMPOTENCY_KEY LOOM_SCRIPTS || true
+
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
 BIN="$ROOT/bin/last-stack-canary-red-loom"
 fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
