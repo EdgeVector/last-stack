@@ -3,8 +3,13 @@ set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
 BIN="$ROOT/bin/last-stack-fleet-performance-routine"
+PROMPT="$ROOT/routines/fleet-performance.md"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
+
+grep -q 'mechanical no-op' "$PROMPT"
+grep -q 'agent no-op share' "$PROMPT"
+grep -q 'Use only the agent no-op share for model-waste decisions' "$PROMPT"
 
 chmod +x "$BIN"
 prompt="$tmp/fleet-performance.md"

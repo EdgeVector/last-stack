@@ -239,6 +239,29 @@ printf '%s\n' "$out_idle" | grep -q 'outcome=noop detail=no-key' \
   || fail "true idle lane did not return no-key: $out_idle"
 [ ! -s "$FAKE_LOOM_CALLS" ] || fail "idle lane called Loom without a resume key"
 
+# An unreadable execution list is uncertain state, not a quiet lane.
+rm -f "$LAST_STACK_CANARY_LOOM_ACTIVE" "$LAST_STACK_CANARY_LOOM_STAMP"
+set +e
+out_unreadable="$(HOME="$mock_home" FAKE_LOOM_MODE=success \
+  CANARY_LOOM_LIST_FILE="$tmp/missing-list.json" "$BIN" --json --quiet)"
+rc_unreadable=$?
+set -e
+[ "$rc_unreadable" -eq 3 ] || fail "unreadable list returned $rc_unreadable, expected 3"
+printf '%s\n' "$out_unreadable" | head -1 \
+  | jq -e '.outcome == "error" and .detail == "loom-list-unreadable"' >/dev/null \
+  || fail "unreadable list became an idle no-op: $out_unreadable"
+
+printf '%s\n' '{not-json' >"$tmp/malformed-list.json"
+set +e
+out_malformed_list="$(HOME="$mock_home" FAKE_LOOM_MODE=success \
+  CANARY_LOOM_LIST_FILE="$tmp/malformed-list.json" "$BIN" --json --quiet)"
+rc_malformed_list=$?
+set -e
+[ "$rc_malformed_list" -eq 3 ] || fail "malformed list returned $rc_malformed_list, expected 3"
+printf '%s\n' "$out_malformed_list" | head -1 \
+  | jq -e '.outcome == "error" and .detail == "loom-list-unreadable"' >/dev/null \
+  || fail "malformed list became an idle no-op: $out_malformed_list"
+
 # --- both local files gone, execution still parked: loom holds the key ---
 # The key below is hand-made, so no `canary-<oid>` reconstruction finds it.
 # lx-20260830T140407.992-49336-1 sat waiting in SOAK_WAIT under exactly this

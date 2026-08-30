@@ -83,9 +83,20 @@ For each id, also sample the last **20** `~/.routines/runs/<id>/*/meta.json`
 files: `outcome`, `durationMs`, `timedOut`/`exitCode==124`,
 `gateSkippedHarness`, `outcomeDetail`.
 
+Keep three no-op measures separate:
+
+- **raw no-op:** every run whose outcome is `noop`.
+- **mechanical no-op:** `outcome == noop` and `gateSkippedHarness == true`.
+- **agent no-op:** `outcome == noop` and `gateSkippedHarness != true`.
+
+Use only the agent no-op share for model-waste decisions. Keep the raw and
+mechanical shares in the report because they measure scheduler and probe load.
+Do not relabel a mechanical no-op as `ok` to improve the raw number.
+
 Classify:
 
-- **noop-waste:** active, window ≥8, noopRate ≥0.70, last 8 fires noop with
+- **noop-waste:** active, agent window ≥8, agent noopRate ≥0.70, last 8 agent
+  fires noop with
   the **same** detail (e.g. `waiting-slices`, `no_soak_green`,
   `compatibility-shim delegated`), **and** not a watch/reclaim/pipeline
   pulse that the freeze kept hourly because it does real work
@@ -170,6 +181,10 @@ Brain: `brain put` a small `closeout-fleet-performance-<YYYYMMDD>` reference
 (or append to `reference-fleet-performance-log` if it exists — never
 get→edit→put a large record). Include: measured, applied, reverted, cards,
 papercuts.
+
+Always include fleet totals for raw no-ops, mechanical no-ops, agent runs,
+agent no-ops, and agent no-op share. Name the highest mechanical pollers, but
+do not present them as model waste.
 
 File brain papercuts for friction. Then close-out skill
 (`$LAST_STACK_ROOT/skills/close-out/SKILL.md`) for the two brain writes.

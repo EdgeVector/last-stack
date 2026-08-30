@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Zero-agent scheduled tick for the LastDB canary soak lane.
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
+
+launcher="${LAST_STACK_CANARY_SOAK_GATE_LAUNCHER:-${ROOT}/bin/last-stack-canary-loom}"
+run_dir="${ROUTINES_RUN_DIR:-${TMPDIR:-/tmp}}"
+evidence="${LAST_STACK_CANARY_SOAK_GATE_EVIDENCE:-${run_dir}/canary-soak-gate.out}"
+
+usage() {
+  cat <<'USAGE'
+last-stack-canary-soak-watch-gate
+
+Exit 0 completes the scheduled tick without a model.
+Exit 10 asks routinesd to start the full soak-watch agent.
+USAGE
+}
+
+case "${1:-}" in
+  "") ;;
+  -h|--help) usage; exit 0 ;;
+  *) usage >&2; exit 2 ;;
+esac
+
+[ -x "$launcher" ] || {
+  printf 'CANARY_SOAK_GATE_PROCEED reason=launcher-missing\n'
+  exit 10
+}
+mkdir -p "$(dirname "$evidence")"
+tmp="$(mktemp "${TMPDIR:-/tmp}/canary-soak-gate.XXXXXX")"
+trap 'rm -f "$tmp"' EXIT
+
+set +e
+"$launcher" --json --quiet >"$tmp" 2>&1
+launcher_rc=$?
+set -e
+
+if [ "$launcher_rc" -eq 0 ] \
+   && grep -Eq '^ROUTINE_RESULT outcome=(ok|noop|error)( |$)' "$tmp"; then
+  cat "$tmp"
+  exit 0
+fi
+
+# Keep the failed tick for the full agent or later inspection. The launcher
+# writes structured JSON first, then the legacy result trailer.
+cp "$tmp" "$evidence"
+status="$(sed -n '1p' "$tmp" | jq -r '.status // ""' 2>/dev/null || true)"
+
+if [ "$status" = "failed" ]; then
+  # Preserve the RED result without a dispatcher model. The dedicated healer
+  # fires at :36, two minutes after this :34 soak tick, with its 90-minute cap.
+  # Running that healer inside this gate would inherit the 15-minute soak cap.
+  cat "$tmp"
+  exit 0
+fi
+
+# Transport, state, and parse failures need the full agent. Do not emit a
+# result trailer here; exit 10 transfers ownership to the scheduled prompt.
+printf 'CANARY_SOAK_GATE_PROCEED reason=tick-error rc=%s status=%s evidence=%s\n' \
+  "$launcher_rc" "${status:-unknown}" "$evidence"
+exit 10
