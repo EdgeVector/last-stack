@@ -80,12 +80,28 @@ case "${1:-}" in
 esac
 SH
 
+# Situations shim. It must reject exactly what the real CLI rejects, or a guard
+# bug survives a green suite: the 2026-08-30 attribution fix passed CI while
+# every live notice was still rejected, because this shim only checked --actor.
+# Real rule, situations src/record.ts: SLUG_RE = /^[a-z0-9][a-z0-9_-]*$/, and
+# validateSlug throws invalid_slug before the write.
 cat >"$tmp/bin/situations" <<'SH'
 #!/usr/bin/env bash
 printf 'situations %s\n' "$*" >>"$FAKE_ACTION_LOG"
+slug=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "--slug" ]; then slug="$arg"; fi
+  prev="$arg"
+done
+if [ -n "$slug" ] && ! printf '%s' "$slug" | grep -Eq '^[a-z0-9][a-z0-9_-]*$'; then
+  echo "Invalid slug \"$slug\"." >&2
+  echo 'hint: Use lowercase letters, digits, hyphens, and underscores.' >&2
+  exit 2
+fi
 case " $* " in
   *" --actor agent:lastdb-memory-guard "*) ;;
-  *) exit 2 ;;
+  *) echo "unexpected actor" >&2; exit 2 ;;
 esac
 SH
 
@@ -139,6 +155,13 @@ grep -q '"event":"restart_observed".*"old_pid":4242.*"new_pid":4243' "$EVENT_LOG
   || fail "replacement pid should be durable after restart"
 grep -q 'situations notice .*--actor agent:lastdb-memory-guard.*pid 4242 -> 4243' "$FAKE_ACTION_LOG" \
   || fail "a forced restart should post an attributed Situations notice"
+notice_slug=$(sed -n 's/.*--slug \([^ ]*\).*/\1/p' "$FAKE_ACTION_LOG" | head -1)
+printf '%s' "$notice_slug" | grep -Eq '^[a-z0-9][a-z0-9_-]*$' \
+  || fail "notice slug '$notice_slug' is not a valid Situations slug (invalid_slug rejects the write)"
+grep -q 'WARN notice_failed' "$LOG" \
+  && fail "the generated slug must satisfy the Situations slug rule"
+grep -q 'notice posted slug=lastdb-memory-guard-restart-' "$LOG" \
+  || fail "an accepted notice should record the slug it posted"
 
 # --- 4. an explicit footprint limit override still applies -------------------
 reset
@@ -198,5 +221,25 @@ identity="$(FAKE_START_TS=5678 FAKE_BUILD=0.23.3-test "$GUARD" --identity)" \
 [ "$identity" = 'pid=4242 process_start_ts=5678 build=0.23.3-test' ] \
   || fail "identity mode returned unexpected evidence: $identity"
 restarted && fail "identity mode must never restart the primary"
+
+# --- 10. a rejected notice records WHY, so a wrong fix cannot look green -----
+# The restart itself must still complete and stay durable in the event log.
+reset
+cat >"$tmp/bin/situations-reject" <<'SH'
+#!/usr/bin/env bash
+echo 'Invalid slug "boom".' >&2
+exit 2
+SH
+chmod +x "$tmp/bin/situations-reject"
+FAKE_RSS_KB=$((1500 * 1024)) \
+FAKE_FOOTPRINT_BYTES=$((17000 * MB)) \
+FAKE_PEAK_BYTES=$((17100 * MB)) \
+LASTDBD_GUARD_NOTICE_CMD="$tmp/bin/situations-reject" \
+  "$GUARD" >/dev/null 2>&1 || fail "a rejected notice must not fail the guard"
+restarted || fail "a rejected notice must not block the restart"
+grep -q 'WARN notice_failed .*reason=.*Invalid slug' "$LOG" \
+  || fail "a rejected notice should record the reason the CLI gave"
+grep -q '"event":"restart_observed"' "$EVENT_LOG" \
+  || fail "restart evidence must stay durable when the notice is rejected"
 
 printf 'PASS: last-stack-lastdb-memory-guard\n'
