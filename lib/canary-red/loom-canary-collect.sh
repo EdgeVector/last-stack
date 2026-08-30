@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # COLLECT node: read the failed lastdb-canary-release execution and its
-# safe-upgrade child. Effects: none. Never mutates the primary.
+# safe-upgrade child from loom's own records. Effects: none. Never mutates
+# the primary.
 set -euo pipefail
 
 python3 <<'PY'
@@ -24,7 +25,11 @@ if max_attempts < 1:
     max_attempts = 3
 
 exec_id = str(ctx.get("exec_id") or os.environ.get("CANARY_RED_EXEC_ID") or "").strip()
-fixture = os.environ.get("CANARY_RED_SM_GET_FILE") or ""
+fixture = (
+    os.environ.get("CANARY_RED_LOOM_GET_FILE")
+    or os.environ.get("CANARY_RED_SM_GET_FILE")
+    or ""
+)
 
 
 def load_json(path):
@@ -32,22 +37,68 @@ def load_json(path):
         return json.load(fh)
 
 
-def sm_json(args):
+def exec_latest_bin():
+    """Locate the loom execution reader.
+
+    The gate puts the install's bin/ on PATH, but a node command re-execed by
+    loom may not inherit it, so fall back to the shipped tree.
+    """
+    from shutil import which
+
+    hit = which("last-stack-loom-exec-latest")
+    if hit:
+        return hit
+    for root in (
+        os.environ.get("LAST_STACK_ROOT") or "",
+        os.path.join(os.path.expanduser("~"), ".last-stack"),
+    ):
+        cand = os.path.join(root, "bin", "last-stack-loom-exec-latest")
+        if root and os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    return ""
+
+
+def loom_get(exec_id):
+    """Read one loom execution and normalize it to the row shape below.
+
+    The canary lane is orchestrated by loom. `sm` holds a retired copy that
+    stopped issuing ids on 2026-08-26 and cannot resolve an `lx-*` id at all,
+    so reading it here failed COLLECT on every live red
+    (papercut-canary-red-heal-collect-reads-retired-sm-not-loom).
+    """
+    binpath = exec_latest_bin()
+    if not binpath:
+        return None, "last-stack-loom-exec-latest not found on PATH or in LAST_STACK_ROOT/bin"
     try:
         p = subprocess.run(
-            ["sm", *args, "--json"],
+            [binpath, "--exec", exec_id, "--full"],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=60,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         return None, str(e)
     if p.returncode != 0:
-        return None, (p.stderr or p.stdout or "sm failed").strip()
+        return None, (p.stderr or p.stdout or "loom exec read failed").strip()
     try:
-        return json.loads(p.stdout), ""
+        rows = json.loads(p.stdout)
     except json.JSONDecodeError:
-        return None, "sm json parse failed"
+        return None, "loom exec read returned non-json"
+    if not isinstance(rows, list) or not rows:
+        return None, f"execution not found in loom records: {exec_id}"
+    row = rows[0]
+    if not isinstance(row, dict):
+        return None, "loom exec row is not an object"
+    # loom's column names -> the names the rest of this node reads.
+    return {
+        "id": row.get("id") or row.get("exec_id") or exec_id,
+        "status": row.get("status") or "",
+        "state": row.get("state") or "",
+        "contextJson": row.get("hot_context_patch_json") or "",
+        "inputJson": row.get("input_json") or "",
+        "lastError": row.get("last_error") or "",
+        "parent_execution_id": row.get("parent_execution_id") or "",
+    }, ""
 
 
 def ctx_obj(row):
@@ -71,9 +122,9 @@ if fixture:
         print(f"canary-collect: fixture failed: {e}", file=sys.stderr)
         sys.exit(1)
 elif exec_id:
-    row, err = sm_json(["get", exec_id])
+    row, err = loom_get(exec_id)
     if row is None:
-        print(f"canary-collect: sm get failed: {err}", file=sys.stderr)
+        print(f"canary-collect: loom get failed: {err}", file=sys.stderr)
         sys.exit(1)
 
 if not isinstance(row, dict):
@@ -92,14 +143,20 @@ if child_id and not child_id.startswith("exec_"):
 
 child = {}
 if fixture:
-    child_fix = os.environ.get("CANARY_RED_SM_CHILD_FILE") or ""
+    child_fix = (
+        os.environ.get("CANARY_RED_LOOM_CHILD_FILE")
+        or os.environ.get("CANARY_RED_SM_CHILD_FILE")
+        or ""
+    )
     if child_fix:
         try:
             child = load_json(child_fix)
         except Exception:
             child = {}
 elif child_id:
-    child, _ = sm_json(["get", child_id])
+    # A missing child is not fatal: the parent row already carries the
+    # verdict, and the child only enriches probe_tail / candidate.
+    child, _ = loom_get(child_id)
     if not isinstance(child, dict):
         child = {}
 

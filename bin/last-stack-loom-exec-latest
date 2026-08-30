@@ -3,10 +3,15 @@
 #
 #   last-stack-loom-exec-latest --definition <name> [--window-hours H]
 #                               [--max-probe N] [--max-pages N] [--limit N]
-#   last-stack-loom-exec-latest --exec <lx-id>
+#   last-stack-loom-exec-latest --exec <lx-id> [--full]
 #
 # Prints a JSON array of execution rows, newest first:
 #   [{"id","definition_name","status","state","created_at","updated_at"}]
+#
+# --full adds the payload fields a caller needs to reason about WHY an
+# execution ended: input_json, last_error, hot_context_patch_json and
+# parent_execution_id. Callers that only rank executions should omit it, so
+# the point query stays narrow.
 #
 # The lane that produces these rows is orchestrated by loom, so the listing
 # reads loom's LoomExecution schema over the LastDB socket. The retired
@@ -31,6 +36,7 @@ WINDOW_H="${LAST_STACK_LOOM_EXEC_WINDOW_HOURS:-36}"
 MAX_PROBE="${LAST_STACK_LOOM_EXEC_MAX_PROBE:-250}"
 MAX_PAGES="${LAST_STACK_LOOM_EXEC_MAX_PAGES:-20}"
 LIMIT=1
+FULL=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -44,12 +50,13 @@ while [ "$#" -gt 0 ]; do
     --max-probe=*) MAX_PROBE="${1#*=}"; shift ;;
     --max-pages) MAX_PAGES="${2:-}"; shift 2 ;;
     --max-pages=*) MAX_PAGES="${1#*=}"; shift ;;
+    --full) FULL=1; shift ;;
     --limit) LIMIT="${2:-}"; shift 2 ;;
     --limit=*) LIMIT="${1#*=}"; shift ;;
     --json) shift ;;
     -h|--help)
       echo "last-stack-loom-exec-latest --definition <name> [--window-hours H] [--max-probe N] [--limit N]"
-      echo "last-stack-loom-exec-latest --exec <lx-id>"
+      echo "last-stack-loom-exec-latest --exec <lx-id> [--full]"
       exit 0
       ;;
     *) echo "unknown: $1" >&2; exit 2 ;;
@@ -80,10 +87,17 @@ api() {
   curl -s --unix-socket "$SOCK" -H "X-LastDB-Client: last-stack-loom-exec" "$@"
 }
 
+FIELDS='["id","definition_name","status","state","created_at","updated_at"]'
+if [ "$FULL" -eq 1 ]; then
+  FIELDS='["id","definition_name","status","state","created_at","updated_at","input_json","last_error","hot_context_patch_json","parent_execution_id"]'
+fi
+
 # One point query per execution id, on loom's primary key layout.
 point_get() {
+  body="$(jq -cn --arg s "$EXEC_SCHEMA" --arg h "$1" --argjson f "$FIELDS" \
+    '{schema_name:$s, fields:$f, filter:{HashKey:$h}, limit:1, offset:0}')"
   api -H "Content-Type: application/json" -X POST http://localhost/api/query \
-    -d "{\"schema_name\":\"$EXEC_SCHEMA\",\"fields\":[\"id\",\"definition_name\",\"status\",\"state\",\"created_at\",\"updated_at\"],\"filter\":{\"HashKey\":\"$1\"},\"limit\":1,\"offset\":0}" \
+    -d "$body" \
     2>/dev/null | jq -c '.results[0].fields // empty' 2>/dev/null || true
 }
 
