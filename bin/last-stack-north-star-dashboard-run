@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+# Run last-stack-north-star-dashboard so its outcome survives a lost caller.
+#
+# Why this exists. The north-star-rollup routine called the generator as a bare
+# `timeout 900 "$dash_bin" ... ; printf 'DASHBOARD_EXIT=%s\n' "$?"` inside an
+# agent Bash tool. On 2026-08-27, 08-28 (x2) the tool result came back with no
+# generator output AND no DASHBOARD_EXIT marker, so the printf itself never
+# reached the transcript. The exit status lived only in the tool result, and
+# when the harness lost that result the status was gone with it. The routine
+# then could not tell a crash from a success and reported
+# `dashboard-script-silent-result-prior-snapshot-retained` — 5 of 8 runs in the
+# window ending 2026-08-30 did not refresh the dashboard.
+#
+# The fix is to put the status somewhere the tool result cannot take with it.
+# This wrapper writes a durable status file BEFORE the generator starts and
+# rewrites it when the generator ends. Three states are then distinguishable
+# from disk alone, with no transcript:
+#
+#   dashboard_status=ok        exit 0, artifacts refreshed
+#   dashboard_status=failed    non-zero exit, diagnostic names what failed
+#   dashboard_status=timeout   the command budget fired (exit 124)
+#   dashboard_status=killed    a signal reached the generator or this wrapper
+#   dashboard_status=running   NEITHER of the above was ever written, so the
+#                              wrapper died hard (SIGKILL / lost shell). This
+#                              is the previously-silent case, now named.
+#
+# Card: north-star-dashboard-generator-must-not-exit-silently
+# Papercut: papercut-north-star-dashboard-generator-silent-exit
+set -uo pipefail
+
+home="${HOME:?HOME must be set}"
+last_stack="${LAST_STACK_ROOT:-$home/.last-stack}"
+state_dir="${LAST_STACK_STATE_DIR:-$home/.local/state/last-stack}/north-star-dashboard"
+
+dash_bin="${LAST_STACK_NORTH_STAR_DASHBOARD_BIN:-$last_stack/bin/last-stack-north-star-dashboard}"
+status_file="${LAST_STACK_NORTH_STAR_DASHBOARD_STATUS:-$state_dir/last-run.env}"
+html_path="$home/code/edgevector/north-star-dashboard.html"
+timeout_sec=900
+put_brain=1
+
+usage() {
+  cat <<'EOF'
+Usage: last-stack-north-star-dashboard-run [options] [-- <extra generator args>]
+
+  --status-file PATH   durable status file (default:
+                       $LAST_STACK_STATE_DIR/north-star-dashboard/last-run.env)
+  --html PATH          HTML snapshot path passed to the generator
+  --timeout SECONDS    command budget for the generator (default 900)
+  --no-put-brain       do not pass --put-brain to the generator
+  --bin PATH           generator binary to run
+  -h, --help           this text
+
+Exits with the generator's exit status. The status file is written whether or
+not this process keeps its stdout, so the caller reads the outcome from disk:
+
+  dashboard_status=ok|failed|timeout|killed|running
+  dashboard_exit=<n>
+  dashboard_diagnostic=<one line naming what failed>
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --status-file) status_file="${2:?--status-file needs a path}"; shift 2 ;;
+    --html) html_path="${2:?--html needs a path}"; shift 2 ;;
+    --timeout) timeout_sec="${2:?--timeout needs seconds}"; shift 2 ;;
+    --no-put-brain) put_brain=0; shift ;;
+    --bin) dash_bin="${2:?--bin needs a path}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    --) shift; break ;;
+    *) printf 'last-stack-north-star-dashboard-run: unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+case "$timeout_sec" in
+  ''|*[!0-9]*) printf 'last-stack-north-star-dashboard-run: --timeout must be an integer\n' >&2; exit 2 ;;
+esac
+
+iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+status_dir="$(dirname "$status_file")"
+if ! mkdir -p "$status_dir" 2>/dev/null; then
+  printf 'last-stack-north-star-dashboard-run: cannot create status dir: %s\n' "$status_dir" >&2
+  exit 2
+fi
+
+stdout_file="$status_file.out"
+stderr_file="$status_file.err"
+started_at="$(iso_now)"
+started_epoch="$(date -u +%s)"
+
+# One-line diagnostic, quoted so a stray newline cannot forge a second key.
+sanitize() {
+  printf '%s' "$1" | tr '\n\r' '  ' | cut -c1-400
+}
+
+write_status() {
+  # write_status <status> <exit> <signal> <diagnostic>
+  local st="$1" rc="$2" sig="$3" diag="$4"
+  local finished_epoch elapsed html_bytes html_mtime tmp
+  finished_epoch="$(date -u +%s)"
+  elapsed=$(( finished_epoch - started_epoch ))
+  html_bytes=0
+  [ -f "$html_path" ] && html_bytes="$(wc -c <"$html_path" | tr -d '[:space:]')"
+  html_mtime="$(stat -f '%Sm' -t '%Y-%m-%dT%H:%M:%SZ' "$html_path" 2>/dev/null \
+    || stat -c '%y' "$html_path" 2>/dev/null || printf 'unknown')"
+  tmp="$status_file.tmp.$$"
+  {
+    printf 'dashboard_status=%s\n' "$st"
+    printf 'dashboard_exit=%s\n' "$rc"
+    printf 'dashboard_signal=%s\n' "$sig"
+    printf 'dashboard_started_at=%s\n' "$started_at"
+    printf 'dashboard_finished_at=%s\n' "$(iso_now)"
+    printf 'dashboard_elapsed_s=%s\n' "$elapsed"
+    printf 'dashboard_bin=%s\n' "$dash_bin"
+    printf 'dashboard_html=%s\n' "$html_path"
+    printf 'dashboard_html_bytes=%s\n' "$html_bytes"
+    printf 'dashboard_html_mtime=%s\n' "$html_mtime"
+    printf 'dashboard_stdout=%s\n' "$stdout_file"
+    printf 'dashboard_stderr=%s\n' "$stderr_file"
+    printf 'dashboard_diagnostic=%s\n' "$(sanitize "$diag")"
+  } >"$tmp" 2>/dev/null || return 0
+  mv -f "$tmp" "$status_file" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+  return 0
+}
+
+on_signal() {
+  # A signal that reaches THIS wrapper still leaves a named outcome behind.
+  write_status killed 143 "$1" "wrapper received SIG$1 before the generator finished"
+  printf 'dashboard_status=killed dashboard_exit=143 dashboard_signal=%s status_file=%s\n' \
+    "$1" "$status_file" >&2
+  exit 143
+}
+trap 'on_signal TERM' TERM
+trap 'on_signal INT' INT
+trap 'on_signal HUP' HUP
+
+if [ ! -x "$dash_bin" ]; then
+  write_status failed 2 none "generator binary not executable: $dash_bin"
+  printf 'dashboard_status=failed dashboard_exit=2 status_file=%s\n' "$status_file" >&2
+  exit 2
+fi
+
+# The running marker is the whole point: if this process dies hard, the file
+# still says a run STARTED and never recorded an end. Silence becomes evidence.
+write_status running unknown none "generator started; no end recorded yet"
+
+args=("$dash_bin")
+[ "$put_brain" -eq 1 ] && args+=(--put-brain)
+args+=(--html "$html_path" --stdout none "$@")
+
+timeout_bin=""
+if command -v gtimeout >/dev/null 2>&1; then
+  timeout_bin=gtimeout
+elif command -v timeout >/dev/null 2>&1; then
+  timeout_bin=timeout
+fi
+
+if [ -n "$timeout_bin" ]; then
+  # --foreground keeps the generator in THIS wrapper's process group. Without it
+  # GNU timeout gives the child its own group, so a signal aimed at the wrapper's
+  # group never reaches the generator: SIGKILL the wrapper and the generator is
+  # orphaned, still running, still free to rewrite the HTML and the brain stamp
+  # long after the status file froze at dashboard_status=running. That orphan is
+  # the silent-exit failure wearing a different hat, so the generator stays
+  # inside the group that a caller can actually kill as one unit.
+  "$timeout_bin" --foreground -k 30s "$timeout_sec" "${args[@]}" >"$stdout_file" 2>"$stderr_file"
+  rc=$?
+else
+  "${args[@]}" >"$stdout_file" 2>"$stderr_file"
+  rc=$?
+fi
+
+first_err="$(grep -m1 '^ERROR=' "$stderr_file" 2>/dev/null || true)"
+[ -n "$first_err" ] || first_err="$(head -n 1 "$stderr_file" 2>/dev/null || true)"
+
+signal=none
+case "$rc" in
+  0)   status=ok;      diag="generator refreshed the dashboard" ;;
+  124) status=timeout; diag="generator exceeded the ${timeout_sec}s command budget" ;;
+  *)
+    if [ "$rc" -gt 128 ] && [ "$rc" -lt 160 ]; then
+      status=killed
+      signal="$(kill -l $(( rc - 128 )) 2>/dev/null || printf '%s' "$(( rc - 128 ))")"
+      diag="generator was killed by SIG$signal"
+    else
+      status=failed
+      diag="generator exited $rc"
+    fi
+    ;;
+esac
+[ -n "$first_err" ] && diag="$diag: $first_err"
+
+write_status "$status" "$rc" "$signal" "$diag"
+
+# stderr, not stdout: --stdout none means the caller wants a quiet channel.
+printf 'dashboard_status=%s dashboard_exit=%s dashboard_signal=%s status_file=%s\n' \
+  "$status" "$rc" "$signal" "$status_file" >&2
+
+exit "$rc"

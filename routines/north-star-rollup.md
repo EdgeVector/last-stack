@@ -44,6 +44,10 @@ the path, note `memory_unwritable=<path>` in the heartbeat and continue.
   and EXIT. Do not turn a one-pass refresh miss into a fleet error.
 - No `sleep`-to-wait; one foreground pass then exit. Wrap long calls in `timeout`
   when available.
+- Never call `last-stack-north-star-dashboard` directly for the refresh. Use
+  `last-stack-north-star-dashboard-run`, which records the exit status on disk.
+  The exit status of a bare call lives only in the tool result, and a lost tool
+  result then reads as silence.
 - Prefer the pure script over hand-assembled markdown — the script is the source
   of truth for counts and grouping.
 
@@ -69,15 +73,20 @@ Brain record (stable):
    socket-safe read: `kanban list --column todo --json` or `kanban ping` when
    available. Do **not** use `brain list` for health or inventory (list is a
    SAMPLE, not a census). On busy-node errors, EXIT with noop.
-2. **Regenerate.** Run:
+2. **Regenerate.** Always go through the wrapper, never the bare binary:
    ```bash
-   timeout 900 "$dash_bin" \
-     --put-brain \
+   "$last_stack/bin/last-stack-north-star-dashboard-run" \
      --html "$HOME/code/edgevector/north-star-dashboard.html" \
-     --stdout none
+     --timeout 900
    ```
    This 15-minute command budget leaves five minutes in the routine's
    20-minute run budget for confirmation, close-out, and the final heartbeat.
+
+   The wrapper writes the outcome to a durable status file
+   (`$HOME/.local/state/last-stack/north-star-dashboard/last-run.env`) before
+   and after the generator runs, so the outcome survives a lost tool result.
+   **Never classify this run from the tool result alone** — an empty tool
+   result is not evidence of anything. Read the status file in step 3.
    The script:
    - collects board state from the board
    - point-reads brain projects for each card `north_star` slug (plus known
@@ -93,7 +102,25 @@ Brain record (stable):
    `outcome=<noop> detail=reason=dashboard-timeout-prior-snapshot`,
    and exit. Only use `error` for timeout/crash cases where no prior dashboard
    artifact exists or confirmation proves the artifact is empty/corrupt.
-3. **Confirm.** Point-read `brain get north-star-dashboard --type reference`
+3. **Confirm.** First read the durable status file the wrapper wrote. It is the
+   authoritative outcome of step 2:
+   ```bash
+   status_file="$HOME/.local/state/last-stack/north-star-dashboard/last-run.env"
+   cat "$status_file"
+   ```
+   Classify from `dashboard_status`, not from what the tool result contained:
+   - `ok` — continue to the brain confirmation below.
+   - `timeout` — the command budget fired. Apply step 5.
+   - `failed` / `killed` — `dashboard_diagnostic` names what failed. Report
+     `error reason=dashboard-<status> exit=<dashboard_exit>` with that
+     diagnostic, unless step 5 applies.
+   - `running` — the wrapper itself died hard and never recorded an end. This is
+     the old silent case, now named. Report
+     `error reason=dashboard-wrapper-killed-no-exit started=<dashboard_started_at>`.
+   - status file absent — step 2 never started. Report
+     `error reason=dashboard-run-never-started`.
+
+   Then point-read `brain get north-star-dashboard --type reference`
    (or `brain get north-star-dashboard`) and check the body head contains the
    current UTC hour's generated stamp (or today's date). The dashboard markdown
    currently renders the stamp inline as `**Generated:** \`<ISO>\``; older
@@ -114,8 +141,9 @@ Brain record (stable):
    (daily) / skill `north-star-hygiene`. You may note
    `HYGIENE_NEEDS_WORK=1` if `last-stack-north-star-dashboard --stdout hygiene`
    reports orphans so morning-sync can see the gap.
-5. **Dashboard timeout handling.** If the dashboard command times out before
-   confirmation, first inspect the prior brain record and HTML snapshot. If
+5. **Dashboard timeout handling.** This branch applies when step 3 read
+   `dashboard_status=timeout` (or `dashboard_exit=124`) from the status file.
+   Inspect the prior brain record and HTML snapshot first. If
    they are present and non-empty, report a `noop` with
    `reason=dashboard-timeout-prior-snapshot` and include the prior snapshot
    timestamp/counts in the summary. Treat this as temporary load, not a fleet
@@ -143,6 +171,12 @@ Brain record (stable):
   noop (`noop reason=dashboard-timeout-prior-snapshot`) — do not fail the
   routine fleet when the durable mirror is still available
 - Script crash, brain put failure, empty HTML after claimed success → `error`
+- `dashboard_status=failed|killed` in the status file → `error` with
+  `dashboard_diagnostic` in the one-line outcome
+- `dashboard_status=running` (wrapper died before recording an end) or a missing
+  status file → `error reason=dashboard-wrapper-killed-no-exit` /
+  `reason=dashboard-run-never-started`. Never report `ok` from an empty tool
+  result; an empty tool result carries no outcome at all.
 
 ## Out of scope
 - Promoting or moving cards

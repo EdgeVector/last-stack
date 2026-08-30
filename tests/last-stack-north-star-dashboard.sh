@@ -262,6 +262,73 @@ if grep -q 'promote/file only terminal work' "$WORK/completion.md"; then
 fi
 grep -q "COMPLETION_NEEDS_WORK=1" "$WORK/completion.err"
 
+# The HTML snapshot and the brain record are one snapshot in two places. When
+# `brain put` fails, the HTML must keep its previous content — a fresh HTML over
+# a stale brain stamp is the disagreement the routine kept reporting.
+mkdir -p "$WORK/brainbin"
+cat >"$WORK/brainbin/brain" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "put" ]; then
+  printf 'node did not respond within 30000ms\n' >&2
+  exit 1
+fi
+exit 0
+EOF
+chmod +x "$WORK/brainbin/brain"
+
+printf 'PREVIOUS SNAPSHOT\n' >"$WORK/coupled.html"
+set +e
+PATH="$WORK/brainbin:$PATH" "$BIN" \
+  --cards-json "$WORK/cards.json" \
+  --projects-json "$WORK/projects.json" \
+  --html "$WORK/coupled.html" \
+  --put-brain \
+  --stdout none >"$WORK/coupled.out" 2>"$WORK/coupled.err"
+coupled_rc=$?
+set -e
+[ "$coupled_rc" -eq 1 ] || { echo "a failed brain put must exit non-zero, got $coupled_rc" >&2; exit 1; }
+grep -q '^ERROR=' "$WORK/coupled.err"
+grep -q 'PREVIOUS SNAPSHOT' "$WORK/coupled.html" \
+  || { echo "HTML was published even though the brain put failed" >&2; exit 1; }
+# No staged leftovers next to the published path.
+if ls "$WORK"/.coupled.html.staging-*.tmp >/dev/null 2>&1; then
+  echo "staged HTML left behind after a failed brain put" >&2
+  exit 1
+fi
+
+# When the brain put succeeds, the HTML publishes.
+cat >"$WORK/brainbin/brain" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "put" ]; then
+  cat >/dev/null
+  printf 'ok\n'
+  exit 0
+fi
+exit 0
+EOF
+chmod +x "$WORK/brainbin/brain"
+PATH="$WORK/brainbin:$PATH" "$BIN" \
+  --cards-json "$WORK/cards.json" \
+  --projects-json "$WORK/projects.json" \
+  --html "$WORK/coupled.html" \
+  --put-brain \
+  --stdout none >/dev/null 2>"$WORK/coupled2.err"
+grep -q 'North Star dashboard' "$WORK/coupled.html"
+! grep -q 'PREVIOUS SNAPSHOT' "$WORK/coupled.html"
+grep -q "^HTML=$WORK/coupled.html$" "$WORK/coupled2.err"
+grep -q '^BRAIN_PUT=' "$WORK/coupled2.err"
+# An atomic publish must not narrow the snapshot's mode to mkstemp's 0600.
+chmod 644 "$WORK/coupled.html"
+PATH="$WORK/brainbin:$PATH" "$BIN" \
+  --cards-json "$WORK/cards.json" \
+  --projects-json "$WORK/projects.json" \
+  --html "$WORK/coupled.html" \
+  --put-brain \
+  --stdout none >/dev/null 2>&1
+coupled_mode="$(stat -f '%OLp' "$WORK/coupled.html" 2>/dev/null || stat -c '%a' "$WORK/coupled.html")"
+[ "$coupled_mode" = "644" ] \
+  || { echo "atomic publish changed the snapshot mode to $coupled_mode" >&2; exit 1; }
+
 WRAP="$ROOT/bin/last-stack-north-star-completion-check"
 if [ -x "$WRAP" ]; then
   bash -n "$WRAP"
