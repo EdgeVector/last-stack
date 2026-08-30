@@ -224,6 +224,8 @@ printf 'VERDICT: RED brain:ask-or-search\n' \
 wrapper_tmp="$(mktemp -d "${TMPDIR:-/tmp}/llms-smoke-wrapper-test.XXXXXX")"
 mkdir -p "$wrapper_tmp/run"
 cp "$WRAPPER" "$wrapper_tmp/routine-run.sh"
+# The wrapper sources its sibling bounded-helpers lib for the outer bound.
+cp "$LIB" "$wrapper_tmp/lib-bounded.sh"
 cat >"$wrapper_tmp/run.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -247,5 +249,84 @@ grep -qF "failure log preserved at $wrapper_tmp/run/smoke-run.log" \
   "$wrapper_tmp/wrapper.stderr" \
   || fail "RED wrapper did not report the retained log path"
 rm -rf "$wrapper_tmp"
+
+
+# --- run.sh: the remaining unbounded calls ----------------------------------
+# The global deadline only clamps calls routed through run_bounded, so a bare
+# network pipeline or a socket read with no --max-time is invisible to it.
+grep -qF "bash -c 'curl -fsSL --max-time 120 https://bun.sh/install | bash'" "$RUN" \
+  || fail "the bun install pipeline must be bounded and carry --max-time"
+grep -qF 'run_bounded "$(smoke_bounded_remaining "$INSTALL_TIMEOUT")"' "$RUN" \
+  || fail "the bun install must be clamped by the global budget"
+grep -qF 'curl -s --max-time 15 --unix-socket "$SOCK"' "$RUN" \
+  || fail "the health probe must carry --max-time; a wedged socket hangs curl"
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  case "$line" in
+    *--max-time*) continue ;;
+  esac
+  fail "unix-socket curl without --max-time in run.sh: $line"
+done <<EOF
+$(grep -n -- '--unix-socket' "$RUN" || true)
+EOF
+
+# An outer bound kills run.sh with SIGTERM. Bash skips the EXIT trap when it
+# dies of an uncaught signal, which would orphan the isolated lastdbd and the
+# /tmp sandbox, so run.sh must route TERM/INT through cleanup().
+grep -qF "trap 'exit 143' TERM INT" "$RUN" \
+  || fail "run.sh must route TERM/INT through the EXIT trap"
+
+# --- wrapper: outer backstop bound ------------------------------------------
+# Per-call bounds plus a global deadline still cannot cover a step nobody
+# wrapped. The wrapper bound is what guarantees a RESULT trailer regardless.
+grep -qF 'SMOKE_WRAPPER_TIMEOUT_SECS="${SMOKE_WRAPPER_TIMEOUT_SECS:-570}"' "$WRAPPER" \
+  || fail "wrapper must define the outer backstop bound"
+grep -qF 'run_bounded "$SMOKE_WRAPPER_TIMEOUT_SECS"' "$WRAPPER" \
+  || fail "wrapper must run run.sh under the outer bound"
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  case "$line" in
+    *run_bounded*) continue ;;
+  esac
+  fail "wrapper must not invoke run.sh unbounded: $line"
+done <<EOF
+$(grep -nF 'bash "$RUN_SH"' "$WRAPPER" || true)
+EOF
+
+# The backstop must sit above run.sh's own budget (so the internal deadline
+# stays primary) and below the 600s foreground cap (so the trailer is printed).
+wrapper_bound="$(sed -n 's/^SMOKE_WRAPPER_TIMEOUT_SECS="\${SMOKE_WRAPPER_TIMEOUT_SECS:-\([0-9]*\)}"$/\1/p' "$WRAPPER")"
+[ -n "$wrapper_bound" ] || fail "could not read the wrapper bound default"
+[ "$wrapper_bound" -gt "$budget_default" ] \
+  || fail "wrapper bound $wrapper_bound must exceed run.sh budget $budget_default"
+[ "$wrapper_bound" -lt 600 ] \
+  || fail "wrapper bound $wrapper_bound leaves no room under the 600s cap"
+
+# A hung run.sh must still produce a RESULT trailer, inside the bound.
+hang_tmp="$(mktemp -d "${TMPDIR:-/tmp}/llms-smoke-hang-test.XXXXXX")"
+mkdir -p "$hang_tmp/run"
+cp "$WRAPPER" "$hang_tmp/routine-run.sh"
+cp "$LIB" "$hang_tmp/lib-bounded.sh"
+cat >"$hang_tmp/run.sh" <<'HANGEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'started, about to hang\n' >&2
+sleep 300
+HANGEOF
+chmod +x "$hang_tmp/run.sh"
+hang_started="$(date +%s)"
+set +e
+SMOKE_WRAPPER_TIMEOUT_SECS=3 ROUTINES_RUN_DIR="$hang_tmp/run" TMPDIR="$hang_tmp/run" \
+  bash "$hang_tmp/routine-run.sh" \
+  >"$hang_tmp/wrapper.stdout" 2>"$hang_tmp/wrapper.stderr"
+hang_rc=$?
+set -e
+hang_elapsed=$(( $(date +%s) - hang_started ))
+[ "$hang_rc" -eq 2 ] || fail "hung smoke must exit 2 (incomplete); got $hang_rc"
+[ "$hang_elapsed" -lt 60 ] \
+  || fail "wrapper bound did not fire: ${hang_elapsed}s elapsed"
+grep -qF 'RESULT: error RED incomplete-timeout wrapper=3s' "$hang_tmp/wrapper.stdout" \
+  || fail "hung smoke must print a named timeout RESULT trailer"
+rm -rf "$hang_tmp"
 
 echo "OK llms-txt-install-smoke-bounded"

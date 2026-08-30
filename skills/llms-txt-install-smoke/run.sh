@@ -164,6 +164,11 @@ cleanup() {
   return "$exit_rc"
 }
 trap cleanup EXIT
+# An outer bound (routine-run.sh) terminates this script with SIGTERM. Bash does
+# not run an EXIT trap when it dies of an uncaught signal, so without this the
+# backstop would leave the isolated lastdbd running and the /tmp sandbox behind.
+# Exiting from the handler routes the kill through cleanup().
+trap 'exit 143' TERM INT
 
 echo "=========================================="
 echo "llms-txt install smoke (isolated)"
@@ -179,7 +184,11 @@ require_cmd lastdbd
 # Bun: install into sandbox if missing; allow pre-existing system bun
 if ! command -v bun >/dev/null 2>&1; then
   step "installing bun (sandbox-aware)"
-  curl -fsSL https://bun.sh/install | bash || true
+  # Bounded: an unbounded network pipeline here is invisible to the global
+  # deadline and can hang the whole run past the foreground cap. The result is
+  # deliberately tolerated — `prereq:bun` below is the authoritative check.
+  run_bounded "$(smoke_bounded_remaining "$INSTALL_TIMEOUT")" \
+    bash -c 'curl -fsSL --max-time 120 https://bun.sh/install | bash' || true
 fi
 export PATH="$HOME/.bun/bin:${REAL_HOME}/.bun/bin:$HOME/.local/bin:$PATH"
 if command -v bun >/dev/null 2>&1; then
@@ -325,7 +334,7 @@ fi
 
 # health
 if [ -S "$SOCK" ]; then
-  HEALTH=$(curl -s --unix-socket "$SOCK" http://localhost/health || true)
+  HEALTH=$(curl -s --max-time 15 --unix-socket "$SOCK" http://localhost/health || true)
   if [ "$HEALTH" = '{"status":"ok"}' ]; then
     note_pass "health:$HEALTH"
   else
