@@ -1247,6 +1247,67 @@ for (const btn of document.querySelectorAll('.controls button[data-filter]')) {{
 """
 
 
+def _stage_sibling(path: Path, text: str) -> Path:
+    """Write `text` next to `path` and return the staged file, unpublished.
+
+    A staged write is durable but invisible: the reader of `path` still sees the
+    previous snapshot until `_publish_staged` renames over it. That is what lets
+    the HTML file and the brain record refresh together instead of drifting
+    apart when the process dies between them.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for orphan in path.parent.glob(f".{path.name}.staging-*.tmp"):
+        # A hard kill (SIGKILL / lost shell) can strand a staged file. It is
+        # never read, so clearing it here keeps the directory from growing.
+        try:
+            orphan.unlink()
+        except OSError:
+            pass
+    fd, staged = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.staging-", suffix=".tmp"
+    )
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    # mkstemp creates 0600. Publishing that would silently narrow a snapshot
+    # that a plain write left readable, so restore the mode the reader expects.
+    try:
+        mode = path.stat().st_mode & 0o777
+    except OSError:
+        umask = os.umask(0)
+        os.umask(umask)
+        mode = 0o666 & ~umask
+    try:
+        os.chmod(staged, mode)
+    except OSError:
+        pass
+    return Path(staged)
+
+
+def _publish_staged(staged: Path, path: Path) -> None:
+    """Atomically move a staged file into place (os.replace is one syscall)."""
+    os.replace(str(staged), str(path))
+
+
+def _discard_staged(staged: Optional[Path]) -> None:
+    if staged is None:
+        return
+    try:
+        staged.unlink()
+    except OSError:
+        pass
+
+
+def write_text_atomic(path: Path, text: str) -> None:
+    """Replace `path` in one step so a kill cannot leave a truncated file.
+
+    `Path.write_text` truncates first and writes second. A signal in that window
+    leaves an empty or half-written snapshot, which downstream callers then read
+    as a valid prior artifact.
+    """
+    staged = _stage_sibling(path, text)
+    _publish_staged(staged, path)
+
+
 def put_brain(slug: str, markdown: str, title: str) -> None:
     # Stage body to temp file; pipe frontmatter+body via stdin to brain put.
     body = (
@@ -1372,18 +1433,42 @@ def main(argv: Optional[list[str]] = None) -> int:
             )
             print(f"COMPLETION_JSON={args.completion_json}", file=sys.stderr)
         if args.markdown:
-            args.markdown.write_text(md, encoding="utf-8")
+            write_text_atomic(args.markdown, md)
             print(f"MARKDOWN={args.markdown}", file=sys.stderr)
+
+        # The HTML file and the brain record are one durable snapshot in two
+        # places. Writing the HTML first and then calling `brain put` let a kill
+        # in between publish a fresh HTML against a stale brain stamp, which is
+        # exactly what the routine kept observing. So render the HTML to a
+        # staged sibling, let the slow brain write happen, and publish the HTML
+        # only after it lands. Either both refresh or neither does, down to one
+        # rename.
+        staged_html: Optional[Path] = None
         if args.html is not None:
-            args.html.parent.mkdir(parents=True, exist_ok=True)
-            args.html.write_text(html_doc, encoding="utf-8")
-            print(f"HTML={args.html}", file=sys.stderr)
+            if args.put_brain:
+                staged_html = _stage_sibling(args.html, html_doc)
+                print(f"HTML_STAGED={args.html}", file=sys.stderr)
+            else:
+                write_text_atomic(args.html, html_doc)
+                print(f"HTML={args.html}", file=sys.stderr)
+
         if args.put_brain:
-            put_brain(
-                args.brain_slug,
-                md,
-                title="North Star dashboard — cards by north_star × column",
-            )
+            try:
+                put_brain(
+                    args.brain_slug,
+                    md,
+                    title="North Star dashboard — cards by north_star × column",
+                )
+            except BaseException:
+                # BaseException, not Exception: a SystemExit or KeyboardInterrupt
+                # raised out of the brain write must not publish the HTML either.
+                _discard_staged(staged_html)
+                staged_html = None
+                raise
+
+        if staged_html is not None:
+            _publish_staged(staged_html, args.html)
+            print(f"HTML={args.html}", file=sys.stderr)
 
         if args.stdout == "markdown":
             sys.stdout.write(md)
