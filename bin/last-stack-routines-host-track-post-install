@@ -18,22 +18,43 @@ if [ -z "$routines_bin" ] || [ ! -x "$routines_bin" ]; then
 fi
 
 out="$(mktemp "${TMPDIR:-/tmp}/routines-post-install.XXXXXX")"
+trap 'rm -f "$out"' EXIT
+
+launchctl_bin="${LAST_STACK_LAUNCHCTL_BIN:-launchctl}"
+service="gui/$(id -u)/com.edgevector.routinesd"
+
+if "$launchctl_bin" print "$service" >/dev/null 2>&1; then
+  set +e
+  "$launchctl_bin" kickstart -k "$service" >"$out" 2>&1
+  rc=$?
+  set -e
+  if [ "$rc" -eq 0 ]; then
+    printf 'routines post-install: kickstart ok (%s)\n' "$service"
+    exit 0
+  fi
+
+  # The stable launcher resolves host-track current at each start. A refused
+  # kickstart is safe only while the existing launchd job remains registered.
+  if "$launchctl_bin" print "$service" >/dev/null 2>&1; then
+    echo "routines post-install: WARN kickstart failed; the LaunchAgent remains loaded" >&2
+    cat "$out" >&2 || true
+    exit 0
+  fi
+
+  echo "routines post-install: kickstart failed and the LaunchAgent is not loaded" >&2
+  cat "$out" >&2 || true
+  exit 1
+fi
+
 set +e
 "$routines_bin" install-daemon >"$out" 2>&1
 rc=$?
 set -e
 if [ "$rc" -eq 0 ]; then
   printf 'routines post-install: install-daemon ok (%s)\n' "$routines_bin"
-  rm -f "$out"
   exit 0
 fi
-if grep -qiE 'operation not permitted|not authorized|EPERM' "$out"; then
-  echo "routines post-install: WARN could not reload LaunchAgent (permission). PATH current is the new artifact. Run: routines install-daemon" >&2
-  cat "$out" >&2 || true
-  rm -f "$out"
-  exit 0
-fi
+
 echo "routines post-install: install-daemon failed rc=$rc" >&2
 cat "$out" >&2 || true
-rm -f "$out"
 exit 1
