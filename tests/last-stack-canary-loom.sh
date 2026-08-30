@@ -6,8 +6,21 @@ fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 bash -n "$BIN"
 bash -n "$ROOT/lib/canary-loom/loom-canary-step.sh"
 [ -f "$ROOT/lib/canary-loom/lastdb-canary-release.json" ] || fail "graph missing"
-[ "$(jq -r .version "$ROOT/lib/canary-loom/lastdb-canary-release.json")" = "5" ] \
+[ "$(jq -r .version "$ROOT/lib/canary-loom/lastdb-canary-release.json")" = "6" ] \
   || fail "canary graph version did not advance"
+# Every node command must survive a launcher that forgot LOOM_SCRIPTS: the
+# 2026-08-30 recovery exec died at spawn (exit 127, no recorded output)
+# because the env contract was hand-rolled (lx-20260830T122141.772-6345-1).
+jq -e '[.states[] | select(.type == "agent") | .command[2], (.check[2]? // empty)]
+       | all(contains("${LOOM_SCRIPTS:-"))' \
+  "$ROOT/lib/canary-loom/lastdb-canary-release.json" >/dev/null \
+  || fail "a canary node command lacks the LOOM_SCRIPTS fallback"
+jq -e '[.states[] | select(.type == "agent") | .command[2], (.check[2]? // empty)]
+       | all(contains("${LOOM_SCRIPTS:-"))' \
+  "$ROOT/lib/canary-loom/lastdb-safe-upgrade.json" >/dev/null \
+  || fail "a safe-upgrade node command lacks the LOOM_SCRIPTS fallback"
+[ "$(jq -r '.states.RECOVER_LIVE.timeout_sec' "$ROOT/lib/canary-loom/lastdb-canary-release.json")" = "300" ] \
+  || fail "RECOVER_LIVE budget must cover a measured 64s healthy pass plus a busy node"
 jq -e '.start_at == "DECIDE_ENTRY" and
        .states.DECIDE_ENTRY.map["verified-live"] == "RECOVER_LIVE" and
        .states.DECIDE_ENTRY.default == "BUILD_START" and
@@ -182,7 +195,10 @@ ledger_out="$(PATH="$mock_home/.local/bin:$PATH" HOME="$mock_home" LOOM_LIVE=1 \
 printf '%s\n' "$ledger_out" | grep -q 'LOOM_CONTEXT_PATCH:{"phase_next":"SOAK","ledger_sha":"candidate-sha","source_git_oid":"abc","version":"1.2.3"}' \
   || fail "live ledger step did not preserve the dogfood receipt: $ledger_out"
 
-standin_ledger="$(LOOM_INPUT='{"source_git_oid":"abc","version":"1.2.3"}' \
+# env -u: an ambient LOOM_LIVE in the caller's shell must not turn this
+# stand-in into a REAL ledger write (it did, on 2026-08-30).
+standin_ledger="$(env -u LOOM_LIVE -u LOOM_CANARY_LIVE \
+  LOOM_INPUT='{"source_git_oid":"abc","version":"1.2.3"}' \
   "$ROOT/lib/canary-loom/loom-canary-step.sh" LEDGER)"
 printf '%s\n' "$standin_ledger" | grep -q '"ledger_sha":"1.2.3"' \
   || fail "stand-in ledger step did not record the candidate: $standin_ledger"
@@ -250,8 +266,65 @@ grep -q 'loom transport denied' "$LAST_STACK_CANARY_LOOM_STDERR_LOG" \
 grep -q 'loom transport denied' "$LAST_STACK_CANARY_LOOM_STAMP" \
   || fail "loom stderr was not summarized in the stamp"
 
-LOOM_INPUT='{"main_oid":"abc","max_attempts":3}' "$ROOT/lib/canary-loom/loom-canary-step.sh" PROBE | grep -q 'verdict":"green"' \
+env -u LOOM_LIVE -u LOOM_CANARY_LIVE \
+  LOOM_INPUT='{"main_oid":"abc","max_attempts":3}' "$ROOT/lib/canary-loom/loom-canary-step.sh" PROBE | grep -q 'verdict":"green"' \
   || fail "stand-in probe not green"
 echo ok
 
 [ -f "$ROOT/lib/canary-loom/lastdb-safe-upgrade.json" ] || fail "graph A missing"
+
+# --- verified-live recovery: env-contract regression + supported launcher ---
+
+# The node command must find its script through the installed-tree fallback
+# when LOOM_SCRIPTS is absent from the launcher env.
+mkdir -p "$mock_home/.last-stack/lib"
+ln -sfn "$ROOT/lib/canary-loom" "$mock_home/.last-stack/lib/canary-loom"
+recover_cmd="$(jq -r '.states.RECOVER_LIVE.command[2]' "$ROOT/lib/canary-loom/lastdb-canary-release.json")"
+fallback_out="$(env -u LOOM_SCRIPTS \
+  PATH="$mock_home/.local/bin:$PATH" HOME="$mock_home" LOOM_LIVE=1 \
+  LOOM_INPUT="$recovery_input" \
+  bash -c "$recover_cmd")" \
+  || fail "RECOVER_LIVE died without LOOM_SCRIPTS in the env"
+printf '%s\n' "$fallback_out" | grep -q '"recovery_verified":true' \
+  || fail "fallback-path recovery did not verify: $fallback_out"
+
+# The launcher owns the env contract end to end: --recover reads the green
+# child receipt and relaunches the graph in verified-live mode.
+: >"$FAKE_LOOM_CALLS"
+rm -f "$LAST_STACK_CANARY_LOOM_ACTIVE" "$LAST_STACK_CANARY_LOOM_STAMP"
+recover_out="$(PATH="$mock_home/.local/bin:$PATH" HOME="$mock_home" FAKE_LOOM_MODE=success \
+  "$BIN" --recover --child lx-recovery-child --json --quiet)"
+printf '%s\n' "$recover_out" | head -1 | jq -e '.outcome == "ok" and .status == "running"' >/dev/null \
+  || fail "--recover did not launch: $recover_out"
+grep -q 'run lastdb-canary-release --key canary-recover-' "$FAKE_LOOM_CALLS" \
+  || fail "--recover did not run the canary graph under a recovery key"
+grep -q '"recovery_mode":"verified-live"' "$FAKE_LOOM_CALLS" \
+  || fail "--recover input lacks verified-live mode"
+grep -q '"recovery_child_execution":"lx-recovery-child"' "$FAKE_LOOM_CALLS" \
+  || fail "--recover input lacks the child execution"
+grep -q "\"recovery_candidate\":\"$recovery_stage/lastdbd\"" "$FAKE_LOOM_CALLS" \
+  || fail "--recover input lacks the candidate from the child receipt"
+rm -f "$LAST_STACK_CANARY_LOOM_ACTIVE" "$LAST_STACK_CANARY_LOOM_STAMP"
+
+# An unreadable child is refused before anything launches.
+: >"$FAKE_LOOM_CALLS"
+set +e
+recover_bad="$(PATH="$mock_home/.local/bin:$PATH" HOME="$mock_home" FAKE_LOOM_MODE=success \
+  "$BIN" --recover --child lx-unknown-child --json --quiet)"
+rc_recover_bad=$?
+set -e
+[ "$rc_recover_bad" -eq 3 ] || fail "--recover with an unreadable child returned $rc_recover_bad, expected 3"
+printf '%s\n' "$recover_bad" | grep -q 'recover-child-unreadable' \
+  || fail "--recover unreadable child was not named: $recover_bad"
+[ ! -s "$FAKE_LOOM_CALLS" ] || fail "--recover launched despite an unreadable child"
+rm -f "$LAST_STACK_CANARY_LOOM_ACTIVE" "$LAST_STACK_CANARY_LOOM_STAMP"
+
+# --recover must never run the stand-in lane against a live receipt.
+set +e
+PATH="$mock_home/.local/bin:$PATH" HOME="$mock_home" \
+  "$BIN" --recover --child lx-recovery-child --no-heal --json --quiet >/dev/null 2>&1
+rc_recover_standin=$?
+set -e
+[ "$rc_recover_standin" -eq 2 ] || fail "--recover --no-heal returned $rc_recover_standin, expected usage refusal 2"
+
+echo recover-ok
