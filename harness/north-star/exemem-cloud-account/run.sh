@@ -223,6 +223,58 @@ def walk(obj, path=""):
         pii_hits.append(path + "(email-shaped value)")
 
 
+# Keys whose VALUE is a live credential. These are not the PII the North Star
+# forbids -- the account endpoint legitimately hands the calling device a
+# short-lived bearer token -- but the proof report is a durable file, so the
+# value must never be written into it. The earlier redaction only inspected
+# top-level keys, so a real drive printed account.auth.token verbatim into
+# ~/.last-stack/north-star-proofs/north-star-exemem-cloud-account.md.
+SECRET_KEY_HINTS = (
+    "token",
+    "api_key",
+    "apikey",
+    "secret",
+    "authorization",
+    "password",
+    "credential",
+)
+# token_type is "Bearer": a type label, not the credential.
+SECRET_KEY_ALLOW = {"token_type"}
+secret_values = []
+
+
+def is_secret_key(key):
+    lower = str(key).lower()
+    if lower in SECRET_KEY_ALLOW:
+        return False
+    return any(hint in lower for hint in SECRET_KEY_HINTS)
+
+
+def redact(obj, key=""):
+    if is_secret_key(key):
+        if isinstance(obj, str) and obj:
+            secret_values.append(obj)
+        return "<redacted-secret>"
+    if "url" in str(key).lower():
+        if isinstance(obj, str) and obj:
+            secret_values.append(obj)
+        return "<redacted-url>"
+    if isinstance(obj, dict):
+        return {key_name: redact(value, key_name) for key_name, value in obj.items()}
+    if isinstance(obj, list):
+        return [redact(item, key) for item in obj]
+    if look_like_email(obj):
+        return "<redacted-email>"
+    return obj
+
+
+def scrub_text(text):
+    for value in secret_values:
+        if value:
+            text = text.replace(value, "<redacted-secret>")
+    return text
+
+
 status_rc, status_out = run(["lastdb", "cloud", "status"])
 account_rc, account_out = run(["lastdb", "cloud", "account", "--json", "--no-open"])
 # Help-only: never execute upgrade (it opens Stripe Checkout).
@@ -289,20 +341,30 @@ if pii_hits:
 else:
     notes.append("CLI JSON/text contained no name/email/api_key/session_token fields")
 
-print("\n".join(notes))
-print("\n--- status (redacted capture) ---")
-print(status_out[:2000])
-print("\n--- account (redacted capture) ---")
-# Drop values that look like tokens while keeping keys.
+report = []
+report.append("\n".join(notes))
+
 if isinstance(account_json, dict):
-    redacted = {
-        key: ("<redacted-url>" if "url" in key.lower() else account_json[key])
-        for key in account_json
-        if key.lower() not in {"api_key", "session_token", "email", "name"}
-    }
-    print(json.dumps(redacted, indent=2, default=str)[:2000])
+    account_block = json.dumps(redact(account_json), indent=2, default=str)[:2000]
 else:
-    print(account_out[:1000])
+    account_block = account_out[:1000]
+
+report.append("\n--- status (redacted capture) ---")
+report.append(scrub_text(status_out)[:2000])
+report.append("\n--- account (redacted capture) ---")
+report.append(account_block)
+report_text = "\n".join(report)
+
+# Belt and braces: a redaction rule that silently stops matching would put a
+# live credential into a durable file, so prove the values are gone first.
+leaked = [value for value in secret_values if value and value in report_text]
+if leaked:
+    failures.append(
+        "redaction failed: "
+        f"{len(leaked)} secret value(s) still present in the report body"
+    )
+else:
+    print(report_text)
 
 if failures:
     print("\nFAILURES:")
