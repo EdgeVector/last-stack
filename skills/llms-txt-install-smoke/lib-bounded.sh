@@ -149,6 +149,24 @@ run_bounded() {
   return "$rc"
 }
 
+# smoke_reap_sandboxes <root> <name-glob> <age-minutes> <bound-seconds>
+# Remove sandbox directories that earlier runs left behind. Sandbox removal is
+# itself bounded (a 1.4G sandbox needs more than the teardown margin), so every
+# capped run can leak one directory and the disk grows without this.
+#
+# The root is resolved with `pwd -P` first. On macOS /tmp is a symlink to
+# /private/tmp, and `find /tmp -maxdepth 1` walks the LINK rather than the
+# directory, so it matches nothing and reaps nothing — silently.
+smoke_reap_sandboxes() {
+  local root="$1" glob="$2" age_mins="$3" bound="$4"
+  local resolved
+  resolved="$(cd "$root" 2>/dev/null && pwd -P)" || return 0
+  [ -n "$resolved" ] || return 0
+  run_bounded "$bound" find "$resolved" -maxdepth 1 -type d \
+    -name "$glob" -mmin "+$age_mins" -exec rm -rf {} + >/dev/null 2>&1 || true
+  return 0
+}
+
 # fail_steps_summary <fail entry> [...]
 # Comma-joined leading step token of each recorded failure, deduped, so the
 # visible RED verdict names the step instead of forcing a log dig.

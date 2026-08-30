@@ -224,6 +224,8 @@ printf 'VERDICT: RED brain:ask-or-search\n' \
 wrapper_tmp="$(mktemp -d "${TMPDIR:-/tmp}/llms-smoke-wrapper-test.XXXXXX")"
 mkdir -p "$wrapper_tmp/run"
 cp "$WRAPPER" "$wrapper_tmp/routine-run.sh"
+# The wrapper sources its sibling bounded-helpers lib for the outer bound.
+cp "$LIB" "$wrapper_tmp/lib-bounded.sh"
 cat >"$wrapper_tmp/run.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -247,5 +249,177 @@ grep -qF "failure log preserved at $wrapper_tmp/run/smoke-run.log" \
   "$wrapper_tmp/wrapper.stderr" \
   || fail "RED wrapper did not report the retained log path"
 rm -rf "$wrapper_tmp"
+
+
+# --- run.sh: the remaining unbounded calls ----------------------------------
+# The global deadline only clamps calls routed through run_bounded, so a bare
+# network pipeline or a socket read with no --max-time is invisible to it.
+grep -qF "bash -c 'curl -fsSL --max-time 120 https://bun.sh/install | bash'" "$RUN" \
+  || fail "the bun install pipeline must be bounded and carry --max-time"
+grep -qF 'run_bounded "$(smoke_bounded_remaining "$INSTALL_TIMEOUT")"' "$RUN" \
+  || fail "the bun install must be clamped by the global budget"
+grep -qF 'curl -s --max-time 15 --unix-socket "$SOCK"' "$RUN" \
+  || fail "the health probe must carry --max-time; a wedged socket hangs curl"
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  case "$line" in
+    *--max-time*) continue ;;
+  esac
+  fail "unix-socket curl without --max-time in run.sh: $line"
+done <<EOF
+$(grep -n -- '--unix-socket' "$RUN" || true)
+EOF
+
+# An outer bound kills run.sh with SIGTERM. Bash skips the EXIT trap when it
+# dies of an uncaught signal, which would orphan the isolated lastdbd and the
+# /tmp sandbox, so run.sh must route TERM/INT through cleanup().
+grep -qF "trap 'exit 143' TERM INT" "$RUN" \
+  || fail "run.sh must route TERM/INT through the EXIT trap"
+
+# --- wrapper: outer backstop bound ------------------------------------------
+# Per-call bounds plus a global deadline still cannot cover a step nobody
+# wrapped. The wrapper bound is what guarantees a RESULT trailer regardless.
+grep -qF 'SMOKE_WRAPPER_TIMEOUT_SECS="${SMOKE_WRAPPER_TIMEOUT_SECS:-570}"' "$WRAPPER" \
+  || fail "wrapper must define the outer backstop bound"
+grep -qF 'run_bounded "$SMOKE_WRAPPER_TIMEOUT_SECS"' "$WRAPPER" \
+  || fail "wrapper must run run.sh under the outer bound"
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  case "$line" in
+    *run_bounded*) continue ;;
+  esac
+  fail "wrapper must not invoke run.sh unbounded: $line"
+done <<EOF
+$(grep -nF 'bash "$RUN_SH"' "$WRAPPER" || true)
+EOF
+
+# The backstop must sit above run.sh's own budget (so the internal deadline
+# stays primary) and below the 600s foreground cap (so the trailer is printed).
+wrapper_bound="$(sed -n 's/^SMOKE_WRAPPER_TIMEOUT_SECS="\${SMOKE_WRAPPER_TIMEOUT_SECS:-\([0-9]*\)}"$/\1/p' "$WRAPPER")"
+[ -n "$wrapper_bound" ] || fail "could not read the wrapper bound default"
+[ "$wrapper_bound" -gt "$budget_default" ] \
+  || fail "wrapper bound $wrapper_bound must exceed run.sh budget $budget_default"
+[ "$wrapper_bound" -lt 600 ] \
+  || fail "wrapper bound $wrapper_bound leaves no room under the 600s cap"
+
+# A hung run.sh must still produce a RESULT trailer, inside the bound.
+hang_tmp="$(mktemp -d "${TMPDIR:-/tmp}/llms-smoke-hang-test.XXXXXX")"
+mkdir -p "$hang_tmp/run"
+cp "$WRAPPER" "$hang_tmp/routine-run.sh"
+cp "$LIB" "$hang_tmp/lib-bounded.sh"
+cat >"$hang_tmp/run.sh" <<'HANGEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'started, about to hang\n' >&2
+sleep 300
+HANGEOF
+chmod +x "$hang_tmp/run.sh"
+hang_started="$(date +%s)"
+set +e
+SMOKE_WRAPPER_TIMEOUT_SECS=3 ROUTINES_RUN_DIR="$hang_tmp/run" TMPDIR="$hang_tmp/run" \
+  bash "$hang_tmp/routine-run.sh" \
+  >"$hang_tmp/wrapper.stdout" 2>"$hang_tmp/wrapper.stderr"
+hang_rc=$?
+set -e
+hang_elapsed=$(( $(date +%s) - hang_started ))
+[ "$hang_rc" -eq 2 ] || fail "hung smoke must exit 2 (incomplete); got $hang_rc"
+[ "$hang_elapsed" -lt 60 ] \
+  || fail "wrapper bound did not fire: ${hang_elapsed}s elapsed"
+grep -qF 'RESULT: error RED incomplete-timeout wrapper=3s' "$hang_tmp/wrapper.stdout" \
+  || fail "hung smoke must print a named timeout RESULT trailer"
+rm -rf "$hang_tmp"
+
+# --- run.sh: bounded teardown ------------------------------------------------
+# The VERDICT prints before cleanup, so an unbounded teardown spends the
+# caller's remaining cap after the answer already exists. A 2026-08-30
+# reproduction reached VERDICT: RED at 376s and was killed at 570s still inside
+# `rm -rf` of a 458M sandbox, so the caller read a timeout, not the verdict.
+grep -qF 'stop_pid_bounded "$DAEMON_PID" "$SMOKE_DAEMON_STOP_SECS"' "$RUN" \
+  || fail "cleanup must stop the isolated daemon under a bound"
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  fail "bare wait on the daemon in run.sh (unbounded teardown): $line"
+done <<EOF
+$(grep -n 'wait "\$DAEMON_PID"' "$RUN" || true)
+EOF
+grep -qF 'discard_sandbox' "$RUN" \
+  || fail "cleanup must hand the sandbox to discard_sandbox"
+grep -qF 'mv "$FRESH_ROOT" "$trash"' "$RUN" \
+  || fail "discard_sandbox must rename the sandbox instead of removing it inline"
+grep -qF 'run_bounded "$SMOKE_SANDBOX_RM_SECS" rm -rf "$FRESH_ROOT"' "$RUN" \
+  || fail "discard_sandbox needs a bounded fallback when the rename fails"
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  case "$line" in
+    *run_bounded*) continue ;;
+  esac
+  fail "unbounded sandbox removal in run.sh: $line"
+done <<EOF
+$(grep -n 'rm -rf "\$FRESH_ROOT"' "$RUN" || true)
+EOF
+
+# A bounded removal leaves sandboxes behind, so a later run must reap them.
+grep -qF "smoke_reap_sandboxes /tmp 'llms-txt-install-smoke.*'" "$RUN" \
+  || fail "run.sh must reap sandboxes left by earlier killed runs"
+
+# The reaper, for real. The first version of it globbed `find /tmp -maxdepth 1`
+# and reaped nothing on macOS, because /tmp is a symlink to /private/tmp and
+# find walks the link instead of the directory. Exercise the symlink case.
+reap_tmp="$(mktemp -d "${TMPDIR:-/tmp}/llms-smoke-reap-test.XXXXXX")"
+mkdir -p "$reap_tmp/real/llms-txt-install-smoke.old" \
+  "$reap_tmp/real/llms-txt-install-smoke.new" \
+  "$reap_tmp/real/keep-me"
+touch -t 202001010000 "$reap_tmp/real/llms-txt-install-smoke.old" \
+  "$reap_tmp/real/keep-me"
+ln -s "$reap_tmp/real" "$reap_tmp/link"
+smoke_reap_sandboxes "$reap_tmp/link" 'llms-txt-install-smoke.*' 120 30
+[ ! -d "$reap_tmp/real/llms-txt-install-smoke.old" ] \
+  || fail "reaper left an old sandbox behind (symlinked root not resolved?)"
+[ -d "$reap_tmp/real/llms-txt-install-smoke.new" ] \
+  || fail "reaper deleted a fresh sandbox — a live run would lose its own home"
+[ -d "$reap_tmp/real/keep-me" ] \
+  || fail "reaper deleted a directory outside its name glob"
+mkdir -p "$reap_tmp/real/llms-txt-install-smoke.abc.trash-999"
+touch -t 202001010000 "$reap_tmp/real/llms-txt-install-smoke.abc.trash-999"
+smoke_reap_sandboxes "$reap_tmp/link" 'llms-txt-install-smoke.*' 120 30
+[ ! -d "$reap_tmp/real/llms-txt-install-smoke.abc.trash-999" ] \
+  || fail "reaper must also collect renamed trash dirs a detached removal left"
+smoke_reap_sandboxes "$reap_tmp/does-not-exist" 'llms-txt-install-smoke.*' 120 30 \
+  || fail "reaper must be a no-op on a missing root, not an error"
+rm -rf "$reap_tmp"
+reap_mins="$(sed -n 's/^SMOKE_SANDBOX_REAP_MINS="\${SMOKE_SANDBOX_REAP_MINS:-\([0-9]*\)}"$/\1/p' "$RUN")"
+[ -n "$reap_mins" ] || fail "could not read the sandbox reap age default"
+[ "$(( reap_mins * 60 ))" -gt "$wrapper_bound" ] \
+  || fail "reap age ${reap_mins}m must exceed the wrapper bound ${wrapper_bound}s, or it could delete a live sandbox"
+
+# --- wrapper: a verdict already printed survives the backstop ----------------
+# The failure this file exists for was not a missing verdict; run.sh had one.
+# It was lost because the run was killed during teardown and the caller reported
+# the timeout instead. The wrapper must prefer the captured verdict.
+late_tmp="$(mktemp -d "${TMPDIR:-/tmp}/llms-smoke-late-test.XXXXXX")"
+mkdir -p "$late_tmp/run"
+cp "$WRAPPER" "$late_tmp/routine-run.sh"
+cp "$LIB" "$late_tmp/lib-bounded.sh"
+cat >"$late_tmp/run.sh" <<'LATEEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'FAIL (1): brain:init timeout=120s\n' >&2
+printf 'VERDICT: RED brain:init\n' >&2
+sleep 300
+LATEEOF
+chmod +x "$late_tmp/run.sh"
+set +e
+SMOKE_WRAPPER_TIMEOUT_SECS=3 ROUTINES_RUN_DIR="$late_tmp/run" TMPDIR="$late_tmp/run" \
+  bash "$late_tmp/routine-run.sh" \
+  >"$late_tmp/wrapper.stdout" 2>"$late_tmp/wrapper.stderr"
+late_rc=$?
+set -e
+[ "$late_rc" -eq 1 ] \
+  || fail "a run killed after printing VERDICT must report RED (exit 1); got $late_rc"
+grep -qF 'RESULT: error RED FAIL (1): brain:init timeout=120s' "$late_tmp/wrapper.stdout" \
+  || fail "wrapper must report the captured verdict, not the backstop timeout"
+grep -qF 'incomplete-timeout' "$late_tmp/wrapper.stdout" \
+  && fail "wrapper reported incomplete-timeout despite a captured VERDICT"
+rm -rf "$late_tmp"
 
 echo "OK llms-txt-install-smoke-bounded"

@@ -17,6 +17,18 @@ if [ ! -f "$RUN_SH" ]; then
   exit 2
 fi
 
+# run.sh carries its own global deadline, but that deadline only clamps calls
+# routed through run_bounded. Anything it does not wrap — a new step, a network
+# pipeline, a wedged child — can still hang the whole run past the foreground
+# cap, which is how the 2026-08-29 run died mute with no VERDICT line and was
+# reconciled as an orphan. This outer bound is the backstop: whatever run.sh
+# does, the wrapper reaches its RESULT trailer. It must sit ABOVE run.sh's own
+# budget (540s) so the internal deadline stays the primary mechanism, and below
+# the 600s foreground cap so the trailer is still printed.
+# shellcheck source=lib-bounded.sh
+. "${SKILL_DIR}/lib-bounded.sh"
+SMOKE_WRAPPER_TIMEOUT_SECS="${SMOKE_WRAPPER_TIMEOUT_SECS:-570}"
+
 # Capture everything; run.sh prints VERDICT on stderr and optional JSON on stdout.
 # Use an explicit ${TMPDIR:-/tmp} template. Darwin prefix-only mktemp selects
 # /var/folders/... which the Codex/routine sandbox denies
@@ -30,8 +42,11 @@ else
 fi
 
 set +e
-LLMS_TXT_SMOKE_FAILURE_LOG="$FAILURE_LOG" \
-  bash "$RUN_SH" --json >"$TMP.stdout" 2>"$TMP.stderr"
+# Exported, not an assignment prefix: run_bounded is a shell function, so a
+# prefix would not reach the child.
+export LLMS_TXT_SMOKE_FAILURE_LOG="$FAILURE_LOG"
+run_bounded "$SMOKE_WRAPPER_TIMEOUT_SECS" bash "$RUN_SH" --json \
+  >"$TMP.stdout" 2>"$TMP.stderr"
 EC=$?
 set -e
 
@@ -59,6 +74,16 @@ if [ -z "$VERDICT_LINE" ]; then
 fi
 
 if [ -z "$VERDICT_LINE" ]; then
+  if [ "$EC" -eq 124 ]; then
+    # The backstop fired. Name it, so the outcome reads as a bounded hang
+    # rather than an unexplained mute run.
+    echo "routine-run.sh: smoke exceeded the wrapper bound of ${SMOKE_WRAPPER_TIMEOUT_SECS}s" >&2
+    if [ -f "$FAILURE_LOG" ]; then
+      echo "routine-run.sh: failure log preserved at $FAILURE_LOG" >&2
+    fi
+    echo "RESULT: error RED incomplete-timeout wrapper=${SMOKE_WRAPPER_TIMEOUT_SECS}s"
+    exit 2
+  fi
   echo "routine-run.sh: incomplete smoke — no VERDICT line (exit was $EC)" >&2
   echo "RESULT: error RED incomplete-no-verdict exit=$EC"
   exit 2

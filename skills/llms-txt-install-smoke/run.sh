@@ -53,6 +53,18 @@ INSTALL_TIMEOUT="${INSTALL_TIMEOUT:-240}"
 # slow host. Set 0 to disable for interactive debugging.
 SMOKE_TOTAL_BUDGET_SECS="${SMOKE_TOTAL_BUDGET_SECS:-540}"
 smoke_deadline_init "$SMOKE_TOTAL_BUDGET_SECS"
+# Teardown bounds. The global budget above covers the WORK of the run, and the
+# VERDICT prints before cleanup starts, so an unbounded teardown still burns the
+# caller's remaining cap AFTER the answer exists. A 2026-08-30 reproduction
+# reached VERDICT: RED at 376s and was then killed at 570s still inside
+# `rm -rf` of a 458M sandbox, so the caller saw a timeout instead of the real
+# verdict. Both teardown steps are bounded; leftovers are reaped on the next run.
+SMOKE_DAEMON_STOP_SECS="${SMOKE_DAEMON_STOP_SECS:-15}"
+SMOKE_SANDBOX_RM_SECS="${SMOKE_SANDBOX_RM_SECS:-45}"
+# Age above which a sandbox from an earlier killed run is reaped at start. The
+# whole smoke is capped near 10 minutes, so nothing this old is still running.
+SMOKE_SANDBOX_REAP_MINS="${SMOKE_SANDBOX_REAP_MINS:-120}"
+SMOKE_SANDBOX_REAP_SECS="${SMOKE_SANDBOX_REAP_SECS:-60}"
 
 FAILS=()
 PASS=()
@@ -102,6 +114,12 @@ require_cmd() {
   fi
 }
 
+# Reap sandboxes left behind by earlier runs that were killed mid-teardown, or
+# that outran the bounded removal below. Without this every capped run leaks one
+# directory: five leftovers held 3.5G when this was measured.
+smoke_reap_sandboxes /tmp 'llms-txt-install-smoke.*' \
+  "$SMOKE_SANDBOX_REAP_MINS" "$SMOKE_SANDBOX_REAP_SECS"
+
 FRESH_ROOT="$(mktemp -d /tmp/llms-txt-install-smoke.XXXXXX)"
 export FRESH_ROOT
 export HOME="$FRESH_ROOT/home"
@@ -143,11 +161,44 @@ emit_status() {
   echo "$*" >&4
 }
 DAEMON_PID=""
+# stop_pid_bounded <pid> <seconds>
+# Wait up to <seconds> for an already-signalled child to exit, then SIGKILL it.
+# `wait` is a shell builtin, so it cannot be wrapped by run_bounded.
+stop_pid_bounded() {
+  local pid="$1" secs="$2" waited=0
+  while [ "$waited" -lt "$secs" ]; do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 1
+    waited=$(( waited + 1 ))
+  done
+  kill -KILL "$pid" 2>/dev/null || true
+  return 0
+}
+# discard_sandbox
+# Give the sandbox back without paying for it. A finished sandbox holds ~1.4G of
+# install output, and `rm -rf` on it runs for minutes — far past the margin left
+# after the VERDICT is printed. Renaming it is a single inode operation, so the
+# caller pays nothing, and the removal is detached to finish on its own. A
+# rename that fails, or a detach the host refuses, falls back to the bounded
+# removal; whatever survives is reaped at the start of a later run.
+discard_sandbox() {
+  local trash="${FRESH_ROOT}.trash-$$"
+  if mv "$FRESH_ROOT" "$trash" 2>/dev/null; then
+    ( rm -rf "$trash" >/dev/null 2>&1 & ) >/dev/null 2>&1 || true
+    return 0
+  fi
+  if ! run_bounded "$SMOKE_SANDBOX_RM_SECS" rm -rf "$FRESH_ROOT"; then
+    echo "sandbox removal exceeded ${SMOKE_SANDBOX_RM_SECS}s; left at $FRESH_ROOT (reaped by a later run)" >&4
+  fi
+}
+
 cleanup() {
   local exit_rc=$?
   if [ -n "$DAEMON_PID" ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
     kill "$DAEMON_PID" 2>/dev/null || true
-    wait "$DAEMON_PID" 2>/dev/null || true
+    # Bounded: a bare `wait` here blocks for as long as the isolated lastdbd
+    # takes to unwind, which is unbounded work after the verdict is already out.
+    stop_pid_bounded "$DAEMON_PID" "$SMOKE_DAEMON_STOP_SECS"
   fi
   if [ "$exit_rc" -ne 0 ] && [ -n "${LLMS_TXT_SMOKE_FAILURE_LOG:-}" ]; then
     if preserve_failure_log "$LOG" "$LLMS_TXT_SMOKE_FAILURE_LOG"; then
@@ -157,13 +208,18 @@ cleanup() {
     fi
   fi
   if [ "$KEEP" -eq 0 ]; then
-    rm -rf "$FRESH_ROOT"
+    discard_sandbox
   else
     echo "sandbox kept at $FRESH_ROOT" >&2
   fi
   return "$exit_rc"
 }
 trap cleanup EXIT
+# An outer bound (routine-run.sh) terminates this script with SIGTERM. Bash does
+# not run an EXIT trap when it dies of an uncaught signal, so without this the
+# backstop would leave the isolated lastdbd running and the /tmp sandbox behind.
+# Exiting from the handler routes the kill through cleanup().
+trap 'exit 143' TERM INT
 
 echo "=========================================="
 echo "llms-txt install smoke (isolated)"
@@ -179,7 +235,11 @@ require_cmd lastdbd
 # Bun: install into sandbox if missing; allow pre-existing system bun
 if ! command -v bun >/dev/null 2>&1; then
   step "installing bun (sandbox-aware)"
-  curl -fsSL https://bun.sh/install | bash || true
+  # Bounded: an unbounded network pipeline here is invisible to the global
+  # deadline and can hang the whole run past the foreground cap. The result is
+  # deliberately tolerated — `prereq:bun` below is the authoritative check.
+  run_bounded "$(smoke_bounded_remaining "$INSTALL_TIMEOUT")" \
+    bash -c 'curl -fsSL --max-time 120 https://bun.sh/install | bash' || true
 fi
 export PATH="$HOME/.bun/bin:${REAL_HOME}/.bun/bin:$HOME/.local/bin:$PATH"
 if command -v bun >/dev/null 2>&1; then
@@ -325,7 +385,7 @@ fi
 
 # health
 if [ -S "$SOCK" ]; then
-  HEALTH=$(curl -s --unix-socket "$SOCK" http://localhost/health || true)
+  HEALTH=$(curl -s --max-time 15 --unix-socket "$SOCK" http://localhost/health || true)
   if [ "$HEALTH" = '{"status":"ok"}' ]; then
     note_pass "health:$HEALTH"
   else
