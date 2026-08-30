@@ -6,8 +6,13 @@ fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 bash -n "$BIN"
 bash -n "$ROOT/lib/canary-loom/loom-canary-step.sh"
 [ -f "$ROOT/lib/canary-loom/lastdb-canary-release.json" ] || fail "graph missing"
-[ "$(jq -r .version "$ROOT/lib/canary-loom/lastdb-canary-release.json")" = "3" ] \
+[ "$(jq -r .version "$ROOT/lib/canary-loom/lastdb-canary-release.json")" = "4" ] \
   || fail "canary graph version did not advance"
+jq -e '.states.DECIDE_A.map.green == "LEDGER" and
+       .states.LEDGER.next == "SOAK" and
+       .states.LEDGER.effects == "idempotent"' \
+  "$ROOT/lib/canary-loom/lastdb-canary-release.json" >/dev/null \
+  || fail "green child does not record the dogfood ledger before soak"
 grep -q 'last-stack-canary-loom' "$ROOT/routines/lastdb-canary-soak-watch.md" \
   || fail "soak-watch missing loom tick"
 if grep -q 'sm tick --definition lastdb-canary-release' "$ROOT/routines/lastdb-canary-soak-watch.md"; then
@@ -58,6 +63,7 @@ cat > "$mock_home/.local/bin/sm-canary-release-step" <<'SH'
 set -euo pipefail
 case "${1:-}" in
   BUILD_POLL) printf '%s\n' 'SM_CONTEXT_PATCH:{"build_next":"BUILD_WAIT"}' ;;
+  LEDGER) printf '%s\n' 'SM_CONTEXT_PATCH:{"phase_next":"SOAK","ledger_sha":"candidate-sha","source_git_oid":"abc","version":"1.2.3"}' ;;
   SOAK) printf '%s\n' 'SM_CONTEXT_PATCH:{"soak_status":"pending"}' ;;
   *) exit 2 ;;
 esac
@@ -80,6 +86,16 @@ printf '%s\n' "$soak_out" | grep -q 'LOOM_CONTEXT_PATCH:{"soak_status":"pending"
   || fail "live soak poll did not store its decision with its revision: $soak_out"
 [ "$(printf '%s\n' "$soak_out" | grep -c '^LOOM_CONTEXT_PATCH:')" -eq 1 ] \
   || fail "live soak poll emitted split context patches: $soak_out"
+ledger_out="$(PATH="$mock_home/.local/bin:$PATH" HOME="$mock_home" LOOM_LIVE=1 \
+  LOOM_INPUT='{"source_git_oid":"abc","version":"1.2.3"}' \
+  "$ROOT/lib/canary-loom/loom-canary-step.sh" LEDGER)"
+printf '%s\n' "$ledger_out" | grep -q 'LOOM_CONTEXT_PATCH:{"phase_next":"SOAK","ledger_sha":"candidate-sha","source_git_oid":"abc","version":"1.2.3"}' \
+  || fail "live ledger step did not preserve the dogfood receipt: $ledger_out"
+
+standin_ledger="$(LOOM_INPUT='{"source_git_oid":"abc","version":"1.2.3"}' \
+  "$ROOT/lib/canary-loom/loom-canary-step.sh" LEDGER)"
+printf '%s\n' "$standin_ledger" | grep -q '"ledger_sha":"1.2.3"' \
+  || fail "stand-in ledger step did not record the candidate: $standin_ledger"
 
 export LAST_STACK_CANARY_LOOM_STDOUT_LOG="$tmp/loom.stdout.log"
 export LAST_STACK_CANARY_LOOM_STDERR_LOG="$tmp/loom.stderr.log"

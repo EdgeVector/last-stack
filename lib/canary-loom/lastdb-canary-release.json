@@ -1,6 +1,6 @@
 {
   "name": "lastdb-canary-release",
-  "version": "3",
+  "version": "4",
   "start_at": "BUILD_START",
   "max_depth": 2,
   "node_budget": 80,
@@ -80,11 +80,19 @@
       "type": "choice",
       "path": "child_status",
       "map": {
-        "green": "SOAK",
+        "green": "LEDGER",
         "red": "HEAL",
         "exhausted": "REPORT"
       },
       "default": "HEAL"
+    },
+    "LEDGER": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-canary-step.sh\" LEDGER"],
+      "effects": "idempotent",
+      "timeout_sec": 120,
+      "next": "SOAK",
+      "on_error": "HEAL"
     },
     "SOAK": {
       "type": "agent",
