@@ -274,12 +274,25 @@ handle_departure() {
 
   view="$(lastgit cr view "$repo" "$id" --json 2>/dev/null || printf '{}')"
   state="$(printf '%s' "$view" | jq -r '.state // empty')"
-  if [ "$state" != "merged" ]; then
-    # closed without merge — don't upgrade, don't retry forever
-    mark_handled "$repo" "$id"
-    log "skip $repo $id state=$state (not merged)"
-    return 0
-  fi
+  case "$state" in
+    merged) ;;
+    open|merging|'')
+      # Transient: the CR left the open index while the completer (or a lagging
+      # view read) still shows it in flight. Marking it handled here burns the
+      # only departure event this watcher gets for the CR, so a merge that
+      # lands seconds later is never installed (loom cr-mtgf4rnz-5d48,
+      # 2026-08-30). Defer: the caller keeps the key in the open snapshot and
+      # the next pass re-reads the settled state.
+      log "defer $repo $id state=${state:-unreadable} (transient; next pass re-reads)"
+      return 2
+      ;;
+    *)
+      # closed without merge — don't upgrade, don't retry forever
+      mark_handled "$repo" "$id"
+      log "skip $repo $id state=$state (not merged)"
+      return 0
+      ;;
+  esac
 
   base="$(printf '%s' "$view" | jq -r '.base_ref // .base_branch // empty' | sed 's#^refs/heads/##')"
   if [ -n "$base" ] && [ "$base" != "main" ]; then
@@ -318,7 +331,7 @@ handle_departure() {
 }
 
 poll_fleet() {
-  local open_path tmp_open key repo id
+  local open_path tmp_open key repo id rc
   mkdir -p "$STATE_DIR"
   open_path="$(fleet_open_path)"
   tmp_open="$(mktemp "${TMPDIR:-/tmp}/post-merge-open.XXXXXX")"
@@ -346,7 +359,12 @@ poll_fleet() {
     repo="${key%%:*}"
     id="${key#*:}"
     [ -n "$repo" ] && [ -n "$id" ] || continue
-    handle_departure "$repo" "$id" || true
+    rc=0
+    handle_departure "$repo" "$id" || rc=$?
+    if [ "$rc" -eq 2 ]; then
+      # Still in flight: keep the key so the next pass sees the departure again.
+      printf '%s\n' "$key" >>"$tmp_open"
+    fi
   done <"$open_path"
 
   mv "$tmp_open" "$open_path"
@@ -366,7 +384,7 @@ CONVERGE_TIMEOUT="${LAST_STACK_POST_MERGE_CONVERGE_TIMEOUT:-600}"
 CONVERGE_INTERVAL="${LAST_STACK_POST_MERGE_CONVERGE_INTERVAL:-300}"
 
 converge_repos() {
-  printf 'last-stack\nbrain\nsituations\nfkanban\nroutines\nlastsecrets\nconfigurations\nsearch\n'
+  printf 'last-stack\nbrain\nsituations\nfkanban\nroutines\nlastsecrets\nconfigurations\nsearch\nloom\n'
 }
 
 tip_seen_path() { printf '%s/%s.tip-seen\n' "$STATE_DIR" "$1"; }
