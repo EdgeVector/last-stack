@@ -100,11 +100,6 @@ ci_test() {
 ci_test tests/last-stack-routine-read.sh
 ci_test tests/last-stack-routine-read-proceed-on-stale.sh
 ci_test tests/last-stack-ci-sharding.sh
-# The install-smoke bounds. This file was written for a canary that kept dying
-# mute at the agent tool's 600s foreground cap, and it was reachable only under
-# LAST_STACK_CI_FULL=1 — so nothing in the required gate held those bounds in
-# place. It is pure helper behaviour plus wiring greps; a few seconds.
-ci_test tests/llms-txt-install-smoke-bounded.sh
 # Reclaim safety belongs in the REQUIRED gate, not only under
 # LAST_STACK_CI_FULL=1: this covers a liveness check that once failed OPEN
 # (a sandbox denying ps/lsof made every worktree look idle) and a board parse
@@ -302,3 +297,15 @@ ci_test tests/last-stack-generator-shed-gate.sh
 # `sleep` as the fixture process, so it fits the foreground budget.
 ci_test tests/last-stack-worktree-reclaim.sh
 ci_test tests/last-stack-disk-reclaim-stripped-path.sh
+
+# The install-smoke bounds. This file was written for a canary that kept dying
+# mute at the agent tool's 600s foreground cap, and it was reachable only under
+# LAST_STACK_CI_FULL=1 — so nothing in the required gate held those bounds in
+# place. It is pure helper behaviour plus wiring greps; a few seconds.
+#
+# APPENDED, deliberately. ci_test assigns a shard by list POSITION, so inserting
+# a test anywhere else renumbers every test after it into a different shard and
+# re-pairs concurrent neighbours. Doing that here moved
+# tests/last-stack-canary-pipeline.sh into a shard where it failed under load.
+# New tests go at the end.
+ci_test tests/llms-txt-install-smoke-bounded.sh
