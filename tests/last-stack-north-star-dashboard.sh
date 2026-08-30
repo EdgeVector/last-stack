@@ -4,7 +4,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$ROOT/bin/last-stack-north-star-dashboard"
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/ns-dashboard-test.XXXXXX")"
+# macOS TMPDIR ends with '/', so "$TMPDIR/ns-..." contains '//' while the
+# dashboard prints normalized paths — the ^HTML=$WORK/...$ asserts below can
+# then never match (this test was red on every trailing-slash-TMPDIR host).
+tmp_root="${TMPDIR:-/tmp}"
+WORK="$(mktemp -d "${tmp_root%/}/ns-dashboard-test.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
 chmod +x "$BIN"

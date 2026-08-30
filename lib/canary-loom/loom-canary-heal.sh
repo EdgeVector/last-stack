@@ -110,6 +110,81 @@ if fenced:
         file=sys.stderr,
     )
 
+
+def recover_child_evidence():
+    """Fill exec_id and probe evidence from the failed safe-upgrade child.
+
+    JOIN_A routes a child failure straight to HEAL, so the parent context has
+    no exec_id and no probe tail — heal lx-20260830T195506 dispatched an agent
+    with "(no probe tail)". The child is addressable by its idempotency key
+    "<parent exec id>#upgrade#<n>", and the step wrapper persists driver output
+    as <candidate dir>/{probe,cutover}-fail-*.log. Fail open: a heal must
+    still run blind when recovery fails.
+    """
+    global exec_id, probe
+    parent = os.environ.get("LOOM_EXEC_ID") or ""
+    scripts_dir = os.environ.get("LOOM_SCRIPTS") or os.path.expanduser(
+        "~/.last-stack/lib/canary-loom"
+    )
+    helper = os.path.join(
+        os.path.dirname(os.path.dirname(scripts_dir)), "bin", "last-stack-loom-exec-latest"
+    )
+    if not os.path.isfile(helper):
+        helper = os.path.expanduser("~/.last-stack/bin/last-stack-loom-exec-latest")
+    child = None
+    if parent and not exec_id and os.path.isfile(helper):
+        try:
+            p = subprocess.run(
+                [helper, "--definition", "lastdb-safe-upgrade", "--window-hours", "24"],
+                capture_output=True, text=True, timeout=60,
+            )
+            rows = json.loads(p.stdout or "[]")
+            for row in rows if isinstance(rows, list) else []:
+                if str(row.get("idempotency_key") or "").startswith(parent + "#"):
+                    child = row
+                    break
+        except Exception as err:
+            print(f"loom-canary-heal: child lookup failed: {err}", file=sys.stderr)
+    if child:
+        exec_id = str(child.get("id") or child.get("exec_id") or "")
+    if not probe and exec_id:
+        try:
+            p = subprocess.run(
+                ["loom", "show", exec_id], capture_output=True, text=True, timeout=60
+            )
+            keep = []
+            for line in (p.stdout or "").splitlines():
+                if line.startswith(("status:", "state:", "error:", "node ")) or line.startswith(
+                    ("context.last_error:", "context.probe_tail:", "context.probe_rc:", "context.verdict:")
+                ):
+                    keep.append(line)
+            if keep:
+                probe = "\n".join(keep)
+        except Exception as err:
+            print(f"loom-canary-heal: loom show failed: {err}", file=sys.stderr)
+    candidate = str(ctx.get("candidate") or "")
+    if candidate:
+        try:
+            cand_dir = os.path.dirname(candidate)
+            logs = sorted(
+                (
+                    os.path.join(cand_dir, name)
+                    for name in os.listdir(cand_dir)
+                    if name.startswith(("probe-fail-", "cutover-fail-")) and name.endswith(".log")
+                ),
+                key=os.path.getmtime,
+            )
+            if logs:
+                with open(logs[-1], encoding="utf-8") as handle:
+                    tail = handle.read()[-3000:]
+                probe = (probe + "\n\n" if probe else "") + f"--- {logs[-1]} ---\n{tail}"
+        except OSError as err:
+            print(f"loom-canary-heal: evidence file read failed: {err}", file=sys.stderr)
+
+
+if not exec_id or not probe:
+    recover_child_evidence()
+
 cwd = os.environ.get("CANARY_RED_CWD") or os.path.expanduser("~/code/edgevector")
 prompt = textwrap.dedent(f"""
 You are the LastDB canary RED healer. A canary upgrade failed. You RUN a fix.

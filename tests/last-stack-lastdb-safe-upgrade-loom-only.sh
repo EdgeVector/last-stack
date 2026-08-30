@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# A HEAL-node-spawned agent exports the ambient live-loom contract; scrub it
+# so every invocation below controls its own LOOM_* env.
+unset LOOM_LIVE LOOM_CANARY_LIVE LOOM_CANARY_RED_LIVE \
+  LOOM_EXEC_ID LOOM_INPUT LOOM_IDEMPOTENCY_KEY LOOM_SCRIPTS || true
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 FRESH="$ROOT/lib/canary-loom/lastdb-candidate-freshness.py"
 STEP="$ROOT/lib/canary-loom/loom-safe-upgrade-step.sh"
@@ -123,7 +128,23 @@ cat >"$skill_dir/safe-upgrade-lastdb.sh" <<'SH'
 set -euo pipefail
 printf 'args=%s marker=%s exec=%s\n' "$*" "${LASTDB_SAFE_UPGRADE_VIA_LOOM:-}" "${LOOM_EXEC_ID:-}" >>"${SAFE_LOG:?}"
 case " $* " in
-  *" --probe-only "*) printf 'VERDICT: GREEN_PROBE_ONLY\n' ;;
+  *" --probe-only "*)
+    case "${SAFE_MOCK_PROBE:-green}" in
+      green) printf 'VERDICT: GREEN_PROBE_ONLY\n' ;;
+      false-green)
+        # Real drivers cat sub-probe output: the smoke stage prints its own
+        # "VERDICT: GREEN" before a later bar fails RED with rc=1.
+        printf 'VERDICT: GREEN\n'
+        printf 'VERDICT: RED\n'
+        printf 'REASON: candidate fails the latency bar\n'
+        exit 1
+        ;;
+      rc-red)
+        printf 'VERDICT: GREEN_PROBE_ONLY\n'
+        exit 1
+        ;;
+    esac
+    ;;
   *)
     [ "${LASTDB_SAFE_UPGRADE_VIA_LOOM:-}" = "1" ] || exit 70
     [ -n "${LOOM_EXEC_ID:-}" ] || exit 71
@@ -167,6 +188,50 @@ forward_input="$(jq -cn \
   --arg version "0.23.3-2-g${oid_b:0:12}" \
   --arg source_git_oid "$oid_b" \
   '{candidate:$candidate,version:$version,source_git_oid:$source_git_oid}')"
+
+# Forward probe, driver green (rc=0, final verdict GREEN_PROBE_ONLY).
+out="$(HOME="$mock_home" \
+  SAFE_LOG="$safe_log" \
+  LOOM_LIVE=1 \
+  LOOM_EXEC_ID=lx-test-probe-green \
+  LOOM_INPUT="$forward_input" \
+  LASTDB_SAFE_UPGRADE_CURRENT_BIN="$tmp/current-a/lastdbd" \
+  LASTDB_SAFE_UPGRADE_FOLD_GIT_DIR="$repo" \
+  "$STEP" PROBE)"
+printf '%s\n' "$out" | grep -q '"verdict":"green"' || fail "green probe was not green: $out"
+
+# Incident lx-20260830T203912: the smoke stage's own "VERDICT: GREEN" inside a
+# rc=1 red probe must not read as green — the false green sent a RED candidate
+# into CUTOVER.
+out="$(HOME="$mock_home" \
+  SAFE_LOG="$safe_log" \
+  SAFE_MOCK_PROBE=false-green \
+  LOOM_LIVE=1 \
+  LOOM_EXEC_ID=lx-test-probe-red \
+  LOOM_INPUT="$forward_input" \
+  LASTDB_SAFE_UPGRADE_CURRENT_BIN="$tmp/current-a/lastdbd" \
+  LASTDB_SAFE_UPGRADE_FOLD_GIT_DIR="$repo" \
+  "$STEP" PROBE)"
+printf '%s\n' "$out" | grep -q '"verdict":"red"' \
+  || fail "smoke-section GREEN inside a rc=1 probe was not red: $out"
+printf '%s\n' "$out" | grep -q 'REASON: candidate fails the latency bar' \
+  || fail "red probe did not carry the driver REASON line: $out"
+[ -s "$tmp/candidate-b/probe-fail-lx-test-probe-red.log" ] \
+  || fail "red probe left no durable evidence file"
+
+# A driver that prints a green verdict but exits non-zero is still red.
+out="$(HOME="$mock_home" \
+  SAFE_LOG="$safe_log" \
+  SAFE_MOCK_PROBE=rc-red \
+  LOOM_LIVE=1 \
+  LOOM_EXEC_ID=lx-test-probe-rc \
+  LOOM_INPUT="$forward_input" \
+  LASTDB_SAFE_UPGRADE_CURRENT_BIN="$tmp/current-a/lastdbd" \
+  LASTDB_SAFE_UPGRADE_FOLD_GIT_DIR="$repo" \
+  "$STEP" PROBE)"
+printf '%s\n' "$out" | grep -q '"verdict":"red"' \
+  || fail "green text with rc=1 was not red: $out"
+
 HOME="$mock_home" \
   SAFE_LOG="$safe_log" \
   LOOM_LIVE=1 \

@@ -97,6 +97,42 @@ skill = os.path.expanduser(
     "~/.last-stack/skills/lastdb-safe-upgrade/scripts/safe-upgrade-lastdb.sh"
 )
 
+
+def evidence_tail(text, limit=2000):
+    lines = [ln.rstrip() for ln in text.splitlines() if ln.strip()]
+    return "\n".join(lines[-30:])[-limit:]
+
+
+def probe_failure_reason(text, final_verdict, rc):
+    reasons = [ln.strip() for ln in text.splitlines() if ln.strip().startswith("REASON:")]
+    if reasons:
+        return reasons[-1][:400]
+    if final_verdict:
+        return f"{final_verdict} (rc={rc})"
+    return f"driver exited rc={rc} with no VERDICT line"
+
+
+def write_evidence_file(stage, text, rc):
+    """Persist driver output next to the staged candidate.
+
+    Loom keeps no output for a failed node, so without this file a RED
+    cutover leaves zero evidence (heal lx-20260830T195506 started blind).
+    Best effort: evidence must never turn a probe verdict into a crash.
+    """
+    if not cand:
+        return
+    try:
+        path = os.path.join(
+            os.path.dirname(cand),
+            f"{stage}-fail-{os.environ.get('LOOM_EXEC_ID') or 'loom-unknown'}.log",
+        )
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(f"stage={stage} rc={rc}\n")
+            handle.write(text)
+        print(f"su {stage} evidence: {path}", file=sys.stderr)
+    except OSError as err:
+        print(f"su {stage} evidence write failed: {err}", file=sys.stderr)
+
 if step == "PROBE":
     if not cand:
         emit({"verdict": "red"}, "su PROBE no candidate")
@@ -126,8 +162,22 @@ if step == "PROBE":
     sys.stdout.write(p.stdout or "")
     sys.stderr.write(p.stderr or "")
     text = (p.stdout or "") + (p.stderr or "")
-    v = "green" if "VERDICT: GREEN" in text or "GREEN_PROBE_ONLY" in text else "red"
-    emit({"verdict": v, "probe_rc": p.returncode}, f"su PROBE verdict={v}")
+    # The driver cats sub-probe output (smoke prints its own "VERDICT: GREEN"),
+    # so a substring match false-greens a red probe: rc=1 runs reached CUTOVER
+    # on lx-20260830T203912.259-78723-1. Only the driver's FINAL verdict line
+    # plus rc==0 is green.
+    verdicts = [ln.strip() for ln in text.splitlines() if ln.strip().startswith("VERDICT:")]
+    final_verdict = verdicts[-1] if verdicts else ""
+    green = p.returncode == 0 and final_verdict in (
+        "VERDICT: GREEN",
+        "VERDICT: GREEN_PROBE_ONLY",
+    )
+    patch = {"verdict": "green" if green else "red", "probe_rc": p.returncode}
+    if not green:
+        patch["last_error"] = probe_failure_reason(text, final_verdict, p.returncode)
+        patch["probe_tail"] = evidence_tail(text)
+        write_evidence_file("probe", text, p.returncode)
+    emit(patch, f"su PROBE verdict={patch['verdict']}")
     raise SystemExit(0)
 
 if step == "CUTOVER":
@@ -155,6 +205,7 @@ if step == "CUTOVER":
     sys.stdout.write(p.stdout or "")
     sys.stderr.write(p.stderr or "")
     if p.returncode != 0:
+        write_evidence_file("cutover", (p.stdout or "") + (p.stderr or ""), p.returncode)
         sys.exit(p.returncode)
     print('LOOM_EFFECT_DONE:{"kind":"deploy","target":"lastdb-safe-upgrade"}')
     emit({"cutover": "live", "verdict": "green"}, "su CUTOVER live")
