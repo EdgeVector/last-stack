@@ -138,6 +138,46 @@ def event_ts_for_state(path: Path, candidate: str, state: str) -> dt.datetime | 
     return None
 
 
+def event_for_state(path: Path, candidate: str, state: str) -> dict | None:
+    for event in reversed(load_events(path)):
+        if event.get("candidate") == candidate and event.get("state") == state:
+            return event
+    return None
+
+
+def primary_identity(dry_run: bool) -> tuple[str, str, str] | None:
+    explicit = "LAST_STACK_CANARY_PRIMARY_IDENTITY_CMD" in os.environ
+    if dry_run and not explicit:
+        return ("dry-run", "dry-run", "dry-run")
+    command = os.environ.get(
+        "LAST_STACK_CANARY_PRIMARY_IDENTITY_CMD",
+        "last-stack-lastdb-memory-guard --identity",
+    )
+    if command in ("pass", "true", "ok"):
+        return ("stub", "stub", "stub")
+    result = subprocess.run(
+        command,
+        shell=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        return None
+    fields = {}
+    for token in (result.stdout or "").strip().split():
+        key, separator, value = token.partition("=")
+        if separator and key in {"pid", "process_start_ts", "build"}:
+            fields[key] = value
+    if not fields.get("pid") or not fields.get("process_start_ts"):
+        return None
+    return (
+        fields["pid"],
+        fields["process_start_ts"],
+        fields.get("build", "unknown"),
+    )
+
+
 def live_version() -> str:
     cmd = os.environ.get("LAST_STACK_CANARY_LIVE_VERSION_CMD", "lastdbd --version")
     if cmd in ("", "pass", "skip", "true", "ok"):
@@ -920,20 +960,49 @@ def soak_watch(path: Path, args: argparse.Namespace) -> dict:
             if observed_sha != candidate and not str(current.get("version") or ""):
                 failures.append(f"sha_mismatch_expected_{candidate}_observed_{observed_sha}")
 
-        for label, env_name, default_cmd in CHECKS:
-            if not run_check(label, env_name, default_cmd, dry_run=args.dry_run):
-                detail = CHECK_FAILURE_DETAIL.get(label)
-                failures.append(f"{label}[{detail}]" if detail else label)
-
         latest = latest_by_candidate(load_events(path)).get(candidate, current)
         state = str(latest.get("state", ""))
+        identity_now = primary_identity(args.dry_run)
         if state == "dogfood_green":
-            append_transition(path, candidate, "soak_started", observed_sha=observed_sha)
+            identity_extra = {}
+            if identity_now is not None:
+                identity_extra = {
+                    "primary_pid": identity_now[0],
+                    "primary_start_ts": identity_now[1],
+                    "primary_build": identity_now[2],
+                }
+            latest = append_transition(
+                path,
+                candidate,
+                "soak_started",
+                observed_sha=observed_sha,
+                **identity_extra,
+            )
             state = "soak_started"
         if state not in {"soak_started", "soak_green", "soak_red"}:
             die(f"cannot soak-watch {candidate}: current state is {state}")
         if state in {"soak_green", "soak_red"}:
             return latest
+
+        baseline = event_for_state(path, candidate, "soak_started") or {}
+        baseline_pid = str(baseline.get("primary_pid", ""))
+        baseline_start = str(baseline.get("primary_start_ts", ""))
+        if not baseline_pid or not baseline_start:
+            failures.append("primary_identity_baseline_missing")
+        elif identity_now is None:
+            failures.append("primary_identity_unavailable")
+        elif identity_now[0] != baseline_pid or identity_now[1] != baseline_start:
+            failures.append(
+                "primary_restarted["
+                f"pid={baseline_pid}->{identity_now[0]}_"
+                f"start={baseline_start}->{identity_now[1]}]"
+            )
+
+        for label, env_name, default_cmd in CHECKS:
+            if not run_check(label, env_name, default_cmd, dry_run=args.dry_run):
+                detail = CHECK_FAILURE_DETAIL.get(label)
+                failures.append(f"{label}[{detail}]" if detail else label)
+
         if failures:
             return append_transition(
                 path, candidate, "soak_red", observed_sha=observed_sha, evidence=";".join(failures)

@@ -22,7 +22,9 @@ export LASTDBD_GUARD_PATH="$tmp/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 mkdir -p "$tmp/bin" "$tmp/home/.lastdb/data"
 export HOME="$tmp/home"
 export LASTDBD_PRIMARY_HOME="$tmp/home/.lastdb"
+export LASTDBD_GUARD_RESTART_WAIT_SEC=2
 LOG="$LASTDBD_PRIMARY_HOME/monitoring/lastdbd-memory-guard.log"
+EVENT_LOG="$LASTDBD_PRIMARY_HOME/monitoring/lastdbd-memory-guard-events.jsonl"
 
 FAKE_PID=4242
 
@@ -31,7 +33,11 @@ cat >"$tmp/bin/ps" <<'SH'
 #!/usr/bin/env bash
 args="$*"
 case "$args" in
-  "-Ao pid=,comm=")   printf '%s /opt/lastdb/bin/lastdbd\n' "${FAKE_PID:-4242}" ;;
+  "-Ao pid=,comm=")
+    pid="${FAKE_PID:-4242}"
+    if grep -q 'launchctl kickstart' "$FAKE_ACTION_LOG" 2>/dev/null; then pid=$((pid + 1)); fi
+    printf '%s /opt/lastdb/bin/lastdbd\n' "$pid"
+    ;;
   *"-o args="*)       printf '/opt/lastdb/bin/lastdbd\n' ;;
   "eww -p "*)         printf 'PID TTY TIME CMD LASTDB_HOME=%s\n' "$LASTDBD_PRIMARY_HOME" ;;
   *"-o rss="*)        printf '%s\n' "${FAKE_RSS_KB:-0}" ;;
@@ -44,8 +50,9 @@ SH
 cat >"$tmp/bin/curl" <<'SH'
 #!/usr/bin/env bash
 if [ "${FAKE_NODE_DOWN:-0}" = "1" ]; then exit 7; fi
-printf '{"status":{"rss_bytes":%s,"phys_footprint_bytes":%s,"phys_footprint_peak_bytes":%s}}' \
-  "${FAKE_RSS_BYTES:-0}" "${FAKE_FOOTPRINT_BYTES:-0}" "${FAKE_PEAK_BYTES:-0}"
+printf '{"status":{"rss_bytes":%s,"phys_footprint_bytes":%s,"phys_footprint_peak_bytes":%s,"process_start_ts":%s,"build":{"version":"%s"}}}' \
+  "${FAKE_RSS_BYTES:-0}" "${FAKE_FOOTPRINT_BYTES:-0}" "${FAKE_PEAK_BYTES:-0}" \
+  "${FAKE_START_TS:-1234}" "${FAKE_BUILD:-0.0.0-test}"
 SH
 
 # Fake sysctl for vm.swapusage.
@@ -73,13 +80,20 @@ case "${1:-}" in
 esac
 SH
 
+cat >"$tmp/bin/situations" <<'SH'
+#!/usr/bin/env bash
+printf 'situations %s\n' "$*" >>"$FAKE_ACTION_LOG"
+SH
+
 chmod +x "$tmp/bin/"*
 export FAKE_PID FAKE_ACTION_LOG="$tmp/actions.log"
+export LASTDBD_GUARD_NOTICE_CMD="$tmp/bin/situations"
 
 MB=1048576
 reset() {
   : >"$FAKE_ACTION_LOG"
   rm -f "$LOG" "$LASTDBD_PRIMARY_HOME/monitoring/lastdbd-memory-guard.state"
+  rm -f "$EVENT_LOG"
 }
 restarted() { grep -q 'launchctl kickstart' "$FAKE_ACTION_LOG" 2>/dev/null; }
 
@@ -115,6 +129,12 @@ FAKE_PEAK_BYTES=$((17100 * MB)) \
 restarted || fail "default footprint policy must restart above 16 GiB"
 grep -q 'OVER_LIMIT.*metric=footprint.*enforced_mb=17000.*limit_mb=16384' "$LOG" \
   || fail "over-limit line should record the default footprint policy"
+grep -q '"event":"restart_requested".*"old_pid":4242.*"new_pid":null' "$EVENT_LOG" \
+  || fail "restart request should be durable before the signal"
+grep -q '"event":"restart_observed".*"old_pid":4242.*"new_pid":4243' "$EVENT_LOG" \
+  || fail "replacement pid should be durable after restart"
+grep -q 'situations notice .*--kind restart.*pid 4242 -> 4243' "$FAKE_ACTION_LOG" \
+  || fail "a forced restart should post an attributed Situations notice"
 
 # --- 4. an explicit footprint limit override still applies -------------------
 reset
@@ -166,5 +186,13 @@ LASTDBD_GUARD_METRIC=rss \
   "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 with node unreachable"
 restarted || fail "rss enforcement must not depend on the status socket"
 grep -q 'footprint_mb=unavailable' "$LOG" || fail "unavailable footprint should be stated, not omitted"
+
+# --- 9. identity mode is read-only and carries pid, start time, and build ----
+reset
+identity="$(FAKE_START_TS=5678 FAKE_BUILD=0.23.3-test "$GUARD" --identity)" \
+  || fail "identity mode should succeed for the primary"
+[ "$identity" = 'pid=4242 process_start_ts=5678 build=0.23.3-test' ] \
+  || fail "identity mode returned unexpected evidence: $identity"
+restarted && fail "identity mode must never restart the primary"
 
 printf 'PASS: last-stack-lastdb-memory-guard\n'
