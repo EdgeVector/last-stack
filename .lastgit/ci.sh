@@ -100,6 +100,11 @@ ci_test() {
 ci_test tests/last-stack-routine-read.sh
 ci_test tests/last-stack-routine-read-proceed-on-stale.sh
 ci_test tests/last-stack-ci-sharding.sh
+# The install-smoke bounds. This file was written for a canary that kept dying
+# mute at the agent tool's 600s foreground cap, and it was reachable only under
+# LAST_STACK_CI_FULL=1 — so nothing in the required gate held those bounds in
+# place. It is pure helper behaviour plus wiring greps; a few seconds.
+ci_test tests/llms-txt-install-smoke-bounded.sh
 # Reclaim safety belongs in the REQUIRED gate, not only under
 # LAST_STACK_CI_FULL=1: this covers a liveness check that once failed OPEN
 # (a sandbox denying ps/lsof made every worktree look idle) and a board parse
