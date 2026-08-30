@@ -195,4 +195,74 @@ printf '%s\n' "$mout" | grep -q '"outcome":"ok"' || fail "json missing outcome=o
 printf '%s\n' "$mout" | grep -q 'ROUTINE_RESULT' || fail "missing ROUTINE_RESULT: $mout"
 printf '%s\n' "$mout" | grep -q 'verdict=green' || fail "missing verdict=green: $mout"
 
+# --- COLLECT reads loom, never the retired sm ---
+# The fixture case above bypasses the reader entirely, which is how a COLLECT
+# that shelled out to `sm get` with an `lx-*` id shipped and failed every live
+# red. This exercises the reader itself.
+ctmp="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-canary-collect.XXXXXX")"
+trap 'rm -rf "$ctmp"' EXIT
+mkdir -p "$ctmp/bin"
+
+cat >"$ctmp/bin/last-stack-loom-exec-latest" <<'SH'
+#!/usr/bin/env bash
+# Stub: answer --exec <lx-id> --full with a loom-shaped row.
+want=""
+full=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --exec) want="${2:-}"; shift 2 ;;
+    --full) full=1; shift ;;
+    *) shift ;;
+  esac
+done
+[ "$full" -eq 1 ] || { echo "stub: --full not requested" >&2; exit 9; }
+case "$want" in
+  lx-collect-test-1)
+    cat <<'JSON'
+[{"id":"lx-collect-test-1","definition_name":"lastdb-canary-release","status":"failed","state":"FAILED","input_json":"{\"main_oid\":\"deadbeefcafe0001\",\"max_attempts\":3}","last_error":"graph reached a fail state","hot_context_patch_json":"{\"version\":\"0.23.3\"}","parent_execution_id":""}]
+JSON
+    ;;
+  *) echo "[]" ;;
+esac
+SH
+chmod 755 "$ctmp/bin/last-stack-loom-exec-latest"
+
+# Any call to the retired orchestrator must fail the test loudly.
+cat >"$ctmp/bin/sm" <<'SH'
+#!/usr/bin/env bash
+echo "RETIRED_SM_WAS_CALLED $*" >&2
+exit 1
+SH
+chmod 755 "$ctmp/bin/sm"
+
+set +e
+cout="$(
+  PATH="$ctmp/bin:/usr/bin:/bin" \
+  LOOM_INPUT='{"exec_id":"lx-collect-test-1","max_attempts":3}' \
+    "$ROOT/lib/canary-red/loom-canary-collect.sh" 2>"$ctmp/collect.err"
+)"
+crc=$?
+set -e
+[ "$crc" -eq 0 ] || fail "collect against loom exited $crc: $(cat "$ctmp/collect.err")"
+grep -q RETIRED_SM_WAS_CALLED "$ctmp/collect.err" && fail "collect still shells out to sm"
+printf '%s\n' "$cout" | grep -q '"verdict":"red"' || fail "collect missing red verdict: $cout"
+printf '%s\n' "$cout" | grep -q 'deadbeefcafe0001' || fail "collect lost source oid: $cout"
+printf '%s\n' "$cout" | grep -q PASS || fail "collect missing PASS: $cout"
+
+# An id loom does not hold must fail loudly, not silently collect an empty row.
+set +e
+PATH="$ctmp/bin:/usr/bin:/bin" \
+LOOM_INPUT='{"exec_id":"lx-not-a-real-exec","max_attempts":3}' \
+  "$ROOT/lib/canary-red/loom-canary-collect.sh" >"$ctmp/miss.out" 2>"$ctmp/miss.err"
+mrc2=$?
+set -e
+[ "$mrc2" -ne 0 ] || fail "collect must fail on an execution loom does not hold"
+grep -q 'loom get failed' "$ctmp/miss.err" \
+  || fail "missing-exec error must name the loom read: $(cat "$ctmp/miss.err")"
+
+# The two shipped copies of the node must not drift.
+cmp -s "$ROOT/lib/canary-red/loom-canary-collect.sh" \
+       "$ROOT/lib/canary-loom/loom-canary-collect.sh" \
+  || fail "lib/canary-red and lib/canary-loom copies of loom-canary-collect.sh differ"
+
 echo "ok"
