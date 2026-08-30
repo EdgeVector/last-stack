@@ -29,10 +29,21 @@ FORGE_RE = re.compile(r"https?://[^/\s)>\]]+/([^/\s)>\]]+)/([^/\s)>\]]+)/pulls?/
 GITHUB_RE = re.compile(r"https?://github\.com/([^/\s)>\]]+)/([^/\s)>\]]+)/pull/(\d+)")
 PIPELINE_STUCK_SLUG_RE = re.compile(r"^papercut-pipeline-stuck-(cr|forge|pr)-")
 STUCK_CR_SLUG_RE = re.compile(r"^papercut-pipeline-stuck-cr-(.+)-cr-([a-z0-9]+)$")
-STUCK_FORGE_SLUG_RE = re.compile(r"^papercut-pipeline-stuck-forge-(.+)-(\d+)$")
-STUCK_PR_SLUG_RE = re.compile(r"^papercut-pipeline-stuck-pr-(.+)-(\d+)$")
+# `pipeline-health` files these as `...-forge-<repo>-pr-<num>` / `...-pr-<repo>-pr-<num>`.
+# A greedy `(.+)-(\d+)` swallowed the `-pr` marker into the repo name and then
+# called a repo that does not exist (`EdgeVector/fold-pr/pulls/826` -> 404).
+STUCK_FORGE_SLUG_RE = re.compile(r"^papercut-pipeline-stuck-forge-(.+?)(?:-pr)?-(\d+)$")
+STUCK_PR_SLUG_RE = re.compile(r"^papercut-pipeline-stuck-pr-(.+?)(?:-pr)?-(\d+)$")
 CR_FULL_RE = re.compile(r"\b(cr-[0-9a-z]{6,12}-[0-9a-z]{2,8})\b")
 REPO_HEADER_RE = re.compile(r"(?im)^Repo:\s*(\S+)")
+# Only a labeled field may contribute a review ref. A bare `cr-…`-shaped token
+# in prose is a mention of somebody else's CR, not this papercut's own ref.
+LABELED_REF_LINE_RE = re.compile(
+    r"(?im)^\s*(?:PR|CR|Review|Change[- ]Request|Fixed[- ]by|Merged[- ]by)\s*:\s*(.+)$"
+)
+# Characters that quote or terminate a ref inside prose but are never part of a
+# LastGit CR id, a forge repo name, or a PR number.
+REF_TOKEN_TRIM = "`'\"*_~,;:.!?()[]{}<>"
 FORGE_VENUE_REPOS = frozenset({"fold", "lastgit", "exemem-infra", "exemem-workspace"})
 
 
@@ -328,14 +339,47 @@ def status_is_open(body: str) -> bool:
 
 
 def repo_token(raw: str) -> str:
-    token = raw.strip().rstrip("/")
+    token = ref_token(raw).rstrip("/")
     if "/" in token:
         token = token.rsplit("/", 1)[-1]
-    return token.strip()
+    return ref_token(token)
 
 
-def review_refs(body: str, slug: str = "") -> list[ReviewRef]:
+def ref_token(raw: str) -> str:
+    """Strip the quoting/terminating punctuation prose wraps a ref in.
+
+    Bodies write `lastgit://last-stack/cr/cr-mt1t6wpi-33a6;` or backtick-quote
+    the URL. Those characters are not part of the id, and passing them through
+    made every `lastgit cr view` call fail on a ref that really exists.
+    """
+    return raw.strip().strip(REF_TOKEN_TRIM).strip()
+
+
+def owner_repo(raw: str) -> tuple[str, str]:
+    """Split an `owner/name` header into its parts; owner may be absent."""
+    token = ref_token(raw).rstrip("/")
+    if "/" in token:
+        owner, name = token.rsplit("/", 1)
+        return ref_token(owner), ref_token(name)
+    return "", ref_token(token)
+
+
+def labeled_ref_values(body: str) -> list[str]:
+    """Return the values of labeled ref fields (`PR:`, `Fixed by:`, …) only."""
+    return [match.group(1) for match in LABELED_REF_LINE_RE.finditer(body)]
+
+
+def review_refs(body: str, slug: str = "") -> tuple[list[ReviewRef], list[str]]:
+    """Resolve a papercut's own review refs.
+
+    Returns the resolvable refs plus typed reasons for refs that were named but
+    could not be resolved. A ref is only taken from a structured source: an
+    explicit review URL, a labeled `PR:`/`Fixed by:`-style field, or the
+    papercut's own `pipeline-stuck-*` slug. Free prose is never scanned — a
+    `cr-…`-shaped token elsewhere in the body belongs to some other record.
+    """
     refs: list[ReviewRef] = []
+    skips: list[str] = []
     seen: set[str] = set()
 
     def add(ref: ReviewRef) -> None:
@@ -343,45 +387,76 @@ def review_refs(body: str, slug: str = "") -> list[ReviewRef]:
             seen.add(ref.url)
             refs.append(ref)
 
-    for repo, ident in LASTGIT_RE.findall(body):
+    def skip(reason: str) -> None:
+        if reason not in skips:
+            skips.append(reason)
+
+    for raw_repo, raw_ident in LASTGIT_RE.findall(body):
+        repo = repo_token(raw_repo)
+        ident = ref_token(raw_ident)
+        if not repo or not ident:
+            skip(f"unparseable-lastgit-ref:{raw_repo}/{raw_ident}")
+            continue
         add(ReviewRef("lastgit", f"lastgit://{repo}/cr/{ident}", repo, ident))
-    for owner, repo, num in GITHUB_RE.findall(body):
+    for raw_owner, raw_repo, num in GITHUB_RE.findall(body):
+        owner = repo_token(raw_owner)
+        repo = repo_token(raw_repo)
+        if not owner or not repo:
+            skip(f"unparseable-github-ref:{raw_owner}/{raw_repo}#{num}")
+            continue
         add(ReviewRef("github", f"https://github.com/{owner}/{repo}/pull/{num}", repo, num, owner))
     for match in FORGE_RE.finditer(body):
         if "github.com" in match.group(0):
             continue
-        owner, repo, num = match.group(1), match.group(2), match.group(3)
+        owner = repo_token(match.group(1))
+        repo = repo_token(match.group(2))
+        num = match.group(3)
+        if not owner or not repo:
+            skip(f"unparseable-forge-ref:{match.group(1)}/{match.group(2)}#{num}")
+            continue
         add(ReviewRef("forge", f"{owner}/{repo}/pulls/{num}", repo, num, owner))
 
-    header_repo = repo_token(REPO_HEADER_RE.search(body).group(1)) if REPO_HEADER_RE.search(body) else ""
+    header_match = REPO_HEADER_RE.search(body)
+    header_owner, header_repo = owner_repo(header_match.group(1)) if header_match else ("", "")
     stuck_cr = STUCK_CR_SLUG_RE.match(slug)
     if stuck_cr:
-        repo = stuck_cr.group(1)
-        short = stuck_cr.group(2)
+        repo = repo_token(stuck_cr.group(1))
+        short = ref_token(stuck_cr.group(2))
         ident = f"cr-{short}"
         for full in CR_FULL_RE.findall(body):
             if full == ident or full.startswith(f"cr-{short}-"):
                 ident = full
                 break
-        add(ReviewRef("lastgit", f"lastgit://{repo}/cr/{ident}", repo, ident))
+        if repo:
+            add(ReviewRef("lastgit", f"lastgit://{repo}/cr/{ident}", repo, ident))
+        else:
+            skip(f"unparseable-stuck-cr-slug:{slug}")
     stuck_forge = STUCK_FORGE_SLUG_RE.match(slug)
     if stuck_forge:
-        repo = stuck_forge.group(1)
+        # The body header names the real repo; the slug fragment is a guess.
+        repo = header_repo or repo_token(stuck_forge.group(1))
+        owner = header_owner or "EdgeVector"
         num = stuck_forge.group(2)
-        add(ReviewRef("forge", f"EdgeVector/{repo}/pulls/{num}", repo, num, "EdgeVector"))
-    stuck_pr = STUCK_PR_SLUG_RE.match(slug)
-    if stuck_pr:
-        repo = stuck_pr.group(1)
-        num = stuck_pr.group(2)
-        owner = "EdgeVector"
-        if repo in FORGE_VENUE_REPOS:
+        if header_repo or repo in FORGE_VENUE_REPOS:
             add(ReviewRef("forge", f"{owner}/{repo}/pulls/{num}", repo, num, owner))
         else:
+            skip(f"unmapped-forge-repo:{repo}")
+    stuck_pr = STUCK_PR_SLUG_RE.match(slug)
+    if stuck_pr:
+        repo = header_repo or repo_token(stuck_pr.group(1))
+        owner = header_owner or "EdgeVector"
+        num = stuck_pr.group(2)
+        if repo in FORGE_VENUE_REPOS:
+            add(ReviewRef("forge", f"{owner}/{repo}/pulls/{num}", repo, num, owner))
+        elif header_repo:
             add(ReviewRef("github", f"https://github.com/{owner}/{repo}/pull/{num}", repo, num, owner))
+        else:
+            skip(f"unmapped-pr-repo:{repo}")
     if header_repo and not stuck_cr and not stuck_forge and not stuck_pr:
-        for full in CR_FULL_RE.findall(body):
-            add(ReviewRef("lastgit", f"lastgit://{header_repo}/cr/{full}", header_repo, full))
-    return refs
+        for value in labeled_ref_values(body):
+            for full in CR_FULL_RE.findall(value):
+                add(ReviewRef("lastgit", f"lastgit://{header_repo}/cr/{full}", header_repo, full))
+    return refs, skips
 
 
 def merged_status(args: argparse.Namespace, ref: ReviewRef) -> tuple[bool, str]:
@@ -478,9 +553,13 @@ def close_review_records(args: argparse.Namespace, iso: str) -> dict[str, Any]:
         if not is_open:
             result["skipped"].append({"slug": slug, "reason": "not-open"})
             continue
-        refs = review_refs(body, slug)
+        refs, ref_skips = review_refs(body, slug)
         if not refs:
-            result["skipped"].append({"slug": slug, "reason": "no-review-ref"})
+            entry: dict[str, Any] = {"slug": slug, "reason": "no-review-ref"}
+            if ref_skips:
+                entry["reason"] = "unresolved-review-ref"
+                entry["details"] = ref_skips
+            result["skipped"].append(entry)
             continue
         fixed = False
         for ref in refs:
