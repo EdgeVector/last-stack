@@ -356,6 +356,54 @@ printf '%s\n' "$rout" | grep -q 'healed=1' || fail "retried run lost the heal de
 [ "$(cat "$RUN_COUNT_FILE")" = "2" ] \
   || fail "expected 2 loom run attempts, got $(cat "$RUN_COUNT_FILE")"
 
+# --- the capture-queue 400 is the SAME backpressure, typed differently ---
+# On 2026-08-30T08:23Z the pass logged `attempts=3` and then ended
+# `loom run failed rc=1 after 1 attempt(s)`. The node answered HTTP 400
+# `Invalid data: Storage backend error: mutation capture queue remained full
+# for 100ms; retry before local commit` — no 503, no `"retryable": true`, so
+# the classifier read a structural reject and stopped. The next block proves a
+# bare 400 still is not retried, so this match must be on the message text.
+cat >"$tmp/bin/loom" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-}"
+case "$cmd" in
+  ping) echo ok; exit 0 ;;
+  publish) echo "published $(basename "$2" .json)"; exit 0 ;;
+  run)
+    nfile="${RUN_COUNT_FILE:?}"
+    n=$(cat "$nfile" 2>/dev/null || echo 0)
+    n=$((n + 1))
+    printf '%s\n' "$n" >"$nfile"
+    if [ "$n" -lt 2 ]; then
+      echo 'Error: mutation on LoomExecution -> HTTP 400: "Invalid data: Storage backend error: mutation capture queue remained full for 100ms; retry before local commit"' >&2
+      exit 1
+    fi
+    cat <<'VIEW'
+lx-ww-capture-queue
+status: succeeded
+state: DONE
+context.outcome: "ok"
+context.detail: "exceptions=2 healed=1 remaining=1"
+VIEW
+    exit 0
+    ;;
+  *) echo "unexpected $*" >&2; exit 2 ;;
+esac
+SH
+chmod 755 "$tmp/bin/loom"
+export LAST_STACK_WHATS_WRONG_STAMP="$tmp/stamp-capture-queue.json"
+export RUN_COUNT_FILE="$tmp/run-count-capture-queue"
+export LOOM_WHATS_WRONG_KEY="whats-wrong-capture-queue-key"
+set +e
+cqout="$("$BIN" --json --quiet --no-heal)"
+cqrc=$?
+set -e
+[ "$cqrc" -eq 0 ] || fail "capture-queue 400 must be retried to success, got exit $cqrc out=$cqout"
+printf '%s\n' "$cqout" | grep -q 'outcome":"ok"' || fail "retried capture-queue run must be ok: $cqout"
+[ "$(cat "$RUN_COUNT_FILE")" = "2" ] \
+  || fail "expected 2 loom run attempts on capture-queue 400, got $(cat "$RUN_COUNT_FILE")"
+
 # --- a NON-retryable answer is not thrashed ---
 cat >"$tmp/bin/loom" <<'SH'
 #!/usr/bin/env bash

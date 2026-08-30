@@ -269,6 +269,17 @@ esac
 # in a row on 2026-08-27
 # (papercut-whats-wrong-loom-no-retry-on-retryable-lastdb-503).
 #
+# The bounded post-ack capture queue is the SAME backpressure wearing a
+# different type. The node answers it `HTTP 400 Invalid data: Storage backend
+# error: mutation capture queue remained full for 100ms; retry before local
+# commit` — a 400 with no `"retryable": true`, so a classifier keyed on the 503
+# shape reads it as a structural reject and stops after one attempt. Observed
+# 2026-08-30T08:23Z: `loom run ... attempts=3` ended `rc=1 after 1 attempt(s)`
+# on that exact string, and last-stack-whats-wrong recorded outcome=error.
+# The message ends in "retry before local commit"; the caller is being told to
+# retry, so it is matched here. See
+# papercut-lastdb-capture-queue-full-logged-as-error-not-warn.
+#
 # Retrying is safe because `loom run --key` is idempotent by contract: the same
 # key re-attaches to the existing execution instead of starting a second one.
 # The retries share the ONE wall-clock deadline below, so this cannot push the
@@ -289,7 +300,7 @@ esac
 # (max_outbox_entries) and agent rate limits are NOT retried.
 is_transient_lastdb_flap() {
   printf '%s' "${1:-}" | grep -Eiq \
-    'persist_queue_full|persist queue full|retry after drain|"retryable":[[:space:]]*true|service_timeout|node did not respond|too many concurrent reads|uds_connection_limit|connection refused|ECONNRESET|EPIPE|[Bb]roken pipe|os error 32|temporarily at capacity' \
+    'persist_queue_full|persist queue full|retry after drain|capture queue remained full|retry before local commit|"retryable":[[:space:]]*true|service_timeout|node did not respond|too many concurrent reads|uds_connection_limit|connection refused|ECONNRESET|EPIPE|[Bb]roken pipe|os error 32|temporarily at capacity' \
     || return 1
   if printf '%s' "${1:-}" | grep -Eiq 'max_outbox_entries|outbox.?full'; then
     return 1
