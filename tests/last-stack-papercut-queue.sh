@@ -131,4 +131,66 @@ $ROOT/bin/last-stack-papercut-queue verify --snapshot "$mixed" \
   --already-handled-file "$tmp/mixed-already" --failed-file "$tmp/mixed-failed" --json \
   | jq -e '.ok and .conserved and .discovered == 2' >/dev/null
 
+# An unreadable queue is rc=3 (dependency degraded), NOT rc=1 (queue invalid).
+# The reconciler reports rc=3 as noop, so conflating the two makes a degraded
+# brain index look like a routine defect
+# (routine-error-last-stack-papercut-reconciler-20260829).
+cat >"$tmp/brain-index-incomplete" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$*" = "papercut list --status open --json" ] || exit 2
+printf '%s\n' '{"error":"the status-keyed papercut index is registered but not marked complete, so the ledger cannot trust it without enumerating the whole papercut partition.","hint":"Run `fbrain reindex --papercut-status-index` (admin/offline) to rebuild the index from source of truth, then retry."}'
+echo "error: the status-keyed papercut index is registered but not marked complete." >&2
+exit 1
+SH
+chmod +x "$tmp/brain-index-incomplete"
+set +e
+$ROOT/bin/last-stack-papercut-queue snapshot --brain-bin "$tmp/brain-index-incomplete" \
+  --output "$tmp/unavailable.json" --json >"$tmp/unavailable.out" 2>"$tmp/unavailable.err"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || { echo "expected rc=3 for an unreadable queue, got $rc" >&2; exit 1; }
+jq -e '.ok == false and .reason == "status-index-incomplete" and .retryable == true and (.hint | test("reindex"))' "$tmp/unavailable.out" >/dev/null
+# It must not leave a snapshot behind: a later pass would read it as membership.
+[ ! -e "$tmp/unavailable.json" ] || { echo "unavailable snapshot must not be written" >&2; exit 1; }
+grep -q 'papercut queue unavailable' "$tmp/unavailable.err"
+
+# Node backpressure is the same class, not a queue defect.
+cat >"$tmp/brain-busy" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$*" = "papercut list --status open --json" ] || exit 2
+echo "error: service_timeout: node did not respond within 30000ms" >&2
+exit 1
+SH
+chmod +x "$tmp/brain-busy"
+set +e
+$ROOT/bin/last-stack-papercut-queue snapshot --brain-bin "$tmp/brain-busy" \
+  --output "$tmp/busy.json" --json >"$tmp/busy.out" 2>/dev/null
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || { echo "expected rc=3 for a busy node, got $rc" >&2; exit 1; }
+jq -e '.ok == false and .reason == "brain-unavailable"' "$tmp/busy.out" >/dev/null
+
+# An INVALID queue must still be rc=1. Degrading this to noop would let a lying
+# instrument pass silently, which is the thing rc=3 must never buy.
+cat >"$tmp/brain-bad-method" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$*" = "papercut list --status open --json" ] || exit 2
+printf '%s\n' '{"rows":[{"slug":"papercut-a","status":"open"}],"total":1,"method":"method: ranked search sample"}'
+SH
+chmod +x "$tmp/brain-bad-method"
+set +e
+$ROOT/bin/last-stack-papercut-queue snapshot --brain-bin "$tmp/brain-bad-method" \
+  --output "$tmp/bad.json" --json >/dev/null 2>"$tmp/bad.err"
+rc=$?
+set -e
+[ "$rc" -eq 1 ] || { echo "expected rc=1 for an invalid queue, got $rc" >&2; exit 1; }
+grep -q 'papercut queue invalid' "$tmp/bad.err"
+
+# The routine prompt must actually carry the rc=3 -> noop rule.
+grep -q 'snapshot_rc' "$ROOT/routines/papercut-reconciler.md"
+grep -q 'queue_snapshot_unavailable' "$ROOT/routines/papercut-reconciler.md"
+
 printf 'ok last-stack-papercut-queue\n'

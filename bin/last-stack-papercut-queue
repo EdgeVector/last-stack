@@ -16,6 +16,56 @@ from typing import Any
 
 EXPECTED_METHOD = "status-keyed papercut index"
 
+# Exit codes. 1 means the queue itself is wrong and a human must look; 3 means
+# the queue could not be read at all because a dependency is degraded. The
+# reconciler must not report a routine error for 3 -- nothing was mutated and
+# nothing about the routine is broken. Keeping them apart is what stops an
+# unreadable queue from looking like a defect, without ever letting an invalid
+# queue look green.
+EXIT_QUEUE_INVALID = 1
+EXIT_QUEUE_UNAVAILABLE = 3
+
+# Substrings that identify a degraded-dependency read rather than a bad queue.
+# Matched case-insensitively against the brain error text.
+UNAVAILABLE_SIGNATURES = (
+    "not marked complete",
+    "index is registered but not",
+    "service_timeout",
+    "node did not respond",
+    "too many concurrent reads",
+    "uds_connection_limit",
+)
+
+
+def brain_failure_text(proc: subprocess.CompletedProcess[str]) -> tuple[str, str]:
+    """Return (detail, hint) for a failed brain call.
+
+    brain reports the machine-readable form on stdout as {"error", "hint"} and
+    the human form on stderr. Prefer the structured one; fall back to whichever
+    stream has text.
+    """
+    stdout = (proc.stdout or "").strip()
+    stderr = (proc.stderr or "").strip()
+    try:
+        payload = json.loads(stdout)
+    except (json.JSONDecodeError, TypeError):
+        payload = None
+    if isinstance(payload, dict) and isinstance(payload.get("error"), str):
+        hint = payload.get("hint")
+        return payload["error"].strip(), hint.strip() if isinstance(hint, str) else ""
+    return (stderr or stdout), ""
+
+
+def unavailable_reason(detail: str) -> str | None:
+    """Name the degraded-dependency condition in `detail`, or None."""
+    lowered = detail.lower()
+    if "not marked complete" in lowered or "index is registered but not" in lowered:
+        return "status-index-incomplete"
+    for signature in UNAVAILABLE_SIGNATURES:
+        if signature in lowered:
+            return "brain-unavailable"
+    return None
+
 
 def parse_json_stream(raw: str) -> dict[str, Any]:
     decoder = json.JSONDecoder()
@@ -98,17 +148,41 @@ def snapshot(args: argparse.Namespace) -> int:
         timeout=args.timeout,
     )
     if proc.returncode != 0:
+        detail, hint = brain_failure_text(proc)
+        reason = unavailable_reason(detail)
+        if reason is not None:
+            # The queue was never read, so there is nothing to be false-green
+            # about. Report it as its own terminal condition and let the caller
+            # decide; do NOT write a snapshot file.
+            result = {
+                "ok": False,
+                "phase": "snapshot",
+                "reason": reason,
+                "retryable": True,
+                "detail": detail,
+            }
+            if hint:
+                result["hint"] = hint
+            if args.json:
+                print(json.dumps(result, sort_keys=True))
+            else:
+                print(f"papercut-queue unavailable reason={reason} detail={detail}")
+            print(
+                f"papercut queue unavailable ({reason}): {detail}",
+                file=sys.stderr,
+            )
+            return EXIT_QUEUE_UNAVAILABLE
         print(
             f"papercut queue read failed ({proc.returncode}): {proc.stderr.strip() or proc.stdout.strip()}",
             file=sys.stderr,
         )
-        return 1
+        return EXIT_QUEUE_INVALID
     try:
         source = parse_json_stream(proc.stdout)
         rows, quarantined = validate_queue(source)
     except ValueError as error:
         print(f"papercut queue invalid: {error}", file=sys.stderr)
-        return 1
+        return EXIT_QUEUE_INVALID
     fetched_at = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     receipt = {
         "version": 1,
