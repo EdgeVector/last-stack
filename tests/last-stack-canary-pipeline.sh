@@ -483,4 +483,116 @@ printf '%s\n' "$out" | grep -q 'status=no_active_candidate'
 grep -q 'situations preflight --action lastdb-safe-upgrade' "$CLI"
 ! grep -q 'jq -e "length == 0"' "$CLI"
 
+# --- settle grace: a blind identity probe at soak start DEFERS ---
+# Regression for 2026-08-30 (lx-20260830T221122.295-20948-1): soak-watch ran
+# ~35s after the live cutover, the identity probe returned nothing, and the
+# code appended a baseline-less soak_started row — then hard-red on
+# primary_identity_baseline_missing, the baseline it had itself declined to
+# write. Inside the settle grace this must be soak_pending with NO ledger
+# transition; the next tick (warm node) establishes the baseline properly.
+settle_dir="$tmp/w-settle"
+LAST_STACK_CANARY_LIVE_VERSION_CMD=pass \
+  "$CLI" --state-dir "$settle_dir" dogfood --sha w-settle --version 0.0.1-canary.test \
+  >/dev/null 2>&1
+LAST_STACK_CANARY_PRIMARY_IDENTITY_CMD="exit 1" \
+LAST_STACK_CANARY_LAUNCHD_CHECK_CMD=pass \
+LAST_STACK_CANARY_MEMORY_CHECK_CMD=pass \
+LAST_STACK_CANARY_BOARD_CHECK_CMD=pass \
+LAST_STACK_CANARY_BOARD_WRITE_CHECK_CMD=pass \
+LAST_STACK_CANARY_SITUATION_CHECK_CMD=pass \
+LAST_STACK_CANARY_SOAK_HOURS=24 \
+LAST_STACK_CANARY_LIVE_VERSION_CMD=pass \
+  "$CLI" --state-dir "$settle_dir" soak-watch --sha w-settle >"$tmp/w-settle.out" 2>&1
+grep -q 'status=soak_pending' "$tmp/w-settle.out"
+grep -q 'soak_settling primary_identity_unavailable' "$tmp/w-settle.out"
+! grep -q 'soak_started' "$settle_dir/ledger.jsonl"
+# Next tick, probe recovered: the baseline lands WITH identity and the soak
+# can complete (hours=0 collapses the window for the fixture).
+LAST_STACK_CANARY_PRIMARY_IDENTITY_CMD="printf 'pid=4242 process_start_ts=1234 build=0.0.1-canary.test\n'" \
+LAST_STACK_CANARY_LAUNCHD_CHECK_CMD=pass \
+LAST_STACK_CANARY_MEMORY_CHECK_CMD=pass \
+LAST_STACK_CANARY_BOARD_CHECK_CMD=pass \
+LAST_STACK_CANARY_BOARD_WRITE_CHECK_CMD=pass \
+LAST_STACK_CANARY_SITUATION_CHECK_CMD=pass \
+LAST_STACK_CANARY_SOAK_HOURS=0 \
+LAST_STACK_CANARY_LIVE_VERSION_CMD=pass \
+  "$CLI" --state-dir "$settle_dir" soak-watch --sha w-settle >"$tmp/w-settle2.out" 2>&1
+grep -q 'status=soak_green' "$tmp/w-settle2.out"
+grep -q '"state":"soak_started".*"primary_pid":"4242"\|"primary_pid":"4242".*"state":"soak_started"' \
+  "$settle_dir/ledger.jsonl"
+
+# Past the grace, a probe that stays blind cannot certify a soak → real red.
+blind_dir="$tmp/w-blind"
+LAST_STACK_CANARY_LIVE_VERSION_CMD=pass \
+  "$CLI" --state-dir "$blind_dir" dogfood --sha w-blind --version 0.0.1-canary.test \
+  >/dev/null 2>&1
+if LAST_STACK_CANARY_PRIMARY_IDENTITY_CMD="exit 1" \
+   LAST_STACK_CANARY_SETTLE_GRACE_MIN=0 \
+   LAST_STACK_CANARY_LAUNCHD_CHECK_CMD=pass \
+   LAST_STACK_CANARY_MEMORY_CHECK_CMD=pass \
+   LAST_STACK_CANARY_BOARD_CHECK_CMD=pass \
+   LAST_STACK_CANARY_BOARD_WRITE_CHECK_CMD=pass \
+   LAST_STACK_CANARY_SITUATION_CHECK_CMD=pass \
+   LAST_STACK_CANARY_SOAK_HOURS=24 \
+   LAST_STACK_CANARY_LIVE_VERSION_CMD=pass \
+     "$CLI" --state-dir "$blind_dir" soak-watch --sha w-blind \
+     >"$tmp/w-blind.out" 2>&1; then
+  echo "expected a past-grace blind identity probe to red the soak" >&2
+  exit 1
+fi
+grep -q 'status=soak_red' "$tmp/w-blind.out"
+grep -q 'primary_identity_unavailable_past_settle_grace' "$blind_dir/ledger.jsonl"
+
+# --- one exit-code blip is not a verdict; a persistent failure is ---
+# Same principle as the slow-median rule: one failed read probe is a blip
+# (post-cutover `kanban ping` timing out), a failure that survives the
+# bounded retry is the binary.
+flapread_dir="$tmp/w-flapread"
+cat >"$tmp/flapread.sh" <<'FLAPR'
+#!/usr/bin/env bash
+n="$(cat "$FLAPR_COUNTER" 2>/dev/null || echo 0)"
+echo $((n + 1)) >"$FLAPR_COUNTER"
+[ "$n" = "0" ] && exit 1
+exit 0
+FLAPR
+chmod +x "$tmp/flapread.sh"
+LAST_STACK_CANARY_LIVE_VERSION_CMD=pass \
+  "$CLI" --state-dir "$flapread_dir" dogfood --sha w-flapread --version 0.0.1-canary.test \
+  >/dev/null 2>&1
+FLAPR_COUNTER="$tmp/flapread.count" \
+LAST_STACK_CANARY_CHECK_FAIL_RETRY_DELAY_S=0 \
+LAST_STACK_CANARY_PRIMARY_IDENTITY_CMD="printf 'pid=4242 process_start_ts=1234 build=0.0.1-canary.test\n'" \
+LAST_STACK_CANARY_LAUNCHD_CHECK_CMD=pass \
+LAST_STACK_CANARY_MEMORY_CHECK_CMD=pass \
+LAST_STACK_CANARY_BOARD_CHECK_CMD="$tmp/flapread.sh" \
+LAST_STACK_CANARY_BOARD_WRITE_CHECK_CMD=pass \
+LAST_STACK_CANARY_SITUATION_CHECK_CMD=pass \
+LAST_STACK_CANARY_SOAK_HOURS=0 \
+LAST_STACK_CANARY_LIVE_VERSION_CMD=pass \
+  "$CLI" --state-dir "$flapread_dir" soak-watch --sha w-flapread \
+  >"$tmp/w-flapread.out" 2>"$tmp/w-flapread.err"
+grep -q 'status=soak_green' "$tmp/w-flapread.out"
+grep -q 'CHECK label=board_read result=retry exit_1' "$tmp/w-flapread.err"
+
+persist_dir="$tmp/w-persist"
+LAST_STACK_CANARY_LIVE_VERSION_CMD=pass \
+  "$CLI" --state-dir "$persist_dir" dogfood --sha w-persist --version 0.0.1-canary.test \
+  >/dev/null 2>&1
+if LAST_STACK_CANARY_CHECK_FAIL_RETRY_DELAY_S=0 \
+   LAST_STACK_CANARY_PRIMARY_IDENTITY_CMD="printf 'pid=4242 process_start_ts=1234 build=0.0.1-canary.test\n'" \
+   LAST_STACK_CANARY_LAUNCHD_CHECK_CMD=pass \
+   LAST_STACK_CANARY_MEMORY_CHECK_CMD=pass \
+   LAST_STACK_CANARY_BOARD_CHECK_CMD="exit 1" \
+   LAST_STACK_CANARY_BOARD_WRITE_CHECK_CMD=pass \
+   LAST_STACK_CANARY_SITUATION_CHECK_CMD=pass \
+   LAST_STACK_CANARY_SOAK_HOURS=0 \
+   LAST_STACK_CANARY_LIVE_VERSION_CMD=pass \
+     "$CLI" --state-dir "$persist_dir" soak-watch --sha w-persist \
+     >"$tmp/w-persist.out" 2>"$tmp/w-persist.err"; then
+  echo "expected a persistent board_read failure to red the soak" >&2
+  exit 1
+fi
+grep -q 'status=soak_red' "$tmp/w-persist.out"
+grep -q 'board_read\[exit_1\]' "$persist_dir/ledger.jsonl"
+
 echo "PASS last-stack-canary-pipeline"

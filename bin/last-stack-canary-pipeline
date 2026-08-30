@@ -120,6 +120,29 @@ def soak_hours() -> float:
         return 24.0
 
 
+def env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def settle_grace_minutes() -> float:
+    """How long after dogfood_green a blind identity probe is settle noise.
+
+    The state machine starts the soak SECONDS after the live cutover, inside
+    the window where the upgrade notice itself says "brief socket blips
+    expected". Within this grace an unavailable identity probe defers the
+    soak start (soak_pending); past it, the probe's blindness is a real
+    failure. 45 minutes is under the state machine's 1h SOAK_WAIT re-tick, so
+    a persistent failure still reds on the second tick.
+    """
+    return env_float("LAST_STACK_CANARY_SETTLE_GRACE_MIN", 45.0)
+
+
 def parse_ts(value: str) -> dt.datetime | None:
     if not value:
         return None
@@ -673,27 +696,53 @@ def run_check(label: str, env_name: str, default_cmd: str, dry_run: bool = False
 
     budget_ms, samples = check_budget_ms(label)
     capture = label == "memory_guard"
-    durations = []
-    for _ in range(samples):
-        started = time.monotonic()
-        result = subprocess.run(
-            command,
-            shell=True,
-            stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            text=True if capture else False,
-        )
-        durations.append((time.monotonic() - started) * 1000.0)
-        if result.returncode != 0:
-            print(f"CHECK label={label} result=fail", file=sys.stderr)
-            CHECK_FAILURE_DETAIL[label] = f"exit_{result.returncode}"
-            return False
-        if capture:
-            evidence = memory_guard_error(result.stdout or "")
-            if evidence is not None:
-                print(f"CHECK label={label} result=fail {evidence}", file=sys.stderr)
-                CHECK_FAILURE_DETAIL[label] = evidence
-                return False
+    # A non-zero exit gets ONE bounded re-run after a settle delay before it
+    # reds the soak — the same reasoning as the slow-median rule below: one
+    # failed read probe is load or a blip, a failure that survives the retry
+    # is the binary. The 2026-08-30 soak_red was `kanban ping` exiting 1
+    # ~35s after the live cutover, inside the window the upgrade notice
+    # itself calls "brief socket blips expected"; the same ping was green a
+    # minute later. Budget (slow) and memory-guard verdicts are NOT retried:
+    # the median already absorbed load, and an over-ceiling RSS is no blip.
+    fail_retries = int(env_float("LAST_STACK_CANARY_CHECK_FAIL_RETRIES", 1))
+    fail_retry_delay_s = env_float("LAST_STACK_CANARY_CHECK_FAIL_RETRY_DELAY_S", 20.0)
+    attempt = 0
+    while True:
+        durations = []
+        exit_code = 0
+        for _ in range(samples):
+            started = time.monotonic()
+            result = subprocess.run(
+                command,
+                shell=True,
+                stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True if capture else False,
+            )
+            durations.append((time.monotonic() - started) * 1000.0)
+            if result.returncode != 0:
+                exit_code = result.returncode
+                break
+            if capture:
+                evidence = memory_guard_error(result.stdout or "")
+                if evidence is not None:
+                    print(f"CHECK label={label} result=fail {evidence}", file=sys.stderr)
+                    CHECK_FAILURE_DETAIL[label] = evidence
+                    return False
+        if exit_code == 0:
+            break
+        if attempt < fail_retries:
+            attempt += 1
+            print(
+                f"CHECK label={label} result=retry exit_{exit_code} "
+                f"attempt={attempt} delay_s={fail_retry_delay_s:g}",
+                file=sys.stderr,
+            )
+            time.sleep(fail_retry_delay_s)
+            continue
+        print(f"CHECK label={label} result=fail", file=sys.stderr)
+        CHECK_FAILURE_DETAIL[label] = f"exit_{exit_code}"
+        return False
 
     if budget_ms > 0:
         # Median, not mean or max: one slow sample is load, a slow median is
@@ -964,6 +1013,40 @@ def soak_watch(path: Path, args: argparse.Namespace) -> dict:
         state = str(latest.get("state", ""))
         identity_now = primary_identity(args.dry_run)
         if state == "dogfood_green":
+            # Establishment tick. Never append a soak_started row WITHOUT an
+            # identity baseline: the 2026-08-30 red
+            # (lx-20260830T221122.295-20948-1) was this code stamping a
+            # baseline-less row while the just-cut-over node was still
+            # warming up, then hard-failing one branch later on
+            # `primary_identity_baseline_missing` — the baseline it had
+            # itself declined to write. A blind probe inside the settle
+            # grace defers the soak start (soak_pending; the state machine
+            # re-ticks in 1h with a warm node); past the grace it is a real
+            # failure — a probe that stays blind cannot certify a 24h soak.
+            if identity_now is None and not failures:
+                green_ts = event_ts_for_state(path, candidate, "dogfood_green")
+                grace_min = settle_grace_minutes()
+                within_grace = False
+                if green_ts is not None and grace_min > 0:
+                    if green_ts.tzinfo is None:
+                        green_ts = green_ts.replace(tzinfo=dt.timezone.utc)
+                    elapsed_s = (dt.datetime.now(dt.timezone.utc) - green_ts).total_seconds()
+                    within_grace = elapsed_s < grace_min * 60.0
+                if within_grace:
+                    pending = {
+                        "candidate": candidate,
+                        "state": "dogfood_green",
+                        "evidence": "soak_settling primary_identity_unavailable",
+                    }
+                    return latest
+                append_transition(path, candidate, "soak_started", observed_sha=observed_sha)
+                return append_transition(
+                    path,
+                    candidate,
+                    "soak_red",
+                    observed_sha=observed_sha,
+                    evidence=f"primary_identity_unavailable_past_settle_grace_{grace_min:g}m",
+                )
             identity_extra = {}
             if identity_now is not None:
                 identity_extra = {
