@@ -1,6 +1,6 @@
 {
   "name": "lastdb-safe-upgrade",
-  "version": "3",
+  "version": "4",
   "start_at": "PROBE",
   "max_depth": 1,
   "node_budget": 20,
@@ -16,7 +16,7 @@
   "states": {
     "PROBE": {
       "type": "agent",
-      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-safe-upgrade-step.sh\" PROBE"],
+      "command": ["/bin/bash", "-c", "exec \"${LOOM_SCRIPTS:-$HOME/.last-stack/lib/canary-loom}/loom-safe-upgrade-step.sh\" PROBE"],
       "effects": "none",
       "timeout_sec": 7200,
       "next": "DECIDE",
@@ -35,12 +35,12 @@
     },
     "CUTOVER": {
       "type": "agent",
-      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-safe-upgrade-step.sh\" CUTOVER"],
+      "command": ["/bin/bash", "-c", "exec \"${LOOM_SCRIPTS:-$HOME/.last-stack/lib/canary-loom}/loom-safe-upgrade-step.sh\" CUTOVER"],
       "effects": "checked",
       "check": [
         "/bin/bash",
         "-c",
-        "exec \"$LOOM_SCRIPTS/loom-canary-check-cutover.sh\""
+        "exec \"${LOOM_SCRIPTS:-$HOME/.last-stack/lib/canary-loom}/loom-canary-check-cutover.sh\""
       ],
       "timeout_sec": 10800,
       "next": "VERIFY",
@@ -48,7 +48,7 @@
     },
     "VERIFY": {
       "type": "agent",
-      "command": ["/bin/bash", "-c", "exec \"$LOOM_SCRIPTS/loom-safe-upgrade-step.sh\" VERIFY"],
+      "command": ["/bin/bash", "-c", "exec \"${LOOM_SCRIPTS:-$HOME/.last-stack/lib/canary-loom}/loom-safe-upgrade-step.sh\" VERIFY"],
       "effects": "none",
       "timeout_sec": 180,
       "next": "DONE",

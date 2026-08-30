@@ -4,6 +4,14 @@
 #
 #   last-stack-canary-loom [--json] [--quiet] [--dry-run] [--no-heal] [--status]
 #   last-stack-canary-loom --start [--oid SHA]
+#   last-stack-canary-loom --recover --child <lx-id>
+#
+# --recover relaunches the canary graph in verified-live mode for a GREEN
+# safe-upgrade child that already cut over. It reads the child receipt from
+# loom, builds the recovery input, and launches with the full env contract
+# (PATH, LOOM_SCRIPTS, live flags). Hand-rolled `loom run` calls miss that
+# contract and fail the RECOVER_LIVE node at spawn with no recorded output
+# (lx-20260830T122141.772-6345-1).
 #
 # Exit: 0 ran/noop, 2 usage, 3 loom unavailable.
 set -euo pipefail
@@ -14,6 +22,8 @@ STATUS=0
 DRY=0
 HEAL=1
 START=0
+RECOVER=0
+CHILD=""
 OID=""
 KEY=""
 
@@ -26,15 +36,31 @@ while [ "$#" -gt 0 ]; do
     --no-heal) HEAL=0; shift ;;
     --heal) HEAL=1; shift ;;
     --start) START=1; shift ;;
+    --recover) RECOVER=1; shift ;;
+    --child) CHILD="${2:-}"; shift 2 ;;
     --oid) OID="${2:-}"; shift 2 ;;
     --key) KEY="${2:-}"; shift 2 ;;
     -h|--help)
-      echo "last-stack-canary-loom [--json] [--dry-run] [--no-heal] [--start] [--oid SHA] [--key KEY]"
+      echo "last-stack-canary-loom [--json] [--dry-run] [--no-heal] [--start] [--oid SHA] [--recover --child LX-ID] [--key KEY]"
       exit 0
       ;;
     *) echo "unknown: $1" >&2; exit 2 ;;
   esac
 done
+
+if [ "$RECOVER" -eq 1 ]; then
+  [ -n "$CHILD" ] || { echo "canary-loom: --recover requires --child <lx-id>" >&2; exit 2; }
+  [ "$HEAL" -eq 1 ] || { echo "canary-loom: --recover with --no-heal would run the stand-in path against a live receipt" >&2; exit 2; }
+  [ "$START" -eq 0 ] || { echo "canary-loom: --recover and --start are mutually exclusive" >&2; exit 2; }
+  case "$CHILD" in
+    lx-*) ;;
+    *) echo "canary-loom: --child must be a loom execution id (lx-*)" >&2; exit 2 ;;
+  esac
+  # A fresh key per relaunch: recovery verification is read-only up to the
+  # idempotent LEDGER/SOAK nodes, and reusing a failed attempt's key would
+  # only replay the failed execution instead of starting a new one.
+  [ -n "$KEY" ] || KEY="canary-recover-$(date -u +%Y%m%dT%H%M%SZ)-${CHILD}"
+fi
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
 export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
@@ -199,7 +225,44 @@ loom validate "$defs/lastdb-safe-upgrade.json" >/dev/null
 loom validate "$defs/lastdb-canary-release.json" >/dev/null
 loom publish "$defs/lastdb-safe-upgrade.json" >/dev/null
 loom publish "$defs/lastdb-canary-release.json" >/dev/null
-input="$(OID="${OID:-}" python3 -c 'import json,os; print(json.dumps({"main_oid":os.environ.get("OID") or "","max_attempts":3},separators=(",",":")))')"
+if [ "$RECOVER" -eq 1 ]; then
+  # Build verified-live recovery input from the GREEN child's own receipt.
+  # RECOVER_LIVE re-verifies all of this against the live node before the
+  # graph records anything, so a stale receipt fails closed there.
+  recover_show="$(loom show "$CHILD" 2>&1)" || {
+    log "cannot read recovery child $CHILD"
+    write_stamp unavailable "$KEY" "error" "recover-child-unreadable child=$CHILD"
+    printf '%s %s\n' 'ROUTINE_RESULT' "outcome=error detail=recover-child-unreadable child=$CHILD"
+    exit 3
+  }
+  recover_field() {
+    printf '%s\n' "$recover_show" | sed -n "s/^context\.$1: //p" | head -1 | jq -r '.'
+  }
+  recover_status="$(printf '%s\n' "$recover_show" | awk -F': ' '/^status:/{print $2; exit}')"
+  recover_candidate="$(recover_field candidate)"
+  recover_oid="$(recover_field source_git_oid)"
+  recover_version="$(recover_field version)"
+  recover_verdict="$(recover_field verdict)"
+  recover_cutover="$(recover_field cutover)"
+  recover_verify="$(recover_field verify)"
+  if [ "$recover_status" != "succeeded" ] || [ "$recover_verdict" != "green" ] \
+    || [ "$recover_cutover" != "live" ] || [ "$recover_verify" != "live" ] \
+    || [ -z "$recover_candidate" ] || [ -z "$recover_oid" ] || [ -z "$recover_version" ]; then
+    det="recover-child-not-green child=$CHILD status=${recover_status:-none} verdict=${recover_verdict:-none}"
+    log "$det"
+    write_stamp invalid "$KEY" "error" "$det"
+    printf '%s %s\n' 'ROUTINE_RESULT' "outcome=error detail=$det"
+    exit 3
+  fi
+  input="$(jq -cn \
+    --arg oid "$recover_oid" \
+    --arg child "$CHILD" \
+    --arg candidate "$recover_candidate" \
+    --arg version "$recover_version" \
+    '{main_oid:$oid,max_attempts:3,recovery_mode:"verified-live",recovery_child_execution:$child,recovery_candidate:$candidate,recovery_source_git_oid:$oid,recovery_version:$version}')"
+else
+  input="$(OID="${OID:-}" python3 -c 'import json,os; print(json.dumps({"main_oid":os.environ.get("OID") or "","max_attempts":3},separators=(",",":")))')"
+fi
 
 log "loom run lastdb-canary-release --key $KEY"
 run_log_dir="${ROUTINES_RUN_DIR:-$(dirname "$STAMP")}"

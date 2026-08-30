@@ -19,7 +19,7 @@ bash -n "$LAUNCHER"
 bash -n "$DRIVER"
 python3 -m py_compile "$FRESH" "$DOGFOOD"
 
-[ "$(jq -r .version "$GRAPH")" = "3" ] || fail "safe-upgrade graph version did not advance"
+[ "$(jq -r .version "$GRAPH")" = "4" ] || fail "safe-upgrade graph version did not advance"
 [ "$(jq -r '.states.DECIDE.map.current' "$GRAPH")" = "DONE" ] \
   || fail "equal candidate does not finish as a no-op"
 probe_timeout="$(jq -er '.states.PROBE.timeout_sec | numbers' "$GRAPH")"
