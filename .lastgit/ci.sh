@@ -309,3 +309,11 @@ ci_test tests/last-stack-disk-reclaim-stripped-path.sh
 # tests/last-stack-canary-pipeline.sh into a shard where it failed under load.
 # New tests go at the end.
 ci_test tests/llms-txt-install-smoke-bounded.sh
+
+# Review-ref extraction for the papercut lifecycle closer. The parser feeds live
+# `lastgit cr view` / forge API calls, so a prose-greedy or punctuation-keeping
+# regex spends every reconciler pass on 404s against refs that do not exist.
+# Stubbed venues, no network, under a second.
+#
+# APPENDED (see the note above): ci_test shards by list position.
+ci_test tests/last-stack-papercut-lifecycle-close-ref-extraction.sh
