@@ -18,6 +18,8 @@ HOME="$tmp" PATH="/usr/bin:/bin" "$BIN" --json --quiet >"$tmp/out" 2>"$tmp/err"
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "expected exit 3 without loom, got $rc $(cat "$tmp/err")"
+grep -q '"reason":"loom_not_on_path"' "$tmp/out" \
+  || fail "exit 3 did not name its cause on stdout: $(cat "$tmp/out")"
 
 # --- mock loom ---
 mkdir -p "$tmp/bin" "$tmp/install/dist" "$tmp/install/scripts" "$tmp/install/definitions"
@@ -177,5 +179,64 @@ set +e
 rc=$?
 set -e
 [ "$rc" -eq 3 ] || fail "empty view should exit 3, got $rc"
+
+# --- every exit-3 branch names a DIFFERENT cause ------------------------
+# Eight branches exited 3 and explained themselves only through log(), which
+# --quiet silences and every caller sends to /dev/null. The reason now rides
+# on stdout, where the caller already reads the classification, and lands in
+# the stamp so the dashboard row can show it too. Two publish branches used
+# to be counted as one; they are distinct failures and must read differently.
+mk_loom() { # $1 = mode
+  cat >"$tmp/bin/loom" <<SH
+#!/usr/bin/env bash
+mode="$1"
+case "\${1:-} \$mode" in
+  "ping ping-fail")     exit 1 ;;
+  "ping "*)             echo ok; exit 0 ;;
+  "publish publish1-fail") exit 1 ;;
+  "publish publish2-fail")
+      case "\${2##*/}" in why-stopped-probe.json) exit 1 ;; esac
+      exit 0 ;;
+  "publish "*)          exit 0 ;;
+  "run no-view")        exit 0 ;;
+  "run run-failed")     echo "status: failed"; exit 9 ;;
+esac
+exit 0
+SH
+  chmod 755 "$tmp/bin/loom"
+}
+
+reason_of() { # $1 = mode → prints the reason token
+  mk_loom "$1"
+  set +e
+  o="$("$BIN" --json --quiet 2>/dev/null)"
+  set -e
+  printf '%s\n' "$o" | sed -n 's/.*"reason":"\([^"]*\)".*/\1/p' | head -1
+}
+
+r_ping="$(reason_of ping-fail)"
+r_pub1="$(reason_of publish1-fail)"
+r_pub2="$(reason_of publish2-fail)"
+r_view="$(reason_of no-view)"
+r_run="$(reason_of run-failed)"
+
+[ "$r_ping" = "loom_ping_failed" ] || fail "ping branch cause: $r_ping"
+[ "$r_pub1" = "loom_publish_why_stopped_failed" ] || fail "publish branch cause: $r_pub1"
+[ "$r_pub2" = "loom_publish_why_stopped_probe_failed" ] || fail "probe publish branch cause: $r_pub2"
+[ "$r_view" = "loom_run_produced_no_view_rc_0" ] || fail "empty-view branch cause: $r_view"
+[ "$r_run" = "loom_run_failed_rc_9" ] || fail "run-failed branch cause: $r_run"
+
+# The two publish branches are the pair the earlier count merged into one.
+[ "$r_pub1" != "$r_pub2" ] || fail "the two publish branches still read alike: $r_pub1"
+
+n_distinct="$(printf '%s\n' "$r_ping" "$r_pub1" "$r_pub2" "$r_view" "$r_run" | sort -u | wc -l | tr -d ' ')"
+[ "$n_distinct" -eq 5 ] || fail "expected 5 distinct causes, got $n_distinct"
+
+# The stamp carries it too, so --status can show a cause the run dir no longer has.
+mk_loom ping-fail
+set +e; "$BIN" --json --quiet >/dev/null 2>&1; set -e
+st="$("$BIN" --status)"
+printf '%s\n' "$st" | grep -q '"reason": "loom_ping_failed"' \
+  || fail "stamp did not keep the cause: $st"
 
 echo ok
