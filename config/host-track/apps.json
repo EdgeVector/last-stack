@@ -115,6 +115,10 @@
           "target": "$HOME/.local/bin/last-stack-feature-portfolio-admission"
         },
         {
+          "source": "bin/last-stack-milestone-slice-satisfaction",
+          "target": "$HOME/.local/bin/last-stack-milestone-slice-satisfaction"
+        },
+        {
           "source": "bin/last-stack-ship-handoff",
           "target": "$HOME/.local/bin/last-stack-ship-handoff"
         },

@@ -88,6 +88,17 @@ require '--work-class feature' "$milestone"
 require 'admission-record-unreadable' "$milestone"
 require 'admission-paused' "$milestone"
 
+# A stale papercut or design cannot create work before current main, merged
+# reviews, closeouts, and driver memory pass the satisfaction check.
+require 'Shipped-slice satisfaction gate' "$milestone"
+require 'last-stack-milestone-slice-satisfaction' "$milestone"
+require 'SATISFACTION-CHECK' "$milestone"
+require 'already-satisfied' "$milestone"
+require '.remaining_clauses' "$milestone"
+require 'Point-read the merged reviews' "$milestone"
+require 'Point-read the known closeout cards' "$milestone"
+require 'Automation memory:' "$milestone"
+
 # The admission gate must be decided before the driver creates anything.
 north_admission_line="$(grep -nF 'Portfolio admission gate' "$north" | cut -d: -f1 | head -1)"
 north_create_line="$(grep -nF 'kanban milestone add <milestone-slug>' "$north" | cut -d: -f1 | head -1)"
@@ -97,9 +108,15 @@ if (( north_admission_line >= north_create_line )); then
 fi
 
 ms_admission_line="$(grep -nF 'Portfolio admission gate' "$milestone" | cut -d: -f1 | head -1)"
-ms_file_line="$(grep -nF 'last-stack-kanban-file-pr' "$milestone" | cut -d: -f1 | head -1)"
+ms_file_line="$(grep -nF 'last-stack-kanban-file-pr' "$milestone" | cut -d: -f1 | tail -1)"
 if (( ms_admission_line >= ms_file_line )); then
   printf 'admission gate must precede Kind:pr filing\n' >&2
+  exit 1
+fi
+
+ms_satisfaction_line="$(grep -nF 'Shipped-slice satisfaction gate' "$milestone" | cut -d: -f1 | head -1)"
+if (( ms_satisfaction_line >= ms_file_line )); then
+  printf 'satisfaction gate must precede Kind:pr filing\n' >&2
   exit 1
 fi
 
