@@ -234,7 +234,7 @@ fi
 if [ "$START" -eq 1 ]; then
   oid="$(resolve_oid)"
   [ -n "$oid" ] || { echo "canary-loom: no main oid" >&2; exit 3; }
-  KEY="canary-${oid}"
+  [ -n "$KEY" ] || KEY="canary-${oid}"
   OID="$oid"
 fi
 
