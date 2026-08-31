@@ -114,6 +114,16 @@ grep -q 'observer-gate: why-stopped-loom: loom publish why-stopped failed' "$tmp
   exit 1
 }
 
+# With a run dir, the wrapper's words are also kept beside the run, where a
+# later reader looks first.
+mkdir -p "$tmp/rundir"
+out="$(HOME="$tmp/home" PATH="/usr/bin:/bin" ROUTINES_RUN_DIR="$tmp/rundir" \
+  "$tmp/root/bin/last-stack-routine-observer-gate" last-stack-why-stopped 2>/dev/null)"
+grep -q 'loom publish why-stopped failed' "$tmp/rundir/why-stopped-loom.err" || {
+  echo "run dir kept no wrapper stderr: $(ls "$tmp/rundir")" >&2
+  exit 1
+}
+
 # A wrapper too old to print the reason still gets a cause, read back from the
 # stderr the gate now keeps. Without this the fix would only work for branches
 # somebody remembered to update.

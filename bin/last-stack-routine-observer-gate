@@ -75,7 +75,21 @@ if [ -z "$detail" ] && [ "$id" = "last-stack-why-stopped" ]; then
     why_loom="${HOME}/.last-stack/bin/last-stack-why-stopped-loom"
   fi
   if [ -x "$why_loom" ]; then
-    loom_err="$(mktemp "${TMPDIR:-/tmp}/why-stopped-loom-err.XXXXXX")" || loom_err=/dev/null
+    # routines exports ROUTINES_RUN_DIR to a gate_command, so keep the wrapper's
+    # stderr next to the run it belongs to. Fall back to a temp file when the
+    # gate runs outside a routine, and replay it onto the gate's own stderr
+    # either way: stderr.log always exists, a run-dir file does not.
+    loom_err_keep=0
+    if [ -n "${ROUTINES_RUN_DIR:-}" ] && mkdir -p "$ROUTINES_RUN_DIR" 2>/dev/null; then
+      loom_err="$ROUTINES_RUN_DIR/why-stopped-loom.err"
+      if : >"$loom_err" 2>/dev/null; then
+        loom_err_keep=1
+      else
+        loom_err=/dev/null
+      fi
+    else
+      loom_err="$(mktemp "${TMPDIR:-/tmp}/why-stopped-loom-err.XXXXXX")" || loom_err=/dev/null
+    fi
     loom_timeout="${LAST_STACK_WHY_STOPPED_LOOM_TIMEOUT_SEC:-600}"
     case "$loom_timeout" in
       ''|*[!0-9]*) loom_timeout=600 ;;
@@ -97,7 +111,9 @@ if [ -z "$detail" ] && [ "$id" = "last-stack-why-stopped" ]; then
     if [ "${loom_rc:-0}" -ne 0 ] && [ -s "$loom_err" ]; then
       sed -e 's/^/observer-gate: /' "$loom_err" >&2
     fi
-    [ "$loom_err" = /dev/null ] || rm -f "$loom_err"
+    if [ "$loom_err" != /dev/null ] && [ "$loom_err_keep" -eq 0 ]; then
+      rm -f "$loom_err"
+    fi
     cls="$(printf '%s\n' "$out" | sed -n 's/.*"classes":"\([^"]*\)".*/\1/p' | head -1)"
     if [ -n "$cls" ]; then
       detail="classes=${cls}"
