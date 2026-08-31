@@ -53,6 +53,10 @@ out="$("$BIN" --dry-run --json --quiet)"
 printf '%s\n' "$out" | grep -q 'ROUTINE_RESULT' || fail "missing ROUTINE_RESULT: $out"
 out2="$("$BIN" --dry-run --start --oid abc123 --json --quiet)"
 printf '%s\n' "$out2" | grep -q 'canary-abc123' || fail "start dry-run missing key: $out2"
+out2_retry="$("$BIN" --dry-run --start --oid abc123 --key canary-abc123-retry-1 --json --quiet)"
+printf '%s\n' "$out2_retry" | head -1 \
+  | jq -e '.key == "canary-abc123-retry-1"' >/dev/null \
+  || fail "start dry-run replaced the explicit retry key: $out2_retry"
 
 mock_home="$tmp/home"
 mkdir -p "$mock_home/.local/bin"
