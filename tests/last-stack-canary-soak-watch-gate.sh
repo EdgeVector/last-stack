@@ -38,6 +38,14 @@ case "${TEST_LAUNCHER_MODE:-idle}" in
   empty-success)
     printf '%s\n' 'no result trailer'
     ;;
+  hang)
+    # Ignore SIGTERM, so only the -k SIGKILL escalation can stop this. That is
+    # the case the plain routines cap could not handle: it TERMed the gate and
+    # left the launcher's descendants alive, still writing into a finished run.
+    trap '' TERM
+    printf '%s\n' 'starting'
+    sleep 60
+    ;;
 esac
 SH
 
@@ -48,6 +56,7 @@ run_gate() {
   TEST_LAUNCHER_MODE="$1" \
   ROUTINES_RUN_DIR="$tmp/run-$1" \
   LAST_STACK_CANARY_SOAK_GATE_LAUNCHER="$launcher" \
+  LAST_STACK_CANARY_SOAK_GATE_TIMEOUT_SEC="${GATE_TIMEOUT_SEC:-780}" \
     "$GATE"
 }
 
@@ -79,5 +88,51 @@ for mode in unreadable malformed empty-success; do
   fi
   test -s "$tmp/run-$mode/canary-soak-gate.out"
 done
+
+# A launcher that never returns must be bounded BY THE GATE, reported, and
+# reaped. Before this the routines cap SIGTERMed the whole gate: no trailer, no
+# evidence, `gate-timeout` with 0-byte logs, and live descendants.
+if command -v timeout >/dev/null 2>&1; then
+  : >"$calls"
+  set +e
+  start="$(date -u +%s)"
+  hang_out="$(GATE_TIMEOUT_SEC=2 run_gate hang)"
+  hang_rc=$?
+  elapsed=$(( $(date -u +%s) - start ))
+  set -e
+
+  # Exit 0 with a terminal result — routinesd reads the outcome from the
+  # trailer instead of recording a kill.
+  test "$hang_rc" -eq 0
+  printf '%s\n' "$hang_out" | grep -q 'CANARY_SOAK_GATE_LAUNCHER_TIMEOUT after=2s'
+  printf '%s\n' "$hang_out" | grep -q 'ROUTINE_RESULT outcome=error detail=launcher-timeout=2s'
+
+  # Not handed to the full agent: that would re-run the same unbounded call.
+  if printf '%s\n' "$hang_out" | grep -q 'CANARY_SOAK_GATE_PROCEED'; then
+    echo "hang handed off to the agent instead of reporting" >&2
+    exit 1
+  fi
+
+  # The evidence the timeout path used to lose entirely.
+  test -s "$tmp/run-hang/canary-soak-gate.out"
+  grep -q 'starting' "$tmp/run-hang/canary-soak-gate.out"
+
+  # Bounded by the gate, not by anything outside it. The stub sleeps 60s.
+  test "$elapsed" -lt 30
+
+  # A bad value must fall back to the default, never to "no bound".
+  : >"$calls"
+  set +e
+  bad_out="$(GATE_TIMEOUT_SEC=nonsense timeout -k 2s 20s env \
+    TEST_CALLS="$calls" TEST_LAUNCHER_MODE=idle ROUTINES_RUN_DIR="$tmp/run-bad" \
+    LAST_STACK_CANARY_SOAK_GATE_LAUNCHER="$launcher" \
+    LAST_STACK_CANARY_SOAK_GATE_TIMEOUT_SEC=nonsense "$GATE")"
+  bad_rc=$?
+  set -e
+  test "$bad_rc" -eq 0
+  printf '%s\n' "$bad_out" | grep -q 'outcome=noop detail=no-key'
+else
+  echo "note: coreutils timeout unavailable, skipped the hang bound test" >&2
+fi
 
 echo "ok last-stack-canary-soak-watch-gate"
