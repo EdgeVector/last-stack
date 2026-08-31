@@ -119,6 +119,10 @@
           "target": "$HOME/.local/bin/last-stack-milestone-slice-satisfaction"
         },
         {
+          "source": "bin/last-stack-feature-delivery-effective-flow-proof",
+          "target": "$HOME/.local/bin/last-stack-feature-delivery-effective-flow-proof"
+        },
+        {
           "source": "bin/last-stack-ship-handoff",
           "target": "$HOME/.local/bin/last-stack-ship-handoff"
         },
