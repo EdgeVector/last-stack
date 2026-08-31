@@ -32,10 +32,51 @@ mkdir -p "$(dirname "$evidence")"
 tmp="$(mktemp "${TMPDIR:-/tmp}/canary-soak-gate.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT
 
+# Bound the launcher. routinesd caps this gate at GATE_TIMEOUT_CAP_MS (15m) and
+# SIGTERMs it there — and a SIGTERMed gate emits no ROUTINE_RESULT and never
+# reaches the `cp "$tmp" "$evidence"` below, so the hourly tick produced NOTHING:
+# stdout, stderr and evidence all 0 bytes, outcome `gate-timeout`, no verdict for
+# the soak lane. Twice in twelve ticks (2026-08-30T22:34Z, 2026-08-31T06:34Z)
+# against a 2-35s normal runtime. `timeout -k` also SIGKILLs a child that ignores
+# the TERM, which the plain cap did not: those runs left loom and lastgit
+# descendants writing into the finished run's scratch/ for another 15 minutes.
+#
+# 780s leaves headroom under the 15m cap for the evidence copy and the trailer,
+# matching `last-stack-whats-wrong-loom`. The sibling gate that already got this
+# fix is `last-stack-routine-observer-gate`
+# (LAST_STACK_WHY_STOPPED_LOOM_TIMEOUT_SEC); this was the last unbounded loom
+# caller of the three.
+launcher_timeout="${LAST_STACK_CANARY_SOAK_GATE_TIMEOUT_SEC:-780}"
+case "$launcher_timeout" in
+  ''|*[!0-9]*) launcher_timeout=780 ;;
+esac
+[ "$launcher_timeout" -ge 1 ] || launcher_timeout=780
+
 set +e
-"$launcher" --json --quiet >"$tmp" 2>&1
+if command -v timeout >/dev/null 2>&1; then
+  timeout -k 2s "${launcher_timeout}s" "$launcher" --json --quiet >"$tmp" 2>&1
+else
+  # No coreutils `timeout`: keep the old unbounded call rather than inventing a
+  # second reaper here. The routines cap still applies, so this degrades to the
+  # prior behaviour instead of failing the tick outright.
+  "$launcher" --json --quiet >"$tmp" 2>&1
+fi
 launcher_rc=$?
 set -e
+
+# 124 is `timeout`'s own signal that it fired; 137 is the -k SIGKILL escalation.
+if [ "$launcher_rc" -eq 124 ] || [ "$launcher_rc" -eq 137 ]; then
+  cp "$tmp" "$evidence"
+  printf 'CANARY_SOAK_GATE_LAUNCHER_TIMEOUT after=%ss rc=%s evidence=%s\n' \
+    "$launcher_timeout" "$launcher_rc" "$evidence"
+  # Report the tick instead of being killed mid-flight. Exit 0 so routinesd takes
+  # the outcome from this trailer: an error the operator can read beats a
+  # `gate-timeout` with empty logs. Do NOT exit 10 — handing a hung launcher to
+  # the full agent gives it the same unbounded call with less budget left.
+  printf '%s %s\n' 'ROUTINE_RESULT' \
+    "outcome=error detail=launcher-timeout=${launcher_timeout}s rc=${launcher_rc}"
+  exit 0
+fi
 
 if [ "$launcher_rc" -eq 0 ] \
    && grep -Eq '^ROUTINE_RESULT outcome=(ok|noop|error)( |$)' "$tmp"; then
