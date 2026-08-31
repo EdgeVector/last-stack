@@ -134,6 +134,43 @@ If `MILESTONE_DRIVER_TARGET` is nonempty:
 4. Skip the portfolio-ranking procedure; drive only that milestone’s promote,
    decompose, or **complete_proof** action from the report. Targeting never relaxes blockers or the safety cap.
 
+## Portfolio admission gate (before any Kind:pr create)
+
+The factory admits at most two feature North Stars
+(`decision-2026-08-31-two-admitted-feature-outcomes`). Read the admission
+record with **one exact Brain point get**. Never use a Brain list or a Brain
+search as this gate — enumeration under-reports.
+
+Run this once per milestone North Star, before you file any new `Kind: pr`
+card for it:
+
+```bash
+set +e
+"$last_stack/bin/last-stack-feature-portfolio-admission" \
+  --north-star "$ms_north_star" --work-class feature --json \
+  >/tmp/milestone-driver-admission.json
+admission_rc=$?
+set -e
+printf 'ADMISSION north_star=%s rc=%s\n' "$ms_north_star" "$admission_rc"
+if [ "$admission_rc" -ne 0 ]; then
+  # File no new Kind:pr card for this milestone in this pass.
+  skip_new_cards=1
+fi
+```
+
+- `rc=0` — continue and file the next-gate cards.
+- `rc=2` — the North Star is paused for new feature creation. File **no** new
+  `Kind: pr` card for that milestone. Still run `promote` and `complete_proof`
+  for it, because existing work must be able to finish. Report
+  `admission-paused north_star=<slug>` in the run line.
+- `rc=1` — the admission record is missing or malformed. File no new card at
+  all this pass. Report `noop admission-record-unreadable` and stop.
+
+`last-stack-kanban-file-pr` re-runs the same gate and refuses a paused outcome,
+so a skipped check here is caught at the filing boundary. Do **not** pass
+`--work-class` to work around a paused outcome; the non-feature classes exist
+for closeout, proof, repair, and incident work only.
+
 ## Deterministic gap-report (required)
 
 ```bash
@@ -236,9 +273,11 @@ For each `work_queue` item with `action=decompose`, until `safety_cap`:
    `Base:` / `Kind: pr` header. It also runs `last-stack-kanban-decision-check`
    and stamps `## DECISION-CHECK`. A conflict is a refuse — rewrite the brief
    so it honors the named records, or skip that slice. Do not pass
-   `--skip-decision-check`. Unblocked → `--column todo`; dep-held →
-   `--column backlog`. Do not file a Kind:pr that pickup would classify
-   `unattached-outcome`.
+   `--skip-decision-check`. The helper also runs
+   `last-stack-feature-portfolio-admission`; a paused North Star is a refuse.
+   Do not pass `--work-class` to bypass it. Unblocked → `--column todo`;
+   dep-held → `--column backlog`. Do not file a Kind:pr that pickup would
+   classify `unattached-outcome`.
 6. If you cannot name a concrete next slice without inventing product design:
    **stop** for that milestone with `needs-decomposition` — do not spam shells
    (PR or validation).

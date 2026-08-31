@@ -1,0 +1,278 @@
+#!/usr/bin/env python3
+"""Admission gate: the factory admits at most two feature North Stars.
+
+One exact Brain point get of `preference-feature-delivery-portfolio-admission`.
+No Brain list. No Brain search. Enumeration under-reports, so it cannot be the
+gate (see `feedback_brain_list_is_sample_not_census`).
+
+The gate applies to NEW feature creation only: a milestone from the North Star
+driver, and a Kind:pr card from the milestone driver. It never blocks closeout,
+proof, repair, or incident work — those callers pass --work-class.
+
+Exit:
+  0  admitted (or an ungated work class)
+  2  the North Star is paused for new feature creation
+  1  the admission record is missing or malformed (fail closed)
+
+Implements `decision-2026-08-31-two-admitted-feature-outcomes`.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ADMISSION_SLUG = "preference-feature-delivery-portfolio-admission"
+SUPPORTED_POLICY_VERSIONS = (1,)
+MAX_ADMITTED = 2
+SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{2,}$")
+EMPTY_VALUES = ("none", "empty", "unset", "-")
+
+# Work classes that never consult the gate. A paused outcome must still be able
+# to close, prove, repair, and respond to incidents.
+UNGATED_WORK_CLASSES = ("closeout", "proof", "repair", "incident")
+GATED_WORK_CLASSES = ("feature",)
+
+FIELD_RE = re.compile(r"(?im)^[ \t]*(Policy-Version|Primary|Secondary|Paused|Updated-At|Updated-By|Reason)[ \t]*:[ \t]*(.*?)[ \t]*$")
+
+
+class BrainUnavailable(Exception):
+    pass
+
+
+def point_get(slug: str, brain_bin: str, fixture_dir: Path | None) -> tuple[str, list[str]]:
+    """Return (record text, list of point gets performed). Never list/search."""
+    gets = [slug]
+    if fixture_dir is not None:
+        path = fixture_dir / "get" / f"{slug}.txt"
+        if not path.is_file():
+            raise BrainUnavailable(f"fixture has no record for {slug}")
+        return path.read_text(), gets
+    try:
+        cp = subprocess.run(
+            [brain_bin, "get", slug, "--type", "preference"],
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise BrainUnavailable(f"brain get {slug} failed: {exc}") from exc
+    if cp.returncode != 0:
+        detail = (cp.stderr or cp.stdout or "brain get failed").strip().splitlines()
+        raise BrainUnavailable(f"brain get {slug} failed: {detail[0] if detail else 'no output'}")
+    if not cp.stdout.strip():
+        raise BrainUnavailable(f"brain get {slug} returned an empty record")
+    return cp.stdout, gets
+
+
+def parse_fields(text: str) -> tuple[dict[str, str], list[str]]:
+    """Collect the admission fields. A repeated key is malformed."""
+    fields: dict[str, str] = {}
+    duplicates: list[str] = []
+    for match in FIELD_RE.finditer(text):
+        key = match.group(1).lower()
+        value = match.group(2).strip()
+        if key in fields:
+            duplicates.append(key)
+            continue
+        fields[key] = value
+    return fields, duplicates
+
+
+def normalize_slot(value: str) -> str:
+    """Return a slot slug, or '' for a deliberately empty slot."""
+    v = (value or "").strip().strip("`").lower()
+    if not v or v in EMPTY_VALUES:
+        return ""
+    return v
+
+
+def read_policy(text: str) -> dict:
+    """Validate the record. Raise ValueError with a clear reason when malformed."""
+    fields, duplicates = parse_fields(text)
+    if duplicates:
+        raise ValueError(f"duplicate admission field(s): {', '.join(sorted(set(duplicates)))}")
+
+    raw_version = fields.get("policy-version", "")
+    if not raw_version:
+        raise ValueError("missing Policy-Version")
+    try:
+        version = int(raw_version)
+    except ValueError:
+        raise ValueError(f"Policy-Version is not an integer: {raw_version!r}") from None
+    if version not in SUPPORTED_POLICY_VERSIONS:
+        raise ValueError(
+            f"unsupported Policy-Version {version} "
+            f"(this gate reads {', '.join(str(v) for v in SUPPORTED_POLICY_VERSIONS)})"
+        )
+
+    if "primary" not in fields:
+        raise ValueError("missing Primary")
+    primary = normalize_slot(fields["primary"])
+    if not primary:
+        raise ValueError("Primary is empty — name the admitted primary North Star")
+    if "," in primary or " " in primary:
+        raise ValueError(f"Primary must hold one slug: {fields['primary']!r}")
+    if not SLUG_RE.match(primary):
+        raise ValueError(f"Primary is not a slug: {fields['primary']!r}")
+
+    secondary = normalize_slot(fields.get("secondary", ""))
+    if secondary:
+        if "," in secondary or " " in secondary:
+            raise ValueError(f"Secondary must hold one slug: {fields['secondary']!r}")
+        if not SLUG_RE.match(secondary):
+            raise ValueError(f"Secondary is not a slug: {fields['secondary']!r}")
+        if secondary == primary:
+            raise ValueError("Secondary repeats Primary — that admits one outcome, not two")
+
+    admitted = [primary] + ([secondary] if secondary else [])
+    if len(admitted) > MAX_ADMITTED:
+        raise ValueError(f"more than {MAX_ADMITTED} admitted outcomes")
+
+    return {
+        "policy_version": version,
+        "primary": primary,
+        "secondary": secondary,
+        "paused": fields.get("paused", ""),
+        "updated_at": fields.get("updated-at", ""),
+        "updated_by": fields.get("updated-by", ""),
+        "reason": fields.get("reason", ""),
+        "admitted": admitted,
+    }
+
+
+def evaluate(north_star: str, work_class: str, brain_bin: str, fixture_dir: Path | None) -> dict:
+    result = {
+        "slug": ADMISSION_SLUG,
+        "north_star": north_star,
+        "work_class": work_class,
+        "gated": work_class not in UNGATED_WORK_CLASSES,
+        "admitted": False,
+        "verdict": "",
+        "reason": "",
+        "primary": "",
+        "secondary": "",
+        "admitted_outcomes": [],
+        "point_gets": [],
+        "brain_searches": [],
+        "brain_lists": [],
+    }
+
+    if not result["gated"]:
+        result["verdict"] = "ungated"
+        result["admitted"] = True
+        result["reason"] = (
+            f"work_class={work_class} is not new feature creation; "
+            "admission does not gate closeout, proof, repair, or incident work"
+        )
+        return result
+
+    try:
+        text, gets = point_get(ADMISSION_SLUG, brain_bin, fixture_dir)
+    except BrainUnavailable as exc:
+        result["point_gets"] = [ADMISSION_SLUG]
+        result["verdict"] = "missing"
+        result["reason"] = (
+            f"admission record {ADMISSION_SLUG} is unreadable ({exc}); "
+            "new feature creation is blocked until it point-reads"
+        )
+        return result
+
+    result["point_gets"] = gets
+    try:
+        policy = read_policy(text)
+    except ValueError as exc:
+        result["verdict"] = "malformed"
+        result["reason"] = (
+            f"admission record {ADMISSION_SLUG} is malformed ({exc}); "
+            "new feature creation is blocked until it is repaired"
+        )
+        return result
+
+    result["primary"] = policy["primary"]
+    result["secondary"] = policy["secondary"]
+    result["admitted_outcomes"] = policy["admitted"]
+    result["policy_version"] = policy["policy_version"]
+    result["updated_at"] = policy["updated_at"]
+
+    if not north_star:
+        result["verdict"] = "report"
+        result["admitted"] = True
+        result["reason"] = "no --north-star given; reporting the admitted outcomes only"
+        return result
+
+    ns = north_star.strip().lower()
+    if ns == policy["primary"]:
+        result["verdict"] = "admitted"
+        result["admitted"] = True
+        result["reason"] = f"{ns} holds the primary admission slot"
+        return result
+    if policy["secondary"] and ns == policy["secondary"]:
+        result["verdict"] = "admitted"
+        result["admitted"] = True
+        result["reason"] = f"{ns} holds the secondary admission slot"
+        return result
+
+    admitted_list = ", ".join(policy["admitted"]) or "none"
+    result["verdict"] = "paused"
+    result["reason"] = (
+        f"{ns} is paused for new feature creation; the admitted outcomes are "
+        f"{admitted_list}. Update {ADMISSION_SLUG} before you create work for it. "
+        "Closeout, proof, repair, and incident work stay allowed."
+    )
+    return result
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--north-star", default="", help="North Star slug to admit")
+    ap.add_argument(
+        "--work-class",
+        default="feature",
+        choices=list(GATED_WORK_CLASSES) + list(UNGATED_WORK_CLASSES),
+        help="feature is gated; closeout/proof/repair/incident are not",
+    )
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument(
+        "--fixture-dir",
+        help="Offline brain: get/<slug>.txt (no live node)",
+    )
+    ap.add_argument(
+        "--brain",
+        default=os.environ.get("BRAIN_BIN", "brain"),
+        help="brain CLI (ignored when --fixture-dir is set)",
+    )
+    args = ap.parse_args(argv)
+
+    fixture = Path(args.fixture_dir) if args.fixture_dir else None
+    if fixture is None:
+        env_fix = os.environ.get("LAST_STACK_ADMISSION_FIXTURE", "")
+        if env_fix:
+            fixture = Path(env_fix)
+
+    result = evaluate(args.north_star, args.work_class, args.brain, fixture)
+
+    if args.json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+
+    if result["verdict"] in ("missing", "malformed"):
+        print(f"last-stack-feature-portfolio-admission: {result['reason']}", file=sys.stderr)
+        return 1
+    if result["verdict"] == "paused":
+        print(f"last-stack-feature-portfolio-admission: {result['reason']}", file=sys.stderr)
+        return 2
+    if not args.json:
+        print(
+            f"admission {result['verdict']} north_star={result['north_star'] or 'none'} "
+            f"primary={result['primary'] or 'none'} secondary={result['secondary'] or 'none'}"
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -138,6 +138,43 @@ Use the milestone portfolio captured by the creation inventory gate. Then:
 If the outcome, acceptance criteria, or owning North Star is ambiguous, do not
 guess. Report `noop needs-outcome-definition`.
 
+## Portfolio admission gate (before any milestone create)
+
+The factory admits at most two feature North Stars
+(`decision-2026-08-31-two-admitted-feature-outcomes`). Read the admission
+record with **one exact Brain point get**. Never use a Brain list or a Brain
+search as this gate — enumeration under-reports.
+
+```bash
+set +e
+"$last_stack/bin/last-stack-feature-portfolio-admission" \
+  --north-star "$ns_slug" --work-class feature --json \
+  >/tmp/north-star-driver-admission.json
+admission_rc=$?
+set -e
+printf 'ADMISSION north_star=%s rc=%s\n' "$ns_slug" "$admission_rc"
+if [ "$admission_rc" -ne 0 ]; then
+  # Create nothing. The next pass re-reads the record.
+  exit 0
+fi
+```
+
+- `rc=0` — the North Star holds the Primary or the Secondary slot. Continue.
+- `rc=2` — the North Star is paused for new feature creation. Create no
+  milestone for it. Report `noop admission-paused north_star=<slug>` and pick
+  no replacement outcome in this pass.
+- `rc=1` — the admission record is missing or malformed. Create nothing.
+  Report `noop admission-record-unreadable` and stop. This is fail-closed by
+  design.
+
+The gate blocks **new feature creation only**. It never blocks closeout, proof,
+repair, or incident work; those paths pass `--work-class` and stay allowed.
+
+A P0 incident can replace the Secondary slot. The controller must update
+`preference-feature-delivery-portfolio-admission` **before** this driver
+creates a milestone for the replacement. This driver never edits the admission
+record and never admits a third outcome.
+
 ## Create one milestone scaffold
 
 Pass the creation inventory gate again, then deduplicate by requested slug and

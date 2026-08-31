@@ -111,6 +111,10 @@
           "target": "$HOME/.local/bin/last-stack-kanban-decision-check"
         },
         {
+          "source": "bin/last-stack-feature-portfolio-admission",
+          "target": "$HOME/.local/bin/last-stack-feature-portfolio-admission"
+        },
+        {
           "source": "bin/last-stack-ship-handoff",
           "target": "$HOME/.local/bin/last-stack-ship-handoff"
         },
@@ -211,7 +215,7 @@
           "target": "$HOME/.local/bin/last-stack-routines-host-track-post-install"
         }
       ],
-      "notes": "Runtime is an immutable CI artifact that tracks gate_main (green+published main). host-track refresh promotes stable to that tip then installs. ~/.last-stack/{bin,skills,...} \u2192 artifacts/current. PATH links Class A + pickup bootstrap + Forge closeout tools (forge-api and friends) so routinesd (~/.local/bin first) never hits GC'd version pins and board-closeout can resolve Forge PRs. Never develop in the install; use a worktree. Also PATH-link last-stack-papercut-lifecycle-close, last-stack-kanban-file-pr, last-stack-kanban-decision-check, last-stack-kanban-done-when-eval, last-stack-json-capture, and last-stack-json-get so scheduled shells (routinesd PATH often ~/.local/bin-first without sourcing shell-prelude) resolve the lifecycle closer, the required Kind:pr filing helper, its settled-decision check, the non-PR DONE-WHEN evaluator, and the JSON stdout/stderr capture helpers the unsafe-inline-json hook recommends.",
+      "notes": "Runtime is an immutable CI artifact that tracks gate_main (green+published main). host-track refresh promotes stable to that tip then installs. ~/.last-stack/{bin,skills,...} \u2192 artifacts/current. PATH links Class A + pickup bootstrap + Forge closeout tools (forge-api and friends) so routinesd (~/.local/bin first) never hits GC'd version pins and board-closeout can resolve Forge PRs. Never develop in the install; use a worktree. Also PATH-link last-stack-papercut-lifecycle-close, last-stack-kanban-file-pr, last-stack-kanban-decision-check, last-stack-feature-portfolio-admission, last-stack-kanban-done-when-eval, last-stack-json-capture, and last-stack-json-get so scheduled shells (routinesd PATH often ~/.local/bin-first without sourcing shell-prelude) resolve the lifecycle closer, the required Kind:pr filing helper, its settled-decision check, the two-outcome portfolio admission gate, the non-PR DONE-WHEN evaluator, and the JSON stdout/stderr capture helpers the unsafe-inline-json hook recommends.",
       "safe_upgrade": {
         "post_install_phase": "after-cutover",
         "probes": [

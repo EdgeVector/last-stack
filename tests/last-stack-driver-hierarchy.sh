@@ -74,6 +74,35 @@ if (( portfolio_line >= target_line )); then
   exit 1
 fi
 
+# Two-outcome portfolio admission (decision-2026-08-31-two-admitted-feature-outcomes)
+require 'Portfolio admission gate' "$north"
+require 'last-stack-feature-portfolio-admission' "$north"
+require '--work-class feature' "$north"
+require 'admission-record-unreadable' "$north"
+require 'admission-paused' "$north"
+require 'never admits a third outcome' "$north"
+
+require 'Portfolio admission gate' "$milestone"
+require 'last-stack-feature-portfolio-admission' "$milestone"
+require '--work-class feature' "$milestone"
+require 'admission-record-unreadable' "$milestone"
+require 'admission-paused' "$milestone"
+
+# The admission gate must be decided before the driver creates anything.
+north_admission_line="$(grep -nF 'Portfolio admission gate' "$north" | cut -d: -f1 | head -1)"
+north_create_line="$(grep -nF 'kanban milestone add <milestone-slug>' "$north" | cut -d: -f1 | head -1)"
+if (( north_admission_line >= north_create_line )); then
+  printf 'admission gate must precede milestone creation\n' >&2
+  exit 1
+fi
+
+ms_admission_line="$(grep -nF 'Portfolio admission gate' "$milestone" | cut -d: -f1 | head -1)"
+ms_file_line="$(grep -nF 'last-stack-kanban-file-pr' "$milestone" | cut -d: -f1 | head -1)"
+if (( ms_admission_line >= ms_file_line )); then
+  printf 'admission gate must precede Kind:pr filing\n' >&2
+  exit 1
+fi
+
 require 'must stay paused' "$program"
 require 'superseded-by-north-star-driver-and-milestone-driver' "$program"
 

@@ -27,10 +27,14 @@
 #   --board-cli PATH        kanban/fkanban binary (tests)
 #   --decision-fixture DIR  offline brain for last-stack-kanban-decision-check
 #   --skip-decision-check   tests/operator only — generators must not pass this
+#   --work-class CLASS      feature (default, gated) | closeout | proof |
+#                           repair | incident (not gated by admission)
+#   --admission-fixture DIR offline brain for last-stack-feature-portfolio-admission
 #   --dry-run
 #
 # Exit: 0 on file, 2 on usage/validation, 1 on board write failure.
 # A decision-check conflict is exit 2 and does not write the card.
+# A paused North Star is exit 2; an unreadable admission record is exit 1.
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
@@ -63,6 +67,8 @@ board_cli=""
 dry=0
 decision_fixture=""
 skip_decision_check=0
+work_class="feature"
+admission_fixture=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -82,6 +88,8 @@ while [ "$#" -gt 0 ]; do
     --board-cli) board_cli="${2:-}"; shift 2 ;;
     --decision-fixture) decision_fixture="${2:-}"; shift 2 ;;
     --skip-decision-check) skip_decision_check=1; shift ;;
+    --work-class) work_class="${2:-}"; shift 2 ;;
+    --admission-fixture) admission_fixture="${2:-}"; shift 2 ;;
     --dry-run) dry=1; shift ;;
     -h|--help) usage ;;
     *)
@@ -109,6 +117,10 @@ case "$repo" in
   */*) ;;
   *) die "repo must be owner/name (got $repo)" ;;
 esac
+case "$work_class" in
+  feature|closeout|proof|repair|incident) ;;
+  *) die "work-class must be feature, closeout, proof, repair, or incident (got $work_class)" ;;
+esac
 
 if [ -z "$board_cli" ]; then
   if command -v kanban >/dev/null 2>&1; then
@@ -131,6 +143,25 @@ printf '%s\n' "$body" | grep -Eq '(^|[[:space:]])##[[:space:]]*END STATE\b|^END 
 header_repo="$(printf '%s\n' "$body" | sed -n -E 's/^Repo:[[:space:]]*//p' | head -1 | tr -d '\r')"
 if [ -n "$header_repo" ] && [ "$header_repo" != "$repo" ]; then
   die "body Repo: '$header_repo' does not match --repo $repo"
+fi
+
+# Two-outcome portfolio admission. One exact Brain point get, never a list or
+# a search. `feature` is gated; closeout/proof/repair/incident are not.
+# decision-2026-08-31-two-admitted-feature-outcomes
+admission_bin="$ROOT/bin/last-stack-feature-portfolio-admission"
+[ -x "$admission_bin" ] || die "missing $admission_bin"
+admission_args=(--north-star "$north_star" --work-class "$work_class")
+if [ -n "$admission_fixture" ]; then
+  admission_args+=(--fixture-dir "$admission_fixture")
+fi
+set +e
+"$admission_bin" "${admission_args[@]}" >/dev/null
+admission_rc=$?
+set -e
+if [ "$admission_rc" -eq 2 ]; then
+  die "admission refused this card: '$north_star' is not an admitted feature outcome"
+elif [ "$admission_rc" -ne 0 ]; then
+  die "admission record unreadable (exit $admission_rc) — not filing"
 fi
 
 # Settled design/decision/preference check. Fail closed: do not file a card

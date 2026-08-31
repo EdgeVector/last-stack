@@ -20,6 +20,22 @@ mkdir -p "$tmp/bin" "$tmp/empty-fixture"
 : >"$tmp/add.body"
 export LAST_STACK_DECISION_FIXTURE="$tmp/empty-fixture"
 
+# Offline admission record: ns-a is the admitted primary, ns-paused is not.
+# decision-2026-08-31-two-admitted-feature-outcomes
+admission_fix="$tmp/admission-fixture"
+mkdir -p "$admission_fix/get"
+cat >"$admission_fix/get/preference-feature-delivery-portfolio-admission.txt" <<'EOF'
+[preference] preference-feature-delivery-portfolio-admission
+title:      Feature delivery portfolio admission
+---
+Policy-Version: 1
+Primary: ns-a
+Secondary: ns-b
+Paused: all-other-feature-north-stars
+Updated-At: 2026-08-31T17:45:00Z
+EOF
+export LAST_STACK_ADMISSION_FIXTURE="$admission_fix"
+
 cat >"$tmp/bin/kanban" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -192,6 +208,51 @@ printf '%s\n' "$conflict_out" | grep -q 'decision-check refused' \
   || fail "conflict stdout missing refuse: $conflict_out"
 if [ -s "$tmp/add.log" ]; then
   fail "conflict wrote add: $(cat "$tmp/add.log")"
+fi
+
+# admission: a paused north star is refused and writes no card
+: >"$tmp/add.log"
+set +e
+paused_out="$("$bin" paused-card --board-cli "$fake_kanban" --title "Paused work" \
+  --repo EdgeVector/last-stack --north-star ns-paused --milestone ms-live \
+  --admission-fixture "$admission_fix" <"$body_ok" 2>&1)"
+paused_rc=$?
+set -e
+[ "$paused_rc" -eq 2 ] || fail "paused north star should exit 2, got $paused_rc: $paused_out"
+printf '%s\n' "$paused_out" | grep -q 'admission refused' \
+  || fail "paused refusal message: $paused_out"
+if [ -s "$tmp/add.log" ]; then
+  fail "paused north star wrote add: $(cat "$tmp/add.log")"
+fi
+
+# admission: an unreadable record fails closed and writes no card
+: >"$tmp/add.log"
+mkdir -p "$tmp/no-admission/get"
+set +e
+noadm_out="$("$bin" no-admission-card --board-cli "$fake_kanban" --title "x" \
+  --repo EdgeVector/last-stack --north-star ns-a --milestone ms-live \
+  --admission-fixture "$tmp/no-admission" <"$body_ok" 2>&1)"
+noadm_rc=$?
+set -e
+[ "$noadm_rc" -eq 2 ] || fail "unreadable admission should refuse, got $noadm_rc: $noadm_out"
+printf '%s\n' "$noadm_out" | grep -q 'admission record unreadable' \
+  || fail "unreadable admission message: $noadm_out"
+if [ -s "$tmp/add.log" ]; then
+  fail "unreadable admission wrote add: $(cat "$tmp/add.log")"
+fi
+
+# admission: repair work is not gated, even with no readable admission record
+: >"$tmp/add.log"
+"$bin" repair-card --board-cli "$fake_kanban" --title "Repair" \
+  --repo EdgeVector/last-stack --north-star ns-a --milestone ms-live \
+  --work-class repair --admission-fixture "$tmp/no-admission" <"$body_ok" \
+  || fail "repair work-class must bypass admission"
+grep -q 'repair-card' "$tmp/add.log" || fail "repair card not filed: $(cat "$tmp/add.log")"
+
+# an unknown work class is a usage error
+if "$bin" bad-class --board-cli "$fake_kanban" --title "x" --repo EdgeVector/last-stack \
+  --north-star ns-a --milestone ms-live --work-class nonsense <"$body_ok" 2>/dev/null; then
+  fail "unknown work-class should be refused"
 fi
 
 echo "ok last-stack-kanban-file-pr"
