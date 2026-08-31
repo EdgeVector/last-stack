@@ -38,7 +38,7 @@ STAMP="${LAST_STACK_WHY_STOPPED_STAMP:-$HOME/.last-stack/state/why-stopped-loom.
 
 write_stamp() {
   mkdir -p "$(dirname "$STAMP")"
-  ST="$1" EX="${2:-}" CL="${3:-}" KY="${4:-}" LAST_STACK_WHY_STOPPED_STAMP="$STAMP" python3 -c '
+  ST="$1" EX="${2:-}" CL="${3:-}" KY="${4:-}" RS="${5:-}" LAST_STACK_WHY_STOPPED_STAMP="$STAMP" python3 -c '
 import json, os, datetime
 p = os.environ["LAST_STACK_WHY_STOPPED_STAMP"]
 doc = {
@@ -47,6 +47,7 @@ doc = {
   "exec_id": os.environ.get("EX", ""),
   "classes": os.environ.get("CL", ""),
   "key": os.environ.get("KY", ""),
+  "reason": os.environ.get("RS", ""),
   "engine": "loom",
 }
 open(p, "w").write(json.dumps(doc) + "\n")
@@ -80,6 +81,7 @@ print(json.dumps({
     "exec_id": d.get("exec_id") or "",
     "classes": d.get("classes") or "",
     "key": d.get("key") or "",
+    "reason": d.get("reason") or "",
 }))
 '
 }
@@ -89,19 +91,38 @@ if [ "$STATUS" -eq 1 ]; then
   exit 0
 fi
 
-log() { [ "$QUIET" -eq 1 ] || printf 'why-stopped-loom: %s\n' "$*" >&2; }
+# LAST_LOG keeps the most recent log line so an exit can name its own cause.
+# --quiet silences the print, never the record: every rc=3 branch below used to
+# explain itself on a stream the caller sends to /dev/null, which left eight
+# distinct failures indistinguishable as the bare word `unavailable`.
+LAST_LOG=""
+log() {
+  LAST_LOG="$*"
+  [ "$QUIET" -eq 1 ] || printf 'why-stopped-loom: %s\n' "$*" >&2
+}
+
+# A stable, greppable token for the cause, derived from the log line itself so
+# a branch added later still gets a real reason instead of a new blind spot.
+reason_token() {
+  printf '%s' "${LAST_LOG:-unknown}" \
+    | tr 'A-Z' 'a-z' \
+    | sed -e 's/[^a-z0-9]\{1,\}/_/g' -e 's/^_//' -e 's/_$//' \
+    | cut -c1-60
+}
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
 export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
 
 if ! command -v loom >/dev/null 2>&1; then
   log "loom not on PATH"
-  write_stamp unavailable "" "" "${LOOM_WHY_KEY:-}"
+  write_stamp unavailable "" "" "${LOOM_WHY_KEY:-}" "$(reason_token)"
+  printf '{"loom":"unavailable","reason":"%s"}\n' "$(reason_token)"
   exit 3
 fi
 if ! loom ping >/dev/null 2>&1; then
   log "loom ping failed"
-  write_stamp unavailable "" "" "${LOOM_WHY_KEY:-}"
+  write_stamp unavailable "" "" "${LOOM_WHY_KEY:-}" "$(reason_token)"
+  printf '{"loom":"unavailable","reason":"%s"}\n' "$(reason_token)"
   exit 3
 fi
 
@@ -121,7 +142,8 @@ for cand in \
 done
 if [ -z "$defs" ]; then
   log "why-stopped definitions not found"
-  write_stamp unavailable "" "" "${LOOM_WHY_KEY:-}"
+  write_stamp unavailable "" "" "${LOOM_WHY_KEY:-}" "$(reason_token)"
+  printf '{"loom":"unavailable","reason":"%s"}\n' "$(reason_token)"
   exit 3
 fi
 
@@ -132,18 +154,21 @@ if [ -z "${LOOM_SCRIPTS:-}" ] || [ ! -f "${LOOM_SCRIPTS}/loom-why-classify.sh" ]
 fi
 if [ ! -f "${LOOM_SCRIPTS:-}/loom-why-classify.sh" ]; then
   log "loom-why-classify.sh not in LOOM_SCRIPTS=${LOOM_SCRIPTS:-unset}"
-  write_stamp unavailable "" "" "${LOOM_WHY_KEY:-}"
+  write_stamp unavailable "" "" "${LOOM_WHY_KEY:-}" "$(reason_token)"
+  printf '{"loom":"unavailable","reason":"%s"}\n' "$(reason_token)"
   exit 3
 fi
 
 if ! loom publish "$defs/why-stopped.json" >/dev/null 2>&1; then
   log "loom publish why-stopped failed"
-  write_stamp unavailable "" "" "${LOOM_WHY_KEY:-}"
+  write_stamp unavailable "" "" "${LOOM_WHY_KEY:-}" "$(reason_token)"
+  printf '{"loom":"unavailable","reason":"%s"}\n' "$(reason_token)"
   exit 3
 fi
 if ! loom publish "$defs/why-stopped-probe.json" >/dev/null 2>&1; then
   log "loom publish why-stopped-probe failed"
-  write_stamp unavailable "" "" "${LOOM_WHY_KEY:-}"
+  write_stamp unavailable "" "" "${LOOM_WHY_KEY:-}" "$(reason_token)"
+  printf '{"loom":"unavailable","reason":"%s"}\n' "$(reason_token)"
   exit 3
 fi
 
@@ -166,12 +191,14 @@ set -e
 # gave us nothing to read.
 if [ -z "$view" ]; then
   log "loom run produced no view rc=$lrc"
-  write_stamp failed "" "" "$key"
+  write_stamp failed "" "" "$key" "$(reason_token)"
+  printf '{"loom":"failed","reason":"%s"}\n' "$(reason_token)"
   exit 3
 fi
 if [ "$lrc" -ne 0 ] && [ "$lrc" -ne 4 ]; then
   log "loom run failed rc=$lrc"
-  write_stamp failed "" "" "$key"
+  write_stamp failed "" "" "$key" "$(reason_token)"
+  printf '{"loom":"failed","reason":"%s"}\n' "$(reason_token)"
   exit 3
 fi
 
@@ -228,7 +255,7 @@ emit_classification() {
 
 if [ "$status" != "succeeded" ]; then
   log "loom exec status=$status"
-  write_stamp "${status:-failed}" "$exec_id" "$cls_str" "$key"
+  write_stamp "${status:-failed}" "$exec_id" "$cls_str" "$key" "$(reason_token)"
   # A populated classification is the answer we were asked for, even though
   # the execution is unfinished. Hand it back and say the run is incomplete —
   # discarding it here is what made the fleet surface read `loom=unavailable`

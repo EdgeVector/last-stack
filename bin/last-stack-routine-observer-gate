@@ -39,10 +39,33 @@ exit_code=0
 loom_state() {
   if [ "${loom_rc:-0}" -eq 4 ]; then
     printf 'incomplete'
+  elif [ "${loom_rc:-0}" -eq 124 ]; then
+    printf 'timeout'
   else
     printf 'unavailable'
   fi
 }
+
+# The wrapper exits 3 from eight distinct places. It used to explain itself only
+# on stderr, which this gate sends to /dev/null, so all eight arrived here as
+# the bare word `unavailable` and nothing downstream could tell a missing binary
+# from a publish that could not reach the node. The wrapper now names its cause
+# on stdout; keep it.
+loom_reason=""
+capture_loom_reason() {
+  loom_reason="$(printf '%s\n' "${out:-}" | sed -n 's/.*"reason":"\([^"]*\)".*/\1/p' | head -1)"
+  if [ -z "$loom_reason" ] && [ "${loom_rc:-0}" -eq 124 ]; then
+    loom_reason="gate_timeout_${loom_timeout:-600}s"
+  fi
+  if [ -z "$loom_reason" ] && [ -s "${loom_err:-/dev/null}" ]; then
+    loom_reason="$(tail -1 "$loom_err" \
+      | sed -e 's/^why-stopped-loom: //' \
+      | tr 'A-Z' 'a-z' \
+      | sed -e 's/[^a-z0-9]\{1,\}/_/g' -e 's/^_//' -e 's/_$//' \
+      | cut -c1-60)"
+  fi
+}
+loom_cause() { printf '%s' "${loom_reason:-unnamed}"; }
 
 if [ -z "$detail" ] && [ "$id" = "last-stack-why-stopped" ]; then
   # Prefer the loom wrapper so the EV OPS why-loom stamp stays fresh.
@@ -52,6 +75,7 @@ if [ -z "$detail" ] && [ "$id" = "last-stack-why-stopped" ]; then
     why_loom="${HOME}/.last-stack/bin/last-stack-why-stopped-loom"
   fi
   if [ -x "$why_loom" ]; then
+    loom_err="$(mktemp "${TMPDIR:-/tmp}/why-stopped-loom-err.XXXXXX")" || loom_err=/dev/null
     loom_timeout="${LAST_STACK_WHY_STOPPED_LOOM_TIMEOUT_SEC:-600}"
     case "$loom_timeout" in
       ''|*[!0-9]*) loom_timeout=600 ;;
@@ -59,13 +83,21 @@ if [ -z "$detail" ] && [ "$id" = "last-stack-why-stopped" ]; then
     [ "$loom_timeout" -ge 1 ] || loom_timeout=600
     set +e
     if command -v timeout >/dev/null 2>&1; then
-      out="$(timeout -k 2s "${loom_timeout}s" "$why_loom" --json --quiet 2>/dev/null)"
+      out="$(timeout -k 2s "${loom_timeout}s" "$why_loom" --json 2>>"$loom_err")"
       loom_rc=$?
     else
-      out="$("$why_loom" --json --quiet 2>/dev/null)"
+      out="$("$why_loom" --json 2>>"$loom_err")"
       loom_rc=$?
     fi
     set -e
+    capture_loom_reason
+    # Replay the wrapper's own words onto the gate's stderr, which routines
+    # captures as stderr.log. A cause that lives only in a variable dies with
+    # the process; this is what makes the next rc=3 readable after the fact.
+    if [ "${loom_rc:-0}" -ne 0 ] && [ -s "$loom_err" ]; then
+      sed -e 's/^/observer-gate: /' "$loom_err" >&2
+    fi
+    [ "$loom_err" = /dev/null ] || rm -f "$loom_err"
     cls="$(printf '%s\n' "$out" | sed -n 's/.*"classes":"\([^"]*\)".*/\1/p' | head -1)"
     if [ -n "$cls" ]; then
       detail="classes=${cls}"
@@ -89,9 +121,9 @@ if [ -z "$detail" ] && [ "$id" = "last-stack-why-stopped" ]; then
       # No --heal: Class A heal can hang; classification itself is the job.
       out="$("$why" --json 2>/dev/null || true)"
       cls="$(printf '%s\n' "$out" | sed -n 's/.*"classes":"\([^"]*\)".*/\1/p' | head -1)"
-      detail="classes=${cls:-unknown} loom=$(loom_state) rc=${loom_rc:-missing}"
+      detail="classes=${cls:-unknown} loom=$(loom_state) rc=${loom_rc:-missing} cause=$(loom_cause)"
     else
-      detail="classes=unknown loom=$(loom_state) rc=${loom_rc:-missing}"
+      detail="classes=unknown loom=$(loom_state) rc=${loom_rc:-missing} cause=$(loom_cause)"
     fi
   fi
 fi
