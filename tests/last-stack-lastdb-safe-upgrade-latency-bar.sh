@@ -181,4 +181,31 @@ set -e
 [ "$RC" -ne 0 ] || fail "cold-vs-cold 20x must RED; out=$OUT"
 echo "$OUT" | grep -q 'RED:' || fail "expected cold RED; out=$OUT"
 
+# --- (e) sub-floor baseline: ratio applies to the floor, not the raw base ----
+# 2026-08-31 canary: cold point 549ms vs 168ms baseline. Raw ratio 3.27x REDed;
+# floored denominator max(168,250)=250 gives 2.2x — GREEN. Brain:
+# papercut-safe-upgrade-point-read-bar-cold-first-boot-vs-subfloor-baseline.
+set +e
+OUT="$(lat_op_like_to_like_within_bar "cold point-read" 549 168 cold cold 2>&1)"
+RC=$?
+set -e
+[ "$RC" -eq 0 ] || fail "549 vs sub-floor 168 must GREEN via floored denominator; out=$OUT"
+echo "$OUT" | grep -q 'floor' || fail "expected floored-denominator GREEN message; out=$OUT"
+
+# --- (f) sub-floor baseline does NOT disable the bar: 3x over the floor RED --
+# 800 > 3 * max(168, 250) = 750 → still RED.
+set +e
+OUT="$(lat_op_like_to_like_within_bar "cold point-read" 800 168 cold cold 2>&1)"
+RC=$?
+set -e
+[ "$RC" -ne 0 ] || fail "800 vs sub-floor 168 must RED over the floored bar; out=$OUT"
+echo "$OUT" | grep -q 'floor' || fail "RED message must name the floor denominator; out=$OUT"
+
+# --- (g) 2026-08-26 shape same-thermal: 354/50 hot-vs-hot GREEN via floor ----
+set +e
+OUT="$(lat_op_like_to_like_within_bar "point-read" 354 50 hot hot 2>&1)"
+RC=$?
+set -e
+[ "$RC" -eq 0 ] || fail "354 vs sub-floor 50 must GREEN via floored denominator; out=$OUT"
+
 echo "OK: correlated latency bar (Aug-5 numbers RED; healthy GREEN; cold/hot like-to-like)"

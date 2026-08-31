@@ -32,6 +32,13 @@
 # Pairs where both times are under the floor are noise, not a ratio.
 # Geo-mean uses the HOT triple only (driver passes hot times in).
 #
+# Per-op ratio denominator is max(baseline, floor): a sub-floor baseline is
+# noise-level and must not manufacture a big ratio (2026-08-26 354ms vs 50ms;
+# 2026-08-31 cold point 549ms vs 168ms — 3.27x raw, 2.2x floored, not a
+# product regression). The candidate must still clear the floor before the
+# ratio bar applies, and the absolute ceiling is unchanged.
+# Brain: papercut-safe-upgrade-point-read-bar-cold-first-boot-vs-subfloor-baseline.
+#
 # bash 3.2 compatible (macOS /bin/bash) — no namerefs, no nested functions.
 
 lat_floor_ms() {
@@ -224,11 +231,28 @@ lat_op_like_to_like_within_bar() {
         "$op" "$cand" "$base" "$floor"
       return 0
     fi
+    # Denominator is max(baseline, floor): a sub-floor baseline must not
+    # inflate the ratio (papercut-safe-upgrade-point-read-bar-cold-first-boot-
+    # vs-subfloor-baseline, fix 2).
+    local eff_base="$base"
+    if [ "$base" -lt "$floor" ] 2>/dev/null; then
+      eff_base="$floor"
+    fi
     if [ "$cand" -gt "$floor" ] 2>/dev/null \
-      && awk -v c="$cand" -v b="$base" -v r="$ratio" 'BEGIN{exit !(c > b*r)}'; then
-      printf 'latency %s RED: candidate %sms > %sx baseline %sms (%s-vs-%s)\n' \
-        "$op" "$cand" "$ratio" "$base" "${c_th:-hot}" "${b_th:-hot}"
+      && awk -v c="$cand" -v b="$eff_base" -v r="$ratio" 'BEGIN{exit !(c > b*r)}'; then
+      if [ "$eff_base" != "$base" ]; then
+        printf 'latency %s RED: candidate %sms > %sx floor %sms (baseline %sms under floor; %s-vs-%s)\n' \
+          "$op" "$cand" "$ratio" "$eff_base" "$base" "${c_th:-hot}" "${b_th:-hot}"
+      else
+        printf 'latency %s RED: candidate %sms > %sx baseline %sms (%s-vs-%s)\n' \
+          "$op" "$cand" "$ratio" "$base" "${c_th:-hot}" "${b_th:-hot}"
+      fi
       return 1
+    fi
+    if [ "$eff_base" != "$base" ] && [ "$cand" -gt "$floor" ] 2>/dev/null; then
+      printf 'latency %s GREEN: candidate=%sms baseline=%sms under %sms floor — ratio %sx applied to the floor\n' \
+        "$op" "$cand" "$base" "$floor" "$ratio"
+      return 0
     fi
     if [ "$cand" -gt "$absmax" ] 2>/dev/null; then
       if [ "$base" -gt "$absmax" ] 2>/dev/null; then

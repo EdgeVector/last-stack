@@ -112,7 +112,9 @@ proxy is optional later for near-zero client impact.
    shape) must not RED. Pairs where both times are under
    `LASTDB_PROBE_LAT_FLOOR_MS` (default **250 ms**) are noise, not a ratio.
    **RED** if a like-to-like candidate time > `LASTDB_PROBE_LAT_RATIO`
-   (default 3×) the same-thermal baseline above the floor, exceeds
+   (default 3×) **max(same-thermal baseline, floor)** — a sub-floor
+   baseline is noise-level and never a raw denominator (2026-08-31 cold
+   point 549 ms vs 168 ms is 2.2× floored, GREEN) — or exceeds
    `LASTDB_PROBE_LAT_ABS_MAX_MS` (20 s) **when no baseline is measurable**,
    or is unmeasurable on the candidate while the baseline measured.
    **Correlated / aggregate term (2026-08-05) uses the HOT triple only:**
