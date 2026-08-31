@@ -28,6 +28,70 @@ esac
   printf 'CANARY_SOAK_GATE_PROCEED reason=launcher-missing\n'
   exit 10
 }
+
+# `ps -o etime` is the only elapsed field macOS ps offers; `etimes` does not
+# exist here. Normalise [D-]HH:MM:SS and MM:SS to seconds so the detail line
+# carries a number an operator can compare against the node timeouts below.
+etime_seconds() {
+  ps -o etime= -p "$1" 2>/dev/null | awk '
+    { gsub(/^[ \t]+/, "", $0); n = split($0, part, /[-:]/)
+      if (n == 0 || $0 == "") { print ""; exit }
+      s = 0
+      if (n == 4) s = part[1]*86400 + part[2]*3600 + part[3]*60 + part[4]
+      else if (n == 3) s = part[1]*3600 + part[2]*60 + part[3]
+      else if (n == 2) s = part[1]*60 + part[2]
+      else s = part[1]
+      print s }'
+}
+
+# A canary loom node left running by an EARLIER tick.
+#
+# `loom run` drives the graph inline: the launcher blocks until the graph parks.
+# The lastdb-safe-upgrade nodes this lane calls declare their own budgets —
+# PROBE 7200s, CUTOVER 10800s — while routinesd caps this gate at 900s and the
+# launcher bound below is 780s. So a lane that reaches a LIVE probe can never
+# finish inside one tick. What happened instead, every hour, was:
+#
+#   * the bound fired and reported `error launcher-timeout=780s rc=124`, a red
+#     for work that was running correctly;
+#   * `--quiet` means the launcher writes nothing until it returns, so the
+#     evidence file the red pointed at was 0 bytes — an unattributable red;
+#   * the node script runs in its OWN process group (loom sets one per step),
+#     so `timeout`'s group signal never reached it. It survived at PPID 1,
+#     still doing real work no tick would collect, and the NEXT tick launched a
+#     second driver over the top of it. For PROBE that is a second 27 GB
+#     copy-on-write clone of ~/.lastdb onto a volume at 95% capacity.
+#
+# Measured 2026-08-31T14:34Z: exec lx-…, node PROBE, 36 min elapsed and still
+# cloning while the tick that started it had been reported dead for 21 minutes.
+#
+# So: do not drive a lane that is already being driven. Report the node and its
+# age and let it finish. This gate does NOT kill the step — a probe interrupted
+# mid-clone leaves a partial rollback point, which is worse than a long wait.
+# Reaping a genuinely dead lease stays with `loom reap` and the :36 healer.
+inflight_pids() {
+  if [ -n "${LAST_STACK_CANARY_SOAK_GATE_INFLIGHT_CMD:-}" ]; then
+    eval "$LAST_STACK_CANARY_SOAK_GATE_INFLIGHT_CMD"
+    return 0
+  fi
+  pgrep -f "${ROOT}/lib/canary-loom/loom-" 2>/dev/null || true
+}
+
+inflight_pid="$(inflight_pids | head -1 || true)"
+if [ -n "$inflight_pid" ]; then
+  inflight_cmd="$(ps -o command= -p "$inflight_pid" 2>/dev/null || true)"
+  inflight_node="$(printf '%s\n' "$inflight_cmd" \
+    | sed -n 's|.*/lib/canary-loom/loom-\([A-Za-z0-9_-]*\)\.sh *\([A-Za-z0-9_]*\).*|\1 \2|p' \
+    | awk '{ if ($2 != "") print $1 ":" $2; else print $1 }')"
+  [ -n "$inflight_node" ] || inflight_node="unknown"
+  inflight_age="$(etime_seconds "$inflight_pid")"
+  printf 'CANARY_SOAK_GATE_INFLIGHT node=%s pid=%s age=%ss\n' \
+    "$inflight_node" "$inflight_pid" "${inflight_age:-unknown}"
+  printf '%s %s\n' 'ROUTINE_RESULT' \
+    "outcome=noop detail=in-flight node=${inflight_node} pid=${inflight_pid} age=${inflight_age:-unknown}s"
+  exit 0
+fi
+
 mkdir -p "$(dirname "$evidence")"
 tmp="$(mktemp "${TMPDIR:-/tmp}/canary-soak-gate.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT
@@ -37,9 +101,7 @@ trap 'rm -f "$tmp"' EXIT
 # reaches the `cp "$tmp" "$evidence"` below, so the hourly tick produced NOTHING:
 # stdout, stderr and evidence all 0 bytes, outcome `gate-timeout`, no verdict for
 # the soak lane. Twice in twelve ticks (2026-08-30T22:34Z, 2026-08-31T06:34Z)
-# against a 2-35s normal runtime. `timeout -k` also SIGKILLs a child that ignores
-# the TERM, which the plain cap did not: those runs left loom and lastgit
-# descendants writing into the finished run's scratch/ for another 15 minutes.
+# against a 2-35s normal runtime.
 #
 # 780s leaves headroom under the 15m cap for the evidence copy and the trailer,
 # matching `last-stack-whats-wrong-loom`. The sibling gate that already got this
@@ -67,14 +129,33 @@ set -e
 # 124 is `timeout`'s own signal that it fired; 137 is the -k SIGKILL escalation.
 if [ "$launcher_rc" -eq 124 ] || [ "$launcher_rc" -eq 137 ]; then
   cp "$tmp" "$evidence"
-  printf 'CANARY_SOAK_GATE_LAUNCHER_TIMEOUT after=%ss rc=%s evidence=%s\n' \
-    "$launcher_timeout" "$launcher_rc" "$evidence"
+  # Name what was still running. `--quiet` keeps the launcher silent until it
+  # returns, so on this path the evidence file is usually empty — say so rather
+  # than pointing an operator at a 0-byte file and calling it evidence.
+  timeout_pid="$(inflight_pids | head -1 || true)"
+  timeout_node="unknown"
+  timeout_age="unknown"
+  if [ -n "$timeout_pid" ]; then
+    timeout_node="$(ps -o command= -p "$timeout_pid" 2>/dev/null \
+      | sed -n 's|.*/lib/canary-loom/loom-\([A-Za-z0-9_-]*\)\.sh *\([A-Za-z0-9_]*\).*|\1 \2|p' \
+      | awk '{ if ($2 != "") print $1 ":" $2; else print $1 }')"
+    [ -n "$timeout_node" ] || timeout_node="unknown"
+    timeout_age="$(etime_seconds "$timeout_pid")"
+    [ -n "$timeout_age" ] || timeout_age="unknown"
+  fi
+  if [ -s "$evidence" ]; then
+    evidence_detail="evidence=$evidence"
+  else
+    evidence_detail="evidence=empty"
+  fi
+  printf 'CANARY_SOAK_GATE_LAUNCHER_TIMEOUT after=%ss rc=%s node=%s age=%ss %s\n' \
+    "$launcher_timeout" "$launcher_rc" "$timeout_node" "$timeout_age" "$evidence_detail"
   # Report the tick instead of being killed mid-flight. Exit 0 so routinesd takes
   # the outcome from this trailer: an error the operator can read beats a
   # `gate-timeout` with empty logs. Do NOT exit 10 — handing a hung launcher to
   # the full agent gives it the same unbounded call with less budget left.
   printf '%s %s\n' 'ROUTINE_RESULT' \
-    "outcome=error detail=launcher-timeout=${launcher_timeout}s rc=${launcher_rc}"
+    "outcome=error detail=launcher-timeout=${launcher_timeout}s rc=${launcher_rc} node=${timeout_node} age=${timeout_age}s"
   exit 0
 fi
 
