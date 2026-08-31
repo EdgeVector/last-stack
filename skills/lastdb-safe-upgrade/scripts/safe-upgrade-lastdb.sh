@@ -1162,7 +1162,7 @@ live_install_brew() {
 
 OWNER_LOCK_MODE="live"
 [ "$PROBE_ONLY" -eq 1 ] && OWNER_LOCK_MODE="probe-only"
-if ! safe_upgrade_owner_lock_acquire \
+if ! safe_upgrade_owner_lock_acquire_wait \
     "$OWNER_LOCK_DIR" "$OWNER_LOCK_TOKEN" "$$" "${CANDIDATE_BIN:-${TARGET_VERSION:-auto}}" "$OWNER_LOCK_MODE"; then
   die "another LastDB safe-upgrade process owns the host-wide safety lane"
 fi
