@@ -49,6 +49,9 @@ case "${1:-}" in
   add)
     exit 0
     ;;
+  mark)
+    exit 0
+    ;;
   *)
     echo "unexpected fake board command: $*" >&2
     exit 2
