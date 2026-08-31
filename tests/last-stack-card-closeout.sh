@@ -83,6 +83,9 @@ case "${1:-}" in
     printf '%s\n' "${3:-}" >"$col_file"
     exit 0
     ;;
+  mark)
+    exit 0
+    ;;
   *)
     echo "unexpected restamp board: $*" >&2
     exit 2
@@ -245,6 +248,9 @@ case "${1:-}" in
     printf '%s\n' "${3:-}" >"$col_file"
     exit 0
     ;;
+  mark)
+    exit 0
+    ;;
   *)
     echo "unexpected todo board: $*" >&2
     exit 2
@@ -284,6 +290,129 @@ grep -q 'todo-link-card done' "$todo_moves" || {
 }
 [ "$(cat "$todo_url")" = "lastgit://fold/cr/cr-linked" ] || {
   echo "FAIL: expected persisted pr_url, got $(cat "$todo_url")" >&2
+  exit 1
+}
+
+# A positive PROOF line is terminal evidence. The same merge and proof cannot
+# close a card after a deliberate reopen. A new proof creates a new signal.
+monotonic_tmp="$(mktemp -d)"
+monotonic_board="$monotonic_tmp/board"
+monotonic_moves="$monotonic_tmp/moves"
+monotonic_marks="$monotonic_tmp/marks"
+monotonic_col="$monotonic_tmp/col"
+monotonic_url="$monotonic_tmp/pr_url"
+monotonic_body="$monotonic_tmp/body"
+: >"$monotonic_moves"
+: >"$monotonic_marks"
+echo doing >"$monotonic_col"
+: >"$monotonic_url"
+printf '%s\n' \
+  'Repo: EdgeVector/last-stack' \
+  'Kind: pr' \
+  '## END STATE' \
+  'The live closeout path passes.' \
+  'PROOF: PASS live check at abc123' >"$monotonic_body"
+cat >"$monotonic_board" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+col_file="${MONOTONIC_COL:?}"
+url_file="${MONOTONIC_URL:?}"
+body_file="${MONOTONIC_BODY:?}"
+case "${1:-}" in
+  show)
+    python3 - "${2:-}" "$(cat "$col_file")" "$(cat "$url_file")" "$body_file" <<'PY'
+import json
+import pathlib
+import sys
+
+slug, column, pr_url, body_path = sys.argv[1:]
+print(json.dumps({
+    "slug": slug,
+    "column": column,
+    "pr_url": pr_url,
+    "branch": "",
+    "body": pathlib.Path(body_path).read_text(),
+}))
+PY
+    ;;
+  add)
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "--pr-url" ]; then
+        printf '%s\n' "${2:-}" >"$url_file"
+        shift 2
+        continue
+      fi
+      shift
+    done
+    ;;
+  move)
+    printf '%s %s\n' "${2:-}" "${3:-}" >>"${MONOTONIC_MOVES:?}"
+    printf '%s\n' "${3:-}" >"$col_file"
+    ;;
+  mark)
+    printf '%s\n' "${3:-}" >>"$body_file"
+    printf '%s\n' "${3:-}" >>"${MONOTONIC_MARKS:?}"
+    ;;
+  *)
+    echo "unexpected monotonic board: $*" >&2
+    exit 2
+    ;;
+esac
+EOF
+chmod +x "$monotonic_board"
+export MONOTONIC_MOVES="$monotonic_moves"
+export MONOTONIC_MARKS="$monotonic_marks"
+export MONOTONIC_COL="$monotonic_col"
+export MONOTONIC_URL="$monotonic_url"
+export MONOTONIC_BODY="$monotonic_body"
+
+first_out="$("$bin" monotonic-card --board-cli "$monotonic_board" --pr-url 'lastgit://last-stack/cr/cr-monotonic' 2>&1)" || {
+  echo "FAIL: first close with PROOF must pass: $first_out" >&2
+  exit 1
+}
+if echo "$first_out" | grep -q 'end-state-unverified'; then
+  echo "FAIL: PROOF: PASS must satisfy the END STATE audit: $first_out" >&2
+  exit 1
+fi
+grep -q '^CLOSEOUT-DECISION signal=.* state=closed$' "$monotonic_marks" || {
+  echo "FAIL: first close must write a closeout decision:" >&2
+  cat "$monotonic_marks" >&2
+  exit 1
+}
+if grep -q '^CLOSED-ON-MERGE ' "$monotonic_marks"; then
+  echo "FAIL: proven close must not carry an unverified marker:" >&2
+  cat "$monotonic_marks" >&2
+  exit 1
+fi
+
+echo doing >"$monotonic_col"
+moves_before="$(wc -l <"$monotonic_moves" | tr -d ' ')"
+set +e
+reopen_out="$("$bin" monotonic-card --board-cli "$monotonic_board" 2>&1)"
+reopen_rc=$?
+set -e
+if [ "$reopen_rc" -eq 0 ]; then
+  echo "FAIL: the same signal must not close a reopened card: $reopen_out" >&2
+  exit 1
+fi
+echo "$reopen_out" | grep -q 'FAILED reopened-same-signal' || {
+  echo "FAIL: expected reopened-same-signal: $reopen_out" >&2
+  exit 1
+}
+moves_after="$(wc -l <"$monotonic_moves" | tr -d ' ')"
+[ "$moves_before" = "$moves_after" ] || {
+  echo "FAIL: rejected reopen must not move the card" >&2
+  exit 1
+}
+
+printf '%s\n' 'PROOF: VERIFIED new live check at def456' >>"$monotonic_body"
+new_proof_out="$("$bin" monotonic-card --board-cli "$monotonic_board" 2>&1)" || {
+  echo "FAIL: a new positive proof must create a new close signal: $new_proof_out" >&2
+  exit 1
+}
+[ "$(grep -c '^CLOSEOUT-DECISION signal=.* state=closed$' "$monotonic_marks")" -eq 2 ] || {
+  echo "FAIL: expected one decision per distinct terminal signal:" >&2
+  cat "$monotonic_marks" >&2
   exit 1
 }
 
