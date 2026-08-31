@@ -245,17 +245,34 @@ if nts < cutoff:
         "lookback_hours": lookback_h,
     }))
     raise SystemExit(4)
-# The newest row still decides whether the lane is live. Healing underneath a
-# running execution would fight it.
-if nstatus in ("running", "waiting"):
-    print(json.dumps({"ok": True, "idle": True, "reason": "lane_busy", "exec_id": nid, "status": nstatus}))
-    raise SystemExit(0)
-
-# Beyond that, the newest row does not have to be the failed one. Pick the
-# newest FAILED execution inside the window; a later cancelled or succeeded
-# row no longer masks it.
+# The newest row does not have to be the failed one. Pick every FAILED
+# execution inside the window; a later cancelled or succeeded row no longer
+# masks them.
 failed = [(ts, rid, r) for ts, rid, status, r in parsed
           if status == "failed" and ts >= cutoff]
+
+# A live newest row still stops the heal — starting a retry underneath a
+# running execution would fight it. It must NOT also hide the reds behind it.
+# A canary soak sits `waiting` for a full 24 h, and on 2026-08-31 four FAILED
+# canary releases idled behind one soak, reported hourly as a healthy `noop`.
+# The guard stays; the silence does not.
+if nstatus in ("running", "waiting"):
+    out = {"ok": True, "idle": True, "reason": "lane_busy",
+           "exec_id": nid, "status": nstatus}
+    unhealed = [rid for _, rid, _ in failed
+                if rid != nid and (key_prefix + rid) not in healed_keys]
+    if failed and not heal_path:
+        # healed_keys is unknown on the first pass. Ask the caller for the
+        # heal listing before calling these reds unhealed.
+        out["needs_heal_listing"] = True
+        out["failed_in_window"] = len(failed)
+    elif unhealed:
+        out["reason"] = "lane_busy_masking_reds"
+        out["masked"] = len(unhealed)
+        out["masked_ids"] = unhealed
+        out["oldest_failed"] = unhealed[-1]
+    print(json.dumps(out))
+    raise SystemExit(0)
 if not failed:
     print(json.dumps({"ok": True, "idle": True, "reason": "no_failed_in_window",
                       "exec_id": nid, "status": nstatus, "scanned": len(parsed)}))
@@ -317,8 +334,11 @@ picked="$(pick_failed "$rows_file")" || picked_rc=$?
 
 # Second pass only when the first found a red. The heal listing is one more
 # loom read, and a quiet lane must not pay for it every tick.
-if [ -n "$picked" ] && [ "$(json_field ok "$picked")" = "1" ] \
-   && [ -z "$(json_field idle "$picked")" ] && [ -z "$EXEC_ID" ]; then
+# A busy lane that is masking reds also needs the heal listing: only that
+# listing says whether those reds are already healed.
+picked_needs_heal="$(json_field needs_heal_listing "$picked")"
+if [ -n "$picked" ] && [ "$(json_field ok "$picked")" = "1" ] && [ -z "$EXEC_ID" ] \
+   && { [ -z "$(json_field idle "$picked")" ] || [ "$picked_needs_heal" = "1" ]; }; then
   if list_heal_executions >"$heal_rows_file" 2>/dev/null; then
     picked_rc=0
     picked="$(pick_failed "$rows_file" "$heal_rows_file")" || picked_rc=$?
@@ -364,9 +384,35 @@ if [ "$DRY" -eq 1 ]; then
   fi
   oc="noop"
   [ "$idle" = "1" ] || oc="ok"
+  dry_detail="idle=${idle} exec=${picked_id:-} reason=${picked_reason}"
+  if [ "$picked_reason" = "lane_busy_masking_reds" ]; then
+    oc="error"
+    dry_detail="lane_busy_masking_reds masked=$(json_field masked "$picked") oldest_failed=$(json_field oldest_failed "$picked") lane=${picked_id:-}"
+  fi
   write_stamp dry-run "${picked_id:-}" "idle=${idle} reason=${picked_reason}" "${KEY:-}" "$oc"
-  printf '%s %s\n' 'ROUTINE_RESULT' "outcome=${oc} detail=idle=${idle} exec=${picked_id:-} reason=${picked_reason}"
+  printf '%s %s\n' 'ROUTINE_RESULT' "outcome=${oc} detail=${dry_detail}"
   exit 0
+fi
+
+if [ "$idle" = "1" ] && [ "$picked_reason" = "lane_busy_masking_reds" ]; then
+  # The lane is live, so no heal starts here. Unhealed reds behind it are a
+  # backlog, not quiet — reporting them as `noop` is what let four sit for a
+  # day. Say it loudly and let the next free tick heal them.
+  masked="$(json_field masked "$picked")"
+  oldest="$(json_field oldest_failed "$picked")"
+  log "lane busy on ${picked_id:-} while ${masked:-0} unhealed red(s) wait; oldest ${oldest:-none}"
+  write_stamp idle "${picked_id:-}" \
+    "reason=${picked_reason} masked=${masked:-0} oldest_failed=${oldest:-}" \
+    "${KEY:-}" "error"
+  if [ "$JSON" -eq 1 ]; then
+    printf '%s\n' "$picked"
+  else
+    printf 'canary-red lane_busy_masking_reds masked=%s oldest_failed=%s lane=%s\n' \
+      "${masked:-0}" "${oldest:-}" "${picked_id:-}"
+  fi
+  printf '%s %s\n' 'ROUTINE_RESULT' \
+    "outcome=error detail=lane_busy_masking_reds masked=${masked:-0} oldest_failed=${oldest:-} lane=${picked_id:-}"
+  exit 3
 fi
 
 if [ "$idle" = "1" ]; then

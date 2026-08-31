@@ -109,6 +109,61 @@ printf '%s\n' "$idle_out" | python3 -c 'import json,sys
 d,_=json.JSONDecoder().raw_decode(sys.stdin.read())
 assert d.get("idle") is True and d.get("reason")=="lane_busy", d'
 
+# --- a busy lane must not hide the reds behind it ---
+# A canary soak sits `waiting` for a full 24 h. On 2026-08-31 four FAILED
+# canary releases idled behind one, and the gate reported `noop lane_busy`
+# every hour. The heal still must not start under a live execution, but the
+# backlog has to reach the fleet as an error.
+cat >"$tmp/busy-masking.json" <<JSON
+[
+  {
+    "id": "lx-20260830T140407.992-49336-1",
+    "definition_name": "lastdb-canary-release",
+    "status": "waiting",
+    "state": "SOAK_WAIT",
+    "updated_at": "$(now_iso 0.2)"
+  },
+  {
+    "id": "lx-20260831T062355.999-25291-1",
+    "definition_name": "lastdb-canary-release",
+    "status": "failed",
+    "state": "FAILED",
+    "updated_at": "$(now_iso 2)"
+  },
+  {
+    "id": "lx-20260831T031319.081-31192-1",
+    "definition_name": "lastdb-canary-release",
+    "status": "failed",
+    "state": "FAILED",
+    "updated_at": "$(now_iso 3)"
+  }
+]
+JSON
+busy_out="$(CANARY_RED_LOOM_LIST_FILE="$tmp/busy-masking.json" "$BIN" --dry-run --json --quiet)"
+printf '%s\n' "$busy_out" | python3 -c 'import json,sys
+d,_=json.JSONDecoder().raw_decode(sys.stdin.read())
+assert d.get("idle") is True, d
+assert d.get("reason")=="lane_busy_masking_reds", d
+assert d.get("masked")==2, d
+assert d.get("exec_id")=="lx-20260830T140407.992-49336-1", d
+assert d.get("oldest_failed")=="lx-20260831T031319.081-31192-1", d'
+printf '%s\n' "$busy_out" | grep -q 'outcome=error detail=lane_busy_masking_reds masked=2' \
+  || fail "busy lane masking reds must report outcome=error: $busy_out"
+
+# A busy lane whose reds have all been healed is genuinely quiet.
+cat >"$tmp/heal-done.json" <<JSON
+[
+  {"id":"h1","idempotency_key":"canary-red-lx-20260831T062355.999-25291-1","status":"succeeded"},
+  {"id":"h2","idempotency_key":"canary-red-lx-20260831T031319.081-31192-1","status":"failed"}
+]
+JSON
+quiet_out="$(CANARY_RED_LOOM_LIST_FILE="$tmp/busy-masking.json" \
+  CANARY_RED_LOOM_HEAL_LIST_FILE="$tmp/heal-done.json" "$BIN" --dry-run --json --quiet)"
+printf '%s\n' "$quiet_out" | python3 -c 'import json,sys
+d,_=json.JSONDecoder().raw_decode(sys.stdin.read())
+assert d.get("idle") is True and d.get("reason")=="lane_busy", d
+assert "masked" not in d, d'
+
 # --- a newer cancelled row must not mask an older failed one ---
 # The lister defaults to one row, and `pick_failed` used to test only that row.
 # Seven reds sat unhealed behind a single cancelled execution.
