@@ -126,7 +126,16 @@ list_executions() {
   fi
   # Probe wider than the verdict window: an execution can start before the
   # lookback and fail inside it. The age test still runs on updated_at.
-  window_h="$(awk -v h="$LOOKBACK_H" 'BEGIN { w = h * 2; if (w < 24) w = 24; printf "%d", w }')"
+  #
+  # The floor must clear a whole SOAK. The lister windows on the START stamp
+  # embedded in the id, not on updated_at, so a 24 h floor drops a canary soak
+  # at exactly the moment it completes its 24 h park. On 2026-08-31T16:05Z
+  # `--window-hours 24` returned 8 rows without the live SOAK_WAIT execution
+  # lx-20260830T140407.992-49336-1 (updated 13:34:44Z, 2.5 h old); the same
+  # call at 96 h returned it. An invisible soak is worse than a masked red:
+  # the `waiting` guard below never fires, so the gate heals underneath a live
+  # lane. Cover the soak (24 h) plus a full verdict window.
+  window_h="$(awk -v h="$LOOKBACK_H" 'BEGIN { w = h * 2; if (w < 48) w = 48; printf "%d", w }')"
   if [ -n "$EXEC_ID" ]; then
     "$ROOT/bin/last-stack-loom-exec-latest" --exec "$EXEC_ID"
   else
@@ -146,7 +155,9 @@ list_heal_executions() {
     cat "$CANARY_RED_LOOM_HEAL_LIST_FILE"
     return 0
   fi
-  window_h="$(awk -v h="$LOOKBACK_H" 'BEGIN { w = h * 2; if (w < 24) w = 24; printf "%d", w }')"
+  # Same floor as the lane listing: a heal keyed to a soak-era execution must
+  # stay visible for as long as that execution can still be parked.
+  window_h="$(awk -v h="$LOOKBACK_H" 'BEGIN { w = h * 2; if (w < 48) w = 48; printf "%d", w }')"
   "$ROOT/bin/last-stack-loom-exec-latest" \
     --definition "$CANARY_RED_HEAL_DEFINITION" --window-hours "$window_h" \
     --limit "$LIST_LIMIT"

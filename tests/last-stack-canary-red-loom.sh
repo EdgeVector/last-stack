@@ -445,4 +445,60 @@ cmp -s "$ROOT/lib/canary-red/loom-canary-collect.sh" \
        "$ROOT/lib/canary-loom/loom-canary-collect.sh" \
   || fail "lib/canary-red and lib/canary-loom copies of loom-canary-collect.sh differ"
 
+# --- the probe window must clear a whole 24 h soak ---
+# The lister windows on the START stamp embedded in the execution id, not on
+# updated_at. A 24 h floor therefore drops a canary soak at exactly the moment
+# it finishes its 24 h park. Measured 2026-08-31T16:05Z: --window-hours 24
+# returned 8 rows WITHOUT the live SOAK_WAIT execution
+# lx-20260830T140407.992-49336-1 (updated 13:34:44Z); --window-hours 96
+# returned it. With the soak invisible the `waiting` guard never fires and the
+# gate heals underneath a live lane.
+wtmp="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-canary-window.XXXXXX")"
+trap 'rm -rf "$wtmp"' EXIT
+mkdir -p "$wtmp/bin"
+cp "$BIN" "$wtmp/bin/last-stack-canary-red-loom"
+
+# Stub the lister: record every --window-hours it is asked for, answer empty.
+cat >"$wtmp/bin/last-stack-loom-exec-latest" <<'SH'
+#!/usr/bin/env bash
+win=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --window-hours) win="${2:-}"; shift 2 ;;
+    --window-hours=*) win="${1#*=}"; shift ;;
+    *) shift ;;
+  esac
+done
+[ -z "$win" ] || printf '%s\n' "$win" >>"$CANARY_WINDOW_LOG"
+echo "[]"
+SH
+chmod 755 "$wtmp/bin/last-stack-loom-exec-latest"
+
+: >"$wtmp/windows.txt"
+# The fixture cases above export a canned listing, which bypasses the lister
+# entirely. This case must reach the real call site.
+unset CANARY_RED_LOOM_LIST_FILE CANARY_RED_LOOM_HEAL_LIST_FILE
+set +e
+CANARY_WINDOW_LOG="$wtmp/windows.txt" PATH="/usr/bin:/bin"   "$wtmp/bin/last-stack-canary-red-loom" --dry-run --json --quiet   >"$wtmp/win.out" 2>"$wtmp/win.err"
+set -e
+
+[ -s "$wtmp/windows.txt" ] || fail "lister was never asked for a window: $(cat "$wtmp/win.err")"
+while IFS= read -r w; do
+  [ -n "$w" ] || continue
+  case "$w" in
+    ''|*[!0-9]*) fail "non-numeric --window-hours: $w" ;;
+  esac
+  [ "$w" -ge 48 ]     || fail "probe window ${w}h cannot cover a 24h soak (need >=48)"
+done <"$wtmp/windows.txt"
+
+# A longer lookback must still widen the window, not clamp it to the floor.
+: >"$wtmp/windows.txt"
+set +e
+CANARY_WINDOW_LOG="$wtmp/windows.txt" LAST_STACK_CANARY_RED_LOOKBACK_HOURS=36 PATH="/usr/bin:/bin"   "$wtmp/bin/last-stack-canary-red-loom" --dry-run --json --quiet \
+  >"$wtmp/win2.out" 2>"$wtmp/win2.err"
+set -e
+[ -s "$wtmp/windows.txt" ] || fail "lister was never asked for a window at lookback=36"
+head -n1 "$wtmp/windows.txt" | grep -qx '72' \
+  || fail "lookback=36 must probe 72h, got $(head -n1 "$wtmp/windows.txt")"
+
 echo "ok"
