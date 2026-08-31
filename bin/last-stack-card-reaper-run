@@ -402,6 +402,17 @@ function openPrSignal(card) {
   return Boolean(String(card.pr_url || card.prUrl || card.pr || "").trim());
 }
 
+// Kinds `kanban pickup status` reports as "non-pickup kind: <k>". No agent can
+// claim these, so they can never show progress, and an age-based staleness rule
+// re-targets them on every run forever. Age is not evidence of abandonment for
+// a card the pickup lane is designed never to touch.
+const NON_PICKUP_KINDS = new Set(["validation", "tracker"]);
+const nonPickupExempt = new Set();
+
+function isNonPickupKind(card) {
+  return NON_PICKUP_KINDS.has(String(card?.kind || card?.Kind || "").trim().toLowerCase());
+}
+
 function branchHasRecentCommit(card, hours) {
   const branch = branchOf(card);
   if (!branch) return false;
@@ -500,7 +511,19 @@ function rmCard(slug) {
   const out = run("kanban", ["rm", slug], {timeout: 60000});
   if (!out.ok) {
     if (noteBoardDeferred(slug, "rm", out)) return false;
-    res.flagged.push(`kanban_rm_failed_for_${slug}`);
+    // A delete of a card the board says does not exist is a stale projection
+    // in the listing we were handed, not a failure. The kill path used to meet
+    // this case on the `show` it no longer makes, so recognise it here.
+    if (noteMissingCardReference(slug, boardFailureDetail(out))) return false;
+    // Carry the refusal reason. Without it every run reports only that the
+    // delete failed, and no run ever says why, so the cause stays unknown
+    // however many times the rule fires.
+    res.flagged.push(compactFlag(`kanban_rm_failed_for_${slug}:${boardFailureDetail(out).trim()}`));
+    // A delete the board refuses for a reason we did not anticipate is a
+    // failure of this routine, not a quiet skip. Returning false alone left
+    // the run reporting ok/noop, which is how the same refusal repeated
+    // unnoticed on every run for fourteen days.
+    res.status = "error";
     return false;
   }
   return true;
@@ -533,10 +556,6 @@ function removeWorktree(wt) {
   if (dryRun || !fs.existsSync(wt)) return;
   const out = run("git", ["-C", wt, "worktree", "remove", wt], {timeout: 60000});
   if (!out.ok) res.flagged.push(`worktree-remove-failed:${path.basename(wt)}`);
-}
-
-function reapNote(rule) {
-  return `\n\n## CARD REAP ${iso}\nRule: ${rule}\nRecovery: deleted (hard erase; no trash); recreate via program-driver.\n`;
 }
 
 function rollbackNote(rule) {
@@ -598,14 +617,22 @@ function salvage(slug, card) {
 
 function killCard(card, rule, col) {
   const slug = String(card.slug);
+  if (isNonPickupKind(card)) {
+    nonPickupExempt.add(slug);
+    return false;
+  }
   const wt = worktreePath(slug);
   if (fs.existsSync(wt) && isDirtyWorktree(wt)) {
     const s = salvage(slug, card);
     if (!s.ok) return false;
   }
-  const body = dryRun ? String(card.body || "") : getFullBody(slug);
-  if (body === null) return false;
-  if (!readdBody(slug, body + reapNote(rule))) return false;
+  // Delete FIRST, and write nothing into the card. The reap note used to be
+  // stamped before the delete. A hard erase leaves nothing to read it on, so
+  // the note was worthless when the delete worked -- and when the delete was
+  // refused the note stayed on a live card and the next run appended another.
+  // Two live cards collected 38 and 18 copies of a "deleted" note that way.
+  // The rule, the slug and the failure reason belong in the run report, which
+  // survives; they do not belong in the body of a card being erased.
   if (!rmCard(slug)) return false;
   if (col === "backlog") res.killed.backlog++;
   else if (col === "todo") res.killed.todo++;
@@ -798,6 +825,7 @@ try {
 
 if (actions > 0 && res.status === "noop") res.status = "ok";
 else if (actions === 0 && res.status === "ok") res.status = "noop";
+if (nonPickupExempt.size) res.flagged.push(`non-pickup-kind-exempt:${nonPickupExempt.size}`);
 if (dryRun) res.flagged.push("dry-run");
 writeResult();
 NODE
