@@ -298,15 +298,29 @@ def probe_card_truth_and_flow() -> dict[str, Any]:
         ).stdout,
         "kanban pickup claim",
     )
-    shown = parse_json(run(["kanban", "show", PROBE_CARD, "--json"]).stdout, "kanban show")
-    assignee = shown.get("assignee", shown.get("assigned_to", shown.get("worker", "")))
-    if shown.get("column") != "doing":
-        raise ProofError(f"immediate show returned column={shown.get('column')!r}")
-    if assignee != PROBE_WORKER:
-        raise ProofError(f"immediate show returned worker={assignee!r}")
-    if shown.get("milestone") != MILESTONE:
-        raise ProofError(f"show returned milestone={shown.get('milestone')!r}")
-    run(["kanban", "move", PROBE_CARD, "done", "--force", "--json"])
+    shown: dict[str, Any] = {}
+    assignee: Any = ""
+    probe_error: ProofError | None = None
+    try:
+        shown = parse_json(run(["kanban", "show", PROBE_CARD, "--json"]).stdout, "kanban show")
+        assignee = shown.get("assignee", shown.get("assigned_to", shown.get("worker", "")))
+        if shown.get("column") != "doing":
+            raise ProofError(f"immediate show returned column={shown.get('column')!r}")
+        if assignee != PROBE_WORKER:
+            raise ProofError(f"immediate show returned worker={assignee!r}")
+        if shown.get("milestone") != MILESTONE:
+            raise ProofError(f"show returned milestone={shown.get('milestone')!r}")
+    except ProofError as exc:
+        probe_error = exc
+    # Do not leave the reusable proof card in doing after a failed assertion.
+    # A cleanup error is terminal only when no earlier assertion explains it.
+    try:
+        run(["kanban", "move", PROBE_CARD, "done", "--force", "--json"])
+    except ProofError as exc:
+        if probe_error is None:
+            probe_error = exc
+    if probe_error is not None:
+        raise probe_error
     flow = parse_json(run(["kanban", "flow", MILESTONE, "--json"]).stdout, "kanban flow")
     cards = flow.get("cards")
     if not isinstance(cards, list):
