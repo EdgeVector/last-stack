@@ -3,6 +3,13 @@
 # node-script stand-in contracts — all against stubs, no live loom or node.
 set -euo pipefail
 
+# Hermetic: a caller inside the canary loom exports LOOM_LIVE=1, and the
+# node scripts read it as the live switch — the stand-in contract checks
+# below would then spawn a real fix agent and send a real page.
+unset LOOM_LIVE LOOM_SOAK_HEAL_LIVE LAST_STACK_SOAK_HEAL_LIVE \
+  LOOM_INPUT LOOM_SCRIPTS LOOM_IDEMPOTENCY_KEY LOOM_CHECK_EXIT \
+  HOST_TRACK_STAMP_DIR || true
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-soak-heal-test.XXXXXX")"
 cleanup() { rm -rf "$tmp"; }
