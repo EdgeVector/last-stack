@@ -9,6 +9,10 @@
 #   0  classified (including classes=none / unknown) or --status printed
 #   2  usage
 #   3  loom unavailable — caller should fall back to last-stack-why-stopped
+#   4  loom ran and classified, but its execution did not reach a terminal
+#      state. The classification on stdout is real. Do NOT read this as
+#      "loom is down": 3 used to cover both, so every reader of the fleet
+#      surface was sent to look for a missing binary while loom was up.
 set -euo pipefail
 
 JSON=0
@@ -157,7 +161,15 @@ set +e
 view="$(loom run why-stopped --key "$key" --input "$input" 2>/dev/null)"
 lrc=$?
 set -e
-if [ "$lrc" -ne 0 ] || [ -z "$view" ]; then
+# rc 4 is loom reporting its own execution incomplete; it still printed the
+# view, so the classification below is real. Only an empty view means loom
+# gave us nothing to read.
+if [ -z "$view" ]; then
+  log "loom run produced no view rc=$lrc"
+  write_stamp failed "" "" "$key"
+  exit 3
+fi
+if [ "$lrc" -ne 0 ] && [ "$lrc" -ne 4 ]; then
   log "loom run failed rc=$lrc"
   write_stamp failed "" "" "$key"
   exit 3
@@ -197,9 +209,34 @@ exec_id="$(printf '%s\n' "$view" | awk 'NF{print; exit}')"
 cls_str="$(printf '%s\n' "$parsed" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("classes","unknown"))')"
 det_str="$(printf '%s\n' "$parsed" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("detail",""))')"
 act_str="$(printf '%s\n' "$parsed" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("actions",""))')"
+emit_classification() {
+  if [ "$JSON" -eq 1 ]; then
+    printf '{"classes":"%s","detail":"%s","actions":"%s","engine":"loom"}\n' \
+      "$cls_str" "$(printf '%s' "$det_str" | tr '"' "'")" "$(printf '%s' "$act_str" | tr '"' "'")"
+  else
+    printf 'WHY_STOPPED classes=%s engine=loom\n' "$cls_str"
+    printf 'detail: %s\n' "$det_str"
+    printf 'actions: %s\n' "$act_str"
+  fi
+
+  routine_outcome="ok"
+  case "$cls_str" in
+    none) routine_outcome="noop" ;;
+  esac
+  printf '%s %s\n' 'ROUTINE_RESULT' "outcome=${routine_outcome} detail=classes=${cls_str}"
+}
+
 if [ "$status" != "succeeded" ]; then
   log "loom exec status=$status"
   write_stamp "${status:-failed}" "$exec_id" "$cls_str" "$key"
+  # A populated classification is the answer we were asked for, even though
+  # the execution is unfinished. Hand it back and say the run is incomplete —
+  # discarding it here is what made the fleet surface read `loom=unavailable`
+  # while loom was up and answering.
+  if [ -n "$cls_str" ] && [ "$cls_str" != "unknown" ]; then
+    emit_classification
+    exit 4
+  fi
   exit 3
 fi
 write_stamp succeeded "$exec_id" "$cls_str" "$key"
@@ -210,18 +247,5 @@ if [ -x "$ROOT/bin/last-stack-brain-append-heartbeat" ]; then
     "why-stopped $ts classes=$cls_str detail=$det_str engine=loom" >/dev/null 2>&1 || true
 fi
 
-if [ "$JSON" -eq 1 ]; then
-  printf '{"classes":"%s","detail":"%s","actions":"%s","engine":"loom"}\n' \
-    "$cls_str" "$(printf '%s' "$det_str" | tr '"' "'")" "$(printf '%s' "$act_str" | tr '"' "'")"
-else
-  printf 'WHY_STOPPED classes=%s engine=loom\n' "$cls_str"
-  printf 'detail: %s\n' "$det_str"
-  printf 'actions: %s\n' "$act_str"
-fi
-
-routine_outcome="ok"
-case "$cls_str" in
-  none) routine_outcome="noop" ;;
-esac
-printf '%s %s\n' 'ROUTINE_RESULT' "outcome=${routine_outcome} detail=classes=${cls_str}"
+emit_classification
 exit 0
