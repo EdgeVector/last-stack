@@ -422,4 +422,49 @@ grep -qF 'incomplete-timeout' "$late_tmp/wrapper.stdout" \
   && fail "wrapper reported incomplete-timeout despite a captured VERDICT"
 rm -rf "$late_tmp"
 
+# --- step bounds scale with the global budget --------------------------------
+# The routines gate raises SMOKE_TOTAL_BUDGET_SECS to 2400 and left the step
+# bounds at their 540s-budget values, so `install-apps` kept dying at 240s and
+# the smoke printed a product RED for four nights. The bounds must follow the
+# budget, and an explicit export must still win.
+bounds_block="$(sed -n '/^SMOKE_TOTAL_BUDGET_SECS=/,/^INSTALL_TIMEOUT=/p' "$RUN")"
+[ -n "$bounds_block" ] || fail "could not read the step-bound block from run.sh"
+case "$bounds_block" in
+  *smoke_scale_bound*) : ;;
+  *) fail "step bounds no longer scale with the global budget" ;;
+esac
+
+bounds_probe="$(mktemp "${TMPDIR:-/tmp}/llms-smoke-bounds.XXXXXX")"
+{
+  printf '%s\n' 'smoke_deadline_init() { :; }'
+  printf '%s\n' "$bounds_block"
+  printf '%s\n' 'printf "%s\\n" "${!1}"'
+} >"$bounds_probe"
+
+read_bound() { # <budget> <var-name> [VAR=value to export]
+  env -u QUICK_TRY_TIMEOUT -u APP_INIT_TIMEOUT -u INSTALL_TIMEOUT \
+    SMOKE_TOTAL_BUDGET_SECS="$1" ${3:+"$3"} bash "$bounds_probe" "$2"
+}
+
+[ "$(read_bound 540 INSTALL_TIMEOUT)" = 240 ] \
+  || fail "the baseline budget must leave INSTALL_TIMEOUT at its 240s default"
+[ "$(read_bound 300 APP_INIT_TIMEOUT)" = 120 ] \
+  || fail "a budget under the baseline must not shrink a step bound"
+[ "$(read_bound 0 INSTALL_TIMEOUT)" = 240 ] \
+  || fail "budget 0 disables the deadline and must keep the default bound"
+raised="$(read_bound 2400 INSTALL_TIMEOUT)"
+[ "$raised" -gt 240 ] \
+  || fail "the gate's 2400s budget must raise INSTALL_TIMEOUT above 240s; got $raised"
+[ "$raised" -lt 2400 ] \
+  || fail "a step bound must stay under the global budget; got $raised"
+# The measured install-apps step needs more than the 240s that killed it, with
+# ~130s of that inside sharp's postinstall in the `search` dependency install.
+[ "$raised" -ge 600 ] \
+  || fail "INSTALL_TIMEOUT ${raised}s is still under the measured install work"
+[ "$(read_bound 2400 APP_INIT_TIMEOUT)" -gt 120 ] \
+  || fail "the raised budget must also raise APP_INIT_TIMEOUT"
+[ "$(read_bound 2400 INSTALL_TIMEOUT INSTALL_TIMEOUT=90)" = 90 ] \
+  || fail "an explicitly exported bound must win over the scaled default"
+rm -f "$bounds_probe"
+
 echo "OK llms-txt-install-smoke-bounded"

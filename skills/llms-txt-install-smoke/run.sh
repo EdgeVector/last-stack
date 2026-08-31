@@ -38,20 +38,50 @@ SMOKE_SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=lib-bounded.sh
 . "$SMOKE_SKILL_DIR/lib-bounded.sh"
 
-# Per-call bound for the quick-try block. One hung brain/search call must fail
-# that step, not consume the whole routine budget.
-QUICK_TRY_TIMEOUT="${QUICK_TRY_TIMEOUT:-60}"
-# Per-call bound for the app init/list calls. `brain init` bootstraps 25 node
-# schemas and is where the 2026-08-29 run stalled; it is slower than a quick-try
-# verb but must still be a step that can fail, not a hang.
-APP_INIT_TIMEOUT="${APP_INIT_TIMEOUT:-120}"
-# Per-call bound for the heavy install steps (clone, setup, install-apps).
-INSTALL_TIMEOUT="${INSTALL_TIMEOUT:-240}"
 # The one global budget. 540s leaves a minute of footer/cleanup margin under the
 # agent Bash tool's hard 600s foreground cap, which is what killed the run that
 # filed this: no VERDICT line, nothing to report, no way to tell a hang from a
 # slow host. Set 0 to disable for interactive debugging.
 SMOKE_TOTAL_BUDGET_SECS="${SMOKE_TOTAL_BUDGET_SECS:-540}"
+# The budget the per-step defaults below were sized against. A caller that
+# raises the global budget must raise the step bounds with it, or the step bound
+# becomes the binding constraint and the extra budget buys nothing. The routines
+# gate passes SMOKE_TOTAL_BUDGET_SECS=2400 and left these at their 540s values:
+# every run from 2026-08-28 to 2026-08-31 died at `install-apps timeout=240s`,
+# 139s into a step whose `search` dependency install alone spends ~130s in
+# sharp's postinstall, and the six later FAILs were an incomplete tree, not
+# product defects. Scale instead of restating the numbers, so the next budget
+# change cannot drift them apart again.
+SMOKE_BUDGET_BASELINE_SECS="${SMOKE_BUDGET_BASELINE_SECS:-540}"
+# smoke_scale_bound <default-secs> -> the default scaled to the global budget.
+# An explicitly exported bound always wins; a budget at or under the baseline,
+# and the 0 that disables the deadline, both keep the default unchanged. Every
+# scaled bound is still clamped per call by smoke_bounded_remaining, so no step
+# can outlive the global deadline.
+smoke_scale_bound() {
+  local default="$1"
+  case "$SMOKE_TOTAL_BUDGET_SECS" in
+    ''|*[!0-9]*) printf '%s\n' "$default"; return 0 ;;
+  esac
+  case "$SMOKE_BUDGET_BASELINE_SECS" in
+    ''|*[!0-9]*|0) printf '%s\n' "$default"; return 0 ;;
+  esac
+  if [ "$SMOKE_TOTAL_BUDGET_SECS" -le "$SMOKE_BUDGET_BASELINE_SECS" ]; then
+    printf '%s\n' "$default"
+    return 0
+  fi
+  printf '%s\n' "$(( default * SMOKE_TOTAL_BUDGET_SECS / SMOKE_BUDGET_BASELINE_SECS ))"
+}
+
+# Per-call bound for the quick-try block. One hung brain/search call must fail
+# that step, not consume the whole routine budget.
+QUICK_TRY_TIMEOUT="${QUICK_TRY_TIMEOUT:-$(smoke_scale_bound 60)}"
+# Per-call bound for the app init/list calls. `brain init` bootstraps 25 node
+# schemas and is where the 2026-08-29 run stalled; it is slower than a quick-try
+# verb but must still be a step that can fail, not a hang.
+APP_INIT_TIMEOUT="${APP_INIT_TIMEOUT:-$(smoke_scale_bound 120)}"
+# Per-call bound for the heavy install steps (clone, setup, install-apps).
+INSTALL_TIMEOUT="${INSTALL_TIMEOUT:-$(smoke_scale_bound 240)}"
 smoke_deadline_init "$SMOKE_TOTAL_BUDGET_SECS"
 # Teardown bounds. The global budget above covers the WORK of the run, and the
 # VERDICT prints before cleanup starts, so an unbounded teardown still burns the
