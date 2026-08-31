@@ -1,0 +1,333 @@
+#!/usr/bin/env python3
+"""Verify a proposed milestone slice against current-main and delivery evidence.
+
+The caller supplies one proposed slice and four bounded evidence sources:
+the exact candidate repository main commit, a merged-review snapshot, known
+card closeout records, and the milestone-driver memory file.
+
+Each END STATE clause declares whether the evidence shows it as satisfied,
+unsatisfied, or unknown. This command verifies every declared predicate. It
+then returns only the unsatisfied clauses. An unknown or unsupported claim
+blocks card creation.
+
+Exit:
+  0  fresh or partly satisfied; remaining_clauses contains work to file
+  2  all clauses already hold; create no implementation card
+  3  one or more clauses are unknown; leave the milestone unchanged
+  1  malformed input or unreadable evidence; fail closed
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import subprocess
+import sys
+from pathlib import Path, PurePosixPath
+from typing import Any
+
+
+VALID_CLAUSE_VERDICTS = {"satisfied", "unsatisfied", "unknown"}
+SNAPSHOT_SOURCES = {"merged_reviews", "closeouts", "driver_memory"}
+VALID_SOURCES = SNAPSHOT_SOURCES | {"repo_main"}
+
+
+class CheckError(Exception):
+    """The check cannot produce a safe answer."""
+
+
+def read_text(path: Path, label: str) -> str:
+    if not path.is_file():
+        raise CheckError(f"{label} is not a readable file: {path}")
+    try:
+        return path.read_text()
+    except OSError as exc:
+        raise CheckError(f"cannot read {label} {path}: {exc}") from exc
+
+
+def read_json(path: Path, label: str) -> dict[str, Any]:
+    text = read_text(path, label)
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise CheckError(f"{label} is not valid JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise CheckError(f"{label} must be a JSON object")
+    return value
+
+
+def digest(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def git(repo: Path, *args: str) -> str:
+    try:
+        cp = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise CheckError(f"git {' '.join(args)} failed: {exc}") from exc
+    if cp.returncode != 0:
+        detail = (cp.stderr or cp.stdout or "git failed").strip().splitlines()
+        raise CheckError(
+            f"git {' '.join(args)} failed: {detail[0] if detail else 'no output'}"
+        )
+    return cp.stdout.rstrip("\n")
+
+
+def resolve_commit(repo: Path, ref: str) -> str:
+    return git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}").strip()
+
+
+def safe_repo_path(raw: Any) -> str:
+    if not isinstance(raw, str) or not raw.strip():
+        raise CheckError("repo_main evidence needs a non-empty path")
+    path = PurePosixPath(raw)
+    if path.is_absolute() or ".." in path.parts:
+        raise CheckError(f"repo_main evidence path is outside the tree: {raw}")
+    return path.as_posix()
+
+
+def predicate(evidence: dict[str, Any], text: str) -> tuple[bool, str]:
+    has_contains = "contains" in evidence
+    has_not_contains = "not_contains" in evidence
+    if has_contains == has_not_contains:
+        raise CheckError("each evidence item needs exactly one of contains or not_contains")
+    key = "contains" if has_contains else "not_contains"
+    needle = evidence.get(key)
+    if not isinstance(needle, str) or not needle:
+        raise CheckError(f"evidence {key} must be a non-empty string")
+    present = needle in text
+    if has_contains:
+        return present, f"contains {needle!r}"
+    return not present, f"does not contain {needle!r}"
+
+
+def evaluate(
+    proposal: dict[str, Any],
+    repo: Path,
+    base_ref: str,
+    expected_main_oid: str,
+    snapshots: dict[str, str],
+) -> tuple[dict[str, Any], int]:
+    for field in ("milestone", "candidate", "repo"):
+        if not isinstance(proposal.get(field), str) or not proposal[field].strip():
+            raise CheckError(f"proposal needs a non-empty {field}")
+    clauses = proposal.get("clauses")
+    if not isinstance(clauses, list) or not clauses:
+        raise CheckError("proposal needs one or more END STATE clauses")
+
+    main_oid = resolve_commit(repo, base_ref)
+    if main_oid != expected_main_oid:
+        raise CheckError(
+            f"candidate main moved or the snapshot is stale: expected "
+            f"{expected_main_oid}, resolved {main_oid}"
+        )
+
+    file_cache: dict[str, str] = {}
+    evaluated: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    for index, raw_clause in enumerate(clauses, start=1):
+        if not isinstance(raw_clause, dict):
+            raise CheckError(f"clause {index} must be an object")
+        clause_id = raw_clause.get("id")
+        text = raw_clause.get("text")
+        declared = raw_clause.get("verdict")
+        if not isinstance(clause_id, str) or not clause_id.strip():
+            raise CheckError(f"clause {index} needs a non-empty id")
+        if clause_id in seen_ids:
+            raise CheckError(f"duplicate clause id: {clause_id}")
+        seen_ids.add(clause_id)
+        if not isinstance(text, str) or not text.strip():
+            raise CheckError(f"clause {clause_id} needs non-empty text")
+        if declared not in VALID_CLAUSE_VERDICTS:
+            raise CheckError(
+                f"clause {clause_id} verdict must be satisfied, unsatisfied, or unknown"
+            )
+
+        result: dict[str, Any] = {
+            "id": clause_id,
+            "text": text.strip(),
+            "declared_verdict": declared,
+            "verdict": declared,
+            "reason": "",
+            "evidence": [],
+        }
+
+        if declared == "unknown":
+            reason = raw_clause.get("reason")
+            if not isinstance(reason, str) or not reason.strip():
+                raise CheckError(f"unknown clause {clause_id} needs a reason")
+            result["reason"] = reason.strip()
+            evaluated.append(result)
+            continue
+
+        evidence_list = raw_clause.get("evidence")
+        if not isinstance(evidence_list, list) or not evidence_list:
+            raise CheckError(f"clause {clause_id} needs evidence")
+        has_main = False
+        has_main_positive = False
+        has_main_negative = False
+        failed: list[str] = []
+
+        for evidence_index, raw_evidence in enumerate(evidence_list, start=1):
+            if not isinstance(raw_evidence, dict):
+                raise CheckError(
+                    f"clause {clause_id} evidence {evidence_index} must be an object"
+                )
+            source = raw_evidence.get("source")
+            if source not in VALID_SOURCES:
+                raise CheckError(
+                    f"clause {clause_id} evidence source must be one of "
+                    f"{', '.join(sorted(VALID_SOURCES))}"
+                )
+            if source == "repo_main":
+                has_main = True
+                tree_path = safe_repo_path(raw_evidence.get("path"))
+                if tree_path not in file_cache:
+                    try:
+                        file_cache[tree_path] = git(repo, "show", f"{main_oid}:{tree_path}")
+                    except CheckError as exc:
+                        result["verdict"] = "unknown"
+                        failed.append(str(exc))
+                        continue
+                source_text = file_cache[tree_path]
+                has_main_positive = has_main_positive or "contains" in raw_evidence
+                has_main_negative = has_main_negative or "not_contains" in raw_evidence
+                source_ref = f"{main_oid}:{tree_path}"
+            else:
+                source_text = snapshots[source]
+                source_ref = source
+
+            ok, detail = predicate(raw_evidence, source_text)
+            result["evidence"].append(
+                {"source": source, "ref": source_ref, "predicate": detail, "passed": ok}
+            )
+            if not ok:
+                failed.append(f"{source_ref} failed predicate: {detail}")
+
+        if not has_main:
+            raise CheckError(f"clause {clause_id} does not check the exact repo main")
+        if declared == "satisfied" and not has_main_positive:
+            raise CheckError(
+                f"satisfied clause {clause_id} needs a positive repo_main predicate"
+            )
+        if declared == "unsatisfied" and not has_main_negative:
+            raise CheckError(
+                f"unsatisfied clause {clause_id} needs a negative repo_main predicate"
+            )
+        if failed:
+            result["verdict"] = "unknown"
+            result["reason"] = "; ".join(failed)
+        else:
+            result["reason"] = "all declared evidence predicates passed"
+        evaluated.append(result)
+
+    final_main_oid = resolve_commit(repo, base_ref)
+    if final_main_oid != main_oid:
+        raise CheckError(
+            f"candidate main moved during the check: {main_oid} -> {final_main_oid}"
+        )
+
+    satisfied = [c for c in evaluated if c["verdict"] == "satisfied"]
+    unsatisfied = [c for c in evaluated if c["verdict"] == "unsatisfied"]
+    unknown = [c for c in evaluated if c["verdict"] == "unknown"]
+    if unknown:
+        verdict = "unknown"
+        rc = 3
+    elif not unsatisfied:
+        verdict = "already-satisfied"
+        rc = 2
+    elif satisfied:
+        verdict = "partial"
+        rc = 0
+    else:
+        verdict = "fresh"
+        rc = 0
+
+    report = {
+        "milestone": proposal["milestone"],
+        "candidate": proposal["candidate"],
+        "repo": proposal["repo"],
+        "base_ref": base_ref,
+        "main_oid": main_oid,
+        "verdict": verdict,
+        "clauses": evaluated,
+        "satisfied_clauses": [{"id": c["id"], "text": c["text"]} for c in satisfied],
+        "remaining_clauses": [{"id": c["id"], "text": c["text"]} for c in unsatisfied],
+        "unknown_clauses": [
+            {"id": c["id"], "text": c["text"], "reason": c["reason"]}
+            for c in unknown
+        ],
+        "sources": {
+            "repo_main": {"oid": main_oid, "files_read": sorted(file_cache)},
+            **{
+                name: {"sha256": digest(source_text), "bytes": len(source_text.encode())}
+                for name, source_text in snapshots.items()
+            },
+        },
+    }
+    report["status_line"] = (
+        f"SATISFACTION-CHECK milestone={proposal['milestone']} "
+        f"candidate={proposal['candidate']} main={main_oid} verdict={verdict} "
+        f"satisfied={len(satisfied)} remaining={len(unsatisfied)} "
+        f"unknown={len(unknown)}"
+    )
+    return report, rc
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--proposal", required=True, type=Path)
+    ap.add_argument("--repo-path", required=True, type=Path)
+    ap.add_argument("--base-ref", required=True)
+    ap.add_argument("--expected-main-oid", required=True)
+    ap.add_argument("--merged-reviews", required=True, type=Path)
+    ap.add_argument("--closeouts", required=True, type=Path)
+    ap.add_argument("--driver-memory", required=True, type=Path)
+    ap.add_argument("--json", action="store_true")
+    args = ap.parse_args(argv)
+
+    try:
+        proposal = read_json(args.proposal, "proposal")
+        if not args.repo_path.is_dir():
+            raise CheckError(f"repo path is not a directory: {args.repo_path}")
+        snapshots = {
+            "merged_reviews": read_text(args.merged_reviews, "merged reviews"),
+            "closeouts": read_text(args.closeouts, "closeouts"),
+            "driver_memory": read_text(args.driver_memory, "driver memory"),
+        }
+        report, rc = evaluate(
+            proposal,
+            args.repo_path,
+            args.base_ref,
+            args.expected_main_oid,
+            snapshots,
+        )
+    except CheckError as exc:
+        report = {"verdict": "invalid", "reason": str(exc)}
+        rc = 1
+
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        if "status_line" in report:
+            print(report["status_line"])
+        else:
+            print(f"SATISFACTION-CHECK verdict=invalid reason={report['reason']}")
+    if rc != 0:
+        print(
+            f"last-stack-milestone-slice-satisfaction: "
+            f"{report.get('status_line', report.get('reason', report.get('verdict', 'blocked')))}",
+            file=sys.stderr,
+        )
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())

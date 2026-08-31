@@ -169,6 +169,7 @@ ci_test tests/last-stack-launchagent-stable-path.sh
 ci_test tests/last-stack-todo-rank.sh
 ci_test tests/last-stack-kanban-done-when-eval.sh
 ci_test tests/last-stack-driver-hierarchy.sh
+ci_test tests/last-stack-milestone-slice-satisfaction.sh
 ci_test tests/last-stack-kanban-file-pr.sh
 ci_test tests/last-stack-kanban-file-pr-host-track-install.sh
 ci_test tests/last-stack-kanban-decision-check.sh

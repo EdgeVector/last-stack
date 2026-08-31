@@ -171,6 +171,62 @@ so a skipped check here is caught at the filing boundary. Do **not** pass
 `--work-class` to work around a paused outcome; the non-feature classes exist
 for closeout, proof, repair, and incident work only.
 
+## Shipped-slice satisfaction gate (before any Kind:pr create)
+
+Do not infer missing work from an old papercut, design, or milestone body.
+Verify each proposed `## END STATE` clause against current evidence before you
+file its card.
+
+For each proposed slice:
+
+1. Resolve the candidate repository venue and its exact canonical main commit.
+   Use that immutable OID for every source-tree check in this pass.
+2. Point-read the merged reviews named by the proposal, milestone history, and
+   known closeouts. Do not use a GitHub mirror for a LastGit or Forgejo repo.
+3. Point-read the known closeout cards with `kanban show`. Do not infer closeout
+   state from a board list.
+4. Read the exact `Automation memory:` path from the dispatch envelope. If the
+   envelope has no path, use
+   `${ROUTINES_HOME:-$HOME/.routines}/memory/last-stack-milestone-driver/memory.md`.
+5. Write one proposal JSON object. Give each END STATE clause an ID, text,
+   verdict, and evidence predicates. Every satisfied or unsatisfied clause must
+   test a path at the exact repository main OID.
+6. Run:
+
+   ```bash
+   "$last_stack/bin/last-stack-milestone-slice-satisfaction" \
+     --proposal "$proposal_json" \
+     --repo-path "$candidate_repo" \
+     --base-ref "$candidate_main_ref" \
+     --expected-main-oid "$candidate_main_oid" \
+     --merged-reviews "$merged_reviews_json" \
+     --closeouts "$closeouts_json" \
+     --driver-memory "$automation_memory" \
+     --json >"$satisfaction_json"
+   satisfaction_rc=$?
+   jq -r '.status_line // "SATISFACTION-CHECK verdict=invalid"' \
+     "$satisfaction_json"
+   ```
+
+The command reads all four evidence sources. It also reads the candidate main
+ref before and after the check. A main-ref change makes the result invalid.
+
+- `rc=2`, `already-satisfied`: record the `SATISFACTION-CHECK` and the existing
+  proof in driver memory. File no implementation card.
+- `rc=0`, `partial`: use only `.remaining_clauses` in the new card's END STATE.
+  Do not repeat a satisfied clause in GOAL, STEPS, or VERIFY.
+- `rc=0`, `fresh`: the current main lacks every clause. File the checked brief.
+- `rc=3`, `unknown`: leave the milestone unchanged. State the missing evidence.
+  File no card.
+- `rc=1`, `invalid`: fail closed. File no card.
+
+Append the emitted `SATISFACTION-CHECK` line to driver memory for every result.
+The line must name the milestone, candidate, exact main OID, verdict, satisfied
+count, remaining count, and unknown count.
+
+Immediately before `last-stack-kanban-file-pr`, re-resolve the candidate main
+OID. If it differs from `.main_oid`, discard the result and repeat the check.
+
 ## Deterministic gap-report (required)
 
 ```bash
@@ -277,7 +333,9 @@ For each `work_queue` item with `action=decompose`, until `safety_cap`:
    `last-stack-feature-portfolio-admission`; a paused North Star is a refuse.
    Do not pass `--work-class` to bypass it. Unblocked → `--column todo`;
    dep-held → `--column backlog`. Do not file a Kind:pr that pickup would
-   classify `unattached-outcome`.
+   classify `unattached-outcome`. The shipped-slice satisfaction gate must
+   return `fresh` or `partial`. A `partial` card contains only its
+   `.remaining_clauses`.
 6. If you cannot name a concrete next slice without inventing product design:
    **stop** for that milestone with `needs-decomposition` — do not spam shells
    (PR or validation).
