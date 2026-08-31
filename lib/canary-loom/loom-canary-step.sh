@@ -344,6 +344,61 @@ if step == "READ_A":
     emit({"child_status": "green"}, "canary-step READ_A live assume join-all")
     raise SystemExit(0)
 
+
+if step == "LEDGER" and ctx.get("recovery_mode") == "verified-live":
+    if ctx.get("recovery_verified") is not True or ctx.get("recovery_no_mutation") is not True:
+        recovery_fail("verified-live ledger needs the RECOVER_LIVE receipt")
+
+    child = required_recovery_text("recovery_child_execution")
+    oid = required_recovery_text("recovery_source_git_oid")
+    version = required_recovery_text("recovery_version")
+    if ctx.get("source_git_oid") != oid or ctx.get("version") != version:
+        recovery_fail("verified-live ledger identity differs from the RECOVER_LIVE receipt")
+
+    # Keep the failed soak terminal. Create one new attempt whose key is stable
+    # for this verified child. A retry of this same step is then idempotent.
+    ledger_sha = f"{version}-recovery-{child}"
+    p = run(
+        [
+            "last-stack-canary-pipeline",
+            "--json",
+            "dogfood",
+            "--sha",
+            ledger_sha,
+            "--observed-sha",
+            version,
+            "--version",
+            version,
+            "--source",
+            "verified-live-recovery",
+            "--source-git-oid",
+            oid,
+        ],
+        timeout=120,
+    )
+    if p.stdout:
+        print(p.stdout, end="" if p.stdout.endswith("\n") else "\n")
+    if p.stderr:
+        sys.stderr.write(p.stderr)
+    if p.returncode != 0:
+        print(
+            f"canary-step LEDGER recovery record failed rc={p.returncode}",
+            file=sys.stderr,
+        )
+        raise SystemExit(p.returncode)
+    emit(
+        {
+            "phase_next": "SOAK",
+            "ledger_sha": ledger_sha,
+            "source_git_oid": oid,
+            "version": version,
+            "last_note": f"verified-live recovery ledger recorded sha={ledger_sha}",
+        },
+        "canary-step LEDGER verified-live recovery",
+    )
+    raise SystemExit(0)
+
+
 if step in ("BUILD_START", "BUILD_POLL", "BUILD_COLLECT", "LEDGER", "SOAK", "PROMOTE"):
     env = os.environ.copy()
     env["SM_CONTEXT_JSON"] = json.dumps(ctx)

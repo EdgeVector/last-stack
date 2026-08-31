@@ -252,6 +252,38 @@ grep -q 'situations preflight --action lastdb-safe-upgrade' "$CLI"
 grep -q 'situations preflight --action lastdb-safe-upgrade' "$LEDGER"
 ! grep -q 'situations list --json | jq -e "length == 0"' "$LEDGER"
 
+# A verified-live recovery uses a new attempt key. The old soak_red row stays
+# terminal. The new row keeps the actual live version as its observed identity.
+recovery_ledger="$tmp/recovery-ledger.jsonl"
+old_sha="0.25.0-local-main"
+"$LEDGER" --ledger "$recovery_ledger" create "$old_sha" --version "$old_sha" --source old >/dev/null
+"$LEDGER" --ledger "$recovery_ledger" advance "$old_sha" dogfood_started >/dev/null
+"$LEDGER" --ledger "$recovery_ledger" advance "$old_sha" dogfood_green >/dev/null
+"$LEDGER" --ledger "$recovery_ledger" advance "$old_sha" soak_started >/dev/null
+"$LEDGER" --ledger "$recovery_ledger" advance "$old_sha" soak_red >/dev/null
+recovery_sha="$old_sha-recovery-lx-test-child"
+LAST_STACK_CANARY_ANCESTRY_GUARD=0 \
+  "$LEDGER" --json --ledger "$recovery_ledger" dogfood \
+    --sha "$recovery_sha" \
+    --observed-sha "$old_sha" \
+    --version "$old_sha" \
+    --source verified-live-recovery \
+    --source-git-oid "$MAIN_OID" >/dev/null
+recovery_current="$("$LEDGER" --json --ledger "$recovery_ledger" read "$recovery_sha")"
+[ "$(printf '%s\n' "$recovery_current" | jq -r '.state')" = dogfood_green ]
+[ "$(printf '%s\n' "$recovery_current" | jq -r '.candidate')" = "$recovery_sha" ]
+[ "$(printf '%s\n' "$recovery_current" | jq -r '.observed_sha')" = "$old_sha" ]
+[ "$("$LEDGER" --json --ledger "$recovery_ledger" read "$old_sha" | tail -1 | jq -r '.state')" = soak_red ]
+before_retry="$(wc -l <"$recovery_ledger" | tr -d ' ')"
+LAST_STACK_CANARY_ANCESTRY_GUARD=0 \
+  "$LEDGER" --json --ledger "$recovery_ledger" dogfood \
+    --sha "$recovery_sha" \
+    --observed-sha "$old_sha" \
+    --version "$old_sha" \
+    --source verified-live-recovery \
+    --source-git-oid "$MAIN_OID" >/dev/null
+[ "$(wc -l <"$recovery_ledger" | tr -d ' ')" = "$before_retry" ]
+
 # --- a staged build one merge behind main tip is still dogfooded ---
 # Tip equality is unwinnable on a repo that merges several times a day: a real
 # ancestor sat staged on the host while the nightly red'd as "unbuilt".

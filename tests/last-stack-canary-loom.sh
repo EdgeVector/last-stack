@@ -110,6 +110,15 @@ case "${1:-}" in
 esac
 SH
 chmod 755 "$mock_home/.local/bin/sm-canary-release-step"
+cat > "$mock_home/.local/bin/last-stack-canary-pipeline" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"${FAKE_PIPELINE_CALLS:?}"
+printf '%s\n' '{"state":"dogfood_green"}'
+SH
+chmod 755 "$mock_home/.local/bin/last-stack-canary-pipeline"
+export FAKE_PIPELINE_CALLS="$tmp/pipeline.calls"
+: >"$FAKE_PIPELINE_CALLS"
 
 recovery_stage="$tmp/recovery-stage"
 recovery_current="$mock_home/.lastdb/current"
@@ -153,6 +162,36 @@ printf '%s\n' "$recovery_out" | grep -q '"recovery_no_mutation":true' \
 if printf '%s\n' "$recovery_out" | grep -q 'upgrade_jobs'; then
   fail "verified-live recovery exposed an upgrade job: $recovery_out"
 fi
+
+recovery_receipt="$(printf '%s' "$recovery_input" | jq \
+  '. + {recovery_verified:true,recovery_no_mutation:true,source_git_oid:.recovery_source_git_oid,version:.recovery_version}')"
+recovery_ledger_out="$(PATH="$mock_home/.local/bin:$PATH" HOME="$mock_home" LOOM_LIVE=1 \
+  LOOM_INPUT="$recovery_receipt" \
+  "$ROOT/lib/canary-loom/loom-canary-step.sh" LEDGER)"
+recovery_ledger_sha="$recovery_version-recovery-lx-recovery-child"
+printf '%s\n' "$recovery_ledger_out" | grep -q "\"ledger_sha\":\"$recovery_ledger_sha\"" \
+  || fail "verified-live ledger did not create a new attempt: $recovery_ledger_out"
+grep -q -- "dogfood --sha $recovery_ledger_sha --observed-sha $recovery_version --version $recovery_version --source verified-live-recovery --source-git-oid $recovery_oid" \
+  "$FAKE_PIPELINE_CALLS" \
+  || fail "verified-live ledger did not preserve the exact live identity"
+
+: >"$FAKE_PIPELINE_CALLS"
+PATH="$mock_home/.local/bin:$PATH" HOME="$mock_home" LOOM_LIVE=1 \
+  LOOM_INPUT="$recovery_receipt" \
+  "$ROOT/lib/canary-loom/loom-canary-step.sh" LEDGER >/dev/null
+[ "$(wc -l <"$FAKE_PIPELINE_CALLS" | tr -d ' ')" -eq 1 ] \
+  || fail "verified-live ledger retry issued more than one ledger command"
+
+set +e
+missing_receipt_out="$(PATH="$mock_home/.local/bin:$PATH" HOME="$mock_home" LOOM_LIVE=1 \
+  LOOM_INPUT="$recovery_input" \
+  "$ROOT/lib/canary-loom/loom-canary-step.sh" LEDGER 2>&1)"
+missing_receipt_rc=$?
+set -e
+[ "$missing_receipt_rc" -ne 0 ] \
+  || fail "verified-live ledger accepted input without a RECOVER_LIVE receipt"
+printf '%s\n' "$missing_receipt_out" | grep -q 'RECOVER_LIVE receipt' \
+  || fail "verified-live ledger refusal did not name the missing receipt"
 
 assert_recovery_refused() {
   local label="$1" input_json="$2"
