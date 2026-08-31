@@ -104,6 +104,13 @@ def evidence_tail(text, limit=2000):
 
 
 def probe_failure_reason(text, final_verdict, rc):
+    # The die() line prints only when lock acquisition terminally failed, so
+    # this cannot fire on a run that waited, acquired, and then failed a bar.
+    if "owns the host-wide safety lane" in text:
+        return (
+            "safe-upgrade owner lock busy past the wait budget — "
+            "harness contention, not a candidate defect"
+        )
     reasons = [ln.strip() for ln in text.splitlines() if ln.strip().startswith("REASON:")]
     if reasons:
         return reasons[-1][:400]
@@ -155,9 +162,14 @@ if step == "PROBE":
             f"su PROBE freshness={relation} refused",
         )
         raise SystemExit(0)
+    # A re-dispatched PROBE can find the owner lock still held by an earlier
+    # attempt's orphaned process tree. Wait for the lane instead of marking
+    # the candidate RED; the budget stays well under the PROBE node timeout.
+    probe_env = os.environ.copy()
+    probe_env.setdefault("LASTDB_SAFE_UPGRADE_OWNER_LOCK_WAIT_S", "2700")
     p = subprocess.run(
         ["bash", skill, "--candidate", cand, "--probe-only"],
-        capture_output=True, text=True, timeout=node_timeout("PROBE"),
+        capture_output=True, text=True, timeout=node_timeout("PROBE"), env=probe_env,
     )
     sys.stdout.write(p.stdout or "")
     sys.stderr.write(p.stderr or "")
@@ -198,6 +210,7 @@ if step == "CUTOVER":
     print('LOOM_EFFECT_INTENT:{"kind":"deploy","target":"lastdb-safe-upgrade"}')
     cutover_env = os.environ.copy()
     cutover_env["LASTDB_SAFE_UPGRADE_VIA_LOOM"] = "1"
+    cutover_env.setdefault("LASTDB_SAFE_UPGRADE_OWNER_LOCK_WAIT_S", "1800")
     p = subprocess.run(
         ["bash", skill, "--candidate", cand, "--yes"],
         capture_output=True, text=True, timeout=node_timeout("CUTOVER"), env=cutover_env,

@@ -103,6 +103,62 @@ safe_upgrade_owner_lock_acquire() {
   return 0
 }
 
+safe_upgrade_owner_lock_acquire_wait() {
+  # Bounded wait around acquire. Contention (a live owner, or init grace) is
+  # retried until LASTDB_SAFE_UPGRADE_OWNER_LOCK_WAIT_S expires; every other
+  # acquire error returns at once. wait=0 keeps today's fail-fast behavior.
+  # Loom re-dispatches a node whose worker lease lapsed while the first
+  # attempt's process tree still holds this lock (exec
+  # lx-20260831T143453.167-37523-1) — the re-run must wait, not mark the
+  # candidate RED.
+  local lock_dir="$1" token="$2" owner_pid="$3" candidate="$4" mode="$5"
+  local wait_s poll now deadline err announced=0
+  wait_s="${LASTDB_SAFE_UPGRADE_OWNER_LOCK_WAIT_S:-0}"
+  poll="${LASTDB_SAFE_UPGRADE_OWNER_LOCK_POLL_S:-15}"
+  case "$wait_s" in
+    ""|*[!0-9]*)
+      printf '[safe-upgrade] ERROR: owner lock wait must be a non-negative integer\n' >&2
+      return 1
+      ;;
+  esac
+  case "$poll" in
+    ""|0|*[!0-9]*)
+      printf '[safe-upgrade] ERROR: owner lock poll must be a positive integer\n' >&2
+      return 1
+      ;;
+  esac
+  now="$(date +%s 2>/dev/null || echo 0)"
+  deadline=$((now + wait_s))
+  while :; do
+    if err="$(safe_upgrade_owner_lock_acquire \
+        "$lock_dir" "$token" "$owner_pid" "$candidate" "$mode" 2>&1)"; then
+      [ -z "$err" ] || printf '%s\n' "$err" >&2
+      return 0
+    fi
+    case "$err" in
+      *"owner lock active"*|*"owner lock initialization active"*) ;;
+      *)
+        printf '%s\n' "$err" >&2
+        return 1
+        ;;
+    esac
+    now="$(date +%s 2>/dev/null || echo 0)"
+    if [ "$now" -ge "$deadline" ]; then
+      printf '%s\n' "$err" >&2
+      if [ "$wait_s" -gt 0 ]; then
+        printf '[safe-upgrade] ERROR: owner lock still busy after %ss wait\n' "$wait_s" >&2
+      fi
+      return 1
+    fi
+    if [ "$announced" -eq 0 ]; then
+      printf '[safe-upgrade] owner lock busy — waiting up to %ss (poll %ss): %s\n' \
+        "$wait_s" "$poll" "$err" >&2
+      announced=1
+    fi
+    sleep "$poll"
+  done
+}
+
 safe_upgrade_owner_lock_release() {
   local lock_dir="$1" token="$2" held="${3:-0}" current_token
   [ "$held" = "1" ] || return 0
