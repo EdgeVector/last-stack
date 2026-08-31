@@ -1,0 +1,1061 @@
+#!/usr/bin/env python3
+"""Prove the five permanent feature-delivery fixes against installed products.
+
+PASS is terminal. PENDING means that an artifact or the 24-hour LastDB soak is
+not ready. FAIL means that an installed fix failed its product probe.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import io
+import json
+import os
+import re
+import subprocess
+import sys
+import tarfile
+import tempfile
+from pathlib import Path
+from typing import Any
+
+
+SLUG = "north-star-feature-delivery-effective-flow"
+MILESTONE = "feature-delivery-effective-flow-v1"
+PROBE_BOARD = "feature-delivery-effective-flow-proof"
+PROBE_CARD = "feature-delivery-effective-flow-proof-probe"
+PROBE_WORKER = "feature-delivery-effective-flow-proof"
+SOAK_SECONDS = 24 * 60 * 60
+
+FIXES: dict[str, list[dict[str, str]]] = {
+    "fkanban": [
+        {
+            "name": "durable milestone on add",
+            "source_commit": "ec51f37a1502fd8cf0ad21e10b293ffca0ae9a7d",
+        },
+        {
+            "name": "immediate claim and show coherence",
+            "source_commit": "b3868f5c0bdb7a14d41a391432ac51fbc3a75528",
+        },
+        {
+            "name": "bounded board move write",
+            "source_commit": "e59594d546b2cc0193b6ed7196c41b5fa6aaf128",
+        },
+        {
+            "name": "keyed feature flow ledger",
+            "source_commit": "64096f71d15cc2745bd0ee13989efd4264d04bc0",
+        },
+    ],
+    "last-stack": [
+        {
+            "name": "two-outcome feature admission",
+            "source_commit": "ce7566abb3302c63da61aa26ee6dada8d5762f0d",
+        },
+        {
+            "name": "current-main slice satisfaction",
+            "source_commit": "7bb8dd280574a382f141e8c2ec3fc02581a132db",
+        },
+        {
+            "name": "monotonic card closeout",
+            "source_commit": "a312542dfc1b58932563d17d29b2bda9baeb47cf",
+        },
+    ],
+    "fold": [
+        {
+            "name": "full-heap warm-cache accounting",
+            "source_commit": "28e77f30e774f6ac16c50a214cdb280d12025e6d",
+        }
+    ],
+    "routines": [
+        {
+            "name": "all-route provider fallback",
+            "source_commit": "fd3a50c6d0366672312b414e5ff24690b4c0c174",
+        }
+    ],
+}
+
+
+class ProofError(Exception):
+    """A product probe cannot produce valid evidence."""
+
+
+def now() -> str:
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def run(
+    argv: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    timeout: int = 90,
+    allowed: tuple[int, ...] = (0,),
+) -> subprocess.CompletedProcess[str]:
+    try:
+        cp = subprocess.run(
+            argv,
+            text=True,
+            capture_output=True,
+            env=env,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ProofError(f"{' '.join(argv)} failed: {exc}") from exc
+    if cp.returncode not in allowed:
+        detail = (cp.stderr or cp.stdout or "no output").strip().splitlines()
+        raise ProofError(
+            f"{' '.join(argv)} returned {cp.returncode}: "
+            f"{detail[0] if detail else 'no output'}"
+        )
+    return cp
+
+
+def parse_json(text: str, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ProofError(f"{label} returned invalid JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ProofError(f"{label} did not return a JSON object")
+    return value
+
+
+def timed_probe(name: str, callback: Any) -> dict[str, Any]:
+    started = now()
+    try:
+        detail = callback()
+        status = "pass"
+        if not isinstance(detail, dict):
+            detail = {"detail": str(detail)}
+    except ProofError as exc:
+        detail = {"reason": str(exc)}
+        status = "fail"
+    return {
+        "name": name,
+        "status": status,
+        "started_at": started,
+        "finished_at": now(),
+        **detail,
+    }
+
+
+def workspace() -> Path:
+    return Path(os.environ.get("EDGEVECTOR_WORKSPACE", str(Path.home() / "code/edgevector")))
+
+
+def cache_path(repo: str) -> Path:
+    marker = workspace() / repo / ".portal/cache"
+    if not marker.is_file():
+        raise ProofError(f"missing portal cache marker: {marker}")
+    value = marker.read_text().strip()
+    if not value:
+        raise ProofError(f"empty portal cache marker: {marker}")
+    path = Path(value)
+    if not path.is_dir():
+        raise ProofError(f"portal cache does not exist: {path}")
+    return path
+
+
+def git(repo: str, *args: str) -> str:
+    cp = run(["git", f"--git-dir={cache_path(repo)}", *args], timeout=60)
+    return cp.stdout.strip()
+
+
+def source_contains(repo: str, required: str, installed: str) -> bool:
+    if not required or not installed:
+        return False
+    cp = run(
+        ["git", f"--git-dir={cache_path(repo)}", "merge-base", "--is-ancestor", required, installed],
+        timeout=60,
+        allowed=(0, 1),
+    )
+    return cp.returncode == 0
+
+
+def read_stamp(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        raise ProofError(f"missing install stamp: {path}")
+    return parse_json(path.read_text(), str(path))
+
+
+def installed_heads() -> tuple[dict[str, str], dict[str, Any]]:
+    home = Path.home()
+    stamps = home / ".host-track/stamps"
+    heads = {
+        "fkanban": str(read_stamp(stamps / "kanban.json").get("source_oid", "")),
+        "last-stack": str(read_stamp(stamps / "last-stack.json").get("source_oid", "")),
+        "routines": str(read_stamp(stamps / "routines.json").get("source_oid", "")),
+    }
+    status = parse_json(run(["lastdb", "status", "--json"], timeout=60).stdout, "lastdb status")
+    build = str(status.get("daemon_build", ""))
+    match = re.search(r"g([0-9a-f]{7,40})$", build)
+    fold_head = ""
+    if match:
+        cp = run(
+            ["git", f"--git-dir={cache_path('fold')}", "rev-parse", f"{match.group(1)}^{{commit}}"],
+            timeout=60,
+            allowed=(0, 128),
+        )
+        if cp.returncode == 0:
+            fold_head = cp.stdout.strip()
+    heads["fold"] = fold_head
+    return heads, {"build": build, "status": status}
+
+
+def component_evidence(heads: dict[str, str]) -> dict[str, Any]:
+    evidence: dict[str, Any] = {}
+    for repo, fixes in FIXES.items():
+        installed = heads.get(repo, "")
+        checks = []
+        for fix in fixes:
+            checks.append(
+                {
+                    **fix,
+                    "installed_head": installed,
+                    "present": source_contains(repo, fix["source_commit"], installed),
+                }
+            )
+        evidence[repo] = {"installed_head": installed, "fixes": checks}
+    return evidence
+
+
+def all_present(components: dict[str, Any], repo: str, names: tuple[str, ...]) -> bool:
+    checks = components.get(repo, {}).get("fixes", [])
+    by_name = {str(check.get("name")): bool(check.get("present")) for check in checks}
+    return all(by_name.get(name, False) for name in names)
+
+
+def installed_root(app: str) -> Path:
+    if app == "last-stack":
+        return Path.home() / ".local/state/last-stack/artifacts/current"
+    if app == "routines":
+        return Path.home() / ".host-track/apps/routines/current"
+    raise ProofError(f"unknown installed app: {app}")
+
+
+def probe_card_truth_and_flow() -> dict[str, Any]:
+    body = (
+        "Kind: pr\n"
+        "Repo: EdgeVector/last-stack\n"
+        "Base: main\n\n"
+        "## GOAL\n\nProve the installed feature delivery card path.\n\n"
+        "## END STATE\n\nThe proof card reaches done with coherent state.\n"
+    )
+    run(
+        [
+            "kanban",
+            "board",
+            "create",
+            PROBE_BOARD,
+            "--title",
+            "Feature delivery proof",
+            "--body",
+            "A fixed board for the feature-delivery terminal proof.",
+            "--json",
+        ]
+    )
+    run(
+        [
+            "kanban",
+            "add",
+            PROBE_CARD,
+            "--board",
+            PROBE_BOARD,
+            "--column",
+            "todo",
+            "--title",
+            "Feature delivery proof probe",
+            "--kind",
+            "pr",
+            "--repo",
+            "EdgeVector/last-stack",
+            "--base",
+            "main",
+            "--north-star",
+            SLUG,
+            "--milestone",
+            MILESTONE,
+            "--surfaces",
+            "proof-fixture",
+            "--body",
+            body,
+            "--force",
+            "--json",
+        ]
+    )
+    claimed = parse_json(
+        run(
+            [
+                "kanban",
+                "pickup",
+                "claim",
+                "--board",
+                PROBE_BOARD,
+                "--worker",
+                PROBE_WORKER,
+                "--json",
+            ]
+        ).stdout,
+        "kanban pickup claim",
+    )
+    shown: dict[str, Any] = {}
+    assignee: Any = ""
+    probe_error: ProofError | None = None
+    try:
+        shown = parse_json(run(["kanban", "show", PROBE_CARD, "--json"]).stdout, "kanban show")
+        assignee = shown.get("assignee", shown.get("assigned_to", shown.get("worker", "")))
+        if shown.get("column") != "doing":
+            raise ProofError(f"immediate show returned column={shown.get('column')!r}")
+        if assignee != PROBE_WORKER:
+            raise ProofError(f"immediate show returned worker={assignee!r}")
+        if shown.get("milestone") != MILESTONE:
+            raise ProofError(f"show returned milestone={shown.get('milestone')!r}")
+    except ProofError as exc:
+        probe_error = exc
+    # Do not leave the reusable proof card in doing after a failed assertion.
+    # A cleanup error is terminal only when no earlier assertion explains it.
+    try:
+        run(["kanban", "move", PROBE_CARD, "done", "--force", "--json"])
+    except ProofError as exc:
+        if probe_error is None:
+            probe_error = exc
+    if probe_error is not None:
+        raise probe_error
+    flow = parse_json(run(["kanban", "flow", MILESTONE, "--json"]).stdout, "kanban flow")
+    cards = flow.get("cards")
+    if not isinstance(cards, list):
+        raise ProofError("flow report has no cards array")
+    card = next((item for item in cards if item.get("card_slug") == PROBE_CARD), None)
+    if not isinstance(card, dict):
+        raise ProofError("flow report does not contain the proof card")
+    events = [item.get("event") for item in card.get("events", []) if isinstance(item, dict)]
+    if card.get("stage") != "done" or "claim" not in events or "done" not in events:
+        raise ProofError(f"flow events are incomplete: stage={card.get('stage')!r} events={events!r}")
+    if "oldest_wait" not in flow:
+        raise ProofError("flow report has no oldest_wait field")
+    return {
+        "claim_result": claimed.get("result", claimed.get("status", "claimed")),
+        "card_column": shown.get("column"),
+        "worker": assignee,
+        "milestone": shown.get("milestone"),
+        "flow_stage": card.get("stage"),
+        "flow_events": events,
+        "oldest_wait": flow.get("oldest_wait"),
+    }
+
+
+def proof_command(root: Path, name: str) -> Path:
+    path = root / "bin" / name
+    if not path.is_file():
+        raise ProofError(f"installed command is missing: {path}")
+    return path
+
+
+def probe_admission() -> dict[str, Any]:
+    command = proof_command(installed_root("last-stack"), "last-stack-feature-portfolio-admission")
+    cases = [
+        (SLUG, 0, "admitted"),
+        ("north-star-lastdb-no-scan-access", 0, "admitted"),
+        ("north-star-feature-delivery-proof-paused", 2, "paused"),
+    ]
+    results = []
+    for slug, rc, verdict in cases:
+        cp = run([str(command), "--north-star", slug, "--json"], allowed=(rc,), timeout=90)
+        result = parse_json(cp.stdout, f"admission {slug}")
+        if result.get("verdict") != verdict:
+            raise ProofError(f"admission {slug} returned {result.get('verdict')!r}")
+        results.append({"north_star": slug, "verdict": verdict, "exit": rc})
+    return {"cases": results}
+
+
+def probe_satisfaction() -> dict[str, Any]:
+    command = proof_command(installed_root("last-stack"), "last-stack-milestone-slice-satisfaction")
+    repo = cache_path("last-stack")
+    main_oid = git("last-stack", "rev-parse", "main^{commit}")
+    with tempfile.TemporaryDirectory(prefix="feature-satisfaction-proof.") as raw:
+        tmp = Path(raw)
+        proposal = {
+            "milestone": MILESTONE,
+            "candidate": "proof-current-main-does-not-refile",
+            "repo": "EdgeVector/last-stack",
+            "clauses": [
+                {
+                    "id": "already-shipped",
+                    "text": "The current-main satisfaction gate exists.",
+                    "verdict": "satisfied",
+                    "evidence": [
+                        {
+                            "source": "repo_main",
+                            "path": "bin/last-stack-milestone-slice-satisfaction",
+                            "contains": 'verdict = "already-satisfied"',
+                        }
+                    ],
+                }
+            ],
+        }
+        (tmp / "proposal.json").write_text(json.dumps(proposal) + "\n")
+        (tmp / "reviews.json").write_text("[]\n")
+        (tmp / "closeouts.json").write_text("[]\n")
+        (tmp / "memory.md").write_text("No prior driver claim.\n")
+        cp = run(
+            [
+                str(command),
+                "--proposal",
+                str(tmp / "proposal.json"),
+                "--repo-path",
+                str(repo),
+                "--base-ref",
+                "main",
+                "--expected-main-oid",
+                main_oid,
+                "--merged-reviews",
+                str(tmp / "reviews.json"),
+                "--closeouts",
+                str(tmp / "closeouts.json"),
+                "--driver-memory",
+                str(tmp / "memory.md"),
+                "--json",
+            ],
+            allowed=(2,),
+        )
+        result = parse_json(cp.stdout, "current-main satisfaction")
+    if result.get("verdict") != "already-satisfied" or result.get("remaining_clauses") != []:
+        raise ProofError(f"current-main satisfaction returned {result.get('verdict')!r}")
+    return {"main_oid": main_oid, "verdict": result.get("verdict"), "remaining_clauses": []}
+
+
+def extract_source(repo: str, oid: str, destination: Path) -> None:
+    try:
+        cp = subprocess.run(
+            ["git", f"--git-dir={cache_path(repo)}", "archive", oid],
+            capture_output=True,
+            timeout=90,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ProofError(f"cannot archive {repo} at {oid}: {exc}") from exc
+    if cp.returncode != 0:
+        detail = cp.stderr.decode(errors="replace").strip().splitlines()
+        raise ProofError(
+            f"cannot archive {repo} at {oid}: {detail[0] if detail else 'git archive failed'}"
+        )
+    with tarfile.open(fileobj=io.BytesIO(cp.stdout), mode="r:") as archive:
+        try:
+            archive.extractall(destination, filter="data")
+        except TypeError:
+            # Python before 3.12 has no extraction filter. This archive comes
+            # from the trusted local repository object named above.
+            archive.extractall(destination)
+
+
+def probe_closeout(installed_head: str) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="feature-closeout-proof.") as raw:
+        source = Path(raw)
+        extract_source("last-stack", installed_head, source)
+        test = source / "tests/last-stack-card-closeout.sh"
+        cp = run(["bash", str(test)], timeout=120)
+    if "ok last-stack-card-closeout" not in cp.stdout:
+        raise ProofError("the exact installed-source closeout test returned no pass marker")
+    return {
+        "installed_source": installed_head,
+        "fixture": "positive PROOF; same-signal reopen refusal; new-signal close",
+        "result": "ok last-stack-card-closeout",
+    }
+
+
+def write_executable(path: Path, text: str) -> None:
+    path.write_text(text)
+    path.chmod(0o755)
+
+
+def probe_provider_fallback() -> dict[str, Any]:
+    command = proof_command(installed_root("routines"), "routines")
+    with tempfile.TemporaryDirectory(prefix="feature-provider-proof.") as raw:
+        home = Path(raw)
+        (home / "registry").mkdir(parents=True)
+        (home / "harness-outage").mkdir(parents=True)
+        (home / "registry/demo.toml").write_text(
+            'harness = "grok"\n'
+            'model = "grok-4.6"\n'
+            'rrule = "FREQ=HOURLY"\n'
+            'prompt = "health"\n'
+            'timeout_min = 0.5\n'
+        )
+        (home / "harness-outage/codex.json").write_text(
+            json.dumps(
+                {
+                    "kind": "usage-limit",
+                    "lastSeenAt": "2026-08-31T00:00:00Z",
+                    "situationSlug": "feature-provider-proof",
+                    "expiresAt": "2099-01-01T00:00:00Z",
+                }
+            )
+            + "\n"
+        )
+        codex_marker = home / "codex-called"
+        grok = home / "grok-bin"
+        codex = home / "codex-bin"
+        claude = home / "claude-bin"
+        noop = home / "noop-bin"
+        write_executable(
+            grok,
+            "#!/bin/sh\n"
+            "printf '%s\\n' 'API error (status 402 Payment Required): "
+            "usage balance exhausted' >&2\n"
+            "exit 1\n",
+        )
+        write_executable(codex, f"#!/bin/sh\nprintf called >>'{codex_marker}'\nexit 1\n")
+        write_executable(
+            claude,
+            "#!/bin/sh\nprintf '%s\\n' 'demo 2026-08-31T00:00:00Z ok GREEN findings=0'\nexit 0\n",
+        )
+        write_executable(noop, "#!/bin/sh\nexit 0\n")
+        env = os.environ.copy()
+        env.update(
+            {
+                "ROUTINES_HOME": str(home),
+                "ROUTINES_ALLOW_HARNESS_BIN_OVERRIDES": "1",
+                "ROUTINES_FALLBACK_CHAIN": "codex:gpt-5.6-terra,claude:sonnet,grok:grok-4.5",
+                "ROUTINES_FALLBACK_MAX_CONCURRENT": "1",
+                "ROUTINES_FALLBACK_JITTER_MS": "0",
+                "ROUTINES_GROK_BIN": str(grok),
+                "ROUTINES_CODEX_BIN": str(codex),
+                "ROUTINES_CLAUDE_BIN": str(claude),
+                "ROUTINES_FSITUATIONS_BIN": str(noop),
+                "ROUTINES_SITUATIONS_CLI": str(noop),
+                "ROUTINES_FBRAIN_BIN": str(noop),
+                "ROUTINES_RA_BIN": str(noop),
+                "ROUTINES_HEARTBEATS_FILE": str(home / "heartbeats.log"),
+            }
+        )
+        run([str(command), "run", "demo", "--quiet"], env=env, timeout=90)
+        meta_files = sorted((home / "runs/demo").glob("*/meta.json"))
+        if not meta_files:
+            meta_files = sorted(home.glob("runs/**/meta.json"))
+        if not meta_files:
+            raise ProofError("the provider probe wrote no run metadata")
+        meta = parse_json(meta_files[-1].read_text(), "provider probe metadata")
+        attempts = meta.get("fallbackAttempts")
+        if not isinstance(attempts, list):
+            raise ProofError("provider probe has no fallbackAttempts array")
+        harnesses = [str(item.get("harness")) for item in attempts if isinstance(item, dict)]
+        if meta.get("harness") != "claude" or harnesses[:2] != ["grok", "claude"]:
+            raise ProofError(f"provider chain stopped early: winner={meta.get('harness')!r} legs={harnesses!r}")
+        if codex_marker.exists():
+            raise ProofError("the provider chain called the fenced Codex route")
+    return {
+        "primary": "grok",
+        "fenced_first_fallback": "codex",
+        "winner": "claude",
+        "attempts": harnesses,
+    }
+
+
+def read_self_metric_samples(process_start: int) -> list[dict[str, Any]]:
+    path = Path(
+        os.environ.get(
+            "LASTDB_SELF_METRICS_FILE",
+            str(Path.home() / ".lastdb/logs/self-metrics.jsonl"),
+        )
+    )
+    if not path.is_file():
+        raise ProofError(f"LastDB self-metric file is missing: {path}")
+    samples: list[dict[str, Any]] = []
+    with path.open() as stream:
+        for line in stream:
+            if not line.strip():
+                continue
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict) and value.get("process_start_ts") == process_start:
+                samples.append(value)
+    return samples
+
+
+def collect_lastdb_soak(lastdb_meta: dict[str, Any], fixed_build: bool) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "build": lastdb_meta.get("build", ""),
+        "fixed_build": fixed_build,
+        "required_seconds": SOAK_SECONDS,
+        "samples": [],
+    }
+    if not fixed_build:
+        result["status"] = "pending"
+        result["reason"] = "the active LastDB build does not contain the full-heap cache fix"
+        return result
+    metrics_path = Path(
+        os.environ.get(
+            "LASTDB_SELF_METRICS_FILE",
+            str(Path.home() / ".lastdb/logs/self-metrics.jsonl"),
+        )
+    )
+    if not metrics_path.is_file():
+        result["status"] = "fail"
+        result["reason"] = f"missing LastDB self metrics: {metrics_path}"
+        return result
+    latest: dict[str, Any] | None = None
+    with metrics_path.open() as stream:
+        for line in stream:
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict) and isinstance(value.get("process_start_ts"), int):
+                latest = value
+    if latest is None:
+        result["status"] = "fail"
+        result["reason"] = "LastDB self metrics contain no process sample"
+        return result
+    process_start = int(latest["process_start_ts"])
+    samples = read_self_metric_samples(process_start)
+    result["process_start_ts"] = process_start
+    result["samples"] = samples
+    return result
+
+
+def sample_number(sample: dict[str, Any], field: str) -> int | None:
+    value = sample.get(field)
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def evaluate_soak(soak: dict[str, Any]) -> dict[str, Any]:
+    started = now()
+    if not soak.get("fixed_build"):
+        return {
+            "name": "LastDB 24-hour full-heap soak",
+            "status": "pending",
+            "started_at": started,
+            "finished_at": now(),
+            "reason": str(soak.get("reason", "the fixed build is not active")),
+            "build": soak.get("build", ""),
+        }
+    samples = soak.get("samples")
+    if not isinstance(samples, list) or not samples:
+        return {
+            "name": "LastDB 24-hour full-heap soak",
+            "status": "fail",
+            "started_at": started,
+            "finished_at": now(),
+            "reason": "the fixed process has no self-metric samples",
+            "build": soak.get("build", ""),
+        }
+    valid = [sample for sample in samples if isinstance(sample, dict)]
+    process_starts = {sample_number(sample, "process_start_ts") for sample in valid}
+    if None in process_starts or len(process_starts) != 1:
+        return {
+            "name": "LastDB 24-hour full-heap soak",
+            "status": "pending",
+            "started_at": started,
+            "finished_at": now(),
+            "reason": "the sample window crosses a LastDB restart; the soak resets",
+            "build": soak.get("build", ""),
+        }
+    epochs = [sample_number(sample, "sampled_at") for sample in valid]
+    if any(value is None for value in epochs):
+        return {
+            "name": "LastDB 24-hour full-heap soak",
+            "status": "fail",
+            "started_at": started,
+            "finished_at": now(),
+            "reason": "a LastDB sample has no sampled_at value",
+            "build": soak.get("build", ""),
+        }
+    first = min(int(value) for value in epochs if value is not None)
+    last = max(int(value) for value in epochs if value is not None)
+    span = last - first
+    violations: list[str] = []
+    for sample in valid:
+        resident = sample_number(sample, "warm_resident_bytes")
+        budget = sample_number(sample, "warm_budget_bytes")
+        rss = sample_number(sample, "rss_bytes")
+        limit = sample_number(sample, "memory_limit_bytes")
+        at = sample.get("sampled_at", "unknown")
+        if resident is None or budget is None or budget <= 0:
+            violations.append(f"sample {at} lacks the warm-cache byte contract")
+        elif resident > budget:
+            violations.append(f"sample {at} warm bytes {resident} exceed {budget}")
+        if rss is not None and limit is not None and limit > 0 and rss > limit:
+            violations.append(f"sample {at} RSS {rss} exceeds guard limit {limit}")
+        if sample.get("runtime_degraded") is True:
+            violations.append(f"sample {at} reports runtime_degraded=true")
+    if violations:
+        return {
+            "name": "LastDB 24-hour full-heap soak",
+            "status": "fail",
+            "started_at": started,
+            "finished_at": now(),
+            "reason": violations[0],
+            "violation_count": len(violations),
+            "sample_count": len(valid),
+            "span_seconds": span,
+            "build": soak.get("build", ""),
+        }
+    required = int(soak.get("required_seconds", SOAK_SECONDS))
+    if span < required:
+        return {
+            "name": "LastDB 24-hour full-heap soak",
+            "status": "pending",
+            "started_at": started,
+            "finished_at": now(),
+            "reason": (
+                f"the fixed process has {span}s of the required {required}s sample window; "
+                f"it needs {required - span}s more"
+            ),
+            "sample_count": len(valid),
+            "span_seconds": span,
+            "remaining_seconds": required - span,
+            "process_start_ts": next(iter(process_starts)),
+            "build": soak.get("build", ""),
+        }
+    return {
+        "name": "LastDB 24-hour full-heap soak",
+        "status": "pass",
+        "started_at": started,
+        "finished_at": now(),
+        "sample_count": len(valid),
+        "span_seconds": span,
+        "process_start_ts": next(iter(process_starts)),
+        "max_warm_resident_bytes": max(int(sample["warm_resident_bytes"]) for sample in valid),
+        "warm_budget_bytes": min(int(sample["warm_budget_bytes"]) for sample in valid),
+        "build": soak.get("build", ""),
+    }
+
+
+def skipped_probe(name: str, reason: str) -> dict[str, Any]:
+    stamp = now()
+    return {
+        "name": name,
+        "status": "pending",
+        "started_at": stamp,
+        "finished_at": stamp,
+        "reason": reason,
+    }
+
+
+def collect_live() -> dict[str, Any]:
+    collected_at = now()
+    heads, lastdb_meta = installed_heads()
+    components = component_evidence(heads)
+    fkanban_ready = all_present(
+        components,
+        "fkanban",
+        (
+            "durable milestone on add",
+            "immediate claim and show coherence",
+            "bounded board move write",
+            "keyed feature flow ledger",
+        ),
+    )
+    last_stack_ready = all_present(
+        components,
+        "last-stack",
+        (
+            "two-outcome feature admission",
+            "current-main slice satisfaction",
+            "monotonic card closeout",
+        ),
+    )
+    routines_ready = all_present(components, "routines", ("all-route provider fallback",))
+    fold_ready = all_present(components, "fold", ("full-heap warm-cache accounting",))
+    probes: dict[str, Any] = {}
+    if fkanban_ready:
+        card_probe = timed_probe("installed F-Kanban card truth and keyed flow", probe_card_truth_and_flow)
+        probes["card_truth"] = card_probe
+        probes["board_write"] = {**card_probe, "name": "bounded board write via installed F-Kanban"}
+        probes["flow_ledger"] = {**card_probe, "name": "installed keyed feature flow ledger"}
+    else:
+        reason = "the active F-Kanban artifact lacks one or more required source commits"
+        probes["card_truth"] = skipped_probe("installed F-Kanban card truth", reason)
+        probes["board_write"] = skipped_probe("bounded board write", reason)
+        probes["flow_ledger"] = skipped_probe("keyed feature flow ledger", reason)
+    if last_stack_ready:
+        probes["admission"] = timed_probe("installed two-outcome admission", probe_admission)
+        probes["satisfaction"] = timed_probe("current-main duplicate prevention", probe_satisfaction)
+        probes["closeout"] = timed_probe(
+            "monotonic exact-source closeout",
+            lambda: probe_closeout(heads["last-stack"]),
+        )
+    else:
+        reason = "the active Last Stack artifact lacks one or more required source commits"
+        probes["admission"] = skipped_probe("installed two-outcome admission", reason)
+        probes["satisfaction"] = skipped_probe("current-main duplicate prevention", reason)
+        probes["closeout"] = skipped_probe("monotonic closeout", reason)
+    if routines_ready:
+        probes["provider_fallback"] = timed_probe(
+            "installed provider fallback with two unavailable routes",
+            probe_provider_fallback,
+        )
+    else:
+        probes["provider_fallback"] = skipped_probe(
+            "installed provider fallback",
+            "the active Routines artifact lacks the required source commit",
+        )
+    soak = collect_lastdb_soak(lastdb_meta, fold_ready)
+    return {
+        "captured_at": collected_at,
+        "components": components,
+        "probes": probes,
+        "lastdb": soak,
+    }
+
+
+def fix_status(components: dict[str, Any], repo: str, name: str) -> str:
+    for fix in components.get(repo, {}).get("fixes", []):
+        if fix.get("name") == name:
+            return "pass" if fix.get("present") else "pending"
+    return "pending"
+
+
+def combine_status(statuses: list[str]) -> str:
+    if "fail" in statuses:
+        return "fail"
+    if any(status != "pass" for status in statuses):
+        return "pending"
+    return "pass"
+
+
+def evaluate(snapshot: dict[str, Any]) -> dict[str, Any]:
+    components = snapshot.get("components", {})
+    probes = snapshot.get("probes", {})
+    soak_probe = evaluate_soak(snapshot.get("lastdb", {}))
+    probes = {**probes, "lastdb_soak": soak_probe}
+    clauses = [
+        {
+            "number": 1,
+            "title": "Durable card truth",
+            "sources": [
+                ("fkanban", "durable milestone on add"),
+                ("fkanban", "immediate claim and show coherence"),
+            ],
+            "probes": ["card_truth"],
+        },
+        {
+            "number": 2,
+            "title": "Portfolio admission and current-main duplicate prevention",
+            "sources": [
+                ("last-stack", "two-outcome feature admission"),
+                ("last-stack", "current-main slice satisfaction"),
+            ],
+            "probes": ["admission", "satisfaction"],
+        },
+        {
+            "number": 3,
+            "title": "Monotonic closeout",
+            "sources": [("last-stack", "monotonic card closeout")],
+            "probes": ["closeout"],
+        },
+        {
+            "number": 4,
+            "title": "Bounded board and LastDB memory",
+            "sources": [
+                ("fkanban", "bounded board move write"),
+                ("fold", "full-heap warm-cache accounting"),
+            ],
+            "probes": ["board_write", "lastdb_soak"],
+        },
+        {
+            "number": 5,
+            "title": "Provider fallback and keyed flow ledger",
+            "sources": [
+                ("routines", "all-route provider fallback"),
+                ("fkanban", "keyed feature flow ledger"),
+            ],
+            "probes": ["provider_fallback", "flow_ledger"],
+        },
+    ]
+    results = []
+    for clause in clauses:
+        statuses = [fix_status(components, repo, name) for repo, name in clause["sources"]]
+        statuses.extend(str(probes.get(name, {}).get("status", "pending")) for name in clause["probes"])
+        results.append({**clause, "status": combine_status(statuses)})
+    overall = combine_status([clause["status"] for clause in results])
+    return {
+        "verdict": overall.upper(),
+        "captured_at": snapshot.get("captured_at", now()),
+        "finished_at": now(),
+        "components": components,
+        "probes": probes,
+        "clauses": results,
+    }
+
+
+def render(report: dict[str, Any], offline: bool = False) -> str:
+    verdict = str(report["verdict"])
+    first_line = "PENDING-OFFLINE" if offline else verdict
+    lines = [
+        first_line,
+        "",
+        f"# North Star proof — {SLUG}",
+        "",
+        f"Start: {report.get('captured_at', '')}",
+        f"Finish: {report.get('finished_at', '')}",
+        f"Verdict: {first_line}",
+        "",
+    ]
+    components = report.get("components", {})
+    probes = report.get("probes", {})
+    for clause in report.get("clauses", []):
+        lines.extend(
+            [
+                f"## {clause['number']}. {clause['title']}",
+                "",
+                f"Verdict: {str(clause['status']).upper()}",
+                "",
+                "Sources:",
+                "",
+            ]
+        )
+        for repo, name in clause["sources"]:
+            matched = next(
+                (
+                    fix
+                    for fix in components.get(repo, {}).get("fixes", [])
+                    if fix.get("name") == name
+                ),
+                {},
+            )
+            lines.append(
+                f"- {name}: source `{matched.get('source_commit', 'unknown')}`; "
+                f"installed `{matched.get('installed_head', 'unknown') or 'unknown'}`; "
+                f"verdict `{'PASS' if matched.get('present') else 'PENDING'}`."
+            )
+        lines.extend(["", "Live probes:", ""])
+        for key in clause["probes"]:
+            probe = probes.get(key, {})
+            detail = probe.get("reason")
+            if not detail:
+                compact = {
+                    k: v
+                    for k, v in probe.items()
+                    if k not in {"name", "status", "started_at", "finished_at", "samples"}
+                }
+                detail = json.dumps(compact, sort_keys=True, separators=(",", ":"))
+            lines.append(
+                f"- {probe.get('name', key)}: start `{probe.get('started_at', '')}`; "
+                f"finish `{probe.get('finished_at', '')}`; "
+                f"verdict `{str(probe.get('status', 'pending')).upper()}`; {detail}"
+            )
+        lines.append("")
+    lines.extend(
+        [
+            "## Terminal rule",
+            "",
+            "Only PASS on the first line satisfies the North Star. PENDING and FAIL remain open.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def offline_snapshot(root: Path) -> dict[str, Any]:
+    required = [
+        root / "bin/last-stack-feature-delivery-effective-flow-proof",
+        root / "bin/last-stack-feature-portfolio-admission",
+        root / "bin/last-stack-milestone-slice-satisfaction",
+        root / "bin/last-stack-card-closeout",
+        root / "harness/north-star/feature-delivery-effective-flow/run.sh",
+    ]
+    missing = [str(path) for path in required if not path.is_file()]
+    stamp = now()
+    status = "pass" if not missing else "fail"
+    reason = "repository structure is complete" if not missing else f"missing paths: {', '.join(missing)}"
+    components = {
+        repo: {
+            "installed_head": "offline-source-tree",
+            "fixes": [
+                {**fix, "installed_head": "offline-source-tree", "present": not missing}
+                for fix in fixes
+            ],
+        }
+        for repo, fixes in FIXES.items()
+    }
+    probes = {
+        key: {
+            "name": f"offline structure: {key}",
+            "status": status,
+            "started_at": stamp,
+            "finished_at": stamp,
+            "reason": reason,
+        }
+        for key in (
+            "card_truth",
+            "board_write",
+            "flow_ledger",
+            "admission",
+            "satisfaction",
+            "closeout",
+            "provider_fallback",
+        )
+    }
+    return {
+        "captured_at": stamp,
+        "components": components,
+        "probes": probes,
+        "lastdb": {
+            "build": "offline",
+            "fixed_build": False,
+            "reason": "offline mode cannot prove the 24-hour live process",
+            "samples": [],
+        },
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--live", action="store_true")
+    mode.add_argument("--offline", action="store_true")
+    parser.add_argument("--fixture", type=Path, help="evaluate a captured snapshot")
+    parser.add_argument("--report", type=Path)
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+
+    self_path = Path(__file__).resolve()
+    root = self_path.parent.parent
+    default_mode = os.environ.get("NORTH_STAR_PROOF_MODE", "live")
+    offline = args.offline or (not args.live and default_mode == "offline")
+    report_path = args.report or Path(
+        os.environ.get(
+            "NORTH_STAR_PROOF_DIR",
+            str(Path.home() / ".last-stack/north-star-proofs"),
+        )
+    ) / f"{SLUG}.md"
+
+    try:
+        if args.fixture:
+            snapshot = parse_json(args.fixture.read_text(), str(args.fixture))
+        elif offline:
+            snapshot = offline_snapshot(root)
+        else:
+            snapshot = collect_live()
+        report = evaluate(snapshot)
+    except (OSError, ProofError, subprocess.SubprocessError) as exc:
+        stamp = now()
+        report = {
+            "verdict": "FAIL",
+            "captured_at": stamp,
+            "finished_at": now(),
+            "components": {},
+            "probes": {},
+            "clauses": [],
+            "reason": str(exc),
+        }
+
+    text = render(report, offline=offline)
+    if report.get("reason"):
+        text += f"\n## Fatal error\n\n{report['reason']}\n"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(text)
+    if args.json:
+        print(json.dumps({**report, "report": str(report_path)}, indent=2, sort_keys=True))
+    else:
+        print(f"PROOF_REPORT={report_path}")
+        print(f"PROOF_VERDICT={'PENDING-OFFLINE' if offline else report['verdict']}")
+    if offline:
+        return 0 if report["verdict"] != "FAIL" else 1
+    return 0 if report["verdict"] == "PASS" else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
