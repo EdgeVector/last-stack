@@ -49,4 +49,45 @@ printf '%s\n' "$out" | grep -q -- '--detail classes=B' || {
   exit 1
 }
 
+# rc 4: loom classified the freeze but could not finish its execution. The
+# classification is real, so the observer stays green — and the detail must
+# say `incomplete`, not `unavailable`. Reporting the two the same way sent
+# readers looking for a missing binary while loom was up and answering.
+cat >"$tmp/home/.last-stack/bin/last-stack-why-stopped-loom" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' '{"classes":"D+F","engine":"loom"}'
+exit 4
+SH
+chmod 755 "$tmp/home/.last-stack/bin/last-stack-why-stopped-loom"
+out="$(HOME="$tmp/home" PATH="/usr/bin:/bin" "$tmp/root/bin/last-stack-routine-observer-gate" last-stack-why-stopped)"
+printf '%s\n' "$out" | grep -q -- '--exit 0' || {
+  echo "incomplete Loom path with a real classification must stay green: $out" >&2
+  exit 1
+}
+printf '%s\n' "$out" | grep -q 'classes=D+F' || {
+  echo "incomplete Loom path lost its classes: $out" >&2
+  exit 1
+}
+printf '%s\n' "$out" | grep -q 'loom=incomplete' || {
+  echo "incomplete Loom path did not say incomplete: $out" >&2
+  exit 1
+}
+printf '%s\n' "$out" | grep -q 'loom=unavailable' && {
+  echo "incomplete Loom path still reports unavailable: $out" >&2
+  exit 1
+}
+
+# rc 4 with nothing to classify falls back, and still must not claim the
+# binary is missing.
+cat >"$tmp/home/.last-stack/bin/last-stack-why-stopped-loom" <<'SH'
+#!/usr/bin/env bash
+exit 4
+SH
+chmod 755 "$tmp/home/.last-stack/bin/last-stack-why-stopped-loom"
+out="$(HOME="$tmp/home" PATH="/usr/bin:/bin" "$tmp/root/bin/last-stack-routine-observer-gate" last-stack-why-stopped)"
+printf '%s\n' "$out" | grep -q 'loom=incomplete rc=4' || {
+  echo "blank incomplete Loom path lost its cause: $out" >&2
+  exit 1
+}
+
 echo ok

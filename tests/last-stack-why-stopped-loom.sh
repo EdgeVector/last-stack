@@ -99,4 +99,83 @@ st="$("$BIN" --status)"
 printf '%s\n' "$st" | grep -q '"status": "failed"' || fail "status stamp missing failed: $st"
 printf '%s\n' "$st" | grep -q '"missing": false' || fail "status should see stamp: $st"
 
+# A non-terminal execution that DID classify → exit 4, and the classification
+# still reaches the caller. Exit 3 used to cover this and "loom is missing",
+# so the fleet surface reported a live loom as unavailable.
+cat >"$tmp/bin/loom" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  ping) echo ok; exit 0 ;;
+  publish) exit 0 ;;
+  run)
+    cat <<'VIEW'
+lx-incomplete
+status: running
+state: REPORT
+context.classes: "D+F"
+context.detail: "pickup:stalled"
+context.actions: "check the board"
+VIEW
+    echo "execution lx-incomplete is incomplete" >&2
+    exit 4
+    ;;
+  *) exit 2 ;;
+esac
+SH
+chmod 755 "$tmp/bin/loom"
+set +e
+out="$("$BIN" --json --quiet)"
+rc=$?
+set -e
+[ "$rc" -eq 4 ] || fail "incomplete exec should exit 4, not $rc: $out"
+printf '%s\n' "$out" | grep -q '"classes":"D+F"' || fail "exit 4 dropped its classification: $out"
+printf '%s\n' "$out" | grep -q 'ROUTINE_RESULT' || fail "exit 4 missing ROUTINE_RESULT: $out"
+
+st="$("$BIN" --status)"
+printf '%s\n' "$st" | grep -q '"status": "running"' || fail "stamp lost the real status: $st"
+
+# An incomplete run with nothing to classify is still a fallback case.
+cat >"$tmp/bin/loom" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  ping) echo ok; exit 0 ;;
+  publish) exit 0 ;;
+  run)
+    cat <<'VIEW'
+lx-blank
+status: running
+state: HEAL
+VIEW
+    exit 4
+    ;;
+  *) exit 2 ;;
+esac
+SH
+chmod 755 "$tmp/bin/loom"
+set +e
+"$BIN" --json --quiet >/dev/null
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "incomplete exec with no classes should exit 3, got $rc"
+
+# No view at all is the real "loom gave us nothing" case.
+cat >"$tmp/bin/loom" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  ping) echo ok; exit 0 ;;
+  publish) exit 0 ;;
+  run) exit 1 ;;
+  *) exit 2 ;;
+esac
+SH
+chmod 755 "$tmp/bin/loom"
+set +e
+"$BIN" --json --quiet >/dev/null
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "empty view should exit 3, got $rc"
+
 echo ok
