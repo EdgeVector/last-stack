@@ -94,17 +94,12 @@ cat >"$fake_bin/kanban" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case "${1:-}" in
-  show)
-    cat <<'JSON'
-{"slug":"transient-add","body":"## END STATE\nDone."}
-JSON
-    ;;
-  add)
+  rm)
     echo "service_timeout: node did not respond within 30000ms" >&2
     exit 1
     ;;
-  rm|move)
-    echo "unexpected destructive mutation after add failure: $*" >&2
+  add|move)
+    echo "unexpected mutation in the kill path: $*" >&2
     exit 2
     ;;
   *)
@@ -121,8 +116,8 @@ transient_out="$(PATH="$fake_bin:$PATH" LAST_STACK_ROOT="$tmp/no-last-stack" "$R
   --memory "$tmp/transient-memory.md" \
   --now 2026-07-20T13:31:08Z)"
 
-printf '%s\n' "$transient_out" | grep -q '^card-reaper 2026-07-20T13:31:08Z noop live=1 killed=<backlog=0,todo=0,doing=0> rolled_back=0 parked=0 salvaged=0 exempt_needs_human=0 flagged=board-add-deferred:transient-add$'
-! printf '%s\n' "$transient_out" | grep -q 'exception:kanban_add_failed'
+printf '%s\n' "$transient_out" | grep -q '^card-reaper 2026-07-20T13:31:08Z noop live=1 killed=<backlog=0,todo=0,doing=0> rolled_back=0 parked=0 salvaged=0 exempt_needs_human=0 flagged=board-rm-deferred:transient-add$'
+! printf '%s\n' "$transient_out" | grep -q 'exception:'
 test ! -e "$tmp/transient-memory.md"
 
 reference_board="$tmp/reference-board.json"
@@ -158,12 +153,12 @@ cat >"$reference_bin/kanban" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case "${1:-}:${2:-}" in
-  show:missing-dependency)
+  rm:missing-dependency)
     echo 'kanban: No card with slug "missing-dependency"' >&2
     exit 1
     ;;
-  show:*)
-    echo "unexpected show for protected card: $*" >&2
+  rm:*)
+    echo "unexpected delete of a protected card: $*" >&2
     exit 2
     ;;
   *)
@@ -181,7 +176,7 @@ reference_out="$(PATH="$reference_bin:$PATH" LAST_STACK_ROOT="$tmp/no-last-stack
   --now 2026-07-20T13:31:08Z)"
 
 printf '%s\n' "$reference_out" | grep -q '^card-reaper 2026-07-20T13:31:08Z noop live=3 killed=<backlog=0,todo=0,doing=0> rolled_back=0 parked=0 salvaged=0 exempt_needs_human=0 flagged=stale-dependency-ref:missing-dependency,live-dependent-protected:protected-dependency$'
-! printf '%s\n' "$reference_out" | grep -q 'exception:kanban_show_failed'
+! printf '%s\n' "$reference_out" | grep -q 'exception:'
 ! printf '%s\n' "$reference_out" | grep -q '^would_kill protected-dependency:'
 ! printf '%s\n' "$reference_out" | grep -q '^killed protected-dependency:'
 
@@ -202,7 +197,7 @@ unexpected_out="$(PATH="$unexpected_bin:$PATH" LAST_STACK_ROOT="$tmp/no-last-sta
   --now 2026-07-20T13:31:08Z)"
 
 printf '%s\n' "$unexpected_out" | grep -q '^card-reaper 2026-07-20T13:31:08Z error '
-printf '%s\n' "$unexpected_out" | grep -q 'flagged=exception:kanban_show_failed_for_transient-add:'
+printf '%s\n' "$unexpected_out" | grep -q 'flagged=kanban_rm_failed_for_transient-add:.*permission_denied'
 
 promotion_board="$tmp/promotion-board.json"
 cat >"$promotion_board" <<'JSON'
@@ -210,8 +205,8 @@ cat >"$promotion_board" <<'JSON'
   {
     "slug": "papercut-invalid-promotion",
     "title": "Papercut promotion",
-    "column": "todo",
-    "created_at": "2026-07-15T12:00:00Z",
+    "column": "doing",
+    "created_at": "2026-07-20T11:00:00Z",
     "body": "## END STATE\nDone."
   }
 ]
@@ -414,5 +409,119 @@ CARD_REAPER_RUN_DIR="$explicit" "$ROOT/bin/last-stack-card-reaper-run" \
   --memory "$tmp/explicit-memory.md" \
   --now 2026-07-20T13:31:08Z >/dev/null
 test -s "$explicit/outcome.txt"
+
+# ---------------------------------------------------------------------------
+# Regression: a refused delete must not write anything into the live card.
+#
+# killCard used to stamp a "Recovery: deleted (hard erase; no trash)" note into
+# the body BEFORE calling rm. When rm was refused the note stayed on a card
+# that is still on the board, and the next run appended another copy. Two live
+# terminal-proof cards collected 38 and 18 copies of that false note over 14
+# days while the routine reported ok/noop every run.
+refuse_board="$tmp/refuse-board.json"
+cat >"$refuse_board" <<'JSON'
+[
+  {
+    "slug": "undeletable-stale",
+    "title": "Stale card the board refuses to delete",
+    "column": "todo",
+    "created_at": "2026-07-15T12:00:00Z",
+    "body": "## END STATE\nDone."
+  }
+]
+JSON
+
+refuse_bin="$tmp/refuse-bin"
+mkdir -p "$refuse_bin"
+cat >"$refuse_bin/kanban" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  show)
+    cat <<'JSON'
+{"slug":"undeletable-stale","body":"## END STATE\nDone."}
+JSON
+    ;;
+  rm)
+    echo "kanban: refusing to delete: a live card still depends on it" >&2
+    exit 1
+    ;;
+  add)
+    # The whole point of the fix: the kill path must never write the body.
+    echo "unexpected body write during a kill: $*" >&2
+    exit 2
+    ;;
+  *)
+    echo "unexpected kanban command: $*" >&2
+    exit 2
+    ;;
+esac
+EOF
+chmod +x "$refuse_bin/kanban"
+
+refuse_out="$(PATH="$refuse_bin:$PATH" LAST_STACK_ROOT="$tmp/no-last-stack" "$ROOT/bin/last-stack-card-reaper-run" \
+  --skip-preflight \
+  --board-json "$refuse_board" \
+  --memory "$tmp/refuse-memory.md" \
+  --now 2026-07-20T13:31:08Z)"
+
+# Nothing was killed, and no body write was attempted (the fake `add` above
+# would have aborted the run with "unexpected body write during a kill").
+printf '%s\n' "$refuse_out" | grep -q 'killed=<backlog=0,todo=0,doing=0>'
+! printf '%s\n' "$refuse_out" | grep -q 'unexpected body write'
+! printf '%s\n' "$refuse_out" | grep -q '^killed undeletable-stale:'
+# The flag now carries WHY the board refused, not just that it did.
+printf '%s\n' "$refuse_out" | grep -q 'kanban_rm_failed_for_undeletable-stale:.*depends'
+# A refused delete is not silent success.
+test ! -s "$tmp/refuse-memory.md"
+
+# ---------------------------------------------------------------------------
+# Regression: kinds the pickup lane excludes are never hard-erased for age.
+#
+# `kanban pickup status` reports validation and tracker cards as "non-pickup
+# kind", so no agent can claim them and they can never show progress. An
+# age-based staleness rule therefore re-targets them on every run, forever.
+kind_board="$tmp/kind-board.json"
+cat >"$kind_board" <<'JSON'
+[
+  {
+    "slug": "stale-validation",
+    "title": "Terminal proof, aged past the backlog rule",
+    "column": "backlog",
+    "kind": "validation",
+    "created_at": "2026-07-01T12:00:00Z"
+  },
+  {
+    "slug": "stale-tracker",
+    "title": "Tracker, aged past the todo rule",
+    "column": "todo",
+    "kind": "tracker",
+    "created_at": "2026-07-15T12:00:00Z",
+    "body": "## END STATE\nDone."
+  },
+  {
+    "slug": "stale-pr",
+    "title": "Ordinary pr card, still reapable",
+    "column": "todo",
+    "kind": "pr",
+    "created_at": "2026-07-15T12:00:00Z",
+    "body": "## END STATE\nDone."
+  }
+]
+JSON
+
+kind_out="$("$ROOT/bin/last-stack-card-reaper-run" \
+  --dry-run \
+  --skip-preflight \
+  --board-json "$kind_board" \
+  --memory "$tmp/kind-memory.md" \
+  --now 2026-07-20T13:31:08Z)"
+
+! printf '%s\n' "$kind_out" | grep -q 'would_kill stale-validation:'
+! printf '%s\n' "$kind_out" | grep -q 'would_kill stale-tracker:'
+# The exemption is scoped to non-pickup kinds; a normal card still reaps.
+printf '%s\n' "$kind_out" | grep -q '^would_kill stale-pr: todo stale >72h'
+# Reported once for the run, not once per card, so the flag list stays readable.
+printf '%s\n' "$kind_out" | grep -q 'non-pickup-kind-exempt:2'
 
 echo "ok last-stack-card-reaper-run"
