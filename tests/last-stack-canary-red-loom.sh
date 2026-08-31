@@ -501,4 +501,73 @@ set -e
 head -n1 "$wtmp/windows.txt" | grep -qx '72' \
   || fail "lookback=36 must probe 72h, got $(head -n1 "$wtmp/windows.txt")"
 
+
+# --- an unavailable exit must still say WHY ---
+# 2026-08-31T16:36Z the hourly healer recorded `error exit 3` and nothing else.
+# The run dir held one stderr line, "loom publish canary-red-heal failed", and
+# the reason had been discarded by `>/dev/null 2>&1`. A manual retry published
+# fine, so the cause was a busy node — but nothing in the record could
+# distinguish that from a malformed graph, which never self-heals. These paths
+# exit `error`, so each must print its own ROUTINE_RESULT: without one
+# routinesd falls back to the exit code and stores the string "exit 3".
+ptmp="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-canary-publish.XXXXXX")"
+trap 'rm -rf "$ptmp"' EXIT
+mkdir -p "$ptmp/bin" "$ptmp/home/.local/bin"
+
+# The gate prepends $HOME/.local/bin to PATH, so a stub only wins under a
+# scratch HOME.
+cat >"$ptmp/bin/loom" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  ping) exit 0 ;;
+  publish)
+    echo "loom: node did not respond within 30000ms (service_timeout)" >&2
+    exit 1
+    ;;
+  *) exit 0 ;;
+esac
+SH
+chmod 755 "$ptmp/bin/loom"
+
+cat >"$ptmp/one-red.json" <<JSON
+[
+  {
+    "id": "lx-20260830T030901.571-75984-1",
+    "definition_name": "lastdb-canary-release",
+    "status": "failed",
+    "state": "FAILED",
+    "updated_at": "$(now_iso 1)"
+  }
+]
+JSON
+
+set +e
+pub_out="$(
+  HOME="$ptmp/home" \
+  PATH="$ptmp/bin:/usr/bin:/bin" \
+  LOOM_DEFS="$ROOT/lib/canary-red" \
+  LOOM_SCRIPTS="$ROOT/lib/canary-red" \
+  LAST_STACK_CANARY_RED_STAMP="$ptmp/stamp.json" \
+  CANARY_RED_LOOM_LIST_FILE="$ptmp/one-red.json" \
+    "$BIN" --quiet --no-heal 2>"$ptmp/pub.err"
+)"
+pub_rc=$?
+set -e
+
+[ "$pub_rc" -eq 3 ] || fail "publish failure must exit 3, got $pub_rc: $pub_out $(cat "$ptmp/pub.err")"
+printf '%s\n' "$pub_out" | grep -q 'ROUTINE_RESULT' \
+  || fail "publish failure printed no ROUTINE_RESULT (routinesd then records the bare string 'exit 3'): $pub_out"
+printf '%s\n' "$pub_out" | grep -q 'outcome=error detail=publish-failed' \
+  || fail "publish failure must name itself: $pub_out"
+printf '%s\n' "$pub_out" | grep -q 'service_timeout' \
+  || fail "publish failure must carry the reason that tells a busy node from a bad graph: $pub_out"
+
+# The other unavailable exits carry the same contract.
+grep -q 'outcome=error detail=loom-missing' "$BIN" \
+  || fail "loom-missing exit prints no ROUTINE_RESULT"
+grep -q 'outcome=error detail=loom-ping-failed' "$BIN" \
+  || fail "loom-ping-failed exit prints no ROUTINE_RESULT"
+grep -q 'outcome=error detail=defs-missing' "$BIN" \
+  || fail "defs-missing exit prints no ROUTINE_RESULT"
+
 echo "ok"

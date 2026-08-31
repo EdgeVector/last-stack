@@ -437,14 +437,20 @@ if [ "$idle" = "1" ]; then
   exit 0
 fi
 
+# Every exit below is an `error` outcome, so each one must print its own
+# ROUTINE_RESULT. Without it routinesd falls back to the exit code and records
+# the whole failure as the string "exit 3" — which is what the 2026-08-31T16:36Z
+# fire recorded for a publish that a manual retry showed was a busy node.
 if ! command -v loom >/dev/null 2>&1; then
   log "loom not on PATH"
   write_stamp unavailable "${picked_id}" "loom-missing" "${KEY:-}" "error"
+  printf '%s %s\n' 'ROUTINE_RESULT' "outcome=error detail=loom-missing exec=${picked_id:-}"
   exit 3
 fi
 if ! loom ping >/dev/null 2>&1; then
   log "loom ping failed"
   write_stamp unavailable "${picked_id}" "loom-ping-failed" "${KEY:-}" "error"
+  printf '%s %s\n' 'ROUTINE_RESULT' "outcome=error detail=loom-ping-failed exec=${picked_id:-}"
   exit 3
 fi
 
@@ -477,15 +483,27 @@ done
 if [ -z "$defs" ] || [ -z "$scripts" ]; then
   log "canary-red definitions/scripts not found"
   write_stamp unavailable "${picked_id}" "defs-missing" "${KEY:-}" "error"
+  printf '%s %s\n' 'ROUTINE_RESULT' "outcome=error detail=defs-missing exec=${picked_id:-}"
   exit 3
 fi
 export LOOM_SCRIPTS="$scripts"
 
-if ! loom publish "$defs/canary-red-heal.json" >/dev/null 2>&1; then
-  log "loom publish canary-red-heal failed"
+# `>/dev/null 2>&1` threw the reason away. A publish fails for a malformed
+# graph (never self-heals, needs a person) and for a busy node
+# (service_timeout / too many concurrent reads — retries on the next tick).
+# Those need opposite responses and the discarded stderr was the only thing
+# that told them apart. Keep a bounded excerpt.
+publish_err="$(mktemp "${TMPDIR:-/tmp}/canary-red-publish.XXXXXX")"
+if ! loom publish "$defs/canary-red-heal.json" >/dev/null 2>"$publish_err"; then
+  publish_excerpt="$(tr '\n' ' ' <"$publish_err" | tr -s ' ' | cut -c1-200)"
+  rm -f "$publish_err"
+  log "loom publish canary-red-heal failed: ${publish_excerpt:-<no stderr>}"
   write_stamp unavailable "${picked_id}" "publish-failed" "${KEY:-}" "error"
+  printf '%s %s\n' 'ROUTINE_RESULT' \
+    "outcome=error detail=publish-failed exec=${picked_id:-} err=${publish_excerpt:-none}"
   exit 3
 fi
+rm -f "$publish_err"
 
 if [ "$HEAL" -eq 1 ]; then
   export LOOM_CANARY_RED_LIVE=1
