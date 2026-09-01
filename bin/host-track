@@ -369,16 +369,32 @@ artifact_tracks_gate_main() {
   return 1
 }
 
+# Resolve one ref's oid with the POINT read, not the whole status drain.
+#
+# `lastgit ref <repo> <name>` is a single O(1) HashRange read of LastgitRef.
+# `lastgit status --json` is nine requests, and three of them drain every
+# LastgitPackInventory row in the repo to compute a pack footprint this
+# function does not read. Measured on the live primary 2026-09-01 with
+# lastgit's own meter (LASTGIT_NODE_COST=1), repo last-stack:
+#
+#     lastgit status last-stack --json   9 requests   657ms   recv 2.59 MB
+#     lastgit ref    last-stack main     1 request     16ms   recv 1.7 KB
+#
+# Same oid from both paths, and `ref` reports source=point. The drain is
+# O(packs-ever-pushed) and grows with every push
+# (brain: papercut-lastgit-status-reads-every-pack-row-to-compute-four-numbers),
+# so the gap widens over time. `lastgit ref` was added for THIS caller —
+# src/ref-lookup.ts names host-track:361 as the production caller that pays
+# eight requests to read one field — and every other consumer had already
+# switched (last-stack-post-merge-safe-upgrade:414,478).
+#
+# Output is "<oid>\t<ref name>\t<point|partition>"; take field 1. A missing
+# repo or ref exits 1 and prints nothing to stdout, which the 40-hex guard
+# below already rejects, so the failure contract is unchanged.
 artifact_main_tip() {
   local repo="$1" ref="${2:-main}" oid
   command -v lastgit >/dev/null 2>&1 || return 1
-  oid="$(
-    lastgit status "$repo" --json 2>/dev/null \
-      | json_first_object \
-      | jq -r --arg ref "refs/heads/$ref" '
-          (.refs // [])[] | select(.name == $ref) | .oid // empty
-        ' 2>/dev/null || true
-  )"
+  oid="$(lastgit ref "$repo" "$ref" 2>/dev/null | awk 'NR==1{print $1}' || true)"
   [[ "$oid" =~ ^[0-9a-f]{40}$ ]] || return 1
   printf '%s\n' "$oid"
 }
