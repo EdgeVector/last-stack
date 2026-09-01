@@ -31,6 +31,15 @@ if [ "${1:-}" = status ]; then
   jq -n --arg oid "$oid" '{refs:[{name:"refs/heads/main",oid:$oid}]}'
   exit 0
 fi
+# `ref` is the point read host-track uses to resolve one tip. Same oid the
+# `status` arm reports, in the real verb's tab-separated shape:
+# "<oid>\t<ref name>\t<point|partition>".
+if [ "${1:-}" = ref ]; then
+  oid="${HOST_TRACK_TEST_MAIN_OID:-}"
+  [[ "$oid" =~ ^[0-9a-f]{40}$ ]] || exit 3
+  printf '%s\t%s\t%s\n' "$oid" "refs/heads/${3:-main}" point
+  exit 0
+fi
 [ "${1:-}" = artifact ] && [ "${2:-}" = resolve ] || exit 2
 shift 2
 app="" channel="" root=""
