@@ -16,6 +16,41 @@ chmod +x "$BIN" "$ROOT/harness/north-star/feature-delivery-effective-flow/run.sh
 python3 -m py_compile "$BIN"
 bash -n "$ROOT/harness/north-star/feature-delivery-effective-flow/run.sh"
 
+# The live proof must follow the current admission pair. It must not require
+# this proof's North Star to retain a feature-creation slot forever.
+mkdir -p "$TMP/admission/get"
+cat >"$TMP/admission/get/preference-feature-delivery-portfolio-admission.txt" <<'EOF'
+[preference] preference-feature-delivery-portfolio-admission
+title: Feature delivery portfolio admission
+---
+Policy-Version: 1
+Primary: north-star-current-primary
+Secondary: north-star-current-secondary
+Paused: all-other-feature-north-stars
+Updated-At: 2026-08-31T23:00:00Z
+EOF
+python3 - "$BIN" "$ROOT" "$TMP/admission" <<'PY'
+import os
+import runpy
+import sys
+from pathlib import Path
+
+module = runpy.run_path(sys.argv[1])
+module["installed_root"] = lambda app: Path(sys.argv[2])
+os.environ["LAST_STACK_ADMISSION_FIXTURE"] = sys.argv[3]
+result = module["probe_admission"]()
+cases = result["cases"]
+assert result["admitted_outcomes"] == [
+    "north-star-current-primary",
+    "north-star-current-secondary",
+], result
+assert [case["verdict"] for case in cases] == ["admitted", "admitted", "paused"], result
+assert all(
+    case["north_star"] != "north-star-feature-delivery-effective-flow"
+    for case in cases
+), result
+PY
+
 python3 - "$BIN" "$TMP/pass.json" <<'PY'
 import json
 import runpy
