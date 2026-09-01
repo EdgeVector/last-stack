@@ -353,11 +353,25 @@ def proof_command(root: Path, name: str) -> Path:
 
 def probe_admission() -> dict[str, Any]:
     command = proof_command(installed_root("last-stack"), "last-stack-feature-portfolio-admission")
-    cases = [
-        (SLUG, 0, "admitted"),
-        ("north-star-lastdb-no-scan-access", 0, "admitted"),
-        ("north-star-feature-delivery-proof-paused", 2, "paused"),
-    ]
+    policy = parse_json(
+        run([str(command), "--json"], timeout=90).stdout,
+        "admission policy",
+    )
+    if policy.get("verdict") != "report":
+        raise ProofError(f"admission policy returned {policy.get('verdict')!r}, not 'report'")
+    admitted = policy.get("admitted_outcomes")
+    if not isinstance(admitted, list) or not 1 <= len(admitted) <= 2:
+        raise ProofError(f"admission policy returned invalid outcomes: {admitted!r}")
+    if not all(isinstance(slug, str) and slug for slug in admitted):
+        raise ProofError(f"admission policy returned invalid outcome slugs: {admitted!r}")
+    if len(set(admitted)) != len(admitted):
+        raise ProofError(f"admission policy returned duplicate outcomes: {admitted!r}")
+
+    paused = "north-star-feature-delivery-proof-paused"
+    while paused in admitted:
+        paused += "-control"
+    cases = [(slug, 0, "admitted") for slug in admitted]
+    cases.append((paused, 2, "paused"))
     results = []
     for slug, rc, verdict in cases:
         cp = run([str(command), "--north-star", slug, "--json"], allowed=(rc,), timeout=90)
@@ -365,7 +379,11 @@ def probe_admission() -> dict[str, Any]:
         if result.get("verdict") != verdict:
             raise ProofError(f"admission {slug} returned {result.get('verdict')!r}")
         results.append({"north_star": slug, "verdict": verdict, "exit": rc})
-    return {"cases": results}
+    return {
+        "policy_version": policy.get("policy_version"),
+        "admitted_outcomes": admitted,
+        "cases": results,
+    }
 
 
 def probe_satisfaction() -> dict[str, Any]:
