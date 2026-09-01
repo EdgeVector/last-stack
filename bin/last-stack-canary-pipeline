@@ -294,6 +294,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     soak.add_argument("--sha", default="")
     soak.add_argument("--dry-run", action="store_true")
 
+    verdict = sub.add_parser("verdict", help="compute a stateless verdict from durable evidence")
+    verdict.add_argument("--candidate", required=True)
+    verdict.add_argument("--boot", default="{}", help="durable boot record JSON")
+    verdict.add_argument("--observations", default="[]", help="durable observation array JSON")
+
     promote = sub.add_parser("promote-prepare", help="report whether a green soak is ready for promotion")
     add_common_ledger_flags(promote)
     promote.add_argument("--sha", default="")
@@ -362,6 +367,26 @@ def latest_by_candidate(events: list[dict]) -> dict[str, dict]:
         if candidate:
             latest[candidate] = event
     return latest
+
+
+def durable_verdict(candidate: str, boot: dict, observations: list[dict]) -> dict:
+    """Compute a verdict from immutable boot and observation evidence only."""
+    if not boot or not boot.get("pid") or not boot.get("start_ts"):
+        return {"candidate": candidate, "verdict": "red", "subject": "build", "evidence": "boot_record_missing"}
+    if boot.get("cause") in {"crash", "panic", "guard-memory"}:
+        return {"candidate": candidate, "verdict": "red", "subject": "build", "evidence": f"restart[{boot['cause']}]"}
+    for observation in observations:
+        subject = str(observation.get("subject", ""))
+        if subject not in {"build", "observer", "host"}:
+            return {"candidate": candidate, "verdict": "line-stopped", "subject": "observer", "evidence": "observation_subject_missing"}
+        if observation.get("passed") is False:
+            evidence = str(observation.get("check", "check"))
+            if subject == "build":
+                return {"candidate": candidate, "verdict": "red", "subject": subject, "evidence": evidence}
+            if subject == "observer":
+                return {"candidate": candidate, "verdict": "line-stopped", "subject": subject, "evidence": evidence}
+            return {"candidate": candidate, "verdict": "window-open", "subject": subject, "evidence": evidence}
+    return {"candidate": candidate, "verdict": "window-open", "subject": "", "evidence": "awaiting_quiet_window"}
 
 
 def append_event(path: Path, event: dict) -> None:
@@ -1676,6 +1701,15 @@ def main(argv: list[str]) -> int:
         dogfood_candidate(path, args)
     elif args.command == "soak-watch":
         soak_watch(path, args)
+    elif args.command == "verdict":
+        try:
+            boot = json.loads(args.boot)
+            observations = json.loads(args.observations)
+        except json.JSONDecodeError as exc:
+            die(f"invalid durable evidence JSON: {exc}", 2)
+        if not isinstance(boot, dict) or not isinstance(observations, list):
+            die("durable evidence must be an object and an array", 2)
+        emit(durable_verdict(args.candidate, boot, observations), args.json)
     elif args.command == "promote-prepare":
         promote_prepare(path, args)
     elif args.command == "promote-execute":
