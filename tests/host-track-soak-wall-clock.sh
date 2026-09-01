@@ -154,4 +154,23 @@ printf '%s\n' "$out" | grep -q 'soak pending' \
   || fail "status reported time left but soak-watch flipped anyway: $out"
 [ "$(demo)" = v1 ] || fail "soak-watch flipped inside the reported window: $(demo)"
 
+# A RED canary must NOT carry a clock. Both `soak_red` writes reset
+# `started_epoch` to now, so the stamp holds a fresh window for a candidate that
+# will never flip; printing it would render `soak_red:1/3:0s/3600s` as a
+# countdown. The state is reported, the window is not.
+jq '.status = "soak_red" | .started_epoch = '"$(date +%s)"' | .checks = 1' \
+  "$HOST_TRACK_STAMP_DIR/demo.soak.json" > "$tmp/stamp.json"
+mv "$tmp/stamp.json" "$HOST_TRACK_STAMP_DIR/demo.soak.json"
+red="$(status_json)"
+printf '%s\n' "$red" | jq -e '.soak_state == "soak_red"' >/dev/null \
+  || fail "fixture should be red, got: $red"
+printf '%s\n' "$red" | jq -e '.soak_elapsed_secs == null and .soak_need_secs == null' >/dev/null \
+  || fail "a red canary must not report a flip window: $red"
+red_plain="$("$ROOT/bin/host-track" status demo 2>/dev/null | tr '\t' '\n' | grep '^soak=')"
+case "$red_plain" in
+  *s/*s) fail "red plain line must not carry a countdown: $red_plain" ;;
+  soak=soak_red:*) ;;
+  *) fail "unexpected red plain line: $red_plain" ;;
+esac
+
 printf 'ok: host-track soak wall clock\n'

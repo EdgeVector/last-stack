@@ -655,10 +655,18 @@ status_json_for() {
       # over-satisfied for most of the window's life. Printing only that half
       # renders a soaking canary as a stuck promotion, and it has cost more than
       # one routine pass chasing a flip that was simply not due yet.
-      soak_elapsed_secs="$(soak_elapsed_secs_for "$app")"
-      [[ "$soak_elapsed_secs" =~ ^[0-9]+$ ]] || soak_elapsed_secs="null"
-      soak_need_secs="$(soak_need_secs_for "$app" "$json")"
-      [[ "$soak_need_secs" =~ ^[0-9]+$ ]] || soak_need_secs="null"
+      #
+      # ONLY while `soaking`. Both `soak_red` writes pass an empty `started`, so
+      # `write_soak_stamp` resets `started_epoch` to now: a red canary's stamp
+      # carries a fresh clock. Rendering it would print `soak_red:1/3:0s/3600s`
+      # -- a countdown, on the one state that never flips. Report the window
+      # only where a window is what the reader is waiting on.
+      if [ "$soak_state" = soaking ]; then
+        soak_elapsed_secs="$(soak_elapsed_secs_for "$app")"
+        [[ "$soak_elapsed_secs" =~ ^[0-9]+$ ]] || soak_elapsed_secs="null"
+        soak_need_secs="$(soak_need_secs_for "$app" "$json")"
+        [[ "$soak_need_secs" =~ ^[0-9]+$ ]] || soak_need_secs="null"
+      fi
     fi
     if [ -f "$(post_flip_stamp_path "$app")" ]; then
       post_flip_ticks_left="$(jq -r '.ticks_left // 0' "$(post_flip_stamp_path "$app")" 2>/dev/null || true)"
