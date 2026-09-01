@@ -34,6 +34,13 @@ ln -s "versions/$installed_oid" "$install_root/current"
 cat > "$fake_bin/lastgit" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
+# `ref` is the point read host-track uses to resolve one tip; `status` is the
+# whole-repo read. Both report the same oid here, `ref` in the real verb's
+# tab-separated shape: "<oid>\t<ref name>\t<point|partition>".
+if [ "${1:-}" = "ref" ]; then
+  printf '%s\t%s\t%s\n' "$HOST_TRACK_TEST_TIP" "refs/heads/${3:-main}" point
+  exit 0
+fi
 [ "${1:-}" = "status" ] || exit 2
 printf '{"refs":[{"name":"refs/heads/main","oid":"%s"}]}\n' "$HOST_TRACK_TEST_TIP"
 SH

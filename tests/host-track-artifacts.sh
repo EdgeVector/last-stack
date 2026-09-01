@@ -267,6 +267,14 @@ if [ "\${1:-}" = status ]; then
     '{repo:"skillpack",refs:[{name:"refs/heads/main",oid:\$tip}]}'
   exit 0
 fi
+# `ref` is the point read host-track uses to resolve one tip. Same oid the
+# `status` arm above reports, in the real verb's tab-separated shape:
+# "<oid>\t<ref name>\t<point|partition>".
+if [ "\${1:-}" = ref ]; then
+  tip="\$(cat "$MAIN_TIP_FILE")"
+  printf '%s\t%s\t%s\n' "\$tip" "refs/heads/\${3:-main}" point
+  exit 0
+fi
 if [ "\${1:-}" = ci ] && [ "\${2:-}" = status ]; then
   jq -n --arg oid "\${3:-}" '{oid:\$oid,context:"ci-required",state:"success"}'
   exit 0
