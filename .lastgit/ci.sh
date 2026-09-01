@@ -265,6 +265,12 @@ ci_test tests/host-track-registry-compliance.sh
 # digests, post-flip rollback. A regression here silently flips a bad binary
 # onto PATH fleet-wide — same silent-cutover family as the tests above.
 ci_test tests/host-track-soak-gate.sh
+# The other half of the same gate: what `host-track status` REPORTS about it.
+# The check counter alone reads as over-satisfied for most of a soak window,
+# so a soaking canary renders as a stuck promotion and costs someone a hunt.
+# Pins that the reported window is the one `soak_watch_one` applies, not the
+# stamp's own copy.
+ci_test tests/host-track-soak-wall-clock.sh
 ci_test tests/last-stack-fleet-channel-freshness-gate.sh
 ci_test tests/last-stack-artifact-host-track-proof.sh
 ci_test tests/last-stack-artifact-layout.sh
