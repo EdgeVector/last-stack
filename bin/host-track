@@ -558,6 +558,7 @@ status_json_for() {
   local deployment_version deployment_head deployment_peer_version deployment_peer_head
   local deployment_pair_match deployment_problem behind_by distance deployment_expanded
   local main_unpublished freshness soak_state soak_checks soak_min post_flip_ticks_left
+  local soak_elapsed_secs soak_need_secs
 
   json="$(require_app_json "$app")"
   kind="$(field "$json" kind)"
@@ -590,6 +591,8 @@ status_json_for() {
   soak_state=""
   soak_checks="null"
   soak_min="null"
+  soak_elapsed_secs="null"
+  soak_need_secs="null"
   post_flip_ticks_left="null"
   deployment_version=""
   deployment_head=""
@@ -641,6 +644,21 @@ status_json_for() {
       [[ "$soak_checks" =~ ^[0-9]+$ ]] || soak_checks="null"
       soak_min="$(min_checks_for "$json")"
       [[ "$soak_min" =~ ^[0-9]+$ ]] || soak_min="null"
+      # The wall clock is the BINDING half of the gate soak_watch_one applies:
+      #
+      #   if [ "$elapsed" -lt "$need" ] || [ "$checks" -lt "$min_checks" ]
+      #
+      # and its own comment says the check count is the backstop -- it exists so
+      # "a canary that sat out the window with soak-watch down must not flip on
+      # its first and only green check". Recent last-stack soaks activate at
+      # 10-15 checks against min_checks=3, so checks/min_checks reads as
+      # over-satisfied for most of the window's life. Printing only that half
+      # renders a soaking canary as a stuck promotion, and it has cost more than
+      # one routine pass chasing a flip that was simply not due yet.
+      soak_elapsed_secs="$(soak_elapsed_secs_for "$app")"
+      [[ "$soak_elapsed_secs" =~ ^[0-9]+$ ]] || soak_elapsed_secs="null"
+      soak_need_secs="$(soak_need_secs_for "$app" "$json")"
+      [[ "$soak_need_secs" =~ ^[0-9]+$ ]] || soak_need_secs="null"
     fi
     if [ -f "$(post_flip_stamp_path "$app")" ]; then
       post_flip_ticks_left="$(jq -r '.ticks_left // 0' "$(post_flip_stamp_path "$app")" 2>/dev/null || true)"
@@ -807,6 +825,8 @@ status_json_for() {
     --arg soak_state "$soak_state" \
     --argjson soak_checks "$soak_checks" \
     --argjson soak_min_checks "$soak_min" \
+    --argjson soak_elapsed_secs "$soak_elapsed_secs" \
+    --argjson soak_need_secs "$soak_need_secs" \
     --argjson post_flip_ticks_left "$post_flip_ticks_left" \
     --argjson artifact_exemption "$artifact_exemption_json" \
     --argjson stale "$stale" \
@@ -839,6 +859,8 @@ status_json_for() {
       soak_state: ($soak_state | select(length > 0) // null),
       soak_checks: $soak_checks,
       soak_min_checks: $soak_min_checks,
+      soak_elapsed_secs: $soak_elapsed_secs,
+      soak_need_secs: $soak_need_secs,
       post_flip_ticks_left: $post_flip_ticks_left,
       stamp: $stamp,
       refresh: ($refresh | select(length > 0) // null),
@@ -876,7 +898,7 @@ status_plain_for() {
       "stale=" + (.stale | tostring),
       "main_unpublished=" + ((.main_unpublished // false) | tostring),
       "freshness=" + (.freshness // "-"),
-      "soak=" + (if .soak_state then .soak_state + ":" + ((.soak_checks // 0) | tostring) + "/" + ((.soak_min_checks // 0) | tostring) else "-" end),
+      "soak=" + (if .soak_state then .soak_state + ":" + ((.soak_checks // 0) | tostring) + "/" + ((.soak_min_checks // 0) | tostring) + (if .soak_need_secs then ":" + ((.soak_elapsed_secs // 0) | tostring) + "s/" + (.soak_need_secs | tostring) + "s" else "" end) else "-" end),
       "post_flip=" + ((.post_flip_ticks_left // "-") | tostring),
       "notes=" + .notes
     ] | @tsv'
@@ -1811,6 +1833,34 @@ min_checks_for() {
   # Green soak-watch checks required before a flip. Code fallback is 1
   # (the pre-defaults behavior); the shipped registry default is 3.
   safe_upgrade_setting "$1" min_checks 1
+}
+
+# The two halves of the soak gate, computed exactly as `soak_watch_one` applies
+# them, so `host-track status` cannot report a different window than the flip
+# uses. Both print nothing when the stamp is missing or malformed; the caller
+# turns that into a JSON null rather than a zero, because "no window recorded"
+# and "zero seconds elapsed" are opposite readings.
+soak_elapsed_secs_for() {
+  local app="$1" stamp started now
+  stamp="$(soak_stamp_path "$app")"
+  [ -f "$stamp" ] || return 0
+  started="$(jq -r '.started_epoch // empty' "$stamp" 2>/dev/null || true)"
+  case "$started" in ''|*[!0-9]*) return 0 ;; esac
+  now="$(date +%s)"
+  # A stamp written ahead of this clock reports 0, never a negative age.
+  [ "$now" -ge "$started" ] || { printf '0\n'; return 0; }
+  printf '%s\n' "$((now - started))"
+}
+
+soak_need_secs_for() {
+  # `soak_hours_for` and NOT the stamp's own `soak_hours`: the gate re-reads the
+  # registry every pass, so a window widened after a canary parked binds that
+  # canary. Reporting the stamp's copy would print a deadline the flip ignores.
+  local app="$1" json="$2" soak_h
+  [ -f "$(soak_stamp_path "$app")" ] || return 0
+  soak_h="$(soak_hours_for "$json")"
+  case "$soak_h" in '') return 0 ;; esac
+  awk -v h="$soak_h" 'BEGIN { printf "%d\n", (h+0)*3600 }'
 }
 
 post_flip_ticks_for() {
