@@ -50,7 +50,7 @@ unique_count="$(printf '%s\n' "$listed" | LC_ALL=C sort -u | grep -c .)"
 
 # The two slugs whose absence caused the incidents this test exists for: one
 # was never registered at all, one hit the gap on 2026-08-06.
-for required in north-star-revenant-watch north-star-app-ops-latency north-star-lastdb-ideal-storage-shape north-star-lastdb-uuid-hash-group-addressing; do
+for required in north-star-revenant-watch north-star-app-ops-latency north-star-lastdb-canary-pipeline-v2 north-star-lastdb-ideal-storage-shape north-star-lastdb-uuid-hash-group-addressing; do
   printf '%s\n' "$listed" | grep -qx "$required" ||
     fail "--list is missing $required"
 done
