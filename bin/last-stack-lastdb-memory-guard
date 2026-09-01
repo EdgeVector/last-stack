@@ -197,17 +197,22 @@ read_status() {
 }
 
 identity() {
-  local identity_pid start build_value
+  local identity_pid start build_value current latest
   identity_pid=$(primary_pid || true)
   if [ -z "$identity_pid" ]; then
     return 1
   fi
-  read_status
-  start=$(status_field "$STATUS_BODY" process_start_ts)
-  build_value=$(status_build "$STATUS_BODY")
+  # The session ledger is the daemon's durable boot evidence.  Do not use
+  # /api/status here: the canary identity path must stay available when the
+  # status snapshot is slow or under load.
+  current="${PRIMARY_HOME}/current-session.json"
+  latest="${PRIMARY_HOME}/sessions.jsonl"
+  start=$(sed -n 's/.*"start_ts":\([0-9][0-9]*\).*/\1/p' "$current" 2>/dev/null | head -1)
+  build_value=$(tail -n 1 "$latest" 2>/dev/null | sed -n 's/.*"build_version":"\([^"]*\)".*/\1/p')
   if [ -z "$start" ]; then
     return 1
   fi
+  [ -n "$build_value" ] || build_value=unknown
   printf 'pid=%s process_start_ts=%s build=%s\n' "$identity_pid" "$start" "$build_value"
 }
 
