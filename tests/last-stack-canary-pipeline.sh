@@ -595,4 +595,13 @@ fi
 grep -q 'status=soak_red' "$tmp/w-persist.out"
 grep -q 'board_read\[exit_1\]' "$persist_dir/ledger.jsonl"
 
+# --- v2 verdict fixtures are pure durable-evidence queries ---
+"$CLI" --json verdict --candidate sep0830 --boot '{"pid":"1","start_ts":"1"}' --observations '[]' \
+  | grep -q '"verdict":"window-open"'
+"$CLI" --json verdict --candidate sep0831 --boot '{"pid":"1","start_ts":"1","cause":"guard-memory"}' --observations '[]' \
+  | grep -q '"evidence":"restart\[guard-memory\]"'
+"$CLI" --json verdict --candidate sep0901 --boot '{"pid":"1","start_ts":"1"}' \
+  --observations '[{"check":"status_latency[19s>2s]","subject":"build","passed":false}]' \
+  | grep -q '"evidence":"status_latency\[19s>2s\]"'
+
 echo "PASS last-stack-canary-pipeline"

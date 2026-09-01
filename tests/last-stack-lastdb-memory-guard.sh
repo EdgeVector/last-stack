@@ -114,6 +114,8 @@ reset() {
   : >"$FAKE_ACTION_LOG"
   rm -f "$LOG" "$LASTDBD_PRIMARY_HOME/monitoring/lastdbd-memory-guard.state"
   rm -f "$EVENT_LOG"
+  printf '{"pid":4242,"start_ts":1234,"last_heartbeat_ts":1234}\n' >"$LASTDBD_PRIMARY_HOME/current-session.json"
+  printf '{"pid":4242,"start_ts":1234,"build_version":"0.0.0-test"}\n' >"$LASTDBD_PRIMARY_HOME/sessions.jsonl"
 }
 restarted() { grep -q 'launchctl kickstart' "$FAKE_ACTION_LOG" 2>/dev/null; }
 
@@ -216,7 +218,9 @@ grep -q 'footprint_mb=unavailable' "$LOG" || fail "unavailable footprint should 
 
 # --- 9. identity mode is read-only and carries pid, start time, and build ----
 reset
-identity="$(FAKE_START_TS=5678 FAKE_BUILD=0.23.3-test "$GUARD" --identity)" \
+printf '{"pid":4242,"start_ts":5678,"last_heartbeat_ts":5678}\n' >"$LASTDBD_PRIMARY_HOME/current-session.json"
+printf '{"pid":4242,"start_ts":5678,"build_version":"0.23.3-test"}\n' >"$LASTDBD_PRIMARY_HOME/sessions.jsonl"
+identity="$(FAKE_NODE_DOWN=1 "$GUARD" --identity)" \
   || fail "identity mode should succeed for the primary"
 [ "$identity" = 'pid=4242 process_start_ts=5678 build=0.23.3-test' ] \
   || fail "identity mode returned unexpected evidence: $identity"
