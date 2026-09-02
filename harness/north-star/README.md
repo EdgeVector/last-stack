@@ -32,6 +32,7 @@ First line is `PASS`, `PASS-OFFLINE`, or `FAIL` for kanban DONE-WHEN matching.
 | lastdb-ideal-storage-shape | validates redacted CoW + dogfood evidence for proteins, backup, plane map, status, and fkanban coherence | same evidence contract; evidence collection remains CoW-first and primary-safe |
 | lastdb-io-free-commit-and-barrierless-purge | validates the Fold-generated isolated-copy evidence, warm apply-gate p99, reverse-index audit, and zero purge barriers | requires the same evidence to carry a PASS verdict after safe live cutover |
 | lastdb-uuid-hash-group-addressing | validates Fold source contracts and the immutable 11M-document CoW migration proof | runs focused new-home, legacy-read, warm-set, group-backup, and as-is restore tests; preserves the later Tom-authorized primary sync configuration |
+| lastdb-no-scan-access | refuses terminal PASS without the keyed scan-deprecation tracker and its completion proof | reads the tracker by slug; never scans, restarts, or mutates LastDB |
 
 ## Org cloud principal membership
 
