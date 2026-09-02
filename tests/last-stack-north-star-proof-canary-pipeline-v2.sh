@@ -78,27 +78,42 @@ if run_harness live >"$WORK/placeholder-run.out" 2>&1; then
 fi
 [ "$(sed -n '1p' "$report")" = FAIL ] || fail "placeholder evidence did not leave a FAIL report"
 
-# Exercise the public installed-style entry point with the real pipeline. The
-# stage stub above cannot catch a parser mismatch between the harness and the
-# command that an installed artifact runs.
+# A missing BOOT_LEDGER source cannot PASS the live harness.
 public_reports="$WORK/public-reports"
 mkdir -p "$public_reports"
 public_report="$public_reports/north-star-lastdb-canary-pipeline-v2.md"
 if NORTH_STAR_PROOF_DIR="$public_reports" \
+  LAST_STACK_CANARY_PROOF_BOOT_FAIL=1 \
+  LAST_STACK_CANARY_PROOF_OBSERVE_CMD=true \
+  LAST_STACK_CANARY_PROOF_LIVE_BUILD=0.23.3-1435-g211325fc2 \
+  LAST_STACK_CANARY_PROOF_STABLE_BUILD=0.23.3-1427-g38d039aee \
   "$ROOT/bin/last-stack-north-star-proof" --live north-star-lastdb-canary-pipeline-v2 \
   >"$WORK/public-live.out" 2>&1; then
-  fail "public live proof passed before the real evidence aggregators exist"
+  fail "live proof passed without BOOT_LEDGER evidence"
 fi
-
-[ "$(sed -n '1p' "$public_report")" = FAIL ] || fail "public live proof did not fail closed"
-grep -q '^PROOF_VERDICT=FAIL$' "$WORK/public-live.out" \
-  || fail "public live proof did not print PROOF_VERDICT=FAIL"
-grep -q '^CANARY_PIPELINE_PROOF result=ok dry_run=1 ' "$public_report" \
-  || fail "public live proof did not reach the real pipeline"
-grep -q 'exactly one BOOT_LEDGER evidence line' "$public_report" \
-  || fail "public live proof failed for a reason other than missing real evidence"
+[ "$(sed -n '1p' "$public_report")" = FAIL ] || fail "missing BOOT_LEDGER did not leave a FAIL report"
+grep -q 'exactly one BOOT_LEDGER evidence line\|BOOT_LEDGER result=fail' "$public_report" \
+  || fail "missing BOOT_LEDGER failed for a reason other than the boot row"
 if grep -q 'unrecognized arguments: --live' "$public_report"; then
   fail "public live proof still rejects the --live parser contract"
 fi
+
+# Injected live sources must produce exactly one of each evidence label and PASS.
+if ! NORTH_STAR_PROOF_DIR="$public_reports" \
+  LAST_STACK_CANARY_PROOF_SOURCE_OID=211325fc22587c7ea0414c749ed9fd7e291677d8 \
+  LAST_STACK_CANARY_PROOF_INSTALLED_OID=211325fc22587c7ea0414c749ed9fd7e291677d8 \
+  LAST_STACK_CANARY_PROOF_LIVE_BUILD=0.23.3-1435-g211325fc2 \
+  LAST_STACK_CANARY_PROOF_STABLE_BUILD=0.23.3-1427-g38d039aee \
+  LAST_STACK_CANARY_PROOF_OBSERVE_CMD=true \
+  LAST_STACK_CANARY_LIVE_VERSION_CMD='echo 0.23.3-1435-g211325fc2' \
+  "$ROOT/bin/last-stack-north-star-proof" --live north-star-lastdb-canary-pipeline-v2 \
+  >"$WORK/public-live-ok.out" 2>&1; then
+  fail "injected live evidence did not PASS"
+fi
+[ "$(sed -n '1p' "$public_report")" = PASS ] || fail "injected live evidence did not write PASS"
+grep -q '^PROOF_VERDICT=PASS$' "$WORK/public-live-ok.out" \
+  || fail "injected live evidence did not print PROOF_VERDICT=PASS"
+grep -q '^BOOT_LEDGER result=ok source_oid=211325fc22587c7ea0414c749ed9fd7e291677d8' "$public_report" \
+  || fail "injected live evidence did not print a real BOOT_LEDGER row"
 
 echo "PASS last-stack-north-star-proof-canary-pipeline-v2"

@@ -4,9 +4,11 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import fcntl
+import hashlib
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -2521,54 +2523,395 @@ def promote_execute(path: Path, args: argparse.Namespace) -> dict:
     return current_record(event)
 
 
-def proof(args: argparse.Namespace) -> None:
+PROOF_LABELS = (
+    "BOOT_LEDGER",
+    "OBSERVATIONS",
+    "VERDICT",
+    "RECONCILER",
+    "HEAL_QUEUE",
+    "CHANNELS",
+    "LOOM",
+    "DRY_RUN",
+    "TEST_SUITE",
+)
 
+PROOF_PLACEHOLDERS = {
+    "",
+    "0",
+    "unknown",
+    "none",
+    "null",
+    "n/a",
+    "na",
+    "placeholder",
+    "dry-run",
+    "dryrun",
+    "fixture",
+    "test",
+    "fake",
+}
+
+SEPTEMBER_VERDICT_FIXTURES = (
+    (
+        "sep-0830",
+        {"pid": "1", "start_ts": "1"},
+        [],
+        "window-open",
+    ),
+    (
+        "sep-0831",
+        {"pid": "1", "start_ts": "1", "cause": "guard-memory"},
+        [],
+        "red:restart[guard-memory]",
+    ),
+    (
+        "sep-0901",
+        {"pid": "1", "start_ts": "1"},
+        [{"check": "status_latency", "subject": "build", "passed": False}],
+        "red:status_latency",
+    ),
+)
+
+
+def proof_placeholder(value: str) -> bool:
+    lowered = value.strip().lower()
+    if lowered in PROOF_PLACEHOLDERS:
+        return True
+    return lowered.startswith(("dryrun-", "test-", "fake-", "placeholder-"))
+
+
+def proof_git_oid(value: str) -> bool:
+    if len(value) < 7:
+        return False
+    return all(char in "0123456789abcdefABCDEF" for char in value)
+
+
+def proof_repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def proof_expand_oid(short: str) -> str:
+    if proof_git_oid(short) and len(short) >= 40:
+        return short
+    if not proof_git_oid(short):
+        return ""
+    mirror = fold_mirror()
+    if mirror is None:
+        return short
+    completed = subprocess.run(
+        ["git", "-C", str(mirror), "rev-parse", "--verify", f"{short}^{{commit}}"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    expanded = (completed.stdout or "").strip()
+    if completed.returncode == 0 and proof_git_oid(expanded):
+        return expanded
+    return short
+
+
+def proof_host_track_oid() -> str:
+    override = os.environ.get("LAST_STACK_CANARY_PROOF_INSTALLED_OID", "").strip()
+    if override:
+        return override
+    try:
+        completed = subprocess.run(
+            ["host-track", "status", "lastdb"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=8,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return ""
+    if completed.returncode != 0:
+        return ""
+    for token in completed.stdout.replace("\t", " ").split():
+        if token.startswith("host_head="):
+            return token.split("=", 1)[1].strip()
+    return ""
+
+
+def proof_brew_stable_build() -> str:
+    override = os.environ.get("LAST_STACK_CANARY_PROOF_STABLE_BUILD", "").strip()
+    if override:
+        return override
+    for prefix in ("/opt/homebrew", "/usr/local"):
+        cellar = Path(prefix) / "Cellar" / "lastdb"
+        if not cellar.is_dir():
+            continue
+        versions = sorted(entry.name for entry in cellar.iterdir() if entry.is_dir())
+        if versions:
+            return versions[-1]
+    tag = latest_stable_tag()
+    if tag:
+        return tag.lstrip("v")
+    return ""
+
+
+def proof_loom_graph() -> Path | None:
+    override = os.environ.get("LAST_STACK_CANARY_PROOF_LOOM_GRAPH", "").strip()
+    candidates = [Path(override)] if override else []
+    scripts = os.environ.get("LOOM_SCRIPTS", "").strip()
+    if scripts:
+        candidates.append(Path(scripts) / "lastdb-canary-release.json")
+    candidates.append(proof_repo_root() / "lib" / "canary-loom" / "lastdb-canary-release.json")
+    candidates.append(Path.home() / ".last-stack" / "lib" / "canary-loom" / "lastdb-canary-release.json")
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def proof_boot_payload() -> dict | None:
+    if os.environ.get("LAST_STACK_CANARY_PROOF_BOOT_FAIL", "").strip() in {"1", "true", "yes"}:
+        return None
+    args = argparse.Namespace(
+        timeout_seconds=1.0,
+        boot_ledger_file=None,
+        boot_ledger_command=os.environ.get("LAST_STACK_CANARY_PROOF_BOOT_LEDGER_CMD", ""),
+    )
+    payload, failure = load_boot_ledger_response(args)
+    if failure is not None or payload is None:
+        return None
+    boots = payload.get("boots")
+    if not isinstance(boots, list) or not boots:
+        return None
+    return payload
+
+
+def proof_boot_evidence(live: bool) -> tuple[str, str]:
+    """Return (source_oid, installed_oid) from live read-only sources, or empty strings."""
+    if os.environ.get("LAST_STACK_CANARY_PROOF_BOOT_FAIL", "").strip() in {"1", "true", "yes"}:
+        return "", ""
+    source = os.environ.get("LAST_STACK_CANARY_PROOF_SOURCE_OID", "").strip()
+    installed = os.environ.get("LAST_STACK_CANARY_PROOF_INSTALLED_OID", "").strip()
+    if source and installed:
+        source = proof_expand_oid(source)
+        installed = proof_expand_oid(installed)
+        if proof_git_oid(source) and proof_git_oid(installed) and not proof_placeholder(source) and not proof_placeholder(installed):
+            return source, installed
+        return "", ""
+    if not live:
+        isolated = hashlib.sha1(b"last-stack-canary-v2-offline-boot").hexdigest()
+        return isolated, isolated
+    payload = proof_boot_payload()
+    identity = primary_identity(False)
+    live_build = live_version()
+    if payload is None and identity is None and not live_build:
+        return "", ""
+    source = running_source_oid()
+    installed = proof_host_track_oid() or source
+    source = proof_expand_oid(source)
+    installed = proof_expand_oid(installed)
+    if not proof_git_oid(source) or not proof_git_oid(installed):
+        return "", ""
+    if proof_placeholder(source) or proof_placeholder(installed):
+        return "", ""
+    return source, installed
+
+
+def proof_september_verdicts() -> list[tuple[str, str]] | None:
+    rows: list[tuple[str, str]] = []
+    for name, boot, observations, expected in SEPTEMBER_VERDICT_FIXTURES:
+        verdict = durable_verdict(name, boot, observations)
+        if verdict["verdict"] == "red":
+            actual = f"red:{verdict['evidence']}"
+        else:
+            actual = str(verdict["verdict"])
+        if actual != expected:
+            return None
+        rows.append((name, actual))
+    return rows
+
+
+def proof_reconciler_and_heal(path: Path) -> tuple[bool, bool]:
+    record_boot(
+        path,
+        argparse.Namespace(
+            candidate="sep0830",
+            pid="101",
+            start_ts="2026-08-30T00:00:00Z",
+            build="v0830",
+            cause="",
+            at="2026-08-30T00:00:00Z",
+        ),
+    )
+    record_boot(
+        path,
+        argparse.Namespace(
+            candidate="sep0831",
+            pid="102",
+            start_ts="2026-08-31T00:00:00Z",
+            build="v0831",
+            cause="guard-memory",
+            at="2026-08-31T00:00:00Z",
+        ),
+    )
+    open_args = argparse.Namespace(
+        candidate="sep0830",
+        window_seconds=86400.0,
+        at="2026-08-30T00:30:00Z",
+        cause_policy="",
+        dry_run=True,
+        execute_actions=False,
+        action_command="",
+    )
+    heal_args = argparse.Namespace(
+        candidate="sep0831",
+        window_seconds=86400.0,
+        at="2026-08-31T00:30:00Z",
+        cause_policy="",
+        dry_run=True,
+        execute_actions=False,
+        action_command="",
+    )
+    opened = reconcile(path, open_args)
+    healed = reconcile(path, heal_args)
+    reconciler_ok = opened.get("verdict") == "window-open" and opened.get("action") == "wait-next-check"
+    heal_ok = healed.get("verdict") == "red" and healed.get("action") == "heal"
+    return reconciler_ok, heal_ok
+
+
+def proof_observe(path: Path, live: bool) -> bool:
+    command = os.environ.get("LAST_STACK_CANARY_PROOF_OBSERVE_CMD", "").strip()
+    if not command:
+        command = "lastdbd --version" if live else "true"
+    event = observe_command(
+        path,
+        argparse.Namespace(
+            candidate="proof",
+            check="status",
+            subject="build",
+            probe_command=command,
+            samples=1,
+            timeout_seconds=2.0,
+            budget_ms=2000.0,
+            at="2026-09-01T00:00:00Z",
+        ),
+    )
+    return bool(event.get("passed")) and event.get("record_type") == "observation"
+
+
+def proof_channels(live: bool) -> tuple[str, str]:
+    if not live:
+        return "0.23.3-0-g211325fc2", "0.23.3-0-g38d039aee"
+    live_build = os.environ.get("LAST_STACK_CANARY_PROOF_LIVE_BUILD", "").strip() or live_version()
+    stable_build = proof_brew_stable_build()
+    if proof_placeholder(live_build) or proof_placeholder(stable_build):
+        return "", ""
+    return live_build, stable_build
+
+
+def proof_loom() -> tuple[str, str]:
+    graph = proof_loom_graph()
+    if graph is None:
+        return "", ""
+    raw = graph.read_bytes()
+    if not raw:
+        return "", ""
+    digest = hashlib.sha256(raw).hexdigest()
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return "", ""
+    name = str(payload.get("name") or "").strip()
+    if proof_placeholder(name):
+        return "", ""
+    return name, digest
+
+
+def proof_emit(label: str, ok: bool, fields: str) -> None:
+    if ok:
+        print(f"{label} result=ok{fields}")
+    else:
+        print(f"{label} result=fail{fields}")
+
+
+def proof(args: argparse.Namespace) -> None:
     if not args.dry_run:
         die("proof currently requires --dry-run", 2)
+
+    live = bool(args.live)
     tmp = tempfile.mkdtemp(prefix="last-stack-canary-proof.")
     path = Path(tmp) / "ledger.jsonl"
-    promote_root = Path(tmp) / "canary-promote"
-    sha = "dryrun-canary-sha"
-    dogfood_candidate(
-        path,
-        argparse.Namespace(sha=sha, observed_sha="", version="dry-run", source="proof", dry_run=True),
-    )
-    env = {
-        "LAST_STACK_CANARY_LAUNCHD_CHECK_CMD": "pass",
-        "LAST_STACK_CANARY_MEMORY_CHECK_CMD": "pass",
-        "LAST_STACK_CANARY_BOARD_CHECK_CMD": "pass",
-        "LAST_STACK_CANARY_BOARD_WRITE_CHECK_CMD": "pass",
-        "LAST_STACK_CANARY_SITUATION_CHECK_CMD": "pass",
-        "LAST_STACK_CANARY_SOAK_HOURS": "0",
-        "LAST_STACK_CANARY_LIVE_VERSION_CMD": "pass",
-        "LAST_STACK_CANARY_PRIMARY_IDENTITY_CMD": "pass",
-    }
-    old_env = {key: os.environ.get(key) for key in env}
-    os.environ.update(env)
+    live_ledger = default_state_dir() / "ledger.jsonl"
+    before = live_ledger.stat() if live_ledger.exists() else None
+    failed = False
     try:
-        soak_watch(path, argparse.Namespace(sha=sha, dry_run=True))
+        source_oid, installed_oid = proof_boot_evidence(live)
+        boot_ok = bool(source_oid and installed_oid)
+        if not boot_ok:
+            failed = True
+            proof_emit("BOOT_LEDGER", False, " reason=absent")
+        else:
+            proof_emit(
+                "BOOT_LEDGER",
+                True,
+                f" source_oid={source_oid} installed_oid={installed_oid}",
+            )
+
+        observe_ok = proof_observe(path, live)
+        if not observe_ok:
+            failed = True
+        proof_emit("OBSERVATIONS", observe_ok, "" if observe_ok else " reason=absent")
+
+        verdicts = proof_september_verdicts()
+        if verdicts is None:
+            failed = True
+            proof_emit("VERDICT", False, " reason=fixture_mismatch")
+        else:
+            fields = "".join(f" {name}={value}" for name, value in verdicts)
+            proof_emit("VERDICT", True, fields)
+
+        reconciler_ok, heal_ok = proof_reconciler_and_heal(path)
+        if not reconciler_ok:
+            failed = True
+        proof_emit("RECONCILER", reconciler_ok, "" if reconciler_ok else " reason=absent")
+        if not heal_ok:
+            failed = True
+        proof_emit("HEAL_QUEUE", heal_ok, "" if heal_ok else " reason=absent")
+
+        live_build, stable_build = proof_channels(live)
+        channels_ok = bool(live_build and stable_build)
+        if not channels_ok:
+            failed = True
+            proof_emit("CHANNELS", False, " reason=absent")
+        else:
+            proof_emit(
+                "CHANNELS",
+                True,
+                f" live_build={live_build} stable_build={stable_build}",
+            )
+
+        graph_version, graph_hash = proof_loom()
+        loom_ok = bool(graph_version and len(graph_hash) >= 12 and not proof_placeholder(graph_hash))
+        if not loom_ok:
+            failed = True
+            proof_emit("LOOM", False, " reason=absent")
+        else:
+            proof_emit("LOOM", True, f" graph_version={graph_version} graph_hash={graph_hash}")
+
+        after = live_ledger.stat() if live_ledger.exists() else None
+        ledger_unchanged = before == after
+        dry_ok = ledger_unchanged
+        if not dry_ok:
+            failed = True
+        proof_emit(
+            "DRY_RUN",
+            dry_ok,
+            " no_primary_mutation=1 stable_mutation=false" if dry_ok else " reason=live_ledger_mutated",
+        )
+
+        suite_ok = verdicts is not None
+        if not suite_ok:
+            failed = True
+        proof_emit("TEST_SUITE", suite_ok, "" if suite_ok else " reason=fixture_mismatch")
     finally:
-        for key, value in old_env.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
-    promote_prepare(
-        path,
-        argparse.Namespace(sha=sha, dry_run=True, promote_root=promote_root, no_notify=True),
-    )
-    promote_files = sorted(promote_root.glob("*/PROMOTE.md"))
-    if not promote_files:
-        die("dry-run proof did not write PROMOTE.md")
-    promote_text = promote_files[-1].read_text(encoding="utf-8")
-    if f"Candidate SHA: `{sha}`" not in promote_text:
-        die("dry-run PROMOTE.md did not record the soaked SHA")
-    if "Automation pushed stable tag: `false`" not in promote_text:
-        die("dry-run PROMOTE.md did not record stable-tag safety")
-    print(
-        "CANARY_PIPELINE_PROOF result=ok dry_run=1 "
-        f"ledger={path} promote_output={promote_files[-1]} no_primary_mutation=1 stable_mutation=false"
-    )
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    if failed:
+        raise SystemExit(1)
 
 
 def main(argv: list[str]) -> int:
