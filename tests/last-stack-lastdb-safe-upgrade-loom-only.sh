@@ -24,7 +24,7 @@ bash -n "$LAUNCHER"
 bash -n "$DRIVER"
 python3 -m py_compile "$FRESH" "$DOGFOOD"
 
-[ "$(jq -r .version "$GRAPH")" = "4" ] || fail "safe-upgrade graph version did not advance"
+[ "$(jq -r .version "$GRAPH")" = "5" ] || fail "safe-upgrade graph version did not advance"
 [ "$(jq -r '.states.DECIDE.map.current' "$GRAPH")" = "DONE" ] \
   || fail "equal candidate does not finish as a no-op"
 probe_timeout="$(jq -er '.states.PROBE.timeout_sec | numbers' "$GRAPH")"
@@ -199,6 +199,47 @@ out="$(HOME="$mock_home" \
   LASTDB_SAFE_UPGRADE_FOLD_GIT_DIR="$repo" \
   "$STEP" PROBE)"
 printf '%s\n' "$out" | grep -q '"verdict":"green"' || fail "green probe was not green: $out"
+
+# A long successful probe can outlive the caller's drive window. A repeated
+# request for the same immutable execution must reuse the stored result. The
+# CUTOVER node reruns the complete safe-upgrade driver before any live change.
+safe_log_lines_before="$(wc -l <"$safe_log" | tr -d ' ')"
+resumed_green_input="$(printf '%s\n' "$forward_input" | jq -c '. + {verdict:"green",probe_rc:0}')"
+out="$(HOME="$mock_home" \
+  SAFE_LOG="$safe_log" \
+  SAFE_MOCK_PROBE=false-green \
+  LOOM_LIVE=1 \
+  LOOM_EXEC_ID=lx-test-probe-resume-green \
+  LOOM_INPUT="$resumed_green_input" \
+  LASTDB_SAFE_UPGRADE_CURRENT_BIN="$tmp/current-a/lastdbd" \
+  LASTDB_SAFE_UPGRADE_FOLD_GIT_DIR="$repo" \
+  "$STEP" PROBE)"
+printf '%s\n' "$out" | grep -q 'reused exact stored green result' \
+  || fail "stored green probe was not reused: $out"
+if printf '%s\n' "$out" | grep -q 'LOOM_CONTEXT_PATCH'; then
+  fail "stored green probe wrote another context patch: $out"
+fi
+safe_log_lines_after="$(wc -l <"$safe_log" | tr -d ' ')"
+[ "$safe_log_lines_after" = "$safe_log_lines_before" ] \
+  || fail "stored green probe reran the safe-upgrade driver"
+
+# JSON false compares equal to zero in Python. Exact type checks must reject
+# it so a malformed prior receipt cannot skip the probe driver.
+resumed_false_input="$(printf '%s\n' "$forward_input" | jq -c '. + {verdict:"green",probe_rc:false}')"
+out="$(HOME="$mock_home" \
+  SAFE_LOG="$safe_log" \
+  SAFE_MOCK_PROBE=green \
+  LOOM_LIVE=1 \
+  LOOM_EXEC_ID=lx-test-probe-resume-false \
+  LOOM_INPUT="$resumed_false_input" \
+  LASTDB_SAFE_UPGRADE_CURRENT_BIN="$tmp/current-a/lastdbd" \
+  LASTDB_SAFE_UPGRADE_FOLD_GIT_DIR="$repo" \
+  "$STEP" PROBE)"
+printf '%s\n' "$out" | grep -q 'LOOM_CONTEXT_PATCH' \
+  || fail "boolean probe receipt skipped the driver: $out"
+safe_log_lines_after_false="$(wc -l <"$safe_log" | tr -d ' ')"
+[ "$safe_log_lines_after_false" -eq $((safe_log_lines_before + 1)) ] \
+  || fail "boolean probe receipt did not rerun the driver"
 
 # Incident lx-20260830T203912: the smoke stage's own "VERDICT: GREEN" inside a
 # rc=1 red probe must not read as green — the false green sent a RED candidate
