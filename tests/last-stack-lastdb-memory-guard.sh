@@ -47,25 +47,45 @@ esac
 SH
 
 # Fake curl: serves status and the bounded boot-identity route unless the node
-# is unavailable.
+# is unavailable. Honor -w '%{http_code}' so identity can distinguish 404.
 cat >"$tmp/bin/curl" <<'SH'
 #!/usr/bin/env bash
 if [ "${FAKE_NODE_DOWN:-0}" = "1" ]; then exit 7; fi
+want_code=0
+for arg in "$@"; do
+  case "$arg" in
+    *%{http_code}*) want_code=1 ;;
+  esac
+done
+emit() {
+  printf '%s' "$1"
+  if [ "$want_code" = 1 ]; then
+    printf '\n%s' "$2"
+  fi
+}
 case "$*" in
   *"/api/system/boot-identity"*)
+    if [ "${FAKE_BOOT_HTTP:-200}" = "404" ]; then
+      emit "Not Found" "404"
+      exit 0
+    fi
     boot_pid="${FAKE_BOOT_PID:-${FAKE_PID:-4242}}"
     if [ -z "${FAKE_BOOT_PID:-}" ] && grep -q 'launchctl kickstart' "$FAKE_ACTION_LOG" 2>/dev/null; then
       boot_pid=$((boot_pid + 1))
     fi
-    printf '{"pid":%s,"process_start_ts":%s,"build":"%s","restart_cause":"%s"}' \
+    emit "$(printf '{"pid":%s,"process_start_ts":%s,"build":"%s","restart_cause":"%s"}' \
       "$boot_pid" "${FAKE_BOOT_START:-1234}" \
-      "${FAKE_BOOT_BUILD:-0.0.0-test}" "${FAKE_BOOT_CAUSE:-initial}"
+      "${FAKE_BOOT_BUILD:-0.0.0-test}" "${FAKE_BOOT_CAUSE:-initial}")" "200"
     exit 0
     ;;
 esac
-printf '{"status":{"rss_bytes":%s,"phys_footprint_bytes":%s,"phys_footprint_peak_bytes":%s,"process_start_ts":%s,"build":{"version":"%s"}}}' \
+if [ "${FAKE_STATUS_EMPTY:-0}" = "1" ]; then
+  emit "" "200"
+  exit 0
+fi
+emit "$(printf '{"status":{"rss_bytes":%s,"phys_footprint_bytes":%s,"phys_footprint_peak_bytes":%s,"process_start_ts":%s,"build":{"version":"%s"}}}' \
   "${FAKE_RSS_BYTES:-0}" "${FAKE_FOOTPRINT_BYTES:-0}" "${FAKE_PEAK_BYTES:-0}" \
-  "${FAKE_START_TS:-1234}" "${FAKE_BUILD:-0.0.0-test}"
+  "${FAKE_START_TS:-1234}" "${FAKE_BUILD:-0.0.0-test}")" "200"
 SH
 
 # Fake sysctl for vm.swapusage.
@@ -233,13 +253,28 @@ grep -q 'footprint_mb=unavailable' "$LOG" || fail "unavailable footprint should 
 reset
 identity="$(FAKE_BOOT_START=5678 FAKE_BOOT_BUILD=0.23.3-test "$GUARD" --identity)" \
   || fail "identity mode should succeed for the primary"
-[ "$identity" = 'pid=4242 process_start_ts=5678 build=0.23.3-test' ] \
+[ "$identity" = 'pid=4242 process_start_ts=5678 build=0.23.3-test identity_source=boot_identity' ] \
   || fail "identity mode returned unexpected evidence: $identity"
 restarted && fail "identity mode must never restart the primary"
 
 if FAKE_NODE_DOWN=1 "$GUARD" --identity >/dev/null 2>&1; then
-  fail "missing boot identity must fail instead of falling back to status or files"
+  fail "a down socket must fail instead of falling back to status or files"
 fi
+
+# HTTP 404 on boot-identity falls back to a bounded /api/status read.
+reset
+identity="$(FAKE_BOOT_HTTP=404 FAKE_BUILD=0.23.3-status FAKE_START_TS=9999 "$GUARD" --identity)" \
+  || fail "HTTP 404 on boot-identity should fall back to status"
+[ "$identity" = 'pid=4242 process_start_ts=9999 build=0.23.3-status identity_source=status_fallback' ] \
+  || fail "404 fallback returned unexpected evidence: $identity"
+restarted && fail "404 identity fallback must never restart the primary"
+
+# HTTP 404 with empty status is still a line-stop.
+reset
+if FAKE_BOOT_HTTP=404 FAKE_STATUS_EMPTY=1 "$GUARD" --identity >/dev/null 2>&1; then
+  fail "empty status after a boot-identity 404 must fail"
+fi
+restarted && fail "empty-status identity failure must never restart the primary"
 
 # --- 10. a rejected notice records WHY, so a wrong fix cannot look green -----
 # The restart itself must still complete and stay durable in the event log.

@@ -27,6 +27,7 @@ esac
 }
 
 primary=""
+identity_source=""
 identity_command="${LAST_STACK_CANARY_V2_PRIMARY_IDENTITY_CMD:-last-stack-lastdb-memory-guard --identity}"
 set +e
 identity_output="$(eval "$identity_command" 2>/dev/null)"
@@ -36,6 +37,7 @@ if [ "$identity_rc" -eq 0 ]; then
   for token in $identity_output; do
     case "$token" in
       build=*) primary="${token#build=}" ;;
+      identity_source=*) identity_source="${token#identity_source=}" ;;
     esac
   done
 fi
@@ -48,7 +50,11 @@ if [ -z "$primary" ] || [ "$primary" = "unknown" ]; then
   exit 0
 fi
 
-"$pipeline" record-line-event --check primary_identity --subject observer --result pass >/dev/null
+if [ -z "$identity_source" ]; then
+  identity_source="boot_identity"
+fi
+"$pipeline" record-line-event --check primary_identity --subject observer --result pass \
+  --detail "identity_source=${identity_source}" >/dev/null
 
 set +e
 preview="$($dogfood --dry-run --json)"
