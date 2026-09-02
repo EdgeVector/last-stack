@@ -109,4 +109,183 @@ grep -q 'wait_for_live_unix_socket_health' "$driver" || {
   exit 1
 }
 
+# The canary must request local persistence and inspect the node receipt. A
+# resident read-back after a queued receipt lost one of four sentinels during
+# the 2026-09-02 cutover, so either half alone is not restart proof.
+grep -q 'brain put --durable --json' "$driver" || {
+  echo "FAIL: durability sentinels must request durable brain writes" >&2
+  exit 1
+}
+grep -q '\.durability == "durable"' "$driver" || {
+  echo "FAIL: durability sentinels must require the node's durable receipt" >&2
+  exit 1
+}
+grep -q 'brain put --durable --json' "$skill_md" || {
+  echo "FAIL: SKILL.md must document the durable sentinel receipt" >&2
+  exit 1
+}
+
+# Exercise the shipped functions against a stub brain command. The stub stores
+# the exact stdin body for point-read verification. Negative receipts must stop
+# before the wrapper writes its live-change marker.
+test_tmp="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-durable-canary-test.XXXXXX")"
+trap 'rm -rf -- "$test_tmp"' EXIT
+mkdir -p "$test_tmp/bin" "$test_tmp/state"
+apply_stub="$test_tmp/bin/brain"
+cat >"$apply_stub" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  put)
+    body="$(cat)"
+    slug="$(printf '%s\n' "$body" | sed -n 's/^slug:[[:space:]]*//p' | head -1)"
+    [ -n "$slug" ] || exit 2
+    case "${CANARY_RECEIPT_MODE:-durable}" in
+      mismatch) printf '%s\n' 'nonce: stale#1' >"$CANARY_STUB_DIR/$slug" ;;
+      *) printf '%s' "$body" >"$CANARY_STUB_DIR/$slug" ;;
+    esac
+    case "${CANARY_RECEIPT_MODE:-durable}" in
+      durable|mismatch) printf '%s\n' '{"ok":true,"durability":"durable"}' ;;
+      queued) printf '%s\n' '{"ok":true,"durability":"queued"}' ;;
+      missing) printf '%s\n' '{"ok":true}' ;;
+      malformed) printf '%s\n' 'not-json' ;;
+      failed) exit 1 ;;
+      *) exit 2 ;;
+    esac
+    ;;
+  get)
+    cat "$CANARY_STUB_DIR/${2:?missing slug}"
+    ;;
+  *) exit 2 ;;
+esac
+STUB
+chmod +x "$apply_stub"
+
+export PATH="$test_tmp/bin:$PATH"
+export CANARY_STUB_DIR="$test_tmp/state"
+export LASTDB_DURABILITY_CANARY_N=4
+export LASTDB_DURABILITY_READ_WAIT_S=1
+export PRIMARY_SOCK="$test_tmp/fake.sock"
+export PRIMARY_HOME="$test_tmp/home"
+mkdir -p "$PRIMARY_HOME"
+run_op_with_deadline() {
+  shift
+  "$@"
+}
+die() {
+  printf 'DIE: %s\n' "$*" >&2
+  return 1
+}
+log() { :; }
+
+# Extract the exact canary variables and functions without executing the full
+# upgrade driver.
+eval "$(awk '
+  /^DURABILITY_N=/ { capture=1 }
+  /^measure_op_median_ms\(\)/ { exit }
+  capture { print }
+' "$driver")"
+
+# The safe-upgrade producer must arm Fold's boot-ledger evidence before either
+# venue can stop the daemon. It must remove an unconsumed marker if no start
+# request succeeded, and leave a successful-start marker for the new daemon.
+intent_call_line="$(grep -n '^write_upgrade_restart_intent$' "$driver" | cut -d: -f1)"
+sidebin_call_line="$(grep -n '^  live_install_sidebin$' "$driver" | cut -d: -f1)"
+brew_call_line="$(grep -n '^  live_install_brew$' "$driver" | cut -d: -f1)"
+[ -n "$intent_call_line" ] \
+  && [ "$intent_call_line" -lt "$sidebin_call_line" ] \
+  && [ "$intent_call_line" -lt "$brew_call_line" ] || {
+  echo "FAIL: restart intent must precede both live install paths" >&2
+  exit 1
+}
+grep -q 'cleanup_upgrade_restart_intent' "$driver" || {
+  echo "FAIL: safe-upgrade cleanup must remove an unstarted restart intent" >&2
+  exit 1
+}
+grep -q 'RESTART_INTENT_START_REQUESTED=1' "$driver" || {
+  echo "FAIL: a successful supervisor start must preserve the restart intent" >&2
+  exit 1
+}
+
+canary_primary_home="$PRIMARY_HOME"
+intent_home="$test_tmp/restart-intent-home"
+mkdir -p "$intent_home"
+printf '%s\n' '{"pid":4321}' >"$intent_home/current-session.json"
+PRIMARY_HOME="$intent_home"
+RESTART_INTENT_PATH=""
+RESTART_INTENT_START_REQUESTED=0
+write_upgrade_restart_intent
+intent_file="$intent_home/restart-intent.json"
+jq -e '
+  (. | keys | sort) == ["cause", "created_at", "previous_pid"]
+  and .cause == "upgrade"
+  and .previous_pid == 4321
+  and (.created_at | type) == "number"
+  and .created_at > 0
+' "$intent_file" >/dev/null || {
+  echo "FAIL: restart intent does not match the Fold boot-ledger contract" >&2
+  exit 1
+}
+intent_mode="$(stat -f '%Lp' "$intent_file" 2>/dev/null || stat -c '%a' "$intent_file")"
+[ "$intent_mode" = 600 ] || {
+  echo "FAIL: restart intent mode is $intent_mode, expected 600" >&2
+  exit 1
+}
+cleanup_upgrade_restart_intent
+[ ! -e "$intent_file" ] || {
+  echo "FAIL: cleanup kept a marker when no start request succeeded" >&2
+  exit 1
+}
+
+RESTART_INTENT_PATH=""
+write_upgrade_restart_intent
+RESTART_INTENT_START_REQUESTED=1
+cleanup_upgrade_restart_intent
+[ -e "$intent_file" ] || {
+  echo "FAIL: cleanup removed the marker after a successful start request" >&2
+  exit 1
+}
+rm -f "$intent_file"
+PRIMARY_HOME="$canary_primary_home"
+RESTART_INTENT_PATH=""
+RESTART_INTENT_START_REQUESTED=0
+
+run_receipt_case() {
+  local mode="$1" expected="$2"
+  local case_dir="$test_tmp/case-$mode"
+  local marker="$case_dir/live-change"
+  rm -rf -- "$case_dir"
+  mkdir -p "$case_dir"
+  export CANARY_STUB_DIR="$case_dir"
+  export CANARY_RECEIPT_MODE="$mode"
+  set +e
+  (
+    set -e
+    durability_write_sentinels
+    : >"$marker"
+  ) >/dev/null 2>"$case_dir/stderr"
+  local rc=$?
+  set -e
+  if [ "$expected" = pass ]; then
+    [ "$rc" -eq 0 ] || {
+      echo "FAIL: durable receipt case returned $rc" >&2
+      cat "$case_dir/stderr" >&2
+      exit 1
+    }
+    [ -f "$marker" ] || { echo "FAIL: durable receipt did not reach marker" >&2; exit 1; }
+    [ "$(find "$case_dir" -type f -name 'lastdb-safe-upgrade-durability-canary-*' | wc -l | tr -d ' ')" = 4 ] || {
+      echo "FAIL: durable receipt case did not point-read four sentinels" >&2
+      exit 1
+    }
+  else
+    [ "$rc" -ne 0 ] || { echo "FAIL: $mode receipt reached live change" >&2; exit 1; }
+    [ ! -e "$marker" ] || { echo "FAIL: $mode receipt wrote live-change marker" >&2; exit 1; }
+  fi
+}
+
+run_receipt_case durable pass
+for mode in queued missing malformed failed mismatch; do
+  run_receipt_case "$mode" fail
+done
+
 echo "OK: lastdb-safe-upgrade skill packaged for multi-harness setup"

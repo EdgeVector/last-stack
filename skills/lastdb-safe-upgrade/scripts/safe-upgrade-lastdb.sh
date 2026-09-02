@@ -295,11 +295,16 @@ retain_rollback_point() {
 OWNER_LOCK_DIR="${LASTDB_SAFE_UPGRADE_OWNER_LOCK_DIR:-/tmp/lastdb-safe-upgrade-owner-${UID:-$(id -u)}.lock.d}"
 OWNER_LOCK_TOKEN="$$.$RANDOM.$(date +%s 2>/dev/null || echo 0)"
 OWNER_LOCK_HELD=0
+RESTART_INTENT_PATH=""
+RESTART_INTENT_START_REQUESTED=0
 
 cleanup_work() {
   local rc=$?
   [ -n "${WORK:-}" ] && [ -d "$WORK" ] && rm -rf "$WORK"
   [ -n "${CUTOVER_LOCK:-}" ] && rm -f "$CUTOVER_LOCK"
+  if type cleanup_upgrade_restart_intent >/dev/null 2>&1; then
+    cleanup_upgrade_restart_intent
+  fi
   if [ "${ROLLBACK_READY:-0}" -eq 1 ]; then
     if [ "$rc" -eq 0 ]; then
       release_rollback_point
@@ -481,18 +486,52 @@ op_lat_write() {
 # Brain: papercut-lastdb-acked-write-lost-loom-terminal-status-regressed.
 #
 # Mechanism: immediately before any live change, upsert N fixed-slug sentinels
-# through the ordinary app write path (brain put), each carrying a run-unique
-# nonce, and read each back. After the cutover, read them again on the new
-# daemon. A sentinel whose body carries the PREVIOUS run's nonce is exactly
-# the observed loss shape (last write to a key dropped, prior version
-# survives). Fixed slugs keep the store flat; N spreads sentinels across hash
-# groups because the loss was per-key, not per-interval. There is deliberately
-# no skip flag — a durability bar that can be skipped recurs silently.
+# through `brain put --durable --json`, require the node's exact `durable`
+# receipt, and read each nonce back. After the cutover, read them again on the
+# new daemon. A queued write plus resident read-back is not durability proof:
+# that exact sequence lost sentinel 4 during the 2026-09-02 cutover. A stale
+# nonce after restart is the observed loss shape (the last write to one key
+# dropped and the prior version survived). Fixed slugs keep the store flat; N
+# spreads sentinels across hash groups because the loss was per-key, not
+# per-interval. There is deliberately no skip flag — a durability bar that can
+# be skipped recurs silently.
 # ---------------------------------------------------------------------------
 DURABILITY_N="${LASTDB_DURABILITY_CANARY_N:-4}"
 DURABILITY_READ_WAIT_S="${LASTDB_DURABILITY_READ_WAIT_S:-120}"
 DURABILITY_SLUG_PREFIX="lastdb-safe-upgrade-durability-canary"
 DURABILITY_NONCE=""
+
+cleanup_upgrade_restart_intent() {
+  [ "${RESTART_INTENT_START_REQUESTED:-0}" -eq 0 ] || return 0
+  [ -n "${RESTART_INTENT_PATH:-}" ] || return 0
+  [ -e "$RESTART_INTENT_PATH" ] || return 0
+  rm -f "$RESTART_INTENT_PATH"
+  log "restart intent: removed after the cutover stopped before a successful start request"
+}
+
+write_upgrade_restart_intent() {
+  local current_session="$PRIMARY_HOME/current-session.json"
+  if [ ! -s "$current_session" ]; then
+    log "restart intent: no current session record; the daemon will use its clean-exit and build-change fallback"
+    return 0
+  fi
+
+  local previous_pid intent_tmp
+  previous_pid="$(jq -er 'if (.pid | type) == "number" and .pid > 0 then .pid else error("invalid pid") end' "$current_session" 2>/dev/null)" \
+    || die "restart intent: current session has no valid pid ($current_session)"
+  RESTART_INTENT_PATH="$PRIMARY_HOME/restart-intent.json"
+  intent_tmp="${RESTART_INTENT_PATH}.tmp.$$"
+  if ! (
+    umask 077
+    printf '{"cause":"upgrade","previous_pid":%s,"created_at":%s}\n' \
+      "$previous_pid" "$(date +%s)" >"$intent_tmp"
+    mv -f "$intent_tmp" "$RESTART_INTENT_PATH"
+  ); then
+    rm -f "$intent_tmp"
+    die "restart intent: could not atomically write $RESTART_INTENT_PATH"
+  fi
+  log "restart intent: armed cause=upgrade previous_pid=$previous_pid path=$RESTART_INTENT_PATH"
+}
 
 durability_slug() { printf '%s-%d' "$DURABILITY_SLUG_PREFIX" "$1"; }
 
@@ -508,18 +547,24 @@ durability_write_sentinels() {
   # cutover, which is the honest outcome — an upgrade whose durability bar
   # cannot arm must not proceed to the restart that bar exists to judge.
   DURABILITY_NONCE="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-  local i slug
+  local i slug receipt
   for i in $(seq 1 "$DURABILITY_N"); do
     slug="$(durability_slug "$i")"
-    printf -- '---\ntype: reference\nslug: %s\ntitle: safe-upgrade durability canary %d (constant slug; nonce changes per run)\n---\nnonce: %s#%d\n\nWritten by lastdb-safe-upgrade immediately before the cutover restart and\nread back after it. A stale nonce after an upgrade means the primary lost an\nacknowledged write across the restart. Safe to keep; carries no other\nmeaning. Rationale: brain\npapercut-lastdb-acked-write-lost-loom-terminal-status-regressed.\n' \
-      "$slug" "$i" "$DURABILITY_NONCE" "$i" \
-      | env FBRAIN_FOLDDB_SOCKET="$PRIMARY_SOCK" LASTDB_HOME="$PRIMARY_HOME" FOLDDB_HOME="$PRIMARY_HOME" \
-        brain put >/dev/null 2>&1 \
-      || die "durability canary: pre-cutover write of $slug failed — aborting before any live change (the canary must arm to prove the cutover keeps acked writes)"
+    if ! receipt="$(
+      printf -- '---\ntype: reference\nslug: %s\ntitle: safe-upgrade durability canary %d (constant slug; nonce changes per run)\n---\nnonce: %s#%d\n\nWritten by lastdb-safe-upgrade immediately before the cutover restart and\nread back after it. A stale nonce after an upgrade means the primary lost an\nacknowledged write across the restart. Safe to keep; carries no other\nmeaning. Rationale: brain\npapercut-lastdb-acked-write-lost-loom-terminal-status-regressed.\n' \
+        "$slug" "$i" "$DURABILITY_NONCE" "$i" \
+        | env FBRAIN_FOLDDB_SOCKET="$PRIMARY_SOCK" LASTDB_HOME="$PRIMARY_HOME" FOLDDB_HOME="$PRIMARY_HOME" \
+          brain put --durable --json 2>/dev/null
+    )"; then
+      die "durability canary: pre-cutover durable write of $slug failed — aborting before any live change (the canary must arm to prove the cutover keeps durable writes)"
+    fi
+    printf '%s' "$receipt" | jq -e \
+      '.ok == true and .durability == "durable"' >/dev/null 2>&1 \
+      || die "durability canary: pre-cutover write of $slug returned no durable receipt — aborting before any live change (queued or malformed acknowledgments are not restart proof)"
     durability_read_body "$slug" | grep -qF "nonce: ${DURABILITY_NONCE}#${i}" \
       || die "durability canary: pre-cutover read-back of $slug did not return this run's nonce — primary already unhealthy; aborting before any live change"
   done
-  log "durability canary: armed — $DURABILITY_N sentinels written and read back on the old daemon (nonce $DURABILITY_NONCE)"
+  log "durability canary: armed — $DURABILITY_N sentinels durably persisted and read back on the old daemon (nonce $DURABILITY_NONCE)"
 }
 
 durability_verify_after_cutover() {
@@ -1066,6 +1111,7 @@ live_install_sidebin() {
     page_human "safe-upgrade: primary lastdbd is UNLOADED — bootstrap retries exhausted for ${LAUNCHD_LABEL}. Recover: launchctl bootstrap gui/${uid} ${LAUNCHD_PLIST}"
     die "launchd job-definition reload failed after bootstrap retries; the primary is UNLOADED. Recover: launchctl bootstrap gui/${uid} ${LAUNCHD_PLIST} then launchctl print gui/${uid}/${LAUNCHD_LABEL}"
   fi
+  RESTART_INTENT_START_REQUESTED=1
 
   # Wait for a LIVE listener + /health. A leftover folddb.sock inode is
   # still `-S` after bootout; waiting only for the inode reports
@@ -1156,6 +1202,7 @@ live_install_brew() {
   brew upgrade edgevector/lastdb/lastdb 2>&1 \
     || die "brew upgrade failed (primary may still be running if brew was not supervising it). Check launchd/sidebin. Backup: $BACKUP"
   brew services start lastdb || die "brew services start lastdb failed"
+  RESTART_INTENT_START_REQUESTED=1
 }
 
 # --- preflight ---------------------------------------------------------------
@@ -1602,6 +1649,11 @@ durability_write_sentinels
 CUTOVER_T0="$(date +%s)"
 
 assert_launchd_label_usable
+
+# The daemon consumes this marker only after it durably appends the next boot
+# row. Cleanup removes it when this script aborts before a successful start
+# request. A successful start leaves it for the new daemon.
+write_upgrade_restart_intent
 
 if [ "$VENUE" = "sidebin" ]; then
   live_install_sidebin
