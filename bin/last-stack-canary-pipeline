@@ -321,8 +321,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="allow promote without LAST_STACK_CANARY_PROMOTE_AUTO=1",
     )
 
-    proof = sub.add_parser("proof", help="exercise dogfood, soak-watch, and promote-prepare offline")
+    proof = sub.add_parser(
+        "proof",
+        help="exercise the pipeline without primary or stable mutation",
+    )
     proof.add_argument("--dry-run", action="store_true")
+    proof.add_argument(
+        "--live",
+        action="store_true",
+        help="read live provenance and channel evidence; still requires --dry-run",
+    )
 
     return parser.parse_args(argv)
 
@@ -1657,6 +1665,7 @@ def proof(args: argparse.Namespace) -> None:
         "LAST_STACK_CANARY_SITUATION_CHECK_CMD": "pass",
         "LAST_STACK_CANARY_SOAK_HOURS": "0",
         "LAST_STACK_CANARY_LIVE_VERSION_CMD": "pass",
+        "LAST_STACK_CANARY_PRIMARY_IDENTITY_CMD": "pass",
     }
     old_env = {key: os.environ.get(key) for key in env}
     os.environ.update(env)
