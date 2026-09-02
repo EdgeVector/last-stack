@@ -604,4 +604,77 @@ grep -q 'board_read\[exit_1\]' "$persist_dir/ledger.jsonl"
   --observations '[{"check":"status_latency[19s>2s]","subject":"build","passed":false}]' \
   | grep -q '"evidence":"status_latency\[19s>2s\]"'
 
+# --- v2 reconciler reads only immutable boot and observation rows ---
+v2_dir="$tmp/v2"
+v2_at_0830='2026-08-30T00:30:00Z'
+"$CLI" --state-dir "$v2_dir" record-boot --candidate sep0830 --pid 101 \
+  --start-ts '2026-08-30T00:00:00Z' --build v0830 --at '2026-08-30T00:00:00Z' >/dev/null
+out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate sep0830 \
+  --window-seconds 86400 --at "$v2_at_0830")"
+[ "$(printf '%s\n' "$out" | jq -r '.verdict')" = "window-open" ]
+[ "$(printf '%s\n' "$out" | jq -r '.action')" = "wait-next-check" ]
+[ "$(printf '%s\n' "$out" | jq -r '.boot_count')" = "1" ]
+
+"$CLI" --state-dir "$v2_dir" record-boot --candidate sep0831 --pid 102 \
+  --start-ts '2026-08-31T00:00:00Z' --build v0831 --cause guard-memory --at '2026-08-31T00:00:00Z' >/dev/null
+out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate sep0831 \
+  --window-seconds 86400 --at '2026-08-31T00:30:00Z')"
+[ "$(printf '%s\n' "$out" | jq -r '.verdict')" = "red" ]
+[ "$(printf '%s\n' "$out" | jq -r '.subject')" = "build" ]
+[ "$(printf '%s\n' "$out" | jq -r '.evidence')" = "restart[guard-memory]" ]
+[ "$(printf '%s\n' "$out" | jq -r '.action')" = "heal" ]
+
+"$CLI" --state-dir "$v2_dir" record-boot --candidate sep0901 --pid 103 \
+  --start-ts '2026-09-01T00:00:00Z' --build v0901 --at '2026-09-01T00:00:00Z' >/dev/null
+"$CLI" --state-dir "$v2_dir" record-observation --candidate sep0901 --check status_latency \
+  --subject build --result pass --measured-ms 19000 --budget-ms 2000 --at '2026-09-01T00:01:00Z' >/dev/null
+out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate sep0901 \
+  --window-seconds 86400 --at '2026-09-01T00:30:00Z')"
+[ "$(printf '%s\n' "$out" | jq -r '.verdict')" = "red" ]
+[ "$(printf '%s\n' "$out" | jq -r '.evidence')" = "status_latency[p95=19000ms>2000ms]" ]
+
+# Timeout and absence are failures even when a collector falsely reports pass.
+"$CLI" --state-dir "$v2_dir" record-boot --candidate absence --pid 104 \
+  --start-ts '2026-09-02T00:00:00Z' --build vabsence --at '2026-09-02T00:00:00Z' >/dev/null
+"$CLI" --state-dir "$v2_dir" record-observation --candidate absence --check status \
+  --subject observer --result pass --detail timeout --at '2026-09-02T00:01:00Z' >/dev/null
+out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate absence \
+  --window-seconds 86400 --at '2026-09-02T00:30:00Z')"
+[ "$(printf '%s\n' "$out" | jq -r '.verdict')" = "line-stopped" ]
+[ "$(printf '%s\n' "$out" | jq -r '.action')" = "line-stop" ]
+
+"$CLI" --state-dir "$v2_dir" record-boot --candidate host-window --pid 105 \
+  --start-ts '2026-09-03T00:00:00Z' --build vhost --at '2026-09-03T00:00:00Z' >/dev/null
+"$CLI" --state-dir "$v2_dir" record-observation --candidate host-window --check disk \
+  --subject host --result fail --detail absent --at '2026-09-03T00:01:00Z' >/dev/null
+out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate host-window \
+  --window-seconds 86400 --at '2026-09-03T00:30:00Z')"
+[ "$(printf '%s\n' "$out" | jq -r '.verdict')" = "window-open" ]
+[ "$(printf '%s\n' "$out" | jq -r '.action')" = "pause-window" ]
+
+# A neutral upgrade supersedes the old candidate. An operator restart starts a
+# new quiet window instead of making the candidate red.
+"$CLI" --state-dir "$v2_dir" record-boot --candidate superseded --pid 106 \
+  --start-ts '2026-09-04T00:00:00Z' --build vold --cause upgrade --at '2026-09-04T00:00:00Z' >/dev/null
+out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate superseded \
+  --window-seconds 86400 --at '2026-09-04T00:30:00Z')"
+[ "$(printf '%s\n' "$out" | jq -r '.verdict')" = "superseded" ]
+[ "$(printf '%s\n' "$out" | jq -r '.action')" = "retire" ]
+
+"$CLI" --state-dir "$v2_dir" record-boot --candidate operator-reset --pid 107 \
+  --start-ts '2026-09-05T00:00:00Z' --build vreset --at '2026-09-05T00:00:00Z' >/dev/null
+"$CLI" --state-dir "$v2_dir" record-boot --candidate operator-reset --pid 108 \
+  --start-ts '2026-09-05T01:00:00Z' --build vreset --cause operator --at '2026-09-05T01:00:00Z' >/dev/null
+out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate operator-reset \
+  --window-seconds 7200 --at '2026-09-05T02:00:00Z')"
+[ "$(printf '%s\n' "$out" | jq -r '.verdict')" = "window-open" ]
+
+# Dry-run plans a fresh verdict but does not append another durable event.
+dry_before="$(wc -l <"$v2_dir/ledger.jsonl" | tr -d ' ')"
+out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate sep0830 --dry-run \
+  --window-seconds 86400 --at "$v2_at_0830")"
+dry_after="$(wc -l <"$v2_dir/ledger.jsonl" | tr -d ' ')"
+[ "$dry_before" = "$dry_after" ]
+[ "$(printf '%s\n' "$out" | jq -r '.action_dispatch')" = "planned" ]
+
 echo "PASS last-stack-canary-pipeline"
