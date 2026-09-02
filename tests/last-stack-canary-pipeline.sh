@@ -121,29 +121,26 @@ manual="$(awk -F 'output=' '/PROMOTE_READY/ {print $2}' "$tmp/promote.out" | awk
 test -r "$manual"
 grep -q 'Candidate SHA: `sha-green`' "$manual"
 
-grep -q 'last-stack-canary-red-loom' "$ROOT/routines/lastdb-canary-soak-watch.md" \
-  || { echo "soak-watch prompt missing canary-red-loom hook" >&2; exit 1; }
 grep -q 'lastdb-canary-soak-watch' "$ROOT/config/routines-registry/lastdb-canary-soak-watch.toml"
 grep -q 'status = "active"' "$ROOT/config/routines-registry/lastdb-canary-soak-watch.toml"
 grep -q 'last-stack-canary-soak-watch-gate' "$ROOT/config/routines-registry/lastdb-canary-soak-watch.toml"
 soak_prompt="$ROOT/routines/lastdb-canary-soak-watch.md"
-grep -q 'last-stack-canary-pipeline proof --dry-run' "$soak_prompt"
-grep -Fq 'The legacy state engine cannot see native `lx-*` executions' "$soak_prompt"
-grep -Fq 'The sink must start with `ok `, `noop `, or `error `' "$soak_prompt"
-grep -Fq 'Do not put a shell assignment in the sink' "$soak_prompt"
+grep -q 'last-stack-canary-soak-watch-gate' "$soak_prompt"
+grep -q 'owner-only bounded boot ledger' "$soak_prompt"
+grep -q 'deterministic verdict function' "$soak_prompt"
+if grep -Eq 'SOAK_WAIT|last-stack-canary-loom|last-stack-canary-red-loom' "$soak_prompt"; then
+  echo "canary soak prompt contains legacy Loom state" >&2
+  exit 1
+fi
 if grep -Eq 'ROUTINE_RESULT[[:space:]]+outcome=' "$soak_prompt"; then
   echo "canary soak prompt contains a result-shaped trailer literal" >&2
   exit 1
 fi
 grep -q 'lastdb-canary-promote-prepare' "$ROOT/config/routines-registry/lastdb-canary-promote-prepare.toml"
-grep -q 'status = "active"' "$ROOT/config/routines-registry/lastdb-canary-promote-prepare.toml"
+grep -q 'status = "paused"' "$ROOT/config/routines-registry/lastdb-canary-promote-prepare.toml"
 promote_prompt="$ROOT/routines/lastdb-canary-promote-prepare.md"
-grep -q 'last-stack-canary-pipeline" --json list' "$promote_prompt"
-if grep -Eq 'last-stack-canary-pipeline" (list|promote-prepare) --json' "$promote_prompt"; then
-  echo "promote prompt puts global --json after the subcommand" >&2
-  exit 1
-fi
-grep -q 'there are no `status` or' "$promote_prompt"
+grep -q 'This routine is paused' "$promote_prompt"
+grep -q 'promote-eligible' "$promote_prompt"
 
 # promote-execute dry-run after soak_green
 LAST_STACK_CANARY_PROMOTE_AUTO=1 \
@@ -603,5 +600,178 @@ grep -q 'board_read\[exit_1\]' "$persist_dir/ledger.jsonl"
 "$CLI" --json verdict --candidate sep0901 --boot '{"pid":"1","start_ts":"1"}' \
   --observations '[{"check":"status_latency[19s>2s]","subject":"build","passed":false}]' \
   | grep -q '"evidence":"status_latency\[19s>2s\]"'
+
+# --- v2 reconciler reads only immutable boot and observation rows ---
+v2_dir="$tmp/v2"
+v2_at_0830='2026-08-30T00:30:00Z'
+"$CLI" --state-dir "$v2_dir" record-boot --candidate sep0830 --pid 101 \
+  --start-ts '2026-08-30T00:00:00Z' --build v0830 --at '2026-08-30T00:00:00Z' >/dev/null
+out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate sep0830 \
+  --window-seconds 86400 --at "$v2_at_0830")"
+[ "$(printf '%s\n' "$out" | jq -r '.verdict')" = "window-open" ]
+[ "$(printf '%s\n' "$out" | jq -r '.action')" = "wait-next-check" ]
+[ "$(printf '%s\n' "$out" | jq -r '.boot_count')" = "1" ]
+
+"$CLI" --state-dir "$v2_dir" record-boot --candidate sep0831 --pid 102 \
+  --start-ts '2026-08-31T00:00:00Z' --build v0831 --cause guard-memory --at '2026-08-31T00:00:00Z' >/dev/null
+out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate sep0831 \
+  --window-seconds 86400 --at '2026-08-31T00:30:00Z')"
+[ "$(printf '%s\n' "$out" | jq -r '.verdict')" = "red" ]
+[ "$(printf '%s\n' "$out" | jq -r '.subject')" = "build" ]
+[ "$(printf '%s\n' "$out" | jq -r '.evidence')" = "restart[guard-memory]" ]
+[ "$(printf '%s\n' "$out" | jq -r '.action')" = "heal" ]
+[ "$(printf '%s\n' "$out" | jq -r '.heal_queued')" = "true" ]
+jq -e 'select(.record_type == "heal_queue" and .candidate == "sep0831" and .status == "queued")' \
+  "$v2_dir/ledger.jsonl" >/dev/null
+
+# A heal attempts once for a durable failure class. Later ticks re-check the
+# evidence but never make their own repeated action attempt.
+heal_log="$tmp/heal-action.log"
+out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate sep0831 \
+  --window-seconds 86400 --at '2026-08-31T00:31:00Z' --execute-actions \
+  --action-command "printf '%s\\n' heal >> '$heal_log'")"
+[ "$(printf '%s\n' "$out" | jq -r '.action_dispatch')" = "ok" ]
+out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate sep0831 \
+  --window-seconds 86400 --at '2026-08-31T00:32:00Z' --execute-actions \
+  --action-command "printf '%s\\n' heal >> '$heal_log'")"
+[ "$(printf '%s\n' "$out" | jq -r '.action_dispatch')" = "already-dispatched" ]
+test "$(wc -l <"$heal_log" | tr -d ' ')" -eq 1
+
+"$CLI" --state-dir "$v2_dir" record-boot --candidate sep0901 --pid 103 \
+  --start-ts '2026-09-01T00:00:00Z' --build v0901 --at '2026-09-01T00:00:00Z' >/dev/null
+"$CLI" --state-dir "$v2_dir" record-observation --candidate sep0901 --check status_latency \
+  --subject build --result pass --measured-ms 19000 --budget-ms 2000 --at '2026-09-01T00:01:00Z' >/dev/null
+out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate sep0901 \
+  --window-seconds 86400 --at '2026-09-01T00:30:00Z')"
+[ "$(printf '%s\n' "$out" | jq -r '.verdict')" = "red" ]
+[ "$(printf '%s\n' "$out" | jq -r '.evidence')" = "status_latency[p95=19000ms>2000ms]" ]
+
+# Timeout and absence are failures even when a collector falsely reports pass.
+"$CLI" --state-dir "$v2_dir" record-boot --candidate absence --pid 104 \
+  --start-ts '2026-09-02T00:00:00Z' --build vabsence --at '2026-09-02T00:00:00Z' >/dev/null
+"$CLI" --state-dir "$v2_dir" record-observation --candidate absence --check status \
+  --subject observer --result pass --detail timeout --at '2026-09-02T00:01:00Z' >/dev/null
+out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate absence \
+  --window-seconds 86400 --at '2026-09-02T00:30:00Z')"
+[ "$(printf '%s\n' "$out" | jq -r '.verdict')" = "line-stopped" ]
+[ "$(printf '%s\n' "$out" | jq -r '.action')" = "line-stop" ]
+
+"$CLI" --state-dir "$v2_dir" record-boot --candidate host-window --pid 105 \
+  --start-ts '2026-09-03T00:00:00Z' --build vhost --at '2026-09-03T00:00:00Z' >/dev/null
+"$CLI" --state-dir "$v2_dir" record-observation --candidate host-window --check disk \
+  --subject host --result fail --detail absent --at '2026-09-03T00:01:00Z' >/dev/null
+out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate host-window \
+  --window-seconds 86400 --at '2026-09-03T00:30:00Z')"
+[ "$(printf '%s\n' "$out" | jq -r '.verdict')" = "window-open" ]
+[ "$(printf '%s\n' "$out" | jq -r '.action')" = "pause-window" ]
+
+# A neutral upgrade supersedes the old candidate. An operator restart starts a
+# new quiet window instead of making the candidate red.
+"$CLI" --state-dir "$v2_dir" record-boot --candidate superseded --pid 106 \
+  --start-ts '2026-09-04T00:00:00Z' --build vold --cause upgrade --at '2026-09-04T00:00:00Z' >/dev/null
+out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate superseded \
+  --window-seconds 86400 --at '2026-09-04T00:30:00Z')"
+[ "$(printf '%s\n' "$out" | jq -r '.verdict')" = "superseded" ]
+[ "$(printf '%s\n' "$out" | jq -r '.action')" = "retire" ]
+
+"$CLI" --state-dir "$v2_dir" record-boot --candidate operator-reset --pid 107 \
+  --start-ts '2026-09-05T00:00:00Z' --build vreset --at '2026-09-05T00:00:00Z' >/dev/null
+"$CLI" --state-dir "$v2_dir" record-boot --candidate operator-reset --pid 108 \
+  --start-ts '2026-09-05T01:00:00Z' --build vreset --cause operator --at '2026-09-05T01:00:00Z' >/dev/null
+out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate operator-reset \
+  --window-seconds 7200 --at '2026-09-05T02:00:00Z')"
+[ "$(printf '%s\n' "$out" | jq -r '.verdict')" = "window-open" ]
+
+# A completed window with no observation rows is observer failure. Silence
+# cannot certify a build as green.
+"$CLI" --state-dir "$v2_dir" record-boot --candidate silent-window --pid 110 \
+  --start-ts '2026-09-06T00:00:00Z' --build vsilent --at '2026-09-06T00:00:00Z' >/dev/null
+out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate silent-window \
+  --window-seconds 86400 --at '2026-09-07T00:00:00Z')"
+[ "$(printf '%s\n' "$out" | jq -r '.verdict')" = "line-stopped" ]
+[ "$(printf '%s\n' "$out" | jq -r '.subject')" = "observer" ]
+[ "$(printf '%s\n' "$out" | jq -r '.evidence')" = "observations_absent" ]
+[ "$(printf '%s\n' "$out" | jq -r '.action')" = "line-stop" ]
+[ "$(printf '%s\n' "$out" | jq -r '.observation_count')" = "0" ]
+
+# Dry-run plans a fresh verdict but does not append another durable event.
+dry_before="$(wc -l <"$v2_dir/ledger.jsonl" | tr -d ' ')"
+out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate sep0830 --dry-run \
+  --window-seconds 86400 --at "$v2_at_0830")"
+dry_after="$(wc -l <"$v2_dir/ledger.jsonl" | tr -d ' ')"
+[ "$dry_before" = "$dry_after" ]
+[ "$(printf '%s\n' "$out" | jq -r '.action_dispatch')" = "planned" ]
+
+# Channel policy keeps primary on main, promotes only a completed quiet window,
+# and holds a normal incoming cutover near the current window end.
+out="$("$CLI" --state-dir "$v2_dir" --json channels --main-build sep0830 --incoming-build next \
+  --window-seconds 86400 --cutover-hold-hours 24 --at '2026-08-30T00:30:00Z')"
+[ "$(printf '%s\n' "$out" | jq -r '.primary.tracks_main')" = "true" ]
+[ "$(printf '%s\n' "$out" | jq -r '.stable.verdict')" = "none" ]
+[ "$(printf '%s\n' "$out" | jq -r '.cutover.hold')" = "true" ]
+out="$("$CLI" --state-dir "$v2_dir" --json channels --main-build sep0830 --incoming-build next \
+  --incoming-fixes-red --window-seconds 86400 --cutover-hold-hours 24 --at '2026-08-30T00:30:00Z')"
+[ "$(printf '%s\n' "$out" | jq -r '.cutover.hold')" = "false" ]
+
+"$CLI" --state-dir "$v2_dir" record-boot --candidate channel-green --pid 109 \
+  --start-ts '2026-08-01T00:00:00Z' --build vgreen >/dev/null
+"$CLI" --state-dir "$v2_dir" record-observation --candidate channel-green --check status \
+  --subject build --result pass --at '2026-08-01T00:01:00Z' >/dev/null
+"$CLI" --state-dir "$v2_dir" reconcile --candidate channel-green --window-seconds 86400 \
+  --at '2026-09-01T00:00:00Z' >/dev/null
+out="$("$CLI" --state-dir "$v2_dir" --json channels --main-build channel-green \
+  --window-seconds 86400 --at '2026-09-01T00:00:00Z')"
+[ "$(printf '%s\n' "$out" | jq -r '.stable.build')" = "channel-green" ]
+
+# The live collector reads only Fold's bounded owner boot ledger. A later build
+# retires the candidate; a failed collector remains named observer evidence,
+# while the missing boot row remains a build failure.
+boot_ledger_json='{"boots":[{"pid":201,"process_start_ts":1788134400,"build":"vcanary","restart_cause":"initial"},{"pid":202,"process_start_ts":1788138000,"build":"vnext","restart_cause":"upgrade"}]}'
+out="$("$CLI" --state-dir "$v2_dir" --json sync-boot-ledger --candidate vcanary \
+  --boot-ledger-command "printf '%s\\n' '$boot_ledger_json'")"
+[ "$(printf '%s\n' "$out" | jq -r '.result')" = "ok" ]
+[ "$(printf '%s\n' "$out" | jq -r '.matched_boots')" = "2" ]
+[ "$(printf '%s\n' "$out" | jq -r '.appended_boots')" = "2" ]
+out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate vcanary \
+  --window-seconds 86400 --at '2026-09-01T02:00:00Z')"
+[ "$(printf '%s\n' "$out" | jq -r '.verdict')" = "superseded" ]
+[ "$(printf '%s\n' "$out" | jq -r '.evidence')" = "restart[supersession]" ]
+out="$("$CLI" --state-dir "$v2_dir" --json sync-boot-ledger --candidate vcanary \
+  --boot-ledger-command "printf '%s\\n' '$boot_ledger_json'")"
+[ "$(printf '%s\n' "$out" | jq -r '.appended_boots')" = "0" ]
+[ "$(printf '%s\n' "$out" | jq -r '.duplicate_boots')" = "2" ]
+
+out="$("$CLI" --state-dir "$v2_dir" --json sync-boot-ledger --candidate vmissing \
+  --boot-ledger-command 'exit 28')"
+[ "$(printf '%s\n' "$out" | jq -r '.result')" = "failed" ]
+[ "$(printf '%s\n' "$out" | jq -r '.failure')" = "absent" ]
+out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate vmissing \
+  --window-seconds 86400 --at '2026-09-01T02:00:00Z')"
+[ "$(printf '%s\n' "$out" | jq -r '.verdict')" = "red" ]
+[ "$(printf '%s\n' "$out" | jq -r '.subject')" = "build" ]
+
+# Command observations measure a real p95 and preserve timeout/exit evidence.
+out="$("$CLI" --state-dir "$v2_dir" --json observe-command --candidate command-pass \
+  --check status --subject build --command true --samples 3 --timeout-seconds 1 --budget-ms 2000 \
+  --at '2026-09-01T00:00:00Z')"
+[ "$(printf '%s\n' "$out" | jq -r '.passed')" = "true" ]
+[ "$(printf '%s\n' "$out" | jq -r '.samples')" = "3" ]
+out="$("$CLI" --state-dir "$v2_dir" --json observe-command --candidate command-fail \
+  --check status --subject build --command 'exit 7' --samples 3 --timeout-seconds 1 --budget-ms 2000 \
+  --at '2026-09-01T00:00:00Z')"
+[ "$(printf '%s\n' "$out" | jq -r '.passed')" = "false" ]
+[ "$(printf '%s\n' "$out" | jq -r '.detail')" = "exit_7" ]
+
+# A candidate-independent identity absence is durable observer evidence. The
+# next successful identity read clears the line without blaming a build.
+"$CLI" --state-dir "$v2_dir" record-line-event --check primary_identity \
+  --subject observer --result pass --detail timeout --at '2026-09-01T00:00:00Z' >/dev/null
+out="$("$CLI" --state-dir "$v2_dir" --json line-status)"
+[ "$(printf '%s\n' "$out" | jq -r '.state')" = "line-stopped" ]
+[ "$(printf '%s\n' "$out" | jq -r '.subject')" = "observer" ]
+"$CLI" --state-dir "$v2_dir" record-line-event --check primary_identity \
+  --subject observer --result pass --at '2026-09-01T00:01:00Z' >/dev/null
+out="$("$CLI" --state-dir "$v2_dir" --json line-status)"
+[ "$(printf '%s\n' "$out" | jq -r '.state')" = "clear" ]
 
 echo "PASS last-stack-canary-pipeline"

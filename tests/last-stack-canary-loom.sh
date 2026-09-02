@@ -34,13 +34,13 @@ jq -e '.start_at == "DECIDE_ENTRY" and
        .states.DECIDE_RETRY_ROUTE.default == "BUILD_START"' \
   "$ROOT/lib/canary-loom/lastdb-canary-release.json" >/dev/null \
   || fail "green child does not record the dogfood ledger before soak"
-grep -q 'last-stack-canary-loom' "$ROOT/routines/lastdb-canary-soak-watch.md" \
-  || fail "soak-watch missing loom tick"
-if grep -q 'sm tick --definition lastdb-canary-release' "$ROOT/routines/lastdb-canary-soak-watch.md"; then
-  fail "soak-watch still ticks the legacy state engine"
+grep -q 'stateless LastDB canary v2 reconciler' "$ROOT/routines/lastdb-canary-soak-watch.md" \
+  || fail "soak-watch missing v2 reconciler"
+if grep -Eq 'last-stack-canary-loom|SOAK_WAIT' "$ROOT/routines/lastdb-canary-soak-watch.md"; then
+  fail "soak-watch still invokes the retired release graph"
 fi
-grep -q 'last-stack-canary-loom' "$ROOT/routines/lastdb-canary-dogfood.md" \
-  || fail "dogfood missing loom start"
+grep -q 'last-stack-canary-v2-dogfood-gate' "$ROOT/routines/lastdb-canary-dogfood.md" \
+  || fail "dogfood missing v2 primary action"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-canary-loom.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 export LAST_STACK_CANARY_LOOM_STAMP="$tmp/stamp.json"

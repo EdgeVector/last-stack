@@ -357,31 +357,21 @@ grep -q '^id = "lastdb-canary-dogfood"$' "$ROOT/config/routines-registry/lastdb-
 grep -q '^status = "active"$' "$ROOT/config/routines-registry/lastdb-canary-dogfood.toml"
 grep -q 'lastdb-canary-dogfood.md' "$ROOT/config/routines-registry/lastdb-canary-dogfood.toml"
 # The nightly starts Loom graph B only. Graph B starts graph A as a child.
-# Do not sm start from this prompt (CR cr-mtancr1s-783d).
+# The legacy CLI remains testable, but the scheduled prompt now dispatches one
+# bounded v2 action and gives quiet-window ownership to the hourly reconciler.
 dog_md="$ROOT/routines/lastdb-canary-dogfood.md"
-grep -q 'last-stack-canary-loom' "$dog_md"
-grep -q -- '--start' "$dog_md"
-grep -q 'Do not `sm start`' "$dog_md"
-# One execution per main tip via the canary-<oid> loom key.
-grep -q -- '--key' "$dog_md"
-grep -q 'canary-<oid>' "$dog_md"
-# The env flag must not be armed in the routine — PUBLISH sets it itself, and
-# only behind a completed PROMOTE for a soaked sha.
-grep -q 'Do NOT set LAST_STACK_CANARY_PROMOTE_AUTO here' "$dog_md"
-# UPGRADE is a child execution of the safe-upgrade machine, not inlined steps.
-grep -qi 'child execution' "$dog_md"
-grep -q 'lastdb-safe-upgrade' "$dog_md"
-# PUBLISH ships to the public; the kill switch must be documented where the
-# on-call agent will actually look.
-grep -q 'lastdb-brew-publish' "$dog_md"
-grep -q 'blocked_actions' "$dog_md"
-# The soak watch is the Loom clock, and an idle lane is not an error.
-soak_md="$ROOT/routines/lastdb-canary-soak-watch.md"
-grep -q 'last-stack-canary-loom' "$soak_md"
-if grep -q 'sm tick --definition lastdb-canary-release' "$soak_md"; then
-  echo "soak-watch still ticks the legacy state engine" >&2
+grep -q 'last-stack-canary-v2-dogfood-gate' "$dog_md"
+grep -q 'bounded safe-upgrade action' "$dog_md"
+if grep -Eq 'last-stack-canary-loom|lastdb-canary-release|SOAK_WAIT' "$dog_md"; then
+  echo "dogfood prompt still invokes the retired release graph" >&2
   exit 1
 fi
-grep -q 'no_active_candidate' "$soak_md"
+# The soak watch is the v2 evidence reconciler, not a Loom clock.
+soak_md="$ROOT/routines/lastdb-canary-soak-watch.md"
+grep -q 'stateless LastDB canary v2 reconciler' "$soak_md"
+if grep -Eq 'last-stack-canary-loom|SOAK_WAIT' "$soak_md"; then
+  echo "soak-watch still invokes the retired release graph" >&2
+  exit 1
+fi
 
 echo "ok last-stack-lastdb-canary-dogfood"

@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# Start one bounded build/probe/cutover action for the v2 primary channel.
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
+
+dogfood="${LAST_STACK_CANARY_V2_DOGFOOD:-${ROOT}/bin/last-stack-lastdb-canary-dogfood}"
+pipeline="${LAST_STACK_CANARY_V2_PIPELINE:-${ROOT}/bin/last-stack-canary-pipeline}"
+hold_hours="${LAST_STACK_CANARY_V2_CUTOVER_HOLD_HOURS:-4}"
+
+usage() {
+  printf '%s\n' 'last-stack-canary-v2-dogfood-gate'
+  printf '%s\n' 'Resolve one main build and start one bounded probe/cutover action.'
+}
+
+case "${1:-}" in
+  '') ;;
+  -h|--help) usage; exit 0 ;;
+  *) usage >&2; exit 2 ;;
+esac
+
+[ -x "$dogfood" ] && [ -x "$pipeline" ] || {
+  printf 'CANARY_V2_DOGFOOD result=error evidence=tool_missing\n'
+  printf 'ROUTINE_RESULT outcome=error detail=tool_missing\n'
+  exit 0
+}
+
+primary=""
+identity_command="${LAST_STACK_CANARY_V2_PRIMARY_IDENTITY_CMD:-last-stack-lastdb-memory-guard --identity}"
+set +e
+identity_output="$(eval "$identity_command" 2>/dev/null)"
+identity_rc=$?
+set -e
+if [ "$identity_rc" -eq 0 ]; then
+  for token in $identity_output; do
+    case "$token" in
+      build=*) primary="${token#build=}" ;;
+    esac
+  done
+fi
+
+if [ -z "$primary" ] || [ "$primary" = "unknown" ]; then
+  "$pipeline" record-line-event --check primary_identity --subject observer --result fail \
+    --detail absent >/dev/null || true
+  printf 'CANARY_V2_DOGFOOD result=error subject=observer evidence=primary_identity_absent\n'
+  printf 'ROUTINE_RESULT outcome=error detail=line_stopped=primary_identity_absent\n'
+  exit 0
+fi
+
+"$pipeline" record-line-event --check primary_identity --subject observer --result pass >/dev/null
+
+set +e
+preview="$($dogfood --dry-run --json)"
+preview_rc=$?
+set -e
+if [ "$preview_rc" -ne 0 ]; then
+  printf 'CANARY_V2_DOGFOOD result=error evidence=candidate_absent\n'
+  printf 'ROUTINE_RESULT outcome=error detail=candidate_absent\n'
+  exit 0
+fi
+
+incoming="$(printf '%s\n' "$preview" | jq -r '.version // empty' 2>/dev/null || true)"
+if [ -z "$incoming" ] || [ "$incoming" = "unknown" ]; then
+  printf 'CANARY_V2_DOGFOOD result=error evidence=candidate_identity_absent\n'
+  printf 'ROUTINE_RESULT outcome=error detail=candidate_identity_absent\n'
+  exit 0
+fi
+
+channel_args=(--json channels --main-build "$primary" --incoming-build "$incoming" \
+  --cutover-hold-hours "$hold_hours")
+if [ "${LAST_STACK_CANARY_V2_INCOMING_FIXES_RED:-0}" = "1" ]; then
+  channel_args+=(--incoming-fixes-red)
+fi
+if [ -n "${LAST_STACK_CANARY_V2_AT:-}" ]; then
+  channel_args+=(--at "$LAST_STACK_CANARY_V2_AT")
+fi
+channel_json="$($pipeline "${channel_args[@]}")"
+cutover_hold="$(printf '%s\n' "$channel_json" | jq -r '.cutover.hold // false')"
+if [ "$cutover_hold" = "true" ]; then
+  printf 'CANARY_V2_DOGFOOD result=noop candidate=%s primary=%s evidence=quiet_window_near_complete\n' \
+    "$incoming" "$primary"
+  printf 'ROUTINE_RESULT outcome=noop detail=cutover_hold=quiet_window_near_complete\n'
+  exit 0
+fi
+
+# This is one bounded action. It uses the safe-upgrade graph for probe and
+# cutover only; it never starts the old release/soak graph.
+set +e
+cutover="$($dogfood --cutover --json)"
+cutover_rc=$?
+set -e
+if [ "$cutover_rc" -ne 0 ]; then
+  printf 'CANARY_V2_DOGFOOD result=error candidate=%s evidence=cutover_failed\n' "$incoming"
+  printf 'ROUTINE_RESULT outcome=error detail=cutover_failed\n'
+  exit 0
+fi
+
+result="$(printf '%s\n' "$cutover" | jq -r '.safe_upgrade // "unknown"' 2>/dev/null || true)"
+printf 'CANARY_V2_DOGFOOD result=ok candidate=%s cutover=%s\n' "$incoming" "$result"
+printf 'ROUTINE_RESULT outcome=ok detail=cutover=%s candidate=%s\n' "$result" "$incoming"

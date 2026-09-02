@@ -38,26 +38,17 @@ if [ "$DRY_RUN" -eq 0 ] && last_stack_registry_skip_if_exists "$path" "$FORCE_DE
   exit 0
 fi
 
-# Routinesd skips the LLM harness when gate_command is set. The gate MUST be
-# the healer itself so a RED canary gets a live investigate+fix+retry, not a
-# card. Pin the stable compat path, never artifacts/versions/<sha>.
-GATE="${REG_STABLE_ROOT}/bin/last-stack-canary-red-loom"
-if last_stack_registry_is_version_dir "$GATE"; then
-  GATE="${HOME}/.last-stack/bin/last-stack-canary-red-loom"
-fi
-
 body=$(cat <<EOF
-# When a LastDB canary goes RED: loom investigates, lands a fix, retries upgrade (cap 3).
-# gate_command is the wrapper (zero extra LLM). Routinesd will skip the prompt.
+# Retired by Canary Pipeline v2. The stateless reconciler writes the durable
+# heal queue and dispatches an explicit short action after it re-checks evidence.
 id = "$ID"
 difficulty = "normal"
 effort = "high"
 rrule = "FREQ=HOURLY;INTERVAL=1;BYMINUTE=36;BYSECOND=0"
 cwd = "$REG_CWD"
-status = "active"
-timeout_min = 90
+status = "paused"
+timeout_min = 15
 prompt_path = "$PROMPT_PATH"
-gate_command = "$GATE"
 heartbeat_slug = "routine-heartbeats"
 group = "ops"
 EOF

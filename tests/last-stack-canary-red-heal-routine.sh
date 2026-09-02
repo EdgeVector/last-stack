@@ -15,11 +15,11 @@ entry="$tmp/registry/lastdb-canary-red-heal.toml"
 test -f "$entry"
 grep -q 'id = "lastdb-canary-red-heal"' "$entry"
 grep -q 'rrule = "FREQ=HOURLY;INTERVAL=1;BYMINUTE=36;BYSECOND=0"' "$entry"
-grep -q 'timeout_min = 90' "$entry"
+grep -q 'status = "paused"' "$entry"
+grep -q 'timeout_min = 15' "$entry"
 grep -q "prompt_path = \"$prompt\"" "$entry"
-grep -q 'bin/last-stack-canary-red-loom' "$entry"
-if grep -q 'observer-gate' "$entry"; then
-  echo "gate_command must be the healer, not observer-gate" >&2
+if grep -q 'gate_command' "$entry"; then
+  echo "retired recovery lane must not install a gate" >&2
   exit 1
 fi
 
