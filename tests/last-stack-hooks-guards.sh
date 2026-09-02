@@ -83,6 +83,8 @@ printf '%s' "$deny_out" | jq -e '(.continue // true) == true' >/dev/null
 printf '%s' "$deny_out" | grep -q 'use jq'
 printf '%s' "$deny_out" | grep -q 'scratchpad'
 printf '%s' "$deny_out" | grep -q 'last-stack-json-get'
+printf '%s' "$deny_out" | grep -q '.last-stack/bin/last-stack-json-capture'
+printf '%s' "$deny_out" | grep -q 'jq . /tmp/data.json'
 
 allow_out="$(jq -n '{
   tool_name: "Bash",
