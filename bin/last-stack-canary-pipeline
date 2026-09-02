@@ -349,6 +349,20 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     observe.add_argument("--budget-ms", type=float, default=None)
     observe.add_argument("--at", default="", help="observation timestamp in ISO-8601 UTC")
 
+    command_observe = sub.add_parser(
+        "observe-command",
+        help="run a bounded command and append one v2 observation with p95 latency",
+    )
+    add_common_ledger_flags(command_observe)
+    command_observe.add_argument("--candidate", required=True)
+    command_observe.add_argument("--check", required=True)
+    command_observe.add_argument("--subject", required=True, choices=sorted(V2_SUBJECTS))
+    command_observe.add_argument("--command", required=True)
+    command_observe.add_argument("--samples", type=int, default=1)
+    command_observe.add_argument("--timeout-seconds", type=float, required=True)
+    command_observe.add_argument("--budget-ms", type=float, required=True)
+    command_observe.add_argument("--at", default="", help="observation timestamp in ISO-8601 UTC")
+
     reconcile = sub.add_parser("reconcile", help="compute and record a stateless v2 verdict")
     add_common_ledger_flags(reconcile)
     reconcile.add_argument("--candidate", required=True)
@@ -358,6 +372,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     reconcile.add_argument("--dry-run", action="store_true")
     reconcile.add_argument("--execute-actions", action="store_true")
     reconcile.add_argument("--action-command", default="", help="short action command; never a wait loop")
+
+    channels = sub.add_parser("channels", help="compute primary, stable, and cutover-hold channel state")
+    add_common_ledger_flags(channels)
+    channels.add_argument("--main-build", required=True, help="build currently selected for the primary channel")
+    channels.add_argument("--incoming-build", default="", help="newer build that would replace the primary build")
+    channels.add_argument("--incoming-fixes-red", action="store_true")
+    channels.add_argument("--window-seconds", type=float, default=None)
+    channels.add_argument("--cutover-hold-hours", type=float, default=4.0)
+    channels.add_argument("--at", default="", help="evaluation timestamp in ISO-8601 UTC")
 
     promote = sub.add_parser("promote-prepare", help="report whether a green soak is ready for promotion")
     add_common_ledger_flags(promote)
@@ -815,6 +838,49 @@ def record_observation(path: Path, args: argparse.Namespace) -> dict:
     return event
 
 
+def observe_command(path: Path, args: argparse.Namespace) -> dict:
+    if args.samples < 1 or args.samples > 9:
+        die("samples must be between 1 and 9", 2)
+    if args.timeout_seconds <= 0 or args.budget_ms <= 0:
+        die("timeout seconds and budget ms must be positive", 2)
+    measurements: list[float] = []
+    failure = ""
+    for _ in range(args.samples):
+        started = time.monotonic()
+        try:
+            completed = subprocess.run(
+                args.command,
+                shell=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=args.timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            measurements.append((time.monotonic() - started) * 1000)
+            failure = "timeout"
+            break
+        measurements.append((time.monotonic() - started) * 1000)
+        if completed.returncode != 0:
+            failure = f"exit_{completed.returncode}"
+            break
+    ordered = sorted(measurements)
+    p95 = ordered[(95 * len(ordered) + 99) // 100 - 1]
+    observation_args = argparse.Namespace(
+        candidate=args.candidate,
+        check=args.check,
+        subject=args.subject,
+        result="fail" if failure else "pass",
+        detail=failure,
+        measured_ms=p95,
+        budget_ms=args.budget_ms,
+        at=args.at,
+    )
+    event = record_observation(path, observation_args)
+    event["samples"] = len(measurements)
+    event["p95_ms"] = p95
+    return event
+
+
 def reconcile_action(verdict: dict) -> str:
     if verdict["verdict"] == "red":
         return "heal"
@@ -827,6 +893,94 @@ def reconcile_action(verdict: dict) -> str:
     if verdict["verdict"] == "green":
         return "promote-eligible"
     return "wait-next-check"
+
+
+def action_token(verdict: dict) -> str:
+    """Group repeat reconciler ticks under one dispatched action attempt."""
+    evidence = str(verdict.get("evidence") or "")
+    if evidence.startswith("restart["):
+        evidence_key = evidence
+    else:
+        evidence_key = evidence.split("[", 1)[0]
+    return json.dumps(
+        {
+            "candidate": verdict["candidate"],
+            "action": verdict["action"],
+            "subject": verdict.get("subject") or "",
+            "evidence": evidence_key,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def queue_heal_if_new(path: Path, verdict: dict) -> bool:
+    """Queue one durable heal per failure class; ticks never count as attempts."""
+    if verdict["action"] != "heal":
+        return False
+    token = action_token(verdict)
+
+    def inner() -> bool:
+        for event in load_events(path):
+            if event.get("record_type") == "heal_queue" and event.get("action_token") == token:
+                return False
+        append_event(
+            path,
+            {
+                "record_type": "heal_queue",
+                "ts": verdict["at"],
+                "candidate": verdict["candidate"],
+                "subject": verdict.get("subject") or "build",
+                "evidence": verdict["evidence"],
+                "action_token": token,
+                "status": "queued",
+            },
+        )
+        return True
+
+    return lock_and_run(path, inner)
+
+
+def reserve_action_dispatch(path: Path, verdict: dict) -> bool:
+    """Record a dispatch attempt before execution so a later tick cannot repeat it."""
+    token = action_token(verdict)
+
+    def inner() -> bool:
+        for event in load_events(path):
+            if event.get("record_type") == "action_dispatch" and event.get("action_token") == token:
+                return False
+        append_event(
+            path,
+            {
+                "record_type": "action_dispatch",
+                "ts": utc_now(),
+                "candidate": verdict["candidate"],
+                "action": verdict["action"],
+                "subject": verdict.get("subject") or "",
+                "evidence": verdict["evidence"],
+                "action_token": token,
+                "status": "started",
+            },
+        )
+        return True
+
+    return lock_and_run(path, inner)
+
+
+def finish_action_dispatch(path: Path, verdict: dict, status: str) -> None:
+    lock_and_run(
+        path,
+        lambda: append_event(
+            path,
+            {
+                "record_type": "action_dispatch_result",
+                "ts": utc_now(),
+                "candidate": verdict["candidate"],
+                "action_token": action_token(verdict),
+                "status": status,
+            },
+        ),
+    )
 
 
 def reconcile(path: Path, args: argparse.Namespace) -> dict:
@@ -865,12 +1019,18 @@ def reconcile(path: Path, args: argparse.Namespace) -> dict:
         return verdict
 
     verdict = lock_and_run(path, inner)
+    if not args.dry_run:
+        verdict["heal_queued"] = queue_heal_if_new(path, verdict)
+    else:
+        verdict["heal_queued"] = False
     if args.execute_actions:
         command = args.action_command or os.environ.get("LAST_STACK_CANARY_V2_ACTION_CMD", "")
         if not command:
             die("--execute-actions requires --action-command or LAST_STACK_CANARY_V2_ACTION_CMD", 2)
         if args.dry_run:
             verdict["action_dispatch"] = "dry-run"
+        elif not reserve_action_dispatch(path, verdict):
+            verdict["action_dispatch"] = "already-dispatched"
         else:
             env = {
                 **os.environ,
@@ -881,11 +1041,69 @@ def reconcile(path: Path, args: argparse.Namespace) -> dict:
             }
             completed = subprocess.run(command, shell=True, env=env)
             verdict["action_dispatch"] = "ok" if completed.returncode == 0 else f"exit_{completed.returncode}"
+            finish_action_dispatch(path, verdict, verdict["action_dispatch"])
             if completed.returncode != 0:
                 die(f"short action failed: exit {completed.returncode}")
     else:
         verdict["action_dispatch"] = "planned"
     return verdict
+
+
+def channel_state(path: Path, args: argparse.Namespace) -> dict:
+    if args.cutover_hold_hours < 0:
+        die("cutover hold hours must be non-negative", 2)
+    now = parse_required_ts(args.at, "channel timestamp") if args.at else dt.datetime.now(dt.timezone.utc)
+    window_seconds = args.window_seconds
+    if window_seconds is None:
+        window_seconds = env_float("LAST_STACK_CANARY_V2_WINDOW_SECONDS", 24 * 60 * 60.0)
+    if window_seconds < 0:
+        die("window seconds must be non-negative", 2)
+
+    events = load_events(path)
+    latest_verdicts: dict[str, dict] = {}
+    for event in events:
+        if event.get("record_type") != "reconciler":
+            continue
+        candidate = str(event.get("candidate") or "")
+        if candidate:
+            latest_verdicts[candidate] = event
+    green_candidates = [event for event in latest_verdicts.values() if event.get("verdict") == "green"]
+    stable = max(green_candidates, key=lambda event: str(event.get("ts") or ""), default=None)
+
+    primary_verdict = latest_verdicts.get(args.main_build)
+    primary_boots = [
+        event
+        for event in events
+        if event.get("record_type") == "boot" and event.get("candidate") == args.main_build
+    ]
+    hold = False
+    remaining_seconds: float | None = None
+    if args.incoming_build and not args.incoming_fixes_red and primary_verdict is not None:
+        if primary_verdict.get("verdict") == "window-open" and primary_boots:
+            newest_boot = max(primary_boots, key=lambda event: str(event.get("ts") or ""))
+            started = event_timestamp(newest_boot)
+            if started is not None:
+                remaining_seconds = max(0.0, window_seconds - (now - started).total_seconds())
+                hold = 0.0 < remaining_seconds <= args.cutover_hold_hours * 60 * 60
+
+    return {
+        "primary": {
+            "build": args.main_build,
+            "verdict": str(primary_verdict.get("verdict")) if primary_verdict else "unverified",
+            "tracks_main": True,
+        },
+        "stable": {
+            "build": str(stable.get("candidate")) if stable else "",
+            "verdict": "green" if stable else "none",
+        },
+        "cutover": {
+            "incoming_build": args.incoming_build,
+            "hold": hold,
+            "reason": "quiet_window_near_complete" if hold else "allowed",
+            "remaining_seconds": remaining_seconds,
+            "incoming_fixes_red": args.incoming_fixes_red,
+        },
+    }
 
 
 def append_event(path: Path, event: dict) -> None:
@@ -2228,6 +2446,8 @@ def main(argv: list[str]) -> int:
         emit(sync_boot_ledger(path, args), args.json)
     elif args.command == "record-observation":
         emit(record_observation(path, args), args.json)
+    elif args.command == "observe-command":
+        emit(observe_command(path, args), args.json)
     elif args.command == "reconcile":
         verdict = reconcile(path, args)
         if args.json:
@@ -2240,6 +2460,8 @@ def main(argv: list[str]) -> int:
                 f"boots={verdict['boot_count']} observations={verdict['observation_count']}"
                 f"{dry_suffix(args.dry_run)}"
             )
+    elif args.command == "channels":
+        emit(channel_state(path, args), args.json)
     elif args.command == "promote-prepare":
         promote_prepare(path, args)
     elif args.command == "promote-execute":
