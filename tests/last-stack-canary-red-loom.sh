@@ -272,31 +272,71 @@ assert d.get("idle") is True and d.get("reason")=="no_failed_in_window", d'
 grep -q 'idempotency_key' "$LISTER" \
   || fail "lister drops idempotency_key from the row"
 
-# --- an empty listing is an ERROR, never a quiet lane ---
+# --- an empty listing is a noop, never a fleet error ---
+# Seed a stale resume key first: the gate must drop it when the listing
+# has no lastdb-canary-release execution in the window.
+printf '%s\n' '{"ts":"2026-09-01T12:58:48Z","status":"unavailable","exec_id":"lx-20260901T125848.060-84424-1","detail":"reason=listing_stale","key":"canary-red-lx-20260901T125848.060-84424-1","outcome":"error","engine":"loom"}' \
+  >"$tmp/stamp.json"
 printf '%s\n' '[]' >"$tmp/empty.json"
 set +e
 empty_out="$(CANARY_RED_LOOM_LIST_FILE="$tmp/empty.json" "$BIN" --dry-run --json --quiet)"
 empty_rc=$?
 set -e
-[ "$empty_rc" -eq 3 ] || fail "empty listing must exit 3, got $empty_rc: $empty_out"
-printf '%s\n' "$empty_out" | grep -q 'no_executions_in_window' \
-  || fail "empty listing missing no_executions_in_window: $empty_out"
-printf '%s\n' "$empty_out" | grep -q 'outcome=error' \
-  || fail "empty listing must report outcome=error: $empty_out"
+[ "$empty_rc" -eq 0 ] || fail "empty listing must exit 0, got $empty_rc: $empty_out"
+printf '%s\n' "$empty_out" | grep -q 'listing_stale' \
+  || fail "empty listing missing listing_stale: $empty_out"
+printf '%s\n' "$empty_out" | grep -q 'outcome=noop' \
+  || fail "empty listing must report outcome=noop: $empty_out"
+python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("outcome") == "noop", d
+assert d.get("exec_id") in ("", None), d
+assert d.get("key") in ("", None), d
+' "$tmp/stamp.json" || fail "empty listing did not drop the stale exec key: $(cat "$tmp/stamp.json")"
 
-# --- a listing whose newest row predates the window is ERROR, not idle ---
+# --- a listing whose newest row predates the window is also noop ---
 cat >"$tmp/stale.json" <<'JSON'
 [{"id":"lx-20200101T000000.000-1-1","definition_name":"lastdb-canary-release","status":"failed","state":"FAILED","updated_at":"2020-01-01T00:00:00.000Z"}]
 JSON
+printf '%s\n' '{"ts":"2026-09-01T12:58:48Z","status":"unavailable","exec_id":"lx-20200101T000000.000-1-1","detail":"reason=listing_stale","key":"canary-red-lx-20200101T000000.000-1-1","outcome":"error","engine":"loom"}' \
+  >"$tmp/stamp.json"
 set +e
 stale_out="$(CANARY_RED_LOOM_LIST_FILE="$tmp/stale.json" "$BIN" --dry-run --json --quiet)"
 stale_rc=$?
 set -e
-[ "$stale_rc" -eq 3 ] || fail "stale listing must exit 3, got $stale_rc: $stale_out"
+[ "$stale_rc" -eq 0 ] || fail "stale listing must exit 0, got $stale_rc: $stale_out"
 printf '%s\n' "$stale_out" | grep -q 'listing_stale' \
   || fail "stale listing missing listing_stale: $stale_out"
+printf '%s\n' "$stale_out" | grep -q 'outcome=noop' \
+  || fail "stale listing must report outcome=noop: $stale_out"
 printf '%s\n' "$stale_out" | grep -qv 'failed_too_old' \
   || fail "stale listing must not report the old failed_too_old idle reason: $stale_out"
+python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("outcome") == "noop", d
+assert d.get("exec_id") in ("", None), d
+assert d.get("key") in ("", None), d
+' "$tmp/stamp.json" || fail "stale listing did not drop the stale exec key: $(cat "$tmp/stamp.json")"
+
+# Live (non-dry-run) empty listing: same noop, no loom needed.
+printf '%s\n' '{"ts":"2026-09-01T12:58:48Z","status":"unavailable","exec_id":"lx-20260901T125848.060-84424-1","detail":"reason=listing_stale","key":"canary-red-lx-20260901T125848.060-84424-1","outcome":"error","engine":"loom"}' \
+  >"$tmp/stamp.json"
+set +e
+live_empty_out="$(CANARY_RED_LOOM_LIST_FILE="$tmp/empty.json" "$BIN" --json --quiet --no-heal)"
+live_empty_rc=$?
+set -e
+[ "$live_empty_rc" -eq 0 ] || fail "live empty listing must exit 0, got $live_empty_rc: $live_empty_out"
+printf '%s\n' "$live_empty_out" | grep -q 'ROUTINE_RESULT outcome=noop' \
+  || fail "live empty listing missing ROUTINE_RESULT outcome=noop: $live_empty_out"
+python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("outcome") == "noop", d
+assert d.get("exec_id") in ("", None), d
+assert d.get("key") in ("", None), d
+' "$tmp/stamp.json" || fail "live empty listing did not drop the stale exec key: $(cat "$tmp/stamp.json")"
 
 # stand-in scripts (no live agent)
 cat >"$tmp/get.json" <<'JSON'
