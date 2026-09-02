@@ -194,6 +194,7 @@ ci_test tests/last-stack-kanban-decision-check.sh
 ci_test tests/last-stack-sanitize-structured-fields.sh
 ci_test tests/last-stack-board-closeout-sweep-logic.sh
 ci_test tests/last-stack-board-closeout-sweep.sh
+ci_test tests/last-stack-board-closeout-stale-list-row.sh
 ci_test tests/last-stack-board-closeout-merge-proof-guard.sh
 ci_test tests/last-stack-board-closeout-evidence-freshness.sh
 ci_test tests/last-stack-loom-reaper.sh
