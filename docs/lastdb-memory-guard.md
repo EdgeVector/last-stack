@@ -78,6 +78,11 @@ launchctl list | awk '$3 ~ /lastdbd-memory-guard/ { print $3 }'
 If the node is unavailable, the guard does not use RSS as a substitute for
 footprint. It writes a warning and takes no action for that cycle.
 
+`--identity` prefers `GET /api/system/boot-identity` with a 1 s budget. On
+HTTP 404 only, it reads pid and build from `GET /api/status` and prints
+`identity_source=status_fallback`. A down socket, a timeout, or an empty
+status body still fails. The guard does not restart the primary for identity.
+
 Fixtures: `tests/last-stack-lastdb-memory-guard.sh` (in the required CI gate).
 
 ## Companion host guards

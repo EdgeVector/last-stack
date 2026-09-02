@@ -192,6 +192,28 @@ status_build() {
   printf '%s\n' "${v:-unknown}"
 }
 
+# Split a curl body that ends with a newline plus the write-out HTTP code.
+# Empty code means the socket did not answer. Callers own the timeout.
+split_http_body() {
+  local blob="$1"
+  IDENTITY_HTTP_CODE=""
+  IDENTITY_BODY=""
+  if [ -z "$blob" ]; then
+    return 1
+  fi
+  IDENTITY_HTTP_CODE=$(printf '%s\n' "$blob" | sed -n '$p')
+  IDENTITY_BODY=$(printf '%s\n' "$blob" | sed '$d')
+  return 0
+}
+
+unix_get() {
+  local url="$1"
+  curl -s --max-time "$IDENTITY_TIMEOUT_SEC" --unix-socket "$SOCKET" \
+    -H 'X-LastDB-Client: lastdb-memory-guard' \
+    -w '\n%{http_code}' \
+    "$url" 2>/dev/null || true
+}
+
 # footprint_mb + peak_mb from the primary's own socket. Empty on any failure —
 # callers fall back to rss and say so.
 STATUS_BODY=""
@@ -204,25 +226,57 @@ read_status() {
     http://localhost/api/status 2>/dev/null || true)
 }
 
+identity_from_status() {
+  # 404-only fallback. A timeout, empty body, or down socket stays a failure.
+  local expected_pid="$1" blob status_pid start build_value
+  blob=$(unix_get "http://localhost/api/status")
+  split_http_body "$blob" || return 1
+  if [ "$IDENTITY_HTTP_CODE" != "200" ] || [ -z "$IDENTITY_BODY" ]; then
+    return 1
+  fi
+  status_pid=$(printf '%s' "$IDENTITY_BODY" | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' | head -1)
+  if [ -z "$status_pid" ]; then
+    status_pid="$expected_pid"
+  fi
+  start=$(status_field "$IDENTITY_BODY" process_start_ts)
+  if [ -z "$start" ]; then
+    start=0
+  fi
+  build_value=$(status_build "$IDENTITY_BODY")
+  if [ "$status_pid" != "$expected_pid" ] || [ -z "$build_value" ] || [ "$build_value" = "unknown" ]; then
+    return 1
+  fi
+  printf 'pid=%s process_start_ts=%s build=%s identity_source=status_fallback\n' \
+    "$status_pid" "$start" "$build_value"
+}
+
 identity() {
-  local expected_pid identity_pid start build_value body
+  local expected_pid identity_pid start build_value blob
   expected_pid=$(primary_pid || true)
   if [ -z "$expected_pid" ]; then
     return 1
   fi
-  # `boot-identity` is a one-row session-ledger read. Do not call
-  # `/api/status`: that route builds a much larger snapshot and its timeout is
-  # evidence of a build failure, not a reason to hide identity.
-  body=$(curl -s --max-time "$IDENTITY_TIMEOUT_SEC" --unix-socket "$SOCKET" \
-    -H 'X-LastDB-Client: lastdb-memory-guard' \
-    http://localhost/api/system/boot-identity 2>/dev/null || true)
-  identity_pid=$(printf '%s' "$body" | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' | head -1)
-  start=$(printf '%s' "$body" | sed -n 's/.*"process_start_ts":\([0-9][0-9]*\).*/\1/p' | head -1)
-  build_value=$(printf '%s' "$body" | sed -n 's/.*"build":"\([^"]*\)".*/\1/p' | head -1)
+  # Prefer the one-row boot-identity read. Call /api/status only when that
+  # route is absent (HTTP 404). A timeout or down socket is still a failure.
+  blob=$(unix_get "http://localhost/api/system/boot-identity")
+  if ! split_http_body "$blob"; then
+    return 1
+  fi
+  if [ "$IDENTITY_HTTP_CODE" = "404" ]; then
+    identity_from_status "$expected_pid"
+    return $?
+  fi
+  if [ "$IDENTITY_HTTP_CODE" != "200" ]; then
+    return 1
+  fi
+  identity_pid=$(printf '%s' "$IDENTITY_BODY" | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' | head -1)
+  start=$(printf '%s' "$IDENTITY_BODY" | sed -n 's/.*"process_start_ts":\([0-9][0-9]*\).*/\1/p' | head -1)
+  build_value=$(printf '%s' "$IDENTITY_BODY" | sed -n 's/.*"build":"\([^"]*\)".*/\1/p' | head -1)
   if [ -z "$identity_pid" ] || [ "$identity_pid" != "$expected_pid" ] || [ -z "$start" ] || [ -z "$build_value" ]; then
     return 1
   fi
-  printf 'pid=%s process_start_ts=%s build=%s\n' "$identity_pid" "$start" "$build_value"
+  printf 'pid=%s process_start_ts=%s build=%s identity_source=boot_identity\n' \
+    "$identity_pid" "$start" "$build_value"
 }
 
 # Slug for the restart notice.
