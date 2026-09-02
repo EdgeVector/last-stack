@@ -78,4 +78,27 @@ if run_harness live >"$WORK/placeholder-run.out" 2>&1; then
 fi
 [ "$(sed -n '1p' "$report")" = FAIL ] || fail "placeholder evidence did not leave a FAIL report"
 
+# Exercise the public installed-style entry point with the real pipeline. The
+# stage stub above cannot catch a parser mismatch between the harness and the
+# command that an installed artifact runs.
+public_reports="$WORK/public-reports"
+mkdir -p "$public_reports"
+public_report="$public_reports/north-star-lastdb-canary-pipeline-v2.md"
+if NORTH_STAR_PROOF_DIR="$public_reports" \
+  "$ROOT/bin/last-stack-north-star-proof" --live north-star-lastdb-canary-pipeline-v2 \
+  >"$WORK/public-live.out" 2>&1; then
+  fail "public live proof passed before the real evidence aggregators exist"
+fi
+
+[ "$(sed -n '1p' "$public_report")" = FAIL ] || fail "public live proof did not fail closed"
+grep -q '^PROOF_VERDICT=FAIL$' "$WORK/public-live.out" \
+  || fail "public live proof did not print PROOF_VERDICT=FAIL"
+grep -q '^CANARY_PIPELINE_PROOF result=ok dry_run=1 ' "$public_report" \
+  || fail "public live proof did not reach the real pipeline"
+grep -q 'exactly one BOOT_LEDGER evidence line' "$public_report" \
+  || fail "public live proof failed for a reason other than missing real evidence"
+if grep -q 'unrecognized arguments: --live' "$public_report"; then
+  fail "public live proof still rejects the --live parser contract"
+fi
+
 echo "PASS last-stack-north-star-proof-canary-pipeline-v2"
