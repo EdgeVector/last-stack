@@ -191,8 +191,11 @@ Raw `kanban add` for Kind:pr skips this gate.
 - `kanban add <slug> --title "..." --column todo --body "..."` — NOTE:
   `--body` REPLACES the whole body. To edit an existing card,
   `kanban show <slug>` first, concatenate, then re-add with the full new body.
+- `kanban mark <slug> "<line>"` appends one PROGRESS/HANDOFF line. Do not
+  pass `--note` or `--line`; both exit 2 with `Unknown option`. MCP
+  `fkanban_mark` is the structured equivalent.
 - Only `list`, `search`, and `add` take `--board`; `show`, `move`, `rm`,
-  `rank`, `dep`, and `tag` use the default board implicitly and reject it.
+  `rank`, `dep`, `tag`, and `mark` use the default board implicitly and reject it.
 - Every new card needs `--north-star <slug>` or an `## END STATE` section in
   the body, and if it names a repo, the `Repo:` line must be a bare
   `owner/name` token alone on its line (no comments or prose after it).
@@ -231,7 +234,13 @@ daemon restart):
 ```bash
 lastdb status    # host vitals + short request-ops summary
 lastdb ops       # full worst-offender tables (client, kind, schema, ms, count)
+lastdb ops --by-app   # compact app/verb rows for parsers
 ```
+
+`lastdb ops` has no `--json`. That flag exits 2 with
+`unexpected argument '--json' found`. Use the text tables, or `--by-app`
+for the compact key-value contract. Do not scrape a JSON mode that does
+not exist.
 
 Or read `status.request_ops` on `GET /api/status` over the socket. Rankings:
 `top_by_total_ms` (who eats wall time), `top_by_count` (chatty callers),
