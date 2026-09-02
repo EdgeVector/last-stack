@@ -51,10 +51,14 @@ if [ -z "$candidate" ]; then
 fi
 
 if [ -z "$candidate" ] || [ "$candidate" = "unknown" ]; then
-  printf 'CANARY_V2_GATE result=error evidence=candidate_identity_absent\n'
-  printf 'ROUTINE_RESULT outcome=error detail=candidate_identity_absent\n'
+  "$pipeline" record-line-event --check primary_identity --subject observer --result fail \
+    --detail absent >/dev/null || true
+  printf 'CANARY_V2_GATE result=error subject=observer evidence=candidate_identity_absent\n'
+  printf 'ROUTINE_RESULT outcome=error detail=line_stopped=primary_identity_absent\n'
   exit 0
 fi
+
+"$pipeline" record-line-event --check primary_identity --subject observer --result pass >/dev/null
 
 sync_args=(--json sync-boot-ledger --candidate "$candidate")
 if [ -n "${LAST_STACK_CANARY_V2_BOOT_LEDGER_CMD:-}" ]; then

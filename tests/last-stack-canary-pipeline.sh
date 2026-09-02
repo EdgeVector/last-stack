@@ -748,4 +748,16 @@ out="$("$CLI" --state-dir "$v2_dir" --json observe-command --candidate command-f
 [ "$(printf '%s\n' "$out" | jq -r '.passed')" = "false" ]
 [ "$(printf '%s\n' "$out" | jq -r '.detail')" = "exit_7" ]
 
+# A candidate-independent identity absence is durable observer evidence. The
+# next successful identity read clears the line without blaming a build.
+"$CLI" --state-dir "$v2_dir" record-line-event --check primary_identity \
+  --subject observer --result pass --detail timeout --at '2026-09-01T00:00:00Z' >/dev/null
+out="$("$CLI" --state-dir "$v2_dir" --json line-status)"
+[ "$(printf '%s\n' "$out" | jq -r '.state')" = "line-stopped" ]
+[ "$(printf '%s\n' "$out" | jq -r '.subject')" = "observer" ]
+"$CLI" --state-dir "$v2_dir" record-line-event --check primary_identity \
+  --subject observer --result pass --at '2026-09-01T00:01:00Z' >/dev/null
+out="$("$CLI" --state-dir "$v2_dir" --json line-status)"
+[ "$(printf '%s\n' "$out" | jq -r '.state')" = "clear" ]
+
 echo "PASS last-stack-canary-pipeline"

@@ -363,6 +363,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     command_observe.add_argument("--budget-ms", type=float, required=True)
     command_observe.add_argument("--at", default="", help="observation timestamp in ISO-8601 UTC")
 
+    line_event = sub.add_parser("record-line-event", help="append durable observer or host line evidence")
+    add_common_ledger_flags(line_event)
+    line_event.add_argument("--check", required=True)
+    line_event.add_argument("--subject", required=True, choices=("observer", "host"))
+    line_event.add_argument("--result", required=True, choices=("pass", "fail"))
+    line_event.add_argument("--detail", default="")
+    line_event.add_argument("--at", default="", help="observation timestamp in ISO-8601 UTC")
+    sub.add_parser("line-status", help="read the latest durable observer or host line state")
+
     reconcile = sub.add_parser("reconcile", help="compute and record a stateless v2 verdict")
     add_common_ledger_flags(reconcile)
     reconcile.add_argument("--candidate", required=True)
@@ -879,6 +888,43 @@ def observe_command(path: Path, args: argparse.Namespace) -> dict:
     event["samples"] = len(measurements)
     event["p95_ms"] = p95
     return event
+
+
+def record_line_event(path: Path, args: argparse.Namespace) -> dict:
+    observed_at = args.at or utc_now()
+    parse_required_ts(observed_at, "line event timestamp")
+    detail = args.detail
+    passed = args.result == "pass"
+    if any(word in detail.lower() for word in ("timeout", "absent", "missing")):
+        passed = False
+    event = {
+        "record_type": "line_event",
+        "ts": observed_at,
+        "check": args.check,
+        "subject": args.subject,
+        "passed": passed,
+        "detail": detail,
+    }
+    lock_and_run(path, lambda: append_event(path, event))
+    return event
+
+
+def line_status(path: Path) -> dict:
+    events = [event for event in load_events(path) if event.get("record_type") == "line_event"]
+    if not events:
+        return {"state": "clear", "subject": "", "evidence": "no_line_events"}
+    latest = max(events, key=lambda event: str(event.get("ts") or ""))
+    if latest.get("passed") is False:
+        return {
+            "state": "line-stopped",
+            "subject": str(latest.get("subject") or "observer"),
+            "evidence": str(latest.get("detail") or latest.get("check") or "line_event"),
+        }
+    return {
+        "state": "clear",
+        "subject": str(latest.get("subject") or ""),
+        "evidence": str(latest.get("check") or "line_event"),
+    }
 
 
 def reconcile_action(verdict: dict) -> str:
@@ -2448,6 +2494,10 @@ def main(argv: list[str]) -> int:
         emit(record_observation(path, args), args.json)
     elif args.command == "observe-command":
         emit(observe_command(path, args), args.json)
+    elif args.command == "record-line-event":
+        emit(record_line_event(path, args), args.json)
+    elif args.command == "line-status":
+        emit(line_status(path), args.json)
     elif args.command == "reconcile":
         verdict = reconcile(path, args)
         if args.json:

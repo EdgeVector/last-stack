@@ -23,7 +23,8 @@ run_gate() {
   DOGFOOD_CALLS="$calls" \
   LAST_STACK_CANARY_V2_DOGFOOD="$dogfood" \
   LAST_STACK_CANARY_V2_PIPELINE="$PIPELINE" \
-  "$GATE"
+  LAST_STACK_CANARY_V2_PRIMARY_IDENTITY_CMD="printf '%s\\n' 'pid=800 process_start_ts=1 build=vcurrent'" \
+    "$GATE"
 }
 
 : >"$calls"
@@ -52,6 +53,19 @@ printf '%s\n' "$hold_out" | grep -q 'result=noop candidate=vnext primary=vcurren
 printf '%s\n' "$hold_out" | grep -q 'ROUTINE_RESULT outcome=noop detail=cutover_hold=quiet_window_near_complete'
 test "$(wc -l <"$calls" | tr -d ' ')" -eq 1
 grep -q -- '--dry-run --json' "$calls"
+
+# An absent primary identity stops the line and writes durable observer evidence.
+: >"$calls"
+missing_out="$(DOGFOOD_CALLS="$calls" \
+  LAST_STACK_CANARY_PIPELINE_DIR="$tmp/missing-identity" \
+  LAST_STACK_CANARY_V2_DOGFOOD="$dogfood" \
+  LAST_STACK_CANARY_V2_PIPELINE="$PIPELINE" \
+  LAST_STACK_CANARY_V2_PRIMARY_IDENTITY_CMD='exit 9' \
+  "$GATE")"
+printf '%s\n' "$missing_out" | grep -q 'result=error subject=observer evidence=primary_identity_absent'
+"$PIPELINE" --state-dir "$tmp/missing-identity" --json line-status \
+  | jq -e '.state == "line-stopped" and .subject == "observer"' >/dev/null
+test ! -s "$calls"
 
 if rg -n 'lastdb-canary-release|SOAK_WAIT|last-stack-canary-loom' "$GATE"; then
   echo 'the v2 dogfood gate starts the retired release graph' >&2
