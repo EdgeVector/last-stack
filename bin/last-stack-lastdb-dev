@@ -1,0 +1,617 @@
+#!/usr/bin/env bash
+# last-stack-lastdb-dev — one-command LastDB dev node on a CoW copy of the real home.
+#
+# The inner loop for LastDB (fold) development: build `lastdbd` from a worktree,
+# boot it against a PERSISTENT copy-on-write clone of ~/.lastdb with the
+# primary's LASTDB_* tuning mirrored from its LaunchAgent, and point the
+# brain / kanban / lastdb CLIs at that node instead of the primary.
+#
+# Why this exists: the only prior way to run a candidate binary on real data was
+# the smoke gate, which is verdict-only and pays a full clone plus a full rm -rf
+# on EVERY run (measured 283 s + 445 s on the primary, 2026-08-27). Here the
+# clone persists across restarts, so an edit -> build -> restart cycle costs one
+# incremental build plus one boot. `refresh` re-clones on demand.
+#
+# Never touches the live primary home:
+#   - the dev home is compared by realpath against the primary before any
+#     clone, boot, or delete, and a symlinked dev home is refused;
+#   - the node is always started with --data-dir <dev home>, and LASTDB_HOME /
+#     FOLDDB_HOME are overridden to the dev home for that process;
+#   - cloud_sync.json* is stripped from the clone so the dev node can never
+#     publish backups with the primary's credentials;
+#   - stop/reset only signal a pid this tool started, and only after its argv
+#     is verified to carry `--data-dir <dev home>`.
+#
+# Usage:
+#   lastdb-dev up [--worktree DIR | --bin PATH | --canary | --staged]
+#                 [--release] [--fresh] [--no-wait] [--env K=V]...
+#   lastdb-dev build [--worktree DIR] [--release]
+#   lastdb-dev restart [same flags as up]
+#   lastdb-dev refresh             stop, re-clone the dev home from the primary, restart if it was up
+#   lastdb-dev status [--json]
+#   lastdb-dev logs [-f] [-n N]
+#   lastdb-dev stop
+#   lastdb-dev env                 print export lines:  eval "$(lastdb-dev env)"
+#   lastdb-dev run -- <cmd...>     run one command against the dev node
+#   lastdb-dev shell               subshell whose brain/kanban/lastdb hit the dev node
+#   lastdb-dev reset               stop, delete the dev home and staged binaries
+#
+# Binary selection for `up` (first match wins):
+#   --bin PATH        use this lastdbd
+#   --canary          the staged canary build of current main (last-stack-canary-resolve-lastdbd)
+#   --staged          the binary from the last `build`
+#   --worktree DIR    build lastdbd from this fold worktree, then stage it
+#   (none)            a fold worktree from $PWD, $LASTDB_DEV_WORKTREE, or the last
+#                     build's worktree -> build; else the staged binary; else --canary
+#
+# Environment:
+#   LASTDB_DEV_HOME            dev home           (default ~/.lastdb-dev)
+#   LASTDB_DEV_STATE           tool state         (default ~/.local/state/lastdb-dev)
+#   LASTDB_DEV_PRIMARY_HOME    home to clone      (default ~/.lastdb)
+#   LASTDB_LAUNCHD_PLIST       primary LaunchAgent plist whose LASTDB_* env the node inherits
+#   LASTDB_DEV_WORKTREE        default fold worktree for build
+#   LASTDB_DEV_BOOT_TIMEOUT    seconds to wait for identity (default 600)
+#   LASTDB_DEV_SCHEMA_WAIT     seconds to wait for schemas after identity (default 300)
+#   LASTDB_DEV_MIN_MIB         available-memory floor that only WARNS (default 4096)
+#   LASTDB_DEV_DEBUG_STACK_BYTES  RUST_MIN_STACK applied to debug builds (default 64 MiB)
+#
+# Exit: 0 ok · 1 failure · 2 usage
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+DEV_HOME="${LASTDB_DEV_HOME:-$HOME/.lastdb-dev}"
+STATE="${LASTDB_DEV_STATE:-$HOME/.local/state/lastdb-dev}"
+PRIMARY_HOME="${LASTDB_DEV_PRIMARY_HOME:-$HOME/.lastdb}"
+resolve_launchd_plist() {
+  # Same discovery order as lastdb-safe-upgrade: explicit env, then the loaded
+  # job whose label looks like the primary daemon, then a LaunchAgent plist by
+  # that label pattern. No host-specific label is hard-coded here.
+  local label plist
+  if [ -n "${LASTDB_LAUNCHD_PLIST:-}" ]; then printf '%s\n' "$LASTDB_LAUNCHD_PLIST"; return 0; fi
+  label="${LASTDB_LAUNCHD_LABEL:-}"
+  [ -n "$label" ] || label="$(launchctl list 2>/dev/null | awk '{print $3}' \
+    | grep -E '\.lastdbd-primary(-[0-9]+)?$' | grep -v '^com\.REPLACE\.' | head -1 || true)"
+  if [ -n "$label" ]; then printf '%s\n' "$HOME/Library/LaunchAgents/$label.plist"; return 0; fi
+  for plist in "$HOME"/Library/LaunchAgents/*.lastdbd-primary*.plist; do
+    [ -f "$plist" ] || continue
+    printf '%s\n' "$plist"; return 0
+  done
+  return 0
+}
+LAUNCHD_PLIST="$(resolve_launchd_plist)"
+BOOT_TIMEOUT="${LASTDB_DEV_BOOT_TIMEOUT:-600}"
+SCHEMA_WAIT="${LASTDB_DEV_SCHEMA_WAIT:-300}"
+MIN_MIB="${LASTDB_DEV_MIN_MIB:-4096}"
+SOCK="$DEV_HOME/data/folddb.sock"
+RESTART=0
+PIDFILE="$STATE/node.pid"
+LOG="$STATE/boot.log"
+CLIENT_NAME="lastdb-dev"
+
+say()  { printf 'lastdb-dev: %s\n' "$*"; }
+warn() { printf 'lastdb-dev: WARN %s\n' "$*" >&2; }
+die()  { printf 'lastdb-dev: ERROR %s\n' "$*" >&2; exit 1; }
+usage() { sed -n '2,60p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+now()  { date +%s; }
+iso()  { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# ---------- safety: the dev home must never alias the primary ----------
+realpath_of() { (cd "$1" 2>/dev/null && pwd -P) || true; }
+primary_real() {
+  local r
+  r="$(realpath_of "$PRIMARY_HOME")"
+  [ -n "$r" ] || die "primary home $PRIMARY_HOME does not resolve to a directory"
+  printf '%s\n' "$r"
+}
+assert_dev_home_is_not_primary() {
+  local p d
+  p="$(primary_real)"
+  case "$DEV_HOME" in
+    "$p"|"$p"/*) die "dev home $DEV_HOME is inside the primary home $p" ;;
+  esac
+  [ -L "$DEV_HOME" ] && die "dev home $DEV_HOME is a symlink (would alias another home)"
+  if [ -d "$DEV_HOME" ]; then
+    d="$(realpath_of "$DEV_HOME")"
+    [ "$d" = "$p" ] && die "dev home $DEV_HOME resolves to the primary home $p"
+    case "$d" in "$p"/*) die "dev home resolves inside the primary home $p" ;; esac
+  fi
+  return 0
+}
+
+# ---------- process helpers ----------
+node_pid() {
+  local pid
+  [ -f "$PIDFILE" ] || return 1
+  pid="$(tr -d '[:space:]' <"$PIDFILE")"
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  printf '%s\n' "$pid"
+}
+pid_is_ours() {
+  # The pid must still be a process started on OUR dev home. Never trust a
+  # pidfile alone: pids get recycled, and the wrong one could be the primary.
+  local pid="$1" argv
+  argv="$(ps -o command= -p "$pid" 2>/dev/null || true)"
+  case "$argv" in
+    *"--data-dir $DEV_HOME"*|*"--data-dir=$DEV_HOME"*) return 0 ;;
+  esac
+  return 1
+}
+rss_mib() { ps -o rss= -p "$1" 2>/dev/null | awk '{printf "%d", $1/1024}'; }
+
+# ---------- HTTP over the dev socket ----------
+dev_get() {
+  curl -sS --max-time "${2:-5}" --unix-socket "$SOCK" \
+    -H "X-LastDB-Client: $CLIENT_NAME" "http://localhost$1" 2>/dev/null
+}
+identity_hash() { dev_get /api/system/auto-identity 5 | jq -r '.user_hash // empty' 2>/dev/null || true; }
+schema_count()  { dev_get /api/schemas 60 | jq -r '.schemas | length' 2>/dev/null || true; }
+
+# ---------- memory preflight (warn only) ----------
+available_mib() {
+  local pagesize free inactive spec
+  pagesize="$(vm_stat 2>/dev/null | awk '/page size of/ { gsub("\\.", "", $8); print $8; exit }')"
+  [ -n "$pagesize" ] || pagesize="$(pagesize 2>/dev/null || echo 16384)"
+  free="$(vm_stat 2>/dev/null | awk '/Pages free/ {gsub("\\.","",$3); print $3; exit}')"
+  inactive="$(vm_stat 2>/dev/null | awk '/Pages inactive/ {gsub("\\.","",$3); print $3; exit}')"
+  spec="$(vm_stat 2>/dev/null | awk '/Pages speculative/ {gsub("\\.","",$3); print $3; exit}')"
+  [ -n "$free" ] || { echo ""; return 0; }
+  echo $(( (${free:-0} + ${inactive:-0} + ${spec:-0}) * pagesize / 1048576 ))
+}
+memory_preflight() {
+  local avail
+  avail="$(available_mib)"
+  [ -n "$avail" ] || return 0
+  if [ "$avail" -lt "$MIN_MIB" ]; then
+    warn "only ${avail} MiB available (floor ${MIN_MIB} MiB); a real-data boot next to the primary may squeeze the machine"
+  fi
+}
+
+# ---------- primary env mirror ----------
+# Shared with lastdb-safe-upgrade (HR-N1): a probe that boots without the
+# primary's LASTDB_* env is not running the primary's database — e.g. the
+# atom key encoding var decides whether 950k atom bodies are addressable.
+# Never invent a second env-mirror; source the one the upgrade path uses.
+LIVE_ENV_SH="$ROOT/skills/lastdb-safe-upgrade/scripts/live-lastdb-env.sh"
+mirror_env_lines() {
+  if [ -f "$LIVE_ENV_SH" ]; then
+    # shellcheck source=/dev/null
+    . "$LIVE_ENV_SH"
+    live_lastdb_env_pairs "$LAUNCHD_PLIST"
+  elif [ -f "$LAUNCHD_PLIST" ]; then
+    warn "shared env mirror $LIVE_ENV_SH missing; reading the plist directly"
+    /usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables' "$LAUNCHD_PLIST" 2>/dev/null \
+      | awk -F' = ' '
+          $1 ~ /^ *LASTDB_/ {
+            key=$1; gsub(/^ +| +$/,"",key)
+            if (key == "LASTDB_HOME" || key == "FOLDDB_HOME" || key == "LASTDB_DATA_DIR") next
+            val=$2; gsub(/^ +| +$/,"",val)
+            if (key != "" && val != "") print key "=" val
+          }'
+  fi
+}
+
+# ---------- clone ----------
+clone_from_primary() {
+  local p tmp ts old start
+  assert_dev_home_is_not_primary
+  p="$(primary_real)"
+  mkdir -p "$STATE" "$(dirname "$DEV_HOME")"
+  tmp="$DEV_HOME.clone-$$"
+  rm -rf "$tmp"
+  say "cloning $p -> $DEV_HOME (APFS copy-on-write; sockets are skipped)"
+  start="$(now)"
+  # cp -cR is an instant per-file clone on APFS. The live sockets cannot be
+  # copied, so cp exits non-zero even on a good clone; judge by the result.
+  cp -cR "$p" "$tmp" 2>"$STATE/clone.err" || true
+  if [ -s "$STATE/clone.err" ]; then
+    # grep -v exits 1 when every line is a socket complaint; with pipefail that
+    # must not abort the clone (it did, silently, on the first real run).
+    { grep -v -E '\.sock|app-sock|Operation not supported on socket' "$STATE/clone.err" || true; } \
+      | head -5 | while IFS= read -r l; do warn "clone: $l"; done
+  fi
+  [ -d "$tmp/data" ] || die "clone incomplete: no data/ under $tmp ($(head -1 "$STATE/clone.err" 2>/dev/null))"
+  [ ! -L "$tmp" ] || die "clone is a symlink (would alias the live home)"
+  rm -f "$tmp/data/folddb.sock" "$tmp/data/folddb-full.sock" "$tmp/data.app-sock" 2>/dev/null || true
+  # Never let a dev node publish to Exemem with the primary's credentials, and
+  # never race the primary's backup publisher.
+  rm -f "$tmp"/cloud_sync.json* 2>/dev/null || true
+  rm -f "$tmp/current-session.json" 2>/dev/null || true
+  if [ -e "$DEV_HOME" ]; then
+    ts="$(date +%Y%m%dT%H%M%S)"
+    old="$DEV_HOME.old-$ts"
+    mv "$DEV_HOME" "$old"
+    mv "$tmp" "$DEV_HOME"
+    # Deleting a 13 GB clone is the slow half of the smoke gate; do it off the
+    # critical path so the new node can boot right away.
+    (nohup rm -rf "$old" >/dev/null 2>&1 &)
+    say "previous dev home is being removed in the background ($old)"
+  else
+    mv "$tmp" "$DEV_HOME"
+  fi
+  printf '%s primary=%s\n' "$(iso)" "$p" >"$STATE/clone.stamp"
+  say "clone ready in $(( $(now) - start ))s"
+}
+
+# ---------- worktree + build ----------
+is_fold_worktree() { [ -n "${1:-}" ] && [ -f "$1/lastdb_node/Cargo.toml" ]; }
+resolve_worktree() {
+  # $1 = explicit --worktree (may be empty). Prints a path or nothing.
+  local cand top
+  for cand in "${1:-}" "${LASTDB_DEV_WORKTREE:-}"; do
+    if [ -n "$cand" ]; then
+      is_fold_worktree "$cand" && { (cd "$cand" && pwd -P); return 0; }
+      die "$cand is not a fold worktree (no lastdb_node/Cargo.toml)"
+    fi
+  done
+  top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  if is_fold_worktree "$top"; then printf '%s\n' "$top"; return 0; fi
+  if [ -f "$STATE/worktree" ]; then
+    cand="$(cat "$STATE/worktree")"
+    is_fold_worktree "$cand" && { printf '%s\n' "$cand"; return 0; }
+  fi
+  return 0
+}
+do_build() {
+  # $1 = worktree, $2 = profile (debug|release). Stages the binary OUT of
+  # target/ (cargo clippy in the same target dir deletes target/debug/lastdbd).
+  local wt="$1" profile="$2" start bin sha dirty stage ver
+  start="$(now)"
+  say "building lastdbd ($profile) in $wt"
+  if [ "$profile" = release ]; then
+    (cd "$wt" && cargo build --release -p lastdb_node --bin lastdbd)
+  else
+    (cd "$wt" && cargo build -p lastdb_node --bin lastdbd)
+  fi
+  bin="$wt/target/$profile/lastdbd"
+  [ -x "$bin" ] || die "build produced no binary at $bin"
+  sha="$(git -C "$wt" rev-parse --short HEAD 2>/dev/null || echo nogit)"
+  dirty=""
+  [ -z "$(git -C "$wt" status --porcelain --untracked-files=no 2>/dev/null)" ] || dirty="-dirty"
+  mkdir -p "$STATE/bin"
+  stage="$STATE/bin/lastdbd-$sha$dirty-$profile"
+  cp "$bin" "$stage"
+  ln -sfn "$stage" "$STATE/bin/lastdbd"
+  ver="$("$stage" --version 2>/dev/null | head -1 || true)"
+  printf '%s\n' "$wt" >"$STATE/worktree"
+  printf 'kind=build\nworktree=%s\nsha=%s%s\nprofile=%s\nversion=%s\nbuilt_at=%s\n' \
+    "$wt" "$sha" "$dirty" "$profile" "$ver" "$(iso)" >"$STATE/source"
+  say "staged $stage (${ver:-unknown}) in $(( $(now) - start ))s"
+}
+staged_bin() { [ -x "$STATE/bin/lastdbd" ] && printf '%s\n' "$STATE/bin/lastdbd"; }
+canary_bin() {
+  local r out
+  r="$(command -v last-stack-canary-resolve-lastdbd 2>/dev/null || true)"
+  [ -n "$r" ] || r="$ROOT/bin/last-stack-canary-resolve-lastdbd"
+  [ -x "$r" ] || return 1
+  out="$("$r" --json --allow-newest --allow-current 2>/dev/null || true)"
+  [ "$(printf '%s' "$out" | jq -r '.status // empty')" = ok ] || return 1
+  printf '%s' "$out" | jq -r '.lastdbd // empty'
+}
+record_source() {
+  # $1 kind, $2 path
+  printf 'kind=%s\nbin=%s\nversion=%s\nselected_at=%s\n' \
+    "$1" "$2" "$("$2" --version 2>/dev/null | head -1 || true)" "$(iso)" >"$STATE/source"
+}
+
+# ---------- boot ----------
+boot_node() {
+  # $1 = binary; remaining = extra K=V env
+  local bin="$1"; shift
+  local -a env_pairs=()
+  local line pid start
+  [ -x "$bin" ] || die "lastdbd not executable: $bin"
+  assert_dev_home_is_not_primary
+  [ -d "$DEV_HOME/data" ] || clone_from_primary
+  if pid="$(node_pid)"; then
+    die "dev node already running (pid $pid). Use: lastdb-dev restart"
+  fi
+  rm -f "$SOCK" 2>/dev/null || true
+  mkdir -p "$STATE"
+  memory_preflight
+  while IFS= read -r line; do
+    [ -n "$line" ] && env_pairs+=("$line")
+  done <<EOF_ENV
+$(mirror_env_lines)
+EOF_ENV
+  for line in "$@"; do env_pairs+=("$line"); done
+  # An unoptimized lastdbd overflows the UDS worker stack on a real home even
+  # with the 8 MiB floor the pool sets (proved 2026-09-02: debug build of main
+  # f356d5c19 aborted on first request over ~/.lastdb; RUST_MIN_STACK=32 MiB
+  # booted and served 1248 schemas). The pool takes the LARGER of its floor and
+  # RUST_MIN_STACK, so raise it for debug builds unless the caller already did.
+  # Address space only; pages are committed lazily.
+  if [ "$(sed -n 's/^profile=//p' "$STATE/source" 2>/dev/null)" = debug ] \
+     && ! printf '%s\n' ${env_pairs[@]+"${env_pairs[@]}"} | grep -q '^RUST_MIN_STACK='; then
+    env_pairs+=("RUST_MIN_STACK=${LASTDB_DEV_DEBUG_STACK_BYTES:-67108864}")
+  fi
+  {
+    printf '# %s boot env (mirrored from %s)\n' "$(iso)" "$LAUNCHD_PLIST"
+    printf '%s\n' ${env_pairs[@]+"${env_pairs[@]}"}
+  } >"$STATE/boot.env"
+  [ -f "$LOG" ] && mv -f "$LOG" "$LOG.1"
+  say "booting $bin ($("$bin" --version 2>/dev/null | head -1 || echo '?'))"
+  say "  data-dir $DEV_HOME"
+  say "  env      ${env_pairs[*]:-<none>}"
+  start="$(now)"
+  # A dev node is never the primary: no crash telemetry, no cloud sync
+  # (cloud_sync.json was stripped from the clone).
+  nohup env -u SENTRY_DSN -u FOLD_SENTRY_DSN -u OBS_SENTRY_DSN \
+    ${env_pairs[@]+"${env_pairs[@]}"} \
+    LASTDB_HOME="$DEV_HOME" FOLDDB_HOME="$DEV_HOME" \
+    "$bin" --data-dir "$DEV_HOME" >"$LOG" 2>&1 &
+  pid=$!
+  disown "$pid" 2>/dev/null || true
+  printf '%s\n' "$pid" >"$PIDFILE"
+  printf '%s\n' "$start" >"$STATE/started_at"
+  say "  pid      $pid   log $LOG"
+}
+wait_ready() {
+  local start uh i n sw
+  start="$(cat "$STATE/started_at" 2>/dev/null || now)"
+  uh=""
+  i=0
+  while [ "$i" -lt "$BOOT_TIMEOUT" ]; do
+    node_pid >/dev/null || die "node exited during boot: $(tail -3 "$LOG" 2>/dev/null | tr '\n' ' ')"
+    if [ -S "$SOCK" ]; then
+      uh="$(identity_hash)"
+      [ -n "$uh" ] && break
+    fi
+    sleep 1; i=$((i + 1))
+  done
+  [ -n "$uh" ] || die "identity not ready in ${BOOT_TIMEOUT}s (log: $(tail -3 "$LOG" 2>/dev/null | tr '\n' ' '))"
+  say "identity ready after $(( $(now) - start ))s (user_hash $uh)"
+  # Schemas hydrate for a while after identity on real homes; report, don't fail.
+  sw=0; n=""
+  while [ "$sw" -lt "$SCHEMA_WAIT" ]; do
+    n="$(schema_count)"
+    [ -n "$n" ] && [ "$n" -gt 0 ] 2>/dev/null && break
+    sleep 5; sw=$((sw + 5))
+  done
+  if [ -n "$n" ] && [ "$n" -gt 0 ] 2>/dev/null; then
+    say "schemas $n (after ${sw}s more)"
+  else
+    warn "no schemas after ${SCHEMA_WAIT}s; the node may still be hydrating: lastdb-dev logs -f"
+  fi
+}
+print_ready_hint() {
+  cat <<EOF
+lastdb-dev: UP  socket $SOCK
+lastdb-dev: point the CLIs at it:   eval "\$(lastdb-dev env)"     (or: lastdb-dev shell / lastdb-dev run -- kanban ping)
+EOF
+}
+
+# ---------- stop ----------
+stop_node() {
+  local pid i
+  if ! pid="$(node_pid)"; then
+    rm -f "$PIDFILE"
+    say "dev node not running"
+    return 0
+  fi
+  pid_is_ours "$pid" || die "refusing to signal pid $pid: its argv does not carry --data-dir $DEV_HOME"
+  say "stopping dev node pid $pid"
+  kill "$pid" 2>/dev/null || true
+  i=0
+  while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 30 ]; do sleep 1; i=$((i + 1)); done
+  if kill -0 "$pid" 2>/dev/null; then
+    warn "pid $pid ignored SIGTERM for 30s; sending SIGKILL"
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+  rm -f "$PIDFILE"
+  say "stopped"
+}
+
+# ---------- client env ----------
+write_client_configs() {
+  # Copies of the CLI configs with the socket re-pointed, so BRAIN_CONFIG /
+  # KANBAN_CONFIG select the dev node without touching ~/.brain or ~/.fkanban.
+  local src
+  mkdir -p "$STATE/clients"
+  src="$HOME/.brain/config.json"; [ -f "$src" ] || src="$HOME/.fbrain/config.json"
+  if [ -f "$src" ]; then
+    jq --arg s "$SOCK" --arg h "$DEV_HOME" '.nodeSocketPath = $s' "$src" >"$STATE/clients/brain.json.tmp" \
+      && mv "$STATE/clients/brain.json.tmp" "$STATE/clients/brain.json"
+  fi
+  src="$HOME/.fkanban/config.json"
+  if [ -f "$src" ]; then
+    jq --arg s "$SOCK" '.nodeSocketPath = $s' "$src" >"$STATE/clients/kanban.json.tmp" \
+      && mv "$STATE/clients/kanban.json.tmp" "$STATE/clients/kanban.json"
+  fi
+  # brain caches capabilities and node metadata per config dir; give the dev
+  # node its own copies so a dev grant never overwrites the primary's.
+  if [ -d "$HOME/.brain/capabilities" ] && [ ! -d "$STATE/clients/brain-capabilities" ]; then
+    cp -R "$HOME/.brain/capabilities" "$STATE/clients/brain-capabilities" 2>/dev/null || true
+  fi
+  mkdir -p "$STATE/clients/brain-capabilities" "$STATE/clients/brain-cache"
+}
+print_env() {
+  write_client_configs
+  cat <<EOF
+export LASTDB_DEV_ACTIVE=1
+export LASTDB_HOME='$DEV_HOME'
+export FOLDDB_HOME='$DEV_HOME'
+export LASTDB_SOCKET_PATH='$SOCK'
+export FOLDDB_SOCKET_PATH='$SOCK'
+export FBRAIN_FOLDDB_SOCKET='$SOCK'
+export LAST_STACK_LASTDB_SOCKET='$SOCK'
+export FBRAIN_CAPABILITY_DIR='$STATE/clients/brain-capabilities'
+export FBRAIN_CACHE_DIR='$STATE/clients/brain-cache'
+EOF
+  [ -f "$STATE/clients/brain.json" ]  && printf "export BRAIN_CONFIG='%s'\nexport FBRAIN_CONFIG='%s'\n" "$STATE/clients/brain.json" "$STATE/clients/brain.json"
+  [ -f "$STATE/clients/kanban.json" ] && printf "export KANBAN_CONFIG='%s'\nexport FKANBAN_CONFIG='%s'\n" "$STATE/clients/kanban.json" "$STATE/clients/kanban.json"
+  return 0
+}
+
+# ---------- status ----------
+status_cmd() {
+  local json=0 pid running=false ident="" nsch="" rss="" up_s="" ver="" clone="" src="" wt=""
+  [ "${1:-}" = "--json" ] && json=1
+  if pid="$(node_pid)" && pid_is_ours "$pid"; then
+    running=true
+    rss="$(rss_mib "$pid")"
+    up_s="$(( $(now) - $(cat "$STATE/started_at" 2>/dev/null || now) ))"
+    if [ -S "$SOCK" ]; then
+      ident="$(identity_hash)"
+      [ -n "$ident" ] && nsch="$(schema_count)"
+    fi
+  fi
+  [ -f "$STATE/source" ] && ver="$(sed -n 's/^version=//p' "$STATE/source")" && src="$(sed -n 's/^kind=//p' "$STATE/source")"
+  [ -f "$STATE/worktree" ] && wt="$(cat "$STATE/worktree")"
+  [ -f "$STATE/clone.stamp" ] && clone="$(cut -d' ' -f1 "$STATE/clone.stamp")"
+  if [ "$json" -eq 1 ]; then
+    jq -n --argjson running "$running" --arg pid "${pid:-}" --arg sock "$SOCK" --arg home "$DEV_HOME" \
+      --arg ident "$ident" --arg nsch "$nsch" --arg rss "$rss" --arg up "$up_s" --arg ver "$ver" \
+      --arg src "$src" --arg wt "$wt" --arg clone "$clone" --arg log "$LOG" \
+      '{running:$running, pid:($pid|if .=="" then null else tonumber end), socket:$sock, dev_home:$home,
+        identity_ready:($ident!=""), user_hash:$ident, schemas:($nsch|if .=="" then null else tonumber end),
+        rss_mib:($rss|if .=="" then null else tonumber end), uptime_s:($up|if .=="" then null else tonumber end),
+        binary_version:$ver, binary_source:$src, worktree:$wt, cloned_at:$clone, log:$log}'
+    return 0
+  fi
+  if [ "$running" = true ]; then
+    say "UP   pid $pid  rss ${rss:-?} MiB  uptime ${up_s}s"
+    if [ -n "$ident" ]; then say "     identity ready (user_hash $ident)  schemas ${nsch:-?}"; else say "     socket not answering yet (still booting?)  log: $LOG"; fi
+  else
+    say "DOWN"
+  fi
+  say "     home    $DEV_HOME  (cloned ${clone:-never})"
+  say "     socket  $SOCK"
+  say "     binary  ${ver:-none staged}  (${src:-no source recorded})"
+  [ -n "$wt" ] && say "     worktree $wt"
+  return 0
+}
+
+# ---------- up / restart ----------
+up_cmd() {
+  local wt="" bin="" mode="" profile=debug fresh=0 nowait=0 cand
+  local -a extra=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --worktree) wt="${2:-}"; mode=build; shift 2 ;;
+      --worktree=*) wt="${1#*=}"; mode=build; shift ;;
+      --bin) bin="${2:-}"; mode=bin; shift 2 ;;
+      --bin=*) bin="${1#*=}"; mode=bin; shift ;;
+      --canary) mode=canary; shift ;;
+      --staged) mode=staged; shift ;;
+      --release) profile=release; shift ;;
+      --fresh) fresh=1; shift ;;
+      --no-wait) nowait=1; shift ;;
+      --env) extra+=("${2:-}"); shift 2 ;;
+      --env=*) extra+=("${1#*=}"); shift ;;
+      -h|--help) usage 0 ;;
+      *) echo "lastdb-dev up: unknown argument $1" >&2; usage 2 ;;
+    esac
+  done
+  assert_dev_home_is_not_primary
+  if [ -z "$mode" ]; then
+    cand="$(resolve_worktree "")"
+    if [ -n "$cand" ]; then wt="$cand"; mode=build
+    elif staged_bin >/dev/null; then mode=staged
+    else mode=canary
+    fi
+  fi
+  case "$mode" in
+    bin)
+      [ -x "$bin" ] || die "--bin $bin is not executable"
+      mkdir -p "$STATE"; record_source bin "$bin" ;;
+    build)
+      [ -n "$wt" ] || wt="$(resolve_worktree "")"
+      [ -n "$wt" ] || die "no fold worktree: pass --worktree DIR, set LASTDB_DEV_WORKTREE, or run from inside one"
+      do_build "$wt" "$profile"; bin="$(staged_bin)" ;;
+    staged)
+      bin="$(staged_bin)" || die "nothing staged yet: run lastdb-dev build"
+      say "using staged $(readlink "$bin" 2>/dev/null || echo "$bin")" ;;
+    canary)
+      bin="$(canary_bin)" || die "no canary build resolvable (last-stack-canary-resolve-lastdbd); pass --bin or --worktree"
+      mkdir -p "$STATE"; record_source canary "$bin"
+      say "using canary build $bin" ;;
+  esac
+  if [ "${RESTART:-0}" -eq 1 ] && node_pid >/dev/null; then stop_node; fi
+  if [ "$fresh" -eq 1 ] || [ ! -d "$DEV_HOME/data" ]; then
+    if node_pid >/dev/null; then stop_node; fi
+    clone_from_primary
+  fi
+  boot_node "$bin" ${extra[@]+"${extra[@]}"}
+  if [ "$nowait" -eq 1 ]; then
+    say "not waiting for readiness (--no-wait); watch: lastdb-dev logs -f"
+    return 0
+  fi
+  wait_ready
+  print_ready_hint
+}
+
+# ---------- main ----------
+cmd="${1:-}"
+[ -n "$cmd" ] || usage 2
+shift
+case "$cmd" in
+  up) up_cmd "$@" ;;
+  restart)
+    # Build FIRST, then stop, then boot: a failed build must leave the old
+    # node serving, and the node should not be down for the build's duration.
+    RESTART=1
+    up_cmd "$@" ;;
+  build)
+    wt=""; profile=debug
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --worktree) wt="${2:-}"; shift 2 ;;
+        --worktree=*) wt="${1#*=}"; shift ;;
+        --release) profile=release; shift ;;
+        -h|--help) usage 0 ;;
+        *) echo "lastdb-dev build: unknown argument $1" >&2; usage 2 ;;
+      esac
+    done
+    wt="$(resolve_worktree "$wt")"
+    [ -n "$wt" ] || die "no fold worktree: pass --worktree DIR, set LASTDB_DEV_WORKTREE, or run from inside one"
+    do_build "$wt" "$profile" ;;
+  refresh)
+    was_up=0
+    if node_pid >/dev/null; then was_up=1; stop_node; fi
+    clone_from_primary
+    if [ "$was_up" -eq 1 ]; then
+      bin="$(staged_bin || true)"
+      [ -n "$bin" ] || bin="$(sed -n 's/^bin=//p' "$STATE/source" 2>/dev/null)"
+      [ -x "${bin:-}" ] || die "re-clone done, but no binary to restart with: lastdb-dev up --bin/--worktree/--canary"
+      boot_node "$bin"; wait_ready; print_ready_hint
+    else
+      say "dev home refreshed; start it with: lastdb-dev up"
+    fi ;;
+  status) status_cmd "$@" ;;
+  logs)
+    follow=0; n=80
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -f) follow=1; shift ;;
+        -n) n="${2:-80}"; shift 2 ;;
+        *) echo "lastdb-dev logs: unknown argument $1" >&2; usage 2 ;;
+      esac
+    done
+    [ -f "$LOG" ] || die "no log yet at $LOG"
+    if [ "$follow" -eq 1 ]; then tail -n "$n" -f "$LOG"; else tail -n "$n" "$LOG"; fi ;;
+  stop) stop_node ;;
+  env) print_env ;;
+  run)
+    [ "${1:-}" = "--" ] && shift
+    [ "$#" -gt 0 ] || die "run: give a command after --"
+    node_pid >/dev/null || warn "dev node is not running; the command will hit a dead socket"
+    eval "$(print_env)"
+    exec "$@" ;;
+  shell)
+    node_pid >/dev/null || warn "dev node is not running (lastdb-dev up)"
+    eval "$(print_env)"
+    say "subshell: brain / kanban / lastdb now talk to $SOCK  (exit to leave)"
+    exec "${SHELL:-/bin/bash}" ;;
+  reset)
+    stop_node
+    assert_dev_home_is_not_primary
+    if [ -d "$DEV_HOME" ]; then
+      say "deleting $DEV_HOME"
+      rm -rf "$DEV_HOME"
+    fi
+    rm -rf "${STATE:?}/bin" "${STATE:?}/clients" "$STATE/source" "$STATE/clone.stamp" "$STATE/started_at" 2>/dev/null || true
+    say "reset done (state dir $STATE kept for logs)" ;;
+  -h|--help|help) usage 0 ;;
+  *) echo "lastdb-dev: unknown command $cmd" >&2; usage 2 ;;
+esac
