@@ -284,17 +284,24 @@ esac
 # key re-attaches to the existing execution instead of starting a second one.
 # The retries share the ONE wall-clock deadline below, so this cannot push the
 # gate past routines' GATE_TIMEOUT_CAP_MS.
-RETRY_ATTEMPTS="${LAST_STACK_WHATS_WRONG_LOOM_RETRY_ATTEMPTS:-3}"
-case "$RETRY_ATTEMPTS" in
-  ''|*[!0-9]*) RETRY_ATTEMPTS=3 ;;
-esac
-[ "$RETRY_ATTEMPTS" -ge 1 ] || RETRY_ATTEMPTS=3
+#
+# Drain-aware schedule lives in lib/lastdb-retry-schedule.sh (15s, 45s, 90s,
+# 120s; 5 attempts). A fixed 10 s sleep never reaches a 45 s persist drain
+# (2026-09-02T20:25Z whats-wrong ended error after 30 s of a 780 s budget).
+# LAST_STACK_WHATS_WRONG_LOOM_RETRY_ATTEMPTS / _RETRY_SLEEP_SEC still override.
+# shellcheck source=lib/lastdb-retry-schedule.sh
+. "$ROOT/lib/lastdb-retry-schedule.sh"
+if [ -n "${LAST_STACK_WHATS_WRONG_LOOM_RETRY_ATTEMPTS:-}" ]; then
+  LAST_STACK_LASTDB_RETRY_ATTEMPTS="$LAST_STACK_WHATS_WRONG_LOOM_RETRY_ATTEMPTS"
+fi
+if [ -n "${LAST_STACK_WHATS_WRONG_LOOM_RETRY_SLEEP_SEC:-}" ]; then
+  LAST_STACK_LASTDB_RETRY_SLEEP_SEC="$LAST_STACK_WHATS_WRONG_LOOM_RETRY_SLEEP_SEC"
+fi
+RETRY_ATTEMPTS="$(last_stack_lastdb_retry_default_attempts)"
 
-RETRY_SLEEP_SEC="${LAST_STACK_WHATS_WRONG_LOOM_RETRY_SLEEP_SEC:-10}"
-case "$RETRY_SLEEP_SEC" in
-  ''|*[!0-9]*) RETRY_SLEEP_SEC=10 ;;
-esac
-[ "$RETRY_SLEEP_SEC" -ge 1 ] || RETRY_SLEEP_SEC=10
+# Drain waits are operator-visible even under --quiet: a quiet routine still
+# has to show whether the drain finished or the deadline won.
+drain_log() { printf 'whats-wrong-loom: %s\n' "$*" >&2; }
 
 # Same transient set as last-stack-lastdb-retry. Structural rejects
 # (max_outbox_entries) and agent rate limits are NOT retried.
@@ -480,7 +487,10 @@ trap 'rm -f "$loom_err_file"' EXIT
 # ONE deadline for the whole attempt sequence. Each attempt is handed only the
 # time still left, so N retries cost the same wall clock as no retries.
 loom_deadline=$(( $(date -u +%s) + TIMEOUT_SEC ))
+export LAST_STACK_LASTDB_RETRY_DEADLINE_EPOCH="$loom_deadline"
 attempt=1
+cumulative_wait=0
+ended_reason=""
 view=""
 lrc=0
 
@@ -537,13 +547,26 @@ except subprocess.TimeoutExpired:
     break
   fi
 
-  if [ "$attempt" -lt "$RETRY_ATTEMPTS" ] \
-     && is_transient_lastdb_flap "$loom_err" \
-     && [ "$(( loom_deadline - $(date -u +%s) ))" -gt "$(( RETRY_SLEEP_SEC + 5 ))" ]; then
-    log "loom run rc=${lrc} is a retryable LastDB answer; attempt $((attempt + 1))/${RETRY_ATTEMPTS} in ${RETRY_SLEEP_SEC}s"
-    sleep "$RETRY_SLEEP_SEC"
+  if [ "$attempt" -lt "$RETRY_ATTEMPTS" ] && is_transient_lastdb_flap "$loom_err"; then
+    remaining=$(( loom_deadline - $(date -u +%s) ))
+    sleep_sec="$(last_stack_lastdb_retry_sleep_sec "$attempt")"
+    capped="$(last_stack_lastdb_retry_capped_sleep_sec "$sleep_sec")"
+    ended_reason="$(last_stack_lastdb_retry_reason "$loom_err")"
+    # A 0 s slot is a valid no-wait retry (tests, and a schedule of 0).
+    # Deadline-won is only when the next attempt has no budget, or the
+    # schedule asked for a wait and the cap zeroed it.
+    if [ "$remaining" -le 5 ] || { [ "$capped" -lt 1 ] && [ "$sleep_sec" -gt 0 ]; }; then
+      drain_log "deadline won remaining=${remaining}s answer=${ended_reason} cumulative=${cumulative_wait}s"
+      break
+    fi
+    cumulative_wait=$((cumulative_wait + capped))
+    drain_log "drain wait attempt=$((attempt + 1))/${RETRY_ATTEMPTS} sleep=${capped}s cumulative=${cumulative_wait}s remaining=${remaining}s reason=${ended_reason}"
+    last_stack_lastdb_retry_wait "$capped"
     attempt=$((attempt + 1))
     continue
+  fi
+  if [ -n "$loom_err" ]; then
+    ended_reason="$(last_stack_lastdb_retry_reason "$loom_err")"
   fi
   break
 done
@@ -615,6 +638,7 @@ if [ "$lrc" -ne 0 ] || [ -z "$view" ]; then
   fi
   det="exceptions=${n} healed=0 loom-run-failed rc=${lrc} attempts=${attempt}"
   log "loom run failed rc=$lrc after ${attempt} attempt(s)"
+  drain_log "loom run ended rc=${lrc} after ${attempt} attempt(s) cumulative=${cumulative_wait}s answer=${ended_reason:-unknown}"
   write_stamp failed "" "$det" "$KEY" "error"
   emit_result error "$det"
   exit 3
@@ -630,6 +654,7 @@ if [ "$run_status" != "succeeded" ]; then
   n="$(count_exceptions)"
   [ -n "$det_str" ] || det_str="exceptions=${n} healed=0 status=${run_status:-failed}"
   log "loom exec status=$run_status"
+  drain_log "loom exec status=${run_status} after ${attempt} attempt(s) cumulative=${cumulative_wait}s answer=${ended_reason:-$run_status}"
   write_stamp "${run_status:-failed}" "$exec_id" "$det_str" "$KEY" "error"
   emit_result error "$det_str"
   exit 3
@@ -641,6 +666,7 @@ fi
 if [ -z "$det_str" ]; then
   det_str="ran"
 fi
+drain_log "loom run succeeded after $((attempt - 1)) drain wait(s) cumulative=${cumulative_wait}s answer=ok"
 write_stamp succeeded "$exec_id" "$det_str" "$KEY" "$oc_str"
 
 if [ -x "$ROOT/bin/last-stack-brain-append-heartbeat" ]; then
