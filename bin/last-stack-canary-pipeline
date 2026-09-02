@@ -6,6 +6,7 @@ import datetime as dt
 import fcntl
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -317,6 +318,26 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     boot.add_argument("--cause", default="", help="restart cause; empty means normal startup")
     boot.add_argument("--at", default="", help="observation timestamp in ISO-8601 UTC")
 
+    sync_boots = sub.add_parser(
+        "sync-boot-ledger",
+        help="copy bounded durable Fold boot rows into immutable v2 evidence",
+    )
+    add_common_ledger_flags(sync_boots)
+    sync_boots.add_argument("--candidate", required=True, help="the exact build identifier under evaluation")
+    sync_boots.add_argument(
+        "--boot-ledger-command",
+        default="",
+        help="owner-socket command that returns the Fold boot-ledger JSON",
+    )
+    sync_boots.add_argument(
+        "--boot-ledger-file",
+        type=Path,
+        default=None,
+        help="JSON fixture or captured owner response; used instead of the command",
+    )
+    sync_boots.add_argument("--timeout-seconds", type=float, default=1.0)
+    sync_boots.add_argument("--dry-run", action="store_true")
+
     observe = sub.add_parser("record-observation", help="append an immutable v2 observation row")
     add_common_ledger_flags(observe)
     observe.add_argument("--candidate", required=True)
@@ -559,7 +580,9 @@ def v2_verdict(
 
 
 def record_boot(path: Path, args: argparse.Namespace) -> dict:
-    observed_at = args.at or utc_now()
+    # A reconciliation window begins at the process boot, not the first
+    # collector pass. The explicit --at flag remains useful for fixture input.
+    observed_at = args.at or args.start_ts
     parse_required_ts(observed_at, "boot observation timestamp")
     parse_required_ts(args.start_ts, "boot start timestamp")
     event = {
@@ -571,8 +594,198 @@ def record_boot(path: Path, args: argparse.Namespace) -> dict:
         "build": args.build,
         "cause": args.cause,
     }
-    lock_and_run(path, lambda: append_event(path, event))
-    return event
+    return append_boot_if_new(path, event)
+
+
+def boot_event_key(event: dict) -> tuple[str, str, str, str]:
+    return (
+        str(event.get("candidate") or ""),
+        str(event.get("pid") or ""),
+        str(event.get("start_ts") or ""),
+        str(event.get("build") or ""),
+    )
+
+
+def append_boot_if_new(path: Path, event: dict) -> dict:
+    def inner() -> dict:
+        key = boot_event_key(event)
+        for existing in load_events(path):
+            if existing.get("record_type") == "boot" and boot_event_key(existing) == key:
+                return {**existing, "deduplicated": True}
+        append_event(path, event)
+        return {**event, "deduplicated": False}
+
+    return lock_and_run(path, inner)
+
+
+def epoch_to_iso(value: object, label: str) -> str:
+    try:
+        epoch = float(str(value))
+        converted = dt.datetime.fromtimestamp(epoch, dt.timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        die(f"{label} must be a Unix epoch timestamp", 2)
+    return converted.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def default_boot_ledger_command(timeout_seconds: float) -> str:
+    socket = os.environ.get("LASTDB_SOCKET", str(Path.home() / ".lastdb" / "data" / "folddb.sock"))
+    return (
+        f"curl -fsS --max-time {timeout_seconds:g} --unix-socket {shlex.quote(socket)} "
+        "http://localhost/api/system/boot-ledger"
+    )
+
+
+def append_sync_failure(path: Path, candidate: str, detail: str, dry_run: bool) -> dict:
+    event = {
+        "record_type": "observation",
+        "ts": utc_now(),
+        "candidate": candidate,
+        "check": "boot_ledger",
+        "subject": "observer",
+        "passed": False,
+        "detail": detail,
+    }
+    if not dry_run:
+        lock_and_run(path, lambda: append_event(path, event))
+    return {"candidate": candidate, "result": "failed", "failure": detail, "observation": event}
+
+
+def load_boot_ledger_response(args: argparse.Namespace) -> tuple[dict | None, str | None]:
+    if args.timeout_seconds <= 0:
+        die("timeout seconds must be positive", 2)
+    if args.boot_ledger_file is not None:
+        try:
+            raw = args.boot_ledger_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            return None, f"absent[{exc.__class__.__name__}]"
+    else:
+        command = args.boot_ledger_command or default_boot_ledger_command(args.timeout_seconds)
+        try:
+            completed = subprocess.run(
+                command,
+                shell=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=args.timeout_seconds + 1,
+            )
+        except subprocess.TimeoutExpired:
+            return None, "timeout"
+        if completed.returncode != 0:
+            return None, "absent"
+        raw = completed.stdout
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return None, "absent[invalid_json]"
+    if not isinstance(value, dict):
+        return None, "absent[invalid_shape]"
+    # Accept the direct route body and the standard response envelope.
+    payload = value.get("data", value)
+    if not isinstance(payload, dict):
+        return None, "absent[invalid_shape]"
+    return payload, None
+
+
+def sync_boot_ledger(path: Path, args: argparse.Namespace) -> dict:
+    payload, failure = load_boot_ledger_response(args)
+    if failure is not None:
+        return append_sync_failure(path, args.candidate, failure, args.dry_run)
+    assert payload is not None
+    boots = payload.get("boots")
+    if not isinstance(boots, list):
+        return append_sync_failure(path, args.candidate, "absent[boot_rows_missing]", args.dry_run)
+
+    parsed: list[dict] = []
+    for row in boots:
+        if not isinstance(row, dict):
+            return append_sync_failure(path, args.candidate, "absent[boot_row_invalid]", args.dry_run)
+        pid = row.get("pid")
+        start = row.get("process_start_ts")
+        build = row.get("build")
+        if pid in (None, "") or start in (None, "") or not isinstance(build, str) or not build:
+            return append_sync_failure(path, args.candidate, "absent[boot_row_incomplete]", args.dry_run)
+        parsed.append(
+            {
+                "pid": str(pid),
+                "start_ts": epoch_to_iso(start, "boot process start timestamp"),
+                "build": build,
+                "source_cause": str(row.get("restart_cause") or ""),
+            }
+        )
+
+    candidate_rows = [row for row in parsed if row["build"] == args.candidate]
+    events = [
+        {
+            "record_type": "boot",
+            "ts": row["start_ts"],
+            "candidate": args.candidate,
+            "pid": row["pid"],
+            "start_ts": row["start_ts"],
+            "build": row["build"],
+            "cause": row["source_cause"],
+        }
+        for row in candidate_rows
+    ]
+    # A later, different build ends the candidate's ownership of the channel.
+    # Preserve it as neutral supersession evidence rather than treating the
+    # new build's restart cause as a failure of the retired candidate.
+    if candidate_rows:
+        candidate_start = max(row["start_ts"] for row in candidate_rows)
+        for row in parsed:
+            if row["build"] != args.candidate and row["start_ts"] > candidate_start:
+                events.append(
+                    {
+                        "record_type": "boot",
+                        "ts": row["start_ts"],
+                        "candidate": args.candidate,
+                        "pid": row["pid"],
+                        "start_ts": row["start_ts"],
+                        "build": row["build"],
+                        "cause": "supersession",
+                        "source_cause": row["source_cause"],
+                    }
+                )
+
+    def inner() -> dict:
+        existing = {
+            boot_event_key(event)
+            for event in load_events(path)
+            if event.get("record_type") == "boot"
+        }
+        appended = 0
+        duplicates = 0
+        for event in events:
+            key = boot_event_key(event)
+            if key in existing:
+                duplicates += 1
+                continue
+            if not args.dry_run:
+                append_event(path, event)
+            existing.add(key)
+            appended += 1
+        observation = {
+            "record_type": "observation",
+            "ts": utc_now(),
+            "candidate": args.candidate,
+            "check": "boot_ledger",
+            "subject": "observer",
+            "passed": True,
+            "detail": "bounded_tail_read",
+        }
+        if not args.dry_run:
+            append_event(path, observation)
+        return {
+            "candidate": args.candidate,
+            "result": "ok",
+            "reported_boots": len(parsed),
+            "matched_boots": len(events),
+            "appended_boots": appended,
+            "duplicate_boots": duplicates,
+            "observation": observation,
+        }
+
+    return lock_and_run(path, inner)
 
 
 def record_observation(path: Path, args: argparse.Namespace) -> dict:
@@ -2011,6 +2224,8 @@ def main(argv: list[str]) -> int:
         emit(durable_verdict(args.candidate, boot, observations), args.json)
     elif args.command == "record-boot":
         emit(record_boot(path, args), args.json)
+    elif args.command == "sync-boot-ledger":
+        emit(sync_boot_ledger(path, args), args.json)
     elif args.command == "record-observation":
         emit(record_observation(path, args), args.json)
     elif args.command == "reconcile":

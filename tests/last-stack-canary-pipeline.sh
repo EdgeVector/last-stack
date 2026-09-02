@@ -677,4 +677,31 @@ dry_after="$(wc -l <"$v2_dir/ledger.jsonl" | tr -d ' ')"
 [ "$dry_before" = "$dry_after" ]
 [ "$(printf '%s\n' "$out" | jq -r '.action_dispatch')" = "planned" ]
 
+# The live collector reads only Fold's bounded owner boot ledger. A later build
+# retires the candidate; a failed collector remains named observer evidence,
+# while the missing boot row remains a build failure.
+boot_ledger_json='{"boots":[{"pid":201,"process_start_ts":1788134400,"build":"vcanary","restart_cause":"initial"},{"pid":202,"process_start_ts":1788138000,"build":"vnext","restart_cause":"upgrade"}]}'
+out="$("$CLI" --state-dir "$v2_dir" --json sync-boot-ledger --candidate vcanary \
+  --boot-ledger-command "printf '%s\\n' '$boot_ledger_json'")"
+[ "$(printf '%s\n' "$out" | jq -r '.result')" = "ok" ]
+[ "$(printf '%s\n' "$out" | jq -r '.matched_boots')" = "2" ]
+[ "$(printf '%s\n' "$out" | jq -r '.appended_boots')" = "2" ]
+out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate vcanary \
+  --window-seconds 86400 --at '2026-09-01T02:00:00Z')"
+[ "$(printf '%s\n' "$out" | jq -r '.verdict')" = "superseded" ]
+[ "$(printf '%s\n' "$out" | jq -r '.evidence')" = "restart[supersession]" ]
+out="$("$CLI" --state-dir "$v2_dir" --json sync-boot-ledger --candidate vcanary \
+  --boot-ledger-command "printf '%s\\n' '$boot_ledger_json'")"
+[ "$(printf '%s\n' "$out" | jq -r '.appended_boots')" = "0" ]
+[ "$(printf '%s\n' "$out" | jq -r '.duplicate_boots')" = "2" ]
+
+out="$("$CLI" --state-dir "$v2_dir" --json sync-boot-ledger --candidate vmissing \
+  --boot-ledger-command 'exit 28')"
+[ "$(printf '%s\n' "$out" | jq -r '.result')" = "failed" ]
+[ "$(printf '%s\n' "$out" | jq -r '.failure')" = "absent" ]
+out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate vmissing \
+  --window-seconds 86400 --at '2026-09-01T02:00:00Z')"
+[ "$(printf '%s\n' "$out" | jq -r '.verdict')" = "red" ]
+[ "$(printf '%s\n' "$out" | jq -r '.subject')" = "build" ]
+
 echo "PASS last-stack-canary-pipeline"
