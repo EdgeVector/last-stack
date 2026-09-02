@@ -122,4 +122,42 @@ test "$LAST_STACK_TOOL_BRAIN" = "$fake_home/.local/bin/brain"
 last_stack_require_tools kanban
 test "$LAST_STACK_TOOL_KANBAN" = "$fake_home/.local/bin/kanban"
 
+# Sourcing the prelude alone must make the prescribed
+# `last_stack_run_tool "$LAST_STACK_TOOL_BASH" -c ...` form work, without a
+# prior last_stack_require_tools call.
+# Regression: papercut-last-stack-shell-prelude-empty-tool-bash.
+PATH="/usr/bin:/bin"
+unset LAST_STACK_GLOBAL_PATH LAST_STACK_WORKSPACE LAST_STACK_EDGEVECTOR_ROOT
+unset LAST_STACK_TOOL_BASH LAST_STACK_TOOL_CAT LAST_STACK_TOOL_DF LAST_STACK_TOOL_PS
+LAST_STACK_ROOT="$ROOT"
+export PATH LAST_STACK_ROOT
+. "$ROOT/bin/last-stack-shell-prelude"
+test -n "${LAST_STACK_TOOL_BASH:-}"
+test -x "$LAST_STACK_TOOL_BASH"
+test -n "${LAST_STACK_TOOL_CAT:-}"
+test "$(last_stack_run_tool "$LAST_STACK_TOOL_BASH" -c 'printf seeded-ok')" = "seeded-ok"
+
+# An explicit caller value wins over the seeded default.
+printf '#!/bin/sh\nprintf pinned-ok\n' > "$tmp/pinned-bash"
+chmod +x "$tmp/pinned-bash"
+LAST_STACK_TOOL_BASH="$tmp/pinned-bash"
+export LAST_STACK_TOOL_BASH
+. "$ROOT/bin/last-stack-shell-prelude"
+test "$LAST_STACK_TOOL_BASH" = "$tmp/pinned-bash"
+unset LAST_STACK_TOOL_BASH
+
+# An empty tool path must give a named, actionable error instead of a blank
+# `permission denied:` / `: command not found` from the shell.
+. "$ROOT/bin/last-stack-shell-prelude"
+if last_stack_run_tool "" -c 'echo nope' >/dev/null 2>"$tmp/empty-tool.err"; then
+  echo "expected empty tool path to fail" >&2
+  exit 1
+fi
+grep -q 'LAST_STACK_TOOL_MISSING' "$tmp/empty-tool.err"
+grep -q 'last_stack_require_tools' "$tmp/empty-tool.err"
+if grep -qi 'permission denied' "$tmp/empty-tool.err"; then
+  echo "expected named empty-tool error, not a blank permission-denied" >&2
+  exit 1
+fi
+
 echo "ok"

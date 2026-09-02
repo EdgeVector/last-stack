@@ -151,10 +151,51 @@ $tool"
   fi
 }
 
+# Routine prompts prescribe `last_stack_run_tool "$LAST_STACK_TOOL_BASH" -c ...`
+# immediately after sourcing this prelude. Sourcing alone used to leave every
+# LAST_STACK_TOOL_* unset, so the documented form ran an empty command name.
+# Seed the tools that prescribed form reaches for, best-effort and silently.
+# A value already set by the caller or by last_stack_require_tools always wins;
+# a tool that does not resolve is simply left unset, because this is a
+# convenience and last_stack_require_tools remains the contract.
+# The variable names are literal so that seeding needs no external binary.
+# last_stack_tool_env_name shells out to tr, which a stripped PATH may not have.
+last_stack_seed_default_tools() {
+  for tool_pair in bash:LAST_STACK_TOOL_BASH cat:LAST_STACK_TOOL_CAT \
+    df:LAST_STACK_TOOL_DF ps:LAST_STACK_TOOL_PS
+  do
+    tool="${tool_pair%%:*}"
+    tool_var="${tool_pair#*:}"
+    eval "tool_current=\${$tool_var:-}"
+    if [ -n "$tool_current" ]; then
+      continue
+    fi
+    if tool_path="$(last_stack_resolve_tool "$tool" 2>/dev/null)"; then
+      eval "$tool_var=\$tool_path"
+      export "$tool_var"
+    fi
+  done
+  unset tool_current tool_pair
+  return 0
+}
+
+last_stack_seed_default_tools
+
 last_stack_run_tool() {
   if [ "$#" -eq 0 ]; then
     echo "LAST_STACK_TOOL_MISSING" >&2
     echo "Usage: last_stack_run_tool <tool-path> [args...]" >&2
+    return 127
+  fi
+
+  # An unset LAST_STACK_TOOL_* expands to a quoted empty string, so "$#" is
+  # still nonzero and the empty value reaches the shell as the command name.
+  # That produced a blank `permission denied:` / `: command not found` naming
+  # nothing the caller could act on.
+  if [ -z "$1" ]; then
+    echo "LAST_STACK_TOOL_MISSING" >&2
+    echo "Empty tool path passed to last_stack_run_tool." >&2
+    echo "Remediation: call last_stack_require_tools <tool> in this same shell first, then pass \$LAST_STACK_TOOL_<TOOL>." >&2
     return 127
   fi
 
