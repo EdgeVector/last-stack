@@ -186,6 +186,70 @@ eval "$(awk '
   capture { print }
 ' "$driver")"
 
+# The safe-upgrade producer must arm Fold's boot-ledger evidence before either
+# venue can stop the daemon. It must remove an unconsumed marker if no start
+# request succeeded, and leave a successful-start marker for the new daemon.
+intent_call_line="$(grep -n '^write_upgrade_restart_intent$' "$driver" | cut -d: -f1)"
+sidebin_call_line="$(grep -n '^  live_install_sidebin$' "$driver" | cut -d: -f1)"
+brew_call_line="$(grep -n '^  live_install_brew$' "$driver" | cut -d: -f1)"
+[ -n "$intent_call_line" ] \
+  && [ "$intent_call_line" -lt "$sidebin_call_line" ] \
+  && [ "$intent_call_line" -lt "$brew_call_line" ] || {
+  echo "FAIL: restart intent must precede both live install paths" >&2
+  exit 1
+}
+grep -q 'cleanup_upgrade_restart_intent' "$driver" || {
+  echo "FAIL: safe-upgrade cleanup must remove an unstarted restart intent" >&2
+  exit 1
+}
+grep -q 'RESTART_INTENT_START_REQUESTED=1' "$driver" || {
+  echo "FAIL: a successful supervisor start must preserve the restart intent" >&2
+  exit 1
+}
+
+canary_primary_home="$PRIMARY_HOME"
+intent_home="$test_tmp/restart-intent-home"
+mkdir -p "$intent_home"
+printf '%s\n' '{"pid":4321}' >"$intent_home/current-session.json"
+PRIMARY_HOME="$intent_home"
+RESTART_INTENT_PATH=""
+RESTART_INTENT_START_REQUESTED=0
+write_upgrade_restart_intent
+intent_file="$intent_home/restart-intent.json"
+jq -e '
+  (. | keys | sort) == ["cause", "created_at", "previous_pid"]
+  and .cause == "upgrade"
+  and .previous_pid == 4321
+  and (.created_at | type) == "number"
+  and .created_at > 0
+' "$intent_file" >/dev/null || {
+  echo "FAIL: restart intent does not match the Fold boot-ledger contract" >&2
+  exit 1
+}
+intent_mode="$(stat -f '%Lp' "$intent_file" 2>/dev/null || stat -c '%a' "$intent_file")"
+[ "$intent_mode" = 600 ] || {
+  echo "FAIL: restart intent mode is $intent_mode, expected 600" >&2
+  exit 1
+}
+cleanup_upgrade_restart_intent
+[ ! -e "$intent_file" ] || {
+  echo "FAIL: cleanup kept a marker when no start request succeeded" >&2
+  exit 1
+}
+
+RESTART_INTENT_PATH=""
+write_upgrade_restart_intent
+RESTART_INTENT_START_REQUESTED=1
+cleanup_upgrade_restart_intent
+[ -e "$intent_file" ] || {
+  echo "FAIL: cleanup removed the marker after a successful start request" >&2
+  exit 1
+}
+rm -f "$intent_file"
+PRIMARY_HOME="$canary_primary_home"
+RESTART_INTENT_PATH=""
+RESTART_INTENT_START_REQUESTED=0
+
 run_receipt_case() {
   local mode="$1" expected="$2"
   local case_dir="$test_tmp/case-$mode"

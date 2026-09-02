@@ -177,6 +177,10 @@ proxy is optional later for near-zero client impact.
     `papercut-lastdb-acked-write-lost-loom-terminal-status-regressed`
     (2026-08-18: two read-back-confirmed loom terminal-status writes vanished
     across a restart whose shutdown "did not complete its clean drain").
+    Before the first daemon stop, the driver also writes
+    `restart-intent.json` with the prior session PID and `cause: upgrade`.
+    It removes the marker if no start request succeeds. A successful start
+    leaves the marker for the new daemon's durable boot-ledger append.
     Unreadable sentinels after `LASTDB_DURABILITY_READ_WAIT_S` (default 120s)
     are also RED — durability UNPROVEN. Rolling back the binary does not
     recover lost writes; a RED here means audit recent writes across apps
@@ -323,7 +327,7 @@ The script:
 | **2. Probe** | `BIN=<candidate>` CoW smoke harness (never live home) + **CAS mutation bar** (ephemeral candidate node: false `expected` → 409) + **RSS settle/sample** vs memory-guard limit + **latency bar**: cold then hot Board point-read / scan (like-to-like vs baseline CoW); hot `brain put` write; geo-mean on the hot triple only |
 | Detect venue | sidebin vs brew |
 | **2b. DEV photograph stamp** | Live cutover **refused** without a GREEN receipt: ephemeral/CoW (never `~/.lastdb`) uploaded the photograph to **DEV** (not the primary's production backup home) and CAS-flipped `backup/latest`. `--check-dev-stamp` exercises this gate alone. |
-| **3. Live** | **durability canary armed** (N run-unique sentinels returned `durable` + read back on the old daemon, before any live change), then sidebin atomic install + LaunchAgent job-definition reload **or** brew upgrade/restart |
+| **3. Live** | **durability canary armed** (N run-unique sentinels returned `durable` + read back on the old daemon, before any live change), boot-ledger restart intent armed, then sidebin atomic install + LaunchAgent job-definition reload **or** brew upgrade/restart |
 | **4. Post-check** | Live `/health`, schemas > 0, Board title, **LaunchAgent config parity** (missing process env keys WARN; `LASTDB_LIVE_CONFIG_ENFORCE=1` → RED), **LaunchAgent loaded + live pid is that job** (a nohup `--data-dir` start is RED), **durability canary read-back** (stale nonce → RED, no skip flag), **live peak RSS** vs guard, **live point-read + kanban list latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency + durability in notice |
 | **4b. Release** | After GREEN, delete the rollback point and its empty root. GREEN probe-only and operator abort release it too. |
 | RED | Exit 1, retain the one rollback point, print its path, TTL, and cleanup owner; primary untouched if class/probe failed |

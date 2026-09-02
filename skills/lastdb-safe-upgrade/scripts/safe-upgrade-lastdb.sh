@@ -295,11 +295,16 @@ retain_rollback_point() {
 OWNER_LOCK_DIR="${LASTDB_SAFE_UPGRADE_OWNER_LOCK_DIR:-/tmp/lastdb-safe-upgrade-owner-${UID:-$(id -u)}.lock.d}"
 OWNER_LOCK_TOKEN="$$.$RANDOM.$(date +%s 2>/dev/null || echo 0)"
 OWNER_LOCK_HELD=0
+RESTART_INTENT_PATH=""
+RESTART_INTENT_START_REQUESTED=0
 
 cleanup_work() {
   local rc=$?
   [ -n "${WORK:-}" ] && [ -d "$WORK" ] && rm -rf "$WORK"
   [ -n "${CUTOVER_LOCK:-}" ] && rm -f "$CUTOVER_LOCK"
+  if type cleanup_upgrade_restart_intent >/dev/null 2>&1; then
+    cleanup_upgrade_restart_intent
+  fi
   if [ "${ROLLBACK_READY:-0}" -eq 1 ]; then
     if [ "$rc" -eq 0 ]; then
       release_rollback_point
@@ -495,6 +500,38 @@ DURABILITY_N="${LASTDB_DURABILITY_CANARY_N:-4}"
 DURABILITY_READ_WAIT_S="${LASTDB_DURABILITY_READ_WAIT_S:-120}"
 DURABILITY_SLUG_PREFIX="lastdb-safe-upgrade-durability-canary"
 DURABILITY_NONCE=""
+
+cleanup_upgrade_restart_intent() {
+  [ "${RESTART_INTENT_START_REQUESTED:-0}" -eq 0 ] || return 0
+  [ -n "${RESTART_INTENT_PATH:-}" ] || return 0
+  [ -e "$RESTART_INTENT_PATH" ] || return 0
+  rm -f "$RESTART_INTENT_PATH"
+  log "restart intent: removed after the cutover stopped before a successful start request"
+}
+
+write_upgrade_restart_intent() {
+  local current_session="$PRIMARY_HOME/current-session.json"
+  if [ ! -s "$current_session" ]; then
+    log "restart intent: no current session record; the daemon will use its clean-exit and build-change fallback"
+    return 0
+  fi
+
+  local previous_pid intent_tmp
+  previous_pid="$(jq -er 'if (.pid | type) == "number" and .pid > 0 then .pid else error("invalid pid") end' "$current_session" 2>/dev/null)" \
+    || die "restart intent: current session has no valid pid ($current_session)"
+  RESTART_INTENT_PATH="$PRIMARY_HOME/restart-intent.json"
+  intent_tmp="${RESTART_INTENT_PATH}.tmp.$$"
+  if ! (
+    umask 077
+    printf '{"cause":"upgrade","previous_pid":%s,"created_at":%s}\n' \
+      "$previous_pid" "$(date +%s)" >"$intent_tmp"
+    mv -f "$intent_tmp" "$RESTART_INTENT_PATH"
+  ); then
+    rm -f "$intent_tmp"
+    die "restart intent: could not atomically write $RESTART_INTENT_PATH"
+  fi
+  log "restart intent: armed cause=upgrade previous_pid=$previous_pid path=$RESTART_INTENT_PATH"
+}
 
 durability_slug() { printf '%s-%d' "$DURABILITY_SLUG_PREFIX" "$1"; }
 
@@ -1074,6 +1111,7 @@ live_install_sidebin() {
     page_human "safe-upgrade: primary lastdbd is UNLOADED — bootstrap retries exhausted for ${LAUNCHD_LABEL}. Recover: launchctl bootstrap gui/${uid} ${LAUNCHD_PLIST}"
     die "launchd job-definition reload failed after bootstrap retries; the primary is UNLOADED. Recover: launchctl bootstrap gui/${uid} ${LAUNCHD_PLIST} then launchctl print gui/${uid}/${LAUNCHD_LABEL}"
   fi
+  RESTART_INTENT_START_REQUESTED=1
 
   # Wait for a LIVE listener + /health. A leftover folddb.sock inode is
   # still `-S` after bootout; waiting only for the inode reports
@@ -1164,6 +1202,7 @@ live_install_brew() {
   brew upgrade edgevector/lastdb/lastdb 2>&1 \
     || die "brew upgrade failed (primary may still be running if brew was not supervising it). Check launchd/sidebin. Backup: $BACKUP"
   brew services start lastdb || die "brew services start lastdb failed"
+  RESTART_INTENT_START_REQUESTED=1
 }
 
 # --- preflight ---------------------------------------------------------------
@@ -1610,6 +1649,11 @@ durability_write_sentinels
 CUTOVER_T0="$(date +%s)"
 
 assert_launchd_label_usable
+
+# The daemon consumes this marker only after it durably appends the next boot
+# row. Cleanup removes it when this script aborts before a successful start
+# request. A successful start leaves it for the new daemon.
+write_upgrade_restart_intent
 
 if [ "$VENUE" = "sidebin" ]; then
   live_install_sidebin
