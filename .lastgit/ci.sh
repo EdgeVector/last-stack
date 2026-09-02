@@ -73,16 +73,32 @@ if [ -z "$CI_SHARD_INDEX" ]; then
     done
 
     shard_failed=0
-    for shard_pid in "${shard_pids[@]}"; do
-      if ! wait "$shard_pid"; then shard_failed=1; fi
-    done
+    failed_shards=""
     shard_index=0
-    while [ "$shard_index" -lt "$CI_SHARD_COUNT" ]; do
-      cat "$CI_SHARD_LOG_DIR/$shard_index.log"
+    for shard_pid in "${shard_pids[@]}"; do
+      if ! wait "$shard_pid"; then shard_failed=1; failed_shards="${failed_shards} ${shard_index}"; fi
       shard_index=$((shard_index + 1))
     done
+    # Passing shards first, failing shards last. lastgit ci status stores a
+    # 12KB tail of the concatenated stream; a failing shard in the middle
+    # used to vanish behind later PASS lines plus the bare summary.
+    shard_index=0
+    while [ "$shard_index" -lt "$CI_SHARD_COUNT" ]; do
+      case " ${failed_shards} " in
+        *" ${shard_index} "*) ;;
+        *)
+          echo "----- last-stack CI shard ${shard_index} ok -----"
+          cat "$CI_SHARD_LOG_DIR/$shard_index.log"
+          ;;
+      esac
+      shard_index=$((shard_index + 1))
+    done
+    for failed_index in $failed_shards; do
+      echo "----- last-stack CI shard ${failed_index} FAILED -----"
+      cat "$CI_SHARD_LOG_DIR/$failed_index.log"
+    done
     if [ "$shard_failed" -ne 0 ]; then
-      echo "last-stack required CI shard failed" >&2
+      echo "last-stack required CI shard failed shards=${failed_shards# }" >&2
       exit 1
     fi
     exit 0
@@ -94,6 +110,7 @@ ci_test() {
   local test_slot=$((ci_test_index % CI_SHARD_COUNT))
   ci_test_index=$((ci_test_index + 1))
   [ "$test_slot" -eq "$CI_SHARD_INDEX" ] || return 0
+  echo "ci_test start: $*"
   bash "$@"
 }
 

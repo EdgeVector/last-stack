@@ -12,12 +12,20 @@ grep -Fq 'test_slot=$((ci_test_index % CI_SHARD_COUNT))' "$CI" || {
   echo "required CI must assign each test to exactly one shard" >&2
   exit 1
 }
-grep -Fq 'if ! wait "$shard_pid"; then shard_failed=1; fi' "$CI" || {
+grep -Fq 'if ! wait "$shard_pid"; then shard_failed=1; failed_shards="${failed_shards} ${shard_index}"; fi' "$CI" || {
   echo "required CI must wait for every shard and keep any failure" >&2
   exit 1
 }
 grep -Fq 'if [ "$shard_failed" -ne 0 ]' "$CI" || {
   echo "required CI must fail when one shard fails" >&2
+  exit 1
+}
+grep -Fq 'echo "ci_test start: $*"' "$CI" || {
+  echo "required CI must print each scheduled test path before it runs" >&2
+  exit 1
+}
+grep -Fq 'echo "----- last-stack CI shard ${failed_index} FAILED -----"' "$CI" || {
+  echo "required CI must emit failing shard logs last so the status tail names them" >&2
   exit 1
 }
 
