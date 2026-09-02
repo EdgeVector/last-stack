@@ -16,6 +16,42 @@ chmod +x "$BIN" "$ROOT/harness/north-star/feature-delivery-effective-flow/run.sh
 python3 -m py_compile "$BIN"
 bash -n "$ROOT/harness/north-star/feature-delivery-effective-flow/run.sh"
 
+# The probe add must use a milestone that belongs to the proof board. Pairing
+# the default-board ship milestone with the proof board is the live FAIL:
+# `Card board "feature-delivery-effective-flow-proof" does not match milestone
+# "feature-delivery-effective-flow-v1" (default).` This block fails on that
+# old pairing and on a kanban add that still returns the mismatch string.
+python3 - "$BIN" <<'PY'
+import runpy
+import sys
+
+module = runpy.run_path(sys.argv[1])
+argv = module["probe_card_add_argv"]()
+board = argv[argv.index("--board") + 1]
+milestone = argv[argv.index("--milestone") + 1]
+if board != module["PROBE_BOARD"]:
+    raise SystemExit(f"probe add board is {board!r}")
+if milestone != module["PROBE_MILESTONE"]:
+    raise SystemExit(f"probe add milestone is {milestone!r}")
+if milestone == module["MILESTONE"]:
+    raise SystemExit("probe add still uses the default-board ship milestone")
+
+err = (
+    'kanban: Card board "feature-delivery-effective-flow-proof" does not match '
+    'milestone "feature-delivery-effective-flow-v1" (default).'
+)
+try:
+    module["raise_if_board_milestone_mismatch"](err, "kanban add")
+except module["ProofError"] as exc:
+    text = str(exc)
+    if "does not match milestone" not in text:
+        raise SystemExit(f"mismatch helper hid the live error: {text}")
+else:
+    raise SystemExit("mismatch helper did not fail on the live error string")
+
+module["raise_if_board_milestone_mismatch"]('{"slug":"ok"}', "kanban add")
+PY
+
 # The live proof must follow the current admission pair. It must not require
 # this proof's North Star to retain a feature-creation slot forever.
 mkdir -p "$TMP/admission/get"
