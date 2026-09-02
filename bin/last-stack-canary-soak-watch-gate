@@ -110,7 +110,8 @@ if [ "$verdict_rc" -ne 0 ]; then
 fi
 
 verdict="$(printf '%s\n' "$verdict_json" | jq -r '.verdict // "invalid"')"
-subject="$(printf '%s\n' "$verdict_json" | jq -r '.subject // "none"')"
+subject="$(printf '%s\n' "$verdict_json" | jq -r '.subject // empty')"
+[ -n "$subject" ] || subject=none
 action="$(printf '%s\n' "$verdict_json" | jq -r '.action // "unknown"')"
 detail="$(printf '%s\n' "$verdict_json" | jq -r '.evidence // "unknown"')"
 

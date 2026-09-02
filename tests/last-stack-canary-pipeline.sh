@@ -682,6 +682,18 @@ out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate operator-reset 
   --window-seconds 7200 --at '2026-09-05T02:00:00Z')"
 [ "$(printf '%s\n' "$out" | jq -r '.verdict')" = "window-open" ]
 
+# A completed window with no observation rows is observer failure. Silence
+# cannot certify a build as green.
+"$CLI" --state-dir "$v2_dir" record-boot --candidate silent-window --pid 110 \
+  --start-ts '2026-09-06T00:00:00Z' --build vsilent --at '2026-09-06T00:00:00Z' >/dev/null
+out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate silent-window \
+  --window-seconds 86400 --at '2026-09-07T00:00:00Z')"
+[ "$(printf '%s\n' "$out" | jq -r '.verdict')" = "line-stopped" ]
+[ "$(printf '%s\n' "$out" | jq -r '.subject')" = "observer" ]
+[ "$(printf '%s\n' "$out" | jq -r '.evidence')" = "observations_absent" ]
+[ "$(printf '%s\n' "$out" | jq -r '.action')" = "line-stop" ]
+[ "$(printf '%s\n' "$out" | jq -r '.observation_count')" = "0" ]
+
 # Dry-run plans a fresh verdict but does not append another durable event.
 dry_before="$(wc -l <"$v2_dir/ledger.jsonl" | tr -d ' ')"
 out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate sep0830 --dry-run \
@@ -703,6 +715,8 @@ out="$("$CLI" --state-dir "$v2_dir" --json channels --main-build sep0830 --incom
 
 "$CLI" --state-dir "$v2_dir" record-boot --candidate channel-green --pid 109 \
   --start-ts '2026-08-01T00:00:00Z' --build vgreen >/dev/null
+"$CLI" --state-dir "$v2_dir" record-observation --candidate channel-green --check status \
+  --subject build --result pass --at '2026-08-01T00:01:00Z' >/dev/null
 "$CLI" --state-dir "$v2_dir" reconcile --candidate channel-green --window-seconds 86400 \
   --at '2026-09-01T00:00:00Z' >/dev/null
 out="$("$CLI" --state-dir "$v2_dir" --json channels --main-build channel-green \

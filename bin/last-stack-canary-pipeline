@@ -357,7 +357,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     command_observe.add_argument("--candidate", required=True)
     command_observe.add_argument("--check", required=True)
     command_observe.add_argument("--subject", required=True, choices=sorted(V2_SUBJECTS))
-    command_observe.add_argument("--command", required=True)
+    command_observe.add_argument("--command", dest="probe_command", required=True)
     command_observe.add_argument("--samples", type=int, default=1)
     command_observe.add_argument("--timeout-seconds", type=float, required=True)
     command_observe.add_argument("--budget-ms", type=float, required=True)
@@ -561,7 +561,7 @@ def v2_verdict(
         if not boot.get("pid") or not boot.get("start_ts") or not boot.get("build"):
             return {"candidate": candidate, "verdict": "red", "subject": "build", "evidence": "boot_record_incomplete"}
         cause = str(boot.get("cause") or "").strip().lower()
-        if not cause or cause in {"normal", "startup"}:
+        if not cause or cause in {"initial", "normal", "startup"}:
             continue
         if cause in cause_policy["neutral"]:
             return {"candidate": candidate, "verdict": "superseded", "subject": "build", "evidence": f"restart[{cause}]"}
@@ -575,6 +575,7 @@ def v2_verdict(
     window_start = reset_at or event_timestamp(latest_boot) or parse_required_ts(
         str(latest_boot["start_ts"]), "boot start timestamp"
     )
+    saw_window_observation = False
     for observation in observations:
         subject = str(observation.get("subject") or "")
         if subject not in V2_SUBJECTS:
@@ -582,6 +583,7 @@ def v2_verdict(
         observed_at = event_timestamp(observation)
         if observed_at is not None and observed_at < window_start:
             continue
+        saw_window_observation = True
         evidence = observation_failure(observation)
         if evidence is None:
             continue
@@ -598,6 +600,15 @@ def v2_verdict(
             "verdict": "window-open",
             "subject": "",
             "evidence": "awaiting_quiet_window",
+            "elapsed_seconds": elapsed,
+            "window_seconds": window_seconds,
+        }
+    if not saw_window_observation:
+        return {
+            "candidate": candidate,
+            "verdict": "line-stopped",
+            "subject": "observer",
+            "evidence": "observations_absent",
             "elapsed_seconds": elapsed,
             "window_seconds": window_seconds,
         }
@@ -858,7 +869,7 @@ def observe_command(path: Path, args: argparse.Namespace) -> dict:
         started = time.monotonic()
         try:
             completed = subprocess.run(
-                args.command,
+                args.probe_command,
                 shell=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -912,15 +923,17 @@ def record_line_event(path: Path, args: argparse.Namespace) -> dict:
 def line_status(path: Path) -> dict:
     events = [event for event in load_events(path) if event.get("record_type") == "line_event"]
     if not events:
-        return {"state": "clear", "subject": "", "evidence": "no_line_events"}
+        return {"record_type": "line_status", "state": "clear", "subject": "", "evidence": "no_line_events"}
     latest = max(events, key=lambda event: str(event.get("ts") or ""))
     if latest.get("passed") is False:
         return {
+            "record_type": "line_status",
             "state": "line-stopped",
             "subject": str(latest.get("subject") or "observer"),
             "evidence": str(latest.get("detail") or latest.get("check") or "line_event"),
         }
     return {
+        "record_type": "line_status",
         "state": "clear",
         "subject": str(latest.get("subject") or ""),
         "evidence": str(latest.get("check") or "line_event"),
@@ -1197,6 +1210,18 @@ def emit_record(value: dict) -> None:
         print(
             f"OBSERVATION candidate={value.get('candidate')} check={value.get('check')} "
             f"subject={value.get('subject')} passed={str(value.get('passed')).lower()} result=ok"
+        )
+        return
+    if record_type == "line_event":
+        print(
+            f"LINE_EVENT check={value.get('check')} subject={value.get('subject')} "
+            f"passed={str(value.get('passed')).lower()} result=ok"
+        )
+        return
+    if record_type == "line_status":
+        print(
+            f"LINE_STATUS state={value.get('state')} subject={value.get('subject') or 'none'} "
+            f"evidence={value.get('evidence')}"
         )
         return
     print(

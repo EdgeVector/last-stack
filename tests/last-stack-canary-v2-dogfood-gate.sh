@@ -13,8 +13,8 @@ printf '%s\n' \
   '#!/usr/bin/env bash' \
   'printf "%s\\n" "$*" >>"${DOGFOOD_CALLS:?}"' \
   'case " $* " in' \
-  '  *" --dry-run "*) printf "%s\\n" "{\\"version\\":\\"vnext\\",\\"state\\":\\"dogfood_green\\"}" ;;' \
-  '  *" --cutover "*) printf "%s\\n" "{\\"safe_upgrade\\":\\"loom-cutover-green\\",\\"state\\":\\"dogfood_green\\"}" ;;' \
+  "  *\" --dry-run \"*) printf '%s\\n' '{\"version\":\"vnext\",\"state\":\"dogfood_green\"}' ;;" \
+  "  *\" --cutover \"*) printf '%s\\n' '{\"safe_upgrade\":\"loom-cutover-green\",\"state\":\"dogfood_green\"}' ;;" \
   '  *) exit 2 ;;' \
   'esac' >"$dogfood"
 chmod 755 "$dogfood"

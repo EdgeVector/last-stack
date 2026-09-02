@@ -26,23 +26,6 @@ esac
   exit 0
 }
 
-set +e
-preview="$($dogfood --dry-run --json)"
-preview_rc=$?
-set -e
-if [ "$preview_rc" -ne 0 ]; then
-  printf 'CANARY_V2_DOGFOOD result=error evidence=candidate_absent\n'
-  printf 'ROUTINE_RESULT outcome=error detail=candidate_absent\n'
-  exit 0
-fi
-
-incoming="$(printf '%s\n' "$preview" | jq -r '.version // empty' 2>/dev/null || true)"
-if [ -z "$incoming" ] || [ "$incoming" = "unknown" ]; then
-  printf 'CANARY_V2_DOGFOOD result=error evidence=candidate_identity_absent\n'
-  printf 'ROUTINE_RESULT outcome=error detail=candidate_identity_absent\n'
-  exit 0
-fi
-
 primary=""
 identity_command="${LAST_STACK_CANARY_V2_PRIMARY_IDENTITY_CMD:-last-stack-lastdb-memory-guard --identity}"
 set +e
@@ -66,6 +49,24 @@ if [ -z "$primary" ] || [ "$primary" = "unknown" ]; then
 fi
 
 "$pipeline" record-line-event --check primary_identity --subject observer --result pass >/dev/null
+
+set +e
+preview="$($dogfood --dry-run --json)"
+preview_rc=$?
+set -e
+if [ "$preview_rc" -ne 0 ]; then
+  printf 'CANARY_V2_DOGFOOD result=error evidence=candidate_absent\n'
+  printf 'ROUTINE_RESULT outcome=error detail=candidate_absent\n'
+  exit 0
+fi
+
+incoming="$(printf '%s\n' "$preview" | jq -r '.version // empty' 2>/dev/null || true)"
+if [ -z "$incoming" ] || [ "$incoming" = "unknown" ]; then
+  printf 'CANARY_V2_DOGFOOD result=error evidence=candidate_identity_absent\n'
+  printf 'ROUTINE_RESULT outcome=error detail=candidate_identity_absent\n'
+  exit 0
+fi
+
 channel_args=(--json channels --main-build "$primary" --incoming-build "$incoming" \
   --cutover-hold-hours "$hold_hours")
 if [ "${LAST_STACK_CANARY_V2_INCOMING_FIXES_RED:-0}" = "1" ]; then

@@ -13,3 +13,6 @@ dispatches a configured short action once per failure class.
 Do not start the retired red-heal Loom graph. Do not retry a candidate because a
 timer fired. A new action needs new durable evidence or an explicit operator
 decision.
+
+If this paused prompt runs, emit
+`ROUTINE_RESULT outcome=<noop> detail=status=paused action=none`.
