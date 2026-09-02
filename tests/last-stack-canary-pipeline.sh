@@ -70,17 +70,47 @@ out="$("$CLI" --state-dir "$state_dir" --json list)"
 
 proof_out="$tmp/proof.out"
 "$CLI" proof --dry-run >"$proof_out"
-grep -q 'DOGFOOD .*result=ok.*no_primary_mutation=1' "$proof_out"
-grep -q 'SOAK .*status=soak_green.*no_primary_mutation=1' "$proof_out"
-grep -q 'PROMOTE_READY .*status=ready.*no_primary_mutation=1' "$proof_out"
-grep -q 'CANARY_PIPELINE_PROOF result=ok dry_run=1' "$proof_out"
-grep -q 'stable_mutation=false' "$proof_out"
-promote_path="$(awk -F 'promote_output=' '/CANARY_PIPELINE_PROOF/ {print $2}' "$proof_out" | awk '{print $1}')"
-test -r "$promote_path"
-grep -q 'Candidate SHA: `dryrun-canary-sha`' "$promote_path"
-grep -q 'Automation pushed stable tag: `false`' "$promote_path"
+for label in BOOT_LEDGER OBSERVATIONS VERDICT RECONCILER HEAL_QUEUE CHANNELS LOOM DRY_RUN TEST_SUITE; do
+  test "$(grep -c "^${label} " "$proof_out" || true)" = "1"
+  grep -q "^${label} result=ok" "$proof_out"
+done
+grep -q 'DRY_RUN result=ok no_primary_mutation=1 stable_mutation=false' "$proof_out"
+grep -q 'VERDICT result=ok sep-0830=window-open sep-0831=red:restart\[guard-memory\] sep-0901=red:status_latency' "$proof_out"
+if grep -Eq 'DOGFOOD |CANARY_PIPELINE_PROOF ' "$proof_out"; then
+  echo "dry-run proof still prints the old synthetic labels" >&2
+  exit 1
+fi
 if grep -q "$HOME/.lastdb" "$proof_out"; then
   echo "dry-run proof unexpectedly referenced the primary LastDB home" >&2
+  exit 1
+fi
+
+live_env=(
+  LAST_STACK_CANARY_PROOF_SOURCE_OID=211325fc22587c7ea0414c749ed9fd7e291677d8
+  LAST_STACK_CANARY_PROOF_INSTALLED_OID=211325fc22587c7ea0414c749ed9fd7e291677d8
+  LAST_STACK_CANARY_PROOF_LIVE_BUILD=0.23.3-1435-g211325fc2
+  LAST_STACK_CANARY_PROOF_STABLE_BUILD=0.23.3-1427-g38d039aee
+  LAST_STACK_CANARY_PROOF_OBSERVE_CMD=true
+  LAST_STACK_CANARY_LIVE_VERSION_CMD="echo 0.23.3-1435-g211325fc2"
+)
+env "${live_env[@]}" "$CLI" proof --live --dry-run >"$tmp/proof-live.out"
+for label in BOOT_LEDGER OBSERVATIONS VERDICT RECONCILER HEAL_QUEUE CHANNELS LOOM DRY_RUN TEST_SUITE; do
+  test "$(grep -c "^${label} " "$tmp/proof-live.out" || true)" = "1"
+  grep -q "^${label} result=ok" "$tmp/proof-live.out"
+done
+grep -q 'BOOT_LEDGER result=ok source_oid=211325fc22587c7ea0414c749ed9fd7e291677d8 installed_oid=211325fc22587c7ea0414c749ed9fd7e291677d8' "$tmp/proof-live.out"
+
+if LAST_STACK_CANARY_PROOF_BOOT_FAIL=1 \
+  LAST_STACK_CANARY_PROOF_OBSERVE_CMD=true \
+  LAST_STACK_CANARY_PROOF_LIVE_BUILD=0.23.3-1435-g211325fc2 \
+  LAST_STACK_CANARY_PROOF_STABLE_BUILD=0.23.3-1427-g38d039aee \
+  "$CLI" proof --live --dry-run >"$tmp/proof-missing-boot.out"; then
+  echo "expected a missing BOOT_LEDGER source to fail closed" >&2
+  exit 1
+fi
+grep -q '^BOOT_LEDGER result=fail' "$tmp/proof-missing-boot.out"
+if grep -q '^BOOT_LEDGER result=ok' "$tmp/proof-missing-boot.out"; then
+  echo "missing BOOT_LEDGER still printed result=ok" >&2
   exit 1
 fi
 
