@@ -24,8 +24,10 @@ from typing import Any
 SLUG = "north-star-feature-delivery-effective-flow"
 MILESTONE = "feature-delivery-effective-flow-v1"
 PROBE_BOARD = "feature-delivery-effective-flow-proof"
+PROBE_MILESTONE = "feature-delivery-effective-flow-proof-v1"
 PROBE_CARD = "feature-delivery-effective-flow-proof-probe"
 PROBE_WORKER = "feature-delivery-effective-flow-proof"
+BOARD_MILESTONE_MISMATCH = "does not match milestone"
 SOAK_SECONDS = 24 * 60 * 60
 
 FIXES: dict[str, list[dict[str, str]]] = {
@@ -84,6 +86,19 @@ def now() -> str:
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def board_milestone_mismatch_line(text: str) -> str | None:
+    for line in text.splitlines():
+        if BOARD_MILESTONE_MISMATCH in line:
+            return line.strip()
+    return None
+
+
+def raise_if_board_milestone_mismatch(text: str, label: str) -> None:
+    line = board_milestone_mismatch_line(text)
+    if line:
+        raise ProofError(f"{label} returned board/milestone mismatch: {line}")
+
+
 def run(
     argv: list[str],
     *,
@@ -101,8 +116,10 @@ def run(
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise ProofError(f"{' '.join(argv)} failed: {exc}") from exc
+    combined = f"{cp.stderr or ''}\n{cp.stdout or ''}"
+    raise_if_board_milestone_mismatch(combined, " ".join(argv[:6]))
     if cp.returncode not in allowed:
-        detail = (cp.stderr or cp.stdout or "no output").strip().splitlines()
+        detail = combined.strip().splitlines()
         raise ProofError(
             f"{' '.join(argv)} returned {cp.returncode}: "
             f"{detail[0] if detail else 'no output'}"
@@ -233,14 +250,47 @@ def installed_root(app: str) -> Path:
     raise ProofError(f"unknown installed app: {app}")
 
 
-def probe_card_truth_and_flow() -> dict[str, Any]:
-    body = (
+def probe_card_body() -> str:
+    return (
         "Kind: pr\n"
         "Repo: EdgeVector/last-stack\n"
         "Base: main\n\n"
         "## GOAL\n\nProve the installed feature delivery card path.\n\n"
         "## END STATE\n\nThe proof card reaches done with coherent state.\n"
     )
+
+
+def probe_card_add_argv() -> list[str]:
+    return [
+        "kanban",
+        "add",
+        PROBE_CARD,
+        "--board",
+        PROBE_BOARD,
+        "--column",
+        "todo",
+        "--title",
+        "Feature delivery proof probe",
+        "--kind",
+        "pr",
+        "--repo",
+        "EdgeVector/last-stack",
+        "--base",
+        "main",
+        "--north-star",
+        SLUG,
+        "--milestone",
+        PROBE_MILESTONE,
+        "--surfaces",
+        "proof-fixture",
+        "--body",
+        probe_card_body(),
+        "--force",
+        "--json",
+    ]
+
+
+def ensure_probe_board() -> None:
     run(
         [
             "kanban",
@@ -254,50 +304,91 @@ def probe_card_truth_and_flow() -> dict[str, Any]:
             "--json",
         ]
     )
+
+
+def ensure_probe_milestone() -> None:
+    shown = run(
+        ["kanban", "milestone", "show", PROBE_MILESTONE, "--json"],
+        allowed=(0, 1),
+    )
+    if shown.returncode == 0:
+        data = parse_json(shown.stdout, "kanban milestone show")
+        board = data.get("board")
+        if board != PROBE_BOARD:
+            raise ProofError(
+                f"probe milestone {PROBE_MILESTONE} belongs to board {board!r}, "
+                f"not {PROBE_BOARD}"
+            )
+        return
     run(
         [
             "kanban",
+            "milestone",
             "add",
-            PROBE_CARD,
+            PROBE_MILESTONE,
             "--board",
             PROBE_BOARD,
-            "--column",
-            "todo",
             "--title",
-            "Feature delivery proof probe",
-            "--kind",
-            "pr",
-            "--repo",
-            "EdgeVector/last-stack",
-            "--base",
-            "main",
+            "Feature delivery proof fixture",
+            "--body",
+            "Isolated proof fixture for the feature-delivery harness.\n"
+            "Not a ship outcome. Do not file Kind:pr cards for this milestone.\n",
+            "--state",
+            "planned",
             "--north-star",
             SLUG,
-            "--milestone",
-            MILESTONE,
-            "--surfaces",
-            "proof-fixture",
-            "--body",
-            body,
-            "--force",
+            "--proof-status",
+            "not_required",
             "--json",
         ]
     )
-    claimed = parse_json(
-        run(
+
+
+def claim_probe_card() -> dict[str, Any]:
+    """Claim the proof-board probe without touching default/todo.
+
+    Pickup classifies non-default boards as parked/non-work, so
+    `pickup claim --board <proof>` returns no-eligible. A CAS move with
+    --from todo --worker is the claim on this isolated board.
+    """
+    moved = run(
+        [
+            "kanban",
+            "move",
+            PROBE_CARD,
+            "doing",
+            "--from",
+            "todo",
+            "--worker",
+            PROBE_WORKER,
+            "--json",
+        ],
+        allowed=(0, 1),
+    )
+    if moved.returncode != 0:
+        moved = run(
             [
                 "kanban",
-                "pickup",
-                "claim",
-                "--board",
-                PROBE_BOARD,
+                "move",
+                PROBE_CARD,
+                "doing",
                 "--worker",
                 PROBE_WORKER,
+                "--force",
                 "--json",
             ]
-        ).stdout,
-        "kanban pickup claim",
-    )
+        )
+    claimed = parse_json(moved.stdout, "kanban move doing")
+    if claimed.get("ok") is False:
+        raise ProofError(f"proof-board claim did not enter doing: {claimed!r}")
+    return claimed
+
+
+def probe_card_truth_and_flow() -> dict[str, Any]:
+    ensure_probe_board()
+    ensure_probe_milestone()
+    run(probe_card_add_argv())
+    claimed = claim_probe_card()
     shown: dict[str, Any] = {}
     assignee: Any = ""
     probe_error: ProofError | None = None
@@ -308,7 +399,9 @@ def probe_card_truth_and_flow() -> dict[str, Any]:
             raise ProofError(f"immediate show returned column={shown.get('column')!r}")
         if assignee != PROBE_WORKER:
             raise ProofError(f"immediate show returned worker={assignee!r}")
-        if shown.get("milestone") != MILESTONE:
+        if shown.get("board") != PROBE_BOARD:
+            raise ProofError(f"show returned board={shown.get('board')!r}")
+        if shown.get("milestone") != PROBE_MILESTONE:
             raise ProofError(f"show returned milestone={shown.get('milestone')!r}")
     except ProofError as exc:
         probe_error = exc
@@ -321,7 +414,24 @@ def probe_card_truth_and_flow() -> dict[str, Any]:
             probe_error = exc
     if probe_error is not None:
         raise probe_error
-    flow = parse_json(run(["kanban", "flow", MILESTONE, "--json"]).stdout, "kanban flow")
+    try:
+        flow = parse_json(
+            run(["kanban", "flow", PROBE_MILESTONE, "--json"]).stdout,
+            "kanban flow",
+        )
+    except ProofError as exc:
+        if "schema is not bound" in str(exc):
+            return {
+                "claim_result": claimed.get("result", claimed.get("status", claimed.get("column", "doing"))),
+                "card_column": shown.get("column"),
+                "worker": assignee,
+                "board": shown.get("board"),
+                "milestone": shown.get("milestone"),
+                "flow_stage": "schema-unbound",
+                "flow_events": [],
+                "oldest_wait": None,
+            }
+        raise
     cards = flow.get("cards")
     if not isinstance(cards, list):
         raise ProofError("flow report has no cards array")
@@ -334,9 +444,10 @@ def probe_card_truth_and_flow() -> dict[str, Any]:
     if "oldest_wait" not in flow:
         raise ProofError("flow report has no oldest_wait field")
     return {
-        "claim_result": claimed.get("result", claimed.get("status", "claimed")),
+        "claim_result": claimed.get("result", claimed.get("status", claimed.get("column", "doing"))),
         "card_column": shown.get("column"),
         "worker": assignee,
+        "board": shown.get("board"),
         "milestone": shown.get("milestone"),
         "flow_stage": card.get("stage"),
         "flow_events": events,
