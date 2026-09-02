@@ -481,13 +481,15 @@ op_lat_write() {
 # Brain: papercut-lastdb-acked-write-lost-loom-terminal-status-regressed.
 #
 # Mechanism: immediately before any live change, upsert N fixed-slug sentinels
-# through the ordinary app write path (brain put), each carrying a run-unique
-# nonce, and read each back. After the cutover, read them again on the new
-# daemon. A sentinel whose body carries the PREVIOUS run's nonce is exactly
-# the observed loss shape (last write to a key dropped, prior version
-# survives). Fixed slugs keep the store flat; N spreads sentinels across hash
-# groups because the loss was per-key, not per-interval. There is deliberately
-# no skip flag — a durability bar that can be skipped recurs silently.
+# through `brain put --durable --json`, require the node's exact `durable`
+# receipt, and read each nonce back. After the cutover, read them again on the
+# new daemon. A queued write plus resident read-back is not durability proof:
+# that exact sequence lost sentinel 4 during the 2026-09-02 cutover. A stale
+# nonce after restart is the observed loss shape (the last write to one key
+# dropped and the prior version survived). Fixed slugs keep the store flat; N
+# spreads sentinels across hash groups because the loss was per-key, not
+# per-interval. There is deliberately no skip flag — a durability bar that can
+# be skipped recurs silently.
 # ---------------------------------------------------------------------------
 DURABILITY_N="${LASTDB_DURABILITY_CANARY_N:-4}"
 DURABILITY_READ_WAIT_S="${LASTDB_DURABILITY_READ_WAIT_S:-120}"
@@ -508,18 +510,24 @@ durability_write_sentinels() {
   # cutover, which is the honest outcome — an upgrade whose durability bar
   # cannot arm must not proceed to the restart that bar exists to judge.
   DURABILITY_NONCE="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-  local i slug
+  local i slug receipt
   for i in $(seq 1 "$DURABILITY_N"); do
     slug="$(durability_slug "$i")"
-    printf -- '---\ntype: reference\nslug: %s\ntitle: safe-upgrade durability canary %d (constant slug; nonce changes per run)\n---\nnonce: %s#%d\n\nWritten by lastdb-safe-upgrade immediately before the cutover restart and\nread back after it. A stale nonce after an upgrade means the primary lost an\nacknowledged write across the restart. Safe to keep; carries no other\nmeaning. Rationale: brain\npapercut-lastdb-acked-write-lost-loom-terminal-status-regressed.\n' \
-      "$slug" "$i" "$DURABILITY_NONCE" "$i" \
-      | env FBRAIN_FOLDDB_SOCKET="$PRIMARY_SOCK" LASTDB_HOME="$PRIMARY_HOME" FOLDDB_HOME="$PRIMARY_HOME" \
-        brain put >/dev/null 2>&1 \
-      || die "durability canary: pre-cutover write of $slug failed — aborting before any live change (the canary must arm to prove the cutover keeps acked writes)"
+    if ! receipt="$(
+      printf -- '---\ntype: reference\nslug: %s\ntitle: safe-upgrade durability canary %d (constant slug; nonce changes per run)\n---\nnonce: %s#%d\n\nWritten by lastdb-safe-upgrade immediately before the cutover restart and\nread back after it. A stale nonce after an upgrade means the primary lost an\nacknowledged write across the restart. Safe to keep; carries no other\nmeaning. Rationale: brain\npapercut-lastdb-acked-write-lost-loom-terminal-status-regressed.\n' \
+        "$slug" "$i" "$DURABILITY_NONCE" "$i" \
+        | env FBRAIN_FOLDDB_SOCKET="$PRIMARY_SOCK" LASTDB_HOME="$PRIMARY_HOME" FOLDDB_HOME="$PRIMARY_HOME" \
+          brain put --durable --json 2>/dev/null
+    )"; then
+      die "durability canary: pre-cutover durable write of $slug failed — aborting before any live change (the canary must arm to prove the cutover keeps durable writes)"
+    fi
+    printf '%s' "$receipt" | jq -e \
+      '.ok == true and .durability == "durable"' >/dev/null 2>&1 \
+      || die "durability canary: pre-cutover write of $slug returned no durable receipt — aborting before any live change (queued or malformed acknowledgments are not restart proof)"
     durability_read_body "$slug" | grep -qF "nonce: ${DURABILITY_NONCE}#${i}" \
       || die "durability canary: pre-cutover read-back of $slug did not return this run's nonce — primary already unhealthy; aborting before any live change"
   done
-  log "durability canary: armed — $DURABILITY_N sentinels written and read back on the old daemon (nonce $DURABILITY_NONCE)"
+  log "durability canary: armed — $DURABILITY_N sentinels durably persisted and read back on the old daemon (nonce $DURABILITY_NONCE)"
 }
 
 durability_verify_after_cutover() {

@@ -109,4 +109,119 @@ grep -q 'wait_for_live_unix_socket_health' "$driver" || {
   exit 1
 }
 
+# The canary must request local persistence and inspect the node receipt. A
+# resident read-back after a queued receipt lost one of four sentinels during
+# the 2026-09-02 cutover, so either half alone is not restart proof.
+grep -q 'brain put --durable --json' "$driver" || {
+  echo "FAIL: durability sentinels must request durable brain writes" >&2
+  exit 1
+}
+grep -q '\.durability == "durable"' "$driver" || {
+  echo "FAIL: durability sentinels must require the node's durable receipt" >&2
+  exit 1
+}
+grep -q 'brain put --durable --json' "$skill_md" || {
+  echo "FAIL: SKILL.md must document the durable sentinel receipt" >&2
+  exit 1
+}
+
+# Exercise the shipped functions against a stub brain command. The stub stores
+# the exact stdin body for point-read verification. Negative receipts must stop
+# before the wrapper writes its live-change marker.
+test_tmp="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-durable-canary-test.XXXXXX")"
+trap 'rm -rf -- "$test_tmp"' EXIT
+mkdir -p "$test_tmp/bin" "$test_tmp/state"
+apply_stub="$test_tmp/bin/brain"
+cat >"$apply_stub" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  put)
+    body="$(cat)"
+    slug="$(printf '%s\n' "$body" | sed -n 's/^slug:[[:space:]]*//p' | head -1)"
+    [ -n "$slug" ] || exit 2
+    case "${CANARY_RECEIPT_MODE:-durable}" in
+      mismatch) printf '%s\n' 'nonce: stale#1' >"$CANARY_STUB_DIR/$slug" ;;
+      *) printf '%s' "$body" >"$CANARY_STUB_DIR/$slug" ;;
+    esac
+    case "${CANARY_RECEIPT_MODE:-durable}" in
+      durable|mismatch) printf '%s\n' '{"ok":true,"durability":"durable"}' ;;
+      queued) printf '%s\n' '{"ok":true,"durability":"queued"}' ;;
+      missing) printf '%s\n' '{"ok":true}' ;;
+      malformed) printf '%s\n' 'not-json' ;;
+      failed) exit 1 ;;
+      *) exit 2 ;;
+    esac
+    ;;
+  get)
+    cat "$CANARY_STUB_DIR/${2:?missing slug}"
+    ;;
+  *) exit 2 ;;
+esac
+STUB
+chmod +x "$apply_stub"
+
+export PATH="$test_tmp/bin:$PATH"
+export CANARY_STUB_DIR="$test_tmp/state"
+export LASTDB_DURABILITY_CANARY_N=4
+export LASTDB_DURABILITY_READ_WAIT_S=1
+export PRIMARY_SOCK="$test_tmp/fake.sock"
+export PRIMARY_HOME="$test_tmp/home"
+mkdir -p "$PRIMARY_HOME"
+run_op_with_deadline() {
+  shift
+  "$@"
+}
+die() {
+  printf 'DIE: %s\n' "$*" >&2
+  return 1
+}
+log() { :; }
+
+# Extract the exact canary variables and functions without executing the full
+# upgrade driver.
+eval "$(awk '
+  /^DURABILITY_N=/ { capture=1 }
+  /^measure_op_median_ms\(\)/ { exit }
+  capture { print }
+' "$driver")"
+
+run_receipt_case() {
+  local mode="$1" expected="$2"
+  local case_dir="$test_tmp/case-$mode"
+  local marker="$case_dir/live-change"
+  rm -rf -- "$case_dir"
+  mkdir -p "$case_dir"
+  export CANARY_STUB_DIR="$case_dir"
+  export CANARY_RECEIPT_MODE="$mode"
+  set +e
+  (
+    set -e
+    durability_write_sentinels
+    : >"$marker"
+  ) >/dev/null 2>"$case_dir/stderr"
+  local rc=$?
+  set -e
+  if [ "$expected" = pass ]; then
+    [ "$rc" -eq 0 ] || {
+      echo "FAIL: durable receipt case returned $rc" >&2
+      cat "$case_dir/stderr" >&2
+      exit 1
+    }
+    [ -f "$marker" ] || { echo "FAIL: durable receipt did not reach marker" >&2; exit 1; }
+    [ "$(find "$case_dir" -type f -name 'lastdb-safe-upgrade-durability-canary-*' | wc -l | tr -d ' ')" = 4 ] || {
+      echo "FAIL: durable receipt case did not point-read four sentinels" >&2
+      exit 1
+    }
+  else
+    [ "$rc" -ne 0 ] || { echo "FAIL: $mode receipt reached live change" >&2; exit 1; }
+    [ ! -e "$marker" ] || { echo "FAIL: $mode receipt wrote live-change marker" >&2; exit 1; }
+  fi
+}
+
+run_receipt_case durable pass
+for mode in queued missing malformed failed mismatch; do
+  run_receipt_case "$mode" fail
+done
+
 echo "OK: lastdb-safe-upgrade skill packaged for multi-harness setup"
