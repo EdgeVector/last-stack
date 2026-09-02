@@ -105,11 +105,16 @@ kanban list --board <b> --column todo --json  # board-scoped column preview
 kanban search "<text>" --json      # text search; no --full-body flag
 kanban show <slug> --json          # one card in detail
 kanban add <slug> [flags]          # create OR update a card
+kanban mark <slug> "<line>"        # append one PROGRESS/HANDOFF line
 kanban move <slug> <column> [--position N]
 kanban rm <slug>                   # delete (hard erase; no trash)
 kanban board create <slug> --title ... --columns a,b,c
 kanban board list
 ```
+
+`mark` takes the slug and the line as positional arguments. There is no
+`--note` and no `--line`. Those flags exit 2 with `Unknown option`. MCP
+`fkanban_mark` is the structured equivalent.
 
 `list` flags: `--board --column --tag --assignee --wide --field --limit N
 --all --json --full-body --full_body`.
