@@ -45,16 +45,31 @@ row is build failure evidence.
 
 ## Action safety
 
-The gate only plans actions by default. It runs an action only when both of
-these settings are explicit:
+The gate only plans actions by default. It starts one short action only when
+`LAST_STACK_CANARY_V2_EXECUTE_ACTIONS=1` is set and the verdict maps to a
+dispatchable action.
+
+Allowed actions: build, heal, line-stop, pause, retire, promote.
+`wait-next-check` is a fact for the next tick. The dispatcher never starts it.
+
+Per-action commands:
 
 ```bash
-LAST_STACK_CANARY_V2_EXECUTE_ACTIONS=1
-LAST_STACK_CANARY_V2_ACTION_CMD='short-command'
+LAST_STACK_CANARY_V2_BUILD_CMD='short-command'
+LAST_STACK_CANARY_V2_HEAL_CMD='short-command'
+LAST_STACK_CANARY_V2_LINE_STOP_CMD='short-command'
+LAST_STACK_CANARY_V2_PAUSE_CMD='short-command'
+LAST_STACK_CANARY_V2_RETIRE_CMD='short-command'
+LAST_STACK_CANARY_V2_PROMOTE_CMD='short-command'
 ```
 
-The action command must finish quickly. It must not start a wait loop. Stable
-channel promotion remains held until the channel proof is complete.
+`LAST_STACK_CANARY_V2_ACTION_CMD` is a fallback override for tests. A missing
+command leaves the action planned. It does not invent a wait loop.
+
+`--dry-run` (or `LAST_STACK_CANARY_V2_DRY_RUN=1`) prints the action plan and
+writes no reconciler evidence, primary state, or stable-channel state.
+
+Stable channel promotion remains held until the channel proof is complete.
 
 ## Closeout
 
