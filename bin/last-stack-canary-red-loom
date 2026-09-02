@@ -237,11 +237,20 @@ if want:
     print(json.dumps({"ok": True, "idle": False, "exec_id": want, "status": hit.get("status"), "state": hit.get("state")}))
     raise SystemExit(0)
 
-# A listing with nothing inside the window is a broken listing, not a quiet
-# lane. Reporting it as idle is what hid two REDs for four days.
+# No lastdb-canary-release row inside the verdict window is a quiet lane.
+# Paging `error` for listing_stale every hour (2026-09-02 retro) is worse
+# than idle: the listed exec already aged out. A broken lister still fails
+# at list_executions (loom-list-failed). A RED that is actually in the
+# window still heals or alarms below.
 if not parsed:
-    print(json.dumps({"ok": False, "reason": "no_executions_in_window", "lookback_hours": lookback_h}))
-    raise SystemExit(4)
+    print(json.dumps({
+        "ok": True,
+        "idle": True,
+        "reason": "listing_stale",
+        "lookback_hours": lookback_h,
+        "drop_key": True,
+    }))
+    raise SystemExit(0)
 
 newest = parsed[0][3]
 nid = str(newest.get("id") or newest.get("exec_id") or "")
@@ -249,13 +258,15 @@ nstatus = str(newest.get("status") or "")
 nts = parsed[0][0]
 if nts < cutoff:
     print(json.dumps({
-        "ok": False,
+        "ok": True,
+        "idle": True,
         "reason": "listing_stale",
         "exec_id": nid,
         "updated_at": newest.get("updated_at") or newest.get("updatedAt") or "",
         "lookback_hours": lookback_h,
+        "drop_key": True,
     }))
-    raise SystemExit(4)
+    raise SystemExit(0)
 # The newest row does not have to be the failed one. Pick every FAILED
 # execution inside the window; a later cancelled or succeeded row no longer
 # masks them.
@@ -396,11 +407,17 @@ if [ "$DRY" -eq 1 ]; then
   oc="noop"
   [ "$idle" = "1" ] || oc="ok"
   dry_detail="idle=${idle} exec=${picked_id:-} reason=${picked_reason}"
+  dry_id="${picked_id:-}"
+  dry_key="${KEY:-}"
   if [ "$picked_reason" = "lane_busy_masking_reds" ]; then
     oc="error"
     dry_detail="lane_busy_masking_reds masked=$(json_field masked "$picked") oldest_failed=$(json_field oldest_failed "$picked") lane=${picked_id:-}"
+  elif [ "$picked_reason" = "listing_stale" ]; then
+    dry_id=""
+    dry_key=""
+    log "listing has no ${CANARY_LANE_DEFINITION} execution in the window; dropping stale exec key ${picked_id:-none}"
   fi
-  write_stamp dry-run "${picked_id:-}" "idle=${idle} reason=${picked_reason}" "${KEY:-}" "$oc"
+  write_stamp dry-run "$dry_id" "idle=${idle} reason=${picked_reason}" "$dry_key" "$oc"
   printf '%s %s\n' 'ROUTINE_RESULT' "outcome=${oc} detail=${dry_detail}"
   exit 0
 fi
@@ -427,7 +444,16 @@ if [ "$idle" = "1" ] && [ "$picked_reason" = "lane_busy_masking_reds" ]; then
 fi
 
 if [ "$idle" = "1" ]; then
-  write_stamp idle "${picked_id:-}" "reason=${picked_reason}" "${KEY:-}" "noop"
+  stamp_id="${picked_id:-}"
+  stamp_key="${KEY:-}"
+  if [ "$picked_reason" = "listing_stale" ]; then
+    # The listed exec (if any) is outside the window. Keep pointing the
+    # resume key at it and the next hourly fire resumes a corpse.
+    stamp_id=""
+    stamp_key=""
+    log "listing has no ${CANARY_LANE_DEFINITION} execution in the window; dropping stale exec key ${picked_id:-none}"
+  fi
+  write_stamp idle "$stamp_id" "reason=${picked_reason}" "$stamp_key" "noop"
   if [ "$JSON" -eq 1 ]; then
     printf '%s\n' "$picked"
   else
