@@ -124,10 +124,13 @@ grep -q 'Candidate SHA: `sha-green`' "$manual"
 grep -q 'lastdb-canary-soak-watch' "$ROOT/config/routines-registry/lastdb-canary-soak-watch.toml"
 grep -q 'status = "active"' "$ROOT/config/routines-registry/lastdb-canary-soak-watch.toml"
 grep -q 'last-stack-canary-soak-watch-gate' "$ROOT/config/routines-registry/lastdb-canary-soak-watch.toml"
+grep -q 'stateless verdict' "$ROOT/config/routines-registry/lastdb-canary-soak-watch.toml"
 soak_prompt="$ROOT/routines/lastdb-canary-soak-watch.md"
 grep -q 'last-stack-canary-soak-watch-gate' "$soak_prompt"
 grep -q 'owner-only bounded boot ledger' "$soak_prompt"
 grep -q 'deterministic verdict function' "$soak_prompt"
+grep -q 'wait-next-check' "$soak_prompt"
+grep -q 'LAST_STACK_CANARY_V2_HEAL_CMD' "$soak_prompt"
 if grep -Eq 'SOAK_WAIT|last-stack-canary-loom|last-stack-canary-red-loom' "$soak_prompt"; then
   echo "canary soak prompt contains legacy Loom state" >&2
   exit 1
@@ -611,6 +614,14 @@ out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate sep0830 \
 [ "$(printf '%s\n' "$out" | jq -r '.verdict')" = "window-open" ]
 [ "$(printf '%s\n' "$out" | jq -r '.action')" = "wait-next-check" ]
 [ "$(printf '%s\n' "$out" | jq -r '.boot_count')" = "1" ]
+[ "$(printf '%s\n' "$out" | jq -r '.action_plan.dispatchable')" = "false" ]
+wait_log="$tmp/wait-action.log"
+out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate sep0830 \
+  --window-seconds 86400 --at "$v2_at_0830" --execute-actions \
+  --action-command "printf '%s\\n' waited >> '$wait_log'")"
+[ "$(printf '%s\n' "$out" | jq -r '.action_dispatch')" = "not-an-action" ]
+[ "$(printf '%s\n' "$out" | jq -r '.action_plan.dispatchable')" = "false" ]
+test ! -e "$wait_log"
 
 "$CLI" --state-dir "$v2_dir" record-boot --candidate sep0831 --pid 102 \
   --start-ts '2026-08-31T00:00:00Z' --build v0831 --cause guard-memory --at '2026-08-31T00:00:00Z' >/dev/null
@@ -636,6 +647,18 @@ out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate sep0831 \
   --action-command "printf '%s\\n' heal >> '$heal_log'")"
 [ "$(printf '%s\n' "$out" | jq -r '.action_dispatch')" = "already-dispatched" ]
 test "$(wc -l <"$heal_log" | tr -d ' ')" -eq 1
+
+"$CLI" --state-dir "$v2_dir" record-boot --candidate heal-env --pid 111 \
+  --start-ts '2026-08-31T00:00:00Z' --build vhealenv --cause guard-memory \
+  --at '2026-08-31T00:00:00Z' >/dev/null
+heal_env_log="$tmp/heal-env-action.log"
+out="$(LAST_STACK_CANARY_V2_HEAL_CMD="printf '%s\\n' heal-env >> '$heal_env_log'" \
+  "$CLI" --state-dir "$v2_dir" --json reconcile --candidate heal-env \
+  --window-seconds 86400 --at '2026-08-31T00:31:00Z' --execute-actions)"
+[ "$(printf '%s\n' "$out" | jq -r '.action')" = "heal" ]
+[ "$(printf '%s\n' "$out" | jq -r '.action_dispatch')" = "ok" ]
+[ "$(printf '%s\n' "$out" | jq -r '.action_plan.dispatchable')" = "true" ]
+grep -q heal-env "$heal_env_log"
 
 "$CLI" --state-dir "$v2_dir" record-boot --candidate sep0901 --pid 103 \
   --start-ts '2026-09-01T00:00:00Z' --build v0901 --at '2026-09-01T00:00:00Z' >/dev/null
@@ -664,6 +687,11 @@ out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate host-window \
   --window-seconds 86400 --at '2026-09-03T00:30:00Z')"
 [ "$(printf '%s\n' "$out" | jq -r '.verdict')" = "window-open" ]
 [ "$(printf '%s\n' "$out" | jq -r '.action')" = "pause-window" ]
+[ "$(printf '%s\n' "$out" | jq -r '.action_plan.dispatchable')" = "true" ]
+out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate host-window \
+  --window-seconds 86400 --at '2026-09-03T00:30:00Z' --execute-actions)"
+[ "$(printf '%s\n' "$out" | jq -r '.action_dispatch')" = "planned" ]
+[ "$(printf '%s\n' "$out" | jq -r '.action_plan.command')" = "" ]
 
 # A neutral upgrade supersedes the old candidate. An operator restart starts a
 # new quiet window instead of making the candidate red.
@@ -700,7 +728,28 @@ out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate sep0830 --dry-r
   --window-seconds 86400 --at "$v2_at_0830")"
 dry_after="$(wc -l <"$v2_dir/ledger.jsonl" | tr -d ' ')"
 [ "$dry_before" = "$dry_after" ]
-[ "$(printf '%s\n' "$out" | jq -r '.action_dispatch')" = "planned" ]
+[ "$(printf '%s\n' "$out" | jq -r '.action_dispatch')" = "not-an-action" ]
+[ "$(printf '%s\n' "$out" | jq -r '.action_plan.dispatchable')" = "false" ]
+[ "$(printf '%s\n' "$out" | jq -r '.heal_queued')" = "false" ]
+
+# Dry-run plus execute still writes no evidence and starts no command.
+dry_exec_log="$tmp/dry-exec.log"
+stable_before="$tmp/stable-before"
+cp "$v2_dir/ledger.jsonl" "$stable_before"
+out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate sep0831 --dry-run \
+  --execute-actions --action-command "printf '%s\\n' ran >> '$dry_exec_log'" \
+  --window-seconds 86400 --at '2026-08-31T00:33:00Z')"
+[ "$(printf '%s\n' "$out" | jq -r '.action')" = "heal" ]
+[ "$(printf '%s\n' "$out" | jq -r '.action_dispatch')" = "dry-run" ]
+[ "$(printf '%s\n' "$out" | jq -r '.action_plan.dispatchable')" = "true" ]
+[ "$(printf '%s\n' "$out" | jq -r '.action_plan.command')" != "" ]
+[ "$(printf '%s\n' "$out" | jq -r '.heal_queued')" = "false" ]
+cmp -s "$stable_before" "$v2_dir/ledger.jsonl"
+test ! -e "$dry_exec_log"
+if grep -Eq 'SOAK_WAIT|resume_key|active_execution' "$v2_dir/ledger.jsonl"; then
+  echo "v2 ledger contains a legacy wait marker" >&2
+  exit 1
+fi
 
 # Channel policy keeps primary on main, promotes only a completed quiet window,
 # and holds a normal incoming cutover near the current window end.

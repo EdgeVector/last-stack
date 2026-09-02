@@ -372,15 +372,30 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     line_event.add_argument("--at", default="", help="observation timestamp in ISO-8601 UTC")
     sub.add_parser("line-status", help="read the latest durable observer or host line state")
 
-    reconcile = sub.add_parser("reconcile", help="compute and record a stateless v2 verdict")
+    reconcile = sub.add_parser(
+        "reconcile",
+        help="compute a stateless v2 verdict and optionally start one short action",
+    )
     add_common_ledger_flags(reconcile)
     reconcile.add_argument("--candidate", required=True)
     reconcile.add_argument("--window-seconds", type=float, default=None)
     reconcile.add_argument("--at", default="", help="evaluation timestamp in ISO-8601 UTC")
     reconcile.add_argument("--cause-policy", default="", help="JSON cause policy with red, neutral, and reset arrays")
-    reconcile.add_argument("--dry-run", action="store_true")
-    reconcile.add_argument("--execute-actions", action="store_true")
-    reconcile.add_argument("--action-command", default="", help="short action command; never a wait loop")
+    reconcile.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the action plan; write no evidence, primary state, or stable-channel state",
+    )
+    reconcile.add_argument(
+        "--execute-actions",
+        action="store_true",
+        help="start the matching short build/heal/line-stop/pause/retire/promote command",
+    )
+    reconcile.add_argument(
+        "--action-command",
+        default="",
+        help="override the per-action short command; wait-next-check is never started",
+    )
 
     channels = sub.add_parser("channels", help="compute primary, stable, and cutover-hold channel state")
     add_common_ledger_flags(channels)
@@ -948,6 +963,25 @@ def line_status(path: Path) -> dict:
     }
 
 
+DISPATCHABLE_ACTIONS = (
+    "build",
+    "heal",
+    "line-stop",
+    "pause-window",
+    "retire",
+    "promote-eligible",
+)
+
+ACTION_COMMAND_ENV = {
+    "build": "LAST_STACK_CANARY_V2_BUILD_CMD",
+    "heal": "LAST_STACK_CANARY_V2_HEAL_CMD",
+    "line-stop": "LAST_STACK_CANARY_V2_LINE_STOP_CMD",
+    "pause-window": "LAST_STACK_CANARY_V2_PAUSE_CMD",
+    "retire": "LAST_STACK_CANARY_V2_RETIRE_CMD",
+    "promote-eligible": "LAST_STACK_CANARY_V2_PROMOTE_CMD",
+}
+
+
 def reconcile_action(verdict: dict) -> str:
     if verdict["verdict"] == "red":
         return "heal"
@@ -960,6 +994,39 @@ def reconcile_action(verdict: dict) -> str:
     if verdict["verdict"] == "green":
         return "promote-eligible"
     return "wait-next-check"
+
+
+def action_is_dispatchable(action: str) -> bool:
+    return action in DISPATCHABLE_ACTIONS
+
+
+def resolve_action_command(action: str, args: argparse.Namespace) -> str:
+    """Pick one short command for a dispatchable action. Wait is never a command."""
+    if not action_is_dispatchable(action):
+        return ""
+    override = str(getattr(args, "action_command", "") or "").strip()
+    if override:
+        return override
+    env_name = ACTION_COMMAND_ENV.get(action, "")
+    if env_name:
+        specific = os.environ.get(env_name, "").strip()
+        if specific:
+            return specific
+    return os.environ.get("LAST_STACK_CANARY_V2_ACTION_CMD", "").strip()
+
+
+def attach_action_plan(verdict: dict, args: argparse.Namespace) -> None:
+    action = str(verdict.get("action") or "")
+    dispatchable = action_is_dispatchable(action)
+    command = resolve_action_command(action, args) if dispatchable else ""
+    verdict["action_command"] = command
+    verdict["action_plan"] = {
+        "action": action,
+        "command": command,
+        "dispatchable": dispatchable,
+        "dry_run": bool(getattr(args, "dry_run", False)),
+        "execute": bool(getattr(args, "execute_actions", False)),
+    }
 
 
 def action_token(verdict: dict) -> str:
@@ -1086,33 +1153,41 @@ def reconcile(path: Path, args: argparse.Namespace) -> dict:
         return verdict
 
     verdict = lock_and_run(path, inner)
+    attach_action_plan(verdict, args)
     if not args.dry_run:
         verdict["heal_queued"] = queue_heal_if_new(path, verdict)
     else:
         verdict["heal_queued"] = False
-    if args.execute_actions:
-        command = args.action_command or os.environ.get("LAST_STACK_CANARY_V2_ACTION_CMD", "")
-        if not command:
-            die("--execute-actions requires --action-command or LAST_STACK_CANARY_V2_ACTION_CMD", 2)
-        if args.dry_run:
-            verdict["action_dispatch"] = "dry-run"
-        elif not reserve_action_dispatch(path, verdict):
-            verdict["action_dispatch"] = "already-dispatched"
-        else:
-            env = {
-                **os.environ,
-                "LAST_STACK_CANARY_CANDIDATE": args.candidate,
-                "LAST_STACK_CANARY_VERDICT": str(verdict["verdict"]),
-                "LAST_STACK_CANARY_SUBJECT": str(verdict.get("subject", "")),
-                "LAST_STACK_CANARY_ACTION": str(verdict["action"]),
-            }
-            completed = subprocess.run(command, shell=True, env=env)
-            verdict["action_dispatch"] = "ok" if completed.returncode == 0 else f"exit_{completed.returncode}"
-            finish_action_dispatch(path, verdict, verdict["action_dispatch"])
-            if completed.returncode != 0:
-                die(f"short action failed: exit {completed.returncode}")
-    else:
+    plan = verdict["action_plan"]
+    if not plan["dispatchable"]:
+        verdict["action_dispatch"] = "not-an-action"
+        return verdict
+    if not args.execute_actions:
         verdict["action_dispatch"] = "planned"
+        return verdict
+    if args.dry_run:
+        verdict["action_dispatch"] = "dry-run"
+        return verdict
+    command = str(plan.get("command") or "")
+    if not command:
+        # Held until the matching short command is configured. Never invent a wait.
+        verdict["action_dispatch"] = "planned"
+        return verdict
+    if not reserve_action_dispatch(path, verdict):
+        verdict["action_dispatch"] = "already-dispatched"
+        return verdict
+    env = {
+        **os.environ,
+        "LAST_STACK_CANARY_CANDIDATE": args.candidate,
+        "LAST_STACK_CANARY_VERDICT": str(verdict["verdict"]),
+        "LAST_STACK_CANARY_SUBJECT": str(verdict.get("subject", "")),
+        "LAST_STACK_CANARY_ACTION": str(verdict["action"]),
+    }
+    completed = subprocess.run(command, shell=True, env=env)
+    verdict["action_dispatch"] = "ok" if completed.returncode == 0 else f"exit_{completed.returncode}"
+    finish_action_dispatch(path, verdict, verdict["action_dispatch"])
+    if completed.returncode != 0:
+        die(f"short action failed: exit {completed.returncode}")
     return verdict
 
 
@@ -2537,10 +2612,14 @@ def main(argv: list[str]) -> int:
         if args.json:
             emit(verdict, True)
         else:
+            plan = verdict.get("action_plan") or {}
             print(
                 f"RECONCILER ledger={path} candidate={args.candidate} result=ok "
                 f"verdict={verdict['verdict']} subject={verdict.get('subject') or 'none'} "
-                f"action={verdict['action']} evidence={verdict['evidence']} "
+                f"action={verdict['action']} dispatch={verdict.get('action_dispatch')} "
+                f"dispatchable={str(plan.get('dispatchable')).lower()} "
+                f"action_command={plan.get('command') or '-'} "
+                f"evidence={verdict['evidence']} "
                 f"boots={verdict['boot_count']} observations={verdict['observation_count']}"
                 f"{dry_suffix(args.dry_run)}"
             )
