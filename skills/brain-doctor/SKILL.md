@@ -65,7 +65,11 @@ Slow ≠ dead. Before framing a wedge, run:
 ```bash
 lastdb status    # RSS/CPU/QoS + short request-ops summary
 lastdb ops       # worst clients / kinds / schemas by total time and count
+lastdb ops --by-app   # compact app/verb rows for parsers
 ```
+
+`lastdb ops` has no `--json` (exits 2: `unexpected argument '--json'`).
+Use the text tables or `--by-app`.
 
 This is Mini's in-process per-request ranking (`status.request_ops`). Clients
 self-identify via `X-LastDB-Client`. Full playbook:
