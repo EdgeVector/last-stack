@@ -137,14 +137,10 @@ if grep -Eq 'ROUTINE_RESULT[[:space:]]+outcome=' "$soak_prompt"; then
   exit 1
 fi
 grep -q 'lastdb-canary-promote-prepare' "$ROOT/config/routines-registry/lastdb-canary-promote-prepare.toml"
-grep -q 'status = "active"' "$ROOT/config/routines-registry/lastdb-canary-promote-prepare.toml"
+grep -q 'status = "paused"' "$ROOT/config/routines-registry/lastdb-canary-promote-prepare.toml"
 promote_prompt="$ROOT/routines/lastdb-canary-promote-prepare.md"
-grep -q 'last-stack-canary-pipeline" --json list' "$promote_prompt"
-if grep -Eq 'last-stack-canary-pipeline" (list|promote-prepare) --json' "$promote_prompt"; then
-  echo "promote prompt puts global --json after the subcommand" >&2
-  exit 1
-fi
-grep -q 'there are no `status` or' "$promote_prompt"
+grep -q 'This routine is paused' "$promote_prompt"
+grep -q 'promote-eligible' "$promote_prompt"
 
 # promote-execute dry-run after soak_green
 LAST_STACK_CANARY_PROMOTE_AUTO=1 \

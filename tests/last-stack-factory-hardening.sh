@@ -94,8 +94,8 @@ grep -q 'last-stack-why-stopped-loom' "$ROOT/routines/why-stopped.md" \
 grep -q 'last-stack-whats-wrong-loom' "$ROOT/routines/whats-wrong.md" \
   || fail "whats-wrong prompt missing loom hook"
 [ -f "$ROOT/routines/lastdb-canary-red-heal.md" ] || fail "canary-red-heal prompt missing"
-grep -q 'last-stack-canary-red-loom' "$ROOT/routines/lastdb-canary-red-heal.md" \
-  || fail "canary-red-heal prompt missing loom hook"
+grep -q 'This routine is paused' "$ROOT/routines/lastdb-canary-red-heal.md" \
+  || fail "canary-red-heal prompt missing v2 retirement state"
 [ -x "$ROOT/bin/last-stack-feature-prove-routine" ] || fail "feature-prove installer missing"
 [ -x "$ROOT/bin/last-stack-fleet-performance-routine" ] || fail "fleet-performance installer missing"
 [ -f "$ROOT/routines/fleet-performance.md" ] || fail "fleet-performance prompt missing"

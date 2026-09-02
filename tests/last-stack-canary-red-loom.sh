@@ -20,16 +20,10 @@ bash -n "$ROOT/lib/canary-red/loom-canary-retry-upgrade.sh"
 bash -n "$ROOT/lib/canary-red/loom-canary-report.sh"
 
 [ -f "$ROOT/routines/lastdb-canary-red-heal.md" ] || fail "canary-red-heal prompt missing"
-grep -q 'last-stack-canary-red-loom' "$ROOT/routines/lastdb-canary-red-heal.md" \
-  || fail "heal prompt missing loom wrapper"
-grep -q 'Close-out (always the LAST step)' "$ROOT/routines/lastdb-canary-red-heal.md" \
-  || fail "heal prompt missing close-out section"
-grep -q 'last-stack-canary-red-loom' "$ROOT/routines/lastdb-canary-soak-watch.md" \
-  || fail "soak-watch prompt missing canary-red hook"
-grep -q 'last-stack-canary-red-loom' "$ROOT/routines/lastdb-canary-dogfood.md" \
-  || fail "dogfood prompt missing canary-red hook"
-grep -q 'NEVER skip the probe latency bar' "$ROOT/routines/lastdb-canary-red-heal.md" \
-  || fail "heal prompt missing probe-bar rule"
+grep -q 'This routine is paused' "$ROOT/routines/lastdb-canary-red-heal.md" \
+  || fail "heal prompt missing v2 retirement state"
+grep -q 'stateless reconciler' "$ROOT/routines/lastdb-canary-red-heal.md" \
+  || fail "heal prompt missing v2 reconciliation rule"
 
 [ -f "$ROOT/lib/canary-red/canary-red-heal.json" ] || fail "lib graph missing"
 python3 -c 'import json,sys; json.load(open(sys.argv[1]))' \
