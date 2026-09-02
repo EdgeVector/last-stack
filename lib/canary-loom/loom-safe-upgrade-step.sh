@@ -162,6 +162,22 @@ if step == "PROBE":
             f"su PROBE freshness={relation} refused",
         )
         raise SystemExit(0)
+    # Loom can re-dispatch a long PROBE after its caller reaches the drive
+    # deadline. The immutable execution context already contains the exact
+    # prior result. Reuse only a clean GREEN result after the current
+    # freshness check. CUTOVER runs the complete safe-upgrade driver again,
+    # so this skips no live safety gate.
+    if (
+        ctx.get("verdict") == "green"
+        and type(ctx.get("probe_rc")) is int
+        and ctx.get("probe_rc") == 0
+        and not ctx.get("last_error")
+    ):
+        # Do not write the same context patch again. The new revision can race
+        # the state advance and leave PROBE selected for another dispatch.
+        print("su PROBE reused exact stored green result")
+        print("PASS")
+        raise SystemExit(0)
     # A re-dispatched PROBE can find the owner lock still held by an earlier
     # attempt's orphaned process tree. Wait for the lane instead of marking
     # the candidate RED; the budget stays well under the PROBE node timeout.

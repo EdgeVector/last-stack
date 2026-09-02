@@ -1,6 +1,6 @@
 {
   "name": "lastdb-safe-upgrade",
-  "version": "4",
+  "version": "5",
   "start_at": "PROBE",
   "max_depth": 1,
   "node_budget": 20,
