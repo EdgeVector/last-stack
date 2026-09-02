@@ -46,10 +46,23 @@ case "$args" in
 esac
 SH
 
-# Fake curl: serves /api/status unless FAKE_NODE_DOWN=1.
+# Fake curl: serves status and the bounded boot-identity route unless the node
+# is unavailable.
 cat >"$tmp/bin/curl" <<'SH'
 #!/usr/bin/env bash
 if [ "${FAKE_NODE_DOWN:-0}" = "1" ]; then exit 7; fi
+case "$*" in
+  *"/api/system/boot-identity"*)
+    boot_pid="${FAKE_BOOT_PID:-${FAKE_PID:-4242}}"
+    if [ -z "${FAKE_BOOT_PID:-}" ] && grep -q 'launchctl kickstart' "$FAKE_ACTION_LOG" 2>/dev/null; then
+      boot_pid=$((boot_pid + 1))
+    fi
+    printf '{"pid":%s,"process_start_ts":%s,"build":"%s","restart_cause":"%s"}' \
+      "$boot_pid" "${FAKE_BOOT_START:-1234}" \
+      "${FAKE_BOOT_BUILD:-0.0.0-test}" "${FAKE_BOOT_CAUSE:-initial}"
+    exit 0
+    ;;
+esac
 printf '{"status":{"rss_bytes":%s,"phys_footprint_bytes":%s,"phys_footprint_peak_bytes":%s,"process_start_ts":%s,"build":{"version":"%s"}}}' \
   "${FAKE_RSS_BYTES:-0}" "${FAKE_FOOTPRINT_BYTES:-0}" "${FAKE_PEAK_BYTES:-0}" \
   "${FAKE_START_TS:-1234}" "${FAKE_BUILD:-0.0.0-test}"
@@ -218,13 +231,15 @@ grep -q 'footprint_mb=unavailable' "$LOG" || fail "unavailable footprint should 
 
 # --- 9. identity mode is read-only and carries pid, start time, and build ----
 reset
-printf '{"pid":4242,"start_ts":5678,"last_heartbeat_ts":5678}\n' >"$LASTDBD_PRIMARY_HOME/current-session.json"
-printf '{"pid":4242,"start_ts":5678,"build_version":"0.23.3-test"}\n' >"$LASTDBD_PRIMARY_HOME/sessions.jsonl"
-identity="$(FAKE_NODE_DOWN=1 "$GUARD" --identity)" \
+identity="$(FAKE_BOOT_START=5678 FAKE_BOOT_BUILD=0.23.3-test "$GUARD" --identity)" \
   || fail "identity mode should succeed for the primary"
 [ "$identity" = 'pid=4242 process_start_ts=5678 build=0.23.3-test' ] \
   || fail "identity mode returned unexpected evidence: $identity"
 restarted && fail "identity mode must never restart the primary"
+
+if FAKE_NODE_DOWN=1 "$GUARD" --identity >/dev/null 2>&1; then
+  fail "missing boot identity must fail instead of falling back to status or files"
+fi
 
 # --- 10. a rejected notice records WHY, so a wrong fix cannot look green -----
 # The restart itself must still complete and stay durable in the event log.
