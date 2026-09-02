@@ -348,6 +348,11 @@ ci_test tests/last-stack-lastdb-safe-upgrade-client-header.sh
 ci_test tests/last-stack-north-star-dashboard.sh
 ci_test tests/last-stack-north-star-dashboard-run.sh
 
-# Durable sentinel receipts gate every primary cutover. Keep this at the end so
-# ci_test shard positions above remain stable.
+# Durable sentinel receipts gate every primary cutover.
+# APPENDED (see the note above): ci_test shards by list position.
 ci_test tests/last-stack-lastdb-safe-upgrade-skill.sh
+
+# The tracker gate is fixture-only and finishes in under one second.
+#
+# APPENDED (see the shard-stability note above): ci_test shards by list position.
+ci_test tests/last-stack-north-star-proof-no-scan-access.sh
