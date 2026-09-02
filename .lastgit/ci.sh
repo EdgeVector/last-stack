@@ -187,6 +187,7 @@ ci_test tests/last-stack-routines-host-track-post-install.sh
 ci_test tests/last-stack-unattached-outcome-heal.sh
 ci_test tests/last-stack-north-star-ledger-sync.sh
 ci_test tests/last-stack-north-star-proof-registry.sh
+ci_test tests/last-stack-north-star-proof-canary-pipeline-v2.sh
 ci_test tests/last-stack-north-star-proof-uuid-hash-group.sh
 ci_test tests/last-stack-north-star-proof-io-free.sh
 ci_test tests/last-stack-north-star-proof-delete-returns-bytes.sh
