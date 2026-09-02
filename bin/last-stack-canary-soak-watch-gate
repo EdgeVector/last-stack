@@ -91,13 +91,14 @@ reconcile_args=(--json reconcile --candidate "$candidate" --window-seconds "$win
 if [ -n "${LAST_STACK_CANARY_V2_AT:-}" ]; then
   reconcile_args+=(--at "$LAST_STACK_CANARY_V2_AT")
 fi
+if [ "${LAST_STACK_CANARY_V2_DRY_RUN:-0}" = "1" ]; then
+  reconcile_args+=(--dry-run)
+fi
 if [ "${LAST_STACK_CANARY_V2_EXECUTE_ACTIONS:-0}" = "1" ]; then
-  [ -n "${LAST_STACK_CANARY_V2_ACTION_CMD:-}" ] || {
-    printf 'CANARY_V2_GATE candidate=%s result=error evidence=action_command_missing\n' "$candidate"
-    printf 'ROUTINE_RESULT outcome=error detail=action_command_missing\n'
-    exit 0
-  }
-  reconcile_args+=(--execute-actions --action-command "$LAST_STACK_CANARY_V2_ACTION_CMD")
+  reconcile_args+=(--execute-actions)
+  if [ -n "${LAST_STACK_CANARY_V2_ACTION_CMD:-}" ]; then
+    reconcile_args+=(--action-command "$LAST_STACK_CANARY_V2_ACTION_CMD")
+  fi
 fi
 set +e
 verdict_json="$($pipeline "${reconcile_args[@]}")"

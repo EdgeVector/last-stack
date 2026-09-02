@@ -1,4 +1,4 @@
-# Auto release loop: hard health + 24h soak on dogfooded canary.
+# Hourly v2 reconciler tick. One stateless verdict from durable evidence.
 id = "lastdb-canary-soak-watch"
 harness = "claude"
 model = "sonnet"

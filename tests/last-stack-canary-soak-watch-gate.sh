@@ -32,6 +32,52 @@ held_out="$(LAST_STACK_CANARY_V2_ACTION_CMD="touch '$action_log'" run_gate held)
 printf '%s\n' "$held_out" | grep -q 'verdict=green subject=none action=promote-eligible'
 test ! -e "$action_log"
 
+# Execute without a command stays planned. It does not error or invent a wait.
+planned_out="$(LAST_STACK_CANARY_V2_EXECUTE_ACTIONS=1 run_gate planned)"
+printf '%s\n' "$planned_out" | grep -q 'verdict=green subject=none action=promote-eligible'
+if printf '%s\n' "$planned_out" | grep -q 'action_command_missing'; then
+  echo 'execute without a command should stay planned' >&2
+  exit 1
+fi
+
+# A dry-run execute plan writes no extra reconciler row and starts no command.
+dry_log="$tmp/dry-action"
+dry_dir="$tmp/dry-run"
+boot_rows_dry='{"boots":[{"pid":701,"process_start_ts":1788220800,"build":"vcanary","restart_cause":"initial"}]}'
+LAST_STACK_CANARY_PIPELINE_DIR="$dry_dir" \
+LAST_STACK_CANARY_V2_CANDIDATE=vcanary \
+LAST_STACK_CANARY_V2_BOOT_LEDGER_CMD="printf '%s\\n' '$boot_rows_dry'" \
+LAST_STACK_CANARY_V2_STATUS_CHECK_CMD=true \
+LAST_STACK_CANARY_V2_HOST_CHECK_CMD=true \
+LAST_STACK_CANARY_V2_WINDOW_SECONDS=0 \
+LAST_STACK_CANARY_V2_AT='2026-09-02T00:00:00Z' \
+LAST_STACK_CANARY_V2_EXECUTE_ACTIONS=1 \
+LAST_STACK_CANARY_V2_DRY_RUN=1 \
+LAST_STACK_CANARY_V2_ACTION_CMD="touch '$dry_log'" \
+ROUTINES_RUN_DIR="$tmp/run-dry" \
+  "$GATE" >/dev/null
+test ! -e "$dry_log"
+if grep -q '"record_type":"reconciler"' "$dry_dir/ledger.jsonl"; then
+  echo 'dry-run wrote a reconciler evidence row' >&2
+  exit 1
+fi
+
+# wait-next-check is never started, even with execute enabled.
+wait_log="$tmp/wait-gate-action"
+wait_out="$(LAST_STACK_CANARY_V2_WINDOW_SECONDS=999999999 \
+  LAST_STACK_CANARY_V2_EXECUTE_ACTIONS=1 \
+  LAST_STACK_CANARY_V2_ACTION_CMD="touch '$wait_log'" \
+  LAST_STACK_CANARY_PIPELINE_DIR="$tmp/wait-next" \
+  LAST_STACK_CANARY_V2_CANDIDATE=vcanary \
+  LAST_STACK_CANARY_V2_BOOT_LEDGER_CMD="printf '%s\\n' '$boot_rows'" \
+  LAST_STACK_CANARY_V2_STATUS_CHECK_CMD=true \
+  LAST_STACK_CANARY_V2_HOST_CHECK_CMD=true \
+  LAST_STACK_CANARY_V2_AT='2026-09-02T00:00:00Z' \
+  ROUTINES_RUN_DIR="$tmp/run-wait" \
+  "$GATE")"
+printf '%s\n' "$wait_out" | grep -q 'action=wait-next-check'
+test ! -e "$wait_log"
+
 # A second hourly run appends new observations, but it cannot duplicate the
 # immutable boot row or introduce a wait marker.
 second_out="$(run_gate green)"
