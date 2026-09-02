@@ -104,15 +104,21 @@ safe_upgrade_owner_lock_acquire() {
 }
 
 safe_upgrade_owner_lock_acquire_wait() {
-  # Bounded wait around acquire. Contention (a live owner, or init grace) is
-  # retried until LASTDB_SAFE_UPGRADE_OWNER_LOCK_WAIT_S expires; every other
-  # acquire error returns at once. wait=0 keeps today's fail-fast behavior.
+  # Bounded wait around acquire. Contention (a live owner, init grace, or a
+  # stale-recovery race against a releaser) is retried until
+  # LASTDB_SAFE_UPGRADE_OWNER_LOCK_WAIT_S expires; every other acquire error
+  # returns at once. wait=0 keeps today's fail-fast behavior.
   # Loom re-dispatches a node whose worker lease lapsed while the first
   # attempt's process tree still holds this lock (exec
   # lx-20260831T143453.167-37523-1) — the re-run must wait, not mark the
   # candidate RED.
+  #
+  # Budget uses $SECONDS (monotonic in this shell), not `date +%s`. A failed
+  # date that fell back to 0 used to set deadline=wait_s and then treat the
+  # next real epoch as expiry, so a live holder that released inside the
+  # budget was never observed.
   local lock_dir="$1" token="$2" owner_pid="$3" candidate="$4" mode="$5"
-  local wait_s poll now deadline err announced=0
+  local wait_s poll started elapsed err announced=0
   wait_s="${LASTDB_SAFE_UPGRADE_OWNER_LOCK_WAIT_S:-0}"
   poll="${LASTDB_SAFE_UPGRADE_OWNER_LOCK_POLL_S:-15}"
   case "$wait_s" in
@@ -127,8 +133,7 @@ safe_upgrade_owner_lock_acquire_wait() {
       return 1
       ;;
   esac
-  now="$(date +%s 2>/dev/null || echo 0)"
-  deadline=$((now + wait_s))
+  started="$SECONDS"
   while :; do
     if err="$(safe_upgrade_owner_lock_acquire \
         "$lock_dir" "$token" "$owner_pid" "$candidate" "$mode" 2>&1)"; then
@@ -136,14 +141,14 @@ safe_upgrade_owner_lock_acquire_wait() {
       return 0
     fi
     case "$err" in
-      *"owner lock active"*|*"owner lock initialization active"*) ;;
+      *"owner lock active"*|*"owner lock initialization active"*|*"owner lock changed during stale recovery"*) ;;
       *)
         printf '%s\n' "$err" >&2
         return 1
         ;;
     esac
-    now="$(date +%s 2>/dev/null || echo 0)"
-    if [ "$now" -ge "$deadline" ]; then
+    elapsed=$((SECONDS - started))
+    if [ "$elapsed" -ge "$wait_s" ]; then
       printf '%s\n' "$err" >&2
       if [ "$wait_s" -gt 0 ]; then
         printf '[safe-upgrade] ERROR: owner lock still busy after %ss wait\n' "$wait_s" >&2
@@ -155,17 +160,29 @@ safe_upgrade_owner_lock_acquire_wait() {
         "$wait_s" "$poll" "$err" >&2
       announced=1
     fi
+    # Holder already left the path: retry now so a release inside the budget
+    # is observed on this loop, not after a full poll sleep.
+    if [ ! -e "$lock_dir" ]; then
+      continue
+    fi
     sleep "$poll"
   done
 }
 
 safe_upgrade_owner_lock_release() {
-  local lock_dir="$1" token="$2" held="${3:-0}" current_token
+  local lock_dir="$1" token="$2" held="${3:-0}" current_token staging
   [ "$held" = "1" ] || return 0
   [ -d "$lock_dir" ] && [ ! -L "$lock_dir" ] || return 0
   current_token="$(sed -n 's/^token=//p' "$lock_dir/owner" 2>/dev/null | head -1)"
   [ "$current_token" = "$token" ] || return 0
-  rm -f "$lock_dir/pid" "$lock_dir/owner"
-  rmdir "$lock_dir" 2>/dev/null || return 1
+  # Rename first so a waiter never sees a half-deleted dir that still looks
+  # like a live owner (pid gone, owner gone, rmdir not yet). mkdir on the
+  # original path can succeed as soon as the rename lands.
+  staging="${lock_dir}.releasing.${token}.$$"
+  if ! mv "$lock_dir" "$staging" 2>/dev/null; then
+    return 1
+  fi
+  rm -f "$staging/pid" "$staging/owner"
+  rmdir "$staging" 2>/dev/null || rm -rf "$staging"
   return 0
 }
