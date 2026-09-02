@@ -1,5 +1,5 @@
-# Auto release loop: after soak_green, promote-execute to public brew stable (local-canonical).
-# Registry id kept as promote-prepare for continuity; prompt runs promote-execute.
+# Canary v1 promotion is held. Canary v2 enables stable publication only after
+# its channel proof and explicit action command are complete.
 id = "lastdb-canary-promote-prepare"
 harness = "claude"
 model = "sonnet"
@@ -7,7 +7,7 @@ effort = "medium"
 group = "ops"
 rrule = "FREQ=HOURLY;INTERVAL=1;BYMINUTE=35;BYSECOND=0"
 cwd = "/Users/REPLACE/code/edgevector"
-status = "active"
+status = "paused"
 timeout_min = 90
 prompt_path = "/Users/REPLACE/.last-stack/routines/lastdb-canary-promote-prepare.md"
 heartbeat_slug = "routine-heartbeats"

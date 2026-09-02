@@ -1,185 +1,129 @@
 #!/usr/bin/env bash
-# Zero-agent scheduled tick for the LastDB canary soak lane.
+# Stateless hourly reconciler for the LastDB canary v2 evidence ledger.
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
 export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
 
-launcher="${LAST_STACK_CANARY_SOAK_GATE_LAUNCHER:-${ROOT}/bin/last-stack-canary-loom}"
+pipeline="${LAST_STACK_CANARY_V2_PIPELINE:-${ROOT}/bin/last-stack-canary-pipeline}"
 run_dir="${ROUTINES_RUN_DIR:-${TMPDIR:-/tmp}}"
-evidence="${LAST_STACK_CANARY_SOAK_GATE_EVIDENCE:-${run_dir}/canary-soak-gate.out}"
+evidence="${LAST_STACK_CANARY_V2_GATE_EVIDENCE:-${run_dir}/canary-v2-gate.out}"
+window_seconds="${LAST_STACK_CANARY_V2_WINDOW_SECONDS:-86400}"
+status_command="${LAST_STACK_CANARY_V2_STATUS_CHECK_CMD:-}"
+host_command="${LAST_STACK_CANARY_V2_HOST_CHECK_CMD:-situations preflight --action lastdb-safe-upgrade}"
 
 usage() {
-  cat <<'USAGE'
-last-stack-canary-soak-watch-gate
-
-Exit 0 completes the scheduled tick without a model.
-Exit 10 asks routinesd to start the full soak-watch agent.
-USAGE
+  printf '%s\n' 'last-stack-canary-soak-watch-gate'
+  printf '%s\n' 'Read bounded durable evidence and append one stateless canary verdict.'
 }
 
 case "${1:-}" in
-  "") ;;
+  '') ;;
   -h|--help) usage; exit 0 ;;
   *) usage >&2; exit 2 ;;
 esac
 
-[ -x "$launcher" ] || {
-  printf 'CANARY_SOAK_GATE_PROCEED reason=launcher-missing\n'
-  exit 10
+[ -x "$pipeline" ] || {
+  printf 'CANARY_V2_GATE result=error evidence=pipeline_missing\n'
+  printf 'ROUTINE_RESULT outcome=error detail=pipeline_missing\n'
+  exit 0
 }
 
-# `ps -o etime` is the only elapsed field macOS ps offers; `etimes` does not
-# exist here. Normalise [D-]HH:MM:SS and MM:SS to seconds so the detail line
-# carries a number an operator can compare against the node timeouts below.
-etime_seconds() {
-  ps -o etime= -p "$1" 2>/dev/null | awk '
-    { gsub(/^[ \t]+/, "", $0); n = split($0, part, /[-:]/)
-      if (n == 0 || $0 == "") { print ""; exit }
-      s = 0
-      if (n == 4) s = part[1]*86400 + part[2]*3600 + part[3]*60 + part[4]
-      else if (n == 3) s = part[1]*3600 + part[2]*60 + part[3]
-      else if (n == 2) s = part[1]*60 + part[2]
-      else s = part[1]
-      print s }'
-}
+socket="${LASTDB_SOCKET:-${HOME}/.lastdb/data/folddb.sock}"
+if [ -z "$status_command" ]; then
+  status_command="curl -fsS --max-time 2 --unix-socket '$socket' http://localhost/api/status"
+fi
 
-# A canary loom node left running by an EARLIER tick.
-#
-# `loom run` drives the graph inline: the launcher blocks until the graph parks.
-# The lastdb-safe-upgrade nodes this lane calls declare their own budgets —
-# PROBE 7200s, CUTOVER 10800s — while routinesd caps this gate at 900s and the
-# launcher bound below is 780s. So a lane that reaches a LIVE probe can never
-# finish inside one tick. What happened instead, every hour, was:
-#
-#   * the bound fired and reported `error launcher-timeout=780s rc=124`, a red
-#     for work that was running correctly;
-#   * `--quiet` means the launcher writes nothing until it returns, so the
-#     evidence file the red pointed at was 0 bytes — an unattributable red;
-#   * the node script runs in its OWN process group (loom sets one per step),
-#     so `timeout`'s group signal never reached it. It survived at PPID 1,
-#     still doing real work no tick would collect, and the NEXT tick launched a
-#     second driver over the top of it. For PROBE that is a second 27 GB
-#     copy-on-write clone of ~/.lastdb onto a volume at 95% capacity.
-#
-# Measured 2026-08-31T14:34Z: exec lx-…, node PROBE, 36 min elapsed and still
-# cloning while the tick that started it had been reported dead for 21 minutes.
-#
-# So: do not drive a lane that is already being driven. Report the node and its
-# age and let it finish. This gate does NOT kill the step — a probe interrupted
-# mid-clone leaves a partial rollback point, which is worse than a long wait.
-# Reaping a genuinely dead lease stays with `loom reap` and the :36 healer.
-inflight_pids() {
-  if [ -n "${LAST_STACK_CANARY_SOAK_GATE_INFLIGHT_CMD:-}" ]; then
-    eval "$LAST_STACK_CANARY_SOAK_GATE_INFLIGHT_CMD"
-    return 0
+candidate="${LAST_STACK_CANARY_V2_CANDIDATE:-}"
+if [ -z "$candidate" ]; then
+  identity_command="${LAST_STACK_CANARY_V2_CANDIDATE_CMD:-last-stack-lastdb-memory-guard --identity}"
+  set +e
+  identity_output="$(eval "$identity_command" 2>/dev/null)"
+  identity_rc=$?
+  set -e
+  if [ "$identity_rc" -eq 0 ]; then
+    for token in $identity_output; do
+      case "$token" in
+        build=*) candidate="${token#build=}" ;;
+      esac
+    done
   fi
-  pgrep -f "${ROOT}/lib/canary-loom/loom-" 2>/dev/null || true
-}
+fi
 
-inflight_pid="$(inflight_pids | head -1 || true)"
-if [ -n "$inflight_pid" ]; then
-  inflight_cmd="$(ps -o command= -p "$inflight_pid" 2>/dev/null || true)"
-  inflight_node="$(printf '%s\n' "$inflight_cmd" \
-    | sed -n 's|.*/lib/canary-loom/loom-\([A-Za-z0-9_-]*\)\.sh *\([A-Za-z0-9_]*\).*|\1 \2|p' \
-    | awk '{ if ($2 != "") print $1 ":" $2; else print $1 }')"
-  [ -n "$inflight_node" ] || inflight_node="unknown"
-  inflight_age="$(etime_seconds "$inflight_pid")"
-  printf 'CANARY_SOAK_GATE_INFLIGHT node=%s pid=%s age=%ss\n' \
-    "$inflight_node" "$inflight_pid" "${inflight_age:-unknown}"
-  printf '%s %s\n' 'ROUTINE_RESULT' \
-    "outcome=noop detail=in-flight node=${inflight_node} pid=${inflight_pid} age=${inflight_age:-unknown}s"
+if [ -z "$candidate" ] || [ "$candidate" = "unknown" ]; then
+  "$pipeline" record-line-event --check primary_identity --subject observer --result fail \
+    --detail absent >/dev/null || true
+  printf 'CANARY_V2_GATE result=error subject=observer evidence=candidate_identity_absent\n'
+  printf 'ROUTINE_RESULT outcome=error detail=line_stopped=primary_identity_absent\n'
   exit 0
 fi
+
+"$pipeline" record-line-event --check primary_identity --subject observer --result pass >/dev/null
+
+sync_args=(--json sync-boot-ledger --candidate "$candidate")
+if [ -n "${LAST_STACK_CANARY_V2_BOOT_LEDGER_CMD:-}" ]; then
+  sync_args+=(--boot-ledger-command "$LAST_STACK_CANARY_V2_BOOT_LEDGER_CMD")
+fi
+if [ -n "${LAST_STACK_CANARY_V2_BOOT_LEDGER_FILE:-}" ]; then
+  sync_args+=(--boot-ledger-file "$LAST_STACK_CANARY_V2_BOOT_LEDGER_FILE")
+fi
+set +e
+sync_json="$($pipeline "${sync_args[@]}")"
+sync_rc=$?
+set -e
+if [ "$sync_rc" -ne 0 ]; then
+  printf 'CANARY_V2_GATE candidate=%s result=error evidence=boot_ledger_command_error\n' "$candidate"
+  printf 'ROUTINE_RESULT outcome=error detail=boot_ledger_command_error\n'
+  exit 0
+fi
+sync_result="$(printf '%s\n' "$sync_json" | jq -r '.result // "invalid"' 2>/dev/null || true)"
+
+# The status route has the v2 2-second handler budget. Three measured samples
+# produce a real p95; timeout and absence become build evidence.
+"$pipeline" observe-command --candidate "$candidate" --check status --subject build \
+  --command "$status_command" --samples 3 --timeout-seconds 2 --budget-ms 2000 >/dev/null
+
+# A host fence pauses the window. It does not mark the candidate red.
+"$pipeline" observe-command --candidate "$candidate" --check host_fence --subject host \
+  --command "$host_command" --samples 1 --timeout-seconds 10 --budget-ms 10000 >/dev/null
+
+reconcile_args=(--json reconcile --candidate "$candidate" --window-seconds "$window_seconds")
+if [ -n "${LAST_STACK_CANARY_V2_AT:-}" ]; then
+  reconcile_args+=(--at "$LAST_STACK_CANARY_V2_AT")
+fi
+if [ "${LAST_STACK_CANARY_V2_EXECUTE_ACTIONS:-0}" = "1" ]; then
+  [ -n "${LAST_STACK_CANARY_V2_ACTION_CMD:-}" ] || {
+    printf 'CANARY_V2_GATE candidate=%s result=error evidence=action_command_missing\n' "$candidate"
+    printf 'ROUTINE_RESULT outcome=error detail=action_command_missing\n'
+    exit 0
+  }
+  reconcile_args+=(--execute-actions --action-command "$LAST_STACK_CANARY_V2_ACTION_CMD")
+fi
+set +e
+verdict_json="$($pipeline "${reconcile_args[@]}")"
+verdict_rc=$?
+set -e
+if [ "$verdict_rc" -ne 0 ]; then
+  printf 'CANARY_V2_GATE candidate=%s result=error evidence=reconcile_command_error\n' "$candidate"
+  printf 'ROUTINE_RESULT outcome=error detail=reconcile_command_error\n'
+  exit 0
+fi
+
+verdict="$(printf '%s\n' "$verdict_json" | jq -r '.verdict // "invalid"')"
+subject="$(printf '%s\n' "$verdict_json" | jq -r '.subject // empty')"
+[ -n "$subject" ] || subject=none
+action="$(printf '%s\n' "$verdict_json" | jq -r '.action // "unknown"')"
+detail="$(printf '%s\n' "$verdict_json" | jq -r '.evidence // "unknown"')"
+
+case "$verdict" in
+  green) outcome=ok ;;
+  window-open|superseded) outcome=noop ;;
+  red|line-stopped) outcome=error ;;
+  *) outcome=error ;;
+esac
 
 mkdir -p "$(dirname "$evidence")"
-tmp="$(mktemp "${TMPDIR:-/tmp}/canary-soak-gate.XXXXXX")"
-trap 'rm -f "$tmp"' EXIT
-
-# Bound the launcher. routinesd caps this gate at GATE_TIMEOUT_CAP_MS (15m) and
-# SIGTERMs it there — and a SIGTERMed gate emits no ROUTINE_RESULT and never
-# reaches the `cp "$tmp" "$evidence"` below, so the hourly tick produced NOTHING:
-# stdout, stderr and evidence all 0 bytes, outcome `gate-timeout`, no verdict for
-# the soak lane. Twice in twelve ticks (2026-08-30T22:34Z, 2026-08-31T06:34Z)
-# against a 2-35s normal runtime.
-#
-# 780s leaves headroom under the 15m cap for the evidence copy and the trailer,
-# matching `last-stack-whats-wrong-loom`. The sibling gate that already got this
-# fix is `last-stack-routine-observer-gate`
-# (LAST_STACK_WHY_STOPPED_LOOM_TIMEOUT_SEC); this was the last unbounded loom
-# caller of the three.
-launcher_timeout="${LAST_STACK_CANARY_SOAK_GATE_TIMEOUT_SEC:-780}"
-case "$launcher_timeout" in
-  ''|*[!0-9]*) launcher_timeout=780 ;;
-esac
-[ "$launcher_timeout" -ge 1 ] || launcher_timeout=780
-
-set +e
-if command -v timeout >/dev/null 2>&1; then
-  timeout -k 2s "${launcher_timeout}s" "$launcher" --json --quiet >"$tmp" 2>&1
-else
-  # No coreutils `timeout`: keep the old unbounded call rather than inventing a
-  # second reaper here. The routines cap still applies, so this degrades to the
-  # prior behaviour instead of failing the tick outright.
-  "$launcher" --json --quiet >"$tmp" 2>&1
-fi
-launcher_rc=$?
-set -e
-
-# 124 is `timeout`'s own signal that it fired; 137 is the -k SIGKILL escalation.
-if [ "$launcher_rc" -eq 124 ] || [ "$launcher_rc" -eq 137 ]; then
-  cp "$tmp" "$evidence"
-  # Name what was still running. `--quiet` keeps the launcher silent until it
-  # returns, so on this path the evidence file is usually empty — say so rather
-  # than pointing an operator at a 0-byte file and calling it evidence.
-  timeout_pid="$(inflight_pids | head -1 || true)"
-  timeout_node="unknown"
-  timeout_age="unknown"
-  if [ -n "$timeout_pid" ]; then
-    timeout_node="$(ps -o command= -p "$timeout_pid" 2>/dev/null \
-      | sed -n 's|.*/lib/canary-loom/loom-\([A-Za-z0-9_-]*\)\.sh *\([A-Za-z0-9_]*\).*|\1 \2|p' \
-      | awk '{ if ($2 != "") print $1 ":" $2; else print $1 }')"
-    [ -n "$timeout_node" ] || timeout_node="unknown"
-    timeout_age="$(etime_seconds "$timeout_pid")"
-    [ -n "$timeout_age" ] || timeout_age="unknown"
-  fi
-  if [ -s "$evidence" ]; then
-    evidence_detail="evidence=$evidence"
-  else
-    evidence_detail="evidence=empty"
-  fi
-  printf 'CANARY_SOAK_GATE_LAUNCHER_TIMEOUT after=%ss rc=%s node=%s age=%ss %s\n' \
-    "$launcher_timeout" "$launcher_rc" "$timeout_node" "$timeout_age" "$evidence_detail"
-  # Report the tick instead of being killed mid-flight. Exit 0 so routinesd takes
-  # the outcome from this trailer: an error the operator can read beats a
-  # `gate-timeout` with empty logs. Do NOT exit 10 — handing a hung launcher to
-  # the full agent gives it the same unbounded call with less budget left.
-  printf '%s %s\n' 'ROUTINE_RESULT' \
-    "outcome=error detail=launcher-timeout=${launcher_timeout}s rc=${launcher_rc} node=${timeout_node} age=${timeout_age}s"
-  exit 0
-fi
-
-if [ "$launcher_rc" -eq 0 ] \
-   && grep -Eq '^ROUTINE_RESULT outcome=(ok|noop|error)( |$)' "$tmp"; then
-  cat "$tmp"
-  exit 0
-fi
-
-# Keep the failed tick for the full agent or later inspection. The launcher
-# writes structured JSON first, then the legacy result trailer.
-cp "$tmp" "$evidence"
-status="$(sed -n '1p' "$tmp" | jq -r '.status // ""' 2>/dev/null || true)"
-
-if [ "$status" = "failed" ]; then
-  # Preserve the RED result without a dispatcher model. The dedicated healer
-  # fires at :36, two minutes after this :34 soak tick, with its 90-minute cap.
-  # Running that healer inside this gate would inherit the 15-minute soak cap.
-  cat "$tmp"
-  exit 0
-fi
-
-# Transport, state, and parse failures need the full agent. Do not emit a
-# result trailer here; exit 10 transfers ownership to the scheduled prompt.
-printf 'CANARY_SOAK_GATE_PROCEED reason=tick-error rc=%s status=%s evidence=%s\n' \
-  "$launcher_rc" "${status:-unknown}" "$evidence"
-exit 10
+printf 'CANARY_V2_GATE candidate=%s verdict=%s subject=%s action=%s evidence=%s sync=%s\n' \
+  "$candidate" "$verdict" "$subject" "$action" "$detail" "$sync_result" | tee "$evidence"
+printf 'ROUTINE_RESULT outcome=%s detail=verdict=%s subject=%s action=%s\n' \
+  "$outcome" "$verdict" "$subject" "$action"

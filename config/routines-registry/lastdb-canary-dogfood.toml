@@ -1,5 +1,5 @@
-# Auto release loop: resolve Forge fold main tip → probe → live safe-upgrade cutover of primary.
-# GitHub prereleases are opt-in only (LAST_STACK_CANARY_ALLOW_GITHUB=1 + source_git_oid == main).
+# Canary v2 primary action: resolve Forge fold main and run one bounded
+# safe-upgrade action. The hourly reconciler owns the quiet window.
 id = "lastdb-canary-dogfood"
 harness = "claude"
 model = "sonnet"
@@ -10,4 +10,5 @@ cwd = "/Users/REPLACE/code/edgevector"
 status = "active"
 timeout_min = 120
 prompt_path = "/Users/REPLACE/.last-stack/routines/lastdb-canary-dogfood.md"
+gate_command = "/Users/REPLACE/.last-stack/bin/last-stack-canary-v2-dogfood-gate"
 heartbeat_slug = "routine-heartbeats"

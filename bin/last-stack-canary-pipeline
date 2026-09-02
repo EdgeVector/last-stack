@@ -6,6 +6,7 @@ import datetime as dt
 import fcntl
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -87,6 +88,15 @@ CHECKS = (
 # can never write to a real node.
 MUTATING_CHECKS = frozenset({"board_write"})
 
+# Canary Pipeline v2 has three failure subjects. Keep this set close to the
+# ledger code so a caller cannot silently add a fourth, un-routable subject.
+V2_SUBJECTS = frozenset({"build", "observer", "host"})
+DEFAULT_CAUSE_POLICY = {
+    "red": ("crash", "panic", "guard-memory"),
+    "neutral": ("upgrade", "supersession"),
+    "reset": ("operator", "manual"),
+}
+
 # label -> (env override, default budget ms, samples). A check with a budget
 # fails when it SUCCEEDS BUT IS TOO SLOW — exit code alone was the whole
 # problem. 0 disables the bound.
@@ -156,14 +166,14 @@ def parse_ts(value: str) -> dt.datetime | None:
 
 def event_ts_for_state(path: Path, candidate: str, state: str) -> dt.datetime | None:
     for event in reversed(load_events(path)):
-        if event.get("candidate") == candidate and event.get("state") == state:
+        if is_state_event(event) and event.get("candidate") == candidate and event.get("state") == state:
             return parse_ts(str(event.get("ts", "")))
     return None
 
 
 def event_for_state(path: Path, candidate: str, state: str) -> dict | None:
     for event in reversed(load_events(path)):
-        if event.get("candidate") == candidate and event.get("state") == state:
+        if is_state_event(event) and event.get("candidate") == candidate and event.get("state") == state:
             return event
     return None
 
@@ -299,6 +309,88 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     verdict.add_argument("--boot", default="{}", help="durable boot record JSON")
     verdict.add_argument("--observations", default="[]", help="durable observation array JSON")
 
+    boot = sub.add_parser("record-boot", help="append an immutable v2 boot-ledger row")
+    add_common_ledger_flags(boot)
+    boot.add_argument("--candidate", required=True)
+    boot.add_argument("--pid", required=True)
+    boot.add_argument("--start-ts", required=True, help="process start timestamp in ISO-8601 UTC")
+    boot.add_argument("--build", required=True)
+    boot.add_argument("--cause", default="", help="restart cause; empty means normal startup")
+    boot.add_argument("--at", default="", help="observation timestamp in ISO-8601 UTC")
+
+    sync_boots = sub.add_parser(
+        "sync-boot-ledger",
+        help="copy bounded durable Fold boot rows into immutable v2 evidence",
+    )
+    add_common_ledger_flags(sync_boots)
+    sync_boots.add_argument("--candidate", required=True, help="the exact build identifier under evaluation")
+    sync_boots.add_argument(
+        "--boot-ledger-command",
+        default="",
+        help="owner-socket command that returns the Fold boot-ledger JSON",
+    )
+    sync_boots.add_argument(
+        "--boot-ledger-file",
+        type=Path,
+        default=None,
+        help="JSON fixture or captured owner response; used instead of the command",
+    )
+    sync_boots.add_argument("--timeout-seconds", type=float, default=1.0)
+    sync_boots.add_argument("--dry-run", action="store_true")
+
+    observe = sub.add_parser("record-observation", help="append an immutable v2 observation row")
+    add_common_ledger_flags(observe)
+    observe.add_argument("--candidate", required=True)
+    observe.add_argument("--check", required=True)
+    observe.add_argument("--subject", required=True, choices=sorted(V2_SUBJECTS))
+    observe.add_argument("--result", required=True, choices=("pass", "fail"))
+    observe.add_argument("--detail", default="")
+    observe.add_argument("--measured-ms", type=float, default=None)
+    observe.add_argument("--budget-ms", type=float, default=None)
+    observe.add_argument("--at", default="", help="observation timestamp in ISO-8601 UTC")
+
+    command_observe = sub.add_parser(
+        "observe-command",
+        help="run a bounded command and append one v2 observation with p95 latency",
+    )
+    add_common_ledger_flags(command_observe)
+    command_observe.add_argument("--candidate", required=True)
+    command_observe.add_argument("--check", required=True)
+    command_observe.add_argument("--subject", required=True, choices=sorted(V2_SUBJECTS))
+    command_observe.add_argument("--command", dest="probe_command", required=True)
+    command_observe.add_argument("--samples", type=int, default=1)
+    command_observe.add_argument("--timeout-seconds", type=float, required=True)
+    command_observe.add_argument("--budget-ms", type=float, required=True)
+    command_observe.add_argument("--at", default="", help="observation timestamp in ISO-8601 UTC")
+
+    line_event = sub.add_parser("record-line-event", help="append durable observer or host line evidence")
+    add_common_ledger_flags(line_event)
+    line_event.add_argument("--check", required=True)
+    line_event.add_argument("--subject", required=True, choices=("observer", "host"))
+    line_event.add_argument("--result", required=True, choices=("pass", "fail"))
+    line_event.add_argument("--detail", default="")
+    line_event.add_argument("--at", default="", help="observation timestamp in ISO-8601 UTC")
+    sub.add_parser("line-status", help="read the latest durable observer or host line state")
+
+    reconcile = sub.add_parser("reconcile", help="compute and record a stateless v2 verdict")
+    add_common_ledger_flags(reconcile)
+    reconcile.add_argument("--candidate", required=True)
+    reconcile.add_argument("--window-seconds", type=float, default=None)
+    reconcile.add_argument("--at", default="", help="evaluation timestamp in ISO-8601 UTC")
+    reconcile.add_argument("--cause-policy", default="", help="JSON cause policy with red, neutral, and reset arrays")
+    reconcile.add_argument("--dry-run", action="store_true")
+    reconcile.add_argument("--execute-actions", action="store_true")
+    reconcile.add_argument("--action-command", default="", help="short action command; never a wait loop")
+
+    channels = sub.add_parser("channels", help="compute primary, stable, and cutover-hold channel state")
+    add_common_ledger_flags(channels)
+    channels.add_argument("--main-build", required=True, help="build currently selected for the primary channel")
+    channels.add_argument("--incoming-build", default="", help="newer build that would replace the primary build")
+    channels.add_argument("--incoming-fixes-red", action="store_true")
+    channels.add_argument("--window-seconds", type=float, default=None)
+    channels.add_argument("--cutover-hold-hours", type=float, default=4.0)
+    channels.add_argument("--at", default="", help="evaluation timestamp in ISO-8601 UTC")
+
     promote = sub.add_parser("promote-prepare", help="report whether a green soak is ready for promotion")
     add_common_ledger_flags(promote)
     promote.add_argument("--sha", default="")
@@ -368,11 +460,16 @@ def load_events(path: Path) -> list[dict]:
     return events
 
 
+def is_state_event(event: dict) -> bool:
+    """Return true only for legacy state-machine rows, not v2 evidence rows."""
+    return event.get("record_type", "state") == "state" and str(event.get("state", "")) in STATES
+
+
 def latest_by_candidate(events: list[dict]) -> dict[str, dict]:
     latest = {}
     for event in events:
         candidate = str(event.get("candidate", ""))
-        if candidate:
+        if candidate and is_state_event(event):
             latest[candidate] = event
     return latest
 
@@ -395,6 +492,685 @@ def durable_verdict(candidate: str, boot: dict, observations: list[dict]) -> dic
                 return {"candidate": candidate, "verdict": "line-stopped", "subject": subject, "evidence": evidence}
             return {"candidate": candidate, "verdict": "window-open", "subject": subject, "evidence": evidence}
     return {"candidate": candidate, "verdict": "window-open", "subject": "", "evidence": "awaiting_quiet_window"}
+
+
+def parse_required_ts(value: str, label: str) -> dt.datetime:
+    parsed = parse_ts(value)
+    if parsed is None:
+        die(f"{label} must be an ISO-8601 timestamp", 2)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def event_timestamp(event: dict) -> dt.datetime | None:
+    parsed = parse_ts(str(event.get("observed_at") or event.get("ts") or ""))
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def normalise_cause_policy(raw: str) -> dict[str, frozenset[str]]:
+    policy = {key: frozenset(values) for key, values in DEFAULT_CAUSE_POLICY.items()}
+    if not raw:
+        return policy
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        die(f"invalid cause policy JSON: {exc}", 2)
+    if not isinstance(value, dict):
+        die("cause policy must be a JSON object", 2)
+    for key in policy:
+        if key not in value:
+            continue
+        entries = value[key]
+        if not isinstance(entries, list) or not all(isinstance(entry, str) for entry in entries):
+            die(f"cause policy {key} must be an array of strings", 2)
+        policy[key] = frozenset(entry.strip().lower() for entry in entries if entry.strip())
+    overlap = (policy["red"] & policy["neutral"]) | (policy["red"] & policy["reset"]) | (policy["neutral"] & policy["reset"])
+    if overlap:
+        die(f"cause policy categories overlap: {','.join(sorted(overlap))}", 2)
+    return policy
+
+
+def observation_failure(observation: dict) -> str | None:
+    """Return failure evidence, including timeout, absence, and budget breaches."""
+    check = str(observation.get("check") or "check")
+    detail = str(observation.get("detail") or "")
+    measured = observation.get("measured_ms")
+    budget = observation.get("budget_ms")
+    if isinstance(measured, (int, float)) and isinstance(budget, (int, float)) and measured > budget:
+        return f"{check}[p95={measured:g}ms>{budget:g}ms]"
+    if observation.get("passed") is False:
+        return detail or check
+    normalized_detail = detail.lower()
+    if "timeout" in normalized_detail or "absent" in normalized_detail or "missing" in normalized_detail:
+        return detail or check
+    return None
+
+
+def v2_verdict(
+    candidate: str,
+    window_seconds: float,
+    boots: list[dict],
+    observations: list[dict],
+    cause_policy: dict[str, frozenset[str]],
+    now: dt.datetime,
+) -> dict:
+    """Compute a v2 verdict from durable rows only; no state-machine data enters."""
+    if not boots:
+        return {"candidate": candidate, "verdict": "red", "subject": "build", "evidence": "boot_record_missing"}
+
+    ordered_boots = sorted(boots, key=lambda event: str(event.get("ts", "")))
+    reset_at: dt.datetime | None = None
+    for boot in ordered_boots:
+        if not boot.get("pid") or not boot.get("start_ts") or not boot.get("build"):
+            return {"candidate": candidate, "verdict": "red", "subject": "build", "evidence": "boot_record_incomplete"}
+        cause = str(boot.get("cause") or "").strip().lower()
+        if not cause or cause in {"initial", "normal", "startup"}:
+            continue
+        if cause in cause_policy["neutral"]:
+            return {"candidate": candidate, "verdict": "superseded", "subject": "build", "evidence": f"restart[{cause}]"}
+        if cause in cause_policy["reset"]:
+            reset_at = event_timestamp(boot) or parse_required_ts(str(boot["start_ts"]), "boot start timestamp")
+            continue
+        # A cause outside the explicit neutral/reset policy fails closed.
+        return {"candidate": candidate, "verdict": "red", "subject": "build", "evidence": f"restart[{cause}]"}
+
+    latest_boot = ordered_boots[-1]
+    window_start = reset_at or event_timestamp(latest_boot) or parse_required_ts(
+        str(latest_boot["start_ts"]), "boot start timestamp"
+    )
+    saw_window_observation = False
+    for observation in observations:
+        subject = str(observation.get("subject") or "")
+        if subject not in V2_SUBJECTS:
+            return {"candidate": candidate, "verdict": "line-stopped", "subject": "observer", "evidence": "observation_subject_missing"}
+        observed_at = event_timestamp(observation)
+        if observed_at is not None and observed_at < window_start:
+            continue
+        saw_window_observation = True
+        evidence = observation_failure(observation)
+        if evidence is None:
+            continue
+        if subject == "build":
+            return {"candidate": candidate, "verdict": "red", "subject": subject, "evidence": evidence}
+        if subject == "observer":
+            return {"candidate": candidate, "verdict": "line-stopped", "subject": subject, "evidence": evidence}
+        return {"candidate": candidate, "verdict": "window-open", "subject": subject, "evidence": evidence}
+
+    elapsed = max(0.0, (now - window_start).total_seconds())
+    if elapsed < window_seconds:
+        return {
+            "candidate": candidate,
+            "verdict": "window-open",
+            "subject": "",
+            "evidence": "awaiting_quiet_window",
+            "elapsed_seconds": elapsed,
+            "window_seconds": window_seconds,
+        }
+    if not saw_window_observation:
+        return {
+            "candidate": candidate,
+            "verdict": "line-stopped",
+            "subject": "observer",
+            "evidence": "observations_absent",
+            "elapsed_seconds": elapsed,
+            "window_seconds": window_seconds,
+        }
+    return {
+        "candidate": candidate,
+        "verdict": "green",
+        "subject": "",
+        "evidence": "quiet_window_complete",
+        "elapsed_seconds": elapsed,
+        "window_seconds": window_seconds,
+    }
+
+
+def record_boot(path: Path, args: argparse.Namespace) -> dict:
+    # A reconciliation window begins at the process boot, not the first
+    # collector pass. The explicit --at flag remains useful for fixture input.
+    observed_at = args.at or args.start_ts
+    parse_required_ts(observed_at, "boot observation timestamp")
+    parse_required_ts(args.start_ts, "boot start timestamp")
+    event = {
+        "record_type": "boot",
+        "ts": observed_at,
+        "candidate": args.candidate,
+        "pid": args.pid,
+        "start_ts": args.start_ts,
+        "build": args.build,
+        "cause": args.cause,
+    }
+    return append_boot_if_new(path, event)
+
+
+def boot_event_key(event: dict) -> tuple[str, str, str, str]:
+    return (
+        str(event.get("candidate") or ""),
+        str(event.get("pid") or ""),
+        str(event.get("start_ts") or ""),
+        str(event.get("build") or ""),
+    )
+
+
+def append_boot_if_new(path: Path, event: dict) -> dict:
+    def inner() -> dict:
+        key = boot_event_key(event)
+        for existing in load_events(path):
+            if existing.get("record_type") == "boot" and boot_event_key(existing) == key:
+                return {**existing, "deduplicated": True}
+        append_event(path, event)
+        return {**event, "deduplicated": False}
+
+    return lock_and_run(path, inner)
+
+
+def epoch_to_iso(value: object, label: str) -> str:
+    try:
+        epoch = float(str(value))
+        converted = dt.datetime.fromtimestamp(epoch, dt.timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        die(f"{label} must be a Unix epoch timestamp", 2)
+    return converted.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def default_boot_ledger_command(timeout_seconds: float) -> str:
+    socket = os.environ.get("LASTDB_SOCKET", str(Path.home() / ".lastdb" / "data" / "folddb.sock"))
+    return (
+        f"curl -fsS --max-time {timeout_seconds:g} --unix-socket {shlex.quote(socket)} "
+        "http://localhost/api/system/boot-ledger"
+    )
+
+
+def append_sync_failure(path: Path, candidate: str, detail: str, dry_run: bool) -> dict:
+    event = {
+        "record_type": "observation",
+        "ts": utc_now(),
+        "candidate": candidate,
+        "check": "boot_ledger",
+        "subject": "observer",
+        "passed": False,
+        "detail": detail,
+    }
+    if not dry_run:
+        lock_and_run(path, lambda: append_event(path, event))
+    return {"candidate": candidate, "result": "failed", "failure": detail, "observation": event}
+
+
+def load_boot_ledger_response(args: argparse.Namespace) -> tuple[dict | None, str | None]:
+    if args.timeout_seconds <= 0:
+        die("timeout seconds must be positive", 2)
+    if args.boot_ledger_file is not None:
+        try:
+            raw = args.boot_ledger_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            return None, f"absent[{exc.__class__.__name__}]"
+    else:
+        command = args.boot_ledger_command or default_boot_ledger_command(args.timeout_seconds)
+        try:
+            completed = subprocess.run(
+                command,
+                shell=True,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=args.timeout_seconds + 1,
+            )
+        except subprocess.TimeoutExpired:
+            return None, "timeout"
+        if completed.returncode != 0:
+            return None, "absent"
+        raw = completed.stdout
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return None, "absent[invalid_json]"
+    if not isinstance(value, dict):
+        return None, "absent[invalid_shape]"
+    # Accept the direct route body and the standard response envelope.
+    payload = value.get("data", value)
+    if not isinstance(payload, dict):
+        return None, "absent[invalid_shape]"
+    return payload, None
+
+
+def sync_boot_ledger(path: Path, args: argparse.Namespace) -> dict:
+    payload, failure = load_boot_ledger_response(args)
+    if failure is not None:
+        return append_sync_failure(path, args.candidate, failure, args.dry_run)
+    assert payload is not None
+    boots = payload.get("boots")
+    if not isinstance(boots, list):
+        return append_sync_failure(path, args.candidate, "absent[boot_rows_missing]", args.dry_run)
+
+    parsed: list[dict] = []
+    for row in boots:
+        if not isinstance(row, dict):
+            return append_sync_failure(path, args.candidate, "absent[boot_row_invalid]", args.dry_run)
+        pid = row.get("pid")
+        start = row.get("process_start_ts")
+        build = row.get("build")
+        if pid in (None, "") or start in (None, "") or not isinstance(build, str) or not build:
+            return append_sync_failure(path, args.candidate, "absent[boot_row_incomplete]", args.dry_run)
+        parsed.append(
+            {
+                "pid": str(pid),
+                "start_ts": epoch_to_iso(start, "boot process start timestamp"),
+                "build": build,
+                "source_cause": str(row.get("restart_cause") or ""),
+            }
+        )
+
+    candidate_rows = [row for row in parsed if row["build"] == args.candidate]
+    events = [
+        {
+            "record_type": "boot",
+            "ts": row["start_ts"],
+            "candidate": args.candidate,
+            "pid": row["pid"],
+            "start_ts": row["start_ts"],
+            "build": row["build"],
+            "cause": row["source_cause"],
+        }
+        for row in candidate_rows
+    ]
+    # A later, different build ends the candidate's ownership of the channel.
+    # Preserve it as neutral supersession evidence rather than treating the
+    # new build's restart cause as a failure of the retired candidate.
+    if candidate_rows:
+        candidate_start = max(row["start_ts"] for row in candidate_rows)
+        for row in parsed:
+            if row["build"] != args.candidate and row["start_ts"] > candidate_start:
+                events.append(
+                    {
+                        "record_type": "boot",
+                        "ts": row["start_ts"],
+                        "candidate": args.candidate,
+                        "pid": row["pid"],
+                        "start_ts": row["start_ts"],
+                        "build": row["build"],
+                        "cause": "supersession",
+                        "source_cause": row["source_cause"],
+                    }
+                )
+
+    def inner() -> dict:
+        existing = {
+            boot_event_key(event)
+            for event in load_events(path)
+            if event.get("record_type") == "boot"
+        }
+        appended = 0
+        duplicates = 0
+        for event in events:
+            key = boot_event_key(event)
+            if key in existing:
+                duplicates += 1
+                continue
+            if not args.dry_run:
+                append_event(path, event)
+            existing.add(key)
+            appended += 1
+        observation = {
+            "record_type": "observation",
+            "ts": utc_now(),
+            "candidate": args.candidate,
+            "check": "boot_ledger",
+            "subject": "observer",
+            "passed": True,
+            "detail": "bounded_tail_read",
+        }
+        if not args.dry_run:
+            append_event(path, observation)
+        return {
+            "candidate": args.candidate,
+            "result": "ok",
+            "reported_boots": len(parsed),
+            "matched_boots": len(events),
+            "appended_boots": appended,
+            "duplicate_boots": duplicates,
+            "observation": observation,
+        }
+
+    return lock_and_run(path, inner)
+
+
+def record_observation(path: Path, args: argparse.Namespace) -> dict:
+    observed_at = args.at or utc_now()
+    parse_required_ts(observed_at, "observation timestamp")
+    passed = args.result == "pass"
+    detail = args.detail
+    detail_lower = detail.lower()
+    if "timeout" in detail_lower or "absent" in detail_lower or "missing" in detail_lower:
+        passed = False
+    if args.measured_ms is not None and args.budget_ms is not None and args.measured_ms > args.budget_ms:
+        passed = False
+    event = {
+        "record_type": "observation",
+        "ts": observed_at,
+        "candidate": args.candidate,
+        "check": args.check,
+        "subject": args.subject,
+        "passed": passed,
+        "detail": detail,
+    }
+    if args.measured_ms is not None:
+        event["measured_ms"] = args.measured_ms
+    if args.budget_ms is not None:
+        event["budget_ms"] = args.budget_ms
+    lock_and_run(path, lambda: append_event(path, event))
+    return event
+
+
+def observe_command(path: Path, args: argparse.Namespace) -> dict:
+    if args.samples < 1 or args.samples > 9:
+        die("samples must be between 1 and 9", 2)
+    if args.timeout_seconds <= 0 or args.budget_ms <= 0:
+        die("timeout seconds and budget ms must be positive", 2)
+    measurements: list[float] = []
+    failure = ""
+    for _ in range(args.samples):
+        started = time.monotonic()
+        try:
+            completed = subprocess.run(
+                args.probe_command,
+                shell=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=args.timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            measurements.append((time.monotonic() - started) * 1000)
+            failure = "timeout"
+            break
+        measurements.append((time.monotonic() - started) * 1000)
+        if completed.returncode != 0:
+            failure = f"exit_{completed.returncode}"
+            break
+    ordered = sorted(measurements)
+    p95 = ordered[(95 * len(ordered) + 99) // 100 - 1]
+    observation_args = argparse.Namespace(
+        candidate=args.candidate,
+        check=args.check,
+        subject=args.subject,
+        result="fail" if failure else "pass",
+        detail=failure,
+        measured_ms=p95,
+        budget_ms=args.budget_ms,
+        at=args.at,
+    )
+    event = record_observation(path, observation_args)
+    event["samples"] = len(measurements)
+    event["p95_ms"] = p95
+    return event
+
+
+def record_line_event(path: Path, args: argparse.Namespace) -> dict:
+    observed_at = args.at or utc_now()
+    parse_required_ts(observed_at, "line event timestamp")
+    detail = args.detail
+    passed = args.result == "pass"
+    if any(word in detail.lower() for word in ("timeout", "absent", "missing")):
+        passed = False
+    event = {
+        "record_type": "line_event",
+        "ts": observed_at,
+        "check": args.check,
+        "subject": args.subject,
+        "passed": passed,
+        "detail": detail,
+    }
+    lock_and_run(path, lambda: append_event(path, event))
+    return event
+
+
+def line_status(path: Path) -> dict:
+    events = [event for event in load_events(path) if event.get("record_type") == "line_event"]
+    if not events:
+        return {"record_type": "line_status", "state": "clear", "subject": "", "evidence": "no_line_events"}
+    latest = max(events, key=lambda event: str(event.get("ts") or ""))
+    if latest.get("passed") is False:
+        return {
+            "record_type": "line_status",
+            "state": "line-stopped",
+            "subject": str(latest.get("subject") or "observer"),
+            "evidence": str(latest.get("detail") or latest.get("check") or "line_event"),
+        }
+    return {
+        "record_type": "line_status",
+        "state": "clear",
+        "subject": str(latest.get("subject") or ""),
+        "evidence": str(latest.get("check") or "line_event"),
+    }
+
+
+def reconcile_action(verdict: dict) -> str:
+    if verdict["verdict"] == "red":
+        return "heal"
+    if verdict["verdict"] == "line-stopped":
+        return "line-stop"
+    if verdict["verdict"] == "superseded":
+        return "retire"
+    if verdict.get("subject") == "host":
+        return "pause-window"
+    if verdict["verdict"] == "green":
+        return "promote-eligible"
+    return "wait-next-check"
+
+
+def action_token(verdict: dict) -> str:
+    """Group repeat reconciler ticks under one dispatched action attempt."""
+    evidence = str(verdict.get("evidence") or "")
+    if evidence.startswith("restart["):
+        evidence_key = evidence
+    else:
+        evidence_key = evidence.split("[", 1)[0]
+    return json.dumps(
+        {
+            "candidate": verdict["candidate"],
+            "action": verdict["action"],
+            "subject": verdict.get("subject") or "",
+            "evidence": evidence_key,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def queue_heal_if_new(path: Path, verdict: dict) -> bool:
+    """Queue one durable heal per failure class; ticks never count as attempts."""
+    if verdict["action"] != "heal":
+        return False
+    token = action_token(verdict)
+
+    def inner() -> bool:
+        for event in load_events(path):
+            if event.get("record_type") == "heal_queue" and event.get("action_token") == token:
+                return False
+        append_event(
+            path,
+            {
+                "record_type": "heal_queue",
+                "ts": verdict["at"],
+                "candidate": verdict["candidate"],
+                "subject": verdict.get("subject") or "build",
+                "evidence": verdict["evidence"],
+                "action_token": token,
+                "status": "queued",
+            },
+        )
+        return True
+
+    return lock_and_run(path, inner)
+
+
+def reserve_action_dispatch(path: Path, verdict: dict) -> bool:
+    """Record a dispatch attempt before execution so a later tick cannot repeat it."""
+    token = action_token(verdict)
+
+    def inner() -> bool:
+        for event in load_events(path):
+            if event.get("record_type") == "action_dispatch" and event.get("action_token") == token:
+                return False
+        append_event(
+            path,
+            {
+                "record_type": "action_dispatch",
+                "ts": utc_now(),
+                "candidate": verdict["candidate"],
+                "action": verdict["action"],
+                "subject": verdict.get("subject") or "",
+                "evidence": verdict["evidence"],
+                "action_token": token,
+                "status": "started",
+            },
+        )
+        return True
+
+    return lock_and_run(path, inner)
+
+
+def finish_action_dispatch(path: Path, verdict: dict, status: str) -> None:
+    lock_and_run(
+        path,
+        lambda: append_event(
+            path,
+            {
+                "record_type": "action_dispatch_result",
+                "ts": utc_now(),
+                "candidate": verdict["candidate"],
+                "action_token": action_token(verdict),
+                "status": status,
+            },
+        ),
+    )
+
+
+def reconcile(path: Path, args: argparse.Namespace) -> dict:
+    now = parse_required_ts(args.at, "reconciliation timestamp") if args.at else dt.datetime.now(dt.timezone.utc)
+    window_seconds = args.window_seconds
+    if window_seconds is None:
+        window_seconds = env_float("LAST_STACK_CANARY_V2_WINDOW_SECONDS", 24 * 60 * 60.0)
+    if window_seconds < 0:
+        die("window seconds must be non-negative", 2)
+    cause_policy = normalise_cause_policy(args.cause_policy)
+
+    def inner() -> dict:
+        events = load_events(path)
+        boots = [event for event in events if event.get("record_type") == "boot" and event.get("candidate") == args.candidate]
+        observations = [event for event in events if event.get("record_type") == "observation" and event.get("candidate") == args.candidate]
+        verdict = v2_verdict(args.candidate, window_seconds, boots, observations, cause_policy, now)
+        verdict["action"] = reconcile_action(verdict)
+        verdict["boot_count"] = len(boots)
+        verdict["observation_count"] = len(observations)
+        verdict["at"] = now.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        if not args.dry_run:
+            append_event(
+                path,
+                {
+                    "record_type": "reconciler",
+                    "ts": verdict["at"],
+                    "candidate": args.candidate,
+                    "verdict": verdict["verdict"],
+                    "subject": verdict.get("subject", ""),
+                    "evidence": verdict["evidence"],
+                    "action": verdict["action"],
+                    "boot_count": verdict["boot_count"],
+                    "observation_count": verdict["observation_count"],
+                },
+            )
+        return verdict
+
+    verdict = lock_and_run(path, inner)
+    if not args.dry_run:
+        verdict["heal_queued"] = queue_heal_if_new(path, verdict)
+    else:
+        verdict["heal_queued"] = False
+    if args.execute_actions:
+        command = args.action_command or os.environ.get("LAST_STACK_CANARY_V2_ACTION_CMD", "")
+        if not command:
+            die("--execute-actions requires --action-command or LAST_STACK_CANARY_V2_ACTION_CMD", 2)
+        if args.dry_run:
+            verdict["action_dispatch"] = "dry-run"
+        elif not reserve_action_dispatch(path, verdict):
+            verdict["action_dispatch"] = "already-dispatched"
+        else:
+            env = {
+                **os.environ,
+                "LAST_STACK_CANARY_CANDIDATE": args.candidate,
+                "LAST_STACK_CANARY_VERDICT": str(verdict["verdict"]),
+                "LAST_STACK_CANARY_SUBJECT": str(verdict.get("subject", "")),
+                "LAST_STACK_CANARY_ACTION": str(verdict["action"]),
+            }
+            completed = subprocess.run(command, shell=True, env=env)
+            verdict["action_dispatch"] = "ok" if completed.returncode == 0 else f"exit_{completed.returncode}"
+            finish_action_dispatch(path, verdict, verdict["action_dispatch"])
+            if completed.returncode != 0:
+                die(f"short action failed: exit {completed.returncode}")
+    else:
+        verdict["action_dispatch"] = "planned"
+    return verdict
+
+
+def channel_state(path: Path, args: argparse.Namespace) -> dict:
+    if args.cutover_hold_hours < 0:
+        die("cutover hold hours must be non-negative", 2)
+    now = parse_required_ts(args.at, "channel timestamp") if args.at else dt.datetime.now(dt.timezone.utc)
+    window_seconds = args.window_seconds
+    if window_seconds is None:
+        window_seconds = env_float("LAST_STACK_CANARY_V2_WINDOW_SECONDS", 24 * 60 * 60.0)
+    if window_seconds < 0:
+        die("window seconds must be non-negative", 2)
+
+    events = load_events(path)
+    latest_verdicts: dict[str, dict] = {}
+    for event in events:
+        if event.get("record_type") != "reconciler":
+            continue
+        candidate = str(event.get("candidate") or "")
+        if candidate:
+            latest_verdicts[candidate] = event
+    green_candidates = [event for event in latest_verdicts.values() if event.get("verdict") == "green"]
+    stable = max(green_candidates, key=lambda event: str(event.get("ts") or ""), default=None)
+
+    primary_verdict = latest_verdicts.get(args.main_build)
+    primary_boots = [
+        event
+        for event in events
+        if event.get("record_type") == "boot" and event.get("candidate") == args.main_build
+    ]
+    hold = False
+    remaining_seconds: float | None = None
+    if args.incoming_build and not args.incoming_fixes_red and primary_verdict is not None:
+        if primary_verdict.get("verdict") == "window-open" and primary_boots:
+            newest_boot = max(primary_boots, key=lambda event: str(event.get("ts") or ""))
+            started = event_timestamp(newest_boot)
+            if started is not None:
+                remaining_seconds = max(0.0, window_seconds - (now - started).total_seconds())
+                hold = 0.0 < remaining_seconds <= args.cutover_hold_hours * 60 * 60
+
+    return {
+        "primary": {
+            "build": args.main_build,
+            "verdict": str(primary_verdict.get("verdict")) if primary_verdict else "unverified",
+            "tracks_main": True,
+        },
+        "stable": {
+            "build": str(stable.get("candidate")) if stable else "",
+            "verdict": "green" if stable else "none",
+        },
+        "cutover": {
+            "incoming_build": args.incoming_build,
+            "hold": hold,
+            "reason": "quiet_window_near_complete" if hold else "allowed",
+            "remaining_seconds": remaining_seconds,
+            "incoming_fixes_red": args.incoming_fixes_red,
+        },
+    }
 
 
 def append_event(path: Path, event: dict) -> None:
@@ -431,6 +1207,31 @@ def current_record(event: dict) -> dict:
 
 
 def emit_record(value: dict) -> None:
+    record_type = value.get("record_type", "")
+    if record_type == "boot":
+        print(
+            f"BOOT_LEDGER candidate={value.get('candidate')} pid={value.get('pid')} "
+            f"build={value.get('build')} cause={value.get('cause') or 'normal'} result=ok"
+        )
+        return
+    if record_type == "observation":
+        print(
+            f"OBSERVATION candidate={value.get('candidate')} check={value.get('check')} "
+            f"subject={value.get('subject')} passed={str(value.get('passed')).lower()} result=ok"
+        )
+        return
+    if record_type == "line_event":
+        print(
+            f"LINE_EVENT check={value.get('check')} subject={value.get('subject')} "
+            f"passed={str(value.get('passed')).lower()} result=ok"
+        )
+        return
+    if record_type == "line_status":
+        print(
+            f"LINE_STATUS state={value.get('state')} subject={value.get('subject') or 'none'} "
+            f"evidence={value.get('evidence')}"
+        )
+        return
     print(
         "candidate={candidate} state={state} version={version} source={source} updated_at={updated_at}".format(
             **value
@@ -1719,6 +2520,32 @@ def main(argv: list[str]) -> int:
         if not isinstance(boot, dict) or not isinstance(observations, list):
             die("durable evidence must be an object and an array", 2)
         emit(durable_verdict(args.candidate, boot, observations), args.json)
+    elif args.command == "record-boot":
+        emit(record_boot(path, args), args.json)
+    elif args.command == "sync-boot-ledger":
+        emit(sync_boot_ledger(path, args), args.json)
+    elif args.command == "record-observation":
+        emit(record_observation(path, args), args.json)
+    elif args.command == "observe-command":
+        emit(observe_command(path, args), args.json)
+    elif args.command == "record-line-event":
+        emit(record_line_event(path, args), args.json)
+    elif args.command == "line-status":
+        emit(line_status(path), args.json)
+    elif args.command == "reconcile":
+        verdict = reconcile(path, args)
+        if args.json:
+            emit(verdict, True)
+        else:
+            print(
+                f"RECONCILER ledger={path} candidate={args.candidate} result=ok "
+                f"verdict={verdict['verdict']} subject={verdict.get('subject') or 'none'} "
+                f"action={verdict['action']} evidence={verdict['evidence']} "
+                f"boots={verdict['boot_count']} observations={verdict['observation_count']}"
+                f"{dry_suffix(args.dry_run)}"
+            )
+    elif args.command == "channels":
+        emit(channel_state(path, args), args.json)
     elif args.command == "promote-prepare":
         promote_prepare(path, args)
     elif args.command == "promote-execute":

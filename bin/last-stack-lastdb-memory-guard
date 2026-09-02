@@ -69,6 +69,7 @@ GUARD_METRIC="${LASTDBD_GUARD_METRIC:-footprint}"
 RSS_LIMIT_MB="${LASTDBD_RSS_LIMIT_MB:-16384}"
 COOLDOWN_SEC="${LASTDBD_GUARD_COOLDOWN_SEC:-120}"
 RESTART_WAIT_SEC="${LASTDBD_GUARD_RESTART_WAIT_SEC:-30}"
+IDENTITY_TIMEOUT_SEC="${LASTDBD_GUARD_IDENTITY_TIMEOUT_SEC:-1}"
 PRIMARY_HOME="${LASTDBD_PRIMARY_HOME:-$HOME/.lastdb}"
 LOG_DIR="${PRIMARY_HOME}/monitoring"
 LOG="${LOG_DIR}/lastdbd-memory-guard.log"
@@ -83,6 +84,13 @@ case "$GUARD_METRIC" in
   rss|footprint) ;;
   *)
     echo "invalid LASTDBD_GUARD_METRIC=$GUARD_METRIC (want rss|footprint)" >&2
+    exit 2
+    ;;
+esac
+
+case "$IDENTITY_TIMEOUT_SEC" in
+  ''|*[!0-9]*|0)
+    echo "invalid LASTDBD_GUARD_IDENTITY_TIMEOUT_SEC=$IDENTITY_TIMEOUT_SEC (want positive whole seconds)" >&2
     exit 2
     ;;
 esac
@@ -197,22 +205,23 @@ read_status() {
 }
 
 identity() {
-  local identity_pid start build_value current latest
-  identity_pid=$(primary_pid || true)
-  if [ -z "$identity_pid" ]; then
+  local expected_pid identity_pid start build_value body
+  expected_pid=$(primary_pid || true)
+  if [ -z "$expected_pid" ]; then
     return 1
   fi
-  # The session ledger is the daemon's durable boot evidence.  Do not use
-  # /api/status here: the canary identity path must stay available when the
-  # status snapshot is slow or under load.
-  current="${PRIMARY_HOME}/current-session.json"
-  latest="${PRIMARY_HOME}/sessions.jsonl"
-  start=$(sed -n 's/.*"start_ts":\([0-9][0-9]*\).*/\1/p' "$current" 2>/dev/null | head -1)
-  build_value=$(tail -n 1 "$latest" 2>/dev/null | sed -n 's/.*"build_version":"\([^"]*\)".*/\1/p')
-  if [ -z "$start" ]; then
+  # `boot-identity` is a one-row session-ledger read. Do not call
+  # `/api/status`: that route builds a much larger snapshot and its timeout is
+  # evidence of a build failure, not a reason to hide identity.
+  body=$(curl -s --max-time "$IDENTITY_TIMEOUT_SEC" --unix-socket "$SOCKET" \
+    -H 'X-LastDB-Client: lastdb-memory-guard' \
+    http://localhost/api/system/boot-identity 2>/dev/null || true)
+  identity_pid=$(printf '%s' "$body" | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' | head -1)
+  start=$(printf '%s' "$body" | sed -n 's/.*"process_start_ts":\([0-9][0-9]*\).*/\1/p' | head -1)
+  build_value=$(printf '%s' "$body" | sed -n 's/.*"build":"\([^"]*\)".*/\1/p' | head -1)
+  if [ -z "$identity_pid" ] || [ "$identity_pid" != "$expected_pid" ] || [ -z "$start" ] || [ -z "$build_value" ]; then
     return 1
   fi
-  [ -n "$build_value" ] || build_value=unknown
   printf 'pid=%s process_start_ts=%s build=%s\n' "$identity_pid" "$start" "$build_value"
 }
 

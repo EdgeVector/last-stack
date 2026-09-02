@@ -161,7 +161,7 @@ ls ~/.routines/registry/last-stack-fkanban-validate.toml
 |---|---|---|
 | [`llms-txt-install-smoke`](llms-txt-install-smoke.md) | daily | Isolated dogfood of https://thelastdb.com/llms.txt first-run install; file cards on RED (never touches primary LastDB). |
 | [`lastdb-install-docs-weekly`](lastdb-install-docs-weekly.md) | weekly | Refresh thelastdb.com install/use docs, ephemeral fresh-install prove, heal-loop until GREEN (budgeted; never primary LastDB). |
-| [`lastdb-canary-dogfood`](lastdb-canary-dogfood.md) | nightly, paused | Resolve a LastDB canary candidate and dogfood the safe-upgrade probe path through the canary ledger; never activates the primary install. |
+| [`lastdb-canary-dogfood`](lastdb-canary-dogfood.md) | nightly | Start one bounded v2 safe-upgrade action for the Forge main build. The hourly reconciler owns the quiet window. |
 | [`self-improvement-loop`](self-improvement-loop.md) | daily | Mine recent agent sessions for recurring friction; upgrade the agent's OWN skills / routines / permission allowlist / docs. The flagship self-fixing loop. |
 | [`revenant-watch`](revenant-watch.md) | daily | **Revenant Watch** (session-miner profile): flag agents reanimating settled-dead product truth; Brain-only `revenant-*` + ledger; open-work exemption. Not a new peer engine. |
 | [`revenant-watch-weekly-review`](revenant-watch-weekly-review.md) | weekly (Thu) | Steward Revenant Watch: run health, signal/noise, fixture bar, small fixes, report Tom. |
@@ -173,8 +173,8 @@ ls ~/.routines/registry/last-stack-fkanban-validate.toml
 | [`pipeline-health`](pipeline-health.md) | every ~10 min | Keep LastGit CRs and forge (fold / forge-hot) PRs unblocked; fix mechanical issues or file Brain papercuts (`papercut-pipeline-*`) — never board P0 monopoly. |
 | [`merge-babysit`](merge-babysit.md) | every ~15 min | Self-heal stuck LastGit CRs, completing green laggards or filing P0 merge cards without turning transient backend outages into fleet-red runs. |
 | [`drain-open-prs`](drain-open-prs.md) | daily | Drive every open PR across all repos toward zero (merge or close). |
-| [`lastdb-canary-soak-watch`](lastdb-canary-soak-watch.md) | paused | Evaluate a dogfooded LastDB canary SHA, mark the canary ledger `soak_green` / `soak_red`, and leave promote-ready evidence without mutating the primary. |
-| [`lastdb-canary-red-heal`](lastdb-canary-red-heal.md) | hourly (:36) | When a canary upgrade is RED: loom investigates, merges a fix, retries the canary upgrade up to 3 times. Does not stop at a kanban card. |
+| [`lastdb-canary-soak-watch`](lastdb-canary-soak-watch.md) | hourly | Recompute a v2 verdict from bounded boot and observation evidence. It has no wait state. |
+| [`lastdb-canary-red-heal`](lastdb-canary-red-heal.md) | paused | Retired. The v2 reconciler queues one short heal action per durable failure class. |
 | [`lastdb-ops-offenders`](lastdb-ops-offenders.md) | daily | Rank live `lastdb ops` worst offenders, skip long-poll/cheap-count noise, investigate the rest, file ≤2 pickup-ready improvement cards. |
 | [`whats-wrong`](whats-wrong.md) | hourly (:23) | EV OPS What's wrong panel (`http://127.0.0.1:7733` `coverage.exceptions`): one loom heal agent per row, Brain papercuts, full closeout. |
 
