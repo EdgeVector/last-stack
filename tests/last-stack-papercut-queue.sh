@@ -8,7 +8,7 @@ trap 'rm -rf "$tmp"' EXIT
 cat >"$tmp/brain" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-[ "$*" = "papercut list --status open --json" ] || exit 2
+case "$*" in "papercut list --status open --index-only --json"|"papercut list --status open --json") ;; *) exit 2 ;; esac
 printf '%s\n' '{"event":"verb_timing","duration_ms":2,"verb":"papercut"}'
 printf '%s\n' '{"rows":[{"slug":"papercut-a","status":"open"},{"slug":"papercut-b","status":"open"},{"slug":"papercut-c","status":"open"}],"total":3,"method":"method: status-keyed papercut index (one keyed partition)"}'
 SH
@@ -113,7 +113,7 @@ done
 cat >"$tmp/brain-mixed" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-[ "$*" = "papercut list --status open --json" ] || exit 2
+case "$*" in "papercut list --status open --index-only --json"|"papercut list --status open --json") ;; *) exit 2 ;; esac
 printf '%s\n' '{"rows":[{"slug":"papercut-a","status":"open"},{"slug":"brain-bare-unprefixed","status":"open"},{"slug":"papercut-b","status":"open"}],"total":3,"method":"method: status-keyed papercut index (one keyed partition)"}'
 SH
 chmod +x "$tmp/brain-mixed"
@@ -138,7 +138,7 @@ $ROOT/bin/last-stack-papercut-queue verify --snapshot "$mixed" \
 cat >"$tmp/brain-index-incomplete" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-[ "$*" = "papercut list --status open --json" ] || exit 2
+case "$*" in "papercut list --status open --index-only --json"|"papercut list --status open --json") ;; *) exit 2 ;; esac
 printf '%s\n' '{"error":"the status-keyed papercut index is registered but not marked complete, so the ledger cannot trust it without enumerating the whole papercut partition.","hint":"Run `fbrain reindex --papercut-status-index` (admin/offline) to rebuild the index from source of truth, then retry."}'
 echo "error: the status-keyed papercut index is registered but not marked complete." >&2
 exit 1
@@ -159,7 +159,7 @@ grep -q 'papercut queue unavailable' "$tmp/unavailable.err"
 cat >"$tmp/brain-busy" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-[ "$*" = "papercut list --status open --json" ] || exit 2
+case "$*" in "papercut list --status open --index-only --json"|"papercut list --status open --json") ;; *) exit 2 ;; esac
 echo "error: service_timeout: node did not respond within 30000ms" >&2
 exit 1
 SH
@@ -177,7 +177,7 @@ jq -e '.ok == false and .reason == "brain-unavailable"' "$tmp/busy.out" >/dev/nu
 cat >"$tmp/brain-bad-method" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-[ "$*" = "papercut list --status open --json" ] || exit 2
+case "$*" in "papercut list --status open --index-only --json"|"papercut list --status open --json") ;; *) exit 2 ;; esac
 printf '%s\n' '{"rows":[{"slug":"papercut-a","status":"open"}],"total":1,"method":"method: ranked search sample"}'
 SH
 chmod +x "$tmp/brain-bad-method"
@@ -194,3 +194,55 @@ grep -q 'snapshot_rc' "$ROOT/routines/papercut-reconciler.md"
 grep -q 'queue_snapshot_unavailable' "$ROOT/routines/papercut-reconciler.md"
 
 printf 'ok last-stack-papercut-queue\n'
+
+# An installed brain that predates --index-only refuses the flag; the helper
+# must fall back to the hydrated list instead of reporting the queue invalid.
+cat >"$tmp/old-brain" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  "papercut list --status open --index-only --json")
+    echo "error: Unknown option '--index-only'" >&2
+    exit 2
+    ;;
+  "papercut list --status open --json")
+    printf '%s\n' '{"rows":[{"slug":"papercut-old-a","status":"open"},{"slug":"papercut-old-b","status":"open"}],"total":2,"method":"method: status-keyed papercut index with batched hydrate"}'
+    ;;
+  *) exit 2 ;;
+esac
+SH
+chmod +x "$tmp/old-brain"
+old_snapshot="$tmp/old-open.json"
+$ROOT/bin/last-stack-papercut-queue snapshot --brain-bin "$tmp/old-brain" --output "$old_snapshot" --json \
+  | jq -e '.ok and .discovered == 2' >/dev/null
+
+# A node that rejects the list query at the grammar never read the queue:
+# unavailable (rc=3), not "queue invalid" (rc=1), and no snapshot file.
+cat >"$tmp/grammar-brain" <<'SH'
+#!/usr/bin/env bash
+echo "error: Node /api/query returned HTTP 400 [a key was present with a value outside its grammar]." >&2
+exit 1
+SH
+chmod +x "$tmp/grammar-brain"
+set +e
+$ROOT/bin/last-stack-papercut-queue snapshot --brain-bin "$tmp/grammar-brain" --output "$tmp/grammar-open.json" --json >"$tmp/grammar.json"
+rc=$?
+set -e
+[ "$rc" -eq 3 ]
+jq -e '.ok == false and .reason == "brain-unavailable" and .retryable == true' "$tmp/grammar.json" >/dev/null
+[ ! -e "$tmp/grammar-open.json" ]
+
+# A list that outlives --timeout is reported as unavailable, not as a traceback.
+cat >"$tmp/slow-brain" <<'SH'
+#!/usr/bin/env bash
+sleep 5
+SH
+chmod +x "$tmp/slow-brain"
+set +e
+$ROOT/bin/last-stack-papercut-queue snapshot --brain-bin "$tmp/slow-brain" --output "$tmp/slow-open.json" --timeout 1 --json >"$tmp/slow.json" 2>"$tmp/slow.err"
+rc=$?
+set -e
+[ "$rc" -eq 3 ]
+jq -e '.ok == false and .reason == "brain-unavailable" and (.detail | test("timed out after 1s"))' "$tmp/slow.json" >/dev/null
+! grep -q Traceback "$tmp/slow.err"
+[ ! -e "$tmp/slow-open.json" ]

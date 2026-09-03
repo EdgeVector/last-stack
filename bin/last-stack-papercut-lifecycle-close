@@ -382,19 +382,7 @@ def load_records(args: argparse.Namespace) -> list[dict[str, Any]]:
             record["_typed"] = True
             records.append(record)
         return records
-    previews = as_items(
-        run_json(
-            [
-                args.brain_bin,
-                "papercut",
-                "list",
-                "--status",
-                "open",
-                "--json",
-            ],
-            timeout=args.read_timeout,
-        )
-    )
+    previews = as_items(list_open_queue(args))
     slugs = [str(item.get("slug") or "") for item in previews if str(item.get("slug") or "").startswith("papercut-")]
     # Prefer the pipeline-stuck cluster so --limit 200 covers it instead of
     # the first page of unrelated open papercuts (the registry path used to
@@ -426,6 +414,43 @@ def load_records(args: argparse.Namespace) -> list[dict[str, Any]]:
         except Exception as exc:
             print(f"warning: skipped {slug}: {exc}", file=sys.stderr)
     return records
+
+
+# Index-only first: one keyed partition read, no per-row hydrate. The hydrated
+# open ledger measured 214s wall on the primary (2026-09-03, 2171 rows), 10x
+# this helper's --read-timeout, so every pass since 2026-08-30 ended in
+# `brain_papercut_list_timeout` (papercut-lastdb-reconciler-policies-query-slow).
+# Only the slug column is used here; each selected slug is point-got below.
+OPEN_QUEUE_INDEX_ONLY = ["papercut", "list", "--status", "open", "--index-only", "--json"]
+OPEN_QUEUE_HYDRATED = ["papercut", "list", "--status", "open", "--json"]
+
+
+def rejects_index_only(proc: subprocess.CompletedProcess[str]) -> bool:
+    """True when the installed brain predates `--index-only` and refused the flag."""
+    text = f"{proc.stdout or ''}\n{proc.stderr or ''}".lower()
+    if "index-only" not in text:
+        return False
+    return any(word in text for word in ("unknown", "unexpected", "unrecognized", "invalid option"))
+
+
+def list_open_queue(args: argparse.Namespace) -> Any:
+    """Open-queue rows; same transient retry as run_json, plus the old-brain fallback."""
+    argv = [args.brain_bin, *OPEN_QUEUE_INDEX_ONLY]
+    last_error = ""
+    for attempt in range(1, 4):
+        proc = run(argv, timeout=args.list_timeout)
+        if proc.returncode == 0:
+            parsed = parse_json_stream(proc.stdout)
+            if parsed is not None:
+                return parsed
+            raise RuntimeError(f"{' '.join(argv)} did not return JSON")
+        if rejects_index_only(proc):
+            return run_json([args.brain_bin, *OPEN_QUEUE_HYDRATED], timeout=args.list_timeout)
+        last_error = f"{proc.stderr.strip()} {proc.stdout.strip()}".strip()
+        if attempt == 3 or not is_transient(last_error):
+            raise RuntimeError(f"{' '.join(argv)} failed: {last_error}")
+        time.sleep(0.75)
+    raise RuntimeError(last_error)
 
 
 def brain_get(args: argparse.Namespace, slug: str) -> dict[str, Any]:
@@ -743,6 +768,10 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", dest="json_out")
     parser.add_argument("--limit", type=int, default=200)
     parser.add_argument("--read-timeout", type=int, default=20)
+    # The open-queue list is one call over the whole partition (11.8s measured
+    # for 2187 rows on the primary, 2026-09-03); the per-slug point reads keep
+    # --read-timeout. Both stay inside --budget-seconds.
+    parser.add_argument("--list-timeout", type=int, default=90)
     parser.add_argument(
         "--budget-seconds",
         type=int,
