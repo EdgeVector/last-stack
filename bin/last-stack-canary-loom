@@ -64,17 +64,22 @@ fi
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
 export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
+# shellcheck source=../lib/canary-loom/loom-run-deadline.sh
+. "$ROOT/lib/canary-loom/loom-run-deadline.sh"
 STAMP="${LAST_STACK_CANARY_LOOM_STAMP:-$HOME/.last-stack/state/canary-loom.json}"
 ACTIVE="${LAST_STACK_CANARY_LOOM_ACTIVE:-$(dirname "$STAMP")/canary-loom-active.json}"
 CANARY_LOOM_DEFINITION="${LAST_STACK_CANARY_DEFINITION:-lastdb-canary-release}"
 CANARY_LOOM_DISCOVER_WINDOW_H="${LAST_STACK_CANARY_LOOM_DISCOVER_WINDOW_HOURS:-72}"
 CANARY_LOOM_DISCOVER_LIMIT="${LAST_STACK_CANARY_LOOM_DISCOVER_LIMIT:-25}"
+# Parent CALL_A drives a lastdb-safe-upgrade child; size the drive for CUTOVER.
+export_loom_run_deadline_for "$CANARY_LOOM_DEFINITION"
+DEADLINE_SECS="${LOOM_RUN_DEADLINE_SECS:-}"
 
 log() { [ "$QUIET" -eq 1 ] || printf 'canary-loom: %s\n' "$*" >&2; }
 
 write_stamp() {
   mkdir -p "$(dirname "$STAMP")"
-  ST="$1" KY="${2:-}" OC="${3:-}" DT="${4:-}" LAST_STACK_CANARY_LOOM_STAMP="$STAMP" python3 -c '
+  ST="$1" KY="${2:-}" OC="${3:-}" DT="${4:-}" DL="${DEADLINE_SECS:-}" LAST_STACK_CANARY_LOOM_STAMP="$STAMP" python3 -c '
 import json, os, datetime
 p = os.environ["LAST_STACK_CANARY_LOOM_STAMP"]
 doc = {
@@ -83,6 +88,7 @@ doc = {
   "key": os.environ.get("KY", ""),
   "outcome": os.environ.get("OC", ""),
   "detail": os.environ.get("DT", ""),
+  "deadline_secs": os.environ.get("DL", ""),
   "engine": "loom",
 }
 tmp = f"{p}.tmp.{os.getpid()}"
@@ -239,7 +245,7 @@ if [ "$START" -eq 1 ]; then
 fi
 
 if [ "$DRY" -eq 1 ]; then
-  det="key=${KEY:-} start=${START} oid=${OID:-}"
+  det="key=${KEY:-} start=${START} oid=${OID:-} deadline_secs=${DEADLINE_SECS:-} definition=${CANARY_LOOM_DEFINITION}"
   oc="noop"
   [ "$START" -eq 1 ] && oc="ok"
   write_stamp dry-run "$KEY" "$oc" "$det"
@@ -351,7 +357,7 @@ else
   input="$(OID="${OID:-}" python3 -c 'import json,os; print(json.dumps({"main_oid":os.environ.get("OID") or "","max_attempts":3},separators=(",",":")))')"
 fi
 
-log "loom run lastdb-canary-release --key $KEY"
+log "loom run lastdb-canary-release --key $KEY loom_run_deadline_secs=${DEADLINE_SECS:-default}"
 run_log_dir="${ROUTINES_RUN_DIR:-$(dirname "$STAMP")}"
 stdout_log="${LAST_STACK_CANARY_LOOM_STDOUT_LOG:-$run_log_dir/canary-loom.stdout.log}"
 stderr_log="${LAST_STACK_CANARY_LOOM_STDERR_LOG:-$run_log_dir/canary-loom.stderr.log}"
@@ -366,7 +372,7 @@ status="$(printf '%s\n' "$view" | awk -F': ' '/^status:/{print $2; exit}')"
 state="$(printf '%s\n' "$view" | awk -F': ' '/^state:/{print $2; exit}')"
 rendered_status="${status:-unknown}"
 rendered_state="${state:-unknown}"
-det="exec=${exec_id:-none} key=${KEY} status=${rendered_status} state=${rendered_state} loom_rc=${loom_rc}"
+det="exec=${exec_id:-none} key=${KEY} status=${rendered_status} state=${rendered_state} loom_rc=${loom_rc} deadline_secs=${DEADLINE_SECS:-default}"
 case "$status" in
   succeeded|waiting|parked|running) oc="ok" ;;
   *) oc="error" ;;
@@ -391,7 +397,7 @@ case "$status" in
     ;;
 esac
 if [ "$JSON" -eq 1 ]; then
-  OC="$oc" DT="$det" KY="$KEY" ST="$rendered_status" EX="${exec_id:-}" python3 -c '
+  OC="$oc" DT="$det" KY="$KEY" ST="$rendered_status" EX="${exec_id:-}" DL="${DEADLINE_SECS:-}" python3 -c '
 import json, os
 print(json.dumps({
   "outcome": os.environ["OC"],
@@ -400,6 +406,7 @@ print(json.dumps({
   "key": os.environ["KY"],
   "status": os.environ["ST"],
   "execution": os.environ["EX"],
+  "deadline_secs": os.environ["DL"],
 }, separators=(",", ":")))
 '
 else
