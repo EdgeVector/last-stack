@@ -178,6 +178,66 @@ assert "retries a broken pipe then succeeds" \
   "$BIN" --attempts 3 --sleep-ms 50 -- "$tmpdir/broken_pipe.sh"
 assert "broken pipe took 2 attempts" test "$(cat "$RETRY_COUNT_FILE")" = "2"
 
+# 8) shared drain schedule (fails on the old 3x750ms defaults)
+# shellcheck source=lib/lastdb-retry-schedule.sh
+. "$ROOT/lib/lastdb-retry-schedule.sh"
+assert "default attempts is 5" test "$(last_stack_lastdb_retry_default_attempts)" = "5"
+assert "schedule slot 1 is 15" test "$(last_stack_lastdb_retry_sleep_sec 1)" = "15"
+assert "schedule slot 2 is 45" test "$(last_stack_lastdb_retry_sleep_sec 2)" = "45"
+assert "schedule slot 3 is 90" test "$(last_stack_lastdb_retry_sleep_sec 3)" = "90"
+assert "schedule slot 4 is 120" test "$(last_stack_lastdb_retry_sleep_sec 4)" = "120"
+
+cat >"$tmpdir/persist_queue_twice.sh" <<'SH'
+#!/usr/bin/env bash
+nfile="${RETRY_COUNT_FILE:?}"
+n=$(cat "$nfile" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" >"$nfile"
+if [ "$n" -lt 3 ]; then
+  echo 'Error: HTTP 503: {"error":"persist_queue_full","retryable":true}' >&2
+  exit 1
+fi
+echo "ok-on-attempt-$n"
+exit 0
+SH
+chmod +x "$tmpdir/persist_queue_twice.sh"
+export RETRY_COUNT_FILE="$tmpdir/count-drain"
+unset LAST_STACK_LASTDB_RETRY_SLEEP_SEC
+unset LAST_STACK_LASTDB_RETRY_ATTEMPTS
+export LAST_STACK_LASTDB_RETRY_SCHEDULE_SEC="0,0,0,0"
+set +e
+drain_err="$tmpdir/drain.err"
+out="$("$BIN" -- "$tmpdir/persist_queue_twice.sh" 2>"$drain_err")"
+drain_rc=$?
+set -e
+assert "schedule persist_queue_full twice then succeeds" test "$drain_rc" -eq 0
+assert "schedule took 3 attempts" test "$(cat "$RETRY_COUNT_FILE")" = "3"
+assert "stdout is success" test "$out" = "ok-on-attempt-3"
+wait_lines="$(grep -c 'drain wait attempt=' "$drain_err" || true)"
+assert "two drain waits logged" test "$wait_lines" = "2"
+assert "ended with drain-finished log" grep -q 'succeeded after 2 drain wait(s)' "$drain_err"
+
+cat >"$tmpdir/persist_queue_four.sh" <<'SH'
+#!/usr/bin/env bash
+nfile="${RETRY_COUNT_FILE:?}"
+n=$(cat "$nfile" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" >"$nfile"
+if [ "$n" -lt 5 ]; then
+  echo 'Error: HTTP 503: {"error":"persist_queue_full","retryable":true}' >&2
+  exit 1
+fi
+echo "ok-on-attempt-$n"
+exit 0
+SH
+chmod +x "$tmpdir/persist_queue_four.sh"
+export RETRY_COUNT_FILE="$tmpdir/count-drain5"
+set +e
+"$BIN" -- "$tmpdir/persist_queue_four.sh" >/dev/null 2>"$tmpdir/drain5.err"
+d5_rc=$?
+set -e
+assert "default 5 attempts survive 4 persist_queue_full" test "$d5_rc" -eq 0
+assert "default schedule took 5 attempts" test "$(cat "$RETRY_COUNT_FILE")" = "5"
 
 echo "PASS=$pass FAIL=$fail"
 test "$fail" -eq 0

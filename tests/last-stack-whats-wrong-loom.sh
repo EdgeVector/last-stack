@@ -7,6 +7,7 @@ fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 
 bash -n "$BIN"
 bash -n "$ROOT/bin/last-stack-whats-wrong-routine"
+bash -n "$ROOT/lib/lastdb-retry-schedule.sh"
 bash -n "$ROOT/lib/whats-wrong/loom-whats-wrong-list.sh"
 bash -n "$ROOT/lib/whats-wrong/loom-whats-wrong-heal.sh"
 bash -n "$ROOT/lib/whats-wrong/loom-whats-wrong-closeout.sh"
@@ -545,5 +546,129 @@ PYLIVE
 unset LAST_STACK_WHATS_WRONG_LOOM_TIMEOUT_SEC
 unset LAST_STACK_WHATS_WRONG_LOOM_READBACK_SEC
 
+# --- drain-aware schedule: persist_queue_full twice then success ---
+# The 2026-09-02T20:25Z pass retried at 10 s and died after 30 s of a 780 s
+# budget. The shared schedule is 15,45,90,120 (5 attempts). This fixture uses
+# 0 s slots so CI does not wait; the wait LINES are the contract. Old code
+# defaulted to 3 attempts and a fixed 10 s sleep, so a 4-shed then success
+# case (below) fails on the unfixed wrapper.
+. "$ROOT/lib/lastdb-retry-schedule.sh"
+[ "$(last_stack_lastdb_retry_default_attempts)" = "5" ] \
+  || fail "default attempts must be 5, got $(last_stack_lastdb_retry_default_attempts)"
+[ "$(last_stack_lastdb_retry_sleep_sec 1)" = "15" ] \
+  || fail "schedule slot 1 must be 15s"
+[ "$(last_stack_lastdb_retry_sleep_sec 2)" = "45" ] \
+  || fail "schedule slot 2 must be 45s"
+[ "$(last_stack_lastdb_retry_sleep_sec 3)" = "90" ] \
+  || fail "schedule slot 3 must be 90s"
+[ "$(last_stack_lastdb_retry_sleep_sec 4)" = "120" ] \
+  || fail "schedule slot 4 must be 120s"
+
+cat >"$tmp/bin/loom" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-}"
+case "$cmd" in
+  ping) echo ok; exit 0 ;;
+  publish) echo "published $(basename "$2" .json)"; exit 0 ;;
+  run)
+    nfile="${RUN_COUNT_FILE:?}"
+    n=$(cat "$nfile" 2>/dev/null || echo 0)
+    n=$((n + 1))
+    printf '%s\n' "$n" >"$nfile"
+    if [ "$n" -lt 3 ]; then
+      echo 'Error: mutation on LoomAgent -> HTTP 503: {"error":"persist_queue_full","kind":"bytes","message":"persist queue full for schema '"'"'6fcb6bd1'"'"' (bytes); retry after drain","ok":false,"retryable":true}' >&2
+      exit 1
+    fi
+    cat <<'VIEW'
+lx-ww-drain
+status: succeeded
+state: DONE
+context.outcome: "ok"
+context.detail: "exceptions=2 healed=1 remaining=1"
+VIEW
+    exit 0
+    ;;
+  *) echo "unexpected $*" >&2; exit 2 ;;
+esac
+SH
+chmod 755 "$tmp/bin/loom"
+unset LAST_STACK_WHATS_WRONG_LOOM_RETRY_SLEEP_SEC
+unset LAST_STACK_WHATS_WRONG_LOOM_RETRY_ATTEMPTS
+unset LAST_STACK_LASTDB_RETRY_SLEEP_SEC
+unset LAST_STACK_LASTDB_RETRY_ATTEMPTS
+export LAST_STACK_LASTDB_RETRY_SCHEDULE_SEC="0,0,0,0"
+export LAST_STACK_WHATS_WRONG_STAMP="$tmp/stamp-drain.json"
+export LAST_STACK_WHATS_WRONG_LOOM_TIMEOUT_SEC=60
+export RUN_COUNT_FILE="$tmp/run-count-drain"
+export LOOM_WHATS_WRONG_KEY="whats-wrong-drain-key"
+export WHATS_WRONG_SNAPSHOT_FILE="$tmp/snap.json"
+export HOME="$tmp"
+export PATH="$tmp/bin:/usr/bin:/bin"
+set +e
+drain_out="$("$BIN" --json --quiet --no-heal 2>"$tmp/drain.err")"
+drain_rc=$?
+set -e
+[ "$drain_rc" -eq 0 ] || fail "drain schedule must succeed after two persist_queue_full, got exit $drain_rc out=$drain_out err=$(cat "$tmp/drain.err")"
+printf '%s\n' "$drain_out" | grep -q 'outcome":"ok"' \
+  || fail "drain schedule run must be ok: $drain_out"
+[ "$(cat "$RUN_COUNT_FILE")" = "3" ] \
+  || fail "expected 3 loom run attempts (2 sheds + success), got $(cat "$RUN_COUNT_FILE")"
+wait_lines="$(grep -c 'drain wait attempt=' "$tmp/drain.err" || true)"
+[ "$wait_lines" = "2" ] \
+  || fail "expected 2 drain wait lines, got $wait_lines err=$(cat "$tmp/drain.err")"
+grep -q 'reason=persist_queue_full' "$tmp/drain.err" \
+  || fail "drain wait must name persist_queue_full: $(cat "$tmp/drain.err")"
+grep -q 'succeeded after 2 drain wait(s)' "$tmp/drain.err" \
+  || fail "must log that the drain finished: $(cat "$tmp/drain.err")"
+
+# Four sheds then success needs the new default of 5 attempts. Old default 3
+# ends error after three persist_queue_full answers.
+cat >"$tmp/bin/loom" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-}"
+case "$cmd" in
+  ping) echo ok; exit 0 ;;
+  publish) echo "published $(basename "$2" .json)"; exit 0 ;;
+  run)
+    nfile="${RUN_COUNT_FILE:?}"
+    n=$(cat "$nfile" 2>/dev/null || echo 0)
+    n=$((n + 1))
+    printf '%s\n' "$n" >"$nfile"
+    if [ "$n" -lt 5 ]; then
+      echo 'Error: HTTP 503: {"error":"persist_queue_full","retryable":true}' >&2
+      exit 1
+    fi
+    cat <<'VIEW'
+lx-ww-drain5
+status: succeeded
+state: DONE
+context.outcome: "ok"
+context.detail: "exceptions=2 healed=1 remaining=1"
+VIEW
+    exit 0
+    ;;
+  *) echo "unexpected $*" >&2; exit 2 ;;
+esac
+SH
+chmod 755 "$tmp/bin/loom"
+export LAST_STACK_WHATS_WRONG_STAMP="$tmp/stamp-drain5.json"
+export RUN_COUNT_FILE="$tmp/run-count-drain5"
+export LOOM_WHATS_WRONG_KEY="whats-wrong-drain5-key"
+set +e
+d5out="$("$BIN" --json --quiet --no-heal 2>"$tmp/drain5.err")"
+d5rc=$?
+set -e
+[ "$d5rc" -eq 0 ] || fail "default 5 attempts must survive 4 persist_queue_full, got exit $d5rc out=$d5out err=$(cat "$tmp/drain5.err")"
+[ "$(cat "$RUN_COUNT_FILE")" = "5" ] \
+  || fail "expected 5 loom run attempts, got $(cat "$RUN_COUNT_FILE")"
+d5_waits="$(grep -c 'drain wait attempt=' "$tmp/drain5.err" || true)"
+[ "$d5_waits" = "4" ] \
+  || fail "expected 4 drain wait lines, got $d5_waits err=$(cat "$tmp/drain5.err")"
+
+unset LAST_STACK_LASTDB_RETRY_SCHEDULE_SEC
+unset LAST_STACK_WHATS_WRONG_LOOM_TIMEOUT_SEC
+unset RUN_COUNT_FILE
 
 echo "ok"
