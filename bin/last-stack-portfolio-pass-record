@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""Record one milestone-driver pass's per-admitted-North-Star idle counts.
+
+`last-stack-milestone-driver` runs hourly and already computes
+`kanban milestone gap-report --json` every pass. This helper reads that same
+report plus one Brain point get of `preference-feature-delivery-portfolio-admission`
+and appends one JSON line to a durable pass-history file. It never lists or
+searches Brain.
+
+`last-stack-portfolio-auto-refill` reads this file to detect two consecutive
+drained passes and decide the auto-refill trigger
+(`decision-2026-09-03-portfolio-auto-refill-from-ranking`). This script only
+records; it never rewrites the admission record and never touches Kanban.
+
+Best-effort instrumentation: a failure here must never fail the milestone-driver
+pass that calls it. Exit 0 on a recorded pass or a soft skip (unreadable
+admission record, missing gap-report). Exit 2 only for bad arguments.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Optional
+
+ADMISSION_SLUG = "preference-feature-delivery-portfolio-admission"
+DEFAULT_PASSES_FILE = Path.home() / ".local" / "state" / "last-stack" / "portfolio-admission-passes.jsonl"
+FIELD_RE = re.compile(r"(?im)^[ \t]*(Primary|Secondary|Updated-At|Updated-By)[ \t]*:[ \t]*(.*?)[ \t]*$")
+
+
+def normalize(value: str) -> str:
+    v = (value or "").strip().strip("`").lower()
+    if v in ("", "none", "empty", "unset", "-"):
+        return ""
+    return v
+
+
+def read_admission(brain_bin: str, fixture_dir: Optional[Path]) -> Optional[dict]:
+    """One point get. Return field dict, or None if unreadable (soft-skip)."""
+    if fixture_dir is not None:
+        path = fixture_dir / "get" / f"{ADMISSION_SLUG}.txt"
+        if not path.is_file():
+            return None
+        text = path.read_text()
+    else:
+        try:
+            cp = subprocess.run(
+                [brain_bin, "get", ADMISSION_SLUG, "--type", "preference"],
+                text=True,
+                capture_output=True,
+                timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if cp.returncode != 0 or not cp.stdout.strip():
+            return None
+        text = cp.stdout
+
+    fields: dict[str, str] = {}
+    for match in FIELD_RE.finditer(text):
+        key = match.group(1).lower()
+        if key in fields:
+            continue
+        fields[key] = match.group(2).strip()
+    primary = normalize(fields.get("primary", ""))
+    if not primary:
+        return None
+    return {
+        "primary": primary,
+        "secondary": normalize(fields.get("secondary", "")),
+        "updated_at": fields.get("updated-at", ""),
+        "updated_by": fields.get("updated-by", ""),
+    }
+
+
+def counts_for(milestones: list[dict], north_star: str) -> tuple[int, int]:
+    idle_promoteable = 0
+    idle_empty = 0
+    for m in milestones:
+        if not isinstance(m, dict):
+            continue
+        if normalize(m.get("north_star", "")) != north_star:
+            continue
+        action = m.get("action")
+        if action == "promote":
+            idle_promoteable += 1
+        elif action == "decompose":
+            idle_empty += 1
+    return idle_promoteable, idle_empty
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--gap-report", required=True, help="Path to kanban milestone gap-report --json output")
+    ap.add_argument("--passes-file", default=os.environ.get("LAST_STACK_PORTFOLIO_PASSES_FILE", str(DEFAULT_PASSES_FILE)))
+    ap.add_argument("--fixture-dir", help="Offline brain: get/<slug>.txt (no live node)")
+    ap.add_argument("--brain", default=os.environ.get("BRAIN_BIN", "brain"))
+    ap.add_argument("--ts", default="", help="Override pass timestamp (tests only)")
+    ap.add_argument("--json", action="store_true")
+    args = ap.parse_args(argv)
+
+    try:
+        gap_report = json.loads(Path(args.gap_report).read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        result = {"recorded": False, "reason": f"gap-report unreadable: {exc}"}
+        if args.json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+
+    fixture = Path(args.fixture_dir) if args.fixture_dir else None
+    admission = read_admission(args.brain, fixture)
+    if admission is None:
+        result = {"recorded": False, "reason": "admission record unreadable; skipping this pass"}
+        if args.json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+
+    milestones = gap_report.get("milestones", [])
+    if not isinstance(milestones, list):
+        milestones = []
+
+    primary = admission["primary"]
+    secondary = admission["secondary"]
+    p_promo, p_empty = counts_for(milestones, primary)
+    s_promo, s_empty = counts_for(milestones, secondary) if secondary else (0, 0)
+
+    ts = args.ts or subprocess.run(
+        ["date", "-u", "+%Y-%m-%dT%H:%M:%SZ"], text=True, capture_output=True, timeout=10
+    ).stdout.strip()
+
+    record = {
+        "ts": ts,
+        "primary": primary,
+        "secondary": secondary,
+        "primary_idle_promoteable": p_promo,
+        "primary_idle_empty": p_empty,
+        "secondary_idle_promoteable": s_promo,
+        "secondary_idle_empty": s_empty,
+        "admission_updated_at": admission["updated_at"],
+        "admission_updated_by": admission["updated_by"],
+    }
+
+    passes_path = Path(args.passes_file)
+    passes_path.parent.mkdir(parents=True, exist_ok=True)
+    with passes_path.open("a") as fh:
+        fh.write(json.dumps(record, sort_keys=True) + "\n")
+
+    result = {"recorded": True, "record": record, "passes_file": str(passes_path)}
+    if args.json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        print(
+            f"portfolio-pass-record: primary={primary} "
+            f"({p_promo}/{p_empty}) secondary={secondary or 'none'} ({s_promo}/{s_empty})"
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

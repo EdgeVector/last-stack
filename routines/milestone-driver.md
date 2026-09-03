@@ -422,8 +422,22 @@ The CLI rejects this transition unless the proof contract passes.
 Re-run:
 
 ```bash
-kanban milestone gap-report --json | jq '{counts, work_queue, action_counts}'
+kanban milestone gap-report --json | tee /tmp/milestone-gap-report.json | jq '{counts, work_queue, action_counts}'
 ```
+
+**Portfolio pass record (best-effort, never blocking):** feeds
+`last-stack-north-star-driver`'s auto-refill trigger
+(`decision-2026-09-03-portfolio-auto-refill-from-ranking`) with this pass's
+per-admitted-North-Star idle counts. One Brain point get, one append to a
+local pass-history file — never a Brain list, never a Kanban write.
+
+```bash
+"$last_stack/bin/last-stack-portfolio-pass-record" \
+  --gap-report /tmp/milestone-gap-report.json --json || true
+```
+
+A failure here must never fail this run; it only affects a future
+north-star-driver pass's auto-refill visibility.
 
 Write 5–15 lines to automation memory. Heartbeat via
 `$last_stack/bin/last-stack-brain-append-heartbeat` with GAP_FILL counts.
