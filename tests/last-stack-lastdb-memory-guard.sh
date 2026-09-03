@@ -56,11 +56,20 @@ SH
 # is unavailable. Honor -w '%{http_code}' so identity can distinguish 404.
 cat >"$tmp/bin/curl" <<'SH'
 #!/usr/bin/env bash
-if [ "${FAKE_NODE_DOWN:-0}" = "1" ]; then exit 7; fi
+# A connection failure. Real curl STILL emits the -w write-out in this case,
+# as the literal 000, and a shim that exits silently hides every caller that
+# mistakes a non-empty code for a live socket. One did.
+down() {
+  for a in "$@"; do
+    case "$a" in *%{http_code}*) printf '\n000'; exit 7 ;; esac
+  done
+  exit 7
+}
+if [ "${FAKE_NODE_DOWN:-0}" = "1" ]; then down "$@"; fi
 # FAKE_SOCKET_UP=1 keeps the socket answering while ps reports no daemon —
 # the "our selector missed it" case the revival path must fail closed on.
 if [ "${FAKE_NO_PRIMARY:-0}" = "1" ] && [ "${FAKE_SOCKET_UP:-0}" != "1" ] \
-   && ! grep -q 'launchctl bootstrap' "$FAKE_ACTION_LOG" 2>/dev/null; then exit 7; fi
+   && ! grep -q 'launchctl bootstrap' "$FAKE_ACTION_LOG" 2>/dev/null; then down "$@"; fi
 want_code=0
 for arg in "$@"; do
   case "$arg" in

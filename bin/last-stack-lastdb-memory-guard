@@ -567,11 +567,22 @@ deliberately_paused() {
 # Anything answering on the primary socket means a daemon owns this home even if
 # our process selector missed it. Bootstrapping a second one would be worse than
 # the outage, so this is a hard stop rather than a hint.
+#
+# It has to be a real HTTP status. `curl -w '%{http_code}'` STILL writes the
+# write-out when the connection itself fails, as the literal string 000, so a
+# non-empty code is not evidence of anything — an unreachable socket produces
+# one. Measured against the real curl on 2026-09-03: a missing socket returned
+# "000" here and an earlier draft of this function read it as "answers", which
+# would have disabled revival on exactly the machine state it exists for. The
+# fixtures did not catch it because their curl shim exits 7 with no output.
 socket_answers() {
   local blob
   blob=$(unix_get "http://localhost/api/status")
   split_http_body "$blob" || return 1
-  [ -n "$IDENTITY_HTTP_CODE" ]
+  case "$IDENTITY_HTTP_CODE" in
+    [1-5][0-9][0-9]) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 revive_preflight_ok() {
