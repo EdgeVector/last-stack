@@ -4,6 +4,9 @@ set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
 export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
+# shellcheck source=../lib/canary-loom/loom-run-deadline.sh
+. "$ROOT/lib/canary-loom/loom-run-deadline.sh"
+export_loom_run_deadline_for lastdb-safe-upgrade
 
 KEY=""
 CAND=""
