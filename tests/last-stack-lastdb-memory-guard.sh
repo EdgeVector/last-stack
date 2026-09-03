@@ -34,6 +34,12 @@ cat >"$tmp/bin/ps" <<'SH'
 args="$*"
 case "$args" in
   "-Ao pid=,comm=")
+    # FAKE_NO_PRIMARY=1 means the daemon is gone. A bootstrap in the action log
+    # brings it back, which is how the revival tests observe recovery.
+    if [ "${FAKE_NO_PRIMARY:-0}" = "1" ] \
+       && ! grep -q 'launchctl bootstrap' "$FAKE_ACTION_LOG" 2>/dev/null; then
+      exit 0
+    fi
     pid="${FAKE_PID:-4242}"
     if grep -q 'launchctl kickstart' "$FAKE_ACTION_LOG" 2>/dev/null; then pid=$((pid + 1)); fi
     printf '%s /opt/lastdb/bin/lastdbd\n' "$pid"
@@ -50,7 +56,20 @@ SH
 # is unavailable. Honor -w '%{http_code}' so identity can distinguish 404.
 cat >"$tmp/bin/curl" <<'SH'
 #!/usr/bin/env bash
-if [ "${FAKE_NODE_DOWN:-0}" = "1" ]; then exit 7; fi
+# A connection failure. Real curl STILL emits the -w write-out in this case,
+# as the literal 000, and a shim that exits silently hides every caller that
+# mistakes a non-empty code for a live socket. One did.
+down() {
+  for a in "$@"; do
+    case "$a" in *%{http_code}*) printf '\n000'; exit 7 ;; esac
+  done
+  exit 7
+}
+if [ "${FAKE_NODE_DOWN:-0}" = "1" ]; then down "$@"; fi
+# FAKE_SOCKET_UP=1 keeps the socket answering while ps reports no daemon —
+# the "our selector missed it" case the revival path must fail closed on.
+if [ "${FAKE_NO_PRIMARY:-0}" = "1" ] && [ "${FAKE_SOCKET_UP:-0}" != "1" ] \
+   && ! grep -q 'launchctl bootstrap' "$FAKE_ACTION_LOG" 2>/dev/null; then down "$@"; fi
 want_code=0
 for arg in "$@"; do
   case "$arg" in
@@ -108,7 +127,14 @@ cat >"$tmp/bin/launchctl" <<'SH'
 #!/usr/bin/env bash
 printf 'launchctl %s\n' "$*" >>"$FAKE_ACTION_LOG"
 case "${1:-}" in
-  list)  printf '%s\t0\tcom.example.lastdbd-primary\n' "${FAKE_PID:-4242}" ;;
+  list)
+    # An unloaded agent is ABSENT from the list, not listed as stopped. That
+    # distinction is the whole trigger, so the shim has to reproduce it.
+    if [ "${FAKE_AGENT_LOADED:-1}" = "1" ] \
+       || grep -q 'launchctl bootstrap' "$FAKE_ACTION_LOG" 2>/dev/null; then
+      printf '%s\t0\tcom.example.lastdbd-primary\n' "${FAKE_PID:-4242}"
+    fi
+    ;;
   print) exit 0 ;;
 esac
 SH
@@ -132,6 +158,9 @@ if [ -n "$slug" ] && ! printf '%s' "$slug" | grep -Eq '^[a-z0-9][a-z0-9_-]*$'; t
   echo 'hint: Use lowercase letters, digits, hyphens, and underscores.' >&2
   exit 2
 fi
+case "${1:-}" in
+  preflight) exit "${FAKE_PREFLIGHT_RC:-0}" ;;
+esac
 case " $* " in
   *" --actor agent:lastdb-memory-guard "*) ;;
   *) echo "unexpected actor" >&2; exit 2 ;;
@@ -142,11 +171,30 @@ chmod +x "$tmp/bin/"*
 export FAKE_PID FAKE_ACTION_LOG="$tmp/actions.log"
 export LASTDBD_GUARD_NOTICE_CMD="$tmp/bin/situations"
 
+# A LaunchAgent directory holding the primary's plist, a decoy for a DIFFERENT
+# home, and a .bak- copy — the three shapes that actually sit in
+# ~/Library/LaunchAgents on the machine this guard runs on.
+export LASTDBD_GUARD_PLIST_DIR="$tmp/agents"
+export LASTDBD_GUARD_REVIVE_WAIT_SEC=3
+mkdir -p "$LASTDBD_GUARD_PLIST_DIR"
+write_agents() {
+  rm -f "$LASTDBD_GUARD_PLIST_DIR"/*
+  printf '<plist><string>%s</string></plist>\n' "$LASTDBD_PRIMARY_HOME" \
+    >"$LASTDBD_GUARD_PLIST_DIR/com.example.lastdbd-primary.plist"
+  printf '<plist><string>%s</string></plist>\n' "/somewhere/else/.lastdb" \
+    >"$LASTDBD_GUARD_PLIST_DIR/com.example.lastdbd-primary-other.plist"
+  printf '<plist><string>%s</string></plist>\n' "$LASTDBD_PRIMARY_HOME" \
+    >"$LASTDBD_GUARD_PLIST_DIR/com.example.lastdbd-primary.plist.bak-20260101"
+}
+
 MB=1048576
 reset() {
   : >"$FAKE_ACTION_LOG"
   rm -f "$LOG" "$LASTDBD_PRIMARY_HOME/monitoring/lastdbd-memory-guard.state"
+  rm -f "$LASTDBD_PRIMARY_HOME/monitoring/lastdbd-absent.state"
+  rm -f "$LASTDBD_PRIMARY_HOME/monitoring/lastdbd-revive.hold"
   rm -f "$EVENT_LOG"
+  write_agents
   printf '{"pid":4242,"start_ts":1234,"last_heartbeat_ts":1234}\n' >"$LASTDBD_PRIMARY_HOME/current-session.json"
   printf '{"pid":4242,"start_ts":1234,"build_version":"0.0.0-test"}\n' >"$LASTDBD_PRIMARY_HOME/sessions.jsonl"
 }
@@ -295,5 +343,122 @@ grep -q 'WARN notice_failed .*reason=.*Invalid slug' "$LOG" \
   || fail "a rejected notice should record the reason the CLI gave"
 grep -q '"event":"restart_observed"' "$EVENT_LOG" \
   || fail "restart evidence must stay durable when the notice is rejected"
+
+revived() { grep -q 'launchctl bootstrap' "$FAKE_ACTION_LOG" 2>/dev/null; }
+
+# The revival cases below all describe the same outage: the primary daemon is
+# gone AND its LaunchAgent is not loaded, so KeepAlive cannot bring it back.
+# Before this guard owned that case it logged `ok no_primary_lastdbd` and
+# exited, which is what let three outages run 4, 14 and 38 minutes.
+
+# --- 11. absent + unloaded revives, but only after the state persists --------
+reset
+FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=0 "$GUARD" >/dev/null 2>&1 \
+  || fail "guard should exit 0 on the first absent cycle"
+revived && fail "a single absent cycle must not revive (that is an upgrade window)"
+grep -q 'absent_cycles=1/2' "$LOG" || fail "the first cycle should record the wait"
+
+FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=0 "$GUARD" >/dev/null 2>&1 \
+  || fail "guard should exit 0 on the revive cycle"
+revived || fail "a persistent absent+unloaded state must revive the agent"
+grep -q 'launchctl enable ' "$FAKE_ACTION_LOG" \
+  || fail "enable must precede bootstrap; launchctl disable outlives a rename"
+grep -q 'REVIVE primary lastdbd agent=com.example.lastdbd-primary' "$LOG" \
+  || fail "the revive should name the agent it bootstrapped"
+grep -q 'revive verified agent=com.example.lastdbd-primary new_pid=' "$LOG" \
+  || fail "revival is verified by the socket answering, and must be logged"
+grep -q '"event":"revive_requested"' "$EVENT_LOG" \
+  || fail "the revive request should be durable before the bootstrap"
+grep -q '"event":"revive_observed"' "$EVENT_LOG" \
+  || fail "the observed recovery should be durable"
+grep -q 'situations notice .*--slug lastdb-memory-guard-revive-' "$FAKE_ACTION_LOG" \
+  || fail "a revive should post a notice so socket errors read as that outage"
+revive_slug=$(sed -n 's/.*--slug \(lastdb-memory-guard-revive-[^ ]*\).*/\1/p' "$FAKE_ACTION_LOG" | head -1)
+printf '%s' "$revive_slug" | grep -Eq '^[a-z0-9][a-z0-9_-]*$' \
+  || fail "revive notice slug '$revive_slug' is not a valid Situations slug"
+grep -q 'WARN notice_failed' "$LOG" && fail "the revive notice slug must be accepted"
+
+# --- 12. a loaded agent is KeepAlive's job — never race it -------------------
+reset
+FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=1 "$GUARD" >/dev/null 2>&1 || fail "exit 0 expected"
+FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=1 "$GUARD" >/dev/null 2>&1 || fail "exit 0 expected"
+revived && fail "must not bootstrap an agent launchd already owns"
+grep -q 'loaded=yes' "$LOG" || fail "the loaded case should say so"
+
+# --- 13. a socket that answers means someone owns this home — fail closed ----
+# The process selector deliberately fails closed, so "no pid" can mean "missed
+# it". Starting a second daemon on the same home would be worse than the outage.
+reset
+FAKE_NO_PRIMARY=1 FAKE_SOCKET_UP=1 FAKE_AGENT_LOADED=0 \
+  LASTDBD_GUARD_REVIVE_MIN_ABSENT_CYCLES=1 "$GUARD" >/dev/null 2>&1 || fail "exit 0 expected"
+revived && fail "must not revive while the primary socket still answers"
+grep -q 'answers — not reviving' "$LOG" || fail "the live-socket refusal should be logged"
+
+# --- 14. a maintenance hold suppresses revival ------------------------------
+reset
+touch "$LASTDBD_PRIMARY_HOME/monitoring/lastdbd-revive.hold"
+FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=0 LASTDBD_GUARD_REVIVE_MIN_ABSENT_CYCLES=1 \
+  "$GUARD" >/dev/null 2>&1 || fail "exit 0 expected"
+revived && fail "a hold file must suppress revival"
+grep -q 'revive=held' "$LOG" || fail "the hold should be logged with its path"
+
+# --- 15. a deliberately parked agent is not an outage -----------------------
+reset
+mv "$LASTDBD_GUARD_PLIST_DIR/com.example.lastdbd-primary.plist" \
+   "$LASTDBD_GUARD_PLIST_DIR/com.example.lastdbd-primary.plist.paused-20260101"
+FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=0 LASTDBD_GUARD_REVIVE_MIN_ABSENT_CYCLES=1 \
+  PRIMARY_AGENT_LABEL= LASTDBD_PRIMARY_AGENT_LABEL=com.example.lastdbd-primary \
+  "$GUARD" >/dev/null 2>&1 || fail "exit 0 expected"
+revived && fail "a .paused-* marker means parked on purpose"
+grep -q 'parked=yes' "$LOG" || fail "the parked case should be logged"
+
+# --- 16. ambiguous or foreign plists are refused, not guessed ---------------
+reset
+printf '<plist><string>%s</string></plist>\n' "$LASTDBD_PRIMARY_HOME" \
+  >"$LASTDBD_GUARD_PLIST_DIR/com.example.lastdbd-primary-second.plist"
+FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=0 LASTDBD_GUARD_REVIVE_MIN_ABSENT_CYCLES=1 \
+  "$GUARD" >/dev/null 2>&1 || fail "exit 0 expected"
+revived && fail "two candidate plists for one home must refuse, not guess"
+grep -q 'reason=no_unique_primary_plist' "$LOG" || fail "the refusal should say why"
+
+reset
+rm -f "$LASTDBD_GUARD_PLIST_DIR/com.example.lastdbd-primary.plist"
+FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=0 LASTDBD_GUARD_REVIVE_MIN_ABSENT_CYCLES=1 \
+  "$GUARD" >/dev/null 2>&1 || fail "exit 0 expected"
+revived && fail "a plist naming a different home must not be started"
+grep -q 'reason=no_unique_primary_plist' "$LOG" \
+  || fail "only the decoy remains, so no unique candidate exists"
+
+# --- 17. a blocking Situation stops the revive ------------------------------
+reset
+FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=0 LASTDBD_GUARD_REVIVE_MIN_ABSENT_CYCLES=1 \
+  FAKE_PREFLIGHT_RC=3 "$GUARD" >/dev/null 2>&1 || fail "exit 0 expected"
+revived && fail "preflight exit 3 requires human clearance"
+grep -q 'revive=blocked' "$LOG" || fail "the block should be logged"
+
+# --- 18. revival can be switched off entirely -------------------------------
+reset
+FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=0 LASTDBD_GUARD_REVIVE=0 \
+  LASTDBD_GUARD_REVIVE_MIN_ABSENT_CYCLES=1 "$GUARD" >/dev/null 2>&1 || fail "exit 0 expected"
+revived && fail "LASTDBD_GUARD_REVIVE=0 must disable revival"
+grep -q 'revive=disabled' "$LOG" || fail "the disabled state should be logged"
+
+# --- 19. a healthy cycle clears the absent counter --------------------------
+# Otherwise a flapping primary would accumulate cycles across unrelated outages
+# and revive on its first absent cycle much later.
+reset
+FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=0 "$GUARD" >/dev/null 2>&1 || fail "exit 0 expected"
+[ -f "$LASTDBD_PRIMARY_HOME/monitoring/lastdbd-absent.state" ] \
+  || fail "an absent cycle should be recorded"
+FAKE_RSS_KB=$((1500 * 1024)) FAKE_FOOTPRINT_BYTES=$((9000 * MB)) \
+  "$GUARD" >/dev/null 2>&1 || fail "exit 0 expected"
+[ -f "$LASTDBD_PRIMARY_HOME/monitoring/lastdbd-absent.state" ] \
+  && fail "a healthy cycle must clear the absent counter"
+
+# --- 20. identity mode stays read-only on the revival path ------------------
+reset
+FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=0 "$GUARD" --identity >/dev/null 2>&1 \
+  && fail "identity should fail when there is no primary"
+revived && fail "identity mode must never bootstrap anything"
 
 printf 'PASS: last-stack-lastdb-memory-guard\n'
