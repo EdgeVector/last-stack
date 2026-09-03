@@ -90,6 +90,15 @@ proxy is optional later for near-zero client impact.
    run, which reclaims it before creating another. Never write rollback copies
    under `$HOME`.
 3. **Never** restart/upgrade on a RED probe.
+3b. **A read that answers fast with ZERO rows is RED, not GREEN.** The
+   **row-count bar** counts the rows the Board point-read and the `kanban list
+   --column todo` scan return on the candidate and on the baseline, over the
+   same CoW data. Baseline > 0 with candidate == 0 is a read-path regression
+   and fails the probe. There is **no skip flag**, and `LASTDB_PROBE_LAT_SKIP=1`
+   does not buy a pass — this is a correctness bar, not a speed bar. Added
+   2026-09-03 after lastdbd 0.23.3-1535 served every kanban BoardCards read
+   empty on the primary for an hour; every latency bar passed it GREEN, because
+   an empty answer is the fastest possible answer.
 4. **Never** kill the primary unattended outside this skill's live step; if live
    post-check fails after upgrade, **stop and restore** (binary bak and/or data
    retained rollback point) — do not improvise.
@@ -332,7 +341,7 @@ The script:
 | Resolve candidate | `brew update` / `--version` tarball / `--candidate` |
 | **1. Rollback point** | `cp -cR` (APFS only; no full-copy fallback) → `${TMPDIR}/lastdb-safe-upgrade-rollback-<uid>/pre-<new>-from-<old>-<ts>/`; reclaim the prior retained point first |
 | **0. Class** | Refuse `target/debug`, `-dirty` version, size ≫ incumbent (before multi-GB backup) |
-| **2. Probe** | `BIN=<candidate>` CoW smoke harness (never live home) + **CAS mutation bar** (ephemeral candidate node: false `expected` → 409) + **RSS settle/sample** vs memory-guard limit + **latency bar**: cold then hot Board point-read / scan (like-to-like vs baseline CoW); hot `brain put` write; geo-mean on the hot triple only |
+| **2. Probe** | `BIN=<candidate>` CoW smoke harness (never live home) + **CAS mutation bar** (ephemeral candidate node: false `expected` → 409) + **RSS settle/sample** vs memory-guard limit + **latency bar**: cold then hot Board point-read / scan (like-to-like vs baseline CoW); hot `brain put` write; geo-mean on the hot triple only + **row-count bar**: candidate must not return 0 rows where the baseline returns rows (no skip flag) |
 | Detect venue | sidebin vs brew |
 | **2b. DEV photograph stamp** | Live cutover **refused** without a GREEN receipt: ephemeral/CoW (never `~/.lastdb`) uploaded the photograph to **DEV** (not the primary's production backup home) and CAS-flipped `backup/latest`. `--check-dev-stamp` exercises this gate alone. |
 | **3. Live** | **durability canary armed** (N run-unique sentinels returned `durable` + read back on the old daemon, **or** `queued+readback` after HTTP 400 on `--durable` plus a queued put and matching nonce read-back; before any live change), boot-ledger restart intent armed, then sidebin atomic install + LaunchAgent job-definition reload **or** brew upgrade/restart |
@@ -373,7 +382,7 @@ incident.
 | `VERDICT: GREEN` | Probe + live cutover + live post-check passed | Done |
 | `VERDICT: GREEN_PROBE_ONLY` | Probe passed; primary still on old version | Start `last-stack-safe-upgrade-loom` with the candidate and source commit if Tom wants the upgrade |
 | `VERDICT: ALREADY_CURRENT` | Already on candidate/stable | Nothing to do |
-| `VERDICT: RED` | Candidate fails **class** bar (debug/dirty/size), **or** cannot serve real data, **or** the **CAS mutation** bar (node accepted a false `expected` precondition), **or** peak RSS exceeds memory-guard bar, **or** the latency bar failed (per-op 3×, absolute ceiling, **or correlated** all-ops / geo-mean regression), **or** the **DEV photograph stamp** is missing/RED (no ephemeral/CoW upload to DEV, or the receipt names production / live `~/.lastdb`), **or** the **durability canary** cannot obtain an exact durable receipt before cutover (and cannot arm `queued+readback` after HTTP 400), **or** its post-cutover read is stale/unreadable, **or** the primary LaunchAgent is unloaded / is not the live pid after a nohup `--data-dir` start | **Do not upgrade**; file release-blocker; use the one retained rollback point only if recovery is required. The next safe-upgrade run reclaims it. A durability RED after cutover additionally means: audit recent writes across apps — rollback does not recover lost writes. An unloaded LaunchAgent additionally means: `launchctl bootstrap gui/$(id -u) <plist>` then `launchctl print` must show state=running and this pid. |
+| `VERDICT: RED` | Candidate fails **class** bar (debug/dirty/size), **or** cannot serve real data, **or** the **CAS mutation** bar (node accepted a false `expected` precondition), **or** peak RSS exceeds memory-guard bar, **or** the latency bar failed (per-op 3×, absolute ceiling, **or correlated** all-ops / geo-mean regression), **or** the **row-count bar** failed (a real read returned 0 rows on the candidate while the baseline returned rows on the same CoW data), **or** the **DEV photograph stamp** is missing/RED (no ephemeral/CoW upload to DEV, or the receipt names production / live `~/.lastdb`), **or** the **durability canary** cannot obtain an exact durable receipt before cutover (and cannot arm `queued+readback` after HTTP 400), **or** its post-cutover read is stale/unreadable, **or** the primary LaunchAgent is unloaded / is not the live pid after a nohup `--data-dir` start | **Do not upgrade**; file release-blocker; use the one retained rollback point only if recovery is required. The next safe-upgrade run reclaims it. A durability RED after cutover additionally means: audit recent writes across apps — rollback does not recover lost writes. An unloaded LaunchAgent additionally means: `launchctl bootstrap gui/$(id -u) <plist>` then `launchctl print` must show state=running and this pid. |
 
 ## Rollback
 
@@ -447,6 +456,7 @@ kanban list   # must show real cards
   safety lock. Wait for the first owner to exit. The lock covers rollback
   cleanup, the real-data probe, and the live cutover.
 - Point candidate `--data-dir` at live `~/.lastdb` "just to see".
+- Read a probe's fast, empty query result as a pass. Count the rows.
 - Upload a CoW/ephemeral photograph into the primary's **production** backup
   home, or treat a mock object-store "stamp" as the DEV photograph gate.
 - Live cutover without a GREEN DEV photograph stamp (CAS `latest` on DEV

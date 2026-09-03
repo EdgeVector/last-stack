@@ -496,6 +496,73 @@ op_lat_scan() {
     kanban list --column todo --json >/dev/null 2>&1
 }
 
+# ---------------------------------------------------------------------------
+# Row-count bar: a read that answers fast with ZERO rows is NOT green.
+#
+# 2026-09-03: lastdbd 0.23.3-1535 shipped #1893 "Keep HashKey on a named
+# HashRange schema on that schema's key layout". Every kanban BoardCards
+# HashKey/HashRangePrefix read then returned ok:true with returned_count=0 on
+# the primary — the whole board read empty, pickup gates saw zero cards, and
+# ship rate went to 0. The probe passed GREEN because op_lat_point only
+# asserted `.ok == true` and op_lat_scan discarded stdout entirely: a query
+# that answers "no rows" in 169 ms is the FASTEST possible answer, so every
+# latency bar rewarded the regression.
+#
+# These two ops return the row COUNT the same query yields, so the bar can
+# compare candidate against baseline on identical CoW data. Baseline > 0 with
+# candidate == 0 is a read-path regression and is RED.
+# Brain: papercut-lastdb-1535-hashrange-board-queries-return-zero-rows-after-cutover-20260903.
+op_rows_point() {
+  # $1 = socket path; prints the row count, or -1 when unmeasurable
+  local body count
+  body="$(curl -sS --max-time "$LAT_OP_TIMEOUT_SECS" --unix-socket "$1" -H 'Host: localhost' \
+    -H 'X-LastDB-Client: lastdb-safe-upgrade' -H 'Content-Type: application/json' \
+    --data '{"schema_name":"Board","fields":["title"],"filter":{"HashKey":"default"}}' \
+    http://x/api/query 2>/dev/null)" || { echo "-1"; return 0; }
+  count="$(printf '%s' "$body" | jq -r 'if .ok != true then -1
+    elif (.returned_count // empty) != null then .returned_count
+    elif (.results // empty) != null then (.results | length)
+    elif (.rows // empty) != null then (.rows | length)
+    else -1 end' 2>/dev/null)"
+  case "$count" in ''|*[!0-9-]*) count="-1" ;; esac
+  echo "$count"
+}
+
+op_rows_scan() {
+  # $1 = probe copy home; prints the card count, or -1 when unmeasurable
+  local body count
+  body="$(env FOLDDB_SOCKET_PATH="$1/data/folddb.sock" LASTDB_HOME="$1" FOLDDB_HOME="$1" \
+    kanban list --column todo --json 2>/dev/null)" || { echo "-1"; return 0; }
+  count="$(printf '%s' "$body" | jq -r '(.total // (.cards | length) // -1)' 2>/dev/null)"
+  case "$count" in ''|*[!0-9-]*) count="-1" ;; esac
+  echo "$count"
+}
+
+# Compare one candidate/baseline row-count pair.
+# $1 = label, $2 = candidate count, $3 = baseline count.
+# Prints one verdict line; returns 1 only on a real zero-row regression.
+rowcount_verdict() {
+  local label="$1" cand="$2" base="$3"
+  if ! [ "$cand" -ge 0 ] 2>/dev/null; then
+    echo "rowcount $label SKIPPED: candidate count unmeasurable (got '${cand}')"
+    return 0
+  fi
+  if ! [ "$base" -ge 0 ] 2>/dev/null; then
+    echo "rowcount $label SKIPPED: no baseline count (got '${base}') — cannot tell an empty board from an empty answer"
+    return 0
+  fi
+  if [ "$base" -gt 0 ] && [ "$cand" -eq 0 ]; then
+    echo "rowcount $label RED: baseline returned ${base} rows, candidate returned 0 on the SAME CoW data — read-path regression, not an empty board"
+    return 1
+  fi
+  if [ "$base" -gt 0 ] && [ "$cand" -lt "$base" ]; then
+    echo "rowcount $label WARN: candidate ${cand} rows vs baseline ${base} on the same CoW data (copies are taken moments apart; investigate if the gap is large)"
+    return 0
+  fi
+  echo "rowcount $label ok: candidate=${cand} baseline=${base}"
+  return 0
+}
+
 op_lat_write() {
   # $1 = probe copy home
   printf -- '---\ntype: reference\nslug: safe-upgrade-latency-probe-scratch\ntitle: safe-upgrade latency probe scratch\n---\nUpsert from the safe-upgrade latency bar. Only ever written to throwaway CoW probe copies.\n' \
@@ -993,6 +1060,21 @@ probe_like_to_like_metrics() {
     return 1
   fi
 
+  # Row-count bar (never skipped by LAT_SKIP — this is a correctness bar, not a
+  # speed bar). Both nodes serve the same CoW data and are still up here.
+  c_rows_pt="$(op_rows_point "$c_sock")"
+  b_rows_pt="-1"
+  [ -n "$b_sock" ] && b_rows_pt="$(op_rows_point "$b_sock")"
+  c_rows_sc="-1"
+  b_rows_sc="-1"
+  if command -v kanban >/dev/null 2>&1; then
+    c_rows_sc="$(op_rows_scan "$c_copy")"
+    [ -n "$b_copy" ] && b_rows_sc="$(op_rows_scan "$b_copy")"
+  else
+    warn "rowcount: kanban CLI not on PATH — scan row count unmeasured"
+  fi
+  log "row counts: point cand=${c_rows_pt} base=${b_rows_pt} · scan cand=${c_rows_sc} base=${b_rows_sc}"
+
   {
     echo "boot_secs=$c_boot"
     echo "peak_rss_mb=$max_rss"
@@ -1004,6 +1086,8 @@ probe_like_to_like_metrics() {
     echo "lat_point_ms=$c_hot_pt"
     echo "lat_scan_ms=$c_hot_sc"
     echo "lat_write_ms=$c_hot_wr"
+    echo "rows_point=$c_rows_pt"
+    echo "rows_scan=$c_rows_sc"
   } >"$cand_out"
   if [ -n "$base_out" ]; then
     {
@@ -1016,6 +1100,8 @@ probe_like_to_like_metrics() {
       echo "lat_point_ms=$b_hot_pt"
       echo "lat_scan_ms=$b_hot_sc"
       echo "lat_write_ms=$b_hot_wr"
+      echo "rows_point=$b_rows_pt"
+      echo "rows_scan=$b_rows_sc"
     } >"$base_out"
   fi
   log "candidate metrics: boot_s=${c_boot} peak_rss_mb=${max_rss} cold_point_ms=${c_cold_pt} cold_scan_ms=${c_cold_sc} hot_point_ms=${c_hot_pt} hot_scan_ms=${c_hot_sc} hot_write_ms=${c_hot_wr}"
@@ -1613,6 +1699,48 @@ BASE_BOOT_SECS="$(metric_val "$BASE_METRICS" boot_secs)"
 [ -n "$BASE_LAT_SCAN_MS" ] || BASE_LAT_SCAN_MS="-1"
 [ -n "$BASE_LAT_WRITE_MS" ] || BASE_LAT_WRITE_MS="-1"
 
+CAND_ROWS_POINT="$(metric_val "$CAND_METRICS" rows_point)"
+CAND_ROWS_SCAN="$(metric_val "$CAND_METRICS" rows_scan)"
+BASE_ROWS_POINT="$(metric_val "$BASE_METRICS" rows_point)"
+BASE_ROWS_SCAN="$(metric_val "$BASE_METRICS" rows_scan)"
+[ -n "$CAND_ROWS_POINT" ] || CAND_ROWS_POINT="-1"
+[ -n "$CAND_ROWS_SCAN" ] || CAND_ROWS_SCAN="-1"
+[ -n "$BASE_ROWS_POINT" ] || BASE_ROWS_POINT="-1"
+[ -n "$BASE_ROWS_SCAN" ] || BASE_ROWS_SCAN="-1"
+
+# Row-count bar. Deliberately NOT gated on LAT_SKIP: a candidate that answers
+# every read with zero rows is wrong, not slow, and LASTDB_PROBE_LAT_SKIP must
+# never buy a pass for it.
+ROWS_RED=0
+ROWS_RED_REASON=""
+set +e
+for rows_pair in "point-read:${CAND_ROWS_POINT}:${BASE_ROWS_POINT}" "kanban-scan:${CAND_ROWS_SCAN}:${BASE_ROWS_SCAN}"; do
+  rows_label="${rows_pair%%:*}"
+  rows_rest="${rows_pair#*:}"
+  ROWS_OUT="$(rowcount_verdict "$rows_label" "${rows_rest%%:*}" "${rows_rest#*:}")"
+  ROWS_RC=$?
+  case "$ROWS_OUT" in
+    *' RED:'*) log "$ROWS_OUT" ;;
+    *' WARN:'*|*'SKIPPED'*) warn "$ROWS_OUT" ;;
+    *) log "$ROWS_OUT" ;;
+  esac
+  if [ "$ROWS_RC" -ne 0 ]; then
+    ROWS_RED=1
+    ROWS_RED_REASON="${rows_label} returned 0 rows on the candidate while the baseline returned rows on the same CoW data"
+  fi
+done
+set -e
+if [ "$ROWS_RED" -ne 0 ]; then
+  echo ""
+  echo "VERDICT: RED"
+  echo "REASON: candidate $CAND_VER fails the row-count bar (${ROWS_RED_REASON}) — a read that answers FAST with ZERO rows is not GREEN (incident 2026-09-03: lastdbd 0.23.3-1535 served every kanban BoardCards read empty, ship rate went to 0, and every latency bar passed because an empty answer is the fastest answer)"
+  echo "ROWCOUNT: point cand=${CAND_ROWS_POINT}(base ${BASE_ROWS_POINT}) scan cand=${CAND_ROWS_SCAN}(base ${BASE_ROWS_SCAN})"
+  echo "BACKUP: $BACKUP  (kept; primary NOT upgraded)"
+  echo "NEXT:   do NOT live-upgrade; the candidate's hash-key/range read path is broken for at least one real schema. Brain: papercut-lastdb-1535-hashrange-board-queries-return-zero-rows-after-cutover-20260903. There is no skip flag for this bar."
+  exit 1
+fi
+
+
 if [ "$LAT_SKIP" != "1" ]; then
   if [ -n "$BASE_BOOT_SECS" ] && [ -n "$CAND_BOOT_SECS" ] \
     && [ "$CAND_BOOT_SECS" -gt $((BASE_BOOT_SECS * 3)) ] 2>/dev/null \
@@ -1664,6 +1792,7 @@ EOF
 else
   warn "latency bar SKIPPED (LASTDB_PROBE_LAT_SKIP=1) — Tom-clearance only; correct-but-slow will NOT be caught"
 fi
+log "row-count bar GREEN: point cand=${CAND_ROWS_POINT}(base ${BASE_ROWS_POINT}) scan cand=${CAND_ROWS_SCAN}(base ${BASE_ROWS_SCAN})"
 log "probe GREEN for candidate $CAND_VER (data-plane + RSS peak_mb=${PROBE_RSS_MB} + cold_point/scan=${CAND_LAT_COLD_POINT_MS}/${CAND_LAT_COLD_SCAN_MS}ms hot_point/scan/write=${CAND_LAT_POINT_MS}/${CAND_LAT_SCAN_MS}/${CAND_LAT_WRITE_MS}ms)"
 
 if [ "$PROBE_ONLY" -eq 1 ]; then
@@ -1674,6 +1803,7 @@ if [ "$PROBE_ONLY" -eq 1 ]; then
   echo "ROLLBACK: released (probe GREEN; primary untouched)"
   echo "RSS:     peak_mb=${PROBE_RSS_MB} limit_mb=$(resolve_rss_limit_mb) fail_at_mb=$(rss_fail_threshold_mb "$(resolve_rss_limit_mb)")"
   echo "LATENCY: cold_point=${CAND_LAT_COLD_POINT_MS}ms(base ${BASE_LAT_COLD_POINT_MS}ms) cold_scan=${CAND_LAT_COLD_SCAN_MS}ms(base ${BASE_LAT_COLD_SCAN_MS}ms) hot_point=${CAND_LAT_POINT_MS}ms(base ${BASE_LAT_POINT_MS}ms) hot_scan=${CAND_LAT_SCAN_MS}ms(base ${BASE_LAT_SCAN_MS}ms) hot_write=${CAND_LAT_WRITE_MS}ms(base ${BASE_LAT_WRITE_MS}ms) boot=${CAND_BOOT_SECS}s(base ${BASE_BOOT_SECS:-?}s)"
+  echo "ROWCOUNT: point cand=${CAND_ROWS_POINT}(base ${BASE_ROWS_POINT}) scan cand=${CAND_ROWS_SCAN}(base ${BASE_ROWS_SCAN})"
   echo "NEXT:    run last-stack-safe-upgrade-loom --candidate $CANDIDATE_BIN --source-git-oid <full-fold-commit>"
   exit 0
 fi
