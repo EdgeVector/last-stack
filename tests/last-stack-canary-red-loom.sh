@@ -156,7 +156,91 @@ quiet_out="$(CANARY_RED_LOOM_LIST_FILE="$tmp/busy-masking.json" \
 printf '%s\n' "$quiet_out" | python3 -c 'import json,sys
 d,_=json.JSONDecoder().raw_decode(sys.stdin.read())
 assert d.get("idle") is True and d.get("reason")=="lane_busy", d
-assert "masked" not in d, d'
+assert "masked" not in d, d
+assert d.get("lane_stale") is False, d'
+
+# --- a live lane that stops advancing must not stay a healthy noop ---
+# lx-20260902T172952.304-31149-1 held status=running in state DECIDE_BUILD from
+# `updated_at` 2026-09-02T22:25:22Z through 2026-09-03T09:37Z. Eleven hourly
+# fires each reported `noop idle reason=lane_busy` on that same exec id, so a
+# ~20 h wedge read as a quiet lane
+# (papercut-canary-red-heal-fifth-consecutive-day-same-class-20260903).
+cat >"$tmp/lane-wedged.json" <<JSON
+[{"id":"lx-20260902T172952.304-31149-1","definition_name":"lastdb-canary-release","status":"running","state":"DECIDE_BUILD","updated_at":"$(now_iso 17)"}]
+JSON
+wedged_out="$(CANARY_RED_LOOM_LIST_FILE="$tmp/lane-wedged.json" \
+  LAST_STACK_CANARY_RED_LOOKBACK_HOURS=24 "$BIN" --dry-run --json --quiet)"
+printf '%s\n' "$wedged_out" | python3 -c 'import json,sys
+d,_=json.JSONDecoder().raw_decode(sys.stdin.read())
+assert d.get("idle") is True, d
+assert d.get("reason")=="lane_stale", d
+assert d.get("lane_stale") is True, d
+assert d.get("exec_id")=="lx-20260902T172952.304-31149-1", d
+assert d.get("state")=="DECIDE_BUILD", d
+assert d.get("lane_stale_hours")==6.0, d
+assert d.get("lane_age_hours") >= 16.5, d'
+printf '%s\n' "$wedged_out" | grep -q 'outcome=error detail=lane_stale' \
+  || fail "wedged lane must report outcome=error: $wedged_out"
+
+# The same wedge on the live (non-dry-run) path. The gate must exit 3 so
+# routinesd records `error`, not another hourly `noop`.
+set +e
+wedged_live="$(CANARY_RED_LOOM_LIST_FILE="$tmp/lane-wedged.json" \
+  LAST_STACK_CANARY_RED_LOOKBACK_HOURS=24 \
+  LAST_STACK_CANARY_RED_STAMP="$tmp/stamp-wedged.json" "$BIN" --json --quiet)"
+wedged_rc=$?
+set -e
+[ "$wedged_rc" -eq 3 ] || fail "wedged lane must exit 3, got $wedged_rc: $wedged_live"
+printf '%s\n' "$wedged_live" | grep -q 'outcome=error detail=lane_stale' \
+  || fail "live wedged lane missing error trailer: $wedged_live"
+python3 -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+assert d.get("outcome")=="error", d
+assert d.get("exec_id")=="lx-20260902T172952.304-31149-1", d
+assert "reason=lane_stale" in (d.get("detail") or ""), d' "$tmp/stamp-wedged.json" \
+  || fail "wedged lane stamp did not record the error"
+
+# A canary soak legitimately parks for a day. It re-checks, so `updated_at`
+# stays young (2.5 h observed on lx-20260830T140407.992-49336-1 after two
+# days). The guard must not page on that.
+cat >"$tmp/lane-soaking.json" <<JSON
+[{"id":"lx-20260830T140407.992-49336-1","definition_name":"lastdb-canary-release","status":"waiting","state":"SOAK_WAIT","updated_at":"$(now_iso 2.5)"}]
+JSON
+soak_out="$(CANARY_RED_LOOM_LIST_FILE="$tmp/lane-soaking.json" \
+  LAST_STACK_CANARY_RED_LOOKBACK_HOURS=24 "$BIN" --dry-run --json --quiet)"
+printf '%s\n' "$soak_out" | python3 -c 'import json,sys
+d,_=json.JSONDecoder().raw_decode(sys.stdin.read())
+assert d.get("idle") is True and d.get("reason")=="lane_busy", d
+assert d.get("lane_stale") is False, d'
+printf '%s\n' "$soak_out" | grep -q 'outcome=noop' \
+  || fail "a soaking lane must stay noop: $soak_out"
+
+# The bar is tunable, so an operator can tighten it without a code change.
+tight_out="$(CANARY_RED_LOOM_LIST_FILE="$tmp/lane-soaking.json" \
+  LAST_STACK_CANARY_RED_LOOKBACK_HOURS=24 "$BIN" --dry-run --json --quiet \
+  --lane-stale-hours 2)"
+printf '%s\n' "$tight_out" | python3 -c 'import json,sys
+d,_=json.JSONDecoder().raw_decode(sys.stdin.read())
+assert d.get("reason")=="lane_stale", d
+assert d.get("lane_stale_hours")==2.0, d'
+
+# Masked reds name the louder problem, so they keep the reason slot. The
+# staleness flag still has to travel with them.
+cat >"$tmp/lane-wedged-masking.json" <<JSON
+[
+  {"id":"lx-20260902T172952.304-31149-1","definition_name":"lastdb-canary-release","status":"running","state":"DECIDE_BUILD","updated_at":"$(now_iso 17)"},
+  {"id":"lx-20260902T031319.081-31192-1","definition_name":"lastdb-canary-release","status":"failed","state":"FAILED","updated_at":"$(now_iso 18)"}
+]
+JSON
+both_out="$(CANARY_RED_LOOM_LIST_FILE="$tmp/lane-wedged-masking.json" \
+  LAST_STACK_CANARY_RED_LOOKBACK_HOURS=24 "$BIN" --dry-run --json --quiet)"
+printf '%s\n' "$both_out" | python3 -c 'import json,sys
+d,_=json.JSONDecoder().raw_decode(sys.stdin.read())
+assert d.get("reason")=="lane_busy_masking_reds", d
+assert d.get("lane_stale") is True, d
+assert d.get("masked")==1, d'
+printf '%s\n' "$both_out" | grep -q 'outcome=error detail=lane_busy_masking_reds' \
+  || fail "masked reds must keep their own error detail: $both_out"
 
 # --- a newer cancelled row must not mask an older failed one ---
 # The lister defaults to one row, and `pick_failed` used to test only that row.
