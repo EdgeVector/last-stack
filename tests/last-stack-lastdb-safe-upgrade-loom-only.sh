@@ -317,6 +317,10 @@ grep -q 'LASTDB_SAFE_UPGRADE_VIA_LOOM' "$DRIVER" \
   || fail "driver lacks the Loom live-cutover contract"
 grep -q 'publish "\$defs/lastdb-safe-upgrade.json"' "$ROOT/bin/last-stack-canary-loom" \
   || fail "parent launcher does not publish the safe-upgrade child graph"
+grep -q 'export_loom_run_deadline_for' "$ROOT/bin/last-stack-canary-loom" \
+  || fail "parent launcher does not size LOOM_RUN_DEADLINE_SECS for the child"
+grep -q 'export_loom_run_deadline_for lastdb-safe-upgrade' "$LAUNCHER" \
+  || fail "safe-upgrade launcher does not size LOOM_RUN_DEADLINE_SECS"
 grep -q 'last-stack-safe-upgrade-loom' "$ROOT/skills/lastdb-safe-upgrade/SKILL.md" \
   || fail "skill does not route live upgrades through Loom"
 

@@ -5,6 +5,7 @@ BIN="$ROOT/bin/last-stack-canary-loom"
 fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 bash -n "$BIN"
 bash -n "$ROOT/lib/canary-loom/loom-canary-step.sh"
+bash -n "$ROOT/lib/canary-loom/loom-run-deadline.sh"
 [ -f "$ROOT/lib/canary-loom/lastdb-canary-release.json" ] || fail "graph missing"
 [ "$(jq -r .version "$ROOT/lib/canary-loom/lastdb-canary-release.json")" = "6" ] \
   || fail "canary graph version did not advance"
@@ -49,8 +50,31 @@ export LAST_STACK_CANARY_LOOM_ACTIVE="$tmp/active.json"
 # empty listing so no test reaches the live node.
 printf '%s\n' '[]' >"$tmp/discover-empty.json"
 export CANARY_LOOM_LIST_FILE="$tmp/discover-empty.json"
+# shellcheck source=../lib/canary-loom/loom-run-deadline.sh
+. "$ROOT/lib/canary-loom/loom-run-deadline.sh"
+[ "$(loom_run_deadline_secs lastdb-safe-upgrade)" = 5400 ] \
+  || fail "lastdb-safe-upgrade deadline is not 5400s"
+[ "$(loom_run_deadline_secs lastdb-canary-release)" = 5400 ] \
+  || fail "lastdb-canary-release deadline is not 5400s (CALL_A child)"
+[ -z "$(loom_run_deadline_secs other-graph)" ] \
+  || fail "other definitions must keep the loom default"
+(
+  unset LOOM_RUN_DEADLINE_SECS
+  export_loom_run_deadline_for other-graph
+  [ -z "${LOOM_RUN_DEADLINE_SECS:-}" ] \
+    || fail "other definition received LOOM_RUN_DEADLINE_SECS=${LOOM_RUN_DEADLINE_SECS:-}"
+)
+(
+  unset LOOM_RUN_DEADLINE_SECS
+  export_loom_run_deadline_for lastdb-safe-upgrade
+  [ "${LOOM_RUN_DEADLINE_SECS:-}" = 5400 ] \
+    || fail "lastdb-safe-upgrade export did not set 5400"
+)
+
 out="$("$BIN" --dry-run --json --quiet)"
 printf '%s\n' "$out" | grep -q 'ROUTINE_RESULT' || fail "missing ROUTINE_RESULT: $out"
+printf '%s\n' "$out" | grep -q 'deadline_secs=5400' \
+  || fail "dry-run did not stamp the safe-upgrade drive deadline: $out"
 out2="$("$BIN" --dry-run --start --oid abc123 --json --quiet)"
 printf '%s\n' "$out2" | grep -q 'canary-abc123' || fail "start dry-run missing key: $out2"
 out2_retry="$("$BIN" --dry-run --start --oid abc123 --key canary-abc123-retry-1 --json --quiet)"
@@ -66,7 +90,8 @@ set -euo pipefail
 case "${1:-}" in
   ping|publish|validate) exit 0 ;;
   run)
-    printf '%s\n' "$*" >>"${FAKE_LOOM_CALLS:?}"
+    printf 'env.LOOM_RUN_DEADLINE_SECS=%s cmd=%s\n' \
+      "${LOOM_RUN_DEADLINE_SECS:-}" "$*" >>"${FAKE_LOOM_CALLS:?}"
     case "${FAKE_LOOM_MODE:-success}" in
       success)
         printf '%s\n' lx-test-canary 'status: running' 'state: BUILD_WAIT'
@@ -254,9 +279,14 @@ export LAST_STACK_CANARY_LOOM_STDOUT_LOG="$tmp/loom.stdout.log"
 export LAST_STACK_CANARY_LOOM_STDERR_LOG="$tmp/loom.stderr.log"
 export FAKE_LOOM_CALLS="$tmp/loom.calls"
 : >"$FAKE_LOOM_CALLS"
-out3="$(HOME="$mock_home" FAKE_LOOM_MODE=success "$BIN" --key canary-test --json --quiet)"
-printf '%s\n' "$out3" | head -1 | jq -e '.outcome == "ok" and .execution == "lx-test-canary" and .status == "running"' >/dev/null \
-  || fail "success result missing execution: $out3"
+out3="$(env -u LOOM_RUN_DEADLINE_SECS HOME="$mock_home" FAKE_LOOM_MODE=success "$BIN" --key canary-test --json --quiet)"
+printf '%s\n' "$out3" | head -1 | jq -e '.outcome == "ok" and .execution == "lx-test-canary" and .status == "running" and .deadline_secs == "5400"' >/dev/null \
+  || fail "success result missing execution or deadline: $out3"
+grep -q 'env.LOOM_RUN_DEADLINE_SECS=5400 cmd=run lastdb-canary-release --key canary-test' \
+  "$FAKE_LOOM_CALLS" \
+  || fail "lastdb-safe-upgrade child drive did not receive 5400s: $(cat "$FAKE_LOOM_CALLS")"
+jq -e '.deadline_secs == "5400"' "$LAST_STACK_CANARY_LOOM_STAMP" >/dev/null \
+  || fail "CUTOVER stamp omitted deadline_secs: $(cat "$LAST_STACK_CANARY_LOOM_STAMP")"
 grep -q 'state: BUILD_WAIT' "$LAST_STACK_CANARY_LOOM_STDOUT_LOG" \
   || fail "loom stdout was not preserved"
 jq -e '.key == "canary-test" and .execution == "lx-test-canary" and .status == "running"' \
