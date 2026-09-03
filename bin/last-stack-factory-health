@@ -1207,7 +1207,14 @@ def maybe_auto_fix(cfg: dict[str, Any], alerts: list[Alert], last_stack: Path, d
             else:
                 code, out, err = run([str(bin_path)], timeout=180)
                 actions.append(f"board_closeout:exit={code}")
-    if "factory_heal" in allowed and alerts:
+    if "factory_heal" in allowed:
+        # A factory-heal STARTS only on an alerting hour, but it must be TICKED
+        # every hour. The tick used to sit inside the `and alerts` gate, so an
+        # execution started on an alerting hour stalled mid-flight as soon as
+        # the board went quiet, and its concurrency key then refused the next
+        # start. Observed 2026-09-03: exec_29bd266a6bbf4fb8 sat in VERIFY from
+        # 21:19Z to 23:09Z through a quiet 22:17Z run, and finished in one
+        # second on a hand tick.
         sm = ""
         for cand in ("state-machine", "sm"):
             code_w, out_w, _ = run(["sh", "-c", f"command -v {cand}"], timeout=5)
@@ -1216,32 +1223,37 @@ def maybe_auto_fix(cfg: dict[str, Any], alerts: list[Alert], last_stack: Path, d
                 break
         if sm:
             if dry_run:
-                actions.append("would:factory_heal")
+                actions.append("would:factory_heal" if alerts else "would:factory_heal_tick")
             else:
-                hour = utc_now().strftime("%Y%m%d%H")
-                input_json = json.dumps(
-                    {"source": "factory-health", "codes": sorted(codes)}
-                )
-                start_code, start_out, start_err = run(
-                    [
-                        sm,
-                        "start",
-                        "factory-heal",
-                        "--concurrency-key",
-                        "factory-heal",
-                        "--idempotency-key",
-                        f"factory-heal-{hour}",
-                        "--input",
-                        input_json,
-                    ],
-                    timeout=60,
-                )
+                start_code = None
+                start_out = ""
+                start_err = ""
+                if alerts:
+                    hour = utc_now().strftime("%Y%m%d%H")
+                    input_json = json.dumps(
+                        {"source": "factory-health", "codes": sorted(codes)}
+                    )
+                    start_code, start_out, start_err = run(
+                        [
+                            sm,
+                            "start",
+                            "factory-heal",
+                            "--concurrency-key",
+                            "factory-heal",
+                            "--idempotency-key",
+                            f"factory-heal-{hour}",
+                            "--input",
+                            input_json,
+                        ],
+                        timeout=60,
+                    )
                 tick_code, tick_out, tick_err = run(
                     [sm, "tick", "--definition", "factory-heal", "--cap", "8"],
                     timeout=300,
                 )
-                actions.append(f"factory_heal:start={start_code} tick={tick_code}")
-                if start_code != 0 and (start_err or start_out):
+                start_label = "skip" if start_code is None else start_code
+                actions.append(f"factory_heal:start={start_label} tick={tick_code}")
+                if start_code not in (None, 0) and (start_err or start_out):
                     actions.append(
                         f"factory_heal:start_detail={(start_err or start_out).strip()[:120]}"
                     )
@@ -1249,7 +1261,7 @@ def maybe_auto_fix(cfg: dict[str, Any], alerts: list[Alert], last_stack: Path, d
                     actions.append(
                         f"factory_heal:tick_detail={(tick_err or tick_out).strip()[:120]}"
                     )
-        else:
+        elif alerts:
             actions.append("factory_heal:sm-missing")
     return actions
 
