@@ -15,7 +15,9 @@ description: |
   then venue-aware live install (sidebin+launchd or
   brew services) + post-check + Situations notice, with the **durability
   canary** bracketing the restart (sentinels must return a durable receipt
-  before cutover and read back after it — a stale nonce is RED; no skip flag). Use when Tom says "upgrade
+  before cutover, or arm `queued+readback` when the old daemon rejects the
+  durable field with HTTP 400; post-cutover nonce read-back is still
+  mandatory — a stale nonce is RED; no skip flag). Use when Tom says "upgrade
   lastdb", "brew upgrade lastdb", "safe upgrade", "update my brain/database
   binary", "can I upgrade to 0.22.x", "don't brick my data", "new bottle/release",
   or whenever an agent would otherwise brew-upgrade or point a candidate lastdbd
@@ -169,9 +171,15 @@ proxy is optional later for near-zero client impact.
     `lastdb-safe-upgrade-durability-canary-1..N` (default N=4) through the
     `brain put --durable --json` path on the **live primary**, each carrying a
     run-unique nonce. Every write must return `durability: durable`, then the
-    driver reads the exact nonce back. A queued, missing, malformed, or failed
-    receipt is RED before any live change. After the cutover it re-reads each
-    nonce on the new daemon. A sentinel that reads back with the PREVIOUS
+    driver reads the exact nonce back. **Exception — queued+readback:** if
+    `--durable` returns HTTP 400 (old daemon predates the durable-receipt
+    API and `deny_unknown_fields` rejects the `durability` field), a queued
+    put of the same sentinel that succeeds **and** a read-back of this run's
+    nonce on the old daemon arms the canary in declared `queued+readback`
+    mode (logged with the old build string and recorded on the Situations
+    notice). A queued, missing, malformed, or failed receipt that is **not**
+    HTTP 400 is still RED before any live change. After the cutover it
+    re-reads each nonce on the new daemon. A sentinel that reads back with the PREVIOUS
     run's nonce is **RED**: the old daemon acknowledged a write the new daemon
     does not have — the exact loss shape of
     `papercut-lastdb-acked-write-lost-loom-terminal-status-regressed`
@@ -327,7 +335,7 @@ The script:
 | **2. Probe** | `BIN=<candidate>` CoW smoke harness (never live home) + **CAS mutation bar** (ephemeral candidate node: false `expected` → 409) + **RSS settle/sample** vs memory-guard limit + **latency bar**: cold then hot Board point-read / scan (like-to-like vs baseline CoW); hot `brain put` write; geo-mean on the hot triple only |
 | Detect venue | sidebin vs brew |
 | **2b. DEV photograph stamp** | Live cutover **refused** without a GREEN receipt: ephemeral/CoW (never `~/.lastdb`) uploaded the photograph to **DEV** (not the primary's production backup home) and CAS-flipped `backup/latest`. `--check-dev-stamp` exercises this gate alone. |
-| **3. Live** | **durability canary armed** (N run-unique sentinels returned `durable` + read back on the old daemon, before any live change), boot-ledger restart intent armed, then sidebin atomic install + LaunchAgent job-definition reload **or** brew upgrade/restart |
+| **3. Live** | **durability canary armed** (N run-unique sentinels returned `durable` + read back on the old daemon, **or** `queued+readback` after HTTP 400 on `--durable` plus a queued put and matching nonce read-back; before any live change), boot-ledger restart intent armed, then sidebin atomic install + LaunchAgent job-definition reload **or** brew upgrade/restart |
 | **4. Post-check** | Live `/health`, schemas > 0, Board title, **LaunchAgent config parity** (missing process env keys WARN; `LASTDB_LIVE_CONFIG_ENFORCE=1` → RED), **LaunchAgent loaded + live pid is that job** (a nohup `--data-dir` start is RED), **durability canary read-back** (stale nonce → RED, no skip flag), **live peak RSS** vs guard, **live point-read + kanban list latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency + durability in notice |
 | **4b. Release** | After GREEN, delete the rollback point and its empty root. GREEN probe-only and operator abort release it too. |
 | RED | Exit 1, retain the one rollback point, print its path, TTL, and cleanup owner; primary untouched if class/probe failed |
@@ -365,7 +373,7 @@ incident.
 | `VERDICT: GREEN` | Probe + live cutover + live post-check passed | Done |
 | `VERDICT: GREEN_PROBE_ONLY` | Probe passed; primary still on old version | Start `last-stack-safe-upgrade-loom` with the candidate and source commit if Tom wants the upgrade |
 | `VERDICT: ALREADY_CURRENT` | Already on candidate/stable | Nothing to do |
-| `VERDICT: RED` | Candidate fails **class** bar (debug/dirty/size), **or** cannot serve real data, **or** the **CAS mutation** bar (node accepted a false `expected` precondition), **or** peak RSS exceeds memory-guard bar, **or** the latency bar failed (per-op 3×, absolute ceiling, **or correlated** all-ops / geo-mean regression), **or** the **DEV photograph stamp** is missing/RED (no ephemeral/CoW upload to DEV, or the receipt names production / live `~/.lastdb`), **or** the **durability canary** cannot obtain an exact durable receipt before cutover, **or** its post-cutover read is stale/unreadable, **or** the primary LaunchAgent is unloaded / is not the live pid after a nohup `--data-dir` start | **Do not upgrade**; file release-blocker; use the one retained rollback point only if recovery is required. The next safe-upgrade run reclaims it. A durability RED after cutover additionally means: audit recent writes across apps — rollback does not recover lost writes. An unloaded LaunchAgent additionally means: `launchctl bootstrap gui/$(id -u) <plist>` then `launchctl print` must show state=running and this pid. |
+| `VERDICT: RED` | Candidate fails **class** bar (debug/dirty/size), **or** cannot serve real data, **or** the **CAS mutation** bar (node accepted a false `expected` precondition), **or** peak RSS exceeds memory-guard bar, **or** the latency bar failed (per-op 3×, absolute ceiling, **or correlated** all-ops / geo-mean regression), **or** the **DEV photograph stamp** is missing/RED (no ephemeral/CoW upload to DEV, or the receipt names production / live `~/.lastdb`), **or** the **durability canary** cannot obtain an exact durable receipt before cutover (and cannot arm `queued+readback` after HTTP 400), **or** its post-cutover read is stale/unreadable, **or** the primary LaunchAgent is unloaded / is not the live pid after a nohup `--data-dir` start | **Do not upgrade**; file release-blocker; use the one retained rollback point only if recovery is required. The next safe-upgrade run reclaims it. A durability RED after cutover additionally means: audit recent writes across apps — rollback does not recover lost writes. An unloaded LaunchAgent additionally means: `launchctl bootstrap gui/$(id -u) <plist>` then `launchctl print` must show state=running and this pid. |
 
 ## Rollback
 

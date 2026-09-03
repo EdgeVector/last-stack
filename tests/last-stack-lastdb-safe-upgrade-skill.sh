@@ -120,8 +120,20 @@ grep -q '\.durability == "durable"' "$driver" || {
   echo "FAIL: durability sentinels must require the node's durable receipt" >&2
   exit 1
 }
+grep -q 'queued+readback' "$driver" || {
+  echo "FAIL: durability sentinels must declare queued+readback for HTTP 400" >&2
+  exit 1
+}
+grep -q 'durability_mode=' "$driver" || {
+  echo "FAIL: Situations notice must record durability_mode" >&2
+  exit 1
+}
 grep -q 'brain put --durable --json' "$skill_md" || {
   echo "FAIL: SKILL.md must document the durable sentinel receipt" >&2
+  exit 1
+}
+grep -q 'queued+readback' "$skill_md" || {
+  echo "FAIL: SKILL.md must document queued+readback when --durable returns HTTP 400" >&2
   exit 1
 }
 
@@ -135,12 +147,34 @@ apply_stub="$test_tmp/bin/brain"
 cat >"$apply_stub" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
+durable=0
+for arg in "$@"; do
+  [ "$arg" = "--durable" ] && durable=1
+done
 case "${1:-}" in
   put)
     body="$(cat)"
     slug="$(printf '%s\n' "$body" | sed -n 's/^slug:[[:space:]]*//p' | head -1)"
     [ -n "$slug" ] || exit 2
     case "${CANARY_RECEIPT_MODE:-durable}" in
+      http400)
+        if [ "$durable" -eq 1 ]; then
+          printf '%s\n' 'HTTP 400: unknown field durability' >&2
+          exit 1
+        fi
+        printf '%s' "$body" >"$CANARY_STUB_DIR/$slug"
+        printf '%s\n' '{"ok":true,"durability":"queued"}'
+        exit 0
+        ;;
+      http400-stale)
+        if [ "$durable" -eq 1 ]; then
+          printf '%s\n' 'HTTP 400: unknown field durability' >&2
+          exit 1
+        fi
+        printf '%s\n' 'nonce: stale#1' >"$CANARY_STUB_DIR/$slug"
+        printf '%s\n' '{"ok":true,"durability":"queued"}'
+        exit 0
+        ;;
       mismatch) printf '%s\n' 'nonce: stale#1' >"$CANARY_STUB_DIR/$slug" ;;
       *) printf '%s' "$body" >"$CANARY_STUB_DIR/$slug" ;;
     esac
@@ -176,7 +210,9 @@ die() {
   printf 'DIE: %s\n' "$*" >&2
   return 1
 }
-log() { :; }
+log() { printf 'LOG: %s\n' "$*" >&2; }
+warn() { printf 'WARN: %s\n' "$*" >&2; }
+export CURRENT_VER="0.23.3-1435-g211325fc2"
 
 # Extract the exact canary variables and functions without executing the full
 # upgrade driver.
@@ -261,6 +297,7 @@ run_receipt_case() {
   set +e
   (
     set -e
+    die() { printf 'DIE: %s\n' "$*" >&2; exit 1; }
     durability_write_sentinels
     : >"$marker"
   ) >/dev/null 2>"$case_dir/stderr"
@@ -284,8 +321,41 @@ run_receipt_case() {
 }
 
 run_receipt_case durable pass
-for mode in queued missing malformed failed mismatch; do
+grep -q 'mode=durable' "$test_tmp/case-durable/stderr" || {
+  echo "FAIL: durable receipt did not log mode=durable" >&2
+  cat "$test_tmp/case-durable/stderr" >&2
+  exit 1
+}
+
+run_receipt_case http400 pass
+grep -q 'mode=queued+readback' "$test_tmp/case-http400/stderr" || {
+  echo "FAIL: HTTP 400 durable put did not arm queued+readback" >&2
+  cat "$test_tmp/case-http400/stderr" >&2
+  exit 1
+}
+grep -q 'old_build=0.23.3-1435-g211325fc2' "$test_tmp/case-http400/stderr" || {
+  echo "FAIL: queued+readback did not log the old daemon build string" >&2
+  cat "$test_tmp/case-http400/stderr" >&2
+  exit 1
+}
+grep -q 'HTTP 400 stderr: HTTP 400: unknown field durability' "$test_tmp/case-http400/stderr" || {
+  echo "FAIL: HTTP 400 response body was not printed" >&2
+  cat "$test_tmp/case-http400/stderr" >&2
+  exit 1
+}
+
+for mode in queued missing malformed failed mismatch http400-stale; do
   run_receipt_case "$mode" fail
 done
+grep -q 'queued+readback of .* did not return this run' "$test_tmp/case-http400-stale/stderr" || {
+  echo "FAIL: stale queued+readback nonce did not hard-abort" >&2
+  cat "$test_tmp/case-http400-stale/stderr" >&2
+  exit 1
+}
+if grep -q 'mode=queued+readback' "$test_tmp/case-failed/stderr"; then
+  echo "FAIL: non-400 durable put failure armed queued+readback" >&2
+  cat "$test_tmp/case-failed/stderr" >&2
+  exit 1
+fi
 
 echo "OK: lastdb-safe-upgrade skill packaged for multi-harness setup"
