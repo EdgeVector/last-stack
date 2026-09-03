@@ -20,7 +20,7 @@ CI_SHARD_INDEX="${LAST_STACK_CI_SHARD_INDEX:-}"
 CI_SHARD_COUNT="${LAST_STACK_CI_SHARD_COUNT:-1}"
 
 if [ -z "$CI_SHARD_INDEX" ]; then
-  for script in setup bin/* hooks/*.sh tests/*.sh .lastgit/ci.sh; do
+  for script in setup bin/* lib/*.sh hooks/*.sh tests/*.sh .lastgit/ci.sh; do
     [ -f "$script" ] || continue
     first_line="$(sed -n '1p' "$script")"
     case "$first_line" in

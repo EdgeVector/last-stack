@@ -19,21 +19,31 @@
 # 30 attempts got exactly one
 # (papercut-last-stack-lastdb-retry-does-not-match-persist-queue-full).
 #
+# Default wait is the shared drain-aware schedule in lib/lastdb-retry-schedule.sh
+# (15s, 45s, 90s, 120s; 5 attempts). --sleep-ms keeps a fixed millisecond sleep
+# for callers that already pass it (pickup claim uses --attempts 3 --sleep-ms 750).
+#
 # Exit: propagates the last command exit code. On final failure after retries
 # still returns that exit code (caller decides noop vs error).
 
 set -euo pipefail
 
-attempts=3
-sleep_ms=750
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+# shellcheck source=lib/lastdb-retry-schedule.sh
+. "$ROOT/lib/lastdb-retry-schedule.sh"
+
+attempts="$(last_stack_lastdb_retry_default_attempts)"
+sleep_ms=""
 
 usage() {
   cat <<'EOF'
 Usage: last-stack-lastdb-retry [--attempts N] [--sleep-ms MS] -- <command> [args...]
 
-Run <command> with up to N attempts (default 3) when stderr/stdout match
-transient LastDB flap signals. Sleep MS milliseconds between attempts
-(default 750). Never restarts lastdbd. Never retries max_outbox_entries.
+Run <command> with up to N attempts (default 5) when stderr/stdout match
+transient LastDB flap signals. Default sleep is the drain-aware schedule
+15s,45s,90s,120s (LAST_STACK_LASTDB_RETRY_SCHEDULE_SEC). --sleep-ms sets a
+fixed millisecond sleep instead. Never restarts lastdbd. Never retries
+max_outbox_entries.
 EOF
 }
 
@@ -87,6 +97,8 @@ is_transient_flap() {
 attempt=1
 last_rc=1
 combined=""
+cumulative_wait=0
+ended_reason=""
 
 while [ "$attempt" -le "$attempts" ]; do
   tmp_out="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack.XXXXXX")"
@@ -101,23 +113,56 @@ while [ "$attempt" -le "$attempts" ]; do
   combined="${out}${err}"
 
   if [ "$last_rc" -eq 0 ]; then
+    if [ "$attempt" -gt 1 ]; then
+      printf 'last-stack-lastdb-retry: succeeded after %s drain wait(s) cumulative=%ss answer=ok\n' \
+        "$((attempt - 1))" "$cumulative_wait" >&2
+    fi
     printf '%s' "$out"
     [ -n "$err" ] && printf '%s' "$err" >&2
     exit 0
   fi
 
   if [ "$attempt" -lt "$attempts" ] && is_transient_flap "$combined"; then
-    # short backoff without a long sleep-loop (bounded attempts only)
-    if command -v python3 >/dev/null 2>&1; then
-      python3 -c "import time; time.sleep(max(0, int('${sleep_ms}'))/1000.0)"
-    else
-      # bash $(( )) is integer seconds floor; use 1s minimum on macOS sleep
-      sleep 1
+    ended_reason="$(last_stack_lastdb_retry_reason "$combined")"
+    if [ -n "$sleep_ms" ]; then
+      printf 'last-stack-lastdb-retry: drain wait attempt=%s/%s sleep=%sms reason=%s\n' \
+        "$((attempt + 1))" "$attempts" "$sleep_ms" "$ended_reason" >&2
+      if command -v python3 >/dev/null 2>&1; then
+        python3 -c "import time; time.sleep(max(0, int('${sleep_ms}'))/1000.0)"
+      else
+        sleep 1
+      fi
+      case "$sleep_ms" in
+        ''|*[!0-9]*) ;;
+        *) cumulative_wait=$((cumulative_wait + (sleep_ms / 1000))) ;;
+      esac
+      attempt=$((attempt + 1))
+      continue
     fi
+    sleep_sec="$(last_stack_lastdb_retry_sleep_sec "$attempt")"
+    capped="$(last_stack_lastdb_retry_capped_sleep_sec "$sleep_sec")"
+    if [ "$capped" -lt 1 ] && [ "$sleep_sec" -gt 0 ]; then
+      printf 'last-stack-lastdb-retry: deadline won remaining wait=%ss answer=%s cumulative=%ss\n' \
+        "$sleep_sec" "$ended_reason" "$cumulative_wait" >&2
+      printf '%s' "$out"
+      [ -n "$err" ] && printf '%s' "$err" >&2
+      exit "$last_rc"
+    fi
+    cumulative_wait=$((cumulative_wait + capped))
+    printf 'last-stack-lastdb-retry: drain wait attempt=%s/%s sleep=%ss cumulative=%ss reason=%s\n' \
+      "$((attempt + 1))" "$attempts" "$capped" "$cumulative_wait" "$ended_reason" >&2
+    last_stack_lastdb_retry_wait "$capped"
     attempt=$((attempt + 1))
     continue
   fi
 
+  if [ -n "$combined" ]; then
+    ended_reason="$(last_stack_lastdb_retry_reason "$combined")"
+  fi
+  if [ "$attempt" -gt 1 ]; then
+    printf 'last-stack-lastdb-retry: ended rc=%s after %s attempt(s) cumulative=%ss answer=%s\n' \
+      "$last_rc" "$attempt" "$cumulative_wait" "${ended_reason:-unknown}" >&2
+  fi
   printf '%s' "$out"
   [ -n "$err" ] && printf '%s' "$err" >&2
   exit "$last_rc"
