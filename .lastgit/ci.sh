@@ -182,6 +182,7 @@ ci_test tests/last-stack-factory-hardening.sh
 ci_test tests/last-stack-factory-ready-buffer-activation.sh
 ci_test tests/morning-sync-live-human-gate-reconcile.sh
 ci_test tests/last-stack-factory-health-backlog.sh
+ci_test tests/last-stack-factory-heal-tick.sh
 ci_test tests/last-stack-launchagent-stable-path.sh
 ci_test tests/last-stack-todo-rank.sh
 ci_test tests/last-stack-kanban-done-when-eval.sh
