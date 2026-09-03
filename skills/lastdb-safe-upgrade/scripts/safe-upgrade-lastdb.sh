@@ -531,6 +531,7 @@ DURABILITY_N="${LASTDB_DURABILITY_CANARY_N:-4}"
 DURABILITY_READ_WAIT_S="${LASTDB_DURABILITY_READ_WAIT_S:-120}"
 DURABILITY_SLUG_PREFIX="lastdb-safe-upgrade-durability-canary"
 DURABILITY_NONCE=""
+DURABILITY_MODE="durable"
 
 cleanup_upgrade_restart_intent() {
   [ "${RESTART_INTENT_START_REQUESTED:-0}" -eq 0 ] || return 0
@@ -573,29 +574,84 @@ durability_read_body() {
     brain get "$1" 2>/dev/null || true
 }
 
+durability_output_is_http_400() {
+  # Distinguish "old daemon has no durable-receipt API" from other write
+  # failures. HTTP 400 is the deny_unknown_fields rejection of `durability`.
+  printf '%s' "$1" | grep -Eqi \
+    'HTTP[[:space:]]*400|status[[:space:]]*[:=][[:space:]]*"?400"?([^0-9]|$)|400[[:space:]]+Bad[[:space:]]+Request'
+}
+
 durability_write_sentinels() {
   # Runs BEFORE any live change; a failure here aborts a not-yet-started
   # cutover, which is the honest outcome — an upgrade whose durability bar
   # cannot arm must not proceed to the restart that bar exists to judge.
+  #
+  # Two arming modes:
+  #   durable         — --durable returned .durability=="durable" (preferred)
+  #   queued+readback — --durable returned HTTP 400 (pre-receipt API daemon),
+  #                     a queued put of the same sentinel succeeded, and
+  #                     read-back on the old daemon returned this run's nonce.
+  #                     Post-cutover nonce read-back remains mandatory.
+  # Any non-400 durable-put failure still hard-aborts.
   DURABILITY_NONCE="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-  local i slug receipt
+  DURABILITY_MODE="durable"
+  local i slug body receipt put_rc put_err used_fallback=0
+  local errf="${TMPDIR:-/tmp}/lastdb-su-durability-err.$$"
   for i in $(seq 1 "$DURABILITY_N"); do
     slug="$(durability_slug "$i")"
-    if ! receipt="$(
+    body="$(
       printf -- '---\ntype: reference\nslug: %s\ntitle: safe-upgrade durability canary %d (constant slug; nonce changes per run)\n---\nnonce: %s#%d\n\nWritten by lastdb-safe-upgrade immediately before the cutover restart and\nread back after it. A stale nonce after an upgrade means the primary lost an\nacknowledged write across the restart. Safe to keep; carries no other\nmeaning. Rationale: brain\npapercut-lastdb-acked-write-lost-loom-terminal-status-regressed.\n' \
-        "$slug" "$i" "$DURABILITY_NONCE" "$i" \
+        "$slug" "$i" "$DURABILITY_NONCE" "$i"
+    )"
+    put_rc=0
+    receipt="$(
+      printf '%s' "$body" \
         | env FBRAIN_FOLDDB_SOCKET="$PRIMARY_SOCK" LASTDB_HOME="$PRIMARY_HOME" FOLDDB_HOME="$PRIMARY_HOME" \
-          brain put --durable --json 2>/dev/null
-    )"; then
-      die "durability canary: pre-cutover durable write of $slug failed — aborting before any live change (the canary must arm to prove the cutover keeps durable writes)"
+          brain put --durable --json 2>"$errf"
+    )" || put_rc=$?
+    put_err="$(cat "$errf" 2>/dev/null || true)"
+    if [ "$put_rc" -eq 0 ] && printf '%s' "$receipt" | jq -e \
+      '.ok == true and .durability == "durable"' >/dev/null 2>&1; then
+      durability_read_body "$slug" | grep -qF "nonce: ${DURABILITY_NONCE}#${i}" \
+        || { rm -f "$errf"; die "durability canary: pre-cutover read-back of $slug did not return this run's nonce — primary already unhealthy; aborting before any live change"; }
+      continue
     fi
-    printf '%s' "$receipt" | jq -e \
-      '.ok == true and .durability == "durable"' >/dev/null 2>&1 \
-      || die "durability canary: pre-cutover write of $slug returned no durable receipt — aborting before any live change (queued or malformed acknowledgments are not restart proof)"
-    durability_read_body "$slug" | grep -qF "nonce: ${DURABILITY_NONCE}#${i}" \
-      || die "durability canary: pre-cutover read-back of $slug did not return this run's nonce — primary already unhealthy; aborting before any live change"
+    if durability_output_is_http_400 "${receipt}
+${put_err}"; then
+      log "durability canary: $slug --durable put HTTP 400 on old daemon ${CURRENT_VER:-unknown} (no durable-receipt API); printing response body"
+      if [ -n "$put_err" ]; then
+        log "durability canary: HTTP 400 stderr: $(printf '%s' "$put_err" | tr '\n' ' ')"
+      fi
+      if [ -n "$receipt" ]; then
+        log "durability canary: HTTP 400 stdout: $(printf '%s' "$receipt" | tr '\n' ' ')"
+      fi
+      put_rc=0
+      receipt="$(
+        printf '%s' "$body" \
+          | env FBRAIN_FOLDDB_SOCKET="$PRIMARY_SOCK" LASTDB_HOME="$PRIMARY_HOME" FOLDDB_HOME="$PRIMARY_HOME" \
+            brain put --json 2>"$errf"
+      )" || put_rc=$?
+      put_err="$(cat "$errf" 2>/dev/null || true)"
+      if [ "$put_rc" -ne 0 ] || ! printf '%s' "$receipt" | jq -e '.ok == true' >/dev/null 2>&1; then
+        rm -f "$errf"
+        die "durability canary: HTTP 400 durable put, then queued put of $slug failed — aborting before any live change (${put_err})"
+      fi
+      durability_read_body "$slug" | grep -qF "nonce: ${DURABILITY_NONCE}#${i}" \
+        || { rm -f "$errf"; die "durability canary: queued+readback of $slug did not return this run's nonce — aborting before any live change"; }
+      used_fallback=1
+      continue
+    fi
+    rm -f "$errf"
+    die "durability canary: pre-cutover durable write of $slug failed — aborting before any live change (the canary must arm to prove the cutover keeps durable writes; not HTTP 400, so the daemon appears to support durable receipts)"
   done
-  log "durability canary: armed — $DURABILITY_N sentinels durably persisted and read back on the old daemon (nonce $DURABILITY_NONCE)"
+  rm -f "$errf"
+  if [ "$used_fallback" -eq 1 ]; then
+    DURABILITY_MODE="queued+readback"
+    log "durability canary: armed mode=queued+readback old_build=${CURRENT_VER:-unknown} — $DURABILITY_N sentinels queued, acknowledged, and read back on the old daemon (nonce $DURABILITY_NONCE). Post-cutover nonce read-back remains mandatory."
+  else
+    DURABILITY_MODE="durable"
+    log "durability canary: armed mode=durable — $DURABILITY_N sentinels durably persisted and read back on the old daemon (nonce $DURABILITY_NONCE)"
+  fi
 }
 
 durability_verify_after_cutover() {
@@ -1962,7 +2018,7 @@ for cand in \
 do
   [ -x "$cand" ] && POST_NOTICE="$cand" && break
 done
-NOTICE_SUMMARY="lastdbd ${CURRENT_VER} → ${INSTALLED} with lastdb=${INSTALLED_CLI:-?} venue=${VENUE} cutover_s=${CUTOVER_SECS}; probe latency point/scan/write=${CAND_LAT_POINT_MS:-?}/${CAND_LAT_SCAN_MS:-?}/${CAND_LAT_WRITE_MS:-?}ms (baseline ${BASE_LAT_POINT_MS:-?}/${BASE_LAT_SCAN_MS:-?}/${BASE_LAT_WRITE_MS:-?}ms) live_point_ms=${LIVE_LAT_POINT_MS:-?} live_scan_ms=${LIVE_LAT_SCAN_MS:-?} durability=${DURABILITY_N}/${DURABILITY_N}; brief socket blips expected. Do not open a new incident or restart the primary for flapping alone. Design: lastdb-minimal-downtime-cutover."
+NOTICE_SUMMARY="lastdbd ${CURRENT_VER} → ${INSTALLED} with lastdb=${INSTALLED_CLI:-?} venue=${VENUE} cutover_s=${CUTOVER_SECS}; probe latency point/scan/write=${CAND_LAT_POINT_MS:-?}/${CAND_LAT_SCAN_MS:-?}/${CAND_LAT_WRITE_MS:-?}ms (baseline ${BASE_LAT_POINT_MS:-?}/${BASE_LAT_SCAN_MS:-?}/${BASE_LAT_WRITE_MS:-?}ms) live_point_ms=${LIVE_LAT_POINT_MS:-?} live_scan_ms=${LIVE_LAT_SCAN_MS:-?} durability=${DURABILITY_N}/${DURABILITY_N} durability_mode=${DURABILITY_MODE:-durable}; brief socket blips expected. Do not open a new incident or restart the primary for flapping alone. Design: lastdb-minimal-downtime-cutover."
 if [ -n "$POST_NOTICE" ]; then
   if "$POST_NOTICE" \
     --title "LastDB upgraded to ${INSTALLED}" \
