@@ -264,50 +264,6 @@ BK_END='<!-- last-stack:brain-kanban:end -->'
 STE_START='<!-- last-stack:asd-ste100:start (managed by last-stack setup; edits inside are overwritten) -->'
 STE_END='<!-- last-stack:asd-ste100:end -->'
 
-upsert_managed_md_block() {
-  # $1 file  $2 label  $3 src  $4 start  $5 end  $6 log-name
-  local file="$1"
-  local label="$2"
-  local src="$3"
-  local start="$4"
-  local end="$5"
-  local logname="$6"
-  [ -f "$src" ] || return 0
-  mkdir -p "$(dirname "$file")"
-  [ -f "$file" ] || : > "$file"
-  local tmp
-  tmp="$(mktemp)"
-  awk -v s="$start" -v e="$end" '
-    $0 == s { ib = 1; next }
-    $0 == e { ib = 0; next }
-    !ib { lines[++n] = $0 }
-    END {
-      while (n > 0 && lines[n] == "") n--
-      for (i = 1; i <= n; i++) print lines[i]
-    }
-  ' "$file" > "$tmp"
-  [ -s "$tmp" ] && echo "" >> "$tmp"
-  {
-    printf '%s\n' "$start"
-    cat "$src"
-    printf '%s\n' "$end"
-  } >> "$tmp"
-  mv "$tmp" "$file"
-  echo "  ${label} instructions: ${logname} block -> $file"
-}
-
-upsert_brain_kanban_block() {
-  upsert_managed_md_block "$1" "$2" \
-    "$SOURCE_ROOT/instructions/brain-kanban.md" \
-    "$BK_START" "$BK_END" "brain-kanban"
-}
-
-upsert_asd_ste100_block() {
-  upsert_managed_md_block "$1" "$2" \
-    "$SOURCE_ROOT/instructions/asd-ste100.md" \
-    "$STE_START" "$STE_END" "asd-ste100"
-}
-
 strip_managed_md_block() {
   # $1 file  $2 start  $3 end
   local file="$1"
