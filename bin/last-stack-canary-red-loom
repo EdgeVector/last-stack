@@ -3,6 +3,7 @@
 # that investigates, lands a fix, and retries the upgrade up to 3 times.
 #
 #   last-stack-canary-red-loom [--json] [--quiet] [--dry-run] [--no-heal] [--status]
+#                             [--lane-stale-hours H]
 #   last-stack-canary-red-loom --exec exec_… [--key canary-red-exec_…]
 #
 # Same-key resume: a repeated --key returns the existing loom execution.
@@ -22,6 +23,17 @@ HEAL=1
 KEY=""
 EXEC_ID=""
 LOOKBACK_H="${LAST_STACK_CANARY_RED_LOOKBACK_HOURS:-12}"
+# A live lane row legitimately parks for hours (a canary soak waits 24 h), so
+# total age says nothing. `updated_at` does: loom touches it every time the
+# execution advances or re-checks, and the 2026-08-31 soak
+# lx-20260830T140407.992-49336-1 sat in SOAK_WAIT two days with a 2.5 h-old
+# `updated_at`. The 2026-09-02 wedge lx-20260902T172952.304-31149-1 stopped at
+# `updated_at` 22:25:22Z in state DECIDE_BUILD and reported a healthy hourly
+# `noop idle reason=lane_busy` for the next 17 h. So the bar is how long the
+# row has failed to advance, not how long it has existed. 6 h clears a normal
+# soak re-check (~2.5 h observed) with margin; the card's suggested 2 h would
+# page on every healthy soak.
+LANE_STALE_H="${LAST_STACK_CANARY_RED_LANE_STALE_HOURS:-6}"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -36,8 +48,10 @@ while [ "$#" -gt 0 ]; do
     --key) KEY="${2:-}"; shift 2 ;;
     --key=*) KEY="${1#*=}"; shift ;;
     --lookback-hours) LOOKBACK_H="${2:-}"; shift 2 ;;
+    --lane-stale-hours) LANE_STALE_H="${2:-}"; shift 2 ;;
+    --lane-stale-hours=*) LANE_STALE_H="${1#*=}"; shift ;;
     -h|--help)
-      echo "last-stack-canary-red-loom [--json] [--quiet] [--dry-run] [--no-heal] [--status] [--exec ID] [--key KEY]"
+      echo "last-stack-canary-red-loom [--json] [--quiet] [--dry-run] [--no-heal] [--status] [--exec ID] [--key KEY] [--lane-stale-hours H]"
       exit 0
       ;;
     *) echo "unknown: $1" >&2; exit 2 ;;
@@ -164,7 +178,8 @@ list_heal_executions() {
 }
 
 pick_failed() {
-  LOOKBACK_H="$LOOKBACK_H" EXEC_ID="$EXEC_ID" LOOM_ROWS_FILE="$1" \
+  LOOKBACK_H="$LOOKBACK_H" LANE_STALE_H="$LANE_STALE_H" EXEC_ID="$EXEC_ID" \
+  LOOM_ROWS_FILE="$1" \
   LOOM_HEAL_ROWS_FILE="${2:-}" KEY_PREFIX="$CANARY_RED_KEY_PREFIX" python3 -c '
 import json, os, sys
 from datetime import datetime, timezone, timedelta
@@ -176,6 +191,13 @@ try:
     lookback_h = float(lookback_h)
 except ValueError:
     lookback_h = 12.0
+lane_stale_h = os.environ.get("LANE_STALE_H") or "6"
+try:
+    lane_stale_h = float(lane_stale_h)
+except ValueError:
+    lane_stale_h = 6.0
+if lane_stale_h <= 0:
+    lane_stale_h = 6.0
 
 path = os.environ.get("LOOM_ROWS_FILE") or ""
 try:
@@ -279,8 +301,18 @@ failed = [(ts, rid, r) for ts, rid, status, r in parsed
 # canary releases idled behind one soak, reported hourly as a healthy `noop`.
 # The guard stays; the silence does not.
 if nstatus in ("running", "waiting"):
+    # How long the live row has failed to advance. A wedged execution holds
+    # `running` forever, so an unbounded `lane_busy` noop is how one stuck
+    # exec blocked the lane for 20 h
+    # (papercut-canary-red-heal-fifth-consecutive-day-same-class-20260903).
+    lane_age_h = (now - nts).total_seconds() / 3600.0
+    lane_stale = lane_age_h >= lane_stale_h
     out = {"ok": True, "idle": True, "reason": "lane_busy",
-           "exec_id": nid, "status": nstatus}
+           "exec_id": nid, "status": nstatus, "state": newest.get("state") or "",
+           "updated_at": newest.get("updated_at") or newest.get("updatedAt") or "",
+           "lane_age_hours": round(lane_age_h, 2),
+           "lane_stale_hours": lane_stale_h,
+           "lane_stale": lane_stale}
     unhealed = [rid for _, rid, _ in failed
                 if rid != nid and (key_prefix + rid) not in healed_keys]
     if failed and not heal_path:
@@ -293,6 +325,10 @@ if nstatus in ("running", "waiting"):
         out["masked"] = len(unhealed)
         out["masked_ids"] = unhealed
         out["oldest_failed"] = unhealed[-1]
+    elif lane_stale:
+        # No masked red to name, and the lane itself has not moved. Escalate
+        # instead of another healthy-looking hourly noop.
+        out["reason"] = "lane_stale"
     print(json.dumps(out))
     raise SystemExit(0)
 if not failed:
@@ -379,6 +415,11 @@ fi
 picked_ok="$(json_field ok "$picked")"
 picked_reason="$(json_field reason "$picked")"
 picked_id="$(json_field exec_id "$picked")"
+# Read the flag, not the reason: `lane_busy_masking_reds` names a louder
+# problem and wins the reason slot, and a failed heal listing leaves the
+# first-pass `lane_busy` reason in place. Either way the lane is still wedged.
+picked_lane_stale="$(json_field lane_stale "$picked")"
+[ -n "$picked_lane_stale" ] || picked_lane_stale="0"
 
 if [ "$picked_ok" != "1" ]; then
   # No usable row inside the window. Fail loudly: a blind healer must not
@@ -412,6 +453,9 @@ if [ "$DRY" -eq 1 ]; then
   if [ "$picked_reason" = "lane_busy_masking_reds" ]; then
     oc="error"
     dry_detail="lane_busy_masking_reds masked=$(json_field masked "$picked") oldest_failed=$(json_field oldest_failed "$picked") lane=${picked_id:-}"
+  elif [ "$picked_lane_stale" = "1" ]; then
+    oc="error"
+    dry_detail="lane_stale exec=${picked_id:-} age_hours=$(json_field lane_age_hours "$picked") stale_hours=$(json_field lane_stale_hours "$picked") state=$(json_field state "$picked")"
   elif [ "$picked_reason" = "listing_stale" ]; then
     dry_id=""
     dry_key=""
@@ -440,6 +484,31 @@ if [ "$idle" = "1" ] && [ "$picked_reason" = "lane_busy_masking_reds" ]; then
   fi
   printf '%s %s\n' 'ROUTINE_RESULT' \
     "outcome=error detail=lane_busy_masking_reds masked=${masked:-0} oldest_failed=${oldest:-} lane=${picked_id:-}"
+  exit 3
+fi
+
+if [ "$idle" = "1" ] && [ "$picked_lane_stale" = "1" ]; then
+  # The lane row is still `running`/`waiting`, but it has not advanced past
+  # the staleness bar. Another `noop idle reason=lane_busy` is what let one
+  # wedged exec hold the lane for 20 h across 11 hourly fires. `error` reaches
+  # routinesd error-escalate (brain papercut-routine-non-p0-failures) and
+  # routine-fleet-health's reds count, so a human sees it inside the hour.
+  lane_age="$(json_field lane_age_hours "$picked")"
+  lane_bar="$(json_field lane_stale_hours "$picked")"
+  lane_state="$(json_field state "$picked")"
+  lane_updated="$(json_field updated_at "$picked")"
+  log "lane exec ${picked_id:-} has not advanced in ${lane_age:-?}h (bar ${lane_bar:-?}h, state ${lane_state:-unknown}, updated ${lane_updated:-unknown}); escalating instead of another lane_busy noop"
+  write_stamp idle "${picked_id:-}" \
+    "reason=lane_stale age_hours=${lane_age:-} stale_hours=${lane_bar:-} state=${lane_state:-}" \
+    "${KEY:-}" "error"
+  if [ "$JSON" -eq 1 ]; then
+    printf '%s\n' "$picked"
+  else
+    printf 'canary-red lane_stale exec=%s age_hours=%s stale_hours=%s state=%s updated=%s\n' \
+      "${picked_id:-}" "${lane_age:-}" "${lane_bar:-}" "${lane_state:-}" "${lane_updated:-}"
+  fi
+  printf '%s %s\n' 'ROUTINE_RESULT' \
+    "outcome=error detail=lane_stale exec=${picked_id:-} age_hours=${lane_age:-} stale_hours=${lane_bar:-} state=${lane_state:-}"
   exit 3
 fi
 
