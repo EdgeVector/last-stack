@@ -297,6 +297,7 @@ OWNER_LOCK_TOKEN="$$.$RANDOM.$(date +%s 2>/dev/null || echo 0)"
 OWNER_LOCK_HELD=0
 RESTART_INTENT_PATH=""
 RESTART_INTENT_START_REQUESTED=0
+DRIVER_ENDED_STEP=0
 
 cleanup_work() {
   local rc=$?
@@ -305,11 +306,14 @@ cleanup_work() {
   if type cleanup_upgrade_restart_intent >/dev/null 2>&1; then
     cleanup_upgrade_restart_intent
   fi
+  # GREEN / probe-only / operator abort call release_rollback_point first
+  # (ROLLBACK_READY=0). Any other end — including a loom drive deadline that
+  # reparents this script and then SIGTERM/SIGHUP with a false-zero EXIT —
+  # keeps the newest rollback point so a later attempt can reuse it.
   if [ "${ROLLBACK_READY:-0}" -eq 1 ]; then
-    if [ "$rc" -eq 0 ]; then
-      release_rollback_point
-    else
-      retain_rollback_point
+    retain_rollback_point
+    if [ "${DRIVER_ENDED_STEP:-0}" -eq 1 ]; then
+      warn "rollback: driver ended the step; kept newest point ${BACKUP:-none}"
     fi
   fi
   if type safe_upgrade_owner_lock_release >/dev/null 2>&1; then
@@ -318,6 +322,11 @@ cleanup_work() {
   fi
   return "$rc"
 }
+on_driver_end() {
+  DRIVER_ENDED_STEP=1
+  exit 143
+}
+trap 'on_driver_end' HUP INT TERM
 trap cleanup_work EXIT
 
 backup_essentials_ok() {
@@ -350,8 +359,26 @@ is_routine_pre_upgrade_backup() {
   return 0
 }
 
+newest_routine_rollback_point() {
+  local d base ts newest="" newest_ts=""
+  [ -d "$ROLLBACK_ROOT" ] || return 0
+  for d in "$ROLLBACK_ROOT"/*; do
+    [ -d "$d" ] && [ ! -L "$d" ] || continue
+    base="$(basename "$d")"
+    is_routine_pre_upgrade_backup "$base" || continue
+    ts="$(printf '%s\n' "$base" | sed -n 's/.*-\([0-9]\{8\}T[0-9]\{6\}Z\)$/\1/p')"
+    [ -n "$ts" ] || continue
+    if [ -z "$newest_ts" ] || [ "$ts" \> "$newest_ts" ]; then
+      newest="$d"
+      newest_ts="$ts"
+    fi
+  done
+  [ -n "$newest" ] && printf '%s\n' "$newest"
+  return 0
+}
+
 prepare_rollback_root() {
-  local root_real home_real d base reclaimed=0
+  local root_real home_real d base reclaimed=0 newest=""
   mkdir -p "$ROLLBACK_ROOT"
   [ ! -L "$ROLLBACK_ROOT" ] || die "rollback root must not be a symlink: $ROLLBACK_ROOT"
   root_real="$(cd "$ROLLBACK_ROOT" && pwd -P)"
@@ -361,15 +388,19 @@ prepare_rollback_root() {
       die "rollback root must be ephemeral and outside HOME: $root_real"
       ;;
   esac
+  newest="$(newest_routine_rollback_point)"
   for d in "$ROLLBACK_ROOT"/*; do
     [ -d "$d" ] && [ ! -L "$d" ] || continue
     base="$(basename "$d")"
     is_routine_pre_upgrade_backup "$base" || continue
+    if [ -n "$newest" ] && [ "$d" = "$newest" ]; then
+      continue
+    fi
     log "rollback: reclaim previous retained point $d"
     rm -rf "$d"
     reclaimed=$((reclaimed + 1))
   done
-  log "rollback: root=$root_real previous_reclaimed=$reclaimed ttl_hours=$ROLLBACK_TTL_HOURS cleanup_owner=next-lastdb-safe-upgrade-run"
+  log "rollback: root=$root_real previous_reclaimed=$reclaimed kept_newest=${newest:-none} ttl_hours=$ROLLBACK_TTL_HOURS cleanup_owner=next-lastdb-safe-upgrade-run"
 }
 
 rss_mb_of_pid() {
@@ -1380,30 +1411,42 @@ log "candidate class GREEN: path/version/size ok (vs baseline ${BASELINE_FOR_CLA
 # --- 1) ephemeral CoW rollback point -----------------------------------------
 
 prepare_rollback_root
-TS="$(date -u +%Y%m%dT%H%M%SZ)"
-BACKUP="$ROLLBACK_ROOT/pre-${CAND_VER}-from-${CURRENT_VER}-${TS}"
-# Prefer APFS clone for speed. A *live* primary races with the copy:
-#   - UDS sockets under data/*.sock (not copyable)
-#   - CAS blob files that vanish mid-walk
-# Those produce non-zero `cp` exit even when identity + store data are cloned.
-# Treat clone as OK when essential files land despite socket/blob races. Never
-# fall back to a full rsync copy: upgrade safety must not buy itself with disk.
-log "STEP 1/4: ephemeral CoW rollback point → $BACKUP"
-set +e
-cp -cR "$PRIMARY_HOME" "$BACKUP" 2>"$WORK/rollback-clone.err"
-CP_RC=$?
-set -e
-backup_essentials_ok "$BACKUP" \
-  || die "CoW rollback clone incomplete (cp exit=$CP_RC); refusing full-copy fallback; see $WORK/rollback-clone.err"
-ROLLBACK_READY=1
-log "rollback: APFS clone ready (cp -cR exit=$CP_RC; live sockets/vanished blobs tolerated)"
-if [ "$CP_RC" -ne 0 ] && [ -s "$WORK/rollback-clone.err" ]; then
-  log "rollback: non-fatal cp notes (first 5 lines):"
-  head -5 "$WORK/rollback-clone.err" | while IFS= read -r line; do log "  $line"; done
+kept="$(newest_routine_rollback_point)"
+if [ -n "$kept" ] && backup_essentials_ok "$kept" && backup_data_is_not_live "$kept"; then
+  BACKUP="$kept"
+  ROLLBACK_READY=1
+  log "STEP 1/4: reused newest rollback point → $BACKUP"
+  log "rollback: skipped cp -cR; kept newest point from a prior driver-ended step"
+else
+  if [ -n "$kept" ]; then
+    log "rollback: newest point unusable; cloning a fresh one"
+    rm -rf "$kept"
+  fi
+  TS="$(date -u +%Y%m%dT%H%M%SZ)"
+  BACKUP="$ROLLBACK_ROOT/pre-${CAND_VER}-from-${CURRENT_VER}-${TS}"
+  # Prefer APFS clone for speed. A *live* primary races with the copy:
+  #   - UDS sockets under data/*.sock (not copyable)
+  #   - CAS blob files that vanish mid-walk
+  # Those produce non-zero `cp` exit even when identity + store data are cloned.
+  # Treat clone as OK when essential files land despite socket/blob races. Never
+  # fall back to a full rsync copy: upgrade safety must not buy itself with disk.
+  log "STEP 1/4: ephemeral CoW rollback point → $BACKUP"
+  set +e
+  cp -cR "$PRIMARY_HOME" "$BACKUP" 2>"$WORK/rollback-clone.err"
+  CP_RC=$?
+  set -e
+  backup_essentials_ok "$BACKUP" \
+    || die "CoW rollback clone incomplete (cp exit=$CP_RC); refusing full-copy fallback; see $WORK/rollback-clone.err"
+  ROLLBACK_READY=1
+  log "rollback: APFS clone ready (cp -cR exit=$CP_RC; live sockets/vanished blobs tolerated)"
+  if [ "$CP_RC" -ne 0 ] && [ -s "$WORK/rollback-clone.err" ]; then
+    log "rollback: non-fatal cp notes (first 5 lines):"
+    head -5 "$WORK/rollback-clone.err" | while IFS= read -r line; do log "  $line"; done
+  fi
+  [ ! -L "$BACKUP" ] || die "rollback point resolved to a symlink (unsafe)"
+  backup_data_is_not_live "$BACKUP" || die "rollback point data dir aliases live primary"
+  log "rollback point ok ($(du -sh "$BACKUP" 2>/dev/null | awk '{print $1}'))"
 fi
-[ ! -L "$BACKUP" ] || die "rollback point resolved to a symlink (unsafe)"
-backup_data_is_not_live "$BACKUP" || die "rollback point data dir aliases live primary"
-log "rollback point ok ($(du -sh "$BACKUP" 2>/dev/null | awk '{print $1}'))"
 
 # --- 2) probe candidate on a throwaway CoW of the primary --------------------
 
@@ -1978,6 +2021,6 @@ else
   echo "  brew services start lastdb"
 fi
 echo ""
-echo "DATA ROLLBACK: not retained after GREEN. Any RED before this point keeps one"
-echo "ephemeral CoW rollback point for ${ROLLBACK_TTL_HOURS}h; the next safe-upgrade run reclaims it."
+echo "DATA ROLLBACK: not retained after GREEN. Any RED or driver-ended step keeps the newest"
+echo "ephemeral CoW rollback point for ${ROLLBACK_TTL_HOURS}h; the next safe-upgrade run reuses it."
 exit 0
