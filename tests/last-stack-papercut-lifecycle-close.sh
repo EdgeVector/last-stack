@@ -220,7 +220,7 @@ case "$*" in
 - Card: `missing-card-c`
 EOF
     ;;
-  "papercut list --status open --json")
+  "papercut list --status open --index-only --json"|"papercut list --status open --json")
     printf '%s\n' '{"rows":[{"slug":"papercut-unrelated-open","status":"open"},{"slug":"papercut-pipeline-stuck-cr-last-stack-cr-msfkhqbn","status":"open"}],"total":2,"method":"method: status-keyed papercut index (canary)"}'
     ;;
   "get papercut-pipeline-stuck-cr-last-stack-cr-msfkhqbn --type papercut --json")

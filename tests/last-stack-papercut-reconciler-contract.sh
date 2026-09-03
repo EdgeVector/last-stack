@@ -63,7 +63,7 @@ EOF
   "get papercut-demo-helper-drift --type papercut --json")
     printf '%s\n' '{"slug":"papercut-demo-helper-drift","title":"Demo helper drift","status":"open","body":"Evidence: lastgit://last-stack/cr/cr-demo"}'
     ;;
-  "papercut list --status open --json")
+  "papercut list --status open --index-only --json"|"papercut list --status open --json")
     printf '%s\n' '{"rows":[],"total":0,"method":"method: status-keyed papercut index (canary)"}'
     ;;
   papercut\ close\ papercut-demo-helper-drift*)

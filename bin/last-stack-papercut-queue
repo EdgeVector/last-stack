@@ -34,6 +34,10 @@ UNAVAILABLE_SIGNATURES = (
     "node did not respond",
     "too many concurrent reads",
     "uds_connection_limit",
+    # A query the node rejects at the grammar is a read that never happened,
+    # not a queue that read as invalid (papercut-brain-papercut-list-http-400-grammar).
+    "http 400",
+    "outside its grammar",
 )
 
 
@@ -139,14 +143,64 @@ def write_atomic(path: Path, payload: dict[str, Any]) -> None:
         raise
 
 
-def snapshot(args: argparse.Namespace) -> int:
+# Index-only first: one keyed partition read, no per-row hydrate. The hydrated
+# open ledger measured 214s wall / 2191 node requests on the primary
+# (2026-09-03, 2171 rows) and timed out every reconciler pass for 8 days
+# (papercut-lastdb-reconciler-policies-query-slow). This helper only needs the
+# slug column; the reconciler point-gets what it acts on.
+OPEN_LIST_INDEX_ONLY = ["papercut", "list", "--status", "open", "--index-only", "--json"]
+OPEN_LIST_HYDRATED = ["papercut", "list", "--status", "open", "--json"]
+
+
+def rejects_index_only(proc: subprocess.CompletedProcess[str]) -> bool:
+    """True when the installed brain predates `--index-only` and refused the flag."""
+    text = f"{proc.stdout or ''}\n{proc.stderr or ''}".lower()
+    if "index-only" not in text:
+        return False
+    return any(word in text for word in ("unknown", "unexpected", "unrecognized", "invalid option"))
+
+
+def run_open_list(brain_bin: str, *, timeout: int) -> subprocess.CompletedProcess[str]:
+    """Read the open queue; fall back to the hydrated list only on an old brain."""
     proc = subprocess.run(
-        [args.brain_bin, "papercut", "list", "--status", "open", "--json"],
+        [brain_bin, *OPEN_LIST_INDEX_ONLY],
         text=True,
         capture_output=True,
         check=False,
-        timeout=args.timeout,
+        timeout=timeout,
     )
+    if proc.returncode != 0 and rejects_index_only(proc):
+        proc = subprocess.run(
+            [brain_bin, *OPEN_LIST_HYDRATED],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=timeout,
+        )
+    return proc
+
+
+def snapshot(args: argparse.Namespace) -> int:
+    try:
+        proc = run_open_list(args.brain_bin, timeout=args.timeout)
+    except subprocess.TimeoutExpired as error:
+        # The queue was never read. An uncaught traceback here ended the pass
+        # with rc=1 and no snapshot (2026-09-02T14:45Z); report it like every
+        # other unavailable read so the caller can retry or hold.
+        detail = f"{' '.join(str(part) for part in error.cmd)} timed out after {args.timeout}s"
+        result = {
+            "ok": False,
+            "phase": "snapshot",
+            "reason": "brain-unavailable",
+            "retryable": True,
+            "detail": detail,
+        }
+        if args.json:
+            print(json.dumps(result, sort_keys=True))
+        else:
+            print(f"papercut-queue unavailable reason=brain-unavailable detail={detail}")
+        print(f"papercut queue unavailable (brain-unavailable): {detail}", file=sys.stderr)
+        return EXIT_QUEUE_UNAVAILABLE
     if proc.returncode != 0:
         detail, hint = brain_failure_text(proc)
         reason = unavailable_reason(detail)
