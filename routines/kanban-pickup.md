@@ -470,19 +470,50 @@ If the helper parks/closes cards and the ready gate would now be empty, re-run
 **Hard todo rank before claim:** pickup must not rely on prompt-only
 ship-outcome budget while active/proving milestones have unblocked `Kind: pr`
 frontier. Immediately before `pickup claim`, run the Last Stack wrapper around
-the board's hard ranker:
+the board's hard ranker.
+
+**The rank is SLOW, not stuck — give it 300s (won't-undo 2026-09-04).**
+`<board CLI> rank --mode hard` issues ~3,000 node queries for a 20-card column
+and takes 83-179 s on this host (six hand-timed runs, 2026-09-04T11:10-12:20Z,
+all rc=0). Only the fastest of the six would have survived a 90 s deadline, and
+it had 7 s of headroom. Do **not** invent a shorter deadline. Every `rc=124` this step has produced was
+a deterministic overrun of a 90 s wrapper an agent chose on its own, and each
+one cost a whole pickup fire while `ready>0` work sat claimable. Use the block
+below verbatim, and give the Bash tool call itself a timeout of at least
+330000 ms so the harness does not kill the command before its own deadline.
+The durable cost fix is carded as
+`kanban-rank-hard-3004-queries-168s-blocks-pickup-claim-20260904`; until it
+lands, the deadline is the thing that must be generous.
 
 ```bash
 rank_out="/tmp/kanban-pickup-rank.json"
-if ! "$last_stack/bin/last-stack-todo-rank" --board-cli <board CLI> --json >"$rank_out"
-then
+if command -v gtimeout >/dev/null 2>&1; then TO=gtimeout; else TO=timeout; fi
+set +e
+$TO -k 5s 300s "$last_stack/bin/last-stack-todo-rank" --board-cli <board CLI> \
+  --json >"$rank_out" 2>/tmp/kanban-pickup-rank.err
+rank_rc=$?
+set -e
+if [ "$rank_rc" -ne 0 ]; then
+  # 124/137 = the ranker outran 300s. That is a COST problem in the ranker, not
+  # a sick node: do not report busy-node, and do not send the reader to node
+  # telemetry. Any other rc is a real rank failure.
+  if [ "$rank_rc" -eq 124 ] || [ "$rank_rc" -eq 137 ]; then
+    detail="rank-slow todo-rank-over-300s no_card_claimed rank_rc=${rank_rc}"
+  else
+    detail="todo-rank-failed no_card_claimed rank_rc=${rank_rc}"
+  fi
   "$last_stack/bin/last-stack-brain-append-heartbeat" --line \
-    "kanban-pickup $(date -u +%Y-%m-%dT%H:%M:%SZ) noop busy-node todo-rank-failed no_card_claimed" || true
-  printf '%s %s\n' 'ROUTINE_RESULT' \
-    'outcome=noop detail=busy-node todo-rank-failed no_card_claimed'
+    "kanban-pickup $(date -u +%Y-%m-%dT%H:%M:%SZ) noop ${detail}" || true
+  printf '%s %s\n' 'ROUTINE_RESULT' "outcome=noop detail=${detail}"
   exit 0
 fi
 ```
+
+Report `busy-node` only when the NODE is actually unwell — `lastdb status`
+fails, or the error text matches a real backpressure signal. A command that is
+merely slower than a deadline the caller picked is not a node fault, and
+labelling it `busy-node` routes every investigator to node telemetry where
+nothing is wrong.
 
 `last-stack-todo-rank` delegates to `<board CLI> rank --mode hard`, which
 orders default/todo as: active/proving milestone `Kind: pr` frontier first,
