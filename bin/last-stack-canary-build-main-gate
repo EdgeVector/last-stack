@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# Zero-LLM pre-dispatch gate for lastdb-canary-build-main.
+#
+# Problem: the routine's own prompt already dedupes against an existing stage
+# (`already_staged`), but nothing skipped the LLM turn when the primary is
+# not even stale — a nightly full Claude session (20-40 min of `cargo build
+# --release`) ran even when `host-track status lastdbd` already agreed with
+# fold main tip. This is the cheap outer gate:
+#
+#   - exit 0  -> skip harness (noop). Heartbeat + ROUTINE_RESULT already
+#                printed.
+#   - exit 10 -> proceed to harness (a fresh stage is actually needed).
+#   - exit 2  -> usage / hard config error.
+#
+# Skip conditions (both zero-LLM, both point reads):
+#   1. host-track reports the primary is not stale, or has no gate_head to
+#      compare (`stale != true` or `host_head == gate_head`).
+#   2. A candidate for the current gate_head is already staged under
+#      canary-builds/<gate_head>/ (lastdbd + manifest.json present) — the
+#      routine would only re-discover `already_staged` at LLM cost.
+set -euo pipefail
+
+self_dir="$(cd "$(dirname "$0")" && pwd -P)"
+if [ -n "${LAST_STACK_ROOT:-}" ] && [ -d "${LAST_STACK_ROOT}/bin" ]; then
+  last_stack="${LAST_STACK_ROOT}"
+elif [ -x "${HOME}/.last-stack/bin/last-stack-canary-build-main-gate" ]; then
+  last_stack="${HOME}/.last-stack"
+else
+  last_stack="$(cd "$self_dir/.." && pwd -P)"
+fi
+export PATH="${HOME}/.local/bin:${last_stack}/bin:${PATH:-/usr/bin:/bin}"
+
+usage() {
+  cat <<'USAGE'
+last-stack-canary-build-main-gate
+
+Zero-LLM gate for lastdb-canary-build-main. Exit 0 = skip agent; 10 = proceed.
+
+Env (optional, for tests):
+  LAST_STACK_CANARY_BUILD_GATE_STATUS_CMD   override for `host-track status --json lastdbd`
+  LAST_STACK_CANARY_BUILDS_DIR              stage root (default ~/.local/state/last-stack/canary-builds)
+USAGE
+}
+
+case "${1:-}" in
+  '') ;;
+  -h|--help) usage; exit 0 ;;
+  *) usage >&2; exit 2 ;;
+esac
+
+heartbeat_line() {
+  "$last_stack/bin/last-stack-brain-append-heartbeat" --line \
+    "lastdb-canary-build-main-gate $(date -u +%Y-%m-%dT%H:%M:%SZ) $1" 2>/dev/null || true
+}
+
+status_cmd="${LAST_STACK_CANARY_BUILD_GATE_STATUS_CMD:-host-track status --json lastdbd}"
+set +e
+status_json="$(eval "$status_cmd" 2>/dev/null)"
+status_rc=$?
+set -e
+if [ "$status_rc" -ne 0 ] || [ -z "$status_json" ]; then
+  heartbeat_line "noop status-unavailable"
+  printf 'ROUTINE_RESULT outcome=noop detail=status-unavailable\n'
+  exit 0
+fi
+
+stale="$(printf '%s' "$status_json" | jq -r '.stale // false' 2>/dev/null || echo false)"
+host_head="$(printf '%s' "$status_json" | jq -r '.host_head // empty' 2>/dev/null || true)"
+gate_head="$(printf '%s' "$status_json" | jq -r '.gate_head // empty' 2>/dev/null || true)"
+
+if [ "$stale" != "true" ] || [ -z "$gate_head" ] || [ "$host_head" = "$gate_head" ]; then
+  heartbeat_line "noop not-stale host_head=${host_head:-none} gate_head=${gate_head:-none}"
+  printf 'ROUTINE_RESULT outcome=noop detail=not-stale host_head=%s gate_head=%s\n' \
+    "${host_head:-none}" "${gate_head:-none}"
+  exit 0
+fi
+
+builds_dir="${LAST_STACK_CANARY_BUILDS_DIR:-$HOME/.local/state/last-stack/canary-builds}"
+stage_dir="$builds_dir/$gate_head"
+if [ -x "$stage_dir/lastdbd" ] && [ -f "$stage_dir/manifest.json" ]; then
+  heartbeat_line "noop already-staged gate_head=$gate_head"
+  printf 'ROUTINE_RESULT outcome=noop detail=already-staged gate_head=%s\n' "$gate_head"
+  exit 0
+fi
+
+printf 'CANARY_BUILD_MAIN_GATE proceed gate_head=%s host_head=%s\n' "$gate_head" "$host_head"
+exit 10
