@@ -108,6 +108,46 @@ counts. If the requested slug or an equivalent nonterminal outcome now exists,
 reuse it and report `noop existing-milestone`; never create a parallel milestone
 merely because this pass began from an older snapshot.
 
+## Portfolio auto-refill (before selection)
+
+`decision-2026-09-03-portfolio-auto-refill-from-ranking`: when both admitted
+North Stars have reported zero idle-promoteable and zero idle-empty
+milestones on two consecutive `last-stack-milestone-driver` passes, this
+driver refills the drained Secondary slot from the North Star ranking
+instead of leaving the factory idle. `last-stack-milestone-driver` writes one
+pass-history line per hourly run (`last-stack-portfolio-pass-record`); this
+step never reads a Brain list — only that file and one admission point get.
+
+```bash
+set +e
+"$last_stack/bin/last-stack-portfolio-auto-refill" --apply --json \
+  >/tmp/north-star-driver-auto-refill.json
+refill_rc=$?
+set -e
+refill_verdict="$(jq -r '.verdict // "unknown"' /tmp/north-star-driver-auto-refill.json 2>/dev/null || echo unknown)"
+printf 'AUTO_REFILL verdict=%s rc=%s\n' "$refill_verdict" "$refill_rc"
+```
+
+- `verdict=refilled` — the record was rewritten (Policy-Version bumped, a
+  Situations notice posted naming the admitted North Star). Re-read
+  `preference-feature-delivery-portfolio-admission` mentally as changed for
+  the rest of this pass; the newly admitted North Star is now eligible in the
+  admission gate below.
+- `verdict=would-refill` should never appear here (this step always passes
+  `--apply`); if it does, treat it the same as `refilled` failing and report
+  `noop auto-refill-apply-not-honored`.
+- `verdict=no-trigger-*` / `no-candidate` — nothing written. Continue
+  selection as usual.
+- `rc=1` (admission record unreadable/malformed) or `rc=2` (pass-history file
+  unreadable) — do not block this pass on it; the admission gate below is the
+  authoritative fail-closed check. Report `WARN=auto-refill-check-failed` and
+  continue.
+
+This step never picks or scaffolds a milestone itself, never edits North Star
+intent, and never touches Kanban. It only rewrites the admission preference
+record. Tom keeps veto by editing that record directly — see
+`preference-feature-delivery-portfolio-admission`.
+
 ## Select one North Star outcome
 
 Use the milestone portfolio captured by the creation inventory gate. Then:

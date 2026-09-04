@@ -1,0 +1,425 @@
+#!/usr/bin/env python3
+"""Auto-refill an empty admitted feature slot from the North Star ranking.
+
+Implements `decision-2026-09-03-portfolio-auto-refill-from-ranking`.
+
+Trigger: both admitted North Stars in
+`preference-feature-delivery-portfolio-admission` report zero
+idle-promoteable and zero idle-empty milestones on two consecutive
+`last-stack-milestone-driver` passes. Pass evidence comes from the
+pass-history file `last-stack-portfolio-pass-record` writes each hour — never
+a Brain list.
+
+Action: admit the highest-ranked paused North Star (the first real slug in
+the `Paused:` field, in order) into the Secondary slot. The Primary slot
+never moves here — it is Tom's pinned strategic pick
+(`decision-2026-08-31-lastdb-storage-simplification-primary`), while the
+Secondary slot is the rotation point: both prior manual refills
+(`decision-2026-09-01-admit-lastdb-canary-pipeline-v2-secondary`,
+`decision-2026-09-02-admit-lastdb-factory-stays-fast-secondary`) replaced
+Secondary and left Primary untouched. Bumps Policy-Version, stamps
+Updated-By/Updated-At/Reason, and (with --apply) rewrites the record with one
+point put. Never admits a third outcome; never enumerates Brain records.
+
+Idempotence: after a successful rewrite the Secondary slug changes, so pass
+records written under the previous Secondary no longer match the live record
+and two fresh passes must accumulate before the rule can fire again. A human
+edit (`Updated-By` set to a person, with a newer `Updated-At`) resets the same
+way, even when Primary/Secondary are unchanged — the matcher requires the two
+most recent passes to have recorded the exact `Updated-At` the current record
+carries.
+
+Exit:
+  0  no trigger this run (nothing written) — the default without --apply
+  0  refilled (only with --apply and the trigger fired)
+  1  admission record unreadable/malformed (fail closed, no write)
+  2  passes file unreadable/unparseable (fail closed, no write)
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Optional
+
+ADMISSION_SLUG = "preference-feature-delivery-portfolio-admission"
+DEFAULT_PASSES_FILE = Path.home() / ".local" / "state" / "last-stack" / "portfolio-admission-passes.jsonl"
+SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{2,}$")
+PLACEHOLDER_TOKENS = ("all-other-feature-north-stars", "none", "empty", "unset", "-")
+FIELD_LINE_RE = {
+    "policy-version": re.compile(r"(?im)^([ \t]*Policy-Version[ \t]*:)[ \t]*.*$"),
+    "primary": re.compile(r"(?im)^([ \t]*Primary[ \t]*:)[ \t]*.*$"),
+    "secondary": re.compile(r"(?im)^([ \t]*Secondary[ \t]*:)[ \t]*.*$"),
+    "paused": re.compile(r"(?im)^([ \t]*Paused[ \t]*:)[ \t]*.*$"),
+    "updated-at": re.compile(r"(?im)^([ \t]*Updated-At[ \t]*:)[ \t]*.*$"),
+    "updated-by": re.compile(r"(?im)^([ \t]*Updated-By[ \t]*:)[ \t]*.*$"),
+    "reason": re.compile(r"(?im)^([ \t]*Reason[ \t]*:)[ \t]*.*$"),
+}
+DRIVER_ACTOR = "last-stack-north-star-driver"
+
+
+def normalize(value: str) -> str:
+    v = (value or "").strip().strip("`").lower()
+    if v in ("", "none", "empty", "unset", "-"):
+        return ""
+    return v
+
+
+def now_iso() -> str:
+    return subprocess.run(
+        ["date", "-u", "+%Y-%m-%dT%H:%M:%SZ"], text=True, capture_output=True, timeout=10
+    ).stdout.strip()
+
+
+def split_get_output(raw: str) -> tuple[dict, str]:
+    """Parse `brain get` text into meta fields + body (matches the live CLI shape)."""
+    text = raw or ""
+    meta: dict[str, str] = {}
+    if text.startswith("["):
+        first_nl = text.find("\n")
+        if first_nl >= 0:
+            head = text[1:first_nl]
+            if "]" in head:
+                typ, _, rest = head.partition("]")
+                meta["type"] = typ.strip()
+                slug_guess = rest.strip()
+                if slug_guess:
+                    meta["slug"] = slug_guess
+            text = text[first_nl + 1:]
+    if "\n---\n" in text:
+        meta_blob, body = text.split("\n---\n", 1)
+    else:
+        meta_blob, body = text, ""
+    for line in meta_blob.splitlines():
+        if ":" not in line:
+            continue
+        k, v = line.split(":", 1)
+        meta[k.strip().lower()] = v.strip()
+    return meta, body.lstrip("\n")
+
+
+def parse_admission_fields(body: str) -> dict:
+    fields = {}
+    for key, rx in FIELD_LINE_RE.items():
+        m = rx.search(body)
+        if m:
+            line = m.group(0)
+            fields[key] = line.split(":", 1)[1].strip()
+    return fields
+
+
+def read_admission(brain_bin: str, fixture_dir: Optional[Path]) -> Optional[tuple[dict, str, str]]:
+    """Return (meta, body, raw_text), or None if unreadable."""
+    if fixture_dir is not None:
+        path = fixture_dir / "get" / f"{ADMISSION_SLUG}.txt"
+        if not path.is_file():
+            return None
+        text = path.read_text()
+    else:
+        try:
+            cp = subprocess.run(
+                [brain_bin, "get", ADMISSION_SLUG, "--type", "preference"],
+                text=True, capture_output=True, timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if cp.returncode != 0 or not cp.stdout.strip():
+            return None
+        text = cp.stdout
+    meta, body = split_get_output(text)
+    return meta, body, text
+
+
+def load_passes(path: Path) -> list[dict]:
+    if not path.is_file():
+        return []
+    out = []
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(rec, dict):
+            out.append(rec)
+    return out
+
+
+def matching_tail(passes: list[dict], primary: str, secondary: str, updated_at: str) -> list[dict]:
+    """Most-recent-first run of passes matching the live (primary, secondary, updated_at)."""
+    matched = []
+    for rec in reversed(passes):
+        if (
+            normalize(rec.get("primary", "")) == primary
+            and normalize(rec.get("secondary", "")) == secondary
+            and rec.get("admission_updated_at", "") == updated_at
+        ):
+            matched.append(rec)
+        else:
+            break
+    return matched
+
+
+def pick_candidate(paused_field: str, primary: str, secondary: str) -> Optional[str]:
+    for tok in paused_field.split(","):
+        cand = normalize(tok)
+        if not cand or cand in PLACEHOLDER_TOKENS:
+            continue
+        if not SLUG_RE.match(cand):
+            continue
+        if cand in (primary, secondary):
+            continue
+        return cand
+    return None
+
+
+def rebuild_paused(paused_field: str, candidate: str, displaced_secondary: str) -> str:
+    tokens = [t.strip() for t in paused_field.split(",")]
+    out = []
+    inserted_displaced = False
+    for tok in tokens:
+        norm = normalize(tok)
+        if norm == candidate:
+            # candidate leaves Paused; splice the displaced Secondary in its place
+            if displaced_secondary and not inserted_displaced:
+                out.append(displaced_secondary)
+                inserted_displaced = True
+            continue
+        out.append(tok.strip())
+    if displaced_secondary and not inserted_displaced:
+        # candidate was the last token or displaced not yet placed — append before any catch-all
+        catch_all_idx = next(
+            (i for i, t in enumerate(out) if normalize(t) == "all-other-feature-north-stars"), None
+        )
+        if catch_all_idx is not None:
+            out.insert(catch_all_idx, displaced_secondary)
+        else:
+            out.append(displaced_secondary)
+    return ", ".join(t for t in out if t)
+
+
+def rewrite_body(body: str, new_fields: dict) -> str:
+    out = body
+    for key, value in new_fields.items():
+        rx = FIELD_LINE_RE[key]
+        out, count = rx.subn(lambda m: f"{m.group(1)} {value}", out, count=1)
+    return out
+
+
+def brain_put(meta: dict, body: str, brain_bin: str, fixture_dir: Optional[Path]) -> bool:
+    slug = meta.get("slug", ADMISSION_SLUG)
+    fm = ["---", f"type: {meta.get('type', 'preference')}", f"slug: {slug}"]
+    if meta.get("title"):
+        fm.append(f"title: {meta['title']}")
+    if meta.get("status"):
+        fm.append(f"status: {meta['status']}")
+    if meta.get("tags"):
+        fm.append(f"tags: {meta['tags']}")
+    fm.append("---")
+    fm.append("")
+    payload = "\n".join(fm) + body
+    if not payload.endswith("\n"):
+        payload += "\n"
+
+    if fixture_dir is not None:
+        put_dir = fixture_dir / "put"
+        put_dir.mkdir(parents=True, exist_ok=True)
+        (put_dir / f"{slug}.txt").write_text(payload)
+        # Mirror the live effect: a subsequent get reflects the write.
+        get_dir = fixture_dir / "get"
+        get_dir.mkdir(parents=True, exist_ok=True)
+        header = f"[{meta.get('type', 'preference')}] {slug}\n"
+        get_body = f"title:      {meta.get('title', '')}\nstatus:     {meta.get('status', '')}\ntags:       {meta.get('tags', '')}\n---\n\n{body}"
+        (get_dir / f"{slug}.txt").write_text(header + get_body)
+        return True
+
+    try:
+        cp = subprocess.run(
+            [brain_bin, "put"], input=payload, text=True, capture_output=True, timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return cp.returncode == 0
+
+
+def notice_refill(candidate: str, policy_version: int, situations_bin: str, actor: str, apply_notice: bool) -> bool:
+    if not apply_notice:
+        return True
+    try:
+        cp = subprocess.run(
+            [
+                situations_bin, "notice",
+                "--title", f"Portfolio auto-refill admitted {candidate} (Policy-Version {policy_version})",
+                "--kind", "other",
+                "--system", "last-stack",
+                "--actor", actor,
+                "--summary",
+                (
+                    f"{DRIVER_ACTOR} admitted {candidate} into the Secondary slot after two "
+                    "consecutive drained milestone-driver passes. Tom can veto by editing "
+                    f"{ADMISSION_SLUG}."
+                ),
+            ],
+            text=True, capture_output=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return cp.returncode == 0
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--passes-file", default=os.environ.get("LAST_STACK_PORTFOLIO_PASSES_FILE", str(DEFAULT_PASSES_FILE)))
+    ap.add_argument("--fixture-dir", help="Offline brain: get/<slug>.txt, put/<slug>.txt (no live node)")
+    ap.add_argument("--brain", default=os.environ.get("BRAIN_BIN", "brain"))
+    ap.add_argument("--situations", default=os.environ.get("SITUATIONS_BIN", "situations"))
+    ap.add_argument("--notice-actor", default=f"routine:{DRIVER_ACTOR}")
+    ap.add_argument("--apply", action="store_true", help="Actually rewrite the admission record and post a notice")
+    ap.add_argument("--now", default="", help="Override the write timestamp (tests only)")
+    ap.add_argument("--json", action="store_true")
+    args = ap.parse_args(argv)
+
+    fixture = Path(args.fixture_dir) if args.fixture_dir else None
+
+    got = read_admission(args.brain, fixture)
+    if got is None:
+        result = {"verdict": "admission-unreadable", "refilled": False}
+        if args.json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        print(f"last-stack-portfolio-auto-refill: {ADMISSION_SLUG} is unreadable", file=sys.stderr)
+        return 1
+    meta, body, _raw = got
+    fields = parse_admission_fields(body)
+
+    primary = normalize(fields.get("primary", ""))
+    secondary = normalize(fields.get("secondary", ""))
+    paused = fields.get("paused", "")
+    updated_at = fields.get("updated-at", "")
+    try:
+        policy_version = int(fields.get("policy-version", ""))
+    except ValueError:
+        result = {"verdict": "admission-malformed", "refilled": False, "reason": "Policy-Version is not an integer"}
+        if args.json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        print("last-stack-portfolio-auto-refill: admission record is malformed (Policy-Version)", file=sys.stderr)
+        return 1
+    if not primary:
+        result = {"verdict": "admission-malformed", "refilled": False, "reason": "Primary is empty"}
+        if args.json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        print("last-stack-portfolio-auto-refill: admission record is malformed (Primary)", file=sys.stderr)
+        return 1
+
+    passes_path = Path(args.passes_file)
+    if passes_path.is_file():
+        try:
+            passes = load_passes(passes_path)
+        except OSError as exc:
+            result = {"verdict": "passes-file-unreadable", "refilled": False, "reason": str(exc)}
+            if args.json:
+                print(json.dumps(result, indent=2, sort_keys=True))
+            return 2
+    else:
+        passes = []
+
+    matched = matching_tail(passes, primary, secondary, updated_at)
+    result = {
+        "verdict": "",
+        "refilled": False,
+        "primary": primary,
+        "secondary": secondary,
+        "policy_version": policy_version,
+        "matched_pass_count": len(matched),
+        "candidate": "",
+    }
+
+    if len(matched) < 2:
+        result["verdict"] = "no-trigger-insufficient-passes"
+        if args.json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+
+    two_most_recent = matched[:2]
+    drained = all(
+        rec.get("primary_idle_promoteable") == 0
+        and rec.get("primary_idle_empty") == 0
+        and rec.get("secondary_idle_promoteable") == 0
+        and rec.get("secondary_idle_empty") == 0
+        for rec in two_most_recent
+    )
+    if not drained:
+        result["verdict"] = "no-trigger-supply-not-drained"
+        if args.json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+
+    candidate = pick_candidate(paused, primary, secondary)
+    if candidate is None:
+        result["verdict"] = "no-candidate"
+        if args.json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        print(
+            "last-stack-portfolio-auto-refill: trigger fired but no paused North Star candidate "
+            f"remains in {ADMISSION_SLUG}",
+            file=sys.stderr,
+        )
+        return 0
+
+    result["candidate"] = candidate
+    result["verdict"] = "would-refill" if not args.apply else "refilled"
+
+    ts1, ts2 = two_most_recent[1].get("ts", ""), two_most_recent[0].get("ts", "")
+    new_policy_version = policy_version + 1
+    new_updated_at = args.now or now_iso()
+    new_paused = rebuild_paused(paused, candidate, secondary)
+    reason = (
+        f"Auto-refill: {primary} and {secondary} reported zero idle-promoteable and zero "
+        f"idle-empty milestones on 2 consecutive milestone-driver passes ({ts1}, {ts2}); "
+        f"admitted highest-ranked paused {candidate} into Secondary per "
+        "decision-2026-09-03-portfolio-auto-refill-from-ranking."
+    )
+    result["new_policy_version"] = new_policy_version
+    result["new_secondary"] = candidate
+    result["new_paused"] = new_paused
+    result["reason"] = reason
+
+    if args.apply:
+        new_body = rewrite_body(body, {
+            "policy-version": str(new_policy_version),
+            "secondary": candidate,
+            "paused": new_paused,
+            "updated-at": new_updated_at,
+            "updated-by": DRIVER_ACTOR,
+            "reason": reason,
+        })
+        put_ok = brain_put(meta, new_body, args.brain, fixture)
+        if not put_ok:
+            result["verdict"] = "write-failed"
+            result["refilled"] = False
+            if args.json:
+                print(json.dumps(result, indent=2, sort_keys=True))
+            print("last-stack-portfolio-auto-refill: brain put failed; admission record unchanged", file=sys.stderr)
+            return 1
+        result["refilled"] = True
+        notice_ok = notice_refill(candidate, new_policy_version, args.situations, args.notice_actor, True)
+        result["notice_posted"] = notice_ok
+
+    if args.json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        print(
+            f"last-stack-portfolio-auto-refill: {result['verdict']} candidate={candidate or 'none'} "
+            f"policy_version={policy_version}->{result.get('new_policy_version', policy_version)}"
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

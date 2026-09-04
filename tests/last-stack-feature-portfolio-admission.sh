@@ -142,10 +142,25 @@ Policy-Version: draft
 Primary: north-star-feature-delivery-effective-flow
 REC
 
-malformed_case future-version <<'REC'
-Policy-Version: 99
+malformed_case below-minimum-version <<'REC'
+Policy-Version: 0
 Primary: north-star-feature-delivery-effective-flow
 REC
+
+# Policy-Version is a change counter, not a schema version — a large but
+# well-formed counter value must stay admitted (last-stack-portfolio-auto-refill
+# bumps it by one on every rewrite; a fixed allowlist would fail-closed the
+# whole gate after enough rewrites).
+high_version="$tmp/high-version"
+write_record "$high_version" <<'REC'
+Policy-Version: 7
+Primary: north-star-feature-delivery-effective-flow
+Secondary: north-star-lastdb-no-scan-access
+Paused: all-other-feature-north-stars
+REC
+out="$(run 0 "$high_version" --north-star north-star-feature-delivery-effective-flow)"
+printf '%s' "$out" | jq -e '.verdict == "admitted"' >/dev/null \
+  || fail "a high but well-formed Policy-Version must stay admitted: $out"
 
 malformed_case no-primary <<'REC'
 Policy-Version: 1
