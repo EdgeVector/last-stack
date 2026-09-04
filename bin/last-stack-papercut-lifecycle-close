@@ -29,12 +29,22 @@ LASTGIT_RE = re.compile(r"\blastgit://([^/\s)>\]]+)/cr/([^/\s)>\]]+)")
 FORGE_RE = re.compile(r"https?://[^/\s)>\]]+/([^/\s)>\]]+)/([^/\s)>\]]+)/pulls?/(\d+)")
 GITHUB_RE = re.compile(r"https?://github\.com/([^/\s)>\]]+)/([^/\s)>\]]+)/pull/(\d+)")
 PIPELINE_STUCK_SLUG_RE = re.compile(r"^papercut-pipeline-stuck-(cr|forge|pr)-")
-STUCK_CR_SLUG_RE = re.compile(r"^papercut-pipeline-stuck-cr-(.+)-cr-([a-z0-9]+)$")
+# A LastGit CR id carries a disambiguator suffix (`cr-msc85npn-c483`), so the
+# tail is at most two `-`-joined runs. Bounded on purpose: an unbounded
+# `([a-z0-9-]+)$` would let the prefix give back a repo name containing `-cr-`.
+STUCK_CR_SLUG_RE = re.compile(r"^papercut-pipeline-stuck-cr-(.+?)-cr-([a-z0-9]+(?:-[a-z0-9]+)?)$")
 # `pipeline-health` files these as `...-forge-<repo>-pr-<num>` / `...-pr-<repo>-pr-<num>`.
 # A greedy `(.+)-(\d+)` swallowed the `-pr` marker into the repo name and then
 # called a repo that does not exist (`EdgeVector/fold-pr/pulls/826` -> 404).
-STUCK_FORGE_SLUG_RE = re.compile(r"^papercut-pipeline-stuck-forge-(.+?)(?:-pr)?-(\d+)$")
-STUCK_PR_SLUG_RE = re.compile(r"^papercut-pipeline-stuck-pr-(.+?)(?:-pr)?-(\d+)$")
+# Both `-pr-1018` and `-pr1018` are in the ledger; the second spelling is the
+# more common one and matched nothing until 2026-09-04.
+STUCK_FORGE_SLUG_RE = re.compile(r"^papercut-pipeline-stuck-forge-(.+?)(?:-pr-?|-)(\d+)$")
+STUCK_PR_SLUG_RE = re.compile(r"^papercut-pipeline-stuck-pr-(.+?)(?:-pr-?|-)(\d+)$")
+# `pipeline-health` also files a forge PR under the `-cr-` prefix
+# (`...-cr-fold-1709`), and a CR with no `-cr-` before its short id
+# (`...-cr-last-stack-msh21rhh`). Neither shape reaches the two patterns above.
+STUCK_CR_PREFIXED_PR_SLUG_RE = re.compile(r"^papercut-pipeline-stuck-cr-(.+)-(\d+)$")
+STUCK_BARE_CR_SLUG_RE = re.compile(r"^papercut-pipeline-stuck-cr-(.+)-([a-z0-9]{6,12})$")
 CR_FULL_RE = re.compile(r"\b(cr-[0-9a-z]{6,12}-[0-9a-z]{2,8})\b")
 REPO_HEADER_RE = re.compile(r"(?im)^Repo:\s*(\S+)")
 # Only a labeled field may contribute a review ref. A bare `cr-…`-shaped token
@@ -584,7 +594,49 @@ def review_refs(body: str, slug: str = "") -> tuple[list[ReviewRef], list[str]]:
             add(ReviewRef("github", f"https://github.com/{owner}/{repo}/pull/{num}", repo, num, owner))
         else:
             skip(f"unmapped-pr-repo:{repo}")
-    if header_repo and not stuck_cr and not stuck_forge and not stuck_pr:
+    # A forge PR filed under the `-cr-` prefix: the tail is a PR number, not a
+    # CR id, so `-cr-` in the slug says nothing about the venue.
+    stuck_cr_pr = (
+        STUCK_CR_PREFIXED_PR_SLUG_RE.match(slug) if not stuck_cr else None
+    )
+    if stuck_cr_pr:
+        repo = header_repo or repo_token(stuck_cr_pr.group(1))
+        owner = header_owner or "EdgeVector"
+        num = stuck_cr_pr.group(2)
+        if repo in FORGE_VENUE_REPOS:
+            add(ReviewRef("forge", f"{owner}/{repo}/pulls/{num}", repo, num, owner))
+        else:
+            skip(f"unmapped-cr-pr-repo:{repo}")
+    # A CR short id with no `-cr-` separator (`...-cr-last-stack-msh21rhh`).
+    # The slug alone cannot tell a short id from a repo-name fragment, so the
+    # body must corroborate it with a real `cr-<short>-<suffix>` token. Without
+    # that the ref is a guess, and a guessed ref is what invented
+    # `EdgeVector/fold-pr` and 404ed for four passes.
+    stuck_bare_cr = (
+        STUCK_BARE_CR_SLUG_RE.match(slug)
+        if not stuck_cr and not stuck_cr_pr
+        else None
+    )
+    if stuck_bare_cr:
+        repo = repo_token(stuck_bare_cr.group(1))
+        short = ref_token(stuck_bare_cr.group(2))
+        ident = ""
+        for full in CR_FULL_RE.findall(body):
+            if full == f"cr-{short}" or full.startswith(f"cr-{short}-"):
+                ident = full
+                break
+        if repo and ident:
+            add(ReviewRef("lastgit", f"lastgit://{repo}/cr/{ident}", repo, ident))
+        else:
+            skip(f"uncorroborated-stuck-cr-slug:{slug}")
+    if (
+        header_repo
+        and not stuck_cr
+        and not stuck_forge
+        and not stuck_pr
+        and not stuck_cr_pr
+        and not stuck_bare_cr
+    ):
         for value in labeled_ref_values(body):
             for full in CR_FULL_RE.findall(value):
                 add(ReviewRef("lastgit", f"lastgit://{header_repo}/cr/{full}", header_repo, full))
