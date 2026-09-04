@@ -6,7 +6,9 @@
 #     [--pr-url URL] [--branch NAME] [--force]
 #
 # 1. Optionally stamps --pr-url / --branch via add (preserves column).
-# 2. Refuses deploy-gated closeout unless Requires-Deploy has terminal success.
+# 2. Refuses deploy-gated closeout unless Requires-Deploy has terminal success,
+#    a positive PROOF line, or (for helper-cutover END STATE / awaiting-deploy)
+#    live proof in the body. Merge receipt alone is not done.
 # 3. Refuses legacy-residue closeout unless latest main has zero marker hits
 #    and the card OUTCOME records that grep-zero proof.
 # 4. Moves the card to done (with lastdb-retry).
@@ -129,13 +131,73 @@ for line in body.splitlines():
             continue
         seen.add(part)
         print(f"requires={part}")
+
+tags = card.get("tags") or []
+if isinstance(tags, str):
+    tags = [p for p in re.split(r"[,\s]+", tags) if p]
+parked = {
+    "awaiting-deploy",
+    "live-proof",
+    "deploy-gate",
+    "needs-safe-upgrade",
+    "awaiting-validation",
+}
+has_parked_tag = any(str(t).strip().lower() in parked for t in tags)
+print(f"parked_tag={1 if has_parked_tag else 0}")
+
+section_lines = []
+in_end = False
+for line in body.splitlines():
+    if re.match(r"^##[ \t]+", line):
+        in_end = bool(re.match(r"^##[ \t]+END[ \t]+STATE\b", line, re.I))
+    if in_end:
+        section_lines.append(line)
+    if re.match(r"^\s*DONE-WHEN\s*:", line, re.I):
+        section_lines.append(line)
+section = "\n".join(section_lines)
+cutover_re = re.compile(
+    r"(?i)\b(helper[ -]?cutover|host-track|live\s+scheduled[- ]fire|"
+    r"installed\s+(?:helper|binary|cli)|safe-upgrade|awaiting-deploy)\b"
+)
+print(f"helper_cutover_end_state={1 if cutover_re.search(section) else 0}")
+
+positive_words = re.compile(
+    r"(?i)\b(pass|passed|verified|proven|green|satisfied|met|confirmed|"
+    r"success|successful|complete|completed)\b"
+)
+proof = False
+for line in body.splitlines():
+    match = re.match(r"(?i)^\s*(?:[-*]\s*)?PROOF\s*:\s*(.*?)\s*$", line)
+    if match and positive_words.search(match.group(1)):
+        proof = True
+        break
+print(f"positive_proof={1 if proof else 0}")
 PY
 )"
 
 deploy_repo="$(printf '%s\n' "$deploy_info" | sed -n 's/^repo=//p' | head -n 1)"
 deploy_reqs="$(printf '%s\n' "$deploy_info" | sed -n 's/^requires=//p')"
+parked_tag="$(printf '%s\n' "$deploy_info" | sed -n 's/^parked_tag=//p' | head -n 1)"
+helper_cutover_end_state="$(printf '%s\n' "$deploy_info" | sed -n 's/^helper_cutover_end_state=//p' | head -n 1)"
+positive_proof="$(printf '%s\n' "$deploy_info" | sed -n 's/^positive_proof=//p' | head -n 1)"
+parked_tag="${parked_tag:-0}"
+helper_cutover_end_state="${helper_cutover_end_state:-0}"
+positive_proof="${positive_proof:-0}"
+deploy_pipeline_ok=0
 
-if [ -n "$deploy_reqs" ]; then
+refuse_helper_cutover() {
+  local reason="$1"
+  echo "last-stack-card-closeout: FAILED helper-cutover-unmet slug=$slug reason=$reason" >&2
+  echo "  Merge is not done. Add a positive PROOF line, or wait for helper cutover / host-track / deploy success." >&2
+  run "$board_cli" mark "$slug" \
+    "CLOSEOUT-DEFERRED: helper-cutover/deploy gate unmet (reason=$reason); merge is not done" \
+    </dev/null >/dev/null 2>&1 || true
+  exit 1
+}
+
+if [ "$positive_proof" = "1" ]; then
+  echo "last-stack-card-closeout: body PROOF satisfies helper-cutover/deploy gate slug=$slug" >&2
+elif [ -n "$deploy_reqs" ]; then
   if [ -z "$deploy_repo" ]; then
     echo "last-stack-card-closeout: FAILED deploy-gate-missing-repo slug=$slug" >&2
     exit 1
@@ -197,9 +259,18 @@ EOF
       echo "last-stack-card-closeout: deploy gate pending slug=$slug repo=$deploy_repo requires=$deploy_req status=${gate_state:-unknown} reason=$gate_reason" >&2
       exit 1
     fi
+    deploy_pipeline_ok=1
   done <<EOF
 $deploy_reqs
 EOF
+fi
+
+if [ "$positive_proof" = "1" ] || [ "$deploy_pipeline_ok" = "1" ]; then
+  :
+elif [ "$parked_tag" = "1" ]; then
+  refuse_helper_cutover "awaiting-deploy-tag"
+elif [ "$helper_cutover_end_state" = "1" ]; then
+  refuse_helper_cutover "end-state-helper-cutover"
 fi
 
 legacy_info="$(CARD_JSON="$card_json" python3 - <<'PY'

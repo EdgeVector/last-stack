@@ -156,8 +156,17 @@ awaiting = dict(parked)
 awaiting["slug"] = "awaiting-validation"
 awaiting["tags"] = ["awaiting-validation"]
 check("awaiting-validation is parked", fh.is_deploy_parked(awaiting), True)
+cutover = dict(live_pr)
+cutover["slug"] = "helper-cutover"
+cutover["tags"] = []
+cutover["pr_url"] = ""
+cutover["body"] = (
+    "Repo: EdgeVector/last-stack\nKind: pr\n\n"
+    "## END STATE\nThe installed helper is on host-track current.\n"
+)
+check("helper-cutover END STATE is parked", fh.is_deploy_parked(cutover), True)
 check("actionable drops extra park tags",
-      [c["slug"] for c in fh.actionable_doing([parked, live_pr, upgrade, awaiting])],
+      [c["slug"] for c in fh.actionable_doing([parked, live_pr, upgrade, awaiting, cutover])],
       ["open-pr"])
 
 if fails:
