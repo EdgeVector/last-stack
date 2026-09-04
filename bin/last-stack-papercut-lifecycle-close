@@ -591,18 +591,31 @@ def review_refs(body: str, slug: str = "") -> tuple[list[ReviewRef], list[str]]:
     return refs, skips
 
 
-def merged_status(args: argparse.Namespace, ref: ReviewRef) -> tuple[bool, str]:
+def review_state(args: argparse.Namespace, ref: ReviewRef) -> tuple[str, str]:
+    """Normalized review state: `merged`, `closed`, `open`, or `unknown`.
+
+    `merged` and `closed` are both TERMINAL — the review will not move again.
+    Only a `pipeline-stuck` papercut may act on `closed`; see
+    close_review_records for why the two classes read the same state
+    differently.
+    """
     if ref.kind == "lastgit":
         data = run_json([args.lastgit_bin, "cr", "view", ref.repo, ref.ident, "--json"], timeout=60)
         cr = data.get("cr") or data.get("change_request") or data if isinstance(data, dict) else {}
         state = str(cr.get("state") or cr.get("status") or "").lower()
         merge_oid = str(cr.get("merge_oid") or cr.get("mergeOid") or "")
-        return state == "merged" or bool(merge_oid), f"lastgit:{ref.repo}/{ref.ident}"
+        detail = f"lastgit:{ref.repo}/{ref.ident}"
+        if state == "merged" or merge_oid:
+            return "merged", detail
+        return (state if state in ("closed", "open") else "unknown"), detail
     if ref.kind == "forge":
         data = run_json([args.forge_api_bin, f"repos/{ref.owner}/{ref.repo}/pulls/{ref.ident}"], timeout=60)
         state = str(data.get("state") or "").lower() if isinstance(data, dict) else ""
         merged = bool(data.get("merged")) if isinstance(data, dict) else False
-        return merged or state == "merged", f"forge:{ref.owner}/{ref.repo}#{ref.ident}"
+        detail = f"forge:{ref.owner}/{ref.repo}#{ref.ident}"
+        if merged or state == "merged":
+            return "merged", detail
+        return (state if state in ("closed", "open") else "unknown"), detail
     data = run_json(
         [
             args.gh_bin,
@@ -616,9 +629,17 @@ def merged_status(args: argparse.Namespace, ref: ReviewRef) -> tuple[bool, str]:
         ],
         timeout=60,
     )
-    state = str(data.get("state") or "").upper() if isinstance(data, dict) else ""
+    state = str(data.get("state") or "").lower() if isinstance(data, dict) else ""
     merged_at = str(data.get("mergedAt") or "") if isinstance(data, dict) else ""
-    return state == "MERGED" or bool(merged_at), f"github:{ref.owner}/{ref.repo}#{ref.ident}"
+    detail = f"github:{ref.owner}/{ref.repo}#{ref.ident}"
+    if state == "merged" or merged_at:
+        return "merged", detail
+    return (state if state in ("closed", "open") else "unknown"), detail
+
+
+def merged_status(args: argparse.Namespace, ref: ReviewRef) -> tuple[bool, str]:
+    state, detail = review_state(args, ref)
+    return state == "merged", detail
 
 
 def append_brain(args: argparse.Namespace, slug: str, text: str) -> None:
@@ -629,32 +650,58 @@ def append_brain(args: argparse.Namespace, slug: str, text: str) -> None:
         raise RuntimeError(f"brain append {slug} failed: {proc.stderr.strip()}")
 
 
-def close_record(args: argparse.Namespace, record: dict[str, Any], ref: ReviewRef, detail: str, iso: str) -> None:
+def close_record(
+    args: argparse.Namespace,
+    record: dict[str, Any],
+    ref: ReviewRef,
+    detail: str,
+    iso: str,
+    state: str = "merged",
+) -> None:
     slug = str(record.get("slug") or "")
     title = str(record.get("title") or slug)
     if args.dry_run:
         return
-    evidence = f"lifecycle closer confirmed {ref.url} is merged ({detail})."
-    proc = run(
-        [
-            args.brain_bin,
-            "papercut",
-            "close",
-            slug,
-            "--status",
-            "fixed",
-            "--evidence",
-            evidence,
-            "--fixed-by",
-            detail,
-        ],
-        timeout=60,
-    )
+    if state == "merged":
+        status = "fixed"
+        evidence = f"lifecycle closer confirmed {ref.url} is merged ({detail})."
+    else:
+        # The claim was "this review is STUCK". A review that was closed without
+        # merging is not stuck any more, and nothing was fixed — `wontfix` is the
+        # only honest terminal status left in the enum.
+        #
+        # `wontfix` on a defect that still reproduces is status laundering
+        # (papercut-reconciler-hygiene-retires-unfixed-defects-as-wontfix-...).
+        # This close is not that: the condition retired here is the review being
+        # stuck, and that condition provably ended. But a pipeline-stuck body
+        # often ALSO carries a root-cause claim, and no automatic closer can
+        # split that out into its own slug. So the evidence says so in its own
+        # words, and every such close is reported separately from `fixed`.
+        status = "wontfix"
+        evidence = (
+            f"lifecycle closer confirmed {ref.url} is closed without merging ({detail}); "
+            "the stuck condition ended when the review was abandoned, so there is no fix to cite. "
+            "Retires the stuck-review claim ONLY: any root-cause or suggested-fix text in this "
+            "body is unaddressed and needs its own papercut if it still reproduces."
+        )
+    close_argv = [
+        args.brain_bin,
+        "papercut",
+        "close",
+        slug,
+        "--status",
+        status,
+        "--evidence",
+        evidence,
+    ]
+    if status == "fixed":
+        close_argv += ["--fixed-by", detail]
+    proc = run(close_argv, timeout=60)
     if proc.returncode != 0:
         raise RuntimeError(f"brain papercut close {slug} failed: {proc.stderr.strip()}")
-    ledger = f"{iso} {slug} -> card:none | pattern:lifecycle-auto-close | skip:fixed:{detail}\n"
+    ledger = f"{iso} {slug} -> card:none | pattern:lifecycle-auto-close | skip:{status}:{detail}\n"
     append_brain(args, args.ledger_slug, ledger)
-    line = f"fixed {slug} via {detail}: {title}"
+    line = f"{status} {slug} via {detail}: {title}"
     if args.json_out:
         print(line, file=sys.stderr)
     else:
@@ -666,6 +713,7 @@ def close_review_records(args: argparse.Namespace, iso: str) -> dict[str, Any]:
         "ok": True,
         "checked": 0,
         "fixed": [],
+        "closed_unmerged": [],
         "skipped": [],
         "errors": [],
         "pipeline_stuck_checked": 0,
@@ -699,27 +747,50 @@ def close_review_records(args: argparse.Namespace, iso: str) -> dict[str, Any]:
                 entry["details"] = ref_skips
             result["skipped"].append(entry)
             continue
+        # A `pipeline-stuck` papercut claims "this review is STUCK", so BOTH
+        # terminal review states resolve it: merged, and closed-without-merging.
+        # Every other papercut class claims "the fix is covered by this review",
+        # where a closed-unmerged review means the fix was ABANDONED — closing
+        # the papercut on it would be wrong. Measured 2026-09-04 on the primary:
+        # 43 open p0 pipeline-stuck rows skipped `review-not-merged`, and 41 of
+        # them named a review that was already closed. `merged`-only made the
+        # whole cluster permanently unclosable.
+        closed_is_terminal = bool(PIPELINE_STUCK_SLUG_RE.match(slug))
         fixed = False
+        last_state = ""
         for ref in refs:
             try:
-                merged, detail = merged_status(args, ref)
+                state, detail = review_state(args, ref)
             except BudgetExhausted:
                 result["skipped"].append({"slug": slug, "reason": "budget-exhausted"})
                 return result
             except Exception as exc:
                 result["errors"].append({"slug": slug, "ref": ref.url, "error": str(exc)})
                 continue
-            if merged:
+            last_state = state
+            if state == "merged" or (state == "closed" and closed_is_terminal):
                 try:
-                    close_record(args, record, ref, detail, iso)
+                    close_record(args, record, ref, detail, iso, state=state)
                 except BudgetExhausted:
                     result["skipped"].append({"slug": slug, "reason": "budget-exhausted-before-close"})
                     return result
-                result["fixed"].append({"slug": slug, "ref": ref.url, "detail": detail})
+                entry = {"slug": slug, "ref": ref.url, "detail": detail, "review_state": state}
+                if state == "merged":
+                    result["fixed"].append(entry)
+                else:
+                    result["closed_unmerged"].append(entry)
                 fixed = True
                 break
         if not fixed:
-            result["skipped"].append({"slug": slug, "reason": "review-not-merged"})
+            if last_state == "closed":
+                # Not a pipeline-stuck row: the cited fix was abandoned, so this
+                # papercut needs a human decision, not an automatic close.
+                reason = "review-closed-not-merged"
+            elif last_state == "open":
+                reason = "review-still-open"
+            else:
+                reason = "review-not-merged"
+            result["skipped"].append({"slug": slug, "reason": reason})
     return result
 
 
@@ -758,6 +829,12 @@ def merge_default_results(registry: dict[str, Any], review: dict[str, Any]) -> d
         "review_checked": rev_checked,
         "pipeline_stuck_checked": int(review.get("pipeline_stuck_checked") or 0),
         "fixed_refs": review.get("fixed") if isinstance(review.get("fixed"), list) else [],
+        # Terminal closes that cite an ABANDONED review, kept apart from `fixed`
+        # so a reader can never mistake a wontfix for a shipped fix.
+        "closed_unmerged": _fixed_count(review.get("closed_unmerged")),
+        "closed_unmerged_refs": (
+            review.get("closed_unmerged") if isinstance(review.get("closed_unmerged"), list) else []
+        ),
     }
 
 
@@ -811,6 +888,7 @@ def main() -> int:
                 "fixed": [],
                 "skipped": [{"slug": "", "reason": "budget-exhausted", "detail": str(exc)}],
                 "errors": [],
+                "closed_unmerged": [],
                 "pipeline_stuck_checked": 0,
             }
     else:
@@ -827,6 +905,7 @@ def main() -> int:
                 "fixed": [],
                 "skipped": [{"slug": "", "reason": "budget-exhausted", "detail": str(exc)}],
                 "errors": [],
+                "closed_unmerged": [],
                 "pipeline_stuck_checked": 0,
             }
         except Exception as exc:
@@ -836,6 +915,7 @@ def main() -> int:
                 "fixed": [],
                 "skipped": [],
                 "errors": [{"error": str(exc)}],
+                "closed_unmerged": [],
                 "pipeline_stuck_checked": 0,
             }
         if registry_result is None:
@@ -857,6 +937,7 @@ def main() -> int:
         print(
             "papercut-lifecycle-close "
             f"checked={checked} fixed={fixed_count} "
+            f"closed_unmerged={_fixed_count(result.get('closed_unmerged'))} "
             f"skipped={len(skipped) if isinstance(skipped, list) else 0} "
             f"errors={len(result.get('errors', [])) if isinstance(result.get('errors', []), list) else 0}"
             + (

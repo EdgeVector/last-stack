@@ -140,7 +140,10 @@ assert fixed == {
 }, fixed
 
 skipped = {item["slug"]: item for item in data["skipped"]}
-assert skipped["papercut-pipeline-stuck-forge-fold-pr-826"]["reason"] == "review-not-merged"
+# fold#826 is still OPEN, so the row stays open and the reason says which of the
+# two non-merged states it is. `review-not-merged` used to conflate "still open"
+# with "closed and never coming back"; only the second is terminal.
+assert skipped["papercut-pipeline-stuck-forge-fold-pr-826"]["reason"] == "review-still-open"
 assert skipped["papercut-lifecycle-ref-prose-mention"]["reason"] == "no-review-ref"
 unmapped = skipped["papercut-pipeline-stuck-forge-mystery-service-pr-7"]
 assert unmapped["reason"] == "unresolved-review-ref", unmapped
