@@ -21,7 +21,7 @@ export type SentryInitResult =
  * `Invalid Sentry Dsn` or panic. Routine/agent shells inherit unresolved
  * locators from routinesd; those must never reach the SDK or stdout.
  */
-export function parseObsSentryDsn(raw: string): string | null {
+function parseObsSentryDsn(raw: string): string | null {
   const dsn = raw.trim();
   if (!dsn) return null;
 
