@@ -34,6 +34,9 @@ LOOKBACK_H="${LAST_STACK_CANARY_RED_LOOKBACK_HOURS:-12}"
 # soak re-check (~2.5 h observed) with margin; the card's suggested 2 h would
 # page on every healthy soak.
 LANE_STALE_H="${LAST_STACK_CANARY_RED_LANE_STALE_HOURS:-6}"
+# Same exec id in listing_stale across this many hourly fires expires the
+# resume key. 2 = first fire drops the key, second fire pages once.
+LISTING_STALE_MAX_HITS="${LAST_STACK_CANARY_RED_LISTING_STALE_HITS:-2}"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -66,7 +69,8 @@ log() { [ "$QUIET" -eq 1 ] || printf 'canary-red-loom: %s\n' "$*" >&2; }
 
 write_stamp() {
   mkdir -p "$(dirname "$STAMP")"
-  ST="$1" EX="${2:-}" DT="${3:-}" KY="${4:-}" OC="${5:-}" LAST_STACK_CANARY_RED_STAMP="$STAMP" python3 -c '
+  ST="$1" EX="${2:-}" DT="${3:-}" KY="${4:-}" OC="${5:-}" \
+  LSTALE_EXEC="${6:-}" LSTALE_HITS="${7:-}" LAST_STACK_CANARY_RED_STAMP="$STAMP" python3 -c '
 import json, os, datetime
 p = os.environ["LAST_STACK_CANARY_RED_STAMP"]
 doc = {
@@ -78,8 +82,69 @@ doc = {
   "outcome": os.environ.get("OC", ""),
   "engine": "loom",
 }
+lstale = os.environ.get("LSTALE_EXEC") or ""
+if lstale:
+    doc["listing_stale_exec"] = lstale
+    try:
+        doc["listing_stale_hits"] = int(os.environ.get("LSTALE_HITS") or "1")
+    except ValueError:
+        doc["listing_stale_hits"] = 1
 open(p, "w").write(json.dumps(doc) + "\n")
 '
+}
+
+stamp_field() {
+  LAST_STACK_CANARY_RED_STAMP="$STAMP" STAMP_FIELD="$1" python3 -c '
+import json, os
+p = os.environ["LAST_STACK_CANARY_RED_STAMP"]
+f = os.environ["STAMP_FIELD"]
+try:
+    d = json.load(open(p))
+except Exception:
+    d = {}
+v = d.get(f)
+if v is None or v is False:
+    print("")
+else:
+    print(v)
+'
+}
+
+# listing_stale_apply <picked_id>
+# Always drops the resume key. Tracks consecutive listing_stale hits for the
+# same exec in the stamp (not as exec_id/key). Sets LS_OC / LS_DETAIL / LS_EXIT
+# / LS_TRACK_EXEC / LS_HITS for the caller.
+listing_stale_apply() {
+  local picked="${1:-}"
+  local prev_exec prev_hits prev_outcome hits max_hits
+  prev_exec="$(stamp_field listing_stale_exec)"
+  [ -n "$prev_exec" ] || prev_exec="$(stamp_field exec_id)"
+  prev_hits="$(stamp_field listing_stale_hits)"
+  prev_outcome="$(stamp_field outcome)"
+  case "$prev_hits" in
+    ''|*[!0-9]*) prev_hits=0 ;;
+  esac
+  max_hits="$LISTING_STALE_MAX_HITS"
+  case "$max_hits" in
+    ''|*[!0-9]*) max_hits=2 ;;
+  esac
+  [ "$max_hits" -ge 1 ] || max_hits=2
+  hits=1
+  if [ -n "$picked" ] && [ "$picked" = "$prev_exec" ]; then
+    hits=$((prev_hits + 1))
+  fi
+  LS_TRACK_EXEC="$picked"
+  LS_HITS="$hits"
+  # Resume key stays empty on every listing_stale tick.
+  if [ "$hits" -ge "$max_hits" ] && [ "$prev_outcome" != "error" ]; then
+    LS_OC="error"
+    LS_DETAIL="listing_stale_expired hits=${hits} dropped=${picked:-none}"
+    LS_EXIT=3
+  else
+    LS_OC="noop"
+    LS_DETAIL="idle reason=listing_stale exec="
+    LS_EXIT=0
+  fi
 }
 
 print_status() {
@@ -439,12 +504,6 @@ idle="$(json_field idle "$picked")"
 [ -n "$idle" ] || idle="0"
 
 if [ "$DRY" -eq 1 ]; then
-  if [ "$JSON" -eq 1 ]; then
-    printf '%s\n' "$picked"
-  else
-    printf 'canary-red dry-run idle=%s exec=%s reason=%s\n' \
-      "$idle" "${picked_id:-}" "${picked_reason:-}"
-  fi
   oc="noop"
   [ "$idle" = "1" ] || oc="ok"
   dry_detail="idle=${idle} exec=${picked_id:-} reason=${picked_reason}"
@@ -457,11 +516,25 @@ if [ "$DRY" -eq 1 ]; then
     oc="error"
     dry_detail="lane_stale exec=${picked_id:-} age_hours=$(json_field lane_age_hours "$picked") stale_hours=$(json_field lane_stale_hours "$picked") state=$(json_field state "$picked")"
   elif [ "$picked_reason" = "listing_stale" ]; then
+    listing_stale_apply "${picked_id:-}"
     dry_id=""
     dry_key=""
-    log "listing has no ${CANARY_LANE_DEFINITION} execution in the window; dropping stale exec key ${picked_id:-none}"
+    oc="$LS_OC"
+    dry_detail="$LS_DETAIL"
+    log "listing has no ${CANARY_LANE_DEFINITION} execution in the window; dropping stale exec key ${picked_id:-none} hits=${LS_HITS}"
   fi
-  write_stamp dry-run "$dry_id" "idle=${idle} reason=${picked_reason}" "$dry_key" "$oc"
+  if [ "$JSON" -eq 1 ]; then
+    printf '%s\n' "$picked"
+  else
+    printf 'canary-red dry-run idle=%s exec=%s reason=%s\n' \
+      "$idle" "${dry_id}" "${picked_reason:-}"
+  fi
+  if [ "$picked_reason" = "listing_stale" ]; then
+    write_stamp dry-run "$dry_id" "$dry_detail" "$dry_key" "$oc" \
+      "$LS_TRACK_EXEC" "$LS_HITS"
+  else
+    write_stamp dry-run "$dry_id" "idle=${idle} reason=${picked_reason}" "$dry_key" "$oc"
+  fi
   printf '%s %s\n' 'ROUTINE_RESULT' "outcome=${oc} detail=${dry_detail}"
   exit 0
 fi
@@ -512,17 +585,24 @@ if [ "$idle" = "1" ] && [ "$picked_lane_stale" = "1" ]; then
   exit 3
 fi
 
-if [ "$idle" = "1" ]; then
-  stamp_id="${picked_id:-}"
-  stamp_key="${KEY:-}"
-  if [ "$picked_reason" = "listing_stale" ]; then
-    # The listed exec (if any) is outside the window. Keep pointing the
-    # resume key at it and the next hourly fire resumes a corpse.
-    stamp_id=""
-    stamp_key=""
-    log "listing has no ${CANARY_LANE_DEFINITION} execution in the window; dropping stale exec key ${picked_id:-none}"
+if [ "$idle" = "1" ] && [ "$picked_reason" = "listing_stale" ]; then
+  # Drop the resume key on every listing_stale tick. Reprinting picked_id in
+  # ROUTINE_RESULT is how lx-20260902T215510.402-45278-1 stayed the hourly
+  # outcome for 12 fires after the stamp already went empty.
+  listing_stale_apply "${picked_id:-}"
+  log "listing has no ${CANARY_LANE_DEFINITION} execution in the window; dropping stale exec key ${picked_id:-none} hits=${LS_HITS}"
+  write_stamp idle "" "$LS_DETAIL" "" "$LS_OC" "$LS_TRACK_EXEC" "$LS_HITS"
+  if [ "$JSON" -eq 1 ]; then
+    printf '%s\n' "$picked"
+  else
+    printf 'canary-red %s\n' "$LS_DETAIL"
   fi
-  write_stamp idle "$stamp_id" "reason=${picked_reason}" "$stamp_key" "noop"
+  printf '%s %s\n' 'ROUTINE_RESULT' "outcome=${LS_OC} detail=${LS_DETAIL}"
+  exit "$LS_EXIT"
+fi
+
+if [ "$idle" = "1" ]; then
+  write_stamp idle "${picked_id:-}" "reason=${picked_reason}" "${KEY:-}" "noop"
   if [ "$JSON" -eq 1 ]; then
     printf '%s\n' "$picked"
   else
