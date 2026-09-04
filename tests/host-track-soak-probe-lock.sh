@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-# Soak RED files one P0 Kind:pr card and does not file again for the same digest.
+# soak-watch must not probe a canary tree that a concurrent install may be
+# restaging: with the app's install lock held by a live process, the tick
+# defers (rc 0, no soak_red stamp, no card). With the lock free, the same
+# healthy canary probes GREEN and soaks normally.
+# Regression for 2026-09-04: a force-if-stale restage raced soak-watch and a
+# healthy brain digest was rejected as soak RED, spawning a spurious P0 + heal.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -16,10 +21,12 @@ export HOME="$tmp/home"
 export HOST_TRACK_REGISTRY="$tmp/registry.json"
 export HOST_TRACK_STAMP_DIR="$tmp/stamps"
 export HOST_TRACK_FILE_PR="$tmp/bin/last-stack-kanban-file-pr"
+export HOST_TRACK_SOAK_HEAL=0
 export PATH="$HOME/.local/bin:$tmp/bin:/usr/bin:/bin"
 mkdir -p "$HOME/.local/bin" "$tmp/bin" "$tmp/cas"
 
 : >"$tmp/file-pr.log"
+export FILE_PR_LOG="$tmp/file-pr.log"
 cat >"$tmp/bin/last-stack-kanban-file-pr" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -86,41 +93,46 @@ publish_fixture() {
   cp "$manifest" "$tmp/cas/channels/demo/stable.json"
 }
 
-digest_good="$(printf 'a%.0s' {1..64})"
-digest_bad="$(printf 'b%.0s' {1..64})"
-oid_good="$(printf '1%.0s' {1..40})"
-oid_bad="$(printf '2%.0s' {1..40})"
+digest_v1="$(printf 'a%.0s' {1..64})"
+digest_v2="$(printf 'b%.0s' {1..64})"
+oid_v1="$(printf '1%.0s' {1..40})"
+oid_v2="$(printf '2%.0s' {1..40})"
 
-export FILE_PR_LOG="$tmp/file-pr.log"
-export HOST_TRACK_SOAK_FILE_CARD=1
-
-publish_fixture "$digest_good" "$oid_good" $'#!/usr/bin/env bash\necho ok-v1'
+publish_fixture "$digest_v1" "$oid_v1" $'#!/usr/bin/env bash\necho ok-v1'
 "$ROOT/bin/host-track" install demo >/dev/null
 
-publish_fixture "$digest_bad" "$oid_bad" $'#!/usr/bin/env bash\necho broken\nexit 1'
-"$ROOT/bin/host-track" refresh demo >/dev/null || true
-[ -d "$HOME/apps/demo/versions/$digest_bad" ] || fail "bad version not staged"
-ln -sfn "versions/$digest_bad" "$HOME/apps/demo/canary"
+# Park a healthy v2 canary.
+publish_fixture "$digest_v2" "$oid_v2" $'#!/usr/bin/env bash\necho ok-v2'
+"$ROOT/bin/host-track" refresh demo >/dev/null
+[ -L "$HOME/apps/demo/canary" ] || fail "canary not parked"
 
+# 1) Lock held by a live process → soak-watch defers, never RED.
+lock="$HOME/.host-track/locks/install-demo.lock.d"
+mkdir -p "$lock"
+printf '%s\n' "$$" > "$lock/pid"
 set +e
-"$ROOT/bin/host-track" soak-watch demo >/dev/null 2>"$tmp/red1.err"
-rc1=$?
+HOST_TRACK_SOAK_LOCK_WAIT_S=1 "$ROOT/bin/host-track" soak-watch demo \
+  > "$tmp/defer.out" 2> "$tmp/defer.err"
+rc=$?
 set -e
-[ "$rc1" -ne 0 ] || fail "soak-watch should fail on RED"
-grep -q 'filed P0' "$tmp/red1.err" || fail "first RED did not file a card: $(cat "$tmp/red1.err")"
-[ "$(wc -l < "$FILE_PR_LOG" | tr -d ' ')" = 1 ] || fail "expected one file-pr call"
-grep -q -- '--priority P0' "$FILE_PR_LOG" || fail "card was not P0"
-grep -q -- '--work-class incident' "$FILE_PR_LOG" || fail "card not filed as incident work (admission gate would refuse a paused NS)"
-grep -q 'EdgeVector/demo' "$FILE_PR_LOG" || fail "card repo not from gate_main"
-[ -s "$HOST_TRACK_STAMP_DIR/soak-history/last-probe-demo.log" ] || fail "RED probe output not kept for the heal brief"
-[ "$(demo)" = ok-v1 ] || fail "RED soak changed the live command"
+rm -rf "$lock"
+[ "$rc" -eq 0 ] || fail "locked soak-watch should defer with rc 0 (rc=$rc): $(cat "$tmp/defer.err")"
+grep -q 'deferred (install in progress)' "$tmp/defer.out" \
+  || fail "locked soak-watch did not report deferral: $(cat "$tmp/defer.out" "$tmp/defer.err")"
+if [ -f "$HOST_TRACK_STAMP_DIR/demo.soak.json" ]; then
+  st="$(jq -r '.status' "$HOST_TRACK_STAMP_DIR/demo.soak.json")"
+  [ "$st" != "soak_red" ] || fail "locked soak-watch marked soak_red"
+fi
+[ ! -s "$FILE_PR_LOG" ] || fail "locked soak-watch filed a card: $(cat "$FILE_PR_LOG")"
 
-set +e
-"$ROOT/bin/host-track" soak-watch demo >/dev/null 2>"$tmp/red2.err"
-rc2=$?
-set -e
-[ "$rc2" -ne 0 ] || fail "second soak-watch should still be RED"
-grep -q 'incident card .* already open' "$tmp/red2.err" || fail "second RED re-filed: $(cat "$tmp/red2.err")"
-[ "$(wc -l < "$FILE_PR_LOG" | tr -d ' ')" = 1 ] || fail "second RED called file-pr again"
+# 2) Lock free → the same canary probes GREEN and the soak advances.
+"$ROOT/bin/host-track" soak-watch demo > "$tmp/free.out" 2> "$tmp/free.err" \
+  || fail "unlocked soak-watch failed: $(cat "$tmp/free.err")"
+grep -q 'soak pending' "$tmp/free.out" || fail "unlocked soak-watch did not soak: $(cat "$tmp/free.out")"
+[ "$(jq -r '.status' "$HOST_TRACK_STAMP_DIR/demo.soak.json")" = "soaking" ] \
+  || fail "soak stamp not soaking after green probe"
+[ -s "$HOST_TRACK_STAMP_DIR/soak-history/last-probe-demo.log" ] \
+  || fail "probe transcript not kept"
+[ ! -d "$lock" ] || fail "soak-watch leaked its install lock"
 
-printf 'ok: soak RED files one P0 card\n'
+printf 'ok: soak-watch defers under a held install lock and soaks when free\n'
