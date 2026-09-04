@@ -64,6 +64,9 @@ case "$cmd" in
     elif [ "$sub" = "add" ]; then
       printf '%s\n' "$*" >>"${FILE_PR_MS_ADD_LOG:-/tmp/ms-add.log}"
       exit 0
+    elif [ "$sub" = "state" ]; then
+      printf '%s\n' "$*" >>"${FILE_PR_MS_STATE_LOG:-/tmp/ms-state.log}"
+      exit 0
     else
       echo "unexpected milestone $sub $*" >&2
       exit 1
@@ -115,6 +118,15 @@ if "$bin" some-slug --board-cli "$fake_kanban" --title "x" --repo EdgeVector/las
   --north-star ns-a --milestone ms-done <"$body_ok" 2>/dev/null; then
   fail "should refuse complete milestone"
 fi
+
+# --ensure-milestone reopens a complete milestone (soak-red auto-filer path)
+export FILE_PR_MS_STATE_LOG="$tmp/ms-state.log"
+: >"$FILE_PR_MS_STATE_LOG"
+"$bin" reopen-slug --board-cli "$fake_kanban" --title "x" --repo EdgeVector/last-stack \
+  --north-star ns-a --milestone ms-done --ensure-milestone <"$body_ok" >/dev/null 2>&1 \
+  || fail "--ensure-milestone should reopen a complete milestone"
+grep -q 'ms-done active' "$FILE_PR_MS_STATE_LOG" \
+  || fail "complete milestone was not reopened: $(cat "$FILE_PR_MS_STATE_LOG")"
 
 # refuse NS mismatch
 if "$bin" some-slug --board-cli "$fake_kanban" --title "x" --repo EdgeVector/last-stack \

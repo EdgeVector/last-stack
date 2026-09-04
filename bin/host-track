@@ -1173,7 +1173,8 @@ atomic_symlink() {
 
 # mkdir-mutex install lock (pid + age reclaim). Same shape as lastgit install-local.lock.d.
 acquire_install_lock() {
-  local app="$1" lock waited=0 mtime now age
+  local app="$1" wait_s="${2:-$HOST_TRACK_INSTALL_LOCK_WAIT_S}" nonfatal="${3:-0}"
+  local lock waited=0 mtime now age
   mkdir -p "$HOST_TRACK_LOCK_DIR"
   lock="$HOST_TRACK_LOCK_DIR/install-${app}.lock.d"
   while ! mkdir "$lock" 2>/dev/null; do
@@ -1194,8 +1195,10 @@ acquire_install_lock() {
         continue
       fi
     fi
-    if [ "$waited" -ge "$HOST_TRACK_INSTALL_LOCK_WAIT_S" ]; then
-      die "install lock timeout for $app after ${HOST_TRACK_INSTALL_LOCK_WAIT_S}s (another host-track install is running)"
+    if [ "$waited" -ge "$wait_s" ]; then
+      [ "$nonfatal" != "1" ] \
+        || return 1
+      die "install lock timeout for $app after ${wait_s}s (another host-track install is running)"
     fi
     sleep 1
     waited=$((waited + 1))
@@ -2041,6 +2044,7 @@ EOF
     --north-star north-star-artifact-driven-host-track \
     --work-class incident \
     --milestone ms-host-track-app-soak-failures \
+    --work-class incident \
     --ensure-milestone; then
     printf 'host-track: %s soak RED; card file failed (soak still refuses cutover)\n' \
       "$app" >&2
@@ -2097,7 +2101,7 @@ kick_ship_soak_runs() {
 post_flip_watch_one() {
   # Probe the NEW current for post_flip_ticks ticks after a flip. Red rolls
   # current back to previous automatically, files the card, kicks heal.
-  local app="$1" json path digest ticks install_root current_dir incumbent_dir probe_rc
+  local app="$1" json path digest ticks install_root current_dir incumbent_dir probe_rc probe_log
   json="$(require_app_json "$app")"
   [ "$(setting "$json" install_mode)" = "artifact" ] || return 0
   path="$(post_flip_stamp_path "$app")"
@@ -2117,13 +2121,23 @@ post_flip_watch_one() {
     incumbent_dir="$install_root/$(readlink "$install_root/previous")"
     [ -d "$incumbent_dir" ] || incumbent_dir=""
   fi
+  # Same rule as soak_watch_one: never probe a tree a concurrent install may
+  # be restaging. Defer the tick when the install lock is busy.
+  if ! acquire_install_lock "$app" "${HOST_TRACK_SOAK_LOCK_WAIT_S:-60}" 1; then
+    printf 'host-track: %s post-flip watch deferred (install in progress)\n' "$app"
+    return 0
+  fi
+  probe_log="$STAMP_DIR/soak-history/last-probe-$app.log"
+  mkdir -p "$STAMP_DIR/soak-history"
   probe_rc=0
-  if run_safe_upgrade_probes "$app" "$json" "$current_dir" "$incumbent_dir"; then
+  if run_safe_upgrade_probes "$app" "$json" "$current_dir" "$incumbent_dir" 2>"$probe_log"; then
     :
   else
     probe_rc=$?
   fi
+  cat "$probe_log" >&2 || true
   if [ "$probe_rc" -eq 2 ]; then
+    release_install_lock
     printf 'host-track: %s post-flip probe inconclusive; ticks_left=%s unchanged\n' \
       "$app" "$ticks" >&2
     return 0
@@ -2131,11 +2145,15 @@ post_flip_watch_one() {
   if [ "$probe_rc" -ne 0 ]; then
     printf 'host-track: %s post-flip RED; rolling back to previous\n' "$app" >&2
     rollback_current_to_previous "$app" "$install_root" "$digest" "$json"
+    # Release before the card/heal kick: the heal runner can block for a long
+    # time and must not hold this app's install lock while it does.
+    release_install_lock
     file_soak_red_card "$app" "$digest" "$json"
     kick_heal_soak "$app" "$digest" "$json"
     rm -f "$path"
     return 1
   fi
+  release_install_lock
   ticks=$((ticks - 1))
   if [ "$ticks" -le 0 ]; then
     printf 'host-track: %s post-flip watch complete for %s\n' "$app" "${digest:0:12}"
@@ -2750,7 +2768,7 @@ validate_registry_cmd() {
 
 
 soak_watch_one() {
-  local app="$1" json install_root canary_rel canary_dir digest soak_h min_checks stamp checks started now elapsed need current_dir probe_rc
+  local app="$1" json install_root canary_rel canary_dir digest soak_h min_checks stamp checks started now elapsed need current_dir probe_rc probe_log
   json="$(require_app_json "$app")"
   [ "$(setting "$json" install_mode)" = "artifact" ] || return 0
   IFS=$'\t' read -r _ _ _ install_root < <(artifact_paths "$app" "$json")
@@ -2758,32 +2776,55 @@ soak_watch_one() {
     printf 'host-track: %s soak-watch noop (no canary)\n' "$app"
     return 0
   }
+  # Read the canary and probe it under the per-app install lock so a
+  # concurrent refresh restaging the same tree cannot make a half-staged
+  # canary probe RED (2026-09-04 brain incident: a force-if-stale restage
+  # raced soak-watch and a healthy digest was rejected as soak RED).
+  # Bounded and non-fatal: an install in progress just defers this tick.
+  if ! acquire_install_lock "$app" "${HOST_TRACK_SOAK_LOCK_WAIT_S:-60}" 1; then
+    printf 'host-track: %s soak-watch deferred (install in progress)\n' "$app"
+    return 0
+  fi
+  [ -L "$install_root/canary" ] || {
+    printf 'host-track: %s soak-watch noop (canary retired while waiting)\n' "$app"
+    release_install_lock
+    return 0
+  }
   canary_rel="$(readlink "$install_root/canary")"
   case "$canary_rel" in versions/*) ;; *)
     printf 'host-track: %s soak-watch invalid canary %s\n' "$app" "$canary_rel" >&2
+    release_install_lock
     return 1
   esac
   canary_dir="$install_root/$canary_rel"
   [ -d "$canary_dir" ] || {
     printf 'host-track: %s soak-watch dangling canary %s\n' "$app" "$canary_rel" >&2
+    release_install_lock
     return 1
   }
   digest="${canary_rel#versions/}"
   if [ -L "$install_root/current" ] && [ "$(readlink "$install_root/current")" = "$canary_rel" ]; then
     printf 'host-track: %s soak-watch already current\n' "$app"
     archive_soak_stamp "$app" "activated"
+    release_install_lock
     return 0
   fi
   current_dir=""
   if [ -L "$install_root/current" ] && current_target_is_live "$install_root"; then
     current_dir="$install_root/$(readlink "$install_root/current")"
   fi
+  # Keep the probe transcript so a RED's card/heal brief carries the real
+  # failure output (loom-soak-collect reads soak-history/last-probe-<app>.log).
+  probe_log="$STAMP_DIR/soak-history/last-probe-$app.log"
+  mkdir -p "$STAMP_DIR/soak-history"
   probe_rc=0
-  if run_safe_upgrade_probes "$app" "$json" "$canary_dir" "$current_dir"; then
+  if run_safe_upgrade_probes "$app" "$json" "$canary_dir" "$current_dir" 2>"$probe_log"; then
     :
   else
     probe_rc=$?
   fi
+  cat "$probe_log" >&2 || true
+  release_install_lock
   if [ "$probe_rc" -eq 2 ]; then
     printf 'host-track: %s soak probe inconclusive; current and soak state unchanged\n' \
       "$app" >&2
