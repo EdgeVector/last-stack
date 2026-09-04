@@ -375,3 +375,13 @@ ci_test tests/last-stack-lastdb-safe-upgrade-skill.sh
 #
 # APPENDED (see the shard-stability note above): ci_test shards by list position.
 ci_test tests/last-stack-north-star-proof-no-scan-access.sh
+
+# lastdb-canary-build-main was registered in config/routines-registry/ since
+# 2026-08-05 but had no installer, so it never reached the live registry
+# (papercut-no-registered-routine-produces-a-lastdb-canary-candidate-20260903).
+# These pin the new zero-LLM staleness gate and its seed-if-missing installer.
+# Hermetic fixtures, stubbed host-track/prompt/gate paths, no node, no network.
+#
+# APPENDED (see the shard-stability note above): ci_test shards by list position.
+ci_test tests/last-stack-canary-build-main-gate.sh
+ci_test tests/last-stack-lastdb-canary-build-main-routine.sh
