@@ -194,7 +194,14 @@ for repo in $repo_list; do
       skipped=$((skipped + 1))
       continue
     fi
-    ci="$(lastgit ci status "$head_oid" --repo "$repo" 2>/dev/null | plain | awk 'NF{print $1; exit}')"
+    # `lastgit ci status` EXITS NON-ZERO for a commit that has no status row
+    # yet, which under `set -o pipefail` kills the whole run at the assignment
+    # — before the settled-merge pass below, whose repairs the dry run has
+    # already promised. Seen 2026-09-04: --apply exited 1 on a minutes-old CR
+    # and left two acknowledged merges unlanded (loom cr-mtm9thej-5187,
+    # situations cr-mtm8zgyv-a588) that the same run's --dry-run had listed.
+    # No status is the `none` case the skip below already handles.
+    ci="$(lastgit ci status "$head_oid" --repo "$repo" 2>/dev/null | plain | awk 'NF{print $1; exit}' || true)"
     if [ "$ci" != "pending" ]; then
       say "  skip: ci-required reads '${ci:-none}', not the torn shape"
       skipped=$((skipped + 1))

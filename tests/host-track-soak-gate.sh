@@ -124,6 +124,11 @@ slug="$(jq -r '.card_slug' "$stamp")"
 [ "$slug" = "soak-red-demo-digestbbbb" ] || fail "unexpected incident slug: $slug"
 grep -q -- "--key $slug" "$tmp/heal-calls" || fail "heal kick should use the card slug key"
 [ "$(wc -l < "$tmp/file-pr-calls")" -eq 1 ] || fail "exactly one card filing expected"
+# A soak RED is incident work. Filed as the default `feature` work class it is
+# refused by portfolio admission whenever this North Star is paused, and the
+# board never learns the promotion failed.
+grep -q -- "--work-class incident" "$tmp/file-pr-calls" \
+  || fail "soak-red filing must pass --work-class incident, got: $(cat "$tmp/file-pr-calls")"
 [ "$(wc -l < "$tmp/ship-soak-tick-calls" | tr -d ' ')" -eq $((ship_ticks_before_red + 1)) ] \
   || fail "a red Host Track tick should still resume ship-soak"
 

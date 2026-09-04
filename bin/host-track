@@ -2029,6 +2029,12 @@ host-track soak-watch ${app}
 # expect soak GREEN or already current — not soak RED
 EOF
 )"
+  # A failed promotion is incident work, not a new feature. Filed under the
+  # default `feature` work class, portfolio admission refuses the card for as
+  # long as this North Star is paused — and then NOTHING records the failure:
+  # the filing dies, the stamp keeps an empty card_slug, and the next red
+  # re-files and is refused again. The board never learns the app is stuck on
+  # its last-known-good copy.
   if ! printf '%s\n' "$body" | "$helper" "$slug" \
     --title "Soak RED: ${app} ${digest:0:12} failed safe-upgrade probes" \
     --repo "$repo" \
@@ -2036,6 +2042,7 @@ EOF
     --priority P0 \
     --tags "p0,soak-red,${app}" \
     --north-star north-star-artifact-driven-host-track \
+    --work-class incident \
     --milestone ms-host-track-app-soak-failures \
     --work-class incident \
     --ensure-milestone; then

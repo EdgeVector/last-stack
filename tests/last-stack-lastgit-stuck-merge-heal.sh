@@ -17,6 +17,7 @@ RUNNING=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 GREEN=cccccccccccccccccccccccccccccccccccccccc
 MERGE_OID=dddddddddddddddddddddddddddddddddddddddd
 SETTLED=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+NOSTATUS=ffffffffffffffffffffffffffffffffffffffff
 
 cat > "$tmp/forge.log" <<LOG
 unconfirmed $TORN ci-required: ci_verdict_unconfirmed_after_retry: ${TORN:0:12} ci-required was accepted as success but the status row still reads pending.
@@ -33,6 +34,7 @@ case "\$1 \$2" in
         printf 'cr-torn\topen\tx->main\ttorn verdict\n'
         printf 'cr-running\topen\ty->main\tci still running\n'
         printf 'cr-green\topen\tz->main\talready green\n'
+        [ -f "$tmp/with-nostatus" ] && printf 'cr-nostatus\topen\tn->main\tno ci row yet\n'
         ;;
     esac
     ;;
@@ -49,6 +51,7 @@ case "\$1 \$2" in
     case "\$4" in
       cr-torn) oid=$TORN ;;
       cr-running) oid=$RUNNING ;;
+      cr-nostatus) oid=$NOSTATUS ;;
       *) oid=$GREEN ;;
     esac
     printf 'head_oid\t%s\n' "\$oid"
@@ -65,6 +68,7 @@ case "\$1 \$2" in
     ;;
   "ci status")
     case "\$3" in
+      $NOSTATUS) exit 1 ;;
       $GREEN) printf 'success\tci-required\n' ;;
       *) printf 'pending\tci-required\n' ;;
     esac
@@ -201,3 +205,22 @@ grep -q "landed; base has advanced" "$tmp/adv" \
 : > "$tmp/merged-crs"; echo 1 > "$tmp/contains"
 
 echo "PASS: last-stack-lastgit-stuck-merge-heal"
+
+# --- a CR with no CI row yet must not abort the run ------------------------
+# `lastgit ci status` exits non-zero for a commit that has no status row. Under
+# `set -o pipefail` that killed the whole run AT THE ASSIGNMENT, before the
+# settled-merge pass — so --apply exited 1 having repaired nothing, while the
+# same run's --dry-run had listed the repairs. Live on 2026-09-04: a
+# minutes-old last-stack CR stranded loom cr-mtm9thej-5187 and situations
+# cr-mtm8zgyv-a588, both acknowledged as merged with their base refs behind.
+rm -f "$tmp/merged"; : > "$tmp/git-push"; : > "$tmp/forge.log"
+touch "$tmp/with-nostatus"
+echo 0 > "$tmp/ancestor"; echo 1 > "$tmp/contains"
+printf 'cr-settled\tmerged\ts->main\tsettled merge\n' > "$tmp/merged-crs"
+PATH="$tmp:$PATH" bash "$bin" --repos demo --apply > "$tmp/nostatus" 2>&1 \
+  || { echo "FAIL: a CR with no CI row aborted the run"; cat "$tmp/nostatus"; exit 1; }
+grep -q "ci-required reads 'none'" "$tmp/nostatus" \
+  || { echo "FAIL: did not skip the statusless CR by name"; cat "$tmp/nostatus"; exit 1; }
+grep -q "$MERGE_OID:refs/heads/main" "$tmp/git-push" \
+  || { echo "FAIL: statusless CR blocked the settled-merge repair"; cat "$tmp/nostatus"; exit 1; }
+rm -f "$tmp/with-nostatus"; : > "$tmp/merged-crs"
