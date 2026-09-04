@@ -36,6 +36,7 @@ set -euo pipefail
 
 forge_log="${LASTGIT_FORGE_LOG:-$HOME/.lastgit/forge-primary/forge.log}"
 repos=""
+since="6h"
 apply=0
 json=0
 merged=0
@@ -44,12 +45,13 @@ skipped=0
 
 usage() {
   cat >&2 <<'EOF'
-usage: last-stack-lastgit-stuck-merge-heal [--repos a,b,c] [--apply] [--json]
+usage: last-stack-lastgit-stuck-merge-heal [--repos a,b,c] [--since 6h] [--apply] [--json]
 
 Reports (default) or lands (--apply) LastGit CRs stranded by a torn CI-verdict
 write, and moves a base ref whose merge was acknowledged but never landed.
 
   --repos   comma-separated repo list; default: every repo with an open CR
+  --since   how far back the merged-CR pass reads (default 6h)
   --apply   perform the admin merge and the fast-forward push
   --json    emit one summary object instead of the human report
 
@@ -61,6 +63,7 @@ EOF
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --repos) repos="${2:-}"; shift 2 ;;
+    --since) since="${2:-}"; shift 2 ;;
     --apply) apply=1; shift ;;
     --json) json=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -112,17 +115,29 @@ repair_ref() {
     say "  ref $repo/$base already at ${merge_oid:0:12}"
     return 0
   fi
-  say "  ref $repo/$base reads ${cur:0:12}, merge oid is ${merge_oid:0:12} (unlanded)"
-  if [ "$apply" -eq 0 ]; then
-    say "  would fast-forward $repo/$base to ${merge_oid:0:12} (--apply to do it)"
-    return 1
-  fi
   ensure_clone "$repo"
   local wt="$scratch/repo"
   git -C "$wt" fetch -q --depth 1 origin "$merge_oid" 2>/dev/null || true
   git -C "$wt" fetch -q origin 2>/dev/null || true
+  # A merged CR whose base has since advanced PAST its merge oid landed
+  # correctly. Equality alone calls that unlanded and would push the ref
+  # backwards; only ancestry answers it.
+  if git -C "$wt" merge-base --is-ancestor "$merge_oid" "$cur" 2>/dev/null; then
+    say "  ref $repo/$base contains ${merge_oid:0:12} (landed; base has advanced)"
+    return 0
+  fi
+  say "  ref $repo/$base reads ${cur:0:12}, merge oid is ${merge_oid:0:12} (unlanded)"
+  # Prove the fast-forward BEFORE reporting one. A merge oid that is a SIBLING
+  # of the current base (both merges of the same parent, acknowledged out of
+  # order) is not recoverable by a ref push at all, and a report that promises
+  # a fast-forward for it sends the next reader to a push that must be
+  # refused. Seen live on loom cr-mtm3ryqk-3c22, 2026-09-04.
   if ! git -C "$wt" merge-base --is-ancestor "$cur" "$merge_oid" 2>/dev/null; then
     say "  REFUSED: ${cur:0:12} is not an ancestor of ${merge_oid:0:12}; not a fast-forward"
+    return 1
+  fi
+  if [ "$apply" -eq 0 ]; then
+    say "  would fast-forward $repo/$base to ${merge_oid:0:12} (--apply to do it)"
     return 1
   fi
   if git -C "$wt" push -q origin "$merge_oid:refs/heads/$base" 2>/dev/null; then
@@ -190,6 +205,25 @@ for repo in $repo_list; do
     fi
     merged=$((merged + 1))
     say "  merged $repo:$cr as ${merge_oid:0:12}"
+    repair_ref "$repo" "$base" "$merge_oid" || true
+  done
+done
+
+# Second pass: a CR whose row already reads `merged` is NOT in the open list,
+# so the pass above can never see it. That is the shape both ships of
+# 2026-09-04T01:0x-01:3xZ took (last-stack cr-mtm5pr6u-ab38, loom
+# cr-mtm79teu-1af9): the merge was acknowledged, the row was stamped merged,
+# and the base ref never moved. Left alone it reads as a landed feature that
+# is absent from main.
+for repo in $repo_list; do
+  merged_crs="$(lastgit cr list "$repo" --state merged --since "$since" 2>/dev/null | plain | awk -F'\t' '$2=="merged"{print $1}')"
+  [ -n "$merged_crs" ] || continue
+  for cr in $merged_crs; do
+    view="$(lastgit cr view "$repo" "$cr" 2>/dev/null | plain)"
+    merge_oid="$(cr_field "$view" merge_oid)"
+    base="$(cr_field "$view" base_branch)"
+    [ -n "$merge_oid" ] && [ -n "$base" ] || continue
+    say "$repo:$cr state=merged merge=${merge_oid:0:12}"
     repair_ref "$repo" "$base" "$merge_oid" || true
   done
 done
