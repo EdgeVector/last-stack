@@ -224,9 +224,13 @@ rss_mb_of() {
 # phys_footprint_mb_of.
 phys_footprint_mb_of() {
   local pid="$1" bytes
-  bytes="$(python3 - "$pid" <<'PY' 2>/dev/null || true
+  # Unquoted $(...) — bash 3.2 (LaunchAgent /bin/bash) treats quotes inside
+  # a double-quoted "$( <<'PY' )" as closers, so the python must not sit
+  # in an extra quoted substitution.
+  bytes=$(python3 - "$pid" <<'PY' 2>/dev/null || true
 import ctypes
 import ctypes.util
+import struct
 import sys
 
 pid = int(sys.argv[1])
@@ -234,49 +238,25 @@ libc_name = ctypes.util.find_library("c")
 if not libc_name:
     raise SystemExit(1)
 libc = ctypes.CDLL(libc_name)
+# Darwin rusage_info_v4 is 296 bytes (macOS 26 SDK). A 248-byte ctypes
+# Structure overflowed the heap and SIGSEGV'd in PyGC_Collect on finalize.
+# An oversized buffer survives later field growth (v5=304, v6=464).
 RUSAGE_INFO_V4 = 4
-
-class rusage_info_v4(ctypes.Structure):
-    _fields_ = [
-        ("ri_uuid", ctypes.c_uint8 * 16),
-        ("ri_user_time", ctypes.c_uint64),
-        ("ri_system_time", ctypes.c_uint64),
-        ("ri_pkg_idle_wkups", ctypes.c_uint64),
-        ("ri_interrupt_wkups", ctypes.c_uint64),
-        ("ri_pageins", ctypes.c_uint64),
-        ("ri_wired_size", ctypes.c_uint64),
-        ("ri_resident_size", ctypes.c_uint64),
-        ("ri_phys_footprint", ctypes.c_uint64),
-        ("ri_proc_start_abstime", ctypes.c_uint64),
-        ("ri_proc_exit_abstime", ctypes.c_uint64),
-        ("ri_child_user_time", ctypes.c_uint64),
-        ("ri_child_system_time", ctypes.c_uint64),
-        ("ri_child_pkg_idle_wkups", ctypes.c_uint64),
-        ("ri_child_interrupt_wkups", ctypes.c_uint64),
-        ("ri_child_pageins", ctypes.c_uint64),
-        ("ri_child_elapsed_abstime", ctypes.c_uint64),
-        ("ri_diskio_bytesread", ctypes.c_uint64),
-        ("ri_diskio_byteswritten", ctypes.c_uint64),
-        ("ri_cpu_time_qos_default", ctypes.c_uint64),
-        ("ri_cpu_time_qos_maintenance", ctypes.c_uint64),
-        ("ri_cpu_time_qos_background", ctypes.c_uint64),
-        ("ri_cpu_time_qos_utility", ctypes.c_uint64),
-        ("ri_cpu_time_qos_legacy", ctypes.c_uint64),
-        ("ri_cpu_time_qos_user_initiated", ctypes.c_uint64),
-        ("ri_cpu_time_qos_user_interactive", ctypes.c_uint64),
-        ("ri_billed_system_time", ctypes.c_uint64),
-        ("ri_serviced_system_time", ctypes.c_uint64),
-        ("ri_logical_writes", ctypes.c_uint64),
-        ("ri_lifetime_max_phys_footprint", ctypes.c_uint64),
-    ]
-
-info = rusage_info_v4()
-rc = libc.proc_pid_rusage(pid, RUSAGE_INFO_V4, ctypes.byref(info))
-if rc != 0 or info.ri_phys_footprint <= 0:
+BUF_SIZE = 1024
+PHYS_FOOTPRINT_OFFSET = 72
+buf = (ctypes.c_uint8 * BUF_SIZE)()
+fn = libc.proc_pid_rusage
+fn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
+fn.restype = ctypes.c_int
+rc = fn(pid, RUSAGE_INFO_V4, buf)
+if rc != 0:
     raise SystemExit(1)
-print(info.ri_phys_footprint)
+footprint = struct.unpack_from('<Q', bytes(buf), PHYS_FOOTPRINT_OFFSET)[0]
+if footprint <= 0:
+    raise SystemExit(1)
+print(int(footprint))
 PY
-)"
+)
   if [ -n "${bytes:-}" ] && [ "$bytes" -gt 0 ] 2>/dev/null; then
     printf '%s rusage\n' "$((bytes / 1024 / 1024))"
     return 0
