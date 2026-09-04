@@ -28,7 +28,24 @@ TRANSIENT_ERRORS = (
 LASTGIT_RE = re.compile(r"\blastgit://([^/\s)>\]]+)/cr/([^/\s)>\]]+)")
 FORGE_RE = re.compile(r"https?://[^/\s)>\]]+/([^/\s)>\]]+)/([^/\s)>\]]+)/pulls?/(\d+)")
 GITHUB_RE = re.compile(r"https?://github\.com/([^/\s)>\]]+)/([^/\s)>\]]+)/pull/(\d+)")
-PIPELINE_STUCK_SLUG_RE = re.compile(r"^papercut-pipeline-stuck-(cr|forge|pr)-")
+PIPELINE_STUCK_SLUG_RE = re.compile(r"^papercut-pipeline-stuck-(cr|forge|pr|merges)-")
+# `pipeline-health` also files an AGGREGATE row per repo (`...-merges-<repo>`,
+# optionally with a wake stamp). It names its reviews in the BODY, never in the
+# slug, and one row accumulates many of them across per-wake appends.
+PIPELINE_STUCK_MERGES_SLUG_RE = re.compile(r"^papercut-pipeline-stuck-merges-(.+)$")
+# A `[[wikilink]]` and a `papercut-…` slug both carry review-id-shaped text that
+# belongs to some OTHER record ("Compared against and judged distinct from:").
+WIKILINK_RE = re.compile(r"\[\[[^\]]*\]\]")
+SLUG_MENTION_RE = re.compile(r"\bpapercut-[a-z0-9-]+")
+# `PR 1801`, `PR #1869`. The word is the qualifier, so no lookbehind is needed.
+AGGREGATE_PR_RE = re.compile(r"(?i)\bPR\s*#?\s*(\d{2,6})\b")
+# A bare `#1869`. Rejects `lastgit#507` — a foreign repo's PR quoted inside a
+# fold row — because a qualified `<repo>#<n>` is matched separately, against
+# this row's own repo only.
+AGGREGATE_BARE_PR_RE = re.compile(r"(?<![A-Za-z0-9_-])#(\d{2,6})\b")
+# A rolling row can name dozens of reviews. Past this many the row is not worth
+# a venue call per ref inside one pass; it gets a typed skip instead.
+AGGREGATE_REF_CAP = 60
 # A LastGit CR id carries a disambiguator suffix (`cr-msc85npn-c483`), so the
 # tail is at most two `-`-joined runs. Bounded on purpose: an unbounded
 # `([a-z0-9-]+)$` would let the prefix give back a repo name containing `-cr-`.
@@ -511,6 +528,77 @@ def labeled_ref_values(body: str) -> list[str]:
     return [match.group(1) for match in LABELED_REF_LINE_RE.finditer(body)]
 
 
+def record_repo(record: dict[str, Any]) -> tuple[str, str]:
+    """The owner and bare repo name a papercut is filed against.
+
+    The typed `repo` field is the reliable source: only one of the twelve open
+    `-merges-` rows carries a `Repo:` body header, and all twelve carry the
+    field.
+    """
+    extra = record.get("extra_fields")
+    raw = str(extra.get("repo") or "") if isinstance(extra, dict) else ""
+    if not raw:
+        header = REPO_HEADER_RE.search(str(record.get("body") or ""))
+        raw = header.group(1) if header else ""
+    if not raw:
+        return "", ""
+    return owner_repo(raw)
+
+
+def aggregate_repo(slug: str, repo: str) -> str:
+    """The repo an aggregate `-merges-` row is about, or "" if it is not one.
+
+    `pipeline-health` names these `papercut-pipeline-stuck-merges-<repo>` with
+    an optional wake stamp, so the repo prefix is what separates a per-wake
+    stuck-review roll-up from a record that merely lives under the same slug
+    prefix. `...-merges-canonical-record-unbounded-growth` is filed against
+    `EdgeVector/fold` but claims that a BRAIN RECORD grows unboundedly; closing
+    it because some fold PR reached a terminal state would be backwards.
+    """
+    match = PIPELINE_STUCK_MERGES_SLUG_RE.match(slug)
+    if not match or not repo:
+        return ""
+    tail = match.group(1)
+    return repo if tail == repo or tail.startswith(f"{repo}-") else ""
+
+
+def aggregate_review_refs(body: str, repo: str, owner: str) -> list[ReviewRef]:
+    """Review refs named in an aggregate row's prose, in first-mention order.
+
+    Free prose is normally never scanned, because a `cr-…`-shaped token usually
+    belongs to some other record. An aggregate row is the one class where the
+    prose IS the ref list: `pipeline-health` writes `CR cr-mtlk6vyw-f891 (…)`
+    and `Forgejo EdgeVector/fold PR 1902 is stuck red`, and nothing labels
+    either. Wikilinks and `papercut-…` slugs are stripped first, so a
+    "judged distinct from" list contributes nothing. What survives that is
+    still checked against the venue, and a ref the venue does not know is
+    dropped rather than believed — see close_review_records.
+    """
+    prose = SLUG_MENTION_RE.sub(" ", WIKILINK_RE.sub(" ", body))
+    found: list[tuple[int, ReviewRef]] = []
+    seen: set[str] = set()
+
+    def add(pos: int, ref: ReviewRef) -> None:
+        if ref.url not in seen:
+            seen.add(ref.url)
+            found.append((pos, ref))
+
+    for match in CR_FULL_RE.finditer(prose):
+        ident = match.group(1)
+        add(match.start(), ReviewRef("lastgit", f"lastgit://{repo}/cr/{ident}", repo, ident))
+    if repo in FORGE_VENUE_REPOS:
+        qualified = re.compile(rf"\b{re.escape(repo)}#(\d{{2,6}})\b")
+        for pattern in (AGGREGATE_PR_RE, AGGREGATE_BARE_PR_RE, qualified):
+            for match in pattern.finditer(prose):
+                num = match.group(1)
+                add(
+                    match.start(),
+                    ReviewRef("forge", f"{owner}/{repo}/pulls/{num}", repo, num, owner),
+                )
+    found.sort(key=lambda item: item[0])
+    return [ref for _, ref in found]
+
+
 def review_refs(body: str, slug: str = "") -> tuple[list[ReviewRef], list[str]]:
     """Resolve a papercut's own review refs.
 
@@ -643,13 +731,25 @@ def review_refs(body: str, slug: str = "") -> tuple[list[ReviewRef], list[str]]:
     return refs, skips
 
 
+def is_absent_ref_error(text: str) -> bool:
+    """The venue answered, and it does not have this review.
+
+    `lastgit cr view` on another repo's CR id exits 0 and streams
+    `cr_not_found`; the forge answers `HTTP 404`. Both are the venue saying the
+    id is not one of its reviews — a different fact from a lookup that failed.
+    """
+    lowered = text.lower()
+    return "cr_not_found" in lowered or "http 404" in lowered or "404 not found" in lowered
+
+
 def review_state(args: argparse.Namespace, ref: ReviewRef) -> tuple[str, str]:
-    """Normalized review state: `merged`, `closed`, `open`, or `unknown`.
+    """Normalized review state: `merged`, `closed`, `open`, `absent`, `unknown`.
 
     `merged` and `closed` are both TERMINAL — the review will not move again.
     Only a `pipeline-stuck` papercut may act on `closed`; see
     close_review_records for why the two classes read the same state
-    differently.
+    differently. `absent` means the venue answered and does not have this
+    review at all.
     """
     if ref.kind == "lastgit":
         data = run_json([args.lastgit_bin, "cr", "view", ref.repo, ref.ident, "--json"], timeout=60)
@@ -659,7 +759,11 @@ def review_state(args: argparse.Namespace, ref: ReviewRef) -> tuple[str, str]:
         detail = f"lastgit:{ref.repo}/{ref.ident}"
         if state == "merged" or merge_oid:
             return "merged", detail
-        return (state if state in ("closed", "open") else "unknown"), detail
+        if state in ("closed", "open"):
+            return state, detail
+        # A CR that exists always carries a state. An empty one is the
+        # `cr_not_found` stream, which `lastgit` emits on a zero exit.
+        return ("unknown" if state else "absent"), detail
     if ref.kind == "forge":
         data = run_json([args.forge_api_bin, f"repos/{ref.owner}/{ref.repo}/pulls/{ref.ident}"], timeout=60)
         state = str(data.get("state") or "").lower() if isinstance(data, dict) else ""
@@ -709,12 +813,34 @@ def close_record(
     detail: str,
     iso: str,
     state: str = "merged",
+    aggregate: list[str] | None = None,
 ) -> None:
     slug = str(record.get("slug") or "")
     title = str(record.get("title") or slug)
     if args.dry_run:
         return
-    if state == "merged":
+    if aggregate:
+        # An aggregate row claims a SET of reviews is stuck, so its evidence
+        # names the whole set. `fixed` is reserved for a set where every review
+        # merged; one abandoned review in the set means no fix can be cited.
+        listing = ", ".join(aggregate)
+        detail = listing
+        if state == "merged":
+            status = "fixed"
+            evidence = (
+                f"lifecycle closer confirmed all {len(aggregate)} reviews named by this row "
+                f"are merged: {listing}."
+            )
+        else:
+            status = "wontfix"
+            evidence = (
+                f"lifecycle closer confirmed all {len(aggregate)} reviews named by this row "
+                f"reached a terminal state ({listing}); the ones closed without merging cite no "
+                "fix, so the stuck condition ended without one. Retires the stuck-review claim "
+                "ONLY: any root-cause or suggested-fix text in this body is unaddressed and needs "
+                "its own papercut if it still reproduces."
+            )
+    elif state == "merged":
         status = "fixed"
         evidence = f"lifecycle closer confirmed {ref.url} is merged ({detail})."
     else:
@@ -760,6 +886,80 @@ def close_record(
         print(line)
 
 
+def close_aggregate_record(
+    args: argparse.Namespace,
+    record: dict[str, Any],
+    refs: list[ReviewRef],
+    iso: str,
+    result: dict[str, Any],
+) -> bool:
+    """Close an aggregate `-merges-` row only when EVERY review it names is terminal.
+
+    The single-ref classes close on the first terminal review they find, which
+    is right when the row names one. An aggregate row names several — one
+    `-merges-fold` row carried 25 fold PRs across three weeks of per-wake
+    appends — and it is still stuck while any one of them is live.
+
+    Returns True when the caller must stop (budget exhausted mid-row).
+    """
+    slug = str(record.get("slug") or "")
+    if len(refs) > AGGREGATE_REF_CAP:
+        result["skipped"].append(
+            {"slug": slug, "reason": "aggregate-too-many-refs", "details": [str(len(refs))]}
+        )
+        return False
+    terminal: list[tuple[ReviewRef, str, str]] = []
+    blocked = ""
+    # Newest mention first. A live row names its live review in its LAST
+    # append, so the common case costs one venue call instead of one per ref.
+    for ref in reversed(refs):
+        try:
+            state, detail = review_state(args, ref)
+        except BudgetExhausted:
+            result["skipped"].append({"slug": slug, "reason": "budget-exhausted"})
+            return True
+        except Exception as exc:
+            if is_absent_ref_error(str(exc)):
+                continue
+            result["errors"].append({"slug": slug, "ref": ref.url, "error": str(exc)})
+            return False
+        if state == "absent":
+            # Prose in one repo's row quotes another repo's review. The venue
+            # says the id is not its own, so it is not this row's ref.
+            continue
+        if state in ("merged", "closed"):
+            terminal.append((ref, state, detail))
+            continue
+        blocked = state or "unknown"
+        break
+    if blocked:
+        result["skipped"].append({"slug": slug, "reason": f"aggregate-review-{blocked}"})
+        return False
+    if not terminal:
+        result["skipped"].append({"slug": slug, "reason": "no-review-ref"})
+        return False
+    ref, state, detail = terminal[0]
+    overall = "merged" if all(item[1] == "merged" for item in terminal) else "closed"
+    listing = [f"{item[2]}={item[1]}" for item in terminal]
+    try:
+        close_record(args, record, ref, detail, iso, state=overall, aggregate=listing)
+    except BudgetExhausted:
+        result["skipped"].append({"slug": slug, "reason": "budget-exhausted-before-close"})
+        return True
+    entry = {
+        "slug": slug,
+        "ref": ref.url,
+        "detail": detail,
+        "review_state": overall,
+        "aggregate_refs": listing,
+    }
+    if overall == "merged":
+        result["fixed"].append(entry)
+    else:
+        result["closed_unmerged"].append(entry)
+    return False
+
+
 def close_review_records(args: argparse.Namespace, iso: str) -> dict[str, Any]:
     result: dict[str, Any] = {
         "ok": True,
@@ -792,6 +992,11 @@ def close_review_records(args: argparse.Namespace, iso: str) -> dict[str, Any]:
             result["skipped"].append({"slug": slug, "reason": "not-open"})
             continue
         refs, ref_skips = review_refs(body, slug)
+        owner_name, repo_name = record_repo(record)
+        agg_repo = aggregate_repo(slug, repo_name)
+        if agg_repo:
+            refs = aggregate_review_refs(body, agg_repo, owner_name or "EdgeVector")
+            ref_skips = []
         if not refs:
             entry: dict[str, Any] = {"slug": slug, "reason": "no-review-ref"}
             if ref_skips:
@@ -808,6 +1013,10 @@ def close_review_records(args: argparse.Namespace, iso: str) -> dict[str, Any]:
         # them named a review that was already closed. `merged`-only made the
         # whole cluster permanently unclosable.
         closed_is_terminal = bool(PIPELINE_STUCK_SLUG_RE.match(slug))
+        if agg_repo:
+            if close_aggregate_record(args, record, refs, iso, result):
+                return result
+            continue
         fixed = False
         last_state = ""
         for ref in refs:
