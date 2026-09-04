@@ -126,6 +126,23 @@ repair_ref() {
     say "  ref $repo/$base contains ${merge_oid:0:12} (landed; base has advanced)"
     return 0
   fi
+  # A merge object whose PARENTS are all already in the base carries no work
+  # the base is missing: the CR's commits reached main by another merge, and
+  # only the merge object itself is orphaned. Pushing it is not a
+  # fast-forward and re-merging would land nothing. Report it apart, or every
+  # later pass re-reports the same permanent REFUSED. Seen on loom
+  # cr-mtm3ryqk-3c22, 2026-09-04.
+  local parents orphan=1 pp
+  parents="$(git -C "$wt" log --format=%P -1 "$merge_oid" 2>/dev/null || true)"
+  if [ -n "$parents" ]; then
+    for pp in $parents; do
+      git -C "$wt" merge-base --is-ancestor "$pp" "$cur" 2>/dev/null || { orphan=0; break; }
+    done
+    if [ "$orphan" -eq 1 ]; then
+      say "  ref $repo/$base has every parent of ${merge_oid:0:12} (work landed; merge object orphaned)"
+      return 0
+    fi
+  fi
   say "  ref $repo/$base reads ${cur:0:12}, merge oid is ${merge_oid:0:12} (unlanded)"
   # Prove the fast-forward BEFORE reporting one. A merge oid that is a SIBLING
   # of the current base (both merges of the same parent, acknowledged out of

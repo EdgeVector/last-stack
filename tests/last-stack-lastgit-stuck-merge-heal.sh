@@ -89,7 +89,9 @@ case "\$args" in
     # "is <cur> an ancestor of <merge_oid>" decides fast-forward.
     # git -C <wt> merge-base --is-ancestor <A> <B> -> A is \$5.
     if [ "\$5" = "$MERGE_OID" ]; then exit "\$(cat "$tmp/contains")"; fi
+    if grep -q -- "\$5" "$tmp/parents" 2>/dev/null; then exit "\$(cat "$tmp/parent_in_base")"; fi
     exit "\$(cat "$tmp/ancestor")" ;;
+  *"log --format=%P"*) cat "$tmp/parents"; exit 0 ;;
   *push*) echo "\$args" >> "$tmp/git-push"; exit 0 ;;
 esac
 exit 0
@@ -97,6 +99,8 @@ STUB
 chmod +x "$tmp/git"
 echo 0 > "$tmp/ancestor"
 echo 1 > "$tmp/contains"
+: > "$tmp/parents"
+echo 1 > "$tmp/parent_in_base"
 : > "$tmp/merged-crs"
 
 export LASTGIT_FORGE_LOG="$tmp/forge.log"
@@ -134,6 +138,24 @@ PATH="$tmp:$PATH" bash "$bin" --repos demo --apply > "$tmp/nff" 2>&1 \
   && { echo "FAIL: pushed a non-fast-forward"; cat "$tmp/git-push"; exit 1; }
 grep -q "REFUSED" "$tmp/nff" \
   || { echo "FAIL: non-fast-forward was not refused out loud"; cat "$tmp/nff"; exit 1; }
+
+# --- a merge object whose parents are already in the base is not work -------
+# loom cr-mtm3ryqk-3c22, 2026-09-04: both parents of the merge oid were in
+# main, so the CR's commits had landed and only the merge object was orphaned.
+# Pushing it is not a fast-forward and re-merging lands nothing.
+PARENT_A=1111111111111111111111111111111111111111
+PARENT_B=2222222222222222222222222222222222222222
+rm -f "$tmp/merged"; : > "$tmp/git-push"
+printf 'cr-settled\tmerged\ts->main\tsettled merge\n' > "$tmp/merged-crs"
+printf '%s %s\n' "$PARENT_A" "$PARENT_B" > "$tmp/parents"
+echo 1 > "$tmp/contains"; echo 0 > "$tmp/parent_in_base"; echo 0 > "$tmp/ancestor"
+PATH="$tmp:$PATH" bash "$bin" --repos demo --apply > "$tmp/orphan" 2>&1 \
+  || { echo "FAIL: orphan-merge run errored"; cat "$tmp/orphan"; exit 1; }
+[ -s "$tmp/git-push" ] \
+  && { echo "FAIL: pushed an orphaned merge object"; cat "$tmp/git-push"; exit 1; }
+grep -q "merge object orphaned" "$tmp/orphan" \
+  || { echo "FAIL: did not classify the orphaned merge object"; cat "$tmp/orphan"; exit 1; }
+: > "$tmp/parents"; echo 1 > "$tmp/parent_in_base"; : > "$tmp/merged-crs"
 
 # --- the REPORT must not promise a fast-forward it cannot prove -------------
 rm -f "$tmp/merged"; : > "$tmp/git-push"
