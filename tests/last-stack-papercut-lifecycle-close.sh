@@ -273,4 +273,87 @@ assert refs and refs[0]["slug"] == "papercut-pipeline-stuck-cr-last-stack-cr-msf
 PY
 grep -q '^CLOSE papercut close papercut-pipeline-stuck-cr-last-stack-cr-msfkhqbn --status fixed ' "$BRAIN_DEFAULT_LOG"
 
+
+# A CLOSED review is TERMINAL. A `pipeline-stuck` papercut claims "this review
+# is stuck", so a review closed without merging resolves it -- as `wontfix`,
+# never `fixed`. Every other papercut class claims "the fix is covered by this
+# review", where a closed-unmerged review means the fix was ABANDONED and the
+# record must stay open for a human. Measured 2026-09-04: 41 of 43 open p0
+# pipeline-stuck rows named an already-closed review and could never close.
+cat >"$bin_dir/terminal-brain" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  "get papercut-pipeline-stuck-cr-last-stack-cr-abandoned --type papercut --json")
+    printf '%s\n' '{"slug":"papercut-pipeline-stuck-cr-last-stack-cr-abandoned","title":"Abandoned stuck CR","body":"Evidence: lastgit://last-stack/cr/cr-closed","status":"open"}'
+    ;;
+  "get papercut-last-stack-some-other-defect --type papercut --json")
+    printf '%s\n' '{"slug":"papercut-last-stack-some-other-defect","title":"Fix cited an abandoned CR","body":"Fixed-by: lastgit://last-stack/cr/cr-closed","status":"open"}'
+    ;;
+  papercut\ close\ *)
+    printf 'CLOSE %s\n' "$*" >>"$BRAIN_TERMINAL_LOG"
+    ;;
+  "append papercut-reconciler-ledger --type reference")
+    cat >>"$BRAIN_TERMINAL_LOG"
+    ;;
+  *)
+    echo "unexpected terminal brain args: $*" >&2
+    exit 2
+    ;;
+esac
+SH
+chmod +x "$bin_dir/terminal-brain"
+cat >"$bin_dir/terminal-lastgit" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+cr_id="$4"
+case "$cr_id" in
+  cr-closed)
+    printf '%s\n' '{"cr_id":"cr-closed","repo":"last-stack","state":"closed","merge_oid":""}'
+    ;;
+  *)
+    echo "unexpected cr $cr_id" >&2
+    exit 1
+    ;;
+esac
+SH
+chmod +x "$bin_dir/terminal-lastgit"
+export BRAIN_TERMINAL_LOG="$tmp/terminal.log"
+: >"$BRAIN_TERMINAL_LOG"
+PATH="$bin_dir:$PATH" "$ROOT/bin/last-stack-papercut-lifecycle-close" \
+  papercut-pipeline-stuck-cr-last-stack-cr-abandoned \
+  papercut-last-stack-some-other-defect \
+  --brain-bin "$bin_dir/terminal-brain" \
+  --lastgit-bin "$bin_dir/terminal-lastgit" \
+  --json >"$tmp/terminal.json"
+python3 - "$tmp/terminal.json" <<'TERMPY'
+import json
+import sys
+
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+assert data["checked"] == 2, data
+assert data["errors"] == [], data
+# The stuck row closed on the abandoned review; nothing landed in `fixed`.
+assert [item["slug"] for item in data["fixed"]] == [], data
+closed = data.get("closed_unmerged") or []
+assert [item["slug"] for item in closed] == [
+    "papercut-pipeline-stuck-cr-last-stack-cr-abandoned"
+], data
+assert closed[0]["review_state"] == "closed", data
+# The non-stuck row stayed open, with a reason that names WHY.
+reasons = {
+    item["slug"]: item["reason"] for item in data["skipped"] if isinstance(item, dict)
+}
+assert reasons.get("papercut-last-stack-some-other-defect") == "review-closed-not-merged", data
+TERMPY
+grep -q '^CLOSE papercut close papercut-pipeline-stuck-cr-last-stack-cr-abandoned --status wontfix ' "$BRAIN_TERMINAL_LOG"
+if grep -q 'papercut-last-stack-some-other-defect' "$BRAIN_TERMINAL_LOG"; then
+  echo "a non-pipeline-stuck papercut was closed on an ABANDONED review" >&2
+  exit 1
+fi
+if grep -q -- '--fixed-by' "$BRAIN_TERMINAL_LOG"; then
+  echo "a wontfix close cited a fix that does not exist" >&2
+  exit 1
+fi
+
 printf 'ok last-stack-papercut-lifecycle-close\n'
