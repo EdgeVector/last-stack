@@ -230,7 +230,20 @@ if [ -z "$ms_json" ]; then
   ms_state=active
   ms_ns="$north_star"
 elif ! is_live_ms_state "$ms_state"; then
-  die "milestone '$milestone' is not live (state=${ms_state:-empty}) — pick an active/planned/proving outcome"
+  # --ensure-milestone means "make this milestone usable": a completed outcome
+  # that gets new incident work reopens instead of silently blocking the
+  # auto-filer (2026-09-04: soak RED card lost because this refused
+  # state=complete). Abandoned and unknown states still refuse.
+  if [ "$ensure_ms" -eq 1 ] && [ "$ms_state" = "complete" ]; then
+    if [ "$dry" -eq 1 ]; then
+      printf 'DRY would reopen milestone %s complete → active\n' "$milestone"
+    elif ! "$board_cli" milestone state "$milestone" active >/dev/null; then
+      die "failed to reopen milestone $milestone (state=complete)"
+    fi
+    ms_state=active
+  else
+    die "milestone '$milestone' is not live (state=${ms_state:-empty}) — pick an active/planned/proving outcome"
+  fi
 fi
 
 if [ -n "$ms_ns" ] && [ "$ms_ns" != "$north_star" ]; then
