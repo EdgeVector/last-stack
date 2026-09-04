@@ -5,8 +5,10 @@
 # under test are mostly about when it does NOT fire:
 #   - default enforcement is footprint at the ratified 16 GiB limit
 #   - steady-state footprint below that limit causes no action
-#   - footprint enforcement refuses to fall back to rss when the node is
-#     unreachable, because that silently restores the 6.7x blind spot
+#   - footprint comes from proc_pid_rusage, not /api/status, so it stays
+#     available even when the node's own socket is unreachable
+#   - a forced restart sheds first (POST /api/admin/shed) and only proceeds to
+#     vmmap capture + SIGTERM when the footprint does not fall (fold #1908 port)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -23,6 +25,8 @@ mkdir -p "$tmp/bin" "$tmp/home/.lastdb/data"
 export HOME="$tmp/home"
 export LASTDBD_PRIMARY_HOME="$tmp/home/.lastdb"
 export LASTDBD_GUARD_RESTART_WAIT_SEC=2
+export LASTDBD_GUARD_SHED_WAIT_SEC=1
+export LASTDBD_GUARD_TERM_WAIT_SEC=1
 LOG="$LASTDBD_PRIMARY_HOME/monitoring/lastdbd-memory-guard.log"
 EVENT_LOG="$LASTDBD_PRIMARY_HOME/monitoring/lastdbd-memory-guard-events.jsonl"
 
@@ -50,6 +54,30 @@ case "$args" in
   *"-o command="*)    printf '/opt/lastdb/bin/lastdbd\n' ;;
   *)                  exit 1 ;;
 esac
+SH
+
+# Fake python3: shims phys_footprint_mb_of's proc_pid_rusage read. The guard
+# passes the pid as argv and a throwaway ctypes script on stdin; both are
+# ignored — the byte count comes straight from the fixture's env vars, and
+# FAKE_SHED_MARKER lets a test observe footprint falling after a shed.
+cat >"$tmp/bin/python3" <<'SH'
+#!/usr/bin/env bash
+if [ "${FAKE_FOOTPRINT_FAIL:-0}" = "1" ]; then
+  exit 1
+fi
+if [ -f "${FAKE_SHED_MARKER:-/nonexistent-shed-marker}" ]; then
+  printf '%s\n' "${FAKE_FOOTPRINT_BYTES_AFTER_SHED:-${FAKE_FOOTPRINT_BYTES:-0}}"
+else
+  printf '%s\n' "${FAKE_FOOTPRINT_BYTES:-0}"
+fi
+SH
+
+# Fake vmmap: records the capture attempt instead of scanning a pid that does
+# not really exist.
+cat >"$tmp/bin/vmmap" <<'SH'
+#!/usr/bin/env bash
+printf 'vmmap %s\n' "$*" >>"$FAKE_ACTION_LOG"
+echo "fake vmmap summary"
 SH
 
 # Fake curl: serves status and the bounded boot-identity route unless the node
@@ -82,6 +110,16 @@ emit() {
     printf '\n%s' "$2"
   fi
 }
+case "$*" in
+  *"/api/admin/shed"*)
+    code="${FAKE_SHED_HTTP:-404}"
+    if [ "$code" = "200" ]; then
+      touch "$FAKE_SHED_MARKER"
+    fi
+    emit "" "$code"
+    exit 0
+    ;;
+esac
 case "$*" in
   *"/api/system/boot-identity"*)
     if [ "${FAKE_BOOT_HTTP:-200}" = "404" ]; then
@@ -169,6 +207,7 @@ SH
 
 chmod +x "$tmp/bin/"*
 export FAKE_PID FAKE_ACTION_LOG="$tmp/actions.log"
+export FAKE_SHED_MARKER="$tmp/shed-posted"
 export LASTDBD_GUARD_NOTICE_CMD="$tmp/bin/situations"
 
 # A LaunchAgent directory holding the primary's plist, a decoy for a DIFFERENT
@@ -194,6 +233,7 @@ reset() {
   rm -f "$LASTDBD_PRIMARY_HOME/monitoring/lastdbd-absent.state"
   rm -f "$LASTDBD_PRIMARY_HOME/monitoring/lastdbd-revive.hold"
   rm -f "$EVENT_LOG"
+  rm -f "$FAKE_SHED_MARKER"
   write_agents
   printf '{"pid":4242,"start_ts":1234,"last_heartbeat_ts":1234}\n' >"$LASTDBD_PRIMARY_HOME/current-session.json"
   printf '{"pid":4242,"start_ts":1234,"build_version":"0.0.0-test"}\n' >"$LASTDBD_PRIMARY_HOME/sessions.jsonl"
@@ -210,7 +250,6 @@ fi
 reset
 FAKE_RSS_KB=$((1500 * 1024)) \
 FAKE_FOOTPRINT_BYTES=$((9000 * MB)) \
-FAKE_PEAK_BYTES=$((12500 * MB)) \
 FAKE_SWAP_MB=25000 \
   "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 below the default limit"
 
@@ -218,20 +257,22 @@ restarted && fail "default footprint policy must not restart at steady state"
 grep -q 'metric=footprint' "$LOG" || fail "default metric should be footprint"
 grep -q 'limit_mb=16384' "$LOG" || fail "default limit should be 16384 MiB"
 grep -q 'footprint_mb=9000' "$LOG" || fail "log should carry the footprint gauge"
-grep -q 'peak_mb=12500' "$LOG" || fail "log should carry the footprint peak"
+grep -q 'footprint_source=rusage' "$LOG" || fail "footprint should come from rusage by default"
 grep -q 'rss_mb=1500' "$LOG" || fail "log should still carry rss"
 grep -q 'swap_mb=' "$LOG" || fail "log should carry swap for diagnosis"
 grep -q 'warn swap_used' "$LOG" && fail "swap use alone must not raise an alert"
 
-# --- 3. default policy fires when footprint exceeds 16 GiB -------------------
+# --- 3. default policy fires when footprint exceeds 16 GiB; an unsupported
+# (404) shed route never fails closed and the restart still proceeds ---------
 reset
 FAKE_RSS_KB=$((1500 * 1024)) \
 FAKE_FOOTPRINT_BYTES=$((17000 * MB)) \
-FAKE_PEAK_BYTES=$((17100 * MB)) \
   "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 after a restart"
 restarted || fail "default footprint policy must restart above 16 GiB"
 grep -q 'OVER_LIMIT.*metric=footprint.*enforced_mb=17000.*limit_mb=16384' "$LOG" \
   || fail "over-limit line should record the default footprint policy"
+grep -q 'shed_unsupported' "$LOG" || fail "a 404 shed route should be logged and not block the restart"
+grep -q 'vmmap_capture\|vmmap_skip' "$LOG" || fail "a forced restart should attempt a vmmap capture"
 grep -q '"event":"restart_requested".*"old_pid":4242.*"new_pid":null' "$EVENT_LOG" \
   || fail "restart request should be durable before the signal"
 grep -q '"event":"restart_observed".*"old_pid":4242.*"new_pid":4243' "$EVENT_LOG" \
@@ -250,27 +291,27 @@ grep -q 'notice posted slug=lastdb-memory-guard-restart-' "$LOG" \
 reset
 FAKE_RSS_KB=$((1500 * 1024)) \
 FAKE_FOOTPRINT_BYTES=$((8700 * MB)) \
-FAKE_PEAK_BYTES=$((11110 * MB)) \
 LASTDBD_RSS_LIMIT_MB=6144 \
   "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 after a restart"
 restarted || fail "footprint enforcement must restart when footprint exceeds the limit"
 grep -q 'OVER_LIMIT.*metric=footprint.*enforced_mb=8700' "$LOG" \
   || fail "over-limit line should name the footprint gauge and reading"
 
-# --- 5. default footprint policy declines rather than falling back to rss -----
-# Falling back would silently restore the blind spot the policy closed.
+# --- 5. a failed rusage read falls back to rss and records the source -------
+# rusage is a local syscall, not a network call, so this only happens off
+# macOS or when the pid has just raced away — it must not block a whole cycle.
 reset
-FAKE_NODE_DOWN=1 \
+FAKE_FOOTPRINT_FAIL=1 \
 FAKE_RSS_KB=$((1500 * 1024)) \
-  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 when it declines to enforce"
-restarted && fail "must not restart on an unavailable footprint reading"
-grep -q 'footprint_unavailable' "$LOG" || fail "declining to enforce must be logged"
+  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 when the rusage read fails"
+restarted && fail "an rss-equivalent footprint below the limit must not restart"
+grep -q 'footprint_source=rss_fallback' "$LOG" || fail "a rusage failure should record the fallback source"
+grep -q 'footprint_mb=1500' "$LOG" || fail "the fallback footprint should equal rss"
 
 # --- 6. explicit rss compatibility mode exposes its blind spot ----------------
 reset
 FAKE_RSS_KB=$((1500 * 1024)) \
 FAKE_FOOTPRINT_BYTES=$((8700 * MB)) \
-FAKE_PEAK_BYTES=$((11110 * MB)) \
 LASTDBD_RSS_LIMIT_MB=6144 \
 LASTDBD_GUARD_METRIC=rss \
   "$GUARD" >/dev/null 2>&1 || fail "rss compatibility mode should exit 0"
@@ -281,21 +322,23 @@ grep -q 'WARN blind_spot' "$LOG" || fail "rss blind spot must be logged"
 reset
 FAKE_RSS_KB=$((7000 * 1024)) \
 FAKE_FOOTPRINT_BYTES=$((9000 * MB)) \
-FAKE_PEAK_BYTES=$((11110 * MB)) \
 LASTDBD_RSS_LIMIT_MB=6144 \
 LASTDBD_GUARD_METRIC=rss \
   "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 after an rss restart"
 restarted || fail "rss enforcement must still fire when rss exceeds the limit"
 
-# --- 8. node unreachable under explicit rss mode still guards on rss ----------
+# --- 8. footprint via rusage does not depend on the status socket: a node
+# that cannot answer HTTP still reports a real footprint and rss still fires -
 reset
 FAKE_NODE_DOWN=1 \
 FAKE_RSS_KB=$((7000 * 1024)) \
+FAKE_FOOTPRINT_BYTES=$((9000 * MB)) \
 LASTDBD_RSS_LIMIT_MB=6144 \
 LASTDBD_GUARD_METRIC=rss \
   "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 with node unreachable"
 restarted || fail "rss enforcement must not depend on the status socket"
-grep -q 'footprint_mb=unavailable' "$LOG" || fail "unavailable footprint should be stated, not omitted"
+grep -q 'footprint_mb=9000' "$LOG" || fail "rusage footprint must not depend on socket reachability"
+grep -q 'footprint_source=rusage' "$LOG" || fail "footprint source should still be rusage when the socket is down"
 
 # --- 9. identity mode is read-only and carries pid, start time, and build ----
 reset
@@ -335,7 +378,6 @@ SH
 chmod +x "$tmp/bin/situations-reject"
 FAKE_RSS_KB=$((1500 * 1024)) \
 FAKE_FOOTPRINT_BYTES=$((17000 * MB)) \
-FAKE_PEAK_BYTES=$((17100 * MB)) \
 LASTDBD_GUARD_NOTICE_CMD="$tmp/bin/situations-reject" \
   "$GUARD" >/dev/null 2>&1 || fail "a rejected notice must not fail the guard"
 restarted || fail "a rejected notice must not block the restart"
@@ -460,5 +502,38 @@ reset
 FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=0 "$GUARD" --identity >/dev/null 2>&1 \
   && fail "identity should fail when there is no primary"
 revived && fail "identity mode must never bootstrap anything"
+
+# --- 21. a shed that recovers the footprint skips SIGTERM entirely ----------
+reset
+FAKE_RSS_KB=$((1500 * 1024)) \
+FAKE_FOOTPRINT_BYTES=$((17000 * MB)) \
+FAKE_SHED_HTTP=200 \
+FAKE_FOOTPRINT_BYTES_AFTER_SHED=$((9000 * MB)) \
+  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 when shed recovers the footprint"
+restarted && fail "a shed that recovers footprint must not kill the primary"
+grep -q 'shed_ok' "$LOG" || fail "a 200 from /api/admin/shed should be logged"
+grep -q 'shed_recovered pid=4242 footprint_mb=9000' "$LOG" \
+  || fail "recovery should be logged with the post-shed footprint"
+
+# --- 22. a shed that never recovers falls through to vmmap + SIGTERM -------
+reset
+FAKE_RSS_KB=$((1500 * 1024)) \
+FAKE_FOOTPRINT_BYTES=$((17000 * MB)) \
+FAKE_SHED_HTTP=200 \
+  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 after a shed-timeout restart"
+restarted || fail "a shed that does not recover footprint must still restart"
+grep -q 'shed_ok' "$LOG" || fail "the shed attempt should be logged"
+grep -q 'shed_timeout' "$LOG" || fail "a shed that never recovers should log the timeout"
+grep -q 'vmmap_capture' "$LOG" || fail "a forced restart after a shed timeout should capture vmmap"
+
+# --- 23. dry run logs intent and takes no action whatsoever ------------------
+reset
+FAKE_RSS_KB=$((1500 * 1024)) \
+FAKE_FOOTPRINT_BYTES=$((17000 * MB)) \
+LASTDBD_GUARD_DRY_RUN=1 \
+  "$GUARD" >/dev/null 2>&1 || fail "dry run should exit 0"
+restarted && fail "dry run must never kill or kickstart the primary"
+grep -q 'dry_run skip shed/kill/kickstart' "$LOG" || fail "dry run should log its intent"
+[ -s "$FAKE_ACTION_LOG" ] && fail "dry run must not touch kill/launchctl/situations/vmmap"
 
 printf 'PASS: last-stack-lastdb-memory-guard\n'

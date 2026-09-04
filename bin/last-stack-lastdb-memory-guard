@@ -18,9 +18,15 @@
 #   - throwaway smoke / temp-home / CoW upgrade-probe nodes
 #   - fold-app desktop binary
 #
-# When the ceiling trips we SIGTERM (graceful), wait, then SIGKILL if needed.
-# launchd KeepAlive restarts the service. The guard is a circuit breaker, not a
-# root-cause fix.
+# When the ceiling trips we POST /api/admin/shed first and wait for footprint
+# to fall (a build without the shed route answers 404; log shed_unsupported
+# and move on — never fail closed on a missing route). If footprint has not
+# fallen by LASTDBD_GUARD_SHED_WAIT_SEC, capture `vmmap -summary` for
+# post-mortem, then SIGTERM (graceful) with a LASTDBD_GUARD_TERM_WAIT_SEC
+# clean-shutdown window, then SIGKILL if still alive. launchd KeepAlive
+# restarts the service. The guard is a circuit breaker, not a root-cause fix.
+# Port of fold #1908 (scripts/lastdbd/lastdbd-memory-guard.sh, merge 3974e691);
+# see design-lastdb-primary-footprint-stays-under-the-guard clause D.
 #
 # KeepAlive only restarts a LOADED agent. When the primary exits while its
 # LaunchAgent is not loaded, nothing revives it and every brain/kanban/situations
@@ -73,6 +79,12 @@
 #                            lastdbd-revive.hold — presence declares a
 #                            maintenance window and suppresses revival
 #   LASTDBD_GUARD_PLIST_DIR  default $HOME/Library/LaunchAgents
+#   LASTDBD_GUARD_DRY_RUN    default 0 — log restart intent, skip shed/kill/kickstart
+#   LASTDBD_GUARD_SHED_WAIT_SEC default 60 — seconds to wait after POST
+#                            /api/admin/shed for footprint to fall below the
+#                            limit before capturing vmmap and sending SIGTERM
+#   LASTDBD_GUARD_TERM_WAIT_SEC default 60 — clean-shutdown window after
+#                            SIGTERM before SIGKILL
 
 set -eu
 # launchd hands this script a near-empty PATH, so pin a known-good one. Kept
@@ -85,6 +97,8 @@ RSS_LIMIT_MB="${LASTDBD_RSS_LIMIT_MB:-16384}"
 COOLDOWN_SEC="${LASTDBD_GUARD_COOLDOWN_SEC:-120}"
 RESTART_WAIT_SEC="${LASTDBD_GUARD_RESTART_WAIT_SEC:-30}"
 IDENTITY_TIMEOUT_SEC="${LASTDBD_GUARD_IDENTITY_TIMEOUT_SEC:-1}"
+SHED_WAIT_SEC="${LASTDBD_GUARD_SHED_WAIT_SEC:-60}"
+TERM_WAIT_SEC="${LASTDBD_GUARD_TERM_WAIT_SEC:-60}"
 PRIMARY_HOME="${LASTDBD_PRIMARY_HOME:-$HOME/.lastdb}"
 LOG_DIR="${PRIMARY_HOME}/monitoring"
 LOG="${LOG_DIR}/lastdbd-memory-guard.log"
@@ -106,6 +120,20 @@ esac
 case "$IDENTITY_TIMEOUT_SEC" in
   ''|*[!0-9]*|0)
     echo "invalid LASTDBD_GUARD_IDENTITY_TIMEOUT_SEC=$IDENTITY_TIMEOUT_SEC (want positive whole seconds)" >&2
+    exit 2
+    ;;
+esac
+
+case "$SHED_WAIT_SEC" in
+  ''|*[!0-9]*)
+    echo "invalid LASTDBD_GUARD_SHED_WAIT_SEC=$SHED_WAIT_SEC (want whole seconds)" >&2
+    exit 2
+    ;;
+esac
+
+case "$TERM_WAIT_SEC" in
+  ''|*[!0-9]*)
+    echo "invalid LASTDBD_GUARD_TERM_WAIT_SEC=$TERM_WAIT_SEC (want whole seconds)" >&2
     exit 2
     ;;
 esac
@@ -181,6 +209,119 @@ rss_mb_of() {
     echo 0
   else
     echo $((rss_kb / 1024))
+  fi
+}
+
+# phys_footprint via proc_pid_rusage(RUSAGE_INFO_V4) — the same gauge macOS
+# jetsam and Activity Monitor use, read directly from the kernel instead of
+# through this daemon's own /api/status. That decouples the reading from the
+# node's HTTP path entirely: a hung or overloaded node (the ~242-cold-load
+# cost /api/status carried before fold #1908) no longer blinds this gauge.
+# Falls back to rss when the pid is gone or the platform has no footprint
+# accounting (e.g. non-macOS CI). Prints "<mb> <source>" — a caller run
+# through `$(...)` runs in a subshell, so the source has to travel on stdout
+# rather than through a global the function sets. Port of fold #1908's
+# phys_footprint_mb_of.
+phys_footprint_mb_of() {
+  local pid="$1" bytes
+  bytes="$(python3 - "$pid" <<'PY' 2>/dev/null || true
+import ctypes
+import ctypes.util
+import sys
+
+pid = int(sys.argv[1])
+libc_name = ctypes.util.find_library("c")
+if not libc_name:
+    raise SystemExit(1)
+libc = ctypes.CDLL(libc_name)
+RUSAGE_INFO_V4 = 4
+
+class rusage_info_v4(ctypes.Structure):
+    _fields_ = [
+        ("ri_uuid", ctypes.c_uint8 * 16),
+        ("ri_user_time", ctypes.c_uint64),
+        ("ri_system_time", ctypes.c_uint64),
+        ("ri_pkg_idle_wkups", ctypes.c_uint64),
+        ("ri_interrupt_wkups", ctypes.c_uint64),
+        ("ri_pageins", ctypes.c_uint64),
+        ("ri_wired_size", ctypes.c_uint64),
+        ("ri_resident_size", ctypes.c_uint64),
+        ("ri_phys_footprint", ctypes.c_uint64),
+        ("ri_proc_start_abstime", ctypes.c_uint64),
+        ("ri_proc_exit_abstime", ctypes.c_uint64),
+        ("ri_child_user_time", ctypes.c_uint64),
+        ("ri_child_system_time", ctypes.c_uint64),
+        ("ri_child_pkg_idle_wkups", ctypes.c_uint64),
+        ("ri_child_interrupt_wkups", ctypes.c_uint64),
+        ("ri_child_pageins", ctypes.c_uint64),
+        ("ri_child_elapsed_abstime", ctypes.c_uint64),
+        ("ri_diskio_bytesread", ctypes.c_uint64),
+        ("ri_diskio_byteswritten", ctypes.c_uint64),
+        ("ri_cpu_time_qos_default", ctypes.c_uint64),
+        ("ri_cpu_time_qos_maintenance", ctypes.c_uint64),
+        ("ri_cpu_time_qos_background", ctypes.c_uint64),
+        ("ri_cpu_time_qos_utility", ctypes.c_uint64),
+        ("ri_cpu_time_qos_legacy", ctypes.c_uint64),
+        ("ri_cpu_time_qos_user_initiated", ctypes.c_uint64),
+        ("ri_cpu_time_qos_user_interactive", ctypes.c_uint64),
+        ("ri_billed_system_time", ctypes.c_uint64),
+        ("ri_serviced_system_time", ctypes.c_uint64),
+        ("ri_logical_writes", ctypes.c_uint64),
+        ("ri_lifetime_max_phys_footprint", ctypes.c_uint64),
+    ]
+
+info = rusage_info_v4()
+rc = libc.proc_pid_rusage(pid, RUSAGE_INFO_V4, ctypes.byref(info))
+if rc != 0 or info.ri_phys_footprint <= 0:
+    raise SystemExit(1)
+print(info.ri_phys_footprint)
+PY
+)"
+  if [ -n "${bytes:-}" ] && [ "$bytes" -gt 0 ] 2>/dev/null; then
+    printf '%s rusage\n' "$((bytes / 1024 / 1024))"
+    return 0
+  fi
+  printf '%s rss_fallback\n' "$(rss_mb_of "$pid")"
+}
+
+# The shed route only exists on daemon builds carrying fold #1908
+# (0.23.3-1540+); an older daemon answers 404. Never fail closed on a missing
+# or errored route — restart_primary proceeds straight to the vmmap capture +
+# SIGTERM window either way.
+post_shed() {
+  local blob
+  blob=$(curl -s --max-time 5 --unix-socket "$SOCKET" \
+    -H 'X-LastDB-Client: lastdb-memory-guard' \
+    -X POST -w '\n%{http_code}' \
+    "http://localhost/api/admin/shed" 2>/dev/null || true)
+  if ! split_http_body "$blob"; then
+    log "shed_failed reason=no_response socket=$SOCKET"
+    return 1
+  fi
+  case "$IDENTITY_HTTP_CODE" in
+    200)
+      log "shed_ok socket=$SOCKET"
+      return 0
+      ;;
+    404)
+      log "shed_unsupported socket=$SOCKET"
+      return 1
+      ;;
+    *)
+      log "shed_failed http_code=$IDENTITY_HTTP_CODE socket=$SOCKET"
+      return 1
+      ;;
+  esac
+}
+
+capture_vmmap() {
+  local pid="$1" dest
+  dest="$LOG_DIR/footprint-guard-$(date -u +%Y%m%dT%H%M%SZ).txt"
+  if command -v vmmap >/dev/null 2>&1; then
+    vmmap -summary "$pid" >"$dest" 2>&1 || true
+    log "vmmap_capture path=$dest pid=$pid"
+  else
+    log "vmmap_skip reason=no_vmmap pid=$pid"
   fi
 }
 
@@ -370,19 +511,43 @@ restart_primary() {
   local pid="$1"
   local reading="$2"
   event restart_requested "$pid" null
-  log "RESTART primary lastdbd pid=$pid metric=$metric enforced_mb=$reading limit_mb=$RSS_LIMIT_MB (SIGTERM then kickstart)"
+  log "RESTART primary lastdbd pid=$pid metric=$metric enforced_mb=$reading limit_mb=$RSS_LIMIT_MB (shed, then SIGTERM, then kickstart)"
   mark_restart
+  if [ "${LASTDBD_GUARD_DRY_RUN:-0}" = "1" ]; then
+    log "dry_run skip shed/kill/kickstart"
+    return 0
+  fi
+
+  if post_shed; then
+    local shed_deadline current_reading current_mb
+    shed_deadline=$(($(date +%s) + SHED_WAIT_SEC))
+    while [ "$(date +%s)" -lt "$shed_deadline" ]; do
+      current_reading=$(phys_footprint_mb_of "$pid")
+      current_mb="${current_reading%% *}"
+      if [ -n "$current_mb" ] && [ "$current_mb" -lt "$RSS_LIMIT_MB" ] 2>/dev/null; then
+        log "shed_recovered pid=$pid footprint_mb=$current_mb limit_mb=$RSS_LIMIT_MB"
+        return 0
+      fi
+      sleep 1
+    done
+    log "shed_timeout pid=$pid footprint_mb=${current_mb:-unavailable} limit_mb=$RSS_LIMIT_MB wait_sec=$SHED_WAIT_SEC"
+  fi
+
+  capture_vmmap "$pid"
   kill -TERM "$pid" 2>/dev/null || true
-  local i
-  for i in 1 2 3 4 5 6 7 8 9 10; do
+  local term_deadline
+  term_deadline=$(($(date +%s) + TERM_WAIT_SEC))
+  while [ "$(date +%s)" -lt "$term_deadline" ]; do
     if ! kill -0 "$pid" 2>/dev/null; then
       break
     fi
     sleep 1
   done
   if kill -0 "$pid" 2>/dev/null; then
-    log "SIGKILL pid=$pid (did not exit after SIGTERM)"
+    log "SIGKILL pid=$pid (did not exit after SIGTERM window ${TERM_WAIT_SEC}s)"
     kill -KILL "$pid" 2>/dev/null || true
+  else
+    log "SIGTERM_clean pid=$pid"
   fi
   # Prefer the LaunchAgent that owns the primary. Never restart
   # homebrew.mxcl.lastdb while that agent is the intended primary — brew restart
@@ -728,43 +893,26 @@ rss=$(rss_mb_of "$pid")
 swap=$(swap_used_mb 2>/dev/null || true)
 cmd=$(ps -p "$pid" -o command= 2>/dev/null | head -c 200 || true)
 
-read_status
-footprint_b=$(status_field "$STATUS_BODY" phys_footprint_bytes)
-peak_b=$(status_field "$STATUS_BODY" phys_footprint_peak_bytes)
-build=$(status_build "$STATUS_BODY")
-if [ -n "$footprint_b" ]; then
-  footprint=$((footprint_b / 1048576))
-else
-  footprint=""
-fi
-if [ -n "$peak_b" ]; then
-  peak=$((peak_b / 1048576))
-else
-  peak=""
-fi
+# phys_footprint comes from the kernel via proc_pid_rusage, not this daemon's
+# own /api/status — see phys_footprint_mb_of. That means a steady-state "ok"
+# cycle makes zero calls to the node's HTTP path.
+footprint_reading=$(phys_footprint_mb_of "$pid")
+footprint="${footprint_reading%% *}"
+footprint_source="${footprint_reading#* }"
 
-# Choose the enforced reading. Footprint enforcement REQUIRES a live reading —
-# falling back to rss under a footprint policy would silently restore the 6.7x
-# blind spot the policy was chosen to close, so we decline to enforce instead.
 metric="$GUARD_METRIC"
-if [ "$GUARD_METRIC" = "footprint" ] && [ -z "$footprint" ]; then
-  log "warn footprint_unavailable pid=$pid socket=$SOCKET — not enforcing this cycle (rss_mb=$rss)"
-  exit 0
-fi
 if [ "$metric" = "footprint" ]; then
   enforced="$footprint"
 else
   enforced="$rss"
 fi
 
-# Every cycle carries both gauges, so the log is a usable footprint time series
-# and never again asserts a reassuring number that is 6.7x off.
-log "ok pid=$pid metric=$metric enforced_mb=$enforced limit_mb=$RSS_LIMIT_MB rss_mb=$rss footprint_mb=${footprint:-unavailable} peak_mb=${peak:-unavailable} swap_mb=${swap:-unknown}"
+log "ok pid=$pid metric=$metric enforced_mb=$enforced limit_mb=$RSS_LIMIT_MB rss_mb=$rss footprint_mb=$footprint footprint_source=$footprint_source swap_mb=${swap:-unknown}"
 
 # Keep the old RSS policy explicit and visible when an operator selects it.
 # Swap remains in the status line for diagnosis, but swap use does not trigger
 # an alert or restart. On macOS, swap use alone is not a capacity signal.
-if [ "$metric" = "rss" ] && [ -n "$footprint" ] && [ "$footprint" -ge "$RSS_LIMIT_MB" ] 2>/dev/null; then
+if [ "$metric" = "rss" ] && [ "$footprint" -ge "$RSS_LIMIT_MB" ] 2>/dev/null; then
   log "WARN blind_spot pid=$pid footprint_mb=$footprint >= limit_mb=$RSS_LIMIT_MB but enforcing on rss_mb=$rss — guard will NOT fire; see LASTDBD_GUARD_METRIC"
 fi
 
@@ -777,6 +925,11 @@ if ! cooldown_ok; then
   exit 0
 fi
 
-log "OVER_LIMIT pid=$pid metric=$metric enforced_mb=$enforced limit_mb=$RSS_LIMIT_MB rss_mb=$rss footprint_mb=${footprint:-unavailable} swap_mb=${swap:-unknown} cmd=$cmd"
+log "OVER_LIMIT pid=$pid metric=$metric enforced_mb=$enforced limit_mb=$RSS_LIMIT_MB rss_mb=$rss footprint_mb=$footprint footprint_source=$footprint_source swap_mb=${swap:-unknown} cmd=$cmd"
+# build is only needed for the restart notice, so only fetch it (via the
+# node's own status/boot-identity route) on the rare over-limit path — the
+# steady-state cycle above never touches /api/status.
+read_status
+build=$(status_build "$STATUS_BODY")
 restart_primary "$pid" "$enforced"
 exit 0
