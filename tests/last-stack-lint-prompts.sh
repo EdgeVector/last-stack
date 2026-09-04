@@ -809,7 +809,16 @@ grep -q 'Do not run broad' "$pickup"
 grep -q 'board search or full-body board scans' "$pickup"
 grep -q 'Hard todo rank before claim' "$pickup"
 grep -q 'last-stack-todo-rank' "$pickup"
-grep -q 'todo-rank-failed no_card_claimed' "$pickup"
+# The hard rank is best effort: a rank failure must NOT veto the claim.
+# Card pickup-rank-failure-must-not-veto-the-claim-20260904.
+grep -q 'Hard todo rank before claim (best effort)' "$pickup"
+grep -q 'A rank failure is NOT a reason to claim nothing' "$pickup"
+grep -q 'rank=stale-order' "$pickup"
+grep -q 'a failed ranker never produces that noop' "$pickup"
+if grep -q 'todo-rank-failed no_card_claimed' "$pickup"; then
+  echo "lint: pickup prompt still noops on a failed hard rank" >&2
+  exit 1
+fi
 grep -q 'active/proving milestone `Kind: pr` frontier first' "$pickup"
 grep -q 'Wall-clock budget (hard)' "$pickup"
 grep -q 'idle=budget-exhausted' "$pickup"

@@ -467,26 +467,27 @@ fi
 If the helper parks/closes cards and the ready gate would now be empty, re-run
 `last-stack-kanban-pickup-gate`; exit on gate ≠ 10. Do not invent work.
 
-**Hard todo rank before claim:** pickup must not rely on prompt-only
-ship-outcome budget while active/proving milestones have unblocked `Kind: pr`
-frontier. Immediately before `pickup claim`, run the Last Stack wrapper around
-the board's hard ranker.
+**Hard todo rank before claim (best effort):** pickup must not rely on
+prompt-only ship-outcome budget while active/proving milestones have unblocked
+`Kind: pr` frontier. Immediately before `pickup claim`, run the Last Stack
+wrapper around the board's hard ranker.
 
 **The rank is SLOW, not stuck — give it 300s (won't-undo 2026-09-04).**
 `<board CLI> rank --mode hard` issues ~3,000 node queries for a 20-card column
 and takes 83-179 s on this host (six hand-timed runs, 2026-09-04T11:10-12:20Z,
 all rc=0). Only the fastest of the six would have survived a 90 s deadline, and
-it had 7 s of headroom. Do **not** invent a shorter deadline. Every `rc=124` this step has produced was
-a deterministic overrun of a 90 s wrapper an agent chose on its own, and each
-one cost a whole pickup fire while `ready>0` work sat claimable. Use the block
-below verbatim, and give the Bash tool call itself a timeout of at least
-330000 ms so the harness does not kill the command before its own deadline.
+it had 7 s of headroom. Do **not** invent a shorter deadline. Every `rc=124`
+this step has produced was a deterministic overrun of a 90 s wrapper an agent
+chose on its own. Use the block below verbatim, and give the Bash tool call
+itself a timeout of at least 330000 ms so the harness does not kill the
+command before its own deadline.
 The durable cost fix is carded as
 `kanban-rank-hard-3004-queries-168s-blocks-pickup-claim-20260904`; until it
 lands, the deadline is the thing that must be generous.
 
 ```bash
 rank_out="/tmp/kanban-pickup-rank.json"
+rank_state="ok"
 if command -v gtimeout >/dev/null 2>&1; then TO=gtimeout; else TO=timeout; fi
 set +e
 $TO -k 5s 300s "$last_stack/bin/last-stack-todo-rank" --board-cli <board CLI> \
@@ -495,17 +496,8 @@ rank_rc=$?
 set -e
 if [ "$rank_rc" -ne 0 ]; then
   # 124/137 = the ranker outran 300s. That is a COST problem in the ranker, not
-  # a sick node: do not report busy-node, and do not send the reader to node
-  # telemetry. Any other rc is a real rank failure.
-  if [ "$rank_rc" -eq 124 ] || [ "$rank_rc" -eq 137 ]; then
-    detail="rank-slow todo-rank-over-300s no_card_claimed rank_rc=${rank_rc}"
-  else
-    detail="todo-rank-failed no_card_claimed rank_rc=${rank_rc}"
-  fi
-  "$last_stack/bin/last-stack-brain-append-heartbeat" --line \
-    "kanban-pickup $(date -u +%Y-%m-%dT%H:%M:%SZ) noop ${detail}" || true
-  printf '%s %s\n' 'ROUTINE_RESULT' "outcome=noop detail=${detail}"
-  exit 0
+  # a sick node. Any non-zero rc is stale order, not a reason to claim nothing.
+  rank_state="stale-order"
 fi
 ```
 
@@ -517,8 +509,30 @@ nothing is wrong.
 
 `last-stack-todo-rank` delegates to `<board CLI> rank --mode hard`, which
 orders default/todo as: active/proving milestone `Kind: pr` frontier first,
-then cleared non-frontier work, with papercut/hygiene last. Treat a rank write
-failure as pre-claim backpressure, not as permission to claim from stale order.
+then cleared non-frontier work, with papercut/hygiene last.
+
+**A rank failure is NOT a reason to claim nothing.** Ordering is an
+optimization; the board already carries an order, and a claim from a stale
+order still ships. Continue to `pickup claim` with `rank_state=stale-order`,
+and carry that term into the heartbeat and the `ROUTINE_RESULT` outcome so the
+degradation stays measurable — for example
+`ok cards=1 rank=stale-order worked=<slug>`. A normal fire reports `rank=ok`.
+
+Only the ready gate is fatal. If `pickup status` cannot be read the lane has no
+ready set and must noop; a failed ranker never produces that noop.
+
+Why this is best effort and not a precondition, as of 2026-09-04:
+
+- `pickup claim` does not consume the rank's output even when the rank
+  succeeds — brain `papercut-kanban-pickup-claim-ignores-hard-rank-order`,
+  open since 2026-08-26 with three recorded recurrences.
+- The failure is the ranker's own cost (about 3,004 node queries per call —
+  board card `kanban-rank-hard-3004-queries-168s-blocks-pickup-claim-20260904`),
+  not node backpressure. Measured during a failure the primary read RSS 29% of
+  its guard, zero sheds, `kanban ping` 21 ms.
+- The cost is not stable, so no fixed bound rescues the lane: the same command
+  on the same healthy node measured 54 s, 99-179 s, and over 300 s on
+  2026-09-04.
 
 **Preferred path (board CLI with `pickup claim`):** let the board pick and
 CAS-claim the next card so you do not reimplement priority / overlap / races:
