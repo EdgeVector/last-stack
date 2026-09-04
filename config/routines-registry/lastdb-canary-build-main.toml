@@ -1,13 +1,18 @@
 # Auto release loop step 0: build Forge fold main tip → stage canary-builds/<oid>.
 # Runs before lastdb-canary-dogfood (03:17). Does not cut over primary.
+# gate_command keeps this zero-LLM unless the primary is stale AND the
+# current gate_head has no staged candidate yet — see
+# last-stack-canary-build-main-gate and
+# papercut-no-registered-routine-produces-a-lastdb-canary-candidate-20260903.
 id = "lastdb-canary-build-main"
 harness = "claude"
 model = "sonnet"
 effort = "medium"
 group = "dogfood"
-rrule = "FREQ=DAILY;BYHOUR=1;BYMINUTE=17;BYSECOND=0"
+rrule = "FREQ=HOURLY;INTERVAL=1;BYMINUTE=47;BYSECOND=0"
 cwd = "/Users/REPLACE/code/edgevector"
 status = "active"
 timeout_min = 180
 prompt_path = "/Users/REPLACE/.last-stack/routines/lastdb-canary-build-main.md"
+gate_command = "/Users/REPLACE/.last-stack/bin/last-stack-canary-build-main-gate"
 heartbeat_slug = "routine-heartbeats"
