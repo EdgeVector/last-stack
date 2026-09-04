@@ -55,6 +55,36 @@ cat >"$tmp/records.json" <<'JSON'
     "title": "Stuck forge PR with no Repo header to anchor the repo name",
     "status": "open",
     "body": "Status: OPEN\nSeverity: P0\nPR: Forgejo #7\n"
+  },
+  {
+    "slug": "papercut-pipeline-stuck-forge-fold-pr1018",
+    "title": "Pipeline: fold Forgejo PR 1018 stuck (no dash before the number)",
+    "status": "open",
+    "body": "Status: OPEN\nSeverity: P0\nRepo: EdgeVector/fold\nPR: Forgejo #1018\n"
+  },
+  {
+    "slug": "papercut-pipeline-stuck-cr-last-stack-cr-msc85npn-c483",
+    "title": "Pipeline: last-stack CR id carrying its disambiguator suffix",
+    "status": "open",
+    "body": "Status: OPEN\nSeverity: P0\nRepo: EdgeVector/last-stack\n"
+  },
+  {
+    "slug": "papercut-pipeline-stuck-cr-fold-1709",
+    "title": "Pipeline: a fold forge PR filed under the -cr- prefix",
+    "status": "open",
+    "body": "Symptom: Fold PR 1709 has a stale red required Forge CI check\n\nchecked_at=2026-08-22T19:07:24Z; repo=EdgeVector/fold; PR=1709; head=ec4fd4fc\n"
+  },
+  {
+    "slug": "papercut-pipeline-stuck-cr-last-stack-msh21rhh",
+    "title": "Pipeline: CR short id with no -cr- separator, corroborated by the body",
+    "status": "open",
+    "body": "Status: OPEN\nSeverity: P0\nRepo: EdgeVector/last-stack\n\n## Symptom\ncr-msh21rhh-c064 open >10m with ci-required failure.\n"
+  },
+  {
+    "slug": "papercut-pipeline-stuck-cr-last-stack-notacrid",
+    "title": "Pipeline: slug tail that is not a CR id and nothing corroborates it",
+    "status": "open",
+    "body": "Status: OPEN\nSeverity: P0\nRepo: EdgeVector/last-stack\n\n## Symptom\nThe rebase target was cr-mt1t6wpi-33a6, which is somebody else's CR.\n"
   }
 ]
 JSON
@@ -76,7 +106,7 @@ repo="$3"
 cr_id="$4"
 printf '%s %s\n' "$repo" "$cr_id" >>"$LASTGIT_CALL_LOG"
 case "$repo/$cr_id" in
-  last-stack/cr-mt1t6wpi-33a6|last-stack/cr-mt33r3h2-5b5b|fold/cr-mrxxzsay-bbf3)
+  last-stack/cr-mt1t6wpi-33a6|last-stack/cr-mt33r3h2-5b5b|fold/cr-mrxxzsay-bbf3|last-stack/cr-msc85npn-c483|last-stack/cr-msh21rhh-c064)
     printf '{"cr_id":"%s","repo":"%s","state":"merged","merge_oid":"deadbee"}\n' "$cr_id" "$repo"
     ;;
   *)
@@ -96,7 +126,7 @@ case "$route" in
   repos/EdgeVector/fold/pulls/826)
     printf '{"state":"open","merged":false}\n'
     ;;
-  repos/EdgeVector/lastgit/pulls/90)
+  repos/EdgeVector/lastgit/pulls/90|repos/EdgeVector/fold/pulls/1018|repos/EdgeVector/fold/pulls/1709)
     printf '{"state":"closed","merged":true}\n'
     ;;
   *)
@@ -129,7 +159,7 @@ import sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 errors = data.get("errors") or []
 assert not errors, f"self-inflicted parse errors survived: {errors}"
-assert data["checked"] == 7, data["checked"]
+assert data["checked"] == 12, data["checked"]
 
 fixed = {item["slug"]: item["ref"] for item in data["fixed"]}
 assert fixed == {
@@ -137,6 +167,16 @@ assert fixed == {
     "papercut-lifecycle-ref-punctuation-period": "lastgit://last-stack/cr/cr-mt33r3h2-5b5b",
     "papercut-lifecycle-ref-punctuation-backtick": "lastgit://fold/cr/cr-mrxxzsay-bbf3",
     "papercut-pipeline-stuck-forge-lastgit-pr-90": "EdgeVector/lastgit/pulls/90",
+    # `-pr1018`, not `-pr-1018`: the spelling `pipeline-health` actually writes
+    # 21 times in the ledger, and the one no fixture covered until 2026-09-04.
+    "papercut-pipeline-stuck-forge-fold-pr1018": "EdgeVector/fold/pulls/1018",
+    # A CR id keeps its `-<disambiguator>` suffix.
+    "papercut-pipeline-stuck-cr-last-stack-cr-msc85npn-c483": "lastgit://last-stack/cr/cr-msc85npn-c483",
+    # A forge PR filed under the `-cr-` prefix resolves at the forge, not LastGit.
+    "papercut-pipeline-stuck-cr-fold-1709": "EdgeVector/fold/pulls/1709",
+    # A CR short id with no `-cr-` separator, taken only because the body
+    # carries the matching full id.
+    "papercut-pipeline-stuck-cr-last-stack-msh21rhh": "lastgit://last-stack/cr/cr-msh21rhh-c064",
 }, fixed
 
 skipped = {item["slug"]: item for item in data["skipped"]}
@@ -148,10 +188,21 @@ assert skipped["papercut-lifecycle-ref-prose-mention"]["reason"] == "no-review-r
 unmapped = skipped["papercut-pipeline-stuck-forge-mystery-service-pr-7"]
 assert unmapped["reason"] == "unresolved-review-ref", unmapped
 assert unmapped["details"] == ["unmapped-forge-repo:mystery-service"], unmapped
+
+# A slug tail that merely LOOKS like a CR short id is not one. Nothing in the
+# body corroborates it, so no ref is invented and no venue is called.
+# The body names an unrelated CR. Corroboration means the body carries THIS
+# slug's id, not merely some id — without that check the extractor would file
+# a close against another record's review.
+uncorroborated = skipped["papercut-pipeline-stuck-cr-last-stack-notacrid"]
+assert uncorroborated["reason"] == "unresolved-review-ref", uncorroborated
+assert uncorroborated["details"] == [
+    "uncorroborated-stuck-cr-slug:papercut-pipeline-stuck-cr-last-stack-notacrid"
+], uncorroborated
 PY
 
 # No punctuated, invented, or prose-scraped token may ever reach a live venue.
-for forbidden in 'cr-mt1t6wpi-33a6;' 'cr-mt33r3h2-5b5b.' 'cr-mrxxzsay-bbf3`' 'cr-ms7sdfqg-16b8'; do
+for forbidden in 'cr-mt1t6wpi-33a6;' 'cr-mt33r3h2-5b5b.' 'cr-mrxxzsay-bbf3`' 'cr-ms7sdfqg-16b8' 'cr-notacrid' 'cr-1709'; do
   if grep -qF -- "$forbidden" "$LASTGIT_CALL_LOG"; then
     echo "lastgit was called with a misparsed ref: $forbidden" >&2
     exit 1
@@ -165,5 +216,7 @@ for forbidden in 'fold-pr' 'lastgit-pr' 'mystery-service-pr'; do
 done
 grep -qx 'repos/EdgeVector/fold/pulls/826' "$FORGE_CALL_LOG"
 grep -qx 'repos/EdgeVector/lastgit/pulls/90' "$FORGE_CALL_LOG"
+grep -qx 'repos/EdgeVector/fold/pulls/1018' "$FORGE_CALL_LOG"
+grep -qx 'repos/EdgeVector/fold/pulls/1709' "$FORGE_CALL_LOG"
 
 printf 'ok last-stack-papercut-lifecycle-close-ref-extraction\n'
