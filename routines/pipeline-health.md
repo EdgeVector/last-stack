@@ -279,6 +279,24 @@ memory's first-seen timestamp if events lack times) **and** any of:
 
 Younger than 10 minutes with CI still running → leave it (normal lag).
 
+**Torn CI verdict → heal it, do not only report it.** A CR whose required
+status reads `pending` while `~/.lastgit/forge-primary/forge.log` holds a
+`ci_verdict_unconfirmed` line for the same head oid is not a CI run in flight.
+The CI passed and the `state` field of the status row did not land
+(`lastdb-multi-field-apply-still-tears-on-1536-blocks-all-automerge-20260903`).
+Auto-merge cannot fire for that CR, and the same defect can leave a merged CR
+with a base ref that never moved. Run the heal before you file anything:
+
+```bash
+last-stack-lastgit-stuck-merge-heal --repos <repo>          # report only
+last-stack-lastgit-stuck-merge-heal --repos <repo> --apply  # land it
+```
+
+The helper merges only the torn shape, and it pushes a base ref only when
+`git merge-base --is-ancestor` proves a fast-forward. Report the result in the
+heartbeat as `fixed=torn-verdict:<repo>:<cr>`. File a papercut only for a CR
+the helper leaves open.
+
 **Stuck merges → Brain papercut (not board P0):** any STUCK CR is
 pipeline-critical. If you cannot clear it this wake (heavy budget spent or
 needs human), call the filer helper so two CRs that share one outage stay

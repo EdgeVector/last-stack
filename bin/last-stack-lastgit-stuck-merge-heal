@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+# Land the green LastGit CRs that the torn-verdict defect strands, and move the
+# base ref when a merge is acknowledged but never lands.
+#
+# ## Why this exists
+#
+# On 0.23.3-1536 a multi-field mutation on `LastgitCiStatus` can land
+# `event_id` and leave `state` at `pending`
+# (`lastdb-multi-field-apply-still-tears-on-1536-blocks-all-automerge-20260903`,
+# p0). `lastgit` already reports that honestly — `ci_verdict_unconfirmed` names
+# the oid, and `src/ci-verdict-readback.ts` deliberately refuses to rewrite a
+# write it cannot prove was lost. So the row stays `pending`, `--require-status
+# ci-required` never clears, and auto-merge never fires for a CR whose CI
+# actually passed.
+#
+# The ref write has the same shape: `merge_ref_unlanded` says the merge batch
+# was acknowledged as <oid> while `lastgit ref` still reads the old one.
+#
+# Three routines (pipeline-health, kanban-watch, merge-babysit) each DETECT
+# both shapes and none REPAIRS either. Between 2026-09-03T20:06Z and
+# 2026-09-04T00:10Z a human agent ran the same two commands by hand at least
+# six times, once per ship. This helper is that hand procedure.
+#
+# ## What makes it safe to run unattended
+#
+# It never invents a verdict. It merges only a CR whose CI run the forge log
+# already recorded as accepted-as-success for that exact oid, and only when the
+# durable row still reads `pending` — that pair is the torn write and nothing
+# else. A `failure`, a row with no unconfirmed line, or a CI run still in
+# flight is left alone.
+#
+# It never rewrites history. The ref repair pushes the merge oid only after
+# `git merge-base --is-ancestor` proves the current ref is its ancestor. A
+# non-fast-forward is reported and skipped.
+set -euo pipefail
+
+forge_log="${LASTGIT_FORGE_LOG:-$HOME/.lastgit/forge-primary/forge.log}"
+repos=""
+apply=0
+json=0
+merged=0
+pushed=0
+skipped=0
+
+usage() {
+  cat >&2 <<'EOF'
+usage: last-stack-lastgit-stuck-merge-heal [--repos a,b,c] [--apply] [--json]
+
+Reports (default) or lands (--apply) LastGit CRs stranded by a torn CI-verdict
+write, and moves a base ref whose merge was acknowledged but never landed.
+
+  --repos   comma-separated repo list; default: every repo with an open CR
+  --apply   perform the admin merge and the fast-forward push
+  --json    emit one summary object instead of the human report
+
+Exit 0 when the pass completes, even with nothing to heal. Exit 2 on usage or
+a missing dependency.
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --repos) repos="${2:-}"; shift 2 ;;
+    --apply) apply=1; shift ;;
+    --json) json=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown arg: $1" >&2; usage; exit 2 ;;
+  esac
+done
+
+command -v lastgit >/dev/null 2>&1 || { echo "need lastgit on PATH" >&2; exit 2; }
+command -v git >/dev/null 2>&1 || { echo "need git on PATH" >&2; exit 2; }
+
+# `lastgit` interleaves verb_timing JSON with its tab-separated rows.
+plain() { grep -v '^{' || true; }
+
+say() { [ "$json" -eq 1 ] || printf '%s\n' "$*"; }
+
+scratch=""
+scratch_repo=""
+ensure_clone() {
+  # One throwaway clone per repo, reused across CRs in the same pass.
+  local repo="$1"
+  [ "$scratch_repo" = "$repo" ] && return 0
+  [ -n "$scratch" ] && rm -rf -- "$scratch"
+  scratch="$(mktemp -d "${TMPDIR:-/tmp}/stuck-merge-heal.XXXXXX")"
+  git init -q "$scratch/repo"
+  git -C "$scratch/repo" remote add origin "lastdb:///$repo"
+  scratch_repo="$repo"
+}
+cleanup() { [ -n "$scratch" ] && rm -rf -- "$scratch"; return 0; }
+trap cleanup EXIT
+
+# The oid the forge accepted as success but could not confirm. Full oid only:
+# `lastgit ci status` reads by exact key, so a short oid answers with a false
+# absence (`papercut-lastgit-ci-status-short-oid-silently-null`).
+verdict_was_accepted() {
+  local oid="$1"
+  [ -f "$forge_log" ] || return 1
+  grep -q "ci_verdict_unconfirmed[a-z_]*: ${oid:0:12} " "$forge_log"
+}
+
+cr_field() { sed -n "s/^$2	//p" <<<"$1" | head -1; }
+
+# Move <base> to <merge_oid> when the acknowledged merge never landed. Prints
+# one line per outcome; returns 0 when the ref already reads the merge oid or
+# the push lands, 1 otherwise.
+repair_ref() {
+  local repo="$1" base="$2" merge_oid="$3" cur
+  cur="$(lastgit ref "$repo" "refs/heads/$base" 2>/dev/null | plain | awk 'NF{print $1; exit}')"
+  if [ "$cur" = "$merge_oid" ]; then
+    say "  ref $repo/$base already at ${merge_oid:0:12}"
+    return 0
+  fi
+  say "  ref $repo/$base reads ${cur:0:12}, merge oid is ${merge_oid:0:12} (unlanded)"
+  if [ "$apply" -eq 0 ]; then
+    say "  would fast-forward $repo/$base to ${merge_oid:0:12} (--apply to do it)"
+    return 1
+  fi
+  ensure_clone "$repo"
+  local wt="$scratch/repo"
+  git -C "$wt" fetch -q --depth 1 origin "$merge_oid" 2>/dev/null || true
+  git -C "$wt" fetch -q origin 2>/dev/null || true
+  if ! git -C "$wt" merge-base --is-ancestor "$cur" "$merge_oid" 2>/dev/null; then
+    say "  REFUSED: ${cur:0:12} is not an ancestor of ${merge_oid:0:12}; not a fast-forward"
+    return 1
+  fi
+  if git -C "$wt" push -q origin "$merge_oid:refs/heads/$base" 2>/dev/null; then
+    say "  pushed $repo/$base -> ${merge_oid:0:12}"
+    pushed=$((pushed + 1))
+    return 0
+  fi
+  say "  push FAILED for $repo/$base -> ${merge_oid:0:12}"
+  return 1
+}
+
+if [ -n "$repos" ]; then
+  repo_list="$(tr ',' ' ' <<<"$repos")"
+else
+  repo_list="$(ls "$HOME/.cache/edgevector-git" 2>/dev/null | sed -n 's/\.git$//p' | tr '\n' ' ')"
+fi
+
+for repo in $repo_list; do
+  open_crs="$(lastgit cr list "$repo" --state open 2>/dev/null | plain | awk -F'\t' '$2=="open"{print $1}')"
+  [ -n "$open_crs" ] || continue
+  for cr in $open_crs; do
+    view="$(lastgit cr view "$repo" "$cr" 2>/dev/null | plain)"
+    head_oid="$(cr_field "$view" head_oid)"
+    base="$(cr_field "$view" base_branch)"
+    state="$(cr_field "$view" state)"
+    auto="$(cr_field "$view" auto_merge)"
+    require="$(cr_field "$view" require_status)"
+    merge_oid="$(cr_field "$view" merge_oid)"
+    say "$repo:$cr state=$state auto_merge=$auto require=$require head=${head_oid:0:12}"
+
+    if [ "$state" = "merged" ] && [ -n "$merge_oid" ]; then
+      repair_ref "$repo" "$base" "$merge_oid" || true
+      continue
+    fi
+    if [ "$auto" != "true" ] || [ -z "$require" ]; then
+      say "  skip: not armed for auto-merge"
+      skipped=$((skipped + 1))
+      continue
+    fi
+    ci="$(lastgit ci status "$head_oid" --repo "$repo" 2>/dev/null | plain | awk 'NF{print $1; exit}')"
+    if [ "$ci" != "pending" ]; then
+      say "  skip: ci-required reads '${ci:-none}', not the torn shape"
+      skipped=$((skipped + 1))
+      continue
+    fi
+    if ! verdict_was_accepted "$head_oid"; then
+      say "  skip: pending with no accepted-as-success line; CI may still be running"
+      skipped=$((skipped + 1))
+      continue
+    fi
+    say "  torn verdict: CI passed for ${head_oid:0:12} and the row still reads pending"
+    if [ "$apply" -eq 0 ]; then
+      say "  would admin-merge $repo:$cr (--apply to do it)"
+      continue
+    fi
+    if ! lastgit cr merge "$repo" "$cr" --admin >/dev/null 2>&1; then
+      say "  admin merge reported an error for $repo:$cr; re-reading the row"
+    fi
+    view="$(lastgit cr view "$repo" "$cr" 2>/dev/null | plain)"
+    state="$(cr_field "$view" state)"
+    merge_oid="$(cr_field "$view" merge_oid)"
+    if [ "$state" != "merged" ] || [ -z "$merge_oid" ]; then
+      say "  merge did not take: state=$state merge_oid=${merge_oid:-none}"
+      continue
+    fi
+    merged=$((merged + 1))
+    say "  merged $repo:$cr as ${merge_oid:0:12}"
+    repair_ref "$repo" "$base" "$merge_oid" || true
+  done
+done
+
+if [ "$json" -eq 1 ]; then
+  printf '{"merged":%d,"pushed":%d,"skipped":%d,"apply":%d}\n' "$merged" "$pushed" "$skipped" "$apply"
+else
+  say "stuck-merge-heal: merged=$merged ref_pushed=$pushed skipped=$skipped apply=$apply"
+fi
