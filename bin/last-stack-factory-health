@@ -658,6 +658,22 @@ def is_deploy_parked(card: dict[str, Any]) -> bool:
         re.I,
     ):
         return True
+    section_lines = []
+    in_end = False
+    for line in body.splitlines():
+        if re.match(r"^##[ \t]+", line):
+            in_end = bool(re.match(r"^##[ \t]+END[ \t]+STATE\b", line, re.I))
+        if in_end:
+            section_lines.append(line)
+        if re.match(r"^\s*DONE-WHEN\s*:", line, re.I):
+            section_lines.append(line)
+    section = "\n".join(section_lines)
+    if re.search(
+        r"(?i)\b(helper[ -]?cutover|host-track|live\s+scheduled[- ]fire|"
+        r"installed\s+(?:helper|binary|cli)|safe-upgrade|awaiting-deploy)\b",
+        section,
+    ):
+        return True
     return False
 
 
