@@ -536,4 +536,98 @@ restarted && fail "dry run must never kill or kickstart the primary"
 grep -q 'dry_run skip shed/kill/kickstart' "$LOG" || fail "dry run should log its intent"
 [ -s "$FAKE_ACTION_LOG" ] && fail "dry run must not touch kill/launchctl/situations/vmmap"
 
+# --- 24. shipped rusage python: oversized buffer, real pid, exit 0 ----------
+# The PATH python3 above is a fixture for the rest of this file. This check
+# drives the shipped helper with the real interpreter and must not use that
+# shim.
+
+rusage_py="$tmp/shipped-rusage.py"
+awk '
+  /phys_footprint_mb_of\(\)/ { in_fn=1 }
+  in_fn && /<<'\''PY'\''/ { grab=1; next }
+  grab && $0 == "PY" { exit }
+  grab { print }
+' "$GUARD" >"$rusage_py"
+[ -s "$rusage_py" ] || fail "could not extract shipped rusage python from $GUARD"
+
+grep -q 'class rusage_info_v4' "$GUARD" && fail "shipped guard still declares ctypes rusage_info_v4"
+grep -q 'BUF_SIZE = 1024' "$rusage_py" || fail "shipped rusage python must use a 1024-byte buffer"
+grep -q 'PHYS_FOOTPRINT_OFFSET = 72' "$rusage_py" || fail "shipped rusage python must unpack phys_footprint at offset 72"
+grep -q 'c_uint8 \* BUF_SIZE' "$rusage_py" || fail "shipped rusage python must allocate BUF_SIZE bytes, not a 248-byte Structure"
+
+python3_real="${LAST_STACK_TEST_PYTHON3:-/usr/bin/python3}"
+if [ ! -x "$python3_real" ]; then
+  python3_real="$(command -v python3 || true)"
+fi
+[ -n "$python3_real" ] || fail "no python3 for the real rusage check"
+
+# The pre-fix layout is 248 bytes (Darwin v4 is 296). Do not call
+# proc_pid_rusage on it — overflow is UB and does not SIGSEGV in every CI
+# environment. sizeof is the deterministic class check.
+short_size=$("$python3_real" - <<'SHORT'
+import ctypes
+class rusage_info_v4(ctypes.Structure):
+    _fields_ = [
+        ("ri_uuid", ctypes.c_uint8 * 16),
+        ("ri_user_time", ctypes.c_uint64),
+        ("ri_system_time", ctypes.c_uint64),
+        ("ri_pkg_idle_wkups", ctypes.c_uint64),
+        ("ri_interrupt_wkups", ctypes.c_uint64),
+        ("ri_pageins", ctypes.c_uint64),
+        ("ri_wired_size", ctypes.c_uint64),
+        ("ri_resident_size", ctypes.c_uint64),
+        ("ri_phys_footprint", ctypes.c_uint64),
+        ("ri_proc_start_abstime", ctypes.c_uint64),
+        ("ri_proc_exit_abstime", ctypes.c_uint64),
+        ("ri_child_user_time", ctypes.c_uint64),
+        ("ri_child_system_time", ctypes.c_uint64),
+        ("ri_child_pkg_idle_wkups", ctypes.c_uint64),
+        ("ri_child_interrupt_wkups", ctypes.c_uint64),
+        ("ri_child_pageins", ctypes.c_uint64),
+        ("ri_child_elapsed_abstime", ctypes.c_uint64),
+        ("ri_diskio_bytesread", ctypes.c_uint64),
+        ("ri_diskio_byteswritten", ctypes.c_uint64),
+        ("ri_cpu_time_qos_default", ctypes.c_uint64),
+        ("ri_cpu_time_qos_maintenance", ctypes.c_uint64),
+        ("ri_cpu_time_qos_background", ctypes.c_uint64),
+        ("ri_cpu_time_qos_utility", ctypes.c_uint64),
+        ("ri_cpu_time_qos_legacy", ctypes.c_uint64),
+        ("ri_cpu_time_qos_user_initiated", ctypes.c_uint64),
+        ("ri_cpu_time_qos_user_interactive", ctypes.c_uint64),
+        ("ri_billed_system_time", ctypes.c_uint64),
+        ("ri_serviced_system_time", ctypes.c_uint64),
+        ("ri_logical_writes", ctypes.c_uint64),
+        ("ri_lifetime_max_phys_footprint", ctypes.c_uint64),
+    ]
+print(ctypes.sizeof(rusage_info_v4))
+SHORT
+)
+[ "$short_size" = "248" ] || fail "pre-fix rusage_info_v4 class should sizeof 248, got '$short_size'"
+
+if [ "$(uname -s)" = "Darwin" ]; then
+  out1="$tmp/rusage-live-1.txt"
+  set +e
+  "$python3_real" - "$$" <"$rusage_py" >"$out1"
+  ec1=$?
+  set -e
+  [ "$ec1" -eq 0 ] || fail "shipped rusage python exit $ec1 (want 0, not 139) pid=$$"
+  bytes1=$(tr -d ' \n' <"$out1")
+  case "$bytes1" in
+    ''|*[!0-9]*) fail "shipped rusage python stdout not a positive integer: '$bytes1'" ;;
+  esac
+  [ "$bytes1" -gt 0 ] || fail "shipped rusage python printed non-positive: $bytes1"
+
+  out2="$tmp/rusage-live-2.txt"
+  set +e
+  "$python3_real" - "$$" <"$rusage_py" >"$out2"
+  ec2=$?
+  set -e
+  [ "$ec2" -eq 0 ] || fail "second shipped rusage python exit $ec2 (want 0, not 139)"
+  bytes2=$(tr -d ' \n' <"$out2")
+  case "$bytes2" in
+    ''|*[!0-9]*) fail "second shipped rusage python stdout not a positive integer: '$bytes2'" ;;
+  esac
+  [ "$bytes2" -gt 0 ] || fail "second shipped rusage python printed non-positive: $bytes2"
+fi
+
 printf 'PASS: last-stack-lastdb-memory-guard\n'
