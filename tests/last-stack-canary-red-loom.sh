@@ -422,6 +422,75 @@ assert d.get("exec_id") in ("", None), d
 assert d.get("key") in ("", None), d
 ' "$tmp/stamp.json" || fail "live empty listing did not drop the stale exec key: $(cat "$tmp/stamp.json")"
 
+# --- the same listing_stale exec must not remain the resume key on the next tick ---
+# Live 2026-09-04: 12 hourly fires reported
+# `noop idle reason=listing_stale exec=lx-20260902T215510.402-45278-1`.
+# Stamp drop alone was not enough: ROUTINE_RESULT kept reprinting picked_id,
+# and the 48h lister kept returning the same out-of-window row.
+STALE_RESUME="lx-20260902T215510.402-45278-1"
+cat >"$tmp/stale-resume.json" <<JSON
+[{"id":"$STALE_RESUME","definition_name":"lastdb-canary-release","status":"failed","state":"FAILED","updated_at":"$(now_iso 36)"}]
+JSON
+printf '%s\n' "{\"ts\":\"2026-09-04T03:37:00Z\",\"status\":\"idle\",\"exec_id\":\"$STALE_RESUME\",\"detail\":\"reason=listing_stale\",\"key\":\"canary-red-$STALE_RESUME\",\"outcome\":\"noop\",\"engine\":\"loom\"}" \
+  >"$tmp/stamp.json"
+set +e
+tick1_out="$(CANARY_RED_LOOM_LIST_FILE="$tmp/stale-resume.json" "$BIN" --dry-run --json --quiet)"
+tick1_rc=$?
+set -e
+[ "$tick1_rc" -eq 0 ] || fail "listing_stale tick1 must exit 0, got $tick1_rc: $tick1_out"
+printf '%s\n' "$tick1_out" | grep -q 'ROUTINE_RESULT outcome=noop detail=idle reason=listing_stale exec=' \
+  || fail "listing_stale tick1 must drop exec from ROUTINE_RESULT: $tick1_out"
+if printf '%s\n' "$tick1_out" | grep -E 'ROUTINE_RESULT .* exec='"$STALE_RESUME"; then
+  fail "listing_stale tick1 ROUTINE_RESULT still carries the resume exec: $tick1_out"
+fi
+python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("outcome") == "noop", d
+assert d.get("exec_id") in ("", None), d
+assert d.get("key") in ("", None), d
+assert d.get("listing_stale_exec") == sys.argv[2], d
+assert int(d.get("listing_stale_hits") or 0) == 1, d
+' "$tmp/stamp.json" "$STALE_RESUME" \
+  || fail "listing_stale tick1 did not drop the resume key: $(cat "$tmp/stamp.json")"
+
+set +e
+tick2_out="$(CANARY_RED_LOOM_LIST_FILE="$tmp/stale-resume.json" "$BIN" --dry-run --json --quiet)"
+tick2_rc=$?
+set -e
+[ "$tick2_rc" -eq 0 ] || fail "listing_stale tick2 dry-run must exit 0, got $tick2_rc: $tick2_out"
+printf '%s\n' "$tick2_out" | grep -q 'ROUTINE_RESULT outcome=error detail=listing_stale_expired' \
+  || fail "listing_stale tick2 must page listing_stale_expired: $tick2_out"
+if printf '%s\n' "$tick2_out" | grep -E 'ROUTINE_RESULT .* exec='"$STALE_RESUME"; then
+  fail "listing_stale tick2 ROUTINE_RESULT restored the resume exec: $tick2_out"
+fi
+python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("outcome") == "error", d
+assert d.get("exec_id") in ("", None), d
+assert d.get("key") in ("", None), d
+assert d.get("listing_stale_exec") == sys.argv[2], d
+assert int(d.get("listing_stale_hits") or 0) == 2, d
+' "$tmp/stamp.json" "$STALE_RESUME" \
+  || fail "listing_stale tick2 restored the resume key: $(cat "$tmp/stamp.json")"
+
+set +e
+tick3_out="$(CANARY_RED_LOOM_LIST_FILE="$tmp/stale-resume.json" "$BIN" --dry-run --json --quiet)"
+tick3_rc=$?
+set -e
+[ "$tick3_rc" -eq 0 ] || fail "listing_stale tick3 must exit 0, got $tick3_rc: $tick3_out"
+printf '%s\n' "$tick3_out" | grep -q 'ROUTINE_RESULT outcome=noop detail=idle reason=listing_stale exec=' \
+  || fail "listing_stale tick3 must stay noop without the exec after one page: $tick3_out"
+python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("outcome") == "noop", d
+assert d.get("exec_id") in ("", None), d
+assert d.get("key") in ("", None), d
+' "$tmp/stamp.json" \
+  || fail "listing_stale tick3 restored the resume key: $(cat "$tmp/stamp.json")"
+
 # stand-in scripts (no live agent)
 cat >"$tmp/get.json" <<'JSON'
 {"id":"exec_test","status":"failed","state":"FAILED","inputJson":"{\"main_oid\":\"abc\"}","contextJson":"{\"source_git_oid\":\"abc\",\"version\":\"0.1\"}"}

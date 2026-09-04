@@ -213,7 +213,8 @@ own mistake" are not reasons.
 This is the durable *what was done* record — not a one-line "shipped X"
 checkpoint. `preference-always-save-to-brain-when-done` already requires it;
 close-out is the step that actually writes it. Prefer **update in place**:
-`brain append` the design/reference already in play, *and* `brain put` a short
+`brain append` the design/reference already in play (stdin only — no `--body`
+or `--body-path`; those flags exit 2), *and* `brain put` a short
 `type: reference` closeout slug if no existing record owns this session.
 
 Skip only for pure Q&A, one-liner answers, and failed dead-ends with no

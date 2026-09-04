@@ -243,7 +243,7 @@ continue — do not fail the whole run.
    final free space:
    - **< 60 GiB free:** add `low_disk=<free>` to the heartbeat line and post a
      Situations notice (`situations notice --title "disk low: <free> free
-     after reclaim" --kind other --system host-disk`) so every agent sees it.
+     after reclaim" --kind other --system host-disk --summary "host disk below 60 GiB after reclaim"`) so every agent sees it.
      Do not post a duplicate if an unexpired low-disk notice from a prior run
      is already up.
    - **< 30 GiB free:** additionally run the step-5 aggressive purge even if
