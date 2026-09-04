@@ -107,6 +107,8 @@ kanban show <slug> --json          # one card in detail
 kanban add <slug> [flags]          # create OR update a card
 kanban mark <slug> "<line>"        # append one PROGRESS/HANDOFF line
 kanban move <slug> <column> [--position N]
+kanban set <slug> --block-status <s> [--block-reason "..."]
+kanban rank                        # rewrite the column order (no slug)
 kanban rm <slug>                   # delete (hard erase; no trash)
 kanban board create <slug> --title ... --columns a,b,c
 kanban board list
@@ -115,6 +117,17 @@ kanban board list
 `mark` takes the slug and the line as positional arguments. There is no
 `--note` and no `--line`. Those flags exit 2 with `Unknown option`. MCP
 `fkanban_mark` is the structured equivalent.
+
+`rank` rewrites every work card's `position` in one column (default `todo`).
+It takes no card slug and no `--top`. `kanban rank <slug> --top` exits 2 with
+`Unknown option '--top'`. To place one card, use
+`kanban move <slug> <column> --position N` (lowest N is first for pickup).
+
+`move` changes column (and optional `--position`). It has no `--block-status`.
+Stamp a hold with `kanban set <slug> --block-status needs_human|deferred|design_first --block-reason "..."`,
+then `kanban move <slug> backlog` if it must leave the pickup lane. `add` can
+set `--block-status` on create; `set` is the metadata-only path for an existing
+card.
 
 `list` flags: `--board --column --tag --assignee --wide --field --limit N
 --all --json --full-body --full_body`.

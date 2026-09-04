@@ -100,7 +100,8 @@ shell-visible CLI and daemon binary agree. The helper never restarts/kills
   search for an existing record before creating a new one.
 - `brain append <slug> --type <t>` — grow a big record's body (also stdin);
   never get→edit→put a large record (get windows at ~40K chars, a re-put
-  truncates what you didn't see).
+  truncates what you didn't see). Append has no `--body` and no `--body-path`.
+  Those flags exit 2 (`Unknown option`). Pipe the chunk: `brain append <slug> --type <t> < addendum.md`.
 - Write a settled call as its own `type: decision` record (`brain put` with
   `type: decision` and real `program` / `gate_slug` / `decided_by` /
   `decided_on` columns). Do NOT append to the archived `decisions-log`
@@ -194,6 +195,10 @@ Raw `kanban add` for Kind:pr skips this gate.
 - `kanban mark <slug> "<line>"` appends one PROGRESS/HANDOFF line. Do not
   pass `--note` or `--line`; both exit 2 with `Unknown option`. MCP
   `fkanban_mark` is the structured equivalent.
+- `kanban rank` rewrites the whole column (default `todo`). It takes no slug
+  and no `--top`. `kanban rank <slug> --top` exits 2. Place one card with
+  `kanban move <slug> <column> --position N`.
+- `kanban move` has no `--block-status`. Use `kanban set <slug> --block-status <s> --block-reason "..."`.
 - Only `list`, `search`, and `add` take `--board`; `show`, `move`, `rm`,
   `rank`, `dep`, `tag`, and `mark` use the default board implicitly and reject it.
 - Every new card needs `--north-star <slug>` or an `## END STATE` section in
@@ -201,6 +206,21 @@ Raw `kanban add` for Kind:pr skips this gate.
   `owner/name` token alone on its line (no comments or prose after it).
 - `kanban move <slug> <column>` — blocked cards (unfinished deps) refuse
   doing/review/done without `--force`.
+
+### Situations notice (FYI, not a Situation)
+
+`situations notice` posts a non-blocking agent-impact FYI. The text flag is
+`--summary`, not `--body`. `kanban add` and `brain papercut file` take `--body`;
+`situations notice` does not. `--body` exits with `Unknown option '--body'`.
+
+```bash
+situations notice --title "LastDB upgraded to 0.22.8" --kind upgrade \
+  --system lastdbd --actor skill:lastdb-safe-upgrade \
+  --summary "brief socket blips expected ~10-15m"
+```
+
+`--kind` is `upgrade|restart|deploy|config|cutover|other`. There is no
+`maintenance` kind.
 
 ### Git commits from isolated worktrees
 
