@@ -561,12 +561,11 @@ if [ ! -x "$python3_real" ]; then
 fi
 [ -n "$python3_real" ] || fail "no python3 for the real rusage check"
 
-if [ "$(uname -s)" = "Darwin" ]; then
-  short_py="$tmp/short-rusage-v4.py"
-  cat >"$short_py" <<'SHORT'
-import ctypes, ctypes.util, sys
-pid = int(sys.argv[1])
-libc = ctypes.CDLL(ctypes.util.find_library("c"))
+# The pre-fix layout is 248 bytes (Darwin v4 is 296). Do not call
+# proc_pid_rusage on it — overflow is UB and does not SIGSEGV in every CI
+# environment. sizeof is the deterministic class check.
+short_size=$("$python3_real" - <<'SHORT'
+import ctypes
 class rusage_info_v4(ctypes.Structure):
     _fields_ = [
         ("ri_uuid", ctypes.c_uint8 * 16),
@@ -600,14 +599,12 @@ class rusage_info_v4(ctypes.Structure):
         ("ri_logical_writes", ctypes.c_uint64),
         ("ri_lifetime_max_phys_footprint", ctypes.c_uint64),
     ]
-info = rusage_info_v4()
-libc.proc_pid_rusage(pid, 4, ctypes.byref(info))
-print(info.ri_phys_footprint)
+print(ctypes.sizeof(rusage_info_v4))
 SHORT
-  short_ec=0
-  "$python3_real" "$short_py" "$$" >/dev/null 2>&1 || short_ec=$?
-  [ "$short_ec" -ne 0 ] || fail "248-byte rusage_info_v4 should still overflow (got exit 0)"
+)
+[ "$short_size" = "248" ] || fail "pre-fix rusage_info_v4 class should sizeof 248, got '$short_size'"
 
+if [ "$(uname -s)" = "Darwin" ]; then
   out1="$tmp/rusage-live-1.txt"
   set +e
   "$python3_real" - "$$" <"$rusage_py" >"$out1"
