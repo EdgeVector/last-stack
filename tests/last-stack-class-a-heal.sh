@@ -364,4 +364,39 @@ grep -q 'hard-broken' "$ROOT/routines/kanban-pickup.md" \
 grep -Eq 'timeout -k 3s 20s|gtimeout -k 3s 20s' "$ROOT/routines/kanban-pickup.md" \
   || fail "preclaim Class A timeout must be 20s-bound"
 
+# --- 13) ownerless lock directory (no owner file) is reclaimed by mtime,
+# not left to wait out the full LOCK_WAIT_S every time ---
+rm -rf "$HOME/.last-stack/state/class-a-heal.lock"
+mkdir -p "$HOME/.last-stack/state/class-a-heal.lock"
+# No owner file — simulates a kill between mkdir and the owner write (or a
+# pre-fix binary's non-atomic acquire) that no PID probe can ever reclaim.
+old_epoch=$(( $(date +%s) - 3600 ))
+# touch -t takes a LOCAL-time stamp, so build it with `date -r`/`-d` (no -u):
+# a UTC-labelled stamp fed to touch -t is misread as local time and can land
+# in the future depending on the host's offset from UTC.
+old_stamp="$(date -r "$old_epoch" +%Y%m%d%H%M.%S 2>/dev/null \
+  || date -d "@$old_epoch" +%Y%m%d%H%M.%S)"
+touch -t "$old_stamp" "$HOME/.last-stack/state/class-a-heal.lock"
+printf 'healthy\n' >"$FAKE_HT_STATE"
+export LASTSTACK_CLASS_A_LOCK_WAIT_S=1
+t0=$(date +%s)
+set +e
+out13="$("$HOME/.last-stack/bin/last-stack-class-a-heal" --reason=ownerless-lock --json 2>"$tmp/err13")"
+rc13=$?
+set -e
+t1=$(date +%s)
+elapsed13=$((t1 - t0))
+unset LASTSTACK_CLASS_A_LOCK_WAIT_S
+[ "$rc13" -eq 0 ] \
+  || fail "ownerless-lock heal should exit 0; rc=$rc13 out=$out13 err=$(cat "$tmp/err13")"
+[ "$elapsed13" -le 5 ] \
+  || fail "ownerless-lock reclaim took ${elapsed13}s (want well under LOCK_WAIT_S)"
+printf '%s\n' "$out13" | grep -q 'reclaim-ownerless-lock' \
+  || fail "expected reclaim-ownerless-lock action: $out13"
+printf '%s\n' "$out13" | grep -q 'lock-wait-timeout' \
+  && fail "ownerless lock should not fall through to lock-wait-timeout: $out13" || true
+[ -d "$HOME/.last-stack/state/class-a-heal.lock" ] \
+  && fail "planted ownerless lock directory should be gone after a clean acquire+release cycle" \
+  || true
+
 printf 'ok: last-stack-class-a-heal fixtures passed\n'
