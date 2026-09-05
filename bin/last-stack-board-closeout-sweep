@@ -25,10 +25,12 @@
 #      EXCEPT a structured branch plus a HANDOFF/verified commit checkpoint
 #      keeps doing (flag checkpoint-handoff).
 #   5. deploy-parked doing cards (Requires-Deploy:, tags awaiting-deploy /
-#      live-proof / deploy-gate / needs-safe-upgrade / awaiting-validation, or
-#      live-proof wait notes) → backlog + block_status=deferred (flag
-#      deploy-parked-demoted). They must not inflate factory doing_stuck_hard.
-#      Open in-flight PR/CR cards are NOT demoted.
+#      live-proof / deploy-gate / needs-safe-upgrade / awaiting-validation,
+#      live-proof wait notes, or END STATE / DONE-WHEN that names helper
+#      cutover / host-track / a live scheduled-fire) → backlog +
+#      block_status=deferred (flag deploy-parked-demoted). They must not
+#      inflate factory doing_stuck_hard. Open in-flight PR/CR cards are NOT
+#      demoted. last-stack-card-closeout refuses done on the same gate.
 #   6. park expiry: a NON-deploy close-failed park older than
 #      --max-park-hours with no live worker → todo (flag park-expired), so a
 #      parked card can never sit in `doing` forever with nobody driving it.
@@ -467,6 +469,27 @@ function tagList(card) {
     .filter(Boolean);
 }
 
+function endStateSection(body) {
+  // Line walk, not \Z: JavaScript regex has no end-of-string \Z.
+  const lines = String(body || "").split(/\n/);
+  const out = [];
+  let inEnd = false;
+  for (const line of lines) {
+    if (/^##[ \t]+/.test(line)) {
+      inEnd = /^##[ \t]+END[ \t]+STATE\b/i.test(line);
+    }
+    if (inEnd) out.push(line);
+    if (/^\s*DONE-WHEN\s*:/i.test(line)) out.push(line);
+  }
+  return out.join("\n");
+}
+
+function endStateRequiresHelperCutover(body) {
+  return /\b(helper[ -]?cutover|host-track|live\s+scheduled[- ]fire|installed\s+(?:helper|binary|cli)|safe-upgrade|awaiting-deploy)\b/i.test(
+    endStateSection(body),
+  );
+}
+
 /** Deploy-gated / live-proof / safe-upgrade park: demote out of doing. */
 function isDeployParked(card) {
   const tags = tagList(card);
@@ -491,6 +514,7 @@ function isDeployParked(card) {
       /\b(pending|do not mark done|returning the card|leave(?:ing)? this card)\b/i.test(body)) {
     return true;
   }
+  if (endStateRequiresHelperCutover(body)) return true;
   return false;
 }
 
@@ -1439,6 +1463,29 @@ def tag_list(card):
         return [str(x).lower() for x in t]
     return [x.strip().lower() for x in str(t).split() if x.strip()]
 
+def end_state_section(body):
+    out = []
+    in_end = False
+    for line in str(body or "").splitlines():
+        if re.match(r"^##[ \t]+", line):
+            in_end = bool(re.match(r"^##[ \t]+END[ \t]+STATE\b", line, re.I))
+        if in_end:
+            out.append(line)
+        if re.match(r"^\s*DONE-WHEN\s*:", line, re.I):
+            out.append(line)
+    return "\n".join(out)
+
+
+def end_state_requires_helper_cutover(body):
+    return bool(
+        re.search(
+            r"(?i)\b(helper[ -]?cutover|host-track|live\s+scheduled[- ]fire|"
+            r"installed\s+(?:helper|binary|cli)|safe-upgrade|awaiting-deploy)\b",
+            end_state_section(body),
+        )
+    )
+
+
 def is_deploy_parked(card):
     tags = tag_list(card)
     if any(
@@ -1460,6 +1507,8 @@ def is_deploy_parked(card):
     if re.search(r"\b(LIVE PROOF|deploy-pipeline proof|awaiting deploy)\b", body, re.I) and re.search(
         r"\b(pending|do not mark done|returning the card|leave(?:ing)? this card)\b", body, re.I
     ):
+        return True
+    if end_state_requires_helper_cutover(body):
         return True
     return False
 

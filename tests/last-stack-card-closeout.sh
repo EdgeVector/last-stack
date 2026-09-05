@@ -416,6 +416,106 @@ new_proof_out="$("$bin" monotonic-card --board-cli "$monotonic_board" 2>&1)" || 
   exit 1
 }
 
+# Helper-cutover END STATE without proof: merge is not done.
+cutover_tmp="$(mktemp -d)"
+cutover_board="$cutover_tmp/board"
+cutover_moves="$cutover_tmp/moves"
+cutover_col="$cutover_tmp/col"
+cutover_body="$cutover_tmp/body"
+cutover_url="$cutover_tmp/pr_url"
+: >"$cutover_moves"
+echo doing >"$cutover_col"
+: >"$cutover_url"
+printf '%s\n' \
+  'Repo: EdgeVector/last-stack' \
+  'Kind: pr' \
+  '## END STATE' \
+  'The installed helper is on host-track current after helper cutover.' \
+  'A later live scheduled-fire proof still holds.' >"$cutover_body"
+cat >"$cutover_board" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+col_file="${CUTOVER_COL:?}"
+url_file="${CUTOVER_URL:?}"
+body_file="${CUTOVER_BODY:?}"
+case "${1:-}" in
+  show)
+    python3 - "${2:-}" "$(cat "$col_file")" "$(cat "$url_file")" "$body_file" <<'PY'
+import json
+import pathlib
+import sys
+
+slug, column, pr_url, body_path = sys.argv[1:]
+print(json.dumps({
+    "slug": slug,
+    "column": column,
+    "pr_url": pr_url,
+    "branch": "",
+    "body": pathlib.Path(body_path).read_text(),
+    "tags": [],
+}))
+PY
+    ;;
+  add)
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "--pr-url" ]; then
+        printf '%s\n' "${2:-}" >"$url_file"
+        shift 2
+        continue
+      fi
+      shift
+    done
+    ;;
+  move)
+    printf '%s %s\n' "${2:-}" "${3:-}" >>"${CUTOVER_MOVES:?}"
+    printf '%s\n' "${3:-}" >"$col_file"
+    ;;
+  mark)
+    printf '%s\n' "${3:-}" >>"$body_file"
+    ;;
+  *)
+    echo "unexpected cutover board: $*" >&2
+    exit 2
+    ;;
+esac
+EOF
+chmod +x "$cutover_board"
+export CUTOVER_MOVES="$cutover_moves"
+export CUTOVER_COL="$cutover_col"
+export CUTOVER_URL="$cutover_url"
+export CUTOVER_BODY="$cutover_body"
+set +e
+cutover_out="$("$bin" helper-cutover-card --board-cli "$cutover_board" --pr-url 'lastgit://last-stack/cr/cr-cutover' 2>&1)"
+cutover_rc=$?
+set -e
+if [ "$cutover_rc" -eq 0 ]; then
+  echo "FAIL: helper-cutover END STATE without proof must not close: $cutover_out" >&2
+  exit 1
+fi
+echo "$cutover_out" | grep -q 'FAILED helper-cutover-unmet' || {
+  echo "FAIL: expected helper-cutover-unmet: $cutover_out" >&2
+  exit 1
+}
+if grep -q 'helper-cutover-card done' "$cutover_moves" 2>/dev/null; then
+  echo "FAIL: helper-cutover closeout must not move to done:" >&2
+  cat "$cutover_moves" >&2
+  exit 1
+fi
+
+printf '%s\n' 'PROOF: PASS host-track current carries the merged helper' >>"$cutover_body"
+echo doing >"$cutover_col"
+: >"$cutover_moves"
+cutover_ok_out="$("$bin" helper-cutover-card --board-cli "$cutover_board" --pr-url 'lastgit://last-stack/cr/cr-cutover' 2>&1)" || {
+  echo "FAIL: helper-cutover END STATE with PROOF must close: $cutover_ok_out" >&2
+  exit 1
+}
+grep -q 'helper-cutover-card done' "$cutover_moves" || {
+  echo "FAIL: expected proven helper-cutover card to move done:" >&2
+  cat "$cutover_moves" >&2
+  echo "$cutover_ok_out" >&2
+  exit 1
+}
+
 # If fkanban is available and board works, optional live smoke is skipped here
 # (routines CI should not thrash Tom's board).
 echo "ok last-stack-card-closeout"

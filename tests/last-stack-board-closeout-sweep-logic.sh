@@ -67,6 +67,19 @@ case "$cmd" in
     "body": "Repo: EdgeVector/fold\nBase: main\nKind: pr\n"
   },
   {
+    "slug": "helper-cutover-end-state-no-pr",
+    "title": "helper cutover wait with no PR",
+    "column": "doing",
+    "position": "4",
+    "assignee": "",
+    "tags": [],
+    "pr_url": "",
+    "branch": "",
+    "repo": "EdgeVector/last-stack",
+    "updated_at": "2020-01-01T00:00:00.000Z",
+    "body": "Repo: EdgeVector/last-stack\nBase: main\nKind: pr\n\n## END STATE\nThe installed helper is on host-track current after helper cutover.\n"
+  },
+  {
     "slug": "empty-zombie-old",
     "title": "empty zombie",
     "column": "doing",
@@ -177,8 +190,23 @@ if ! grep -q 'needs-safe-upgrade-no-pr backlog' "$moves"; then
   echo "out=$out" >&2
   exit 1
 fi
+if ! grep -q 'helper-cutover-end-state-no-pr backlog' "$moves"; then
+  echo "FAIL: expected helper-cutover END STATE card demoted to backlog:" >&2
+  cat "$moves" >&2
+  echo "out=$out" >&2
+  exit 1
+fi
+if grep -q 'helper-cutover-end-state-no-pr todo' "$moves"; then
+  echo "FAIL: helper-cutover END STATE card was rolled back to todo:" >&2
+  cat "$moves" >&2
+  exit 1
+fi
 echo "$out" | grep -q 'deploy-parked-demoted:awaiting-deploy-no-pr' || {
   echo "FAIL: expected deploy-parked-demoted flag: $out" >&2
+  exit 1
+}
+echo "$out" | grep -q 'deploy-parked-demoted:helper-cutover-end-state-no-pr' || {
+  echo "FAIL: expected helper-cutover demote flag: $out" >&2
   exit 1
 }
 
