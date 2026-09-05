@@ -211,7 +211,7 @@ install_claude_hooks() {
   local settings="$HOME/.claude/settings.json"
   mkdir -p "$hooks_dir" "$(dirname "$settings")"
 
-  for hook in unsafe-inline-json.sh; do
+  for hook in unsafe-inline-json.sh no-home-root-scan.sh; do
     [ -f "$HOOKS_SRC/$hook" ] || continue
     cp -f "$HOOKS_SRC/$hook" "$hooks_dir/$hook"
     chmod 700 "$hooks_dir/$hook"
@@ -237,6 +237,14 @@ install_claude_hooks() {
     "$hooks_dir/unsafe-inline-json.sh  # keep parsed JSON stdout clean; block brittle inline parsing and merged stderr" \
     5
 
+  # macOS TCC: a walk of $HOME steps into Desktop/Documents/Downloads/Pictures.
+  # Under routinesd the prompt is attributed to `routines` and the command
+  # BLOCKS until a human clicks it — the cause of the "find $HOME hung past
+  # 15 min" stalls. Escape hatch: '# home-scan-ok: <reason>'.
+  upsert_pretool_hook "$settings" "Bash" \
+    "$hooks_dir/no-home-root-scan.sh  # macOS TCC: deny home-root walks and Desktop/Documents/Downloads/Pictures reads; they prompt the owner and block the run" \
+    5
+
   for tool in \
     mcp__brain__brain_get \
     mcp__brain__brain_search \
@@ -247,7 +255,7 @@ install_claude_hooks() {
     upsert_permission_allow "$settings" "$tool"
   done
 
-  echo "  claude hooks: unsafe-inline-json.sh (inline parsing + merged JSON stderr guard; read-before-edit retired)"
+  echo "  claude hooks: unsafe-inline-json.sh + no-home-root-scan.sh (inline parsing guard; home-root/TCC walk guard; read-before-edit retired)"
   echo "  claude permissions: brain MCP get/search/list/ask/put"
 }
 
@@ -263,6 +271,8 @@ BK_START='<!-- last-stack:brain-kanban:start (managed by last-stack setup; edits
 BK_END='<!-- last-stack:brain-kanban:end -->'
 STE_START='<!-- last-stack:asd-ste100:start (managed by last-stack setup; edits inside are overwritten) -->'
 STE_END='<!-- last-stack:asd-ste100:end -->'
+HS_START='<!-- last-stack:no-home-root-scan:start (managed by last-stack setup; edits inside are overwritten) -->'
+HS_END='<!-- last-stack:no-home-root-scan:end -->'
 
 strip_managed_md_block() {
   # $1 file  $2 start  $3 end
@@ -307,9 +317,11 @@ upsert_harness_instruction_blocks() {
   [ -f "$file" ] || : > "$file"
   strip_managed_md_block "$file" "$BK_START" "$BK_END"
   strip_managed_md_block "$file" "$STE_START" "$STE_END"
+  strip_managed_md_block "$file" "$HS_START" "$HS_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/brain-kanban.md" "$BK_START" "$BK_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/asd-ste100.md" "$STE_START" "$STE_END"
-  echo "  ${label} instructions: brain-kanban + asd-ste100 -> $file"
+  append_managed_md_block "$file" "$SOURCE_ROOT/instructions/no-home-root-scan.md" "$HS_START" "$HS_END"
+  echo "  ${label} instructions: brain-kanban + asd-ste100 + no-home-root-scan -> $file"
 }
 
 ensure_codex_mcp_servers() {
