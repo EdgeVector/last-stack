@@ -1174,7 +1174,7 @@ atomic_symlink() {
 # mkdir-mutex install lock (pid + age reclaim). Same shape as lastgit install-local.lock.d.
 acquire_install_lock() {
   local app="$1" wait_s="${2:-$HOST_TRACK_INSTALL_LOCK_WAIT_S}" nonfatal="${3:-0}"
-  local lock waited=0 mtime now age
+  local lock waited=0 mtime now age lock_pid pid_dead
   mkdir -p "$HOST_TRACK_LOCK_DIR"
   lock="$HOST_TRACK_LOCK_DIR/install-${app}.lock.d"
   while ! mkdir "$lock" 2>/dev/null; do
@@ -1182,13 +1182,16 @@ acquire_install_lock() {
       mtime="$(stat -f %m "$lock" 2>/dev/null || stat -c %Y "$lock" 2>/dev/null || echo 0)"
       now="$(date +%s)"
       age=$((now - mtime))
-      # Also reclaim if recorded pid is dead (crash without unlock).
+      # A live owner keeps exclusive access for the full transaction, even
+      # after the stale-age threshold. Age alone can reclaim only an ownerless
+      # lock. A recorded dead owner is safe to reclaim immediately.
       lock_pid="$(tr -d '[:space:]' <"$lock/pid" 2>/dev/null || true)"
       pid_dead=0
       if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
         pid_dead=1
       fi
-      if [ "$age" -ge "$HOST_TRACK_INSTALL_LOCK_STALE_S" ] || [ "$pid_dead" -eq 1 ]; then
+      if [ "$pid_dead" -eq 1 ] \
+        || { [ -z "$lock_pid" ] && [ "$age" -ge "$HOST_TRACK_INSTALL_LOCK_STALE_S" ]; }; then
         printf 'host-track: reclaiming install lock for %s (age=%ss pid_dead=%s)\n' \
           "$app" "$age" "$pid_dead" >&2
         rm -rf -- "$lock" 2>/dev/null || true
@@ -1213,6 +1216,18 @@ release_install_lock() {
     rm -rf -- "$INSTALL_LOCK_HELD" 2>/dev/null || true
   fi
   INSTALL_LOCK_HELD=""
+}
+
+# An artifact install normally owns its lock. soak-watch can pass an existing
+# lock so its final probe, exact-digest checks, flip, and stamps form one
+# transaction. In that case the caller releases the lock after its own state
+# updates.
+finish_artifact_install_lock() {
+  local reuse_install_lock="${1:-0}"
+  if [ "$reuse_install_lock" != "1" ]; then
+    release_install_lock
+    trap - EXIT
+  fi
 }
 
 # True when a staged/installed version tree has a usable command payload.
@@ -2178,26 +2193,42 @@ should_soak() {
 }
 
 artifact_install_app() {
-  local app="$1" channel_override="${2:-}" force_restage="${3:-0}" activate_now="${4:-0}" json install_mode artifact_app channel artifact_root install_root
+  local app="$1" channel_override="${2:-}" force_restage="${3:-0}" activate_now="${4:-0}"
+  local expected_digest="${5:-}" reuse_install_lock="${6:-0}"
+  local json install_mode artifact_app channel artifact_root install_root
   local manifest digest stage target old_target stamp_path need_materialize=0
   local old_digest prev_target prev_digest post_install_phase current_dir soak_h probe_rc
+  local expected_lock lock_pid latest_manifest latest_digest
   json="$(require_app_json "$app")"
   install_mode="$(setting "$json" install_mode)"
   [ "$install_mode" = "artifact" ] || die "$app is not registered for artifact installs"
   [ "${HOST_TRACK_ACTIVATE:-0}" != "1" ] || activate_now=1
+  if [ -n "$expected_digest" ] && [[ ! "$expected_digest" =~ ^[0-9a-f]{64}$ ]]; then
+    die "expected activation digest is invalid: $expected_digest"
+  fi
   IFS=$'\t' read -r artifact_app channel artifact_root install_root < <(artifact_paths "$app" "$json")
   [ -z "$channel_override" ] || channel="$channel_override"
   case "$channel" in candidate|canary|stable) ;; *) die "invalid artifact channel: $channel" ;; esac
   command -v lastgit >/dev/null 2>&1 || die "lastgit is required for verified artifact installs"
 
-  acquire_install_lock "$app"
+  if [ "$reuse_install_lock" = "1" ]; then
+    expected_lock="$HOST_TRACK_LOCK_DIR/install-${app}.lock.d"
+    lock_pid="$(tr -d '[:space:]' <"$expected_lock/pid" 2>/dev/null || true)"
+    if [ "${INSTALL_LOCK_HELD:-}" != "$expected_lock" ] \
+      || [ ! -d "$expected_lock" ] \
+      || [ "$lock_pid" != "$$" ]; then
+      die "cannot reuse install lock for $app: this process does not own it"
+    fi
+    # Restart the stale-lock clock before the installer runs its own probes.
+    touch "$expected_lock"
+  else
+    acquire_install_lock "$app"
+    # Always release a lock owned by this function on unexpected process exit.
+    # The soak-watch caller installs its own EXIT trap before lock reuse.
+    trap 'release_install_lock' EXIT
+  fi
   # Clean crashed half-stages before materializing a new one.
   gc_stale_stage_dirs "$install_root"
-
-  # Always release the lock on any exit path from this function (bash RETURN is
-  # unreliable across re-exec/temp-copy; pair with explicit releases + die()).
-  # shellcheck disable=SC2064
-  trap 'release_install_lock' EXIT
 
   # Track main: promote green+published main tip into the channel before resolve
   # so refresh does not no-op on a stale stable pointer while main has moved.
@@ -2206,6 +2237,12 @@ artifact_install_app() {
   manifest="$(lastgit artifact resolve --app "$artifact_app" --channel "$channel" --root "$artifact_root" --json | json_first_object)"
   digest="$(printf '%s\n' "$manifest" | jq -r '.manifest_digest // ""')"
   [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || die "resolved artifact has invalid manifest digest"
+  if [ -n "$expected_digest" ] && [ "$digest" != "$expected_digest" ]; then
+    printf 'host-track: %s soak activation deferred; channel advanced expected=%s actual=%s\n' \
+      "$app" "${expected_digest:0:12}" "${digest:0:12}" >&2
+    finish_artifact_install_lock "$reuse_install_lock"
+    return 75
+  fi
   mkdir -p "$install_root/versions"
   target="$install_root/versions/$digest"
 
@@ -2223,14 +2260,12 @@ artifact_install_app() {
 
   if [ "$need_materialize" -eq 1 ]; then
     if ! stage="$(stage_artifact_from_manifest "$install_root" "$digest" "$manifest" "$artifact_root" "$json")"; then
-      release_install_lock
-      trap - EXIT
+      finish_artifact_install_lock "$reuse_install_lock"
       return 1
     fi
     if ! verify_staged_artifact_links "$json" "$stage"; then
       rm -rf -- "$stage" 2>/dev/null || true
-      release_install_lock
-      trap - EXIT
+      finish_artifact_install_lock "$reuse_install_lock"
       return 1
     fi
     commit_staged_version "$install_root" "$digest" "$stage"
@@ -2263,8 +2298,7 @@ artifact_install_app() {
   if [ "$post_install_phase" = "before-probe" ] || [ "$post_install_phase" = "both" ]; then
     if ! run_artifact_post_install_on_tree "$app" "$json" "$install_root" "$digest" "$target"; then
       printf 'host-track: %s pre-probe post-install failed\n' "$app" >&2
-      release_install_lock
-      trap - EXIT
+      finish_artifact_install_lock "$reuse_install_lock"
       return 1
     fi
   fi
@@ -2277,15 +2311,13 @@ artifact_install_app() {
   if [ "$probe_rc" -eq 2 ]; then
     printf 'host-track: %s probe inconclusive; current unchanged; retry on next refresh\n' \
       "$app" >&2
-    release_install_lock
-    trap - EXIT
+    finish_artifact_install_lock "$reuse_install_lock"
     return 0
   fi
   if [ "$probe_rc" -ne 0 ]; then
     printf 'host-track: %s probe RED; refusing cutover (current unchanged)\n' "$app" >&2
     rollback_current_to_previous "$app" "$install_root" "$digest" "$json"
-    release_install_lock
-    trap - EXIT
+    finish_artifact_install_lock "$reuse_install_lock"
     return 1
   fi
 
@@ -2293,9 +2325,24 @@ artifact_install_app() {
   if should_soak "$json" "$install_root" "$digest" "$activate_now"; then
     soak_h="$(soak_hours_for "$json")"
     park_canary "$app" "$install_root" "$digest" "$soak_h"
-    release_install_lock
-    trap - EXIT
+    finish_artifact_install_lock "$reuse_install_lock"
     return 0
+  fi
+
+  # The soak gate passes an exact digest and keeps this app's install lock
+  # from its successful probe through this cutover. Re-resolve immediately
+  # before the flip. A channel change must start a new soak, not borrow the
+  # completed clock of the prior digest.
+  if [ -n "$expected_digest" ]; then
+    latest_manifest="$(lastgit artifact resolve --app "$artifact_app" --channel "$channel" --root "$artifact_root" --json | json_first_object)"
+    latest_digest="$(printf '%s\n' "$latest_manifest" | jq -r '.manifest_digest // ""')"
+    [[ "$latest_digest" =~ ^[0-9a-f]{64}$ ]] || die "resolved artifact has invalid manifest digest"
+    if [ "$latest_digest" != "$expected_digest" ]; then
+      printf 'host-track: %s soak activation deferred; channel advanced expected=%s actual=%s\n' \
+        "$app" "${expected_digest:0:12}" "${latest_digest:0:12}" >&2
+      finish_artifact_install_lock "$reuse_install_lock"
+      return 75
+    fi
   fi
 
   old_target=""
@@ -2340,8 +2387,7 @@ artifact_install_app() {
   if [ "$post_install_phase" = "after-cutover" ] || [ "$post_install_phase" = "both" ]; then
     if ! run_artifact_post_install "$app" "$json" "$install_root" "$digest"; then
       printf 'host-track: %s post-install failed\n' "$app" >&2
-      release_install_lock
-      trap - EXIT
+      finish_artifact_install_lock "$reuse_install_lock"
       return 1
     fi
   fi
@@ -2356,8 +2402,7 @@ artifact_install_app() {
       atomic_symlink "$(readlink "$install_root/previous")" "$install_root/current" || true
       install_artifact_links "$json" "$install_root" || true
     fi
-    release_install_lock
-    trap - EXIT
+    finish_artifact_install_lock "$reuse_install_lock"
     return 1
   fi
 
@@ -2374,8 +2419,7 @@ artifact_install_app() {
   printf 'host-track: installed %s channel=%s oid=%s manifest=%s\n' \
     "$app" "$channel" "$(printf '%s\n' "$manifest" | jq -r '.source_oid')" "$digest"
 
-  release_install_lock
-  trap - EXIT
+  finish_artifact_install_lock "$reuse_install_lock"
 }
 
 rollback_artifact_app() {
@@ -2768,7 +2812,8 @@ validate_registry_cmd() {
 
 
 soak_watch_one() {
-  local app="$1" json install_root canary_rel canary_dir digest soak_h min_checks stamp checks started now elapsed need current_dir probe_rc probe_log
+  local app="$1" json install_root canary_rel canary_dir digest soak_h min_checks stamp checks started now elapsed need current_dir probe_rc probe_log activation_rc
+  local active_target install_stamp_digest soak_stamp_digest
   json="$(require_app_json "$app")"
   [ "$(setting "$json" install_mode)" = "artifact" ] || return 0
   IFS=$'\t' read -r _ _ _ install_root < <(artifact_paths "$app" "$json")
@@ -2785,21 +2830,27 @@ soak_watch_one() {
     printf 'host-track: %s soak-watch deferred (install in progress)\n' "$app"
     return 0
   fi
+  # The lock spans the probe, exact-digest activation, and soak state updates.
+  # Release it on any unexpected process exit.
+  trap 'release_install_lock' EXIT
   [ -L "$install_root/canary" ] || {
     printf 'host-track: %s soak-watch noop (canary retired while waiting)\n' "$app"
     release_install_lock
+    trap - EXIT
     return 0
   }
   canary_rel="$(readlink "$install_root/canary")"
   case "$canary_rel" in versions/*) ;; *)
     printf 'host-track: %s soak-watch invalid canary %s\n' "$app" "$canary_rel" >&2
     release_install_lock
+    trap - EXIT
     return 1
   esac
   canary_dir="$install_root/$canary_rel"
   [ -d "$canary_dir" ] || {
     printf 'host-track: %s soak-watch dangling canary %s\n' "$app" "$canary_rel" >&2
     release_install_lock
+    trap - EXIT
     return 1
   }
   digest="${canary_rel#versions/}"
@@ -2807,6 +2858,7 @@ soak_watch_one() {
     printf 'host-track: %s soak-watch already current\n' "$app"
     archive_soak_stamp "$app" "activated"
     release_install_lock
+    trap - EXIT
     return 0
   fi
   current_dir=""
@@ -2824,8 +2876,9 @@ soak_watch_one() {
     probe_rc=$?
   fi
   cat "$probe_log" >&2 || true
-  release_install_lock
   if [ "$probe_rc" -eq 2 ]; then
+    release_install_lock
+    trap - EXIT
     printf 'host-track: %s soak probe inconclusive; current and soak state unchanged\n' \
       "$app" >&2
     return 0
@@ -2834,6 +2887,8 @@ soak_watch_one() {
     soak_h="$(soak_hours_for "$json")"
     write_soak_stamp "$app" "$digest" "soak_red" "$soak_h"
     printf 'host-track: %s soak RED; current unchanged\n' "$app" >&2
+    release_install_lock
+    trap - EXIT
     file_soak_red_card "$app" "$digest" "$json"
     kick_heal_soak "$app" "$digest" "$json"
     return 1
@@ -2858,16 +2913,47 @@ soak_watch_one() {
     write_soak_stamp "$app" "$digest" "soaking" "$soak_h" "$checks" "$started"
     printf 'host-track: %s soak pending elapsed=%ss need=%ss checks=%s/%s\n' \
       "$app" "$elapsed" "$need" "$checks" "$min_checks"
+    release_install_lock
+    trap - EXIT
     return 0
   fi
   printf 'host-track: %s soak GREEN after %ss (checks=%s/%s); activating\n' \
     "$app" "$elapsed" "$checks" "$min_checks" >&2
-  if HOST_TRACK_ACTIVATE=1 artifact_install_app "$app" "" 0 1; then
-    archive_soak_stamp "$app" "activated"
+  activation_rc=0
+  if artifact_install_app "$app" "" 0 1 "$digest" 1; then
+    active_target="$(readlink "$install_root/current" 2>/dev/null || true)"
+    install_stamp_digest="$(jq -r '.manifest_digest // empty' "$STAMP_DIR/$app.json" 2>/dev/null || true)"
+    if [ "$active_target" != "versions/$digest" ] \
+      || [ "$install_stamp_digest" != "$digest" ]; then
+      printf 'host-track: %s soak activation incomplete; exact digest is not current and stamped; retrying later\n' \
+        "$app" >&2
+      release_install_lock
+      trap - EXIT
+      return 0
+    fi
+    soak_stamp_digest="$(jq -r '.digest // empty' "$(soak_stamp_path "$app")" 2>/dev/null || true)"
+    if [ "$soak_stamp_digest" = "$digest" ]; then
+      archive_soak_stamp "$app" "activated"
+    else
+      printf 'host-track: %s preserved a successor soak stamp after exact activation\n' \
+        "$app" >&2
+    fi
     write_post_flip_stamp "$app" "$digest" "$json"
+    release_install_lock
+    trap - EXIT
+    return 0
   else
-    return 1
+    activation_rc=$?
   fi
+  release_install_lock
+  trap - EXIT
+  if [ "$activation_rc" -eq 75 ]; then
+    printf 'host-track: %s channel changed during activation; parking successor for a fresh soak\n' \
+      "$app" >&2
+    artifact_install_app "$app" "" 0 0
+    return
+  fi
+  return 1
 }
 
 soak_watch_cmd() {
