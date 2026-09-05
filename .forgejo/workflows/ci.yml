@@ -34,7 +34,17 @@ jobs:
     # ran 8m20s and 9m17s to completion and was killed at 10m when loom compiled
     # on the same runner. 15 keeps it honest today; card
     # forgejo-venue-move-followups-20260905 owns bringing it back under 10.
-    timeout-minutes: 15
+    #
+    # Re-measured 2026-09-05T21:12Z at load average 53-62, with loom and fold
+    # now sharing this capacity-2 runner: run 10 passed in 14m03s and the push
+    # run on main (run 9) was killed at 15m01s by this limit. A ceiling the
+    # green path lands 57s under is a coin flip, not a guard, and it marked a
+    # merged main red. 25 restores headroom over the observed 14m03s worst
+    # green while still catching a genuine hang. Bringing the gate back under
+    # 10 stays with forgejo-venue-move-followups-20260905; this only stops the
+    # false failures until then. Remedy named by
+    # papercut-last-stack-required-gate-exceeds-default-lastgit-timeout-20260828.
+    timeout-minutes: 25
 
     steps:
       # Host-mode runners cannot use actions/checkout: the local runner's URL
