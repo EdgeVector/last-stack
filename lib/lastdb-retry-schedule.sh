@@ -137,7 +137,15 @@ last_stack_lastdb_retry_reason() {
     printf 'service_timeout\n'
   elif printf '%s' "$text" | grep -Eiq 'too many concurrent reads'; then
     printf 'concurrent_reads\n'
-  else
+  elif printf '%s' "$text" | grep -Eiq 'lastdb.{0,80}timed out after|(POST|GET|PUT|PATCH|DELETE) /api/[^ ]* timed out'; then
+    printf 'client_timeout\n'
+  elif printf '%s' "$text" | grep -Eiq 'node did not respond|uds_connection_limit|connection refused|ECONNRESET|EPIPE|[Bb]roken pipe|os error 32|temporarily at capacity|resource has been exhausted|"retryable":[[:space:]]*true'; then
     printf 'transient_flap\n'
+  else
+    # No known-transient marker matched. Say so, rather than calling every
+    # unrecognized failure transient: the retry gate is a strict allowlist, so
+    # a 'transient_flap' label on a text the gate rejected reads as "we retried"
+    # when nothing retried at all.
+    printf 'unclassified\n'
   fi
 }

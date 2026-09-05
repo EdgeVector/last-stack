@@ -335,5 +335,60 @@ else
   echo "case 10 skip (no gtimeout/timeout on PATH)"
 fi
 
+# 11) the lastdb CLIENT-SIDE timeout wording is retryable.
+#     2026-09-05T10:45Z last-stack-whats-wrong died exit=3 after ONE attempt on
+#     `Error: lastdb POST /api/mutation timed out after 60s`, with attempts=5
+#     configured. The allowlist named the node-side wording ("node did not
+#     respond within Nms", service_timeout) but not the client's own, so the
+#     same backpressure was retried or not depending purely on which side
+#     phrased the timeout.
+cat >"$tmpdir/client_timeout_then_ok.sh" <<'SH'
+#!/usr/bin/env bash
+nfile="${RETRY_COUNT_FILE:?}"
+n=$(cat "$nfile" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" >"$nfile"
+if [ "$n" -lt 3 ]; then
+  echo "Error: lastdb POST /api/mutation timed out after 60s" >&2
+  exit 1
+fi
+echo "ok-on-attempt-$n"
+exit 0
+SH
+chmod +x "$tmpdir/client_timeout_then_ok.sh"
+export RETRY_COUNT_FILE="$tmpdir/count_client_timeout"
+out="$("$BIN" --attempts 5 --sleep-ms 50 -- "$tmpdir/client_timeout_then_ok.sh")"
+assert "retries a lastdb client-side timeout then succeeds" \
+  test "$out" = "ok-on-attempt-3"
+assert "client-side timeout took 3 attempts" \
+  test "$(cat "$RETRY_COUNT_FILE")" = "3"
+
+# 12) an unrelated timeout is NOT swept into the lastdb retry class.
+cat >"$tmpdir/foreign_timeout.sh" <<'SH'
+#!/usr/bin/env bash
+nfile="${RETRY_COUNT_FILE:?}"
+n=$(cat "$nfile" 2>/dev/null || echo 0)
+echo "$((n + 1))" >"$nfile"
+echo "test suite timed out after 60s" >&2
+exit 1
+SH
+chmod +x "$tmpdir/foreign_timeout.sh"
+export RETRY_COUNT_FILE="$tmpdir/count_foreign"
+set +e
+"$BIN" --attempts 3 --sleep-ms 50 -- "$tmpdir/foreign_timeout.sh" >/dev/null 2>&1
+set -e
+assert "a non-lastdb timeout is not retried" \
+  test "$(cat "$RETRY_COUNT_FILE")" = "1"
+
+# 13) the reason classifier does not call an unrecognized failure transient.
+# shellcheck source=../lib/lastdb-retry-schedule.sh
+. "$ROOT/lib/lastdb-retry-schedule.sh"
+assert "a lastdb client timeout is named client_timeout" \
+  test "$(last_stack_lastdb_retry_reason 'Error: lastdb POST /api/mutation timed out after 60s')" = "client_timeout"
+assert "an unrecognized failure is unclassified, not transient_flap" \
+  test "$(last_stack_lastdb_retry_reason 'fatal: authentication required')" = "unclassified"
+assert "a known socket blip is still transient_flap" \
+  test "$(last_stack_lastdb_retry_reason 'connection refused')" = "transient_flap"
+
 echo "PASS=$pass FAIL=$fail"
 test "$fail" -eq 0
