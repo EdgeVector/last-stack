@@ -1,6 +1,6 @@
 {
   "name": "lastdb-safe-upgrade",
-  "version": "5",
+  "version": "6",
   "start_at": "PROBE",
   "max_depth": 1,
   "node_budget": 20,
@@ -8,10 +8,29 @@
     "type": "object",
     "properties": {
       "candidate": { "type": "string" },
+      "candidate_cli": { "type": "string" },
       "version": { "type": "string" },
+      "lastdbd_version": { "type": "string" },
+      "lastdb_version": { "type": "string" },
+      "lastdbd_sha256": { "type": "string" },
+      "lastdb_sha256": { "type": "string" },
       "source_git_oid": { "type": "string" },
+      "candidate_artifact_digest": { "type": "string" },
+      "safe_upgrade_protocol_version": { "type": "string" },
       "item": {}
-    }
+    },
+    "required": [
+      "candidate",
+      "candidate_cli",
+      "version",
+      "lastdbd_version",
+      "lastdb_version",
+      "lastdbd_sha256",
+      "lastdb_sha256",
+      "source_git_oid",
+      "candidate_artifact_digest",
+      "safe_upgrade_protocol_version"
+    ]
   },
   "states": {
     "PROBE": {

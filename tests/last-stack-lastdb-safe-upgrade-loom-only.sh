@@ -4,7 +4,16 @@ set -euo pipefail
 # A HEAL-node-spawned agent exports the ambient live-loom contract; scrub it
 # so every invocation below controls its own LOOM_* env.
 unset LOOM_LIVE LOOM_CANARY_LIVE LOOM_CANARY_RED_LIVE \
-  LOOM_EXEC_ID LOOM_INPUT LOOM_IDEMPOTENCY_KEY LOOM_SCRIPTS || true
+  LOOM_EXEC_ID LOOM_INPUT LOOM_IDEMPOTENCY_KEY LOOM_SCRIPTS \
+  LASTDB_SAFE_UPGRADE_EXPECTED_SOURCE_OID \
+  LASTDB_SAFE_UPGRADE_EXPECTED_LASTDBD_PATH \
+  LASTDB_SAFE_UPGRADE_EXPECTED_LASTDB_PATH \
+  LASTDB_SAFE_UPGRADE_EXPECTED_LASTDBD_VERSION \
+  LASTDB_SAFE_UPGRADE_EXPECTED_LASTDB_VERSION \
+  LASTDB_SAFE_UPGRADE_EXPECTED_LASTDBD_SHA256 \
+  LASTDB_SAFE_UPGRADE_EXPECTED_LASTDB_SHA256 \
+  LASTDB_SAFE_UPGRADE_EXPECTED_ARTIFACT_DIGEST \
+  LASTDB_DEV_STAMP_RECEIPT || true
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 FRESH="$ROOT/lib/canary-loom/lastdb-candidate-freshness.py"
@@ -24,7 +33,9 @@ bash -n "$LAUNCHER"
 bash -n "$DRIVER"
 python3 -m py_compile "$FRESH" "$DOGFOOD"
 
-[ "$(jq -r .version "$GRAPH")" = "5" ] || fail "safe-upgrade graph version did not advance"
+[ "$(jq -r .version "$GRAPH")" = "6" ] || fail "safe-upgrade graph version did not advance"
+grep -q 'SAFE_UPGRADE_PROTOCOL_VERSION="6"' "$LAUNCHER" \
+  || fail "launcher key namespace does not match safe-upgrade graph version 6"
 [ "$(jq -r '.states.DECIDE.map.current' "$GRAPH")" = "DONE" ] \
   || fail "equal candidate does not finish as a no-op"
 probe_timeout="$(jq -er '.states.PROBE.timeout_sec | numbers' "$GRAPH")"
@@ -43,6 +54,7 @@ fi
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-safe-upgrade-loom.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
+tmp="$(CDPATH= cd -- "$tmp" && pwd -P)"
 
 repo="$tmp/fold"
 git init -q "$repo"
@@ -62,10 +74,44 @@ make_candidate() {
   local dir="$1" version="$2" oid="$3"
   mkdir -p "$dir"
   printf '#!/usr/bin/env bash\nprintf "lastdbd %s\\n"\n' "$version" >"$dir/lastdbd"
-  chmod 755 "$dir/lastdbd"
+  printf '#!/usr/bin/env bash\nprintf "lastdb %s\\n"\n' "$version" >"$dir/lastdb"
+  chmod 755 "$dir/lastdbd" "$dir/lastdb"
   if [ -n "$oid" ]; then
     printf '{"source_git_oid":"%s"}\n' "$oid" >"$dir/manifest.json"
   fi
+}
+
+sha256_file() {
+  shasum -a 256 "$1" | awk '{print $1}'
+}
+
+artifact_digest() {
+  printf '%s\0%s\0%s\0%s\0%s\0%s\0%s' \
+    "$1" "$2" "$3" "$4" "$5" "$6" "$7" \
+    | shasum -a 256 | awk '{print $1}'
+}
+
+candidate_input() {
+  local dir="$1" oid="$2" version daemon cli daemon_sha cli_sha digest
+  daemon="$(CDPATH= cd -- "$dir" && printf '%s/lastdbd\n' "$(pwd -P)")"
+  cli="$(CDPATH= cd -- "$dir" && printf '%s/lastdb\n' "$(pwd -P)")"
+  version="$("$daemon" --version | awk '{print $NF}')"
+  daemon_sha="$(sha256_file "$daemon")"
+  cli_sha="$(sha256_file "$cli")"
+  digest="$(artifact_digest \
+    "$oid" "$daemon" "$cli" "$daemon_sha" "$cli_sha" "$version" "$version")"
+  jq -cn \
+    --arg candidate "$daemon" \
+    --arg candidate_cli "$cli" \
+    --arg version "$version" \
+    --arg lastdbd_version "$version" \
+    --arg lastdb_version "$version" \
+    --arg lastdbd_sha256 "$daemon_sha" \
+    --arg lastdb_sha256 "$cli_sha" \
+    --arg source_git_oid "$oid" \
+    --arg candidate_artifact_digest "$digest" \
+    --arg safe_upgrade_protocol_version 6 \
+    '{candidate:$candidate,candidate_cli:$candidate_cli,version:$version,lastdbd_version:$lastdbd_version,lastdb_version:$lastdb_version,lastdbd_sha256:$lastdbd_sha256,lastdb_sha256:$lastdb_sha256,source_git_oid:$source_git_oid,candidate_artifact_digest:$candidate_artifact_digest,safe_upgrade_protocol_version:$safe_upgrade_protocol_version}'
 }
 
 make_candidate "$tmp/current-a" "0.23.3-1-g${oid_a:0:12}" "$oid_a"
@@ -126,7 +172,14 @@ safe_log="$tmp/safe.log"
 cat >"$skill_dir/safe-upgrade-lastdb.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-printf 'args=%s marker=%s exec=%s\n' "$*" "${LASTDB_SAFE_UPGRADE_VIA_LOOM:-}" "${LOOM_EXEC_ID:-}" >>"${SAFE_LOG:?}"
+printf 'args=%s marker=%s exec=%s daemon=%s cli=%s daemon_sha=%s cli_sha=%s source=%s receipt=%s\n' \
+  "$*" "${LASTDB_SAFE_UPGRADE_VIA_LOOM:-}" "${LOOM_EXEC_ID:-}" \
+  "${LASTDB_SAFE_UPGRADE_EXPECTED_LASTDBD_PATH:-}" \
+  "${LASTDB_SAFE_UPGRADE_EXPECTED_LASTDB_PATH:-}" \
+  "${LASTDB_SAFE_UPGRADE_EXPECTED_LASTDBD_SHA256:-}" \
+  "${LASTDB_SAFE_UPGRADE_EXPECTED_LASTDB_SHA256:-}" \
+  "${LASTDB_SAFE_UPGRADE_EXPECTED_SOURCE_OID:-}" \
+  "${LASTDB_DEV_STAMP_RECEIPT:-}" >>"${SAFE_LOG:?}"
 case " $* " in
   *" --probe-only "*)
     case "${SAFE_MOCK_PROBE:-green}" in
@@ -154,11 +207,7 @@ esac
 SH
 chmod 755 "$skill_dir/safe-upgrade-lastdb.sh"
 
-stale_input="$(jq -cn \
-  --arg candidate "$tmp/candidate-a/lastdbd" \
-  --arg version "0.23.3-1-g${oid_a:0:12}" \
-  --arg source_git_oid "$oid_a" \
-  '{candidate:$candidate,version:$version,source_git_oid:$source_git_oid}')"
+stale_input="$(candidate_input "$tmp/candidate-a" "$oid_a")"
 out="$(HOME="$mock_home" \
   LOOM_LIVE=1 \
   LOOM_INPUT="$stale_input" \
@@ -169,11 +218,7 @@ printf '%s\n' "$out" | grep -q '"verdict":"red"' || fail "stale graph probe was 
 printf '%s\n' "$out" | grep -q '"freshness":"stale"' || fail "stale relation was not recorded"
 [ ! -e "$safe_log" ] || fail "stale graph reached the safe-upgrade driver"
 
-equal_input="$(jq -cn \
-  --arg candidate "$tmp/candidate-b/lastdbd" \
-  --arg version "0.23.3-2-g${oid_b:0:12}" \
-  --arg source_git_oid "$oid_b" \
-  '{candidate:$candidate,version:$version,source_git_oid:$source_git_oid}')"
+equal_input="$(candidate_input "$tmp/candidate-b" "$oid_b")"
 out="$(HOME="$mock_home" \
   LOOM_LIVE=1 \
   LOOM_INPUT="$equal_input" \
@@ -183,11 +228,52 @@ out="$(HOME="$mock_home" \
 printf '%s\n' "$out" | grep -q '"verdict":"current"' || fail "equal graph probe did not no-op"
 [ ! -e "$safe_log" ] || fail "equal graph probe reached the safe-upgrade driver"
 
-forward_input="$(jq -cn \
-  --arg candidate "$tmp/candidate-b/lastdbd" \
-  --arg version "0.23.3-2-g${oid_b:0:12}" \
-  --arg source_git_oid "$oid_b" \
-  '{candidate:$candidate,version:$version,source_git_oid:$source_git_oid}')"
+forward_input="$(candidate_input "$tmp/candidate-b" "$oid_b")"
+
+# Item fanout cannot override the immutable tuple that the parent supplies.
+conflict_input="$(printf '%s' "$forward_input" | jq -c \
+  '. + {item:(. + {lastdb_sha256:"0000000000000000000000000000000000000000000000000000000000000000"})}')"
+set +e
+out="$(HOME="$mock_home" LOOM_LIVE=1 LOOM_INPUT="$conflict_input" "$STEP" PROBE 2>&1)"
+rc=$?
+set -e
+[ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -q 'immutable item/context mismatch' \
+  || fail "item/top-level candidate conflict did not fail closed: rc=$rc out=$out"
+[ ! -e "$safe_log" ] || fail "immutable input conflict reached the safe-upgrade driver"
+
+# The step recomputes the digest. A caller cannot supply a valid tuple with a
+# digest from another path or protocol input.
+bad_digest_input="$(printf '%s' "$forward_input" | jq -c \
+  '.candidate_artifact_digest="0000000000000000000000000000000000000000000000000000000000000000"')"
+out="$(HOME="$mock_home" LOOM_LIVE=1 LOOM_INPUT="$bad_digest_input" "$STEP" PROBE)"
+printf '%s\n' "$out" | grep -q 'exact candidate binding refused' \
+  || fail "mismatched artifact digest did not fail closed: $out"
+printf '%s\n' "$out" | grep -q 'artifact digest does not match' \
+  || fail "artifact digest refusal did not name the tuple mismatch: $out"
+[ ! -e "$safe_log" ] || fail "mismatched artifact digest reached the safe-upgrade driver"
+
+legacy_protocol_input="$(printf '%s' "$forward_input" | jq -c \
+  '.safe_upgrade_protocol_version="5"')"
+out="$(HOME="$mock_home" LOOM_LIVE=1 LOOM_INPUT="$legacy_protocol_input" "$STEP" PROBE)"
+printf '%s\n' "$out" | grep -q 'safe-upgrade protocol version is not 6' \
+  || fail "legacy safe-upgrade protocol was not refused: $out"
+[ ! -e "$safe_log" ] || fail "legacy safe-upgrade protocol reached the driver"
+
+# Any byte change after kickoff fails before ancestry or the driver. This test
+# mutates only the paired CLI, which a daemon-only execution key would miss.
+cp "$tmp/candidate-b/lastdb" "$tmp/candidate-b/lastdb.saved"
+printf '# byte change after kickoff\n' >>"$tmp/candidate-b/lastdb"
+set +e
+out="$(HOME="$mock_home" LOOM_LIVE=1 LOOM_INPUT="$forward_input" "$STEP" PROBE 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -q 'exact candidate binding refused' \
+  || fail "paired CLI byte change was not refused: rc=$rc out=$out"
+printf '%s\n' "$out" | grep -q 'candidate pair bytes changed' \
+  || fail "paired CLI byte refusal did not name changed bytes: $out"
+[ ! -e "$safe_log" ] || fail "changed paired CLI reached the safe-upgrade driver"
+mv "$tmp/candidate-b/lastdb.saved" "$tmp/candidate-b/lastdb"
+chmod 755 "$tmp/candidate-b/lastdb"
 
 # Forward probe, driver green (rc=0, final verdict GREEN_PROBE_ONLY).
 out="$(HOME="$mock_home" \
@@ -283,6 +369,12 @@ HOME="$mock_home" \
   "$STEP" CUTOVER >/dev/null
 grep -q 'marker=1 exec=lx-test-safe-upgrade' "$safe_log" \
   || fail "Loom did not mark the live driver call"
+grep -q "daemon=$tmp/candidate-b/lastdbd cli=$tmp/candidate-b/lastdb" "$safe_log" \
+  || fail "Loom did not pass the exact candidate paths to the driver"
+grep -q "daemon_sha=$(sha256_file "$tmp/candidate-b/lastdbd") cli_sha=$(sha256_file "$tmp/candidate-b/lastdb") source=$oid_b" "$safe_log" \
+  || fail "Loom did not pass both hashes and the source OID to the driver"
+grep -q 'receipt=.*/lx-test-safe-upgrade-.*\.receipt' "$safe_log" \
+  || fail "Loom did not isolate the DEV receipt by execution and pair hashes"
 
 set +e
 out="$("$DRIVER" --candidate "$tmp/candidate-b/lastdbd" --yes 2>&1)"
@@ -297,12 +389,36 @@ dry_b="$(LASTDB_SAFE_UPGRADE_FOLD_GIT_DIR="$repo" \
   "$LAUNCHER" --candidate "$tmp/candidate-b/lastdbd" --source-git-oid "$oid_b" --dry-run --json)"
 [ "$(printf '%s\n' "$dry_a" | jq -r .graph)" = "lastdb-safe-upgrade" ] \
   || fail "launcher did not select the safe-upgrade graph"
-[ "$(printf '%s\n' "$dry_a" | jq -r .key)" = "safe-upgrade-$oid_a" ] \
-  || fail "launcher key did not use candidate A source"
-[ "$(printf '%s\n' "$dry_b" | jq -r .key)" = "safe-upgrade-$oid_b" ] \
-  || fail "launcher key did not use candidate B source"
+version_a="$("$tmp/candidate-a/lastdbd" --version | awk '{print $NF}')"
+version_b="$("$tmp/candidate-b/lastdbd" --version | awk '{print $NF}')"
+digest_a="$(artifact_digest "$oid_a" "$tmp/candidate-a/lastdbd" "$tmp/candidate-a/lastdb" "$(sha256_file "$tmp/candidate-a/lastdbd")" "$(sha256_file "$tmp/candidate-a/lastdb")" "$version_a" "$version_a")"
+digest_b="$(artifact_digest "$oid_b" "$tmp/candidate-b/lastdbd" "$tmp/candidate-b/lastdb" "$(sha256_file "$tmp/candidate-b/lastdbd")" "$(sha256_file "$tmp/candidate-b/lastdb")" "$version_b" "$version_b")"
+[ "$(printf '%s\n' "$dry_a" | jq -r .key)" = "safe-upgrade-v6-$digest_a" ] \
+  || fail "launcher key did not bind candidate A full tuple digest"
+[ "$(printf '%s\n' "$dry_b" | jq -r .key)" = "safe-upgrade-v6-$digest_b" ] \
+  || fail "launcher key did not bind candidate B full tuple digest"
+[ "$(printf '%s\n' "$dry_a" | jq -r .candidate_artifact_digest)" = "$digest_a" ] \
+  || fail "launcher output omitted candidate A artifact digest"
+[ "$(printf '%s\n' "$dry_a" | jq -r .safe_upgrade_protocol_version)" = 6 ] \
+  || fail "launcher output omitted safe-upgrade protocol v6"
+key_a="$(printf '%s\n' "$dry_a" | jq -r .key)"
+[ "${#digest_a}" -eq 64 ] && [ "${#key_a}" -eq 80 ] \
+  || fail "launcher execution key is not fixed length"
 [ "$(printf '%s\n' "$dry_a" | jq -r .key)" != "$(printf '%s\n' "$dry_b" | jq -r .key)" ] \
   || fail "different candidates reused one Loom key"
+
+cp -R "$tmp/candidate-a" "$tmp/candidate-a-relocated"
+dry_a_relocated="$(LASTDB_SAFE_UPGRADE_FOLD_GIT_DIR="$repo" \
+  "$LAUNCHER" --candidate "$tmp/candidate-a-relocated/lastdbd" --source-git-oid "$oid_a" --dry-run --json)"
+[ "$(printf '%s\n' "$dry_a" | jq -r .key)" != "$(printf '%s\n' "$dry_a_relocated" | jq -r .key)" ] \
+  || fail "identical candidate bytes at a new canonical path reused one Loom key"
+
+make_candidate "$tmp/candidate-a-cli-change" "0.23.3-1-g${oid_a:0:12}" "$oid_a"
+printf '# distinct CLI bytes\n' >>"$tmp/candidate-a-cli-change/lastdb"
+dry_a_cli_change="$(LASTDB_SAFE_UPGRADE_FOLD_GIT_DIR="$repo" \
+  "$LAUNCHER" --candidate "$tmp/candidate-a-cli-change/lastdbd" --source-git-oid "$oid_a" --dry-run --json)"
+[ "$(printf '%s\n' "$dry_a" | jq -r .key)" != "$(printf '%s\n' "$dry_a_cli_change" | jq -r .key)" ] \
+  || fail "a paired CLI-only byte change reused the prior Loom execution key"
 
 grep -q 'run_safe_upgrade_loom(candidate)' "$DOGFOOD" \
   || fail "legacy dogfood cutover does not route through Loom"

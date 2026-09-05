@@ -1,112 +1,223 @@
 #!/usr/bin/env bash
-# Unit tests for the safe-upgrade DEV photograph-stamp gate (Tom 2026-08-19).
-# Drives the shipped gate script and the driver's --check-dev-stamp path.
+# Exact-candidate receipt tests for the LastDB safe-upgrade DEV photograph.
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
 GATE="$ROOT/skills/lastdb-safe-upgrade/scripts/dev-photograph-stamp-gate.sh"
 DRIVER="$ROOT/skills/lastdb-safe-upgrade/scripts/safe-upgrade-lastdb.sh"
+PROOF="$ROOT/skills/lastdb-safe-upgrade/scripts/dev-photograph-candidate-proof.sh"
 SKILL_MD="$ROOT/skills/lastdb-safe-upgrade/SKILL.md"
 
-[ -f "$GATE" ] || { echo "FAIL: missing $GATE" >&2; exit 1; }
-[ -f "$DRIVER" ] || { echo "FAIL: missing $DRIVER" >&2; exit 1; }
-[ -x "$GATE" ] || { echo "FAIL: gate not executable: $GATE" >&2; exit 1; }
+fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+
+[ -x "$GATE" ] || fail "receipt gate is absent or not executable"
+[ -x "$PROOF" ] || fail "candidate proof helper is absent or not executable"
+[ -x "$DRIVER" ] || fail "safe-upgrade driver is absent or not executable"
 bash -n "$GATE"
+bash -n "$PROOF"
 bash -n "$DRIVER"
 
 # shellcheck source=../skills/lastdb-safe-upgrade/scripts/dev-photograph-stamp-gate.sh
 . "$GATE"
 
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/dev-stamp-gate.XXXXXX")"
-trap 'rm -rf "$TMP"' EXIT
-PRIMARY="$TMP/primary-home"
-EPHEM="$TMP/ephemeral-home"
-mkdir -p "$PRIMARY" "$EPHEM"
-PROD_API="https://jdsx4ixk2i.execute-api.us-east-1.amazonaws.com"
-DEV_API="https://ygyu7ritx8.execute-api.us-west-2.amazonaws.com"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/lastdb-dev-stamp-v2.XXXXXX")"
+trap 'rm -rf -- "$TMP"' EXIT
+TMP="$(CDPATH= cd -- "$TMP" && pwd -P)"
+PRIMARY="$TMP/primary"
+COW="$TMP/proof-root/cow"
+CAND="$TMP/candidate"
+mkdir -p "$PRIMARY" "$COW" "$CAND"
+VERSION="0.24.0-1-gaaaaaaaaaaaa"
+OID="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+cat >"$CAND/lastdbd" <<EOF
+#!/usr/bin/env bash
+printf 'lastdbd %s\\n' '$VERSION'
+EOF
+cat >"$CAND/lastdb" <<EOF
+#!/usr/bin/env bash
+printf 'lastdb %s\\n' '$VERSION'
+EOF
+chmod 755 "$CAND/lastdbd" "$CAND/lastdb"
 
-dev_stamp_api_is_prod "$PROD_API" \
-  || { echo "FAIL: prod host should flag" >&2; exit 1; }
-dev_stamp_api_is_prod "$DEV_API" \
-  && { echo "FAIL: DEV host must not flag as prod" >&2; exit 1; }
-dev_stamp_api_is_dev "$DEV_API" \
-  || { echo "FAIL: DEV host should match" >&2; exit 1; }
-dev_stamp_api_is_dev "$PROD_API" \
-  && { echo "FAIL: prod host must not match DEV" >&2; exit 1; }
-
-# Missing receipt → refuse
+export LOOM_EXEC_ID="lx-exact-candidate-test"
+export LASTDB_SAFE_UPGRADE_EXPECTED_SOURCE_OID="$OID"
+export LASTDB_SAFE_UPGRADE_EXPECTED_LASTDBD_PATH="$CAND/lastdbd"
+export LASTDB_SAFE_UPGRADE_EXPECTED_LASTDB_PATH="$CAND/lastdb"
+export LASTDB_SAFE_UPGRADE_EXPECTED_LASTDBD_VERSION="$VERSION"
+export LASTDB_SAFE_UPGRADE_EXPECTED_LASTDB_VERSION="$VERSION"
+export LASTDB_SAFE_UPGRADE_EXPECTED_LASTDBD_SHA256="$(dev_stamp_sha256_file "$CAND/lastdbd")"
+export LASTDB_SAFE_UPGRADE_EXPECTED_LASTDB_SHA256="$(dev_stamp_sha256_file "$CAND/lastdb")"
 export LASTDB_HOME="$PRIMARY"
-export LASTDB_DEV_STAMP_RECEIPT="$TMP/missing.receipt"
+
+now="$(date +%s)"
+now_rfc="$(date -u -r "$now" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+  || date -u -d "@$now" +%Y-%m-%dT%H:%M:%SZ)"
+
+receipt="$TMP/exact.receipt"
+write_dev_stamp_receipt_v2 \
+  "$receipt" "$PRIMARY" "$COW" 7 7 \
+  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" \
+  "backup/latest" "$now_rfc" "$now" \
+  || fail "v2 receipt writer failed"
+assert_dev_photograph_stamp_ok "$receipt" "$PRIMARY" \
+  || fail "exact v2 receipt was refused"
+[ "$(_dev_stamp_file_mode "$receipt")" = "600" ] || fail "receipt mode is not 600"
+[ "$(find "$TMP" -name '.exact.receipt.tmp.*' -print | wc -l | tr -d ' ')" = "0" ] \
+  || fail "atomic receipt writer left a temporary file"
+
+replace_key() {
+  local file="$1" key="$2" replacement="$3" tmp_file
+  tmp_file="$file.edit"
+  awk -v k="$key" -v v="$replacement" '
+    index($0, k "=") == 1 { print k "=" v; next }
+    { print }
+  ' "$file" >"$tmp_file"
+  chmod 600 "$tmp_file"
+  mv "$tmp_file" "$file"
+}
+
+expect_red_field() {
+  local key="$1" replacement="$2" case_receipt
+  case_receipt="$TMP/red-$key.receipt"
+  cp "$receipt" "$case_receipt"
+  chmod 600 "$case_receipt"
+  replace_key "$case_receipt" "$key" "$replacement"
+  if assert_dev_photograph_stamp_ok "$case_receipt" "$PRIMARY" >/dev/null 2>&1; then
+    fail "receipt accepted mismatched field $key"
+  fi
+}
+
+# Each v2 field can fail the gate. The two valid time fields also receive
+# dedicated stale and future cases below.
+expect_red_field receipt_version 1
+expect_red_field verdict RED
+expect_red_field loom_execution_id lx-other
+expect_red_field source_git_oid cccccccccccccccccccccccccccccccccccccccc
+expect_red_field lastdbd_path "$TMP/other/lastdbd"
+expect_red_field lastdb_path "$TMP/other/lastdb"
+expect_red_field lastdbd_sha256 cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+expect_red_field lastdb_sha256 dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+expect_red_field lastdbd_version other
+expect_red_field lastdb_version other
+expect_red_field api_url "https://jdsx4ixk2i.execute-api.us-east-1.amazonaws.com"
+expect_red_field home "$PRIMARY"
+expect_red_field primary_home "$TMP/other-primary"
+expect_red_field counter 0
+expect_red_field cas_counter 8
+expect_red_field manifest_sha256 missing
+expect_red_field latest_key ""
+expect_red_field committed_at 2026-01-01T00:00:00Z
+expect_red_field committed_epoch 1
+for key in \
+  fresh_device_id \
+  production_cloud_config_absent \
+  production_cloud_residue_absent \
+  production_presence_cache_absent \
+  production_manifest_cache_absent \
+  copied_session_absent \
+  identity_preserved \
+  bootstrap_preserved; do
+  expect_red_field "$key" false
+done
+
+duplicate="$TMP/duplicate.receipt"
+cp "$receipt" "$duplicate"
+printf 'counter=7\n' >>"$duplicate"
+chmod 600 "$duplicate"
+assert_dev_photograph_stamp_ok "$duplicate" "$PRIMARY" >/dev/null 2>&1 \
+  && fail "duplicate receipt key was accepted"
+
+unknown="$TMP/unknown.receipt"
+cp "$receipt" "$unknown"
+printf 'unreviewed_fact=true\n' >>"$unknown"
+chmod 600 "$unknown"
+assert_dev_photograph_stamp_ok "$unknown" "$PRIMARY" >/dev/null 2>&1 \
+  && fail "unknown receipt key was accepted"
+
+missing="$TMP/missing.receipt"
+awk '$0 !~ /^manifest_sha256=/' "$receipt" >"$missing"
+chmod 600 "$missing"
+assert_dev_photograph_stamp_ok "$missing" "$PRIMARY" >/dev/null 2>&1 \
+  && fail "missing receipt key was accepted"
+
+legacy="$TMP/legacy.receipt"
+cat >"$legacy" <<EOF
+verdict=GREEN
+api_url=$LASTDB_DEV_BACKUP_API_URL_DEFAULT
+home=$COW
+primary_home=$PRIMARY
+counter=7
+committed_at=$now_rfc
+EOF
+chmod 600 "$legacy"
+assert_dev_photograph_stamp_ok "$legacy" "$PRIMARY" >/dev/null 2>&1 \
+  && fail "legacy GREEN receipt was accepted"
+
+bad_mode="$TMP/bad-mode.receipt"
+cp "$receipt" "$bad_mode"
+chmod 644 "$bad_mode"
+assert_dev_photograph_stamp_ok "$bad_mode" "$PRIMARY" >/dev/null 2>&1 \
+  && fail "world-readable receipt was accepted"
+
+ln -s "$receipt" "$TMP/link.receipt"
+assert_dev_photograph_stamp_ok "$TMP/link.receipt" "$PRIMARY" >/dev/null 2>&1 \
+  && fail "receipt symlink was accepted"
+
+stale_epoch=$((now - LASTDB_DEV_STAMP_MAX_AGE_SECS_DEFAULT - 5))
+stale_rfc="$(date -u -r "$stale_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+  || date -u -d "@$stale_epoch" +%Y-%m-%dT%H:%M:%SZ)"
+stale="$TMP/stale.receipt"
+cp "$receipt" "$stale"
+replace_key "$stale" committed_at "$stale_rfc"
+replace_key "$stale" committed_epoch "$stale_epoch"
+assert_dev_photograph_stamp_ok "$stale" "$PRIMARY" >/dev/null 2>&1 \
+  && fail "stale receipt was accepted"
+
+future_epoch=$((now + LASTDB_DEV_STAMP_FUTURE_SKEW_SECS_DEFAULT + 120))
+future_rfc="$(date -u -r "$future_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+  || date -u -d "@$future_epoch" +%Y-%m-%dT%H:%M:%SZ)"
+future="$TMP/future.receipt"
+cp "$receipt" "$future"
+replace_key "$future" committed_at "$future_rfc"
+replace_key "$future" committed_epoch "$future_epoch"
+assert_dev_photograph_stamp_ok "$future" "$PRIMARY" >/dev/null 2>&1 \
+  && fail "future receipt was accepted"
+
+# The live pair must still match the immutable tuple. A receipt alone cannot
+# authorize replacement bytes at the same path.
+cp "$CAND/lastdb" "$CAND/lastdb.saved"
+printf '# mutation\n' >>"$CAND/lastdb"
+assert_candidate_binding_matches_expected "$CAND/lastdbd" "$CAND/lastdb" "$OID" >/dev/null 2>&1 \
+  && fail "candidate CLI mutation passed the exact binding gate"
+mv "$CAND/lastdb.saved" "$CAND/lastdb"
+chmod 755 "$CAND/lastdb"
+assert_candidate_binding_matches_expected "$CAND/lastdbd" "$CAND/lastdb" "$OID" \
+  || fail "restored exact pair failed the binding gate"
+
+export LASTDB_DEV_STAMP_RECEIPT="$receipt"
+driver_out="$($DRIVER --check-dev-stamp 2>&1)" \
+  || fail "driver check refused an exact receipt: $driver_out"
+printf '%s\n' "$driver_out" | grep -q 'VERDICT: GREEN' \
+  || fail "driver check did not report GREEN"
+export LASTDB_DEV_STAMP_RECEIPT="$legacy"
 set +e
-OUT="$(assert_dev_photograph_stamp_ok "$TMP/missing.receipt" "$PRIMARY" 2>&1)"
-RC=$?
+driver_out="$($DRIVER --check-dev-stamp 2>&1)"
+driver_rc=$?
 set -e
-[ "$RC" -ne 0 ] || { echo "FAIL: missing receipt must refuse; out=$OUT" >&2; exit 1; }
-echo "$OUT" | grep -q 'RED:' || { echo "FAIL: expected RED: line; out=$OUT" >&2; exit 1; }
+[ "$driver_rc" -ne 0 ] && printf '%s\n' "$driver_out" | grep -q 'VERDICT: RED' \
+  || fail "driver check accepted a legacy receipt"
 
-# Prod api_url cannot be written GREEN
-write_dev_stamp_receipt "$TMP/prod.receipt" GREEN "$PROD_API" "$EPHEM" "$PRIMARY" 3
-grep -q '^verdict=RED$' "$TMP/prod.receipt" \
-  || { echo "FAIL: write_dev_stamp_receipt must not stamp GREEN on prod api" >&2; exit 1; }
-set +e
-OUT="$(assert_dev_photograph_stamp_ok "$TMP/prod.receipt" "$PRIMARY" 2>&1)"
-RC=$?
-set -e
-[ "$RC" -ne 0 ] || { echo "FAIL: prod receipt must refuse live; out=$OUT" >&2; exit 1; }
-echo "$OUT" | grep -q 'production backup host' \
-  || { echo "FAIL: expected production-host reason; out=$OUT" >&2; exit 1; }
+grep -q 'safe-upgrade-v6-<digest>' "$SKILL_MD" \
+  || fail "SKILL.md does not state the exact execution-key tuple"
+grep -q 'both canonical paths' "$SKILL_MD" \
+  || fail "SKILL.md omits candidate paths from the execution-key digest"
+grep -q 'laststore_backup_manifest.json' "$SKILL_MD" \
+  || fail "SKILL.md omits the production manifest-cache scrub"
+grep -q 'current-session.json' "$SKILL_MD" \
+  || fail "SKILL.md omits the copied session scrub"
+for name in LASTDB_HOME FOLDDB_HOME FOLD_SYNC_DEVICE_ID; do
+  grep -q "$name" "$SKILL_MD" \
+    || fail "SKILL.md omits the unset variable $name"
+done
 
-# Live home as stamp home → refuse
-write_dev_stamp_receipt "$TMP/live.receipt" GREEN "$DEV_API" "$PRIMARY" "$PRIMARY" 2
-set +e
-OUT="$(assert_dev_photograph_stamp_ok "$TMP/live.receipt" "$PRIMARY" 2>&1)"
-RC=$?
-set -e
-[ "$RC" -ne 0 ] || { echo "FAIL: live-home stamp must refuse; out=$OUT" >&2; exit 1; }
-echo "$OUT" | grep -q 'live primary' \
-  || { echo "FAIL: expected live-primary reason; out=$OUT" >&2; exit 1; }
-
-# GREEN DEV receipt on ephemeral home → allow
-write_dev_stamp_receipt "$TMP/green.receipt" GREEN "$DEV_API" "$EPHEM" "$PRIMARY" 9
-set +e
-OUT="$(assert_dev_photograph_stamp_ok "$TMP/green.receipt" "$PRIMARY" 2>&1)"
-RC=$?
-set -e
-[ "$RC" -eq 0 ] || { echo "FAIL: GREEN DEV receipt should allow; out=$OUT" >&2; exit 1; }
-
-# Driver --check-dev-stamp is the real refuse/allow path (not a reimplementation)
-grep -q 'dev-photograph-stamp-gate.sh' "$DRIVER" \
-  || { echo "FAIL: driver must source dev-photograph-stamp-gate.sh" >&2; exit 1; }
-grep -q 'assert_dev_photograph_stamp_ok' "$DRIVER" \
-  || { echo "FAIL: driver must call assert_dev_photograph_stamp_ok" >&2; exit 1; }
-grep -q -- '--check-dev-stamp' "$DRIVER" \
-  || { echo "FAIL: driver must expose --check-dev-stamp" >&2; exit 1; }
-
-export LASTDB_DEV_STAMP_RECEIPT="$TMP/missing.receipt"
-set +e
-OUT="$("$DRIVER" --check-dev-stamp 2>&1)"
-RC=$?
-set -e
-[ "$RC" -ne 0 ] || { echo "FAIL: driver --check-dev-stamp must refuse missing stamp; out=$OUT" >&2; exit 1; }
-echo "$OUT" | grep -q 'VERDICT: RED' \
-  || { echo "FAIL: driver missing stamp must print VERDICT: RED; out=$OUT" >&2; exit 1; }
-
-export LASTDB_DEV_STAMP_RECEIPT="$TMP/green.receipt"
-set +e
-OUT="$("$DRIVER" --check-dev-stamp 2>&1)"
-RC=$?
-set -e
-[ "$RC" -eq 0 ] || { echo "FAIL: driver --check-dev-stamp must allow GREEN DEV stamp; out=$OUT" >&2; exit 1; }
-echo "$OUT" | grep -q 'VERDICT: GREEN' \
-  || { echo "FAIL: driver GREEN stamp must print VERDICT: GREEN; out=$OUT" >&2; exit 1; }
-
-# Skill SOP words
-grep -q 'ephemeral/CoW' "$SKILL_MD" \
-  || { echo "FAIL: SKILL.md must name ephemeral/CoW" >&2; exit 1; }
-grep -q 'DEV' "$SKILL_MD" \
-  || { echo "FAIL: SKILL.md must name DEV photograph upload" >&2; exit 1; }
-grep -qi 'photograph' "$SKILL_MD" \
-  || { echo "FAIL: SKILL.md must name photograph stamp" >&2; exit 1; }
-grep -q 'production backup' "$SKILL_MD" \
-  || { echo "FAIL: SKILL.md must forbid the primary production backup home" >&2; exit 1; }
-
-echo "OK: lastdb-safe-upgrade DEV photograph-stamp gate"
+printf 'OK: exact-candidate LastDB DEV photograph receipt gate\n'
