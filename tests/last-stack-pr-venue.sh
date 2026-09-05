@@ -22,7 +22,12 @@ git -C "$repo" update-ref refs/remotes/origin/main "$initial_head"
 
 # Defaults without marker (2026-07-17): most EdgeVector repos are LastGit-native;
 # GitHub copies are read-only mirrors. Do not default public repos to github.
-test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/last-stack "$repo")" = "lastgit"
+# 2026-09-05 (Tom): the four factory repos are Forgejo gates of record.
+test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/last-stack "$repo")" = "forgejo"
+test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/fkanban "$repo")" = "forgejo"
+test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/routines "$repo")" = "forgejo"
+test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/loom "$repo")" = "forgejo"
+test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/brain "$repo")" = "lastgit"
 test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/fold "$repo")" = "forgejo"
 test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/lastgit "$repo")" = "forgejo"
 # exemem-infra cut over to LastGit (GitHub is read-only mirror / deploy artifact only).

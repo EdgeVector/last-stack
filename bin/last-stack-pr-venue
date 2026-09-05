@@ -162,13 +162,16 @@ fi
 if [ -z "$venue" ]; then
   case "$repo" in
     # Remaining Forgejo gates of record (GitHub = read-only mirror).
-    EdgeVector/fold|EdgeVector/lastgit)
+    # last-stack, fkanban, routines, loom: Forgejo since 2026-09-05 (Tom) —
+    # brain decision-2026-09-05-factory-repos-venue-back-to-forgejo. Their
+    # LastGit repos are disabled; a marker or git-config still wins above.
+    EdgeVector/fold|EdgeVector/lastgit|EdgeVector/last-stack|EdgeVector/fkanban|EdgeVector/routines|EdgeVector/loom)
       venue="forgejo"
       reason="default:forge-hot"
       ;;
     # LastGit-native fleet (GitHub = read-only mirror). Keep in sync with
     # brain reference-edgevector-github-mirrors-read-only.
-    EdgeVector/brain|EdgeVector/demo-repository|EdgeVector/discovery|EdgeVector/dogfood-graph|EdgeVector/edgevector-website|EdgeVector/exemem-infra|EdgeVector/exemem-workspace|EdgeVector/fkanban|EdgeVector/fold_db_website|EdgeVector/homebrew-lastdb|EdgeVector/last-stack|EdgeVector/lastsecrets|EdgeVector/org|EdgeVector/routines|EdgeVector/schema-infra|EdgeVector/situations|EdgeVector/configurations|EdgeVector/autoresearch-docstore|EdgeVector/coderings|EdgeVector/lastdb-core|EdgeVector/lastdb-nano|EdgeVector/laststore|EdgeVector/photos|EdgeVector/remote)
+    EdgeVector/brain|EdgeVector/demo-repository|EdgeVector/discovery|EdgeVector/dogfood-graph|EdgeVector/edgevector-website|EdgeVector/exemem-infra|EdgeVector/exemem-workspace|EdgeVector/fold_db_website|EdgeVector/homebrew-lastdb|EdgeVector/lastsecrets|EdgeVector/org|EdgeVector/schema-infra|EdgeVector/situations|EdgeVector/configurations|EdgeVector/autoresearch-docstore|EdgeVector/coderings|EdgeVector/lastdb-core|EdgeVector/lastdb-nano|EdgeVector/laststore|EdgeVector/photos|EdgeVector/remote)
       venue="lastgit"
       reason="default:lastgit-native"
       ;;
