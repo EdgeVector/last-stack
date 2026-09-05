@@ -6,6 +6,8 @@ set -euo pipefail
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=dev-photograph-stamp-gate.sh
 . "$SCRIPT_DIR/dev-photograph-stamp-gate.sh"
+# shellcheck source=deadline.sh
+. "$SCRIPT_DIR/deadline.sh"
 
 DEV_INVITE_SLUG="lastdb-restore-probe-invite-dev-20260720"
 CANDIDATE_DAEMON=""
@@ -199,6 +201,7 @@ cp -cR "$CLONE_SOURCE" "$COW_HOME" >/dev/null 2>&1 \
   && [ -f "$COW_HOME/identity.key" ] \
   && [ -f "$COW_HOME/.bootstrap_done" ] \
   && [ -f "$COW_HOME/data/.device_id" ] \
+  && [ -f "$COW_HOME/laststore_high_water.json" ] \
   || proof_die "the CoW clone lacks a required durable file"
 [ ! -L "$COW_HOME" ] && [ ! -L "$COW_HOME/data" ] \
   || proof_die "the CoW clone uses an unsafe directory symlink"
@@ -206,6 +209,19 @@ COW_HOME="$(_dev_stamp_real_dir "$COW_HOME")" || proof_die "the CoW home cannot 
 if ! _dev_stamp_paths_do_not_overlap "$COW_HOME" "$PRIMARY_HOME_ARG"; then
   proof_die "the CoW home overlaps the primary home"
 fi
+
+high_water="$COW_HOME/laststore_high_water.json"
+[ -f "$high_water" ] && [ ! -L "$high_water" ] \
+  || proof_die "the copied Last Store high-water marker is absent or unsafe"
+store_uuid="$(jq -er '
+  .store_uuid
+  | select(type == "string" and length > 0 and (test("[\\r\\n]") | not))
+' "$high_water" 2>/dev/null)" \
+  || proof_die "the copied Last Store marker has no safe store UUID"
+cloud_db_hash="$(printf 'laststore-db:%s' "$store_uuid" | shasum -a 256 | awk '{print $1}')"
+case "$cloud_db_hash" in *[!0-9a-f]*|'') proof_die "the local cloud DB hash is invalid" ;; esac
+[ "${#cloud_db_hash}" -eq 64 ] \
+  || proof_die "the local cloud DB hash is not full length"
 
 identity_before="$(file_fingerprint "$COW_HOME/identity.key")" \
   || proof_die "the copied identity file is unsafe"
@@ -215,8 +231,11 @@ production_device_id="$(cat "$COW_HOME/data/.device_id")"
 [ -n "$production_device_id" ] || proof_die "the copied production device ID is empty"
 
 # Remove every production cloud intent or backup, not only active and paused.
+# Older writers also left a hidden temporary credential beside the active file.
 # The copied manifest can pass production lineage into the DEV CAS request.
-find "$COW_HOME" -maxdepth 1 -name 'cloud_sync.json*' -exec rm -f -- {} + 2>/dev/null \
+find "$COW_HOME" -maxdepth 1 \
+  \( -name 'cloud_sync.json*' -o -name '.cloud_sync.json.tmp*' \) \
+  -exec rm -f -- {} + 2>/dev/null \
   || proof_die "a copied cloud credential residue cannot be removed"
 rm -f -- \
   "$COW_HOME/data/folddb.sock" \
@@ -227,7 +246,9 @@ rm -f -- \
   "$COW_HOME/laststore_backup_manifest.json" \
   || proof_die "a copied runtime or backup residue cannot be removed"
 
-[ "$(find "$COW_HOME" -maxdepth 1 -name 'cloud_sync.json*' -print | wc -l | tr -d ' ')" = "0" ] \
+[ "$(find "$COW_HOME" -maxdepth 1 \
+    \( -name 'cloud_sync.json*' -o -name '.cloud_sync.json.tmp*' \) \
+    -print | wc -l | tr -d ' ')" = "0" ] \
   || proof_die "copied cloud credential residue remains before DEV connect"
 for absent in \
   "$COW_HOME/data/folddb.sock" \
@@ -256,7 +277,9 @@ active_config="$COW_HOME/cloud_sync.json"
   || proof_die "DEV connect did not create one safe active cloud config"
 [ "$(_dev_stamp_file_mode "$active_config" || true)" = "600" ] \
   || proof_die "the DEV cloud config is not owner-only"
-[ "$(find "$COW_HOME" -maxdepth 1 -name 'cloud_sync.json*' -print | wc -l | tr -d ' ')" = "1" ] \
+[ "$(find "$COW_HOME" -maxdepth 1 \
+    \( -name 'cloud_sync.json*' -o -name '.cloud_sync.json.tmp*' \) \
+    -print | wc -l | tr -d ' ')" = "1" ] \
   || proof_die "cloud credential backup residue remains after DEV connect"
 jq -e --arg url "$LASTDB_DEV_BACKUP_API_URL_DEFAULT" \
   '.api_url == $url and (.api_key | type == "string" and length > 0) and ((keys | sort) == ["api_key","api_url"])' \
@@ -309,23 +332,40 @@ snapshot_json=""
 snapshot_ok=0
 snapshot_attempts="${LASTDB_DEV_PHOTOGRAPH_SNAPSHOT_ATTEMPTS:-3}"
 snapshot_delay="${LASTDB_DEV_PHOTOGRAPH_SNAPSHOT_RETRY_SECS:-5}"
+snapshot_timeout="${LASTDB_DEV_PHOTOGRAPH_SNAPSHOT_TIMEOUT_SECS:-900}"
 case "$snapshot_attempts" in ''|*[!0-9]*|0) proof_die "the DEV snapshot attempt limit is invalid" ;; esac
+case "$snapshot_timeout" in ''|*[!0-9]*|0) proof_die "the DEV snapshot command timeout is invalid" ;; esac
+expected_manifest_cache="$COW_HOME/laststore_backup_manifest.json"
 attempt=1
 while [ "$attempt" -le "$snapshot_attempts" ]; do
   candidate_pid_is_owned || proof_die "the exact candidate stopped during the DEV snapshot"
   set +e
-  snapshot_json="$(env -u LASTDB_HOME -u FOLDDB_HOME -u FOLD_SYNC_DEVICE_ID \
+  snapshot_json="$(run_op_with_deadline "$snapshot_timeout" \
+    env -u LASTDB_HOME -u FOLDDB_HOME -u FOLD_SYNC_DEVICE_ID \
     "$CANDIDATE_CLI" --data-dir "$COW_HOME" cloud snapshot --json 2>/dev/null)"
   snapshot_rc=$?
   set -e
   if [ "$snapshot_rc" -eq 0 ] \
-      && printf '%s' "$snapshot_json" | jq -e '
-        ((.report // .data.report) as $r
-          | (.ok == true)
-          and ($r.counter | type == "number" and . > 0)
+      && printf '%s' "$snapshot_json" | jq -e \
+        --arg manifest_cache "$expected_manifest_cache" \
+        --arg cloud_db_hash "$cloud_db_hash" '
+        (. as $envelope
+          | ($envelope | type == "object")
+          and (($envelope | keys | sort) == ["manifest_cache","ok","report","user_hash"])
+          and ($envelope.ok == true)
+          and ($envelope.user_hash | type == "string" and test("^[0-9a-f]{32}$"))
+          and ($envelope.manifest_cache | type == "string" and . == $manifest_cache)
+          and ($envelope.report | type == "object")
+          and ($envelope.report as $r |
+          ($r.counter | type == "number" and . > 0)
           and ($r.cas_counter | type == "number" and . == $r.counter)
           and ($r.manifest_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
-          and ($r.latest_key | type == "string" and length > 0))
+          and ($r.manifest_key
+            | type == "string"
+            and . == ($cloud_db_hash + "/backup/manifests/" + $r.manifest_sha256))
+          and ($r.latest_key
+            | type == "string"
+            and . == ($cloud_db_hash + "/backup/latest"))))
       ' >/dev/null 2>&1; then
     snapshot_ok=1
     break
@@ -335,18 +375,39 @@ while [ "$attempt" -le "$snapshot_attempts" ]; do
   attempt=$((attempt + 1))
 done
 [ "$snapshot_ok" -eq 1 ] || proof_die "the manual DEV photograph did not return an exact committed CAS report"
+[ -f "$expected_manifest_cache" ] && [ ! -L "$expected_manifest_cache" ] \
+  || proof_die "the manual DEV photograph did not commit its exact manifest cache"
 
-counter="$(printf '%s' "$snapshot_json" | jq -er '(.report // .data.report).counter')"
-cas_counter="$(printf '%s' "$snapshot_json" | jq -er '(.report // .data.report).cas_counter')"
-manifest_sha256="$(printf '%s' "$snapshot_json" | jq -er '(.report // .data.report).manifest_sha256')"
-latest_key="$(printf '%s' "$snapshot_json" | jq -er '(.report // .data.report).latest_key')"
+counter="$(printf '%s' "$snapshot_json" | jq -er '.report.counter')"
+cas_counter="$(printf '%s' "$snapshot_json" | jq -er '.report.cas_counter')"
+manifest_sha256="$(printf '%s' "$snapshot_json" | jq -er '.report.manifest_sha256')"
+manifest_key="$(printf '%s' "$snapshot_json" | jq -er '.report.manifest_key')"
+latest_key="$(printf '%s' "$snapshot_json" | jq -er '.report.latest_key')"
+user_hash="$(printf '%s' "$snapshot_json" | jq -er '.user_hash')"
+manifest_cache="$(printf '%s' "$snapshot_json" | jq -er '.manifest_cache')"
 snapshot_json=""
 
 stop_exact_candidate
+[ -f "$COW_HOME/data/.device_id" ] && [ ! -L "$COW_HOME/data/.device_id" ] \
+  || proof_die "the fresh DEV device ID is absent after the photograph"
+[ "$(_dev_stamp_file_mode "$COW_HOME/data/.device_id" || true)" = "600" ] \
+  || proof_die "the fresh DEV device ID lost its owner-only mode"
+[ "$(cat "$COW_HOME/data/.device_id")" = "$dev_device_id" ] \
+  && [ "$dev_device_id" != "$production_device_id" ] \
+  || proof_die "the DEV photograph changed or reused the fresh device ID"
 [ "$(file_fingerprint "$COW_HOME/identity.key")" = "$identity_before" ] \
   || proof_die "the DEV photograph changed the copied identity"
 [ "$(file_fingerprint "$COW_HOME/.bootstrap_done")" = "$bootstrap_before" ] \
   || proof_die "the DEV photograph changed the copied bootstrap marker"
+store_uuid_after="$(jq -er '
+  .store_uuid
+  | select(type == "string" and length > 0 and (test("[\\r\\n]") | not))
+' "$high_water" 2>/dev/null)" \
+  || proof_die "the DEV photograph removed the Last Store UUID"
+[ "$store_uuid_after" = "$store_uuid" ] \
+  || proof_die "the DEV photograph changed the Last Store UUID"
+[ "$(printf 'laststore-db:%s' "$store_uuid_after" | shasum -a 256 | awk '{print $1}')" = "$cloud_db_hash" ] \
+  || proof_die "the DEV photograph changed the local cloud DB hash"
 if ! assert_candidate_binding_matches_expected \
     "$CANDIDATE_DAEMON" "$CANDIDATE_CLI" "$SOURCE_OID" >/dev/null 2>&1; then
   proof_die "the exact candidate binding changed during the DEV proof"
@@ -359,8 +420,8 @@ rm -f -- "$RECEIPT" \
   || proof_die "the prior exact receipt cannot be removed"
 write_dev_stamp_receipt_v2 \
   "$RECEIPT" "$PRIMARY_HOME_ARG" "$COW_HOME" \
-  "$counter" "$cas_counter" "$manifest_sha256" "$latest_key" \
-  "$committed_at" "$committed_epoch" \
+  "$counter" "$cas_counter" "$manifest_sha256" "$cloud_db_hash" "$manifest_key" "$latest_key" \
+  "$user_hash" "$manifest_cache" "$committed_at" "$committed_epoch" \
   || proof_die "the exact-candidate DEV photograph receipt could not be written"
 assert_dev_photograph_stamp_ok "$RECEIPT" "$PRIMARY_HOME_ARG" >/dev/null \
   || proof_die "the exact-candidate DEV photograph receipt failed its own gate"

@@ -313,11 +313,13 @@ RESTART_INTENT_START_REQUESTED=0
 DRIVER_ENDED_STEP=0
 SIDEBIN_BACKUP_DAEMON=""
 SIDEBIN_BACKUP_CLI=""
+CUTOVER_RECOVERY_STATE_TMP=""
 
 cleanup_work() {
   local rc=$?
   [ -n "${WORK:-}" ] && [ -d "$WORK" ] && rm -rf "$WORK"
   [ -n "${CUTOVER_LOCK:-}" ] && rm -f "$CUTOVER_LOCK"
+  [ -n "${CUTOVER_RECOVERY_STATE_TMP:-}" ] && rm -f "$CUTOVER_RECOVERY_STATE_TMP"
   if type cleanup_upgrade_restart_intent >/dev/null 2>&1; then
     cleanup_upgrade_restart_intent
   fi
@@ -343,6 +345,61 @@ on_driver_end() {
 }
 trap 'on_driver_end' HUP INT TERM
 trap cleanup_work EXIT
+
+write_cutover_recovery_state() {
+  # The Loom wrapper owns this mode-600 file and removes it after the CUTOVER
+  # process ends. Keep a complete atomic record before the first live rename.
+  local stage="$1" effect_started="$2"
+  local state="${LASTDB_CUTOVER_RECOVERY_STATE:-}"
+  local daemon_sha="" cli_sha=""
+  [ -n "$state" ] || return 0
+  case "$state" in /*) ;; *) die "cutover recovery state path is not absolute" ;; esac
+  [ -f "$state" ] && [ ! -L "$state" ] \
+    || die "cutover recovery state is absent or unsafe: $state"
+  [ "$(stat -f '%u' "$state" 2>/dev/null || stat -c '%u' "$state" 2>/dev/null)" = "$(id -u)" ] \
+    || die "cutover recovery state has the wrong owner"
+  [ "$(stat -f '%Lp' "$state" 2>/dev/null || stat -c '%a' "$state" 2>/dev/null)" = 600 ] \
+    || die "cutover recovery state must have mode 600"
+  [ "$effect_started" = true ] || [ "$effect_started" = false ] \
+    || die "cutover recovery state has an invalid effect flag"
+  if [ -n "${SIDEBIN_BACKUP_DAEMON:-}" ] && [ -f "$SIDEBIN_BACKUP_DAEMON" ]; then
+    daemon_sha="$(dev_stamp_sha256_file "$SIDEBIN_BACKUP_DAEMON")"
+  fi
+  if [ -n "${SIDEBIN_BACKUP_CLI:-}" ] && [ -f "$SIDEBIN_BACKUP_CLI" ]; then
+    cli_sha="$(dev_stamp_sha256_file "$SIDEBIN_BACKUP_CLI")"
+  fi
+  CUTOVER_RECOVERY_STATE_TMP="${state}.tmp.$$.$RANDOM"
+  (
+    umask 077
+    jq -cn \
+      --argjson state_version 1 \
+      --arg loom_execution_id "${LOOM_EXEC_ID:-}" \
+      --arg stage "$stage" \
+      --argjson effect_started "$effect_started" \
+      --arg venue "${VENUE:-}" \
+      --arg primary_home "$PRIMARY_HOME" \
+      --arg primary_socket "$PRIMARY_SOCK" \
+      --arg sidebin_dir "$SIDEBIN_DIR" \
+      --arg launchd_label "$LAUNCHD_LABEL" \
+      --arg launchd_plist "$LAUNCHD_PLIST" \
+      --arg backup_lastdbd "${SIDEBIN_BACKUP_DAEMON:-}" \
+      --arg backup_lastdb "${SIDEBIN_BACKUP_CLI:-}" \
+      --arg backup_lastdbd_sha256 "$daemon_sha" \
+      --arg backup_lastdb_sha256 "$cli_sha" \
+      '{state_version:$state_version,loom_execution_id:$loom_execution_id,
+        stage:$stage,effect_started:$effect_started,venue:$venue,
+        primary_home:$primary_home,primary_socket:$primary_socket,
+        sidebin_dir:$sidebin_dir,launchd_label:$launchd_label,
+        launchd_plist:$launchd_plist,backup_lastdbd:$backup_lastdbd,
+        backup_lastdb:$backup_lastdb,backup_lastdbd_sha256:$backup_lastdbd_sha256,
+        backup_lastdb_sha256:$backup_lastdb_sha256}' \
+      >"$CUTOVER_RECOVERY_STATE_TMP"
+    chmod 600 "$CUTOVER_RECOVERY_STATE_TMP"
+    mv -f "$CUTOVER_RECOVERY_STATE_TMP" "$state"
+  ) || die "could not atomically update the cutover recovery state"
+  CUTOVER_RECOVERY_STATE_TMP=""
+  log "cutover recovery state: stage=$stage effect_started=$effect_started"
+}
 
 backup_essentials_ok() {
   local root="$1"
@@ -1126,7 +1183,7 @@ detect_live_venue() {
   # Sets: VENUE (sidebin|brew), LIVE_BIN, SIDEBIN_DIR (may refine)
   VENUE=""
   LIVE_BIN=""
-  local prog=""
+  local prog="" physical_sidebin=""
 
   if [ -f "$LAUNCHD_PLIST" ]; then
     prog="$(plutil -extract ProgramArguments.0 raw "$LAUNCHD_PLIST" 2>/dev/null || true)"
@@ -1168,6 +1225,15 @@ detect_live_venue() {
         SIDEBIN_DIR="$(dirname "$LIVE_BIN")"
         ;;
     esac
+  fi
+
+  if [ "$VENUE" = "sidebin" ]; then
+    physical_sidebin="$(CDPATH= cd -- "$SIDEBIN_DIR" 2>/dev/null && pwd -P)" \
+      || die "cannot resolve the physical sidebin directory: $SIDEBIN_DIR"
+    [ -d "$physical_sidebin" ] && [ ! -L "$physical_sidebin" ] \
+      || die "physical sidebin directory is absent or unsafe: $physical_sidebin"
+    SIDEBIN_DIR="$physical_sidebin"
+    LIVE_BIN="$SIDEBIN_DIR/lastdbd"
   fi
 
   log "live venue: $VENUE"
@@ -1349,6 +1415,7 @@ live_install_sidebin() {
     && cmp -s "$dest/lastdb" "$SIDEBIN_BACKUP_CLI" \
     || die "sidebin pre-cutover backup pair does not match the installed pair"
   log "backed up live pair → $(basename -- "$SIDEBIN_BACKUP_DAEMON"), $(basename -- "$SIDEBIN_BACKUP_CLI")"
+  write_cutover_recovery_state "sidebin-backups-ready" false
 
   rm -f -- "$dest/lastdbd.new" "$dest/lastdb.new"
   cp -a "$CANDIDATE_BIN" "$dest/lastdbd.new"
@@ -1365,6 +1432,7 @@ live_install_sidebin() {
 
   # Same-directory rename changes each path atomically. A partial pair swap or
   # a later hash mismatch restores both saved files before this process exits.
+  write_cutover_recovery_state "sidebin-swap-started" true
   mv -f "$dest/lastdbd.new" "$dest/lastdbd" \
     || die "could not install staged lastdbd; live pair remains unchanged"
   if ! mv -f "$dest/lastdb.new" "$dest/lastdb"; then
@@ -1377,6 +1445,7 @@ live_install_sidebin() {
   fi
   log "installed candidate into $dest/{lastdb,lastdbd}"
   assert_sidebin_installed_hashes_or_restore "post-rename sidebin pair"
+  write_cutover_recovery_state "sidebin-candidate-installed" true
 
   ensure_primary_launchd_rss_limit
 
@@ -1384,12 +1453,14 @@ live_install_sidebin() {
   uid="$(id -u)"
   CUTOVER_T0="$(date +%s)"
   assert_sidebin_installed_hashes_or_restore "pre-reload sidebin pair"
+  write_cutover_recovery_state "sidebin-reload-started" true
   if ! lastdb_launchd_reload_job \
     launchctl "gui/${uid}" "$LAUNCHD_LABEL" "$LAUNCHD_PLIST"; then
     page_human "safe-upgrade: primary lastdbd is UNLOADED — bootstrap retries exhausted for ${LAUNCHD_LABEL}. Recover: launchctl bootstrap gui/${uid} ${LAUNCHD_PLIST}"
     die "launchd job-definition reload failed after bootstrap retries; the primary is UNLOADED. Recover: launchctl bootstrap gui/${uid} ${LAUNCHD_PLIST} then launchctl print gui/${uid}/${LAUNCHD_LABEL}"
   fi
   RESTART_INTENT_START_REQUESTED=1
+  write_cutover_recovery_state "sidebin-supervisor-loaded" true
 
   # Wait for a LIVE listener + /health. A leftover folddb.sock inode is
   # still `-S` after bootout; waiting only for the inode reports
@@ -2010,6 +2081,7 @@ fi
 
 detect_live_venue
 assert_exact_candidate_live_venue
+write_cutover_recovery_state "pre-live" false
 
 if [ "$ASSUME_YES" -eq 0 ]; then
   if [ ! -t 0 ]; then
@@ -2312,6 +2384,10 @@ if [ "$VENUE" = "sidebin" ]; then
     die "primary LaunchAgent is not supervising the live daemon; KeepAlive does not own lastdbd"
   fi
 fi
+
+# After this point the driver proved the live primary healthy and supervised.
+# A later wrapper timeout must not restart that already-green primary.
+write_cutover_recovery_state "cutover-green" false
 
 CUTOVER_T1="$(date +%s)"
 CUTOVER_SECS=$((CUTOVER_T1 - CUTOVER_T0))

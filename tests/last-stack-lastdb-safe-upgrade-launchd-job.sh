@@ -218,6 +218,46 @@ grep -q 'retrying LaunchAgent bootstrap so KeepAlive owns lastdbd' "$DRIVER" \
 grep -q 'A nohup start is not GREEN' "$SKILL_MD" \
   || { echo "FAIL: SKILL.md must refuse GREEN for an unsupervised nohup start" >&2; exit 1; }
 
+# The canonical primary plist points through LASTDB_HOME/current. Resolve that
+# directory symlink before backup, install, and recovery state capture.
+current_layout="$TMP/current-layout"
+current_target="$current_layout/releases/0.23.3"
+current_home="$current_layout/primary"
+current_tools="$current_layout/bin"
+mkdir -p "$current_target" "$current_home" "$current_tools"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$current_target/lastdbd"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$current_target/lastdb"
+chmod 755 "$current_target/lastdbd" "$current_target/lastdb"
+ln -s "$current_target" "$current_home/current"
+: >"$current_layout/primary.plist"
+cat >"$current_tools/plutil" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "${FAKE_CURRENT_PROGRAM:?}"
+EOF
+chmod 755 "$current_tools/plutil"
+sed -n '/^detect_live_venue() {/,/^}/p' "$DRIVER" \
+  >"$current_layout/detect-live-venue.sh"
+current_expected="$(CDPATH= cd -- "$current_target" && pwd -P)"
+current_result="$(
+  set -euo pipefail
+  PATH="$current_tools:$PATH"
+  export PATH
+  FAKE_CURRENT_PROGRAM="$current_home/current/lastdbd"
+  export FAKE_CURRENT_PROGRAM
+  LAUNCHD_PLIST="$current_layout/primary.plist"
+  LAUNCHD_LABEL="com.example.lastdbd-current-layout"
+  SIDEBIN_DIR="$current_home/current"
+  CANDIDATE_BIN=""
+  die() { printf 'RED: %s\n' "$*" >&2; exit 1; }
+  log() { :; }
+  # shellcheck source=/dev/null
+  . "$current_layout/detect-live-venue.sh"
+  detect_live_venue
+  printf '%s|%s|%s\n' "$VENUE" "$SIDEBIN_DIR" "$LIVE_BIN"
+)"
+[ "$current_result" = "sidebin|$current_expected|$current_expected/lastdbd" ] \
+  || { echo "FAIL: current symlink did not resolve to one physical sidebin: $current_result" >&2; exit 1; }
+
 # The live VERDICT GREEN (not --check-dev-stamp) must sit after the
 # supervised-primary bar so a leftover listener cannot print GREEN.
 live_green_line="$(awk '/^echo "VERDICT: GREEN"$/{print NR}' "$DRIVER" | tail -1)"
