@@ -9,10 +9,25 @@ cd "$ROOT"
 # Python helper is checked without depending on host-home permissions.
 CI_PYTHON_CACHE="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-ci-pycache.XXXXXX")"
 export PYTHONPYCACHEPREFIX="$CI_PYTHON_CACHE"
+
+# Tests drive real bin/ scripts, and several of those append a fleet heartbeat.
+# Without an override the appender resolves its default from the install root it
+# runs under, so a suite run from a checkout whose logs/ points at
+# ~/.local/state/last-stack/runtime/logs writes fixture rows into the PRODUCTION
+# fleet log (aaa111/bbb222 canary-gate rows, 264 of them over 21h). Every fleet
+# reader then consumes fixtures as real routine state. Sandbox the whole suite
+# here, but never override a test that already set its own path.
+if [ -z "${LAST_STACK_HEARTBEATS_FILE:-}" ]; then
+  CI_HEARTBEATS_FILE="$(mktemp "${TMPDIR:-/tmp}/last-stack-ci-heartbeats.XXXXXX")"
+  export LAST_STACK_HEARTBEATS_FILE="$CI_HEARTBEATS_FILE"
+else
+  CI_HEARTBEATS_FILE=""
+fi
 CI_SHARD_LOG_DIR=""
 cleanup_ci_temp() {
   rm -rf -- "$CI_PYTHON_CACHE"
   [ -z "$CI_SHARD_LOG_DIR" ] || rm -rf -- "$CI_SHARD_LOG_DIR"
+  [ -z "$CI_HEARTBEATS_FILE" ] || rm -f -- "$CI_HEARTBEATS_FILE"
 }
 trap cleanup_ci_temp EXIT
 
