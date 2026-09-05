@@ -7,8 +7,18 @@ bash -n "$BIN"
 bash -n "$ROOT/lib/canary-loom/loom-canary-step.sh"
 bash -n "$ROOT/lib/canary-loom/loom-run-deadline.sh"
 [ -f "$ROOT/lib/canary-loom/lastdb-canary-release.json" ] || fail "graph missing"
-[ "$(jq -r .version "$ROOT/lib/canary-loom/lastdb-canary-release.json")" = "6" ] \
+[ "$(jq -r .version "$ROOT/lib/canary-loom/lastdb-canary-release.json")" = "8" ] \
   || fail "canary graph version did not advance"
+jq -e '
+  .states.CALL_A.epoch_from == "candidate_artifact_digest"
+  and .states.JOIN_A.epoch_from == "candidate_artifact_digest"
+  and (.states.CALL_A.input_from_context == [
+    "candidate","candidate_cli","version","lastdbd_version","lastdb_version",
+    "lastdbd_sha256","lastdb_sha256","source_git_oid","candidate_artifact_digest",
+    "safe_upgrade_protocol_version"
+  ])
+' "$ROOT/lib/canary-loom/lastdb-canary-release.json" >/dev/null \
+  || fail "parent graph does not bind its child to the exact candidate pair"
 # Every node command must survive a launcher that forgot LOOM_SCRIPTS: the
 # 2026-08-30 recovery exec died at spawn (exit 127, no recorded output)
 # because the env contract was hand-rolled (lx-20260830T122141.772-6345-1).
@@ -44,6 +54,7 @@ grep -q 'last-stack-canary-v2-dogfood-gate' "$ROOT/routines/lastdb-canary-dogfoo
   || fail "dogfood missing v2 primary action"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-canary-loom.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
+tmp="$(CDPATH= cd -- "$tmp" && pwd -P)"
 export LAST_STACK_CANARY_LOOM_STAMP="$tmp/stamp.json"
 export LAST_STACK_CANARY_LOOM_ACTIVE="$tmp/active.json"
 # Key discovery asks loom for its own executions. Default the fixture to an
@@ -119,7 +130,18 @@ case "${1:-}" in
       "context.source_git_oid: \"${RECOVERY_OID:?}\"" \
       'context.verdict: "green"' \
       'context.verify: "live"' \
-      "context.version: \"${RECOVERY_VERSION:?}\"" \
+      "context.version: \"${RECOVERY_VERSION:?}\""
+    if [ "${FAKE_RECOVERY_LEGACY:-0}" != 1 ]; then
+      printf '%s\n' \
+        "context.candidate_cli: \"${RECOVERY_STAGE:?}/lastdb\"" \
+        "context.lastdbd_version: \"${RECOVERY_VERSION:?}\"" \
+        "context.lastdb_version: \"${RECOVERY_VERSION:?}\"" \
+        "context.lastdbd_sha256: \"${RECOVERY_DAEMON_SHA:?}\"" \
+        "context.lastdb_sha256: \"${RECOVERY_CLI_SHA:?}\"" \
+        "context.candidate_artifact_digest: \"${RECOVERY_ARTIFACT_DIGEST:?}\"" \
+        'context.safe_upgrade_protocol_version: "6"'
+    fi
+    printf '%s\n' \
       'node CUTOVER#1 succeeded: {"stdout":"PASS"}' \
       'node PROBE#1 succeeded: {"stdout":"PASS"}' \
       'node VERIFY#1 succeeded: {"stdout":"PASS"}'
@@ -133,6 +155,10 @@ cat > "$mock_home/.local/bin/sm-canary-release-step" <<'SH'
 set -euo pipefail
 case "${1:-}" in
   BUILD_POLL) printf '%s\n' 'SM_CONTEXT_PATCH:{"build_next":"BUILD_WAIT"}' ;;
+  BUILD_COLLECT)
+    printf 'SM_CONTEXT_PATCH:{"candidate":"%s","source_git_oid":"%s","version":"%s"}\n' \
+      "${CANARY_BUILD_CANDIDATE:?}" "${CANARY_BUILD_OID:?}" "${CANARY_BUILD_VERSION:?}"
+    ;;
   LEDGER) printf '%s\n' 'SM_CONTEXT_PATCH:{"phase_next":"SOAK","ledger_sha":"candidate-sha","source_git_oid":"abc","version":"1.2.3"}' ;;
   SOAK) printf '%s\n' 'SM_CONTEXT_PATCH:{"soak_status":"pending"}' ;;
   *) exit 2 ;;
@@ -172,13 +198,74 @@ done
 cat >"$recovery_stage/manifest.json" <<JSON
 {"source_git_oid":"$recovery_oid","lastdb_version":"$recovery_version","lastdbd_version":"$recovery_version","staged_by":"test"}
 JSON
+
+# The parent computes the immutable child tuple from the staged files. It does
+# not trust only the build helper's version or source text.
+export CANARY_BUILD_CANDIDATE="$recovery_stage/lastdbd"
+export CANARY_BUILD_OID="$recovery_oid"
+export CANARY_BUILD_VERSION="$recovery_version"
+build_collect_out="$(PATH="$mock_home/.local/bin:$PATH" HOME="$mock_home" LOOM_LIVE=1 \
+  LOOM_INPUT='{}' "$ROOT/lib/canary-loom/loom-canary-step.sh" BUILD_COLLECT)"
+build_patch="$(printf '%s\n' "$build_collect_out" | sed -n 's/^LOOM_CONTEXT_PATCH://p')"
+daemon_sha="$(shasum -a 256 "$recovery_stage/lastdbd" | awk '{print $1}')"
+cli_sha="$(shasum -a 256 "$recovery_stage/lastdb" | awk '{print $1}')"
+artifact_digest="$(printf '%s\0%s\0%s\0%s\0%s\0%s\0%s' \
+  "$recovery_oid" "$recovery_stage/lastdbd" "$recovery_stage/lastdb" \
+  "$daemon_sha" "$cli_sha" "$recovery_version" "$recovery_version" \
+  | shasum -a 256 | awk '{print $1}')"
+export RECOVERY_DAEMON_SHA="$daemon_sha"
+export RECOVERY_CLI_SHA="$cli_sha"
+export RECOVERY_ARTIFACT_DIGEST="$artifact_digest"
+printf '%s\n' "$build_patch" | jq -e \
+  --arg daemon "$recovery_stage/lastdbd" \
+  --arg cli "$recovery_stage/lastdb" \
+  --arg oid "$recovery_oid" \
+  --arg version "$recovery_version" \
+  --arg daemon_sha "$daemon_sha" \
+  --arg cli_sha "$cli_sha" \
+  --arg digest "$artifact_digest" '
+    .candidate == $daemon
+    and .candidate_cli == $cli
+    and .source_git_oid == $oid
+    and .version == $version
+    and .lastdbd_version == $version
+    and .lastdb_version == $version
+    and .lastdbd_sha256 == $daemon_sha
+    and .lastdb_sha256 == $cli_sha
+    and .candidate_artifact_digest == $digest
+    and .safe_upgrade_protocol_version == "6"
+    and (.upgrade_jobs | length) == 1
+    and .upgrade_jobs[0] == {
+      candidate:$daemon,candidate_cli:$cli,source_git_oid:$oid,version:$version,
+      lastdbd_version:$version,lastdb_version:$version,lastdbd_sha256:$daemon_sha,
+      lastdb_sha256:$cli_sha,candidate_artifact_digest:$digest,
+      safe_upgrade_protocol_version:"6"
+    }
+  ' >/dev/null || fail "BUILD_COLLECT did not bind the exact child candidate: $build_patch"
+
+cp "$recovery_stage/lastdb" "$recovery_stage/lastdb.saved"
+printf '# paired CLI mutation\n' >>"$recovery_stage/lastdb"
+mutated_collect_out="$(PATH="$mock_home/.local/bin:$PATH" HOME="$mock_home" LOOM_LIVE=1 \
+  LOOM_INPUT='{}' "$ROOT/lib/canary-loom/loom-canary-step.sh" BUILD_COLLECT)"
+mutated_patch="$(printf '%s\n' "$mutated_collect_out" | sed -n 's/^LOOM_CONTEXT_PATCH://p')"
+[ "$(printf '%s\n' "$mutated_patch" | jq -r .lastdb_sha256)" != "$cli_sha" ] \
+  || fail "BUILD_COLLECT ignored a paired CLI byte change"
+[ "$(printf '%s\n' "$mutated_patch" | jq -r .candidate_artifact_digest)" != "$artifact_digest" ] \
+  || fail "parent fanout epoch ignored a paired CLI byte change"
+mv "$recovery_stage/lastdb.saved" "$recovery_stage/lastdb"
+chmod 755 "$recovery_stage/lastdb"
+
 recovery_input="$(jq -cn \
   --arg mode verified-live \
   --arg child lx-recovery-child \
   --arg candidate "$recovery_stage/lastdbd" \
+  --arg candidate_cli "$recovery_stage/lastdb" \
   --arg oid "$recovery_oid" \
   --arg version "$recovery_version" \
-  '{recovery_mode:$mode,recovery_child_execution:$child,recovery_candidate:$candidate,recovery_source_git_oid:$oid,recovery_version:$version}')"
+  --arg daemon_sha "$daemon_sha" \
+  --arg cli_sha "$cli_sha" \
+  --arg digest "$artifact_digest" \
+  '{recovery_mode:$mode,recovery_child_execution:$child,recovery_candidate:$candidate,recovery_candidate_cli:$candidate_cli,recovery_source_git_oid:$oid,recovery_version:$version,recovery_lastdbd_version:$version,recovery_lastdb_version:$version,recovery_lastdbd_sha256:$daemon_sha,recovery_lastdb_sha256:$cli_sha,recovery_candidate_artifact_digest:$digest,recovery_safe_upgrade_protocol_version:"6"}')"
 recovery_out="$(PATH="$mock_home/.local/bin:$PATH" HOME="$mock_home" LOOM_LIVE=1 \
   LOOM_INPUT="$recovery_input" \
   "$ROOT/lib/canary-loom/loom-canary-step.sh" RECOVER_LIVE)"
@@ -191,9 +278,32 @@ printf '%s\n' "$recovery_out" | grep -q '"recovery_no_mutation":true' \
 if printf '%s\n' "$recovery_out" | grep -q 'upgrade_jobs'; then
   fail "verified-live recovery exposed an upgrade job: $recovery_out"
 fi
+recovery_patch="$(printf '%s\n' "$recovery_out" | sed -n 's/^LOOM_CONTEXT_PATCH://p')"
+printf '%s\n' "$recovery_patch" | jq -e \
+  --arg daemon "$recovery_stage/lastdbd" \
+  --arg cli "$recovery_stage/lastdb" \
+  --arg oid "$recovery_oid" \
+  --arg version "$recovery_version" \
+  --arg daemon_sha "$daemon_sha" \
+  --arg cli_sha "$cli_sha" \
+  --arg digest "$artifact_digest" '
+    .candidate == $daemon and .candidate_cli == $cli
+    and .source_git_oid == $oid and .version == $version
+    and .lastdbd_version == $version and .lastdb_version == $version
+    and .lastdbd_sha256 == $daemon_sha and .lastdb_sha256 == $cli_sha
+    and .candidate_artifact_digest == $digest
+    and .safe_upgrade_protocol_version == "6"
+    and .recovery_verified == true and .recovery_no_mutation == true
+  ' >/dev/null || fail "RECOVER_LIVE did not preserve the complete v6 tuple: $recovery_patch"
 
 recovery_receipt="$(printf '%s' "$recovery_input" | jq \
-  '. + {recovery_verified:true,recovery_no_mutation:true,source_git_oid:.recovery_source_git_oid,version:.recovery_version}')"
+  '. + {recovery_verified:true,recovery_no_mutation:true,
+    candidate:.recovery_candidate,candidate_cli:.recovery_candidate_cli,
+    source_git_oid:.recovery_source_git_oid,version:.recovery_version,
+    lastdbd_version:.recovery_lastdbd_version,lastdb_version:.recovery_lastdb_version,
+    lastdbd_sha256:.recovery_lastdbd_sha256,lastdb_sha256:.recovery_lastdb_sha256,
+    candidate_artifact_digest:.recovery_candidate_artifact_digest,
+    safe_upgrade_protocol_version:.recovery_safe_upgrade_protocol_version}')"
 recovery_ledger_out="$(PATH="$mock_home/.local/bin:$PATH" HOME="$mock_home" LOOM_LIVE=1 \
   LOOM_INPUT="$recovery_receipt" \
   "$ROOT/lib/canary-loom/loom-canary-step.sh" LEDGER)"
@@ -241,9 +351,47 @@ assert_recovery_refused wrong-child "$(printf '%s' "$recovery_input" | jq '.reco
 assert_recovery_refused wrong-source "$(printf '%s' "$recovery_input" | jq '.recovery_source_git_oid="0123456789abcdef0123456789abcdef01234568"')"
 assert_recovery_refused wrong-version "$(printf '%s' "$recovery_input" | jq '.recovery_version="0.0.1-g012345678"')"
 assert_recovery_refused wrong-candidate "$(printf '%s' "$recovery_input" | jq '.recovery_candidate="/tmp/missing-lastdbd"')"
+assert_recovery_refused wrong-cli "$(printf '%s' "$recovery_input" | jq '.recovery_candidate_cli="/tmp/missing-lastdb"')"
+assert_recovery_refused wrong-daemon-version "$(printf '%s' "$recovery_input" | jq '.recovery_lastdbd_version="0.0.1-g012345678"')"
+assert_recovery_refused wrong-cli-version "$(printf '%s' "$recovery_input" | jq '.recovery_lastdb_version="0.0.1-g012345678"')"
+assert_recovery_refused wrong-daemon-hash "$(printf '%s' "$recovery_input" | jq '.recovery_lastdbd_sha256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"')"
+assert_recovery_refused wrong-cli-hash "$(printf '%s' "$recovery_input" | jq '.recovery_lastdb_sha256="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"')"
+assert_recovery_refused wrong-digest "$(printf '%s' "$recovery_input" | jq '.recovery_candidate_artifact_digest="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"')"
+assert_recovery_refused legacy-protocol "$(printf '%s' "$recovery_input" | jq '.recovery_safe_upgrade_protocol_version="5"')"
+ln -s "$recovery_stage/lastdb" "$tmp/noncanonical-lastdb"
+assert_recovery_refused noncanonical-cli "$(printf '%s' "$recovery_input" | jq --arg cli "$tmp/noncanonical-lastdb" '.recovery_candidate_cli=$cli')"
+
+export FAKE_RECOVERY_LEGACY=1
+assert_recovery_refused legacy-child-receipt "$recovery_input"
+unset FAKE_RECOVERY_LEGACY
+
+printf '# staged daemon mismatch\n' >>"$recovery_stage/lastdbd"
+assert_recovery_refused changed-staged-daemon "$recovery_input"
+cp "$recovery_current/lastdbd" "$recovery_stage/lastdbd"
+printf '# staged CLI mismatch\n' >>"$recovery_stage/lastdb"
+assert_recovery_refused changed-staged-cli "$recovery_input"
+cp "$recovery_current/lastdb" "$recovery_stage/lastdb"
 printf '# mismatch\n' >>"$recovery_current/lastdbd"
 assert_recovery_refused wrong-installed-bytes "$recovery_input"
 cp "$recovery_stage/lastdbd" "$recovery_current/lastdbd"
+printf '# mismatch\n' >>"$recovery_current/lastdb"
+assert_recovery_refused wrong-installed-cli-bytes "$recovery_input"
+cp "$recovery_stage/lastdb" "$recovery_current/lastdb"
+
+# Matching alternate staged/current files cannot replace the immutable hashes
+# that the successful child stored before either file changed.
+printf '# paired post-receipt mutation\n' >>"$recovery_stage/lastdbd"
+printf '# paired post-receipt mutation\n' >>"$recovery_stage/lastdb"
+cp "$recovery_stage/lastdbd" "$recovery_current/lastdbd"
+cp "$recovery_stage/lastdb" "$recovery_current/lastdb"
+assert_recovery_refused paired-post-receipt-mutation "$recovery_input"
+for name in lastdb lastdbd; do
+  # Restore from the saved exact fixture body without importing repo state.
+  sed '/^# paired post-receipt mutation$/d' "$recovery_stage/$name" >"$tmp/$name.restore"
+  mv "$tmp/$name.restore" "$recovery_stage/$name"
+  chmod 755 "$recovery_stage/$name"
+  cp "$recovery_stage/$name" "$recovery_current/$name"
+done
 
 # Every external poll changes its context input. Loom then cannot adopt the
 # prior successful result when the graph returns from its timed wait.
@@ -463,6 +611,34 @@ grep -q '"recovery_child_execution":"lx-recovery-child"' "$FAKE_LOOM_CALLS" \
   || fail "--recover input lacks the child execution"
 grep -q "\"recovery_candidate\":\"$recovery_stage/lastdbd\"" "$FAKE_LOOM_CALLS" \
   || fail "--recover input lacks the candidate from the child receipt"
+grep -q "\"recovery_candidate_cli\":\"$recovery_stage/lastdb\"" "$FAKE_LOOM_CALLS" \
+  || fail "--recover input lacks the canonical CLI from the child receipt"
+grep -q "\"recovery_lastdbd_version\":\"$recovery_version\"" "$FAKE_LOOM_CALLS" \
+  && grep -q "\"recovery_lastdb_version\":\"$recovery_version\"" "$FAKE_LOOM_CALLS" \
+  || fail "--recover input lacks both pair versions from the child receipt"
+grep -q "\"recovery_lastdbd_sha256\":\"$daemon_sha\"" "$FAKE_LOOM_CALLS" \
+  && grep -q "\"recovery_lastdb_sha256\":\"$cli_sha\"" "$FAKE_LOOM_CALLS" \
+  || fail "--recover input lacks the pair hashes from the child receipt"
+grep -q "\"recovery_candidate_artifact_digest\":\"$artifact_digest\"" "$FAKE_LOOM_CALLS" \
+  || fail "--recover input lacks the artifact digest from the child receipt"
+grep -q '"recovery_safe_upgrade_protocol_version":"6"' "$FAKE_LOOM_CALLS" \
+  || fail "--recover input lacks the child protocol v6 receipt"
+rm -f "$LAST_STACK_CANARY_LOOM_ACTIVE" "$LAST_STACK_CANARY_LOOM_STAMP"
+
+# The original recovery shape is the legacy v5 receipt. It must fail before
+# the launcher starts a new parent execution.
+: >"$FAKE_LOOM_CALLS"
+set +e
+legacy_recover_out="$(PATH="$mock_home/.local/bin:$PATH" HOME="$mock_home" \
+  FAKE_LOOM_MODE=success FAKE_RECOVERY_LEGACY=1 \
+  "$BIN" --recover --child lx-recovery-child --json --quiet)"
+legacy_recover_rc=$?
+set -e
+[ "$legacy_recover_rc" -eq 3 ] \
+  || fail "--recover accepted a legacy child receipt: $legacy_recover_out"
+printf '%s\n' "$legacy_recover_out" | grep -q 'recover-child-not-exact-v6' \
+  || fail "legacy child refusal did not name the exact-v6 gate: $legacy_recover_out"
+[ ! -s "$FAKE_LOOM_CALLS" ] || fail "legacy child receipt launched a parent execution"
 rm -f "$LAST_STACK_CANARY_LOOM_ACTIVE" "$LAST_STACK_CANARY_LOOM_STAMP"
 
 # An unreadable child is refused before anything launches.

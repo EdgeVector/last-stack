@@ -47,6 +47,74 @@ def next_revision(name):
     return current + 1
 
 
+def exact_candidate_version(path):
+    proc = subprocess.run(
+        [path, "--version"], capture_output=True, text=True, timeout=15
+    )
+    fields = (proc.stdout or "").strip().split()
+    if proc.returncode != 0 or not fields:
+        raise RuntimeError(f"candidate version is unreadable: {path}")
+    return fields[-1]
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def exact_upgrade_job(candidate, source_git_oid, claimed_version):
+    daemon = os.path.realpath(candidate)
+    cli = os.path.realpath(os.path.join(os.path.dirname(daemon), "lastdb"))
+    if not re.fullmatch(r"[0-9a-f]{40}", source_git_oid):
+        raise RuntimeError("candidate source Git OID is not one full lowercase commit")
+    if not os.path.isfile(daemon) or not os.access(daemon, os.X_OK):
+        raise RuntimeError(f"candidate lastdbd is not executable: {daemon}")
+    if not os.path.isfile(cli) or not os.access(cli, os.X_OK):
+        raise RuntimeError(f"candidate sibling lastdb is not executable: {cli}")
+    if os.path.dirname(cli) != os.path.dirname(daemon) or os.path.basename(cli) != "lastdb":
+        raise RuntimeError("candidate sibling lastdb is not a real file beside lastdbd")
+    daemon_version = exact_candidate_version(daemon)
+    cli_version = exact_candidate_version(cli)
+    if daemon_version != cli_version:
+        raise RuntimeError(
+            f"candidate pair version mismatch: lastdbd={daemon_version} lastdb={cli_version}"
+        )
+    if claimed_version and claimed_version != daemon_version:
+        raise RuntimeError(
+            f"candidate version changed after build: expected={claimed_version} actual={daemon_version}"
+        )
+    daemon_sha = file_sha256(daemon)
+    cli_sha = file_sha256(cli)
+    artifact_digest = hashlib.sha256(
+        "\0".join(
+            [
+                source_git_oid,
+                daemon,
+                cli,
+                daemon_sha,
+                cli_sha,
+                daemon_version,
+                cli_version,
+            ]
+        ).encode()
+    ).hexdigest()
+    return {
+        "candidate": daemon,
+        "candidate_cli": cli,
+        "source_git_oid": source_git_oid,
+        "version": daemon_version,
+        "lastdbd_version": daemon_version,
+        "lastdb_version": cli_version,
+        "lastdbd_sha256": daemon_sha,
+        "lastdb_sha256": cli_sha,
+        "candidate_artifact_digest": artifact_digest,
+        "safe_upgrade_protocol_version": "6",
+    }
+
+
 if not live:
     if step == "RECOVER_LIVE":
         oid = str(ctx.get("recovery_source_git_oid") or "stand-in")
@@ -85,8 +153,15 @@ if not live:
         oid = str(ctx.get("main_oid") or "stand-in")
         job = {
             "candidate": "/tmp/stand-in-lastdbd",
+            "candidate_cli": "/tmp/lastdb",
             "source_git_oid": oid,
             "version": "stand-in",
+            "lastdbd_version": "stand-in",
+            "lastdb_version": "stand-in",
+            "lastdbd_sha256": "stand-in",
+            "lastdb_sha256": "stand-in",
+            "candidate_artifact_digest": "stand-in",
+            "safe_upgrade_protocol_version": "6",
         }
         emit(
             {
@@ -240,26 +315,50 @@ if step == "RECOVER_LIVE":
 
     child = required_recovery_text("recovery_child_execution")
     candidate = required_recovery_text("recovery_candidate")
+    candidate_cli = required_recovery_text("recovery_candidate_cli")
     oid = required_recovery_text("recovery_source_git_oid")
     version = required_recovery_text("recovery_version")
+    lastdbd_version = required_recovery_text("recovery_lastdbd_version")
+    lastdb_version = required_recovery_text("recovery_lastdb_version")
+    lastdbd_sha256 = required_recovery_text("recovery_lastdbd_sha256")
+    lastdb_sha256 = required_recovery_text("recovery_lastdb_sha256")
+    artifact_digest = required_recovery_text("recovery_candidate_artifact_digest")
+    protocol_version = required_recovery_text(
+        "recovery_safe_upgrade_protocol_version"
+    )
 
     if not re.fullmatch(r"lx-[A-Za-z0-9._-]+", child):
         recovery_fail("recovery_child_execution has an invalid form")
+    if protocol_version != "6":
+        recovery_fail("recovery child does not use safe-upgrade protocol v6")
     if not re.fullmatch(r"[0-9a-f]{40}", oid):
         recovery_fail("recovery_source_git_oid must be a full lowercase SHA")
+    if not re.fullmatch(r"[0-9a-f]{64}", lastdbd_sha256):
+        recovery_fail("recovery_lastdbd_sha256 must be one full lowercase SHA-256")
+    if not re.fullmatch(r"[0-9a-f]{64}", lastdb_sha256):
+        recovery_fail("recovery_lastdb_sha256 must be one full lowercase SHA-256")
+    if not re.fullmatch(r"[0-9a-f]{64}", artifact_digest):
+        recovery_fail("recovery artifact digest must be one full lowercase SHA-256")
     suffix = re.search(r"-g([0-9a-f]{7,40})$", version)
     if not suffix or not oid.startswith(suffix.group(1)):
         recovery_fail("recovery_version does not identify recovery_source_git_oid")
-    if not os.path.isabs(candidate) or not os.path.isfile(candidate):
-        recovery_fail("recovery_candidate must be an existing absolute file")
-    if not os.access(candidate, os.X_OK):
-        recovery_fail("recovery_candidate is not executable")
+    if version != lastdbd_version or version != lastdb_version:
+        recovery_fail("recovery pair versions do not match the version alias")
+    for path, label in (
+        (candidate, "recovery_candidate"),
+        (candidate_cli, "recovery_candidate_cli"),
+    ):
+        if not os.path.isabs(path) or not os.path.isfile(path):
+            recovery_fail(f"{label} must be an existing absolute file")
+        if not os.access(path, os.X_OK):
+            recovery_fail(f"{label} is not executable")
+        if os.path.realpath(path) != path:
+            recovery_fail(f"{label} is not canonical")
 
     stage_dir = os.path.dirname(candidate)
-    candidate_cli = os.path.join(stage_dir, "lastdb")
     manifest_path = os.path.join(stage_dir, "manifest.json")
-    if not os.path.isfile(candidate_cli) or not os.access(candidate_cli, os.X_OK):
-        recovery_fail("candidate sibling lastdb is missing or not executable")
+    if os.path.dirname(candidate_cli) != stage_dir or os.path.basename(candidate_cli) != "lastdb":
+        recovery_fail("recovery candidate CLI is not the daemon sibling")
     try:
         with open(manifest_path, encoding="utf-8") as handle:
             manifest = json.load(handle)
@@ -267,12 +366,34 @@ if step == "RECOVER_LIVE":
         recovery_fail(f"candidate manifest is unreadable: {error}")
     if manifest.get("source_git_oid") != oid:
         recovery_fail("candidate manifest source does not match")
-    if manifest.get("lastdbd_version") != version or manifest.get("lastdb_version") != version:
+    if (
+        manifest.get("lastdbd_version") != lastdbd_version
+        or manifest.get("lastdb_version") != lastdb_version
+    ):
         recovery_fail("candidate manifest version does not match")
-    if binary_version(candidate, "candidate lastdbd") != version:
+    if binary_version(candidate, "candidate lastdbd") != lastdbd_version:
         recovery_fail("candidate lastdbd version does not match")
-    if binary_version(candidate_cli, "candidate lastdb") != version:
+    if binary_version(candidate_cli, "candidate lastdb") != lastdb_version:
         recovery_fail("candidate lastdb version does not match")
+    if sha256_file(candidate) != lastdbd_sha256:
+        recovery_fail("candidate lastdbd bytes do not match the child receipt")
+    if sha256_file(candidate_cli) != lastdb_sha256:
+        recovery_fail("candidate lastdb bytes do not match the child receipt")
+    actual_digest = hashlib.sha256(
+        "\0".join(
+            [
+                oid,
+                candidate,
+                candidate_cli,
+                lastdbd_sha256,
+                lastdb_sha256,
+                lastdbd_version,
+                lastdb_version,
+            ]
+        ).encode()
+    ).hexdigest()
+    if actual_digest != artifact_digest:
+        recovery_fail("candidate artifact digest does not match the complete tuple")
 
     show = run(["loom", "show", child], timeout=30)
     if show.returncode != 0:
@@ -282,8 +403,15 @@ if step == "RECOVER_LIVE":
         "status": "succeeded",
         "state": "DONE",
         "context.candidate": candidate,
+        "context.candidate_cli": candidate_cli,
         "context.source_git_oid": oid,
         "context.version": version,
+        "context.lastdbd_version": lastdbd_version,
+        "context.lastdb_version": lastdb_version,
+        "context.lastdbd_sha256": lastdbd_sha256,
+        "context.lastdb_sha256": lastdb_sha256,
+        "context.candidate_artifact_digest": artifact_digest,
+        "context.safe_upgrade_protocol_version": protocol_version,
         "context.verdict": "green",
         "context.cutover": "live",
         "context.verify": "live",
@@ -301,14 +429,14 @@ if step == "RECOVER_LIVE":
     current_cli = os.path.join(current_dir, "lastdb")
     if not os.path.isfile(current_daemon) or not os.path.isfile(current_cli):
         recovery_fail("the canonical current LastDB binary pair is missing")
-    if binary_version(current_daemon, "current lastdbd") != version:
+    if binary_version(current_daemon, "current lastdbd") != lastdbd_version:
         recovery_fail("current lastdbd version does not match")
-    if binary_version(current_cli, "current lastdb") != version:
+    if binary_version(current_cli, "current lastdb") != lastdb_version:
         recovery_fail("current lastdb version does not match")
-    if sha256_file(current_daemon) != sha256_file(candidate):
-        recovery_fail("current lastdbd bytes do not match the candidate")
-    if sha256_file(current_cli) != sha256_file(candidate_cli):
-        recovery_fail("current lastdb bytes do not match the candidate")
+    if sha256_file(current_daemon) != lastdbd_sha256:
+        recovery_fail("current lastdbd bytes do not match the child receipt")
+    if sha256_file(current_cli) != lastdb_sha256:
+        recovery_fail("current lastdb bytes do not match the child receipt")
 
     status = run([current_cli, "status", "--json", "--timeout", "60"], timeout=90)
     if status.returncode != 0:
@@ -327,8 +455,15 @@ if step == "RECOVER_LIVE":
     emit(
         {
             "candidate": candidate,
+            "candidate_cli": candidate_cli,
             "source_git_oid": oid,
             "version": version,
+            "lastdbd_version": lastdbd_version,
+            "lastdb_version": lastdb_version,
+            "lastdbd_sha256": lastdbd_sha256,
+            "lastdb_sha256": lastdb_sha256,
+            "candidate_artifact_digest": artifact_digest,
+            "safe_upgrade_protocol_version": protocol_version,
             "child_status": "green",
             "recovery_verified": True,
             "recovery_no_mutation": True,
@@ -352,8 +487,26 @@ if step == "LEDGER" and ctx.get("recovery_mode") == "verified-live":
     child = required_recovery_text("recovery_child_execution")
     oid = required_recovery_text("recovery_source_git_oid")
     version = required_recovery_text("recovery_version")
-    if ctx.get("source_git_oid") != oid or ctx.get("version") != version:
-        recovery_fail("verified-live ledger identity differs from the RECOVER_LIVE receipt")
+    recovery_bindings = (
+        ("candidate", "recovery_candidate"),
+        ("candidate_cli", "recovery_candidate_cli"),
+        ("source_git_oid", "recovery_source_git_oid"),
+        ("version", "recovery_version"),
+        ("lastdbd_version", "recovery_lastdbd_version"),
+        ("lastdb_version", "recovery_lastdb_version"),
+        ("lastdbd_sha256", "recovery_lastdbd_sha256"),
+        ("lastdb_sha256", "recovery_lastdb_sha256"),
+        ("candidate_artifact_digest", "recovery_candidate_artifact_digest"),
+        (
+            "safe_upgrade_protocol_version",
+            "recovery_safe_upgrade_protocol_version",
+        ),
+    )
+    for verified_name, recovery_name in recovery_bindings:
+        if ctx.get(verified_name) != required_recovery_text(recovery_name):
+            recovery_fail(
+                "verified-live ledger tuple differs from the RECOVER_LIVE receipt"
+            )
 
     # Keep the failed soak terminal. Create one new attempt whose key is stable
     # for this verified child. A retry of this same step is then idempotent.
@@ -429,13 +582,12 @@ if step in ("BUILD_START", "BUILD_POLL", "BUILD_COLLECT", "LEDGER", "SOAK", "PRO
     elif step == "SOAK":
         patch["soak_poll_revision"] = next_revision("soak_poll_revision")
     if step == "BUILD_COLLECT":
-        job = {
-            "candidate": str(merged.get("candidate") or ctx.get("candidate") or ""),
-            "source_git_oid": str(
-                merged.get("source_git_oid") or ctx.get("source_git_oid") or ""
-            ),
-            "version": str(merged.get("version") or ctx.get("version") or ""),
-        }
+        job = exact_upgrade_job(
+            str(merged.get("candidate") or ctx.get("candidate") or ""),
+            str(merged.get("source_git_oid") or ctx.get("source_git_oid") or ""),
+            str(merged.get("version") or ctx.get("version") or ""),
+        )
+        patch.update(job)
         patch["upgrade_jobs"] = [job]
     if patch:
         print(
