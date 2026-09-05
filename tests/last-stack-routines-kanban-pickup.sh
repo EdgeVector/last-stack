@@ -43,4 +43,23 @@ grep -q 'Default: `exit`' "$pickup"
 grep -q 'Idle mode: smart-heal' "$pickup"
 grep -q 'opt-in only' "$pickup"
 
+# The hard rank must run AFTER pickup claim, not before — a rank failure must
+# never stop a fire from claiming. Assert both text markers and their order.
+grep -q 'Claim FIRST, rank AFTER' "$pickup"
+grep -q 'Hard todo rank AFTER claim' "$pickup"
+grep -q 'A rank result never un-claims a card' "$pickup"
+grep -q 'rank_state="ok"' "$pickup"
+grep -q 'ok cards=1 rank=stale-order worked=<slug>' "$pickup"
+
+claim_line="$(grep -n 'CLAIM_JSON=\$(' "$pickup" | head -1 | cut -d: -f1)"
+rank_line="$(grep -n 'Hard todo rank AFTER claim (best effort' "$pickup" | head -1 | cut -d: -f1)"
+if [ -z "$claim_line" ] || [ -z "$rank_line" ]; then
+  echo "missing claim or rank anchor in $pickup" >&2
+  exit 1
+fi
+if [ "$rank_line" -le "$claim_line" ]; then
+  echo "hard rank block must appear AFTER the pickup-claim block (claim=$claim_line rank=$rank_line)" >&2
+  exit 1
+fi
+
 echo ok
