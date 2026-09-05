@@ -139,6 +139,14 @@ fi
 # cannot run bash functions). Exit 124/137 = timed out. Exit 126/127 = the
 # timeout wrapper itself could not exec — fall back to unwrapped kanban so a
 # sandbox that blocks Homebrew gtimeout does not look like a dead board.
+#
+# Won't-undo (2026-09-04): the retry wrapper's own backoff schedule (15s,
+# 45s, ...) does not know about this function's outer `timeout` deadline
+# unless told. Export LAST_STACK_LASTDB_RETRY_DEADLINE_EPOCH so
+# last_stack_lastdb_retry_capped_sleep_sec caps each sleep to what is left of
+# `secs`, and exits with the real rc/stderr ("deadline won") instead of
+# sleeping past the outer kill and having SIGKILL erase the buffered error
+# (papercut-pickup-gate-45s-cap-cannot-hold-the-retry-schedule-it-asks-for-20260904).
 run_board_capped() {
   local secs="$1"
   shift
@@ -146,7 +154,8 @@ run_board_capped() {
   set +e
   if [ -n "$timeout_bin" ] && [ -n "$secs" ] && [ "$secs" -gt 0 ] 2>/dev/null; then
     if [ -n "$retry_bin" ]; then
-      "$timeout_bin" -k 3s "${secs}s" "$retry_bin" --attempts 3 -- "$@"
+      LAST_STACK_LASTDB_RETRY_DEADLINE_EPOCH="$(( $(date -u +%s) + secs ))" \
+        "$timeout_bin" -k 3s "${secs}s" "$retry_bin" --attempts 3 -- "$@"
     else
       "$timeout_bin" -k 3s "${secs}s" "$@"
     fi
@@ -157,7 +166,8 @@ run_board_capped() {
     # Keep 124/137 as real wall-clock timeouts (fail closed).
     if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] && [ "$rc" -ne 137 ]; then
       if [ -n "$retry_bin" ]; then
-        "$retry_bin" --attempts 3 -- "$@"
+        LAST_STACK_LASTDB_RETRY_DEADLINE_EPOCH="$(( $(date -u +%s) + secs ))" \
+          "$retry_bin" --attempts 3 -- "$@"
       else
         "$@"
       fi
