@@ -60,7 +60,8 @@ if [ -z "$CI_SHARD_INDEX" ]; then
     routines/pipeline-health.md \
     skills/kanban-agent/SKILL.md \
     instructions/brain-kanban.md \
-    instructions/asd-ste100.md
+    instructions/asd-ste100.md \
+    instructions/no-home-root-scan.md
 
   bin/last-stack-lint-prompts --access-sweep .
 
