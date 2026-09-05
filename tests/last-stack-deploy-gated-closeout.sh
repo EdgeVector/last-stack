@@ -164,6 +164,49 @@ grep -q 'deploy gate not-applicable slug=fold-card repo=fold' "$na_out" || {
 rm -f "$na_out"
 grep -q '^fold-card done' "$na_moves"
 
+# not-applicable plus helper-cutover END STATE is still unmet without proof.
+printf 'doing\n' >"$na_state"
+: >"$na_moves"
+cat >"$na_body" <<'EOF'
+Repo: EdgeVector/fold
+Base: main
+Kind: pr
+Requires-Deploy: deploy-pipeline
+
+## END STATE
+The installed helper is on host-track current after helper cutover.
+EOF
+if LASTGIT_DEPLOY_ROOT="$deploy_root" \
+   FAKE_BOARD_STATE="$na_state" \
+   FAKE_BOARD_BODY="$na_body" \
+   FAKE_BOARD_MOVES="$na_moves" \
+   "$closeout" fold-cutover-card --board-cli "$na_board" >/tmp/deploy-closeout-cutover.$$ 2>&1; then
+  cat /tmp/deploy-closeout-cutover.$$ >&2
+  rm -f /tmp/deploy-closeout-cutover.$$
+  echo "expected helper-cutover END STATE to block a not-applicable close" >&2
+  exit 1
+fi
+grep -q 'FAILED helper-cutover-unmet' /tmp/deploy-closeout-cutover.$$ || {
+  cat /tmp/deploy-closeout-cutover.$$ >&2
+  rm -f /tmp/deploy-closeout-cutover.$$
+  echo "expected helper-cutover-unmet on not-applicable + host-track END STATE" >&2
+  exit 1
+}
+rm -f /tmp/deploy-closeout-cutover.$$
+[ ! -s "$na_moves" ] || {
+  echo "helper-cutover not-applicable close still moved the card:" >&2
+  cat "$na_moves" >&2
+  exit 1
+}
+
+# Restore the fold not-applicable body for the empty-root case below.
+cat >"$na_body" <<'EOF'
+Repo: EdgeVector/fold
+Base: main
+Kind: pr
+Requires-Deploy: deploy-pipeline
+EOF
+
 # The scan reports the same judgement, and says which producers DO exist.
 na_scan="$("$scan" --json --root "$deploy_root" --repo fold)"
 echo "$na_scan" | jq -e 'length==1 and .[0].status=="not-applicable" and .[0].blocked==false' >/dev/null
