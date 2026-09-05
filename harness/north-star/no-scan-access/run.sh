@@ -16,6 +16,45 @@ trap 'rm -rf "$TMP"' EXIT
 tracker="$TMP/tracker.json"
 failure=""
 
+seed_tracker() {
+  # Idempotent keyed seed so a board wipe cannot silently drop this slug
+  # again (it happened once, 2026-09-01 -> discovered 2026-09-04). Never
+  # marks the card done — the fail-closed gate below still requires a real
+  # COMPLETION RULE + PROOF before this tracker can pass.
+  kanban add "$TRACKER_SLUG" \
+    --title "Track the original LastDB scan-deprecation fan-out" \
+    --column backlog \
+    --kind tracker \
+    --north-star north-star-lastdb-no-scan-access \
+    --tags no-scan,tracker \
+    --body "$(cat <<'SEED'
+Kind: tracker
+Repo: EdgeVector/last-stack
+Base: main
+
+Track the original LastDB scan-deprecation fan-out for
+north-star-lastdb-no-scan-access.
+
+## COMPLETION RULE
+
+This tracker moves to done only when BOTH are true and this body carries a
+PROOF: line naming the live evidence for each:
+
+1. Grep gate - every first-party app has zero unfiltered queryAll /
+   listRecords / listCards full-schema drains on default CLI/MCP/daemon
+   paths.
+2. Live ops proof - a lastdb ops sample taken during normal dogfood shows
+   no multi-hundred-row unfiltered query as the top total_ms consumer for
+   kanban or lastgit.
+
+Re-seeded by harness/north-star/no-scan-access/run.sh because the card was
+absent on a live proof run. See north-star-lastdb-no-scan-access for the
+per-app fan-out completion history.
+SEED
+)" \
+    >/dev/null 2>&1
+}
+
 if [ -n "${LASTDB_NO_SCAN_TRACKER_FILE:-}" ]; then
   if [ -f "$LASTDB_NO_SCAN_TRACKER_FILE" ]; then
     cp "$LASTDB_NO_SCAN_TRACKER_FILE" "$tracker"
@@ -23,8 +62,11 @@ if [ -n "${LASTDB_NO_SCAN_TRACKER_FILE:-}" ]; then
     failure="tracker fixture is absent"
   fi
 elif [ "$MODE" = live ] && command -v kanban >/dev/null 2>&1; then
-  if ! kanban show "$TRACKER_SLUG" --json >"$tracker"; then
-    failure="$TRACKER_SLUG is absent"
+  if ! kanban show "$TRACKER_SLUG" --json >"$tracker" 2>/dev/null; then
+    seed_tracker
+    if ! kanban show "$TRACKER_SLUG" --json >"$tracker" 2>/dev/null; then
+      failure="$TRACKER_SLUG is absent"
+    fi
   fi
 else
   failure="live keyed read or tracker fixture is required"
