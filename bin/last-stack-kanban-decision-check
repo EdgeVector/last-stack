@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import re
+import select
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -272,6 +273,39 @@ def assemble(
     }
 
 
+
+STDIN_FIRST_BYTE_TIMEOUT_S = float(
+    os.environ.get("LAST_STACK_DECISION_CHECK_STDIN_TIMEOUT", "20")
+)
+
+
+def read_body_or_fail(timeout_s: float = STDIN_FIRST_BYTE_TIMEOUT_S) -> str:
+    """Read the card body from stdin, but never block on it forever.
+
+    The card body always arrives as a pipe or a redirect, so the first byte
+    (or EOF) is available immediately. An inherited descriptor that nobody
+    ever writes to and nobody ever closes is the failure this guards: it
+    deadlocked an agent lane for 27 hours on 2026-09-04. Wait a bounded time
+    for stdin to become readable, then fail with the fix in the message.
+    """
+    if timeout_s > 0:
+        try:
+            ready, _, _ = select.select([sys.stdin], [], [], timeout_s)
+        except (ValueError, OSError):
+            ready = [sys.stdin]
+        if not ready:
+            sys.stderr.write(
+                "last-stack-kanban-decision-check: no card body on stdin after "
+                f"{timeout_s:g}s. This command reads the body from stdin; it "
+                "does not take --body or --body-path. Pipe or redirect it:\n"
+                "  last-stack-kanban-decision-check --title '...' --kind pr "
+                "--column todo --inject < card.md\n"
+                "Set LAST_STACK_DECISION_CHECK_STDIN_TIMEOUT=0 to wait forever.\n"
+            )
+            raise SystemExit(2)
+    return sys.stdin.read()
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--title", default="", help="Card title")
@@ -290,7 +324,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
 
-    body = sys.stdin.read()
+    body = read_body_or_fail()
     fixture = Path(args.fixture_dir) if args.fixture_dir else None
     if fixture is None:
         env_fix = os.environ.get("LAST_STACK_DECISION_FIXTURE", "")
