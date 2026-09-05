@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+# Refuse the one CLOSE that silently destroys work: a green auto-merge CR whose
+# head never reached its base branch.
+#
+# Symptom this exists for (papercut-lastgit-pr-reaper-closes-green-unmerged-cr,
+# p0, three recorded instances on 2026-09-02): routines/pr-reaper.md STEP 2 is a
+# two-branch ladder — MERGE if green and mergeable right now, else CLOSE
+# everything else. A CR that is green and wants to land, but cannot merge
+# because the merge machinery is failing (base_ref_rewound on an unfetchable
+# cache tip, completer abort/recover churn), is not "everything else". It falls
+# to CLOSE, leaves the open inventory, and then `lastgit stuck` and
+# `lastgit cr list --all-open` both report empty while the change is off main.
+# A later pipeline-health wake stamps noop over lost work.
+#
+# The ladder has no branch for "green, driving, blocked by infrastructure", and
+# prose in the prompt has not supplied one. This helper is that branch, as a
+# decision the reaper RUNS instead of a rule the reaper must remember.
+#
+# Deliberately narrow. On 51 auto-merge last-stack CRs closed in the 14 days to
+# 2026-09-05, 37 heads never reached main and a sample of those read
+# ci-required=failure — correct reaping. Refusing every unlanded close would
+# refuse that work too. Only a required check that actually says `success`, or
+# one that says nothing usable, holds a close here.
+#
+# Exit codes (the caller's contract):
+#   0  close-ok      — closing this CR loses nothing
+#   1  refuse        — green unmerged auto-merge work; closing destroys it
+#   3  indeterminate — could not judge; fail closed, treat as refuse
+#   2  usage / preflight
+#
+# Every input can come from a file so the suite runs with no node and no forge.
+set -euo pipefail
+
+repo=""
+cr_id=""
+json=0
+cr_json_path=""
+ci_json_path=""
+base_oid=""
+git_dir=""
+no_fetch=0
+lastgit_bin="${LASTGIT_BIN:-lastgit}"
+
+usage() {
+  cat >&2 <<'EOF'
+usage: last-stack-pr-reaper-close-guard --repo <slug> --cr <cr-id> [--json]
+                                        [--cr-json PATH] [--ci-json PATH]
+                                        [--base-oid OID] [--git-dir PATH]
+                                        [--no-fetch]
+
+Decide whether pr-reaper may CLOSE a LastGit change request. Reads only; never
+closes, merges, or writes.
+
+Verdicts:
+  close-ok       already terminal / head already in base / not auto-merge /
+                 required check is a real failure
+  refuse         open|merging + auto_merge + head not in base + required check
+                 success
+  indeterminate  the same shape with a required check that is pending, torn, or
+                 absent, or an ancestry question that could not be answered
+
+Flags:
+  --cr-json PATH   use this `cr view --json` object instead of calling lastgit
+  --ci-json PATH   use this `ci status --json` object instead of calling lastgit
+  --base-oid OID   use this base-branch tip instead of `lastgit ref`
+  --git-dir PATH   ancestry repository (default: the repo's bare mirror, then
+                   the portal cache)
+  --no-fetch       never fetch; an object that is missing stays missing
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --repo) repo="${2:-}"; shift 2 ;;
+    --cr) cr_id="${2:-}"; shift 2 ;;
+    --json) json=1; shift ;;
+    --cr-json) cr_json_path="${2:-}"; shift 2 ;;
+    --ci-json) ci_json_path="${2:-}"; shift 2 ;;
+    --base-oid) base_oid="${2:-}"; shift 2 ;;
+    --git-dir) git_dir="${2:-}"; shift 2 ;;
+    --no-fetch) no_fetch=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown argument: $1" >&2; usage; exit 2 ;;
+  esac
+done
+
+[ -n "$repo" ] || { echo "--repo is required" >&2; usage; exit 2; }
+[ -n "$cr_id" ] || { echo "--cr is required" >&2; usage; exit 2; }
+command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 2; }
+
+git_bin=/usr/bin/git
+[ -x "$git_bin" ] || git_bin="$(command -v git || true)"
+
+# ── CR row ──────────────────────────────────────────────────────────────────
+cr_json=""
+if [ -n "$cr_json_path" ]; then
+  [ -f "$cr_json_path" ] || { echo "no such --cr-json file: $cr_json_path" >&2; exit 2; }
+  cr_json="$(cat "$cr_json_path")"
+else
+  cr_json="$("$lastgit_bin" cr view "$repo" "$cr_id" --json 2>/dev/null || true)"
+fi
+
+emit() {
+  # emit <verdict> <reason> <exit-code>
+  local verdict="$1" reason="$2" code="$3"
+  local out
+  out="$(jq -n \
+    --arg verdict "$verdict" \
+    --arg reason "$reason" \
+    --arg repo "$repo" \
+    --arg cr "$cr_id" \
+    --arg state "${cr_state:-}" \
+    --arg auto_merge "${cr_auto_merge:-}" \
+    --arg head "${head_oid:-}" \
+    --arg base_ref "${base_ref:-}" \
+    --arg base_oid "${base_oid:-}" \
+    --arg ci_state "${ci_state:-}" \
+    --arg ci_context "${require_status:-}" \
+    --arg ci_event_id "${ci_event_id:-}" \
+    --arg ancestry "${ancestry:-}" \
+    '{
+      verdict: $verdict,
+      reason: $reason,
+      repo: $repo,
+      cr: $cr,
+      cr_state: $state,
+      auto_merge: $auto_merge,
+      head_oid: $head,
+      base_ref: $base_ref,
+      base_oid: $base_oid,
+      required_context: $ci_context,
+      ci_state: $ci_state,
+      ci_event_id: $ci_event_id,
+      head_in_base: $ancestry
+    }')"
+  if [ "$json" = "1" ]; then
+    printf '%s\n' "$out"
+  else
+    echo "last-stack-pr-reaper-close-guard: verdict=$verdict reason=$reason repo=$repo cr=$cr_id head=${head_oid:-} base=${base_oid:-} ci=${ci_state:-} head_in_base=${ancestry:-}"
+    printf '%s\n' "$out"
+  fi
+  exit "$code"
+}
+
+if [ -z "$cr_json" ] || ! printf '%s' "$cr_json" | jq -e . >/dev/null 2>&1; then
+  emit indeterminate cr-unreadable 3
+fi
+
+cr_state="$(printf '%s' "$cr_json" | jq -r '(.state // "") | ascii_downcase')"
+cr_auto_merge="$(printf '%s' "$cr_json" | jq -r '(.auto_merge // "") | tostring | ascii_downcase')"
+head_oid="$(printf '%s' "$cr_json" | jq -r '(.head_oid // "")')"
+base_ref="$(printf '%s' "$cr_json" | jq -r '(.base_ref // .base_branch // "refs/heads/main")')"
+require_status="$(printf '%s' "$cr_json" | jq -r '(.require_status // "")')"
+
+# 1. A CR that is not open is not being closed by this decision.
+case "$cr_state" in
+  open|merging) : ;;
+  "") emit indeterminate cr-state-missing 3 ;;
+  *) emit close-ok already-terminal 0 ;;
+esac
+
+[ -n "$head_oid" ] || emit indeterminate no-head-oid 3
+
+# ── base tip ────────────────────────────────────────────────────────────────
+# From lastgit, not from a mirror: a mirror can be many merges behind (the
+# last-stack mirror read 177a0d3b while main was ab84c2b8 on 2026-09-05), and a
+# stale base tip answers "not in base" for work that already landed.
+if [ -z "$base_oid" ]; then
+  base_name="${base_ref#refs/heads/}"
+  base_oid="$("$lastgit_bin" ref "$repo" "$base_name" 2>/dev/null | awk 'NF{print $1; exit}')"
+fi
+case "$base_oid" in
+  ''|*[!0-9a-fA-F]*) emit indeterminate base-tip-unreadable 3 ;;
+esac
+
+# ── ancestry ────────────────────────────────────────────────────────────────
+if [ -z "$git_dir" ]; then
+  for candidate in "$HOME/.lastgit/mirrors/$repo" "$HOME/.cache/edgevector-git/$repo.git"; do
+    if [ -d "$candidate" ] && "$git_bin" -C "$candidate" rev-parse --git-dir >/dev/null 2>&1; then
+      git_dir="$candidate"
+      break
+    fi
+  done
+fi
+[ -n "$git_dir" ] || emit indeterminate no-ancestry-repo 3
+
+have_object() { "$git_bin" -C "$git_dir" cat-file -e "${1}^{commit}" 2>/dev/null; }
+
+if ! have_object "$head_oid" || ! have_object "$base_oid"; then
+  if [ "$no_fetch" = "0" ]; then
+    "$git_bin" -C "$git_dir" fetch --quiet --prune lastgit >/dev/null 2>&1 \
+      || "$git_bin" -C "$git_dir" fetch --quiet --prune origin >/dev/null 2>&1 || true
+  fi
+fi
+if ! have_object "$head_oid" || ! have_object "$base_oid"; then
+  emit indeterminate ancestry-object-missing 3
+fi
+
+if "$git_bin" -C "$git_dir" merge-base --is-ancestor "$head_oid" "$base_oid" 2>/dev/null; then
+  ancestry="true"
+  # The work is on the base branch. Closing loses nothing — this is the shape a
+  # phantom-merge heal leaves behind, and it must stay closeable.
+  emit close-ok head-already-in-base 0
+fi
+ancestry="false"
+
+# 2. Nothing is driving this CR to land, so the reaper's own judgment stands.
+[ "$cr_auto_merge" = "true" ] || emit close-ok not-auto-merge 0
+
+# ── required check ──────────────────────────────────────────────────────────
+ci_json=""
+if [ -n "$ci_json_path" ]; then
+  [ -f "$ci_json_path" ] || { echo "no such --ci-json file: $ci_json_path" >&2; exit 2; }
+  ci_json="$(cat "$ci_json_path")"
+else
+  ci_json="$("$lastgit_bin" ci status "$head_oid" --repo "$repo" --json 2>/dev/null || true)"
+fi
+
+ci_state=""
+ci_event_id=""
+if [ -n "$ci_json" ] && printf '%s' "$ci_json" | jq -e . >/dev/null 2>&1; then
+  want="${require_status:-ci-required}"
+  ci_state="$(printf '%s' "$ci_json" | jq -r --arg want "$want" '
+    if (.checks? | type) == "array" then
+      ((.checks[] | select((.context // "") == $want) | .state) // "")
+    else (.state // "") end | ascii_downcase' 2>/dev/null | awk 'NF{print;exit}')"
+  ci_event_id="$(printf '%s' "$ci_json" | jq -r --arg want "$want" '
+    if (.checks? | type) == "array" then
+      ((.checks[] | select((.context // "") == $want) | .event_id) // "")
+    else (.event_id // "") end' 2>/dev/null | awk 'NF{print;exit}')"
+fi
+
+case "$ci_state" in
+  failure|error|cancelled|canceled)
+    # A real red verdict. Reaping this is the reaper doing its job.
+    emit close-ok required-check-failed 0
+    ;;
+  success)
+    emit refuse green-unmerged-auto-merge 1
+    ;;
+  pending)
+    # A pending row whose event_id carries no ci-queued:/ci-lease: prefix is
+    # torn, not live (papercut-lastdb-1535-multi-field-update…). Either way a
+    # pending check is not evidence that green work should be discarded.
+    case "$ci_event_id" in
+      ci-queued:*|ci-lease:*) emit indeterminate required-check-running 3 ;;
+      *) emit indeterminate required-check-pending-unleased 3 ;;
+    esac
+    ;;
+  "")
+    emit indeterminate required-check-absent 3
+    ;;
+  *)
+    emit indeterminate "required-check-unknown-state" 3
+    ;;
+esac

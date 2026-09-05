@@ -102,18 +102,59 @@ not escalate that into a pass-level `error`.
 Age ≤ 60 min → leave it. Age > 60 min → it leaves this run in a TERMINAL
 state. Decide in this order:
 
+**Before any CLOSE on a LastGit CR, run the close guard — won't-undo
+2026-09-05.** This ladder used to have two branches: MERGE if green and
+mergeable right now, else CLOSE everything else. A CR that is green and
+driving, but cannot merge because the merge machinery is failing
+(`base_ref_rewound` on an unfetchable cache tip, completer abort/recover
+churn), is not "everything else". Closing it removes the CR from the open
+inventory, so `lastgit stuck` and `lastgit cr list --all-open` both report
+empty while the change is off main, and a later pipeline-health wake stamps
+noop over lost work. That happened three times on 2026-09-02
+(`papercut-lastgit-pr-reaper-closes-green-unmerged-cr`) and twice more in the
+14 days to 2026-09-05. Prose did not stop it, so the missing branch is a
+command you RUN, not a rule you remember:
+
+```bash
+close_guard_rc=0
+"$last_stack/bin/last-stack-pr-reaper-close-guard" \
+  --repo <repo> --cr <cr-id> --json >/tmp/pr-reaper-close-guard.json \
+  2>/tmp/pr-reaper-close-guard.err || close_guard_rc=$?
+# 0 = close-ok · 1 = refuse · 3 = indeterminate · 2 = usage
+```
+
+- `0` **close-ok** — closing loses nothing. Continue down the ladder.
+- `1` **refuse** — green unmerged work. Do NOT close it. Leave the CR open so
+  it stays in the inventory, and heartbeat
+  `flagged=close-refused-green-unmerged:<repo>:<cr-id>`. Merging it is the
+  repair and it belongs to whoever owns the merge failure; reaping is not.
+- `3` **indeterminate** — the guard could not judge (required check pending,
+  torn, or absent; ancestry unreadable). Fail closed: leave the CR open and
+  heartbeat `flagged=close-indeterminate:<repo>:<cr-id>`. It is reaped next
+  round once the check settles.
+- `2` — usage/preflight. Fix the invocation. Never close on a guard that did
+  not run.
+
+Never close a LastGit CR whose guard verdict you did not read. The guard is
+read-only and refuses narrowly: of 51 auto-merge last-stack CRs closed in the
+14 days to 2026-09-05, 37 heads never reached main, and a 12-row sample of
+those read 8 `ci-required=failure`, 2 absent, 2 `success`. It holds only the
+last of those — a close that would destroy green work.
+
+Then decide in this order:
+
 1. **MERGE** if required CI is green on the current head AND it is mergeable
    right now AND it is not an explicitly human-gated PROD cutover/flip.
    LastGit: `lastgit cr merge <repo> <cr-id> --require-status ci-required`
    (then `lastgit cr complete --once` if needed). Forgejo: normal merge API.
    NEVER bypass a failing/pending required check to merge.
-2. **CLOSE** everything else — red CI, merge conflict, pending CI on a stale
-   head, draft, spike, AND human-gated publish/content PRs (blog posts etc.):
-   a lingering publish decision belongs in the morning-sync decision queue,
-   not an open PR. Comment first where the venue supports it (Forgejo:
-   `issues/<n>/comments` then PATCH `pulls/<n>` state=closed; LastGit:
-   `lastgit cr close <repo> <cr-id>`). The branch is always preserved — say so
-   in the comment.
+2. **CLOSE** everything the guard cleared — red CI, merge conflict, pending CI
+   on a stale head, draft, spike, AND human-gated publish/content PRs (blog
+   posts etc.): a lingering publish decision belongs in the morning-sync
+   decision queue, not an open PR. Comment first where the venue supports it
+   (Forgejo: `issues/<n>/comments` then PATCH `pulls/<n>` state=closed;
+   LastGit: `lastgit cr close <repo> <cr-id>`). The branch is always preserved
+   — say so in the comment.
 
 **Narrow live-work exception (one round only):** skip an over-age item ONLY if
 required CI is currently RUNNING on a head pushed within the last 60 min, or

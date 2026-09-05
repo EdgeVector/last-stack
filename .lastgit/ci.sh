@@ -194,6 +194,10 @@ ci_test tests/last-stack-pickup-work-policy.sh
 ci_test tests/last-stack-routines-kanban-pickup.sh
 ci_test tests/last-stack-kanban-validate-routine.sh
 ci_test tests/last-stack-pr-reaper-stale-open-heal.sh
+# The close guard holds the one reap that destroys work: a green auto-merge
+# CR whose head never reached main. Required, not FULL-only — the defect it
+# covers removed CRs from the open inventory, so nothing downstream noticed.
+ci_test tests/last-stack-pr-reaper-close-guard.sh
 ci_test tests/last-stack-factory-hardening.sh
 ci_test tests/last-stack-factory-ready-buffer-activation.sh
 ci_test tests/morning-sync-live-human-gate-reconcile.sh
