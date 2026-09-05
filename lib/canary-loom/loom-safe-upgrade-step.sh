@@ -6,8 +6,8 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
 export LOOM_LASTDB_FRESHNESS_SCRIPT="${LOOM_LASTDB_FRESHNESS_SCRIPT:-$SCRIPT_DIR/lastdb-candidate-freshness.py}"
 export LOOM_SAFE_UPGRADE_GRAPH="${LOOM_SAFE_UPGRADE_GRAPH:-$SCRIPT_DIR/lastdb-safe-upgrade.json}"
 
-python3 - "$step" <<'PY'
-import hashlib, json, os, re, subprocess, sys
+exec python3 - "$step" <<'PY'
+import hashlib, json, os, re, signal, stat, subprocess, sys, tempfile, time
 from pathlib import Path
 
 step = sys.argv[1]
@@ -72,6 +72,391 @@ def node_timeout(node):
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise RuntimeError(f"safe-upgrade graph has invalid {node} timeout: {value}")
     return value
+
+
+def positive_env_seconds(name, default):
+    raw = os.environ.get(name, str(default))
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise RuntimeError(f"{name} must be a positive integer")
+    if value <= 0:
+        raise RuntimeError(f"{name} must be a positive integer")
+    return value
+
+
+def signal_process_group(proc, sig):
+    try:
+        os.killpg(proc.pid, sig)
+    except ProcessLookupError:
+        pass
+
+
+def process_group_exists(proc):
+    try:
+        os.killpg(proc.pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def close_process_pipes(proc):
+    for stream in (proc.stdout, proc.stderr):
+        if stream is not None:
+            try:
+                stream.close()
+            except OSError:
+                pass
+
+
+def terminate_owned_group(proc, cleanup_grace, kill_drain, signal_already_sent=False):
+    """Bound TERM/KILL and pipe drain for one isolated process group."""
+    term_grace = cleanup_grace - kill_drain
+    if term_grace <= 0:
+        raise RuntimeError(
+            "safe-upgrade cleanup grace must exceed its KILL drain reserve"
+        )
+    if not signal_already_sent:
+        signal_process_group(proc, signal.SIGTERM)
+
+    stdout = ""
+    stderr = ""
+    term_deadline = time.monotonic() + term_grace
+    try:
+        stdout, stderr = proc.communicate(timeout=term_grace)
+    except subprocess.TimeoutExpired:
+        pass
+
+    while process_group_exists(proc) and time.monotonic() < term_deadline:
+        time.sleep(0.05)
+    if process_group_exists(proc):
+        signal_process_group(proc, signal.SIGKILL)
+
+    kill_deadline = time.monotonic() + kill_drain
+    try:
+        more_stdout, more_stderr = proc.communicate(timeout=kill_drain)
+        stdout = more_stdout or stdout
+        stderr = more_stderr or stderr
+    except subprocess.TimeoutExpired as error:
+        # A descendant can escape the group but retain a pipe. Never let that
+        # escaped descriptor consume the Loom headroom after group KILL.
+        if isinstance(error.stdout, str):
+            stdout = error.stdout
+        if isinstance(error.stderr, str):
+            stderr = error.stderr
+        close_process_pipes(proc)
+        proc.poll()
+    while process_group_exists(proc) and time.monotonic() < kill_deadline:
+        time.sleep(0.05)
+    return stdout or "", stderr or "", not process_group_exists(proc)
+
+
+class WrapperSignal(Exception):
+    def __init__(self, signum):
+        super().__init__(signum)
+        self.signum = signum
+
+
+def run_recovery_bounded(argv, env, recovery_budget):
+    """Run cutover recovery outside the killed driver group."""
+    term_grace = positive_env_seconds(
+        "LOOM_SAFE_UPGRADE_RECOVERY_TERM_GRACE_SECS", 5
+    )
+    kill_drain = positive_env_seconds(
+        "LOOM_SAFE_UPGRADE_RECOVERY_KILL_DRAIN_SECS", 5
+    )
+    work_budget = recovery_budget - term_grace - kill_drain
+    if work_budget <= 0:
+        raise RuntimeError(
+            "safe-upgrade recovery timeout leaves no recovery work budget"
+        )
+
+    proc = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        start_new_session=True,
+    )
+    cleanup_attempted = False
+    try:
+        try:
+            stdout, stderr = proc.communicate(timeout=work_budget)
+            return proc.returncode, stdout or "", stderr or "", False
+        except subprocess.TimeoutExpired:
+            cleanup_attempted = True
+            stdout, stderr, _ = terminate_owned_group(
+                proc, term_grace + kill_drain, kill_drain
+            )
+            return 126, stdout, stderr, True
+    finally:
+        if cleanup_attempted:
+            if process_group_exists(proc):
+                signal_process_group(proc, signal.SIGKILL)
+                close_process_pipes(proc)
+        elif process_group_exists(proc):
+            terminate_owned_group(proc, term_grace + kill_drain, kill_drain)
+
+
+def make_cutover_recovery_state(env):
+    """Create the wrapper-owned protocol state in one narrow private root."""
+    root = Path(
+        env.get("LASTDB_CUTOVER_RECOVERY_ROOT")
+        or "~/.local/state/last-stack/lastdb-safe-upgrade/cutover-recovery"
+    ).expanduser()
+    if not root.is_absolute():
+        raise RuntimeError("cutover recovery root must be absolute")
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    root_stat = root.lstat()
+    if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
+        raise RuntimeError("cutover recovery root must be a real directory")
+    if root.resolve() != root:
+        raise RuntimeError("cutover recovery root must not traverse a symlink")
+    if root_stat.st_uid != os.getuid() or stat.S_IMODE(root_stat.st_mode) != 0o700:
+        raise RuntimeError("cutover recovery root must be owner UID mode 700")
+
+    exec_id = os.environ.get("LOOM_EXEC_ID") or ""
+    safe_exec_id = re.sub(r"[^A-Za-z0-9._-]", "_", exec_id)
+    if not exec_id or not safe_exec_id:
+        raise RuntimeError("cutover recovery state requires a Loom execution id")
+    fd, raw_path = tempfile.mkstemp(
+        prefix=f"{safe_exec_id}-", suffix=".json", dir=str(root)
+    )
+    state_path = Path(raw_path)
+    initial = {
+        "state_version": 1,
+        "loom_execution_id": exec_id,
+        "stage": "wrapper-started",
+        "effect_started": False,
+        "venue": "",
+        "primary_home": "",
+        "primary_socket": "",
+        "sidebin_dir": "",
+        "launchd_label": "",
+        "launchd_plist": "",
+        "backup_lastdbd": "",
+        "backup_lastdb": "",
+        "backup_lastdbd_sha256": "",
+        "backup_lastdb_sha256": "",
+    }
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(initial, handle, separators=(",", ":"))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        state_path.unlink(missing_ok=True)
+        raise
+    env["LASTDB_CUTOVER_RECOVERY_ROOT"] = str(root)
+    env["LASTDB_CUTOVER_RECOVERY_STATE"] = str(state_path)
+    return state_path
+
+
+def remove_cutover_recovery_state(state_path):
+    try:
+        state_stat = state_path.lstat()
+    except FileNotFoundError:
+        return
+    if (
+        not stat.S_ISREG(state_stat.st_mode)
+        or stat.S_ISLNK(state_stat.st_mode)
+        or state_stat.st_uid != os.getuid()
+    ):
+        raise RuntimeError("refusing to remove an unsafe cutover recovery state")
+    state_path.unlink()
+
+
+def run_driver_bounded(argv, node, env, recovery_argv=None):
+    """Run one driver tree with cleanup and recovery inside the node deadline."""
+    if not hasattr(signal, "pthread_sigmask"):
+        raise RuntimeError("safe-upgrade wrapper requires POSIX signal masks")
+    node_budget = node_timeout(node)
+    cleanup_grace = positive_env_seconds(
+        "LOOM_SAFE_UPGRADE_CLEANUP_GRACE_SECS", 45
+    )
+    kill_drain = positive_env_seconds(
+        "LOOM_SAFE_UPGRADE_KILL_DRAIN_SECS", 5
+    )
+    outer_headroom = positive_env_seconds(
+        "LOOM_SAFE_UPGRADE_TIMEOUT_HEADROOM_SECS", 15
+    )
+    recovery_budget = 0
+    if recovery_argv is not None:
+        recovery_budget = positive_env_seconds(
+            "LOOM_SAFE_UPGRADE_RECOVERY_TIMEOUT_SECS", 180
+        )
+    driver_budget = (
+        node_budget - cleanup_grace - recovery_budget - outer_headroom
+    )
+    if driver_budget <= 0:
+        raise RuntimeError(
+            f"safe-upgrade {node} timeout leaves no driver budget after cleanup and recovery"
+        )
+    if cleanup_grace <= kill_drain:
+        raise RuntimeError(
+            "safe-upgrade cleanup grace must exceed its KILL drain reserve"
+        )
+
+    prior_handlers = {}
+    external_signal = 0
+    recovery_active = False
+    shutdown_started = False
+    proc = None
+    handled_signals = (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
+
+    def forward_signal(signum, _frame):
+        nonlocal external_signal, shutdown_started
+        external_signal = external_signal or signum
+        if recovery_active or shutdown_started:
+            return
+        shutdown_started = True
+        if proc is not None:
+            signal_process_group(proc, signum)
+        raise WrapperSignal(signum)
+
+    for signum in handled_signals:
+        prior_handlers[signum] = signal.signal(signum, forward_signal)
+
+    stdout = ""
+    stderr = ""
+    driver_timed_out = False
+    driver_reaped = False
+    driver_cleanup_attempted = False
+    recovery_rc = None
+    recovery_stdout = ""
+    recovery_stderr = ""
+    recovery_timed_out = False
+    try:
+        try:
+            prior_mask = signal.pthread_sigmask(signal.SIG_BLOCK, handled_signals)
+            try:
+                proc = subprocess.Popen(
+                    argv,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                    start_new_session=True,
+                    preexec_fn=lambda: signal.pthread_sigmask(
+                        signal.SIG_UNBLOCK, handled_signals
+                    ),
+                )
+                if env.get("LOOM_SAFE_UPGRADE_TEST_SIGNAL_AFTER_POPEN") == "TERM":
+                    # Test seam: queue TERM while the child exists but before
+                    # the parent restores delivery of wrapper signals.
+                    os.kill(os.getpid(), signal.SIGTERM)
+                    ready_raw = env.get(
+                        "LOOM_SAFE_UPGRADE_TEST_SIGNAL_AFTER_POPEN_READY"
+                    )
+                    if ready_raw:
+                        ready_path = Path(ready_raw)
+                        if not ready_path.is_absolute():
+                            raise RuntimeError("safe-upgrade test ready path must be absolute")
+                        ready_deadline = time.monotonic() + 5
+                        while not ready_path.exists() and time.monotonic() < ready_deadline:
+                            time.sleep(0.01)
+                        if not ready_path.exists():
+                            raise RuntimeError("safe-upgrade test driver did not become ready")
+            finally:
+                # A pending signal now runs only after proc owns the detached
+                # process group. The child unblocks these signals before exec.
+                signal.pthread_sigmask(signal.SIG_SETMASK, prior_mask)
+            try:
+                stdout, stderr = proc.communicate(timeout=driver_budget)
+                # No later signal can interrupt cleanup or CUTOVER recovery.
+                # A signal before this assignment reaches the broad catch.
+                shutdown_started = True
+            except subprocess.TimeoutExpired:
+                driver_timed_out = True
+                shutdown_started = True
+                driver_cleanup_attempted = True
+                stdout, stderr, driver_reaped = terminate_owned_group(
+                    proc, cleanup_grace, kill_drain
+                )
+        except WrapperSignal:
+            if proc is not None:
+                driver_cleanup_attempted = True
+                stdout, stderr, driver_reaped = terminate_owned_group(
+                    proc, cleanup_grace, kill_drain, signal_already_sent=True
+                )
+
+        driver_failed = proc is not None and proc.returncode not in (None, 0)
+        if (
+            driver_failed
+            and not driver_timed_out
+            and not external_signal
+            and process_group_exists(proc)
+        ):
+            # A failed driver can leave a same-group emergency daemon after
+            # its shell exits. Stop that tree before independent recovery.
+            driver_cleanup_attempted = True
+            stdout, stderr, driver_reaped = terminate_owned_group(
+                proc, cleanup_grace, kill_drain
+            )
+
+        recovery_needed = bool(
+            recovery_argv is not None
+            and (driver_timed_out or external_signal or driver_failed)
+        )
+        if recovery_needed:
+            recovery_active = True
+            try:
+                recovery_rc, recovery_stdout, recovery_stderr, recovery_timed_out = (
+                    run_recovery_bounded(recovery_argv, env, recovery_budget)
+                )
+            except (OSError, RuntimeError) as error:
+                recovery_rc = 127
+                recovery_stderr = f"CUTOVER_TIMEOUT_RECOVERY=red reason={error}\n"
+            recovery_active = False
+
+        if recovery_needed:
+            if recovery_timed_out:
+                result_rc = 126
+            elif recovery_rc != 0:
+                result_rc = 125
+            elif external_signal:
+                result_rc = 128 + external_signal
+            elif driver_timed_out:
+                result_rc = 124
+            else:
+                result_rc = proc.returncode
+        elif external_signal:
+            result_rc = 128 + external_signal
+        elif driver_timed_out:
+            result_rc = 124
+        else:
+            result_rc = proc.returncode
+        result = subprocess.CompletedProcess(argv, result_rc, stdout, stderr)
+        return (
+            result,
+            driver_timed_out,
+            driver_budget,
+            external_signal,
+            recovery_rc,
+            recovery_stdout,
+            recovery_stderr,
+            recovery_timed_out,
+        )
+    finally:
+        recovery_active = True
+        if proc is not None:
+            if driver_cleanup_attempted:
+                if not driver_reaped and process_group_exists(proc):
+                    signal_process_group(proc, signal.SIGKILL)
+                    close_process_pipes(proc)
+            elif process_group_exists(proc):
+                terminate_owned_group(proc, cleanup_grace, kill_drain)
+        for signum, handler in prior_handlers.items():
+            signal.signal(signum, handler)
 
 
 def binary_version(path):
@@ -336,13 +721,39 @@ if step == "PROBE":
     # the candidate RED; the budget stays well under the PROBE node timeout.
     probe_env = exact_driver_env()
     probe_env.setdefault("LASTDB_SAFE_UPGRADE_OWNER_LOCK_WAIT_S", "2700")
-    p = subprocess.run(
-        ["bash", skill, "--candidate", cand, "--probe-only"],
-        capture_output=True, text=True, timeout=node_timeout("PROBE"), env=probe_env,
+    (
+        p,
+        driver_timed_out,
+        driver_timeout,
+        external_signal,
+        _recovery_rc,
+        _recovery_stdout,
+        _recovery_stderr,
+        _recovery_timed_out,
+    ) = run_driver_bounded(
+        ["bash", skill, "--candidate", cand, "--probe-only"], "PROBE", probe_env,
     )
     sys.stdout.write(p.stdout or "")
     sys.stderr.write(p.stderr or "")
+    timeout_note = ""
+    if driver_timed_out:
+        timeout_note = (
+            f"safe-upgrade PROBE driver timed out after {driver_timeout}s; "
+            "its isolated process group received TERM before KILL"
+        )
+        sys.stderr.write(timeout_note + "\n")
     text = (p.stdout or "") + (p.stderr or "")
+    if timeout_note:
+        text += ("" if text.endswith("\n") or not text else "\n") + timeout_note + "\n"
+    if external_signal:
+        signal_note = (
+            f"safe-upgrade PROBE wrapper received signal {external_signal}; "
+            "it forwarded the signal and reaped the isolated driver group"
+        )
+        text += ("" if text.endswith("\n") or not text else "\n") + signal_note + "\n"
+        sys.stderr.write(signal_note + "\n")
+        write_evidence_file("probe", text, p.returncode)
+        raise SystemExit(p.returncode)
     # The driver cats sub-probe output (smoke prints its own "VERDICT: GREEN"),
     # so a substring match false-greens a red probe: rc=1 runs reached CUTOVER
     # on lx-20260830T203912.259-78723-1. Only the driver's FINAL verdict line
@@ -355,7 +766,9 @@ if step == "PROBE":
     )
     patch = {"verdict": "green" if green else "red", "probe_rc": p.returncode}
     if not green:
-        patch["last_error"] = probe_failure_reason(text, final_verdict, p.returncode)
+        patch["last_error"] = timeout_note or probe_failure_reason(
+            text, final_verdict, p.returncode
+        )
         patch["probe_tail"] = evidence_tail(text)
         write_evidence_file("probe", text, p.returncode)
     emit(patch, f"su PROBE verdict={patch['verdict']}")
@@ -384,14 +797,123 @@ if step == "CUTOVER":
     cutover_env = exact_driver_env()
     cutover_env["LASTDB_SAFE_UPGRADE_VIA_LOOM"] = "1"
     cutover_env.setdefault("LASTDB_SAFE_UPGRADE_OWNER_LOCK_WAIT_S", "1800")
-    p = subprocess.run(
-        ["bash", skill, "--candidate", cand, "--yes"],
-        capture_output=True, text=True, timeout=node_timeout("CUTOVER"), env=cutover_env,
-    )
+    state_path = make_cutover_recovery_state(cutover_env)
+    recovery_script_raw = os.environ.get(
+        "LOOM_SAFE_UPGRADE_CUTOVER_RECOVERY_SCRIPT"
+    ) or str(Path(skill).resolve().parent / "cutover-timeout-recovery.sh")
+    recovery_script = str(Path(recovery_script_raw).expanduser().resolve(strict=True))
+    recovery_argv = [
+        "bash",
+        recovery_script,
+        "--state",
+        str(state_path),
+        "--loom-exec-id",
+        os.environ.get("LOOM_EXEC_ID") or "",
+    ]
+    preserve_recovery_state = True
+    try:
+        (
+            p,
+            driver_timed_out,
+            driver_timeout,
+            external_signal,
+            recovery_rc,
+            recovery_stdout,
+            recovery_stderr,
+            recovery_timed_out,
+        ) = run_driver_bounded(
+            ["bash", skill, "--candidate", cand, "--yes"],
+            "CUTOVER",
+            cutover_env,
+            recovery_argv,
+        )
+        preserve_recovery_state = bool(
+            recovery_rc is not None
+            and (recovery_timed_out or recovery_rc != 0)
+        )
+    finally:
+        if not preserve_recovery_state:
+            remove_cutover_recovery_state(state_path)
     sys.stdout.write(p.stdout or "")
     sys.stderr.write(p.stderr or "")
+    sys.stdout.write(recovery_stdout or "")
+    sys.stderr.write(recovery_stderr or "")
+    timeout_note = ""
+    if driver_timed_out:
+        if recovery_timed_out:
+            recovery_result = (
+                "bounded supervisor recovery timed out; "
+                f"exact state retained at {state_path}"
+            )
+        elif recovery_rc == 0:
+            recovery_result = "bounded supervisor recovery succeeded"
+        else:
+            recovery_result = (
+                f"bounded supervisor recovery failed rc={recovery_rc}; "
+                f"exact state retained at {state_path}"
+            )
+        timeout_note = (
+            f"safe-upgrade CUTOVER driver timed out after {driver_timeout}s; "
+            "its isolated process group received TERM before KILL; "
+            f"{recovery_result}"
+        )
+        sys.stderr.write(timeout_note + "\n")
+    signal_note = ""
+    if external_signal:
+        if recovery_timed_out:
+            recovery_result = (
+                "bounded supervisor recovery timed out; "
+                f"exact state retained at {state_path}"
+            )
+        elif recovery_rc == 0:
+            recovery_result = "bounded supervisor recovery succeeded"
+        else:
+            recovery_result = (
+                f"bounded supervisor recovery failed rc={recovery_rc}; "
+                f"exact state retained at {state_path}"
+            )
+        signal_note = (
+            f"safe-upgrade CUTOVER wrapper received signal {external_signal}; "
+            "it forwarded the signal and reaped the isolated driver group; "
+            f"{recovery_result}"
+        )
+        sys.stderr.write(signal_note + "\n")
+    failure_note = ""
+    if p.returncode != 0 and not driver_timed_out and not external_signal:
+        if recovery_timed_out:
+            recovery_result = (
+                "bounded supervisor recovery timed out; "
+                f"exact state retained at {state_path}"
+            )
+        elif recovery_rc == 0:
+            recovery_result = "bounded supervisor recovery succeeded"
+        else:
+            recovery_result = (
+                f"bounded supervisor recovery failed rc={recovery_rc}; "
+                f"exact state retained at {state_path}"
+            )
+        failure_note = (
+            "safe-upgrade CUTOVER driver exited nonzero; "
+            f"{recovery_result}"
+        )
+        sys.stderr.write(failure_note + "\n")
     if p.returncode != 0:
-        write_evidence_file("cutover", (p.stdout or "") + (p.stderr or ""), p.returncode)
+        evidence = (
+            (p.stdout or "")
+            + (p.stderr or "")
+            + (recovery_stdout or "")
+            + (recovery_stderr or "")
+        )
+        if timeout_note:
+            evidence += ("" if evidence.endswith("\n") or not evidence else "\n")
+            evidence += timeout_note + "\n"
+        if signal_note:
+            evidence += ("" if evidence.endswith("\n") or not evidence else "\n")
+            evidence += signal_note + "\n"
+        if failure_note:
+            evidence += ("" if evidence.endswith("\n") or not evidence else "\n")
+            evidence += failure_note + "\n"
+        write_evidence_file("cutover", evidence, p.returncode)
         sys.exit(p.returncode)
     print('LOOM_EFFECT_DONE:{"kind":"deploy","target":"lastdb-safe-upgrade"}')
     emit({"cutover": "live", "verdict": "green"}, "su CUTOVER live")

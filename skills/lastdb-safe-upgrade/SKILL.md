@@ -216,9 +216,10 @@ proxy is optional later for near-zero client impact.
 
     The proof removes both sockets, `current-session.json`, the copied device
     ID, `laststore_backup_known_present.json`,
-    `laststore_backup_manifest.json`, and every `cloud_sync.json*` file. It
-    does this before DEV connect. It unsets `LASTDB_HOME`, `FOLDDB_HOME`, and
-    `FOLD_SYNC_DEVICE_ID` for connect, daemon start, and snapshot.
+    `laststore_backup_manifest.json`, every `cloud_sync.json*` file, and hidden
+    `.cloud_sync.json.tmp*` residue. It does this before DEV connect. It unsets
+    `LASTDB_HOME`, `FOLDDB_HOME`, and `FOLD_SYNC_DEVICE_ID` for connect, daemon
+    start, and snapshot.
 
     The proof reads `lastdb-restore-probe-invite-dev-20260720` from
     LastSecrets. It pipes the value directly to the paired CLI through stdin.
@@ -227,15 +228,37 @@ proxy is optional later for near-zero client impact.
     owner-only active config for the exact compiled DEV URL. No
     `cloud_sync.json*` backup can remain.
 
-    The exact daemon then starts on the CoW. The exact CLI runs
-    `cloud snapshot --json`. Only that command's report can prove the manual
-    CAS update. The report must contain a positive counter, an equal CAS
-    counter, a manifest SHA-256, and a latest key.
+    The exact daemon then starts on the CoW. The exact CLI runs a bounded
+    `cloud snapshot --json` command. Only that command's report can prove the
+    manual CAS update. The response must use the sealed top-level `report`,
+    `user_hash`, and `manifest_cache` fields. The manifest-cache path must name
+    the new isolated cache. The report must contain a positive counter, an
+    equal CAS counter, and a manifest SHA-256. The proof reads the copied
+    `laststore_high_water.json` store UUID. It derives the 64-hex
+    `cloud_db_hash` as SHA-256 of `laststore-db:<store_uuid>`. Both report keys
+    must use that scope:
+    `<cloud_db_hash>/backup/manifests/<manifest_sha256>` and
+    `<cloud_db_hash>/backup/latest`. The top-level 32-hex `user_hash` proves
+    the envelope identity only. The proof checks the fresh DEV device ID again
+    after the snapshot. Each snapshot attempt has
+    a 900-second command deadline by default
+    (`LASTDB_DEV_PHOTOGRAPH_SNAPSHOT_TIMEOUT_SECS`).
+
+    The Loom step starts each safe-upgrade driver in its own process group. It
+    reserves 45 seconds for owned cleanup, 180 seconds for CUTOVER recovery,
+    and 15 seconds for the outer Loom deadline. It forwards external signals
+    to the group and always reaps an abnormal driver tree. On a CUTOVER stop,
+    a separate process group reads the private recovery state. If a live swap
+    began, it restores the exact saved pair and reloads the LaunchAgent. It
+    requires socket health and the supervised listener PID before it returns.
+    A failed recovery retains the mode-600 state for exact manual recovery.
 
     The owner-only v2 receipt belongs to one Loom execution and expires after
     one hour. It records the exact source, pair paths, pair hashes, pair
-    versions, DEV URL, CoW path, primary path, snapshot report, and isolation
-    facts. The gate rejects missing, duplicate, or unknown fields. It also
+    versions, DEV URL, CoW path, primary path, snapshot report, snapshot user
+    hash, cloud DB hash, manifest object key, exact manifest-cache path, and
+    isolation facts.
+    The gate rejects missing, duplicate, or unknown fields. It also
     rejects a legacy receipt, a stale time, a future time, another candidate,
     a production URL, or an overlapping home. Skip
     (`LASTDB_PROBE_DEV_STAMP_SKIP=1`) needs Tom's clearance. Brain:

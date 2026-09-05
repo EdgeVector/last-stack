@@ -106,7 +106,12 @@ primary_home
 counter
 cas_counter
 manifest_sha256
+cloud_db_hash
+manifest_key
 latest_key
+user_hash
+manifest_cache
+report_top_level
 committed_at
 committed_epoch
 fresh_device_id
@@ -124,8 +129,9 @@ _dev_stamp_key_is_known() {
   case "$1" in
     receipt_version|verdict|loom_execution_id|source_git_oid|lastdbd_path|lastdb_path|\
     lastdbd_sha256|lastdb_sha256|lastdbd_version|lastdb_version|api_url|home|\
-    primary_home|counter|cas_counter|manifest_sha256|latest_key|committed_at|\
-    committed_epoch|fresh_device_id|production_cloud_config_absent|\
+    primary_home|counter|cas_counter|manifest_sha256|cloud_db_hash|manifest_key|latest_key|user_hash|\
+    manifest_cache|report_top_level|committed_at|committed_epoch|\
+    fresh_device_id|production_cloud_config_absent|\
     production_cloud_residue_absent|production_presence_cache_absent|\
     production_manifest_cache_absent|copied_session_absent|identity_preserved|\
     bootstrap_preserved) return 0 ;;
@@ -269,7 +275,9 @@ assert_dev_photograph_stamp_ok() {
   local receipt="${1:-$(dev_stamp_receipt_path)}"
   local primary="${2:-${LASTDB_HOME:-$HOME/.lastdb}}"
   local failed=0 line key required value expected
-  local mode home phome counter cas_counter committed_at committed_epoch
+  local mode home phome counter cas_counter manifest_sha256 cloud_db_hash manifest_key latest_key
+  local user_hash manifest_cache
+  local expected_manifest_cache committed_at committed_epoch
 
   if [ ! -f "$receipt" ] || [ -L "$receipt" ]; then
     printf 'RED: exact-candidate DEV photograph receipt is absent or unsafe\n'
@@ -363,14 +371,41 @@ EOF
   case "$cas_counter" in ''|*[!0-9]*|0) printf 'RED: DEV photograph CAS counter is not positive\n'; failed=1 ;; esac
   [ "$counter" = "$cas_counter" ] \
     || { printf 'RED: DEV photograph CAS counter differs from the committed counter\n'; failed=1; }
-  case "$(dev_stamp_receipt_get "$receipt" manifest_sha256 || true)" in
+  manifest_sha256="$(dev_stamp_receipt_get "$receipt" manifest_sha256 || true)"
+  case "$manifest_sha256" in
     *[!0-9a-f]*|'') printf 'RED: DEV photograph manifest SHA-256 is invalid\n'; failed=1 ;;
   esac
-  value="$(dev_stamp_receipt_get "$receipt" manifest_sha256 || true)"
-  [ "${#value}" -eq 64 ] \
+  [ "${#manifest_sha256}" -eq 64 ] \
     || { printf 'RED: DEV photograph manifest SHA-256 is not full length\n'; failed=1; }
-  [ -n "$(dev_stamp_receipt_get "$receipt" latest_key || true)" ] \
-    || { printf 'RED: DEV photograph latest key is absent\n'; failed=1; }
+  manifest_key="$(dev_stamp_receipt_get "$receipt" manifest_key || true)"
+  latest_key="$(dev_stamp_receipt_get "$receipt" latest_key || true)"
+  cloud_db_hash="$(dev_stamp_receipt_get "$receipt" cloud_db_hash || true)"
+  user_hash="$(dev_stamp_receipt_get "$receipt" user_hash || true)"
+  case "$user_hash" in
+    *[!0-9a-f]*|'') printf 'RED: DEV photograph user hash is invalid\n'; failed=1 ;;
+  esac
+  [ "${#user_hash}" -eq 32 ] \
+    || { printf 'RED: DEV photograph user hash is not full length\n'; failed=1; }
+  case "$cloud_db_hash" in
+    *[!0-9a-f]*|'') printf 'RED: DEV photograph cloud DB hash is invalid\n'; failed=1 ;;
+  esac
+  [ "${#cloud_db_hash}" -eq 64 ] \
+    || { printf 'RED: DEV photograph cloud DB hash is not full length\n'; failed=1; }
+  [ -n "$cloud_db_hash" ] && [ "$latest_key" = "$cloud_db_hash/backup/latest" ] \
+    || { printf 'RED: DEV photograph latest key does not match its cloud DB hash\n'; failed=1; }
+  [ -n "$cloud_db_hash" ] && [ -n "$manifest_sha256" ] \
+    && [ "$manifest_key" = "$cloud_db_hash/backup/manifests/$manifest_sha256" ] \
+    || { printf 'RED: DEV photograph manifest key does not match its cloud DB hash and digest\n'; failed=1; }
+
+  manifest_cache="$(dev_stamp_receipt_get "$receipt" manifest_cache || true)"
+  expected_manifest_cache=""
+  case "$home" in
+    /*) expected_manifest_cache="$(_dev_stamp_real_maybe_absent "$home/laststore_backup_manifest.json" || true)" ;;
+  esac
+  [ -n "$expected_manifest_cache" ] && [ "$manifest_cache" = "$expected_manifest_cache" ] \
+    || { printf 'RED: DEV photograph manifest cache does not match its isolated home\n'; failed=1; }
+  [ "$(dev_stamp_receipt_get "$receipt" report_top_level || true)" = "true" ] \
+    || { printf 'RED: DEV photograph report was not top-level\n'; failed=1; }
 
   committed_at="$(dev_stamp_receipt_get "$receipt" committed_at || true)"
   committed_epoch="$(dev_stamp_receipt_get "$receipt" committed_epoch || true)"
@@ -393,7 +428,8 @@ EOF
 # fields come only from the Loom environment. The rename is same-directory.
 write_dev_stamp_receipt_v2() {
   local path="$1" primary_home="$2" cow_home="$3" counter="$4" cas_counter="$5"
-  local manifest_sha256="$6" latest_key="$7" committed_at="$8" committed_epoch="$9"
+  local manifest_sha256="$6" cloud_db_hash="$7" manifest_key="$8" latest_key="$9"
+  local user_hash="${10}" manifest_cache="${11}" committed_at="${12}" committed_epoch="${13}"
   local dir base tmp
 
   dev_stamp_expected_binding_is_complete >/dev/null || return 1
@@ -422,7 +458,12 @@ write_dev_stamp_receipt_v2() {
     printf 'counter=%s\n' "$counter"
     printf 'cas_counter=%s\n' "$cas_counter"
     printf 'manifest_sha256=%s\n' "$manifest_sha256"
+    printf 'cloud_db_hash=%s\n' "$cloud_db_hash"
+    printf 'manifest_key=%s\n' "$manifest_key"
     printf 'latest_key=%s\n' "$latest_key"
+    printf 'user_hash=%s\n' "$user_hash"
+    printf 'manifest_cache=%s\n' "$manifest_cache"
+    printf 'report_top_level=true\n'
     printf 'committed_at=%s\n' "$committed_at"
     printf 'committed_epoch=%s\n' "$committed_epoch"
     printf 'fresh_device_id=true\n'

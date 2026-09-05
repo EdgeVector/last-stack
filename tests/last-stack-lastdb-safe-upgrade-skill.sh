@@ -579,7 +579,9 @@ case "${1:-}" in
       && [ ! -e "$home/current-session.json" ] \
       && [ ! -e "$home/laststore_backup_known_present.json" ] \
       && [ ! -e "$home/laststore_backup_manifest.json" ] || exit 36
-    [ "$(find "$home" -maxdepth 1 -name 'cloud_sync.json*' -print | wc -l | tr -d ' ')" = 0 ] \
+    [ "$(find "$home" -maxdepth 1 \
+        \( -name 'cloud_sync.json*' -o -name '.cloud_sync.json.tmp*' \) \
+        -print | wc -l | tr -d ' ')" = 0 ] \
       || exit 37
     printf '%s' 'fresh-dev-device' >"$home/data/.device_id"
     chmod 600 "$home/data/.device_id"
@@ -594,7 +596,23 @@ JSON
     [ -S "$home/data/folddb.sock" ] || exit 39
     printf 'snapshot:unset\n' >>"${FAKE_PROOF_CALLS:?}"
     [ "${FAKE_SNAPSHOT_FAIL:-0}" != 1 ] || exit 40
-    printf '%s\n' '{"ok":true,"report":{"counter":9,"cas_counter":9,"manifest_sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","latest_key":"backup/latest"}}'
+    manifest_cache="$home/laststore_backup_manifest.json"
+    printf '{}\n' >"$manifest_cache"
+    store_uuid="$(jq -er '.store_uuid | select(type == "string" and length > 0)' \
+      "$home/laststore_high_water.json")"
+    cloud_db_hash="$(printf 'laststore-db:%s' "$store_uuid" | shasum -a 256 | awk '{print $1}')"
+    jq -cn --arg manifest_cache "$manifest_cache" --arg cloud_db_hash "$cloud_db_hash" '{
+      ok: true,
+      user_hash: "11111111111111111111111111111111",
+      report: {
+        counter: 9,
+        cas_counter: 9,
+        manifest_sha256: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        manifest_key: ($cloud_db_hash + "/backup/manifests/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"),
+        latest_key: ($cloud_db_hash + "/backup/latest")
+      },
+      manifest_cache: $manifest_cache
+    }'
     ;;
   *) exit 41 ;;
 esac
@@ -666,8 +684,10 @@ printf '%s\n' '{"pid":99999}' >"$proof_primary/current-session.json"
 printf '%s\n' production >"$proof_primary/cloud_sync.json"
 printf '%s\n' production >"$proof_primary/cloud_sync.json.paused"
 printf '%s\n' production >"$proof_primary/cloud_sync.json.backup-20260904"
+printf '%s\n' production >"$proof_primary/.cloud_sync.json.tmp"
 printf '%s\n' production >"$proof_primary/laststore_backup_known_present.json"
 printf '%s\n' production >"$proof_primary/laststore_backup_manifest.json"
+printf '%s\n' '{"store_uuid":"skill-proof-store-uuid"}' >"$proof_primary/laststore_high_water.json"
 printf '%s\n' socket-residue >"$proof_primary/data/folddb.sock"
 printf '%s\n' socket-residue >"$proof_primary/data/folddb-full.sock"
 printf '%s\n' real-data >"$proof_primary/data/store-fixture"
@@ -780,7 +800,9 @@ fi
 [ "$(shasum -a 256 "$proof_primary/identity.key" | awk '{print $1}')" = "$primary_identity_sha" ] \
   && [ -f "$proof_primary/cloud_sync.json.backup-20260904" ] \
   && [ -f "$proof_primary/current-session.json" ] \
+  && [ -f "$proof_primary/.cloud_sync.json.tmp" ] \
   && [ -f "$proof_source/cloud_sync.json.backup-20260904" ] \
+  && [ -f "$proof_source/.cloud_sync.json.tmp" ] \
   && [ -f "$proof_source/laststore_backup_manifest.json" ] \
   || { echo "FAIL: DEV proof changed the primary fixture" >&2; exit 1; }
 
