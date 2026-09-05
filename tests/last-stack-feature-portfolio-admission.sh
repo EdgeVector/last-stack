@@ -258,4 +258,28 @@ grep -q 'last-stack-feature-portfolio-admission' "$ROOT/routines/north-star-driv
 grep -q 'last-stack-feature-portfolio-admission' "$ROOT/routines/milestone-driver.md" \
   || fail "milestone-driver does not run the admission gate"
 
+# A brain that never answers must retry once, then fail closed with a line that
+# says it retried — not an unhandled TimeoutExpired. 2026-09-05: a slow node
+# made this 60 s point get expire, and the failure blocked Kind:pr filing
+# before the decision check even ran.
+slow_brain="$tmp/bin/slow-brain"
+cat >"$slow_brain" <<'SLOW'
+#!/bin/sh
+sleep 30
+SLOW
+chmod +x "$slow_brain"
+set +e
+LAST_STACK_ADMISSION_BRAIN_TIMEOUT=1 \
+LAST_STACK_ADMISSION_BRAIN_RETRY_TIMEOUT=1 \
+"$bin" --brain "$slow_brain" \
+  --north-star north-star-feature-delivery-effective-flow \
+  >"$tmp/slow.out" 2>"$tmp/slow.err"
+slow_rc=$?
+set -e
+[ "$slow_rc" -eq 1 ] || fail "brain timeout must fail closed with exit 1, got $slow_rc"
+grep -q "Traceback" "$tmp/slow.err" \
+  && fail "brain timeout must not print a Python traceback"
+grep -q "timed out twice" "$tmp/slow.err" \
+  || fail "brain timeout must say it retried: $(cat "$tmp/slow.err")"
+
 printf 'ok last-stack-feature-portfolio-admission\n'

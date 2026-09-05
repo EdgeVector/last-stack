@@ -167,4 +167,31 @@ set -e
 [ "$eof_rc" -eq 0 ] || fail "empty stdin should exit 0, got $eof_rc ($(cat "$tmp/eof.err"))"
 echo "decision-check empty-stdin still passes ok"
 
+# a brain that never answers must retry once, then fail with one readable line
+# instead of an unhandled TimeoutExpired traceback. 2026-09-05: a slow node made
+# every `brain search` here exceed the old hard-coded 60 s, and the traceback
+# blocked all Kind:pr filing fleet-wide.
+slow_bin="$tmp/slow-brain"
+cat >"$slow_bin" <<'SLOW'
+#!/bin/sh
+sleep 30
+SLOW
+chmod +x "$slow_bin"
+set +e
+LAST_STACK_DECISION_CHECK_BRAIN_TIMEOUT=1 \
+LAST_STACK_DECISION_CHECK_BRAIN_RETRY_TIMEOUT=1 \
+python3 "$BIN" --title "slow node probe" --kind pr --column todo \
+  --brain "$slow_bin" >"$tmp/slow.out" 2>"$tmp/slow.err" <<'BODY'
+## GOAL
+probe
+BODY
+slow_rc=$?
+set -e
+[ "$slow_rc" -eq 1 ] || fail "brain timeout should exit 1, got $slow_rc"
+grep -q "Traceback" "$tmp/slow.err" \
+  && fail "brain timeout must not print a Python traceback"
+grep -q "timed out twice" "$tmp/slow.err" \
+  || fail "brain timeout must say it retried: $(cat "$tmp/slow.err")"
+echo "decision-check brain-timeout retries then fails readably ok"
+
 echo "last-stack-kanban-decision-check tests ok"

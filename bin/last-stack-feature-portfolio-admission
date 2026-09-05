@@ -50,6 +50,14 @@ class BrainUnavailable(Exception):
     pass
 
 
+# Per-call budget for one `brain` subprocess, and the budget the single retry
+# gets. Both env-tunable, matching last-stack-kanban-decision-check.
+BRAIN_CALL_TIMEOUT_S = float(os.environ.get("LAST_STACK_ADMISSION_BRAIN_TIMEOUT", "180"))
+BRAIN_RETRY_TIMEOUT_S = float(
+    os.environ.get("LAST_STACK_ADMISSION_BRAIN_RETRY_TIMEOUT", "300")
+)
+
+
 def point_get(slug: str, brain_bin: str, fixture_dir: Path | None) -> tuple[str, list[str]]:
     """Return (record text, list of point gets performed). Never list/search."""
     gets = [slug]
@@ -58,15 +66,31 @@ def point_get(slug: str, brain_bin: str, fixture_dir: Path | None) -> tuple[str,
         if not path.is_file():
             raise BrainUnavailable(f"fixture has no record for {slug}")
         return path.read_text(), gets
-    try:
-        cp = subprocess.run(
-            [brain_bin, "get", slug, "--type", "preference"],
-            text=True,
-            capture_output=True,
-            timeout=60,
+    # 60 s was the original budget and it is not enough. On 2026-09-05 the
+    # primary node thrashed its warm cache for hours and a single `brain get`
+    # ran past 60 s, so this admission read failed and blocked Kind:pr filing
+    # before the decision check even ran. Same budget and retry as
+    # last-stack-kanban-decision-check.
+    cp = None
+    for budget in (BRAIN_CALL_TIMEOUT_S, BRAIN_RETRY_TIMEOUT_S):
+        try:
+            cp = subprocess.run(
+                [brain_bin, "get", slug, "--type", "preference"],
+                text=True,
+                capture_output=True,
+                timeout=budget,
+            )
+            break
+        except subprocess.TimeoutExpired:
+            cp = None
+            continue
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise BrainUnavailable(f"brain get {slug} failed: {exc}") from exc
+    if cp is None:
+        raise BrainUnavailable(
+            f"brain get {slug} timed out twice "
+            f"({BRAIN_CALL_TIMEOUT_S:.0f}s then {BRAIN_RETRY_TIMEOUT_S:.0f}s)"
         )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise BrainUnavailable(f"brain get {slug} failed: {exc}") from exc
     if cp.returncode != 0:
         detail = (cp.stderr or cp.stdout or "brain get failed").strip().splitlines()
         raise BrainUnavailable(f"brain get {slug} failed: {detail[0] if detail else 'no output'}")

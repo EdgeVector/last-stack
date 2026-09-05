@@ -57,6 +57,29 @@ SEARCH_LIMIT = 8
 POINT_GET_CAP = 8
 QUERY_CAP = 300
 
+# Per-call budget for one `brain` subprocess, and the budget the single retry
+# gets. 60 s was the original figure and it is not enough: on 2026-09-05 the
+# primary node ran a warm-cache thrash for hours (brain writes 60-165 s, reads
+# to 102 s), every `brain search` here hit the 60 s cap, and this script died
+# with an unhandled TimeoutExpired traceback. That blocked ALL Kind:pr filing
+# fleet-wide, including the card for the node defect that caused the slowness.
+# A gate that a slow node turns off is not a gate. Budget generously, retry
+# once, and fail with one readable line instead of a traceback.
+BRAIN_CALL_TIMEOUT_S = float(os.environ.get("LAST_STACK_DECISION_CHECK_BRAIN_TIMEOUT", "180"))
+BRAIN_RETRY_TIMEOUT_S = float(
+    os.environ.get("LAST_STACK_DECISION_CHECK_BRAIN_RETRY_TIMEOUT", "300")
+)
+
+
+def run_brain(argv: list[str]) -> subprocess.CompletedProcess | None:
+    """Run one `brain` call, retrying once on timeout. None means it timed out twice."""
+    for budget in (BRAIN_CALL_TIMEOUT_S, BRAIN_RETRY_TIMEOUT_S):
+        try:
+            return subprocess.run(argv, text=True, capture_output=True, timeout=budget)
+        except subprocess.TimeoutExpired:
+            continue
+    return None
+
 
 class Brain:
     def __init__(self, bin_name: str, fixture_dir: Path | None) -> None:
@@ -65,6 +88,7 @@ class Brain:
         self.gets: list[str] = []
         self.searches: list[str] = []
         self.failed = False
+        self.timed_out = False
         self.fail_detail = ""
 
     def get(self, slug: str) -> str | None:
@@ -74,12 +98,14 @@ class Brain:
             if not path.is_file():
                 return None
             return path.read_text()
-        cp = subprocess.run(
-            [self.bin_name, "get", slug],
-            text=True,
-            capture_output=True,
-            timeout=60,
-        )
+        cp = run_brain([self.bin_name, "get", slug])
+        if cp is None:
+            self.timed_out = True
+            self.fail_detail = (
+                f"brain get {slug} timed out twice "
+                f"({BRAIN_CALL_TIMEOUT_S:.0f}s then {BRAIN_RETRY_TIMEOUT_S:.0f}s)"
+            )
+            return None
         if cp.returncode != 0:
             return None
         return cp.stdout
@@ -111,7 +137,7 @@ class Brain:
                     if m
                 ]
             return []
-        cp = subprocess.run(
+        cp = run_brain(
             [
                 self.bin_name,
                 "search",
@@ -125,11 +151,17 @@ class Brain:
                 "--limit",
                 str(SEARCH_LIMIT),
                 "--json",
-            ],
-            text=True,
-            capture_output=True,
-            timeout=60,
+            ]
         )
+        if cp is None:
+            self.failed = True
+            self.timed_out = True
+            self.fail_detail = (
+                f"brain search timed out twice "
+                f"({BRAIN_CALL_TIMEOUT_S:.0f}s then {BRAIN_RETRY_TIMEOUT_S:.0f}s) — "
+                "the node is too slow to run the decision check right now"
+            )
+            return []
         if cp.returncode != 0:
             self.failed = True
             self.fail_detail = (cp.stderr or cp.stdout or "brain search failed").strip()
