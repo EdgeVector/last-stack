@@ -63,7 +63,13 @@ jobs:
             echo "$d" >> "$GITHUB_PATH"
           done
 
+      # Parity with the LastGit watcher, which ran the gate through a pipe: the
+      # host executor hands steps a pseudo-terminal, and renderers that key on
+      # isTTY then paint ANSI codes into text tests compare literally.
       - name: Merge gate (.lastgit/ci.sh)
+        env:
+          NO_COLOR: "1"
+          FORCE_COLOR: "0"
         run: bash .lastgit/ci.sh
 
   publish:
