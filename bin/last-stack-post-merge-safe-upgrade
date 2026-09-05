@@ -389,6 +389,22 @@ converge_repos() {
 
 tip_seen_path() { printf '%s/%s.tip-seen\n' "$STATE_DIR" "$1"; }
 
+# Gate of record for a repo: lastgit, forgejo, or github. Forgejo-venue repos
+# (fold, lastgit, and since 2026-09-05 last-stack, fkanban, routines, loom —
+# brain decision-2026-09-05-factory-repos-venue-back-to-forgejo) have no
+# moving LastGit ref and no ci-required row on the node: their Forge CI
+# publish job promotes the stable channel, so the only convergence left here
+# is "install the channel head". Reading `lastgit ref`/`ci status` for them
+# would answer from a frozen tip, or fail once the repo is disabled.
+repo_venue() {
+  local resolver
+  resolver="$(command -v last-stack-pr-venue 2>/dev/null || true)"
+  [ -x "$resolver" ] || resolver="$(dirname "$0")/last-stack-pr-venue"
+  [ -x "$resolver" ] || resolver="$HOME/.last-stack/bin/last-stack-pr-venue"
+  [ -x "$resolver" ] || { printf 'lastgit\n'; return 0; }
+  "$resolver" "EdgeVector/$1" 2>/dev/null || printf 'lastgit\n'
+}
+
 converge_one() {
   local repo="$1" app ht_app ht_status eligible tip state seen_file seen_tip seen_epoch now
   local attempt_key attempts ci_rc current_tip
@@ -397,6 +413,17 @@ converge_one() {
     artifact:*) ht_app="${app#artifact:}" ;;
     *) return 0 ;;
   esac
+
+  if [ "$(repo_venue "$repo")" = "forgejo" ]; then
+    ht_status="$(host-track status --json "$ht_app" 2>/dev/null || true)"
+    if [ "$(printf '%s\n' "$ht_status" | jq -r '.stale // "null" | tostring' 2>/dev/null)" = "true" ]; then
+      log "converge $repo (forgejo venue): stable channel moved; refreshing $ht_app"
+      host-track refresh "$ht_app" >/dev/null 2>&1 \
+        || log "converge $repo: refresh failed (next tick retries)"
+    fi
+    rm -f "$(tip_seen_path "$repo")"
+    return 0
+  fi
 
   seen_file="$(tip_seen_path "$repo")"
   ht_status="$(host-track status --json "$ht_app" 2>/dev/null || true)"

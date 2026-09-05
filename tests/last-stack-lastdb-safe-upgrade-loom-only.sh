@@ -734,7 +734,14 @@ export FAKE_LAUNCHCTL_LOG="$cutover_launch_log"
 [ -S "$cutover_socket" ] || fail "CUTOVER timeout fixture did not start its initial primary"
 
 cutover_timeout_graph="$cutover_fixture/timeout-graph.json"
-jq '.states.CUTOVER.timeout_sec = 18' "$GRAPH" >"$cutover_timeout_graph"
+# The recovery bound below must stay under this state timeout, or the
+# timeout-ok case stops returning 124. Both were raised together (18/10 ->
+# 45/25) after two Forge CI runs under a load average above 40 exceeded 10s.
+jq '.states.CUTOVER.timeout_sec = 45' "$GRAPH" >"$cutover_timeout_graph"
+# Recovery bound is 25s, not 10s, and the CUTOVER state timeout above is 45s,
+# not 18s: the cases assert the exit code of a bounded recovery, not its
+# speed, and the recovery bound must stay under the state timeout. Under a
+# load average above 40 (Forge CI host, 2026-09-05) two cases exceeded 10s.
 run_cutover_recovery_case() {
   local exec_id="$1" bootstrap_fail="$2" expected_rc="$3" mock_mode="${4:-timeout_effect}"
   local case_out="$cutover_fixture/$exec_id.out" emergency_pid
@@ -761,7 +768,7 @@ run_cutover_recovery_case() {
     LOOM_SAFE_UPGRADE_GRAPH="$cutover_timeout_graph" \
     LOOM_SAFE_UPGRADE_CLEANUP_GRACE_SECS=2 \
     LOOM_SAFE_UPGRADE_KILL_DRAIN_SECS=1 \
-    LOOM_SAFE_UPGRADE_RECOVERY_TIMEOUT_SECS=10 \
+    LOOM_SAFE_UPGRADE_RECOVERY_TIMEOUT_SECS=25 \
     LOOM_SAFE_UPGRADE_RECOVERY_TERM_GRACE_SECS=1 \
     LOOM_SAFE_UPGRADE_RECOVERY_KILL_DRAIN_SECS=1 \
     LOOM_SAFE_UPGRADE_TIMEOUT_HEADROOM_SECS=1 \
@@ -847,7 +854,7 @@ env \
   LOOM_SAFE_UPGRADE_GRAPH="$cutover_timeout_graph" \
   LOOM_SAFE_UPGRADE_CLEANUP_GRACE_SECS=2 \
   LOOM_SAFE_UPGRADE_KILL_DRAIN_SECS=1 \
-  LOOM_SAFE_UPGRADE_RECOVERY_TIMEOUT_SECS=10 \
+  LOOM_SAFE_UPGRADE_RECOVERY_TIMEOUT_SECS=25 \
   LOOM_SAFE_UPGRADE_RECOVERY_TERM_GRACE_SECS=1 \
   LOOM_SAFE_UPGRADE_RECOVERY_KILL_DRAIN_SECS=1 \
   LOOM_SAFE_UPGRADE_TIMEOUT_HEADROOM_SECS=1 \

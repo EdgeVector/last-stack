@@ -53,7 +53,7 @@ app_defaults() {
       # are `kanban`. INSTALL_APP is the host-track APP name, not the repo —
       # `fkanban` here would name a registration that no longer exists.
       INSTALL_APP="kanban"
-      DEFAULT_REMOTE="lastdb:///fkanban"
+      DEFAULT_REMOTE="http://localhost:3300/EdgeVector/fkanban.git"  # Forgejo gate of record since 2026-09-05; lastdb:///fkanban is disabled
       DEFAULT_BARE="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/fkanban.git"
       DEFAULT_LINKS="bin/kanban:$HOME/.local/bin/kanban"
       DEFAULT_BUILD="bun_install"
@@ -61,7 +61,7 @@ app_defaults() {
       DEFAULT_WRAPPERS="kanban"
       ;;
     routines)
-      DEFAULT_REMOTE="lastdb:///routines"
+      DEFAULT_REMOTE="http://localhost:3300/EdgeVector/routines.git"  # Forgejo gate of record since 2026-09-05; lastdb:///routines is disabled
       DEFAULT_BARE="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/routines.git"
       DEFAULT_LINKS="bin/routines:$HOME/.local/bin/routines"
       DEFAULT_BUILD="bun_install"

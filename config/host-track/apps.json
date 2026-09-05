@@ -45,9 +45,9 @@
       "install_mode": "artifact",
       "kind": "artifact skill-pack",
       "command": "host-track",
-      "gate": "lastgit",
-      "gate_main": "lastdb:///last-stack#main",
-      "track_gate_main": true,
+      "gate": "forgejo",
+      "gate_main": "http://localhost:3300/EdgeVector/last-stack.git#main",
+      "track_gate_main": false,
       "artifact_app": "last-stack",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -227,12 +227,24 @@
           "target": "$HOME/.local/bin/last-stack-routines-host-track-post-install"
         }
       ],
-      "notes": "Runtime is an immutable CI artifact that tracks gate_main (green+published main). host-track refresh promotes stable to that tip then installs. ~/.last-stack/{bin,skills,...} \u2192 artifacts/current. PATH links Class A + pickup bootstrap + Forge closeout tools (forge-api and friends) so routinesd (~/.local/bin first) never hits GC'd version pins and board-closeout can resolve Forge PRs. Never develop in the install; use a worktree. Also PATH-link last-stack-papercut-lifecycle-close, last-stack-kanban-file-pr, last-stack-kanban-decision-check, last-stack-feature-portfolio-admission, last-stack-kanban-done-when-eval, last-stack-json-capture, and last-stack-json-get so scheduled shells (routinesd PATH often ~/.local/bin-first without sourcing shell-prelude) resolve the lifecycle closer, the required Kind:pr filing helper, its settled-decision check, the two-outcome portfolio admission gate, the non-PR DONE-WHEN evaluator, and the JSON stdout/stderr capture helpers the unsafe-inline-json hook recommends.",
+      "notes": "Gate of record is Forgejo since 2026-09-05 (brain decision-2026-09-05-factory-repos-venue-back-to-forgejo); lastdb:///last-stack is disabled. The Forge CI publish job on every push to main builds the artifact, publishes it into artifact_root and promotes stable with `lastgit artifact promote --gate forgejo` (EdgeVector/lastgit#591). track_gate_main is false on purpose: the node's ref for this repo no longer moves, and promote-to-main from a frozen LastGit tip would roll the channel back. host-track follows the stable channel head. Runtime is an immutable CI artifact that tracks gate_main (green+published main). host-track refresh promotes stable to that tip then installs. ~/.last-stack/{bin,skills,...} \u2192 artifacts/current. PATH links Class A + pickup bootstrap + Forge closeout tools (forge-api and friends) so routinesd (~/.local/bin first) never hits GC'd version pins and board-closeout can resolve Forge PRs. Never develop in the install; use a worktree. Also PATH-link last-stack-papercut-lifecycle-close, last-stack-kanban-file-pr, last-stack-kanban-decision-check, last-stack-feature-portfolio-admission, last-stack-kanban-done-when-eval, last-stack-json-capture, and last-stack-json-get so scheduled shells (routinesd PATH often ~/.local/bin-first without sourcing shell-prelude) resolve the lifecycle closer, the required Kind:pr filing helper, its settled-decision check, the two-outcome portfolio admission gate, the non-PR DONE-WHEN evaluator, and the JSON stdout/stderr capture helpers the unsafe-inline-json hook recommends.",
       "safe_upgrade": {
         "post_install_phase": "after-cutover",
         "probes": [
-          {"argv": ["bin/host-track", "--help"], "timeout_s": 15},
-          {"argv": ["bin/host-track", "validate-registry"], "timeout_s": 30}
+          {
+            "argv": [
+              "bin/host-track",
+              "--help"
+            ],
+            "timeout_s": 15
+          },
+          {
+            "argv": [
+              "bin/host-track",
+              "validate-registry"
+            ],
+            "timeout_s": 30
+          }
         ]
       }
     },
@@ -264,8 +276,21 @@
         "soak_hours": 1,
         "latency": true,
         "probes": [
-          {"argv": ["bin/brain", "which"], "timeout_s": 30},
-          {"argv": ["bin/brain", "get", "sop-edgevector-portals"], "timeout_s": 60}
+          {
+            "argv": [
+              "bin/brain",
+              "which"
+            ],
+            "timeout_s": 30
+          },
+          {
+            "argv": [
+              "bin/brain",
+              "get",
+              "sop-edgevector-portals"
+            ],
+            "timeout_s": 60
+          }
         ]
       }
     },
@@ -293,8 +318,21 @@
         "soak_hours": 1,
         "latency": true,
         "probes": [
-          {"argv": ["src/cli.ts", "status", "--owner"], "timeout_s": 45},
-          {"argv": ["src/cli.ts", "schemas"], "timeout_s": 30}
+          {
+            "argv": [
+              "src/cli.ts",
+              "status",
+              "--owner"
+            ],
+            "timeout_s": 45
+          },
+          {
+            "argv": [
+              "src/cli.ts",
+              "schemas"
+            ],
+            "timeout_s": 30
+          }
         ]
       }
     },
@@ -325,8 +363,20 @@
         "soak_hours": 1,
         "latency": true,
         "probes": [
-          {"argv": ["dist/situations", "--help"], "timeout_s": 15},
-          {"argv": ["dist/situations", "list"], "timeout_s": 45}
+          {
+            "argv": [
+              "dist/situations",
+              "--help"
+            ],
+            "timeout_s": 15
+          },
+          {
+            "argv": [
+              "dist/situations",
+              "list"
+            ],
+            "timeout_s": 45
+          }
         ]
       }
     },
@@ -335,8 +385,8 @@
       "install_mode": "artifact",
       "kind": "artifact cli",
       "command": "kanban",
-      "gate": "lastgit",
-      "gate_main": "lastdb:///fkanban#main",
+      "gate": "forgejo",
+      "gate_main": "http://localhost:3300/EdgeVector/fkanban.git#main",
       "artifact_app": "fkanban",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -352,14 +402,28 @@
           "target": "$HOME/.local/bin/fkanban"
         }
       ],
-      "notes": "One registration for the fkanban artifact bundle. Public CLI is kanban only. retired_links drops the leftover fkanban PATH symlink on refresh when it still points at this install_root. The LastGit slug and install_root stay fkanban. track_gate_main follows fkanban green+published main.",
-      "track_gate_main": true,
+      "notes": "Gate of record is Forgejo since 2026-09-05 (brain decision-2026-09-05-factory-repos-venue-back-to-forgejo); lastdb:///fkanban is disabled. The Forge CI publish job on every push to main builds the artifact, publishes it into artifact_root and promotes stable with `lastgit artifact promote --gate forgejo` (EdgeVector/lastgit#591). track_gate_main is false on purpose: the node's ref for this repo no longer moves, and promote-to-main from a frozen LastGit tip would roll the channel back. host-track follows the stable channel head. One registration for the fkanban artifact bundle. Public CLI is kanban only. retired_links drops the leftover fkanban PATH symlink on refresh when it still points at this install_root. The LastGit slug and install_root stay fkanban. track_gate_main follows fkanban green+published main.",
+      "track_gate_main": false,
       "safe_upgrade": {
         "soak_hours": 1,
         "latency": true,
         "probes": [
-          {"argv": ["dist/kanban", "--help"], "timeout_s": 15},
-          {"argv": ["dist/kanban", "list", "--column", "todo"], "timeout_s": 45}
+          {
+            "argv": [
+              "dist/kanban",
+              "--help"
+            ],
+            "timeout_s": 15
+          },
+          {
+            "argv": [
+              "dist/kanban",
+              "list",
+              "--column",
+              "todo"
+            ],
+            "timeout_s": 45
+          }
         ]
       }
     },
@@ -368,8 +432,8 @@
       "install_mode": "artifact",
       "kind": "artifact cli",
       "command": "routines",
-      "gate": "lastgit",
-      "gate_main": "lastdb:///routines#main",
+      "gate": "forgejo",
+      "gate_main": "http://localhost:3300/EdgeVector/routines.git#main",
       "artifact_app": "routines",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -396,15 +460,27 @@
           "target": "$HOME/.local/bin/routines-llms-txt-install-smoke-gate"
         }
       ],
-      "notes": "Routines LastGit artifact install from CI-published dist/routines; track_gate_main promotes stable to green+published main. post_install reloads the LaunchAgent so current and routinesd stay on the same digest. The zero-LLM gate scripts ship at dist/probes/*.sh and get PATH names here, so routinesd gate_command entries resolve to a file the artifact contains. links[] is a literal enumeration - host-track does not glob dist/probes - so a probe added in the routines repo gets NO PATH name until it is listed here. The failure is silent: the file installs, no link appears, and a registry gate_command naming it exits 127. llms-txt-install-smoke-gate.sh shipped 2026-08-30T06:20Z and sat unlinked until 2026-08-30T15:10Z for exactly this reason. When you add a probe to the routines repo, add its link entry here in the same change.",
-      "track_gate_main": true,
+      "notes": "Gate of record is Forgejo since 2026-09-05 (brain decision-2026-09-05-factory-repos-venue-back-to-forgejo); lastdb:///routines is disabled. The Forge CI publish job on every push to main builds the artifact, publishes it into artifact_root and promotes stable with `lastgit artifact promote --gate forgejo` (EdgeVector/lastgit#591). track_gate_main is false on purpose: the node's ref for this repo no longer moves, and promote-to-main from a frozen LastGit tip would roll the channel back. host-track follows the stable channel head. Routines LastGit artifact install from CI-published dist/routines; track_gate_main promotes stable to green+published main. post_install reloads the LaunchAgent so current and routinesd stay on the same digest. The zero-LLM gate scripts ship at dist/probes/*.sh and get PATH names here, so routinesd gate_command entries resolve to a file the artifact contains. links[] is a literal enumeration - host-track does not glob dist/probes - so a probe added in the routines repo gets NO PATH name until it is listed here. The failure is silent: the file installs, no link appears, and a registry gate_command naming it exits 127. llms-txt-install-smoke-gate.sh shipped 2026-08-30T06:20Z and sat unlinked until 2026-08-30T15:10Z for exactly this reason. When you add a probe to the routines repo, add its link entry here in the same change.",
+      "track_gate_main": false,
       "post_install": "$HOME/.local/state/last-stack/artifacts/current/bin/last-stack-routines-host-track-post-install",
       "safe_upgrade": {
         "soak_hours": 1,
         "post_install_phase": "after-cutover",
         "probes": [
-          {"argv": ["dist/routines", "--help"], "timeout_s": 15},
-          {"argv": ["dist/routines", "list"], "timeout_s": 20}
+          {
+            "argv": [
+              "dist/routines",
+              "--help"
+            ],
+            "timeout_s": 15
+          },
+          {
+            "argv": [
+              "dist/routines",
+              "list"
+            ],
+            "timeout_s": 20
+          }
         ]
       }
     },
@@ -431,12 +507,24 @@
         "soak_hours": 1,
         "probes": [
           {
-            "argv": ["dist/lastsecrets"],
+            "argv": [
+              "dist/lastsecrets"
+            ],
             "timeout_s": 15,
-            "accept_exit": [0, 1, 2],
+            "accept_exit": [
+              0,
+              1,
+              2
+            ],
             "output_matches": "lastsecrets"
           },
-          {"argv": ["dist/lastsecrets", "schema-json"], "timeout_s": 15}
+          {
+            "argv": [
+              "dist/lastsecrets",
+              "schema-json"
+            ],
+            "timeout_s": 15
+          }
         ]
       }
     },
@@ -462,8 +550,20 @@
       "safe_upgrade": {
         "soak_hours": 1,
         "probes": [
-          {"argv": ["dist/configurations", "--help"], "timeout_s": 15},
-          {"argv": ["dist/configurations", "kinds"], "timeout_s": 15}
+          {
+            "argv": [
+              "dist/configurations",
+              "--help"
+            ],
+            "timeout_s": 15
+          },
+          {
+            "argv": [
+              "dist/configurations",
+              "kinds"
+            ],
+            "timeout_s": 15
+          }
         ]
       }
     },
@@ -490,7 +590,13 @@
       "safe_upgrade": {
         "soak_hours": 1,
         "probes": [
-          {"argv": ["dist/lastseek", "--help"], "timeout_s": 15}
+          {
+            "argv": [
+              "dist/lastseek",
+              "--help"
+            ],
+            "timeout_s": 15
+          }
         ],
         "probe_waiver_reason": "status/query hammer the node (papercut: lastseek status became the top node consumer); no cheap local read verb yet"
       }
@@ -519,12 +625,24 @@
         "soak_hours": 1,
         "probes": [
           {
-            "argv": ["bin/search"],
+            "argv": [
+              "bin/search"
+            ],
             "timeout_s": 20,
-            "accept_exit": [0, 1, 2],
+            "accept_exit": [
+              0,
+              1,
+              2
+            ],
             "output_matches": "usage:"
           },
-          {"argv": ["bin/search", "status"], "timeout_s": 25}
+          {
+            "argv": [
+              "bin/search",
+              "status"
+            ],
+            "timeout_s": 25
+          }
         ]
       }
     },
@@ -553,13 +671,26 @@
           "target": "$HOME/.local/bin/rad-telegram"
         }
       ],
-      "notes": "Remote Agent artifact install; refresh links ra/rad/rad-telegram from the promoted LastGit artifact. track_gate_main promotes stable to green+published main — without it the channel sat on a hand-promoted pointer for 8 days and shipped a known-broken ra shim, silently killing every ra notify page.",
+      "notes": "Remote Agent artifact install; refresh links ra/rad/rad-telegram from the promoted LastGit artifact. track_gate_main promotes stable to green+published main \u2014 without it the channel sat on a hand-promoted pointer for 8 days and shipped a known-broken ra shim, silently killing every ra notify page.",
       "track_gate_main": true,
       "safe_upgrade": {
         "soak_hours": 1,
         "probes": [
-          {"argv": ["bin/ra", "--help"], "timeout_s": 15},
-          {"argv": ["bin/ra", "which", "--json"], "timeout_s": 15}
+          {
+            "argv": [
+              "bin/ra",
+              "--help"
+            ],
+            "timeout_s": 15
+          },
+          {
+            "argv": [
+              "bin/ra",
+              "which",
+              "--json"
+            ],
+            "timeout_s": 15
+          }
         ]
       }
     },
@@ -592,8 +723,22 @@
       "safe_upgrade": {
         "soak_hours": 1,
         "probes": [
-          {"argv": ["dist/sm", "--help"], "timeout_s": 15},
-          {"argv": ["dist/sm", "schema-json", "--type", "all"], "timeout_s": 15}
+          {
+            "argv": [
+              "dist/sm",
+              "--help"
+            ],
+            "timeout_s": 15
+          },
+          {
+            "argv": [
+              "dist/sm",
+              "schema-json",
+              "--type",
+              "all"
+            ],
+            "timeout_s": 15
+          }
         ]
       }
     },
@@ -602,8 +747,8 @@
       "install_mode": "artifact",
       "kind": "artifact cli",
       "command": "loom",
-      "gate": "lastgit",
-      "gate_main": "lastdb:///loom#main",
+      "gate": "forgejo",
+      "gate_main": "http://localhost:3300/EdgeVector/loom.git#main",
       "artifact_app": "loom",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -614,13 +759,25 @@
           "target": "$HOME/.local/bin/loom"
         }
       ],
-      "notes": "loom LastGit artifact install from CI-published dist/loom plus scripts/. track_gate_main promotes stable to green+published main. Do not symlink ~/.local/bin/loom at a DEV worktree.",
-      "track_gate_main": true,
+      "notes": "Gate of record is Forgejo since 2026-09-05 (brain decision-2026-09-05-factory-repos-venue-back-to-forgejo); lastdb:///loom is disabled. The Forge CI publish job on every push to main builds the artifact, publishes it into artifact_root and promotes stable with `lastgit artifact promote --gate forgejo` (EdgeVector/lastgit#591). track_gate_main is false on purpose: the node's ref for this repo no longer moves, and promote-to-main from a frozen LastGit tip would roll the channel back. host-track follows the stable channel head. loom LastGit artifact install from CI-published dist/loom plus scripts/. track_gate_main promotes stable to green+published main. Do not symlink ~/.local/bin/loom at a DEV worktree.",
+      "track_gate_main": false,
       "safe_upgrade": {
         "soak_hours": 1,
         "probes": [
-          {"argv": ["dist/loom", "--help"], "timeout_s": 15},
-          {"argv": ["dist/loom", "ping"], "timeout_s": 15}
+          {
+            "argv": [
+              "dist/loom",
+              "--help"
+            ],
+            "timeout_s": 15
+          },
+          {
+            "argv": [
+              "dist/loom",
+              "ping"
+            ],
+            "timeout_s": 15
+          }
         ]
       }
     },
@@ -647,9 +804,15 @@
       "safe_upgrade": {
         "soak_hours": 1,
         "probes": [
-          {"argv": ["bin/lastdb-browser", "--help"], "timeout_s": 15}
+          {
+            "argv": [
+              "bin/lastdb-browser",
+              "--help"
+            ],
+            "timeout_s": 15
+          }
         ],
-        "probe_waiver_reason": "server-only binary; post_install builds the UI and runs its smoke — no CLI read verb"
+        "probe_waiver_reason": "server-only binary; post_install builds the UI and runs its smoke \u2014 no CLI read verb"
       }
     },
     {
