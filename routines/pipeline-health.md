@@ -40,7 +40,8 @@ Standing rule (Tom, 2026-07-22 — do not re-litigate):
 Reporting `noop` while a deploy log ends in `failure` (or a green-but-unmerged
 CR has been open >10m) **and** you neither fixed it nor filed/updated the Brain
 papercut is a **routine failure**. Do not claim the pipeline is healthy because
-`open_cr=0`.
+`open_cr=0`: a merged CR whose base ref never moved is not an open CR. Run the
+landing sweep below before any `noop`.
 
 This is **not** a feature-shipping routine and **not** a board reconciler for
 ordinary cards. You do not move random cards (leave that to `kanban-watch`). You
@@ -297,6 +298,50 @@ The helper merges only the torn shape, and it pushes a base ref only when
 heartbeat as `fixed=torn-verdict:<repo>:<cr>`. File a papercut only for a CR
 the helper leaves open.
 
+**Merged CRs need a landing sweep — `open_cr=0` does not prove nothing is
+lost.** Every check above reads OPEN CRs. A CR that reaches `state=merged`
+leaves that set at once, so a merge whose base ref never moved is invisible to
+`lastgit stuck` and to `cr list --all-open`. On 2026-09-05 two such merges
+(brain `cr-mtoa64ag-ff41`, routines `cr-mto9t3eb-b05d`) sat unlanded for over
+an hour while this routine reported `open_cr=0` and `ok`.
+
+Run the fleet ancestry sweep every pass:
+
+```bash
+lastgit landed --all-repos --since 6h --json > "$run_dir/landed.json"
+```
+
+For each merged CR it answers whether `merge_oid` is an ancestor of its base
+ref, with one of three verdicts: `landed`, `not-ancestor`, `missing-object`.
+
+CAUTION: a merge that is absent minutes after the ack is the ORDINARY case on
+a staged node, not data loss. One CR took 107 minutes to land with nothing
+lost (`decision-2026-09-04-lastgit-merge-publish-ref-repair-stays-manual`).
+Read each verdict against the age of the merge:
+
+- **`not-ancestor`, younger than 2h** (`MERGE_LANDING_LOST_MS`) → ordinary
+  landing lag. Report `landing_lag=<repo>:<cr>` and do nothing else.
+- **`not-ancestor`, 2h or older** → a merge that will not land on its own. Run
+  the heal helper, which pushes a base ref only when
+  `git merge-base --is-ancestor` proves a fast-forward:
+
+  ```bash
+  last-stack-lastgit-stuck-merge-heal --repos <repo>          # report only
+  last-stack-lastgit-stuck-merge-heal --repos <repo> --apply  # land it
+  ```
+
+  Report `fixed=unlanded-merge:<repo>:<cr>`. When the helper refuses because
+  the merge oid is not a fast-forward of the live base, do NOT force it. That
+  is the fork shape, and a forced push compounds it. Diff the merge oid
+  against the live base first: an empty diff means the content already reached
+  main under another oid, which is a benign duplicate and not lost work.
+- **`missing-object`** → the forge's push-time alarms already own this shape.
+  Report it, do not repair it.
+
+Add `not_landed=<n>` to the heartbeat every pass and name each `repo:cr` past
+the 2h threshold. `not_landed=0` is a measurement, so run the sweep before you
+claim it.
+
 **Stuck merges → Brain papercut (not board P0):** any STUCK CR is
 pipeline-critical. If you cannot clear it this wake (heavy budget spent or
 needs human), call the filer helper so two CRs that share one outage stay
@@ -433,11 +478,12 @@ CRs/PRs no longer open.
 ```bash
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 "$last_stack/bin/last-stack-brain-append-heartbeat" --line \
-  "pipeline-health $ts <ok|noop|error> open_cr=<n> open_forge=<n> deploy_blocked=<n|repo:sha,…> merged=<…> fixed=<…> stuck=<…> filed_papercut=<…> flagged=<…>"
+  "pipeline-health $ts <ok|noop|error> open_cr=<n> open_forge=<n> not_landed=<n|repo:cr,…> deploy_blocked=<n|repo:sha,…> merged=<…> fixed=<…> stuck=<…> filed_papercut=<…> flagged=<…>"
 ```
 
 Rules:
-- Use **`noop` only** when open_cr=0, open_forge=0, **and** deploy_blocked=0
+- Use **`noop` only** when open_cr=0, open_forge=0, not_landed=0, **and**
+  deploy_blocked=0
   (or every blocked deploy already has an OPEN Brain papercut you confirmed this
   wake without new action — still prefer
   `ok deploy_blocked=… already-papercut=…`).
