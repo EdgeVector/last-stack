@@ -63,6 +63,20 @@ expect ALLOW 'du -sh ~/.cache/*'
 # A path that merely starts with the home string is not the home root.
 expect ALLOW 'find "$HOME/code" -maxdepth 2 -name x'
 
+# A heredoc BODY is data, not a path the command reads. A report that merely
+# names a protected folder must pass — this guard denied its own closeout report
+# on 2026-09-05, which is the false positive that retired read-before-edit.sh.
+doc=$'cat > /tmp/report.md <<MD\nThe walk enters ~/Desktop and ~/Downloads, which macOS protects.\nMD'
+expect ALLOW "$doc"
+
+# A quoted marker is the common spelling and must behave the same.
+docq=$'cat > /tmp/report.md <<\'MD\'\nnames ~/Documents as prose only\nMD'
+expect ALLOW "$docq"
+
+# The same body with a real home-root walk on a line around it still denies.
+doc2=$'cat > /tmp/report.md <<MD\nnames ~/Desktop as prose only\nMD\nfind "$HOME" -name x'
+expect DENY "$doc2"
+
 # Deliberate use passes with a stated reason.
 expect ALLOW 'find "$HOME" -maxdepth 2  # home-scan-ok: auditing top-level layout'
 

@@ -33,6 +33,25 @@ case "$cmd" in
   *"home-scan-ok:"*) exit 0 ;;
 esac
 
+# A heredoc BODY is data the command writes, not a path it reads. A report that
+# merely NAMES a protected folder must not be denied — that false positive is how
+# a guard earns its own retirement (see read-before-edit.sh, retired 2026-07-28).
+# Drop every heredoc body before matching, keeping the command lines around it.
+cmd="$(printf '%s' "$cmd" | awk '
+  {
+    if (inbody) { if ($0 == term) { inbody = 0 } ; next }
+    line = $0
+    if (match(line, /<<-?[ \t]*[\047"]?[A-Za-z_][A-Za-z0-9_]*[\047"]?/)) {
+      tag = substr(line, RSTART, RLENGTH)
+      gsub(/^<<-?[ \t]*/, "", tag)
+      gsub(/[\047"]/, "", tag)
+      term = tag
+      inbody = 1
+    }
+    print line
+  }
+')"
+
 home="${HOME:-}"
 [ -n "$home" ] || exit 0
 
