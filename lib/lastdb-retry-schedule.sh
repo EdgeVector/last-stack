@@ -11,6 +11,16 @@
 #   LAST_STACK_LASTDB_RETRY_SCHEDULE_SEC   comma list, default 15,45,90,120
 #   LAST_STACK_LASTDB_RETRY_SLEEP_SEC      if set, fixed sleep instead of list
 #   LAST_STACK_LASTDB_RETRY_DEADLINE_EPOCH unix seconds; cap each wait
+#   LAST_STACK_LASTDB_RETRY_ATTEMPT_RESERVE_SEC
+#     seconds of the remaining deadline budget reserved for the NEXT attempt's
+#     own call cost, not just its sleep (default 20 — measured single-call cost
+#     of `kanban pickup status --json` was 14-18s on 2026-09-04). Capping the
+#     sleep to `remaining - 1` leaves no room for the attempt to actually run:
+#     it starts, the caller's outer `timeout` fires mid-call, and the SIGKILL
+#     discards this wrapper's buffered stdout/stderr before it can print them
+#     (papercut-pickup-gate-45s-cap-cannot-hold-the-retry-schedule-it-asks-for-20260904).
+#     Reserving the observed call cost lets the "deadline won" branch below
+#     fire in time to exit with the real rc and real stderr instead.
 
 last_stack_lastdb_retry_default_attempts() {
   local n="${LAST_STACK_LASTDB_RETRY_ATTEMPTS:-5}"
@@ -62,7 +72,20 @@ last_stack_lastdb_retry_sleep_sec() {
   printf '%s\n' "$val"
 }
 
-# Cap a requested sleep so the next attempt still has one second of budget.
+# Seconds of the remaining deadline budget reserved for the next attempt's own
+# call cost (not just its sleep). See the env doc above.
+last_stack_lastdb_retry_attempt_reserve_sec() {
+  local n="${LAST_STACK_LASTDB_RETRY_ATTEMPT_RESERVE_SEC:-20}"
+  case "$n" in
+    ''|*[!0-9]*) n=20 ;;
+  esac
+  printf '%s\n' "$n"
+}
+
+# Cap a requested sleep so the next attempt still has room to actually run,
+# not just one second before the deadline. If what remains after reserving
+# that room is already gone, return 0 so the caller takes its "deadline won"
+# branch immediately instead of sleeping into an external kill.
 last_stack_lastdb_retry_capped_sleep_sec() {
   local want="${1:-0}"
   local deadline="${LAST_STACK_LASTDB_RETRY_DEADLINE_EPOCH:-}"
@@ -76,14 +99,15 @@ last_stack_lastdb_retry_capped_sleep_sec() {
   case "$deadline" in
     ''|*[!0-9]*) printf '%s\n' "$want"; return 0 ;;
   esac
-  local now remaining cap
+  local now remaining reserve cap
   now="$(date -u +%s)"
   remaining=$((deadline - now))
-  if [ "$remaining" -le 1 ]; then
+  reserve="$(last_stack_lastdb_retry_attempt_reserve_sec)"
+  if [ "$remaining" -le "$reserve" ]; then
     printf '0\n'
     return 0
   fi
-  cap=$((remaining - 1))
+  cap=$((remaining - reserve))
   if [ "$want" -gt "$cap" ]; then
     printf '%s\n' "$cap"
   else

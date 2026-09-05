@@ -239,5 +239,101 @@ set -e
 assert "default 5 attempts survive 4 persist_queue_full" test "$d5_rc" -eq 0
 assert "default schedule took 5 attempts" test "$(cat "$RETRY_COUNT_FILE")" = "5"
 
+# 9) capped_sleep_sec reserves room for the NEXT attempt's call cost, not just
+# one second (papercut-pickup-gate-45s-cap-cannot-hold-the-retry-schedule-it-asks-for-20260904).
+# Deterministic: drive the epoch math directly, no real sleeping.
+# Test 8 left LAST_STACK_LASTDB_RETRY_SCHEDULE_SEC=0,0,0,0 exported; clear it
+# (and the other schedule knobs) so this section sees the real defaults.
+unset LAST_STACK_LASTDB_RETRY_SCHEDULE_SEC
+unset LAST_STACK_LASTDB_RETRY_SLEEP_SEC
+assert "default attempt reserve is 20" \
+  test "$(last_stack_lastdb_retry_attempt_reserve_sec)" = "20"
+unset LAST_STACK_LASTDB_RETRY_ATTEMPT_RESERVE_SEC
+
+# Each sub-test recomputes `now` right before use (not once at the top): the
+# capped-sleep math is wall-clock-sensitive, and the asserts above this point
+# take real (if small) time, so a stale `now` intermittently drifts a boundary
+# case (e.g. remaining=25 becoming remaining=24) across an exact-equality
+# assert.
+
+# Plenty of budget: the request passes through unclamped.
+LAST_STACK_LASTDB_RETRY_DEADLINE_EPOCH=$(($(date -u +%s) + 100))
+assert "ample budget: request passes through" \
+  test "$(last_stack_lastdb_retry_capped_sleep_sec 15)" = "15"
+
+# Moderate budget (~25s left, reserve 20s -> cap ~5s): a bigger request is
+# clamped DOWN, not to "remaining-1" (~24s), but to the reserve-aware cap.
+# Tolerate +/-1s of real wall-clock drift between the two `date` reads
+# instead of asserting an exact value.
+LAST_STACK_LASTDB_RETRY_DEADLINE_EPOCH=$(($(date -u +%s) + 25))
+moderate_cap="$(last_stack_lastdb_retry_capped_sleep_sec 45)"
+assert "moderate budget clamps to reserve-aware cap (~5s), not remaining-1 (~24s)" \
+  test "$moderate_cap" -ge 4 -a "$moderate_cap" -le 6
+
+# Budget at or below the reserve: no more sleeping, take the deadline-won
+# branch immediately instead of sleeping into the outer kill.
+LAST_STACK_LASTDB_RETRY_DEADLINE_EPOCH=$(($(date -u +%s) + 20))
+assert "budget == reserve returns 0 (deadline won)" \
+  test "$(last_stack_lastdb_retry_capped_sleep_sec 15)" = "0"
+LAST_STACK_LASTDB_RETRY_DEADLINE_EPOCH=$(($(date -u +%s) + 5))
+assert "budget under reserve returns 0 (deadline won)" \
+  test "$(last_stack_lastdb_retry_capped_sleep_sec 15)" = "0"
+
+# Reserve is configurable — a caller with a cheaper/known call cost can shrink
+# it, and the cap follows.
+LAST_STACK_LASTDB_RETRY_ATTEMPT_RESERVE_SEC=5
+LAST_STACK_LASTDB_RETRY_DEADLINE_EPOCH=$(($(date -u +%s) + 25))
+custom_cap="$(last_stack_lastdb_retry_capped_sleep_sec 45)"
+assert "custom reserve changes the cap (~20s)" \
+  test "$custom_cap" -ge 19 -a "$custom_cap" -le 21
+unset LAST_STACK_LASTDB_RETRY_ATTEMPT_RESERVE_SEC
+unset LAST_STACK_LASTDB_RETRY_DEADLINE_EPOCH
+
+# 10) End-to-end: a caller that wraps this binary in an outer `timeout` and
+# exports the deadline must get the REAL rc and REAL stderr back, and must
+# finish comfortably inside the outer cap -- not be SIGKILLed mid-sleep with
+# its buffered error erased. This is the gate's exact failure shape from the
+# papercut repro: a stub that sleeps then fails with a flap string, wrapped in
+# `timeout -k 3s <cap>s`, default schedule (15s first sleep) far exceeds a
+# short cap unless the wrapper self-terminates via "deadline won" first.
+if command -v gtimeout >/dev/null 2>&1; then
+  TO=gtimeout
+elif command -v timeout >/dev/null 2>&1; then
+  TO=timeout
+else
+  TO=""
+fi
+if [ -n "$TO" ]; then
+  cat >"$tmpdir/always_flap_fast.sh" <<'SH'
+#!/usr/bin/env bash
+echo "service_timeout: node did not respond within 30000ms" >&2
+exit 1
+SH
+  chmod +x "$tmpdir/always_flap_fast.sh"
+  cap_sec=6
+  deadline_err="$tmpdir/deadline.err"
+  start_epoch="$(date +%s)"
+  set +e
+  LAST_STACK_LASTDB_RETRY_DEADLINE_EPOCH=$(( $(date -u +%s) + cap_sec )) \
+    "$TO" -k 3s "${cap_sec}s" "$BIN" --attempts 5 -- "$tmpdir/always_flap_fast.sh" \
+    >/dev/null 2>"$deadline_err"
+  deadline_rc=$?
+  set -e
+  end_epoch="$(date +%s)"
+  elapsed=$((end_epoch - start_epoch))
+  assert "budget-capped run exits with the real rc, not an outer timeout kill" \
+    test "$deadline_rc" -eq 1
+  assert "budget-capped run finishes at or under the outer cap" \
+    test "$elapsed" -le "$cap_sec"
+  assert "budget-capped run's stderr is not empty" \
+    test -s "$deadline_err"
+  assert "budget-capped run's stderr keeps the real flap reason" \
+    grep -q 'service_timeout' "$deadline_err"
+  assert "budget-capped run logs deadline won, not a silent kill" \
+    grep -q 'deadline won' "$deadline_err"
+else
+  echo "case 10 skip (no gtimeout/timeout on PATH)"
+fi
+
 echo "PASS=$pass FAIL=$fail"
 test "$fail" -eq 0
