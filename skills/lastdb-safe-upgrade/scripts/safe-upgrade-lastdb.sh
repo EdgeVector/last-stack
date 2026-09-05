@@ -240,6 +240,8 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
 . "$_SCRIPT_DIR/binary-pair-checks.sh"
 # shellcheck source=latency-bar-checks.sh
 . "$_SCRIPT_DIR/latency-bar-checks.sh"
+# shellcheck source=rowcount-bar-checks.sh
+. "$_SCRIPT_DIR/rowcount-bar-checks.sh"
 # shellcheck source=live-lastdb-env.sh
 . "$_SCRIPT_DIR/live-lastdb-env.sh"
 # shellcheck source=dev-photograph-stamp-gate.sh
@@ -536,31 +538,6 @@ op_rows_scan() {
   count="$(printf '%s' "$body" | jq -r '(.total // (.cards | length) // -1)' 2>/dev/null)"
   case "$count" in ''|*[!0-9-]*) count="-1" ;; esac
   echo "$count"
-}
-
-# Compare one candidate/baseline row-count pair.
-# $1 = label, $2 = candidate count, $3 = baseline count.
-# Prints one verdict line; returns 1 only on a real zero-row regression.
-rowcount_verdict() {
-  local label="$1" cand="$2" base="$3"
-  if ! [ "$cand" -ge 0 ] 2>/dev/null; then
-    echo "rowcount $label SKIPPED: candidate count unmeasurable (got '${cand}')"
-    return 0
-  fi
-  if ! [ "$base" -ge 0 ] 2>/dev/null; then
-    echo "rowcount $label SKIPPED: no baseline count (got '${base}') — cannot tell an empty board from an empty answer"
-    return 0
-  fi
-  if [ "$base" -gt 0 ] && [ "$cand" -eq 0 ]; then
-    echo "rowcount $label RED: baseline returned ${base} rows, candidate returned 0 on the SAME CoW data — read-path regression, not an empty board"
-    return 1
-  fi
-  if [ "$base" -gt 0 ] && [ "$cand" -lt "$base" ]; then
-    echo "rowcount $label WARN: candidate ${cand} rows vs baseline ${base} on the same CoW data (copies are taken moments apart; investigate if the gap is large)"
-    return 0
-  fi
-  echo "rowcount $label ok: candidate=${cand} baseline=${base}"
-  return 0
 }
 
 op_lat_write() {
