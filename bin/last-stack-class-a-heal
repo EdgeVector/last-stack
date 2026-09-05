@@ -301,7 +301,7 @@ write_cache() {
 }
 
 acquire_lock() {
-  local waited=0 owner
+  local waited=0 owner lock_mtime now age stage_dir
   mkdir -p "$STATE_DIR" 2>/dev/null || true
   # Reclaim abandoned lock (dead owner PID) — leftover hangs blocked the fleet.
   if [ -d "$LOCK_DIR" ]; then
@@ -310,9 +310,41 @@ acquire_lock() {
       log "clearing dead lock owner=$owner"
       rm -rf "$LOCK_DIR" 2>/dev/null || true
       append_action "reclaim-dead-lock"
+    elif [ -z "$owner" ]; then
+      # No readable owner file at all — a process was killed between
+      # creating the directory and recording its PID (or a pre-fix binary
+      # left one behind), so no PID probe can ever reclaim it. mtime is
+      # enough: acquire_lock()'s own mkdir-to-owner-write window is
+      # microseconds, so a directory still ownerless after LOCK_WAIT_S is
+      # abandoned, not mid-acquire.
+      lock_mtime="$(stat -f %m "$LOCK_DIR" 2>/dev/null || stat -c %Y "$LOCK_DIR" 2>/dev/null || echo 0)"
+      now="$(date +%s)"
+      age=$(( now - lock_mtime ))
+      if [ "$lock_mtime" -gt 0 ] && [ "$age" -ge "$LOCK_WAIT_S" ]; then
+        log "clearing ownerless lock age=${age}s"
+        rm -rf "$LOCK_DIR" 2>/dev/null || true
+        append_action "reclaim-ownerless-lock"
+      fi
     fi
   fi
-  while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+  while :; do
+    if [ ! -e "$LOCK_DIR" ]; then
+      # Build the owner file in a private staging dir first, then publish
+      # with one rename. A kill can only land before the rename (LOCK_DIR
+      # never appears) or after it (LOCK_DIR appears with owner already in
+      # it) — never in between, so LOCK_DIR can no longer be observed
+      # without an owner file.
+      stage_dir="$STATE_DIR/.class-a-heal.lock.stage.$$"
+      rm -rf "$stage_dir" 2>/dev/null || true
+      if mkdir "$stage_dir" 2>/dev/null \
+        && printf '%s\n' "$$" >"$stage_dir/owner" 2>/dev/null \
+        && mv -n "$stage_dir" "$LOCK_DIR" 2>/dev/null; then
+        lock_held=1
+        return 0
+      fi
+      rm -rf "$stage_dir" 2>/dev/null || true
+      # Lost the race to another acquirer — fall through to the wait below.
+    fi
     # Another healer running — if they just succeeded, share the win
     if cache_is_fresh_ok; then
       append_action "shared-cache-ok"
@@ -326,9 +358,6 @@ acquire_lock() {
     sleep 1
     waited=$((waited + 1))
   done
-  printf '%s\n' "$$" >"$LOCK_DIR/owner" 2>/dev/null || true
-  lock_held=1
-  return 0
 }
 
 release_lock() {
