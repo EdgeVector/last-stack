@@ -204,8 +204,6 @@ grep -q "landed; base has advanced" "$tmp/adv" \
   || { echo "FAIL: did not report the merge as already landed"; cat "$tmp/adv"; exit 1; }
 : > "$tmp/merged-crs"; echo 1 > "$tmp/contains"
 
-echo "PASS: last-stack-lastgit-stuck-merge-heal"
-
 # --- a CR with no CI row yet must not abort the run ------------------------
 # `lastgit ci status` exits non-zero for a commit that has no status row. Under
 # `set -o pipefail` that killed the whole run AT THE ASSIGNMENT, before the
@@ -224,3 +222,53 @@ grep -q "ci-required reads 'none'" "$tmp/nostatus" \
 grep -q "$MERGE_OID:refs/heads/main" "$tmp/git-push" \
   || { echo "FAIL: statusless CR blocked the settled-merge repair"; cat "$tmp/nostatus"; exit 1; }
 rm -f "$tmp/with-nostatus"; : > "$tmp/merged-crs"
+
+# --- a FAILURE verdict must never be offered for an admin merge ------------
+# The torn shape is written for a red run exactly as it is for a green one:
+# 53 of the 176 `ci_verdict_unconfirmed*` lines on the primary at 2026-09-05
+# read "accepted as failure". Matching the oid alone reported those as
+# torn-success and offered `cr merge --admin` for them, forcing a merge around
+# the required gate this helper promises never to force.
+#
+# Note what the negative fixture has to carry: an EMPTY log (the case above)
+# only proves the absent-line branch. It cannot reach this one, which is why
+# the suite was green while the check did not exist.
+rm -f "$tmp/merged"; : > "$tmp/git-push"; : > "$tmp/lastgit-calls"
+cat > "$tmp/forge.log" <<LOG
+unconfirmed $TORN ci-required: ci_verdict_unconfirmed_after_retry: ${TORN:0:12} ci-required was accepted as failure but the status row still reads pending.
+LOG
+PATH="$tmp:$PATH" bash "$bin" --repos demo --apply > "$tmp/red" 2>&1 \
+  || { echo "FAIL: failure-verdict run errored"; cat "$tmp/red"; exit 1; }
+grep -q "cr merge" "$tmp/lastgit-calls" \
+  && { echo "FAIL: admin-merged a CR whose ci-required verdict was FAILURE"; cat "$tmp/red"; exit 1; }
+grep -q "torn verdict: CI passed" "$tmp/red" \
+  && { echo "FAIL: reported a failure verdict as a passed one"; cat "$tmp/red"; exit 1; }
+grep -q "accepted as FAILURE" "$tmp/red" \
+  || { echo "FAIL: did not name the red verdict as the reason for the skip"; cat "$tmp/red"; exit 1; }
+
+# --- the LAST verdict for an oid decides, not any verdict ------------------
+# A red run that is re-run green writes a SECOND unconfirmed line for the same
+# oid (live on 0014fa3626f4 and a63a224675f0, both failure-then-success), so
+# the fix cannot be "does a success line exist".
+rm -f "$tmp/merged"; : > "$tmp/lastgit-calls"
+cat > "$tmp/forge.log" <<LOG
+unconfirmed $TORN ci-required: ci_verdict_unconfirmed: ${TORN:0:12} ci-required was accepted as failure but the status row still reads pending.
+unconfirmed $TORN ci-required: ci_verdict_unconfirmed_after_retry: ${TORN:0:12} ci-required was accepted as success but the status row still reads pending.
+LOG
+PATH="$tmp:$PATH" bash "$bin" --repos demo --apply > "$tmp/rerun" 2>&1 \
+  || { echo "FAIL: rerun-green run errored"; cat "$tmp/rerun"; exit 1; }
+grep -q "cr merge demo cr-torn --admin" "$tmp/lastgit-calls" \
+  || { echo "FAIL: a red run re-run GREEN was not landed"; cat "$tmp/rerun"; exit 1; }
+
+# ...and the reverse order must be refused: a green run whose re-run went red.
+rm -f "$tmp/merged"; : > "$tmp/lastgit-calls"
+cat > "$tmp/forge.log" <<LOG
+unconfirmed $TORN ci-required: ci_verdict_unconfirmed: ${TORN:0:12} ci-required was accepted as success but the status row still reads pending.
+unconfirmed $TORN ci-required: ci_verdict_unconfirmed_after_retry: ${TORN:0:12} ci-required was accepted as failure but the status row still reads pending.
+LOG
+PATH="$tmp:$PATH" bash "$bin" --repos demo --apply > "$tmp/rered" 2>&1 \
+  || { echo "FAIL: rerun-red run errored"; cat "$tmp/rered"; exit 1; }
+grep -q "cr merge" "$tmp/lastgit-calls" \
+  && { echo "FAIL: landed a CR whose LATEST verdict was FAILURE"; cat "$tmp/rered"; exit 1; }
+
+echo "PASS: last-stack-lastgit-stuck-merge-heal"

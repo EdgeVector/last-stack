@@ -97,10 +97,28 @@ trap cleanup EXIT
 # The oid the forge accepted as success but could not confirm. Full oid only:
 # `lastgit ci status` reads by exact key, so a short oid answers with a false
 # absence (`papercut-lastgit-ci-status-short-oid-silently-null`).
-verdict_was_accepted() {
+#
+# The verdict WORD decides this, not the presence of the line. A torn write
+# records `ci_verdict_unconfirmed*` for a FAILURE exactly as it does for a
+# success — 53 of the 176 lines on the primary at 2026-09-05 read "accepted as
+# failure" — so matching the oid alone reported a red CR as torn-success and
+# offered it to `cr merge --admin`, forcing a merge around the required gate
+# this helper's own header promises never to force
+# (`papercut-lastgit-stuck-merge-heal-ignores-failure-verdict`, p0).
+#
+# Take the LAST verdict for the oid, not any verdict. A red run that is re-run
+# green writes a second line (live on 0014fa3626f4 and a63a224675f0, both
+# failure-then-success), so grep-for-success alone would also accept the
+# reverse order — a green run whose re-run went red.
+verdict_word() {
   local oid="$1"
-  [ -f "$forge_log" ] || return 1
-  grep -q "ci_verdict_unconfirmed[a-z_]*: ${oid:0:12} " "$forge_log"
+  [ -f "$forge_log" ] || return 0
+  grep -oE "ci_verdict_unconfirmed[a-z_]*: ${oid:0:12} [^ ]+ was accepted as (success|failure)" \
+    "$forge_log" | tail -1 | awk '{print $NF}'
+}
+
+verdict_was_accepted() {
+  [ "$(verdict_word "$1")" = success ]
 }
 
 cr_field() { sed -n "s/^$2	//p" <<<"$1" | head -1; }
@@ -208,7 +226,15 @@ for repo in $repo_list; do
       continue
     fi
     if ! verdict_was_accepted "$head_oid"; then
-      say "  skip: pending with no accepted-as-success line; CI may still be running"
+      # A red verdict and an absent line are both "do not merge", but they are
+      # not the same finding: one is a torn write of a FAILURE that no rerun
+      # will turn green, the other is a run still in flight. Reporting the
+      # first as the second is what sent an operator looking for a stuck run.
+      if [ "$(verdict_word "$head_oid")" = failure ]; then
+        say "  skip: ci-required was accepted as FAILURE for ${head_oid:0:12}; row is torn but the verdict is red"
+      else
+        say "  skip: pending with no accepted-as-success line; CI may still be running"
+      fi
       skipped=$((skipped + 1))
       continue
     fi
