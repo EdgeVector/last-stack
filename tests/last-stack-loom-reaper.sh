@@ -29,16 +29,35 @@ run_reaper() {
 }
 
 out="$(run_reaper)" || fail "success pass failed"
+# The default resume limit must stay above the orphan arrival rate; 1 let the
+# deferred set grow from 88 to 314 in eight days.
 [ "$(cat "$MOCK_LOOM_CALLS")" = \
-  'reap --older-than-secs 300 --resume-limit 1 --resume-timeout-secs 60 --json' ] \
+  'reap --older-than-secs 300 --resume-limit 10 --resume-timeout-secs 60 --json' ] \
   || fail "unsafe Loom arguments: $(cat "$MOCK_LOOM_CALLS")"
 printf '%s\n' "$out" | jq -e \
   --arg loom "$home/.local/bin/loom" \
   '.status == "ok" and .exit_code == 0 and .loom_bin == $loom
    and .report.resumed == 1
-   and .command == ["reap","--older-than-secs","300","--resume-limit","1",
+   and .command == ["reap","--older-than-secs","300","--resume-limit","10",
      "--resume-timeout-secs","60","--json"]' \
   >/dev/null || fail "bad success result: $out"
+
+# The bounds are tunable, and the recorded command must reflect what actually ran.
+: >"$MOCK_LOOM_CALLS"
+tuned="$(HOME="$home" XDG_STATE_HOME="$state" \
+  LAST_STACK_LOOM_REAPER_RESUME_LIMIT=3 \
+  LAST_STACK_LOOM_REAPER_RESUME_TIMEOUT_S=15 \
+  LAST_STACK_LOOM_REAPER_OLDER_THAN_S=600 \
+  "$ROOT/bin/last-stack-loom-reaper-run")" || fail "tuned pass failed"
+[ "$(cat "$MOCK_LOOM_CALLS")" = \
+  'reap --older-than-secs 600 --resume-limit 3 --resume-timeout-secs 15 --json' ] \
+  || fail "env overrides ignored: $(cat "$MOCK_LOOM_CALLS")"
+printf '%s\n' "$tuned" | jq -e \
+  '.command == ["reap","--older-than-secs","600","--resume-limit","3",
+     "--resume-timeout-secs","15","--json"]' \
+  >/dev/null || fail "recorded command did not follow the overrides: $tuned"
+: >"$MOCK_LOOM_CALLS"
+out="$(run_reaper)" || fail "second default pass failed"
 jq -e '.status == "ok" and .report.scanned == 2' \
   "$state/last-stack/loom-reaper/result.json" >/dev/null \
   || fail "result file did not preserve the report"
