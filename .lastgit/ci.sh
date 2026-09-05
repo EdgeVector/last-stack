@@ -386,3 +386,7 @@ ci_test tests/last-stack-north-star-proof-no-scan-access.sh
 # APPENDED (see the shard-stability note above): ci_test shards by list position.
 ci_test tests/last-stack-canary-build-main-gate.sh
 ci_test tests/last-stack-lastdb-canary-build-main-routine.sh
+
+# Row-count bar: a 0-row candidate against a non-zero baseline is RED.
+# APPENDED (see the shard-stability note above): ci_test shards by list position.
+ci_test tests/last-stack-safe-upgrade-rowcount-verdict.sh
