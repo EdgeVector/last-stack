@@ -144,4 +144,27 @@ assert p["slugs"] == []
 print("decision-check ignores non-decision types ok")
 PY
 
+# a stdin that never delivers a byte must fail fast, not deadlock the caller
+set +e
+sleep 30 | LAST_STACK_DECISION_CHECK_STDIN_TIMEOUT=2 python3 "$BIN" \
+  --title "wedge probe" --kind pr --column todo \
+  --fixture-dir "$clear_dir" --json >"$tmp/wedge.out" 2>"$tmp/wedge.err"
+wedge_rc=$?
+set -e
+[ "$wedge_rc" -eq 2 ] || fail "never-delivering stdin should exit 2, got $wedge_rc"
+grep -q "no card body on stdin" "$tmp/wedge.err" \
+  || fail "stdin timeout must name the cause"
+grep -q "< card.md" "$tmp/wedge.err" || fail "stdin timeout must print the fix"
+echo "decision-check stdin-never-delivers fails fast ok"
+
+# an immediate EOF is a legitimate empty body, never the timeout path
+set +e
+LAST_STACK_DECISION_CHECK_STDIN_TIMEOUT=2 python3 "$BIN" \
+  --title "empty body" --kind pr --column todo \
+  --fixture-dir "$clear_dir" --json </dev/null >"$tmp/eof.json" 2>"$tmp/eof.err"
+eof_rc=$?
+set -e
+[ "$eof_rc" -eq 0 ] || fail "empty stdin should exit 0, got $eof_rc ($(cat "$tmp/eof.err"))"
+echo "decision-check empty-stdin still passes ok"
+
 echo "last-stack-kanban-decision-check tests ok"
