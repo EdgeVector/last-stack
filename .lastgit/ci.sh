@@ -300,6 +300,9 @@ ci_test tests/host-track-registry-compliance.sh
 # digests, post-flip rollback. A regression here silently flips a bad binary
 # onto PATH fleet-wide — same silent-cutover family as the tests above.
 ci_test tests/host-track-soak-gate.sh
+# The probe and flip must bind to one exact digest. This test advances the
+# channel after the final probe and proves that the successor starts a new soak.
+ci_test tests/host-track-soak-probe-lock.sh
 # The other half of the same gate: what `host-track status` REPORTS about it.
 # The check counter alone reads as over-satisfied for most of a soak window,
 # so a soaking canary renders as a stuck promotion and costs someone a hunt.
