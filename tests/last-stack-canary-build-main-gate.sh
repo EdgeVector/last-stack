@@ -10,6 +10,12 @@ trap 'rm -rf "$tmp"' EXIT
 
 export LAST_STACK_CANARY_BUILDS_DIR="$tmp/canary-builds"
 
+# The gate script heartbeats on every branch. Without this the appender falls
+# back to the install root's logs/ and these fixture SHAs land in the PRODUCTION
+# fleet log. Set here too, not only in .lastgit/ci.sh, because this test is also
+# run directly.
+export LAST_STACK_HEARTBEATS_FILE="$tmp/routine-heartbeats.log"
+
 # --- not stale: skip (exit 0) ---
 export LAST_STACK_CANARY_BUILD_GATE_STATUS_CMD="cat <<'JSON'
 {\"stale\": false, \"host_head\": \"aaa111\", \"gate_head\": \"aaa111\"}
