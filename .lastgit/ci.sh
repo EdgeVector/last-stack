@@ -390,3 +390,7 @@ ci_test tests/last-stack-lastdb-canary-build-main-routine.sh
 # Row-count bar: a 0-row candidate against a non-zero baseline is RED.
 # APPENDED (see the shard-stability note above): ci_test shards by list position.
 ci_test tests/last-stack-safe-upgrade-rowcount-verdict.sh
+
+# One exact Loom candidate must create the fresh DEV photograph receipt.
+# APPENDED (see the shard-stability note above): ci_test shards by list position.
+ci_test tests/last-stack-lastdb-safe-upgrade-dev-photograph-stamp.sh

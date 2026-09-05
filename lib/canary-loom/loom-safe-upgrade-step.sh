@@ -7,7 +7,8 @@ export LOOM_LASTDB_FRESHNESS_SCRIPT="${LOOM_LASTDB_FRESHNESS_SCRIPT:-$SCRIPT_DIR
 export LOOM_SAFE_UPGRADE_GRAPH="${LOOM_SAFE_UPGRADE_GRAPH:-$SCRIPT_DIR/lastdb-safe-upgrade.json}"
 
 python3 - "$step" <<'PY'
-import json, os, subprocess, sys
+import hashlib, json, os, re, subprocess, sys
+from pathlib import Path
 
 step = sys.argv[1]
 raw = os.environ.get("LOOM_INPUT") or "{}"
@@ -18,12 +19,41 @@ except json.JSONDecodeError:
 
 item = ctx.get("item")
 if isinstance(item, dict):
+    immutable = (
+        "candidate",
+        "candidate_cli",
+        "version",
+        "lastdbd_version",
+        "lastdb_version",
+        "lastdbd_sha256",
+        "lastdb_sha256",
+        "source_git_oid",
+        "candidate_artifact_digest",
+        "safe_upgrade_protocol_version",
+    )
+    conflicts = [
+        key for key in immutable
+        if key in item and key in ctx and item.get(key) != ctx.get(key)
+    ]
+    if conflicts:
+        print(
+            "safe-upgrade immutable item/context mismatch: " + ",".join(conflicts),
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
     ctx = {**item, **{k: v for k, v in ctx.items() if k != "item"}}
 
 live = os.environ.get("LOOM_CANARY_LIVE") == "1" or os.environ.get("LOOM_LIVE") == "1"
 cand = str(ctx.get("candidate") or "")
+cand_cli = str(ctx.get("candidate_cli") or "")
 version = str(ctx.get("version") or "")
+lastdbd_version = str(ctx.get("lastdbd_version") or "")
+lastdb_version = str(ctx.get("lastdb_version") or "")
+lastdbd_sha256 = str(ctx.get("lastdbd_sha256") or "")
+lastdb_sha256 = str(ctx.get("lastdb_sha256") or "")
 source_git_oid = str(ctx.get("source_git_oid") or "")
+candidate_artifact_digest = str(ctx.get("candidate_artifact_digest") or "")
+safe_upgrade_protocol_version = str(ctx.get("safe_upgrade_protocol_version") or "")
 
 
 def emit(payload, line="PASS"):
@@ -42,6 +72,122 @@ def node_timeout(node):
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise RuntimeError(f"safe-upgrade graph has invalid {node} timeout: {value}")
     return value
+
+
+def binary_version(path):
+    try:
+        proc = subprocess.run(
+            [path, "--version"], capture_output=True, text=True, timeout=15
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    fields = (proc.stdout or "").strip().split()
+    return fields[-1] if proc.returncode == 0 and fields else ""
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_candidate_binding():
+    required = {
+        "candidate": cand,
+        "candidate_cli": cand_cli,
+        "version": version,
+        "lastdbd_version": lastdbd_version,
+        "lastdb_version": lastdb_version,
+        "lastdbd_sha256": lastdbd_sha256,
+        "lastdb_sha256": lastdb_sha256,
+        "source_git_oid": source_git_oid,
+        "candidate_artifact_digest": candidate_artifact_digest,
+        "safe_upgrade_protocol_version": safe_upgrade_protocol_version,
+    }
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        return False, "candidate binding is missing: " + ",".join(missing)
+    if not re.fullmatch(r"[0-9a-f]{40}", source_git_oid):
+        return False, "candidate source Git OID is not one full lowercase commit"
+    if safe_upgrade_protocol_version != "6":
+        return False, "safe-upgrade protocol version is not 6"
+    if not re.fullmatch(r"[0-9a-f]{64}", lastdbd_sha256) or not re.fullmatch(
+        r"[0-9a-f]{64}", lastdb_sha256
+    ):
+        return False, "candidate binding has an invalid SHA-256"
+    if not re.fullmatch(r"[0-9a-f]{64}", candidate_artifact_digest):
+        return False, "candidate artifact digest is not one SHA-256"
+    actual_artifact_digest = hashlib.sha256(
+        "\0".join(
+            [
+                source_git_oid,
+                cand,
+                cand_cli,
+                lastdbd_sha256,
+                lastdb_sha256,
+                lastdbd_version,
+                lastdb_version,
+            ]
+        ).encode()
+    ).hexdigest()
+    if actual_artifact_digest != candidate_artifact_digest:
+        return False, "candidate artifact digest does not match the immutable tuple"
+    try:
+        daemon_real = str(Path(cand).expanduser().resolve(strict=True))
+        cli_real = str(Path(cand_cli).expanduser().resolve(strict=True))
+    except OSError as error:
+        return False, f"candidate binding path cannot resolve: {error}"
+    if daemon_real != cand or cli_real != cand_cli:
+        return False, "candidate binding paths are not canonical"
+    if Path(cli_real).parent != Path(daemon_real).parent or Path(cli_real).name != "lastdb":
+        return False, "candidate CLI is not the sibling lastdb binary"
+    if not os.access(daemon_real, os.X_OK) or not os.access(cli_real, os.X_OK):
+        return False, "candidate pair is not executable"
+    actual_daemon_version = binary_version(daemon_real)
+    actual_cli_version = binary_version(cli_real)
+    if (
+        not actual_daemon_version
+        or actual_daemon_version != version
+        or actual_daemon_version != lastdbd_version
+        or actual_cli_version != lastdb_version
+        or actual_cli_version != actual_daemon_version
+    ):
+        return False, "candidate pair version changed after Loom kickoff"
+    try:
+        actual_daemon_sha = file_sha256(daemon_real)
+        actual_cli_sha = file_sha256(cli_real)
+    except OSError as error:
+        return False, f"candidate pair cannot be hashed: {error}"
+    if actual_daemon_sha != lastdbd_sha256 or actual_cli_sha != lastdb_sha256:
+        return False, "candidate pair bytes changed after Loom kickoff"
+    return True, "exact candidate pair matches Loom context"
+
+
+def exact_driver_env():
+    env = os.environ.copy()
+    env.update(
+        {
+            "LASTDB_SAFE_UPGRADE_EXPECTED_SOURCE_OID": source_git_oid,
+            "LASTDB_SAFE_UPGRADE_EXPECTED_LASTDBD_PATH": cand,
+            "LASTDB_SAFE_UPGRADE_EXPECTED_LASTDB_PATH": cand_cli,
+            "LASTDB_SAFE_UPGRADE_EXPECTED_LASTDBD_VERSION": lastdbd_version,
+            "LASTDB_SAFE_UPGRADE_EXPECTED_LASTDB_VERSION": lastdb_version,
+            "LASTDB_SAFE_UPGRADE_EXPECTED_LASTDBD_SHA256": lastdbd_sha256,
+            "LASTDB_SAFE_UPGRADE_EXPECTED_LASTDB_SHA256": lastdb_sha256,
+        }
+    )
+    receipt_root = os.environ.get("LASTDB_DEV_STAMP_ROOT") or os.path.expanduser(
+        "~/.local/state/last-stack/lastdb-safe-upgrade/dev-photograph-receipts"
+    )
+    exec_id = os.environ.get("LOOM_EXEC_ID") or ""
+    safe_exec_id = re.sub(r"[^A-Za-z0-9._-]", "_", exec_id)
+    env["LASTDB_DEV_STAMP_RECEIPT"] = os.path.join(
+        receipt_root,
+        f"{safe_exec_id}-{lastdbd_sha256[:16]}-{lastdb_sha256[:16]}.receipt",
+    )
+    return env
 
 
 def check_freshness():
@@ -144,6 +290,13 @@ if step == "PROBE":
     if not cand:
         emit({"verdict": "red"}, "su PROBE no candidate")
         raise SystemExit(0)
+    bound, binding_reason = verify_candidate_binding()
+    if not bound:
+        emit(
+            {"verdict": "red", "last_error": binding_reason},
+            "su PROBE exact candidate binding refused",
+        )
+        raise SystemExit(0)
     freshness = check_freshness()
     relation = str(freshness.get("relation") or "unknown")
     if freshness.get("ok") and relation == "current":
@@ -181,7 +334,7 @@ if step == "PROBE":
     # A re-dispatched PROBE can find the owner lock still held by an earlier
     # attempt's orphaned process tree. Wait for the lane instead of marking
     # the candidate RED; the budget stays well under the PROBE node timeout.
-    probe_env = os.environ.copy()
+    probe_env = exact_driver_env()
     probe_env.setdefault("LASTDB_SAFE_UPGRADE_OWNER_LOCK_WAIT_S", "2700")
     p = subprocess.run(
         ["bash", skill, "--candidate", cand, "--probe-only"],
@@ -209,6 +362,10 @@ if step == "PROBE":
     raise SystemExit(0)
 
 if step == "CUTOVER":
+    bound, binding_reason = verify_candidate_binding()
+    if not bound:
+        sys.stderr.write(f"safe-upgrade CUTOVER refused: {binding_reason}\n")
+        raise SystemExit(1)
     freshness = check_freshness()
     relation = str(freshness.get("relation") or "unknown")
     if freshness.get("ok") and relation == "current":
@@ -224,7 +381,7 @@ if step == "CUTOVER":
         )
         raise SystemExit(1)
     print('LOOM_EFFECT_INTENT:{"kind":"deploy","target":"lastdb-safe-upgrade"}')
-    cutover_env = os.environ.copy()
+    cutover_env = exact_driver_env()
     cutover_env["LASTDB_SAFE_UPGRADE_VIA_LOOM"] = "1"
     cutover_env.setdefault("LASTDB_SAFE_UPGRADE_OWNER_LOCK_WAIT_S", "1800")
     p = subprocess.run(

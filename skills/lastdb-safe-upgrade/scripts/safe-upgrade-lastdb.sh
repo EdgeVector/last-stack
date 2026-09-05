@@ -255,8 +255,19 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
 # shellcheck source=deadline.sh
 . "$_SCRIPT_DIR/deadline.sh"
 CAS_PROBE_SH="$_SCRIPT_DIR/cas-mutation-probe.sh"
+DEV_PHOTOGRAPH_PROOF_SH="$_SCRIPT_DIR/dev-photograph-candidate-proof.sh"
 
 if [ "${CHECK_DEV_STAMP:-0}" -eq 1 ]; then
+  DEV_BINDING_OUT=""
+  set +e
+  DEV_BINDING_OUT="$(assert_candidate_binding_matches_expected 2>&1)"
+  DEV_BINDING_RC=$?
+  set -e
+  if [ "$DEV_BINDING_RC" -ne 0 ]; then
+    echo "VERDICT: RED"
+    echo "REASON: exact candidate binding is absent or changed"
+    exit 1
+  fi
   DEV_STAMP_OUT=""
   set +e
   DEV_STAMP_OUT="$(assert_dev_photograph_stamp_ok "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" 2>&1)"
@@ -300,6 +311,8 @@ OWNER_LOCK_HELD=0
 RESTART_INTENT_PATH=""
 RESTART_INTENT_START_REQUESTED=0
 DRIVER_ENDED_STEP=0
+SIDEBIN_BACKUP_DAEMON=""
+SIDEBIN_BACKUP_CLI=""
 
 cleanup_work() {
   local rc=$?
@@ -1163,6 +1176,23 @@ detect_live_venue() {
   [ "$VENUE" = "sidebin" ] && log "launchd label: $LAUNCHD_LABEL"
 }
 
+# A photographed pair is useful only when the live install copies those exact
+# files. Brew resolves and installs a formula artifact after the photograph,
+# so this driver cannot prove byte identity before the first live mutation.
+assert_exact_candidate_live_venue() {
+  [ "$VENUE" != "brew" ] \
+    || die "exact-candidate live cutover refuses venue=brew because brew can install unphotographed bytes; use the sidebin venue"
+}
+
+# This check is unconditional. LASTDB_PROBE_DEV_STAMP_SKIP can waive only the
+# DEV receipt, never the immutable candidate pair.
+assert_final_candidate_binding() {
+  assert_candidate_binding_matches_expected \
+    "$CANDIDATE_BIN" "$CANDIDATE_CLI_BIN" \
+    "${LASTDB_SAFE_UPGRADE_EXPECTED_SOURCE_OID:-}" >/dev/null 2>&1 \
+    || die "candidate pair changed before the live section; primary remains untouched"
+}
+
 # A sidebin live install that cannot name the real launchd job cannot restart
 # the primary. Refuse rather than reload into the void — the old daemon keeps
 # serving and every downstream health check passes, so this fails silent.
@@ -1209,6 +1239,82 @@ ensure_primary_launchd_rss_limit() {
   log "stamped primary LaunchAgent LASTDBD_RSS_LIMIT_MB=$limit (was ${current:-unset})"
 }
 
+# Version parity cannot detect replacement bytes that report the same version.
+# Every sidebin copy must match the immutable Loom hashes.
+sidebin_pair_hashes_match_expected() {
+  local daemon="$1" cli="$2" phase="$3"
+  local expected_daemon="${LASTDB_SAFE_UPGRADE_EXPECTED_LASTDBD_SHA256:-}"
+  local expected_cli="${LASTDB_SAFE_UPGRADE_EXPECTED_LASTDB_SHA256:-}"
+  local actual_daemon actual_cli failed=0
+
+  case "$expected_daemon" in ''|*[!0-9a-f]*) failed=1 ;; esac
+  case "$expected_cli" in ''|*[!0-9a-f]*) failed=1 ;; esac
+  [ "${#expected_daemon}" -eq 64 ] || failed=1
+  [ "${#expected_cli}" -eq 64 ] || failed=1
+  if [ "$failed" -ne 0 ]; then
+    printf 'RED: %s has an invalid expected SHA-256 binding\n' "$phase"
+    return 1
+  fi
+
+  [ -f "$daemon" ] && [ ! -L "$daemon" ] && [ -x "$daemon" ] \
+    || { printf 'RED: %s lastdbd is absent, linked, or not executable\n' "$phase"; failed=1; }
+  [ -f "$cli" ] && [ ! -L "$cli" ] && [ -x "$cli" ] \
+    || { printf 'RED: %s lastdb is absent, linked, or not executable\n' "$phase"; failed=1; }
+  [ "$failed" -eq 0 ] || return 1
+
+  actual_daemon="$(dev_stamp_sha256_file "$daemon" || true)"
+  actual_cli="$(dev_stamp_sha256_file "$cli" || true)"
+  [ "$actual_daemon" = "$expected_daemon" ] \
+    || { printf 'RED: %s lastdbd bytes differ from the photographed candidate\n' "$phase"; failed=1; }
+  [ "$actual_cli" = "$expected_cli" ] \
+    || { printf 'RED: %s lastdb bytes differ from the photographed candidate\n' "$phase"; failed=1; }
+  [ "$failed" -eq 0 ]
+}
+
+# Restore both pre-cutover files through same-directory renames. This function
+# returns only after both destination paths contain the saved pair.
+restore_sidebin_backup_pair() {
+  local dest="${1:-$SIDEBIN_DIR}"
+  local daemon_backup="${2:-${SIDEBIN_BACKUP_DAEMON:-}}"
+  local cli_backup="${3:-${SIDEBIN_BACKUP_CLI:-}}"
+  local daemon_restore="$dest/lastdbd.restore.$$"
+  local cli_restore="$dest/lastdb.restore.$$"
+
+  [ -x "$daemon_backup" ] && [ -x "$cli_backup" ] || return 1
+  rm -f -- "$daemon_restore" "$cli_restore"
+  cp -a "$daemon_backup" "$daemon_restore" \
+    || { rm -f -- "$daemon_restore" "$cli_restore"; return 1; }
+  cp -a "$cli_backup" "$cli_restore" \
+    || { rm -f -- "$daemon_restore" "$cli_restore"; return 1; }
+  cmp -s "$daemon_backup" "$daemon_restore" \
+    && cmp -s "$cli_backup" "$cli_restore" \
+    || { rm -f -- "$daemon_restore" "$cli_restore"; return 1; }
+  mv -f "$daemon_restore" "$dest/lastdbd" \
+    || { rm -f -- "$daemon_restore" "$cli_restore"; return 1; }
+  mv -f "$cli_restore" "$dest/lastdb" \
+    || { rm -f -- "$cli_restore"; return 1; }
+  cmp -s "$daemon_backup" "$dest/lastdbd" \
+    && cmp -s "$cli_backup" "$dest/lastdb" \
+    || return 1
+  log "restored pre-cutover sidebin backup pair"
+}
+
+assert_sidebin_installed_hashes_or_restore() {
+  local phase="$1"
+  if sidebin_pair_hashes_match_expected \
+      "$SIDEBIN_DIR/lastdbd" "$SIDEBIN_DIR/lastdb" "$phase"; then
+    log "$phase hashes match the photographed candidate pair"
+    return 0
+  fi
+  if restore_sidebin_backup_pair \
+      "$SIDEBIN_DIR" "$SIDEBIN_BACKUP_DAEMON" "$SIDEBIN_BACKUP_CLI"; then
+    die "$phase hash check failed; restored the pre-cutover sidebin backup pair before exit"
+  else
+    die "$phase hash check failed and the pre-cutover sidebin backup pair could not be restored"
+  fi
+  return 1
+}
+
 live_install_sidebin() {
   local dest="$SIDEBIN_DIR"
   local ts
@@ -1233,29 +1339,51 @@ live_install_sidebin() {
   # refused to start for 10 minutes behind a lock whose owner was long gone.
   CUTOVER_LOCK="$lock"
 
-  if [ -x "$dest/lastdbd" ]; then
-    cp -a "$dest/lastdbd" "$dest/lastdbd.bak-pre-${CAND_VER}-${ts}"
-    log "backed up live lastdbd → lastdbd.bak-pre-${CAND_VER}-${ts}"
-  fi
+  [ -x "$dest/lastdbd" ] && [ -x "$dest/lastdb" ] \
+    || die "sidebin live pair is incomplete; cannot create the required binary rollback pair"
+  SIDEBIN_BACKUP_DAEMON="$dest/lastdbd.bak-pre-${CAND_VER}-${ts}"
+  SIDEBIN_BACKUP_CLI="$dest/lastdb.bak-pre-${CAND_VER}-${ts}"
+  cp -a "$dest/lastdbd" "$SIDEBIN_BACKUP_DAEMON"
+  cp -a "$dest/lastdb" "$SIDEBIN_BACKUP_CLI"
+  cmp -s "$dest/lastdbd" "$SIDEBIN_BACKUP_DAEMON" \
+    && cmp -s "$dest/lastdb" "$SIDEBIN_BACKUP_CLI" \
+    || die "sidebin pre-cutover backup pair does not match the installed pair"
+  log "backed up live pair → $(basename -- "$SIDEBIN_BACKUP_DAEMON"), $(basename -- "$SIDEBIN_BACKUP_CLI")"
+
+  rm -f -- "$dest/lastdbd.new" "$dest/lastdb.new"
   cp -a "$CANDIDATE_BIN" "$dest/lastdbd.new"
   chmod +x "$dest/lastdbd.new"
-
-  if [ -x "$dest/lastdb" ]; then
-    cp -a "$dest/lastdb" "$dest/lastdb.bak-pre-${CAND_VER}-${ts}" 2>/dev/null || true
-  fi
   cp -a "$CANDIDATE_CLI_BIN" "$dest/lastdb.new"
   chmod +x "$dest/lastdb.new"
 
-  # Atomic-ish swap (same directory rename)
-  mv -f "$dest/lastdbd.new" "$dest/lastdbd"
-  mv -f "$dest/lastdb.new" "$dest/lastdb"
+  # Verify both staged files before either destination path changes.
+  if ! sidebin_pair_hashes_match_expected \
+      "$dest/lastdbd.new" "$dest/lastdb.new" "staged sidebin pair"; then
+    rm -f -- "$dest/lastdbd.new" "$dest/lastdb.new"
+    die "staged sidebin pair differs from the photographed candidate; live pair remains unchanged"
+  fi
+
+  # Same-directory rename changes each path atomically. A partial pair swap or
+  # a later hash mismatch restores both saved files before this process exits.
+  mv -f "$dest/lastdbd.new" "$dest/lastdbd" \
+    || die "could not install staged lastdbd; live pair remains unchanged"
+  if ! mv -f "$dest/lastdb.new" "$dest/lastdb"; then
+    rm -f -- "$dest/lastdb.new"
+    if restore_sidebin_backup_pair \
+        "$dest" "$SIDEBIN_BACKUP_DAEMON" "$SIDEBIN_BACKUP_CLI"; then
+      die "could not install staged lastdb; restored the pre-cutover sidebin backup pair"
+    fi
+    die "could not install staged lastdb and the pre-cutover sidebin backup pair could not be restored"
+  fi
   log "installed candidate into $dest/{lastdb,lastdbd}"
+  assert_sidebin_installed_hashes_or_restore "post-rename sidebin pair"
 
   ensure_primary_launchd_rss_limit
 
   local uid
   uid="$(id -u)"
   CUTOVER_T0="$(date +%s)"
+  assert_sidebin_installed_hashes_or_restore "pre-reload sidebin pair"
   if ! lastdb_launchd_reload_job \
     launchctl "gui/${uid}" "$LAUNCHD_LABEL" "$LAUNCHD_PLIST"; then
     page_human "safe-upgrade: primary lastdbd is UNLOADED — bootstrap retries exhausted for ${LAUNCHD_LABEL}. Recover: launchctl bootstrap gui/${uid} ${LAUNCHD_PLIST}"
@@ -1487,6 +1615,24 @@ if [ "$PAIR_RC" -ne 0 ]; then
   echo "CANDIDATE_CLI:    $CANDIDATE_CLI_BIN"
   echo "NEXT: build/package both lastdb and lastdbd from the same source revision; never promote a daemon-only artifact."
   exit 1
+fi
+
+# A live Loom run must preserve the exact pair tuple from graph kickoff. Probe-
+# only use stays available outside Loom and does not authorize a live change.
+if [ "$PROBE_ONLY" -eq 0 ]; then
+  BINDING_OUT=""
+  set +e
+  BINDING_OUT="$(assert_candidate_binding_matches_expected \
+    "$CANDIDATE_BIN" "$CANDIDATE_CLI_BIN" \
+    "${LASTDB_SAFE_UPGRADE_EXPECTED_SOURCE_OID:-}" 2>&1)"
+  BINDING_RC=$?
+  set -e
+  if [ "$BINDING_RC" -ne 0 ]; then
+    echo "VERDICT: RED"
+    echo "REASON: candidate pair does not match the immutable Loom execution tuple"
+    exit 1
+  fi
+  log "candidate binding GREEN: exact source, paths, versions, and binary hashes match Loom"
 fi
 
 if [ "$CAND_VER" = "$CURRENT_VER" ] && [ "$PROBE_ONLY" -eq 0 ]; then
@@ -1785,13 +1931,57 @@ if [ "$PROBE_ONLY" -eq 1 ]; then
   exit 0
 fi
 
-# --- 2b) DEV photograph stamp gate (Tom 2026-08-19) --------------------------
-# Live cutover is refused unless an ephemeral/CoW copy already uploaded a
-# photograph to DEV and CAS-flipped backup/latest. LASTDB_PROBE_DEV_STAMP_SKIP=1
-# is Tom clearance only.
+# --- 2c) exact-candidate DEV photograph proof (Tom 2026-08-19) ---------------
+# Reuse the rollback CoW that this safe-upgrade sequence selected in step 1.
+# The exact candidate pair clones that static point, connects its copied identity
+# to compiled DEV, and publishes one photograph. A receipt from another
+# execution, source, path, version, or byte pair cannot authorize this change.
+# LASTDB_PROBE_DEV_STAMP_SKIP=1 is Tom clearance only.
 if [ "${LASTDB_PROBE_DEV_STAMP_SKIP:-0}" = "1" ]; then
   warn "DEV photograph stamp SKIPPED (LASTDB_PROBE_DEV_STAMP_SKIP=1) — Tom-clearance only; live cutover will not prove backup-to-DEV"
 else
+  [ -x "$DEV_PHOTOGRAPH_PROOF_SH" ] \
+    || die "exact-candidate DEV photograph proof helper is absent or not executable"
+  BINDING_OUT=""
+  set +e
+  BINDING_OUT="$(assert_candidate_binding_matches_expected \
+    "$CANDIDATE_BIN" "$CANDIDATE_CLI_BIN" \
+    "${LASTDB_SAFE_UPGRADE_EXPECTED_SOURCE_OID:-}" 2>&1)"
+  BINDING_RC=$?
+  set -e
+  [ "$BINDING_RC" -eq 0 ] \
+    || die "candidate pair changed after the normal probe bars; primary remains untouched"
+
+  DEV_STAMP_OUT=""
+  set +e
+  DEV_STAMP_OUT="$(assert_dev_photograph_stamp_ok \
+    "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" 2>&1)"
+  DEV_STAMP_RC=$?
+  set -e
+  if [ "$DEV_STAMP_RC" -ne 0 ]; then
+    log "exact-candidate DEV photograph: create a fresh isolated proof"
+    DEV_PROOF_OUT=""
+    set +e
+    DEV_PROOF_OUT="$(bash "$DEV_PHOTOGRAPH_PROOF_SH" \
+      --candidate-lastdbd "$CANDIDATE_BIN" \
+      --candidate-lastdb "$CANDIDATE_CLI_BIN" \
+      --primary-home "$PRIMARY_HOME" \
+      --clone-source "$BACKUP" \
+      --receipt "$(dev_stamp_receipt_path)" \
+      --source-git-oid "${LASTDB_SAFE_UPGRADE_EXPECTED_SOURCE_OID:-}" 2>&1)"
+    DEV_PROOF_RC=$?
+    set -e
+    if [ "$DEV_PROOF_RC" -ne 0 ]; then
+      echo ""
+      echo "VERDICT: RED"
+      echo "REASON: the exact candidate failed its isolated DEV photograph proof; primary remains untouched"
+      echo "NEXT: fix the candidate, DEV registration, or snapshot CAS path, then start a new bound Loom execution"
+      exit 1
+    fi
+  else
+    log "exact-candidate DEV photograph: reuse this execution's fresh receipt"
+  fi
+
   DEV_STAMP_OUT=""
   set +e
   DEV_STAMP_OUT="$(assert_dev_photograph_stamp_ok "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" 2>&1)"
@@ -1809,17 +1999,17 @@ else
   if [ "$DEV_STAMP_RC" -ne 0 ]; then
     echo ""
     echo "VERDICT: RED"
-    echo "REASON: live cutover refused — DEV photograph stamp is missing or RED. Boot the candidate on an ephemeral/CoW copy of real data, upload the photograph to DEV (not the primary production backup home), and record a GREEN stamp. Never point the candidate at live ~/.lastdb."
-    echo "RECEIPT: $(dev_stamp_receipt_path)"
-    echo "NEXT:    run the DEV photograph stamp (lastdb connect --env dev on the CoW, then lastdb cloud snapshot) then re-run this driver."
+    echo "REASON: live cutover refused because this execution lacks a fresh exact-candidate DEV photograph receipt"
+    echo "NEXT: start a new bound Loom execution after the DEV proof path is healthy"
     exit 1
   fi
-  log "DEV photograph stamp GREEN ($(dev_stamp_receipt_path))"
+  log "exact-candidate DEV photograph GREEN"
 fi
 
 # --- 3) human confirm before touching live -----------------------------------
 
 detect_live_venue
+assert_exact_candidate_live_venue
 
 if [ "$ASSUME_YES" -eq 0 ]; then
   if [ ! -t 0 ]; then
@@ -1848,6 +2038,15 @@ fi
 
 log "STEP 3/4: live install + supervisor restart (venue=$VENUE)"
 
+# Close the candidate mutation window before the first primary write. Tom can
+# waive the DEV receipt, but that waiver cannot authorize replacement bytes.
+assert_final_candidate_binding
+
+if [ "${LASTDB_PROBE_DEV_STAMP_SKIP:-0}" != "1" ]; then
+  assert_dev_photograph_stamp_ok "$(dev_stamp_receipt_path)" "$PRIMARY_HOME" >/dev/null \
+    || die "exact-candidate DEV photograph receipt changed before the live section"
+fi
+
 # Arm the durability canary before any live change and before the cutover
 # clock starts, so cutover_s stays comparable to historical runs.
 durability_write_sentinels
@@ -1864,8 +2063,9 @@ write_upgrade_restart_intent
 if [ "$VENUE" = "sidebin" ]; then
   live_install_sidebin
   INSTALLED_DAEMON_BIN="$SIDEBIN_DIR/lastdbd"
-  INSTALLED="$("$SIDEBIN_DIR/lastdbd" --version 2>/dev/null | awk '{print $NF}' || true)"
   INSTALLED_CLI_BIN="$SIDEBIN_DIR/lastdb"
+  assert_sidebin_installed_hashes_or_restore "post-install sidebin pair"
+  INSTALLED="$("$SIDEBIN_DIR/lastdbd" --version 2>/dev/null | awk '{print $NF}' || true)"
 else
   live_install_brew
   INSTALLED_DAEMON_BIN="$(command -v lastdbd 2>/dev/null || true)"

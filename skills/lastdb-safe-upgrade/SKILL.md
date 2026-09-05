@@ -9,11 +9,12 @@ description: |
   workloads timed vs the current binary — correct-but-slow is RED) AND the
   CAS mutation bar (candidate enforces `/api/mutation` `expected` — false
   precondition → 409; LastGit ref/CI CAS depends on it), AND a GREEN
-  **DEV photograph stamp** (ephemeral/CoW of real data uploads the
-  photograph to DEV — not the primary's production backup home — and
-  CAS-flips backup/latest; never live `~/.lastdb` first), (4) only
-  then venue-aware live install (sidebin+launchd or
-  brew services) + post-check + Situations notice, with the **durability
+  **DEV photograph stamp** for the exact Loom source, daemon bytes, and CLI
+  bytes (a new ephemeral/CoW copy uploads the photograph to DEV and CAS-flips
+  backup/latest; never use the production backup home or live `~/.lastdb`), (4) only
+  then an exact sidebin+launchd live install + post-check + Situations notice.
+  The driver rejects brew before a live mutation because brew can install
+  unphotographed bytes. The **durability
   canary** bracketing the restart (sentinels must return a durable receipt
   before cutover, or arm `queued+readback` when the old daemon rejects the
   durable field with HTTP 400; post-cutover nonce read-back is still
@@ -57,23 +58,26 @@ Prefer the **driver script** path below; do not hard-code a single harness dir.
 
 ## Live venue (important — 2026-07-16)
 
-Primary may be supervised in either of two ways:
+Primary can use either supervisor, but exact-candidate live cutover supports
+only sidebin:
 
 | Venue | How primary runs | Live install |
 |-------|------------------|--------------|
 | **sidebin** (Tom’s default) | LaunchAgent → `~/.lastdb/bin-with-upload-cap/lastdbd` | Atomic install into that dir + `launchctl bootout` / `bootstrap` job reload |
-| **brew** | `brew services` + Cellar formula | `brew upgrade` + `brew services restart` |
+| **brew** | `brew services` + Cellar formula | Refused before a live mutation; move the primary to sidebin first |
 
-The script **detects venue** (LaunchAgent `ProgramArguments`, formula installed,
-sidebin present). It must **not** call `brew upgrade` when the formula is not
-installed — that was the 2026-07-16 failure mode.
+The script **detects venue** from the LaunchAgent, the formula, and sidebin. It
+refuses a brew live cutover before the durability canary or a service stop.
 
 Design: `fold/docs/designs/lastdb-minimal-downtime-cutover.md`.
 
 Env overrides: `LASTDB_SIDEBIN_DIR`, `LASTDB_LAUNCHD_LABEL`, `LASTDB_LAUNCHD_PLIST`.
 The sidebin path reloads the LaunchAgent job definition so plist environment
 edits take effect; `kickstart` alone only restarts the cached definition. The
-live post-check names configured keys absent from the new process, and
+driver verifies both staged files before either rename. It verifies the
+installed hashes before the reload and during the post-install gate. A hash
+failure after a rename restores both pre-cutover files before exit. The live
+post-check names configured keys absent from the new process, and
 `LASTDB_LIVE_CONFIG_ENFORCE=1` makes any such drift RED.
 
 **Hot swap:** a single-process image swap always needs a brief restart. “Seamless”
@@ -203,20 +207,39 @@ proxy is optional later for near-zero client impact.
     recover lost writes; a RED here means audit recent writes across apps
     before trusting the store. **There is deliberately no skip flag.**
     Tunables: `LASTDB_DURABILITY_CANARY_N`, `LASTDB_DURABILITY_READ_WAIT_S`.
-13. **DEV photograph stamp (required before live cutover — Tom 2026-08-19,
-    this is the SOP for all upgrades):** after the other probe bars, live
-    install is **refused** unless an **ephemeral/CoW copy of real data**
-    (never live `~/.lastdb`) uploaded a cloud-backup **photograph** to
-    **DEV** (Exemem `https://ygyu7ritx8.execute-api.us-west-2.amazonaws.com`,
-    not the primary's production backup home
-    `jdsx4ixk2i.execute-api.us-east-1.amazonaws.com`) and CAS-flipped
-    `backup/latest` (committed snapshot counter ≥ 1). A mock object store is
-    not DEV. Strip prod `cloud_sync.json` on the CoW, connect `--env dev`
-    with a DEV-only invite, then `lastdb cloud snapshot`. Record a GREEN
-    receipt; `scripts/dev-photograph-stamp-gate.sh` / `--check-dev-stamp`
-    refuse live when the receipt is missing, RED, aimed at production, or
-    used the live home. Skip (`LASTDB_PROBE_DEV_STAMP_SKIP=1`) is Tom
-    clearance only. Brain: `preference-lastdb-upgrade-ephemeral-probe-first`,
+13. **Exact-candidate DEV photograph (required before live cutover — Tom
+    2026-08-19):** the CUTOVER pass clones the rollback point that step 1
+    selects in the same safe-upgrade sequence. It does not clone live
+    `~/.lastdb` again. The versioned execution-key digest covers the source
+    OID, canonical paths, binary hashes, and binary versions. The child graph
+    checks the tuple before PROBE and CUTOVER.
+
+    The proof removes both sockets, `current-session.json`, the copied device
+    ID, `laststore_backup_known_present.json`,
+    `laststore_backup_manifest.json`, and every `cloud_sync.json*` file. It
+    does this before DEV connect. It unsets `LASTDB_HOME`, `FOLDDB_HOME`, and
+    `FOLD_SYNC_DEVICE_ID` for connect, daemon start, and snapshot.
+
+    The proof reads `lastdb-restore-probe-invite-dev-20260720` from
+    LastSecrets. It pipes the value directly to the paired CLI through stdin.
+    The CLI uses `--env dev --invite-code-stdin --use-existing-identity`.
+    It does not accept an API URL. After connect, the proof requires one
+    owner-only active config for the exact compiled DEV URL. No
+    `cloud_sync.json*` backup can remain.
+
+    The exact daemon then starts on the CoW. The exact CLI runs
+    `cloud snapshot --json`. Only that command's report can prove the manual
+    CAS update. The report must contain a positive counter, an equal CAS
+    counter, a manifest SHA-256, and a latest key.
+
+    The owner-only v2 receipt belongs to one Loom execution and expires after
+    one hour. It records the exact source, pair paths, pair hashes, pair
+    versions, DEV URL, CoW path, primary path, snapshot report, and isolation
+    facts. The gate rejects missing, duplicate, or unknown fields. It also
+    rejects a legacy receipt, a stale time, a future time, another candidate,
+    a production URL, or an overlapping home. Skip
+    (`LASTDB_PROBE_DEV_STAMP_SKIP=1`) needs Tom's clearance. Brain:
+    `preference-lastdb-upgrade-ephemeral-probe-first`,
     `sop-lastdb-safe-upgrade`.
 14. **LaunchAgent config parity:** sidebin cutover uses `bootout` then
     `bootstrap` so the plist job definition is re-read. It falls back to
@@ -270,8 +293,11 @@ proxy is optional later for near-zero client impact.
 ### A. Use Loom for every live cutover
 
 Start the graph with an explicit release candidate. The launcher reads the
-candidate source commit, creates one execution key for that commit, and checks
-Git ancestry before the probe and immediately before the cutover.
+full candidate source commit. It hashes the sibling `lastdbd` and `lastdb`
+files. The fixed-length `safe-upgrade-v6-<digest>` key includes the gate
+protocol version. Its digest covers the source OID, both canonical paths, both
+binary hashes, and both versions. The graph checks the complete tuple before
+PROBE and CUTOVER.
 
 ```bash
 last-stack-safe-upgrade-loom \
@@ -281,7 +307,12 @@ last-stack-safe-upgrade-loom \
 
 The sibling `lastdb` binary and the bundle manifest must be next to `lastdbd`.
 An equal candidate finishes as a no-op. An older, divergent, or unknown source
-commit fails closed. Do not resume an execution for a different source commit.
+commit fails closed. A byte change needs a new execution key. Do not reuse an
+execution for another pair.
+
+An exact-candidate live cutover requires the sidebin venue. The driver refuses
+the brew venue before a durable write or a service stop. Brew can resolve an
+artifact whose bytes differ from the photographed pair.
 
 The nightly path uses the parent graph:
 
@@ -291,6 +322,11 @@ last-stack-canary-loom --start --oid <full-fold-main-commit>
 
 The parent graph builds the candidate and calls `lastdb-safe-upgrade` as a Loom
 child. Do not call the cutover driver from a routine or an agent.
+
+`last-stack-canary-loom --recover` accepts only a complete protocol-v6 child
+receipt. Recovery rechecks both canonical paths, versions, hashes, the tuple
+digest, the successful nodes, and the installed live pair. A legacy receipt
+cannot record the dogfood ledger.
 
 ### B. Use the driver only for probe-only work
 
@@ -323,9 +359,10 @@ bash "$driver" --candidate /path/to/release/lastdbd --probe-only
 # Bottle version probe only
 bash "$driver" --version 0.22.8 --probe-only
 
-# Refuse/allow live based only on the DEV photograph stamp receipt
-bash "$driver" --check-dev-stamp
 ```
+
+`--check-dev-stamp` is an internal diagnostic. It fails without the complete
+Loom tuple and execution ID. Do not use a copied receipt as a manual approval.
 
 Or, after last-stack is installed:
 
@@ -343,9 +380,9 @@ The script:
 | **0. Class** | Refuse `target/debug`, `-dirty` version, size ≫ incumbent (before multi-GB backup) |
 | **2. Probe** | `BIN=<candidate>` CoW smoke harness (never live home) + **CAS mutation bar** (ephemeral candidate node: false `expected` → 409) + **RSS settle/sample** vs memory-guard limit + **latency bar**: cold then hot Board point-read / scan (like-to-like vs baseline CoW); hot `brain put` write; geo-mean on the hot triple only + **row-count bar**: candidate must not return 0 rows where the baseline returns rows (no skip flag) |
 | Detect venue | sidebin vs brew |
-| **2b. DEV photograph stamp** | Live cutover **refused** without a GREEN receipt: ephemeral/CoW (never `~/.lastdb`) uploaded the photograph to **DEV** (not the primary's production backup home) and CAS-flipped `backup/latest`. `--check-dev-stamp` exercises this gate alone. |
-| **3. Live** | **durability canary armed** (N run-unique sentinels returned `durable` + read back on the old daemon, **or** `queued+readback` after HTTP 400 on `--durable` plus a queued put and matching nonce read-back; before any live change), boot-ledger restart intent armed, then sidebin atomic install + LaunchAgent job-definition reload **or** brew upgrade/restart |
-| **4. Post-check** | Live `/health`, schemas > 0, Board title, **LaunchAgent config parity** (missing process env keys WARN; `LASTDB_LIVE_CONFIG_ENFORCE=1` → RED), **LaunchAgent loaded + live pid is that job** (a nohup `--data-dir` start is RED), **durability canary read-back** (stale nonce → RED, no skip flag), **live peak RSS** vs guard, **live point-read + kanban list latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency + durability in notice |
+| **2c. DEV photograph proof** | After all normal bars pass, the exact pair clones the static rollback point from step 1. It scrubs production state, connects the copied identity to compiled DEV, and runs the manual snapshot CAS. The fresh v2 receipt must match this Loom execution. |
+| **3. Live** | Refuse brew. For sidebin, arm the **durability canary** (N run-unique sentinels returned `durable` + read back on the old daemon, **or** `queued+readback` after HTTP 400 on `--durable` plus a queued put and matching nonce read-back; before any live change), arm the boot-ledger restart intent, verify both `.new` hashes before either rename, verify both installed hashes before reload, then reload the LaunchAgent job definition. A post-rename hash failure restores the saved pair before exit. |
+| **4. Post-check** | Exact installed pair hashes, live `/health`, schemas > 0, Board title, **LaunchAgent config parity** (missing process env keys WARN; `LASTDB_LIVE_CONFIG_ENFORCE=1` → RED), **LaunchAgent loaded + live pid is that job** (a nohup `--data-dir` start is RED), **durability canary read-back** (stale nonce → RED, no skip flag), **live peak RSS** vs guard, **live point-read + kanban list latency** vs the candidate's probe numbers (WARN; `LASTDB_LIVE_LAT_ENFORCE=1` → RED); cutover_s + latency + durability in notice |
 | **4b. Release** | After GREEN, delete the rollback point and its empty root. GREEN probe-only and operator abort release it too. |
 | RED | Exit 1, retain the one rollback point, print its path, TTL, and cleanup owner; primary untouched if class/probe failed |
 
@@ -382,7 +419,7 @@ incident.
 | `VERDICT: GREEN` | Probe + live cutover + live post-check passed | Done |
 | `VERDICT: GREEN_PROBE_ONLY` | Probe passed; primary still on old version | Start `last-stack-safe-upgrade-loom` with the candidate and source commit if Tom wants the upgrade |
 | `VERDICT: ALREADY_CURRENT` | Already on candidate/stable | Nothing to do |
-| `VERDICT: RED` | Candidate fails **class** bar (debug/dirty/size), **or** cannot serve real data, **or** the **CAS mutation** bar (node accepted a false `expected` precondition), **or** peak RSS exceeds memory-guard bar, **or** the latency bar failed (per-op 3×, absolute ceiling, **or correlated** all-ops / geo-mean regression), **or** the **row-count bar** failed (a real read returned 0 rows on the candidate while the baseline returned rows on the same CoW data), **or** the **DEV photograph stamp** is missing/RED (no ephemeral/CoW upload to DEV, or the receipt names production / live `~/.lastdb`), **or** the **durability canary** cannot obtain an exact durable receipt before cutover (and cannot arm `queued+readback` after HTTP 400), **or** its post-cutover read is stale/unreadable, **or** the primary LaunchAgent is unloaded / is not the live pid after a nohup `--data-dir` start | **Do not upgrade**; file release-blocker; use the one retained rollback point only if recovery is required. The next safe-upgrade run reclaims it. A durability RED after cutover additionally means: audit recent writes across apps — rollback does not recover lost writes. An unloaded LaunchAgent additionally means: `launchctl bootstrap gui/$(id -u) <plist>` then `launchctl print` must show state=running and this pid. |
+| `VERDICT: RED` | Candidate fails **class** bar (debug/dirty/size), **or** cannot serve real data, **or** the **CAS mutation** bar (node accepted a false `expected` precondition), **or** peak RSS exceeds memory-guard bar, **or** the latency bar failed (per-op 3×, absolute ceiling, **or correlated** all-ops / geo-mean regression), **or** the **row-count bar** failed (a real read returned 0 rows where the baseline returned rows), **or** the exact-candidate DEV proof failed, **or** its v2 receipt is stale or mismatched, **or** the **durability canary** lacks an exact durable receipt before cutover, **or** its post-cutover read is stale, **or** the primary LaunchAgent does not own the live process | **Do not upgrade**. File a release blocker. Use the retained rollback point only when recovery needs it. The next safe-upgrade run reclaims it. A durability RED after cutover means you must audit recent writes. A binary rollback cannot recover lost writes. |
 
 ## Rollback
 
@@ -452,6 +489,8 @@ kanban list   # must show real cards
 
 - `brew upgrade lastdb` as a one-liner without this skill when the user cares about data.
 - Run `safe-upgrade-lastdb.sh` without `--probe-only` outside a Loom execution.
+- Use the brew venue for an exact-candidate live cutover. Use sidebin so the
+  installed files equal the photographed pair.
 - Start a second safe-upgrade while another probe or cutover owns the host-wide
   safety lock. Wait for the first owner to exit. The lock covers rollback
   cleanup, the real-data probe, and the live cutover.
@@ -459,8 +498,14 @@ kanban list   # must show real cards
 - Read a probe's fast, empty query result as a pass. Count the rows.
 - Upload a CoW/ephemeral photograph into the primary's **production** backup
   home, or treat a mock object-store "stamp" as the DEV photograph gate.
-- Live cutover without a GREEN DEV photograph stamp (CAS `latest` on DEV
-  from an ephemeral/CoW copy of real data).
+- Reuse a DEV photograph receipt from another execution, source, daemon, or
+  CLI. A matching version does not prove matching bytes.
+- Use `LASTDB_PROBE_DEV_STAMP_SKIP=1` to skip the final binary-binding check.
+  The flag skips only the DEV receipt.
+- Keep `current-session.json`, either LastStore backup cache, a copied device
+  ID, or any `cloud_sync.json*` residue in the DEV CoW.
+- Put an invite, API key, identity seed, or recovery phrase in output, logs,
+  receipts, or files outside the one new CoW credential file.
 - Pass `--candidate …/target/debug/lastdbd` or any `-dirty` build to "get a feature SHA on primary" — rebuild `--release` from origin/main (or a soaked canary) instead (incident 2026-08-01).
 - Put a rollback or probe copy under `$HOME` (`~/.lastdb-backups`,
   `~/.lastdb-test-copies`, sibling `.bak` homes). Existing legacy trees are a

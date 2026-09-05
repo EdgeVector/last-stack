@@ -329,19 +329,33 @@ if [ "$RECOVER" -eq 1 ]; then
     exit 3
   }
   recover_field() {
-    printf '%s\n' "$recover_show" | sed -n "s/^context\.$1: //p" | head -1 | jq -r '.'
+    printf '%s\n' "$recover_show" | sed -n "s/^context\.$1: //p" | head -1 \
+      | jq -r 'if type == "string" then . else empty end' 2>/dev/null || true
   }
   recover_status="$(printf '%s\n' "$recover_show" | awk -F': ' '/^status:/{print $2; exit}')"
+  recover_state="$(printf '%s\n' "$recover_show" | awk -F': ' '/^state:/{print $2; exit}')"
   recover_candidate="$(recover_field candidate)"
+  recover_candidate_cli="$(recover_field candidate_cli)"
   recover_oid="$(recover_field source_git_oid)"
   recover_version="$(recover_field version)"
+  recover_lastdbd_version="$(recover_field lastdbd_version)"
+  recover_lastdb_version="$(recover_field lastdb_version)"
+  recover_lastdbd_sha256="$(recover_field lastdbd_sha256)"
+  recover_lastdb_sha256="$(recover_field lastdb_sha256)"
+  recover_artifact_digest="$(recover_field candidate_artifact_digest)"
+  recover_protocol_version="$(recover_field safe_upgrade_protocol_version)"
   recover_verdict="$(recover_field verdict)"
   recover_cutover="$(recover_field cutover)"
   recover_verify="$(recover_field verify)"
-  if [ "$recover_status" != "succeeded" ] || [ "$recover_verdict" != "green" ] \
+  if [ "$recover_status" != "succeeded" ] || [ "$recover_state" != "DONE" ] \
+    || [ "$recover_protocol_version" != "6" ] || [ "$recover_verdict" != "green" ] \
     || [ "$recover_cutover" != "live" ] || [ "$recover_verify" != "live" ] \
-    || [ -z "$recover_candidate" ] || [ -z "$recover_oid" ] || [ -z "$recover_version" ]; then
-    det="recover-child-not-green child=$CHILD status=${recover_status:-none} verdict=${recover_verdict:-none}"
+    || [ -z "$recover_candidate" ] || [ -z "$recover_candidate_cli" ] \
+    || [ -z "$recover_oid" ] || [ -z "$recover_version" ] \
+    || [ -z "$recover_lastdbd_version" ] || [ -z "$recover_lastdb_version" ] \
+    || [ -z "$recover_lastdbd_sha256" ] || [ -z "$recover_lastdb_sha256" ] \
+    || [ -z "$recover_artifact_digest" ]; then
+    det="recover-child-not-exact-v6 child=$CHILD status=${recover_status:-none} state=${recover_state:-none} protocol=${recover_protocol_version:-none}"
     log "$det"
     write_stamp invalid "$KEY" "error" "$det"
     printf '%s %s\n' 'ROUTINE_RESULT' "outcome=error detail=$det"
@@ -351,8 +365,15 @@ if [ "$RECOVER" -eq 1 ]; then
     --arg oid "$recover_oid" \
     --arg child "$CHILD" \
     --arg candidate "$recover_candidate" \
+    --arg candidate_cli "$recover_candidate_cli" \
     --arg version "$recover_version" \
-    '{main_oid:$oid,max_attempts:3,recovery_mode:"verified-live",recovery_child_execution:$child,recovery_candidate:$candidate,recovery_source_git_oid:$oid,recovery_version:$version}')"
+    --arg lastdbd_version "$recover_lastdbd_version" \
+    --arg lastdb_version "$recover_lastdb_version" \
+    --arg lastdbd_sha256 "$recover_lastdbd_sha256" \
+    --arg lastdb_sha256 "$recover_lastdb_sha256" \
+    --arg artifact_digest "$recover_artifact_digest" \
+    --arg protocol_version "$recover_protocol_version" \
+    '{main_oid:$oid,max_attempts:3,recovery_mode:"verified-live",recovery_child_execution:$child,recovery_candidate:$candidate,recovery_candidate_cli:$candidate_cli,recovery_source_git_oid:$oid,recovery_version:$version,recovery_lastdbd_version:$lastdbd_version,recovery_lastdb_version:$lastdb_version,recovery_lastdbd_sha256:$lastdbd_sha256,recovery_lastdb_sha256:$lastdb_sha256,recovery_candidate_artifact_digest:$artifact_digest,recovery_safe_upgrade_protocol_version:$protocol_version}')"
 else
   input="$(OID="${OID:-}" python3 -c 'import json,os; print(json.dumps({"main_oid":os.environ.get("OID") or "","max_attempts":3},separators=(",",":")))')"
 fi
