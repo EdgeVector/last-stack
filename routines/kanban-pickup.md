@@ -452,8 +452,8 @@ another work-unit while a prior claimed card only needs rollback reconciliation.
 legacy merge-babysit / pipeline paths left bare `Kind: pr` `todo` cards for
 transient stuck CR/PR symptoms (`stuck-lastgit-*`, etc.) without milestone /
 North Star. Those cards poison pickup (`write-guard` / no-claim on unrelated
-valid work). After the ready gate and **before** hard rank / `pickup claim`,
-run the zero-LLM healer once:
+valid work). After the ready gate and **before** `pickup claim` (the hard rank
+now runs after claim — see below), run the zero-LLM healer once:
 
 ```bash
 if [ -x "$last_stack/bin/last-stack-park-stuck-merge-poison-cards" ]; then
@@ -467,72 +467,14 @@ fi
 If the helper parks/closes cards and the ready gate would now be empty, re-run
 `last-stack-kanban-pickup-gate`; exit on gate ≠ 10. Do not invent work.
 
-**Hard todo rank before claim (best effort):** pickup must not rely on
-prompt-only ship-outcome budget while active/proving milestones have unblocked
-`Kind: pr` frontier. Immediately before `pickup claim`, run the Last Stack
-wrapper around the board's hard ranker.
-
-**The rank is SLOW, not stuck — give it 300s (won't-undo 2026-09-04).**
-`<board CLI> rank --mode hard` issues ~3,000 node queries for a 20-card column
-and takes 83-179 s on this host (six hand-timed runs, 2026-09-04T11:10-12:20Z,
-all rc=0). Only the fastest of the six would have survived a 90 s deadline, and
-it had 7 s of headroom. Do **not** invent a shorter deadline. Every `rc=124`
-this step has produced was a deterministic overrun of a 90 s wrapper an agent
-chose on its own. Use the block below verbatim, and give the Bash tool call
-itself a timeout of at least 330000 ms so the harness does not kill the
-command before its own deadline.
-The durable cost fix is carded as
-`kanban-rank-hard-3004-queries-168s-blocks-pickup-claim-20260904`; until it
-lands, the deadline is the thing that must be generous.
-
-```bash
-rank_out="/tmp/kanban-pickup-rank.json"
-rank_state="ok"
-if command -v gtimeout >/dev/null 2>&1; then TO=gtimeout; else TO=timeout; fi
-set +e
-$TO -k 5s 300s "$last_stack/bin/last-stack-todo-rank" --board-cli <board CLI> \
-  --json >"$rank_out" 2>/tmp/kanban-pickup-rank.err
-rank_rc=$?
-set -e
-if [ "$rank_rc" -ne 0 ]; then
-  # 124/137 = the ranker outran 300s. That is a COST problem in the ranker, not
-  # a sick node. Any non-zero rc is stale order, not a reason to claim nothing.
-  rank_state="stale-order"
-fi
-```
-
-Report `busy-node` only when the NODE is actually unwell — `lastdb status`
-fails, or the error text matches a real backpressure signal. A command that is
-merely slower than a deadline the caller picked is not a node fault, and
-labelling it `busy-node` routes every investigator to node telemetry where
-nothing is wrong.
-
-`last-stack-todo-rank` delegates to `<board CLI> rank --mode hard`, which
-orders default/todo as: active/proving milestone `Kind: pr` frontier first,
-then cleared non-frontier work, with papercut/hygiene last.
-
-**A rank failure is NOT a reason to claim nothing.** Ordering is an
-optimization; the board already carries an order, and a claim from a stale
-order still ships. Continue to `pickup claim` with `rank_state=stale-order`,
-and carry that term into the heartbeat and the `ROUTINE_RESULT` outcome so the
-degradation stays measurable — for example
-`ok cards=1 rank=stale-order worked=<slug>`. A normal fire reports `rank=ok`.
-
-Only the ready gate is fatal. If `pickup status` cannot be read the lane has no
-ready set and must noop; a failed ranker never produces that noop.
-
-Why this is best effort and not a precondition, as of 2026-09-04:
-
-- `pickup claim` does not consume the rank's output even when the rank
-  succeeds — brain `papercut-kanban-pickup-claim-ignores-hard-rank-order`,
-  open since 2026-08-26 with three recorded recurrences.
-- The failure is the ranker's own cost (about 3,004 node queries per call —
-  board card `kanban-rank-hard-3004-queries-168s-blocks-pickup-claim-20260904`),
-  not node backpressure. Measured during a failure the primary read RSS 29% of
-  its guard, zero sheds, `kanban ping` 21 ms.
-- The cost is not stable, so no fixed bound rescues the lane: the same command
-  on the same healthy node measured 54 s, 99-179 s, and over 300 s on
-  2026-09-04.
+**Claim FIRST, rank AFTER (won't-undo 2026-09-05):** a rank failure must never
+stop a fire from claiming and shipping. Run `pickup claim` immediately after
+the poison-card park above. Only once a card is actually claimed does the
+hard rank run — and only to order the *next* fire's queue, not to gate this
+one. Card `pickup-run-hard-rank-after-claim-not-before-20260905` fixed a
+recurring shape where fires read "a rank failure is NOT a reason to claim
+nothing" and then noop'd on `todo-rank-failed` anyway: prose could not stop
+the noop, so the order of the steps had to.
 
 **Preferred path (board CLI with `pickup claim`):** let the board pick and
 CAS-claim the next card so you do not reimplement priority / overlap / races:
@@ -544,9 +486,11 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
 ```
 
 - If `claimed=true` and `reason=claimed`: the card is already in `doing`.
-  **Do not** `move … doing` again. Use `.card` (slug, repo, base, body, …) as
-  the work-unit and continue at Execute (isolate / implement). Still drive to
-  **MERGED** as usual.
+  **Do not** `move … doing` again. Before continuing to Execute, run the
+  **Hard todo rank AFTER claim** step below (best effort) — the claim already
+  happened, so a rank failure at this point cannot undo it. Then use `.card`
+  (slug, repo, base, body, …) as the work-unit and continue at Execute
+  (isolate / implement). Still drive to **MERGED** as usual.
 - If `claimed=false` with `reason=at-capacity`, or with any non-empty `skipped`
   list / `scanned_ready>0` (for example `surface-overlap`), this is **not** an
   empty queue. Heartbeat `noop no-claim reason=<reason> skipped=<slug:reason>`
@@ -579,6 +523,80 @@ CLAIM_JSON=$("$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- \
   rejection, still print the machine trailer with `outcome=noop`.
 - If the CLI rejects `pickup claim` (unknown subcommand / old board binary):
   fall through to the manual steps below.
+
+**Hard todo rank AFTER claim (best effort, orders the NEXT fire — won't-undo
+2026-09-05):** only after `pickup claim` reports `claimed=true` above, run the
+Last Stack wrapper around the board's hard ranker. This step orders the queue
+for the *next* fire; it cannot gate this fire's claim, because the claim
+already happened. Skip this step entirely when no card was claimed this fire
+(no-claim / empty-queue / busy-node paths above) — there is nothing to ship,
+so spending up to 300 s on ordering here only delays the noop.
+
+**The rank is SLOW, not stuck — give it 300s (won't-undo 2026-09-04).**
+`<board CLI> rank --mode hard` issues ~3,000 node queries for a 20-card column
+and takes 83-179 s on this host (six hand-timed runs, 2026-09-04T11:10-12:20Z,
+all rc=0). Only the fastest of the six would have survived a 90 s deadline, and
+it had 7 s of headroom. Do **not** invent a shorter deadline. Every `rc=124`
+this step has produced was a deterministic overrun of a 90 s wrapper an agent
+chose on its own. Use the block below verbatim, and give the Bash tool call
+itself a timeout of at least 330000 ms so the harness does not kill the
+command before its own deadline.
+The durable cost fix is carded as
+`kanban-rank-hard-3004-queries-168s-blocks-pickup-claim-20260904`; until it
+lands, the deadline is the thing that must be generous.
+
+```bash
+rank_out="/tmp/kanban-pickup-rank.json"
+rank_state="ok"
+if command -v gtimeout >/dev/null 2>&1; then TO=gtimeout; else TO=timeout; fi
+set +e
+$TO -k 5s 300s "$last_stack/bin/last-stack-todo-rank" --board-cli <board CLI> \
+  --json >"$rank_out" 2>/tmp/kanban-pickup-rank.err
+rank_rc=$?
+set -e
+if [ "$rank_rc" -ne 0 ]; then
+  # 124/137 = the ranker outran 300s. That is a COST problem in the ranker, not
+  # a sick node. Any non-zero rc is stale order, not a reason to undo the claim.
+  rank_state="stale-order"
+fi
+```
+
+Report `busy-node` only when the NODE is actually unwell — `lastdb status`
+fails, or the error text matches a real backpressure signal. A command that is
+merely slower than a deadline the caller picked is not a node fault, and
+labelling it `busy-node` routes every investigator to node telemetry where
+nothing is wrong.
+
+`last-stack-todo-rank` delegates to `<board CLI> rank --mode hard`, which
+orders default/todo as: active/proving milestone `Kind: pr` frontier first,
+then cleared non-frontier work, with papercut/hygiene last.
+
+**A rank result never un-claims a card.** The claim already happened above;
+this step only refreshes the order the *next* fire reads. Carry `rank_state`
+into the heartbeat and the `ROUTINE_RESULT` outcome so the degradation stays
+measurable — for example `ok cards=1 rank=stale-order worked=<slug>`. A normal
+fire reports `rank=ok`.
+
+Only the ready gate is fatal. If `pickup status` cannot be read the lane has no
+ready set and must noop; a failed ranker never produces that noop.
+
+Why this runs after the claim, not before, as of 2026-09-05:
+
+- `pickup claim` does not consume the rank's output even when the rank
+  succeeds — brain `papercut-kanban-pickup-claim-ignores-hard-rank-order`,
+  open since 2026-08-26 with three recorded recurrences. Ordering the *next*
+  fire's queue is the only value this step buys; it never affects this fire's
+  claim.
+- The rank's cost (about 3,004 node queries per call, 83-179 s, sometimes over
+  300 s — board card
+  `kanban-rank-hard-3004-queries-168s-blocks-pickup-claim-20260904`) is the
+  ranker's own cost, not node backpressure. Measured during a failure the
+  primary read RSS 29% of its guard, zero sheds, `kanban ping` 21 ms.
+- Fires previously noop'd on `todo-rank-failed no_card_claimed` even though the
+  prompt already said in bold that a rank failure is not a reason to claim
+  nothing — the rule was correct but ran too early to be followed reliably.
+  Running the rank after the claim removes the failure mode structurally
+  instead of relying on an agent reading the rule correctly under pressure.
 
 1. Read only the ready queue (with the same flap-retry wrapper):
    `"$last_stack/bin/last-stack-lastdb-retry" --attempts 3 -- <board CLI> list
