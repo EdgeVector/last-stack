@@ -1,6 +1,6 @@
 {
   "name": "lastdb-canary-release",
-  "version": "6",
+  "version": "8",
   "start_at": "DECIDE_ENTRY",
   "max_depth": 2,
   "node_budget": 80,
@@ -12,8 +12,15 @@
       "recovery_mode": { "type": "string" },
       "recovery_child_execution": { "type": "string" },
       "recovery_candidate": { "type": "string" },
+      "recovery_candidate_cli": { "type": "string" },
       "recovery_source_git_oid": { "type": "string" },
-      "recovery_version": { "type": "string" }
+      "recovery_version": { "type": "string" },
+      "recovery_lastdbd_version": { "type": "string" },
+      "recovery_lastdb_version": { "type": "string" },
+      "recovery_lastdbd_sha256": { "type": "string" },
+      "recovery_lastdb_sha256": { "type": "string" },
+      "recovery_candidate_artifact_digest": { "type": "string" },
+      "recovery_safe_upgrade_protocol_version": { "type": "string" }
     }
   },
   "states": {
@@ -77,13 +84,26 @@
       "over": "upgrade_jobs",
       "definition": "lastdb-safe-upgrade",
       "fanout": "upgrade",
+      "epoch_from": "candidate_artifact_digest",
       "max_parallel": 1,
-      "input_from_context": ["candidate", "version", "source_git_oid"],
+      "input_from_context": [
+        "candidate",
+        "candidate_cli",
+        "version",
+        "lastdbd_version",
+        "lastdb_version",
+        "lastdbd_sha256",
+        "lastdb_sha256",
+        "source_git_oid",
+        "candidate_artifact_digest",
+        "safe_upgrade_protocol_version"
+      ],
       "next": "JOIN_A"
     },
     "JOIN_A": {
       "type": "join",
       "fanout": "upgrade",
+      "epoch_from": "candidate_artifact_digest",
       "policy": "all",
       "result_key": "upgrade_results",
       "next": "READ_A",

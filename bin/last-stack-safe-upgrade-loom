@@ -10,10 +10,12 @@ export_loom_run_deadline_for lastdb-safe-upgrade
 
 KEY=""
 CAND=""
+CAND_CLI=""
 SOURCE_OID=""
 STAND_IN=0
 DRY_RUN=0
 AS_JSON=0
+SAFE_UPGRADE_PROTOCOL_VERSION="6"
 
 usage() {
   cat <<'EOF'
@@ -21,7 +23,8 @@ Usage:
   last-stack-safe-upgrade-loom --candidate PATH [--source-git-oid OID] [--json]
   last-stack-safe-upgrade-loom --dry-run --candidate PATH [--source-git-oid OID] [--json]
 
-The launcher derives one immutable execution key from the candidate source OID.
+The launcher derives one immutable execution key from a SHA-256 digest of the
+source OID, canonical pair paths, binary hashes, and binary versions.
 It refuses live use when source ancestry cannot be identified.
 EOF
 }
@@ -44,15 +47,64 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+canonical_file() {
+  python3 - "$1" <<'PY'
+import os
+import sys
+
+print(os.path.realpath(sys.argv[1]))
+PY
+}
+
 if [ "$STAND_IN" -eq 0 ]; then
   [ -n "$CAND" ] || die "--candidate is required"
   [ -x "$CAND" ] || die "candidate is not executable: $CAND"
+  CAND="$(canonical_file "$CAND")"
+  CAND_CLI="$(dirname -- "$CAND")/lastdb"
+  [ -x "$CAND_CLI" ] || die "candidate sibling lastdb is not executable: $CAND_CLI"
+  CAND_CLI="$(canonical_file "$CAND_CLI")"
+  [ "$(dirname -- "$CAND_CLI")" = "$(dirname -- "$CAND")" ] \
+    && [ "$(basename -- "$CAND_CLI")" = "lastdb" ] \
+    || die "candidate sibling lastdb must be a real file beside lastdbd"
 fi
 
+sha256_file() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    die "shasum or sha256sum is required"
+  fi
+}
+
+sha256_stream() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{print $1}'
+  else
+    die "shasum or sha256sum is required"
+  fi
+}
+
 candidate_version="stand-in"
+candidate_cli_version="stand-in"
+candidate_daemon_sha256="stand-in"
+candidate_cli_sha256="stand-in"
 if [ "$STAND_IN" -eq 0 ]; then
   candidate_version="$("$CAND" --version 2>/dev/null | awk '{print $NF}' || true)"
   [ -n "$candidate_version" ] || die "candidate version is unreadable"
+  candidate_cli_version="$("$CAND_CLI" --version 2>/dev/null | awk '{print $NF}' || true)"
+  [ -n "$candidate_cli_version" ] || die "candidate sibling lastdb version is unreadable"
+  [ "$candidate_cli_version" = "$candidate_version" ] \
+    || die "candidate pair version mismatch: lastdbd=$candidate_version lastdb=$candidate_cli_version"
+  candidate_daemon_sha256="$(sha256_file "$CAND")"
+  candidate_cli_sha256="$(sha256_file "$CAND_CLI")"
+  printf '%s\n' "$candidate_daemon_sha256" | grep -Eq '^[0-9a-f]{64}$' \
+    || die "candidate daemon SHA-256 calculation failed"
+  printf '%s\n' "$candidate_cli_sha256" | grep -Eq '^[0-9a-f]{64}$' \
+    || die "candidate CLI SHA-256 calculation failed"
 fi
 
 read_manifest_oid() {
@@ -95,7 +147,19 @@ if [ "$STAND_IN" -eq 0 ]; then
   SOURCE_OID="$(printf '%s' "$SOURCE_OID" | tr 'A-F' 'a-f')"
 fi
 
-expected_key="safe-upgrade-${SOURCE_OID}"
+candidate_artifact_digest="$(printf '%s\0%s\0%s\0%s\0%s\0%s\0%s' \
+  "$SOURCE_OID" \
+  "$CAND" \
+  "$CAND_CLI" \
+  "$candidate_daemon_sha256" \
+  "$candidate_cli_sha256" \
+  "$candidate_version" \
+  "$candidate_cli_version" \
+  | sha256_stream)"
+printf '%s\n' "$candidate_artifact_digest" | grep -Eq '^[0-9a-f]{64}$' \
+  || die "candidate artifact digest calculation failed"
+
+expected_key="safe-upgrade-v${SAFE_UPGRADE_PROTOCOL_VERSION}-${candidate_artifact_digest}"
 if [ -n "$KEY" ] && [ "$KEY" != "$expected_key" ]; then
   die "--key must equal $expected_key so different candidates cannot share one execution"
 fi
@@ -103,9 +167,16 @@ KEY="$expected_key"
 
 input="$(jq -cn \
   --arg candidate "$CAND" \
+  --arg candidate_cli "$CAND_CLI" \
   --arg version "$candidate_version" \
+  --arg lastdbd_version "$candidate_version" \
+  --arg lastdb_version "$candidate_cli_version" \
+  --arg lastdbd_sha256 "$candidate_daemon_sha256" \
+  --arg lastdb_sha256 "$candidate_cli_sha256" \
   --arg source_git_oid "$SOURCE_OID" \
-  '{candidate:$candidate,version:$version,source_git_oid:$source_git_oid}')"
+  --arg candidate_artifact_digest "$candidate_artifact_digest" \
+  --arg safe_upgrade_protocol_version "$SAFE_UPGRADE_PROTOCOL_VERSION" \
+  '{candidate:$candidate,candidate_cli:$candidate_cli,version:$version,lastdbd_version:$lastdbd_version,lastdb_version:$lastdb_version,lastdbd_sha256:$lastdbd_sha256,lastdb_sha256:$lastdb_sha256,source_git_oid:$source_git_oid,candidate_artifact_digest:$candidate_artifact_digest,safe_upgrade_protocol_version:$safe_upgrade_protocol_version}')"
 
 emit_json() {
   local outcome="$1" status="$2" state="$3" execution="$4"
@@ -116,9 +187,16 @@ emit_json() {
     --arg execution "$execution" \
     --arg key "$KEY" \
     --arg candidate "$CAND" \
+    --arg candidate_cli "$CAND_CLI" \
     --arg version "$candidate_version" \
+    --arg lastdbd_version "$candidate_version" \
+    --arg lastdb_version "$candidate_cli_version" \
+    --arg lastdbd_sha256 "$candidate_daemon_sha256" \
+    --arg lastdb_sha256 "$candidate_cli_sha256" \
     --arg source_git_oid "$SOURCE_OID" \
-    '{outcome:$outcome,status:$status,state:$state,execution:$execution,key:$key,candidate:$candidate,version:$version,source_git_oid:$source_git_oid,graph:"lastdb-safe-upgrade"}'
+    --arg candidate_artifact_digest "$candidate_artifact_digest" \
+    --arg safe_upgrade_protocol_version "$SAFE_UPGRADE_PROTOCOL_VERSION" \
+    '{outcome:$outcome,status:$status,state:$state,execution:$execution,key:$key,candidate:$candidate,candidate_cli:$candidate_cli,version:$version,lastdbd_version:$lastdbd_version,lastdb_version:$lastdb_version,lastdbd_sha256:$lastdbd_sha256,lastdb_sha256:$lastdb_sha256,source_git_oid:$source_git_oid,candidate_artifact_digest:$candidate_artifact_digest,safe_upgrade_protocol_version:$safe_upgrade_protocol_version,graph:"lastdb-safe-upgrade"}'
 }
 
 if [ "$DRY_RUN" -eq 1 ]; then
