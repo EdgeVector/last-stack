@@ -807,15 +807,17 @@ grep -q 'kanban list --column backlog' "$pickup"
 grep -q 'keyed `kanban show <slug> --json`' "$pickup"
 grep -q 'Do not run broad' "$pickup"
 grep -q 'board search or full-body board scans' "$pickup"
-grep -q 'Hard todo rank before claim' "$pickup"
+grep -q 'Hard todo rank AFTER claim' "$pickup"
 grep -q 'last-stack-todo-rank' "$pickup"
 # The hard rank is best effort: a rank failure must NOT veto the claim.
-# Card pickup-rank-failure-must-not-veto-the-claim-20260904.
-grep -q 'Hard todo rank before claim (best effort)' "$pickup"
-grep -q 'A rank failure is NOT a reason to claim nothing' "$pickup"
+# Card pickup-rank-failure-must-not-veto-the-claim-20260904. Reordered
+# claim-before-rank per pickup-run-hard-rank-after-claim-not-before-20260905.
+grep -q 'Hard todo rank AFTER claim (best effort' "$pickup"
+grep -q 'A rank result never un-claims a card' "$pickup"
 grep -q 'rank=stale-order' "$pickup"
 grep -q 'a failed ranker never produces that noop' "$pickup"
-if grep -q 'todo-rank-failed no_card_claimed' "$pickup"; then
+if grep -q 'todo-rank-failed no_card_claimed' "$pickup" \
+  && ! grep -q "previously noop'd on \`todo-rank-failed" "$pickup"; then
   echo "lint: pickup prompt still noops on a failed hard rank" >&2
   exit 1
 fi
