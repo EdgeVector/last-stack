@@ -30,7 +30,11 @@ jobs:
   ci-required:
     name: ci-required
     runs-on: macos-arm64
-    timeout-minutes: 10
+    # Measured 2026-09-05 on this host under a load average above 40: the gate
+    # ran 8m20s and 9m17s to completion and was killed at 10m when loom compiled
+    # on the same runner. 15 keeps it honest today; card
+    # forgejo-venue-move-followups-20260905 owns bringing it back under 10.
+    timeout-minutes: 15
 
     steps:
       # Host-mode runners cannot use actions/checkout: the local runner's URL
