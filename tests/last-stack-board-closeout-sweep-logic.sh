@@ -142,11 +142,28 @@ exit 1
 EOF
 chmod +x "$binwrap/lastgit"
 
+# The sweep sources last-stack-shell-prelude, which prepends its own install
+# bin to PATH, so a PATH-only stub loses to ~/.local/bin/lastgit and the
+# fixture asks the live primary node instead. Every invocation below therefore
+# runs a COPY of the sweep out of a temp stack whose bin/ also holds the stub,
+# which is where the sweep resolves it from
+# (papercut-board-closeout-sweep-logic-fixture-used-live-lastgit-cr).
+stub_stack() {
+  local dir="$1"
+  mkdir -p "$dir/bin"
+  cp "$sweep" "$dir/bin/last-stack-board-closeout-sweep"
+  cp "$binwrap/lastgit" "$dir/bin/lastgit"
+  chmod +x "$dir/bin/last-stack-board-closeout-sweep" "$dir/bin/lastgit"
+  printf '%s\n' "$dir/bin/last-stack-board-closeout-sweep"
+}
+
 # Forge API is resolved from lastStack/bin (not PATH). Stub an open PR so the
 # in-flight CI card cannot be confused with a live merged CR.
 first_stack="$tmp/first-stack"
 mkdir -p "$first_stack/bin"
 cp "$sweep" "$first_stack/bin/last-stack-board-closeout-sweep"
+cp "$binwrap/lastgit" "$first_stack/bin/lastgit"
+chmod +x "$first_stack/bin/lastgit"
 chmod +x "$first_stack/bin/last-stack-board-closeout-sweep"
 cat >"$first_stack/bin/last-stack-forge-api" <<'EOF'
 #!/usr/bin/env bash
@@ -253,7 +270,8 @@ esac
 EOF
 chmod +x "$malformed_board"
 
-malformed_out="$("$sweep" --dry-run --board-cli "$malformed_board" --grace-min 1 --max-actions 20 2>&1 || true)"
+malformed_sweep="$(stub_stack "$tmp/malformed-stack")"
+malformed_out="$("$malformed_sweep" --dry-run --board-cli "$malformed_board" --grace-min 1 --max-actions 20 2>&1 || true)"
 echo "$malformed_out"
 echo "$malformed_out" | grep -q 'closed_slugs=malformed-structured-pr-url' || {
   echo "FAIL: expected malformed structured pr_url to resolve as merged after sanitizing:" >&2
@@ -306,7 +324,8 @@ esac
 EOF
 chmod +x "$dirty_board"
 export BOARD_HEALS="$dirty_heals"
-dirty_out="$("$sweep" --board-cli "$dirty_board" --grace-min 1 --max-actions 20 2>&1 || true)"
+dirty_sweep="$(stub_stack "$tmp/dirty-stack")"
+dirty_out="$("$dirty_sweep" --board-cli "$dirty_board" --grace-min 1 --max-actions 20 2>&1 || true)"
 echo "$dirty_out"
 if ! grep -q 'lastgit://last-stack/cr/cr-mskqwa3y-78c9' "$dirty_heals"; then
   echo "FAIL: expected dirty-nonempty pr_url heal to the sanitized lastgit URL:" >&2
@@ -327,6 +346,8 @@ echo "$dirty_out" | grep -q 'pr-url-healed:dirty-nonempty-pr-url' || {
 transient_stack="$tmp/transient-stack"
 mkdir -p "$transient_stack/bin"
 cp "$sweep" "$transient_stack/bin/last-stack-board-closeout-sweep"
+cp "$binwrap/lastgit" "$transient_stack/bin/lastgit"
+chmod +x "$transient_stack/bin/lastgit"
 cat >"$transient_stack/bin/last-stack-card-closeout" <<'EOF'
 #!/usr/bin/env bash
 echo "service_timeout: board point read failed" >&2
@@ -465,6 +486,8 @@ chmod +x "$binwrap/last-stack-forge-api"
 closed_stack="$tmp/closed-stack"
 mkdir -p "$closed_stack/bin"
 cp "$sweep" "$closed_stack/bin/last-stack-board-closeout-sweep"
+cp "$binwrap/lastgit" "$closed_stack/bin/lastgit"
+chmod +x "$closed_stack/bin/lastgit"
 cp "$binwrap/last-stack-forge-api" "$closed_stack/bin/last-stack-forge-api"
 chmod +x "$closed_stack/bin/last-stack-board-closeout-sweep" "$closed_stack/bin/last-stack-forge-api"
 
@@ -579,6 +602,8 @@ fi
 merged_park_stack="$tmp/merged-park-stack"
 mkdir -p "$merged_park_stack/bin"
 cp "$sweep" "$merged_park_stack/bin/last-stack-board-closeout-sweep"
+cp "$binwrap/lastgit" "$merged_park_stack/bin/lastgit"
+chmod +x "$merged_park_stack/bin/lastgit"
 cat >"$merged_park_stack/bin/last-stack-card-closeout" <<'EOF'
 #!/usr/bin/env bash
 echo "last-stack-card-closeout: deploy gate pending slug=merged-deploy-park repo=fold requires=deploy-pipeline status=missing" >&2

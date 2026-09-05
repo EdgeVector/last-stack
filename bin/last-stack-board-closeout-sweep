@@ -193,6 +193,15 @@ const worktreeRoots = [
   path.join(home, ".fkanban", "worktrees"),
 ];
 const forgeApi = path.join(lastStack, "bin", "last-stack-forge-api");
+// Resolve LastGit the way the forge API is resolved: an absolute path under
+// this install's bin when one exists, and only then the bare PATH name. This
+// script sources last-stack-shell-prelude, which prepends last_stack/bin, so a
+// PATH-only lookup cannot be overridden by a caller — a fixture that stubs
+// `lastgit` on PATH loses to ~/.local/bin/lastgit and silently asks the live
+// primary node instead
+// (papercut-board-closeout-sweep-logic-fixture-used-live-lastgit-cr).
+const lastgitStackBin = path.join(lastStack, "bin", "lastgit");
+const lastgitBin = fs.existsSync(lastgitStackBin) ? lastgitStackBin : "lastgit";
 const closeoutBin = path.join(lastStack, "bin", "last-stack-card-closeout");
 const forgeJsonJq = path.join(lastStack, "bin", "last-stack-forge-json-jq");
 
@@ -632,7 +641,7 @@ function isMerged(pr) {
     };
   }
   if (pr.kind === "lastgit") {
-    const out = run("lastgit", ["cr", "view", pr.repo, pr.id, "--json"], { timeout: 45000 });
+    const out = run(lastgitBin, ["cr", "view", pr.repo, pr.id, "--json"], { timeout: 45000 });
     if (!out.ok) {
       res.flagged.push(`lastgit-fetch-failed:${pr.repo}/${pr.id}`);
       return { merged: false, closed: false, detail: "lastgit-fetch-failed" };
@@ -1218,6 +1227,9 @@ iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
 home = Path.home()
 worktree_roots = [home / ".kanban" / "worktrees", home / ".fkanban" / "worktrees"]
 forge_api = last_stack / "bin" / "last-stack-forge-api"
+# Same rule as the JS arm above: prefer this install's bin, fall back to PATH.
+_lastgit_stack_bin = last_stack / "bin" / "lastgit"
+lastgit_bin = str(_lastgit_stack_bin) if _lastgit_stack_bin.exists() else "lastgit"
 closeout_bin = last_stack / "bin" / "last-stack-card-closeout"
 
 res = {"status": "ok", "closed": [], "rolled_back": [], "demoted": [], "skipped": [], "flagged": []}
@@ -1554,7 +1566,7 @@ def is_merged(url):
     m = re.match(r"lastgit://([^/]+)/cr/([^/\s?#]+)", url)
     if m:
         repo, cid = m.group(1), m.group(2)
-        ok, out, _ = run(["lastgit", "cr", "view", repo, cid, "--json"], timeout=45)
+        ok, out, _ = run([lastgit_bin, "cr", "view", repo, cid, "--json"], timeout=45)
         if not ok:
             res["flagged"].append(f"lastgit-fetch-failed:{repo}/{cid}")
             return False, False, "lastgit-fetch-failed"

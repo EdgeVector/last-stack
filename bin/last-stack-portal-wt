@@ -13,6 +13,8 @@ set -euo pipefail
 GIT="${GIT:-/usr/bin/git}"
 CACHE_ROOT="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}"
 WT_ROOT="${WORKTREES_DIR:-$HOME/.fkanban/worktrees}"
+# Set by detach_idle_main_worktrees when it refuses a dirty pin on <main>.
+DIRTY_MAIN_PIN=""
 
 die() { printf 'portal-wt: %s\n' "$*" >&2; exit 1; }
 
@@ -102,6 +104,7 @@ worktree_has_live_process() {
 # and detach only pins that are both clean and unused.
 detach_idle_main_worktrees() {
   local path="" line git_status
+  DIRTY_MAIN_PIN=""
   while IFS= read -r line; do
     case "$line" in
       "worktree "*) path="${line#worktree }" ;;
@@ -115,6 +118,7 @@ detach_idle_main_worktrees() {
         if [ -n "$git_status" ]; then
           printf 'portal-wt: refusing to detach dirty worktree pinning %s: %s\n' \
             "$MAIN_REF" "$path" >&2
+          DIRTY_MAIN_PIN="$path"
           continue
         fi
         if worktree_has_live_process "$path"; then
@@ -136,23 +140,91 @@ $($GIT -C "$CACHE" worktree list --porcelain 2>/dev/null || true)
 EOF
 }
 
+# A portal mirror must map remote branches into refs/remotes/origin/*, never
+# into refs/heads/*. Both of the shapes this fleet accumulated are silent
+# stale-ref generators that still exit 0:
+#
+#   +refs/heads/*:refs/heads/*  — a plain `git fetch origin` targets every
+#     worktree-owned branch, so git refuses the WHOLE fetch ("refusing to fetch
+#     into branch <x> checked out at <path>") whenever any sibling worktree has
+#     one checked out, and refs/heads/main is left at its previous value.
+#   (unset)                     — `git fetch origin` writes FETCH_HEAD only, so
+#     refs/remotes/origin/main never moves after clone time and every later
+#     `git merge-base --is-ancestor <oid> origin/main` answers from a ref that
+#     can be days old.
+#
+# Normalize on every call, not only at clone time, so mirrors provisioned
+# before this rule heal on the next start/fetch.
+MIRROR_FETCH_REFSPEC='+refs/heads/*:refs/remotes/origin/*'
+
+normalize_mirror_refspec() {
+  local current
+  # `config --get-all` exits 1 when the key is unset — which is exactly the
+  # unset-refspec mirror this heals — so swallow it under `set -e -o pipefail`.
+  current="$($GIT -C "$CACHE" config --get-all remote.origin.fetch 2>/dev/null \
+    | tr '\n' ' ' | sed 's/ *$//' || true)"
+  [ "$current" != "$MIRROR_FETCH_REFSPEC" ] || return 0
+  $GIT -C "$CACHE" config --replace-all remote.origin.fetch \
+    "$MIRROR_FETCH_REFSPEC" 2>/dev/null || return 0
+  printf 'portal-wt: healed mirror refspec [%s] -> [%s]\n' \
+    "${current:-unset}" "$MIRROR_FETCH_REFSPEC" >&2
+}
+
 ensure_cache() {
   mkdir -p "$(dirname "$CACHE")"
   if [ ! -d "$CACHE" ]; then
     printf 'portal-wt: cloning bare cache %s ← %s\n' "$CACHE" "$REMOTE" >&2
     $GIT clone --bare --quiet "$REMOTE" "$CACHE"
-    $GIT -C "$CACHE" config remote.origin.fetch "+refs/heads/*:refs/heads/*" 2>/dev/null || true
   fi
-  # Always refresh main tip before starting work
+  normalize_mirror_refspec
+  # Always refresh main tip before starting work. Update the documented mirror
+  # read path (refs/heads/<main>) AND the remote-tracking ref in one call: the
+  # first can be pinned by a worktree, the second never can, so a reader that
+  # trusts either one is answered from this fetch. Never fall back to a bare
+  # ref name — that form updates FETCH_HEAD alone and is the stale-ref bug.
   printf 'portal-wt: fetch %s (%s)\n' "$REMOTE" "$MAIN_REF" >&2
   detach_idle_main_worktrees
   $GIT -C "$CACHE" fetch --prune --quiet origin \
-    "+refs/heads/${MAIN_REF}:refs/heads/${MAIN_REF}" 2>/dev/null \
-    || $GIT -C "$CACHE" fetch --prune --quiet origin "$MAIN_REF" 2>/dev/null \
+    "+refs/heads/${MAIN_REF}:refs/heads/${MAIN_REF}" \
+    "+refs/heads/${MAIN_REF}:refs/remotes/origin/${MAIN_REF}" 2>/dev/null \
+    || $GIT -C "$CACHE" fetch --prune --quiet origin \
+         "+refs/heads/${MAIN_REF}:refs/remotes/origin/${MAIN_REF}" 2>/dev/null \
     || $GIT -C "$CACHE" fetch --prune --quiet "$REMOTE" \
-         "+refs/heads/${MAIN_REF}:refs/heads/${MAIN_REF}"
+         "+refs/heads/${MAIN_REF}:refs/heads/${MAIN_REF}" \
+         "+refs/heads/${MAIN_REF}:refs/remotes/origin/${MAIN_REF}"
   $GIT -C "$CACHE" rev-parse --verify -q "refs/heads/${MAIN_REF}" >/dev/null \
+    || $GIT -C "$CACHE" rev-parse --verify -q "refs/remotes/origin/${MAIN_REF}" >/dev/null \
     || die "no ${MAIN_REF} after fetch from $REMOTE"
+  warn_pinned_main
+  # A dirty worktree pinning <main> stays fail-closed. The remote-tracking ref
+  # above is now current either way, so a caller that catches this can still
+  # read the true tip, but portal-wt never starts work behind an unresolved pin.
+  [ -z "${DIRTY_MAIN_PIN:-}" ] \
+    || die "dirty worktree pins ${MAIN_REF}: ${DIRTY_MAIN_PIN}"
+}
+
+# refs/heads/<main> lags whenever a worktree pins it and the branch fetch was
+# refused. Say so with both oids: a caller that reads the mirror ref must not
+# mistake "the fetch succeeded" for "this ref is the remote tip".
+warn_pinned_main() {
+  local local_tip remote_tip
+  local_tip="$($GIT -C "$CACHE" rev-parse -q --verify "refs/heads/${MAIN_REF}" 2>/dev/null || true)"
+  remote_tip="$($GIT -C "$CACHE" rev-parse -q --verify "refs/remotes/origin/${MAIN_REF}" 2>/dev/null || true)"
+  [ -n "$local_tip" ] && [ -n "$remote_tip" ] || return 0
+  [ "$local_tip" != "$remote_tip" ] || return 0
+  printf 'portal-wt: WARNING refs/heads/%s is stale (%s) vs origin/%s (%s); reading the mirror branch ref will answer from the stale tip\n' \
+    "$MAIN_REF" "$local_tip" "$MAIN_REF" "$remote_tip" >&2
+}
+
+# Base a new worktree on the remote-tracking ref when it exists: it is the one
+# ref no local worktree can pin, so a stray worktree holding main can no longer
+# start fresh work from a stale base.
+start_base_ref() {
+  if $GIT -C "$CACHE" rev-parse -q --verify "refs/remotes/origin/${MAIN_REF}" >/dev/null 2>&1; then
+    printf 'refs/remotes/origin/%s\n' "$MAIN_REF"
+  else
+    printf 'refs/heads/%s\n' "$MAIN_REF"
+  fi
 }
 
 cmd_fetch() {
@@ -322,7 +394,7 @@ cmd_start() {
   if $GIT -C "$CACHE" show-ref --verify --quiet "refs/heads/$branch"; then
     $GIT -C "$CACHE" worktree add --quiet "$path" "$branch"
   else
-    $GIT -C "$CACHE" worktree add --quiet -b "$branch" "$path" "refs/heads/${MAIN_REF}"
+    $GIT -C "$CACHE" worktree add --quiet -b "$branch" "$path" "$(start_base_ref)"
   fi
 
   # Drop a small marker so agents know this is the work surface.

@@ -417,3 +417,10 @@ ci_test tests/last-stack-safe-upgrade-rowcount-verdict.sh
 # One exact Loom candidate must create the fresh DEV photograph receipt.
 # APPENDED (see the shard-stability note above): ci_test shards by list position.
 ci_test tests/last-stack-lastdb-safe-upgrade-dev-photograph-stamp.sh
+
+# Portal bare mirrors must map remote branches into refs/remotes/origin/*, so a
+# plain `git fetch origin` is never refused by a sibling worktree's branch and
+# origin/<main> is never a clone-time tip. Hermetic: local bare repos only, no
+# node, no network.
+# APPENDED (see the shard-stability note above): ci_test shards by list position.
+ci_test tests/last-stack-portal-wt-mirror-origin-refspec.sh
