@@ -103,6 +103,10 @@
           "target": "$HOME/.local/bin/last-stack-json-get"
         },
         {
+          "source": "bin/last-stack-lastdb-dev",
+          "target": "$HOME/.local/bin/lastdb-dev"
+        },
+        {
           "source": "bin/last-stack-design-pack",
           "target": "$HOME/.local/bin/last-stack-design-pack"
         },
