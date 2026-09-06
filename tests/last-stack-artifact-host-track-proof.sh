@@ -27,23 +27,24 @@ jq -e '
       and (.artifact_exemption.rationale | length > 0))
 ' "$default_registry" >/dev/null || fail "default registry has checkout entries without documented exemptions"
 
-# 2026-09-05: last-stack, kanban(fkanban), routines, loom are Forgejo gates of
-# record; their stable channel is promoted by Forge CI, so track_gate_main is
-# false on purpose (decision-2026-09-05-factory-repos-venue-back-to-forgejo).
+# 2026-09-06: every artifact app is a Forgejo gate of record; each repo's
+# Forge CI publish job promotes the stable channel, so track_gate_main is
+# false on purpose (decision-2026-09-06-all-repos-venue-forgejo-no-lastgit-default;
+# the four factory apps moved 2026-09-05).
 jq -e '
   def app($name): .apps[] | select(.app == $name);
   (app("last-stack") | .install_mode == "artifact" and .artifact_app == "last-stack" and .gate == "forgejo" and .track_gate_main == false)
   and (app("lastgit") | .install_mode == "checkout" and .artifact_exemption.kind == "bootstrap-recovery")
-  and (app("brain") | .install_mode == "artifact" and .track_gate_main == true and (.links | length) >= 2)
-  and (app("reconciler") | .install_mode == "artifact" and .track_gate_main == true and .install_root == "$HOME/.host-track/apps/reconciler" and .post_install == "$HOME/.host-track/apps/reconciler/current/bin/reconciler-host-track-post-install" and any(.links[]; .source == "src/cli.ts" and .target == "$HOME/.local/bin/reconciler") and (.safe_upgrade.probes | length) == 2)
-  and (app("situations") | .install_mode == "artifact" and .track_gate_main == true and (.links | length) == 2)
+  and (app("brain") | .install_mode == "artifact" and .gate == "forgejo" and .track_gate_main == false and (.links | length) >= 2)
+  and (app("reconciler") | .install_mode == "artifact" and .gate == "forgejo" and .track_gate_main == false and .install_root == "$HOME/.host-track/apps/reconciler" and .post_install == "$HOME/.host-track/apps/reconciler/current/bin/reconciler-host-track-post-install" and any(.links[]; .source == "src/cli.ts" and .target == "$HOME/.local/bin/reconciler") and (.safe_upgrade.probes | length) == 2)
+  and (app("situations") | .install_mode == "artifact" and .gate == "forgejo" and .track_gate_main == false and (.links | length) == 2)
   and (app("kanban") | .install_mode == "artifact" and .gate == "forgejo" and .track_gate_main == false and .install_root == "$HOME/.host-track/apps/fkanban" and (.links | length) == 1 and any(.links[]; .source == "dist/kanban" and .target == "$HOME/.local/bin/kanban") and (any(.links[]; .target == "$HOME/.local/bin/fkanban") | not) and any(.retired_links[]?; .target == "$HOME/.local/bin/fkanban"))
   and (any(.apps[]; .app == "fkanban") | not)
   and (app("routines") | .install_mode == "artifact" and .gate == "forgejo" and .track_gate_main == false)
-  and (app("lastsecrets") | .install_mode == "artifact" and .track_gate_main == true)
-  and (app("configurations") | .install_mode == "artifact" and .track_gate_main == true)
-  and (app("lastseek") | .install_mode == "artifact" and .track_gate_main == true and (.post_install|length) > 0)
-  and (app("search") | .install_mode == "artifact" and .track_gate_main == true and (.post_install|length) > 0)
+  and (app("lastsecrets") | .install_mode == "artifact" and .gate == "forgejo" and .track_gate_main == false)
+  and (app("configurations") | .install_mode == "artifact" and .gate == "forgejo" and .track_gate_main == false)
+  and (app("lastseek") | .install_mode == "artifact" and .gate == "forgejo" and .track_gate_main == false and (.post_install|length) > 0)
+  and (app("search") | .install_mode == "artifact" and .gate == "forgejo" and .track_gate_main == false and (.post_install|length) > 0)
   and (app("loom") | .install_mode == "artifact" and .gate == "forgejo" and .track_gate_main == false and any(.links[]; .source == "dist/loom" and .target == "$HOME/.local/bin/loom"))
   and (app("lastdb") | .install_mode == "checkout" and .artifact_exemption.kind == "deployment-only")
   and (app("lastdbd") | .install_mode == "checkout" and .artifact_exemption.kind == "deployment-only")

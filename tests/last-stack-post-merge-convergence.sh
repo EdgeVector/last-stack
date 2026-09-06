@@ -147,7 +147,11 @@ touch "$tmp/gate.log" "$tmp/ci-run.log" "$tmp/refresh.log"
 printf '0\n' >"$tmp/ci-run-fails"
 
 run_worker() {
+  # The fixture drives the LastGit convergence path (lastgit ref / ci status /
+  # ci run). Since 2026-09-06 no repo defaults to LastGit, so opt the fixture
+  # repo in the way a real repo would.
   env PATH="$tmp/bin:/usr/bin:/bin" \
+    LAST_STACK_LASTGIT_NATIVE_REPOS="EdgeVector/situations" \
     QUIET_REMOTE="$remote" \
     QUIET_STATUS_DIR="$tmp/status" \
     QUIET_ARTIFACT_ROOT="$tmp/artifacts" \

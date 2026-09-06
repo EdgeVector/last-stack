@@ -31,8 +31,8 @@ grep -q 'keep me' "$claude_md" || fail "user CLAUDE.md content was clobbered"
 grep -q 'last-stack:brain-kanban:start' "$claude_md" || fail "managed block missing from CLAUDE.md"
 grep -q 'last-stack:asd-ste100:start' "$claude_md" || fail "asd-ste100 block missing from CLAUDE.md"
 grep -q 'Write to Tom in ASD-STE100' "$claude_md" || fail "ASD-STE100 rule missing from CLAUDE.md"
-grep -q 'New repository venue default: LastGit' "$claude_md" \
-  || fail "LastGit new-repo default missing from CLAUDE.md"
+grep -q 'New repository venue default: Forgejo' "$claude_md" \
+  || fail "Forgejo new-repo default missing from CLAUDE.md"
 grep -q 'brain ask' "$claude_md" || fail "CLI guidance missing from managed block"
 grep -q 'folddb.sock' "$claude_md" || fail "transport guidance missing from managed block"
 grep -q 'kanban ping' "$claude_md" || fail "socket health check guidance missing from managed block"
