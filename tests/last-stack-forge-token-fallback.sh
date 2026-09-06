@@ -121,7 +121,12 @@ awk '/^web_login\(\)/,/^}/' "$ROOT/bin/last-stack-forge-ci-log" | grep -q 'retur
 # job must not sink the jobs that did read.
 grep -q 'NO LOG AVAILABLE' "$ROOT/bin/last-stack-forge-ci-log" \
   || fail "last-stack-forge-ci-log must report a per-job missing log and continue"
-awk '/^for idx in \$targets/,0' "$ROOT/bin/last-stack-forge-ci-log" | grep -q 'read_ok=$(( read_ok + 1 ))' \
+# Anchored on the target loop, NOT on its variable name: the first version of
+# this check matched `for idx in $targets` literally and went red the day the
+# loop became `for target in $targets` to carry run:idx pairs, while the
+# behaviour it guards was untouched.
+awk '/^for [A-Za-z_][A-Za-z0-9_]* in \$targets/,0' "$ROOT/bin/last-stack-forge-ci-log" \
+  | grep -q 'read_ok=$(( read_ok + 1 ))' \
   || fail "last-stack-forge-ci-log must count the jobs it actually read"
 
 printf 'ok: forge token fallback (env > keychain > lastsecrets, locked keychain, no helper reads the keychain directly, ci-log reads on-disk logs)\n'

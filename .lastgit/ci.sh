@@ -469,3 +469,13 @@ ci_test tests/last-stack-portal-wt-rm-suggestion-scope.sh
 # values, raw snapshot envelopes, object digests, and full CoW paths.
 # APPENDED (see the shard-stability note above): ci_test shards by list position.
 ci_test tests/last-stack-lastdb-dev-photograph-sanitize-tail.sh
+
+# The CI-log helper answered a question about a commit with a green run while a
+# red sibling run existed for the same commit. Measured over fold's complete
+# task history: 288 of 4589 heads, and 279 heads carry failures in more than
+# one run, so preferring a single failing run would hide almost as many as it
+# fixed. Four routines read "Job succeeded" as evidence for a failing commit
+# across three weeks. Also pins that a PR number is refused as a run number.
+# Hermetic: stubbed `curl` and an on-disk log root, no forge, no network. ~1s.
+# APPENDED (see the shard-stability note above): ci_test shards by list position.
+ci_test tests/last-stack-forge-ci-log-run-selection.sh
