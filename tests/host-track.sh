@@ -235,8 +235,8 @@ printf '%s\n' "$remote_status" | jq -e '
   and .install_mode == "artifact"
   and .kind == "artifact cli"
   and .command == "ra"
-  and .gate == "lastgit"
-  and .gate_main == "lastdb:///remote#main"
+  and .gate == "forgejo"
+  and .gate_main == "http://localhost:3300/EdgeVector/remote.git#main"
   and .artifact_app == "remote"
   and .artifact_channel == "stable"
   and (.artifact_root | endswith("/default-home/.lastgit/artifacts"))
