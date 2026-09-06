@@ -313,8 +313,8 @@ bin/
   last-stack-json-get       extract one simple field path from socket/API JSON
                             without relying on jq or inline python/node parsing
   last-stack-repo-op-guard  reject workspace roots before repo-scoped git/gh
-  last-stack-pr-venue       route a repo to github, forgejo, or explicit
-                            LastGit-native CR handling before PR/CR operations
+  last-stack-pr-venue       route a repo to forgejo (the default), github, or
+                            explicit opt-in LastGit CR handling before PR/CR ops
   last-stack-gh-pr-queue-state
                             GraphQL PR queue-state helper without gh -R drift
   last-stack-forge-ci-log   print a failing forge (Forgejo) CI job's log tail —
@@ -376,7 +376,7 @@ instructions/brain-kanban.md
                         and registers the brain/kanban MCP servers for Codex and
                         agy (with a PATH env so GUI-spawned servers can find bun);
                         also records the
-                        creation-time default that new repos start in LastGit
+                        creation-time default that new repos start on Forgejo
                         while existing venue choices remain unchanged until
                         explicitly migrated
 instructions/asd-ste100.md

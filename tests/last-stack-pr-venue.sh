@@ -20,18 +20,20 @@ git -C "$repo" branch -M main
 initial_head="$(git -C "$repo" rev-parse HEAD)"
 git -C "$repo" update-ref refs/remotes/origin/main "$initial_head"
 
-# Defaults without marker (2026-07-17): most EdgeVector repos are LastGit-native;
-# GitHub copies are read-only mirrors. Do not default public repos to github.
-# 2026-09-05 (Tom): the four factory repos are Forgejo gates of record.
+# Defaults without marker. 2026-09-06 (Tom): every EdgeVector repo is a Forgejo
+# gate of record; LastGit is opt-in only; GitHub copies are read-only mirrors,
+# so an unknown repo defaults to forgejo, never github or lastgit.
 test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/last-stack "$repo")" = "forgejo"
 test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/fkanban "$repo")" = "forgejo"
 test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/routines "$repo")" = "forgejo"
 test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/loom "$repo")" = "forgejo"
-test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/brain "$repo")" = "lastgit"
+test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/brain "$repo")" = "forgejo"
 test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/fold "$repo")" = "forgejo"
 test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/lastgit "$repo")" = "forgejo"
-# exemem-infra cut over to LastGit (GitHub is read-only mirror / deploy artifact only).
-test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/exemem-infra "$repo")" = "lastgit"
+test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/exemem-infra "$repo")" = "forgejo"
+# An unknown EdgeVector repo is forgejo too (never github: mirrors are read-only).
+test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/never-heard-of-it "$repo")" = "forgejo"
+test "$("$ROOT/bin/last-stack-pr-venue" --json EdgeVector/never-heard-of-it "$repo" | jq -r .reason)" = "default:forgejo"
 # True GitHub primaries still default to github.
 test "$("$ROOT/bin/last-stack-pr-venue" EdgeVector/Keepside_Desktop "$repo")" = "github"
 test "$("$ROOT/bin/last-stack-pr-venue" --compare-ref EdgeVector/last-stack "$repo")" = "origin/main"

@@ -37,18 +37,25 @@ misbehaves, first run `host-track status` when available and `<cmd> which` (for
 example `lastgit which`) before blaming LastDB, changing PATH by hand, or
 running a checkout-local binary.
 
-### New repository venue default: LastGit
+### New repository venue default: Forgejo (won't-undo — 2026-09-06)
 
-Create new repositories in LastGit first, with `lastdb:///<slug>` as the
-canonical remote. Commit `.last-stack/pr-venue` with `lastgit` on its first
-line, add a required `.lastgit/ci.sh` gate, and configure the repo's supervised
-CI watcher/completer with a concurrency limit of one. Do not create a Forgejo
-or GitHub source repository first unless the repository is explicitly public
-or a mirror is part of the request.
+Create new repositories on the local Forgejo forge first:
+`http://localhost:3300/EdgeVector/<slug>` is the canonical remote and the gate
+of record. Commit `.last-stack/pr-venue` with `forgejo` on its first line, add
+`.forgejo/workflows/ci.yml` whose `ci-required` job runs `.lastgit/ci.sh` on
+the `macos-arm64` host lane, and protect `main` with the required context
+`Forge CI / ci-required (pull_request)`. Open PRs with `last-stack-forge-api`
+(`sop-forge-pr-workflow`). Do not create a LastGit repo (`lastdb:///<slug>`),
+and do not create a GitHub source repository unless the repository is
+explicitly public or a mirror is part of the request.
 
-This is a creation-time default, not an instruction to silently migrate
-existing repositories. Existing repos keep their configured GitHub, Forgejo,
-or LastGit venue until an explicit migration changes it.
+LastGit is not a default for any repository (Tom, 2026-09-06). Every
+EdgeVector repo moved its gate of record to Forgejo on 2026-09-05/06 and its
+LastGit repo is disabled: brain
+`decision-2026-09-06-all-repos-venue-forgejo-no-lastgit-default`. Do not run
+`lastgit cr create` and do not push to any `lastdb:///<slug>` remote.
+`last-stack-pr-venue` answers `forgejo` for every EdgeVector repo that is not
+a listed GitHub primary; LastGit routing is explicit opt-in only.
 
 ### Transport: the unix socket, NOT TCP — a `:9001` failure is NOT an outage
 

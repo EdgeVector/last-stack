@@ -279,7 +279,7 @@
           "target": "$HOME/.local/bin/last-stack-safe-upgrade-cli"
         }
       ],
-      "notes": "Gate of record is Forgejo since 2026-09-05 (brain decision-2026-09-05-factory-repos-venue-back-to-forgejo); lastdb:///last-stack is disabled. The Forge CI publish job on every push to main builds the artifact, publishes it into artifact_root and promotes stable with `lastgit artifact promote --gate forgejo` (EdgeVector/lastgit#591). track_gate_main is false on purpose: the node's ref for this repo no longer moves, and promote-to-main from a frozen LastGit tip would roll the channel back. host-track follows the stable channel head. Runtime is an immutable CI artifact that tracks gate_main (green+published main). host-track refresh promotes stable to that tip then installs. ~/.last-stack/{bin,skills,...} → artifacts/current. PATH links Class A + pickup bootstrap + Forge closeout tools (forge-api and friends) so routinesd (~/.local/bin first) never hits GC'd version pins and board-closeout can resolve Forge PRs. Never develop in the install; use a worktree. Also PATH-link last-stack-papercut-lifecycle-close, last-stack-kanban-file-pr, last-stack-kanban-decision-check, last-stack-feature-portfolio-admission, last-stack-kanban-done-when-eval, last-stack-json-capture, and last-stack-json-get so scheduled shells (routinesd PATH often ~/.local/bin-first without sourcing shell-prelude) resolve the lifecycle closer, the required Kind:pr filing helper, its settled-decision check, the two-outcome portfolio admission gate, the non-PR DONE-WHEN evaluator, and the JSON stdout/stderr capture helpers the unsafe-inline-json hook recommends.",
+      "notes": "Gate of record is Forgejo since 2026-09-05 (brain decision-2026-09-05-factory-repos-venue-back-to-forgejo); lastdb:///last-stack is disabled. The Forge CI publish job on every push to main builds the artifact, publishes it into artifact_root and promotes stable with `lastgit artifact promote --gate forgejo` (EdgeVector/lastgit#591). track_gate_main is false on purpose: the node's ref for this repo no longer moves, and promote-to-main from a frozen LastGit tip would roll the channel back. host-track follows the stable channel head. Runtime is an immutable CI artifact that tracks gate_main (green+published main). host-track refresh promotes stable to that tip then installs. ~/.last-stack/{bin,skills,...} \u2192 artifacts/current. PATH links Class A + pickup bootstrap + Forge closeout tools (forge-api and friends) so routinesd (~/.local/bin first) never hits GC'd version pins and board-closeout can resolve Forge PRs. Never develop in the install; use a worktree. Also PATH-link last-stack-papercut-lifecycle-close, last-stack-kanban-file-pr, last-stack-kanban-decision-check, last-stack-feature-portfolio-admission, last-stack-kanban-done-when-eval, last-stack-json-capture, and last-stack-json-get so scheduled shells (routinesd PATH often ~/.local/bin-first without sourcing shell-prelude) resolve the lifecycle closer, the required Kind:pr filing helper, its settled-decision check, the two-outcome portfolio admission gate, the non-PR DONE-WHEN evaluator, and the JSON stdout/stderr capture helpers the unsafe-inline-json hook recommends.",
       "safe_upgrade": {
         "post_install_phase": "after-cutover",
         "probes": [
@@ -305,8 +305,8 @@
       "install_mode": "artifact",
       "kind": "artifact cli",
       "command": "brain",
-      "gate": "lastgit",
-      "gate_main": "lastdb:///brain#main",
+      "gate": "forgejo",
+      "gate_main": "http://localhost:3300/EdgeVector/brain.git#main",
       "artifact_app": "brain",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -321,8 +321,7 @@
           "target": "$HOME/.local/bin/brain-mcp"
         }
       ],
-      "notes": "Brain LastGit artifact install; track_gate_main promotes stable to green+published main. post_install runs bun install --frozen-lockfile --production. PATH links brain + brain-mcp.",
-      "track_gate_main": true,
+      "notes": "Brain Forgejo-gated artifact install (2026-09-06); the repo's Forge CI publish job promotes stable. post_install runs bun install --frozen-lockfile --production. PATH links brain + brain-mcp.",
       "post_install": "$HOME/.host-track/apps/brain/current/bin/brain-host-track-post-install",
       "safe_upgrade": {
         "soak_hours": 1,
@@ -351,8 +350,8 @@
       "install_mode": "artifact",
       "kind": "artifact cli",
       "command": "reconciler",
-      "gate": "lastgit",
-      "gate_main": "lastdb:///reconciler#main",
+      "gate": "forgejo",
+      "gate_main": "http://localhost:3300/EdgeVector/reconciler.git#main",
       "artifact_app": "reconciler",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -364,7 +363,6 @@
         }
       ],
       "notes": "Reconciler uses the immutable LastGit artifact. Host Track follows the green published main source OID, installs locked production dependencies, and links only the artifact CLI.",
-      "track_gate_main": true,
       "post_install": "$HOME/.host-track/apps/reconciler/current/bin/reconciler-host-track-post-install",
       "safe_upgrade": {
         "soak_hours": 1,
@@ -393,8 +391,8 @@
       "install_mode": "artifact",
       "kind": "artifact cli",
       "command": "situations",
-      "gate": "lastgit",
-      "gate_main": "lastdb:///situations#main",
+      "gate": "forgejo",
+      "gate_main": "http://localhost:3300/EdgeVector/situations.git#main",
       "artifact_app": "situations",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -410,7 +408,6 @@
         }
       ],
       "notes": "Situations LastGit artifact install from CI-published dist/* binaries; track_gate_main promotes stable to green+published main.",
-      "track_gate_main": true,
       "safe_upgrade": {
         "soak_hours": 1,
         "latency": true,
@@ -541,8 +538,8 @@
       "install_mode": "artifact",
       "kind": "artifact cli",
       "command": "lastsecrets",
-      "gate": "lastgit",
-      "gate_main": "lastdb:///lastsecrets#main",
+      "gate": "forgejo",
+      "gate_main": "http://localhost:3300/EdgeVector/lastsecrets.git#main",
       "artifact_app": "lastsecrets",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -554,7 +551,6 @@
         }
       ],
       "notes": "LastSecrets LastGit artifact install from CI-published dist/lastsecrets; track_gate_main promotes stable to green+published main.",
-      "track_gate_main": true,
       "safe_upgrade": {
         "soak_hours": 1,
         "probes": [
@@ -585,8 +581,8 @@
       "install_mode": "artifact",
       "kind": "artifact cli",
       "command": "configurations",
-      "gate": "lastgit",
-      "gate_main": "lastdb:///configurations#main",
+      "gate": "forgejo",
+      "gate_main": "http://localhost:3300/EdgeVector/configurations.git#main",
       "artifact_app": "configurations",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -598,7 +594,6 @@
         }
       ],
       "notes": "Configurations LastGit artifact install from CI-published dist/configurations; track_gate_main promotes stable to green+published main.",
-      "track_gate_main": true,
       "safe_upgrade": {
         "soak_hours": 1,
         "probes": [
@@ -624,8 +619,8 @@
       "install_mode": "artifact",
       "kind": "artifact cli",
       "command": "lastseek",
-      "gate": "lastgit",
-      "gate_main": "lastdb:///lastseek#main",
+      "gate": "forgejo",
+      "gate_main": "http://localhost:3300/EdgeVector/lastseek.git#main",
       "artifact_app": "lastseek",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -637,7 +632,6 @@
         }
       ],
       "notes": "LastSeek LastGit neural artifact install from CI-published dist/lastseek; track_gate_main promotes stable to green+published main. Model weights remain host state and post_install verifies the five documented bge-small-en-v1.5 files without downloading them.",
-      "track_gate_main": true,
       "post_install": "$HOME/.local/bin/last-stack-lastseek-host-track-post-install",
       "safe_upgrade": {
         "soak_hours": 1,
@@ -658,8 +652,8 @@
       "install_mode": "artifact",
       "kind": "artifact cli",
       "command": "search",
-      "gate": "lastgit",
-      "gate_main": "lastdb:///search#main",
+      "gate": "forgejo",
+      "gate_main": "http://localhost:3300/EdgeVector/search.git#main",
       "artifact_app": "search",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -671,7 +665,6 @@
         }
       ],
       "notes": "Search LastGit artifact install (source pack + post_install npm/bun deps + neural smoke); track_gate_main promotes stable to green+published main.",
-      "track_gate_main": true,
       "post_install": "$HOME/.host-track/apps/search/current/bin/search-host-track-post-install",
       "safe_upgrade": {
         "soak_hours": 1,
@@ -703,8 +696,8 @@
       "install_mode": "artifact",
       "kind": "artifact cli",
       "command": "ra",
-      "gate": "lastgit",
-      "gate_main": "lastdb:///remote#main",
+      "gate": "forgejo",
+      "gate_main": "http://localhost:3300/EdgeVector/remote.git#main",
       "artifact_app": "remote",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -723,8 +716,7 @@
           "target": "$HOME/.local/bin/rad-telegram"
         }
       ],
-      "notes": "Remote Agent artifact install; refresh links ra/rad/rad-telegram from the promoted LastGit artifact. track_gate_main promotes stable to green+published main — without it the channel sat on a hand-promoted pointer for 8 days and shipped a known-broken ra shim, silently killing every ra notify page.",
-      "track_gate_main": true,
+      "notes": "Remote Agent artifact install; refresh links ra/rad/rad-telegram from the promoted LastGit artifact. track_gate_main promotes stable to green+published main \u2014 without it the channel sat on a hand-promoted pointer for 8 days and shipped a known-broken ra shim, silently killing every ra notify page.",
       "safe_upgrade": {
         "soak_hours": 1,
         "probes": [
@@ -754,8 +746,8 @@
       "aliases": [
         "state-machine"
       ],
-      "gate": "lastgit",
-      "gate_main": "lastdb:///state-machine-app#main",
+      "gate": "forgejo",
+      "gate_main": "http://localhost:3300/EdgeVector/state-machine-app.git#main",
       "artifact_app": "state-machine",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -770,8 +762,7 @@
           "target": "$HOME/.local/bin/state-machine"
         }
       ],
-      "notes": "State Machine LastGit artifact install from CI-published dist/* binaries; track_gate_main promotes stable to green+published main. sm is the runner for lastdb-canary-release and lastdb-safe-upgrade, so it upgrades the primary and publishes to public brew — before this entry ~/.local/bin/sm symlinked into the workspace DEV checkout and had no freshness gate at all.",
-      "track_gate_main": true,
+      "notes": "State Machine LastGit artifact install from CI-published dist/* binaries; track_gate_main promotes stable to green+published main. sm is the runner for lastdb-canary-release and lastdb-safe-upgrade, so it upgrades the primary and publishes to public brew \u2014 before this entry ~/.local/bin/sm symlinked into the workspace DEV checkout and had no freshness gate at all.",
       "safe_upgrade": {
         "soak_hours": 1,
         "probes": [
@@ -838,8 +829,8 @@
       "install_mode": "artifact",
       "kind": "artifact cli",
       "command": "lastdb-browser",
-      "gate": "lastgit",
-      "gate_main": "lastdb:///lastdb-browser#main",
+      "gate": "forgejo",
+      "gate_main": "http://localhost:3300/EdgeVector/lastdb-browser.git#main",
       "artifact_app": "lastdb-browser",
       "artifact_channel": "stable",
       "artifact_root": "$HOME/.lastgit/artifacts",
@@ -851,7 +842,6 @@
         }
       ],
       "notes": "LastDB Browser LastGit artifact install (source pack + post_install npm build, same shape as search); track_gate_main promotes stable to green+published main. Interactive schemas -> keys -> record -> atom browser for a local node, served by a zero-dependency Node bridge because a browser cannot open a unix socket. Read-only: every bridge route is a GET or the read-only POST /api/query. post_install builds the UI then deletes node_modules -- nothing is needed at runtime.",
-      "track_gate_main": true,
       "post_install": "$HOME/.host-track/apps/lastdb-browser/current/bin/lastdb-browser-host-track-post-install",
       "safe_upgrade": {
         "soak_hours": 1,
@@ -864,7 +854,7 @@
             "timeout_s": 15
           }
         ],
-        "probe_waiver_reason": "server-only binary; post_install builds the UI and runs its smoke — no CLI read verb"
+        "probe_waiver_reason": "server-only binary; post_install builds the UI and runs its smoke \u2014 no CLI read verb"
       }
     },
     {

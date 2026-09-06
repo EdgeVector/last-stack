@@ -55,11 +55,13 @@ genuinely blocked.
 > LastSecrets locators; never put raw secret values in Brain/Kanban/logs/PR/CR
 > text.
 >
-> ⚠️ **ALL NON-PUBLIC repos → the LOCAL FORGE, not GitHub unless they explicitly
-> opt into LastGit-native routing.** Forge-hot:
-> `EdgeVector/fold` (since 2026-07-02) plus `exemem-infra`, `exemem-workspace`,
-> `lastgit` (since 2026-07-03, Tom's decision after the GitHub Actions billing
-> halt). Every `gh -R EdgeVector/<forge-hot-repo> ...` command in this handbook
+> ⚠️ **EVERY EdgeVector repo → the LOCAL FORGE, not GitHub and not LastGit,
+> unless it explicitly opts into LastGit routing.** Forge-hot: all of them
+> since 2026-09-06 (Tom; brain
+> `decision-2026-09-06-all-repos-venue-forgejo-no-lastgit-default`): `fold`
+> since 2026-07-02, `exemem-infra`, `exemem-workspace`, `lastgit` since
+> 2026-07-03, the four factory repos since 2026-09-05, and the remaining
+> thirty since 2026-09-06. Their LastGit repos are disabled. Every `gh -R EdgeVector/<forge-hot-repo> ...` command in this handbook
 > must instead be its Forgejo-API equivalent against `http://localhost:3300` —
 > their GitHub copies are read-only 24h push-mirrors; `gh` there reads stale
 > state and cannot merge. Full command map + auth + the current venue map:
