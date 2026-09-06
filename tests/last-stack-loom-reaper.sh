@@ -3,7 +3,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-loom-reaper.XXXXXX")"
-cleanup() { chmod -R u+w "$tmp" 2>/dev/null || true; rm -rf "$tmp"; }
+stale_owner=""
+cleanup() {
+  [ -z "$stale_owner" ] || kill -TERM "$stale_owner" 2>/dev/null || true
+  chmod -R u+w "$tmp" 2>/dev/null || true
+  rm -rf "$tmp"
+}
 trap cleanup EXIT HUP INT TERM
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -15,12 +20,25 @@ mkdir -p "$home/.local/bin" "$home/Library/LaunchAgents" "$state"
 cat >"$home/.local/bin/loom" <<'SH'
 #!/bin/sh
 printf '%s\n' "$*" >>"${MOCK_LOOM_CALLS:?}"
+if [ "${MOCK_LOOM_HANG:-0}" -eq 1 ]; then
+  sh -c 'trap "exit 0" TERM; while :; do sleep 1; done' &
+  child=$!
+  printf '%s\n' "$child" >"${MOCK_LOOM_CHILD_PID_FILE:?}"
+  on_term() {
+    kill -TERM "$child" 2>/dev/null || true
+    wait "$child" 2>/dev/null || true
+    exit 0
+  }
+  trap on_term TERM
+  while :; do sleep 1; done
+fi
 printf '%s\n' "${MOCK_LOOM_STDERR:-}" >&2
 printf '%s\n' '{"scanned":2,"resumed":1,"skipped":1}'
 exit "${MOCK_LOOM_RC:-0}"
 SH
 chmod +x "$home/.local/bin/loom"
 export MOCK_LOOM_CALLS="$tmp/loom.calls"
+export MOCK_LOOM_CHILD_PID_FILE="$tmp/loom-child.pid"
 : >"$MOCK_LOOM_CALLS"
 
 run_reaper() {
@@ -37,6 +55,9 @@ out="$(run_reaper)" || fail "success pass failed"
 printf '%s\n' "$out" | jq -e \
   --arg loom "$home/.local/bin/loom" \
   '.status == "ok" and .exit_code == 0 and .loom_bin == $loom
+   and (.age_secs | type) == "number"
+   and .pass_deadline_secs == 720
+   and .orphan_drives_swept == 0
    and .report.resumed == 1
    and .command == ["reap","--older-than-secs","300","--resume-limit","10",
      "--resume-timeout-secs","60","--json"]' \
@@ -68,8 +89,55 @@ before="$(wc -l <"$MOCK_LOOM_CALLS" | tr -d ' ')"
 locked="$(run_reaper)" || fail "locked pass returned failure"
 printf '%s\n' "$locked" | jq -e '.status == "locked" and .exit_code == 0' \
   >/dev/null || fail "bad lock result: $locked"
+jq -e '.status == "locked" and .age_secs >= 0' \
+  "$state/last-stack/loom-reaper/result.json" >/dev/null \
+  || fail "locked result was not written with an age"
 after="$(wc -l <"$MOCK_LOOM_CALLS" | tr -d ' ')"
 [ "$before" = "$after" ] || fail "locked pass invoked Loom"
+rm -f "$state/last-stack/loom-reaper/run.lock/owner"
+rmdir "$state/last-stack/loom-reaper/run.lock"
+
+set +e
+HOME="$home" XDG_STATE_HOME="$state" \
+LAST_STACK_LOOM_REAPER_PASS_DEADLINE_S=1 \
+LAST_STACK_LOOM_REAPER_PASS_KILL_AFTER_S=1 \
+MOCK_LOOM_HANG=1 \
+  "$ROOT/bin/last-stack-loom-reaper-run" >"$tmp/deadline.out" 2>"$tmp/deadline.err"
+deadline_rc=$?
+set -e
+[ "$deadline_rc" -eq 124 ] || fail "deadline exit changed from 124 to $deadline_rc"
+jq -e '
+  .status == "deadline" and .exit_code == 124
+  and .pass_deadline_secs == 1 and .age_secs >= 1
+  and (.orphan_drives_swept | type) == "number"
+' "$state/last-stack/loom-reaper/result.json" >/dev/null \
+  || fail "deadline result was not recorded"
+deadline_child="$(cat "$MOCK_LOOM_CHILD_PID_FILE")"
+if kill -0 "$deadline_child" 2>/dev/null; then
+  fail "deadline left descendant $deadline_child alive"
+fi
+
+mkdir -p "$state/last-stack/loom-reaper/run.lock"
+sh -c 'trap "exit 0" TERM; while :; do sleep 1; done' &
+stale_owner=$!
+stale_started=$(( $(date -u +%s) - 10 ))
+printf '%s %s\n' "$stale_owner" "$stale_started" \
+  >"$state/last-stack/loom-reaper/run.lock/owner"
+set +e
+stuck="$(HOME="$home" XDG_STATE_HOME="$state" \
+  LAST_STACK_LOOM_REAPER_PASS_DEADLINE_S=1 \
+  "$ROOT/bin/last-stack-loom-reaper-run")"
+stuck_rc=$?
+set -e
+[ "$stuck_rc" -eq 75 ] || fail "stuck lock exit changed from 75 to $stuck_rc"
+printf '%s\n' "$stuck" | jq -e \
+  --arg owner "$stale_owner" \
+  '.status == "stuck" and .exit_code == 75 and .owner_pid == $owner
+   and .age_secs >= 10 and .pass_deadline_secs == 1' \
+  >/dev/null || fail "bad stuck-lock result: $stuck"
+kill -TERM "$stale_owner" 2>/dev/null || true
+wait "$stale_owner" 2>/dev/null || true
+stale_owner=""
 rm -f "$state/last-stack/loom-reaper/run.lock/owner"
 rmdir "$state/last-stack/loom-reaper/run.lock"
 

@@ -15,11 +15,15 @@ LOCK_DIR="${LAST_STACK_LOOM_REAPER_LOCK_DIR:-$STATE_ROOT/run.lock}"
 RESUME_LIMIT="${LAST_STACK_LOOM_REAPER_RESUME_LIMIT:-10}"
 RESUME_TIMEOUT_S="${LAST_STACK_LOOM_REAPER_RESUME_TIMEOUT_S:-60}"
 OLDER_THAN_S="${LAST_STACK_LOOM_REAPER_OLDER_THAN_S:-300}"
+PASS_DEADLINE_MARGIN_S="${LAST_STACK_LOOM_REAPER_PASS_DEADLINE_MARGIN_S:-120}"
+PASS_DEADLINE_S="${LAST_STACK_LOOM_REAPER_PASS_DEADLINE_S:-$((RESUME_LIMIT * RESUME_TIMEOUT_S + PASS_DEADLINE_MARGIN_S))}"
+PASS_KILL_AFTER_S="${LAST_STACK_LOOM_REAPER_PASS_KILL_AFTER_S:-10}"
 LOCK_HELD=0
 OUT_FILE=""
 ERR_FILE=""
 RESULT_TMP=""
 
+# shellcheck disable=SC2329 # Invoked through the EXIT and signal traps.
 cleanup() {
   [ -z "$OUT_FILE" ] || rm -f "$OUT_FILE"
   [ -z "$ERR_FILE" ] || rm -f "$ERR_FILE"
@@ -31,26 +35,81 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-emit_locked() {
+lock_age_secs() {
+  now_epoch="$(date -u +%s)"
+  owner_started="$(awk 'NR == 1 { print $2 }' "$LOCK_DIR/owner" 2>/dev/null || true)"
+  case "$owner_started" in
+    ''|*[!0-9]*)
+      owner_started="$(stat -f '%m' "$LOCK_DIR/owner" 2>/dev/null \
+        || stat -c '%Y' "$LOCK_DIR/owner" 2>/dev/null \
+        || printf '%s' "$now_epoch")"
+      ;;
+  esac
+  age_secs=$((now_epoch - owner_started))
+  [ "$age_secs" -ge 0 ] || age_secs=0
+  printf '%s\n' "$age_secs"
+}
+
+emit_lock_result() {
+  lock_status="$1"
+  lock_exit="$2"
+  lock_age="$3"
+  lock_owner="${4:-}"
+  RESULT_TMP="$RESULT_FILE.tmp.$$"
   jq -cn \
     --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --arg loom_bin "$LOOM_BIN" \
-    '{status:"locked",at:$at,exit_code:0,loom_bin:$loom_bin,
-      detail:"another Loom reaper pass owns the lock"}'
+    --arg status "$lock_status" \
+    --arg owner_pid "$lock_owner" \
+    --argjson exit_code "$lock_exit" \
+    --argjson age_secs "$lock_age" \
+    --argjson pass_deadline_secs "$PASS_DEADLINE_S" \
+    '{status:$status,at:$at,exit_code:$exit_code,loom_bin:$loom_bin,
+      owner_pid:$owner_pid,age_secs:$age_secs,
+      pass_deadline_secs:$pass_deadline_secs,
+      detail:(if $status == "stuck" then
+        "the live Loom reaper lock owner exceeded the pass deadline"
+      else "another Loom reaper pass owns the lock" end)}' \
+    >"$RESULT_TMP"
+  mv "$RESULT_TMP" "$RESULT_FILE"
+  RESULT_TMP=""
+  cat "$RESULT_FILE"
+}
+
+sweep_orphan_drives() {
+  swept=0
+  orphan_pids="$(ps -axo pid=,ppid=,command= 2>/dev/null | awk '
+    $2 == 1 {
+      line = $0
+      if (line ~ /(^|[[:space:]\/])loom([[:space:]]|$)/ &&
+          line ~ /[[:space:]]drive([[:space:]]|$)/) print $1
+    }
+  ')"
+  for orphan_pid in $orphan_pids; do
+    if kill -TERM "$orphan_pid" 2>/dev/null; then
+      swept=$((swept + 1))
+    fi
+  done
+  printf '%s\n' "$swept"
 }
 
 mkdir -p "$STATE_ROOT" "$(dirname "$RESULT_FILE")"
 
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-  owner="$(sed -n '1p' "$LOCK_DIR/owner" 2>/dev/null || true)"
+  owner="$(awk 'NR == 1 { print $1 }' "$LOCK_DIR/owner" 2>/dev/null || true)"
   case "$owner" in
     ''|*[!0-9]*)
-      emit_locked
+      emit_lock_result locked 0 0 "$owner"
       exit 0
       ;;
     *)
       if kill -0 "$owner" 2>/dev/null; then
-        emit_locked
+        owner_age_secs="$(lock_age_secs)"
+        if [ "$owner_age_secs" -gt "$PASS_DEADLINE_S" ]; then
+          emit_lock_result stuck 75 "$owner_age_secs" "$owner"
+          exit 75
+        fi
+        emit_lock_result locked 0 "$owner_age_secs" "$owner"
         exit 0
       fi
       ;;
@@ -58,33 +117,53 @@ if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   rm -f "$LOCK_DIR/owner" 2>/dev/null || true
   rmdir "$LOCK_DIR" 2>/dev/null || true
   if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    emit_locked
+    emit_lock_result locked 0 0 ""
     exit 0
   fi
 fi
 LOCK_HELD=1
-printf '%s\n' "$$" >"$LOCK_DIR/owner"
+started_epoch="$(date -u +%s)"
+printf '%s %s\n' "$$" "$started_epoch" >"$LOCK_DIR/owner"
 
 OUT_FILE="$STATE_ROOT/reap.out.$$"
 ERR_FILE="$STATE_ROOT/reap.err.$$"
 RESULT_TMP="$RESULT_FILE.tmp.$$"
 
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+timeout_bin=""
+if command -v gtimeout >/dev/null 2>&1; then
+  timeout_bin=gtimeout
+elif command -v timeout >/dev/null 2>&1; then
+  timeout_bin=timeout
+fi
+
 set +e
-"$LOOM_BIN" reap \
-  --older-than-secs "$OLDER_THAN_S" \
-  --resume-limit "$RESUME_LIMIT" \
-  --resume-timeout-secs "$RESUME_TIMEOUT_S" \
-  --json >"$OUT_FILE" 2>"$ERR_FILE"
-loom_rc=$?
+if [ -n "$timeout_bin" ]; then
+  "$timeout_bin" -k "${PASS_KILL_AFTER_S}s" "${PASS_DEADLINE_S}s" \
+    "$LOOM_BIN" reap \
+    --older-than-secs "$OLDER_THAN_S" \
+    --resume-limit "$RESUME_LIMIT" \
+    --resume-timeout-secs "$RESUME_TIMEOUT_S" \
+    --json >"$OUT_FILE" 2>"$ERR_FILE"
+  loom_rc=$?
+else
+  loom_rc=127
+  printf '%s\n' 'timeout or gtimeout is required for a bounded Loom reaper pass' >"$ERR_FILE"
+fi
 set -e
 finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+finished_epoch="$(date -u +%s)"
+age_secs=$((finished_epoch - started_epoch))
+orphan_drives_swept=0
 
-if [ "$loom_rc" -eq 0 ]; then
-  result_status=ok
-else
-  result_status=error
-fi
+case "$loom_rc" in
+  0) result_status=ok ;;
+  124)
+    result_status=deadline
+    orphan_drives_swept="$(sweep_orphan_drives)"
+    ;;
+  *) result_status=error ;;
+esac
 
 jq -cn \
   --arg status "$result_status" \
@@ -92,13 +171,18 @@ jq -cn \
   --arg finished_at "$finished_at" \
   --arg loom_bin "$LOOM_BIN" \
   --argjson exit_code "$loom_rc" \
+  --argjson age_secs "$age_secs" \
+  --argjson pass_deadline_secs "$PASS_DEADLINE_S" \
+  --argjson orphan_drives_swept "$orphan_drives_swept" \
   --arg older_than "$OLDER_THAN_S" \
   --arg resume_limit "$RESUME_LIMIT" \
   --arg resume_timeout "$RESUME_TIMEOUT_S" \
   --rawfile stdout "$OUT_FILE" \
   --rawfile stderr "$ERR_FILE" \
   '{status:$status,started_at:$started_at,finished_at:$finished_at,
-    exit_code:$exit_code,loom_bin:$loom_bin,
+    exit_code:$exit_code,loom_bin:$loom_bin,age_secs:$age_secs,
+    pass_deadline_secs:$pass_deadline_secs,
+    orphan_drives_swept:$orphan_drives_swept,
     command:["reap","--older-than-secs",$older_than,"--resume-limit",$resume_limit,
       "--resume-timeout-secs",$resume_timeout,"--json"],
     report:(try ($stdout | fromjson) catch null),stdout:$stdout,stderr:$stderr}' \
