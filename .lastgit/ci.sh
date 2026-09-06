@@ -479,3 +479,14 @@ ci_test tests/last-stack-lastdb-dev-photograph-sanitize-tail.sh
 # Hermetic: stubbed `curl` and an on-disk log root, no forge, no network. ~1s.
 # APPENDED (see the shard-stability note above): ci_test shards by list position.
 ci_test tests/last-stack-forge-ci-log-run-selection.sh
+
+# A shell test must not compare a measured wall clock against a bare literal.
+# The number then measures the CI host: two tests went red on consecutive Forge
+# runs on 2026-09-06 (PR 19) and a third — the safe-upgrade Loom driver bound,
+# 8s against a designed 5s — went red on run 58 and blocked this very PR, while
+# every assertion that detects the real defect passed. The class record named
+# this lint as its unshipped follow-up. A justified literal opts out inline with
+# `# wallclock-bound-ok: <reason>`; six existing bounds now state their slack
+# ratio. Hermetic: reads tests/*.sh, runs nothing. ~1s.
+# APPENDED (see the shard-stability note above): ci_test shards by list position.
+ci_test tests/last-stack-lint-test-wallclock-bounds.sh

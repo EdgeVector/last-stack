@@ -36,6 +36,8 @@ for mode in auto fallback; do
   set -e
   elapsed=$(( $(date +%s) - started ))
   [ "$rc" -eq 124 ] || fail "[$mode] hung command must return 124; got $rc"
+  # wallclock-bound-ok: 20s ceiling over a 2s bound on a `sleep 30` (10x slack);
+  # the failing side is the full 30s sleep, so the windows cannot overlap.
   [ "$elapsed" -lt 20 ] || fail "[$mode] bound did not fire: ${elapsed}s elapsed"
 
   # a fast success passes its own status through
@@ -323,6 +325,8 @@ hang_rc=$?
 set -e
 hang_elapsed=$(( $(date +%s) - hang_started ))
 [ "$hang_rc" -eq 2 ] || fail "hung smoke must exit 2 (incomplete); got $hang_rc"
+# wallclock-bound-ok: 60s ceiling over a 3s wrapper bound (20x slack); the
+# failing side is a hung smoke that never returns.
 [ "$hang_elapsed" -lt 60 ] \
   || fail "wrapper bound did not fire: ${hang_elapsed}s elapsed"
 grep -qF 'RESULT: error RED incomplete-timeout wrapper=3s' "$hang_tmp/wrapper.stdout" \

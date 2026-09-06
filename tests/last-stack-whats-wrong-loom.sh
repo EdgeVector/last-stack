@@ -471,6 +471,8 @@ set +e
 "$BIN" --json --quiet --no-heal >/dev/null 2>&1
 set -e
 budget_sec=$(( $(date +%s) - budget_start ))
+# wallclock-bound-ok: 20s ceiling over an 8s shared deadline (2.5x slack); the
+# failing side is 9 retry attempts that do NOT share it, which runs far longer.
 [ "$budget_sec" -le 20 ] \
   || fail "retry loop ran ${budget_sec}s against an 8s budget; the deadline is not shared"
 unset LAST_STACK_WHATS_WRONG_LOOM_TIMEOUT_SEC

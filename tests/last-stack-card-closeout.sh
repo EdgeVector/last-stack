@@ -44,6 +44,8 @@ EOF
     exit 1
   fi
   elapsed=$(( $(date +%s) - started ))
+  # wallclock-bound-ok: 4s ceiling over a 1s COMMAND_TIMEOUT_SEC (4x slack); the
+  # failing side is an unbounded board read, so the ceiling only has to be finite.
   if [ "$elapsed" -gt 4 ]; then
     cat /tmp/card-closeout-slow.$$ >&2
     rm -f /tmp/card-closeout-slow.$$

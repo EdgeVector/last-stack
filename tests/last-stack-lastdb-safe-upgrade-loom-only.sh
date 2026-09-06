@@ -462,6 +462,9 @@ timeout_graph="$tmp/timeout-graph.json"
 jq '.states.PROBE.timeout_sec = 5' "$GRAPH" >"$timeout_graph"
 timeout_residue="$tmp/timeout-owned-cow"
 timeout_pid_file="$tmp/timeout-child.pid"
+# The ceiling below follows THESE, so changing a budget moves the bound.
+timeout_grace_secs=2
+timeout_drain_secs=1
 timeout_started="$(date +%s)"
 out="$(HOME="$mock_home" \
   SAFE_LOG="$safe_log" \
@@ -472,8 +475,8 @@ out="$(HOME="$mock_home" \
   LOOM_EXEC_ID=lx-test-probe-timeout \
   LOOM_INPUT="$forward_input" \
   LOOM_SAFE_UPGRADE_GRAPH="$timeout_graph" \
-  LOOM_SAFE_UPGRADE_CLEANUP_GRACE_SECS=2 \
-  LOOM_SAFE_UPGRADE_KILL_DRAIN_SECS=1 \
+  LOOM_SAFE_UPGRADE_CLEANUP_GRACE_SECS="$timeout_grace_secs" \
+  LOOM_SAFE_UPGRADE_KILL_DRAIN_SECS="$timeout_drain_secs" \
   LOOM_SAFE_UPGRADE_TIMEOUT_HEADROOM_SECS=1 \
   LASTDB_SAFE_UPGRADE_CURRENT_BIN="$tmp/current-a/lastdbd" \
   LASTDB_SAFE_UPGRADE_FOLD_GIT_DIR="$repo" \
@@ -483,8 +486,23 @@ printf '%s\n' "$out" | grep -q '"probe_rc":124' \
   || fail "bounded driver timeout did not record rc=124: $out"
 printf '%s\n' "$out" | grep -q 'driver timed out after 2s' \
   || fail "bounded driver timeout did not name its reserved budget: $out"
-[ "$timeout_elapsed" -lt 8 ] \
-  || fail "bounded driver cleanup exceeded its node budget: ${timeout_elapsed}s"
+# What this bound must detect: that the driver returned on its OWN reserved
+# budget instead of waiting on the stubborn descendant, which ignores TERM and
+# loops forever. The failing side is therefore UNBOUNDED, so every ceiling above
+# the configured budgets has identical detection power — and the four assertions
+# around it (rc=124, the named budget, the removed residue, the killed child)
+# are what actually prove the behaviour.
+#
+# The literal 8 had none of that reasoning behind it and measured the CI host
+# instead: Forge CI run 58 on a loaded runner reported exactly 8s while all four
+# of those assertions passed, blocking an unrelated fix.
+# papercut-last-stack-shell-test-wall-clock-bounds-measure-the-ci-host-20260906
+timeout_driver_secs="$(printf '%s\n' "$out" | sed -nE 's/.*driver timed out after ([0-9]+)s.*/\1/p' | head -1)"
+[ -n "$timeout_driver_secs" ] || fail "could not read the driver budget back from the output: $out"
+timeout_budget_floor=$(( timeout_driver_secs + timeout_grace_secs + timeout_drain_secs ))
+timeout_ceiling=$(( timeout_budget_floor * 4 ))
+[ "$timeout_elapsed" -lt "$timeout_ceiling" ] \
+  || fail "bounded driver cleanup exceeded 4x its configured budget (${timeout_budget_floor}s): ${timeout_elapsed}s"
 [ ! -e "$timeout_residue" ] \
   || fail "TERM did not let the driver remove its owned CoW residue"
 [ -s "$timeout_pid_file" ] || fail "timeout fixture did not start its stubborn child"
