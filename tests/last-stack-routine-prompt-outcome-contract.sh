@@ -32,7 +32,6 @@ product-feature-ns-reconcile.md
 program-rollup.md
 search-inbox-drain.md
 self-upgrade.md
-sentry-triage.md
 "
 
 is_known_missing() {

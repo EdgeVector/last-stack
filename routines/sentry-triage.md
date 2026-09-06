@@ -28,7 +28,30 @@ Normalize the scheduled shell:
 last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 . "$last_stack/bin/last-stack-shell-prelude"
 "$last_stack/bin/last-stack-cli-preflight" git curl jq brain kanban
+
+# sentry-token-bootstrap:start
+TOKEN="$(printf '%s' "${SENTRY_AUTH_TOKEN:-}" | tr -d '\r\n')"
+if [ -z "$TOKEN" ] && command -v lastsecrets >/dev/null 2>&1; then
+  TOKEN="$(lastsecrets get obs-sentry-auth-token 2>/dev/null | tr -d '\r\n' || true)"
+fi
+if [ -z "$TOKEN" ] && command -v security >/dev/null 2>&1; then
+  TOKEN="$(security find-generic-password -s "sentry-auth-token" \
+    -a "edge-vector" -w 2>/dev/null | tr -d '\r\n' || true)"
+fi
+if [ -z "$TOKEN" ]; then
+  "$last_stack/bin/last-stack-brain-append-heartbeat" --line \
+    "sentry-triage $(date -u +%Y-%m-%dT%H:%M:%SZ) error sentry_token_unreadable auth_ref=lastsecrets://obs-sentry-auth-token cards=0" \
+    || true
+  printf '%s\n' \
+    "ROUTINE_RESULT outcome=error detail=sentry_token_unreadable auth_ref=lastsecrets://obs-sentry-auth-token cards=0"
+  exit 0
+fi
+# sentry-token-bootstrap:end
 ```
+
+The resolver order is `SENTRY_AUTH_TOKEN`, LastSecrets, and then the keychain.
+If the resolver reports `sentry_token_unreadable`, stop the run. Do not call
+Sentry with an empty token. Reserve `sentry_api_401` for a non-empty token.
 
 Read `signal-sources` for the Sentry org/API/auth/projects/ignore-list,
 repo-mapping, and ledger config:

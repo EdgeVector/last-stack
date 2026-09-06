@@ -611,6 +611,10 @@ ci_test tests/last-stack-update-check.sh
 ci_test tests/last-stack-verify-skill-links.sh
 ci_test tests/machine-hygiene-empty-globs.sh
 
+# Sentry credentials must remain usable when the login keychain is locked.
+# APPENDED: ci_test shards by list position.
+ci_test tests/last-stack-sentry-token-fallback.sh
+
 # The registration guard itself. Kept last, and asserted to be registered by
 # tests/last-stack-ci-sharding.sh, so the guard cannot quietly stop running.
 ci_test tests/last-stack-ci-test-registration.sh
