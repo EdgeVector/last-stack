@@ -18,9 +18,9 @@ printf '%s\n' "$kanban_registry" | jq -e '
   .install_mode == "artifact" and
   .kind == "artifact cli" and
   .command == "kanban" and
-  .gate == "lastgit" and
-  .gate_main == "lastdb:///fkanban#main" and
-  .track_gate_main == true and
+  .gate == "forgejo" and
+  .gate_main == "http://localhost:3300/EdgeVector/fkanban.git#main" and
+  .track_gate_main == false and
   (.refresh | not) and
   .artifact_app == "fkanban" and
   .artifact_channel == "stable" and
@@ -40,9 +40,9 @@ printf '%s\n' "$lastseek_registry" | jq -e '
   .install_mode == "artifact" and
   .kind == "artifact cli" and
   .command == "lastseek" and
-  .gate == "lastgit" and
-  .gate_main == "lastdb:///lastseek#main" and
-  .track_gate_main == true and
+  .gate == "forgejo" and
+  .gate_main == "http://localhost:3300/EdgeVector/lastseek.git#main" and
+  .track_gate_main == false and
   .artifact_app == "lastseek" and
   .artifact_channel == "stable" and
   .artifact_root == "$HOME/.lastgit/artifacts" and
@@ -218,9 +218,9 @@ jq -e '
   .apps[] | select(.app == "situations")
   | .install_mode == "artifact"
     and .kind == "artifact cli"
-    and .gate == "lastgit"
-    and .gate_main == "lastdb:///situations#main"
-    and .track_gate_main == true
+    and .gate == "forgejo"
+    and .gate_main == "http://localhost:3300/EdgeVector/situations.git#main"
+    and .track_gate_main == false
     and (.refresh | not)
     and .artifact_app == "situations"
     and .artifact_channel == "stable"

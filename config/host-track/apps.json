@@ -343,7 +343,8 @@
             "timeout_s": 60
           }
         ]
-      }
+      },
+      "track_gate_main": false
     },
     {
       "app": "reconciler",
@@ -384,7 +385,8 @@
             "timeout_s": 30
           }
         ]
-      }
+      },
+      "track_gate_main": false
     },
     {
       "app": "situations",
@@ -427,7 +429,8 @@
             "timeout_s": 45
           }
         ]
-      }
+      },
+      "track_gate_main": false
     },
     {
       "app": "kanban",
@@ -574,7 +577,8 @@
             "timeout_s": 15
           }
         ]
-      }
+      },
+      "track_gate_main": false
     },
     {
       "app": "configurations",
@@ -612,7 +616,8 @@
             "timeout_s": 15
           }
         ]
-      }
+      },
+      "track_gate_main": false
     },
     {
       "app": "lastseek",
@@ -645,7 +650,8 @@
           }
         ],
         "probe_waiver_reason": "status/query hammer the node (papercut: lastseek status became the top node consumer); no cheap local read verb yet"
-      }
+      },
+      "track_gate_main": false
     },
     {
       "app": "search",
@@ -689,7 +695,8 @@
             "timeout_s": 25
           }
         ]
-      }
+      },
+      "track_gate_main": false
     },
     {
       "app": "remote",
@@ -736,7 +743,8 @@
             "timeout_s": 15
           }
         ]
-      }
+      },
+      "track_gate_main": false
     },
     {
       "app": "state-machine",
@@ -783,7 +791,8 @@
             "timeout_s": 15
           }
         ]
-      }
+      },
+      "track_gate_main": false
     },
     {
       "app": "loom",
@@ -855,7 +864,8 @@
           }
         ],
         "probe_waiver_reason": "server-only binary; post_install builds the UI and runs its smoke \u2014 no CLI read verb"
-      }
+      },
+      "track_gate_main": false
     },
     {
       "app": "lastdb",
