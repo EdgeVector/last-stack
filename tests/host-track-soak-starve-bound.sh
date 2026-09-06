@@ -199,10 +199,20 @@ jq --argjson started "$(( $(date +%s) - 3800 ))" --argjson checks 12 \
   '.started_epoch=$started | .checks=$checks | .abandoned_consecutive=0' \
   "$stamp" > "$stamp.tmp" && mv "$stamp.tmp" "$stamp"
 # A merge lands; brand-new bytes are parked over it.
+#
+# Assert against a reference taken BEFORE the clamp runs, not a `date` taken
+# after it. park_canary computes `started = carry_now - carried` with
+# `carried <= need - floor`, where `carry_now` is its OWN clock read, so
+# `started_epoch >= park_at - 3000` holds however long park takes. Measuring
+# `$(date +%s) - started_epoch` instead charged the clamp for every second that
+# passed after it ran, and the check failed at 3001s on any run where park and
+# the read landed in different seconds — which is what happened on a loaded
+# Forge CI host on 2026-09-06T10:25Z.
+park_at="$(date +%s)"
 park digestcccc oidcccc00000000000000000000000000000002
-carried_elapsed=$(( $(date +%s) - $(jq -r '.started_epoch' "$stamp") ))
-[ "$carried_elapsed" -le 3000 ] \
-  || fail "carry must cap elapsed at need-floor (3600-600=3000), got ${carried_elapsed}s"
+carried_started="$(jq -r '.started_epoch' "$stamp")"
+[ "$carried_started" -ge "$(( park_at - 3000 ))" ] \
+  || fail "carry must cap the carried window at need-floor (3600-600=3000): started_epoch=$carried_started park_at=$park_at"
 ln -sfn versions/digestcccc "$install_root/canary"
 out="$(ht soak-watch demo 2>&1)" || fail "clamped tick should exit 0: $out"
 printf '%s\n' "$out" | grep -q 'soak pending' \
