@@ -1,0 +1,24 @@
+# Helpers whose `--help` / `-h` contract is EXECUTED by
+# tests/last-stack-help-flag-contract.sh.
+#
+# Enrollment is deliberate, not a sweep. A helper goes on this list only after
+# someone READ its argument parser and confirmed that the help flag reaches no
+# side effect. That rule exists because the defect this file guards against is
+# precisely "the help flag is taken as a positional argument", and one helper on
+# this fleet turns `--help` into a card slug and escalates to a `--force` board
+# move (papercut-card-closeout-help-flag-becomes-a-slug-and-force-writes-the-board).
+# Executing every helper in bin/ with --help therefore FIRES that path.
+#
+# Contract for an enrolled helper: `--help` and `-h` each exit 0, print the
+# usage on stdout, and print nothing on stderr. A genuine argument error keeps
+# exit 2 on stderr.
+#
+# `last-stack-help-flag-contract --report` (the test with --report) lists the
+# helpers in bin/ that have a help arm and are NOT enrolled. It never runs them.
+#
+# helper	verdict	reason
+last-stack-kanban-file-pr	exit0	parser read 2026-09-06: help answered before the slug positional and before any board or brain call
+last-stack-forge-ci-log	exit0	parser read 2026-09-06: help answered before the arity check; reads Forgejo logs only
+last-stack-json-capture	exit0	parser read 2026-09-06: help answered before the outfile positional; wraps a command otherwise
+last-stack-lint-machine-leaks	exit0	parser read 2026-09-06: flag loop only; the lint itself runs after the loop
+last-stack-literal-markdown-append	exit0	parser read 2026-09-06: help answered before the mode positional and before any brain or board write

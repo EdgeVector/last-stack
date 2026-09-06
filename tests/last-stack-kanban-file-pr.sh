@@ -11,7 +11,11 @@ fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 [ -x "$bin" ] || chmod +x "$bin"
 bash -n "$bin" || fail "bash -n"
 
-"$bin" --help >/dev/null 2>&1 && fail "bare --help as slug should be usage"
+# This line used to read `"$bin" --help ... && fail "bare --help as slug should
+# be usage"`, so the suite ASSERTED the defect: asking for help was required to
+# fail. That is why five recurrences over twelve days found no guard to break.
+# papercut-last-stack-kanban-file-pr-help-exits-2
+"$bin" --help >/dev/null 2>&1 || fail "--help must exit 0"
 "$bin" 2>/dev/null && fail "expected usage failure"
 
 mkdir -p "$tmp/bin" "$tmp/empty-fixture"
@@ -233,6 +237,12 @@ set -e
 [ "$paused_rc" -eq 2 ] || fail "paused north star should exit 2, got $paused_rc: $paused_out"
 printf '%s\n' "$paused_out" | grep -q 'admission refused' \
   || fail "paused refusal message: $paused_out"
+# The refusal is where the caller is standing, so it must name the flag that
+# clears it. Three routines each burned two extra invocations finding
+# --work-class by grepping this script.
+# papercut-kanban-file-pr-help-hides-work-class-and-admission-refusal-names-no-remedy
+printf '%s\n' "$paused_out" | grep -q -- '--work-class repair' \
+  || fail "paused refusal must name --work-class repair: $paused_out"
 if [ -s "$tmp/add.log" ]; then
   fail "paused north star wrote add: $(cat "$tmp/add.log")"
 fi
@@ -249,6 +259,11 @@ set -e
 [ "$noadm_rc" -eq 2 ] || fail "unreadable admission should refuse, got $noadm_rc: $noadm_out"
 printf '%s\n' "$noadm_out" | grep -q 'admission record unreadable' \
   || fail "unreadable admission message: $noadm_out"
+# ...and only there. An unreadable admission record is not solved by declaring
+# a different work class, so the remedy must not leak into this refusal.
+if printf '%s\n' "$noadm_out" | grep -q -- '--work-class repair'; then
+  fail "unreadable-admission refusal must not suggest --work-class: $noadm_out"
+fi
 if [ -s "$tmp/add.log" ]; then
   fail "unreadable admission wrote add: $(cat "$tmp/add.log")"
 fi
@@ -265,6 +280,18 @@ grep -q 'repair-card' "$tmp/add.log" || fail "repair card not filed: $(cat "$tmp
 if "$bin" bad-class --board-cli "$fake_kanban" --title "x" --repo EdgeVector/last-stack \
   --north-star ns-a --milestone ms-live --work-class nonsense <"$body_ok" 2>/dev/null; then
   fail "unknown work-class should be refused"
+fi
+
+# --help prints the full option block on stdout and exits 0. A one-line usage
+# on stderr with exit 2 made every harness record the discovery gesture as a
+# tool failure, and hid --work-class entirely.
+# papercut-last-stack-kanban-file-pr-help-exits-2
+help_out="$("$bin" --help)" || fail "--help must exit 0"
+printf '%s\n' "$help_out" | grep -q -- '--work-class CLASS' \
+  || fail "--help must list --work-class: $help_out"
+printf '%s\n' "$help_out" | grep -q 'Options:' || fail "--help must print the option block"
+if "$bin" --help 2>&1 >/dev/null | grep -q .; then
+  fail "--help must write nothing to stderr"
 fi
 
 echo "ok last-stack-kanban-file-pr"

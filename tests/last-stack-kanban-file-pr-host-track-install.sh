@@ -102,12 +102,18 @@ resolved="$(PATH="$HOME/.local/bin:/usr/bin:/bin" command -v last-stack-kanban-f
 [ "$(readlink "$expected")" = "$HOME/apps/last-stack/current/bin/last-stack-kanban-file-pr" ] \
   || fail "PATH symlink does not target artifacts/current: $(readlink "$expected")"
 
+# --help is the cheap probe that the PATH name really runs the installed
+# helper. It used to be pinned at exit 2 with a one-line usage on stderr — the
+# defect, asserted as the contract in two separate suites.
+# papercut-last-stack-kanban-file-pr-help-exits-2
 set +e
-help_out="$(PATH="$HOME/.local/bin:/usr/bin:/bin" last-stack-kanban-file-pr --help 2>&1)"
+help_out="$(PATH="$HOME/.local/bin:/usr/bin:/bin" last-stack-kanban-file-pr --help 2>/dev/null)"
 help_rc=$?
 set -e
-[ "$help_rc" -eq 2 ] || fail "expected usage exit 2 from --help, got $help_rc"
-printf '%s\n' "$help_out" | grep -q '^last-stack-kanban-file-pr ' \
+[ "$help_rc" -eq 0 ] || fail "expected --help to exit 0, got $help_rc"
+printf '%s\n' "$help_out" | grep -q 'last-stack-kanban-file-pr <slug>' \
   || fail "PATH-only --help did not execute the installed helper"
+printf '%s\n' "$help_out" | grep -q -- '--work-class CLASS' \
+  || fail "PATH-only --help did not print the option block"
 
 printf 'ok last-stack-kanban-file-pr-host-track-install\n'

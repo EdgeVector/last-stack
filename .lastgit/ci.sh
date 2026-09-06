@@ -490,3 +490,14 @@ ci_test tests/last-stack-forge-ci-log-run-selection.sh
 # ratio. Hermetic: reads tests/*.sh, runs nothing. ~1s.
 # APPENDED (see the shard-stability note above): ci_test shards by list position.
 ci_test tests/last-stack-lint-test-wallclock-bounds.sh
+
+# Asking a helper for help must not be reported as a failure. Five helpers
+# documented `-h`/`--help` in their own source and still exited 2, so every
+# agent harness marked the discovery call `is_error=true`; one class record
+# collected five recurrences over twelve days and TWO suites asserted the
+# defect as the contract. Executes `--help` only for helpers enrolled in
+# config/help-flag-contract.tsv, because a sweep over bin/ would fire
+# last-stack-card-closeout, which reads `--help` as a card slug and escalates
+# to a --force board move. Hermetic: runs five local helpers' help paths. ~1s.
+# APPENDED (see the shard-stability note above): ci_test shards by list position.
+ci_test tests/last-stack-help-flag-contract.sh

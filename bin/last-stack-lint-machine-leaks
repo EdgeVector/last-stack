@@ -21,9 +21,11 @@ MODE=gate
 JSON=0
 BASELINE_PATH="${LAST_STACK_MACHINE_LEAK_BASELINE:-$ROOT/config/machine-leak-baseline.tsv}"
 
+# usage() only PRINTS. The caller picks the stream and the exit code, so
+# asking for help can exit 0 on stdout while a genuine argument error still
+# exits 2 on stderr. papercut-last-stack-kanban-file-pr-help-exits-2
 usage() {
   sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
-  exit 2
 }
 
 while [ "$#" -gt 0 ]; do
@@ -35,8 +37,8 @@ while [ "$#" -gt 0 ]; do
     --baseline=*) BASELINE_PATH="${1#*=}"; shift ;;
     --baseline)
       BASELINE_PATH="${2:-}"; shift 2 ;;
-    -h|--help) usage ;;
-    *) echo "unknown arg: $1" >&2; usage ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown arg: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
 
