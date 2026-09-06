@@ -76,6 +76,9 @@ if [ -z "$CI_SHARD_INDEX" ]; then
   # Run the global lint passes once. The child shards below run only the test
   # scripts, so they do not repeat these full-tree reads.
   bin/last-stack-lint-machine-leaks --ci
+  # No unbounded workspace walk in a helper, no new bash->python heredoc
+  # nest in bin/ (papercut-agent-zero-llm-cli-bash-python-heredoc-rglob).
+  bin/last-stack-lint-bin-authoring --ci
 
   bin/last-stack-lint-prompts \
     routines/kanban-pickup.md \
@@ -84,7 +87,8 @@ if [ -z "$CI_SHARD_INDEX" ]; then
     skills/kanban-agent/SKILL.md \
     instructions/brain-kanban.md \
     instructions/asd-ste100.md \
-    instructions/no-home-root-scan.md
+    instructions/no-home-root-scan.md \
+    instructions/bin-authoring.md
 
   bin/last-stack-lint-prompts --access-sweep .
 
@@ -283,6 +287,12 @@ ci_test tests/last-stack-routines-prompt-doctor.sh
 ci_test tests/last-stack-routine-prompt-outcome-contract.sh
 ci_test tests/last-stack-literal-markdown-append.sh
 ci_test tests/last-stack-lint-machine-leaks.sh
+# Helper authoring guards: the CI lint, the bounded file locator it points
+# at, and the PreToolUse hook that denies a depth-free walk of a workspace
+# root. All three run against fixtures in under two seconds.
+ci_test tests/last-stack-lint-bin-authoring.sh
+ci_test tests/last-stack-locate-file.sh
+ci_test tests/last-stack-hook-no-unbounded-workspace-walk.sh
 ci_test tests/last-stack-audit-f-prefix-callers.sh
 ci_test tests/last-stack-papercut-reconciler-contract.sh
 ci_test tests/last-stack-papercut-queue.sh

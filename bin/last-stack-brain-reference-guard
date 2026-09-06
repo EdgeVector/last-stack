@@ -121,7 +121,7 @@ def iter_prompt_files(root: Path) -> Iterable[Path]:
         base = root / dirname
         if not base.is_dir():
             continue
-        for path in base.rglob("*.md"):
+        for path in base.rglob("*.md"):  # walk-ok: this checkout's own prompt dirs, no target/ trees
             if path.is_file():
                 yield path
 

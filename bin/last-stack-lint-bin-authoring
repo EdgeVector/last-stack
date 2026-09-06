@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+# Static gate for helper authoring. Two defects, one linter:
+#
+#   1. HARD  an unbounded recursive walk. `Path.rglob(...)`, `os.walk(...)`,
+#            `glob("**")`, or a shell `find`/`fd` rooted at a workspace root
+#            (~/code/edgevector, ~/.fkanban, ~/.cache/edgevector-git) with no
+#            depth bound. On this host such a walk crosses ~20 worktrees, each
+#            carrying a cargo `target/` tree, and takes minutes; a background
+#            task then times out and reads as product failure. A walk line
+#            passes only when it states its bound: `# walk-ok: <reason>`.
+#   2. SOFT  a bash helper in bin/ that nests a Python program through a
+#            heredoc (`python3 - <<'PY'`). Two languages in one file fight over
+#            quoting, env flags and argparse, and every draft is a partial
+#            script. New helpers use ONE language. Existing nests are held in
+#            config/bin-authoring-baseline.tsv and may only shrink.
+#
+# Ground truth: brain papercut-agent-zero-llm-cli-bash-python-heredoc-rglob
+# (filed 2026-08-02). The bounded replacement for a walk is
+# bin/last-stack-locate-file (explicit env var, fixed candidates, then a
+# depth-bounded, time-budgeted search of named roots).
+#
+# Modes:
+#   (default) / --ci      gate: exit 1 on any hard finding or a non-baselined nest
+#   --report              print every finding; exit 0 always
+#   --write-baseline      rewrite the baseline from the nests present now
+#   --root DIR            tree to lint (default: this checkout)
+#   --baseline PATH       baseline file (default: <root>/config/bin-authoring-baseline.tsv)
+#   -h | --help           print this usage
+set -euo pipefail
+
+SELF_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+ROOT="$SELF_ROOT"
+MODE=gate
+BASELINE_PATH=""
+
+usage() {
+  sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --ci) MODE=gate; shift ;;
+    --report) MODE=report; shift ;;
+    --write-baseline) MODE=write_baseline; shift ;;
+    --root) ROOT="${2:-}"; shift 2 ;;
+    --root=*) ROOT="${1#*=}"; shift ;;
+    --baseline) BASELINE_PATH="${2:-}"; shift 2 ;;
+    --baseline=*) BASELINE_PATH="${1#*=}"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown arg: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+[ -d "$ROOT" ] || { echo "last-stack-lint-bin-authoring: no such root: $ROOT" >&2; exit 2; }
+ROOT="$(cd "$ROOT" && pwd -P)"
+[ -n "$BASELINE_PATH" ] || BASELINE_PATH="$ROOT/config/bin-authoring-baseline.tsv"
+
+# Never lint: this linter, its test, and test fixtures that carry deliberate
+# bad examples.
+skip_path() {
+  case "$1" in
+    bin/last-stack-lint-bin-authoring|tests/last-stack-lint-bin-authoring.sh) return 0 ;;
+    tests/fixtures/*) return 0 ;;
+  esac
+  return 1
+}
+
+# Python recursive walk calls. `.glob("*.md")` is one level and stays out; only
+# a `**` glob is recursive.
+WALK_RE='\.rglob\(|os\.walk\(|\.glob\([^)]*\*\*|glob\.i?glob\([^)]*\*\*'
+# Workspace roots that hold many checkouts. A depth-free walk here is the
+# multi-minute case.
+ROOT_RE='code/edgevector|\.fkanban|\.cache/edgevector-git|\$HOME/code([[:space:]/"'"'"']|$)|~/code([[:space:]/"'"'"']|$)'
+DEPTH_RE='-maxdepth|--max-depth|(^|[[:space:]])-(d|L)[[:space:]]*[0-9]'
+FIND_RE='(^|[[:space:];&|(`])[[:space:]]*(sudo[[:space:]]+)?(time[[:space:]]+)?(find|fd)[[:space:]]'
+NEST_RE='python3?[[:space:]]+-[[:space:]]*<<'
+
+tmpdir="$(mktemp -d "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack-lint-bin-authoring.XXXXXX")"
+trap 'rm -rf "$tmpdir"' EXIT
+hard="$tmpdir/hard.tsv"
+nests="$tmpdir/nests.txt"
+: >"$hard"
+: >"$nests"
+
+# Files in scope: every regular file directly under bin/, lib/, hooks/ and
+# skills/*/scripts/. A bounded listing, on purpose.
+list_targets() {
+  local d
+  for d in bin lib hooks; do
+    [ -d "$ROOT/$d" ] || continue
+    find "$ROOT/$d" -maxdepth 1 -type f | sort
+  done
+  if [ -d "$ROOT/skills" ]; then
+    find "$ROOT/skills" -maxdepth 3 -type f -path '*/scripts/*' | sort
+  fi
+}
+
+is_shell() {
+  local first
+  first="$(sed -n '1p' "$1")"
+  case "$first" in
+    '#!'*bash*|'#!'*'/sh'*|'#!'*' sh'*) return 0 ;;
+  esac
+  return 1
+}
+
+while IFS= read -r file; do
+  [ -n "$file" ] || continue
+  rel="${file#"$ROOT"/}"
+  skip_path "$rel" && continue
+
+  # Hard 1: Python recursive walk with no stated bound.
+  grep -nE "$WALK_RE" "$file" 2>/dev/null \
+    | grep -v 'walk-ok:' \
+    | grep -vE '^[0-9]+:[[:space:]]*#' \
+    | while IFS= read -r hit; do
+        lineno="${hit%%:*}"
+        content="${hit#*:}"
+        printf 'walk\t%s\t%s\t%s\n' "$rel" "$lineno" "$(printf '%s' "$content" | tr -s '[:space:]' ' ' | cut -c1-160)" >>"$hard"
+      done || true
+
+  # Hard 2: shell find/fd over a workspace root without a depth flag.
+  grep -nE "$FIND_RE" "$file" 2>/dev/null \
+    | grep -E "$ROOT_RE" \
+    | grep -vE -- "$DEPTH_RE" \
+    | grep -v 'walk-ok:' \
+    | grep -vE '^[0-9]+:[[:space:]]*#' \
+    | while IFS= read -r hit; do
+        lineno="${hit%%:*}"
+        content="${hit#*:}"
+        printf 'find\t%s\t%s\t%s\n' "$rel" "$lineno" "$(printf '%s' "$content" | tr -s '[:space:]' ' ' | cut -c1-160)" >>"$hard"
+      done || true
+
+  # Soft: bash→python heredoc nest in a bin/ helper.
+  case "$rel" in
+    bin/*)
+      if is_shell "$file" && grep -qE "$NEST_RE" "$file" 2>/dev/null; then
+        printf '%s\n' "$rel" >>"$nests"
+      fi
+      ;;
+  esac
+done < <(list_targets)
+
+sort -u "$hard" -o "$hard"
+sort -u "$nests" -o "$nests"
+hard_count="$(wc -l <"$hard" | tr -d ' ')"
+nest_count="$(wc -l <"$nests" | tr -d ' ')"
+
+write_baseline() {
+  mkdir -p "$(dirname "$BASELINE_PATH")"
+  {
+    printf '# bin-authoring baseline: bin/ helpers that nest a Python program in a bash heredoc.\n'
+    printf '# This list may only SHRINK. A new helper with a nest fails the gate; rewrite it in one language.\n'
+    printf '# Regenerate after removing a nest: bin/last-stack-lint-bin-authoring --write-baseline\n'
+    printf '# path\n'
+    cat "$nests"
+  } >"$BASELINE_PATH"
+  echo "wrote baseline nests=$nest_count -> $BASELINE_PATH"
+}
+
+if [ "$MODE" = "write_baseline" ]; then
+  write_baseline
+  exit 0
+fi
+
+baseline="$tmpdir/baseline.txt"
+: >"$baseline"
+if [ -f "$BASELINE_PATH" ]; then
+  grep -vE '^[[:space:]]*(#|$)' "$BASELINE_PATH" | sort -u >"$baseline" || true
+fi
+new_nests="$tmpdir/new_nests.txt"
+retired_nests="$tmpdir/retired_nests.txt"
+comm -23 "$nests" "$baseline" >"$new_nests"
+comm -13 "$nests" "$baseline" >"$retired_nests"
+new_count="$(wc -l <"$new_nests" | tr -d ' ')"
+retired_count="$(wc -l <"$retired_nests" | tr -d ' ')"
+
+if [ "$MODE" = "report" ]; then
+  echo "bin-authoring report root=$ROOT hard=$hard_count nests=$nest_count new_nests=$new_count retired_nests=$retired_count"
+  [ "$hard_count" -eq 0 ] || { echo "-- hard (kind path line content)"; cat "$hard"; }
+  [ "$nest_count" -eq 0 ] || { echo "-- nests"; cat "$nests"; }
+  [ "$retired_count" -eq 0 ] || { echo "-- retired nests (run --write-baseline)"; cat "$retired_nests"; }
+  exit 0
+fi
+
+status=0
+if [ "$hard_count" -ne 0 ]; then
+  status=1
+  echo "FAIL last-stack-lint-bin-authoring: $hard_count unbounded walk(s)." >&2
+  echo "A depth-free walk over a workspace root takes minutes on this host and reads as a hang." >&2
+  echo "Use bin/last-stack-locate-file (env var, fixed candidates, bounded roots), or find ... -maxdepth N," >&2
+  echo "or state the bound on the line: # walk-ok: <reason>" >&2
+  cat "$hard" >&2
+fi
+if [ "$new_count" -ne 0 ]; then
+  status=1
+  echo "FAIL last-stack-lint-bin-authoring: $new_count bin/ helper(s) nest a Python program in a bash heredoc:" >&2
+  cat "$new_nests" >&2
+  echo "Write a new helper in ONE language (#!/usr/bin/env python3 with argparse, or pure bash)." >&2
+  echo "The baseline at $BASELINE_PATH only shrinks; it is not the place for a new nest." >&2
+fi
+if [ "$status" -eq 0 ]; then
+  echo "ok last-stack-lint-bin-authoring hard=0 nests=$nest_count baseline=$(wc -l <"$baseline" | tr -d ' ') retired=$retired_count"
+fi
+exit "$status"

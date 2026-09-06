@@ -186,7 +186,7 @@ def load_run_meta(args: argparse.Namespace) -> list[dict[str, Any]]:
     if not base.exists():
         return []
     metas: list[dict[str, Any]] = []
-    for path in base.glob("last-stack-fkanban-pickup*/**/meta.json"):
+    for path in base.glob("last-stack-fkanban-pickup*/**/meta.json"):  # walk-ok: one routine runs dir, no checkouts
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:

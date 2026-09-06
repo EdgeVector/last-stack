@@ -22,3 +22,5 @@ last-stack-forge-ci-log	exit0	parser read 2026-09-06: help answered before the a
 last-stack-json-capture	exit0	parser read 2026-09-06: help answered before the outfile positional; wraps a command otherwise
 last-stack-lint-machine-leaks	exit0	parser read 2026-09-06: flag loop only; the lint itself runs after the loop
 last-stack-literal-markdown-append	exit0	parser read 2026-09-06: help answered before the mode positional and before any brain or board write
+last-stack-lint-bin-authoring	exit0	parser read 2026-09-06: flag loop only; the lint itself runs after the loop
+last-stack-locate-file	exit0	parser read 2026-09-06: argparse answers help before any path is touched; the search runs after parse

@@ -211,7 +211,7 @@ install_claude_hooks() {
   local settings="$HOME/.claude/settings.json"
   mkdir -p "$hooks_dir" "$(dirname "$settings")"
 
-  for hook in unsafe-inline-json.sh no-home-root-scan.sh; do
+  for hook in unsafe-inline-json.sh no-home-root-scan.sh no-unbounded-workspace-walk.sh; do
     [ -f "$HOOKS_SRC/$hook" ] || continue
     cp -f "$HOOKS_SRC/$hook" "$hooks_dir/$hook"
     chmod 700 "$hooks_dir/$hook"
@@ -245,6 +245,15 @@ install_claude_hooks() {
     "$hooks_dir/no-home-root-scan.sh  # macOS TCC: deny home-root walks and Desktop/Documents/Downloads/Pictures reads; they prompt the owner and block the run" \
     5
 
+  # A depth-free find/fd/tree or a Python rglob/os.walk over ~/code/edgevector
+  # or ~/.fkanban crosses ~20 checkouts and their cargo target/ trees. It runs
+  # for minutes and the timeout reads as a product failure
+  # (papercut-agent-zero-llm-cli-bash-python-heredoc-rglob). The deny hands
+  # back last-stack-locate-file / -maxdepth. Escape hatch: '# walk-ok: <reason>'.
+  upsert_pretool_hook "$settings" "Bash" \
+    "$hooks_dir/no-unbounded-workspace-walk.sh  # deny a depth-free walk of a workspace root (find/fd/tree, rglob/os.walk); it runs for minutes and times out" \
+    5
+
   for tool in \
     mcp__brain__brain_get \
     mcp__brain__brain_search \
@@ -255,7 +264,7 @@ install_claude_hooks() {
     upsert_permission_allow "$settings" "$tool"
   done
 
-  echo "  claude hooks: unsafe-inline-json.sh + no-home-root-scan.sh (inline parsing guard; home-root/TCC walk guard; read-before-edit retired)"
+  echo "  claude hooks: unsafe-inline-json.sh + no-home-root-scan.sh + no-unbounded-workspace-walk.sh (inline parsing guard; home-root/TCC walk guard; workspace walk guard; read-before-edit retired)"
   echo "  claude permissions: brain MCP get/search/list/ask/put"
 }
 
@@ -273,6 +282,8 @@ STE_START='<!-- last-stack:asd-ste100:start (managed by last-stack setup; edits 
 STE_END='<!-- last-stack:asd-ste100:end -->'
 HS_START='<!-- last-stack:no-home-root-scan:start (managed by last-stack setup; edits inside are overwritten) -->'
 HS_END='<!-- last-stack:no-home-root-scan:end -->'
+BA_START='<!-- last-stack:bin-authoring:start (managed by last-stack setup; edits inside are overwritten) -->'
+BA_END='<!-- last-stack:bin-authoring:end -->'
 
 strip_managed_md_block() {
   # $1 file  $2 start  $3 end
@@ -318,10 +329,12 @@ upsert_harness_instruction_blocks() {
   strip_managed_md_block "$file" "$BK_START" "$BK_END"
   strip_managed_md_block "$file" "$STE_START" "$STE_END"
   strip_managed_md_block "$file" "$HS_START" "$HS_END"
+  strip_managed_md_block "$file" "$BA_START" "$BA_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/brain-kanban.md" "$BK_START" "$BK_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/asd-ste100.md" "$STE_START" "$STE_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/no-home-root-scan.md" "$HS_START" "$HS_END"
-  echo "  ${label} instructions: brain-kanban + asd-ste100 + no-home-root-scan -> $file"
+  append_managed_md_block "$file" "$SOURCE_ROOT/instructions/bin-authoring.md" "$BA_START" "$BA_END"
+  echo "  ${label} instructions: brain-kanban + asd-ste100 + no-home-root-scan + bin-authoring -> $file"
 }
 
 ensure_codex_mcp_servers() {

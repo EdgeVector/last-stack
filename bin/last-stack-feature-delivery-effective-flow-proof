@@ -659,7 +659,7 @@ def probe_provider_fallback() -> dict[str, Any]:
         run([str(command), "run", "demo", "--quiet"], env=env, timeout=90)
         meta_files = sorted((home / "runs/demo").glob("*/meta.json"))
         if not meta_files:
-            meta_files = sorted(home.glob("runs/**/meta.json"))
+            meta_files = sorted(home.glob("runs/**/meta.json"))  # walk-ok: a fixture home this proof created
         if not meta_files:
             raise ProofError("the provider probe wrote no run metadata")
         meta = parse_json(meta_files[-1].read_text(), "provider probe metadata")
