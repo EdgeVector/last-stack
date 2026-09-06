@@ -267,4 +267,92 @@ pub_reason="$(printf '%s\n' "$pub_out" | sed -n 's/.*"reason":"\([^"]*\)".*/\1/p
 [ "$pub_reason" = "loom_publish_why_stopped_failed" ] \
   || fail "the cause line must not leak into the reason token: $pub_reason"
 
+# --- a bounded run reaps the complete loom process group -----------------
+cat >"$tmp/bin/loom-descendant" <<'PY'
+#!/usr/bin/env python3
+import signal
+import time
+
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+while True:
+    time.sleep(1)
+PY
+chmod 755 "$tmp/bin/loom-descendant"
+cat >"$tmp/bin/loom" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  ping) echo ok; exit 0 ;;
+  publish) exit 0 ;;
+  run)
+    "$TEST_BIN/loom-descendant" &
+    descendant=$!
+    printf '%s %s\n' "$$" "$descendant" >"${LOOM_PROCESS_IDS:?}"
+    printf '%s\n' 'node read stalled after accepted write' >&2
+    wait "$descendant"
+    ;;
+  *) exit 2 ;;
+esac
+SH
+chmod 755 "$tmp/bin/loom"
+export TEST_BIN="$tmp/bin"
+export LOOM_PROCESS_IDS="$tmp/loom-process-ids"
+export ROUTINES_RUN_DIR="$tmp/run"
+mkdir -p "$ROUTINES_RUN_DIR"
+export LAST_STACK_WHY_STOPPED_LOOM_TIMEOUT_SEC=10
+export LAST_STACK_WHY_STOPPED_LOOM_RUN_TIMEOUT_SEC=1
+set +e
+timeout_out="$("$BIN" --json --quiet)"
+timeout_rc=$?
+set -e
+[ "$timeout_rc" -eq 124 ] || fail "bounded loom run should exit 124, got $timeout_rc: $timeout_out"
+printf '%s\n' "$timeout_out" | grep -q '"loom": "timeout"' \
+  || fail "bounded loom run did not identify timeout: $timeout_out"
+printf '%s\n' "$timeout_out" | grep -q 'node read stalled after accepted write' \
+  || fail "bounded loom run lost the last loom stderr line: $timeout_out"
+read -r loom_pid descendant_pid <"$LOOM_PROCESS_IDS"
+for child_pid in "$loom_pid" "$descendant_pid"; do
+  if kill -0 "$child_pid" 2>/dev/null; then
+    kill -9 "$child_pid" 2>/dev/null || true
+    fail "bounded loom run left pid $child_pid alive"
+  fi
+done
+grep -q 'node read stalled after accepted write' "$ROUTINES_RUN_DIR/why-stopped-loom.err" \
+  || fail "loom stderr was not kept in the routine run directory"
+
+# An external deadline signals the wrapper. Its TERM trap must reap the same
+# process group before the wrapper exits.
+export LAST_STACK_WHY_STOPPED_LOOM_RUN_TIMEOUT_SEC=30
+: >"$LOOM_PROCESS_IDS"
+set +e
+"$BIN" --json --quiet >"$tmp/external-out" 2>"$tmp/external-err" &
+wrapper_pid=$!
+set -e
+python3 - "$LOOM_PROCESS_IDS" <<'PY'
+import sys
+import time
+from pathlib import Path
+
+path = Path(sys.argv[1])
+deadline = time.monotonic() + 5
+while time.monotonic() < deadline:
+    if path.stat().st_size if path.exists() else 0:
+        raise SystemExit(0)
+    time.sleep(0.02)
+raise SystemExit("loom process ids did not appear")
+PY
+kill -TERM "$wrapper_pid"
+set +e
+wait "$wrapper_pid"
+signal_rc=$?
+set -e
+[ "$signal_rc" -eq 124 ] || fail "signalled wrapper should exit 124, got $signal_rc"
+read -r loom_pid descendant_pid <"$LOOM_PROCESS_IDS"
+for child_pid in "$loom_pid" "$descendant_pid"; do
+  if kill -0 "$child_pid" 2>/dev/null; then
+    kill -9 "$child_pid" 2>/dev/null || true
+    fail "signalled wrapper left pid $child_pid alive"
+  fi
+done
+
 echo ok

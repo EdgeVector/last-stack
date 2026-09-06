@@ -200,12 +200,186 @@ fi
 
 key="${LOOM_WHY_KEY:-why-stopped-$(date -u +%Y%m%dT%H)}"
 input='{"probes":["install","node","forge","pickup"]}'
-log "loom run why-stopped --key $key"
+
+# Keep an internal margin below the routine observer's 600 second deadline.
+# The child starts a new session. The Python launcher and the shell traps both
+# reap that process group, so an external signal cannot leave `loom drive` at
+# PPID 1.
+gate_timeout="${LAST_STACK_WHY_STOPPED_LOOM_TIMEOUT_SEC:-600}"
+run_timeout="${LAST_STACK_WHY_STOPPED_LOOM_RUN_TIMEOUT_SEC:-540}"
+timeout_headroom="${LAST_STACK_WHY_STOPPED_LOOM_HEADROOM_SEC:-15}"
+case "$gate_timeout" in ''|*[!0-9]*) gate_timeout=600 ;; esac
+case "$run_timeout" in ''|*[!0-9]*) run_timeout=540 ;; esac
+case "$timeout_headroom" in ''|*[!0-9]*) timeout_headroom=15 ;; esac
+[ "$gate_timeout" -ge 1 ] || gate_timeout=600
+[ "$run_timeout" -ge 1 ] || run_timeout=540
+[ "$timeout_headroom" -ge 1 ] || timeout_headroom=15
+max_run_timeout=$(( gate_timeout - timeout_headroom ))
+[ "$max_run_timeout" -ge 1 ] || max_run_timeout=1
+if [ "$run_timeout" -gt "$max_run_timeout" ]; then
+  run_timeout="$max_run_timeout"
+fi
+
+if [ -n "${ROUTINES_RUN_DIR:-}" ]; then
+  mkdir -p "$ROUTINES_RUN_DIR"
+fi
+if [ -n "${LAST_STACK_WHY_STOPPED_LOOM_ERR_FILE:-}" ]; then
+  loom_err_file="$LAST_STACK_WHY_STOPPED_LOOM_ERR_FILE"
+elif [ -n "${ROUTINES_RUN_DIR:-}" ]; then
+  loom_err_file="$ROUTINES_RUN_DIR/why-stopped-loom.err"
+else
+  loom_err_file="$(mktemp "${TMPDIR:-/tmp}/last-stack-why-stopped-loom.XXXXXX")"
+fi
+loom_pgid_file="$(mktemp "${ROUTINES_RUN_DIR:-${TMPDIR:-/tmp}}/why-stopped-loom-pgid.XXXXXX")"
+
+cleanup_loom_group() {
+  LOOM_PGID_FILE="$loom_pgid_file" python3 -c '
+import os, signal, time
+from pathlib import Path
+
+path = Path(os.environ["LOOM_PGID_FILE"])
+try:
+    pgid = int(path.read_text(encoding="utf-8").strip())
+except (FileNotFoundError, ValueError):
+    pgid = 0
+if pgid > 0:
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    deadline = time.monotonic() + 0.5
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+try:
+    path.unlink()
+except FileNotFoundError:
+    pass
+' 2>/dev/null || true
+}
+
+on_loom_signal() {
+  signal_name="$1"
+  cleanup_loom_group
+  loom_last_line="$(tail -n 1 "$loom_err_file" 2>/dev/null || true)"
+  log "loom timeout signal=$signal_name loom_stderr=${loom_last_line:-none}"
+  exit 124
+}
+
+trap cleanup_loom_group EXIT
+trap 'on_loom_signal TERM' TERM
+trap 'on_loom_signal INT' INT
+
+: >"$loom_err_file"
+log "loom run why-stopped --key $key timeout=${run_timeout}s"
 
 set +e
-view="$(loom run why-stopped --key "$key" --input "$input" 2>/dev/null)"
+view="$(python3 - "$run_timeout" "$loom_err_file" "$loom_pgid_file" "$key" "$input" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+timeout_sec = int(sys.argv[1])
+stderr_path = Path(sys.argv[2])
+pgid_path = Path(sys.argv[3])
+key = sys.argv[4]
+run_input = sys.argv[5]
+
+with stderr_path.open("a", encoding="utf-8") as stderr_file:
+    process = subprocess.Popen(
+        ["loom", "run", "why-stopped", "--key", key, "--input", run_input],
+        stdout=subprocess.PIPE,
+        stderr=stderr_file,
+        text=True,
+        start_new_session=True,
+    )
+    pgid_path.write_text(str(process.pid), encoding="utf-8")
+
+    def clear_pgid_file():
+        try:
+            pgid_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def stop_group():
+        def group_exists():
+            try:
+                os.killpg(process.pid, 0)
+                return True
+            except ProcessLookupError:
+                return False
+
+        if not group_exists():
+            return
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        deadline = time.monotonic() + 0.5
+        while time.monotonic() < deadline:
+            if not group_exists():
+                return
+            time.sleep(0.05)
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+
+    def handle_signal(signum, _frame):
+        stop_group()
+        clear_pgid_file()
+        raise SystemExit(124 if signum == signal.SIGTERM else 130)
+
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
+
+    try:
+        stdout, _ = process.communicate(timeout=timeout_sec)
+    except subprocess.TimeoutExpired:
+        stop_group()
+        clear_pgid_file()
+        raise SystemExit(124)
+
+    clear_pgid_file()
+    sys.stdout.write(stdout)
+    raise SystemExit(process.returncode if process.returncode >= 0 else 124)
+PY
+)"
 lrc=$?
 set -e
+if [ "$lrc" -eq 124 ] || [ "$lrc" -eq 130 ]; then
+  loom_last_line="$(tail -n 1 "$loom_err_file" 2>/dev/null || true)"
+  log "loom timeout after ${run_timeout}s loom_stderr=${loom_last_line:-none}"
+  timeout_reason="$(reason_token)"
+  timeout_exec_id="$(printf '%s\n' "$view" | awk 'NF{print; exit}')"
+  write_stamp timeout "$timeout_exec_id" "" "$key" "$timeout_reason"
+  LOOM_TIMEOUT_REASON="$timeout_reason" \
+    LOOM_TIMEOUT_DETAIL="${loom_last_line:-none}" \
+    python3 -c '
+import json, os
+print(json.dumps({
+    "loom": "timeout",
+    "reason": os.environ["LOOM_TIMEOUT_REASON"],
+    "detail": os.environ["LOOM_TIMEOUT_DETAIL"],
+}))
+'
+  exit 124
+fi
 # rc 4 is loom reporting its own execution incomplete; it still printed the
 # view, so the classification below is real. Only an empty view means loom
 # gave us nothing to read.
