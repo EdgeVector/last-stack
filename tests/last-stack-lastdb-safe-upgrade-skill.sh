@@ -7,12 +7,15 @@ skill_md="$skill/SKILL.md"
 driver="$skill/scripts/safe-upgrade-lastdb.sh"
 dev_gate="$skill/scripts/dev-photograph-stamp-gate.sh"
 dev_proof="$skill/scripts/dev-photograph-candidate-proof.sh"
+dev_evidence_sanitizer="$skill/scripts/dev-photograph-sanitize-tail.py"
 
 [ -f "$skill_md" ] || { echo "FAIL: missing $skill_md" >&2; exit 1; }
 [ -f "$driver" ] || { echo "FAIL: missing $driver" >&2; exit 1; }
 [ -x "$driver" ] || { echo "FAIL: driver not executable: $driver" >&2; exit 1; }
 [ -x "$dev_gate" ] || { echo "FAIL: DEV gate not executable: $dev_gate" >&2; exit 1; }
 [ -x "$dev_proof" ] || { echo "FAIL: DEV proof not executable: $dev_proof" >&2; exit 1; }
+[ -f "$dev_evidence_sanitizer" ] \
+  || { echo "FAIL: DEV evidence sanitizer is absent" >&2; exit 1; }
 
 grep -q '^name:[[:space:]]*lastdb-safe-upgrade' "$skill_md" || {
   echo "FAIL: SKILL.md frontmatter name mismatch" >&2
@@ -132,10 +135,34 @@ grep -qi 'DEV photograph' "$skill_md" || {
 }
 
 proof_call_line="$(grep -n 'DEV_PROOF_OUT=.*DEV_PHOTOGRAPH_PROOF_SH' "$driver" | head -1 | cut -d: -f1)"
+proof_output_line="$(grep -n 'emit_dev_photograph_failure "\$DEV_PROOF_OUT"' "$driver" | head -1 | cut -d: -f1)"
 live_marker_line="$(grep -n '^durability_write_sentinels$' "$driver" | tail -1 | cut -d: -f1)"
 [ -n "$proof_call_line" ] && [ -n "$live_marker_line" ] \
   && [ "$proof_call_line" -lt "$live_marker_line" ] || {
   echo "FAIL: exact-candidate DEV proof must precede the first live write" >&2
+  exit 1
+}
+[ -n "$proof_output_line" ] \
+  && [ "$proof_call_line" -lt "$proof_output_line" ] \
+  && [ "$proof_output_line" -lt "$live_marker_line" ] || {
+  echo "FAIL: the driver must print captured DEV proof failure output before live work" >&2
+  exit 1
+}
+
+eval "$(awk '
+  /^emit_dev_photograph_failure\(\)/ { capture=1 }
+  capture { print }
+  capture && /^}/ { exit }
+' "$driver")"
+dev_failure_line='DEV_PHOTOGRAPH_FAILURE phase=snapshot_command attempt=1/1 timeout_secs=3900 snapshot_rc=124'
+set +e
+dev_failure_out="$(emit_dev_photograph_failure "$dev_failure_line" 2>&1)"
+dev_failure_rc=$?
+set -e
+[ "$dev_failure_rc" -eq 0 ] \
+  && printf '%s\n' "$dev_failure_out" | grep -Fxq "$dev_failure_line" \
+  && printf '%s\n' "$dev_failure_out" | grep -q '^VERDICT: RED$' || {
+  echo "FAIL: the driver did not preserve the exact DEV proof failure detail" >&2
   exit 1
 }
 venue_gate_line="$(grep -n '^assert_exact_candidate_live_venue$' "$driver" | tail -1 | cut -d: -f1)"

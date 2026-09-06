@@ -23,6 +23,18 @@ PROOF_SENTINEL=""
 PROOF_TOKEN=""
 COW_HOME=""
 CANDIDATE_PID=""
+DAEMON_LOG=""
+SNAPSHOT_LOG=""
+FAILURE_PHASE="preflight"
+FAILURE_REASON="DEV photograph proof failed"
+SNAPSHOT_ATTEMPT=0
+SNAPSHOT_ATTEMPTS=0
+SNAPSHOT_TIMEOUT=0
+SNAPSHOT_RC="not-run"
+SNAPSHOT_CACHE_PRESENT_BEFORE="not-observed"
+SNAPSHOT_CACHE_PRESENT_AFTER="not-observed"
+FAILURE_EVIDENCE=""
+EVIDENCE_SANITIZER="$SCRIPT_DIR/dev-photograph-sanitize-tail.py"
 
 usage() {
   cat <<'EOF'
@@ -36,9 +48,110 @@ EOF
 }
 
 proof_die() {
+  FAILURE_REASON="$1"
   printf 'DEV_PHOTOGRAPH: RED\n' >&2
   printf 'REASON: %s\n' "$1" >&2
   exit 1
+}
+
+dev_photograph_evidence_root() {
+  local state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
+  printf '%s\n' "${LASTDB_DEV_PHOTOGRAPH_EVIDENCE_ROOT:-$state_home/last-stack/lastdb-safe-upgrade/dev-photograph-failures}"
+}
+
+sanitize_proof_log_tail() {
+  local source="$1" lines bytes
+  lines="${LASTDB_DEV_PHOTOGRAPH_EVIDENCE_TAIL_LINES:-40}"
+  bytes="${LASTDB_DEV_PHOTOGRAPH_EVIDENCE_TAIL_BYTES:-32768}"
+  case "$lines" in ''|*[!0-9]*|0) lines=40 ;; esac
+  case "$bytes" in ''|*[!0-9]*|0) bytes=32768 ;; esac
+  [ "$lines" -le 200 ] || lines=200
+  [ "$bytes" -ge 1024 ] || bytes=1024
+  [ "$bytes" -le 131072 ] || bytes=131072
+  if [ ! -f "$EVIDENCE_SANITIZER" ] || [ -L "$EVIDENCE_SANITIZER" ]; then
+    printf '<sanitizer-unavailable>\n'
+    return 0
+  fi
+  python3 "$EVIDENCE_SANITIZER" \
+    --source "$source" \
+    --cow-home "${COW_HOME:-}" \
+    --lines "$lines" \
+    --bytes "$bytes" 2>/dev/null \
+    || printf '<sanitizer-failed-closed>\n'
+}
+
+snapshot_manifest_cache_present() {
+  if [ -n "${expected_manifest_cache:-}" ] \
+      && [ -f "$expected_manifest_cache" ] \
+      && [ ! -L "$expected_manifest_cache" ]; then
+    printf 'true\n'
+  else
+    printf 'false\n'
+  fi
+}
+
+emit_dev_photograph_failure_summary() {
+  printf 'DEV_PHOTOGRAPH_FAILURE phase=%s attempt=%s/%s timeout_secs=%s snapshot_rc=%s\n' \
+    "${FAILURE_PHASE:-unknown}" "${SNAPSHOT_ATTEMPT:-0}" \
+    "${SNAPSHOT_ATTEMPTS:-0}" "${SNAPSHOT_TIMEOUT:-0}" "${SNAPSHOT_RC:-not-run}"
+  printf 'DEV_PHOTOGRAPH_OBSERVED manifest_cache_present_before=%s manifest_cache_present_after=%s\n' \
+    "${SNAPSHOT_CACHE_PRESENT_BEFORE:-not-observed}" \
+    "${SNAPSHOT_CACHE_PRESENT_AFTER:-not-observed}"
+}
+
+persist_dev_photograph_failure_evidence() {
+  local root root_real bundle bundle_tmp summary daemon_tail snapshot_tail stamp
+  [ -n "${PROOF_ROOT_REAL:-}" ] && [ -d "$PROOF_ROOT_REAL" ] || return 1
+  root="$(dev_photograph_evidence_root)" || return 1
+  case "$root" in /*) ;; *) return 1 ;; esac
+  root_real="$(_dev_stamp_real_maybe_absent "$root")" || return 1
+  case "$root_real" in /|"") return 1 ;; esac
+  if [ -n "${PRIMARY_HOME_ARG:-}" ]; then
+    _dev_stamp_paths_do_not_overlap "$root_real/evidence-placeholder" "$PRIMARY_HOME_ARG" \
+      || return 1
+  fi
+  _dev_stamp_paths_do_not_overlap "$root_real/evidence-placeholder" "$PROOF_ROOT_REAL" \
+    || return 1
+  mkdir -p -- "$root" || return 1
+  [ -d "$root" ] && [ ! -L "$root" ] || return 1
+  [ "$(_dev_stamp_file_owner "$root" || true)" = "$(id -u)" ] || return 1
+  chmod 700 "$root" || return 1
+  root_real="$(_dev_stamp_real_dir "$root")" || return 1
+  stamp="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || printf unknown-time)"
+  bundle="${safe_exec_id:-unknown}-${stamp}-$$"
+  bundle_tmp="$(umask 077; mktemp -d "$root_real/.${bundle}.tmp.XXXXXX")" || return 1
+  summary="$bundle_tmp/summary.txt"
+  daemon_tail="$bundle_tmp/daemon.tail.log"
+  snapshot_tail="$bundle_tmp/snapshot.tail.log"
+  {
+    emit_dev_photograph_failure_summary
+    printf 'reason=%s\n' "${FAILURE_REASON:-DEV photograph proof failed}"
+  } >"$summary" || { rm -rf -- "$bundle_tmp"; return 1; }
+  sanitize_proof_log_tail "${DAEMON_LOG:-}" >"$daemon_tail" \
+    || { rm -rf -- "$bundle_tmp"; return 1; }
+  sanitize_proof_log_tail "${SNAPSHOT_LOG:-}" >"$snapshot_tail" \
+    || { rm -rf -- "$bundle_tmp"; return 1; }
+  chmod 600 "$summary" "$daemon_tail" "$snapshot_tail" \
+    || { rm -rf -- "$bundle_tmp"; return 1; }
+  [ ! -e "$root_real/$bundle" ] || { rm -rf -- "$bundle_tmp"; return 1; }
+  mv "$bundle_tmp" "$root_real/$bundle" || { rm -rf -- "$bundle_tmp"; return 1; }
+  FAILURE_EVIDENCE="$root_real/$bundle"
+}
+
+emit_dev_photograph_failure_evidence() {
+  if ! persist_dev_photograph_failure_evidence; then
+    emit_dev_photograph_failure_summary >&2
+    printf 'DEV_PHOTOGRAPH_EVIDENCE: unavailable\n' >&2
+    return 0
+  fi
+  cat "$FAILURE_EVIDENCE/summary.txt" >&2
+  printf 'DEV_PHOTOGRAPH_EVIDENCE: %s\n' "$FAILURE_EVIDENCE" >&2
+  printf 'DEV_PHOTOGRAPH_DAEMON_TAIL_BEGIN\n' >&2
+  cat "$FAILURE_EVIDENCE/daemon.tail.log" >&2
+  printf 'DEV_PHOTOGRAPH_DAEMON_TAIL_END\n' >&2
+  printf 'DEV_PHOTOGRAPH_SNAPSHOT_TAIL_BEGIN\n' >&2
+  cat "$FAILURE_EVIDENCE/snapshot.tail.log" >&2
+  printf 'DEV_PHOTOGRAPH_SNAPSHOT_TAIL_END\n' >&2
 }
 
 while [ "$#" -gt 0 ]; do
@@ -69,11 +182,13 @@ if [ ! -x "$LASTSECRETS_BIN" ] && ! command -v "$LASTSECRETS_BIN" >/dev/null 2>&
   proof_die "LastSecrets is unavailable"
 fi
 
+FAILURE_PHASE="candidate_binding"
 if ! assert_candidate_binding_matches_expected \
     "$CANDIDATE_DAEMON" "$CANDIDATE_CLI" "$SOURCE_OID" >/dev/null 2>&1; then
   proof_die "the exact candidate binding changed before the DEV proof"
 fi
 
+FAILURE_PHASE="input_safety"
 CANDIDATE_DAEMON="$(_dev_stamp_real_file "$CANDIDATE_DAEMON")"
 CANDIDATE_CLI="$(_dev_stamp_real_file "$CANDIDATE_CLI")"
 PRIMARY_HOME_ARG="$(_dev_stamp_real_dir "$PRIMARY_HOME_ARG")" \
@@ -124,6 +239,7 @@ receipt_parent_real="$(_dev_stamp_real_maybe_absent "$(dirname -- "$RECEIPT")")"
   || proof_die "the DEV receipt path is not bound to this execution and candidate pair"
 RECEIPT="$receipt_root_real/$expected_receipt_name"
 
+FAILURE_PHASE="proof_root"
 PROOF_ROOT="$(mktemp -d "$proof_tmp_base/lastdb-dev-photograph-${safe_exec_id}.XXXXXX")" \
   || proof_die "the DEV proof root cannot be created"
 PROOF_ROOT_REAL="$(_dev_stamp_real_dir "$PROOF_ROOT")" \
@@ -133,6 +249,9 @@ PROOF_SENTINEL="$PROOF_ROOT_REAL/.lastdb-dev-photograph-owner"
 PROOF_TOKEN="${LOOM_EXEC_ID}:$$:${PROOF_ROOT_REAL}"
 (umask 077; printf '%s\n' "$PROOF_TOKEN" >"$PROOF_SENTINEL")
 chmod 600 "$PROOF_SENTINEL"
+DAEMON_LOG="$PROOF_ROOT_REAL/candidate-daemon.log"
+SNAPSHOT_LOG="$PROOF_ROOT_REAL/snapshot.stderr.log"
+(umask 077; : >"$DAEMON_LOG"; : >"$SNAPSHOT_LOG")
 
 proof_root_is_owned() {
   local base_real
@@ -175,13 +294,20 @@ stop_exact_candidate() {
 }
 
 cleanup_dev_proof() {
+  local rc=$?
+  trap - EXIT HUP INT TERM
+  set +e
   stop_exact_candidate
+  if [ "$rc" -ne 0 ]; then
+    emit_dev_photograph_failure_evidence
+  fi
   if proof_root_is_owned; then
     rm -rf -- "$PROOF_ROOT_REAL"
   fi
+  exit "$rc"
 }
 trap cleanup_dev_proof EXIT
-trap 'cleanup_dev_proof; exit 1' HUP INT TERM
+trap 'FAILURE_REASON="the DEV photograph proof received a signal"; exit 1' HUP INT TERM
 
 file_fingerprint() {
   local path="$1" mode inode sha
@@ -195,6 +321,7 @@ file_fingerprint() {
 
 # Clone the static rollback point that step 1 already created. Do not race a
 # second walk of the live primary after the normal probe bars.
+FAILURE_PHASE="clone_rollback"
 cp -cR "$CLONE_SOURCE" "$COW_HOME" >/dev/null 2>&1 \
   || proof_die "the static rollback point cannot create the DEV proof CoW"
 [ -d "$COW_HOME/data" ] \
@@ -233,6 +360,7 @@ production_device_id="$(cat "$COW_HOME/data/.device_id")"
 # Remove every production cloud intent or backup, not only active and paused.
 # Older writers also left a hidden temporary credential beside the active file.
 # The copied manifest can pass production lineage into the DEV CAS request.
+FAILURE_PHASE="scrub_production_state"
 find "$COW_HOME" -maxdepth 1 \
   \( -name 'cloud_sync.json*' -o -name '.cloud_sync.json.tmp*' \) \
   -exec rm -f -- {} + 2>/dev/null \
@@ -262,6 +390,7 @@ for absent in \
 done
 
 # Keep the invite in one pipe. Do not store, print, log, or pass it in argv.
+FAILURE_PHASE="dev_connect"
 set +e
 "$LASTSECRETS_BIN" get "$DEV_INVITE_SLUG" 2>/dev/null \
   | env -u LASTDB_HOME -u FOLDDB_HOME -u FOLD_SYNC_DEVICE_ID \
@@ -307,8 +436,9 @@ done
 
 # The continuous publisher starts at daemon boot. Only the explicit snapshot
 # command below can supply the receipt report for this proof.
+FAILURE_PHASE="daemon_start"
 env -u LASTDB_HOME -u FOLDDB_HOME -u FOLD_SYNC_DEVICE_ID \
-  "$CANDIDATE_DAEMON" --data-dir "$COW_HOME" >/dev/null 2>/dev/null &
+  "$CANDIDATE_DAEMON" --data-dir "$COW_HOME" >"$DAEMON_LOG" 2>&1 &
 CANDIDATE_PID=$!
 
 socket="$COW_HOME/data/folddb.sock"
@@ -317,8 +447,15 @@ ready_waits="${LASTDB_DEV_PHOTOGRAPH_READY_WAITS:-300}"
 case "$ready_waits" in ''|*[!0-9]*) proof_die "the DEV proof readiness limit is invalid" ;; esac
 ready_sleep="${LASTDB_DEV_PHOTOGRAPH_READY_SLEEP_SECS:-1}"
 ready_n=0
+FAILURE_PHASE="daemon_ready"
 while [ "$ready_n" -lt "$ready_waits" ]; do
-  candidate_pid_is_owned || proof_die "the exact candidate stopped before the DEV snapshot"
+  if ! candidate_pid_is_owned; then
+    kill -0 "$CANDIDATE_PID" 2>/dev/null \
+      || proof_die "the exact candidate stopped before the DEV snapshot"
+    sleep "$ready_sleep"
+    ready_n=$((ready_n + 1))
+    continue
+  fi
   if [ -S "$socket" ]; then
     ready=1
     break
@@ -335,16 +472,29 @@ snapshot_delay="${LASTDB_DEV_PHOTOGRAPH_SNAPSHOT_RETRY_SECS:-5}"
 snapshot_timeout="${LASTDB_DEV_PHOTOGRAPH_SNAPSHOT_TIMEOUT_SECS:-900}"
 case "$snapshot_attempts" in ''|*[!0-9]*|0) proof_die "the DEV snapshot attempt limit is invalid" ;; esac
 case "$snapshot_timeout" in ''|*[!0-9]*|0) proof_die "the DEV snapshot command timeout is invalid" ;; esac
+SNAPSHOT_ATTEMPTS="$snapshot_attempts"
+SNAPSHOT_TIMEOUT="$snapshot_timeout"
 expected_manifest_cache="$COW_HOME/laststore_backup_manifest.json"
 attempt=1
 while [ "$attempt" -le "$snapshot_attempts" ]; do
+  FAILURE_PHASE="snapshot_command"
+  SNAPSHOT_ATTEMPT="$attempt"
+  SNAPSHOT_RC="not-run"
+  SNAPSHOT_CACHE_PRESENT_BEFORE="$(snapshot_manifest_cache_present)"
+  SNAPSHOT_CACHE_PRESENT_AFTER="not-observed"
   candidate_pid_is_owned || proof_die "the exact candidate stopped during the DEV snapshot"
+  (umask 077; : >"$SNAPSHOT_LOG")
   set +e
   snapshot_json="$(run_op_with_deadline "$snapshot_timeout" \
     env -u LASTDB_HOME -u FOLDDB_HOME -u FOLD_SYNC_DEVICE_ID \
-    "$CANDIDATE_CLI" --data-dir "$COW_HOME" cloud snapshot --json 2>/dev/null)"
+    "$CANDIDATE_CLI" --data-dir "$COW_HOME" cloud snapshot --json 2>"$SNAPSHOT_LOG")"
   snapshot_rc=$?
+  SNAPSHOT_RC="$snapshot_rc"
+  SNAPSHOT_CACHE_PRESENT_AFTER="$(snapshot_manifest_cache_present)"
   set -e
+  if [ "$snapshot_rc" -eq 0 ]; then
+    FAILURE_PHASE="snapshot_report_validation"
+  fi
   if [ "$snapshot_rc" -eq 0 ] \
       && printf '%s' "$snapshot_json" | jq -e \
         --arg manifest_cache "$expected_manifest_cache" \
@@ -375,6 +525,7 @@ while [ "$attempt" -le "$snapshot_attempts" ]; do
   attempt=$((attempt + 1))
 done
 [ "$snapshot_ok" -eq 1 ] || proof_die "the manual DEV photograph did not return an exact committed CAS report"
+FAILURE_PHASE="post_snapshot_validation"
 [ -f "$expected_manifest_cache" ] && [ ! -L "$expected_manifest_cache" ] \
   || proof_die "the manual DEV photograph did not commit its exact manifest cache"
 
@@ -413,6 +564,7 @@ if ! assert_candidate_binding_matches_expected \
   proof_die "the exact candidate binding changed during the DEV proof"
 fi
 
+FAILURE_PHASE="receipt_write"
 committed_epoch="$(date +%s)"
 committed_at="$(date -u -r "$committed_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
   || date -u -d "@$committed_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
@@ -426,5 +578,6 @@ write_dev_stamp_receipt_v2 \
 assert_dev_photograph_stamp_ok "$RECEIPT" "$PRIMARY_HOME_ARG" >/dev/null \
   || proof_die "the exact-candidate DEV photograph receipt failed its own gate"
 
+FAILURE_PHASE="complete"
 printf 'DEV_PHOTOGRAPH: GREEN\n'
 printf 'SUMMARY: the exact candidate pair committed one isolated DEV photograph\n'

@@ -165,6 +165,17 @@ log() { printf '[safe-upgrade] %s\n' "$*"; }
 die() { printf '[safe-upgrade] ERROR: %s\n' "$*" >&2; exit 1; }
 warn() { printf '[safe-upgrade] WARN: %s\n' "$*" >&2; }
 
+emit_dev_photograph_failure() {
+  local proof_out="${1:-}"
+  if [ -n "$proof_out" ]; then
+    printf '%s\n' "$proof_out"
+  fi
+  printf '\n'
+  printf 'VERDICT: RED\n'
+  printf 'REASON: the exact candidate failed its isolated DEV photograph proof; primary remains untouched\n'
+  printf 'NEXT: fix the candidate, DEV registration, or snapshot CAS path, then start a new bound Loom execution\n'
+}
+
 if [ "$PROBE_ONLY" -eq 0 ] && [ "$CHECK_DEV_STAMP" -eq 0 ]; then
   [ "${LASTDB_SAFE_UPGRADE_VIA_LOOM:-0}" = "1" ] \
     || die "live cutover requires the Loom lastdb-safe-upgrade graph; use last-stack-safe-upgrade-loom --candidate PATH"
@@ -2043,10 +2054,7 @@ else
     DEV_PROOF_RC=$?
     set -e
     if [ "$DEV_PROOF_RC" -ne 0 ]; then
-      echo ""
-      echo "VERDICT: RED"
-      echo "REASON: the exact candidate failed its isolated DEV photograph proof; primary remains untouched"
-      echo "NEXT: fix the candidate, DEV registration, or snapshot CAS path, then start a new bound Loom execution"
+      emit_dev_photograph_failure "$DEV_PROOF_OUT"
       exit 1
     fi
   else

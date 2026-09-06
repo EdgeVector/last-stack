@@ -464,3 +464,8 @@ ci_test tests/last-stack-forge-token-fallback.sh
 # no network. ~2s.
 # APPENDED (see the shard-stability note above): ci_test shards by list position.
 ci_test tests/last-stack-portal-wt-rm-suggestion-scope.sh
+
+# DEV photograph failure evidence must stay bounded and must exclude secret
+# values, raw snapshot envelopes, object digests, and full CoW paths.
+# APPENDED (see the shard-stability note above): ci_test shards by list position.
+ci_test tests/last-stack-lastdb-dev-photograph-sanitize-tail.sh
