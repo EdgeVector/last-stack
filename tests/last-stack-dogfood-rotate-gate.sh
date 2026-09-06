@@ -169,5 +169,57 @@ printf '%s\n' "$dispatch_noop" | grep -q 'ROUTINE_RESULT outcome=noop detail=fea
   || fail "compile-only dispatch must noop-skip harness: $dispatch_noop"
 printf '%s\n' "$dispatch_noop" | grep -q '^SELECTED' && fail "compile-only dispatch must not SELECT: $dispatch_noop"
 
+# A busy node is a load signal, not a gate failure. `brain get` that overruns
+# its timeout used to escape as subprocess.TimeoutExpired (the only handler was
+# `except OSError`), so routinesd recorded outcome=error with a traceback.
+# Both busy shapes must now produce exit 0 and an honest noop.
+cat >"$tmp/brain-hang" <<'EOF'
+#!/usr/bin/env bash
+sleep 120
+EOF
+chmod +x "$tmp/brain-hang"
+
+cat >"$tmp/brain-busy" <<'EOF'
+#!/usr/bin/env bash
+echo "service_timeout: node did not respond within 30000ms" >&2
+exit 1
+EOF
+chmod +x "$tmp/brain-busy"
+
+# Drive the brain-get bound down: Forge CI already runs near its ceiling, so
+# the proof must not sleep out the 30s production timeout.
+set +e
+out_hang="$(LAST_STACK_DOGFOOD_GATE_BRAIN_TIMEOUT_SEC=2 \
+  timeout 60 "$GATE" --brain-bin "$tmp/brain-hang" --now 2026-08-20T00:00:00Z --routines-dispatch)"
+rc_hang=$?
+set -e
+[ "$rc_hang" -eq 0 ] || fail "brain-get timeout must exit 0, got $rc_hang: $out_hang"
+printf '%s\n' "$out_hang" | grep -q 'ROUTINE_RESULT outcome=noop detail=feature=- result=registry-unavailable cards=0' \
+  || fail "brain-get timeout must emit a noop trailer: $out_hang"
+printf '%s\n' "$out_hang" | grep -q 'reason=brain-get-timeout-2s' \
+  || fail "brain-get timeout must name its reason: $out_hang"
+printf '%s\n' "$out_hang" | grep -qi 'Traceback' && fail "brain-get timeout must not traceback: $out_hang"
+
+set +e
+out_busy="$("$GATE" --brain-bin "$tmp/brain-busy" --now 2026-08-20T00:00:00Z --routines-dispatch)"
+rc_busy=$?
+set -e
+[ "$rc_busy" -eq 0 ] || fail "service_timeout must exit 0, got $rc_busy: $out_busy"
+printf '%s\n' "$out_busy" | grep -q 'reason=brain-get-busy-node' \
+  || fail "service_timeout must map to busy-node noop: $out_busy"
+
+# A genuine brain failure is still a gate error, not a silent noop.
+cat >"$tmp/brain-broken" <<'EOF'
+#!/usr/bin/env bash
+echo "record not found" >&2
+exit 1
+EOF
+chmod +x "$tmp/brain-broken"
+set +e
+out_broken="$("$GATE" --brain-bin "$tmp/brain-broken" --now 2026-08-20T00:00:00Z --routines-dispatch 2>/dev/null)"
+rc_broken=$?
+set -e
+[ "$rc_broken" -eq 1 ] || fail "a real brain failure must stay exit 1, got $rc_broken: $out_broken"
+
 python3 -m py_compile "$GATE"
 echo OK last-stack-dogfood-rotate-gate

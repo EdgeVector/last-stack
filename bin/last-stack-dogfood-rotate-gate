@@ -52,6 +52,43 @@ def die(msg: str, code: int = 1) -> None:
     raise SystemExit(code)
 
 
+class BusyNode(Exception):
+    """The node was too loaded to answer, which is not a gate failure.
+
+    `brain get` can exceed its timeout, or answer service_timeout, while the
+    node is perfectly healthy -- CLAUDE.md calls these load signals, not an
+    outage. load_registry used to let subprocess.TimeoutExpired escape (its
+    only handler was `except OSError`, and TimeoutExpired is a SubprocessError,
+    not an OSError), so routinesd recorded outcome=error with a Python
+    traceback in stderrTail and the fleet surface read it as a broken gate.
+    The recipe-run path and append_heartbeat already absorb their own timeouts;
+    this carries the same treatment up to main().
+    """
+
+
+# service_timeout and friends arrive as a non-zero brain exit, not an
+# exception, so the busy node has to be recognised in the message too.
+BUSY_NODE_RE = re.compile(
+    r"service_timeout|did not respond within|too many concurrent reads",
+    re.IGNORECASE,
+)
+
+
+def brain_get_timeout() -> float:
+    """Seconds to wait for `brain get`. Overridable so CI need not burn 30s.
+
+    The Forge CI gate already runs close to its 15-minute ceiling, so the test
+    that proves the busy-node path drives this down instead of sleeping out the
+    production bound.
+    """
+    raw = os.environ.get("LAST_STACK_DOGFOOD_GATE_BRAIN_TIMEOUT_SEC", "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return 30.0
+    return value if value > 0 else 30.0
+
+
 def parse_cadence_hours(raw: str | None) -> float:
     if not raw:
         return 24.0
@@ -332,12 +369,17 @@ def load_registry(args: argparse.Namespace) -> str:
             check=False,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=brain_get_timeout(),
         )
+    except subprocess.TimeoutExpired:
+        raise BusyNode(f"brain-get-timeout-{brain_get_timeout():g}s") from None
     except OSError as exc:
         die(f"brain get failed: {exc}")
     if proc.returncode != 0:
-        die(f"brain get dogfood-registry failed: {proc.stderr.strip() or proc.stdout.strip()}")
+        detail = proc.stderr.strip() or proc.stdout.strip()
+        if BUSY_NODE_RE.search(detail):
+            raise BusyNode("brain-get-busy-node")
+        die(f"brain get dogfood-registry failed: {detail}")
     return proc.stdout
 
 
@@ -359,7 +401,16 @@ def main(argv: list[str] | None = None) -> int:
         args.run = True
 
     now = parse_now(args.now)
-    body = extract_registry_body(load_registry(args))
+    try:
+        body = extract_registry_body(load_registry(args))
+    except BusyNode as exc:
+        return emit_result(
+            "noop",
+            f"registry-unavailable reason={exc}",
+            feature="-",
+            result="registry-unavailable",
+            dispatch=bool(args.routines_dispatch),
+        )
     entries, retired_slugs = parse_entries(body)
     log_rows = parse_rotation_log(body)
 
