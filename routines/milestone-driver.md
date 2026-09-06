@@ -28,8 +28,11 @@ decomposition is unclear.
 
 ## Non-negotiable contract
 
-- **Never skip the gap-report.** First mutation-ready step after inventory is:
-  `kanban milestone gap-report --json` (save under `/tmp/milestone-gap-report.json`).
+- **Never skip the run snapshot.** Before any board mutation, use
+  `last-stack-milestone-driver-snapshot` to run preflight, capture inventory,
+  and create the gap report inside the current routines run directory.
+- Never read a shared `/tmp` gap report. Every report consumer and board
+  mutation must validate the current run ID and the post-preflight creation time.
 - **Trust the report.** Do not re-rank the portfolio by vibe. Process
   `work_queue` in order: all **promote** entries first, then **decompose**.
 - Never implement product code, open or merge a PR/CR, spawn another agent, or
@@ -75,11 +78,28 @@ case "$safety_cap" in
     exit 0
     ;;
 esac
-# Generator backpressure: shed when LastDB is hot so claim/closeout keep shipping.
-if [ -x "$last_stack/bin/last-stack-generator-preflight" ]; then
-  "$last_stack/bin/last-stack-generator-preflight" milestone-driver || exit 0
+run_dir="${ROUTINES_RUN_DIR:?milestone-driver requires ROUTINES_RUN_DIR}"
+run_id="${ROUTINES_RUN_ID:?milestone-driver requires ROUTINES_RUN_ID}"
+snapshot_helper="$last_stack/bin/last-stack-milestone-driver-snapshot"
+gap_report="$run_dir/milestone-driver/gap-report.json"
+
+# The helper clears this run's artifact, then runs
+# last-stack-generator-preflight. A stopped preflight exits before inventory,
+# gap analysis, or board commands.
+if ! snapshot_result="$("$snapshot_helper" capture \
+  --run-dir "$run_dir" --run-id "$run_id")"; then
+  result_token='ROUTINE_RESULT'
+  printf '%s outcome=noop detail=generator-preflight-stopped run_id=%s no_board_mutations=1\n' \
+    "$result_token" "$run_id"
+  exit 0
 fi
+printf '%s\n' "$snapshot_result" | jq -e \
+  --arg artifact "$gap_report" '.artifact == $artifact' >/dev/null
 ```
+
+If capture returns nonzero, the routine ends at this point. Do not run a later
+block in a new shell. The missing current-run artifact also makes every guarded
+mutation fail closed.
 
 Run `situations list --json` before board mutations. Respect blocked actions.
 Never restart LastDB / routinesd / shared infra.
@@ -87,10 +107,11 @@ Never restart LastDB / routinesd / shared infra.
 ## Creation inventory gate
 
 ```bash
-kanban list --column backlog --json > /tmp/milestone-driver-backlog.json
-kanban list --column todo --json > /tmp/milestone-driver-todo.json
-kanban list --column doing --json > /tmp/milestone-driver-doing.json
-kanban milestone portfolio --json > /tmp/milestone-driver-portfolio.json
+snapshot_dir="${ROUTINES_RUN_DIR:?}/milestone-driver"
+backlog_artifact="$snapshot_dir/backlog.json"
+todo_artifact="$snapshot_dir/todo.json"
+doing_artifact="$snapshot_dir/doing.json"
+portfolio_artifact="$snapshot_dir/portfolio.json"
 # Count rows from list --json. Prefer the envelope's pre-cap `.total`
 # (fkanban kanban-json-envelope-total-truncated); fall back to bare-array
 # `length` so this prompt still works against older host-track builds.
@@ -104,10 +125,10 @@ _nonterminal_milestone_count() {
   jq '[(if type == "array" then . else (.entries // .milestones // []) end)[]
        | select(.state != "complete" and .state != "abandoned")] | length' "$1"
 }
-backlog_count="$(_json_row_count /tmp/milestone-driver-backlog.json)"
-todo_count="$(_json_row_count /tmp/milestone-driver-todo.json)"
-doing_count="$(_json_row_count /tmp/milestone-driver-doing.json)"
-milestone_count="$(_nonterminal_milestone_count /tmp/milestone-driver-portfolio.json)"
+backlog_count="$(_json_row_count "$backlog_artifact")"
+todo_count="$(_json_row_count "$todo_artifact")"
+doing_count="$(_json_row_count "$doing_artifact")"
+milestone_count="$(_nonterminal_milestone_count "$portfolio_artifact")"
 printf 'CREATION_INVENTORY backlog=%s todo=%s doing=%s nonterminal_milestones=%s\n' \
   "$backlog_count" "$todo_count" "$doing_count" "$milestone_count"
 if [ "$todo_count" -eq 0 ]; then idle_hint=starving
@@ -148,7 +169,7 @@ card for it:
 set +e
 "$last_stack/bin/last-stack-feature-portfolio-admission" \
   --north-star "$ms_north_star" --work-class feature --json \
-  >/tmp/milestone-driver-admission.json
+  >"$snapshot_dir/admission.json"
 admission_rc=$?
 set -e
 printf 'ADMISSION north_star=%s rc=%s\n' "$ms_north_star" "$admission_rc"
@@ -230,10 +251,11 @@ OID. If it differs from `.main_oid`, discard the result and repeat the check.
 ## Deterministic gap-report (required)
 
 ```bash
-kanban milestone gap-report --json > /tmp/milestone-gap-report.json
-jq -r '
+"${LAST_STACK_ROOT:-$HOME/.last-stack}/bin/last-stack-milestone-driver-snapshot" consume \
+  --run-dir "${ROUTINES_RUN_DIR:?}" --run-id "${ROUTINES_RUN_ID:?}" \
+  --artifact "${ROUTINES_RUN_DIR:?}/milestone-driver/gap-report.json" | jq -r '
   "GAP_FILL IDLE_PROMOTEABLE=\(.counts.idle_promoteable) IDLE_EMPTY=\(.counts.idle_empty) IN_FLIGHT=\(.counts.in_flight) PROOF_PENDING=\(.counts.proof_pending) WORK_QUEUE=\(.work_queue|length)"
-' /tmp/milestone-gap-report.json
+'
 ```
 
 Meanings (from fkanban code, not your opinion):
@@ -255,9 +277,14 @@ Meanings (from fkanban code, not your opinion):
 Print:
 
 ```bash
+current_gap_report="$(
+  "${LAST_STACK_ROOT:-$HOME/.last-stack}/bin/last-stack-milestone-driver-snapshot" consume \
+    --run-dir "${ROUTINES_RUN_DIR:?}" --run-id "${ROUTINES_RUN_ID:?}" \
+    --artifact "${ROUTINES_RUN_DIR:?}/milestone-driver/gap-report.json"
+)" || exit 0
 printf 'GAP_FILL IDLE_MILESTONES=%s SKIPPED_IN_FLIGHT=%s FILED=%s PROMOTED=%s PROOF_ONLY=%s SAFETY_CAP=%s CAP_HIT=%s\n' \
-  "$(( $(jq '.counts.idle_promoteable + .counts.idle_empty' /tmp/milestone-gap-report.json) ))" \
-  "$(jq '.counts.in_flight' /tmp/milestone-gap-report.json)" \
+  "$(( $(printf '%s\n' "$current_gap_report" | jq '.counts.idle_promoteable + .counts.idle_empty') ))" \
+  "$(printf '%s\n' "$current_gap_report" | jq '.counts.in_flight')" \
   "$filed_n" "$promoted_n" "$proof_n" "$safety_cap" "$cap_hit"
 ```
 
@@ -265,8 +292,9 @@ printf 'GAP_FILL IDLE_MILESTONES=%s SKIPPED_IN_FLIGHT=%s FILED=%s PROMOTED=%s PR
 
 ## Drive from work_queue
 
-Immediately before any `kanban add`, refresh inventory reads and re-run
-`gap-report` if the board may have changed.
+Run each board mutation through the snapshot helper's `guard` mode. This works
+when each command runs in a new shell. If the board may have changed, call
+`capture` again first. Capture runs preflight and replaces only this run's snapshot.
 
 Process **in order**: all `promote` → all `decompose` (until `safety_cap`) →
 all `complete_proof` (always; not limited by SAFETY_CAP).
@@ -276,7 +304,10 @@ all `complete_proof` (always; not limited by SAFETY_CAP).
 For each `work_queue` item with `action=promote`, until `safety_cap`:
 
 ```bash
-kanban move "$pr_slug" todo --json
+"${LAST_STACK_ROOT:-$HOME/.last-stack}/bin/last-stack-milestone-driver-snapshot" guard \
+  --run-dir "${ROUTINES_RUN_DIR:?}" --run-id "${ROUTINES_RUN_ID:?}" \
+  --artifact "${ROUTINES_RUN_DIR:?}/milestone-driver/gap-report.json" -- \
+  kanban move "$pr_slug" todo --json
 # if move refuses hollow body, skip that slug (do not invent a sibling)
 ```
 
@@ -298,7 +329,10 @@ For each `work_queue` item with `action=decompose`, until `safety_cap`:
    - If it has **no** `proof_card`, set proof to **not required** (do not invent
      a validation card):
      ```bash
-     kanban milestone add <slug> --proof-status not_required --json
+     "${LAST_STACK_ROOT:-$HOME/.last-stack}/bin/last-stack-milestone-driver-snapshot" guard \
+       --run-dir "${ROUTINES_RUN_DIR:?}" --run-id "${ROUTINES_RUN_ID:?}" \
+       --artifact "${ROUTINES_RUN_DIR:?}/milestone-driver/gap-report.json" -- \
+       kanban milestone add <slug> --proof-status not_required --json
      ```
      (Only updates proof fields; do not rewrite outcome body.)
    - **Only** attach/create a `Kind: validation` proof when **all** of these hold:
@@ -322,8 +356,9 @@ For each `work_queue` item with `action=decompose`, until `safety_cap`:
    pass until the gate is fully represented or `safety_cap` hits:
    - unblocked → `--column todo`
    - dep-held → `--column backlog` + `--deps`
-5. Each card: file via `"$last_stack/bin/last-stack-kanban-file-pr"` (never
-   raw `kanban add` for Kind:pr). The helper requires `--north-star` (this
+5. Each card: file via
+   `last-stack-milestone-driver-snapshot guard -- ... last-stack-kanban-file-pr`
+   (never raw `kanban add` for Kind:pr). The helper requires `--north-star` (this
    milestone's North Star) and `--milestone` (this milestone slug), a full
    `## GOAL` / `## END STATE` / STEPS / VERIFY brief, and a bare `Repo:` /
    `Base:` / `Kind: pr` header. It also runs `last-stack-kanban-decision-check`
@@ -354,12 +389,18 @@ milestone or every queue entry):
    - If reason/body has machine PASS evidence (or proof card DONE with
      `PROOF: PASS` / `RESULT: PASS`):
      ```bash
-     kanban milestone state <slug> complete --proof-status passing --json
+     "${LAST_STACK_ROOT:-$HOME/.last-stack}/bin/last-stack-milestone-driver-snapshot" guard \
+       --run-dir "${ROUTINES_RUN_DIR:?}" --run-id "${ROUTINES_RUN_ID:?}" \
+       --artifact "${ROUTINES_RUN_DIR:?}/milestone-driver/gap-report.json" -- \
+       kanban milestone state <slug> complete --proof-status passing --json
      ```
    - Else if reason mentions `not_required` or `no proof card` (or detail
      `proof_status=not_required` and no harness):
      ```bash
-     kanban milestone state <slug> complete --proof-status not_required --json
+     "${LAST_STACK_ROOT:-$HOME/.last-stack}/bin/last-stack-milestone-driver-snapshot" guard \
+       --run-dir "${ROUTINES_RUN_DIR:?}" --run-id "${ROUTINES_RUN_ID:?}" \
+       --artifact "${ROUTINES_RUN_DIR:?}/milestone-driver/gap-report.json" -- \
+       kanban milestone state <slug> complete --proof-status not_required --json
      ```
    - Else: leave alone (true `await_proof`); do not invent a validation shell.
 3. Re-read detail; require `state=complete` and `proof_status` matching the path
@@ -422,7 +463,12 @@ The CLI rejects this transition unless the proof contract passes.
 Re-run:
 
 ```bash
-kanban milestone gap-report --json | tee /tmp/milestone-gap-report.json | jq '{counts, work_queue, action_counts}'
+"${LAST_STACK_ROOT:-$HOME/.last-stack}/bin/last-stack-milestone-driver-snapshot" capture \
+  --run-dir "${ROUTINES_RUN_DIR:?}" --run-id "${ROUTINES_RUN_ID:?}" >/dev/null || exit 0
+"${LAST_STACK_ROOT:-$HOME/.last-stack}/bin/last-stack-milestone-driver-snapshot" consume \
+  --run-dir "${ROUTINES_RUN_DIR:?}" --run-id "${ROUTINES_RUN_ID:?}" \
+  --artifact "${ROUTINES_RUN_DIR:?}/milestone-driver/gap-report.json" \
+  | jq '{counts, work_queue, action_counts}'
 ```
 
 **Portfolio pass record (best-effort, never blocking):** feeds
@@ -432,8 +478,11 @@ per-admitted-North-Star idle counts. One Brain point get, one append to a
 local pass-history file — never a Brain list, never a Kanban write.
 
 ```bash
+"${LAST_STACK_ROOT:-$HOME/.last-stack}/bin/last-stack-milestone-driver-snapshot" verify \
+  --run-dir "${ROUTINES_RUN_DIR:?}" --run-id "${ROUTINES_RUN_ID:?}" \
+  --artifact "${ROUTINES_RUN_DIR:?}/milestone-driver/gap-report.json" >/dev/null || exit 0
 "$last_stack/bin/last-stack-portfolio-pass-record" \
-  --gap-report /tmp/milestone-gap-report.json --json || true
+  --gap-report "${ROUTINES_RUN_DIR:?}/milestone-driver/gap-report.json" --json || true
 ```
 
 A failure here must never fail this run; it only affects a future

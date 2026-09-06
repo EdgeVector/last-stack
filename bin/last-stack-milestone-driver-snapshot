@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+# Capture and validate one milestone-driver input snapshot.
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage:
+  last-stack-milestone-driver-snapshot capture --run-dir DIR --run-id ID [--preflight-bin PATH] [--kanban-bin PATH]
+  last-stack-milestone-driver-snapshot verify  --run-dir DIR --run-id ID --artifact PATH
+  last-stack-milestone-driver-snapshot consume --run-dir DIR --run-id ID --artifact PATH
+  last-stack-milestone-driver-snapshot guard   --run-dir DIR --run-id ID --artifact PATH -- COMMAND [ARG ...]
+USAGE
+  exit 2
+}
+
+mode="${1:-}"
+[ -n "$mode" ] || usage
+shift
+
+run_dir="${ROUTINES_RUN_DIR:-}"
+run_id="${ROUTINES_RUN_ID:-}"
+artifact=""
+preflight_bin=""
+kanban_bin="${KANBAN_BIN:-kanban}"
+guard_command=()
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --run-dir) run_dir="${2:-}"; shift 2 ;;
+    --run-id) run_id="${2:-}"; shift 2 ;;
+    --artifact) artifact="${2:-}"; shift 2 ;;
+    --preflight-bin) preflight_bin="${2:-}"; shift 2 ;;
+    --kanban-bin) kanban_bin="${2:-}"; shift 2 ;;
+    --) shift; guard_command=("$@"); break ;;
+    -h|--help) usage ;;
+    *) printf 'MILESTONE_DRIVER_SNAPSHOT error=unknown-argument arg=%s\n' "$1" >&2; usage ;;
+  esac
+done
+
+case "$run_dir" in
+  /*) ;;
+  *) printf 'MILESTONE_DRIVER_SNAPSHOT error=run-dir-must-be-absolute\n' >&2; exit 2 ;;
+esac
+[ "$run_dir" != "/" ] || {
+  printf 'MILESTONE_DRIVER_SNAPSHOT error=unsafe-run-dir\n' >&2
+  exit 2
+}
+[ -n "$run_id" ] || {
+  printf 'MILESTONE_DRIVER_SNAPSHOT error=missing-run-id\n' >&2
+  exit 2
+}
+
+snapshot_dir="$run_dir/milestone-driver"
+expected_artifact="$snapshot_dir/gap-report.json"
+preflight_stamp="$snapshot_dir/preflight.json"
+
+validate_snapshot() {
+  [ -n "$artifact" ] || {
+    printf 'MILESTONE_DRIVER_SNAPSHOT error=missing-artifact\n' >&2
+    return 2
+  }
+  [ "$artifact" = "$expected_artifact" ] || {
+    printf 'MILESTONE_DRIVER_SNAPSHOT error=artifact-outside-current-run artifact=%s\n' "$artifact" >&2
+    return 1
+  }
+  [ -f "$artifact" ] && [ -f "$preflight_stamp" ] || {
+    printf 'MILESTONE_DRIVER_SNAPSHOT error=current-run-artifact-missing run_id=%s\n' "$run_id" >&2
+    return 1
+  }
+
+  jq -e --arg run_id "$run_id" --arg artifact "$artifact" \
+    --slurpfile stamp "$preflight_stamp" '
+      ._milestone_driver_run as $run
+      | ($stamp[0]) as $preflight
+      | ($run.run_id == $run_id)
+        and ($preflight.run_id == $run_id)
+        and ($run.preflight_token == $preflight.preflight_token)
+        and ($run.preflight_succeeded == true)
+        and ($preflight.preflight_succeeded == true)
+        and ($run.preflight_succeeded_epoch >= 0)
+        and ($run.created_epoch >= $run.preflight_succeeded_epoch)
+        and ($run.artifact == $artifact)
+    ' "$artifact" >/dev/null || {
+      printf 'MILESTONE_DRIVER_SNAPSHOT error=stale-or-invalid-artifact run_id=%s artifact=%s\n' \
+        "$run_id" "$artifact" >&2
+      return 1
+    }
+}
+
+case "$mode" in
+  capture)
+    mkdir -p "$snapshot_dir"
+    backlog_artifact="$snapshot_dir/backlog.json"
+    todo_artifact="$snapshot_dir/todo.json"
+    doing_artifact="$snapshot_dir/doing.json"
+    portfolio_artifact="$snapshot_dir/portfolio.json"
+    candidate_artifact="$snapshot_dir/.gap-report.candidate.json"
+    final_artifact="$snapshot_dir/.gap-report.final.json"
+
+    # Clear this run's files before preflight. No former-run file can survive a stop.
+    rm -f "$expected_artifact" "$preflight_stamp" "$backlog_artifact" \
+      "$todo_artifact" "$doing_artifact" "$portfolio_artifact" \
+      "$candidate_artifact" "$final_artifact"
+
+    if [ -z "$preflight_bin" ]; then
+      script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+      preflight_bin="$script_dir/last-stack-generator-preflight"
+    fi
+
+    set +e
+    "$preflight_bin" milestone-driver >&2
+    preflight_rc=$?
+    set -e
+    if [ "$preflight_rc" -ne 0 ]; then
+      printf 'MILESTONE_DRIVER_PREFLIGHT stopped rc=%s run_id=%s no_board_commands=1\n' \
+        "$preflight_rc" "$run_id" >&2
+      exit "$preflight_rc"
+    fi
+
+    preflight_succeeded_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    preflight_succeeded_epoch="$(date -u +%s)"
+    preflight_token="$run_id-$$-$preflight_succeeded_epoch"
+    jq -n \
+      --arg run_id "$run_id" \
+      --arg token "$preflight_token" \
+      --arg succeeded_at "$preflight_succeeded_at" \
+      --argjson succeeded_epoch "$preflight_succeeded_epoch" \
+      '{run_id:$run_id, preflight_token:$token, preflight_succeeded:true,
+        preflight_succeeded_at:$succeeded_at,
+        preflight_succeeded_epoch:$succeeded_epoch}' >"$preflight_stamp"
+
+    "$kanban_bin" list --column backlog --json >"$backlog_artifact"
+    "$kanban_bin" list --column todo --json >"$todo_artifact"
+    "$kanban_bin" list --column doing --json >"$doing_artifact"
+    "$kanban_bin" milestone portfolio --json >"$portfolio_artifact"
+    "$kanban_bin" milestone gap-report --json >"$candidate_artifact"
+    jq -e 'type == "object" and (.counts | type == "object") and (.work_queue | type == "array")' \
+      "$candidate_artifact" >/dev/null
+
+    created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    created_epoch="$(date -u +%s)"
+    jq \
+      --arg run_id "$run_id" \
+      --arg token "$preflight_token" \
+      --arg preflight_at "$preflight_succeeded_at" \
+      --arg created_at "$created_at" \
+      --arg artifact "$expected_artifact" \
+      --argjson preflight_epoch "$preflight_succeeded_epoch" \
+      --argjson created_epoch "$created_epoch" '
+        . + {"_milestone_driver_run": {
+          run_id: $run_id,
+          preflight_token: $token,
+          preflight_succeeded: true,
+          preflight_succeeded_at: $preflight_at,
+          preflight_succeeded_epoch: $preflight_epoch,
+          created_at: $created_at,
+          created_epoch: $created_epoch,
+          artifact: $artifact
+        }}
+      ' "$candidate_artifact" >"$final_artifact"
+    mv "$final_artifact" "$expected_artifact"
+    artifact="$expected_artifact"
+    validate_snapshot
+    jq -n \
+      --arg artifact "$artifact" \
+      --arg run_id "$run_id" \
+      --arg preflight_succeeded_at "$preflight_succeeded_at" \
+      --arg created_at "$created_at" \
+      '{artifact:$artifact, run_id:$run_id,
+        preflight_succeeded_at:$preflight_succeeded_at, created_at:$created_at}'
+    ;;
+  verify)
+    validate_snapshot
+    printf 'MILESTONE_DRIVER_SNAPSHOT valid run_id=%s artifact=%s\n' "$run_id" "$artifact"
+    ;;
+  consume)
+    validate_snapshot
+    cat "$artifact"
+    ;;
+  guard)
+    validate_snapshot
+    [ "${#guard_command[@]}" -gt 0 ] || {
+      printf 'MILESTONE_DRIVER_SNAPSHOT error=missing-guard-command\n' >&2
+      exit 2
+    }
+    exec "${guard_command[@]}"
+    ;;
+  *) usage ;;
+esac

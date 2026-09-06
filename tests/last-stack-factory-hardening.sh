@@ -14,6 +14,9 @@ bash -n "$ROOT/bin/last-stack-canary-loom"
 bash -n "$ROOT/bin/last-stack-canary-red-heal-routine"
 bash -n "$ROOT/bin/last-stack-fold-ci-health"
 bash -n "$ROOT/bin/last-stack-generator-preflight"
+bash -n "$ROOT/bin/last-stack-milestone-driver-snapshot"
+[ -x "$ROOT/bin/last-stack-milestone-driver-snapshot" ] \
+  || fail "milestone-driver snapshot helper is not executable"
 bash -n "$ROOT/bin/last-stack-kanban-file-pr"
 [ -x "$ROOT/bin/last-stack-kanban-file-pr" ] || chmod +x "$ROOT/bin/last-stack-kanban-file-pr"
 python3 -m py_compile "$ROOT/bin/last-stack-kanban-decision-check"
@@ -83,6 +86,11 @@ grep -q 'last-stack-generator-preflight' "$ROOT/routines/north-star-driver.md" \
   || fail "north-star-driver missing generator preflight"
 grep -q 'last-stack-generator-preflight' "$ROOT/routines/milestone-driver.md" \
   || fail "milestone-driver missing generator preflight"
+grep -q 'last-stack-milestone-driver-snapshot' "$ROOT/routines/milestone-driver.md" \
+  || fail "milestone-driver missing its run-scoped snapshot guard"
+if grep -q '/tmp/milestone-gap-report.json' "$ROOT/routines/milestone-driver.md"; then
+  fail "milestone-driver still uses the shared gap-report path"
+fi
 grep -q 'Papercut lifecycle' "$ROOT/routines/papercut-reconciler.md" \
   || fail "papercut-reconciler missing lifecycle section"
 grep -q 'class-a-heal-timeout' "$ROOT/routines/kanban-pickup.md" \
