@@ -1,0 +1,29 @@
+# Test files deliberately NOT scheduled in the required gate.
+#
+# Format: <path><TAB><reason>. A reason is mandatory and is checked for length
+# by tests/last-stack-ci-test-registration.sh -- an entry without one is the
+# same forgetting the guard exists to catch, wearing a manifest line as a
+# disguise. Say WHY, and prefer a measured fact over an adjective.
+#
+# Seeded 2026-09-06 from the 70 files measured unregistered at main 440093ea.
+# Each of the 70 was executed standalone in a worktree on a macOS host (except
+# the two noted below, held back as unsafe to execute); 60 passed and were
+# hermetic, and those were WIRED rather than listed here. These 10 are the
+# remainder, with the reason each one is out.
+# Ground truth: papercut-last-stack-tests-can-land-unregistered-in-required-gate
+
+# --- fails today; wiring it would red the required gate ---
+tests/host-track.sh	Exits 1 in under a second with `FAIL: default kanban registry entry is not a real host-track target`; it asserts against the live ~/.host-track registry, so it is a host probe rather than a gate test.
+tests/last-stack-setup-agy-brain-kanban.sh	Exits 1 after 5s with `FAIL: setup did not log agy brain-kanban install`; the agy host path is not exercised by this checkout. Cause not yet isolated -- do not wire until it is.
+tests/last-stack-setup-claude-permissions.sh	Exits 1 because `setup --host claude` installs only the Bash PreToolUse matcher, while this test asserts Edit, Write and Bash. Measured 2026-09-06: setup exits 0, permissions assertions pass, and the hooks assertion fails on ["Bash"]. Tracked by papercut-last-stack-setup-claude-installs-only-the-bash-pretooluse-matcher-20260906.
+tests/morning-sync-usage-bugs-pagination.sh	Exits 1 after 3s and prints NOTHING on stdout or stderr, so it cannot say why it failed. Wiring a mute failure would make the gate red with no diagnosis; fix the reporting first.
+
+# --- passes, but reads LIVE HOST state, so it measures the runner not the change ---
+tests/last-stack-hook-no-home-root-scan.sh	Passes in under a second, but references live host paths (~/.claude) rather than a sandboxed HOME, so what it asserts depends on the operator machine. Measured as passing here; not proven to assert anything on a CI runner.
+tests/last-stack-json-hook-compound-probe.sh	Passes in 1s, but drives the live ~/.claude PreToolUse hook and live board CLIs; hermetic only by accident of this host, so a runner without them may pass vacuously.
+tests/last-stack-launchd-path-audit.sh	Passes in 1s by auditing the live ~/Library/LaunchAgents plists. A CI runner has none, so the audit would have no subject.
+tests/last-stack-repark-shared-checkouts.sh	Passes in 4s but walks the live ~/code/edgevector portals and ~/.fkanban worktrees; the result is a property of the operator machine, not of the change under test.
+
+# --- not executed during the seeding pass, deliberately ---
+tests/last-stack-north-star-proof.sh	Held back from the 2026-09-06 seeding run: it invokes lastgit/host-track/lastdb in command position outside comments, so executing it to classify it could touch shared state. Classify it before wiring.
+tests/last-stack-north-star-proof-cloud-backup.sh	Held back from the 2026-09-06 seeding run: invokes brain get in command position, so a classification run would read the live primary. Classify it before wiring.
