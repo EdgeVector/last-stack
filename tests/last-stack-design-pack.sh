@@ -36,14 +36,18 @@ for slug in \
 do
   extra=""
   if [ "$slug" = "concepts-lastdb-canonical-model" ]; then
-    extra="design design-lastdb-cloud-sync-mutation-log-first (body)"
+    # Index-only `brain get` shape (type + slug, no via suffix) — the crawl
+    # must find the one-hop design from this line.
+    extra="design design-lastdb-cloud-sync-mutation-log-first"
   fi
   write_get "$ok_dir" "$slug" "$extra"
   if [ "$slug" != "concepts-lastdb-canonical-model" ]; then
     write_get "$miss_dir" "$slug" ""
   fi
 done
-write_get "$ok_dir" "design-lastdb-cloud-sync-mutation-log-first" ""
+# Hydrated `brain backlinks` shape with a via suffix must parse the same.
+write_get "$ok_dir" "design-lastdb-cloud-sync-mutation-log-first" \
+  "concept concepts-lastdb-canonical-model (body)"
 printf '%s\n' \
   "1.  papercut-example-not-membership   Papercut    sample hit" \
   "2.  sop-feature-ship-loop             Sop         already required" \

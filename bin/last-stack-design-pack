@@ -55,7 +55,12 @@ def parse_linked_from(text: str) -> list[str]:
     m = LINKED_FROM_RE.search(text)
     if not m:
         return slugs
-    # "preference foo (body), design bar (body)" — slug is the token after type
+    # `brain get` prints the index-only shape "preference foo, design bar"
+    # (type + slug per entry, since brain get stopped hydrating sources);
+    # `brain backlinks` prints "preference foo (body), design bar (explicit)".
+    # Either way the slug is the token after the type. We only crawl slugs —
+    # status and via are not needed for a one-hop pack — so the cheap `get`
+    # line is the right source; do not switch this to `brain backlinks`.
     for part in m.group(1).split(","):
         toks = part.strip().split()
         if len(toks) >= 2:
