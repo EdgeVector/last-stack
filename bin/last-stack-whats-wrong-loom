@@ -60,6 +60,17 @@ STAMP="${LAST_STACK_WHATS_WRONG_STAMP:-$HOME/.last-stack/state/whats-wrong-loom.
 
 log() { [ "$QUIET" -eq 1 ] || printf 'whats-wrong-loom: %s\n' "$*" >&2; }
 
+# Collapse a captured error text to one short single-line string so a failing
+# branch can name its own cause in the log AND in the stamp detail. Every rc=3
+# branch below used to compute the cause, hold it in a variable or a pipe, and
+# then drop it, so `snapshot-failed` was the whole of a nine-hour failure.
+brief() {
+  printf '%s' "${1:-}" \
+    | tr '\n\t' '  ' \
+    | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//' \
+    | cut -c1-300
+}
+
 write_stamp() {
   mkdir -p "$(dirname "$STAMP")"
   ST="$1" EX="${2:-}" DT="${3:-}" KY="${4:-}" OC="${5:-}" LAST_STACK_WHATS_WRONG_STAMP="$STAMP" python3 -c '
@@ -142,8 +153,9 @@ print(json.dumps({"ok": True, "count": len(rows), "exceptions": rows, "dashboard
 
 if [ "$DRY" -eq 1 ]; then
   listed="$(list_exceptions)" || {
-    log "snapshot failed"
-    write_stamp unavailable "" "snapshot-failed" "${KEY:-}" "error"
+    cause="$(brief "$listed")"
+    log "snapshot failed: ${cause:-no error text}"
+    write_stamp unavailable "" "snapshot-failed ${cause}" "${KEY:-}" "error"
     exit 3
   }
   if [ "$JSON" -eq 1 ]; then
@@ -209,16 +221,24 @@ if [ -z "$defs" ] || [ -z "$scripts" ]; then
 fi
 export LOOM_SCRIPTS="$scripts"
 
-if ! loom publish "$defs/whats-wrong.json" >/dev/null 2>&1; then
-  log "loom publish whats-wrong failed"
-  write_stamp unavailable "" "publish-failed" "${KEY:-}" "error"
-  exit 3
-fi
-if ! loom publish "$defs/whats-wrong-item.json" >/dev/null 2>&1; then
-  log "loom publish whats-wrong-item failed"
-  write_stamp unavailable "" "publish-failed" "${KEY:-}" "error"
-  exit 3
-fi
+# Publish one definition and, on failure, carry loom's own stderr into the log
+# and the stamp detail. A schema-skew 400 reads `HTTP 400 ... has no field(s):
+# updated_at`, which is actionable; `publish-failed` alone is not.
+publish_def() {
+  _pd_err="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack-whats-wrong-publish.XXXXXX")"
+  if loom publish "$1" >/dev/null 2>"$_pd_err"; then
+    rm -f "$_pd_err"
+    return 0
+  fi
+  _pd_cause="$(brief "$(cat "$_pd_err" 2>/dev/null || true)")"
+  rm -f "$_pd_err"
+  log "loom publish $2 failed: ${_pd_cause:-no error text}"
+  write_stamp unavailable "" "publish-failed ${_pd_cause}" "${KEY:-}" "error"
+  return 1
+}
+
+publish_def "$defs/whats-wrong.json" whats-wrong || exit 3
+publish_def "$defs/whats-wrong-item.json" whats-wrong-item || exit 3
 
 if [ "$HEAL" -eq 1 ]; then
   export LOOM_WHATS_WRONG_LIVE=1
@@ -231,8 +251,9 @@ if [ -z "$KEY" ]; then
   KEY="${LOOM_WHATS_WRONG_KEY:-whats-wrong-$(date -u +%Y%m%dT%H)}"
 fi
 listed_input="$(list_exceptions)" || {
-  log "snapshot failed"
-  write_stamp unavailable "" "snapshot-failed" "$KEY" "error"
+  cause="$(brief "$listed_input")"
+  log "snapshot failed: ${cause:-no error text}"
+  write_stamp unavailable "" "snapshot-failed ${cause}" "$KEY" "error"
   exit 3
 }
 input="$(printf '%s\n' "$listed_input" | python3 -c '
@@ -453,7 +474,10 @@ sys.stdout.write(out)
 }
 
 count_exceptions() {
-  listed="$(list_exceptions 2>/dev/null)" || listed=""
+  listed="$(list_exceptions 2>/dev/null)" || {
+    log "exception count unavailable: $(brief "$listed")"
+    listed=""
+  }
   printf '%s\n' "$listed" | python3 -c '
 import json, sys
 try:

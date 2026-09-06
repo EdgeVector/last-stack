@@ -309,8 +309,20 @@ if command -v gtimeout >/dev/null 2>&1 || command -v timeout >/dev/null 2>&1; th
     echo "$out"
     exit 1
   }
-  if [ "$elapsed" -ge 5 ]; then
-    echo "case7 took too long ($elapsed s) -- the wrapper had to be SIGKILLed instead of self-exiting" >&2
+  # Bound DERIVED from the schedule this case exists to prove is not slept,
+  # not from one call's cap. `elapsed` covers the WHOLE gate: two capped calls
+  # at 5s each, so up to 10s is legitimate before anything has gone wrong, and
+  # 5 was never the right ceiling — it only held because the "deadline won"
+  # branch returns in well under a second on an idle host. On a loaded Forge CI
+  # runner it read 7s and failed this case while the three assertions that
+  # actually detect the defect (rc=0, status_rc=1 not 124/137, err_class=
+  # busy-node) all passed. The first sleep in the default retry schedule is
+  # 15s, so a run that slept the schedule cannot come in under it, and a run
+  # that did not cannot reach it: the two windows do not overlap.
+  first_backoff="$(printf '%s' "${LAST_STACK_LASTDB_RETRY_SCHEDULE_SEC:-15,45,90,120}" | cut -d, -f1)"
+  case "$first_backoff" in ''|*[!0-9]*) first_backoff=15 ;; esac
+  if [ "$elapsed" -ge "$first_backoff" ]; then
+    echo "case7 took too long ($elapsed s >= first backoff ${first_backoff}s) -- the wrapper slept the retry schedule instead of taking its deadline-won branch" >&2
     echo "$out"
     exit 1
   fi
