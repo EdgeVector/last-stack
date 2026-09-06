@@ -209,7 +209,16 @@ replace_key "$stale" committed_epoch "$stale_epoch"
 assert_dev_photograph_stamp_ok "$stale" "$PRIMARY" >/dev/null 2>&1 \
   && fail "stale receipt was accepted"
 
-future_epoch=$((now + LASTDB_DEV_STAMP_FUTURE_SKEW_SECS_DEFAULT + 120))
+# Read the clock HERE, not from `now` at the top of the file. The gate rejects a
+# receipt only while committed_epoch > check_time + skew(60s), so a future_epoch
+# derived from a stale `now` loses one second of margin per second the test
+# spends getting here — about 166 lines, and an unloaded pass already takes 34s
+# end to end. Once >120s elapsed the "future" receipt was no longer in the
+# future and the gate correctly ACCEPTED it, failing this assertion. That is
+# what reddened required CI on main 13270464 while the identical tree passed on
+# the PR head, and it blocked the host-track artifact publish behind it.
+future_now="$(date +%s)"
+future_epoch=$((future_now + LASTDB_DEV_STAMP_FUTURE_SKEW_SECS_DEFAULT + 120))
 future_rfc="$(date -u -r "$future_epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
   || date -u -d "@$future_epoch" +%Y-%m-%dT%H:%M:%SZ)"
 future="$TMP/future.receipt"
