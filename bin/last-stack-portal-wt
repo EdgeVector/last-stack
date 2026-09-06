@@ -329,7 +329,7 @@ suggest_worktree_near_miss() {
   expected="$name"
   # Only suggest basenames that actually exist on disk. Otherwise agents
   # misread a soft miss as "already cleaned" while multi-GB worktrees remain.
-  local d base base_lc needle_lc token
+  local d base base_lc needle_lc token weak=0
   needle_lc="$(printf '%s' "$needle" | tr '[:upper:]' '[:lower:]')"
   if [ -n "$expected" ] && [ -e "$WT_ROOT/$expected" ]; then
     suggestion="$expected"
@@ -347,30 +347,62 @@ suggest_worktree_near_miss() {
       esac
     done
   fi
-  # Fallback: share a meaningful token (len>=6) from the requested id so a
-  # mistyped suffix still surfaces the live worktree basename.
-  if [ -z "$suggestion" ] && [ -d "$WT_ROOT" ] && [ -n "$needle_lc" ]; then
+  # Fallback: share a meaningful token (len>=6) with a live worktree, so a
+  # mistyped suffix still surfaces the basename the operator meant.
+  #
+  # Two rules stop this naming an UNRELATED live worktree, which is a
+  # destructive suggestion (papercut-portal-wt-rm-suggests-deleting-an-
+  # unrelated-live-worktree-20260906):
+  #
+  #   * Tokens come from what the operator typed, never from `needle_lc`.
+  #     `worktree_ids_from_spec` rewrites a bare slug to `<SLUG>-kanban-<slug>`,
+  #     and `kanban` is six characters and sits in the basename of essentially
+  #     every worktree this fleet creates. A needle-derived token list therefore
+  #     always matches, and the first `${SLUG}-*` the glob returns wins.
+  #   * A token matching MORE THAN ONE worktree is not evidence of anything.
+  #     Only a unique match is a suggestion; ambiguity means keep looking.
+  #
+  # A weak match is reported as a candidate to check, never as a `wt rm` to run.
+  if [ -z "$suggestion" ] && [ -d "$WT_ROOT" ] && [ -n "$spec" ]; then
+    local spec_lc hit hit_count
+    spec_lc="$(printf '%s' "$spec" | tr '[:upper:]' '[:lower:]' | tr '/' '-')"
     while IFS= read -r token; do
       [ -n "$token" ] || continue
+      case "$token" in kanban|"$SLUG") continue ;; esac
+      hit=""
+      hit_count=0
       for d in "$WT_ROOT"/"${SLUG}"-*; do
         [ -e "$d" ] || continue
         base="$(basename "$d")"
         base_lc="$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')"
         case "$base_lc" in
           *"$token"*)
-            suggestion="$base"
-            break 2
+            hit="$base"
+            hit_count=$((hit_count + 1))
             ;;
         esac
       done
+      if [ "$hit_count" -eq 1 ]; then
+        suggestion="$hit"
+        weak=1
+        break
+      fi
     done <<EOF
-$(printf '%s' "$needle_lc" | tr '-' '\n' | awk 'length>=6 {print}')
+$(printf '%s' "$spec_lc" | tr '-' '\n' | awk 'length>=6 {print}')
 EOF
   fi
-  if [ -n "$suggestion" ]; then
+  if [ -n "$suggestion" ] && [ "$weak" -eq 0 ]; then
     printf 'portal-wt: worktree not removed for %s\n' "$spec" >&2
     printf 'portal-wt: no path matched that id; likely basename is %s\n' "$suggestion" >&2
     printf 'portal-wt: try: wt rm %s\n' "$suggestion" >&2
+    printf 'portal-wt: (NOT cleaned up — disk worktree may still exist)\n' >&2
+  elif [ -n "$suggestion" ]; then
+    # Weak: one shared token, uniquely. Name it so a live worktree is never
+    # mistaken for "already cleaned", but do NOT hand back a removal command
+    # for a path the caller did not name.
+    printf 'portal-wt: worktree not removed for %s\n' "$spec" >&2
+    printf 'portal-wt: no path matched that id; closest same-portal worktree is %s\n' "$suggestion" >&2
+    printf 'portal-wt: that is a WEAK token match, not the worktree you named — verify before removing it\n' >&2
     printf 'portal-wt: (NOT cleaned up — disk worktree may still exist)\n' >&2
   else
     # Confirmed absence: no same-portal dir matches. Safe "already gone".
