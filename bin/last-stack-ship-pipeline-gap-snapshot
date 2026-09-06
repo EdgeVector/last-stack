@@ -70,6 +70,12 @@ command -v "$BOARD" >/dev/null 2>&1 || { log "no board CLI"; echo '{}'; exit 0; 
 command -v jq >/dev/null 2>&1 || { log "no jq"; echo '{}'; exit 0; }
 
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+# Last known-good factory_health reading, kept outside the per-run scratch
+# dir (which is removed on EXIT) so a failed helper run can fall back to it.
+FH_STATE_DIR="${LAST_STACK_SHIP_PIPELINE_STATE_DIR:-$HOME/.local/state/last-stack/ship-pipeline-gap-snapshot}"
+FH_CACHE_FILE="$FH_STATE_DIR/factory-health-last-good.json"
+
 tmp_parent="${TMPDIR:-${TMP:-${TEMP:-/tmp}}}"
 tmp="$(mktemp -d "${tmp_parent%/}/ship-pipeline-gap-snapshot.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
@@ -215,9 +221,29 @@ capture_helper_embed() {
 
 # why-stopped often runs ~60–100s under load (board status + class probes).
 # Budget above measured ~95s so a healthy run embeds instead of false-empty.
-# factory-health is usually <30s; keep a comfortable margin and skip notify.
+# factory-health measured 150s+ under load on 2026-09-06 (papercut
+# papercut-ship-pipeline-snapshot-factory-health-helper-timeout-90s recurred
+# 2 nights running) — its runtime is not reliably bounded by a fixed budget,
+# so any failure (timeout/missing/parse/exit) falls back to the last known-good
+# reading instead of dropping the funnel's only ship-rate signal for the night.
 fh="$(capture_helper_embed factory_health 90 last-stack-factory-health --json --no-notify)"
-printf '%s\n' "${fh:-$(embed_error factory_health parse 'empty capture')}" >"$tmp/fh.json"
+fh="${fh:-$(embed_error factory_health parse 'empty capture')}"
+if printf '%s' "$fh" | jq -e 'has("error")' >/dev/null 2>&1; then
+  if [ -f "$FH_CACHE_FILE" ] && cached="$(jq -c . "$FH_CACHE_FILE" 2>/dev/null)" && [ -n "$cached" ]; then
+    fh_reason="$(printf '%s' "$fh" | jq -r '.reason // "unknown"' 2>/dev/null || echo unknown)"
+    stale_fh="$(jq -c --arg reason "$fh_reason" --arg now "$ts" \
+      '.data + {stale: true, stale_reason: $reason, stale_captured_at: .captured_at, stale_checked_at: $now}' \
+      "$FH_CACHE_FILE" 2>/dev/null || true)"
+    [ -n "$stale_fh" ] && fh="$stale_fh"
+  fi
+else
+  mkdir -p "$FH_STATE_DIR" 2>/dev/null || true
+  if jq -cn --arg captured_at "$ts" --argjson data "$fh" '{captured_at: $captured_at, data: $data}' \
+      >"$FH_CACHE_FILE.tmp" 2>/dev/null; then
+    mv -f "$FH_CACHE_FILE.tmp" "$FH_CACHE_FILE" 2>/dev/null || true
+  fi
+fi
+printf '%s\n' "$fh" >"$tmp/fh.json"
 
 ws="$(capture_helper_embed why_stopped 120 last-stack-why-stopped --json --quiet)"
 printf '%s\n' "${ws:-$(embed_error why_stopped parse 'empty capture')}" >"$tmp/ws.json"
