@@ -62,6 +62,16 @@ export LOOM_DEFS="$tmp/install/definitions"
 export LOOM_SCRIPTS="$tmp/install/scripts"
 export LOOM_WHY_KEY="why-stopped-test-key"
 
+# The direct wrapper derives its run bound from routinesd's real gate. A
+# 10-minute gate reserves 300s for closeout and 15s inside the Loom runner.
+set +e
+derived_err="$(ROUTINES_GATE_TIMEOUT_MS=600000 "$BIN" --json 2>&1 >/dev/null)"
+derived_rc=$?
+set -e
+[ "$derived_rc" -eq 0 ] || fail "derived-budget probe failed: $derived_err"
+printf '%s\n' "$derived_err" | grep -q 'timeout=285s' \
+  || fail "why-stopped Loom bound did not derive 285s from a 600s gate: $derived_err"
+
 set +e
 out="$("$BIN" --json --quiet)"
 rc=$?
@@ -288,8 +298,13 @@ case "${1:-}" in
     "$TEST_BIN/loom-descendant" &
     descendant=$!
     printf '%s %s\n' "$$" "$descendant" >"${LOOM_PROCESS_IDS:?}"
+    printf '%s\n' 'lx-why-timeout'
     printf '%s\n' 'node read stalled after accepted write' >&2
     wait "$descendant"
+    ;;
+  cancel)
+    printf '%s\n' "${2:-}" >"${LOOM_CANCEL_EXEC:?}"
+    exit 0
     ;;
   *) exit 2 ;;
 esac
@@ -297,6 +312,7 @@ SH
 chmod 755 "$tmp/bin/loom"
 export TEST_BIN="$tmp/bin"
 export LOOM_PROCESS_IDS="$tmp/loom-process-ids"
+export LOOM_CANCEL_EXEC="$tmp/loom-cancel-exec"
 export ROUTINES_RUN_DIR="$tmp/run"
 mkdir -p "$ROUTINES_RUN_DIR"
 export LAST_STACK_WHY_STOPPED_LOOM_TIMEOUT_SEC=10
@@ -310,6 +326,10 @@ printf '%s\n' "$timeout_out" | grep -q '"loom": "timeout"' \
   || fail "bounded loom run did not identify timeout: $timeout_out"
 printf '%s\n' "$timeout_out" | grep -q 'node read stalled after accepted write' \
   || fail "bounded loom run lost the last loom stderr line: $timeout_out"
+[ "$(cat "$LOOM_CANCEL_EXEC" 2>/dev/null || true)" = "lx-why-timeout" ] \
+  || fail "bounded loom run did not cancel its abandoned execution"
+printf '%s\n' "$timeout_out" | grep -q '"deadline_reap": "cancelled"' \
+  || fail "bounded loom run did not report its execution cleanup: $timeout_out"
 read -r loom_pid descendant_pid <"$LOOM_PROCESS_IDS"
 for child_pid in "$loom_pid" "$descendant_pid"; do
   if kill -0 "$child_pid" 2>/dev/null; then

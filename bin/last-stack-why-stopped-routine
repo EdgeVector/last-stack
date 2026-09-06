@@ -46,7 +46,7 @@ effort = "low"
 rrule = "FREQ=HOURLY;INTERVAL=2;BYMINUTE=11;BYSECOND=0"
 cwd = "$REG_CWD"
 status = "active"
-timeout_min = 15
+timeout_min = 45
 prompt_path = "$PROMPT_PATH"
 gate_command = "$ROOT/bin/last-stack-routine-observer-gate last-stack-why-stopped"
 heartbeat_slug = "routine-heartbeats"

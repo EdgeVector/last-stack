@@ -5,11 +5,6 @@ tmp="$(mktemp -d "${TMPDIR:-/tmp}/observer-why-loom.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/root/bin" "$tmp/home/.last-stack/bin"
 cp "$ROOT/bin/last-stack-routine-observer-gate" "$tmp/root/bin/"
-grep -q 'LAST_STACK_WHY_STOPPED_LOOM_TIMEOUT_SEC:-600' "$tmp/root/bin/last-stack-routine-observer-gate" || {
-  echo "why-stopped Loom timeout is not a bounded ten-minute default" >&2
-  exit 1
-}
-
 cat >"$tmp/root/bin/last-stack-routine-outcome-classify" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*"
@@ -20,11 +15,18 @@ printf '%s\n' '{"classes":"A+D"}'
 SH
 cat >"$tmp/home/.last-stack/bin/last-stack-why-stopped-loom" <<'SH'
 #!/usr/bin/env bash
+printf '%s\n' "${LAST_STACK_WHY_STOPPED_LOOM_TIMEOUT_SEC:-}" >"${CAPTURE_TIMEOUT:?}"
 exit 3
 SH
 chmod 755 "$tmp/root/bin/"* "$tmp/home/.last-stack/bin/last-stack-why-stopped-loom"
 
-out="$(HOME="$tmp/home" PATH="/usr/bin:/bin" "$tmp/root/bin/last-stack-routine-observer-gate" last-stack-why-stopped)"
+out="$(HOME="$tmp/home" PATH="/usr/bin:/bin" CAPTURE_TIMEOUT="$tmp/timeout" \
+  ROUTINES_GATE_TIMEOUT_MS=600000 \
+  "$tmp/root/bin/last-stack-routine-observer-gate" last-stack-why-stopped)"
+[ "$(cat "$tmp/timeout")" = "300" ] || {
+  echo "observer gate did not derive a 300s Loom bound from a 600s gate" >&2
+  exit 1
+}
 printf '%s\n' "$out" | grep -q -- '--exit 1' || {
   echo "failed Loom path did not set observer exit=1: $out" >&2
   exit 1
@@ -36,10 +38,13 @@ printf '%s\n' "$out" | grep -q 'loom=unavailable rc=3' || {
 
 cat >"$tmp/home/.last-stack/bin/last-stack-why-stopped-loom" <<'SH'
 #!/usr/bin/env bash
+printf '%s\n' "${LAST_STACK_WHY_STOPPED_LOOM_TIMEOUT_SEC:-}" >"${CAPTURE_TIMEOUT:?}"
 printf '%s\n' '{"classes":"B","engine":"loom"}'
 SH
 chmod 755 "$tmp/home/.last-stack/bin/last-stack-why-stopped-loom"
-out="$(HOME="$tmp/home" PATH="/usr/bin:/bin" "$tmp/root/bin/last-stack-routine-observer-gate" last-stack-why-stopped)"
+out="$(HOME="$tmp/home" PATH="/usr/bin:/bin" CAPTURE_TIMEOUT="$tmp/timeout" \
+  ROUTINES_GATE_TIMEOUT_MS=600000 \
+  "$tmp/root/bin/last-stack-routine-observer-gate" last-stack-why-stopped)"
 printf '%s\n' "$out" | grep -q -- '--exit 0' || {
   echo "successful Loom path did not keep observer exit=0: $out" >&2
   exit 1

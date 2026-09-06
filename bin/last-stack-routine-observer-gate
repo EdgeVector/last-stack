@@ -90,17 +90,34 @@ if [ -z "$detail" ] && [ "$id" = "last-stack-why-stopped" ]; then
     else
       loom_err="$(mktemp "${TMPDIR:-/tmp}/why-stopped-loom-err.XXXXXX")" || loom_err=/dev/null
     fi
-    loom_timeout="${LAST_STACK_WHY_STOPPED_LOOM_TIMEOUT_SEC:-600}"
-    case "$loom_timeout" in
-      ''|*[!0-9]*) loom_timeout=600 ;;
+    # Derive the Loom allowance from the gate that routinesd gave this
+    # process. The fallback matches the 45-minute routine default. Reserve
+    # five minutes for fallback classification, the stamp, and closeout.
+    default_gate_timeout_ms=2700000
+    gate_closeout_reserve_sec=300
+    gate_timeout_ms="${ROUTINES_GATE_TIMEOUT_MS:-$default_gate_timeout_ms}"
+    case "$gate_timeout_ms" in
+      ''|*[!0-9]*) gate_timeout_ms="$default_gate_timeout_ms" ;;
     esac
-    [ "$loom_timeout" -ge 1 ] || loom_timeout=600
+    gate_timeout_sec=$((gate_timeout_ms / 1000))
+    if [ "$gate_timeout_sec" -gt "$gate_closeout_reserve_sec" ]; then
+      default_loom_timeout=$((gate_timeout_sec - gate_closeout_reserve_sec))
+    else
+      default_loom_timeout=1
+    fi
+    loom_timeout="${LAST_STACK_WHY_STOPPED_LOOM_TIMEOUT_SEC:-$default_loom_timeout}"
+    case "$loom_timeout" in
+      ''|*[!0-9]*) loom_timeout="$default_loom_timeout" ;;
+    esac
+    [ "$loom_timeout" -ge 1 ] || loom_timeout="$default_loom_timeout"
     set +e
     if command -v timeout >/dev/null 2>&1; then
-      out="$(timeout -k 2s "${loom_timeout}s" "$why_loom" --json 2>>"$loom_err")"
+      out="$(LAST_STACK_WHY_STOPPED_LOOM_TIMEOUT_SEC="$loom_timeout" \
+        timeout -k 2s "${loom_timeout}s" "$why_loom" --json 2>>"$loom_err")"
       loom_rc=$?
     else
-      out="$("$why_loom" --json 2>>"$loom_err")"
+      out="$(LAST_STACK_WHY_STOPPED_LOOM_TIMEOUT_SEC="$loom_timeout" \
+        "$why_loom" --json 2>>"$loom_err")"
       loom_rc=$?
     fi
     set -e
