@@ -156,12 +156,20 @@ PY
 sentry_block() {
   echo "### 🐛 Bugs (Sentry · last 14d unresolved)"
   local TOKEN
-  TOKEN=$(security find-generic-password -s "sentry-auth-token" -a "edge-vector" -w 2>/dev/null)
-  if [ -z "${TOKEN:-}" ]; then
-    TOKEN=$(awk -F'=' '/^token/{gsub(/ /,"",$2);print $2}' "$HOME/.sentryclirc" 2>/dev/null | head -1)
+  TOKEN="$(printf '%s' "${SENTRY_AUTH_TOKEN:-}" | tr -d '\r\n')"
+  if [ -z "$TOKEN" ] && command -v lastsecrets >/dev/null 2>&1; then
+    TOKEN="$(lastsecrets get obs-sentry-auth-token 2>/dev/null | tr -d '\r\n' || true)"
+  fi
+  if [ -z "$TOKEN" ] && command -v security >/dev/null 2>&1; then
+    TOKEN="$(security find-generic-password -s "sentry-auth-token" \
+      -a "edge-vector" -w 2>/dev/null | tr -d '\r\n' || true)"
   fi
   if [ -z "${TOKEN:-}" ]; then
-    echo "- ⚠️ Sentry token unavailable (keychain \`sentry-auth-token/edge-vector\` + ~/.sentryclirc both empty)."
+    TOKEN="$(awk -F'=' '/^token/{gsub(/ /,"",$2);print $2}' \
+      "$HOME/.sentryclirc" 2>/dev/null | head -1 | tr -d '\r\n')"
+  fi
+  if [ -z "${TOKEN:-}" ]; then
+    echo "- ⚠️ Sentry token unavailable (\`lastsecrets://obs-sentry-auth-token\`, keychain fallback, and ~/.sentryclirc are empty)."
     return
   fi
   local slug json
