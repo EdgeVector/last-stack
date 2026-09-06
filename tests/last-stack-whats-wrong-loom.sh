@@ -11,6 +11,9 @@ bash -n "$ROOT/lib/lastdb-retry-schedule.sh"
 bash -n "$ROOT/lib/whats-wrong/loom-whats-wrong-list.sh"
 bash -n "$ROOT/lib/whats-wrong/loom-whats-wrong-heal.sh"
 bash -n "$ROOT/lib/whats-wrong/loom-whats-wrong-closeout.sh"
+if grep -q 'GATE_TIMEOUT_CAP_MS' "$BIN"; then
+  fail "whats-wrong loom wrapper still names the retired gate cap"
+fi
 
 [ -f "$ROOT/routines/whats-wrong.md" ] || fail "whats-wrong prompt missing"
 grep -q 'last-stack-whats-wrong-loom' "$ROOT/routines/whats-wrong.md" \
@@ -132,6 +135,13 @@ assert [row.get("id") for row in doc.get("items", [])] == [
 ], doc
 PY
 
+# The default Loom bound follows routinesd's actual gate budget and keeps five
+# minutes for wrapper closeout. A 10-minute gate therefore gives Loom 300s.
+export LOOM_WHATS_WRONG_KEY="whats-wrong-derived-budget-key"
+derived_out="$(ROUTINES_GATE_TIMEOUT_MS=600000 "$BIN" --json --no-heal 2>&1)"
+printf '%s\n' "$derived_out" | grep -q 'timeout=300s' \
+  || fail "loom bound did not derive 300s from a 600s gate: $derived_out"
+
 export WHATS_WRONG_SNAPSHOT_FILE="$empty"
 export LAST_STACK_WHATS_WRONG_STAMP="$tmp/stamp-empty-loom.json"
 export LOOM_WHATS_WRONG_KEY="whats-wrong-empty-test-key"
@@ -154,8 +164,14 @@ case "$cmd" in
   ping) echo ok; exit 0 ;;
   publish) echo "published $(basename "$2" .json)"; exit 0 ;;
   run)
+    printf 'lx-ww-hang\n'
     printf '%s\n' "$$" >"${HANG_PID_FILE:?}"
     exec sleep 86400
+    ;;
+  cancel)
+    printf '%s\n' "${2:-}" >"${CANCEL_EXEC_FILE:?}"
+    printf 'status: cancelled\n'
+    exit 0
     ;;
   *) echo "unexpected $*" >&2; exit 2 ;;
 esac
@@ -166,6 +182,7 @@ export LAST_STACK_WHATS_WRONG_LOOM_TIMEOUT_SEC=1
 # The post-bound readback re-attaches to the same hanging mock, so bound it too.
 export LAST_STACK_WHATS_WRONG_LOOM_READBACK_SEC=2
 export HANG_PID_FILE="$tmp/hang.pid"
+export CANCEL_EXEC_FILE="$tmp/cancel-exec"
 export WHATS_WRONG_SNAPSHOT_FILE="$tmp/snap.json"
 export LOOM_WHATS_WRONG_KEY="whats-wrong-hang-key"
 hang_start="$(date +%s)"
@@ -196,6 +213,8 @@ if [ -f "$tmp/hang.pid" ]; then
 else
   fail "hung loom did not write pid file"
 fi
+[ "$(cat "$CANCEL_EXEC_FILE" 2>/dev/null || true)" = "lx-ww-hang" ] \
+  || fail "deadline did not cancel the abandoned loom execution"
 
 # --- bound fires AFTER heals landed → measured healed>=1, outcome=ok ---
 # The CLOSEOUT node writes context.detail/context.healed and only runs at the
@@ -216,6 +235,7 @@ context.heal_results: [{"id":"machine.disk-lastdb","heal_status":"healed"},{"id"
 VIEW
     exit 0
     ;;
+  cancel) printf 'status: cancelled\n'; exit 0 ;;
   run)
     # First call hangs (the bounded run). The wrapper kills it, then reads the
     # execution back; `--key` is idempotent so this returns the same exec.
@@ -272,6 +292,7 @@ context.heal_results: []
 VIEW
     exit 0
     ;;
+  cancel) printf 'status: cancelled\n'; exit 0 ;;
   run)
     if [ -f "${STUCK_MARK:?}" ]; then
       cat <<'VIEW'

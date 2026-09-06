@@ -7,10 +7,12 @@
 #   last-stack-whats-wrong-loom [--json] [--quiet] [--dry-run] [--no-heal] [--status]
 #   last-stack-whats-wrong-loom --key whats-wrong-YYYYmmddTHH
 #
-# loom run is wall-clock bounded (default 780s, LAST_STACK_WHATS_WRONG_LOOM_TIMEOUT_SEC).
-# A stuck child is SIGTERM'd (then SIGKILL) so it cannot eat routines'
-# GATE_TIMEOUT_CAP_MS (15m) with empty logs. The wrapper still emits
-# ROUTINE_RESULT with exceptions/healed counts.
+# loom run is wall-clock bounded from ROUTINES_GATE_TIMEOUT_MS, with five
+# minutes reserved for readback and closeout. The named fallback gate is 45
+# minutes. LAST_STACK_WHATS_WRONG_LOOM_TIMEOUT_SEC remains an explicit override.
+# A stuck child is SIGTERM'd and then SIGKILL'd. The wrapper also cancels the
+# Loom execution it abandons, so a dead worker does not leave a running row.
+# The wrapper still emits ROUTINE_RESULT with exceptions/healed counts.
 #
 # On that bound the wrapper MEASURES what the run healed; it does not assume
 # zero. The CLOSEOUT node is what writes context.detail/context.healed, and it
@@ -266,16 +268,31 @@ print(json.dumps({
 }, separators=(",", ":")))
 ')"
 
-# Under routines GATE_TIMEOUT_CAP_MS (15m). Leave headroom for snapshot + trailer.
-TIMEOUT_SEC="${LAST_STACK_WHATS_WRONG_LOOM_TIMEOUT_SEC:-780}"
-case "$TIMEOUT_SEC" in
-  ''|*[!0-9]*) TIMEOUT_SEC=780 ;;
+# Derive the Loom allowance from the gate that routinesd gave this process.
+# The fallback matches this routine's 45-minute registry budget. Reserve five
+# minutes for readback, execution cancellation, the stamp, and the trailer.
+DEFAULT_GATE_TIMEOUT_MS=2700000
+GATE_CLOSEOUT_RESERVE_SEC=300
+gate_timeout_ms="${ROUTINES_GATE_TIMEOUT_MS:-$DEFAULT_GATE_TIMEOUT_MS}"
+case "$gate_timeout_ms" in
+  ''|*[!0-9]*) gate_timeout_ms="$DEFAULT_GATE_TIMEOUT_MS" ;;
 esac
-[ "$TIMEOUT_SEC" -ge 1 ] || TIMEOUT_SEC=780
+gate_timeout_sec=$((gate_timeout_ms / 1000))
+if [ "$gate_timeout_sec" -gt "$GATE_CLOSEOUT_RESERVE_SEC" ]; then
+  default_timeout_sec=$((gate_timeout_sec - GATE_CLOSEOUT_RESERVE_SEC))
+else
+  default_timeout_sec=1
+fi
+
+TIMEOUT_SEC="${LAST_STACK_WHATS_WRONG_LOOM_TIMEOUT_SEC:-$default_timeout_sec}"
+case "$TIMEOUT_SEC" in
+  ''|*[!0-9]*) TIMEOUT_SEC="$default_timeout_sec" ;;
+esac
+[ "$TIMEOUT_SEC" -ge 1 ] || TIMEOUT_SEC="$default_timeout_sec"
 
 # Budget for the post-timeout readback. Small and separate from TIMEOUT_SEC:
-# it runs *after* the main bound has already fired, so it eats the headroom
-# left under routines' GATE_TIMEOUT_CAP_MS (15m), not the heal budget.
+# it runs *after* the main bound has already fired, so it uses the reserved
+# gate headroom, not the heal budget.
 READBACK_SEC="${LAST_STACK_WHATS_WRONG_LOOM_READBACK_SEC:-45}"
 case "$READBACK_SEC" in
   ''|*[!0-9]*) READBACK_SEC=45 ;;
@@ -303,8 +320,8 @@ esac
 #
 # Retrying is safe because `loom run --key` is idempotent by contract: the same
 # key re-attaches to the existing execution instead of starting a second one.
-# The retries share the ONE wall-clock deadline below, so this cannot push the
-# gate past routines' GATE_TIMEOUT_CAP_MS.
+# The retries share the ONE wall-clock deadline below, so they cannot consume
+# the reserved gate closeout time.
 #
 # Drain-aware schedule lives in lib/lastdb-retry-schedule.sh (15s, 45s, 90s,
 # 120s; 5 attempts). A fixed 10 s sleep never reaches a 45 s persist drain
@@ -473,6 +490,31 @@ sys.stdout.write(out)
 ' 2>/dev/null
 }
 
+# A local process-group kill stops this wrapper's child, but Loom agents can
+# outlive that process. Cancel the exact execution before this wrapper exits so
+# the shared hourly reaper does not need to recover the wrapper's own debris.
+reap_abandoned_execution() {
+  reap_exec_id="$1"
+  [ -n "$reap_exec_id" ] || return 1
+  REAP_EXEC_ID="$reap_exec_id" RB_SEC="$READBACK_SEC" python3 -c '
+import os, signal, subprocess
+p = subprocess.Popen(
+    ["loom", "cancel", os.environ["REAP_EXEC_ID"]],
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    start_new_session=True,
+)
+try:
+    raise SystemExit(p.wait(timeout=int(os.environ["RB_SEC"])))
+except subprocess.TimeoutExpired:
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    raise SystemExit(1)
+'
+}
+
 count_exceptions() {
   listed="$(list_exceptions 2>/dev/null)" || {
     log "exception count unavailable: $(brief "$listed")"
@@ -615,6 +657,16 @@ if [ "$lrc" -ne 0 ] || [ -z "$view" ]; then
       rb_state="$(printf '%s\n' "$rb_parsed" | json_field state)"
     fi
     [ -n "$rb_exec" ] || rb_exec="$partial_id"
+    deadline_reap="unavailable"
+    if reap_abandoned_execution "$rb_exec"; then
+      deadline_reap="cancelled"
+      log "cancelled abandoned loom execution $rb_exec"
+    elif [ -n "$rb_exec" ]; then
+      deadline_reap="failed"
+      log "could not cancel abandoned loom execution $rb_exec"
+    else
+      log "could not identify the abandoned loom execution"
+    fi
 
     if [ -z "$healed_n" ] && [ -n "$rb" ]; then
       # The readback WORKED. A graph that has not reached its first heal yet
@@ -623,7 +675,7 @@ if [ "$lrc" -ne 0 ] || [ -z "$view" ]; then
       # `readback=unavailable` here sent operators to look for a broken loom
       # when `loom show` answers in ~30 ms and names where the graph is
       # parked. Say what was read.
-      det="exceptions=${n} healed=unknown loom-timeout=${TIMEOUT_SEC}s readback=live exec-status=${rb_status:-unknown} exec-state=${rb_state:-unknown}"
+      det="exceptions=${n} healed=unknown loom-timeout=${TIMEOUT_SEC}s readback=live exec-status=${rb_status:-unknown} exec-state=${rb_state:-unknown} deadline-reap=${deadline_reap}"
       log "loom readback live: exec ${rb_exec} status=${rb_status:-unknown} state=${rb_state:-unknown}; no heal count written yet"
       write_stamp timed-out "$rb_exec" "$det" "$KEY" "error"
       emit_result error "$det"
@@ -633,7 +685,7 @@ if [ "$lrc" -ne 0 ] || [ -z "$view" ]; then
     if [ -z "$healed_n" ]; then
       # Unmeasured. Say so — printing 0 here is what made a working healer
       # look broken for six days.
-      det="exceptions=${n} healed=unknown loom-timeout=${TIMEOUT_SEC}s readback=unavailable"
+      det="exceptions=${n} healed=unknown loom-timeout=${TIMEOUT_SEC}s readback=unavailable deadline-reap=${deadline_reap}"
       log "loom readback unavailable; healed count unknown"
       write_stamp timed-out "$rb_exec" "$det" "$KEY" "error"
       emit_result error "$det"
@@ -642,7 +694,7 @@ if [ "$lrc" -ne 0 ] || [ -z "$view" ]; then
     if [ "$healed_n" -ge 1 ]; then
       # The bound outran the graph, not the healer. Heals landed, so this hour
       # did its job; reporting error here is what buried the signal.
-      det="exceptions=${n} healed=${healed_n} loom-timeout=${TIMEOUT_SEC}s partial=1"
+      det="exceptions=${n} healed=${healed_n} loom-timeout=${TIMEOUT_SEC}s partial=1 deadline-reap=${deadline_reap}"
       log "loom bound fired after ${healed_n} heal(s); reporting ok"
       write_stamp timed-out-partial "$rb_exec" "$det" "$KEY" "ok"
       if [ -x "$ROOT/bin/last-stack-brain-append-heartbeat" ]; then
@@ -655,7 +707,7 @@ if [ "$lrc" -ne 0 ] || [ -z "$view" ]; then
     fi
     # Measured zero: the bound fired and nothing healed. Still red — the card
     # is explicit that a genuinely stuck loom run must not be masked.
-    det="exceptions=${n} healed=0 loom-timeout=${TIMEOUT_SEC}s measured=1"
+    det="exceptions=${n} healed=0 loom-timeout=${TIMEOUT_SEC}s measured=1 deadline-reap=${deadline_reap}"
     write_stamp timed-out "$rb_exec" "$det" "$KEY" "error"
     emit_result error "$det"
     exit 3
