@@ -8,15 +8,20 @@
 # Seeded 2026-09-06 from the 70 files measured unregistered at main 440093ea.
 # Each of the 70 was executed standalone in a worktree on a macOS host (except
 # the two noted below, held back as unsafe to execute); 60 passed and were
-# hermetic, and those were WIRED rather than listed here. These 10 are the
-# remainder, with the reason each one is out.
+# hermetic, and those were WIRED rather than listed here. The remainder is
+# listed below, with the reason each one is out.
 # Ground truth: papercut-last-stack-tests-can-land-unregistered-in-required-gate
+#
+# Retired from this list: tests/morning-sync-usage-bugs-pagination.sh, whose
+# mute failure was diagnosed and fixed on 2026-09-06 (it stubbed `fbrain` while
+# usage-bugs.sh calls `brain`, so the fake PATH reached the live primary). It is
+# scheduled in the required gate now. An entry leaves this file by being fixed
+# and wired, not by being deleted.
 
 # --- fails today; wiring it would red the required gate ---
 tests/host-track.sh	Exits 1 in under a second with `FAIL: default kanban registry entry is not a real host-track target`; it asserts against the live ~/.host-track registry, so it is a host probe rather than a gate test.
 tests/last-stack-setup-agy-brain-kanban.sh	Exits 1 after 5s with `FAIL: setup did not log agy brain-kanban install`; the agy host path is not exercised by this checkout. Cause not yet isolated -- do not wire until it is.
 tests/last-stack-setup-claude-permissions.sh	Exits 1 because `setup --host claude` installs only the Bash PreToolUse matcher, while this test asserts Edit, Write and Bash. Measured 2026-09-06: setup exits 0, permissions assertions pass, and the hooks assertion fails on ["Bash"]. Tracked by papercut-last-stack-setup-claude-installs-only-the-bash-pretooluse-matcher-20260906.
-tests/morning-sync-usage-bugs-pagination.sh	Exits 1 after 3s and prints NOTHING on stdout or stderr, so it cannot say why it failed. Wiring a mute failure would make the gate red with no diagnosis; fix the reporting first.
 
 # --- passes, but reads LIVE HOST state, so it measures the runner not the change ---
 tests/last-stack-hook-no-home-root-scan.sh	Passes in under a second, but references live host paths (~/.claude) rather than a sandboxed HOME, so what it asserts depends on the operator machine. Measured as passing here; not proven to assert anything on a CI runner.
