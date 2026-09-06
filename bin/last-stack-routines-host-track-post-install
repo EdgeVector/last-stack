@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 # After host-track flips routines current, reload the LaunchAgent so the live
 # daemon matches the new immutable artifact. PATH `routines` is not enough.
+#
+# The reload is `kickstart -k`, which SIGTERMs the daemon. Every run in flight
+# dies with it and the next daemon finalizes it `outcome=unknown orphaned`. On
+# 2026-09-06 four promotes in eight hours killed six runs, three of them kanban
+# pickup workers holding claimed cards
+# (papercut-routines-host-track-post-install-kickstart-k-orphans-in-flight-runs-20260906).
+# So the hook now drains first: it waits for the in-flight count to reach zero
+# and only then restarts. routinesd reaches zero many times an hour, so the
+# usual promote waits seconds. A bounded deadline keeps a busy fleet from
+# holding the promote forever, and crossing it NAMES the runs it is about to
+# orphan instead of leaving the next daemon to label them `unknown`.
 set -euo pipefail
 
 routines_bin=""
@@ -23,7 +34,55 @@ trap 'rm -f "$out"' EXIT
 launchctl_bin="${LAST_STACK_LAUNCHCTL_BIN:-launchctl}"
 service="gui/$(id -u)/com.edgevector.routinesd"
 
+drain_max_sec="${LAST_STACK_ROUTINES_DRAIN_MAX_SEC:-900}"
+drain_poll_sec="${LAST_STACK_ROUTINES_DRAIN_POLL_SEC:-15}"
+case "$drain_max_sec" in '' | *[!0-9]*) drain_max_sec=900 ;; esac
+case "$drain_poll_sec" in '' | 0 | *[!0-9]*) drain_poll_sec=15 ;; esac
+
+# Comma-joined ids of the runs the daemon still holds. Exit 2 means the count
+# is unknown, which must never be read as "nothing is running".
+running_ids() {
+  local out
+  out="$("$routines_bin" status --json 2>/dev/null)" || return 2
+  printf '%s' "$out" \
+    | jq -r '[.rows[]? | select(.running == true) | .id] | join(",")' 2>/dev/null \
+    || return 2
+}
+
+drain_before_restart() {
+  [ "$drain_max_sec" -gt 0 ] || return 0
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "routines post-install: WARN no jq; restarting without a drain" >&2
+    return 0
+  fi
+
+  local waited=0 ids rc
+  while :; do
+    set +e
+    ids="$(running_ids)"
+    rc=$?
+    set -e
+    if [ "$rc" -ne 0 ]; then
+      echo "routines post-install: WARN in-flight count unavailable; restarting without a drain" >&2
+      return 0
+    fi
+    if [ -z "$ids" ]; then
+      [ "$waited" -eq 0 ] \
+        || printf 'routines post-install: drained after %ss\n' "$waited"
+      return 0
+    fi
+    if [ "$waited" -ge "$drain_max_sec" ]; then
+      printf 'routines post-install: WARN drain deadline %ss reached; the restart orphans: %s\n' \
+        "$drain_max_sec" "$ids" >&2
+      return 0
+    fi
+    sleep "$drain_poll_sec"
+    waited=$((waited + drain_poll_sec))
+  done
+}
+
 if "$launchctl_bin" print "$service" >/dev/null 2>&1; then
+  drain_before_restart
   set +e
   "$launchctl_bin" kickstart -k "$service" >"$out" 2>&1
   rc=$?

@@ -74,6 +74,24 @@ if [ "${1:-}" = "install-daemon" ]; then
   echo "install-daemon ok"
   exit 0
 fi
+if [ "${1:-}" = "status" ]; then
+  echo "status" >>"${ROUTINES_STATUS_CALLS:-/dev/null}"
+  if [ "${ROUTINES_STATUS_FAIL:-0}" = "1" ]; then
+    exit 1
+  fi
+  # Report `running` for the first ROUTINES_STATUS_BUSY_POLLS polls, then idle.
+  busy="${ROUTINES_STATUS_BUSY_POLLS:-0}"
+  seen=0
+  if [ -n "${ROUTINES_STATUS_CALLS:-}" ] && [ -f "$ROUTINES_STATUS_CALLS" ]; then
+    seen="$(grep -c . "$ROUTINES_STATUS_CALLS" || true)"
+  fi
+  if [ "$busy" -gt 0 ] && [ "$seen" -le "$busy" ]; then
+    echo '{"rows":[{"id":"last-stack-fkanban-pickup","running":true}]}'
+  else
+    echo '{"rows":[{"id":"last-stack-fkanban-pickup","running":false}]}'
+  fi
+  exit 0
+fi
 echo "unexpected $*" >&2
 exit 2
 EOF
@@ -118,6 +136,105 @@ printf '%s\n' "$out" | grep -q 'kickstart ok' || {
 }
 [ ! -s "$calls" ] || {
   echo "FAIL: loaded job must not call install-daemon" >&2
+  exit 1
+}
+
+status_calls="$tmp/status-calls"
+
+# A loaded job waits for the in-flight count to reach zero before it restarts.
+: >"$calls"
+: >"$status_calls"
+out="$(
+  LAUNCHCTL_STATE="$state" \
+  LAUNCHCTL_CALLS="$launchctl_calls" \
+  ROUTINES_CALLS="$calls" \
+  ROUTINES_STATUS_CALLS="$status_calls" \
+  ROUTINES_STATUS_BUSY_POLLS=2 \
+  LAST_STACK_LAUNCHCTL_BIN="$launchctl_stub" \
+  LAST_STACK_ROUTINES_DRAIN_POLL_SEC=1 \
+  HOST_TRACK_VERSION_DIR="$tmp" \
+  "$hook"
+)"
+printf '%s\n' "$out" | grep -q 'drained after' || {
+  echo "FAIL: a busy fleet must drain before the restart: $out" >&2
+  exit 1
+}
+printf '%s\n' "$out" | grep -q 'kickstart ok' || {
+  echo "FAIL: the drain must still restart the daemon: $out" >&2
+  exit 1
+}
+[ "$(grep -c . "$status_calls")" -ge 3 ] || {
+  echo "FAIL: the drain polled too few times: $(cat "$status_calls")" >&2
+  exit 1
+}
+
+# The deadline still restarts, and it names the runs it orphans.
+: >"$status_calls"
+drain_out="$(
+  LAUNCHCTL_STATE="$state" \
+  LAUNCHCTL_CALLS="$launchctl_calls" \
+  ROUTINES_CALLS="$calls" \
+  ROUTINES_STATUS_CALLS="$status_calls" \
+  ROUTINES_STATUS_BUSY_POLLS=999 \
+  LAST_STACK_LAUNCHCTL_BIN="$launchctl_stub" \
+  LAST_STACK_ROUTINES_DRAIN_POLL_SEC=1 \
+  LAST_STACK_ROUTINES_DRAIN_MAX_SEC=2 \
+  HOST_TRACK_VERSION_DIR="$tmp" \
+  "$hook" 2>&1
+)"
+printf '%s\n' "$drain_out" | grep -q 'drain deadline 2s reached' || {
+  echo "FAIL: the deadline must be named: $drain_out" >&2
+  exit 1
+}
+printf '%s\n' "$drain_out" | grep -q 'last-stack-fkanban-pickup' || {
+  echo "FAIL: the deadline must name the orphaned runs: $drain_out" >&2
+  exit 1
+}
+printf '%s\n' "$drain_out" | grep -q 'kickstart ok' || {
+  echo "FAIL: the deadline must still restart: $drain_out" >&2
+  exit 1
+}
+
+# An unreadable count is not an empty count; it restarts and says so.
+: >"$status_calls"
+unknown_out="$(
+  LAUNCHCTL_STATE="$state" \
+  LAUNCHCTL_CALLS="$launchctl_calls" \
+  ROUTINES_CALLS="$calls" \
+  ROUTINES_STATUS_CALLS="$status_calls" \
+  ROUTINES_STATUS_FAIL=1 \
+  LAST_STACK_LAUNCHCTL_BIN="$launchctl_stub" \
+  HOST_TRACK_VERSION_DIR="$tmp" \
+  "$hook" 2>&1
+)"
+printf '%s\n' "$unknown_out" | grep -q 'in-flight count unavailable' || {
+  echo "FAIL: an unreadable count must warn: $unknown_out" >&2
+  exit 1
+}
+printf '%s\n' "$unknown_out" | grep -q 'kickstart ok' || {
+  echo "FAIL: an unreadable count must still restart: $unknown_out" >&2
+  exit 1
+}
+
+# LAST_STACK_ROUTINES_DRAIN_MAX_SEC=0 keeps the emergency immediate reload.
+: >"$status_calls"
+now_out="$(
+  LAUNCHCTL_STATE="$state" \
+  LAUNCHCTL_CALLS="$launchctl_calls" \
+  ROUTINES_CALLS="$calls" \
+  ROUTINES_STATUS_CALLS="$status_calls" \
+  ROUTINES_STATUS_BUSY_POLLS=999 \
+  LAST_STACK_LAUNCHCTL_BIN="$launchctl_stub" \
+  LAST_STACK_ROUTINES_DRAIN_MAX_SEC=0 \
+  HOST_TRACK_VERSION_DIR="$tmp" \
+  "$hook"
+)"
+printf '%s\n' "$now_out" | grep -q 'kickstart ok' || {
+  echo "FAIL: drain 0 must restart at once: $now_out" >&2
+  exit 1
+}
+[ ! -s "$status_calls" ] || {
+  echo "FAIL: drain 0 must not read status: $(cat "$status_calls")" >&2
   exit 1
 }
 
