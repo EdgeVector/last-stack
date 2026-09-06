@@ -34,6 +34,10 @@ printf '%s\n' "$parsed" | jq -e '.status == "ok" and .items == [1, 2]' >/dev/nul
 
 export PATH="$tmp/bin:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
 export SHIP_PIPELINE_GAP_SNAPSHOT_FIXTURE=1
+# Isolate the factory_health last-good cache to this test run — it must never
+# touch the real ~/.local/state/last-stack cache, and must start empty so
+# Case 1's reason=missing assertion isn't masked by a leftover cache.
+export LAST_STACK_SHIP_PIPELINE_STATE_DIR="$tmp/state"
 # Keep real helpers off PATH so factory-health/why-stopped/lastgit don't run
 # unless this test installs stubs under $tmp/bin.
 mkdir -p "$tmp/bin"
@@ -143,7 +147,10 @@ echo "$out" | jq -e '
 echo "$out" | jq -e '.factory_health.status == "ok"' >/dev/null \
   || fail "factory_health still good after why_stopped garbage: $out"
 
-# --- Case 4: empty stdout + non-zero exit → reason=exit ---
+# --- Case 4: helper fails after a good reading was cached → embed the
+# cached reading marked stale, instead of a bare error object. Case 2/3 above
+# already ran factory-health successfully, so $LAST_STACK_SHIP_PIPELINE_STATE_DIR
+# now holds a cached good reading (status=ok, snapshot.todo=2).
 cat >"$tmp/bin/last-stack-factory-health" <<'SH'
 #!/usr/bin/env bash
 exit 7
@@ -152,9 +159,26 @@ chmod +x "$tmp/bin/last-stack-factory-health"
 
 out="$("$bin" --json --quiet 2>/dev/null)" || fail "run failed (exit)"
 echo "$out" | jq -e '
-  .factory_health.reason == "exit"
-  and (.factory_health | has("error"))
-' >/dev/null || fail "factory_health exit contract: $out"
+  .factory_health.status == "ok"
+  and .factory_health.snapshot.todo == 2
+  and .factory_health.stale == true
+  and .factory_health.stale_reason == "exit"
+  and (.factory_health.stale_captured_at | length > 10)
+  and (.factory_health.stale_checked_at | length > 10)
+  and (.factory_health | has("error") | not)
+' >/dev/null || fail "factory_health stale-cache fallback (exit): $out"
+
+# --- Case 4b: helper missing entirely → same stale-cache fallback, not
+# reason=missing bare error, because a good reading is still cached.
+rm -f "$tmp/bin/last-stack-factory-health"
+
+out="$("$bin" --json --quiet 2>/dev/null)" || fail "run failed (missing after cache)"
+echo "$out" | jq -e '
+  .factory_health.status == "ok"
+  and .factory_health.stale == true
+  and .factory_health.stale_reason == "missing"
+  and (.factory_health | has("error") | not)
+' >/dev/null || fail "factory_health stale-cache fallback (missing): $out"
 
 # --- Case 5: invoked THROUGH a symlink, ROOT still finds its own helpers ---
 #
