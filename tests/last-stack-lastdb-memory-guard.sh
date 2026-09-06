@@ -38,6 +38,12 @@ cat >"$tmp/bin/ps" <<'SH'
 args="$*"
 case "$args" in
   "-Ao pid=,comm=")
+    # FAKE_PS_DENIED=1 is the managed-sandbox shape: ps refuses the whole
+    # table rather than reporting an empty one.
+    if [ "${FAKE_PS_DENIED:-0}" = "1" ]; then
+      printf 'ps: operation not permitted\n' >&2
+      exit 1
+    fi
     # FAKE_NO_PRIMARY=1 means the daemon is gone. A bootstrap in the action log
     # brings it back, which is how the revival tests observe recovery.
     if [ "${FAKE_NO_PRIMARY:-0}" = "1" ] \
@@ -138,6 +144,13 @@ case "$*" in
 esac
 if [ "${FAKE_STATUS_EMPTY:-0}" = "1" ]; then
   emit "" "200"
+  exit 0
+fi
+if [ -n "${FAKE_STATUS_PID:-}" ]; then
+  emit "$(printf '{"pid":%s,"status":{"rss_bytes":%s,"phys_footprint_bytes":%s,"phys_footprint_peak_bytes":%s,"process_start_ts":%s,"build":{"version":"%s"}}}' \
+    "$FAKE_STATUS_PID" \
+    "${FAKE_RSS_BYTES:-0}" "${FAKE_FOOTPRINT_BYTES:-0}" "${FAKE_PEAK_BYTES:-0}" \
+    "${FAKE_START_TS:-0}" "${FAKE_BUILD:-0.0.0-test}")" "200"
   exit 0
 fi
 emit "$(printf '{"status":{"rss_bytes":%s,"phys_footprint_bytes":%s,"phys_footprint_peak_bytes":%s,"process_start_ts":%s,"build":{"version":"%s"}}}' \
@@ -366,6 +379,48 @@ if FAKE_BOOT_HTTP=404 FAKE_STATUS_EMPTY=1 "$GUARD" --identity >/dev/null 2>&1; t
   fail "empty status after a boot-identity 404 must fail"
 fi
 restarted && fail "empty-status identity failure must never restart the primary"
+
+# A denied process table is not an absent primary. A scheduled routine runs
+# under a sandbox that refuses ps, and on 2026-09-06 that alone stopped the
+# canary v2 dogfood line with primary_identity_absent while the node's own
+# socket answered HTTP 200. The socket answer is the evidence; the ps
+# cross-check is a second opinion, and losing it renames the source instead of
+# voiding the read.
+reset
+identity="$(FAKE_PS_DENIED=1 FAKE_BOOT_START=5678 FAKE_BOOT_BUILD=0.23.3-test \
+  "$GUARD" --identity)" \
+  || fail "a denied process table must not stop identity when the socket answers"
+[ "$identity" = \
+  'pid=4242 process_start_ts=5678 build=0.23.3-test identity_source=boot_identity_unverified_pid' ] \
+  || fail "denied-ps identity returned unexpected evidence: $identity"
+restarted && fail "denied-ps identity must never restart the primary"
+
+# The same denial on the 404 path names itself too, but only when the status
+# body carries a pid of its own. Without ps, `expected_pid` is the only other
+# source of one, so a status body without a pid leaves nothing to report.
+reset
+identity="$(FAKE_PS_DENIED=1 FAKE_BOOT_HTTP=404 FAKE_STATUS_PID=4242 \
+  FAKE_BUILD=0.23.3-status FAKE_START_TS=9999 "$GUARD" --identity)" \
+  || fail "denied ps plus a boot-identity 404 should still read status"
+[ "$identity" = \
+  'pid=4242 process_start_ts=9999 build=0.23.3-status identity_source=status_fallback_unverified_pid' ] \
+  || fail "denied-ps 404 fallback returned unexpected evidence: $identity"
+restarted && fail "denied-ps 404 fallback must never restart the primary"
+
+reset
+if FAKE_PS_DENIED=1 FAKE_BOOT_HTTP=404 FAKE_BUILD=0.23.3-status \
+   FAKE_START_TS=9999 "$GUARD" --identity >/dev/null 2>&1; then
+  fail "denied ps with no pid in status must fail rather than emit an empty pid"
+fi
+restarted && fail "pidless denied-ps fallback must never restart the primary"
+
+# A denial still cannot invent a node. With ps denied AND the socket down there
+# is no evidence at all, so the read stays a failure.
+reset
+if FAKE_PS_DENIED=1 FAKE_NODE_DOWN=1 "$GUARD" --identity >/dev/null 2>&1; then
+  fail "a denied process table and a down socket must still fail"
+fi
+restarted && fail "denied-ps down-socket identity must never restart the primary"
 
 # --- 10. a rejected notice records WHY, so a wrong fix cannot look green -----
 # The restart itself must still complete and stay durable in the event log.

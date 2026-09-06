@@ -201,6 +201,26 @@ EOF
   return 0
 }
 
+# Is the process table readable at all?
+#
+# `primary_pid` fails closed: it emits nothing both when no primary is running
+# and when `ps` itself is denied. Those two are the same to a killer — neither
+# is a pid it may signal — but they are NOT the same to the read-only
+# `--identity` reader. A scheduled routine runs under a managed sandbox that
+# returns `operation not permitted` for `ps`, and on 2026-09-06 that made the
+# canary v2 dogfood gate report `primary_identity_absent` for a primary whose
+# own socket answered GET /api/system/boot-identity with HTTP 200, build
+# 0.23.3-1576-g86498047e, pid 73392. The line stopped on a denial, not on a
+# fact about the node.
+#
+# So separate them. A `ps` that exits non-zero, or that prints nothing at all
+# on a host that must be running at least one process, is unreadable.
+process_table_readable() {
+  local table
+  table=$(ps -Ao pid=,comm= 2>/dev/null) || return 1
+  [ -n "$table" ]
+}
+
 rss_mb_of() {
   local pid="$1"
   local rss_kb
@@ -379,7 +399,21 @@ identity_from_status() {
     start=0
   fi
   build_value=$(status_build "$IDENTITY_BODY")
-  if [ "$status_pid" != "$expected_pid" ] || [ -z "$build_value" ] || [ "$build_value" = "unknown" ]; then
+  if [ -z "$build_value" ] || [ "$build_value" = "unknown" ]; then
+    return 1
+  fi
+  # An empty expected_pid reaches here only from the unreadable-process-table
+  # branch in identity(). There is nothing to cross-check against, so say so in
+  # the source rather than failing on a denial.
+  if [ -z "$expected_pid" ]; then
+    if [ -z "$status_pid" ]; then
+      return 1
+    fi
+    printf 'pid=%s process_start_ts=%s build=%s identity_source=status_fallback_unverified_pid\n' \
+      "$status_pid" "$start" "$build_value"
+    return 0
+  fi
+  if [ "$status_pid" != "$expected_pid" ]; then
     return 1
   fi
   printf 'pid=%s process_start_ts=%s build=%s identity_source=status_fallback\n' \
@@ -387,9 +421,11 @@ identity_from_status() {
 }
 
 identity() {
-  local expected_pid identity_pid start build_value blob
+  local expected_pid identity_pid start build_value blob source
   expected_pid=$(primary_pid || true)
-  if [ -z "$expected_pid" ]; then
+  if [ -z "$expected_pid" ] && process_table_readable; then
+    # The process table is readable and holds no primary. That is a real fact
+    # about the node, and it stays a failure.
     return 1
   fi
   # Prefer the one-row boot-identity read. Call /api/status only when that
@@ -408,11 +444,20 @@ identity() {
   identity_pid=$(printf '%s' "$IDENTITY_BODY" | sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' | head -1)
   start=$(printf '%s' "$IDENTITY_BODY" | sed -n 's/.*"process_start_ts":\([0-9][0-9]*\).*/\1/p' | head -1)
   build_value=$(printf '%s' "$IDENTITY_BODY" | sed -n 's/.*"build":"\([^"]*\)".*/\1/p' | head -1)
-  if [ -z "$identity_pid" ] || [ "$identity_pid" != "$expected_pid" ] || [ -z "$start" ] || [ -z "$build_value" ]; then
+  if [ -z "$identity_pid" ] || [ -z "$start" ] || [ -z "$build_value" ]; then
     return 1
   fi
-  printf 'pid=%s process_start_ts=%s build=%s identity_source=boot_identity\n' \
-    "$identity_pid" "$start" "$build_value"
+  # Only the live daemon can answer on the primary's own socket, so a 200 here
+  # is already proof of identity. The `ps` cross-check is a second opinion, and
+  # its absence names itself in the source rather than voiding the first one.
+  source=boot_identity
+  if [ -z "$expected_pid" ]; then
+    source=boot_identity_unverified_pid
+  elif [ "$identity_pid" != "$expected_pid" ]; then
+    return 1
+  fi
+  printf 'pid=%s process_start_ts=%s build=%s identity_source=%s\n' \
+    "$identity_pid" "$start" "$build_value" "$source"
 }
 
 # Slug for the restart notice.

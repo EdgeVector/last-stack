@@ -12,8 +12,19 @@ LOCK_DIR="${LAST_STACK_LOOM_REAPER_LOCK_DIR:-$STATE_ROOT/run.lock}"
 # capped by RESUME_TIMEOUT_S, so the worst added wall time is
 # RESUME_LIMIT * RESUME_TIMEOUT_S — keep that product well inside the job's
 # 3600 s StartInterval.
-RESUME_LIMIT="${LAST_STACK_LOOM_REAPER_RESUME_LIMIT:-10}"
-RESUME_TIMEOUT_S="${LAST_STACK_LOOM_REAPER_RESUME_TIMEOUT_S:-60}"
+#
+# RESUME_TIMEOUT_S was 60 s until 2026-09-06. A raised limit cannot drain a
+# backlog when every resume is cut off before it can finish, and 60 s was below
+# the real cost of one resume. Measured that day: the 05:02Z pass reported
+# scanned=2334 active=386 resumed=0 timed_out=1 deferred=343, and the hourly
+# `why-stopped` graph had not reached DONE since 2026-09-05T23:08Z. A targeted
+# reap of one of those executions with --resume-timeout-secs 480 moved it
+# GATHER -> DONE and returned `succeeded` on the first try. So the cap, not the
+# graph, was the blocker. 300 s clears that class of resume; the limit drops to
+# 6 to hold RESUME_LIMIT * RESUME_TIMEOUT_S (1800 s) inside the hour with the
+# 120 s margin, which is still ~5x the measured +1.15/h arrival rate.
+RESUME_LIMIT="${LAST_STACK_LOOM_REAPER_RESUME_LIMIT:-6}"
+RESUME_TIMEOUT_S="${LAST_STACK_LOOM_REAPER_RESUME_TIMEOUT_S:-300}"
 OLDER_THAN_S="${LAST_STACK_LOOM_REAPER_OLDER_THAN_S:-300}"
 PASS_DEADLINE_MARGIN_S="${LAST_STACK_LOOM_REAPER_PASS_DEADLINE_MARGIN_S:-120}"
 PASS_DEADLINE_S="${LAST_STACK_LOOM_REAPER_PASS_DEADLINE_S:-$((RESUME_LIMIT * RESUME_TIMEOUT_S + PASS_DEADLINE_MARGIN_S))}"
