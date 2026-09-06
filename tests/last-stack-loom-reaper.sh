@@ -48,19 +48,22 @@ run_reaper() {
 
 out="$(run_reaper)" || fail "success pass failed"
 # The default resume limit must stay above the orphan arrival rate; 1 let the
-# deferred set grow from 88 to 314 in eight days.
+# deferred set grow from 88 to 314 in eight days. The default resume timeout
+# must also exceed the real cost of one resume, or the limit buys nothing: at
+# 60 s the 2026-09-06T05:02Z pass reported resumed=0 against active=386, and
+# the same class of execution reached DONE on the first try at 480 s.
 [ "$(cat "$MOCK_LOOM_CALLS")" = \
-  'reap --older-than-secs 300 --resume-limit 10 --resume-timeout-secs 60 --json' ] \
+  'reap --older-than-secs 300 --resume-limit 6 --resume-timeout-secs 300 --json' ] \
   || fail "unsafe Loom arguments: $(cat "$MOCK_LOOM_CALLS")"
 printf '%s\n' "$out" | jq -e \
   --arg loom "$home/.local/bin/loom" \
   '.status == "ok" and .exit_code == 0 and .loom_bin == $loom
    and (.age_secs | type) == "number"
-   and .pass_deadline_secs == 720
+   and .pass_deadline_secs == 1920
    and .orphan_drives_swept == 0
    and .report.resumed == 1
-   and .command == ["reap","--older-than-secs","300","--resume-limit","10",
-     "--resume-timeout-secs","60","--json"]' \
+   and .command == ["reap","--older-than-secs","300","--resume-limit","6",
+     "--resume-timeout-secs","300","--json"]' \
   >/dev/null || fail "bad success result: $out"
 
 # The bounds are tunable, and the recorded command must reflect what actually ran.
