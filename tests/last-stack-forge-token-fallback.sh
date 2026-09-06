@@ -76,16 +76,52 @@ done
 printf '%s\n' "$msg" | grep -q 'locked' \
   || fail "missing-token message must name the locked-keychain case"
 
-# --- 5. every forge helper resolves through the shared function -------------
-# A helper that keeps its own copy of the keychain read is the defect coming
-# back one file at a time.
-for h in bin/last-stack-forge-api bin/last-stack-forge-git; do
+# --- 5. NO helper keeps its own copy of the keychain read -------------------
+# This used to enumerate two files while its own comment promised the class.
+# Four helpers were outside that list, and the guard stayed green while
+# `last-stack-forge-ci-log` exited 3 on every unattended pass for six hours —
+# the one instrument five open p0 pipeline papercuts were waiting on to name
+# why routines#10, loom#9/#11/#12, fold#1954/#1955 and last-stack#20/#21 were
+# red. A list is not a class: scan every executable instead.
+#
+# lib/forge-token.sh is the ONE place allowed to name the keychain item.
+# Sole exemption: last-stack-forge-runner-lanes is python and cannot source a
+# bash lib, so it reimplements the same three-step order. The check below
+# asserts it kept the lastsecrets step.
+offenders="$(grep -rln 'find-generic-password[^\n]*forgejo-token' "$ROOT/bin" \
+  | grep -v '/last-stack-forge-runner-lanes$' || true)"
+[ -z "$offenders" ] || fail "these must resolve the token through lib/forge-token.sh, not read the keychain directly:
+$offenders"
+
+# And every helper that talks to the forge must actually call the resolver.
+# `forgejo-admin` (the WEB password) is deliberately not in scope: it has no
+# stored fallback, which is why last-stack-forge-ci-log reads the job log off
+# disk and only reaches for a web session when that file is absent.
+for h in bin/last-stack-forge-api bin/last-stack-forge-git bin/last-stack-forge-ci-log \
+         bin/last-stack-git-checkout-freshness bin/last-stack-dogfood-target-checkout \
+         bin/last-stack-portal-wt; do
   grep -q 'last_stack_forge_token' "$ROOT/$h" \
     || fail "$h must resolve its token through last_stack_forge_token"
-  grep -q 'find-generic-password' "$ROOT/$h" \
-    && fail "$h must not read the keychain directly; use lib/forge-token.sh"
 done
-grep -q 'last_stack_forge_token' "$ROOT/bin/last-stack-portal-wt" \
-  || fail "portal-wt must authenticate forge fetches through last_stack_forge_token"
+# The python helper cannot source the bash lib, so it needs its own fallback.
+# Match the argv, not the word: the first version of this check passed on a
+# docstring that merely mentioned lastsecrets while the call site was gone.
+grep -q '"lastsecrets", "get", "forgejo-token"' "$ROOT/bin/last-stack-forge-runner-lanes" \
+  || fail "last-stack-forge-runner-lanes must fall back to lastsecrets when the keychain is locked"
 
-printf 'ok: forge token fallback (env > keychain > lastsecrets, locked keychain, shared resolver)\n'
+# --- 6. the ci-log helper must not need a credential for an on-disk log -----
+grep -q 'FORGE_ACTIONS_LOG_ROOT' "$ROOT/bin/last-stack-forge-ci-log" \
+  || fail "last-stack-forge-ci-log must read the job log from the forge actions_log root"
+# The web login must be lazy. A top-level `exit 3` on a missing web password
+# is what made a locked keychain fatal even when the log was sitting on disk.
+awk '/^web_login\(\)/,/^}/' "$ROOT/bin/last-stack-forge-ci-log" | grep -q 'return 3' \
+  || fail "last-stack-forge-ci-log must defer the web-password requirement into web_login()"
+# Forgejo does not keep a log for every task (loom run 35's GREEN `ci-required`
+# has no file while the `skipped` job in the same run does), so one unreadable
+# job must not sink the jobs that did read.
+grep -q 'NO LOG AVAILABLE' "$ROOT/bin/last-stack-forge-ci-log" \
+  || fail "last-stack-forge-ci-log must report a per-job missing log and continue"
+awk '/^for idx in \$targets/,0' "$ROOT/bin/last-stack-forge-ci-log" | grep -q 'read_ok=$(( read_ok + 1 ))' \
+  || fail "last-stack-forge-ci-log must count the jobs it actually read"
+
+printf 'ok: forge token fallback (env > keychain > lastsecrets, locked keychain, no helper reads the keychain directly, ci-log reads on-disk logs)\n'

@@ -18,11 +18,38 @@
 # resolve the run + jobs for a red run, log in for a session cookie, then fetch
 # the failing job's log and print its tail.
 #
+#   3. Both credentials live in the login keychain, which locks to
+#      non-interactive readers and then exits 51/25293 with an EMPTY stderr. On
+#      2026-09-06 that made this helper exit 3 on every unattended pass while
+#      five p0 papercuts (routines#10, loom#9/#11/#12, fold#1954/#1955,
+#      last-stack#20/#21) recorded "the failure remains unclassified" for six
+#      hours. The token now resolves through lib/forge-token.sh (env > keychain
+#      > lastsecrets) like every other forge helper, and the log body has a
+#      credential-free path: on the forge host the job log is a plain file, so
+#      the web session is only needed when that file is absent.
+#
 # MUST be run with dangerouslyDisableSandbox:true (TCP to :3300 is sandbox-blocked).
 set -euo pipefail
 
+# Resolve through symlinks so lib/ is found in the artifact tree and in a
+# checkout alike (same convention as bin/last-stack-forge-api).
+self="${BASH_SOURCE[0]}"
+while [ -h "$self" ]; do
+  self_dir="$(cd -P "$(dirname "$self")" && pwd)"
+  self="$(readlink "$self")"
+  case "$self" in /*) ;; *) self="$self_dir/$self" ;; esac
+done
+self_root="$(cd -P "$(dirname "$self")/.." && pwd)"
+# shellcheck source=../lib/forge-token.sh
+. "$self_root/lib/forge-token.sh"
+
 ROOT="${FORGE_ROOT:-http://localhost:3300}"
 TAIL="${FORGE_CI_LOG_TAIL:-80}"
+# Forgejo writes each task's combined log to
+#   <root>/<owner>/<repo>/<taskid%256 as %02x>/<taskid>.log[.zst]
+# That file needs no credential at all, which is the only reason this helper
+# still works while the login keychain is locked.
+ACTIONS_LOG_ROOT="${FORGE_ACTIONS_LOG_ROOT:-/opt/homebrew/var/forgejo/data/actions_log}"
 
 usage() {
   cat <<'EOF'
@@ -48,9 +75,18 @@ Env:
   FORGE_ROOT           forge base URL (default http://localhost:3300)
   FORGE_CI_LOG_TAIL    lines of tail to print per job (default 80; 0 = whole log)
 
-Auth (already provisioned in the macOS keychain):
-  forge web login    user `tom`,  security find-generic-password -s forgejo-admin -w
-  forge api token    security find-generic-password -s forgejo-token -w
+Env (cont.):
+  FORGE_ACTIONS_LOG_ROOT
+                       forge on-disk actions_log root
+                       (default /opt/homebrew/var/forgejo/data/actions_log)
+
+Auth:
+  api token   $FORGE_TOKEN, else keychain `forgejo-token`, else
+              lastsecrets://forgejo-token  (lib/forge-token.sh)
+  job log     read from ACTIONS_LOG_ROOT when present — no credential needed.
+              Only when the file is absent does this fall back to a web
+              session, which needs $FORGE_WEB_PASSWORD or keychain
+              `forgejo-admin` (user $FORGE_WEB_USER, default `tom`).
 
 ⚠️  Run this with `dangerouslyDisableSandbox: true` — a sandboxed Bash tool call
     blocks TCP to localhost:3300 and fails with `command not found: curl`.
@@ -65,8 +101,8 @@ fi
 repo="$1"; shift
 case "$repo" in */*) ;; *) echo "repo must be owner/name: $repo" >&2; exit 2 ;; esac
 
-TOKEN="$(security find-generic-password -s forgejo-token -w 2>/dev/null || true)"
-[ -n "$TOKEN" ] || { echo "no forgejo-token in keychain (security find-generic-password -s forgejo-token -w)" >&2; exit 3; }
+TOKEN="$(last_stack_forge_token || true)"
+[ -n "$TOKEN" ] || { last_stack_forge_token_missing_msg; exit 3; }
 
 api() { curl -fsS -H "Authorization: token $TOKEN" "$ROOT/api/v1/$1"; }
 
@@ -99,14 +135,14 @@ fi
 # Emit "idx<TAB>status<TAB>name" so we know which indices are failing.
 jobs_tsv="$(printf '%s' "$tasks_json" | jq -r --argjson rn "$run_number" '
   [ .workflow_runs[] | select(.run_number == $rn) ] | sort_by(.id)
-  | to_entries[] | "\(.key)\t\(.value.status)\t\(.value.name)"')"
+  | to_entries[] | "\(.key)\t\(.value.status)\t\(.value.name)\t\(.value.id)"')"
 
 if [ -z "$jobs_tsv" ]; then
   echo "no jobs found for run $run_number in the tasks list (list truncated? raise limit / pass a fresher run)" >&2
   exit 4
 fi
 
-echo "run $run_number jobs (idx / status / name):" >&2
+echo "run $run_number jobs (idx / status / name / task-id):" >&2
 printf '%s\n' "$jobs_tsv" | sed 's/^/  /' >&2
 
 # Decide which job indices to dump.
@@ -118,29 +154,88 @@ else
   [ -n "$targets" ] || targets="$(printf '%s\n' "$jobs_tsv" | awk -F'\t' '{print $1}')"  # nothing failed -> dump all
 fi
 
-# ── Web session cookie (the log route rejects the API token) ──────────────────
-web_user="tom"
-web_pass="$(security find-generic-password -s forgejo-admin -w 2>/dev/null || true)"
-[ -n "$web_pass" ] || { echo "no forgejo-admin password in keychain (security find-generic-password -s forgejo-admin -w)" >&2; exit 3; }
+# ── On-disk log (no credential) ───────────────────────────────────────────────
+# Forgejo shards by task-id modulo 256; the file is zstd-compressed when the
+# instance has log compression on, plain otherwise. Prints nothing and returns
+# non-zero when neither exists.
+disk_log() {
+  local task_id="$1" shard base
+  [ -n "$task_id" ] && [ "$task_id" != "null" ] || return 1
+  shard="$(printf '%02x' "$(( task_id % 256 ))")"
+  base="$ACTIONS_LOG_ROOT/$repo/$shard/$task_id.log"
+  if [ -f "$base.zst" ]; then
+    zstdcat "$base.zst"
+  elif [ -f "$base" ]; then
+    cat "$base"
+  else
+    return 1
+  fi
+}
 
-cookie="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack.XXXXXX")"
-trap 'rm -f "$cookie"' EXIT
-curl -fsS -c "$cookie" "$ROOT/user/login" -o /dev/null
-csrf="$(awk '/_csrf/{v=$7} END{print v}' "$cookie")"
-curl -fsS -b "$cookie" -c "$cookie" -X POST "$ROOT/user/login" \
-  --data-urlencode "_csrf=$csrf" \
-  --data-urlencode "user_name=$web_user" \
-  --data-urlencode "password=$web_pass" -o /dev/null
+# ── Web session cookie (the log route rejects the API token) ──────────────────
+# Established lazily: a locked keychain must not stop a job whose log is on
+# disk. Exits 3 only when the web route is the one path left.
+cookie=""
+web_login() {
+  [ -z "$cookie" ] || return 0
+  local web_user web_pass csrf
+  web_user="${FORGE_WEB_USER:-tom}"
+  web_pass="${FORGE_WEB_PASSWORD:-$(security find-generic-password -s forgejo-admin -w 2>/dev/null || true)}"
+  if [ -z "$web_pass" ]; then
+    cat >&2 <<'MSG'
+this job has no log under FORGE_ACTIONS_LOG_ROOT, so the web route is the only
+path left — and it needs a password. Tried $FORGE_WEB_PASSWORD (unset) and
+keychain item `forgejo-admin` (absent, or the login keychain is locked to
+non-interactive readers: `security ... -w` exits 51/25293 silently).
+MSG
+    return 3
+  fi
+  cookie="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack.XXXXXX")"
+  curl -fsS -c "$cookie" "$ROOT/user/login" -o /dev/null
+  csrf="$(awk '/_csrf/{v=$7} END{print v}' "$cookie")"
+  curl -fsS -b "$cookie" -c "$cookie" -X POST "$ROOT/user/login" \
+    --data-urlencode "_csrf=$csrf" \
+    --data-urlencode "user_name=$web_user" \
+    --data-urlencode "password=$web_pass" -o /dev/null
+}
+trap '[ -n "$cookie" ] && rm -f "$cookie"' EXIT
 
 # ── Fetch + print each target job's log ───────────────────────────────────────
+read_ok=0
+unreadable=0
 for idx in $targets; do
   name="$(printf '%s\n' "$jobs_tsv" | awk -F'\t' -v i="$idx" '$1==i{print $3}')"
-  url="$ROOT/$repo/actions/runs/$run_number/jobs/$idx/attempt/$attempt/logs"
-  echo
-  echo "===== job $idx  ($name)  —  $url ====="
-  if [ "$TAIL" = "0" ]; then
-    curl -fsS -b "$cookie" "$url"
+  task_id="$(printf '%s\n' "$jobs_tsv" | awk -F'\t' -v i="$idx" '$1==i{print $4}')"
+  web_url="$ROOT/$repo/actions/runs/$run_number/jobs/$idx/attempt/$attempt/logs"
+  body=""
+  source_desc=""
+  if body="$(disk_log "$task_id" 2>/dev/null)"; then
+    source_desc="$ACTIONS_LOG_ROOT/$repo/$(printf '%02x' "$(( task_id % 256 ))")/$task_id.log (on disk)"
+  elif web_login && body="$(curl -fsS -b "$cookie" "$web_url")"; then
+    source_desc="$web_url"
   else
-    curl -fsS -b "$cookie" "$url" | tail -n "$TAIL"
+    # One unreadable job must not sink the command. Forgejo does not keep a log
+    # for every task — loom run 35's GREEN `ci-required` (task 35096) has no
+    # file while the `skipped` job in the same run does — so a missing log is a
+    # normal per-job outcome, not a reason to lose the jobs that did read.
+    echo >&2
+    echo "===== job $idx  ($name, task $task_id)  —  NO LOG AVAILABLE =====" >&2
+    unreadable=$(( unreadable + 1 ))
+    continue
+  fi
+  read_ok=$(( read_ok + 1 ))
+  echo
+  echo "===== job $idx  ($name, task $task_id)  —  $source_desc ====="
+  if [ "$TAIL" = "0" ]; then
+    printf '%s\n' "$body"
+  else
+    printf '%s\n' "$body" | tail -n "$TAIL"
   fi
 done
+
+# Exit 4 only when NOTHING was readable; a partial read is a useful answer and
+# the per-job banners above say exactly which jobs are missing.
+if [ "$read_ok" -eq 0 ] && [ "$unreadable" -gt 0 ]; then
+  echo "no log could be read for any of the $unreadable target job(s)" >&2
+  exit 4
+fi
