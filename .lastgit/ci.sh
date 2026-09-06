@@ -502,3 +502,82 @@ ci_test tests/last-stack-lint-test-wallclock-bounds.sh
 # to a --force board move. Hermetic: runs five local helpers' help paths. ~1s.
 # APPENDED (see the shard-stability note above): ci_test shards by list position.
 ci_test tests/last-stack-help-flag-contract.sh
+
+# --- Registration backfill, 2026-09-06 -------------------------------------
+#
+# papercut-last-stack-tests-can-land-unregistered-in-required-gate: the gate
+# schedules tests through this explicit list, so a new file is discovered by
+# nothing. 70 of 251 test files had never run in a required gate (63 of 215 on
+# 2026-08-30, so the omission rate held near 29% while the suite grew). Every
+# one of the 70 was executed standalone on 2026-09-06 at main 440093ea: 64
+# passed. The 60 below are the passing ones that are also hermetic -- they
+# sandbox HOME or read nothing outside the repo -- and together they add about
+# 252s, roughly 63s per shard at the default four.
+#
+# The other 10 are recorded in tests/.ci-exempt with the reason each is out,
+# and tests/last-stack-ci-test-registration.sh now fails when a test file is
+# in neither place. APPENDED at the end: ci_test shards by list POSITION.
+ci_test tests/brain-doctor-http-000.sh
+ci_test tests/last-stack-active-programs-guard.sh
+ci_test tests/last-stack-admin-deliver.sh
+ci_test tests/last-stack-attribution-trailers.sh
+ci_test tests/last-stack-board-closeout-park-bound.sh
+ci_test tests/last-stack-board-drain-report.sh
+ci_test tests/last-stack-brain-reference-guard.sh
+ci_test tests/last-stack-canary-heal-harness-fence.sh
+ci_test tests/last-stack-canary-v2-dogfood-gate.sh
+ci_test tests/last-stack-cli-flag-gotchas-docs.sh
+ci_test tests/last-stack-cli-preflight.sh
+ci_test tests/last-stack-disk-reclaim-backup-retention.sh
+ci_test tests/last-stack-dogfood-target-checkout.sh
+ci_test tests/last-stack-driver-admission-fixture.sh
+ci_test tests/last-stack-factory-health.sh
+ci_test tests/last-stack-factory-ready-buffer-controller.sh
+ci_test tests/last-stack-feature-portfolio-admission.sh
+ci_test tests/last-stack-fkanban-compat-skills.sh
+ci_test tests/last-stack-forge-json-jq.sh
+ci_test tests/last-stack-forge-runner-lanes.sh
+ci_test tests/last-stack-forge-runner-watchdog.sh
+ci_test tests/last-stack-gh-pr-queue-state.sh
+ci_test tests/last-stack-git-checkout-freshness.sh
+ci_test tests/last-stack-host-track-artifact-invariant.sh
+ci_test tests/last-stack-install-apps.sh
+ci_test tests/last-stack-json-get.sh
+ci_test tests/last-stack-lastdb-current.sh
+ci_test tests/last-stack-lastdb-dev.sh
+ci_test tests/last-stack-lastdb-safe-upgrade-binary-pair.sh
+ci_test tests/last-stack-lastdb-safe-upgrade-deadline.sh
+ci_test tests/last-stack-lastgit-stuck-merge-heal.sh
+ci_test tests/last-stack-loom-exec-latest.sh
+ci_test tests/last-stack-mask-secrets.sh
+ci_test tests/last-stack-migrate-repo-local-worktrees.sh
+ci_test tests/last-stack-milestone-factory-dashboard.sh
+ci_test tests/last-stack-papercut-lifecycle-close-budget.sh
+ci_test tests/last-stack-park-terminal-validation-todo.sh
+ci_test tests/last-stack-portfolio-auto-refill.sh
+ci_test tests/last-stack-portfolio-pass-record.sh
+ci_test tests/last-stack-post-merge-map-loom.sh
+ci_test tests/last-stack-pr-venue.sh
+ci_test tests/last-stack-product-feature-ns-reconcile.sh
+ci_test tests/last-stack-publish-status.sh
+ci_test tests/last-stack-reclaim-keeps-tracked-dist.sh
+ci_test tests/last-stack-repo-op-guard.sh
+ci_test tests/last-stack-revenant-watch.sh
+ci_test tests/last-stack-routine-job-shrink-gate.sh
+ci_test tests/last-stack-routine-outcome-classify.sh
+ci_test tests/last-stack-safe-upgrade-cli.sh
+ci_test tests/last-stack-scrub-github-token-remotes.sh
+ci_test tests/last-stack-self-upgrade.sh
+ci_test tests/last-stack-session-miner-recent-jsonl.sh
+ci_test tests/last-stack-setup-claude-brain-kanban.sh
+ci_test tests/last-stack-setup-codex-brain-kanban.sh
+ci_test tests/last-stack-setup-no-worktree-symlinks.sh
+ci_test tests/last-stack-shared-checkout-guard.sh
+ci_test tests/last-stack-ship-pipeline-gap-snapshot.sh
+ci_test tests/last-stack-update-check.sh
+ci_test tests/last-stack-verify-skill-links.sh
+ci_test tests/machine-hygiene-empty-globs.sh
+
+# The registration guard itself. Kept last, and asserted to be registered by
+# tests/last-stack-ci-sharding.sh, so the guard cannot quietly stop running.
+ci_test tests/last-stack-ci-test-registration.sh
