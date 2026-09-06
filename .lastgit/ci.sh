@@ -453,3 +453,14 @@ ci_test tests/host-track-soak-starve-bound.sh
 # stubbed `security`/`lastsecrets` on PATH, no node, no network. ~1s.
 # APPENDED (see the shard-stability note above): ci_test shards by list position.
 ci_test tests/last-stack-forge-token-fallback.sh
+
+# A failed `wt rm` used to print `try: wt rm <an unrelated live worktree>`. The
+# token heuristic drew from the NORMALIZED id, which always contains `kanban`,
+# so any same-portal sibling matched and the tool handed back a destructive
+# command aimed at another agent's checkout. Pins that a bystander sharing only
+# `kanban` is never named, that an ambiguous token names nothing, that a genuine
+# near-miss typo IS still surfaced, and that a weak match never renders an
+# executable `try: wt rm` line. Hermetic: temp portal + bare cache, no node,
+# no network. ~2s.
+# APPENDED (see the shard-stability note above): ci_test shards by list position.
+ci_test tests/last-stack-portal-wt-rm-suggestion-scope.sh
