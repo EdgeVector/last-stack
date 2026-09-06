@@ -171,3 +171,34 @@ if grep -q 'PATH shadow' "$tmp/check2.err"; then
 fi
 
 printf 'ok: declaring a shadowed name in links[] heals it and clears the report\n'
+
+# ── a stale app must still get its PATH checked ───────────────────────────────
+# `check` returns 1 at the staleness gate. The shadow report used to sit after
+# that gate, so a stale app was never PATH-checked — including every app inside
+# its soak window, where stale=true is the designed steady state. Measured on
+# the live host 2026-09-06 during a last-stack soak: the same binary reported 0
+# shadows while 12 were live, and the fixed order reported 13.
+# rm first: the repair above left a symlink here, and a plain redirect would
+# write THROUGH it into the managed tree instead of restoring the shadow.
+rm -f "$HOME/.local/bin/sd-orphan"
+printf '#!/usr/bin/env bash\necho sd-orphan-stale-again\n' > "$HOME/.local/bin/sd-orphan"
+chmod +x "$HOME/.local/bin/sd-orphan"
+[ ! -L "$HOME/.local/bin/sd-orphan" ] || fail "fixture failed to restore a real-file shadow"
+write_registry "$declared_only"
+
+digest_two="$(printf 'b%.0s' {1..64})"
+oid_two="$(printf '2%.0s' {1..40})"
+publish_fixture "$digest_two" "$oid_two"
+
+"$ROOT/bin/host-track" status --json shadowdemo | jq -e '.stale == true' >/dev/null \
+  || fail "fixture did not go stale after publishing a newer digest"
+
+if "$ROOT/bin/host-track" check shadowdemo >"$tmp/check3.out" 2>"$tmp/check3.err"; then
+  fail "stale app unexpectedly passed check"
+fi
+grep -q 'shadowdemo stale' "$tmp/check3.err" \
+  || fail "check did not report staleness (got: $(cat "$tmp/check3.err"))"
+grep -q 'PATH shadow: sd-orphan runs' "$tmp/check3.err" \
+  || fail "a stale app was never PATH-checked; the shadow report must precede the stale gate (got: $(cat "$tmp/check3.err"))"
+
+printf 'ok: a stale app still reports PATH shadows\n'

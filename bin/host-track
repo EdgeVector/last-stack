@@ -1071,6 +1071,15 @@ check_cmd() {
     printf 'host-track: %s executable missing\n' "$app" >&2
     return 1
   fi
+  # A PATH shadow is orthogonal to freshness, so report it before the stale
+  # gate returns. Leaving it after meant a stale app never got its PATH
+  # checked — including every app inside its soak window, where `stale` is the
+  # designed steady state. Measured 2026-09-06: `check last-stack` printed
+  # "stale" and reported 0 shadows while 12 were live on the host.
+  if [ "$install_mode" = "artifact" ]; then
+    IFS=$'\t' read -r _ _ _ shadow_install_root < <(artifact_paths "$app" "$json")
+    report_path_shadows "$app" "$shadow_install_root"
+  fi
   if [ "$stale" = "true" ]; then
     exemption_kind="$(printf '%s\n' "$status" | jq -r '.artifact_exemption.kind // ""')"
     deployment_problem="$(printf '%s\n' "$status" | jq -r '.deployment_problem // ""')"
@@ -1088,15 +1097,10 @@ check_cmd() {
       return 1
     fi
   fi
-  if [ "$install_mode" = "artifact" ]; then
-    if ! verify_active_artifact "$app" "$json"; then
-      # verify_active_artifact already printed path/reason to stderr
-      printf 'host-track: %s active artifact verification failed\n' "$app" >&2
-      return 1
-    fi
-    # The tree verified above is only in force if PATH resolves into it.
-    IFS=$'\t' read -r _ _ _ shadow_install_root < <(artifact_paths "$app" "$json")
-    report_path_shadows "$app" "$shadow_install_root"
+  if [ "$install_mode" = "artifact" ] && ! verify_active_artifact "$app" "$json"; then
+    # verify_active_artifact already printed path/reason to stderr
+    printf 'host-track: %s active artifact verification failed\n' "$app" >&2
+    return 1
   fi
   printf 'host-track: %s ok\n' "$app"
 }
