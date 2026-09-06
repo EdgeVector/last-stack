@@ -14,6 +14,7 @@ entry="$tmp/registry/last-stack-why-stopped.toml"
 grep -q 'difficulty = "normal"' "$entry"
 grep -q 'effort = "low"' "$entry"
 grep -q 'rrule = "FREQ=HOURLY;INTERVAL=2;BYMINUTE=11;BYSECOND=0"' "$entry"
+grep -q 'timeout_min = 45' "$entry"
 if grep -qE '^(harness|model|pin) ' "$entry"; then
   echo "fresh why-stopped must not emit harness/model/pin:" >&2
   cat "$entry" >&2

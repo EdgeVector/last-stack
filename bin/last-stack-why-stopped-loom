@@ -201,21 +201,36 @@ fi
 key="${LOOM_WHY_KEY:-why-stopped-$(date -u +%Y%m%dT%H)}"
 input='{"probes":["install","node","forge","pickup"]}'
 
-# Keep an internal margin below the routine observer's 600 second deadline.
+# Derive the Loom allowance from the routine gate. The fallback matches the
+# 45-minute routine default. Reserve five minutes for fallback classification,
+# the stamp, and closeout. The observer gate also passes its derived allowance
+# as an explicit override so both wrappers use one deadline.
+default_gate_timeout_ms=2700000
+gate_closeout_reserve_sec=300
+gate_timeout_ms="${ROUTINES_GATE_TIMEOUT_MS:-$default_gate_timeout_ms}"
+case "$gate_timeout_ms" in ''|*[!0-9]*) gate_timeout_ms="$default_gate_timeout_ms" ;; esac
+gate_timeout_sec=$((gate_timeout_ms / 1000))
+if [ "$gate_timeout_sec" -gt "$gate_closeout_reserve_sec" ]; then
+  default_gate_timeout=$((gate_timeout_sec - gate_closeout_reserve_sec))
+else
+  default_gate_timeout=1
+fi
+
+# Keep an internal margin below the observer's derived deadline.
 # The child starts a new session. The Python launcher and the shell traps both
 # reap that process group, so an external signal cannot leave `loom drive` at
 # PPID 1.
-gate_timeout="${LAST_STACK_WHY_STOPPED_LOOM_TIMEOUT_SEC:-600}"
-run_timeout="${LAST_STACK_WHY_STOPPED_LOOM_RUN_TIMEOUT_SEC:-540}"
+gate_timeout="${LAST_STACK_WHY_STOPPED_LOOM_TIMEOUT_SEC:-$default_gate_timeout}"
 timeout_headroom="${LAST_STACK_WHY_STOPPED_LOOM_HEADROOM_SEC:-15}"
-case "$gate_timeout" in ''|*[!0-9]*) gate_timeout=600 ;; esac
-case "$run_timeout" in ''|*[!0-9]*) run_timeout=540 ;; esac
+case "$gate_timeout" in ''|*[!0-9]*) gate_timeout="$default_gate_timeout" ;; esac
 case "$timeout_headroom" in ''|*[!0-9]*) timeout_headroom=15 ;; esac
-[ "$gate_timeout" -ge 1 ] || gate_timeout=600
-[ "$run_timeout" -ge 1 ] || run_timeout=540
+[ "$gate_timeout" -ge 1 ] || gate_timeout="$default_gate_timeout"
 [ "$timeout_headroom" -ge 1 ] || timeout_headroom=15
 max_run_timeout=$(( gate_timeout - timeout_headroom ))
 [ "$max_run_timeout" -ge 1 ] || max_run_timeout=1
+run_timeout="${LAST_STACK_WHY_STOPPED_LOOM_RUN_TIMEOUT_SEC:-$max_run_timeout}"
+case "$run_timeout" in ''|*[!0-9]*) run_timeout="$max_run_timeout" ;; esac
+[ "$run_timeout" -ge 1 ] || run_timeout="$max_run_timeout"
 if [ "$run_timeout" -gt "$max_run_timeout" ]; then
   run_timeout="$max_run_timeout"
 fi
@@ -264,6 +279,30 @@ try:
 except FileNotFoundError:
     pass
 ' 2>/dev/null || true
+}
+
+cancel_loom_execution() {
+  cancel_exec_id="$1"
+  [ -n "$cancel_exec_id" ] || return 1
+  cancel_timeout="${LAST_STACK_WHY_STOPPED_LOOM_CANCEL_TIMEOUT_SEC:-10}"
+  case "$cancel_timeout" in ''|*[!0-9]*) cancel_timeout=10 ;; esac
+  [ "$cancel_timeout" -ge 1 ] || cancel_timeout=10
+  CANCEL_EXEC_ID="$cancel_exec_id" CANCEL_TIMEOUT="$cancel_timeout" python3 -c '
+import os
+import subprocess
+
+try:
+    result = subprocess.run(
+        ["loom", "cancel", os.environ["CANCEL_EXEC_ID"]],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=int(os.environ["CANCEL_TIMEOUT"]),
+        check=False,
+    )
+except subprocess.TimeoutExpired:
+    raise SystemExit(1)
+raise SystemExit(result.returncode)
+'
 }
 
 on_loom_signal() {
@@ -350,9 +389,13 @@ with stderr_path.open("a", encoding="utf-8") as stderr_file:
 
     try:
         stdout, _ = process.communicate(timeout=timeout_sec)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
+        partial = exc.stdout or ""
+        if isinstance(partial, bytes):
+            partial = partial.decode("utf-8", errors="replace")
         stop_group()
         clear_pgid_file()
+        sys.stdout.write(partial)
         raise SystemExit(124)
 
     clear_pgid_file()
@@ -367,15 +410,27 @@ if [ "$lrc" -eq 124 ] || [ "$lrc" -eq 130 ]; then
   log "loom timeout after ${run_timeout}s loom_stderr=${loom_last_line:-none}"
   timeout_reason="$(reason_token)"
   timeout_exec_id="$(printf '%s\n' "$view" | awk 'NF{print; exit}')"
+  cancel_state="unavailable"
+  if cancel_loom_execution "$timeout_exec_id"; then
+    cancel_state="cancelled"
+    log "cancelled abandoned loom execution $timeout_exec_id"
+  elif [ -n "$timeout_exec_id" ]; then
+    cancel_state="failed"
+    log "could not cancel abandoned loom execution $timeout_exec_id"
+  else
+    log "could not identify the abandoned loom execution"
+  fi
   write_stamp timeout "$timeout_exec_id" "" "$key" "$timeout_reason"
   LOOM_TIMEOUT_REASON="$timeout_reason" \
     LOOM_TIMEOUT_DETAIL="${loom_last_line:-none}" \
+    LOOM_CANCEL_STATE="$cancel_state" \
     python3 -c '
 import json, os
 print(json.dumps({
     "loom": "timeout",
     "reason": os.environ["LOOM_TIMEOUT_REASON"],
     "detail": os.environ["LOOM_TIMEOUT_DETAIL"],
+    "deadline_reap": os.environ["LOOM_CANCEL_STATE"],
 }))
 '
   exit 124
