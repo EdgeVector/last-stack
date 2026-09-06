@@ -18,6 +18,14 @@ Environment overrides:
 EOF
 }
 
+# The mode positional is read first, so `--help` alone was consumed as a mode
+# and the help arm inside the flag loop below could never see it. Answer the
+# help flag before anything is consumed.
+# papercut-last-stack-kanban-file-pr-help-exits-2
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+esac
+
 mode="${1:-}"
 [ -n "$mode" ] || { usage >&2; exit 2; }
 shift

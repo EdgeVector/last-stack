@@ -40,14 +40,34 @@ set -euo pipefail
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
 export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
 
+# The full option block lives in this file's own header. Print it rather than
+# a single line: --work-class is the flag that clears an admission refusal and
+# it was only ever discoverable by grepping this script.
+# papercut-kanban-file-pr-help-hides-work-class-and-admission-refusal-names-no-remedy
+help_text() {
+  awk '
+    /^# Usage:/ { on = 1 }
+    on && !/^#/ { exit }
+    on { sub(/^# ?/, ""); print }
+  ' "$0"
+}
+
+# Asking for help is not an error. It used to reach usage(), which exits 2 on
+# stderr, so every harness recorded the discovery gesture as a tool failure.
+# papercut-last-stack-kanban-file-pr-help-exits-2
 usage() {
   printf '%s\n' \
-    "last-stack-kanban-file-pr <slug> --title TEXT --repo OWNER/NAME --north-star SLUG --milestone SLUG [options] < body.md" >&2
+    "last-stack-kanban-file-pr <slug> --title TEXT --repo OWNER/NAME --north-star SLUG --milestone SLUG [options] < body.md" \
+    "run with --help for the full option list, including --work-class" >&2
   exit 2
 }
 
+case "${1:-}" in
+  -h|--help) help_text; exit 0 ;;
+esac
+
 slug="${1:-}"
-[ -n "$slug" ] && [ "$slug" != "-h" ] && [ "$slug" != "--help" ] || usage
+[ -n "$slug" ] || usage
 shift
 
 title=""
@@ -91,7 +111,7 @@ while [ "$#" -gt 0 ]; do
     --work-class) work_class="${2:-}"; shift 2 ;;
     --admission-fixture) admission_fixture="${2:-}"; shift 2 ;;
     --dry-run) dry=1; shift ;;
-    -h|--help) usage ;;
+    -h|--help) help_text; exit 0 ;;
     *)
       printf 'unknown arg: %s\n' "$1" >&2
       usage
@@ -159,6 +179,17 @@ set +e
 admission_rc=$?
 set -e
 if [ "$admission_rc" -eq 2 ]; then
+  # The refusal is where the caller is standing, so name the escape here. The
+  # gate never blocks closeout/proof/repair/incident work, and pointing a caller
+  # at the admission preference instead invites widening the feature portfolio
+  # to land a bug fix.
+  # papercut-kanban-file-pr-help-hides-work-class-and-admission-refusal-names-no-remedy
+  # No work_class test here: exit 2 from the admission gate is reachable only
+  # for the one gated class, `feature` — every other class returns "ungated"
+  # before the record is even read. A guard on $work_class would be a branch
+  # that can never take its other side.
+  printf '%s\n' \
+    "last-stack-kanban-file-pr: if this is not new feature work, refile with --work-class repair (or closeout, proof, incident) — those classes are never gated by admission." >&2
   die "admission refused this card: '$north_star' is not an admitted feature outcome"
 elif [ "$admission_rc" -ne 0 ]; then
   die "admission record unreadable (exit $admission_rc) — not filing"

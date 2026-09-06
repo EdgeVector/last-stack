@@ -27,7 +27,7 @@
 set -u
 
 usage() {
-  cat >&2 <<'USAGE'
+  cat <<'USAGE'
 usage: last-stack-json-capture <outfile> [--] <cmd> [args...]
 
   stdout -> <outfile>          (clean JSON, safe to parse)
@@ -38,19 +38,22 @@ Exits with the wrapped command's exit status.
   last-stack-json-capture /tmp/cards.json kanban list --column todo --json
   jq -r '.cards[].slug' /tmp/cards.json
 USAGE
-  return 2
 }
 
-[ "$#" -ge 2 ] || { usage; exit 2; }
+# Asking for help is not an error, and it must be answered before the arity
+# check: `--help` is one argument, so the arity check reached first and the
+# help arm below reported the discovery gesture as a usage failure.
+# papercut-last-stack-kanban-file-pr-help-exits-2
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+esac
+
+[ "$#" -ge 2 ] || { usage >&2; exit 2; }
 
 out="$1"
 shift
 [ "${1:-}" = "--" ] && shift
-[ "$#" -ge 1 ] || { usage; exit 2; }
-
-case "$out" in
-  -h|--help) usage; exit 2 ;;
-esac
+[ "$#" -ge 1 ] || { usage >&2; exit 2; }
 
 err="$out.err"
 
