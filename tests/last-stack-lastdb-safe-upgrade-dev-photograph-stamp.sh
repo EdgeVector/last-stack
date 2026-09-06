@@ -561,6 +561,8 @@ if run_proof_case timeout timeout 1; then
   fail "proof accepted a snapshot command that exceeded its deadline"
 fi
 timeout_elapsed=$(( $(date +%s) - timeout_started ))
+# wallclock-bound-ok: 10s ceiling over a 1s deadline (10x slack); the failing
+# side is a snapshot command that never returns.
 [ "$timeout_elapsed" -lt 10 ] \
   || fail "snapshot command timeout was not bounded: ${timeout_elapsed}s"
 [ ! -e "$PROOF_CASE_RECEIPT" ] \

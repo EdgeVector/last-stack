@@ -51,11 +51,13 @@ TAIL="${FORGE_CI_LOG_TAIL:-80}"
 # still works while the login keychain is locked.
 ACTIONS_LOG_ROOT="${FORGE_ACTIONS_LOG_ROOT:-/opt/homebrew/var/forgejo/data/actions_log}"
 
+
 usage() {
   cat <<'EOF'
 Usage:
   last-stack-forge-ci-log <owner/repo> <run-number> [job-index] [attempt]
-  last-stack-forge-ci-log <owner/repo> --sha <head-sha>   # find the red run for a commit
+  last-stack-forge-ci-log <owner/repo> --run <run-number> [job-index] [attempt]
+  last-stack-forge-ci-log <owner/repo> --sha <head-sha>   # every red run for a commit
 
 Prints the plain-text log tail of a forge (Forgejo) CI job.
 
@@ -63,13 +65,17 @@ Arguments:
   <owner/repo>   e.g. EdgeVector/fold
   <run-number>   the per-repo run index shown in the run URL
                  (.../actions/runs/<run-number>) — this is `run_number` in the
-                 /api/v1/.../actions/tasks list, NOT the global task id.
+                 /api/v1/.../actions/tasks list, NOT the global task id, and
+                 NOT a pull-request number. A number that is also a live PR
+                 whose head ran elsewhere is REFUSED, with the --sha command
+                 to use instead.
+  --run <n>      force <n> through as a run number, skipping that PR check.
   [job-index]    0-based job within the run. Default: auto — dumps EVERY failing
                  job's log (and lists the jobs it found).
   [attempt]      re-run attempt. Default: 1 (first run).
 
-  --sha <sha>    instead of a run-number, resolve the newest run for <head-sha>
-                 from the tasks list and dump its failing jobs.
+  --sha <sha>    resolve EVERY run for <head-sha> and dump every failing job
+                 across all of them.
 
 Env:
   FORGE_ROOT           forge base URL (default http://localhost:3300)
@@ -106,52 +112,121 @@ TOKEN="$(last_stack_forge_token || true)"
 
 api() { curl -fsS -H "Authorization: token $TOKEN" "$ROOT/api/v1/$1"; }
 
-# ── Resolve run-number + the list of failing job indices ──────────────────────
+# ── Resolve the run(s) + the list of failing job indices ──────────────────────
 run_number=""
+run_numbers=""
 sha=""
 job_index=""
 attempt="1"
+force_run=0
 
 if [ "${1:-}" = "--sha" ]; then
   sha="${2:?--sha needs a value}"
 else
-  run_number="$1"
+  if [ "${1:-}" = "--run" ]; then
+    force_run=1
+    shift
+  fi
+  run_number="${1:-}"
   case "$run_number" in ''|*[!0-9]*) echo "run-number must be numeric (or use --sha): $run_number" >&2; exit 2 ;; esac
-  [ "${2:-}" != "" ] && job_index="$2"
-  [ "${3:-}" != "" ] && attempt="$3"
+  if [ -n "${2:-}" ]; then job_index="$2"; fi
+  if [ -n "${3:-}" ]; then attempt="$3"; fi
+fi
+
+# ── A pull-request number is not a run number ─────────────────────────────────
+# Measured recurrences: `… EdgeVector/fold 1912` and `… EdgeVector/lastgit 554`
+# each dumped a months-old SUCCEEDED run and were read as CI evidence for a
+# pull request that was failing at the time. Both numbers WERE live runs, so
+# "does this run exist?" cannot catch it. The discriminator is that the number
+# is also a live PR whose head ran under a different run number.
+# papercut-last-stack-forge-ci-log-pr-number-as-run-number
+pr_head=""
+if [ -n "$run_number" ] && [ "$force_run" -eq 0 ]; then
+  pr_json="$(api "repos/$repo/pulls/$run_number" 2>/dev/null || true)"
+  if [ -n "$pr_json" ]; then
+    pr_head="$(printf '%s' "$pr_json" | jq -r '.head.sha // empty' 2>/dev/null || true)"
+  fi
 fi
 
 # Pull the tasks list once; it maps run_number -> per-job status/name.
+# Measured 2026-09-06: this endpoint IGNORES ?limit and returns the repo's
+# complete history (fold: total_count == returned == 22366). So every run for a
+# head is already in hand — the old first-match resolver was a selection bug,
+# never a paging one, and no message here may blame truncation.
 tasks_json="$(api "repos/$repo/actions/tasks?limit=100")"
 
-if [ -n "$sha" ]; then
-  run_number="$(printf '%s' "$tasks_json" | jq -r --arg s "$sha" \
-    '[.workflow_runs[] | select(.head_sha|startswith($s))] | (.[0].run_number // empty)')"
-  [ -n "$run_number" ] || { echo "no run found for sha $sha in the last 100 tasks" >&2; exit 4; }
-  echo "resolved sha $sha -> run $run_number" >&2
+if [ -n "$pr_head" ]; then
+  run_head="$(printf '%s' "$tasks_json" | jq -r --argjson rn "$run_number" \
+    '[.workflow_runs[] | select(.run_number == $rn)] | (.[0].head_sha // empty)')"
+  if [ -n "$run_head" ] && [ "$run_head" != "$pr_head" ]; then
+    cat >&2 <<MSG
+$repo #$run_number is a live pull request, and run $run_number is a DIFFERENT
+commit ($run_head). Reading it as CI evidence for that PR is the defect this
+check exists to stop. The PR's head is $pr_head:
+
+    last-stack-forge-ci-log $repo --sha $pr_head
+
+Pass --run $run_number to read run $run_number anyway.
+MSG
+    exit 2
+  fi
 fi
 
-# Jobs of this run, in the order Forgejo assigns web job-indices (ascending id).
-# Emit "idx<TAB>status<TAB>name" so we know which indices are failing.
-jobs_tsv="$(printf '%s' "$tasks_json" | jq -r --argjson rn "$run_number" '
-  [ .workflow_runs[] | select(.run_number == $rn) ] | sort_by(.id)
-  | to_entries[] | "\(.key)\t\(.value.status)\t\(.value.name)\t\(.value.id)"')"
+# ── Resolve ALL runs for a head sha, not the first one listed ─────────────────
+# Two runs per head is the NORMAL shape in fold, which posts heavy clippy from a
+# separate workflow file with its own concurrency group. Measured 2026-09-06
+# over fold's complete task history: 4589 distinct heads, 2246 with more than
+# one run, and on 288 of them the run the old `.[0]` resolver picked contained
+# NO failing task while a red sibling existed for the same commit. A further
+# 279 heads have failing jobs in more than one run, so "prefer a failing run"
+# would have hidden a red sibling on almost as many heads as it fixed. Every
+# run for the head is dumped instead.
+# papercut-forge-ci-log-sha-selects-first-run-and-hides-failing-sibling
+if [ -n "$sha" ]; then
+  run_numbers="$(printf '%s' "$tasks_json" | jq -r --arg s "$sha" \
+    '[.workflow_runs[] | select(.head_sha|startswith($s)) | .run_number] | unique | .[]')"
+  if [ -z "$run_numbers" ]; then
+    echo "no run found for sha $sha in this repo's complete tasks list" >&2
+    exit 4
+  fi
+  echo "resolved sha $sha -> run(s) $(printf '%s' "$run_numbers" | tr '\n' ' ')" >&2
+fi
+
+# Jobs of the selected run(s), in the order Forgejo assigns web job-indices
+# (ascending id WITHIN each run). Emit "run<TAB>idx<TAB>status<TAB>name<TAB>id".
+if [ -n "$sha" ]; then
+  jobs_tsv="$(printf '%s' "$tasks_json" | jq -r --arg s "$sha" '
+    [ .workflow_runs[] | select(.head_sha|startswith($s)) ]
+    | group_by(.run_number) | sort_by(.[0].run_number)
+    | map(sort_by(.id) | to_entries
+          | map("\(.value.run_number)\t\(.key)\t\(.value.status)\t\(.value.name)\t\(.value.id)"))
+    | flatten | .[]')"
+else
+  jobs_tsv="$(printf '%s' "$tasks_json" | jq -r --argjson rn "$run_number" '
+    [ .workflow_runs[] | select(.run_number == $rn) ] | sort_by(.id)
+    | to_entries[] | "\(.value.run_number)\t\(.key)\t\(.value.status)\t\(.value.name)\t\(.value.id)"')"
+fi
 
 if [ -z "$jobs_tsv" ]; then
-  echo "no jobs found for run $run_number in the tasks list (list truncated? raise limit / pass a fresher run)" >&2
+  echo "no jobs found for run $run_number — this repo's tasks list is complete (the API ignores ?limit), so that run number does not exist here" >&2
   exit 4
 fi
 
-echo "run $run_number jobs (idx / status / name / task-id):" >&2
+echo "jobs (run / idx / status / name / task-id):" >&2
 printf '%s\n' "$jobs_tsv" | sed 's/^/  /' >&2
 
-# Decide which job indices to dump.
+# Decide which jobs to dump, as run:idx pairs.
 targets=""
 if [ -n "$job_index" ]; then
-  targets="$job_index"
+  targets="$run_number:$job_index"
 else
-  targets="$(printf '%s\n' "$jobs_tsv" | awk -F'\t' '$2=="failure"{print $1}')"
-  [ -n "$targets" ] || targets="$(printf '%s\n' "$jobs_tsv" | awk -F'\t' '{print $1}')"  # nothing failed -> dump all
+  targets="$(printf '%s\n' "$jobs_tsv" | awk -F'\t' '$3=="failure"{print $1":"$2}')"
+  if [ -z "$targets" ]; then
+    # Nothing failed in ANY run for this head. Dump the newest run only; the
+    # listing above already named every run, so no sibling is hidden.
+    newest="$(printf '%s\n' "$jobs_tsv" | awk -F'\t' '{print $1}' | sort -n | tail -1)"
+    targets="$(printf '%s\n' "$jobs_tsv" | awk -F'\t' -v r="$newest" '$1==r{print $1":"$2}')"
+  fi
 fi
 
 # ── On-disk log (no credential) ───────────────────────────────────────────────
@@ -203,10 +278,12 @@ trap '[ -n "$cookie" ] && rm -f "$cookie"' EXIT
 # ── Fetch + print each target job's log ───────────────────────────────────────
 read_ok=0
 unreadable=0
-for idx in $targets; do
-  name="$(printf '%s\n' "$jobs_tsv" | awk -F'\t' -v i="$idx" '$1==i{print $3}')"
-  task_id="$(printf '%s\n' "$jobs_tsv" | awk -F'\t' -v i="$idx" '$1==i{print $4}')"
-  web_url="$ROOT/$repo/actions/runs/$run_number/jobs/$idx/attempt/$attempt/logs"
+for target in $targets; do
+  run="${target%%:*}"
+  idx="${target##*:}"
+  name="$(printf '%s\n' "$jobs_tsv" | awk -F'\t' -v r="$run" -v i="$idx" '$1==r && $2==i{print $4}')"
+  task_id="$(printf '%s\n' "$jobs_tsv" | awk -F'\t' -v r="$run" -v i="$idx" '$1==r && $2==i{print $5}')"
+  web_url="$ROOT/$repo/actions/runs/$run/jobs/$idx/attempt/$attempt/logs"
   body=""
   source_desc=""
   if body="$(disk_log "$task_id" 2>/dev/null)"; then
@@ -219,13 +296,13 @@ for idx in $targets; do
     # file while the `skipped` job in the same run does — so a missing log is a
     # normal per-job outcome, not a reason to lose the jobs that did read.
     echo >&2
-    echo "===== job $idx  ($name, task $task_id)  —  NO LOG AVAILABLE =====" >&2
+    echo "===== run $run job $idx  ($name, task $task_id)  —  NO LOG AVAILABLE =====" >&2
     unreadable=$(( unreadable + 1 ))
     continue
   fi
   read_ok=$(( read_ok + 1 ))
   echo
-  echo "===== job $idx  ($name, task $task_id)  —  $source_desc ====="
+  echo "===== run $run job $idx  ($name, task $task_id)  —  $source_desc ====="
   if [ "$TAIL" = "0" ]; then
     printf '%s\n' "$body"
   else

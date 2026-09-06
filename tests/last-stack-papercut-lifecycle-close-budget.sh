@@ -65,6 +65,8 @@ set -e
 elapsed=$(( $(date +%s) - start ))
 
 [ "$rc" -ne 124 ] || fail "slow node: pass did not terminate inside 90s"
+# wallclock-bound-ok: 45s ceiling over a 6s --budget-seconds (7.5x slack), and
+# well under the 90s timeout the rc=124 assertion above already covers.
 [ "$elapsed" -lt 45 ] || fail "slow node: pass took ${elapsed}s against a 6s budget"
 [ -s "$tmp/slow.json" ] || fail "slow node: pass produced no JSON result"
 python3 - "$tmp/slow.json" <<'PY'
