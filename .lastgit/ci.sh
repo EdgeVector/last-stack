@@ -44,9 +44,32 @@ if [ -z "$CI_SHARD_INDEX" ]; then
   done
 
   if [ "${LAST_STACK_CI_FULL:-0}" = "1" ]; then
+    # Collect failures instead of aborting. `set -e` is active, so this loop
+    # used to stop at the FIRST red test and every later test never ran, with
+    # nothing said about the skip: the exhaustive suite gave a less complete
+    # answer than the sharded gate below, which collects per-shard failures.
+    # The unconditional `exit 0` that closed this branch was the second half of
+    # the same defect -- it was unreachable only because `set -e` fired first,
+    # so any change making the loop tolerant without deleting it would have
+    # turned "aborts early" into "reports success no matter what".
+    # papercut-last-stack-ci-full-suite-aborts-on-first-failure-and-exits-zero-20260906
+    full_failed=""
+    full_failed_count=0
+    full_ran=0
     for test_script in tests/*.sh; do
-      bash "$test_script"
+      [ -f "$test_script" ] || continue
+      echo "ci_test start: $test_script"
+      full_ran=$((full_ran + 1))
+      if ! bash "$test_script"; then
+        full_failed="${full_failed} ${test_script}"
+        full_failed_count=$((full_failed_count + 1))
+      fi
     done
+    if [ "$full_failed_count" -ne 0 ]; then
+      echo "last-stack CI full suite: ran=${full_ran} failed=${full_failed_count} scripts:${full_failed}" >&2
+      exit 1
+    fi
+    echo "ok last-stack CI full suite ran=${full_ran}"
     exit 0
   fi
 
@@ -133,6 +156,11 @@ ci_test() {
 ci_test tests/last-stack-routine-read.sh
 ci_test tests/last-stack-routine-read-proceed-on-stale.sh
 ci_test tests/last-stack-ci-sharding.sh
+# The other enumeration gap in this same file: LAST_STACK_CI_FULL=1 used to
+# abort on the first red test and close with an unconditional exit 0, so the
+# exhaustive path was both less complete than the sharded gate and one edit
+# away from a permanent false green. Behavioural, against a fixture root. <2s.
+ci_test tests/last-stack-ci-full-suite.sh
 # Reclaim safety belongs in the REQUIRED gate, not only under
 # LAST_STACK_CI_FULL=1: this covers a liveness check that once failed OPEN
 # (a sandbox denying ps/lsof made every worktree look idle) and a board parse
@@ -202,6 +230,11 @@ ci_test tests/last-stack-factory-hardening.sh
 ci_test tests/last-stack-milestone-driver-snapshot.sh
 ci_test tests/last-stack-factory-ready-buffer-activation.sh
 ci_test tests/morning-sync-live-human-gate-reconcile.sh
+# Sentry issue pagination in the morning digest. Held out of the gate until
+# 2026-09-06 because it failed printing nothing at all: it stubbed `fbrain`
+# while usage-bugs.sh calls `brain`, so the fake PATH fell through to the live
+# primary and the first assertion missed with no message. Hermetic now, ~2s.
+ci_test tests/morning-sync-usage-bugs-pagination.sh
 ci_test tests/last-stack-factory-health-backlog.sh
 ci_test tests/last-stack-factory-health-runway.sh
 ci_test tests/last-stack-factory-heal-tick.sh

@@ -100,10 +100,18 @@ after="$(wc -l <"$MOCK_LOOM_CALLS" | tr -d ' ')"
 rm -f "$state/last-stack/loom-reaper/run.lock/owner"
 rmdir "$state/last-stack/loom-reaper/run.lock"
 
+# This asserts the DEADLINE (rc 124, the SIGTERM path), not the kill escalation,
+# so it must leave the escalation window at the production default of 10s. It
+# used to override it to 1s, and the mock's own TERM handshake does not fit in
+# one second: the inner `sh -c \'trap "exit 0" TERM; while :; do sleep 1; done\'`
+# cannot run its trap until the running `sleep 1` returns. Measured 2026-09-06
+# over 8 samples on an idle host: 832, 858, 952, 953, 958, 967, 971, 1014 ms
+# against a 1000 ms budget. `timeout` then escalated to SIGKILL and the test
+# failed `deadline exit changed from 124 to 137` -- seen twice on this host
+# during a four-shard gate run.
 set +e
 HOME="$home" XDG_STATE_HOME="$state" \
 LAST_STACK_LOOM_REAPER_PASS_DEADLINE_S=1 \
-LAST_STACK_LOOM_REAPER_PASS_KILL_AFTER_S=1 \
 MOCK_LOOM_HANG=1 \
   "$ROOT/bin/last-stack-loom-reaper-run" >"$tmp/deadline.out" 2>"$tmp/deadline.err"
 deadline_rc=$?
