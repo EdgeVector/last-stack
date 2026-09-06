@@ -244,9 +244,56 @@ check_current() {
     [ "$VERBOSE" -eq 0 ] || log "ok PATH lastdbd -> $path_resolved"
   fi
 
-  "$current/lastdbd" --version >/dev/null
-  "$current/lastdb" --version >/dev/null
+  check_versions_agree "$current"
   log "ok current=$current_dir"
+}
+
+# Assert the two binaries in `current` were built from the same commit.
+#
+# This is the check's NAMED job -- CLAUDE.md describes the command as "verify
+# the shell-visible CLI and daemon binary agree" -- and until now the command
+# could not do it. It asserted only that the three shims RESOLVE into one
+# directory, which says nothing about what is inside that directory. On
+# 2026-08-01 the primary ran a CLI and a daemon 170 commits and two days apart
+# in one `current` dir; this command printed five oks. The consequence was not
+# cosmetic: `lastdb db order-log-audit` -- the detector shipped to measure a
+# known 458-molecule / 464,378-entry order-log truncation on that very node --
+# existed in the daemon and not in the installed CLI, so the damage sat
+# unmeasured and the operator got `unrecognized subcommand`.
+#
+# The two `--version` calls were already here and already discarded their
+# output. Discarding it makes them an EXECUTABILITY assertion, which is a real
+# and separate thing (it catches the `cp -a` codesigning brick), and it is not
+# an AGREEMENT assertion: two binaries 170 commits apart both execute. This
+# function keeps the executability property -- a binary that cannot run still
+# fails, now with its own message -- and adds the comparison.
+#
+# Deliberately compares the two BINARIES rather than reading `lastdb status`.
+# Status reports the running DAEMON against the CLI, which is a different
+# property with a different failure mode, and it needs the node up. This check
+# must answer during an upgrade, with no daemon serving.
+check_versions_agree() {
+  local current="$1"
+  local lastdbd_version lastdb_version
+
+  lastdbd_version="$("$current/lastdbd" --version 2>/dev/null)" \
+    || die "$current/lastdbd --version failed; the binary is present but not runnable"
+  lastdb_version="$("$current/lastdb" --version 2>/dev/null)" \
+    || die "$current/lastdb --version failed; the binary is present but not runnable"
+
+  # Each prints "<program> <version>". Compare the version field only, so the
+  # differing program names are not read as a version skew.
+  lastdbd_version="${lastdbd_version##* }"
+  lastdb_version="${lastdb_version##* }"
+
+  [ -n "$lastdbd_version" ] || die "$current/lastdbd --version printed no version"
+  [ -n "$lastdb_version" ] || die "$current/lastdb --version printed no version"
+
+  if [ "$lastdbd_version" != "$lastdb_version" ]; then
+    die "version skew inside current=$current: lastdbd is $lastdbd_version but lastdb is $lastdb_version; \
+re-run last-stack-lastdb-current set against a directory holding one build, or refresh the straggler"
+  fi
+  [ "$VERBOSE" -eq 0 ] || log "ok versions agree -> $lastdb_version"
 }
 
 cmd="${1:-}"
