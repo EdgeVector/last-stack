@@ -424,3 +424,12 @@ ci_test tests/last-stack-lastdb-safe-upgrade-dev-photograph-stamp.sh
 # node, no network.
 # APPENDED (see the shard-stability note above): ci_test shards by list position.
 ci_test tests/last-stack-portal-wt-mirror-origin-refspec.sh
+
+# New ci_test entries go at this append-only tail. A mid-list insertion
+# renumbers every later shard assignment and has reddened the full gate once
+# (papercut-last-stack-ci-sharding-contract-does-not-enforce-append-only-registration).
+# A managed command only takes effect if PATH resolves into the active tree.
+# install_artifact_links heals a PATH target only when links[] declares it, so
+# an undeclared name is never looked at: last-stack ran a 2026-07-22 portal-wt
+# for six weeks while `host-track check last-stack` printed ok. ~2s.
+ci_test tests/host-track-path-shadow.sh

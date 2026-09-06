@@ -225,9 +225,61 @@
         {
           "source": "bin/last-stack-routines-host-track-post-install",
           "target": "$HOME/.local/bin/last-stack-routines-host-track-post-install"
+        },
+        {
+          "source": "bin/last-stack-aws-cost-hygiene",
+          "target": "$HOME/.local/bin/last-stack-aws-cost-hygiene"
+        },
+        {
+          "source": "bin/last-stack-canary-loom",
+          "target": "$HOME/.local/bin/last-stack-canary-loom"
+        },
+        {
+          "source": "bin/last-stack-card-reaper-run",
+          "target": "$HOME/.local/bin/last-stack-card-reaper-run"
+        },
+        {
+          "source": "bin/last-stack-heartbeats-path",
+          "target": "$HOME/.local/bin/last-stack-heartbeats-path"
+        },
+        {
+          "source": "bin/last-stack-kanban-pickup-gate",
+          "target": "$HOME/.local/bin/last-stack-kanban-pickup-gate"
+        },
+        {
+          "source": "bin/last-stack-portal-wt",
+          "target": "$HOME/.local/bin/last-stack-portal-wt"
+        },
+        {
+          "source": "bin/last-stack-refresh-local-safe",
+          "target": "$HOME/.local/bin/last-stack-refresh-local-safe"
+        },
+        {
+          "source": "bin/last-stack-routine-job-shrink-gate",
+          "target": "$HOME/.local/bin/last-stack-routine-job-shrink-gate"
+        },
+        {
+          "source": "bin/last-stack-routine-observer-gate",
+          "target": "$HOME/.local/bin/last-stack-routine-observer-gate"
+        },
+        {
+          "source": "bin/last-stack-routine-outcome-classify",
+          "target": "$HOME/.local/bin/last-stack-routine-outcome-classify"
+        },
+        {
+          "source": "bin/last-stack-safe-activate-cli",
+          "target": "$HOME/.local/bin/last-stack-safe-activate-cli"
+        },
+        {
+          "source": "bin/last-stack-safe-upgrade-all-local",
+          "target": "$HOME/.local/bin/last-stack-safe-upgrade-all-local"
+        },
+        {
+          "source": "bin/last-stack-safe-upgrade-cli",
+          "target": "$HOME/.local/bin/last-stack-safe-upgrade-cli"
         }
       ],
-      "notes": "Gate of record is Forgejo since 2026-09-05 (brain decision-2026-09-05-factory-repos-venue-back-to-forgejo); lastdb:///last-stack is disabled. The Forge CI publish job on every push to main builds the artifact, publishes it into artifact_root and promotes stable with `lastgit artifact promote --gate forgejo` (EdgeVector/lastgit#591). track_gate_main is false on purpose: the node's ref for this repo no longer moves, and promote-to-main from a frozen LastGit tip would roll the channel back. host-track follows the stable channel head. Runtime is an immutable CI artifact that tracks gate_main (green+published main). host-track refresh promotes stable to that tip then installs. ~/.last-stack/{bin,skills,...} \u2192 artifacts/current. PATH links Class A + pickup bootstrap + Forge closeout tools (forge-api and friends) so routinesd (~/.local/bin first) never hits GC'd version pins and board-closeout can resolve Forge PRs. Never develop in the install; use a worktree. Also PATH-link last-stack-papercut-lifecycle-close, last-stack-kanban-file-pr, last-stack-kanban-decision-check, last-stack-feature-portfolio-admission, last-stack-kanban-done-when-eval, last-stack-json-capture, and last-stack-json-get so scheduled shells (routinesd PATH often ~/.local/bin-first without sourcing shell-prelude) resolve the lifecycle closer, the required Kind:pr filing helper, its settled-decision check, the two-outcome portfolio admission gate, the non-PR DONE-WHEN evaluator, and the JSON stdout/stderr capture helpers the unsafe-inline-json hook recommends.",
+      "notes": "Gate of record is Forgejo since 2026-09-05 (brain decision-2026-09-05-factory-repos-venue-back-to-forgejo); lastdb:///last-stack is disabled. The Forge CI publish job on every push to main builds the artifact, publishes it into artifact_root and promotes stable with `lastgit artifact promote --gate forgejo` (EdgeVector/lastgit#591). track_gate_main is false on purpose: the node's ref for this repo no longer moves, and promote-to-main from a frozen LastGit tip would roll the channel back. host-track follows the stable channel head. Runtime is an immutable CI artifact that tracks gate_main (green+published main). host-track refresh promotes stable to that tip then installs. ~/.last-stack/{bin,skills,...} → artifacts/current. PATH links Class A + pickup bootstrap + Forge closeout tools (forge-api and friends) so routinesd (~/.local/bin first) never hits GC'd version pins and board-closeout can resolve Forge PRs. Never develop in the install; use a worktree. Also PATH-link last-stack-papercut-lifecycle-close, last-stack-kanban-file-pr, last-stack-kanban-decision-check, last-stack-feature-portfolio-admission, last-stack-kanban-done-when-eval, last-stack-json-capture, and last-stack-json-get so scheduled shells (routinesd PATH often ~/.local/bin-first without sourcing shell-prelude) resolve the lifecycle closer, the required Kind:pr filing helper, its settled-decision check, the two-outcome portfolio admission gate, the non-PR DONE-WHEN evaluator, and the JSON stdout/stderr capture helpers the unsafe-inline-json hook recommends.",
       "safe_upgrade": {
         "post_install_phase": "after-cutover",
         "probes": [
@@ -671,7 +723,7 @@
           "target": "$HOME/.local/bin/rad-telegram"
         }
       ],
-      "notes": "Remote Agent artifact install; refresh links ra/rad/rad-telegram from the promoted LastGit artifact. track_gate_main promotes stable to green+published main \u2014 without it the channel sat on a hand-promoted pointer for 8 days and shipped a known-broken ra shim, silently killing every ra notify page.",
+      "notes": "Remote Agent artifact install; refresh links ra/rad/rad-telegram from the promoted LastGit artifact. track_gate_main promotes stable to green+published main — without it the channel sat on a hand-promoted pointer for 8 days and shipped a known-broken ra shim, silently killing every ra notify page.",
       "track_gate_main": true,
       "safe_upgrade": {
         "soak_hours": 1,
@@ -718,7 +770,7 @@
           "target": "$HOME/.local/bin/state-machine"
         }
       ],
-      "notes": "State Machine LastGit artifact install from CI-published dist/* binaries; track_gate_main promotes stable to green+published main. sm is the runner for lastdb-canary-release and lastdb-safe-upgrade, so it upgrades the primary and publishes to public brew \u2014 before this entry ~/.local/bin/sm symlinked into the workspace DEV checkout and had no freshness gate at all.",
+      "notes": "State Machine LastGit artifact install from CI-published dist/* binaries; track_gate_main promotes stable to green+published main. sm is the runner for lastdb-canary-release and lastdb-safe-upgrade, so it upgrades the primary and publishes to public brew — before this entry ~/.local/bin/sm symlinked into the workspace DEV checkout and had no freshness gate at all.",
       "track_gate_main": true,
       "safe_upgrade": {
         "soak_hours": 1,
@@ -812,7 +864,7 @@
             "timeout_s": 15
           }
         ],
-        "probe_waiver_reason": "server-only binary; post_install builds the UI and runs its smoke \u2014 no CLI read verb"
+        "probe_waiver_reason": "server-only binary; post_install builds the UI and runs its smoke — no CLI read verb"
       }
     },
     {

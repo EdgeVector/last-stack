@@ -989,9 +989,72 @@ which_cmd() {
   printf '%s\n' "$exec_path"
 }
 
+# Report managed commands that PATH does not actually resolve into this install.
+#
+# `verify_active_artifact` proves the installed tree is intact. It never asks
+# whether that tree is what a caller runs. `install_artifact_links` heals a
+# real file sitting on a PATH target, but only for targets the manifest
+# DECLARES, so a command that links[] never named is not merely unhealed — it
+# is never looked at. A checkout-era copy left in ~/.local/bin then shadows the
+# managed command forever, because ~/.local/bin precedes the install tree on
+# PATH. Measured 2026-09-06: last-stack had 43/43 declared targets healthy and
+# 13 undeclared names shadowed — 12 checkout-era real files (10 older than the
+# shipped copy) plus one symlink into an install root abandoned on 2026-08-30.
+#
+# Report; never fail. `check` gates last-stack-class-a-heal, routine-read and
+# the artifact proof. A shadow is a stale-install defect rather than a broken
+# artifact, and failing here would red three fleet paths on a latent condition.
+report_path_shadows() {
+  local app="$1" install_root="$2" sub bindir cmd name resolved dest
+  local shadows=0
+  # bin/ and dist/ are the two payload roots apps put PATH commands in
+  # (last-stack ships bin/; situations, kanban, lastseek and state-machine ship
+  # dist/; routines and lastsecrets ship both). Nested payloads such as
+  # loom/scripts and routines/dist/probes reach PATH only through a declared
+  # links[] entry, which install_artifact_links already owns and heals.
+  for sub in bin dist; do
+    bindir="$install_root/current/$sub"
+    if [ ! -d "$bindir" ]; then
+      continue
+    fi
+    for cmd in "$bindir"/*; do
+      if [ ! -f "$cmd" ] || [ ! -x "$cmd" ]; then
+        continue
+      fi
+      name="$(basename "$cmd")"
+      resolved="$(command -v "$name" 2>/dev/null || true)"
+      if [ -z "$resolved" ]; then
+        continue
+      fi
+      case "$resolved" in
+        /*) ;;
+        *) continue ;;
+      esac
+      # Healthy when PATH lands on this very file, or on a link into this
+      # install root. Check both: a link through current/ resolves to the same
+      # inode, and a payload dir placed directly on PATH has no link to read.
+      if [ "$resolved" -ef "$cmd" ]; then
+        continue
+      fi
+      dest="$(readlink "$resolved" 2>/dev/null || true)"
+      case "$dest" in
+        "$install_root"/*) continue ;;
+      esac
+      shadows=$((shadows + 1))
+      printf 'host-track: %s PATH shadow: %s runs %s, not the active tree at %s\n' \
+        "$app" "$name" "$resolved" "$cmd" >&2
+    done
+  done
+  if [ "$shadows" -gt 0 ]; then
+    printf 'host-track: %s %s managed command(s) shadowed on PATH; declare each in links[] and re-run: host-track refresh --activate %s\n' \
+      "$app" "$shadows" "$app" >&2
+  fi
+  return 0
+}
+
 check_cmd() {
   local app="${1:-}" status exec_path stale json install_mode artifact_problem
-  local exemption_kind deployment_problem
+  local exemption_kind deployment_problem shadow_install_root
   [ -n "$app" ] || die "check requires an app"
   status="$(status_json_for "$app")"
   exec_path="$(printf '%s\n' "$status" | jq -r '.exec_path // ""')"
@@ -1025,10 +1088,15 @@ check_cmd() {
       return 1
     fi
   fi
-  if [ "$install_mode" = "artifact" ] && ! verify_active_artifact "$app" "$json"; then
-    # verify_active_artifact already printed path/reason to stderr
-    printf 'host-track: %s active artifact verification failed\n' "$app" >&2
-    return 1
+  if [ "$install_mode" = "artifact" ]; then
+    if ! verify_active_artifact "$app" "$json"; then
+      # verify_active_artifact already printed path/reason to stderr
+      printf 'host-track: %s active artifact verification failed\n' "$app" >&2
+      return 1
+    fi
+    # The tree verified above is only in force if PATH resolves into it.
+    IFS=$'\t' read -r _ _ _ shadow_install_root < <(artifact_paths "$app" "$json")
+    report_path_shadows "$app" "$shadow_install_root"
   fi
   printf 'host-track: %s ok\n' "$app"
 }
