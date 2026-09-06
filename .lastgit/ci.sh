@@ -191,7 +191,6 @@ ci_test tests/last-stack-hooks-guards.sh
 ci_test tests/last-stack-json-capture.sh
 ci_test tests/last-stack-brain-append-heartbeat.sh
 ci_test tests/last-stack-obs-sentry-locator.sh
-ci_test tests/last-stack-sentry-token-fallback.sh
 # sentry-triage Step 2/3 policy. It used to be prose in the prompt, where two
 # defects (no sample-event drop, unreachable P3 rule) minted a bad card that
 # cost a pickup slot. The policy is executable now, so pin it here. <1s.
@@ -611,6 +610,10 @@ ci_test tests/last-stack-ship-pipeline-gap-snapshot.sh
 ci_test tests/last-stack-update-check.sh
 ci_test tests/last-stack-verify-skill-links.sh
 ci_test tests/machine-hygiene-empty-globs.sh
+
+# Sentry credentials must remain usable when the login keychain is locked.
+# APPENDED: ci_test shards by list position.
+ci_test tests/last-stack-sentry-token-fallback.sh
 
 # The registration guard itself. Kept last, and asserted to be registered by
 # tests/last-stack-ci-sharding.sh, so the guard cannot quietly stop running.
