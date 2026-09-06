@@ -199,6 +199,7 @@ ci_test tests/last-stack-pr-reaper-stale-open-heal.sh
 # covers removed CRs from the open inventory, so nothing downstream noticed.
 ci_test tests/last-stack-pr-reaper-close-guard.sh
 ci_test tests/last-stack-factory-hardening.sh
+ci_test tests/last-stack-milestone-driver-snapshot.sh
 ci_test tests/last-stack-factory-ready-buffer-activation.sh
 ci_test tests/morning-sync-live-human-gate-reconcile.sh
 ci_test tests/last-stack-factory-health-backlog.sh

@@ -4,6 +4,7 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 north="$root/routines/north-star-driver.md"
 milestone="$root/routines/milestone-driver.md"
+milestone_snapshot="$root/bin/last-stack-milestone-driver-snapshot"
 program="$root/routines/program-driver.md"
 
 require() {
@@ -31,11 +32,15 @@ require 'Do **not** pass `--proof-card`' "$north"
 
 require 'MILESTONE_DRIVER_TARGET' "$milestone"
 require 'Creation inventory gate' "$milestone"
-require 'kanban list --column backlog --json' "$milestone"
-require 'kanban list --column todo --json' "$milestone"
-require 'kanban list --column doing --json' "$milestone"
+require 'last-stack-milestone-driver-snapshot' "$milestone"
+require '"$kanban_bin" list --column backlog --json' "$milestone_snapshot"
+require '"$kanban_bin" list --column todo --json' "$milestone_snapshot"
+require '"$kanban_bin" list --column doing --json' "$milestone_snapshot"
+require '"$kanban_bin" milestone portfolio --json' "$milestone_snapshot"
 require "printf 'CREATION_INVENTORY backlog=%s todo=%s doing=%s nonterminal_milestones=%s" "$milestone"
-require 'Immediately before any `kanban add`' "$milestone"
+require 'Run each board mutation through the snapshot helper' "$milestone"
+require 'preflight_succeeded_epoch' "$milestone_snapshot"
+require 'error=stale-or-invalid-artifact' "$milestone_snapshot"
 require 'Targeted dispatch is an absolute selection gate' "$milestone"
 require 'Skip the portfolio-ranking procedure' "$milestone"
 require 'Targeting never relaxes blockers' "$milestone"
@@ -62,15 +67,15 @@ require '--milestone' "$milestone"
 require '--north-star' "$milestone"
 require 'unattached-outcome' "$milestone"
 
+snapshot_line="$(grep -nF 'snapshot_result=' "$milestone" | cut -d: -f1 | head -1)"
 inventory_line="$(grep -nF 'Creation inventory gate' "$milestone" | cut -d: -f1 | head -1)"
 target_line="$(grep -nF 'Targeted dispatch is an absolute selection gate' "$milestone" | cut -d: -f1)"
-portfolio_line="$(grep -nF 'kanban milestone portfolio --json' "$milestone" | cut -d: -f1)"
-if (( inventory_line >= target_line )); then
-  printf 'creation inventory must precede the targeted selection gate\n' >&2
+if (( snapshot_line >= inventory_line )); then
+  printf 'run snapshot must precede creation inventory consumption\n' >&2
   exit 1
 fi
-if (( portfolio_line >= target_line )); then
-  printf 'milestone inventory must precede the targeted selection gate\n' >&2
+if (( inventory_line >= target_line )); then
+  printf 'creation inventory must precede the targeted selection gate\n' >&2
   exit 1
 fi
 
