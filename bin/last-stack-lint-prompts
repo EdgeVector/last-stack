@@ -320,6 +320,8 @@ is not getting one (Tom 2026-08-06).
   try: brain find --match "<probe>" --match "<probe>"   # array of semantic probes
 
 For a closed set: brain get a known seed, then crawl linked_from with targeted gets.
+  (get lists linked_from as type + slug from the index — one cheap read;
+   brain backlinks <slug> adds each source's status and how it links)
 If a top-k answer genuinely will not do, state why on the line:
   brain list --type <T> --json  # census-ok: <reason>
 CENSUS_HINT
