@@ -671,4 +671,71 @@ unset LAST_STACK_LASTDB_RETRY_SCHEDULE_SEC
 unset LAST_STACK_WHATS_WRONG_LOOM_TIMEOUT_SEC
 unset RUN_COUNT_FILE
 
+# --- a failing branch must name its own cause, not just its branch label ---
+# Both exit-3 paths below used to report one word. `publish-failed` and
+# `snapshot-failed` are true and useless: the wrapper HELD the error text
+# (loom's stderr, and list_exceptions' own JSON) and dropped it, so nine hours
+# of hourly failures escalated to a generic bucket with no cause anywhere.
+cat >"$tmp/bin/loom" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  ping) echo ok; exit 0 ;;
+  publish)
+    echo 'Error: lastdb POST /api/query -> HTTP 400: "Invalid field: schema abc has no field(s): updated_at"' >&2
+    exit 1
+    ;;
+  *) echo "unexpected $*" >&2; exit 2 ;;
+esac
+SH
+chmod 755 "$tmp/bin/loom"
+export WHATS_WRONG_SNAPSHOT_FILE="$tmp/snap.json"
+export LAST_STACK_WHATS_WRONG_STAMP="$tmp/stamp-pubfail.json"
+export LOOM_WHATS_WRONG_KEY="whats-wrong-pubfail-key"
+set +e
+"$BIN" --json --no-heal >"$tmp/pubfail.out" 2>"$tmp/pubfail.err"
+pfrc=$?
+set -e
+[ "$pfrc" -eq 3 ] || fail "publish failure must exit 3, got $pfrc"
+grep -q 'has no field(s): updated_at' "$tmp/pubfail.err" \
+  || fail "publish stderr dropped the cause: $(cat "$tmp/pubfail.err")"
+python3 - "$tmp/stamp-pubfail.json" <<'PYCHK' || fail "publish stamp dropped the cause"
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+det = d.get("detail") or ""
+assert det.startswith("publish-failed"), det
+assert "has no field(s): updated_at" in det, det
+PYCHK
+
+# The snapshot branch holds its cause in a captured variable, not behind a
+# redirect, so a sweep for 2>/dev/null misses it. Same requirement.
+cat >"$tmp/bin/loom" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  ping) echo ok; exit 0 ;;
+  publish) exit 0 ;;
+  *) echo "unexpected $*" >&2; exit 2 ;;
+esac
+SH
+chmod 755 "$tmp/bin/loom"
+export WHATS_WRONG_SNAPSHOT_FILE="$tmp/no-such-snapshot.json"
+export LAST_STACK_WHATS_WRONG_STAMP="$tmp/stamp-snapfail.json"
+export LOOM_WHATS_WRONG_KEY="whats-wrong-snapfail-key"
+set +e
+"$BIN" --json --no-heal >"$tmp/snapfail.out" 2>"$tmp/snapfail.err"
+sfrc=$?
+set -e
+[ "$sfrc" -eq 3 ] || fail "snapshot failure must exit 3, got $sfrc"
+grep -q 'no-such-snapshot.json' "$tmp/snapfail.err" \
+  || fail "snapshot stderr dropped the cause: $(cat "$tmp/snapfail.err")"
+python3 - "$tmp/stamp-snapfail.json" <<'PYCHK' || fail "snapshot stamp dropped the cause"
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+det = d.get("detail") or ""
+assert det.startswith("snapshot-failed"), det
+assert "no-such-snapshot.json" in det, det
+PYCHK
+unset WHATS_WRONG_SNAPSHOT_FILE
+
 echo "ok"

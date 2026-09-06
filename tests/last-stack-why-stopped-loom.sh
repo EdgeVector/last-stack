@@ -239,4 +239,32 @@ st="$("$BIN" --status)"
 printf '%s\n' "$st" | grep -q '"reason": "loom_ping_failed"' \
   || fail "stamp did not keep the cause: $st"
 
+# --- the publish branch keeps loom's stderr, and keeps its token stable ---
+# The reason token names the BRANCH and is greppable; loom's own error text is
+# free-form and belongs on its own line. Before this, the wrapper ran
+# `loom publish ... 2>&1 >/dev/null`-style discard, so an HTTP 400 naming a
+# missing schema field reached no stream and no record.
+cat >"$tmp/bin/loom" <<'SH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  ping) echo ok; exit 0 ;;
+  publish)
+    echo 'Error: lastdb POST /api/query -> HTTP 400: "Invalid field: schema abc has no field(s): updated_at"' >&2
+    exit 1
+    ;;
+esac
+exit 0
+SH
+chmod 755 "$tmp/bin/loom"
+set +e
+pub_out="$("$BIN" --json 2>"$tmp/pub-stderr.txt")"
+pub_rc=$?
+set -e
+[ "$pub_rc" -eq 3 ] || fail "publish failure must exit 3, got $pub_rc"
+grep -q 'has no field(s): updated_at' "$tmp/pub-stderr.txt" \
+  || fail "publish stderr dropped loom's cause: $(cat "$tmp/pub-stderr.txt")"
+pub_reason="$(printf '%s\n' "$pub_out" | sed -n 's/.*"reason":"\([^"]*\)".*/\1/p' | head -1)"
+[ "$pub_reason" = "loom_publish_why_stopped_failed" ] \
+  || fail "the cause line must not leak into the reason token: $pub_reason"
+
 echo ok

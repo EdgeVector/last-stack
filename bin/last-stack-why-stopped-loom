@@ -101,6 +101,16 @@ log() {
   [ "$QUIET" -eq 1 ] || printf 'why-stopped-loom: %s\n' "$*" >&2
 }
 
+# Collapse a captured error text to one short single-line string. The publish
+# branches below discarded loom's stderr with 2>/dev/null, so a failed hour
+# reported the branch name and never the node's error.
+brief() {
+  printf '%s' "${1:-}" \
+    | tr '\n\t' '  ' \
+    | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//' \
+    | cut -c1-300
+}
+
 # A stable, greppable token for the cause, derived from the log line itself so
 # a branch added later still gets a real reason instead of a new blind spot.
 reason_token() {
@@ -159,18 +169,28 @@ if [ ! -f "${LOOM_SCRIPTS:-}/loom-why-classify.sh" ]; then
   exit 3
 fi
 
-if ! loom publish "$defs/why-stopped.json" >/dev/null 2>&1; then
-  log "loom publish why-stopped failed"
+# Publish one definition, keeping loom's stderr instead of sending it to
+# /dev/null. The branch name stays the reason token; the cause is its own line.
+publish_def() {
+  _pd_err="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack-why-stopped-publish.XXXXXX")"
+  if loom publish "$1" >/dev/null 2>"$_pd_err"; then
+    rm -f "$_pd_err"
+    return 0
+  fi
+  _pd_cause="$(brief "$(cat "$_pd_err" 2>/dev/null || true)")"
+  rm -f "$_pd_err"
+  # The cause goes out FIRST so LAST_LOG — and therefore the reason token and
+  # the stamp — keep the stable branch name. A token that absorbed free-form
+  # error text would stop being greppable, which is what it exists for.
+  log "loom publish $2 stderr: ${_pd_cause:-no error text}"
+  log "loom publish $2 failed"
   write_stamp unavailable "" "" "${LOOM_WHY_KEY:-}" "$(reason_token)"
   printf '{"loom":"unavailable","reason":"%s"}\n' "$(reason_token)"
-  exit 3
-fi
-if ! loom publish "$defs/why-stopped-probe.json" >/dev/null 2>&1; then
-  log "loom publish why-stopped-probe failed"
-  write_stamp unavailable "" "" "${LOOM_WHY_KEY:-}" "$(reason_token)"
-  printf '{"loom":"unavailable","reason":"%s"}\n' "$(reason_token)"
-  exit 3
-fi
+  return 1
+}
+
+publish_def "$defs/why-stopped.json" why-stopped || exit 3
+publish_def "$defs/why-stopped-probe.json" why-stopped-probe || exit 3
 
 if [ "$HEAL" -eq 1 ]; then
   export LOOM_WHY_HEAL=1
