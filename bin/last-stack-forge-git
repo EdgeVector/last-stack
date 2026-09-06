@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Resolve this script through symlinks so `lib/` is found in the artifact tree
+# and in a checkout alike (same convention as bin/last-stack-factory-health-install).
+self="${BASH_SOURCE[0]}"
+while [ -h "$self" ]; do
+  self_dir="$(cd -P "$(dirname "$self")" && pwd)"
+  self="$(readlink "$self")"
+  case "$self" in /*) ;; *) self="$self_dir/$self" ;; esac
+done
+self_root="$(cd -P "$(dirname "$self")/.." && pwd)"
+# shellcheck source=../lib/forge-token.sh
+. "$self_root/lib/forge-token.sh"
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -38,12 +50,9 @@ if [[ "$origin_url" != http://localhost:3300/* && "$origin_url" != http://127.0.
   exec git "${args[@]}"
 fi
 
-token="${FORGE_TOKEN:-}"
+token="$(last_stack_forge_token || true)"
 if [[ -z "$token" ]]; then
-  token="$(security find-generic-password -s forgejo-token -w 2>/dev/null || true)"
-fi
-if [[ -z "$token" ]]; then
-  echo "missing Forgejo token: set FORGE_TOKEN or store keychain item forgejo-token" >&2
+  last_stack_forge_token_missing_msg
   exit 1
 fi
 

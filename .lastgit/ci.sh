@@ -444,3 +444,12 @@ ci_test tests/host-track-path-shadow.sh
 # stamp dir and fake probes, no node, no network. ~3s.
 # APPENDED (see the shard-stability note above): ci_test shards by list position.
 ci_test tests/host-track-soak-starve-bound.sh
+
+# The forge is the gate of record for four factory repos, and every helper that
+# reaches it resolved its token from the login keychain alone. When that
+# keychain locks, `security ... -w` exits 51 SILENTLY and API, push, PR create
+# and portal fetch fail together — five routines lost a night to it. Pins the
+# resolution order and that no helper keeps a private keychain read. Hermetic:
+# stubbed `security`/`lastsecrets` on PATH, no node, no network. ~1s.
+# APPENDED (see the shard-stability note above): ci_test shards by list position.
+ci_test tests/last-stack-forge-token-fallback.sh
