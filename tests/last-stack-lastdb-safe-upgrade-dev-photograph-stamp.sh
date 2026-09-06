@@ -260,12 +260,13 @@ PROOF_CLONE="$PROOF_FIXTURE/rollback"
 PROOF_CAND="$PROOF_FIXTURE/candidate"
 PROOF_TMP_ROOT="$PROOF_FIXTURE/tmp"
 PROOF_RECEIPT_ROOT="$PROOF_FIXTURE/receipts"
+PROOF_EVIDENCE_ROOT="$PROOF_FIXTURE/state/dev-photograph-failures"
 PROOF_LOG="$PROOF_FIXTURE/proof.out"
 PROOF_PID_FILE="$PROOF_FIXTURE/candidate.pid"
 PROOF_RESIDUE_MARKER="$PROOF_FIXTURE/residue-removed"
 mkdir -p \
   "$PROOF_PRIMARY/data" "$PROOF_CLONE/data" "$PROOF_CAND" \
-  "$PROOF_TMP_ROOT" "$PROOF_RECEIPT_ROOT"
+  "$PROOF_TMP_ROOT" "$PROOF_RECEIPT_ROOT" "$PROOF_EVIDENCE_ROOT"
 printf 'identity-seed\n' >"$PROOF_PRIMARY/identity.key"
 printf 'bootstrap\n' >"$PROOF_PRIMARY/.bootstrap_done"
 printf 'production-device\n' >"$PROOF_PRIMARY/data/.device_id"
@@ -300,8 +301,20 @@ socket_path = home / "data" / "folddb.sock"
 pid_file = os.environ.get("DEV_FAKE_DAEMON_PID_FILE")
 if pid_file:
     Path(pid_file).write_text(str(os.getpid()), encoding="utf-8")
+mode = os.environ.get("DEV_FAKE_SNAPSHOT_MODE")
+if mode == "stale_pre_cas":
+    (home / "laststore_backup_manifest.json").write_text("{}\n", encoding="utf-8")
 server = socket.socket(socket.AF_UNIX)
 server.bind(str(socket_path))
+if mode in {"timeout", "stale_pre_cas"}:
+    for index in range(12):
+        print(f"daemon diagnostic line {index}", file=sys.stderr)
+    print(
+        f"post-CAS backup orphan GC active api_key=test-only-key "
+        f"device_id=fresh-dev-device object={'a' * 64} path={home}/data/private",
+        file=sys.stderr,
+        flush=True,
+    )
 
 def stop(*_args):
     server.close()
@@ -356,7 +369,27 @@ if "connect" in sys.argv:
 if "snapshot" not in sys.argv:
     raise SystemExit(42)
 mode = os.environ.get("DEV_FAKE_SNAPSHOT_MODE", "success")
+if mode == "stale_pre_cas":
+    print("authentication refused before snapshot request", file=sys.stderr, flush=True)
+    raise SystemExit(73)
 if mode == "timeout":
+    cache = home / "laststore_backup_manifest.json"
+    cache.write_text("{}\n", encoding="utf-8")
+    for index in range(12):
+        print(f"snapshot diagnostic line {index}", file=sys.stderr)
+    print(json.dumps({
+        "ok": False,
+        "user_hash": "2" * 32,
+        "report": {"manifest_sha256": "d" * 64},
+        "api_key": "test-only-key",
+        "path": str(home / "private"),
+    }), file=sys.stderr)
+    print(
+        f"snapshot waits after backup_latest_cas path={home}/private "
+        f"device_id=fresh-dev-device",
+        file=sys.stderr,
+        flush=True,
+    )
     time.sleep(30)
 if mode == "mutate_device":
     (home / "data" / ".device_id").write_text("changed-after-snapshot\n", encoding="utf-8")
@@ -429,6 +462,7 @@ export LASTDB_SAFE_UPGRADE_EXPECTED_LASTDB_SHA256
 
 run_proof_case() {
   local name="$1" mode="$2" timeout_secs="$3" safe_name proof_pid
+  local evidence_root="${4:-$PROOF_EVIDENCE_ROOT}"
   safe_name="$(printf '%s' "lx-proof-$name" | tr -c 'A-Za-z0-9._-' '_')"
   export LOOM_EXEC_ID="lx-proof-$name"
   PROOF_CASE_RECEIPT="$PROOF_RECEIPT_ROOT/${safe_name}-${LASTDB_SAFE_UPGRADE_EXPECTED_LASTDBD_SHA256:0:16}-${LASTDB_SAFE_UPGRADE_EXPECTED_LASTDB_SHA256:0:16}.receipt"
@@ -439,6 +473,9 @@ run_proof_case() {
   DEV_FAKE_SNAPSHOT_MODE="$mode" \
   LASTDB_DEV_STAMP_ROOT="$PROOF_RECEIPT_ROOT" \
   LASTDB_DEV_PHOTOGRAPH_TMP_ROOT="$PROOF_TMP_ROOT" \
+  LASTDB_DEV_PHOTOGRAPH_EVIDENCE_ROOT="$evidence_root" \
+  LASTDB_DEV_PHOTOGRAPH_EVIDENCE_TAIL_LINES=6 \
+  LASTDB_DEV_PHOTOGRAPH_EVIDENCE_TAIL_BYTES=4096 \
   LASTDB_DEV_PHOTOGRAPH_LASTSECRETS_BIN="$PROOF_CAND/lastsecrets" \
   LASTDB_DEV_PHOTOGRAPH_READY_WAITS=80 \
   LASTDB_DEV_PHOTOGRAPH_READY_SLEEP_SECS=0.05 \
@@ -455,6 +492,8 @@ run_proof_case() {
   PROOF_CASE_RC=$?
   set -e
   PROOF_CASE_OUT="$(cat "$PROOF_LOG")"
+  PROOF_CASE_EVIDENCE="$(printf '%s\n' "$PROOF_CASE_OUT" \
+    | sed -n 's/^DEV_PHOTOGRAPH_EVIDENCE: //p' | tail -1)"
   if find "$PROOF_TMP_ROOT" -mindepth 1 -print -quit | grep -q .; then
     fail "proof case $name left its owned CoW root"
   fi
@@ -471,6 +510,8 @@ run_proof_case success success 3 \
   || fail "strict top-level proof failed: $PROOF_CASE_OUT"
 printf '%s\n' "$PROOF_CASE_OUT" | grep -q 'DEV_PHOTOGRAPH: GREEN' \
   || fail "successful proof omitted its GREEN verdict"
+[ -z "$PROOF_CASE_EVIDENCE" ] \
+  || fail "successful proof wrote failure evidence"
 [ -f "$PROOF_CASE_RECEIPT" ] || fail "successful proof omitted its receipt"
 [ -f "$PROOF_RESIDUE_MARKER" ] || fail "hidden cloud residue reached DEV connect"
 assert_dev_photograph_stamp_ok "$PROOF_CASE_RECEIPT" "$PROOF_PRIMARY" \
@@ -494,6 +535,27 @@ for bad_mode in \
     || fail "invalid snapshot mode $bad_mode wrote a receipt"
 done
 
+if run_proof_case stale stale_pre_cas 3; then
+  fail "proof accepted a pre-CAS snapshot failure with an existing manifest cache"
+fi
+[ ! -e "$PROOF_CASE_RECEIPT" ] \
+  || fail "pre-CAS snapshot failure wrote a receipt"
+[ -n "$PROOF_CASE_EVIDENCE" ] && [ -d "$PROOF_CASE_EVIDENCE" ] \
+  || fail "pre-CAS snapshot failure left no durable evidence: $PROOF_CASE_OUT"
+stale_summary="$PROOF_CASE_EVIDENCE/summary.txt"
+stale_daemon_tail="$PROOF_CASE_EVIDENCE/daemon.tail.log"
+stale_snapshot_tail="$PROOF_CASE_EVIDENCE/snapshot.tail.log"
+grep -q '^DEV_PHOTOGRAPH_FAILURE phase=snapshot_command attempt=1/1 timeout_secs=3 snapshot_rc=73$' \
+  "$stale_summary" \
+  || fail "existing cache falsely changed the pre-CAS failure phase"
+grep -q '^DEV_PHOTOGRAPH_OBSERVED manifest_cache_present_before=true manifest_cache_present_after=true$' \
+  "$stale_summary" \
+  || fail "pre-CAS evidence omitted the separate cache observations"
+grep -q 'post-CAS backup orphan GC active' "$stale_daemon_tail" \
+  || fail "the regression fixture omitted its uncorrelated daemon text"
+grep -q 'authentication refused before snapshot request' "$stale_snapshot_tail" \
+  || fail "pre-CAS evidence omitted the current snapshot failure"
+
 timeout_started="$(date +%s)"
 if run_proof_case timeout timeout 1; then
   fail "proof accepted a snapshot command that exceeded its deadline"
@@ -503,6 +565,59 @@ timeout_elapsed=$(( $(date +%s) - timeout_started ))
   || fail "snapshot command timeout was not bounded: ${timeout_elapsed}s"
 [ ! -e "$PROOF_CASE_RECEIPT" ] \
   || fail "timed-out snapshot wrote a receipt"
+[ -n "$PROOF_CASE_EVIDENCE" ] && [ -d "$PROOF_CASE_EVIDENCE" ] \
+  || fail "timed-out snapshot left no durable evidence bundle: $PROOF_CASE_OUT"
+summary="$PROOF_CASE_EVIDENCE/summary.txt"
+daemon_tail="$PROOF_CASE_EVIDENCE/daemon.tail.log"
+snapshot_tail="$PROOF_CASE_EVIDENCE/snapshot.tail.log"
+for evidence_file in "$summary" "$daemon_tail" "$snapshot_tail"; do
+  [ -f "$evidence_file" ] && [ ! -L "$evidence_file" ] \
+    || fail "failure evidence file is absent or unsafe: $evidence_file"
+  [ "$(_dev_stamp_file_mode "$evidence_file")" = 600 ] \
+    || fail "failure evidence file is not owner-only: $evidence_file"
+done
+grep -q '^DEV_PHOTOGRAPH_FAILURE phase=snapshot_command attempt=1/1 timeout_secs=1 snapshot_rc=124$' \
+  "$summary" || fail "timeout evidence omitted the exact phase and budget"
+grep -q '^DEV_PHOTOGRAPH_OBSERVED manifest_cache_present_before=false manifest_cache_present_after=true$' \
+  "$summary" || fail "timeout evidence omitted the separate cache observations"
+printf '%s\n' "$PROOF_CASE_OUT" \
+  | grep -q '^DEV_PHOTOGRAPH_FAILURE phase=snapshot_command attempt=1/1 timeout_secs=1 snapshot_rc=124$' \
+  || fail "timeout output omitted the exact phase and budget"
+grep -q 'post-CAS backup orphan GC active' "$daemon_tail" \
+  || fail "daemon evidence omitted its observed post-CAS text"
+grep -q '<redacted-snapshot-envelope>' "$snapshot_tail" \
+  || fail "snapshot evidence did not suppress the raw envelope"
+grep -q 'snapshot waits after backup_latest_cas' "$snapshot_tail" \
+  || fail "snapshot evidence omitted its bounded diagnostic tail"
+[ "$(wc -l <"$daemon_tail" | tr -d ' ')" -le 7 ] \
+  && [ "$(wc -l <"$snapshot_tail" | tr -d ' ')" -le 7 ] \
+  || fail "failure evidence exceeded the configured six-line tail bound"
+if grep -ERq \
+    'test-only-key|fresh-dev-device|22222222222222222222222222222222|dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd' \
+    "$PROOF_CASE_EVIDENCE" \
+    || grep -Fq "$PROOF_TMP_ROOT" "$summary" "$daemon_tail" "$snapshot_tail" \
+    || printf '%s\n' "$PROOF_CASE_OUT" | grep -Eq \
+      'test-only-key|fresh-dev-device|22222222222222222222222222222222|dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'; then
+  fail "failure evidence exposed a secret, digest, device ID, or full CoW path"
+fi
+
+evidence_blocker="$PROOF_FIXTURE/evidence-root-is-a-file"
+printf 'not a directory\n' >"$evidence_blocker"
+if run_proof_case noev timeout 1 "$evidence_blocker"; then
+  fail "proof passed after its photograph and evidence copy both failed"
+fi
+printf '%s\n' "$PROOF_CASE_OUT" \
+  | grep -q '^DEV_PHOTOGRAPH_FAILURE phase=snapshot_command attempt=1/1 timeout_secs=1 snapshot_rc=124$' \
+  || fail "evidence-copy failure omitted the exact phase and budget: $PROOF_CASE_OUT"
+printf '%s\n' "$PROOF_CASE_OUT" \
+  | grep -q '^DEV_PHOTOGRAPH_EVIDENCE: unavailable$' \
+  || fail "evidence-copy failure did not report the fail-closed state: $PROOF_CASE_OUT"
+[ ! -e "$PROOF_CASE_RECEIPT" ] \
+  || fail "evidence-copy failure wrote a receipt"
+if printf '%s\n' "$PROOF_CASE_OUT" | grep -Eq \
+    'test-only-key|fresh-dev-device|22222222222222222222222222222222|dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'; then
+  fail "evidence-copy failure exposed raw proof data"
+fi
 
 grep -q 'safe-upgrade-v6-<digest>' "$SKILL_MD" \
   || fail "SKILL.md does not state the exact execution-key tuple"

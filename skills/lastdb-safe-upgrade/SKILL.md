@@ -264,6 +264,18 @@ proxy is optional later for near-zero client impact.
     (`LASTDB_PROBE_DEV_STAMP_SKIP=1`) needs Tom's clearance. Brain:
     `preference-lastdb-upgrade-ephemeral-probe-first`,
     `sop-lastdb-safe-upgrade`.
+
+    On RED, the helper writes an owner-only evidence bundle under
+    `~/.local/state/last-stack/lastdb-safe-upgrade/dev-photograph-failures/`.
+    The bundle states the control-flow phase, attempt, timeout, and snapshot
+    exit code. It records manifest-cache presence as an observation, never as
+    proof that the current attempt passed CAS. It also stores a bounded,
+    sanitized daemon tail and the final snapshot-attempt stderr tail. Daemon
+    text can include continuous-publisher or earlier-attempt events, so it does
+    not change the reported phase. The helper removes raw logs with the CoW.
+    It never stores the raw snapshot envelope, credentials, device IDs, user
+    hashes, object digests, or full CoW paths. The driver prints the helper's
+    sanitized failure output before its final RED verdict.
 14. **LaunchAgent config parity:** sidebin cutover uses `bootout` then
     `bootstrap` so the plist job definition is re-read. It falls back to
     `kickstart -k` only when those launchctl verbs are unavailable. After the
