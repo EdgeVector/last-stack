@@ -558,7 +558,7 @@ status_json_for() {
   local deployment_version deployment_head deployment_peer_version deployment_peer_head
   local deployment_pair_match deployment_problem behind_by distance deployment_expanded
   local main_unpublished freshness soak_state soak_checks soak_min post_flip_ticks_left
-  local soak_elapsed_secs soak_need_secs
+  local soak_elapsed_secs soak_need_secs soak_abandoned
 
   json="$(require_app_json "$app")"
   kind="$(field "$json" kind)"
@@ -593,6 +593,7 @@ status_json_for() {
   soak_min="null"
   soak_elapsed_secs="null"
   soak_need_secs="null"
+  soak_abandoned="null"
   post_flip_ticks_left="null"
   deployment_version=""
   deployment_head=""
@@ -644,6 +645,8 @@ status_json_for() {
       [[ "$soak_checks" =~ ^[0-9]+$ ]] || soak_checks="null"
       soak_min="$(min_checks_for "$json")"
       [[ "$soak_min" =~ ^[0-9]+$ ]] || soak_min="null"
+      soak_abandoned="$(jq -r '.abandoned_consecutive // 0' "$(soak_stamp_path "$app")" 2>/dev/null || true)"
+      [[ "$soak_abandoned" =~ ^[0-9]+$ ]] || soak_abandoned="null"
       # The wall clock is the BINDING half of the gate soak_watch_one applies:
       #
       #   if [ "$elapsed" -lt "$need" ] || [ "$checks" -lt "$min_checks" ]
@@ -661,6 +664,10 @@ status_json_for() {
       # carries a fresh clock. Rendering it would print `soak_red:1/3:0s/3600s`
       # -- a countdown, on the one state that never flips. Report the window
       # only where a window is what the reader is waiting on.
+      #
+      # `abandoned_consecutive` names the starvation class that soft_stale alone
+      # cannot: a healthy soak and a clock that keeps resetting look identical
+      # without it.
       if [ "$soak_state" = soaking ]; then
         soak_elapsed_secs="$(soak_elapsed_secs_for "$app")"
         [[ "$soak_elapsed_secs" =~ ^[0-9]+$ ]] || soak_elapsed_secs="null"
@@ -835,6 +842,7 @@ status_json_for() {
     --argjson soak_min_checks "$soak_min" \
     --argjson soak_elapsed_secs "$soak_elapsed_secs" \
     --argjson soak_need_secs "$soak_need_secs" \
+    --argjson soak_abandoned "$soak_abandoned" \
     --argjson post_flip_ticks_left "$post_flip_ticks_left" \
     --argjson artifact_exemption "$artifact_exemption_json" \
     --argjson stale "$stale" \
@@ -869,6 +877,7 @@ status_json_for() {
       soak_min_checks: $soak_min_checks,
       soak_elapsed_secs: $soak_elapsed_secs,
       soak_need_secs: $soak_need_secs,
+      soak_abandoned: $soak_abandoned,
       post_flip_ticks_left: $post_flip_ticks_left,
       stamp: $stamp,
       refresh: ($refresh | select(length > 0) // null),
@@ -906,7 +915,7 @@ status_plain_for() {
       "stale=" + (.stale | tostring),
       "main_unpublished=" + ((.main_unpublished // false) | tostring),
       "freshness=" + (.freshness // "-"),
-      "soak=" + (if .soak_state then .soak_state + ":" + ((.soak_checks // 0) | tostring) + "/" + ((.soak_min_checks // 0) | tostring) + (if .soak_need_secs then ":" + ((.soak_elapsed_secs // 0) | tostring) + "s/" + (.soak_need_secs | tostring) + "s" else "" end) else "-" end),
+      "soak=" + (if .soak_state then .soak_state + ":" + ((.soak_checks // 0) | tostring) + "/" + ((.soak_min_checks // 0) | tostring) + (if .soak_need_secs then ":" + ((.soak_elapsed_secs // 0) | tostring) + "s/" + (.soak_need_secs | tostring) + "s" else "" end) + (if (.soak_abandoned // 0) > 0 then ":abandoned=" + (.soak_abandoned | tostring) else "" end) else "-" end),
       "post_flip=" + ((.post_flip_ticks_left // "-") | tostring),
       "notes=" + .notes
     ] | @tsv'
@@ -1933,6 +1942,26 @@ min_checks_for() {
   safe_upgrade_setting "$1" min_checks 1
 }
 
+# Bound soak starvation on a fast-merging channel (card
+# host-track-soak-must-not-starve-a-fast-merging-app-20260906). After this many
+# consecutive mid-soak canary replacements, soak-watch may activate the newest
+# green canary once min_checks is met — even if the wall clock was reset. Default
+# 3 keeps a single ordinary replace on the full window. Set 0 to disable.
+soak_starve_after_abandons() {
+  local n="${HOST_TRACK_SOAK_STARVE_AFTER_ABANDONS:-3}"
+  case "$n" in ''|*[!0-9]*) n=3 ;; esac
+  printf '%s\n' "$n"
+}
+
+# Optional second bound: when the installed source_oid is this many published
+# channel tips behind the soaking canary's source_oid (commit distance), allow
+# the same early activate. Default 0 = off (abandon count is the primary bound).
+soak_starve_behind_merges() {
+  local n="${HOST_TRACK_SOAK_STARVE_BEHIND_MERGES:-0}"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  printf '%s\n' "$n"
+}
+
 # The two halves of the soak gate, computed exactly as `soak_watch_one` applies
 # them, so `host-track status` cannot report a different window than the flip
 # uses. Both print nothing when the stamp is missing or malformed; the caller
@@ -2003,7 +2032,9 @@ write_post_flip_stamp() {
 }
 
 write_soak_stamp() {
+  # Args: app digest status soak_h [checks] [started] [card_slug] [abandoned] [source_oid]
   local app="$1" digest="$2" status="$3" soak_h="$4" checks="${5:-1}" started="${6:-}" card_slug="${7:-}"
+  local abandoned="${8:-}" source_oid="${9:-}"
   local now path
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   path="$(soak_stamp_path "$app")"
@@ -2014,30 +2045,110 @@ write_soak_stamp() {
   if [ -z "$card_slug" ] && [ -f "$path" ]; then
     card_slug="$(jq -r '.card_slug // empty' "$path")"
   fi
+  if [ -z "$abandoned" ] && [ -f "$path" ]; then
+    abandoned="$(jq -r '.abandoned_consecutive // 0' "$path")"
+  fi
+  case "$abandoned" in ''|*[!0-9]*) abandoned=0 ;; esac
+  if [ -z "$source_oid" ] && [ -f "$path" ]; then
+    source_oid="$(jq -r '.source_oid // empty' "$path")"
+  fi
   jq -n \
     --arg app "$app" --arg digest "$digest" --arg status "$status" \
     --arg now "$now" --argjson soak "$soak_h" --argjson checks "$checks" \
     --argjson started "$started" --arg card "$card_slug" \
+    --argjson abandoned "$abandoned" --arg source_oid "$source_oid" \
     '{app:$app, digest:$digest, status:$status, soak_hours:$soak,
       started_epoch:$started, last_check_at:$now, checks:$checks,
+      abandoned_consecutive:$abandoned,
+      source_oid: (if $source_oid == "" then null else $source_oid end),
       card_slug: (if $card == "" then null else $card end)}' \
     > "$path"
 }
 
+# A carried soak clock must never certify bytes that have not run. Carrying the
+# full window across a channel tip lets a canary parked one second ago activate
+# on its first tick, which removes the soak for exactly the fast-merging apps
+# the bound exists for. When credit is carried, cap the carried elapsed at
+# `window - floor` so the replacing canary still soaks at least this long.
+# Default 600s. A window shorter than the floor carries nothing.
+soak_carry_floor_secs() {
+  local n="${HOST_TRACK_SOAK_CARRY_FLOOR_SECS:-600}"
+  case "$n" in ''|*[!0-9]*) n=600 ;; esac
+  printf '%s\n' "$n"
+}
+
+# True when replacing a soaking canary with a newer channel tip is safe to
+# credit as a fast-forward of the runtime under soak: both tips name a
+# source_oid and they are not a red→green incident reset. Channel tips only
+# move forward on publish, so a soaking→soaking digest change with distinct
+# non-empty source_oids is the ordinary fast-merge case this bound exists for.
+soak_carry_credit_ok() {
+  local prior_status="$1" prior_oid="$2" new_oid="$3"
+  [ "$prior_status" = "soaking" ] || return 1
+  [ -n "$prior_oid" ] && [ -n "$new_oid" ] || return 1
+  [ "$prior_oid" != "$new_oid" ] || return 1
+  return 0
+}
+
 park_canary() {
-  local app="$1" install_root="$2" digest="$3" soak_h="$4"
-  local stamp started checks
+  local app="$1" install_root="$2" digest="$3" soak_h="$4" source_oid="${5:-}"
+  local stamp started checks prior_digest prior_status prior_oid abandoned carry_msg
+  local card_slug hist prior_started prior_checks
+  local carry_now carry_need carry_cap carried
   atomic_symlink "versions/$digest" "$install_root/canary"
   stamp="$(soak_stamp_path "$app")"
   started=""
   checks=1
-  if [ -f "$stamp" ] && [ "$(jq -r '.digest // empty' "$stamp")" = "$digest" ]; then
-    started="$(jq -r '.started_epoch // empty' "$stamp")"
-    checks="$(jq -r '.checks // 1' "$stamp")"
+  abandoned=0
+  card_slug=""
+  carry_msg=""
+  if [ -f "$stamp" ]; then
+    prior_digest="$(jq -r '.digest // empty' "$stamp")"
+    prior_status="$(jq -r '.status // empty' "$stamp")"
+    prior_oid="$(jq -r '.source_oid // empty' "$stamp")"
+    prior_started="$(jq -r '.started_epoch // empty' "$stamp")"
+    prior_checks="$(jq -r '.checks // 1' "$stamp")"
+    card_slug="$(jq -r '.card_slug // empty' "$stamp")"
+    abandoned="$(jq -r '.abandoned_consecutive // 0' "$stamp")"
+    case "$abandoned" in ''|*[!0-9]*) abandoned=0 ;; esac
+    if [ "$prior_digest" = "$digest" ]; then
+      started="$prior_started"
+      checks="$prior_checks"
+    else
+      # Mid-soak replacement: archive the abandoned window, then either carry
+      # the clock (fast-forward channel tip) or restart it — but always count
+      # the abandon so starvation stays bounded.
+      archive_soak_stamp "$app" "abandoned"
+      abandoned=$((abandoned + 1))
+      if soak_carry_credit_ok "$prior_status" "$prior_oid" "$source_oid"; then
+        # Carry the clock, but never all of it. The replacing canary is NEW
+        # bytes: an unclamped carry hands them a window that elapsed on the
+        # prior digest, and they activate on their first tick with no exposure
+        # of their own. Cap the carried elapsed at `need - floor`, and make the
+        # new canary earn its own min_checks green probes.
+        carry_now="$(date +%s)"
+        carry_need="$(awk -v h="$soak_h" 'BEGIN { printf "%d", (h+0)*3600 }')"
+        carry_cap=$(( carry_need - $(soak_carry_floor_secs) ))
+        [ "$carry_cap" -ge 0 ] || carry_cap=0
+        case "$prior_started" in
+          ''|*[!0-9]*) carried=0 ;;
+          *) carried=$(( carry_now - prior_started )) ;;
+        esac
+        [ "$carried" -ge 0 ] || carried=0
+        [ "$carried" -le "$carry_cap" ] || carried="$carry_cap"
+        started=$(( carry_now - carried ))
+        checks=1
+        carry_msg=" (carried ${carried}s of soak credit from ${prior_digest:0:12}; abandoned=$abandoned)"
+      else
+        started=""
+        checks=1
+        carry_msg=" (soak clock reset; abandoned=$abandoned)"
+      fi
+    fi
   fi
-  write_soak_stamp "$app" "$digest" "soaking" "$soak_h" "$checks" "$started"
-  printf 'host-track: %s canary parked at versions/%s; soak %sh; current unchanged\n' \
-    "$app" "$digest" "$soak_h" >&2
+  write_soak_stamp "$app" "$digest" "soaking" "$soak_h" "$checks" "$started" "$card_slug" "$abandoned" "$source_oid"
+  printf 'host-track: %s canary parked at versions/%s; soak %sh; current unchanged%s\n' \
+    "$app" "$digest" "$soak_h" "$carry_msg" >&2
 }
 
 soak_red_repo() {
@@ -2396,7 +2507,8 @@ artifact_install_app() {
   # Canary soak: last-known-good stays on PATH. soak-watch promotes later.
   if should_soak "$json" "$install_root" "$digest" "$activate_now"; then
     soak_h="$(soak_hours_for "$json")"
-    park_canary "$app" "$install_root" "$digest" "$soak_h"
+    park_canary "$app" "$install_root" "$digest" "$soak_h" \
+      "$(printf '%s\n' "$manifest" | jq -r '.source_oid // empty')"
     finish_artifact_install_lock "$reuse_install_lock"
     return 0
   fi
@@ -2885,7 +2997,7 @@ validate_registry_cmd() {
 
 soak_watch_one() {
   local app="$1" json install_root canary_rel canary_dir digest soak_h min_checks stamp checks started now elapsed need current_dir probe_rc probe_log activation_rc
-  local active_target install_stamp_digest soak_stamp_digest
+  local active_target install_stamp_digest soak_stamp_digest abandoned source_oid starve_after window_ready starve_ready
   json="$(require_app_json "$app")"
   [ "$(setting "$json" install_mode)" = "artifact" ] || return 0
   IFS=$'\t' read -r _ _ _ install_root < <(artifact_paths "$app" "$json")
@@ -2968,29 +3080,56 @@ soak_watch_one() {
   stamp="$(soak_stamp_path "$app")"
   started="$(date +%s)"
   checks=1
+  abandoned=0
+  source_oid=""
   if [ -f "$stamp" ]; then
     started="$(jq -r '.started_epoch // empty' "$stamp")"
     [ -n "$started" ] || started="$(date +%s)"
     checks="$(jq -r '.checks // 0' "$stamp")"
     checks=$((checks + 1))
+    abandoned="$(jq -r '.abandoned_consecutive // 0' "$stamp")"
+    case "$abandoned" in ''|*[!0-9]*) abandoned=0 ;; esac
+    source_oid="$(jq -r '.source_oid // empty' "$stamp")"
   fi
   soak_h="$(soak_hours_for "$json")"
   min_checks="$(min_checks_for "$json")"
+  starve_after="$(soak_starve_after_abandons)"
   now="$(date +%s)"
   elapsed=$((now - started))
   need="$(awk -v h="$soak_h" 'BEGIN { printf "%d", (h+0)*3600 }')"
-  # The gate counts as well as waits: a canary that sat out the window with
-  # soak-watch down must not flip on its first and only green check.
-  if [ "$elapsed" -lt "$need" ] || [ "$checks" -lt "$min_checks" ]; then
-    write_soak_stamp "$app" "$digest" "soaking" "$soak_h" "$checks" "$started"
-    printf 'host-track: %s soak pending elapsed=%ss need=%ss checks=%s/%s\n' \
-      "$app" "$elapsed" "$need" "$checks" "$min_checks"
+  # Normal gate: window elapsed AND enough green checks.
+  # Starve bound: after N consecutive mid-soak replacements, min_checks alone
+  # is enough — the wall clock was reset by the channel, not by a bad canary.
+  window_ready=0
+  if [ "$elapsed" -ge "$need" ] && [ "$checks" -ge "$min_checks" ]; then
+    window_ready=1
+  fi
+  starve_ready=0
+  if [ "$starve_after" -gt 0 ] \
+    && [ "$abandoned" -ge "$starve_after" ] \
+    && [ "$checks" -ge "$min_checks" ]; then
+    starve_ready=1
+  fi
+  if [ "$window_ready" -eq 0 ] && [ "$starve_ready" -eq 0 ]; then
+    write_soak_stamp "$app" "$digest" "soaking" "$soak_h" "$checks" "$started" "" "$abandoned" "$source_oid"
+    if [ "$starve_after" -gt 0 ] && [ "$abandoned" -gt 0 ]; then
+      printf 'host-track: %s soak pending elapsed=%ss need=%ss checks=%s/%s abandoned=%s/%s\n' \
+        "$app" "$elapsed" "$need" "$checks" "$min_checks" "$abandoned" "$starve_after"
+    else
+      printf 'host-track: %s soak pending elapsed=%ss need=%ss checks=%s/%s\n' \
+        "$app" "$elapsed" "$need" "$checks" "$min_checks"
+    fi
     release_install_lock
     trap - EXIT
     return 0
   fi
-  printf 'host-track: %s soak GREEN after %ss (checks=%s/%s); activating\n' \
-    "$app" "$elapsed" "$checks" "$min_checks" >&2
+  if [ "$starve_ready" -eq 1 ] && [ "$window_ready" -eq 0 ]; then
+    printf 'host-track: %s soak STARVE-BOUND after %s abandons (checks=%s/%s elapsed=%ss<%ss); activating\n' \
+      "$app" "$abandoned" "$checks" "$min_checks" "$elapsed" "$need" >&2
+  else
+    printf 'host-track: %s soak GREEN after %ss (checks=%s/%s); activating\n' \
+      "$app" "$elapsed" "$checks" "$min_checks" >&2
+  fi
   activation_rc=0
   if artifact_install_app "$app" "" 0 1 "$digest" 1; then
     active_target="$(readlink "$install_root/current" 2>/dev/null || true)"

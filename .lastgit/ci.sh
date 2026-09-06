@@ -434,3 +434,13 @@ ci_test tests/last-stack-portal-wt-mirror-origin-refspec.sh
 # an undeclared name is never looked at: last-stack ran a 2026-07-22 portal-wt
 # for six weeks while `host-track check last-stack` printed ok. ~2s.
 ci_test tests/host-track-path-shadow.sh
+
+# A soak must DELAY an install, never prevent it: a channel merging faster than
+# the window used to reset started_epoch forever, so the app never installed.
+# The bound activates the newest green canary after N abandoned windows. The
+# same test pins the other direction — carried soak credit is capped at
+# `window - floor`, so a canary parked one second ago can never inherit a
+# finished window and activate with no exposure of its own. Hermetic: temp
+# stamp dir and fake probes, no node, no network. ~3s.
+# APPENDED (see the shard-stability note above): ci_test shards by list position.
+ci_test tests/host-track-soak-starve-bound.sh
