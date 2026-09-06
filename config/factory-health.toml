@@ -71,7 +71,36 @@ enabled = true
 soft_count = 25
 hard_count = 50
 # Also alert if todo is empty while baseline ship rate was healthy (starvation).
+# This no longer waits for doing to reach zero: an empty queue is worth saying
+# while the last cards are still in flight, because that is the only moment a
+# refill can still keep the lanes busy.
 empty_todo_with_baseline = true
+
+# ── Supply runway ─────────────────────────────────────────────────────────
+# The counts above catch a pile-up. They cannot catch the opposite failure,
+# because depth without a rate says nothing: nine ready cards is eight hours of
+# runway at 1 ship/hour and ninety minutes at 6. No constant is right for both.
+#
+# Measured 2026-09-06T03:21Z: `ready=9 todo=9 doing=3 ships_h=6`, and
+# factory-health reported `factory=up` with no todo alert of any kind. The
+# refill controller arms only below three ready cards and is capped at one card
+# per 30-minute cooldown — about 2/hour against a 6/hour drain — so `ready=3` is
+# one cooldown from empty and the refill lands at a third of the drain rate.
+# The band between "the controller has not armed yet" and "the queue is empty"
+# had no instrument in it.
+#
+# Reads pickup_ready, not todo: a todo card the lanes cannot claim is not
+# supply, and pickup_ready is the number the controller and the lanes both act
+# on. Falls back to todo when the board CLI reports no ready count. Stays silent
+# below ship_rate.min_baseline_mean — an idle factory has no runway problem,
+# only an idle one, and ship_rate_* already owns that.
+runway_enabled = true
+runway_soft_hours = 2.0
+runway_hard_hours = 1.0
+# Soft waits for two consecutive observations so one busy hour cannot page.
+# Hard does not wait: under an hour of runway is urgent on a single reading.
+runway_soft_streak = 2
+runway_hard_streak = 1
 
 # ── Pickup-ready buffer ───────────────────────────────────────────────────
 # The 30-minute controller acts below three ready cards. Alert only after the

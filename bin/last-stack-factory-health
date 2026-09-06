@@ -959,11 +959,87 @@ def evaluate(cfg: dict[str, Any], snap: Snapshot, meta: dict[str, Any], state: d
                     recommendations=["Check pickup capacity and blocked/human-gated cards."],
                 )
             )
+        min_rate = float(cfg_get(cfg, "ship_rate", "min_baseline_mean", 1.0))
+
+        # Supply runway. Depth alone cannot say how long the queue lasts: nine
+        # cards is eight hours at 1 ship/h and ninety minutes at 6, so no
+        # constant count is correct for both. Divide the claimable supply by
+        # the rate that is actually draining it.
+        #
+        # Prefer pickup_ready over todo. A todo card the lanes cannot claim is
+        # not supply, and pickup_ready is the number the lanes really consume.
+        if cfg_get(cfg, "todo", "runway_enabled", True):
+            soft_h = float(cfg_get(cfg, "todo", "runway_soft_hours", 2.0))
+            hard_h = float(cfg_get(cfg, "todo", "runway_hard_hours", 1.0))
+            soft_streak = int(cfg_get(cfg, "todo", "runway_soft_streak", 2))
+            hard_streak = int(cfg_get(cfg, "todo", "runway_hard_streak", 1))
+            supply = snap.pickup_ready if snap.pickup_ready >= 0 else snap.todo
+            supply_name = "ready" if snap.pickup_ready >= 0 else "todo"
+            # The last completed hour tracks the drain happening now; the 24h
+            # mean is the fallback when the hourly bucket is not populated yet.
+            rate = snap.ships_last_h or snap.ships_per_hour_24h
+            # An idle factory has no runway problem, only an idle one, and
+            # ship_rate_* already owns that. Stay quiet below the baseline.
+            live = supply > 0 and rate >= min_rate
+            runway_h = (supply / rate) if live and rate > 0 else None
+
+            for key, bound, sev, need in (
+                ("todo_runway_hard", hard_h, "hard", hard_streak),
+                ("todo_runway_soft", soft_h, "soft", soft_streak),
+            ):
+                if runway_h is not None and runway_h < bound:
+                    streaks[key] = int(streaks.get(key) or 0) + 1
+                else:
+                    streaks[key] = 0
+
+            recs = [
+                "Refill supply now: run last-stack-papercut-reconciler, "
+                "last-stack-groom-board, or last-stack-milestone-driver.",
+                "Backlog depth is not supply — check `kanban pickup status` "
+                "for deferred holds whose condition is already met.",
+                "A producer routine that bailed reports outcome=noop, so read "
+                "its detail line, not just its outcome "
+                "(papercut-routine-outcome-vocabulary-has-no-deferred-value).",
+            ]
+            if runway_h is not None and runway_h < hard_h and int(
+                streaks.get("todo_runway_hard") or 0
+            ) >= hard_streak:
+                alerts.append(
+                    Alert(
+                        severity="hard",
+                        code="todo_runway_hard",
+                        title="Supply runs out within the hour",
+                        detail=(
+                            f"{supply_name}={supply:.0f} draining at {rate:.2f}/h "
+                            f"→ runway≈{runway_h:.1f}h (hard<{hard_h:.1f}h)"
+                        ),
+                        recommendations=recs,
+                    )
+                )
+            elif runway_h is not None and runway_h < soft_h and int(
+                streaks.get("todo_runway_soft") or 0
+            ) >= soft_streak:
+                alerts.append(
+                    Alert(
+                        severity="soft",
+                        code="todo_runway_soft",
+                        title="Supply runway short",
+                        detail=(
+                            f"{supply_name}={supply:.0f} draining at {rate:.2f}/h "
+                            f"→ runway≈{runway_h:.1f}h (soft<{soft_h:.1f}h); "
+                            f"streak={streaks['todo_runway_soft']}/{soft_streak}"
+                        ),
+                        recommendations=recs,
+                    )
+                )
+
+        # An empty queue is worth saying while the last cards are still in
+        # flight. That is the only moment a refill can still keep the lanes
+        # busy, so this no longer waits for doing to reach zero as well.
         if (
             cfg_get(cfg, "todo", "empty_todo_with_baseline", True)
             and snap.todo == 0
-            and snap.ships_per_hour_24h >= float(cfg_get(cfg, "ship_rate", "min_baseline_mean", 1.0))
-            and snap.doing == 0
+            and snap.ships_per_hour_24h >= min_rate
         ):
             alerts.append(
                 Alert(
@@ -971,7 +1047,8 @@ def evaluate(cfg: dict[str, Any], snap: Snapshot, meta: dict[str, Any], state: d
                     code="todo_starved",
                     title="Queue empty while factory was shipping",
                     detail=(
-                        f"todo=0 doing=0 but 24h ship rate≈{snap.ships_per_hour_24h:.2f}/h — "
+                        f"todo=0 doing={snap.doing} but 24h ship rate"
+                        f"≈{snap.ships_per_hour_24h:.2f}/h — "
                         "may be fine if intentionally drained"
                     ),
                     recommendations=[
