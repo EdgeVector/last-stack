@@ -315,6 +315,12 @@ ci_test tests/host-track-soak-probe-lock.sh
 # Pins that the reported window is the one `soak_watch_one` applies, not the
 # stamp's own copy.
 ci_test tests/host-track-soak-wall-clock.sh
+# The forge is the gate of record for four factory repos, and every helper that
+# reaches it resolved its token from the login keychain alone. When that
+# keychain locks, `security ... -w` exits 51 SILENTLY and API, push, PR create
+# and portal fetch fail together — five routines lost a night to it. Pins the
+# resolution order and that no helper keeps a private keychain read.
+ci_test tests/last-stack-forge-token-fallback.sh
 ci_test tests/last-stack-fleet-channel-freshness-gate.sh
 ci_test tests/last-stack-artifact-host-track-proof.sh
 ci_test tests/last-stack-artifact-layout.sh

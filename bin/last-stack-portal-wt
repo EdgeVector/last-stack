@@ -10,6 +10,16 @@
 #   last-stack-portal-wt fetch
 set -euo pipefail
 
+self="${BASH_SOURCE[0]}"
+while [ -h "$self" ]; do
+  self_dir="$(cd -P "$(dirname "$self")" && pwd)"
+  self="$(readlink "$self")"
+  case "$self" in /*) ;; *) self="$self_dir/$self" ;; esac
+done
+self_root="$(cd -P "$(dirname "$self")/.." && pwd)"
+# shellcheck source=../lib/forge-token.sh
+. "$self_root/lib/forge-token.sh"
+
 GIT="${GIT:-/usr/bin/git}"
 CACHE_ROOT="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}"
 WT_ROOT="${WORKTREES_DIR:-$HOME/.fkanban/worktrees}"
@@ -79,6 +89,30 @@ read_portal() {
   CACHE="$(tr -d '[:space:]' <"$PORTAL/.portal/cache" 2>/dev/null || true)"
   [ -n "$CACHE" ] || CACHE="$CACHE_ROOT/${SLUG}.git"
   MAIN_REF="${PORTAL_MAIN_REF:-main}"
+  export_forge_git_auth
+}
+
+# A portal whose venue is the local Forgejo cannot fall back on git's
+# osxkeychain credential helper: when the login keychain is locked, that helper
+# fails with -25293 and git then asks for a username on a terminal an
+# unattended agent does not have ("could not read Username ... Device not
+# configured"). Resolve the token ourselves and hand it to every child git
+# through GIT_CONFIG_*, which needs no change at the ~30 `$GIT` call sites and
+# reaches `clone` before any repo config exists.
+# Papercut: papercut-forge-helpers-keychain-lockout-blocks-unattended-push
+export_forge_git_auth() {
+  case "$REMOTE" in
+    http://localhost:3300/*|http://127.0.0.1:3300/*) ;;
+    *) return 0 ;;
+  esac
+  local token
+  token="$(last_stack_forge_token || true)"
+  [ -n "$token" ] || return 0
+  export GIT_CONFIG_COUNT=2
+  export GIT_CONFIG_KEY_0="http.http://localhost:3300/.extraHeader"
+  export GIT_CONFIG_VALUE_0="Authorization: token $token"
+  export GIT_CONFIG_KEY_1="http.http://127.0.0.1:3300/.extraHeader"
+  export GIT_CONFIG_VALUE_1="Authorization: token $token"
 }
 
 # Return success when a process appears to be using a worktree. This check is
