@@ -78,12 +78,21 @@ Prefer the post-heal open list. If you still need a fresh read:
 
 ```bash
 "$timeout_bin" 60s lastgit cr list --all-open --json   # lastgit fleet
-# Forgejo (fold + any forge-venue repo with open PRs):
-"$last_stack/bin/last-stack-forge-api" "repos/EdgeVector/fold/pulls?state=open"
-"$last_stack/bin/last-stack-forge-api" "repos/EdgeVector/lastgit/pulls?state=open"
-"$last_stack/bin/last-stack-forge-api" "repos/EdgeVector/exemem-infra/pulls?state=open"
+# Forgejo — EVERY forge-venue repo. The four factory repos moved from LastGit
+# to Forgejo on 2026-09-05 (Situation
+# factory-repos-venue-move-to-forgejo-20260905) and their LastGit repos are
+# DISABLED, so `lastgit cr list` cannot see them. Omitting them here left their
+# PRs with no reaper at all.
+for repo in fold lastgit exemem-infra last-stack fkanban routines loom; do
+  "$last_stack/bin/last-stack-forge-api" "repos/EdgeVector/$repo/pulls?state=open"
+done
 # GitHub (rare): gh api "search/issues?q=org:EdgeVector+is:pr+is:open"
 ```
+
+**Venue coverage is part of the pass, not a detail.** An empty inventory is
+only a real `open=0` when every forge-venue repo above answered. If a repo
+query fails, report `flagged=venue-unreadable:<repo>` — never fold an
+unreadable repo into `all venue inventories empty`.
 
 Pipe forge JSON through `"$last_stack/bin/last-stack-forge-json-jq"`. Redirect
 `--json` output to a scratch file first; never inline-parse with `python -c`.

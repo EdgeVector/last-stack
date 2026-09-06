@@ -130,18 +130,39 @@ fi
 
 list_exceptions() {
   WHATS_WRONG_DASHBOARD="${WHATS_WRONG_DASHBOARD:-http://127.0.0.1:7733}" \
+  WHATS_WRONG_SNAPSHOT_TIMEOUT_SEC="${WHATS_WRONG_SNAPSHOT_TIMEOUT_SEC:-150}" \
   python3 -c '
-import json, os, sys, urllib.request
+import json, os, sys, time, urllib.request
 snap_file = os.environ.get("WHATS_WRONG_SNAPSHOT_FILE") or ""
 dash = (os.environ.get("WHATS_WRONG_DASHBOARD") or "http://127.0.0.1:7733").rstrip("/")
 url = os.environ.get("WHATS_WRONG_SNAPSHOT_URL") or (dash + "/api/snapshot")
+# The dashboard collects from kanban, host-track and LastDB on every request.
+# An idle collect is ~12s; a hot node pushes the kanban and host-track legs
+# past a minute each. A fixed 45s read turned that backpressure into rc=3 and
+# made a working healer look broken
+# (papercut-whats-wrong-snapshot-45s-timeout-under-hot-node-20260906).
+try:
+    timeout = float(os.environ.get("WHATS_WRONG_SNAPSHOT_TIMEOUT_SEC") or 150)
+except ValueError:
+    timeout = 150.0
 try:
     if snap_file:
         snap = json.load(open(snap_file))
     else:
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=45) as resp:
-            snap = json.loads(resp.read().decode("utf-8"))
+        last = None
+        snap = None
+        for attempt in range(2):
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    snap = json.loads(resp.read().decode("utf-8"))
+                break
+            except Exception as e:  # one retry: a hot node sheds, then serves
+                last = e
+                if attempt == 0:
+                    time.sleep(5)
+        if snap is None:
+            raise last
 except Exception as e:
     print(json.dumps({"ok": False, "error": str(e)}))
     sys.exit(3)

@@ -761,4 +761,19 @@ assert "no-such-snapshot.json" in det, det
 PYCHK
 unset WHATS_WRONG_SNAPSHOT_FILE
 
+# --- snapshot read timeout is configurable and generous by default ----------
+# The dashboard collects from kanban, host-track and LastDB on every request.
+# A fixed 45s read turned node backpressure into rc=3 for nine straight hourly
+# runs on 2026-09-06 while ten real exceptions went unhealed.
+grep -q 'WHATS_WRONG_SNAPSHOT_TIMEOUT_SEC' "$BIN" \
+  || fail "snapshot read timeout is not configurable"
+python3 - "$BIN" <<'PYCHK' || fail "snapshot default timeout is too tight"
+import re, sys
+src = open(sys.argv[1], encoding="utf-8").read()
+m = re.search(r'WHATS_WRONG_SNAPSHOT_TIMEOUT_SEC:-(\d+)', src)
+assert m, "no default for WHATS_WRONG_SNAPSHOT_TIMEOUT_SEC"
+assert int(m.group(1)) >= 120, "default %s is below the 120s floor" % m.group(1)
+assert "urlopen(req, timeout=45)" not in src, "the fixed 45s read is still there"
+PYCHK
+
 echo "ok"

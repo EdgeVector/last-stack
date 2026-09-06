@@ -125,6 +125,34 @@ non-backpressure reason after proving this routine itself is broken, such as a
 bad parser, missing required local binary after preflight, malformed registry
 configuration, or an unhandled prompt/logic fault.
 
+### 1b. Forge-venue repos (Forgejo) — LastGit cannot see them
+
+`lastgit stuck` and `lastgit cr list` cover LastGit repos only. On 2026-09-05
+(Situation `factory-repos-venue-move-to-forgejo-20260905`) **last-stack,
+fkanban, routines and loom** moved their gate of record to Forgejo and their
+LastGit repos were DISABLED — every fetch returns `app_disabled`. A disabled
+LastGit repo is **expected**, not an inventory failure: never count it in
+`unreadable-repos`, and never let it turn this pass into `error`.
+
+Those four repos plus fold, lastgit and exemem-infra need a Forgejo pass:
+
+```bash
+for repo in fold lastgit exemem-infra last-stack fkanban routines loom; do
+  "$timeout_bin" 30s "$last_stack/bin/last-stack-forge-api" \
+    "repos/EdgeVector/$repo/pulls?state=open" > "$scratch/$repo.json" || true
+done
+```
+
+Treat a Forgejo PR as stuck when it is open for more than 10 minutes and any
+of these hold: required check `Forge CI / ci-required` is green but the PR is
+still open; the required check is red for the current head; the required check
+is missing or pending with no update for more than 10 minutes; or merge returns
+405 with green checks (stuck status-check task — heal with an empty commit per
+`papercut-forge-merge-405-stuck-status-check`).
+
+Advance a Forgejo PR with the normal merge API, not `lastgit cr merge`. Report
+Forgejo counts in the heartbeat as `forge_stuck=<n>` alongside `stuck=<n>`.
+
 ### 2. Prefer complete-only first
 
 For each `reason=green_unmerged` with `agent_fixable=true`:
