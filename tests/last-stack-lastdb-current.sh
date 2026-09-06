@@ -96,6 +96,64 @@ if PATH="$link_dir:/usr/bin:/bin" "$ROOT/bin/last-stack-lastdb-current" check \
 fi
 grep -q 'ProgramArguments\[0\].*expected.*current/lastdbd' "$tmp/plist-check.err"
 
+# A `current` dir holding two binaries from different builds must FAIL the
+# check. This is the property the command's own description claims ("verify the
+# shell-visible CLI and daemon binary agree") and could not assert: on
+# 2026-08-01 the primary ran a CLI and a daemon 170 commits apart in one
+# `current` dir and `check --verbose` printed five oks and exited 0. The
+# versions used below are that incident's, so this test fails the exact tree
+# the old check passed.
+skew_home="$tmp/skew/.lastdb"
+skew_link_dir="$tmp/skew/.local/bin"
+skew_bin_dir="$tmp/skew/bin-skewed"
+mkdir -p "$skew_home" "$skew_link_dir" "$skew_bin_dir"
+printf '#!/bin/sh\necho "lastdbd 0.23.3-235-g4f5476498"\n' >"$skew_bin_dir/lastdbd"
+printf '#!/bin/sh\necho "lastdb 0.23.2-65-g9934ab89e"\n' >"$skew_bin_dir/lastdb"
+chmod +x "$skew_bin_dir/lastdbd" "$skew_bin_dir/lastdb"
+
+"$ROOT/bin/last-stack-lastdb-current" set \
+  --lastdb-home "$skew_home" \
+  --bin-dir "$skew_bin_dir" \
+  --link-dir "$skew_link_dir" >/dev/null
+
+if PATH="$skew_link_dir:/usr/bin:/bin" "$ROOT/bin/last-stack-lastdb-current" check \
+  --lastdb-home "$skew_home" \
+  --bin-dir "$skew_bin_dir" \
+  --link-dir "$skew_link_dir" >"$tmp/skew.out" 2>"$tmp/skew.err"; then
+  echo "expected a version skew inside current to fail the check" >&2
+  exit 1
+fi
+# The message must name BOTH versions. An operator who is told only "skew" has
+# to go and run the two --version calls the check just ran.
+grep -q 'version skew inside current' "$tmp/skew.err"
+grep -q '0.23.3-235-g4f5476498' "$tmp/skew.err"
+grep -q '0.23.2-65-g9934ab89e' "$tmp/skew.err"
+
+# A binary that is present but not runnable is still caught, and is reported as
+# an executability failure rather than as a skew — the `cp -a` codesigning
+# brick this command has always caught must not be re-labelled by this change.
+brick_home="$tmp/brick/.lastdb"
+brick_link_dir="$tmp/brick/.local/bin"
+brick_bin_dir="$tmp/brick/bin-bricked"
+mkdir -p "$brick_home" "$brick_link_dir" "$brick_bin_dir"
+printf '#!/bin/sh\necho "lastdbd 0.test"\n' >"$brick_bin_dir/lastdbd"
+printf '#!/bin/sh\nexit 9\n' >"$brick_bin_dir/lastdb"
+chmod +x "$brick_bin_dir/lastdbd" "$brick_bin_dir/lastdb"
+
+"$ROOT/bin/last-stack-lastdb-current" set \
+  --lastdb-home "$brick_home" \
+  --bin-dir "$brick_bin_dir" \
+  --link-dir "$brick_link_dir" >/dev/null
+
+if PATH="$brick_link_dir:/usr/bin:/bin" "$ROOT/bin/last-stack-lastdb-current" check \
+  --lastdb-home "$brick_home" \
+  --bin-dir "$brick_bin_dir" \
+  --link-dir "$brick_link_dir" >"$tmp/brick.out" 2>"$tmp/brick.err"; then
+  echo "expected an unrunnable binary in current to fail the check" >&2
+  exit 1
+fi
+grep -q 'not runnable' "$tmp/brick.err"
+
 bad_link_dir="$tmp/bad-link-dir"
 mkdir -p "$bad_link_dir"
 touch "$bad_link_dir/lastdb"
