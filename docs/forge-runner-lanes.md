@@ -90,6 +90,61 @@ bin/last-stack-forge-runner-lanes --check --live
 Live mode also lists admin (global) merge-gate runners and repo-scoped heavy
 runners for `EdgeVector/fold` and `EdgeVector/exemem-infra`.
 
+## Owner PC pause (`heavy` + `pc-linux`)
+
+Both PC lanes run on the gaming PC, so the `.paused-*` LaunchAgent marker that
+records a deliberate pause for a Mac lane cannot express one for them. The
+factory owns that intent and writes it to a durable file. The watchdog only
+reads it.
+
+| | |
+|---|---|
+| Path | `~/.local/state/last-stack/pc-ci/state.json` |
+| Override | `FORGE_WATCHDOG_PC_PAUSE_FILE` (tests and fixtures) |
+| Writer | the factory pause/resume control |
+| Reader | `bin/last-stack-forge-runner-watchdog` |
+
+```json
+{
+  "intent": "paused",
+  "since": "2026-09-07T09:00:00Z",
+  "reason": "owner is gaming"
+}
+```
+
+- `intent` is the whole contract. `"paused"` means paused. **Every** other
+  value — `"normal"`, a missing file, an unreadable file, a half-written file —
+  means NOT paused. An unreadable pause file must never silence a merge gate.
+- `since` identifies one pause, so the Situations notice is posted once per
+  pause and not once per watchdog run. The file's mtime is the fallback.
+- `reason` is optional and is quoted back to the owner.
+
+While the pause holds, the watchdog:
+
+1. suppresses the PC lane alerts **only** — `heavy-lane-live`,
+   `pc-linux-absent`, `pc-linux-offline`;
+2. keeps paging for the Mac runner lanes, local revive failures, the LastGit
+   forge supervisor, and every Forgejo API error;
+3. reports the drain instead of alerting: `active` means the PC is still
+   finishing a job it already accepted, anything else means it has drained;
+4. **freezes** the paging state of a suppressed key rather than clearing it. A
+   pause is not a recovery. Clearing would page "healthy again" for a lane
+   nobody observed and would reset the re-page cooldown, so resume would page
+   at once for an outage already reported. Resume restores exactly the state
+   the pause froze;
+5. records the pause, and later the resume, as one Situations notice each.
+
+Proof: `tests/last-stack-forge-runner-watchdog.sh` (cases 8-18) covers an
+active job, the drain, a Mac outage under pause, a forge API failure under
+pause, restart persistence, resume with the lane still down, resume with the
+lane healthy, and every malformed pause file.
+
+Out of scope for this repo: the factory-side pause control itself — stopping
+new jobs on the PC runner services, the guard that keeps the PC
+`pc-runner-watchdog` from restarting them, and the HTTP access controls on the
+pause endpoint. Those live with the factory. See brain
+`papercut-factory-pc-forgejo-runners-lack-owner-pause-20260906`.
+
 ## What this does *not* do
 
 - Does not install or re-register runners (ops remains LaunchAgent +

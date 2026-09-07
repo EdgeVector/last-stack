@@ -18,6 +18,19 @@
 # Note a bare `launchctl disable` with no marker is NOT distinguishable from a
 # crash; we treat it as revivable and say so in the page.
 #
+# Owner PC pause: the PC lanes (`heavy`, `pc-linux`) live on the gaming PC, so a
+# `.paused-*` plist marker cannot express an owner pause for them. The factory
+# owns that intent and writes it to a durable JSON file (`intent: "paused"`).
+# This watchdog only READS that file. While the pause holds:
+#   • PC lane alerts are suppressed — `heavy`, `pc-linux`, nothing else.
+#   • Mac runner lanes, local revive, and Forge API errors stay observable.
+#   • Suppressed PC keys keep their paging state instead of being cleared, so a
+#     pause never fires a false "healthy again" page and never resets the
+#     re-page cooldown. Resume restores exactly the state the pause froze.
+#   • One Situations notice records each distinct pause, not one per run.
+# Anything other than `intent: "paused"` (absent, unreadable, malformed) means
+# NOT paused: an unreadable pause file must never silence a real outage.
+#
 # Exit: 0 all lanes healthy (or only deliberately-paused), 1 a lane is down.
 
 set -u
@@ -34,6 +47,8 @@ PLIST_DIR="${FORGE_WATCHDOG_PLIST_DIR:-$HOME/Library/LaunchAgents}"
 STATE_DIR="${FORGE_WATCHDOG_STATE_DIR:-$HOME/.local/state/last-stack/forge-runner-watchdog}"
 STATE_FILE="$STATE_DIR/state.json"
 LOG_FILE="$STATE_DIR/watchdog.log"
+# Durable owner intent for the PC CI lanes. Written by the factory, read here.
+PC_PAUSE_FILE="${FORGE_WATCHDOG_PC_PAUSE_FILE:-$HOME/.local/state/last-stack/pc-ci/state.json}"
 FORGE_LOG="$HOME/.lastgit/forge-primary/forge.log"
 
 # Re-page cadence for a condition that stays broken (seconds). Page is immediate
@@ -183,24 +198,74 @@ check_local_lane com.edgevector.forgejo-runner-host-exemem-infra \
 check_local_lane com.edgevector.forgejo-runner \
   "Forge merge-gate runner" "all docker/ubuntu/macos-arm64 CI jobs"
 
+# --- owner PC pause (durable, factory-owned; read-only here) ------------------
+# PC lane keys we suppress under a pause. Nothing else is affected: the Mac
+# lanes and the forge API keep paging, because the owner paused a machine, not
+# the fleet.
+PC_LANE_KEYS="heavy-lane-live
+pc-linux-absent
+pc-linux-offline"
+
+is_pc_lane_key() {  # key -> 0 when this key belongs to the paused PC lanes
+  local want="$1" k
+  while IFS= read -r k; do
+    [ "$k" = "$want" ] && return 0
+  done <<EOF
+$PC_LANE_KEYS
+EOF
+  return 1
+}
+
+# Identity of the current pause, so the Situations notice fires once per pause
+# and not once per watchdog run. `since` when the factory records one, else the
+# file's mtime — either way a new pause produces a new id.
+pc_pause_id() {
+  local since
+  since="$($JQ -r '.since // empty' "$PC_PAUSE_FILE" 2>/dev/null || true)"
+  if [ -n "$since" ]; then printf '%s' "$since"; return 0; fi
+  /usr/bin/stat -f %m "$PC_PAUSE_FILE" 2>/dev/null || printf 'unknown'
+}
+
+PC_PAUSED=0
+PC_PAUSE_ID=""
+PC_PAUSE_REASON=""
+if [ -f "$PC_PAUSE_FILE" ] && "$JQ" -e '.intent == "paused"' "$PC_PAUSE_FILE" >/dev/null 2>&1; then
+  PC_PAUSED=1
+  PC_PAUSE_ID="$(pc_pause_id)"
+  PC_PAUSE_REASON="$($JQ -r '.reason // empty' "$PC_PAUSE_FILE" 2>/dev/null || true)"
+  add_info "PC CI is paused by the owner${PC_PAUSE_REASON:+ ($PC_PAUSE_REASON)}. Resume it from the factory."
+  log "pc-ci paused (id=$PC_PAUSE_ID); suppressing PC lane alerts only"
+fi
+
 # 3. Live registration, not just a running process. A runner can be up locally
 #    and still not be serving the label the gate needs.
 LIVE_JSON="$STATE_DIR/lanes-live.json"
 if "$LANES_BIN" --live --json > "$LIVE_JSON" 2>/dev/null; then
   heavy_live="$($JQ -r '.heavy_ok_live // false' "$LIVE_JSON" 2>/dev/null || echo false)"
-  if [ "$heavy_live" != "true" ]; then
+  if [ "$heavy_live" != "true" ] && [ "$PC_PAUSED" -eq 0 ]; then
     add_down "heavy-lane-live" \
       "No runner is LIVE for the 'heavy' label — full-workspace clippy will hang pending on every PR." \
       "heavy lane"
   fi
   # pc-linux is fold's build_test gate: down => fold merges freeze, not slow.
   pc_status="$($JQ -r '[.live.admin_runners[]? | select(.labels // [] | index("pc-linux")) | .status] | first // "absent"' "$LIVE_JSON" 2>/dev/null || echo absent)"
-  case "$pc_status" in
-    idle|active) : ;;
-    absent) add_down "pc-linux-absent" "pc-linux runner is NOT registered with the forge — fold's build_test merge gate cannot run." "pc-linux gate" ;;
-    *) add_down "pc-linux-offline" "pc-linux runner is '$pc_status' — fold merges will freeze (build_test is pinned to it)." "pc-linux gate" ;;
-  esac
+  if [ "$PC_PAUSED" -eq 1 ]; then
+    # Paused: report the drain instead of paging. An `active` runner is still
+    # finishing the job it already accepted; `idle`/`absent`/`offline` means the
+    # PC lane has drained and the owner can use the machine.
+    case "$pc_status" in
+      active) add_info "PC CI is paused; pc-linux is still finishing an accepted job (not drained yet)." ;;
+      *) add_info "PC CI is paused and pc-linux has drained (status '$pc_status')." ;;
+    esac
+  else
+    case "$pc_status" in
+      idle|active) : ;;
+      absent) add_down "pc-linux-absent" "pc-linux runner is NOT registered with the forge — fold's build_test merge gate cannot run." "pc-linux gate" ;;
+      *) add_down "pc-linux-offline" "pc-linux runner is '$pc_status' — fold merges will freeze (build_test is pinned to it)." "pc-linux gate" ;;
+    esac
+  fi
 else
+  # A forge-API failure is never a PC lane symptom: it stays loud under a pause.
   add_down "forge-api" "Could not query the Forgejo runner API — forge may be down, or the token is unreadable." "forge API"
 fi
 
@@ -253,6 +318,47 @@ clear_state() {  # key
   printf '%s' "$nm"
 }
 
+# One Situations FYI per distinct pause / resume. The marker lives beside the
+# paging state so a watchdog restart does not re-announce a pause already told.
+PC_PAUSE_NOTICE_FILE="$STATE_DIR/pc-pause-notice"
+
+record_pc_pause_situation() {
+  local told="" sit="$SITUATIONS_BIN"
+  [ -f "$PC_PAUSE_NOTICE_FILE" ] && told="$(/bin/cat "$PC_PAUSE_NOTICE_FILE" 2>/dev/null || true)"
+
+  if [ "$PC_PAUSED" -eq 1 ]; then
+    [ "$told" = "$PC_PAUSE_ID" ] && return 0
+    if [ "$DRY_RUN" -eq 1 ]; then
+      log "WOULD POST SITUATIONS NOTICE: PC CI paused by the owner (id=$PC_PAUSE_ID)"
+      return 0
+    fi
+    if [ -x "$sit" ]; then
+      "$sit" notice --title "PC CI paused by the owner" --kind config \
+        --system forge-runner-watchdog --actor last-stack-forge-runner-watchdog \
+        --summary "PC lanes (heavy, pc-linux) are paused on purpose${PC_PAUSE_REASON:+: $PC_PAUSE_REASON}. Fold build_test and heavy clippy queue until the factory resumes them; Mac lanes and the forge API are unaffected." \
+        >/dev/null 2>&1 || log "situations notice failed (pause id=$PC_PAUSE_ID)"
+    fi
+    printf '%s' "$PC_PAUSE_ID" > "$PC_PAUSE_NOTICE_FILE" 2>/dev/null || true
+    return 0
+  fi
+
+  # Not paused. If we announced a pause, announce that it ended, once.
+  [ -n "$told" ] || return 0
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "WOULD POST SITUATIONS NOTICE: PC CI resumed (was id=$told)"
+    return 0
+  fi
+  if [ -x "$sit" ]; then
+    "$sit" notice --title "PC CI resumed" --kind config \
+      --system forge-runner-watchdog --actor last-stack-forge-runner-watchdog \
+      --summary "The owner pause on the PC lanes (heavy, pc-linux) is cleared. PC lane alerting is live again from the state it held before the pause." \
+      >/dev/null 2>&1 || log "situations notice failed (resume from id=$told)"
+  fi
+  /bin/rm -f "$PC_PAUSE_NOTICE_FILE" 2>/dev/null || true
+}
+
+record_pc_pause_situation
+
 notify() {  # priority, message
   local prio="$1" msg="$2" ra="$RA_BIN"
   if [ "$DRY_RUN" -eq 1 ]; then
@@ -265,9 +371,19 @@ notify() {  # priority, message
 }
 
 # Recovery: anything previously failing that is healthy now.
+#
+# A suppressed PC lane is NOT recovered — it is unobserved. Clearing it here
+# would page "healthy again" for a lane nobody looked at, and would drop the
+# re-page cooldown, so resuming would page instantly for an outage that had
+# already been reported. Freezing the key leaves resume with exactly the state
+# the pause started from.
 RECOVERED=""
 if [ -s "$STATE_FILE" ]; then
   for key in $($JQ -r 'keys[]?' "$STATE_FILE" 2>/dev/null); do
+    if [ "$PC_PAUSED" -eq 1 ] && is_pc_lane_key "$key"; then
+      log "pc-ci paused: holding prior state for '$key' (not a recovery)"
+      continue
+    fi
     case "$DOWN_KEYS" in
       *"$key"*) : ;;
       *) nm="$(clear_state "$key")" && RECOVERED="${RECOVERED}${RECOVERED:+, }$nm" ;;
