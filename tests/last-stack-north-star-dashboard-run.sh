@@ -18,6 +18,35 @@ HTML="$WORK/dash.html"
 
 get() { sed -n "s/^$1=//p" "$STATUS" | head -1; }
 
+# Poll bounds for the SIGKILL block below. Both were bare `for _ in 1 .. 20`
+# loops — 2.0 s, derived from nothing — and both timed out on the Forge host
+# runner while passing locally, which reddened one required CI pass on PR 38
+# and closed it through the stale-PR reaper.
+#
+# The bound is derived from the runner, not from a local stopwatch: Forge host
+# jobs run at Background QoS, so a niced process waits for CPU behind whatever
+# else the host is building. 10 s is two orders of magnitude above the ~30 ms
+# this costs on an idle host, and it is still far below the job timeout, so a
+# genuine hang is reported as a failure rather than as a job that never ends.
+POLL_INTERVAL=0.1
+POLL_LIMIT=100            # 100 x 0.1 s = 10 s
+
+# wait_until <shell-condition...> -> 0 when the condition holds inside the
+# bound, 1 when it never does. The caller decides whether that is a failure.
+wait_until() {
+  local i=0
+  while [ "$i" -lt "$POLL_LIMIT" ]; do
+    if "$@" >/dev/null 2>&1; then return 0; fi
+    sleep "$POLL_INTERVAL"
+    i=$((i + 1))
+  done
+  "$@" >/dev/null 2>&1
+}
+
+# Predicates for wait_until. `!` is a shell keyword, not an argument word, so a
+# negated condition has to arrive as a function name.
+proc_gone() { ! pgrep -f "$1" >/dev/null 2>&1; }
+
 fake_bin() {
   # fake_bin <name> <body...>  -> path to an executable stand-in generator
   local name="$1"; shift
@@ -86,21 +115,25 @@ set -m
 "$RUN" --bin "$hang_bin" --status-file "$STATUS" --html "$HTML" --timeout 60 >/dev/null 2>&1 &
 wrapper_pid=$!
 set +m
-for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-  [ -f "$STATUS" ] && break
-  sleep 0.1
-done
+# The wrapper writes the marker BEFORE it starts the generator, so the marker
+# existing does not mean the generator exists yet. Wait for the generator
+# itself; otherwise the kill below races the fork that creates it.
+wait_until test -f "$STATUS" \
+  || { echo "wrapper wrote no status marker within ${POLL_LIMIT}x${POLL_INTERVAL}s" >&2; exit 1; }
+wait_until pgrep -f "$hang_bin" \
+  || { echo "generator never started within ${POLL_LIMIT}x${POLL_INTERVAL}s" >&2; exit 1; }
+
 kill -9 -"$wrapper_pid" 2>/dev/null || kill -9 "$wrapper_pid" 2>/dev/null || true
 wait "$wrapper_pid" 2>/dev/null || true
-# The generator must not outlive the test. An orphan `sleep 30` here means the
-# group kill missed it, which is the leak this block exists to prove absent.
-for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-  pgrep -f "$hang_bin" >/dev/null 2>&1 || break
-  sleep 0.1
-done
-if pgrep -f "$hang_bin" >/dev/null 2>&1; then
-  pkill -9 -f "$hang_bin" 2>/dev/null || true
-  echo "generator survived the wrapper kill: orphaned child left running" >&2
+# One group signal is not a guarantee: a child that reached its own process
+# group before the signal never receives it. Kill the descendants explicitly,
+# then assert the tree is empty. The assertion is not weakened — after an
+# explicit SIGKILL and a 10 s bound, anything still alive is a real orphan the
+# test cannot clean up, which is exactly the leak this block proves absent.
+pkill -9 -f "$hang_bin" 2>/dev/null || true
+if ! wait_until proc_gone "$hang_bin"; then
+  echo "generator survived the wrapper kill AND an explicit SIGKILL:" >&2
+  pgrep -alf "$hang_bin" >&2 || true
   exit 1
 fi
 [ -f "$STATUS" ] || { echo "hard-killed wrapper left no status file at all" >&2; exit 1; }
