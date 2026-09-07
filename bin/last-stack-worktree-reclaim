@@ -114,6 +114,13 @@ open_index_ok=0
 open_pr_check=1
 [ "${LAST_STACK_RECLAIM_SKIP_OPEN_PR:-0}" = "1" ] && open_pr_check=0
 open_heads_file="${LAST_STACK_RECLAIM_OPEN_HEADS_FILE:-}"
+# Offline mode (SKIP_BOARD is the tests/offline knob): no board, no forge, no
+# lastgit — unless a prebuilt index was injected. Every reclaim test in the
+# required gate runs this way, and a network read per test put the gate past
+# its 25-minute deadline twice on 2026-09-07 (runs 144 and 146).
+if [ "${LAST_STACK_RECLAIM_SKIP_BOARD:-0}" = "1" ] && [ -z "$open_heads_file" ]; then
+  open_pr_check=0
+fi
 kept_open_pr=0
 
 while [ "$#" -gt 0 ]; do
@@ -509,7 +516,7 @@ build_open_head_index() {
   # LastGit fleet open-CR index: one keyed read, rows carry repo + head_ref.
   lg_bin="$(command -v lastgit || true)"
   if [ -n "$lg_bin" ]; then
-    if ! ${tout:+"$tout" 45s} "$lg_bin" cr list --all-open --json 2>/dev/null \
+    if ! ${tout:+"$tout" 20s} "$lg_bin" cr list --all-open --json 2>/dev/null \
       | jq -r '(if type == "array" then . else (.rows // .crs // []) end) | .[]? | select((.state // "open") != "merged" and (.state // "open") != "closed") | [(.repo // ""), ((.head_ref // .head // .head_branch // "") | sub("^refs/heads/"; ""))] | select(.[0] != "" and .[1] != "") | @tsv' >>"$out" 2>/dev/null; then
       log "open-pr index: lastgit cr list --all-open failed"
       ok=0
@@ -520,14 +527,14 @@ build_open_head_index() {
   # Forgejo: every repo with an open PR, then that repo's open PR heads.
   forge_api="${LAST_STACK_FORGE_API:-$HOME/.last-stack/bin/last-stack-forge-api}"
   if [ -x "$forge_api" ]; then
-    repos="$(${tout:+"$tout" 30s} "$forge_api" GET '/repos/issues/search?type=pulls&state=open&owner=EdgeVector&limit=50' 2>/dev/null \
+    repos="$(${tout:+"$tout" 15s} "$forge_api" GET '/repos/issues/search?type=pulls&state=open&owner=EdgeVector&limit=50' 2>/dev/null \
       | jq -r '.[]? | .repository.name // empty' 2>/dev/null | sort -u || true)"
-    if [ -z "$repos" ] && ! ${tout:+"$tout" 30s} "$forge_api" GET '/repos/issues/search?type=pulls&state=open&owner=EdgeVector&limit=1' >/dev/null 2>&1; then
+    if [ -z "$repos" ] && ! ${tout:+"$tout" 15s} "$forge_api" GET '/repos/issues/search?type=pulls&state=open&owner=EdgeVector&limit=1' >/dev/null 2>&1; then
       log "open-pr index: forgejo issues/search failed"
       ok=0
     fi
     for r in $repos; do
-      if ! ${tout:+"$tout" 30s} "$forge_api" GET "/repos/EdgeVector/$r/pulls?state=open&limit=50" 2>/dev/null \
+      if ! ${tout:+"$tout" 15s} "$forge_api" GET "/repos/EdgeVector/$r/pulls?state=open&limit=50" 2>/dev/null \
         | jq -r --arg r "$r" '.[]? | [$r, (.head.ref // "")] | select(.[1] != "") | @tsv' >>"$out" 2>/dev/null; then
         log "open-pr index: forgejo pulls read failed for $r"
         ok=0
