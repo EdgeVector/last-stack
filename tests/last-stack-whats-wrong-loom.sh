@@ -776,4 +776,167 @@ assert int(m.group(1)) >= 120, "default %s is below the 120s floor" % m.group(1)
 assert "urlopen(req, timeout=45)" not in src, "the fixed 45s read is still there"
 PYCHK
 
+
+# --- loom's OWN drive deadline is retried, and a finished execution is read ---
+# `loom run` can exit non-zero while the execution is alive:
+#   execution lx-... is incomplete: still `running` at state `CLOSEOUT` after
+#   the drive deadline. ... `loom reap --execution lx-...` recovers an
+#   unattended one.
+# That is not this wrapper's rc=124 bound, so it used to fall to the terminal
+# branch: no readback, no reap, no retry, and an EMPTY exec id in the stamp.
+# Measured on 2026-09-07: the 02:23Z pass reported error on
+# lx-20260907T022306.693-67123-1 at 02:28:25.820Z and that execution reached
+# DONE at 02:28:29.991Z — 4 s later, having spent 319 s of a 2400 s budget.
+# The 00:23Z pass did the same. `loom run --key` is idempotent, so re-attaching
+# is the whole fix.
+cat >"$tmp/bin/loom" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-}"
+case "$cmd" in
+  ping) echo ok; exit 0 ;;
+  publish) echo "published $(basename "$2" .json)"; exit 0 ;;
+  reap)
+    printf '%s\n' "$*" >>"${REAP_LOG_FILE:?}"
+    exit 0
+    ;;
+  run)
+    nfile="${RUN_COUNT_FILE:?}"
+    n=$(cat "$nfile" 2>/dev/null || echo 0)
+    n=$((n + 1))
+    printf '%s\n' "$n" >"$nfile"
+    if [ "$n" -lt 2 ]; then
+      echo 'execution lx-ww-incomplete is incomplete: still `running` at state `CLOSEOUT` after the drive deadline. Another worker holds the frontier, or the frontier is unattended — `loom reap --execution lx-ww-incomplete` recovers an unattended one.' >&2
+      exit 4
+    fi
+    cat <<'VIEW'
+lx-ww-incomplete
+status: succeeded
+state: DONE
+context.outcome: "ok"
+context.detail: "exceptions=2 healed=1 remaining=1"
+VIEW
+    exit 0
+    ;;
+  *) echo "unexpected $*" >&2; exit 2 ;;
+esac
+SH
+chmod 755 "$tmp/bin/loom"
+export LAST_STACK_WHATS_WRONG_STAMP="$tmp/stamp-incomplete.json"
+export LAST_STACK_WHATS_WRONG_LOOM_TIMEOUT_SEC=60
+export LAST_STACK_WHATS_WRONG_LOOM_RETRY_SLEEP_SEC=1
+export LAST_STACK_WHATS_WRONG_LOOM_RETRY_ATTEMPTS=3
+export RUN_COUNT_FILE="$tmp/run-count-incomplete"
+export REAP_LOG_FILE="$tmp/reap-incomplete.log"
+export LOOM_WHATS_WRONG_KEY="whats-wrong-incomplete-key"
+export WHATS_WRONG_SNAPSHOT_FILE="$tmp/snap.json"
+set +e
+iout="$("$BIN" --json --quiet --no-heal)"
+irc=$?
+set -e
+[ "$irc" -eq 0 ] \
+  || fail "loom drive deadline must be re-attached, got exit $irc out=$iout"
+printf '%s\n' "$iout" | grep -q 'outcome":"ok"' \
+  || fail "re-attached run must be ok: $iout"
+printf '%s\n' "$iout" | grep -q 'healed=1' \
+  || fail "re-attached run lost the heal detail: $iout"
+[ "$(cat "$RUN_COUNT_FILE")" = "2" ] \
+  || fail "expected 2 loom run attempts, got $(cat "$RUN_COUNT_FILE")"
+grep -q 'lx-ww-incomplete' "$REAP_LOG_FILE" \
+  || fail "the named execution was not reaped before the re-attach"
+
+# --- every attempt hits the drive deadline, but the execution DID finish ---
+# The retry can run out of attempts while the execution reaches DONE in the
+# seconds after the last one. Reporting error there is the false red measured
+# on 2026-09-07; a bounded `loom show` read is the whole difference.
+cat >"$tmp/bin/loom" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-}"
+case "$cmd" in
+  ping) echo ok; exit 0 ;;
+  publish) echo "published $(basename "$2" .json)"; exit 0 ;;
+  reap) exit 0 ;;
+  show)
+    cat <<'VIEW'
+lx-ww-late
+status: succeeded
+state: DONE
+context.outcome: "ok"
+context.detail: "exceptions=2 healed=1 remaining=1"
+VIEW
+    exit 0
+    ;;
+  run)
+    nfile="${RUN_COUNT_FILE:?}"
+    n=$(cat "$nfile" 2>/dev/null || echo 0)
+    printf '%s\n' "$((n + 1))" >"$nfile"
+    echo 'execution lx-ww-late is incomplete: still `running` at state `CLOSEOUT` after the drive deadline. Another worker holds the frontier, or the frontier is unattended — `loom reap --execution lx-ww-late` recovers an unattended one.' >&2
+    exit 4
+    ;;
+  *) echo "unexpected $*" >&2; exit 2 ;;
+esac
+SH
+chmod 755 "$tmp/bin/loom"
+export LAST_STACK_WHATS_WRONG_STAMP="$tmp/stamp-late.json"
+export RUN_COUNT_FILE="$tmp/run-count-late"
+export LAST_STACK_WHATS_WRONG_LOOM_RETRY_ATTEMPTS=2
+export LOOM_WHATS_WRONG_KEY="whats-wrong-late-key"
+set +e
+lout="$("$BIN" --json --quiet --no-heal)"
+lrc_test=$?
+set -e
+[ "$lrc_test" -eq 0 ] \
+  || fail "a succeeded execution must not be reported red, got exit $lrc_test out=$lout"
+printf '%s\n' "$lout" | grep -q 'outcome":"ok"' \
+  || fail "readback of a succeeded execution must be ok: $lout"
+printf '%s\n' "$lout" | grep -q 'healed=1' \
+  || fail "readback lost the heal detail: $lout"
+
+# --- a genuinely stranded execution stays red, and is NAMED in the stamp ---
+# Stamping "" left the frontier unowned; the shared reaper had to find 14 such
+# whats-wrong executions by sweep at 01:1xZ on 2026-09-07.
+cat >"$tmp/bin/loom" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+cmd="${1:-}"
+case "$cmd" in
+  ping) echo ok; exit 0 ;;
+  publish) echo "published $(basename "$2" .json)"; exit 0 ;;
+  reap) exit 0 ;;
+  show)
+    cat <<'VIEW'
+lx-ww-stuck
+status: running
+state: GATHER
+VIEW
+    exit 0
+    ;;
+  run)
+    echo 'execution lx-ww-stuck is incomplete: still `running` at state `GATHER` after the drive deadline. Another worker holds the frontier, or the frontier is unattended — `loom reap --execution lx-ww-stuck` recovers an unattended one.' >&2
+    exit 4
+    ;;
+  *) echo "unexpected $*" >&2; exit 2 ;;
+esac
+SH
+chmod 755 "$tmp/bin/loom"
+export LAST_STACK_WHATS_WRONG_STAMP="$tmp/stamp-stuck.json"
+export LOOM_WHATS_WRONG_KEY="whats-wrong-stuck-key"
+set +e
+sout="$("$BIN" --json --quiet --no-heal)"
+src_test=$?
+set -e
+[ "$src_test" -eq 3 ] \
+  || fail "a stranded execution must stay red, got exit $src_test out=$sout"
+printf '%s\n' "$sout" | grep -q 'outcome":"error"' \
+  || fail "stranded execution must report error: $sout"
+python3 - "$tmp/stamp-stuck.json" <<'PYCHK' || fail "stranded stamp does not name the execution"
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+blob = json.dumps(d)
+assert "lx-ww-stuck" in blob, d
+PYCHK
+unset REAP_LOG_FILE
+unset LAST_STACK_WHATS_WRONG_LOOM_RETRY_ATTEMPTS
+
 echo "ok"
