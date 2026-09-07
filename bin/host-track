@@ -195,19 +195,65 @@ git_dirty() {
   [ -z "$(git -C "$path" status --porcelain)" ]
 }
 
+# Forgejo needs a token. Since the 2026-09-05/06 venue move every gate_main is
+# an http://localhost:3300 URL, and a plain `git ls-remote` against it answers
+# `could not read Username`. Both head readers below discarded that stderr, so
+# an auth failure surfaced as an EMPTY gate head, and status then reported
+# `deployment_problem=published gate head is unavailable` and
+# `freshness=hard_broken` for a healthy install. The publish lane was never the
+# problem. Measured 2026-09-07:
+#
+#   git ls-remote http://localhost:3300/EdgeVector/fold.git refs/heads/main
+#     -> fatal: could not read Username for 'http://localhost:3300'
+#   same ref with the token as an extraHeader
+#     -> 120627d8889c074ffe31e7ee4d11e6606f788b22
+#
+# Brain: papercut-host-track-lastdb-hard-broken-when-published-head-is-unavailable-20260906
+FORGE_TOKEN_LIB_LOADED=0
+if [ -r "$ROOT/lib/forge-token.sh" ]; then
+  # shellcheck source=../lib/forge-token.sh
+  . "$ROOT/lib/forge-token.sh" && FORGE_TOKEN_LIB_LOADED=1
+fi
+
+# Emits `-c http.<base>.extraHeader=...` words for a local forge remote, and
+# nothing at all for any other remote. A non-forge gate is untouched.
+forge_auth_args() {
+  local remote="$1" token
+  case "$remote" in
+    http://localhost:3300/*|http://127.0.0.1:3300/*) ;;
+    *) return 0 ;;
+  esac
+  [ "$FORGE_TOKEN_LIB_LOADED" = "1" ] || return 0
+  token="$(last_stack_forge_token 2>/dev/null || true)"
+  [ -n "$token" ] || return 0
+  printf '%s\n' \
+    "-c" "http.http://localhost:3300/.extraHeader=Authorization: token $token" \
+    "-c" "http.http://127.0.0.1:3300/.extraHeader=Authorization: token $token"
+}
+
 gate_head() {
   local host_track="$1" remote="$2" ref="$3"
   [ -n "$host_track" ] || return 0
   [ -n "$remote" ] || return 0
   [ -n "$ref" ] || return 0
-  git -C "$host_track" ls-remote "$remote" "$ref" 2>/dev/null | awk 'NR == 1 {print $1}' || true
+  local auth=()
+  while IFS= read -r word; do
+    [ -n "$word" ] && auth+=("$word")
+  done < <(forge_auth_args "$remote")
+  git "${auth[@]+"${auth[@]}"}" -C "$host_track" ls-remote "$remote" "$ref" 2>/dev/null \
+    | awk 'NR == 1 {print $1}' || true
 }
 
 remote_head() {
   local remote="$1" ref="$2"
   [ -n "$remote" ] || return 0
   [ -n "$ref" ] || return 0
-  git ls-remote "$remote" "$ref" 2>/dev/null | awk 'NR == 1 {print $1}' || true
+  local auth=()
+  while IFS= read -r word; do
+    [ -n "$word" ] && auth+=("$word")
+  done < <(forge_auth_args "$remote")
+  git "${auth[@]+"${auth[@]}"}" ls-remote "$remote" "$ref" 2>/dev/null \
+    | awk 'NR == 1 {print $1}' || true
 }
 
 binary_version() {

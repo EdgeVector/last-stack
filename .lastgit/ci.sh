@@ -631,6 +631,12 @@ ci_test tests/last-stack-sentry-token-fallback.sh
 # APPENDED: ci_test shards by list position.
 ci_test tests/last-stack-setup-seeds-every-routine.sh
 
+# host-track must read a Forgejo gate head with the forge token. A plain
+# ls-remote answered 'could not read Username' and the empty result was
+# reported as 'published gate head is unavailable' / hard_broken.
+# APPENDED: ci_test shards by list position.
+ci_test tests/host-track-forge-gate-head-auth.sh
+
 # The registration guard itself. Kept last, and asserted to be registered by
 # tests/last-stack-ci-sharding.sh, so the guard cannot quietly stop running.
 ci_test tests/last-stack-ci-test-registration.sh
