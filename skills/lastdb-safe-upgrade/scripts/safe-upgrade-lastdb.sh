@@ -2459,8 +2459,28 @@ echo "LATENCY: probe point/scan/write=${CAND_LAT_POINT_MS:-?}/${CAND_LAT_SCAN_MS
 echo ""
 echo "ROLLBACK (binary only, if new binary misbehaves but data is fine):"
 if [ "$VENUE" = "sidebin" ]; then
-  echo "  cp -a $SIDEBIN_DIR/lastdbd.bak-pre-${CAND_VER}-* $SIDEBIN_DIR/lastdbd   # pick newest bak"
-  echo "  cp -a $SIDEBIN_DIR/lastdb.bak-pre-${CAND_VER}-* $SIDEBIN_DIR/lastdb     # pick matching newest bak"
+  # NEVER print the in-place `cp -a` onto the live path. It keeps the
+  # destination inode, macOS still holds the cached code signature for that
+  # inode from the binary that was just running, and the kernel then kills
+  # every exec with OS_REASON_CODESIGNING -- launchd sits in "spawn scheduled"
+  # and the primary never comes back. That is not theory: it took the primary
+  # down for several minutes on 2026-07-27, from this very block. The safe
+  # recipe is temp copy -> re-sign -> clear quarantine -> assert it RUNS ->
+  # atomic rename, matching SKILL.md "Rollback / Binary only (sidebin)".
+  # Papercut: papercut-lastdb-safe-upgrade-rollback-cp-a-trips-codesigning
+  echo "  # copy to a temp path, re-sign, prove it runs, THEN atomically rename."
+  echo "  # Never cp -a straight onto the live path: the cached code signature"
+  echo "  # for that inode kills every exec with OS_REASON_CODESIGNING."
+  echo "  cp -a $SIDEBIN_DIR/lastdbd.bak-pre-${CAND_VER}-* $SIDEBIN_DIR/.lastdbd.rollback.tmp   # pick newest bak"
+  echo "  codesign --force --sign - $SIDEBIN_DIR/.lastdbd.rollback.tmp"
+  echo "  xattr -c $SIDEBIN_DIR/.lastdbd.rollback.tmp"
+  echo "  $SIDEBIN_DIR/.lastdbd.rollback.tmp --version    # MUST print a version before proceeding"
+  echo "  mv -f $SIDEBIN_DIR/.lastdbd.rollback.tmp $SIDEBIN_DIR/lastdbd"
+  echo "  cp -a $SIDEBIN_DIR/lastdb.bak-pre-${CAND_VER}-* $SIDEBIN_DIR/.lastdb.rollback.tmp     # pick matching newest bak"
+  echo "  codesign --force --sign - $SIDEBIN_DIR/.lastdb.rollback.tmp"
+  echo "  xattr -c $SIDEBIN_DIR/.lastdb.rollback.tmp"
+  echo "  $SIDEBIN_DIR/.lastdb.rollback.tmp --version     # MUST print a version before proceeding"
+  echo "  mv -f $SIDEBIN_DIR/.lastdb.rollback.tmp $SIDEBIN_DIR/lastdb"
   echo "  launchctl kickstart -k gui/\$(id -u)/$LAUNCHD_LABEL"
 else
   echo "  brew services stop lastdb"
