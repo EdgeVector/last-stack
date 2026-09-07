@@ -169,11 +169,27 @@ if grep -Eq 'ROUTINE_RESULT[[:space:]]+outcome=' "$soak_prompt"; then
   echo "canary soak prompt contains a result-shaped trailer literal" >&2
   exit 1
 fi
+# The promote lane resumed on 2026-09-07. The canary v2 migration that held it
+# finished on 2026-09-05: north-star-lastdb-canary-pipeline-v2 is done and its
+# terminal proof reads PASS, CHANNELS stage included. These assertions used to
+# pin the hold text ('status = "paused"' and 'This routine is paused'), so the
+# migration stub could outlive its reason without a red test. They now pin the
+# contract that must survive the resume instead: prepare and notify only.
+# Decision: decision-2026-09-07-canary-v2-migration-finished-promote-lane-resumes
 grep -q 'lastdb-canary-promote-prepare' "$ROOT/config/routines-registry/lastdb-canary-promote-prepare.toml"
-grep -q 'status = "paused"' "$ROOT/config/routines-registry/lastdb-canary-promote-prepare.toml"
+grep -q 'status = "active"' "$ROOT/config/routines-registry/lastdb-canary-promote-prepare.toml"
 promote_prompt="$ROOT/routines/lastdb-canary-promote-prepare.md"
-grep -q 'This routine is paused' "$promote_prompt"
-grep -q 'promote-eligible' "$promote_prompt"
+grep -q 'last-stack-canary-pipeline" promote-prepare' "$promote_prompt"
+grep -q 'PROMOTE_READY' "$promote_prompt"
+# The narrow hold is the point of the routine. Losing any of these three lines
+# turns a prepare-and-notify lane into an unattended stable publisher.
+grep -q 'Do not run `promote-execute`' "$promote_prompt"
+grep -q 'stable-channel publish' "$promote_prompt"
+grep -q 'Do not restart, kill, or upgrade the primary LastDB node' "$promote_prompt"
+if grep -Eq 'ROUTINE_RESULT[[:space:]]+outcome=' "$promote_prompt"; then
+  echo "canary promote prompt contains a result-shaped trailer literal" >&2
+  exit 1
+fi
 
 # promote-execute dry-run after soak_green
 LAST_STACK_CANARY_PROMOTE_AUTO=1 \

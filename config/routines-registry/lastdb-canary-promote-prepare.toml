@@ -1,13 +1,19 @@
-# Canary v1 promotion is held. Canary v2 enables stable publication only after
-# its channel proof and explicit action command are complete.
+# Prepare + notify only. This routine writes promotion material and sends one
+# notification. It never runs promote-execute, never publishes brew or a stable
+# tag, and never mutates the primary LastDB node. Stable publication stays an
+# explicit human action.
+#
+# Resumed 2026-09-07: the canary v2 migration that held this lane finished on
+# 2026-09-05 (north-star-lastdb-canary-pipeline-v2 is done, terminal proof
+# PASS). The old prompt was a migration-hold stub that printed a paused noop.
 id = "lastdb-canary-promote-prepare"
 harness = "claude"
 model = "sonnet"
 effort = "medium"
 group = "ops"
-rrule = "FREQ=HOURLY;INTERVAL=1;BYMINUTE=35;BYSECOND=0"
+rrule = "FREQ=HOURLY;INTERVAL=6;BYMINUTE=35;BYSECOND=0"
 cwd = "/Users/REPLACE/code/edgevector"
-status = "paused"
+status = "active"
 timeout_min = 90
 prompt_path = "/Users/REPLACE/.last-stack/routines/lastdb-canary-promote-prepare.md"
 heartbeat_slug = "routine-heartbeats"

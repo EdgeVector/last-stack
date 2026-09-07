@@ -171,6 +171,11 @@ if rg -n 'lastdb-canary-release|SOAK_WAIT|last-stack-canary-loom' "$GATE"; then
   exit 1
 fi
 grep -q 'last-stack-canary-v2-dogfood-gate' "$ROOT/config/routines-registry/lastdb-canary-dogfood.toml"
-grep -q 'status = "paused"' "$ROOT/config/routines-registry/lastdb-canary-promote-prepare.toml"
+# Dogfood must never be able to publish stable as a side effect. That used to
+# be asserted as `status = "paused"` on the promote routine, which also froze
+# the whole lane. The lane resumed on 2026-09-07; the ban is now asserted where
+# it belongs, on the promote prompt's own hard rules.
+grep -q 'Do not run `promote-execute`' "$ROOT/routines/lastdb-canary-promote-prepare.md"
+grep -q 'stable-channel publish' "$ROOT/routines/lastdb-canary-promote-prepare.md"
 
 echo "ok last-stack-canary-v2-dogfood-gate"

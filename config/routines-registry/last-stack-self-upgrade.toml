@@ -2,6 +2,8 @@
 # (zero-LLM, every 30m). This Codex routine is OPTIONAL backup for dirty-tree
 # repair only — default paused so it does not double-pay for clean FF upgrades.
 # Resume with: routines resume last-stack-self-upgrade
+# PAUSED-REASON: the launchd zero-LLM healer covers this every 30m; optional backup only
+# PAUSED-UNTIL: never
 id = "last-stack-self-upgrade"
 harness = "codex"
 model = "gpt-5.5"

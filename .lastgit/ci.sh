@@ -201,6 +201,7 @@ ci_test tests/last-stack-obs-sentry-locator.sh
 ci_test tests/last-stack-sentry-triage-classify.sh
 ci_test tests/last-stack-install-routines.sh
 ci_test tests/last-stack-routines-registry-host-paths.sh
+ci_test tests/last-stack-routines-paused-audit.sh
 ci_test tests/last-stack-feature-prove-routine.sh
 ci_test tests/last-stack-fleet-performance-routine.sh
 ci_test tests/last-stack-why-stopped-routine.sh

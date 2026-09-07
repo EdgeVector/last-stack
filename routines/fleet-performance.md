@@ -77,7 +77,37 @@ difficulty matrix). Never `routines-profile apply grok-default-20260818`.
 routines list --json
 routines status --json
 kanban pickup status
+"$last_stack/bin/last-stack-routines-paused-audit" --json
 ```
+
+The audit answers a question `routines status` cannot: **who owns each pause?**
+A paused routine and an idle one both report `lastOutcome: noop`, so a pause
+that gates a delivery line is invisible. Measured 2026-09-07: the canary
+promote pair sat paused for a migration that finished on 2026-09-05, and 13 of
+13 paused routines carried no reason at all.
+
+Each finding has a verdict:
+
+- `owned` — a reason, and an unexpired expiry or an owning card. Leave it.
+- `expired` — the stated expiry has passed. Resume it, or restate the expiry.
+- `silent` — no reason a reader can find. Give it one, or resume it.
+- `drift` — the live entry is paused while the shipped source says active, so
+  no reviewed file records the pause. Give it a reason, or resume it.
+
+You own this list. Every non-`owned` finding needs one of two outcomes in the
+same run: the pause gains structured metadata, or the routine resumes. The
+metadata is TOML **comments**, because the registry parser rejects an unknown
+key and drops the whole entry (`unknown key "paused_reason"`):
+
+```toml
+# PAUSED-REASON: one line naming what the pause waits for
+# PAUSED-UNTIL: 2026-10-01T00:00:00Z    # or `card`, or `never`
+# PAUSED-CARD: owning-card-slug
+status = "paused"
+```
+
+Standing rule 2 still holds: documenting why `-w4`/`-w5`/`-w6` are paused is
+the correct outcome for them. Do not resume them.
 
 For each id, also sample the last **20** `~/.routines/runs/<id>/*/meta.json`
 files: `outcome`, `durationMs`, `timedOut`/`exitCode==124`,

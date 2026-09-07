@@ -1,0 +1,263 @@
+#!/usr/bin/env python3
+"""Report every paused routine, and say who owns the pause.
+
+Why this exists
+---------------
+A paused routine and an idle routine look the same on the fleet view. Both
+report `lastOutcome: noop`. `routines status --json` does carry
+`status: "paused"`, but nothing says WHY a routine is paused, WHEN the pause
+should end, or WHICH card owns the resume. So a pause that gates a delivery
+line is silent.
+
+Measured 2026-09-07: `lastdb-canary-promote-prepare` and
+`lastdb-canary-soak-watch` were both paused with the reason
+`canary-v2-migration`. That migration finished on 2026-09-05 (North Star
+`north-star-lastdb-canary-pipeline-v2` is done, its terminal proof reads PASS).
+The pause outlived its reason by two days, and the fleet view reported `noop`
+for both. `lastdb-canary-soak-watch` was worse: the SHIPPED registry source
+says `status = "active"`, so the pause existed only in the live registry and
+no reviewed file recorded it.
+
+Where the metadata lives
+------------------------
+NOT in a TOML key. The `routines` registry parser rejects an unknown key and
+drops the whole entry:
+
+    routines list --json
+    {"entries": [], "errors": ["...toml: unknown key \"paused_reason\""]}
+
+So a pause carries its metadata in structured TOML comments, which the parser
+ignores and this auditor reads:
+
+    # PAUSED-REASON: <one line: what the pause is waiting for>
+    # PAUSED-UNTIL: <ISO-8601 UTC, or `card`, or `never`>
+    # PAUSED-CARD: <kanban slug that owns the resume>
+    status = "paused"
+
+`PAUSED-UNTIL: never` states a permanent hold by design, such as an optional
+backup routine that a launchd healer already covers. It still needs a reason.
+`PAUSED-UNTIL: card` hands the expiry to `PAUSED-CARD`.
+
+Verdicts
+--------
+    owned    reason present, and an unexpired expiry or an owning card
+    expired  PAUSED-UNTIL is in the past
+    silent   paused with no reason, and no owning card
+    drift    live entry is paused while the shipped source says active
+
+Exit 0 when every pause is `owned`. Exit 1 when any pause is `expired`,
+`silent`, or `drift` — those are the pauses a human cannot see today.
+Exit 2 on a usage or config error.
+"""
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+ID_RE = re.compile(r'^\s*id\s*=\s*"([^"]*)"')
+STATUS_RE = re.compile(r'^\s*status\s*=\s*"([^"]*)"')
+META_RE = re.compile(r'^\s*#\s*PAUSED-(REASON|UNTIL|CARD)\s*:\s*(.*?)\s*$', re.IGNORECASE)
+
+
+def parse_iso(value):
+    """Parse an ISO-8601 UTC stamp. Return None when it is not one."""
+    text = (value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        stamp = dt.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=dt.timezone.utc)
+    return stamp.astimezone(dt.timezone.utc)
+
+
+def read_entry(path):
+    """Read one registry TOML. Return id, status, and the pause comments."""
+    entry = {
+        "file": str(path),
+        "id": path.stem,
+        "status": "",
+        "paused_reason": "",
+        "paused_until": "",
+        "paused_card": "",
+    }
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as err:
+        entry["read_error"] = str(err)
+        return entry
+    for line in text.splitlines():
+        meta = META_RE.match(line)
+        if meta:
+            entry["paused_" + meta.group(1).lower()] = meta.group(2)
+            continue
+        found = ID_RE.match(line)
+        if found:
+            entry["id"] = found.group(1)
+            continue
+        found = STATUS_RE.match(line)
+        if found:
+            entry["status"] = found.group(1)
+    return entry
+
+
+def read_dir(directory):
+    """Read every registry TOML in one directory, keyed by routine id."""
+    entries = {}
+    if not directory or not directory.is_dir():
+        return entries
+    for path in sorted(directory.glob("*.toml")):
+        entry = read_entry(path)
+        entries[entry["id"]] = entry
+    return entries
+
+
+def classify(entry, source_entry, now):
+    """Return the verdict for one paused live entry, and why."""
+    reason = entry["paused_reason"].strip()
+    card = entry["paused_card"].strip()
+    until_raw = entry["paused_until"].strip()
+    until = parse_iso(until_raw)
+
+    if source_entry is not None and source_entry["status"] == "active" and not reason:
+        return "drift", (
+            "the live entry is paused while the shipped source says active, "
+            "and no PAUSED-REASON records the local pause"
+        )
+    if until is not None and until <= now:
+        return "expired", "PAUSED-UNTIL %s has passed" % until_raw
+    if not reason:
+        return "silent", "no PAUSED-REASON"
+    keyword = until_raw.lower()
+    if keyword == "never":
+        return "owned", "reason recorded, and the hold is permanent by design"
+    if until is not None:
+        return "owned", "reason recorded, and an unexpired expiry"
+    if card:
+        return "owned", "reason recorded, and an owning card"
+    if until_raw and keyword != "card":
+        return "silent", "PAUSED-UNTIL %r is not an ISO-8601 UTC stamp, `card`, or `never`" % until_raw
+    return "silent", "a reason with neither an expiry nor an owning card"
+
+
+def default_registry_dir():
+    home = os.environ.get("ROUTINES_HOME") or str(Path.home() / ".routines")
+    return Path(home) / "registry"
+
+
+def default_source_dir():
+    here = Path(__file__).resolve().parent.parent
+    return here / "config" / "routines-registry"
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="last-stack-routines-paused-audit",
+        description="Report every paused routine and say who owns the pause.",
+    )
+    parser.add_argument(
+        "--registry-dir",
+        type=Path,
+        default=None,
+        help="live routines registry directory (default: $ROUTINES_HOME/registry)",
+    )
+    parser.add_argument(
+        "--source-dir",
+        type=Path,
+        default=None,
+        help="shipped registry source directory used for drift detection",
+    )
+    parser.add_argument("--json", action="store_true", help="print one JSON document")
+    parser.add_argument(
+        "--at",
+        default="",
+        help="evaluation timestamp in ISO-8601 UTC (default: now)",
+    )
+    args = parser.parse_args(argv)
+
+    registry_dir = args.registry_dir or default_registry_dir()
+    source_dir = args.source_dir if args.source_dir is not None else default_source_dir()
+
+    if not registry_dir.is_dir():
+        print(
+            "last-stack-routines-paused-audit: no registry directory at %s" % registry_dir,
+            file=sys.stderr,
+        )
+        return 2
+
+    now = parse_iso(args.at) if args.at else dt.datetime.now(dt.timezone.utc)
+    if now is None:
+        print("last-stack-routines-paused-audit: --at is not ISO-8601 UTC", file=sys.stderr)
+        return 2
+
+    live = read_dir(registry_dir)
+    source = read_dir(source_dir)
+
+    findings = []
+    for routine_id in sorted(live):
+        entry = live[routine_id]
+        if entry["status"] != "paused":
+            continue
+        verdict, detail = classify(entry, source.get(routine_id), now)
+        findings.append(
+            {
+                "id": routine_id,
+                "verdict": verdict,
+                "detail": detail,
+                "paused_reason": entry["paused_reason"],
+                "paused_until": entry["paused_until"],
+                "paused_card": entry["paused_card"],
+                "source_status": source.get(routine_id, {}).get("status", ""),
+                "file": entry["file"],
+            }
+        )
+
+    unowned = [f for f in findings if f["verdict"] != "owned"]
+    result = {
+        "kind": "routines-paused-audit",
+        "at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "registry_dir": str(registry_dir),
+        "source_dir": str(source_dir),
+        "paused": len(findings),
+        "owned": len(findings) - len(unowned),
+        "unowned": len(unowned),
+        "findings": findings,
+    }
+
+    if args.json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        if not findings:
+            print("PAUSED_AUDIT ok paused=0 — no routine is paused")
+        for finding in findings:
+            print(
+                "PAUSED_AUDIT %s id=%s reason=%s until=%s card=%s source=%s — %s"
+                % (
+                    finding["verdict"],
+                    finding["id"],
+                    finding["paused_reason"] or "none",
+                    finding["paused_until"] or "none",
+                    finding["paused_card"] or "none",
+                    finding["source_status"] or "absent",
+                    finding["detail"],
+                )
+            )
+        if findings:
+            print(
+                "PAUSED_AUDIT summary paused=%d owned=%d unowned=%d"
+                % (result["paused"], result["owned"], result["unowned"])
+            )
+
+    return 1 if unowned else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
