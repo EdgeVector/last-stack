@@ -416,6 +416,12 @@ incomplete_exec_id() {
     | sed -E 's/^execution[[:space:]]+//; s/[[:space:]]+is incomplete$//'
 }
 
+# Stopping the driver this wrapper gave up on lives in
+# lib/loom-drive-workers.sh, so whats-wrong and why-stopped cannot drift in
+# what they consider safe to signal.
+# shellcheck source=lib/loom-drive-workers.sh
+. "$ROOT/lib/loom-drive-workers.sh"
+
 # `loom reap --execution <id>` recovers ONLY an execution whose worker no
 # longer holds a live lease, so it is safe to call on a frontier another worker
 # may still hold. Best effort and bounded; the retry runs either way.
@@ -727,6 +733,11 @@ except subprocess.TimeoutExpired:
       drain_log "deadline won remaining=${remaining}s answer=${ended_reason} exec=${stalled_exec}"
       break
     fi
+    # Stop the driver this attempt gave up on BEFORE reaping. A live driver
+    # holds the lease, so a reap around it answers `reaped` and recovers
+    # nothing, and the next `loom run` then adds a second writer to the same
+    # row. See stop_abandoned_drive_workers.
+    stop_answer="$(stop_abandoned_drive_workers "$stalled_exec")"
     reap_answer="skipped"
     if [ "$stalled_exec" != "unknown" ]; then
       if reap_stalled_execution "$stalled_exec"; then
@@ -736,7 +747,7 @@ except subprocess.TimeoutExpired:
       fi
     fi
     ended_reason="incomplete_drive_deadline"
-    drain_log "re-attach attempt=$((attempt + 1))/${RETRY_ATTEMPTS} exec=${stalled_exec} reap=${reap_answer} remaining=${remaining}s reason=${ended_reason}"
+    drain_log "re-attach attempt=$((attempt + 1))/${RETRY_ATTEMPTS} exec=${stalled_exec} workers=${stop_answer} reap=${reap_answer} remaining=${remaining}s reason=${ended_reason}"
     attempt=$((attempt + 1))
     continue
   fi

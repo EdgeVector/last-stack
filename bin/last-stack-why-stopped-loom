@@ -121,6 +121,10 @@ reason_token() {
 }
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+# Stopping a driver this wrapper gave up on. Same helper whats-wrong uses, so
+# the two cannot drift in what they consider safe to signal.
+# shellcheck source=lib/loom-drive-workers.sh
+. "$ROOT/lib/loom-drive-workers.sh"
 export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
 
 if ! command -v loom >/dev/null 2>&1; then
@@ -305,6 +309,34 @@ raise SystemExit(result.returncode)
 '
 }
 
+# One bounded `loom show` point read. Empty when loom cannot answer in time —
+# the caller then keeps the verdict it already had.
+readback_loom_execution() {
+  rb_exec_id="$1"
+  [ -n "$rb_exec_id" ] || return 1
+  rb_timeout="${LAST_STACK_WHY_STOPPED_LOOM_READBACK_TIMEOUT_SEC:-20}"
+  case "$rb_timeout" in ''|*[!0-9]*) rb_timeout=20 ;; esac
+  [ "$rb_timeout" -ge 1 ] || rb_timeout=20
+  RB_EXEC_ID="$rb_exec_id" RB_TIMEOUT="$rb_timeout" python3 -c '
+import os
+import subprocess
+
+try:
+    result = subprocess.run(
+        ["loom", "show", os.environ["RB_EXEC_ID"]],
+        capture_output=True,
+        text=True,
+        timeout=int(os.environ["RB_TIMEOUT"]),
+        check=False,
+    )
+except (subprocess.TimeoutExpired, OSError):
+    raise SystemExit(1)
+if result.returncode != 0:
+    raise SystemExit(1)
+print(result.stdout, end="")
+'
+}
+
 on_loom_signal() {
   signal_name="$1"
   cleanup_loom_group
@@ -451,6 +483,30 @@ if [ "$lrc" -ne 0 ] && [ "$lrc" -ne 4 ]; then
   exit 3
 fi
 
+# loom's drive deadline can fire seconds before the execution reaches DONE.
+# whats-wrong measured exactly that on 2026-09-07: it reported `error` at
+# 02:28:25.820Z on an execution loom recorded DONE at 02:28:29.991Z, four
+# seconds later. This wrapper had no equivalent guard, so every such hour
+# surfaced `loom=unavailable rc=3 cause=loom_exec_status_running` for a loom
+# that was up and answering (papercut
+# papercut-why-stopped-loom-has-no-rc4-retry-pr41-fixed-only-whats-wrong-20260907).
+#
+# Read the execution back BEFORE the view is parsed, so a readback that wins
+# supplies the classification too — promoting only the status would report a
+# succeeded execution with `classes=unknown`.
+view_status="$(printf '%s\n' "$view" | awk -F': *' '/^status:/{print $2; exit}')"
+if [ "$view_status" != "succeeded" ]; then
+  rb_exec="$(printf '%s\n' "$view" | awk 'NF{print; exit}')"
+  rb_view="$(readback_loom_execution "$rb_exec" || true)"
+  if [ -n "$rb_view" ]; then
+    rb_status="$(printf '%s\n' "$rb_view" | awk -F': *' '/^status:/{print $2; exit}')"
+    if [ "$rb_status" = "succeeded" ]; then
+      log "loom drive deadline fired, but exec $rb_exec is succeeded; reporting the execution"
+      view="$rb_view"
+    fi
+  fi
+fi
+
 parsed="$(printf '%s\n' "$view" | python3 -c '
 import json, sys
 text = sys.stdin.read()
@@ -503,7 +559,8 @@ emit_classification() {
 }
 
 if [ "$status" != "succeeded" ]; then
-  log "loom exec status=$status"
+  workers_stopped="$(stop_abandoned_drive_workers "$exec_id")"
+  log "loom exec status=$status exec=${exec_id:-unknown} workers=${workers_stopped}"
   write_stamp "${status:-failed}" "$exec_id" "$cls_str" "$key" "$(reason_token)"
   # A populated classification is the answer we were asked for, even though
   # the execution is unfinished. Hand it back and say the run is incomplete —

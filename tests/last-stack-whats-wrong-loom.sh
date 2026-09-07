@@ -940,3 +940,103 @@ unset REAP_LOG_FILE
 unset LAST_STACK_WHATS_WRONG_LOOM_RETRY_ATTEMPTS
 
 echo "ok"
+
+# --- stop_abandoned_drive_workers -------------------------------------------
+#
+# The re-attach branch must stop the driver it just gave up on. Before this,
+# every `loom run --key` retry started ANOTHER `drive-detached` worker and left
+# the previous one alive: five attempts left five live drivers on one execution
+# and eleven on its child on 2026-09-07, host load average 42, and the reap
+# between attempts answered `reaped` while recovering nothing because those
+# live drivers still held the lease.
+#
+# Three properties, proven against real processes:
+#   1. a driver for the named execution is stopped,
+#   2. a `drive-detached` CHILD of that driver is stopped too (killing only the
+#      parent reparents the child to PID 1, where it survives forever),
+#   3. a process that merely QUOTES the marker is NOT signalled. A routine
+#      harness carries its whole prompt on its command line, so `claude -p`
+#      dispatches match a substring search — four did on 2026-09-07 — and
+#      signalling one kills the routine running this wrapper.
+LIB="$ROOT/lib/loom-drive-workers.sh"
+[ -f "$LIB" ] || fail "lib/loom-drive-workers.sh missing"
+bash -n "$LIB" || fail "lib/loom-drive-workers.sh does not parse"
+grep -q '\. "\$ROOT/lib/loom-drive-workers.sh"' "$BIN" \
+  || fail "whats-wrong wrapper does not source lib/loom-drive-workers.sh"
+stop_fn="$(sed -n '/^stop_abandoned_drive_workers()/,/^}$/p' "$LIB")"
+[ -n "$stop_fn" ] || fail "stop_abandoned_drive_workers not found in $LIB"
+printf '%s\n' "$stop_fn" > "$tmp/stop.sh"
+bash -n "$tmp/stop.sh" || fail "stop_abandoned_drive_workers does not parse"
+
+# A stand-in whose argv[0] basename is `loom`, so the helper's binary check
+# accepts it. `sh` ignores the trailing words but `ps` still shows them.
+mkdir -p "$tmp/fakebin"
+ln -s /bin/sh "$tmp/fakebin/loom"
+
+cat > "$tmp/stop-case.sh" <<'CASE'
+#!/bin/bash
+set -u
+. "$1"; FB="$2"
+# `sh -c '<simple command>'` execs the command and DROPS the trailing argv,
+# which erases the marker `ps` must show. A compound body keeps the shell.
+"$FB/loom" -c '"$0" -c "sleep 120; :" "$0" --socket /x drive-detached lx-TEST-CHILD \
+    >/dev/null 2>&1 &
+  sleep 120; :' "$FB/loom" --socket /x drive-detached lx-TEST-PARENT >/dev/null 2>&1 &
+"$FB/loom" -c 'sleep 120; :' d --socket /x drive-detached lx-TEST-OTHER >/dev/null 2>&1 &
+/bin/bash -c 'exec -a "harness -p prompt drive-detached lx-TEST-PARENT tail" sleep 120' \
+  >/dev/null 2>&1 &
+sleep 2
+printf 'BEFORE %s\n' "$(ps -Ao command= | grep -c 'drive-detached lx-TEST')"
+printf 'ANSWER %s\n' "$(stop_abandoned_drive_workers lx-TEST-PARENT)"
+sleep 2
+ps -Ao command= | grep 'drive-detached lx-TEST' | grep -v grep | sed 's/^ *//' \
+  | while read -r line; do printf 'AFTER %s\n' "$line"; done
+kill %1 %2 %3 >/dev/null 2>&1 || true
+exit 0
+CASE
+
+case_out="$(bash "$tmp/stop-case.sh" "$tmp/stop.sh" "$tmp/fakebin" 2>/dev/null)"
+printf '%s\n' "$case_out" | grep -q '^ANSWER stopped=2$' \
+  || fail "stop_abandoned_drive_workers did not stop the driver and its child: $case_out"
+printf '%s\n' "$case_out" | grep -q 'AFTER.*lx-TEST-OTHER' \
+  || fail "stop_abandoned_drive_workers killed an unrelated execution's driver: $case_out"
+printf '%s\n' "$case_out" | grep -q 'AFTER.*harness -p prompt' \
+  || fail "stop_abandoned_drive_workers signalled a process that only quotes the marker: $case_out"
+printf '%s\n' "$case_out" | grep -q 'AFTER.*/loom.*lx-TEST-PARENT' \
+  && fail "stop_abandoned_drive_workers left the named driver alive: $case_out"
+
+# No id, and an id loom never named, are both no-ops rather than a broad sweep.
+for arg in '' unknown; do
+  ans="$(bash -c '. "$1"; stop_abandoned_drive_workers "$2"' _ "$tmp/stop.sh" "$arg")"
+  [ "$ans" = "none" ] || fail "stop_abandoned_drive_workers('$arg') answered '$ans', wanted none"
+done
+
+# A scheduled routine runs under a sandbox that answers `operation not
+# permitted: ps` -- lastdb-canary-dogfood stopped on exactly that on
+# 2026-09-06 (papercut-routine-process-inspection-sandbox-denied). These
+# wrappers ARE scheduled routines, so this is the production path, not an edge
+# case. It must degrade to a named no-op and still return 0, so the reap and
+# the retry after it run either way.
+mkdir -p "$tmp/denybin"
+printf '#!/bin/sh\necho "operation not permitted: ps" >&2\nexit 1\n' > "$tmp/denybin/ps"
+chmod 755 "$tmp/denybin/ps"
+denied="$(bash -c '. "$1"; PATH="$2:$PATH"; stop_abandoned_drive_workers lx-ANY' \
+  _ "$tmp/stop.sh" "$tmp/denybin")"
+[ "$denied" = "unreadable" ] \
+  || fail "a denied ps should answer 'unreadable', got '$denied'"
+bash -c '. "$1"; PATH="$2:$PATH"; stop_abandoned_drive_workers lx-ANY >/dev/null' \
+  _ "$tmp/stop.sh" "$tmp/denybin" \
+  || fail "a denied ps must still return 0 so the reap and retry run"
+
+# The re-attach branch must call it, and before the reap.
+grep -q 'stop_answer="$(stop_abandoned_drive_workers "$stalled_exec")"' "$BIN" \
+  || fail "re-attach branch does not stop the abandoned driver"
+python3 - "$BIN" <<'ORDER'
+import sys
+src = open(sys.argv[1]).read()
+stop = src.index('stop_answer="$(stop_abandoned_drive_workers "$stalled_exec")"')
+reap = src.index('if reap_stalled_execution "$stalled_exec"; then')
+assert stop < reap, "the driver must be stopped BEFORE the reap, or the reap finds a held lease"
+ORDER
+grep -q 'workers=${stop_answer}' "$BIN" \
+  || fail "re-attach log line does not report how many drivers were stopped"

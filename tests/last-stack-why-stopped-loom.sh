@@ -375,4 +375,91 @@ for child_pid in "$loom_pid" "$descendant_pid"; do
   fi
 done
 
+# --- loom's drive deadline fired, but the execution is already DONE ---------
+#
+# whats-wrong measured this exact false red on 2026-09-07: it reported `error`
+# at 02:28:25.820Z on an execution loom recorded DONE at 02:28:29.991Z. This
+# wrapper had no readback, so it answered exit 3 / loom=unavailable for a loom
+# that was up. `loom run` here reports the execution still running; `loom show`
+# reports it succeeded with a classification. The readback must win.
+cat >"$tmp/bin/loom" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  ping) echo ok; exit 0 ;;
+  publish) exit 0 ;;
+  run)
+    cat <<'VIEW'
+lx-late-done
+status: running
+state: GATHER
+VIEW
+    exit 4
+    ;;
+  show)
+    cat <<'VIEW'
+lx-late-done
+status: succeeded
+state: DONE
+context.classes: "D+F"
+context.detail: "two lanes stalled"
+context.actions: "rerun the lane"
+VIEW
+    exit 0
+    ;;
+  *) exit 2 ;;
+esac
+SH
+chmod 755 "$tmp/bin/loom"
+set +e
+late_out="$("$BIN" --json --quiet 2>/dev/null)"
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "readback should turn the late DONE into exit 0, got $rc: $late_out"
+printf '%s\n' "$late_out" | grep -q '"classes":"D+F"' \
+  || fail "readback did not report the execution's classification: $late_out"
+
+st="$("$BIN" --status)"
+printf '%s\n' "$st" | grep -q '"status": "succeeded"' \
+  || fail "readback win should stamp succeeded: $st"
+
+# A readback that agrees the execution is unfinished must NOT be promoted.
+cat >"$tmp/bin/loom" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  ping) echo ok; exit 0 ;;
+  publish) exit 0 ;;
+  run)
+    cat <<'VIEW'
+lx-really-stuck
+status: running
+state: GATHER
+VIEW
+    exit 4
+    ;;
+  show)
+    cat <<'VIEW'
+lx-really-stuck
+status: running
+state: GATHER
+VIEW
+    exit 0
+    ;;
+  *) exit 2 ;;
+esac
+SH
+chmod 755 "$tmp/bin/loom"
+set +e
+"$BIN" --json --quiet >/dev/null 2>&1
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || fail "a still-running readback must stay a failure, got $rc"
+
+# The wrapper shares one driver-stopping helper with whats-wrong.
+grep -q '\. "\$ROOT/lib/loom-drive-workers.sh"' "$BIN" \
+  || fail "why-stopped wrapper does not source lib/loom-drive-workers.sh"
+grep -q 'stop_abandoned_drive_workers "\$exec_id"' "$BIN" \
+  || fail "why-stopped does not stop the driver it abandoned"
+
 echo ok
