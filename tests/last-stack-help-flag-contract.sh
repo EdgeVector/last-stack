@@ -39,7 +39,12 @@ BIN_DIR="${LAST_STACK_HELP_FLAG_BIN_DIR:-$ROOT/bin}"
 # case arm, or a comparison against a positional. Merely passing --help through
 # to another tool does not count.
 has_help_arm() {
-  grep -qE -- '(-h\|--help|--help\|-h)\)|(\[|\[\[)[^\n]*"?\$\{?[0-9][^\n]*=[[:space:]]*"?--help"?' "$1" 2>/dev/null
+  # A bash case arm or test on --help, or a Python argparse parser: argparse
+  # wires -h/--help itself unless the helper passes add_help=False.
+  if grep -qE -- '(-h\|--help|--help\|-h)\)|(\[|\[\[)[^\n]*"?\$\{?[0-9][^\n]*=[[:space:]]*"?--help"?' "$1" 2>/dev/null; then
+    return 0
+  fi
+  grep -q 'ArgumentParser(' "$1" 2>/dev/null && ! grep -q 'add_help=False' "$1" 2>/dev/null
 }
 
 failures=0

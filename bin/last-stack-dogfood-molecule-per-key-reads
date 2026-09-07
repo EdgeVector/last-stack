@@ -236,7 +236,7 @@ def median(group, size):
     # criterion layout: <group>/<id>/new/estimates.json or base/
     for sub in ("new", "base"):
         # ids look like "1000", "Contacts/1000", etc.
-        for path in crit.glob(f"{group}/**/estimates.json"):
+        for path in crit.glob(f"{group}/**/estimates.json"):  # walk-ok: one criterion report dir, three levels
             if path.parent.name != sub:
                 continue
             # parent of new/base is the case id

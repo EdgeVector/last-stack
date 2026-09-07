@@ -164,7 +164,7 @@ def main():
                 return 2
             patterns = includes.get(label, ["*.jsonl"])
             summary["roots"].append({"harness": label, "path": str(root), "include": patterns})
-            paths = {path for pattern in patterns for path in root.rglob(pattern)}
+            paths = {path for pattern in patterns for path in root.rglob(pattern)}  # walk-ok: harness transcript dirs, shallow
             for path in sorted(paths):
                 if output_path and path.resolve() == output_path.resolve():
                     continue

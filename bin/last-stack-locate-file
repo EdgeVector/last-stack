@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""Locate one config or catalog file without an unbounded workspace walk.
+
+Resolution order, first hit wins:
+
+  1. --env VAR         the path in that environment variable, when it exists
+  2. --candidate PATH  fixed candidates, in the order given (~ expands)
+  3. --root DIR        a bounded search: at most --maxdepth levels below each
+                       root, at most --budget-ms of wall clock in total, never
+                       following symlinks, and pruning .git, target,
+                       node_modules and __pycache__.
+
+The home directory is refused as a root: a walk of $HOME steps into the macOS
+TCC-protected folders and blocks on a privacy prompt. Workspace roots such as
+~/code/edgevector or ~/.fkanban/worktrees are accepted, because the depth and
+time bounds keep them cheap.
+
+Exit codes: 0 found, 1 not found, 2 usage error.
+
+Examples:
+
+  last-stack-locate-file --name feature_catalog.toml \\
+    --env PRODUCT_FEATURE_CATALOG \\
+    --candidate ~/code/edgevector/fold/folddb_profile/feature_catalog.toml \\
+    --root ~/.fkanban/worktrees --maxdepth 3
+
+  last-stack-locate-file --name ci.sh --root ~/.fkanban/worktrees/x --maxdepth 2 --json
+
+Ground truth: brain papercut-agent-zero-llm-cli-bash-python-heredoc-rglob.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fnmatch
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+PRUNE_DIRS = {".git", "target", "node_modules", "__pycache__"}
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="last-stack-locate-file",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--name", required=True, help="file name or glob to find, e.g. feature_catalog.toml")
+    parser.add_argument("--env", default="", help="environment variable that may hold the path")
+    parser.add_argument("--candidate", action="append", default=[], help="fixed candidate path; repeatable, ordered")
+    parser.add_argument("--root", action="append", default=[], help="root for the bounded search; repeatable, ordered")
+    parser.add_argument("--maxdepth", type=int, default=3, help="levels below a root to search (default 3; 1 = the root's own entries)")
+    parser.add_argument("--budget-ms", type=int, default=3000, help="wall-clock budget for the whole search (default 3000)")
+    parser.add_argument("--all", action="store_true", help="print every hit inside the bounds instead of the first")
+    parser.add_argument("--json", action="store_true", help="print a JSON summary instead of bare paths")
+    args = parser.parse_args(argv)
+    if args.maxdepth < 1:
+        parser.error("--maxdepth must be at least 1")
+    if args.budget_ms < 1:
+        parser.error("--budget-ms must be at least 1")
+    return args
+
+
+def expand(raw: str) -> Path:
+    return Path(os.path.expanduser(raw))
+
+
+def is_home_root(path: Path) -> bool:
+    home = Path.home()
+    try:
+        resolved = path.resolve()
+    except OSError:
+        resolved = path
+    try:
+        home_resolved = home.resolve()
+    except OSError:
+        home_resolved = home
+    return resolved == home_resolved or path == home
+
+
+def bounded_walk(root: Path, name: str, maxdepth: int, deadline: float, found: list[Path], want_all: bool) -> tuple[int, bool]:
+    """Breadth-first, depth-bounded, time-budgeted. Returns (dirs_visited, budget_exhausted)."""
+    visited = 0
+    frontier: list[tuple[Path, int]] = [(root, 1)]
+    while frontier:
+        current, depth = frontier.pop(0)
+        if time.monotonic() >= deadline:
+            return visited, True
+        try:
+            with os.scandir(current) as entries:
+                visited += 1
+                for entry in sorted(entries, key=lambda e: e.name):
+                    try:
+                        if entry.is_symlink():
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            if entry.name in PRUNE_DIRS:
+                                continue
+                            if depth < maxdepth:
+                                frontier.append((Path(entry.path), depth + 1))
+                            continue
+                        if entry.is_file(follow_symlinks=False) and fnmatch.fnmatch(entry.name, name):
+                            found.append(Path(entry.path))
+                            if not want_all:
+                                return visited, False
+                    except OSError:
+                        continue
+        except (PermissionError, FileNotFoundError, NotADirectoryError):
+            continue
+    return visited, False
+
+
+def main(argv: list[str]) -> int:
+    args = parse_args(argv)
+    started = time.monotonic()
+    deadline = started + args.budget_ms / 1000.0
+    summary: dict[str, object] = {
+        "name": args.name,
+        "found": [],
+        "source": None,
+        "checked": {"env": None, "candidates": [], "roots": []},
+        "budget_exhausted": False,
+    }
+    found: list[Path] = []
+
+    if args.env:
+        raw = os.environ.get(args.env, "").strip()
+        env_path = expand(raw) if raw else None
+        exists = bool(env_path and env_path.is_file())
+        summary["checked"]["env"] = {"var": args.env, "value": raw or None, "exists": exists}
+        if exists and env_path is not None:
+            found.append(env_path)
+            summary["source"] = "env"
+
+    if not found or args.all:
+        for raw in args.candidate:
+            candidate = expand(raw)
+            exists = candidate.is_file()
+            summary["checked"]["candidates"].append({"path": str(candidate), "exists": exists})
+            if exists:
+                found.append(candidate)
+                summary["source"] = summary["source"] or "candidate"
+                if not args.all:
+                    break
+
+    if not found or args.all:
+        for raw in args.root:
+            root = expand(raw)
+            if is_home_root(root):
+                print(f"last-stack-locate-file: refusing the home directory as a root: {root}", file=sys.stderr)
+                print("Name the workspace root you need, e.g. ~/code/edgevector or ~/.fkanban/worktrees.", file=sys.stderr)
+                return 2
+            if not root.is_dir():
+                summary["checked"]["roots"].append({"path": str(root), "exists": False})
+                continue
+            before = len(found)
+            visited, exhausted = bounded_walk(root, args.name, args.maxdepth, deadline, found, args.all)
+            summary["checked"]["roots"].append({
+                "path": str(root),
+                "exists": True,
+                "maxdepth": args.maxdepth,
+                "dirs_visited": visited,
+                "budget_exhausted": exhausted,
+            })
+            if exhausted:
+                summary["budget_exhausted"] = True
+            if len(found) > before:
+                summary["source"] = summary["source"] or "walk"
+                if not args.all:
+                    break
+            if exhausted:
+                break
+
+    summary["found"] = [str(p) for p in found]
+    summary["elapsed_ms"] = int((time.monotonic() - started) * 1000)
+
+    if args.json:
+        print(json.dumps(summary, indent=2, sort_keys=True))
+    else:
+        for path in found:
+            print(path)
+    if found:
+        return 0
+    if not args.json:
+        print(f"last-stack-locate-file: {args.name} not found", file=sys.stderr)
+        env_check = summary["checked"]["env"]
+        if isinstance(env_check, dict):
+            print(f"  env {env_check['var']}: {env_check['value'] or '(unset)'}", file=sys.stderr)
+        for item in summary["checked"]["candidates"]:
+            print(f"  candidate {item['path']}: missing", file=sys.stderr)
+        for item in summary["checked"]["roots"]:
+            if item.get("exists"):
+                tail = " (budget exhausted)" if item.get("budget_exhausted") else ""
+                print(f"  root {item['path']} maxdepth={item['maxdepth']} dirs={item['dirs_visited']}{tail}", file=sys.stderr)
+            else:
+                print(f"  root {item['path']}: missing", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,11 @@
+# bin-authoring baseline: bin/ helpers that nest a Python program in a bash heredoc.
+# This list may only SHRINK. A new helper with a nest fails the gate; rewrite it in one language.
+# Regenerate after removing a nest: bin/last-stack-lint-bin-authoring --write-baseline
+# path
+bin/last-stack-card-closeout
+bin/last-stack-dogfood-resource-isolate
+bin/last-stack-forge-runner-lanes
+bin/last-stack-lastdb-ops-offenders
+bin/last-stack-lastgit-ci-coverage
+bin/last-stack-park-stuck-merge-poison-cards
+bin/last-stack-worktree-reclaim

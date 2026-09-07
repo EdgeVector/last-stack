@@ -40,7 +40,7 @@ def walk_identities(root: Path) -> Dict[Id, int]:
     out: Dict[Id, int] = {}
     if not root.is_dir():
         return out
-    for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
+    for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):  # walk-ok: one backup home, not a workspace
         for name in filenames:
             path = Path(dirpath) / name
             try:
