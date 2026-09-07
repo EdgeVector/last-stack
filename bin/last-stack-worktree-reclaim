@@ -97,6 +97,25 @@ board_unavailable=0
 # Soft-degrade requires this: without a real protect set we stay hard-closed.
 board_read_ok=0
 
+# Open PR / CR index. A worktree whose branch is the head of an OPEN change
+# request is not finished, however clean and however old: it is a change in
+# CI. On 2026-09-06 this sweep deleted the same brain worktree twice
+# (`reclaim finished … age_h=1 clean=1`) while its branch had an open LastGit
+# CR and then an open Forgejo PR — the agent lost its checkout mid-run both
+# times. Built once per sweep from LastGit's fleet open-CR index and the
+# Forgejo open-PR lists; lines are `<repo>\t<branch>`. When the index cannot
+# be read, the fast finished-work path is DISABLED (fail closed) and only the
+# conservative --max-age-hours gate applies, the same shape as board_unavailable.
+# LAST_STACK_RECLAIM_OPEN_HEADS_FILE injects a prebuilt index (tests, offline);
+# LAST_STACK_RECLAIM_SKIP_OPEN_PR=1 skips the check entirely (never in the
+# scheduled sweep).
+open_index=""
+open_index_ok=0
+open_pr_check=1
+[ "${LAST_STACK_RECLAIM_SKIP_OPEN_PR:-0}" = "1" ] && open_pr_check=0
+open_heads_file="${LAST_STACK_RECLAIM_OPEN_HEADS_FILE:-}"
+kept_open_pr=0
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --slug) slug="${2:-}"; shift 2 ;;
@@ -457,6 +476,78 @@ save_dirty_patch() {
   fi
 }
 
+# Repo slug of a worktree, as LastGit and Forgejo name it: the basename of the
+# common git dir with any `.git` suffix removed (`~/.cache/edgevector-git/brain.git`
+# → brain, `~/code/edgevector/last-stack` → last-stack).
+worktree_repo_slug() {
+  local wt="$1" repo base
+  repo="$(resolve_repo "$wt")"
+  [ -n "$repo" ] || { echo ""; return 0; }
+  base="$(basename "$repo")"
+  base="${base%.git}"
+  base="${base%.legacy-checkout}"
+  echo "$base"
+}
+
+worktree_branch() {
+  git -C "$1" rev-parse --abbrev-ref HEAD 2>/dev/null || echo ""
+}
+
+# Build the open-head index once per sweep. Sets open_index_ok=1 only when
+# BOTH sources answered (or were injected); a partial read protects nothing it
+# did not see, so it counts as unreadable.
+build_open_head_index() {
+  local out="$1" ok=1 lg_bin forge_api tout repos r
+  : >"$out"
+  if [ -n "$open_heads_file" ]; then
+    [ -f "$open_heads_file" ] || { open_index_ok=0; return 0; }
+    cat "$open_heads_file" >>"$out"
+    open_index_ok=1
+    return 0
+  fi
+  tout="$(command -v timeout || command -v gtimeout || true)"
+  # LastGit fleet open-CR index: one keyed read, rows carry repo + head_ref.
+  lg_bin="$(command -v lastgit || true)"
+  if [ -n "$lg_bin" ]; then
+    if ! ${tout:+"$tout" 45s} "$lg_bin" cr list --all-open --json 2>/dev/null \
+      | jq -r '(if type == "array" then . else (.rows // .crs // []) end) | .[]? | select((.state // "open") != "merged" and (.state // "open") != "closed") | [(.repo // ""), ((.head_ref // .head // .head_branch // "") | sub("^refs/heads/"; ""))] | select(.[0] != "" and .[1] != "") | @tsv' >>"$out" 2>/dev/null; then
+      log "open-pr index: lastgit cr list --all-open failed"
+      ok=0
+    fi
+  else
+    log "open-pr index: no lastgit binary on PATH (LastGit venue skipped)"
+  fi
+  # Forgejo: every repo with an open PR, then that repo's open PR heads.
+  forge_api="${LAST_STACK_FORGE_API:-$HOME/.last-stack/bin/last-stack-forge-api}"
+  if [ -x "$forge_api" ]; then
+    repos="$(${tout:+"$tout" 30s} "$forge_api" GET '/repos/issues/search?type=pulls&state=open&owner=EdgeVector&limit=50' 2>/dev/null \
+      | jq -r '.[]? | .repository.name // empty' 2>/dev/null | sort -u || true)"
+    if [ -z "$repos" ] && ! ${tout:+"$tout" 30s} "$forge_api" GET '/repos/issues/search?type=pulls&state=open&owner=EdgeVector&limit=1' >/dev/null 2>&1; then
+      log "open-pr index: forgejo issues/search failed"
+      ok=0
+    fi
+    for r in $repos; do
+      if ! ${tout:+"$tout" 30s} "$forge_api" GET "/repos/EdgeVector/$r/pulls?state=open&limit=50" 2>/dev/null \
+        | jq -r --arg r "$r" '.[]? | [$r, (.head.ref // "")] | select(.[1] != "") | @tsv' >>"$out" 2>/dev/null; then
+        log "open-pr index: forgejo pulls read failed for $r"
+        ok=0
+      fi
+    done
+  else
+    log "open-pr index: forge helper not executable at $forge_api (Forgejo venue skipped)"
+    [ -n "$lg_bin" ] || ok=0
+  fi
+  open_index_ok="$ok"
+}
+
+# branch_has_open_pr <repo-slug> <branch>: exact match on the index.
+branch_has_open_pr() {
+  local repo="$1" br="$2"
+  [ -n "$open_index" ] && [ -f "$open_index" ] || return 1
+  [ -n "$repo" ] && [ -n "$br" ] || return 1
+  grep -Fx -q "$(printf '%s\t%s' "$repo" "$br")" "$open_index"
+}
+
 resolve_repo() {
   local wt="$1"
   local common repo
@@ -625,6 +716,15 @@ if [ "$sweep_stale" -eq 1 ]; then
   # Once-per-sweep live process index (cwd + exe paths).
   live_index="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack.XXXXXX")"
   build_live_index "$live_index" || true
+  if [ "$open_pr_check" -eq 1 ]; then
+    open_index="$(mktemp "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack.XXXXXX")"
+    build_open_head_index "$open_index" || true
+    if [ "$open_index_ok" -eq 1 ]; then
+      log "open-pr index ready heads=$(wc -l <"$open_index" | tr -d ' ')"
+    else
+      log "open-pr index UNREADABLE — finished-work reclaim disabled this run (age gate only)"
+    fi
+  fi
   if [ "$liveness_unavailable" -eq 1 ]; then
     if [ "${board_read_ok:-0}" -eq 1 ]; then
       # Soft-degrade: process table missing but doing-card protect set is real.
@@ -735,14 +835,31 @@ if [ "$sweep_stale" -eq 1 ]; then
         continue
       fi
 
+      # An open change request is live work in CI, whatever the tree looks
+      # like. Exact (repo, branch) match against the index built above.
+      open_pr_unknown=0
+      if [ "$open_pr_check" -eq 1 ]; then
+        if [ "$open_index_ok" -eq 1 ]; then
+          wt_repo="$(worktree_repo_slug "$d")"
+          wt_branch="$(worktree_branch "$d")"
+          if branch_has_open_pr "$wt_repo" "$wt_branch"; then
+            log "keep open-pr ${name} repo=${wt_repo} branch=${wt_branch}"
+            kept_open_pr=$((kept_open_pr + 1))
+            continue
+          fi
+        else
+          open_pr_unknown=1
+        fi
+      fi
+
       # Finished work is reclaimable NOW. By this point the tree is not
       # protected (no doing-card, not salvage/tombstone/locked) and not live.
       # If it also has nothing uncommitted, waiting for it to reach
       # --max-age-hours does not make deletion safer — it only lets the pool
       # grow. This is what let a generator producing ~10 worktrees/hour
       # outrun an hourly sweep whose population was permanently "young".
-      if [ "$board_unavailable" -eq 0 ] && worktree_is_clean "$d"; then
-        log "reclaim finished ${name} age_h=$((age / 3600)) clean=1"
+      if [ "$board_unavailable" -eq 0 ] && [ "$open_pr_unknown" -eq 0 ] && worktree_is_clean "$d"; then
+        log "reclaim finished ${name} age_h=$((age / 3600)) clean=1 open_pr=0"
         remove_worktree "$d"
         reclaimed=$((reclaimed + 1))
         continue
@@ -759,10 +876,12 @@ if [ "$sweep_stale" -eq 1 ]; then
     done
   done
   rm -f "$protect_file" "$live_index"
+  [ -n "$open_index" ] && rm -f "$open_index"
+  open_index=""
   live_index=""
 fi
 
-log "done reclaimed=$reclaimed stripped_paths=$stripped_only strip_skipped_live=$strip_skipped_live strip_skipped_pressure=$strip_skipped_pressure liveness_unavailable=$liveness_unavailable liveness_soft=$liveness_soft board_read_ok=$board_read_ok free_floor_gib=$free_floor_gib min_age_min=$min_age_minutes dry_run=$dry_run"
+log "done reclaimed=$reclaimed kept_open_pr=$kept_open_pr open_pr_index_ok=$open_index_ok stripped_paths=$stripped_only strip_skipped_live=$strip_skipped_live strip_skipped_pressure=$strip_skipped_pressure liveness_unavailable=$liveness_unavailable liveness_soft=$liveness_soft board_read_ok=$board_read_ok free_floor_gib=$free_floor_gib min_age_min=$min_age_minutes dry_run=$dry_run"
 
 # Hard stop only when process inspection failed AND we lack a real board protect
 # set. Soft-degrade (board_read_ok) already reclaimed finished non-doing trees
