@@ -626,6 +626,11 @@ ci_test tests/machine-hygiene-empty-globs.sh
 # APPENDED: ci_test shards by list position.
 ci_test tests/last-stack-sentry-token-fallback.sh
 
+# setup must invoke every bin/last-stack-*-routine seeder. A hand-written list
+# dropped three of them, so lastdb-canary-build-main was never registered.
+# APPENDED: ci_test shards by list position.
+ci_test tests/last-stack-setup-seeds-every-routine.sh
+
 # The registration guard itself. Kept last, and asserted to be registered by
 # tests/last-stack-ci-sharding.sh, so the guard cannot quietly stop running.
 ci_test tests/last-stack-ci-test-registration.sh

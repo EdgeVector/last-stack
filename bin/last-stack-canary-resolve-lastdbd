@@ -167,11 +167,22 @@ if [ "$allow_newest" -eq 1 ] && [ -d "$BUILDS_DIR" ]; then
   newest=""
   newest_oid=""
   # Newest directory by mtime that actually contains an executable lastdbd.
+  #
+  # A stage directory is named for the commit it was built from. Other tooling
+  # copies a stage next to it under "<oid>-retryN.XXXXXX" (the safe-upgrade
+  # cutover retries leave such copies behind, complete with their own
+  # cutover-fail logs). Those copies win `ls -1t`, so reporting the raw
+  # basename as resolved_oid published a non-OID token: the 2026-09-06 smoke
+  # run recorded
+  # resolved=5af30c0a7ab621d7c2d0875d7b789fdb53142bf2-retry3.3VXp00.
+  # Take the 40-hex prefix as the OID, and skip any directory that does not
+  # start with one — it is not a published stage.
   while IFS= read -r name; do
     [ -n "$name" ] || continue
+    [[ "$name" =~ ^([0-9a-f]{40}) ]] || continue
     if candidate_ready "$BUILDS_DIR/$name/lastdbd"; then
       newest="$BUILDS_DIR/$name/lastdbd"
-      newest_oid="$name"
+      newest_oid="${BASH_REMATCH[1]}"
       break
     fi
   done < <(ls -1t "$BUILDS_DIR" 2>/dev/null || true)

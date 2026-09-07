@@ -13,8 +13,11 @@
 #   - exit 2  -> usage / hard config error.
 #
 # Skip conditions (both zero-LLM, both point reads):
-#   1. host-track reports the primary is not stale, or has no gate_head to
-#      compare (`stale != true` or `host_head == gate_head`).
+#   1. host-track reports the primary is not stale (`stale != true` or
+#      `host_head == gate_head`), or has no gate_head at all. Those are two
+#      different facts and the gate names them apart: no gate_head means the
+#      publish lane is broken (`gate-head-unavailable`), not that the host is
+#      up to date (`not-stale`).
 #   2. A candidate for the current gate_head is already staged under
 #      canary-builds/<gate_head>/ (lastdbd + manifest.json present) — the
 #      routine would only re-discover `already_staged` at LLM cost.
@@ -68,7 +71,24 @@ stale="$(printf '%s' "$status_json" | jq -r '.stale // false' 2>/dev/null || ech
 host_head="$(printf '%s' "$status_json" | jq -r '.host_head // empty' 2>/dev/null || true)"
 gate_head="$(printf '%s' "$status_json" | jq -r '.gate_head // empty' 2>/dev/null || true)"
 
-if [ "$stale" != "true" ] || [ -z "$gate_head" ] || [ "$host_head" = "$gate_head" ]; then
+
+# A missing gate_head is NOT "not stale". host-track reports it as
+# stale=true, gate_head=null, freshness=hard_broken,
+# deployment_problem="published gate head is unavailable" — the publish lane
+# is broken, so there is nothing to compare against. Skipping is still the
+# right call (never start a 20-40 min cargo build on unknown state), but
+# calling it "not-stale" told every investigator the opposite of the truth:
+# this host sat with gate_head=null for days while lastdb-local-smoke-test
+# went on reporting sha_drift=true and nobody read the gate as the cause.
+# Report the condition the gate actually observed.
+if [ -z "$gate_head" ]; then
+  heartbeat_line "noop gate-head-unavailable host_head=${host_head:-none} stale=${stale}"
+  printf 'ROUTINE_RESULT outcome=noop detail=gate-head-unavailable host_head=%s stale=%s\n' \
+    "${host_head:-none}" "$stale"
+  exit 0
+fi
+
+if [ "$stale" != "true" ] || [ "$host_head" = "$gate_head" ]; then
   heartbeat_line "noop not-stale host_head=${host_head:-none} gate_head=${gate_head:-none}"
   printf 'ROUTINE_RESULT outcome=noop detail=not-stale host_head=%s gate_head=%s\n' \
     "${host_head:-none}" "${gate_head:-none}"

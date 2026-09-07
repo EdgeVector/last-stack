@@ -28,7 +28,12 @@ set -e
 grep -q 'outcome=noop' <<<"$out"
 grep -q 'not-stale' <<<"$out"
 
-# --- stale but no gate_head: skip (exit 0) ---
+# --- stale but no gate_head: skip (exit 0), reported as its own condition ---
+# host-track answers stale=true gate_head=null when the publish lane is broken
+# ("published gate head is unavailable"). Skipping is right, but the gate must
+# not call that "not-stale" — this host ran that way for days while
+# lastdb-local-smoke-test reported sha_drift=true and the gate said the host
+# was up to date.
 export LAST_STACK_CANARY_BUILD_GATE_STATUS_CMD="cat <<'JSON'
 {\"stale\": true, \"host_head\": \"aaa111\", \"gate_head\": \"\"}
 JSON"
@@ -37,7 +42,20 @@ out="$("$BIN" 2>&1)"
 rc=$?
 set -e
 [ "$rc" -eq 0 ]
-grep -q 'not-stale' <<<"$out"
+grep -q 'gate-head-unavailable' <<<"$out"
+grep -q 'outcome=noop' <<<"$out"
+grep -q 'not-stale' <<<"$out" && { echo "FAIL: missing gate_head must not report not-stale: $out" >&2; exit 1; }
+
+# --- null gate_head (JSON null, as host-track really emits it) ---
+export LAST_STACK_CANARY_BUILD_GATE_STATUS_CMD="cat <<'JSON'
+{\"stale\": true, \"host_head\": \"aaa111\", \"gate_head\": null}
+JSON"
+set +e
+out="$("$BIN" 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 0 ]
+grep -q 'gate-head-unavailable' <<<"$out"
 
 # --- stale, gate_head differs, no staged candidate: proceed (exit 10) ---
 export LAST_STACK_CANARY_BUILD_GATE_STATUS_CMD="cat <<'JSON'

@@ -90,6 +90,39 @@ out="$("$CLI" --json --allow-newest --allow-daemon-only)"
 [ "$(printf '%s\n' "$out" | jq -r .source)" = "canary-builds-newest" ] || fail "newest source: $out"
 [ "$(printf '%s\n' "$out" | jq -r .sha_drift)" = "true" ] || fail "newest drift: $out"
 [ "$(printf '%s\n' "$out" | jq -r .lastdbd)" = "$builds/$other/lastdbd" ] || fail "newest path: $out"
+[ "$(printf '%s\n' "$out" | jq -r .resolved_oid)" = "$other" ] || fail "newest resolved_oid: $out"
+
+# --- resolved_oid stays a real OID when a suffixed copy is newest ---
+# Other tooling copies a stage next to it as "<oid>-retryN.XXXXXX"; those
+# copies win `ls -1t` and used to be published verbatim as resolved_oid
+# (observed: 5af30c0a...-retry3.3VXp00 in the 2026-09-06 smoke outcome).
+retry_copy="$builds/$other-retry3.3VXp00"
+mkdir -p "$retry_copy"
+printf '#!/bin/sh\necho lastdbd retry copy\n' >"$retry_copy/lastdbd"
+chmod +x "$retry_copy/lastdbd"
+touch "$retry_copy"
+
+out="$("$CLI" --json --allow-newest --allow-daemon-only)"
+[ "$(printf '%s\n' "$out" | jq -r .lastdbd)" = "$retry_copy/lastdbd" ] || fail "retry copy path: $out"
+[ "$(printf '%s\n' "$out" | jq -r .resolved_oid)" = "$other" ] || fail "retry copy resolved_oid must be the bare OID: $out"
+
+# --- a directory with no OID prefix is not a stage ---
+rm -rf "$retry_copy" "$builds/$other"
+junk="$builds/not-an-oid"
+mkdir -p "$junk"
+printf '#!/bin/sh\necho lastdbd junk\n' >"$junk/lastdbd"
+chmod +x "$junk/lastdbd"
+
+set +e
+out="$("$CLI" --json --allow-newest --allow-daemon-only 2>/dev/null)"
+rc=$?
+set -e
+[ "$rc" -eq 2 ] || fail "non-OID directory must not resolve as a stage: $out"
+rm -rf "$junk"
+
+mkdir -p "$builds/$other"
+printf '#!/bin/sh\necho lastdbd old\n' >"$builds/$other/lastdbd"
+chmod +x "$builds/$other/lastdbd"
 
 # --- primary current last resort ---
 rm -rf "$builds/$other"

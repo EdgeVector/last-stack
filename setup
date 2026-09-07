@@ -836,30 +836,22 @@ fi
 
 # Seed missing registry TOMLs only. Existing ~/.routines/registry entries are
 # the canonical live registry and are not rewritten on host-track refresh.
-if [ -x "$SOURCE_ROOT/bin/last-stack-feature-prove-routine" ]; then
-  "$SOURCE_ROOT/bin/last-stack-feature-prove-routine" || \
-    echo "  feature-prove registry: install failed (non-fatal)" >&2
-fi
-if [ -x "$SOURCE_ROOT/bin/last-stack-why-stopped-routine" ]; then
-  "$SOURCE_ROOT/bin/last-stack-why-stopped-routine" || \
-    echo "  why-stopped registry: install failed (non-fatal)" >&2
-fi
-if [ -x "$SOURCE_ROOT/bin/last-stack-whats-wrong-routine" ]; then
-  "$SOURCE_ROOT/bin/last-stack-whats-wrong-routine" || \
-    echo "  whats-wrong registry: install failed (non-fatal)" >&2
-fi
-if [ -x "$SOURCE_ROOT/bin/last-stack-canary-red-heal-routine" ]; then
-  "$SOURCE_ROOT/bin/last-stack-canary-red-heal-routine" || \
-    echo "  canary-red-heal registry: install failed (non-fatal)" >&2
-fi
-if [ -x "$SOURCE_ROOT/bin/last-stack-lastdb-ops-offenders-routine" ]; then
-  "$SOURCE_ROOT/bin/last-stack-lastdb-ops-offenders-routine" || \
-    echo "  lastdb-ops-offenders registry: install failed (non-fatal)" >&2
-fi
-if [ -x "$SOURCE_ROOT/bin/last-stack-fleet-performance-routine" ]; then
-  "$SOURCE_ROOT/bin/last-stack-fleet-performance-routine" || \
-    echo "  fleet-performance registry: install failed (non-fatal)" >&2
-fi
+#
+# Every bin/last-stack-*-routine script is a seed-if-missing registry
+# installer with the same no-argument contract, so iterate the directory
+# instead of listing them by hand. A hand-maintained list silently drops any
+# seeder added later: bin/last-stack-lastdb-canary-build-main-routine shipped
+# on 2026-09-03 and was never called here, so no host ever registered
+# lastdb-canary-build-main, nothing built a canary stage for fold main, and
+# lastdb-local-smoke-test fell back to a stale binary with sha_drift=true on
+# every run. tests/last-stack-setup-seeds-every-routine.sh holds this shape.
+for routine_seeder in "$SOURCE_ROOT"/bin/last-stack-*-routine; do
+  [ -x "$routine_seeder" ] || continue
+  seeder_name="$(basename "$routine_seeder")"
+  "$routine_seeder" || \
+    echo "  $seeder_name: registry install failed (non-fatal)" >&2
+done
+unset routine_seeder seeder_name
 
 # Zero-LLM self-upgrade healer (every 30m) — checkout installs only.
 # Artifact runtime (one rule): host-track refresh agent is the only upgrader.
