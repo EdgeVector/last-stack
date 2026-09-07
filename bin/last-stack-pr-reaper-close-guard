@@ -28,11 +28,30 @@
 #   3  indeterminate — could not judge; fail closed, treat as refuse
 #   2  usage / preflight
 #
+# 2026-09-07: two additions.
+#   - `--venue forgejo --pr <n>` judges a Forgejo PR with the same ladder
+#     (PR row + commit statuses instead of a CR row + `ci status`).
+#   - `base-gate-red`: a red required check on the head is NOT a verdict on the
+#     head when the base branch's own latest run of that context is red too.
+#     On 2026-09-06 the Forge host runner broke every brain run the same way
+#     (23 identical failures on main and every PR); the reaper closed a PR
+#     whose fix was in flight for a defect the PR did not cause. The gate
+#     being red is fleet state, and the reaper does not reap fleet state.
+#     That case is `indeterminate base-gate-red` (exit 3): leave it open, it is
+#     judged again once the base is green.
+#
 # Every input can come from a file so the suite runs with no node and no forge.
 set -euo pipefail
 
 repo=""
 cr_id=""
+venue="lastgit"
+pr_number=""
+pr_json_path=""
+head_status_json_path=""
+base_status_json_path=""
+base_ci_json_path=""
+forge_api="${LAST_STACK_FORGE_API:-$HOME/.last-stack/bin/last-stack-forge-api}"
 json=0
 cr_json_path=""
 ci_json_path=""
@@ -45,8 +64,13 @@ usage() {
   cat >&2 <<'EOF'
 usage: last-stack-pr-reaper-close-guard --repo <slug> --cr <cr-id> [--json]
                                         [--cr-json PATH] [--ci-json PATH]
+                                        [--base-ci-json PATH]
                                         [--base-oid OID] [--git-dir PATH]
                                         [--no-fetch]
+       last-stack-pr-reaper-close-guard --venue forgejo --repo <slug> --pr <n> [--json]
+                                        [--pr-json PATH] [--head-status-json PATH]
+                                        [--base-status-json PATH]
+                                        [--base-oid OID] [--git-dir PATH] [--no-fetch]
 
 Decide whether pr-reaper may CLOSE a LastGit change request. Reads only; never
 closes, merges, or writes.
@@ -57,7 +81,10 @@ Verdicts:
   refuse         open|merging + auto_merge + head not in base + required check
                  success
   indeterminate  the same shape with a required check that is pending, torn, or
-                 absent, or an ancestry question that could not be answered
+                 absent, or an ancestry question that could not be answered;
+                 also `base-gate-red`: the head's required check is red AND the
+                 base branch's latest run of the same context is red (a gate
+                 outage is not a verdict on this head)
 
 Flags:
   --cr-json PATH   use this `cr view --json` object instead of calling lastgit
@@ -79,13 +106,23 @@ while [ "$#" -gt 0 ]; do
     --base-oid) base_oid="${2:-}"; shift 2 ;;
     --git-dir) git_dir="${2:-}"; shift 2 ;;
     --no-fetch) no_fetch=1; shift ;;
+    --venue) venue="${2:-}"; shift 2 ;;
+    --pr) pr_number="${2:-}"; shift 2 ;;
+    --pr-json) pr_json_path="${2:-}"; shift 2 ;;
+    --head-status-json) head_status_json_path="${2:-}"; shift 2 ;;
+    --base-status-json) base_status_json_path="${2:-}"; shift 2 ;;
+    --base-ci-json) base_ci_json_path="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage; exit 2 ;;
   esac
 done
 
 [ -n "$repo" ] || { echo "--repo is required" >&2; usage; exit 2; }
-[ -n "$cr_id" ] || { echo "--cr is required" >&2; usage; exit 2; }
+case "$venue" in
+  lastgit) [ -n "$cr_id" ] || { echo "--cr is required" >&2; usage; exit 2; } ;;
+  forgejo) [ -n "$pr_number" ] || { echo "--pr is required with --venue forgejo" >&2; usage; exit 2; }; cr_id="#$pr_number" ;;
+  *) echo "--venue must be lastgit or forgejo" >&2; usage; exit 2 ;;
+esac
 command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 2; }
 
 git_bin=/usr/bin/git
@@ -93,11 +130,36 @@ git_bin=/usr/bin/git
 
 # ── CR row ──────────────────────────────────────────────────────────────────
 cr_json=""
-if [ -n "$cr_json_path" ]; then
-  [ -f "$cr_json_path" ] || { echo "no such --cr-json file: $cr_json_path" >&2; exit 2; }
-  cr_json="$(cat "$cr_json_path")"
+if [ "$venue" = "forgejo" ]; then
+  # Map the PR row onto the CR shape the ladder below reads. A Forgejo PR has
+  # no auto_merge field on its row; every open Forgejo PR the reaper looks at
+  # is "driving" in the sense that matters here (it wants to land on green),
+  # so auto_merge reads true and the green-unmerged refusal applies — the
+  # reaper's own ladder merges a green mergeable PR before it ever closes one.
+  pr_json=""
+  if [ -n "$pr_json_path" ]; then
+    [ -f "$pr_json_path" ] || { echo "no such --pr-json file: $pr_json_path" >&2; exit 2; }
+    pr_json="$(cat "$pr_json_path")"
+  else
+    pr_json="$("$forge_api" GET "/repos/EdgeVector/$repo/pulls/$pr_number" 2>/dev/null || true)"
+  fi
+  if [ -n "$pr_json" ] && printf '%s' "$pr_json" | jq -e . >/dev/null 2>&1; then
+    cr_json="$(printf '%s' "$pr_json" | jq -c '{
+      state: (if (.merged // false) == true then "merged" else (.state // "") end),
+      auto_merge: "true",
+      head_oid: (.head.sha // ""),
+      base_ref: ("refs/heads/" + (.base.ref // "main")),
+      base_oid_hint: (.base.sha // ""),
+      require_status: "ci-required"
+    }')"
+  fi
 else
-  cr_json="$("$lastgit_bin" cr view "$repo" "$cr_id" --json 2>/dev/null || true)"
+  if [ -n "$cr_json_path" ]; then
+    [ -f "$cr_json_path" ] || { echo "no such --cr-json file: $cr_json_path" >&2; exit 2; }
+    cr_json="$(cat "$cr_json_path")"
+  else
+    cr_json="$("$lastgit_bin" cr view "$repo" "$cr_id" --json 2>/dev/null || true)"
+  fi
 fi
 
 emit() {
@@ -118,7 +180,11 @@ emit() {
     --arg ci_context "${require_status:-}" \
     --arg ci_event_id "${ci_event_id:-}" \
     --arg ancestry "${ancestry:-}" \
+    --arg venue "$venue" \
+    --arg base_ci_state "${base_ci_state:-}" \
     '{
+      venue: $venue,
+      base_ci_state: $base_ci_state,
       verdict: $verdict,
       reason: $reason,
       repo: $repo,
@@ -167,7 +233,11 @@ esac
 # stale base tip answers "not in base" for work that already landed.
 if [ -z "$base_oid" ]; then
   base_name="${base_ref#refs/heads/}"
-  base_oid="$("$lastgit_bin" ref "$repo" "$base_name" 2>/dev/null | awk 'NF{print $1; exit}')"
+  if [ "$venue" = "forgejo" ]; then
+    base_oid="$("$forge_api" GET "/repos/EdgeVector/$repo/branches/$base_name" 2>/dev/null | jq -r '.commit.id // ""' 2>/dev/null || true)"
+  else
+    base_oid="$("$lastgit_bin" ref "$repo" "$base_name" 2>/dev/null | awk 'NF{print $1; exit}')"
+  fi
 fi
 case "$base_oid" in
   ''|*[!0-9a-fA-F]*) emit indeterminate base-tip-unreadable 3 ;;
@@ -188,8 +258,8 @@ have_object() { "$git_bin" -C "$git_dir" cat-file -e "${1}^{commit}" 2>/dev/null
 
 if ! have_object "$head_oid" || ! have_object "$base_oid"; then
   if [ "$no_fetch" = "0" ]; then
-    "$git_bin" -C "$git_dir" fetch --quiet --prune lastgit >/dev/null 2>&1 \
-      || "$git_bin" -C "$git_dir" fetch --quiet --prune origin >/dev/null 2>&1 || true
+    "$git_bin" -C "$git_dir" fetch --quiet --prune origin >/dev/null 2>&1 \
+      || "$git_bin" -C "$git_dir" fetch --quiet --prune lastgit >/dev/null 2>&1 || true
   fi
 fi
 if ! have_object "$head_oid" || ! have_object "$base_oid"; then
@@ -208,17 +278,55 @@ ancestry="false"
 [ "$cr_auto_merge" = "true" ] || emit close-ok not-auto-merge 0
 
 # ── required check ──────────────────────────────────────────────────────────
-ci_json=""
-if [ -n "$ci_json_path" ]; then
-  [ -f "$ci_json_path" ] || { echo "no such --ci-json file: $ci_json_path" >&2; exit 2; }
-  ci_json="$(cat "$ci_json_path")"
-else
-  ci_json="$("$lastgit_bin" ci status "$head_oid" --repo "$repo" --json 2>/dev/null || true)"
-fi
+# forge_required_state <combined-status-json> <context-stem>
+# The newest status whose context starts with the stem (`Forge CI / ci-required`),
+# ignoring the ` (push)` / ` (pull_request)` event suffix Forgejo appends.
+forge_required_state() {
+  printf '%s' "$1" | jq -r --arg stem "$2" '
+    [ (.statuses // [])[] | select((.context // "") | startswith($stem)) ]
+    | sort_by(.created_at // "") | last | (.status // "") | ascii_downcase' 2>/dev/null | awk 'NF{print;exit}'
+}
 
+ci_json=""
 ci_state=""
 ci_event_id=""
-if [ -n "$ci_json" ] && printf '%s' "$ci_json" | jq -e . >/dev/null 2>&1; then
+base_ci_state=""
+want="${require_status:-ci-required}"
+if [ "$venue" = "forgejo" ]; then
+  stem="Forge CI / $want"
+  head_status_json=""
+  if [ -n "$head_status_json_path" ]; then
+    [ -f "$head_status_json_path" ] || { echo "no such --head-status-json file: $head_status_json_path" >&2; exit 2; }
+    head_status_json="$(cat "$head_status_json_path")"
+  else
+    head_status_json="$("$forge_api" GET "/repos/EdgeVector/$repo/commits/$head_oid/status" 2>/dev/null || true)"
+  fi
+  if [ -n "$head_status_json" ] && printf '%s' "$head_status_json" | jq -e . >/dev/null 2>&1; then
+    ci_state="$(forge_required_state "$head_status_json" "$stem")"
+    ci_event_id="ci-lease:forgejo"
+  fi
+  if [ "$ci_state" = "failure" ] || [ "$ci_state" = "error" ]; then
+    base_status_json=""
+    if [ -n "$base_status_json_path" ]; then
+      [ -f "$base_status_json_path" ] || { echo "no such --base-status-json file: $base_status_json_path" >&2; exit 2; }
+      base_status_json="$(cat "$base_status_json_path")"
+    else
+      base_status_json="$("$forge_api" GET "/repos/EdgeVector/$repo/commits/$base_oid/status" 2>/dev/null || true)"
+    fi
+    if [ -n "$base_status_json" ] && printf '%s' "$base_status_json" | jq -e . >/dev/null 2>&1; then
+      base_ci_state="$(forge_required_state "$base_status_json" "$stem")"
+    fi
+  fi
+else
+  if [ -n "$ci_json_path" ]; then
+    [ -f "$ci_json_path" ] || { echo "no such --ci-json file: $ci_json_path" >&2; exit 2; }
+    ci_json="$(cat "$ci_json_path")"
+  else
+    ci_json="$("$lastgit_bin" ci status "$head_oid" --repo "$repo" --json 2>/dev/null || true)"
+  fi
+fi
+
+if [ "$venue" = "lastgit" ] && [ -n "$ci_json" ] && printf '%s' "$ci_json" | jq -e . >/dev/null 2>&1; then
   want="${require_status:-ci-required}"
   ci_state="$(printf '%s' "$ci_json" | jq -r --arg want "$want" '
     if (.checks? | type) == "array" then
@@ -230,9 +338,41 @@ if [ -n "$ci_json" ] && printf '%s' "$ci_json" | jq -e . >/dev/null 2>&1; then
     else (.event_id // "") end' 2>/dev/null | awk 'NF{print;exit}')"
 fi
 
+# The base branch's own run of the required context. Read only when the head
+# is red: a green head needs no excuse, and the base read costs a call.
+if [ "$venue" = "lastgit" ]; then
+  case "$ci_state" in
+    failure|error)
+      base_ci_json=""
+      if [ -n "$base_ci_json_path" ]; then
+        [ -f "$base_ci_json_path" ] || { echo "no such --base-ci-json file: $base_ci_json_path" >&2; exit 2; }
+        base_ci_json="$(cat "$base_ci_json_path")"
+      else
+        base_ci_json="$("$lastgit_bin" ci status "$base_oid" --repo "$repo" --json 2>/dev/null || true)"
+      fi
+      if [ -n "$base_ci_json" ] && printf '%s' "$base_ci_json" | jq -e . >/dev/null 2>&1; then
+        base_ci_state="$(printf '%s' "$base_ci_json" | jq -r --arg want "$want" '
+          if (.checks? | type) == "array" then
+            ((.checks[] | select((.context // "") == $want) | .state) // "")
+          else (.state // "") end | ascii_downcase' 2>/dev/null | awk 'NF{print;exit}')"
+      fi
+      ;;
+  esac
+fi
+
 case "$ci_state" in
-  failure|error|cancelled|canceled)
+  failure|error)
+    case "$base_ci_state" in
+      failure|error)
+        # The base is red on the same context: the gate is broken for
+        # everyone, and this head's red says nothing about this head.
+        emit indeterminate base-gate-red 3
+        ;;
+    esac
     # A real red verdict. Reaping this is the reaper doing its job.
+    emit close-ok required-check-failed 0
+    ;;
+  cancelled|canceled)
     emit close-ok required-check-failed 0
     ;;
   success)

@@ -114,6 +114,9 @@ export LAST_STACK_RECLAIM_SKIP_BOARD=1
 export LAST_STACK_RECLAIM_SKIP_LSOF=1
 export LAST_STACK_RECLAIM_EXTRA_LIVE_PATHS="$WORKTREES_DIR/live-wt"
 export LAST_STACK_RECLAIM_EXTRA_LIVE_EXEC_PATHS="$WORKTREES_DIR/exec-wt/target/release/live-sleeper"
+# No forge/lastgit round-trip in a unit test: inject an empty open-head index.
+: >"$fixture/open-heads.tsv"
+export LAST_STACK_RECLAIM_OPEN_HEADS_FILE="$fixture/open-heads.tsv"
 
 out="$("$bin" --sweep-stale --max-age-hours 99999 2>&1 || true)"
 printf '%s\n' "$out" | head -n 40
@@ -173,3 +176,66 @@ if [ ! -f "$WORKTREES_DIR/idle2-wt/target/KEEP_ME" ]; then
 fi
 
 echo "ok last-stack-worktree-reclaim"
+
+# --- Open change requests protect their worktree (2026-09-07) ----------------
+# 2026-09-06: the sweep deleted a clean, hour-old worktree twice while its
+# branch had an open CR and then an open PR (`reclaim finished … clean=1`).
+# A worktree whose (repo, branch) is the head of an open change request is
+# kept; one with no open change request is reclaimed; an unreadable index
+# disables the finished-work path instead of reclaiming blind.
+git_bin=/usr/bin/git
+[ -x "$git_bin" ] || git_bin="$(command -v git)"
+prfix="$(mktemp -d "${TMPDIR:-/tmp}/ls-wt-reclaim-pr.XXXXXX")"
+trap 'cleanup; rm -rf "$prfix"' EXIT
+export WORKTREES_DIR="$prfix/worktrees"
+mkdir -p "$WORKTREES_DIR"
+mk_wt() { # mk_wt <dirname> <branch>
+  local d="$WORKTREES_DIR/$1"
+  "$git_bin" init -q -b "$2" "$d"
+  "$git_bin" -C "$d" -c user.email=t@example.com -c user.name=t commit -q --allow-empty -m init
+  # Make the tree old enough for any grace window.
+  touch -t 202601010000 "$d"
+}
+mk_wt open-pr-wt kanban/has-open-pr
+mk_wt finished-wt kanban/nothing-open
+printf 'open-pr-wt\tkanban/has-open-pr\n' >"$prfix/open-heads.tsv"
+
+# Hermetic: no process-table scan in a unit test. --force-live skips the
+# liveness checks the scan feeds, so the finished-work path is reached on the
+# index verdict alone; SKIP_LSOF keeps the fixture off ps/lsof entirely.
+unset LAST_STACK_RECLAIM_EXTRA_LIVE_PATHS LAST_STACK_RECLAIM_EXTRA_LIVE_EXEC_PATHS
+export LAST_STACK_RECLAIM_SKIP_LSOF=1
+export LAST_STACK_RECLAIM_SKIP_BOARD=1
+export LAST_STACK_RECLAIM_FREE_FLOOR_GIB=0
+export LAST_STACK_RECLAIM_OPEN_HEADS_FILE="$prfix/open-heads.tsv"
+out="$("$bin" --sweep-stale --force-live --min-age-minutes 0 --max-age-hours 99999 2>&1 || true)"
+printf '%s\n' "$out" | grep -E 'open-pr|finished-wt|open-pr index' | head -n 8
+if [ ! -d "$WORKTREES_DIR/open-pr-wt" ]; then
+  echo "FAIL: worktree with an open change request was reclaimed" >&2; exit 1
+fi
+printf '%s\n' "$out" | grep -q 'keep open-pr open-pr-wt repo=open-pr-wt branch=kanban/has-open-pr' \
+  || { echo "FAIL: the keep must name the repo and branch it matched" >&2; exit 1; }
+if [ -d "$WORKTREES_DIR/finished-wt" ]; then
+  echo "FAIL: finished worktree with no open change request must still be reclaimed" >&2; exit 1
+fi
+printf '%s\n' "$out" | grep -q 'kept_open_pr=1 open_pr_index_ok=1' \
+  || { echo "FAIL: the done line must count the open-pr keeps" >&2; exit 1; }
+echo "ok   open change request keeps its worktree; finished work still goes"
+
+# Unreadable index: fail closed on the finished path (age gate only).
+mk_wt finished-wt kanban/nothing-open
+export LAST_STACK_RECLAIM_OPEN_HEADS_FILE="$prfix/does-not-exist.tsv"
+out="$("$bin" --sweep-stale --force-live --min-age-minutes 0 --max-age-hours 99999 2>&1 || true)"
+if [ ! -d "$WORKTREES_DIR/finished-wt" ]; then
+  echo "FAIL: with an unreadable open-pr index a clean tree must wait out the age gate" >&2; exit 1
+fi
+printf '%s\n' "$out" | grep -q 'open-pr index UNREADABLE' \
+  || { echo "FAIL: an unreadable index must be logged as such" >&2; exit 1; }
+echo "ok   unreadable open-pr index disables the finished-work path"
+
+# The sweep must consult the index before the finished-work reclaim.
+keep_line="$(grep -n 'log "keep open-pr' "$bin" | head -1 | cut -d: -f1)"
+fin_line="$(grep -n 'log "reclaim finished' "$bin" | head -1 | cut -d: -f1)"
+[ -n "$keep_line" ] && [ -n "$fin_line" ] && [ "$keep_line" -lt "$fin_line" ] \
+  || { echo "FAIL: open-pr keep must precede the finished-work reclaim (keep=$keep_line fin=$fin_line)" >&2; exit 1; }
+echo "PASS last-stack-worktree-reclaim open-pr guard"

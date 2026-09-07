@@ -111,8 +111,8 @@ not escalate that into a pass-level `error`.
 Age ≤ 60 min → leave it. Age > 60 min → it leaves this run in a TERMINAL
 state. Decide in this order:
 
-**Before any CLOSE on a LastGit CR, run the close guard — won't-undo
-2026-09-05.** This ladder used to have two branches: MERGE if green and
+**Before any CLOSE on a LastGit CR or a Forgejo PR, run the close guard —
+won't-undo 2026-09-05 (Forgejo PRs added 2026-09-07).** This ladder used to have two branches: MERGE if green and
 mergeable right now, else CLOSE everything else. A CR that is green and
 driving, but cannot merge because the merge machinery is failing
 (`base_ref_rewound` on an unfetchable cache tip, completer abort/recover
@@ -129,6 +129,10 @@ close_guard_rc=0
 "$last_stack/bin/last-stack-pr-reaper-close-guard" \
   --repo <repo> --cr <cr-id> --json >/tmp/pr-reaper-close-guard.json \
   2>/tmp/pr-reaper-close-guard.err || close_guard_rc=$?
+# Forgejo PR: the same guard, the same verdicts
+"$last_stack/bin/last-stack-pr-reaper-close-guard" \
+  --venue forgejo --repo <repo> --pr <n> --json >/tmp/pr-reaper-close-guard.json \
+  2>/tmp/pr-reaper-close-guard.err || close_guard_rc=$?
 # 0 = close-ok · 1 = refuse · 3 = indeterminate · 2 = usage
 ```
 
@@ -141,10 +145,21 @@ close_guard_rc=0
   torn, or absent; ancestry unreadable). Fail closed: leave the CR open and
   heartbeat `flagged=close-indeterminate:<repo>:<cr-id>`. It is reaped next
   round once the check settles.
+  - `reason: base-gate-red` is the fleet-outage arm of `3`: the head's
+    required check is red AND the base branch's own latest run of that
+    context is red. A gate that fails main fails every head the same way,
+    so the red is not a verdict on this head. On 2026-09-06 the Forge host
+    runner broke every brain run identically (23 failures on main and on
+    every PR) and the reaper closed a PR whose fix for that very defect was
+    in flight. Leave it open, heartbeat
+    `flagged=close-deferred-base-gate-red:<repo>:<id>`, and — since the
+    gate is fleet state — make sure a papercut names it
+    (`brain papercut file`, component `forge-ci` or the repo's) instead of
+    closing PRs one by one until main is green again.
 - `2` — usage/preflight. Fix the invocation. Never close on a guard that did
   not run.
 
-Never close a LastGit CR whose guard verdict you did not read. The guard is
+Never close a LastGit CR or a Forgejo PR whose guard verdict you did not read. The guard is
 read-only and refuses narrowly: of 51 auto-merge last-stack CRs closed in the
 14 days to 2026-09-05, 37 heads never reached main, and a 12-row sample of
 those read 8 `ci-required=failure`, 2 absent, 2 `success`. It holds only the

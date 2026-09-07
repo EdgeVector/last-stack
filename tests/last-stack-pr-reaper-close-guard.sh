@@ -124,15 +124,94 @@ run "reads the required context by name" refuse 1 "$tmp/cr-green.json" "$tmp/ci-
 echo 'not json' > "$tmp/cr-bad.json"
 run "unreadable CR row fails closed" indeterminate 3 "$tmp/cr-bad.json" "$tmp/ci-success.json"
 
+# ── 12/13. base-gate-red: a red head under a red base is fleet state ────────
+# 2026-09-06: the Forge host runner failed every brain run identically (main
+# and every PR, 23 failures each); the reaper closed a PR whose fix for that
+# defect was in flight. A base that is red on the same context makes the
+# head's red a non-verdict.
+run_base() { # run_base <label> <verdict> <exit> <cr> <ci> <base-ci>
+  local label="$1" want_verdict="$2" want_exit="$3" crj="$4" cij="$5" bcij="$6" rc=0
+  "$guard" --repo last-stack --cr cr-test-0001 \
+    --cr-json "$crj" --ci-json "$cij" --base-ci-json "$bcij" \
+    --base-oid "$MAIN" --git-dir "$repo" --no-fetch --json \
+    >"$tmp/out.json" 2>"$tmp/out.err" || rc=$?
+  local got
+  got="$(jq -r '.verdict' "$tmp/out.json" 2>/dev/null || echo PARSE-FAIL)"
+  if [ "$got" != "$want_verdict" ] || [ "$rc" != "$want_exit" ]; then
+    echo "FAIL $label: want verdict=$want_verdict exit=$want_exit, got verdict=$got exit=$rc" >&2
+    cat "$tmp/out.json" "$tmp/out.err" >&2 || true
+    exit 1
+  fi
+  echo "ok   $label ($got, exit $rc)"
+}
+ci_row failure > "$tmp/base-failure.json"
+ci_row success > "$tmp/base-success.json"
+run_base "red head under a red base is indeterminate" indeterminate 3 "$tmp/cr-green.json" "$tmp/ci-failure.json" "$tmp/base-failure.json"
+jq -e '.reason == "base-gate-red" and .base_ci_state == "failure"' "$tmp/out.json" >/dev/null \
+  || { echo "FAIL: must name base-gate-red and carry base_ci_state" >&2; exit 1; }
+run_base "red head under a green base closes" close-ok 0 "$tmp/cr-green.json" "$tmp/ci-failure.json" "$tmp/base-success.json"
+jq -e '.reason == "required-check-failed"' "$tmp/out.json" >/dev/null \
+  || { echo "FAIL: a real red under a green base must stay required-check-failed" >&2; exit 1; }
+# A base that cannot be read does not excuse the head: unreadable base ⇒ red head closes.
+echo 'not json' > "$tmp/base-bad.json"
+run_base "red head with an unreadable base closes" close-ok 0 "$tmp/cr-green.json" "$tmp/ci-failure.json" "$tmp/base-bad.json"
+
+# ── 14-17. Forgejo PRs go through the same ladder ───────────────────────────
+pr_row() { # pr_row <state> <merged> <head>
+  cat <<JSON
+{"number":7,"state":"$1","merged":$2,"head":{"ref":"kanban/x","sha":"$3"},"base":{"ref":"main","sha":"$MAIN"}}
+JSON
+}
+forge_status() { # forge_status <state> [event]
+  cat <<JSON
+{"state":"$1","statuses":[
+  {"context":"Forge CI / ci-required (${2:-pull_request})","status":"$1","created_at":"2026-09-06T21:00:00Z"},
+  {"context":"Forge CI / publish host-track artifact (${2:-pull_request})","status":"pending","created_at":"2026-09-06T21:00:01Z"}]}
+JSON
+}
+run_forge() { # run_forge <label> <verdict> <exit> <pr> <head-status> <base-status>
+  local label="$1" want_verdict="$2" want_exit="$3" prj="$4" hs="$5" bs="$6" rc=0
+  "$guard" --venue forgejo --repo brain --pr 7 \
+    --pr-json "$prj" --head-status-json "$hs" --base-status-json "$bs" \
+    --base-oid "$MAIN" --git-dir "$repo" --no-fetch --json \
+    >"$tmp/out.json" 2>"$tmp/out.err" || rc=$?
+  local got
+  got="$(jq -r '.verdict' "$tmp/out.json" 2>/dev/null || echo PARSE-FAIL)"
+  if [ "$got" != "$want_verdict" ] || [ "$rc" != "$want_exit" ]; then
+    echo "FAIL $label: want verdict=$want_verdict exit=$want_exit, got verdict=$got exit=$rc" >&2
+    cat "$tmp/out.json" "$tmp/out.err" >&2 || true
+    exit 1
+  fi
+  echo "ok   $label ($got, exit $rc)"
+}
+pr_row open false "$STRAY" > "$tmp/pr-open.json"
+forge_status failure > "$tmp/fs-head-red.json"
+forge_status failure push > "$tmp/fs-base-red.json"
+forge_status success push > "$tmp/fs-base-green.json"
+forge_status success > "$tmp/fs-head-green.json"
+forge_status pending > "$tmp/fs-head-pending.json"
+run_forge "forgejo: red head under a red main is indeterminate" indeterminate 3 "$tmp/pr-open.json" "$tmp/fs-head-red.json" "$tmp/fs-base-red.json"
+jq -e '.reason == "base-gate-red" and .venue == "forgejo"' "$tmp/out.json" >/dev/null \
+  || { echo "FAIL: forgejo base-gate-red must be named" >&2; exit 1; }
+run_forge "forgejo: red head under a green main closes" close-ok 0 "$tmp/pr-open.json" "$tmp/fs-head-red.json" "$tmp/fs-base-green.json"
+run_forge "forgejo: green unmerged head refuses" refuse 1 "$tmp/pr-open.json" "$tmp/fs-head-green.json" "$tmp/fs-base-green.json"
+run_forge "forgejo: pending head is indeterminate" indeterminate 3 "$tmp/pr-open.json" "$tmp/fs-head-pending.json" "$tmp/fs-base-green.json"
+pr_row closed true "$STRAY" > "$tmp/pr-merged.json"
+run_forge "forgejo: a merged PR is already terminal" close-ok 0 "$tmp/pr-merged.json" "$tmp/fs-head-red.json" "$tmp/fs-base-red.json"
+pr_row open false "$LANDED" > "$tmp/pr-landed.json"
+run_forge "forgejo: head already in main closes" close-ok 0 "$tmp/pr-landed.json" "$tmp/fs-head-red.json" "$tmp/fs-base-red.json"
+# The event suffix must not matter: a base read as `(push)` matches the same stem.
+jq -e '.head_in_base == "true"' "$tmp/out.json" >/dev/null || { echo "FAIL: landed forgejo head must read head_in_base=true" >&2; exit 1; }
+
 # ── 11. the prompt must actually run the guard ─────────────────────────────
 # A helper nothing calls is not a guard. This is the half that failed before:
 # routines/pr-reaper.md STEP 2 had a two-branch ladder and no call site.
 prompt="$ROOT/routines/pr-reaper.md"
 grep -q 'bin/last-stack-pr-reaper-close-guard' "$prompt" \
   || { echo "FAIL: routines/pr-reaper.md must invoke the close guard" >&2; exit 1; }
-for token in 'close-refused-green-unmerged' 'close-indeterminate'; do
-  grep -q "$token" "$prompt" \
-    || { echo "FAIL: pr-reaper.md must heartbeat $token so the refusal stays measurable" >&2; exit 1; }
+for token in 'close-refused-green-unmerged' 'close-indeterminate' 'close-deferred-base-gate-red' '--venue forgejo'; do
+  grep -q -- "$token" "$prompt" \
+    || { echo "FAIL: pr-reaper.md must carry $token so the refusal stays measurable" >&2; exit 1; }
 done
 # The call site must precede the close verbs it gates, or it gates nothing.
 guard_line="$(grep -n 'bin/last-stack-pr-reaper-close-guard' "$prompt" | head -1 | cut -d: -f1)"

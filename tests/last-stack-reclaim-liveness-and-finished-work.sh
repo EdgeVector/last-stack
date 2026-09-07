@@ -25,6 +25,12 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 WT="$tmp/worktrees"
+# No forge/lastgit round-trip in a unit test: an injected (empty) open-head
+# index keeps the finished-work path enabled without a network read. Without
+# it the helper fails closed (unreadable index → age gate only), which is the
+# behaviour last-stack-worktree-reclaim.sh proves on purpose.
+: >"$tmp/open-heads.tsv"
+export LAST_STACK_RECLAIM_OPEN_HEADS_FILE="$tmp/open-heads.tsv"
 mkdir -p "$WT"
 
 # A finished worktree: clean git tree, nothing running, older than the grace.
