@@ -27,6 +27,9 @@ export LASTDBD_PRIMARY_HOME="$tmp/home/.lastdb"
 export LASTDBD_GUARD_RESTART_WAIT_SEC=2
 export LASTDBD_GUARD_SHED_WAIT_SEC=1
 export LASTDBD_GUARD_TERM_WAIT_SEC=1
+# Confirmation is on by default. Zero interval keeps the suite fast without
+# skipping a single sample — the sample COUNT is what the rule turns on.
+export LASTDBD_GUARD_CONFIRM_INTERVAL_SEC=0
 LOG="$LASTDBD_PRIMARY_HOME/monitoring/lastdbd-memory-guard.log"
 EVENT_LOG="$LASTDBD_PRIMARY_HOME/monitoring/lastdbd-memory-guard-events.jsonl"
 
@@ -64,17 +67,37 @@ SH
 
 # Fake python3: shims phys_footprint_mb_of's proc_pid_rusage read. The guard
 # passes the pid as argv and a throwaway ctypes script on stdin; both are
-# ignored — the byte count comes straight from the fixture's env vars, and
+# ignored — the byte counts come straight from the fixture's env vars, and
 # FAKE_SHED_MARKER lets a test observe footprint falling after a shed.
+#
+# Output is "<footprint_bytes> <lifetime_peak_bytes>", matching the shipped
+# helper. FAKE_FOOTPRINT_SEQUENCE is consumed one value per call so a test can
+# drive the confirmation sampler through a spike that does not repeat; the last
+# value repeats once the list runs out.
 cat >"$tmp/bin/python3" <<'SH'
 #!/usr/bin/env bash
 if [ "${FAKE_FOOTPRINT_FAIL:-0}" = "1" ]; then
   exit 1
 fi
+emit() { printf '%s %s\n' "$1" "${FAKE_PEAK_BYTES:-$1}"; }
+if [ -n "${FAKE_FOOTPRINT_SEQUENCE:-}" ]; then
+  n=0
+  if [ -f "${FAKE_SEQ_COUNTER:-/nonexistent}" ]; then n=$(cat "$FAKE_SEQ_COUNTER"); fi
+  i=0
+  chosen=""
+  for v in $FAKE_FOOTPRINT_SEQUENCE; do
+    chosen="$v"
+    if [ "$i" -ge "$n" ]; then break; fi
+    i=$((i + 1))
+  done
+  printf '%s\n' "$((n + 1))" >"$FAKE_SEQ_COUNTER"
+  emit "$chosen"
+  exit 0
+fi
 if [ -f "${FAKE_SHED_MARKER:-/nonexistent-shed-marker}" ]; then
-  printf '%s\n' "${FAKE_FOOTPRINT_BYTES_AFTER_SHED:-${FAKE_FOOTPRINT_BYTES:-0}}"
+  emit "${FAKE_FOOTPRINT_BYTES_AFTER_SHED:-${FAKE_FOOTPRINT_BYTES:-0}}"
 else
-  printf '%s\n' "${FAKE_FOOTPRINT_BYTES:-0}"
+  emit "${FAKE_FOOTPRINT_BYTES:-0}"
 fi
 SH
 
@@ -146,16 +169,24 @@ if [ "${FAKE_STATUS_EMPTY:-0}" = "1" ]; then
   emit "" "200"
   exit 0
 fi
+# local_retention.in_flight is a real key on the live route and it is a
+# BOOLEAN that shares its name with uds.in_flight. It is reproduced here on
+# purpose: a drain reader that greps the flat key instead of scoping it to the
+# uds object has to fail this fixture.
+drain_fields() {
+  printf '"local_retention":{"enabled":true,"in_flight":false},"uds":{"in_flight":%s,"queue_capacity":256},"sync":{"pending_count":%s}' \
+    "${FAKE_UDS_IN_FLIGHT:-0}" "${FAKE_SYNC_PENDING:-0}"
+}
 if [ -n "${FAKE_STATUS_PID:-}" ]; then
-  emit "$(printf '{"pid":%s,"status":{"rss_bytes":%s,"phys_footprint_bytes":%s,"phys_footprint_peak_bytes":%s,"process_start_ts":%s,"build":{"version":"%s"}}}' \
+  emit "$(printf '{"pid":%s,"status":{"rss_bytes":%s,"phys_footprint_bytes":%s,"phys_footprint_peak_bytes":%s,"process_start_ts":%s,%s,"build":{"version":"%s"}}}' \
     "$FAKE_STATUS_PID" \
     "${FAKE_RSS_BYTES:-0}" "${FAKE_FOOTPRINT_BYTES:-0}" "${FAKE_PEAK_BYTES:-0}" \
-    "${FAKE_START_TS:-0}" "${FAKE_BUILD:-0.0.0-test}")" "200"
+    "${FAKE_START_TS:-0}" "$(drain_fields)" "${FAKE_BUILD:-0.0.0-test}")" "200"
   exit 0
 fi
-emit "$(printf '{"status":{"rss_bytes":%s,"phys_footprint_bytes":%s,"phys_footprint_peak_bytes":%s,"process_start_ts":%s,"build":{"version":"%s"}}}' \
+emit "$(printf '{"status":{"rss_bytes":%s,"phys_footprint_bytes":%s,"phys_footprint_peak_bytes":%s,"process_start_ts":%s,%s,"build":{"version":"%s"}}}' \
   "${FAKE_RSS_BYTES:-0}" "${FAKE_FOOTPRINT_BYTES:-0}" "${FAKE_PEAK_BYTES:-0}" \
-  "${FAKE_START_TS:-1234}" "${FAKE_BUILD:-0.0.0-test}")" "200"
+  "${FAKE_START_TS:-1234}" "$(drain_fields)" "${FAKE_BUILD:-0.0.0-test}")" "200"
 SH
 
 # Fake sysctl for vm.swapusage.
@@ -165,9 +196,15 @@ printf 'total = 8192.00M  used = %s.00M  free = 100.00M\n' "${FAKE_SWAP_MB:-10}"
 SH
 
 # kill/launchctl record what the guard tried to do instead of doing it.
+# NOTE: this shim is never reached. `kill` is a bash BUILTIN and the builtin
+# wins over PATH, so every `kill` in the guard runs for real — which is why the
+# action log has never once contained a `kill` line. It is kept because the
+# effect it was written for still holds by accident: FAKE_PID does not exist,
+# so the real `kill -0` reports dead and the guard does not sit out its whole
+# SIGTERM window. Tests that need a live pid must supply one (see the SIGTERM
+# window tests, which run a process that ignores TERM).
 cat >"$tmp/bin/kill" <<'SH'
 #!/usr/bin/env bash
-# `kill -0` is a liveness probe; report dead so the guard does not sleep 10s.
 case "${1:-}" in
   -0) exit 1 ;;
 esac
@@ -221,6 +258,7 @@ SH
 chmod +x "$tmp/bin/"*
 export FAKE_PID FAKE_ACTION_LOG="$tmp/actions.log"
 export FAKE_SHED_MARKER="$tmp/shed-posted"
+export FAKE_SEQ_COUNTER="$tmp/footprint-seq.counter"
 export LASTDBD_GUARD_NOTICE_CMD="$tmp/bin/situations"
 
 # A LaunchAgent directory holding the primary's plist, a decoy for a DIFFERENT
@@ -247,6 +285,7 @@ reset() {
   rm -f "$LASTDBD_PRIMARY_HOME/monitoring/lastdbd-revive.hold"
   rm -f "$EVENT_LOG"
   rm -f "$FAKE_SHED_MARKER"
+  rm -f "$FAKE_SEQ_COUNTER"
   write_agents
   printf '{"pid":4242,"start_ts":1234,"last_heartbeat_ts":1234}\n' >"$LASTDBD_PRIMARY_HOME/current-session.json"
   printf '{"pid":4242,"start_ts":1234,"build_version":"0.0.0-test"}\n' >"$LASTDBD_PRIMARY_HOME/sessions.jsonl"
@@ -263,6 +302,7 @@ fi
 reset
 FAKE_RSS_KB=$((1500 * 1024)) \
 FAKE_FOOTPRINT_BYTES=$((9000 * MB)) \
+FAKE_PEAK_BYTES=$((17300 * MB)) \
 FAKE_SWAP_MB=25000 \
   "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 below the default limit"
 
@@ -274,6 +314,15 @@ grep -q 'footprint_source=rusage' "$LOG" || fail "footprint should come from rus
 grep -q 'rss_mb=1500' "$LOG" || fail "log should still carry rss"
 grep -q 'swap_mb=' "$LOG" || fail "log should carry swap for diagnosis"
 grep -q 'warn swap_used' "$LOG" && fail "swap use alone must not raise an alert"
+# The peak is the whole point of logging it: the instant series MISSES
+# excursions between the 60 s samples, so a cycle that reads 9000 MB must still
+# report that this process has touched 17300 MB. A peak that merely echoes the
+# instant would carry no information at all.
+grep -q 'peak_mb=17300' "$LOG" \
+  || fail "steady-state line should carry the lifetime peak beside the instant"
+grep -q 'footprint_mb=9000 peak_mb=17300' "$LOG" \
+  || fail "peak should sit next to the instantaneous footprint"
+restarted && fail "an over-limit PEAK must not restart — step 2 is observation only"
 
 # --- 3. default policy fires when footprint exceeds 16 GiB; an unsupported
 # (404) shed route never fails closed and the restart still proceeds ---------
@@ -284,6 +333,10 @@ FAKE_FOOTPRINT_BYTES=$((17000 * MB)) \
 restarted || fail "default footprint policy must restart above 16 GiB"
 grep -q 'OVER_LIMIT.*metric=footprint.*enforced_mb=17000.*limit_mb=16384' "$LOG" \
   || fail "over-limit line should record the default footprint policy"
+grep -q 'over_limit_candidate.*enforced_mb=17000' "$LOG" \
+  || fail "the first over-limit reading should be recorded as a candidate"
+grep -q 'confirmed_over_limit.*over=5/5' "$LOG" \
+  || fail "a sustained breach should confirm on every sample before restarting"
 grep -q 'shed_unsupported' "$LOG" || fail "a 404 shed route should be logged and not block the restart"
 grep -q 'vmmap_capture\|vmmap_skip' "$LOG" || fail "a forced restart should attempt a vmmap capture"
 grep -q '"event":"restart_requested".*"old_pid":4242.*"new_pid":null' "$EVENT_LOG" \
@@ -591,6 +644,138 @@ restarted && fail "dry run must never kill or kickstart the primary"
 grep -q 'dry_run skip shed/kill/kickstart' "$LOG" || fail "dry run should log its intent"
 [ -s "$FAKE_ACTION_LOG" ] && fail "dry run must not touch kill/launchctl/situations/vmmap"
 
+# --- 25. a single-sample spike is ignored; the readings stay in the log ------
+# The failure this closes: the guard read one phys_footprint sample per 60 s
+# and a single sample at or above the line entered the restart path. On the
+# live primary that signal moves p90 1650 MB per minute, and 24 of 39 recorded
+# OVER_LIMIT events fired within 500 MB of the limit — indistinguishable from
+# noise. One spike must no longer SIGKILL the database.
+reset
+FAKE_RSS_KB=$((1500 * 1024)) \
+FAKE_FOOTPRINT_SEQUENCE="$((17000 * MB)) $((9000 * MB)) $((9200 * MB)) $((8800 * MB)) $((9100 * MB)) $((9000 * MB))" \
+  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 after ignoring a transient"
+restarted && fail "a single-sample spike must NOT restart the primary"
+grep -q 'over_limit_candidate.*enforced_mb=17000' "$LOG" \
+  || fail "the spike should still be recorded as a candidate"
+grep -q 'transient_ignored.*over=0/5' "$LOG" \
+  || fail "an unconfirmed candidate should log transient_ignored with the tally"
+grep -q 'transient_ignored.*readings=17000,9000,9200,8800,9100,9000' "$LOG" \
+  || fail "transient_ignored must carry every reading so the rate is countable"
+grep -q 'OVER_LIMIT' "$LOG" \
+  && fail "OVER_LIMIT must keep meaning 'the guard acted'"
+[ -f "$LASTDBD_PRIMARY_HOME/monitoring/lastdbd-memory-guard.state" ] \
+  && fail "an ignored transient must not burn the restart cooldown"
+
+# --- 26. a real breach survives a dip: majority, not unanimity --------------
+# Three of five confirmation samples over the line is a breach. The guard must
+# not need a perfectly flat signal to act, or the confirmation rule would trade
+# the old false positives for new false negatives on a signal that moves.
+reset
+FAKE_RSS_KB=$((1500 * 1024)) \
+FAKE_FOOTPRINT_SEQUENCE="$((17000 * MB)) $((17100 * MB)) $((15000 * MB)) $((17200 * MB)) $((14900 * MB)) $((17300 * MB))" \
+  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 after a confirmed restart"
+restarted || fail "a majority of over-limit samples must still restart"
+grep -q 'confirmed_over_limit.*over=3/5' "$LOG" \
+  || fail "confirmation should report the majority tally it acted on"
+grep -q 'OVER_LIMIT' "$LOG" || fail "a confirmed breach should log OVER_LIMIT"
+
+# --- 27. a process that exits mid-confirmation is not restarted -------------
+# rss of a gone process is 0 and 0 is under the limit, so the sampler reads the
+# exit as "not over" without a liveness special case. Asserted because that is
+# load-bearing, not incidental.
+reset
+FAKE_RSS_KB=0 \
+FAKE_FOOTPRINT_SEQUENCE="$((17000 * MB)) 0 0 0 0 0" \
+  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 when the pid goes away"
+restarted && fail "a pid that stopped being over the limit must not be killed"
+grep -q 'transient_ignored.*over=0/5' "$LOG" || fail "the exit should read as unconfirmed"
+
+# --- 28. confirmation can be switched off, and says so ----------------------
+# The rollback path. It must be explicit in the log, because a reader counting
+# restarts needs to know which policy produced them.
+reset
+FAKE_RSS_KB=$((1500 * 1024)) \
+FAKE_FOOTPRINT_SEQUENCE="$((17000 * MB)) $((9000 * MB)) $((9000 * MB))" \
+LASTDBD_GUARD_CONFIRM_SAMPLES=0 \
+  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 with confirmation disabled"
+restarted || fail "CONFIRM_SAMPLES=0 must restore the single-sample restart"
+grep -q 'confirm_disabled.*samples=0' "$LOG" \
+  || fail "disabled confirmation should be visible in the log"
+grep -q 'transient_ignored' "$LOG" && fail "disabled confirmation cannot ignore anything"
+
+# --- 29. a non-numeric confirmation setting is rejected, not defaulted ------
+reset
+if LASTDBD_GUARD_CONFIRM_SAMPLES=lots "$GUARD" >/dev/null 2>&1; then
+  fail "invalid LASTDBD_GUARD_CONFIRM_SAMPLES should exit non-zero"
+fi
+if LASTDBD_GUARD_CONFIRM_INTERVAL_SEC=soon "$GUARD" >/dev/null 2>&1; then
+  fail "invalid LASTDBD_GUARD_CONFIRM_INTERVAL_SEC should exit non-zero"
+fi
+
+# --- 30. every SIGKILL records how far the drain got ------------------------
+# 43 SIGKILL, 0 SIGTERM_clean across the whole guard log, and not one line said
+# whether the drain was progressing or wedged. Without that, raising
+# TERM_WAIT_SEC would be a guess. The drain state is read from what a shutting
+# down node still reports: whether its socket answers, and what is still queued
+# on it.
+#
+# This needs a pid that is really alive and really survives SIGTERM, because
+# `kill` is a bash builtin and no shim can fake it. A child that ignores TERM
+# holds the window open exactly the way a slow drain does.
+# Started in THIS shell, not in a `$(...)` helper: a command substitution
+# subshell takes its background jobs down with it when it exits, so a helper
+# that returns `$!` hands back a pid that is already dead. Measured while
+# writing this test — the drain window silently logged polls=0.
+# Stdio goes to /dev/null so the orphaned `sleep` cannot hold the suite's
+# output pipe open after the guard kills its parent.
+bash -c 'trap "" TERM; sleep 10' >/dev/null 2>&1 &
+stubborn_pid=$!
+# The guard SIGKILLs this pid on purpose. Disown it so the shell does not
+# report "Killed: 9" on a suite that passed.
+disown "$stubborn_pid" 2>/dev/null || true
+reset
+FAKE_PID=$stubborn_pid \
+FAKE_RSS_KB=$((1500 * 1024)) \
+FAKE_FOOTPRINT_BYTES=$((17000 * MB)) \
+FAKE_UDS_IN_FLIGHT=7 \
+FAKE_SYNC_PENDING=3 \
+LASTDBD_GUARD_TERM_WAIT_SEC=2 \
+  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 after a SIGKILL restart"
+kill -9 "$stubborn_pid" 2>/dev/null || true
+grep -q "SIGKILL pid=$stubborn_pid" "$LOG" || fail "a pid that never exits should be SIGKILLed"
+grep -q 'SIGTERM_clean' "$LOG" && fail "a pid that ignored TERM did not exit cleanly"
+grep -q 'drain_progress .*polls=[1-9]' "$LOG" \
+  || fail "the SIGTERM window should be polled at least once"
+grep -q 'drain_progress .*last=socket=answering uds_in_flight=7 sync_pending=3' "$LOG" \
+  || fail "drain_progress should carry the last observed drain state"
+grep -q 'drain_progress .*answered=[1-9]' "$LOG" \
+  || fail "drain_progress should count how many polls the node answered"
+# uds.in_flight and local_retention.in_flight share a key name on the real
+# route. Reading the flat key would report the boolean's neighbour, not 7.
+grep -q 'uds_in_flight=false' "$LOG" \
+  && fail "drain reader must scope in_flight to the uds object"
+
+# --- 31. a node whose socket is already gone still records the drain --------
+# "unanswered" is the informative answer here: it says the node stopped serving
+# before the window expired, which is a different failure from a slow drain.
+bash -c 'trap "" TERM; sleep 10' >/dev/null 2>&1 &
+stubborn_pid=$!
+# The guard SIGKILLs this pid on purpose. Disown it so the shell does not
+# report "Killed: 9" on a suite that passed.
+disown "$stubborn_pid" 2>/dev/null || true
+reset
+FAKE_PID=$stubborn_pid \
+FAKE_RSS_KB=$((1500 * 1024)) \
+FAKE_FOOTPRINT_BYTES=$((17000 * MB)) \
+LASTDBD_GUARD_TERM_WAIT_SEC=2 \
+FAKE_NODE_DOWN=1 \
+  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 when the node socket is down"
+kill -9 "$stubborn_pid" 2>/dev/null || true
+grep -q 'drain_progress .*last=socket=unanswered' "$LOG" \
+  || fail "an unanswered socket during the drain should be recorded as such"
+grep -q 'drain_progress .*answered=0' "$LOG" \
+  || fail "an unanswered socket should not count as an answered poll"
+
 # --- 24. shipped rusage python: oversized buffer, real pid, exit 0 ----------
 # The PATH python3 above is a fixture for the rest of this file. This check
 # drives the shipped helper with the real interpreter and must not use that
@@ -608,6 +793,8 @@ awk '
 grep -q 'class rusage_info_v4' "$GUARD" && fail "shipped guard still declares ctypes rusage_info_v4"
 grep -q 'BUF_SIZE = 1024' "$rusage_py" || fail "shipped rusage python must use a 1024-byte buffer"
 grep -q 'PHYS_FOOTPRINT_OFFSET = 72' "$rusage_py" || fail "shipped rusage python must unpack phys_footprint at offset 72"
+grep -q 'LIFETIME_MAX_FOOTPRINT_OFFSET = 240' "$rusage_py" \
+  || fail "shipped rusage python must unpack ri_lifetime_max_phys_footprint at offset 240"
 grep -q 'c_uint8 \* BUF_SIZE' "$rusage_py" || fail "shipped rusage python must allocate BUF_SIZE bytes, not a 248-byte Structure"
 
 python3_real="${LAST_STACK_TEST_PYTHON3:-/usr/bin/python3}"
@@ -666,11 +853,21 @@ if [ "$(uname -s)" = "Darwin" ]; then
   ec1=$?
   set -e
   [ "$ec1" -eq 0 ] || fail "shipped rusage python exit $ec1 (want 0, not 139) pid=$$"
-  bytes1=$(tr -d ' \n' <"$out1")
-  case "$bytes1" in
-    ''|*[!0-9]*) fail "shipped rusage python stdout not a positive integer: '$bytes1'" ;;
+  read -r bytes1 peak1 <"$out1"
+  case "${bytes1:-}" in
+    ''|*[!0-9]*) fail "shipped rusage python footprint not a positive integer: '${bytes1:-}'" ;;
   esac
   [ "$bytes1" -gt 0 ] || fail "shipped rusage python printed non-positive: $bytes1"
+  case "${peak1:-}" in
+    ''|*[!0-9]*) fail "shipped rusage python peak not an integer: '${peak1:-}'" ;;
+  esac
+  # A lifetime high water mark below the current footprint is not a peak; the
+  # helper reports 0 rather than a number no reader could interpret.
+  [ "$peak1" -eq 0 ] || [ "$peak1" -ge "$bytes1" ] \
+    || fail "peak $peak1 is below the instantaneous footprint $bytes1"
+  # This is the offset check that a fixture cannot fake. On the real primary
+  # the peak is strictly above the instant; on this short-lived test process it
+  # may legitimately be equal. Either is fine — a SMALLER peak is not.
 
   out2="$tmp/rusage-live-2.txt"
   set +e
@@ -678,11 +875,14 @@ if [ "$(uname -s)" = "Darwin" ]; then
   ec2=$?
   set -e
   [ "$ec2" -eq 0 ] || fail "second shipped rusage python exit $ec2 (want 0, not 139)"
-  bytes2=$(tr -d ' \n' <"$out2")
-  case "$bytes2" in
-    ''|*[!0-9]*) fail "second shipped rusage python stdout not a positive integer: '$bytes2'" ;;
+  read -r bytes2 peak2 <"$out2"
+  case "${bytes2:-}" in
+    ''|*[!0-9]*) fail "second shipped rusage python footprint not a positive integer: '${bytes2:-}'" ;;
   esac
   [ "$bytes2" -gt 0 ] || fail "second shipped rusage python printed non-positive: $bytes2"
+  case "${peak2:-}" in
+    ''|*[!0-9]*) fail "second shipped rusage python peak not an integer: '${peak2:-}'" ;;
+  esac
 fi
 
 printf 'PASS: last-stack-lastdb-memory-guard\n'

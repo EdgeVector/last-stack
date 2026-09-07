@@ -85,6 +85,13 @@
 #                            limit before capturing vmmap and sending SIGTERM
 #   LASTDBD_GUARD_TERM_WAIT_SEC default 60 — clean-shutdown window after
 #                            SIGTERM before SIGKILL
+#   LASTDBD_GUARD_CONFIRM_SAMPLES default 5 — extra readings taken after the
+#                            first over-limit reading. A majority of them must
+#                            also be at or above the limit before the restart
+#                            path runs. 0 restores the old single-sample
+#                            behaviour (deliberate rollback only).
+#   LASTDBD_GUARD_CONFIRM_INTERVAL_SEC default 2 — seconds between those
+#                            confirmation readings
 
 set -eu
 # launchd hands this script a near-empty PATH, so pin a known-good one. Kept
@@ -99,6 +106,8 @@ RESTART_WAIT_SEC="${LASTDBD_GUARD_RESTART_WAIT_SEC:-30}"
 IDENTITY_TIMEOUT_SEC="${LASTDBD_GUARD_IDENTITY_TIMEOUT_SEC:-1}"
 SHED_WAIT_SEC="${LASTDBD_GUARD_SHED_WAIT_SEC:-60}"
 TERM_WAIT_SEC="${LASTDBD_GUARD_TERM_WAIT_SEC:-60}"
+CONFIRM_SAMPLES="${LASTDBD_GUARD_CONFIRM_SAMPLES:-5}"
+CONFIRM_INTERVAL_SEC="${LASTDBD_GUARD_CONFIRM_INTERVAL_SEC:-2}"
 PRIMARY_HOME="${LASTDBD_PRIMARY_HOME:-$HOME/.lastdb}"
 LOG_DIR="${PRIMARY_HOME}/monitoring"
 LOG="${LOG_DIR}/lastdbd-memory-guard.log"
@@ -134,6 +143,20 @@ esac
 case "$TERM_WAIT_SEC" in
   ''|*[!0-9]*)
     echo "invalid LASTDBD_GUARD_TERM_WAIT_SEC=$TERM_WAIT_SEC (want whole seconds)" >&2
+    exit 2
+    ;;
+esac
+
+case "$CONFIRM_SAMPLES" in
+  ''|*[!0-9]*)
+    echo "invalid LASTDBD_GUARD_CONFIRM_SAMPLES=$CONFIRM_SAMPLES (want whole samples)" >&2
+    exit 2
+    ;;
+esac
+
+case "$CONFIRM_INTERVAL_SEC" in
+  ''|*[!0-9]*)
+    echo "invalid LASTDBD_GUARD_CONFIRM_INTERVAL_SEC=$CONFIRM_INTERVAL_SEC (want whole seconds)" >&2
     exit 2
     ;;
 esac
@@ -238,16 +261,28 @@ rss_mb_of() {
 # node's HTTP path entirely: a hung or overloaded node (the ~242-cold-load
 # cost /api/status carried before fold #1908) no longer blinds this gauge.
 # Falls back to rss when the pid is gone or the platform has no footprint
-# accounting (e.g. non-macOS CI). Prints "<mb> <source>" — a caller run
-# through `$(...)` runs in a subshell, so the source has to travel on stdout
-# rather than through a global the function sets. Port of fold #1908's
+# accounting (e.g. non-macOS CI). Prints "<mb> <source> <peak_mb>" — a caller
+# run through `$(...)` runs in a subshell, so the source has to travel on
+# stdout rather than through a global the function sets. Port of fold #1908's
 # phys_footprint_mb_of.
+#
+# The third field is ri_lifetime_max_phys_footprint, the process-lifetime high
+# water mark the same syscall already carries. The node publishes the identical
+# number as status.phys_footprint_peak_bytes — verified equal on the live
+# primary 2026-09-07 (pid 40502, both 18656074072 bytes) — but reading it from
+# the kernel costs this guard nothing and adds no request to a primary that
+# Situation lastdb-primary-offload-then-heal-20260906 says must not gain
+# consumers. It also keeps the steady-state cycle off the node's HTTP path,
+# which is the property fold #1908 bought.
+#
+# Peak is 0 when unavailable (rss fallback, or a kernel that does not carry the
+# field). Callers must read 0 as "unknown", not as "the process never grew".
 phys_footprint_mb_of() {
-  local pid="$1" bytes
+  local pid="$1" bytes peak_bytes reading
   # Unquoted $(...) — bash 3.2 (LaunchAgent /bin/bash) treats quotes inside
   # a double-quoted "$( <<'PY' )" as closers, so the python must not sit
   # in an extra quoted substitution.
-  bytes=$(python3 - "$pid" <<'PY' 2>/dev/null || true
+  reading=$(python3 - "$pid" <<'PY' 2>/dev/null || true
 import ctypes
 import ctypes.util
 import struct
@@ -264,6 +299,9 @@ libc = ctypes.CDLL(libc_name)
 RUSAGE_INFO_V4 = 4
 BUF_SIZE = 1024
 PHYS_FOOTPRINT_OFFSET = 72
+# ri_lifetime_max_phys_footprint, the field after ri_logical_writes in the v4
+# tail. Verified against the node's own status.phys_footprint_peak_bytes.
+LIFETIME_MAX_FOOTPRINT_OFFSET = 240
 buf = (ctypes.c_uint8 * BUF_SIZE)()
 fn = libc.proc_pid_rusage
 fn.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
@@ -271,17 +309,35 @@ fn.restype = ctypes.c_int
 rc = fn(pid, RUSAGE_INFO_V4, buf)
 if rc != 0:
     raise SystemExit(1)
-footprint = struct.unpack_from('<Q', bytes(buf), PHYS_FOOTPRINT_OFFSET)[0]
+raw = bytes(buf)
+footprint = struct.unpack_from('<Q', raw, PHYS_FOOTPRINT_OFFSET)[0]
 if footprint <= 0:
     raise SystemExit(1)
-print(int(footprint))
+peak = struct.unpack_from('<Q', raw, LIFETIME_MAX_FOOTPRINT_OFFSET)[0]
+# A peak below the instantaneous reading means the offset does not hold what
+# this code expects on this kernel. Report 0 rather than a smaller-than-now
+# "high water mark" no reader could interpret.
+if peak < footprint:
+    peak = 0
+print(int(footprint), int(peak))
 PY
 )
+  # A shim or an older reader may print only the footprint. Splitting on the
+  # first and last word of a one-word line yields the same word twice, so the
+  # peak is validated as a distinct number before it is trusted.
+  bytes="${reading%% *}"
+  peak_bytes="${reading##* }"
+  if [ "$peak_bytes" = "$reading" ]; then
+    peak_bytes=0
+  fi
+  case "${peak_bytes:-}" in
+    ''|*[!0-9]*) peak_bytes=0 ;;
+  esac
   if [ -n "${bytes:-}" ] && [ "$bytes" -gt 0 ] 2>/dev/null; then
-    printf '%s rusage\n' "$((bytes / 1024 / 1024))"
+    printf '%s rusage %s\n' "$((bytes / 1024 / 1024))" "$((peak_bytes / 1024 / 1024))"
     return 0
   fi
-  printf '%s rss_fallback\n' "$(rss_mb_of "$pid")"
+  printf '%s rss_fallback 0\n' "$(rss_mb_of "$pid")"
 }
 
 # The shed route only exists on daemon builds carrying fold #1908
@@ -532,6 +588,90 @@ mark_restart() {
   date +%s >"$STATE"
 }
 
+# The gauge the guard actually enforces on, as one number. Confirmation and
+# drain logging both need "what would fire right now", not the whole reading.
+current_enforced_mb() {
+  local pid="$1" reading
+  if [ "$GUARD_METRIC" = "rss" ]; then
+    rss_mb_of "$pid"
+    return 0
+  fi
+  reading=$(phys_footprint_mb_of "$pid")
+  printf '%s\n' "${reading%% *}"
+}
+
+# Confirm an over-limit reading before handing a pid to the killer.
+#
+# The LaunchAgent runs this guard once per 60 s, so the old code enforced a
+# hard ceiling on ONE sample. Measured on the live primary 2026-09-07 over 623
+# samples of a single pid, the minute-to-minute absolute change of
+# phys_footprint is p50 110 MB, p90 1650 MB, max 7638 MB. One sample therefore
+# says very little about whether the process is holding that memory: of the 39
+# recorded OVER_LIMIT events carrying a footprint reading, 24 (62%) fired
+# within 500 MB of the limit, which is well inside that noise.
+#
+# So take CONFIRM_SAMPLES more readings CONFIRM_INTERVAL_SEC apart and require
+# a majority of them at or above the limit. Seconds apart, not minutes apart:
+# that separates a spike from a sustained hold without leaving the machine at
+# its ceiling for another full cycle.
+#
+# A dead pid needs no special case. Its reading falls back to rss, rss of a
+# gone process is 0, and 0 is under the limit — so an exit during confirmation
+# reads as "not over" and nothing gets signalled.
+#
+# Returns 0 to proceed with the restart, 1 to ignore this cycle. Either way
+# every reading lands in the log, so the false-positive rate becomes countable
+# instead of inferred.
+confirm_over_limit() {
+  local pid="$1" first="$2"
+  if [ "$CONFIRM_SAMPLES" -eq 0 ]; then
+    log "confirm_disabled pid=$pid samples=0 first_mb=$first limit_mb=$RSS_LIMIT_MB"
+    return 0
+  fi
+  local i=0 over=0 mb readings="$first"
+  while [ "$i" -lt "$CONFIRM_SAMPLES" ]; do
+    sleep "$CONFIRM_INTERVAL_SEC"
+    mb=$(current_enforced_mb "$pid")
+    case "${mb:-}" in
+      ''|*[!0-9]*) mb=0 ;;
+    esac
+    readings="$readings,$mb"
+    if [ "$mb" -ge "$RSS_LIMIT_MB" ]; then
+      over=$((over + 1))
+    fi
+    i=$((i + 1))
+  done
+  if [ $((over * 2)) -gt "$CONFIRM_SAMPLES" ]; then
+    log "confirmed_over_limit pid=$pid metric=$GUARD_METRIC over=$over/$CONFIRM_SAMPLES limit_mb=$RSS_LIMIT_MB interval_sec=$CONFIRM_INTERVAL_SEC readings=$readings"
+    return 0
+  fi
+  log "transient_ignored pid=$pid metric=$GUARD_METRIC over=$over/$CONFIRM_SAMPLES limit_mb=$RSS_LIMIT_MB interval_sec=$CONFIRM_INTERVAL_SEC readings=$readings"
+  return 1
+}
+
+# One observation of how far a shutting-down node has got.
+#
+# There is no shutdown-state field on the status route, so the drain is read
+# from what a draining node still reports: whether the socket answers at all,
+# how many requests are still in flight on it, and how many sync uploads are
+# still pending. `uds.in_flight` is scoped to its own object here rather than
+# taken from the flat key, because `local_retention.in_flight` shares the name.
+drain_snapshot() {
+  local blob in_flight pending
+  blob=$(unix_get "http://localhost/api/status")
+  if ! split_http_body "$blob" \
+    || [ "$IDENTITY_HTTP_CODE" != "200" ] \
+    || [ -z "$IDENTITY_BODY" ]; then
+    printf 'socket=unanswered\n'
+    return 0
+  fi
+  in_flight=$(printf '%s' "$IDENTITY_BODY" \
+    | sed -n 's/.*"uds":{[^}]*"in_flight":\([0-9][0-9]*\).*/\1/p' | head -1)
+  pending=$(status_field "$IDENTITY_BODY" pending_count)
+  printf 'socket=answering uds_in_flight=%s sync_pending=%s\n' \
+    "${in_flight:-unknown}" "${pending:-unknown}"
+}
+
 restart_primary() {
   local pid="$1"
   local reading="$2"
@@ -560,14 +700,27 @@ restart_primary() {
 
   capture_vmmap "$pid"
   kill -TERM "$pid" 2>/dev/null || true
-  local term_deadline
-  term_deadline=$(($(date +%s) + TERM_WAIT_SEC))
+  # Every guard restart in the whole log so far ended in SIGKILL: 43 SIGKILL,
+  # 0 SIGTERM_clean. Nothing recorded WHY, so nobody could tell a drain that
+  # needs more than TERM_WAIT_SEC from a drain that is wedged. Poll the node
+  # once per second across the window and log the last state observed next to
+  # the outcome. This measures the question; it does not answer it by raising
+  # the window.
+  local term_deadline drain_state="" drain_polls=0 drain_answered=0 term_started
+  term_started=$(date +%s)
+  term_deadline=$((term_started + TERM_WAIT_SEC))
   while [ "$(date +%s)" -lt "$term_deadline" ]; do
     if ! kill -0 "$pid" 2>/dev/null; then
       break
     fi
+    drain_state=$(drain_snapshot)
+    drain_polls=$((drain_polls + 1))
+    case "$drain_state" in
+      socket=answering*) drain_answered=$((drain_answered + 1)) ;;
+    esac
     sleep 1
   done
+  log "drain_progress pid=$pid term_wait_sec=$TERM_WAIT_SEC elapsed_sec=$(($(date +%s) - term_started)) polls=$drain_polls answered=$drain_answered last=${drain_state:-unobserved}"
   if kill -0 "$pid" 2>/dev/null; then
     log "SIGKILL pid=$pid (did not exit after SIGTERM window ${TERM_WAIT_SEC}s)"
     kill -KILL "$pid" 2>/dev/null || true
@@ -922,8 +1075,12 @@ cmd=$(ps -p "$pid" -o command= 2>/dev/null | head -c 200 || true)
 # own /api/status — see phys_footprint_mb_of. That means a steady-state "ok"
 # cycle makes zero calls to the node's HTTP path.
 footprint_reading=$(phys_footprint_mb_of "$pid")
-footprint="${footprint_reading%% *}"
-footprint_source="${footprint_reading#* }"
+# Three fields now: value, source, lifetime peak. Read them positionally —
+# `${reading#* }` would hand the source and the peak back as one token.
+read -r footprint footprint_source peak <<EOF
+$footprint_reading
+EOF
+peak="${peak:-0}"
 
 metric="$GUARD_METRIC"
 if [ "$metric" = "footprint" ]; then
@@ -932,7 +1089,15 @@ else
   enforced="$rss"
 fi
 
-log "ok pid=$pid metric=$metric enforced_mb=$enforced limit_mb=$RSS_LIMIT_MB rss_mb=$rss footprint_mb=$footprint footprint_source=$footprint_source swap_mb=${swap:-unknown}"
+# peak_mb is the process-lifetime high water mark, on every cycle beside the
+# instant. The 60 s sampling interval means the instant series MISSES
+# excursions: `lastdb status` reported a 17.32 GiB peak for pid 40502 while the
+# highest of 623 guard samples for the same pid was 15.93 GiB. The node went
+# 1.39 GiB past the line and no guard log line knew. Carrying the peak makes
+# the excursion rate above the limit countable from this log alone. It is
+# OBSERVATION ONLY — nothing enforces on it, by design, until that rate has
+# been counted. 0 means unavailable, not "never grew".
+log "ok pid=$pid metric=$metric enforced_mb=$enforced limit_mb=$RSS_LIMIT_MB rss_mb=$rss footprint_mb=$footprint peak_mb=$peak footprint_source=$footprint_source swap_mb=${swap:-unknown}"
 
 # Keep the old RSS policy explicit and visible when an operator selects it.
 # Swap remains in the status line for diagnosis, but swap use does not trigger
@@ -950,7 +1115,16 @@ if ! cooldown_ok; then
   exit 0
 fi
 
-log "OVER_LIMIT pid=$pid metric=$metric enforced_mb=$enforced limit_mb=$RSS_LIMIT_MB rss_mb=$rss footprint_mb=$footprint footprint_source=$footprint_source swap_mb=${swap:-unknown} cmd=$cmd"
+log "over_limit_candidate pid=$pid metric=$metric enforced_mb=$enforced limit_mb=$RSS_LIMIT_MB rss_mb=$rss footprint_mb=$footprint peak_mb=$peak footprint_source=$footprint_source swap_mb=${swap:-unknown} cmd=$cmd"
+
+# One sample is not evidence. Confirm before the killer runs. OVER_LIMIT stays
+# the line that means "the guard acted", so counting restarts in this log does
+# not change meaning; the new candidate/transient lines carry what was rejected.
+if ! confirm_over_limit "$pid" "$enforced"; then
+  exit 0
+fi
+
+log "OVER_LIMIT pid=$pid metric=$metric enforced_mb=$enforced limit_mb=$RSS_LIMIT_MB rss_mb=$rss footprint_mb=$footprint peak_mb=$peak footprint_source=$footprint_source swap_mb=${swap:-unknown} cmd=$cmd"
 # build is only needed for the restart notice, so only fetch it (via the
 # node's own status/boot-identity route) on the rare over-limit path — the
 # steady-state cycle above never touches /api/status.
