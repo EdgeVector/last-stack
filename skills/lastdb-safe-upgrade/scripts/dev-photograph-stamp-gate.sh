@@ -349,8 +349,20 @@ EOF
   [ "${#expected}" -eq 64 ] \
     || { printf 'RED: expected CLI SHA-256 is not full length\n'; failed=1; }
 
-  if ! dev_stamp_api_is_dev "$(dev_stamp_receipt_get "$receipt" api_url || true)"; then
-    printf 'RED: DEV photograph receipt does not name the exact DEV API\n'
+  receipt_api_url="$(dev_stamp_receipt_get "$receipt" api_url || true)"
+  if ! dev_stamp_api_is_dev "$receipt_api_url"; then
+    # The dev check is exact equality, so it already refuses the production
+    # host along with everything else — the refusal is not what changes here.
+    # What changes is what the operator is told. "does not name the exact DEV
+    # API" is the same sentence for a typo, an empty field, and a receipt that
+    # names the PRODUCTION backup API, and only the last of those means the
+    # photograph ran against Tom's real backup home. Say which one it is.
+    # papercut-lastdb-safe-upgrade-unwired-guard-functions-20260907
+    if dev_stamp_api_is_prod "$receipt_api_url"; then
+      printf 'RED: DEV photograph receipt names the PRODUCTION backup API\n'
+    else
+      printf 'RED: DEV photograph receipt does not name the exact DEV API\n'
+    fi
     failed=1
   fi
 

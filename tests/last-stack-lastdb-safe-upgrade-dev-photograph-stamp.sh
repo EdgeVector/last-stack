@@ -107,6 +107,31 @@ expect_red_field lastdb_sha256 ddddddddddddddddddddddddddddddddddddddddddddddddd
 expect_red_field lastdbd_version other
 expect_red_field lastdb_version other
 expect_red_field api_url "https://jdsx4ixk2i.execute-api.us-east-1.amazonaws.com"
+
+# The production backup API is refused by the exact-equality DEV check like any
+# other wrong value, but it is the one wrong value that means the photograph ran
+# against Tom's real backup home. The refusal has to SAY so, or an operator
+# reads the same sentence for a typo and for that.
+# papercut-lastdb-safe-upgrade-unwired-guard-functions-20260907
+prod_receipt="$TMP/red-api_url-prod-message.receipt"
+cp "$receipt" "$prod_receipt"
+chmod 600 "$prod_receipt"
+replace_key "$prod_receipt" api_url "https://jdsx4ixk2i.execute-api.us-east-1.amazonaws.com"
+prod_out="$(assert_dev_photograph_stamp_ok "$prod_receipt" "$PRIMARY" 2>&1 || true)"
+case "$prod_out" in
+  *"names the PRODUCTION backup API"*) ;;
+  *) fail "a prod api_url was refused without naming production: $prod_out" ;;
+esac
+typo_receipt="$TMP/red-api_url-typo-message.receipt"
+cp "$receipt" "$typo_receipt"
+chmod 600 "$typo_receipt"
+replace_key "$typo_receipt" api_url "https://ygyu7ritx8.execute-api.us-west-2.amazonaws.com/"
+typo_out="$(assert_dev_photograph_stamp_ok "$typo_receipt" "$PRIMARY" 2>&1 || true)"
+case "$typo_out" in
+  *"names the PRODUCTION backup API"*) fail "a non-prod wrong api_url was reported as production: $typo_out" ;;
+  *"does not name the exact DEV API"*) ;;
+  *) fail "a wrong api_url was not refused by the DEV check: $typo_out" ;;
+esac
 expect_red_field home "$PRIMARY"
 expect_red_field primary_home "$TMP/other-primary"
 expect_red_field counter 0
