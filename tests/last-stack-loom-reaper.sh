@@ -53,7 +53,7 @@ out="$(run_reaper)" || fail "success pass failed"
 # 60 s the 2026-09-06T05:02Z pass reported resumed=0 against active=386, and
 # the same class of execution reached DONE on the first try at 480 s.
 [ "$(cat "$MOCK_LOOM_CALLS")" = \
-  'reap --older-than-secs 300 --resume-limit 6 --resume-timeout-secs 300 --json' ] \
+  'reap --older-than-secs 300 --abandon-after-secs 172800 --resume-limit 6 --resume-timeout-secs 300 --json' ] \
   || fail "unsafe Loom arguments: $(cat "$MOCK_LOOM_CALLS")"
 printf '%s\n' "$out" | jq -e \
   --arg loom "$home/.local/bin/loom" \
@@ -62,7 +62,8 @@ printf '%s\n' "$out" | jq -e \
    and .pass_deadline_secs == 1920
    and .orphan_drives_swept == 0
    and .report.resumed == 1
-   and .command == ["reap","--older-than-secs","300","--resume-limit","6",
+   and .command == ["reap","--older-than-secs","300",
+     "--abandon-after-secs","172800","--resume-limit","6",
      "--resume-timeout-secs","300","--json"]' \
   >/dev/null || fail "bad success result: $out"
 
@@ -72,12 +73,14 @@ tuned="$(HOME="$home" XDG_STATE_HOME="$state" \
   LAST_STACK_LOOM_REAPER_RESUME_LIMIT=3 \
   LAST_STACK_LOOM_REAPER_RESUME_TIMEOUT_S=15 \
   LAST_STACK_LOOM_REAPER_OLDER_THAN_S=600 \
+  LAST_STACK_LOOM_REAPER_ABANDON_AFTER_S=86400 \
   "$ROOT/bin/last-stack-loom-reaper-run")" || fail "tuned pass failed"
 [ "$(cat "$MOCK_LOOM_CALLS")" = \
-  'reap --older-than-secs 600 --resume-limit 3 --resume-timeout-secs 15 --json' ] \
+  'reap --older-than-secs 600 --abandon-after-secs 86400 --resume-limit 3 --resume-timeout-secs 15 --json' ] \
   || fail "env overrides ignored: $(cat "$MOCK_LOOM_CALLS")"
 printf '%s\n' "$tuned" | jq -e \
-  '.command == ["reap","--older-than-secs","600","--resume-limit","3",
+  '.command == ["reap","--older-than-secs","600",
+     "--abandon-after-secs","86400","--resume-limit","3",
      "--resume-timeout-secs","15","--json"]' \
   >/dev/null || fail "recorded command did not follow the overrides: $tuned"
 : >"$MOCK_LOOM_CALLS"

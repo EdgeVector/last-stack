@@ -23,9 +23,15 @@ LOCK_DIR="${LAST_STACK_LOOM_REAPER_LOCK_DIR:-$STATE_ROOT/run.lock}"
 # graph, was the blocker. 300 s clears that class of resume; the limit drops to
 # 6 to hold RESUME_LIMIT * RESUME_TIMEOUT_S (1800 s) inside the hour with the
 # 120 s margin, which is still ~5x the measured +1.15/h arrival rate.
+#
+# ABANDON_AFTER_S is 48 hours. Hourly observer graphs stay far outside this
+# age, while a ship-feature execution gets two full days to make progress.
+# Loom only abandons an execution after all worker leases expire. This bound
+# drains dead execution husks without shortening the live worker lease rule.
 RESUME_LIMIT="${LAST_STACK_LOOM_REAPER_RESUME_LIMIT:-6}"
 RESUME_TIMEOUT_S="${LAST_STACK_LOOM_REAPER_RESUME_TIMEOUT_S:-300}"
 OLDER_THAN_S="${LAST_STACK_LOOM_REAPER_OLDER_THAN_S:-300}"
+ABANDON_AFTER_S="${LAST_STACK_LOOM_REAPER_ABANDON_AFTER_S:-172800}"
 PASS_DEADLINE_MARGIN_S="${LAST_STACK_LOOM_REAPER_PASS_DEADLINE_MARGIN_S:-120}"
 PASS_DEADLINE_S="${LAST_STACK_LOOM_REAPER_PASS_DEADLINE_S:-$((RESUME_LIMIT * RESUME_TIMEOUT_S + PASS_DEADLINE_MARGIN_S))}"
 PASS_KILL_AFTER_S="${LAST_STACK_LOOM_REAPER_PASS_KILL_AFTER_S:-10}"
@@ -153,6 +159,7 @@ if [ -n "$timeout_bin" ]; then
   "$timeout_bin" -k "${PASS_KILL_AFTER_S}s" "${PASS_DEADLINE_S}s" \
     "$LOOM_BIN" reap \
     --older-than-secs "$OLDER_THAN_S" \
+    --abandon-after-secs "$ABANDON_AFTER_S" \
     --resume-limit "$RESUME_LIMIT" \
     --resume-timeout-secs "$RESUME_TIMEOUT_S" \
     --json >"$OUT_FILE" 2>"$ERR_FILE"
@@ -186,6 +193,7 @@ jq -cn \
   --argjson pass_deadline_secs "$PASS_DEADLINE_S" \
   --argjson orphan_drives_swept "$orphan_drives_swept" \
   --arg older_than "$OLDER_THAN_S" \
+  --arg abandon_after "$ABANDON_AFTER_S" \
   --arg resume_limit "$RESUME_LIMIT" \
   --arg resume_timeout "$RESUME_TIMEOUT_S" \
   --rawfile stdout "$OUT_FILE" \
@@ -194,7 +202,8 @@ jq -cn \
     exit_code:$exit_code,loom_bin:$loom_bin,age_secs:$age_secs,
     pass_deadline_secs:$pass_deadline_secs,
     orphan_drives_swept:$orphan_drives_swept,
-    command:["reap","--older-than-secs",$older_than,"--resume-limit",$resume_limit,
+    command:["reap","--older-than-secs",$older_than,
+      "--abandon-after-secs",$abandon_after,"--resume-limit",$resume_limit,
       "--resume-timeout-secs",$resume_timeout,"--json"],
     report:(try ($stdout | fromjson) catch null),stdout:$stdout,stderr:$stderr}' \
   >"$RESULT_TMP"
