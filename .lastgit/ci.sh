@@ -648,6 +648,9 @@ ci_test tests/host-track-forge-gate-head-auth.sh
 # no-token case cannot reach this host's keychain or node.
 ci_test tests/host-track-forge-gate-head-behaviour.sh
 
+# APPENDED: ci_test shards by list position.
+ci_test tests/last-stack-lastdb-memory-guard-log-contract.sh
+
 # The registration guard itself. Kept last, and asserted to be registered by
 # tests/last-stack-ci-sharding.sh, so the guard cannot quietly stop running.
 ci_test tests/last-stack-ci-test-registration.sh

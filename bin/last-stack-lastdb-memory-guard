@@ -92,6 +92,16 @@
 #                            behaviour (deliberate rollback only).
 #   LASTDBD_GUARD_CONFIRM_INTERVAL_SEC default 2 — seconds between those
 #                            confirmation readings
+#
+# Subcommand:
+#   --check-log-contract [logfile] [--since ISO]
+#       Audit an existing guard log against the declared field contract instead
+#       of running a guard cycle. Groups violations by the missing key set with
+#       a first and last timestamp, so a field that went away without a format
+#       change reads as its own row with a start and an end. Exits 1 on any
+#       violation in range. --since bounds it, which is how you ask whether the
+#       CURRENT format is whole without being told about every deliberate past
+#       format change.
 
 set -eu
 # launchd hands this script a near-empty PATH, so pin a known-good one. Kept
@@ -163,6 +173,151 @@ esac
 
 ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 log() { echo "$(ts) $*" | tee -a "$LOG" >/dev/null; echo "$(ts) $*"; }
+
+# >>> log field contract (extracted by tests/last-stack-lastdb-memory-guard-log-contract.sh)
+# --------------------------------------------------------------------------
+# Log field contract.
+#
+# The guard's telemetry lines are space-separated key=value free text with no
+# declared field set. A refactor can therefore drop a field from one of them
+# and nothing says so, because an absent key is indistinguishable from a field
+# that was never there. That is measured, not hypothetical: the 2026-09-04
+# rusage reader port removed `peak_mb` from the `ok` line and the field stayed
+# absent for 2.8 days and 3115 samples. peak_mb is the ONLY field that can show
+# an excursion the 60 s sampler missed, so for those three days this log could
+# not answer the question the guard exists to answer, and the analysis written
+# in that window had to reach outside the log to find the peak.
+# papercut-lastdbd-guard-log-lost-peak-mb-for-28-days-in-a-silent-field-drop-20260907
+#
+# So the required keys are declared once, here, and asserted where the line is
+# emitted. A value that is genuinely unavailable is emitted as a token — 0,
+# `unknown`, `unavailable` — because that is a reading. An absent key is not a
+# reading, and it is what this contract refuses.
+log_contract_keys() {
+  case "$1" in
+    ok|over_limit_candidate|OVER_LIMIT)
+      printf 'pid metric enforced_mb limit_mb rss_mb footprint_mb peak_mb footprint_source swap_mb\n'
+      ;;
+    *) printf '\n' ;;
+  esac
+}
+
+# Comma-joined list of the required keys a message fails to carry, empty when
+# it satisfies its contract. A key must be present AND carry a non-empty value:
+# an unset shell variable interpolates as an empty value, not as an absent key,
+# so both shapes have to fail. The leading space in the match keeps `pid=` from
+# matching `new_pid=`.
+log_contract_missing() {
+  event="$1"
+  msg="$2"
+  missing=""
+  for key in $(log_contract_keys "$event"); do
+    case " $msg " in
+      *" $key="*)
+        value="${msg#*" $key="}"
+        value="${value%% *}"
+        [ -n "$value" ] || missing="${missing:+$missing,}$key=empty"
+        ;;
+      *) missing="${missing:+$missing,}$key" ;;
+    esac
+  done
+  printf '%s' "$missing"
+}
+
+# log(), plus the contract assertion for the events that declare one. The
+# violation is itself a log line rather than a hard failure: this script's job
+# is to keep the primary alive, and it must not stop guarding because it has
+# stopped describing itself well.
+log_checked() {
+  event="$1"
+  shift
+  msg="$*"
+  log "$msg"
+  missing="$(log_contract_missing "$event" "$msg")"
+  [ -z "$missing" ] || log "log_contract_violation event=$event missing=$missing"
+}
+
+# <<< log field contract
+
+# `--check-log-contract [logfile] [--since ISO]` audits an EXISTING guard log
+# against the declared contract, so the contract can be verified against real
+# production output and not only against a fixture. This is the reader that
+# would have caught the peak_mb hole on the day it opened.
+#
+# It groups by the MISSING KEY SET rather than printing every offending line,
+# because this log spans several deliberate format changes and a flat count
+# over its whole history is 61696 violations of which nearly all are simply
+# "July did not have these fields yet". Grouped, the same scan reads as a
+# history of what the line carried and when — and a field that went away
+# without a format change appears as its own row with a start and an end.
+#
+# --since bounds the scan to lines at or after an ISO timestamp prefix, which
+# is what an operator wants when asking whether the CURRENT format is whole.
+#
+# The whole scan is ONE awk pass. The obvious shell loop calls
+# log_contract_missing per line, which is a fork per line: 62k forks and over
+# two minutes on the production log. A diagnostic nobody will wait for is a
+# diagnostic nobody runs, so the key list is declared once above and handed to
+# awk, which keeps the declaration single-sourced without paying for it.
+# Exits 1 when any contracted line in range is short a field.
+if [ "${1:-}" = "--check-log-contract" ]; then
+  scan_log="$LOG"
+  scan_since=""
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --since)
+        shift
+        scan_since="${1:-}"
+        ;;
+      --since=*) scan_since="${1#--since=}" ;;
+      *) scan_log="$1" ;;
+    esac
+    shift
+  done
+  if [ ! -r "$scan_log" ]; then
+    echo "cannot read $scan_log" >&2
+    exit 2
+  fi
+  awk -v required="$(log_contract_keys ok)" \
+      -v since="$scan_since" \
+      -v logfile="$scan_log" '
+    BEGIN { nreq = split(required, req, " ") }
+    {
+      if (index($0, " ok pid=")) event = "ok"
+      else if (index($0, " over_limit_candidate pid=")) event = "over_limit_candidate"
+      else if (index($0, " OVER_LIMIT pid=")) event = "OVER_LIMIT"
+      else next
+      if (since != "" && $1 < since) next
+      checked++
+      missing = ""
+      for (i = 1; i <= nreq; i++) {
+        at = index($0, " " req[i] "=")
+        if (at == 0) { missing = missing (missing ? "," : "") req[i]; continue }
+        rest = substr($0, at + length(req[i]) + 2)
+        sp = index(rest, " ")
+        value = (sp ? substr(rest, 1, sp - 1) : rest)
+        if (value == "") missing = missing (missing ? "," : "") req[i] "=empty"
+      }
+      if (missing == "") next
+      violations++
+      key = event " " missing
+      n[key]++
+      if (!(key in first)) first[key] = $1
+      last[key] = $1
+    }
+    END {
+      for (k in n)
+        printf "violations=%-6d event+missing=%s first=%s last=%s\n",
+               n[k], k, first[k], last[k] | "sort -t= -k2 -rn"
+      close("sort -t= -k2 -rn")
+      printf "log_contract_scan file=%s since=%s checked=%d violations=%d\n",
+             logfile, (since == "" ? "all" : since), checked + 0, violations + 0
+      exit (violations > 0 ? 1 : 0)
+    }
+  ' "$scan_log"
+  exit $?
+fi
 
 event() {
   # Values passed here are numeric or controlled tokens. Keep this dependency
@@ -1097,7 +1252,7 @@ fi
 # the excursion rate above the limit countable from this log alone. It is
 # OBSERVATION ONLY — nothing enforces on it, by design, until that rate has
 # been counted. 0 means unavailable, not "never grew".
-log "ok pid=$pid metric=$metric enforced_mb=$enforced limit_mb=$RSS_LIMIT_MB rss_mb=$rss footprint_mb=$footprint peak_mb=$peak footprint_source=$footprint_source swap_mb=${swap:-unknown}"
+log_checked ok "ok pid=$pid metric=$metric enforced_mb=$enforced limit_mb=$RSS_LIMIT_MB rss_mb=$rss footprint_mb=$footprint peak_mb=$peak footprint_source=$footprint_source swap_mb=${swap:-unknown}"
 
 # Keep the old RSS policy explicit and visible when an operator selects it.
 # Swap remains in the status line for diagnosis, but swap use does not trigger
@@ -1115,7 +1270,7 @@ if ! cooldown_ok; then
   exit 0
 fi
 
-log "over_limit_candidate pid=$pid metric=$metric enforced_mb=$enforced limit_mb=$RSS_LIMIT_MB rss_mb=$rss footprint_mb=$footprint peak_mb=$peak footprint_source=$footprint_source swap_mb=${swap:-unknown} cmd=$cmd"
+log_checked over_limit_candidate "over_limit_candidate pid=$pid metric=$metric enforced_mb=$enforced limit_mb=$RSS_LIMIT_MB rss_mb=$rss footprint_mb=$footprint peak_mb=$peak footprint_source=$footprint_source swap_mb=${swap:-unknown} cmd=$cmd"
 
 # One sample is not evidence. Confirm before the killer runs. OVER_LIMIT stays
 # the line that means "the guard acted", so counting restarts in this log does
@@ -1124,7 +1279,7 @@ if ! confirm_over_limit "$pid" "$enforced"; then
   exit 0
 fi
 
-log "OVER_LIMIT pid=$pid metric=$metric enforced_mb=$enforced limit_mb=$RSS_LIMIT_MB rss_mb=$rss footprint_mb=$footprint peak_mb=$peak footprint_source=$footprint_source swap_mb=${swap:-unknown} cmd=$cmd"
+log_checked OVER_LIMIT "OVER_LIMIT pid=$pid metric=$metric enforced_mb=$enforced limit_mb=$RSS_LIMIT_MB rss_mb=$rss footprint_mb=$footprint peak_mb=$peak footprint_source=$footprint_source swap_mb=${swap:-unknown} cmd=$cmd"
 # build is only needed for the restart notice, so only fetch it (via the
 # node's own status/boot-identity route) on the rare over-limit path — the
 # steady-state cycle above never touches /api/status.
