@@ -200,11 +200,15 @@ mk_wt open-pr-wt kanban/has-open-pr
 mk_wt finished-wt kanban/nothing-open
 printf 'open-pr-wt\tkanban/has-open-pr\n' >"$prfix/open-heads.tsv"
 
-unset LAST_STACK_RECLAIM_SKIP_LSOF LAST_STACK_RECLAIM_EXTRA_LIVE_PATHS LAST_STACK_RECLAIM_EXTRA_LIVE_EXEC_PATHS
+# Hermetic: no process-table scan in a unit test. --force-live skips the
+# liveness checks the scan feeds, so the finished-work path is reached on the
+# index verdict alone; SKIP_LSOF keeps the fixture off ps/lsof entirely.
+unset LAST_STACK_RECLAIM_EXTRA_LIVE_PATHS LAST_STACK_RECLAIM_EXTRA_LIVE_EXEC_PATHS
+export LAST_STACK_RECLAIM_SKIP_LSOF=1
 export LAST_STACK_RECLAIM_SKIP_BOARD=1
 export LAST_STACK_RECLAIM_FREE_FLOOR_GIB=0
 export LAST_STACK_RECLAIM_OPEN_HEADS_FILE="$prfix/open-heads.tsv"
-out="$("$bin" --sweep-stale --min-age-minutes 0 --max-age-hours 99999 2>&1 || true)"
+out="$("$bin" --sweep-stale --force-live --min-age-minutes 0 --max-age-hours 99999 2>&1 || true)"
 printf '%s\n' "$out" | grep -E 'open-pr|finished-wt|open-pr index' | head -n 8
 if [ ! -d "$WORKTREES_DIR/open-pr-wt" ]; then
   echo "FAIL: worktree with an open change request was reclaimed" >&2; exit 1
@@ -221,7 +225,7 @@ echo "ok   open change request keeps its worktree; finished work still goes"
 # Unreadable index: fail closed on the finished path (age gate only).
 mk_wt finished-wt kanban/nothing-open
 export LAST_STACK_RECLAIM_OPEN_HEADS_FILE="$prfix/does-not-exist.tsv"
-out="$("$bin" --sweep-stale --min-age-minutes 0 --max-age-hours 99999 2>&1 || true)"
+out="$("$bin" --sweep-stale --force-live --min-age-minutes 0 --max-age-hours 99999 2>&1 || true)"
 if [ ! -d "$WORKTREES_DIR/finished-wt" ]; then
   echo "FAIL: with an unreadable open-pr index a clean tree must wait out the age gate" >&2; exit 1
 fi
