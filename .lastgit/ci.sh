@@ -636,6 +636,17 @@ ci_test tests/last-stack-setup-seeds-every-routine.sh
 # reported as 'published gate head is unavailable' / hard_broken.
 # APPENDED: ci_test shards by list position.
 ci_test tests/host-track-forge-gate-head-auth.sh
+# ...and what status REPORTS once those words are emitted. #48 unit-tests the
+# `-c` words; this asserts the behaviour they exist for. The outage had two
+# halves and the header only fixes the first: losing the gate read was
+# indistinguishable from having nothing to do, so
+# `last-stack-canary-build-main-gate` short-circuited on an empty gate_head and
+# the canary line reported success-shaped noops for a day while producing
+# nothing. An unreadable gate must stay a REPORTED problem — never `fresh`,
+# never `stale=false` — and reaching the gate must not paper over real lag.
+# Hermetic: local bare repo, stub git, `security`/`lastsecrets` shadowed so the
+# no-token case cannot reach this host's keychain or node.
+ci_test tests/host-track-forge-gate-head-behaviour.sh
 
 # The registration guard itself. Kept last, and asserted to be registered by
 # tests/last-stack-ci-sharding.sh, so the guard cannot quietly stop running.
