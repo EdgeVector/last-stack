@@ -3,16 +3,19 @@ set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
 GATE="$ROOT/bin/last-stack-canary-soak-watch-gate"
+# The gate and ledger use real code. Only fixture probe time and exit results
+# are controlled; the wrapper asserts the production budgets and sample counts.
+export LAST_STACK_CANARY_V2_PIPELINE="$ROOT/tests/canary-gate-pipeline.py"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-canary-v2-gate.XXXXXX")"
 cleanup() {
   local rc=$?
   if [ "$rc" -ne 0 ]; then
     printf 'FAIL canary-soak-watch-gate: exit=%s\n' "$rc" >&2
     # These are fixture verdicts, never provider output or host credentials.
-    for name in green_out held_out planned_out wait_out second_out status_red host_pause missing_boot; do
+    for name in green_out held_out planned_out wait_out second_out status_red host_pause missing_boot slow_out timeout_out; do
       declare -p "$name" >&2 2>/dev/null || true
     done
-    # Nine fixed fixture cases at most; retain their last observations before
+    # Eleven fixed fixture cases at most; retain their last observations before
     # cleanup so a loaded-host timeout does not become a silent grep failure.
     for ledger in "$tmp"/*/ledger.jsonl; do
       [ -f "$ledger" ] || continue
@@ -136,6 +139,12 @@ set -e
 test "$missing_boot_rc" -eq 0
 printf '%s\n' "$missing_boot" | grep -q 'verdict=red subject=build action=heal'
 printf '%s\n' "$missing_boot" | grep -q 'sync=failed'
+
+# A successful but slow status command is red, as is a timed-out command.
+slow_out="$(run_gate slow fixture-slow)"
+printf '%s\n' "$slow_out" | grep -q 'verdict=red subject=build action=heal'
+timeout_out="$(run_gate timeout fixture-timeout)"
+printf '%s\n' "$timeout_out" | grep -q 'verdict=red subject=build action=heal'
 
 # The source itself must never drive a Loom graph or write a wait/resume marker.
 if rg -n 'SOAK_WAIT|last-stack-canary-loom|last-stack-canary-red-loom|resume_key|active_execution' \
