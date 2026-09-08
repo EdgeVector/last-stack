@@ -1282,7 +1282,9 @@ assert_launchd_label_usable() {
   if [ "$LAUNCHD_LABEL_RESOLVED" != "1" ]; then
     die "could not resolve the primary launchd label; refusing sidebin live install"
   fi
-  if ! launchctl list 2>/dev/null | awk '{print $3}' | grep -qx "$LAUNCHD_LABEL"; then
+  # A grep -q consumer can close the list pipe early and turn a loaded job
+  # into a pipefail/SIGPIPE false negative. Query the exact GUI service.
+  if ! lastdb_launchd_job_loaded launchctl "gui/$(id -u)/${LAUNCHD_LABEL}"; then
     die "launchd label $LAUNCHD_LABEL is not a loaded job — job reload would target the wrong service"
   fi
   if [ ! -f "$LAUNCHD_PLIST" ]; then

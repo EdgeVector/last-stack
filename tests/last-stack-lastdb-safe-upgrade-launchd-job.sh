@@ -8,6 +8,7 @@ SKILL_MD="$ROOT/skills/lastdb-safe-upgrade/SKILL.md"
 
 bash -n "$CHECKS"
 bash -n "$DRIVER"
+python3 "$ROOT/tests/test_safe_upgrade_launchd_precheck.py"
 # shellcheck source=../skills/lastdb-safe-upgrade/scripts/launchd-job-checks.sh
 . "$CHECKS"
 
