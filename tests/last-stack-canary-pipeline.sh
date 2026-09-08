@@ -419,32 +419,9 @@ fi
 grep -q 'status=soak_red' "$tmp/w-restart.out"
 grep -q 'primary_restarted\[pid=4242->4243_start=1234->2345\]' "$restart_dir/ledger.jsonl"
 
-# One slow sample is load; a slow MEDIAN is the binary. A single outlier among
-# three must not brake a good candidate.
-#
-# The two fast samples are real `bash` spawns, so the budget has to clear a
-# loaded host, not an idle one. At a 200ms budget with a 0.4s outlier this
-# assertion failed about 1 run in 5 standalone, and every run under the four
-# parallel CI shards: a fast spawn crossed 200ms, so the MEDIAN was a fast
-# sample that read as slow. The gap is what the test is about, so widen it —
-# 2s outlier against a 1s budget keeps the same meaning with room for load.
-flap_dir="$tmp/w-flap"
-cat >"$tmp/flappy.sh" <<'FLAP'
-#!/usr/bin/env bash
-n="$(cat "$FLAP_COUNTER" 2>/dev/null || echo 0)"
-echo $((n + 1)) >"$FLAP_COUNTER"
-[ "$n" = "0" ] && sleep 2
-exit 0
-FLAP
-chmod +x "$tmp/flappy.sh"
-FLAP_COUNTER="$tmp/flap.count" soak_once "$flap_dir" \
-  FLAP_COUNTER="$tmp/flap.count" \
-  LAST_STACK_CANARY_BOARD_WRITE_CHECK_CMD="$tmp/flappy.sh" \
-  LAST_STACK_CANARY_WRITE_MS_MAX=1000 \
-  LAST_STACK_CANARY_CHECK_SAMPLES=3 \
-  >"$tmp/w-flap.out" 2>"$tmp/w-flap.err"
-grep -q 'status=soak_green' "$tmp/w-flap.out" \
-  || { echo "flap median assertion failed: $(cat "$tmp/w-flap.err")" >&2; exit 1; }
+# Controlled durations prove median and p95 policy without measuring CI load.
+# The real-command slow/fast and exit fixtures around this case remain intact.
+python3 "$ROOT/tests/test_canary_probe_latency.py"
 
 # A write that ERRORS is distinguishable in the ledger from one that is slow.
 err_dir="$tmp/w-err"
@@ -845,17 +822,8 @@ out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate vmissing \
 [ "$(printf '%s\n' "$out" | jq -r '.verdict')" = "red" ]
 [ "$(printf '%s\n' "$out" | jq -r '.subject')" = "build" ]
 
-# Command observations measure a real p95 and preserve timeout/exit evidence.
-out="$("$CLI" --state-dir "$v2_dir" --json observe-command --candidate command-pass \
-  --check status --subject build --command true --samples 3 --timeout-seconds 1 --budget-ms 2000 \
-  --at '2026-09-01T00:00:00Z')"
-[ "$(printf '%s\n' "$out" | jq -r '.passed')" = "true" ]
-[ "$(printf '%s\n' "$out" | jq -r '.samples')" = "3" ]
-out="$("$CLI" --state-dir "$v2_dir" --json observe-command --candidate command-fail \
-  --check status --subject build --command 'exit 7' --samples 3 --timeout-seconds 1 --budget-ms 2000 \
-  --at '2026-09-01T00:00:00Z')"
-[ "$(printf '%s\n' "$out" | jq -r '.passed')" = "false" ]
-[ "$(printf '%s\n' "$out" | jq -r '.detail')" = "exit_7" ]
+# Command p95, deadline, and exit evidence are covered by the controlled
+# production-function tests above, including a slow successful command.
 
 # A candidate-independent identity absence is durable observer evidence. The
 # next successful identity read clears the line without blaming a build.
