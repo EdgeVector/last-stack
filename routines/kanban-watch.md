@@ -134,8 +134,8 @@ and exit. A handoff with a live card is an `ok` routine result, not `error`.
   host-track-managed CLI installs win over stale WIP binaries. Before a heavy
   reconcile fix, or whenever `brain`, `<board-cli>`, `situations`, `lastgit`, or
   another shared CLI behaves oddly, run `host-track status` when available and
-  `<cmd> which` (for example `lastgit which`) before changing PATH or running a
-  checkout-local command.
+  `command -v <cmd>` before you change PATH or use a checkout-local command.
+  Use `<cmd> which` only when that CLI documents it. Routines and Loom do not.
 - Drive the board CLI from `<board repo dir>` with `<board CLI> ...`.
 - Follow the **kanban-agent** skill, RECONCILE mode — it is the source of truth
   for behavior; this prompt is the trigger.

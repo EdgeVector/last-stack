@@ -339,8 +339,8 @@ back to `todo` (or `pending_rollback=` in memory) per transport rules below.
   host-track-managed CLI installs win over stale WIP binaries. Before expensive
   work, or whenever `brain`, `<board-cli>`, `situations`, `lastgit`, or another
   shared CLI behaves oddly, run `host-track status` when available and
-  `<cmd> which` (for example `lastgit which`) before changing PATH or running a
-  checkout-local command.
+  `command -v <cmd>` before you change PATH or use a checkout-local command.
+  Use `<cmd> which` only when that CLI documents it. Routines and Loom do not.
 - **Direct `prompt_path` freshness guard:** pickup workers load this file
   directly from the installed Last Stack checkout, so they do not get
   `last-stack-routine-read`'s auto-upgrade before prompt load. After CLI
