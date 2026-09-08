@@ -8,9 +8,9 @@ description: |
   lastdb smoke test", "do a lastdb local smoke test", "smoke-test lastdb
   main", "check if lastdb main still works", or when the scheduled
   `lastdb-local-smoke-test` routine fires (every 6h). This is the CHEAP,
-  FREQUENT regression check — distinct from `onboarding-preview` (drives the
-  first-run setup wizard UI) and the real-machine release gate (which needs a
-  signed build + human witness before a version reaches stable/Latest). Make
+  FREQUENT regression check — distinct from the real-machine release gate
+  (which needs a signed build + human witness before a version reaches
+  stable/Latest). Make
   sure to reach for this instead of hand-deriving the smoke steps from
   scratch — the full procedure, with every hard-won gotcha, lives in a living
   brain SOP that this skill always reads fresh before running.
@@ -80,8 +80,10 @@ stale copy here would silently regress the procedure.
 
 ## When NOT to use this
 
-For the daily UX/visual review of the LastDB UI, use `lastdb-ui-design-review`
-instead — this skill only checks that the app functions on real data, it does
-not judge visual/UX quality. For the pre-release human-witnessed gate, that's
+There is no UI review path any more. The LastDB desktop app was deprecated on
+2026-08-26 (`decision-2026-08-26-lastdb-desktop-app-deprecated-no-ui`) and the
+`lastdb-ui-design-review` skill was retired with it; the new-user path is the
+CLI/llms.txt install (skill `llms-txt-install-smoke`).
+For the pre-release human-witnessed gate, that's
 a separate, heavier SOP (`north-star-lastdb-release-works-on-real-machine`) —
 don't treat a green smoke run as sufficient to promote a build to stable.

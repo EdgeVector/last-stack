@@ -21,6 +21,11 @@
 # Start list: Activity Monitor only. Add a new app only with its full comm
 # path and a Tom decision on why a kill loses nothing.
 #
+# NOT the LastDB desktop app. "GUI app" means any allowlisted macOS GUI app;
+# the allowlist is Activity Monitor only. This guard is unaffected by the
+# 2026-08-26 desktop-app deprecation and must survive it — it is the only
+# cover for the 2026-08-24 jetsam class. Do not remove it as desktop residue.
+#
 # Gauge: max(ps rss, top mem footprint) — rss alone misses compressed pages.
 #
 # Tunables (env):

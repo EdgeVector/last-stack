@@ -10,6 +10,14 @@ rationale, not registry membership.
   discovery; every candidate is confirmed with `brain get`
 - **excluded_self_reviewing_charters**: `owner-lastdb-operations`,
   `owner-lastdb-cloud-sync`, `owner-lastdb-data-lifecycle`
+- **retired_charters**: `owner-lastdb-desktop` — retired 2026-09-07. Its whole
+  owned surface (embedded node UI, onboarding wizard, DMG release gate,
+  desktop telemetry) no longer exists. Tom deprecated the desktop app on
+  2026-08-26 (`decision-2026-08-26-lastdb-desktop-app-deprecated-no-ui`) and
+  the `fold_db_node` tree was deleted in the 2026-07-12 Mini-only cutover.
+  The surviving daemon surface (`lastdb_node/`, `lastdb_host/`,
+  `lastdb_identity/`) is owned by `owner-fold`, so this leaves no ownership
+  hole. Do not re-add this charter.
 - **log_record**: `owner-review-rotate-log`
 - **timebox**: 20 minutes for the selected owner
 
@@ -140,16 +148,6 @@ cadence: 1d
 recipe: owner-review
 isolation: read current code only; never mutate primary LastDB data or a live worktree
 
-### owner-lastdb-desktop
-track: domain owner review
-area: lastdb-desktop
-charter: owner-lastdb-desktop
-repos: EdgeVector/fold
-owned_paths: embedded node, onboarding, release gate, telemetry, desktop UI
-cadence: 1d
-recipe: owner-review
-isolation: read current code only; never mutate primary LastDB data or a live worktree
-
 ### owner-unassigned
 track: unassigned papercut review
 area: unassigned
@@ -173,6 +171,5 @@ isolation: read current code only; never mutate primary LastDB data or a live wo
 | owner-agent-harness | never | -- | -- |
 | owner-fold-ci | never | -- | -- |
 | owner-fbrain | never | -- | -- |
-| owner-lastdb-desktop | never | -- | -- |
 | owner-unassigned | never | -- | -- |
 <!-- rotation-log:end -->

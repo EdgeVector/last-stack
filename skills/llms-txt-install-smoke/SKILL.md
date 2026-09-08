@@ -147,4 +147,5 @@ silent-kill failure this design removes.
 
 - Public install map: https://thelastdb.com/llms.txt
 - Real-data Mini canary: skill `lastdb-smoke-test`
-- Onboarding wizard UI: skill `onboarding-preview`
+- New-user path: this skill IS it. The desktop onboarding wizard was
+  retired with the desktop app (2026-08-26); there is no UI to preview.

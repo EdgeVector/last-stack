@@ -26,6 +26,14 @@ The GUI guard matches the executable path (`ps -o comm=`) against a fixed
 allowlist. The default list is Activity Monitor only. A process outside the
 list cannot match. Do not add an app without a Tom decision.
 
+CAUTION: `gui-app-memory-guard` does NOT guard the LastDB desktop app. The
+name means "any allowlisted macOS GUI app", and the allowlist holds Activity
+Monitor only. The guard stays live after the 2026-08-26 desktop-app
+deprecation. Do not retire it as desktop-app residue: it is the only cover for
+the 2026-08-24 jetsam class (Activity Monitor held 70.5 GiB, 13 jetsam events,
+the machine rebooted). Retire it only when Activity Monitor itself stops being
+a kill target.
+
 The testbin guard matches only cargo deps paths:
 
 - `*/target/*/deps/*`

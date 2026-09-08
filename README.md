@@ -357,6 +357,7 @@ bin/
                             LaunchAgent plist without restarting lastdbd
   last-stack-gui-app-memory-guard
                             8 GiB fail-closed kill for Activity Monitor
+                            (not the deprecated LastDB desktop app; keep)
   last-stack-testbin-memory-guard
                             8 GiB fail-closed kill for cargo deps test binaries
   last-stack-host-memory-sentinel
