@@ -4,7 +4,25 @@ set -euo pipefail
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
 GATE="$ROOT/bin/last-stack-canary-soak-watch-gate"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-canary-v2-gate.XXXXXX")"
-trap 'rm -rf "$tmp"' EXIT
+cleanup() {
+  local rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'FAIL canary-soak-watch-gate: exit=%s\n' "$rc" >&2
+    # These are fixture verdicts, never provider output or host credentials.
+    for name in green_out held_out planned_out wait_out second_out status_red host_pause missing_boot; do
+      declare -p "$name" >&2 2>/dev/null || true
+    done
+    # Nine fixed fixture cases at most; retain their last observations before
+    # cleanup so a loaded-host timeout does not become a silent grep failure.
+    for ledger in "$tmp"/*/ledger.jsonl; do
+      [ -f "$ledger" ] || continue
+      printf 'fixture ledger: %s\n' "$ledger" >&2
+      tail -n 12 "$ledger" >&2
+    done
+  fi
+  rm -rf "$tmp"
+}
+trap cleanup EXIT
 
 boot_rows='{"boots":[{"pid":701,"process_start_ts":1788220800,"build":"vcanary","restart_cause":"initial"}]}'
 
