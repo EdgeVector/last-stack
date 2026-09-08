@@ -1,7 +1,24 @@
 #!/usr/bin/env bash
 # Resolve an already-built LastDB canary stage. The default contract requires
-# lastdbd, lastdb, and lastdb_restore_probe from one directory. The local smoke
-# can opt into historical daemon-only stages. Never compiles.
+# lastdbd, lastdb, lastdb_restore_probe, AND scripts/run-lastdb-restore-probe.sh
+# from one stage directory. The local smoke can opt into historical daemon-only
+# stages. Never compiles.
+#
+# The script is part of the contract because the restore probe is a script plus
+# a binary, and only the pair is source-bound. Stage
+# 5af30c0a...-retry3.3VXp00 carried the three binaries and no script; the
+# resolver called it newest/complete, so the backup-restore-probe routine
+# hand-pinned OID 140a341722bb7ddb2e4fde3e76d0803b685bb544 instead of trusting
+# this helper (card lastdb-restore-probe-stage-script-missing-20260906).
+# A stage that cannot run the probe is not a complete stage.
+#
+# --allow-current is exempt: ~/.lastdb/current is an install tree, not a stage.
+# It already reports sha_drift=true and reports restore_probe_script=null, so a
+# caller that needs the source-bound pair can see that it did not get one.
+#
+# A caller that does not run the restore probe (a dev node, a daemon smoke)
+# opts out with --allow-no-restore-script. The opt-out is explicit and shows in
+# the command line, so the strict default keeps holding for the probe itself.
 #
 # Lookup order:
 #   1. ~/.lastdb-test-copies/lastdbd-smoke-staged-<shortsha>
@@ -28,6 +45,11 @@ Options:
   --allow-daemon-only
                    Accept a candidate with only lastdbd. Use only for the
                    local daemon smoke test. Backup restore must stay strict.
+                   Also waives the restore-probe script requirement.
+  --allow-no-restore-script
+                   Accept a stage without scripts/run-lastdb-restore-probe.sh.
+                   For callers that only need a binary (dev nodes). The backup
+                   restore probe must never pass this.
   -h, --help       Show help
 
 Env:
@@ -49,6 +71,7 @@ as_json=0
 allow_newest=0
 allow_current=0
 allow_daemon_only=0
+allow_no_restore_script=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -56,10 +79,15 @@ while [ "$#" -gt 0 ]; do
     --allow-newest) allow_newest=1; shift ;;
     --allow-current) allow_current=1; shift ;;
     --allow-daemon-only) allow_daemon_only=1; shift ;;
+    --allow-no-restore-script) allow_no_restore_script=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
+
+# One canonical location inside a stage. A second accepted path would make
+# "the stage has the script" mean two things.
+RESTORE_SCRIPT_REL="scripts/run-lastdb-restore-probe.sh"
 
 HOME_DIR="${HOME:-$(eval echo ~)}"
 FOLD_MIRROR="${LAST_STACK_CANARY_FOLD_MIRROR:-$HOME_DIR/.cache/edgevector-git/fold.git}"
@@ -111,30 +139,56 @@ sibling_restore_probe() {
   fi
 }
 
-candidate_ready() {
+sibling_restore_script() {
   local lastdbd="$1"
+  local path
+  path="$(dirname "$lastdbd")/$RESTORE_SCRIPT_REL"
+  if [ -f "$path" ]; then
+    printf '%s\n' "$path"
+  fi
+}
+
+# A file at the right path is not enough. A stage that packaged an unrelated or
+# truncated script would still resolve, and the probe would fail later with a
+# stage already declared complete. These two markers are what the probe run
+# actually needs: the corrupt-restore proof and the RED-path report it writes.
+restore_script_ok() {
+  local path="$1"
+  [ -f "$path" ] || return 1
+  grep -q -- '--prove-corrupt-restore' "$path" || return 1
+  grep -q -- 'red-path.json' "$path" || return 1
+}
+
+# $2: 1 = this candidate is a STAGE and must carry the probe script.
+candidate_ready() {
+  local lastdbd="$1" need_script="${2:-1}"
   [ -x "$lastdbd" ] || return 1
   if [ "$allow_daemon_only" -eq 1 ]; then
     return 0
   fi
   [ -x "$(dirname "$lastdbd")/lastdb" ] || return 1
   [ -x "$(dirname "$lastdbd")/lastdb_restore_probe" ] || return 1
+  if [ "$need_script" -eq 1 ] && [ "$allow_no_restore_script" -eq 0 ]; then
+    restore_script_ok "$(dirname "$lastdbd")/$RESTORE_SCRIPT_REL" || return 1
+  fi
 }
 
 emit() {
   local status="$1" lastdbd="$2" source="$3" wanted="$4" resolved="$5" drift="$6" note="$7"
-  local lastdb restore_probe
+  local lastdb restore_probe restore_script
   lastdb="$(sibling_lastdb "$lastdbd")"
   restore_probe="$(sibling_restore_probe "$lastdbd")"
+  restore_script="$(sibling_restore_script "$lastdbd")"
   if [ "$as_json" -eq 1 ]; then
-    python3 - "$status" "$lastdbd" "$lastdb" "$restore_probe" "$source" "$wanted" "$resolved" "$drift" "$note" <<'PY'
+    python3 - "$status" "$lastdbd" "$lastdb" "$restore_probe" "$source" "$wanted" "$resolved" "$drift" "$note" "$restore_script" <<'PY'
 import json, sys
-status, lastdbd, lastdb, restore_probe, source, wanted, resolved, drift, note = sys.argv[1:10]
+status, lastdbd, lastdb, restore_probe, source, wanted, resolved, drift, note, restore_script = sys.argv[1:11]
 print(json.dumps({
     "status": status,
     "lastdbd": lastdbd or None,
     "lastdb": lastdb or None,
     "lastdb_restore_probe": restore_probe or None,
+    "restore_probe_script": restore_script or None,
     "source": source or None,
     "wanted_oid": wanted,
     "resolved_oid": resolved or None,
@@ -144,7 +198,7 @@ print(json.dumps({
 }, sort_keys=True, separators=(",", ":")))
 PY
   else
-    echo "status=$status lastdbd=${lastdbd:-} source=${source:-} wanted=${wanted:0:12} resolved=${resolved:0:12} sha_drift=$drift note=$note"
+    echo "status=$status lastdbd=${lastdbd:-} restore_probe_script=${restore_script:-none} source=${source:-} wanted=${wanted:0:12} resolved=${resolved:0:12} sha_drift=$drift note=$note"
   fi
 }
 
@@ -192,10 +246,11 @@ if [ "$allow_newest" -eq 1 ] && [ -d "$BUILDS_DIR" ]; then
   fi
 fi
 
-if [ "$allow_current" -eq 1 ] && candidate_ready "$CURRENT_BIN"; then
+# The install tree is not a stage and never carries the source-bound script.
+if [ "$allow_current" -eq 1 ] && candidate_ready "$CURRENT_BIN" 0; then
   emit ok "$CURRENT_BIN" primary-current "$oid" "" 1 "primary current lastdbd; no staged build"
   exit 0
 fi
 
-emit need_build "" "" "$oid" "" 0 "no complete staged binary set; do not cargo"
+emit need_build "" "" "$oid" "" 0 "no complete stage (three binaries + $RESTORE_SCRIPT_REL); do not cargo"
 exit 2

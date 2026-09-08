@@ -17,7 +17,13 @@ git clone "$mirror" "$work" >/dev/null 2>&1
   cd "$work"
   git checkout -b main >/dev/null 2>&1
   echo 'fn main() {}' > noop.rs
-  git add noop.rs
+  mkdir -p scripts
+  cat >scripts/run-lastdb-restore-probe.sh <<'PROBE'
+#!/usr/bin/env bash
+"$PROBE" --prove-corrupt-restore "$REPORT_DIR/red-path.json"
+PROBE
+  chmod +x scripts/run-lastdb-restore-probe.sh
+  git add noop.rs scripts/run-lastdb-restore-probe.sh
   git -c user.email=t@example.com -c user.name=t commit -m 'main tip' >/dev/null
   git push origin main >/dev/null 2>&1
 )
@@ -84,6 +90,14 @@ out="$(
 man_oid="$(jq -r .source_git_oid "$builds/$MAIN_OID/manifest.json")"
 [ "$man_oid" = "$MAIN_OID" ]
 
+# The restore probe is a script plus a binary, and only the pair is source-bound.
+# The script comes from the mirror at the staged OID, so --skip-build cannot
+# publish a stage whose script and binaries disagree.
+[ -x "$builds/$MAIN_OID/scripts/run-lastdb-restore-probe.sh" ]
+grep -q -- '--prove-corrupt-restore' "$builds/$MAIN_OID/scripts/run-lastdb-restore-probe.sh"
+grep -q -- 'red-path.json' "$builds/$MAIN_OID/scripts/run-lastdb-restore-probe.sh"
+[ "$(jq -r .restore_probe_script "$builds/$MAIN_OID/manifest.json")" = "scripts/run-lastdb-restore-probe.sh" ]
+
 # --- second run: already_staged (no force) ---
 out="$(
   LAST_STACK_CANARY_BUILD_BIN_DIR="$stub_bin" \
@@ -91,6 +105,41 @@ out="$(
 )"
 [ "$(printf '%s\n' "$out" | jq -r '.status')" = "already_staged" ]
 [ "$(printf '%s\n' "$out" | jq -r '.rebuilt')" = "false" ]
+
+# --- a stage that lost its script is not "already staged" ---
+# Otherwise the historical script-less stages stay forever, because the second
+# run reports already_staged and never repairs them.
+mv "$builds/$MAIN_OID/scripts/run-lastdb-restore-probe.sh" "$tmp/parked-probe.sh"
+out="$(
+  LAST_STACK_CANARY_BUILD_BIN_DIR="$stub_bin" \
+  "$CLI" --skip-build --json
+)"
+[ "$(printf '%s\n' "$out" | jq -r '.status')" = "built" ]
+[ -x "$builds/$MAIN_OID/scripts/run-lastdb-restore-probe.sh" ]
+
+# --- a script that could not run the probe fails the build, not the probe run ---
+bad_work="$tmp/fold-bad"
+git clone "$mirror" "$bad_work" >/dev/null 2>&1
+(
+  cd "$bad_work"
+  git checkout main >/dev/null 2>&1
+  printf '#!/usr/bin/env bash\necho unrelated\n' >scripts/run-lastdb-restore-probe.sh
+  git add scripts/run-lastdb-restore-probe.sh
+  git -c user.email=t@example.com -c user.name=t commit -m 'break the probe script' >/dev/null
+  git push origin main >/dev/null 2>&1
+)
+BAD_OID="$(git -C "$mirror" rev-parse refs/heads/main)"
+set +e
+bad_out="$(
+  LAST_STACK_CANARY_MAIN_OID="$BAD_OID" \
+  LAST_STACK_CANARY_BUILD_BIN_DIR="$stub_bin" \
+  "$CLI" --skip-build --json 2>&1
+)"
+bad_rc=$?
+set -e
+[ "$bad_rc" -ne 0 ]
+printf '%s\n' "$bad_out" | grep -q 'prove-corrupt-restore'
+[ ! -d "$builds/$BAD_OID" ]
 
 # --- force rebuild ---
 out="$(

@@ -7,7 +7,16 @@
 # Stages under:
 #   ~/.local/state/last-stack/canary-builds/<full-oid>/
 #     lastdb, lastdbd, lastdb_restore_probe, manifest.json,
+#     scripts/run-lastdb-restore-probe.sh,
 #     (optional) lastdb-*.tar.gz + .manifest.json
+#
+# The restore probe is a script plus a binary, and only the pair is source-bound.
+# A stage that shipped the three binaries without the script still resolved as
+# newest/complete, so the backup-restore-probe routine hand-pinned an OID
+# instead of trusting the resolver (card
+# lastdb-restore-probe-stage-script-missing-20260906). The script is read from
+# the MIRROR at the exact staged OID, so it is bound to the same source as the
+# binaries whether or not this run compiled anything.
 #
 # Never touches the primary. Never publishes brew. Never uses GitHub as SoT.
 set -euo pipefail
@@ -68,6 +77,9 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+# One canonical location inside a stage, matching last-stack-canary-resolve-lastdbd.
+RESTORE_SCRIPT_REL="scripts/run-lastdb-restore-probe.sh"
+
 HOME_DIR="${HOME:-$(eval echo ~)}"
 FOLD_MIRROR="${LAST_STACK_CANARY_FOLD_MIRROR:-$HOME_DIR/.cache/edgevector-git/fold.git}"
 BUILDS_DIR="${LAST_STACK_CANARY_BUILDS_DIR:-$HOME_DIR/.local/state/last-stack/canary-builds}"
@@ -115,11 +127,41 @@ resolve_main_oid() {
   die "could not resolve fold main tip in $FOLD_MIRROR"
 }
 
+# The probe script must carry the corrupt-restore proof and the RED-path report
+# it writes. A file at the right path with the wrong contents would let a stage
+# be declared complete and fail only during the probe run.
+restore_script_ok() {
+  local path="$1"
+  [ -f "$path" ] || return 1
+  grep -q -- '--prove-corrupt-restore' "$path" || return 1
+  grep -q -- 'red-path.json' "$path" || return 1
+}
+
+# Read the script from the mirror at the exact staged OID, so it is bound to the
+# same source as the binaries even under --skip-build.
+stage_restore_script() {
+  local oid="$1" dest="$2"
+  mkdir -p "$(dirname "$dest")"
+  if git -C "$FOLD_MIRROR" show "${oid}:${RESTORE_SCRIPT_REL}" >"$dest" 2>/dev/null \
+    && [ -s "$dest" ]; then
+    chmod +x "$dest"
+    return 0
+  fi
+  rm -f "$dest"
+  if [ -f "$WORKDIR/$RESTORE_SCRIPT_REL" ]; then
+    cp "$WORKDIR/$RESTORE_SCRIPT_REL" "$dest"
+    chmod +x "$dest"
+    return 0
+  fi
+  return 1
+}
+
 stage_is_current() {
   local dir="$1" oid="$2"
   [ -x "$dir/lastdbd" ] || return 1
   [ -x "$dir/lastdb" ] || return 1
   [ -x "$dir/lastdb_restore_probe" ] || return 1
+  restore_script_ok "$dir/$RESTORE_SCRIPT_REL" || return 1
   local man=""
   if [ -f "$dir/manifest.json" ]; then
     man="$dir/manifest.json"
@@ -149,6 +191,7 @@ doc = {
     "source_git_oid": oid,
     "lastdb_version": lv,
     "lastdbd_version": dv,
+    "restore_probe_script": "scripts/run-lastdb-restore-probe.sh",
     "staged_by": "last-stack-canary-build-main",
 }
 with open(path, "w", encoding="utf-8") as f:
@@ -284,6 +327,10 @@ cp "$bin_dir/lastdb" "$tmp_stage/lastdb"
 cp "$bin_dir/lastdbd" "$tmp_stage/lastdbd"
 cp "$bin_dir/lastdb_restore_probe" "$tmp_stage/lastdb_restore_probe"
 chmod +x "$tmp_stage/lastdb" "$tmp_stage/lastdbd" "$tmp_stage/lastdb_restore_probe"
+stage_restore_script "$main_oid" "$tmp_stage/$RESTORE_SCRIPT_REL" \
+  || die "could not read ${RESTORE_SCRIPT_REL} at $main_oid from $FOLD_MIRROR"
+restore_script_ok "$tmp_stage/$RESTORE_SCRIPT_REL" \
+  || die "staged ${RESTORE_SCRIPT_REL} does not invoke --prove-corrupt-restore and reference red-path.json"
 write_simple_manifest "$tmp_stage/manifest.json" "$main_oid" "$lastdb_ver" "$lastdbd_ver"
 
 # Optional full Homebrew-shaped package (for promote-execute)
@@ -318,6 +365,8 @@ cp -a "$tmp_stage"/. "$stage_dir"/
 [ -x "$stage_dir/lastdbd" ] || die "stage missing lastdbd after copy"
 [ -x "$stage_dir/lastdb" ] || die "stage missing lastdb after copy"
 [ -x "$stage_dir/lastdb_restore_probe" ] || die "stage missing lastdb_restore_probe after copy"
+restore_script_ok "$stage_dir/$RESTORE_SCRIPT_REL" \
+  || die "stage missing or unusable $RESTORE_SCRIPT_REL after copy"
 [ -f "$stage_dir/manifest.json" ] || write_simple_manifest "$stage_dir/manifest.json" "$main_oid" "$lastdb_ver" "$lastdbd_ver"
 
 prune_old_stages "$BUILDS_DIR" "$KEEP"

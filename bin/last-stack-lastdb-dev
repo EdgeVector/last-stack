@@ -284,7 +284,9 @@ canary_bin() {
   r="$(command -v last-stack-canary-resolve-lastdbd 2>/dev/null || true)"
   [ -n "$r" ] || r="$ROOT/bin/last-stack-canary-resolve-lastdbd"
   [ -x "$r" ] || return 1
-  out="$("$r" --json --allow-newest --allow-current 2>/dev/null || true)"
+  # A dev node does not run the restore probe, so it opts out of the stage's
+  # probe-script requirement explicitly rather than silently.
+  out="$("$r" --json --allow-newest --allow-current --allow-no-restore-script 2>/dev/null || true)"
   [ "$(printf '%s' "$out" | jq -r '.status // empty')" = ok ] || return 1
   printf '%s' "$out" | jq -r '.lastdbd // empty'
 }
