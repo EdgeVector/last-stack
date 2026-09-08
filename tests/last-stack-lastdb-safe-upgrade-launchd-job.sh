@@ -34,6 +34,14 @@ case "${1:-}" in
     exit 0
     ;;
   print)
+    if [ -e "${FAKE_BOOTOUT_PENDING_FILE:-/nonexistent}" ]; then
+      left="$(cat "$FAKE_BOOTOUT_PENDING_FILE")"
+      if [ "$left" -eq 0 ]; then
+        rm -f "$loaded_file" "$FAKE_BOOTOUT_PENDING_FILE"
+      else
+        printf '%s\n' "$((left - 1))" >"$FAKE_BOOTOUT_PENDING_FILE"
+      fi
+    fi
     if [ -n "$loaded_file" ] && [ ! -e "$loaded_file" ]; then
       exit 113
     fi
@@ -47,10 +55,18 @@ case "${1:-}" in
     ;;
   bootout)
     [ "${FAKE_BOOTOUT_FAIL:-0}" = "1" ] && exit 68
+    if [ "${FAKE_BOOTOUT_DELAY_PRINTS:-0}" -gt 0 ]; then
+      printf '%s\n' "$FAKE_BOOTOUT_DELAY_PRINTS" >"$FAKE_BOOTOUT_PENDING_FILE"
+      exit 0
+    fi
     [ -n "$loaded_file" ] && rm -f "$loaded_file"
     exit 0
     ;;
   bootstrap)
+    if [ -e "${FAKE_BOOTOUT_PENDING_FILE:-/nonexistent}" ]; then
+      printf 'EARLY_BOOTSTRAP\n' >>"$FAKE_LAUNCHCTL_LOG"
+      exit 37
+    fi
     if [ "${FAKE_BOOTSTRAP_FAIL:-0}" = "1" ]; then
       # The real shape from 2026-08-23: launchd can answer EIO for a bootstrap
       # that DID take effect ("already bootstrapped"), so a caller reading the
@@ -78,6 +94,7 @@ chmod +x "$TMP/launchctl"
 export FAKE_LAUNCHCTL_LOG="$TMP/launchctl.log"
 export FAKE_LOADED_FILE="$TMP/job.loaded"
 export FAKE_BOOTSTRAP_COUNT_FILE="$TMP/bootstrap.count"
+export FAKE_BOOTOUT_PENDING_FILE="$TMP/bootout.pending"
 export LASTDB_LAUNCHD_BOOTSTRAP_RETRY_DELAYS="0 0 0"
 : >"$FAKE_LOADED_FILE"
 
@@ -123,6 +140,34 @@ grep -q 'LASTDB_LAUNCHD_BOOTSTRAP=retry attempt=1' "$TMP/retry.err" \
   || { echo "FAIL: the job must be loaded after the retry" >&2; exit 1; }
 [ "$(grep -c '^bootstrap ' "$FAKE_LAUNCHCTL_LOG")" -ge 2 ] \
   || { echo "FAIL: expected a second bootstrap attempt" >&2; exit 1; }
+
+# A successful bootout can still expose the old service for a few prints.
+# Never accept that old loaded state as evidence that bootstrap succeeded.
+: >"$FAKE_LAUNCHCTL_LOG"
+: >"$FAKE_LOADED_FILE"
+transient_out="$(FAKE_BOOTOUT_DELAY_PRINTS=2 lastdb_launchd_reload_job \
+  "$TMP/launchctl" gui/501 com.test.lastdbd "$TMP/primary.plist" 2>"$TMP/transient.err")"
+if grep -q '^EARLY_BOOTSTRAP$' "$FAKE_LAUNCHCTL_LOG"; then
+  echo 'FAIL: bootstrap ran before the old service disappeared' >&2
+  exit 1
+fi
+grep -q 'LASTDB_LAUNCHD_RELOAD=ok' <<<"$transient_out"
+[ -e "$FAKE_LOADED_FILE" ] && [ ! -e "$FAKE_BOOTOUT_PENDING_FILE" ]
+
+# An incomplete bootout must refuse bootstrap within its own bounded wait.
+: >"$FAKE_LAUNCHCTL_LOG"
+: >"$FAKE_LOADED_FILE"
+set +e
+FAKE_BOOTOUT_DELAY_PRINTS=100 LASTDB_LAUNCHD_BOOTOUT_WAIT_SECS=0 lastdb_launchd_reload_job \
+  "$TMP/launchctl" gui/501 com.test.lastdbd "$TMP/primary.plist" >"$TMP/stuck.out" 2>"$TMP/stuck.err"
+stuck_rc=$?
+set -e
+[ "$stuck_rc" -ne 0 ] || { echo 'FAIL: incomplete bootout reported success' >&2; exit 1; }
+if grep -q '^bootstrap ' "$FAKE_LAUNCHCTL_LOG"; then
+  echo 'FAIL: bootstrap overlapped an incomplete bootout' >&2
+  exit 1
+fi
+rm -f "$FAKE_BOOTOUT_PENDING_FILE"
 
 # --- Terminal: every attempt fails and the job never loads --------------------
 : >"$FAKE_LAUNCHCTL_LOG"
