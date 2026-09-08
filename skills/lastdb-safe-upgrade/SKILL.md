@@ -291,6 +291,11 @@ proxy is optional later for near-zero client impact.
     So the driver retries `bootstrap` with backoff — `2 5 15 30 30 30`
     seconds, override with `LASTDB_LAUNCHD_BOOTSTRAP_RETRY_DELAYS`.
 
+    After `bootout`, the helper waits until the old service disappears before
+    it calls `bootstrap`. The wait has a 30-second default bound. A loaded
+    service during this interval still belongs to the old job. It cannot prove
+    a successful reload. An incomplete removal fails before a new bootstrap.
+
     CAUTION: launchd returns that SAME EIO for a job that is *already*
     bootstrapped. The exit code cannot tell recovery from outage. Success is
     decided by `launchctl print <domain>/<label>`, never by the exit status.

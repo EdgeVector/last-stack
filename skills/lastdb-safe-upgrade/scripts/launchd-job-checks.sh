@@ -33,6 +33,26 @@ lastdb_launchd_job_state() {
   '
 }
 
+lastdb_launchd_wait_unloaded() {
+  local launchctl_bin="$1" service="$2"
+  local wait_secs="${LASTDB_LAUNCHD_BOOTOUT_WAIT_SECS:-30}" elapsed=0
+  case "$wait_secs" in
+    ''|*[!0-9]*) printf 'invalid launchd bootout wait\n' >&2; return 1 ;;
+  esac
+  while lastdb_launchd_job_loaded "$launchctl_bin" "$service"; do
+    if [ "$elapsed" -ge "$wait_secs" ]; then
+      printf 'LASTDB_LAUNCHD_RELOAD=failed step=bootout-incomplete service=%s waited_s=%s\n' \
+        "$service" "$elapsed" >&2
+      return 1
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  if [ "$elapsed" -gt 0 ]; then
+    printf 'LASTDB_LAUNCHD_BOOTOUT=removed service=%s waited_s=%s\n' "$service" "$elapsed"
+  fi
+}
+
 lastdb_require_supervised_primary() {
   # GREEN bar for sidebin: launchctl print must succeed, the job must have a
   # pid, and that pid must be the live listener when a live pid is known.
@@ -92,6 +112,11 @@ lastdb_launchd_reload_job() {
       fi
       printf 'LASTDB_LAUNCHD_BOOTOUT=already-unloaded service=%s\n' "$service"
     fi
+
+    # bootout can return before launchd removes the old service. An immediate
+    # bootstrap then returns Operation already in progress, while print still
+    # describes the dying job. Do not mistake that job for the new bootstrap.
+    lastdb_launchd_wait_unloaded "$launchctl_bin" "$service" || return 1
 
     local delays_spec="${LASTDB_LAUNCHD_BOOTSTRAP_RETRY_DELAYS:-2 5 15 30 30 30}"
     set -- $delays_spec

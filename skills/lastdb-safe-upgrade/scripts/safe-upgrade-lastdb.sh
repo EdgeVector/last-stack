@@ -1469,8 +1469,8 @@ live_install_sidebin() {
   write_cutover_recovery_state "sidebin-reload-started" true
   if ! lastdb_launchd_reload_job \
     launchctl "gui/${uid}" "$LAUNCHD_LABEL" "$LAUNCHD_PLIST"; then
-    page_human "safe-upgrade: primary lastdbd is UNLOADED — bootstrap retries exhausted for ${LAUNCHD_LABEL}. Recover: launchctl bootstrap gui/${uid} ${LAUNCHD_PLIST}"
-    die "launchd job-definition reload failed after bootstrap retries; the primary is UNLOADED. Recover: launchctl bootstrap gui/${uid} ${LAUNCHD_PLIST} then launchctl print gui/${uid}/${LAUNCHD_LABEL}"
+    page_human "safe-upgrade: primary lastdbd job reload failed for ${LAUNCHD_LABEL}. Inspect: launchctl print gui/${uid}/${LAUNCHD_LABEL}. Recovery: launchctl bootstrap gui/${uid} ${LAUNCHD_PLIST}"
+    die "launchd job-definition reload failed; inspect the reported phase and launchctl print gui/${uid}/${LAUNCHD_LABEL}. Recovery: launchctl bootstrap gui/${uid} ${LAUNCHD_PLIST}"
   fi
   RESTART_INTENT_START_REQUESTED=1
   write_cutover_recovery_state "sidebin-supervisor-loaded" true
