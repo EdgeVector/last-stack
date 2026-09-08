@@ -33,9 +33,10 @@ For long-running agent work, prefer installed global CLIs over binaries from a
 random WIP checkout. Source `last-stack-shell-prelude` or otherwise ensure
 `~/.local/bin` is ahead of ad-hoc repo paths; host-track-managed installs live
 there. When `brain`, `kanban`, `situations`, `lastgit`, or another shared CLI
-misbehaves, first run `host-track status` when available and `<cmd> which` (for
-example `lastgit which`) before blaming LastDB, changing PATH by hand, or
-running a checkout-local binary.
+misbehaves, first run `host-track status` when available and `command -v <cmd>`.
+Use `<cmd> which` only when that CLI documents the subcommand, such as `lastgit which`.
+Routines and Loom do not implement `which`. Check the installed path before
+you change PATH or use a checkout-local binary.
 
 ### New repository venue default: Forgejo (won't-undo — 2026-09-06)
 

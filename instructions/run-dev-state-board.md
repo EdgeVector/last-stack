@@ -58,4 +58,5 @@ cd ~/code/edgevector/<portal>   # e.g. routines, last-stack portal if any
 
 CLI hygiene: prefer host-track / `~/.local/bin` tools (`brain`, `kanban`,
 `lastgit`, `situations`) over random WIP checkouts. If a CLI misbehaves:
-`host-track status` / `<cmd> which` first.
+`host-track status` / `command -v <cmd>` first. Use `<cmd> which` only when
+the CLI documents that subcommand. Routines and Loom do not implement it.

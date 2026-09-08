@@ -81,6 +81,7 @@ case "$cmd" in
     fi
     ;;
   check)
+    printf 'check\n' >>"${FAKE_HT_CHECK_LOG:-/dev/null}"
     if [ "$cur" = "healthy" ]; then exit 0; fi
     exit 1
     ;;
@@ -303,37 +304,36 @@ grep -q 'last-stack-forge-api' "$ROOT/bin/last-stack-class-a-heal" \
 grep -q 'last-stack-card-closeout' "$ROOT/bin/last-stack-class-a-heal" \
   || fail "class-a-heal PATH_SHIM_NAMES must include last-stack-card-closeout"
 
-# --- 10) healthy / soft-stale preclaim path is fast (p95 target < 2s) ---
+# --- 10) healthy / soft-stale preclaim skips slow check and refresh calls ---
+# Assert the fast-path contract, not host scheduling latency under CI shards.
+export FAKE_HT_CHECK_LOG="$tmp/ht-check-log"
+: >"$FAKE_HT_CHECK_LOG"
 # Restore known-good current + fake host-track (earlier cases may repoint current).
 ln -sfn "versions/good" "$tmp/artifacts/current"
 ln -sfn "$tmp/bin/host-track" "$HOME/.local/bin/host-track"
 printf 'healthy\n' >"$FAKE_HT_STATE"
 rm -f "$HOME/.last-stack/state/class-a-heal.last-ok"
 : >"$FAKE_HT_LOG"
-t0=$(date +%s)
 set +e
 out10="$("$HOME/.last-stack/bin/last-stack-class-a-heal" --reason=timing --json 2>/dev/null)"
 rc10=$?
 set -e
-t1=$(date +%s)
-elapsed=$((t1 - t0))
 [ "$rc10" -eq 0 ] || fail "timing heal exit 0; rc=$rc10 out=$out10"
-[ "$elapsed" -le 2 ] || fail "healthy preclaim took ${elapsed}s (want ≤2s)"
+[ ! -s "$FAKE_HT_CHECK_LOG" ] || fail "healthy preclaim must skip deep host-track check"
+[ ! -s "$FAKE_HT_LOG" ] || fail "healthy preclaim must skip host-track refresh"
 # Soft-stale path
 printf 'stale\n' >"$FAKE_HT_STATE"
 rm -f "$HOME/.last-stack/state/class-a-heal.last-ok"
 : >"$FAKE_HT_LOG"
 # Keep fake host-track (not artifact stub) for status.stale=true
 ln -sfn "$tmp/bin/host-track" "$HOME/.local/bin/host-track"
-t0=$(date +%s)
 set +e
 out10b="$("$HOME/.last-stack/bin/last-stack-class-a-heal" --reason=timing-soft --json 2>/dev/null)"
 rc10b=$?
 set -e
-t1=$(date +%s)
-elapsed=$((t1 - t0))
 [ "$rc10b" -eq 0 ] || fail "soft-stale timing exit 0; rc=$rc10b out=$out10b"
-[ "$elapsed" -le 2 ] || fail "soft-stale preclaim took ${elapsed}s (want ≤2s)"
+[ ! -s "$FAKE_HT_CHECK_LOG" ] || fail "soft-stale preclaim must skip deep host-track check"
+[ ! -s "$FAKE_HT_LOG" ] || fail "soft-stale fast preclaim must skip host-track refresh"
 printf '%s\n' "$out10b" | grep -qE 'soft-stale|oob-refresh' \
   || fail "soft-stale timing should signal soft-stale/oob: $out10b"
 
@@ -379,18 +379,22 @@ old_stamp="$(date -r "$old_epoch" +%Y%m%d%H%M.%S 2>/dev/null \
 touch -t "$old_stamp" "$HOME/.last-stack/state/class-a-heal.lock"
 printf 'healthy\n' >"$FAKE_HT_STATE"
 export LASTSTACK_CLASS_A_LOCK_WAIT_S=1
-t0=$(date +%s)
+export FAKE_SLEEP_LOG="$tmp/ownerless-sleeps"
+cat >"$tmp/bin/sleep" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE_SLEEP_LOG"
+exec /bin/sleep "$@"
+SH
+chmod +x "$tmp/bin/sleep"
 set +e
 out13="$("$HOME/.last-stack/bin/last-stack-class-a-heal" --reason=ownerless-lock --json 2>"$tmp/err13")"
 rc13=$?
 set -e
-t1=$(date +%s)
-elapsed13=$((t1 - t0))
 unset LASTSTACK_CLASS_A_LOCK_WAIT_S
 [ "$rc13" -eq 0 ] \
   || fail "ownerless-lock heal should exit 0; rc=$rc13 out=$out13 err=$(cat "$tmp/err13")"
-[ "$elapsed13" -le 5 ] \
-  || fail "ownerless-lock reclaim took ${elapsed13}s (want well under LOCK_WAIT_S)"
+[ ! -s "$FAKE_SLEEP_LOG" ] \
+  || fail "ownerless-lock reclaim must not enter the lock-wait sleep"
 printf '%s\n' "$out13" | grep -q 'reclaim-ownerless-lock' \
   || fail "expected reclaim-ownerless-lock action: $out13"
 printf '%s\n' "$out13" | grep -q 'lock-wait-timeout' \

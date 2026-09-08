@@ -296,6 +296,9 @@ write_worker() {
     printf 'status = "active"\n'
     # 3h upper bound — Tom 2026-08-20 (decision-2026-08-20-pickup-three-hour-budget)
     printf 'timeout_min = 180\n'
+    # Routines retains the exact Codex session for these long implementation tasks.
+    # Each scheduled fire still starts fresh; native resume remains explicit and guarded.
+    printf 'session_mode = "persistent"\n'
     # Zero-LLM ready gate: routinesd skips the harness when ready=0 (routines ≥ gate_command).
     printf 'gate_command = "%s"\n' "$gate_cmd"
     printf '# Cap: one WORK unit per fire; capacity comes from separate registry workers, not SpawnAgent fan-out.\n'

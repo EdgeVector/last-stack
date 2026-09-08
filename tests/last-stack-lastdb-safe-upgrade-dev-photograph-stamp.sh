@@ -289,6 +289,8 @@ PROOF_EVIDENCE_ROOT="$PROOF_FIXTURE/state/dev-photograph-failures"
 PROOF_LOG="$PROOF_FIXTURE/proof.out"
 PROOF_PID_FILE="$PROOF_FIXTURE/candidate.pid"
 PROOF_RESIDUE_MARKER="$PROOF_FIXTURE/residue-removed"
+PROOF_SNAPSHOT_PID_FILE="$PROOF_FIXTURE/snapshot.pid"
+PROOF_SNAPSHOT_LATE_MARKER="$PROOF_FIXTURE/snapshot-exceeded-bound"
 mkdir -p \
   "$PROOF_PRIMARY/data" "$PROOF_CLONE/data" "$PROOF_CAND" \
   "$PROOF_TMP_ROOT" "$PROOF_RECEIPT_ROOT" "$PROOF_EVIDENCE_ROOT"
@@ -398,6 +400,7 @@ if mode == "stale_pre_cas":
     print("authentication refused before snapshot request", file=sys.stderr, flush=True)
     raise SystemExit(73)
 if mode == "timeout":
+    Path(os.environ["DEV_FAKE_SNAPSHOT_PID_FILE"]).write_text(str(os.getpid()), encoding="utf-8")
     cache = home / "laststore_backup_manifest.json"
     cache.write_text("{}\n", encoding="utf-8")
     for index in range(12):
@@ -415,7 +418,11 @@ if mode == "timeout":
         file=sys.stderr,
         flush=True,
     )
-    time.sleep(30)
+    # The deadline must kill this process before its own ten-second sentinel.
+    # Setup, evidence copy, and daemon cleanup do not consume this budget.
+    time.sleep(10)
+    Path(os.environ["DEV_FAKE_SNAPSHOT_LATE_MARKER"]).touch()
+    raise SystemExit(74)
 if mode == "mutate_device":
     (home / "data" / ".device_id").write_text("changed-after-snapshot\n", encoding="utf-8")
     os.chmod(home / "data" / ".device_id", 0o600)
@@ -491,11 +498,14 @@ run_proof_case() {
   safe_name="$(printf '%s' "lx-proof-$name" | tr -c 'A-Za-z0-9._-' '_')"
   export LOOM_EXEC_ID="lx-proof-$name"
   PROOF_CASE_RECEIPT="$PROOF_RECEIPT_ROOT/${safe_name}-${LASTDB_SAFE_UPGRADE_EXPECTED_LASTDBD_SHA256:0:16}-${LASTDB_SAFE_UPGRADE_EXPECTED_LASTDB_SHA256:0:16}.receipt"
-  rm -f -- "$PROOF_CASE_RECEIPT" "$PROOF_LOG" "$PROOF_PID_FILE" "$PROOF_RESIDUE_MARKER"
+  rm -f -- "$PROOF_CASE_RECEIPT" "$PROOF_LOG" "$PROOF_PID_FILE" "$PROOF_RESIDUE_MARKER" \
+    "$PROOF_SNAPSHOT_PID_FILE" "$PROOF_SNAPSHOT_LATE_MARKER"
   set +e
   DEV_FAKE_DAEMON_PID_FILE="$PROOF_PID_FILE" \
   DEV_FAKE_RESIDUE_MARKER="$PROOF_RESIDUE_MARKER" \
   DEV_FAKE_SNAPSHOT_MODE="$mode" \
+  DEV_FAKE_SNAPSHOT_PID_FILE="$PROOF_SNAPSHOT_PID_FILE" \
+  DEV_FAKE_SNAPSHOT_LATE_MARKER="$PROOF_SNAPSHOT_LATE_MARKER" \
   LASTDB_DEV_STAMP_ROOT="$PROOF_RECEIPT_ROOT" \
   LASTDB_DEV_PHOTOGRAPH_TMP_ROOT="$PROOF_TMP_ROOT" \
   LASTDB_DEV_PHOTOGRAPH_EVIDENCE_ROOT="$evidence_root" \
@@ -581,15 +591,16 @@ grep -q 'post-CAS backup orphan GC active' "$stale_daemon_tail" \
 grep -q 'authentication refused before snapshot request' "$stale_snapshot_tail" \
   || fail "pre-CAS evidence omitted the current snapshot failure"
 
-timeout_started="$(date +%s)"
 if run_proof_case timeout timeout 1; then
   fail "proof accepted a snapshot command that exceeded its deadline"
 fi
-timeout_elapsed=$(( $(date +%s) - timeout_started ))
-# wallclock-bound-ok: 10s ceiling over a 1s deadline (10x slack); the failing
-# side is a snapshot command that never returns.
-[ "$timeout_elapsed" -lt 10 ] \
-  || fail "snapshot command timeout was not bounded: ${timeout_elapsed}s"
+# Measure the snapshot process itself. The old outer timer included setup and
+# evidence cleanup, and failed at 11s despite the one-second deadline working.
+[ -s "$PROOF_SNAPSHOT_PID_FILE" ] || fail "timed-out snapshot never started"
+[ ! -e "$PROOF_SNAPSHOT_LATE_MARKER" ] || fail "snapshot exceeded its ten-second bound"
+if kill -0 "$(cat "$PROOF_SNAPSHOT_PID_FILE")" 2>/dev/null; then
+  fail "timed-out snapshot process remains alive"
+fi
 [ ! -e "$PROOF_CASE_RECEIPT" ] \
   || fail "timed-out snapshot wrote a receipt"
 [ -n "$PROOF_CASE_EVIDENCE" ] && [ -d "$PROOF_CASE_EVIDENCE" ] \
