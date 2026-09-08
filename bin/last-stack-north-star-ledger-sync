@@ -536,6 +536,12 @@ def plan_ns(
     return plan
 
 
+def terminal_card_exists(terminal_slug: str) -> bool:
+    """True only when the board can hand the slug back."""
+    cp = run_cmd(["kanban", "show", terminal_slug], timeout=120)
+    return cp.returncode == 0 and "No card with slug" not in (cp.stdout + cp.stderr)
+
+
 def ensure_terminal_card(
     *,
     ns_slug: str,
@@ -577,6 +583,13 @@ def ensure_terminal_card(
         os.unlink(path)
     if cp.returncode != 0:
         return f"error_create_terminal:{terminal_slug}:{cp.stderr.strip()[:200]}"
+    # `kanban add` exiting 0 is a fact about the CLI, not about the board. The
+    # 2026-08-26 sync recorded `created_terminal` for
+    # lastdb-delete-returns-the-bytes-proof and the slug never resolved, so
+    # every later reader believed a terminal proof card existed. Re-read the
+    # slug and only claim a creation the board agrees with.
+    if not terminal_card_exists(terminal_slug):
+        return f"created_terminal_unverified:{terminal_slug}"
     return f"created_terminal:{terminal_slug}"
 
 

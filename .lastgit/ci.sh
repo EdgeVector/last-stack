@@ -652,6 +652,11 @@ ci_test tests/host-track-forge-gate-head-behaviour.sh
 # APPENDED: ci_test shards by list position.
 ci_test tests/last-stack-lastdb-memory-guard-log-contract.sh
 
+# APPENDED: ci_test shards by list position.
+# Live mode of the delete-returns-bytes proof, driven by a stub `lastdb` so the
+# byte assertions are covered without a real node.
+ci_test tests/last-stack-north-star-proof-delete-returns-bytes-live.sh
+
 # The registration guard itself. Kept last, and asserted to be registered by
 # tests/last-stack-ci-sharding.sh, so the guard cannot quietly stop running.
 ci_test tests/last-stack-ci-test-registration.sh

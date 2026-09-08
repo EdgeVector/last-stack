@@ -57,8 +57,12 @@ case "${1:-} ${2:-}" in
   "show example-ns-terminal-verification")
     if [ "${MOCK_EXISTING:-0}" = "1" ]; then
       printf '%s\n' '{"slug":"example-ns-terminal-verification","column":"backlog","body":"Kind: validation\nRepo: EdgeVector/last-stack\nBase: main\n\nDONE-WHEN: file docs/north-star-proofs/north-star-example.md matches /PASS|GREEN/\n"}'
+    elif [ "${MOCK_SHOW_AFTER_ADD:-0}" = "1" ] && [ -s "${MOCK_CARD_BODY:-/nonexistent}" ]; then
+      printf '%s\n' '{"slug":"example-ns-terminal-verification","column":"backlog"}'
     else
-      exit 1
+      # A board that accepted the write but cannot hand the slug back. The
+      # real kanban prints this and still exits 0.
+      printf '%s\n' 'kanban: No card with slug "example-ns-terminal-verification".'
     fi
     ;;
   "add example-ns-terminal-verification") cat >"$MOCK_CARD_BODY" ;;
@@ -72,6 +76,22 @@ MOCK_CARD_BODY="$tmp/created-card.md" \
   python3 "$BIN" --apply --ns north-star-example --json >"$tmp/create.json"
 grep -Fq 'DONE-WHEN: file $HOME/.last-stack/north-star-proofs/north-star-example.md matches /^PASS/' "$tmp/created-card.md"
 ! grep -Fq 'docs/north-star-proofs' "$tmp/created-card.md"
+
+# `kanban add` exiting 0 is a fact about the CLI, not about the board. A sync
+# that reports created_terminal without re-reading the slug is how
+# lastdb-delete-returns-the-bytes-proof stayed "created" in the ledger for
+# twelve days while `kanban show` answered "No card with slug".
+grep -Fq 'created_terminal_unverified:example-ns-terminal-verification' "$tmp/create.json" \
+  || { echo "FAIL: unconfirmed terminal creation was reported as created" >&2; exit 1; }
+! grep -Eq '"created_terminal:example-ns-terminal-verification"' "$tmp/create.json"
+
+# Green arm: when the board does hand the slug back, the claim is allowed.
+MOCK_SHOW_AFTER_ADD=1 MOCK_CARD_BODY="$tmp/created-card-verified.md" \
+  HOME="$tmp/home" PATH="$tmp/bin:$PATH" \
+  python3 "$BIN" --apply --ns north-star-example --json >"$tmp/create-verified.json"
+grep -Fq 'created_terminal:example-ns-terminal-verification' "$tmp/create-verified.json" \
+  || { echo "FAIL: a board-confirmed terminal creation was not reported" >&2; exit 1; }
+! grep -Fq 'created_terminal_unverified' "$tmp/create-verified.json"
 
 # Write the proof through the PRODUCTION writer, and read the predicate back
 # out of the PRODUCTION card body. Neither path is retyped here.
