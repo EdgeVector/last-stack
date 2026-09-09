@@ -246,11 +246,83 @@ out="$(
 [ "$(printf '%s\n' "$out" | jq -r '.safe_upgrade')" = "blocked-situation" ]
 [ "$(printf '%s\n' "$out" | jq -r '.primary_mutation')" = "false" ]
 
-# --- the default fence is SCOPED preflight, not "any Situation is open" ---
-grep -q 'situations preflight --action lastdb-safe-upgrade' "$CLI"
+# --- the default fence is SCOPED restart-primary-lastdbd, not unscoped upgrade ---
+grep -q 'situations preflight --action restart-primary-lastdbd --system lastdbd' "$CLI"
 ! grep -q 'situations list --json | jq -e "length == 0"' "$CLI"
+# Pipeline soak fence is a different helper; this card scopes the dogfood gate.
 grep -q 'situations preflight --action lastdb-safe-upgrade' "$LEDGER"
 ! grep -q 'situations list --json | jq -e "length == 0"' "$LEDGER"
+
+# PATH stub: prove the default argv (not LAST_STACK_CANARY_SITUATION_CHECK_CMD)
+# is the scoped restart question, and --cutover honors its exit code.
+sitbin="$tmp/sitbin"
+mkdir -p "$sitbin"
+cat >"$sitbin/situations" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${SITUATIONS_STUB_LOG:?}"
+scoped=0
+case " $* " in
+  *" --action restart-primary-lastdbd "*)
+    case " $* " in
+      *" --system lastdbd "*) scoped=1 ;;
+    esac
+    ;;
+esac
+if [ "$scoped" -eq 1 ]; then
+  exit "${SITUATIONS_STUB_SCOPED_RC:-0}"
+fi
+exit "${SITUATIONS_STUB_OTHER_RC:-0}"
+STUB
+chmod +x "$sitbin/situations"
+
+cutover_with_sit_stub() {
+  local state_dir="$1"
+  shift
+  env -u LAST_STACK_CANARY_SITUATION_CHECK_CMD \
+    PATH="$sitbin:$PATH" \
+    LAST_STACK_CANARY_LOCAL_FALLBACK_BIN="$fallback_bin" \
+    LAST_STACK_CANARY_SAFE_UPGRADE="$stub" \
+    LAST_STACK_CANARY_SAFE_UPGRADE_LOOM="$loom_stub" \
+    SAFE_UPGRADE_STUB_LOG="$tmp/safe-upgrade.log" \
+    SAFE_UPGRADE_LOOM_STUB_LOG="$tmp/safe-upgrade-loom.log" \
+    SITUATIONS_STUB_LOG="$tmp/situations-stub.log" \
+    LAST_STACK_CANARY_LIVE_VERSION_CMD='echo lastdbd 0.25.0-local-main' \
+    "$@" \
+    "$CLI" --state-dir "$state_dir" --cutover --json
+}
+
+# Exit 3 on the scoped restart action: line-stop, never reach live install.
+: >"$tmp/safe-upgrade.log"
+: >"$tmp/safe-upgrade-loom.log"
+: >"$tmp/situations-stub.log"
+out="$(
+  cutover_with_sit_stub "$tmp/scoped-fence-red" \
+    SITUATIONS_STUB_SCOPED_RC=3 SITUATIONS_STUB_OTHER_RC=0
+)" || true
+[ "$(printf '%s\n' "$out" | jq -r '.state')" = "blocked_situation" ]
+[ "$(printf '%s\n' "$out" | jq -r '.safe_upgrade')" = "blocked-situation" ]
+[ "$(printf '%s\n' "$out" | jq -r '.primary_mutation')" = "false" ]
+[ ! -s "$tmp/safe-upgrade.log" ]
+[ ! -s "$tmp/safe-upgrade-loom.log" ]
+grep -q -- '--action restart-primary-lastdbd' "$tmp/situations-stub.log"
+grep -q -- '--system lastdbd' "$tmp/situations-stub.log"
+! grep -q -- 'lastdb-safe-upgrade' "$tmp/situations-stub.log"
+
+# Exit 0 on the scoped restart action: cutover proceeds as before.
+: >"$tmp/safe-upgrade.log"
+: >"$tmp/safe-upgrade-loom.log"
+: >"$tmp/situations-stub.log"
+out="$(
+  cutover_with_sit_stub "$tmp/scoped-fence-ok" \
+    SITUATIONS_STUB_SCOPED_RC=0 SITUATIONS_STUB_OTHER_RC=3
+)"
+[ "$(printf '%s\n' "$out" | jq -r '.mode')" = "cutover" ]
+[ "$(printf '%s\n' "$out" | jq -r '.safe_upgrade')" = "loom-cutover-green" ]
+[ "$(printf '%s\n' "$out" | jq -r '.primary_mutation')" = "true" ]
+[ ! -s "$tmp/safe-upgrade.log" ]
+grep -q -- "--candidate $fallback_bin" "$tmp/safe-upgrade-loom.log"
+grep -q -- '--action restart-primary-lastdbd' "$tmp/situations-stub.log"
+grep -q -- '--system lastdbd' "$tmp/situations-stub.log"
 
 # A verified-live recovery uses a new attempt key. The old soak_red row stays
 # terminal. The new row keeps the actual live version as its observed identity.
