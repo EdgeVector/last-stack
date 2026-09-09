@@ -207,23 +207,19 @@ if ! grep -q 'needs-safe-upgrade-no-pr backlog' "$moves"; then
   echo "out=$out" >&2
   exit 1
 fi
-if ! grep -q 'helper-cutover-end-state-no-pr backlog' "$moves"; then
-  echo "FAIL: expected helper-cutover END STATE card demoted to backlog:" >&2
+if ! grep -q 'helper-cutover-end-state-no-pr todo' "$moves"; then
+  echo "FAIL: stale unfinished work must follow normal reclaim despite its future END STATE:" >&2
   cat "$moves" >&2
   echo "out=$out" >&2
   exit 1
 fi
-if grep -q 'helper-cutover-end-state-no-pr todo' "$moves"; then
-  echo "FAIL: helper-cutover END STATE card was rolled back to todo:" >&2
+if grep -q 'helper-cutover-end-state-no-pr backlog' "$moves"; then
+  echo "FAIL: future helper-cutover END STATE became a current deployment wait:" >&2
   cat "$moves" >&2
   exit 1
 fi
 echo "$out" | grep -q 'deploy-parked-demoted:awaiting-deploy-no-pr' || {
   echo "FAIL: expected deploy-parked-demoted flag: $out" >&2
-  exit 1
-}
-echo "$out" | grep -q 'deploy-parked-demoted:helper-cutover-end-state-no-pr' || {
-  echo "FAIL: expected helper-cutover demote flag: $out" >&2
   exit 1
 }
 

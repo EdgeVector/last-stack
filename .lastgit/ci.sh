@@ -659,4 +659,5 @@ ci_test tests/last-stack-north-star-proof-delete-returns-bytes-live.sh
 
 # The registration guard itself. Kept last, and asserted to be registered by
 # tests/last-stack-ci-sharding.sh, so the guard cannot quietly stop running.
+ci_test tests/last-stack-board-closeout-active-source.sh
 ci_test tests/last-stack-ci-test-registration.sh

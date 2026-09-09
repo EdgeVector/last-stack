@@ -24,13 +24,14 @@
 #   4. WIP commits + no PR after grace → todo (flag wip-no-pr; worktree kept),
 #      EXCEPT a structured branch plus a HANDOFF/verified commit checkpoint
 #      keeps doing (flag checkpoint-handoff).
-#   5. deploy-parked doing cards (Requires-Deploy:, tags awaiting-deploy /
+#   5. deploy-parked doing cards (tags awaiting-deploy /
 #      live-proof / deploy-gate / needs-safe-upgrade / awaiting-validation,
-#      live-proof wait notes, or END STATE / DONE-WHEN that names helper
-#      cutover / host-track / a live scheduled-fire) → backlog +
+#      or the latest progress/handoff/park note states a current deploy wait)
+#      → backlog +
 #      block_status=deferred (flag deploy-parked-demoted). They must not
 #      inflate factory doing_stuck_hard. Open in-flight PR/CR cards are NOT
-#      demoted. last-stack-card-closeout refuses done on the same gate.
+#      demoted. Requires-Deploy and END STATE remain closeout gates for merged
+#      code; future requirements alone never classify unfinished work as parked.
 #   6. park expiry: a NON-deploy close-failed park older than
 #      --max-park-hours with no live worker → todo (flag park-expired), so a
 #      parked card can never sit in `doing` forever with nobody driving it.
@@ -499,7 +500,26 @@ function endStateRequiresHelperCutover(body) {
   );
 }
 
-/** Deploy-gated / live-proof / safe-upgrade park: demote out of doing. */
+function hasDeployRequirement(card) {
+  const body = bodyOf(card);
+  return Boolean(parseBodyHeader(body, "Requires-Deploy")) ||
+    /^Requires-Deploy:/im.test(body) || endStateRequiresHelperCutover(body);
+}
+
+function latestProgressNote(body) {
+  let fenced = false;
+  let latest = "";
+  for (const line of String(body || "").split("\n")) {
+    if (/^[ \t]*```/.test(line)) {
+      fenced = !fenced;
+      continue;
+    }
+    if (!fenced && /^[ \t]*(PROGRESS|HANDOFF|PARKED|STATUS):/i.test(line)) latest = line;
+  }
+  return latest;
+}
+
+/** Current wait state, distinct from a future rollout requirement. */
 function isDeployParked(card) {
   const tags = tagList(card);
   if (
@@ -515,16 +535,12 @@ function isDeployParked(card) {
   ) {
     return true;
   }
-  const body = bodyOf(card);
-  if (parseBodyHeader(body, "Requires-Deploy")) return true;
-  if (/^Requires-Deploy:/im.test(body)) return true;
-  // Live-proof wait notes written by pickup without the structured header.
-  if (/\b(LIVE PROOF|deploy-pipeline proof|awaiting deploy)\b/i.test(body) &&
-      /\b(pending|do not mark done|returning the card|leave(?:ing)? this card)\b/i.test(body)) {
-    return true;
-  }
-  if (endStateRequiresHelperCutover(body)) return true;
-  return false;
+  // An old PARKED note must not override a later source-work update. Match
+  // explicit wait phrases, not unrelated words spread across the brief.
+  const note = latestProgressNote(bodyOf(card));
+  if (/\b(?:not|no longer)\s+(?:awaiting|waiting|blocked)\b/i.test(note)) return false;
+  return /\b(?:awaiting|waiting for|blocked on)\s+(?:deploy(?:ment)?|safe-upgrade|live[- ]proof|helper[- ]cutover|host-track)\b/i.test(note) ||
+    /\b(?:live[- ]proof|deploy-pipeline proof)\s*[:=-]?\s*(?:pending|blocked|awaiting)\b/i.test(note);
 }
 
 function ensureAwaitingDeployTag(slug, card) {
@@ -1022,7 +1038,7 @@ for (const card of cards) {
         // Deploy-parked merged cards are a human/validate gate, not WIP.
         // Demote to backlog instead of leaving them to inflate doing_stuck_hard.
         const parkedClose =
-          deployParked || /deploy/i.test(String(m.detail || ""));
+          deployParked || hasDeployRequirement(card) || /deploy/i.test(String(m.detail || ""));
         if (!closeoutDeferred.has(slug) && parkedClose) {
           if (demoteDeployParked(slug, card)) {
             actions++;
@@ -1498,6 +1514,25 @@ def end_state_requires_helper_cutover(body):
     )
 
 
+def has_deploy_requirement(card):
+    body = body_of(card)
+    return bool(parse_body_header(body, "Requires-Deploy")) or bool(
+        re.search(r"^Requires-Deploy:", body, re.I | re.M)
+    ) or end_state_requires_helper_cutover(body)
+
+
+def latest_progress_note(body):
+    fenced = False
+    latest = ""
+    for line in str(body or "").splitlines():
+        if re.match(r"^[ \t]*```", line):
+            fenced = not fenced
+            continue
+        if not fenced and re.match(r"^[ \t]*(PROGRESS|HANDOFF|PARKED|STATUS):", line, re.I):
+            latest = line
+    return latest
+
+
 def is_deploy_parked(card):
     tags = tag_list(card)
     if any(
@@ -1511,18 +1546,14 @@ def is_deploy_parked(card):
         for t in tags
     ):
         return True
-    body = body_of(card)
-    if parse_body_header(body, "Requires-Deploy"):
-        return True
-    if re.search(r"^Requires-Deploy:", body, re.I | re.M):
-        return True
-    if re.search(r"\b(LIVE PROOF|deploy-pipeline proof|awaiting deploy)\b", body, re.I) and re.search(
-        r"\b(pending|do not mark done|returning the card|leave(?:ing)? this card)\b", body, re.I
-    ):
-        return True
-    if end_state_requires_helper_cutover(body):
-        return True
-    return False
+    note = latest_progress_note(body_of(card))
+    if re.search(r"\b(?:not|no longer)\s+(?:awaiting|waiting|blocked)\b", note, re.I):
+        return False
+    return bool(re.search(
+        r"\b(?:awaiting|waiting for|blocked on)\s+(?:deploy(?:ment)?|safe-upgrade|live[- ]proof|helper[- ]cutover|host-track)\b"
+        r"|\b(?:live[- ]proof|deploy-pipeline proof)\s*[:=-]?\s*(?:pending|blocked|awaiting)\b",
+        note, re.I,
+    ))
 
 def ensure_awaiting_deploy_tag(slug, card):
     if dry_run:
@@ -1960,7 +1991,7 @@ for card in cards:
             if close_card(slug, url, branch):
                 actions += 1
             else:
-                parked_close = deploy_parked or bool(
+                parked_close = deploy_parked or has_deploy_requirement(card) or bool(
                     re.search(r"deploy", str(detail or ""), re.I)
                 )
                 if slug not in closeout_deferred and parked_close:
