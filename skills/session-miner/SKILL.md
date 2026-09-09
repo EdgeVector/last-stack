@@ -73,9 +73,12 @@ jq . "$scratch/summary.json"
 Add one `--root "<harness>=<path>"` argument for each configured harness. The
 helper reports files without record timestamps as `unwindowed_files`. Add an
 `--include "<harness>=<glob>"` argument when a root contains more than one JSONL
-format. For example, use `--include "grok=prompt_history.jsonl"` for a Grok
-session root. Do not use a file mtime to force files into the window. Use a
-harness index or a targeted OneContext query when a format has no timestamps.
+format. Grok sessions under `~/.grok/sessions/<workspace>/<id>/` use
+`events.jsonl` with a `ts` field — pass `--include "grok=events.jsonl"`.
+`chat_history.jsonl` has no per-message timestamp; do not window it by mtime.
+The older `--include "grok=prompt_history.jsonl"` form is for leftover files
+only. Do not use a file mtime to force files into the window. Use a harness
+index or a targeted OneContext query when a format has no timestamps.
 
 Parse `recent.jsonl` structurally. Each line contains `harness`, `path`,
 `timestamp`, and `record`. Remove the scratch directory after the report.

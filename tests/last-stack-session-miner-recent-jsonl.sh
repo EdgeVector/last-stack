@@ -41,4 +41,33 @@ if rg -q 'old-marker|mtime-must-not-qualify' "$scratch/recent.jsonl"; then
   exit 1
 fi
 
+# Grok events.jsonl stamps the record with `ts`. chat_history.jsonl does not.
+mkdir -p "$scratch/grok/session-a"
+cat >"$scratch/grok/session-a/events.jsonl" <<'EOF'
+{"ts":"2026-08-20T00:00:00Z","type":"tool_completed","session_id":"grok-old","message":"grok-old-marker"}
+{"ts":"2026-08-28T00:02:00Z","type":"tool_completed","session_id":"grok-new","message":"grok-ts-marker"}
+EOF
+cat >"$scratch/grok/session-a/chat_history.jsonl" <<'EOF'
+{"type":"assistant","content":"chat-history-has-no-ts","session_id":"grok-chat"}
+EOF
+touch -t 203001010000 "$scratch/grok/session-a/chat_history.jsonl"
+
+python3 "$HELPER" \
+  --since 2026-08-27T00:00:00Z \
+  --root "grok=$scratch/grok" \
+  --include "grok=events.jsonl" \
+  --records-output "$scratch/grok-recent.jsonl" \
+  >"$scratch/grok-summary.json"
+
+[ "$(jq -r .files_scanned "$scratch/grok-summary.json")" = "1" ]
+[ "$(jq -r .files_in_window "$scratch/grok-summary.json")" = "1" ]
+[ "$(jq -r .records_in_window "$scratch/grok-summary.json")" = "1" ]
+[ "$(jq -r .sessions_in_window "$scratch/grok-summary.json")" = "1" ]
+[ "$(jq -r .unwindowed_file_count "$scratch/grok-summary.json")" = "0" ]
+rg -q 'grok-ts-marker' "$scratch/grok-recent.jsonl"
+if rg -q 'grok-old-marker|chat-history-has-no-ts' "$scratch/grok-recent.jsonl"; then
+  echo "out-of-window grok content entered the recent corpus" >&2
+  exit 1
+fi
+
 echo "ok last-stack-session-miner-recent-jsonl"
