@@ -1999,15 +1999,6 @@ soak_starve_after_abandons() {
   printf '%s\n' "$n"
 }
 
-# Optional second bound: when the installed source_oid is this many published
-# channel tips behind the soaking canary's source_oid (commit distance), allow
-# the same early activate. Default 0 = off (abandon count is the primary bound).
-soak_starve_behind_merges() {
-  local n="${HOST_TRACK_SOAK_STARVE_BEHIND_MERGES:-0}"
-  case "$n" in ''|*[!0-9]*) n=0 ;; esac
-  printf '%s\n' "$n"
-}
-
 # The two halves of the soak gate, computed exactly as `soak_watch_one` applies
 # them, so `host-track status` cannot report a different window than the flip
 # uses. Both print nothing when the stamp is missing or malformed; the caller
