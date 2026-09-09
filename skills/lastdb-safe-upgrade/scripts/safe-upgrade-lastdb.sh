@@ -902,25 +902,6 @@ resolve_baseline_bin() {
   command -v lastdbd 2>/dev/null || true
 }
 
-lat_op_within_bar() {
-  # Wrapper: default hot-vs-hot. Prefer lat_op_like_to_like_within_bar.
-  local op="$1" cand="$2" base="$3" c_th="${4:-hot}" b_th="${5:-hot}"
-  local out rc=0
-  export LASTDB_PROBE_LAT_FLOOR_MS="${LAT_FLOOR_MS}"
-  export LASTDB_PROBE_LAT_RATIO="${LAT_RATIO}"
-  export LASTDB_PROBE_LAT_ABS_MAX_MS="${LAT_ABS_MAX_MS}"
-  out="$(lat_op_like_to_like_within_bar "$op" "$cand" "$base" "$c_th" "$b_th")" || rc=$?
-  if [ -n "$out" ]; then
-    case "$out" in
-      *' RED:'*) log "$out" ;;
-      *'mixed thermal'*) log "$out" ;;
-      *WATCH*|*pre-existing*) warn "$out" ;;
-      *) log "$out" ;;
-    esac
-  fi
-  return "$rc"
-}
-
 # Leaf must stay short: the node refuses a data dir over 82 bytes (103-byte
 # sockaddr_un limit minus socket name + atomic temp sibling). $$ keeps uniqueness.
 clone_probe_home() {
