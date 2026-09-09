@@ -191,6 +191,22 @@ def live_version() -> str:
     return line[-1].split()[-1]
 
 
+# The --cutover branch restarts primary lastdbd. Ask that action, scoped
+# to lastdbd. Unscoped `lastdb-safe-upgrade` returned a false OK while an
+# active Situation required human clearance for restart-primary-lastdbd.
+DEFAULT_SITUATION_CHECK_CMD = (
+    "situations preflight --action restart-primary-lastdbd --system lastdbd"
+)
+DEFAULT_SITUATION_CHECK_ARGV = (
+    "situations",
+    "preflight",
+    "--action",
+    "restart-primary-lastdbd",
+    "--system",
+    "lastdbd",
+)
+
+
 def situations_clear() -> bool:
     """Scoped Situations preflight for the cutover.
 
@@ -201,15 +217,21 @@ def situations_clear() -> bool:
     one action, so an unrelated incident no longer parks the release loop while
     a real upgrade freeze still does.
     See papercut-canary-situation-fence-is-unscoped-any-situation-reds-the-nightly.
+
+    The default question is restart-primary-lastdbd scoped to lastdbd (the
+    real --cutover operation), not unscoped lastdb-safe-upgrade.
+    LAST_STACK_CANARY_SITUATION_CHECK_CMD still overrides for tests.
     """
     cmd = os.environ.get(
         "LAST_STACK_CANARY_SITUATION_CHECK_CMD",
-        "situations preflight --action lastdb-safe-upgrade",
+        DEFAULT_SITUATION_CHECK_CMD,
     )
     if cmd in ("", "pass", "true", "ok"):
         return True
     if cmd in ("fail", "false", "red"):
         return False
+    if cmd == DEFAULT_SITUATION_CHECK_CMD:
+        return run(list(DEFAULT_SITUATION_CHECK_ARGV), check=False).returncode == 0
     return run(["bash", "-lc", cmd], check=False).returncode == 0
 
 
