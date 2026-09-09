@@ -9,7 +9,8 @@ import re
 import sys
 
 
-TIMESTAMP_KEYS = ("timestamp", "time", "created_at", "createdAt")
+# `ts` is the Grok events.jsonl stamp. chat_history.jsonl has no per-message time.
+TIMESTAMP_KEYS = ("timestamp", "time", "created_at", "createdAt", "ts")
 SESSION_KEYS = ("session_id", "sessionId", "conversation_id", "conversationId")
 MAX_UNTIMESTAMPED_RECORDS = 1000
 UNWINDOWED_FILE_SAMPLE = 20
