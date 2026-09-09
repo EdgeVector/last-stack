@@ -491,6 +491,125 @@ assert d.get("key") in ("", None), d
 ' "$tmp/stamp.json" \
   || fail "listing_stale tick3 restored the resume key: $(cat "$tmp/stamp.json")"
 
+# --- empty picked must still count consecutive listing_stale ticks ---
+# Live 2026-09-06..09: hourly `noop idle reason=listing_stale exec=` forever
+# because hits keyed on an empty exec id and never reached max_hits=2.
+printf '%s\n' '[]' >"$tmp/empty.json"
+printf '%s\n' '{"ts":"2026-09-09T12:00:00Z","status":"idle","exec_id":"","detail":"idle reason=no_failed_in_window","key":"","outcome":"noop","engine":"loom"}' \
+  >"$tmp/stamp.json"
+set +e
+empty_tick1_out="$(CANARY_RED_LOOM_LIST_FILE="$tmp/empty.json" "$BIN" --dry-run --json --quiet)"
+empty_tick1_rc=$?
+set -e
+[ "$empty_tick1_rc" -eq 0 ] || fail "empty listing_stale tick1 must exit 0, got $empty_tick1_rc: $empty_tick1_out"
+printf '%s\n' "$empty_tick1_out" | grep -q 'ROUTINE_RESULT outcome=noop detail=idle reason=listing_stale exec=' \
+  || fail "empty listing_stale tick1 must stay noop: $empty_tick1_out"
+python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("outcome") == "noop", d
+assert d.get("exec_id") in ("", None), d
+assert d.get("key") in ("", None), d
+assert d.get("listing_stale_exec") == "__listing_stale__", d
+assert int(d.get("listing_stale_hits") or 0) == 1, d
+' "$tmp/stamp.json" \
+  || fail "empty listing_stale tick1 did not persist sentinel hits=1: $(cat "$tmp/stamp.json")"
+
+set +e
+empty_tick2_out="$(CANARY_RED_LOOM_LIST_FILE="$tmp/empty.json" "$BIN" --dry-run --json --quiet)"
+empty_tick2_rc=$?
+set -e
+[ "$empty_tick2_rc" -eq 0 ] || fail "empty listing_stale tick2 dry-run must exit 0, got $empty_tick2_rc: $empty_tick2_out"
+printf '%s\n' "$empty_tick2_out" | grep -q 'ROUTINE_RESULT outcome=error detail=listing_stale_expired' \
+  || fail "empty listing_stale tick2 must page listing_stale_expired: $empty_tick2_out"
+printf '%s\n' "$empty_tick2_out" | grep -q 'hits=2' \
+  || fail "empty listing_stale tick2 must report hits=2: $empty_tick2_out"
+python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("outcome") == "error", d
+assert d.get("exec_id") in ("", None), d
+assert d.get("key") in ("", None), d
+assert d.get("listing_stale_exec") == "__listing_stale__", d
+assert int(d.get("listing_stale_hits") or 0) == 2, d
+' "$tmp/stamp.json" \
+  || fail "empty listing_stale tick2 did not persist sentinel hits=2: $(cat "$tmp/stamp.json")"
+
+set +e
+empty_tick3_out="$(CANARY_RED_LOOM_LIST_FILE="$tmp/empty.json" "$BIN" --dry-run --json --quiet)"
+empty_tick3_rc=$?
+set -e
+[ "$empty_tick3_rc" -eq 0 ] || fail "empty listing_stale tick3 must exit 0, got $empty_tick3_rc: $empty_tick3_out"
+printf '%s\n' "$empty_tick3_out" | grep -q 'ROUTINE_RESULT outcome=noop detail=idle reason=listing_stale exec=' \
+  || fail "empty listing_stale tick3 must stay noop after one page: $empty_tick3_out"
+
+# Negative: one empty tick must not expire a later real exec on leftover hits.
+printf '%s\n' '{"ts":"2026-09-09T12:00:00Z","status":"idle","exec_id":"","detail":"idle reason=no_failed_in_window","key":"","outcome":"noop","engine":"loom"}' \
+  >"$tmp/stamp.json"
+set +e
+neg_empty_out="$(CANARY_RED_LOOM_LIST_FILE="$tmp/empty.json" "$BIN" --dry-run --json --quiet)"
+neg_empty_rc=$?
+set -e
+[ "$neg_empty_rc" -eq 0 ] || fail "negative empty tick must exit 0, got $neg_empty_rc: $neg_empty_out"
+python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("listing_stale_exec") == "__listing_stale__", d
+assert int(d.get("listing_stale_hits") or 0) == 1, d
+' "$tmp/stamp.json" \
+  || fail "negative empty tick missing sentinel hits=1: $(cat "$tmp/stamp.json")"
+set +e
+neg_real_out="$(CANARY_RED_LOOM_LIST_FILE="$tmp/stale-resume.json" "$BIN" --dry-run --json --quiet)"
+neg_real_rc=$?
+set -e
+[ "$neg_real_rc" -eq 0 ] || fail "negative real-exec tick must exit 0, got $neg_real_rc: $neg_real_out"
+printf '%s\n' "$neg_real_out" | grep -q 'ROUTINE_RESULT outcome=noop detail=idle reason=listing_stale exec=' \
+  || fail "negative real-exec tick must reset and stay noop: $neg_real_out"
+if printf '%s\n' "$neg_real_out" | grep -q 'listing_stale_expired'; then
+  fail "negative real-exec tick expired on leftover empty hits: $neg_real_out"
+fi
+python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("outcome") == "noop", d
+assert d.get("listing_stale_exec") == sys.argv[2], d
+assert int(d.get("listing_stale_hits") or 0) == 1, d
+' "$tmp/stamp.json" "$STALE_RESUME" \
+  || fail "negative real-exec tick did not reset sentinel counter: $(cat "$tmp/stamp.json")"
+
+# A prior loom-list-failed must not wipe the empty-listing counter or suppress
+# the next page.
+printf '%s\n' '{"ts":"2026-09-09T12:00:00Z","status":"idle","exec_id":"","detail":"idle reason=no_failed_in_window","key":"","outcome":"noop","engine":"loom"}' \
+  >"$tmp/stamp.json"
+set +e
+fail_tick1_out="$(CANARY_RED_LOOM_LIST_FILE="$tmp/empty.json" "$BIN" --dry-run --json --quiet)"
+fail_tick1_rc=$?
+set -e
+[ "$fail_tick1_rc" -eq 0 ] || fail "pre-failed empty tick must exit 0, got $fail_tick1_rc: $fail_tick1_out"
+set +e
+fail_list_out="$(CANARY_RED_LOOM_LIST_FILE="$tmp/missing-no-such-listing.json" "$BIN" --dry-run --json --quiet 2>/dev/null)"
+fail_list_rc=$?
+set -e
+[ "$fail_list_rc" -eq 3 ] || fail "missing listing must exit 3, got $fail_list_rc: $fail_list_out"
+printf '%s\n' "$fail_list_out" | grep -q 'ROUTINE_RESULT outcome=error detail=loom-list-failed' \
+  || fail "missing listing must report loom-list-failed: $fail_list_out"
+python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("outcome") == "error", d
+assert d.get("detail") == "loom-list-failed", d
+assert d.get("listing_stale_exec") == "__listing_stale__", d
+assert int(d.get("listing_stale_hits") or 0) == 1, d
+' "$tmp/stamp.json" \
+  || fail "loom-list-failed wiped listing_stale counter: $(cat "$tmp/stamp.json")"
+set +e
+fail_tick2_out="$(CANARY_RED_LOOM_LIST_FILE="$tmp/empty.json" "$BIN" --dry-run --json --quiet)"
+fail_tick2_rc=$?
+set -e
+[ "$fail_tick2_rc" -eq 0 ] || fail "post-failed empty tick dry-run must exit 0, got $fail_tick2_rc: $fail_tick2_out"
+printf '%s\n' "$fail_tick2_out" | grep -q 'ROUTINE_RESULT outcome=error detail=listing_stale_expired' \
+  || fail "post-failed empty tick must page listing_stale_expired: $fail_tick2_out"
+
 # stand-in scripts (no live agent)
 cat >"$tmp/get.json" <<'JSON'
 {"id":"exec_test","status":"failed","state":"FAILED","inputJson":"{\"main_oid\":\"abc\"}","contextJson":"{\"source_git_oid\":\"abc\",\"version\":\"0.1\"}"}

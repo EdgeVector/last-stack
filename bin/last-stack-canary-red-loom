@@ -110,17 +110,30 @@ else:
 '
 }
 
+# Empty listing has no exec id. Count those ticks under this sentinel so
+# consecutive empty listings can expire. A real exec id must not inherit
+# the empty-listing hit count.
+LISTING_STALE_EMPTY_KEY="__listing_stale__"
+
 # listing_stale_apply <picked_id>
 # Always drops the resume key. Tracks consecutive listing_stale hits for the
-# same exec in the stamp (not as exec_id/key). Sets LS_OC / LS_DETAIL / LS_EXIT
-# / LS_TRACK_EXEC / LS_HITS for the caller.
+# same exec in the stamp (not as exec_id/key). Empty picked uses
+# LISTING_STALE_EMPTY_KEY so the counter still persists. Sets LS_OC /
+# LS_DETAIL / LS_EXIT / LS_TRACK_EXEC / LS_HITS for the caller.
 listing_stale_apply() {
   local picked="${1:-}"
-  local prev_exec prev_hits prev_outcome hits max_hits
+  local track prev_exec prev_hits prev_outcome prev_detail hits max_hits
+  local already_paged
+  if [ -n "$picked" ]; then
+    track="$picked"
+  else
+    track="$LISTING_STALE_EMPTY_KEY"
+  fi
   prev_exec="$(stamp_field listing_stale_exec)"
   [ -n "$prev_exec" ] || prev_exec="$(stamp_field exec_id)"
   prev_hits="$(stamp_field listing_stale_hits)"
   prev_outcome="$(stamp_field outcome)"
+  prev_detail="$(stamp_field detail)"
   case "$prev_hits" in
     ''|*[!0-9]*) prev_hits=0 ;;
   esac
@@ -130,13 +143,19 @@ listing_stale_apply() {
   esac
   [ "$max_hits" -ge 1 ] || max_hits=2
   hits=1
-  if [ -n "$picked" ] && [ "$picked" = "$prev_exec" ]; then
+  if [ "$track" = "$prev_exec" ]; then
     hits=$((prev_hits + 1))
   fi
-  LS_TRACK_EXEC="$picked"
+  LS_TRACK_EXEC="$track"
   LS_HITS="$hits"
   # Resume key stays empty on every listing_stale tick.
-  if [ "$hits" -ge "$max_hits" ] && [ "$prev_outcome" != "error" ]; then
+  already_paged=0
+  if [ "$prev_outcome" = "error" ] && [ "$prev_exec" = "$track" ]; then
+    case "$prev_detail" in
+      listing_stale_expired*) already_paged=1 ;;
+    esac
+  fi
+  if [ "$hits" -ge "$max_hits" ] && [ "$already_paged" -eq 0 ]; then
     LS_OC="error"
     LS_DETAIL="listing_stale_expired hits=${hits} dropped=${picked:-none}"
     LS_EXIT=3
@@ -201,7 +220,7 @@ esac
 list_executions() {
   if [ -n "${CANARY_RED_LOOM_LIST_FILE:-}" ]; then
     cat "$CANARY_RED_LOOM_LIST_FILE"
-    return 0
+    return
   fi
   # Probe wider than the verdict window: an execution can start before the
   # lookback and fail inside it. The age test still runs on updated_at.
@@ -447,7 +466,10 @@ trap 'rm -f "$rows_file" "$heal_rows_file"' EXIT
 
 if ! list_executions >"$rows_file" 2>/dev/null; then
   log "$CANARY_LANE_ORCHESTRATOR execution listing failed"
-  write_stamp unavailable "" "loom-list-failed" "${KEY:-}" "error"
+  ls_exec="$(stamp_field listing_stale_exec)"
+  ls_hits="$(stamp_field listing_stale_hits)"
+  write_stamp unavailable "" "loom-list-failed" "${KEY:-}" "error" \
+    "$ls_exec" "$ls_hits"
   printf '%s %s\n' 'ROUTINE_RESULT' "outcome=error detail=loom-list-failed"
   exit 3
 fi
@@ -472,7 +494,10 @@ fi
 
 if [ -z "$picked" ]; then
   log "$CANARY_LANE_ORCHESTRATOR execution listing unreadable"
-  write_stamp unavailable "" "loom-list-unreadable" "${KEY:-}" "error"
+  ls_exec="$(stamp_field listing_stale_exec)"
+  ls_hits="$(stamp_field listing_stale_hits)"
+  write_stamp unavailable "" "loom-list-unreadable" "${KEY:-}" "error" \
+    "$ls_exec" "$ls_hits"
   printf '%s %s\n' 'ROUTINE_RESULT' "outcome=error detail=loom-list-unreadable"
   exit 3
 fi
@@ -490,7 +515,10 @@ if [ "$picked_ok" != "1" ]; then
   # No usable row inside the window. Fail loudly: a blind healer must not
   # report a red lane as quiet.
   log "listing has no ${CANARY_LANE_DEFINITION} execution in the window (${picked_reason:-unknown})"
-  write_stamp unavailable "${picked_id:-}" "reason=${picked_reason:-unknown}" "${KEY:-}" "error"
+  ls_exec="$(stamp_field listing_stale_exec)"
+  ls_hits="$(stamp_field listing_stale_hits)"
+  write_stamp unavailable "${picked_id:-}" "reason=${picked_reason:-unknown}" "${KEY:-}" "error" \
+    "$ls_exec" "$ls_hits"
   if [ "$JSON" -eq 1 ]; then
     printf '%s\n' "$picked"
   else
