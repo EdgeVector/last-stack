@@ -657,6 +657,11 @@ ci_test tests/last-stack-lastdb-memory-guard-log-contract.sh
 # byte assertions are covered without a real node.
 ci_test tests/last-stack-north-star-proof-delete-returns-bytes-live.sh
 
+# Aliased ~/.kanban -> ~/.fkanban worktree pool: unique-by-realpath so a
+# keep-protected tree is not rm-orphan on the second listing of the same inode.
+# APPENDED: ci_test shards by list position.
+ci_test tests/last-stack-worktree-reclaim-aliased-pool.sh
+
 # The registration guard itself. Kept last, and asserted to be registered by
 # tests/last-stack-ci-sharding.sh, so the guard cannot quietly stop running.
 ci_test tests/last-stack-board-closeout-active-source.sh
