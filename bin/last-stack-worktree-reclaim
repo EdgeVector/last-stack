@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Reclaim agent worktrees under ~/.fkanban/worktrees (and legacy ~/.kanban).
+# Default roots are unique-by-realpath: ~/.kanban often symlinks to
+# ~/.fkanban, and walking both listed the same inode twice.
 #
 # Tom 2026-07-30: card closeout and disk-reclaim must not leave multi-GB
 # abandoned checkouts. This helper is the single reclaim path.
@@ -147,6 +149,55 @@ if [ -z "$slug" ] && [ -z "$path_arg" ] && [ "$sweep_stale" -eq 0 ]; then
 fi
 
 log() { printf 'last-stack-worktree-reclaim: %s\n' "$*"; }
+
+# unique-worktree-roots-start
+# Collapse ~/.kanban/worktrees onto ~/.fkanban/worktrees when they are the
+# same directory (symlink or bind). Walking both lists the same inode twice
+# and the second pass can reclaim a tree the first pass just protected
+# (papercut-worktree-reclaim-aliased-pool-drops-protect). WORKTREES_DIR stays
+# a single root; this only collapses the default pair.
+_unique_worktree_roots() {
+  local root resolved already s
+  local out_list=""
+  local seen_list=""
+  for root in "${worktree_roots[@]}"; do
+    [ -n "$root" ] || continue
+    if [ -d "$root" ]; then
+      resolved="$(cd "$root" && pwd -P 2>/dev/null || printf '%s' "$root")"
+    else
+      resolved="$root"
+    fi
+    already=0
+    while IFS= read -r s; do
+      [ -z "$s" ] && continue
+      if [ "$s" = "$resolved" ]; then
+        already=1
+        break
+      fi
+    done <<EOF
+${seen_list}
+EOF
+    if [ "$already" -eq 1 ]; then
+      log "skip aliased worktree root $root resolved=$resolved"
+      continue
+    fi
+    seen_list="${seen_list}${resolved}"$'\n'
+    if [ -z "$out_list" ]; then
+      out_list="$root"
+    else
+      out_list="${out_list}"$'\n'"$root"
+    fi
+  done
+  worktree_roots=()
+  while IFS= read -r root; do
+    [ -z "$root" ] && continue
+    worktree_roots+=("$root")
+  done <<EOF
+${out_list}
+EOF
+}
+_unique_worktree_roots
+# unique-worktree-roots-end
 
 # Free space on the data volume hosting $HOME (GiB). macOS df -g; Linux df -BG.
 free_gib_home() {
