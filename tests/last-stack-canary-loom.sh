@@ -7,7 +7,7 @@ bash -n "$BIN"
 bash -n "$ROOT/lib/canary-loom/loom-canary-step.sh"
 bash -n "$ROOT/lib/canary-loom/loom-run-deadline.sh"
 [ -f "$ROOT/lib/canary-loom/lastdb-canary-release.json" ] || fail "graph missing"
-[ "$(jq -r .version "$ROOT/lib/canary-loom/lastdb-canary-release.json")" = "8" ] \
+[ "$(jq -r .version "$ROOT/lib/canary-loom/lastdb-canary-release.json")" = "9" ] \
   || fail "canary graph version did not advance"
 jq -e '
   .states.CALL_A.epoch_from == "candidate_artifact_digest"

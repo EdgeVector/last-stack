@@ -1,6 +1,6 @@
 {
   "name": "lastdb-canary-release",
-  "version": "8",
+  "version": "9",
   "start_at": "DECIDE_ENTRY",
   "max_depth": 2,
   "node_budget": 80,
