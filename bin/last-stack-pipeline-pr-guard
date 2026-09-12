@@ -75,7 +75,7 @@ class Guard:
         # An owner must release the card explicitly. Age/another checkout is not a release.
         if card["assignee"].strip():
             raise Denied("owned-pr")
-        if card["column"] not in {"doing", "review"} or card.get("blocked") is not False:
+        if card["column"] != "doing" or card.get("blocked") is not False:
             raise Denied("card-not-active")
 
     def statuses(self):
@@ -112,6 +112,8 @@ class Guard:
                     if not isinstance(row, dict) or type(row.get("id")) is not int:
                         raise Denied("unreadable-tasks")
                     if row.get("status") != state or not isinstance(row.get("head_sha"), str):
+                        raise Denied("unreadable-tasks")
+                    if not re.fullmatch(r"[0-9a-f]{40}", row["head_sha"]):
                         raise Denied("unreadable-tasks")
                     if row["id"] in seen:
                         raise Denied("incomplete-tasks")

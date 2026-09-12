@@ -59,7 +59,7 @@ class GuardTest(unittest.TestCase):
                    "head": {"sha": SHA, "ref": BRANCH}},
             "card": {"slug": "test-pr", "repo": "EdgeVector/fold", "branch": BRANCH,
                      "kind": "pr", "pr_url": "http://forge.test/EdgeVector/fold/pulls/7",
-                     "assignee": "", "column": "review", "blocked": False},
+                     "assignee": "", "column": "doing", "blocked": False},
             "status": {"state": "failure", "total_count": 1,
                        "statuses": [{"status": "failure", "context": "ci-required"}]},
             "tasks": [{"id": 1, "head_sha": SHA, "status": "failure"}],
@@ -127,6 +127,10 @@ class GuardTest(unittest.TestCase):
     def test_truncated_tasks_never_mutate(self):
         self.data["task_response"] = {"workflow_runs": [], "total_count": 1}
         self.run_guard("incomplete-tasks")
+
+    def test_task_without_head_never_mutates(self):
+        self.data["tasks"].append({"id": 2, "head_sha": "", "status": "running"})
+        self.run_guard("unreadable-tasks")
 
     def test_unbound_card_never_mutates(self):
         self.data["card"]["pr_url"] = "http://forge.test/EdgeVector/fold/pulls/8"
