@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""Fail closed before a pipeline-health PR mutation; never cache an allow result."""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import time
+from urllib.parse import urlparse
+
+ACTIVE = ("unknown", "waiting", "blocked", "running")
+TERMINAL = {"success", "failure", "error", "cancelled", "skipped"}
+PAGE_SIZE = 100
+MAX_PAGES = 5
+BUDGET_SECONDS = 60
+
+
+class Denied(Exception):
+    pass
+
+
+class Guard:
+    def __init__(self, args):
+        self.args = args
+        self.deadline = time.monotonic() + BUDGET_SECONDS
+        self.api = str(Path(__file__).resolve().with_name("last-stack-forge-api"))
+        self.prefix = f"repos/{args.repo}"
+
+    def read(self, command):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise Denied("read-budget")
+        try:
+            result = subprocess.run(command, capture_output=True, timeout=min(10, remaining), check=True)
+            return json.loads(result.stdout)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            # Do not echo API bodies, stderr, board content, or credentials.
+            raise Denied("unreadable-evidence") from None
+
+    def pr(self):
+        pr = self.read([self.api, f"{self.prefix}/pulls/{self.args.pr}"])
+        if not isinstance(pr, dict) or pr.get("number") != self.args.pr:
+            raise Denied("invalid-pr")
+        if pr.get("state") != "open" or pr.get("merged") is not False or pr.get("draft") is not False:
+            raise Denied("pr-not-open-ready")
+        head = pr.get("head")
+        if not isinstance(head, dict) or head.get("sha") != self.args.expected_head:
+            raise Denied("head-changed")
+        if not isinstance(head.get("ref"), str) or not head["ref"].startswith("kanban/"):
+            raise Denied("unbound-card")
+        return head["ref"]
+
+    def owner(self, branch):
+        slug = branch.removeprefix("kanban/")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", slug):
+            raise Denied("unbound-card")
+        card = self.read(["kanban", "show", slug, "--json"])
+        if not isinstance(card, dict) or card.get("slug") != slug or card.get("repo") != self.args.repo:
+            raise Denied("unbound-card")
+        if card.get("branch") != branch or card.get("kind") != "pr":
+            raise Denied("unbound-card")
+        link = card.get("pr_url")
+        if not isinstance(link, str):
+            raise Denied("unbound-card")
+        try:
+            path = urlparse(link).path.rstrip("/")
+        except ValueError:
+            raise Denied("unbound-card") from None
+        if path != f"/{self.args.repo}/pulls/{self.args.pr}":
+            raise Denied("unbound-card")
+        if not isinstance(card.get("assignee"), str) or not isinstance(card.get("column"), str):
+            raise Denied("unreadable-owner")
+        # An owner must release the card explicitly. Age/another checkout is not a release.
+        if card["assignee"].strip():
+            raise Denied("owned-pr")
+        if card["column"] not in {"doing", "review"} or card.get("blocked") is not False:
+            raise Denied("card-not-active")
+
+    def statuses(self):
+        data = self.read([self.api, f"{self.prefix}/commits/{self.args.expected_head}/status"])
+        if not isinstance(data, dict) or not isinstance(data.get("statuses"), list):
+            raise Denied("unreadable-status")
+        rows = data["statuses"]
+        if type(data.get("total_count")) is not int or data["total_count"] != len(rows):
+            raise Denied("incomplete-status")
+        if data.get("state") not in TERMINAL and not (data.get("state") == "" and not rows):
+            raise Denied("active-or-unknown-status")
+        for row in rows:
+            if not isinstance(row, dict) or row.get("status") not in TERMINAL:
+                raise Denied("active-or-unknown-status")
+
+    def tasks(self):
+        # Forgejo's finite nonterminal status set. Filtering avoids walking task history.
+        # Every response must honor its filter and complete within the page/read budgets.
+        for state in ACTIVE:
+            seen = set()
+            total = None
+            for page in range(1, MAX_PAGES + 1):
+                data = self.read([self.api, f"{self.prefix}/actions/tasks?status={state}&page={page}&limit={PAGE_SIZE}"])
+                if not isinstance(data, dict) or not isinstance(data.get("workflow_runs"), list):
+                    raise Denied("unreadable-tasks")
+                rows = data["workflow_runs"]
+                count = data.get("total_count")
+                if type(count) is not int or count < 0 or len(rows) > PAGE_SIZE:
+                    raise Denied("unreadable-tasks")
+                if total is not None and total != count:
+                    raise Denied("tasks-changed")
+                total = count
+                for row in rows:
+                    if not isinstance(row, dict) or type(row.get("id")) is not int:
+                        raise Denied("unreadable-tasks")
+                    if row.get("status") != state or not isinstance(row.get("head_sha"), str):
+                        raise Denied("unreadable-tasks")
+                    if row["id"] in seen:
+                        raise Denied("incomplete-tasks")
+                    seen.add(row["id"])
+                    if row["head_sha"] == self.args.expected_head:
+                        raise Denied("active-head-task")
+                if len(seen) == total:
+                    break
+                if not rows or len(seen) > total:
+                    raise Denied("incomplete-tasks")
+            else:
+                raise Denied("task-page-budget")
+
+    def check(self):
+        branch = self.pr()
+        self.owner(branch)
+        self.statuses()
+        self.tasks()
+        # A same-head owner retry does not change a Git lease. Re-read the owner and
+        # statuses after task reads, then the head, immediately before the command.
+        self.owner(branch)
+        self.statuses()
+        if self.pr() != branch:
+            raise Denied("branch-changed")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--repo", required=True)
+    parser.add_argument("--pr", required=True, type=int)
+    parser.add_argument("--expected-head", required=True)
+    parser.add_argument("command", nargs=argparse.REMAINDER, help="-- COMMAND [ARG ...]; omit for a read-only probe")
+    args = parser.parse_args()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repo) or args.pr <= 0:
+        parser.error("invalid repo or PR")
+    if not re.fullmatch(r"[0-9a-f]{40}", args.expected_head):
+        parser.error("expected-head must be a full commit SHA")
+    command = args.command
+    if command[:1] == ["--"]:
+        command = command[1:]
+    try:
+        Guard(args).check()
+    except Denied as error:
+        print(json.dumps({"version": 1, "verdict": "deny", "reason": str(error)}))
+        return 3
+    print(json.dumps({"version": 1, "verdict": "allow", "head": args.expected_head}), flush=True)
+    if command:
+        os.execvp(command[0], command)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

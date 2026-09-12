@@ -319,6 +319,7 @@ ci_test tests/last-stack-portal-wt-start-help.sh
 ci_test tests/last-stack-pickup-zsh-timeout.sh
 ci_test tests/last-stack-portal-live-checkout.sh
 ci_test tests/last-stack-pipeline-health-gate.sh
+ci_test tests/last-stack-pipeline-pr-guard.sh
 ci_test tests/last-stack-canary-soak-watch-gate.sh
 ci_test tests/last-stack-pipeline-deploy-scan.sh
 ci_test tests/last-stack-whats-wrong-loom.sh
