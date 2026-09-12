@@ -33,7 +33,42 @@ First line is `PASS`, `PASS-OFFLINE`, or `FAIL` for kanban DONE-WHEN matching.
 | lastdb-io-free-commit-and-barrierless-purge | validates the Fold-generated isolated-copy evidence, warm apply-gate p99, reverse-index audit, and zero purge barriers | requires the same evidence to carry a PASS verdict after safe live cutover |
 | lastdb-uuid-hash-group-addressing | validates Fold source contracts and the immutable 11M-document CoW migration proof | runs focused new-home, legacy-read, warm-set, group-backup, and as-is restore tests; preserves the later Tom-authorized primary sync configuration |
 | lastdb-no-scan-access | refuses terminal PASS without the keyed scan-deprecation tracker and its completion proof | reads the tracker by slug; never scans, restarts, or mutates LastDB |
-| lastdb-cloud-owned-gc | invokes Fold's `scripts/prove-cloud-owned-gc --require-full-release-proof` and re-reads its nonce-bound, source-bound evidence; FAIL with a named missing-proof reason until P9 lands | same command in live mode; the verifier owns the real-data copy and cloud proof, the harness never opens a home, socket, or account |
+| lastdb-cloud-owned-gc | FAIL; no child execution in offline or unknown mode | explicit clean Fold source and exact commit pin; verified child invocation still returns FAIL until P9 supplies the reviewed release-evidence validator |
+
+## Cloud-owned GC: registration is not release proof
+
+This harness has no full-release PASS or PASS-OFFLINE path.
+The future P9 validator must verify the actual release evidence before this rule changes.
+A source pin permits an invocation. It does not certify a release or authorize cloud or primary operations.
+
+The live invocation requires:
+
+- `CLOUD_OWNED_GC_FOLD_SOURCE`, or the supported `FOLD_REPO` override, names an explicit source root.
+- `CLOUD_OWNED_GC_FOLD_SOURCE_OID` is the exact 40-character commit at that root's HEAD.
+- The source is a clean Git checkout or DEV worktree. Portal paths, unbound archives, mismatched pins, and dirty sources fail.
+- Index flags must not hide changes. Assume-unchanged and skip-worktree entries, including sparse sources, fail inspection.
+- The tracked executable `scripts/prove-cloud-owned-gc` matches its pinned Git blob without content filters. Symlink verifiers fail.
+- The caller keeps this private source immutable through the invocation. This harness is not a sandbox for untrusted code.
+
+The child runs from that source root with exactly `--require-full-release-proof`.
+Offline and unknown modes never resolve the source or execute a child.
+No implicit archive of current main is used. An installed archive needs a future verified source resolver before admission.
+
+The harness discards child stdout and stderr directly. It creates no raw child log.
+It ignores the old evidence-file input and nonce. The child's legacy evidence-file destination is `/dev/null`.
+A nonzero child exit stays nonzero and yields `VERIFIER_NONZERO_EXIT`; the generic runner aggregates failures as exit one.
+A zero child exit yields `FULL_RELEASE_EVIDENCE_CONTRACT_UNIMPLEMENTED`, also with a nonzero harness exit.
+Markdown, JSON, PASS text, and self-declared private or full-release checklists never establish release truth.
+
+The report contains fixed reason codes, verified source identifiers, and the numeric child exit, not child claims or payloads.
+It replaces prior PASS before helper load, source checks, or child execution. It remains FAIL through unexpected exits.
+If the report cannot be written, the harness refuses child execution. No software can overwrite a report on an unwritable filesystem.
+The harness does not claim a completed proof after an uncatchable process or host failure.
+
+P9 still owns the reviewed evidence validator and its exact release, service, binary, scope, epoch, and receipt bindings.
+It also owns physical absence, retained controls, crash recovery, concurrent publication, device disconnect, fresh restore, and byte reconciliation.
+Private DEV evidence does not satisfy the full release proof. Production activation still requires its separate approval.
+Fixture success verifies these refusal rules only; it is never a P9 success claim.
 
 ## Org cloud principal membership
 
