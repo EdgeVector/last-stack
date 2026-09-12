@@ -202,24 +202,43 @@ if NORTH_STAR_PROOF_DIR="$WORK/reports" NORTH_STAR_PROOF_MODE=unknown \
 fi
 grep -qx FAIL "$WORK/reports/$SLUG.md" || fail 'runner lost failed report'
 
-# The new test belongs at the append-only tail, just before the final guard.
-# This rejects the mid-list registration from PR73 without a historical Git
-# dependency (release archives and shallow CI checkouts need the same test).
+# Anchor this entry to the former tail, not to a position that must move when
+# later tests append. The final registration guard still remains last. This
+# needs no historical Git objects in release archives or shallow CI checkouts.
 check_ci_tail() {
   local entries entry='ci_test tests/last-stack-north-star-proof-cloud-owned-gc.sh'
+  local predecessor='ci_test tests/last-stack-board-closeout-active-source.sh'
+  local guard='ci_test tests/last-stack-ci-test-registration.sh'
   entries="$(sed -n '/^ci_test /p' "$1")"
-  [ "$(printf '%s\n' "$entries" | grep -Fxc "$entry")" -eq 1 ] || return 1
-  [ "$(printf '%s\n' "$entries" | tail -n 2)" = "$entry
-ci_test tests/last-stack-ci-test-registration.sh" ]
+  printf '%s\n' "$entries" | awk -v entry="$entry" -v predecessor="$predecessor" -v guard="$guard" '
+    $0 == entry { count++; if (previous != predecessor) bad = 1 }
+    $0 == guard { guards++ }
+    { previous = $0 }
+    END { exit !(count == 1 && !bad && guards == 1 && previous == guard) }
+  '
 }
 check_ci_tail "$ROOT/.lastgit/ci.sh" || fail 'CI registration moved existing shard positions'
-printf '%s\n' 'ci_test tests/old-a.sh' 'ci_test tests/old-b.sh' \
-  'ci_test tests/last-stack-north-star-proof-cloud-owned-gc.sh' \
-  'ci_test tests/last-stack-ci-test-registration.sh' >"$WORK/ci-tail.sh"
+ci_gc_entry='ci_test tests/last-stack-north-star-proof-cloud-owned-gc.sh'
+ci_old_tail='ci_test tests/last-stack-board-closeout-active-source.sh'
+ci_guard='ci_test tests/last-stack-ci-test-registration.sh'
+printf '%s\n' 'ci_test tests/old-a.sh' "$ci_old_tail" "$ci_gc_entry" "$ci_guard" >"$WORK/ci-tail.sh"
 check_ci_tail "$WORK/ci-tail.sh" || fail 'valid append-only fixture failed'
-printf '%s\n' 'ci_test tests/old-a.sh' \
-  'ci_test tests/last-stack-north-star-proof-cloud-owned-gc.sh' 'ci_test tests/old-b.sh' \
-  'ci_test tests/last-stack-ci-test-registration.sh' >"$WORK/ci-middle.sh"
+printf '%s\n' 'ci_test tests/old-a.sh' "$ci_old_tail" "$ci_gc_entry" \
+  'ci_test tests/later-valid-append.sh' 'ci_test tests/another-later-append.sh' \
+  "$ci_guard" >"$WORK/ci-later-append.sh"
+check_ci_tail "$WORK/ci-later-append.sh" || fail 'later valid append-only fixture failed'
+printf '%s\n' 'ci_test tests/old-a.sh' "$ci_gc_entry" "$ci_old_tail" "$ci_guard" >"$WORK/ci-middle.sh"
 if check_ci_tail "$WORK/ci-middle.sh"; then fail 'mid-list CI fixture was accepted'; fi
+printf '%s\n' 'ci_test tests/old-a.sh' "$ci_old_tail" "$ci_gc_entry" \
+  "$ci_gc_entry" "$ci_guard" >"$WORK/ci-duplicate.sh"
+if check_ci_tail "$WORK/ci-duplicate.sh"; then fail 'duplicate CI entry was accepted'; fi
+printf '%s\n' 'ci_test tests/old-a.sh' "$ci_old_tail" 'ci_test tests/wrong-predecessor.sh' \
+  "$ci_gc_entry" "$ci_guard" >"$WORK/ci-predecessor.sh"
+if check_ci_tail "$WORK/ci-predecessor.sh"; then fail 'wrong CI predecessor was accepted'; fi
+printf '%s\n' 'ci_test tests/old-a.sh' "$ci_old_tail" "$ci_gc_entry" \
+  "$ci_guard" 'ci_test tests/after-guard.sh' >"$WORK/ci-guard.sh"
+if check_ci_tail "$WORK/ci-guard.sh"; then fail 'non-final CI guard was accepted'; fi
+printf '%s\n' 'ci_test tests/old-a.sh' "$ci_old_tail" "$ci_guard" >"$WORK/ci-missing.sh"
+if check_ci_tail "$WORK/ci-missing.sh"; then fail 'missing CI entry was accepted'; fi
 
-printf 'PASS cloud-owned-gc rejection fixtures: %s cases; no full-release PASS path\n' "$cases"
+printf 'PASS cloud-owned-gc rejection fixtures: %s cases; 7 CI-order fixtures; no full-release PASS path\n' "$cases"
