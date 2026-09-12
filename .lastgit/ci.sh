@@ -269,7 +269,6 @@ ci_test tests/last-stack-north-star-proof-registry.sh
 ci_test tests/last-stack-north-star-proof-canary-pipeline-v2.sh
 ci_test tests/last-stack-north-star-proof-uuid-hash-group.sh
 ci_test tests/last-stack-north-star-proof-io-free.sh
-ci_test tests/last-stack-north-star-proof-cloud-owned-gc.sh
 ci_test tests/last-stack-north-star-proof-delete-returns-bytes.sh
 ci_test tests/last-stack-north-star-proof-ideal-storage-shape.sh
 ci_test tests/last-stack-north-star-proof-exemem-cloud-account.sh
@@ -667,4 +666,5 @@ ci_test tests/last-stack-worktree-reclaim-aliased-pool.sh
 # The registration guard itself. Kept last, and asserted to be registered by
 # tests/last-stack-ci-sharding.sh, so the guard cannot quietly stop running.
 ci_test tests/last-stack-board-closeout-active-source.sh
+ci_test tests/last-stack-north-star-proof-cloud-owned-gc.sh
 ci_test tests/last-stack-ci-test-registration.sh
