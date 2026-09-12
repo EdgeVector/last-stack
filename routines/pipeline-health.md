@@ -118,6 +118,10 @@ read/write, fail loudly if the resolved path is empty or starts with
 - **NEVER touch a LIVE worktree** on the head branch (dirty tree, commit or
   non-cache file touched in the last ~2h, or a process cwd'd there). PARKED
   worktrees (clean + idle + no process) are fair game to adopt.
+- **Protect the PR branch, not only its checkout.** A separate worktree does
+  not release another agent's ownership. Before a Forgejo branch change,
+  CI retry, or PR supersede, use the guarded command below. Never create an
+  empty commit to retry CI. Never replace a failed task read with empty data.
 - **NEVER file `deploy-pipeline-red-*` (or similar) kanban cards.** Brain
   papercuts only for escalation. Legacy board cards already open may be left for
   `kanban-watch` / closeout; do not mint new ones.
@@ -383,8 +387,10 @@ Brain record.
    memory/heartbeat that auto_merge is off.
 3. **Red CI** → ALWAYS read `log_excerpt` / CI logs. Branch:
    - **Infra flake** (timeout, lost runner, cancelled with tests passing) →
-     push an empty commit from a worktree to re-trigger the watcher, or re-push
-     the head ref; do not "fix" product code.
+     record the exact failure and current head. The active owner controls any
+     retry. For an unowned Forgejo PR, use the guard below for one diagnosed
+     same-head retry. For LastGit, record the failure for its owner; do not
+     mint a new head or re-push a ref to retry CI.
    - **Mechanical** (fmt, lint, typecheck, snapshot) → fix in a fresh worktree
      off the head branch, verify locally with the repo's `.lastgit/ci.sh` or the
      narrowest command, push with lease, leave auto_merge on.
@@ -422,6 +428,29 @@ For each non-draft open PR, load checks / status via the forge API (see
 `sop-forge-pr-workflow`). Apply the same >10 minute stuck rule.
 
 ### Forgejo actions
+Before a branch change, CI retry, or PR supersede, resolve its exact
+`kanban/<card-slug>` branch and use this command wrapper:
+
+```bash
+"$last_stack/bin/last-stack-pipeline-pr-guard" \
+  --repo <owner/repo> --pr <n> --expected-head <full-sha> -- \
+  <authorized-command> <arguments...>
+```
+
+The guard point-reads the card and the fresh PR. It refuses assigned cards,
+unbound cards, a changed head, active exact-head tasks, and unreadable data.
+It reads all four Forgejo nonterminal task filters within fixed page and time
+limits. It rechecks the owner, statuses, and head before the command executes.
+The wrapper does not authorize an action: use only the permitted action below.
+Keep lease protection on branch pushes. API reads and command execution are
+not one atomic operation; retain the owner handoff and the lease check.
+Pass only the final bounded operation, after preparation. The operation must
+retain its own checks between writes. Do not reuse a prior allow result.
+A missing command is a read-only probe, not permission for a later write.
+On refusal, record the reason in the existing papercut and leave the PR to its
+owner or its current CI run. Do not clear an assignee to make the guard pass.
+Read-only diagnosis and auto-merge re-arm retain their existing rules.
+
 1. **Mergeable + required `Forge CI / ci-required` green + auto-merge off/null** →
    re-arm:
    ```bash
@@ -432,20 +461,23 @@ For each non-draft open PR, load checks / status via the forge API (see
 2. **BEHIND / conflict** → worktree rebase onto base, push with lease, re-arm.
 3. **Red required CI** → same flake / mechanical / real split as LastGit; use
    `"$last_stack/bin/last-stack-forge-ci-log"` when available for logs.
-4. **405 merge / stuck status-check** while green → empty-commit push from
-   worktree (known Forgejo papercut; see brain
-   `papercut-forge-merge-405-stuck-status-check`).
+4. **405 merge / stuck status-check** while green → re-read the PR and every
+   current check. A live check or an already merged PR needs no retry. Record
+   a persistent failure in `papercut-forge-merge-405-stuck-status-check`.
+   Historical empty-commit advice in that record does not authorize a new head.
 5. **Dead CI trigger after branch recreate** — `commits/<sha>/status` is the
    empty envelope (`state:""`, `total_count:0`) **and** `actions/tasks` has
    zero runs for that head, even though the runner is alive on other heads.
-   This is **not** a stuck status task: empty-commit heal does nothing.
+   This is **not** a stuck status task. Do not retry it with a new empty commit.
    Detect + supersede with:
    ```bash
    "$last_stack/bin/last-stack-forge-dead-trigger" probe \
      --repo <owner/repo> --pr <n> --min-age-secs 120 --json
    # verdict=dead-trigger →
-   "$last_stack/bin/last-stack-forge-dead-trigger" supersede \
-     --repo <owner/repo> --pr <n> --checkout <worktree>
+   "$last_stack/bin/last-stack-pipeline-pr-guard" \
+     --repo <owner/repo> --pr <n> --expected-head <full-sha> -- \
+     "$last_stack/bin/last-stack-forge-dead-trigger" supersede \
+       --repo <owner/repo> --pr <n> --checkout <worktree>
    ```
    Supersede pushes the same commits to a fresh branch, opens a new PR, closes
    the dead one, and arms auto-merge on the fresh PR. Source papercut:
