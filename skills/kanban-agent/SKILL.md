@@ -346,6 +346,19 @@ to `review`, append a one-line note explaining what's missing, and exit.
    the shared checkout clean. For multi-file leftovers, use
    `last-stack-repark-shared-checkouts` so salvage commits carry attribution
    instead of silently abandoning root-checkout dirt.
+2a. **Bootstrap the isolated worktree.** Read the repository contributor files
+    before a test or a build. Use the repository bootstrap command when one
+    exists. For JavaScript or TypeScript, do not assume a fresh worktree has
+    `node_modules`.
+
+    - If `node_modules` is absent, install from the committed lockfile before
+      VERIFY.
+    - Keep lockfile validation active. For Bun, use
+      `bun install --frozen-lockfile` with `bun.lock` or `bun.lockb`.
+    - For other package managers, use the repository's documented immutable
+      or frozen install command.
+    - Do not accept a lockfile rewrite from this bootstrap. Stop and inspect a
+      tracked lockfile change.
 3. **Do the work** described in the brief. Match the repo's contributor docs and
    existing style. Honor OUT OF SCOPE — keep the PR atomic.
 
