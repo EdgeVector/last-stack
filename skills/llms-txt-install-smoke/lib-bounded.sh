@@ -198,3 +198,39 @@ preserve_failure_log() {
   [ -f "$source_log" ] || return 1
   cp "$source_log" "$destination_log"
 }
+
+# resolver_outcome_summary <lastdbd.err>
+# Tally the isolated daemon's per-schema Schema Service resolver outcomes so
+# a RED run names the service, not the app. The node logs one WARN line per
+# schema whose live resolve did not answer ("schema resolver unavailable;
+# registering through Schema Service ..."), and every such schema then goes
+# through a quota-counted register. Prints
+# `unavailable=<n> schemas=<name,name,...>`; a missing or empty log prints
+# `unavailable=0 schemas=`.
+resolver_outcome_summary() {
+  local err_log="$1"
+  local names="" count=0 line schema
+  if [ -f "$err_log" ]; then
+    # Strip ANSI first: under a PTY the fmt layer styles `schema=` as
+    # ESC[3mschema ESC[0m ESC[2m= ESC[0m and the field parse would miss.
+    while IFS= read -r line; do
+      case "$line" in
+        *"schema resolver unavailable"*) ;;
+        *) continue ;;
+      esac
+      count=$((count + 1))
+      # tracing renders the field as `schema=<local_schema_id>`; keep only
+      # the token so the summary stays greppable.
+      schema="${line#*schema=}"
+      [ "$schema" = "$line" ] && schema="?"
+      schema="${schema%% *}"
+      schema="${schema%%,*}"
+      if [ -z "$names" ]; then
+        names="$schema"
+      else
+        names="$names,$schema"
+      fi
+    done < <(sed -e $'s/\x1b\\[[0-9;]*m//g' "$err_log")
+  fi
+  printf 'unavailable=%s schemas=%s' "$count" "$names"
+}
