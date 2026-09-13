@@ -284,6 +284,8 @@ HS_START='<!-- last-stack:no-home-root-scan:start (managed by last-stack setup; 
 HS_END='<!-- last-stack:no-home-root-scan:end -->'
 BA_START='<!-- last-stack:bin-authoring:start (managed by last-stack setup; edits inside are overwritten) -->'
 BA_END='<!-- last-stack:bin-authoring:end -->'
+JC_START='<!-- last-stack:safe-json-capture:start (managed by last-stack setup; edits inside are overwritten) -->'
+JC_END='<!-- last-stack:safe-json-capture:end -->'
 
 strip_managed_md_block() {
   # $1 file  $2 start  $3 end
@@ -330,11 +332,13 @@ upsert_harness_instruction_blocks() {
   strip_managed_md_block "$file" "$STE_START" "$STE_END"
   strip_managed_md_block "$file" "$HS_START" "$HS_END"
   strip_managed_md_block "$file" "$BA_START" "$BA_END"
+  strip_managed_md_block "$file" "$JC_START" "$JC_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/brain-kanban.md" "$BK_START" "$BK_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/asd-ste100.md" "$STE_START" "$STE_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/no-home-root-scan.md" "$HS_START" "$HS_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/bin-authoring.md" "$BA_START" "$BA_END"
-  echo "  ${label} instructions: brain-kanban + asd-ste100 + no-home-root-scan + bin-authoring -> $file"
+  append_managed_md_block "$file" "$SOURCE_ROOT/instructions/safe-json-capture.md" "$JC_START" "$JC_END"
+  echo "  ${label} instructions: brain-kanban + asd-ste100 + no-home-root-scan + bin-authoring + safe-json-capture -> $file"
 }
 
 ensure_codex_mcp_servers() {

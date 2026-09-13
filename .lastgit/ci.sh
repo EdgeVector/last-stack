@@ -663,6 +663,9 @@ ci_test tests/last-stack-north-star-proof-delete-returns-bytes-live.sh
 # APPENDED: ci_test shards by list position.
 ci_test tests/last-stack-worktree-reclaim-aliased-pool.sh
 
+# APPENDED: ci_test shards by list position.
+ci_test tests/last-stack-safe-json-capture-docs.sh
+
 # The registration guard itself. Kept last, and asserted to be registered by
 # tests/last-stack-ci-sharding.sh, so the guard cannot quietly stop running.
 ci_test tests/last-stack-board-closeout-active-source.sh

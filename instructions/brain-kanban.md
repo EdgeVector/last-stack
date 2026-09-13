@@ -106,6 +106,12 @@ shell-visible CLI and daemon binary agree. The helper never restarts/kills
 - `brain put` reads the record from **stdin** with YAML frontmatter
   (`type:`, `slug:`, `title:`, then body). Update in place by reusing the slug;
   search for an existing record before creating a new one.
+- Give the slug ONCE. `brain put closeout-x --type reference < f.md` with a
+  frontmatter `slug: closeout-x` is fine, but a positional `reference/closeout-x`
+  next to `slug: closeout-x` exits 2 (`positional slug ... conflicts with
+  frontmatter`). The `brain` CLI does not strip a `<type>/` prefix; that form
+  belongs to `gbrain put <type>/<slug>`. Put the slug in the frontmatter and
+  drop the positional, or pass the identical bare slug in both places.
 - `brain append <slug> --type <t>` — grow a big record's body (also stdin);
   never get→edit→put a large record (get windows at ~40K chars, a re-put
   truncates what you didn't see). Append has no `--body` and no `--body-path`.

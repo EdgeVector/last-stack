@@ -3,6 +3,8 @@
 # Window 2026-09-03/04 self-improvement-loop: situations notice --body (11
 # sessions), kanban rank --top (3), kanban move --block-status (8), brain
 # append --body/--body-path (18).
+# Window 2026-09-13: brain put positional `<type>/<slug>` beside a frontmatter
+# `slug:` (9 sessions, exit 2 `positional slug ... conflicts with frontmatter`).
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -40,5 +42,7 @@ require 'kanban rank <slug> --top' "$instructions"
 
 require 'Append has no `--body` and no `--body-path`' "$instructions"
 require 'stdin only — no `--body`' "$closeout"
+require 'conflicts with' "$instructions"
+require 'does not strip a `<type>/` prefix' "$instructions"
 
 echo "ok last-stack-cli-flag-gotchas-docs"
