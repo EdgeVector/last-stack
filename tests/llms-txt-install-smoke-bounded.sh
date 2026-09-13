@@ -508,4 +508,36 @@ if grep -qE '^lastdbd --data-dir' "$RUN"; then
   fail "run.sh still boots lastdbd through a bare PATH lookup"
 fi
 
+# --- resolver_outcome_summary: name the service on a RED run ---------------
+# The node logs one WARN per schema whose live resolve did not answer; the
+# smoke tallies them so a RED verdict points at the Schema Service.
+tmp_err="$(mktemp)"
+cat >"$tmp_err" <<'LOG'
+2026-09-13T21:02:11.100Z  INFO lastdb_node: schema manager ready
+2026-09-13T21:02:21.412Z  WARN lastdb_node::apps_declare_schema: schema resolver unavailable; registering through Schema Service with the locally loaded catalog predecessor schema=Agent error=resolve timed out after 10s
+2026-09-13T21:02:31.900Z  WARN lastdb_node::apps_declare_schema: schema resolver unavailable; registering through Schema Service with the locally loaded catalog predecessor schema=TagIndex error=resolve timed out after 10s
+2026-09-13T21:02:32.000Z  INFO lastdb_node: declare ok
+LOG
+summary="$(resolver_outcome_summary "$tmp_err")"
+[ "$summary" = "unavailable=2 schemas=Agent,TagIndex" ] \
+  || fail "resolver_outcome_summary must tally WARN lines per schema; got '$summary'"
+# The Forge host runner gives the daemon a PTY, so the fmt layer styles the
+# field name; the tally must read through ANSI.
+printf '%s\n' $'WARN lastdb_node::apps_declare_schema: schema resolver unavailable; registering \e[3mschema\e[0m\e[2m=\e[0mDesign \e[3merror\e[0m\e[2m=\e[0mtimed out' >"$tmp_err"
+summary="$(resolver_outcome_summary "$tmp_err")"
+[ "$summary" = "unavailable=1 schemas=Design" ] \
+  || fail "resolver_outcome_summary must strip ANSI before the field parse; got '$summary'"
+: >"$tmp_err"
+summary="$(resolver_outcome_summary "$tmp_err")"
+[ "$summary" = "unavailable=0 schemas=" ] \
+  || fail "resolver_outcome_summary on a quiet log must be zero; got '$summary'"
+summary="$(resolver_outcome_summary "$tmp_err.missing")"
+[ "$summary" = "unavailable=0 schemas=" ] \
+  || fail "resolver_outcome_summary on a missing log must be zero; got '$summary'"
+rm -f "$tmp_err"
+grep -qF 'RESOLVER_SUMMARY="$(resolver_outcome_summary "$FRESH_ROOT/lastdbd.err")"' "$RUN" \
+  || fail "run.sh must tally resolver outcomes from the isolated daemon log"
+grep -qF 'note_fail "resolver:unavailable $RESOLVER_SUMMARY' "$RUN" \
+  || fail "run.sh must name the Schema Service on a resolver-unavailable run"
+
 echo "OK llms-txt-install-smoke-bounded"
