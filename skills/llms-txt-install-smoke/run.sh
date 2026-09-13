@@ -30,7 +30,15 @@ done
 
 # Real user home for brew/lastdbd binaries only — never for data.
 REAL_HOME="${REAL_HOME:-$(eval echo "~$(id -un)")}"
-export PATH="/opt/homebrew/bin:/usr/local/bin:${REAL_HOME}/.bun/bin:${REAL_HOME}/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# `${REAL_HOME}/.local/bin` goes FIRST. That is the host-track tree, and
+# `~/.local/bin/lastdbd` symlinks through `~/.lastdb/current`, the daemon the
+# primary actually runs. With `/opt/homebrew/bin` ahead of it the smoke booted
+# `/opt/homebrew/bin/lastdbd`, which on this host is a 2026-08-01 canary copy
+# (a regular file, not brew's symlink), so a node fix merged 2026-09-07 (fold
+# PR 1993, key-layout declare guard) never ran here and `kanban init` stayed
+# RED for five days after the fix landed. Measured 2026-09-13 on fresh homes:
+# lastdbd 0.23.3-1908 → kanban init PASS; canary 0801 and brew 0.23.2 → FAIL.
+export PATH="${REAL_HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${REAL_HOME}/.bun/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 # Bounded-command helpers (run_bounded / fail_steps_summary). Sourced after PATH
 # so the timeout-binary probe sees the same PATH the smoke itself uses.
@@ -261,6 +269,13 @@ require_cmd brew
 require_cmd git
 require_cmd curl
 require_cmd lastdbd
+# Name the daemon the smoke boots. Two runs read as the same binary until the
+# log says which file and which build answered `lastdbd`.
+LASTDBD_BIN="$(command -v lastdbd || true)"
+if [ -n "$LASTDBD_BIN" ]; then
+  LASTDBD_VERSION="$("$LASTDBD_BIN" --version 2>/dev/null | grep -E '^lastdbd ' | head -n1 || true)"
+  live "lastdbd: $LASTDBD_BIN (${LASTDBD_VERSION:-version unknown})"
+fi
 
 # Bun: install into sandbox if missing; allow pre-existing system bun
 if ! command -v bun >/dev/null 2>&1; then
@@ -395,7 +410,7 @@ assert_brew_service_home
 # --- isolated daemon (NOT brew services) ---
 step "start isolated lastdbd"
 mkdir -p "$LASTDB_HOME"
-lastdbd --data-dir "$LASTDB_HOME" >"$FRESH_ROOT/lastdbd.out" 2>"$FRESH_ROOT/lastdbd.err" &
+"${LASTDBD_BIN:-lastdbd}" --data-dir "$LASTDB_HOME" >"$FRESH_ROOT/lastdbd.out" 2>"$FRESH_ROOT/lastdbd.err" &
 DAEMON_PID=$!
 
 SOCK="$LASTDB_HOME/data/folddb.sock"
@@ -416,11 +431,13 @@ fi
 # health
 if [ -S "$SOCK" ]; then
   HEALTH=$(curl -s --max-time 15 --unix-socket "$SOCK" http://localhost/health || true)
-  if [ "$HEALTH" = '{"status":"ok"}' ]; then
-    note_pass "health:$HEALTH"
-  else
-    note_fail "health: got '$HEALTH'"
-  fi
+  # Match the status field, not the whole body. Newer daemons add
+  # `capabilities` and `instance_id` next to `status`, and a byte-exact compare
+  # read a healthy 0.23.3-1908 node as RED.
+  case "$HEALTH" in
+    '{"status":"ok"'*) note_pass "health:$HEALTH" ;;
+    *) note_fail "health: got '$HEALTH'" ;;
+  esac
 fi
 
 # --- app inits ---

@@ -471,4 +471,41 @@ raised="$(read_bound 2400 INSTALL_TIMEOUT)"
   || fail "an explicitly exported bound must win over the scaled default"
 rm -f "$bounds_probe"
 
+# --- run.sh wiring: the daemon comes from the host-track tree, and is named --
+# `${REAL_HOME}/.local/bin` must be the FIRST PATH entry. `~/.local/bin/lastdbd`
+# symlinks through `~/.lastdb/current`, the daemon the primary runs. With
+# `/opt/homebrew/bin` ahead of it the smoke booted a stale canary copy for five
+# days after fold PR 1993 merged, and reported the fixed bug as still RED.
+path_line="$(grep -E '^export PATH="[^"]*"$' "$RUN" | head -n1)"
+[ -n "$path_line" ] || fail "run.sh must export a fixed PATH before the prereq checks"
+case "$path_line" in
+  'export PATH="${REAL_HOME}/.local/bin:'*) ;;
+  *) fail "run.sh PATH must start with \${REAL_HOME}/.local/bin (host-track lastdbd); got: $path_line" ;;
+esac
+case "$path_line" in
+  *'/opt/homebrew/bin'*) ;;
+  *) fail "run.sh PATH must keep /opt/homebrew/bin as the brew fallback" ;;
+esac
+
+# The daemon that answered `lastdbd` is resolved once and booted by path, and
+# the log names the file and the build, so two runs never read as one binary.
+grep -qF 'LASTDBD_BIN="$(command -v lastdbd || true)"' "$RUN" \
+  || fail "run.sh must resolve the lastdbd binary once after the prereq check"
+grep -qF 'live "lastdbd: $LASTDBD_BIN (${LASTDBD_VERSION:-version unknown})"' "$RUN" \
+  || fail "run.sh must log the lastdbd path and version as a live breadcrumb"
+
+# The health check reads the status field. A newer daemon adds `capabilities`
+# and `instance_id` next to `status`, and a byte-exact body compare read a
+# healthy node as RED.
+grep -qF "'{\"status\":\"ok\"'*) note_pass \"health:\$HEALTH\" ;;" "$RUN" \
+  || fail "run.sh health check must match the status field, not the whole body"
+if grep -qF "[ \"\$HEALTH\" = '{\"status\":\"ok\"}' ]" "$RUN"; then
+  fail "run.sh health check still compares the whole body byte-for-byte"
+fi
+grep -qF '"${LASTDBD_BIN:-lastdbd}" --data-dir "$LASTDB_HOME"' "$RUN" \
+  || fail "run.sh must boot the resolved lastdbd binary, not a fresh PATH lookup"
+if grep -qE '^lastdbd --data-dir' "$RUN"; then
+  fail "run.sh still boots lastdbd through a bare PATH lookup"
+fi
+
 echo "OK llms-txt-install-smoke-bounded"
