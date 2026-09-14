@@ -154,7 +154,7 @@ eval "$(awk '
   capture { print }
   capture && /^}/ { exit }
 ' "$driver")"
-dev_failure_line='DEV_PHOTOGRAPH_FAILURE phase=snapshot_command attempt=1/1 timeout_secs=3900 snapshot_rc=124'
+dev_failure_line='DEV_PHOTOGRAPH_FAILURE phase=snapshot_command attempt=1/1 timeout_secs=3900 client_timeout_secs=3960 snapshot_rc=124'
 set +e
 dev_failure_out="$(emit_dev_photograph_failure "$dev_failure_line" 2>&1)"
 dev_failure_rc=$?

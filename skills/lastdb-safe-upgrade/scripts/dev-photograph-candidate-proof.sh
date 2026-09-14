@@ -91,9 +91,10 @@ snapshot_manifest_cache_present() {
 }
 
 emit_dev_photograph_failure_summary() {
-  printf 'DEV_PHOTOGRAPH_FAILURE phase=%s attempt=%s/%s timeout_secs=%s snapshot_rc=%s\n' \
+  printf 'DEV_PHOTOGRAPH_FAILURE phase=%s attempt=%s/%s timeout_secs=%s client_timeout_secs=%s snapshot_rc=%s\n' \
     "${FAILURE_PHASE:-unknown}" "${SNAPSHOT_ATTEMPT:-0}" \
-    "${SNAPSHOT_ATTEMPTS:-0}" "${SNAPSHOT_TIMEOUT:-0}" "${SNAPSHOT_RC:-not-run}"
+    "${SNAPSHOT_ATTEMPTS:-0}" "${SNAPSHOT_TIMEOUT:-0}" \
+    "${SNAPSHOT_CLIENT_TIMEOUT:-not-set}" "${SNAPSHOT_RC:-not-run}"
   printf 'DEV_PHOTOGRAPH_OBSERVED manifest_cache_present_before=%s manifest_cache_present_after=%s\n' \
     "${SNAPSHOT_CACHE_PRESENT_BEFORE:-not-observed}" \
     "${SNAPSHOT_CACHE_PRESENT_AFTER:-not-observed}"
@@ -472,8 +473,39 @@ snapshot_delay="${LASTDB_DEV_PHOTOGRAPH_SNAPSHOT_RETRY_SECS:-5}"
 snapshot_timeout="${LASTDB_DEV_PHOTOGRAPH_SNAPSHOT_TIMEOUT_SECS:-900}"
 case "$snapshot_attempts" in ''|*[!0-9]*|0) proof_die "the DEV snapshot attempt limit is invalid" ;; esac
 case "$snapshot_timeout" in ''|*[!0-9]*|0) proof_die "the DEV snapshot command timeout is invalid" ;; esac
+
+# The CLI enforces its OWN socket deadline inside the step deadline below
+# (`LASTDB_UDS_ADMIN_TIMEOUT_SECS`, default 600s). Left unset it is smaller
+# than this step's 900s budget, so the budget can never be reached: the client
+# gives up first and discards a snapshot the daemon is still committing.
+#
+# That is not hypothetical. On 2026-09-14, execution
+# lx-20260914T211906.601-58215-1 burned three 600s attempts and failed the live
+# cutover on a candidate that had already passed PROBE green, while the daemon
+# logged `uds handler deadline exceeded` and the manifest cache appeared
+# mid-attempt. Thirty minutes spent on a deadline that could not be reached.
+#
+# So derive the client deadline from the step budget and keep the step's own
+# timer the binding one, by giving the client a margin above it. One deadline
+# governs, and the failure a reader sees is classified by this script rather
+# than by a transport giving up underneath it.
+snapshot_client_margin="${LASTDB_DEV_PHOTOGRAPH_SNAPSHOT_CLIENT_MARGIN_SECS:-60}"
+case "$snapshot_client_margin" in ''|*[!0-9]*) proof_die "the DEV snapshot client margin is invalid" ;; esac
+snapshot_client_timeout="${LASTDB_UDS_ADMIN_TIMEOUT_SECS:-}"
+if [ -n "$snapshot_client_timeout" ]; then
+  case "$snapshot_client_timeout" in ''|*[!0-9]*|0) proof_die "LASTDB_UDS_ADMIN_TIMEOUT_SECS is invalid" ;; esac
+  # An explicit value BELOW the step budget recreates the exact trap this
+  # guard exists to close, silently. Refuse it and name both numbers.
+  if [ "$snapshot_client_timeout" -lt "$snapshot_timeout" ]; then
+    proof_die "LASTDB_UDS_ADMIN_TIMEOUT_SECS=${snapshot_client_timeout}s is below the DEV snapshot budget of ${snapshot_timeout}s, so the budget could never be reached; raise it to at least the budget or leave it unset"
+  fi
+else
+  snapshot_client_timeout=$((snapshot_timeout + snapshot_client_margin))
+fi
+
 SNAPSHOT_ATTEMPTS="$snapshot_attempts"
 SNAPSHOT_TIMEOUT="$snapshot_timeout"
+SNAPSHOT_CLIENT_TIMEOUT="$snapshot_client_timeout"
 expected_manifest_cache="$COW_HOME/laststore_backup_manifest.json"
 attempt=1
 while [ "$attempt" -le "$snapshot_attempts" ]; do
@@ -487,6 +519,7 @@ while [ "$attempt" -le "$snapshot_attempts" ]; do
   set +e
   snapshot_json="$(run_op_with_deadline "$snapshot_timeout" \
     env -u LASTDB_HOME -u FOLDDB_HOME -u FOLD_SYNC_DEVICE_ID \
+    LASTDB_UDS_ADMIN_TIMEOUT_SECS="$snapshot_client_timeout" \
     "$CANDIDATE_CLI" --data-dir "$COW_HOME" cloud snapshot --json 2>"$SNAPSHOT_LOG")"
   snapshot_rc=$?
   SNAPSHOT_RC="$snapshot_rc"

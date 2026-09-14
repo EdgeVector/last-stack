@@ -580,7 +580,7 @@ fi
 stale_summary="$PROOF_CASE_EVIDENCE/summary.txt"
 stale_daemon_tail="$PROOF_CASE_EVIDENCE/daemon.tail.log"
 stale_snapshot_tail="$PROOF_CASE_EVIDENCE/snapshot.tail.log"
-grep -q '^DEV_PHOTOGRAPH_FAILURE phase=snapshot_command attempt=1/1 timeout_secs=3 snapshot_rc=73$' \
+grep -q '^DEV_PHOTOGRAPH_FAILURE phase=snapshot_command attempt=1/1 timeout_secs=3 client_timeout_secs=63 snapshot_rc=73$' \
   "$stale_summary" \
   || fail "existing cache falsely changed the pre-CAS failure phase"
 grep -q '^DEV_PHOTOGRAPH_OBSERVED manifest_cache_present_before=true manifest_cache_present_after=true$' \
@@ -614,12 +614,12 @@ for evidence_file in "$summary" "$daemon_tail" "$snapshot_tail"; do
   [ "$(_dev_stamp_file_mode "$evidence_file")" = 600 ] \
     || fail "failure evidence file is not owner-only: $evidence_file"
 done
-grep -q '^DEV_PHOTOGRAPH_FAILURE phase=snapshot_command attempt=1/1 timeout_secs=1 snapshot_rc=124$' \
+grep -q '^DEV_PHOTOGRAPH_FAILURE phase=snapshot_command attempt=1/1 timeout_secs=1 client_timeout_secs=61 snapshot_rc=124$' \
   "$summary" || fail "timeout evidence omitted the exact phase and budget"
 grep -q '^DEV_PHOTOGRAPH_OBSERVED manifest_cache_present_before=false manifest_cache_present_after=true$' \
   "$summary" || fail "timeout evidence omitted the separate cache observations"
 printf '%s\n' "$PROOF_CASE_OUT" \
-  | grep -q '^DEV_PHOTOGRAPH_FAILURE phase=snapshot_command attempt=1/1 timeout_secs=1 snapshot_rc=124$' \
+  | grep -q '^DEV_PHOTOGRAPH_FAILURE phase=snapshot_command attempt=1/1 timeout_secs=1 client_timeout_secs=61 snapshot_rc=124$' \
   || fail "timeout output omitted the exact phase and budget"
 grep -q 'post-CAS backup orphan GC active' "$daemon_tail" \
   || fail "daemon evidence omitted its observed post-CAS text"
@@ -645,7 +645,7 @@ if run_proof_case noev timeout 1 "$evidence_blocker"; then
   fail "proof passed after its photograph and evidence copy both failed"
 fi
 printf '%s\n' "$PROOF_CASE_OUT" \
-  | grep -q '^DEV_PHOTOGRAPH_FAILURE phase=snapshot_command attempt=1/1 timeout_secs=1 snapshot_rc=124$' \
+  | grep -q '^DEV_PHOTOGRAPH_FAILURE phase=snapshot_command attempt=1/1 timeout_secs=1 client_timeout_secs=61 snapshot_rc=124$' \
   || fail "evidence-copy failure omitted the exact phase and budget: $PROOF_CASE_OUT"
 printf '%s\n' "$PROOF_CASE_OUT" \
   | grep -q '^DEV_PHOTOGRAPH_EVIDENCE: unavailable$' \
