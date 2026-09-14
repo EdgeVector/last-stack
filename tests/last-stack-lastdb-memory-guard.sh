@@ -65,11 +65,29 @@ case "$args" in
     # respawned daemon from then on, with no kickstart involved.
     if [ "${FAKE_RESPAWN_AFTER_VMMAP:-0}" = "1" ] \
        && grep -q '^vmmap ' "$FAKE_ACTION_LOG" 2>/dev/null; then pid=$((pid + 1)); fi
+    # FAKE_PROBE_PID models a second lastdbd — a CoW upgrade probe, a canary,
+    # a smoke node — that sits FIRST in the table. It has no --data-dir and,
+    # unless FAKE_PROBE_HOME is set, no LASTDB_HOME either: by argv and env it
+    # is indistinguishable from the primary. Only launchd can tell them apart.
+    if [ -n "${FAKE_PROBE_PID:-}" ]; then
+      printf '%s /tmp/probe/bin/lastdbd\n' "$FAKE_PROBE_PID"
+    fi
     printf '%s /opt/lastdb/bin/lastdbd\n' "$pid"
     ;;
+  "-p ${FAKE_PROBE_PID:-none} -o args=")    printf '/tmp/probe/bin/lastdbd\n' ;;
   *"-o args="*)       printf '/opt/lastdb/bin/lastdbd\n' ;;
+  "eww -p ${FAKE_PROBE_PID:-none}")
+    if [ -n "${FAKE_PROBE_HOME:-}" ]; then
+      printf 'PID TTY TIME CMD LASTDB_HOME=%s\n' "$FAKE_PROBE_HOME"
+    else
+      printf 'PID TTY TIME CMD\n'
+    fi
+    ;;
   "eww -p "*)         printf 'PID TTY TIME CMD LASTDB_HOME=%s\n' "$LASTDBD_PRIMARY_HOME" ;;
+  "-p ${FAKE_PROBE_PID:-none} -o rss=")     printf '%s\n' "${FAKE_PROBE_RSS_KB:-0}" ;;
   *"-o rss="*)        printf '%s\n' "${FAKE_RSS_KB:-0}" ;;
+  "-p ${FAKE_PROBE_PID:-none} -o comm=")    printf '/tmp/probe/bin/lastdbd\n' ;;
+  *"-o comm="*)       printf '/opt/lastdb/bin/lastdbd\n' ;;
   *"-o command="*)    printf '/opt/lastdb/bin/lastdbd\n' ;;
   *)                  exit 1 ;;
 esac
@@ -90,6 +108,12 @@ if [ "${FAKE_FOOTPRINT_FAIL:-0}" = "1" ]; then
   exit 1
 fi
 emit() { printf '%s %s\n' "$1" "${FAKE_PEAK_BYTES:-$1}"; }
+# argv is `- <pid>`. The probe's footprint is its own number, so a test can
+# put the probe over the ceiling while the primary stays under it.
+if [ -n "${FAKE_PROBE_PID:-}" ] && [ "${2:-}" = "$FAKE_PROBE_PID" ]; then
+  emit "${FAKE_PROBE_FOOTPRINT_BYTES:-0}"
+  exit 0
+fi
 if [ -n "${FAKE_FOOTPRINT_SEQUENCE:-}" ]; then
   n=0
   if [ -f "${FAKE_SEQ_COUNTER:-/nonexistent}" ]; then n=$(cat "$FAKE_SEQ_COUNTER"); fi
@@ -223,17 +247,50 @@ SH
 
 cat >"$tmp/bin/launchctl" <<'SH'
 #!/usr/bin/env bash
-printf 'launchctl %s\n' "$*" >>"$FAKE_ACTION_LOG"
+# `print` is a read-only query the guard now runs every cycle to name the
+# primary, so it does not go in the action log; the log records only what the
+# guard tried to DO.
+[ "${1:-}" = "print" ] || printf 'launchctl %s\n' "$*" >>"$FAKE_ACTION_LOG"
+loaded() {
+  [ "${FAKE_AGENT_LOADED:-1}" = "1" ] \
+    || grep -q 'launchctl bootstrap' "$FAKE_ACTION_LOG" 2>/dev/null
+}
 case "${1:-}" in
   list)
     # An unloaded agent is ABSENT from the list, not listed as stopped. That
     # distinction is the whole trigger, so the shim has to reproduce it.
-    if [ "${FAKE_AGENT_LOADED:-1}" = "1" ] \
-       || grep -q 'launchctl bootstrap' "$FAKE_ACTION_LOG" 2>/dev/null; then
+    if loaded; then
       printf '%s\t0\tcom.example.lastdbd-primary\n' "${FAKE_PID:-4242}"
     fi
     ;;
-  print) exit 0 ;;
+  print)
+    # Real launchctl: an unloaded label is "Could not find service", exit 113.
+    # FAKE_LAUNCHCTL_PRINT_FAIL models any other failure of the query, and a
+    # managed sandbox that denies ps is modelled as denying launchctl too.
+    if [ "${FAKE_LAUNCHCTL_PRINT_FAIL:-0}" = "1" ] || [ "${FAKE_PS_DENIED:-0}" = "1" ]; then
+      exit 1
+    fi
+    loaded || exit 113
+    printf '%s = {\n\tactive count = 1\n\tpath = /x/%s.plist\n\tstate = running\n' "${2:-}" "com.example.lastdbd-primary"
+    # A loaded agent that owns no process prints no `pid =` line at all.
+    if [ "${FAKE_NO_PRIMARY:-0}" = "1" ] \
+       && ! grep -q 'launchctl bootstrap' "$FAKE_ACTION_LOG" 2>/dev/null; then
+      printf '}\n'
+      exit 0
+    fi
+    # The pid launchd owns tracks the same respawn model the ps shim uses.
+    pid="${FAKE_PID:-4242}"
+    # FAKE_RESOLVE_FLIP_FILE: the first query names FAKE_PID; every later one
+    # names a different pid, so the pre-signal re-resolution disagrees with
+    # the pid the cycle started on.
+    if [ -n "${FAKE_RESOLVE_FLIP_FILE:-}" ]; then
+      if [ -f "$FAKE_RESOLVE_FLIP_FILE" ]; then pid=$((pid + 2)); else : >"$FAKE_RESOLVE_FLIP_FILE"; fi
+    fi
+    if grep -q 'launchctl kickstart' "$FAKE_ACTION_LOG" 2>/dev/null; then pid=$((pid + 1)); fi
+    if [ "${FAKE_RESPAWN_AFTER_VMMAP:-0}" = "1" ] \
+       && grep -q '^vmmap ' "$FAKE_ACTION_LOG" 2>/dev/null; then pid=$((pid + 1)); fi
+    printf '\tpid = %s\n}\n' "$pid"
+    ;;
 esac
 SH
 
@@ -815,6 +872,88 @@ grep -q 'kickstart verified old_pid=4242 new_pid=4243' "$LOG" \
   || fail "the respawned pid should still be verified through its socket identity"
 grep -q '"event":"restart_observed".*"old_pid":4242.*"new_pid":4243' "$EVENT_LOG" \
   || fail "the respawned pid should still be durable in the event log"
+
+# --- 33. two lastdbd processes: launchd names the primary; a probe over the
+# ceiling does not restart it -------------------------------------------------
+# The probe sits FIRST in the ps table with no --data-dir and no LASTDB_HOME,
+# which is exactly what a CoW safe-upgrade probe or a canary looks like to
+# argv and env. The old selector took the first match and handed it to the
+# killer; wiki/concepts/lastdb-memory-guard-watches-the-wrong-process-and-
+# disagrees-with-the-node counted that 5 times in 90 minutes.
+reset
+FAKE_PROBE_PID=4343 \
+FAKE_PROBE_FOOTPRINT_BYTES=$((17000 * MB)) \
+FAKE_PROBE_RSS_KB=$((9000 * 1024)) \
+FAKE_RSS_KB=$((1500 * 1024)) \
+FAKE_FOOTPRINT_BYTES=$((9000 * MB)) \
+  "$GUARD" >/dev/null 2>&1 || fail "probe-over-ceiling cycle should exit 0"
+restarted && fail "a probe over the ceiling must not kickstart the primary's label"
+grep -q '^vmmap ' "$FAKE_ACTION_LOG" && fail "a probe over the ceiling must not be signalled either"
+grep -q 'ok pid=4242 .*primary_source=launchd' "$LOG" \
+  || fail "the gauged pid must be the one launchd owns, and the line must say so: $(cat "$LOG")"
+grep -q 'pid=4343' "$LOG" && fail "the probe pid must never appear as the gauged process"
+grep -q 'OVER_LIMIT\|over_limit_candidate' "$LOG" \
+  && fail "the primary at 9000 MB is under the ceiling; nothing is over"
+
+# --- 34. launchd cannot answer: the env walk still picks the one process
+# homed here, not the first lastdbd in the table ------------------------------
+reset
+FAKE_LAUNCHCTL_PRINT_FAIL=1 \
+FAKE_PROBE_PID=4343 \
+FAKE_PROBE_FOOTPRINT_BYTES=$((17000 * MB)) \
+FAKE_RSS_KB=$((1500 * 1024)) \
+FAKE_FOOTPRINT_BYTES=$((9000 * MB)) \
+  "$GUARD" >/dev/null 2>&1 || fail "fallback cycle should exit 0"
+restarted && fail "fallback must not restart on the probe's reading"
+grep -q 'ok pid=4242 .*primary_source=fallback' "$LOG" \
+  || fail "with launchd silent the env-homed process is the primary and the line must say fallback: $(cat "$LOG")"
+grep -q 'ABSTAIN' "$LOG" && fail "one env-verified candidate is not ambiguous"
+
+# --- 35. launchd cannot answer and two processes both claim this home: the
+# guard abstains — no gauge, no restart, no revive -----------------------------
+reset
+FAKE_LAUNCHCTL_PRINT_FAIL=1 \
+FAKE_PROBE_PID=4343 \
+FAKE_PROBE_HOME="$LASTDBD_PRIMARY_HOME" \
+FAKE_PROBE_FOOTPRINT_BYTES=$((17000 * MB)) \
+FAKE_RSS_KB=$((1500 * 1024)) \
+FAKE_FOOTPRINT_BYTES=$((17000 * MB)) \
+  "$GUARD" >/dev/null 2>&1 || fail "ambiguous cycle should exit 0"
+restarted && fail "an ambiguous cycle must not restart anything"
+grep -q 'launchctl bootstrap' "$FAKE_ACTION_LOG" \
+  && fail "ambiguous is not absent; it must not revive a second daemon onto this home"
+grep -q 'ABSTAIN primary_resolution=ambiguous .*home_match=4343,4242' "$LOG" \
+  || fail "an ambiguous cycle must say so and name the candidates: $(cat "$LOG")"
+grep -q '^.* ok pid=' "$LOG" && fail "an ambiguous cycle must not gauge a guessed pid"
+grep -q 'OVER_LIMIT' "$LOG" && fail "an ambiguous cycle must not declare OVER_LIMIT on a guessed pid"
+[ -f "$LASTDBD_PRIMARY_HOME/monitoring/lastdbd-absent.state" ] \
+  && fail "an ambiguous cycle must not count toward the absent-revive trigger"
+
+# --- 36. launchd says the agent is loaded and owns no pid: that is absent,
+# authoritative — the env walk does not get to pick a probe instead -----------
+reset
+FAKE_NO_PRIMARY=1 FAKE_AGENT_LOADED=1 \
+FAKE_PROBE_PID=4343 \
+FAKE_PROBE_FOOTPRINT_BYTES=$((17000 * MB)) \
+  "$GUARD" >/dev/null 2>&1 || fail "absent-with-probe cycle should exit 0"
+restarted && fail "a probe must not be restarted in the primary's name"
+grep -q 'pid=4343' "$LOG" && fail "a probe must not be gauged as the primary when launchd says none runs"
+grep -q 'no_primary_lastdbd agent=com.example.lastdbd-primary loaded=yes' "$LOG" \
+  || fail "launchd owning no pid is the absent shape: KeepAlive owns it, the probe does not stand in: $(cat "$LOG")"
+
+# --- 37. the restart target is re-resolved at the last moment -----------------
+# The pid was resolved at the top of the cycle. If the primary is a different
+# pid by the time the killer runs, the guard abstains rather than signalling a
+# pid that is no longer (or never was) the primary.
+reset
+FAKE_RESOLVE_FLIP_FILE="$tmp/resolve-flip" \
+FAKE_RSS_KB=$((1500 * 1024)) \
+FAKE_FOOTPRINT_BYTES=$((17000 * MB)) \
+  "$GUARD" >/dev/null 2>&1 || fail "target-mismatch cycle should exit 0"
+restarted && fail "a restart whose target no longer resolves as the primary must not kickstart"
+grep -q '^vmmap ' "$FAKE_ACTION_LOG" && fail "a mismatched target must not be signalled"
+grep -q 'ABSTAIN restart_target_mismatch requested_pid=4242 resolved_primary=4244' "$LOG" \
+  || fail "the mismatch must be logged with both pids: $(cat "$LOG")"
 
 # --- 24. shipped rusage python: oversized buffer, real pid, exit 0 ----------
 # The PATH python3 above is a fixture for the rest of this file. This check

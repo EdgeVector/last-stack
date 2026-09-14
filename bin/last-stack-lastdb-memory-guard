@@ -12,8 +12,12 @@
 # here, then install; never hand-edit the deployed copy.
 #
 # Scope: ONLY the primary Mini daemon.
-#   (executable named `lastdbd` with no --data-dir, or LASTDB_HOME pointing at
-#    the primary home). Never touches:
+#   The pid comes from launchd (`launchctl print gui/<uid>/<label>` for the
+#   agent that owns $LASTDBD_PRIMARY_HOME), not from a `ps -A` scan. The scan
+#   is the fallback for when launchd cannot answer, and then it must find
+#   exactly one candidate (LASTDB_HOME pointing at the primary home, or a
+#   lone `lastdbd` with no home marker and no --data-dir) or it abstains.
+#   Never touches:
 #   - LastGit forge lastdbd (--data-dir ~/.lastgit/...)
 #   - throwaway smoke / temp-home / CoW upgrade-probe nodes
 #   - fold-app desktop binary
@@ -67,6 +71,10 @@
 #   LASTDBD_RSS_LIMIT_MB     default 16384 — ceiling, in MB, for the enforced gauge
 #   LASTDBD_GUARD_COOLDOWN_SEC  default 120 — min seconds between restarts
 #   LASTDBD_PRIMARY_HOME     default $HOME/.lastdb
+#   LASTDBD_PRIMARY_AGENT_LABEL  default: the one plist under
+#                            LASTDBD_GUARD_PLIST_DIR that names a lastdbd
+#                            primary AND this home. launchd's pid for that
+#                            label is the primary; see primary_pid.
 #   LASTDBD_GUARD_RESTART_WAIT_SEC default 30 — wait for the replacement PID
 #   LASTDBD_GUARD_NOTICE_CMD default situations — notice CLI or absolute path
 #   LASTDBD_GUARD_REVIVE     default 1 — revive the primary LaunchAgent when the
@@ -357,8 +365,72 @@ event() {
 #
 # Fail closed: emit nothing rather than a guess. A guard that does nothing this
 # cycle is strictly safer than one that kills the wrong process.
+#
+# 2026-09-14: the ps walk above is now the FALLBACK, not the selector. It can
+# only reject a probe that announces itself (--data-dir, or LASTDB_HOME set to
+# some other home). A CoW upgrade probe, a canary, or a smoke node that was
+# started without either marker looks exactly like the primary to argv and
+# env, and `ps -A` order decides which one this guard measures and kills.
+# wiki/concepts/lastdb-memory-guard-watches-the-wrong-process-and-disagrees-
+# with-the-node counted the fallback choosing a non-primary pid 5 times in
+# 90 minutes. The 2026-09-14T01:57Z restart notice could not say whether the
+# pid it restarted was the primary at all.
+#
+# So ask launchd first. `launchctl print gui/<uid>/<label>` names the pid the
+# primary LaunchAgent owns right now; a probe cannot be that pid. The label
+# comes from primary_agent_label (explicit env, or the one on-disk plist that
+# names this home). Only when launchd cannot answer — no label, or the print
+# itself fails — does the env walk run, and then it must find exactly one
+# candidate: one process whose LASTDB_HOME is this home, or, failing that,
+# one lastdbd with no home marker at all. Two or more is ambiguous, and an
+# ambiguous cycle abstains: no restart, no revive.
+#
+# stdout: the pid, or nothing. Exit: 0 found, 1 absent, 2 ambiguous. Callers
+# run it inside `$(...)`, so the pid and the exit code are the whole answer;
+# resolve_primary_source below names the resolver for the log lines.
+LAUNCHD_PRINT_PID_RE='^[[:space:]]*pid = \([0-9][0-9]*\)$'
+
+# launchd_primary_pid: 0 + pid on stdout when the agent owns a running pid;
+# 1 when the agent is loaded and owns no pid (the primary is NOT running —
+# authoritative, no fallback); 2 when launchd cannot answer (no label, print
+# failed) and the env walk may run.
+launchd_primary_pid() {
+  local label out lpid comm
+  label=$(primary_agent_label 2>/dev/null) || return 2
+  [ -n "$label" ] || return 2
+  out=$(launchctl print "gui/$(id -u)/${label}" 2>/dev/null) || return 2
+  lpid=$(printf '%s\n' "$out" | sed -n "s/${LAUNCHD_PRINT_PID_RE}/\\1/p" | head -1)
+  [ -n "$lpid" ] || return 1
+  # Second opinion only: launchd is authoritative, but a pid it names that ps
+  # can see and that is NOT a lastdbd means the table and launchd disagree, and
+  # that is not a pid to hand to a killer. A denied ps cannot disagree.
+  comm=$(ps -p "$lpid" -o comm= 2>/dev/null || true)
+  if [ -n "$comm" ]; then
+    case "$comm" in
+      */lastdbd|lastdbd) ;;
+      *) return 2 ;;
+    esac
+  fi
+  printf '%s\n' "$lpid"
+  return 0
+}
+
 primary_pid() {
-  local p comm args home
+  local p comm args home lpid rc
+  local verified="" unmarked="" n_verified=0 n_unmarked=0
+  set +e
+  lpid=$(launchd_primary_pid)
+  rc=$?
+  set -e
+  case "$rc" in
+    0)
+      printf '%s\n' "$lpid"
+      return 0
+      ;;
+    1)
+      return 1
+      ;;
+  esac
   while read -r p comm; do
     # Executable path, not argv: a client that merely mentions lastdbd cannot
     # reach this branch.
@@ -372,17 +444,46 @@ primary_pid() {
     case "$args" in
       *--data-dir*) continue ;;
     esac
-    # Confirm the home really is the primary before handing this pid to a killer.
     home=$(ps eww -p "$p" 2>/dev/null | tr ' ' '\n' | sed -n 's/^LASTDB_HOME=//p' | head -1 || true)
-    if [ -n "$home" ] && [ "$home" != "$PRIMARY_HOME" ]; then
-      continue
+    if [ -n "$home" ]; then
+      [ "$home" = "$PRIMARY_HOME" ] || continue
+      verified="${verified:+$verified,}$p"
+      n_verified=$((n_verified + 1))
+    else
+      unmarked="${unmarked:+$unmarked,}$p"
+      n_unmarked=$((n_unmarked + 1))
     fi
-    echo "$p"
-    return 0
   done <<EOF
 $(ps -Ao pid=,comm=)
 EOF
-  return 0
+  if [ "$n_verified" -eq 1 ]; then
+    printf '%s\n' "$verified"
+    return 0
+  fi
+  if [ "$n_verified" -eq 0 ] && [ "$n_unmarked" -eq 1 ]; then
+    printf '%s\n' "$unmarked"
+    return 0
+  fi
+  if [ "$n_verified" -eq 0 ] && [ "$n_unmarked" -eq 0 ]; then
+    return 1
+  fi
+  # Not log(): that helper echoes to stdout, and stdout here IS the pid the
+  # caller captures. File and stderr only.
+  mkdir -p "$LOG_DIR"
+  echo "$(ts) ABSTAIN primary_resolution=ambiguous launchd=unavailable home_match=${verified:-none} unmarked=${unmarked:-none} (no restart, no revive)" | tee -a "$LOG" >&2
+  return 2
+}
+
+# resolve_primary_source: which resolver named this cycle's pid, for the log lines.
+# primary_pid runs inside `$(...)`, so nothing it sets survives that
+# subshell; this asks launchd once more (one launchctl print, read-only).
+resolve_primary_source() {
+  local lpid
+  if lpid=$(launchd_primary_pid 2>/dev/null) && [ "$lpid" = "$1" ]; then
+    printf 'launchd\n'
+  else
+    printf 'fallback\n'
+  fi
 }
 
 # Is the process table readable at all?
@@ -836,8 +937,23 @@ drain_snapshot() {
 restart_primary() {
   local pid="$1"
   local reading="$2"
+  local target
+  # The pid handed in was resolved at the top of the cycle, and the
+  # confirmation sampler has held it for several seconds since. Resolve once
+  # more, right before anything is signalled: if the primary is no longer
+  # this pid — it exited, launchd respawned it, or the earlier resolution
+  # was the fallback and launchd now answers differently — then this pid is
+  # not the primary, and a probe tripping its own ceiling must never turn
+  # into a SIGTERM on the primary's pid or a kickstart of its label.
+  set +e
+  target=$(primary_pid)
+  set -e
+  if [ "${target:-}" != "$pid" ]; then
+    log "ABSTAIN restart_target_mismatch requested_pid=$pid resolved_primary=${target:-none} (no shed, no signal, no kickstart)"
+    return 0
+  fi
   event restart_requested "$pid" null
-  log "RESTART primary lastdbd pid=$pid metric=$metric enforced_mb=$reading limit_mb=$RSS_LIMIT_MB (shed, then SIGTERM, then observe respawn)"
+  log "RESTART primary lastdbd pid=$pid metric=$metric enforced_mb=$reading limit_mb=$RSS_LIMIT_MB primary_source=${primary_source:-unknown} (shed, then SIGTERM, then observe respawn)"
   mark_restart
   if [ "${LASTDBD_GUARD_DRY_RUN:-0}" = "1" ]; then
     log "dry_run skip shed/kill/kickstart"
@@ -1247,13 +1363,24 @@ if [ "$#" -ne 0 ]; then
   exit 2
 fi
 
-pid=$(primary_pid || true)
+set +e
+pid=$(primary_pid)
+pid_rc=$?
+set -e
+if [ "$pid_rc" -eq 2 ]; then
+  # Two or more processes could be the primary and launchd could not say
+  # which. primary_pid already logged ABSTAIN. This is not the outage — a
+  # revive here would bootstrap a second daemon onto a home that may already
+  # have one — and it is not a pid to gauge. Do nothing this cycle.
+  exit 0
+fi
 if [ -z "${pid:-}" ]; then
   # No process is not "ok" — it is the outage. See the primary revival block.
   revive_primary
   exit 0
 fi
 clear_absent
+primary_source=$(resolve_primary_source "$pid")
 
 rss=$(rss_mb_of "$pid")
 swap=$(swap_used_mb 2>/dev/null || true)
@@ -1285,7 +1412,7 @@ fi
 # the excursion rate above the limit countable from this log alone. It is
 # OBSERVATION ONLY — nothing enforces on it, by design, until that rate has
 # been counted. 0 means unavailable, not "never grew".
-log_checked ok "ok pid=$pid metric=$metric enforced_mb=$enforced limit_mb=$RSS_LIMIT_MB rss_mb=$rss footprint_mb=$footprint peak_mb=$peak footprint_source=$footprint_source swap_mb=${swap:-unknown}"
+log_checked ok "ok pid=$pid metric=$metric enforced_mb=$enforced limit_mb=$RSS_LIMIT_MB rss_mb=$rss footprint_mb=$footprint peak_mb=$peak footprint_source=$footprint_source swap_mb=${swap:-unknown} primary_source=$primary_source"
 
 # Keep the old RSS policy explicit and visible when an operator selects it.
 # Swap remains in the status line for diagnosis, but swap use does not trigger
@@ -1303,7 +1430,7 @@ if ! cooldown_ok; then
   exit 0
 fi
 
-log_checked over_limit_candidate "over_limit_candidate pid=$pid metric=$metric enforced_mb=$enforced limit_mb=$RSS_LIMIT_MB rss_mb=$rss footprint_mb=$footprint peak_mb=$peak footprint_source=$footprint_source swap_mb=${swap:-unknown} cmd=$cmd"
+log_checked over_limit_candidate "over_limit_candidate pid=$pid metric=$metric enforced_mb=$enforced limit_mb=$RSS_LIMIT_MB rss_mb=$rss footprint_mb=$footprint peak_mb=$peak footprint_source=$footprint_source swap_mb=${swap:-unknown} primary_source=$primary_source cmd=$cmd"
 
 # One sample is not evidence. Confirm before the killer runs. OVER_LIMIT stays
 # the line that means "the guard acted", so counting restarts in this log does
@@ -1312,7 +1439,7 @@ if ! confirm_over_limit "$pid" "$enforced"; then
   exit 0
 fi
 
-log_checked OVER_LIMIT "OVER_LIMIT pid=$pid metric=$metric enforced_mb=$enforced limit_mb=$RSS_LIMIT_MB rss_mb=$rss footprint_mb=$footprint peak_mb=$peak footprint_source=$footprint_source swap_mb=${swap:-unknown} cmd=$cmd"
+log_checked OVER_LIMIT "OVER_LIMIT pid=$pid metric=$metric enforced_mb=$enforced limit_mb=$RSS_LIMIT_MB rss_mb=$rss footprint_mb=$footprint peak_mb=$peak footprint_source=$footprint_source swap_mb=${swap:-unknown} primary_source=$primary_source cmd=$cmd"
 # build is only needed for the restart notice, so only fetch it (via the
 # node's own status/boot-identity route) on the rare over-limit path — the
 # steady-state cycle above never touches /api/status.
