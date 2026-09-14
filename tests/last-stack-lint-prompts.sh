@@ -1017,4 +1017,60 @@ grep -q 'last-stack/routines/owner-review-rotate.md' \
 grep -q 'configurations get <slug> --json' "$ROOT/skills/registry-rotator/SKILL.md"
 grep -q 'configurations put' "$ROOT/skills/registry-rotator/SKILL.md"
 
+# A routines/ prompt block that runs bare `lastdb status` / `lastdb ops` must
+# source last-stack-shell-prelude in the same block. Each tool call is a fresh
+# shell; without it the routinesd PATH resolves the brew canary
+# (0.23.3-canary.20260801) that still wants `mk_legacy_hits`, and the
+# "name the offender" health check fails exactly when it is needed
+# (papercut-lastdb-status-ops-invalid-status-payload-missing-mk-legacy-hits).
+mkdir -p "$tmp/routines"
+cat > "$tmp/routines/bare-lastdb.md" <<'BAD'
+## Step 1
+```bash
+"$last_stack/bin/last-stack-lastdb-ops-offenders" --json
+lastdb status || true
+lastdb ops || true
+```
+BAD
+if "$ROOT/bin/last-stack-lint-prompts" "$tmp/routines/bare-lastdb.md" >/dev/null 2>&1; then
+  echo "expected bare lastdb status/ops without a same-block prelude to fail lint" >&2
+  exit 1
+fi
+cat > "$tmp/routines/prelude-lastdb.md" <<'GOOD'
+## Step 1
+```bash
+last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+. "$last_stack/bin/last-stack-shell-prelude"
+lastdb status || true
+lastdb ops || true
+```
+GOOD
+"$ROOT/bin/last-stack-lint-prompts" "$tmp/routines/prelude-lastdb.md"
+# A prelude in an EARLIER block does not count: that shell is gone.
+cat > "$tmp/routines/split-lastdb.md" <<'SPLIT'
+## Preflight
+```bash
+. "$last_stack/bin/last-stack-shell-prelude"
+```
+## Step 1
+```bash
+lastdb ops || true
+```
+SPLIT
+if "$ROOT/bin/last-stack-lint-prompts" "$tmp/routines/split-lastdb.md" >/dev/null 2>&1; then
+  echo "expected prelude in an earlier block to NOT satisfy the bare lastdb gate" >&2
+  exit 1
+fi
+# Documentation pages outside routines/ are not gated (the reader owns that shell).
+cat > "$tmp/lastdb-notes.md" <<'DOC'
+```bash
+lastdb ops --by-app   # compact app/verb rows for parsers
+```
+DOC
+"$ROOT/bin/last-stack-lint-prompts" "$tmp/lastdb-notes.md"
+# The live prompt that produced the recurrence sources the prelude in-block.
+grep -q 'last-stack-shell-prelude' "$ROOT/routines/lastdb-ops-offenders.md"
+awk '/^```bash/{blk=""; inb=1; next} /^```/{ if (inb && blk ~ /\nlastdb status/ && blk !~ /shell-prelude/) bad=1; inb=0; next} inb{blk=blk "\n" $0} END{exit bad}' \
+  "$ROOT/routines/lastdb-ops-offenders.md"
+
 echo "ok"
