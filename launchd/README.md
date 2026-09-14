@@ -15,6 +15,7 @@ add a `lastgit ci watch --repo last-stack --context ci-required` unit here. A
 second watcher on the same (repo, context) duplicates `LastgitRefEvent` reads
 and bypasses `--max-per-repo-concurrency`.
 
-Check coverage with `bin/last-stack-lastgit-ci-coverage`. The sibling
+Check coverage with `bin/last-stack-lastgit-ci-coverage --repo last-stack`
+(add `--head <oid>` to ask about one commit). The sibling
 `ci watch` processes on this host are deploy/artifact contexts
 (`deploy-prod`, `deploy-pipeline`, `artifact-release`), not `ci-required`.

@@ -61,9 +61,10 @@ Complements:
   (`lastgit forge run --all --context ci-required`, LaunchAgent
   `com.edgevector.lastgit-forge-primary`), not a per-repo
   `lastgit ci watch --repo last-stack`. Check with
-  `last-stack-lastgit-ci-coverage`. Do not file a last-stack watcher card
-  when that helper reports `covered=true`. A second `ci watch` on the same
-  (repo, context) is a duplicate.
+  `last-stack-lastgit-ci-coverage --repo <slug> [--head <oid>] --json`
+  (`--repo` is required; there is no fixed default). Do not file a last-stack
+  watcher card when that helper reports `covered=true`. A second `ci watch`
+  on the same (repo, context) is a duplicate.
 
 You are the **agent backstop** when daemons stall, CI goes red, deploys fail,
 merges conflict, or auto-merge drops — especially anything open **longer than

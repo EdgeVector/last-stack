@@ -8,14 +8,28 @@
 # on the same context is a duplicate: it re-reads LastgitRefEvent and
 # bypasses --max-per-repo-concurrency. Do not install that watcher.
 #
+# Repo selection: `--repo <slug>` wins. Without it the helper reads
+# $LASTGIT_REPO, then the basename of the git `origin` remote of $PWD. It never
+# falls back to a fixed repo: a silent `last-stack` default once reported
+# `covered=true` while the CR under check belonged to `laststore`
+# (papercut-last-stack-lastgit-ci-coverage-defaults-to-last-stack-repo).
+#
+# Head scoping: `--head <oid>` asks whether THAT commit is covered. A forge run
+# or a per-repo watch covers every head of the repo. A `--ref` watch covers a
+# head only when its ref names that oid (full or >=7-char prefix). Without
+# --head, --ref watches are listed but never count as coverage (unchanged).
+#
 # Exit:
-#   0  forge-run covers last-stack, no duplicate repo watch
+#   0  forge-run covers the repo, no duplicate repo watch
 #   1  uncovered
-#   3  forge-run covers last-stack AND a duplicate repo watch is running
-#   4  only an unsupervised per-repo ci watch (not the fleet supervisor)
+#   2  usage (bad flag, no repo resolvable, malformed --head)
+#   3  forge-run covers the repo AND a duplicate repo watch is running
+#   4  only an unsupervised ci watch covers it (per-repo, or per-ref for --head)
 set -euo pipefail
 
-repo="last-stack"
+repo=""
+repo_source=""
+head=""
 context="ci-required"
 ps_file=""
 launchctl_file=""
@@ -23,15 +37,22 @@ json=0
 
 usage() {
   cat >&2 <<'EOF'
-usage: last-stack-lastgit-ci-coverage [--repo last-stack] [--context ci-required]
+usage: last-stack-lastgit-ci-coverage --repo <slug> [--head <oid>]
+                                      [--context ci-required]
                                       [--ps-file PATH] [--launchctl-file PATH]
                                       [--json]
+  --repo   LastGit repo slug. Omitted: $LASTGIT_REPO, else the basename of
+           the git origin remote of the current directory. No fixed default.
+  --head   commit oid (7-64 hex). Scope the answer to that head.
 EOF
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --repo) repo="${2:-}"; shift 2 ;;
+    --repo) repo="${2:-}"; repo_source="flag"; shift 2 ;;
+    --repo=*) repo="${1#*=}"; repo_source="flag"; shift ;;
+    --head) head="${2:-}"; shift 2 ;;
+    --head=*) head="${1#*=}"; shift ;;
     --context) context="${2:-}"; shift 2 ;;
     --ps-file) ps_file="${2:-}"; shift 2 ;;
     --launchctl-file) launchctl_file="${2:-}"; shift 2 ;;
@@ -41,9 +62,37 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if [ -z "$repo" ] || [ -z "$context" ]; then
-  echo "last-stack-lastgit-ci-coverage: --repo and --context must be non-empty" >&2
+if [ -z "$repo" ] && [ -n "${LASTGIT_REPO:-}" ]; then
+  repo="$LASTGIT_REPO"
+  repo_source="env:LASTGIT_REPO"
+fi
+if [ -z "$repo" ]; then
+  origin_url="$(git config --get remote.origin.url 2>/dev/null || true)"
+  if [ -n "$origin_url" ]; then
+    repo="${origin_url%/}"
+    repo="${repo##*/}"
+    repo="${repo%.git}"
+    repo_source="git-origin"
+  fi
+fi
+if [ -z "$repo" ]; then
+  echo "last-stack-lastgit-ci-coverage: no repo: pass --repo <slug> (no LASTGIT_REPO, no git origin remote in $PWD)" >&2
+  usage
   exit 2
+fi
+if [ -z "$context" ]; then
+  echo "last-stack-lastgit-ci-coverage: --context must be non-empty" >&2
+  exit 2
+fi
+if [ -n "$head" ]; then
+  head="$(printf '%s' "$head" | tr 'A-F' 'a-f')"
+  case "$head" in
+    *[!0-9a-f]*) echo "last-stack-lastgit-ci-coverage: --head must be a 7-64 char hex oid, got '$head'" >&2; exit 2 ;;
+  esac
+  if [ "${#head}" -lt 7 ] || [ "${#head}" -gt 64 ]; then
+    echo "last-stack-lastgit-ci-coverage: --head must be a 7-64 char hex oid, got '$head'" >&2
+    exit 2
+  fi
 fi
 
 ps_tmp=""
@@ -74,6 +123,8 @@ elif [ -z "$ps_file" ] && command -v launchctl >/dev/null 2>&1; then
 fi
 
 export COVERAGE_REPO="$repo"
+export COVERAGE_REPO_SOURCE="$repo_source"
+export COVERAGE_HEAD="$head"
 export COVERAGE_CONTEXT="$context"
 export COVERAGE_JSON="$json"
 export COVERAGE_PS_FILE="$ps_tmp"
@@ -84,6 +135,8 @@ import os
 import sys
 
 repo = os.environ["COVERAGE_REPO"]
+repo_source = os.environ.get("COVERAGE_REPO_SOURCE") or "flag"
+head = os.environ.get("COVERAGE_HEAD") or None
 want_context = os.environ["COVERAGE_CONTEXT"]
 want_json = os.environ.get("COVERAGE_JSON") == "1"
 ps_path = os.environ["COVERAGE_PS_FILE"]
@@ -124,6 +177,22 @@ def split_csv(value):
     if not value:
         return []
     return [part.strip() for part in value.split(",") if part.strip()]
+
+def ref_names_head(ref, oid):
+    """True when a `--ref` value names the requested head oid.
+
+    A ref watch on `refs/heads/main` may or may not sit on the oid; this
+    helper has no git access to the LastGit repo, so only an explicit oid
+    (full, or a >=7-char prefix of the requested head) counts.
+    """
+    if not ref or not oid:
+        return False
+    ref = ref.strip().lower()
+    if ref == oid:
+        return True
+    if len(ref) >= 7 and all(c in "0123456789abcdef" for c in ref):
+        return oid.startswith(ref) or ref.startswith(oid)
+    return False
 
 def pid_and_cmd(line):
     stripped = line.strip()
@@ -192,10 +261,14 @@ if launchctl_path:
             "scope": "all",
         })
 
+# A --ref watch that names the requested head covers that head only.
+head_ref_watch = [row for row in ref_watch if head and ref_names_head(row["ref"], head)]
+
 covered_by_forge = bool(forge or launchd_forge)
 duplicate = covered_by_forge and bool(repo_watch)
 orphan_only = (not covered_by_forge) and bool(repo_watch)
-covered = covered_by_forge or orphan_only
+orphan_ref_only = (not covered_by_forge) and (not repo_watch) and bool(head_ref_watch)
+covered = covered_by_forge or orphan_only or orphan_ref_only
 if covered_by_forge:
     if forge:
         supervisor = "forge-run-all" if any(row["scope"] == "all" for row in forge) else "forge-run-repos"
@@ -203,24 +276,37 @@ if covered_by_forge:
         supervisor = "launchd-forge-primary"
 elif orphan_only:
     supervisor = "orphan-ci-watch"
+elif orphan_ref_only:
+    supervisor = "orphan-ref-watch"
 else:
     supervisor = None
 
+target = f"{repo} {want_context}"
+if head:
+    target = f"{repo}@{head} {want_context}"
 if covered_by_forge and not duplicate:
     rc = 0
-    detail = f"{supervisor} covers {repo} {want_context}"
+    detail = f"{supervisor} covers {target}"
 elif duplicate:
     rc = 3
-    detail = f"{supervisor} covers {repo} {want_context}; duplicate lastgit ci watch --repo {repo} is running"
+    detail = f"{supervisor} covers {target}; duplicate lastgit ci watch --repo {repo} is running"
 elif orphan_only:
     rc = 4
     detail = f"unsupervised lastgit ci watch --repo {repo} --context {want_context} (not forge run --all)"
+elif orphan_ref_only:
+    rc = 4
+    detail = f"unsupervised lastgit ci watch --repo {repo} --ref {head_ref_watch[0]['ref']} covers only {target} (not forge run --all)"
 else:
     rc = 1
-    detail = f"no lastgit forge run covering {repo} {want_context}"
+    if head and ref_watch:
+        detail = f"no lastgit forge run covering {target}; {len(ref_watch)} --ref watch(es) name other refs"
+    else:
+        detail = f"no lastgit forge run covering {target}"
 
 payload = {
     "repo": repo,
+    "repo_source": repo_source,
+    "head": head,
     "context": want_context,
     "covered": covered,
     "supervised": covered_by_forge,
@@ -230,6 +316,7 @@ payload = {
     "launchd_forge": launchd_forge,
     "repo_watch": repo_watch,
     "ref_watch": ref_watch,
+    "head_ref_watch": head_ref_watch,
     "detail": detail,
     "exit": rc,
 }
