@@ -45,6 +45,11 @@ unless they outlast the notice window. Busy-node errors are load, not death.
 ## Step 1 — Rank
 
 ```bash
+# Fresh tool shell: the preflight prelude does not carry over. Source it here
+# so `lastdb` is ~/.local/bin/lastdb (current), not the brew canary that
+# still wants `mk_legacy_hits` and prints "invalid status payload".
+last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+. "$last_stack/bin/last-stack-shell-prelude"
 "$last_stack/bin/last-stack-lastdb-ops-offenders" --json | tee /tmp/lastdb-ops-offenders.json
 lastdb status || true
 lastdb ops || true

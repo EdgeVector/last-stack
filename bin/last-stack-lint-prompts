@@ -813,6 +813,69 @@ check_gh_json_fields() {
   done
 }
 
+check_bare_lastdb_cli_without_prelude() {
+  # A fenced shell block in a routines/ prompt that runs a bare `lastdb status`
+  # / `lastdb ops` must source last-stack-shell-prelude in the SAME block (or
+  # name the binary by path). LINT_PROMPTS_FORCE_ROUTINE_FILE=<path> treats one
+  # extra file as a routine prompt (tests). Every agent tool call is a fresh shell: a prelude sourced in the
+  # preflight block does not carry over, and the routine PATH then resolves
+  # /opt/homebrew/bin/lastdb (0.23.3-canary.20260801, still wants
+  # `mk_legacy_hits`) ahead of ~/.local/bin/lastdb (current). That shadow
+  # produced "invalid status payload: missing field `mk_legacy_hits`" on 6+
+  # scheduled runs 2026-09-05..09-14 while the daemon and the current CLI
+  # agreed (brain papercut-lastdb-status-ops-invalid-status-payload-missing-mk-legacy-hits).
+  local root="$1"
+  local files=()
+  if [ -d "$root" ]; then
+    while IFS= read -r -d '' file; do
+      files+=("$file")
+    done < <(
+      find "$root" -type f -name '*.md' \
+        ! -path '*/.git/*' \
+        ! -path '*/logs/*' \
+        ! -path '*/run/*' \
+        ! -name memory.md \
+        -print0
+    )
+  else
+    case "$root" in *.md) files=("$root") ;; *) return 0 ;; esac
+  fi
+
+  for file in "${files[@]}"; do
+    [ -f "$file" ] || continue
+    # Scheduled prompts only: they run under the routinesd PATH. Skill and
+    # instruction pages document the commands for a shell the reader owns.
+    case "$file" in
+      routines/*.md|*/routines/*.md|"${LINT_PROMPTS_FORCE_ROUTINE_FILE:-}") ;;
+      *) continue ;;
+    esac
+    awk -v file="$file" '
+      /^```[[:space:]]*(bash|sh|shell|zsh)([[:space:]].*)?$/ {
+        in_shell = 1; has_prelude = 0; nbare = 0; next
+      }
+      /^```/ {
+        if (in_shell && nbare > 0 && !has_prelude) {
+          for (i = 1; i <= nbare; i++) {
+            printf "%s:%s:%s\n", file, bare_ln[i], bare_txt[i]
+          }
+          bad = 1
+        }
+        in_shell = 0; next
+      }
+      in_shell {
+        if ($0 ~ /last-stack-shell-prelude/) { has_prelude = 1 }
+        if ($0 ~ /^[[:space:]]*lastdb[[:space:]]+(status|ops)([[:space:]]|$)/) {
+          nbare++; bare_ln[nbare] = NR; bare_txt[nbare] = $0
+        }
+      }
+      END { exit bad }
+    ' "$file" || {
+      echo "bare lastdb status/ops in a shell block without last-stack-shell-prelude in the SAME block under $root; source the prelude first so ~/.local/bin/lastdb wins over the brew canary" >&2
+      fail=1
+    }
+  done
+}
+
 check_raw_markdown_shell_blocks() {
   local root="$1"
   local files=()
@@ -1097,6 +1160,7 @@ for path in "$@"; do
   check_routine_result_prompt_literals "$path"
   check_admin_ui_repo_targets "$path"
   check_raw_markdown_shell_blocks "$path"
+  check_bare_lastdb_cli_without_prelude "$path"
   check_default_board_scope "$path"
   check_workspace_root_git_probes "$path"
   check_kanban_json_envelope_jq "$path"
