@@ -85,6 +85,9 @@
 #                            limit before capturing vmmap and sending SIGTERM
 #   LASTDBD_GUARD_TERM_WAIT_SEC default 60 — clean-shutdown window after
 #                            SIGTERM before SIGKILL
+#   LASTDBD_GUARD_RESPAWN_WAIT_SEC default 15 — window to observe launchd
+#                            KeepAlive respawning the daemon after the signal
+#                            before a plain `launchctl kickstart` (never -k)
 #   LASTDBD_GUARD_CONFIRM_SAMPLES default 5 — extra readings taken after the
 #                            first over-limit reading. A majority of them must
 #                            also be at or above the limit before the restart
@@ -116,6 +119,9 @@ RESTART_WAIT_SEC="${LASTDBD_GUARD_RESTART_WAIT_SEC:-30}"
 IDENTITY_TIMEOUT_SEC="${LASTDBD_GUARD_IDENTITY_TIMEOUT_SEC:-1}"
 SHED_WAIT_SEC="${LASTDBD_GUARD_SHED_WAIT_SEC:-60}"
 TERM_WAIT_SEC="${LASTDBD_GUARD_TERM_WAIT_SEC:-60}"
+# launchd throttles a KeepAlive respawn to ~10 s after a short-lived exit, so
+# this window must outlast that throttle or a healthy respawn reads as absent.
+RESPAWN_WAIT_SEC="${LASTDBD_GUARD_RESPAWN_WAIT_SEC:-15}"
 CONFIRM_SAMPLES="${LASTDBD_GUARD_CONFIRM_SAMPLES:-5}"
 CONFIRM_INTERVAL_SEC="${LASTDBD_GUARD_CONFIRM_INTERVAL_SEC:-2}"
 PRIMARY_HOME="${LASTDBD_PRIMARY_HOME:-$HOME/.lastdb}"
@@ -831,7 +837,7 @@ restart_primary() {
   local pid="$1"
   local reading="$2"
   event restart_requested "$pid" null
-  log "RESTART primary lastdbd pid=$pid metric=$metric enforced_mb=$reading limit_mb=$RSS_LIMIT_MB (shed, then SIGTERM, then kickstart)"
+  log "RESTART primary lastdbd pid=$pid metric=$metric enforced_mb=$reading limit_mb=$RSS_LIMIT_MB (shed, then SIGTERM, then observe respawn)"
   mark_restart
   if [ "${LASTDBD_GUARD_DRY_RUN:-0}" = "1" ]; then
     log "dry_run skip shed/kill/kickstart"
@@ -882,31 +888,58 @@ restart_primary() {
   else
     log "SIGTERM_clean pid=$pid"
   fi
-  # Prefer the LaunchAgent that owns the primary. Never restart
-  # homebrew.mxcl.lastdb while that agent is the intended primary — brew restart
-  # was reintroducing the pre-cap bottle and fighting the LaunchAgent for the
-  # primary home during the 2026-07-14 re-enable.
-  local uid label
-  uid=$(id -u)
-  label="$PRIMARY_AGENT_LABEL"
-  if [ -z "$label" ]; then
-    # Discover the agent that owns the primary rather than hardcoding an
-    # install-specific label: any loaded agent whose label names a lastdbd
-    # primary. Keeps this script portable across installs.
-    label=$(launchctl list 2>/dev/null \
-      | awk '$3 ~ /lastdbd-primary/ { print $3; exit }' || true)
-  fi
-  if [ -n "$label" ] && launchctl print "gui/${uid}/${label}" >/dev/null 2>&1; then
-    log "kickstart agent=$label"
-    launchctl kickstart -k "gui/${uid}/${label}" 2>/dev/null || true
-  elif launchctl print "gui/${uid}/${FALLBACK_AGENT_LABEL}" >/dev/null 2>&1; then
-    log "kickstart agent=$FALLBACK_AGENT_LABEL"
-    launchctl kickstart -k "gui/${uid}/${FALLBACK_AGENT_LABEL}" 2>/dev/null \
-      || brew services restart lastdb 2>/dev/null \
-      || true
+  # launchd KeepAlive respawns the daemon within about a second of the old pid
+  # dying. Until 2026-09-14 the guard then ran `launchctl kickstart -k`, which
+  # SIGKILLed THAT fresh daemon after it had appended its session-ledger row
+  # and before it could record any exit; launchd respawned a third time after
+  # its 10 s throttle, and that boot promoted a phantom "unclean exit" crash to
+  # Sentry (issue 7601263508: 9 of the 10 retained events were this double
+  # kill, each matching a SIGKILL line in this log to the second). Observe the
+  # respawn instead; only START (never kill) when launchd did not respawn.
+  local respawn_pid="" respawn_deadline
+  respawn_deadline=$(( $(date +%s) + RESPAWN_WAIT_SEC ))
+  while :; do
+    respawn_pid=$(primary_pid || true)
+    if [ -n "$respawn_pid" ] && [ "$respawn_pid" != "$pid" ]; then
+      break
+    fi
+    respawn_pid=""
+    if [ "$(date +%s)" -ge "$respawn_deadline" ]; then
+      break
+    fi
+    sleep 1
+  done
+  if [ -n "$respawn_pid" ]; then
+    log "respawn_observed old_pid=$pid new_pid=$respawn_pid wait_sec=$RESPAWN_WAIT_SEC (KeepAlive restarted it; no kickstart)"
   else
-    # KeepAlive on whichever agent owns the socket should revive; do not force brew.
-    true
+    # Prefer the LaunchAgent that owns the primary. Never restart
+    # homebrew.mxcl.lastdb while that agent is the intended primary — brew restart
+    # was reintroducing the pre-cap bottle and fighting the LaunchAgent for the
+    # primary home during the 2026-07-14 re-enable.
+    # Plain kickstart starts a stopped service and leaves a running one alone.
+    # Never pass -k: that is the double kill the loop above exists to prevent.
+    local uid label
+    uid=$(id -u)
+    label="$PRIMARY_AGENT_LABEL"
+    if [ -z "$label" ]; then
+      # Discover the agent that owns the primary rather than hardcoding an
+      # install-specific label: any loaded agent whose label names a lastdbd
+      # primary. Keeps this script portable across installs.
+      label=$(launchctl list 2>/dev/null \
+        | awk '$3 ~ /lastdbd-primary/ { print $3; exit }' || true)
+    fi
+    if [ -n "$label" ] && launchctl print "gui/${uid}/${label}" >/dev/null 2>&1; then
+      log "kickstart agent=$label reason=no_respawn_within_${RESPAWN_WAIT_SEC}s"
+      launchctl kickstart "gui/${uid}/${label}" 2>/dev/null || true
+    elif launchctl print "gui/${uid}/${FALLBACK_AGENT_LABEL}" >/dev/null 2>&1; then
+      log "kickstart agent=$FALLBACK_AGENT_LABEL reason=no_respawn_within_${RESPAWN_WAIT_SEC}s"
+      launchctl kickstart "gui/${uid}/${FALLBACK_AGENT_LABEL}" 2>/dev/null \
+        || brew services restart lastdb 2>/dev/null \
+        || true
+    else
+      # KeepAlive on whichever agent owns the socket should revive; do not force brew.
+      true
+    fi
   fi
   local new_pid="" new_identity="" new_build="$build" waited=0
   while [ "$waited" -lt "$RESTART_WAIT_SEC" ]; do

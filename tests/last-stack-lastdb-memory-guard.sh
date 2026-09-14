@@ -27,6 +27,10 @@ export LASTDBD_PRIMARY_HOME="$tmp/home/.lastdb"
 export LASTDBD_GUARD_RESTART_WAIT_SEC=2
 export LASTDBD_GUARD_SHED_WAIT_SEC=1
 export LASTDBD_GUARD_TERM_WAIT_SEC=1
+# FAKE_PID never exists, so no shim can model launchd respawning it; a zero
+# window makes the guard look once and fall through to the plain kickstart.
+# The respawn test below overrides this and models the respawn in the ps shim.
+export LASTDBD_GUARD_RESPAWN_WAIT_SEC=0
 # Confirmation is on by default. Zero interval keeps the suite fast without
 # skipping a single sample — the sample COUNT is what the rule turns on.
 export LASTDBD_GUARD_CONFIRM_INTERVAL_SEC=0
@@ -55,6 +59,12 @@ case "$args" in
     fi
     pid="${FAKE_PID:-4242}"
     if grep -q 'launchctl kickstart' "$FAKE_ACTION_LOG" 2>/dev/null; then pid=$((pid + 1)); fi
+    # FAKE_RESPAWN_AFTER_VMMAP=1 models launchd KeepAlive: the guard captures
+    # vmmap immediately before it signals the old pid, so a vmmap line in the
+    # action log means "the old pid was signalled" and the table shows the
+    # respawned daemon from then on, with no kickstart involved.
+    if [ "${FAKE_RESPAWN_AFTER_VMMAP:-0}" = "1" ] \
+       && grep -q '^vmmap ' "$FAKE_ACTION_LOG" 2>/dev/null; then pid=$((pid + 1)); fi
     printf '%s /opt/lastdb/bin/lastdbd\n' "$pid"
     ;;
   *"-o args="*)       printf '/opt/lastdb/bin/lastdbd\n' ;;
@@ -331,6 +341,12 @@ FAKE_RSS_KB=$((1500 * 1024)) \
 FAKE_FOOTPRINT_BYTES=$((17000 * MB)) \
   "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 after a restart"
 restarted || fail "default footprint policy must restart above 16 GiB"
+grep -Eq '^launchctl kickstart gui/[0-9]+/' "$FAKE_ACTION_LOG" \
+  || fail "with no respawn seen the guard should issue a plain kickstart"
+grep -q 'launchctl kickstart -k' "$FAKE_ACTION_LOG" \
+  && fail "kickstart -k SIGKILLs the daemon KeepAlive just respawned (Sentry 7601263508); never pass -k"
+grep -q 'kickstart agent=.*reason=no_respawn_within_0s' "$LOG" \
+  || fail "a kickstart should say why launchd's own respawn was not enough"
 grep -q 'OVER_LIMIT.*metric=footprint.*enforced_mb=17000.*limit_mb=16384' "$LOG" \
   || fail "over-limit line should record the default footprint policy"
 grep -q 'over_limit_candidate.*enforced_mb=17000' "$LOG" \
@@ -775,6 +791,30 @@ grep -q 'drain_progress .*last=socket=unanswered' "$LOG" \
   || fail "an unanswered socket during the drain should be recorded as such"
 grep -q 'drain_progress .*answered=0' "$LOG" \
   || fail "an unanswered socket should not count as an answered poll"
+
+# --- 32. launchd KeepAlive respawn is observed; the fresh daemon is NOT
+# kickstarted (Sentry 7601263508). Until 2026-09-14 the guard SIGKILLed the old
+# pid, launchd respawned lastdbd ~1 s later, and `kickstart -k` then SIGKILLed
+# that fresh daemon after it had written its session-ledger row: two boots per
+# restart and a phantom unclean_exit crash on the third. The ps shim flips to
+# the respawned pid the moment the old one is signalled (vmmap precedes the
+# signal); the guard must see it and leave launchd alone. -------------------
+reset
+FAKE_RSS_KB=$((1500 * 1024)) \
+FAKE_FOOTPRINT_BYTES=$((17000 * MB)) \
+FAKE_RESPAWN_AFTER_VMMAP=1 \
+FAKE_BOOT_PID=4243 \
+LASTDBD_GUARD_RESPAWN_WAIT_SEC=5 \
+  "$GUARD" >/dev/null 2>&1 || fail "guard should exit 0 after observing a respawn"
+grep -q 'respawn_observed old_pid=4242 new_pid=4243' "$LOG" \
+  || fail "the guard should record that launchd KeepAlive already restarted the daemon"
+restarted && fail "a daemon launchd already respawned must not be kickstarted again (double kill)"
+grep -q 'kickstart -k' "$FAKE_ACTION_LOG" \
+  && fail "kickstart -k must never appear in the restart path"
+grep -q 'kickstart verified old_pid=4242 new_pid=4243' "$LOG" \
+  || fail "the respawned pid should still be verified through its socket identity"
+grep -q '"event":"restart_observed".*"old_pid":4242.*"new_pid":4243' "$EVENT_LOG" \
+  || fail "the respawned pid should still be durable in the event log"
 
 # --- 24. shipped rusage python: oversized buffer, real pid, exit 0 ----------
 # The PATH python3 above is a fixture for the rest of this file. This check
