@@ -81,7 +81,8 @@ Environment:
   HOST_TRACK_PROBE_SKIP=1   Tom-only: skip functional probe (do not use casually)
   HOST_TRACK_PROBE_ATTEMPTS  Probe attempts after a transient failure (default 3, max 5)
   HOST_TRACK_PROBE_RETRY_DELAY_S  Delay between probe attempts (default 1, max 10)
-  HOST_TRACK_PROBE_LAT_RATIO   Candidate vs current latency fail ratio (default 3)
+  HOST_TRACK_PROBE_LAT_RATIO   Candidate vs current latency fail ratio (default 3);
+                             a RED pair is re-sampled once before it counts
   HOST_TRACK_PROBE_LAT_FLOOR_MS  Ignore latency below this (default 1000)
   HOST_TRACK_ACTIVATE=1     Flip current after GREEN probe (skip soak)
   HOST_TRACK_SOAK_HOURS     Override registry soak window
@@ -1869,6 +1870,16 @@ run_probe_with_incumbent_control() {
   return 1
 }
 
+# One latency pair is over the bar when the candidate is above the floor and
+# slower than ratio x the incumbent. Args: candidate_ms baseline_ms ratio floor
+latency_pair_over_ratio() {
+  local candidate_ms="$1" baseline_ms="$2" ratio_i="$3" floor="$4"
+  [ "$candidate_ms" -gt "$floor" ] || return 1
+  [ "$baseline_ms" -gt 0 ] || return 1
+  [ "$candidate_ms" -gt $((baseline_ms * ratio_i)) ] || return 1
+  return 0
+}
+
 time_one_probe_ms() {
   local version_dir="$1" spec="$2" start end
   start="$(now_ms)"
@@ -1890,8 +1901,8 @@ first_link_source() {
 run_safe_upgrade_probes() {
   local app="$1" json="$2" version_dir="$3" current_dir="${4:-}"
   local skip="${HOST_TRACK_PROBE_SKIP:-0}"
-  local encoded spec n i candidate_ms baseline_ms ratio floor
-  local latency_on
+  local encoded spec n i candidate_ms baseline_ms ratio floor ratio_i
+  local latency_on candidate2_ms baseline2_ms
 
   if [ "$skip" = "1" ]; then
     printf 'host-track: %s probe SKIPPED (HOST_TRACK_PROBE_SKIP=1)\n' "$app" >&2
@@ -1933,18 +1944,36 @@ run_safe_upgrade_probes() {
     spec="$(printf '%s\n' "$json" | jq -c '.safe_upgrade.probes[-1]')"
     ratio="${HOST_TRACK_PROBE_LAT_RATIO:-$(printf '%s\n' "$json" | jq -r '.safe_upgrade.latency_ratio // 3')}"
     floor="${HOST_TRACK_PROBE_LAT_FLOOR_MS:-$(printf '%s\n' "$json" | jq -r '.safe_upgrade.latency_floor_ms // 1000')}"
+    ratio_i="${ratio%%.*}"
+    [ -n "$ratio_i" ] || ratio_i=3
     candidate_ms="$(time_one_probe_ms "$version_dir" "$spec" || true)"
     baseline_ms="$(time_one_probe_ms "$current_dir" "$spec" || true)"
     if [ -n "$candidate_ms" ] && [ -n "$baseline_ms" ]; then
       printf 'host-track: %s latency candidate=%sms baseline=%sms ratio=%s floor=%sms\n' \
         "$app" "$candidate_ms" "$baseline_ms" "$ratio" "$floor" >&2
-      if [ "$candidate_ms" -gt "$floor" ] && [ "$baseline_ms" -gt 0 ]; then
-        ratio_i="${ratio%%.*}"
-        [ -n "$ratio_i" ] || ratio_i=3
-        if [ "$candidate_ms" -gt $((baseline_ms * ratio_i)) ]; then
-          printf 'host-track: %s latency RED candidate=%sms > %sx baseline=%sms\n' \
-            "$app" "$candidate_ms" "$ratio_i" "$baseline_ms" >&2
-          return 1
+      if latency_pair_over_ratio "$candidate_ms" "$baseline_ms" "$ratio_i" "$floor"; then
+        # One pair is a fragile signal. The two samples run in sequence, so a
+        # shared node stall that ends between them shows up as a large ratio
+        # from the same binary (kanban 2026-09-14: 5684ms vs 805ms during a
+        # jetsam event, 555ms vs 473ms an hour later; same shape 2026-09-04
+        # and 2026-09-05). Re-sample once with the incumbent FIRST so a stall
+        # cannot land on the candidate side twice, and RED only when both
+        # pairs agree. The correctness probes already retry and use the
+        # incumbent as a control; this gives the latency bar the same shape.
+        baseline2_ms="$(time_one_probe_ms "$current_dir" "$spec" || true)"
+        candidate2_ms="$(time_one_probe_ms "$version_dir" "$spec" || true)"
+        if [ -n "$candidate2_ms" ] && [ -n "$baseline2_ms" ]; then
+          printf 'host-track: %s latency re-sample candidate=%sms baseline=%sms (pair 2, incumbent first)\n' \
+            "$app" "$candidate2_ms" "$baseline2_ms" >&2
+          if latency_pair_over_ratio "$candidate2_ms" "$baseline2_ms" "$ratio_i" "$floor"; then
+            printf 'host-track: %s latency RED candidate=%sms > %sx baseline=%sms (both pairs; first pair %sms/%sms)\n' \
+              "$app" "$candidate2_ms" "$ratio_i" "$baseline2_ms" "$candidate_ms" "$baseline_ms" >&2
+            return 1
+          fi
+          printf 'host-track: %s latency recovered on re-sample; first pair %sms/%sms was a stall\n' \
+            "$app" "$candidate_ms" "$baseline_ms" >&2
+        else
+          printf 'host-track: %s latency re-sample unmeasurable; continuing on correctness\n' "$app" >&2
         fi
       fi
     else

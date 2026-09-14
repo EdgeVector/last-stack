@@ -68,7 +68,8 @@ cat > "$HOST_TRACK_REGISTRY" <<'JSON'
       "safe_upgrade": {
         "probes": [
           {"argv": ["bin/demo"], "timeout_s": 10, "output_matches": "ok"}
-        ]
+        ],
+        "latency": true
       },
       "notes": "probe-before-cutover fixture"
     }
@@ -99,10 +100,14 @@ digest_good="$(printf 'a%.0s' {1..64})"
 digest_bad="$(printf 'b%.0s' {1..64})"
 digest_transient="$(printf 'c%.0s' {1..64})"
 digest_shared="$(printf 'd%.0s' {1..64})"
+digest_stall="$(printf 'e%.0s' {1..64})"
+digest_slow="$(printf 'f%.0s' {1..64})"
 oid_good="$(printf '1%.0s' {1..40})"
 oid_bad="$(printf '2%.0s' {1..40})"
 oid_transient="$(printf '3%.0s' {1..40})"
 oid_shared="$(printf '4%.0s' {1..40})"
+oid_stall="$(printf '5%.0s' {1..40})"
+oid_slow="$(printf '6%.0s' {1..40})"
 
 publish_fixture "$digest_bad" "$oid_bad" $'#!/usr/bin/env bash\necho broken\nexit 1'
 if "$ROOT/bin/host-track" install demo >/dev/null 2>"$tmp/first-red.err"; then
@@ -154,6 +159,44 @@ grep -q 'soak probe inconclusive; current and soak state unchanged' "$tmp/inconc
   || fail "inconclusive probe changed current"
 rm -f "$HOME/shared-probe-down"
 
+# Latency bar. The shared-control case above left a parked canary; drop that
+# soak state so these refreshes take the direct activate path and the
+# latency verdict alone decides the outcome. One probe call costs ~0.7s of
+# harness overhead in this fixture, so the stall sleeps well past 3x that.
+rm -f "$HOST_TRACK_STAMP_DIR/demo.soak.json" "$HOME/apps/demo/canary"
+
+# One-shot stall: the candidate's second call (its first latency sample;
+# call 1 is the correctness probe) sleeps, so pair one is far over the
+# ratio. Pair two is even. Expect a re-sample, no RED, and activation.
+publish_fixture "$digest_stall" "$oid_stall" $'#!/usr/bin/env bash\nmarker="$HOME/stall-probe-count"\ncount="$(cat "$marker" 2>/dev/null || printf 0)"\ncount=$((count + 1))\nprintf "%s\\n" "$count" >"$marker"\nif [ "$count" -eq 2 ]; then sleep 2.5; fi\necho ok-v4'
+HOST_TRACK_ACTIVATE=1 HOST_TRACK_PROBE_LAT_FLOOR_MS=100 "$ROOT/bin/host-track" refresh demo \
+  >/dev/null 2>"$tmp/stall.err" \
+  || fail "a one-shot latency stall should recover on re-sample: $(cat "$tmp/stall.err")"
+grep -q 'latency re-sample candidate=' "$tmp/stall.err" \
+  || fail "stall did not trigger a latency re-sample: $(cat "$tmp/stall.err")"
+grep -q 'latency recovered on re-sample; first pair' "$tmp/stall.err" \
+  || fail "stall re-sample did not report recovery: $(cat "$tmp/stall.err")"
+! grep -q 'latency RED' "$tmp/stall.err" \
+  || fail "one-shot stall still reported latency RED: $(cat "$tmp/stall.err")"
+[ "$(demo)" = ok-v4 ] || fail "stall-recovered candidate did not activate: $(demo)"
+[ "$(readlink "$HOME/apps/demo/current")" = "versions/$digest_stall" ] \
+  || fail "stall-recovered candidate current pointer wrong"
+
+# Persistently slow candidate: every call sleeps, so both pairs are over the
+# ratio. Expect RED on the second pair and no flip.
+publish_fixture "$digest_slow" "$oid_slow" $'#!/usr/bin/env bash\nsleep 2.5\necho ok-v5'
+if HOST_TRACK_ACTIVATE=1 HOST_TRACK_PROBE_LAT_FLOOR_MS=100 "$ROOT/bin/host-track" refresh demo \
+  >/dev/null 2>"$tmp/slow.err"; then
+  fail "a persistently slow candidate should fail closed: $(cat "$tmp/slow.err")"
+fi
+grep -q 'latency re-sample candidate=' "$tmp/slow.err" \
+  || fail "slow candidate was not re-sampled before RED: $(cat "$tmp/slow.err")"
+grep -q 'latency RED candidate=.*(both pairs; first pair' "$tmp/slow.err" \
+  || fail "slow candidate did not RED on both pairs: $(cat "$tmp/slow.err")"
+[ "$(demo)" = ok-v4 ] || fail "latency RED changed the live command: $(demo)"
+[ "$(readlink "$HOME/apps/demo/current")" = "versions/$digest_stall" ] \
+  || fail "latency RED flipped current"
+
 publish_fixture "$digest_bad" "$oid_bad" $'#!/usr/bin/env bash\necho broken\nexit 1'
 if "$ROOT/bin/host-track" refresh demo >/dev/null 2>"$tmp/red.err"; then
   fail "RED probe refresh should fail closed"
@@ -167,14 +210,14 @@ grep -q 'incumbent control GREEN; confirming candidate' "$tmp/red.err" \
   || fail "refresh did not compare the incumbent: $(cat "$tmp/red.err")"
 grep -q 'probe RED; candidate failed while incumbent passed' "$tmp/red.err" \
   || fail "refresh did not report a candidate-only RED: $(cat "$tmp/red.err")"
-[ "$(demo)" = ok-v2 ] || fail "RED probe changed the live command: $(demo)"
-[ "$(readlink "$HOME/apps/demo/current")" = "versions/$digest_transient" ] \
+[ "$(demo)" = ok-v4 ] || fail "RED probe changed the live command: $(demo)"
+[ "$(readlink "$HOME/apps/demo/current")" = "versions/$digest_stall" ] \
   || fail "RED probe flipped current"
 [ ! -e "$HOME/.local/bin/demo" ] || [ "$(readlink "$HOME/.local/bin/demo")" = "$HOME/apps/demo/current/bin/demo" ] \
   || true
 # PATH still points at current (good tree).
 [ "$(readlink "$HOME/.local/bin/demo")" = "$HOME/apps/demo/current/bin/demo" ] \
-  || [ "$(readlink "$HOME/.local/bin/demo")" = "$HOME/apps/demo/versions/$digest_transient/bin/demo" ] \
+  || [ "$(readlink "$HOME/.local/bin/demo")" = "$HOME/apps/demo/versions/$digest_stall/bin/demo" ] \
   || fail "PATH link left the good tree"
 
 # Bad version may exist on disk (staged) but must not be current.
