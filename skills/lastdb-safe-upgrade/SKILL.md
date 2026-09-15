@@ -85,9 +85,22 @@ failure after a rename restores both pre-cutover files before exit. The live
 post-check names configured keys absent from the new process, and
 `LASTDB_LIVE_CONFIG_ENFORCE=1` makes any such drift RED.
 
-**Hot swap:** a single-process image swap always needs a brief restart. The
-current path is a prepared cutover after GREEN CoW. A socket proxy remains a
-separate future change for near-zero client impact.
+**Hot swap:** a single-process image swap still needs a worker handoff. For
+near-zero client impact, run the `lastdb-proxy` from Fold PR #2091. It owns the
+stable public sockets while `lastdbd` uses private worker sockets. The proxy
+does not open the LastDB home, and it never permits two workers to own one
+home. Dogfood and service-manager wiring remain required before deployment.
+
+Use these worker flags when the proxy owns the public paths:
+
+```text
+lastdbd --data-dir <home> --socket-path <run>/worker.sock \
+  --full-socket-path <run>/worker-full.sock
+```
+
+The cutover must stop the old worker, start the new worker, run the full
+health checks, and then issue `lastdb-proxy set-target`. The proxy returns a
+bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
 
 ## Hard rules (never skip)
 
