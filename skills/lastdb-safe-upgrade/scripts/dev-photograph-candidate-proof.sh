@@ -437,37 +437,6 @@ done
 
 # The continuous publisher starts at daemon boot. Only the explicit snapshot
 # command below can supply the receipt report for this proof.
-FAILURE_PHASE="daemon_start"
-env -u LASTDB_HOME -u FOLDDB_HOME -u FOLD_SYNC_DEVICE_ID \
-  "$CANDIDATE_DAEMON" --data-dir "$COW_HOME" >"$DAEMON_LOG" 2>&1 &
-CANDIDATE_PID=$!
-
-socket="$COW_HOME/data/folddb.sock"
-ready=0
-ready_waits="${LASTDB_DEV_PHOTOGRAPH_READY_WAITS:-300}"
-case "$ready_waits" in ''|*[!0-9]*) proof_die "the DEV proof readiness limit is invalid" ;; esac
-ready_sleep="${LASTDB_DEV_PHOTOGRAPH_READY_SLEEP_SECS:-1}"
-ready_n=0
-FAILURE_PHASE="daemon_ready"
-while [ "$ready_n" -lt "$ready_waits" ]; do
-  if ! candidate_pid_is_owned; then
-    kill -0 "$CANDIDATE_PID" 2>/dev/null \
-      || proof_die "the exact candidate stopped before the DEV snapshot"
-    sleep "$ready_sleep"
-    ready_n=$((ready_n + 1))
-    continue
-  fi
-  if [ -S "$socket" ]; then
-    ready=1
-    break
-  fi
-  sleep "$ready_sleep"
-  ready_n=$((ready_n + 1))
-done
-[ "$ready" -eq 1 ] || proof_die "the exact candidate did not open its isolated socket"
-
-snapshot_json=""
-snapshot_ok=0
 snapshot_attempts="${LASTDB_DEV_PHOTOGRAPH_SNAPSHOT_ATTEMPTS:-3}"
 snapshot_delay="${LASTDB_DEV_PHOTOGRAPH_SNAPSHOT_RETRY_SECS:-5}"
 snapshot_timeout="${LASTDB_DEV_PHOTOGRAPH_SNAPSHOT_TIMEOUT_SECS:-900}"
@@ -503,6 +472,46 @@ else
   snapshot_client_timeout=$((snapshot_timeout + snapshot_client_margin))
 fi
 
+
+FAILURE_PHASE="daemon_start"
+# `LASTDB_UDS_ADMIN_TIMEOUT_SECS` is read by BOTH sides, so the daemon needs
+# the same deadline as the CLI or it answers 503 `node is busy: handler
+# deadline exceeded` at its own default while the client is still patiently
+# waiting. Setting it on the client alone only moved the failure from "the
+# client gave up" to "the server said busy" (2026-09-14, execution
+# lx-20260914T232101.801-28273-1, which reported client_timeout_secs=960 and
+# still failed). Server and client stay matched here.
+env -u LASTDB_HOME -u FOLDDB_HOME -u FOLD_SYNC_DEVICE_ID \
+  LASTDB_UDS_ADMIN_TIMEOUT_SECS="$snapshot_client_timeout" \
+  "$CANDIDATE_DAEMON" --data-dir "$COW_HOME" >"$DAEMON_LOG" 2>&1 &
+CANDIDATE_PID=$!
+
+socket="$COW_HOME/data/folddb.sock"
+ready=0
+ready_waits="${LASTDB_DEV_PHOTOGRAPH_READY_WAITS:-300}"
+case "$ready_waits" in ''|*[!0-9]*) proof_die "the DEV proof readiness limit is invalid" ;; esac
+ready_sleep="${LASTDB_DEV_PHOTOGRAPH_READY_SLEEP_SECS:-1}"
+ready_n=0
+FAILURE_PHASE="daemon_ready"
+while [ "$ready_n" -lt "$ready_waits" ]; do
+  if ! candidate_pid_is_owned; then
+    kill -0 "$CANDIDATE_PID" 2>/dev/null \
+      || proof_die "the exact candidate stopped before the DEV snapshot"
+    sleep "$ready_sleep"
+    ready_n=$((ready_n + 1))
+    continue
+  fi
+  if [ -S "$socket" ]; then
+    ready=1
+    break
+  fi
+  sleep "$ready_sleep"
+  ready_n=$((ready_n + 1))
+done
+[ "$ready" -eq 1 ] || proof_die "the exact candidate did not open its isolated socket"
+
+snapshot_json=""
+snapshot_ok=0
 SNAPSHOT_ATTEMPTS="$snapshot_attempts"
 SNAPSHOT_TIMEOUT="$snapshot_timeout"
 SNAPSHOT_CLIENT_TIMEOUT="$snapshot_client_timeout"

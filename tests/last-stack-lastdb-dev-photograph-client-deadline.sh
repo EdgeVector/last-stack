@@ -48,6 +48,24 @@ grep -q 'is below the DEV snapshot budget of' "$PROOF" \
 grep -q 'client_timeout_secs=%s' "$PROOF" \
   || fail "the failure summary does not report the client deadline"
 
+# 6. The DAEMON must get the same deadline. It reads the same variable and
+#    enforces its own handler deadline, so setting only the client moved the
+#    failure from "the client gave up" to a 503 "node is busy: handler deadline
+#    exceeded" without changing the outcome (execution
+#    lx-20260914T232101.801-28273-1, which reported client_timeout_secs=960).
+daemon_line="$(grep -n 'CANDIDATE_DAEMON" --data-dir' "$PROOF" | head -1 | cut -d: -f1)"
+[ -n "$daemon_line" ] || fail "the candidate daemon start was not found"
+sed -n "$((daemon_line - 1))p" "$PROOF" \
+  | grep -q 'LASTDB_UDS_ADMIN_TIMEOUT_SECS="\$snapshot_client_timeout"' \
+  || fail "the candidate daemon is started without the matched socket deadline"
+
+# 7. The deadline must be derived BEFORE the daemon start, or the daemon is
+#    handed an empty value and silently keeps its default.
+derive_line="$(grep -n 'snapshot_client_timeout=\$((snapshot_timeout' "$PROOF" | head -1 | cut -d: -f1)"
+[ -n "$derive_line" ] || fail "the client deadline derivation was not found"
+[ "$derive_line" -lt "$daemon_line" ] \
+  || fail "the deadline is derived at line $derive_line, after the daemon start at $daemon_line"
+
 # 6. Exercise the arithmetic the script uses, with its own default budget.
 snapshot_timeout="$(sed -n 's/.*LASTDB_DEV_PHOTOGRAPH_SNAPSHOT_TIMEOUT_SECS:-\([0-9]\{1,\}\)}.*/\1/p' "$PROOF" | head -1)"
 [ -n "$snapshot_timeout" ] || fail "the snapshot budget has no numeric default"
