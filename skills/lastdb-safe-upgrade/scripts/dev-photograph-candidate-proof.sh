@@ -8,6 +8,8 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 . "$SCRIPT_DIR/dev-photograph-stamp-gate.sh"
 # shellcheck source=deadline.sh
 . "$SCRIPT_DIR/deadline.sh"
+# shellcheck source=live-lastdb-env.sh
+. "$SCRIPT_DIR/live-lastdb-env.sh"
 
 DEV_INVITE_SLUG="lastdb-restore-probe-invite-dev-20260720"
 CANDIDATE_DAEMON=""
@@ -17,6 +19,7 @@ CLONE_SOURCE=""
 RECEIPT=""
 SOURCE_OID=""
 LASTSECRETS_BIN="${LASTDB_DEV_PHOTOGRAPH_LASTSECRETS_BIN:-lastsecrets}"
+LIVE_LASTDB_ENV_ARGS=()
 PROOF_ROOT=""
 PROOF_ROOT_REAL=""
 PROOF_SENTINEL=""
@@ -175,6 +178,12 @@ done
 [ -n "$RECEIPT" ] || proof_die "receipt path is absent"
 [ -n "$SOURCE_OID" ] || proof_die "source OID is absent"
 case "$RECEIPT" in /*) ;; *) proof_die "receipt path is not absolute" ;; esac
+
+while IFS= read -r env_pair; do
+  [ -n "$env_pair" ] && LIVE_LASTDB_ENV_ARGS+=("$env_pair")
+done <<EOF_ENV
+$(live_lastdb_env_pairs "${LASTDB_LAUNCHD_PLIST:-}")
+EOF_ENV
 
 if ! command -v jq >/dev/null 2>&1; then
   proof_die "jq is unavailable"
@@ -395,6 +404,7 @@ FAILURE_PHASE="dev_connect"
 set +e
 "$LASTSECRETS_BIN" get "$DEV_INVITE_SLUG" 2>/dev/null \
   | env -u LASTDB_HOME -u FOLDDB_HOME -u FOLD_SYNC_DEVICE_ID \
+      ${LIVE_LASTDB_ENV_ARGS[@]+"${LIVE_LASTDB_ENV_ARGS[@]}"} \
       "$CANDIDATE_CLI" --data-dir "$COW_HOME" connect \
         --env dev --invite-code-stdin --use-existing-identity \
         >/dev/null 2>/dev/null
@@ -482,6 +492,7 @@ FAILURE_PHASE="daemon_start"
 # lx-20260914T232101.801-28273-1, which reported client_timeout_secs=960 and
 # still failed). Server and client stay matched here.
 env -u LASTDB_HOME -u FOLDDB_HOME -u FOLD_SYNC_DEVICE_ID \
+  ${LIVE_LASTDB_ENV_ARGS[@]+"${LIVE_LASTDB_ENV_ARGS[@]}"} \
   LASTDB_UDS_ADMIN_TIMEOUT_SECS="$snapshot_client_timeout" \
   "$CANDIDATE_DAEMON" --data-dir "$COW_HOME" >"$DAEMON_LOG" 2>&1 &
 CANDIDATE_PID=$!
@@ -528,6 +539,7 @@ while [ "$attempt" -le "$snapshot_attempts" ]; do
   set +e
   snapshot_json="$(run_op_with_deadline "$snapshot_timeout" \
     env -u LASTDB_HOME -u FOLDDB_HOME -u FOLD_SYNC_DEVICE_ID \
+    ${LIVE_LASTDB_ENV_ARGS[@]+"${LIVE_LASTDB_ENV_ARGS[@]}"} \
     LASTDB_UDS_ADMIN_TIMEOUT_SECS="$snapshot_client_timeout" \
     "$CANDIDATE_CLI" --data-dir "$COW_HOME" cloud snapshot --json 2>"$SNAPSHOT_LOG")"
   snapshot_rc=$?
