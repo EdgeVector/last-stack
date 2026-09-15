@@ -2027,7 +2027,7 @@ else
     log "exact-candidate DEV photograph: create a fresh isolated proof"
     DEV_PROOF_OUT=""
     set +e
-    DEV_PROOF_OUT="$(bash "$DEV_PHOTOGRAPH_PROOF_SH" \
+    DEV_PROOF_OUT="$(LASTDB_LAUNCHD_PLIST="$LAUNCHD_PLIST" bash "$DEV_PHOTOGRAPH_PROOF_SH" \
       --candidate-lastdbd "$CANDIDATE_BIN" \
       --candidate-lastdb "$CANDIDATE_CLI_BIN" \
       --primary-home "$PRIMARY_HOME" \

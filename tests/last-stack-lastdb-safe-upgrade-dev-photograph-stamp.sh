@@ -291,6 +291,8 @@ PROOF_PID_FILE="$PROOF_FIXTURE/candidate.pid"
 PROOF_RESIDUE_MARKER="$PROOF_FIXTURE/residue-removed"
 PROOF_SNAPSHOT_PID_FILE="$PROOF_FIXTURE/snapshot.pid"
 PROOF_SNAPSHOT_LATE_MARKER="$PROOF_FIXTURE/snapshot-exceeded-bound"
+PROOF_ENV_LOG="$PROOF_FIXTURE/candidate-env.log"
+PROOF_LAUNCHD_PLIST="$PROOF_FIXTURE/primary.plist"
 mkdir -p \
   "$PROOF_PRIMARY/data" "$PROOF_CLONE/data" "$PROOF_CAND" \
   "$PROOF_TMP_ROOT" "$PROOF_RECEIPT_ROOT" "$PROOF_EVIDENCE_ROOT"
@@ -308,6 +310,17 @@ chmod 600 \
   "$PROOF_PRIMARY/identity.key" "$PROOF_PRIMARY/.bootstrap_done" \
   "$PROOF_PRIMARY/data/.device_id" "$PROOF_CLONE/identity.key" \
   "$PROOF_CLONE/.bootstrap_done" "$PROOF_CLONE/data/.device_id"
+cat >"$PROOF_LAUNCHD_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>EnvironmentVariables</key><dict>
+    <key>LASTDB_HOME</key><string>$PROOF_PRIMARY</string>
+    <key>LASTDB_MAX_ATOM_CONTENT_BYTES</key><string>524288</string>
+    <key>LASTDB_HASH_GROUP_WARM_BYTES</key><string>4294967296</string>
+  </dict>
+</dict></plist>
+PLIST
 
 cat >"$PROOF_CAND/lastdbd" <<'PY'
 #!/usr/bin/env python3
@@ -325,6 +338,16 @@ if "--version" in sys.argv:
 
 home = Path(sys.argv[sys.argv.index("--data-dir") + 1])
 socket_path = home / "data" / "folddb.sock"
+env_log = os.environ.get("DEV_FAKE_ENV_LOG")
+if env_log:
+    Path(env_log).write_text(
+        "|".join([
+            os.environ.get("LASTDB_MAX_ATOM_CONTENT_BYTES", "unset"),
+            os.environ.get("LASTDB_HASH_GROUP_WARM_BYTES", "unset"),
+            os.environ.get("LASTDB_HOME", "unset"),
+        ]) + "\n",
+        encoding="utf-8",
+    )
 pid_file = os.environ.get("DEV_FAKE_DAEMON_PID_FILE")
 if pid_file:
     Path(pid_file).write_text(str(os.getpid()), encoding="utf-8")
@@ -506,6 +529,8 @@ run_proof_case() {
   DEV_FAKE_SNAPSHOT_MODE="$mode" \
   DEV_FAKE_SNAPSHOT_PID_FILE="$PROOF_SNAPSHOT_PID_FILE" \
   DEV_FAKE_SNAPSHOT_LATE_MARKER="$PROOF_SNAPSHOT_LATE_MARKER" \
+  DEV_FAKE_ENV_LOG="$PROOF_ENV_LOG" \
+  LASTDB_LAUNCHD_PLIST="$PROOF_LAUNCHD_PLIST" \
   LASTDB_DEV_STAMP_ROOT="$PROOF_RECEIPT_ROOT" \
   LASTDB_DEV_PHOTOGRAPH_TMP_ROOT="$PROOF_TMP_ROOT" \
   LASTDB_DEV_PHOTOGRAPH_EVIDENCE_ROOT="$evidence_root" \
@@ -549,6 +574,8 @@ printf '%s\n' "$PROOF_CASE_OUT" | grep -q 'DEV_PHOTOGRAPH: GREEN' \
   || fail "successful proof wrote failure evidence"
 [ -f "$PROOF_CASE_RECEIPT" ] || fail "successful proof omitted its receipt"
 [ -f "$PROOF_RESIDUE_MARKER" ] || fail "hidden cloud residue reached DEV connect"
+grep -q '^524288|4294967296|unset$' "$PROOF_ENV_LOG" \
+  || fail "successful proof did not mirror the primary LASTDB_* environment"
 assert_dev_photograph_stamp_ok "$PROOF_CASE_RECEIPT" "$PROOF_PRIMARY" \
   || fail "successful proof wrote a receipt that its gate refused"
 grep -q '^report_top_level=true$' "$PROOF_CASE_RECEIPT" \
