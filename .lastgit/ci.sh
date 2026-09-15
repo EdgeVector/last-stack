@@ -665,6 +665,7 @@ ci_test tests/last-stack-worktree-reclaim-aliased-pool.sh
 
 # APPENDED: ci_test shards by list position.
 ci_test tests/last-stack-safe-json-capture-docs.sh
+ci_test tests/last-stack-safe-upgrade-loom-local-recovery.sh
 
 # The registration guard itself. Kept last, and asserted to be registered by
 # tests/last-stack-ci-sharding.sh, so the guard cannot quietly stop running.

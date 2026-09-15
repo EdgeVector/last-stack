@@ -40,6 +40,11 @@ This skill and its Loom `lastdb-safe-upgrade` graph are the **only** allowed
 path for a live binary change on this machine. The shell driver remains the
 probe and cutover implementation. It refuses a live cutover outside Loom.
 
+If LastDB refuses the Loom write probe, `last-stack-safe-upgrade-loom` selects
+Loom local recovery. Loom uses the trusted local graph bundle and a protected
+journal outside LastDB. The launcher reconciles that journal after LastDB
+returns. Other Loom graphs do not use this mode.
+
 ## Install location (all harnesses)
 
 Shipped in **last-stack** (`skills/lastdb-safe-upgrade/`). After
@@ -80,9 +85,22 @@ failure after a rename restores both pre-cutover files before exit. The live
 post-check names configured keys absent from the new process, and
 `LASTDB_LIVE_CONFIG_ENFORCE=1` makes any such drift RED.
 
-**Hot swap:** a single-process image swap always needs a brief restart. “Seamless”
-here means **prepared cutover after GREEN CoW**, not zero downtime. A socket
-proxy is optional later for near-zero client impact.
+**Hot swap:** a single-process image swap still needs a worker handoff. For
+near-zero client impact, run the `lastdb-proxy` from Fold PR #2091. It owns the
+stable public sockets while `lastdbd` uses private worker sockets. The proxy
+does not open the LastDB home, and it never permits two workers to own one
+home. Dogfood and service-manager wiring remain required before deployment.
+
+Use these worker flags when the proxy owns the public paths:
+
+```text
+lastdbd --data-dir <home> --socket-path <run>/worker.sock \
+  --full-socket-path <run>/worker-full.sock
+```
+
+The cutover must stop the old worker, start the new worker, run the full
+health checks, and then issue `lastdb-proxy set-target`. The proxy returns a
+bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
 
 ## Hard rules (never skip)
 
@@ -349,6 +367,12 @@ The sibling `lastdb` binary and the bundle manifest must be next to `lastdbd`.
 An equal candidate finishes as a no-op. An older, divergent, or unknown source
 commit fails closed. A byte change needs a new execution key. Do not reuse an
 execution for another pair.
+
+The launcher probes LastDB before it publishes or starts the graph. A refused
+write selects local recovery. An accepted write keeps the normal LastDB path.
+The local journal path defaults to
+`~/.local/state/last-stack/loom/recovery/executions.jsonl`; set
+`LAST_STACK_LOOM_LOCAL_RECOVERY_DIR` for a different state directory.
 
 An exact-candidate live cutover requires the sidebin venue. The driver refuses
 the brew venue before a durable write or a service stop. Brew can resolve an
