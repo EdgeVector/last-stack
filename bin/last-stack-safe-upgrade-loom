@@ -16,6 +16,9 @@ STAND_IN=0
 DRY_RUN=0
 AS_JSON=0
 SAFE_UPGRADE_PROTOCOL_VERSION="6"
+LOCAL_RECOVERY=0
+LOCAL_RECOVERY_DIR="${LAST_STACK_LOOM_LOCAL_RECOVERY_DIR:-$HOME/.local/state/last-stack/loom/recovery}"
+CONTROL_PLANE="lastdb"
 
 usage() {
   cat <<'EOF'
@@ -196,7 +199,8 @@ emit_json() {
     --arg source_git_oid "$SOURCE_OID" \
     --arg candidate_artifact_digest "$candidate_artifact_digest" \
     --arg safe_upgrade_protocol_version "$SAFE_UPGRADE_PROTOCOL_VERSION" \
-    '{outcome:$outcome,status:$status,state:$state,execution:$execution,key:$key,candidate:$candidate,candidate_cli:$candidate_cli,version:$version,lastdbd_version:$lastdbd_version,lastdb_version:$lastdb_version,lastdbd_sha256:$lastdbd_sha256,lastdb_sha256:$lastdb_sha256,source_git_oid:$source_git_oid,candidate_artifact_digest:$candidate_artifact_digest,safe_upgrade_protocol_version:$safe_upgrade_protocol_version,graph:"lastdb-safe-upgrade"}'
+    --arg control_plane "$CONTROL_PLANE" \
+    '{outcome:$outcome,status:$status,state:$state,execution:$execution,key:$key,candidate:$candidate,candidate_cli:$candidate_cli,version:$version,lastdbd_version:$lastdbd_version,lastdb_version:$lastdb_version,lastdbd_sha256:$lastdbd_sha256,lastdb_sha256:$lastdb_sha256,source_git_oid:$source_git_oid,candidate_artifact_digest:$candidate_artifact_digest,safe_upgrade_protocol_version:$safe_upgrade_protocol_version,control_plane:$control_plane,graph:"lastdb-safe-upgrade"}'
 }
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -209,7 +213,6 @@ if [ "$DRY_RUN" -eq 1 ]; then
 fi
 
 command -v loom >/dev/null 2>&1 || die "loom is not installed"
-loom ping >/dev/null 2>&1 || die "loom cannot reach LastDB"
 
 exe="$(command -v loom)"
 real="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$exe")"
@@ -231,11 +234,39 @@ else
   export LOOM_LIVE=1 LOOM_CANARY_LIVE=1
 fi
 
-loom validate "$defs/lastdb-safe-upgrade.json" >/dev/null
-loom publish "$defs/lastdb-safe-upgrade.json" >/dev/null
+if ! loom ping >/dev/null 2>&1; then
+  LOCAL_RECOVERY=1
+else
+  set +e
+  probe_json="$(loom write-probe --json 2>/dev/null)"
+  probe_rc=$?
+  set -e
+  if [ "$probe_rc" -eq 42 ] && printf '%s\n' "$probe_json" | jq -e '.recovery_eligible == true' >/dev/null 2>&1; then
+    LOCAL_RECOVERY=1
+  elif [ "$probe_rc" -ne 0 ]; then
+    die "Loom write probe failed without a recovery authorization: ${probe_json:-no result}"
+  fi
+fi
+
+if [ "$LOCAL_RECOVERY" -eq 1 ]; then
+  CONTROL_PLANE="local-recovery"
+  printf 'last-stack-safe-upgrade-loom: control_plane=local-recovery journal=%s\n' \
+    "$LOCAL_RECOVERY_DIR/executions.jsonl" >&2
+else
+  loom validate "$defs/lastdb-safe-upgrade.json" >/dev/null
+  loom publish "$defs/lastdb-safe-upgrade.json" >/dev/null
+fi
 
 set +e
-view="$(loom run lastdb-safe-upgrade --key "$KEY" --input "$input")"
+run_args=(loom run lastdb-safe-upgrade --key "$KEY" --input "$input")
+if [ "$LOCAL_RECOVERY" -eq 1 ]; then
+  run_args+=(
+    --local-recovery
+    --definition "$defs/lastdb-safe-upgrade.json"
+    --local-recovery-dir "$LOCAL_RECOVERY_DIR"
+  )
+fi
+view="$("${run_args[@]}")"
 loom_rc=$?
 set -e
 execution="$(printf '%s\n' "$view" | awk '/^lx-/{print; exit}')"
@@ -243,6 +274,11 @@ status="$(printf '%s\n' "$view" | awk -F': ' '/^status:/{print $2; exit}')"
 state="$(printf '%s\n' "$view" | awk -F': ' '/^state:/{print $2; exit}')"
 outcome="error"
 [ "$loom_rc" -eq 0 ] && [ "$status" = "succeeded" ] && outcome="ok"
+
+if [ "$LOCAL_RECOVERY" -eq 1 ] && [ "$outcome" = "ok" ] && loom ping >/dev/null 2>&1; then
+  loom reconcile-local "$LOCAL_RECOVERY_DIR/executions.jsonl" --json >/dev/null 2>&1 \
+    || printf 'last-stack-safe-upgrade-loom: local receipt remains pending reconciliation\n' >&2
+fi
 
 if [ "$AS_JSON" -eq 1 ]; then
   emit_json "$outcome" "${status:-unknown}" "${state:-unknown}" "$execution"
