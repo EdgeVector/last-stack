@@ -57,10 +57,6 @@ log() {
   echo "last-stack-canary-build-main: $*" >&2
 }
 
-json_escape() {
-  python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()[:-1] if False else sys.argv[1]))' "$1"
-}
-
 dry_run=0
 force=0
 skip_build=0
