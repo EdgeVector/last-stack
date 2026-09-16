@@ -9,6 +9,9 @@ timezone = "America/Los_Angeles"
 cadence_min = 60
 # Prefer live factory dashboard when up.
 factory_url = "http://127.0.0.1:4177"
+# GET /api/state budget. Cold probes on 2026-09-04 took up to 13.07s and still
+# returned HTTP 200; 4s sat inside that spread and painted factory=down.
+factory_timeout_s = 20
 # Use completed hour (hourAgo=1), not partial current hour, for ship-rate checks.
 use_completed_hour = true
 

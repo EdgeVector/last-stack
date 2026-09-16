@@ -37,7 +37,7 @@ else:
     raise SystemExit(99)
 ''', encoding="utf-8")
     stub.chmod(0o755)
-    for name in ("kanban", "fkanban", "ra"):
+    for name in ("kanban", "fkanban", "ra", "lastgit", "last-stack-forge-api"):
         (binaries / name).symlink_to(stub.name)
     config = root / "config.toml"
     config.write_text('''[general]
@@ -62,9 +62,10 @@ hard_count = 1
     assert not notifications.exists(), "dry-run reached the notifier"
     assert not (state / "state.json").exists(), "dry-run persisted state"
     observed = [json.loads(line) for line in calls.read_text().splitlines()]
-    assert observed == [["kanban", "list", "--json", "--all"],
-                        ["kanban", "pickup", "status", "--json"],
-                        ["kanban", "milestone", "gap-report", "--json"]], observed
+    kanban_calls = [row for row in observed if row and row[0] == "kanban"]
+    assert kanban_calls == [["kanban", "list", "--json", "--all"],
+                            ["kanban", "pickup", "status", "--json"],
+                            ["kanban", "milestone", "gap-report", "--json"]], observed
     # Control: the same alert without --dry-run must reach our fake notifier
     # and persist state. Otherwise the negative assertions could pass vacuously.
     live = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=30)

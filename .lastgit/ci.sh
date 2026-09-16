@@ -242,6 +242,7 @@ ci_test tests/morning-sync-live-human-gate-reconcile.sh
 ci_test tests/morning-sync-usage-bugs-pagination.sh
 ci_test tests/last-stack-factory-health-backlog.sh
 ci_test tests/last-stack-factory-health-runway.sh
+ci_test tests/last-stack-factory-health-ship-meter.sh
 ci_test tests/last-stack-factory-heal-tick.sh
 ci_test tests/last-stack-launchagent-stable-path.sh
 ci_test tests/last-stack-todo-rank.sh
