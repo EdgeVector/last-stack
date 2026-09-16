@@ -255,14 +255,6 @@ def load_board_cards(board_path: str) -> dict[str, dict[str, object]]:
     return cards
 
 
-def load_board_columns(board_path: str) -> dict[str, str]:
-    return {
-        slug: str(card["column"])
-        for slug, card in load_board_cards(board_path).items()
-        if isinstance(card.get("column"), str)
-    }
-
-
 def load_proof_slugs(path: Optional[str]) -> set[str]:
     if not path:
         return set()
