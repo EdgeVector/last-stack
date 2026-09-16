@@ -793,11 +793,6 @@ def review_state(args: argparse.Namespace, ref: ReviewRef) -> tuple[str, str]:
     return (state if state in ("closed", "open") else "unknown"), detail
 
 
-def merged_status(args: argparse.Namespace, ref: ReviewRef) -> tuple[bool, str]:
-    state, detail = review_state(args, ref)
-    return state == "merged", detail
-
-
 def append_brain(args: argparse.Namespace, slug: str, text: str) -> None:
     if args.dry_run:
         return
