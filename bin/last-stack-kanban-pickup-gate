@@ -17,7 +17,7 @@
 # Won't-undo (2026-08-15): NEVER run unbounded board-closeout-sweep here.
 # Closeout has its own 15m LaunchAgent. A hung closeout under LastDB load
 # exceeded routinesd's ~120s gate_command timeout, so ready>0 never reached a
-# harness (factory outage: pickup-gate-timeout). Status reads are hard-capped.
+# harness (factory outage: pickup-gate-timeout). Ready reads are hard-capped.
 set -euo pipefail
 
 self_dir="$(cd "$(dirname "$0")" && pwd -P)"
@@ -43,18 +43,22 @@ last-stack-kanban-pickup-gate [--json-out PATH]
 
 Zero-LLM credit gate for kanban-pickup. Exit 0 = skip agent; 10 = proceed.
 
-Does not run board-closeout-sweep (LaunchAgent owns closeout). Caps status and
+Does not run board-closeout-sweep (LaunchAgent owns closeout). Caps ready and
 todo board reads so the gate always finishes under routinesd's gate_command
-timeout (~120s). Todo list is diagnostic only. Status unavailable always skips.
+timeout (~120s). Todo list is diagnostic only. Ready unavailable always skips.
 Never proceed from todo count. Proceed prints PICKUP_GATE_PROCEED, not
 ROUTINE_RESULT outcome=ok.
 
+The proceed/skip read is `kanban pickup ready --json` (todo-partition ready
+count). Do not call the full-board BoardCards audit CLI here.
+
 Options:
-  --json-out PATH   write the pickup status JSON (or todo list) to PATH
+  --json-out PATH   write the pickup ready JSON (or todo list) to PATH
   -h, --help        show this help
 
 Env (optional, for tests):
-  LAST_STACK_PICKUP_GATE_STATUS_TIMEOUT_SEC  cap for `pickup status` (default 45)
+  LAST_STACK_PICKUP_GATE_READY_TIMEOUT_SEC   cap for `pickup ready` (default 45)
+  LAST_STACK_PICKUP_GATE_STATUS_TIMEOUT_SEC  alias for READY timeout (legacy)
   LAST_STACK_PICKUP_GATE_TODO_TIMEOUT_SEC    cap for todo list fallback (default 30)
 USAGE
 }
@@ -114,7 +118,7 @@ if [ -n "$timeout_bin" ]; then
   fi
 fi
 
-status_timeout_sec="${LAST_STACK_PICKUP_GATE_STATUS_TIMEOUT_SEC:-45}"
+status_timeout_sec="${LAST_STACK_PICKUP_GATE_READY_TIMEOUT_SEC:-${LAST_STACK_PICKUP_GATE_STATUS_TIMEOUT_SEC:-45}}"
 todo_timeout_sec="${LAST_STACK_PICKUP_GATE_TODO_TIMEOUT_SEC:-30}"
 
 # Closeout is intentionally NOT run here. LaunchAgent
@@ -192,8 +196,10 @@ tmp_todo_err="$(mktemp "${TMPDIR:-/tmp}/pickup-gate-todo-err.XXXXXX")"
 cleanup() { rm -f "$tmp_status" "$tmp_todo" "$tmp_status_err" "$tmp_todo_err"; }
 trap cleanup EXIT
 
-# Prefer pickup status (ready count). A failed or timed-out status always
-# skips. The todo list is diagnostic only — never a proceed signal.
+# Prefer pickup ready (todo-partition ready count). A failed or timed-out
+# ready read always skips. The todo list is diagnostic only — never a
+# proceed signal. CLI `pickup status` stays the full-board audit; this gate
+# must not call it.
 classify_err_class() {
   local status_rc="$1"
   local err="$2"
@@ -241,7 +247,7 @@ status_ok=0
 status_rc=0
 todo_rc=0
 if run_board_capped "$status_timeout_sec" \
-  "$board_cli" pickup status --json >"$tmp_status" 2>"$tmp_status_err"; then
+  "$board_cli" pickup ready --json >"$tmp_status" 2>"$tmp_status_err"; then
   status_ok=1
 else
   status_rc=$?

@@ -129,9 +129,9 @@ fi
 
 # 6) todo ready count
 if command -v kanban >/dev/null 2>&1; then
-  ready=$(kanban pickup status --json 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("ready",0))' 2>/dev/null || echo "?")
+  ready=$(kanban pickup ready --json 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("ready",0))' 2>/dev/null || echo "?")
   if [ "$ready" = "?" ]; then
-    add_warn "pickup-ready" "could not parse kanban pickup status"
+    add_warn "pickup-ready" "could not parse kanban pickup ready"
   elif [ "$ready" -gt 0 ] 2>/dev/null; then
     add_ok "pickup-ready" "${ready} cards ready"
   else

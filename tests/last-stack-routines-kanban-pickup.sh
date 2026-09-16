@@ -7,7 +7,11 @@ gate="$ROOT/bin/last-stack-kanban-pickup-gate"
 
 test -x "$gate"
 grep -q 'exit 10' "$gate"
-grep -q 'pickup status --json' "$gate"
+grep -q 'pickup ready' "$gate"
+if grep -q 'pickup status --json' "$gate"; then
+  echo "gate still calls pickup status --json (full-board audit)" >&2
+  exit 1
+fi
 grep -q 'ready=0' "$gate"
 
 grep -q 'The candidate is pickup work with `Kind: pr`' "$pickup"

@@ -41,7 +41,7 @@ chmod +x "$LAST_STACK_ROOT/bin/last-stack-brain-append-heartbeat" \
 # Case 1: ready=0
 cat >"$tmp/path/kanban" <<'S'
 #!/bin/sh
-if [ "$1" = pickup ] && [ "$2" = status ]; then
+if [ "$1" = pickup ] && [ "$2" = ready ]; then
   printf '%s\n' '{"scanned":10,"ready":0,"counts":{"pickup-ready":0,"unattached-outcome":5,"human-gated":3},"cards":[]}'
   exit 0
 fi
@@ -63,7 +63,7 @@ printf '%s\n' "$out" | grep -q 'ready=0' || { echo "missing ready=0"; echo "$out
 # (under 120s; assert well under 30s).
 cat >"$tmp/path/kanban" <<'S'
 #!/bin/sh
-if [ "$1" = pickup ] && [ "$2" = status ]; then
+if [ "$1" = pickup ] && [ "$2" = ready ]; then
   printf '%s\n' '{"scanned":10,"ready":3,"counts":{"pickup-ready":3},"cards":[]}'
   exit 0
 fi
@@ -95,7 +95,7 @@ fi
 # Case 3: status hangs; todo has items → skip (fail-closed), never proceed-ok.
 cat >"$tmp/path/kanban" <<'S'
 #!/bin/sh
-if [ "$1" = pickup ] && [ "$2" = status ]; then
+if [ "$1" = pickup ] && [ "$2" = ready ]; then
   sleep 600
   exit 0
 fi
@@ -140,7 +140,7 @@ unset LAST_STACK_PICKUP_GATE_TODO_TIMEOUT_SEC
 # Case 4: status fails immediately; todo is non-empty → skip, no proceed-ok.
 cat >"$tmp/path/kanban" <<'S'
 #!/bin/sh
-if [ "$1" = pickup ] && [ "$2" = status ]; then
+if [ "$1" = pickup ] && [ "$2" = ready ]; then
   echo "service_timeout: node did not respond within 30000ms" >&2
   exit 1
 fi
@@ -187,7 +187,7 @@ S
 chmod +x "$tmp/badtimeout/gtimeout"
 cat >"$tmp/path/kanban" <<'S'
 #!/bin/sh
-if [ "$1" = pickup ] && [ "$2" = status ]; then
+if [ "$1" = pickup ] && [ "$2" = ready ]; then
   printf '%s\n' '{"scanned":10,"ready":3,"counts":{"pickup-ready":3},"cards":[]}'
   exit 0
 fi
@@ -267,7 +267,7 @@ chmod +x "$LAST_STACK_ROOT/bin/last-stack-brain-append-heartbeat" \
 
 cat >"$tmp/path/kanban" <<'S'
 #!/bin/sh
-if [ "$1" = pickup ] && [ "$2" = status ]; then
+if [ "$1" = pickup ] && [ "$2" = ready ]; then
   echo "service_timeout: node did not respond within 30000ms" >&2
   exit 1
 fi
