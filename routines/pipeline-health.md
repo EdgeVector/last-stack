@@ -527,8 +527,9 @@ Rules:
 - Use **`error`** only for tool/auth failures that prevented the deploy scan or
   the stuck-merge scan entirely (CLI missing, unusable, timed out before any
   inventory read).
-- Classify with `last-stack-routine-outcome-classify --observer last-stack-pipeline-health`
-  when in doubt.
+- Classify with `last-stack-routine-outcome-classify --observer last-stack-pipeline-health --detail "<ok|noop|error> open_cr=… open_forge=…"`
+  when in doubt. Put heartbeat fields inside `--detail`. Do not invent
+  `--open-cr`. `--line` belongs to `last-stack-brain-append-heartbeat`.
 - Prefer `filed_papercut=` over legacy `filed_p0=` (the latter meant board cards;
   do not reintroduce board P0 filing).
 

@@ -45,4 +45,10 @@ require 'stdin only — no `--body`' "$closeout"
 require 'conflicts with' "$instructions"
 require 'does not strip a `<type>/` prefix' "$instructions"
 
+# Window 2026-09-16: agents mix heartbeat --line / --open-cr onto the classifier
+# (17 sessions, exit 2 unrecognized arguments).
+require 'last-stack-routine-outcome-classify --observer last-stack-pipeline-health --detail' \
+  "$root/routines/pipeline-health.md"
+require 'Put heartbeat fields inside `--detail`' "$root/routines/pipeline-health.md"
+
 echo "ok last-stack-cli-flag-gotchas-docs"

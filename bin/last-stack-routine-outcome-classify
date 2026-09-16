@@ -11,6 +11,11 @@ Usage:
       [--timed-out 0|1] [--emit-result]
   last-stack-routine-outcome-classify --status-json FILE [--json] [--emit-result]
 
+`--line` is an alias for `--detail` (agents mix this with
+last-stack-brain-append-heartbeat). Heartbeat field flags such as
+`--open-cr 2` and leftover `open_cr=2` tokens fold into `--detail`.
+Do not invent other classifier flags.
+
 Exit 0 after a successful classify. Exit 2 on usage.
 """
 from __future__ import annotations
@@ -170,18 +175,82 @@ def emit_result(outcome: str, detail: str) -> None:
     print(f"ROUTINE_RESULT outcome={outcome} detail={detail}")
 
 
+# Agents copy heartbeat tokens onto this CLI. Fold the known field names
+# and leftover key=value / positional words into --detail instead of
+# argparse-exiting 2 (self-improvement 2026-09-16, 17 sessions).
+HEARTBEAT_FIELD_FLAGS = frozenset(
+    {
+        "open-cr",
+        "open_cr",
+        "open-forge",
+        "open_forge",
+        "not-landed",
+        "not_landed",
+        "deploy-blocked",
+        "deploy_blocked",
+        "stuck",
+        "merged",
+        "fixed",
+        "flagged",
+        "filed-papercut",
+        "filed_papercut",
+        "health",
+        "gaps",
+        "filed",
+        "healed",
+        "exceptions",
+        "remaining",
+        "classes",
+    }
+)
+
+
+def fold_observer_rest(rest: list[str], detail: str) -> tuple[str, list[str]]:
+    """Append known heartbeat leftovers to detail. Return leftover unknown flags."""
+    parts = [detail] if detail.strip() else []
+    leftover: list[str] = []
+    i = 0
+    while i < len(rest):
+        tok = rest[i]
+        if tok.startswith("--"):
+            key = tok[2:]
+            norm = key.replace("-", "_")
+            known = key in HEARTBEAT_FIELD_FLAGS or norm in HEARTBEAT_FIELD_FLAGS
+            if known and i + 1 < len(rest) and not rest[i + 1].startswith("--"):
+                parts.append(f"{norm}={rest[i + 1]}")
+                i += 2
+                continue
+            leftover.append(tok)
+            i += 1
+            continue
+        parts.append(tok)
+        i += 1
+    return " ".join(parts).strip(), leftover
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(add_help=True)
     parser.add_argument("--observer")
     parser.add_argument("--exit", dest="exit_code", type=int, default=0)
     parser.add_argument("--detail", default="")
+    parser.add_argument(
+        "--line",
+        default="",
+        help="alias for --detail (heartbeat line from last-stack-brain-append-heartbeat)",
+    )
     parser.add_argument("--timed-out", dest="timed_out", default="0")
     parser.add_argument("--status-json")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--emit-result", action="store_true")
-    args = parser.parse_args(argv)
+    args, rest = parser.parse_known_args(argv)
 
     if args.status_json:
+        if rest:
+            print(
+                "error: unrecognized arguments: " + " ".join(rest),
+                file=sys.stderr,
+            )
+            return 2
         with open(args.status_json, encoding="utf-8") as fh:
             payload = json.load(fh)
         summary = classify_status(payload)
@@ -211,8 +280,17 @@ def main(argv: list[str]) -> int:
         print("usage: provide --observer or --status-json", file=sys.stderr)
         return 2
 
+    detail = (args.detail or args.line or "").strip()
+    detail, leftover = fold_observer_rest(rest, detail)
+    if leftover:
+        print(
+            "error: unrecognized arguments: " + " ".join(leftover),
+            file=sys.stderr,
+        )
+        return 2
+
     timed_out = str(args.timed_out).lower() in {"1", "true", "yes"}
-    outcome = classify_observer(args.exit_code, args.detail, timed_out)
+    outcome = classify_observer(args.exit_code, detail, timed_out)
     if args.json:
         print(
             json.dumps(
@@ -227,8 +305,8 @@ def main(argv: list[str]) -> int:
     else:
         print(outcome)
     if args.emit_result:
-        detail = args.detail.strip() or f"observer={args.observer}"
-        emit_result(outcome, detail)
+        emit_detail = detail or f"observer={args.observer}"
+        emit_result(outcome, emit_detail)
     return 0
 
 

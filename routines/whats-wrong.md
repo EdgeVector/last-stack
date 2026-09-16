@@ -53,9 +53,10 @@ invoked as an LLM anyway:
 ## Heartbeat / result
 
 Prefer the CLI's own heartbeat. Classify with
-`last-stack-routine-outcome-classify --observer last-stack-whats-wrong`
+`last-stack-routine-outcome-classify --observer last-stack-whats-wrong --detail "ok exceptions=… remaining=…"`
 (or print the `ROUTINE_RESULT` token followed by
 `outcome=<ok|noop|error> detail=<same-one-line-outcome>`).
+Put `exceptions=` inside `--detail`. Do not pass `--line` or invent `--exceptions`.
 
 - `ok` — ran the graph (including remaining red rows / papercuts filed)
 - `noop` — `exceptions=0` or dry-run of an empty list
