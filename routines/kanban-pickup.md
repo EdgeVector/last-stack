@@ -71,7 +71,7 @@ if [ "$gate_rc" -ne 10 ]; then
 fi
 ```
 
-The gate checks **`kanban pickup status --json` → `ready`**, not todo length.
+The gate checks **`kanban pickup ready --json` → `ready`**, not todo length.
 A full `todo` of unclaimable cards (`ready=0`: unattached-outcome, human-gated,
 blocked-on-dependency, parked/non-work, …) must EXIT without claiming.
 
@@ -581,7 +581,7 @@ into the heartbeat and the `ROUTINE_RESULT` outcome so the degradation stays
 measurable — for example `ok cards=1 rank=stale-order worked=<slug>`. A normal
 fire reports `rank=ok`.
 
-Only the ready gate is fatal. If `pickup status` cannot be read the lane has no
+Only the ready gate is fatal. If `pickup ready` cannot be read the lane has no
 ready set and must noop; a failed ranker never produces that noop.
 
 Why this runs after the claim, not before, as of 2026-09-05:

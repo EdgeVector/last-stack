@@ -142,7 +142,7 @@ if [ "\$gate_rc" -ne 10 ]; then
 fi
 \`\`\`
 
-**Critical:** the gate uses \`kanban pickup status --json\` **ready** count, not
+**Critical:** the gate uses \`kanban pickup ready --json\` **ready** count, not
 \`todo\` length. A full todo of unclaimable cards (\`ready=0\`:
 unattached-outcome, human-gated, blocked-on-dependency, …) must **not** load
 the full pickup prompt or start implementation. Only when the gate exits 10

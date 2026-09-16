@@ -21,7 +21,7 @@ usage() {
   cat <<'EOF'
 Usage: last-stack-factory-ready-buffer-controller [--dry-run] [--json]
 
-Read `kanban pickup status --json`. Run the milestone driver once when the
+Read `kanban pickup ready --json`. Run the milestone driver once when the
 pickup-ready count is below three. A successful run starts a 30-minute
 cooldown and gives the driver a one-card safety cap.
 EOF
@@ -80,7 +80,7 @@ esac
 [ "$THRESHOLD" -gt 0 ] || { emit error none invalid-threshold; exit 2; }
 [ "$LOCK_STALE_S" -gt 0 ] || { emit error none invalid-lock-stale; exit 2; }
 
-if ! pickup_json="$($BOARD_CLI pickup status --json 2>/dev/null)"; then
+if ! pickup_json="$($BOARD_CLI pickup ready --json 2>/dev/null)"; then
   emit error none board-unreadable
   exit 1
 fi
