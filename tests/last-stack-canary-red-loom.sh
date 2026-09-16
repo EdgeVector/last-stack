@@ -32,6 +32,10 @@ python3 -c 'import json,sys; json.load(open(sys.argv[1]))' \
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-canary-red.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
+# Hermetic: do not consult the host Situations node. An active
+# lastdb-primary-offload-then-heal-20260906 would keep empty listings
+# from expiring and would turn the negative expire fixture red.
+export CANARY_RED_BLOCKING_SITUATION=""
 
 # --- the gate lists from the same system that orchestrates the lane ---
 LANE="$ROOT/bin/last-stack-canary-loom"
@@ -609,6 +613,119 @@ set -e
 [ "$fail_tick2_rc" -eq 0 ] || fail "post-failed empty tick dry-run must exit 0, got $fail_tick2_rc: $fail_tick2_out"
 printf '%s\n' "$fail_tick2_out" | grep -q 'ROUTINE_RESULT outcome=error detail=listing_stale_expired' \
   || fail "post-failed empty tick must page listing_stale_expired: $fail_tick2_out"
+
+# --- empty listing + owned-pause Situation stays noop, never listing_stale_expired ---
+# Live 2026-09-15..16: 10 of 20 hourly fires paged `error listing_stale_expired`
+# while Situation lastdb-primary-offload-then-heal-20260906 was active and
+# canary dogfood already said blocked_situation=restart-primary-lastdbd.
+# Revert listing_stale_blocking_situation / the empty-picked honor path and
+# this fixture goes red (tick 2 pages listing_stale_expired).
+grep -q 'listing_stale_blocking_situation' "$BIN" \
+  || fail "listing_stale_blocking_situation missing from $BIN"
+grep -q 'expected_situation=' "$BIN" \
+  || fail "expected_situation detail missing from $BIN"
+grep -q 'restart-primary-lastdbd' "$BIN" \
+  || fail "listing_stale must ask scoped restart-primary-lastdbd preflight"
+grep -q 'lastdb-primary-offload-then-heal-20260906' "$BIN" \
+  || fail "owned-pause Situation slug missing from $BIN"
+
+OWNED_PAUSE="lastdb-primary-offload-then-heal-20260906"
+printf '%s\n' '[]' >"$tmp/empty.json"
+printf '%s\n' '{"ts":"2026-09-16T12:00:00Z","status":"idle","exec_id":"","detail":"idle reason=no_failed_in_window","key":"","outcome":"noop","engine":"loom"}' \
+  >"$tmp/stamp.json"
+set +e
+owned_tick1_out="$(
+  CANARY_RED_BLOCKING_SITUATION="$OWNED_PAUSE" \
+  CANARY_RED_LOOM_LIST_FILE="$tmp/empty.json" \
+  "$BIN" --dry-run --json --quiet
+)"
+owned_tick1_rc=$?
+set -e
+[ "$owned_tick1_rc" -eq 0 ] || fail "owned-pause tick1 must exit 0, got $owned_tick1_rc: $owned_tick1_out"
+printf '%s\n' "$owned_tick1_out" | grep -q "ROUTINE_RESULT outcome=noop detail=idle reason=listing_stale expected_situation=${OWNED_PAUSE}" \
+  || fail "owned-pause tick1 must name the Situation: $owned_tick1_out"
+if printf '%s\n' "$owned_tick1_out" | grep -q 'listing_stale_expired'; then
+  fail "owned-pause tick1 paged listing_stale_expired: $owned_tick1_out"
+fi
+python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("outcome") == "noop", d
+assert d.get("exec_id") in ("", None), d
+assert d.get("listing_stale_exec") == "__listing_stale__", d
+assert int(d.get("listing_stale_hits") or 0) == 1, d
+' "$tmp/stamp.json" \
+  || fail "owned-pause tick1 did not persist sentinel hits=1: $(cat "$tmp/stamp.json")"
+
+set +e
+owned_tick2_out="$(
+  CANARY_RED_BLOCKING_SITUATION="$OWNED_PAUSE" \
+  CANARY_RED_LOOM_LIST_FILE="$tmp/empty.json" \
+  "$BIN" --dry-run --json --quiet
+)"
+owned_tick2_rc=$?
+set -e
+[ "$owned_tick2_rc" -eq 0 ] || fail "owned-pause tick2 must exit 0, got $owned_tick2_rc: $owned_tick2_out"
+printf '%s\n' "$owned_tick2_out" | grep -q "ROUTINE_RESULT outcome=noop detail=idle reason=listing_stale expected_situation=${OWNED_PAUSE} hits=2" \
+  || fail "owned-pause tick2 must stay noop and name the Situation: $owned_tick2_out"
+if printf '%s\n' "$owned_tick2_out" | grep -q 'listing_stale_expired'; then
+  fail "owned-pause tick2 paged listing_stale_expired: $owned_tick2_out"
+fi
+python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("outcome") == "noop", d
+assert d.get("listing_stale_exec") == "__listing_stale__", d
+assert int(d.get("listing_stale_hits") or 0) == 2, d
+' "$tmp/stamp.json" \
+  || fail "owned-pause tick2 did not persist sentinel hits=2: $(cat "$tmp/stamp.json")"
+
+# PATH stub: production (unset override) asks the scoped restart preflight.
+mkdir -p "$tmp/sitbin"
+cat >"$tmp/sitbin/situations" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${SITUATIONS_STUB_LOG:?}"
+case " $* " in
+  *" --action restart-primary-lastdbd "*)
+    case " $* " in
+      *" --system lastdbd "*)
+        printf '%s\n' "lastdb-primary-offload-then-heal-20260906"
+        exit 3
+        ;;
+    esac
+    ;;
+esac
+exit 0
+STUB
+chmod +x "$tmp/sitbin/situations"
+# The helper prepends $HOME/.local/bin, so the stub must live there.
+mkdir -p "$tmp/home/.local/bin"
+cp "$tmp/sitbin/situations" "$tmp/home/.local/bin/situations"
+: >"$tmp/situations-stub.log"
+printf '%s\n' '{"ts":"2026-09-16T12:00:00Z","status":"idle","exec_id":"","detail":"idle reason=no_failed_in_window","key":"","outcome":"noop","engine":"loom"}' \
+  >"$tmp/stamp.json"
+set +e
+preflight_out="$(
+  env -u CANARY_RED_BLOCKING_SITUATION \
+    HOME="$tmp/home" \
+    PATH="$tmp/sitbin:$PATH" \
+    SITUATIONS_STUB_LOG="$tmp/situations-stub.log" \
+    LAST_STACK_CANARY_RED_STAMP="$tmp/stamp.json" \
+    CANARY_RED_LOOM_LIST_FILE="$tmp/empty.json" \
+    CANARY_RED_LOOM_HEAL_LIST_FILE="$tmp/heal-empty.json" \
+    "$BIN" --dry-run --json --quiet
+)"
+preflight_rc=$?
+set -e
+[ "$preflight_rc" -eq 0 ] || fail "preflight stub tick must exit 0, got $preflight_rc: $preflight_out"
+printf '%s\n' "$preflight_out" | grep -q "ROUTINE_RESULT outcome=noop detail=idle reason=listing_stale expected_situation=${OWNED_PAUSE}" \
+  || fail "preflight stub must honor restart-primary-lastdbd: $preflight_out"
+grep -q -- '--action restart-primary-lastdbd' "$tmp/situations-stub.log" \
+  || fail "preflight stub was not asked restart-primary-lastdbd: $(cat "$tmp/situations-stub.log")"
+grep -q -- '--system lastdbd' "$tmp/situations-stub.log" \
+  || fail "preflight stub was not scoped to lastdbd: $(cat "$tmp/situations-stub.log")"
+grep -q -- '--field slug' "$tmp/situations-stub.log" \
+  || fail "preflight stub was not asked --field slug: $(cat "$tmp/situations-stub.log")"
 
 # stand-in scripts (no live agent)
 cat >"$tmp/get.json" <<'JSON'

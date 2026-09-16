@@ -114,16 +114,52 @@ else:
 # consecutive empty listings can expire. A real exec id must not inherit
 # the empty-listing hit count.
 LISTING_STALE_EMPTY_KEY="__listing_stale__"
+# Situation that owns the empty canary lane (Tom 2026-09-06 offload plan).
+# Paging listing_stale_expired while this (or any Situation that blocks
+# restart-primary-lastdbd) is active is worse than idle: dogfood already
+# reports blocked_situation=restart-primary-lastdbd and nothing is red.
+LISTING_STALE_OWNED_PAUSE_SLUG="lastdb-primary-offload-then-heal-20260906"
+
+# listing_stale_blocking_situation
+# Prints one Situation slug when an owned pause covers the empty canary
+# lane. Empty output means none. Tests set CANARY_RED_BLOCKING_SITUATION
+# (even to empty) to skip the live preflight. Production leaves it unset
+# and asks `situations preflight --action restart-primary-lastdbd
+# --system lastdbd --field slug`.
+listing_stale_blocking_situation() {
+  if [ "${CANARY_RED_SKIP_SITUATION_CHECK:-0}" = "1" ]; then
+    return 0
+  fi
+  if [ -n "${CANARY_RED_BLOCKING_SITUATION+x}" ]; then
+    if [ -n "$CANARY_RED_BLOCKING_SITUATION" ]; then
+      printf '%s\n' "$CANARY_RED_BLOCKING_SITUATION"
+    fi
+    return 0
+  fi
+  local sit_bin sit_out sit_rc=0 sit_slug
+  sit_bin="$(command -v situations 2>/dev/null || true)"
+  if [ -z "$sit_bin" ]; then
+    return 0
+  fi
+  sit_out="$("$sit_bin" preflight --action restart-primary-lastdbd --system lastdbd --field slug 2>/dev/null)" || sit_rc=$?
+  sit_slug="$(printf '%s\n' "$sit_out" | sed -n '1p')"
+  if [ -n "$sit_slug" ]; then
+    printf '%s\n' "$sit_slug"
+  fi
+  return 0
+}
 
 # listing_stale_apply <picked_id>
 # Always drops the resume key. Tracks consecutive listing_stale hits for the
 # same exec in the stamp (not as exec_id/key). Empty picked uses
 # LISTING_STALE_EMPTY_KEY so the counter still persists. Sets LS_OC /
 # LS_DETAIL / LS_EXIT / LS_TRACK_EXEC / LS_HITS for the caller.
+# Empty picked + an active owned-pause Situation stays noop (never
+# listing_stale_expired). A real exec id still uses the expire path.
 listing_stale_apply() {
   local picked="${1:-}"
   local track prev_exec prev_hits prev_outcome prev_detail hits max_hits
-  local already_paged
+  local already_paged sit
   if [ -n "$picked" ]; then
     track="$picked"
   else
@@ -154,6 +190,15 @@ listing_stale_apply() {
     case "$prev_detail" in
       listing_stale_expired*) already_paged=1 ;;
     esac
+  fi
+  if [ -z "$picked" ]; then
+    sit="$(listing_stale_blocking_situation || true)"
+    if [ -n "$sit" ]; then
+      LS_OC="noop"
+      LS_DETAIL="idle reason=listing_stale expected_situation=${sit} hits=${hits}"
+      LS_EXIT=0
+      return 0
+    fi
   fi
   if [ "$hits" -ge "$max_hits" ] && [ "$already_paged" -eq 0 ]; then
     LS_OC="error"
