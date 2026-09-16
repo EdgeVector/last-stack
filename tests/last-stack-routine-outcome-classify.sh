@@ -47,6 +47,26 @@ printf '%s\n' "$summary" | grep -q 'last-stack-pipeline-health' || fail "expecte
 printf '%s\n' "$summary" | grep -q 'last-stack-why-stopped' || fail "expected why-stopped in relabel set: $summary"
 printf '%s\n' "$summary" | grep -q 'last-stack-ship-pipeline-gap-audit' || fail "expected ship-pipeline in relabel set: $summary"
 
+# Agents mix heartbeat flags onto this CLI (17 sessions on 2026-09-16).
+got="$("$bin" --observer last-stack-pipeline-health --exit 0 --line 'open_cr=2 stuck=fold:1570:red')"
+[ "$got" = "ok" ] || fail "--line alias should classify like --detail, got $got"
+
+got="$("$bin" --observer last-stack-pipeline-health --exit 0 --open-cr 2 --open-forge 1 --stuck fold:1570:red)"
+[ "$got" = "ok" ] || fail "heartbeat field flags should fold into detail, got $got"
+
+got="$("$bin" --observer last-stack-pipeline-health --exit 0 open_cr=2 stuck=fold:1570:red)"
+[ "$got" = "ok" ] || fail "key=value leftovers should fold into detail, got $got"
+
+got="$("$bin" --observer last-stack-pipeline-health --line pipeline-health 2026-09-16T12:34:30Z ok open_cr=2)"
+[ "$got" = "ok" ] || fail "unquoted --line leftovers should fold, got $got"
+
+bogus_err="$(mktemp)"
+if "$bin" --observer last-stack-pipeline-health --bogus 1 >"$bogus_err.out" 2>"$bogus_err"; then
+  fail "unknown --bogus should exit 2"
+fi
+grep -q "unrecognized arguments" "$bogus_err" || fail "unknown flag should name unrecognized arguments"
+rm -f "$bogus_err" "$bogus_err.out"
+
 # True reds (timeouts / job failures) must remain red in the fixture.
 printf '%s\n' "$summary" | grep -q 'lastdb-local-smoke-test' || fail "smoke timeout must stay true-red: $summary"
 printf '%s\n' "$summary" | grep -q 'dogfood-rotate' || fail "dogfood-rotate fail must stay true-red: $summary"

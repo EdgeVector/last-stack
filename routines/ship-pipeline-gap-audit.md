@@ -213,8 +213,8 @@ Use `noop` only if the funnel is GREEN and nothing was written beyond a brief
 `health=yellow` or `health=red` with gaps filed. Use `error` only if the run
 itself failed (CLI missing, no snapshot *and* empty prior, brain put refused).
 A yellow/red funnel is the *subject*, not a routine failure. Classify with
-`last-stack-routine-outcome-classify --observer last-stack-ship-pipeline-gap-audit`
-when in doubt.
+`last-stack-routine-outcome-classify --observer last-stack-ship-pipeline-gap-audit --detail "ok health=yellow gaps=…"`
+when in doubt. Put `health=` / `gaps=` inside `--detail`. Do not pass `--line`.
 
 ## Standing rules
 

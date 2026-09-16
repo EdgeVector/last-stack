@@ -43,9 +43,10 @@ last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 ## Heartbeat / result
 
 Prefer the CLI’s own heartbeat. Classify the stamp with
-`last-stack-routine-outcome-classify --observer last-stack-why-stopped`
+`last-stack-routine-outcome-classify --observer last-stack-why-stopped --detail "ok classes=…"`
 (or print the `ROUTINE_RESULT` token followed by
 `outcome=<ok|noop|error> detail=<same-one-line-outcome>`).
+Put `classes=` inside `--detail`. Do not pass `--line` or invent `--classes`.
 
 - `ok` — classified (including `classes=unknown` or any Class A–F set)
 - `noop` — classified healthy (`classes=none`) or only informational
