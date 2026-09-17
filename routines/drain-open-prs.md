@@ -9,6 +9,10 @@ open PRs across ALL your repos toward ZERO every day. For each open PR, decide
 whether it's still wanted, then take it to a terminal state: MERGE it
 (rebasing/resolving conflicts and fixing mechanical CI as needed), or CLOSE it
 (stale / superseded / abandoned / irrelevant) with a one-line comment saying why.
+
+Scheduled runs use `last-stack-merge-demand-gate`. Skip when Forge and deploy
+are quiet. Ghost LastGit does not count. The default Forge list is
+`config/merge-demand-forge-repos`.
 Run ONE full sweep, emit a fresh `ROUTINE_RESULT` line, then exit with a
 report. Do not keep inspecting old memory, waiting on CI, or re-enumerating once
 the report and result line are written.

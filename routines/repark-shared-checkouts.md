@@ -12,6 +12,10 @@ description: |
 
 # repark-shared-checkouts — keep shared main checkouts current
 
+Scheduled runs use `last-stack-janitor-lag-gate`. Janitor proceeds after
+ships (`ships_24h >= 1`), when doing=0 and no pickup worker is in flight.
+A starve with no recent ships skips. One pass per janitor id.
+
 ## Situations
 
 `situations notices --since 15m` — a matching notice (LastDB upgrade, stack

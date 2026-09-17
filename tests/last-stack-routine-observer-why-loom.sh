@@ -172,4 +172,28 @@ printf '%s\n' "$out" | grep -q 'cause=' && {
   exit 1
 }
 
+# Last-tank uses the CLI classifier and must not spawn why-stopped-loom.
+: >"$tmp/timeout"
+cat >"$tmp/home/.last-stack/bin/last-stack-why-stopped-loom" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "${LAST_STACK_WHY_STOPPED_LOOM_TIMEOUT_SEC:-}" >"${CAPTURE_TIMEOUT:?}"
+printf '%s\n' '{"classes":"loom-should-not-run"}'
+SH
+chmod 755 "$tmp/home/.last-stack/bin/last-stack-why-stopped-loom"
+out="$(HOME="$tmp/home" PATH="/usr/bin:/bin" CAPTURE_TIMEOUT="$tmp/timeout" \
+  ROUTINES_POSTURE=last-tank \
+  "$tmp/root/bin/last-stack-routine-observer-gate" last-stack-why-stopped)"
+[ ! -s "$tmp/timeout" ] || {
+  echo "last-tank observer still spawned why-stopped-loom: $(cat "$tmp/timeout")" >&2
+  exit 1
+}
+printf '%s\n' "$out" | grep -q 'posture=last-tank' || {
+  echo "last-tank observer missing posture: $out" >&2
+  exit 1
+}
+printf '%s\n' "$out" | grep -q 'classes=A+D' || {
+  echo "last-tank observer did not use CLI classes: $out" >&2
+  exit 1
+}
+
 echo ok

@@ -26,6 +26,17 @@ Implementation remains with `last-stack-fkanban-pickup*`. Proof **execution**
 (when a real harness exists) is `kanban-validate`. Never invent architecture when
 decomposition is unclear.
 
+## Zero-agent gate
+
+Scheduled runs use `last-stack-milestone-driver-gate` before the harness.
+The gate reads `kanban milestone gap-report --json`. It skips when the
+work queue is empty and no idle promote or idle-empty counts remain.
+A decompose-only queue also runs
+`last-stack-feature-portfolio-admission --work-class feature --json`.
+Paused or unreadable admission skips. Board or Brain unreadable skips.
+Promote and complete_proof still proceed when those actions exist.
+Ready-buffer keeps `routines run last-stack-milestone-driver`.
+
 ## Non-negotiable contract
 
 - **Never skip the run snapshot.** Before any board mutation, use

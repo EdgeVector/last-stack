@@ -1,0 +1,298 @@
+#!/usr/bin/env bash
+# Zero-LLM demand gate for merge-class routines.
+#
+# Skip when the seven-repo Forge pass is quiet, LastGit ghosts are not demand,
+# and deploy is not blocked. Aged open Forge PRs and blocked deploys proceed.
+#
+# LastGit is opt-in (`LAST_STACK_LASTGIT_NATIVE_REPOS`). An empty list is
+# LastGit-disabled: lastgit-missing / unreadable / json-invalid / index-drift
+# are quiet. lastgit stuck rows with reason cr_not_found are ghosts.
+#
+#   exit 0  → skip harness (noop)
+#   exit 10 → proceed
+#   exit 2  → usage
+#
+# pipeline-health-gate calls this helper. It does not force an hourly deep pass.
+set -euo pipefail
+
+self_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
+if [ -n "${LAST_STACK_ROOT:-}" ] && [ -d "${LAST_STACK_ROOT}/bin" ]; then
+  last_stack="$LAST_STACK_ROOT"
+elif [ -d "${HOME}/.last-stack/bin" ]; then
+  last_stack="${HOME}/.last-stack"
+else
+  last_stack="$(CDPATH='' cd -- "$self_dir/.." && pwd -P)"
+fi
+export PATH="${HOME}/.local/bin:${last_stack}/bin:${PATH:-/usr/bin:/bin}"
+
+usage() {
+  cat <<'USAGE'
+last-stack-merge-demand-gate
+
+Zero-LLM gate for merge class. Exit 0 = skip; 10 = proceed.
+
+Default Forge list is config/merge-demand-forge-repos (fold, lastgit,
+exemem-infra, last-stack, fkanban, routines, loom). Ghost LastGit does not
+count. Aged Forge PRs and blocked deploys proceed.
+
+Environment:
+  LAST_STACK_MERGE_DEMAND_FORGE_REPOS     comma list (overrides file)
+  LAST_STACK_PIPELINE_GATE_FORGE_REPOS    alias used by pipeline-health-gate
+  LAST_STACK_LASTGIT_NATIVE_REPOS         opt-in LastGit venues; empty = disabled
+  LAST_STACK_PIPELINE_GATE_MIN_AGE_MIN    stuck / aged-open minutes (default 10)
+  LAST_STACK_PIPELINE_GATE_TIMEOUT_SEC    per-read cap (default 20)
+  LAST_STACK_MERGE_DEMAND_PROCEED_PREFIX  proceed line name
+USAGE
+}
+
+case "${1:-}" in
+  "") ;;
+  -h|--help) usage; exit 0 ;;
+  *) usage >&2; exit 2 ;;
+esac
+
+iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+positive_int() {
+  case "$1" in
+    ''|*[!0-9]*|0) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+default_repos() {
+  printf '%s' "EdgeVector/fold,EdgeVector/lastgit,EdgeVector/exemem-infra,EdgeVector/last-stack,EdgeVector/fkanban,EdgeVector/routines,EdgeVector/loom"
+}
+
+load_forge_repos() {
+  if [ -n "${LAST_STACK_MERGE_DEMAND_FORGE_REPOS:-}" ]; then
+    printf '%s\n' "$LAST_STACK_MERGE_DEMAND_FORGE_REPOS"
+    return
+  fi
+  if [ -n "${LAST_STACK_PIPELINE_GATE_FORGE_REPOS:-}" ]; then
+    printf '%s\n' "$LAST_STACK_PIPELINE_GATE_FORGE_REPOS"
+    return
+  fi
+  local cfg="${LAST_STACK_MERGE_DEMAND_REPOS_FILE:-${last_stack}/config/merge-demand-forge-repos}"
+  if [ -f "$cfg" ]; then
+    local line repo list=""
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        ''|'#'*) continue ;;
+      esac
+      repo="$(printf '%s' "$line" | sed 's/#.*//;s/[[:space:]]//g')"
+      [ -n "$repo" ] || continue
+      if [ -n "$list" ]; then
+        list="${list},${repo}"
+      else
+        list="$repo"
+      fi
+    done <"$cfg"
+    if [ -n "$list" ]; then
+      printf '%s\n' "$list"
+      return
+    fi
+  fi
+  default_repos
+  printf '\n'
+}
+
+min_age_min="${LAST_STACK_PIPELINE_GATE_MIN_AGE_MIN:-10}"
+timeout_sec="${LAST_STACK_PIPELINE_GATE_TIMEOUT_SEC:-20}"
+deploy_tail_bytes="${LAST_STACK_PIPELINE_GATE_DEPLOY_TAIL_BYTES:-16777216}"
+proceed_prefix="${LAST_STACK_MERGE_DEMAND_PROCEED_PREFIX:-MERGE_DEMAND_GATE_PROCEED}"
+heartbeat_id="${LAST_STACK_MERGE_DEMAND_HEARTBEAT_ID:-merge-demand}"
+
+positive_int "$min_age_min" || { echo "invalid minimum age: $min_age_min" >&2; exit 2; }
+positive_int "$timeout_sec" || { echo "invalid timeout: $timeout_sec" >&2; exit 2; }
+positive_int "$deploy_tail_bytes" || { echo "invalid deploy tail bytes: $deploy_tail_bytes" >&2; exit 2; }
+
+forge_repos="$(load_forge_repos)"
+IFS=',' read -r -a forge_repo_list <<<"$forge_repos"
+[ "${#forge_repo_list[@]}" -gt 0 ] || { echo "forge repo list is empty" >&2; exit 2; }
+for repo in "${forge_repo_list[@]}"; do
+  case "$repo" in
+    */*) ;;
+    *) echo "invalid Forgejo repo: $repo" >&2; exit 2 ;;
+  esac
+done
+
+now_epoch="${LAST_STACK_PIPELINE_GATE_NOW_EPOCH:-$(date -u +%s)}"
+positive_int "$now_epoch" || { echo "invalid current epoch: $now_epoch" >&2; exit 2; }
+
+lastgit_native="$(printf '%s' "${LAST_STACK_LASTGIT_NATIVE_REPOS:-}" | tr -d '[:space:]')"
+lastgit_enabled=0
+[ -n "$lastgit_native" ] && lastgit_enabled=1
+
+proceed() {
+  local reason="$1"
+  printf '%s reason=%s\n' "$proceed_prefix" "$reason"
+  exit 10
+}
+
+heartbeat() {
+  local line="$1"
+  local helper="${last_stack}/bin/last-stack-brain-append-heartbeat"
+  if [ -x "$helper" ]; then
+    "$helper" --line "$line" >/dev/null 2>&1 || true
+  fi
+  printf '%s\n' "$line"
+}
+
+timeout_bin="${LAST_STACK_PIPELINE_GATE_TIMEOUT_BIN:-}"
+if [ -z "$timeout_bin" ]; then
+  if command -v gtimeout >/dev/null 2>&1; then
+    timeout_bin="$(command -v gtimeout)"
+  elif command -v timeout >/dev/null 2>&1; then
+    timeout_bin="$(command -v timeout)"
+  fi
+fi
+[ -n "$timeout_bin" ] && [ -x "$timeout_bin" ] || proceed "timeout-tool-missing"
+
+lastgit_bin="${LAST_STACK_PIPELINE_GATE_LASTGIT_BIN:-$(command -v lastgit 2>/dev/null || true)}"
+forge_api="${LAST_STACK_PIPELINE_GATE_FORGE_API_BIN:-${last_stack}/bin/last-stack-forge-api}"
+deploy_scan="${LAST_STACK_PIPELINE_GATE_DEPLOY_SCAN_BIN:-${last_stack}/bin/last-stack-pipeline-deploy-scan}"
+jq_bin="${LAST_STACK_PIPELINE_GATE_JQ_BIN:-$(command -v jq 2>/dev/null || true)}"
+
+if [ "$lastgit_enabled" -eq 1 ]; then
+  [ -n "$lastgit_bin" ] && [ -x "$lastgit_bin" ] || proceed "lastgit-missing"
+fi
+[ -x "$forge_api" ] || proceed "forge-api-missing"
+[ -x "$deploy_scan" ] || proceed "deploy-scan-missing"
+[ -n "$jq_bin" ] && [ -x "$jq_bin" ] || proceed "jq-missing"
+
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/merge-demand-gate.XXXXXX")"
+# shellcheck disable=SC2329  # invoked by the EXIT trap
+cleanup() { rm -rf "$tmp"; }
+trap cleanup EXIT
+
+run_capped() {
+  local out="$1"
+  local err="$2"
+  shift 2
+  "$timeout_bin" -k 2s "${timeout_sec}s" "$@" >"$out" 2>"$err"
+}
+
+lastgit_pid=""
+if [ "$lastgit_enabled" -eq 1 ]; then
+  run_capped "$tmp/lastgit.json" "$tmp/lastgit.err" \
+    "$lastgit_bin" stuck --json --min-age-min "$min_age_min" --no-probe-merge --no-verify &
+  lastgit_pid=$!
+fi
+run_capped "$tmp/deploy.json" "$tmp/deploy.err" \
+  "$deploy_scan" --json --tail-bytes "$deploy_tail_bytes" &
+deploy_pid=$!
+
+forge_pids=""
+forge_files=""
+forge_index=0
+for repo in "${forge_repo_list[@]}"; do
+  forge_index=$((forge_index + 1))
+  forge_file="$tmp/forge-${forge_index}.json"
+  run_capped "$forge_file" "$tmp/forge-${forge_index}.err" \
+    "$forge_api" "repos/${repo}/pulls?state=open&limit=50" &
+  forge_pids="${forge_pids} $!"
+  forge_files="${forge_files} ${forge_file}"
+done
+
+set +e
+lastgit_rc=0
+if [ -n "$lastgit_pid" ]; then
+  wait "$lastgit_pid"
+  lastgit_rc=$?
+fi
+wait "$deploy_pid"
+deploy_rc=$?
+forge_rc=0
+for pid in $forge_pids; do
+  wait "$pid"
+  rc=$?
+  [ "$rc" -eq 0 ] || forge_rc="$rc"
+done
+set -e
+
+if [ "$lastgit_enabled" -eq 1 ]; then
+  [ "$lastgit_rc" -eq 0 ] || proceed "lastgit-read-rc-${lastgit_rc}"
+fi
+[ "$deploy_rc" -eq 0 ] || proceed "deploy-read-rc-${deploy_rc}"
+[ "$forge_rc" -eq 0 ] || proceed "forge-read-rc-${forge_rc}"
+
+if [ "$lastgit_enabled" -eq 1 ]; then
+  if ! "$jq_bin" -e '
+    type == "object"
+    and (.stuck | type == "array")
+    and (.unreadable_repos == null or (.unreadable_repos | type) == "array")
+    and all(.stuck[]; (.age_min | type) == "number")
+  ' "$tmp/lastgit.json" >/dev/null 2>&1; then
+    proceed "lastgit-json-invalid"
+  fi
+
+  unreadable_count="$("$jq_bin" -r '(.unreadable_repos // []) | length' "$tmp/lastgit.json")"
+  [ "$unreadable_count" -eq 0 ] || proceed "lastgit-unreadable-${unreadable_count}"
+  if "$jq_bin" -e '.index_drift != null' "$tmp/lastgit.json" >/dev/null 2>&1; then
+    proceed "lastgit-index-drift"
+  fi
+
+  # Ghost rows (cr_not_found) are not demand. Count only real aged stuck.
+  # shellcheck disable=SC2016  # jq expands $min
+  lastgit_stuck="$("$jq_bin" -r --argjson min "$min_age_min" '
+    [
+      .stuck[]
+      | select(.age_min >= $min)
+      | select((.reason // "") != "cr_not_found")
+      | select((.error // "") != "cr_not_found")
+    ] | length
+  ' "$tmp/lastgit.json")"
+  [ "$lastgit_stuck" -eq 0 ] || proceed "lastgit-stuck-${lastgit_stuck}"
+fi
+
+forge_open=0
+for forge_file in $forge_files; do
+  if ! "$jq_bin" -e 'type == "array"' "$forge_file" >/dev/null 2>&1; then
+    proceed "forge-json-invalid"
+  fi
+  set +e
+  # shellcheck disable=SC2016  # jq expands $now, $created, and $age
+  count="$("$jq_bin" -r --argjson now "$now_epoch" --argjson age "$((min_age_min * 60))" '
+    def rfc3339_epoch:
+      capture("^(?<day>[0-9]{4}-[0-9]{2}-[0-9]{2})T(?<clock>[0-9]{2}:[0-9]{2}:[0-9]{2})(?<fraction>\\.[0-9]+)?(?<zone>Z|[+-][0-9]{2}:[0-9]{2})$")
+      | ((.day + "T" + .clock + "Z") | fromdateiso8601) as $wall
+      | if .zone == "Z" then $wall
+        else (.zone | capture("(?<sign>[+-])(?<hour>[0-9]{2}):(?<minute>[0-9]{2})")) as $offset
+        | (($offset.hour | tonumber) * 3600 + ($offset.minute | tonumber) * 60) as $seconds
+        | if $offset.sign == "+" then $wall - $seconds else $wall + $seconds end
+        end;
+    [
+      .[]
+      | select((.draft // false) == false)
+      | (.created_at // null) as $created
+      | (try ($created | rfc3339_epoch) catch null) as $created_epoch
+      | if $created_epoch == null then error("created_at")
+        else select(($now - $created_epoch) >= $age)
+        end
+    ] | length
+  ' "$forge_file" 2>/dev/null)"
+  count_rc=$?
+  set -e
+  [ "$count_rc" -eq 0 ] || proceed "forge-created-at-invalid"
+  forge_open=$((forge_open + count))
+done
+[ "$forge_open" -eq 0 ] || proceed "forge-open-${forge_open}"
+
+if ! "$jq_bin" -e '
+  type == "array"
+  and length > 0
+  and all(.[]; (.blocked | type) == "boolean")
+' "$tmp/deploy.json" >/dev/null 2>&1; then
+  proceed "deploy-json-invalid"
+fi
+
+deploy_unknown="$("$jq_bin" -r '[.[] | select(.status == "unknown" or .status == "missing" or .status == "unconfigured")] | length' "$tmp/deploy.json")"
+[ "$deploy_unknown" -eq 0 ] || proceed "deploy-unknown-${deploy_unknown}"
+deploy_blocked="$("$jq_bin" -r '[.[] | select(.blocked == true)] | length' "$tmp/deploy.json")"
+[ "$deploy_blocked" -eq 0 ] || proceed "deploy-blocked-${deploy_blocked}"
+
+detail="quiet-gate lastgit_enabled=${lastgit_enabled} lastgit_stuck=0 open_forge=0 deploy_blocked=0"
+heartbeat "${heartbeat_id} $(iso_now) noop ${detail}"
+printf 'ROUTINE_RESULT outcome=noop detail=%s\n' "$detail"
+exit 0

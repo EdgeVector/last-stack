@@ -10,6 +10,9 @@ directive from Tom (2026-07-19, brain `decision` record
 than ONE HOUR.** Other routines flag and defer; you terminalize. Run **ONE
 bounded pass**, then exit. No `sleep` loops.
 
+Scheduled runs use `last-stack-merge-demand-gate`. Skip when Forge and deploy
+are quiet. Ghost LastGit does not count.
+
 ## Setup
 
 ```bash

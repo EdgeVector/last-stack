@@ -1,0 +1,9 @@
+# Default Forgejo repos for merge-class demand (merge-babysit inventory).
+# One owner/name per line. LAST_STACK_MERGE_DEMAND_FORGE_REPOS overrides.
+EdgeVector/fold
+EdgeVector/lastgit
+EdgeVector/exemem-infra
+EdgeVector/last-stack
+EdgeVector/fkanban
+EdgeVector/routines
+EdgeVector/loom

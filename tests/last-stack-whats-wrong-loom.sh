@@ -72,12 +72,14 @@ for line in sys.stdin:
 assert d and d.get("id")=="machine.load" and d.get("heal_status") in ("healed","noop"), d'
 
 # --- no loom → exit 3 ---
+# Exceptions > 0 and not last-tank: the wrapper must try loom and fail.
 set +e
 HOME="$tmp" PATH="/usr/bin:/bin" LAST_STACK_WHATS_WRONG_STAMP="$tmp/stamp2.json" \
+  WHATS_WRONG_SNAPSHOT_FILE="$tmp/snap.json" ROUTINES_POSTURE= \
   "$BIN" --json --quiet >"$tmp/noloom.out" 2>"$tmp/noloom.err"
 nrc=$?
 set -e
-[ "$nrc" -eq 3 ] || fail "expected exit 3 without loom, got $nrc $(cat "$tmp/noloom.err")"
+[ "$nrc" -eq 3 ] || fail "expected exit 3 without loom, got $nrc out=$(cat "$tmp/noloom.out") err=$(cat "$tmp/noloom.err")"
 
 # --- mock loom run ---
 mkdir -p "$tmp/bin"
@@ -146,14 +148,15 @@ export WHATS_WRONG_SNAPSHOT_FILE="$empty"
 export LAST_STACK_WHATS_WRONG_STAMP="$tmp/stamp-empty-loom.json"
 export LOOM_WHATS_WRONG_KEY="whats-wrong-empty-test-key"
 export LOOM_CAPTURE_INPUT="$tmp/loom-empty-input.json"
-"$BIN" --json --quiet --no-heal >/dev/null
-python3 - "$LOOM_CAPTURE_INPUT" <<'PY' || fail "empty loom input lacks an empty items array"
-import json, sys
-with open(sys.argv[1], encoding="utf-8") as fh:
-    doc = json.load(fh)
-assert doc.get("count") == 0, doc
-assert doc.get("items") == [], doc
-PY
+set +e
+empty_live="$("$BIN" --json --quiet --no-heal 2>&1)"
+empty_live_rc=$?
+set -e
+[ "$empty_live_rc" -eq 0 ] || fail "exceptions=0 must skip loom, got $empty_live_rc $empty_live"
+printf '%s\n' "$empty_live" | grep -q 'exceptions=0' \
+  || fail "exceptions=0 skip missing trailer: $empty_live"
+[ ! -f "$LOOM_CAPTURE_INPUT" ] \
+  || fail "exceptions=0 still started loom: $(cat "$LOOM_CAPTURE_INPUT")"
 
 # --- hung loom child is SIGTERM'd; wrapper still emits ROUTINE_RESULT ---
 cat >"$tmp/bin/loom" <<'SH'
@@ -1040,3 +1043,29 @@ assert stop < reap, "the driver must be stopped BEFORE the reap, or the reap fin
 ORDER
 grep -q 'workers=${stop_answer}' "$BIN" \
   || fail "re-attach log line does not report how many drivers were stopped"
+
+# exceptions=0 skips loom (no PATH loom needed)
+empty="$tmp/empty-live.json"
+printf '%s\n' '{"coverage":{"exceptions":[]}}' >"$empty"
+set +e
+WHATS_WRONG_SNAPSHOT_FILE="$empty" HOME="$tmp" PATH="/usr/bin:/bin" \
+  LAST_STACK_WHATS_WRONG_STAMP="$tmp/stamp-empty.json" \
+  "$BIN" --json --quiet >"$tmp/empty-live.out" 2>"$tmp/empty-live.err"
+empty_rc=$?
+set -e
+[ "$empty_rc" -eq 0 ] || fail "exceptions=0 must skip loom, got $empty_rc $(cat "$tmp/empty-live.err")"
+grep -q 'exceptions=0' "$tmp/empty-live.out" \
+  || fail "exceptions=0 skip missing trailer: $(cat "$tmp/empty-live.out")"
+
+# last-tank skips loom even when exceptions exist
+set +e
+ROUTINES_POSTURE=last-tank WHATS_WRONG_SNAPSHOT_FILE="$tmp/snap.json" \
+  HOME="$tmp" PATH="/usr/bin:/bin" LAST_STACK_WHATS_WRONG_STAMP="$tmp/stamp-tank.json" \
+  "$BIN" --json --quiet >"$tmp/tank.out" 2>"$tmp/tank.err"
+tank_rc=$?
+set -e
+[ "$tank_rc" -eq 0 ] || fail "last-tank must skip loom, got $tank_rc $(cat "$tmp/tank.err")"
+grep -q 'posture=last-tank' "$tmp/tank.out" \
+  || fail "last-tank skip missing posture: $(cat "$tmp/tank.out")"
+grep -q 'ROUTINE_RESULT outcome=noop' "$tmp/tank.out" \
+  || fail "last-tank skip missing noop: $(cat "$tmp/tank.out")"

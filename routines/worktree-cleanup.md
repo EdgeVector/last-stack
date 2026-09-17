@@ -10,6 +10,10 @@ code: prune stale worktrees/branches, bring repos to latest, reclaim disk if
 needed, and turn coherent local work into draft PRs instead of letting it rot in
 shared checkouts. Then report what you did and what's left.
 
+Scheduled runs use `last-stack-janitor-lag-gate`. Janitor proceeds after
+ships (`ships_24h >= 1`), when doing=0 and no pickup worker is in flight.
+A starve with no recent ships skips. One pass per janitor id.
+
 ## Run Budget And Exit Contract
 Treat this as a bounded foreground routine. Immediately after CLI preflight,
 record:

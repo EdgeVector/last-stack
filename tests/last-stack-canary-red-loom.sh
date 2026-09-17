@@ -993,4 +993,17 @@ grep -q 'outcome=error detail=loom-ping-failed' "$BIN" \
 grep -q 'outcome=error detail=defs-missing' "$BIN" \
   || fail "defs-missing exit prints no ROUTINE_RESULT"
 
+# last-tank never starts loom (no listing, no heal graph)
+set +e
+ROUTINES_POSTURE=last-tank HOME="$tmp" PATH="/usr/bin:/bin" \
+  LAST_STACK_CANARY_RED_STAMP="$tmp/tank-stamp.json" \
+  "$BIN" --json --quiet >"$tmp/tank.out" 2>"$tmp/tank.err"
+tank_rc=$?
+set -e
+[ "$tank_rc" -eq 0 ] || fail "last-tank must skip loom, got $tank_rc $(cat "$tmp/tank.err")"
+grep -q 'last-tank' "$tmp/tank.out" \
+  || fail "last-tank skip missing reason: $(cat "$tmp/tank.out")"
+grep -q 'outcome=noop' "$tmp/tank.out" \
+  || fail "last-tank skip missing noop: $(cat "$tmp/tank.out")"
+
 echo "ok"

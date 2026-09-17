@@ -505,6 +505,20 @@ else:
 '
 }
 
+# Last-tank observe never starts loom. Stamp idle from this cheap path.
+case "${ROUTINES_POSTURE:-}" in
+  last-tank|last_tank)
+    write_stamp idle "" "reason=last-tank" "${KEY:-}" "noop"
+    if [ "$JSON" -eq 1 ]; then
+      printf '%s\n' '{"ok":true,"idle":true,"reason":"last-tank"}'
+    else
+      printf 'canary-red idle reason=last-tank\n'
+    fi
+    printf '%s %s\n' 'ROUTINE_RESULT' 'outcome=noop detail=idle reason=last-tank'
+    exit 0
+    ;;
+esac
+
 rows_file="$(mktemp "${TMPDIR:-/tmp}/canary-red-rows.XXXXXX")"
 heal_rows_file="$(mktemp "${TMPDIR:-/tmp}/canary-red-heal-rows.XXXXXX")"
 trap 'rm -f "$rows_file" "$heal_rows_file"' EXIT

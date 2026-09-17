@@ -70,11 +70,16 @@ loom_cause() { printf '%s' "${loom_reason:-unnamed}"; }
 if [ -z "$detail" ] && [ "$id" = "last-stack-why-stopped" ]; then
   # Prefer the loom wrapper so the EV OPS why-loom stamp stays fresh.
   # The CLI path never writes that stamp; a 4.5h-stale stamp is a dashboard x.
+  # Last-tank observe never starts loom: classify with the zero-LLM CLI.
   why_loom="$ROOT/bin/last-stack-why-stopped-loom"
   if [ -x "${HOME}/.last-stack/bin/last-stack-why-stopped-loom" ]; then
     why_loom="${HOME}/.last-stack/bin/last-stack-why-stopped-loom"
   fi
-  if [ -x "$why_loom" ]; then
+  use_loom=1
+  case "${ROUTINES_POSTURE:-}" in
+    last-tank|last_tank) use_loom=0 ;;
+  esac
+  if [ "$use_loom" -eq 1 ] && [ -x "$why_loom" ]; then
     # routines exports ROUTINES_RUN_DIR to a gate_command, so keep the wrapper's
     # stderr next to the run it belongs to. Fall back to a temp file when the
     # gate runs outside a routine, and replay it onto the gate's own stderr
@@ -154,9 +159,17 @@ if [ -z "$detail" ] && [ "$id" = "last-stack-why-stopped" ]; then
       # No --heal: Class A heal can hang; classification itself is the job.
       out="$("$why" --json 2>/dev/null || true)"
       cls="$(printf '%s\n' "$out" | sed -n 's/.*"classes":"\([^"]*\)".*/\1/p' | head -1)"
-      detail="classes=${cls:-unknown} loom=$(loom_state) rc=${loom_rc:-missing} cause=$(loom_cause)"
+      if [ "$use_loom" -eq 0 ]; then
+        detail="classes=${cls:-unknown} posture=last-tank loom=skipped"
+      else
+        detail="classes=${cls:-unknown} loom=$(loom_state) rc=${loom_rc:-missing} cause=$(loom_cause)"
+      fi
     else
-      detail="classes=unknown loom=$(loom_state) rc=${loom_rc:-missing} cause=$(loom_cause)"
+      if [ "$use_loom" -eq 0 ]; then
+        detail="classes=unknown posture=last-tank loom=skipped"
+      else
+        detail="classes=unknown loom=$(loom_state) rc=${loom_rc:-missing} cause=$(loom_cause)"
+      fi
     fi
   fi
 fi

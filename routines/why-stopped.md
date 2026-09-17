@@ -19,9 +19,14 @@ last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 ## Run (bounded)
 
 1. **Classify + best-effort Class A heal** via loom, then the one-shot CLI
-   if loom is missing or the graph fails (exit 3):
+   if loom is missing or the graph fails (exit 3). Last-tank
+   (`ROUTINES_POSTURE=last-tank`) uses `last-stack-why-stopped --json` plus
+   classify. It does not start `last-stack-why-stopped-loom`.
    ```bash
-   if ! "$last_stack/bin/last-stack-why-stopped-loom" --heal --json \
+   if [ "${ROUTINES_POSTURE:-}" = "last-tank" ]; then
+     "$last_stack/bin/last-stack-why-stopped" --json \
+       | tee /tmp/why-stopped.json
+   elif ! "$last_stack/bin/last-stack-why-stopped-loom" --heal --json \
         | tee /tmp/why-stopped.json
    then
      "$last_stack/bin/last-stack-why-stopped" --heal --json \

@@ -200,6 +200,55 @@ for r in d.get("exceptions") or []:
   exit 0
 fi
 
+# Cheap skip before any loom spawn. Count 0 is a quiet panel. Last-tank
+# observe never starts a model (the wrapper itself is the gate_command).
+if [ -z "$KEY" ]; then
+  KEY="${LOOM_WHATS_WRONG_KEY:-whats-wrong-$(date -u +%Y%m%dT%H)}"
+fi
+listed_input="$(list_exceptions)" || {
+  cause="$(brief "$listed_input")"
+  log "snapshot failed: ${cause:-no error text}"
+  write_stamp unavailable "" "snapshot-failed ${cause}" "$KEY" "error"
+  exit 3
+}
+exc_count="$(printf '%s\n' "$listed_input" | python3 -c '
+import json, sys
+try:
+    print(int(json.load(sys.stdin).get("count") or 0))
+except Exception:
+    print(0)
+' 2>/dev/null || echo 0)"
+case "$exc_count" in
+  ''|*[!0-9]*) exc_count=0 ;;
+esac
+skip_loom=0
+skip_reason=""
+case "${ROUTINES_POSTURE:-}" in
+  last-tank|last_tank)
+    skip_loom=1
+    skip_reason="last-tank"
+    ;;
+esac
+if [ "$skip_loom" -eq 0 ] && [ "$exc_count" -eq 0 ]; then
+  skip_loom=1
+  skip_reason="exceptions=0"
+fi
+if [ "$skip_loom" -eq 1 ]; then
+  oc="noop"
+  det="exceptions=${exc_count}"
+  if [ "$skip_reason" = "last-tank" ]; then
+    det="${det} posture=last-tank"
+  fi
+  write_stamp skipped "" "$det" "$KEY" "$oc"
+  if [ "$JSON" -eq 1 ]; then
+    printf '%s\n' "$listed_input"
+  else
+    printf 'whats-wrong skip reason=%s count=%s\n' "$skip_reason" "$exc_count"
+  fi
+  printf '%s %s\n' 'ROUTINE_RESULT' "outcome=${oc} detail=${det}"
+  exit 0
+fi
+
 if ! command -v loom >/dev/null 2>&1; then
   log "loom not on PATH"
   write_stamp unavailable "" "loom-missing" "${KEY:-}" "error"
@@ -273,12 +322,6 @@ fi
 if [ -z "$KEY" ]; then
   KEY="${LOOM_WHATS_WRONG_KEY:-whats-wrong-$(date -u +%Y%m%dT%H)}"
 fi
-listed_input="$(list_exceptions)" || {
-  cause="$(brief "$listed_input")"
-  log "snapshot failed: ${cause:-no error text}"
-  write_stamp unavailable "" "snapshot-failed ${cause}" "$KEY" "error"
-  exit 3
-}
 input="$(printf '%s\n' "$listed_input" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)

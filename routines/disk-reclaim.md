@@ -8,6 +8,13 @@ Hourly disk-space reclaim for `<WORKSPACE>`. Runs unattended every hour — make
 safe choices, never block on questions, end with a one-paragraph report of what
 was reclaimed and current free space (`df -h`).
 
+## Zero-agent gate
+
+Scheduled runs use `last-stack-disk-reclaim-gate` before the harness.
+The gate reads `df -kP` on the data volume (default `/`) and compares free
+GiB to `LAST_STACK_RECLAIM_FREE_FLOOR_GIB` (default 80). Free space at or
+above the floor skips. `df` failure proceeds.
+
 This is the DISK-FOCUSED subset of the `worktree-cleanup` routine: do NOT pull
 repos to latest, do NOT enumerate/archive sessions, do NOT file cards. Just
 reclaim disk safely.
