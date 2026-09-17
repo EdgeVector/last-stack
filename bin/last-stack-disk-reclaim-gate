@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# Zero-LLM pre-dispatch gate for last-stack-disk-reclaim (safety class).
+#
+# Skip the harness when free space is at or above the floor. Fail open when
+# `df` cannot answer: a wasted wake is cheaper than a dead scheduler.
+#
+#   exit 0  → skip harness (noop)
+#   exit 10 → proceed (under floor, or df failed)
+#   exit 2  → usage
+set -euo pipefail
+
+self_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
+if [ -n "${LAST_STACK_ROOT:-}" ] && [ -d "${LAST_STACK_ROOT}/bin" ]; then
+  last_stack="$LAST_STACK_ROOT"
+elif [ -d "${HOME}/.last-stack/bin" ]; then
+  last_stack="${HOME}/.last-stack"
+else
+  last_stack="$(CDPATH='' cd -- "$self_dir/.." && pwd -P)"
+fi
+
+usage() {
+  cat <<'USAGE'
+last-stack-disk-reclaim-gate
+
+Zero-LLM gate for last-stack-disk-reclaim. Exit 0 = skip; 10 = proceed.
+
+Reads `df -kP` on LAST_STACK_RECLAIM_VOLUME (default /) and compares free
+GiB to LAST_STACK_RECLAIM_FREE_FLOOR_GIB (default 80). df failure proceeds.
+
+Env (optional, for tests):
+  LAST_STACK_DISK_RECLAIM_DF_CMD   override for the df command
+USAGE
+}
+
+case "${1:-}" in
+  "") ;;
+  -h|--help) usage; exit 0 ;;
+  *) usage >&2; exit 2 ;;
+esac
+
+iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+heartbeat() {
+  local line="$1"
+  local helper="${last_stack}/bin/last-stack-brain-append-heartbeat"
+  if [ -x "$helper" ]; then
+    "$helper" --line "$line" >/dev/null 2>&1 || true
+  fi
+  printf '%s\n' "$line"
+}
+
+skip() {
+  local reason="$1"
+  heartbeat "disk-reclaim-gate $(iso_now) noop ${reason}"
+  printf 'DISK_RECLAIM_GATE skip reason=%s\n' "$reason"
+  printf 'ROUTINE_RESULT outcome=noop detail=%s\n' "$reason"
+  exit 0
+}
+
+proceed() {
+  local reason="$1"
+  printf 'DISK_RECLAIM_GATE proceed reason=%s\n' "$reason"
+  exit 10
+}
+
+floor="${LAST_STACK_RECLAIM_FREE_FLOOR_GIB:-80}"
+volume="${LAST_STACK_RECLAIM_VOLUME:-/}"
+case "$floor" in
+  ''|*[!0-9]*) echo "invalid LAST_STACK_RECLAIM_FREE_FLOOR_GIB: $floor" >&2; exit 2 ;;
+esac
+
+df_cmd="${LAST_STACK_DISK_RECLAIM_DF_CMD:-}"
+set +e
+if [ -n "$df_cmd" ]; then
+  df_out="$(eval "$df_cmd" 2>/dev/null)"
+  df_rc=$?
+else
+  df_out="$(df -kP "$volume" 2>/dev/null)"
+  df_rc=$?
+fi
+set -e
+
+if [ "$df_rc" -ne 0 ] || [ -z "$df_out" ]; then
+  proceed "df-failed"
+fi
+
+# POSIX df -kP: Available is 1K-blocks in column 4 of the data row.
+avail_k="$(printf '%s\n' "$df_out" | awk 'NR==2 {print $4}')"
+case "$avail_k" in
+  ''|*[!0-9]*) proceed "df-parse-failed" ;;
+esac
+
+avail_gib=$((avail_k / 1024 / 1024))
+if [ "$avail_gib" -ge "$floor" ]; then
+  skip "above-floor free_gib=${avail_gib} floor_gib=${floor}"
+fi
+proceed "under-floor free_gib=${avail_gib} floor_gib=${floor}"

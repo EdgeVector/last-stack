@@ -1,7 +1,7 @@
 ---
 name: pipeline-health
 cadence: every 10 min
-description: Keep merge + post-merge deploy pipelines unblocked — open LastGit CRs, Forgejo forge-hot PRs, and LastGit deploy-pipeline logs. Anything blocked is P0 severity — fix this wake or file a Brain papercut so papercut-reconciler can promote clustered board work.
+description: Keep merge + post-merge deploy pipelines unblocked — Forgejo aged-open PRs and blocked deploys. LastGit is opt-in and is not demand when disabled. Anything blocked is P0 severity — fix this wake or file a Brain papercut so papercut-reconciler can promote clustered board work.
 ---
 
 You are the **pipeline-health** routine for `<WORKSPACE>`. Run ONE bounded pass,
@@ -73,12 +73,17 @@ merges conflict, or auto-merge drops — especially anything open **longer than
 ## Zero-agent gate
 
 Scheduled runs use `last-stack-pipeline-health-gate` before the full agent.
-The gate runs a full agent at least once per hour. Between those passes, it
-checks LastGit, Forgejo, and deploy state every ten minutes.
+That gate calls `last-stack-merge-demand-gate`. Quiet Forge and deploy
+inventories skip. There is no hourly deep-pulse proceed.
 
-The gate skips the agent only when all required reads succeed and all three
-inventories are quiet. A blocked item, an old open change, or an uncertain
-read starts this full routine. The gate does not bypass CI or deploy checks.
+LastGit is opt-in (`LAST_STACK_LASTGIT_NATIVE_REPOS`). An empty list is
+LastGit-disabled. Then lastgit-missing, unreadable, json-invalid, and
+index-drift are quiet. A stuck row with `cr_not_found` is a ghost and is
+not demand. Do not treat `lastgit cr list --all-open` as demand.
+
+Aged open Forge PRs on the seven-repo merge list and blocked deploys
+still proceed. The default list is `config/merge-demand-forge-repos`:
+fold, lastgit, exemem-infra, last-stack, fkanban, routines, loom.
 
 ## Automation memory
 If the scheduled prompt includes an `Automation memory:` path, read and write
@@ -259,9 +264,12 @@ LastDB ChangeRequest storm (2026-07-18). Prefer:
 export LASTGIT_SOCKET="<socket>"
 # Preferred: structured stuck classification (uses LastgitOpenCrIndex).
 lastgit stuck --json --min-age-min 10
-# Fleet open membership (thin; one OpenCrIndex read):
-lastgit cr list --all-open --json
 ```
+
+Do **not** treat `lastgit cr list --all-open` as demand. LastGit is not the
+venue. Ghost CRs from that list are not merge work. Use it only when
+`LAST_STACK_LASTGIT_NATIVE_REPOS` names a repo and `lastgit stuck` already
+showed a real aged row.
 
 Only for CRs that look stuck (or need CI detail), point-read:
 

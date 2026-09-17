@@ -1,0 +1,221 @@
+#!/usr/bin/env bash
+# Zero-LLM lag gate for janitor-class routines.
+#
+# Proceed only when all hold:
+#   (a) posture is not last-tank (defense; runner owns last-tank)
+#   (b) no pickup worker in flight
+#   (c) doing=0 in a fresh factory-health snapshot
+#   (d) ships_24h >= 1 (starve floor N=1)
+#   (e) lag debt: a history point with ships_last_h > 0 after last success
+#   (f) last success age >= 3600 s for this janitor id
+#
+# This gate never writes ~/.routines/state/janitor-lag/<id>.success-epoch.
+# runRoutine consumes debt after a janitor harness ok/noop.
+#
+#   exit 0  → skip harness (noop)
+#   exit 10 → proceed
+#   exit 2  → usage
+set -euo pipefail
+
+self_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
+if [ -n "${LAST_STACK_ROOT:-}" ] && [ -d "${LAST_STACK_ROOT}/bin" ]; then
+  last_stack="$LAST_STACK_ROOT"
+elif [ -d "${HOME}/.last-stack/bin" ]; then
+  last_stack="${HOME}/.last-stack"
+else
+  last_stack="$(CDPATH='' cd -- "$self_dir/.." && pwd -P)"
+fi
+
+usage() {
+  cat <<'USAGE'
+last-stack-janitor-lag-gate [routine-id]
+
+Zero-LLM lag gate for janitor class. Exit 0 = skip; 10 = proceed.
+
+Reads factory-health state.json (never last-stack-factory-health). Pickup
+locks are ~/.routines/locks/last-stack-fkanban-pickup*.lock JSON bodies.
+N=1 on ships_24h is the starve floor. One pass per janitor id.
+
+Env:
+  ROUTINE_ID                         janitor id when no positional
+  LAST_STACK_JANITOR_LAG_STATE       override state.json
+  LAST_STACK_JANITOR_LAG_LOCKS_DIR   override locks dir
+  LAST_STACK_JANITOR_LAG_SUCCESS_DIR override success-epoch dir
+  LAST_STACK_JANITOR_LAG_NOW_EPOCH   override now
+USAGE
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+esac
+id="${1:-${ROUTINE_ID:-}}"
+[ -n "$id" ] || { usage >&2; exit 2; }
+
+iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+heartbeat() {
+  local line="$1"
+  local helper="${last_stack}/bin/last-stack-brain-append-heartbeat"
+  if [ -x "$helper" ]; then
+    "$helper" --line "$line" >/dev/null 2>&1 || true
+  fi
+  printf '%s\n' "$line"
+}
+
+skip() {
+  local reason="$1"
+  heartbeat "janitor-lag-gate $(iso_now) noop id=${id} ${reason}"
+  printf 'JANITOR_LAG_GATE skip reason=%s id=%s\n' "$reason" "$id"
+  printf 'ROUTINE_RESULT outcome=noop detail=%s\n' "$reason"
+  exit 0
+}
+
+proceed() {
+  local extra="$1"
+  printf 'JANITOR_LAG_GATE proceed id=%s %s\n' "$id" "$extra"
+  exit 10
+}
+
+pid_live() {
+  local pid="$1"
+  case "$pid" in
+    ''|*[!0-9]*|0) return 1 ;;
+  esac
+  kill -0 "$pid" 2>/dev/null
+}
+
+file_mtime() {
+  local path="$1"
+  if stat -f %m "$path" >/dev/null 2>&1; then
+    stat -f %m "$path"
+  else
+    stat -c %Y "$path"
+  fi
+}
+
+case "${ROUTINES_POSTURE:-}" in
+  last-tank|last_tank) skip "posture-last-tank" ;;
+esac
+
+now_epoch="${LAST_STACK_JANITOR_LAG_NOW_EPOCH:-$(date -u +%s)}"
+case "$now_epoch" in
+  ''|*[!0-9]*) echo "invalid now epoch: $now_epoch" >&2; exit 2 ;;
+esac
+stale_sec="${LAST_STACK_JANITOR_LAG_STALE_SEC:-7200}"
+cadence_sec="${LAST_STACK_JANITOR_LAG_CADENCE_SEC:-3600}"
+case "$stale_sec" in ''|*[!0-9]*) stale_sec=7200 ;; esac
+case "$cadence_sec" in ''|*[!0-9]*) cadence_sec=3600 ;; esac
+
+state_path="${LAST_STACK_JANITOR_LAG_STATE:-${last_stack}/state/factory-health/state.json}"
+if [ ! -f "$state_path" ]; then
+  skip "state-missing"
+fi
+mtime="$(file_mtime "$state_path" 2>/dev/null || echo 0)"
+case "$mtime" in ''|*[!0-9]*) mtime=0 ;; esac
+age=$((now_epoch - mtime))
+if [ "$mtime" -eq 0 ] || [ "$age" -lt 0 ] || [ "$age" -ge "$stale_sec" ]; then
+  skip "state-stale age_s=${age}"
+fi
+
+jq_bin="$(command -v jq 2>/dev/null || true)"
+[ -n "$jq_bin" ] && [ -x "$jq_bin" ] || skip "jq-missing"
+
+if ! "$jq_bin" -e 'type == "object" and (.history | type == "array")' "$state_path" >/dev/null 2>&1; then
+  skip "state-unreadable"
+fi
+
+ships_24h_raw="$("$jq_bin" -r '
+  (.history // []) | if length == 0 then "null" else (.[-1].ships_24h // "null") | tostring end
+' "$state_path")"
+if [ -z "$ships_24h_raw" ] || [ "$ships_24h_raw" = "null" ]; then
+  skip "starve ships_24h=null"
+fi
+ships_24h_int="$("$jq_bin" -r '
+  (.history // []) | if length == 0 then 0
+  else ((.[-1].ships_24h // 0) | tonumber | floor)
+  end
+' "$state_path")"
+doing_int="$("$jq_bin" -r '
+  (.history // []) | if length == 0 then -1
+  else ((.[-1].doing // 0) | tonumber | floor)
+  end
+' "$state_path")"
+
+if [ "$ships_24h_int" -lt 1 ]; then
+  skip "starve ships_24h=${ships_24h_int}"
+fi
+if [ "$doing_int" -ne 0 ]; then
+  skip "doing=${doing_int}"
+fi
+
+routines_home="${ROUTINES_HOME:-${HOME}/.routines}"
+locks_dir="${LAST_STACK_JANITOR_LAG_LOCKS_DIR:-${routines_home}/locks}"
+if [ -d "$locks_dir" ]; then
+  # Glob pickup locks only. Exclude bak copies.
+  # walk-ok: bounded to the pickup lock dir, maxdepth 1, named glob.
+  shopt -s nullglob
+  for lock in "$locks_dir"/last-stack-fkanban-pickup*.lock; do
+    base="$(basename "$lock")"
+    case "$base" in
+      *.lock.bak|*.lock.bak-*) continue ;;
+    esac
+    body="$(cat "$lock" 2>/dev/null || true)"
+    [ -n "$body" ] || continue
+    pids=""
+    if printf '%s' "$body" | "$jq_bin" -e 'type == "object"' >/dev/null 2>&1; then
+      pids="$(printf '%s' "$body" | "$jq_bin" -r '
+        [.harnessPid, .ownerPid, .pid] | map(select(. != null)) | .[]
+      ' 2>/dev/null || true)"
+    else
+      trimmed="$(printf '%s' "$body" | tr -d '[:space:]')"
+      case "$trimmed" in
+        ''|*[!0-9]*) ;;
+        *) pids="$trimmed" ;;
+      esac
+    fi
+    for pid in $pids; do
+      if pid_live "$pid"; then
+        skip "pickup-in-flight lock=${base} pid=${pid}"
+      fi
+    done
+  done
+  shopt -u nullglob
+fi
+
+success_dir="${LAST_STACK_JANITOR_LAG_SUCCESS_DIR:-${routines_home}/state/janitor-lag}"
+success_file="${success_dir}/${id}.success-epoch"
+last_success=0
+if [ -f "$success_file" ]; then
+  last_success="$(head -n 1 "$success_file" 2>/dev/null || echo 0)"
+fi
+case "$last_success" in
+  ''|*[!0-9]*) last_success=0 ;;
+esac
+success_age=$((now_epoch - last_success))
+if [ "$last_success" -gt 0 ] && [ "$success_age" -lt "$cadence_sec" ]; then
+  skip "cadence-floor last_success_age_s=${success_age}"
+fi
+
+# Lag debt: a history point with ships_last_h > 0 whose ts is after last success.
+# Null ships_last_h is not greater than 0.
+last_ship_ts="$("$jq_bin" -r --argjson since "$last_success" '
+  def epoch:
+    (tostring | sub("\\.[0-9]+"; "") | sub("Z$"; "Z")
+     | if test("Z$") then . else . + "Z" end
+     | try fromdateiso8601 catch empty);
+  [
+    (.history // [])[]
+    | select(.ships_last_h != null)
+    | select((.ships_last_h | tonumber) > 0)
+    | (.ts // empty) as $ts
+    | ($ts | epoch) as $e
+    | select($e != null and $e > $since)
+    | {ts: $ts, epoch: $e, ships_last_h}
+  ] | if length == 0 then empty else .[-1].ts end
+' "$state_path")"
+
+if [ -z "$last_ship_ts" ] || [ "$last_ship_ts" = "null" ]; then
+  skip "no-lag-debt last_success_epoch=${last_success}"
+fi
+
+proceed "ships_24h=${ships_24h_int} last_ship_ts=${last_ship_ts} last_success_epoch=${last_success}"

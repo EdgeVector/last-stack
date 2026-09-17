@@ -24,3 +24,8 @@ last-stack-lint-machine-leaks	exit0	parser read 2026-09-06: flag loop only; the 
 last-stack-literal-markdown-append	exit0	parser read 2026-09-06: help answered before the mode positional and before any brain or board write
 last-stack-lint-bin-authoring	exit0	parser read 2026-09-06: flag loop only; the lint itself runs after the loop
 last-stack-locate-file	exit0	parser read 2026-09-06: argparse answers help before any path is touched; the search runs after parse
+last-stack-milestone-driver-gate	exit0	parser read 2026-09-16: help answered before any board or admission read
+last-stack-disk-reclaim-gate	exit0	parser read 2026-09-16: help answered before df
+last-stack-janitor-lag-gate	exit0	parser read 2026-09-16: help answered before state.json or lock reads
+last-stack-merge-demand-gate	exit0	parser read 2026-09-16: help answered before Forge or deploy reads
+last-stack-pipeline-health-gate	exit0	parser read 2026-09-16: help answered before exec of merge-demand-gate

@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+# Zero-LLM pre-dispatch gate for last-stack-milestone-driver.
+#
+# Ready-buffer calls `routines run last-stack-milestone-driver`. An empty
+# frontier must skip the harness instead of spending a model to learn that.
+#
+#   exit 0  → skip harness (noop)
+#   exit 10 → proceed (promote, admitted decompose, or complete_proof)
+#   exit 2  → usage
+#
+# Skip: empty work_queue with no idle promote/empty counts, admission paused
+# or unreadable on a decompose-only queue, or board/Brain unreadable.
+set -euo pipefail
+
+self_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
+if [ -n "${LAST_STACK_ROOT:-}" ] && [ -d "${LAST_STACK_ROOT}/bin" ]; then
+  last_stack="$LAST_STACK_ROOT"
+elif [ -d "${HOME}/.last-stack/bin" ]; then
+  last_stack="${HOME}/.last-stack"
+else
+  last_stack="$(CDPATH='' cd -- "$self_dir/.." && pwd -P)"
+fi
+export PATH="${HOME}/.local/bin:${last_stack}/bin:${PATH:-/usr/bin:/bin}"
+
+usage() {
+  cat <<'USAGE'
+last-stack-milestone-driver-gate
+
+Zero-LLM gate for last-stack-milestone-driver. Exit 0 = skip; 10 = proceed.
+
+Reads `kanban milestone gap-report --json`. Decompose-only queues also run
+`last-stack-feature-portfolio-admission --work-class feature --json`.
+
+Env (optional, for tests):
+  LAST_STACK_MILESTONE_DRIVER_GATE_KANBAN   kanban CLI (default kanban)
+  LAST_STACK_MILESTONE_DRIVER_GATE_ADMISSION admission CLI
+  LAST_STACK_ADMISSION_FIXTURE              offline admission fixture dir
+USAGE
+}
+
+case "${1:-}" in
+  "") ;;
+  -h|--help) usage; exit 0 ;;
+  *) usage >&2; exit 2 ;;
+esac
+
+iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+heartbeat() {
+  local line="$1"
+  local helper="${last_stack}/bin/last-stack-brain-append-heartbeat"
+  if [ -x "$helper" ]; then
+    "$helper" --line "$line" >/dev/null 2>&1 || true
+  fi
+  printf '%s\n' "$line"
+}
+
+skip() {
+  local reason="$1"
+  heartbeat "milestone-driver-gate $(iso_now) noop ${reason}"
+  printf 'MILESTONE_DRIVER_GATE skip reason=%s\n' "$reason"
+  printf 'ROUTINE_RESULT outcome=noop detail=%s\n' "$reason"
+  exit 0
+}
+
+proceed() {
+  local reason="$1"
+  printf 'MILESTONE_DRIVER_GATE proceed reason=%s\n' "$reason"
+  exit 10
+}
+
+kanban_bin="${LAST_STACK_MILESTONE_DRIVER_GATE_KANBAN:-kanban}"
+admission_bin="${LAST_STACK_MILESTONE_DRIVER_GATE_ADMISSION:-${last_stack}/bin/last-stack-feature-portfolio-admission}"
+jq_bin="$(command -v jq 2>/dev/null || true)"
+[ -n "$jq_bin" ] && [ -x "$jq_bin" ] || skip "jq-missing"
+
+if ! command -v "$kanban_bin" >/dev/null 2>&1; then
+  skip "board-unreadable missing-kanban"
+fi
+
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/milestone-driver-gate.XXXXXX")"
+cleanup() { rm -rf "$tmp"; }
+trap cleanup EXIT
+
+set +e
+"$kanban_bin" milestone gap-report --json >"$tmp/gap.json" 2>"$tmp/gap.err"
+gap_rc=$?
+set -e
+if [ "$gap_rc" -ne 0 ] || [ ! -s "$tmp/gap.json" ]; then
+  skip "board-unreadable gap-report-rc=${gap_rc}"
+fi
+if ! "$jq_bin" -e 'type == "object"' "$tmp/gap.json" >/dev/null 2>&1; then
+  skip "board-unreadable gap-report-json-invalid"
+fi
+
+wq_len="$("$jq_bin" -r '(.work_queue // []) | length' "$tmp/gap.json")"
+idle_promoteable="$("$jq_bin" -r '(.counts.idle_promoteable // 0) | tonumber' "$tmp/gap.json")"
+idle_empty="$("$jq_bin" -r '(.counts.idle_empty // 0) | tonumber' "$tmp/gap.json")"
+has_promote="$("$jq_bin" -r '[.work_queue[]? | select(.action == "promote")] | length' "$tmp/gap.json")"
+has_complete="$("$jq_bin" -r '[.work_queue[]? | select(.action == "complete_proof")] | length' "$tmp/gap.json")"
+has_decompose="$("$jq_bin" -r '[.work_queue[]? | select(.action == "decompose")] | length' "$tmp/gap.json")"
+
+case "$wq_len" in ''|*[!0-9]*) wq_len=0 ;; esac
+case "$idle_promoteable" in ''|*[!0-9]*) idle_promoteable=0 ;; esac
+case "$idle_empty" in ''|*[!0-9]*) idle_empty=0 ;; esac
+case "$has_promote" in ''|*[!0-9]*) has_promote=0 ;; esac
+case "$has_complete" in ''|*[!0-9]*) has_complete=0 ;; esac
+case "$has_decompose" in ''|*[!0-9]*) has_decompose=0 ;; esac
+
+idle=$((idle_promoteable + idle_empty))
+if [ "$wq_len" -eq 0 ] && [ "$idle" -eq 0 ]; then
+  skip "empty-frontier work_queue=0 idle_promoteable=0 idle_empty=0"
+fi
+
+need_admission=0
+if [ "$has_promote" -eq 0 ] && [ "$has_complete" -eq 0 ]; then
+  if [ "$has_decompose" -gt 0 ] || [ "$idle_empty" -gt 0 ]; then
+    need_admission=1
+  fi
+fi
+
+if [ "$need_admission" -eq 1 ]; then
+  if [ ! -x "$admission_bin" ]; then
+    skip "admission-unreadable missing-cli"
+  fi
+  north_star="$("$jq_bin" -r '
+    [.work_queue[]? | select(.action == "decompose") | (.north_star // .northStar // empty)]
+    | map(select(length > 0)) | .[0] // empty
+  ' "$tmp/gap.json")"
+  set +e
+  if [ -n "$north_star" ]; then
+    "$admission_bin" --work-class feature --json --north-star "$north_star" \
+      >"$tmp/adm.json" 2>"$tmp/adm.err"
+  else
+    "$admission_bin" --work-class feature --json \
+      >"$tmp/adm.json" 2>"$tmp/adm.err"
+  fi
+  adm_rc=$?
+  set -e
+  if [ "$adm_rc" -eq 2 ]; then
+    skip "admission-paused"
+  fi
+  if [ "$adm_rc" -eq 1 ] || [ "$adm_rc" -ne 0 ]; then
+    skip "admission-unreadable rc=${adm_rc}"
+  fi
+  proceed "decompose-admitted work_queue=${wq_len} idle_empty=${idle_empty}"
+fi
+
+if [ "$has_promote" -gt 0 ]; then
+  proceed "promote=${has_promote} work_queue=${wq_len}"
+fi
+if [ "$has_complete" -gt 0 ]; then
+  proceed "complete_proof=${has_complete} work_queue=${wq_len}"
+fi
+proceed "idle-frontier idle_promoteable=${idle_promoteable} idle_empty=${idle_empty}"

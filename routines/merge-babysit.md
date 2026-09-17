@@ -9,6 +9,11 @@ You are the **merge-babysit** routine for `<WORKSPACE>`. You are the fleet
 resolves merge conflicts (it only skips). You (or kanban-pickup via a card you
 file) must rebase, fix mechanical conflicts, re-green CI, and complete.
 
+Scheduled runs use `last-stack-merge-demand-gate`. Skip when the seven-repo
+Forge pass and deploy scan are quiet. Ghost LastGit does not count. Aged
+Forge PRs and blocked deploys proceed. The repo list is
+`config/merge-demand-forge-repos`.
+
 Run **ONE bounded pass**, then exit. No `sleep` loops.
 
 ## Priority policy

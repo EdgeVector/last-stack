@@ -30,8 +30,10 @@ last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 
 Scheduled runs use `gate_command = last-stack-whats-wrong-loom` so routinesd
 skips the LLM harness and the wrapper is the whole wake (measured 2026-08-20:
-observer-gate `--status` finished in 1.3s and never fanned out). If you are
-invoked as an LLM anyway:
+observer-gate `--status` finished in 1.3s and never fanned out). The wrapper
+skips loom when `coverage.exceptions` count is 0, or when
+`ROUTINES_POSTURE=last-tank`. Last-tank observe never starts a model. If you
+are invoked as an LLM anyway:
 
 1. **List + fan-out + closeout** via loom. Same `--key` within an hour
    (`whats-wrong-YYYYmmddTHH`) resumes the existing exec — do not invent a

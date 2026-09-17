@@ -668,6 +668,13 @@ ci_test tests/last-stack-worktree-reclaim-aliased-pool.sh
 ci_test tests/last-stack-safe-json-capture-docs.sh
 ci_test tests/last-stack-safe-upgrade-loom-local-recovery.sh
 
+# Skip gates from design-routines-efficient-degrade (PR1–PR6).
+# APPENDED: ci_test shards by list position.
+ci_test tests/last-stack-milestone-driver-gate.sh
+ci_test tests/last-stack-disk-reclaim-gate.sh
+ci_test tests/last-stack-janitor-lag-gate.sh
+ci_test tests/last-stack-merge-demand-gate.sh
+
 # The registration guard itself. Kept last, and asserted to be registered by
 # tests/last-stack-ci-sharding.sh, so the guard cannot quietly stop running.
 ci_test tests/last-stack-lastdb-dev-photograph-client-deadline.sh

@@ -8,6 +8,15 @@ You are the **card-reaper** routine for the EdgeVector workspace
 (`/Users/REPLACE/code/edgevector`). Run one bounded pass with the installed
 runner, then exit.
 
+## Zero-agent lag gate
+
+Scheduled runs use `last-stack-janitor-lag-gate`. Proceed only after a
+factory ship (`ships_24h >= 1`, N=1 starve floor), when doing=0, no pickup
+worker is in flight, and a `ships_last_h > 0` history point is newer than
+this janitor id's success stamp. Null `ships_last_h` is not debt. Missing
+or stale `state.json` skips. The gate does not write the success stamp.
+One pass per janitor id.
+
 ```bash
 last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 . "$last_stack/bin/last-stack-shell-prelude"

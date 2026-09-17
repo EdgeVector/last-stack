@@ -17,6 +17,11 @@ bash -n "$ROOT/bin/last-stack-generator-preflight"
 bash -n "$ROOT/bin/last-stack-milestone-driver-snapshot"
 [ -x "$ROOT/bin/last-stack-milestone-driver-snapshot" ] \
   || fail "milestone-driver snapshot helper is not executable"
+bash -n "$ROOT/bin/last-stack-milestone-driver-gate"
+bash -n "$ROOT/bin/last-stack-disk-reclaim-gate"
+bash -n "$ROOT/bin/last-stack-janitor-lag-gate"
+bash -n "$ROOT/bin/last-stack-merge-demand-gate"
+bash -n "$ROOT/bin/last-stack-pipeline-health-gate"
 bash -n "$ROOT/bin/last-stack-kanban-file-pr"
 [ -x "$ROOT/bin/last-stack-kanban-file-pr" ] || chmod +x "$ROOT/bin/last-stack-kanban-file-pr"
 python3 -m py_compile "$ROOT/bin/last-stack-kanban-decision-check"
@@ -88,6 +93,16 @@ grep -q 'last-stack-generator-preflight' "$ROOT/routines/milestone-driver.md" \
   || fail "milestone-driver missing generator preflight"
 grep -q 'last-stack-milestone-driver-snapshot' "$ROOT/routines/milestone-driver.md" \
   || fail "milestone-driver missing its run-scoped snapshot guard"
+grep -q 'last-stack-milestone-driver-gate' "$ROOT/routines/milestone-driver.md" \
+  || fail "milestone-driver missing skip gate"
+grep -q 'last-stack-disk-reclaim-gate' "$ROOT/routines/disk-reclaim.md" \
+  || fail "disk-reclaim missing skip gate"
+grep -q 'last-stack-merge-demand-gate' "$ROOT/routines/pipeline-health.md" \
+  || fail "pipeline-health missing merge-demand gate"
+grep -q 'deep-pulse-due' "$ROOT/bin/last-stack-pipeline-health-gate" \
+  && fail "pipeline-health-gate still proceeds on deep-pulse-due"
+grep -q 'deep-pulse-due' "$ROOT/bin/last-stack-merge-demand-gate" \
+  && fail "merge-demand-gate still proceeds on deep-pulse-due"
 if grep -q '/tmp/milestone-gap-report.json' "$ROOT/routines/milestone-driver.md"; then
   fail "milestone-driver still uses the shared gap-report path"
 fi

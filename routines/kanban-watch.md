@@ -23,6 +23,9 @@ FOLLOW the board — advance in-flight work — NOT to author or ship new featur
 code. If the sweep is quiet and you spotted something worth doing, FILE it as a
 card for the `kanban-pickup` + `kanban-agent` pipeline to build.
 
+Scheduled runs use `last-stack-merge-demand-gate`. Skip when Forge and deploy
+are quiet. Ghost LastGit does not count.
+
 ## Hollow Kind:pr (won't-undo — 2026-08-17)
 
 Never raw-`kanban add` a `Kind: pr` card without both a clean `Repo: owner/name`
