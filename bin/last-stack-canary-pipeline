@@ -783,18 +783,28 @@ def sync_boot_ledger(path: Path, args: argparse.Namespace) -> dict:
         )
 
     candidate_rows = [row for row in parsed if row["build"] == args.candidate]
-    events = [
-        {
-            "record_type": "boot",
-            "ts": row["start_ts"],
-            "candidate": args.candidate,
-            "pid": row["pid"],
-            "start_ts": row["start_ts"],
-            "build": row["build"],
-            "cause": row["source_cause"],
-        }
-        for row in candidate_rows
-    ]
+    candidate_rows.sort(key=lambda row: row["start_ts"])
+    events = []
+    for index, row in enumerate(candidate_rows):
+        source_cause = row["source_cause"].strip().lower()
+        # The first boot of the build under evaluation is the safe-upgrade
+        # cutover that installed that build. Treat that restart as the
+        # candidate's start, not as evidence that the candidate was replaced.
+        # Later boots of the same build stay visible and fail closed if they
+        # carry a crash or an unexpected restart cause.
+        cause = "" if index == 0 and source_cause == "upgrade" else source_cause
+        events.append(
+            {
+                "record_type": "boot",
+                "ts": row["start_ts"],
+                "candidate": args.candidate,
+                "pid": row["pid"],
+                "start_ts": row["start_ts"],
+                "build": row["build"],
+                "cause": cause,
+                "source_cause": row["source_cause"],
+            }
+        )
     # A later, different build ends the candidate's ownership of the channel.
     # Preserve it as neutral supersession evidence rather than treating the
     # new build's restart cause as a failure of the retired candidate.

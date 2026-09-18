@@ -822,6 +822,19 @@ out="$("$CLI" --state-dir "$v2_dir" --json reconcile --candidate vmissing \
 [ "$(printf '%s\n' "$out" | jq -r '.verdict')" = "red" ]
 [ "$(printf '%s\n' "$out" | jq -r '.subject')" = "build" ]
 
+# The first `upgrade` boot for the candidate under evaluation is its own
+# safe-upgrade cutover, not supersession. A later build still retires the old
+# candidate through the synthetic `supersession` boot above.
+current_boot_ledger='{"boots":[{"pid":203,"process_start_ts":1788220800,"build":"vcurrent","restart_cause":"upgrade"}]}'
+out="$($CLI --state-dir "$v2_dir" --json sync-boot-ledger --candidate vcurrent \
+  --boot-ledger-command "printf '%s\\n' '$current_boot_ledger'")"
+[ "$(printf '%s\n' "$out" | jq -r '.matched_boots')" = "1" ]
+$CLI --state-dir "$v2_dir" record-observation --candidate vcurrent --check status \
+  --subject build --result pass --at '2026-09-01T00:01:00Z' >/dev/null
+out="$($CLI --state-dir "$v2_dir" --json reconcile --candidate vcurrent \
+  --window-seconds 86400 --at '2026-09-02T00:01:00Z')"
+[ "$(printf '%s\n' "$out" | jq -r '.verdict')" = "green" ]
+
 # Command p95, deadline, and exit evidence are covered by the controlled
 # production-function tests above, including a slow successful command.
 
