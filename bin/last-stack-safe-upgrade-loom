@@ -272,6 +272,31 @@ set -e
 execution="$(printf '%s\n' "$view" | awk '/^lx-/{print; exit}')"
 status="$(printf '%s\n' "$view" | awk -F': ' '/^status:/{print $2; exit}')"
 state="$(printf '%s\n' "$view" | awk -F': ' '/^state:/{print $2; exit}')"
+
+# `loom run` can return the execution view before the terminal status write is
+# visible. Read the named execution back before reporting a false red. This is
+# a bounded point read; a genuinely live or failed execution stays non-green.
+if [ "$status" != "succeeded" ] && [ -n "$execution" ]; then
+  readback_wait_secs="${LASTDB_SAFE_UPGRADE_LOOM_READBACK_SECS:-30}"
+  case "$readback_wait_secs" in
+    ''|*[!0-9]*) die "LASTDB_SAFE_UPGRADE_LOOM_READBACK_SECS must be an integer" ;;
+  esac
+  readback_deadline=$((SECONDS + readback_wait_secs))
+  while :; do
+    readback="$(loom show "$execution" 2>/dev/null || true)"
+    readback_status="$(printf '%s\n' "$readback" | awk -F': ' '/^status:/{print $2; exit}')"
+    if [ "$readback_status" = "succeeded" ]; then
+      view="$readback"
+      loom_rc=0
+      status="$readback_status"
+      state="$(printf '%s\n' "$readback" | awk -F': ' '/^state:/{print $2; exit}')"
+      break
+    fi
+    [ "$SECONDS" -ge "$readback_deadline" ] && break
+    sleep 1
+  done
+fi
+
 outcome="error"
 [ "$loom_rc" -eq 0 ] && [ "$status" = "succeeded" ] && outcome="ok"
 
