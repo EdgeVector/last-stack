@@ -340,6 +340,38 @@ artifact_registry_channel() {
   printf '%s\n' "$value"
 }
 
+# The `lastdb` reader fetches an index anonymously: that is the public
+# contract. Tom's `next` channel lives on the private local forge, whose raw
+# route answers 303 → login without a token. For a forge URL, fetch the two
+# files here with the forge token into a per-channel cache directory and hand
+# `lastdb` the directory. Any other URL (or a directory) passes through.
+# Prints the location to use; rc 1 when the forge fetch failed (a hold, not a
+# fall-through: an unreadable index must not become "install main").
+registry_index_local_copy() {
+  local index="$1" channel="$2" token cache header
+  case "$index" in
+    http://localhost:3300/*|http://127.0.0.1:3300/*) ;;
+    *) printf '%s\n' "$index"; return 0 ;;
+  esac
+  cache="${HOST_TRACK_REGISTRY_INDEX_CACHE:-$HOME/.local/state/last-stack/registry-index-cache}"
+  mkdir -p "$cache"
+  token=""
+  if [ "$FORGE_TOKEN_LIB_LOADED" -eq 1 ]; then
+    token="$(last_stack_forge_token 2>/dev/null || true)"
+  fi
+  header=()
+  [ -z "$token" ] || header=(-H "Authorization: token $token")
+  if ! curl -fsS --max-time 20 "${header[@]}" -o "$cache/$channel.json.tmp" "${index%/}/$channel.json"     || ! curl -fsS --max-time 20 "${header[@]}" -o "$cache/$channel.json.sig.tmp" "${index%/}/$channel.json.sig"; then
+    rm -f "$cache/$channel.json.tmp" "$cache/$channel.json.sig.tmp"
+    printf 'host-track: registry index %s/%s.json is not readable (forge token %s)\n' \
+      "$index" "$channel" "$([ -n "$token" ] && echo present || echo absent)" >&2
+    return 1
+  fi
+  mv -f "$cache/$channel.json.tmp" "$cache/$channel.json"
+  mv -f "$cache/$channel.json.sig.tmp" "$cache/$channel.json.sig"
+  printf '%s\n' "$cache"
+}
+
 # stdout: the proved commit.  rc 0 = pinned · 1 = not applicable (no channel,
 # no `lastdb app resolve`, app not on the index) · 2 = no row proved with this
 # node (the caller holds the current install).
@@ -354,7 +386,10 @@ artifact_registry_pin_oid() {
   args=(app resolve "$reg_app" --channel "$channel" --json)
   index="$(setting "$json" registry_index)"
   [ -n "${HOST_TRACK_REGISTRY_INDEX:-}" ] && index="$HOST_TRACK_REGISTRY_INDEX"
-  [ -z "$index" ] || args+=(--index "$index")
+  if [ -n "$index" ]; then
+    index="$(registry_index_local_copy "$index" "$channel")" || return 2
+    args+=(--index "$index")
+  fi
   set +e
   out="$(lastdb "${args[@]}" 2>&1)"
   rc=$?
