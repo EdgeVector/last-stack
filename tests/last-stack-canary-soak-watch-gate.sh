@@ -12,7 +12,7 @@ cleanup() {
   if [ "$rc" -ne 0 ]; then
     printf 'FAIL canary-soak-watch-gate: exit=%s\n' "$rc" >&2
     # These are fixture verdicts, never provider output or host credentials.
-    for name in green_out held_out planned_out wait_out second_out status_red host_pause missing_boot slow_out timeout_out; do
+    for name in green_out held_out chatty_out planned_out wait_out second_out status_red host_pause missing_boot slow_out timeout_out; do
       declare -p "$name" >&2 2>/dev/null || true
     done
     # Eleven fixed fixture cases at most; retain their last observations before
@@ -52,6 +52,17 @@ action_log="$tmp/held-action"
 held_out="$(LAST_STACK_CANARY_V2_ACTION_CMD="touch '$action_log'" run_gate held)"
 printf '%s\n' "$held_out" | grep -q 'verdict=green subject=none action=promote-eligible'
 test ! -e "$action_log"
+
+# An action that prints on stdout must not corrupt the JSON verdict the gate
+# parses (the first live promote-material dispatch did exactly that, 2026-09-20).
+chatty_log="$tmp/chatty-action"
+chatty_out="$(LAST_STACK_CANARY_V2_EXECUTE_ACTIONS=1 \
+  LAST_STACK_CANARY_V2_ACTION_CMD="echo PROMOTE_MATERIAL candidate=vcanary rows=0; touch '$chatty_log'" run_gate chatty)"
+printf '%s\n' "$chatty_out" | grep -q 'verdict=green subject=none action=promote-eligible' \
+  || { echo "chatty action broke the verdict parse: $chatty_out" >&2; exit 1; }
+printf '%s\n' "$chatty_out" | grep -q 'ROUTINE_RESULT outcome=ok' \
+  || { echo "chatty action changed the outcome: $chatty_out" >&2; exit 1; }
+test -e "$chatty_log"
 
 # Execute without a command stays planned. It does not error or invent a wait.
 planned_out="$(LAST_STACK_CANARY_V2_EXECUTE_ACTIONS=1 run_gate planned)"
