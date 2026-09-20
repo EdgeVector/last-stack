@@ -61,12 +61,10 @@ def forge_git() -> list[str]:
         return ["git"]
     token = os.environ.get("FORGE_TOKEN", "").strip()
     if not token:
-        sec = run(["security", "find-generic-password", "-s", "forgejo-token", "-w"])
-        token = sec.stdout.strip() if sec.returncode == 0 else ""
-    if not token and shutil.which("lastsecrets"):
-        ls_env = {k: v for k, v in os.environ.items() if k != "OBS_SENTRY_DSN"}
-        ls = run(["lastsecrets", "get", "forgejo-token"], env=ls_env)
-        token = ls.stdout.strip().splitlines()[0].strip() if ls.returncode == 0 and ls.stdout.strip() else ""
+        # lib/forge-token.sh owns the source order ($FORGE_TOKEN, keychain,
+        # lastsecrets); source it through bash rather than copy it.
+        proc = run(["bash", "-c", f'. "{ROOT / "lib" / "forge-token.sh"}" && last_stack_forge_token'])
+        token = proc.stdout.strip() if proc.returncode == 0 else ""
     if not token:
         return ["git"]
     return ["git", "-c", f"http.http://localhost:3300/.extraHeader=Authorization: token {token}"]

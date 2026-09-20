@@ -24,7 +24,6 @@ import argparse
 import datetime as dt
 import json
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -59,17 +58,15 @@ def forge_git_env() -> dict[str, str]:
     if _FORGE_GIT_ENV is not None:
         return _FORGE_GIT_ENV
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "RUST_LOG": "off"}
+    # lib/forge-token.sh is the one place that names the token sources
+    # ($FORGE_TOKEN, keychain, lastsecrets); a python helper sources it
+    # through bash instead of keeping its own copy of that order.
     token = os.environ.get("FORGE_TOKEN", "").strip()
     if not token:
-        sec = subprocess.run(["security", "find-generic-password", "-s", "forgejo-token", "-w"],
-                             capture_output=True, text=True, check=False)
-        token = sec.stdout.strip() if sec.returncode == 0 else ""
-    if not token and shutil.which("lastsecrets"):
-        # Locked login keychain (unattended) → lastsecrets, minus the Sentry DSN
-        # injector that makes `lastsecrets get` print nothing with exit 0.
-        ls_env = {k: v for k, v in os.environ.items() if k != "OBS_SENTRY_DSN"}
-        ls = subprocess.run(["lastsecrets", "get", "forgejo-token"], capture_output=True, text=True, check=False, env=ls_env)
-        token = ls.stdout.strip().splitlines()[0].strip() if ls.returncode == 0 and ls.stdout.strip() else ""
+        lib = ROOT / "lib" / "forge-token.sh"
+        proc = subprocess.run(["bash", "-c", f'. "{lib}" && last_stack_forge_token'],
+                              capture_output=True, text=True, check=False)
+        token = proc.stdout.strip() if proc.returncode == 0 else ""
     if token:
         env["GIT_CONFIG_COUNT"] = "1"
         env["GIT_CONFIG_KEY_0"] = "http.http://localhost:3300/.extraHeader"
