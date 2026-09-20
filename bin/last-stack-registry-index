@@ -1,0 +1,397 @@
+#!/usr/bin/env python3
+"""Write, promote, sign, and read the static signed LastDB app index.
+
+The index is the anonymous read surface of the app registry
+(fold `docs/lastdb-app-registry-index.md`). One JSON file per channel
+(`next`, `stable`) plus a detached Ed25519 signature written by
+`lastdb app index sign`. Each app row carries compat rows: one proved pair
+`<app_version> @ <sha>` proved with `lastdb <build>` by one proof run.
+
+This helper owns the rows. The nightly canary lane calls `add-row` after the
+isolated llms-txt smoke passes on a candidate set; the human publish command
+calls `promote` to copy one node build's rows from `next` to `stable` and
+rewrite each app's `source` to its public URL. Signing is delegated to the
+`lastdb` binary so the crypto lives in one place.
+
+No walk, no network except `git ls-remote`/`git fetch` in `promote` when
+reachability is checked. Every path comes from a flag.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+INDEX_VERSION = 1
+# Rows per app per channel. The newest rows stay; older proved pairs for node
+# builds nobody runs any more fall off. Twenty covers ~3 weeks of nightlies.
+DEFAULT_MAX_ROWS = 20
+SHA_RE = re.compile(r"^[0-9a-f]{7,64}$")
+CHANNEL_RE = re.compile(r"^[a-z0-9-]{1,32}$")
+
+
+def utc_now() -> str:
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def die(message: str, code: int = 1) -> None:
+    print(f"last-stack-registry-index: {message}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def empty_index(channel: str) -> dict:
+    return {
+        "index_version": INDEX_VERSION,
+        "channel": channel,
+        "generated_at": utc_now(),
+        "apps": [],
+    }
+
+
+def load_index(path: Path, channel: str | None = None) -> dict:
+    if not path.exists():
+        if channel is None:
+            die(f"index {path} does not exist and no --channel was given to create it", 2)
+        return empty_index(channel)
+    try:
+        index = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        die(f"index {path} does not parse: {exc}", 2)
+    if not isinstance(index, dict):
+        die(f"index {path} is not a JSON object", 2)
+    if index.get("index_version") != INDEX_VERSION:
+        die(f"index {path} has index_version {index.get('index_version')!r}; this helper writes {INDEX_VERSION}", 2)
+    if channel is not None and index.get("channel") != channel:
+        die(f"index {path} is channel {index.get('channel')!r}, not {channel!r}", 2)
+    index.setdefault("apps", [])
+    return index
+
+
+def write_index(path: Path, index: dict) -> None:
+    """Write atomically. The signature covers exact bytes, so the layout is fixed:
+    two-space indent, sorted keys off (row order is meaningful), trailing newline."""
+    index["generated_at"] = utc_now()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(index, indent=2, ensure_ascii=False) + "\n"
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(payload)
+    # mkstemp creates 0600; the index is a public file.
+    os.chmod(tmp_name, 0o644)
+    os.replace(tmp_name, path)
+    # A stale signature next to a rewritten index is a lie; drop it until sign runs.
+    sig = Path(str(path) + ".sig")
+    if sig.exists():
+        sig.unlink()
+
+
+def find_app(index: dict, app_id: str) -> dict | None:
+    for app in index["apps"]:
+        if app.get("app_id") == app_id:
+            return app
+    return None
+
+
+def validate_row(row: dict) -> None:
+    for key in ("app_version", "sha", "lastdb_version", "proved_at", "proof_run"):
+        if not str(row.get(key, "")).strip():
+            die(f"compat row needs a non-empty {key}", 2)
+    if not SHA_RE.match(row["sha"]):
+        die(f"sha {row['sha']!r} is not a git commit hash", 2)
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    if not CHANNEL_RE.match(args.channel):
+        die(f"invalid channel {args.channel!r}", 2)
+    if args.out.exists() and not args.force:
+        die(f"{args.out} exists (pass --force to overwrite)", 2)
+    write_index(args.out, empty_index(args.channel))
+    print(f"wrote empty {args.channel} index to {args.out}")
+    return 0
+
+
+def cmd_add_row(args: argparse.Namespace) -> int:
+    index = load_index(args.index, args.channel)
+    row = {
+        "app_version": args.app_version,
+        "sha": args.sha,
+        "lastdb_version": args.lastdb_version,
+        "proved_at": args.proved_at or utc_now(),
+        "proof_run": args.proof_run,
+    }
+    if args.artifact:
+        row["artifact"] = args.artifact
+    if args.lastdb_api_version is not None:
+        row["lastdb_api_version"] = args.lastdb_api_version
+    validate_row(row)
+
+    app = find_app(index, args.app)
+    if app is None:
+        if not args.source:
+            die(f"app {args.app!r} is new to this index; --source is required", 2)
+        app = {"app_id": args.app, "source": args.source, "compat": []}
+        if args.description:
+            app["description"] = args.description
+        index["apps"].append(app)
+        index["apps"].sort(key=lambda a: a["app_id"])
+    else:
+        if args.source:
+            app["source"] = args.source
+        if args.description:
+            app["description"] = args.description
+    app.setdefault("compat", [])
+    # One row per (sha, lastdb_version): a re-proof replaces, never duplicates.
+    app["compat"] = [
+        r for r in app["compat"]
+        if not (r.get("sha") == row["sha"] and r.get("lastdb_version") == row["lastdb_version"])
+    ]
+    app["compat"].append(row)
+    app["compat"].sort(key=lambda r: (r.get("proved_at", ""), r.get("app_version", "")))
+    if len(app["compat"]) > args.max_rows:
+        app["compat"] = app["compat"][-args.max_rows:]
+    write_index(args.index, index)
+    print(
+        f"{index['channel']}: {args.app} {args.app_version} @ {args.sha[:12]} "
+        f"proved with lastdb {args.lastdb_version} by {args.proof_run} ({len(app['compat'])} rows)"
+    )
+    return 0
+
+
+def load_source_map(path: Path | None) -> dict[str, str]:
+    if path is None:
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        die(f"source map {path}: {exc}", 2)
+    if not isinstance(data, dict) or not all(isinstance(v, str) for v in data.values()):
+        die(f"source map {path} must be an object of app_id -> public git URL", 2)
+    return data
+
+
+def commit_reachable(source: str, sha: str, timeout: int) -> bool:
+    """True when `sha` can be fetched from `source`. GitHub serves a reachable
+    commit by hash; a mirror that lags does not have it and the fetch fails."""
+    with tempfile.TemporaryDirectory(prefix="registry-index-reach.") as tmp:
+        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+        init = subprocess.run(["git", "init", "--quiet", "--bare", tmp], capture_output=True, text=True, env=env)
+        if init.returncode != 0:
+            return False
+        proc = subprocess.run(
+            ["git", "-C", tmp, "fetch", "--quiet", "--depth", "1", source, sha],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=timeout,
+        )
+        return proc.returncode == 0
+
+
+def cmd_promote(args: argparse.Namespace) -> int:
+    source_index = load_index(args.source_index, args.from_channel)
+    target = load_index(args.target_index, args.to_channel)
+    source_map = load_source_map(args.source_map)
+    promoted = 0
+    unreachable: list[str] = []
+    for app in source_index["apps"]:
+        rows = [r for r in app.get("compat", []) if r.get("lastdb_version") == args.lastdb_version]
+        if not rows:
+            continue
+        public_source = source_map.get(app["app_id"], app["source"])
+        if args.require_source_map and app["app_id"] not in source_map:
+            die(f"app {app['app_id']!r} has no public source in {args.source_map}", 2)
+        row = max(rows, key=lambda r: (r.get("proved_at", ""), r.get("app_version", "")))
+        if args.verify_reachable and not commit_reachable(public_source, row["sha"], args.fetch_timeout):
+            unreachable.append(f"{app['app_id']} {row['sha'][:12]} on {public_source}")
+            continue
+        target_app = find_app(target, app["app_id"])
+        if target_app is None:
+            target_app = {"app_id": app["app_id"], "source": public_source, "compat": []}
+            if app.get("description"):
+                target_app["description"] = app["description"]
+            target["apps"].append(target_app)
+            target["apps"].sort(key=lambda a: a["app_id"])
+        else:
+            target_app["source"] = public_source
+        target_app["compat"] = [
+            r for r in target_app.get("compat", [])
+            if not (r.get("sha") == row["sha"] and r.get("lastdb_version") == row["lastdb_version"])
+        ]
+        target_app["compat"].append(dict(row))
+        target_app["compat"].sort(key=lambda r: (r.get("proved_at", ""), r.get("app_version", "")))
+        if len(target_app["compat"]) > args.max_rows:
+            target_app["compat"] = target_app["compat"][-args.max_rows:]
+        promoted += 1
+        print(f"{args.to_channel}: {app['app_id']} {row['app_version']} @ {row['sha'][:12]} <- {args.from_channel}")
+    if unreachable:
+        for line in unreachable:
+            print(f"UNREACHABLE {line}", file=sys.stderr)
+        die(
+            f"{len(unreachable)} proved commit(s) are not on their public source yet "
+            "(mirror lag); run the GitHub mirror sync, then promote again. Nothing was written.",
+            3,
+        )
+    if promoted == 0:
+        die(f"no {args.from_channel} rows name lastdb {args.lastdb_version}; nothing to promote", 4)
+    if not args.dry_run:
+        write_index(args.target_index, target)
+    print(f"promoted {promoted} app row(s) for lastdb {args.lastdb_version} -> {args.target_index}{' (dry-run)' if args.dry_run else ''}")
+    return 0
+
+
+def resolve_lastdb_bin(explicit: str | None) -> str:
+    if explicit:
+        return explicit
+    env = os.environ.get("LASTDB_BIN", "").strip()
+    if env:
+        return env
+    found = shutil.which("lastdb")
+    if found:
+        return found
+    die("no `lastdb` binary on PATH (set LASTDB_BIN or pass --lastdb-bin)", 2)
+    return ""
+
+
+def cmd_sign(args: argparse.Namespace) -> int:
+    lastdb = resolve_lastdb_bin(args.lastdb_bin)
+    cmd = [lastdb, "app", "index", "sign", "--index", str(args.index)]
+    if args.key_file:
+        cmd += ["--key-file", str(args.key_file)]
+    proc = subprocess.run(cmd, text=True, capture_output=True)
+    sys.stdout.write(proc.stdout)
+    sys.stderr.write(proc.stderr)
+    return proc.returncode
+
+
+def cmd_verify(args: argparse.Namespace) -> int:
+    lastdb = resolve_lastdb_bin(args.lastdb_bin)
+    cmd = [lastdb, "app", "index", "verify", "--index", str(args.index)]
+    if args.trust_key:
+        cmd += ["--trust-key", args.trust_key]
+    proc = subprocess.run(cmd, text=True, capture_output=True)
+    sys.stdout.write(proc.stdout)
+    sys.stderr.write(proc.stderr)
+    return proc.returncode
+
+
+def cmd_show(args: argparse.Namespace) -> int:
+    index = load_index(args.index)
+    if args.json:
+        if args.lastdb_version:
+            view = {
+                **index,
+                "apps": [
+                    {**a, "compat": [r for r in a.get("compat", []) if r.get("lastdb_version") == args.lastdb_version]}
+                    for a in index["apps"]
+                ],
+            }
+            print(json.dumps(view, indent=2))
+        else:
+            print(json.dumps(index, indent=2))
+        return 0
+    print(f"# {index['channel']} · generated {index['generated_at']} · {len(index['apps'])} apps")
+    for app in index["apps"]:
+        rows = app.get("compat", [])
+        if args.lastdb_version:
+            rows = [r for r in rows if r.get("lastdb_version") == args.lastdb_version]
+        print(f"{app['app_id']}\t{app['source']}\t{len(rows)} rows")
+        for row in rows:
+            print(f"  {row['app_version']}\t{row['sha'][:12]}\tlastdb {row['lastdb_version']}\t{row['proved_at']}\t{row['proof_run']}")
+    return 0
+
+
+def cmd_builds(args: argparse.Namespace) -> int:
+    """The node builds an index has rows for, newest proof first."""
+    index = load_index(args.index)
+    seen: dict[str, str] = {}
+    for app in index["apps"]:
+        for row in app.get("compat", []):
+            build = row.get("lastdb_version", "")
+            seen[build] = max(seen.get(build, ""), row.get("proved_at", ""))
+    for build, proved_at in sorted(seen.items(), key=lambda kv: kv[1], reverse=True):
+        print(f"{build}\t{proved_at}")
+    return 0
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="last-stack-registry-index",
+        description="Write, promote, sign, and read the static signed LastDB app index.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("init", help="write an empty index for a channel")
+    p.add_argument("--channel", required=True)
+    p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--force", action="store_true")
+    p.set_defaults(func=cmd_init)
+
+    p = sub.add_parser("add-row", help="add one proved pair to an app (creates the app or the index)")
+    p.add_argument("--index", type=Path, required=True)
+    p.add_argument("--channel", help="required when the index file does not exist yet; checked otherwise")
+    p.add_argument("--app", required=True)
+    p.add_argument("--source", help="git checkout URL (required for a new app)")
+    p.add_argument("--description")
+    p.add_argument("--app-version", required=True)
+    p.add_argument("--sha", required=True)
+    p.add_argument("--artifact")
+    p.add_argument("--lastdb-version", required=True, help="node build string, e.g. 0.23.3-2117-gffb8eb6c4")
+    p.add_argument("--lastdb-api-version", type=int)
+    p.add_argument("--proved-at", help="RFC 3339 UTC (default: now)")
+    p.add_argument("--proof-run", required=True)
+    p.add_argument("--max-rows", type=int, default=DEFAULT_MAX_ROWS)
+    p.set_defaults(func=cmd_add_row)
+
+    p = sub.add_parser("promote", help="copy one node build's rows from one channel index to another")
+    p.add_argument("--source-index", type=Path, required=True)
+    p.add_argument("--from-channel", default="next")
+    p.add_argument("--target-index", type=Path, required=True)
+    p.add_argument("--to-channel", default="stable")
+    p.add_argument("--lastdb-version", required=True)
+    p.add_argument("--source-map", type=Path, help="JSON {app_id: public git URL}; rewrites each app's source")
+    p.add_argument("--require-source-map", action="store_true", help="fail when an app is missing from --source-map")
+    p.add_argument("--verify-reachable", action="store_true", help="fetch each sha from its public source first")
+    p.add_argument("--fetch-timeout", type=int, default=120)
+    p.add_argument("--max-rows", type=int, default=DEFAULT_MAX_ROWS)
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(func=cmd_promote)
+
+    p = sub.add_parser("sign", help="sign an index with `lastdb app index sign`")
+    p.add_argument("--index", type=Path, required=True)
+    p.add_argument("--key-file", type=Path)
+    p.add_argument("--lastdb-bin")
+    p.set_defaults(func=cmd_sign)
+
+    p = sub.add_parser("verify", help="verify an index with `lastdb app index verify`")
+    p.add_argument("--index", type=Path, required=True)
+    p.add_argument("--trust-key")
+    p.add_argument("--lastdb-bin")
+    p.set_defaults(func=cmd_verify)
+
+    p = sub.add_parser("show", help="print an index (optionally one node build's rows)")
+    p.add_argument("--index", type=Path, required=True)
+    p.add_argument("--lastdb-version")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_show)
+
+    p = sub.add_parser("builds", help="list the node builds an index has rows for")
+    p.add_argument("--index", type=Path, required=True)
+    p.set_defaults(func=cmd_builds)
+
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str]) -> int:
+    args = parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

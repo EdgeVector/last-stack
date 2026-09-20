@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# Write one candidate set's proved rows to the registry `next` channel.
+#
+# Input: the candidate set the smoke installed (last-stack-canary-candidate-set)
+# and the smoke's GREEN JSON verdict. Output: one PR on the Forgejo tap repo
+# (EdgeVector/homebrew-lastdb) that adds a compat row per app to
+# registry/next.json, writes registry/proofs/<proof_run>.json, re-signs the
+# index, and arms auto-merge. Forge CI on the tap checks the digest and the
+# proof record, then merges; the GitHub mirror serves the file.
+#
+# Nothing here touches the primary node. A RED smoke never reaches this script.
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
+
+FORGE_ROOT_URL="${FORGE_ROOT_URL:-http://localhost:3300}"
+TAP_REPO="${LAST_STACK_REGISTRY_TAP_REPO:-EdgeVector/homebrew-lastdb}"
+TAP_URL="${LAST_STACK_REGISTRY_TAP_URL:-$FORGE_ROOT_URL/$TAP_REPO.git}"
+TAP_DIR="${LAST_STACK_REGISTRY_TAP_DIR:-$HOME/.local/state/last-stack/registry-tap}"
+SIGNING_KEY="${LASTDB_REGISTRY_SIGNING_KEY:-$HOME/.lastdb/registry-index-signing.key}"
+FORGE_API="${FORGE_API_BIN:-$ROOT/bin/last-stack-forge-api}"
+FORGE_GIT="${FORGE_GIT_BIN:-$ROOT/bin/last-stack-forge-git}"
+CHANNEL=next
+DRY_RUN=0
+CANDIDATE_SET=""
+PROOF_JSON=""
+PROOF_RUN=""
+LASTDB_BIN_OVERRIDE=""
+
+usage() {
+  cat <<'USAGE'
+last-stack-registry-publish-next --candidate-set FILE --proof FILE [--proof-run ID] [--dry-run]
+
+Adds one compat row per app in the candidate set to registry/next.json on the
+tap repo, records the proof, signs, and opens an auto-merging Forgejo PR.
+
+  --candidate-set FILE  output of last-stack-canary-candidate-set
+  --proof FILE          the smoke's GREEN JSON verdict (verdict must be GREEN)
+  --proof-run ID        proof record name (default: llms-smoke-<UTC>-<build>)
+  --lastdb-bin PATH     lastdb used to sign (default: $LASTDB_BIN, then PATH)
+  --dry-run             write the rows in a scratch clone; no push, no PR
+
+Env: LAST_STACK_REGISTRY_TAP_URL, LAST_STACK_REGISTRY_TAP_DIR,
+     LASTDB_REGISTRY_SIGNING_KEY (default ~/.lastdb/registry-index-signing.key)
+USAGE
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --candidate-set) CANDIDATE_SET="$2"; shift 2 ;;
+    --proof) PROOF_JSON="$2"; shift 2 ;;
+    --proof-run) PROOF_RUN="$2"; shift 2 ;;
+    --lastdb-bin) LASTDB_BIN_OVERRIDE="$2"; shift 2 ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+done
+
+die() { printf 'last-stack-registry-publish-next: %s\n' "$*" >&2; exit 1; }
+[ -n "$CANDIDATE_SET" ] && [ -f "$CANDIDATE_SET" ] || die "--candidate-set FILE is required"
+[ -n "$PROOF_JSON" ] && [ -f "$PROOF_JSON" ] || die "--proof FILE is required"
+command -v jq >/dev/null 2>&1 || die "jq is required"
+[ -f "$SIGNING_KEY" ] || die "signing key not found at $SIGNING_KEY"
+
+verdict="$(jq -r '.verdict // empty' "$PROOF_JSON")"
+[ "$verdict" = GREEN ] || die "proof verdict is '${verdict:-absent}', not GREEN; rows are written only for a GREEN proof"
+build="$(jq -r '.lastdb.build // empty' "$CANDIDATE_SET")"
+[ -n "$build" ] || die "candidate set has no lastdb.build"
+proof_build="$(jq -r '.lastdb_build // empty' "$PROOF_JSON")"
+if [ -n "$proof_build" ] && [ "$proof_build" != "$build" ]; then
+  die "proof names lastdb $proof_build but the candidate set is $build"
+fi
+proved_at="$(jq -r '.proved_at // empty' "$PROOF_JSON")"
+[ -n "$proved_at" ] || proved_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+if [ -z "$PROOF_RUN" ]; then
+  PROOF_RUN="llms-smoke-$(date -u +%Y%m%dT%H%M%SZ)-$(printf '%s' "$build" | tr -c 'A-Za-z0-9.-' '_')"
+fi
+
+if [ -n "$LASTDB_BIN_OVERRIDE" ]; then
+  export LASTDB_BIN="$LASTDB_BIN_OVERRIDE"
+fi
+lastdb_for_sign="${LASTDB_BIN:-$(command -v lastdb || true)}"
+[ -n "$lastdb_for_sign" ] || die "no lastdb binary to sign with (set LASTDB_BIN)"
+"$lastdb_for_sign" app index sign --help >/dev/null 2>&1 || die "$lastdb_for_sign has no \`app index sign\`; point LASTDB_BIN at a build that does"
+
+# Fresh tap checkout on main. A stale clone would rebase onto old rows.
+if [ "$DRY_RUN" -eq 1 ]; then
+  TAP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/registry-tap-dry.XXXXXX")"
+  trap 'rm -rf "$TAP_DIR"' EXIT
+fi
+if [ -d "$TAP_DIR/.git" ]; then
+  git -C "$TAP_DIR" fetch --quiet origin main
+  git -C "$TAP_DIR" checkout --quiet -B main origin/main
+  git -C "$TAP_DIR" reset --quiet --hard origin/main
+else
+  rm -rf "$TAP_DIR"
+  git clone --quiet "$TAP_URL" "$TAP_DIR"
+fi
+branch="registry/next-$(printf '%s' "$build" | tr -c 'A-Za-z0-9.-' '_')-$(date -u +%Y%m%dT%H%M%SZ)"
+git -C "$TAP_DIR" checkout --quiet -b "$branch"
+
+index="$TAP_DIR/registry/$CHANNEL.json"
+[ -f "$index" ] || die "$index is missing on the tap; land the registry scaffold first"
+mkdir -p "$TAP_DIR/registry/proofs"
+
+api_version="$(jq -r '.lastdb.api_version // empty' "$CANDIDATE_SET")"
+count=0
+while IFS=$'\t' read -r app sha app_version source description; do
+  [ -n "$app" ] || continue
+  args=(add-row --index "$index" --channel "$CHANNEL" --app "$app" --source "$source"
+        --app-version "$app_version" --sha "$sha" --lastdb-version "$build"
+        --proved-at "$proved_at" --proof-run "$PROOF_RUN")
+  [ -z "$description" ] || args+=(--description "$description")
+  [ -z "$api_version" ] || args+=(--lastdb-api-version "$api_version")
+  "$ROOT/bin/last-stack-registry-index" "${args[@]}"
+  count=$((count + 1))
+done < <(jq -r '.apps | to_entries[] | [.key, .value.sha, (.value.app_version // "0.0.0"), .value.source, (.value.description // "")] | @tsv' "$CANDIDATE_SET")
+[ "$count" -gt 0 ] || die "candidate set has no apps"
+
+# The proof record: what was proved, with what, by which run.
+jq -n --arg run "$PROOF_RUN" --arg build "$build" --arg at "$proved_at" --arg channel "$CHANNEL" \
+  --slurpfile set "$CANDIDATE_SET" --slurpfile proof "$PROOF_JSON" \
+  '{proof_run: $run, kind: "llms-txt-install-smoke", channel: $channel, lastdb_build: $build, proved_at: $at,
+    candidate_set: ($set[0] | {created_at, lastdb, apps: (.apps | with_entries(.value |= {sha, app_version, source}))}),
+    verdict: ($proof[0] | {verdict, pass, sandbox})}' >"$TAP_DIR/registry/proofs/$PROOF_RUN.json"
+
+"$ROOT/bin/last-stack-registry-index" sign --index "$index" --key-file "$SIGNING_KEY" --lastdb-bin "$lastdb_for_sign"
+"$lastdb_for_sign" app index verify --index "$index" >/dev/null
+
+git -C "$TAP_DIR" add registry
+git -C "$TAP_DIR" -c user.name="last-stack canary" -c user.email="canary@edgevector.local" commit --quiet -F - <<EOF
+registry(next): lastdb $build + $count apps proved by $PROOF_RUN
+
+The isolated llms-txt install smoke passed on this candidate set, so each
+app commit in it is a proved pair with lastdb $build. Rows land on \`next\`;
+\`stable\` waits for the human publish command.
+
+Proof: registry/proofs/$PROOF_RUN.json
+EOF
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  printf 'REGISTRY_NEXT status=dry-run build=%s apps=%s proof_run=%s dir=%s\n' "$build" "$count" "$PROOF_RUN" "$TAP_DIR"
+  git -C "$TAP_DIR" show --stat HEAD | head -20
+  exit 0
+fi
+
+if [ -x "$FORGE_GIT" ]; then
+  "$FORGE_GIT" -C "$TAP_DIR" push --quiet -u origin "$branch"
+else
+  git -C "$TAP_DIR" push --quiet -u origin "$branch"
+fi
+[ -x "$FORGE_API" ] || die "forge api helper missing at $FORGE_API"
+body="$(jq -n --arg build "$build" --arg run "$PROOF_RUN" --arg n "$count" \
+  '"## What\n\n`registry/next.json`: " + $n + " compat rows proved with lastdb `" + $build + "` by `" + $run + "`. Proof record: `registry/proofs/" + $run + ".json`.\n\nWritten by the nightly canary lane after the isolated llms-txt install smoke passed on this candidate set. `stable` is untouched.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)"')"
+pr_json="$(jq -n --arg t "registry(next): lastdb $build + $count apps proved by $PROOF_RUN" --arg h "$branch" --arg b "$body" \
+  '{title:$t, head:$h, base:"main", body:$b}')"
+pr_number="$("$FORGE_API" POST --data "$pr_json" "repos/$TAP_REPO/pulls" --jq '.number')"
+[ -n "$pr_number" ] && [ "$pr_number" != null ] || die "PR create returned no number"
+"$FORGE_API" POST --data '{"Do":"merge","merge_when_checks_succeed":true,"delete_branch_after_merge":true}' \
+  "repos/$TAP_REPO/pulls/$pr_number/merge" >/dev/null || true
+printf 'REGISTRY_NEXT status=pr build=%s apps=%s proof_run=%s pr=%s/%s\n' "$build" "$count" "$PROOF_RUN" "$TAP_REPO" "$pr_number"

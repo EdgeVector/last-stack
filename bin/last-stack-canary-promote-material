@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# The `promote-eligible` short action of the hourly canary v2 reconciler.
+#
+# Called once per green verdict token with LAST_STACK_CANARY_CANDIDATE set to
+# the primary's build string. Writes PROMOTE.md — the node build, the `next`
+# rows proved with it, and the ONE command that publishes — then notifies.
+# It never publishes: stable stays a human action.
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
+
+candidate="${LAST_STACK_CANARY_CANDIDATE:-}"
+promote_root="${LAST_STACK_CANARY_PROMOTE_ROOT:-$HOME/.local/state/last-stack/canary-promote}"
+tap_url="${LAST_STACK_REGISTRY_TAP_URL:-${FORGE_ROOT_URL:-http://localhost:3300}/EdgeVector/homebrew-lastdb.git}"
+next_index="${LAST_STACK_REGISTRY_NEXT_INDEX:-}"   # tests: a local next.json
+notify="${LAST_STACK_CANARY_NOTIFY_CMD:-ra notify}"
+no_notify=0
+
+usage() {
+  printf '%s\n' 'last-stack-canary-promote-material [--candidate BUILD] [--no-notify]'
+  printf '%s\n' 'Write PROMOTE.md for a green candidate: node build, proved next rows, the publish command.'
+}
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --candidate) candidate="$2"; shift 2 ;;
+    --no-notify) no_notify=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+done
+[ -n "$candidate" ] || { echo "last-stack-canary-promote-material: no candidate (LAST_STACK_CANARY_CANDIDATE)" >&2; exit 2; }
+
+# Read the `next` rows for this build from the tap's main (or a local file).
+work="$(mktemp -d "${TMPDIR:-/tmp}/promote-material.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+if [ -z "$next_index" ]; then
+  if git clone --quiet --depth 1 "$tap_url" "$work/tap" 2>/dev/null && [ -f "$work/tap/registry/next.json" ]; then
+    next_index="$work/tap/registry/next.json"
+  fi
+fi
+rows_block="(the tap could not be read; run \`last-stack-registry-index show --index <tap>/registry/next.json --lastdb-version $candidate\`)"
+row_count=0
+if [ -n "$next_index" ] && [ -f "$next_index" ]; then
+  rows_block="$(jq -r --arg b "$candidate" '.apps[] | . as $a | .compat[] | select(.lastdb_version == $b) | "- `\($a.app_id)` \(.app_version) @ `\(.sha[0:12])` — proved \(.proved_at) by `\(.proof_run)`"' "$next_index")"
+  row_count="$(jq -r --arg b "$candidate" '[.apps[].compat[] | select(.lastdb_version == $b)] | length' "$next_index")"
+  [ -n "$rows_block" ] || rows_block="(no next rows name lastdb $candidate — the nightly candidate gate did not write them; the publish command will refuse)"
+fi
+
+day="$(date -u +%Y-%m-%d)"
+out_dir="$promote_root/$day"
+mkdir -p "$out_dir"
+out="$out_dir/PROMOTE.md"
+cat >"$out" <<EOF
+# LastDB release candidate — ready to publish
+
+- Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+- Node build: \`$candidate\` (the primary ran it through the 24 h quiet window; verdict green)
+- Registry \`next\` rows proved with this build: $row_count
+
+## Proved app rows (\`next\`)
+
+$rows_block
+
+## Publish (one human command)
+
+\`\`\`bash
+last-stack-release-publish --lastdb-version $candidate
+\`\`\`
+
+It publishes the node to the Homebrew stable formula and copies these rows to
+the registry \`stable\` channel with public sources, in one step. Add \`--dry-run\` first to see the tag, the rows, and the PRs it
+would open. Stable publication stays a human action until five clean manual
+promotes (decision-2026-09-19-app-registry-is-the-release-unit).
+EOF
+
+if [ "$no_notify" -ne 1 ]; then
+  # shellcheck disable=SC2086
+  $notify "LastDB candidate $candidate is green: $row_count proved app rows. Publish: last-stack-release-publish --lastdb-version $candidate ($out)" --priority high >/dev/null 2>&1 || true
+fi
+printf 'PROMOTE_MATERIAL candidate=%s rows=%s output=%s\n' "$candidate" "$row_count" "$out"

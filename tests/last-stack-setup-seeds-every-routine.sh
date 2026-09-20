@@ -73,8 +73,8 @@ fi
 
 # The seeder that started this: name it explicitly so a future narrowing of
 # the glob cannot quietly drop the canary producer again.
-grep -qxF 'last-stack-lastdb-canary-build-main-routine' "$tmp/called.txt" || {
-  echo "FAIL: setup does not seed lastdb-canary-build-main" >&2
+grep -qxF 'last-stack-lastdb-canary-candidate-set-routine' "$tmp/called.txt" || {
+  echo "FAIL: setup does not seed lastdb-canary-candidate-set" >&2
   exit 1
 }
 

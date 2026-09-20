@@ -168,14 +168,19 @@ staged_path="$(printf '%s\n' "$out" | jq -r '.safe_upgrade_args[1]')"
 [ "$(printf '%s\n' "$out" | jq -r '.state')" = "dogfood_green" ]
 
 # --- registry + routine present ---
-grep -q '^id = "lastdb-canary-build-main"$' "$ROOT/config/routines-registry/lastdb-canary-build-main.toml"
-grep -q '^status = "active"$' "$ROOT/config/routines-registry/lastdb-canary-build-main.toml"
-grep -q 'last-stack-canary-build-main' "$ROOT/routines/lastdb-canary-build-main.md"
-grep -q 'Forge' "$ROOT/routines/lastdb-canary-build-main.md"
+# The builder is step 1 of the nightly candidate-set routine since 2026-09-20
+# (north-star-lastdb-app-registry-release-loop); the standalone build-main
+# routine is gone.
+[ ! -f "$ROOT/routines/lastdb-canary-build-main.md" ]
+grep -q '^id = "lastdb-canary-candidate-set"$' "$ROOT/config/routines-registry/lastdb-canary-candidate-set.toml"
+grep -q '^status = "active"$' "$ROOT/config/routines-registry/lastdb-canary-candidate-set.toml"
+grep -q 'last-stack-canary-build-main' "$ROOT/bin/last-stack-canary-candidate-gate"
+grep -q 'Forge' "$ROOT/routines/lastdb-canary-candidate-set.md"
 
-# The nightly uses the v2 bounded primary action. The hourly reconciler owns
-# candidate evidence and the quiet window after the daemon starts.
-grep -q 'last-stack-canary-v2-dogfood-gate' "$ROOT/routines/lastdb-canary-dogfood.md"
-grep -q 'bounded safe-upgrade action' "$ROOT/routines/lastdb-canary-dogfood.md"
+# The nightly uses the v2 bounded primary action inside the candidate gate.
+# The hourly reconciler owns candidate evidence and the quiet window after
+# the daemon starts.
+grep -q 'last-stack-canary-candidate-gate' "$ROOT/routines/lastdb-canary-candidate-set.md"
+grep -q 'safe-upgrade probe' "$ROOT/routines/lastdb-canary-candidate-set.md"
 
 echo "ok last-stack-canary-build-main"

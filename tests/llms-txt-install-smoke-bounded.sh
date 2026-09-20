@@ -489,8 +489,8 @@ esac
 
 # The daemon that answered `lastdbd` is resolved once and booted by path, and
 # the log names the file and the build, so two runs never read as one binary.
-grep -qF 'LASTDBD_BIN="$(command -v lastdbd || true)"' "$RUN" \
-  || fail "run.sh must resolve the lastdbd binary once after the prereq check"
+grep -qF 'LASTDBD_BIN="${SMOKE_LASTDBD_BIN:-$(command -v lastdbd || true)}"' "$RUN" \
+  || fail "run.sh must resolve the lastdbd binary once after the prereq check (SMOKE_LASTDBD_BIN names a candidate)"
 grep -qF 'live "lastdbd: $LASTDBD_BIN (${LASTDBD_VERSION:-version unknown})"' "$RUN" \
   || fail "run.sh must log the lastdbd path and version as a live breadcrumb"
 

@@ -20,7 +20,7 @@ export PATH="$last_stack/bin:$HOME/.local/bin:$PATH"
 Run the zero-agent gate first.
 
 ```bash
-"$last_stack/bin/last-stack-canary-soak-watch-gate"
+"$last_stack/bin/last-stack-canary-reconcile-gate"
 ```
 
 The gate reads the owner-only bounded boot ledger. It records a three-sample
@@ -45,9 +45,11 @@ row is build failure evidence.
 
 ## Action safety
 
-The gate only plans actions by default. It starts one short action only when
-`LAST_STACK_CANARY_V2_EXECUTE_ACTIONS=1` is set and the verdict maps to a
-dispatchable action.
+The gate executes exactly one configured short action per verdict token. By
+default only `promote-eligible` has a command: `last-stack-canary-promote-material`
+writes `PROMOTE.md` (the node build, the registry `next` rows proved with it,
+and the one publish command) and notifies. It never publishes. The other
+actions stay planned until a command is configured.
 
 Allowed actions: build, heal, line-stop, pause, retire, promote.
 `wait-next-check` is a fact for the next tick. The dispatcher never starts it.
@@ -69,7 +71,9 @@ command leaves the action planned. It does not invent a wait loop.
 `--dry-run` (or `LAST_STACK_CANARY_V2_DRY_RUN=1`) prints the action plan and
 writes no reconciler evidence, primary state, or stable-channel state.
 
-Stable channel promotion remains held until the channel proof is complete.
+Stable publication is a human action: `last-stack-release-publish
+--lastdb-version <build>` promotes the node to brew and the proved rows to the
+registry `stable` channel in one step. Nothing in this routine runs it.
 
 ## Closeout
 

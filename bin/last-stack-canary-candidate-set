@@ -1,0 +1,225 @@
+#!/usr/bin/env python3
+"""Write the nightly candidate set: one LastDB build plus one commit per app.
+
+The candidate set is what the isolated llms-txt smoke installs and what the
+registry `next` rows record when that smoke is GREEN. Fixing the app commits
+before the smoke is the whole point: the pair that was proved is the pair
+that gets published, not "whatever main was when the user cloned".
+
+Per app the commit comes from, in order:
+  1. --pin <app>=<sha>                    operator override
+  2. the LastGit artifact CAS channel     channels/<artifact_app>/<channel>.json
+     (the app's released head: built and green-published)
+  3. `git ls-remote <forge> refs/heads/main`
+
+The app version is read from `package.json` at that commit through a small
+bounded bare cache (one shallow fetch per app), else `0.0.0`.
+
+No walk. Every path comes from a flag or a fixed default under
+~/.local/state/last-stack.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+HOME = Path.home()
+DEFAULT_APPS_CONFIG = ROOT / "config" / "registry" / "apps.json"
+DEFAULT_ARTIFACT_ROOT = HOME / ".lastgit" / "artifacts"
+DEFAULT_CACHE_ROOT = HOME / ".local" / "state" / "last-stack" / "registry-cache"
+DEFAULT_OUT_ROOT = HOME / ".local" / "state" / "last-stack" / "canary-candidate-sets"
+
+
+def utc_now() -> str:
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def die(message: str, code: int = 1) -> None:
+    print(f"last-stack-canary-candidate-set: {message}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def run(cmd: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "RUST_LOG": "off"},
+        check=False,
+    )
+
+
+def lastdbd_build(bin_path: Path) -> str:
+    proc = run([str(bin_path), "--version"], timeout=20)
+    if proc.returncode != 0:
+        die(f"{bin_path} --version failed: {proc.stderr.strip()[:200]}")
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("lastdbd "):
+            return line.split(None, 1)[1].strip()
+    die(f"{bin_path} --version printed no `lastdbd <build>` line")
+    return ""
+
+
+def lastdb_oid_from_manifest(bin_path: Path) -> str:
+    for candidate in (bin_path.parent / "manifest.json", bin_path.parent.parent / "manifest.json"):
+        if candidate.is_file():
+            try:
+                data = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            oid = str(data.get("source_git_oid") or "")
+            if oid:
+                return oid
+    return ""
+
+
+def artifact_channel_oid(artifact_root: Path, artifact_app: str | None, channel: str) -> str:
+    if not artifact_app:
+        return ""
+    path = artifact_root / "channels" / artifact_app / f"{channel}.json"
+    if not path.is_file():
+        return ""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    return str(data.get("source_oid") or "")
+
+
+def forge_main_oid(url: str) -> str:
+    proc = run(["git", "ls-remote", url, "refs/heads/main"], timeout=60)
+    if proc.returncode != 0:
+        return ""
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1] == "refs/heads/main":
+            return parts[0]
+    return ""
+
+
+def app_version_at(cache_root: Path, app: str, url: str, sha: str) -> str:
+    """package.json version at `sha`, through a bounded per-app bare cache."""
+    cache = cache_root / f"{app}.git"
+    if not cache.is_dir():
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        init = run(["git", "init", "--quiet", "--bare", str(cache)], timeout=30)
+        if init.returncode != 0:
+            return "0.0.0"
+    show = run(["git", "-C", str(cache), "show", f"{sha}:package.json"], timeout=30)
+    if show.returncode != 0:
+        fetch = run(["git", "-C", str(cache), "fetch", "--quiet", "--depth", "1", url, sha], timeout=180)
+        if fetch.returncode != 0:
+            return "0.0.0"
+        show = run(["git", "-C", str(cache), "show", f"{sha}:package.json"], timeout=30)
+        if show.returncode != 0:
+            return "0.0.0"
+    try:
+        version = str(json.loads(show.stdout).get("version") or "").strip()
+    except json.JSONDecodeError:
+        return "0.0.0"
+    return version or "0.0.0"
+
+
+def parse_pins(values: list[str]) -> dict[str, str]:
+    pins: dict[str, str] = {}
+    for value in values:
+        if "=" not in value:
+            die(f"--pin takes <app>=<sha>, got {value!r}", 2)
+        app, sha = value.split("=", 1)
+        pins[app.strip()] = sha.strip()
+    return pins
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="last-stack-canary-candidate-set",
+        description="Write the nightly candidate set: one LastDB build plus one commit per app.",
+    )
+    parser.add_argument("--lastdbd", type=Path, required=True, help="the candidate lastdbd binary (canary-builds/<oid>/lastdbd)")
+    parser.add_argument("--apps-config", type=Path, default=DEFAULT_APPS_CONFIG)
+    parser.add_argument("--only", action="append", default=[], help="limit to these app ids (repeatable)")
+    parser.add_argument("--pin", action="append", default=[], help="<app>=<sha> override (repeatable)")
+    parser.add_argument("--artifact-root", type=Path, default=Path(os.environ.get("HOST_TRACK_ARTIFACT_ROOT", DEFAULT_ARTIFACT_ROOT)))
+    parser.add_argument("--artifact-channel", default="stable", help="artifact CAS channel that names each app's released head")
+    parser.add_argument("--cache-root", type=Path, default=DEFAULT_CACHE_ROOT)
+    parser.add_argument("--no-version-lookup", action="store_true", help="skip the package.json fetch; versions read 0.0.0")
+    parser.add_argument("--out", type=Path, help="output file (default: <out-root>/<lastdb build>.json)")
+    parser.add_argument("--out-root", type=Path, default=DEFAULT_OUT_ROOT)
+    parser.add_argument("--json", action="store_true", help="print the set to stdout as well")
+    args = parser.parse_args(argv)
+
+    if not args.lastdbd.is_file():
+        die(f"lastdbd not found at {args.lastdbd}", 2)
+    try:
+        config = json.loads(args.apps_config.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        die(f"apps config {args.apps_config}: {exc}", 2)
+    apps_cfg: dict = config.get("apps") or {}
+    if not apps_cfg:
+        die(f"apps config {args.apps_config} has no apps", 2)
+    pins = parse_pins(args.pin)
+    for pinned in pins:
+        if pinned not in apps_cfg:
+            die(f"--pin names unknown app {pinned!r}", 2)
+    selected = [a for a in apps_cfg if not args.only or a in args.only]
+    for wanted in args.only:
+        if wanted not in apps_cfg:
+            die(f"--only names unknown app {wanted!r}", 2)
+
+    build = lastdbd_build(args.lastdbd)
+    oid = lastdb_oid_from_manifest(args.lastdbd)
+    apps_out: dict[str, dict] = {}
+    missing: list[str] = []
+    for app in selected:
+        cfg = apps_cfg[app]
+        forge = str(cfg.get("forge") or "")
+        if app in pins:
+            sha, sha_source = pins[app], "pin"
+        else:
+            sha = artifact_channel_oid(args.artifact_root, cfg.get("artifact_app"), args.artifact_channel)
+            sha_source = f"artifact-channel:{args.artifact_channel}"
+            if not sha and forge:
+                sha, sha_source = forge_main_oid(forge), "forge-main"
+        if not sha:
+            missing.append(app)
+            continue
+        version = "0.0.0" if args.no_version_lookup else app_version_at(args.cache_root, app, forge, sha)
+        apps_out[app] = {
+            "sha": sha,
+            "sha_source": sha_source,
+            "app_version": version,
+            "source": forge,
+            "public_source": str(cfg.get("public") or ""),
+            "install_name": str(cfg.get("install_name") or app),
+            "description": str(cfg.get("description") or ""),
+        }
+    if missing:
+        die(f"no commit could be resolved for: {', '.join(missing)}", 3)
+
+    candidate_set = {
+        "created_at": utc_now(),
+        "lastdb": {"build": build, "oid": oid, "bin": str(args.lastdbd)},
+        "apps": apps_out,
+    }
+    out = args.out or (args.out_root / f"{build}.json")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(candidate_set, indent=2) + "\n", encoding="utf-8")
+    if args.json:
+        print(json.dumps(candidate_set, indent=2))
+    else:
+        print(f"candidate set: lastdb {build} + {len(apps_out)} apps -> {out}")
+        for app, row in apps_out.items():
+            print(f"  {app}\t{row['app_version']}\t{row['sha'][:12]}\t{row['sha_source']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
