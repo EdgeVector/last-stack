@@ -54,6 +54,20 @@ def die(message: str, code: int = 1) -> None:
     raise SystemExit(code)
 
 
+def forge_git() -> list[str]:
+    """`git` with the forge token as an HTTP extraHeader for the local forge, so
+    an unattended clone of the private tap has no keychain prompt to answer."""
+    if not (TAP_URL.startswith("http://localhost:3300/") or TAP_URL.startswith("http://127.0.0.1:3300/")):
+        return ["git"]
+    token = os.environ.get("FORGE_TOKEN", "").strip()
+    if not token:
+        sec = run(["security", "find-generic-password", "-s", "forgejo-token", "-w"])
+        token = sec.stdout.strip() if sec.returncode == 0 else ""
+    if not token:
+        return ["git"]
+    return ["git", "-c", f"http.http://localhost:3300/.extraHeader=Authorization: token {token}"]
+
+
 def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     kw.setdefault("text", True)
     kw.setdefault("capture_output", True)
@@ -103,12 +117,28 @@ def find_promote_script(explicit: str | None) -> Path:
     return Path()
 
 
+# Stable tags live on the public GitHub tap (the bottle CDN), not on the
+# Forge copy, so the next tag is read from there. Anonymous read.
+PUBLIC_TAP_URL = os.environ.get("LAST_STACK_PUBLIC_TAP_URL", "https://github.com/EdgeVector/homebrew-lastdb.git")
+
+
 def latest_stable_tag() -> str | None:
-    proc = run(["git", "ls-remote", "--tags", "--refs", TAP_URL, "v*"], timeout=60)
-    if proc.returncode != 0:
-        return None
     best: tuple[int, int, int] | None = None
-    for line in proc.stdout.splitlines():
+    seen_any = False
+    for url in (PUBLIC_TAP_URL, TAP_URL):
+        cmd = (["git"] if url == PUBLIC_TAP_URL else forge_git()) + ["ls-remote", "--tags", "--refs", url, "v*"]
+        proc = run(cmd, timeout=60)
+        if proc.returncode != 0:
+            continue
+        seen_any = True
+        best = _max_semver_tag(proc.stdout, best)
+    if not seen_any:
+        die("could not read stable tags from the public tap or the forge; pass --version-tag")
+    return f"v{best[0]}.{best[1]}.{best[2]}" if best else None
+
+
+def _max_semver_tag(listing: str, best: tuple[int, int, int] | None) -> tuple[int, int, int] | None:
+    for line in listing.splitlines():
         parts = line.split()
         if len(parts) != 2:
             continue
@@ -118,7 +148,7 @@ def latest_stable_tag() -> str | None:
         tup = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
         if best is None or tup > best:
             best = tup
-    return f"v{best[0]}.{best[1]}.{best[2]}" if best else None
+    return best
 
 
 def next_stable_tag(build: str, explicit: str | None) -> str:
@@ -194,7 +224,7 @@ def main(argv: list[str]) -> int:
         env = os.environ.copy()
         if args.dry_run:
             tap_dir = Path(tempfile.mkdtemp(prefix="release-publish-tap."))
-            clone = run(["git", "clone", "--quiet", TAP_URL, str(tap_dir)], timeout=120)
+            clone = run(forge_git() + ["clone", "--quiet", TAP_URL, str(tap_dir)], timeout=120)
             if clone.returncode != 0:
                 die(f"clone of {TAP_URL} failed: {clone.stderr.strip()}")
             cmd += ["--dry-run", "--tap-dir", str(tap_dir)]
@@ -223,7 +253,7 @@ def main(argv: list[str]) -> int:
         if not SIGNING_KEY.is_file():
             die(f"signing key not found at {SIGNING_KEY}")
         tap_dir = Path(tempfile.mkdtemp(prefix="release-publish-registry."))
-        clone = run(["git", "clone", "--quiet", TAP_URL, str(tap_dir)], timeout=120)
+        clone = run(forge_git() + ["clone", "--quiet", TAP_URL, str(tap_dir)], timeout=120)
         if clone.returncode != 0:
             die(f"clone of {TAP_URL} failed: {clone.stderr.strip()}")
         next_idx = tap_dir / "registry" / "next.json"
@@ -267,8 +297,8 @@ def main(argv: list[str]) -> int:
         if args.dry_run:
             registry_result = f"dry-run ({tap_dir})"
         else:
-            forge_git = ROOT / "bin" / "last-stack-forge-git"
-            push_cmd = [str(forge_git), "-C", str(tap_dir)] if forge_git.is_file() else ["git", "-C", str(tap_dir)]
+            forge_git_bin = ROOT / "bin" / "last-stack-forge-git"
+            push_cmd = [str(forge_git_bin), "-C", str(tap_dir)] if forge_git_bin.is_file() else forge_git() + ["-C", str(tap_dir)]
             push = run(push_cmd + ["push", "--quiet", "-u", "origin", branch], timeout=120)
             if push.returncode != 0:
                 die(f"push failed: {push.stderr.strip()}")
