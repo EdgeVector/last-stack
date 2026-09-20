@@ -99,7 +99,7 @@ grep -q 'ROUTINE_RESULT outcome=error' <<<"$out" || fail "red smoke not error: $
 grep -q 'evidence=smoke_red' <<<"$out" || fail "red smoke evidence: $out"
 grep -q 'dogfood --cutover' "$calls" && fail "RED smoke still cut over"
 grep -q 'publish-next' "$calls" && fail "RED smoke still wrote rows"
-grep -q 'record-line-event --check candidate_smoke --subject build --result fail' "$calls" || fail "no build-subject line event on RED"
+grep -q 'record-line-event --check candidate_smoke' "$calls" && fail "RED smoke wrote a line event (the ledger has no build subject; observer/host would misgrade it)"
 
 # Primary already on the candidate: noop before any smoke.
 out="$(run_gate env FAKE_PRIMARY=0.23.3-200-gbbbbbbbbb)"

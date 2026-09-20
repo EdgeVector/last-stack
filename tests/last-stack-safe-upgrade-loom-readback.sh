@@ -34,6 +34,24 @@ case "${1:-}" in
     exit 3
     ;;
   show)
+    # Optional: stay `running` for the first N reads (VERIFY after a live
+    # cutover), then succeed. LOOM_FAKE_RUNNING_READS counts down in a file.
+    if [ -n "${LOOM_FAKE_RUNNING_READS:-}" ] && [ -f "${LOOM_FAKE_RUNNING_READS}" ]; then
+      left="$(cat "$LOOM_FAKE_RUNNING_READS")"
+      if [ "$left" -gt 0 ]; then
+        echo $((left - 1)) >"$LOOM_FAKE_RUNNING_READS"
+        printf '%s\n' 'lx-test-readback'
+        printf '%s\n' 'status: running'
+        printf '%s\n' 'state: CUTOVER'
+        exit 0
+      fi
+    fi
+    if [ "${LOOM_FAKE_FINAL:-succeeded}" != succeeded ]; then
+      printf '%s\n' 'lx-test-readback'
+      printf '%s\n' "status: ${LOOM_FAKE_FINAL}"
+      printf '%s\n' 'state: CUTOVER'
+      exit 0
+    fi
     printf '%s\n' 'lx-test-readback'
     printf '%s\n' 'status: succeeded'
     printf '%s\n' 'state: DONE'
@@ -64,4 +82,65 @@ printf '%s\n' "$out" | jq -e '
   and .execution == "lx-test-readback"
 ' >/dev/null
 
-printf 'PASS: safe-upgrade Loom launcher reads back a terminal success\n'
+# The execution is still `running` past the 30 s readback window (VERIFY after
+# the live cutover; measured 2026-09-20 23:24Z as a false red). The wrapper
+# must keep reading while it runs, then report the success.
+counter="$tmp/running-reads"
+echo 3 >"$counter"
+out="$(
+  HOME="$mock_home" \
+  PATH="$fake_bin:$PATH" \
+  LOOM_FAKE_RUNNING_READS="$counter" \
+  LASTDB_SAFE_UPGRADE_FOLD_GIT_DIR="$repo" \
+  LASTDB_SAFE_UPGRADE_LOOM_READBACK_SECS=1 \
+  LASTDB_SAFE_UPGRADE_LOOM_RUNNING_SECS=60 \
+  "$ROOT/bin/last-stack-safe-upgrade-loom" \
+    --candidate "$candidate/lastdbd" \
+    --source-git-oid "$oid" \
+    --json
+)"
+printf '%s\n' "$out" | jq -e '.outcome == "ok" and .status == "succeeded" and .state == "DONE"' >/dev/null \
+  || { printf 'FAIL: a still-running execution that then succeeds must read as ok: %s\n' "$out" >&2; exit 1; }
+[ "$(cat "$counter")" = 0 ] || { echo "FAIL: the wrapper did not wait through the running reads" >&2; exit 1; }
+
+# A running execution that never finishes inside the running budget is non-green.
+echo 1000 >"$counter"
+set +e
+out="$(
+  HOME="$mock_home" \
+  PATH="$fake_bin:$PATH" \
+  LOOM_FAKE_RUNNING_READS="$counter" \
+  LASTDB_SAFE_UPGRADE_FOLD_GIT_DIR="$repo" \
+  LASTDB_SAFE_UPGRADE_LOOM_READBACK_SECS=1 \
+  LASTDB_SAFE_UPGRADE_LOOM_RUNNING_SECS=3 \
+  "$ROOT/bin/last-stack-safe-upgrade-loom" \
+    --candidate "$candidate/lastdbd" \
+    --source-git-oid "$oid" \
+    --json
+)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || { echo "FAIL: an execution still running past the budget must exit 3, got $rc" >&2; exit 1; }
+printf '%s\n' "$out" | jq -e '.outcome == "error" and .status == "running"' >/dev/null \
+  || { printf 'FAIL: running past budget must report status running: %s\n' "$out" >&2; exit 1; }
+
+# A terminal failure is reported at once, without waiting the readback out.
+set +e
+out="$(
+  HOME="$mock_home" \
+  PATH="$fake_bin:$PATH" \
+  LOOM_FAKE_FINAL=failed \
+  LASTDB_SAFE_UPGRADE_FOLD_GIT_DIR="$repo" \
+  LASTDB_SAFE_UPGRADE_LOOM_READBACK_SECS=30 \
+  "$ROOT/bin/last-stack-safe-upgrade-loom" \
+    --candidate "$candidate/lastdbd" \
+    --source-git-oid "$oid" \
+    --json
+)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || { echo "FAIL: a failed execution must exit 3, got $rc" >&2; exit 1; }
+printf '%s\n' "$out" | jq -e '.status == "failed"' >/dev/null \
+  || { printf 'FAIL: a failed execution must read as failed: %s\n' "$out" >&2; exit 1; }
+
+printf 'PASS: safe-upgrade Loom launcher reads back a terminal success, waits through running, reports failure\n'
