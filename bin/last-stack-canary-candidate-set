@@ -24,6 +24,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -45,13 +46,45 @@ def die(message: str, code: int = 1) -> None:
     raise SystemExit(code)
 
 
+_FORGE_GIT_ENV: dict[str, str] | None = None
+
+
+def forge_git_env() -> dict[str, str]:
+    """git env with the local forge token as an HTTP extraHeader (GIT_CONFIG_*).
+
+    The candidate set reads Forge repos unattended; there is no keychain
+    prompt to answer, so the token rides in the environment the same way
+    last-stack-forge-git passes it on the command line."""
+    global _FORGE_GIT_ENV
+    if _FORGE_GIT_ENV is not None:
+        return _FORGE_GIT_ENV
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "RUST_LOG": "off"}
+    token = os.environ.get("FORGE_TOKEN", "").strip()
+    if not token:
+        sec = subprocess.run(["security", "find-generic-password", "-s", "forgejo-token", "-w"],
+                             capture_output=True, text=True, check=False)
+        token = sec.stdout.strip() if sec.returncode == 0 else ""
+    if not token and shutil.which("lastsecrets"):
+        # Locked login keychain (unattended) → lastsecrets, minus the Sentry DSN
+        # injector that makes `lastsecrets get` print nothing with exit 0.
+        ls_env = {k: v for k, v in os.environ.items() if k != "OBS_SENTRY_DSN"}
+        ls = subprocess.run(["lastsecrets", "get", "forgejo-token"], capture_output=True, text=True, check=False, env=ls_env)
+        token = ls.stdout.strip().splitlines()[0].strip() if ls.returncode == 0 and ls.stdout.strip() else ""
+    if token:
+        env["GIT_CONFIG_COUNT"] = "1"
+        env["GIT_CONFIG_KEY_0"] = "http.http://localhost:3300/.extraHeader"
+        env["GIT_CONFIG_VALUE_0"] = f"Authorization: token {token}"
+    _FORGE_GIT_ENV = env
+    return env
+
+
 def run(cmd: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
     return subprocess.run(
         cmd,
         capture_output=True,
         text=True,
         timeout=timeout,
-        env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "RUST_LOG": "off"},
+        env=forge_git_env(),
         check=False,
     )
 

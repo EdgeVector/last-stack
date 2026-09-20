@@ -63,6 +63,10 @@ def forge_git() -> list[str]:
     if not token:
         sec = run(["security", "find-generic-password", "-s", "forgejo-token", "-w"])
         token = sec.stdout.strip() if sec.returncode == 0 else ""
+    if not token and shutil.which("lastsecrets"):
+        ls_env = {k: v for k, v in os.environ.items() if k != "OBS_SENTRY_DSN"}
+        ls = run(["lastsecrets", "get", "forgejo-token"], env=ls_env)
+        token = ls.stdout.strip().splitlines()[0].strip() if ls.returncode == 0 and ls.stdout.strip() else ""
     if not token:
         return ["git"]
     return ["git", "-c", f"http.http://localhost:3300/.extraHeader=Authorization: token {token}"]
