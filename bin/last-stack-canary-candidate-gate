@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# The nightly LastDB candidate-set action, zero-agent. One routine does what
+# build-main and dogfood did, plus the two steps the release loop needed:
+#
+#   1. build   — Forge fold main → canary-builds/<oid>/ (idempotent)
+#   2. resolve — the candidate build and the cutover-hold policy
+#   3. set     — fix one commit per app: the candidate set
+#   4. smoke   — the isolated llms-txt install smoke on exactly that set,
+#                booting the candidate lastdbd (never the primary)
+#   5. cutover — safe-upgrade probe + primary cutover (existing action)
+#   6. rows    — write the proved pairs to registry `next` (Forgejo PR)
+#
+# A RED smoke stops before the cutover: the primary keeps its build and the
+# ledger gets a build-subject line event. Rows are written only after a GREEN
+# smoke AND a successful cutover, so `next` never names a pair the primary
+# did not accept.
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
+
+build_main="${LAST_STACK_CANARY_V2_BUILD_MAIN:-${ROOT}/bin/last-stack-canary-build-main}"
+dogfood="${LAST_STACK_CANARY_V2_DOGFOOD:-${ROOT}/bin/last-stack-lastdb-canary-dogfood}"
+pipeline="${LAST_STACK_CANARY_V2_PIPELINE:-${ROOT}/bin/last-stack-canary-pipeline}"
+candidate_set_bin="${LAST_STACK_CANARY_CANDIDATE_SET_BIN:-${ROOT}/bin/last-stack-canary-candidate-set}"
+smoke_run="${LAST_STACK_CANARY_SMOKE_RUN:-${ROOT}/skills/llms-txt-install-smoke/run.sh}"
+publish_next="${LAST_STACK_CANARY_PUBLISH_NEXT_BIN:-${ROOT}/bin/last-stack-registry-publish-next}"
+hold_hours="${LAST_STACK_CANARY_V2_CUTOVER_HOLD_HOURS:-4}"
+run_dir="${ROUTINES_RUN_DIR:-${TMPDIR:-/tmp}}"
+skip_build="${LAST_STACK_CANARY_SKIP_BUILD:-0}"
+skip_smoke="${LAST_STACK_CANARY_SKIP_SMOKE:-0}"
+skip_rows="${LAST_STACK_CANARY_SKIP_ROWS:-0}"
+
+usage() {
+  printf '%s\n' 'last-stack-canary-candidate-gate'
+  printf '%s\n' 'Build → candidate set → isolated smoke → primary cutover → registry next rows.'
+  printf '%s\n' 'Env for tests: LAST_STACK_CANARY_V2_BUILD_MAIN, LAST_STACK_CANARY_V2_DOGFOOD,'
+  printf '%s\n' '  LAST_STACK_CANARY_V2_PIPELINE, LAST_STACK_CANARY_CANDIDATE_SET_BIN,'
+  printf '%s\n' '  LAST_STACK_CANARY_SMOKE_RUN, LAST_STACK_CANARY_PUBLISH_NEXT_BIN,'
+  printf '%s\n' '  LAST_STACK_CANARY_SKIP_BUILD=1, LAST_STACK_CANARY_SKIP_SMOKE=1, LAST_STACK_CANARY_SKIP_ROWS=1'
+}
+
+case "${1:-}" in
+  '') ;;
+  -h|--help) usage; exit 0 ;;
+  *) usage >&2; exit 2 ;;
+esac
+
+result() {
+  # result <outcome> <detail-kv...>: the two contract lines, then exit 0.
+  local outcome="$1"; shift
+  printf 'CANARY_CANDIDATE result=%s %s\n' "$outcome" "$*"
+  printf 'ROUTINE_RESULT outcome=%s detail=%s\n' "$outcome" "$(printf '%s' "$*" | tr ' ' ',')"
+  exit 0
+}
+
+for tool in "$dogfood" "$pipeline"; do
+  [ -x "$tool" ] || result error "evidence=tool_missing tool=$tool"
+done
+
+# ── 1. build ─────────────────────────────────────────────────────────────
+build_status=skipped
+if [ "$skip_build" != 1 ]; then
+  [ -x "$build_main" ] || result error "evidence=tool_missing tool=$build_main"
+  set +e
+  build_json="$(LAST_STACK_CANARY_FETCH_MAIN=1 "$build_main" --json)"
+  build_rc=$?
+  set -e
+  if [ "$build_rc" -ne 0 ]; then
+    "$pipeline" record-line-event --check build_main --subject build --result fail --detail "exit=$build_rc" >/dev/null || true
+    result error "stage=build evidence=build_failed rc=$build_rc"
+  fi
+  build_status="$(printf '%s\n' "$build_json" | jq -r '.status // "unknown"' 2>/dev/null || echo unknown)"
+fi
+
+# ── 2. resolve the candidate and the hold policy ─────────────────────────
+primary=""
+identity_command="${LAST_STACK_CANARY_V2_PRIMARY_IDENTITY_CMD:-last-stack-lastdb-memory-guard --identity}"
+set +e
+identity_output="$(eval "$identity_command" 2>/dev/null)"
+identity_rc=$?
+set -e
+if [ "$identity_rc" -eq 0 ]; then
+  for token in $identity_output; do
+    case "$token" in build=*) primary="${token#build=}" ;; esac
+  done
+fi
+if [ -z "$primary" ] || [ "$primary" = unknown ]; then
+  "$pipeline" record-line-event --check primary_identity --subject observer --result fail --detail absent >/dev/null || true
+  result error "stage=resolve subject=observer evidence=primary_identity_absent"
+fi
+"$pipeline" record-line-event --check primary_identity --subject observer --result pass >/dev/null || true
+
+set +e
+preview="$("$dogfood" --dry-run --json)"
+preview_rc=$?
+set -e
+[ "$preview_rc" -eq 0 ] || result error "stage=resolve evidence=candidate_absent"
+incoming="$(printf '%s\n' "$preview" | jq -r '.version // empty' 2>/dev/null || true)"
+candidate_bin="$(printf '%s\n' "$preview" | jq -r '.safe_upgrade_args[1] // empty' 2>/dev/null || true)"
+[ -n "$incoming" ] && [ "$incoming" != unknown ] || result error "stage=resolve evidence=candidate_identity_absent"
+[ -n "$candidate_bin" ] && [ -f "$candidate_bin" ] || result error "stage=resolve evidence=candidate_binary_absent candidate=$incoming"
+
+if [ "$incoming" = "$primary" ]; then
+  result noop "stage=resolve candidate=$incoming primary=$primary evidence=primary_already_on_candidate build=$build_status"
+fi
+
+channel_args=(--json channels --main-build "$primary" --incoming-build "$incoming" --cutover-hold-hours "$hold_hours")
+[ "${LAST_STACK_CANARY_V2_INCOMING_FIXES_RED:-0}" != 1 ] || channel_args+=(--incoming-fixes-red)
+[ -z "${LAST_STACK_CANARY_V2_AT:-}" ] || channel_args+=(--at "$LAST_STACK_CANARY_V2_AT")
+channel_json="$("$pipeline" "${channel_args[@]}")"
+if [ "$(printf '%s\n' "$channel_json" | jq -r '.cutover.hold // false')" = true ]; then
+  result noop "stage=resolve candidate=$incoming primary=$primary evidence=quiet_window_near_complete"
+fi
+
+# ── 3. candidate set ─────────────────────────────────────────────────────
+[ -x "$candidate_set_bin" ] || result error "evidence=tool_missing tool=$candidate_set_bin"
+mkdir -p "$run_dir"
+set_file="$run_dir/candidate-set.json"
+set +e
+"$candidate_set_bin" --lastdbd "$candidate_bin" --out "$set_file" >"$run_dir/candidate-set.out" 2>&1
+set_rc=$?
+set -e
+if [ "$set_rc" -ne 0 ]; then
+  "$pipeline" record-line-event --check candidate_set --subject observer --result fail --detail "exit=$set_rc" >/dev/null || true
+  result error "stage=set candidate=$incoming evidence=candidate_set_failed rc=$set_rc"
+fi
+app_count="$(jq -r '.apps | length' "$set_file")"
+
+# ── 4. isolated smoke on the set, booting the candidate lastdbd ──────────
+smoke_status=skipped
+proof_file="$run_dir/smoke-proof.json"
+if [ "$skip_smoke" != 1 ]; then
+  [ -f "$smoke_run" ] || result error "evidence=tool_missing tool=$smoke_run"
+  set +e
+  SMOKE_LASTDBD_BIN="$candidate_bin" SMOKE_CANDIDATE_SET="$set_file" \
+    bash "$smoke_run" --json >"$proof_file" 2>"$run_dir/smoke.err"
+  smoke_rc=$?
+  set -e
+  smoke_status="$(jq -r '.verdict // empty' "$proof_file" 2>/dev/null || true)"
+  if [ "$smoke_rc" -ne 0 ] || [ "$smoke_status" != GREEN ]; then
+    steps="$(jq -r '.steps // "no-verdict"' "$proof_file" 2>/dev/null || echo no-verdict)"
+    "$pipeline" record-line-event --check candidate_smoke --subject build --result fail \
+      --detail "candidate=$incoming steps=$steps" >/dev/null || true
+    result error "stage=smoke candidate=$incoming apps=$app_count evidence=smoke_red steps=$steps log=$run_dir/smoke.err"
+  fi
+  "$pipeline" record-line-event --check candidate_smoke --subject build --result pass --detail "candidate=$incoming apps=$app_count" >/dev/null || true
+fi
+
+# ── 5. cutover (the existing bounded safe-upgrade action) ────────────────
+set +e
+cutover="$("$dogfood" --cutover --json)"
+cutover_rc=$?
+set -e
+if [ "$cutover_rc" -ne 0 ]; then
+  result error "stage=cutover candidate=$incoming smoke=$smoke_status evidence=cutover_failed"
+fi
+cutover_result="$(printf '%s\n' "$cutover" | jq -r '.safe_upgrade // "unknown"' 2>/dev/null || true)"
+
+# ── 6. proved rows → registry next ───────────────────────────────────────
+rows_status=skipped
+if [ "$skip_rows" != 1 ] && [ "$skip_smoke" != 1 ]; then
+  [ -x "$publish_next" ] || result error "evidence=tool_missing tool=$publish_next"
+  set +e
+  rows_out="$("$publish_next" --candidate-set "$set_file" --proof "$proof_file" 2>"$run_dir/rows.err")"
+  rows_rc=$?
+  set -e
+  if [ "$rows_rc" -ne 0 ]; then
+    # The primary is already on the candidate; a rows failure is a lane fault,
+    # not a build verdict. Say so and leave the evidence where the next run finds it.
+    result error "stage=rows candidate=$incoming cutover=$cutover_result evidence=rows_failed rc=$rows_rc log=$run_dir/rows.err"
+  fi
+  rows_status="$(printf '%s\n' "$rows_out" | sed -n 's/^REGISTRY_NEXT status=\([^ ]*\).*/\1/p' | tail -n1)"
+  rows_pr="$(printf '%s\n' "$rows_out" | sed -n 's/.* pr=\([^ ]*\).*/\1/p' | tail -n1)"
+  [ -z "$rows_pr" ] || rows_status="$rows_status:$rows_pr"
+fi
+
+result ok "candidate=$incoming primary_was=$primary build=$build_status apps=$app_count smoke=$smoke_status cutover=$cutover_result rows=$rows_status"

@@ -1,0 +1,17 @@
+# The nightly LastDB candidate set (north-star-lastdb-app-registry-release-loop):
+# build Forge fold main → fix one commit per app → isolated llms-txt smoke on
+# that set with the candidate lastdbd → primary cutover on GREEN → proved rows
+# to registry `next`. Replaces lastdb-canary-build-main + lastdb-canary-dogfood.
+# Live entries are seeded by bin/last-stack-lastdb-canary-candidate-set-routine.
+id = "lastdb-canary-candidate-set"
+harness = "claude"
+model = "sonnet"
+effort = "medium"
+group = "dogfood"
+rrule = "FREQ=DAILY;BYHOUR=2;BYMINUTE=47;BYSECOND=0"
+cwd = "/Users/REPLACE/code/edgevector"
+status = "active"
+timeout_min = 180
+prompt_path = "/Users/REPLACE/.last-stack/routines/lastdb-canary-candidate-set.md"
+gate_command = "/Users/REPLACE/.last-stack/bin/last-stack-canary-candidate-gate"
+heartbeat_slug = "routine-heartbeats"

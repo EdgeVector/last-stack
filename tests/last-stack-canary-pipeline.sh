@@ -153,10 +153,14 @@ grep -q 'Candidate SHA: `sha-green`' "$manual"
 
 grep -q 'lastdb-canary-soak-watch' "$ROOT/config/routines-registry/lastdb-canary-soak-watch.toml"
 grep -q 'status = "active"' "$ROOT/config/routines-registry/lastdb-canary-soak-watch.toml"
-grep -q 'last-stack-canary-soak-watch-gate' "$ROOT/config/routines-registry/lastdb-canary-soak-watch.toml"
+# The reconcile gate is the plain soak-watch gate with the promote-material
+# action armed (north-star-lastdb-app-registry-release-loop, slice 6).
+grep -q 'last-stack-canary-reconcile-gate' "$ROOT/config/routines-registry/lastdb-canary-soak-watch.toml"
 grep -q 'stateless verdict' "$ROOT/config/routines-registry/lastdb-canary-soak-watch.toml"
+grep -q 'last-stack-canary-soak-watch-gate' "$ROOT/bin/last-stack-canary-reconcile-gate"
+grep -q 'last-stack-canary-promote-material' "$ROOT/bin/last-stack-canary-reconcile-gate"
 soak_prompt="$ROOT/routines/lastdb-canary-soak-watch.md"
-grep -q 'last-stack-canary-soak-watch-gate' "$soak_prompt"
+grep -q 'last-stack-canary-reconcile-gate' "$soak_prompt"
 grep -q 'owner-only bounded boot ledger' "$soak_prompt"
 grep -q 'deterministic verdict function' "$soak_prompt"
 grep -q 'wait-next-check' "$soak_prompt"
@@ -169,25 +173,17 @@ if grep -Eq 'ROUTINE_RESULT[[:space:]]+outcome=' "$soak_prompt"; then
   echo "canary soak prompt contains a result-shaped trailer literal" >&2
   exit 1
 fi
-# The promote lane resumed on 2026-09-07. The canary v2 migration that held it
-# finished on 2026-09-05: north-star-lastdb-canary-pipeline-v2 is done and its
-# terminal proof reads PASS, CHANNELS stage included. These assertions used to
-# pin the hold text ('status = "paused"' and 'This routine is paused'), so the
-# migration stub could outlive its reason without a red test. They now pin the
-# contract that must survive the resume instead: prepare and notify only.
-# Decision: decision-2026-09-07-canary-v2-migration-finished-promote-lane-resumes
-grep -q 'lastdb-canary-promote-prepare' "$ROOT/config/routines-registry/lastdb-canary-promote-prepare.toml"
-grep -q 'status = "active"' "$ROOT/config/routines-registry/lastdb-canary-promote-prepare.toml"
-promote_prompt="$ROOT/routines/lastdb-canary-promote-prepare.md"
-grep -q 'last-stack-canary-pipeline" promote-prepare' "$promote_prompt"
-grep -q 'PROMOTE_READY' "$promote_prompt"
-# The narrow hold is the point of the routine. Losing any of these three lines
-# turns a prepare-and-notify lane into an unattended stable publisher.
-grep -q 'Do not run `promote-execute`' "$promote_prompt"
-grep -q 'stable-channel publish' "$promote_prompt"
-grep -q 'Do not restart, kill, or upgrade the primary LastDB node' "$promote_prompt"
-if grep -Eq 'ROUTINE_RESULT[[:space:]]+outcome=' "$promote_prompt"; then
-  echo "canary promote prompt contains a result-shaped trailer literal" >&2
+# The promote-prepare routine (v1 ledger) was removed on 2026-09-20: the hourly
+# reconciler's `promote-eligible` action writes the promote material now
+# (north-star-lastdb-app-registry-release-loop, slice 6). The contract that
+# must survive is the same: prepare and notify only, never publish.
+[ ! -f "$ROOT/routines/lastdb-canary-promote-prepare.md" ]
+[ ! -f "$ROOT/config/routines-registry/lastdb-canary-promote-prepare.toml" ]
+material="$ROOT/bin/last-stack-canary-promote-material"
+grep -q 'It never publishes' "$material"
+grep -q 'last-stack-release-publish --lastdb-version' "$material"
+if grep -Eq 'promote-execute|forge-promote-homebrew-stable\.sh|(^|[^a-zA-Z])brew (install|upgrade|services|tap)' "$material"; then
+  echo "promote material must not publish" >&2
   exit 1
 fi
 

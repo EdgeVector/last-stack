@@ -5,6 +5,13 @@ set -euo pipefail
 TARGET_DIR="${LASTDB_APPS_DIR:-$HOME/lastdb-apps}"
 INSTALL_LASTDB=1
 LINK_CLIS=1
+# Install by proof (registry index) unless a candidate set pins every commit.
+PINS_FILE="${LASTDB_APPS_PINS:-}"
+CHANNEL="${LASTDB_APPS_CHANNEL:-stable}"
+PROOF_MODE="${LASTDB_APPS_PROOF:-auto}"   # auto | require | off
+ALLOW_UNPROVED=0
+RECEIPTS_DIR=""
+SOURCE_ONLY=0
 
 usage() {
   cat <<'USAGE'
@@ -26,7 +33,20 @@ Options:
                    (default: ~/lastdb-apps or $LASTDB_APPS_DIR)
   --no-brew         skip installing the LastDB Homebrew formula
   --no-link         skip linking CLI commands onto PATH
+  --pins <file>     candidate set (last-stack-canary-candidate-set): install
+                   each app at exactly the pinned commit from its pinned source
+  --channel <c>     registry index channel for install-by-proof (default:
+                   stable, or $LASTDB_APPS_CHANNEL)
+  --no-proof        do not consult the registry index; clone main (legacy)
+  --allow-unproved  when the index has no row proved with this node, fall back
+                   to main with a warning instead of failing
+  --source-only     check out sources only; skip dependency installs and links
   -h, --help        show this help
+
+Install by proof: when the installed `lastdb` knows `app resolve`, each app
+is checked out at the newest commit the signed registry index proves with the
+running LastDB build (`lastdb app resolve <app> --channel <c>`). An older
+`lastdb` without that verb falls back to cloning main and says so.
 
 LastGit is intentionally not installed by this bundle yet (review venue for
 EdgeVector contributors). Public app source is GitHub so a cold first install
@@ -49,6 +69,35 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     --no-link)
+      LINK_CLIS=0
+      shift
+      ;;
+    --pins)
+      PINS_FILE="$2"
+      shift 2
+      ;;
+    --pins=*)
+      PINS_FILE="${1#*=}"
+      shift
+      ;;
+    --channel)
+      CHANNEL="$2"
+      shift 2
+      ;;
+    --channel=*)
+      CHANNEL="${1#*=}"
+      shift
+      ;;
+    --no-proof)
+      PROOF_MODE=off
+      shift
+      ;;
+    --allow-unproved)
+      ALLOW_UNPROVED=1
+      shift
+      ;;
+    --source-only)
+      SOURCE_ONLY=1
       LINK_CLIS=0
       shift
       ;;
@@ -103,6 +152,118 @@ clone_or_update() {
     fi
     return 0
   fi
+}
+
+# Check out `sha` from `url` at $TARGET_DIR/$name. An existing clone is
+# fetched and moved; a fresh directory is cloned. HEAD is verified.
+install_pinned() {
+  local name="$1" url="$2" sha="$3" why="$4"
+  local dest="$TARGET_DIR/$name" head
+  if [ -d "$dest/.git" ]; then
+    echo "==> pinning $name to ${sha:0:12} ($why)"
+    if ! git -C "$dest" cat-file -e "${sha}^{commit}" 2>/dev/null; then
+      git -C "$dest" fetch --quiet origin || git -C "$dest" fetch --quiet origin "$sha" || {
+        echo "failed to fetch $name from $(git -C "$dest" remote get-url origin 2>/dev/null || echo origin)" >&2
+        return 1
+      }
+      if ! git -C "$dest" cat-file -e "${sha}^{commit}" 2>/dev/null; then
+        git -C "$dest" fetch --quiet origin "$sha" 2>/dev/null || true
+      fi
+    fi
+    git -C "$dest" checkout --quiet --detach "$sha" || {
+      echo "proved commit ${sha:0:12} for $name is not in its source" >&2
+      return 1
+    }
+  elif [ -e "$dest" ]; then
+    echo "refusing to overwrite non-git path: $dest" >&2
+    exit 1
+  else
+    echo "==> cloning $name at ${sha:0:12} ($why)"
+    git clone --quiet --no-checkout "$url" "$dest" || {
+      echo "failed to clone $name from $url" >&2
+      return 1
+    }
+    git -C "$dest" checkout --quiet --detach "$sha" || {
+      echo "proved commit ${sha:0:12} for $name is not in $url" >&2
+      return 1
+    }
+  fi
+  head="$(git -C "$dest" rev-parse HEAD)"
+  case "$head" in
+    "$sha"*|*"$sha") ;;
+    *)
+      echo "$name checkout HEAD $head is not the proved commit $sha" >&2
+      return 1
+      ;;
+  esac
+  return 0
+}
+
+write_receipt() {
+  local name="$1" json="$2"
+  [ -n "$RECEIPTS_DIR" ] || RECEIPTS_DIR="$TARGET_DIR/.lastdb-app-receipts"
+  mkdir -p "$RECEIPTS_DIR"
+  printf '%s\n' "$json" >"$RECEIPTS_DIR/$name.json"
+}
+
+# Does the installed `lastdb` know `app resolve`? Cached after the first call.
+LASTDB_RESOLVE_AVAILABLE=""
+lastdb_can_resolve() {
+  if [ -z "$LASTDB_RESOLVE_AVAILABLE" ]; then
+    if command -v lastdb >/dev/null 2>&1 && lastdb app resolve --help >/dev/null 2>&1; then
+      LASTDB_RESOLVE_AVAILABLE=1
+    else
+      LASTDB_RESOLVE_AVAILABLE=0
+    fi
+  fi
+  [ "$LASTDB_RESOLVE_AVAILABLE" = 1 ]
+}
+
+# Install `name` (registry app id == install name for this bundle) from the
+# candidate set, else by proof, else the legacy main clone.
+#   returns 0 installed, 1 hard failure
+install_app_source() {
+  local name="$1" url="$2" optional="${3:-}"
+  local pin_json sha psrc resolved err
+  if [ -n "$PINS_FILE" ]; then
+    pin_json="$(jq -c --arg n "$name" '.apps | to_entries[] | select(.value.install_name == $n or .key == $n) | .value' "$PINS_FILE" 2>/dev/null | head -n1 || true)"
+    if [ -n "$pin_json" ]; then
+      sha="$(printf '%s' "$pin_json" | jq -r '.sha')"
+      psrc="$(printf '%s' "$pin_json" | jq -r '.source // empty')"
+      [ -n "$psrc" ] || psrc="$url"
+      install_pinned "$name" "$psrc" "$sha" "candidate set" || return 1
+      write_receipt "$name" "$(jq -cn --arg n "$name" --arg sha "$sha" --arg src "$psrc" --arg mode pinned --arg pins "$PINS_FILE" \
+        '{app_id:$n, sha:$sha, source:$src, mode:$mode, pins:$pins}')"
+      return 0
+    fi
+  fi
+  if [ "$PROOF_MODE" != off ] && lastdb_can_resolve; then
+    set +e
+    resolved="$(lastdb app resolve "$name" --channel "$CHANNEL" --json 2>"$TARGET_DIR/.resolve.err")"
+    err=$?
+    set -e
+    if [ "$err" -eq 0 ]; then
+      sha="$(printf '%s' "$resolved" | jq -r '.sha')"
+      psrc="$(printf '%s' "$resolved" | jq -r '.source')"
+      install_pinned "$name" "$psrc" "$sha" "proved with lastdb $(printf '%s' "$resolved" | jq -r '.lastdb_version') by $(printf '%s' "$resolved" | jq -r '.proof_run')" || return 1
+      write_receipt "$name" "$(printf '%s' "$resolved" | jq -c '. + {mode:"proved"}')"
+      rm -f "$TARGET_DIR/.resolve.err"
+      return 0
+    fi
+    echo "    registry: $(tr '\n' ' ' <"$TARGET_DIR/.resolve.err")" >&2
+    rm -f "$TARGET_DIR/.resolve.err"
+    if [ "$ALLOW_UNPROVED" -ne 1 ]; then
+      echo "no $CHANNEL row for $name is proved with this LastDB build; pass --allow-unproved to clone main anyway" >&2
+      return 1
+    fi
+    echo "    warning: installing $name from main WITHOUT a proved row (--allow-unproved)" >&2
+  elif [ "$PROOF_MODE" != off ]; then
+    echo "    note: this lastdb has no \`app resolve\`; installing $name from main (unproved). \`brew upgrade lastdb\` enables install-by-proof." >&2
+  fi
+  clone_or_update "$name" "$url" "$optional" || return 1
+  write_receipt "$name" "$(jq -cn --arg n "$name" --arg src "$url" --arg sha "$(git -C "$TARGET_DIR/$name" rev-parse HEAD 2>/dev/null || echo unknown)" \
+    '{app_id:$n, sha:$sha, source:$src, mode:"unproved-main"}')"
+  return 0
 }
 
 run_bun_install() {
@@ -255,8 +416,11 @@ link_cli() {
 }
 
 need git
-need bun
-need npm
+need jq
+if [ "$SOURCE_ONLY" -ne 1 ]; then
+  need bun
+  need npm
+fi
 
 if [ "$INSTALL_LASTDB" -eq 1 ]; then
   install_lastdb_formula
@@ -276,20 +440,28 @@ mkdir -p "$TARGET_DIR"
 # All required apps are public on GitHub so invitees can cold-install without
 # LastGit, without a running node, and without GitHub org membership.
 # Failures here must abort — invite/join needs org + lastsecrets linked.
-clone_or_update brain "https://github.com/EdgeVector/brain.git" || exit 1
-clone_or_update kanban "https://github.com/EdgeVector/fkanban.git" || exit 1
-clone_or_update situations "https://github.com/EdgeVector/situations.git" || exit 1
-clone_or_update routines "https://github.com/EdgeVector/routines.git" || exit 1
-clone_or_update dogfood-graph "https://github.com/EdgeVector/dogfood-graph.git" || exit 1
-clone_or_update org "https://github.com/EdgeVector/org.git" || exit 1
-clone_or_update lastsecrets "https://github.com/EdgeVector/lastsecrets.git" || exit 1
-clone_or_update search "https://github.com/EdgeVector/search.git" || exit 1
-clone_or_update lastdb-browser "https://github.com/EdgeVector/lastdb-browser.git" || exit 1
+if [ -n "$PINS_FILE" ]; then
+  [ -f "$PINS_FILE" ] || { echo "--pins file not found: $PINS_FILE" >&2; exit 2; }
+  echo "==> candidate set: $PINS_FILE (lastdb $(jq -r '.lastdb.build // "?"' "$PINS_FILE"))"
+fi
+install_app_source brain "https://github.com/EdgeVector/brain.git" || exit 1
+install_app_source kanban "https://github.com/EdgeVector/fkanban.git" || exit 1
+install_app_source situations "https://github.com/EdgeVector/situations.git" || exit 1
+install_app_source routines "https://github.com/EdgeVector/routines.git" || exit 1
+install_app_source dogfood-graph "https://github.com/EdgeVector/dogfood-graph.git" || exit 1
+install_app_source org "https://github.com/EdgeVector/org.git" || exit 1
+install_app_source lastsecrets "https://github.com/EdgeVector/lastsecrets.git" || exit 1
+install_app_source search "https://github.com/EdgeVector/search.git" || exit 1
+install_app_source lastdb-browser "https://github.com/EdgeVector/lastdb-browser.git" || exit 1
 # Optional UI: animated live theater for the board (Node; no package install).
-# Soft-fail so a private/unreachable mirror never blocks the core stack.
+# Soft-fail so a private/unreachable mirror never blocks the core stack. It is
+# not part of the proved set, so it always tracks main.
 clone_or_update kanban-factory "https://github.com/EdgeVector/kanban-factory.git" optional || true
 
 for app in brain kanban situations routines dogfood-graph org lastsecrets search lastdb-browser; do
+  if [ "$SOURCE_ONLY" -eq 1 ]; then
+    continue
+  fi
   if [ "$app" = "lastdb-browser" ]; then
     install_lastdb_browser
   else

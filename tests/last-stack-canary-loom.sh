@@ -50,8 +50,8 @@ grep -q 'stateless LastDB canary v2 reconciler' "$ROOT/routines/lastdb-canary-so
 if grep -Eq 'last-stack-canary-loom|SOAK_WAIT' "$ROOT/routines/lastdb-canary-soak-watch.md"; then
   fail "soak-watch still invokes the retired release graph"
 fi
-grep -q 'last-stack-canary-v2-dogfood-gate' "$ROOT/routines/lastdb-canary-dogfood.md" \
-  || fail "dogfood missing v2 primary action"
+grep -q 'last-stack-canary-candidate-gate' "$ROOT/routines/lastdb-canary-candidate-set.md" \
+  || fail "candidate-set missing its primary action gate"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-canary-loom.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 tmp="$(CDPATH= cd -- "$tmp" && pwd -P)"

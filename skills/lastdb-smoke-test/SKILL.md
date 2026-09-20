@@ -66,7 +66,7 @@ stale copy here would silently regress the procedure.
   `lastdbd` with `last-stack-canary-resolve-lastdbd --json --allow-newest --allow-current --allow-daemon-only`
   (exact smoke-staged SHA, then `canary-builds/<oid>`, then newest stage, then
   `~/.lastdb/current/lastdbd`). If status is `need_build`, stamp
-  `noop reason=no-staged-lastdbd` and stop — `lastdb-canary-build-main` is the
+  `noop reason=no-staged-lastdbd` and stop — `lastdb-canary-candidate-set` (which builds fold main first) is the
   180-minute builder. A cold compile will eat the whole smoke timebox.
 - Touch `~/.lastdb` or `~/.folddb` directly, or kill/restart the primary
   LastDB brain. This test always runs against a throwaway COW copy on an isolated

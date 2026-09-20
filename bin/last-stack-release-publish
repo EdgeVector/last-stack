@@ -1,0 +1,299 @@
+#!/usr/bin/env python3
+"""The one human command that publishes a proved LastDB candidate.
+
+    last-stack-release-publish --lastdb-version 0.23.3-2117-gffb8eb6c4 [--dry-run]
+
+Two things move together, so the public shelf never names an app row that was
+not proved with the node brew ships:
+
+  1. node  → brew stable: fold's forge-promote-homebrew-stable.sh publishes
+     the staged canary package under the next stable tag and opens the
+     formula PR on the Forgejo tap.
+  2. rows  → registry stable: the `next` rows proved with this build are
+     copied to registry/stable.json with each app's PUBLIC source, every
+     commit is checked to be fetchable from that public source (mirror lag
+     fails closed), the index is re-signed, and a second auto-merging PR
+     lands on the tap.
+
+`--dry-run` resolves the tag, stages nothing public, promotes into a scratch
+copy, and prints what the two PRs would carry. This command is for a human at
+a keyboard; no routine calls it (decision-2026-09-19: stable stays human until
+five clean manual promotes).
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+HOME = Path.home()
+FORGE_ROOT_URL = os.environ.get("FORGE_ROOT_URL", "http://localhost:3300")
+TAP_REPO = os.environ.get("LAST_STACK_REGISTRY_TAP_REPO", "EdgeVector/homebrew-lastdb")
+TAP_URL = os.environ.get("LAST_STACK_REGISTRY_TAP_URL", f"{FORGE_ROOT_URL}/{TAP_REPO}.git")
+CANARY_BUILDS = Path(os.environ.get("LAST_STACK_CANARY_BUILDS_DIR", HOME / ".local/state/last-stack/canary-builds"))
+PROMOTE_ROOT = Path(os.environ.get("LAST_STACK_CANARY_PROMOTE_ROOT", HOME / ".local/state/last-stack/canary-promote"))
+SIGNING_KEY = Path(os.environ.get("LASTDB_REGISTRY_SIGNING_KEY", HOME / ".lastdb/registry-index-signing.key"))
+APPS_CONFIG = ROOT / "config" / "registry" / "apps.json"
+SEMVER_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+
+
+def utc_now() -> str:
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def die(message: str, code: int = 1) -> None:
+    print(f"last-stack-release-publish: {message}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
+    kw.setdefault("text", True)
+    kw.setdefault("capture_output", True)
+    kw.setdefault("check", False)
+    return subprocess.run(cmd, **kw)
+
+
+def find_staged_build(build: str) -> tuple[Path, str]:
+    """canary-builds/<oid>/ whose manifest names this build string."""
+    if not CANARY_BUILDS.is_dir():
+        die(f"no canary-builds directory at {CANARY_BUILDS}")
+    for child in sorted(CANARY_BUILDS.iterdir(), reverse=True):
+        if not child.is_dir():
+            continue
+        for name in ("manifest.json", "lastdb-aarch64-apple-darwin.manifest.json"):
+            man = child / name
+            if not man.is_file():
+                continue
+            try:
+                data = json.loads(man.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if str(data.get("lastdb_version") or data.get("lastdbd_version") or "") == build:
+                oid = str(data.get("source_git_oid") or child.name)
+                return child, oid
+    die(f"no staged canary package names lastdb {build} under {CANARY_BUILDS}")
+    return Path(), ""
+
+
+def find_promote_script(explicit: str | None) -> Path:
+    candidates: list[Path] = []
+    if explicit:
+        candidates.append(Path(explicit))
+    env = os.environ.get("LAST_STACK_CANARY_FORGE_PROMOTE", "")
+    if env:
+        candidates.append(Path(env))
+    candidates.append(HOME / ".lastgit/mirrors/fold/scripts/release/forge-promote-homebrew-stable.sh")
+    wt_root = HOME / ".fkanban" / "worktrees"
+    if wt_root.is_dir():
+        for child in sorted(wt_root.iterdir(), reverse=True):  # walk-ok: one level, fixed root
+            if child.name.startswith("fold-"):
+                candidates.append(child / "scripts/release/forge-promote-homebrew-stable.sh")
+    for c in candidates:
+        if c.is_file():
+            return c
+    die("forge-promote-homebrew-stable.sh not found; pass --fold-promote-script")
+    return Path()
+
+
+def latest_stable_tag() -> str | None:
+    proc = run(["git", "ls-remote", "--tags", "--refs", TAP_URL, "v*"], timeout=60)
+    if proc.returncode != 0:
+        return None
+    best: tuple[int, int, int] | None = None
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        m = SEMVER_TAG.match(parts[1].rsplit("/", 1)[-1])
+        if not m:
+            continue
+        tup = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        if best is None or tup > best:
+            best = tup
+    return f"v{best[0]}.{best[1]}.{best[2]}" if best else None
+
+
+def next_stable_tag(build: str, explicit: str | None) -> str:
+    if explicit:
+        if not SEMVER_TAG.match(explicit):
+            die(f"--version-tag must look like vX.Y.Z, got {explicit!r}", 2)
+        return explicit
+    base = build.split("-", 1)[0]
+    try:
+        a, b, c = (int(x) for x in base.split("."))
+    except ValueError:
+        die(f"cannot read a semver base from build {build!r}; pass --version-tag")
+    latest = latest_stable_tag()
+    candidate = (a, b, c)
+    if latest:
+        m = SEMVER_TAG.match(latest)
+        assert m
+        lt = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        if candidate <= lt:
+            candidate = (lt[0], lt[1], lt[2] + 1)
+    return f"v{candidate[0]}.{candidate[1]}.{candidate[2]}"
+
+
+def stage_assets(build_dir: Path, dest: Path) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    for item in build_dir.iterdir():
+        if item.is_file() and (item.name.endswith(".tar.gz") or item.name.endswith(".manifest.json") or item.name == "manifest.json"):
+            shutil.copy2(item, dest / item.name)
+    std = dest / "lastdb-aarch64-apple-darwin.manifest.json"
+    if not std.is_file() and (dest / "manifest.json").is_file():
+        shutil.copy2(dest / "manifest.json", std)
+    if not any(p.name.endswith(".tar.gz") for p in dest.iterdir()):
+        die(f"staged build {build_dir} has no .tar.gz package; the canary build did not package")
+
+
+def source_map(config_path: Path) -> dict[str, str]:
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        die(f"apps config {config_path}: {exc}")
+    return {app: str(cfg.get("public") or "") for app, cfg in (data.get("apps") or {}).items() if cfg.get("public")}
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="last-stack-release-publish", description=__doc__.split("\n\n")[0])
+    parser.add_argument("--lastdb-version", required=True, help="the proved node build string, e.g. 0.23.3-2117-gffb8eb6c4")
+    parser.add_argument("--version-tag", help="stable tag to publish as (default: next patch after the latest tap tag)")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--skip-brew", action="store_true", help="registry rows only (the node is already on brew)")
+    parser.add_argument("--skip-registry", action="store_true", help="brew only (rows already promoted)")
+    parser.add_argument("--fold-promote-script", help="path to fold's forge-promote-homebrew-stable.sh")
+    parser.add_argument("--lastdb-bin", help="lastdb used to sign the index (default: $LASTDB_BIN, then PATH)")
+    parser.add_argument("--no-verify-reachable", action="store_true", help="do not fetch each commit from its public source (not for a real publish)")
+    args = parser.parse_args(argv)
+
+    build = args.lastdb_version.strip()
+    build_dir, oid = find_staged_build(build)
+    tag = next_stable_tag(build, args.version_tag)
+    day = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
+    out_dir = PROMOTE_ROOT / day
+    out_dir.mkdir(parents=True, exist_ok=True)
+    print(f"candidate: lastdb {build} (oid {oid[:12]}) staged at {build_dir}")
+    print(f"stable tag: {tag}{' (dry-run)' if args.dry_run else ''}")
+
+    # ── 1. node → brew stable ─────────────────────────────────────────────
+    brew_result = "skipped"
+    if not args.skip_brew:
+        promote_sh = find_promote_script(args.fold_promote_script)
+        artifact_dir = out_dir / f"artifacts-{tag}"
+        stage_assets(build_dir, artifact_dir)
+        cmd = ["bash", str(promote_sh), "--version-tag", tag, "--artifact-dir", str(artifact_dir),
+               "--source-git-oid", oid, "--proof-report", str(out_dir / f"proof-{tag}.json")]
+        env = os.environ.copy()
+        if args.dry_run:
+            tap_dir = Path(tempfile.mkdtemp(prefix="release-publish-tap."))
+            clone = run(["git", "clone", "--quiet", TAP_URL, str(tap_dir)], timeout=120)
+            if clone.returncode != 0:
+                die(f"clone of {TAP_URL} failed: {clone.stderr.strip()}")
+            cmd += ["--dry-run", "--tap-dir", str(tap_dir)]
+        else:
+            if not env.get("GH_TOKEN"):
+                gh = run(["gh", "auth", "token"])
+                if gh.returncode == 0 and gh.stdout.strip():
+                    env["GH_TOKEN"] = gh.stdout.strip()
+            if not env.get("GH_TOKEN"):
+                die("GH_TOKEN is required to upload the public bottle (GitHub Releases CDN); `gh auth login` first")
+            cmd.append("--publish")
+        print(f"brew: {' '.join(cmd)}")
+        proc = subprocess.run(cmd, env=env, text=True)
+        if proc.returncode != 0:
+            die(f"forge-promote-homebrew-stable.sh exited {proc.returncode}; nothing was written to the registry")
+        brew_result = "dry-run" if args.dry_run else "published"
+
+    # ── 2. rows → registry stable ─────────────────────────────────────────
+    registry_result = "skipped"
+    if not args.skip_registry:
+        lastdb_bin = args.lastdb_bin or os.environ.get("LASTDB_BIN") or shutil.which("lastdb")
+        if not lastdb_bin:
+            die("no lastdb binary to sign with (pass --lastdb-bin or set LASTDB_BIN)")
+        if run([lastdb_bin, "app", "index", "sign", "--help"]).returncode != 0:
+            die(f"{lastdb_bin} has no `app index sign`; point --lastdb-bin at a build that does")
+        if not SIGNING_KEY.is_file():
+            die(f"signing key not found at {SIGNING_KEY}")
+        tap_dir = Path(tempfile.mkdtemp(prefix="release-publish-registry."))
+        clone = run(["git", "clone", "--quiet", TAP_URL, str(tap_dir)], timeout=120)
+        if clone.returncode != 0:
+            die(f"clone of {TAP_URL} failed: {clone.stderr.strip()}")
+        next_idx = tap_dir / "registry" / "next.json"
+        stable_idx = tap_dir / "registry" / "stable.json"
+        if not next_idx.is_file() or not stable_idx.is_file():
+            die("the tap has no registry/next.json + registry/stable.json; land the registry scaffold first")
+        smap = tap_dir / "registry" / ".source-map.json"
+        smap.write_text(json.dumps(source_map(APPS_CONFIG), indent=2) + "\n", encoding="utf-8")
+        promote = [str(ROOT / "bin" / "last-stack-registry-index"), "promote",
+                   "--source-index", str(next_idx), "--target-index", str(stable_idx),
+                   "--lastdb-version", build, "--source-map", str(smap), "--require-source-map"]
+        if not args.no_verify_reachable:
+            promote.append("--verify-reachable")
+        proc = subprocess.run(promote, text=True)
+        smap.unlink()
+        if proc.returncode != 0:
+            die(f"registry promote exited {proc.returncode}; stable.json untouched" + ("" if args.skip_brew else f" (brew step already {brew_result})"))
+        # Carry the proof records the promoted rows name.
+        proofs_dir = tap_dir / "registry" / "proofs"
+        stable = json.loads(stable_idx.read_text(encoding="utf-8"))
+        for app in stable.get("apps", []):
+            for row in app.get("compat", []):
+                if row.get("lastdb_version") == build and not (proofs_dir / f"{row['proof_run']}.json").is_file():
+                    die(f"row for {app['app_id']} names proof_run {row['proof_run']} but registry/proofs has no record")
+        sign = run([str(ROOT / "bin" / "last-stack-registry-index"), "sign", "--index", str(stable_idx),
+                    "--key-file", str(SIGNING_KEY), "--lastdb-bin", lastdb_bin])
+        if sign.returncode != 0:
+            die(f"index sign failed: {sign.stderr.strip()}")
+        verify = run([lastdb_bin, "app", "index", "verify", "--index", str(stable_idx)])
+        if verify.returncode != 0:
+            die(f"index verify failed after signing: {verify.stderr.strip()}")
+        branch = f"registry/stable-{tag}-{dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+        run(["git", "-C", str(tap_dir), "checkout", "--quiet", "-b", branch])
+        run(["git", "-C", str(tap_dir), "add", "registry"])
+        commit = run(["git", "-C", str(tap_dir), "-c", "user.name=last-stack release", "-c", "user.email=release@edgevector.local",
+                      "commit", "--quiet", "-m",
+                      f"registry(stable): rows proved with lastdb {build} ({tag})\n\nPromoted from `next` by last-stack-release-publish together with the brew {tag} formula bump. Sources rewritten to the public mirrors; every commit fetched from its public source before this commit was made."])
+        if commit.returncode != 0:
+            die(f"nothing to commit for the registry ({commit.stderr.strip()})")
+        subprocess.run(["git", "-C", str(tap_dir), "show", "--stat", "HEAD"], text=True)
+        if args.dry_run:
+            registry_result = f"dry-run ({tap_dir})"
+        else:
+            forge_git = ROOT / "bin" / "last-stack-forge-git"
+            push_cmd = [str(forge_git), "-C", str(tap_dir)] if forge_git.is_file() else ["git", "-C", str(tap_dir)]
+            push = run(push_cmd + ["push", "--quiet", "-u", "origin", branch], timeout=120)
+            if push.returncode != 0:
+                die(f"push failed: {push.stderr.strip()}")
+            forge_api = ROOT / "bin" / "last-stack-forge-api"
+            body = (f"## What\n\n`registry/stable.json`: the `next` rows proved with lastdb `{build}`, promoted alongside brew `{tag}`. "
+                    "Sources point at the public mirrors; each commit was fetched from its public source before this PR was opened.\n\n"
+                    "🤖 Generated with [Claude Code](https://claude.com/claude-code)")
+            pr = run([str(forge_api), "POST", "--data",
+                      json.dumps({"title": f"registry(stable): rows proved with lastdb {build} ({tag})", "head": branch, "base": "main", "body": body}),
+                      f"repos/{TAP_REPO}/pulls", "--jq", ".number"])
+            number = pr.stdout.strip()
+            if pr.returncode != 0 or not number:
+                die(f"PR create failed: {pr.stderr.strip()}")
+            run([str(forge_api), "POST", "--data", '{"Do":"merge","merge_when_checks_succeed":true,"delete_branch_after_merge":true}',
+                 f"repos/{TAP_REPO}/pulls/{number}/merge"])
+            registry_result = f"PR {TAP_REPO}#{number}"
+
+    summary = {
+        "at": utc_now(), "lastdb_version": build, "source_git_oid": oid, "stable_tag": tag,
+        "brew": brew_result, "registry": registry_result, "dry_run": args.dry_run,
+    }
+    (out_dir / f"release-publish-{tag}.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    print(f"RELEASE_PUBLISH build={build} tag={tag} brew={brew_result} registry={registry_result}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

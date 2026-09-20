@@ -425,19 +425,24 @@ out="$(
 )" || true
 [ "$(printf '%s\n' "$out" | jq -r '.source')" = "forge-main-missing" ]
 
-grep -q '^id = "lastdb-canary-dogfood"$' "$ROOT/config/routines-registry/lastdb-canary-dogfood.toml"
-grep -q '^status = "active"$' "$ROOT/config/routines-registry/lastdb-canary-dogfood.toml"
-grep -q 'lastdb-canary-dogfood.md' "$ROOT/config/routines-registry/lastdb-canary-dogfood.toml"
-# The nightly starts Loom graph B only. Graph B starts graph A as a child.
-# The legacy CLI remains testable, but the scheduled prompt now dispatches one
-# bounded v2 action and gives quiet-window ownership to the hourly reconciler.
-dog_md="$ROOT/routines/lastdb-canary-dogfood.md"
-grep -q 'last-stack-canary-v2-dogfood-gate' "$dog_md"
-grep -q 'bounded safe-upgrade action' "$dog_md"
+# The nightly routine is lastdb-canary-candidate-set since 2026-09-20
+# (north-star-lastdb-app-registry-release-loop): build → set → smoke → the
+# bounded safe-upgrade cutover this CLI runs → registry rows. The legacy CLI
+# remains testable; the scheduled prompt dispatches the candidate gate and
+# gives quiet-window ownership to the hourly reconciler.
+grep -q '^id = "lastdb-canary-candidate-set"$' "$ROOT/config/routines-registry/lastdb-canary-candidate-set.toml"
+grep -q '^status = "active"$' "$ROOT/config/routines-registry/lastdb-canary-candidate-set.toml"
+grep -q 'lastdb-canary-candidate-set.md' "$ROOT/config/routines-registry/lastdb-canary-candidate-set.toml"
+[ ! -f "$ROOT/routines/lastdb-canary-dogfood.md" ]
+dog_md="$ROOT/routines/lastdb-canary-candidate-set.md"
+grep -q 'last-stack-canary-candidate-gate' "$dog_md"
+grep -q 'safe-upgrade probe' "$dog_md"
 if grep -Eq 'last-stack-canary-loom|lastdb-canary-release|SOAK_WAIT' "$dog_md"; then
-  echo "dogfood prompt still invokes the retired release graph" >&2
+  echo "candidate-set prompt still invokes the retired release graph" >&2
   exit 1
 fi
+# The gate itself calls this CLI for the resolve and the cutover.
+grep -q 'last-stack-lastdb-canary-dogfood' "$ROOT/bin/last-stack-canary-candidate-gate"
 # The soak watch is the v2 evidence reconciler, not a Loom clock.
 soak_md="$ROOT/routines/lastdb-canary-soak-watch.md"
 grep -q 'stateless LastDB canary v2 reconciler' "$soak_md"

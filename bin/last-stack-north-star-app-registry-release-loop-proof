@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# Terminal proof for north-star-lastdb-app-registry-release-loop.
+#
+# DONE means: a fresh isolated install via `lastdb app install brain kanban
+# situations` against brew stable resolves every app from the signed index by
+# proved pair, the rows it installed name proof runs that exist, and the
+# public llms-txt install smoke is GREEN on that proved set.
+#
+# The report starts with PASS or FAIL and goes to
+# ~/.last-stack/north-star-proofs/north-star-lastdb-app-registry-release-loop.md.
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
+
+NS=north-star-lastdb-app-registry-release-loop
+OUT="${LAST_STACK_NS_PROOF_OUT:-$HOME/.last-stack/north-star-proofs/$NS.md}"
+LASTDB_BIN=""
+INDEX="${LASTDB_REGISTRY_INDEX:-}"
+CHANNEL=stable
+APPS="brain kanban situations"
+SKIP_SMOKE=0
+TRUST_KEY=""
+
+usage() {
+  cat <<'USAGE'
+last-stack-north-star-app-registry-release-loop-proof [options]
+
+  --lastdb-bin PATH   the `lastdb` to prove with (default: brew stable edgevector/lastdb/lastdb)
+  --index URL|DIR     index location (default: the public tap, or $LASTDB_REGISTRY_INDEX)
+  --channel NAME      index channel (default: stable)
+  --trust-key K       trust key override for a test index (recorded in the report)
+  --skip-smoke        install + proof-record checks only (never a PASS for the North Star)
+  --out FILE          report path
+USAGE
+}
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --lastdb-bin) LASTDB_BIN="$2"; shift 2 ;;
+    --index) INDEX="$2"; shift 2 ;;
+    --channel) CHANNEL="$2"; shift 2 ;;
+    --trust-key) TRUST_KEY="$2"; shift 2 ;;
+    --skip-smoke) SKIP_SMOKE=1; shift ;;
+    --out) OUT="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+done
+
+started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+lines=()
+fails=()
+ok()   { lines+=("- OK   $1"); }
+bad()  { lines+=("- FAIL $1"); fails+=("$1"); }
+
+# 1. The lastdb under test.
+if [ -z "$LASTDB_BIN" ]; then
+  prefix="$(brew --prefix edgevector/lastdb/lastdb 2>/dev/null || brew --prefix lastdb 2>/dev/null || true)"
+  [ -n "$prefix" ] && [ -x "$prefix/bin/lastdb" ] && LASTDB_BIN="$prefix/bin/lastdb"
+fi
+if [ -z "$LASTDB_BIN" ] || [ ! -x "$LASTDB_BIN" ]; then
+  bad "brew stable lastdb not found (brew install edgevector/lastdb/lastdb, or --lastdb-bin)"
+else
+  ok "lastdb under test: $LASTDB_BIN ($("$LASTDB_BIN" --version 2>/dev/null | tail -n1))"
+fi
+lastdbd_bin="$(dirname "${LASTDB_BIN:-/nonexistent}")/lastdbd"
+node_build=""
+if [ -x "$lastdbd_bin" ]; then
+  node_build="$("$lastdbd_bin" --version 2>/dev/null | sed -n 's/^lastdbd //p' | tail -n1)"
+  ok "node build under test: $node_build ($lastdbd_bin)"
+else
+  bad "lastdbd next to the lastdb under test is missing: $lastdbd_bin"
+fi
+if [ -n "$LASTDB_BIN" ] && ! "$LASTDB_BIN" app resolve --help >/dev/null 2>&1; then
+  bad "this lastdb has no \`app resolve\`: brew stable predates install-by-proof; run last-stack-release-publish first"
+fi
+
+index_args=()
+[ -z "$INDEX" ] || index_args+=(--index "$INDEX")
+[ -z "$TRUST_KEY" ] || index_args+=(--trust-key "$TRUST_KEY")
+
+# 2. Isolated home; nothing touches ~/.lastdb.
+sandbox="$(mktemp -d "${TMPDIR:-/tmp}/ns-app-registry-proof.XXXXXX")"
+trap 'rm -rf "$sandbox"' EXIT
+real_home="$HOME"
+export LASTDB_HOME="$sandbox/lastdb-home"
+mkdir -p "$LASTDB_HOME/data"
+proof_runs=()
+if [ ${#fails[@]} -eq 0 ]; then
+  # 3. Install the three apps by proof against the node build under test.
+  set +e
+  # shellcheck disable=SC2086
+  install_out="$("$LASTDB_BIN" --data-dir "$LASTDB_HOME" app install $APPS --channel "$CHANNEL" \
+    --lastdb-version "$node_build" "${index_args[@]}" --json 2>"$sandbox/install.err")"
+  install_rc=$?
+  set -e
+  if [ "$install_rc" -ne 0 ]; then
+    bad "lastdb app install $APPS failed: $(grep -v '^note:' "$sandbox/install.err" | tail -n2 | tr '\n' ' ')"
+  else
+    for app in $APPS; do
+      receipt="$LASTDB_HOME/apps/$app/lastdb-app-install.json"
+      if [ ! -f "$receipt" ]; then
+        bad "$app: no install receipt at $receipt"
+        continue
+      fi
+      sha="$(jq -r .sha "$receipt")"
+      row_build="$(jq -r .lastdb_version "$receipt")"
+      run_id="$(jq -r .proof_run "$receipt")"
+      head="$(git -C "$LASTDB_HOME/apps/$app/source" rev-parse HEAD 2>/dev/null || echo none)"
+      if [ "$row_build" != "$node_build" ]; then
+        bad "$app: installed row was proved with lastdb $row_build, node is $node_build"
+      elif [ "$head" != "$sha" ]; then
+        bad "$app: checkout HEAD $head is not the proved commit $sha"
+      else
+        ok "$app $(jq -r .version "$receipt") @ ${sha:0:12} proved with lastdb $row_build by $run_id"
+        proof_runs+=("$run_id")
+      fi
+    done
+  fi
+fi
+
+# 4. Every proof_run the installed rows name exists on the index host.
+if [ ${#proof_runs[@]} -gt 0 ]; then
+  base="${INDEX:-https://raw.githubusercontent.com/EdgeVector/homebrew-lastdb/main/registry}"
+  base="${base%/}"
+  for run_id in $(printf '%s\n' "${proof_runs[@]}" | sort -u); do
+    case "$base" in
+      http://*|https://*)
+        if curl -fsS --max-time 30 -o "$sandbox/$run_id.json" "$base/proofs/$run_id.json" 2>/dev/null \
+          && jq -e '.proof_run and .verdict' "$sandbox/$run_id.json" >/dev/null 2>&1; then
+          ok "proof record exists: $base/proofs/$run_id.json ($(jq -r '.verdict.verdict // .verdict' "$sandbox/$run_id.json"))"
+        else
+          bad "proof record missing or malformed: $base/proofs/$run_id.json"
+        fi ;;
+      *)
+        p="${base#file://}/proofs/$run_id.json"
+        if [ -f "$p" ] && jq -e '.proof_run' "$p" >/dev/null 2>&1; then
+          ok "proof record exists: $p"
+        else
+          bad "proof record missing: $p"
+        fi ;;
+    esac
+  done
+fi
+
+# 5. The public install smoke, by proof, on the same node build.
+smoke_verdict=skipped
+if [ "$SKIP_SMOKE" -eq 1 ]; then
+  lines+=("- SKIP llms-txt install smoke (--skip-smoke; this report cannot PASS the North Star)")
+elif [ ${#fails[@]} -eq 0 ]; then
+  smoke_env=(SMOKE_LASTDBD_BIN="$lastdbd_bin" SMOKE_INSTALL_CHANNEL="$CHANNEL")
+  [ -z "$INDEX" ] || smoke_env+=(LASTDB_REGISTRY_INDEX="$INDEX")
+  [ -z "$TRUST_KEY" ] || smoke_env+=(LASTDB_REGISTRY_TRUST_KEY="$TRUST_KEY")
+  set +e
+  env "${smoke_env[@]}" PATH="$(dirname "$LASTDB_BIN"):$PATH" \
+    bash "$ROOT/skills/llms-txt-install-smoke/run.sh" --json >"$sandbox/smoke.json" 2>"$sandbox/smoke.err"
+  smoke_rc=$?
+  set -e
+  smoke_verdict="$(jq -r '.verdict // "no-verdict"' "$sandbox/smoke.json" 2>/dev/null || echo no-verdict)"
+  if [ "$smoke_rc" -eq 0 ] && [ "$smoke_verdict" = GREEN ]; then
+    ok "llms-txt install smoke GREEN on lastdb $(jq -r .lastdb_build "$sandbox/smoke.json") (install by proof, channel $CHANNEL)"
+  else
+    bad "llms-txt install smoke $smoke_verdict: $(jq -r '.steps // ""' "$sandbox/smoke.json" 2>/dev/null) $(grep -E 'FAIL|VERDICT' "$sandbox/smoke.err" | tail -n3 | tr '\n' ' ')"
+  fi
+fi
+
+verdict=PASS
+[ ${#fails[@]} -eq 0 ] && [ "$SKIP_SMOKE" -eq 0 ] || verdict=FAIL
+mkdir -p "$(dirname "$OUT")"
+{
+  printf '%s — %s\n\n' "$verdict" "$NS"
+  printf -- '- Started: %s · Finished: %s\n' "$started" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf -- '- Node build: %s · Channel: %s · Index: %s\n' "${node_build:-unknown}" "$CHANNEL" "${INDEX:-public tap}"
+  [ -z "$TRUST_KEY" ] || printf -- '- Trust key: OVERRIDDEN (test index; not the public proof)\n'
+  printf -- '- Done means: a fresh isolated `lastdb app install %s` against brew stable resolves every app from the signed index by proved pair, each installed row names a proof run that exists, and the llms-txt install smoke is GREEN on that set.\n\n' "$APPS"
+  printf '## Checks\n\n'
+  printf '%s\n' "${lines[@]}"
+  if [ ${#fails[@]} -gt 0 ]; then
+    printf '\n## Why FAIL\n\n'
+    printf -- '- %s\n' "${fails[@]}"
+  fi
+} >"$OUT"
+HOME="$real_home"
+printf '%s %s -> %s\n' "$verdict" "$NS" "$OUT"
+[ "$verdict" = PASS ]

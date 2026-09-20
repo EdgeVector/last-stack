@@ -321,6 +321,86 @@ artifact_channel_manifest() {
   jq -r '.manifest_digest // ""' "$path" 2>/dev/null || true
 }
 
+# ── Registry pin (North Star lastdb-app-registry-release-loop, slice 7) ──────
+# An app may follow a registry index channel instead of its artifact channel
+# head: the desired commit is then the newest one the signed index proves with
+# the LastDB build this host runs (`lastdb app resolve`). Tom's Mac follows
+# `next`; per-app main tracking is retired for those apps. Configure with
+# app.registry_channel, defaults.registry_channel, or HOST_TRACK_REGISTRY_CHANNEL;
+# app.registry_follow=false opts one app out; app.registry_app maps the
+# host-track app name to the registry app id when they differ.
+artifact_registry_channel() {
+  local json="$1" value
+  value="$(setting "$json" registry_channel)"
+  [ -n "$value" ] || value="${HOST_TRACK_REGISTRY_CHANNEL:-}"
+  # `field` folds JSON false into "" (jq `//`), so read the boolean directly.
+  if [ "$(printf '%s\n' "$json" | jq -r 'if .registry_follow == false then "false" else "" end')" = "false" ]; then
+    value=""
+  fi
+  printf '%s\n' "$value"
+}
+
+# stdout: the proved commit.  rc 0 = pinned · 1 = not applicable (no channel,
+# no `lastdb app resolve`, app not on the index) · 2 = no row proved with this
+# node (the caller holds the current install).
+artifact_registry_pin_oid() {
+  local app="$1" json="$2" channel reg_app index out rc args
+  channel="$(artifact_registry_channel "$json")"
+  [ -n "$channel" ] || return 1
+  reg_app="$(field "$json" registry_app)"
+  [ -n "$reg_app" ] || reg_app="$app"
+  command -v lastdb >/dev/null 2>&1 || return 1
+  lastdb app resolve --help >/dev/null 2>&1 || return 1
+  args=(app resolve "$reg_app" --channel "$channel" --json)
+  index="$(setting "$json" registry_index)"
+  [ -n "${HOST_TRACK_REGISTRY_INDEX:-}" ] && index="$HOST_TRACK_REGISTRY_INDEX"
+  [ -z "$index" ] || args+=(--index "$index")
+  set +e
+  out="$(lastdb "${args[@]}" 2>&1)"
+  rc=$?
+  set -e
+  if [ "$rc" -ne 0 ]; then
+    case "$out" in
+      *"is not in the"*"index"*) return 1 ;;
+      *) printf 'host-track: %s registry: %s\n' "$app" "$(printf '%s\n' "$out" | grep -v '^note:' | tail -n1)" >&2; return 2 ;;
+    esac
+  fi
+  printf '%s\n' "$out" | jq -r '.sha // empty'
+}
+
+# The manifest this host should be on: the registry pin when one applies,
+# else the artifact channel head. Prints the manifest JSON with
+# manifest_digest. rc 75 = hold the current install (no proved row, or the
+# proved commit has no published artifact yet).
+artifact_desired_manifest() {
+  local app="$1" json="$2" artifact_app="$3" channel="$4" artifact_root="$5" oid digest rc
+  set +e
+  oid="$(artifact_registry_pin_oid "$app" "$json")"
+  rc=$?
+  set -e
+  case "$rc" in
+    0)
+      digest="$(artifact_manifest_digest_for_oid "$artifact_root" "$artifact_app" "$oid" || true)"
+      if [ -z "$digest" ]; then
+        printf 'host-track: %s proved commit %s has no published artifact yet; holding current\n' \
+          "$app" "${oid:0:12}" >&2
+        return 75
+      fi
+      [ -f "$artifact_root/manifests/$digest.json" ] || {
+        printf 'host-track: %s manifest %s missing under %s\n' "$app" "${digest:0:12}" "$artifact_root" >&2
+        return 1
+      }
+      jq -c --arg d "$digest" '. + {manifest_digest: $d, registry_pin: true}' "$artifact_root/manifests/$digest.json"
+      return 0
+      ;;
+    2)
+      printf 'host-track: %s has no registry row proved with this LastDB build; holding current\n' "$app" >&2
+      return 75
+      ;;
+  esac
+  lastgit artifact resolve --app "$artifact_app" --channel "$channel" --root "$artifact_root" --json | json_first_object
+}
+
 # lastgit often emits the payload JSON plus a trailing verb_timing event on stdout.
 # Keep the first complete JSON object that matches the caller's jq filter.
 json_first_object() {
@@ -606,9 +686,13 @@ status_json_for() {
   local deployment_pair_match deployment_problem behind_by distance deployment_expanded
   local main_unpublished freshness soak_state soak_checks soak_min post_flip_ticks_left
   local soak_elapsed_secs soak_need_secs soak_abandoned
+  local registry_channel registry_pin_oid registry_pin_state pin_rc
 
   json="$(require_app_json "$app")"
   kind="$(field "$json" kind)"
+  registry_channel=""
+  registry_pin_oid=""
+  registry_pin_state=""
   command_name="$(field "$json" command)"
   gate="$(field "$json" gate)"
   gate_main="$(field "$json" gate_main)"
@@ -660,6 +744,27 @@ status_json_for() {
     host_head="$(jq -r '.source_oid // ""' "$stamp_path" 2>/dev/null || true)"
     host_head_short="${host_head:0:12}"
     channel_oid="$(jq -r '.source_oid // ""' "$artifact_root/channels/$artifact_app/$artifact_channel.json" 2>/dev/null || true)"
+    # A registry pin replaces the channel head as the desired oid. No proved
+    # row means "hold": the host is not stale against a pair nobody proved.
+    registry_channel="$(artifact_registry_channel "$json")"
+    registry_pin_oid=""
+    registry_pin_state=""
+    if [ -n "$registry_channel" ]; then
+      set +e
+      registry_pin_oid="$(artifact_registry_pin_oid "$app" "$json" 2>/dev/null)"
+      pin_rc=$?
+      set -e
+      case "$pin_rc" in
+        0)
+          registry_pin_state="pinned"
+          channel_oid="$registry_pin_oid"
+          channel_digest="$(artifact_manifest_digest_for_oid "$artifact_root" "$artifact_app" "$registry_pin_oid" 2>/dev/null || true)"
+          [ -n "$channel_digest" ] || registry_pin_state="pinned-unpublished"
+          ;;
+        1) registry_pin_state="not-on-index" ;;
+        2) registry_pin_state="no-proved-row"; channel_digest=""; channel_oid="" ;;
+      esac
+    fi
     # gate_head for check/stale is the published channel oid, not lastgit main.
     # Unpublished main is main_unpublished. Pickup must not wait on that lag.
     gate_tip="$channel_oid"
@@ -682,6 +787,13 @@ status_json_for() {
         stale="true"
       fi
     fi
+    # A registry hold is a decision, not an unknown: the live install is the
+    # newest pair anyone proved for this node, so it is current.
+    case "$registry_pin_state" in
+      no-proved-row|pinned-unpublished)
+        if [ -L "$install_root/current" ]; then stale="false"; fi
+        ;;
+    esac
     if [ -n "$artifact_problem" ]; then
       stale="true"
     fi
@@ -896,6 +1008,9 @@ status_json_for() {
     --argjson main_unpublished "$main_unpublished" \
     --argjson behind_by "$behind_by" \
     --argjson binary_pair_match "$deployment_pair_match" \
+    --arg registry_channel "$registry_channel" \
+    --arg registry_pin_oid "$registry_pin_oid" \
+    --arg registry_pin_state "$registry_pin_state" \
     '{
       app: $app,
       command: $command,
@@ -913,6 +1028,9 @@ status_json_for() {
       artifact_exemption: $artifact_exemption,
       stale: $stale,
       main_unpublished: $main_unpublished,
+      registry_channel: ($registry_channel | select(length > 0) // null),
+      registry_pin_oid: ($registry_pin_oid | select(length > 0) // null),
+      registry_pin_state: ($registry_pin_state | select(length > 0) // null),
       behind_by: $behind_by,
       binary_pair_match: $binary_pair_match,
       paired_version: ($deployment_peer_version | select(length > 0) // null),
@@ -961,6 +1079,7 @@ status_plain_for() {
       "deployment_problem=" + (.deployment_problem // "-"),
       "stale=" + (.stale | tostring),
       "main_unpublished=" + ((.main_unpublished // false) | tostring),
+      "registry=" + (if .registry_channel then .registry_channel + ":" + (.registry_pin_state // "-") else "-" end),
       "freshness=" + (.freshness // "-"),
       "soak=" + (if .soak_state then .soak_state + ":" + ((.soak_checks // 0) | tostring) + "/" + ((.soak_min_checks // 0) | tostring) + (if .soak_need_secs then ":" + ((.soak_elapsed_secs // 0) | tostring) + "s/" + (.soak_need_secs | tostring) + "s" else "" end) + (if (.soak_abandoned // 0) > 0 then ":abandoned=" + (.soak_abandoned | tostring) else "" end) else "-" end),
       "post_flip=" + ((.post_flip_ticks_left // "-") | tostring),
@@ -1233,7 +1352,7 @@ verify_active_artifact() {
   local app="$1" json="$2" artifact_app channel artifact_root install_root manifest digest current_target
   local encoded entry rel expected_sha active_file actual_sha
   IFS=$'\t' read -r artifact_app channel artifact_root install_root < <(artifact_paths "$app" "$json")
-  if ! manifest="$(lastgit artifact resolve --app "$artifact_app" --channel "$channel" --root "$artifact_root" --json | json_first_object)"; then
+  if ! manifest="$(artifact_desired_manifest "$app" "$json" "$artifact_app" "$channel" "$artifact_root" 2>/dev/null)"; then
     printf 'host-track: %s artifact resolve failed (channel=%s root=%s)\n' \
       "$app" "$channel" "$artifact_root" >&2
     return 1
@@ -2447,7 +2566,7 @@ artifact_install_app() {
   local json install_mode artifact_app channel artifact_root install_root
   local manifest digest stage target old_target stamp_path need_materialize=0
   local old_digest prev_target prev_digest post_install_phase current_dir soak_h probe_rc
-  local expected_lock lock_pid latest_manifest latest_digest
+  local expected_lock lock_pid latest_manifest latest_digest desired_rc
   json="$(require_app_json "$app")"
   install_mode="$(setting "$json" install_mode)"
   [ "$install_mode" = "artifact" ] || die "$app is not registered for artifact installs"
@@ -2483,7 +2602,15 @@ artifact_install_app() {
   # so refresh does not no-op on a stale stable pointer while main has moved.
   artifact_promote_channel_to_main "$app" "$json" "$channel"
 
-  manifest="$(lastgit artifact resolve --app "$artifact_app" --channel "$channel" --root "$artifact_root" --json | json_first_object)"
+  set +e
+  manifest="$(artifact_desired_manifest "$app" "$json" "$artifact_app" "$channel" "$artifact_root")"
+  desired_rc=$?
+  set -e
+  if [ "$desired_rc" -eq 75 ]; then
+    finish_artifact_install_lock "$reuse_install_lock"
+    return 75
+  fi
+  [ "$desired_rc" -eq 0 ] || die "$app artifact resolve failed"
   digest="$(printf '%s\n' "$manifest" | jq -r '.manifest_digest // ""')"
   [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || die "resolved artifact has invalid manifest digest"
   if [ -n "$expected_digest" ] && [ "$digest" != "$expected_digest" ]; then
@@ -2584,7 +2711,7 @@ artifact_install_app() {
   # before the flip. A channel change must start a new soak, not borrow the
   # completed clock of the prior digest.
   if [ -n "$expected_digest" ]; then
-    latest_manifest="$(lastgit artifact resolve --app "$artifact_app" --channel "$channel" --root "$artifact_root" --json | json_first_object)"
+    latest_manifest="$(artifact_desired_manifest "$app" "$json" "$artifact_app" "$channel" "$artifact_root" || true)"
     latest_digest="$(printf '%s\n' "$latest_manifest" | jq -r '.manifest_digest // ""')"
     [[ "$latest_digest" =~ ^[0-9a-f]{64}$ ]] || die "resolved artifact has invalid manifest digest"
     if [ "$latest_digest" != "$expected_digest" ]; then

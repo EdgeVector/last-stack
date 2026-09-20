@@ -1,0 +1,68 @@
+{
+  "_comment": "The app set the nightly canary proves as one candidate set and the public install draws from. `forge` is the source `next` rows carry (Tom's LAN); `public` is the source `stable` rows carry. `artifact_app` names the LastGit artifact CAS channel whose source_oid is the app's released head. `install_name` is the directory last-stack-install-apps uses under ~/lastdb-apps.",
+  "apps": {
+    "brain": {
+      "forge": "http://localhost:3300/EdgeVector/brain.git",
+      "public": "https://github.com/EdgeVector/brain.git",
+      "artifact_app": "brain",
+      "install_name": "brain",
+      "description": "Long-lived knowledge: decisions, rationale, references."
+    },
+    "kanban": {
+      "forge": "http://localhost:3300/EdgeVector/fkanban.git",
+      "public": "https://github.com/EdgeVector/fkanban.git",
+      "artifact_app": "fkanban",
+      "install_name": "kanban",
+      "description": "Kanban board over LastDB."
+    },
+    "situations": {
+      "forge": "http://localhost:3300/EdgeVector/situations.git",
+      "public": "https://github.com/EdgeVector/situations.git",
+      "artifact_app": "situations",
+      "install_name": "situations",
+      "description": "Shared operational posture and preflight."
+    },
+    "routines": {
+      "forge": "http://localhost:3300/EdgeVector/routines.git",
+      "public": "https://github.com/EdgeVector/routines.git",
+      "artifact_app": "routines",
+      "install_name": "routines",
+      "description": "Scheduled agent routines."
+    },
+    "dogfood-graph": {
+      "forge": "http://localhost:3300/EdgeVector/dogfood-graph.git",
+      "public": "https://github.com/EdgeVector/dogfood-graph.git",
+      "artifact_app": null,
+      "install_name": "dogfood-graph",
+      "description": "Local dogfood graph UI."
+    },
+    "org": {
+      "forge": "http://localhost:3300/EdgeVector/org.git",
+      "public": "https://github.com/EdgeVector/org.git",
+      "artifact_app": null,
+      "install_name": "org",
+      "description": "Org invite and join."
+    },
+    "lastsecrets": {
+      "forge": "http://localhost:3300/EdgeVector/lastsecrets.git",
+      "public": "https://github.com/EdgeVector/lastsecrets.git",
+      "artifact_app": "lastsecrets",
+      "install_name": "lastsecrets",
+      "description": "Local secrets over LastDB."
+    },
+    "search": {
+      "forge": "http://localhost:3300/EdgeVector/search.git",
+      "public": "https://github.com/EdgeVector/search.git",
+      "artifact_app": "search",
+      "install_name": "search",
+      "description": "Local semantic search plane."
+    },
+    "lastdb-browser": {
+      "forge": "http://localhost:3300/EdgeVector/lastdb-browser.git",
+      "public": "https://github.com/EdgeVector/lastdb-browser.git",
+      "artifact_app": "lastdb-browser",
+      "install_name": "lastdb-browser",
+      "description": "Read-only local data browser."
+    }
+  }
+}

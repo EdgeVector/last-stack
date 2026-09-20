@@ -30,6 +30,8 @@ done
 
 # Real user home for brew/lastdbd binaries only — never for data.
 REAL_HOME="${REAL_HOME:-$(eval echo "~$(id -un)")}"
+SMOKE_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+SMOKE_CANDIDATE_SET="${SMOKE_CANDIDATE_SET:-}"
 # `${REAL_HOME}/.local/bin` goes FIRST. That is the host-track tree, and
 # `~/.local/bin/lastdbd` symlinks through `~/.lastdb/current`, the daemon the
 # primary actually runs. With `/opt/homebrew/bin` ahead of it the smoke booted
@@ -39,6 +41,16 @@ REAL_HOME="${REAL_HOME:-$(eval echo "~$(id -un)")}"
 # RED for five days after the fix landed. Measured 2026-09-13 on fresh homes:
 # lastdbd 0.23.3-1908 → kanban init PASS; canary 0801 and brew 0.23.2 → FAIL.
 export PATH="${REAL_HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${REAL_HOME}/.bun/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# A candidate binary pair comes first on PATH: the canary lane names its
+# `lastdbd` with SMOKE_LASTDBD_BIN, and the sibling `lastdb` (same bottle) is
+# the CLI that resolves apps by proof. Without this the sandbox would install
+# apps with the HOST's older lastdb and silently fall back to main.
+if [ -n "${SMOKE_LASTDBD_BIN:-}" ]; then
+  SMOKE_LASTDB_BIN="${SMOKE_LASTDB_BIN:-$(dirname "$SMOKE_LASTDBD_BIN")/lastdb}"
+  if [ -x "$SMOKE_LASTDB_BIN" ]; then
+    export PATH="$(dirname "$SMOKE_LASTDB_BIN"):$PATH"
+  fi
+fi
 
 # Bounded-command helpers (run_bounded / fail_steps_summary). Sourced after PATH
 # so the timeout-binary probe sees the same PATH the smoke itself uses.
@@ -187,6 +199,29 @@ $(env | awk -F= '/^(OBS_SENTRY_|SENTRY_)/ { print $1 }')
 EOF
 unset _obs_key || true
 
+# The candidate set (and the `next` channel) name Forge sources, which need a
+# token the sandbox HOME cannot see. Hand git the token through GIT_CONFIG_*
+# (git >= 2.31; no file touched) only when Forge sources are expected. A public
+# `stable` install never carries a token and never needs one.
+if [ -n "$SMOKE_CANDIDATE_SET" ] || [ "${SMOKE_INSTALL_CHANNEL:-}" = next ] || [ "${SMOKE_FORGE_GIT_AUTH:-0}" = 1 ]; then
+  smoke_forge_token=""
+  if [ -f "${LAST_STACK_ROOT:-$REAL_HOME/.last-stack}/lib/forge-token.sh" ]; then
+    # shellcheck source=/dev/null
+    . "${LAST_STACK_ROOT:-$REAL_HOME/.last-stack}/lib/forge-token.sh"
+    smoke_forge_token="$(HOME="$REAL_HOME" last_stack_forge_token 2>/dev/null || true)"
+  elif [ -f "$SMOKE_SELF_DIR/../../lib/forge-token.sh" ]; then
+    # shellcheck source=/dev/null
+    . "$SMOKE_SELF_DIR/../../lib/forge-token.sh"
+    smoke_forge_token="$(HOME="$REAL_HOME" last_stack_forge_token 2>/dev/null || true)"
+  fi
+  if [ -n "$smoke_forge_token" ]; then
+    export GIT_CONFIG_COUNT=1
+    export GIT_CONFIG_KEY_0="http.http://localhost:3300/.extraHeader"
+    export GIT_CONFIG_VALUE_0="Authorization: token $smoke_forge_token"
+  fi
+  unset smoke_forge_token
+fi
+
 LOG="$FRESH_ROOT/run.log"
 exec 3>&1 4>&2
 exec >>"$LOG" 2>&1
@@ -270,11 +305,23 @@ require_cmd git
 require_cmd curl
 require_cmd lastdbd
 # Name the daemon the smoke boots. Two runs read as the same binary until the
-# log says which file and which build answered `lastdbd`.
-LASTDBD_BIN="$(command -v lastdbd || true)"
+# log says which file and which build answered `lastdbd`. The canary lane names
+# its candidate with SMOKE_LASTDBD_BIN so the proof row records that build.
+LASTDBD_BIN="${SMOKE_LASTDBD_BIN:-$(command -v lastdbd || true)}"
+LASTDBD_BUILD=""
 if [ -n "$LASTDBD_BIN" ]; then
   LASTDBD_VERSION="$("$LASTDBD_BIN" --version 2>/dev/null | grep -E '^lastdbd ' | head -n1 || true)"
+  LASTDBD_BUILD="${LASTDBD_VERSION#lastdbd }"
   live "lastdbd: $LASTDBD_BIN (${LASTDBD_VERSION:-version unknown})"
+fi
+# A candidate set (last-stack-canary-candidate-set) pins every app commit so
+# the pair that is proved is the pair the registry row records.
+if [ -n "$SMOKE_CANDIDATE_SET" ]; then
+  if [ -f "$SMOKE_CANDIDATE_SET" ]; then
+    live "candidate set: $SMOKE_CANDIDATE_SET"
+  else
+    note_fail "prereq:candidate-set missing $SMOKE_CANDIDATE_SET"
+  fi
 fi
 
 # Bun: install into sandbox if missing; allow pre-existing system bun
@@ -319,8 +366,34 @@ if [ -x "$HOME/.last-stack/bin/last-stack-install-apps" ]; then
   # Apps clone under sandbox HOME. Use --no-brew: this smoke already requires a
   # system lastdbd on PATH, and brew install under a non-login HOME must never
   # rewrite the machine-wide launchd service plist (Dir.home freeze).
+  install_apps_args=(--no-brew)
+  if [ -n "$SMOKE_CANDIDATE_SET" ]; then
+    install_apps_args+=(--pins "$SMOKE_CANDIDATE_SET")
+  elif [ -n "${SMOKE_INSTALL_CHANNEL:-}" ]; then
+    install_apps_args+=(--channel "$SMOKE_INSTALL_CHANNEL")
+  fi
+  if [ "${SMOKE_ALLOW_UNPROVED:-0}" = "1" ]; then
+    install_apps_args+=(--allow-unproved)
+  fi
   bounded_step "install-apps" "$INSTALL_TIMEOUT" \
-    "$HOME/.last-stack/bin/last-stack-install-apps" --no-brew || true
+    "$HOME/.last-stack/bin/last-stack-install-apps" "${install_apps_args[@]}" || true
+  # Install-by-proof must not silently fall back to main. When a channel or a
+  # candidate set was requested, every receipt must say so.
+  if [ -n "$SMOKE_CANDIDATE_SET" ] || [ -n "${SMOKE_INSTALL_CHANNEL:-}" ]; then
+    want_mode=proved
+    [ -z "$SMOKE_CANDIDATE_SET" ] || want_mode=pinned
+    receipts="$HOME/lastdb-apps/.lastdb-app-receipts"
+    for app in brain kanban situations routines dogfood-graph org lastsecrets search lastdb-browser; do
+      mode="$(jq -r '.mode // "missing"' "$receipts/$app.json" 2>/dev/null || echo missing)"
+      if [ "$mode" = "$want_mode" ]; then
+        note_pass "install-apps:$app:$mode"
+      elif [ "${SMOKE_ALLOW_UNPROVED:-0}" = "1" ]; then
+        live "  note: $app installed as $mode (SMOKE_ALLOW_UNPROVED=1)"
+      else
+        note_fail "install-apps:$app:$mode (wanted $want_mode; lastdb=$(command -v lastdb || echo none))"
+      fi
+    done
+  fi
 else
   note_fail "install-apps missing"
 fi
@@ -564,7 +637,8 @@ echo "=========================================="
 if [ "${#FAILS[@]}" -eq 0 ]; then
   echo "VERDICT: GREEN" >&2
   emit_status "VERDICT: GREEN"
-  emit_json '{"verdict":"GREEN","sandbox":"%s","pass":%d}\n' "$FRESH_ROOT" "${#PASS[@]}"
+  emit_json '{"verdict":"GREEN","sandbox":"%s","pass":%d,"lastdb_build":"%s","candidate_set":"%s","proved_at":"%s"}\n' \
+    "$FRESH_ROOT" "${#PASS[@]}" "$LASTDBD_BUILD" "$SMOKE_CANDIDATE_SET" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   exit 0
 else
   FAIL_STEPS="$(fail_steps_summary "${FAILS[@]}")"

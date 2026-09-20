@@ -207,8 +207,11 @@ ci_test tests/last-stack-fleet-performance-routine.sh
 ci_test tests/last-stack-why-stopped-routine.sh
 ci_test tests/last-stack-why-stopped-loom.sh
 ci_test tests/last-stack-routine-observer-why-loom.sh
-ci_test tests/last-stack-canary-red-heal-routine.sh
-ci_test tests/last-stack-canary-red-loom.sh
+# (positions kept) the red-heal routine and its loom were removed by the release
+# loop (north-star-lastdb-app-registry-release-loop); the registry index writer
+# and install-by-proof take their two slots.
+ci_test tests/last-stack-registry-index.sh
+ci_test tests/last-stack-install-apps-pins.sh
 ci_test tests/last-stack-canary-loom.sh
 ci_test tests/last-stack-lastdb-safe-upgrade-loom-only.sh
 # Class A must not fire on class-a-heal wrapper timeout when heal exits 0.
@@ -449,15 +452,14 @@ ci_test tests/last-stack-lastdb-safe-upgrade-skill.sh
 # APPENDED (see the shard-stability note above): ci_test shards by list position.
 ci_test tests/last-stack-north-star-proof-no-scan-access.sh
 
-# lastdb-canary-build-main was registered in config/routines-registry/ since
-# 2026-08-05 but had no installer, so it never reached the live registry
-# (papercut-no-registered-routine-produces-a-lastdb-canary-candidate-20260903).
-# These pin the new zero-LLM staleness gate and its seed-if-missing installer.
-# Hermetic fixtures, stubbed host-track/prompt/gate paths, no node, no network.
+# The nightly candidate-set gate (build → set → smoke → cutover → rows) and its
+# seed-if-missing installer replaced the build-main gate + installer here
+# (north-star-lastdb-app-registry-release-loop). Fake tools record their calls;
+# no node, no network.
 #
 # APPENDED (see the shard-stability note above): ci_test shards by list position.
-ci_test tests/last-stack-canary-build-main-gate.sh
-ci_test tests/last-stack-lastdb-canary-build-main-routine.sh
+ci_test tests/last-stack-canary-candidate-gate.sh
+ci_test tests/last-stack-lastdb-canary-candidate-set-routine.sh
 
 # Row-count bar: a 0-row candidate against a non-zero baseline is RED.
 # APPENDED (see the shard-stability note above): ci_test shards by list position.
@@ -572,7 +574,7 @@ ci_test tests/last-stack-board-closeout-park-bound.sh
 ci_test tests/last-stack-board-drain-report.sh
 ci_test tests/last-stack-brain-reference-guard.sh
 ci_test tests/last-stack-canary-heal-harness-fence.sh
-ci_test tests/last-stack-canary-v2-dogfood-gate.sh
+ci_test tests/host-track-registry-pin.sh
 ci_test tests/last-stack-cli-flag-gotchas-docs.sh
 ci_test tests/last-stack-cli-preflight.sh
 ci_test tests/last-stack-disk-reclaim-backup-retention.sh

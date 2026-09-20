@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# The hourly reconciler as the release loop runs it: the stateless v2 gate
+# with exactly one action armed. A green quiet window dispatches
+# `last-stack-canary-promote-material` (PROMOTE.md + notify); every other
+# action stays planned. Nothing here publishes — stable is a human command.
+#
+# The plain gate keeps its "actions are held unless execute is explicit"
+# contract for tests and ad-hoc runs; this wrapper is the explicit switch
+# the scheduled routine points at.
+set -euo pipefail
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+case "${1:-}" in
+  -h|--help)
+    printf '%s\n' 'last-stack-canary-reconcile-gate' \
+      'Hourly canary v2 reconciler with the promote-material action armed.'
+    exit 0 ;;
+esac
+export LAST_STACK_CANARY_V2_EXECUTE_ACTIONS=1
+export LAST_STACK_CANARY_V2_PROMOTE_CMD="${LAST_STACK_CANARY_V2_PROMOTE_CMD:-$ROOT/bin/last-stack-canary-promote-material}"
+exec "$ROOT/bin/last-stack-canary-soak-watch-gate" "$@"
