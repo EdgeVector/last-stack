@@ -101,6 +101,13 @@ emit_dev_photograph_failure_summary() {
   printf 'DEV_PHOTOGRAPH_OBSERVED manifest_cache_present_before=%s manifest_cache_present_after=%s\n' \
     "${SNAPSHOT_CACHE_PRESENT_BEFORE:-not-observed}" \
     "${SNAPSHOT_CACHE_PRESENT_AFTER:-not-observed}"
+  # Its own line (the OBSERVED line is grepped verbatim by a fixture): did the
+  # observer see the candidate's argv, and did the candidate's socket exist
+  # when the proof gave up? Both answer the one question a daemon_ready
+  # failure raises — "was it the daemon, or was it the observer?"
+  printf 'DEV_PHOTOGRAPH_CANDIDATE pid=%s cmdline=%s socket_present=%s\n' \
+    "${CANDIDATE_PID:-none}" "${CANDIDATE_CMDLINE_OBSERVED:-not-observed}" \
+    "$(if [ -n "${COW_HOME:-}" ] && [ -S "$COW_HOME/data/folddb.sock" ]; then printf true; else printf false; fi)"
 }
 
 persist_dev_photograph_failure_evidence() {
@@ -276,14 +283,33 @@ proof_root_is_owned() {
   [ "$PROOF_ROOT_REAL" != "$base_real" ]
 }
 
+# Whether `ps` could read the candidate's command line at all. The scheduled
+# dogfood runs inside the codex seatbelt sandbox (`codex exec --sandbox
+# workspace-write`); on 2026-09-20 (lx-20260920T101724.060-7286-1) the
+# candidate booted, logged `lastdbd serving <cow>/data/folddb.sock`, and ran
+# for five minutes while this proof reported "did not open its isolated
+# socket" — the readiness loop never reached its socket check because the
+# ownership test below read an empty command line and failed every second.
+# `$CANDIDATE_PID` is this script's own forked child, so "alive but argv
+# unobservable" is still ours; only a NON-EMPTY, non-matching command line
+# means the PID was reused by something else. The verdict names which case
+# it saw so a reader never has to guess again.
+CANDIDATE_CMDLINE_OBSERVED="not-observed"
+
 candidate_pid_is_owned() {
   local command_line
   [ -n "$CANDIDATE_PID" ] || return 1
   kill -0 "$CANDIDATE_PID" 2>/dev/null || return 1
   command_line="$(ps -p "$CANDIDATE_PID" -o command= 2>/dev/null || true)"
+  if [ -z "$command_line" ]; then
+    CANDIDATE_CMDLINE_OBSERVED="unobservable"
+    return 0
+  fi
+  CANDIDATE_CMDLINE_OBSERVED="observed"
   case "$command_line" in
     *"$CANDIDATE_DAEMON"*"$COW_HOME"*) return 0 ;;
   esac
+  CANDIDATE_CMDLINE_OBSERVED="mismatch"
   return 1
 }
 
@@ -508,6 +534,11 @@ while [ "$ready_n" -lt "$ready_waits" ]; do
   if ! candidate_pid_is_owned; then
     kill -0 "$CANDIDATE_PID" 2>/dev/null \
       || proof_die "the exact candidate stopped before the DEV snapshot"
+    # Alive, argv readable, and not ours: the PID was reused. Say so now
+    # instead of waiting the whole readiness budget for a socket that will
+    # never be this process's.
+    [ "$CANDIDATE_CMDLINE_OBSERVED" != "mismatch" ] \
+      || proof_die "the candidate PID now belongs to another process"
     sleep "$ready_sleep"
     ready_n=$((ready_n + 1))
     continue
