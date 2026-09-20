@@ -98,6 +98,7 @@ chmod +x "$stubbin/git"
 
 cat >"$stubbin/bun" <<'EOF'
 #!/bin/sh
+printf '%s\n' "$*" >>"${BUN_LOG:-/dev/null}"
 exit 0
 EOF
 chmod +x "$stubbin/bun"
@@ -129,7 +130,7 @@ esac
 EOF
 chmod +x "$stubbin/npm"
 
-BREW_LOG="$tmp/brew.log" PATH="$stubbin:/usr/bin:/bin" \
+HOME="$tmp/home-initial" BREW_LOG="$tmp/brew.log" BUN_LOG="$tmp/bun-initial.log" PATH="$stubbin:/usr/bin:/bin" \
   "$ROOT/bin/last-stack-install-apps" --dir "$tmp/apps" --no-link >/tmp/last-stack-install-apps.out
 
 grep -Eq 'HOME=.+ brew tap( |$)' "$tmp/brew.log"
@@ -160,7 +161,7 @@ if grep -Fq "HOME=$sandbox_home brew install" "$tmp/brew-sandbox.log"; then
   exit 1
 fi
 
-HOME="$tmp/home" BREW_LOG="$tmp/brew-link.log" PATH="$stubbin:/usr/bin:/bin" \
+HOME="$tmp/home" BREW_LOG="$tmp/brew-link.log" BUN_LOG="$tmp/bun.log" PATH="$stubbin:/usr/bin:/bin" \
   "$ROOT/bin/last-stack-install-apps" --dir "$tmp/apps-link" --no-brew >/tmp/last-stack-install-apps-link.out
 
 test "$(readlink "$tmp/home/.local/bin/brain")" = "$tmp/apps-link/brain/bin/brain"
@@ -175,5 +176,6 @@ if grep -Fq 'bun link' /tmp/last-stack-install-apps-link.out; then
   echo "installer used bun link for CLI wiring" >&2
   exit 1
 fi
+grep -Fq -- "--cache-dir $tmp/home/.cache/bun" "$tmp/bun.log"
 
 echo "ok"
