@@ -67,7 +67,10 @@ if [ "$skip_build" != 1 ]; then
   build_rc=$?
   set -e
   if [ "$build_rc" -ne 0 ]; then
-    "$pipeline" record-line-event --check build_main --subject build --result fail --detail "exit=$build_rc" >/dev/null || true
+    # No ledger line event here: `record-line-event` knows the subjects
+    # observer and host, and a failed build is neither (an observer failure
+    # would read as line-stopped in the hourly verdict). The result line and
+    # ROUTINE_RESULT are the evidence; the primary stays where it is.
     result error "stage=build evidence=build_failed rc=$build_rc"
   fi
   build_status="$(printf '%s\n' "$build_json" | jq -r '.status // "unknown"' 2>/dev/null || echo unknown)"
@@ -140,11 +143,12 @@ if [ "$skip_smoke" != 1 ]; then
   smoke_status="$(jq -r '.verdict // empty' "$proof_file" 2>/dev/null || true)"
   if [ "$smoke_rc" -ne 0 ] || [ "$smoke_status" != GREEN ]; then
     steps="$(jq -r '.steps // "no-verdict"' "$proof_file" 2>/dev/null || echo no-verdict)"
-    "$pipeline" record-line-event --check candidate_smoke --subject build --result fail \
-      --detail "candidate=$incoming steps=$steps" >/dev/null || true
+    # A RED smoke is a verdict about the candidate set, not about the observer
+    # or the host, and the ledger's line events know only those two subjects.
+    # The candidate never boots on the primary, so there is nothing for the
+    # hourly reconciler to grade; this result line is the record.
     result error "stage=smoke candidate=$incoming apps=$app_count evidence=smoke_red steps=$steps log=$run_dir/smoke.err"
   fi
-  "$pipeline" record-line-event --check candidate_smoke --subject build --result pass --detail "candidate=$incoming apps=$app_count" >/dev/null || true
 fi
 
 # ── 5. cutover (the existing bounded safe-upgrade action) ────────────────
