@@ -560,7 +560,14 @@ run_proof_case() {
   if [ -s "$PROOF_PID_FILE" ]; then
     proof_pid="$(cat "$PROOF_PID_FILE")"
     if kill -0 "$proof_pid" 2>/dev/null; then
-      fail "proof case $name left its candidate daemon alive"
+      if [ "${PROOF_CASE_EXPECT_DISOWNED:-0}" = "1" ]; then
+        # The observer was made to say the PID is a stranger, so the proof
+        # correctly refused to kill it. The fixture owns the fake and reaps it.
+        kill "$proof_pid" 2>/dev/null || true
+        wait "$proof_pid" 2>/dev/null || true
+      else
+        fail "proof case $name left its candidate daemon alive"
+      fi
     fi
   fi
   return "$PROOF_CASE_RC"
@@ -586,6 +593,40 @@ grep -Eq '^cloud_db_hash=[0-9a-f]{64}$' "$PROOF_CASE_RECEIPT" \
   || fail "receipt omitted the locally derived cloud DB hash"
 grep -q '/laststore_backup_manifest.json$' "$PROOF_CASE_RECEIPT" \
   || fail "receipt omitted the exact isolated manifest cache"
+
+# The scheduled dogfood runs inside the codex seatbelt sandbox, where `ps`
+# can answer an empty command line for the proof's own child. On 2026-09-20
+# (lx-20260920T101724.060-7286-1) the candidate served its socket for five
+# minutes while the readiness loop, gated on that command line, reported
+# "did not open its isolated socket". A `ps` that sees nothing must NOT hide
+# the socket: the child is ours by construction. A `ps` that sees a DIFFERENT
+# command line means the PID was reused and must fail fast, by name.
+PS_SHIM_ROOT="$PROOF_FIXTURE/ps-shim"
+mkdir -p "$PS_SHIM_ROOT/blind" "$PS_SHIM_ROOT/stranger"
+cat >"$PS_SHIM_ROOT/blind/ps" <<'SH'
+#!/bin/sh
+# The sandboxed observer: alive PID, no argv.
+exit 0
+SH
+cat >"$PS_SHIM_ROOT/stranger/ps" <<'SH'
+#!/bin/sh
+# A reused PID: some other process, readable argv.
+printf '/usr/bin/some-other-daemon --unrelated\n'
+SH
+chmod +x "$PS_SHIM_ROOT/blind/ps" "$PS_SHIM_ROOT/stranger/ps"
+
+PATH="$PS_SHIM_ROOT/blind:$PATH" run_proof_case blindps success 3 \
+  || fail "proof with an argv-blind ps must still pass: $PROOF_CASE_OUT"
+printf '%s\n' "$PROOF_CASE_OUT" | grep -q 'DEV_PHOTOGRAPH: GREEN' \
+  || fail "argv-blind ps proof omitted its GREEN verdict"
+
+if PROOF_CASE_EXPECT_DISOWNED=1 PATH="$PS_SHIM_ROOT/stranger:$PATH" run_proof_case strangerps success 3; then
+  fail "proof must refuse a candidate PID whose argv belongs to another process"
+fi
+printf '%s\n' "$PROOF_CASE_OUT" | grep -q 'the candidate PID now belongs to another process' \
+  || fail "PID-reuse refusal did not name its reason: $PROOF_CASE_OUT"
+printf '%s\n' "$PROOF_CASE_OUT" | grep -q '^DEV_PHOTOGRAPH_CANDIDATE pid=[^ ]* cmdline=mismatch socket_present=' \
+  || fail "PID-reuse refusal did not report what the observer saw: $PROOF_CASE_OUT"
 
 for bad_mode in \
   nested_report invalid_user_hash wrong_manifest_cache missing_cache \
