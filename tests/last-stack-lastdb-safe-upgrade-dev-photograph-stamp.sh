@@ -515,6 +515,15 @@ LASTDB_SAFE_UPGRADE_EXPECTED_LASTDB_SHA256="$(dev_stamp_sha256_file "$PROOF_CAND
 export LASTDB_SAFE_UPGRADE_EXPECTED_LASTDBD_SHA256
 export LASTDB_SAFE_UPGRADE_EXPECTED_LASTDB_SHA256
 
+# Timing bounds in this fixture are generous on purpose. The fake daemon and
+# the fake snapshot are python3 processes; under the 4-shard CI gate on a
+# loaded host their startup alone crossed the old 4 s readiness budget and the
+# old 1 s snapshot deadline, so the proof failed in a different phase than the
+# case asserted ("timed-out snapshot never started", "existing cache falsely
+# changed the pre-CAS failure phase") — twice on 2026-09-20, green when run
+# alone. The happy path spends none of the slack: readiness is polled at 50 ms
+# and the snapshot cases still finish inside their deadline.
+# papercut-safe-upgrade-dev-photograph-stamp-test-flaky-under-shard-load-20260920
 run_proof_case() {
   local name="$1" mode="$2" timeout_secs="$3" safe_name proof_pid
   local evidence_root="${4:-$PROOF_EVIDENCE_ROOT}"
@@ -537,7 +546,7 @@ run_proof_case() {
   LASTDB_DEV_PHOTOGRAPH_EVIDENCE_TAIL_LINES=6 \
   LASTDB_DEV_PHOTOGRAPH_EVIDENCE_TAIL_BYTES=4096 \
   LASTDB_DEV_PHOTOGRAPH_LASTSECRETS_BIN="$PROOF_CAND/lastsecrets" \
-  LASTDB_DEV_PHOTOGRAPH_READY_WAITS=80 \
+  LASTDB_DEV_PHOTOGRAPH_READY_WAITS=600 \
   LASTDB_DEV_PHOTOGRAPH_READY_SLEEP_SECS=0.05 \
   LASTDB_DEV_PHOTOGRAPH_SNAPSHOT_ATTEMPTS=1 \
   LASTDB_DEV_PHOTOGRAPH_SNAPSHOT_RETRY_SECS=0 \
@@ -659,7 +668,7 @@ grep -q 'post-CAS backup orphan GC active' "$stale_daemon_tail" \
 grep -q 'authentication refused before snapshot request' "$stale_snapshot_tail" \
   || fail "pre-CAS evidence omitted the current snapshot failure"
 
-if run_proof_case timeout timeout 1; then
+if run_proof_case timeout timeout 3; then
   fail "proof accepted a snapshot command that exceeded its deadline"
 fi
 # Measure the snapshot process itself. The old outer timer included setup and
@@ -682,12 +691,12 @@ for evidence_file in "$summary" "$daemon_tail" "$snapshot_tail"; do
   [ "$(_dev_stamp_file_mode "$evidence_file")" = 600 ] \
     || fail "failure evidence file is not owner-only: $evidence_file"
 done
-grep -q '^DEV_PHOTOGRAPH_FAILURE phase=snapshot_command attempt=1/1 timeout_secs=1 client_timeout_secs=61 snapshot_rc=124$' \
+grep -q '^DEV_PHOTOGRAPH_FAILURE phase=snapshot_command attempt=1/1 timeout_secs=3 client_timeout_secs=63 snapshot_rc=124$' \
   "$summary" || fail "timeout evidence omitted the exact phase and budget"
 grep -q '^DEV_PHOTOGRAPH_OBSERVED manifest_cache_present_before=false manifest_cache_present_after=true$' \
   "$summary" || fail "timeout evidence omitted the separate cache observations"
 printf '%s\n' "$PROOF_CASE_OUT" \
-  | grep -q '^DEV_PHOTOGRAPH_FAILURE phase=snapshot_command attempt=1/1 timeout_secs=1 client_timeout_secs=61 snapshot_rc=124$' \
+  | grep -q '^DEV_PHOTOGRAPH_FAILURE phase=snapshot_command attempt=1/1 timeout_secs=3 client_timeout_secs=63 snapshot_rc=124$' \
   || fail "timeout output omitted the exact phase and budget"
 grep -q 'post-CAS backup orphan GC active' "$daemon_tail" \
   || fail "daemon evidence omitted its observed post-CAS text"
@@ -709,11 +718,11 @@ fi
 
 evidence_blocker="$PROOF_FIXTURE/evidence-root-is-a-file"
 printf 'not a directory\n' >"$evidence_blocker"
-if run_proof_case noev timeout 1 "$evidence_blocker"; then
+if run_proof_case noev timeout 3 "$evidence_blocker"; then
   fail "proof passed after its photograph and evidence copy both failed"
 fi
 printf '%s\n' "$PROOF_CASE_OUT" \
-  | grep -q '^DEV_PHOTOGRAPH_FAILURE phase=snapshot_command attempt=1/1 timeout_secs=1 client_timeout_secs=61 snapshot_rc=124$' \
+  | grep -q '^DEV_PHOTOGRAPH_FAILURE phase=snapshot_command attempt=1/1 timeout_secs=3 client_timeout_secs=63 snapshot_rc=124$' \
   || fail "evidence-copy failure omitted the exact phase and budget: $PROOF_CASE_OUT"
 printf '%s\n' "$PROOF_CASE_OUT" \
   | grep -q '^DEV_PHOTOGRAPH_EVIDENCE: unavailable$' \
