@@ -271,7 +271,9 @@ run_bun_install() {
   local dest="$TARGET_DIR/$name"
   [ -f "$dest/package.json" ] || return 0
   echo "==> installing dependencies for $name"
-  bun install --cwd "$dest"
+  local cache_dir="${BUN_INSTALL_CACHE_DIR:-${HOME:-/tmp}/.cache/bun}"
+  mkdir -p "$cache_dir"
+  bun install --cwd "$dest" --cache-dir "$cache_dir"
 }
 
 install_lastdb_browser() {
