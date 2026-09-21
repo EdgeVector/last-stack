@@ -1,0 +1,51 @@
+{
+  "name": "deploy-main",
+  "version": "1",
+  "start_at": "STAGE",
+  "max_depth": 1,
+  "node_budget": 12,
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "repo": { "type": "string" },
+      "oid": { "type": "string" },
+      "source_url": { "type": "string" },
+      "deploy_script": { "type": "string" },
+      "context": { "type": "string" },
+      "verify_command": { "type": "string" },
+      "state_root": { "type": "string" },
+      "env": { "type": "object" },
+      "item": {}
+    },
+    "required": ["repo", "oid", "source_url", "deploy_script", "context", "state_root"]
+  },
+  "states": {
+    "STAGE": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"${LOOM_DEPLOY_SCRIPTS:-$HOME/.last-stack/lib/deploy-loom}/loom-deploy-step.sh\" STAGE"],
+      "effects": "none",
+      "timeout_sec": 600,
+      "next": "DEPLOY",
+      "on_error": "FAILED"
+    },
+    "DEPLOY": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"${LOOM_DEPLOY_SCRIPTS:-$HOME/.last-stack/lib/deploy-loom}/loom-deploy-step.sh\" DEPLOY"],
+      "effects": "checked",
+      "check": ["/bin/bash", "-c", "exec \"${LOOM_DEPLOY_SCRIPTS:-$HOME/.last-stack/lib/deploy-loom}/loom-deploy-step.sh\" CHECK"],
+      "timeout_sec": 3600,
+      "next": "VERIFY",
+      "on_error": "FAILED"
+    },
+    "VERIFY": {
+      "type": "agent",
+      "command": ["/bin/bash", "-c", "exec \"${LOOM_DEPLOY_SCRIPTS:-$HOME/.last-stack/lib/deploy-loom}/loom-deploy-step.sh\" VERIFY"],
+      "effects": "none",
+      "timeout_sec": 900,
+      "next": "DONE",
+      "on_error": "FAILED"
+    },
+    "DONE": { "type": "succeed" },
+    "FAILED": { "type": "fail" }
+  }
+}

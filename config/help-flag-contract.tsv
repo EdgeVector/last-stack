@@ -29,3 +29,5 @@ last-stack-disk-reclaim-gate	exit0	parser read 2026-09-16: help answered before 
 last-stack-janitor-lag-gate	exit0	parser read 2026-09-16: help answered before state.json or lock reads
 last-stack-merge-demand-gate	exit0	parser read 2026-09-16: help answered before Forge or deploy reads
 last-stack-pipeline-health-gate	exit0	parser read 2026-09-16: help answered before exec of merge-demand-gate
+last-stack-deploy-loom	exit0	parser read 2026-09-21: --help is matched in the arg loop before any config read, loom call, or forge status post
+last-stack-deploy-watch-gate	exit0	parser read 2026-09-21: -h/--help is the first case, before config, tip, or deploy reads

@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# Seed the deploy-watch routine when missing (seed-if-missing / --force-defaults,
+# the shared *-routine installer contract). It replaces the four per-repo
+# launchd deploy watchers; `--retire-superseded` is accepted for symmetry with
+# the canary seeder and is a no-op here: the launchd labels are retired by
+# hand (`launchctl bootout` + disable), never by an installer.
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+# shellcheck source=last-stack-routines-registry-env
+. "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/last-stack-routines-registry-env"
+last_stack_registry_paths_init
+
+ROUTINES_HOME="${ROUTINES_HOME:-$HOME/.routines}"
+REGISTRY_DIR="$ROUTINES_HOME/registry"
+PROMPT_PATH="$(last_stack_registry_prompt_path deploy-watch.md "$ROOT/routines/deploy-watch.md")"
+GATE_PATH="$REG_STABLE_ROOT/bin/last-stack-deploy-watch-gate"
+ID="deploy-watch"
+SUPERSEDED=""
+DRY_RUN=0
+FORCE_DEFAULTS=0
+RETIRE=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --registry-dir) REGISTRY_DIR="$2"; shift 2 ;;
+    --prompt-path) PROMPT_PATH="$2"; shift 2 ;;
+    --gate-path) GATE_PATH="$2"; shift 2 ;;
+    --id) ID="$2"; shift 2 ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --force-defaults) FORCE_DEFAULTS=1; shift ;;
+    --retire-superseded) RETIRE=1; shift ;;
+    -h|--help) echo "last-stack-deploy-watch-routine [--dry-run] [--force-defaults] [--retire-superseded]"; exit 0 ;;
+    *) echo "unknown: $1" >&2; exit 2 ;;
+  esac
+done
+
+[ -r "$PROMPT_PATH" ] || { echo "missing prompt: $PROMPT_PATH" >&2; exit 66; }
+
+if [ "$DRY_RUN" -eq 0 ]; then
+  last_stack_registry_assert_safe_write "$REGISTRY_DIR" "$PROMPT_PATH" "$GATE_PATH" "$REG_CWD" \
+    || exit 3
+fi
+
+retire_superseded() {
+  local name path
+  for name in $SUPERSEDED; do
+    path="$REGISTRY_DIR/$name.toml"
+    [ -f "$path" ] || continue
+    if grep -q '^status = "paused"' "$path" && grep -q 'superseded by deploy-watch' "$path"; then
+      printf 'already retired %s\n' "$path"
+      continue
+    fi
+    if [ "$DRY_RUN" -eq 1 ]; then
+      printf 'would retire %s\n' "$path"
+      continue
+    fi
+    cp "$path" "$path.bak-retired-$(date -u +%Y%m%dT%H%M%SZ)"
+    # One status line, one reason line; the rest of the entry stays as history.
+    if grep -q '^status = ' "$path"; then
+      sed -i.tmp 's/^status = .*/status = "paused"  # superseded by deploy-watch (north-star-lastdb-app-registry-release-loop, 2026-09-20)/' "$path"
+      rm -f "$path.tmp"
+    else
+      printf 'status = "paused"  # superseded by deploy-watch (north-star-lastdb-app-registry-release-loop, 2026-09-20)\n' >>"$path"
+    fi
+    printf 'retired %s\n' "$path"
+  done
+}
+
+path="$REGISTRY_DIR/$ID.toml"
+if [ "$DRY_RUN" -eq 0 ] && last_stack_registry_skip_if_exists "$path" "$FORCE_DEFAULTS"; then
+  [ "$RETIRE" -eq 0 ] || retire_superseded
+  exit 0
+fi
+
+body=$(cat <<EOF
+# Production deploys as a routine (2026-09-21): every 5 min, each enabled repo
+# in config/deploy/repos.json whose forge main moved to a green commit is
+# deployed through the durable deploy-main Loom graph. Replaces the per-repo
+# launchd watchers (com.edgevector.lastgit-deploy-*). Zero-agent gate.
+id = "$ID"
+harness = "claude"
+model = "sonnet"
+effort = "low"
+group = "ops"
+rrule = "FREQ=MINUTELY;INTERVAL=5;BYSECOND=0"
+cwd = "$REG_CWD"
+status = "active"
+timeout_min = 30
+prompt_path = "$PROMPT_PATH"
+gate_command = "$GATE_PATH"
+heartbeat_slug = "routine-heartbeats"
+EOF
+)
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  printf '%s\n' "--- $path"
+  printf '%s\n' "$body"
+  [ "$RETIRE" -eq 0 ] || retire_superseded
+  exit 0
+fi
+mkdir -p "$REGISTRY_DIR"
+tmp="$(mktemp "${TMPDIR:-/tmp}/last-stack-canary-candidate-set.XXXXXX")"
+printf '%s\n' "$body" >"$tmp"
+if [ -f "$path" ] && cmp -s "$tmp" "$path"; then
+  rm -f "$tmp"
+  printf 'unchanged %s\n' "$path"
+else
+  mv "$tmp" "$path"
+  printf 'wrote %s\n' "$path"
+fi
+[ "$RETIRE" -eq 0 ] || retire_superseded
