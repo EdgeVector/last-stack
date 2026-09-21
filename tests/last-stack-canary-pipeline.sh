@@ -179,11 +179,15 @@ fi
 # must survive is the same: prepare and notify only, never publish.
 [ ! -f "$ROOT/routines/lastdb-canary-promote-prepare.md" ]
 [ ! -f "$ROOT/config/routines-registry/lastdb-canary-promote-prepare.toml" ]
+# Since 2026-09-21 (decision-2026-09-21-stable-publish-is-automatic-on-green)
+# the same action publishes through the ONE publisher, with its idempotence
+# guard, and never through the retired v1 promote-execute or a bare brew call.
 material="$ROOT/bin/last-stack-canary-promote-material"
-grep -q 'It never publishes' "$material"
-grep -q 'last-stack-release-publish --lastdb-version' "$material"
+grep -q 'last-stack-release-publish' "$material"
+grep -q -- '--if-needed' "$material"
+grep -q 'LAST_STACK_RELEASE_AUTO_PUBLISH' "$material"
 if grep -Eq 'promote-execute|forge-promote-homebrew-stable\.sh|(^|[^a-zA-Z])brew (install|upgrade|services|tap)' "$material"; then
-  echo "promote material must not publish" >&2
+  echo "promote material must publish only through last-stack-release-publish" >&2
   exit 1
 fi
 
