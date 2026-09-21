@@ -1,0 +1,44 @@
+{
+  "_comment": "Repos with a production target. The deploy-watch routine polls each enabled repo's forge main; when the tip moved and its Forge CI status is success it runs the deploy-main Loom graph, which stages that exact OID and runs the repo's OWN deploy script with the same variables the retired launchd watchers gave it. `env` is copied into the deploy script's environment. `verify_command` runs after the deploy with DEPLOY_OID / DEPLOY_REPO set and must exit 0 (retried for up to 10 min). Disabled repos are listed so the retirement of their launchd agents is visible here, not only in launchd's override table.",
+  "defaults": {
+    "venue": "forgejo",
+    "forge_root": "http://localhost:3300",
+    "owner": "EdgeVector",
+    "ref": "refs/heads/main",
+    "state_root": "$HOME/.local/state/last-stack/deploy"
+  },
+  "repos": [
+    {
+      "repo": "fold_db_website",
+      "enabled": true,
+      "context": "deploy-prod",
+      "deploy_script": ".lastgit/deploy-prod.sh",
+      "verify_command": "curl -fsS --max-time 20 https://thelastdb.com/llms.txt | grep -q 'LastDB' && curl -fsSI --max-time 20 https://thelastdb.com/ | grep -qi '^HTTP/[0-9.]* 200'",
+      "notes": "thelastdb.com via vercel promote (token lastsecrets://lastgit-vercel-token). Replaced launchd com.edgevector.lastgit-deploy-fold-db-website on 2026-09-21."
+    },
+    {
+      "repo": "exemem-infra",
+      "enabled": false,
+      "context": "deploy-pipeline",
+      "deploy_script": ".lastgit/deploy-pipeline.sh",
+      "env": { "AWS_PROFILE": "default" },
+      "notes": "Exemem cloud pipeline. launchd com.edgevector.lastgit-deploy-exemem-infra was found disabled on 2026-09-21; enable here when Tom decides."
+    },
+    {
+      "repo": "schema-infra",
+      "enabled": false,
+      "context": "deploy-pipeline",
+      "deploy_script": ".lastgit/deploy-pipeline.sh",
+      "env": { "AWS_PROFILE": "default", "SCHEMA_BUILD_REMOTE_HOST": "pc" },
+      "notes": "Schema service pipeline, builds on the PC. launchd com.edgevector.lastgit-deploy-schema-infra was found disabled on 2026-09-21."
+    },
+    {
+      "repo": "ops-terminal",
+      "enabled": false,
+      "context": "deploy-prod",
+      "deploy_script": ".lastgit/deploy-prod.sh",
+      "env": { "OPS_TERMINAL_RUN": "$HOME/.local/share/edgevector/ops-terminal" },
+      "notes": "Local ops terminal. launchd com.edgevector.lastgit-deploy-ops-terminal was found disabled on 2026-09-21."
+    }
+  ]
+}

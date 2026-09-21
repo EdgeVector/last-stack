@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# The deploy-watch routine, zero-agent. Every tick, for each enabled repo in
+# config/deploy/repos.json:
+#
+#   1. read the forge tip of `ref` (default refs/heads/main)
+#   2. if it differs from the last receipt for that repo and the commit's
+#      Forge CI combined status is `success`, start the deploy-main Loom
+#      graph for exactly that OID (last-stack-deploy-loom)
+#   3. otherwise say why not, in one line
+#
+# It runs under routinesd, so it gets a heartbeat and a fleet-health row: a
+# watcher that stops is a red row within the hour, not a silent week. One
+# deploy per repo per tick; a repo whose execution is still running is
+# skipped by the Loom idempotency key, not re-run.
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
+CONFIG="${LAST_STACK_DEPLOY_CONFIG:-$ROOT/config/deploy/repos.json}"
+DEPLOY_BIN="${LAST_STACK_DEPLOY_LOOM_BIN:-$ROOT/bin/last-stack-deploy-loom}"
+TIP_CMD="${LAST_STACK_DEPLOY_TIP_CMD:-}"        # tests: prints the tip for "$1" (repo) "$2" (ref)
+STATUS_CMD="${LAST_STACK_DEPLOY_STATUS_CMD:-}"  # tests: prints the CI state for "$1" (repo) "$2" (oid)
+ONLY="${LAST_STACK_DEPLOY_ONLY:-}"
+
+usage() {
+  printf '%s\n' 'last-stack-deploy-watch-gate' \
+    'Deploy every enabled repo whose forge main moved to a green commit, through the deploy-main Loom graph.' \
+    'Env for tests: LAST_STACK_DEPLOY_CONFIG, LAST_STACK_DEPLOY_LOOM_BIN, LAST_STACK_DEPLOY_TIP_CMD,' \
+    '  LAST_STACK_DEPLOY_STATUS_CMD, LAST_STACK_DEPLOY_ONLY=<repo>'
+}
+case "${1:-}" in
+  '') ;;
+  -h|--help) usage; exit 0 ;;
+  *) usage >&2; exit 2 ;;
+esac
+
+result() {
+  local outcome="$1"; shift
+  printf 'DEPLOY_WATCH result=%s %s\n' "$outcome" "$*"
+  printf 'ROUTINE_RESULT outcome=%s detail=%s\n' "$outcome" "$(printf '%s' "$*" | tr ' ' ',')"
+  exit 0
+}
+[ -f "$CONFIG" ] || result error "evidence=config_missing config=$CONFIG"
+command -v jq >/dev/null 2>&1 || result error "evidence=jq_missing"
+[ -x "$DEPLOY_BIN" ] || result error "evidence=tool_missing tool=$DEPLOY_BIN"
+
+forge_root="$(jq -r '.defaults.forge_root // "http://localhost:3300"' "$CONFIG")"
+owner="$(jq -r '.defaults.owner // "EdgeVector"' "$CONFIG")"
+default_ref="$(jq -r '.defaults.ref // "refs/heads/main"' "$CONFIG")"
+state_root="$(jq -r '.defaults.state_root // "$HOME/.local/state/last-stack/deploy"' "$CONFIG")"
+state_root="${state_root/\$HOME/$HOME}"
+
+forge_token=""
+if [ -r "$ROOT/lib/forge-token.sh" ]; then
+  # shellcheck source=../lib/forge-token.sh
+  . "$ROOT/lib/forge-token.sh"
+  forge_token="$(last_stack_forge_token 2>/dev/null || true)"
+fi
+
+read_tip() {
+  local repo="$1" ref="$2"
+  if [ -n "$TIP_CMD" ]; then
+    "$TIP_CMD" "$repo" "$ref"
+    return
+  fi
+  local url="$forge_root/$owner/$repo.git" args=()
+  [ -z "$forge_token" ] || args=(-c "http.$forge_root/.extraHeader=Authorization: token $forge_token")
+  GIT_TERMINAL_PROMPT=0 timeout 60 git "${args[@]}" ls-remote "$url" "$ref" 2>/dev/null | awk '{print $1}' | head -n1
+}
+
+read_status() {
+  local repo="$1" oid="$2"
+  if [ -n "$STATUS_CMD" ]; then
+    "$STATUS_CMD" "$repo" "$oid"
+    return
+  fi
+  [ -x "$ROOT/bin/last-stack-forge-api" ] || { echo unknown; return; }
+  "$ROOT/bin/last-stack-forge-api" "repos/$owner/$repo/commits/$oid/status" --jq '.state // "unknown"' 2>/dev/null || echo unknown
+}
+
+last_receipt_oid() {
+  local repo="$1" f
+  f="$state_root/$repo/last-deployed"
+  [ -f "$f" ] && cat "$f" || true
+}
+
+started=0 lines=() failed=0 skipped=0
+while IFS=$'\t' read -r repo enabled ref; do
+  [ -n "$repo" ] || continue
+  [ -z "$ONLY" ] || [ "$ONLY" = "$repo" ] || continue
+  [ "$enabled" = true ] || { lines+=("$repo=disabled"); continue; }
+  [ -n "$ref" ] && [ "$ref" != null ] || ref="$default_ref"
+  tip="$(read_tip "$repo" "$ref" || true)"
+  if ! [[ "$tip" =~ ^[0-9a-f]{40}$ ]]; then
+    lines+=("$repo=tip_unreadable"); failed=$((failed + 1)); continue
+  fi
+  last="$(last_receipt_oid "$repo")"
+  if [ "$tip" = "$last" ]; then
+    lines+=("$repo=current@${tip:0:12}"); continue
+  fi
+  # A tip whose deploy already failed is not retried on a timer: the Loom
+  # execution for that key is terminal, and a retry needs either a new commit
+  # or a human (`last-stack-deploy-loom --repo … --oid …` after the fix). It
+  # was reported as error once; from here it is a visible hold.
+  if [ -f "$state_root/$repo/last-failed" ] && [ "$tip" = "$(cat "$state_root/$repo/last-failed")" ]; then
+    lines+=("$repo=held_after_failure@${tip:0:12}"); skipped=$((skipped + 1)); continue
+  fi
+  ci="$(read_status "$repo" "$tip" || echo unknown)"
+  case "$ci" in
+    success) ;;
+    pending|"") lines+=("$repo=ci_pending@${tip:0:12}"); skipped=$((skipped + 1)); continue ;;
+    *) lines+=("$repo=ci_${ci}@${tip:0:12}"); skipped=$((skipped + 1))
+       # A red tip is recorded so the same red commit is not re-read every tick;
+       # the next green tip deploys.
+       mkdir -p "$state_root/$repo"; printf '%s\n' "$tip" >"$state_root/$repo/last-seen-red"
+       continue ;;
+  esac
+  mkdir -p "$state_root/$repo"
+  set +e
+  "$DEPLOY_BIN" --repo "$repo" --oid "$tip" >"$state_root/$repo/last-run.out" 2>"$state_root/$repo/last-run.err"
+  rc=$?
+  set -e
+  if [ "$rc" -eq 0 ]; then
+    printf '%s\n' "$tip" >"$state_root/$repo/last-deployed"
+    rm -f "$state_root/$repo/last-failed"
+    lines+=("$repo=deployed@${tip:0:12}"); started=$((started + 1))
+  else
+    printf '%s\n' "$tip" >"$state_root/$repo/last-failed"
+    lines+=("$repo=deploy_failed@${tip:0:12}"); failed=$((failed + 1))
+  fi
+done < <(jq -r '.repos[] | [.repo, (.enabled // false | tostring), (.ref // "")] | @tsv' "$CONFIG")
+
+detail="${lines[*]:-no_repos}"
+if [ "$failed" -gt 0 ]; then
+  result error "deployed=$started failed=$failed $detail"
+elif [ "$started" -gt 0 ]; then
+  result ok "deployed=$started $detail"
+else
+  result noop "deployed=0 $detail"
+fi

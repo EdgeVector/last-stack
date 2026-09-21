@@ -15,6 +15,7 @@ for bin in \
   last-stack-why-stopped-routine \
   last-stack-whats-wrong-routine \
   last-stack-lastdb-canary-candidate-set-routine \
+  last-stack-deploy-watch-routine \
   last-stack-lastdb-ops-offenders-routine \
   last-stack-kanban-validate-routine \
   last-stack-fleet-performance-routine \

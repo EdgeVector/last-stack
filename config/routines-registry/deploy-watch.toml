@@ -1,0 +1,17 @@
+# Production deploys as a routine (2026-09-21): replaces the four per-repo
+# launchd watchers (com.edgevector.lastgit-deploy-*), which held one OID in a
+# file, had no heartbeat, and were found disabled for a week. Zero-agent gate;
+# the deploy itself is the durable deploy-main Loom graph. Live entries are
+# seeded by bin/last-stack-deploy-watch-routine.
+id = "deploy-watch"
+harness = "claude"
+model = "sonnet"
+effort = "low"
+group = "ops"
+rrule = "FREQ=MINUTELY;INTERVAL=5;BYSECOND=0"
+cwd = "/Users/REPLACE/code/edgevector"
+status = "active"
+timeout_min = 30
+prompt_path = "/Users/REPLACE/.last-stack/routines/deploy-watch.md"
+gate_command = "/Users/REPLACE/.last-stack/bin/last-stack-deploy-watch-gate"
+heartbeat_slug = "routine-heartbeats"

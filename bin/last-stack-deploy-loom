@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# Deploy one repo at one commit through the durable `deploy-main` Loom graph.
+#
+#   last-stack-deploy-loom --repo fold_db_website --oid <40 hex> [--json] [--dry-run]
+#
+# One execution per (repo, oid): the idempotency key is deploy-<repo>-<oid>,
+# so a retry by any caller returns the running/finished execution instead of
+# a second deploy. The graph stages the exact OID, runs the repo's own deploy
+# script (the DEPLOY node is a checked effect: a resumed execution finds the
+# receipt and does not deploy twice), then runs the repo's verify command.
+# This launcher posts the commit status (`<context>` success|failure) back to
+# the forge and prints one DEPLOY_RESULT line.
+#
+# Replaces the per-repo launchd watchers (.lastgit/deploy-run.sh): those held
+# one OID in a file, had no heartbeat, and were disabled for a week before
+# anyone noticed (papercut-thelastdb-website-deploy-agent-disabled-in-launchd-20260921).
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
+CONFIG="${LAST_STACK_DEPLOY_CONFIG:-$ROOT/config/deploy/repos.json}"
+REPO="" OID="" AS_JSON=0 DRY_RUN=0 NO_STATUS=0
+RUNNING_SECS="${LAST_STACK_DEPLOY_LOOM_RUNNING_SECS:-5400}"
+
+usage() {
+  cat <<'USAGE'
+last-stack-deploy-loom --repo NAME --oid OID [--json] [--dry-run] [--no-status]
+
+Runs the deploy-main Loom graph for one repo at one commit (key deploy-<repo>-<oid>),
+posts the commit status to the forge, prints DEPLOY_RESULT.
+Env: LAST_STACK_DEPLOY_CONFIG (config/deploy/repos.json), LOOM_DEPLOY_SCRIPTS,
+     LAST_STACK_DEPLOY_LOOM_RUNNING_SECS (wait for a running execution; default 90 min)
+USAGE
+}
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --repo) REPO="$2"; shift 2 ;;
+    --oid) OID="$2"; shift 2 ;;
+    --json) AS_JSON=1; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --no-status) NO_STATUS=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+done
+die() { printf 'last-stack-deploy-loom: %s\n' "$*" >&2; exit 1; }
+[ -n "$REPO" ] || die "--repo is required"
+[[ "$OID" =~ ^[0-9a-f]{40}$ ]] || die "--oid must be a full 40-hex commit"
+[ -f "$CONFIG" ] || die "config missing: $CONFIG"
+command -v jq >/dev/null 2>&1 || die "jq is required"
+
+entry="$(jq -c --arg r "$REPO" '.repos[] | select(.repo == $r)' "$CONFIG")"
+[ -n "$entry" ] || die "repo $REPO is not in $CONFIG"
+forge_root="$(jq -r '.defaults.forge_root // "http://localhost:3300"' "$CONFIG")"
+owner="$(jq -r '.defaults.owner // "EdgeVector"' "$CONFIG")"
+state_root="$(jq -r '.defaults.state_root // "$HOME/.local/state/last-stack/deploy"' "$CONFIG")"
+state_root="${state_root/\$HOME/$HOME}"
+source_url="$(printf '%s' "$entry" | jq -r --arg d "$forge_root/$owner/$REPO.git" '.source_url // $d')"
+deploy_script="$(printf '%s' "$entry" | jq -r '.deploy_script // ".lastgit/deploy-prod.sh"')"
+context="$(printf '%s' "$entry" | jq -r '.context // "deploy-prod"')"
+verify_command="$(printf '%s' "$entry" | jq -r '.verify_command // ""')"
+env_json="$(printf '%s' "$entry" | jq -c '(.env // {}) | with_entries(.value |= gsub("\\$HOME"; env.HOME))')"
+key="deploy-$REPO-$OID"
+input="$(jq -cn --arg repo "$REPO" --arg oid "$OID" --arg source_url "$source_url" \
+  --arg deploy_script "$deploy_script" --arg context "$context" --arg verify_command "$verify_command" \
+  --arg state_root "$state_root" --argjson env "$env_json" \
+  '{repo:$repo, oid:$oid, source_url:$source_url, deploy_script:$deploy_script, context:$context, verify_command:$verify_command, state_root:$state_root, env:$env}')"
+
+emit() {
+  local outcome="$1" status="$2" state="$3" execution="$4"
+  if [ "$AS_JSON" -eq 1 ]; then
+    jq -cn --arg outcome "$outcome" --arg status "$status" --arg state "$state" --arg execution "$execution" \
+      --arg key "$key" --arg repo "$REPO" --arg oid "$OID" --arg context "$context" \
+      '{outcome:$outcome,status:$status,state:$state,execution:$execution,key:$key,repo:$repo,oid:$oid,context:$context,graph:"deploy-main"}'
+  else
+    printf 'DEPLOY_RESULT repo=%s oid=%s outcome=%s status=%s state=%s execution=%s\n' \
+      "$REPO" "${OID:0:12}" "$outcome" "$status" "$state" "${execution:-none}"
+  fi
+}
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  emit noop dry-run STAGE ""
+  exit 0
+fi
+command -v loom >/dev/null 2>&1 || die "loom is not installed"
+defs=""
+for c in "${LOOM_DEPLOY_DEFS:-}" "$ROOT/lib/deploy-loom"; do
+  [ -n "$c" ] && [ -f "$c/deploy-main.json" ] && defs="$c" && break
+done
+[ -n "$defs" ] || die "deploy-main graph definition is missing"
+export LOOM_DEPLOY_SCRIPTS="${LOOM_DEPLOY_SCRIPTS:-$ROOT/lib/deploy-loom}"
+loom ping >/dev/null 2>&1 || die "loom control plane is not reachable"
+loom validate "$defs/deploy-main.json" >/dev/null
+loom publish "$defs/deploy-main.json" >/dev/null
+
+set +e
+view="$(loom run deploy-main --key "$key" --input "$input")"
+rc=$?
+set -e
+execution="$(printf '%s\n' "$view" | awk '/^lx-/{print; exit}')"
+status="$(printf '%s\n' "$view" | awk -F': ' '/^status:/{print $2; exit}')"
+state="$(printf '%s\n' "$view" | awk -F': ' '/^state:/{print $2; exit}')"
+
+# `loom run` can return before the graph is done (the same shape that read a
+# green safe-upgrade as red on 2026-09-20). Read the execution back while it
+# runs; stop at once on a terminal status.
+if [ -n "$execution" ]; then
+  deadline=$((SECONDS + RUNNING_SECS))
+  while :; do
+    readback="$(loom show "$execution" 2>/dev/null || true)"
+    rs="$(printf '%s\n' "$readback" | awk -F': ' '/^status:/{print $2; exit}')"
+    case "$rs" in
+      succeeded|failed|cancelled) status="$rs"; state="$(printf '%s\n' "$readback" | awk -F': ' '/^state:/{print $2; exit}')"; [ "$rs" = succeeded ] && rc=0; break ;;
+      running|pending|"") [ "$SECONDS" -ge "$deadline" ] && { status="${rs:-unknown}"; break; }; sleep 5 ;;
+      *) status="$rs"; break ;;
+    esac
+  done
+fi
+outcome=error
+[ "$status" = succeeded ] && outcome=ok
+
+if [ "$NO_STATUS" -ne 1 ] && [ -x "$ROOT/bin/last-stack-forge-api" ]; then
+  st=failure; [ "$outcome" = ok ] && st=success
+  body="$(jq -cn --arg s "$st" --arg c "$context" --arg d "$context $status via deploy-main ${execution:-}" '{state:$s, context:$c, description:$d, target_url:""}')"
+  "$ROOT/bin/last-stack-forge-api" POST --data "$body" "repos/$owner/$REPO/statuses/$OID" >/dev/null 2>&1 \
+    || printf 'last-stack-deploy-loom: could not post %s status for %s@%s\n' "$context" "$REPO" "${OID:0:12}" >&2
+fi
+emit "$outcome" "${status:-unknown}" "${state:-unknown}" "$execution"
+[ "$outcome" = ok ]

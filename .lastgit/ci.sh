@@ -687,4 +687,9 @@ ci_test tests/last-stack-north-star-proof-cloud-owned-gc.sh
 # publisher records its calls; no network, no tap. New entries go HERE, before
 # the registration guard, which must stay the last ci_test line.
 ci_test tests/last-stack-canary-promote-material.sh
+# Production deploys as a routine + Loom graph (2026-09-21). Hermetic: local
+# bare repo, fake tip/status/deploy, no loom, no network.
+ci_test tests/last-stack-deploy-loom-steps.sh
+ci_test tests/last-stack-deploy-watch-gate.sh
+ci_test tests/last-stack-deploy-watch-routine.sh
 ci_test tests/last-stack-ci-test-registration.sh

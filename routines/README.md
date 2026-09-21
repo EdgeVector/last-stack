@@ -173,6 +173,7 @@ ls ~/.routines/registry/last-stack-fkanban-validate.toml
 | [`pipeline-health`](pipeline-health.md) | every ~10 min | Keep LastGit CRs and forge (fold / forge-hot) PRs unblocked; fix mechanical issues or file Brain papercuts (`papercut-pipeline-*`) — never board P0 monopoly. |
 | [`merge-babysit`](merge-babysit.md) | every ~15 min | Self-heal stuck LastGit CRs, completing green laggards or filing P0 merge cards without turning transient backend outages into fleet-red runs. |
 | [`drain-open-prs`](drain-open-prs.md) | daily | Drive every open PR across all repos toward zero (merge or close). |
+| [`deploy-watch`](deploy-watch.md) | every 5 min | Deploy each enabled repo whose forge main moved to a green commit through the durable `deploy-main` Loom graph. Replaces the launchd `lastgit-deploy-*` watchers. |
 | [`lastdb-canary-soak-watch`](lastdb-canary-soak-watch.md) | hourly | Recompute a v2 verdict from bounded boot and observation evidence. On green it writes `PROMOTE.md` (node build + proved `next` rows + the one publish command) and notifies. Stable stays human. |
 | [`lastdb-ops-offenders`](lastdb-ops-offenders.md) | daily | Rank live `lastdb ops` worst offenders, skip long-poll/cheap-count noise, investigate the rest, file ≤2 pickup-ready improvement cards. |
 | [`whats-wrong`](whats-wrong.md) | hourly (:23) | EV OPS What's wrong panel (`http://127.0.0.1:7733` `coverage.exceptions`): one loom heal agent per row, Brain papercuts, full closeout. |
