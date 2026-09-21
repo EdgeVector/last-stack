@@ -684,3 +684,7 @@ ci_test tests/last-stack-safe-upgrade-loom-readback.sh
 ci_test tests/last-stack-board-closeout-active-source.sh
 ci_test tests/last-stack-north-star-proof-cloud-owned-gc.sh
 ci_test tests/last-stack-ci-test-registration.sh
+
+# The promote-eligible action publishes on green (decision-2026-09-21). Fake
+# publisher records its calls; no network, no tap. APPENDED: shards by position.
+ci_test tests/last-stack-canary-promote-material.sh

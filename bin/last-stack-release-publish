@@ -16,9 +16,14 @@ not proved with the node brew ships:
      lands on the tap.
 
 `--dry-run` resolves the tag, stages nothing public, promotes into a scratch
-copy, and prints what the two PRs would carry. This command is for a human at
-a keyboard; no routine calls it (decision-2026-09-19: stable stays human until
-five clean manual promotes).
+copy, and prints what the two PRs would carry.
+
+Since 2026-09-21 (decision-2026-09-21-stable-publish-is-automatic-on-green,
+Tom) the hourly reconciler runs this with `--if-needed` when a candidate's
+24 h quiet window is green: a build whose rows are already on `stable`
+publishes nothing, a build with no `next` rows (nothing proved) is refused,
+and each half (brew, registry) is skipped when it is already done. A human
+can still run it by hand; the flags are the same.
 """
 from __future__ import annotations
 
@@ -68,6 +73,25 @@ def forge_git() -> list[str]:
     if not token:
         return ["git"]
     return ["git", "-c", f"http.http://localhost:3300/.extraHeader=Authorization: token {token}"]
+
+
+def github_token() -> str:
+    """GH_TOKEN for the public bottle CDN: env, then `gh auth token` (keyring,
+    interactive), then lastsecrets://github-token (unattended, locked keychain).
+    Same shape as the forge token order; the login keychain is the piece that
+    goes away under launchd."""
+    token = os.environ.get("GH_TOKEN", "").strip()
+    if token:
+        return token
+    gh = run(["gh", "auth", "token"])
+    if gh.returncode == 0 and gh.stdout.strip():
+        return gh.stdout.strip()
+    if shutil.which("lastsecrets"):
+        ls_env = {k: v for k, v in os.environ.items() if k != "OBS_SENTRY_DSN"}
+        ls = run(["lastsecrets", "get", "github-token"], env=ls_env)
+        if ls.returncode == 0 and ls.stdout.strip():
+            return ls.stdout.strip().splitlines()[0].strip()
+    return ""
 
 
 def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
@@ -186,6 +210,41 @@ def stage_assets(build_dir: Path, dest: Path) -> None:
         die(f"staged build {build_dir} has no .tar.gz package; the canary build did not package")
 
 
+def tap_state_for_build(build: str, oid: str) -> dict:
+    """Read the tap's main once: next/stable rows for this build, and whether the
+    formula's current release was built from this source OID."""
+    tap_dir = Path(tempfile.mkdtemp(prefix="release-publish-state."))
+    clone = run(forge_git() + ["clone", "--quiet", "--depth", "1", TAP_URL, str(tap_dir)], timeout=120)
+    if clone.returncode != 0:
+        die(f"clone of {TAP_URL} failed: {clone.stderr.strip()}")
+    state = {"next_rows": 0, "stable_rows": 0, "brew_tag": "", "brew_release_oid": ""}
+    for channel in ("next", "stable"):
+        path = tap_dir / "registry" / f"{channel}.json"
+        if path.is_file():
+            try:
+                index = json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                continue
+            state[f"{channel}_rows"] = sum(
+                1 for app in index.get("apps", []) for row in app.get("compat", []) if row.get("lastdb_version") == build
+            )
+    formula = tap_dir / "Formula" / "lastdb.rb"
+    if formula.is_file():
+        m = re.search(r'version\s+"([^"]+)"', formula.read_text(encoding="utf-8"))
+        if m:
+            state["brew_tag"] = f"v{m.group(1)}"
+            manifest_url = (f"https://github.com/EdgeVector/homebrew-lastdb/releases/download/"
+                            f"{state['brew_tag']}/lastdb-aarch64-apple-darwin.manifest.json")
+            curl = run(["curl", "-fsSL", "--max-time", "30", manifest_url], timeout=60)
+            if curl.returncode == 0:
+                try:
+                    state["brew_release_oid"] = str(json.loads(curl.stdout).get("source_git_oid") or "")
+                except json.JSONDecodeError:
+                    pass
+    shutil.rmtree(tap_dir, ignore_errors=True)
+    return state
+
+
 def source_map(config_path: Path) -> dict[str, str]:
     try:
         data = json.loads(config_path.read_text(encoding="utf-8"))
@@ -204,10 +263,29 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--fold-promote-script", help="path to fold's forge-promote-homebrew-stable.sh")
     parser.add_argument("--lastdb-bin", help="lastdb used to sign the index (default: $LASTDB_BIN, then PATH)")
     parser.add_argument("--no-verify-reachable", action="store_true", help="do not fetch each commit from its public source (not for a real publish)")
+    parser.add_argument("--if-needed", action="store_true",
+                        help="unattended mode: refuse a build with no `next` rows; skip each half that is already published; exit 0 when nothing is left to do")
     args = parser.parse_args(argv)
 
     build = args.lastdb_version.strip()
     build_dir, oid = find_staged_build(build)
+
+    if args.if_needed:
+        # What the public already has for this build, read from the tap's main.
+        published = tap_state_for_build(build, oid)
+        if not published["next_rows"]:
+            print(f"RELEASE_PUBLISH build={build} skipped=no_next_rows (nothing proved for this build; the nightly gate writes next rows after a GREEN smoke)")
+            return 0
+        if published["stable_rows"]:
+            args.skip_registry = True
+        if published["brew_release_oid"] == oid:
+            args.skip_brew = True
+        if args.skip_brew and args.skip_registry:
+            print(f"RELEASE_PUBLISH build={build} tag={published['brew_tag']} brew=already registry=already")
+            return 0
+        if published["brew_tag"] and args.skip_brew and not args.version_tag:
+            args.version_tag = published["brew_tag"]
+
     tag = next_stable_tag(build, args.version_tag)
     day = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
     out_dir = PROMOTE_ROOT / day
@@ -231,12 +309,9 @@ def main(argv: list[str]) -> int:
                 die(f"clone of {TAP_URL} failed: {clone.stderr.strip()}")
             cmd += ["--dry-run", "--tap-dir", str(tap_dir)]
         else:
+            env["GH_TOKEN"] = github_token()
             if not env.get("GH_TOKEN"):
-                gh = run(["gh", "auth", "token"])
-                if gh.returncode == 0 and gh.stdout.strip():
-                    env["GH_TOKEN"] = gh.stdout.strip()
-            if not env.get("GH_TOKEN"):
-                die("GH_TOKEN is required to upload the public bottle (GitHub Releases CDN); `gh auth login` first")
+                die("no GitHub token for the public bottle CDN: set GH_TOKEN, `gh auth login`, or store lastsecrets://github-token")
             cmd.append("--publish")
         print(f"brew: {' '.join(cmd)}")
         proc = subprocess.run(cmd, env=env, text=True)

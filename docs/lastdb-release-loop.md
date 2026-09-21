@@ -14,7 +14,7 @@ from the same proved rows.
 | Routine | Cadence | Gate | Does |
 |---|---|---|---|
 | `lastdb-canary-candidate-set` | nightly 02:47 PT | `last-stack-canary-candidate-gate` | build → candidate set → isolated smoke → primary cutover → rows to `next` |
-| `lastdb-canary-soak-watch` | hourly | `last-stack-canary-reconcile-gate` | v2 quiet-window verdict; on green writes `PROMOTE.md` + notifies |
+| `lastdb-canary-soak-watch` | hourly | `last-stack-canary-reconcile-gate` | v2 quiet-window verdict; on green writes `PROMOTE.md`, **publishes stable** (`release-publish --if-needed`), notifies |
 
 `lastdb-canary-build-main`, `lastdb-canary-dogfood`,
 `lastdb-canary-promote-prepare`, and `lastdb-canary-red-heal` are removed.
@@ -46,14 +46,15 @@ pauses their live registry entries.
    `~/.lastdb/registry-index-signing.key` through `lastdb app index sign`, and
    opens an auto-merging Forgejo PR on `EdgeVector/homebrew-lastdb`.
 
-## Promote material and the one human command
+## Promote material and the automatic publish
 
-On a green quiet window the reconciler runs `last-stack-canary-promote-material`.
-It writes `~/.local/state/last-stack/canary-promote/<date>/PROMOTE.md` with the
-node build, the `next` rows proved with it, and:
+On a green quiet window (24 h, v2 verdict) the reconciler runs
+`last-stack-canary-promote-material`. It writes
+`~/.local/state/last-stack/canary-promote/<date>/PROMOTE.md` with the node
+build and the `next` rows proved with it, then runs:
 
 ```bash
-last-stack-release-publish --lastdb-version <build>
+last-stack-release-publish --lastdb-version <build> --if-needed
 ```
 
 That command does two things together: fold's
@@ -61,9 +62,17 @@ That command does two things together: fold's
 PR on the Forgejo tap) and `last-stack-registry-index promote` (the `next` rows
 for that build → `registry/stable.json`, sources rewritten to the public GitHub
 mirrors from `config/registry/apps.json`, every commit fetched from its public
-source first, signed, second auto-merging PR). `--dry-run` shows both without
-writing anything public. Stable stays a human action until five clean manual
-promotes.
+source first, signed, second auto-merging PR). `--if-needed` refuses a build
+with no proved `next` rows, skips a half that is already public, and exits 0
+when nothing is left. The result is appended to `PROMOTE.md` and sent with the
+notify. Since 2026-09-21 a green quiet window is the stable decision
+(decision-2026-09-21-stable-publish-is-automatic-on-green); the 2026-09-19
+"human until five clean promotes" rule is retired after promote #1.
+`LAST_STACK_RELEASE_AUTO_PUBLISH=0` returns the action to material-only.
+`--dry-run` by hand shows both halves without writing anything public.
+
+The GitHub token for the bottle upload comes from `GH_TOKEN`, then `gh auth
+token`, then `lastsecrets://github-token` (unattended, locked keychain).
 
 ## Install by proof
 

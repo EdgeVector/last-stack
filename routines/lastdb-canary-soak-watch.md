@@ -47,9 +47,13 @@ row is build failure evidence.
 
 The gate executes exactly one configured short action per verdict token. By
 default only `promote-eligible` has a command: `last-stack-canary-promote-material`
-writes `PROMOTE.md` (the node build, the registry `next` rows proved with it,
-and the one publish command) and notifies. It never publishes. The other
-actions stay planned until a command is configured.
+writes `PROMOTE.md` (the node build and the registry `next` rows proved with
+it), then runs `last-stack-release-publish --lastdb-version <build>
+--if-needed` and notifies with the result. Since 2026-09-21 a green quiet
+window IS the stable decision (decision-2026-09-21-stable-publish-is-automatic-on-green).
+The publisher refuses a build with no proved `next` rows and skips halves
+that are already public. The other actions stay planned until a command is
+configured.
 
 Allowed actions: build, heal, line-stop, pause, retire, promote.
 `wait-next-check` is a fact for the next tick. The dispatcher never starts it.
@@ -71,9 +75,9 @@ command leaves the action planned. It does not invent a wait loop.
 `--dry-run` (or `LAST_STACK_CANARY_V2_DRY_RUN=1`) prints the action plan and
 writes no reconciler evidence, primary state, or stable-channel state.
 
-Stable publication is a human action: `last-stack-release-publish
---lastdb-version <build>` promotes the node to brew and the proved rows to the
-registry `stable` channel in one step. Nothing in this routine runs it.
+Stable publication is automatic on green. The same command works by hand
+(`last-stack-release-publish --lastdb-version <build> [--dry-run]`) and
+`LAST_STACK_RELEASE_AUTO_PUBLISH=0` returns the action to material-only.
 
 ## Closeout
 

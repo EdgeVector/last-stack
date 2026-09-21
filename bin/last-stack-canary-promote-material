@@ -2,9 +2,14 @@
 # The `promote-eligible` short action of the hourly canary v2 reconciler.
 #
 # Called once per green verdict token with LAST_STACK_CANARY_CANDIDATE set to
-# the primary's build string. Writes PROMOTE.md — the node build, the `next`
-# rows proved with it, and the ONE command that publishes — then notifies.
-# It never publishes: stable stays a human action.
+# the primary's build string. Writes PROMOTE.md — the node build and the
+# `next` rows proved with it — then PUBLISHES: since 2026-09-21
+# (decision-2026-09-21-stable-publish-is-automatic-on-green, Tom) a green
+# 24 h quiet window is the stable decision. `last-stack-release-publish
+# --if-needed` refuses a build with no proved `next` rows, skips halves that
+# are already public, and moves brew stable and the registry `stable` rows
+# together. LAST_STACK_RELEASE_AUTO_PUBLISH=0 turns this back into
+# material-only (the pre-09-21 behaviour). Then it notifies with the result.
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
@@ -16,15 +21,18 @@ tap_url="${LAST_STACK_REGISTRY_TAP_URL:-${FORGE_ROOT_URL:-http://localhost:3300}
 next_index="${LAST_STACK_REGISTRY_NEXT_INDEX:-}"   # tests: a local next.json
 notify="${LAST_STACK_CANARY_NOTIFY_CMD:-ra notify}"
 no_notify=0
+auto_publish="${LAST_STACK_RELEASE_AUTO_PUBLISH:-1}"
+publish_bin="${LAST_STACK_RELEASE_PUBLISH_BIN:-$ROOT/bin/last-stack-release-publish}"
 
 usage() {
-  printf '%s\n' 'last-stack-canary-promote-material [--candidate BUILD] [--no-notify]'
-  printf '%s\n' 'Write PROMOTE.md for a green candidate: node build, proved next rows, the publish command.'
+  printf '%s\n' 'last-stack-canary-promote-material [--candidate BUILD] [--no-notify] [--no-publish]'
+  printf '%s\n' 'Green candidate: write PROMOTE.md, then publish brew stable + registry stable rows (release-publish --if-needed).'
 }
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --candidate) candidate="$2"; shift 2 ;;
     --no-notify) no_notify=1; shift ;;
+    --no-publish) auto_publish=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac
@@ -72,20 +80,53 @@ cat >"$out" <<EOF
 
 $rows_block
 
-## Publish (one human command)
+## Publish
 
 \`\`\`bash
-last-stack-release-publish --lastdb-version $candidate
+last-stack-release-publish --lastdb-version $candidate --if-needed
 \`\`\`
 
-It publishes the node to the Homebrew stable formula and copies these rows to
-the registry \`stable\` channel with public sources, in one step. Add \`--dry-run\` first to see the tag, the rows, and the PRs it
-would open. Stable publication stays a human action until five clean manual
-promotes (decision-2026-09-19-app-registry-is-the-release-unit).
+Since 2026-09-21 the reconciler runs this itself when the quiet window is
+green (decision-2026-09-21-stable-publish-is-automatic-on-green). It moves
+the node to the Homebrew stable formula and these rows to the registry
+\`stable\` channel with public sources, together. A build with no proved
+rows is refused; halves already public are skipped. The result is appended
+below.
 EOF
+
+publish_status=material-only
+if [ "$auto_publish" != 0 ]; then
+  if [ "$row_count" -eq 0 ]; then
+    publish_status=skipped:no_next_rows
+  elif [ -x "$publish_bin" ]; then
+    set +e
+    publish_out="$("$publish_bin" --lastdb-version "$candidate" --if-needed 2>"$out_dir/publish.err")"
+    publish_rc=$?
+    set -e
+    publish_line="$(printf '%s\n' "$publish_out" | grep '^RELEASE_PUBLISH' | tail -n1 || true)"
+    if [ "$publish_rc" -eq 0 ]; then
+      publish_status="${publish_line#RELEASE_PUBLISH }"
+    else
+      publish_status="failed:rc=$publish_rc"
+    fi
+    {
+      printf '\n## Result (%s)\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      printf '%s\n' "${publish_line:-no RELEASE_PUBLISH line}"
+      if [ "$publish_rc" -ne 0 ]; then
+        printf '\nrc=%s\n\n' "$publish_rc"
+        tail -n 20 "$out_dir/publish.err"
+      fi
+    } >>"$out"
+  else
+    publish_status=failed:publisher_missing
+  fi
+fi
 
 if [ "$no_notify" -ne 1 ]; then
   # shellcheck disable=SC2086
-  $notify "LastDB candidate $candidate is green: $row_count proved app rows. Publish: last-stack-release-publish --lastdb-version $candidate ($out)" --priority high >/dev/null 2>&1 || true
+  $notify "LastDB candidate $candidate green ($row_count proved app rows): publish $publish_status ($out)" --priority high >/dev/null 2>&1 || true
 fi
-printf 'PROMOTE_MATERIAL candidate=%s rows=%s output=%s\n' "$candidate" "$row_count" "$out"
+printf 'PROMOTE_MATERIAL candidate=%s rows=%s publish=%s output=%s\n' "$candidate" "$row_count" "$publish_status" "$out"
+case "$publish_status" in
+  failed:*) exit 1 ;;
+esac
