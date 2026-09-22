@@ -380,7 +380,21 @@ while True:
     time.sleep(1)
 PY
 
-cat >"$PROOF_CAND/lastdb" <<'PY'
+cat >"$PROOF_CAND/lastdb" <<'SH'
+#!/usr/bin/env bash
+# Record the PID BEFORE exec'ing the interpreter, then become it. `exec` keeps
+# this same PID, so the file the test reads always names the process the
+# deadline kills — with no interpreter-startup window in between. Writing it
+# from inside python3 raced the 3s snapshot deadline under CI shard load and
+# reddened "timed-out snapshot never started" on a correct product.
+set -euo pipefail
+if [ "${DEV_FAKE_SNAPSHOT_MODE:-}" = timeout ] && [ -n "${DEV_FAKE_SNAPSHOT_PID_FILE:-}" ]; then
+  printf '%s' "$$" >"$DEV_FAKE_SNAPSHOT_PID_FILE"
+fi
+exec python3 "$(dirname -- "$0")/lastdb-impl.py" "$@"
+SH
+
+cat >"$PROOF_CAND/lastdb-impl.py" <<'PY'
 #!/usr/bin/env python3
 import json
 import hashlib
@@ -423,7 +437,17 @@ if mode == "stale_pre_cas":
     print("authentication refused before snapshot request", file=sys.stderr, flush=True)
     raise SystemExit(73)
 if mode == "timeout":
-    Path(os.environ["DEV_FAKE_SNAPSHOT_PID_FILE"]).write_text(str(os.getpid()), encoding="utf-8")
+    # The PID file is written by the bash preamble BEFORE exec'ing this
+    # interpreter (see the `lastdb` wrapper). Writing it here would race the
+    # deadline: under shard load a cold python3 can still be importing when
+    # the 3s deadline fires, leaving the file empty and reddening
+    # "timed-out snapshot never started" for a product that behaved
+    # correctly. Re-assert it instead of creating it, so the file is a fact
+    # about the process the deadline kills, not about interpreter startup.
+    pid_path = Path(os.environ["DEV_FAKE_SNAPSHOT_PID_FILE"])
+    assert pid_path.read_text().strip() == str(os.getpid()), (
+        "the wrapper recorded a different PID than the interpreter it exec'd"
+    )
     cache = home / "laststore_backup_manifest.json"
     cache.write_text("{}\n", encoding="utf-8")
     for index in range(12):
@@ -611,7 +635,7 @@ grep -q '/laststore_backup_manifest.json$' "$PROOF_CASE_RECEIPT" \
 # the socket: the child is ours by construction. A `ps` that sees a DIFFERENT
 # command line means the PID was reused and must fail fast, by name.
 PS_SHIM_ROOT="$PROOF_FIXTURE/ps-shim"
-mkdir -p "$PS_SHIM_ROOT/blind" "$PS_SHIM_ROOT/stranger"
+mkdir -p "$PS_SHIM_ROOT/blind" "$PS_SHIM_ROOT/stranger" "$PS_SHIM_ROOT/preexec"
 cat >"$PS_SHIM_ROOT/blind/ps" <<'SH'
 #!/bin/sh
 # The sandboxed observer: alive PID, no argv.
@@ -622,7 +646,26 @@ cat >"$PS_SHIM_ROOT/stranger/ps" <<'SH'
 # A reused PID: some other process, readable argv.
 printf '/usr/bin/some-other-daemon --unrelated\n'
 SH
-chmod +x "$PS_SHIM_ROOT/blind/ps" "$PS_SHIM_ROOT/stranger/ps"
+# A forked-but-not-yet-exec'd child: `ps` reports the PARENT's argv for the
+# first observations, then the real daemon. This is indistinguishable from a
+# reused PID on any SINGLE observation, which is exactly why the ownership
+# test debounces instead of failing on the first mismatch. Without the
+# debounce this shim reproduces the CI flake deterministically.
+cat >"$PS_SHIM_ROOT/preexec/ps" <<'SH'
+#!/bin/sh
+counter="${DEV_FAKE_PS_PREEXEC_COUNTER:?}"
+n=0
+[ -s "$counter" ] && n="$(cat "$counter")"
+n=$((n + 1))
+printf '%s' "$n" >"$counter"
+if [ "$n" -le "${DEV_FAKE_PS_PREEXEC_MISSES:-2}" ]; then
+  # The parent script's own command line: not the daemon, not the CoW home.
+  printf '/bin/bash %s\n' "${DEV_FAKE_PS_PREEXEC_PARENT_ARGV:-/proof/parent}"
+  exit 0
+fi
+exec /bin/ps "$@"
+SH
+chmod +x "$PS_SHIM_ROOT/blind/ps" "$PS_SHIM_ROOT/stranger/ps" "$PS_SHIM_ROOT/preexec/ps"
 
 PATH="$PS_SHIM_ROOT/blind:$PATH" run_proof_case blindps success 3 \
   || fail "proof with an argv-blind ps must still pass: $PROOF_CASE_OUT"
@@ -636,6 +679,22 @@ printf '%s\n' "$PROOF_CASE_OUT" | grep -q 'the candidate PID now belongs to anot
   || fail "PID-reuse refusal did not name its reason: $PROOF_CASE_OUT"
 printf '%s\n' "$PROOF_CASE_OUT" | grep -q '^DEV_PHOTOGRAPH_CANDIDATE pid=[^ ]* cmdline=mismatch socket_present=' \
   || fail "PID-reuse refusal did not report what the observer saw: $PROOF_CASE_OUT"
+
+# A TRANSIENT mismatch is the fork/exec window, not a reused PID. The proof
+# must ride it out and still go GREEN. Before the debounce this case failed
+# with "the candidate PID now belongs to another process" — the exact text
+# that reddened required CI on last-stack main while the identical tree
+# passed when run alone.
+# papercut-dev-photograph-stamp-test-red-on-main-blocks-every-last-stack-pr-20260922
+DEV_FAKE_PS_PREEXEC_COUNTER="$PROOF_FIXTURE/ps-preexec.count" \
+DEV_FAKE_PS_PREEXEC_MISSES=2 \
+DEV_FAKE_PS_PREEXEC_PARENT_ARGV="$PROOF" \
+PATH="$PS_SHIM_ROOT/preexec:$PATH" run_proof_case preexecps success 3 \
+  || fail "proof must tolerate a pre-exec argv window and still pass: $PROOF_CASE_OUT"
+printf '%s\n' "$PROOF_CASE_OUT" | grep -q 'DEV_PHOTOGRAPH: GREEN' \
+  || fail "pre-exec argv proof omitted its GREEN verdict"
+printf '%s\n' "$PROOF_CASE_OUT" | grep -q 'the candidate PID now belongs to another process' \
+  && fail "a transient pre-exec argv was misreported as a reused PID"
 
 for bad_mode in \
   nested_report invalid_user_hash wrong_manifest_cache missing_cache \

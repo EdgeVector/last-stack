@@ -296,21 +296,48 @@ proof_root_is_owned() {
 # it saw so a reader never has to guess again.
 CANDIDATE_CMDLINE_OBSERVED="not-observed"
 
+# A mismatch has TWO causes and they need opposite responses. A reused PID is
+# permanent and must fail fast. But `pid=$!` names a child that bash has
+# FORKED and not yet exec'd: in that window `ps` reports the PARENT's argv —
+# this script — which matches neither the daemon nor the CoW home, and reads
+# as a stranger. Under CI shard load that window is wide enough to lose the
+# race, which reddened phase=daemon_ready with "the candidate PID now belongs
+# to another process" on a candidate that went on to boot normally.
+#
+# So require the mismatch to PERSIST. A reused PID still fails within a few
+# polls; a pre-exec child resolves on the next one. The confirmation count is
+# the debounce, not a timeout: it never delays the happy path, which leaves
+# this loop on the socket check.
+CANDIDATE_MISMATCH_CONFIRMATIONS="${LASTDB_DEV_PHOTOGRAPH_PID_MISMATCH_CONFIRMATIONS:-3}"
+case "$CANDIDATE_MISMATCH_CONFIRMATIONS" in
+  ''|*[!0-9]*|0) proof_die "the DEV candidate PID mismatch confirmation count is invalid" ;;
+esac
+CANDIDATE_MISMATCH_STREAK=0
+
 candidate_pid_is_owned() {
   local command_line
   [ -n "$CANDIDATE_PID" ] || return 1
   kill -0 "$CANDIDATE_PID" 2>/dev/null || return 1
-  command_line="$(ps -p "$CANDIDATE_PID" -o command= 2>/dev/null || true)"
+  command_line="$(ps -ww -p "$CANDIDATE_PID" -o command= 2>/dev/null || true)"
   if [ -z "$command_line" ]; then
     CANDIDATE_CMDLINE_OBSERVED="unobservable"
+    CANDIDATE_MISMATCH_STREAK=0
     return 0
   fi
   CANDIDATE_CMDLINE_OBSERVED="observed"
   case "$command_line" in
-    *"$CANDIDATE_DAEMON"*"$COW_HOME"*) return 0 ;;
+    *"$CANDIDATE_DAEMON"*"$COW_HOME"*) CANDIDATE_MISMATCH_STREAK=0; return 0 ;;
   esac
+  CANDIDATE_MISMATCH_STREAK=$((CANDIDATE_MISMATCH_STREAK + 1))
   CANDIDATE_CMDLINE_OBSERVED="mismatch"
   return 1
+}
+
+# True only once a mismatch has been seen on enough consecutive observations
+# to rule out the fork/exec window above.
+candidate_pid_mismatch_is_confirmed() {
+  [ "$CANDIDATE_CMDLINE_OBSERVED" = "mismatch" ] \
+    && [ "$CANDIDATE_MISMATCH_STREAK" -ge "$CANDIDATE_MISMATCH_CONFIRMATIONS" ]
 }
 
 stop_exact_candidate() {
@@ -534,10 +561,11 @@ while [ "$ready_n" -lt "$ready_waits" ]; do
   if ! candidate_pid_is_owned; then
     kill -0 "$CANDIDATE_PID" 2>/dev/null \
       || proof_die "the exact candidate stopped before the DEV snapshot"
-    # Alive, argv readable, and not ours: the PID was reused. Say so now
-    # instead of waiting the whole readiness budget for a socket that will
-    # never be this process's.
-    [ "$CANDIDATE_CMDLINE_OBSERVED" != "mismatch" ] \
+    # Alive, argv readable, and not ours: either the PID was reused, or bash
+    # has forked this child and not yet exec'd it. Only a mismatch that
+    # PERSISTS is the former; say so now instead of waiting the whole
+    # readiness budget for a socket that will never be this process's.
+    ! candidate_pid_mismatch_is_confirmed \
       || proof_die "the candidate PID now belongs to another process"
     sleep "$ready_sleep"
     ready_n=$((ready_n + 1))
