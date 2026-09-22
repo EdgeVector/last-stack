@@ -170,12 +170,45 @@ preflight_ok() {
   return 0
 }
 
+# --- live forge inventory ------------------------------------------------------
+# Read once, before the launchd checks. `launchctl list` answers for the caller's
+# own launchd view: from a sandboxed or routine shell it can omit a runner that
+# is loaded and serving jobs. On 2026-09-22 two pickup runs saw --dry-run report
+# all three lanes NOT loaded (WOULD PAGE) while `last-stack-forge-runner-lanes
+# --check --live` showed the same runners active/idle on the forge. The forge's
+# own runner inventory is the ground truth for "is this lane serving jobs".
+# papercut-forge-runner-watchdog-dry-run-misclassifies-live-runners-20260922
+LIVE_JSON="$STATE_DIR/lanes-live.json"
+LIVE_OK=0
+if "$LANES_BIN" --live --json > "$LIVE_JSON" 2>/dev/null; then
+  LIVE_OK=1
+fi
+
+# Forge status (idle/active/offline/...) of a runner by name, or empty.
+runner_live_status() {  # runner-name
+  [ "$LIVE_OK" -eq 1 ] || return 0
+  $JQ -r --arg n "$1" '
+    [ (.live.admin_runners // [])[], ((.live.repo_runners // {}) | .[][]?) ]
+    | map(select(.name == $n)) | .[0].status // empty' "$LIVE_JSON" 2>/dev/null || true
+}
+
 # --- lane checks --------------------------------------------------------------
 
-check_local_lane() {  # label, human-name, what-it-blocks
-  local label="$1" name="$2" blocks="$3"
+check_local_lane() {  # label, human-name, what-it-blocks, [forge runner name]
+  local label="$1" name="$2" blocks="$3" runner="${4:-}" status
   if agent_loaded "$label"; then
     return 0
+  fi
+  # launchd did not list it. When the forge reports the runner idle or active,
+  # the lane IS serving jobs: record the disagreement, never revive or page.
+  if [ -n "$runner" ]; then
+    status="$(runner_live_status "$runner")"
+    case "$status" in
+      idle|active)
+        add_info "$name: launchctl in this shell does not list $label, but the forge reports runner $runner '$status'. Treated as live."
+        return 0
+        ;;
+    esac
   fi
   if deliberately_paused "$label"; then
     add_info "$name is parked on purpose (.paused-* marker) — not reviving."
@@ -192,11 +225,11 @@ check_local_lane() {  # label, human-name, what-it-blocks
 
 # 1+2. Local Forgejo runner lanes.
 check_local_lane com.edgevector.forgejo-runner-host \
-  "Forge heavy runner" "full-workspace clippy on every PR"
+  "Forge heavy runner" "full-workspace clippy on every PR" mac-forge-runner-host
 check_local_lane com.edgevector.forgejo-runner-host-exemem-infra \
-  "Forge heavy runner (exemem-infra)" "exemem-infra heavy lane"
+  "Forge heavy runner (exemem-infra)" "exemem-infra heavy lane" mac-forge-runner-host-exemem-infra
 check_local_lane com.edgevector.forgejo-runner \
-  "Forge merge-gate runner" "all docker/ubuntu/macos-arm64 CI jobs"
+  "Forge merge-gate runner" "all docker/ubuntu/macos-arm64 CI jobs" mac-forge-runner
 
 # --- owner PC pause (durable, factory-owned; read-only here) ------------------
 # PC lane keys we suppress under a pause. Nothing else is affected: the Mac
@@ -239,8 +272,7 @@ fi
 
 # 3. Live registration, not just a running process. A runner can be up locally
 #    and still not be serving the label the gate needs.
-LIVE_JSON="$STATE_DIR/lanes-live.json"
-if "$LANES_BIN" --live --json > "$LIVE_JSON" 2>/dev/null; then
+if [ "$LIVE_OK" -eq 1 ]; then
   heavy_live="$($JQ -r '.heavy_ok_live // false' "$LIVE_JSON" 2>/dev/null || echo false)"
   if [ "$heavy_live" != "true" ] && [ "$PC_PAUSED" -eq 0 ]; then
     add_down "heavy-lane-live" \

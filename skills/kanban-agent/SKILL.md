@@ -633,7 +633,10 @@ has no `Repo:` header (it isn't meant for this flow). For each candidate:
      (or died mid-work). Finish WORK MODE step 5 for it. Don't thrash.
    - **CI red** (a real failing required check in `statusCheckRollup`, not just
      BEHIND) → enter the worktree, read the failing job logs
-     (`gh run view --log-failed`), fix, re-run VERIFY, push. HEAVY (see budget).
+     (Forgejo venue: `last-stack-forge-ci-log EdgeVector/<repo> --pr <n>`;
+     GitHub: `gh run view --log-failed`), fix, re-run VERIFY, push. HEAVY (see
+     budget). A log that ends in `CI_DEADLINE_EXCEEDED` or runner `context
+     deadline exceeded` is a timeout, not a test failure: do not edit code for it.
    - **Auto-merge dropped** (`autoMergeRequest` is null) while the PR is CLEAN /
      mergeable and not merged → **re-arm it: `gh -R <repo> pr merge <n> --auto`.** A merge
      queue can silently drop the auto-merge request when it ejects a PR; once

@@ -72,6 +72,16 @@ else
 fi
 export LAST_STACK_SCCACHE_BYPASS
 
+# Apple's python3 caches bytecode under ~/Library/Caches/com.apple.python, which
+# the routine sandbox denies: `python3 -m py_compile` in a DEV worktree failed
+# with PermissionError before any check ran. An explicit prefix still wins.
+# papercut-python-pycompile-cache-permission-worktree-20260922
+if [ -z "${PYTHONPYCACHEPREFIX:-}" ]; then
+  PYTHONPYCACHEPREFIX="${TMPDIR:-/tmp}"
+  PYTHONPYCACHEPREFIX="${PYTHONPYCACHEPREFIX%/}/last-stack-pycache-$(id -u)"
+  export PYTHONPYCACHEPREFIX
+fi
+
 if [ "${1:-}" = "--print" ] || [ "${LAST_STACK_SHELL_PRELUDE_PRINT:-}" = "1" ]; then
   printf 'PATH=%s\n' "$PATH"
 fi
