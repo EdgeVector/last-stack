@@ -191,18 +191,31 @@ a named blocker instead of parking inside the run.
 - **PASS:** append `PROOF: passed <validation> — <evidence>` (or cite DONE-WHEN
   evaluator / north-star-proof report path), move card to **`done`**, heartbeat
   `ok validated=<slug> result=passed`.
-- **FAIL:** append `PROOF: failed <validation> — <observed failure>`, file
-  **one** pickup-ready **`Kind: pr`** fix card via
-  `"$last_stack/bin/last-stack-kanban-file-pr"` (never raw `kanban add`)
-  with `--north-star` and `--milestone` of the failed card's live outcome
-  (`--ensure-milestone` only when that outcome is missing), plus:
-  - clean `Repo:` / `Base:` / `Branch:` headers
-  - kanban-agent trigger line
-  - narrow GOAL/STEPS/VERIFY and reference to the failed proof slug
-  - optional `kanban dep add <proof-slug> <fix-slug>` so the proof waits on the fix
+- **FAIL:** append one `PROOF: failed <validation> — <observed failure>` line
+  to the proof card. Read the proof card's live `milestone` field first.
+  If a parent milestone exists:
+
+  - run `kanban milestone add <milestone-slug> --proof-status failing --json`;
+  - leave the milestone active so the milestone driver can choose a repair;
+  - do not file a fix card from this routine;
+  - do not append the same failure line twice on a repeat run.
+
+  The proof card stores the failure evidence. The parent milestone stores
+  `proof_status=failing`. This keeps one repair-card producer and prevents a
+  repeated proof failure from growing the backlog.
+
+  If no parent milestone exists, file exactly one pickup-ready **`Kind: pr`**
+  fix card via `"$last_stack/bin/last-stack-kanban-file-pr"` (never raw
+  `kanban add`). Use the failed card's North Star, or
+  `--ensure-milestone` only when that outcome is missing, plus clean
+  `Repo:` / `Base:` / `Branch:` headers, the kanban-agent trigger line, and a
+  narrow GOAL/STEPS/VERIFY brief that names the failed proof slug. Add
+  `kanban dep add <proof-slug> <fix-slug>` when the proof must wait on the fix.
+
   Leave the proof card in **`backlog`** (or `todo` if already there) with
   `block_status=none` unless the failure is a true human gate. **Never** move
-  to a `review` column. Heartbeat `ok validated=<slug> result=failed fix=<fix-slug>`.
+  to a `review` column. Heartbeat `ok validated=<slug> result=failed` and add
+  `fix=<fix-slug>` only when the no-milestone exception files a card.
 - **BLOCKED (upstream):** append/refresh `BLOCKED: awaiting <blocker-slug> for
   <validation>`, leave in backlog/todo, heartbeat `noop blocked=<blocker>`.
 - **HUMAN GATE:** remaining END STATE is prod/public/irreversible or needs

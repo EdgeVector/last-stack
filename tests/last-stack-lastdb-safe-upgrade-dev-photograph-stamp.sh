@@ -547,7 +547,9 @@ export LASTDB_SAFE_UPGRADE_EXPECTED_LASTDB_SHA256
 # changed the pre-CAS failure phase") — twice on 2026-09-20, green when run
 # alone. The happy path spends none of the slack: readiness is polled at 50 ms
 # and the snapshot cases still finish inside their deadline.
-# papercut-safe-upgrade-dev-photograph-stamp-test-flaky-under-shard-load-20260920
+# That slug (papercut-safe-upgrade-dev-photograph-stamp-test-flaky-under-shard-load-20260920)
+# was never filed. The flake and its process-identity fix (PR 115) are in
+# papercut-dev-photograph-stamp-test-red-on-main-blocks-every-last-stack-pr-20260922.
 run_proof_case() {
   local name="$1" mode="$2" timeout_secs="$3" safe_name proof_pid
   local evidence_root="${4:-$PROOF_EVIDENCE_ROOT}"
