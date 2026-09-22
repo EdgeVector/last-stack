@@ -135,6 +135,8 @@ brain papercut file <slug> --component <c> --symptom "<one line>" \
   output, repro, date, repo, suggested fix>"
 brain papercut close <slug> --status fixed|verified --evidence "<what you
   checked>" --fixed-by "<repo> #<PR>" --verified-by "<live check you ran>"
+brain papercut close <slug> --status duplicate --duplicate-of <canonical-slug> \
+  --evidence "<why it is the same defect>"
 ```
 
 - **Do not judge it first.** The gate is "is this a distinct claim someone would
