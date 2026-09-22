@@ -75,9 +75,11 @@ Two modes. Pick by how you were invoked:
 
 ## The data the loop reads/writes
 
-- **`active-programs`** (brain project) — the driving index: ~11 programs, each
-  with a "Next move", its DAG cards, and `needs-human`/`blocked-needs-human`
-  lines. This is the program work-list.
+- **North Stars + milestones** — the driving index. `kanban milestone portfolio
+  --json` lists nonterminal milestones and their `north_star`; point-read each
+  North Star with `brain get <slug> --type project`. (`active-programs` is
+  RETIRED — Tom 2026-07-23, `preference-active-programs-retired`; do not read or
+  write it.)
 - **`decision` records** (brain type `decision`, one record per decision) —
   every call Tom makes, dated, with what it unblocked. The durable memory. WORK
   writes ONE `decision` record per call (point write; no list rewrite). This
@@ -123,8 +125,8 @@ waiting on Tom. Steps:
      blast radius,
    **The authoritative source for this set is `open-decisions`** — the SINGLE
    ledger of human gates ([[human-gate-single-source-and-crosscheck]]); its live
-   (un-cleared) lines ARE the decision queue. `active-programs` `needs-human:` /
-   rollup tokens are a derived CROSS-CHECK only: if one names a gate with no live
+   (un-cleared) lines ARE the decision queue. Board cards with
+   `block_status: needs_human` are a derived CROSS-CHECK only: if one names a gate with no live
    `open-decisions` line, write the line (dedup) or treat it as noise — do NOT
    surface a gate that isn't in `open-decisions`. **Dedup** by slug. Before listing
    any gate, verify it is still live against the durable records (linked
@@ -155,9 +157,9 @@ waiting on Tom. Steps:
    without having to approve it. (This is the reassurance that replaces the old
    decision-fatigue queue.)
 
-3. **§2 — Programs that need scoping (not a decision).** For each program in
-   `active-programs`: if it has NO card in `todo`/`doing`/`review` AND its "Next
-   move" is concrete but un-carded (e.g. #6 desktop's 3-in-1), list it as a
+3. **§2 — North Stars that need scoping (not a decision).** For each North Star
+   named by the milestone portfolio: if it has NO card in `todo`/`doing` AND its
+   next milestone step is concrete but un-carded (e.g. #6 desktop's 3-in-1), list it as a
    "scope me" candidate with a suggested first PR-sized slice. These are un-gated
    work that's falling through because no generator covers the program.
 
@@ -385,9 +387,9 @@ stands up, `todo` is freshly stocked and the pipeline takes over.
    c. After executing, confirm with `kanban show <slug>` that the card reads back
       correctly (DECIDED line present, `column` correct) before moving on.
 
-4. **Update `active-programs`.** For each program touched, refresh its "Next move"
-   line to reflect the decision (edit the prose, NOT the `rollup:start…end`
-   auto-block — that's program-rollup's). Keep it to the one settled next step.
+4. **Record the next step on the North Star.** For each North Star touched,
+   `brain append <ns-slug> --type project` one line with the settled next step.
+   (Do not edit `active-programs`: it is retired.)
 
 5. **Close the session.** Report: decisions captured (N), gates cleared → cards
    promoted (list slugs + new column), programs scoped (new card slugs), holds.
@@ -412,8 +414,8 @@ stands up, `todo` is freshly stocked and the pipeline takes over.
   to manufacture busywork.
 - **One record per decision; never clobber.** Each decision is a NEW `decision`
   record (a tiny write) — never rewrite a prior decision or the archived
-  `decisions-log` monolith. For the standing `open-decisions`/`active-programs`
-  ledgers you still edit, read-modify-write; big bodies via stdin.
+  `decisions-log` monolith. For the standing `open-decisions`
+  ledger you still edit, read-modify-write; big bodies via stdin.
 - This skill is the only place decisions get *captured + executed*. It does NOT
   ship code, open PRs, or run kanban-agent — the pickup→agent pipeline does that
   once the cards are in `todo`.
