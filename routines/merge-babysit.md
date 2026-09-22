@@ -148,6 +148,17 @@ for repo in fold lastgit exemem-infra last-stack fkanban routines loom; do
 done
 ```
 
+The collection read can list a PR that a point read shows closed and merged
+(loom #26 on 2026-09-21, fold #2142 on 2026-09-22;
+`papercut-forge-open-pr-list-stale-merged`). Before you count or act on a PR
+from that list, point-read it and drop it unless it is still open and unmerged:
+
+```bash
+"$timeout_bin" 30s "$last_stack/bin/last-stack-forge-api" \
+  "repos/EdgeVector/$repo/pulls/$number" --jq '[.state, .merged] | @tsv'
+# act only on: open	false
+```
+
 Treat a Forgejo PR as stuck when it is open for more than 10 minutes and any
 of these hold: required check `Forge CI / ci-required` is green but the PR is
 still open; the required check is red for the current head; the required check

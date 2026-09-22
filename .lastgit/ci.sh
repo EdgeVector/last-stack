@@ -25,6 +25,7 @@ else
 fi
 CI_SHARD_LOG_DIR=""
 cleanup_ci_temp() {
+  if declare -F ci_host_lock_release >/dev/null; then ci_host_lock_release; fi
   rm -rf -- "$CI_PYTHON_CACHE"
   [ -z "$CI_SHARD_LOG_DIR" ] || rm -rf -- "$CI_SHARD_LOG_DIR"
   [ -z "$CI_HEARTBEATS_FILE" ] || rm -f -- "$CI_HEARTBEATS_FILE"
@@ -105,15 +106,51 @@ if [ -z "$CI_SHARD_INDEX" ]; then
   else
     CI_SHARD_LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-ci-shards.XXXXXX")"
     echo "last-stack required CI: test scripts use $CI_SHARD_COUNT bounded shards"
+    # Heartbeat + internal deadline (lib/ci-shard-supervisor.sh). The whole
+    # gate gets LAST_STACK_CI_JOB_BUDGET_SECS (default 2820 s = 47 min, three
+    # minutes under the Forge job's timeout-minutes: 50). The shard deadline is
+    # what is left of that budget after the lint passes and any host-lock wait,
+    # so a slow gate ends as CI_DEADLINE_EXCEEDED with the running test of every
+    # live shard, not as a silent runner SIGKILL. LAST_STACK_CI_DEADLINE_SECS
+    # sets the shard deadline directly.
+    # shellcheck source=../lib/ci-shard-supervisor.sh
+    . "$ROOT/lib/ci-shard-supervisor.sh"
+    CI_PROGRESS_SECS="${LAST_STACK_CI_PROGRESS_SECS:-60}"
+    CI_JOB_BUDGET_SECS="${LAST_STACK_CI_JOB_BUDGET_SECS:-2820}"
+    case "$CI_PROGRESS_SECS$CI_JOB_BUDGET_SECS${LAST_STACK_CI_DEADLINE_SECS:-}" in
+      *[!0-9]*) echo "LAST_STACK_CI_PROGRESS_SECS, LAST_STACK_CI_JOB_BUDGET_SECS and LAST_STACK_CI_DEADLINE_SECS must be whole seconds" >&2; exit 2 ;;
+    esac
+    # One gate at a time on the Forge host (opt-in from the workflow). Two
+    # gates side by side thrash each other past the job timeout; back to back
+    # they both pass. See ci_host_lock_acquire.
+    if [ "${LAST_STACK_CI_HOST_LOCK:-0}" = "1" ]; then
+      ci_host_lock_acquire \
+        "${LAST_STACK_CI_HOST_LOCK_DIR:-$HOME/.local/state/last-stack/ci-gate.lock}" \
+        "${LAST_STACK_CI_HOST_LOCK_WAIT_SECS:-1500}" 3600 "$CI_PROGRESS_SECS"
+    fi
+    if [ -n "${LAST_STACK_CI_DEADLINE_SECS:-}" ]; then
+      CI_DEADLINE_SECS="$LAST_STACK_CI_DEADLINE_SECS"
+    else
+      CI_DEADLINE_SECS=$((CI_JOB_BUDGET_SECS - SECONDS))
+      [ "$CI_DEADLINE_SECS" -ge 60 ] || CI_DEADLINE_SECS=60
+    fi
+    echo "last-stack required CI: shard deadline ${CI_DEADLINE_SECS}s (gate elapsed ${SECONDS}s)"
     shard_pids=()
     shard_index=0
+    # Job control gives each shard its own process group, so a deadline stop
+    # reaches the test a shard runs and that test's children. stdin is
+    # /dev/null: a background group that reads the runner's PTY gets SIGTTIN.
+    set -m
     while [ "$shard_index" -lt "$CI_SHARD_COUNT" ]; do
       LAST_STACK_CI_SHARD_INDEX="$shard_index" \
         LAST_STACK_CI_SHARD_COUNT="$CI_SHARD_COUNT" \
-        bash "$0" >"$CI_SHARD_LOG_DIR/$shard_index.log" 2>&1 &
+        bash "$0" </dev/null >"$CI_SHARD_LOG_DIR/$shard_index.log" 2>&1 &
       shard_pids+=("$!")
       shard_index=$((shard_index + 1))
     done
+    set +m
+
+    ci_supervise_shards "$CI_SHARD_LOG_DIR" "$CI_PROGRESS_SECS" "$CI_DEADLINE_SECS" "${shard_pids[@]}"
 
     shard_failed=0
     failed_shards=""
@@ -137,9 +174,16 @@ if [ -z "$CI_SHARD_INDEX" ]; then
       shard_index=$((shard_index + 1))
     done
     for failed_index in $failed_shards; do
-      echo "----- last-stack CI shard ${failed_index} FAILED -----"
+      case " ${CI_SUPERVISE_RUNNING_AT_DEADLINE:-} " in
+        *" ${failed_index} "*) echo "----- last-stack CI shard ${failed_index} STOPPED AT DEADLINE (a timeout, not a test failure) -----" ;;
+        *) echo "----- last-stack CI shard ${failed_index} FAILED -----" ;;
+      esac
       cat "$CI_SHARD_LOG_DIR/$failed_index.log"
     done
+    if [ "${CI_SUPERVISE_TIMED_OUT:-0}" -eq 1 ]; then
+      echo "last-stack required CI DEADLINE EXCEEDED after ${CI_DEADLINE_SECS}s: a timeout, not a test failure; shards still running:${CI_SUPERVISE_RUNNING_AT_DEADLINE}" >&2
+      exit 124
+    fi
     if [ "$shard_failed" -ne 0 ]; then
       echo "last-stack required CI shard failed shards=${failed_shards# }" >&2
       exit 1
@@ -154,7 +198,13 @@ ci_test() {
   ci_test_index=$((ci_test_index + 1))
   [ "$test_slot" -eq "$CI_SHARD_INDEX" ] || return 0
   echo "ci_test start: $*"
-  bash "$@"
+  # The done line carries rc and wall seconds, so the job log names the slow
+  # test and the heartbeat counts finished tests. The shard still stops at its
+  # first failure: a non-zero return trips `set -e` here as before.
+  local ci_test_started="$SECONDS" ci_test_rc=0
+  bash "$@" || ci_test_rc=$?
+  echo "ci_test done: $* rc=${ci_test_rc} secs=$((SECONDS - ci_test_started))"
+  return "$ci_test_rc"
 }
 
 ci_test tests/last-stack-routine-read.sh
@@ -229,6 +279,7 @@ ci_test tests/last-stack-park-stuck-merge-poison-cards.sh
 ci_test tests/last-stack-pickup-work-policy.sh
 ci_test tests/last-stack-routines-kanban-pickup.sh
 ci_test tests/last-stack-kanban-validate-routine.sh
+ci_test tests/last-stack-kanban-validate-failure-routing.sh
 ci_test tests/last-stack-pr-reaper-stale-open-heal.sh
 # The close guard holds the one reap that destroys work: a green auto-merge
 # CR whose head never reached main. Required, not FULL-only — the defect it
@@ -692,4 +743,7 @@ ci_test tests/last-stack-canary-promote-material.sh
 ci_test tests/last-stack-deploy-loom-steps.sh
 ci_test tests/last-stack-deploy-watch-gate.sh
 ci_test tests/last-stack-deploy-watch-routine.sh
+# Heartbeat + internal deadline of this gate's shard runner. Fake shards,
+# no network, ~6s. APPENDED before the registration guard, which stays last.
+ci_test tests/last-stack-ci-shard-supervisor.sh
 ci_test tests/last-stack-ci-test-registration.sh
