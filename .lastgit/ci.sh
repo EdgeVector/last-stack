@@ -320,6 +320,7 @@ ci_test tests/last-stack-north-star-portal-resolver.sh
 ci_test tests/last-stack-portal-wt-fetch-detaches-idle-main.sh
 ci_test tests/last-stack-portal-wt-rm-accepts-branch.sh
 ci_test tests/last-stack-portal-wt-start-help.sh
+ci_test tests/last-stack-portal-wt-stale-registration.sh
 ci_test tests/last-stack-pickup-zsh-timeout.sh
 ci_test tests/last-stack-portal-live-checkout.sh
 ci_test tests/last-stack-pipeline-health-gate.sh
