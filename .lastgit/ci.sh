@@ -106,16 +106,19 @@ if [ -z "$CI_SHARD_INDEX" ]; then
   else
     CI_SHARD_LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-ci-shards.XXXXXX")"
     echo "last-stack required CI: test scripts use $CI_SHARD_COUNT bounded shards"
-    # Heartbeat + internal deadline (lib/ci-shard-supervisor.sh). The budget
-    # sits under the Forge job's timeout-minutes (25m) minus the lint passes
-    # above, so a slow gate ends as CI_DEADLINE_EXCEEDED with the running test
-    # of every live shard, not as a silent runner SIGKILL.
+    # Heartbeat + internal deadline (lib/ci-shard-supervisor.sh). The whole
+    # gate gets LAST_STACK_CI_JOB_BUDGET_SECS (default 2820 s = 47 min, three
+    # minutes under the Forge job's timeout-minutes: 50). The shard deadline is
+    # what is left of that budget after the lint passes and any host-lock wait,
+    # so a slow gate ends as CI_DEADLINE_EXCEEDED with the running test of every
+    # live shard, not as a silent runner SIGKILL. LAST_STACK_CI_DEADLINE_SECS
+    # sets the shard deadline directly.
     # shellcheck source=../lib/ci-shard-supervisor.sh
     . "$ROOT/lib/ci-shard-supervisor.sh"
     CI_PROGRESS_SECS="${LAST_STACK_CI_PROGRESS_SECS:-60}"
-    CI_DEADLINE_SECS="${LAST_STACK_CI_DEADLINE_SECS:-1320}"
-    case "$CI_PROGRESS_SECS$CI_DEADLINE_SECS" in
-      *[!0-9]*) echo "LAST_STACK_CI_PROGRESS_SECS and LAST_STACK_CI_DEADLINE_SECS must be whole seconds" >&2; exit 2 ;;
+    CI_JOB_BUDGET_SECS="${LAST_STACK_CI_JOB_BUDGET_SECS:-2820}"
+    case "$CI_PROGRESS_SECS$CI_JOB_BUDGET_SECS${LAST_STACK_CI_DEADLINE_SECS:-}" in
+      *[!0-9]*) echo "LAST_STACK_CI_PROGRESS_SECS, LAST_STACK_CI_JOB_BUDGET_SECS and LAST_STACK_CI_DEADLINE_SECS must be whole seconds" >&2; exit 2 ;;
     esac
     # One gate at a time on the Forge host (opt-in from the workflow). Two
     # gates side by side thrash each other past the job timeout; back to back
@@ -125,6 +128,13 @@ if [ -z "$CI_SHARD_INDEX" ]; then
         "${LAST_STACK_CI_HOST_LOCK_DIR:-$HOME/.local/state/last-stack/ci-gate.lock}" \
         "${LAST_STACK_CI_HOST_LOCK_WAIT_SECS:-1500}" 3600 "$CI_PROGRESS_SECS"
     fi
+    if [ -n "${LAST_STACK_CI_DEADLINE_SECS:-}" ]; then
+      CI_DEADLINE_SECS="$LAST_STACK_CI_DEADLINE_SECS"
+    else
+      CI_DEADLINE_SECS=$((CI_JOB_BUDGET_SECS - SECONDS))
+      [ "$CI_DEADLINE_SECS" -ge 60 ] || CI_DEADLINE_SECS=60
+    fi
+    echo "last-stack required CI: shard deadline ${CI_DEADLINE_SECS}s (gate elapsed ${SECONDS}s)"
     shard_pids=()
     shard_index=0
     # Job control gives each shard its own process group, so a deadline stop

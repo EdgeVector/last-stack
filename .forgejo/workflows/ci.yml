@@ -48,8 +48,9 @@ jobs:
     # 2026-09-22: 50. Two gates side by side on this capacity-2 runner both hit
     # the 25-minute kill (runs 272/273, 287/288) while a gate alone ran 10-15
     # minutes. The gate now takes a host lock (LAST_STACK_CI_HOST_LOCK) so the
-    # second one waits up to 25 minutes, then runs under ci.sh's own 22-minute
-    # shard deadline, which prints CI_DEADLINE_EXCEEDED before this limit.
+    # second one waits up to 25 minutes. ci.sh ends itself at 47 minutes
+    # (LAST_STACK_CI_JOB_BUDGET_SECS) with CI_DEADLINE_EXCEEDED and the running
+    # test of each shard, before this limit can SIGKILL it with no output.
     # papercut-forge-ci-last-stack-job-times-out-at-25m-20260922
     timeout-minutes: 50
 
