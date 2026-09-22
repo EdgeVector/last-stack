@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/lib/python-cache.sh"  # writable py_compile cache
 
 # A HEAL-node-spawned agent exports the ambient live-loom contract; scrub it
 # so every invocation below controls its own LOOM_* env.
