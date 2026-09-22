@@ -3036,6 +3036,20 @@ app_is_stale() {
   [ "$stale" = "true" ]
 }
 
+reopen_deferred_cards() {
+  local helper reopen_flag
+  reopen_flag="$(printenv HOST_TRACK_REOPEN_DEFERRED || printf '1')"
+  [ "$reopen_flag" != "0" ] || return 0
+  helper="$ROOT/bin/last-stack-kanban-reopen-deferred"
+  if [ ! -x "$helper" ]; then
+    helper="$(command -v last-stack-kanban-reopen-deferred 2>/dev/null || true)"
+  fi
+  [ -x "$helper" ] || return 0
+  "$helper" --trigger host-track >/dev/null 2>&1 || {
+    printf '%s\n' 'host-track: deferred-card reopen pass failed; next activation retries' >&2
+  }
+}
+
 refresh_cmd() {
   local force=0 force_if_stale=0 all=0 app="" failures=0 rc eff
   while [ "$#" -gt 0 ]; do
@@ -3072,6 +3086,7 @@ refresh_cmd() {
     if [ "${HOST_TRACK_ACTIVATE:-0}" != "1" ] && [ "${HOST_TRACK_SKIP_SOAK_WATCH:-0}" != "1" ]; then
       soak_watch_cmd --all || failures=$((failures + 1))
     fi
+    reopen_deferred_cards
     [ "$failures" -eq 0 ]
     return
   fi
@@ -3083,6 +3098,7 @@ refresh_cmd() {
   if [ "${HOST_TRACK_ACTIVATE:-0}" != "1" ] && [ "${HOST_TRACK_SKIP_SOAK_WATCH:-0}" != "1" ]; then
     soak_watch_one "$app"
   fi
+  reopen_deferred_cards
 }
 
 
