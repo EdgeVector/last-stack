@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Seed the scheduled kanban validation proof-lane routine when missing.
+# Seed the scheduled kanban validation proof-lane workers when missing.
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
@@ -11,6 +11,7 @@ ROUTINES_HOME="${ROUTINES_HOME:-$HOME/.routines}"
 REGISTRY_DIR="$ROUTINES_HOME/registry"
 PROMPT_PATH="$(last_stack_registry_prompt_path kanban-validate.md "$ROOT/routines/kanban-validate.md")"
 ID="last-stack-fkanban-validate"
+WORKERS=6
 DRY_RUN=0
 FORCE_DEFAULTS=0
 
@@ -18,14 +19,16 @@ usage() {
   cat <<'USAGE'
 last-stack-kanban-validate-routine [options]
 
-Seeds the routines registry entry for the kanban validation proof lane.
-An existing file is the canonical registry and is left alone.
+Seeds independent routines registry entries for the kanban validation proof
+lane. Each worker owns one bounded validation per wake and its own lock.
+Existing files are canonical registry entries and are left alone.
 Pass --force-defaults to replace it with compiled defaults.
 
 Options:
   --registry-dir <p>  registry directory (default: $ROUTINES_HOME/registry)
   --prompt-path <p>   kanban-validate prompt path (default: stable last-stack)
   --id <id>           automation id (default: last-stack-fkanban-validate)
+  --workers <n>       number of workers to configure, 3..6 (default: 6)
   --force-defaults    replace an existing file with compiled defaults
   --dry-run           print compiled defaults without writing
   -h, --help          show this help
@@ -53,6 +56,14 @@ while [ "$#" -gt 0 ]; do
     --id)
       ID="$2"
       shift 2
+      ;;
+    --workers)
+      WORKERS="$2"
+      shift 2
+      ;;
+    --workers=*)
+      WORKERS="${1#*=}"
+      shift
       ;;
     --id=*)
       ID="${1#*=}"
@@ -85,6 +96,14 @@ case "$ID" in
     ;;
 esac
 
+case "$WORKERS" in
+  3|4|5|6) ;;
+  *)
+    echo "workers must be an integer from 3 through 6" >&2
+    exit 2
+    ;;
+esac
+
 if [ ! -r "$PROMPT_PATH" ]; then
   echo "prompt path is not readable: $PROMPT_PATH" >&2
   exit 66
@@ -94,6 +113,67 @@ if [ "$DRY_RUN" -eq 0 ]; then
   last_stack_registry_assert_safe_write "$REGISTRY_DIR" "$PROMPT_PATH" "$REG_CWD" \
     || exit 3
 fi
+
+worker_offset_seconds() {
+  case "$1" in
+    2) echo 300 ;;
+    3) echo 600 ;;
+    4) echo 150 ;;
+    5) echo 450 ;;
+    6) echo 750 ;;
+  esac
+}
+
+write_worker() {
+  local n="$1"
+  local worker path offset second minute byminute
+  worker="$ID-w$n"
+  path="$REGISTRY_DIR/$worker.toml"
+  offset="$(worker_offset_seconds "$n")"
+  second=$((offset % 60))
+  minute=$((offset / 60))
+  byminute="$minute,$((minute + 15)),$((minute + 30)),$((minute + 45))"
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '%s\n' "--- $path"
+  elif last_stack_registry_skip_if_exists "$path" "$FORCE_DEFAULTS"; then
+    return 0
+  fi
+
+  {
+    printf '# Kanban validation proof lane worker %s.\n' "$n"
+    printf '# One bounded post-merge or terminal North Star proof per wake.\n'
+    printf '# Independent registry id provides a separate lock and slot budget.\n'
+    printf 'id = "%s"\n' "$worker"
+    printf 'harness = "codex"\n'
+    printf 'model = "gpt-5.5"\n'
+    printf 'effort = "medium"\n'
+    printf 'rrule = "FREQ=HOURLY;BYMINUTE=%s;BYSECOND=%s"\n' "$byminute" "$second"
+    printf 'cwd = "%s"\n' "$REG_CWD"
+    printf 'status = "active"\n'
+    printf 'timeout_min = 30\n'
+    printf 'prompt_path = "%s"\n' "$PROMPT_PATH"
+  } | if [ "$DRY_RUN" -eq 1 ]; then
+    cat
+  else
+    mkdir -p "$REGISTRY_DIR"
+    tmp="$(mktemp "/tmp/last-stack-kanban-validate.XXXXXX")"
+    cat >"$tmp"
+    if [ -f "$path" ] && cmp -s "$tmp" "$path"; then
+      rm -f "$tmp"
+      printf 'unchanged %s\n' "$path"
+    else
+      mv "$tmp" "$path"
+      printf 'wrote %s\n' "$path"
+    fi
+  fi
+}
+
+n=2
+while [ "$n" -le "$WORKERS" ]; do
+  write_worker "$n"
+  n=$((n + 1))
+done
 
 path="$REGISTRY_DIR/$ID.toml"
 if [ "$DRY_RUN" -eq 0 ] && last_stack_registry_skip_if_exists "$path" "$FORCE_DEFAULTS"; then
@@ -106,13 +186,14 @@ if [ "$DRY_RUN" -eq 1 ]; then
 fi
 
 {
-  printf '# Kanban validation proof lane.\n'
-  printf '# Runs DONE-WHEN sweep plus one bounded post-merge or terminal North Star proof.\n'
+  printf '# Kanban validation proof lane worker 1.\n'
+  printf '# One bounded post-merge or terminal North Star proof per wake.\n'
+  printf '# Independent registry id provides a separate lock and slot budget.\n'
   printf 'id = "%s"\n' "$ID"
   printf 'harness = "codex"\n'
   printf 'model = "gpt-5.5"\n'
   printf 'effort = "medium"\n'
-  printf 'rrule = "FREQ=HOURLY;INTERVAL=4;BYMINUTE=33;BYSECOND=0"\n'
+  printf 'rrule = "FREQ=HOURLY;BYMINUTE=0,15,30,45;BYSECOND=0"\n'
   printf 'cwd = "%s"\n' "$REG_CWD"
   printf 'status = "active"\n'
   printf 'timeout_min = 30\n'
@@ -132,4 +213,4 @@ else
   fi
 fi
 
-printf 'configured %s in %s\n' "$ID" "$REGISTRY_DIR"
+printf 'configured %s kanban-validate workers in %s\n' "$WORKERS" "$REGISTRY_DIR"

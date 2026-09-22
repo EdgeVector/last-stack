@@ -145,12 +145,16 @@ so the fleet gets a pickup slot about every 2.5 minutes without changing the
 one-card-per-fire contract.
 
 Install the proof lane separately; it is not a pickup worker and owns bounded
-`Kind: validation` / terminal North Star proof cards:
+`Kind: validation` / terminal North Star proof cards. The helper seeds six
+independent workers. Each worker has its own routine lock
+and four hourly slots. The staggered slots create 24 starts per hour, so ten
+ready proof cards can drain within one hour when each proof stays within its
+30-minute bound:
 
 ```bash
-last-stack-kanban-validate-routine \
+last-stack-kanban-validate-routine --workers 6 \
   --prompt-path "$HOME/.last-stack/routines/kanban-validate.md"
-ls ~/.routines/registry/last-stack-fkanban-validate.toml
+ls ~/.routines/registry/last-stack-fkanban-validate*.toml
 ```
 
 ## The two clusters
@@ -184,7 +188,7 @@ ls ~/.routines/registry/last-stack-fkanban-validate.toml
 |---|---|---|
 | [`kanban-pickup`](kanban-pickup.md) | every 5m fleet slot, scalable with separate workers | Drain the ready queue; claim one card and run WORK mode inline. |
 | [`kanban-watch`](kanban-watch.md) | every 10–20 min | RECONCILE the board; advance merged PRs, un-stick the strays. |
-| [`kanban-validate`](kanban-validate.md) | every 4h (lean), offset from watch | **Proof lane (not pickup):** DONE-WHEN sweep + ONE of (A) post-merge END STATE or (B) backlog `Kind: validation`/`capstone` terminal proof; `done` on pass, or PROOF fail + pickup-ready fix PR on fail. |
+| [`kanban-validate`](kanban-validate.md) | six workers, 2.5m stagger | **Proof lane (not pickup):** DONE-WHEN sweep + ONE of (A) post-merge END STATE or (B) backlog `Kind: validation`/`capstone` terminal proof; `done` on pass, or PROOF fail + pickup-ready fix PR on fail. |
 | [`groom-board`](groom-board.md) | daily | Promote ready `backlog`→`todo`, break up epics, prune junk. |
 | [`north-star-driver`](north-star-driver.md) | every 6h | Convert one active North Star or approved outcome request into one milestone scaffold; never creates cards. |
 | [`milestone-driver`](milestone-driver.md) | hourly | Portfolio **gap-fill**: for each idle NS milestone (no Kind:pr in todo/doing), file full next-gate PR set (cap 8/run); skip in-flight; never implements cards. |

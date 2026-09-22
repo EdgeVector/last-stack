@@ -1,10 +1,10 @@
 # Kanban validation proof lane.
-# Runs DONE-WHEN sweep plus one bounded post-merge or terminal North Star proof.
+# Each worker runs one bounded post-merge or terminal North Star proof per wake.
 id = "last-stack-fkanban-validate"
 harness = "codex"
 model = "gpt-5.5"
 effort = "medium"
-rrule = "FREQ=HOURLY;INTERVAL=4;BYMINUTE=33;BYSECOND=0"
+rrule = "FREQ=HOURLY;BYMINUTE=0,15,30,45;BYSECOND=0"
 cwd = "/Users/REPLACE/code/edgevector"
 status = "active"
 timeout_min = 30
