@@ -369,6 +369,7 @@ ci_test tests/last-stack-closeout-skill-contract.sh
 ci_test tests/last-stack-papercut-lifecycle-close.sh
 ci_test tests/last-stack-papercut-lifecycle-helper-run-install.sh
 ci_test tests/last-stack-pipeline-stuck-papercut-file.sh
+ci_test tests/last-stack-pipeline-forge-pr-ledger.sh
 ci_test tests/last-stack-canary-pipeline.sh
 ci_test tests/last-stack-soak-heal-loom.sh
 ci_test tests/last-stack-ship-soak-loom.sh

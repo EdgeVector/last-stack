@@ -36,78 +36,60 @@ If the FIRST inventory read hits `service_timeout`, "node did not respond",
 transient shared backpressure, not a reaper failure. Do not restart anything;
 heartbeat `noop reasons=busy-node` and exit.
 
-## STEP 0 — Heal stale LastGit open-CR inventory (zero-LLM, won't-undo 2026-08-15)
+## STEP 0 — LastGit is disabled: read nothing from it
 
-LastGit's fleet open-CR index can lag behind point truth: `cr list --all-open`
-still lists rows whose `cr view` is already `merged`/`closed`. That is
-**projection lag**, not a reaper failure. **Never** heartbeat
-`error … flagged=stale-open-projection:N-point-merged` or abort the whole pass
-as error solely because inventory rows point-get as terminal.
+LastGit is disabled for every EdgeVector repo
+(`decision-2026-09-06-all-repos-venue-forgejo-no-lastgit-default`). Its
+registry schemas are not on the primary node, so `lastgit cr list --all-open`,
+`lastgit stuck`, and `last-stack-pr-reaper-stale-open-heal` fail with a
+missing-schema error on every pass. That error is not a reaper failure and not
+a papercut. When `LAST_STACK_LASTGIT_NATIVE_REPOS` is empty (the default), run
+no `lastgit` command and no stale-open heal. Heartbeat `healed_stale_open=disabled`.
 
-Run the zero-LLM healer **before** any merge/close loop:
+Only when `LAST_STACK_LASTGIT_NATIVE_REPOS` names a repo, run the zero-LLM
+healer for that repo before any merge/close
+(`"$last_stack/bin/last-stack-pr-reaper-stale-open-heal" --json`), count its
+`healed_stale_open` as reaped, and treat projection lag as fail-soft (never a
+pass-level `error`).
+
+## STEP 1 — Enumerate ALL open Forgejo PRs (one helper, no hand-written loop)
 
 ```bash
-heal_json="$("$last_stack/bin/last-stack-pr-reaper-stale-open-heal" --json 2>/dev/null || true)"
-# optional: also write to $ROUTINES_RUN_DIR/stale-open-heal.json
+run_dir="${ROUTINES_RUN_DIR:-$(mktemp -d)}"
+"$last_stack/bin/last-stack-pipeline-forge-pr-ledger" scan --json \
+  > "$run_dir/forge-open.json" 2> "$run_dir/forge-open.err" || true
+jq -r '.prs[] | [.repo, .number, .age_min, .shape, .head_sha] | @tsv' "$run_dir/forge-open.json"
+jq -r '.unreadable[] | [.repo, .error] | @tsv' "$run_dir/forge-open.json"
 ```
 
-Interpret:
+The helper reads every repo in `config/merge-demand-forge-repos` (fold,
+lastgit, exemem-infra, last-stack, fkanban, routines, loom). The four factory
+repos moved to Forgejo on 2026-09-05; their LastGit repos are disabled.
 
-- `healed_stale_open` → count these as **reaped** for this pass
-  (`reaped=<merged=healed_stale_open,closed=0>` or a dedicated
-  `healed_stale_open=` field in the heartbeat). They are already terminal on
-  point-get; reconcile rebuilds the open index from per-repo truth.
-- `inventory_open_after` is the authoritative open count for the rest of the
-  pass. Prefer re-reading `lastgit cr list --all-open --json` after a successful
-  heal when you need the live list.
-- `outcome=ok|noop` with only projection lag → continue (or exit noop if after
-  heal there is nothing over-age left). **Do not** set the run outcome to
-  `error` for this class of signal alone.
-- If heal reports `busy-node`, heartbeat `noop reasons=busy-node` and exit
-  (same as inventory backpressure).
-
-If the helper binary is missing (stale install), fall soft: point-get a sample
-of inventory rows yourself; any `state=merged|closed` counts as reaped; run
-`lastgit cr reconcile --json` once when available; never full-pass-error on
-projection lag alone. Prefer refreshing last-stack so the helper exists.
-
-After heal, if associated kanban `doing` cards still carry a merged
-`lastgit://…/cr/…` URL, leave them for board-closeout / kanban-watch — do not
-re-open or re-close the CR.
-
-## STEP 1 — Enumerate ALL open PRs/CRs (one query per venue)
-
-Prefer the post-heal open list. If you still need a fresh read:
+CAUTION: do not write your own loop over `"repo pr"` strings. Under zsh,
+`set -- $spec` does not word-split, `set -u` then stops on `$2`, and the close
+guard receives an empty `--pr` (rc=2). That broke the first guard pass of most
+runs on 2026-09-22. Read `repo` and `number` from the helper's JSON, one
+explicit guard call per row, for example:
 
 ```bash
-"$timeout_bin" 60s lastgit cr list --all-open --json   # lastgit fleet
-# Forgejo — EVERY forge-venue repo. The four factory repos moved from LastGit
-# to Forgejo on 2026-09-05 (Situation
-# factory-repos-venue-move-to-forgejo-20260905) and their LastGit repos are
-# DISABLED, so `lastgit cr list` cannot see them. Omitting them here left their
-# PRs with no reaper at all.
-for repo in fold lastgit exemem-infra last-stack fkanban routines loom; do
-  "$last_stack/bin/last-stack-forge-api" "repos/EdgeVector/$repo/pulls?state=open"
+jq -r '.prs[] | select(.age_min > 60) | "\(.repo)\t\(.number)"' "$run_dir/forge-open.json" |
+while IFS="$(printf '\t')" read -r repo pr; do
+  "$last_stack/bin/last-stack-pr-reaper-close-guard" --venue forgejo \
+    --repo "${repo#*/}" --pr "$pr" --json > "$run_dir/guard-${repo#*/}-$pr.json" || true
 done
-# GitHub (rare): gh api "search/issues?q=org:EdgeVector+is:pr+is:open"
 ```
 
 **Venue coverage is part of the pass, not a detail.** An empty inventory is
-only a real `open=0` when every forge-venue repo above answered. If a repo
-query fails, report `flagged=venue-unreadable:<repo>` — never fold an
-unreadable repo into `all venue inventories empty`.
+only a real `open=0` when `.unreadable` is empty. If a repo query fails, report
+`flagged=venue-unreadable:<repo>` — never fold an unreadable repo into
+`all venue inventories empty`.
 
-Pipe forge JSON through `"$last_stack/bin/last-stack-forge-json-jq"`. Redirect
-`--json` output to a scratch file first; never inline-parse with `python -c`.
+**Age:** use `.age_min` from the helper (Forgejo `created_at`).
 
-**Age:** Forgejo/GitHub PRs carry `created_at`. LastGit `cr list` has no
-timestamp — the `cr_id` encodes creation ms in base36 (`cr-<base36ms>-<rand>`):
-decode `int(part2, 36)` via a small scratch script, or use `lastgit cr events`.
-
-**Before merge/close on a LastGit row:** if `lastgit cr view` already reports
-`merged`/`closed` (or merge/close returns `cr_not_open: … is merged`), count it
-as reaped/healed and move on. Do not thrash merge→close on terminal CRs and do
-not escalate that into a pass-level `error`.
+Point-read the PR (`repos/<owner>/<repo>/pulls/<n>`) immediately before any
+merge or close. A PR the point read shows merged or closed, or a 404, is benign
+inventory drift: count it as already terminal and move on.
 
 ## STEP 2 — Reap every item older than 60 minutes
 
@@ -172,9 +154,15 @@ Then decide in this order:
 
 1. **MERGE** if required CI is green on the current head AND it is mergeable
    right now AND it is not an explicitly human-gated PROD cutover/flip.
-   LastGit: `lastgit cr merge <repo> <cr-id> --require-status ci-required`
-   (then `lastgit cr complete --once` if needed). Forgejo: normal merge API.
+   Forgejo: normal merge API. (LastGit, opt-in repos only:
+   `lastgit cr merge <repo> <cr-id> --require-status ci-required`.)
    NEVER bypass a failing/pending required check to merge.
+   HTTP 409 `pull request is already scheduled to auto merge when checks
+   succeed` means auto-merge is ALREADY armed. It is a success receipt, not an
+   error: do not retry, do not file a papercut. Count it as
+   `flagged=auto-merge-armed:<repo>:<n>` and leave the PR open. If every
+   required context of the base branch protection is green and the PR is still
+   open next round, that is `papercut-forge-merge-405-stuck-status-check`.
 2. **CLOSE** everything the guard cleared — red CI, merge conflict, pending CI
    on a stale head, draft, spike, AND human-gated publish/content PRs (blog
    posts etc.): a lingering publish decision belongs in the morning-sync

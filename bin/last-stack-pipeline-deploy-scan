@@ -113,6 +113,11 @@ for dir in "$root"/deploy-*/; do
   [ -d "$dir" ] || continue
   base="$(basename "${dir%/}")"
   case "$base" in
+    # deploy-run's working-copy root (<root>/deploy-checkouts/<repo>/), not a
+    # producer. It never has a deploy.log, and reading it as repo=checkouts
+    # reported a permanent false `missing` block
+    # (papercut-pipeline-deploy-checkouts, 2026-09-21).
+    deploy-checkouts) continue ;;
     deploy-*) repo="${base#deploy-}" ;;
     *) continue ;;
   esac

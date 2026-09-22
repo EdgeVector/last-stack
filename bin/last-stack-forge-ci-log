@@ -59,6 +59,7 @@ Usage:
   last-stack-forge-ci-log <owner/repo> --run <run-number> [job-index] [attempt]
   last-stack-forge-ci-log <owner/repo> --sha <head-sha>   # every red run for a commit
   last-stack-forge-ci-log <owner/repo> --pr <number>      # every red run for a PR's head
+  last-stack-forge-ci-log --repo <owner/repo> --sha <head-sha>   # same; flag form
 
 Prints the plain-text log tail of a forge (Forgejo) CI job.
 
@@ -119,8 +120,19 @@ if [ "$#" -lt 2 ]; then
   exit 2
 fi
 
-repo="$1"; shift
-case "$repo" in */*) ;; *) echo "repo must be owner/name: $repo" >&2; exit 2 ;; esac
+# `--repo <owner/repo>` is accepted as an alias for the positional form: the
+# routines reach for the flag shape every other forge helper uses, and the bare
+# "repo must be owner/name: --repo" refusal cost a probe per run
+# (papercut-pipeline-forge-ci-log-arg-contract, 2026-09-22).
+if [ "$1" = "--repo" ]; then
+  shift
+fi
+case "${1:-}" in
+  --repo=*) set -- "${1#--repo=}" "${@:2}" ;;
+esac
+repo="${1:-}"; shift || true
+case "$repo" in */*) ;; *) echo "repo must be owner/name (positional, or --repo owner/name): $repo" >&2; exit 2 ;; esac
+[ "$#" -ge 1 ] || { usage >&2; exit 2; }
 
 TOKEN="$(last_stack_forge_token || true)"
 [ -n "$TOKEN" ] || { last_stack_forge_token_missing_msg; exit 3; }

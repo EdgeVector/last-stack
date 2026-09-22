@@ -931,6 +931,13 @@ grep -q 'papercut-reconciler' "$pipeline"
 grep -q 'last-stack-pipeline-stuck-papercut-file' "$pipeline"
 grep -q 'last-stack-lastgit-ci-coverage' "$pipeline"
 grep -q 'forge run --all --context ci-required' "$pipeline"
+# 2026-09-22: Forgejo PR rows come from the ledger, one per PR; LastGit is not probed.
+grep -Fq 'last-stack-pipeline-forge-pr-ledger" sync --apply' "$pipeline"
+grep -q 'decision-2026-09-06-all-repos-venue-forgejo-no-lastgit-default' "$pipeline"
+if rg -n '<board-cli>|<brain-cli>|<LASTGIT_BIN_DIR>|lastgit missing on PATH' "$pipeline" >/dev/null; then
+  echo "pipeline-health setup must name the installed kanban/brain CLIs and not require lastgit" >&2
+  exit 1
+fi
 if rg -n 'FILE a P0 PR card|pickup-ready P0 kanban card|deploy-pipeline-red-<repo>-<YYYYMMDD>' "$pipeline" >/dev/null; then
   echo "pipeline-health must not file pickup-ready kanban P0 cards for deploys" >&2
   exit 1

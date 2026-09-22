@@ -94,6 +94,10 @@
           "target": "$HOME/.local/bin/last-stack-pipeline-stuck-papercut-file"
         },
         {
+          "source": "bin/last-stack-pipeline-forge-pr-ledger",
+          "target": "$HOME/.local/bin/last-stack-pipeline-forge-pr-ledger"
+        },
+        {
           "source": "bin/last-stack-kanban-file-pr",
           "target": "$HOME/.local/bin/last-stack-kanban-file-pr"
         },
