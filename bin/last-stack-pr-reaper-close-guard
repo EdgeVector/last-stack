@@ -118,6 +118,14 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -n "$repo" ] || { echo "--repo is required" >&2; usage; exit 2; }
+# Accept the owner/name form every other forge helper takes. The API paths and
+# mirror paths below add the owner themselves, so `--repo EdgeVector/fold` read
+# /repos/EdgeVector/EdgeVector/fold/... and came back `cr-unreadable` for a
+# readable PR (papercut-pr-reaper-forgejo-close-guard-cr-unreadable-20260922).
+case "$repo" in
+  EdgeVector/*) repo="${repo#EdgeVector/}" ;;
+  */*) echo "--repo must be <name> or EdgeVector/<name>: $repo" >&2; exit 2 ;;
+esac
 case "$venue" in
   lastgit) [ -n "$cr_id" ] || { echo "--cr is required" >&2; usage; exit 2; } ;;
   forgejo) [ -n "$pr_number" ] || { echo "--pr is required with --venue forgejo" >&2; usage; exit 2; }; cr_id="#$pr_number" ;;

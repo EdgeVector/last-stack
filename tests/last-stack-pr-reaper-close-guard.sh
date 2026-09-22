@@ -227,6 +227,14 @@ if [ "$rc" != 1 ] || ! jq -e '.verdict == "refuse" and .head_in_base == "false"'
   exit 1
 fi
 echo "ok   forgejo: default ancestry repo is the portal cache; PR head fetched by refs/pull"
+rc=0
+HOME="$fhome" "$guard" --venue forgejo --repo EdgeVector/brain --pr 7 \
+  --pr-json "$tmp/pr-open.json" --head-status-json "$tmp/fs-head-green.json" \
+  --base-status-json "$tmp/fs-base-green.json" --base-oid "$MAIN" --json \
+  >"$tmp/out.json" 2>"$tmp/out.err" || rc=$?
+jq -e '.repo == "brain" and .verdict == "refuse"' "$tmp/out.json" >/dev/null \
+  || { echo "FAIL owner/name --repo must normalize to the bare name (rc=$rc)" >&2; cat "$tmp/out.json" "$tmp/out.err" >&2; exit 1; }
+echo "ok   forgejo: --repo EdgeVector/<name> is accepted"
 
 # ── 11. the prompt must actually run the guard ─────────────────────────────
 # A helper nothing calls is not a guard. This is the half that failed before:
