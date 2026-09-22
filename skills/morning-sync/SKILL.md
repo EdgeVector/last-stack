@@ -104,9 +104,10 @@ waiting on Tom. Steps:
 
 1. **Snapshot.** Read `todo`, `doing`, and `review` with sequential
    `kanban list --column <column> --json` calls (counts + card previews). Then
-   read targeted brain records one at a time: `brain get active-programs`,
-   `brain get open-decisions --type reference`, `brain get
-   routine-heartbeats --type reference`, and `brain get
+   read targeted brain records one at a time:
+   `brain get open-decisions --type reference`, `tail -n 400
+   ~/.last-stack/logs/routine-heartbeats.log` (heartbeats are a file, not a
+   Brain record), and `brain get
    routine-reds-recheck-latest --type reference` (paste its table into §🩺
    when present and newer than 36h).
 

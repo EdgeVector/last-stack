@@ -51,7 +51,7 @@ below.
 4. Confirm LastDB is reachable with socket-backed reads:
    ```bash
    <board-cli> list --board <board> --json >/dev/null
-   <brain-cli> get routine-heartbeats --type reference >/dev/null
+   <brain-cli> get sop-routine-shared-contract --type sop >/dev/null
    ```
    These reads, or `lastdb status` / `kanban ping`, are the health check.
    Modern LastDB/Brain/Kanban installs may intentionally serve only over the
