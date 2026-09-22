@@ -30,7 +30,14 @@ mkstack() {
   mkdir -p "$dir/bin"
   cp "$sweep" "$dir/bin/last-stack-board-closeout-sweep"
   chmod +x "$dir/bin/last-stack-board-closeout-sweep"
-  if [ "$mode" = transient ]; then
+  if [ "$mode" = reopened ]; then
+    cat >"$dir/bin/last-stack-card-closeout" <<'EOF'
+#!/usr/bin/env bash
+echo "last-stack-card-closeout: FAILED reopened-same-signal slug=stuck-card signal=abc" >&2
+echo "  Add a new positive PROOF line or link a new merged review before closeout." >&2
+exit 1
+EOF
+  elif [ "$mode" = transient ]; then
     cat >"$dir/bin/last-stack-card-closeout" <<'EOF'
 #!/usr/bin/env bash
 echo "service_timeout: board point read failed" >&2
@@ -190,6 +197,31 @@ for engine in node python3; do
     cat "$marks" >&2
     exit 1
   }
+
+  # 3b. A card someone REOPENED after a merge-close is refused on the same
+  #     signal by design. That is not a failed close: skip it, never flag
+  #     close-failed, never stamp (papercut-board-closeout-legacy-tip-reaper-failure).
+  rstack="$tmp/rstack.$engine"
+  mkstack "$rstack" reopened
+  rstate="$tmp/rstate.$engine"
+  rmarks="$tmp/rmarks.$engine"
+  : >"$rmarks"
+  for i in 1 2 3 4; do
+    out="$(env PATH="$engine_path" BOARD_MARKS="$rmarks" BOARD_MOVES="$moves" \
+      BOARD_CLOSEOUT_STATE_DIR="$rstate" \
+      "$rstack/bin/last-stack-board-closeout-sweep" \
+      --board-cli "$board" --grace-min 1 --max-park-hours 999999 \
+      --escalate-after 3 --max-actions 20 2>&1 || true)"
+    if echo "$out" | grep -q 'close-failed'; then
+      echo "FAIL[$engine] reopened pass $i: flagged close-failed: $out" >&2
+      exit 1
+    fi
+    echo "$out" | grep -q '"flagged":\[\]' || {
+      echo "FAIL[$engine] reopened pass $i: expected nothing flagged: $out" >&2
+      exit 1
+    }
+  done
+  [ ! -s "$rmarks" ] || { echo "FAIL[$engine]: reopened card was stamped:" >&2; cat "$rmarks" >&2; exit 1; }
 
   # 4. A transient board failure is not evidence the CARD is stuck — it must
   #    never accumulate a streak, however many times it happens.

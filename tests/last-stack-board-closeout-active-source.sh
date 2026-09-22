@@ -15,6 +15,7 @@ cat > "$BOARD_FIXTURE" <<'JSON'
  {"slug":"superseded-wait","column":"doing","updated_at":"2099-01-01T00:00:00Z","branch":"kanban/superseded-wait","body":"PARKED: awaiting deploy; LIVE PROOF pending\nPROGRESS: Source work resumed. Fix the read path first.\n"},
  {"slug":"current-note-wait","column":"doing","updated_at":"2099-01-01T00:00:00Z","body":"PROGRESS: Source work resumed.\nHANDOFF: Code is complete; awaiting deploy.\n"},
  {"slug":"tagged-wait","column":"doing","tags":["awaiting-deploy"],"body":"Requires-Deploy: safe-upgrade\n"},
+ {"slug":"fresh-claim","column":"doing","assignee":"last-stack-fkanban-pickup-w3","updated_at":"2099-01-01T00:00:00Z","body":"HANDOFF: prior cycle awaiting deploy.\n"},
  {"slug":"merged-gated","column":"doing","repo":"EdgeVector/fold","pr_url":"http://localhost:3300/EdgeVector/fold/pulls/4242","body":"Requires-Deploy: safe-upgrade\n## END STATE\nThe installed binary runs the new code.\n"},
  {"slug":"open-tagged","column":"doing","repo":"EdgeVector/fold","pr_url":"http://localhost:3300/EdgeVector/fold/pulls/4243","tags":["awaiting-deploy"],"body":"Requires-Deploy: safe-upgrade\n"}
 ]
@@ -50,7 +51,7 @@ for engine in node python3; do
   : > "$BOARD_MOVES"
   BOARD_CLOSEOUT_ENGINE="$engine" "$tmp/stack/bin/last-stack-board-closeout-sweep" \
     --board-cli "$tmp/board" --max-actions 20 > "$tmp/$engine.out"
-  for slug in future-rollout superseded-wait open-tagged; do
+  for slug in future-rollout superseded-wait open-tagged fresh-claim; do
     if grep -q "^$slug " "$BOARD_MOVES"; then
       echo "FAIL $engine moved active source card $slug" >&2
       cat "$BOARD_MOVES" >&2

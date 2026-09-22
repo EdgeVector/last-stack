@@ -9,13 +9,23 @@
 #   last-stack-git-commit -m "fix: foo"
 #   last-stack-git-commit -am "fix: foo"
 #   last-stack-git-commit -F msg.txt
+#   last-stack-git-commit -C /path/to/worktree -m "fix: foo"
+#
+# A LEADING `-C <dir>` (the first argument, naming an existing directory) is
+# git's global -C: run the commit in that worktree. Anywhere else, or with a
+# non-directory argument, -C keeps its `git commit` meaning (reuse message).
 set -euo pipefail
 
 self_dir="$(cd "$(dirname "$0")" && pwd -P)"
+git_c=()
+if [ "${1:-}" = "-C" ] && [ -n "${2:-}" ] && [ -d "$2" ]; then
+  git_c=(-C "$2")
+  shift 2
+fi
 trailers="$("$self_dir/last-stack-attribution-trailers" 2>/dev/null || true)"
 
 if [ -z "$trailers" ]; then
-  exec git commit "$@"
+  exec git ${git_c[@]+"${git_c[@]}"} commit "$@"
 fi
 
 # Routine author: only when DRIVEN_BY=routine (trailers non-empty implies that).
@@ -106,4 +116,4 @@ fi
 
 cleanup() { rm -f "$msg_file"; }
 trap cleanup EXIT
-git commit "${passthrough[@]}" -F "$msg_file"
+git ${git_c[@]+"${git_c[@]}"} commit ${passthrough[@]+"${passthrough[@]}"} -F "$msg_file"

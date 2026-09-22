@@ -102,8 +102,10 @@ write_status() {
   elapsed=$(( finished_epoch - started_epoch ))
   html_bytes=0
   [ -f "$html_path" ] && html_bytes="$(wc -c <"$html_path" | tr -d '[:space:]')"
-  html_mtime="$(stat -f '%Sm' -t '%Y-%m-%dT%H:%M:%SZ' "$html_path" 2>/dev/null \
-    || stat -c '%y' "$html_path" 2>/dev/null || printf 'unknown')"
+  # True UTC: `stat -f %Sm` formats in the LOCAL zone, so the old stamp was
+  # local time with a Z suffix (papercut-north-star-dashboard-html-mtime-zulu-is-local).
+  html_mtime="$(TZ=UTC stat -f '%Sm' -t '%Y-%m-%dT%H:%M:%SZ' "$html_path" 2>/dev/null \
+    || date -u -r "$html_path" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || printf 'unknown')"
   tmp="$status_file.tmp.$$"
   {
     printf 'dashboard_status=%s\n' "$st"

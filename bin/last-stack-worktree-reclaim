@@ -565,7 +565,16 @@ build_open_head_index() {
   fi
   tout="$(command -v timeout || command -v gtimeout || true)"
   # LastGit fleet open-CR index: one keyed read, rows carry repo + head_ref.
-  lg_bin="$(command -v lastgit || true)"
+  # LastGit is retired as a review venue
+  # (decision-2026-09-06-all-repos-venue-forgejo-no-lastgit-default): no repo
+  # opens a CR there, so its failing `cr list` must not mark the whole index
+  # unreadable and disable finished-work reclaim every run
+  # (papercut-disk-reclaim-open-pr-index-unreadable-20260922). Opt back in with
+  # LAST_STACK_RECLAIM_LASTGIT_OPEN_CRS=1.
+  lg_bin=""
+  if [ "${LAST_STACK_RECLAIM_LASTGIT_OPEN_CRS:-0}" = "1" ]; then
+    lg_bin="$(command -v lastgit || true)"
+  fi
   if [ -n "$lg_bin" ]; then
     if ! ${tout:+"$tout" 20s} "$lg_bin" cr list --all-open --json 2>/dev/null \
       | jq -r '(if type == "array" then . else (.rows // .crs // []) end) | .[]? | select((.state // "open") != "merged" and (.state // "open") != "closed") | [(.repo // ""), ((.head_ref // .head // .head_branch // "") | sub("^refs/heads/"; ""))] | select(.[0] != "" and .[1] != "") | @tsv' >>"$out" 2>/dev/null; then
@@ -573,7 +582,7 @@ build_open_head_index() {
       ok=0
     fi
   else
-    log "open-pr index: no lastgit binary on PATH (LastGit venue skipped)"
+    log "open-pr index: LastGit venue skipped (retired; set LAST_STACK_RECLAIM_LASTGIT_OPEN_CRS=1 to read it)"
   fi
   # Forgejo: every repo with an open PR, then that repo's open PR heads.
   forge_api="${LAST_STACK_FORGE_API:-$HOME/.last-stack/bin/last-stack-forge-api}"
@@ -593,7 +602,7 @@ build_open_head_index() {
     done
   else
     log "open-pr index: forge helper not executable at $forge_api (Forgejo venue skipped)"
-    [ -n "$lg_bin" ] || ok=0
+    ok=0
   fi
   open_index_ok="$ok"
 }

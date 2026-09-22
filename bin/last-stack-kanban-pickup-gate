@@ -307,6 +307,22 @@ if [ "$ready_i" -eq 0 ]; then
   exit 0
 fi
 
-printf 'PICKUP_GATE proceed ready=%s\n' "$ready_i"
+# `claimable` (kanban >= the release that added it) is ready MINUS the cards a
+# live doing peer fences through surface overlap. ready=4 with every card
+# fenced used to wake an LLM worker that claimed nothing and logged the same
+# `noop no-eligible` token an empty queue writes
+# (papercut-kanban-pickup-gate-ready-overstates-eligible-20260922,
+# papercut-pickup-surface-overlap-fence-has-no-age-bound-or-alarm). A fenced
+# queue now skips with its own `fenced` detail token, naming the peers.
+claimable="$(jq -r 'if has("claimable") then (.claimable | tostring) else "" end' "$tmp_status" 2>/dev/null || echo "")"
+if [ "$claimable" = "0" ]; then
+  fenced="$(jq -r '[.fenced[]? | "\(.slug)<-\(.peers | join("+"))"] | join(",")' "$tmp_status" 2>/dev/null || echo "")"
+  detail="fenced ready=${ready_i} claimable=0 fenced=${fenced:-unknown} no_card_claimed"
+  hb "kanban-pickup $(iso_now) noop ${detail}"
+  trailer_noop "$detail"
+  exit 0
+fi
+
+printf 'PICKUP_GATE proceed ready=%s claimable=%s\n' "$ready_i" "${claimable:-unknown}"
 printf 'PICKUP_GATE_PROCEED ready=%s\n' "$ready_i"
 exit 10

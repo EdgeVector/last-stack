@@ -330,4 +330,26 @@ else
   echo "case7 skip (no gtimeout/timeout on PATH)"
 fi
 
+# Case 8: ready>0 but every ready card is fenced by a live doing peer ->
+# skip with the distinct `fenced` token, never proceed.
+cat >"$tmp/path/kanban" <<'S'
+#!/bin/sh
+if [ "$1" = pickup ] && [ "$2" = ready ]; then
+  printf '%s\n' '{"scanned":4,"ready":2,"claimable":0,"fenced":[{"slug":"a","peers":["p"]},{"slug":"b","peers":["p","q"]}],"counts":{"pickup-ready":2},"cards":[]}'
+  exit 0
+fi
+exit 1
+S
+chmod +x "$tmp/path/kanban"
+set +e
+out="$("$GATE" 2>&1)"
+rc=$?
+set -e
+test "$rc" -eq 0 || { echo "case8 expected rc=0 got $rc"; echo "$out"; exit 1; }
+printf '%s\n' "$out" | grep -q 'noop fenced ready=2 claimable=0 fenced=a<-p,b<-p+q' \
+  || { echo "case8 missing fenced heartbeat"; echo "$out"; exit 1; }
+if printf '%s\n' "$out" | grep -q 'PICKUP_GATE_PROCEED'; then
+  echo "case8 must not proceed when nothing is claimable"; echo "$out"; exit 1
+fi
+
 echo ok

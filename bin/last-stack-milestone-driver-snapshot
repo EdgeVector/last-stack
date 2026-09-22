@@ -129,11 +129,42 @@ case "$mode" in
         preflight_succeeded_at:$succeeded_at,
         preflight_succeeded_epoch:$succeeded_epoch}' >"$preflight_stamp"
 
-    "$kanban_bin" list --column backlog --json >"$backlog_artifact"
-    "$kanban_bin" list --column todo --json >"$todo_artifact"
-    "$kanban_bin" list --column doing --json >"$doing_artifact"
-    "$kanban_bin" milestone portfolio --json >"$portfolio_artifact"
-    "$kanban_bin" milestone gap-report --json >"$candidate_artifact"
+    # One board read per artifact. A failed read used to end the script under
+    # `set -e` with a zero-byte artifact and no diagnostic
+    # (papercut-milestone-driver-snapshot-empty-portfolio-20260922). Now a
+    # busy-node failure (BoardMilestones partition read failed, service_timeout,
+    # ...) gets two bounded retries, and a final failure prints one
+    # MILESTONE_DRIVER_SNAPSHOT error line with the step, rc and stderr tail.
+    capture_step() {
+      local step="$1" out="$2" err rc attempt=1
+      shift 2
+      err="$snapshot_dir/.$step.err"
+      while :; do
+        set +e
+        "$@" >"$out" 2>"$err"
+        rc=$?
+        set -e
+        if [ "$rc" -eq 0 ] && [ -s "$out" ]; then
+          rm -f "$err"
+          return 0
+        fi
+        if [ "$attempt" -lt 3 ] \
+          && grep -Eqi 'partition read failed|service_timeout|did not respond|too many concurrent|busy' "$err"; then
+          sleep $((attempt * 10))
+          attempt=$((attempt + 1))
+          continue
+        fi
+        printf 'MILESTONE_DRIVER_SNAPSHOT error=board-read-failed step=%s rc=%s attempts=%s run_id=%s stderr=%s\n' \
+          "$step" "$rc" "$attempt" "$run_id" \
+          "$(tr '\n' ' ' <"$err" | cut -c1-300)" >&2
+        exit 1
+      done
+    }
+    capture_step backlog "$backlog_artifact" "$kanban_bin" list --column backlog --json
+    capture_step todo "$todo_artifact" "$kanban_bin" list --column todo --json
+    capture_step doing "$doing_artifact" "$kanban_bin" list --column doing --json
+    capture_step portfolio "$portfolio_artifact" "$kanban_bin" milestone portfolio --json
+    capture_step gap-report "$candidate_artifact" "$kanban_bin" milestone gap-report --json
     jq -e 'type == "object" and (.counts | type == "object") and (.work_queue | type == "array")' \
       "$candidate_artifact" >/dev/null
 

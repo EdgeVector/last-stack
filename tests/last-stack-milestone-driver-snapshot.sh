@@ -116,4 +116,29 @@ fi
 [ "$(wc -l <"$good_log" | tr -d ' ')" -eq 5 ] \
   || fail "successful capture did not make the five expected keyed reads"
 
+# A failed portfolio read names itself instead of leaving a zero-byte file.
+cat >"$TMP/bin/kanban-portfolio-fail" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  'milestone portfolio --json') echo 'kanban: permission refused on BoardMilestones' >&2; exit 1 ;;
+  *) exec "$(dirname "$0")/kanban-fixture" "$@" ;;
+esac
+SH
+chmod +x "$TMP/bin/kanban-portfolio-fail"
+set +e
+MILESTONE_DRIVER_TEST_KANBAN_LOG="$TMP/pf-kanban.log" \
+  "$HELPER" capture \
+  --run-dir "$TMP/pf-run" \
+  --run-id pf-run \
+  --preflight-bin "$TMP/bin/preflight-pass" \
+  --kanban-bin "$TMP/bin/kanban-portfolio-fail" \
+  >"$TMP/pf.out" 2>"$TMP/pf.err"
+pf_rc=$?
+set -e
+[ "$pf_rc" -ne 0 ] || fail "a failed portfolio read must fail the capture"
+grep -q 'MILESTONE_DRIVER_SNAPSHOT error=board-read-failed step=portfolio rc=1' "$TMP/pf.err" \
+  || fail "a failed portfolio read must print a diagnostic: $(cat "$TMP/pf.err")"
+grep -q 'permission refused on BoardMilestones' "$TMP/pf.err" \
+  || fail "the diagnostic must carry the stderr tail"
+
 printf '%s\n' 'ok: milestone-driver snapshot rejects stale artifacts'
