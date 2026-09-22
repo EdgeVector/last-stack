@@ -13,8 +13,11 @@
 #    and the card OUTCOME records that grep-zero proof.
 # 4. Moves the card to done (with lastdb-retry).
 # 5. Verifies show --json reports column=done; retries once if not.
-# 6. Best-effort: reclaim the card's agent worktree (strip target/node_modules,
-#    save dirty patch, git worktree remove) via last-stack-worktree-reclaim.
+# 6. Best-effort: reclaim the card's private LastDB dev home
+#    (~/.lastdb-dev-<slug>, the AGENTS.md concurrency convention) via
+#    `lastdb-dev reclaim`. An orchestrator that invents a dev home owns deleting
+#    it; leaked homes filled the disk and exhausted CI fds on 2026-09-22.
+#    (Worktree reclaim runs in last-stack-board-closeout-sweep, not here.)
 # 7. Exits 0 only when the card is in the terminal column.
 #
 # Refuse final_column=done in ROUTINE_RESULT unless this helper exits 0.
@@ -636,6 +639,21 @@ if [ "$end_state_warning" = "1" ]; then
     "CLOSED-ON-MERGE $(date -u +%Y-%m-%dT%H:%M:%SZ) — card moved to done because a PR merged; its ## END STATE was NOT evaluated. Re-open if any clause is still unmet. (last-stack-card-closeout end-state audit)" \
     >/dev/null 2>&1 || true
 fi
+
+reclaim_card_dev_home() {
+  # Best effort, never fatal: the card is already done.
+  local home="$HOME/.lastdb-dev-$slug" state="$HOME/.local/state/lastdb-dev-$slug" dev_bin
+  [ -d "$home" ] || return 0
+  dev_bin="$(command -v lastdb-dev 2>/dev/null || true)"
+  [ -n "$dev_bin" ] || dev_bin="$self_dir/last-stack-lastdb-dev"
+  [ -x "$dev_bin" ] || return 0
+  if LASTDB_DEV_HOME="$home" LASTDB_DEV_STATE="$state" "$dev_bin" reclaim >/dev/null 2>&1; then
+    echo "last-stack-card-closeout: reclaimed dev home $home" >&2
+  else
+    echo "last-stack-card-closeout: WARN dev home $home not reclaimed (held or failed); disk-reclaim sweeps it later" >&2
+  fi
+}
+reclaim_card_dev_home || true
 
 echo "last-stack-card-closeout: ok slug=$slug column=done signal=$closeout_signal"
 exit 0

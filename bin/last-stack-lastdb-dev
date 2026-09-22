@@ -35,6 +35,20 @@
 #   lastdb-dev run -- <cmd...>     run one command against the dev node
 #   lastdb-dev shell               subshell whose brain/kanban/lastdb hit the dev node
 #   lastdb-dev reset               stop, delete the dev home and staged binaries
+#   lastdb-dev reclaim [--home DIR] [--dry-run]
+#                                  stop our node, then delete a dev home and its
+#                                  .clone-<pid> / .old-<ts> residue once no
+#                                  process holds it (default: this dev home)
+#   lastdb-dev reclaim --sweep [--ttl-hours N] [--include-default] [--dry-run]
+#                                  delete every unheld dev home under the sweep
+#                                  roots: dead-owner .clone-<pid>, .old-<ts>, and
+#                                  homes idle longer than N hours (default 24)
+#
+# Ownership: a caller that invents LASTDB_DEV_HOME owns deleting it. Run
+# `lastdb-dev reclaim` (with the same env) when the work ends;
+# last-stack-card-closeout does it for ~/.lastdb-dev-<card-slug>, and the
+# disk-reclaim routine runs `reclaim --sweep`. Each clone writes an owner stamp
+# (<home>/.lastdb-dev-owner) that the sweep reads for idle time.
 #
 # Binary selection for `up` (first match wins):
 #   --bin PATH        use this lastdbd
@@ -45,8 +59,16 @@
 #                     build's worktree -> build; else the staged binary; else --canary
 #
 # Environment:
-#   LASTDB_DEV_HOME            dev home           (default ~/.lastdb-dev)
-#   LASTDB_DEV_STATE           tool state         (default ~/.local/state/lastdb-dev)
+#   LASTDB_DEV_HOME            dev home           (default ~/.lastdb-dev; a WARN names
+#                                                 the default so a shell that lost its
+#                                                 exports cannot act on another node)
+#   LASTDB_DEV_STATE           tool state         (default ~/.local/state/lastdb-dev for the
+#                              default home, else ~/.local/state/lastdb-dev-<home basename>,
+#                              so two homes never share a pidfile. When that path is not
+#                              writable (routine sandbox) and the var is unset, the tool
+#                              falls back to $TMPDIR/lastdb-dev-state/<name> with a WARN.)
+#   LASTDB_DEV_SWEEP_ROOTS     colon list of dirs whose .lastdb-dev* children
+#                              `reclaim --sweep` considers (default $HOME:$HOME/.local/state)
 #   LASTDB_DEV_PRIMARY_HOME    home to clone      (default ~/.lastdb)
 #   LASTDB_LAUNCHD_PLIST       primary LaunchAgent plist whose LASTDB_* env the node inherits
 #   LASTDB_DEV_WORKTREE        default fold worktree for build
@@ -59,8 +81,18 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
-DEV_HOME="${LASTDB_DEV_HOME:-$HOME/.lastdb-dev}"
-STATE="${LASTDB_DEV_STATE:-$HOME/.local/state/lastdb-dev}"
+DEFAULT_DEV_HOME="$HOME/.lastdb-dev"
+DEV_HOME="${LASTDB_DEV_HOME:-$DEFAULT_DEV_HOME}"
+DEV_HOME="${DEV_HOME%/}"
+if [ -n "${LASTDB_DEV_STATE:-}" ]; then
+  STATE="$LASTDB_DEV_STATE"
+elif [ "$DEV_HOME" = "$DEFAULT_DEV_HOME" ]; then
+  STATE="$HOME/.local/state/lastdb-dev"
+else
+  # A private home gets private state. A shared default state dir made two
+  # homes share one pidfile, so `stop` in one shell targeted another's node.
+  STATE="$HOME/.local/state/lastdb-dev-$(basename "$DEV_HOME" | sed -e 's/^\.//' -e 's/^lastdb-dev-//')"
+fi
 PRIMARY_HOME="${LASTDB_DEV_PRIMARY_HOME:-$HOME/.lastdb}"
 resolve_launchd_plist() {
   # Same discovery order as lastdb-safe-upgrade: explicit env, then the loaded
@@ -91,9 +123,47 @@ CLIENT_NAME="lastdb-dev"
 say()  { printf 'lastdb-dev: %s\n' "$*"; }
 warn() { printf 'lastdb-dev: WARN %s\n' "$*" >&2; }
 die()  { printf 'lastdb-dev: ERROR %s\n' "$*" >&2; exit 1; }
-usage() { sed -n '2,60p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+usage() { sed -n '2,85p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 now()  { date +%s; }
 iso()  { date -u +%Y-%m-%dT%H:%M:%SZ; }
+OWNER_STAMP_NAME=".lastdb-dev-owner"
+
+warn_if_default_home() {
+  # papercut-lastdb-dev-default-home-risk-20260922: a shell that lost its
+  # private exports silently inspected another worktree's node.
+  if [ -z "${LASTDB_DEV_HOME:-}" ]; then
+    warn "using the DEFAULT dev home $DEV_HOME (LASTDB_DEV_HOME is unset); export a private LASTDB_DEV_HOME if this is not the shared dev node"
+  fi
+}
+
+ensure_state_dir() {
+  # papercut-lastdb-dev-default-state-sandbox-20260922: a routine sandbox
+  # cannot write ~/.local/state. An explicit LASTDB_DEV_STATE is honored or
+  # refused; only the implicit default falls back to a writable temp path.
+  if mkdir -p "$STATE" 2>/dev/null && [ -w "$STATE" ]; then return 0; fi
+  if [ -n "${LASTDB_DEV_STATE:-}" ]; then
+    die "state dir $STATE is not writable (LASTDB_DEV_STATE); pick a writable path"
+  fi
+  local fallback
+  fallback="${TMPDIR:-/tmp}"
+  fallback="${fallback%/}/lastdb-dev-state/$(basename "$STATE")"
+  mkdir -p "$fallback" 2>/dev/null && [ -w "$fallback" ] \
+    || die "state dir $STATE is not writable and fallback $fallback failed; set LASTDB_DEV_STATE"
+  warn "state dir $STATE is not writable; using $fallback (set LASTDB_DEV_STATE to choose)"
+  STATE="$fallback"
+  PIDFILE="$STATE/node.pid"
+  LOG="$STATE/boot.log"
+}
+
+write_owner_stamp() {
+  # $1 = home. Records who made the clone so a sweep can judge idle residue.
+  printf 'created_at=%s\nstate=%s\ncreator_pid=%s\ncreator_cwd=%s\n' \
+    "$(iso)" "$STATE" "${PPID:-}" "$(pwd -P 2>/dev/null || true)" >"$1/$OWNER_STAMP_NAME" 2>/dev/null || true
+}
+touch_owner_stamp() {
+  [ -d "$DEV_HOME" ] && [ -f "$DEV_HOME/$OWNER_STAMP_NAME" ] && touch "$DEV_HOME/$OWNER_STAMP_NAME" 2>/dev/null
+  return 0
+}
 
 # ---------- safety: the dev home must never alias the primary ----------
 realpath_of() { (cd "$1" 2>/dev/null && pwd -P) || true; }
@@ -229,6 +299,7 @@ clone_from_primary() {
   else
     mv "$tmp" "$DEV_HOME"
   fi
+  write_owner_stamp "$DEV_HOME"
   printf '%s primary=%s\n' "$(iso)" "$p" >"$STATE/clone.stamp"
   say "clone ready in $(( $(now) - start ))s"
 }
@@ -338,14 +409,32 @@ EOF_ENV
   start="$(now)"
   # A dev node is never the primary: no crash telemetry, no cloud sync
   # (cloud_sync.json was stripped from the clone).
-  nohup env -u SENTRY_DSN -u FOLD_SENTRY_DSN -u OBS_SENTRY_DSN \
+  # A small waiter owns the node so its exit status survives this script:
+  # papercut-lastdb-dev-cow-clone-socket-never-ready-20260921 saw a candidate
+  # exit before readiness with an EMPTY boot log and no receipt at all. The
+  # waiter writes the node pid (env execs the binary, so argv keeps
+  # --data-dir <dev home>) and, on exit, "<status> <iso>" to exit_status.
+  rm -f "$PIDFILE" "$STATE/exit_status"
+  nohup bash -c '
+    log="$1"; pidf="$2"; exf="$3"; shift 3
+    "$@" >"$log" 2>&1 &
+    child=$!
+    printf "%s\n" "$child" >"$pidf"
+    wait "$child"
+    rc=$?
+    printf "%s %s\n" "$rc" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$exf"
+  ' lastdb-dev-waiter "$LOG" "$PIDFILE" "$STATE/exit_status" \
+    env -u SENTRY_DSN -u FOLD_SENTRY_DSN -u OBS_SENTRY_DSN \
     ${env_pairs[@]+"${env_pairs[@]}"} \
     LASTDB_HOME="$DEV_HOME" FOLDDB_HOME="$DEV_HOME" \
-    "$bin" --data-dir "$DEV_HOME" >"$LOG" 2>&1 &
-  pid=$!
-  disown "$pid" 2>/dev/null || true
-  printf '%s\n' "$pid" >"$PIDFILE"
+    "$bin" --data-dir "$DEV_HOME" >/dev/null 2>&1 &
+  disown $! 2>/dev/null || true
+  i=0
+  while [ ! -s "$PIDFILE" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+  pid="$(tr -d '[:space:]' <"$PIDFILE" 2>/dev/null || true)"
+  [ -n "$pid" ] || die "node did not start (no pid after 10s); log: $LOG"
   printf '%s\n' "$start" >"$STATE/started_at"
+  touch_owner_stamp
   say "  pid      $pid   log $LOG"
 }
 wait_ready() {
@@ -354,7 +443,7 @@ wait_ready() {
   uh=""
   i=0
   while [ "$i" -lt "$BOOT_TIMEOUT" ]; do
-    node_pid >/dev/null || die "node exited during boot: $(tail -3 "$LOG" 2>/dev/null | tr '\n' ' ')"
+    node_pid >/dev/null || die "node exited during boot ($(exit_receipt)): $(tail -3 "$LOG" 2>/dev/null | tr '\n' ' ')"
     if [ -S "$SOCK" ]; then
       uh="$(identity_hash)"
       [ -n "$uh" ] && break
@@ -374,6 +463,20 @@ wait_ready() {
     say "schemas $n (after ${sw}s more)"
   else
     warn "no schemas after ${SCHEMA_WAIT}s; the node may still be hydrating: lastdb-dev logs -f"
+  fi
+}
+exit_receipt() {
+  # Human reading of the waiter's exit_status. 128+N is signal N; 137 (SIGKILL)
+  # with an empty log is usually memory pressure (jetsam) on this host.
+  local rc at i=0
+  while [ ! -s "$STATE/exit_status" ] && [ "$i" -lt 20 ]; do sleep 0.1; i=$((i + 1)); done
+  [ -s "$STATE/exit_status" ] || { printf 'exit status unknown'; return 0; }
+  read -r rc at <"$STATE/exit_status"
+  if [ "$rc" -gt 128 ] 2>/dev/null; then
+    printf 'killed by signal %s at %s' "$((rc - 128))" "$at"
+    [ "$rc" -eq 137 ] && printf '; SIGKILL with no log is usually memory pressure'
+  else
+    printf 'exit status %s at %s' "$rc" "$at"
   fi
 }
 print_ready_hint() {
@@ -448,16 +551,20 @@ EOF
 # ---------- status ----------
 status_cmd() {
   local json=0 pid running=false ident="" nsch="" rss="" up_s="" ver="" clone="" src="" wt=""
+  local sock_ready=false sock_tmp=false last_exit=""
   [ "${1:-}" = "--json" ] && json=1
   if pid="$(node_pid)" && pid_is_ours "$pid"; then
     running=true
     rss="$(rss_mib "$pid")"
     up_s="$(( $(now) - $(cat "$STATE/started_at" 2>/dev/null || now) ))"
     if [ -S "$SOCK" ]; then
+      sock_ready=true
       ident="$(identity_hash)"
       [ -n "$ident" ] && nsch="$(schema_count)"
     fi
+    [ -e "$SOCK.tmp" ] && sock_tmp=true
   fi
+  [ -s "$STATE/exit_status" ] && last_exit="$(cat "$STATE/exit_status")"
   [ -f "$STATE/source" ] && ver="$(sed -n 's/^version=//p' "$STATE/source")" && src="$(sed -n 's/^kind=//p' "$STATE/source")"
   [ -f "$STATE/worktree" ] && wt="$(cat "$STATE/worktree")"
   [ -f "$STATE/clone.stamp" ] && clone="$(cut -d' ' -f1 "$STATE/clone.stamp")"
@@ -465,7 +572,11 @@ status_cmd() {
     jq -n --argjson running "$running" --arg pid "${pid:-}" --arg sock "$SOCK" --arg home "$DEV_HOME" \
       --arg ident "$ident" --arg nsch "$nsch" --arg rss "$rss" --arg up "$up_s" --arg ver "$ver" \
       --arg src "$src" --arg wt "$wt" --arg clone "$clone" --arg log "$LOG" \
+      --argjson sock_ready "$sock_ready" --argjson sock_tmp "$sock_tmp" --arg last_exit "$last_exit" \
+      --arg state "$STATE" \
       '{running:$running, pid:($pid|if .=="" then null else tonumber end), socket:$sock, dev_home:$home,
+        state_dir:$state, socket_ready:$sock_ready, socket_tmp_only:($sock_tmp and ($sock_ready|not)),
+        last_exit:(if $last_exit=="" then null else $last_exit end),
         identity_ready:($ident!=""), user_hash:$ident, schemas:($nsch|if .=="" then null else tonumber end),
         rss_mib:($rss|if .=="" then null else tonumber end), uptime_s:($up|if .=="" then null else tonumber end),
         binary_version:$ver, binary_source:$src, worktree:$wt, cloned_at:$clone, log:$log}'
@@ -473,9 +584,14 @@ status_cmd() {
   fi
   if [ "$running" = true ]; then
     say "UP   pid $pid  rss ${rss:-?} MiB  uptime ${up_s}s"
-    if [ -n "$ident" ]; then say "     identity ready (user_hash $ident)  schemas ${nsch:-?}"; else say "     socket not answering yet (still booting?)  log: $LOG"; fi
+    if [ -n "$ident" ]; then say "     identity ready (user_hash $ident)  schemas ${nsch:-?}"
+    elif [ "$sock_ready" = false ] && [ "$sock_tmp" = true ]; then
+      say "     NOT READY: only $SOCK.tmp exists (the daemon never renamed its socket into place)  log: $LOG"
+    elif [ "$sock_ready" = false ]; then say "     NOT READY: no socket at $SOCK yet (still booting?)  log: $LOG"
+    else say "     socket up, identity not answering yet (still booting?)  log: $LOG"; fi
   else
     say "DOWN"
+    [ -n "$last_exit" ] && say "     last exit: $last_exit (status time)"
   fi
   say "     home    $DEV_HOME  (cloned ${clone:-never})"
   say "     socket  $SOCK"
@@ -543,12 +659,136 @@ up_cmd() {
   print_ready_hint
 }
 
+# ---------- reclaim ----------
+# papercut-agent-supplied-lastdb-dev-homes-leak-cow-clones-and-exhaust-fds:
+# agents given unique LASTDB_DEV_HOME values left 74 GB of clones after exit,
+# and the CI host then failed tests with "Too many open files". No process
+# survives in that failure, only the data dir, so every process-based check
+# reads clean. This removes a home only when nothing holds it.
+home_is_held() {
+  # $1 = home. Held = a process whose argv names --data-dir <home>, or a live
+  # clone in flight (.clone-<pid> with a live pid), or an open file under it.
+  local h="$1" base pid
+  if pgrep -f -- "--data-dir $h( |\$)" >/dev/null 2>&1 \
+     || pgrep -f -- "--data-dir=$h( |\$)" >/dev/null 2>&1; then
+    return 0
+  fi
+  base="$(basename "$h")"
+  case "$base" in
+    *.clone-*)
+      pid="${base##*.clone-}"
+      [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && return 0 ;;
+  esac
+  # The data socket is the one file a live node always holds open.
+  if [ -e "$h/data/folddb.sock" ] && lsof -t -- "$h/data/folddb.sock" >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+home_idle_hours() {
+  # Hours since the newest of: owner stamp, data dir, home dir.
+  local h="$1" newest=0 m f
+  for f in "$h/$OWNER_STAMP_NAME" "$h/data" "$h"; do
+    [ -e "$f" ] || continue
+    m="$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0)"
+    [ "$m" -gt "$newest" ] && newest="$m"
+  done
+  echo $(( ( $(now) - newest ) / 3600 ))
+}
+reclaim_one() {
+  # $1 = path, $2 = reason, $3 = dry-run (0/1). Refuses the primary, anything
+  # inside it, and symlinks; never follows a symlink inside the tree (rm -rf
+  # removes the link, not its target).
+  local h="$1" why="$2" dry="$3" p r
+  p="$(primary_real)"
+  [ -L "$h" ] && { warn "skip $h: symlink"; return 0; }
+  [ -d "$h" ] || return 0
+  r="$(realpath_of "$h")"
+  case "$r" in "$p"|"$p"/*) warn "skip $h: resolves to the primary home"; return 0 ;; esac
+  if home_is_held "$h"; then warn "skip $h: held by a live process"; return 0; fi
+  if [ "$dry" -eq 1 ]; then say "would reclaim $h ($why)"; return 0; fi
+  say "reclaiming $h ($why)"
+  rm -rf "$h" || warn "rm -rf $h reported errors"
+  RECLAIMED=$((RECLAIMED + 1))
+}
+reclaim_home_and_residue() {
+  # $1 = home, $2 = dry. The home plus its .clone-<pid>/.old-<ts> siblings.
+  local h="$1" dry="$2" s
+  for s in "$h".clone-* "$h".old-*; do
+    [ -e "$s" ] || continue
+    reclaim_one "$s" "residue of $(basename "$h")" "$dry"
+  done
+  reclaim_one "$h" "owner reclaim" "$dry"
+}
+reclaim_cmd() {
+  local target="" sweep=0 ttl=24 include_default=0 dry=0 roots root c base idle df0 df1
+  RECLAIMED=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --home) target="${2:-}"; shift 2 ;;
+      --home=*) target="${1#*=}"; shift ;;
+      --sweep) sweep=1; shift ;;
+      --ttl-hours) ttl="${2:-24}"; shift 2 ;;
+      --ttl-hours=*) ttl="${1#*=}"; shift ;;
+      --include-default) include_default=1; shift ;;
+      --dry-run) dry=1; shift ;;
+      -h|--help) usage 0 ;;
+      *) echo "lastdb-dev reclaim: unknown argument $1" >&2; usage 2 ;;
+    esac
+  done
+  case "$ttl" in ''|*[!0-9]*) die "--ttl-hours takes a whole number of hours" ;; esac
+  df0="$(df -k "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')"
+  if [ "$sweep" -eq 0 ]; then
+    [ -n "$target" ] || target="$DEV_HOME"
+    target="${target%/}"
+    if [ "$target" = "$DEV_HOME" ] && pid="$(node_pid)"; then
+      [ "$dry" -eq 1 ] || stop_node
+    fi
+    reclaim_home_and_residue "$target" "$dry"
+  else
+    roots="${LASTDB_DEV_SWEEP_ROOTS:-$HOME:$HOME/.local/state}"
+    local IFS_SAVE="$IFS"; IFS=':'
+    # shellcheck disable=SC2086
+    set -- $roots
+    IFS="$IFS_SAVE"
+    for root in "$@"; do
+      [ -d "$root" ] || continue
+      # A glob of direct children, never a tree walk.
+      for c in "$root"/.lastdb-dev* "$root"/lastdb-dev*; do
+        [ -d "$c" ] && [ ! -L "$c" ] || continue
+        c="${c%/}"
+        base="$(basename "$c")"
+        # State dirs hold logs, pidfiles and staged binaries, not a data tree.
+        [ -d "$c/data" ] || case "$base" in *.clone-*|*.old-*) : ;; *) continue ;; esac
+        case "$base" in
+          *.clone-*) reclaim_one "$c" "clone residue, owner pid ${base##*.clone-} is gone" "$dry"; continue ;;
+          *.old-*) reclaim_one "$c" "superseded clone" "$dry"; continue ;;
+        esac
+        if [ "$c" = "$DEFAULT_DEV_HOME" ] && [ "$include_default" -eq 0 ]; then continue; fi
+        idle="$(home_idle_hours "$c")"
+        if [ "$idle" -lt "$ttl" ]; then continue; fi
+        reclaim_one "$c" "idle ${idle}h >= ${ttl}h" "$dry"
+      done
+    done
+  fi
+  df1="$(df -k "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')"
+  if [ "$dry" -eq 0 ] && [ -n "$df0" ] && [ -n "$df1" ]; then
+    say "reclaimed $RECLAIMED path(s); free space +$(( (df1 - df0) / 1024 )) MiB (df delta)"
+  fi
+}
+
 # ---------- main ----------
 cmd="${1:-}"
 [ -n "$cmd" ] || usage 2
 shift
 case "$cmd" in
+  -h|--help|help) ;;
+  reclaim) ;;
+  *) warn_if_default_home; ensure_state_dir ;;
+esac
+case "$cmd" in
   up) up_cmd "$@" ;;
+  reclaim) reclaim_cmd "$@" ;;
   restart)
     # Build FIRST, then stop, then boot: a failed build must leave the old
     # node serving, and the node should not be down for the build's duration.

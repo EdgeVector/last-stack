@@ -124,6 +124,21 @@ continue — do not fail the whole run.
    strip `target`/`node_modules`, then remove only when clean + not `doing` +
    no live cwd. Never leave multi‑GB `target/` dirs behind even when keeping a
    tree.
+3b. **Reclaim leaked LastDB dev homes.** Agents given a private
+   `LASTDB_DEV_HOME` left 74 GB of CoW clones on 2026-09-22 and the Forge CI
+   host then failed tests with `Too many open files (os error 24)`
+   (brain `papercut-agent-supplied-lastdb-dev-homes-leak-cow-clones-and-exhaust-fds`).
+   No process survives in that failure, so a process scan reads clean. Run:
+   ```bash
+   lastdb-dev reclaim --sweep --ttl-hours 24
+   ```
+   It globs direct `.lastdb-dev*` / `lastdb-dev*` children of `$HOME` and
+   `$HOME/.local/state` (no tree walk), and removes dead-owner `.clone-<pid>`
+   dirs, superseded `.old-<ts>` clones, and homes idle for 24 h or more. It
+   skips any home a live process holds (`--data-dir <home>` argv, an open
+   data socket, a live clone pid), the default `~/.lastdb-dev`, symlinks, and
+   anything that resolves to the primary `~/.lastdb`. Report the `df` delta it
+   prints as reclaimed space.
 3a. **Migrate legacy repo-local `.worktrees/` after the live audit.** Disk
    reclaim must not delete non-removable worktrees just because they live under
    a checkout. After the board/lsof audit above, run the bounded migration
