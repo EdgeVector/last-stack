@@ -41,6 +41,11 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+# fkanban was renamed kanban; the routine ids still say fkanban, so callers
+# pass it. Map it when no fkanban binary exists.
+if [ "$board_cli" = "fkanban" ] && ! command -v fkanban >/dev/null 2>&1; then
+  board_cli=kanban
+fi
 if [ -z "$board_cli" ]; then
   if command -v kanban >/dev/null 2>&1; then board_cli=kanban
   else

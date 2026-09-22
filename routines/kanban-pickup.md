@@ -329,7 +329,9 @@ single blip mid-work: re-try the board write; if it still fails, roll the card
 back to `todo` (or `pending_rollback=` in memory) per transport rules below.
 
 ## Setup
-- Drive the board CLI from `<board repo dir>` with `<board CLI> ...`.
+- Drive the board CLI from `<board repo dir>` with `<board CLI> ...`. On an
+  EdgeVector host `<board CLI>` is `kanban` and `<brain-cli>` is `brain`.
+  There is no `fkanban` binary; the `fkanban` in routine ids is a legacy name.
 - Normalize the scheduled shell before any CLI-heavy work so GUI/sandboxed
   launches can still find `git`, `gh`, `curl`, `jq`, `<board CLI>`, and
   `<brain-cli>`:

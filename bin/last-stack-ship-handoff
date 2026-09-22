@@ -185,17 +185,27 @@ class Tools:
             )
         return data
 
-    def dispatch_milestone_driver(self, slug: str) -> int:
+    def dispatch_milestone_driver(self, slug: str) -> tuple[int | None, str]:
+        """Run the milestone driver once. Returns (rc, last output line).
+
+        rc is None when the driver did not finish inside the bound. The caller
+        reports that as a pending state instead of silently moving on
+        (papercut-ship-handoff-returns-before-driver-frontier-20260921).
+        """
         env = os.environ.copy()
         env["MILESTONE_DRIVER_TARGET"] = slug
-        cp = subprocess.run(
-            [self.routines, "run", "last-stack-milestone-driver"],
-            text=True,
-            capture_output=True,
-            timeout=300,
-            env=env,
-        )
-        return cp.returncode
+        try:
+            cp = subprocess.run(
+                [self.routines, "run", "last-stack-milestone-driver"],
+                text=True,
+                capture_output=True,
+                timeout=300,
+                env=env,
+            )
+        except subprocess.TimeoutExpired:
+            return None, "milestone-driver still running after 300s"
+        lines = [ln for ln in (cp.stdout or "").splitlines() + (cp.stderr or "").splitlines() if ln.strip()]
+        return cp.returncode, (lines[-1] if lines else "")
 
 
 def frontier_slugs(detail: dict, explicit: str | None) -> list[str]:
@@ -284,8 +294,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         created_ms = True
 
+    driver_rc: int | None = None
+    driver_tail = ""
+    driver_dispatched = False
     if not args.skip_driver:
-        tools.dispatch_milestone_driver(args.milestone)
+        driver_dispatched = True
+        driver_rc, driver_tail = tools.dispatch_milestone_driver(args.milestone)
 
     deadline = time.time() + max(0.0, args.wait_ready)
     explain: dict | None = None
@@ -313,7 +327,27 @@ def main(argv: list[str] | None = None) -> int:
         time.sleep(min(2.0, max(0.05, deadline - time.time())))
 
     eligible = bool(explain and explain.get("eligible_for_claim") is True)
+    if eligible:
+        state = "eligible"
+    elif last_err == "no frontier Kind:pr on milestone":
+        # The driver works asynchronously from this verb's point of view: it
+        # may still be writing the proof card and children. Say so, and hand
+        # back the exact poll command instead of a bare refusal.
+        state = "pending-frontier"
+        last_err = (
+            "pending: no frontier Kind:pr on milestone yet"
+            f" (driver_rc={driver_rc if driver_dispatched else 'skipped'});"
+            f" poll: last-stack-ship-handoff --north-star {args.north_star}"
+            f" --milestone {args.milestone} --outcome <same> --acceptance <same>"
+            " --skip-driver --wait-ready 300"
+        )
+    else:
+        state = "not-eligible"
     report = {
+        "state": state,
+        "driver_dispatched": driver_dispatched,
+        "driver_rc": driver_rc,
+        "driver_tail": driver_tail,
         "north_star": args.north_star,
         "milestone": args.milestone,
         "request_appended": appended,

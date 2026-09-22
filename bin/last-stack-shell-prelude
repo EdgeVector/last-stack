@@ -135,6 +135,20 @@ last_stack_require_tools() {
       missing="$missing
 $tool (available at $found but not on PATH)"
     else
+      # The f-prefixed CLIs were renamed (fkanban -> kanban, fbrain -> brain,
+      # fsituations -> situations). Routine ids such as
+      # last-stack-fkanban-pickup still carry the old prefix, so agents keep
+      # guessing `fkanban`. Name the installed CLI instead of a bare miss.
+      case "$tool" in
+        fkanban|fbrain|fsituations)
+          renamed="${tool#f}"
+          if command -v "$renamed" >/dev/null 2>&1; then
+            missing="$missing
+$tool (renamed: use \`$renamed\`; there is no \`$tool\` binary)"
+            continue
+          fi
+          ;;
+      esac
       missing="$missing
 $tool"
     fi
