@@ -255,7 +255,7 @@ ensure_single_live_prompt_root() {
   local out="" rc=0
   if [ -n "$to_bin" ]; then
     out="$(LAST_STACK_ROUTINES_DIR="$product_root" \
-      "$to_bin" "${LASTSTACK_CLASS_A_PROMPT_DOCTOR_TIMEOUT_S:-30}" \
+      "$to_bin" "${LASTSTACK_CLASS_A_PROMPT_DOCTOR_TIMEOUT_S:-10}" \
       "$doc" --normalize-findings --quiet 2>&1)" || rc=$?
   else
     out="$(LAST_STACK_ROUTINES_DIR="$product_root" \
@@ -272,7 +272,7 @@ ensure_single_live_prompt_root() {
     # it is not install health. Say so plainly: the old text printed "still
     # red" and then result=ok already-healthy, and four papercuts asked which
     # one to believe (papercut-class-a-heal-prompt-doctor-red-but-healthy-20260922).
-    log "prompt-doctor timed out after ${LASTSTACK_CLASS_A_PROMPT_DOCTOR_TIMEOUT_S:-30}s (soft; install health is checked separately)"
+    log "prompt-doctor timed out after ${LASTSTACK_CLASS_A_PROMPT_DOCTOR_TIMEOUT_S:-10}s (soft; install health is checked separately)"
     append_action "prompt-doctor-timeout"
     prompt_root_note="prompt-doctor-timeout"
   elif [ "$rc" -ne 0 ]; then
