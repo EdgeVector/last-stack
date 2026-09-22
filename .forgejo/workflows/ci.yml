@@ -44,7 +44,15 @@ jobs:
     # 10 stays with forgejo-venue-move-followups-20260905; this only stops the
     # false failures until then. Remedy named by
     # papercut-last-stack-required-gate-exceeds-default-lastgit-timeout-20260828.
-    timeout-minutes: 25
+    #
+    # 2026-09-22: 50. Two gates side by side on this capacity-2 runner both hit
+    # the 25-minute kill (runs 272/273, 287/288) while a gate alone ran 10-15
+    # minutes. The gate now takes a host lock (LAST_STACK_CI_HOST_LOCK) so the
+    # second one waits up to 25 minutes. ci.sh ends itself at 47 minutes
+    # (LAST_STACK_CI_JOB_BUDGET_SECS) with CI_DEADLINE_EXCEEDED and the running
+    # test of each shard, before this limit can SIGKILL it with no output.
+    # papercut-forge-ci-last-stack-job-times-out-at-25m-20260922
+    timeout-minutes: 50
 
     steps:
       # Host-mode runners cannot use actions/checkout: the local runner's URL
@@ -84,6 +92,7 @@ jobs:
         env:
           NO_COLOR: "1"
           FORCE_COLOR: "0"
+          LAST_STACK_CI_HOST_LOCK: "1"
         run: bash .lastgit/ci.sh
 
   publish:
