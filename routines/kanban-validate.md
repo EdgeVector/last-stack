@@ -1,7 +1,7 @@
 ---
 name: kanban-validate
-cadence: every 4h (lean normal), offset from kanban-watch
-description: Run ONE bounded validation — either a post-merge END STATE check, or a Kind:validation / capstone proof card from backlog — then done on pass or fix-card on fail. Never authors feature code, never uses fkanban-pickup claim, never runs prod cutovers.
+cadence: six workers, staggered every 2.5 minutes
+description: Run one bounded validation per worker wake. Use a post-merge END STATE check or a Kind:validation / capstone proof card. Never author feature code or run prod cutovers.
 ---
 
 ## NO REVIEW COLUMN (Tom 2026-07-16 — won't-undo)
