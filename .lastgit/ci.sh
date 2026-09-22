@@ -229,6 +229,7 @@ ci_test tests/last-stack-park-stuck-merge-poison-cards.sh
 ci_test tests/last-stack-pickup-work-policy.sh
 ci_test tests/last-stack-routines-kanban-pickup.sh
 ci_test tests/last-stack-kanban-validate-routine.sh
+ci_test tests/last-stack-kanban-validate-failure-routing.sh
 ci_test tests/last-stack-pr-reaper-stale-open-heal.sh
 # The close guard holds the one reap that destroys work: a green auto-merge
 # CR whose head never reached main. Required, not FULL-only — the defect it
