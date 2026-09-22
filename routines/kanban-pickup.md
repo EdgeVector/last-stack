@@ -682,6 +682,12 @@ Why this runs after the claim, not before, as of 2026-09-05:
     -b "kanban/<lead-slug>" "origin/<base>"
   cd "${WORKTREES_DIR:-$HOME/.fkanban/worktrees}/<lead-slug>"
   ```
+  **Portal repos:** when `~/code/edgevector/<name>` has `bin/wt` and no
+  `.git` (a portal — every EdgeVector repo since 2026-07-30), it is not the
+  `<target-repo-root>` and the guard correctly rejects it. Do not clone into
+  it. Run `(cd ~/code/edgevector/<name> && ./bin/wt start kanban/<lead-slug>)`
+  and work in the path it prints; it replaces the `fetch` + `worktree add`
+  above (papercut-kanban-repo-header-resolves-portal-not-checkout-20260922).
   `WORKTREES_DIR` must be outside the shared checkout; never point it at
   `<repo>/.worktrees` or any other repo-local path. Never edit a shared checkout
   in place; never blanket stash/reset/clean a shared repo.
