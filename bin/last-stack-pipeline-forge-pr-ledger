@@ -330,6 +330,7 @@ def brain_status(brain: str, slug: str) -> str | None:
 
 
 LIVE = {"open", "partial", "fixed"}
+ATTRIBUTED = {"duplicate", "wontfix"}
 
 
 def evidence_line(pr: dict[str, Any], checked_at: str) -> str:
@@ -382,6 +383,13 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                 if proc.returncode != 0:
                     row["error"] = (proc.stderr or proc.stdout).strip()[:300]
                     continue
+        elif status in ATTRIBUTED:
+            # A human or agent closed this PR's row as a duplicate of a named
+            # root cause (for example a flaky required lane on main), or as
+            # wontfix. Respect that attribution: re-filing it each wake is the
+            # churn this helper exists to stop. It re-opens only as a new PR.
+            act("attributed", slug, status=status)
+            continue
         else:
             file_slug = slug
             if status is not None:

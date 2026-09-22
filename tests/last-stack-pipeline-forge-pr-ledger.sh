@@ -178,6 +178,16 @@ grep -q -- '--not-duplicate-of papercut-pipeline-forge-fold-pr-9' "$tmp/brain/ca
 [ "$(cat "$tmp/brain/papercut-pipeline-forge-fold-pr-10.status")" = open ] || { echo "FAIL pr-10 file"; exit 1; }
 echo "ok   dedupe refusal on a sibling PR row is cleared by name"
 
+# 9b. a row closed as duplicate of a root cause is respected, not re-filed
+echo duplicate >"$tmp/brain/papercut-pipeline-forge-fold-pr-10.status"
+pulls_open 10 | sed 's/"sha":"head10"/"sha":"head10b"/' | put "repos/$R/pulls?state=open&limit=50"
+cp "$fx/repos_EdgeVector_fold_commits_head7_status.json" "$fx/repos_EdgeVector_fold_commits_head10b_status.json"
+: >"$tmp/brain/calls.log"
+sync --apply
+jq -e '.ledger.actions[0].action == "attributed"' "$tmp/out.json" >/dev/null || { echo "FAIL duplicate attribution"; cat "$tmp/out.json"; exit 1; }
+if grep -q '^papercut file' "$tmp/brain/calls.log"; then echo "FAIL re-filed a duplicate-attributed PR"; exit 1; fi
+echo "ok   a duplicate-attributed PR row is not re-filed"
+
 # 10. the prompt uses the ledger and forbids per-state slugs
 grep -Fq 'last-stack-pipeline-forge-pr-ledger" sync --apply' "$ROOT/routines/pipeline-health.md" \
   || { echo "FAIL pipeline-health.md must run the ledger"; exit 1; }
