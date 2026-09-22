@@ -369,7 +369,6 @@ ci_test tests/last-stack-closeout-skill-contract.sh
 ci_test tests/last-stack-papercut-lifecycle-close.sh
 ci_test tests/last-stack-papercut-lifecycle-helper-run-install.sh
 ci_test tests/last-stack-pipeline-stuck-papercut-file.sh
-ci_test tests/last-stack-pipeline-forge-pr-ledger.sh
 ci_test tests/last-stack-canary-pipeline.sh
 ci_test tests/last-stack-soak-heal-loom.sh
 ci_test tests/last-stack-ship-soak-loom.sh
@@ -755,3 +754,8 @@ ci_test tests/last-stack-deploy-watch-routine.sh
 # no network, ~6s. APPENDED before the registration guard, which stays last.
 ci_test tests/last-stack-ci-shard-supervisor.sh
 ci_test tests/last-stack-ci-test-registration.sh
+
+# One papercut per Forgejo PR (not per state), self-closing on merge; fake
+# forge + fake brain + fake board, no node, no network.
+# APPENDED (see the shard-stability note above): ci_test shards by list position.
+ci_test tests/last-stack-pipeline-forge-pr-ledger.sh
