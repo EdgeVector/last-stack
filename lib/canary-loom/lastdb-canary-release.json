@@ -1,6 +1,6 @@
 {
   "name": "lastdb-canary-release",
-  "version": "9",
+  "version": "10",
   "start_at": "DECIDE_ENTRY",
   "max_depth": 2,
   "node_budget": 80,
@@ -52,6 +52,7 @@
       "type": "agent",
       "command": ["/bin/bash", "-c", "exec \"${LOOM_SCRIPTS:-$HOME/.last-stack/lib/canary-loom}/loom-canary-step.sh\" BUILD_POLL"],
       "effects": "none",
+      "epoch_from": "build_poll_revision",
       "timeout_sec": 120,
       "next": "DECIDE_BUILD",
       "on_error": "FAILED"
@@ -139,6 +140,7 @@
       "type": "agent",
       "command": ["/bin/bash", "-c", "exec \"${LOOM_SCRIPTS:-$HOME/.last-stack/lib/canary-loom}/loom-canary-step.sh\" SOAK"],
       "effects": "idempotent",
+      "epoch_from": "soak_poll_revision",
       "timeout_sec": 900,
       "next": "DECIDE_SOAK",
       "on_error": "HEAL"
