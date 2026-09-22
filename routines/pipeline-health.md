@@ -31,8 +31,7 @@ Standing rule (Tom, 2026-07-22 — do not re-litigate):
   `pipeline` / `deploy` as appropriate).
 - **`papercut-reconciler`** is the **only** component that turns those records
   into board cards (clustered, fair-share with feature lanes). See
-  [[sop-brain-papercut-reconciler]] and
-  [[preference-pipeline-health-brain-papercuts]].
+  `routines/papercut-reconciler.md`.
 - You may still **HEAVY-fix** one mechanical issue this wake (merge, CI flake,
   deploy script). You may **not** open or re-rank `deploy-pipeline-red-*`
   kanban cards for pickup monopoly.
@@ -145,9 +144,12 @@ read/write, fail loudly if the resolved path is empty or starts with
    gates): honor any active Situation that freezes pipeline work.
 3. Confirm board/brain reachability with a cheap socket-backed read:
    ```bash
-   kanban list --column todo --json >/dev/null
-   brain get sop-brain-papercut-reconciler --type sop >/dev/null
+   kanban ping >/dev/null
+   brain papercut census pipeline >/dev/null
    ```
+   Do not probe with `brain get sop-brain-papercut-reconciler`: that record does
+   not exist, so the probe failed every pass and was filed as a p0
+   (`papercut-pipeline-health-missing-typed-sop`, 2026-09-22).
    Do **not** use doctor/init/TCP `:9001` as a health check.
 4. Read `brain get sop-forge-pr-workflow --type sop` (Forgejo) if you need
    merge semantics.
