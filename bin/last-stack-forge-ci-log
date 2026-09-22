@@ -58,6 +58,7 @@ Usage:
   last-stack-forge-ci-log <owner/repo> <run-number> [job-index] [attempt]
   last-stack-forge-ci-log <owner/repo> --run <run-number> [job-index] [attempt]
   last-stack-forge-ci-log <owner/repo> --sha <head-sha>   # every red run for a commit
+  last-stack-forge-ci-log <owner/repo> --pr <number>      # every red run for a PR's head
 
 Prints the plain-text log tail of a forge (Forgejo) CI job.
 
@@ -76,10 +77,15 @@ Arguments:
 
   --sha <sha>    resolve EVERY run for <head-sha> and dump every failing job
                  across all of them.
+  --pr <n>       read the pull request's current head sha, then act as --sha.
 
 Env:
   FORGE_ROOT           forge base URL (default http://localhost:3300)
   FORGE_CI_LOG_TAIL    lines of tail to print per job (default 80; 0 = whole log)
+  FORGE_CI_LOG_MAX_PAGES
+                       newest task pages (50 rows each) to search (default 60)
+  FORGE_CI_LOG_API_TIMEOUT
+                       seconds per API request (default 60)
 
 Env (cont.):
   FORGE_ACTIONS_LOG_ROOT
@@ -119,7 +125,9 @@ case "$repo" in */*) ;; *) echo "repo must be owner/name: $repo" >&2; exit 2 ;; 
 TOKEN="$(last_stack_forge_token || true)"
 [ -n "$TOKEN" ] || { last_stack_forge_token_missing_msg; exit 3; }
 
-api() { curl -fsS -H "Authorization: token $TOKEN" "$ROOT/api/v1/$1"; }
+# Every API read is bounded. An unbounded read of fold's task list stalled a
+# routine for more than 90 s (papercut-no-api-path-to-read-a-forgejo-ci-job-log-20260922).
+api() { curl -fsS --max-time "${FORGE_CI_LOG_API_TIMEOUT:-60}" -H "Authorization: token $TOKEN" "$ROOT/api/v1/$1"; }
 
 # ── Resolve the run(s) + the list of failing job indices ──────────────────────
 run_number=""
@@ -131,6 +139,13 @@ force_run=0
 
 if [ "${1:-}" = "--sha" ]; then
   sha="${2:?--sha needs a value}"
+elif [ "${1:-}" = "--pr" ]; then
+  # A PR number resolves to the PR's CURRENT head, then to every run for it.
+  pr_number="${2:?--pr needs a pull-request number}"
+  case "$pr_number" in *[!0-9]*) echo "--pr must be numeric: $pr_number" >&2; exit 2 ;; esac
+  sha="$(api "repos/$repo/pulls/$pr_number" | jq -r '.head.sha // empty')"
+  [ -n "$sha" ] || { echo "could not read the head sha of $repo #$pr_number" >&2; exit 4; }
+  echo "resolved PR #$pr_number -> head $sha" >&2
 else
   if [ "${1:-}" = "--run" ]; then
     force_run=1
@@ -157,12 +172,44 @@ if [ -n "$run_number" ] && [ "$force_run" -eq 0 ]; then
   fi
 fi
 
-# Pull the tasks list once; it maps run_number -> per-job status/name.
-# Measured 2026-09-06: this endpoint IGNORES ?limit and returns the repo's
-# complete history (fold: total_count == returned == 22366). So every run for a
-# head is already in hand — the old first-match resolver was a selection bug,
-# never a paging one, and no message here may blame truncation.
-tasks_json="$(api "repos/$repo/actions/tasks?limit=100")"
+# Read the tasks list newest-first, one page at a time; it maps run_number ->
+# per-job status/name/task id.
+# Measured 2026-09-22 on Forgejo 15.0.3: WITHOUT a `page` parameter the endpoint
+# ignores ?limit and returns the complete history (fold: 26300 rows, 5m29s, and
+# a routine gave up after 90 s). WITH `page` it honours limit (capped at 50) and
+# answers in about 0.15 s. So page, and stop as soon as the target is covered:
+#   run mode  - the page reaches a run_number below the target (all its jobs,
+#               re-runs included, are newer and already read);
+#   sha mode  - a page with no match after at least one match;
+#   any mode  - a short page (end of history) or FORGE_CI_LOG_MAX_PAGES.
+# papercut-no-api-path-to-read-a-forgejo-ci-job-log-20260922
+tasks_json="$(
+  page=1
+  max_pages="${FORGE_CI_LOG_MAX_PAGES:-60}"
+  per_page=50
+  seen_match=0
+  pages_dir="$(mktemp -d "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack.XXXXXX")"
+  trap 'rm -rf "$pages_dir"' EXIT
+  while [ "$page" -le "$max_pages" ]; do
+    api "repos/$repo/actions/tasks?page=$page&limit=$per_page" > "$pages_dir/$page.json"
+    count="$(jq '.workflow_runs | length' "$pages_dir/$page.json")"
+    [ "$count" -gt 0 ] || break
+    [ "$count" -ge "$per_page" ] || break
+    if [ -n "$run_number" ]; then
+      jq -e --argjson rn "$run_number" '[.workflow_runs[].run_number] | min < $rn' \
+        "$pages_dir/$page.json" >/dev/null && break
+    else
+      if jq -e --arg s "$sha" 'any(.workflow_runs[]; .head_sha | startswith($s))' \
+          "$pages_dir/$page.json" >/dev/null; then
+        seen_match=1
+      elif [ "$seen_match" -eq 1 ]; then
+        break
+      fi
+    fi
+    page=$((page + 1))
+  done
+  jq -s '{workflow_runs: (map(.workflow_runs) | add | unique_by(.id))}' "$pages_dir"/*.json
+)"
 
 if [ -n "$pr_head" ]; then
   run_head="$(printf '%s' "$tasks_json" | jq -r --argjson rn "$run_number" \
@@ -195,7 +242,7 @@ if [ -n "$sha" ]; then
   run_numbers="$(printf '%s' "$tasks_json" | jq -r --arg s "$sha" \
     '[.workflow_runs[] | select(.head_sha|startswith($s)) | .run_number] | unique | .[]')"
   if [ -z "$run_numbers" ]; then
-    echo "no run found for sha $sha in this repo's complete tasks list" >&2
+    echo "no run found for sha $sha in the newest ${FORGE_CI_LOG_MAX_PAGES:-60} pages of this repo's tasks list" >&2
     exit 4
   fi
   echo "resolved sha $sha -> run(s) $(printf '%s' "$run_numbers" | tr '\n' ' ')" >&2
@@ -217,7 +264,7 @@ else
 fi
 
 if [ -z "$jobs_tsv" ]; then
-  echo "no jobs found for run $run_number — this repo's tasks list is complete (the API ignores ?limit), so that run number does not exist here" >&2
+  echo "no jobs found for run $run_number in the newest ${FORGE_CI_LOG_MAX_PAGES:-60} pages of this repo's tasks list" >&2
   exit 4
 fi
 

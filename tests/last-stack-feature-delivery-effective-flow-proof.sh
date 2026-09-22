@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/lib/python-cache.sh"  # writable py_compile cache
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 BIN="$ROOT/bin/last-stack-feature-delivery-effective-flow-proof"
