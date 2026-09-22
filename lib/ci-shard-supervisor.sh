@@ -104,3 +104,60 @@ ci_supervise_shards() {
     sleep "${CI_SUPERVISE_POLL_SECS:-2}"
   done
 }
+
+# --- host lock: one last-stack gate runs its shards at a time ----------------
+# Measured 2026-09-22 on the macos-arm64 runner (capacity 2): a gate alone ran
+# in 10-15 minutes (runs 283-286); two gates side by side both hit the 25-minute
+# kill (runs 272/273, 287/288). Eight test streams on a host at load ~100 thrash
+# each other, so the pair finishes later than the two runs back to back. The
+# lock makes the second gate WAIT (with a heartbeat) instead of competing.
+# Opt-in: the Forge workflow sets LAST_STACK_CI_HOST_LOCK=1. A local run does
+# not take it unless asked.
+#
+# Stale holders: Forge ends a timed-out job with SIGKILL, so no trap removes the
+# lock. A holder whose pid is gone, or a lock older than the max age, is taken
+# over. A waiter that runs out of patience proceeds WITHOUT the lock and says so,
+# because a late gate is better than a gate that never runs.
+CI_HOST_LOCK_HELD=""
+
+ci_host_lock_acquire() {  # lock-dir wait-secs max-age-secs progress-secs
+  local dir="$1" wait="$2" max_age="$3" progress="$4"
+  local start="$SECONDS" next_beat holder age now mtime
+  next_beat=$((SECONDS + progress))
+  mkdir -p "$(dirname "$dir")" 2>/dev/null || true
+  while :; do
+    if mkdir "$dir" 2>/dev/null; then
+      printf '%s\n' "$$" >"$dir/pid"
+      printf '%s\n' "${GITHUB_REPOSITORY:-local} run=${GITHUB_RUN_NUMBER:-?} sha=${GITHUB_SHA:-?}" >"$dir/owner"
+      CI_HOST_LOCK_HELD="$dir"
+      echo "ci_host_lock acquired after $((SECONDS - start))s: $dir"
+      return 0
+    fi
+    holder="$(cat "$dir/pid" 2>/dev/null || true)"
+    now="$(date +%s)"
+    mtime="$(stat -f %m "$dir" 2>/dev/null || stat -c %Y "$dir" 2>/dev/null || echo "$now")"
+    age=$((now - mtime))
+    if { [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; } || [ "$age" -ge "$max_age" ]; then
+      echo "ci_host_lock stale (holder pid=${holder:-none} age=${age}s); taking it over"
+      rm -rf -- "$dir"
+      continue
+    fi
+    if [ "$((SECONDS - start))" -ge "$wait" ]; then
+      echo "ci_host_lock NOT acquired after ${wait}s (holder: $(cat "$dir/owner" 2>/dev/null || echo unknown)); running without it"
+      return 0
+    fi
+    if [ "$progress" -gt 0 ] && [ "$SECONDS" -ge "$next_beat" ]; then
+      echo "ci_host_lock waiting $((SECONDS - start))s for a sibling gate: $(cat "$dir/owner" 2>/dev/null || echo unknown)"
+      next_beat=$((SECONDS + progress))
+    fi
+    sleep "${CI_SUPERVISE_POLL_SECS:-2}"
+  done
+}
+
+ci_host_lock_release() {
+  [ -n "$CI_HOST_LOCK_HELD" ] || return 0
+  if [ "$(cat "$CI_HOST_LOCK_HELD/pid" 2>/dev/null || true)" = "$$" ]; then
+    rm -rf -- "$CI_HOST_LOCK_HELD"
+  fi
+  CI_HOST_LOCK_HELD=""
+}

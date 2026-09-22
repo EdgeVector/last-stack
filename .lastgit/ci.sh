@@ -25,6 +25,7 @@ else
 fi
 CI_SHARD_LOG_DIR=""
 cleanup_ci_temp() {
+  if declare -F ci_host_lock_release >/dev/null; then ci_host_lock_release; fi
   rm -rf -- "$CI_PYTHON_CACHE"
   [ -z "$CI_SHARD_LOG_DIR" ] || rm -rf -- "$CI_SHARD_LOG_DIR"
   [ -z "$CI_HEARTBEATS_FILE" ] || rm -f -- "$CI_HEARTBEATS_FILE"
@@ -116,6 +117,14 @@ if [ -z "$CI_SHARD_INDEX" ]; then
     case "$CI_PROGRESS_SECS$CI_DEADLINE_SECS" in
       *[!0-9]*) echo "LAST_STACK_CI_PROGRESS_SECS and LAST_STACK_CI_DEADLINE_SECS must be whole seconds" >&2; exit 2 ;;
     esac
+    # One gate at a time on the Forge host (opt-in from the workflow). Two
+    # gates side by side thrash each other past the job timeout; back to back
+    # they both pass. See ci_host_lock_acquire.
+    if [ "${LAST_STACK_CI_HOST_LOCK:-0}" = "1" ]; then
+      ci_host_lock_acquire \
+        "${LAST_STACK_CI_HOST_LOCK_DIR:-$HOME/.local/state/last-stack/ci-gate.lock}" \
+        "${LAST_STACK_CI_HOST_LOCK_WAIT_SECS:-1500}" 3600 "$CI_PROGRESS_SECS"
+    fi
     shard_pids=()
     shard_index=0
     # Job control gives each shard its own process group, so a deadline stop

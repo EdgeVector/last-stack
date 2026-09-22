@@ -76,11 +76,38 @@ ci_supervise_shards "$logs" 0 60 "$a_pid" "$b_pid" >"$out"
 if grep -q 'CI_DEADLINE_EXCEEDED' "$out"; then fail "deadline fired for shards that finished"; fi
 wait "$a_pid" && wait "$b_pid" || fail "finished shards lost their exit codes"
 
+# --- Case 3: host lock -------------------------------------------------------
+lock="$TMP_ROOT/state/ci-gate.lock"
+out="$TMP_ROOT/lock.out"
+ci_host_lock_acquire "$lock" 5 3600 0 >"$out"
+[ "$CI_HOST_LOCK_HELD" = "$lock" ] || fail "a free lock was not acquired: $(cat "$out")"
+[ "$(cat "$lock/pid")" = "$$" ] || fail "lock does not record the holder pid"
+ci_host_lock_release
+[ ! -e "$lock" ] || fail "release left the lock behind"
+
+# A live sibling holds it: wait, then run WITHOUT it and say so.
+mkdir -p "$lock"; sleep 300 & sibling=$!; echo "$sibling" >"$lock/pid"; echo "EdgeVector/last-stack run=9" >"$lock/owner"
+ci_host_lock_acquire "$lock" 2 3600 1 >"$out"
+kill "$sibling" 2>/dev/null || true; wait "$sibling" 2>/dev/null || true
+[ -z "$CI_HOST_LOCK_HELD" ] || fail "took a lock a live sibling holds"
+grep -q 'ci_host_lock NOT acquired after 2s (holder: EdgeVector/last-stack run=9); running without it' "$out" \
+  || fail "a timed-out wait was not reported: $(cat "$out")"
+ci_host_lock_release
+[ -d "$lock" ] || fail "release removed a lock this process does not hold"
+
+# The sibling was SIGKILLed (dead pid): take the lock over.
+ci_host_lock_acquire "$lock" 5 3600 0 >"$out"
+grep -q 'ci_host_lock stale' "$out" || fail "a dead holder was not detected: $(cat "$out")"
+[ "$CI_HOST_LOCK_HELD" = "$lock" ] || fail "a stale lock was not taken over"
+ci_host_lock_release
+
 # --- Wiring: the gate uses the supervisor and exits 124 on a deadline ------
 CI="$ROOT/.lastgit/ci.sh"
 grep -Fq '. "$ROOT/lib/ci-shard-supervisor.sh"' "$CI" || fail "ci.sh does not source the supervisor"
 grep -Fq 'ci_supervise_shards "$CI_SHARD_LOG_DIR"' "$CI" || fail "ci.sh does not supervise its shards"
 grep -Fq 'exit 124' "$CI" || fail "ci.sh does not exit 124 on a deadline"
+grep -Fq 'ci_host_lock_acquire' "$CI" || fail "ci.sh does not take the host lock"
+grep -Fq 'LAST_STACK_CI_HOST_LOCK: "1"' "$ROOT/.forgejo/workflows/ci.yml" || fail "the Forge workflow does not opt into the host lock"
 grep -Fq 'echo "ci_test done: $* rc=${ci_test_rc} secs=' "$CI" || fail "ci_test does not print a done line"
 
 echo "ok last-stack-ci-shard-supervisor"
