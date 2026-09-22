@@ -209,6 +209,21 @@ merge_405_verdict() {
   else
     mergeable="unknown"
   fi
+  # Forgejo recomputes `mergeable` asynchronously after a push, so a merge
+  # POST seconds after a push can read false on a clean branch. Re-read
+  # before calling it a conflict
+  # (papercut-forge-api-405-misreported-as-real-conflict-20260922).
+  if [[ "$mergeable" == "false" ]]; then
+    local reread
+    for reread in 1 2 3; do
+      sleep "${LAST_STACK_FORGE_MERGEABLE_REREAD_S:-3}"
+      pr_body="$(curl -sS -X GET -H "Authorization: token $token" -H "Accept: application/json" "$pr_url" 2>/dev/null || true)"
+      if [[ "$pr_body" =~ \"mergeable\"[[:space:]]*:[[:space:]]*true ]]; then
+        echo "last-stack-forge-api: PR #$pr_num read mergeable=false at the 405 and mergeable=true on re-read ${reread}: Forgejo was still recomputing after a push. Retry the merge call; this is not a conflict." >&2
+        return
+      fi
+    done
+  fi
   case "$mergeable" in
     false)
       echo "last-stack-forge-api: PR #$pr_num has mergeable=false — this 405 is a REAL CONFLICT, not a stuck status check." >&2
