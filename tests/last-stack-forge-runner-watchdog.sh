@@ -306,4 +306,41 @@ run_wd "$sd" "$lanes_pc_down" --dry-run
 echo "ok: --dry-run observes a pause without recording it"
 rm -f "$pause_file"
 
+# --- 19. launchd blind, forge says live: no revive, no page ------------------
+# A sandboxed caller's `launchctl list` can omit loaded runners. The forge's own
+# inventory decides. papercut-forge-runner-watchdog-dry-run-misclassifies-live-runners-20260922
+lanes_mac_live="$tmp/lanes-mac-live.json"
+cat >"$lanes_mac_live" <<'EOF2'
+{"heavy_ok_live": true,
+ "live": {"admin_runners": [
+   {"name":"pc-forge-runner","status":"idle","labels":["pc-linux"]},
+   {"name":"mac-forge-runner","status":"active","labels":["macos-arm64"]},
+   {"name":"mac-forge-runner-host","status":"idle","labels":["macos"]}],
+  "repo_runners": {"EdgeVector/exemem-infra": [
+   {"name":"mac-forge-runner-host-exemem-infra","status":"idle","labels":["macos","heavy"]}]}}}
+EOF2
+: >"$loaded"; : >"$bootstrapped"; : >"$pages"
+for l in com.edgevector.forgejo-runner-host com.edgevector.forgejo-runner-host-exemem-infra com.edgevector.forgejo-runner; do
+  touch "$plists/$l.plist"
+done
+sd="$tmp/s19"
+run_wd "$sd" "$lanes_mac_live"
+[ ! -s "$bootstrapped" ] || { echo "FAIL: revived lanes the forge reports live"; cat "$bootstrapped"; exit 1; }
+[ ! -s "$pages" ] || { echo "FAIL: paged about lanes the forge reports live"; cat "$pages"; exit 1; }
+grep -q "forge reports runner mac-forge-runner 'active'" "$sd/watchdog.log" \
+  || { echo "FAIL: the launchd/forge disagreement was not recorded"; cat "$sd/watchdog.log"; exit 1; }
+echo "ok: launchd-blind caller trusts the forge's live runner inventory"
+
+# --- 20. launchd blind AND forge says offline: still revive ------------------
+sed 's/"mac-forge-runner","status":"active"/"mac-forge-runner","status":"offline"/' "$lanes_mac_live" > "$tmp/lanes-mac-offline.json"
+: >"$loaded"; : >"$bootstrapped"; : >"$pages"
+sd="$tmp/s20"
+run_wd "$sd" "$tmp/lanes-mac-offline.json"
+grep -q "com.edgevector.forgejo-runner.plist" "$bootstrapped" \
+  || { echo "FAIL: an offline, unlisted merge-gate runner was not revived"; exit 1; }
+echo "ok: an offline runner is still revived"
+for l in com.edgevector.forgejo-runner-host com.edgevector.forgejo-runner-host-exemem-infra com.edgevector.forgejo-runner; do
+  rm -f "$plists/$l.plist"
+done
+
 echo "PASS last-stack-forge-runner-watchdog"

@@ -24,6 +24,15 @@ Examples:
   last-stack-forge-api --method POST --data @body.json repos/EdgeVector/fold/pulls
   last-stack-forge-api POST --data '{"Do":"merge","merge_when_checks_succeed":true}' repos/EdgeVector/fold/pulls/123/merge
 
+Response shapes worth knowing:
+  commits/<sha>/status is ONE object, not an array:
+    {"state":"success|failure|pending", "total_count":N, "statuses":[{context,status,target_url,...}]}
+  last-stack-forge-api repos/EdgeVector/fold/commits/<sha>/status --jq '.state'
+  last-stack-forge-api repos/EdgeVector/fold/commits/<sha>/status --jq '.statuses[] | [.context,.status] | @tsv'
+  A status target_url names a RUN NUMBER (.../actions/runs/<n>/jobs/<i>); the API has
+  no jobs or logs route for it. Read the job log with:
+    last-stack-forge-ci-log EdgeVector/fold --pr <number>   (or --sha <sha>, or <run-number>)
+
 Path forms:
   repos/OWNER/REPO/...      -> $FORGE_ROOT/api/v1/repos/OWNER/REPO/...
   /api/v1/repos/...         -> $FORGE_ROOT/api/v1/repos/...
