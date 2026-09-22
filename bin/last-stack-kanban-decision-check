@@ -84,10 +84,93 @@ def run_brain(argv: list[str]) -> subprocess.CompletedProcess | None:
     return None
 
 
+# ── gbrain backend ──────────────────────────────────────────────────────────
+# gbrain has been the primary knowledge store since 2026-09-06. The LastDB
+# `brain` this check reads by default kept only what was written to it after
+# that cutover: censused 2026-09-22 with `brain reindex --list-index --dry-run`,
+# it holds design=1, decision=3, preference=2, sop=2 against gbrain's ~12,910
+# pages. So the gate was honouring a corpus of six records and reporting
+# `verdict: honor` on everything else, until an unrelated index-marker error
+# made it fail loudly and exposed the gap.
+#
+# The two CLIs differ in exactly two ways that matter here:
+#
+#   * addressing — gbrain pages are `<dir>/<slug>`, where the directory is the
+#     type for most types but `wiki/concepts` for concepts. A bare
+#     `design-foo` slug therefore needs a prefix, and a prefix guess can be
+#     wrong, so a miss falls back to one exact-slug search rather than
+#     reporting the record absent. Absent and unaddressable must not look the
+#     same to a gate that fails closed.
+#   * search flags — `--types a,b` (one comma list), not repeated `--type`.
+#
+# Everything else — the invariants, the honor/conflict verdict, the stamp — is
+# backend-independent and untouched.
+BRAIN_CONFIG_PATH = Path(
+    os.environ.get("LAST_STACK_BRAIN_CONFIG", str(Path.home() / ".claude" / "brain-config.json"))
+)
+KNOWN_BRAIN_BINS = ("brain", "gbrain")
+
+
+def default_brain_bin() -> str:
+    """Which store holds the settled records TODAY.
+
+    Follows `~/.claude/brain-config.json` `.primary`, the switch the rest of
+    the workspace already uses to say which brain is primary (it also drives
+    the recall hook). Deliberately NOT a hard-coded "gbrain": that key is how
+    the cutover is reverted, and a gate that ignores it would keep reading
+    gbrain after the corpus moved back — the same failure as today, mirrored.
+
+    Order: explicit `--brain` (argparse default below) > `$BRAIN_BIN` >
+    `.primary` > `brain`. An unreadable or unrecognised config falls back to
+    `brain`, the historical behaviour.
+    """
+    env = os.environ.get("BRAIN_BIN")
+    if env:
+        return env
+    try:
+        cfg = json.loads(BRAIN_CONFIG_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return "brain"
+    primary = str(cfg.get("primary") or "").strip()
+    return primary if primary in KNOWN_BRAIN_BINS else "brain"
+
+
+GBRAIN_TYPE_DIRS = {
+    "design": "design",
+    "decision": "decision",
+    "preference": "preference",
+    "reference": "reference",
+    "sop": "sop",
+    "task": "task",
+    "project": "project",
+    "spike": "spike",
+    "agent": "agent",
+    "papercut": "papercut",
+    "concept": "wiki/concepts",
+    "concepts": "wiki/concepts",
+}
+
+
+def gbrain_candidate_paths(slug: str) -> list[str]:
+    """Addresses to try for a bare LastDB-brain slug, best guess first."""
+    if "/" in slug:
+        return [slug]
+    head = slug.split("-", 1)[0].lower()
+    seen: list[str] = []
+    for key in (head, head.rstrip("s"), head + "s"):
+        d = GBRAIN_TYPE_DIRS.get(key)
+        if d and f"{d}/{slug}" not in seen:
+            seen.append(f"{d}/{slug}")
+    return seen
+
+
 class Brain:
     def __init__(self, bin_name: str, fixture_dir: Path | None) -> None:
         self.bin_name = bin_name
         self.fixture_dir = fixture_dir
+        # Flavour is read off the binary NAME, so `--brain gbrain` or
+        # `BRAIN_BIN=/some/path/gbrain` both work with no extra flag.
+        self.gbrain = Path(bin_name).name.startswith("gbrain")
         self.gets: list[str] = []
         self.searches: list[str] = []
         self.degraded_types: list[str] = []
@@ -103,6 +186,8 @@ class Brain:
             if not path.is_file():
                 return None
             return path.read_text()
+        if self.gbrain:
+            return self._gbrain_get(slug)
         cp = run_brain([self.bin_name, "get", slug])
         if cp is None:
             self.timed_out = True
@@ -114,6 +199,32 @@ class Brain:
         if cp.returncode != 0:
             return None
         return cp.stdout
+
+    def _gbrain_get(self, slug: str) -> str | None:
+        for path in gbrain_candidate_paths(slug):
+            cp = run_brain([self.bin_name, "get", path])
+            if cp is None:
+                self.timed_out = True
+                self.fail_detail = (
+                    f"gbrain get {path} timed out twice "
+                    f"({BRAIN_CALL_TIMEOUT_S:.0f}s then {BRAIN_RETRY_TIMEOUT_S:.0f}s)"
+                )
+                return None
+            if cp.returncode == 0:
+                return cp.stdout
+        # Prefix guessing failed. One exact-slug search resolves the real
+        # address rather than letting an unaddressable record read as absent —
+        # the invariants only fire on slugs that were GOT, so a false absence
+        # silently disarms them.
+        for hit in self.search(slug):
+            full = str(hit.get("slug") or "")
+            if full.rsplit("/", 1)[-1] != slug:
+                continue
+            cp = run_brain([self.bin_name, "get", full])
+            if cp is not None and cp.returncode == 0:
+                return cp.stdout
+            break
+        return None
 
     def search(self, query: str) -> list[dict]:
         self.searches.append(query)
@@ -142,6 +253,8 @@ class Brain:
                     if m
                 ]
             return []
+        if self.gbrain:
+            return self._gbrain_search(query)
         # Prefer the untyped hybrid path. It does not enumerate a type list,
         # so an incomplete list index cannot block candidate discovery.
         ask = run_brain(
@@ -224,6 +337,75 @@ class Brain:
                 self.search_failures.values()
             ) or "all typed brain searches failed"
         return hits
+
+    def _gbrain_search(self, query: str) -> list[dict]:
+        """One `--types` search on gbrain. gbrain has no per-type list index,
+        so there is no partial-degradation path: a failure fails closed."""
+        cp = run_brain(
+            [
+                self.bin_name,
+                "search",
+                query,
+                "--types",
+                ",".join(TYPES),
+                "--limit",
+                str(SEARCH_LIMIT),
+                "--json",
+            ]
+        )
+        if cp is None:
+            self.failed = True
+            self.timed_out = True
+            self.fail_detail = (
+                f"gbrain search timed out twice "
+                f"({BRAIN_CALL_TIMEOUT_S:.0f}s then {BRAIN_RETRY_TIMEOUT_S:.0f}s) — "
+                "the store is too slow to run the decision check right now"
+            )
+            return []
+        if cp.returncode != 0:
+            self.failed = True
+            self.fail_detail = (cp.stderr or cp.stdout or "gbrain search failed").strip()
+            return []
+        try:
+            data = json.loads(cp.stdout or "[]")
+        except json.JSONDecodeError:
+            self.failed = True
+            self.fail_detail = "gbrain search --json is not JSON"
+            return []
+        if isinstance(data, dict) and data.get("error"):
+            self.failed = True
+            self.fail_detail = str(data.get("error"))
+            return []
+        if not isinstance(data, list):
+            self.failed = True
+            self.fail_detail = "gbrain search --json is not a list"
+            return []
+        return [self._normalize_gbrain_hit(x) for x in data if isinstance(x, dict)]
+
+    @staticmethod
+    def _normalize_gbrain_hit(hit: dict) -> dict:
+        """Present a gbrain row in LastDB-brain terms.
+
+        Two differences are normalised here rather than at each call site, so
+        the invariants, the point-get cap, the dedup and the printed stamp all
+        keep working on ONE slug vocabulary whichever store answered:
+
+        * `slug` arrives addressed (`preference/preference-foo`,
+          `wiki/concepts/concepts-bar`); the bare tail is the slug every
+          INVARIANT and every stamp is written in.
+        * `chunk_text` is gbrain's name for what this check calls `snippet`.
+
+        gbrain returns one row per CHUNK, so a page can appear several times.
+        The caller's `seen` set dedups, and it dedups correctly only once the
+        slugs are bare — two chunks of one page share a tail but not an id.
+        """
+        out = dict(hit)
+        slug = str(out.get("slug") or "").strip()
+        if slug:
+            out["slug"] = slug.rsplit("/", 1)[-1]
+        if "snippet" not in out and out.get("chunk_text"):
+            out["snippet"] = out["chunk_text"]
+        return out
 
 
 def goal_excerpt(body: str) -> str:
@@ -407,8 +589,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument(
         "--brain",
-        default=os.environ.get("BRAIN_BIN", "brain"),
-        help="brain CLI (ignored when --fixture-dir is set)",
+        default=default_brain_bin(),
+        help=(
+            "brain CLI (ignored when --fixture-dir is set). Defaults to $BRAIN_BIN, "
+            "else `.primary` from ~/.claude/brain-config.json, else `brain`."
+        ),
     )
     args = ap.parse_args(argv)
 
