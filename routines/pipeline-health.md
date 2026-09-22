@@ -292,6 +292,10 @@ What the ledger does, so you do not repeat it:
 - A PR red only on contexts that are also red on the base tip goes to ONE
   per-repo row, `papercut-pipeline-forge-<repo>-main-red`, and gets no per-PR
   row. Main red is the defect; fix main, not the PR.
+- It files nothing for a PR whose `kanban/<slug>` card is in `doing`, assigned,
+  and updated in the last 2 hours (`action=owned`): a live worker owns that red.
+  It also leaves a row alone that someone closed `duplicate`/`wontfix`
+  (`action=attributed`), for example onto a flaky required lane on main.
 - It closes its own rows `verified` from a live point read when the PR merges
   or closes, or when main turns green.
 

@@ -97,8 +97,26 @@ put "repos/$R/commits/head7/status" <<'J'
              {"context":"Forge CI / Mini (pull_request)","status":"failure","created_at":"2026-09-22T10:20:00Z"}]}
 J
 
+# fake board: card "x7" (PR 7's branch kanban/x7) is unowned unless OWNED_CARD names it
+cat >"$tmp/kanban-bin" <<'SH'
+#!/usr/bin/env bash
+[ "$1" = show ] || exit 2
+if [ "${OWNED_CARD:-}" = "$2" ]; then
+  printf '{"slug":"%s","column":"doing","assignee":"worker-1","updated_at":"2026-09-22T11:50:00Z"}\n' "$2"; exit 0
+fi
+printf '{"slug":"%s","column":"todo","assignee":"","updated_at":"2026-09-20T00:00:00Z"}\n' "$2"
+SH
+chmod +x "$tmp/kanban-bin"
+
 state="$tmp/state.json"
-sync() { "$LEDGER" sync --repo "$R" --brain-bin "$tmp/brain-bin" --state-file "$state" --json "$@" >"$tmp/out.json"; }
+sync() { "$LEDGER" sync --repo "$R" --brain-bin "$tmp/brain-bin" --kanban-bin "$tmp/kanban-bin" --state-file "$state" --json "$@" >"$tmp/out.json"; }
+
+# 0. a red PR whose card is in doing with a fresh worker is that worker's job
+OWNED_CARD=x7 sync --apply
+jq -e '.ledger.actions == [{"action":"owned","slug":"papercut-pipeline-forge-fold-pr-7","card":"x7"}]' "$tmp/out.json" >/dev/null \
+  || { echo "FAIL owned PR must not be filed"; cat "$tmp/out.json"; exit 1; }
+[ ! -f "$tmp/brain/papercut-pipeline-forge-fold-pr-7.status" ] || { echo "FAIL owned PR filed"; exit 1; }
+echo "ok   a PR owned by a fresh doing card is not filed"
 
 # 1. scan reads branch protection and takes the NEWEST status per context
 "$LEDGER" scan --repo "$R" --json >"$tmp/scan.json"

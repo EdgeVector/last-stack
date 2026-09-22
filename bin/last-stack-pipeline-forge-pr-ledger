@@ -333,6 +333,27 @@ LIVE = {"open", "partial", "fixed"}
 ATTRIBUTED = {"duplicate", "wontfix"}
 
 
+def live_card_owner(args: argparse.Namespace, pr: dict[str, Any], now: dt.datetime) -> str:
+    """Card slug when the PR's kanban/<slug> card is in doing, assigned, and fresh."""
+    ref = pr.get("head_ref") or ""
+    if not ref.startswith("kanban/"):
+        return ""
+    card_slug = ref[len("kanban/"):]
+    proc = run([args.kanban_bin, "show", card_slug, "--json"], timeout=45)
+    if proc.returncode != 0:
+        return ""
+    try:
+        card = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(card, dict) or card.get("column") != "doing" or not card.get("assignee"):
+        return ""
+    updated = parse_ts(card.get("updated_at"))
+    if not updated or (now - updated).total_seconds() > args.owner_fresh_min * 60:
+        return ""
+    return card_slug
+
+
 def evidence_line(pr: dict[str, Any], checked_at: str) -> str:
     req = ", ".join(f"{c}={s}" for c, s in pr["required"].items())
     return (
@@ -366,6 +387,14 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
         pr = prs[0]
         fingerprint = ";".join(sorted(f"{p['number']}:{p['head_sha']}:{p['shape']}" for p in prs))
         prior = tracked.get(slug) or {}
+        if not pr["root_cause"] and args.owner_fresh_min > 0:
+            owner = live_card_owner(args, pr, now_utc())
+            if owner:
+                # A red PR whose card is in doing with a worker that touched it
+                # recently is that worker's job, not pipeline friction. The
+                # pr-reaper's one-hour SLA still applies to it.
+                act("owned", slug, card=owner)
+                continue
         try:
             status = brain_status(brain, slug)
         except BrainBusy as exc:
@@ -540,6 +569,11 @@ def main() -> int:
             sp.add_argument("--apply", action="store_true", help="write the ledger (default: dry run)")
             sp.add_argument("--brain-bin", default=os.environ.get("BRAIN_BIN", "brain"))
             sp.add_argument("--state-file", default="")
+            sp.add_argument("--kanban-bin", default=os.environ.get("KANBAN_BIN", "kanban"))
+            sp.add_argument(
+                "--owner-fresh-min", type=int, default=120,
+                help="skip a PR whose kanban/<slug> card is in doing, assigned, and updated this recently (0 = never skip)",
+            )
     args = parser.parse_args()
     report = scan(args) if args.cmd == "scan" else sync(args)
     if args.json_out:
