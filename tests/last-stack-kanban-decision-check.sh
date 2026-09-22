@@ -129,11 +129,18 @@ assert p["conflicts"][0]["slug"] == "preference-kanban-no-trackers-no-human-gate
 print("decision-check tracker-conflict ok")
 PY
 
-# papercut/reference hits must not become stamp slugs
+# Search candidates with unsupported types still get a point-read. The
+# point-read type, not typed search metadata, controls the stamp set.
 other_dir="$tmp/other"
-mkdir -p "$other_dir"
+mkdir -p "$other_dir/get"
 cat >"$other_dir/search.json" <<'EOF'
 [{"slug":"papercut-example","score":1.0,"type":"papercut","title":"noise","snippet":""}]
+EOF
+cat >"$other_dir/get/papercut-example.txt" <<'EOF'
+[papercut] papercut-example
+title:      noise
+---
+This record must not enter the decision stamp.
 EOF
 run_json "$other_dir" >"$tmp/other.json"
 python3 - "$tmp/other.json" <<'PY'
@@ -141,7 +148,74 @@ import json, sys
 p = json.load(open(sys.argv[1]))
 assert p["verdict"] == "clear"
 assert p["slugs"] == []
+assert p["point_gets"] == ["papercut-example"]
 print("decision-check ignores non-decision types ok")
+PY
+
+# Candidate discovery uses the untyped hybrid ask path. A fake brain records
+# the argv and returns a valid point-get response, so this test rejects typed
+# enumeration on the preferred path.
+argv_log="$tmp/argv.log"
+typed_probe="$tmp/typed-probe"
+cat >"$typed_probe" <<'PROBE'
+#!/bin/sh
+printf '%s\n' "$*" >>"$ARGV_LOG"
+if [ "$1" = ask ] || [ "$1" = search ]; then
+  printf '%s\n' '[{"slug":"decision-probe","type":"decision"}]'
+else
+  printf '%s\n' '[decision] decision-probe'
+fi
+PROBE
+chmod +x "$typed_probe"
+ARGV_LOG="$argv_log" python3 "$BIN" --title "untyped search probe" --kind pr --column todo \
+  --brain "$typed_probe" --json <"$body_ok" >"$tmp/untyped.json"
+grep -q '^ask .*--limit .*--json$' "$argv_log" \
+  || fail "decision search must use untyped hybrid ask"
+if grep -q -- '^ask .*--type' "$argv_log"; then
+  fail "decision ask must not enumerate brain types"
+fi
+python3 - "$tmp/untyped.json" <<'PY'
+import json, sys
+p = json.load(open(sys.argv[1]))
+assert p["verdict"] == "honor"
+assert p["point_gets"] == ["decision-probe"]
+print("decision-check untyped-hybrid-search ok")
+PY
+
+# One incomplete type index degrades the candidate set but does not close the
+# gate. The other type still supplies a point-read candidate.
+degraded_log="$tmp/degraded.log"
+degraded_probe="$tmp/degraded-probe"
+cat >"$degraded_probe" <<'PROBE'
+#!/bin/sh
+printf '%s\n' "$*" >>"$ARGV_LOG"
+case "$*" in
+  *'--type design '*)
+    printf '%s\n' 'design index incomplete' >&2
+    exit 1
+    ;;
+  *)
+    case "$1" in
+      search)
+        printf '%s\n' '[{"slug":"decision-probe","type":"decision"}]'
+        ;;
+      *)
+        printf '%s\n' '[decision] decision-probe'
+        ;;
+    esac
+    ;;
+esac
+PROBE
+chmod +x "$degraded_probe"
+ARGV_LOG="$degraded_log" python3 "$BIN" --title "degraded search probe" --kind pr --column todo \
+  --brain "$degraded_probe" --json <"$body_ok" >"$tmp/degraded.json"
+python3 - "$tmp/degraded.json" <<'PY'
+import json, sys
+p = json.load(open(sys.argv[1]))
+assert p["verdict"] == "honor"
+assert p["degraded_types"] == ["design"]
+assert p["search_failures"]["design"] == "design index incomplete"
+print("decision-check degraded-type search ok")
 PY
 
 # a stdin that never delivers a byte must fail fast, not deadlock the caller
