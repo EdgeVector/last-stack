@@ -7,7 +7,7 @@ bash -n "$BIN"
 bash -n "$ROOT/lib/canary-loom/loom-canary-step.sh"
 bash -n "$ROOT/lib/canary-loom/loom-run-deadline.sh"
 [ -f "$ROOT/lib/canary-loom/lastdb-canary-release.json" ] || fail "graph missing"
-[ "$(jq -r .version "$ROOT/lib/canary-loom/lastdb-canary-release.json")" = "9" ] \
+[ "$(jq -r .version "$ROOT/lib/canary-loom/lastdb-canary-release.json")" = "10" ] \
   || fail "canary graph version did not advance"
 jq -e '
   .states.CALL_A.epoch_from == "candidate_artifact_digest"
@@ -30,6 +30,10 @@ jq -e '[.states[] | select(.type == "agent") | .command[2], (.check[2]? // empty
        | all(contains("${LOOM_SCRIPTS:-"))' \
   "$ROOT/lib/canary-loom/lastdb-safe-upgrade.json" >/dev/null \
   || fail "a safe-upgrade node command lacks the LOOM_SCRIPTS fallback"
+jq -e '.states.BUILD_POLL.epoch_from == "build_poll_revision"
+       and .states.SOAK.epoch_from == "soak_poll_revision"' \
+  "$ROOT/lib/canary-loom/lastdb-canary-release.json" >/dev/null \
+  || fail "repeatable canary polls do not bind their result epoch to the poll revision"
 [ "$(jq -r '.states.RECOVER_LIVE.timeout_sec' "$ROOT/lib/canary-loom/lastdb-canary-release.json")" = "300" ] \
   || fail "RECOVER_LIVE budget must cover a measured 64s healthy pass plus a busy node"
 jq -e '.start_at == "DECIDE_ENTRY" and
