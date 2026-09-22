@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Drive the shipped last-stack-design-pack against fixture brain files.
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/lib/python-cache.sh"  # writable py_compile cache
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 BIN="$ROOT/bin/last-stack-design-pack"

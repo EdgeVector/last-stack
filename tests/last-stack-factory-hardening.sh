@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Smoke tests for factory-hardening tools (no destructive live actions).
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/lib/python-cache.sh"  # writable py_compile cache
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 

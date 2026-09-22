@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/lib/python-cache.sh"  # writable py_compile cache
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 bin="$ROOT/bin/last-stack-factory-health"
 inst="$ROOT/bin/last-stack-factory-health-install"
