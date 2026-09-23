@@ -73,7 +73,7 @@ import sys
 from pathlib import Path
 
 module = runpy.run_path(sys.argv[1])
-module["installed_root"] = lambda app: Path(sys.argv[2])
+module["probe_admission"].__globals__["installed_root"] = lambda app: Path(sys.argv[2])
 os.environ["LAST_STACK_ADMISSION_FIXTURE"] = sys.argv[3]
 result = module["probe_admission"]()
 cases = result["cases"]

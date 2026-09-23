@@ -130,7 +130,7 @@ fi
 # tree on EVERY refresh. Those dirs are GC'd, and a pinned prompt stops tracking
 # merged prompt changes — silently, because the file still exists for a while.
 # Resolve through /var -> /private/var so comparisons match what pwd -P returns.
-ver_home="$(CDPATH= cd -- "$(mktemp -d)" && pwd -P)"
+ver_home="$(CDPATH= cd -- "$(mktemp -d /var/tmp/last-stack-registry-host-paths.XXXXXX)" && pwd -P)"
 mkdir -p "$ver_home/.last-stack/routines"
 mkdir -p "$ver_home/.local/state/last-stack/artifacts/versions/deadbeef/routines"
 printf '# compat\n' >"$ver_home/.last-stack/routines/feature-prove.md"
@@ -173,7 +173,7 @@ rm -rf "$ver_home"
 # unreadable during an install, the readable-check fails and the writer used to
 # emit the versioned fallback — which is why the pin came back on every refresh
 # even after REG_STABLE_ROOT was guarded.
-race_home="$(CDPATH= cd -- "$(mktemp -d)" && pwd -P)"
+race_home="$(CDPATH= cd -- "$(mktemp -d /var/tmp/last-stack-registry-host-paths.XXXXXX)" && pwd -P)"
 mkdir -p "$race_home/.local/state/last-stack/artifacts/versions/cafe01/routines"
 printf '# versioned\n' >"$race_home/.local/state/last-stack/artifacts/versions/cafe01/routines/feature-prove.md"
 # NOTE: no $race_home/.last-stack/routines/feature-prove.md — the compat path is
