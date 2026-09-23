@@ -10,7 +10,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 cd "$ROOT"
 
-bad="$(grep -nE 'dirname (-- )?"\$(0|\{BASH_SOURCE\[0\]\})"\)/\.\.' bin/* 2>/dev/null || true)"
+# A line may keep the link's own location on purpose; it must say why with
+# `# root-link-ok: <reason>` (last-stack-self-upgrade inspects the compat root).
+bad="$(grep -nE 'dirname (-- )?"\$(0|\{BASH_SOURCE\[0\]\})"\)/\.\.' bin/* 2>/dev/null | grep -v 'root-link-ok:' || true)"
 if [ -n "$bad" ]; then
   echo "FAIL: bin/ scripts derive ROOT from an unresolved \$0 (breaks behind a ~/.local/bin symlink):" >&2
   printf '%s\n' "$bad" >&2
