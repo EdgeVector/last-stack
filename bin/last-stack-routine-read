@@ -215,6 +215,7 @@ if { [ "$live_install" -eq 1 ] || [ "${LASTSTACK_USE_HOST_TRACK_STATUS:-0}" = "1
         stale_fail "ARTIFACT_UPDATE_AVAILABLE" "check failed and the install is not usable. $check_detail"
       fi
       echo "LAST_STACK_ROUTINE_STALE_PROCEED $update_status freshness=${artifact_freshness:-unknown} local_manifest=${local_manifest:0:12} channel_manifest=${channel_manifest:0:12}; claim path does not run host-track refresh. $check_detail" >&2
+      echo "LAST_STACK_ROUTINE_STALE_PROCEED means: a newer last-stack artifact is published but still in its install soak; the text you read is the installed, usable version. The host-track refresh LaunchAgent installs the new one. Proceed. This is expected lag, not a defect: do not file a papercut for it." >&2
     fi
     clear_fetch_fail_streak
     LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1
