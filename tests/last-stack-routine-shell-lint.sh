@@ -161,6 +161,22 @@ expect 0 bash date-iso-ok <<'EOF'
 date -u +%Y-%m-%dT%H:%M:%SZ
 EOF
 
+expect 2 bash printf-dash-double <<'EOF'
+printf '--- %s ---\n' "$slug"
+EOF
+expect 2 bash printf-dash-item <<'EOF'
+printf "- %s\n" "$slug"
+EOF
+expect 0 bash printf-dash-safe <<'EOF'
+printf '%s\n' '- item'; printf -- '- %s\n' "$slug"
+EOF
+expect 2 bash bin-mktemp <<'EOF'
+f=$(/bin/mktemp "$TMPDIR/x.XXXXXX")
+EOF
+expect 0 bash usr-bin-and-bin-sh-ok <<'EOF'
+f=$(/usr/bin/mktemp); /bin/sh -c 'echo ok'; /bin/date -u; ls ~/.local/bin/jq-helper
+EOF
+
 # --- zsh-only rules ----------------------------------------------------------
 expect 2 zsh zsh-status-assign <<'EOF'
 for pr in 1 2; do status=$(curl -s x); echo "$status"; done
@@ -173,6 +189,21 @@ status=$(curl -s x); echo "$status"
 EOF
 expect 0 zsh zsh-status-word-ok <<'EOF'
 routines status --json > s.json; jq -r '.status' s.json; git status --short
+EOF
+expect 2 zsh zsh-status-after-do <<'EOF'
+for pr in 1 2; do status=$(curl -s x); done
+EOF
+expect 2 zsh zsh-status-line-start <<'EOF'
+status="$(git rev-parse HEAD)"
+EOF
+expect 0 zsh zsh-status-in-grep-alternation-ok <<'EOF'
+brain get x --type papercut | grep -n -i 'duplicate of\|status=\|done' | head
+EOF
+expect 0 zsh zsh-status-in-dquoted-arg-ok <<'EOF'
+brain papercut close x --status verified --evidence "outcome.txt says status=ok"
+EOF
+expect 0 zsh zsh-status-key-in-url-ok <<'EOF'
+last-stack-forge-api 'repos/o/r/pulls?status=open&limit=5' --jq '.[] | .number'
 EOF
 expect 2 zsh zsh-mapfile <<'EOF'
 mapfile -t slugs < slugs.txt
