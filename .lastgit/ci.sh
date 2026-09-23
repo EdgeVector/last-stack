@@ -757,4 +757,8 @@ ci_test tests/last-stack-ci-shard-supervisor.sh
 # forge + fake brain + fake board, no node, no network.
 # APPENDED (see the shard-stability note above): ci_test shards by list position.
 ci_test tests/last-stack-pipeline-forge-pr-ledger.sh
+# wt start prunes a stale missing-path registration and installs locked bun
+# deps; hermetic temp repos, fake bun, no network.
+# APPENDED (see the shard-stability note above): ci_test shards by list position.
+ci_test tests/last-stack-portal-wt-start-stale-registration.sh
 ci_test tests/last-stack-ci-test-registration.sh
