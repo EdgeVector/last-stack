@@ -753,9 +753,8 @@ ci_test tests/last-stack-deploy-watch-routine.sh
 # Heartbeat + internal deadline of this gate's shard runner. Fake shards,
 # no network, ~6s. APPENDED before the registration guard, which stays last.
 ci_test tests/last-stack-ci-shard-supervisor.sh
-ci_test tests/last-stack-ci-test-registration.sh
-
 # One papercut per Forgejo PR (not per state), self-closing on merge; fake
 # forge + fake brain + fake board, no node, no network.
 # APPENDED (see the shard-stability note above): ci_test shards by list position.
 ci_test tests/last-stack-pipeline-forge-pr-ledger.sh
+ci_test tests/last-stack-ci-test-registration.sh
