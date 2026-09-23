@@ -212,6 +212,17 @@ runner_live_status() {  # runner-name
     | map(select(.name == $n)) | .[0].status // empty' "$LIVE_JSON" 2>/dev/null || true
 }
 
+# --- launchd view sentinel -----------------------------------------------------
+# A sandboxed or routine shell can get an empty or foreign `launchctl list`. The
+# watchdog's own LaunchAgent is always loaded in the owner's gui domain, so when
+# the caller cannot see it, the caller's launchd view is blind: "not listed"
+# then proves nothing. On 2026-09-23T05:58Z a blind shell ran the paging mode
+# while the forge inventory was a 403, and paged all three Mac lanes DOWN; the
+# scheduled run 12 minutes later paged "healthy again".
+LAUNCHD_SENTINEL="${FORGE_WATCHDOG_LAUNCHD_SENTINEL:-com.edgevector.forge-runner-watchdog}"
+LAUNCHD_VIEW_OK=1
+agent_loaded "$LAUNCHD_SENTINEL" || LAUNCHD_VIEW_OK=0
+
 # --- lane checks --------------------------------------------------------------
 
 check_local_lane() {  # label, human-name, what-it-blocks, [forge runner name]
@@ -232,6 +243,13 @@ check_local_lane() {  # label, human-name, what-it-blocks, [forge runner name]
   fi
   if deliberately_paused "$label"; then
     add_info "$name is parked on purpose (.paused-* marker) — not reviving."
+    return 0
+  fi
+  # Blind launchd view AND no complete forge inventory: there is no evidence
+  # either way. Do not revive from a domain we cannot see, and do not page.
+  if [ "$LAUNCHD_VIEW_OK" -eq 0 ] && [ "$LIVE_OK" -eq 0 ]; then
+    add_info "$name: this shell cannot see launchd ($LAUNCHD_SENTINEL not listed) and the forge inventory is incomplete. Lane state unknown here; not reviving, not paging."
+    log "$name ($label): launchd view blind and forge inventory incomplete; skipped"
     return 0
   fi
   log "$name ($label) is NOT loaded; attempting revive"
