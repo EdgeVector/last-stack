@@ -151,6 +151,16 @@ expect 0 bash sed-n-ok <<'EOF'
 sed -n 's/^DONE-WHEN:[[:space:]]*//p' body.md
 EOF
 
+expect 2 bash date-nanos <<'EOF'
+start_ms=$(date +%s%3N); kanban ping; end_ms=$(date +%s%3N)
+EOF
+expect 0 bash gdate-nanos-ok <<'EOF'
+start_ms=$(gdate +%s%3N)
+EOF
+expect 0 bash date-iso-ok <<'EOF'
+date -u +%Y-%m-%dT%H:%M:%SZ
+EOF
+
 # --- zsh-only rules ----------------------------------------------------------
 expect 2 zsh zsh-status-assign <<'EOF'
 for pr in 1 2; do status=$(curl -s x); echo "$status"; done

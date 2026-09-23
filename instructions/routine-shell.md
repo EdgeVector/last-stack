@@ -18,6 +18,7 @@ fix, and the command does not run.
 | jq-escaped-quote | `\"` inside `\( )` is a jq syntax error | `[.slug, .status, (.severity // "-")] \| @tsv` |
 | awk-match-array | macOS awk has no `match(s, /re/, arr)` | `sed -n 's/^KEY:[[:space:]]*//p' file` |
 | sed-inplace | macOS `sed -i` takes the next word as an extension | `sed -i '' 's/a/b/' file` |
+| date-nanos | macOS `date` has no `%N` | `gdate +%s%3N` |
 | zsh-status (Claude) | `status` is read-only in zsh | `rc`, `pr_state`, `ci_state` |
 | zsh-mapfile (Claude) | zsh has no `mapfile` | `while IFS= read -r x; do ...; done < "$file"` |
 
