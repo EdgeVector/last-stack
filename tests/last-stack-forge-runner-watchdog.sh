@@ -21,7 +21,10 @@ pause_file="$tmp/pc-pause.json"               # durable owner PC pause, factory-
 cat >"$tmp/launchctl" <<'EOF'
 #!/usr/bin/env bash
 case "${1:-}" in
-  list)      cat "$FAKE_LOADED" 2>/dev/null || true ;;
+  list)      cat "$FAKE_LOADED" 2>/dev/null || true
+             # The watchdog's own agent is loaded in a real gui domain; a
+             # blind (sandboxed) caller sees nothing at all.
+             [ "${FAKE_LAUNCHD_BLIND:-0}" = "1" ] || printf '1\t0\tcom.edgevector.forge-runner-watchdog\n' ;;
   enable)    : ;;
   bootstrap) printf '%s\n' "${3:-}" >> "$FAKE_BOOTSTRAPPED"
              # A bootstrap "succeeds": mark the label loaded for later probes.
@@ -417,5 +420,32 @@ grep -q "forge reports runner mac-forge-runner-host 'idle'" "$sd/watchdog.log" \
   || { echo "FAIL: partial inventory not used for the launchd-blind fallback"; cat "$sd/watchdog.log"; exit 1; }
 rm -f "$plists/com.edgevector.forgejo-runner-host.plist"
 echo "ok: a partial inventory still feeds the launchd-blind fallback"
+
+# --- 23. blind launchd view + incomplete inventory: no revive, no page ------
+# 2026-09-23T05:58Z: a sandboxed shell saw no agents, the forge answered 403,
+# and the watchdog paged all three Mac lanes DOWN. Neither source had evidence.
+: >"$loaded"; : >"$bootstrapped"; : >"$pages"
+for l in com.edgevector.forgejo-runner-host com.edgevector.forgejo-runner-host-exemem-infra com.edgevector.forgejo-runner; do
+  touch "$plists/$l.plist"
+done
+sd="$tmp/s23"
+FAKE_LAUNCHD_BLIND=1 run_wd "$sd" "$lanes_403"
+[ ! -s "$bootstrapped" ] || { echo "FAIL: a blind shell revived lanes"; cat "$bootstrapped"; exit 1; }
+if grep -q "is DOWN" "$pages"; then
+  echo "FAIL: a blind shell with a 403 inventory paged lanes DOWN"; cat "$pages"; exit 1
+fi
+grep -q "launchd view blind" "$sd/watchdog.log" \
+  || { echo "FAIL: blind launchd view not logged"; cat "$sd/watchdog.log"; exit 1; }
+echo "ok: a blind shell with an incomplete inventory does not page lanes down"
+
+# blind launchd view but a COMPLETE inventory that says offline: still acts
+: >"$bootstrapped"; : >"$pages"
+FAKE_LAUNCHD_BLIND=1 run_wd "$tmp/s23b" "$tmp/lanes-mac-offline.json"
+grep -q "com.edgevector.forgejo-runner.plist" "$bootstrapped" \
+  || { echo "FAIL: complete inventory saying offline was ignored in a blind shell"; exit 1; }
+for l in com.edgevector.forgejo-runner-host com.edgevector.forgejo-runner-host-exemem-infra com.edgevector.forgejo-runner; do
+  rm -f "$plists/$l.plist"
+done
+echo "ok: a complete inventory still drives revive in a blind shell"
 
 echo "PASS last-stack-forge-runner-watchdog"
