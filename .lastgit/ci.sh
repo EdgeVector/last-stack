@@ -378,6 +378,7 @@ ci_test tests/last-stack-north-star-portal-resolver.sh
 ci_test tests/last-stack-portal-wt-fetch-detaches-idle-main.sh
 ci_test tests/last-stack-portal-wt-rm-accepts-branch.sh
 ci_test tests/last-stack-portal-wt-start-help.sh
+ci_test tests/last-stack-portal-wt-stale-registration.sh
 ci_test tests/last-stack-pickup-zsh-timeout.sh
 ci_test tests/last-stack-portal-live-checkout.sh
 ci_test tests/last-stack-pipeline-health-gate.sh
@@ -768,5 +769,8 @@ ci_test tests/last-stack-worktree-reclaim-lsof-fallback.sh
 # APPENDED (see the shard-stability note above): ci_test shards by list position.
 ci_test tests/last-stack-kanban-cheap-health-reads.sh
 ci_test tests/last-stack-kanban-watch-targeted-heal.sh
+# wt start installs locked bun deps; hermetic temp repo, fake bun, no network.
+# APPENDED (see the shard-stability note above): ci_test shards by list position.
+ci_test tests/last-stack-portal-wt-start-installs-deps.sh
 ci_test tests/last-stack-bin-root-resolves-symlinks.sh
 ci_test tests/last-stack-ci-test-registration.sh

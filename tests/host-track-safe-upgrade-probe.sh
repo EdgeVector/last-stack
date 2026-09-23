@@ -232,4 +232,25 @@ HOST_TRACK_PROBE_SKIP=1 "$ROOT/bin/host-track" refresh --force demo >/dev/null \
 skip_out="$(demo || true)"
 [ "$skip_out" = broken ] || fail "skip-probe did not activate the new binary: $skip_out"
 
+# A forced restage of the LIVE digest has no incumbent of its own. When the
+# probe fails there AND on `previous`, that is a shared cause (a missing probe
+# fixture record, 2026-09-23 brain), not a bad binary: INCONCLUSIVE, current
+# unchanged, no rollback to an older build that fails the same probe.
+# (papercut-host-track-red-probe-rolls-current-back-when-incumbent-also-fails-20260923)
+publish_fixture "$digest_shared" "$oid_shared" $'#!/usr/bin/env bash\nif [ -e "$HOME/shared-probe-down" ]; then echo shared-down >&2; exit 1; fi\necho ok-v3'
+HOST_TRACK_PROBE_SKIP=1 HOST_TRACK_ACTIVATE=1 "$ROOT/bin/host-track" refresh --force demo >/dev/null \
+  || fail "skip-probe should activate the shared-control tree"
+[ "$(readlink "$HOME/apps/demo/current")" = "versions/$digest_shared" ] \
+  || fail "fixture: shared tree is not current"
+touch "$HOME/shared-probe-down"
+HOST_TRACK_ACTIVATE=1 "$ROOT/bin/host-track" refresh --force demo >/dev/null 2>"$tmp/restage.err" \
+  || fail "a restage that fails on current and previous should be inconclusive: $(cat "$tmp/restage.err")"
+grep -q 'INCONCLUSIVE' "$tmp/restage.err" \
+  || fail "restage did not report INCONCLUSIVE: $(cat "$tmp/restage.err")"
+! grep -q 'rolling current back' "$tmp/restage.err" \
+  || fail "restage rolled current back on a shared failure: $(cat "$tmp/restage.err")"
+[ "$(readlink "$HOME/apps/demo/current")" = "versions/$digest_shared" ] \
+  || fail "restage changed current: $(readlink "$HOME/apps/demo/current")"
+rm -f "$HOME/shared-probe-down"
+
 printf 'ok: host-track probe-before-cutover\n'
