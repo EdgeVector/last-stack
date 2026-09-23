@@ -2,8 +2,7 @@
 # Does not write LastDB; does not file material-growth cards.
 # Prompt lives under last-stack/routines (portal-safe; never uses raw portal --repo).
 id = "coderings-weekly-fold"
-harness = "grok"
-model = "grok-4.5"
+difficulty = "normal"
 fallback      = "grok:grok-4.5"
 rrule = "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=15;BYSECOND=0"
 cwd = "/Users/REPLACE/code/edgevector"

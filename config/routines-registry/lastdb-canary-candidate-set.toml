@@ -4,8 +4,7 @@
 # to registry `next`. Replaces lastdb-canary-build-main + lastdb-canary-dogfood.
 # Live entries are seeded by bin/last-stack-lastdb-canary-candidate-set-routine.
 id = "lastdb-canary-candidate-set"
-harness = "claude"
-model = "sonnet"
+difficulty = "normal"
 effort = "medium"
 group = "dogfood"
 rrule = "FREQ=DAILY;BYHOUR=2;BYMINUTE=47;BYSECOND=0"

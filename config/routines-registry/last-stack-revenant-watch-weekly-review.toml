@@ -2,8 +2,7 @@
 # First natural fire: Thursday 08:05 (≈1 week cadence after 2026-08-06 ship).
 # Reviews daily miner health, finding quality, fixture bar; reports Tom; small fixes.
 id = "last-stack-revenant-watch-weekly-review"
-harness = "grok"
-model = "grok-4.5"
+difficulty = "normal"
 fallback = "grok:grok-4.5"
 effort = "medium"
 group = "board"

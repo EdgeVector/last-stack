@@ -4,8 +4,7 @@
 # the deploy itself is the durable deploy-main Loom graph. Live entries are
 # seeded by bin/last-stack-deploy-watch-routine.
 id = "deploy-watch"
-harness = "claude"
-model = "sonnet"
+difficulty = "fast"
 effort = "low"
 group = "ops"
 rrule = "FREQ=MINUTELY;INTERVAL=5;BYSECOND=0"

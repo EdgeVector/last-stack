@@ -2,8 +2,7 @@
 # Zero product-code writes — one `search drain --max-files N` call per fire.
 # BYMINUTE offset +3 from the pickup 5-minute grid to avoid crowding it.
 id = "search-inbox-drain"
-harness = "codex"
-model = "gpt-5.5"
+difficulty = "fast"
 effort = "low"
 group = "search"
 rrule = "FREQ=HOURLY;INTERVAL=1;BYMINUTE=8,23,38,53;BYSECOND=0"

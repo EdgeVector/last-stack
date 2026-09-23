@@ -152,8 +152,7 @@ write_worker() {
     printf '# One bounded post-merge or terminal North Star proof per wake.\n'
     printf '# Independent registry id provides a separate lock and slot budget.\n'
     printf 'id = "%s"\n' "$worker"
-    printf 'harness = "codex"\n'
-    printf 'model = "gpt-5.5"\n'
+    printf 'difficulty = "normal"\n'
     printf 'effort = "medium"\n'
     printf 'rrule = "FREQ=HOURLY;BYMINUTE=%s;BYSECOND=%s"\n' "$byminute" "$second"
     printf 'cwd = "%s"\n' "$REG_CWD"
@@ -197,8 +196,7 @@ fi
   printf '# One bounded post-merge or terminal North Star proof per wake.\n'
   printf '# Independent registry id provides a separate lock and slot budget.\n'
   printf 'id = "%s"\n' "$ID"
-  printf 'harness = "codex"\n'
-  printf 'model = "gpt-5.5"\n'
+  printf 'difficulty = "normal"\n'
   printf 'effort = "medium"\n'
   printf 'rrule = "FREQ=HOURLY;BYMINUTE=0,15,30,45;BYSECOND=0"\n'
   printf 'cwd = "%s"\n' "$REG_CWD"

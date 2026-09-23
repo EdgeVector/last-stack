@@ -295,8 +295,7 @@ write_worker() {
     printf '# %s\n' "$peer_note"
     printf '# Staggered slot: +%02d:%02d in each 15-minute cycle. Tom 2026-07-16.\n' "$((offset / 60))" "$second"
     printf 'id = "%s"\n' "$id"
-    printf 'harness = "codex"\n'
-    printf 'model = "gpt-5.5"\n'
+    printf 'difficulty = "fast"\n'
     printf 'effort = "high"\n'
     printf 'rrule = "FREQ=HOURLY;BYMINUTE=%s;BYSECOND=%s"\n' "$byminute" "$second"
     printf 'cwd = "%s"\n' "$REG_CWD"
