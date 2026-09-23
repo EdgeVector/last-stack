@@ -19,7 +19,13 @@
 #
 # Usage: last-stack-pc-run [--timeout SECS] [--distro NAME] SCRIPT
 #        last-stack-pc-run [--timeout SECS] - < SCRIPT
-# Env:   LAST_STACK_PC_HOST (default pc), FORGE_TOKEN (see lib/forge-token.sh)
+# Env:   LAST_STACK_PC_HOST (default pc), FORGE_TOKEN (see lib/forge-token.sh),
+#        LAST_STACK_PC_CI_STATE (default ~/.local/state/last-stack/pc-ci/state.json)
+#
+# Owner pause: when that state file says intent=paused (Tom reserves the PC,
+# e.g. for gaming), this helper REFUSES (exit 3) and prints the reason and the
+# end time. On 2026-09-23 an agent ran cargo on the PC during such a pause
+# because nothing on the hand-rolled path read the file.
 set -euo pipefail
 
 self="${BASH_SOURCE[0]}"
@@ -49,6 +55,21 @@ done
 case "$timeout_s" in ''|*[!0-9]*) echo "last-stack-pc-run: --timeout takes whole seconds" >&2; exit 2 ;; esac
 if [ "$script" != "-" ] && [ ! -r "$script" ]; then
   echo "last-stack-pc-run: cannot read $script" >&2; exit 2
+fi
+
+state_file="${LAST_STACK_PC_CI_STATE:-$HOME/.local/state/last-stack/pc-ci/state.json}"
+if [ -f "$state_file" ] && command -v jq >/dev/null 2>&1 \
+  && jq -e '.intent == "paused"' "$state_file" >/dev/null 2>&1; then
+  until_ts="$(jq -r '.until // empty' "$state_file" 2>/dev/null || true)"
+  now_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  # An expired pause (until in the past) does not block; string compare works
+  # for the fixed-width UTC form the pause writer uses.
+  if [ -z "$until_ts" ] || [[ "$now_ts" < "$until_ts" ]]; then
+    echo "last-stack-pc-run: REFUSED: the PC is paused by its owner until ${until_ts:-further notice}." >&2
+    echo "last-stack-pc-run: reason: $(jq -r '.reason // "none given"' "$state_file" 2>/dev/null)" >&2
+    echo "last-stack-pc-run: run the work on the Mac or wait; do not bypass an owner pause." >&2
+    exit 3
+  fi
 fi
 
 token="$(last_stack_forge_token 2>/dev/null || true)"

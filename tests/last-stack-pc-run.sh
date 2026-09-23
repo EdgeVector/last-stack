@@ -19,6 +19,7 @@ FAKE
 chmod +x "$WORK/bin/ssh"
 printf 'echo hello-from-script\n' >"$WORK/job.sh"
 
+export LAST_STACK_PC_CI_STATE="$WORK/no-pause.json"
 out="$(FAKE_DIR="$WORK" FORGE_TOKEN=secret-tok PATH="$WORK/bin:$PATH" "$BIN" --timeout 30 "$WORK/job.sh")"
 [ "$out" = remote-ok ] || fail "stdout: $out"
 grep -q '^export GIT_TERMINAL_PROMPT=0$' "$WORK/stdin" || fail "no GIT_TERMINAL_PROMPT=0"
@@ -41,4 +42,15 @@ start=$SECONDS
 set +e; FORGE_TOKEN=t PATH="$WORK/bin:$PATH" "$BIN" --timeout 2 "$WORK/job.sh" >/dev/null 2>&1; rc=$?; set -e
 [ "$rc" -ne 0 ] || fail "timeout returned 0"
 [ $((SECONDS - start)) -lt 15 ] || fail "timeout did not stop the hung ssh"
+# owner pause: refuse while paused, run once the pause has expired
+cat >"$WORK/bin/ssh" <<'FAKE'
+#!/usr/bin/env bash
+cat >/dev/null; echo remote-ok
+FAKE
+printf '{"intent":"paused","until":"2999-01-01T00:00:00Z","reason":"gaming"}\n' >"$WORK/paused.json"
+set +e; err="$(LAST_STACK_PC_CI_STATE="$WORK/paused.json" FORGE_TOKEN=t PATH="$WORK/bin:$PATH" "$BIN" "$WORK/job.sh" 2>&1 >/dev/null)"; rc=$?; set -e
+[ "$rc" -eq 3 ] && [[ "$err" == *"paused by its owner"*"gaming"* ]] || fail "pause not honored: rc=$rc err=$err"
+printf '{"intent":"paused","until":"2000-01-01T00:00:00Z","reason":"old"}\n' >"$WORK/expired.json"
+out="$(LAST_STACK_PC_CI_STATE="$WORK/expired.json" FORGE_TOKEN=t PATH="$WORK/bin:$PATH" "$BIN" "$WORK/job.sh")"
+[ "$out" = remote-ok ] || fail "expired pause still blocked: $out"
 echo "ok last-stack-pc-run"
