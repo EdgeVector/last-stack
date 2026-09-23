@@ -51,6 +51,7 @@ git -C "$repo" commit -qm init
 # handling. Pinning the floor absurdly high makes "under pressure" true
 # everywhere, so this test measures what it claims to.
 HOME="$tmp" WORKTREES_DIR="$tmp/worktrees" \
+  LAST_STACK_RECLAIM_SKIP_LSOF=1 \
   LAST_STACK_RECLAIM_FREE_FLOOR_GIB=999999 \
   "$bin" --sweep-stale --max-age-hours 999999 >"$tmp/out.log" 2>&1 || true
 

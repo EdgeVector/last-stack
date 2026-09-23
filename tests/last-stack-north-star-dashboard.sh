@@ -329,7 +329,11 @@ PATH="$WORK/brainbin:$PATH" "$BIN" \
   --html "$WORK/coupled.html" \
   --put-brain \
   --stdout none >/dev/null 2>&1
-coupled_mode="$(stat -f '%OLp' "$WORK/coupled.html" 2>/dev/null || stat -c '%a' "$WORK/coupled.html")"
+if stat --version >/dev/null 2>&1; then
+  coupled_mode="$(stat -c '%a' "$WORK/coupled.html")"
+else
+  coupled_mode="$(stat -f '%OLp' "$WORK/coupled.html")"
+fi
 [ "$coupled_mode" = "644" ] \
   || { echo "atomic publish changed the snapshot mode to $coupled_mode" >&2; exit 1; }
 

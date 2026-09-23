@@ -463,7 +463,11 @@ jq -e '
   echo "FAIL: restart intent does not match the Fold boot-ledger contract" >&2
   exit 1
 }
-intent_mode="$(stat -f '%Lp' "$intent_file" 2>/dev/null || stat -c '%a' "$intent_file")"
+if stat --version >/dev/null 2>&1; then
+  intent_mode="$(stat -c '%a' "$intent_file")"
+else
+  intent_mode="$(stat -f '%Lp' "$intent_file")"
+fi
 [ "$intent_mode" = 600 ] || {
   echo "FAIL: restart intent mode is $intent_mode, expected 600" >&2
   exit 1

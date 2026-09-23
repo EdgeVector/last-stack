@@ -74,10 +74,16 @@ printf '%s\n' "$second" | grep -q 'frozen=' || fail "activation did not report f
 
 # One rule: active version tree is not writable (agents cannot hand-edit).
 resolved="$(cd "$install_root/current" && pwd -P)"
-if touch "$resolved/bin/.write-should-fail" 2>/dev/null; then
-  rm -f "$resolved/bin/.write-should-fail"
-  fail "active artifact version tree remained writable after activation"
+# The PC CI container runs as root. Root can bypass a-w permissions, so a
+# write probe would test the container user instead of the artifact mode.
+if stat --version >/dev/null 2>&1; then
+  active_mode="$(stat -c '%a' "$resolved/bin")"
+else
+  active_mode="$(stat -f '%OLp' "$resolved/bin")"
 fi
+case "$active_mode" in
+  *[2367]) fail "active artifact version tree remained writable after activation (mode=$active_mode)" ;;
+esac
 
 git_owner="$tmp/git-owner"
 mkdir -p "$git_owner" "$install_root/versions/manifest-two"

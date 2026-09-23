@@ -30,7 +30,7 @@ verdict() {
   local out
   out="$(printf '{"tool_name":"Bash","tool_input":{"command":%s}}' \
     "$(jq -Rn --arg c "$1" '$c')" | HOME="$tmp" bash "$HOOK")"
-  if printf '%s' "$out" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null 2>&1; then
+  if [ -n "$out" ] && printf '%s' "$out" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null 2>&1; then
     printf 'DENY\n'
   else
     printf 'ALLOW\n'
