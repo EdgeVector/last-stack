@@ -64,6 +64,16 @@ class H(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"number": 405, "mergeable": False, "state": "open"}))
         elif self.path.endswith("/pulls/406"):
             self._send(200, json.dumps({"number": 406, "mergeable": True, "state": "open"}))
+        elif self.path.endswith("/pulls/501"):
+            self._send(200, json.dumps({"number": 501, "state": "open", "head": {"sha": "aaaa501"}}))
+        elif self.path.endswith("/pulls/502"):
+            self._send(200, json.dumps({"number": 502, "state": "open", "head": {"sha": "bbbb502"}}))
+        elif self.path.endswith("/commits/aaaa501/status"):
+            self._send(200, json.dumps({"state": "pending", "statuses": [
+                {"context": "Forge CI / ci-required (pull_request)", "status": "pending"}]}))
+        elif self.path.endswith("/commits/bbbb502/status"):
+            self._send(200, json.dumps({"state": "success", "statuses": [
+                {"context": "Forge CI / ci-required (pull_request)", "status": "success"}]}))
         else:
             self._send(200, body200)
 
@@ -247,4 +257,33 @@ if [[ "$jq_tsv" != $'a\tb' ]]; then
   echo "FAIL: --jq @tsv should print a real tab, got: $jq_tsv" >&2
   exit 1
 fi
+
+# --- Case 6: update-branch refuses while a check is pending ---
+# papercut-forge-pr-branch-update-cancels-in-flight-ci-20260922: an update
+# cancels the in-flight run and re-queues the PR at the end of the host lane.
+set +e
+upd_out="$("$API" --method POST repos/EdgeVector/fold/pulls/501/update 2>&1 >/dev/null)"
+rc=$?
+set -e
+if [[ "$rc" -ne 3 || "$upd_out" != *"REFUSED update-branch"* ]]; then
+  echo "FAIL: update-branch with a pending check should exit 3 REFUSED, got rc=$rc" >&2
+  echo "got: $upd_out" >&2
+  exit 1
+fi
+if grep -q 'POST /api/v1/repos/EdgeVector/fold/pulls/501/update' "$LOG_FILE"; then
+  echo "FAIL: the refused update still reached the forge" >&2
+  exit 1
+fi
+upd_ok="$("$API" --method POST repos/EdgeVector/fold/pulls/502/update)"
+if [[ "$upd_ok" != *'"ok":true'* ]]; then
+  echo "FAIL: update-branch on a terminal head should pass through, got: $upd_ok" >&2
+  exit 1
+fi
+upd_force="$(LAST_STACK_FORGE_UPDATE_BRANCH_FORCE=1 "$API" --method POST repos/EdgeVector/fold/pulls/501/update)"
+if [[ "$upd_force" != *'"ok":true'* ]]; then
+  echo "FAIL: LAST_STACK_FORGE_UPDATE_BRANCH_FORCE=1 should pass through, got: $upd_force" >&2
+  exit 1
+fi
+
+echo "ok last-stack-forge-api update-branch pending guard"
 echo "ok last-stack-forge-api error-body + 2xx path + 405 mergeable partition + --jq flag guard + raw strings"

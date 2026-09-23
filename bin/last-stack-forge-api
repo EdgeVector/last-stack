@@ -59,6 +59,11 @@ Env:
   FORGE_TOKEN    API token override; otherwise keychain forgejo-token, then
                  lastsecrets://forgejo-token (survives a locked keychain)
 
+Update-branch guard:
+  POST .../pulls/<n>/update is refused (exit 3) while the PR head has a pending
+  check: the update cancels the in-flight run and re-queues the PR. BEHIND never
+  blocks a merge on this forge. Override: LAST_STACK_FORGE_UPDATE_BRANCH_FORCE=1.
+
 HTTP errors:
   On non-2xx, prints "HTTP <code> <METHOD> <url>" and the response body to
   stderr, then exits 1. Never uses curl -f (which discarded the body as
@@ -182,6 +187,35 @@ token="$(last_stack_forge_token || true)"
 if [[ -z "$token" ]]; then
   last_stack_forge_token_missing_msg
   exit 1
+fi
+
+# Update-branch guard (papercut-forge-pr-branch-update-cancels-in-flight-ci-20260922).
+# POST .../pulls/<n>/update merges main into the PR branch. Forgejo then
+# cancels the in-flight run of the old head, and the new head goes to the END
+# of the host-lane queue. On 2026-09-22 this threw away 25 minutes of a
+# capacity-2 lane for PR 121 and PR 120. No EdgeVector repo sets
+# block_on_outdated_branch, so a BEHIND branch never blocks a merge. Refuse the
+# update while the head has a pending check; override with
+# LAST_STACK_FORGE_UPDATE_BRANCH_FORCE=1.
+update_branch_guard() {
+  local pr_url="${url%%\?*}" pr_body head_sha status_body state
+  pr_url="${pr_url%/update}"
+  command -v jq >/dev/null 2>&1 || return 0
+  pr_body="$(curl -sS -X GET -H "Authorization: token $token" -H "Accept: application/json" "$pr_url" 2>/dev/null || true)"
+  head_sha="$(printf '%s' "$pr_body" | jq -r '.head.sha // empty' 2>/dev/null || true)"
+  [[ -n "$head_sha" ]] || return 0
+  status_body="$(curl -sS -X GET -H "Authorization: token $token" -H "Accept: application/json" "${pr_url%/pulls/*}/commits/$head_sha/status" 2>/dev/null || true)"
+  state="$(printf '%s' "$status_body" | jq -r '[.statuses[]? | select(.status == "pending")] | length' 2>/dev/null || echo 0)"
+  if [[ "$state" =~ ^[0-9]+$ && "$state" -gt 0 ]]; then
+    echo "last-stack-forge-api: REFUSED update-branch: PR head ${head_sha:0:10} has $state pending check(s)." >&2
+    echo "last-stack-forge-api: an update now cancels the in-flight run and re-queues the PR at the end of the lane." >&2
+    echo "last-stack-forge-api: BEHIND does not block a merge on this forge. Wait for the checks to finish." >&2
+    echo "last-stack-forge-api: override (rare): LAST_STACK_FORGE_UPDATE_BRANCH_FORCE=1" >&2
+    exit 3
+  fi
+}
+if [[ "$method" == "POST" && "${url%%\?*}" == */pulls/*/update && "${LAST_STACK_FORGE_UPDATE_BRANCH_FORCE:-0}" != "1" ]]; then
+  update_branch_guard
 fi
 
 # Do NOT pass curl -f. A 409/405 from merge auto-arm must keep the response
