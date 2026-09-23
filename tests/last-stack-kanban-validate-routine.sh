@@ -14,7 +14,11 @@ printf '%s\n' '---' 'name: kanban-validate' '---' >"$prompt"
 entry="$tmp/registry/last-stack-fkanban-validate.toml"
 test -f "$entry"
 grep -q 'id = "last-stack-fkanban-validate"' "$entry"
-grep -q 'harness = "codex"' "$entry"
+grep -q 'difficulty = "normal"' "$entry"
+if grep -Eq '^(harness|model|pin) =' "$entry"; then
+  echo 'validate seed pins a harness; it must route by the matrix' >&2
+  exit 1
+fi
 grep -q 'effort = "medium"' "$entry"
 grep -q 'rrule = "FREQ=HOURLY;BYMINUTE=0,15,30,45;BYSECOND=0"' "$entry"
 grep -q 'timeout_min = 30' "$entry"

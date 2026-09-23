@@ -1,8 +1,7 @@
 # PROFILE=normal — keep product feature public readiness tied to North Star completion
 # Zero-LLM script; daily off the crowded pickup hours.
 id = "product-feature-ns-reconcile"
-harness = "codex"
-model = "gpt-5.5"
+difficulty = "fast"
 effort = "low"
 group = "board"
 rrule = "FREQ=DAILY;BYHOUR=7;BYMINUTE=17;BYSECOND=0"

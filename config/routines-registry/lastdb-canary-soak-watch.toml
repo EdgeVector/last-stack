@@ -1,7 +1,6 @@
 # Hourly v2 reconciler tick. One stateless verdict from durable evidence.
 id = "lastdb-canary-soak-watch"
-harness = "claude"
-model = "sonnet"
+difficulty = "fast"
 effort = "low"
 group = "ops"
 rrule = "FREQ=HOURLY;INTERVAL=1;BYMINUTE=34;BYSECOND=0"

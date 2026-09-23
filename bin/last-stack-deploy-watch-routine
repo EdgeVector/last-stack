@@ -79,8 +79,7 @@ body=$(cat <<EOF
 # deployed through the durable deploy-main Loom graph. Replaces the per-repo
 # launchd watchers (com.edgevector.lastgit-deploy-*). Zero-agent gate.
 id = "$ID"
-harness = "claude"
-model = "sonnet"
+difficulty = "fast"
 effort = "low"
 group = "ops"
 rrule = "FREQ=MINUTELY;INTERVAL=5;BYSECOND=0"

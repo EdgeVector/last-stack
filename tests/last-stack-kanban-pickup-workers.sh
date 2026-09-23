@@ -84,8 +84,11 @@ if grep -q 'BYMINUTE=' "$worker_entry"; then
 fi
 
 "$BIN" --workers 6 --registry-dir "$tmp/registry" --prompt-path "$prompt" --bootstrap-path "$bootstrap" --force-defaults >/dev/null
-grep -q 'harness = "codex"' "$worker_entry"
-grep -q 'model = "gpt-5.5"' "$worker_entry"
+grep -q 'difficulty = "fast"' "$worker_entry"
+if grep -Eq '^(harness|model|pin) =' "$worker_entry"; then
+  echo 'pickup-workers seed pins a harness; it must route by the matrix' >&2
+  exit 1
+fi
 grep -q 'BYMINUTE=10,25,40,55;BYSECOND=0' "$worker_entry"
 if grep -q 'fallback =' "$worker_entry"; then
   echo "pickup-workers force-defaults retained leftover fallback:" >&2

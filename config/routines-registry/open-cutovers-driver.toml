@@ -2,8 +2,7 @@
 # Advances live brain open-cutovers lines (ops resume + ledger close).
 # :41 avoids crowded pickup :00/:30 and pipeline :01 slots.
 id = "open-cutovers-driver"
-harness = "codex"
-model = "gpt-5.5"
+difficulty = "normal"
 effort = "medium"
 group = "board"
 rrule = "FREQ=HOURLY;INTERVAL=2;BYMINUTE=41;BYSECOND=0"
