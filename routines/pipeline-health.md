@@ -159,6 +159,10 @@ read/write, fail loudly if the resolved path is empty or starts with
      The ledger JSON already holds every field; read it with `jq -r ... @tsv`.
    - Put every jq filter in single quotes. Never escape quotes inside a
      double-quoted jq program.
+   - In zsh an unmatched glob is an ERROR (`no matches found`) and stops the
+     whole command. Do not glob log or state directories; the helpers above
+     already read them. If you must glob, run `setopt NULL_GLOB` first in the
+     same command (`papercut-pipeline-health-zsh-unmatched-daemon-glob`).
    - Do not name a shell variable `status`, `path`, or `argv`: zsh reserves
      them (`status=0` stops with `read-only variable: status`, and the heartbeat
      never ran; `papercut-pipeline-health-closeout-zsh-status-variable`). Use
@@ -186,20 +190,9 @@ Include `closed=` from that heartbeat when relevant. See
 **not** mean the pipeline is healthy.
 
 ```bash
-scan="$("$last_stack/bin/last-stack-pipeline-deploy-scan" --json 2>/dev/null || true)"
-# Fallback if helper not yet installed on this machine:
-if [ -z "$scan" ] || [ "$scan" = "[]" ] && [ ! -x "$last_stack/bin/last-stack-pipeline-deploy-scan" ]; then
-  # Inline: for each ~/.lastgit/deploy-*/deploy.log, take last success|failure|pending line.
-  scan="[]"
-  for d in "$HOME"/.lastgit/deploy-*/; do
-    [ -f "$d/deploy.log" ] || continue
-    repo="$(basename "$d" | sed 's/^deploy-//')"
-    last="$(rg '^(success|failure|pending) ' "$d/deploy.log" | tail -1 || true)"
-    echo "deploy-scan $repo :: $last"
-  done
-else
-  printf '%s\n' "$scan" | jq -r '.[] | [.repo, .status, (.blocked|tostring), .reason] | @tsv'
-fi
+run_dir="${ROUTINES_RUN_DIR:-$(mktemp -d)}"
+"$last_stack/bin/last-stack-pipeline-deploy-scan" --json >"$run_dir/deploy-scan.json" 2>"$run_dir/deploy-scan.err" || true
+jq -r '.[] | [.repo, .status, (.blocked|tostring), .reason] | @tsv' "$run_dir/deploy-scan.json"
 ```
 
 For each **blocked** entry (`blocked=true`, or human scan shows latest
