@@ -376,8 +376,11 @@ file_fingerprint() {
   local path="$1" mode inode sha
   [ -f "$path" ] && [ ! -L "$path" ] || return 1
   mode="$(_dev_stamp_file_mode "$path")" || return 1
-  inode="$(stat -f '%d:%i' "$path" 2>/dev/null || stat -c '%d:%i' "$path" 2>/dev/null)" \
-    || return 1
+  if stat --version >/dev/null 2>&1; then
+    inode="$(stat -c '%d:%i' "$path")" || return 1
+  else
+    inode="$(stat -f '%d:%i' "$path")" || return 1
+  fi
   sha="$(dev_stamp_sha256_file "$path")" || return 1
   printf '%s:%s:%s\n' "$mode" "$inode" "$sha"
 }
