@@ -807,4 +807,8 @@ ci_test tests/last-stack-prompt-kanban-json-envelope.sh
 ci_test tests/last-stack-portal-wt-forge-credential.sh
 ci_test tests/last-stack-pc-run.sh
 ci_test tests/last-stack-forge-dbfs-read.sh
+# Offline terminal proof for north-star-exemem-hands-off-prod-deploy.
+# Fixture tree and a redacted evidence file. No deploy, no LastDB home.
+# APPENDED before the registration guard, which stays last.
+ci_test tests/last-stack-north-star-proof-exemem-hands-off.sh
 ci_test tests/last-stack-ci-test-registration.sh
