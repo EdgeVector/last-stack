@@ -220,8 +220,8 @@ smoke_search() {
 smoke_fkanban() {
   local root="$1"
   ensure_bin_wrapper "$root" kanban
-  PATH="$root/bin:$PATH" kanban list --column todo >/dev/null \
-    || die "smoke: kanban list failed"
+  PATH="$root/bin:$PATH" kanban ping >/dev/null \
+    || die "smoke: kanban ping failed"
   printf 'safe-upgrade-cli: kanban smoke OK\n'
 }
 

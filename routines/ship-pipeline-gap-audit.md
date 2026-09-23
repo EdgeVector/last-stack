@@ -43,7 +43,7 @@ last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 Socket health (busy-node = skip, do not restart):
 
 ```bash
-kanban ping >/dev/null 2>&1 || kanban list --column todo --json >/dev/null
+kanban ping >/dev/null 2>&1
 ```
 
 If the node is busy (`service_timeout` / concurrent reads), write a short

@@ -48,7 +48,7 @@ Read the skill file fully before acting:
 `"$last_stack/skills/north-star-hygiene/SKILL.md"`
 
 ## Each run
-1. Preflight cheap `kanban list --column todo --json` (or board list limit 1).
+1. Preflight with the cheap socket health check `kanban ping`.
 2. Run FIX mode from the skill (detect → create orphan NS projects → clear
    confirmed mistags → refresh dashboard with `--put-brain --html`).
    Wrap the final dashboard refresh in a command budget:
