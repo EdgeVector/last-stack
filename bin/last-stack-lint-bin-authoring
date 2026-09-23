@@ -28,7 +28,7 @@
 #   -h | --help           print this usage
 set -euo pipefail
 
-SELF_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+SELF_ROOT="$(cd "$(dirname "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 ROOT="$SELF_ROOT"
 MODE=gate
 BASELINE_PATH=""

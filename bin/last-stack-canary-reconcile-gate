@@ -8,7 +8,7 @@
 # contract for tests and ad-hoc runs; this wrapper is the explicit switch
 # the scheduled routine points at.
 set -euo pipefail
-ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+ROOT="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 case "${1:-}" in
   -h|--help)
     printf '%s\n' 'last-stack-canary-reconcile-gate' \

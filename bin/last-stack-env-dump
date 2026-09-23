@@ -14,7 +14,7 @@
 # only, so a filter can never widen what the mask covers.
 set -euo pipefail
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+root="$(cd "$(dirname "$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")")/.." && pwd -P)"
 masker="$root/bin/last-stack-mask-secrets"
 
 if [ ! -x "$masker" ]; then
