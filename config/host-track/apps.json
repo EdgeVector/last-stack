@@ -66,6 +66,10 @@
           "target": "$HOME/.local/bin/last-stack-post-merge-safe-upgrade"
         },
         {
+          "source": "bin/last-stack-kanban-reopen-deferred",
+          "target": "$HOME/.local/bin/last-stack-kanban-reopen-deferred"
+        },
+        {
           "source": "bin/last-stack-ship-soak-loom",
           "target": "$HOME/.local/bin/last-stack-ship-soak-loom"
         },

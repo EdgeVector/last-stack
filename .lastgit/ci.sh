@@ -269,6 +269,9 @@ ci_test tests/last-stack-why-stopped-class-a-timeout.sh
 ci_test tests/last-stack-lastdb-ops-offenders.sh
 ci_test tests/last-stack-lastdb-ops-offenders-routine.sh
 ci_test tests/last-stack-kanban-pickup-workers.sh
+# Deferred deploy holds must clear only after the recorded commit reaches the
+# live build, and a second pass must make no board writes.
+ci_test tests/last-stack-kanban-reopen-deferred.sh
 ci_test tests/last-stack-kanban-pickup-gate.sh
 # last-stack ci-required is forge run --all, not a per-repo ci watch.
 # Pickup kept filing last-stack watcher cards because pgrep missed the fleet
