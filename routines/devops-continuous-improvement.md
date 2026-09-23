@@ -153,7 +153,7 @@ For work that should be shipped by the normal pickup pipeline, file or update
 one precise card per unit of work. Make it pickup-ready:
 
 ```bash
-body_file="$(mktemp)"
+body_file="$(mktemp "${TMPDIR:-/tmp}/body.XXXXXX")"
 cat > "$body_file" <<'EOF'
 Follow the kanban-agent skill, WORK mode. Drive this card through to a MERGED PR.
 
@@ -180,7 +180,7 @@ PR merged into <base>.
 EOF
 <board-cli> add <slug> --board <board> --title "<title>" --column todo \
   --tags devops,ci < "$body_file"
-rm -f "$body_file"
+# No cleanup step: the Codex exec guard rejects file deletion. $TMPDIR is the run scratch dir.
 ```
 
 Before filing, search the board and Brain for existing work covering the same

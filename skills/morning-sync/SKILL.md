@@ -325,7 +325,7 @@ stands up, `todo` is freshly stocked and the pipeline takes over.
       body:
       ```bash
       slug="decision-<date>-<short-kebab-of-the-call>"   # unique, stable
-      body_file="$(mktemp)"
+      body_file="$(mktemp "${TMPDIR:-/tmp}/body.XXXXXX")"
       cat > "$body_file" <<'EOF'
       ---
       type: decision
@@ -344,7 +344,7 @@ stands up, `todo` is freshly stocked and the pipeline takes over.
       Rationale: <one line, in Tom's framing>
       EOF
       brain put "$slug" --type decision < "$body_file"
-      rm -f "$body_file"
+      # No cleanup step: the Codex exec guard rejects file deletion. $TMPDIR is the run scratch dir.
       ```
       This is the permanent memory — "remember all the decisions." Each decision
       is its own record (discover via `brain search`/`ask` + `brain get`; never

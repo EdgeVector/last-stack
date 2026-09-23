@@ -48,8 +48,9 @@ the dispatch envelope. Never invent trailers in interactive sessions. Prefer
 filing a fix **card** over landing code in this routine.
 
 ## Setup
-- Drive the board CLI from `<board repo dir>` with `<board CLI> ...` (`fkanban`
-  or `kanban` shim).
+- Drive the board CLI from `<board repo dir>` with `<board CLI> ...`. On an
+  EdgeVector host `<board CLI>` is `kanban` and `<brain-cli>` is `brain`.
+  There is no `fkanban` binary; the `fkanban` in routine ids is a legacy name.
 - Follow the **kanban-agent** skill, **VALIDATE MODE** — it is the source of
   truth for outcomes; this prompt is the trigger + candidate policy.
 - Normalize scheduled-shell PATH before CLI-heavy work:

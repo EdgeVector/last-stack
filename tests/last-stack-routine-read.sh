@@ -255,4 +255,9 @@ fi
 grep -q 'LAST_STACK_ROUTINE_INVALID' "/tmp/last-stack-routine-read-invalid.$$"
 rm -f "/tmp/last-stack-routine-read-invalid.$$"
 
+help_out="$("$ROOT/bin/last-stack-routine-read" --help)"
+grep -q 'usage: last-stack-routine-read' <<<"$help_out"
+closeout_out="$(LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "$ROOT/bin/last-stack-routine-read" close-out)"
+grep -q '^name: close-out' <<<"$closeout_out"
+
 echo "ok"

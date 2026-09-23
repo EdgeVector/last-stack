@@ -26,8 +26,22 @@ is_artifact_runtime() {
   return 1
 }
 
+usage() {
+  cat <<'USAGE'
+usage: last-stack-routine-read <routine-name>
+
+Print the installed routine prompt routines/<routine-name>.md after a
+freshness check. A skill-backed routine with no routines/ prompt (for example
+close-out) falls back to skills/<routine-name>/SKILL.md.
+USAGE
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+esac
+
 if [ "$#" -ne 1 ]; then
-  echo "usage: last-stack-routine-read <routine-name>" >&2
+  usage >&2
   exit 2
 fi
 
@@ -270,6 +284,12 @@ if [ "${LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK:-0}" != "1" ] && [ -x "$ROOT/bin/las
 fi
 
 routine_path="$ROOT/routines/$routine.md"
+# Close-out is a skill, not a routines/ prompt, yet every routine is told to
+# run it last and agents read it through this reader
+# (papercut-routine-closeout-reader-missing).
+if [ ! -r "$routine_path" ] && [ -r "$ROOT/skills/$routine/SKILL.md" ]; then
+  routine_path="$ROOT/skills/$routine/SKILL.md"
+fi
 if [ ! -r "$routine_path" ]; then
   echo "LAST_STACK_ROUTINE_MISSING routine=$routine path=$routine_path" >&2
   echo "The installed Last Stack runtime does not contain this routine prompt." >&2

@@ -42,6 +42,9 @@ Env:
   LAST_STACK_JANITOR_LAG_LOCKS_DIR   override locks dir
   LAST_STACK_JANITOR_LAG_SUCCESS_DIR override success-epoch dir
   LAST_STACK_JANITOR_LAG_NOW_EPOCH   override now
+  LAST_STACK_JANITOR_LAG_MAX_AGE_SEC proceed when the last success is older
+                                     than this, or absent (default 86400;
+                                     0 disables the floor)
 USAGE
 }
 
@@ -105,6 +108,29 @@ stale_sec="${LAST_STACK_JANITOR_LAG_STALE_SEC:-7200}"
 cadence_sec="${LAST_STACK_JANITOR_LAG_CADENCE_SEC:-3600}"
 case "$stale_sec" in ''|*[!0-9]*) stale_sec=7200 ;; esac
 case "$cadence_sec" in ''|*[!0-9]*) cadence_sec=3600 ;; esac
+
+# Max-age floor. Every other check below waits for an idle factory (doing=0,
+# no pickup in flight, lag debt). card-reaper enforces a settled SLA
+# (decision-card-stale-kill-slo-20260719) and kills doing squatters, so a busy
+# board kept it skipped forever: doing>0 is the condition it exists to fix
+# (papercut-card-reaper-janitor-gate-requires-doing-zero-20260922). When the
+# last success is older than the floor, or there never was one, proceed.
+routines_home="${ROUTINES_HOME:-${HOME}/.routines}"
+max_age_sec="${LAST_STACK_JANITOR_LAG_MAX_AGE_SEC:-86400}"
+case "$max_age_sec" in ''|*[!0-9]*) max_age_sec=86400 ;; esac
+floor_success_file="${LAST_STACK_JANITOR_LAG_SUCCESS_DIR:-${routines_home}/state/janitor-lag}/${id}.success-epoch"
+floor_last=0
+if [ -f "$floor_success_file" ]; then
+  floor_last="$(head -n 1 "$floor_success_file" 2>/dev/null || echo 0)"
+fi
+case "$floor_last" in ''|*[!0-9]*) floor_last=0 ;; esac
+if [ "$max_age_sec" -gt 0 ]; then
+  if [ "$floor_last" -eq 0 ]; then
+    proceed "max-age-floor last_success=none max_age_s=${max_age_sec}"
+  elif [ $((now_epoch - floor_last)) -ge "$max_age_sec" ]; then
+    proceed "max-age-floor last_success_age_s=$((now_epoch - floor_last)) max_age_s=${max_age_sec}"
+  fi
+fi
 
 state_path="${LAST_STACK_JANITOR_LAG_STATE:-${last_stack}/state/factory-health/state.json}"
 if [ ! -f "$state_path" ]; then

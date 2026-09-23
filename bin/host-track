@@ -361,14 +361,21 @@ registry_index_local_copy() {
   fi
   header=()
   [ -z "$token" ] || header=(-H "Authorization: token $token")
-  if ! curl -fsS --max-time 20 "${header[@]}" -o "$cache/$channel.json.tmp" "${index%/}/$channel.json"     || ! curl -fsS --max-time 20 "${header[@]}" -o "$cache/$channel.json.sig.tmp" "${index%/}/$channel.json.sig"; then
-    rm -f "$cache/$channel.json.tmp" "$cache/$channel.json.sig.tmp"
+  # Per-writer temp names. Two refreshes that overlap used to share
+  # "$channel.json.tmp": one renamed it away and the other printed
+  # "mv: rename ... next.json.tmp: No such file or directory"
+  # (papercut-host-track-registry-index-cache-rename-race-20260921).
+  local tmp_json="$cache/$channel.json.tmp.$$" tmp_sig="$cache/$channel.json.sig.tmp.$$"
+  if ! curl -fsS --max-time 20 "${header[@]}" -o "$tmp_json" "${index%/}/$channel.json"     || ! curl -fsS --max-time 20 "${header[@]}" -o "$tmp_sig" "${index%/}/$channel.json.sig"; then
+    rm -f "$tmp_json" "$tmp_sig"
     printf 'host-track: registry index %s/%s.json is not readable (forge token %s)\n' \
       "$index" "$channel" "$([ -n "$token" ] && echo present || echo absent)" >&2
     return 1
   fi
-  mv -f "$cache/$channel.json.tmp" "$cache/$channel.json"
-  mv -f "$cache/$channel.json.sig.tmp" "$cache/$channel.json.sig"
+  # rename(2) is atomic per file; the last writer wins, and both writers
+  # fetched the same published index.
+  mv -f "$tmp_json" "$cache/$channel.json"
+  mv -f "$tmp_sig" "$cache/$channel.json.sig"
   printf '%s\n' "$cache"
 }
 

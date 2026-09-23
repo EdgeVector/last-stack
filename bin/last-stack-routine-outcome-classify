@@ -136,6 +136,15 @@ def classify_row(row: dict[str, Any]) -> dict[str, Any]:
         result["healthy"] = True
         return result
 
+    # A routine that has never run (new id, or registered minutes ago) has no
+    # outcome to judge. Counting it red inflated fleet red counts
+    # (papercut-routine-outcome-classifier-counts-never-run-as-red).
+    if row.get("lastRun") is None and last_outcome is None and last_exit is None:
+        result["skipped"] = True
+        result["healthy"] = True
+        result["classified"] = "not-yet-run"
+        return result
+
     if is_observer(routine_id):
         classified = classify_observer(last_exit, detail, timed_out)
         result["classified"] = classified

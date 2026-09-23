@@ -55,6 +55,16 @@
       "lastOutcome": "ok",
       "lastExit": 0,
       "lastOutcomeDetail": "unit=kanban-groom-parity-check rc=1"
+    },
+    {
+      "id": "last-stack-fkanban-validate-w6",
+      "status": "active",
+      "running": false,
+      "lastRun": null,
+      "lastOutcome": null,
+      "lastExit": null,
+      "lastOutcomeDetail": null,
+      "nextFire": "2026-09-22T20:57:30Z"
     }
   ]
 }

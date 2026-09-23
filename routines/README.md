@@ -388,6 +388,19 @@ Do not use Bash-only `mapfile` / `readarray` in agent-facing snippets; macOS and
 `zsh` sessions commonly lack them. Use a portable `while IFS= read -r ...` loop
 or a short Python snippet for list handling.
 
+The full zsh + Codex exec guard rule set lives in `sop-routine-shared-contract`
+§5 (`configurations get sop-routine-shared-contract`). The short form:
+
+- No `rm -f` / `rm -rf` in a routine command. The Codex exec guard rejects the
+  whole command before it runs. Use `mktemp "$TMPDIR/<name>.XXXXXX"` (routinesd
+  sets `TMPDIR` to the run scratch dir) and leave the file; truncate with
+  `: > "$f"` to reset it.
+- Quote heredocs that carry text (`<<'EOF'`), and put Markdown bodies in a
+  file before you pass them to `--body "$(cat "$f")"`.
+- zsh does not word-split `$var`: loop with `while IFS= read -r x`.
+- macOS awk has no `match(s, re, arr)`; use `sed -n 's/^KEY: *//p'`.
+- Put a pattern that holds backticks in single quotes.
+
 When a routine starts from a workspace container (the directory that holds
 your repos), discover child Git repositories before running
 repo-level Git commands. The root may not be a checkout. Use a child-repo pass

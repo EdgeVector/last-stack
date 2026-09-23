@@ -21,6 +21,13 @@ grep -q 'gate_rc' "$bootstrap"
 grep -q 'gateProceeded' "$bootstrap"
 grep -q "$prompt" "$bootstrap"
 grep -q 'routine-read-failed no_card_claimed' "$bootstrap"
+# The Codex exec guard rejects any routine command that deletes a file, so the
+# prescribed bootstrap must carry no rm cleanup (40+ papercuts, 2026-09-21/22).
+if grep -Eq '(^|[;&| ])rm -(r?f|fr)' "$bootstrap"; then
+  echo "bootstrap must not prescribe rm cleanup" >&2
+  exit 1
+fi
+grep -q 'mktemp "${TMPDIR:-/tmp}/kanban-pickup-prompt' "$bootstrap"
 
 for id in \
   last-stack-fkanban-pickup \

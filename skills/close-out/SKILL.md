@@ -191,10 +191,18 @@ duplicate: append measured evidence to the live record instead of forking a
 near-duplicate slug.
 
 ```bash
+pc_body="$(mktemp "${TMPDIR:-/tmp}/papercut.XXXXXX")"
+cat > "$pc_body" <<'EOF'
+<symptom, exact output, repro, date, repo, suggested fix — `backticks` and $vars safe>
+EOF
 brain papercut file <slug> --component <c> --symptom "<one line>" \
-  --title "<what is wrong>" --severity p0|p1|p2|p3 --body "<symptom, exact
-  output, repro, date, repo, suggested fix>"
+  --title "<what is wrong>" --severity p0|p1|p2|p3 --body "$(cat "$pc_body")"
 ```
+
+Build the body in a file with a QUOTED heredoc (`<<'EOF'`). A body typed
+inside `--body "..."` runs its backticks and `$(...)` in zsh and pastes
+command output into the record. Do not add `rm -f` cleanup: the Codex exec
+guard rejects the whole command. Full shell rules: `sop-routine-shared-contract` §5.
 
 If you healed the friction in this same session, file it, then close it with
 evidence (a merge reference is not a live check):
@@ -224,7 +232,7 @@ shell-expanded command arguments. If the body contains backticks, `$()`,
 so the shell cannot evaluate it.
 
 ```bash
-body_file="$(mktemp)"
+body_file="$(mktemp "${TMPDIR:-/tmp}/closeout.XXXXXX")"
 cat > "$body_file" <<'EOF'
 ---
 type: reference
@@ -263,7 +271,7 @@ tags: [closeout]
 <what was not done, and why it is safe to leave>
 EOF
 brain put closeout-<YYYYMMDD>-<short-kebab> --type reference < "$body_file"
-rm -f "$body_file"
+# No cleanup step: the Codex exec guard rejects file deletion. $TMPDIR is the run scratch dir.
 ```
 
 Point-get the slug back (`brain get closeout-<YYYYMMDD>-<short-kebab>`) before
@@ -278,7 +286,7 @@ closeout report is not a substitute for that ledger. Use real
 and NEVER by appending to the archived `decisions-log` monolith:
 
 ```bash
-body_file="$(mktemp)"
+body_file="$(mktemp "${TMPDIR:-/tmp}/closeout.XXXXXX")"
 cat > "$body_file" <<'EOF'
 ---
 type: decision
@@ -295,7 +303,7 @@ tags: [decisions]
 <what was chosen, why, what it unblocks — literal `backticks`/$(examples) safe>
 EOF
 brain put decision-<date>-<short-kebab> --type decision < "$body_file"
-rm -f "$body_file"
+# No cleanup step: the Codex exec guard rejects file deletion. $TMPDIR is the run scratch dir.
 ```
 
 **For a milestone / why-note that is NOT a decision** (a settled fact,
@@ -303,7 +311,7 @@ implementation record, or project checkpoint), use the appropriate note type
 instead:
 
 ```bash
-body_file="$(mktemp)"
+body_file="$(mktemp "${TMPDIR:-/tmp}/closeout.XXXXXX")"
 cat > "$body_file" <<'EOF'
 ---
 type: project
@@ -314,7 +322,7 @@ tags: [<...>]
 <body with literal `backticks` and $(examples)>
 EOF
 brain put <slug> --type project < "$body_file"
-rm -f "$body_file"
+# No cleanup step: the Codex exec guard rejects file deletion. $TMPDIR is the run scratch dir.
 ```
 
 ## 6. Update superseded brain records and stale kanban cards

@@ -3,6 +3,8 @@
 # non-2xx (esp. Forgejo auto-merge 409 while checks pending). Never collapse to
 # opaque curl: (22) from curl -f.
 set -euo pipefail
+# The 405 verdict re-reads mergeable after a wait; keep the fixture fast.
+export LAST_STACK_FORGE_MERGEABLE_REREAD_S=0
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 API="$ROOT/bin/last-stack-forge-api"

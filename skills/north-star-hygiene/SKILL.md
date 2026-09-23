@@ -105,7 +105,7 @@ For each entry in `orphan_north_stars_live` (then, if time remains, done-only):
 
 ```bash
 slug="<exact orphan slug>"
-body_file="$(mktemp)"
+body_file="$(mktemp "${TMPDIR:-/tmp}/body.XXXXXX")"
 export NORTH_STAR_SLUG="$slug"
 cat >"$body_file" <<'EOF'
 ---
@@ -144,7 +144,7 @@ Card field `north_star: __NORTH_STAR_SLUG__` is canonical — do not invent a se
 EOF
 perl -0pi -e 's/__NORTH_STAR_SLUG__/$ENV{NORTH_STAR_SLUG}/g' "$body_file"
 brain put "$slug" --type project <"$body_file"
-rm -f "$body_file"
+# No cleanup step: the Codex exec guard rejects file deletion. $TMPDIR is the run scratch dir.
 brain get "$slug" --type project | head -20   # confirm
 ```
 
