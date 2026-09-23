@@ -872,7 +872,9 @@ board search or full-body board scans from this idle hot path. Legacy
 frontier if still driving, but do not create new owner cards.
 
 **1) Program / North Star next slice (preferred)**  
-Read `brain get active-programs` (project). For each active program, if:
+Read `kanban milestone portfolio --json` and point-read each distinct
+`north_star` with `brain get <slug> --type project` (`active-programs` is RETIRED (Tom 2026-07-23, `preference-active-programs-retired`); it has no record). For each active
+North Star, if:
 - Next move is a **concrete PR-sized** step, and
 - The candidate is pickup work with `Kind: pr`, and
 - No card for that step is already in `todo`/`doing`/`backlog`, and

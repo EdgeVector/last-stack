@@ -97,6 +97,25 @@ def brain_get_project(slug: str) -> Optional[str]:
 PROJECT_LIST_LIMIT = 5000
 
 
+class ProjectCensusUnavailable(RuntimeError):
+    """The sanctioned project census could not run (timeout, index, error)."""
+
+
+def portfolio_north_star_seeds(portfolio: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Distinct North Star slugs named by nonterminal milestones.
+
+    The degraded discovery path when the project census is unavailable. It is
+    a SEED set, not the closed set: a North Star with no milestone is missed,
+    and the report says so.
+    """
+    seen: list[str] = []
+    for row in portfolio:
+        ns = str(row.get("north_star") or row.get("northStar") or "").strip()
+        if ns and ns not in seen:
+            seen.append(ns)
+    return [{"slug": ns, "status": ""} for ns in seen]
+
+
 def brain_list_projects(limit: int = PROJECT_LIST_LIMIT) -> list[dict[str, Any]]:
     """List projects for NS discovery.
 
@@ -113,12 +132,20 @@ def brain_list_projects(limit: int = PROJECT_LIST_LIMIT) -> list[dict[str, Any]]
     fixes. Prefer board/seed point-reads when possible; this path is only for
     ranking NS projects when --ns is not set.
     """
-    cp = run_cmd(
-        ["brain", "list", "--type", "project", "--limit", str(limit), "--json"],
-        timeout=90,
-    )
+    try:
+        cp = run_cmd(
+            ["brain", "list", "--type", "project", "--limit", str(limit), "--json"],
+            timeout=90,
+        )
+    except subprocess.TimeoutExpired:
+        # A busy node used to kill the whole pass with a raw traceback
+        # (papercut-north-star-ledger-sync-typed-project-enumeration-traceback-20260922).
+        # The caller degrades to portfolio seeds instead.
+        raise ProjectCensusUnavailable("brain project census timed out after 90s")
     if cp.returncode != 0 or not cp.stdout.strip():
-        return []
+        raise ProjectCensusUnavailable(
+            (cp.stderr or cp.stdout or "brain project census failed").strip().splitlines()[0][:300]
+        )
     try:
         data = json.loads(cp.stdout)
     except json.JSONDecodeError:
@@ -867,10 +894,21 @@ def main(argv: Optional[list[str]] = None) -> int:
     portfolio = kanban_milestone_portfolio()
     by_slug, by_ns = index_milestones(portfolio)
 
+    census_degraded = ""
     if args.ns:
         targets = [{"slug": s} for s in args.ns]
     else:
-        projects = [p for p in brain_list_projects() if is_north_star_project(p)]
+        try:
+            projects = [p for p in brain_list_projects() if is_north_star_project(p)]
+        except ProjectCensusUnavailable as exc:
+            print(
+                "last-stack-north-star-ledger-sync: warning: project census unavailable "
+                f"({exc}); degrading to North Star seeds from the milestone portfolio. "
+                "North Stars without a milestone are not covered this pass.",
+                file=sys.stderr,
+            )
+            census_degraded = str(exc)
+            projects = portfolio_north_star_seeds(portfolio)
         # prefer in_progress
         def rank(p: dict[str, Any]) -> tuple[int, str]:
             st = str(p.get("status") or "").lower()
@@ -922,7 +960,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
 
     if args.json:
-        print(json.dumps({"apply": apply, "reports": reports}, indent=2))
+        print(json.dumps({"apply": apply, "census_degraded": census_degraded, "reports": reports}, indent=2))
     else:
         print(f"last-stack-north-star-ledger-sync apply={apply} n={len(reports)}")
         for r in reports:

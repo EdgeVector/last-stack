@@ -310,6 +310,7 @@ ci_test tests/last-stack-feature-delivery-effective-flow-proof.sh
 ci_test tests/last-stack-kanban-file-pr.sh
 ci_test tests/last-stack-kanban-file-pr-host-track-install.sh
 ci_test tests/last-stack-kanban-decision-check.sh
+ci_test tests/last-stack-kanban-decision-check-gbrain.sh
 ci_test tests/last-stack-sanitize-structured-fields.sh
 ci_test tests/last-stack-board-closeout-sweep-logic.sh
 ci_test tests/last-stack-board-closeout-sweep.sh

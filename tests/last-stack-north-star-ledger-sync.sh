@@ -156,3 +156,13 @@ grep -Fq 'healed_terminal_done_when:example-ns-terminal-verification' "$tmp/heal
 grep -q 'last-stack-north-star-ledger-sync' "$ROOT/routines/north-star-driver.md"
 grep -q 'Skip stale pending requests' "$ROOT/routines/north-star-driver.md"
 echo "last-stack-north-star-ledger-sync tests ok"
+
+# A failed project census degrades to portfolio seeds; it must not die with a
+# traceback (papercut-north-star-ledger-sync-typed-project-enumeration-traceback-20260922).
+# The mock brain exits 2 for `list`.
+HOME="$tmp/home" PATH="$tmp/bin:$PATH" \
+  python3 "$BIN" --json >"$tmp/degraded.json" 2>"$tmp/degraded.err"
+jq -e '.census_degraded | length > 0' "$tmp/degraded.json" >/dev/null
+grep -Fq 'project census unavailable' "$tmp/degraded.err"
+! grep -Fq 'Traceback' "$tmp/degraded.err"
+echo "ok census failure degrades to portfolio seeds"
