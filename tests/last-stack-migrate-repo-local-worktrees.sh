@@ -27,7 +27,15 @@ git -C "$repo" worktree add "$repo/.worktrees/clean-slice" -b clean-slice main >
 git -C "$repo" worktree add "$repo/.worktrees/dirty-slice" -b dirty-slice main >/dev/null 2>&1
 printf 'dirty\n' > "$repo/.worktrees/dirty-slice/dirty.txt"
 
-out="$("$ROOT/bin/last-stack-migrate-repo-local-worktrees" --workspace "$workspace" --dest "$dest")"
+# The fixture owns all worktrees. Avoid an image-dependent lsof package from
+# changing a clean migration test into an availability test.
+cat >"$tmp/lsof-empty" <<'SH'
+#!/bin/sh
+exit 1
+SH
+chmod +x "$tmp/lsof-empty"
+
+out="$(LAST_STACK_TOOL_LSOF="$tmp/lsof-empty" "$ROOT/bin/last-stack-migrate-repo-local-worktrees" --workspace "$workspace" --dest "$dest")"
 printf '%s\n' "$out" | grep -q 'migrated clean-slice'
 printf '%s\n' "$out" | grep -q 'kept dirty-slice: dirty worktree'
 
