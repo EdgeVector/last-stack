@@ -211,7 +211,7 @@ install_claude_hooks() {
   local settings="$HOME/.claude/settings.json"
   mkdir -p "$hooks_dir" "$(dirname "$settings")"
 
-  for hook in unsafe-inline-json.sh no-home-root-scan.sh no-unbounded-workspace-walk.sh; do
+  for hook in unsafe-inline-json.sh no-home-root-scan.sh no-unbounded-workspace-walk.sh routine-shell-lint.sh; do
     [ -f "$HOOKS_SRC/$hook" ] || continue
     cp -f "$HOOKS_SRC/$hook" "$hooks_dir/$hook"
     chmod 700 "$hooks_dir/$hook"
@@ -254,6 +254,15 @@ install_claude_hooks() {
     "$hooks_dir/no-unbounded-workspace-walk.sh  # deny a depth-free walk of a workspace root (find/fd/tree, rglob/os.walk); it runs for minutes and times out" \
     5
 
+  # Known-bad shell shapes (read -t N < /dev/zero spin wait, unquoted heredoc
+  # with backticks, jq 1.7.1 optional-after-call, macOS awk/sed, zsh status).
+  # Same rules as the Codex routine entry (lib/routine-shell/). The deny
+  # prints the fix and says not to file a papercut. Escape hatch:
+  # '# shell-lint-ok: <reason>'.
+  upsert_pretool_hook "$settings" "Bash" \
+    "$hooks_dir/routine-shell-lint.sh  # deny known-bad shell shapes (spin wait, heredoc backticks, jq 1.7 syntax, macOS awk/sed, zsh status); prints the fix" \
+    5
+
   for tool in \
     mcp__brain__brain_get \
     mcp__brain__brain_search \
@@ -264,7 +273,7 @@ install_claude_hooks() {
     upsert_permission_allow "$settings" "$tool"
   done
 
-  echo "  claude hooks: unsafe-inline-json.sh + no-home-root-scan.sh + no-unbounded-workspace-walk.sh (inline parsing guard; home-root/TCC walk guard; workspace walk guard; read-before-edit retired)"
+  echo "  claude hooks: unsafe-inline-json.sh + no-home-root-scan.sh + no-unbounded-workspace-walk.sh + routine-shell-lint.sh (inline parsing guard; home-root/TCC walk guard; workspace walk guard; shell shape guard; read-before-edit retired)"
   echo "  claude permissions: brain MCP get/search/list/ask/put"
 }
 
@@ -286,6 +295,8 @@ BA_START='<!-- last-stack:bin-authoring:start (managed by last-stack setup; edit
 BA_END='<!-- last-stack:bin-authoring:end -->'
 JC_START='<!-- last-stack:safe-json-capture:start (managed by last-stack setup; edits inside are overwritten) -->'
 JC_END='<!-- last-stack:safe-json-capture:end -->'
+RS_START='<!-- last-stack:routine-shell:start (managed by last-stack setup; edits inside are overwritten) -->'
+RS_END='<!-- last-stack:routine-shell:end -->'
 
 strip_managed_md_block() {
   # $1 file  $2 start  $3 end
@@ -333,12 +344,39 @@ upsert_harness_instruction_blocks() {
   strip_managed_md_block "$file" "$HS_START" "$HS_END"
   strip_managed_md_block "$file" "$BA_START" "$BA_END"
   strip_managed_md_block "$file" "$JC_START" "$JC_END"
+  strip_managed_md_block "$file" "$RS_START" "$RS_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/brain-kanban.md" "$BK_START" "$BK_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/asd-ste100.md" "$STE_START" "$STE_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/no-home-root-scan.md" "$HS_START" "$HS_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/bin-authoring.md" "$BA_START" "$BA_END"
   append_managed_md_block "$file" "$SOURCE_ROOT/instructions/safe-json-capture.md" "$JC_START" "$JC_END"
-  echo "  ${label} instructions: brain-kanban + asd-ste100 + no-home-root-scan + bin-authoring + safe-json-capture -> $file"
+  append_managed_md_block "$file" "$SOURCE_ROOT/instructions/routine-shell.md" "$RS_START" "$RS_END"
+  echo "  ${label} instructions: brain-kanban + asd-ste100 + no-home-root-scan + bin-authoring + safe-json-capture + routine-shell -> $file"
+}
+
+# ── Codex routine shell: zsh -lc -> bash ─────────────────────────────────────
+# Codex runs each agent command as `/bin/zsh -lc` (shell from passwd; $SHELL is
+# ignored). ~/.zprofile is the one hook every such command passes through, so
+# a managed block there sources lib/routine-shell/codex-routine-bash.zsh. The
+# snippet acts only when DRIVEN_BY=routine and CODEX_THREAD_ID are both set;
+# every other shell is untouched. Opt out: LAST_STACK_ROUTINE_SHELL=zsh.
+RSZ_START='# >>> last-stack:routine-shell (managed by last-stack setup; edits inside are overwritten) >>>'
+RSZ_END='# <<< last-stack:routine-shell <<<'
+
+install_routine_shell_zprofile() {
+  local zprofile="${ZDOTDIR:-$HOME}/.zprofile"
+  local public_root="${LAST_STACK_PUBLIC_ROOT:-$HOME/.last-stack}"
+  local snippet="$public_root/lib/routine-shell/codex-routine-bash.zsh"
+  [ -f "$SOURCE_ROOT/lib/routine-shell/codex-routine-bash.zsh" ] || return 0
+  [ -f "$zprofile" ] || : > "$zprofile"
+  strip_managed_md_block "$zprofile" "$RSZ_START" "$RSZ_END"
+  {
+    echo ""
+    printf '%s\n' "$RSZ_START"
+    printf '[ -r "%s" ] && . "%s"\n' "$snippet" "$snippet"
+    printf '%s\n' "$RSZ_END"
+  } >> "$zprofile"
+  echo "  codex routine shell: zsh -lc -> bash + shell lint for DRIVEN_BY=routine commands ($zprofile)"
 }
 
 ensure_codex_mcp_servers() {
@@ -768,6 +806,7 @@ echo "Installing The Last Stack (v$(cat "$SOURCE_ROOT/VERSION")) ..."
 [ "$INSTALL_CODEX"    -eq 1 ] && register_into "$HOME/.codex/skills"           "codex"
 [ "$INSTALL_CODEX"    -eq 1 ] && upsert_harness_instruction_blocks "$HOME/.codex/AGENTS.md" "codex"
 [ "$INSTALL_CODEX"    -eq 1 ] && ensure_codex_mcp_servers
+[ "$INSTALL_CODEX"    -eq 1 ] && install_routine_shell_zprofile
 [ "$INSTALL_FACTORY"  -eq 1 ] && register_into "$HOME/.factory/skills"         "factory"
 [ "$INSTALL_FACTORY"  -eq 1 ] && upsert_harness_instruction_blocks "$HOME/.factory/AGENTS.md" "factory"
 [ "$INSTALL_OPENCODE" -eq 1 ] && register_into "$HOME/.config/opencode/skills" "opencode"

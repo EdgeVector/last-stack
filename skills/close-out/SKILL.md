@@ -229,7 +229,8 @@ Skip only for pure Q&A, one-liner answers, and failed dead-ends with no
 reusable finding. Pipe the body via **stdin** or a body file, never as
 shell-expanded command arguments. If the body contains backticks, `$()`,
 `$var`, globs, or other shell metacharacters, write it with a quoted heredoc
-so the shell cannot evaluate it.
+so the shell cannot evaluate it. A reference `status` must be `active`,
+`parked`, `broken` or `archived`; brain rejects `done`.
 
 ```bash
 body_file="$(mktemp "${TMPDIR:-/tmp}/closeout.XXXXXX")"

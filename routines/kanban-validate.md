@@ -73,18 +73,26 @@ machine predicate is already true. Cap the sweep so a busy board cannot blow the
 timeout (first **25** non-done `validation|tracker|capstone|meta` cards by
 priority then position is enough per wake).
 
+Run the sweep helper. Do not write your own jq, awk or sed for this step: the
+hand-written versions failed on this host again and again (jq 1.7.1, macOS
+awk, TSV field collapse) and each failure became a papercut.
+
 ```bash
 last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
-board_cli="$(command -v kanban)"
-
-# For each non-done card with Kind in validation|tracker|capstone|meta:
-#   extract single-line DONE-WHEN: predicate from body
-#   "$last_stack/bin/last-stack-kanban-done-when-eval" --kind <kind> --predicate "<pred>"
-#   exit 0 → append PROOF note + move done
-#   exit 1 → leave alone
-#   exit 2 → append NEEDS-HUMAN: malformed DONE-WHEN (do not needs_human spam if already noted)
-#   exit 3 → ignore (Kind: pr)
+sweep_out="$(mktemp "${TMPDIR:-/tmp}/done-when-sweep.XXXXXX")"
+"$last_stack/bin/last-stack-kanban-done-when-sweep" --limit 25 --max 25 > "$sweep_out"
+# One row per card, four TAB fields, never empty:
+#   <verdict> <slug> <kind> <predicate>
+while IFS=$'\t' read -r verdict slug kind pred; do
+  printf '%s %s %s\n' "$verdict" "$slug" "$kind"
+done < "$sweep_out"
 ```
+
+Act on each row (the helper is read-only; you do the board writes):
+- `satisfied` → append a PROOF note that cites the predicate, then move the card done.
+- `pending` → leave alone.
+- `malformed` → append `NEEDS-HUMAN: malformed DONE-WHEN` once (skip when already noted).
+- `ignored` (Kind: pr), `no-predicate`, `read-error` → leave alone.
 
 If this sweep closes one or more cards, still may continue to Step 1 if budget
 remains; if you already closed **≥1** card and the run is time-pressed, heartbeat

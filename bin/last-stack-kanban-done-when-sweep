@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# Read-only DONE-WHEN sweep for kanban-validate Step 0.
+#
+# Why (measured 2026-09-23): six kanban-validate workers wake four times an
+# hour, and each wake wrote its own jq/awk/sed to find candidates and pull the
+# DONE-WHEN line out of card bodies. Those one-off filters failed on this host
+# again and again (jq 1.7.1 rejects match(..)?.string, macOS awk has no
+# match(s, re, arr), TSV reads collapse empty fields, `for x in $list` does
+# not split in zsh, `jq inputs` skips the first file) and each failure became
+# a new papercut. This helper does the whole read side once, with a fixture
+# test, so the prompt has nothing left to hand-write.
+#
+# What it does:
+#   1. kanban list --column C --json --limit N for each column (capped reads).
+#   2. keeps Kind validation|tracker|capstone|meta, in list order, up to --max.
+#   3. kanban show <slug> --json for each, takes the first `DONE-WHEN:` line.
+#   4. runs last-stack-kanban-done-when-eval --kind K --predicate P.
+# It never moves or marks a card. The caller acts on `satisfied` rows.
+#
+# Output: one line per card, four TAB-separated fields, never empty:
+#   <verdict>\t<slug>\t<kind>\t<predicate or ->
+#   verdict: satisfied | pending | malformed | ignored | no-predicate | read-error
+# Last line on stderr: done-when-sweep checked=N satisfied=N pending=N ...
+# Read it with:  while IFS=$'\t' read -r verdict slug kind pred; do ...; done < out.tsv
+#
+# Usage:
+#   last-stack-kanban-done-when-sweep [--columns backlog,todo,doing] [--limit 25]
+#       [--max 25] [--board-cli PATH] [--eval PATH]
+# Exit: 0 sweep ran (any verdicts), 1 every column read failed, 64 usage.
+set -u
+
+columns="backlog,todo,doing"
+limit=25
+max=25
+board_cli="${LAST_STACK_BOARD_CLI:-}"
+eval_bin=""
+here="$(cd "$(dirname "$0")" && pwd -P)"
+
+usage() {
+  sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+is_count() {
+  case "$1" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$1" -ge 1 ]
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --columns) [ "$#" -ge 2 ] || { usage >&2; exit 64; }; columns="$2"; shift 2 ;;
+    --limit) [ "$#" -ge 2 ] || { usage >&2; exit 64; }; limit="$2"; shift 2 ;;
+    --max) [ "$#" -ge 2 ] || { usage >&2; exit 64; }; max="$2"; shift 2 ;;
+    --board-cli) [ "$#" -ge 2 ] || { usage >&2; exit 64; }; board_cli="$2"; shift 2 ;;
+    --eval) [ "$#" -ge 2 ] || { usage >&2; exit 64; }; eval_bin="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 64 ;;
+  esac
+done
+
+is_count "$limit" || { echo "done-when-sweep: --limit must be a positive integer" >&2; exit 64; }
+is_count "$max" || { echo "done-when-sweep: --max must be a positive integer" >&2; exit 64; }
+[ -n "$board_cli" ] || board_cli="$(command -v kanban 2>/dev/null || true)"
+[ -n "$board_cli" ] || { echo "done-when-sweep: no kanban CLI on PATH (pass --board-cli)" >&2; exit 64; }
+[ -n "$eval_bin" ] || eval_bin="$here/last-stack-kanban-done-when-eval"
+[ -x "$eval_bin" ] || { echo "done-when-sweep: evaluator not executable: $eval_bin" >&2; exit 64; }
+command -v jq >/dev/null 2>&1 || { echo "done-when-sweep: jq not found" >&2; exit 64; }
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/done-when-sweep.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+
+candidates="$work/candidates.tsv"
+: > "$candidates"
+read_ok=0
+read_fail=0
+
+old_ifs="$IFS"
+IFS=','
+set -f
+# shellcheck disable=SC2086
+set -- $columns
+set +f
+IFS="$old_ifs"
+for column in "$@"; do
+  [ -n "$column" ] || continue
+  list_json="$work/list-$column.json"
+  if ! "$board_cli" list --column "$column" --json --limit "$limit" > "$list_json" 2> "$list_json.err"; then
+    echo "done-when-sweep: list failed for column $column: $(head -c 300 "$list_json.err")" >&2
+    read_fail=$((read_fail + 1))
+    continue
+  fi
+  # Envelope {cards: [...]} or a legacy bare array. Kind missing -> "-".
+  if ! jq -r '
+      (if type == "array" then . else (.cards // []) end)[]
+      | select((.column // "") != "done")
+      | [(.slug // ""), ((.kind // "") | ascii_downcase | if . == "" then "-" else . end)]
+      | select(.[0] != "")
+      | select(.[1] == "validation" or .[1] == "tracker" or .[1] == "capstone" or .[1] == "meta")
+      | @tsv
+    ' "$list_json" >> "$candidates" 2> "$list_json.jqerr"; then
+    echo "done-when-sweep: unreadable list JSON for column $column" >&2
+    read_fail=$((read_fail + 1))
+    continue
+  fi
+  read_ok=$((read_ok + 1))
+done
+
+if [ "$read_ok" -eq 0 ] && [ "$read_fail" -gt 0 ]; then
+  echo "done-when-sweep checked=0 error=every-column-read-failed" >&2
+  exit 1
+fi
+
+checked=0
+n_satisfied=0; n_pending=0; n_malformed=0; n_ignored=0; n_none=0; n_readerr=0
+
+while IFS=$'\t' read -r slug kind; do
+  [ -n "$slug" ] || continue
+  [ "$checked" -lt "$max" ] || break
+  checked=$((checked + 1))
+  card_json="$work/card-$checked.json"
+  if ! "$board_cli" show "$slug" --json > "$card_json" 2> "$card_json.err"; then
+    printf 'read-error\t%s\t%s\t-\n' "$slug" "$kind"
+    n_readerr=$((n_readerr + 1))
+    continue
+  fi
+  predicate="$(jq -r '
+      (if type == "array" then (.[0] // {}) else . end)
+      | (.body // "")
+      | split("\n")
+      | map(select(startswith("DONE-WHEN:")))
+      | (.[0] // "")
+      | sub("^DONE-WHEN:[[:space:]]*"; "")
+      | sub("[[:space:]]+$"; "")
+    ' "$card_json" 2>/dev/null)" || predicate=""
+  if [ -z "$predicate" ]; then
+    printf 'no-predicate\t%s\t%s\t-\n' "$slug" "$kind"
+    n_none=$((n_none + 1))
+    continue
+  fi
+  "$eval_bin" --kind "$kind" --predicate "$predicate" > "$card_json.eval" 2>&1
+  rc=$?
+  case "$rc" in
+    0) verdict=satisfied; n_satisfied=$((n_satisfied + 1)) ;;
+    1) verdict=pending; n_pending=$((n_pending + 1)) ;;
+    3) verdict=ignored; n_ignored=$((n_ignored + 1)) ;;
+    *) verdict=malformed; n_malformed=$((n_malformed + 1)) ;;
+  esac
+  # One line per card: tabs and newlines in the predicate become spaces.
+  predicate="${predicate//$'\t'/ }"
+  predicate="${predicate//$'\n'/ }"
+  printf '%s\t%s\t%s\t%s\n' "$verdict" "$slug" "$kind" "$predicate"
+done < "$candidates"
+
+echo "done-when-sweep checked=$checked satisfied=$n_satisfied pending=$n_pending malformed=$n_malformed ignored=$n_ignored no_predicate=$n_none read_error=$n_readerr column_read_fail=$read_fail" >&2
+exit 0
