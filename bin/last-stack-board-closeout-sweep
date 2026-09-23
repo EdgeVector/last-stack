@@ -70,6 +70,11 @@
 #   BOARD_CLOSEOUT_STATE_DIR                 override the streak state dir.
 #
 # Exit 0 always after a completed pass (including noop). Exit 2 on usage error.
+# BOARD_CLOSEOUT_TIMEOUT_SEC (default 900) bounds the engine; on timeout or a
+# signal the helper still prints the JSON + heartbeat pair with status=error
+# and flagged=engine-timeout-<n>s or engine-interrupted.
+# A close-failed flag carries its reason: close-failed:<slug>:<reason-token>,
+# and the JSON payload lists close_failed=[{slug,reason}] with the full text.
 # Prints one compact JSON object, then a heartbeat line (heartbeat is last):
 #   {"kind":"board-closeout","status":"noop",...}
 #   board-closeout <ISO> ok|noop closed=<n> rolled_back=<n> demoted=<n> skipped=<n> flagged=...
@@ -149,19 +154,63 @@ export PATH="$last_stack/bin:${PATH:-}"
 # Do NOT exec: merge-babysit / card-reaper chain this helper then keep running.
 _engine_out="$(mktemp "${TMPDIR:-/tmp}/board-closeout.out.XXXXXX")"
 _engine_err="$(mktemp "${TMPDIR:-/tmp}/board-closeout.err.XXXXXX")"
+_engine_stop="${_engine_out}.stop"
+_engine_pid=""
+_watchdog_pid=""
+_emitted=0
+# A terminal line is printed on EVERY exit path: success, a silent engine, a
+# wall-clock timeout, or a signal. A caller that saw no output could not tell
+# a hang from a noop (papercut-kanban-watch-closeout-helper-no-shell-continuation-20260922).
 _emit_closeout_result() {
+  [ "$_emitted" = 1 ] && return 0
+  _emitted=1
   if grep -q '^board-closeout ' "$_engine_out" 2>/dev/null; then
     cat "$_engine_out"
     cat "$_engine_err" >&2 || true
   else
-    cat "$_engine_out"
-    cat "$_engine_err" >&2 || true
+    cat "$_engine_out" 2>/dev/null || true
+    cat "$_engine_err" >&2 2>/dev/null || true
+    _why="engine-silent"
+    if [ -s "$_engine_stop" ]; then _why="$(head -n 1 "$_engine_stop")"; fi
     _iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    printf '%s\n' "{\"kind\":\"board-closeout\",\"status\":\"error\",\"iso\":\"$_iso\",\"closed\":0,\"rolled_back\":0,\"demoted\":0,\"skipped\":0,\"flagged\":[\"engine-silent\"]}"
-    printf 'board-closeout %s error closed=0 rolled_back=0 demoted=0 skipped=0 flagged=engine-silent\n' "$_iso"
+    printf '%s\n' "{\"kind\":\"board-closeout\",\"status\":\"error\",\"iso\":\"$_iso\",\"closed\":0,\"rolled_back\":0,\"demoted\":0,\"skipped\":0,\"flagged\":[\"$_why\"]}"
+    printf 'board-closeout %s error closed=0 rolled_back=0 demoted=0 skipped=0 flagged=%s\n' "$_iso" "$_why"
   fi
-  rm -f "$_engine_out" "$_engine_err"
+  rm -f "$_engine_out" "$_engine_err" "$_engine_stop"
 }
+
+# Bound the engine by wall clock. The watchdog's stdio goes to /dev/null so a
+# caller reading this helper through a pipe or $(...) never waits on it.
+_engine_timeout="${BOARD_CLOSEOUT_TIMEOUT_SEC:-900}"
+case "$_engine_timeout" in ''|*[!0-9]*) _engine_timeout=900 ;; esac
+_start_watchdog() {
+  (
+    trap 'kill "$_sp" 2>/dev/null; exit 0' TERM
+    sleep "$_engine_timeout" &
+    _sp=$!
+    wait "$_sp"
+    if kill -0 "$1" 2>/dev/null; then
+      printf 'engine-timeout-%ss\n' "$_engine_timeout" >"$_engine_stop"
+      kill -TERM "$1" 2>/dev/null || true
+    fi
+  ) </dev/null >/dev/null 2>&1 &
+  _watchdog_pid=$!
+}
+_wait_engine() {
+  _engine_pid="$1"
+  _start_watchdog "$_engine_pid"
+  wait "$_engine_pid" || true
+  kill -TERM "$_watchdog_pid" 2>/dev/null || true
+  wait "$_watchdog_pid" 2>/dev/null || true
+}
+_on_signal() {
+  printf 'engine-interrupted\n' >"$_engine_stop"
+  [ -n "$_engine_pid" ] && kill -TERM "$_engine_pid" 2>/dev/null || true
+  [ -n "$_watchdog_pid" ] && kill -TERM "$_watchdog_pid" 2>/dev/null || true
+  _emit_closeout_result
+  exit 143
+}
+trap _on_signal INT TERM HUP
 
 # BOARD_CLOSEOUT_ENGINE pins one engine so a test can prove both behave the
 # same. Unset/auto keeps the historical preference (node, then python3).
@@ -179,7 +228,7 @@ if [ "$_engine_pref" = "node" ] && ! command -v node >/dev/null 2>&1; then
 fi
 
 if [ "$_engine_pref" != "python3" ] && [ "$_engine_pref" != "python" ] && command -v node >/dev/null 2>&1; then
-  node - "$last_stack" >"$_engine_out" 2>"$_engine_err" <<'NODE' || true
+  node - "$last_stack" >"$_engine_out" 2>"$_engine_err" <<'NODE' &
 const fs = require("fs");
 const path = require("path");
 const cp = require("child_process");
@@ -220,7 +269,25 @@ const res = {
   demoted: [],
   skipped: [],
   flagged: [],
+  // One {slug, reason} per close-failed flag. A bare `close-failed:<slug>`
+  // told an operator nothing (papercut-merge-babysit-board-closeout-*).
+  close_failed: [],
 };
+
+// Squash a closeout failure line into one flag-safe token.
+function reasonToken(text) {
+  const t = String(text || "closeout failed")
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return (t || "closeout-failed").slice(0, 80);
+}
+
+function flagCloseFailed(slug, out) {
+  const reason = failureDetail(out);
+  res.flagged.push(`close-failed:${slug}:${reasonToken(reason)}`);
+  res.close_failed.push({ slug, reason });
+}
 
 function run(cmd, args, opts = {}) {
   const out = cp.spawnSync(cmd, args, {
@@ -679,9 +746,16 @@ function isMerged(pr) {
     const merged = d.merged === true || state === "merged";
     // closed without merged = not our done path — reclaim to todo (reaper path)
     const closed = !merged && (state === "closed" || state === "rejected");
+    // Forgejo sets `merged` on the final PR record. closed + merged:false is a
+    // definitive "this PR did not merge", not an unknown
+    // (papercut-pipeline-board-closeout-closed-pr-proof-unknown).
+    const definitive = closed && d.merged === false;
+    const headRef = d.head && typeof d.head.ref === "string" ? d.head.ref : "";
     return {
       merged,
       closed,
+      definitive,
+      headRef,
       detail: merged ? `forge#${pr.number}` : `forge#${pr.number}:${state || "open"}`,
     };
   }
@@ -869,6 +943,28 @@ function newerHandoffReview(card, structuredUrl) {
   return { url: handoffUrl, branch: handoffBranch(line), m };
 }
 
+// A closed Forge PR is often superseded by a new PR on the SAME branch (PR 132
+// closed, PR 137 opened from kanban/<slug>). Progress lines name the new PR,
+// but only HANDOFF lines were read, so the sweep rolled live work back to todo.
+// Ask Forge once, bounded to one page of open PRs, for an open PR on the head.
+function openForgePrOnBranch(pr, headRef, closedUrl) {
+  if (pr.kind !== "forge" || !headRef || !fs.existsSync(forgeApi)) return null;
+  const out = run(forgeApi, [`repos/${pr.owner}/${pr.repo}/pulls?state=open&limit=50`], { timeout: 45000 });
+  if (!out.ok) return null;
+  const rows = parseJsonLoose(out.stdout);
+  if (!Array.isArray(rows)) return null;
+  for (const row of rows) {
+    if (!row || !row.head || row.head.ref !== headRef) continue;
+    if (String(row.number) === String(pr.number)) continue;
+    if (String(row.state || "").toLowerCase() !== "open") continue;
+    const url =
+      row.html_url ||
+      String(closedUrl || "").replace(/\/pulls?\/\d+/i, `/pulls/${row.number}`);
+    return { number: row.number, url: normalizePrUrl(url) };
+  }
+  return null;
+}
+
 function restoreStructured(slug, prUrl, branch) {
   if (dryRun) return;
   const args = ["add", slug];
@@ -913,7 +1009,7 @@ function closeCard(slug, prUrl, branch) {
     const out = run(boardCli, args, { timeout: 60000 });
     if (!out.ok) {
       if (noteCloseoutDeferred(slug, out)) return false;
-      res.flagged.push(`close-failed:${slug}`);
+      flagCloseFailed(slug, out);
       noteCloseFailure(slug, out);
       return false;
     }
@@ -927,7 +1023,7 @@ function closeCard(slug, prUrl, branch) {
   const out = run(closeoutBin, args, { timeout: 90000 });
   if (!out.ok) {
     if (noteCloseoutDeferred(slug, out)) return false;
-    res.flagged.push(`close-failed:${slug}`);
+    flagCloseFailed(slug, out);
     noteCloseFailure(slug, out);
     return false;
   }
@@ -1117,11 +1213,18 @@ for (const card of cards) {
         res.skipped.push(`${slug}:open-handoff-newer-pr`);
         continue;
       }
+      const sameBranch = openForgePrOnBranch(pr, m.headRef || branch, url);
+      if (sameBranch && sameBranch.url) {
+        res.flagged.push(`open-branch-pr-preserved:${slug}:forge#${sameBranch.number}`);
+        restoreStructured(slug, sameBranch.url, branch || m.headRef);
+        res.skipped.push(`${slug}:open-branch-newer-pr`);
+        continue;
+      }
       if (fieldPr && fieldPr !== url) {
         res.flagged.push(`pr-url-healed:${slug}`);
       }
       res.flagged.push(`closed-pr:${slug}:${m.detail || "body-reap"}`);
-      if (proof === "unknown") res.flagged.push(`merge-proof-unknown:${slug}`);
+      if (proof === "unknown" && !m.definitive) res.flagged.push(`merge-proof-unknown:${slug}`);
       res.flagged.push(`closed-cr-cleared:${slug}`);
       clearClosedArtifact(slug);
       if (rollbackTodo(slug)) actions++;
@@ -1249,6 +1352,7 @@ function finish() {
     demoted,
     skipped,
     flagged: res.flagged,
+    close_failed: res.close_failed,
   };
   // Unbuffered: a timeout/kill used to drop fully-buffered console.log.
   fs.writeSync(1, JSON.stringify(payload) + "\n");
@@ -1266,12 +1370,13 @@ function finish() {
 finish();
 process.exit(0);
 NODE
+  _wait_engine "$!"
   _emit_closeout_result
   exit 0
 fi
 
 # Python fallback
-python3 - "$last_stack" >"$_engine_out" 2>"$_engine_err" <<'PY' || true
+python3 - "$last_stack" >"$_engine_out" 2>"$_engine_err" <<'PY' &
 import json, os, re, subprocess, sys, time
 from pathlib import Path
 
@@ -1293,7 +1398,19 @@ _lastgit_stack_bin = last_stack / "bin" / "lastgit"
 lastgit_bin = str(_lastgit_stack_bin) if _lastgit_stack_bin.exists() else "lastgit"
 closeout_bin = last_stack / "bin" / "last-stack-card-closeout"
 
-res = {"status": "ok", "closed": [], "rolled_back": [], "demoted": [], "skipped": [], "flagged": []}
+res = {"status": "ok", "closed": [], "rolled_back": [], "demoted": [], "skipped": [], "flagged": [], "close_failed": []}
+# Final Forge PR facts keyed by the URL is_merged() read (see the node engine).
+forge_final = {}
+
+def reason_token(text):
+    t = re.sub(r"[^A-Za-z0-9._-]+", "-", str(text or "closeout failed"))
+    t = re.sub(r"-+", "-", t).strip("-")
+    return (t or "closeout-failed")[:80]
+
+def flag_close_failed(slug, out, err):
+    reason = failure_detail(out, err)
+    res["flagged"].append(f"close-failed:{slug}:{reason_token(reason)}")
+    res["close_failed"].append({"slug": slug, "reason": reason})
 
 def run(cmd, timeout=60):
     try:
@@ -1682,6 +1799,15 @@ def is_merged(url):
         state = str(d.get("state") or "").lower()
         merged = d.get("merged") is True or state == "merged"
         closed = (not merged) and state in ("closed", "rejected")
+        head = d.get("head") if isinstance(d.get("head"), dict) else {}
+        forge_final[url] = {
+            # closed + merged:false on the final record is definitive.
+            "definitive": closed and d.get("merged") is False,
+            "head_ref": head.get("ref") if isinstance(head.get("ref"), str) else "",
+            "owner": owner,
+            "repo": repo,
+            "num": num,
+        }
         detail = f"forge#{num}" if merged else f"forge#{num}:{state or 'open'}"
         return merged, closed, detail
     m = re.search(r"github\.com/([^/]+)/([^/]+)/pull/(\d+)", url)
@@ -1869,6 +1995,33 @@ def newer_handoff_review(card, structured_url):
         "detail": detail,
     }
 
+def open_forge_pr_on_branch(closed_url, head_ref):
+    """One bounded read: an open Forge PR on the same head branch, or None."""
+    facts = forge_final.get(normalize_pr_url(closed_url)) or {}
+    if not facts or not head_ref or not forge_api.exists():
+        return None
+    ok, out, _ = run([str(forge_api), f"repos/{facts['owner']}/{facts['repo']}/pulls?state=open&limit=50"], timeout=45)
+    if not ok:
+        return None
+    try:
+        rows = json.loads(strip(out))
+    except Exception:
+        return None
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("head"), dict):
+            continue
+        if row["head"].get("ref") != head_ref:
+            continue
+        if str(row.get("number")) == str(facts["num"]):
+            continue
+        if str(row.get("state") or "").lower() != "open":
+            continue
+        new_url = row.get("html_url") or re.sub(r"/pulls?/\d+", f"/pulls/{row.get('number')}", str(closed_url), count=1)
+        return {"number": row.get("number"), "url": normalize_pr_url(new_url)}
+    return None
+
 def restore_structured(slug, pr_url_val, branch):
     if dry_run:
         return
@@ -1922,7 +2075,7 @@ def close_card(slug, url, branch):
         if not ok:
             if note_closeout_deferred(slug, out, err):
                 return False
-            res["flagged"].append(f"close-failed:{slug}")
+            flag_close_failed(slug, out, err)
             note_close_failure(slug, out, err)
             return False
         res["closed"].append(slug)
@@ -1935,7 +2088,7 @@ def close_card(slug, url, branch):
     if not ok:
         if note_closeout_deferred(slug, out, err):
             return False
-        res["flagged"].append(f"close-failed:{slug}")
+        flag_close_failed(slug, out, err)
         note_close_failure(slug, out, err)
         return False
     res["closed"].append(slug)
@@ -2098,10 +2251,17 @@ for card in cards:
                 restore_structured(slug, newer["url"], newer["branch"] or branch)
                 res["skipped"].append(f"{slug}:open-handoff-newer-pr")
                 continue
+            facts = forge_final.get(normalize_pr_url(url)) or {}
+            same_branch = open_forge_pr_on_branch(url, facts.get("head_ref") or branch)
+            if same_branch and same_branch["url"]:
+                res["flagged"].append(f"open-branch-pr-preserved:{slug}:forge#{same_branch['number']}")
+                restore_structured(slug, same_branch["url"], branch or facts.get("head_ref"))
+                res["skipped"].append(f"{slug}:open-branch-newer-pr")
+                continue
             if field_pr and field_pr != url:
                 res["flagged"].append(f"pr-url-healed:{slug}")
             res["flagged"].append(f"closed-pr:{slug}:{detail or 'body-reap'}")
-            if proof is None:
+            if proof is None and not facts.get("definitive"):
                 res["flagged"].append(f"merge-proof-unknown:{slug}")
             res["flagged"].append(f"closed-cr-cleared:{slug}")
             clear_closed_artifact(slug)
@@ -2208,6 +2368,7 @@ payload = {
     "demoted": demoted,
     "skipped": skipped,
     "flagged": res["flagged"],
+    "close_failed": res["close_failed"],
 }
 print(json.dumps(payload, separators=(",", ":")), flush=True)
 print(line, flush=True)
@@ -2218,5 +2379,6 @@ if not dry_run and hb.exists():
     run([str(hb), "--line", line], timeout=30)
 sys.exit(0)
 PY
+_wait_engine "$!"
 _emit_closeout_result
 exit 0

@@ -91,8 +91,70 @@ done < "$sweep_out"
 Act on each row (the helper is read-only; you do the board writes):
 - `satisfied` → append a PROOF note that cites the predicate, then move the card done.
 - `pending` → leave alone.
-- `malformed` → append `NEEDS-HUMAN: malformed DONE-WHEN` once (skip when already noted).
+- `malformed` → append ONE stable marker line through the dedupe helper,
+  never free text (varied wording defeats dedupe and stacks one note per
+  wake; papercut-kanban-validate-malformed-done-when-duplicate-note-suppression-20260922):
+  ```bash
+  marker="$("$last_stack/bin/last-stack-kanban-done-when-eval" --check --predicate "$pred" | grep '^DONE-WHEN-MALFORMED:')"
+  "$last_stack/bin/last-stack-kanban-mark-once" "$slug" --line "$marker"
+  ```
 - `ignored` (Kind: pr), `no-predicate`, `read-error` → leave alone.
+
+### Board read: column-scoped and capped (never one broad list)
+
+Never run an unscoped `kanban list --json`. It asks the node for
+`limit=1000` in one call, and under load that call times out at 30 s and
+loses the whole wake (papercut-kanban-validate-board-read-timeout-20260922).
+Read only the columns this routine uses, each capped, and capture before
+you parse:
+
+```bash
+last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
+scratch="${ROUTINES_RUN_DIR:-$(mktemp -d)}/scratch"; mkdir -p "$scratch"
+board_read_failed=0
+for col in backlog todo doing; do
+  "$last_stack/bin/last-stack-json-capture" "$scratch/board-$col.json" -- \
+    kanban list --column "$col" --limit 60 --json || board_read_failed=1
+done
+```
+
+If ANY of these reads fails (`service_timeout`, "node did not respond",
+"too many concurrent reads", socket errors), stop: heartbeat
+`kanban-validate <ISO-ts> noop board-read-unavailable` and exit. A busy node
+is a noop, not an error. Do not retry the broad list, and do not run
+doctor/init/restart.
+
+`kanban list --json` and `kanban search --json` print an ENVELOPE
+`{cards, total, truncated}`, not an array. Iterate `.cards[]`; never `.[]`
+and never `(.cards // .[])`
+(papercut-kanban-watch-list-json-envelope-20260923):
+
+```bash
+jq -r '.cards[] | [.slug, .column, (.kind // ""), (.block_status // ""), (.blocked // false)] | @tsv' \
+  "$scratch/board-backlog.json" "$scratch/board-todo.json" "$scratch/board-doing.json"
+```
+
+`truncated: true` means the cap hid cards. That is fine for one bounded
+unit per wake; never treat a capped read as a census.
+
+### Supported DONE-WHEN forms (the only ones the evaluator runs)
+
+```text
+brain <slug> exists
+brain <slug> updated-after <YYYY-MM-DD>
+routine <name> heartbeat matches /<regex>/ after <YYYY-MM-DD>
+date >= <YYYY-MM-DD>
+file <path> matches /<regex>/
+<form> AND <form> [AND <form> ...]
+```
+
+Commands, request-ops thresholds, and warm-window conditions are NOT
+predicates. Write that proof to a report file and use
+`file <path> matches /^PASS/`. Check a predicate before you write it on a
+card: `last-stack-kanban-done-when-eval --check --predicate "<pred>"`
+(exit 0 = supported, exit 2 = rewrite it). The North Star ledger sync runs
+the same check before it creates a proof card
+(papercut-kanban-validate-done-when-predicate-language-too-freeform-20260922).
 
 If this sweep closes one or more cards, still may continue to Step 1 if budget
 remains; if you already closed **≥1** card and the run is time-pressed, heartbeat
@@ -114,8 +176,9 @@ Then re-eval the DONE-WHEN. Do not invent new harness slugs not listed by
 
 ## Candidate scan (after Step 0)
 
-1. Read the board with `<board CLI> list --json` / column-scoped reads. Prefer
-   capped reads; use `show <slug>` for full bodies.
+1. Reuse the three column-scoped capped reads from Step 0
+   (`$scratch/board-{backlog,todo,doing}.json`); never an unscoped
+   `list --json`. Use `show <slug> --json` for one full body.
    If the board read fails because the LastDB node is busy (`service_timeout`,
    "node did not respond", "too many concurrent reads", socket errors), do not
    run doctor/init/restart. Heartbeat
@@ -153,11 +216,16 @@ Then re-eval the DONE-WHEN. Do not invent new harness slugs not listed by
      (`set <slug> --block-status needs_human --block-reason "<that line>"`)
      so the next scan skips it on the field alone
      (papercut-validation-body-human-gate-with-empty-block-status-20260922).
-   - Skip (and note once with `BLOCKED: no registered proof harness for <ns>`)
-     a card whose DONE-WHEN names `~/.last-stack/north-star-proofs/<ns>.md`
+   - Skip a card whose DONE-WHEN names `~/.last-stack/north-star-proofs/<ns>.md`
      when `last-stack-north-star-proof --list` has no `<ns>`. The harness is
      missing, not the proof; running the card only returns `unknown north
      star slug` (papercut-kanban-validation-card-references-unregistered-north-star-20260922).
+     Note it once, with the stable marker and the dedupe helper:
+     `"$last_stack/bin/last-stack-kanban-mark-once" <slug> --marker
+     'BLOCKED[no-registered-harness]:' --text 'no registered proof harness for <ns>'`.
+     `last-stack-north-star-ledger-sync --apply --ns <ns>` files the
+     `<ns>-terminal-proof-harness` Kind:pr card and writes the same marker
+     (papercut-validation-proof-card-unregistered-harness-20260923).
 
 3. **Never** use `kanban pickup claim` / `kanban pickup claim`. Do not move a
    proof card to `todo` just to "make it pickable."
@@ -225,8 +293,15 @@ a named blocker instead of parking inside the run.
   `block_status=none` unless the failure is a true human gate. **Never** move
   to a `review` column. Heartbeat `ok validated=<slug> result=failed` and add
   `fix=<fix-slug>` only when the no-milestone exception files a card.
-- **BLOCKED (upstream):** append/refresh `BLOCKED: awaiting <blocker-slug> for
-  <validation>`, leave in backlog/todo, heartbeat `noop blocked=<blocker>`.
+- **BLOCKED (upstream):** write the blocker with a stable keyed marker
+  through the dedupe helper, leave in backlog/todo, heartbeat
+  `noop blocked=<blocker>`:
+  `"$last_stack/bin/last-stack-kanban-mark-once" <slug> --marker
+  'BLOCKED[<blocker-slug>]:' --text 'awaiting <blocker> for <validation>: <current state>'`.
+  The helper skips the write when the latest line with that marker says the
+  same thing (timestamps, run paths, and worker ids do not count as a
+  change). Never append a raw `BLOCKED:` line per wake
+  (papercut-kanban-validate-blocker-lines-append-duplicates-20260923).
 - **HUMAN GATE:** remaining END STATE is prod/public/irreversible or needs
   human-only secrets/devices → `block_status=needs_human` + crisp reason,
   demote to backlog if in todo, heartbeat `noop human-gate`.

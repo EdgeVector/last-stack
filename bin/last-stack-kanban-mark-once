@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""Append a machine marker line to a card only when its content changed.
+
+`kanban mark` skips an exact duplicate line, but validation workers write the
+same blocker with a new timestamp, run path, or worker id each wake, so the
+card grows one near-identical BLOCKED / malformed-DONE-WHEN line per wake
+(papercut-kanban-validate-blocker-lines-append-duplicates-20260923,
+papercut-kanban-validate-malformed-done-when-duplicate-note-suppression-20260922).
+
+This helper finds the LATEST body line that starts with the same marker and
+compares its content after it removes volatile parts (ISO timestamps, routine
+run paths, worker suffixes like -w3). Same content: skip. New content: mark.
+
+Stable markers (the marker is everything up to and including the colon):
+  BLOCKED[<key>]:          one upstream blocker, e.g. BLOCKED[forge-prs-open]:
+  DONE-WHEN-MALFORMED:     the line last-stack-kanban-done-when-eval prints
+  BLOCKED:                 legacy plain blocker (compared as one stanza)
+
+Usage:
+  last-stack-kanban-mark-once <slug> --marker 'BLOCKED[forge-prs-open]:' --text '<rest of line>'
+  last-stack-kanban-mark-once <slug> --line 'DONE-WHEN-MALFORMED: pred=0123abcd4567'
+
+Output: one line `mark-once <slug> <marked|unchanged> <marker>`.
+Exit: 0 marked or unchanged, 1 board read/write failed (busy node: treat as a
+noop), 2 usage error.
+"""
+import argparse
+import json
+import re
+import subprocess
+import sys
+
+MARKER_RE = re.compile(r"^[A-Z][A-Z0-9-]*(\[[A-Za-z0-9._/#:-]+\])?:$")
+VOLATILE = [
+    re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}[:\-]\d{2}(?:[:\-]\d{2}(?:\.\d+)?)?Z?"),
+    re.compile(r"\S*/\.routines/runs/\S*"),
+    re.compile(r"\S*/scratch(?:pad)?/\S*"),
+]
+WORKER_SUFFIX = re.compile(r"(-w)\d+\b")
+
+
+def normalize(text: str) -> str:
+    t = text
+    for rx in VOLATILE:
+        t = rx.sub(" ", t)
+    t = WORKER_SUFFIX.sub(r"\1", t)
+    t = re.sub(r"\s+", " ", t).strip().rstrip(".;,")
+    return t.lower()
+
+
+def latest_content(body: str, marker: str):
+    latest = None
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(marker):
+            latest = stripped[len(marker):]
+    return latest
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("slug")
+    ap.add_argument("--marker")
+    ap.add_argument("--text", default="")
+    ap.add_argument("--line", help="full line; the marker is its text up to the first colon")
+    ap.add_argument("--board-cli", default="kanban")
+    ap.add_argument("--dry-run", action="store_true")
+    args = ap.parse_args()
+
+    if args.line:
+        head, sep, rest = args.line.partition(":")
+        if not sep:
+            ap.error("--line must contain a marker ending in ':'")
+        marker, text = head.strip() + ":", rest.strip()
+    elif args.marker:
+        marker, text = args.marker.strip(), args.text.strip()
+    else:
+        ap.error("give --marker (with --text) or --line")
+    if not MARKER_RE.match(marker):
+        ap.error(f"marker must look like WORD: or WORD[key]: (got {marker!r})")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", args.slug):
+        ap.error("invalid slug")
+
+    try:
+        show = subprocess.run(
+            [args.board_cli, "show", args.slug, "--json"],
+            capture_output=True, text=True, timeout=60,
+        )
+        card = json.loads(show.stdout) if show.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        card = None
+    if not isinstance(card, dict):
+        print(f"mark-once {args.slug} error board-read-failed")
+        return 1
+
+    previous = latest_content(str(card.get("body") or ""), marker)
+    if previous is not None and normalize(previous) == normalize(text):
+        print(f"mark-once {args.slug} unchanged {marker}")
+        return 0
+
+    line = f"{marker} {text}".rstrip()
+    if args.dry_run:
+        print(f"mark-once {args.slug} would-mark {marker}")
+        return 0
+    try:
+        out = subprocess.run(
+            [args.board_cli, "mark", args.slug, line],
+            capture_output=True, text=True, timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        out = None
+    if out is None or out.returncode != 0:
+        print(f"mark-once {args.slug} error board-write-failed")
+        return 1
+    print(f"mark-once {args.slug} marked {marker}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

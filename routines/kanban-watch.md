@@ -70,11 +70,16 @@ envelope). Do not invent trailers when `DRIVEN_BY` is unset.
   path;
   **re-arm auto-merge on every PR that is CLEAN/mergeable but has auto-merge OFF
   or *dropped*** (a dropped auto-merge is the #1 strand and nothing else
-  re-fires it); and `gh pr update-branch` the oldest few clean-green-BEHIND
-  carded PRs. These are lightweight remote API / board moves and must not be
+  re-fires it); and update-branch the oldest few clean-green-BEHIND
+  carded PRs whose CI is NOT in flight (Forgejo: through
+  `last-stack-forge-pr-update-branch --apply`, which refuses a pending run). These are lightweight remote API / board moves and must not be
   left to rot one-per-hour. In steady state most PRs are driven to merge by
   their own `kanban-agent`; this sweep is the BACKSTOP for whatever slips — so
   be thorough on the cheap advances.
+- **Board JSON is an envelope.** `kanban list --json` / `kanban search --json`
+  print `{cards, total, truncated}`. Iterate `.cards[]`, never `.[]` or
+  `(.cards // .[])` (papercut-kanban-watch-list-json-envelope-20260923).
+  `tests/last-stack-prompt-kanban-json-envelope.sh` fails CI on the array form.
 - **HEAVY work IS capped at ONE bounded unit per wake**: a worktree CI-fix, a
   conflict rebase, OR (on a quiet sweep) filing one card. Pick the highest-value
   one, do it, then exit.
@@ -624,6 +629,14 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
         mid-edit — SKIP. SERIALIZATION: because one merge re-BEHINDs the others,
         update the OLDEST few (≈2-3) clean-green-BEHIND carded PRs per wake, not
         just one. CHEAP advance.
+        **CI-IN-FLIGHT GUARD (all venues):** never update a branch while a CI
+        run on its head is pending or running — the new commit cancels the run
+        and sends the PR to the back of the queue
+        (papercut-forge-pr-branch-update-cancels-in-flight-ci-20260922).
+        Forgejo: `"$last_stack/bin/last-stack-forge-pr-update-branch" --repo
+        <owner/repo> --pr <n> --apply` (exit 3 = CI in flight, skip this wake).
+        Never POST `pulls/<n>/update` directly. GitHub: update only when
+        `statusCheckRollup` has no PENDING / IN_PROGRESS / QUEUED entry.
       - **CI red** (a required check failed/cancelled, not just BEHIND) → READ the
         failing job first and split on the failure KIND:
         - **Flaky infra** — cancelled / runner shutdown / timeout, tests actually
@@ -634,7 +647,8 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
           check". If the base branch moved since the PR head was cut (the PR
           head does not contain the current base tip: `git merge-base
           --is-ancestor <base-tip> <pr-head>` fails against the fetched
-          mirror), update the branch FIRST (`update-branch` / rebase), let CI
+          mirror), update the branch FIRST (the guarded update-branch above /
+          rebase — never while a run is in flight), let CI
           re-run, and classify the failure only on the new head. A test the
           base already fixed is not a branch defect; re-dispatching a builder
           to fix it again wastes a build attempt and re-arms the surface fence
@@ -715,8 +729,9 @@ scan of your repos for these. A PR is a STRANDED candidate when ALL hold:
 Run this phase only if the budget check still leaves the closeout reserve.
 Apply the CHEAP fixes to EVERY stranded candidate found within the remaining
 budget: re-arm auto-merge
-on each CLEAN-but-unarmed one; `update-branch` the oldest few clean-green-BEHIND
-ones; `gh run rerun <run-id> --failed` on every flaky-cancellation. For LastGit
+on each CLEAN-but-unarmed one; update-branch the oldest few clean-green-BEHIND
+ones through the CI-in-flight guard (Forgejo:
+`last-stack-forge-pr-update-branch --apply`); `gh run rerun <run-id> --failed` on every flaky-cancellation. For LastGit
 repos, list open CRs with **one** `lastgit cr list --all-open --json` (never
 N× `cr list <slug>`), run `lastgit cr complete <slug> --once --json` only for
 repos that actually have open auto_merge CRs, and leave pending/missing-status

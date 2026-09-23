@@ -4,6 +4,17 @@ set -u
 usage() {
   cat >&2 <<'EOF'
 usage: last-stack-kanban-done-when-eval --kind <kind> --predicate <DONE-WHEN>
+       last-stack-kanban-done-when-eval --check --predicate <DONE-WHEN>
+
+--check parses the predicate and evaluates nothing: exit 0 when the grammar
+below supports it, exit 2 when it is malformed. Card creators run it before
+they write a DONE-WHEN line
+(papercut-kanban-validate-done-when-predicate-language-too-freeform-20260922).
+
+A malformed predicate always prints one stable marker line:
+  DONE-WHEN-MALFORMED: pred=<sha1-12 of the predicate>
+Append THAT line to the card with last-stack-kanban-mark-once; do not write
+free text (papercut-kanban-validate-malformed-done-when-duplicate-note-suppression-20260922).
 
 Exit codes:
   0  predicate is satisfied
@@ -34,6 +45,7 @@ EOF
 
 kind=""
 predicate=""
+check=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -46,6 +58,10 @@ while [ "$#" -gt 0 ]; do
       [ "$#" -ge 2 ] || { usage; exit 2; }
       predicate="$2"
       shift 2
+      ;;
+    --check)
+      check=1
+      shift
       ;;
     -h|--help)
       usage
@@ -64,7 +80,28 @@ done
 
 [ -n "$predicate" ] || { usage; exit 2; }
 
-if [ "$kind" = "pr" ]; then
+pred_hash() {
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$1" | shasum -a 1 | cut -c1-12
+  else
+    printf '%s' "$1" | sha1sum | cut -c1-12
+  fi
+}
+
+# Every malformed exit prints the same marker for the same predicate.
+malformed_marker() {
+  echo "DONE-WHEN-MALFORMED: pred=$(pred_hash "$predicate")"
+}
+
+# In --check mode a matched form is well-formed; nothing is evaluated.
+well_formed() {
+  if [ "$check" = 1 ]; then
+    echo "well-formed: $1"
+    exit 0
+  fi
+}
+
+if [ "$kind" = "pr" ] && [ "$check" != 1 ]; then
   echo "ignored: Kind: pr requires a verified merged PR"
   exit 3
 fi
@@ -90,13 +127,21 @@ if [[ "$predicate" == *" AND "* ]]; then
     atom="${atom%"${atom##*[![:space:]]}"}"
     if [ -z "$atom" ]; then
       echo "malformed: empty side in compound DONE-WHEN predicate: $predicate"
+      malformed_marker
       exit 2
     fi
-    atom_out="$("$0" --kind "${kind:-validation}" --predicate "$atom")"
+    if [ "$check" = 1 ]; then
+      atom_out="$("$0" --check --predicate "$atom")"
+    else
+      atom_out="$("$0" --kind "${kind:-validation}" --predicate "$atom")"
+    fi
     atom_rc=$?
+    # Only the whole predicate gets a marker line; drop the side's own.
+    atom_out="$(printf '%s\n' "$atom_out" | grep -v '^DONE-WHEN-MALFORMED:' || true)"
     printf '  [%s] %s\n' "$atom_rc" "$atom_out"
     if [ "$atom_rc" -eq 2 ]; then
       echo "malformed: compound DONE-WHEN has an unsupported side: $atom"
+      malformed_marker
       exit 2
     fi
     if [ "$atom_rc" -ne 0 ]; then
@@ -104,6 +149,10 @@ if [[ "$predicate" == *" AND "* ]]; then
     fi
     [ -n "$rest" ] || break
   done
+  if [ "$check" = 1 ]; then
+    echo "well-formed: compound DONE-WHEN"
+    exit 0
+  fi
   if [ "$overall" -eq 0 ]; then
     echo "satisfied: every side of the compound DONE-WHEN is satisfied"
     exit 0
@@ -114,6 +163,7 @@ fi
 
 if [[ "$predicate" =~ ^brain[[:space:]]+([^[:space:]]+)[[:space:]]+exists$ ]]; then
   slug="${BASH_REMATCH[1]}"
+  well_formed "brain exists"
   if brain get "$slug" >/dev/null 2>&1; then
     echo "satisfied: brain $slug exists"
     exit 0
@@ -125,6 +175,7 @@ fi
 if [[ "$predicate" =~ ^brain[[:space:]]+([^[:space:]]+)[[:space:]]+updated-after[[:space:]]+([0-9]{4}-[0-9]{2}-[0-9]{2})$ ]]; then
   slug="${BASH_REMATCH[1]}"
   cutoff="${BASH_REMATCH[2]}"
+  well_formed "brain updated-after"
   record="$(brain get "$slug" 2>/dev/null)" || {
     echo "pending: brain $slug does not exist"
     exit 1
@@ -142,6 +193,7 @@ if [[ "$predicate" =~ ^routine[[:space:]]+([^[:space:]]+)[[:space:]]+heartbeat[[
   routine="${BASH_REMATCH[1]}"
   regex="${BASH_REMATCH[2]}"
   cutoff="${BASH_REMATCH[3]}"
+  well_formed "routine heartbeat"
   # Heartbeats live on the filesystem, not LastDB/brain.
   hb_file="${LAST_STACK_HEARTBEATS_FILE:-}"
   if [ -z "$hb_file" ]; then
@@ -188,6 +240,7 @@ fi
 
 if [[ "$predicate" =~ ^date[[:space:]]+\>=[[:space:]]+([0-9]{4}-[0-9]{2}-[0-9]{2})$ ]]; then
   cutoff="${BASH_REMATCH[1]}"
+  well_formed "date"
   today="$(date -u +%F)"
   if [[ "$today" > "$cutoff" || "$today" = "$cutoff" ]]; then
     echo "satisfied: date $today >= $cutoff"
@@ -200,6 +253,7 @@ fi
 if [[ "$predicate" =~ ^file[[:space:]]+([^[:space:]]+)[[:space:]]+matches[[:space:]]+/(.*)/$ ]]; then
   path="${BASH_REMATCH[1]}"
   regex="${BASH_REMATCH[2]}"
+  well_formed "file matches"
   # Expand ~ and $HOME so harness reports under ~/.last-stack/north-star-proofs work.
   if [[ "$path" == "~/"* ]]; then
     path="$HOME/${path:2}"
@@ -220,4 +274,5 @@ fi
 echo "malformed: unsupported DONE-WHEN predicate: $predicate"
 echo "  supported: brain <slug> exists | brain <slug> updated-after <date> | routine <name> heartbeat matches /<re>/ after <date> | date >= <date> | file <path> matches /<re>/ | <any of these> AND <any of these>"
 echo "  commands and LastDB ops conditions are not evaluated; write the proof to a file and use: file <path> matches /<re>/"
+malformed_marker
 exit 2

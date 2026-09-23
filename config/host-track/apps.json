@@ -198,6 +198,14 @@
           "target": "$HOME/.local/bin/last-stack-forge-api"
         },
         {
+          "source": "bin/last-stack-forge-pr-update-branch",
+          "target": "$HOME/.local/bin/last-stack-forge-pr-update-branch"
+        },
+        {
+          "source": "bin/last-stack-kanban-mark-once",
+          "target": "$HOME/.local/bin/last-stack-kanban-mark-once"
+        },
+        {
           "source": "bin/last-stack-forge-git",
           "target": "$HOME/.local/bin/last-stack-forge-git"
         },
