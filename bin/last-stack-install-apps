@@ -472,6 +472,31 @@ for app in brain kanban situations routines dogfood-graph org lastsecrets search
   link_cli "$app"
 done
 
+# Report every declared `requires` edge that this bundle leaves unmet: the app
+# is installed, the app it needs is neither in the bundle nor on PATH. The
+# registry ships with last-stack; a bare copy of this script skips the report.
+report_unmet_requires() {
+  local registry="$1" installed="$2" gaps
+  [ -f "$registry" ] || return 0
+  gaps="$(jq -r --argjson installed "$installed" '
+    .apps | to_entries[]
+    | select(.key as $k | $installed | index($k))
+    | .key as $app
+    | (.value.requires // [])[]
+    | select(. as $d | $installed | index($d) | not)
+    | [$app, .] | @tsv' "$registry")" || return 0
+  [ -n "$gaps" ] || return 0
+  while IFS=$'\t' read -r app dep; do
+    if command -v "$dep" >/dev/null 2>&1; then
+      continue
+    fi
+    printf 'WARNING: %s requires %s, and this bundle does not install %s yet.\n' "$app" "$dep" "$dep" >&2
+    printf '         %s may fail until %s is on PATH.\n' "$app" "$dep" >&2
+  done <<<"$gaps"
+}
+report_unmet_requires "$(dirname "$0")/../config/registry/apps.json" \
+  '["brain","kanban","situations","routines","dogfood-graph","org","lastsecrets","search","lastdb-browser"]'
+
 printf '\n'
 printf 'Installed LastDB apps under:\n'
 printf '  %s\n\n' "$TARGET_DIR"

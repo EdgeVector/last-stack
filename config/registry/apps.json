@@ -1,19 +1,28 @@
 {
-  "_comment": "The app set the nightly canary proves as one candidate set and the public install draws from. `forge` is the source `next` rows carry (Tom's LAN); `public` is the source `stable` rows carry. `artifact_app` names the LastGit artifact CAS channel whose source_oid is the app's released head. `install_name` is the directory last-stack-install-apps uses under ~/lastdb-apps.",
+  "_comment": "The app set the nightly canary proves as one candidate set and the public install draws from. `forge` is the source `next` rows carry (Tom's LAN); `public` is the source `stable` rows carry. `artifact_app` names the LastGit artifact CAS channel whose source_oid is the app's released head. `install_name` is the directory last-stack-install-apps uses under ~/lastdb-apps. `requires` lists bundle apps an app cannot run without (last-stack-install-apps warns on a gap); `recommends` lists bundle apps that only add a feature. Every app also needs the LastDB daemon, which the bundle installs from Homebrew, so lastdbd is not listed. Full map: docs/app-dependencies.md.",
   "apps": {
     "brain": {
       "forge": "http://localhost:3300/EdgeVector/brain.git",
       "public": "https://github.com/EdgeVector/brain.git",
       "artifact_app": "brain",
       "install_name": "brain",
-      "description": "Long-lived knowledge: decisions, rationale, references."
+      "description": "Long-lived knowledge: decisions, rationale, references.",
+      "recommends": [
+        "search"
+      ]
     },
     "kanban": {
       "forge": "http://localhost:3300/EdgeVector/fkanban.git",
       "public": "https://github.com/EdgeVector/fkanban.git",
       "artifact_app": "fkanban",
       "install_name": "kanban",
-      "description": "Kanban board over LastDB."
+      "description": "Kanban board over LastDB.",
+      "requires": [
+        "situations"
+      ],
+      "recommends": [
+        "brain"
+      ]
     },
     "situations": {
       "forge": "http://localhost:3300/EdgeVector/situations.git",
@@ -27,7 +36,13 @@
       "public": "https://github.com/EdgeVector/routines.git",
       "artifact_app": "routines",
       "install_name": "routines",
-      "description": "Scheduled agent routines."
+      "description": "Scheduled agent routines.",
+      "recommends": [
+        "situations",
+        "kanban",
+        "lastsecrets",
+        "brain"
+      ]
     },
     "dogfood-graph": {
       "forge": "http://localhost:3300/EdgeVector/dogfood-graph.git",
@@ -41,7 +56,10 @@
       "public": "https://github.com/EdgeVector/org.git",
       "artifact_app": null,
       "install_name": "org",
-      "description": "Org invite and join."
+      "description": "Org invite and join.",
+      "requires": [
+        "lastsecrets"
+      ]
     },
     "lastsecrets": {
       "forge": "http://localhost:3300/EdgeVector/lastsecrets.git",

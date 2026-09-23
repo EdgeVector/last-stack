@@ -18,6 +18,7 @@ host-track refresh --force last-stack
 host-track install --channel candidate my-app
 host-track rollback my-app
 host-track validate-registry --json
+host-track requires --json kanban
 ```
 
 The default registry lives at `config/host-track/apps.json`. Tests and local
@@ -159,6 +160,37 @@ Artifact-backed records also report `artifact_app`, `artifact_channel`,
 `artifact_root`, `install_root`, `manifest_digest`, and
 `channel_manifest_digest`.
 
+
+## App dependencies (`requires` / `recommends`)
+
+An app entry names the other registry apps it needs:
+
+```json
+{ "app": "kanban", "requires": ["loom"], "recommends": ["search"] }
+```
+
+- `requires` lists apps that the app cannot run without on a core path.
+  `host-track install <app>` and a single-app `host-track refresh <app>`
+  install every missing app in the transitive closure first, dependencies
+  first, each in its own install process. A missing dependency that Host Track
+  cannot install (`checkout` or `deployment-only`, for example `lastdbd`)
+  fails the install with the reason. Dependencies install on their own
+  registry channel; `--channel` applies to the named app only.
+- `host-track check <app>` fails while any app in the closure is absent from
+  the host (its `command` does not resolve on PATH). It reads the host, not the
+  list.
+- `recommends` lists apps that only add a feature or a faster path. Host Track
+  reports them in `requires --json` and never installs or gates on them.
+- `host-track requires [--json] <app>` prints the install order and what is
+  present or missing. It exits 1 while a required app is missing.
+- `validate-registry` fails on a `requires`/`recommends` entry that names an
+  unknown app, on a self-requirement, and on a cycle.
+
+The public bundle registry (`config/registry/apps.json`) carries the same
+fields. `last-stack-install-apps` prints a WARNING for each declared
+requirement the bundle does not install and PATH does not provide.
+
+The dependency map and its evidence: `docs/app-dependencies.md`.
 
 ## Registry compliance (artifact | exempt | non_compliant)
 
