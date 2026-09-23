@@ -39,17 +39,10 @@
   <key>RunAtLoad</key>
   <true/>
 
-  <!-- Standard, not Background. At ProcessType Background macOS defers the
-       interval spawn ("pended nondemand spawn = interval"): on 2026-09-23 the
-       job ran last at 06:10Z and was still pended two hours later, with the
-       host load back at 14. The CI outage watchdog went silent exactly when
-       the machine was busiest and stayed silent after
-       (papercut-forge-runner-watchdog-launchd-background-spawn-deferred-20260923).
-       The job is one short shell pass every 15 minutes. -->
   <key>ProcessType</key>
-  <string>Standard</string>
+  <string>Background</string>
   <key>Nice</key>
-  <integer>5</integer>
+  <integer>10</integer>
 
   <key>StandardOutPath</key>
   <string>/Users/REPLACE/Library/Logs/forge-runner-watchdog.out.log</string>
