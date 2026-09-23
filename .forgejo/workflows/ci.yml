@@ -106,6 +106,10 @@ jobs:
           NO_COLOR: "1"
           FORCE_COLOR: "0"
           LAST_STACK_CI_HOST_LOCK: "1"
+          # Superseded-head skip (bin/last-stack-ci-superseded). Empty on push.
+          LAST_STACK_CI_PR_NUMBER: ${{ github.event.pull_request.number }}
+          LAST_STACK_CI_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          LAST_STACK_CI_FORGE_TOKEN: ${{ secrets.FORGEJO_TOKEN || github.token }}
         run: bash .lastgit/ci.sh
 
   publish:
