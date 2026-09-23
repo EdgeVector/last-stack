@@ -203,6 +203,39 @@ run_forge "forgejo: head already in main closes" close-ok 0 "$tmp/pr-landed.json
 # The event suffix must not matter: a base read as `(push)` matches the same stem.
 jq -e '.head_in_base == "true"' "$tmp/out.json" >/dev/null || { echo "FAIL: landed forgejo head must read head_in_base=true" >&2; exit 1; }
 
+# ── 10b. forgejo default ancestry repo: the portal cache, fetched by PR ref ──
+# papercut-pr-reaper-forgejo-ancestry-object-missing: the guard read the
+# LastGit mirror first (origin = GitHub, no PR heads), so every Forgejo PR was
+# `ancestry-object-missing`. With no --git-dir, forgejo must use
+# ~/.cache/edgevector-git/<repo>.git and fetch refs/pull/<n>/head from origin.
+fhome="$tmp/home"
+forge="$tmp/forge.git"
+"$git_bin" init --quiet --bare "$forge"
+"$git_bin" -C "$repo" push --quiet "$forge" "$MAIN:refs/heads/main" "$STRAY:refs/pull/7/head"
+mkdir -p "$fhome/.lastgit/mirrors" "$fhome/.cache/edgevector-git"
+"$git_bin" init --quiet --bare "$fhome/.lastgit/mirrors/brain"   # relic: no objects
+"$git_bin" init --quiet --bare "$fhome/.cache/edgevector-git/brain.git"
+"$git_bin" -C "$fhome/.cache/edgevector-git/brain.git" remote add origin "$forge"
+rc=0
+HOME="$fhome" "$guard" --venue forgejo --repo brain --pr 7 \
+  --pr-json "$tmp/pr-open.json" --head-status-json "$tmp/fs-head-green.json" \
+  --base-status-json "$tmp/fs-base-green.json" --base-oid "$MAIN" --json \
+  >"$tmp/out.json" 2>"$tmp/out.err" || rc=$?
+if [ "$rc" != 1 ] || ! jq -e '.verdict == "refuse" and .head_in_base == "false"' "$tmp/out.json" >/dev/null; then
+  echo "FAIL forgejo default ancestry repo: want refuse/1 with head_in_base=false, got rc=$rc" >&2
+  cat "$tmp/out.json" "$tmp/out.err" >&2 || true
+  exit 1
+fi
+echo "ok   forgejo: default ancestry repo is the portal cache; PR head fetched by refs/pull"
+rc=0
+HOME="$fhome" "$guard" --venue forgejo --repo EdgeVector/brain --pr 7 \
+  --pr-json "$tmp/pr-open.json" --head-status-json "$tmp/fs-head-green.json" \
+  --base-status-json "$tmp/fs-base-green.json" --base-oid "$MAIN" --json \
+  >"$tmp/out.json" 2>"$tmp/out.err" || rc=$?
+jq -e '.repo == "brain" and .verdict == "refuse"' "$tmp/out.json" >/dev/null \
+  || { echo "FAIL owner/name --repo must normalize to the bare name (rc=$rc)" >&2; cat "$tmp/out.json" "$tmp/out.err" >&2; exit 1; }
+echo "ok   forgejo: --repo EdgeVector/<name> is accepted"
+
 # ── 11. the prompt must actually run the guard ─────────────────────────────
 # A helper nothing calls is not a guard. This is the half that failed before:
 # routines/pr-reaper.md STEP 2 had a two-branch ladder and no call site.

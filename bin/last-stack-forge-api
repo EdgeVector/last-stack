@@ -266,10 +266,17 @@ fi
 if [[ -n "$jq_filter" ]]; then
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   jq_bin="$script_dir/last-stack-forge-json-jq"
+  # -r: a string result prints bare, like `gh api --jq`, and as the usage
+  # example (`... | @tsv`) and the --jq guard ("output is already raw")
+  # promise. Without it `.state` printed "success" WITH quotes, so
+  # last-stack-deploy-watch-gate's `case "$ci" in success)` never matched and
+  # every @tsv line came back as one quoted string with literal \t
+  # (papercut-pipeline-health-jq-display-quoting, 2026-09-22). Objects,
+  # arrays, numbers and booleans print exactly as before.
   if [[ -x "$jq_bin" ]]; then
-    "$jq_bin" "$jq_filter" <"$body_file"
+    "$jq_bin" -r "$jq_filter" <"$body_file"
   else
-    jq "$jq_filter" <"$body_file"
+    jq -r "$jq_filter" <"$body_file"
   fi
 else
   cat "$body_file"

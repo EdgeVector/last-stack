@@ -83,6 +83,15 @@ heartbeat instead of pure `noop` when cards were closed.
 
 ### 1. Detect (cheap)
 
+CAUTION: LastGit is disabled for every EdgeVector repo
+(`decision-2026-09-06-all-repos-venue-forgejo-no-lastgit-default`). Its
+registry schemas (`LastgitRepoIndex`, `RepoApp`, `LastgitOpenCrInventory`) are
+not on the primary node, so `lastgit stuck` and `lastgit cr list --all-open`
+fail on every pass. When `LAST_STACK_LASTGIT_NATIVE_REPOS` is empty (the
+default), SKIP this whole step: run no `lastgit` command, file no papercut for
+the missing schemas, and go to step 1b. Run the LastGit detect below only for
+the repos that variable names.
+
 ```bash
 "$timeout_bin" 180s lastgit stuck --json --min-age-min 10
 ```
@@ -142,11 +151,13 @@ LastGit repo is **expected**, not an inventory failure: never count it in
 Those four repos plus fold, lastgit and exemem-infra need a Forgejo pass:
 
 ```bash
-for repo in fold lastgit exemem-infra last-stack fkanban routines loom; do
-  "$timeout_bin" 30s "$last_stack/bin/last-stack-forge-api" \
-    "repos/EdgeVector/$repo/pulls?state=open" > "$scratch/$repo.json" || true
-done
+"$timeout_bin" 300s "$last_stack/bin/last-stack-pipeline-forge-pr-ledger" scan --json >"$scratch/forge-open.json" 2>"$scratch/forge-open.err" || true
+jq -r '.prs[] | select(.stuck) | [.repo, .number, .shape, .head_sha] | @tsv' "$scratch/forge-open.json"
 ```
+
+The scan classifies each PR from the base branch's required contexts. Do not
+write a per-repo shell loop; do not file per-PR papercuts (pipeline-health's
+ledger owns `papercut-pipeline-forge-<repo>-pr-<n>`).
 
 The collection read can list a PR that a point read shows closed and merged
 (loom #26 on 2026-09-21, fold #2142 on 2026-09-22;
@@ -166,7 +177,10 @@ is missing or pending with no update for more than 10 minutes; or merge returns
 405 with green checks (stuck status-check task — heal with an empty commit per
 `papercut-forge-merge-405-stuck-status-check`).
 
-Advance a Forgejo PR with the normal merge API, not `lastgit cr merge`. Report
+Advance a Forgejo PR with the normal merge API, not `lastgit cr merge`.
+HTTP 409 `pull request is already scheduled to auto merge when checks succeed`
+means auto-merge is already armed: a success receipt, not an error. Do not
+retry it and do not file it. Report
 Forgejo counts in the heartbeat as `forge_stuck=<n>` alongside `stuck=<n>`.
 
 ### 2. Prefer complete-only first

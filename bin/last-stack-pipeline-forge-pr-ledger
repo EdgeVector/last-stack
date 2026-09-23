@@ -1,0 +1,589 @@
+#!/usr/bin/env python3
+"""Forgejo open-PR inventory and the ONE per-PR papercut ledger for pipeline-health.
+
+Why this exists (2026-09-22 papercut burn-down): the pipeline-health routine
+hand-wrote a shell loop every wake to read Forgejo PR state, and filed a new
+papercut per observed STATE. One PR produced up to five open p0 rows
+(`...-pr-2147`, `-pending`, `-failure`, `-required-checks`, ...), none of which
+closed when the PR merged. The loops themselves broke on zsh word splitting
+and malformed API paths about once a run. Of 82 open pipeline rows, ~55 were
+per-PR state records like these.
+
+This helper replaces both:
+
+  scan   Read-only. One JSON document: every open PR on the merge-demand repo
+         list, with its required-check verdict (read from branch protection),
+         mergeability, age, and whether the BASE branch tip is itself red on
+         the same required contexts.
+
+  sync   scan, then reconcile the ledger (dry run unless --apply):
+         - a stuck PR is keyed by repo + PR number:
+             papercut-pipeline-forge-<repo>-pr-<n>
+           one slug per PR, never per state. An open record gets ONE appended
+           evidence line when the head or the verdict changes; otherwise it is
+           left alone.
+         - a PR that is red only on contexts that are ALSO red on the base tip
+           is not a PR defect. It is attributed to the per-repo root-cause row
+             papercut-pipeline-forge-<repo>-main-red
+           and no per-PR row is written.
+         - every row this helper tracks is closed `verified` with a live point
+           read once its PR is merged or closed, or (main-red rows) once the
+           base tip is green on every required context.
+
+LastGit is not read. It is disabled for every EdgeVector repo
+(decision-2026-09-06-all-repos-venue-forgejo-no-lastgit-default).
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+HERE = Path(__file__).resolve().parent
+DEFAULT_REPOS_FILE = HERE.parent / "config" / "merge-demand-forge-repos"
+FALLBACK_REPOS = [
+    "EdgeVector/fold",
+    "EdgeVector/lastgit",
+    "EdgeVector/exemem-infra",
+    "EdgeVector/last-stack",
+    "EdgeVector/fkanban",
+    "EdgeVector/routines",
+    "EdgeVector/loom",
+]
+DEFAULT_REQUIRED = ["Forge CI / ci-required"]
+RED = {"failure", "error"}
+EVENT_SUFFIX = re.compile(r"\s+\((pull_request|push|pull_request_target)\)$")
+
+
+def now_utc() -> dt.datetime:
+    fixed = os.environ.get("LAST_STACK_PR_LEDGER_NOW")
+    if fixed:
+        return parse_ts(fixed) or dt.datetime.now(dt.timezone.utc)
+    return dt.datetime.now(dt.timezone.utc)
+
+
+def iso(ts: dt.datetime) -> str:
+    return ts.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_ts(raw: Any) -> dt.datetime | None:
+    if not raw or not isinstance(raw, str):
+        return None
+    try:
+        return dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def run(argv: list[str], *, stdin: str | None = None, timeout: int = 60) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(argv, input=stdin, text=True, capture_output=True, check=False, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(argv, 124, "", f"timeout after {timeout}s")
+    except FileNotFoundError as exc:
+        return subprocess.CompletedProcess(argv, 127, "", str(exc))
+
+
+def forge_api_bin() -> str:
+    env = os.environ.get("LAST_STACK_FORGE_API")
+    if env:
+        return env
+    sibling = HERE / "last-stack-forge-api"
+    return str(sibling) if sibling.exists() else "last-stack-forge-api"
+
+
+class ForgeError(RuntimeError):
+    pass
+
+
+def forge_get(path: str) -> Any:
+    proc = run([forge_api_bin(), path], timeout=45)
+    if proc.returncode != 0:
+        raise ForgeError(f"{path}: rc={proc.returncode} {(proc.stderr or proc.stdout).strip()[:300]}")
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise ForgeError(f"{path}: invalid json ({exc})") from exc
+
+
+def load_repos(args: argparse.Namespace) -> list[str]:
+    if args.repo:
+        return [r if "/" in r else f"EdgeVector/{r}" for r in args.repo]
+    env = os.environ.get("LAST_STACK_MERGE_DEMAND_FORGE_REPOS", "").split()
+    if env:
+        return [r if "/" in r else f"EdgeVector/{r}" for r in env]
+    path = Path(args.repos_file)
+    if path.is_file():
+        repos = [ln.strip() for ln in path.read_text().splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+        if repos:
+            return repos
+    return list(FALLBACK_REPOS)
+
+
+def stem(context: str) -> str:
+    return EVENT_SUFFIX.sub("", context or "").strip()
+
+
+def required_contexts(repo: str, branch: str) -> list[str]:
+    try:
+        rules = forge_get(f"repos/{repo}/branch_protections")
+    except ForgeError:
+        return list(DEFAULT_REQUIRED)
+    if isinstance(rules, list):
+        for rule in rules:
+            if not isinstance(rule, dict):
+                continue
+            name = rule.get("rule_name") or rule.get("branch_name") or ""
+            if name == branch and rule.get("enable_status_check", True):
+                ctxs = sorted({stem(c) for c in (rule.get("status_check_contexts") or []) if c})
+                if ctxs:
+                    return ctxs
+    return list(DEFAULT_REQUIRED)
+
+
+def context_states(status_doc: Any) -> dict[str, str]:
+    """Latest state per context stem from a combined-status document."""
+    out: dict[str, tuple[str, str]] = {}
+    statuses = status_doc.get("statuses") if isinstance(status_doc, dict) else None
+    for row in statuses or []:
+        if not isinstance(row, dict):
+            continue
+        key = stem(row.get("context") or "")
+        state = str(row.get("status") or row.get("state") or "").lower()
+        when = str(row.get("updated_at") or row.get("created_at") or "")
+        if key and (key not in out or when >= out[key][1]):
+            out[key] = (state, when)
+    return {k: v[0] for k, v in out.items()}
+
+
+def required_verdict(states: dict[str, str], required: list[str]) -> tuple[str, list[str]]:
+    red = [c for c in required if states.get(c) in RED]
+    if red:
+        return "red", red
+    if any(c not in states for c in required):
+        return "absent", []
+    if all(states.get(c) == "success" for c in required):
+        return "green", []
+    return "pending", []
+
+
+def repo_token(repo: str) -> str:
+    return re.sub(r"[^a-z0-9-]+", "-", repo.rsplit("/", 1)[-1].lower()).strip("-")
+
+
+def pr_slug(repo: str, number: int) -> str:
+    return f"papercut-pipeline-forge-{repo_token(repo)}-pr-{number}"
+
+
+def main_red_slug(repo: str) -> str:
+    return f"papercut-pipeline-forge-{repo_token(repo)}-main-red"
+
+
+def read_base(repo: str, base_ref: str) -> dict[str, Any]:
+    required = required_contexts(repo, base_ref)
+    base_sha, base_states = "", {}
+    try:
+        branch = forge_get(f"repos/{repo}/branches/{base_ref}")
+        base_sha = ((branch or {}).get("commit") or {}).get("id") or ""
+        if base_sha:
+            base_states = context_states(forge_get(f"repos/{repo}/commits/{base_sha}/status"))
+    except ForgeError:
+        pass
+    verdict, red = required_verdict(base_states, required) if base_sha else ("unreadable", [])
+    return {"ref": base_ref, "sha": base_sha, "required": required, "verdict": verdict, "red_contexts": red}
+
+
+def scan(args: argparse.Namespace) -> dict[str, Any]:
+    now = now_utc()
+    report: dict[str, Any] = {"checked_at": iso(now), "repos": [], "prs": [], "unreadable": []}
+    for repo in load_repos(args):
+        try:
+            pulls = forge_get(f"repos/{repo}/pulls?state=open&limit=50")
+        except ForgeError as exc:
+            report["unreadable"].append({"repo": repo, "error": str(exc)})
+            continue
+        if not isinstance(pulls, list):
+            report["unreadable"].append({"repo": repo, "error": "pulls response is not a list"})
+            continue
+        base_cache: dict[str, dict[str, Any]] = {}
+        repo_row = {"repo": repo, "open": 0, "base": {}}
+        for pr in pulls:
+            if not isinstance(pr, dict) or pr.get("state") != "open":
+                continue
+            repo_row["open"] += 1
+            number = int(pr.get("number") or 0)
+            head = (pr.get("head") or {}).get("sha") or ""
+            base_ref = (pr.get("base") or {}).get("ref") or "main"
+            if base_ref not in base_cache:
+                base_cache[base_ref] = read_base(repo, base_ref)
+                repo_row["base"][base_ref] = base_cache[base_ref]
+            base = base_cache[base_ref]
+            states: dict[str, str] = {}
+            status_error = ""
+            if head:
+                try:
+                    states = context_states(forge_get(f"repos/{repo}/commits/{head}/status"))
+                except ForgeError as exc:
+                    status_error = str(exc)
+            verdict, red = required_verdict(states, base["required"])
+            if status_error:
+                verdict = "unreadable"
+            mergeable = pr.get("mergeable")
+            updated = parse_ts(pr.get("updated_at"))
+            created = parse_ts(pr.get("created_at"))
+            age_min = int((now - created).total_seconds() // 60) if created else None
+            idle_min = int((now - updated).total_seconds() // 60) if updated else None
+            if pr.get("draft"):
+                shape = "draft"
+            elif mergeable is False:
+                shape = "conflict"
+            elif verdict == "red":
+                shape = "red"
+            elif verdict == "green":
+                shape = "green-unmerged"
+            else:
+                shape = verdict  # pending | absent | unreadable
+            stuck = False
+            if age_min is not None and age_min >= args.min_age_min and shape in {"conflict", "red", "green-unmerged"}:
+                stuck = True
+            if idle_min is not None and idle_min >= args.pending_stale_min and shape in {"pending", "absent"}:
+                stuck = True
+            root_cause = ""
+            if shape == "red" and red and base["verdict"] == "red" and set(red) <= set(base["red_contexts"]):
+                root_cause = "base-red"
+            report["prs"].append(
+                {
+                    "repo": repo,
+                    "number": number,
+                    "title": pr.get("title") or "",
+                    "head_sha": head,
+                    "head_ref": (pr.get("head") or {}).get("ref") or "",
+                    "base_ref": base_ref,
+                    "mergeable": mergeable,
+                    "age_min": age_min,
+                    "idle_min": idle_min,
+                    "required": {c: states.get(c, "absent") for c in base["required"]},
+                    "red_contexts": red,
+                    "shape": shape,
+                    "stuck": stuck,
+                    "root_cause": root_cause,
+                    "ledger_slug": main_red_slug(repo) if root_cause else pr_slug(repo, number),
+                    "status_error": status_error,
+                }
+            )
+        if "main" not in base_cache:
+            # main-red rows close on a green main even when no PR is open.
+            repo_row["base"]["main"] = read_base(repo, "main")
+        report["repos"].append(repo_row)
+    report["stuck"] = sum(1 for p in report["prs"] if p["stuck"])
+    return report
+
+
+# ── ledger ──────────────────────────────────────────────────────────────────
+
+def state_path(args: argparse.Namespace) -> Path:
+    if args.state_file:
+        return Path(args.state_file)
+    root = os.environ.get("LAST_STACK_STATE_DIR") or str(Path.home() / ".local/state/last-stack")
+    return Path(root) / "pipeline-health" / "forge-pr-ledger.json"
+
+
+def load_state(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_state(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    tmp.replace(path)
+
+
+class BrainBusy(RuntimeError):
+    pass
+
+
+def brain_status(brain: str, slug: str) -> str | None:
+    """Typed status of a papercut, None when the slug does not exist."""
+    proc = run([brain, "get", slug, "--type", "papercut", "--json"], timeout=60)
+    text = (proc.stdout or "") + (proc.stderr or "")
+    if proc.returncode != 0:
+        if "No papercut" in text or "not found" in text.lower():
+            return None
+        raise BrainBusy(text.strip()[:300])
+    try:
+        doc = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise BrainBusy(f"brain get {slug}: invalid json") from exc
+    return str(doc.get("status") or "open")
+
+
+LIVE = {"open", "partial", "fixed"}
+ATTRIBUTED = {"duplicate", "wontfix"}
+
+
+def live_card_owner(args: argparse.Namespace, pr: dict[str, Any], now: dt.datetime) -> str:
+    """Card slug when the PR's kanban/<slug> card is in doing, assigned, and fresh."""
+    ref = pr.get("head_ref") or ""
+    if not ref.startswith("kanban/"):
+        return ""
+    card_slug = ref[len("kanban/"):]
+    proc = run([args.kanban_bin, "show", card_slug, "--json"], timeout=45)
+    if proc.returncode != 0:
+        return ""
+    try:
+        card = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(card, dict) or card.get("column") != "doing" or not card.get("assignee"):
+        return ""
+    updated = parse_ts(card.get("updated_at"))
+    if not updated or (now - updated).total_seconds() > args.owner_fresh_min * 60:
+        return ""
+    return card_slug
+
+
+def evidence_line(pr: dict[str, Any], checked_at: str) -> str:
+    req = ", ".join(f"{c}={s}" for c, s in pr["required"].items())
+    return (
+        f"- {checked_at}: {pr['repo']}#{pr['number']} shape={pr['shape']} head={pr['head_sha'][:12]} "
+        f"mergeable={pr['mergeable']} age_min={pr['age_min']} required: {req}\n"
+    )
+
+
+def sync(args: argparse.Namespace) -> dict[str, Any]:
+    report = scan(args)
+    checked_at = report["checked_at"]
+    path = state_path(args)
+    state = load_state(path)
+    tracked: dict[str, Any] = state.setdefault("tracked", {})
+    actions: list[dict[str, Any]] = []
+    brain = args.brain_bin
+    open_prs = {(p["repo"], p["number"]): p for p in report["prs"]}
+    unreadable = {u["repo"] for u in report["unreadable"]}
+
+    def act(kind: str, slug: str, **extra: Any) -> dict[str, Any]:
+        row = {"action": kind, "slug": slug, **extra}
+        actions.append(row)
+        return row
+
+    # 1. stuck PRs → file or append (one row per PR, or one per repo when main is red)
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for pr in report["prs"]:
+        if pr["stuck"]:
+            grouped.setdefault(pr["ledger_slug"], []).append(pr)
+    for slug, prs in grouped.items():
+        pr = prs[0]
+        fingerprint = ";".join(sorted(f"{p['number']}:{p['head_sha']}:{p['shape']}" for p in prs))
+        prior = tracked.get(slug) or {}
+        if not pr["root_cause"] and args.owner_fresh_min > 0:
+            owner = live_card_owner(args, pr, now_utc())
+            if owner:
+                # A red PR whose card is in doing with a worker that touched it
+                # recently is that worker's job, not pipeline friction. The
+                # pr-reaper's one-hour SLA still applies to it.
+                act("owned", slug, card=owner)
+                continue
+        try:
+            status = brain_status(brain, slug)
+        except BrainBusy as exc:
+            act("skip-busy", slug, error=str(exc))
+            continue
+        if status in LIVE:
+            if prior.get("fingerprint") == fingerprint:
+                act("unchanged", slug)
+                continue
+            chunk = "".join(evidence_line(p, checked_at) for p in prs)
+            row = act("append", slug, prs=[p["number"] for p in prs])
+            if args.apply:
+                proc = run([brain, "append", slug, "--type", "papercut"], stdin=chunk)
+                row["ok"] = proc.returncode == 0
+                if proc.returncode != 0:
+                    row["error"] = (proc.stderr or proc.stdout).strip()[:300]
+                    continue
+        elif status in ATTRIBUTED:
+            # A human or agent closed this PR's row as a duplicate of a named
+            # root cause (for example a flaky required lane on main), or as
+            # wontfix. Respect that attribution: re-filing it each wake is the
+            # churn this helper exists to stop. It re-opens only as a new PR.
+            act("attributed", slug, status=status)
+            continue
+        else:
+            file_slug = slug
+            if status is not None:
+                # terminal (verified/wontfix/duplicate): a recurrence gets its own
+                # stable occurrence slug keyed by the head; never reopen.
+                file_slug = f"{slug}-{pr['head_sha'][:8]}" if not pr["root_cause"] else f"{slug}-{checked_at[:10].replace('-', '')}"
+                try:
+                    if brain_status(brain, file_slug) in LIVE:
+                        act("unchanged", file_slug)
+                        continue
+                except BrainBusy as exc:
+                    act("skip-busy", file_slug, error=str(exc))
+                    continue
+            if pr["root_cause"]:
+                title = f"Pipeline: {pr['repo']} main is red on required checks; open PRs inherit it"
+                symptom = f"{pr['repo']} base tip is red on {', '.join(pr['red_contexts'])}, so every open PR is red"
+            else:
+                title = f"Pipeline: {pr['repo']} PR {pr['number']} is stuck ({pr['shape']})"
+                symptom = f"{pr['repo']} PR {pr['number']} is stuck: {pr['shape']}"
+            body = (
+                f"Source: last-stack-pipeline-forge-pr-ledger (one row per PR; closes itself when the PR merges or closes)\n"
+                f"Repo: {pr['repo']}\nPR: {', '.join(str(p['number']) for p in prs)}\nChecked-at: {checked_at}\n\n"
+                f"## Evidence\n" + "".join(evidence_line(p, checked_at) for p in prs)
+            )
+            row = act("file", file_slug, prs=[p["number"] for p in prs])
+            if args.apply:
+                argv = [
+                    brain, "papercut", "file", file_slug,
+                    "--component", "pipeline", "--severity", "p0", "--kind", "specified-fix",
+                    "--symptom", symptom, "--title", title, "--repo", pr["repo"],
+                    "--tag", "papercut", "--tag", "pipeline", "--tag", "p0", "--body", body,
+                ]
+                proc = run(argv)
+                refusal = (proc.stdout or "") + (proc.stderr or "")
+                if proc.returncode != 0:
+                    # The dedupe gate matches sibling per-PR rows (same shape,
+                    # different PR). Those are not duplicates: clear exactly them.
+                    siblings = sorted(set(re.findall(r"papercut-pipeline-forge-[a-z0-9-]+-pr-\d+(?:-[0-9a-f]{8})?", refusal)) - {file_slug})
+                    others = sorted(set(re.findall(r"papercut-[a-z0-9-]+", refusal)) - set(siblings) - {file_slug})
+                    if siblings and not others:
+                        for sib in siblings:
+                            argv += ["--not-duplicate-of", sib]
+                        proc = run(argv)
+                        refusal = (proc.stdout or "") + (proc.stderr or "")
+                row["ok"] = proc.returncode == 0
+                if proc.returncode != 0:
+                    row["error"] = refusal.strip()[:600]
+                    continue
+            slug = file_slug
+        if args.apply:
+            tracked[slug] = {
+                "repo": pr["repo"],
+                "prs": [p["number"] for p in prs],
+                "kind": "main-red" if pr["root_cause"] else "pr",
+                "fingerprint": fingerprint,
+                "last_evidence_at": checked_at,
+            }
+
+    # 2. tracked rows whose PR left the open set (or whose main went green) → close verified
+    for slug, meta in sorted(tracked.items()):
+        repo = meta.get("repo") or ""
+        if repo in unreadable:
+            continue
+        if meta.get("kind") == "main-red":
+            still = [p for p in report["prs"] if p["ledger_slug"] == slug and p["stuck"]]
+            base = next((r["base"] for r in report["repos"] if r["repo"] == repo), {})
+            main = (base or {}).get("main") or {}
+            if still or main.get("verdict") != "green":
+                continue
+            evidence = f"{repo} main tip {main.get('sha', '')[:12]} is green on every required context: {', '.join(main.get('required', []))}"
+            verified_by = f"forge point read GET repos/{repo}/commits/{main.get('sha', '')}/status at {checked_at}: required contexts success"
+        else:
+            numbers = meta.get("prs") or []
+            if any((repo, n) in open_prs for n in numbers):
+                continue
+            facts = []
+            try:
+                for n in numbers:
+                    doc = forge_get(f"repos/{repo}/pulls/{n}")
+                    facts.append(f"#{n} state={doc.get('state')} merged={doc.get('merged')} merged_at={doc.get('merged_at') or '-'}")
+                    if doc.get("state") == "open":
+                        raise ForgeError("list/point disagreement: still open")
+            except ForgeError as exc:
+                act("close-deferred", slug, error=str(exc))
+                continue
+            evidence = f"{repo} PR left the open set: {'; '.join(facts)}"
+            verified_by = f"forge point read GET repos/{repo}/pulls/<n> at {checked_at}: {'; '.join(facts)}"
+        row = act("close", slug, evidence=evidence)
+        if args.apply:
+            try:
+                status = brain_status(brain, slug)
+            except BrainBusy as exc:
+                row["ok"] = False
+                row["error"] = str(exc)
+                continue
+            if status is None or status not in LIVE:
+                tracked.pop(slug, None)
+                row["ok"] = True
+                row["note"] = f"already {status or 'absent'}"
+                continue
+            proc = run([
+                brain, "papercut", "close", slug, "--status", "verified",
+                "--evidence", evidence, "--verified-by", verified_by,
+            ])
+            row["ok"] = proc.returncode == 0
+            if proc.returncode == 0:
+                tracked.pop(slug, None)
+            else:
+                row["error"] = (proc.stderr or proc.stdout).strip()[:300]
+
+    if args.apply:
+        state["updated_at"] = checked_at
+        save_state(path, state)
+    report["ledger"] = {"apply": bool(args.apply), "state_file": str(path), "actions": actions, "tracked": sorted(tracked)}
+    return report
+
+
+def print_text(report: dict[str, Any]) -> None:
+    print(f"checked_at={report['checked_at']} stuck={report['stuck']} unreadable={len(report['unreadable'])}")
+    for pr in report["prs"]:
+        req = ",".join(f"{c.split(' / ')[-1]}={s}" for c, s in pr["required"].items())
+        print(
+            "\t".join(
+                str(x)
+                for x in (
+                    pr["repo"], pr["number"], pr["shape"], "stuck" if pr["stuck"] else "-",
+                    pr["root_cause"] or "-", pr["age_min"], pr["head_sha"][:10], req,
+                )
+            )
+        )
+    for u in report["unreadable"]:
+        print(f"unreadable\t{u['repo']}\t{u['error']}")
+    for a in (report.get("ledger") or {}).get("actions", []):
+        print(f"ledger\t{a['action']}\t{a['slug']}\t{a.get('ok', '')}\t{a.get('error', '')}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    for name in ("scan", "sync"):
+        sp = sub.add_parser(name)
+        sp.add_argument("--repo", action="append", help="owner/name (repeatable); default: merge-demand repo list")
+        sp.add_argument("--repos-file", default=str(DEFAULT_REPOS_FILE))
+        sp.add_argument("--min-age-min", type=int, default=10, help="red/conflict/green-unmerged older than this is stuck")
+        sp.add_argument("--pending-stale-min", type=int, default=120, help="pending/absent with no PR update for this long is stuck")
+        sp.add_argument("--json", action="store_true", dest="json_out")
+        if name == "sync":
+            sp.add_argument("--apply", action="store_true", help="write the ledger (default: dry run)")
+            sp.add_argument("--brain-bin", default=os.environ.get("BRAIN_BIN", "brain"))
+            sp.add_argument("--state-file", default="")
+            sp.add_argument("--kanban-bin", default=os.environ.get("KANBAN_BIN", "kanban"))
+            sp.add_argument(
+                "--owner-fresh-min", type=int, default=120,
+                help="skip a PR whose kanban/<slug> card is in doing, assigned, and updated this recently (0 = never skip)",
+            )
+    args = parser.parse_args()
+    report = scan(args) if args.cmd == "scan" else sync(args)
+    if args.json_out:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print_text(report)
+    if report["unreadable"] and not report["prs"]:
+        return 3
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

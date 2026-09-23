@@ -43,6 +43,13 @@ EOF
 echo "service_timeout: board point read failed" >&2
 exit 1
 EOF
+  elif [ "$mode" = reopened ]; then
+    cat >"$dir/bin/last-stack-card-closeout" <<'EOF'
+#!/usr/bin/env bash
+echo "last-stack-card-closeout: FAILED reopened-same-signal slug=stuck-card signal=abc" >&2
+echo "  Add a new positive PROOF line or link a new merged review before closeout." >&2
+exit 1
+EOF
   else
     cat >"$dir/bin/last-stack-card-closeout" <<'EOF'
 #!/usr/bin/env bash
@@ -247,6 +254,36 @@ for engine in node python3; do
     cat "$tmarks" >&2
     exit 1
   }
+
+  # 4b. A deliberate reopen (reopened-same-signal) is live work: never flagged
+  #     close-failed, never escalated, never stamped, never moved.
+  rstack="$tmp/rstack.$engine"
+  mkstack "$rstack" reopened
+  rstate="$tmp/rstate.$engine"
+  rmarks="$tmp/rmarks.$engine"
+  rmoves="$tmp/rmoves.$engine"
+  : >"$rmarks"; : >"$rmoves"
+  for i in 1 2 3 4; do
+    rout="$(env PATH="$engine_path" \
+      BOARD_MARKS="$rmarks" BOARD_MOVES="$rmoves" \
+      BOARD_CLOSEOUT_STATE_DIR="$rstate" \
+      "$rstack/bin/last-stack-board-closeout-sweep" \
+      --board-cli "$board" --grace-min 1 --max-park-hours 0 \
+      --escalate-after 3 --max-actions 20 2>&1 || true)"
+    if echo "$rout" | grep -q 'close-failed'; then
+      echo "FAIL[$engine]: reopened card flagged close-failed on pass $i: $rout" >&2
+      exit 1
+    fi
+    if grep -q 'stuck-card' "$rstate/close-failures.json" 2>/dev/null; then
+      echo "FAIL[$engine]: reopened card started a close-failure streak on pass $i" >&2
+      exit 1
+    fi
+  done
+  if [ -s "$rmarks" ] || [ -s "$rmoves" ]; then
+    echo "FAIL[$engine]: reopened card was stamped or moved:" >&2
+    cat "$rmarks" "$rmoves" >&2
+    exit 1
+  fi
 
   # 5. Once the card leaves `doing`, its streak is cleared — a later, unrelated
   #    failure must start from zero rather than escalating immediately.

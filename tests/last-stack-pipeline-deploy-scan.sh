@@ -9,6 +9,8 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 mkdir -p "$tmp/deploy-ok-repo" "$tmp/deploy-bad-repo" "$tmp/deploy-pending-repo"
+# deploy-run's checkout root: never a producer, never a row.
+mkdir -p "$tmp/deploy-checkouts/ok-repo"
 
 cat >"$tmp/deploy-ok-repo/deploy.log" <<'EOF'
 pending aaa deploy-pipeline from x:refs/heads/main:accepted
@@ -33,6 +35,10 @@ touch -t "$(date -u -v-5H +%Y%m%d%H%M.%S 2>/dev/null || date -u -d '5 hours ago'
 
 out="$("$SCAN" --json --root "$tmp" --pending-max-s 3600)"
 echo "$out" | jq -e 'type=="array"' >/dev/null
+echo "$out" | jq -e 'all(.[]; .repo != "checkouts")' >/dev/null || {
+  echo "deploy-checkouts is the deploy-run checkout root, not a producer: $out" >&2
+  exit 1
+}
 
 ok_blocked="$(echo "$out" | jq -r '.[] | select(.repo=="ok-repo") | .blocked')"
 bad_blocked="$(echo "$out" | jq -r '.[] | select(.repo=="bad-repo") | .blocked')"

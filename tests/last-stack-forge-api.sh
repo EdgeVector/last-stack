@@ -223,4 +223,17 @@ if [[ "$jq_ok" != "true" ]]; then
   exit 1
 fi
 
-echo "ok last-stack-forge-api error-body + 2xx path + 405 mergeable partition + --jq flag guard"
+# A string result must print bare: `case "$state" in success)` and @tsv rows
+# depend on it (last-stack-deploy-watch-gate never matched a quoted "success").
+jq_str="$("$API" --jq '"su" + "ccess"' repos/EdgeVector/fold/ok)"
+if [[ "$jq_str" != "success" ]]; then
+  echo "FAIL: --jq string result should print bare success, got: $jq_str" >&2
+  exit 1
+fi
+jq_tsv="$("$API" --jq '["a","b"] | @tsv' repos/EdgeVector/fold/ok)"
+if [[ "$jq_tsv" != $'a\tb' ]]; then
+  echo "FAIL: --jq @tsv should print a real tab, got: $jq_tsv" >&2
+  exit 1
+fi
+
+echo "ok last-stack-forge-api error-body + 2xx path + 405 mergeable partition + --jq flag guard + raw strings"
