@@ -227,7 +227,12 @@ files + `BLOCKED:`, and **never** leave it as a milestone-less `Kind: pr` in
 
 ### 4. Escalate the rest as Brain papercuts (never bare todo Kind:pr)
 
-For every other stuck entry you did not fix, including fallback-detected stuck
+For a stuck **Forgejo PR**, file nothing here: pipeline-health's ledger
+(`last-stack-pipeline-forge-pr-ledger`) owns one row per PR, and the stuck filer
+below skips Forgejo ids (`forgejo-pr-<n>`, `<n>`). The filer is for opt-in
+LastGit CRs only.
+
+For every other stuck LastGit CR you did not fix, including fallback-detected stuck
 CRs: **file or update a Brain papercut** (same policy as `pipeline-health` and
 `preference-always-file-papercuts-in-brain`). Do **not** create
 `stuck-lastgit-*` / pipeline P0 `Kind: pr` cards in default `todo` without a
