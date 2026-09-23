@@ -811,4 +811,8 @@ ci_test tests/last-stack-forge-dbfs-read.sh
 # Fixture tree and a redacted evidence file. No deploy, no LastDB home.
 # APPENDED before the registration guard, which stays last.
 ci_test tests/last-stack-north-star-proof-exemem-hands-off.sh
+# Offline terminal proof for north-star-lastdb-cloud-transaction-groups.
+# Fixture pin-log plus optional redacted evidence. No LastDB home. No cutover.
+# APPENDED before the registration guard, which stays last.
+ci_test tests/last-stack-north-star-proof-cloud-transaction-groups.sh
 ci_test tests/last-stack-ci-test-registration.sh

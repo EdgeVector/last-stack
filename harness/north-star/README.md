@@ -35,6 +35,7 @@ First line is `PASS`, `PASS-OFFLINE`, or `FAIL` for kanban DONE-WHEN matching.
 | lastdb-uuid-hash-group-addressing | validates Fold source contracts and the immutable 11M-document CoW migration proof | runs focused new-home, legacy-read, warm-set, group-backup, and as-is restore tests; preserves the later Tom-authorized primary sync configuration |
 | lastdb-no-scan-access | refuses terminal PASS without the keyed scan-deprecation tracker and its completion proof | reads the tracker by slug; never scans, restarts, or mutates LastDB |
 | lastdb-cloud-owned-gc | FAIL; no child execution in offline or unknown mode | explicit clean Fold source and exact commit pin; verified child invocation still returns FAIL until P9 supplies the reviewed release-evidence validator |
+| lastdb-cloud-transaction-groups | Fold pin-log source contract; PASS-OFFLINE only with redacted CoW evidence for the blocked frontier, atomic restore, and post-soak canary | same evidence contract; does not open a LastDB home and does not start a cloud cutover |
 
 ## Cloud-owned GC: registration is not release proof
 
