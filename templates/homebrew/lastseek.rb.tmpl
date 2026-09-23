@@ -1,0 +1,73 @@
+# frozen_string_literal: true
+
+# Rendered by last-stack-brew-app-publish from templates/homebrew/lastseek.rb.tmpl.
+# Edit the template in EdgeVector/last-stack, not this file: every release
+# rewrites it.
+class Lastseek < Formula
+  desc "LastSeek: local semantic search plane for LastDB"
+  homepage "https://thelastdb.com"
+  version "@VERSION@"
+  license "Apache-2.0"
+
+  depends_on arch: :arm64
+  depends_on :macos
+
+  url "@URL@"
+  sha256 "@SHA256@"
+
+  # bge-small-en-v1.5 (BAAI, MIT), ONNX export by Xenova, pinned to one commit.
+  # lastseek falls back to <prefix>/share/lastseek/models/bge-small-en-v1.5
+  # when ~/.lastseek/models has no model (lastseek >= 0.1.1).
+  MODEL_BASE = "https://huggingface.co/Xenova/bge-small-en-v1.5/resolve/ea104dacec62c0de699686887e3f920caeb4f3e3"
+
+  resource "model.onnx" do
+    url "#{MODEL_BASE}/onnx/model.onnx"
+    sha256 "828e1496d7fabb79cfa4dcd84fa38625c0d3d21da474a00f08db0f559940cf35"
+  end
+
+  resource "tokenizer.json" do
+    url "#{MODEL_BASE}/tokenizer.json"
+    sha256 "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66"
+  end
+
+  resource "config.json" do
+    url "#{MODEL_BASE}/config.json"
+    sha256 "fa73f90bf92c8cace1fbcb709626306f2bdbc9ea3e5b5f94b440df9b6aa56350"
+  end
+
+  resource "special_tokens_map.json" do
+    url "#{MODEL_BASE}/special_tokens_map.json"
+    sha256 "b6d346be366a7d1d48332dbc9fdf3bf8960b5d879522b7799ddba59e76237ee3"
+  end
+
+  resource "tokenizer_config.json" do
+    url "#{MODEL_BASE}/tokenizer_config.json"
+    sha256 "9261e7d79b44c8195c1cada2b453e55b00aeb81e907a6664974b4d7776172ab3"
+  end
+
+  def install
+    bin.install "dist/lastseek"
+    prefix.install "LICENSE", "THIRD_PARTY_NOTICES"
+    model_dir = pkgshare/"models/bge-small-en-v1.5"
+    model_dir.mkpath
+    %w[model.onnx tokenizer.json config.json special_tokens_map.json tokenizer_config.json].each do |name|
+      resource(name).stage { model_dir.install Dir["*"].first => name }
+    end
+  end
+
+  def caveats
+    <<~EOS
+      LastSeek reads the LastDB search feed. Start the daemon first:
+        brew install edgevector/lastdb/lastdb && brew services start lastdb
+
+      The embedding model is installed at:
+        #{opt_pkgshare}/models/bge-small-en-v1.5
+      Set LASTSEEK_MODEL_DIR to use another copy.
+    EOS
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/lastseek --version")
+    assert_predicate pkgshare/"models/bge-small-en-v1.5/model.onnx", :exist?
+  end
+end

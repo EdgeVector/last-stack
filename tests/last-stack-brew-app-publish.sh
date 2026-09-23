@@ -190,4 +190,20 @@ grep -q 'bump the app version' "$tmp/dup.err" || fail "same-version refusal uncl
 pub --publish --if-needed >/dev/null 2>&1 || fail "if-needed should not fail on an unbumped version"
 grep -q 'release create' "$GH_LOG" && fail "an existing tag was uploaded again"
 
+# --- the shipped templates render to valid Ruby --------------------------------
+for tmpl in "$ROOT"/templates/homebrew/*.rb.tmpl; do
+  rendered="$tmp/$(basename "$tmpl" .tmpl)"
+  sed -e 's/@VERSION@/0.1.1/' -e 's#@URL@#https://example.invalid/x.tar.gz#' \
+    -e "s/@SHA256@/$(printf 'a%.0s' {1..64})/" "$tmpl" > "$rendered"
+  if grep -q '@[A-Z0-9_]*@' "$rendered"; then fail "$tmpl has a placeholder the publisher does not fill"; fi
+  if command -v ruby >/dev/null 2>&1; then
+    ruby -c "$rendered" >/dev/null || fail "$tmpl renders to invalid Ruby"
+  fi
+done
+# Every app with brew_release config has a template.
+jq -r '.apps[] | select(.brew_release | type == "object") | (.brew_release.formula // .app)' \
+  "$ROOT/config/host-track/apps.json" | while IFS= read -r f; do
+  [ -f "$ROOT/templates/homebrew/$f.rb.tmpl" ] || fail "brew_release formula $f has no template"
+done
+
 echo "ok last-stack-brew-app-publish"
