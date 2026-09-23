@@ -649,6 +649,35 @@ except subprocess.TimeoutExpired:
 '
 }
 
+# Give up on an execution this wrapper is about to report as failed: cancel it,
+# then stop its detached drivers. Both, in that order.
+#
+# MEASURED 2026-09-22/23: the final rc=4 branch (five re-attaches, each ending
+# at loom's drive deadline) wrote its stamp and exited with the execution still
+# `running` at GATHER and the fifth attempt's `loom drive-detached` alive under
+# PID 1. Three hours of that left three drivers polling the primary lastdbd at
+# ~130 req/s (248 of 252 recent requests), warm cache 100%, host load ~150.
+# A driver also kept polling after `loom cancel` flipped its execution to
+# cancelled (pid 58149 needed SIGTERM), so cancelling alone is not enough;
+# stopping alone leaves an unowned `running` row for the shared reaper.
+# papercut-whats-wrong-loom-gate-leaks-detached-drivers-that-flood-lastdbd-20260923
+#
+# Prints `cancel=<cancelled|failed|skipped> workers=<stop answer>`.
+abandon_live_execution() {
+  ab_id="$1"
+  if [ -z "$ab_id" ] || [ "$ab_id" = "unknown" ]; then
+    printf 'cancel=skipped workers=none\n'
+    return 0
+  fi
+  if reap_abandoned_execution "$ab_id"; then
+    ab_cancel="cancelled"
+  else
+    ab_cancel="failed"
+  fi
+  ab_workers="$(stop_abandoned_drive_workers "$ab_id")"
+  printf 'cancel=%s workers=%s\n' "$ab_cancel" "$ab_workers"
+}
+
 count_exceptions() {
   listed="$(list_exceptions 2>/dev/null)" || {
     log "exception count unavailable: $(brief "$listed")"
@@ -903,6 +932,11 @@ if [ "$lrc" -ne 0 ] || [ -z "$view" ]; then
   det="exceptions=${n} healed=0 loom-run-failed rc=${lrc} attempts=${attempt}"
   if [ -n "$stalled_exec" ]; then
     det="${det} exec=${stalled_exec} exec-status=${rb_final_status:-unknown} exec-state=${rb_final_state:-unknown}"
+    # This hour is over for the execution too. Leaving it `running` with a
+    # live driver is the leak abandon_live_execution documents.
+    abandon="$(abandon_live_execution "$stalled_exec")"
+    log "gave up on loom execution ${stalled_exec}: ${abandon}"
+    det="${det} giveup-$(printf '%s' "$abandon" | sed 's/ / giveup-/')"
   fi
   log "loom run failed rc=$lrc after ${attempt} attempt(s)"
   drain_log "loom run ended rc=${lrc} after ${attempt} attempt(s) cumulative=${cumulative_wait}s answer=${ended_reason:-unknown}"
@@ -923,6 +957,15 @@ if [ "$run_status" != "succeeded" ]; then
   n="$(count_exceptions)"
   [ -n "$det_str" ] || det_str="exceptions=${n} healed=0 status=${run_status:-failed}"
   log "loom exec status=$run_status"
+  case "$run_status" in
+    succeeded|failed|cancelled) ;;
+    *)
+      # A non-terminal view (running/parked) that this wrapper is about to
+      # report as an error: same leak as the rc=4 branch above.
+      abandon="$(abandon_live_execution "$exec_id")"
+      log "gave up on loom execution ${exec_id:-unknown}: ${abandon}"
+      ;;
+  esac
   drain_log "loom exec status=${run_status} after ${attempt} attempt(s) cumulative=${cumulative_wait}s answer=${ended_reason:-$run_status}"
   write_stamp "${run_status:-failed}" "$exec_id" "$det_str" "$KEY" "error"
   emit_result error "$det_str"

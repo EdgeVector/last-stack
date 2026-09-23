@@ -919,10 +919,17 @@ VIEW
     echo 'execution lx-ww-stuck is incomplete: still `running` at state `GATHER` after the drive deadline. Another worker holds the frontier, or the frontier is unattended — `loom reap --execution lx-ww-stuck` recovers an unattended one.' >&2
     exit 4
     ;;
+  cancel)
+    printf '%s\n' "${2:-}" >>"$STUCK_CANCEL_LOG"
+    printf 'status: cancelled\n'
+    exit 0
+    ;;
   *) echo "unexpected $*" >&2; exit 2 ;;
 esac
 SH
 chmod 755 "$tmp/bin/loom"
+export STUCK_CANCEL_LOG="$tmp/cancel-stuck.log"
+: >"$STUCK_CANCEL_LOG"
 export LAST_STACK_WHATS_WRONG_STAMP="$tmp/stamp-stuck.json"
 export LOOM_WHATS_WRONG_KEY="whats-wrong-stuck-key"
 set +e
@@ -939,6 +946,17 @@ d = json.load(open(sys.argv[1], encoding="utf-8"))
 blob = json.dumps(d)
 assert "lx-ww-stuck" in blob, d
 PYCHK
+# Giving up must not leave the execution `running` with a live driver. The
+# final rc=4 branch used to stamp and exit, and three such hours left three
+# `drive-detached` processes polling lastdbd at ~130 req/s on 2026-09-22
+# (papercut-whats-wrong-loom-gate-leaks-detached-drivers-that-flood-lastdbd-20260923).
+grep -qx 'lx-ww-stuck' "$STUCK_CANCEL_LOG" \
+  || fail "giving up did not cancel the stranded execution: $(cat "$STUCK_CANCEL_LOG")"
+printf '%s\n' "$sout" | grep -q 'giveup-cancel=cancelled' \
+  || fail "give-up result does not report the cancel: $sout"
+printf '%s\n' "$sout" | grep -q 'giveup-workers=' \
+  || fail "give-up result does not report the driver stop: $sout"
+unset STUCK_CANCEL_LOG
 unset REAP_LOG_FILE
 unset LAST_STACK_WHATS_WRONG_LOOM_RETRY_ATTEMPTS
 
