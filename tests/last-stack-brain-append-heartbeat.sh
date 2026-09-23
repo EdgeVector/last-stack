@@ -45,4 +45,22 @@ export TMPDIR="$blocked"
 grep -q 'no-host-tmp' "$LAST_STACK_HEARTBEATS_FILE"
 chmod 700 "$blocked"
 
+# PATH-linked from a non-root dir (host-track links into ~/.local/bin, and
+# ~/.local/logs exists): the log must go to $HOME/.last-stack/logs, not to
+# <link dir>/../logs.
+unset LAST_STACK_HEARTBEATS_FILE
+export TMPDIR="$tmp"
+fake_home="$tmp/home"
+mkdir -p "$fake_home/.last-stack/logs" "$tmp/local/bin" "$tmp/local/logs"
+ln -s "$ROOT/bin/last-stack-brain-append-heartbeat" "$tmp/local/bin/last-stack-brain-append-heartbeat"
+ln -s "$ROOT/bin/last-stack-heartbeats-path" "$tmp/local/bin/last-stack-heartbeats-path"
+HOME="$fake_home" ROUTINES_HOME="$tmp/routines" "$tmp/local/bin/last-stack-brain-append-heartbeat" --line "via-path-link"
+grep -q 'via-path-link' "$fake_home/.last-stack/logs/routine-heartbeats.log"
+[ ! -e "$tmp/local/logs/routine-heartbeats.log" ]
+linked_path="$(HOME="$fake_home" ROUTINES_HOME="$tmp/routines" "$tmp/local/bin/last-stack-heartbeats-path")"
+case "$linked_path" in
+  */home/.last-stack/logs/routine-heartbeats.log) ;;
+  *) echo "heartbeats-path via PATH link printed $linked_path" >&2; exit 1 ;;
+esac
+
 echo "ok"
