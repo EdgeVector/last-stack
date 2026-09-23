@@ -43,6 +43,11 @@ Forgejo shapes that differ from GitHub:
   auto-merge is armed, POST the merge again with merge_when_checks_succeed:
   HTTP 409 "already scheduled to auto merge" means it is armed; 200 arms it.
   --jq prints strings raw (like gh api --jq); do not strip quotes.
+  Forgejo 15.0.3 has NO API route to rerun or cancel an actions run (its
+  swagger lists only runs, runs/{id}, tasks, runners, workflows/.../dispatches);
+  POST .../actions/runs/<n>/rerun is a 404. The web route needs a password,
+  which agents must not use. To re-run a required check, push a new commit to
+  the PR branch (an empty commit is fine for a proven flake).
 
 Path forms:
   repos/OWNER/REPO/...      -> $FORGE_ROOT/api/v1/repos/OWNER/REPO/...
