@@ -926,7 +926,14 @@ cutover_red_out="$(run_cutover_recovery_case lx-test-cutover-timeout-red 1 125)"
 printf '%s\n' "$cutover_red_out" | grep -q 'bounded supervisor recovery failed rc=' \
   || fail "CUTOVER recovery failure was not distinct from the driver timeout"
 retained_state="$(find "$cutover_recovery_root" -maxdepth 1 -type f -name '*.json' -print -quit)"
-[ -n "$retained_state" ] && [ "$(stat -f '%Lp' "$retained_state")" = 600 ] \
+[ -n "$retained_state" ] \
+  || fail "failed CUTOVER recovery did not retain exact state"
+if stat --version >/dev/null 2>&1; then
+  retained_state_mode="$(stat -c '%a' "$retained_state")"
+else
+  retained_state_mode="$(stat -f '%Lp' "$retained_state")"
+fi
+[ "$retained_state_mode" = 600 ] \
   || fail "failed CUTOVER recovery did not retain owner-only exact state"
 jq -e --arg sidebin_dir "$cutover_live" '
   .loom_execution_id == "lx-test-cutover-timeout-red"
