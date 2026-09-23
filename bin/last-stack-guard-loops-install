@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# Install / status the two guard LaunchAgents that had no installer:
+#   com.edgevector.lastdb-memory-guard   (acts on the primary lastdbd)
+#   com.edgevector.forge-runner-watchdog (revives forge runner lanes)
+# The gui-app, testbin, and sentinel agents stay with
+# last-stack-host-memory-guards-install.
+#
+# All five run as KeepAlive loops (bin/last-stack-launchd-loop) since
+# 2026-09-23. `status` prints the heartbeat age of every loop.
+#
+# This installer reloads ONLY the two guard labels above. It never boots out,
+# kickstarts, or signals lastdbd itself.
+#
+# Usage:
+#   last-stack-guard-loops-install install|status
+set -euo pipefail
+
+self="${BASH_SOURCE[0]}"
+while [ -h "$self" ]; do
+  self_dir="$(cd -P "$(dirname "$self")" && pwd)"
+  self="$(readlink "$self")"
+  case "$self" in /*) ;; *) self="$self_dir/$self" ;; esac
+done
+self_root="$(cd -P "$(dirname "$self")/.." && pwd)"
+# shellcheck source=../lib/last-stack-launchd-agent.sh
+. "$self_root/lib/last-stack-launchd-agent.sh"
+
+program="last-stack-launchd-loop"
+last_stack="$(last_stack_agent_stable_root "$self" "$program")"
+cmd="${1:-status}"
+plist_dir="${GUARD_LOOPS_PLIST_DIR:-$HOME/Library/LaunchAgents}"
+hb_dir="${LAUNCHD_LOOP_HEARTBEAT_DIR:-$HOME/.lastdb/monitoring/launchd-loop}"
+
+labels() {
+  printf '%s\n' com.edgevector.lastdb-memory-guard com.edgevector.forge-runner-watchdog
+}
+
+assert_guard_label() {
+  case "$1" in
+    com.edgevector.lastdb-memory-guard|com.edgevector.forge-runner-watchdog) ;;
+    *) echo "refusing to touch label: $1" >&2; exit 1 ;;
+  esac
+}
+
+install_one() {
+  local label="$1" src rendered
+  assert_guard_label "$label"
+  src="$self_root/launchd/${label}.plist"
+  [ -f "$src" ] || src="$last_stack/launchd/${label}.plist"
+  [ -f "$src" ] || { echo "missing plist: $src" >&2; exit 1; }
+  rendered="$(mktemp "${TMPDIR:-/tmp}/${label}.plist.XXXXXX")"
+  last_stack_agent_render_plist "$src" "$rendered" "$last_stack"
+  # Every program path in the rendered argv must exist before launchd sees it.
+  local i=0 arg
+  while arg="$(/usr/libexec/PlistBuddy -c "Print :ProgramArguments:$i" "$rendered" 2>/dev/null)"; do
+    case "$arg" in
+      /*) [ -e "$arg" ] || { rm -f "$rendered"; echo "missing program: $arg" >&2; exit 1; } ;;
+    esac
+    i=$((i + 1))
+  done
+  last_stack_agent_commit_plist "$label" "$plist_dir/${label}.plist" "$rendered" "$label"
+}
+
+install_agent() {
+  mkdir -p "$hb_dir"
+  local label
+  for label in $(labels); do install_one "$label"; done
+}
+
+status_agent() {
+  echo "root: $last_stack"
+  echo "heartbeat_dir: $hb_dir"
+  local f now epoch
+  now="$(date +%s)"
+  for f in "$hb_dir"/*.hb; do
+    [ -f "$f" ] || { echo "no heartbeats"; break; }
+    epoch="$(sed -n 's/.*epoch=\([0-9]*\).*/\1/p' "$f")"
+    printf '%s age=%ss %s\n' "$(basename "$f" .hb)" "$((now - ${epoch:-0}))" "$(cat "$f")"
+  done
+}
+
+case "$cmd" in
+  install) install_agent ;;
+  status) status_agent ;;
+  -h|--help) sed -n '2,15p' "$0" ;;
+  *) echo "usage: $0 install|status" >&2; exit 2 ;;
+esac

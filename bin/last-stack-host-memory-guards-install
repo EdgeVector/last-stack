@@ -130,7 +130,7 @@ status_agent() {
     echo "bin: $last_stack/bin/$bin"
     if [ -f "${plist_dir}/${label}.plist" ]; then
       echo "plist: present"
-      prog="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:1' "${plist_dir}/${label}.plist" 2>/dev/null || true)"
+      prog="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:3' "${plist_dir}/${label}.plist" 2>/dev/null || true)"
       echo "program: ${prog:-unknown}"
       case "$prog" in
         */artifacts/versions/*) echo "program: VERSION-PINNED (will re-toast on refresh)" ;;

@@ -208,18 +208,18 @@ out="$("$version/bin/last-stack-host-memory-guards-install" install)" \
 printf '%s\n' "$out" | grep -q 'launchctl skipped' \
   || fail "host-memory-guards expected skip, got: $out"
 hplist="$HOME/Library/LaunchAgents/com.edgevector.gui-app-memory-guard.plist"
-hprog="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:1' "$hplist")"
+hprog="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:3' "$hplist")"
 [ "$hprog" = "$compat/bin/last-stack-gui-app-memory-guard" ] \
   || fail "gui-app-memory-guard program=$hprog"
 case "$hprog" in
   */artifacts/versions/*) fail "gui-app-memory-guard still version-pinned: $hprog" ;;
 esac
 tplist="$HOME/Library/LaunchAgents/com.edgevector.testbin-memory-guard.plist"
-tprog="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:1' "$tplist")"
+tprog="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:3' "$tplist")"
 [ "$tprog" = "$compat/bin/last-stack-testbin-memory-guard" ] \
   || fail "testbin-memory-guard program=$tprog"
 splist="$HOME/Library/LaunchAgents/com.edgevector.host-memory-sentinel.plist"
-sprog="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:1' "$splist")"
+sprog="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:3' "$splist")"
 [ "$sprog" = "$compat/bin/last-stack-host-memory-sentinel" ] \
   || fail "host-memory-sentinel program=$sprog"
 out="$("$version/bin/last-stack-host-memory-guards-install" install)" \
