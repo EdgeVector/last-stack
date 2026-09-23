@@ -42,5 +42,8 @@ Helpers that remove the hand-written parse:
 - In Claude Code, `grep` is ugrep (shell snapshot function). A bounded-context
   regex such as `'.\{0,200\}word'` fails with "exceeds complexity limits" and
   looks like no match. Use `/usr/bin/grep` or `rg -o '.{0,200}word'`.
+- Codex JavaScript (code mode) tools: a shell command inside a JS template
+  literal loses `${var}` to JavaScript. Pass the command as a plain quoted
+  string, or write `\${var}`.
 - `rg` over state or log roots can print one 26 MB line. Add
   `--max-columns 300 --max-filesize 1M`; `head` limits lines, not bytes.
