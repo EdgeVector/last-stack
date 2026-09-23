@@ -106,7 +106,11 @@ continue — do not fail the whole run.
    ```
    **Liveness gates (won't-undo — 2026-08-17 free-collapse):** the helper's
    process probe (`ps`/`lsof`) may fail under a scheduled sandbox while the
-   board still answers. Interpret helper output as:
+   board still answers. When only `ps`/`pgrep` are denied (the Codex seatbelt
+   denies setuid `/bin/ps`) and `lsof -u <uid>` works, the helper logs
+   `ps_unavailable fallback=lsof` and keeps full liveness from lsof (cwd,
+   build-tool command names, executable images); that is not a degrade.
+   Interpret helper output as:
    - **Hard stop** (`exit 3`, `liveness_unavailable=1`, no `liveness_soft=1`):
      process table missing **and** no real board protect set. Do **not** hand-
      delete worktrees. Heartbeat `error liveness_unavailable=1 …`.

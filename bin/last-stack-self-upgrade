@@ -29,7 +29,14 @@
 #     the failure.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+# Resolve the file symlink chain before dirname: the PATH link
+# ~/.local/bin/<name> points into the artifact tree, and siblings live there.
+_self_src="$0"
+while [ -L "$_self_src" ]; do
+  _self_link="$(readlink "$_self_src")"
+  case "$_self_link" in /*) _self_src="$_self_link" ;; *) _self_src="$(dirname "$_self_src")/$_self_link" ;; esac
+done
+ROOT="$(cd "$(dirname "$_self_src")/.." && pwd -P)"
 
 # The install's `origin` remote is often a read-only GitHub mirror; the
 # canonical source for LastGit-native repos (like this one) is the `lastgit`

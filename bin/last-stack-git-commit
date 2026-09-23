@@ -16,7 +16,14 @@
 # non-directory argument, -C keeps its `git commit` meaning (reuse message).
 set -euo pipefail
 
-self_dir="$(cd "$(dirname "$0")" && pwd -P)"
+# Resolve the file symlink chain before dirname: the PATH link
+# ~/.local/bin/<name> points into the artifact tree, and siblings live there.
+_self_src="$0"
+while [ -L "$_self_src" ]; do
+  _self_link="$(readlink "$_self_src")"
+  case "$_self_link" in /*) _self_src="$_self_link" ;; *) _self_src="$(dirname "$_self_src")/$_self_link" ;; esac
+done
+self_dir="$(cd "$(dirname "$_self_src")" && pwd -P)"
 git_c=()
 if [ "${1:-}" = "-C" ] && [ -n "${2:-}" ] && [ -d "$2" ]; then
   git_c=(-C "$2")
@@ -116,4 +123,7 @@ fi
 
 cleanup() { rm -f "$msg_file"; }
 trap cleanup EXIT
-git ${git_c[@]+"${git_c[@]}"} commit ${passthrough[@]+"${passthrough[@]}"} -F "$msg_file"
+# -F goes BEFORE the passthrough args: after a `--` pathspec separator git
+# reads the message file as a pathspec and rejects it as "outside repository"
+# (papercut-last-stack-git-commit-temp-outside-worktree-20260923).
+git ${git_c[@]+"${git_c[@]}"} commit -F "$msg_file" ${passthrough[@]+"${passthrough[@]}"}

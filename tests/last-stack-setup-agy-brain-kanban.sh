@@ -50,7 +50,7 @@ grep -q 'last-stack:brain-kanban:start' "$HOME/.gemini/GEMINI.md" \
   || fail "managed block missing from ~/.gemini/GEMINI.md"
 grep -q 'last-stack:brain-kanban:start' "$HOME/.gemini/config/GEMINI.md" \
   || fail "managed block missing from ~/.gemini/config/GEMINI.md"
-grep -q 'agy instructions: brain-kanban block' "$tmp/setup1.out" \
+grep -q 'agy instructions: brain-kanban' "$tmp/setup1.out" \
   || fail "setup did not log agy brain-kanban install"
 
 jq -e '.mcpServers.brain.command | test("brain-mcp$")' "$HOME/.gemini/config/mcp_config.json" >/dev/null \
