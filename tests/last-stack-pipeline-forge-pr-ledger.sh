@@ -123,6 +123,8 @@ echo "ok   a PR owned by a fresh doing card is not filed"
 jq -e '.prs[0].shape == "red" and .prs[0].stuck == true and .prs[0].red_contexts == ["Forge CI / Mini"]
        and .prs[0].ledger_slug == "papercut-pipeline-forge-fold-pr-7" and .prs[0].root_cause == ""' "$tmp/scan.json" >/dev/null \
   || { echo "FAIL scan classification"; cat "$tmp/scan.json"; exit 1; }
+jq -e '.heartbeat_fields | test("^open_forge=1 stuck=1 stuck_prs=fold#7 unreadable=-$")' "$tmp/scan.json" >/dev/null \
+  || { echo "FAIL heartbeat_fields"; jq -r .heartbeat_fields "$tmp/scan.json"; exit 1; }
 echo "ok   scan: required contexts from branch protection, newest status wins"
 
 # 2. dry run writes nothing
@@ -134,6 +136,8 @@ echo "ok   sync without --apply is a dry run"
 # 3. first apply files ONE row keyed by PR number
 sync --apply
 [ "$(cat "$tmp/brain/papercut-pipeline-forge-fold-pr-7.status")" = open ] || { echo "FAIL not filed"; exit 1; }
+jq -e '.heartbeat_fields | test("filed_papercut=papercut-pipeline-forge-fold-pr-7 ")' "$tmp/out.json" >/dev/null \
+  || { echo "FAIL heartbeat_fields must name the filed row"; jq -r .heartbeat_fields "$tmp/out.json"; exit 1; }
 echo "ok   apply files papercut-pipeline-forge-fold-pr-7"
 
 # 4. same head + same shape → no second write (no per-state sibling, no append)

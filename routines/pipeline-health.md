@@ -198,7 +198,7 @@ if [ -z "$scan" ] || [ "$scan" = "[]" ] && [ ! -x "$last_stack/bin/last-stack-pi
     echo "deploy-scan $repo :: $last"
   done
 else
-  printf '%s\n' "$scan" | jq -r '.[] | "\(.repo)\t\(.status)\tblocked=\(.blocked)\t\(.reason)"'
+  printf '%s\n' "$scan" | jq -r '.[] | [.repo, .status, (.blocked|tostring), .reason] | @tsv'
 fi
 ```
 
@@ -315,12 +315,18 @@ state-suffixed slug (`-pending`, `-failure`, `-required-checks`, `-red`,
 none closed when the PR merged. Evidence you want to add goes to the ledger's
 slug with `brain append <slug> --type papercut` from a quoted heredoc.
 
-For the heartbeat counts read the numbers directly, one field per jq call:
-`jq '.stuck' "$run_dir/forge-ledger.json"` and
-`jq '.prs | length' "$run_dir/forge-ledger.json"`. Do not build a jq string
-with `\(...)` interpolation inside the shell: the harness wraps each command in
-`zsh -lc '...'`, the escapes double, and jq stops with `Invalid escape`
-(`papercut-pipeline-health-jq-stuck-summary-filter`, 2026-09-23).
+For the heartbeat, copy the ready-made fragment; do not compute counts:
+
+```bash
+jq -r '.heartbeat_fields' "$run_dir/forge-ledger.json"
+# open_forge=8 stuck=8 stuck_prs=fold#2144,... unreadable=- filed_papercut=- updated_papercut=... closed_papercut=-
+```
+
+Do not write any jq program with `\(...)` string interpolation or a summary
+array: the harness wraps each command in `zsh -lc '...'`, the escapes double,
+and jq failed four times on 2026-09-23
+(`papercut-pipeline-health-jq-stuck-summary-filter`). Use `@tsv` for rows and
+the `.heartbeat_fields` string for counts.
 
 `ledger.actions[].action == "skip-busy"` means the brain was busy: report it,
 do not retry-loop. A `file` action with `ok=false` names the dedupe gate's
