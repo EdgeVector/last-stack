@@ -78,6 +78,14 @@ blocked-on-dependency, parked/non-work, …) must EXIT without claiming.
 - Gate exit **0** → noop skip (trailer already printed).
 - Gate exit **10** → proceed with claim selection as usual.
 - Busy-node / board-read failures are classified by the gate as noop skip.
+- `ready>0` with `claimable=0` (every ready card fenced by a live doing peer
+  through surface overlap) is a noop skip with the detail token `fenced`,
+  naming each fenced card and its peers. It is not the same condition as an
+  empty queue (`no-eligible ready=0`).
+- The gate never names a claim target. A slug in any preview or ready list is
+  a preview only: `pickup claim` orders by lanes and can select another card.
+  Run the WORK policy below on the slug that the claim RETURNED, never on a
+  preview slug.
 
 (`doing` cards are already claimed — `kanban-watch` / board-closeout own them.)
 
@@ -674,6 +682,12 @@ Why this runs after the claim, not before, as of 2026-09-05:
     -b "kanban/<lead-slug>" "origin/<base>"
   cd "${WORKTREES_DIR:-$HOME/.fkanban/worktrees}/<lead-slug>"
   ```
+  **Portal repos:** when `~/code/edgevector/<name>` has `bin/wt` and no
+  `.git` (a portal — every EdgeVector repo since 2026-07-30), it is not the
+  `<target-repo-root>` and the guard correctly rejects it. Do not clone into
+  it. Run `(cd ~/code/edgevector/<name> && ./bin/wt start kanban/<lead-slug>)`
+  and work in the path it prints; it replaces the `fetch` + `worktree add`
+  above (papercut-kanban-repo-header-resolves-portal-not-checkout-20260922).
   `WORKTREES_DIR` must be outside the shared checkout; never point it at
   `<repo>/.worktrees` or any other repo-local path. Never edit a shared checkout
   in place; never blanket stash/reset/clean a shared repo.

@@ -185,6 +185,56 @@ helper_cutover_end_state="${helper_cutover_end_state:-0}"
 positive_proof="${positive_proof:-0}"
 deploy_pipeline_ok=0
 
+# host_track_gate <repo-name>: is the PR's merge commit installed?
+# Prints `installed host_head=<sha> app=<app>` or a pending reason.
+# Reads: the PR merge commit (Forgejo API), `host-track status --json` for
+# the app whose gate_main is this repo, and the repo's bare mirror for the
+# ancestry check. Any read that fails is a pending reason, never a pass.
+host_track_gate() {
+  local repo="$1" pr card_pr number merge_sha status_json app host_head mirror
+  card_pr="$(printf '%s' "$card_json" | jq -r '(.card // .).pr_url // ""' 2>/dev/null || true)"
+  pr="${pr_url:-$card_pr}"
+  number="$(printf '%s' "$pr" | sed -n 's#.*/pulls/\([0-9][0-9]*\).*#\1#p')"
+  if [ -z "$number" ]; then
+    echo "no-forgejo-pr-url"
+    return 0
+  fi
+  local forge_api="${LAST_STACK_FORGE_API:-$self_dir/last-stack-forge-api}"
+  [ -x "$forge_api" ] || forge_api="last-stack-forge-api"
+  merge_sha="$(with_timeout "$forge_api" "repos/EdgeVector/$repo/pulls/$number" --jq '.merge_commit_sha // ""' 2>/dev/null | tr -d '"' || true)"
+  if [ -z "$merge_sha" ] || [ "$merge_sha" = null ]; then
+    echo "merge-commit-unknown pr=$number"
+    return 0
+  fi
+  status_json="$(with_timeout host-track status --json 2>/dev/null || true)"
+  read -r app host_head <<EOF_HT
+$(printf '%s' "$status_json" | jq -r --arg repo "$repo" '
+    (if type == "array" then . elif type == "object" and has("apps") then .apps else [.] end)
+    | map(select((.gate_main // "") | contains("/EdgeVector/" + $repo + ".git")))
+    | first // empty
+    | "\(.app // "") \(.host_head // "")"' 2>/dev/null || true)
+EOF_HT
+  if [ -z "${app:-}" ] || [ -z "${host_head:-}" ]; then
+    echo "no-host-track-app-for-repo"
+    return 0
+  fi
+  mirror="${EDGEVECTOR_GIT_CACHE:-$HOME/.cache/edgevector-git}/$repo.git"
+  if [ ! -d "$mirror" ]; then
+    echo "mirror-missing app=$app"
+    return 0
+  fi
+  if ! git -C "$mirror" cat-file -e "$host_head^{commit}" 2>/dev/null \
+    || ! git -C "$mirror" cat-file -e "$merge_sha^{commit}" 2>/dev/null; then
+    echo "mirror-lacks-commits app=$app host_head=$host_head merge=$merge_sha (run <portal>/bin/wt fetch)"
+    return 0
+  fi
+  if git -C "$mirror" merge-base --is-ancestor "$merge_sha" "$host_head" 2>/dev/null; then
+    echo "installed host_head=$host_head app=$app"
+  else
+    echo "not-installed app=$app host_head=$host_head merge=$merge_sha"
+  fi
+}
+
 refuse_helper_cutover() {
   local reason="$1"
   echo "last-stack-card-closeout: FAILED helper-cutover-unmet slug=$slug reason=$reason" >&2
@@ -219,8 +269,26 @@ elif [ -n "$deploy_reqs" ]; then
   fi
   while IFS= read -r deploy_req; do
     [ -n "$deploy_req" ] || continue
+    if [ "$deploy_req" = "host-track" ]; then
+      # The merged commit must be inside what host-track installed for the
+      # app built from this repo. Before 2026-09-22 this gate had no reader
+      # and every such card failed unsupported-deploy-gate=host-track
+      # (papercut-card-closeout-helper-blocks-merged-deferred-cards-20260922).
+      host_track_verdict="$(host_track_gate "$deploy_repo")"
+      case "$host_track_verdict" in
+        installed*)
+          echo "last-stack-card-closeout: deploy gate host-track $host_track_verdict slug=$slug repo=$deploy_repo" >&2
+          deploy_pipeline_ok=1
+          continue
+          ;;
+        *)
+          echo "last-stack-card-closeout: deploy gate pending slug=$slug repo=$deploy_repo requires=host-track status=$host_track_verdict" >&2
+          exit 1
+          ;;
+      esac
+    fi
     if [ "$deploy_req" != "deploy-pipeline" ]; then
-      echo "last-stack-card-closeout: FAILED unsupported-deploy-gate=$deploy_req slug=$slug" >&2
+      echo "last-stack-card-closeout: FAILED unsupported-deploy-gate=$deploy_req slug=$slug (supported: deploy-pipeline, host-track)" >&2
       exit 1
     fi
     gate_status="$(DEPLOY_SCAN_JSON="$deploy_scan_json" DEPLOY_REPO="$deploy_repo" python3 - <<'PY'
@@ -480,6 +548,13 @@ markers = re.findall(
 )
 
 print(f"end_state_claimed={1 if claimed else 0}")
+done_when = ""
+for line in body.splitlines():
+    m = re.match(r"(?i)^\s*DONE-WHEN\s*:\s*(.*?)\s*$", line)
+    if m and m.group(1):
+        done_when = m.group(1)
+        break
+print("done_when_b64=" + __import__("base64").b64encode(done_when.encode("utf-8")).decode("ascii"))
 print(f"closeout_initial_column={column}")
 print(f"closeout_previous_signal={markers[-1] if markers else ''}")
 print(f"closeout_signal={signal}")
@@ -506,6 +581,34 @@ if [ "$closeout_initial_column" != "done" ] \
   exit 1
 fi
 
+# A machine DONE-WHEN is an END STATE this helper CAN evaluate. Run it
+# before falling back to "closing on merge without an evaluated END STATE"
+# (papercut-kanban-closeout-end-state-warning-20260921).
+done_when_b64="${done_when_b64:-}"
+done_when_verdict="absent"
+if [ "$end_state_required" = "1" ] && [ "$end_state_claimed" != "1" ] && [ -n "$done_when_b64" ]; then
+  done_when="$(printf '%s' "$done_when_b64" | base64 -d 2>/dev/null || printf '%s' "$done_when_b64" | base64 -D 2>/dev/null || true)"
+  evaluator="$self_dir/last-stack-kanban-done-when-eval"
+  if [ -n "$done_when" ] && [ -x "$evaluator" ]; then
+    set +e
+    done_when_out="$(with_timeout "$evaluator" --kind validation --predicate "$done_when" 2>&1)"
+    done_when_rc=$?
+    set -e
+    case "$done_when_rc" in
+      0)
+        done_when_verdict="satisfied"
+        end_state_claimed=1
+        echo "last-stack-card-closeout: DONE-WHEN evaluated satisfied slug=$slug" >&2
+        run "$board_cli" mark "$slug" \
+          "END-STATE-EVALUATED $(date -u +%Y-%m-%dT%H:%M:%SZ) DONE-WHEN satisfied: $(printf '%s' "$done_when_out" | tail -1)" \
+          </dev/null >/dev/null 2>&1 || true
+        ;;
+      1) done_when_verdict="pending" ;;
+      *) done_when_verdict="unsupported" ;;
+    esac
+  fi
+fi
+
 end_state_warning=0
 if [ "$end_state_required" = "1" ] && [ "$end_state_claimed" != "1" ]; then
   if [ "$end_state_gate" = "1" ]; then
@@ -516,6 +619,7 @@ if [ "$end_state_required" = "1" ] && [ "$end_state_claimed" != "1" ]; then
     exit 1
   fi
   echo "last-stack-card-closeout: WARN end-state-unverified slug=$slug — closing on merge without an evaluated END STATE" >&2
+  echo "  missing: an ## OUTCOME that names the END STATE with a verdict word, or a positive PROOF: line; DONE-WHEN=$done_when_verdict" >&2
   end_state_warning=1
 fi
 

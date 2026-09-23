@@ -9,6 +9,7 @@ export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
 export_loom_run_deadline_for lastdb-safe-upgrade
 
 KEY=""
+RETRY=""
 CAND=""
 CAND_CLI=""
 SOURCE_OID=""
@@ -25,10 +26,17 @@ usage() {
 Usage:
   last-stack-safe-upgrade-loom --candidate PATH [--source-git-oid OID] [--json]
   last-stack-safe-upgrade-loom --dry-run --candidate PATH [--source-git-oid OID] [--json]
+  last-stack-safe-upgrade-loom --candidate PATH --retry N [--json]
 
 The launcher derives one immutable execution key from a SHA-256 digest of the
 source OID, canonical pair paths, binary hashes, and binary versions.
 It refuses live use when source ancestry cannot be identified.
+
+--retry N (N >= 2) runs attempt N of the SAME candidate pair under the key
+<key>-retry-N. Use it after a terminal-failed execution whose cause was fixed
+outside the candidate (for example a DEV photograph 500). Without it the
+pair's key resumes the failed execution. The attempt number is in the input
+and in the --json receipt.
 EOF
 }
 
@@ -40,6 +48,7 @@ die() {
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --key) KEY="${2:-}"; shift 2 ;;
+    --retry) RETRY="${2:-}"; shift 2 ;;
     --candidate) CAND="${2:-}"; shift 2 ;;
     --source-git-oid) SOURCE_OID="${2:-}"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
@@ -163,6 +172,18 @@ printf '%s\n' "$candidate_artifact_digest" | grep -Eq '^[0-9a-f]{64}$' \
   || die "candidate artifact digest calculation failed"
 
 expected_key="safe-upgrade-v${SAFE_UPGRADE_PROTOCOL_VERSION}-${candidate_artifact_digest}"
+# A retry of the same pair gets its own execution: the pair's key would
+# resume the terminal-failed one
+# (papercut-safe-upgrade-failed-execution-blocks-retry-of-same-candidate-20260922).
+ATTEMPT=1
+if [ -n "${RETRY:-}" ]; then
+  case "$RETRY" in
+    ''|*[!0-9]*) die "--retry needs an attempt number >= 2" ;;
+  esac
+  [ "$RETRY" -ge 2 ] || die "--retry needs an attempt number >= 2"
+  ATTEMPT="$RETRY"
+  expected_key="${expected_key}-retry-${RETRY}"
+fi
 if [ -n "$KEY" ] && [ "$KEY" != "$expected_key" ]; then
   die "--key must equal $expected_key so different candidates cannot share one execution"
 fi
@@ -179,7 +200,8 @@ input="$(jq -cn \
   --arg source_git_oid "$SOURCE_OID" \
   --arg candidate_artifact_digest "$candidate_artifact_digest" \
   --arg safe_upgrade_protocol_version "$SAFE_UPGRADE_PROTOCOL_VERSION" \
-  '{candidate:$candidate,candidate_cli:$candidate_cli,version:$version,lastdbd_version:$lastdbd_version,lastdb_version:$lastdb_version,lastdbd_sha256:$lastdbd_sha256,lastdb_sha256:$lastdb_sha256,source_git_oid:$source_git_oid,candidate_artifact_digest:$candidate_artifact_digest,safe_upgrade_protocol_version:$safe_upgrade_protocol_version}')"
+  --argjson attempt "$ATTEMPT" \
+  '{candidate:$candidate,candidate_cli:$candidate_cli,version:$version,lastdbd_version:$lastdbd_version,lastdb_version:$lastdb_version,lastdbd_sha256:$lastdbd_sha256,lastdb_sha256:$lastdb_sha256,source_git_oid:$source_git_oid,candidate_artifact_digest:$candidate_artifact_digest,safe_upgrade_protocol_version:$safe_upgrade_protocol_version} + (if $attempt > 1 then {attempt:$attempt} else {} end)')"
 
 emit_json() {
   local outcome="$1" status="$2" state="$3" execution="$4"
@@ -200,7 +222,8 @@ emit_json() {
     --arg candidate_artifact_digest "$candidate_artifact_digest" \
     --arg safe_upgrade_protocol_version "$SAFE_UPGRADE_PROTOCOL_VERSION" \
     --arg control_plane "$CONTROL_PLANE" \
-    '{outcome:$outcome,status:$status,state:$state,execution:$execution,key:$key,candidate:$candidate,candidate_cli:$candidate_cli,version:$version,lastdbd_version:$lastdbd_version,lastdb_version:$lastdb_version,lastdbd_sha256:$lastdbd_sha256,lastdb_sha256:$lastdb_sha256,source_git_oid:$source_git_oid,candidate_artifact_digest:$candidate_artifact_digest,safe_upgrade_protocol_version:$safe_upgrade_protocol_version,control_plane:$control_plane,graph:"lastdb-safe-upgrade"}'
+    --argjson attempt "$ATTEMPT" \
+    '{attempt:$attempt,outcome:$outcome,status:$status,state:$state,execution:$execution,key:$key,candidate:$candidate,candidate_cli:$candidate_cli,version:$version,lastdbd_version:$lastdbd_version,lastdb_version:$lastdb_version,lastdbd_sha256:$lastdbd_sha256,lastdb_sha256:$lastdb_sha256,source_git_oid:$source_git_oid,candidate_artifact_digest:$candidate_artifact_digest,safe_upgrade_protocol_version:$safe_upgrade_protocol_version,control_plane:$control_plane,graph:"lastdb-safe-upgrade"}'
 }
 
 if [ "$DRY_RUN" -eq 1 ]; then

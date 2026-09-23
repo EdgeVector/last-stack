@@ -213,6 +213,19 @@ For each proposed slice:
 
 1. Resolve the candidate repository venue and its exact canonical main commit.
    Use that immutable OID for every source-tree check in this pass.
+   `~/code/edgevector/<repo>` is a PORTAL with no `.git`; it is never the
+   `--repo-path`. Refresh and use the portal's bare mirror instead — it is a
+   git repository with the fetched main
+   (papercut-milestone-driver-no-dev-checkout-20260922):
+
+   ```bash
+   (cd "$HOME/code/edgevector/$repo" && ./bin/wt fetch)
+   candidate_repo="$HOME/.cache/edgevector-git/$repo.git"
+   candidate_main_ref="refs/remotes/origin/main"
+   candidate_main_oid="$(git -C "$candidate_repo" rev-parse "$candidate_main_ref")"
+   ```
+
+   A read-only check needs no worktree. Use `./bin/wt start` only for edits.
 2. Point-read the merged reviews named by the proposal, milestone history, and
    known closeouts. Do not use a GitHub mirror for a LastGit or Forgejo repo.
 3. Point-read the known closeout cards with `kanban show`. Do not infer closeout

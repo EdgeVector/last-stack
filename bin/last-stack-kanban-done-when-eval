@@ -17,6 +17,18 @@ Supported predicates:
   routine <name> heartbeat matches /<regex>/ after <YYYY-MM-DD>
   date >= <YYYY-MM-DD>
   file <path> matches /<regex>/
+
+Compound form:
+  <predicate> AND <predicate> [AND <predicate> ...]
+  Each side is one supported predicate above. The word AND is uppercase with
+  a space on each side. The result is satisfied only when every side is
+  satisfied; it is malformed when any side is malformed. A regex must not
+  contain the text " AND ".
+
+Not supported, on purpose: arbitrary shell commands and LastDB ops-ring
+conditions. A card body is data, so the evaluator never runs a command from
+it. Put that proof in a file (for example a report under
+~/.last-stack/north-star-proofs/) and use `file <path> matches /<regex>/`.
 EOF
 }
 
@@ -55,6 +67,49 @@ done
 if [ "$kind" = "pr" ]; then
   echo "ignored: Kind: pr requires a verified merged PR"
   exit 3
+fi
+
+# Compound form: split on " AND " and evaluate each side with this same
+# program, so every side gets exactly the single-predicate grammar below.
+if [[ "$predicate" == *" AND "* ]]; then
+  rest="$predicate"
+  overall=0
+  while :; do
+    case "$rest" in
+      *" AND "*)
+        atom="${rest%%" AND "*}"
+        rest="${rest#*" AND "}"
+        ;;
+      *)
+        atom="$rest"
+        rest=""
+        ;;
+    esac
+    # Trim surrounding whitespace.
+    atom="${atom#"${atom%%[![:space:]]*}"}"
+    atom="${atom%"${atom##*[![:space:]]}"}"
+    if [ -z "$atom" ]; then
+      echo "malformed: empty side in compound DONE-WHEN predicate: $predicate"
+      exit 2
+    fi
+    atom_out="$("$0" --kind "${kind:-validation}" --predicate "$atom")"
+    atom_rc=$?
+    printf '  [%s] %s\n' "$atom_rc" "$atom_out"
+    if [ "$atom_rc" -eq 2 ]; then
+      echo "malformed: compound DONE-WHEN has an unsupported side: $atom"
+      exit 2
+    fi
+    if [ "$atom_rc" -ne 0 ]; then
+      overall=1
+    fi
+    [ -n "$rest" ] || break
+  done
+  if [ "$overall" -eq 0 ]; then
+    echo "satisfied: every side of the compound DONE-WHEN is satisfied"
+    exit 0
+  fi
+  echo "pending: at least one side of the compound DONE-WHEN is not satisfied"
+  exit 1
 fi
 
 if [[ "$predicate" =~ ^brain[[:space:]]+([^[:space:]]+)[[:space:]]+exists$ ]]; then
@@ -156,4 +211,6 @@ if [[ "$predicate" =~ ^file[[:space:]]+([^[:space:]]+)[[:space:]]+matches[[:spac
 fi
 
 echo "malformed: unsupported DONE-WHEN predicate: $predicate"
+echo "  supported: brain <slug> exists | brain <slug> updated-after <date> | routine <name> heartbeat matches /<re>/ after <date> | date >= <date> | file <path> matches /<re>/ | <any of these> AND <any of these>"
+echo "  commands and LastDB ops conditions are not evaluated; write the proof to a file and use: file <path> matches /<re>/"
 exit 2

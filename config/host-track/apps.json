@@ -178,6 +178,10 @@
           "target": "$HOME/.local/bin/last-stack-forge-git"
         },
         {
+          "source": "bin/last-stack-forge-dead-trigger",
+          "target": "$HOME/.local/bin/last-stack-forge-dead-trigger"
+        },
+        {
           "source": "bin/last-stack-forge-ci-log",
           "target": "$HOME/.local/bin/last-stack-forge-ci-log"
         },

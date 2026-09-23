@@ -611,6 +611,23 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
           passing → just `gh run rerun <run-id> --failed` and confirm auto-merge
           is armed. This is a CHEAP, UNCAPPED advance — do it for EVERY such PR.
           A flaky-cancelled required check is the #1 reason a green-able PR rots.
+        - **Stale base** — CHEAP, UNCAPPED, and checked BEFORE "Real failing
+          check". If the base branch moved since the PR head was cut (the PR
+          head does not contain the current base tip: `git merge-base
+          --is-ancestor <base-tip> <pr-head>` fails against the fetched
+          mirror), update the branch FIRST (`update-branch` / rebase), let CI
+          re-run, and classify the failure only on the new head. A test the
+          base already fixed is not a branch defect; re-dispatching a builder
+          to fix it again wastes a build attempt and re-arms the surface fence
+          (papercut-kanban-watch-red-ci-retry-never-checks-base-staleness).
+        - **Unrelated-lane flake** — CHEAP. Before you write "real failure",
+          compare the failing test's crate/package path with the PR file list
+          (`GET repos/<owner>/<repo>/pulls/<n>/files` on Forgejo). When no
+          changed path is inside that crate/package AND the base is green on
+          the same lane, write `WATCH: unrelated-lane flake <test> — rerun`
+          and rerun the failed job. Do not re-dispatch the card, and do not
+          call it a real failure. File or append the de-flake card for the
+          test (papercut-kanban-watch-calls-unrelated-core-flake-real-failure-20260921).
         - **Real failing check** (mechanical formatter/linter OR a genuine
           test/logic failure) → enter the worktree (create it if absent), read
           logs, fix, re-run the card's VERIFY, push. HEAVY — one/wake. If the

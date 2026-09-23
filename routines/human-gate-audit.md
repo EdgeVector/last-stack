@@ -79,8 +79,17 @@ Work is blocked on **missing evidence**, not on Tom's pen. Examples:
    (or choose A/B)** ask for Tom. Clear `needs_human` only if the rec is
    "proceed agent-only"; else leave gate with reason
    `waiting Tom decision: see RECOMMENDATION <date>`.
-2. **If not cheap:** file **one** investigation child card (Kind: `pr` or
-   `validation`, pickup-ready) whose END STATE is:
+2. **If not cheap:** file **one** investigation child card whose END STATE
+   is the evidence below. Pick the lane by kind — `default/todo` accepts only
+   Kind `pr` (with repo, base and milestone), and rejects `validation` without
+   `--force` (papercut-kanban-validation-todo-force-required-20260921):
+   - Kind `pr` (the investigation lands a code or doc change) → `default/todo`
+     through `last-stack-kanban-file-pr`.
+   - Kind `validation` (evidence only) → `default/backlog` with a
+     single-line machine `DONE-WHEN:`; `kanban-validate` Pool B runs it.
+     Never `--force` a validation card into todo.
+
+   Its END STATE is:
    - durable evidence (path under `~/.last-stack/feature-proofs/` or brain note),
    - and a one-screen recommendation appended to the parent card.
    Parent stays `needs_human` with reason
@@ -160,7 +169,9 @@ Heuristics (prefer proof over labels):
 - **C expensive:** file child investigation card if none exists:
   - slug: `hga-invest-<parent-slug-short>` or
     `investigate-<parent>-<yyyy-mm-dd>` (stable: reuse open child if present)
-  - Kind: `pr` or `validation`, Repo/Base set, kanban-agent header when `pr`
+  - Kind: `pr` (todo, via `last-stack-kanban-file-pr`) or `validation`
+    (backlog + machine `DONE-WHEN:`; never forced into todo), Repo/Base set,
+    kanban-agent header when `pr`
   - Body must say: gather evidence, write RECOMMENDATION on parent, do not
     need Tom until recommendation exists
   - Dep: optional; parent should **not** block the child

@@ -197,6 +197,14 @@ for one bounded command, then verify with `show`.
 
 ## The card brief is the spec — and must trigger the agent
 
+**Name the card after the layer it changes.** The slug is permanent, so get
+it right at filing. A wire or frame change is "transport", not "streaming",
+and not a storage-limit change. When the brief cites a byte ceiling, cite the
+constant and the encoding that produce it (for example `MAX_BODY_LEN` and
+base64 4:3), and state the tier (atom vs file/CAS) when a number sounds like
+it crosses the 64 KiB atom fence
+(papercut-card-naming-streaming-vs-transport-file-blob).
+
 A card that's meant to be implemented should carry, in its `--body`:
 
 1. **A header so the agent picks it up and drives it to merge** (kanban does

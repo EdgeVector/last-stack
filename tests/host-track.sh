@@ -214,6 +214,16 @@ jq -e '
 ' "$default_registry" >/dev/null \
   || fail "last-stack host-track registry must PATH-link last-stack-kanban-done-when-eval into ~/.local/bin"
 
+# The kanban-agent handbook names this helper bare; it shipped without a PATH
+# name (papercut-forge-dead-trigger-ships-without-a-path-link-20260922).
+jq -e '
+  .apps[] | select(.app == "last-stack")
+  | any(.links[];
+      .source == "bin/last-stack-forge-dead-trigger"
+      and .target == "$HOME/.local/bin/last-stack-forge-dead-trigger")
+' "$default_registry" >/dev/null \
+  || fail "last-stack host-track registry must PATH-link last-stack-forge-dead-trigger into ~/.local/bin"
+
 jq -e '
   .apps[] | select(.app == "situations")
   | .install_mode == "artifact"
