@@ -34,6 +34,7 @@ Config lives on the Host Track registry entry:
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
 import os
@@ -212,7 +213,11 @@ def package(app: str, formula: str, version: str, tree: Path, files: list[str],
         ti.mtime = 0
         return ti
 
-    with tarfile.open(tar_path, "w:gz") as tar:
+    # gzip stamps the wall clock into its header; mtime=0 keeps the tarball
+    # (and so the formula sha256) a pure function of the shipped files.
+    with open(tar_path, "wb") as raw, \
+            gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as gz, \
+            tarfile.open(fileobj=gz, mode="w", format=tarfile.PAX_FORMAT) as tar:
         for rel in files:
             tar.add(str(tree / rel), arcname=rel, recursive=False, filter=clean)
     tar_sha = sha256_file(tar_path)

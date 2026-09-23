@@ -138,6 +138,11 @@ grep -q "sha256 \"$(shasum -a 256 "$tarball" | awk '{print $1}')\"" "$run_dir/lo
   || fail "rendered formula sha256 does not match the tarball"
 (cd "$run_dir/assets" && shasum -a 256 -c SHA256SUMS.txt >/dev/null) || fail "SHA256SUMS.txt does not verify"
 [ ! -s "$GH_LOG" ] || fail "dry-run called gh: $(cat "$GH_LOG")"
+first_sha="$(shasum -a 256 "$tarball" | awk '{print $1}')"
+sleep 1
+out2="$(pub --dry-run)" || fail "second dry-run failed"
+second_sha="$(printf '%s\n' "$out2" | jq -r .tarball_sha256)"
+[ "$first_sha" = "$second_sha" ] || fail "tarball is not reproducible: $first_sha vs $second_sha"
 
 # --- refusals ------------------------------------------------------------------
 cp "$tree/scripts/loom-implement.sh" "$tmp/impl.bak"
