@@ -281,6 +281,13 @@ jq -r '.prs[] | select(.stuck) | [.repo, .number, .shape, .root_cause, .head_sha
 jq -r '.ledger.actions[] | [.action, .slug, (.ok // "")] | @tsv' "$run_dir/forge-ledger.json"
 ```
 
+The sync can take up to about 60 seconds. Run it in the foreground and wait
+for it to exit; check its exit status before you read `forge-ledger.json`.
+An empty file while the command still runs is not a failure. Never wrap the
+sync in a `timeout` under 120 seconds: a 20-second wrapper killed a healthy
+sync and filed a false "silent timeout" papercut
+(papercut-pipeline-health-forge-ledger-silent-timeout).
+
 What the ledger does, so you do not repeat it:
 
 - It classifies each PR from the base branch's REQUIRED contexts (branch

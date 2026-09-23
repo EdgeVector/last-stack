@@ -102,8 +102,8 @@ Act on each row (the helper is read-only; you do the board writes):
 
 ### Board read: column-scoped and capped (never one broad list)
 
-Never run an unscoped `kanban list --json`. It asks the node for
-`limit=1000` in one call, and under load that call times out at 30 s and
+Never run an unscoped `kanban list --json` and never `kanban list --all
+--json`. Each asks the node for `limit=1000` in one call, and under load that call times out at 30 s and
 loses the whole wake (papercut-kanban-validate-board-read-timeout-20260922).
 Read only the columns this routine uses, each capped, and capture before
 you parse:
@@ -124,10 +124,15 @@ If ANY of these reads fails (`service_timeout`, "node did not respond",
 is a noop, not an error. Do not retry the broad list, and do not run
 doctor/init/restart.
 
-`kanban list --json` and `kanban search --json` print an ENVELOPE
-`{cards, total, truncated}`, not an array. Iterate `.cards[]`; never `.[]`
-and never `(.cards // .[])`
-(papercut-kanban-watch-list-json-envelope-20260923):
+`kanban list --json` and `kanban search --json` BOTH print an ENVELOPE
+`{cards, total, truncated}`, not an array (measured 2026-09-23 on both
+verbs). Iterate `.cards[]`; never `.[]`, never `(.cards // .[])`, and never
+`.cards[]? // .[]?`. The fallback forms fail on an EMPTY result: `.cards[]`
+yields nothing, so jq falls through to `.[]`, iterates the envelope's own
+values (`[]`, `0`, `false`), and dies with `Cannot index array with string
+"column"`. That error looks like "search returned an array"; it did not
+(papercut-kanban-watch-list-json-envelope-20260923,
+papercut-kanban-search-json-shape-parser-surprise-20260923):
 
 ```bash
 jq -r '.cards[] | [.slug, .column, (.kind // ""), (.block_status // ""), (.blocked // false)] | @tsv' \

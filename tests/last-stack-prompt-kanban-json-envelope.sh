@@ -9,7 +9,9 @@
 # array form out of every prompt an agent copies from.
 #
 # Flagged on a line that runs jq:
-#   1. `(.cards // .[])`                       — mixes the two shapes
+#   1. `(.cards // .[])` or `... // .[]`       — a fallback to `.[]`. On an
+#      EMPTY envelope `.cards[]` yields nothing, jq falls through, iterates
+#      the envelope values, and dies "Cannot index array with string ..."
 #   2. `kanban list|search ... --json ... | jq '.[]` or `'[.[]`
 #   3. `.[] | select(.column`                  — card fields over a bare array
 #   4. `jq -s 'add'`                           — merges envelopes into one object
@@ -23,6 +25,7 @@ scan() { # scan <file>...: print offending file:line:text
     /jq/ {
       bad = 0
       if (index($0, "(.cards // .[])")) bad = 1
+      if ($0 ~ /\/\/[ \t]*\.\[\]/) bad = 1
       if ($0 ~ /kanban[ \t]+(list|search)/ && $0 ~ /--json([ \t]|$)/ && $0 !~ /--json-array/ \
           && $0 ~ /\|[ \t]*jq[^|]*'"'"'\[?\.\[\]/) bad = 1
       if ($0 ~ /\.\[\][ \t]*\|[ \t]*select\(\.column/) bad = 1
@@ -40,6 +43,7 @@ jq -r '(.cards // .[]) | .slug' board.json
 kanban list --column doing --json | jq -r '.[] | .slug'
 jq -r '.[] | select(.column=="todo") | .slug' /tmp/k.json
 jq -s 'add' a.json b.json
+jq -r '.cards[]? // .[]? | select(.column != "done")' search.json
 EOF
 cat >"$tmp/good.md" <<'EOF'
 jq -r '.cards[] | .slug' board.json
@@ -47,7 +51,7 @@ kanban list --column doing --json | jq -r '.cards[] | .slug'
 kanban list --json-array | jq -r '.[] | .slug'
 jq -r '.[] | [.repo, .status] | @tsv' deploy-scan.json
 EOF
-test "$(scan "$tmp/bad.md" | wc -l | tr -d ' ')" -eq 4 || {
+test "$(scan "$tmp/bad.md" | wc -l | tr -d ' ')" -eq 5 || {
   echo "FAIL: scanner self-test missed a bad shape" >&2
   scan "$tmp/bad.md" >&2
   exit 1
