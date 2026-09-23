@@ -9,7 +9,14 @@
 #   ROUTINE_OBSERVER_DETAIL    optional precomputed detail (skips live I/O)
 set -euo pipefail
 
-ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+# Resolve the file symlink chain before dirname: the PATH link
+# ~/.local/bin/<name> points into the artifact tree, and siblings live there.
+_self_src="$0"
+while [ -L "$_self_src" ]; do
+  _self_link="$(readlink "$_self_src")"
+  case "$_self_link" in /*) _self_src="$_self_link" ;; *) _self_src="$(dirname "$_self_src")/$_self_link" ;; esac
+done
+ROOT="$(CDPATH= cd -- "$(dirname -- "$_self_src")/.." && pwd -P)"
 classify="$ROOT/bin/last-stack-routine-outcome-classify"
 [ -x "$classify" ] || { echo "missing $classify" >&2; exit 1; }
 

@@ -143,6 +143,36 @@ require_app_json() {
   printf '%s\n' "$json"
 }
 
+# canonical_app <name>: print the registry app for <name>, or fail.
+# Exact `.app` first. Else a UNIQUE app whose artifact_app or install_root
+# basename is <name> (fkanban -> kanban, whose install root is
+# ~/.host-track/apps/fkanban). An ambiguous alias (lastdb-bundle) fails.
+# Runs in the caller's shell so `die` exits the process: before this, status
+# died inside a command substitution and the caller went on to feed an empty
+# payload to jq --argjson (papercut-host-track-status-unknown-app-jq-noise-20260922).
+canonical_app() {
+  local name="$1" hits n
+  [ -n "$name" ] || return 1
+  if [ -n "$(app_json "$name")" ]; then printf '%s\n' "$name"; return 0; fi
+  hits="$(jq -r --arg n "$name" '
+    .apps[]?
+    | select((.artifact_app // "") == $n
+             or (((.install_root // "") | sub("/+$"; "") | split("/") | last) == $n))
+    | .app' "$REGISTRY" | LC_ALL=C sort -u)"
+  n="$(printf '%s\n' "$hits" | grep -c . || true)"
+  [ "$n" = "1" ] || return 1
+  printf '%s\n' "$hits"
+}
+
+# resolve_app_or_die <name>: canonical_app, after one default-registry sync.
+# Call it as `app="$(resolve_app_or_die "$app")" || exit 1` in the main shell.
+resolve_app_or_die() {
+  local name="$1" out
+  if out="$(canonical_app "$name")"; then printf '%s\n' "$out"; return 0; fi
+  printf 'host-track: unknown app: %s\n' "$name" >&2
+  return 1
+}
+
 field() {
   local json="$1" key="$2"
   printf '%s\n' "$json" | jq -r --arg key "$key" '.[$key] // ""'
@@ -1146,6 +1176,8 @@ status_cmd() {
   done
 
   if [ -n "$app" ]; then
+    [ -n "$(app_json "$app")" ] || maybe_sync_default_registry || true
+    app="$(resolve_app_or_die "$app")" || exit 1
     one="$(status_json_for "$app")"
     if [ "$stale_only" -eq 1 ] && [ "$(printf '%s\n' "$one" | jq -r '.stale | tostring')" != "true" ]; then
       if [ "$json_out" -eq 1 ]; then printf 'null\n'; fi
@@ -1188,6 +1220,8 @@ which_cmd() {
     esac
   done
   [ -n "$app" ] || die "which requires an app"
+  [ -n "$(app_json "$app")" ] || maybe_sync_default_registry || true
+  app="$(resolve_app_or_die "$app")" || exit 1
   status="$(status_json_for "$app")"
   exec_path="$(printf '%s\n' "$status" | jq -r '.exec_path // ""')"
   artifact_problem="$(printf '%s\n' "$status" | jq -r '.artifact_problem // ""')"
@@ -3017,7 +3051,7 @@ rollback_local_safe_app() {
   install_root="$(expand_path "$(field "$json" install_root)")"
   [ -n "$install_root" ] || install_root="$INSTALL_ROOT_DEFAULT/$app"
   activate_bin="$(command -v last-stack-safe-activate-cli 2>/dev/null || true)"
-  [ -x "$activate_bin" ] || activate_bin="$(cd "$(dirname "$0")" && pwd -P)/last-stack-safe-activate-cli"
+  [ -x "$activate_bin" ] || activate_bin="$ROOT/bin/last-stack-safe-activate-cli"
   [ -x "$activate_bin" ] || die "last-stack-safe-activate-cli not found for local-safe rollback"
   [ -L "$install_root/previous" ] || die "$app has no previous (nothing to roll back to)"
   previous_target="$(readlink "$install_root/previous")"

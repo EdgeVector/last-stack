@@ -20,7 +20,14 @@
 # harness (factory outage: pickup-gate-timeout). Ready reads are hard-capped.
 set -euo pipefail
 
-self_dir="$(cd "$(dirname "$0")" && pwd -P)"
+# Resolve the file symlink chain before dirname: the PATH link
+# ~/.local/bin/<name> points into the artifact tree, and siblings live there.
+_self_src="$0"
+while [ -L "$_self_src" ]; do
+  _self_link="$(readlink "$_self_src")"
+  case "$_self_link" in /*) _self_src="$_self_link" ;; *) _self_src="$(dirname "$_self_src")/$_self_link" ;; esac
+done
+self_dir="$(cd "$(dirname "$_self_src")" && pwd -P)"
 # Prefer a logical install root. `pwd -P` follows ~/.last-stack/bin into the
 # immutable host-track artifacts/versions/* tree. Heartbeat then tries to
 # mkdir version/logs, gets EPERM in a Codex sandbox, and older gates mixed

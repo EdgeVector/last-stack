@@ -20,7 +20,14 @@
 # Refuse final_column=done in ROUTINE_RESULT unless this helper exits 0.
 set -euo pipefail
 
-self_dir="$(cd "$(dirname "$0")" && pwd -P)"
+# Resolve the file symlink chain before dirname: the PATH link
+# ~/.local/bin/<name> points into the artifact tree, and siblings live there.
+_self_src="$0"
+while [ -L "$_self_src" ]; do
+  _self_link="$(readlink "$_self_src")"
+  case "$_self_link" in /*) _self_src="$_self_link" ;; *) _self_src="$(dirname "$_self_src")/$_self_link" ;; esac
+done
+self_dir="$(cd "$(dirname "$_self_src")" && pwd -P)"
 slug="${1:-}"
 shift || true
 if [ -z "$slug" ]; then
@@ -607,6 +614,23 @@ if [ "$end_state_required" = "1" ] && [ "$end_state_claimed" != "1" ] && [ -n "$
       *) done_when_verdict="unsupported" ;;
     esac
   fi
+fi
+
+# A machine DONE-WHEN that evaluates NOT met is evidence that the END STATE
+# does not hold yet. A merge does not override it: leave the card in doing,
+# stamp one CLOSEOUT-DEFERRED line, and fail. Warn-and-close stays only for
+# absent/unsupported predicates (papercut-kanban-closeout-end-state-warning-20260921).
+if [ "$done_when_verdict" = "pending" ]; then
+  echo "last-stack-card-closeout: FAILED done-when-pending slug=$slug" >&2
+  echo "  The card's DONE-WHEN evaluated NOT met. The card stays in $closeout_initial_column." >&2
+  echo "  Close it after the DONE-WHEN holds, or add a positive PROOF: line." >&2
+  deferred_marker="CLOSEOUT-DEFERRED: DONE-WHEN pending"
+  if ! printf '%s' "$card_json" | grep -qF "$deferred_marker"; then
+    run "$board_cli" mark "$slug" \
+      "$deferred_marker $(date -u +%Y-%m-%dT%H:%M:%SZ); merge is not done (last-stack-card-closeout)" \
+      </dev/null >/dev/null 2>&1 || true
+  fi
+  exit 1
 fi
 
 end_state_warning=0

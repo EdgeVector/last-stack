@@ -165,4 +165,23 @@ printf '%s\n' "$fj" | jq -e '.ok == true and .action == "skip-forgejo"' >/dev/nu
   exit 1
 }
 
+# papercut-pipeline-stuck-papercut-file-duplicate-root-cause: an existing
+# root-cause row that is NOT open (partial/fixed/duplicate) must take the
+# evidence by append with rc=0, never rc=1 file_failed duplicate.
+jq '. + [{slug:"papercut-closed-root",status:"partial",body:"old"},
+         {slug:"papercut-dup-root",status:"duplicate",extra_fields:{duplicate_of:"papercut-canon-root"},body:"old"},
+         {slug:"papercut-canon-root",status:"open",body:"old"}]' "$BRAIN_STATE" >"$BRAIN_STATE.tmp"
+mv "$BRAIN_STATE.tmp" "$BRAIN_STATE"
+closed="$("$helper" --brain-bin "$tmp/brain" --json \
+  --repo demo --cr-id cr-ccc --root-cause-slug papercut-closed-root --evidence "closed root evidence")" || {
+  echo "existing non-open root-cause slug must exit 0: $closed" >&2; exit 1; }
+printf '%s\n' "$closed" | jq -e '.ok and .action == "append" and .result == "appended"
+  and .slug == "papercut-closed-root" and .record_status == "partial"' >/dev/null
+jq -e '.[] | select(.slug == "papercut-closed-root") | .body | test("closed root evidence")' "$BRAIN_STATE" >/dev/null
+dup="$("$helper" --brain-bin "$tmp/brain" --json \
+  --repo demo --cr-id cr-ddd --root-cause-slug papercut-dup-root --evidence "dup root evidence")"
+printf '%s\n' "$dup" | jq -e '.ok and .result == "appended" and .slug == "papercut-canon-root"
+  and .requested_slug == "papercut-dup-root"' >/dev/null
+jq -e '.[] | select(.slug == "papercut-canon-root") | .body | test("dup root evidence")' "$BRAIN_STATE" >/dev/null
+
 printf 'ok last-stack-pipeline-stuck-papercut-file\n'

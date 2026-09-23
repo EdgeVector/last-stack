@@ -32,12 +32,34 @@
 #   --admission-fixture DIR offline brain for last-stack-feature-portfolio-admission
 #   --dry-run
 #
+# Body (stdin), checked FIRST, before admission and decision-check:
+#   must contain `## GOAL` (or `GOAL:`) AND `## END STATE` (or `END STATE:` /
+#   `DONE WHEN:`). A `## VERIFY` or `## STEPS` section does not count as the
+#   END STATE: say what is observably true when the card is done.
+#   A `Repo:` header, when present, must equal --repo.
+#
+# Decision-check (settled brain records):
+#   conflict (check exit 2)      -> exit 2, no card, for every work class.
+#   check cannot run (exit 1..)  -> feature: exit 2, no card (fail closed).
+#                                   repair/incident/proof/closeout: the card
+#                                   IS filed with `verdict: unavailable` in its
+#                                   DECISION-CHECK stamp and a stderr warning,
+#                                   so a broken checker cannot block the card
+#                                   that repairs it.
+#
 # Exit: 0 on file, 2 on usage/validation, 1 on board write failure.
 # A decision-check conflict is exit 2 and does not write the card.
 # A paused North Star is exit 2; an unreadable admission record is exit 1.
 set -euo pipefail
 
-ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+# Resolve the file symlink chain before dirname: the PATH link
+# ~/.local/bin/<name> points into the artifact tree, and siblings live there.
+_self_src="$0"
+while [ -L "$_self_src" ]; do
+  _self_link="$(readlink "$_self_src")"
+  case "$_self_link" in /*) _self_src="$_self_link" ;; *) _self_src="$(dirname "$_self_src")/$_self_link" ;; esac
+done
+ROOT="$(CDPATH= cd -- "$(dirname -- "$_self_src")/.." && pwd -P)"
 export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
 
 # The full option block lives in this file's own header. Print it rather than
@@ -154,10 +176,21 @@ body="$(cat || true)"
 [ -n "$body" ] || die "empty body (pipe the brief on stdin)"
 
 # Require a real work brief so default/todo pickup-readiness will accept it.
+# Name EVERY missing section in one refusal, with the contract, so a caller
+# fixes the draft in one retry (papercut-kanban-file-pr-repair-draft-validation-late-20260923).
+missing_sections=""
 printf '%s\n' "$body" | grep -Eq '(^|[[:space:]])##[[:space:]]*GOAL\b|^GOAL:' \
-  || die "body missing ## GOAL (pickup refuses hollow Kind:pr)"
-printf '%s\n' "$body" | grep -Eq '(^|[[:space:]])##[[:space:]]*END STATE\b|^END STATE:|^DONE WHEN:' \
-  || die "body missing ## END STATE (or DONE WHEN)"
+  || missing_sections="## GOAL (pickup refuses hollow Kind:pr)"
+if ! printf '%s\n' "$body" | grep -Eq '(^|[[:space:]])##[[:space:]]*END STATE\b|^END STATE:|^DONE WHEN:'; then
+  end_hint="## END STATE (or DONE WHEN)"
+  if printf '%s\n' "$body" | grep -Eq '^##[[:space:]]*(VERIFY|STEPS)\b'; then
+    end_hint="$end_hint — a ## VERIFY/## STEPS section is not an END STATE; add '## END STATE' with what is observably true when done"
+  fi
+  missing_sections="${missing_sections:+$missing_sections; }$end_hint"
+fi
+if [ -n "$missing_sections" ]; then
+  die "body missing $missing_sections. Body contract: ## GOAL + ## END STATE (or DONE WHEN:); run --help for the full contract"
+fi
 
 # Repo: header must be a clean owner/name token when present.
 header_repo="$(printf '%s\n' "$body" | sed -n -E 's/^Repo:[[:space:]]*//p' | head -1 | tr -d '\r')"
@@ -215,15 +248,34 @@ if [ "$skip_decision_check" -ne 1 ]; then
     if [ -s "$check_err" ]; then
       cat "$check_err" >&2
     fi
+    check_reason="$(head -1 "$check_err" 2>/dev/null | tr -d '\r' | cut -c1-300 || true)"
     rm -f "$check_err"
     if [ "$check_rc" -eq 2 ]; then
       die "decision-check refused this card (conflicts with a settled brain record)"
     fi
-    die "decision-check failed (exit $check_rc) — not filing"
+    # The check could not RUN (brain down, index error, missing CLI). Only new
+    # feature work fails closed on that. Repair/incident/proof/closeout cards
+    # are filed with an honest `unavailable` stamp: on 2026-09-23 a broken
+    # check blocked, for hours, the very repair card that would fix it
+    # (papercut-kanban-file-pr-repair-work-class-still-runs-decision-check-20260923).
+    # A conflict above still refuses every class.
+    if [ "$work_class" = "feature" ]; then
+      die "decision-check failed (exit $check_rc) — not filing (feature work fails closed; repair/incident/proof/closeout would file with verdict: unavailable)"
+    fi
+    printf 'last-stack-kanban-file-pr: WARNING decision-check could not run (exit %s); filing %s card with verdict: unavailable — re-run the check before pickup\n' \
+      "$check_rc" "$work_class" >&2
+    body="$(printf '%s\n' "$body" | awk '
+      /^##[ \t]*DECISION-CHECK/ { skip = 1; next }
+      skip && /^##[ \t]/ { skip = 0 }
+      !skip { print }
+    ')"
+    body="$(printf '%s\n\n## DECISION-CHECK\ndate: %s\nverdict: unavailable\nslugs: none\nwork-class: %s\nreason: decision-check exit %s: %s\n' \
+      "$body" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$work_class" "$check_rc" "${check_reason:-no stderr}")"
+  else
+    rm -f "$check_err"
+    [ -n "$injected" ] || die "decision-check returned an empty body"
+    body="$injected"
   fi
-  rm -f "$check_err"
-  [ -n "$injected" ] || die "decision-check returned an empty body"
-  body="$injected"
 fi
 
 is_live_ms_state() {

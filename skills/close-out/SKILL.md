@@ -238,6 +238,7 @@ cat > "$body_file" <<'EOF'
 type: reference
 slug: closeout-<YYYYMMDD>-<short-kebab>
 title: Closeout — <one-line what shipped>
+status: active
 tags: [closeout]
 ---
 
@@ -273,6 +274,10 @@ EOF
 brain put closeout-<YYYYMMDD>-<short-kebab> --type reference < "$body_file"
 # No cleanup step: the Codex exec guard rejects file deletion. $TMPDIR is the run scratch dir.
 ```
+
+A `reference` status is `active`, `parked`, `broken` or `archived`. `done`
+and `complete` are decision/task words; `brain put` rejects them on a
+reference and the report is not written.
 
 Point-get the slug back (`brain get closeout-<YYYYMMDD>-<short-kebab>`) before
 calling the report written. Listing it in chat is not a write.
