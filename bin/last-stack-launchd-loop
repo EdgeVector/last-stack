@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# last-stack-launchd-loop — run a one-shot guard forever: pass, heartbeat, sleep.
+#
+# Why (2026-09-23, papercut-launchd-interval-agents-stopped-firing-memory-guards-idle-20260923):
+# when the GUI session locks, launchd puts the gui/<uid> domain in on-demand
+# mode ("entering ondemand mode"). In that mode it does not spawn StartInterval
+# jobs ("pended nondemand spawn = interval") and it does not respawn a KeepAlive
+# job that exited ("pended nondemand spawn = inefficient"). A process that is
+# already running keeps running. So the lastdbd memory guard and its siblings
+# were silent every night.
+#
+# The fix: each guard agent is KeepAlive and runs THIS loop, which never exits
+# on its own. Each pass runs the unchanged guard script (same env, same
+# thresholds, same actions), writes a heartbeat, checks the heartbeats of the
+# peer loops, and then sleeps. A guard failure never ends the loop.
+#
+# Usage (from a LaunchAgent plist):
+#   /bin/bash last-stack-launchd-loop <program> [args...]
+#
+# Environment:
+#   LAUNCHD_LOOP_LABEL             required; heartbeat name (the launchd label)
+#   LAUNCHD_LOOP_INTERVAL_SEC      sleep between passes (default 60)
+#   LAUNCHD_LOOP_HEARTBEAT_DIR     default $HOME/.lastdb/monitoring/launchd-loop
+#   LAUNCHD_LOOP_STALE_MIN_SEC     a peer is stale when its heartbeat is older
+#                                  than max(this, 2*interval+60) (default 300)
+#   LAUNCHD_LOOP_ALERT_COOLDOWN_SEC  one page per stale peer per window (3600)
+#   LAUNCHD_LOOP_RA                default $HOME/.local/bin/ra
+#   LAUNCHD_LOOP_SITUATIONS        default $HOME/.local/bin/situations
+#   LAUNCHD_LOOP_DRY_RUN           1 = log a stale peer, do not page
+#   LAUNCHD_LOOP_MAX_PASSES        test hook; 0 = forever (default)
+#
+# Heartbeat file: <dir>/<label>.hb, one line
+#   epoch=<unix> interval=<sec> pid=<pid> pass=<n> rc=<last rc> state=<running|idle>
+# SIGTERM (launchctl bootout) removes the heartbeat so a deliberate stop does
+# not page. A SIGKILL/jetsam death leaves it, and the peers page.
+
+set -u
+
+if [ "$#" -lt 1 ] || [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  sed -n '2,35p' "$0"
+  [ "$#" -ge 1 ] && exit 0
+  exit 2
+fi
+
+LABEL="${LAUNCHD_LOOP_LABEL:-}"
+[ -n "$LABEL" ] || { echo "last-stack-launchd-loop: LAUNCHD_LOOP_LABEL is required" >&2; exit 2; }
+case "$LABEL" in */*|.*) echo "last-stack-launchd-loop: bad label: $LABEL" >&2; exit 2 ;; esac
+INTERVAL="${LAUNCHD_LOOP_INTERVAL_SEC:-60}"
+case "$INTERVAL" in ''|*[!0-9]*) echo "last-stack-launchd-loop: bad interval: $INTERVAL" >&2; exit 2 ;; esac
+HB_DIR="${LAUNCHD_LOOP_HEARTBEAT_DIR:-$HOME/.lastdb/monitoring/launchd-loop}"
+STALE_MIN="${LAUNCHD_LOOP_STALE_MIN_SEC:-300}"
+COOLDOWN="${LAUNCHD_LOOP_ALERT_COOLDOWN_SEC:-3600}"
+RA_BIN="${LAUNCHD_LOOP_RA:-$HOME/.local/bin/ra}"
+SITUATIONS_BIN="${LAUNCHD_LOOP_SITUATIONS:-$HOME/.local/bin/situations}"
+DRY_RUN="${LAUNCHD_LOOP_DRY_RUN:-0}"
+MAX_PASSES="${LAUNCHD_LOOP_MAX_PASSES:-0}"
+
+HB="$HB_DIR/$LABEL.hb"
+mkdir -p "$HB_DIR" 2>/dev/null || true
+
+ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
+log() { echo "$(ts) [launchd-loop $LABEL] $*"; }
+
+child=""
+on_term() {
+  log "stop signal=TERM pass=${pass:-0} (heartbeat removed)"
+  [ -n "$child" ] && kill -TERM "$child" 2>/dev/null
+  rm -f "$HB"
+  exit 0
+}
+trap on_term TERM INT
+trap '' HUP
+
+write_hb() {
+  local state="$1" rc="$2" tmp
+  tmp="$HB.tmp.$$"
+  printf 'epoch=%s interval=%s pid=%s pass=%s rc=%s state=%s\n' \
+    "$(date +%s)" "$INTERVAL" "$$" "$pass" "$rc" "$state" >"$tmp" 2>/dev/null \
+    && mv -f "$tmp" "$HB" 2>/dev/null
+}
+
+hb_field() { # $1 = field, $2 = file
+  sed -n "s/.*$1=\\([0-9]*\\).*/\\1/p" "$2" 2>/dev/null | head -1
+}
+
+alert_stale() {
+  local peer="$1" msg="$2" mark="$HB_DIR/.alert-$1" now last
+  now=$(date +%s)
+  last=$(cat "$mark" 2>/dev/null || echo 0)
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  if [ $((now - last)) -lt "$COOLDOWN" ]; then
+    log "stale_peer_suppressed peer=$peer (cooldown) $msg"
+    return 0
+  fi
+  echo "$now" >"$mark" 2>/dev/null || true
+  log "ALERT stale_peer peer=$peer $msg"
+  [ "$DRY_RUN" = "1" ] && { log "DRY_RUN: page + notice skipped"; return 0; }
+  [ -x "$RA_BIN" ] && "$RA_BIN" notify "[launchd-loop] guard $peer is stale: $msg (seen by $LABEL)" \
+    --priority high >/dev/null 2>&1 </dev/null
+  [ -x "$SITUATIONS_BIN" ] && "$SITUATIONS_BIN" notice \
+    --title "guard loop stale: $peer" --kind other --system host-guards \
+    --actor "launchd:$LABEL" --summary "$msg" >/dev/null 2>&1 </dev/null
+  return 0
+}
+
+check_peers() {
+  local f peer epoch ivl limit age now
+  now=$(date +%s)
+  for f in "$HB_DIR"/*.hb; do
+    [ -f "$f" ] || continue
+    peer="$(basename "$f" .hb)"
+    [ "$peer" = "$LABEL" ] && continue
+    epoch="$(hb_field epoch "$f")"
+    ivl="$(hb_field interval "$f")"
+    [ -n "$epoch" ] || continue
+    [ -n "$ivl" ] || ivl=60
+    limit=$((2 * ivl + 60))
+    [ "$limit" -lt "$STALE_MIN" ] && limit="$STALE_MIN"
+    age=$((now - epoch))
+    if [ "$age" -gt "$limit" ]; then
+      alert_stale "$peer" "heartbeat age ${age}s > ${limit}s (interval ${ivl}s, file $f)"
+    fi
+  done
+}
+
+pass=0
+rc=0
+log "start interval=${INTERVAL}s program=$1 pid=$$"
+while :; do
+  pass=$((pass + 1))
+  write_hb running "$rc"
+  "$@" &
+  child=$!
+  wait "$child"
+  rc=$?
+  child=""
+  [ "$rc" -ne 0 ] && log "pass=$pass program exited rc=$rc (loop continues)"
+  write_hb idle "$rc"
+  check_peers
+  if [ "$MAX_PASSES" -gt 0 ] && [ "$pass" -ge "$MAX_PASSES" ]; then
+    log "max_passes=$MAX_PASSES reached"
+    exit 0
+  fi
+  sleep "$INTERVAL" &
+  child=$!
+  wait "$child"
+  child=""
+done

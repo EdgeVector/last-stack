@@ -12,6 +12,9 @@
        install, so this follows upgrades without waiting on that activation. -->
   <key>ProgramArguments</key>
   <array>
+    <string>/bin/bash</string>
+    <string>/Users/REPLACE/.local/state/last-stack/artifacts/current/bin/last-stack-launchd-loop</string>
+    <string>/bin/bash</string>
     <string>/Users/REPLACE/.local/state/last-stack/artifacts/current/bin/last-stack-forge-runner-watchdog</string>
   </array>
 
@@ -28,19 +31,29 @@
     <string>/Users/REPLACE/.local/bin:/Users/REPLACE/.last-stack/bin:/Users/REPLACE/.bun/bin:/Users/REPLACE/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>LAST_STACK_ROOT</key>
     <string>/Users/REPLACE/.last-stack</string>
+    <!-- launchd-loop: see bin/last-stack-launchd-loop -->
+    <key>LAUNCHD_LOOP_LABEL</key>
+    <string>com.edgevector.forge-runner-watchdog</string>
+    <key>LAUNCHD_LOOP_INTERVAL_SEC</key>
+    <string>900</string>
   </dict>
 
   <!-- Every 15 min. A dead merge gate should be caught in minutes, not the
        ~2 days the 2026-07-28 heavy-lane outage went unnoticed. Deliberately a
        launchd job, not a Claude scheduled task: those only fire while the app
        is open, which is exactly the window a watchdog must not have. -->
-  <key>StartInterval</key>
-  <integer>900</integer>
+  <!-- KeepAlive loop, not StartInterval (2026-09-23): a locked GUI session puts
+       gui/<uid> in on-demand mode, and launchd then spawns no interval job and
+       respawns no exited job. A loop that never exits keeps running.
+       Staleness: every loop pages when a peer heartbeat under
+       ~/.lastdb/monitoring/launchd-loop is older than max(300s, 2*interval+60s). -->
+  <key>KeepAlive</key>
+  <true/>
   <key>RunAtLoad</key>
   <true/>
 
   <key>ProcessType</key>
-  <string>Background</string>
+  <string>Standard</string>
   <key>Nice</key>
   <integer>10</integer>
 

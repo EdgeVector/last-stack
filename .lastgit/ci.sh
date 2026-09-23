@@ -469,6 +469,7 @@ ci_test tests/last-stack-dogfood-rotate-gate.sh
 ci_test tests/last-stack-dogfood-rotate-routine.sh
 ci_test tests/last-stack-lastdb-memory-guard.sh
 ci_test tests/last-stack-host-memory-guards.sh
+ci_test tests/last-stack-launchd-loop.sh
 ci_test tests/last-stack-generator-shed-gate.sh
 
 # Reclaim live-guard fixture. This one is in the REQUIRED gate, not the

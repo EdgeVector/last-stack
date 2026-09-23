@@ -226,7 +226,7 @@ for label in com.edgevector.gui-app-memory-guard \
              com.edgevector.host-memory-sentinel; do
   plist="$HOME/Library/LaunchAgents/${label}.plist"
   [ -f "$plist" ] || fail "missing $plist"
-  prog="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:1' "$plist")"
+  prog="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:3' "$plist")"
   case "$prog" in
     "$HOME/.last-stack/bin/"last-stack-*) ;;
     *) fail "$label program=$prog" ;;
@@ -235,6 +235,27 @@ for label in com.edgevector.gui-app-memory-guard \
     */artifacts/versions/*) fail "$label still version-pinned: $prog" ;;
   esac
   grep -q lastdbd "$plist" && fail "$label plist mentions lastdbd"
+  # KeepAlive loop, never StartInterval: a locked session stops interval spawns.
+  loop="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:1' "$plist")"
+  [ "$loop" = "$HOME/.last-stack/bin/last-stack-launchd-loop" ] || fail "$label loop=$loop"
+  [ "$(/usr/libexec/PlistBuddy -c 'Print :KeepAlive' "$plist")" = true ] || fail "$label not KeepAlive"
+  /usr/libexec/PlistBuddy -c 'Print :StartInterval' "$plist" >/dev/null 2>&1 \
+    && fail "$label still has StartInterval"
+  [ "$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:LAUNCHD_LOOP_LABEL' "$plist")" = "$label" ] \
+    || fail "$label LAUNCHD_LOOP_LABEL mismatch"
+done
+# Every packaged guard plist (including the two with their own installer) is a loop.
+for label in com.edgevector.lastdb-memory-guard com.edgevector.forge-runner-watchdog \
+             com.edgevector.gui-app-memory-guard com.edgevector.testbin-memory-guard \
+             com.edgevector.host-memory-sentinel; do
+  src="$ROOT/launchd/${label}.plist"
+  plutil -lint "$src" >/dev/null || fail "$src does not lint"
+  /usr/libexec/PlistBuddy -c 'Print :StartInterval' "$src" >/dev/null 2>&1 \
+    && fail "$src still has StartInterval"
+  /usr/libexec/PlistBuddy -c 'Print :ProgramArguments:1' "$src" | grep -q '/bin/last-stack-launchd-loop$' \
+    || fail "$src does not run last-stack-launchd-loop"
+  [ "$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:LAUNCHD_LOOP_LABEL' "$src")" = "$label" ] \
+    || fail "$src LAUNCHD_LOOP_LABEL mismatch"
 done
 
 # Reinstall is a no-op.
