@@ -109,5 +109,10 @@ grep -Fq 'exit 124' "$CI" || fail "ci.sh does not exit 124 on a deadline"
 grep -Fq 'ci_host_lock_acquire' "$CI" || fail "ci.sh does not take the host lock"
 grep -Fq 'LAST_STACK_CI_HOST_LOCK: "1"' "$ROOT/.forgejo/workflows/ci.yml" || fail "the Forge workflow does not opt into the host lock"
 grep -Fq 'echo "ci_test done: $* rc=${ci_test_rc} secs=' "$CI" || fail "ci_test does not print a done line"
+# A main push must never cancel the earlier main publish run
+# (papercut-forge-main-publish-starved-by-cancel-in-progress-20260922). Without
+# this block Forgejo cancels by default, and host-track stops getting installs.
+grep -Fq "cancel-in-progress: \${{ github.ref != 'refs/heads/main' }}" "$ROOT/.forgejo/workflows/ci.yml" \
+  || fail "the Forge workflow lets a main push cancel the main publish run"
 
 echo "ok last-stack-ci-shard-supervisor"
