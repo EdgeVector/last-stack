@@ -123,7 +123,10 @@ continue — do not fail the whole run.
 4. **Relevant + MERGEABLE + all required checks green** → merge (re-assert auto-
    merge per your merge strategy; approve first if a *review* gate — not a CI
    gate — blocks and you're authorized to).
-5. **Relevant + CONFLICTING/DIRTY/BEHIND** →
+5. **Relevant + CONFLICTING/DIRTY/BEHIND** → (BEHIND only, no conflict:
+   skip while a CI run on the head is pending — a push cancels it; Forgejo
+   probe `last-stack-forge-pr-update-branch --repo <r> --pr <n>`, exit 3 =
+   in flight)
    `git worktree add <fresh-path> <headRef>`, fetch the base, rebase, resolve,
    re-run the PR's verify, force-push with lease, then merge. Remove the worktree
    when done. If the conflict needs real product judgment, don't guess — comment

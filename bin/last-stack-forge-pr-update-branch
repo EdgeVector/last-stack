@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""Update a Forgejo PR branch from its base ONLY when no CI run is in flight.
+
+Forgejo cancels the running CI of a PR when a new commit lands on its head.
+On 2026-09-22 a routine merged main into last-stack PR 121 25 minutes into its
+ci-required run; the run was cancelled and the PR went to the back of a queue
+of ~8 PRs on one capacity-2 host lane. PR 120 lost its run the same way
+(papercut-forge-pr-branch-update-cancels-in-flight-ci-20260922).
+
+Every routine that wants to "update-branch" a BEHIND Forgejo PR calls this
+helper instead of POST pulls/<n>/update. The helper reads the PR and the
+combined commit status of its head and refuses while any status is pending.
+
+Usage:
+  last-stack-forge-pr-update-branch --repo OWNER/REPO --pr N            # probe
+  last-stack-forge-pr-update-branch --repo OWNER/REPO --pr N --apply    # probe, then update
+
+Output: one JSON line {"verdict": "allow"|"deny"|"updated", "reason": ...}.
+Exit: 0 allow/updated, 3 deny (do not update now; retry on a later wake),
+      2 usage error or failed update.
+
+Env: LAST_STACK_FORGE_API overrides the forge API client (tests use a fake).
+"""
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+# Forgejo commit status values. Only these are terminal.
+TERMINAL = {"success", "failure", "error", "warning", "cancelled", "skipped"}
+READ_TIMEOUT = 30
+
+
+def api_bin() -> str:
+    override = os.environ.get("LAST_STACK_FORGE_API", "").strip()
+    if override:
+        return override
+    return str(Path(__file__).resolve().with_name("last-stack-forge-api"))
+
+
+def api(args: list[str]) -> object:
+    proc = subprocess.run(
+        [api_bin(), *args], capture_output=True, text=True, timeout=READ_TIMEOUT
+    )
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or proc.stdout or "forge api failed").strip()[:200])
+    text = proc.stdout.strip()
+    return json.loads(text) if text else {}
+
+
+def emit(verdict: str, reason: str, **extra: object) -> None:
+    print(json.dumps({"verdict": verdict, "reason": reason, **extra}, sort_keys=True))
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--repo", required=True)
+    parser.add_argument("--pr", required=True, type=int)
+    parser.add_argument("--apply", action="store_true", help="update the branch when allowed")
+    args = parser.parse_args()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repo) or args.pr <= 0:
+        parser.error("invalid --repo or --pr")
+    prefix = f"repos/{args.repo}"
+
+    try:
+        pr = api([f"{prefix}/pulls/{args.pr}"])
+    except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
+        emit("deny", "unreadable-pr", detail=str(exc)[:200])
+        return 3
+    if not isinstance(pr, dict) or pr.get("state") != "open" or pr.get("merged") is True:
+        emit("deny", "pr-not-open")
+        return 3
+    head = pr.get("head") if isinstance(pr.get("head"), dict) else {}
+    sha = head.get("sha") if isinstance(head.get("sha"), str) else ""
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        emit("deny", "unreadable-head")
+        return 3
+
+    try:
+        status = api([f"{prefix}/commits/{sha}/status"])
+    except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
+        emit("deny", "unreadable-status", head=sha, detail=str(exc)[:200])
+        return 3
+    if not isinstance(status, dict) or not isinstance(status.get("statuses", []), list):
+        emit("deny", "unreadable-status", head=sha)
+        return 3
+    in_flight = []
+    for row in status.get("statuses") or []:
+        if not isinstance(row, dict):
+            emit("deny", "unreadable-status", head=sha)
+            return 3
+        state = str(row.get("status") or row.get("state") or "").lower()
+        if state not in TERMINAL:
+            in_flight.append(str(row.get("context") or "?"))
+    combined = str(status.get("state") or "").lower()
+    if in_flight or combined == "pending":
+        # Pushing now cancels the run and sends the PR to the back of the queue.
+        emit("deny", "ci-in-flight", head=sha, contexts=in_flight)
+        return 3
+
+    if not args.apply:
+        emit("allow", "ci-terminal-or-absent", head=sha)
+        return 0
+    try:
+        api(["--method", "POST", f"{prefix}/pulls/{args.pr}/update"])
+    except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
+        emit("error", "update-failed", head=sha, detail=str(exc)[:200])
+        return 2
+    emit("updated", "ci-terminal-or-absent", head=sha)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

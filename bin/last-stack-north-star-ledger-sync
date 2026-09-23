@@ -61,6 +61,10 @@ NONTERMINAL_MS = {"planned", "active", "blocked", "proving"}
 REQUEST_LIVE = {"pending", "active", "open"}
 DEFAULT_NORTH_STAR_PROOF_DIR = "$HOME/.last-stack/north-star-proofs"
 DEFAULT_HARNESS_ROOT = Path(__file__).resolve().parent.parent / "harness" / "north-star"
+BIN_DIR = Path(__file__).resolve().parent
+DONE_WHEN_EVAL = BIN_DIR / "last-stack-kanban-done-when-eval"
+MARK_ONCE = BIN_DIR / "last-stack-kanban-mark-once"
+HARNESS_SLUG_RE = re.compile(r"(?m)^#\s*north-star-slug:\s*(\S+)")
 
 
 def utc_now() -> str:
@@ -335,15 +339,91 @@ when green and all MILESTONE_REQUESTs are done.
 """
 
 
+def harness_root() -> Path:
+    return Path(os.environ.get("NORTH_STAR_HARNESS_ROOT", DEFAULT_HARNESS_ROOT))
+
+
+def registered_harness(ns_slug: str) -> Optional[Path]:
+    """Return the harness that `last-stack-north-star-proof --list` would run.
+
+    The folder is the registry: a harness dir is usually a SHORT name
+    (harness/north-star/cloud-backup-restore/run.sh) whose run.sh declares
+    `# north-star-slug: north-star-...`. The old check looked only for
+    harness/north-star/<ns-slug>/run.sh, which almost never exists, so a
+    registered North Star read as "missing" and an unregistered one could not
+    be told apart (papercut-validation-proof-card-unregistered-harness-20260923).
+    """
+    root = harness_root()
+    direct = root / ns_slug / "run.sh"
+    if direct.is_file():
+        return direct
+    try:
+        scripts = sorted(root.glob("*/run.sh"))  # one level: bounded
+    except OSError:
+        return None
+    for script in scripts:
+        try:
+            head = script.read_text(errors="replace")[:4096]
+        except OSError:
+            continue
+        m = HARNESS_SLUG_RE.search(head)
+        if m and m.group(1) == ns_slug:
+            return script
+    return None
+
+
 def terminal_harness_path(ns_slug: str) -> Path:
-    """Return the registered North Star harness path for one project."""
-    root = Path(os.environ.get("NORTH_STAR_HARNESS_ROOT", DEFAULT_HARNESS_ROOT))
-    return root / ns_slug / "run.sh"
+    """Return the registered harness path, or where a new one should go."""
+    return registered_harness(ns_slug) or harness_root() / ns_slug / "run.sh"
 
 
 def terminal_harness_exists(ns_slug: str) -> bool:
     """A validation card is valid only when its runnable harness exists."""
-    return terminal_harness_path(ns_slug).is_file()
+    return registered_harness(ns_slug) is not None
+
+
+def done_when_supported(predicate: str) -> tuple[bool, str]:
+    """Ask the real evaluator whether it can parse a DONE-WHEN predicate.
+
+    A card whose DONE-WHEN the evaluator cannot parse only collects human
+    notes (papercut-kanban-validate-done-when-predicate-language-too-freeform-20260922).
+    """
+    if not DONE_WHEN_EVAL.is_file():
+        return False, "done-when-evaluator-missing"
+    cp = run_cmd([str(DONE_WHEN_EVAL), "--check", "--predicate", predicate], timeout=30)
+    if cp.returncode == 0:
+        return True, ""
+    lines = [l for l in (cp.stdout or "").splitlines() if l.strip()]
+    return False, (lines[-1] if lines else f"rc={cp.returncode}")[:120]
+
+
+NO_HARNESS_MARKER = "BLOCKED[no-registered-harness]:"
+
+
+def mark_unregistered_harness(terminal_slug: str, ns_slug: str, *, apply: bool) -> str:
+    """Put ONE stable blocker line on an existing proof card with no harness."""
+    if not apply:
+        return f"would_mark_no_harness:{terminal_slug}"
+    if not MARK_ONCE.is_file():
+        return f"error_mark_no_harness:{terminal_slug}:mark-once-missing"
+    cp = run_cmd(
+        [
+            str(MARK_ONCE),
+            terminal_slug,
+            "--marker",
+            NO_HARNESS_MARKER,
+            "--text",
+            f"no registered proof harness for {ns_slug}; "
+            f"harness card {terminal_harness_card_slug(ns_slug)} owns the fix",
+        ],
+        timeout=120,
+    )
+    out = (cp.stdout or "").strip()
+    if cp.returncode != 0:
+        return f"error_mark_no_harness:{terminal_slug}:{out[:120]}"
+    if " marked " in f" {out} ":
+        return f"marked_no_harness:{terminal_slug}"
+    return f"no_harness_already_marked:{terminal_slug}"
 
 
 def terminal_harness_card_slug(ns_slug: str) -> str:
@@ -516,6 +596,7 @@ class NsPlan:
     create_terminal: bool = False
     create_harness: bool = False
     harness_card_slug: str = ""
+    mark_no_harness: bool = False
     terminal_body_update: str = ""
     mark_ns_done: bool = False
     notes: list[str] = field(default_factory=list)
@@ -588,6 +669,14 @@ def plan_ns(
         else:
             col = str(card.get("column") or "")
             plan.notes.append(f"terminal_column:{col}")
+            if col != "done" and not terminal_harness_exists(slug):
+                # An existing proof shell with no registered harness can only
+                # collect blocker notes. File the harness work once and put
+                # one stable blocker line on the card.
+                plan.create_harness = True
+                plan.mark_no_harness = True
+                plan.harness_card_slug = terminal_harness_card_slug(slug)
+                plan.notes.append(f"terminal_harness_unregistered:{slug}")
             healed_body, changed = rewrite_legacy_terminal_done_when(
                 str(card.get("body") or ""), slug
             )
@@ -639,6 +728,10 @@ def ensure_terminal_card(
     ns_title: str,
     apply: bool,
 ) -> str:
+    predicate = terminal_done_when_predicate(ns_slug)
+    ok, why = done_when_supported(predicate)
+    if not ok:
+        return f"refused_unsupported_done_when:{terminal_slug}:{why}"
     if not apply:
         return f"would_create_terminal:{terminal_slug}"
     body = terminal_card_body(ns_slug, ns_title)
@@ -771,7 +864,11 @@ def apply_plan(plan: NsPlan, raw_get: str, *, apply: bool) -> list[str]:
                 apply=apply,
             )
         )
-    elif plan.terminal_body_update and plan.terminal_slug:
+        if plan.mark_no_harness:
+            actions.append(
+                mark_unregistered_harness(plan.terminal_slug, plan.slug, apply=apply)
+            )
+    if plan.terminal_body_update and plan.terminal_slug and not plan.create_terminal:
         actions.append(
             update_terminal_card_body(
                 plan.terminal_slug,

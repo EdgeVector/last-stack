@@ -794,4 +794,11 @@ ci_test tests/last-stack-kanban-watch-targeted-heal.sh
 ci_test tests/last-stack-portal-wt-start-installs-deps.sh
 ci_test tests/last-stack-bin-root-resolves-symlinks.sh
 ci_test tests/last-stack-ci-superseded.sh
+# W3b routine papercuts (2026-09-23): CI-in-flight update-branch guard,
+# closeout failure reasons + terminal line, marker dedupe, and the
+# kanban-list envelope prompt guard. APPENDED: ci_test shards by position.
+ci_test tests/last-stack-forge-pr-update-branch.sh
+ci_test tests/last-stack-board-closeout-failure-reasons.sh
+ci_test tests/last-stack-kanban-mark-once.sh
+ci_test tests/last-stack-prompt-kanban-json-envelope.sh
 ci_test tests/last-stack-ci-test-registration.sh

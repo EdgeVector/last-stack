@@ -89,7 +89,10 @@ read/write, fail loudly if the resolved path is empty or starts with
 - **CHEAP (uncapped this wake):** **deploy-pipeline scan** (mandatory — see
   below); the Forgejo PR ledger sync; check daemon liveness via logs; re-arm Forgejo
   `merge_when_checks_succeed` when checks are green; nudge BEHIND bases with a
-  lease force-push only from a fresh worktree after rebase; **file/update Brain
+  lease force-push only from a fresh worktree after rebase, and never while a
+  CI run on the PR head is pending (probe first with
+  `last-stack-forge-pr-update-branch --repo <r> --pr <n>`; exit 3 = in
+  flight, skip — a push cancels the run); **file/update Brain
   papercuts** for every blocked deploy/merge you are not fixing this wake;
   append heartbeat. **Do not** `kanban add` pipeline P0 cards. **Do not**
   `kanban rank` solely to front-load pipeline work.
@@ -278,6 +281,13 @@ jq -r '.prs[] | select(.stuck) | [.repo, .number, .shape, .root_cause, .head_sha
 jq -r '.ledger.actions[] | [.action, .slug, (.ok // "")] | @tsv' "$run_dir/forge-ledger.json"
 ```
 
+The sync can take up to about 60 seconds. Run it in the foreground and wait
+for it to exit; check its exit status before you read `forge-ledger.json`.
+An empty file while the command still runs is not a failure. Never wrap the
+sync in a `timeout` under 120 seconds: a 20-second wrapper killed a healthy
+sync and filed a false "silent timeout" papercut
+(papercut-pipeline-health-forge-ledger-silent-timeout).
+
 What the ledger does, so you do not repeat it:
 
 - It classifies each PR from the base branch's REQUIRED contexts (branch
@@ -372,6 +382,9 @@ mutation. The list can be stale: a PR that the point read shows closed, or a
    error: do not retry, do not file. If every required context is green and
    the PR is still open 10 minutes later, that is the stuck-task shape of step 4.
 2. **BEHIND / conflict** → worktree rebase onto base, push with lease, re-arm.
+   BEHIND only (no conflict): first run
+   `"$last_stack/bin/last-stack-forge-pr-update-branch" --repo <r> --pr <n>`;
+   exit 3 means a CI run is in flight — leave the PR alone this wake.
 3. **Red required CI** → read the log first
    (`"$last_stack/bin/last-stack-forge-ci-log" <owner/repo> --sha <sha>`), then
    split: **infra flake** (timeout, lost runner, cancelled with tests passing) →
