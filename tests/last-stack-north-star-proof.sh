@@ -16,6 +16,7 @@ grep -q north-star-cloud-sync-storage-lean <<<"$list_out"
 grep -q north-star-exemem-cloud-account <<<"$list_out"
 grep -q north-star-lastdb-ideal-storage-shape <<<"$list_out"
 grep -q north-star-lastdb-no-scan-access <<<"$list_out"
+grep -q north-star-portable-routine-fleet <<<"$list_out"
 
 PROOF_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ns-proof-test.XXXXXX")"
 FILE_BLOB_WORK="$(mktemp -d "${TMPDIR:-/tmp}/ns-file-blob-proof-test.XXXXXX")"

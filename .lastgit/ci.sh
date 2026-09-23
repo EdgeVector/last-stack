@@ -821,4 +821,8 @@ ci_test tests/last-stack-north-star-proof-cloud-transaction-groups.sh
 # Fixture source plus optional measured evidence. No LastDB home. No B2 cutover.
 # APPENDED before the registration guard, which stays last.
 ci_test tests/last-stack-north-star-proof-pack-blobs-b2.sh
+# Offline terminal proof for north-star-portable-routine-fleet.
+# Fills the bootstrap kit and checks the generic engines. No LastDB home.
+# APPENDED before the registration guard, which stays last.
+ci_test tests/last-stack-north-star-proof-portable-routine-fleet.sh
 ci_test tests/last-stack-ci-test-registration.sh
