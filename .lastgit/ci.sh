@@ -759,3 +759,4 @@ ci_test tests/last-stack-ci-shard-supervisor.sh
 ci_test tests/last-stack-pipeline-forge-pr-ledger.sh
 ci_test tests/last-stack-ci-test-registration.sh
 ci_test tests/last-stack-portal-wt-forge-credential.sh
+ci_test tests/last-stack-pc-run.sh
