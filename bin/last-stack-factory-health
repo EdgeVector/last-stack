@@ -628,6 +628,41 @@ def safe_milestone_frontier(board_cli: str) -> tuple[Optional[bool], str]:
 
 
 def age_hours(card: dict[str, Any], now: float) -> float:
+    """How long this card has been working, in hours.
+
+    `first_doing_at` FIRST, and the order is the whole point of the function.
+
+    `position` is fkanban's column-enter stamp. It is rewritten on every
+    `todo -> doing` move, so it measures time since the LAST claim, not time
+    since work started. On a card that is genuinely stuck those are the same
+    number only until something re-dispatches it — and re-dispatch is what the
+    pipeline does to stuck cards. The clock is reset by the loop it is supposed
+    to measure.
+
+    Measured 2026-09-22: `lastdb-streaming-file-blob-put` fenced 4 ready cards
+    and 6 pickup workers via surface-overlap, unresolved since 2026-09-17. This
+    function returned 8.17h at 05:17Z, 0.54h at 06:17Z, 6.53h at 12:17Z and
+    0.16h at 13:17Z. `hard_max_age_h` is 5.0, so the band was crossed and
+    cleared twice in one day and no streak ever formed. Five days of total
+    pipeline starvation, never alerted. Brain
+    `papercut-kanban-doing-age-clock-resets-on-re-dispatch`.
+
+    `first_doing_at` (kanban PR 20) is the monotone stamp: set on first entry
+    into `doing`, preserved across a re-dispatch to `todo`, cleared only when
+    the card leaves the work loop. Prefer it whenever the board supplies it.
+
+    `position` stays as the fallback so this keeps working against a board
+    written by an older kanban, and against cards stamped before PR 20 landed.
+    A legacy card reads `first_doing_at: ""` and falls through unchanged.
+    """
+    first_doing = str(card.get("first_doing_at") or "").strip()
+    if first_doing:
+        try:
+            dt = datetime.fromisoformat(first_doing.replace("Z", "+00:00"))
+            return max(0.0, (now - dt.timestamp()) / 3600.0)
+        except Exception:
+            pass
+
     pos = card.get("position")
     try:
         p = float(pos)

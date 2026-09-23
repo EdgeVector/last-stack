@@ -272,9 +272,28 @@ This is the backstop for the failure mode `kanban-pickup` already forbids
 ("Do not leave zombie `doing` cards with no worker") when the claiming session
 dies before it can roll back.
 
-**Age clock (soft 60m):** prefer *doing-since* when `position` looks like
-epoch-ms (~1e12–1e13, fkanban sets this on column enter); else fall back to
-`updated_at`. Grace = **60 minutes**.
+**Age clock (soft 60m):** prefer **`first_doing_at`** — the monotone stamp for
+the card's current unresolved work attempt. Fall back to *doing-since* when
+`position` looks like epoch-ms (~1e12–1e13, fkanban sets this on column enter),
+then to `updated_at`. Grace = **60 minutes**.
+
+**Read `first_doing_at`, not `position`, and know why.** `position` is rewritten
+on every column enter, so a card YOU re-dispatch (`move <slug> todo`, pickup
+claims it back into `doing`) reads as brand new on the next wake. The clock is
+reset by this routine's own repair loop. On 2026-09-22 that hid a five-day
+stall: `lastdb-streaming-file-blob-put` fenced 4 ready cards and 6 pickup
+workers through surface-overlap, while its measured doing-age reset twice in one
+day (8.17h → 0.54h, 6.53h → 0.16h) and the factory-health 5h HARD band never
+held long enough to fire. `first_doing_at` survives the re-dispatch and clears
+only on `backlog`/`done`. An empty value means a legacy card or a board on an
+older kanban — fall back, do not treat it as age 0. Brain
+`papercut-kanban-doing-age-clock-resets-on-re-dispatch`.
+
+**A bumped `Build attempt:` is the second monotone signal.** It already survives
+re-dispatch. Read the two together: `first_doing_at` far past the grace AND
+`Build attempt:` ≥ 3 is a stalled card holding a surface fence, not honest
+in-flight work — escalate it per the give-up guard below instead of re-arming
+the loop.
 
 For every card in `doing` (from the column preview):
 1. Skip non-PR kinds that use `DONE-WHEN` (evaluate those on the normal path).
