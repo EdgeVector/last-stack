@@ -1,0 +1,253 @@
+#!/usr/bin/env bash
+# Pre-execution lint for ONE agent shell command. It rejects the command
+# shapes that routine agents kept writing, each of which fails on this host
+# in a known way. The command arrives on stdin (or --command STR).
+#
+# Why this exists (measured 2026-09-23, papercut burn-down wave 2):
+#   Wave 1 closed the canonical rows for these hazards with prose rules in
+#   brain sop-routine-shared-contract section 5. Routine agents re-filed ~35
+#   copies within hours, because 71 of 76 routines run under Codex and no
+#   Codex routine reads that brain record. Prose did not reach the agent;
+#   a check at the exec boundary does.
+#
+# Callers:
+#   lib/routine-shell/codex-routine-bash.zsh  every Codex routine command
+#   hooks/routine-shell-lint.sh               every Claude Code Bash command
+#   bin/last-stack-lint-prompts --shell-blocks fenced bash blocks in prompts
+#
+# Rules (id: what fails -> the fix the rejection prints):
+#   spin-wait         read -t N < /dev/zero never waits; it burns a core
+#   heredoc-backticks unquoted heredoc body with backticks runs them
+#   dquote-backticks  --body "...`x`..." runs x (same for --evidence etc.)
+#   jq-optional-call  jq 1.7.1 rejects f(...)?.x and (.a)?.b
+#   jq-escaped-quote  \" inside a jq \( ) interpolation is a jq syntax error
+#   awk-match-array   macOS awk has no match(s, /re/, arr)
+#   sed-inplace       macOS sed -i needs an extension argument
+#   date-nanos        macOS date has no %N (date +%s%3N prints ...3N)
+#   zsh-status        (--shell zsh only) status is read-only in zsh
+#   zsh-mapfile       (--shell zsh only) mapfile/readarray do not exist in zsh
+#
+# Text inside a heredoc body is data, so only heredoc-backticks looks there.
+# Escape hatch: put "shell-lint-ok: <reason>" anywhere in the command.
+#
+# Usage:
+#   last-stack-routine-shell-lint [--shell bash|zsh] [--command STR] [--quiet]
+#   last-stack-routine-shell-lint --list-rules
+# Exit: 0 pass, 2 rejected (message on stderr), 64 usage error.
+set -u
+
+shell_kind="bash"
+command_text=""
+have_command=0
+quiet=0
+
+usage() {
+  sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --shell)
+      [ "$#" -ge 2 ] || { usage >&2; exit 64; }
+      shell_kind="$2"; shift 2 ;;
+    --command)
+      [ "$#" -ge 2 ] || { usage >&2; exit 64; }
+      command_text="$2"; have_command=1; shift 2 ;;
+    --quiet) quiet=1; shift ;;
+    --list-rules)
+      printf '%s\n' spin-wait heredoc-backticks dquote-backticks jq-optional-call jq-escaped-quote \
+        awk-match-array sed-inplace date-nanos zsh-status zsh-mapfile
+      exit 0 ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 64 ;;
+  esac
+done
+
+case "$shell_kind" in
+  bash|zsh) ;;
+  *) echo "last-stack-routine-shell-lint: --shell must be bash or zsh" >&2; exit 64 ;;
+esac
+
+if [ "$have_command" -eq 0 ]; then
+  command_text="$(cat)"
+fi
+
+case "$command_text" in
+  *"shell-lint-ok:"*) exit 0 ;;
+esac
+
+# Rule table: id | canonical papercut | fix line.
+rule_slug() {
+  case "$1" in
+    spin-wait) echo papercut-agent-spin-wait-read-t-dev-zero-20260922 ;;
+    heredoc-backticks|dquote-backticks) echo papercut-routine-heredoc-command-substitution ;;
+    jq-optional-call) echo papercut-routine-jq-optional-field-syntax-unsupported-20260922 ;;
+    jq-escaped-quote) echo papercut-routine-jq-quoted-filter-escape-20260922 ;;
+    awk-match-array) echo papercut-routine-done-when-sweep-awk-match-portability-20260923 ;;
+    sed-inplace) echo papercut-macos-sed-inplace-requires-extension-20260923 ;;
+    date-nanos) echo papercut-routine-zsh-date-percent-n-no-millisecond-timer-20260923 ;;
+    zsh-status|zsh-mapfile) echo papercut-routine-shell-word-splitting ;;
+  esac
+}
+
+rule_fix() {
+  case "$1" in
+    spin-wait) printf '%s\n' \
+      "read -t N < /dev/zero returns at once (zero bytes are always ready), so the loop spins one core." \
+      "Wait with: sleep 30 (Codex/routines), or a background command plus one check per turn (Claude Code)." ;;
+    heredoc-backticks) printf '%s\n' \
+      "An unquoted heredoc (<<EOF) runs \`...\` and \$(...) in its body. Markdown code spans become commands." \
+      "Quote the delimiter: cat > \"\$f\" <<'EOF' ... EOF, then pass --body \"\$(cat \"\$f\")\"." ;;
+    dquote-backticks) printf '%s\n' \
+      "Backticks inside a double-quoted --body/--evidence argument run as commands before the CLI sees the text." \
+      "Write the text to a file with a quoted heredoc (<<'EOF'), then pass --body \"\$(cat \"\$f\")\"." ;;
+    jq-optional-call) printf '%s\n' \
+      "Host jq is 1.7.1: '?' after a call or a paren cannot take a .field (match(..)?.string fails to compile)." \
+      "Use: try (match(\"re\").string) catch \"\"   or   (capture(\"(?<p>re)\") // {}) | .p // \"\"" \
+      "DONE-WHEN sweep: run last-stack-kanban-done-when-sweep instead of writing jq." ;;
+    jq-escaped-quote) printf '%s\n' \
+      "Inside \\( ... ) jq is in expression mode, so \\\" is an invalid character." \
+      "Use a TSV row: jq -r '.[] | [.slug, .status, (.severity // \"-\")] | @tsv'" ;;
+    awk-match-array) printf '%s\n' \
+      "macOS awk has no third match() argument (that is GNU awk)." \
+      "Use: sed -n 's/^DONE-WHEN:[[:space:]]*//p' file | head -n 1" ;;
+    sed-inplace) printf '%s\n' \
+      "macOS sed -i takes the NEXT word as a backup extension, so sed -i 's/a/b/' f fails." \
+      "Use: sed -i '' 's/a/b/' f   or   sed -i.bak 's/a/b/' f" ;;
+    date-nanos) printf '%s\n' \
+      "macOS (BSD) date has no %N, so date +%s%3N prints a literal N and the arithmetic fails." \
+      "Use: gdate +%s%3N (GNU coreutils is installed), or date +%s for whole seconds." ;;
+    zsh-status) printf '%s\n' \
+      "zsh makes status a read-only special variable (same as \$?)." \
+      "Use another name: rc, pr_state, ci_state." ;;
+    zsh-mapfile) printf '%s\n' \
+      "mapfile and readarray are bash builtins; zsh does not have them." \
+      "Use: while IFS= read -r line; do ...; done < \"\$file\"" ;;
+  esac
+}
+
+reject() {
+  local id="$1" line="$2"
+  if [ "$quiet" -eq 0 ]; then
+    {
+      echo "last-stack-routine-shell-lint: REJECTED rule=$id (the command did not run)"
+      echo "  line: ${line:0:200}"
+      rule_fix "$id" | sed 's/^/  /'
+      echo "  This is a known hazard with a guard (brain $(rule_slug "$id"))."
+      echo "  Do NOT file a papercut for this rejection. Rewrite the command and run it again."
+      echo "  Escape hatch, only when the shape is intended: add '# shell-lint-ok: <reason>'."
+    } >&2
+  fi
+  exit 2
+}
+
+# Regexes. Kept in variables so bash does not re-parse the quoting.
+re_heredoc_start='(^|[^<])<<(-?)[[:space:]]*(["'"'"'\\]?)([A-Za-z_][A-Za-z0-9_.-]*)'
+re_spin='(^|[^[:alnum:]_])read[[:space:]][^;|&]*-[[:alpha:]]*t[^;|&]*<[[:space:]]*/dev/zero'
+re_spin_b='/dev/zero[^;|&]*(^|[^[:alnum:]_])read[[:space:]][^;|&]*-[[:alpha:]]*t'
+re_dquote_backticks='--(body|evidence|symptom|title|summary|verified-by|fixed-by|reason|message|note)[= ]"[^"]*`'
+re_jq_word='(^|[^[:alnum:]_-])jq([[:space:]]|$)'
+re_jq_optional_call='\)\?\.[[:alpha:]_\["]'
+re_jq_escaped_quote='\\\([^)]*\\"'
+re_awk_word='(^|[^[:alnum:]_-])awk([[:space:]]|$)'
+re_awk_match='match\([^,()]*,[[:space:]]*/([^/]|\\/)*/[[:space:]]*,[[:space:]]*[[:alpha:]_]'
+q="'"
+re_sed_inplace='(^|[^[:alnum:]_-])sed[[:space:]]+(-[[:alpha:]]+[[:space:]]+)*-i[[:space:]]+([^'"$q"'"[:space:]-]|'"$q"'[^'"$q"']|"[^"]|-e[[:space:]]|-E[[:space:]])'
+re_date_nanos='(^|[^[:alnum:]_-])date[[:space:]][^;|&]*%[0-9]*N'
+re_zsh_status='(^|[;&|({[:space:]])status=|(^|[^[:alnum:]_])read[[:space:]]+(-[[:alpha:]]+[[:space:]]+)*([[:alpha:]_][[:alnum:]_]*[[:space:]]+)*status([[:space:]]|;|$)|(^|[^[:alnum:]_])(local|typeset|declare|integer)[[:space:]]+(-[[:alpha:]]+[[:space:]]+)*status([=[:space:]]|$)|(^|[^[:alnum:]_$])for[[:space:]]+status[[:space:]]+in([[:space:]]|$)'
+re_zsh_mapfile='(^|[;&|({[:space:]])(mapfile|readarray)[[:space:]]'
+
+check_command_line() {
+  local line="$1"
+  if [[ $line =~ $re_spin ]] || [[ $line =~ $re_spin_b ]]; then
+    reject spin-wait "$line"
+  fi
+  if [[ $line =~ $re_dquote_backticks ]]; then
+    reject dquote-backticks "$line"
+  fi
+  if [[ $line =~ $re_jq_word ]]; then
+    if [[ $line =~ $re_jq_optional_call ]]; then
+      reject jq-optional-call "$line"
+    fi
+    if [[ $line =~ $re_jq_escaped_quote ]]; then
+      reject jq-escaped-quote "$line"
+    fi
+  fi
+  if [[ $line =~ $re_awk_word ]] && [[ $line =~ $re_awk_match ]]; then
+    reject awk-match-array "$line"
+  fi
+  if [[ $line =~ $re_sed_inplace ]]; then
+    reject sed-inplace "$line"
+  fi
+  if [[ $line =~ $re_date_nanos ]]; then
+    reject date-nanos "$line"
+  fi
+  if [ "$shell_kind" = zsh ]; then
+    if [[ $line =~ $re_zsh_status ]]; then
+      reject zsh-status "$line"
+    fi
+    if [[ $line =~ $re_zsh_mapfile ]]; then
+      reject zsh-mapfile "$line"
+    fi
+  fi
+}
+
+# Queue of pending heredocs opened on the current command line.
+# Each entry: "<strip-tabs 0|1>:<quoted 0|1>:<delimiter>".
+pending=()
+in_body=0
+body_strip=0
+body_quoted=0
+body_delim=""
+body_start_line=""
+
+queue_heredocs() {
+  local rest="$1" strip quoted delim
+  while [[ $rest =~ $re_heredoc_start ]]; do
+    strip=0; [ "${BASH_REMATCH[2]}" = "-" ] && strip=1
+    quoted=0; [ -n "${BASH_REMATCH[3]}" ] && quoted=1
+    delim="${BASH_REMATCH[4]}"
+    pending+=("$strip:$quoted:$delim")
+    rest="${rest#*"${BASH_REMATCH[0]}"}"
+  done
+}
+
+open_next_body() {
+  local entry="${pending[0]}"
+  pending=("${pending[@]:1}")
+  body_strip="${entry%%:*}"
+  entry="${entry#*:}"
+  body_quoted="${entry%%:*}"
+  body_delim="${entry#*:}"
+  in_body=1
+}
+
+while IFS= read -r line || [ -n "$line" ]; do
+  if [ "$in_body" -eq 1 ]; then
+    probe="$line"
+    if [ "$body_strip" = 1 ]; then
+      probe="${probe#"${probe%%[!$'\t']*}"}"
+    fi
+    if [ "$probe" = "$body_delim" ]; then
+      in_body=0
+      if [ "${#pending[@]}" -gt 0 ]; then
+        open_next_body
+      fi
+      continue
+    fi
+    if [ "$body_quoted" = 0 ]; then
+      case "$line" in
+        *'`'*) reject heredoc-backticks "$body_start_line" ;;
+      esac
+    fi
+    continue
+  fi
+  check_command_line "$line"
+  queue_heredocs "$line"
+  if [ "${#pending[@]}" -gt 0 ]; then
+    body_start_line="$line"
+    open_next_body
+  fi
+done <<< "$command_text"
+
+exit 0
