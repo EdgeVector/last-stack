@@ -769,4 +769,7 @@ ci_test tests/last-stack-worktree-reclaim-lsof-fallback.sh
 # APPENDED (see the shard-stability note above): ci_test shards by list position.
 ci_test tests/last-stack-kanban-cheap-health-reads.sh
 ci_test tests/last-stack-kanban-watch-targeted-heal.sh
+# wt start installs locked bun deps; hermetic temp repo, fake bun, no network.
+# APPENDED (see the shard-stability note above): ci_test shards by list position.
+ci_test tests/last-stack-portal-wt-start-installs-deps.sh
 ci_test tests/last-stack-ci-test-registration.sh

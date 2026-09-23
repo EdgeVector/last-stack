@@ -41,6 +41,7 @@ import datetime as dt
 import json
 import os
 import re
+import concurrent.futures
 import subprocess
 import sys
 from pathlib import Path
@@ -248,88 +249,122 @@ def heartbeat_fields(report: dict[str, Any]) -> str:
     return " ".join(fields)
 
 
+def scan_repo(repo: str, args: argparse.Namespace, now: dt.datetime) -> tuple[dict[str, Any] | None, list[dict[str, Any]], list[dict[str, Any]]]:
+    """One repo's open PRs and base verdicts. Pure reads; safe to run in parallel."""
+    prs: list[dict[str, Any]] = []
+    try:
+        pulls = forge_get(f"repos/{repo}/pulls?state=open&limit=50")
+    except ForgeError as exc:
+        return None, [], [{"repo": repo, "error": str(exc)}]
+    if not isinstance(pulls, list):
+        return None, [], [{"repo": repo, "error": "pulls response is not a list"}]
+    base_cache: dict[str, dict[str, Any]] = {}
+    repo_row = {"repo": repo, "open": 0, "base": {}}
+    # Prefetch every open head's combined status in parallel (one forge-api
+    # spawn each); the loop below then reads from this map.
+    heads = sorted({(pr.get("head") or {}).get("sha") or "" for pr in pulls
+                    if isinstance(pr, dict) and pr.get("state") == "open"} - {""})
+
+    def fetch_status(sha: str) -> tuple[str, Any, str]:
+        try:
+            return sha, forge_get(f"repos/{repo}/commits/{sha}/status"), ""
+        except ForgeError as exc:
+            return sha, None, str(exc)
+
+    status_by_head: dict[str, tuple[Any, str]] = {}
+    if heads:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, len(heads))) as pool:
+            for sha, doc, err in pool.map(fetch_status, heads):
+                status_by_head[sha] = (doc, err)
+    for pr in pulls:
+        if not isinstance(pr, dict) or pr.get("state") != "open":
+            continue
+        repo_row["open"] += 1
+        number = int(pr.get("number") or 0)
+        head = (pr.get("head") or {}).get("sha") or ""
+        base_ref = (pr.get("base") or {}).get("ref") or "main"
+        if base_ref not in base_cache:
+            base_cache[base_ref] = read_base(repo, base_ref)
+            repo_row["base"][base_ref] = base_cache[base_ref]
+        base = base_cache[base_ref]
+        states: dict[str, str] = {}
+        status_error = ""
+        if head:
+            doc, err = status_by_head.get(head, (None, "status not fetched"))
+            if err:
+                status_error = err
+            else:
+                states = context_states(doc)
+        verdict, red = required_verdict(states, base["required"])
+        if status_error:
+            verdict = "unreadable"
+        mergeable = pr.get("mergeable")
+        updated = parse_ts(pr.get("updated_at"))
+        created = parse_ts(pr.get("created_at"))
+        age_min = int((now - created).total_seconds() // 60) if created else None
+        idle_min = int((now - updated).total_seconds() // 60) if updated else None
+        if pr.get("draft"):
+            shape = "draft"
+        elif mergeable is False:
+            shape = "conflict"
+        elif verdict == "red":
+            shape = "red"
+        elif verdict == "green":
+            shape = "green-unmerged"
+        else:
+            shape = verdict  # pending | absent | unreadable
+        stuck = False
+        if age_min is not None and age_min >= args.min_age_min and shape in {"conflict", "red", "green-unmerged"}:
+            stuck = True
+        if idle_min is not None and idle_min >= args.pending_stale_min and shape in {"pending", "absent"}:
+            stuck = True
+        root_cause = ""
+        if shape == "red" and red and base["verdict"] == "red" and set(red) <= set(base["red_contexts"]):
+            root_cause = "base-red"
+        prs.append(
+            {
+                "repo": repo,
+                "number": number,
+                "title": pr.get("title") or "",
+                "head_sha": head,
+                "head_ref": (pr.get("head") or {}).get("ref") or "",
+                "base_ref": base_ref,
+                "mergeable": mergeable,
+                "age_min": age_min,
+                "idle_min": idle_min,
+                "required": {c: states.get(c, "absent") for c in base["required"]},
+                "red_contexts": red,
+                "shape": shape,
+                "stuck": stuck,
+                "root_cause": root_cause,
+                "ledger_slug": main_red_slug(repo) if root_cause else pr_slug(repo, number),
+                "status_error": status_error,
+            }
+        )
+    if "main" not in base_cache:
+        # main-red rows close on a green main even when no PR is open.
+        repo_row["base"]["main"] = read_base(repo, "main")
+    return repo_row, prs, []
+
+
 def scan(args: argparse.Namespace) -> dict[str, Any]:
     now = now_utc()
     report: dict[str, Any] = {"checked_at": iso(now), "repos": [], "prs": [], "unreadable": []}
-    for repo in load_repos(args):
-        try:
-            pulls = forge_get(f"repos/{repo}/pulls?state=open&limit=50")
-        except ForgeError as exc:
-            report["unreadable"].append({"repo": repo, "error": str(exc)})
-            continue
-        if not isinstance(pulls, list):
-            report["unreadable"].append({"repo": repo, "error": "pulls response is not a list"})
-            continue
-        base_cache: dict[str, dict[str, Any]] = {}
-        repo_row = {"repo": repo, "open": 0, "base": {}}
-        for pr in pulls:
-            if not isinstance(pr, dict) or pr.get("state") != "open":
-                continue
-            repo_row["open"] += 1
-            number = int(pr.get("number") or 0)
-            head = (pr.get("head") or {}).get("sha") or ""
-            base_ref = (pr.get("base") or {}).get("ref") or "main"
-            if base_ref not in base_cache:
-                base_cache[base_ref] = read_base(repo, base_ref)
-                repo_row["base"][base_ref] = base_cache[base_ref]
-            base = base_cache[base_ref]
-            states: dict[str, str] = {}
-            status_error = ""
-            if head:
-                try:
-                    states = context_states(forge_get(f"repos/{repo}/commits/{head}/status"))
-                except ForgeError as exc:
-                    status_error = str(exc)
-            verdict, red = required_verdict(states, base["required"])
-            if status_error:
-                verdict = "unreadable"
-            mergeable = pr.get("mergeable")
-            updated = parse_ts(pr.get("updated_at"))
-            created = parse_ts(pr.get("created_at"))
-            age_min = int((now - created).total_seconds() // 60) if created else None
-            idle_min = int((now - updated).total_seconds() // 60) if updated else None
-            if pr.get("draft"):
-                shape = "draft"
-            elif mergeable is False:
-                shape = "conflict"
-            elif verdict == "red":
-                shape = "red"
-            elif verdict == "green":
-                shape = "green-unmerged"
-            else:
-                shape = verdict  # pending | absent | unreadable
-            stuck = False
-            if age_min is not None and age_min >= args.min_age_min and shape in {"conflict", "red", "green-unmerged"}:
-                stuck = True
-            if idle_min is not None and idle_min >= args.pending_stale_min and shape in {"pending", "absent"}:
-                stuck = True
-            root_cause = ""
-            if shape == "red" and red and base["verdict"] == "red" and set(red) <= set(base["red_contexts"]):
-                root_cause = "base-red"
-            report["prs"].append(
-                {
-                    "repo": repo,
-                    "number": number,
-                    "title": pr.get("title") or "",
-                    "head_sha": head,
-                    "head_ref": (pr.get("head") or {}).get("ref") or "",
-                    "base_ref": base_ref,
-                    "mergeable": mergeable,
-                    "age_min": age_min,
-                    "idle_min": idle_min,
-                    "required": {c: states.get(c, "absent") for c in base["required"]},
-                    "red_contexts": red,
-                    "shape": shape,
-                    "stuck": stuck,
-                    "root_cause": root_cause,
-                    "ledger_slug": main_red_slug(repo) if root_cause else pr_slug(repo, number),
-                    "status_error": status_error,
-                }
-            )
-        if "main" not in base_cache:
-            # main-red rows close on a green main even when no PR is open.
-            repo_row["base"]["main"] = read_base(repo, "main")
-        report["repos"].append(repo_row)
+    # Repos are independent, and each Forge read spawns last-stack-forge-api.
+    # Sequentially the scan took ~33s on 2026-09-23 (20 open PRs); a Codex
+    # routine shell yields long before that, and pipeline-health read the
+    # still-empty output file as a "silent timeout"
+    # (papercut-pipeline-health-forge-ledger-silent-timeout). Read repos in
+    # parallel; the report keeps the repo-list order.
+    repos = load_repos(args)
+    workers = max(1, min(len(repos), int(os.environ.get("LAST_STACK_FORGE_LEDGER_WORKERS", "8"))))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(lambda r: scan_repo(r, args, now), repos))
+    for repo_row, prs, unreadable in results:
+        report["unreadable"].extend(unreadable)
+        report["prs"].extend(prs)
+        if repo_row is not None:
+            report["repos"].append(repo_row)
     report["stuck"] = sum(1 for p in report["prs"] if p["stuck"])
     report["open"] = len(report["prs"])
     report["heartbeat_fields"] = heartbeat_fields(report)
