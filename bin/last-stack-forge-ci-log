@@ -50,6 +50,9 @@ TAIL="${FORGE_CI_LOG_TAIL:-80}"
 # That file needs no credential at all, which is the only reason this helper
 # still works while the login keychain is locked.
 ACTIONS_LOG_ROOT="${FORGE_ACTIONS_LOG_ROOT:-/opt/homebrew/var/forgejo/data/actions_log}"
+# Forgejo's sqlite DB. A log that never moved to actions_log/ (green jobs on
+# remote runners) is still in its DBFS tables; read-only access, no credential.
+FORGE_DB="${FORGE_DB_PATH:-/opt/homebrew/var/forgejo/data/forgejo.db}"
 
 
 usage() {
@@ -92,6 +95,8 @@ Env (cont.):
   FORGE_ACTIONS_LOG_ROOT
                        forge on-disk actions_log root
                        (default /opt/homebrew/var/forgejo/data/actions_log)
+  FORGE_DB_PATH        forge sqlite DB, read-only, for logs still in DBFS
+                       (default /opt/homebrew/var/forgejo/data/forgejo.db)
 
 Auth:
   api token   $FORGE_TOKEN, else keychain `forgejo-token`, else
@@ -291,7 +296,10 @@ else
   targets="$(printf '%s\n' "$jobs_tsv" | awk -F'\t' '$3=="failure"{print $1":"$2}')"
   if [ -z "$targets" ]; then
     # Nothing failed in ANY run for this head. Dump the newest run only; the
-    # listing above already named every run, so no sibling is hidden.
+    # listing above already named every run, so no sibling is hidden. Say so:
+    # a reader expecting a red job must not read a green log as the failure
+    # (papercut-forge-ci-log-no-log-for-tasks-absent-from-actions-log-20260923).
+    echo "no failing job for this target; showing every job of the newest run" >&2
     newest="$(printf '%s\n' "$jobs_tsv" | awk -F'\t' '{print $1}' | sort -n | tail -1)"
     targets="$(printf '%s\n' "$jobs_tsv" | awk -F'\t' -v r="$newest" '$1==r{print $1":"$2}')"
   fi
@@ -313,6 +321,19 @@ disk_log() {
   else
     return 1
   fi
+}
+
+# ── DBFS log (no credential) ──────────────────────────────────────────────────
+# Green jobs on remote (docker/PC) runners keep log_in_storage = 0: the log
+# stays in Forgejo's DBFS tables and never reaches actions_log/
+# (papercut-forge-ci-log-missing-for-remote-runner-jobs-20260923).
+dbfs_log() {
+  local task_id="$1" shard
+  [ -n "$task_id" ] && [ "$task_id" != "null" ] || return 1
+  [ -r "$FORGE_DB" ] || return 1
+  shard="$(printf '%02x' "$(( task_id % 256 ))")"
+  python3 "$self_root/lib/forge-dbfs-read.py" --db "$FORGE_DB" \
+    --path "$repo/$shard/$task_id.log.zst"
 }
 
 # ── Web session cookie (the log route rejects the API token) ──────────────────
@@ -356,6 +377,8 @@ for target in $targets; do
   source_desc=""
   if body="$(disk_log "$task_id" 2>/dev/null)"; then
     source_desc="$ACTIONS_LOG_ROOT/$repo/$(printf '%02x' "$(( task_id % 256 ))")/$task_id.log (on disk)"
+  elif body="$(dbfs_log "$task_id" 2>/dev/null)" && [ -n "$body" ]; then
+    source_desc="$FORGE_DB dbfs (log not yet moved to actions_log)"
   elif web_login && body="$(curl -fsS -b "$cookie" "$web_url")"; then
     source_desc="$web_url"
   else
