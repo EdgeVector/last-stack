@@ -1023,15 +1023,26 @@ kill %1 %2 %3 >/dev/null 2>&1 || true
 exit 0
 CASE
 
-case_out="$(bash "$tmp/stop-case.sh" "$tmp/stop.sh" "$tmp/fakebin" 2>/dev/null)"
-printf '%s\n' "$case_out" | grep -q '^ANSWER stopped=2$' \
-  || fail "stop_abandoned_drive_workers did not stop the driver and its child: $case_out"
-printf '%s\n' "$case_out" | grep -q "AFTER.*lx-T${stop_tag}-OTHER" \
-  || fail "stop_abandoned_drive_workers killed an unrelated execution's driver: $case_out"
-printf '%s\n' "$case_out" | grep -q 'AFTER.*harness -p prompt' \
-  || fail "stop_abandoned_drive_workers signalled a process that only quotes the marker: $case_out"
-printf '%s\n' "$case_out" | grep -q "AFTER.*/loom.*lx-T${stop_tag}-PARENT" \
-  && fail "stop_abandoned_drive_workers left the named driver alive: $case_out"
+# The real-process case needs a readable process table. Under the Codex
+# seatbelt a scheduled routine runs in, /bin/ps is setuid and its exec is
+# denied ("operation not permitted: ps"), so the case can only answer
+# `unreadable` there. That is the sandbox, not the fix under test: skip the
+# case out loud and keep the fake-ps branch below, which covers the denied
+# path. Forge CI and interactive shells can read ps and still run it.
+# (papercut-merge-babysit-ps-sandbox-denied-20260923)
+if ps -Ao pid= >/dev/null 2>&1; then
+  case_out="$(bash "$tmp/stop-case.sh" "$tmp/stop.sh" "$tmp/fakebin" 2>/dev/null)"
+  printf '%s\n' "$case_out" | grep -q '^ANSWER stopped=2$' \
+    || fail "stop_abandoned_drive_workers did not stop the driver and its child: $case_out"
+  printf '%s\n' "$case_out" | grep -q "AFTER.*lx-T${stop_tag}-OTHER" \
+    || fail "stop_abandoned_drive_workers killed an unrelated execution's driver: $case_out"
+  printf '%s\n' "$case_out" | grep -q 'AFTER.*harness -p prompt' \
+    || fail "stop_abandoned_drive_workers signalled a process that only quotes the marker: $case_out"
+  printf '%s\n' "$case_out" | grep -q "AFTER.*/loom.*lx-T${stop_tag}-PARENT" \
+    && fail "stop_abandoned_drive_workers left the named driver alive: $case_out"
+else
+  printf 'SKIP real-process stop_abandoned_drive_workers case: ps cannot run in this sandbox\n' >&2
+fi
 
 # No id, and an id loom never named, are both no-ops rather than a broad sweep.
 for arg in '' unknown; do
