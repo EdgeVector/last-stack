@@ -74,13 +74,25 @@ BRAIN_RETRY_TIMEOUT_S = float(
 )
 
 
+class BrainUnavailable(Exception):
+    """The brain CLI could not be started at all (missing or not executable)."""
+
+
 def run_brain(argv: list[str]) -> subprocess.CompletedProcess | None:
-    """Run one `brain` call, retrying once on timeout. None means it timed out twice."""
+    """Run one `brain` call, retrying once on timeout. None means it timed out twice.
+
+    A CLI that cannot be started raises BrainUnavailable, which main() turns
+    into the same fail-closed error pack as a failing brain command. It used to
+    escape as a FileNotFoundError traceback
+    (papercut-decision-check-missing-brain-binary-traceback-20260923).
+    """
     for budget in (BRAIN_CALL_TIMEOUT_S, BRAIN_RETRY_TIMEOUT_S):
         try:
             return subprocess.run(argv, text=True, capture_output=True, timeout=budget)
         except subprocess.TimeoutExpired:
             continue
+        except OSError as exc:
+            raise BrainUnavailable(f"brain CLI {argv[0]!r} cannot be started: {exc}") from exc
     return None
 
 
@@ -178,6 +190,20 @@ class Brain:
         self.failed = False
         self.timed_out = False
         self.fail_detail = ""
+        # slug -> the exact address that resolved it, so the stamp can say how
+        # to read it back from the SAME store.
+        self.addresses: dict[str, str] = {}
+
+    @property
+    def store(self) -> str:
+        return "gbrain" if self.gbrain else "brain"
+
+    def read_command(self, slug: str) -> str:
+        """The command a card reader runs to see this record."""
+        if self.gbrain:
+            guess = (gbrain_candidate_paths(slug) or [slug])[0]
+            return f"gbrain get {self.addresses.get(slug, guess)}"
+        return f"brain get {slug}"
 
     def get(self, slug: str) -> str | None:
         self.gets.append(slug)
@@ -189,6 +215,8 @@ class Brain:
         if self.gbrain:
             return self._gbrain_get(slug)
         cp = run_brain([self.bin_name, "get", slug])
+        if cp is not None and cp.returncode == 0:
+            self.addresses[slug] = slug
         if cp is None:
             self.timed_out = True
             self.fail_detail = (
@@ -211,6 +239,7 @@ class Brain:
                 )
                 return None
             if cp.returncode == 0:
+                self.addresses[slug] = path
                 return cp.stdout
         # Prefix guessing failed. One exact-slug search resolves the real
         # address rather than letting an unaddressable record read as absent —
@@ -222,6 +251,7 @@ class Brain:
                 continue
             cp = run_brain([self.bin_name, "get", full])
             if cp is not None and cp.returncode == 0:
+                self.addresses[slug] = full
                 return cp.stdout
             break
         return None
@@ -454,14 +484,31 @@ def apply_invariants(
     return hits
 
 
-def stamp_block(verdict: str, slugs: list[str], when: str) -> str:
+def stamp_block(
+    verdict: str,
+    slugs: list[str],
+    when: str,
+    reads: list[str] | None = None,
+    store: str = "",
+) -> str:
+    """The stamp. `slugs:` keeps its one-line shape for parsers; each slug
+    also gets a `read:` line with the exact command, from the store the check
+    read. The bare slugs alone sent readers to `brain get` (LastDB), which
+    does not hold most settled records while gbrain is primary, so every
+    point read said "No record" (papercut-kanban-decision-check-missing-brain-slugs-20260921).
+    """
     slug_line = ", ".join(slugs) if slugs else "none"
-    return (
-        f"## DECISION-CHECK\n"
-        f"date: {when}\n"
-        f"verdict: {verdict}\n"
-        f"slugs: {slug_line}\n"
-    )
+    lines = [
+        "## DECISION-CHECK",
+        f"date: {when}",
+        f"verdict: {verdict}",
+        f"slugs: {slug_line}",
+    ]
+    if slugs and store:
+        lines.append(f"store: {store}")
+    for cmd in reads or []:
+        lines.append(f"read: {cmd}")
+    return "\n".join(lines) + "\n"
 
 
 def inject_stamp(body: str, stamp: str) -> str:
@@ -526,7 +573,13 @@ def assemble(
         verdict = "clear"
 
     when = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    stamp = stamp_block(verdict, got_slugs, when)
+    stamp = stamp_block(
+        verdict,
+        got_slugs,
+        when,
+        reads=[brain.read_command(s) for s in got_slugs],
+        store=brain.store,
+    )
     return {
         "ok": verdict != "conflict",
         "verdict": verdict,
@@ -604,7 +657,22 @@ def main(argv: list[str] | None = None) -> int:
         if env_fix:
             fixture = Path(env_fix)
     brain = Brain(args.brain, fixture)
-    pack = assemble(args.title, body, args.kind, args.column, brain)
+    try:
+        pack = assemble(args.title, body, args.kind, args.column, brain)
+    except BrainUnavailable as exc:
+        pack = {
+            "ok": False,
+            "verdict": "error",
+            "slugs": [],
+            "conflicts": [],
+            "records": [],
+            "query": "",
+            "error": str(exc),
+            "stamp": "",
+            "search_is_membership": False,
+            "degraded_types": brain.degraded_types,
+            "search_failures": brain.search_failures,
+        }
 
     if pack["verdict"] == "error":
         print(f"last-stack-kanban-decision-check: {pack['error']}", file=sys.stderr)

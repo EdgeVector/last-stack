@@ -107,6 +107,18 @@ jq -e '.records | length >= 3 and all(.[]; .got == true)' "$out" >/dev/null \
 grep -Fq 'get wiki/concepts/concepts-gate-reliability' "$calls" \
   || fail "concept was not addressed under wiki/concepts: $(cat "$calls")"
 
+# 5b. The stamp tells the reader how to read each slug back from the SAME
+#     store. A bare slug sent readers to `brain get` (LastDB), which does not
+#     hold these records (papercut-kanban-decision-check-missing-brain-slugs-20260921).
+jq -e '.stamp | contains("store: gbrain")' "$out" >/dev/null \
+  || fail "stamp does not name the store: $(jq -r .stamp "$out")"
+jq -e '.stamp | contains("read: gbrain get design/design-flaky-gate-policy")' "$out" >/dev/null \
+  || fail "stamp lacks the gbrain read command: $(jq -r .stamp "$out")"
+jq -e '.stamp | contains("read: gbrain get preference/preference-deflake-assert-cause")' "$out" >/dev/null \
+  || fail "stamp lacks the preference read command: $(jq -r .stamp "$out")"
+jq -e '.stamp | test("(?m)^slugs: [a-z0-9-]+(, [a-z0-9-]+)*$")' "$out" >/dev/null \
+  || fail "the slugs: line must stay one bare comma list: $(jq -r .stamp "$out")"
+
 # 6. gbrain takes ONE comma-separated --types, not repeated --type. Passing the
 #    brain shape exits non-zero with `unknown flag --type`, which the gate
 #    would report as a brain failure and fail closed on.
