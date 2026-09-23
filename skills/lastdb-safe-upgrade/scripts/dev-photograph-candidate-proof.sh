@@ -376,8 +376,11 @@ file_fingerprint() {
   local path="$1" mode inode sha
   [ -f "$path" ] && [ ! -L "$path" ] || return 1
   mode="$(_dev_stamp_file_mode "$path")" || return 1
-  inode="$(stat -f '%d:%i' "$path" 2>/dev/null || stat -c '%d:%i' "$path" 2>/dev/null)" \
-    || return 1
+  if stat --version >/dev/null 2>&1; then
+    inode="$(stat -c '%d:%i' "$path")" || return 1
+  else
+    inode="$(stat -f '%d:%i' "$path")" || return 1
+  fi
   sha="$(dev_stamp_sha256_file "$path")" || return 1
   printf '%s:%s:%s\n' "$mode" "$inode" "$sha"
 }
@@ -385,7 +388,11 @@ file_fingerprint() {
 # Clone the static rollback point that step 1 already created. Do not race a
 # second walk of the live primary after the normal probe bars.
 FAILURE_PHASE="clone_rollback"
-cp -cR "$CLONE_SOURCE" "$COW_HOME" >/dev/null 2>&1 \
+if [ "$(uname -s)" = "Darwin" ]; then
+  cp -cR "$CLONE_SOURCE" "$COW_HOME" >/dev/null 2>&1
+else
+  cp -a "$CLONE_SOURCE" "$COW_HOME" >/dev/null 2>&1
+fi \
   || proof_die "the static rollback point cannot create the DEV proof CoW"
 [ -d "$COW_HOME/data" ] \
   && [ -f "$COW_HOME/identity.key" ] \

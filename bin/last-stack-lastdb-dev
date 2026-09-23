@@ -280,7 +280,11 @@ clone_from_primary() {
   start="$(now)"
   # cp -cR is an instant per-file clone on APFS. The live sockets cannot be
   # copied, so cp exits non-zero even on a good clone; judge by the result.
-  cp -cR "$p" "$tmp" 2>"$STATE/clone.err" || true
+  if [ "$(uname -s)" = "Darwin" ]; then
+    cp -cR "$p" "$tmp" 2>"$STATE/clone.err" || true
+  else
+    cp -a "$p" "$tmp" 2>"$STATE/clone.err" || true
+  fi
   if [ -s "$STATE/clone.err" ]; then
     # grep -v exits 1 when every line is a socket complaint; with pipefail that
     # must not abort the clone (it did, silently, on the first real run).
@@ -697,7 +701,11 @@ home_idle_hours() {
   local h="$1" newest=0 m f
   for f in "$h/$OWNER_STAMP_NAME" "$h/data" "$h"; do
     [ -e "$f" ] || continue
-    m="$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0)"
+    if stat --version >/dev/null 2>&1; then
+      m="$(stat -c %Y "$f" 2>/dev/null || echo 0)"
+    else
+      m="$(stat -f %m "$f" 2>/dev/null || echo 0)"
+    fi
     [ "$m" -gt "$newest" ] && newest="$m"
   done
   echo $(( ( $(now) - newest ) / 3600 ))

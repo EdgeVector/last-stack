@@ -5,7 +5,11 @@
 safe_upgrade_owner_lock_age_seconds() {
   local path="$1" now mtime
   now="$(date +%s 2>/dev/null || echo 0)"
-  mtime="$(stat -f %m "$path" 2>/dev/null || stat -c %Y "$path" 2>/dev/null || echo 0)"
+  if stat --version >/dev/null 2>&1; then
+    mtime="$(stat -c %Y "$path" 2>/dev/null || echo 0)"
+  else
+    mtime="$(stat -f %m "$path" 2>/dev/null || echo 0)"
+  fi
   if [ "$now" -gt 0 ] 2>/dev/null && [ "$mtime" -gt 0 ] 2>/dev/null && [ "$now" -ge "$mtime" ] 2>/dev/null; then
     printf '%s\n' "$((now - mtime))"
   else

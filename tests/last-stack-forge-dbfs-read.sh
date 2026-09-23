@@ -10,6 +10,11 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/forge-dbfs.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
+if ! command -v sqlite3 >/dev/null 2>&1; then
+  echo "SKIP: sqlite3 is not available in this test image"
+  exit 0
+fi
+
 DB="$WORK/forgejo.db"
 sqlite3 "$DB" <<'SQL'
 CREATE TABLE dbfs_meta (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, full_path TEXT NOT NULL, block_size INTEGER NOT NULL, file_size INTEGER NOT NULL, create_timestamp INTEGER NOT NULL, modify_timestamp INTEGER NOT NULL);

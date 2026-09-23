@@ -57,9 +57,11 @@ lock_age_secs() {
   owner_started="$(awk 'NR == 1 { print $2 }' "$LOCK_DIR/owner" 2>/dev/null || true)"
   case "$owner_started" in
     ''|*[!0-9]*)
-      owner_started="$(stat -f '%m' "$LOCK_DIR/owner" 2>/dev/null \
-        || stat -c '%Y' "$LOCK_DIR/owner" 2>/dev/null \
-        || printf '%s' "$now_epoch")"
+      if stat --version >/dev/null 2>&1; then
+        owner_started="$(stat -c '%Y' "$LOCK_DIR/owner" 2>/dev/null || printf '%s' "$now_epoch")"
+      else
+        owner_started="$(stat -f '%m' "$LOCK_DIR/owner" 2>/dev/null || printf '%s' "$now_epoch")"
+      fi
       ;;
   esac
   age_secs=$((now_epoch - owner_started))

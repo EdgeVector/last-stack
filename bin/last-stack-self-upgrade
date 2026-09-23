@@ -437,7 +437,11 @@ lock_age_seconds() {
   now="$(date +%s 2>/dev/null || echo 0)"
   stamp="$lock_dir/owner"
   [ -e "$stamp" ] || stamp="$lock_dir"
-  mtime="$(stat -f %m "$stamp" 2>/dev/null || stat -c %Y "$stamp" 2>/dev/null || echo 0)"
+  if stat --version >/dev/null 2>&1; then
+    mtime="$(stat -c %Y "$stamp" 2>/dev/null || echo 0)"
+  else
+    mtime="$(stat -f %m "$stamp" 2>/dev/null || echo 0)"
+  fi
   if [ "$now" -gt 0 ] && [ "$mtime" -gt 0 ] && [ "$now" -ge "$mtime" ]; then
     printf '%s\n' "$((now - mtime))"
   else

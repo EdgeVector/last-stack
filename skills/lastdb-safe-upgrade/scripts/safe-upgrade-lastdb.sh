@@ -367,9 +367,16 @@ write_cutover_recovery_state() {
   case "$state" in /*) ;; *) die "cutover recovery state path is not absolute" ;; esac
   [ -f "$state" ] && [ ! -L "$state" ] \
     || die "cutover recovery state is absent or unsafe: $state"
-  [ "$(stat -f '%u' "$state" 2>/dev/null || stat -c '%u' "$state" 2>/dev/null)" = "$(id -u)" ] \
+  if stat --version >/dev/null 2>&1; then
+    state_owner="$(stat -c '%u' "$state")"
+    state_mode="$(stat -c '%a' "$state")"
+  else
+    state_owner="$(stat -f '%u' "$state")"
+    state_mode="$(stat -f '%Lp' "$state")"
+  fi
+  [ "$state_owner" = "$(id -u)" ] \
     || die "cutover recovery state has the wrong owner"
-  [ "$(stat -f '%Lp' "$state" 2>/dev/null || stat -c '%a' "$state" 2>/dev/null)" = 600 ] \
+  [ "$state_mode" = 600 ] \
     || die "cutover recovery state must have mode 600"
   [ "$effect_started" = true ] || [ "$effect_started" = false ] \
     || die "cutover recovery state has an invalid effect flag"
@@ -1386,7 +1393,13 @@ live_install_sidebin() {
   # Single-flight lock
   local lock="$dest/.cutover.lock"
   if [ -f "$lock" ]; then
-    local age=$(( $(date +%s) - $(stat -f %m "$lock" 2>/dev/null || echo 0) ))
+    local lock_mtime
+    if stat --version >/dev/null 2>&1; then
+      lock_mtime="$(stat -c %Y "$lock" 2>/dev/null || echo 0)"
+    else
+      lock_mtime="$(stat -f %m "$lock" 2>/dev/null || echo 0)"
+    fi
+    local age=$(( $(date +%s) - lock_mtime ))
     if [ "$age" -lt 600 ]; then
       die "cutover lock present ($lock, age ${age}s) — another upgrade in flight?"
     fi

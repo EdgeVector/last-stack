@@ -1630,7 +1630,11 @@ acquire_install_lock() {
   lock="$HOST_TRACK_LOCK_DIR/install-${app}.lock.d"
   while ! mkdir "$lock" 2>/dev/null; do
     if [ -d "$lock" ]; then
-      mtime="$(stat -f %m "$lock" 2>/dev/null || stat -c %Y "$lock" 2>/dev/null || echo 0)"
+      if stat --version >/dev/null 2>&1; then
+        mtime="$(stat -c %Y "$lock" 2>/dev/null || echo 0)"
+      else
+        mtime="$(stat -f %m "$lock" 2>/dev/null || echo 0)"
+      fi
       now="$(date +%s)"
       age=$((now - mtime))
       # A live owner keeps exclusive access for the full transaction, even
@@ -1980,7 +1984,11 @@ gc_stale_stage_dirs() {
   for stage in "$install_root"/.stage-*; do
     [ -e "$stage" ] || continue
     [ -d "$stage" ] || continue
-    mtime="$(stat -f %m "$stage" 2>/dev/null || stat -c %Y "$stage" 2>/dev/null || echo 0)"
+    if stat --version >/dev/null 2>&1; then
+      mtime="$(stat -c %Y "$stage" 2>/dev/null || echo 0)"
+    else
+      mtime="$(stat -f %m "$stage" 2>/dev/null || echo 0)"
+    fi
     age=$((now - mtime))
     if [ "$age" -ge "$max_age_s" ]; then
       printf 'host-track: gc stale stage dir age=%ss path=%s\n' "$age" "$stage" >&2

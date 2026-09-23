@@ -26,7 +26,7 @@ export LAST_STACK_RECLAIM_SKIP_BOARD=1 LAST_STACK_RECLAIM_SKIP_LSOF=1
 export LAST_STACK_WORKTREE_PATCH_DIR="$tmp/patches"
 
 # Dry run names the mirror, never the cache root.
-out="$("$bin" --path "$tmp/worktrees/demo-card" --dry-run 2>&1)"
+out="$("$bin" --path "$tmp/worktrees/demo-card" --dry-run --force-live 2>&1)"
 printf '%s\n' "$out" | grep -q "repo=$(cd "$tmp/cache/demo.git" && pwd -P)\|repo=$tmp/cache/demo.git" || {
   echo "FAIL: dry run must resolve repo to the bare mirror: $out" >&2; exit 1; }
 if printf '%s\n' "$out" | grep -q "repo=$tmp/cache "; then
@@ -34,7 +34,7 @@ if printf '%s\n' "$out" | grep -q "repo=$tmp/cache "; then
 fi
 
 # Real removal: the mirror forgets the worktree; nothing is an orphan rm.
-out="$("$bin" --path "$tmp/worktrees/demo-card" 2>&1)"
+out="$("$bin" --path "$tmp/worktrees/demo-card" --force-live 2>&1)"
 if printf '%s\n' "$out" | grep -q 'rm orphan path'; then
   echo "FAIL: bare-mirror worktree removed as an orphan path: $out" >&2; exit 1
 fi

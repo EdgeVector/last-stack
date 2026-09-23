@@ -950,7 +950,11 @@ if [ "$sweep_stale" -eq 1 ]; then
         continue
       fi
       # age by directory mtime
-      mtime="$(stat -f %m "$d" 2>/dev/null || stat -c %Y "$d" 2>/dev/null || echo 0)"
+      if stat --version >/dev/null 2>&1; then
+        mtime="$(stat -c %Y "$d" 2>/dev/null || echo 0)"
+      else
+        mtime="$(stat -f %m "$d" 2>/dev/null || echo 0)"
+      fi
       age=$((now_epoch - mtime))
 
       # Short grace: never race a worktree created moments before this sweep,

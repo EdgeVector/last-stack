@@ -38,7 +38,11 @@ candidate_file_bytes() {
     echo 0
     return
   fi
-  sz="$(stat -f%z "$path" 2>/dev/null || stat -c%s "$path" 2>/dev/null || echo 0)"
+  if stat --version >/dev/null 2>&1; then
+    sz="$(stat -c%s "$path" 2>/dev/null || echo 0)"
+  else
+    sz="$(stat -f%z "$path" 2>/dev/null || echo 0)"
+  fi
   echo "${sz:-0}"
 }
 

@@ -23,7 +23,7 @@ done
 : > "$tmp/sm-calls"
 
 cat > "$tmp/driver.py" <<PY
-import importlib.util, sys, pathlib
+import importlib.machinery, importlib.util, sys, pathlib
 spec = importlib.util.spec_from_loader(
     "fh", importlib.machinery.SourceFileLoader("fh", "$bin")
 )
@@ -49,7 +49,7 @@ grep -q "factory_heal:start=skip" "$tmp/out" \
 # An alerting hour must still start AND tick.
 : > "$tmp/sm-calls"
 cat > "$tmp/driver2.py" <<PY
-import importlib.util, sys, pathlib
+import importlib.machinery, importlib.util, sys, pathlib
 spec = importlib.util.spec_from_loader(
     "fh", importlib.machinery.SourceFileLoader("fh", "$bin")
 )

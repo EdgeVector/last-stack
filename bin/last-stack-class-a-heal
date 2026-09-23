@@ -326,7 +326,11 @@ acquire_lock() {
       # enough: acquire_lock()'s own mkdir-to-owner-write window is
       # microseconds, so a directory still ownerless after LOCK_WAIT_S is
       # abandoned, not mid-acquire.
-      lock_mtime="$(stat -f %m "$LOCK_DIR" 2>/dev/null || stat -c %Y "$LOCK_DIR" 2>/dev/null || echo 0)"
+      if stat --version >/dev/null 2>&1; then
+        lock_mtime="$(stat -c %Y "$LOCK_DIR" 2>/dev/null || echo 0)"
+      else
+        lock_mtime="$(stat -f %m "$LOCK_DIR" 2>/dev/null || echo 0)"
+      fi
       now="$(date +%s)"
       age=$(( now - lock_mtime ))
       if [ "$lock_mtime" -gt 0 ] && [ "$age" -ge "$LOCK_WAIT_S" ]; then

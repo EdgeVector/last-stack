@@ -15,8 +15,24 @@ canonical="$HOME/.last-stack"
 scratch="$tmp/scratch-last-stack"
 
 mkdir -p "$HOME/.claude"
-git clone --quiet --no-local "$ROOT" "$canonical"
-rsync -a --delete --exclude=.git "$ROOT/" "$canonical/"
+# Linux CI mounts the source checkout with a host owner.  Git accepts
+# safe.directory only from protected configuration, so use a fixture-local
+# global configuration for the root and its git directory.
+fixture_git_config="$tmp/gitconfig"
+GIT_CONFIG_GLOBAL="$fixture_git_config" git config --global --add safe.directory "$ROOT"
+GIT_CONFIG_GLOBAL="$fixture_git_config" git config --global --add safe.directory "$ROOT/.git"
+GIT_CONFIG_GLOBAL="$fixture_git_config" git clone --quiet --no-local "$ROOT" "$canonical"
+# The production image has rsync.  The minimal Linux gate image does not.
+# Copy tracked source changes after the clone without replacing its Git metadata.
+if command -v rsync >/dev/null 2>&1; then
+  rsync -a --delete --exclude=.git "$ROOT/" "$canonical/"
+else
+  source_patch="$tmp/source.patch"
+  GIT_CONFIG_GLOBAL="$fixture_git_config" git -C "$ROOT" diff --binary HEAD >"$source_patch"
+  if [ -s "$source_patch" ]; then
+    git -C "$canonical" apply --whitespace=nowarn "$source_patch"
+  fi
+fi
 git -C "$canonical" config user.email "last-stack-test@example.invalid"
 git -C "$canonical" config user.name "Last Stack Test"
 git -C "$canonical" add -A

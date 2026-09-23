@@ -253,10 +253,16 @@ assert "the default home keeps the default state dir" test "$(printf '%s' "$out"
 # 20) unwritable default state falls back to TMPDIR; explicit unwritable state is refused
 mkdir -p "$T/ro-home/.local" "$T/tmpdir"
 chmod 555 "$T/ro-home/.local"
-out="$(env -u LASTDB_DEV_STATE HOME="$T/ro-home" TMPDIR="$T/tmpdir" LASTDB_DEV_HOME="$T/ro-home/.lastdb-dev-x" "$BIN" status --json 2>/dev/null)"
-assert "unwritable default state falls back under TMPDIR" test "$(printf '%s' "$out" | jq -r '.state_dir')" = "$T/tmpdir/lastdb-dev-state/lastdb-dev-x"
-set +e; LASTDB_DEV_STATE="$T/ro-home/.local/explicit" "$BIN" status >/dev/null 2>&1; rc=$?; set -e
-assert "an explicit unwritable LASTDB_DEV_STATE is refused" test "$rc" -ne 0
+if [ "$(id -u)" -eq 0 ]; then
+  # Root bypasses directory write bits. A root CI container cannot model this
+  # permission boundary without a separate unprivileged fixture user.
+  echo "ok - root CI cannot model an unwritable state directory"
+else
+  out="$(env -u LASTDB_DEV_STATE HOME="$T/ro-home" TMPDIR="$T/tmpdir" LASTDB_DEV_HOME="$T/ro-home/.lastdb-dev-x" "$BIN" status --json 2>/dev/null)"
+  assert "unwritable default state falls back under TMPDIR" test "$(printf '%s' "$out" | jq -r '.state_dir')" = "$T/tmpdir/lastdb-dev-state/lastdb-dev-x"
+  set +e; LASTDB_DEV_STATE="$T/ro-home/.local/explicit" "$BIN" status >/dev/null 2>&1; rc=$?; set -e
+  assert "an explicit unwritable LASTDB_DEV_STATE is refused" test "$rc" -ne 0
+fi
 chmod 755 "$T/ro-home/.local"
 
 # 21) reclaim: this home plus its residue; refuses a held home and the primary

@@ -300,7 +300,7 @@ pc_pause_id() {
 PC_PAUSED=0
 PC_PAUSE_ID=""
 PC_PAUSE_REASON=""
-if [ -f "$PC_PAUSE_FILE" ] && "$JQ" -e '.intent == "paused"' "$PC_PAUSE_FILE" >/dev/null 2>&1; then
+if [ -s "$PC_PAUSE_FILE" ] && "$JQ" -e '.intent == "paused"' "$PC_PAUSE_FILE" >/dev/null 2>&1; then
   PC_PAUSED=1
   PC_PAUSE_ID="$(pc_pause_id)"
   PC_PAUSE_REASON="$($JQ -r '.reason // empty' "$PC_PAUSE_FILE" 2>/dev/null || true)"
