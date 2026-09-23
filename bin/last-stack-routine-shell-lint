@@ -18,6 +18,7 @@
 # Rules (id: what fails -> the fix the rejection prints):
 #   spin-wait         read -t N < /dev/zero never waits; it burns a core
 #   heredoc-backticks unquoted heredoc body with backticks runs them
+#   dquote-backticks  --body "...`x`..." runs x (same for --evidence etc.)
 #   jq-optional-call  jq 1.7.1 rejects f(...)?.x and (.a)?.b
 #   jq-escaped-quote  \" inside a jq \( ) interpolation is a jq syntax error
 #   awk-match-array   macOS awk has no match(s, /re/, arr)
@@ -53,7 +54,7 @@ while [ "$#" -gt 0 ]; do
       command_text="$2"; have_command=1; shift 2 ;;
     --quiet) quiet=1; shift ;;
     --list-rules)
-      printf '%s\n' spin-wait heredoc-backticks jq-optional-call jq-escaped-quote \
+      printf '%s\n' spin-wait heredoc-backticks dquote-backticks jq-optional-call jq-escaped-quote \
         awk-match-array sed-inplace zsh-status zsh-mapfile
       exit 0 ;;
     -h|--help) usage; exit 0 ;;
@@ -78,7 +79,7 @@ esac
 rule_slug() {
   case "$1" in
     spin-wait) echo papercut-agent-spin-wait-read-t-dev-zero-20260922 ;;
-    heredoc-backticks) echo papercut-routine-heredoc-command-substitution ;;
+    heredoc-backticks|dquote-backticks) echo papercut-routine-heredoc-command-substitution ;;
     jq-optional-call) echo papercut-routine-jq-optional-field-syntax-unsupported-20260922 ;;
     jq-escaped-quote) echo papercut-routine-jq-quoted-filter-escape-20260922 ;;
     awk-match-array) echo papercut-routine-done-when-sweep-awk-match-portability-20260923 ;;
@@ -95,6 +96,9 @@ rule_fix() {
     heredoc-backticks) printf '%s\n' \
       "An unquoted heredoc (<<EOF) runs \`...\` and \$(...) in its body. Markdown code spans become commands." \
       "Quote the delimiter: cat > \"\$f\" <<'EOF' ... EOF, then pass --body \"\$(cat \"\$f\")\"." ;;
+    dquote-backticks) printf '%s\n' \
+      "Backticks inside a double-quoted --body/--evidence argument run as commands before the CLI sees the text." \
+      "Write the text to a file with a quoted heredoc (<<'EOF'), then pass --body \"\$(cat \"\$f\")\"." ;;
     jq-optional-call) printf '%s\n' \
       "Host jq is 1.7.1: '?' after a call or a paren cannot take a .field (match(..)?.string fails to compile)." \
       "Use: try (match(\"re\").string) catch \"\"   or   (capture(\"(?<p>re)\") // {}) | .p // \"\"" \
@@ -136,6 +140,7 @@ reject() {
 re_heredoc_start='(^|[^<])<<(-?)[[:space:]]*(["'"'"'\\]?)([A-Za-z_][A-Za-z0-9_.-]*)'
 re_spin='(^|[^[:alnum:]_])read[[:space:]][^;|&]*-[[:alpha:]]*t[^;|&]*<[[:space:]]*/dev/zero'
 re_spin_b='/dev/zero[^;|&]*(^|[^[:alnum:]_])read[[:space:]][^;|&]*-[[:alpha:]]*t'
+re_dquote_backticks='--(body|evidence|symptom|title|summary|verified-by|fixed-by|reason|message|note)[= ]"[^"]*`'
 re_jq_word='(^|[^[:alnum:]_-])jq([[:space:]]|$)'
 re_jq_optional_call='\)\?\.[[:alpha:]_\["]'
 re_jq_escaped_quote='\\\([^)]*\\"'
@@ -150,6 +155,9 @@ check_command_line() {
   local line="$1"
   if [[ $line =~ $re_spin ]] || [[ $line =~ $re_spin_b ]]; then
     reject spin-wait "$line"
+  fi
+  if [[ $line =~ $re_dquote_backticks ]]; then
+    reject dquote-backticks "$line"
   fi
   if [[ $line =~ $re_jq_word ]]; then
     if [[ $line =~ $re_jq_optional_call ]]; then

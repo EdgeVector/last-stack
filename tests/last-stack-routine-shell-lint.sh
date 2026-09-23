@@ -92,6 +92,16 @@ EOF
 while true; do read -t 3 < /dev/zero; done
 OUTER
 
+expect 2 bash dquote-body-backticks <<'OUTER'
+brain papercut close x --status verified --evidence "ran `kanban ping` ok"
+OUTER
+expect 0 bash dquote-body-file-ok <<'OUTER'
+brain papercut close x --status verified --evidence "$(cat "$f")"
+OUTER
+expect 0 bash squote-body-backticks-ok <<'OUTER'
+brain papercut close x --status verified --evidence 'ran `kanban ping` ok'
+OUTER
+
 # --- jq rules ----------------------------------------------------------------
 expect 2 bash jq-match-optional-field <<'EOF'
 jq -r '.body | match("DONE-WHEN:.*")?.string' card.json
@@ -201,18 +211,18 @@ if [ -n "$out" ]; then
   echo "FAIL [hook-missing-lint] want fail-open, got: $out" >&2; fail=1
 fi
 
-# --- Codex routine entry snippet (zsh -lc -> bash) ---------------------------
+# --- Codex routine entry snippet (zsh -c -> bash, via ~/.zshenv) -------------
 if command -v zsh >/dev/null 2>&1; then
   zdot="$tmp/zdot"
   mkdir -p "$zdot"
-  printf '. %q\n' "$SNIPPET" > "$zdot/.zprofile"
+  printf '. %q\n' "$SNIPPET" > "$zdot/.zshenv"
   run_z() {
     # run_z <env...> -- <command>
     local envs=()
     while [ "$1" != "--" ]; do envs+=("$1"); shift; done
     shift
     env -i HOME="$HOME" PATH="/usr/bin:/bin:/usr/sbin:/sbin" ZDOTDIR="$zdot" \
-      LAST_STACK_ROUTINE_SHELL_LINT="$LINT" "${envs[@]}" /bin/zsh -lc "$1"
+      LAST_STACK_ROUTINE_SHELL_LINT="$LINT" "${envs[@]}" /bin/zsh -c "$1"
   }
   routine_env=(DRIVEN_BY=routine CODEX_THREAD_ID=test-thread)
 
@@ -243,26 +253,45 @@ if command -v zsh >/dev/null 2>&1; then
 
   got="$(run_z "${routine_env[@]}" LAST_STACK_ROUTINE_SHELL=zsh -- 'echo "${ZSH_VERSION:+zsh}"')"
   [ "$got" = zsh ] || { echo "FAIL [snippet-opt-out] want zsh, got '$got'" >&2; fail=1; }
+
+  got="$(run_z "${routine_env[@]}" CLAUDECODE=1 -- 'echo "${ZSH_VERSION:+zsh}"')"
+  [ "$got" = zsh ] || { echo "FAIL [snippet-claude] want zsh, got '$got'" >&2; fail=1; }
+
+  # Codex wrapper form: outer zsh execs an inner zsh -c; the inner one
+  # (which reads .zshenv again) is the one that becomes bash.
+  got="$(run_z "${routine_env[@]}" -- "exec '/bin/zsh' -c 'status=4; echo \"w=\$status \${BASH_VERSION:+bash}\"'")"
+  [ "$got" = "w=4 bash" ] || { echo "FAIL [snippet-codex-wrapper] got '$got'" >&2; fail=1; }
+  set +e
+  run_z "${routine_env[@]}" -- "exec '/bin/zsh' -c 'cat <<'\"'\"'EOF'\"'\"'
+sed -i 's/a/b/' f is only text here
+EOF'" >/dev/null 2>&1; rc=$?
+  set -e
+  [ "$rc" = 0 ] || { echo "FAIL [snippet-wrapper-heredoc-data] want 0, got $rc" >&2; fail=1; }
+
+  # A zsh script file has no -c string and stays zsh.
+  printf 'echo "${ZSH_VERSION:+zsh}"\n' > "$tmp/script.zsh"
+  got="$(env -i HOME="$HOME" PATH=/usr/bin:/bin ZDOTDIR="$zdot" "${routine_env[@]}" /bin/zsh "$tmp/script.zsh")"
+  [ "$got" = zsh ] || { echo "FAIL [snippet-script] want zsh, got '$got'" >&2; fail=1; }
 fi
 
-# --- setup: managed ~/.zprofile block is idempotent and last -----------------
+# --- setup: managed ~/.zshenv block is idempotent and last ------------------
 (
   set -e
   eval "$(sed -n '/^strip_managed_md_block()/,/^}/p' "$ROOT/setup")"
   eval "$(sed -n "/^RSZ_START=/p;/^RSZ_END=/p" "$ROOT/setup")"
-  eval "$(sed -n '/^install_routine_shell_zprofile()/,/^}/p' "$ROOT/setup")"
+  eval "$(sed -n '/^install_routine_shell_zshenv()/,/^}/p' "$ROOT/setup")"
   SOURCE_ROOT="$ROOT"
   ZDOTDIR="$tmp/setup-z"
   mkdir -p "$ZDOTDIR"
-  printf 'export PATH="/x/bin:$PATH"\n' > "$ZDOTDIR/.zprofile"
-  install_routine_shell_zprofile >/dev/null
-  printf 'export LATER=1\n' >> "$ZDOTDIR/.zprofile"
-  install_routine_shell_zprofile >/dev/null
-  [ "$(grep -c 'codex-routine-bash.zsh' "$ZDOTDIR/.zprofile")" = 1 ]
-  [ "$(tail -n 1 "$ZDOTDIR/.zprofile")" = "$RSZ_END" ]
-  grep -q '^export PATH="/x/bin:$PATH"$' "$ZDOTDIR/.zprofile"
-  grep -q '^export LATER=1$' "$ZDOTDIR/.zprofile"
-) || { echo "FAIL [setup-zprofile] block not idempotent or not last" >&2; fail=1; }
+  printf 'export PATH="/x/bin:$PATH"\n' > "$ZDOTDIR/.zshenv"
+  install_routine_shell_zshenv >/dev/null
+  printf 'export LATER=1\n' >> "$ZDOTDIR/.zshenv"
+  install_routine_shell_zshenv >/dev/null
+  [ "$(grep -c 'codex-routine-bash.zsh' "$ZDOTDIR/.zshenv")" = 1 ]
+  [ "$(tail -n 1 "$ZDOTDIR/.zshenv")" = "$RSZ_END" ]
+  grep -q '^export PATH="/x/bin:$PATH"$' "$ZDOTDIR/.zshenv"
+  grep -q '^export LATER=1$' "$ZDOTDIR/.zshenv"
+) || { echo "FAIL [setup-zshenv] block not idempotent or not last" >&2; fail=1; }
 
 if [ "$fail" -ne 0 ]; then
   exit 1

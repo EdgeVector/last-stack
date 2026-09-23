@@ -1,8 +1,10 @@
 # Codex routine shell entry: run each scheduled Codex command in bash.
-# Sourced at the END of ~/.zprofile (setup installs a managed block).
+# Sourced at the END of ~/.zshenv (setup installs a managed block).
 #
 # Why (measured 2026-09-23):
-#   Codex runs every agent command as `/bin/zsh -lc '<command>'`. It takes the
+#   Codex runs every agent command in zsh (its log shows `/bin/zsh -lc`, but
+#   the live shell has no login flag, so ~/.zprofile is NOT read; ~/.zshenv
+#   is read by every zsh). Codex takes the
 #   shell from the passwd entry and ignores $SHELL (a codex exec probe with
 #   SHELL=/opt/homebrew/bin/bash still ran /bin/zsh -lc). 71 of 76 routines use
 #   the Codex harness, and the models write bash. Under zsh that bash fails
@@ -16,15 +18,24 @@
 #   1. last-stack-routine-shell-lint checks the command. A rejection prints
 #      the fix and exits 2 before anything runs.
 #   2. exec bash -c "<the same command>". Exit code, stdout and stderr pass
-#      through unchanged. PATH and the rest of the env come from ~/.zprofile.
+#      through unchanged. PATH and the rest of the env are inherited.
 #
 # Opt out for one command or one routine: LAST_STACK_ROUTINE_SHELL=zsh.
-# Interactive shells, Claude Code shells and Tom's own Codex sessions are
-# untouched (no DRIVEN_BY=routine or no CODEX_THREAD_ID).
-if [[ ${DRIVEN_BY-} == routine && -n ${CODEX_THREAD_ID-} \
+# Interactive shells, zsh scripts (no -c string), Claude Code shells
+# (CLAUDECODE set) and Tom's own Codex sessions (no DRIVEN_BY=routine) are
+# untouched.
+if [[ ${DRIVEN_BY-} == routine && -n ${CODEX_THREAD_ID-} && -z ${CLAUDECODE-} \
       && -n ${ZSH_EXECUTION_STRING-} && ${LAST_STACK_ROUTINE_SHELL-bash} == bash \
       && ! -o interactive ]]; then
   () {
+    # Codex wraps the agent command: the outer zsh runs
+    #   exec '/bin/zsh' -c '<command>'
+    # Let that exec happen; the inner zsh reads this file again and sees the
+    # raw command, so the lint reads the real text once (not the re-quoted
+    # wrapper, where heredoc quotes look like '"'"'EOF'"'"').
+    case $ZSH_EXECUTION_STRING in
+      ("exec '/bin/zsh' -c "*|"exec /bin/zsh -c "*) return 0 ;;
+    esac
     local lint="${LAST_STACK_ROUTINE_SHELL_LINT:-$HOME/.last-stack/bin/last-stack-routine-shell-lint}"
     local lint_rc=0 candidate
     if [[ -x $lint ]]; then
