@@ -758,3 +758,4 @@ ci_test tests/last-stack-ci-shard-supervisor.sh
 # APPENDED (see the shard-stability note above): ci_test shards by list position.
 ci_test tests/last-stack-pipeline-forge-pr-ledger.sh
 ci_test tests/last-stack-ci-test-registration.sh
+ci_test tests/last-stack-portal-wt-forge-credential.sh

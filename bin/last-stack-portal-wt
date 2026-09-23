@@ -204,6 +204,31 @@ normalize_mirror_refspec() {
     "${current:-unset}" "$MIRROR_FETCH_REFSPEC" >&2
 }
 
+# Plain `git fetch` in a mirror or worktree must not depend on the login
+# keychain: when it is locked, the global osxkeychain helper fails and git
+# prompts for a username an unattended run cannot answer
+# (papercut-forgejo-direct-fetch-prompts-for-username-20260923). Register the
+# token-backed helper on the mirror (repo-local; worktrees share it). An empty
+# helper first resets the inherited list for this URL, so osxkeychain is not
+# asked at all. Only for the local forge remote; idempotent.
+normalize_mirror_credential() {
+  local scope helper current
+  case "$REMOTE" in
+    http://localhost:3300/*|http://127.0.0.1:3300/*|http://100.109.94.59:3300/*) ;;
+    *) return 0 ;;
+  esac
+  scope="${REMOTE%%/EdgeVector/*}"
+  scope="${scope%/}"
+  helper='!"$HOME/.last-stack/bin/git-credential-last-stack-forge"'
+  current="$($GIT -C "$CACHE" config --local --get-all "credential.${scope}.helper" 2>/dev/null \
+    | tr '\n' '|' || true)"
+  [ "$current" != "|${helper}|" ] || return 0
+  $GIT -C "$CACHE" config --unset-all "credential.${scope}.helper" 2>/dev/null || true
+  $GIT -C "$CACHE" config --add "credential.${scope}.helper" "" 2>/dev/null || return 0
+  $GIT -C "$CACHE" config --add "credential.${scope}.helper" "$helper" 2>/dev/null || return 0
+  printf 'portal-wt: registered forge credential helper on %s\n' "$CACHE" >&2
+}
+
 ensure_cache() {
   mkdir -p "$(dirname "$CACHE")"
   if [ ! -d "$CACHE" ]; then
@@ -211,6 +236,7 @@ ensure_cache() {
     $GIT clone --bare --quiet "$REMOTE" "$CACHE"
   fi
   normalize_mirror_refspec
+  normalize_mirror_credential
   # Always refresh main tip before starting work. Update the documented mirror
   # read path (refs/heads/<main>) AND the remote-tracking ref in one call: the
   # first can be pinned by a worktree, the second never can, so a reader that
