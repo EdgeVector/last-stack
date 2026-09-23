@@ -281,8 +281,19 @@ if ! have_object "$head_oid" || ! have_object "$base_oid"; then
       # Name the PR head explicitly: a PR from a deleted or fork branch has no
       # refs/heads entry, but Forgejo always serves refs/pull/<n>/head. No
       # destination refspec, so no local ref moves; only objects arrive.
-      "$git_bin" -C "$git_dir" fetch --quiet --no-write-fetch-head origin \
-        "refs/pull/$pr_number/head" "refs/heads/${base_ref#refs/heads/}" >/dev/null 2>&1 || true
+      # Forgejo repos are private: an unattended fetch needs the forge token.
+      # Plain git asks the login keychain, which a routine shell cannot unlock
+      # ("failed to get: -25293", then "could not read Username"), so the
+      # objects never arrived and routines#26 read ancestry-object-missing.
+      # last-stack-forge-git supplies the token (keychain, then lastsecrets).
+      forge_git="${LAST_STACK_FORGE_GIT:-$(dirname "$forge_api")/last-stack-forge-git}"
+      if [ -x "$forge_git" ]; then
+        GIT_TERMINAL_PROMPT=0 "$forge_git" -C "$git_dir" fetch --quiet --no-write-fetch-head origin \
+          "refs/pull/$pr_number/head" "refs/heads/${base_ref#refs/heads/}" >/dev/null 2>&1 || true
+      else
+        GIT_TERMINAL_PROMPT=0 "$git_bin" -C "$git_dir" fetch --quiet --no-write-fetch-head origin \
+          "refs/pull/$pr_number/head" "refs/heads/${base_ref#refs/heads/}" >/dev/null 2>&1 || true
+      fi
     else
       "$git_bin" -C "$git_dir" fetch --quiet --prune origin >/dev/null 2>&1 \
         || "$git_bin" -C "$git_dir" fetch --quiet --prune lastgit >/dev/null 2>&1 || true

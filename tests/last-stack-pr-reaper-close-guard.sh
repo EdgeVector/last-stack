@@ -236,6 +236,27 @@ jq -e '.repo == "brain" and .verdict == "refuse"' "$tmp/out.json" >/dev/null \
   || { echo "FAIL owner/name --repo must normalize to the bare name (rc=$rc)" >&2; cat "$tmp/out.json" "$tmp/out.err" >&2; exit 1; }
 echo "ok   forgejo: --repo EdgeVector/<name> is accepted"
 
+# The ancestry fetch must go through the forge-token wrapper: Forgejo repos are
+# private and an unattended shell cannot unlock the login keychain.
+"$git_bin" init --quiet --bare "$fhome/.cache/edgevector-git/brain2.git"
+"$git_bin" -C "$fhome/.cache/edgevector-git/brain2.git" remote add origin "$forge"
+cat >"$tmp/fake-forge-git" <<'SH'
+#!/usr/bin/env bash
+echo "$*" >>"$FAKE_FORGE_GIT_LOG"
+exec git "$@"
+SH
+chmod +x "$tmp/fake-forge-git"
+rc=0
+HOME="$fhome" LAST_STACK_FORGE_GIT="$tmp/fake-forge-git" FAKE_FORGE_GIT_LOG="$tmp/forge-git.log" \
+  "$guard" --venue forgejo --repo brain2 --pr 7 \
+  --pr-json "$tmp/pr-open.json" --head-status-json "$tmp/fs-head-green.json" \
+  --base-status-json "$tmp/fs-base-green.json" --base-oid "$MAIN" --json \
+  >"$tmp/out.json" 2>"$tmp/out.err" || rc=$?
+grep -q 'fetch --quiet --no-write-fetch-head origin refs/pull/7/head' "$tmp/forge-git.log" 2>/dev/null \
+  || { echo "FAIL forgejo ancestry fetch must use the forge-token wrapper" >&2; cat "$tmp/out.json" >&2; exit 1; }
+jq -e '.verdict == "refuse"' "$tmp/out.json" >/dev/null || { echo "FAIL wrapper fetch verdict (rc=$rc)" >&2; cat "$tmp/out.json" >&2; exit 1; }
+echo "ok   forgejo: ancestry fetch goes through last-stack-forge-git"
+
 # ── 11. the prompt must actually run the guard ─────────────────────────────
 # A helper nothing calls is not a guard. This is the half that failed before:
 # routines/pr-reaper.md STEP 2 had a two-branch ladder and no call site.
