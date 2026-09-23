@@ -190,8 +190,9 @@ Kind:pr cards in default/todo need a substantive brief (prefer `## GOAL` +
 **Won't-undo — 2026-08-20:** a new Kind:pr card must not contradict a settled
 brain decision, design, or preference. File Kind:pr with
 `last-stack-kanban-file-pr` (it runs `last-stack-kanban-decision-check` and
-stamps `## DECISION-CHECK`). If the stamp lists slugs, point-get them and
-honor them in the brief, or do not file. Do not pass `--skip-decision-check`.
+stamps `## DECISION-CHECK`). If the stamp lists slugs, run its `read:` lines
+(the store the check used, e.g. `gbrain get decision/<slug>`) and honor them
+in the brief, or do not file. Do not pass `--skip-decision-check`.
 Raw `kanban add` for Kind:pr skips this gate.
 
 ### kanban CLI

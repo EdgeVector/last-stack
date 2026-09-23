@@ -85,6 +85,8 @@ assert p["verdict"] == "honor"
 assert "decision-2026-07-02-standing-rule-every-card-gets-end" in p["slugs"]
 assert "decision-2026-07-02-standing-rule-every-card-gets-end" in p["point_gets"]
 assert "verdict: honor" in p["stamp"]
+import re
+assert re.search(r"(?m)^read: g?brain get (decision/)?decision-2026-07-02-standing-rule-every-card-gets-end$", p["stamp"]), p["stamp"]
 print("decision-check honor-fixture ok")
 PY
 
@@ -268,5 +270,18 @@ grep -q "Traceback" "$tmp/slow.err" \
 grep -q "timed out twice" "$tmp/slow.err" \
   || fail "brain timeout must say it retried: $(cat "$tmp/slow.err")"
 echo "decision-check brain-timeout retries then fails readably ok"
+
+# A brain CLI that cannot be started fails closed with the error pack, not a
+# FileNotFoundError traceback (papercut-decision-check-missing-brain-binary-traceback-20260923).
+set +e
+python3 "$BIN" --title "missing brain probe" --kind pr --column todo \
+  --brain "$tmp/no-such-brain" --json <"$body_ok" >"$tmp/missing.json" 2>"$tmp/missing.err"
+missing_rc=$?
+set -e
+[ "$missing_rc" -eq 1 ] || fail "missing brain CLI should exit 1, got $missing_rc"
+grep -q "Traceback" "$tmp/missing.err" && fail "missing brain CLI printed a traceback"
+jq -e '.verdict == "error" and .ok == false and (.error | contains("cannot be started"))' \
+  "$tmp/missing.json" >/dev/null || fail "missing brain CLI JSON: $(cat "$tmp/missing.json")"
+echo "decision-check missing-brain-binary fails closed ok"
 
 echo "last-stack-kanban-decision-check tests ok"
