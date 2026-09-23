@@ -33,7 +33,7 @@ printf '%s\n' "$out" | grep -q 'free_mib=' \
 out="$(
   LAST_STACK_DOGFOOD_MIN_FREE_MIB=0 \
   LAST_STACK_DOGFOOD_SKIP_PRIMARY_CHECK=1 \
-  LAST_STACK_DOGFOOD_MAX_LOAD_PER_CPU=-0.000001 \
+  LAST_STACK_DOGFOOD_MAX_LOAD_PER_CPU=-0.1 \
   "$ISOLATE" --preflight-only 2>/dev/null || true
 )"
 printf '%s\n' "$out" | grep -q $'result=blocker' \
