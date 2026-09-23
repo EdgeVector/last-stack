@@ -110,13 +110,19 @@ sorted_slugs() {
 
 usage() {
   cat <<'U'
-usage: last-stack-north-star-proof [--list] [--offline|--live] [<ns-slug>|all]
+usage: last-stack-north-star-proof [--list [--json]] [--offline|--live] [<ns-slug>|all]
 
 North Star terminal proof harness runner.
 
 Modes:
   --offline (default)  structural + fixture / unit proofs; never primary brain
   --live               full dogfood when prerequisites exist (still never primary)
+
+--list prints one slug per line, sorted. --list --json prints one JSON object:
+  {"schema":"last-stack-north-star-proof.list.v1","count":N,
+   "slugs":["north-star-..."],
+   "harnesses":[{"slug":"north-star-...","script":"harness/north-star/<dir>/run.sh"}]}
+  "slugs" and "harnesses" are sorted by slug.
 
 Known slugs (discovered from harness/north-star/*/run.sh):
 U
@@ -134,12 +140,14 @@ U
 discover_harnesses
 
 LIST=0
+JSON=0
 MODE="${NORTH_STAR_PROOF_MODE:-offline}"
 ARGS=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
     --list) LIST=1; shift ;;
+    --json) JSON=1; shift ;;
     --offline) MODE=offline; shift ;;
     --live) MODE=live; shift ;;
     all|north-star-*) ARGS+=("$1"); shift ;;
@@ -149,8 +157,25 @@ done
 
 export NORTH_STAR_PROOF_MODE="$MODE"
 
+if [ "$JSON" -eq 1 ] && [ "$LIST" -ne 1 ]; then
+  echo "--json is only supported with --list" >&2
+  exit 2
+fi
+
 if [ "$LIST" -eq 1 ]; then
-  sorted_slugs
+  if [ "$JSON" -eq 1 ]; then
+    command -v jq >/dev/null 2>&1 || { echo "--list --json needs jq on PATH" >&2; exit 2; }
+    i=0
+    while [ "$i" -lt "${#ALL_SLUGS[@]}" ]; do
+      printf '%s\t%s\n' "${ALL_SLUGS[$i]}" "harness/north-star/${ALL_SCRIPTS[$i]}"
+      i=$((i + 1))
+    done | LC_ALL=C sort | jq -R -s -c '
+      [split("\n")[] | select(length > 0) | split("\t") | {slug: .[0], script: .[1]}]
+      | {schema: "last-stack-north-star-proof.list.v1", count: length,
+         slugs: map(.slug), harnesses: .}'
+  else
+    sorted_slugs
+  fi
   exit 0
 fi
 

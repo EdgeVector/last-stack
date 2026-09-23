@@ -2,7 +2,14 @@
 # Verify the global CLIs a Last Stack routine expects are visible once, up front.
 set -eu
 
-script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
+# Resolve the file symlink chain before dirname: the PATH link
+# ~/.local/bin/<name> points into the artifact tree, and siblings live there.
+_self_src="$0"
+while [ -L "$_self_src" ]; do
+  _self_link="$(readlink "$_self_src")"
+  case "$_self_link" in /*) _self_src="$_self_link" ;; *) _self_src="$(dirname "$_self_src")/$_self_link" ;; esac
+done
+script_dir="$(CDPATH= cd -- "$(dirname -- "$_self_src")" && pwd -P)"
 if [ -z "${LAST_STACK_ROOT+x}" ]; then
   LAST_STACK_ROOT="$(CDPATH= cd -- "$script_dir/.." && pwd -P)"
   export LAST_STACK_ROOT
