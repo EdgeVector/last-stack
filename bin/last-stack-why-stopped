@@ -36,7 +36,7 @@ done
 
 log() { [ "$QUIET" -eq 1 ] || printf 'why-stopped: %s\n' "$*" >&2; }
 
-ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+ROOT="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
 
 # Test seams (product defaults keep live CLI names).

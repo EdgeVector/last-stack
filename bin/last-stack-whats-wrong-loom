@@ -56,7 +56,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+ROOT="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
 STAMP="${LAST_STACK_WHATS_WRONG_STAMP:-$HOME/.last-stack/state/whats-wrong-loom.json}"
 

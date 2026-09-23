@@ -38,7 +38,7 @@
 #       2 usage.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+ROOT="$(cd "$(dirname "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 LAST_STACK_ROOT="${LAST_STACK_ROOT:-$ROOT}"
 ROUTINES_HOME="${ROUTINES_HOME:-$HOME/.routines}"
 PRODUCT_ROOT="${LAST_STACK_ROUTINES_DIR:-$LAST_STACK_ROOT/routines}"

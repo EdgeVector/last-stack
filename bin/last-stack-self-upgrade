@@ -29,7 +29,7 @@
 #     the failure.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+ROOT="$(cd "$(dirname "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 
 # The install's `origin` remote is often a read-only GitHub mirror; the
 # canonical source for LastGit-native repos (like this one) is the `lastgit`

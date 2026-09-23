@@ -10,7 +10,7 @@
 # fixes can land without a VERSION bump.
 set -e
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+ROOT="$(cd "$(dirname "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 LOCAL="$(cat "$ROOT/VERSION" 2>/dev/null || echo "0.0.0")"
 
 REMOTE_URL="${LASTSTACK_REMOTE_URL:-https://raw.githubusercontent.com/EdgeVector/last-stack/main/VERSION}"

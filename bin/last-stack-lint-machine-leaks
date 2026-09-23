@@ -14,7 +14,7 @@
 # Hard findings (never baselined): personal emails, private VPN IPs, secrets-ish.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+ROOT="$(cd "$(dirname "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 cd "$ROOT"
 
 MODE=gate

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+ROOT="$(cd "$(dirname "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 last_stack="${LAST_STACK_ROOT:-$ROOT}"
 # Overlay install lives at ~/.local/bin; only fall back to the host last-stack
 # tree when the caller did not pin LAST_STACK_ROOT (tests pin a tmp root).

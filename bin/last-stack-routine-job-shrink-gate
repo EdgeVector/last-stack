@@ -4,7 +4,7 @@
 # and output. Never invents ok/noop for a failed or skipped job.
 set -euo pipefail
 
-ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+ROOT="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 if [ "${JOB_GATE_FIXTURE:-0}" != "1" ]; then
   export PATH="${HOME}/.local/bin:${ROOT}/bin:${HOME}/.last-stack/bin:${PATH:-/usr/bin:/bin}"
 fi

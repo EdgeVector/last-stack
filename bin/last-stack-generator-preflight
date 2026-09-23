@@ -3,7 +3,7 @@
 # Exit 0 = proceed. Exit 75 = shed (busy/hot). Exit 2 = usage.
 set -euo pipefail
 REASON="${1:-generator}"
-ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+ROOT="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
 
 if [ -x "$ROOT/bin/last-stack-lastdb-pressure" ]; then

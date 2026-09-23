@@ -8,7 +8,7 @@
 # Legacy checkout installs still attempt clean/self-upgrade before failing closed.
 set -eu
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+ROOT="$(cd "$(dirname "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 
 # True when compatibility layout is active (bin → .artifacts/current/bin) or the
 # resolved root already lives under the artifact versions tree.

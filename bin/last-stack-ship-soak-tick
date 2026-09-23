@@ -18,7 +18,7 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$APP" ] || { printf 'ship-soak-tick: --app required\n' >&2; exit 2; }
 
-ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)"
+ROOT="$(CDPATH='' cd -- "$(dirname -- "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 STATE_ROOT="${LAST_STACK_STATE_ROOT:-$HOME/.local/state/last-stack}"
 STATE_DIR="${LAST_STACK_SHIP_SOAK_STATE_DIR:-$STATE_ROOT/soak-loom/ship-soak}"
 MAX="${LAST_STACK_SHIP_SOAK_TICK_MAX:-32}"

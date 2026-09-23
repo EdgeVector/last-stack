@@ -2,7 +2,7 @@
 # Start or resume the Loom lastdb-safe-upgrade graph. No soak. No promotion.
 set -euo pipefail
 
-ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+ROOT="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
 # shellcheck source=../lib/canary-loom/loom-run-deadline.sh
 . "$ROOT/lib/canary-loom/loom-run-deadline.sh"

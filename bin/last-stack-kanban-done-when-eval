@@ -145,7 +145,7 @@ if [[ "$predicate" =~ ^routine[[:space:]]+([^[:space:]]+)[[:space:]]+heartbeat[[
   # Heartbeats live on the filesystem, not LastDB/brain.
   hb_file="${LAST_STACK_HEARTBEATS_FILE:-}"
   if [ -z "$hb_file" ]; then
-    _ls_root="$(cd "$(dirname "$0")/.." && pwd)"
+    _ls_root="$(cd "$(dirname "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd)"
     if [ -d "$_ls_root/bin" ]; then
       hb_file="$_ls_root/logs/routine-heartbeats.log"
     else

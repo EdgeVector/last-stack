@@ -120,7 +120,7 @@ reason_token() {
     | cut -c1-60
 }
 
-ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+ROOT="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 # Stopping a driver this wrapper gave up on. Same helper whats-wrong uses, so
 # the two cannot drift in what they consider safe to signal.
 # shellcheck source=lib/loom-drive-workers.sh

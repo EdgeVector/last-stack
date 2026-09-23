@@ -11,7 +11,7 @@
 # Never restart, reindex, or mutate the primary.
 set -euo pipefail
 
-ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+ROOT="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 as_json=0
 ops_file=""
 snapshot_dir="${LAST_STACK_OPS_OFFENDERS_DIR:-}"

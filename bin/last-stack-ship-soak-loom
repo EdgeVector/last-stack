@@ -44,7 +44,7 @@ if [ "$RESUME" -eq 0 ] && [ -z "$INPUT" ] && [ -z "$INPUT_FILE" ]; then
   exit 2
 fi
 
-ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)"
+ROOT="$(CDPATH='' cd -- "$(dirname -- "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
 STATE_ROOT="${LAST_STACK_STATE_ROOT:-$HOME/.local/state/last-stack}"
 STATE_DIR="${LAST_STACK_SHIP_SOAK_STATE_DIR:-$STATE_ROOT/soak-loom/ship-soak}"

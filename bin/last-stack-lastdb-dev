@@ -58,7 +58,7 @@
 # Exit: 0 ok · 1 failure · 2 usage
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+ROOT="$(cd "$(dirname "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 DEV_HOME="${LASTDB_DEV_HOME:-$HOME/.lastdb-dev}"
 STATE="${LASTDB_DEV_STATE:-$HOME/.local/state/lastdb-dev}"
 PRIMARY_HOME="${LASTDB_DEV_PRIMARY_HOME:-$HOME/.lastdb}"

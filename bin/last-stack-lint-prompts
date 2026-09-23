@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+ROOT="$(cd "$(dirname "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 
 # --access-sweep runs ONLY the LastDB access-pattern gates, over routines/,
 # skills/ and bin/. It exists because the required CI gate invokes this linter

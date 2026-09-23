@@ -24,7 +24,7 @@
 #   WORKTREES_DIR — honored by portal-wt for the dedicated worktree root.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+ROOT="$(cd "$(dirname "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 PORTAL_WT="${LAST_STACK_PORTAL_WT:-$ROOT/bin/last-stack-portal-wt}"
 
 usage() {
