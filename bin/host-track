@@ -67,6 +67,7 @@ Usage:
   host-track status [--json] [--stale] [app]
   host-track which [--json] <app>
   host-track check <app>
+  host-track requires [--json] <app>   required apps, install order, what is missing
   host-track validate-registry [--json]
   host-track refresh [--force] [--force-if-stale] [--activate] (<app>|--all)
   host-track soak-watch [<app>|--all]
@@ -171,6 +172,121 @@ resolve_app_or_die() {
   if out="$(canonical_app "$name")"; then printf '%s\n' "$out"; return 0; fi
   printf 'host-track: unknown app: %s\n' "$name" >&2
   return 1
+}
+
+# App-to-app dependencies. An entry's `requires` lists the registry apps it
+# cannot run without (kanban -> loom). `recommends` lists apps that only add a
+# feature; host-track reports them but never installs or gates on them.
+#
+# requires_plan <app>: print the transitive `requires` closure of <app>,
+# dependencies first, <app> itself excluded, one name per line. On an unknown
+# name or a cycle print `ERROR<TAB><reason>` as the only line and return 1.
+requires_plan() {
+  local app="$1" out
+  out="$(jq -r --arg root "$app" '
+    ((.apps // []) | map({key: .app, value: (.requires // [])}) | from_entries) as $g
+    | def visit($n; $path):
+        if any($path[]; . == $n) then
+          error("requires cycle: " + (($path + [$n]) | join(" -> ")))
+        elif ($g | has($n) | not) then
+          error("unknown required app: " + $n
+                + (if ($path | length) > 0 then " (required by " + $path[-1] + ")" else "" end))
+        else
+          (reduce $g[$n][] as $d ([]; . + visit($d; $path + [$n]))) + [$n]
+        end;
+      try (
+        visit($root; [])
+        | reduce .[] as $x ([]; if any(.[]; . == $x) then . else . + [$x] end)
+        | map(select(. != $root))
+        | .[]
+      ) catch ("ERROR\t" + .)
+  ' "$REGISTRY")" || { printf 'ERROR\tregistry unreadable: %s\n' "$REGISTRY"; return 1; }
+  printf '%s\n' "$out" | sed '/^$/d'
+  case "$out" in ERROR*) return 1 ;; esac
+  return 0
+}
+
+# requires_present <app>: 0 when the app's command resolves on PATH. This reads
+# the host, not the registry: a listed-but-uninstalled dependency is missing.
+requires_present() {
+  local json command_name
+  json="$(app_json "$1")"
+  [ -n "$json" ] || return 1
+  command_name="$(printf '%s\n' "$json" | jq -r '.command // ""')"
+  [ -n "$command_name" ] || return 1
+  [ -n "$(command_path "$command_name")" ]
+}
+
+# requires_missing <plan>: print each app in a requires_plan output that is not
+# present on the host. A transitive gap breaks the app as surely as a direct one.
+requires_missing() {
+  local dep
+  while IFS= read -r dep; do
+    [ -n "$dep" ] || continue
+    requires_present "$dep" || printf '%s\n' "$dep"
+  done <<<"$1"
+}
+
+# ensure_requires_installed <app>: install every missing app in the closure,
+# dependencies first. Each install runs in its own host-track process so its
+# install lock, EXIT trap and soak logic stay exactly as a direct install.
+# A missing dependency that host-track cannot install (checkout or
+# deployment-only) fails the install with the reason; it is never skipped.
+ensure_requires_installed() {
+  local app="$1" plan dep dep_json dep_mode
+  plan="$(requires_plan "$app")" || die "$app: $(printf '%s\n' "$plan" | cut -f2-)"
+  while IFS= read -r dep; do
+    [ -n "$dep" ] || continue
+    if requires_present "$dep"; then
+      continue
+    fi
+    dep_json="$(require_app_json "$dep")"
+    dep_mode="$(setting "$dep_json" install_mode)"
+    if [ "$dep_mode" != "artifact" ]; then
+      die "$app requires $dep, which is not installed and is not an artifact app (install_mode=${dep_mode:-checkout}); install $dep first"
+    fi
+    printf 'host-track: %s requires %s; installing %s first\n' "$app" "$dep" "$dep" >&2
+    "$0" install "$dep" || die "$app requires $dep, and installing $dep failed"
+    requires_present "$dep" \
+      || die "$app requires $dep: install finished but its command is still not on PATH"
+  done <<<"$plan"
+}
+
+requires_cmd() {
+  local json_out=0 app="" plan dep direct missing present rc=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --json) json_out=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      --*) die "unknown requires flag: $1" ;;
+      *) app="$1"; shift ;;
+    esac
+  done
+  [ -n "$app" ] || die "requires needs an app"
+  app="$(resolve_app_or_die "$app")" || exit 1
+  plan="$(requires_plan "$app")" || die "$app: $(printf '%s\n' "$plan" | cut -f2-)"
+  direct="$(app_json "$app" | jq -c '.requires // []')"
+  missing="$(requires_missing "$plan" | jq -R . | jq -sc .)"
+  present="[]"
+  while IFS= read -r dep; do
+    [ -n "$dep" ] || continue
+    requires_present "$dep" && present="$(jq -c --arg d "$dep" '. + [$d]' <<<"$present")"
+  done <<<"$plan"
+  [ "$missing" = "[]" ] || rc=1
+  if [ "$json_out" -eq 1 ]; then
+    jq -n --arg app "$app" --argjson direct "$direct" --argjson present "$present" \
+      --argjson missing "$missing" \
+      --argjson recommends "$(app_json "$app" | jq -c '.recommends // []')" \
+      --argjson order "$(printf '%s\n' "$plan" | sed '/^$/d' | jq -R . | jq -sc .)" \
+      '{app: $app, requires: $direct, install_order: $order, present: $present,
+        missing: $missing, recommends: $recommends, ok: ($missing == [])}'
+  else
+    while IFS= read -r dep; do
+      [ -n "$dep" ] || continue
+      if requires_present "$dep"; then printf '%s\tpresent\n' "$dep"; else printf '%s\tMISSING\n' "$dep"; fi
+    done <<<"$plan"
+  fi
+  return "$rc"
 }
 
 field() {
@@ -1305,7 +1421,7 @@ report_path_shadows() {
 
 check_cmd() {
   local app="${1:-}" status exec_path stale json install_mode artifact_problem
-  local exemption_kind deployment_problem shadow_install_root
+  local exemption_kind deployment_problem shadow_install_root requires_plan_out requires_gap
   [ -n "$app" ] || die "check requires an app"
   status="$(status_json_for "$app")"
   exec_path="$(printf '%s\n' "$status" | jq -r '.exec_path // ""')"
@@ -1320,6 +1436,18 @@ check_cmd() {
   fi
   if [ -z "$exec_path" ]; then
     printf 'host-track: %s executable missing\n' "$app" >&2
+    return 1
+  fi
+  # Required apps must be on this host. Checked before the stale gate so an
+  # app inside its soak window still reports a missing dependency.
+  if ! requires_plan_out="$(requires_plan "$app")"; then
+    printf 'host-track: %s %s\n' "$app" "$(printf '%s\n' "$requires_plan_out" | cut -f2-)" >&2
+    return 1
+  fi
+  requires_gap="$(requires_missing "$requires_plan_out" | paste -sd, -)"
+  if [ -n "$requires_gap" ]; then
+    printf 'host-track: %s requires %s, not installed; run: host-track install %s\n' \
+      "$app" "$requires_gap" "$app" >&2
     return 1
   fi
   # A PATH shadow is orthogonal to freshness, so report it before the stale
@@ -3041,6 +3169,9 @@ install_cmd() {
     esac
   done
   [ -n "$app" ] || die "install requires an app"
+  # Dependencies install on their own registry channel; --channel applies to
+  # <app> only (a canary kanban must not drag loom onto its canary channel).
+  ensure_requires_installed "$app"
   artifact_install_app "$app" "$channel"
 }
 
@@ -3157,6 +3288,9 @@ refresh_cmd() {
   fi
 
   [ -n "$app" ] || die "refresh requires an app or --all"
+  # `refresh --all` already visits every registered app; a single-app refresh
+  # must bring in a dependency that was added to the registry after install.
+  ensure_requires_installed "$app"
   eff="$force"
   if [ "$eff" -eq 0 ] && [ "$force_if_stale" -eq 1 ] && app_is_stale "$app"; then eff=1; fi
   refresh_app "$app" "$eff"
@@ -3231,9 +3365,39 @@ validate_registry_cmd() {
           ((($app.safe_upgrade.probes // []) | length) >= 2)
           or ((($app.safe_upgrade.probe_waiver_reason // "") | length) > 0)
         end;
+      def graph:
+        (($root.apps // [])
+         | map({key: .app,
+                value: ((.requires // []) | if type == "array" then map(select(type == "string")) else [] end)})
+         | from_entries);
+      def cycle_from($n; $path; $g):
+        # First cycle reachable from $n, as a path, or null.
+        if any($path[]; . == $n) then ($path + [$n])
+        elif ($g | has($n) | not) then null
+        else first(($g[$n][] | cycle_from(.; $path + [$n]; $g)) | select(. != null)) // null
+        end;
+      def requires_problems($app):
+        (graph) as $g
+        | [
+            (if (($app.requires // []) | type) != "array" then "requires is not an array" else empty end),
+            (if (($app.recommends // []) | type) != "array" then "recommends is not an array" else empty end),
+            (($app.requires // []) | if type == "array" then .[] else empty end
+              | if type != "string" then "requires entry is not an app name: \(tojson)"
+                elif . == $app.app then "requires itself"
+                elif (. as $d | $g | has($d) | not) then "requires unknown app: \(.)"
+                else empty end),
+            (($app.recommends // []) | if type == "array" then .[] else empty end
+              | if type != "string" then "recommends entry is not an app name: \(tojson)"
+                elif (. as $d | $g | has($d) | not) then "recommends unknown app: \(.)"
+                else empty end),
+            ((cycle_from($app.app; []; $g)) as $c
+              | if $c != null and ($c[0] == $app.app) then "requires cycle: " + ($c | join(" -> ")) else empty end)
+          ];
       ($root.apps // [])
       | map({
           app: .app,
+          requires: ((.requires // []) | if type == "array" then map(tostring) else [] end),
+          requires_problems: requires_problems(.),
           install_mode: mode(.),
           registry_compliance: compliance(.),
           artifact_exemption: exemption(.),
@@ -3246,8 +3410,11 @@ validate_registry_cmd() {
       | ($apps | map(select(.probe_ok == false)) | length) as $mp
       | ($apps | map(select(.soak_ok == false)) | length) as $ms
       | ($apps | map(select(.probe_depth_ok == false)) | length) as $tp
+      | ($apps | map(select((.requires_problems | length) > 0)) | length) as $br
       | {
-          ok: (($nc == 0) and ($mp == 0) and ($ms == 0) and ($tp == 0)),
+          ok: (($nc == 0) and ($mp == 0) and ($ms == 0) and ($tp == 0) and ($br == 0)),
+          bad_requires: $br,
+          requires_policy: "requires_names_known_acyclic",
           registry: $registry,
           total: ($apps | length),
           non_compliant: $nc,
@@ -3278,9 +3445,11 @@ validate_registry_cmd() {
       (if .artifact_exemption then "\t" + (.artifact_exemption.kind // "-") else "\t-" end) +
       "\tprobe=" + (if .probe_ok then "ok" else "MISSING" end) +
       "\tsoak=" + (if .soak_ok then ((.resolved_soak_hours | tostring) + "h") else "MISSING" end) +
-      "\tdepth=" + (if .probe_depth_ok then "ok" else "THIN" end)'
+      "\tdepth=" + (if .probe_depth_ok then "ok" else "THIN" end) +
+      "\trequires=" + (if (.requires | length) == 0 then "-" else (.requires | join(",")) end) +
+      (if (.requires_problems | length) > 0 then "\tREQUIRES-BAD" else "" end)'
     if [ "$(printf '%s\n' "$report" | jq -r '.ok')" = "true" ]; then
-      printf 'ok: every app is artifact or exempt; artifact apps declare probes, soak (or a reason), and probe depth (or a waiver)\n'
+      printf 'ok: every app is artifact or exempt; artifact apps declare probes, soak (or a reason), and probe depth (or a waiver); every requires names a known app with no cycle\n'
     else
       if [ "$non_compliant" != "0" ]; then
         printf 'FAIL: %s app(s) are neither artifact nor exempt\n' "$non_compliant" >&2
@@ -3292,6 +3461,10 @@ validate_registry_cmd() {
       if [ "$(printf '%s\n' "$report" | jq -r '.missing_soak')" != "0" ]; then
         printf 'FAIL: %s artifact app(s) resolve to soak 0 with no soak_exempt_reason\n' \
           "$(printf '%s\n' "$report" | jq -r '.missing_soak')" >&2
+      fi
+      if [ "$(printf '%s\n' "$report" | jq -r '.bad_requires')" != "0" ]; then
+        printf '%s\n' "$report" | jq -r '.apps[] | select((.requires_problems | length) > 0)
+          | "FAIL: " + .app + ": " + (.requires_problems | join("; "))' >&2
       fi
       if [ "$(printf '%s\n' "$report" | jq -r '.thin_probes')" != "0" ]; then
         printf 'FAIL: %s artifact app(s) have <2 probes and no probe_waiver_reason\n' \
@@ -3514,6 +3687,7 @@ main() {
     status) shift; status_cmd "$@" ;;
     which) shift; which_cmd "$@" ;;
     check) shift; check_cmd "$@" ;;
+    requires) shift; requires_cmd "$@" ;;
     validate-registry) shift; validate_registry_cmd "$@" ;;
     refresh) shift; refresh_cmd "$@" ;;
     soak-watch) shift; soak_watch_cmd "$@" ;;

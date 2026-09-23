@@ -41,7 +41,10 @@
         "owner": "platform",
         "rationale": "LastGit remains checkout-backed so LastGit fixes can still be built when the artifact/CR substrate itself is unhealthy."
       },
-      "notes": "LastGit is the bootstrap forge and stays checkout-backed until its artifact producer is independent of LastGit itself."
+      "notes": "LastGit is the bootstrap forge and stays checkout-backed until its artifact producer is independent of LastGit itself.",
+      "requires": [
+        "lastdbd"
+      ]
     },
     {
       "app": "last-stack",
@@ -341,7 +344,15 @@
             "timeout_s": 30
           }
         ]
-      }
+      },
+      "recommends": [
+        "lastgit",
+        "kanban",
+        "brain",
+        "routines",
+        "situations",
+        "loom"
+      ]
     },
     {
       "app": "brain",
@@ -387,7 +398,15 @@
           }
         ]
       },
-      "track_gate_main": false
+      "track_gate_main": false,
+      "requires": [
+        "lastdbd"
+      ],
+      "recommends": [
+        "lastseek",
+        "search",
+        "lastdb"
+      ]
     },
     {
       "app": "reconciler",
@@ -429,7 +448,11 @@
           }
         ]
       },
-      "track_gate_main": false
+      "track_gate_main": false,
+      "requires": [
+        "lastdbd",
+        "lastsecrets"
+      ]
     },
     {
       "app": "situations",
@@ -473,7 +496,10 @@
           }
         ]
       },
-      "track_gate_main": false
+      "track_gate_main": false,
+      "requires": [
+        "lastdbd"
+      ]
     },
     {
       "app": "kanban",
@@ -520,7 +546,16 @@
             "timeout_s": 45
           }
         ]
-      }
+      },
+      "requires": [
+        "lastdbd",
+        "situations"
+      ],
+      "recommends": [
+        "brain",
+        "lastseek",
+        "last-stack"
+      ]
     },
     {
       "app": "routines",
@@ -577,7 +612,15 @@
             "timeout_s": 20
           }
         ]
-      }
+      },
+      "recommends": [
+        "situations",
+        "kanban",
+        "lastsecrets",
+        "configurations",
+        "lastdbd",
+        "brain"
+      ]
     },
     {
       "app": "lastsecrets",
@@ -621,7 +664,10 @@
           }
         ]
       },
-      "track_gate_main": false
+      "track_gate_main": false,
+      "requires": [
+        "lastdbd"
+      ]
     },
     {
       "app": "configurations",
@@ -660,7 +706,10 @@
           }
         ]
       },
-      "track_gate_main": false
+      "track_gate_main": false,
+      "requires": [
+        "lastdbd"
+      ]
     },
     {
       "app": "lastseek",
@@ -694,7 +743,10 @@
         ],
         "probe_waiver_reason": "status/query hammer the node (papercut: lastseek status became the top node consumer); no cheap local read verb yet"
       },
-      "track_gate_main": false
+      "track_gate_main": false,
+      "requires": [
+        "lastdbd"
+      ]
     },
     {
       "app": "search",
@@ -739,7 +791,10 @@
           }
         ]
       },
-      "track_gate_main": false
+      "track_gate_main": false,
+      "requires": [
+        "lastdbd"
+      ]
     },
     {
       "app": "remote",
@@ -787,7 +842,16 @@
           }
         ]
       },
-      "track_gate_main": false
+      "track_gate_main": false,
+      "requires": [
+        "lastdbd"
+      ],
+      "recommends": [
+        "lastsecrets",
+        "brain",
+        "situations",
+        "kanban"
+      ]
     },
     {
       "app": "state-machine",
@@ -835,7 +899,16 @@
           }
         ]
       },
-      "track_gate_main": false
+      "track_gate_main": false,
+      "requires": [
+        "lastdbd"
+      ],
+      "recommends": [
+        "situations",
+        "brain",
+        "kanban",
+        "last-stack"
+      ]
     },
     {
       "app": "loom",
@@ -874,7 +947,19 @@
             "timeout_s": 15
           }
         ]
-      }
+      },
+      "requires": [
+        "lastdbd",
+        "routines"
+      ],
+      "recommends": [
+        "kanban",
+        "last-stack",
+        "state-machine",
+        "brain",
+        "lastseek",
+        "lastgit"
+      ]
     },
     {
       "app": "lastdb-browser",
@@ -908,7 +993,10 @@
         ],
         "probe_waiver_reason": "server-only binary; post_install builds the UI and runs its smoke \u2014 no CLI read verb"
       },
-      "track_gate_main": false
+      "track_gate_main": false,
+      "requires": [
+        "lastdbd"
+      ]
     },
     {
       "app": "lastdb",
@@ -937,7 +1025,10 @@
         "owner": "platform",
         "rationale": "Live primary Mini activation is managed by lastdb-safe-upgrade and ~/.lastdb/current, not generic host-track artifact refresh."
       },
-      "notes": "LastDB Mini is deployment-managed; live primary upgrades still require lastdb-safe-upgrade and must not be performed by Host Track refresh."
+      "notes": "LastDB Mini is deployment-managed; live primary upgrades still require lastdb-safe-upgrade and must not be performed by Host Track refresh.",
+      "requires": [
+        "lastdbd"
+      ]
     },
     {
       "app": "lastdbd",
