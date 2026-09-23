@@ -20,7 +20,7 @@ fix, and the command does not run.
 | sed-inplace | macOS `sed -i` takes the next word as an extension | `sed -i '' 's/a/b/' file` |
 | date-nanos | macOS `date` has no `%N` | `gdate +%s%3N` |
 | printf-dash | `printf '- x'` reads `-` as an option | `printf '%s\n' '- x'` |
-| bin-path | `/bin/mktemp` does not exist on macOS | `mktemp` or `/usr/bin/mktemp` |
+| bin-path | `/bin/mktemp` does not exist on macOS | `mktemp "$TMPDIR/x.XXXXXX"` (a bare call ignores TMPDIR) |
 | zsh-status (Claude) | `status` is read-only in zsh | `rc`, `pr_state`, `ci_state` |
 | zsh-mapfile (Claude) | zsh has no `mapfile` | `while IFS= read -r x; do ...; done < "$file"` |
 
