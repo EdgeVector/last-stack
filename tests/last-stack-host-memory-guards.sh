@@ -17,6 +17,21 @@ cleanup() { rm -rf "$tmp"; }
 trap cleanup EXIT
 fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 
+lint_plist() {
+  local plist="$1"
+  if command -v plutil >/dev/null 2>&1; then
+    plutil -lint "$plist" >/dev/null
+  else
+    python3 - "$plist" <<'PY'
+import plistlib
+import sys
+
+with open(sys.argv[1], "rb") as source:
+    plistlib.load(source)
+PY
+  fi
+}
+
 mkdir -p "$tmp/bin" "$tmp/home/.lastdb/monitoring" "$tmp/home/.last-stack/bin" \
   "$tmp/home/.last-stack/launchd" "$tmp/home/.last-stack/lib" \
   "$tmp/home/Library/LaunchAgents" "$tmp/jetsam"
@@ -249,7 +264,7 @@ for label in com.edgevector.lastdb-memory-guard com.edgevector.forge-runner-watc
              com.edgevector.gui-app-memory-guard com.edgevector.testbin-memory-guard \
              com.edgevector.host-memory-sentinel; do
   src="$ROOT/launchd/${label}.plist"
-  plutil -lint "$src" >/dev/null || fail "$src does not lint"
+  lint_plist "$src" || fail "$src does not lint"
   /usr/libexec/PlistBuddy -c 'Print :StartInterval' "$src" >/dev/null 2>&1 \
     && fail "$src still has StartInterval"
   /usr/libexec/PlistBuddy -c 'Print :ProgramArguments:1' "$src" | grep -q '/bin/last-stack-launchd-loop$' \
