@@ -225,5 +225,74 @@ assert "release build gets no RUST_MIN_STACK default" grep -q '^RUST_MIN_STACK=u
 assert "reset removes the dev home" test ! -e "$T/dev"
 assert "reset leaves the primary intact" test -f "$T/primary/data/data/x"
 
+# 18) owner stamp + exit receipt: a clone records its owner; a node that dies
+#     during boot names its exit status instead of an empty log.
+"$BIN" up --bin "$T/fake-lastdbd" --no-wait >/dev/null 2>&1
+assert "clone writes an owner stamp" grep -q '^created_at=' "$T/dev/.lastdb-dev-owner"
+"$BIN" stop >/dev/null 2>&1
+cat >"$T/dying-lastdbd" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = "--version" ]; then echo "lastdbd 0.0.0-dying"; exit 0; fi
+exit 42
+SH
+chmod +x "$T/dying-lastdbd"
+set +e; out="$(LASTDB_DEV_BOOT_TIMEOUT=10 "$BIN" up --bin "$T/dying-lastdbd" 2>&1)"; rc=$?; set -e
+assert "a node that dies in boot fails up" test "$rc" -ne 0
+assert "the failure names the exit status" bash -c "printf '%s' \"\$1\" | grep -q 'exit status 42'" _ "$out"
+assert "status --json carries last_exit" bash -c '"$1" status --json | jq -e ".last_exit | startswith(\"42 \")" >/dev/null' _ "$BIN"
+assert "status --json reports socket_ready=false" test "$("$BIN" status --json | jq -r '.socket_ready')" = "false"
+
+# 19) default-home warning and private state derivation
+out="$(env -u LASTDB_DEV_HOME -u LASTDB_DEV_STATE HOME="$T/home" "$BIN" status 2>&1 >/dev/null)"
+assert "default home prints a WARN" bash -c "printf '%s' \"\$1\" | grep -q 'DEFAULT dev home'" _ "$out"
+out="$(env -u LASTDB_DEV_STATE HOME="$T/home" LASTDB_DEV_HOME="$T/home/.lastdb-dev-cardx" "$BIN" status --json 2>/dev/null)"
+assert "a private home gets a private state dir" test "$(printf '%s' "$out" | jq -r '.state_dir')" = "$T/home/.local/state/lastdb-dev-cardx"
+out="$(env -u LASTDB_DEV_HOME -u LASTDB_DEV_STATE HOME="$T/home" "$BIN" status --json 2>/dev/null)"
+assert "the default home keeps the default state dir" test "$(printf '%s' "$out" | jq -r '.state_dir')" = "$T/home/.local/state/lastdb-dev"
+
+# 20) unwritable default state falls back to TMPDIR; explicit unwritable state is refused
+mkdir -p "$T/ro-home/.local" "$T/tmpdir"
+chmod 555 "$T/ro-home/.local"
+out="$(env -u LASTDB_DEV_STATE HOME="$T/ro-home" TMPDIR="$T/tmpdir" LASTDB_DEV_HOME="$T/ro-home/.lastdb-dev-x" "$BIN" status --json 2>/dev/null)"
+assert "unwritable default state falls back under TMPDIR" test "$(printf '%s' "$out" | jq -r '.state_dir')" = "$T/tmpdir/lastdb-dev-state/lastdb-dev-x"
+set +e; LASTDB_DEV_STATE="$T/ro-home/.local/explicit" "$BIN" status >/dev/null 2>&1; rc=$?; set -e
+assert "an explicit unwritable LASTDB_DEV_STATE is refused" test "$rc" -ne 0
+chmod 755 "$T/ro-home/.local"
+
+# 21) reclaim: this home plus its residue; refuses a held home and the primary
+"$BIN" up --bin "$T/fake-lastdbd" --no-wait >/dev/null 2>&1
+mkdir -p "$T/dev.clone-999999/data" "$T/dev.old-20260101T000000/data"
+set +e; out="$("$BIN" reclaim --dry-run 2>&1)"; set -e
+assert "reclaim --dry-run deletes nothing" test -d "$T/dev/data"
+assert "reclaim --dry-run lists the residue" bash -c "printf '%s' \"\$1\" | grep -q 'would reclaim $T/dev.clone-999999'" _ "$out"
+"$BIN" reclaim >/dev/null 2>&1
+assert "reclaim stops our node" test "$("$BIN" status --json | jq -r '.running')" = "false"
+assert "reclaim removes the dev home" test ! -e "$T/dev"
+assert "reclaim removes dead-owner clone residue" test ! -e "$T/dev.clone-999999"
+assert "reclaim removes superseded clones" test ! -e "$T/dev.old-20260101T000000"
+assert "reclaim leaves the primary intact" test -f "$T/primary/data/data/x"
+set +e; LASTDB_DEV_HOME="$T/primary" "$BIN" reclaim >/dev/null 2>&1; set -e
+assert "reclaim never deletes the primary" test -f "$T/primary/data/data/x"
+
+# 22) sweep: glob of direct children only; keeps held, fresh, and default homes
+SW="$T/sweep"
+mkdir -p "$SW/.lastdb-dev-idle/data" "$SW/.lastdb-dev-fresh/data" "$SW/.lastdb-dev-held/data" \
+  "$SW/.lastdb-dev/data" "$SW/.lastdb-dev-x.clone-999998/data" "$SW/.lastdb-dev-statedir" \
+  "$SW/nested/.lastdb-dev-deep/data"
+touch -t 202601010000 "$SW/.lastdb-dev-idle/data" "$SW/.lastdb-dev-idle" "$SW/.lastdb-dev/data" "$SW/.lastdb-dev" \
+  "$SW/.lastdb-dev-held/data" "$SW/.lastdb-dev-held"
+"$T/fake-lastdbd" --data-dir "$SW/.lastdb-dev-held" >/dev/null 2>&1 &
+HELD_PID=$!
+sleep 0.3
+LASTDB_DEV_SWEEP_ROOTS="$SW" HOME="$SW" "$BIN" reclaim --sweep >"$T/sweep.out" 2>&1
+kill "$HELD_PID" 2>/dev/null || true
+assert "sweep reclaims an idle home" test ! -e "$SW/.lastdb-dev-idle"
+assert "sweep reclaims dead-owner clone residue" test ! -e "$SW/.lastdb-dev-x.clone-999998"
+assert "sweep keeps a fresh home" test -d "$SW/.lastdb-dev-fresh/data"
+assert "sweep keeps a held home" test -d "$SW/.lastdb-dev-held/data"
+assert "sweep keeps the default home without --include-default" test -d "$SW/.lastdb-dev/data"
+assert "sweep keeps a state dir (no data tree)" test -d "$SW/.lastdb-dev-statedir"
+assert "sweep does not walk below the root" test -d "$SW/nested/.lastdb-dev-deep/data"
+
 echo "passed=$pass failed=$fail"
 [ "$fail" -eq 0 ]

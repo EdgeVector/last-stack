@@ -274,9 +274,29 @@ cmd_path() {
     "$PORTAL" "$SLUG" "$REMOTE" "$VENUE" "$CACHE" "$WT_ROOT"
 }
 
+prune_missing_registrations() {
+  # A worktree whose directory is gone stays registered until `git worktree
+  # prune`. That made `wt list` show dead paths
+  # (papercut-fold-portal-worktree-list-stale-paths-20260920) and made
+  # `wt start` refuse to recreate the same card's worktree because its branch
+  # was "already checked out" at the missing path
+  # (papercut-portal-wt-stale-missing-registration-blocks-recreate-20260922).
+  # Prune removes only admin entries whose directory no longer exists; a
+  # locked worktree is kept.
+  local before after
+  before="$($GIT -C "$CACHE" worktree list --porcelain 2>/dev/null | grep -c '^worktree ' || true)"
+  $GIT -C "$CACHE" worktree prune 2>/dev/null || true
+  after="$($GIT -C "$CACHE" worktree list --porcelain 2>/dev/null | grep -c '^worktree ' || true)"
+  if [ "${before:-0}" -gt "${after:-0}" ]; then
+    printf 'portal-wt: pruned %s stale worktree registration(s) whose directory is gone\n' \
+      "$((before - after))" >&2
+  fi
+}
+
 cmd_list() {
   read_portal
   if [ -d "$CACHE" ]; then
+    prune_missing_registrations
     $GIT -C "$CACHE" worktree list
   else
     printf 'portal-wt: no cache yet at %s (run: wt start …)\n' "$CACHE" >&2
@@ -456,6 +476,7 @@ cmd_start() {
     printf 'portal-wt: worktree already exists\n%s\n' "$path"
     exit 0
   fi
+  prune_missing_registrations
 
   if $GIT -C "$CACHE" show-ref --verify --quiet "refs/heads/$branch"; then
     $GIT -C "$CACHE" worktree add --quiet "$path" "$branch"
