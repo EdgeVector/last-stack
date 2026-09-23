@@ -62,8 +62,11 @@ now_epoch="$(date -u +%s)"
 log() { printf 'scratch-reclaim: %s\n' "$*"; }
 
 mtime_of() {
-  # Darwin stat first; GNU stat fallback.
-  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo "$now_epoch"
+  if stat --version >/dev/null 2>&1; then
+    stat -c %Y "$1" 2>/dev/null || echo "$now_epoch"
+  else
+    stat -f %m "$1" 2>/dev/null || echo "$now_epoch"
+  fi
 }
 
 primary_real="$(cd "$home/.lastdb" 2>/dev/null && pwd -P || true)"
