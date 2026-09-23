@@ -297,6 +297,11 @@ What the ledger does, so you do not repeat it:
   and updated in the last 2 hours (`action=owned`): a live worker owns that red.
   It also leaves a row alone that someone closed `duplicate`/`wontfix`
   (`action=attributed`), for example onto a flaky required lane on main.
+- A PR red ONLY on a context that `config/pipeline-known-root-causes.tsv`
+  maps to a live root-cause papercut (fold's flaky required Mini lane today)
+  becomes one evidence line on that papercut, not a new row. Add a line there
+  when a named, open root cause owns a context; the mapping stops applying
+  when that papercut closes.
 - It closes its own rows `verified` from a live point read when the PR merges
   or closes, or when main turns green.
 
@@ -305,6 +310,13 @@ state-suffixed slug (`-pending`, `-failure`, `-required-checks`, `-red`,
 `-runner-lane`). One PR produced five open p0 rows that way on 2026-09-22, and
 none closed when the PR merged. Evidence you want to add goes to the ledger's
 slug with `brain append <slug> --type papercut` from a quoted heredoc.
+
+For the heartbeat counts read the numbers directly, one field per jq call:
+`jq '.stuck' "$run_dir/forge-ledger.json"` and
+`jq '.prs | length' "$run_dir/forge-ledger.json"`. Do not build a jq string
+with `\(...)` interpolation inside the shell: the harness wraps each command in
+`zsh -lc '...'`, the escapes double, and jq stops with `Invalid escape`
+(`papercut-pipeline-health-jq-stuck-summary-filter`, 2026-09-23).
 
 `ledger.actions[].action == "skip-busy"` means the brain was busy: report it,
 do not retry-loop. A `file` action with `ok=false` names the dedupe gate's

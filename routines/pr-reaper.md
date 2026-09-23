@@ -52,32 +52,28 @@ healer for that repo before any merge/close
 `healed_stale_open` as reaped, and treat projection lag as fail-soft (never a
 pass-level `error`).
 
-## STEP 1 — Enumerate ALL open Forgejo PRs (one helper, no hand-written loop)
+## STEP 1 — One command builds the whole reap plan
 
 ```bash
 run_dir="${ROUTINES_RUN_DIR:-$(mktemp -d)}"
-"$last_stack/bin/last-stack-pipeline-forge-pr-ledger" scan --json >"$run_dir/forge-open.json" 2>"$run_dir/forge-open.err" || true
-jq -r '.prs[] | [.repo, .number, .age_min, .shape, .head_sha] | @tsv' "$run_dir/forge-open.json"
-jq -r '.unreadable[] | [.repo, .error] | @tsv' "$run_dir/forge-open.json"
+"$last_stack/bin/last-stack-pipeline-forge-pr-ledger" reap-plan --json >"$run_dir/reap-plan.json" 2>"$run_dir/reap-plan.err" || true
+jq -r '.reap_plan[] | [.repo, .number, .age_min, .guard_verdict, .guard_reason, .may_close, .may_merge] | @tsv' "$run_dir/reap-plan.json"
+jq -r '.unreadable[] | [.repo, .error] | @tsv' "$run_dir/reap-plan.json"
 ```
 
 The helper reads every repo in `config/merge-demand-forge-repos` (fold,
-lastgit, exemem-infra, last-stack, fkanban, routines, loom). The four factory
-repos moved to Forgejo on 2026-09-05; their LastGit repos are disabled.
+lastgit, exemem-infra, last-stack, fkanban, routines, loom). For each PR open
+longer than 60 minutes it has ALREADY run the close guard (STEP 2) and a fresh
+point read. `may_close=true` means: guard `close-ok`, still open, head
+unchanged. `may_merge=true` means: every required context green, still open,
+head unchanged. Act only on those rows, one explicit API call per row.
 
-CAUTION: do not write your own loop over `"repo pr"` strings. Under zsh,
-`set -- $spec` does not word-split, `set -u` then stops on `$2`, and the close
-guard receives an empty `--pr` (rc=2). That broke the first guard pass of most
-runs on 2026-09-22. Read `repo` and `number` from the helper's JSON, one
-explicit guard call per row, for example:
-
-```bash
-jq -r '.prs[] | select(.age_min > 60) | "\(.repo)\t\(.number)"' "$run_dir/forge-open.json" |
-while IFS="$(printf '\t')" read -r repo pr; do
-  "$last_stack/bin/last-stack-pr-reaper-close-guard" --venue forgejo \
-    --repo "${repo#*/}" --pr "$pr" --json > "$run_dir/guard-${repo#*/}-$pr.json" || true
-done
-```
+CAUTION: do not write your own loop over `"repo pr"` strings, and do not re-run
+the guard in a loop. Under zsh, `set -- $spec` does not word-split, `set -u`
+then stops on `$2`, and the guard receives an empty `--pr` (rc=2). That broke
+the first guard pass of most runs on 2026-09-22 and again on 2026-09-23.
+Do not `rm` files in the run dir: the Codex exec guard rejects the whole
+command. Write each output to a new file name instead.
 
 **Venue coverage is part of the pass, not a detail.** An empty inventory is
 only a real `open=0` when `.unreadable` is empty. If a repo query fails, report
@@ -94,6 +90,10 @@ inventory drift: count it as already terminal and move on.
 
 Age ≤ 60 min → leave it. Age > 60 min → it leaves this run in a TERMINAL
 state. Decide in this order:
+
+For Forgejo PRs the reap plan (STEP 1) already holds each guard verdict
+(`guard_verdict`, `guard_reason`) from the command below. Read it; do not run
+the guard again per PR. Run the guard by hand only for one PR you re-check.
 
 **Before any CLOSE on a LastGit CR or a Forgejo PR, run the close guard —
 won't-undo 2026-09-05 (Forgejo PRs added 2026-09-07).** This ladder used to have two branches: MERGE if green and

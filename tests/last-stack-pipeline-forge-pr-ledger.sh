@@ -206,7 +206,57 @@ jq -e '.ledger.actions[0].action == "attributed"' "$tmp/out.json" >/dev/null || 
 if grep -q '^papercut file' "$tmp/brain/calls.log"; then echo "FAIL re-filed a duplicate-attributed PR"; exit 1; fi
 echo "ok   a duplicate-attributed PR row is not re-filed"
 
+# 9c. a PR red only on a context a LIVE named root cause owns → evidence there
+printf 'EdgeVector/fold\tForge CI / Mini (pull_request)\tpapercut-known-mini-flake\n' >"$tmp/root-causes.tsv"
+echo open >"$tmp/brain/papercut-known-mini-flake.status"
+pulls_open 11 | put "repos/$R/pulls?state=open&limit=50"
+cp "$fx/repos_EdgeVector_fold_commits_head7_status.json" "$fx/repos_EdgeVector_fold_commits_head11_status.json"
+: >"$tmp/brain/calls.log"
+sync --apply --root-causes-file "$tmp/root-causes.tsv"
+jq -e '([.ledger.actions[] | select(.action=="append" and .slug=="papercut-known-mini-flake")] | length) == 1
+       and ([.ledger.actions[] | select(.action=="file")] | length) == 0' "$tmp/out.json" >/dev/null \
+  || { echo "FAIL known root cause must take the evidence"; cat "$tmp/out.json"; exit 1; }
+[ ! -f "$tmp/brain/papercut-pipeline-forge-fold-pr-11.status" ] || { echo "FAIL per-PR row filed under a known root cause"; exit 1; }
+# the root cause is never closed by the ledger, even when its PRs leave
+echo '[]' | put "repos/$R/pulls?state=open&limit=50"
+sync --apply --root-causes-file "$tmp/root-causes.tsv"
+[ "$(cat "$tmp/brain/papercut-known-mini-flake.status")" = open ] || { echo "FAIL ledger closed a root cause it does not own"; exit 1; }
+# once the root cause is closed, a PR red on that context gets its own row again
+echo verified >"$tmp/brain/papercut-known-mini-flake.status"
+pulls_open 12 | put "repos/$R/pulls?state=open&limit=50"
+cp "$fx/repos_EdgeVector_fold_commits_head7_status.json" "$fx/repos_EdgeVector_fold_commits_head12_status.json"
+sync --apply --root-causes-file "$tmp/root-causes.tsv"
+[ "$(cat "$tmp/brain/papercut-pipeline-forge-fold-pr-12.status" 2>/dev/null)" = open ] || { echo "FAIL closed root cause must stop absorbing PRs"; cat "$tmp/out.json"; exit 1; }
+echo "ok   a live named root cause absorbs PRs red only on its context"
+
+# 9d. reap-plan: guard verdict + fresh point read per over-age PR, no loop needed
+cat >"$tmp/guard-bin" <<'SH'
+#!/usr/bin/env bash
+# fake close guard: PR 13 is close-ok, anything else refuses
+pr=""; while [ "$#" -gt 0 ]; do case "$1" in --pr) pr="$2"; shift 2 ;; *) shift ;; esac; done
+if [ "$pr" = 13 ]; then echo '{"verdict":"close-ok","reason":"required-check-failed"}'; exit 0; fi
+echo '{"verdict":"refuse","reason":"green-unmerged-auto-merge"}'; exit 1
+SH
+chmod +x "$tmp/guard-bin"
+pulls_open 13 14 | put "repos/$R/pulls?state=open&limit=50"
+cp "$fx/repos_EdgeVector_fold_commits_head7_status.json" "$fx/repos_EdgeVector_fold_commits_head13_status.json"
+cp "$fx/repos_EdgeVector_fold_commits_head7_status.json" "$fx/repos_EdgeVector_fold_commits_head14_status.json"
+put "repos/$R/pulls/13" <<'J'
+{"number":13,"state":"open","merged":false,"head":{"sha":"head13"}}
+J
+put "repos/$R/pulls/14" <<'J'
+{"number":14,"state":"closed","merged":true,"head":{"sha":"head14"}}
+J
+LAST_STACK_CLOSE_GUARD="$tmp/guard-bin" "$LEDGER" reap-plan --repo "$R" --json >"$tmp/plan.json"
+jq -e '[.reap_plan[] | select(.number==13)][0] | .guard_verdict=="close-ok" and .may_close==true and .head_unchanged==true' "$tmp/plan.json" >/dev/null \
+  || { echo "FAIL reap-plan must allow closing a guarded, still-open PR"; cat "$tmp/plan.json"; exit 1; }
+jq -e '[.reap_plan[] | select(.number==14)][0] | .may_close==false and .point.merged==true' "$tmp/plan.json" >/dev/null \
+  || { echo "FAIL reap-plan must not close a PR the point read shows merged"; cat "$tmp/plan.json"; exit 1; }
+echo "ok   reap-plan pairs each over-age PR with its guard verdict and a fresh point read"
+
 # 10. the prompt uses the ledger and forbids per-state slugs
+grep -Fq 'last-stack-pipeline-forge-pr-ledger" reap-plan' "$ROOT/routines/pr-reaper.md" \
+  || { echo "FAIL pr-reaper.md must read the reap plan"; exit 1; }
 grep -Fq 'last-stack-pipeline-forge-pr-ledger" sync --apply' "$ROOT/routines/pipeline-health.md" \
   || { echo "FAIL pipeline-health.md must run the ledger"; exit 1; }
 echo "ok   pipeline-health.md runs the ledger"

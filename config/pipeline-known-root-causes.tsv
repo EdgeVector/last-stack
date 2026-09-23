@@ -1,0 +1,7 @@
+# Known root causes for red Forgejo PRs, read by last-stack-pipeline-forge-pr-ledger.
+# A stuck PR that is red ONLY on the listed required context(s) of its repo is
+# appended as evidence to the named papercut while that papercut is live
+# (open/partial/fixed), instead of getting its own per-PR row. When the
+# papercut closes, the mapping stops applying. Columns are TAB-separated:
+# repo<TAB>required context (event suffix optional)<TAB>root-cause papercut slug
+EdgeVector/fold	Forge CI / Rust test pyramid (Mini lane tests)	papercut-fold-required-mini-lane-gate-is-red-40-percent-on-main
