@@ -151,8 +151,7 @@ LastGit repo is **expected**, not an inventory failure: never count it in
 Those four repos plus fold, lastgit and exemem-infra need a Forgejo pass:
 
 ```bash
-"$timeout_bin" 300s "$last_stack/bin/last-stack-pipeline-forge-pr-ledger" scan --json \
-  > "$scratch/forge-open.json" 2> "$scratch/forge-open.err" || true
+"$timeout_bin" 300s "$last_stack/bin/last-stack-pipeline-forge-pr-ledger" scan --json >"$scratch/forge-open.json" 2>"$scratch/forge-open.err" || true
 jq -r '.prs[] | select(.stuck) | [.repo, .number, .shape, .head_sha] | @tsv' "$scratch/forge-open.json"
 ```
 

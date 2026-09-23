@@ -275,8 +275,7 @@ under zsh and built malformed Forge URLs on most wakes of 2026-09-22
 
 ```bash
 run_dir="${ROUTINES_RUN_DIR:-$(mktemp -d)}"
-"$last_stack/bin/last-stack-pipeline-forge-pr-ledger" sync --apply --json \
-  > "$run_dir/forge-ledger.json" 2> "$run_dir/forge-ledger.err" || true
+"$last_stack/bin/last-stack-pipeline-forge-pr-ledger" sync --apply --json >"$run_dir/forge-ledger.json" 2>"$run_dir/forge-ledger.err" || true
 jq -r '.prs[] | select(.stuck) | [.repo, .number, .shape, .root_cause, .head_sha, .ledger_slug] | @tsv' \
   "$run_dir/forge-ledger.json"
 jq -r '.ledger.actions[] | [.action, .slug, (.ok // "")] | @tsv' "$run_dir/forge-ledger.json"

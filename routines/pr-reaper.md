@@ -56,8 +56,7 @@ pass-level `error`).
 
 ```bash
 run_dir="${ROUTINES_RUN_DIR:-$(mktemp -d)}"
-"$last_stack/bin/last-stack-pipeline-forge-pr-ledger" scan --json \
-  > "$run_dir/forge-open.json" 2> "$run_dir/forge-open.err" || true
+"$last_stack/bin/last-stack-pipeline-forge-pr-ledger" scan --json >"$run_dir/forge-open.json" 2>"$run_dir/forge-open.err" || true
 jq -r '.prs[] | [.repo, .number, .age_min, .shape, .head_sha] | @tsv' "$run_dir/forge-open.json"
 jq -r '.unreadable[] | [.repo, .error] | @tsv' "$run_dir/forge-open.json"
 ```
