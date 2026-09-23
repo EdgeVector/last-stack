@@ -135,7 +135,11 @@ ci_host_lock_acquire() {  # lock-dir wait-secs max-age-secs progress-secs
     fi
     holder="$(cat "$dir/pid" 2>/dev/null || true)"
     now="$(date +%s)"
-    mtime="$(stat -f %m "$dir" 2>/dev/null || stat -c %Y "$dir" 2>/dev/null || echo "$now")"
+    if stat --version >/dev/null 2>&1; then
+      mtime="$(stat -c %Y "$dir" 2>/dev/null || echo "$now")"
+    else
+      mtime="$(stat -f %m "$dir" 2>/dev/null || echo "$now")"
+    fi
     age=$((now - mtime))
     if { [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; } || [ "$age" -ge "$max_age" ]; then
       echo "ci_host_lock stale (holder pid=${holder:-none} age=${age}s); taking it over"
