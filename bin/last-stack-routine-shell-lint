@@ -154,7 +154,7 @@ re_awk_match='match\([^,()]*,[[:space:]]*/([^/]|\\/)*/[[:space:]]*,[[:space:]]*[
 q="'"
 re_sed_inplace='(^|[^[:alnum:]_-])sed[[:space:]]+(-[[:alpha:]]+[[:space:]]+)*-i[[:space:]]+([^'"$q"'"[:space:]-]|'"$q"'[^'"$q"']|"[^"]|-e[[:space:]]|-E[[:space:]])'
 re_date_nanos='(^|[^[:alnum:]_-])date[[:space:]][^;|&]*%[0-9]*N'
-re_zsh_status='(^|[;&|({[:space:]])status=|(^|[^[:alnum:]_])read[[:space:]]+(-[[:alpha:]]+[[:space:]]+)*([[:alpha:]_][[:alnum:]_]*[[:space:]]+)*status([[:space:]]|;|$)|(^|[^[:alnum:]_])(local|typeset|declare|integer)[[:space:]]+(-[[:alpha:]]+[[:space:]]+)*status([=[:space:]]|$)|(^|[^[:alnum:]_$])for[[:space:]]+status[[:space:]]+in([[:space:]]|$)'
+re_zsh_status='(^|;|&&|[|][|]|[({]|(^|[^[:alnum:]_])(do|then|else|export|local|typeset|declare))[[:space:]]*status=|(^|[^[:alnum:]_])read[[:space:]]+(-[[:alpha:]]+[[:space:]]+)*([[:alpha:]_][[:alnum:]_]*[[:space:]]+)*status([[:space:]]|;|$)|(^|[^[:alnum:]_])(local|typeset|declare|integer)[[:space:]]+(-[[:alpha:]]+[[:space:]]+)*status([=[:space:]]|$)|(^|[^[:alnum:]_$])for[[:space:]]+status[[:space:]]+in([[:space:]]|$)'
 re_zsh_mapfile='(^|[;&|({[:space:]])(mapfile|readarray)[[:space:]]'
 
 check_command_line() {
