@@ -36,6 +36,7 @@ First line is `PASS`, `PASS-OFFLINE`, or `FAIL` for kanban DONE-WHEN matching.
 | lastdb-no-scan-access | refuses terminal PASS without the keyed scan-deprecation tracker and its completion proof | reads the tracker by slug; never scans, restarts, or mutates LastDB |
 | lastdb-cloud-owned-gc | FAIL; no child execution in offline or unknown mode | explicit clean Fold source and exact commit pin; verified child invocation still returns FAIL until P9 supplies the reviewed release-evidence validator |
 | lastdb-cloud-transaction-groups | Fold pin-log source contract; PASS-OFFLINE only when the evidence file carries measured CoW output for frontier 1787974212509104000, the restore, and a 24-hour soak window | same evidence contract; does not open a LastDB home and does not start a cloud cutover |
+| lastgit-pack-blobs-b2-migration | LastGit pack-file source contract plus the mocked pack-file test; PASS-OFFLINE only from measured pointer coverage, a verified second backfill, and B2 SHA-256 samples | same evidence contract; does not open a LastDB home and does not start a B2 cutover |
 
 ## Cloud-owned GC: registration is not release proof
 
