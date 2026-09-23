@@ -549,7 +549,8 @@
       },
       "requires": [
         "lastdbd",
-        "situations"
+        "situations",
+        "loom"
       ],
       "recommends": [
         "brain",
