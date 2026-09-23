@@ -598,11 +598,6 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
         green-and-ready PR sits forever. A CLEAN PR with auto-merge OFF is a
         STRAND. CHEAP advance.
       - **BEHIND base** but otherwise clean + green → `gh -R <repo> pr update-branch <n>`
-        **Forgejo venue (every EdgeVector repo since 2026-09-06): do NOT update a
-        BEHIND branch.** No repo sets `block_on_outdated_branch`, so BEHIND never
-        blocks a merge, and an update cancels the in-flight run and re-queues the
-        PR at the end of the host lane (papercut-forge-pr-branch-update-cancels-in-flight-ci-20260922).
-        `last-stack-forge-api` refuses `pulls/<n>/update` (exit 3) while any check is pending.
         (lightweight, NO worktree), and ensure auto-merge is armed. Do NOT trust
         the queue to self-update a BEHIND branch — a jammed queue never admits it.
         Guard: if a worktree for the card exists, only update-branch when it's

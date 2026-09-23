@@ -83,9 +83,7 @@ genuinely blocked.
 > because it routes projections through the control-char-safe jq wrapper.
 > view = `last-stack-forge-api repos/EdgeVector/<repo>/pulls/<n>` (merged=`.merged`, mergeable=`.mergeable`,
 > draft=`.draft`); CI = `last-stack-forge-api repos/EdgeVector/<repo>/commits/<head-sha>/status`; update a BEHIND
-> branch = `last-stack-forge-api --method POST repos/EdgeVector/<repo>/pulls/<n>/update` (Forgejo: only for a real
-> need — BEHIND never blocks a merge here, and the call is refused with exit 3 while a check is pending, because
-> it cancels the in-flight run; papercut-forge-pr-branch-update-cancels-in-flight-ci-20260922); comment =
+> branch = `last-stack-forge-api --method POST repos/EdgeVector/<repo>/pulls/<n>/update`; comment =
 > `last-stack-forge-api --method POST --data @comment.json repos/EdgeVector/<repo>/issues/<n>/comments`; close = `last-stack-forge-api --method PATCH --data @close.json repos/EdgeVector/<repo>/pulls/<n>` with
 > `{"state":"closed"}`. No rerun-failed API — push an empty commit to re-trigger
 > a flaky run **only when a status task already exists** (stuck task / 405 merge
