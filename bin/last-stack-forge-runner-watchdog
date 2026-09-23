@@ -321,7 +321,7 @@ elif [ "$LIVE_READ" -eq 1 ]; then
   # observability failure, not a runner outage: name it as such. Like any
   # forge-API failure it stays loud under a PC pause.
   add_down "forge-inventory-unreadable" \
-    "Forge runner inventory is unreadable ($LIVE_ERROR). The watchdog cannot see the heavy or pc-linux lanes. This does NOT mean the runners are down. Fix the forge token (needs read:admin)." \
+    "Forge runner inventory is unreadable ($LIVE_ERROR). The watchdog cannot see the heavy or pc-linux lanes. This does NOT mean the runners are down. Fix: store a read:admin token as lastsecrets forgejo-admin-read-token, or unlock the login keychain (forgejo-token)." \
     "forge runner inventory"
 else
   # A forge-API failure is never a PC lane symptom: it stays loud under a pause.

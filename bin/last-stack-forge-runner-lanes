@@ -308,6 +308,36 @@ def forge_token() -> str:
     return ""
 
 
+def forge_admin_token() -> str:
+    """Optional read:admin token for the instance runner inventory only.
+
+    The push token in lastsecrets (`forgejo-token`) carries write:repository and
+    write:issue, not read:admin. When the login keychain is locked, the general
+    resolver falls back to it and the admin runners call gets 403. A dedicated
+    admin-read secret keeps the watchdog able to see instance runners (pc-linux,
+    mac-forge-runner) unattended. Order: FORGE_ADMIN_TOKEN env, then lastsecrets
+    `forgejo-admin-read-token`. Empty means "use the general token".
+    papercut-forge-runner-lanes-live-403-token-lacks-read-admin-20260923
+    """
+    tok = os.environ.get("FORGE_ADMIN_TOKEN") or ""
+    if tok:
+        return tok
+    if os.environ.get("FORGE_TOKEN"):
+        # An explicit general token is an explicit choice (tests, CI): honor it.
+        return ""
+    env = dict(os.environ)
+    # lastsecrets prints nothing and exits 0 under OBS_SENTRY_DSN (2026-09-07).
+    env.pop("OBS_SENTRY_DSN", None)
+    try:
+        out = subprocess.check_output(
+            ["lastsecrets", "get", "forgejo-admin-read-token"],
+            stderr=subprocess.DEVNULL, text=True, env=env, timeout=10,
+        ).strip()
+    except Exception:  # noqa: BLE001
+        return ""
+    return out.splitlines()[0].strip() if out else ""
+
+
 def http_json(url: str, token: str) -> Any:
     req = urllib.request.Request(
         url,
@@ -345,7 +375,10 @@ if live:
             # complete. papercut-forge-runner-lanes-live-403-token-lacks-read-admin-20260923
             admin_error = None
             try:
-                admin = http_json(f"{forge_root}/api/v1/admin/actions/runners", token)
+                admin = http_json(
+                    f"{forge_root}/api/v1/admin/actions/runners",
+                    forge_admin_token() or token,
+                )
             except urllib.error.HTTPError as exc:
                 reason = ""
                 try:
