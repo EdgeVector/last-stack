@@ -487,21 +487,6 @@ cmd_start() {
     exit 0
   fi
 
-  # The path is gone but the mirror may still register it (a reclaim or a
-  # hand `rm -rf` removed the directory without `git worktree prune`). Then
-  # `worktree add` refuses with "missing but already registered worktree".
-  # Only prune when THIS exact path is registered and missing; `worktree
-  # prune` drops admin entries whose directory no longer exists and touches
-  # no branch and no live worktree.
-  # (papercut-portal-wt-stale-missing-registration-blocks-recreate-20260922)
-  local real_path
-  real_path="$(cd "$WT_ROOT" && pwd -P)/$name"
-  if $GIT -C "$CACHE" worktree list --porcelain 2>/dev/null \
-    | grep -Fx -e "worktree $path" -e "worktree $real_path" >/dev/null; then
-    printf 'portal-wt: %s is registered but missing; pruning stale worktree entries\n' "$path" >&2
-    $GIT -C "$CACHE" worktree prune 2>/dev/null || true
-  fi
-
   if $GIT -C "$CACHE" show-ref --verify --quiet "refs/heads/$branch"; then
     $GIT -C "$CACHE" worktree add --quiet "$path" "$branch"
   else

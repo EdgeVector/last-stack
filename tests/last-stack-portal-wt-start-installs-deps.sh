@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
-# Hermetic proof for two `wt start` repairs:
-# 1. A worktree whose directory was removed without `git worktree prune`
-#    stays registered in the mirror. `wt start` for the same branch must
-#    prune that stale entry and recreate the worktree, not fail with
-#    "missing but already registered worktree".
-# 2. A worktree with package.json + bun.lock gets its locked deps installed
-#    (fake bun here), and PORTAL_WT_NO_INSTALL=1 skips that.
+# Hermetic proof: a worktree with package.json + bun.lock gets its locked
+# deps installed by `wt start` (fake bun here), and PORTAL_WT_NO_INSTALL=1
+# skips that. (Stale-registration pruning is covered by
+# tests/last-stack-portal-wt-stale-registration.sh from PR 120.)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 BIN="$ROOT/bin/last-stack-portal-wt"
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/portal-wt-stale-reg.XXXXXX")"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/portal-wt-deps.XXXXXX")"
 cleanup() {
   if [ -d "$WORK/cache.git" ]; then
     git -C "$WORK/cache.git" worktree prune 2>/dev/null || true
@@ -24,8 +21,8 @@ source_repo="$WORK/source"
 cache="$WORK/cache.git"
 wt_root="$WORK/worktrees"
 fakebin="$WORK/fakebin"
-branch="kanban/stale-registration-proof"
-dir_name="demo-kanban-stale-registration-proof"
+branch="kanban/deps-proof"
+dir_name="demo-kanban-deps-proof"
 
 mkdir -p "$portal/.portal" "$source_repo" "$wt_root" "$fakebin"
 git -C "$source_repo" init -q -b main
@@ -62,22 +59,6 @@ test -d "$wt_root/$dir_name" || { echo "FAIL: first start made no worktree" >&2;
 test -f "$wt_root/$dir_name/node_modules/.fake-bun" || {
   echo "FAIL: start did not install locked deps" >&2; exit 1; }
 
-# Remove the directory the way a reclaim or a hand rm does: no prune.
-rm -rf "$wt_root/$dir_name"
-real_wt_root="$(cd "$wt_root" && pwd -P)"
-git -C "$cache" worktree list --porcelain \
-  | grep -Fx -e "worktree $wt_root/$dir_name" -e "worktree $real_wt_root/$dir_name" >/dev/null || {
-  echo "FAIL: fixture expected a stale registration" >&2; exit 1; }
-
-set +e
-out="$(run_wt start "$branch" 2>&1)"
-rc=$?
-set -e
-[ "$rc" -eq 0 ] || { echo "FAIL: restart rc=$rc: $out" >&2; exit 1; }
-printf '%s\n' "$out" | grep -q 'registered but missing' || {
-  echo "FAIL: restart did not say it pruned: $out" >&2; exit 1; }
-test -d "$wt_root/$dir_name" || { echo "FAIL: restart made no worktree" >&2; exit 1; }
-
 # Opt-out.
 branch2="kanban/no-install-proof"
 PORTAL_WT_NO_INSTALL=1 run_wt start "$branch2" >/dev/null 2>&1
@@ -85,4 +66,4 @@ test -d "$wt_root/demo-kanban-no-install-proof" || { echo "FAIL: no-install star
 test ! -e "$wt_root/demo-kanban-no-install-proof/node_modules" || {
   echo "FAIL: PORTAL_WT_NO_INSTALL=1 still installed" >&2; exit 1; }
 
-echo "ok - wt start prunes a stale registration and installs locked deps"
+echo "ok - wt start installs locked deps"
