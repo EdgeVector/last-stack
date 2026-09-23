@@ -6,7 +6,7 @@ label=com.edgevector.last-stack-machine-leak-scan
 template="$last_stack/templates/launchd/${label}.plist.example"
 # resolve from checkout when developing
 if [ ! -f "$template" ]; then
-  self_root="$(cd "$(dirname "$0")/.." && pwd -P)"
+  self_root="$(cd "$(dirname "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
   template="$self_root/templates/launchd/${label}.plist.example"
 fi
 [ -f "$template" ] || { echo "missing template $template" >&2; exit 2; }

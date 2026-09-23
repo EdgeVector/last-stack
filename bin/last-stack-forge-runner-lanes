@@ -15,7 +15,7 @@
 # use the heavy/macos host lane, never capacity on docker/pc merge runners.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+ROOT="$(cd "$(dirname "$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")")/.." && pwd -P)"
 CONFIG="${LAST_STACK_FORGE_LANES_CONFIG:-$ROOT/config/forge-runner-lanes.json}"
 JSON=0
 CHECK=0

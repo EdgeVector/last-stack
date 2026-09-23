@@ -12,7 +12,7 @@
 # material-only (the pre-09-21 behaviour). Then it notifies with the result.
 set -euo pipefail
 
-ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+ROOT="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
 
 candidate="${LAST_STACK_CANARY_CANDIDATE:-}"

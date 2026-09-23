@@ -2,7 +2,7 @@
 # Resolve dogfood recipe checkouts to current, clean isolated checkouts.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+ROOT="$(cd "$(dirname "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 FRESHNESS="$ROOT/bin/last-stack-git-checkout-freshness"
 
 # Resolve through symlinks so lib/ is found in the artifact tree and in a

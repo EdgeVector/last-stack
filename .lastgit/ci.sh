@@ -772,6 +772,7 @@ ci_test tests/last-stack-kanban-watch-targeted-heal.sh
 # wt start installs locked bun deps; hermetic temp repo, fake bun, no network.
 # APPENDED (see the shard-stability note above): ci_test shards by list position.
 ci_test tests/last-stack-portal-wt-start-installs-deps.sh
+ci_test tests/last-stack-bin-root-resolves-symlinks.sh
 ci_test tests/last-stack-portal-wt-forge-credential.sh
 ci_test tests/last-stack-pc-run.sh
 ci_test tests/last-stack-forge-dbfs-read.sh

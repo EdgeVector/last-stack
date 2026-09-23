@@ -41,7 +41,7 @@ done
 [ -n "$APP" ] || { echo "soak-heal-loom: --app required" >&2; exit 2; }
 [ -n "$KEY" ] || KEY="soak-red-$APP-${DIGEST:0:12}"
 
-ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)"
+ROOT="$(CDPATH='' cd -- "$(dirname -- "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
 STATE_ROOT="${LAST_STACK_STATE_ROOT:-$HOME/.local/state/last-stack}"
 STAMP="${LAST_STACK_SOAK_HEAL_STAMP:-$STATE_ROOT/soak-loom/heal-soak-$APP.json}"

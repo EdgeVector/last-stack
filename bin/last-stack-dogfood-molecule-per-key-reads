@@ -28,7 +28,7 @@
 #   2  usage
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+ROOT="$(cd "$(dirname "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 ISOLATE="$ROOT/bin/last-stack-dogfood-resource-isolate"
 TARGET_CHECKOUT="$ROOT/bin/last-stack-dogfood-target-checkout"
 
