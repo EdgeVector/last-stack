@@ -59,13 +59,13 @@ chmod +x "$tmp/launchctl" "$tmp/ra" "$tmp/lanes" "$tmp/situations"
 lanes_healthy="$tmp/lanes-healthy.json"
 cat >"$lanes_healthy" <<'EOF'
 {"heavy_ok_live": true,
- "live": {"admin_runners": [{"name":"pc-forge-runner","status":"idle","labels":["pc-linux"]}]}}
+ "live": {"ok": true, "admin_runners": [{"name":"pc-forge-runner","status":"idle","labels":["pc-linux"]}]}}
 EOF
 
 lanes_pc_offline="$tmp/lanes-pc-offline.json"
 cat >"$lanes_pc_offline" <<'EOF'
 {"heavy_ok_live": true,
- "live": {"admin_runners": [{"name":"pc-forge-runner","status":"offline","labels":["pc-linux"]}]}}
+ "live": {"ok": true, "admin_runners": [{"name":"pc-forge-runner","status":"offline","labels":["pc-linux"]}]}}
 EOF
 
 run_wd() {  # state-dir, lanes-json, extra args...
@@ -167,7 +167,7 @@ echo "ok: recovery is announced once"
 lanes_pc_down="$tmp/lanes-pc-down.json"
 cat >"$lanes_pc_down" <<'EOF'
 {"heavy_ok_live": false,
- "live": {"admin_runners": [{"name":"pc-forge-runner","status":"offline","labels":["pc-linux"]}]}}
+ "live": {"ok": true, "admin_runners": [{"name":"pc-forge-runner","status":"offline","labels":["pc-linux"]}]}}
 EOF
 
 all_loaded
@@ -279,7 +279,7 @@ echo "ok: only an explicit intent=paused is a pause"
 lanes_pc_active="$tmp/lanes-pc-active.json"
 cat >"$lanes_pc_active" <<'EOF'
 {"heavy_ok_live": false,
- "live": {"admin_runners": [{"name":"pc-forge-runner","status":"active","labels":["pc-linux"]}]}}
+ "live": {"ok": true, "admin_runners": [{"name":"pc-forge-runner","status":"active","labels":["pc-linux"]}]}}
 EOF
 all_loaded
 : >"$pages"
@@ -312,7 +312,7 @@ rm -f "$pause_file"
 lanes_mac_live="$tmp/lanes-mac-live.json"
 cat >"$lanes_mac_live" <<'EOF2'
 {"heavy_ok_live": true,
- "live": {"admin_runners": [
+ "live": {"ok": true, "admin_runners": [
    {"name":"pc-forge-runner","status":"idle","labels":["pc-linux"]},
    {"name":"mac-forge-runner","status":"active","labels":["macos-arm64"]},
    {"name":"mac-forge-runner-host","status":"idle","labels":["macos"]}],
@@ -342,5 +342,80 @@ echo "ok: an offline runner is still revived"
 for l in com.edgevector.forgejo-runner-host com.edgevector.forgejo-runner-host-exemem-infra com.edgevector.forgejo-runner; do
   rm -f "$plists/$l.plist"
 done
+
+# --- 21. a FAILED live read is not an empty inventory -----------------------
+# The lanes helper exits 0 when the forge answers 403; the failure is only in
+# `.live.ok == false`. That must page "inventory unreadable", never "heavy lane
+# down" or "pc-linux not registered", and it must not be hidden by a PC pause.
+# papercut-forge-runner-watchdog-treats-failed-live-read-as-empty-inventory-20260923
+lanes_403="$tmp/lanes-403.json"
+cat >"$lanes_403" <<'EOF3'
+{"heavy_ok_live": false,
+ "live": {"ok": false, "error": "HTTP Error 403: Forbidden (token does not have at least one of required scope(s): [read:admin])",
+  "admin_runners": [], "repo_runners": {}}}
+EOF3
+all_loaded
+: >"$pages"; : >"$bootstrapped"
+rm -f "$pause_file"
+sd="$tmp/s21"
+run_wd "$sd" "$lanes_403"
+grep -q "inventory unreadable\|inventory is unreadable" "$pages" \
+  || { echo "FAIL: a 403 live read did not page as inventory unreadable"; cat "$pages"; exit 1; }
+grep -q "read:admin" "$pages" \
+  || { echo "FAIL: the page does not carry the forge error text"; cat "$pages"; exit 1; }
+if grep -q "No runner is LIVE\|NOT registered\|CI runner lane down" "$pages"; then
+  echo "FAIL: a failed live read was reported as runners down"; cat "$pages"; exit 1
+fi
+[ ! -s "$bootstrapped" ] || { echo "FAIL: a failed live read revived lanes"; exit 1; }
+[ "$(/usr/bin/jq -r 'has("forge-inventory-unreadable")' "$sd/state.json")" = "true" ] \
+  || { echo "FAIL: inventory-unreadable state not recorded"; cat "$sd/state.json"; exit 1; }
+echo "ok: a failed live read pages as inventory unreadable, not runners down"
+
+# same failure under a PC pause: still loud (it is not a PC lane symptom)
+pause_pc "2026-09-23T01:40:00Z"
+: >"$pages"
+run_wd "$tmp/s21b" "$lanes_403"
+grep -q "inventory is unreadable" "$pages" \
+  || { echo "FAIL: a PC pause hid an unreadable inventory"; cat "$pages"; exit 1; }
+rm -f "$pause_file"
+echo "ok: a PC pause never hides an unreadable inventory"
+
+# --dry-run reproduces the papercut: WOULD PAGE names the inventory, not lanes
+out="$(FAKE_LOADED="$loaded" FAKE_BOOTSTRAPPED="$bootstrapped" FAKE_PAGES="$pages" \
+  FAKE_LANES_JSON="$lanes_403" FAKE_NOTICES="$notices" \
+  FORGE_WATCHDOG_LAUNCHCTL="$tmp/launchctl" FORGE_WATCHDOG_RA="$tmp/ra" \
+  FORGE_WATCHDOG_LANES="$tmp/lanes" FORGE_WATCHDOG_SITUATIONS="$tmp/situations" \
+  FORGE_WATCHDOG_PLIST_DIR="$plists" FORGE_WATCHDOG_PC_PAUSE_FILE="$pause_file" \
+  FORGE_WATCHDOG_STATE_DIR="$tmp/s21c" "$wd" --dry-run 2>&1 || true)"
+printf '%s\n' "$out" | grep -q "WOULD PAGE.*blind" \
+  || { echo "FAIL: dry-run did not name a blind watchdog"; printf '%s\n' "$out"; exit 1; }
+if printf '%s\n' "$out" | grep -q "No runner is LIVE\|NOT registered"; then
+  echo "FAIL: dry-run still reports runners down on a 403"; printf '%s\n' "$out"; exit 1
+fi
+echo "ok: dry-run on a 403 reports a blind watchdog"
+
+# --- 22. partial inventory keeps the launchd-blind fallback ------------------
+# Admin read fails (403) but a repo-level runner is readable and idle. launchd
+# does not list it: the forge's partial answer still wins, no revive.
+lanes_partial="$tmp/lanes-partial.json"
+cat >"$lanes_partial" <<'EOF4'
+{"heavy_ok_live": false,
+ "live": {"ok": false, "error": "HTTP Error 403: Forbidden",
+  "admin_runners": [],
+  "repo_runners": {"EdgeVector/fold": [
+   {"name":"mac-forge-runner-host","status":"idle","labels":["macos"]}]}}}
+EOF4
+: >"$loaded"; : >"$bootstrapped"; : >"$pages"
+for l in com.edgevector.forgejo-runner-host-exemem-infra com.edgevector.forgejo-runner; do
+  printf '111\t0\t%s\n' "$l" >> "$loaded"
+done
+touch "$plists/com.edgevector.forgejo-runner-host.plist"
+sd="$tmp/s22"
+run_wd "$sd" "$lanes_partial"
+[ ! -s "$bootstrapped" ] || { echo "FAIL: revived a runner the partial inventory reports idle"; cat "$bootstrapped"; exit 1; }
+grep -q "forge reports runner mac-forge-runner-host 'idle'" "$sd/watchdog.log" \
+  || { echo "FAIL: partial inventory not used for the launchd-blind fallback"; cat "$sd/watchdog.log"; exit 1; }
+rm -f "$plists/com.edgevector.forgejo-runner-host.plist"
+echo "ok: a partial inventory still feeds the launchd-blind fallback"
 
 echo "PASS last-stack-forge-runner-watchdog"
