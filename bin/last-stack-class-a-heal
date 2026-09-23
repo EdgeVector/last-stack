@@ -267,10 +267,19 @@ ensure_single_live_prompt_root() {
     n="$(printf '%s\n' "$out" | grep -c 'normalize linked' || true)"
     log "prompt-doctor normalized $n drifted local prompt(s)"
     append_action "normalized-prompt-root-$n"
+  elif [ "$rc" -eq 124 ]; then
+    # The doctor ran out of time. That says nothing about prompt drift, and
+    # it is not install health. Say so plainly: the old text printed "still
+    # red" and then result=ok already-healthy, and four papercuts asked which
+    # one to believe (papercut-class-a-heal-prompt-doctor-red-but-healthy-20260922).
+    log "prompt-doctor timed out after ${LASTSTACK_CLASS_A_PROMPT_DOCTOR_TIMEOUT_S:-10}s (soft; install health is checked separately)"
+    append_action "prompt-doctor-timeout"
+    prompt_root_note="prompt-doctor-timeout"
   elif [ "$rc" -ne 0 ]; then
     # Still red after the heal (or refused). Visible, never fatal here.
-    log "prompt-doctor still red after normalize (rc=$rc)"
+    log "prompt-doctor still red after normalize (rc=$rc; soft; install health is checked separately)"
     append_action "prompt-root-still-red"
+    prompt_root_note="prompt-root-drift"
   fi
   return 0
 }
@@ -803,6 +812,11 @@ heal_dangling_current || true
 
 if healthy; then
   result="ok"
+  # A soft prompt-root finding keeps result=ok (the install is healthy) but
+  # names itself in detail, so the output never says red and healthy at once.
+  if [ -n "${prompt_root_note:-}" ] && [ -z "${detail:-}" ]; then
+    detail="healthy-with-${prompt_root_note}"
+  fi
   detail="${detail:-already-healthy}"
   # If we only fixed shims, still count as ok
   if [ -z "${actions[*]:-}" ]; then

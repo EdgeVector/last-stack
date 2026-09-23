@@ -14,6 +14,8 @@ from typing import Any
 
 
 PER_CR_SLUG = re.compile(r"^papercut-pipeline-stuck-cr-")
+VALID_SLUG = re.compile(r"^papercut-[a-z0-9]+(?:-[a-z0-9]+)*$")
+FORGEJO_ID = re.compile(r"^(forgejo-pr-\d+|#?\d+)$")
 
 
 def run(argv: list[str], *, stdin: str | None = None, timeout: int = 60) -> subprocess.CompletedProcess[str]:
@@ -106,9 +108,24 @@ def main() -> int:
     cr_id = args.cr_id.strip()
     if not cr_id:
         return emit({"ok": False, "reason": "empty_cr_id"}, args.json_out)
+    if FORGEJO_ID.match(cr_id):
+        # LastGit-only filer. Forgejo PRs have their own one-row-per-PR ledger
+        # (last-stack-pipeline-forge-pr-ledger, run by pipeline-health). After
+        # the LastGit shutdown merge-babysit still passed ids like
+        # forgejo-pr-132 here and minted "stuck LastGit CR" rows for Forgejo
+        # PRs (papercut-fkanban-required-ci-red, 2026-09-23). Not an error: the
+        # ledger owns it.
+        return emit(
+            {"ok": True, "action": "skip-forgejo", "cr_id": cr_id,
+             "reason": "forgejo PRs are filed by last-stack-pipeline-forge-pr-ledger"},
+            args.json_out,
+        )
 
     file_slug = args.root_cause_slug.strip() if args.root_cause_slug else stable_slug(repo)
-    if PER_CR_SLUG.match(file_slug):
+    if PER_CR_SLUG.match(file_slug) or not VALID_SLUG.match(file_slug):
+        # A caller that interpolated an owner/name repo built
+        # papercut-pipeline-stuck-merges-EdgeVector/fold; the brain stored four
+        # such rows on 2026-09-23. Fall back to the stable per-repo slug.
         file_slug = stable_slug(repo)
 
     iso = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -120,7 +137,7 @@ def main() -> int:
     candidates: list[str] = []
     for slug in [*args.candidate_slug, args.root_cause_slug or "", file_slug]:
         slug = slug.strip()
-        if slug and slug not in candidates:
+        if slug and VALID_SLUG.match(slug) and slug not in candidates:
             candidates.append(slug)
 
     for slug in candidates:

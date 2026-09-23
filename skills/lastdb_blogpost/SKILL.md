@@ -67,11 +67,12 @@ repair command that couldn't complete, and was retracted by Tom the next day
 
 ## 1. Setup — always a worktree
 
+`~/code/edgevector/fold_db_website` is a portal with no checkout. Start a
+worktree from it and work only in the path it prints:
+
 ```bash
-cd ~/code/edgevector/fold_db_website && git fetch origin -q
-WT=~/code/edgevector-worktrees/foldweb-<short-slug>
-git worktree add "$WT" -b blog/<slug> origin/main
-cd "$WT" && npm install >/dev/null 2>&1
+cd ~/code/edgevector/fold_db_website && ./bin/wt start blog/<slug>
+cd <printed path> && npm install >/dev/null 2>&1
 ```
 
 Pick a short, URL-safe **slug** (e.g. `evolving-a-live-schema`). It's the route
@@ -148,9 +149,12 @@ convert it to `ArchFigure` SVG if you touch it.
 ```js
 { slug: '<slug>', title: '…', date: 'YYYY-MM-DD', blurb: '…' },
 ```
-`src/App.jsx` — add the lazy import next to the other `Blog*` ones, and a route:
+`src/AppRoutes.jsx` — add the import next to the other `Blog*` ones, the path
+to `PRERENDER_PATHS`, and a route:
 ```jsx
-const Blog<PascalName> = lazy(() => import('./pages/Blog<PascalName>'));
+import Blog<PascalName> from './pages/Blog<PascalName>';
+// …in PRERENDER_PATHS, beside the other /blog/* paths:
+'/blog/<slug>',
 // …inside <Routes>, beside the other /blog/* routes:
 <Route path="/blog/<slug>" element={<Blog<PascalName> />} />
 ```
@@ -177,31 +181,34 @@ $B viewport 760x1100; $B goto "file:///tmp/figs.html"; $B screenshot /tmp/figs.p
 Then **Read `/tmp/figs.png` and actually look** — check for labels colliding
 with or overflowing boxes (the #1 mistake), text clipped at the viewBox edge,
 connectors not meeting their joints, hatch not rendering. Fix and re-render
-until clean. The PR's Vercel preview deploy is the final visual confirmation.
+until clean. There is no per-branch preview deploy; `npm run preview` on the
+built `dist/` is the final local visual check.
 
 ## 6. PR — but DO NOT MERGE (publishing is a human gate)
 
 Commit only the source files (`src/pages/Blog<PascalName>.jsx`, `src/pages/Blog.jsx`,
-`src/App.jsx`) — not any worktree-local `.claude/`. Push, open the PR with
-`gh pr create -R EdgeVector/fold_db_website --base main`. End the commit/PR body with the standard Co-Authored-By /
-Generated-with trailers.
-
-**Stop at the PR.** Merging deploys to the live site (Vercel auto-deploys `main`),
-and publishing public/outward content is a human decision (the autonomy
-contract's gate #2 — public/outward-facing). Hand the PR + the Vercel **preview
-deployment URL** to the user for review; push any requested edits to the branch;
-let *them* merge. Pull the preview `*.vercel.app` URL from the PR's commit
-statuses:
+`src/AppRoutes.jsx`) — not any worktree-local `.claude/`. The repo lives on the
+local Forgejo forge (`.last-stack/pr-venue` = `forgejo`); GitHub is a read-only
+mirror, so never `gh pr create` there. Push and open the PR through the forge
+(`brain get sop-forge-pr-workflow --type sop`):
 ```bash
-gh api repos/EdgeVector/fold_db_website/deployments \
-  --jq '.[0].id' | xargs -I{} gh api repos/EdgeVector/fold_db_website/deployments/{}/statuses \
-  --jq '.[0].environment_url'
+"$HOME/.last-stack/bin/last-stack-forge-git" -C "$PWD" push -u origin blog/<slug>
+last-stack-forge-api --method POST --data @pr.json repos/EdgeVector/fold_db_website/pulls
 ```
+End the commit/PR body with the standard Co-Authored-By / Generated-with trailers.
+
+**Stop at the PR.** Merging deploys to the live site (the deploy follows `main`
+through the mirror), and publishing public/outward content is a human decision
+(the autonomy contract's gate #2 — public/outward-facing). Hand the forge PR URL
+(`http://localhost:3300/EdgeVector/fold_db_website/pulls/<n>`) and the local
+`npm run preview` check to the user; push any requested edits to the branch; let
+*them* merge (or merge on their explicit word with
+`last-stack-forge-api POST --data '{"Do":"merge"}' repos/EdgeVector/fold_db_website/pulls/<n>/merge`).
 
 ## Gotchas
 - Worktrees start with **no `node_modules`** — `npm install` first.
-- Repo uses a **merge queue** is NOT set here; it's a normal PR + Vercel. Don't
-  force-merge; the user merges to publish.
+- No merge queue: it is a normal forge PR. Don't force-merge; the user merges
+  to publish.
 - Keep the post atomic — one post per PR. Don't bundle unrelated site changes.
 - After it merges (the user's call), the close-out loop is satisfied by the PR
   itself; no kanban card needed unless there's follow-up work.

@@ -66,28 +66,31 @@ case "${1:-} ${2:-}" in
     fi
     ;;
   "add example-ns-terminal-verification") cat >"$MOCK_CARD_BODY" ;;
+  "add north-star-example-terminal-proof-harness") cat >"$MOCK_HARNESS_BODY" ;;
   *) exit 2 ;;
 esac
 EOF
 chmod +x "$tmp/bin/brain" "$tmp/bin/kanban"
 
 MOCK_CARD_BODY="$tmp/created-card.md" \
+MOCK_HARNESS_BODY="$tmp/created-harness-card.md" \
   HOME="$tmp/home" PATH="$tmp/bin:$PATH" \
+  NORTH_STAR_HARNESS_ROOT="$tmp/harness" \
   python3 "$BIN" --apply --ns north-star-example --json >"$tmp/create.json"
-grep -Fq 'DONE-WHEN: file $HOME/.last-stack/north-star-proofs/north-star-example.md matches /^PASS/' "$tmp/created-card.md"
-! grep -Fq 'docs/north-star-proofs' "$tmp/created-card.md"
 
-# `kanban add` exiting 0 is a fact about the CLI, not about the board. A sync
-# that reports created_terminal without re-reading the slug is how
-# lastdb-delete-returns-the-bytes-proof stayed "created" in the ledger for
-# twelve days while `kanban show` answered "No card with slug".
-grep -Fq 'created_terminal_unverified:example-ns-terminal-verification' "$tmp/create.json" \
-  || { echo "FAIL: unconfirmed terminal creation was reported as created" >&2; exit 1; }
-! grep -Eq '"created_terminal:example-ns-terminal-verification"' "$tmp/create.json"
+# No harness means no hollow validation shell. The sync files one executable
+# pickup card and waits for that card to add the registered harness path.
+grep -Fq 'created_harness_unverified:north-star-example-terminal-proof-harness' "$tmp/create.json"
+grep -Fq 'Kind: pr' "$tmp/created-harness-card.md"
+! test -e "$tmp/created-card.md"
+
+mkdir -p "$tmp/harness/north-star-example"
+printf '%s\n' '#!/usr/bin/env bash' >"$tmp/harness/north-star-example/run.sh"
 
 # Green arm: when the board does hand the slug back, the claim is allowed.
 MOCK_SHOW_AFTER_ADD=1 MOCK_CARD_BODY="$tmp/created-card-verified.md" \
-  HOME="$tmp/home" PATH="$tmp/bin:$PATH" \
+  MOCK_HARNESS_BODY="$tmp/created-harness-card-verified.md" \
+  HOME="$tmp/home" PATH="$tmp/bin:$PATH" NORTH_STAR_HARNESS_ROOT="$tmp/harness" \
   python3 "$BIN" --apply --ns north-star-example --json >"$tmp/create-verified.json"
 grep -Fq 'created_terminal:example-ns-terminal-verification' "$tmp/create-verified.json" \
   || { echo "FAIL: a board-confirmed terminal creation was not reported" >&2; exit 1; }
@@ -109,7 +112,7 @@ proof_report="$(
 )"
 [ -f "$proof_report" ]
 
-predicate="$(sed -n 's/^DONE-WHEN: //p' "$tmp/created-card.md" | head -n 1)"
+predicate="$(sed -n 's/^DONE-WHEN: //p' "$tmp/created-card-verified.md" | head -n 1)"
 [ -n "$predicate" ]
 
 # The failure invariant, executable: the path the generated card CLAIMS is the
@@ -142,7 +145,8 @@ grep -Fq 'pending: file' "$tmp/eval-red.out"
 # Existing named terminal shells heal through the same targeted --apply --ns
 # pass, with no whole-board scan.
 MOCK_EXISTING=1 MOCK_CARD_BODY="$tmp/healed-card.md" \
-  HOME="$tmp/home" PATH="$tmp/bin:$PATH" \
+  MOCK_HARNESS_BODY="$tmp/healed-harness-card.md" \
+  HOME="$tmp/home" PATH="$tmp/bin:$PATH" NORTH_STAR_HARNESS_ROOT="$tmp/harness" \
   python3 "$BIN" --apply --ns north-star-example --json >"$tmp/heal.json"
 grep -Fq 'DONE-WHEN: file $HOME/.last-stack/north-star-proofs/north-star-example.md matches /^PASS/' "$tmp/healed-card.md"
 ! grep -Fq 'docs/north-star-proofs' "$tmp/healed-card.md"
@@ -152,3 +156,13 @@ grep -Fq 'healed_terminal_done_when:example-ns-terminal-verification' "$tmp/heal
 grep -q 'last-stack-north-star-ledger-sync' "$ROOT/routines/north-star-driver.md"
 grep -q 'Skip stale pending requests' "$ROOT/routines/north-star-driver.md"
 echo "last-stack-north-star-ledger-sync tests ok"
+
+# A failed project census degrades to portfolio seeds; it must not die with a
+# traceback (papercut-north-star-ledger-sync-typed-project-enumeration-traceback-20260922).
+# The mock brain exits 2 for `list`.
+HOME="$tmp/home" PATH="$tmp/bin:$PATH" \
+  python3 "$BIN" --json >"$tmp/degraded.json" 2>"$tmp/degraded.err"
+jq -e '.census_degraded | length > 0' "$tmp/degraded.json" >/dev/null
+grep -Fq 'project census unavailable' "$tmp/degraded.err"
+! grep -Fq 'Traceback' "$tmp/degraded.err"
+echo "ok census failure degrades to portfolio seeds"

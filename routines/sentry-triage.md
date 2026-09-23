@@ -72,8 +72,8 @@ For each project slug parsed from `signal-sources` Sentry scopes:
 
 ```bash
 url="https://sentry.io/api/0/projects/edge-vector/<slug>/issues/?query=is:unresolved&statsPeriod=14d&limit=100"
-headers_file="/tmp/sentry.headers.$$"
-page_file="/tmp/sentry.page.$$"
+headers_file="$(mktemp "${TMPDIR:-/tmp}/sentry.headers.XXXXXX")"
+page_file="$(mktemp "${TMPDIR:-/tmp}/sentry.page.XXXXXX")"
 while [ -n "$url" ]; do
   curl -sS -D "$headers_file" -o "$page_file" \
     -H "Authorization: Bearer $TOKEN" "$url" || true
@@ -93,7 +93,7 @@ for line in text.splitlines():
 PY
 )"
 done
-rm -f "$headers_file" "$page_file"
+# No cleanup step: the Codex exec guard rejects file deletion. $TMPDIR is the run scratch dir.
 ```
 
 Valid `statsPeriod` values are only ``, `24h`, and `14d`.

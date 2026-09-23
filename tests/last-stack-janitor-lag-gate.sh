@@ -23,6 +23,8 @@ export LAST_STACK_JANITOR_LAG_NOW_EPOCH=1700000000
 export LAST_STACK_JANITOR_LAG_STALE_SEC=7200
 export LAST_STACK_JANITOR_LAG_CADENCE_SEC=3600
 export ROUTINE_ID=dead-code-reaper
+# The max-age floor has its own cases at the end; keep it off for the rest.
+export LAST_STACK_JANITOR_LAG_MAX_AGE_SEC=0
 unset ROUTINES_POSTURE || true
 
 # Fresh mtime: touch the file at now.
@@ -169,5 +171,22 @@ unset ROUTINES_POSTURE
 # Gate must not write success-epoch
 [ ! -f "$tmp/success/dead-code-reaper.success-epoch" ] \
   || { echo "gate wrote success-epoch" >&2; exit 1; }
+
+# Max-age floor: a busy board (doing>0) must not starve a janitor forever.
+write_state <<'JSON'
+{
+  "history": [
+    {"ts": "2023-11-14T20:00:00Z", "ships_last_h": 2, "ships_24h": 20, "doing": 6}
+  ]
+}
+JSON
+export LAST_STACK_JANITOR_LAG_MAX_AGE_SEC=21600
+run_case floor-never-succeeded 10 'max-age-floor last_success=none'
+mkdir -p "$tmp/success"
+echo $((LAST_STACK_JANITOR_LAG_NOW_EPOCH - 30000)) > "$tmp/success/dead-code-reaper.success-epoch"
+run_case floor-old-success 10 'max-age-floor last_success_age_s=30000'
+echo $((LAST_STACK_JANITOR_LAG_NOW_EPOCH - 600)) > "$tmp/success/dead-code-reaper.success-epoch"
+run_case floor-recent-success-still-waits 0 'doing=6'
+export LAST_STACK_JANITOR_LAG_MAX_AGE_SEC=0
 
 echo "ok last-stack-janitor-lag-gate"

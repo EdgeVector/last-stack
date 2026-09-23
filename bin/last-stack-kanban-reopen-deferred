@@ -1,0 +1,279 @@
+#!/usr/bin/env python3
+"""Re-open deferred cards after their recorded build reaches the live host."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+
+PARKED_TAGS = {
+    "awaiting-deploy",
+    "awaiting-validation",
+    "deploy-gate",
+    "live-proof",
+    "needs-safe-upgrade",
+}
+HEX_RE = re.compile(r"\b[0-9a-f]{7,40}\b", re.IGNORECASE)
+RECORDED_RE = re.compile(
+    r"(?i)\b(?:merge|merged|commit|head|head_oid|merge_oid|oid|sha|source_oid)\s*[:=]\s*([0-9a-f]{7,40})\b"
+)
+PR_RE = re.compile(r"/(?:pull|pulls)/(\d+)(?:\b|/)", re.IGNORECASE)
+LASTGIT_RE = re.compile(r"lastgit://([^/]+)/cr/([^/\s?#]+)", re.IGNORECASE)
+
+
+def run(argv: list[str], timeout: int = 60) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(argv, text=True, capture_output=True, timeout=timeout, check=False)
+
+
+def parse_json(text: str) -> Any:
+    cleaned = "".join(
+        " " if 0 <= ord(ch) < 32 and ch not in "\n\r\t" else ch for ch in text
+    )
+    return json.loads(cleaned)
+
+
+def cards_from(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if isinstance(value, dict):
+        for key in ("cards", "items", "entries"):
+            if isinstance(value.get(key), list):
+                return [item for item in value[key] if isinstance(item, dict)]
+    return []
+
+
+def board_call(args: argparse.Namespace, *parts: str, timeout: int = 60) -> subprocess.CompletedProcess[str]:
+    return run([args.board_cli, *parts], timeout=timeout)
+
+
+def body(card: dict[str, Any]) -> str:
+    return str(card.get("body") or "")
+
+
+def repo_name(card: dict[str, Any]) -> str:
+    repo = str(card.get("repo") or card.get("Repo") or "").strip()
+    return repo.rsplit("/", 1)[-1] if repo else ""
+
+
+def tags(card: dict[str, Any]) -> set[str]:
+    raw = card.get("tags") or []
+    if isinstance(raw, str):
+        return {part for part in re.split(r"[,\s]+", raw) if part}
+    return {str(part).strip() for part in raw if str(part).strip()}
+
+
+def is_deferred(card: dict[str, Any]) -> bool:
+    status = str(card.get("block_status") or card.get("blockStatus") or "").lower()
+    return status == "deferred" or bool(tags(card) & PARKED_TAGS)
+
+
+def recorded_candidates(card: dict[str, Any]) -> list[str]:
+    values = [
+        str(card.get(key) or "").strip()
+        for key in ("merge_oid", "mergeOid", "head_oid", "headOid", "commit", "source_oid", "oid")
+    ]
+    values.append(body(card))
+    found: list[str] = []
+    for value in values:
+        found.extend(match.group(1).lower() for match in RECORDED_RE.finditer(value))
+    return list(dict.fromkeys(found))
+
+
+def branch_from_card(card: dict[str, Any]) -> str:
+    branch = str(card.get("branch") or "").strip()
+    if branch:
+        return branch
+    match = re.search(r"(?im)^\s*Branch:\s*(\S+)\s*$", body(card))
+    return match.group(1) if match else ""
+
+
+def recorded_commit(card: dict[str, Any], repo_dir: Path, forge_api: str, lastgit: str) -> str:
+    candidates = recorded_candidates(card)
+    if candidates:
+        return candidates[0]
+
+    url = str(card.get("pr_url") or "").strip()
+    if not url:
+        match = re.search(r"(?im)^\s*(?:PR|CR):\s*(\S+)\s*$", body(card))
+        url = match.group(1) if match else ""
+
+    lastgit_match = LASTGIT_RE.search(url)
+    if lastgit_match and lastgit:
+        result = run([lastgit, "cr", "view", lastgit_match.group(1), lastgit_match.group(2), "--json"])
+        if result.returncode == 0:
+            try:
+                record = parse_json(result.stdout)
+                record = record.get("cr", record) if isinstance(record, dict) else {}
+                return str(record.get("merge_oid") or record.get("head_oid") or "").lower()
+            except (json.JSONDecodeError, AttributeError):
+                pass
+
+    pr_match = PR_RE.search(url)
+    repo = str(card.get("repo") or "").strip()
+    if pr_match and forge_api and "/" in repo:
+        owner, name = repo.split("/", 1)
+        result = run([forge_api, f"repos/{owner}/{name}/pulls/{pr_match.group(1)}"], timeout=45)
+        if result.returncode == 0:
+            try:
+                data = parse_json(result.stdout)
+                return str(
+                    data.get("merge_commit_sha")
+                    or data.get("head", {}).get("sha")
+                    or ""
+                ).lower()
+            except (json.JSONDecodeError, AttributeError):
+                pass
+
+    branch = branch_from_card(card)
+    if branch:
+        result = run(["git", "-C", str(repo_dir), "rev-parse", "--verify", f"{branch}^{{commit}}"])
+        if result.returncode == 0:
+            return result.stdout.strip().lower()
+    return ""
+
+
+def installed_head(repo: str, app: str, host_track: str, lastdb: str) -> str:
+    if repo == "fold":
+        result = run([lastdb, "status"], timeout=45)
+        if result.returncode != 0:
+            return ""
+        match = re.search(r"(?im)^Build:\s+.*?-g([0-9a-f]{7,40})\b", result.stdout)
+        return match.group(1).lower() if match else ""
+
+    result = run([host_track, "status", "--json", app], timeout=45)
+    if result.returncode != 0:
+        return ""
+    try:
+        data = parse_json(result.stdout)
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    for key in ("host_head", "source_oid", "head", "version"):
+        value = str(data.get(key) or "").strip()
+        if HEX_RE.fullmatch(value):
+            return value.lower()
+    return ""
+
+
+def repo_dir_for(args: argparse.Namespace, repo: str) -> Path | None:
+    name = repo.rsplit("/", 1)[-1]
+    for candidate in (
+        args.repo_cache_root / f"{name}.git",
+        args.repo_cache_root / name,
+        Path.home() / "code" / "edgevector" / name,
+    ):
+        if (candidate / ".git").exists() or (candidate / "HEAD").exists():
+            return candidate
+    return None
+
+
+def is_ancestor(repo_dir: Path, ancestor: str, descendant: str) -> bool:
+    for ref in (ancestor, descendant):
+        checked = run(["git", "-C", str(repo_dir), "rev-parse", "--verify", f"{ref}^{{commit}}"])
+        if checked.returncode != 0:
+            return False
+    result = run(["git", "-C", str(repo_dir), "merge-base", "--is-ancestor", ancestor, descendant])
+    return result.returncode == 0
+
+
+def reopen(args: argparse.Namespace) -> dict[str, Any]:
+    listed = board_call(args, "list", "--column", "backlog", "--json", "--all", "--full-body", timeout=120)
+    if listed.returncode != 0:
+        raise RuntimeError(listed.stderr.strip() or "kanban backlog read failed")
+    try:
+        cards = [card for card in cards_from(parse_json(listed.stdout)) if is_deferred(card)]
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"kanban backlog JSON parse failed: {exc}") from exc
+
+    result: dict[str, Any] = {"scanned": len(cards), "reopened": [], "unchanged": [], "skipped": []}
+    installed_cache: dict[tuple[str, str], str] = {}
+    for card in cards:
+        slug = str(card.get("slug") or "").strip()
+        repo = repo_name(card)
+        if not slug or not repo:
+            result["skipped"].append({"slug": slug or "?", "reason": "missing-slug-or-repo"})
+            continue
+        repo_dir = repo_dir_for(args, repo)
+        if repo_dir is None:
+            result["skipped"].append({"slug": slug, "reason": "repo-cache-missing"})
+            continue
+        app = "kanban" if repo == "fkanban" else repo
+        cache_key = (repo, app)
+        if cache_key not in installed_cache:
+            installed_cache[cache_key] = installed_head(repo, app, args.host_track, args.lastdb)
+        installed = installed_cache[cache_key]
+        recorded = recorded_commit(card, repo_dir, args.forge_api, args.lastgit)
+        if not installed or not recorded or not is_ancestor(repo_dir, recorded, installed):
+            result["unchanged"].append({"slug": slug, "recorded": recorded or None, "installed": installed or None})
+            continue
+
+        proof = (
+            f"PROGRESS {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')} "
+            f"(deploy-reopen): live {repo} build={installed} contains recorded={recorded}; hold cleared"
+        )
+        if not args.dry_run:
+            for command in (
+                ("set", slug, "--block-status", "none", "--json"),
+                ("mark", slug, proof),
+            ):
+                write = board_call(args, *command)
+                if write.returncode != 0:
+                    result["skipped"].append({"slug": slug, "reason": f"board-{command[0]}-failed"})
+                    break
+            else:
+                for tag in sorted(tags(card) & PARKED_TAGS):
+                    board_call(args, "tag", "rm", slug, tag, "--json")
+                if str(card.get("kind") or "pr").strip().lower() == "pr":
+                    move = board_call(args, "move", slug, "todo")
+                    if move.returncode != 0:
+                        result["skipped"].append({"slug": slug, "reason": "board-move-failed"})
+                        continue
+        result["reopened"].append({"slug": slug, "recorded": recorded, "installed": installed})
+    return result
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--board-cli", default=os.environ.get("BOARD_CLI", "kanban"))
+    parser.add_argument("--host-track", default=os.environ.get("HOST_TRACK_BIN", "host-track"))
+    parser.add_argument("--lastdb", default=os.environ.get("LASTDB_BIN", "lastdb"))
+    parser.add_argument("--lastgit", default=os.environ.get("LASTGIT_BIN", "lastgit"))
+    parser.add_argument(
+        "--forge-api",
+        default=os.environ.get(
+            "FORGE_API_BIN",
+            str(Path.home() / ".last-stack" / "bin" / "last-stack-forge-api"),
+        ),
+    )
+    parser.add_argument("--repo-cache-root", type=Path, default=Path.home() / ".cache" / "edgevector-git")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--trigger", default="", help=argparse.SUPPRESS)
+    args = parser.parse_args(argv)
+    try:
+        result = reopen(args)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+        print(f"last-stack-kanban-reopen-deferred: error={exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(result, sort_keys=True))
+    else:
+        print(
+            "last-stack-kanban-reopen-deferred "
+            f"scanned={result['scanned']} reopened={len(result['reopened'])} "
+            f"unchanged={len(result['unchanged'])} skipped={len(result['skipped'])}"
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

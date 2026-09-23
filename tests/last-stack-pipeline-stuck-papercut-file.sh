@@ -148,4 +148,21 @@ jq -e '
          .target == "$HOME/.local/bin/last-stack-pipeline-stuck-papercut-file")
 ' "$ROOT/config/host-track/apps.json" >/dev/null
 
+# A malformed root-cause slug (owner/name interpolated) must fall back to the
+# stable per-repo slug, never land as papercut-...-EdgeVector/fold.
+bad="$("$ROOT/bin/last-stack-pipeline-stuck-papercut-file" --repo EdgeVector/fold --cr-id cr-mtoa64ag-ff41 \
+  --root-cause-slug 'papercut-pipeline-stuck-merges-EdgeVector/fold' --evidence x --dry-run --json --brain-bin "$tmp/brain")"
+printf '%s\n' "$bad" | jq -e '.slug == "papercut-pipeline-stuck-merges-fold"' >/dev/null || {
+  echo "malformed root-cause slug must fall back to the stable slug: $bad" >&2
+  exit 1
+}
+
+# A Forgejo PR id is not a LastGit CR: skip it, point at the ledger.
+fj="$("$ROOT/bin/last-stack-pipeline-stuck-papercut-file" --repo EdgeVector/fkanban --cr-id forgejo-pr-23 \
+  --evidence x --json --brain-bin "$tmp/brain")"
+printf '%s\n' "$fj" | jq -e '.ok == true and .action == "skip-forgejo"' >/dev/null || {
+  echo "forgejo PR ids must be skipped: $fj" >&2
+  exit 1
+}
+
 printf 'ok last-stack-pipeline-stuck-papercut-file\n'

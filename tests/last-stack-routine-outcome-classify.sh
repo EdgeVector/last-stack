@@ -82,6 +82,7 @@ relabel=set(d["relabel_ids"])
 for name in ("last-stack-pipeline-health","last-stack-why-stopped","last-stack-ship-pipeline-gap-audit"):
     assert name in relabel, (name, relabel)
 assert "lastdb-local-smoke-test" in d["red_ids"], d["red_ids"]
+assert "last-stack-fkanban-validate-w6" not in d["red_ids"], "never-run routine must not count red"
 '
 
 echo "ok"

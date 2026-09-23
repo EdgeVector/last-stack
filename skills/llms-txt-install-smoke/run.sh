@@ -273,6 +273,12 @@ cleanup() {
     # takes to unwind, which is unbounded work after the verdict is already out.
     stop_pid_bounded "$DAEMON_PID" "$SMOKE_DAEMON_STOP_SECS"
   fi
+  # A RED run printed "log: $LOG" and then deleted the sandbox that holds it
+  # (papercut-llms-txt-smoke-red-log-removed-20260920). Without a caller path,
+  # keep the log next to the sandbox: a plain file the dir reaper skips.
+  if [ "$exit_rc" -ne 0 ] && [ -z "${LLMS_TXT_SMOKE_FAILURE_LOG:-}" ] && [ "$KEEP" -eq 0 ]; then
+    LLMS_TXT_SMOKE_FAILURE_LOG="${FRESH_ROOT}.run.log"
+  fi
   if [ "$exit_rc" -ne 0 ] && [ -n "${LLMS_TXT_SMOKE_FAILURE_LOG:-}" ]; then
     if preserve_failure_log "$LOG" "$LLMS_TXT_SMOKE_FAILURE_LOG"; then
       echo "failure log preserved: $LLMS_TXT_SMOKE_FAILURE_LOG" >&4

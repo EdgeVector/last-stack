@@ -919,10 +919,17 @@ VIEW
     echo 'execution lx-ww-stuck is incomplete: still `running` at state `GATHER` after the drive deadline. Another worker holds the frontier, or the frontier is unattended — `loom reap --execution lx-ww-stuck` recovers an unattended one.' >&2
     exit 4
     ;;
+  cancel)
+    printf '%s\n' "${2:-}" >>"$STUCK_CANCEL_LOG"
+    printf 'status: cancelled\n'
+    exit 0
+    ;;
   *) echo "unexpected $*" >&2; exit 2 ;;
 esac
 SH
 chmod 755 "$tmp/bin/loom"
+export STUCK_CANCEL_LOG="$tmp/cancel-stuck.log"
+: >"$STUCK_CANCEL_LOG"
 export LAST_STACK_WHATS_WRONG_STAMP="$tmp/stamp-stuck.json"
 export LOOM_WHATS_WRONG_KEY="whats-wrong-stuck-key"
 set +e
@@ -939,6 +946,17 @@ d = json.load(open(sys.argv[1], encoding="utf-8"))
 blob = json.dumps(d)
 assert "lx-ww-stuck" in blob, d
 PYCHK
+# Giving up must not leave the execution `running` with a live driver. The
+# final rc=4 branch used to stamp and exit, and three such hours left three
+# `drive-detached` processes polling lastdbd at ~130 req/s on 2026-09-22
+# (papercut-whats-wrong-loom-gate-leaks-detached-drivers-that-flood-lastdbd-20260923).
+grep -qx 'lx-ww-stuck' "$STUCK_CANCEL_LOG" \
+  || fail "giving up did not cancel the stranded execution: $(cat "$STUCK_CANCEL_LOG")"
+printf '%s\n' "$sout" | grep -q 'giveup-cancel=cancelled' \
+  || fail "give-up result does not report the cancel: $sout"
+printf '%s\n' "$sout" | grep -q 'giveup-workers=' \
+  || fail "give-up result does not report the driver stop: $sout"
+unset STUCK_CANCEL_LOG
 unset REAP_LOG_FILE
 unset LAST_STACK_WHATS_WRONG_LOOM_RETRY_ATTEMPTS
 
@@ -976,7 +994,14 @@ bash -n "$tmp/stop.sh" || fail "stop_abandoned_drive_workers does not parse"
 mkdir -p "$tmp/fakebin"
 ln -s /bin/sh "$tmp/fakebin/loom"
 
-cat > "$tmp/stop-case.sh" <<'CASE'
+# Fixture ids carry a per-run tag. They were the fixed lx-TEST-*, and the
+# helper reads the WHOLE host process table, so two CI gates on one host
+# signalled each other's fixtures: on 2026-09-22 runs 289 and 290 (PRs 109 and
+# 111, both on a green main) failed here together with BEFORE 9 / ANSWER none.
+# The tag sits between fixed text on both sides, so no tag is a substring of
+# another run's id.
+stop_tag="$$${RANDOM}"
+sed "s/lx-TEST-/lx-T${stop_tag}-/g" > "$tmp/stop-case.sh" <<'CASE'
 #!/bin/bash
 set -u
 . "$1"; FB="$2"
@@ -989,10 +1014,10 @@ set -u
 /bin/bash -c 'exec -a "harness -p prompt drive-detached lx-TEST-PARENT tail" sleep 120' \
   >/dev/null 2>&1 &
 sleep 2
-printf 'BEFORE %s\n' "$(ps -Ao command= | grep -c 'drive-detached lx-TEST')"
+printf 'BEFORE %s\n' "$(ps -Ao command= | grep -c 'drive-detached lx-TEST-')"
 printf 'ANSWER %s\n' "$(stop_abandoned_drive_workers lx-TEST-PARENT)"
 sleep 2
-ps -Ao command= | grep 'drive-detached lx-TEST' | grep -v grep | sed 's/^ *//' \
+ps -Ao command= | grep 'drive-detached lx-TEST-' | grep -v grep | sed 's/^ *//' \
   | while read -r line; do printf 'AFTER %s\n' "$line"; done
 kill %1 %2 %3 >/dev/null 2>&1 || true
 exit 0
@@ -1001,11 +1026,11 @@ CASE
 case_out="$(bash "$tmp/stop-case.sh" "$tmp/stop.sh" "$tmp/fakebin" 2>/dev/null)"
 printf '%s\n' "$case_out" | grep -q '^ANSWER stopped=2$' \
   || fail "stop_abandoned_drive_workers did not stop the driver and its child: $case_out"
-printf '%s\n' "$case_out" | grep -q 'AFTER.*lx-TEST-OTHER' \
+printf '%s\n' "$case_out" | grep -q "AFTER.*lx-T${stop_tag}-OTHER" \
   || fail "stop_abandoned_drive_workers killed an unrelated execution's driver: $case_out"
 printf '%s\n' "$case_out" | grep -q 'AFTER.*harness -p prompt' \
   || fail "stop_abandoned_drive_workers signalled a process that only quotes the marker: $case_out"
-printf '%s\n' "$case_out" | grep -q 'AFTER.*/loom.*lx-TEST-PARENT' \
+printf '%s\n' "$case_out" | grep -q "AFTER.*/loom.*lx-T${stop_tag}-PARENT" \
   && fail "stop_abandoned_drive_workers left the named driver alive: $case_out"
 
 # No id, and an id loom never named, are both no-ops rather than a broad sweep.

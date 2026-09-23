@@ -241,8 +241,33 @@ function isTransientBoardFailure(text) {
 // park expiry must not reclaim them (the reclaim would use the same sick CLI).
 const closeoutDeferred = new Set();
 
+// `last-stack-card-closeout` refuses `reopened-same-signal` on purpose: the
+// card's owner moved it from done back to doing with no new PROOF line or
+// merged review, because its END STATE is still unmet. That is live work, not
+// a stuck closeout. Counting it as close-failed stamped CLOSE-FAILED-REPEATED
+// on an actively worked card every few passes, and pipeline-health turned each
+// flag into a p0 papercut (papercut-pipeline-board-closeout-legacy-tip-repair,
+// 2026-09-22). Skip it quietly; no streak, no park expiry, no demote.
+function isReopenedSameSignal(text) {
+  return /FAILED reopened-same-signal/.test(String(text || ""));
+}
+
 function noteCloseoutDeferred(slug, out) {
   const detail = `${out?.stderr || ""} ${out?.error || ""} ${out?.stdout || ""}`;
+  // A card someone REOPENED after a merge-close (deploy or proof still owed)
+  // is refused by card-closeout until a new PROOF line or a new merged review
+  // exists. That refusal is the gate working, not a failed close: flagging it
+  // close-failed every pass, then CLOSE-FAILED-REPEATED, made pipeline-health
+  // file it as a p0 (papercut-board-closeout-legacy-tip-reaper-failure).
+  // It is live work: also keep it out of park expiry and demote, or a pass
+  // rolls an actively worked card back to todo.
+  if (isReopenedSameSignal(detail)) {
+    closeoutDeferred.add(slug);
+    res.skipped.push(`${slug}:reopened-awaiting-proof`);
+    clearCloseFailure(slug);
+    if (res.status === "ok") res.status = "noop";
+    return true;
+  }
   if (!isTransientBoardFailure(detail)) return false;
   closeoutDeferred.add(slug);
   res.skipped.push(`${slug}:closeout-transient`);
@@ -1109,6 +1134,21 @@ for (const card of cards) {
 
   // Deploy-gated / live-proof wait without a parseable PR: demote out of WIP.
   // Do not roll to todo (pickup thrash) and do not leave in doing.
+  // A card a worker holds (assignee set) inside the grace window, or with a
+  // live worker, was just claimed:
+  // its body can describe a deploy topic without being a deploy wait, and
+  // demoting it undid a pickup claim in the same fire
+  // (papercut-board-closeout-demotes-fresh-claim-20260922).
+  // An explicit park TAG is an operator decision and demotes at once; only a
+  // wait INFERRED from an old progress note waits out the grace window.
+  const tagParked = tagList(card).some((t) =>
+    ["awaiting-deploy", "live-proof", "deploy-gate", "needs-safe-upgrade", "awaiting-validation"].includes(t),
+  );
+  const claimedBy = String(card.assignee || "").trim();
+  if (deployParked && !tagParked && claimedBy && (age < graceMs || hasLiveWorker(wt))) {
+    res.skipped.push(`${slug}:deploy-parked-fresh-claim`);
+    continue;
+  }
   if (deployParked) {
     if (demoteDeployParked(slug, card)) {
       actions++;
@@ -1270,6 +1310,15 @@ def transient_board_failure(text):
 closeout_deferred = set()
 
 def note_closeout_deferred(slug, out, err):
+    # A reopened card refused on the same close signal is the gate working,
+    # not a failed close, and it is live work (see the node engine).
+    if "FAILED reopened-same-signal" in f"{out or ''} {err or ''}":
+        closeout_deferred.add(slug)
+        res["skipped"].append(f"{slug}:reopened-awaiting-proof")
+        clear_close_failure(slug)
+        if res["status"] == "ok":
+            res["status"] = "noop"
+        return True
     if not transient_board_failure(f"{out or ''} {err or ''}"):
         return False
     closeout_deferred.add(slug)
@@ -2057,6 +2106,15 @@ for card in cards:
             heal_pr_url(slug, url)
             res["flagged"].append(f"pr-url-healed:{slug}")
         res["skipped"].append(f"{slug}:pr-open-or-unknown")
+        continue
+    # A fresh claim is not a deploy wait (see the node engine).
+    tag_parked = any(
+        t in ("awaiting-deploy", "live-proof", "deploy-gate", "needs-safe-upgrade", "awaiting-validation")
+        for t in tag_list(card)
+    )
+    claimed_by = str(card.get("assignee") or "").strip()
+    if deploy_parked and not tag_parked and claimed_by and (age < grace_s or live_worker(wt)):
+        res["skipped"].append(f"{slug}:deploy-parked-fresh-claim")
         continue
     if deploy_parked:
         if demote_deploy_parked(slug, card):

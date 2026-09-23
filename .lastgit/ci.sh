@@ -269,6 +269,9 @@ ci_test tests/last-stack-why-stopped-class-a-timeout.sh
 ci_test tests/last-stack-lastdb-ops-offenders.sh
 ci_test tests/last-stack-lastdb-ops-offenders-routine.sh
 ci_test tests/last-stack-kanban-pickup-workers.sh
+# Deferred deploy holds must clear only after the recorded commit reaches the
+# live build, and a second pass must make no board writes.
+ci_test tests/last-stack-kanban-reopen-deferred.sh
 ci_test tests/last-stack-kanban-pickup-gate.sh
 # last-stack ci-required is forge run --all, not a per-repo ci watch.
 # Pickup kept filing last-stack watcher cards because pgrep missed the fleet
@@ -307,6 +310,7 @@ ci_test tests/last-stack-feature-delivery-effective-flow-proof.sh
 ci_test tests/last-stack-kanban-file-pr.sh
 ci_test tests/last-stack-kanban-file-pr-host-track-install.sh
 ci_test tests/last-stack-kanban-decision-check.sh
+ci_test tests/last-stack-kanban-decision-check-gbrain.sh
 ci_test tests/last-stack-sanitize-structured-fields.sh
 ci_test tests/last-stack-board-closeout-sweep-logic.sh
 ci_test tests/last-stack-board-closeout-sweep.sh
@@ -316,6 +320,9 @@ ci_test tests/last-stack-board-closeout-evidence-freshness.sh
 ci_test tests/last-stack-loom-reaper.sh
 ci_test tests/last-stack-card-reaper-run.sh
 ci_test tests/last-stack-card-closeout.sh
+ci_test tests/last-stack-card-closeout-done-when.sh
+ci_test tests/last-stack-card-closeout-host-track-gate.sh
+ci_test tests/last-stack-git-commit-c-option.sh
 ci_test tests/last-stack-skill-frontmatter-yaml.sh
 ci_test tests/last-stack-routines-host-track-post-install.sh
 ci_test tests/last-stack-unattached-outcome-heal.sh
@@ -747,4 +754,8 @@ ci_test tests/last-stack-deploy-watch-routine.sh
 # Heartbeat + internal deadline of this gate's shard runner. Fake shards,
 # no network, ~6s. APPENDED before the registration guard, which stays last.
 ci_test tests/last-stack-ci-shard-supervisor.sh
+# One papercut per Forgejo PR (not per state), self-closing on merge; fake
+# forge + fake brain + fake board, no node, no network.
+# APPENDED (see the shard-stability note above): ci_test shards by list position.
+ci_test tests/last-stack-pipeline-forge-pr-ledger.sh
 ci_test tests/last-stack-ci-test-registration.sh

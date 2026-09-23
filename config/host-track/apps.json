@@ -66,6 +66,10 @@
           "target": "$HOME/.local/bin/last-stack-post-merge-safe-upgrade"
         },
         {
+          "source": "bin/last-stack-kanban-reopen-deferred",
+          "target": "$HOME/.local/bin/last-stack-kanban-reopen-deferred"
+        },
+        {
           "source": "bin/last-stack-ship-soak-loom",
           "target": "$HOME/.local/bin/last-stack-ship-soak-loom"
         },
@@ -88,6 +92,10 @@
         {
           "source": "bin/last-stack-pipeline-stuck-papercut-file",
           "target": "$HOME/.local/bin/last-stack-pipeline-stuck-papercut-file"
+        },
+        {
+          "source": "bin/last-stack-pipeline-forge-pr-ledger",
+          "target": "$HOME/.local/bin/last-stack-pipeline-forge-pr-ledger"
         },
         {
           "source": "bin/last-stack-kanban-file-pr",
@@ -172,6 +180,10 @@
         {
           "source": "bin/last-stack-forge-git",
           "target": "$HOME/.local/bin/last-stack-forge-git"
+        },
+        {
+          "source": "bin/last-stack-forge-dead-trigger",
+          "target": "$HOME/.local/bin/last-stack-forge-dead-trigger"
         },
         {
           "source": "bin/last-stack-forge-ci-log",

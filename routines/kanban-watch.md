@@ -272,9 +272,28 @@ This is the backstop for the failure mode `kanban-pickup` already forbids
 ("Do not leave zombie `doing` cards with no worker") when the claiming session
 dies before it can roll back.
 
-**Age clock (soft 60m):** prefer *doing-since* when `position` looks like
-epoch-ms (~1e12–1e13, fkanban sets this on column enter); else fall back to
-`updated_at`. Grace = **60 minutes**.
+**Age clock (soft 60m):** prefer **`first_doing_at`** — the monotone stamp for
+the card's current unresolved work attempt. Fall back to *doing-since* when
+`position` looks like epoch-ms (~1e12–1e13, fkanban sets this on column enter),
+then to `updated_at`. Grace = **60 minutes**.
+
+**Read `first_doing_at`, not `position`, and know why.** `position` is rewritten
+on every column enter, so a card YOU re-dispatch (`move <slug> todo`, pickup
+claims it back into `doing`) reads as brand new on the next wake. The clock is
+reset by this routine's own repair loop. On 2026-09-22 that hid a five-day
+stall: `lastdb-streaming-file-blob-put` fenced 4 ready cards and 6 pickup
+workers through surface-overlap, while its measured doing-age reset twice in one
+day (8.17h → 0.54h, 6.53h → 0.16h) and the factory-health 5h HARD band never
+held long enough to fire. `first_doing_at` survives the re-dispatch and clears
+only on `backlog`/`done`. An empty value means a legacy card or a board on an
+older kanban — fall back, do not treat it as age 0. Brain
+`papercut-kanban-doing-age-clock-resets-on-re-dispatch`.
+
+**A bumped `Build attempt:` is the second monotone signal.** It already survives
+re-dispatch. Read the two together: `first_doing_at` far past the grace AND
+`Build attempt:` ≥ 3 is a stalled card holding a surface fence, not honest
+in-flight work — escalate it per the give-up guard below instead of re-arming
+the loop.
 
 For every card in `doing` (from the column preview):
 1. Skip non-PR kinds that use `DONE-WHEN` (evaluate those on the normal path).
@@ -592,6 +611,23 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
           passing → just `gh run rerun <run-id> --failed` and confirm auto-merge
           is armed. This is a CHEAP, UNCAPPED advance — do it for EVERY such PR.
           A flaky-cancelled required check is the #1 reason a green-able PR rots.
+        - **Stale base** — CHEAP, UNCAPPED, and checked BEFORE "Real failing
+          check". If the base branch moved since the PR head was cut (the PR
+          head does not contain the current base tip: `git merge-base
+          --is-ancestor <base-tip> <pr-head>` fails against the fetched
+          mirror), update the branch FIRST (`update-branch` / rebase), let CI
+          re-run, and classify the failure only on the new head. A test the
+          base already fixed is not a branch defect; re-dispatching a builder
+          to fix it again wastes a build attempt and re-arms the surface fence
+          (papercut-kanban-watch-red-ci-retry-never-checks-base-staleness).
+        - **Unrelated-lane flake** — CHEAP. Before you write "real failure",
+          compare the failing test's crate/package path with the PR file list
+          (`GET repos/<owner>/<repo>/pulls/<n>/files` on Forgejo). When no
+          changed path is inside that crate/package AND the base is green on
+          the same lane, write `WATCH: unrelated-lane flake <test> — rerun`
+          and rerun the failed job. Do not re-dispatch the card, and do not
+          call it a real failure. File or append the de-flake card for the
+          test (papercut-kanban-watch-calls-unrelated-core-flake-real-failure-20260921).
         - **Real failing check** (mechanical formatter/linter OR a genuine
           test/logic failure) → enter the worktree (create it if absent), read
           logs, fix, re-run the card's VERIFY, push. HEAVY — one/wake. If the

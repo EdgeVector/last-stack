@@ -60,6 +60,7 @@ NONTERMINAL_MS = {"planned", "active", "blocked", "proving"}
 # MILESTONE_REQUEST status values that still advertise work to a reader.
 REQUEST_LIVE = {"pending", "active", "open"}
 DEFAULT_NORTH_STAR_PROOF_DIR = "$HOME/.last-stack/north-star-proofs"
+DEFAULT_HARNESS_ROOT = Path(__file__).resolve().parent.parent / "harness" / "north-star"
 
 
 def utc_now() -> str:
@@ -96,6 +97,25 @@ def brain_get_project(slug: str) -> Optional[str]:
 PROJECT_LIST_LIMIT = 5000
 
 
+class ProjectCensusUnavailable(RuntimeError):
+    """The sanctioned project census could not run (timeout, index, error)."""
+
+
+def portfolio_north_star_seeds(portfolio: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Distinct North Star slugs named by nonterminal milestones.
+
+    The degraded discovery path when the project census is unavailable. It is
+    a SEED set, not the closed set: a North Star with no milestone is missed,
+    and the report says so.
+    """
+    seen: list[str] = []
+    for row in portfolio:
+        ns = str(row.get("north_star") or row.get("northStar") or "").strip()
+        if ns and ns not in seen:
+            seen.append(ns)
+    return [{"slug": ns, "status": ""} for ns in seen]
+
+
 def brain_list_projects(limit: int = PROJECT_LIST_LIMIT) -> list[dict[str, Any]]:
     """List projects for NS discovery.
 
@@ -112,12 +132,20 @@ def brain_list_projects(limit: int = PROJECT_LIST_LIMIT) -> list[dict[str, Any]]
     fixes. Prefer board/seed point-reads when possible; this path is only for
     ranking NS projects when --ns is not set.
     """
-    cp = run_cmd(
-        ["brain", "list", "--type", "project", "--limit", str(limit), "--json"],
-        timeout=90,
-    )
+    try:
+        cp = run_cmd(
+            ["brain", "list", "--type", "project", "--limit", str(limit), "--json"],
+            timeout=90,
+        )
+    except subprocess.TimeoutExpired:
+        # A busy node used to kill the whole pass with a raw traceback
+        # (papercut-north-star-ledger-sync-typed-project-enumeration-traceback-20260922).
+        # The caller degrades to portfolio seeds instead.
+        raise ProjectCensusUnavailable("brain project census timed out after 90s")
     if cp.returncode != 0 or not cp.stdout.strip():
-        return []
+        raise ProjectCensusUnavailable(
+            (cp.stderr or cp.stdout or "brain project census failed").strip().splitlines()[0][:300]
+        )
     try:
         data = json.loads(cp.stdout)
     except json.JSONDecodeError:
@@ -307,6 +335,58 @@ when green and all MILESTONE_REQUESTs are done.
 """
 
 
+def terminal_harness_path(ns_slug: str) -> Path:
+    """Return the registered North Star harness path for one project."""
+    root = Path(os.environ.get("NORTH_STAR_HARNESS_ROOT", DEFAULT_HARNESS_ROOT))
+    return root / ns_slug / "run.sh"
+
+
+def terminal_harness_exists(ns_slug: str) -> bool:
+    """A validation card is valid only when its runnable harness exists."""
+    return terminal_harness_path(ns_slug).is_file()
+
+
+def terminal_harness_card_slug(ns_slug: str) -> str:
+    return f"{ns_slug}-terminal-proof-harness"
+
+
+def terminal_harness_card_body(
+    ns_slug: str, terminal_slug: str, ns_title: str
+) -> str:
+    harness = f"harness/north-star/{ns_slug}/run.sh"
+    return f"""Kind: pr
+Repo: EdgeVector/last-stack
+Base: main
+
+## GOAL
+
+Write the runnable terminal proof harness for the North Star `{ns_slug}`.
+
+The North Star names terminal card `{terminal_slug}`, but the registered harness
+path `{harness}` does not exist. The ledger cannot create a validation shell
+until a harness can produce the proof report.
+
+## STEPS
+
+1. Add `{harness}` and use the shared North Star proof helpers.
+2. Exercise the real product contract in offline mode without opening a shared
+   LastDB home or mutating shared infrastructure.
+3. Write a report whose first line is `PASS`, `PASS-OFFLINE`, or `FAIL`.
+
+## VERIFY
+
+Run `bash -n {harness}` and the harness in offline mode. Confirm that the
+report path is `~/.last-stack/north-star-proofs/{ns_slug}.md` and that a
+passing run writes a first line that starts with `PASS`.
+
+## END STATE
+
+The harness at `{harness}` runs the terminal proof for `{ns_title}`. A later
+ledger sync can create the named validation card with a machine-checkable
+DONE-WHEN predicate.
+"""
+
+
 def rewrite_legacy_terminal_done_when(body: str, ns_slug: str) -> tuple[str, bool]:
     """Heal the generator's old repo-relative proof predicate, if present."""
     replacement = f"DONE-WHEN: {terminal_done_when_predicate(ns_slug)}"
@@ -434,6 +514,8 @@ class NsPlan:
     terminal_slug: str
     request_updates: dict[str, str] = field(default_factory=dict)
     create_terminal: bool = False
+    create_harness: bool = False
+    harness_card_slug: str = ""
     terminal_body_update: str = ""
     mark_ns_done: bool = False
     notes: list[str] = field(default_factory=list)
@@ -493,8 +575,16 @@ def plan_ns(
     if terminal:
         card = kanban_show_card(terminal)
         if card is None:
-            plan.create_terminal = True
-            plan.notes.append(f"terminal_missing:{terminal}")
+            if terminal_harness_exists(slug):
+                plan.create_terminal = True
+                plan.notes.append(f"terminal_missing:{terminal}")
+            else:
+                plan.create_harness = True
+                plan.harness_card_slug = terminal_harness_card_slug(slug)
+                plan.notes.append(f"terminal_harness_missing:{slug}")
+                plan.notes.append(
+                    f"terminal_harness_path_missing:{terminal_harness_path(slug)}"
+                )
         else:
             col = str(card.get("column") or "")
             plan.notes.append(f"terminal_column:{col}")
@@ -593,6 +683,50 @@ def ensure_terminal_card(
     return f"created_terminal:{terminal_slug}"
 
 
+def ensure_terminal_harness_card(
+    *,
+    ns_slug: str,
+    terminal_slug: str,
+    ns_title: str,
+    apply: bool,
+) -> str:
+    """File one executable harness card instead of a hollow validation shell."""
+    harness_slug = terminal_harness_card_slug(ns_slug)
+    if not apply:
+        return f"would_create_harness:{harness_slug}"
+    if kanban_show_card(harness_slug) is not None:
+        return f"harness_exists:{harness_slug}"
+    body = terminal_harness_card_body(ns_slug, terminal_slug, ns_title)
+    cp = run_cmd(
+        [
+            "kanban",
+            "add",
+            harness_slug,
+            "--title",
+            f"Write terminal proof harness: {ns_slug}",
+            "--kind",
+            "pr",
+            "--column",
+            "todo",
+            "--north-star",
+            ns_slug,
+            "--repo",
+            "EdgeVector/last-stack",
+            "--base",
+            "main",
+            "--created-by",
+            "last-stack-north-star-ledger-sync",
+        ],
+        input_text=body,
+        timeout=120,
+    )
+    if cp.returncode != 0:
+        return f"error_create_harness:{harness_slug}:{cp.stderr.strip()[:200]}"
+    if kanban_show_card(harness_slug) is None:
+        return f"created_harness_unverified:{harness_slug}"
+    return f"created_harness:{harness_slug}"
+
+
 def update_terminal_card_body(terminal_slug: str, body: str, *, apply: bool) -> str:
     if not apply:
         return f"would_heal_terminal_done_when:{terminal_slug}"
@@ -622,6 +756,15 @@ def apply_plan(plan: NsPlan, raw_get: str, *, apply: bool) -> list[str]:
     if plan.create_terminal and plan.terminal_slug:
         actions.append(
             ensure_terminal_card(
+                ns_slug=plan.slug,
+                terminal_slug=plan.terminal_slug,
+                ns_title=title,
+                apply=apply,
+            )
+        )
+    elif plan.create_harness and plan.terminal_slug:
+        actions.append(
+            ensure_terminal_harness_card(
                 ns_slug=plan.slug,
                 terminal_slug=plan.terminal_slug,
                 ns_title=title,
@@ -751,10 +894,21 @@ def main(argv: Optional[list[str]] = None) -> int:
     portfolio = kanban_milestone_portfolio()
     by_slug, by_ns = index_milestones(portfolio)
 
+    census_degraded = ""
     if args.ns:
         targets = [{"slug": s} for s in args.ns]
     else:
-        projects = [p for p in brain_list_projects() if is_north_star_project(p)]
+        try:
+            projects = [p for p in brain_list_projects() if is_north_star_project(p)]
+        except ProjectCensusUnavailable as exc:
+            print(
+                "last-stack-north-star-ledger-sync: warning: project census unavailable "
+                f"({exc}); degrading to North Star seeds from the milestone portfolio. "
+                "North Stars without a milestone are not covered this pass.",
+                file=sys.stderr,
+            )
+            census_degraded = str(exc)
+            projects = portfolio_north_star_seeds(portfolio)
         # prefer in_progress
         def rank(p: dict[str, Any]) -> tuple[int, str]:
             st = str(p.get("status") or "").lower()
@@ -796,6 +950,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "terminal": plan.terminal_slug,
                 "request_updates": plan.request_updates,
                 "create_terminal": plan.create_terminal,
+                "create_harness": plan.create_harness,
+                "harness_card_slug": plan.harness_card_slug,
                 "heal_terminal_done_when": bool(plan.terminal_body_update),
                 "mark_ns_done": plan.mark_ns_done,
                 "notes": plan.notes,
@@ -804,7 +960,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         )
 
     if args.json:
-        print(json.dumps({"apply": apply, "reports": reports}, indent=2))
+        print(json.dumps({"apply": apply, "census_degraded": census_degraded, "reports": reports}, indent=2))
     else:
         print(f"last-stack-north-star-ledger-sync apply={apply} n={len(reports)}")
         for r in reports:

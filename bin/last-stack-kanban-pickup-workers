@@ -152,8 +152,11 @@ the full pickup prompt or start implementation. Only when the gate exits 10
 
 \`\`\`bash
 last_stack="\${LAST_STACK_ROOT:-\$HOME/.last-stack}"
-rr_out="/tmp/kanban-pickup-prompt.\$\$"
-rr_err="/tmp/kanban-pickup-rr.\$\$"
+# Temp files live in \$TMPDIR (routinesd sets it to the run scratch dir) and
+# are never removed here: the Codex exec guard rejects any command that
+# deletes a file, which made this block fail before it ran on every pickup fire.
+rr_out="\$(mktemp "\${TMPDIR:-/tmp}/kanban-pickup-prompt.XXXXXX")"
+rr_err="\$(mktemp "\${TMPDIR:-/tmp}/kanban-pickup-rr.XXXXXX")"
 if ! LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "\$last_stack/bin/last-stack-routine-read" kanban-pickup >"\$rr_out" 2>"\$rr_err"; then
   # Class A: install/host-track freeze. Heal once (zero-LLM), then retry read.
   if [ -x "\$last_stack/bin/last-stack-class-a-heal" ]; then
@@ -167,7 +170,6 @@ if ! LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "\$last_stack/bin/last-stack-routine-
     "\$last_stack/bin/last-stack-brain-append-heartbeat" --line \\
       "kanban-pickup \$(date -u +%Y-%m-%dT%H:%M:%SZ) noop stale-last-stack-install routine-read-failed no_card_claimed" || true
     printf '%s %s\\n' 'ROUTINE_RESULT' 'outcome=noop detail=stale-last-stack-install routine-read-failed no_card_claimed'
-    rm -f "\$rr_out" "\$rr_err"
     exit 0
   fi
   # Healed mid-fire: next scheduled fire should claim with the new prompt.
@@ -175,11 +177,9 @@ if ! LASTSTACK_ROUTINE_SKIP_UPDATE_CHECK=1 "\$last_stack/bin/last-stack-routine-
   "\$last_stack/bin/last-stack-brain-append-heartbeat" --line \\
     "kanban-pickup \$(date -u +%Y-%m-%dT%H:%M:%SZ) noop stale-last-stack-install healed-before-claim no_card_claimed" || true
   printf '%s %s\\n' 'ROUTINE_RESULT' 'outcome=noop detail=stale-last-stack-install healed-before-claim no_card_claimed'
-  rm -f "\$rr_out" "\$rr_err"
   exit 0
 fi
 cat "\$rr_out"
-rm -f "\$rr_out" "\$rr_err"
 \`\`\`
 
 If that command exits 0, treat its **stdout** as the authoritative prompt for

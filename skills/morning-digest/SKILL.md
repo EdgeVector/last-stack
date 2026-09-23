@@ -69,8 +69,8 @@ The raw data is mechanical. Layer on the *meaning*:
   still live against the durable records (linked `done`/project record + `origin/main`
   + the board) before surfacing — if the work landed/moot, it's resolved, not waiting.
 - **What's stuck but NOT yours — the "🔧 Stuck in the machine" section.** Read the
-  `blocked-on-engineering:` tokens across the `active-programs` rollup blocks (`brain
-  get active-programs --type project`). These are the engineering/dev blockers the
+  blocked cards on the board (`kanban list --column doing --json`, then
+  `kanban show <slug> --json` for cards with a `block_status`); `active-programs` is RETIRED (Tom 2026-07-23, `preference-active-programs-retired`); it has no record. These are the engineering/dev blockers the
   autonomous loop owns — red CI, dep bugs, dep-gated cards — NOT decisions for Tom.
   List each: slug · program · the one-line reason · and a moving-vs-wedged read (open
   PR + auto-merge armed / CI red / dep-blocked behind <slug> / idle >48h = genuinely

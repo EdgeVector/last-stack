@@ -90,8 +90,8 @@ Flags:
   --cr-json PATH   use this `cr view --json` object instead of calling lastgit
   --ci-json PATH   use this `ci status --json` object instead of calling lastgit
   --base-oid OID   use this base-branch tip instead of `lastgit ref`
-  --git-dir PATH   ancestry repository (default: the repo's bare mirror, then
-                   the portal cache)
+  --git-dir PATH   ancestry repository (default: the portal cache, then the
+                   LastGit mirror, for --venue forgejo; the reverse for lastgit)
   --no-fetch       never fetch; an object that is missing stays missing
 EOF
 }
@@ -118,6 +118,14 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -n "$repo" ] || { echo "--repo is required" >&2; usage; exit 2; }
+# Accept the owner/name form every other forge helper takes. The API paths and
+# mirror paths below add the owner themselves, so `--repo EdgeVector/fold` read
+# /repos/EdgeVector/EdgeVector/fold/... and came back `cr-unreadable` for a
+# readable PR (papercut-pr-reaper-forgejo-close-guard-cr-unreadable-20260922).
+case "$repo" in
+  EdgeVector/*) repo="${repo#EdgeVector/}" ;;
+  */*) echo "--repo must be <name> or EdgeVector/<name>: $repo" >&2; exit 2 ;;
+esac
 case "$venue" in
   lastgit) [ -n "$cr_id" ] || { echo "--cr is required" >&2; usage; exit 2; } ;;
   forgejo) [ -n "$pr_number" ] || { echo "--pr is required with --venue forgejo" >&2; usage; exit 2; }; cr_id="#$pr_number" ;;
@@ -244,8 +252,19 @@ case "$base_oid" in
 esac
 
 # ── ancestry ────────────────────────────────────────────────────────────────
+# Forgejo PRs read the portal cache FIRST. Its `origin` is the forge (every
+# portal mirror since last-stack PR 6, 2026-09-05). `~/.lastgit/mirrors/<repo>`
+# is a LastGit relic whose `origin` is the read-only GitHub mirror: a fetch
+# there exits 0 and never brings a Forgejo PR head, so every Forgejo PR read
+# `ancestry-object-missing` and the reaper could terminalize nothing
+# (papercut-pr-reaper-forgejo-ancestry-object-missing, 2026-09-22).
 if [ -z "$git_dir" ]; then
-  for candidate in "$HOME/.lastgit/mirrors/$repo" "$HOME/.cache/edgevector-git/$repo.git"; do
+  if [ "$venue" = "forgejo" ]; then
+    set -- "$HOME/.cache/edgevector-git/$repo.git" "$HOME/.lastgit/mirrors/$repo"
+  else
+    set -- "$HOME/.lastgit/mirrors/$repo" "$HOME/.cache/edgevector-git/$repo.git"
+  fi
+  for candidate in "$@"; do
     if [ -d "$candidate" ] && "$git_bin" -C "$candidate" rev-parse --git-dir >/dev/null 2>&1; then
       git_dir="$candidate"
       break
@@ -258,8 +277,27 @@ have_object() { "$git_bin" -C "$git_dir" cat-file -e "${1}^{commit}" 2>/dev/null
 
 if ! have_object "$head_oid" || ! have_object "$base_oid"; then
   if [ "$no_fetch" = "0" ]; then
-    "$git_bin" -C "$git_dir" fetch --quiet --prune origin >/dev/null 2>&1 \
-      || "$git_bin" -C "$git_dir" fetch --quiet --prune lastgit >/dev/null 2>&1 || true
+    if [ "$venue" = "forgejo" ]; then
+      # Name the PR head explicitly: a PR from a deleted or fork branch has no
+      # refs/heads entry, but Forgejo always serves refs/pull/<n>/head. No
+      # destination refspec, so no local ref moves; only objects arrive.
+      # Forgejo repos are private: an unattended fetch needs the forge token.
+      # Plain git asks the login keychain, which a routine shell cannot unlock
+      # ("failed to get: -25293", then "could not read Username"), so the
+      # objects never arrived and routines#26 read ancestry-object-missing.
+      # last-stack-forge-git supplies the token (keychain, then lastsecrets).
+      forge_git="${LAST_STACK_FORGE_GIT:-$(dirname "$forge_api")/last-stack-forge-git}"
+      if [ -x "$forge_git" ]; then
+        GIT_TERMINAL_PROMPT=0 "$forge_git" -C "$git_dir" fetch --quiet --no-write-fetch-head origin \
+          "refs/pull/$pr_number/head" "refs/heads/${base_ref#refs/heads/}" >/dev/null 2>&1 || true
+      else
+        GIT_TERMINAL_PROMPT=0 "$git_bin" -C "$git_dir" fetch --quiet --no-write-fetch-head origin \
+          "refs/pull/$pr_number/head" "refs/heads/${base_ref#refs/heads/}" >/dev/null 2>&1 || true
+      fi
+    else
+      "$git_bin" -C "$git_dir" fetch --quiet --prune origin >/dev/null 2>&1 \
+        || "$git_bin" -C "$git_dir" fetch --quiet --prune lastgit >/dev/null 2>&1 || true
+    fi
   fi
 fi
 if ! have_object "$head_oid" || ! have_object "$base_oid"; then

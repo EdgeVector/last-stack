@@ -143,4 +143,24 @@ set -e
 printf '%s\n' "$out" | jq -e '.status == "failed"' >/dev/null \
   || { printf 'FAIL: a failed execution must read as failed: %s\n' "$out" >&2; exit 1; }
 
+# --retry N: the same pair gets its own key and records the attempt.
+base_key="$(
+  HOME="$mock_home" PATH="$fake_bin:$PATH" LASTDB_SAFE_UPGRADE_FOLD_GIT_DIR="$repo" \
+  "$ROOT/bin/last-stack-safe-upgrade-loom" --dry-run --candidate "$candidate/lastdbd" \
+    --source-git-oid "$oid" --json | jq -r .key
+)"
+retry_out="$(
+  HOME="$mock_home" PATH="$fake_bin:$PATH" LASTDB_SAFE_UPGRADE_FOLD_GIT_DIR="$repo" \
+  "$ROOT/bin/last-stack-safe-upgrade-loom" --dry-run --candidate "$candidate/lastdbd" \
+    --source-git-oid "$oid" --retry 2 --json
+)"
+printf '%s\n' "$retry_out" | jq -e --arg k "${base_key}-retry-2" '.key == $k and .attempt == 2' >/dev/null \
+  || { printf 'FAIL: --retry 2 must key the attempt: %s\n' "$retry_out" >&2; exit 1; }
+if HOME="$mock_home" PATH="$fake_bin:$PATH" LASTDB_SAFE_UPGRADE_FOLD_GIT_DIR="$repo" \
+  "$ROOT/bin/last-stack-safe-upgrade-loom" --dry-run --candidate "$candidate/lastdbd" \
+    --source-git-oid "$oid" --retry 1 --json >/dev/null 2>&1; then
+  echo "FAIL: --retry 1 must be refused" >&2
+  exit 1
+fi
+
 printf 'PASS: safe-upgrade Loom launcher reads back a terminal success, waits through running, reports failure\n'

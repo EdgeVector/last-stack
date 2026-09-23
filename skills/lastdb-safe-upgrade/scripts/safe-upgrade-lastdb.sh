@@ -2435,6 +2435,13 @@ fi
 # become a backup under another name.
 release_rollback_point
 
+last_stack_root="$(printenv LAST_STACK_ROOT || printf '%s' "$HOME/.last-stack")"
+reopen_deferred_cards="$last_stack_root/bin/last-stack-kanban-reopen-deferred"
+if [ -x "$reopen_deferred_cards" ]; then
+  "$reopen_deferred_cards" --trigger lastdb-safe-upgrade >/dev/null 2>&1 || \
+    warn "deferred-card reopen pass failed after GREEN cutover; next activation retries"
+fi
+
 echo ""
 echo "VERDICT: GREEN"
 echo "SUMMARY: upgraded lastdbd $CURRENT_VER → $INSTALLED and lastdb → ${INSTALLED_CLI:-?}; venue=$VENUE; cutover_s=$CUTOVER_SECS; probe + live Board read OK; probe_rss_mb=${PROBE_RSS_MB:-?} live_rss_mb=${LIVE_RSS_MB:-?} limit_mb=$(resolve_rss_limit_mb); rollback point released"

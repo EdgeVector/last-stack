@@ -10,4 +10,6 @@ python3 -m py_compile "$bin"
 # Exercise the real CLI against isolated inputs; a dry run still reads the
 # board, so the production config made this test depend on primary latency.
 python3 "$ROOT/tests/factory-health-dry-run.py"
+# The doing-age clock must not be resettable by the re-dispatch loop it measures.
+python3 "$ROOT/tests/factory-health-age-clock.py"
 echo "ok last-stack-factory-health"

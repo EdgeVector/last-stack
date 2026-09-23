@@ -48,8 +48,9 @@ the dispatch envelope. Never invent trailers in interactive sessions. Prefer
 filing a fix **card** over landing code in this routine.
 
 ## Setup
-- Drive the board CLI from `<board repo dir>` with `<board CLI> ...` (`fkanban`
-  or `kanban` shim).
+- Drive the board CLI from `<board repo dir>` with `<board CLI> ...`. On an
+  EdgeVector host `<board CLI>` is `kanban` and `<brain-cli>` is `brain`.
+  There is no `fkanban` binary; the `fkanban` in routine ids is a legacy name.
 - Follow the **kanban-agent** skill, **VALIDATE MODE** — it is the source of
   truth for outcomes; this prompt is the trigger + candidate policy.
 - Normalize scheduled-shell PATH before CLI-heavy work:
@@ -138,6 +139,17 @@ Then re-eval the DONE-WHEN. Do not invent new harness slugs not listed by
      milestone `proof_card` when that metadata is visible
    - Skip empty-body shells and pure meta "split into children" capstones
      with no VERIFY (e.g. planning-only dogfood shells)
+   - Skip a card whose BODY holds a human gate while `block_status` is empty:
+     a `Human-Gate:` or non-agent `Requires-Actor:` header, or an unresolved
+     top-level `NEEDS-HUMAN:` line. Backfill the structure once
+     (`set <slug> --block-status needs_human --block-reason "<that line>"`)
+     so the next scan skips it on the field alone
+     (papercut-validation-body-human-gate-with-empty-block-status-20260922).
+   - Skip (and note once with `BLOCKED: no registered proof harness for <ns>`)
+     a card whose DONE-WHEN names `~/.last-stack/north-star-proofs/<ns>.md`
+     when `last-stack-north-star-proof --list` has no `<ns>`. The harness is
+     missing, not the proof; running the card only returns `unknown north
+     star slug` (papercut-kanban-validation-card-references-unregistered-north-star-20260922).
 
 3. **Never** use `kanban pickup claim` / `kanban pickup claim`. Do not move a
    proof card to `todo` just to "make it pickable."

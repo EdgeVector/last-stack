@@ -361,14 +361,21 @@ registry_index_local_copy() {
   fi
   header=()
   [ -z "$token" ] || header=(-H "Authorization: token $token")
-  if ! curl -fsS --max-time 20 "${header[@]}" -o "$cache/$channel.json.tmp" "${index%/}/$channel.json"     || ! curl -fsS --max-time 20 "${header[@]}" -o "$cache/$channel.json.sig.tmp" "${index%/}/$channel.json.sig"; then
-    rm -f "$cache/$channel.json.tmp" "$cache/$channel.json.sig.tmp"
+  # Per-writer temp names. Two refreshes that overlap used to share
+  # "$channel.json.tmp": one renamed it away and the other printed
+  # "mv: rename ... next.json.tmp: No such file or directory"
+  # (papercut-host-track-registry-index-cache-rename-race-20260921).
+  local tmp_json="$cache/$channel.json.tmp.$$" tmp_sig="$cache/$channel.json.sig.tmp.$$"
+  if ! curl -fsS --max-time 20 "${header[@]}" -o "$tmp_json" "${index%/}/$channel.json"     || ! curl -fsS --max-time 20 "${header[@]}" -o "$tmp_sig" "${index%/}/$channel.json.sig"; then
+    rm -f "$tmp_json" "$tmp_sig"
     printf 'host-track: registry index %s/%s.json is not readable (forge token %s)\n' \
       "$index" "$channel" "$([ -n "$token" ] && echo present || echo absent)" >&2
     return 1
   fi
-  mv -f "$cache/$channel.json.tmp" "$cache/$channel.json"
-  mv -f "$cache/$channel.json.sig.tmp" "$cache/$channel.json.sig"
+  # rename(2) is atomic per file; the last writer wins, and both writers
+  # fetched the same published index.
+  mv -f "$tmp_json" "$cache/$channel.json"
+  mv -f "$tmp_sig" "$cache/$channel.json.sig"
   printf '%s\n' "$cache"
 }
 
@@ -3036,6 +3043,20 @@ app_is_stale() {
   [ "$stale" = "true" ]
 }
 
+reopen_deferred_cards() {
+  local helper reopen_flag
+  reopen_flag="$(printenv HOST_TRACK_REOPEN_DEFERRED || printf '1')"
+  [ "$reopen_flag" != "0" ] || return 0
+  helper="$ROOT/bin/last-stack-kanban-reopen-deferred"
+  if [ ! -x "$helper" ]; then
+    helper="$(command -v last-stack-kanban-reopen-deferred 2>/dev/null || true)"
+  fi
+  [ -x "$helper" ] || return 0
+  "$helper" --trigger host-track >/dev/null 2>&1 || {
+    printf '%s\n' 'host-track: deferred-card reopen pass failed; next activation retries' >&2
+  }
+}
+
 refresh_cmd() {
   local force=0 force_if_stale=0 all=0 app="" failures=0 rc eff
   while [ "$#" -gt 0 ]; do
@@ -3072,6 +3093,7 @@ refresh_cmd() {
     if [ "${HOST_TRACK_ACTIVATE:-0}" != "1" ] && [ "${HOST_TRACK_SKIP_SOAK_WATCH:-0}" != "1" ]; then
       soak_watch_cmd --all || failures=$((failures + 1))
     fi
+    reopen_deferred_cards
     [ "$failures" -eq 0 ]
     return
   fi
@@ -3083,6 +3105,7 @@ refresh_cmd() {
   if [ "${HOST_TRACK_ACTIVATE:-0}" != "1" ] && [ "${HOST_TRACK_SKIP_SOAK_WATCH:-0}" != "1" ]; then
     soak_watch_one "$app"
   fi
+  reopen_deferred_cards
 }
 
 

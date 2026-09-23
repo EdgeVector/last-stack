@@ -3,7 +3,7 @@ name: north-star-hygiene
 description: |
   Keep brain North Star projects in sync with kanban card `north_star` fields.
   Detects orphan NS slugs (cards point at a missing brain project), materializes
-  real `project` North Star records from board + active-programs + designs,
+  real `project` North Star records from board + milestones + designs,
   clears high-confidence mis-tags, and refreshes the north-star-dashboard.
   Use when: "orphan north star", "fold discovery's orphan NS", "north star
   hygiene", "cards point at missing north star", "create the north star
@@ -98,14 +98,14 @@ For each entry in `orphan_north_stars_live` (then, if time remains, done-only):
    `brain get <slug> --type project` succeeds → skip.
 2. **Gather evidence (cheap first):**
    - `kanban show <card>` for up to ~8 live cards (titles + GOAL/END STATE)
-   - `brain get active-programs` — section that mentions the slug
+   - (Do not read `active-programs`: `active-programs` is RETIRED (Tom 2026-07-23, `preference-active-programs-retired`); it has no record.)
    - `brain ask "<slug> <product keywords from card titles>"` (limit 5)
    - any design/concept the ask returns (e.g. Discovery architecture design)
 3. **Write the project** with stdin:
 
 ```bash
 slug="<exact orphan slug>"
-body_file="$(mktemp)"
+body_file="$(mktemp "${TMPDIR:-/tmp}/body.XXXXXX")"
 export NORTH_STAR_SLUG="$slug"
 cat >"$body_file" <<'EOF'
 ---
@@ -120,7 +120,7 @@ tags: [north-star, <product tags>]
 
 **Slug (stable card field):** `__NORTH_STAR_SLUG__`
 **Repo / venue:** <from cards>
-**Related:** [[active-programs]], <designs if any>
+**Related:** <designs if any>
 
 ## End state
 <5–8 bullets: product done, not libraries. Pull from card DONE-WHEN / design.>
@@ -144,7 +144,7 @@ Card field `north_star: __NORTH_STAR_SLUG__` is canonical — do not invent a se
 EOF
 perl -0pi -e 's/__NORTH_STAR_SLUG__/$ENV{NORTH_STAR_SLUG}/g' "$body_file"
 brain put "$slug" --type project <"$body_file"
-rm -f "$body_file"
+# No cleanup step: the Codex exec guard rejects file deletion. $TMPDIR is the run scratch dir.
 brain get "$slug" --type project | head -20   # confirm
 ```
 
@@ -216,12 +216,11 @@ When the refresh succeeds, re-run `--stdout hygiene` and confirm
 ## Out of scope
 
 - Promoting/moving cards or shipping product PRs
-- Editing `active-programs` prose (program-driver / consolidate-brain)
 - Inventing NS for unattributed cards
 - Claude Artifact publishing (local HTML + brain `north-star-dashboard` is enough)
 
 ## Related
 
 - Skill/tool: `last-stack-north-star-dashboard` · routine `north-star-rollup`
-- Driving index: brain `active-programs`
+- Driving index: `kanban milestone portfolio` (`active-programs` is retired: `preference-active-programs-retired`)
 - Orphan *completion* ledger (different problem): `fkanban-orphan-completion-checkpoints`
