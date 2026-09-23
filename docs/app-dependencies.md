@@ -24,7 +24,7 @@ An audit agent read the call sites. A second reader checked the key claims.
 | lastdbd | - | - | fold: the daemon calls no other app. It writes the search inbox that search and lastseek read. |
 | lastdb | lastdbd | - | fold: the CLI talks to the daemon socket. |
 | brain | lastdbd | lastseek, search, lastdb | brain `src/client.ts:89` socket. `src/search-plane.ts:1-20`: LastSeek first, then search, then the node search. `lastdb` only for `brain init` consent. |
-| kanban | lastdbd, situations | brain, lastseek, last-stack | fkanban `src/client.ts:49` socket. `src/situations.ts:141,205-216`: `fsituations preflight` fails closed and blocks a move to doing. brain checkpoint, `--semantic` search and the forge-api fallback degrade. |
+| kanban | lastdbd, situations, loom | brain, lastseek, last-stack | fkanban `src/client.ts:49` socket. `src/situations.ts:141,205-216`: `fsituations preflight` fails closed and blocks a move to doing. loom: an owner decision, not a code edge (see below). brain checkpoint, `--semantic` search and the forge-api fallback degrade. |
 | situations | lastdbd | - | situations `src/client.ts:3`. |
 | routines | - | situations, kanban, lastsecrets, configurations, lastdbd, brain | routines: each call has a fallback (`src/route-engine.ts:164`, `src/capacity-runtime.ts:42`, `src/claude-auth.ts:138`, `src/project-config.ts:106`). |
 | lastsecrets | lastdbd | - | lastsecrets `src/lastdb.ts:16`. |
@@ -60,6 +60,10 @@ installs the LastDB daemon from Homebrew.
   to loom's `loom-land-card-pickup-prompt.md`
   (`~/.routines/registry/last-stack-fkanban-pickup-w6.toml`). That is a
   routine setting on this host, not an app edge.
+  **Tom, 2026-09-23: declare it anyway.** The pickup path runs Kanban cards
+  through Loom, so a Kanban install without Loom is not a working factory.
+  `kanban` now `requires` `loom` in the Host Track registry. The public bundle
+  does not install Loom yet, so the public registry does not carry the edge.
 - **"brain requires lastseek."** brain prefers LastSeek and falls back to
   search and then to the node search. brain's own CI replaces lastseek with a
   stub that exits 127. So the edge is `recommends`, not `requires`.
