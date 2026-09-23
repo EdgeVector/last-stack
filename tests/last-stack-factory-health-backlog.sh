@@ -11,6 +11,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 bin="$ROOT/bin/last-stack-factory-health"
 
 python3 - "$bin" <<'PY'
+import importlib.machinery
 import importlib.util
 import sys
 
