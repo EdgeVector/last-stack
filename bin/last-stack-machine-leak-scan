@@ -12,8 +12,8 @@ if [ -x "$last_stack/bin/last-stack-lint-machine-leaks" ]; then
   if [ -d "$last_stack/artifacts/current" ]; then
     ROOT="$last_stack/artifacts/current"
   fi
-elif [ -x "$(cd "$(dirname "$0")/.." && pwd -P)/bin/last-stack-lint-machine-leaks" ]; then
-  ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+elif [ -x "$(cd "$(dirname "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)/bin/last-stack-lint-machine-leaks" ]; then
+  ROOT="$(cd "$(dirname "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 else
   echo "machine-leak-scan: last-stack-lint-machine-leaks not found" >&2
   exit 2

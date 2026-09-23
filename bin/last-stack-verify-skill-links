@@ -42,7 +42,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+ROOT="$(cd "$(dirname "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 
 resolve_source_root() {
   local candidate

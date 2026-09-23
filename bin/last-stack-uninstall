@@ -5,7 +5,7 @@
 # (or is a copy of it), so it never touches skills you added yourself.
 set -e
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+ROOT="$(cd "$(dirname "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 SKILLS_SRC="$ROOT/skills"
 
 # Collect the skill names this repo provides.

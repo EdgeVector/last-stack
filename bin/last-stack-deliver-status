@@ -21,7 +21,7 @@
 # With --approve: Mini seals + sends through Exemem messaging.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+ROOT="$(cd "$(dirname "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 # shellcheck source=../lib/lastdb-http.sh
 . "$ROOT/lib/lastdb-http.sh"
 

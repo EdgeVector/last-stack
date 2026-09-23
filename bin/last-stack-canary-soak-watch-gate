@@ -2,7 +2,7 @@
 # Stateless hourly reconciler for the LastDB canary v2 evidence ledger.
 set -euo pipefail
 
-ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+ROOT="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
 
 pipeline="${LAST_STACK_CANARY_V2_PIPELINE:-${ROOT}/bin/last-stack-canary-pipeline}"

@@ -3,7 +3,7 @@
 # See brain sop-north-star-terminal-verification.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+ROOT="$(cd "$(dirname "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 BIN="$ROOT/bin/last-stack-north-star-dashboard"
 if [ ! -x "$BIN" ]; then
   BIN="$(command -v last-stack-north-star-dashboard || true)"
