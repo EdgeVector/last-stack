@@ -124,23 +124,21 @@ def find_staged_build(build: str) -> tuple[Path, str]:
 
 
 def find_promote_script(explicit: str | None) -> Path:
-    candidates: list[Path] = []
-    if explicit:
-        candidates.append(Path(explicit))
-    env = os.environ.get("LAST_STACK_CANARY_FORGE_PROMOTE", "")
-    if env:
-        candidates.append(Path(env))
-    candidates.append(HOME / ".lastgit/mirrors/fold/scripts/release/forge-promote-homebrew-stable.sh")
-    wt_root = HOME / ".fkanban" / "worktrees"
-    if wt_root.is_dir():
-        for child in sorted(wt_root.iterdir(), reverse=True):  # walk-ok: one level, fixed root
-            if child.name.startswith("fold-"):
-                candidates.append(child / "scripts/release/forge-promote-homebrew-stable.sh")
-    for c in candidates:
-        if c.is_file():
-            return c
-    die("forge-promote-homebrew-stable.sh not found; pass --fold-promote-script")
-    return Path()
+    """fold's promote script from fold's Forgejo main (lib/fold_promote_script.py).
+
+    Never ~/.lastgit/mirrors/fold: frozen at fold 06965ddf, it cloned
+    lastdb:///homebrew-lastdb and exited 128
+    (papercut-release-publish-uses-stale-lastgit-fold-mirror-20260923)."""
+    sys.path.insert(0, str(ROOT / "lib"))
+    import fold_promote_script  # noqa: E402  (lib/ is not a package)
+
+    header = forge_git()[1:]
+    try:
+        script, source = fold_promote_script.resolve(explicit, auth_header=header)
+    except fold_promote_script.PromoteScriptError as exc:
+        die(str(exc))
+    print(f"promote script: {script} ({source})")
+    return script
 
 
 # Stable tags live on the public GitHub tap (the bottle CDN), not on the
@@ -255,7 +253,7 @@ def source_map(config_path: Path) -> dict[str, str]:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="last-stack-release-publish", description=__doc__.split("\n\n")[0])
-    parser.add_argument("--lastdb-version", required=True, help="the proved node build string, e.g. 0.23.3-2117-gffb8eb6c4")
+    parser.add_argument("--lastdb-version", help="the proved node build string, e.g. 0.23.3-2117-gffb8eb6c4 (required)")
     parser.add_argument("--version-tag", help="stable tag to publish as (default: next patch after the latest tap tag)")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--skip-brew", action="store_true", help="registry rows only (the node is already on brew)")
@@ -265,8 +263,15 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--no-verify-reachable", action="store_true", help="do not fetch each commit from its public source (not for a real publish)")
     parser.add_argument("--if-needed", action="store_true",
                         help="unattended mode: refuse a build with no `next` rows; skip each half that is already published; exit 0 when nothing is left to do")
+    parser.add_argument("--resolve-promote-script", action="store_true",
+                        help="fetch fold's Forgejo main, resolve and check the promote script, print its path, and exit")
     args = parser.parse_args(argv)
 
+    if args.resolve_promote_script:
+        find_promote_script(args.fold_promote_script)
+        return 0
+    if not args.lastdb_version:
+        parser.error("--lastdb-version is required")
     build = args.lastdb_version.strip()
     build_dir, oid = find_staged_build(build)
 

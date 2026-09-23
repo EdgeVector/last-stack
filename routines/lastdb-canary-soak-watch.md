@@ -52,7 +52,14 @@ it), then runs `last-stack-release-publish --lastdb-version <build>
 --if-needed` and notifies with the result. Since 2026-09-21 a green quiet
 window IS the stable decision (decision-2026-09-21-stable-publish-is-automatic-on-green).
 The publisher refuses a build with no proved `next` rows and skips halves
-that are already public. The other actions stay planned until a command is
+that are already public. A failed promote action is retried on a
+later hourly tick: at most `LAST_STACK_CANARY_V2_PROMOTE_MAX_ATTEMPTS`
+attempts (default 6), at least `LAST_STACK_CANARY_V2_PROMOTE_RETRY_SECONDS`
+apart (default 3000). Each retry posts a Situations notice, and so does the
+last failed attempt. Other actions stay one attempt per verdict token.
+The publisher takes fold's promote script from fold's Forgejo main (the
+bare mirror `~/.cache/edgevector-git/fold.git`, fetched first), never from
+`~/.lastgit/mirrors`, and refuses a script that names a `lastdb:///` remote. The other actions stay planned until a command is
 configured.
 
 Allowed actions: build, heal, line-stop, pause, retire, promote.
