@@ -379,16 +379,13 @@ function parseJsonLoose(raw) {
 }
 
 function listDoing() {
-  // Prefer --all --full-body: bare list returns empty body previews, which
-  // hides PR: / Requires-Deploy: headers needed for heal + deploy-park.
+  // Keep the BoardCards read as a lightweight column preview. Each candidate
+  // is point-read below for Card truth and any body-only headers.
   let out = run(
     boardCli,
-    ["list", "--column", "doing", "--json", "--all", "--full-body"],
-    { timeout: 180000 },
+    ["list", "--column", "doing", "--json", "--all"],
+    { timeout: 120000 },
   );
-  if (!out.ok) {
-    out = run(boardCli, ["list", "--column", "doing", "--json", "--all"], { timeout: 120000 });
-  }
   if (!out.ok) {
     out = run(boardCli, ["list", "--column", "doing", "--json"], { timeout: 120000 });
   }
@@ -596,7 +593,7 @@ function confirmDoing(slug) {
   const card = data.card && typeof data.card === "object" ? data.card : data;
   const column = String(card.column || "").trim().toLowerCase();
   if (!column) return null;
-  return { column };
+  return { column, card };
 }
 
 function worktreeFor(slug) {
@@ -1045,6 +1042,7 @@ for (const card of cards) {
     seenDoingSlugs.delete(slug);
     continue;
   }
+  if (truth && truth.card) Object.assign(card, truth.card);
   const fieldPr = String(card.pr_url || card.prUrl || card.pr || "").trim();
   const url = prUrlOf(card);
   const branch =
@@ -1405,8 +1403,9 @@ def strip(s):
 def confirm_doing(slug):
     """Confirm the column against `show` (Card truth) before any move.
 
-    `kanban list --column doing` serves BoardCards rows that can lag the Card
-    tip. Fail OPEN: an unavailable or unparsable show keeps legacy behavior.
+    `kanban list --column doing` serves a lightweight BoardCards preview that
+    can lag the Card tip. Return the keyed Card read for body-only headers.
+    Fail OPEN: an unavailable or unparsable show keeps preview behavior.
     """
     ok, out, _ = run([board_cli, "show", slug, "--json"], timeout=45)
     if not ok:
@@ -1419,15 +1418,13 @@ def confirm_doing(slug):
         return None
     card = data.get("card") if isinstance(data.get("card"), dict) else data
     column = str(card.get("column") or "").strip().lower()
-    return {"column": column} if column else None
+    return {"column": column, "card": card} if column else None
 
 def list_doing():
     ok, out, err = run(
-        [board_cli, "list", "--column", "doing", "--json", "--all", "--full-body"],
-        timeout=180,
+        [board_cli, "list", "--column", "doing", "--json", "--all"],
+        timeout=120,
     )
-    if not ok:
-        ok, out, err = run([board_cli, "list", "--column", "doing", "--json", "--all"], timeout=120)
     if not ok:
         ok, out, err = run([board_cli, "list", "--column", "doing", "--json"], timeout=120)
     if not ok:
@@ -2029,6 +2026,10 @@ for card in cards:
         res["flagged"].append(f"stale-list-row:{slug}:{truth['column']}")
         seen_doing_slugs.discard(slug)
         continue
+    if truth and truth.get("card"):
+        hydrated = dict(card)
+        hydrated.update(truth["card"])
+        card = hydrated
     field_pr = (card.get("pr_url") or card.get("prUrl") or card.get("pr") or "").strip()
     url = pr_url(card)
     branch = str(card.get("branch") or "").strip() or parse_body_header(body_of(card), "Branch")

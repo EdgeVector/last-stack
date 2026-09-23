@@ -56,7 +56,7 @@ Default board is `default`. Only `list` / `add` take `--board`; `show` /
 `move` / `rm` reject it.
 
 Health check is socket-backed `brain get dogfood-registry --type project` then
-`kanban list --column todo --json`. Do not use `brain doctor`, `kanban doctor`,
+`kanban ping`. Do not use `brain doctor`, `kanban doctor`,
 or TCP `:9001`. Busy-node (`service_timeout` / too many concurrent reads) →
 STOP, heartbeat `noop busy-node`.
 
