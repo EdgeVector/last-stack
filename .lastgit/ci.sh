@@ -758,4 +758,10 @@ ci_test tests/last-stack-ci-shard-supervisor.sh
 # forge + fake brain + fake board, no node, no network.
 # APPENDED (see the shard-stability note above): ci_test shards by list position.
 ci_test tests/last-stack-pipeline-forge-pr-ledger.sh
+# W3a helper papercuts (2026-09-23). Hermetic fixtures, no network.
+# APPENDED before the registration guard, which stays last.
+ci_test tests/last-stack-worktree-reclaim-bare-mirror.sh
+ci_test tests/host-track-status-unknown-app.sh
+ci_test tests/last-stack-host-track-links-bare-helpers.sh
+ci_test tests/last-stack-worktree-reclaim-lsof-fallback.sh
 ci_test tests/last-stack-ci-test-registration.sh

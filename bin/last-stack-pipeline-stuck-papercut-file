@@ -140,36 +140,53 @@ def main() -> int:
         if slug and VALID_SLUG.match(slug) and slug not in candidates:
             candidates.append(slug)
 
-    for slug in candidates:
-        record = typed_get(args.brain_bin, slug)
-        if not is_open(record):
-            continue
+    def append_to(slug: str, extra: dict[str, Any]) -> int:
         if args.dry_run:
             return emit(
-                {"ok": True, "action": "append", "slug": slug, "cr_id": cr_id, "dry_run": True},
+                {"ok": True, "action": "append", "result": "appended", "slug": slug,
+                 "cr_id": cr_id, "dry_run": True, **extra},
                 args.json_out,
             )
-        proc = run(
-            [args.brain_bin, "append", slug, "--type", "papercut"],
-            stdin=note,
-            timeout=60,
-        )
+        proc = run([args.brain_bin, "append", slug, "--type", "papercut"], stdin=note, timeout=60)
         if proc.returncode != 0:
             return emit(
-                {
-                    "ok": False,
-                    "action": "append",
-                    "slug": slug,
-                    "cr_id": cr_id,
-                    "reason": "append_failed",
-                    "error": proc.stderr.strip(),
-                },
+                {"ok": False, "action": "append", "slug": slug, "cr_id": cr_id,
+                 "reason": "append_failed", "error": proc.stderr.strip(), **extra},
                 args.json_out,
             )
         return emit(
-            {"ok": True, "action": "append", "slug": slug, "cr_id": cr_id},
+            {"ok": True, "action": "append", "result": "appended", "slug": slug,
+             "cr_id": cr_id, **extra},
             args.json_out,
         )
+
+    existing: dict[str, dict[str, Any]] = {}
+    for slug in candidates:
+        record = typed_get(args.brain_bin, slug)
+        if record is not None:
+            existing[slug] = record
+        if not is_open(record):
+            continue
+        return append_to(slug, {})
+
+    # The root-cause slug exists but is not open (partial, fixed, duplicate,
+    # ...). `papercut file` would refuse it as a duplicate and the caller got
+    # rc=1 file_failed (papercut-pipeline-stuck-papercut-file-duplicate-root-cause).
+    # Append the evidence instead: to the canonical row when this one is a
+    # duplicate of an open row, else to the row itself, and say its status so
+    # the caller can reopen it.
+    for slug in candidates:
+        record = existing.get(slug)
+        if record is None:
+            continue
+        status = str(record.get("status") or "")
+        extra_fields = record.get("extra_fields") if isinstance(record.get("extra_fields"), dict) else {}
+        dup_of = str(record.get("duplicate_of") or extra_fields.get("duplicate_of") or "").strip()
+        if status == "duplicate" and dup_of and VALID_SLUG.match(dup_of):
+            canonical = typed_get(args.brain_bin, dup_of)
+            if is_open(canonical):
+                return append_to(dup_of, {"requested_slug": slug, "requested_status": status})
+        return append_to(slug, {"record_status": status})
 
     title = f"Pipeline: stuck LastGit CRs in {repo}"
     symptom = f"LastGit CR {cr_id} in {repo} is stuck without a converging root-cause papercut"

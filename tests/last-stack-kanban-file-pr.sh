@@ -294,4 +294,66 @@ if "$bin" --help 2>&1 >/dev/null | grep -q .; then
   fail "--help must write nothing to stderr"
 fi
 
+printf '%s\n' "$help_out" | grep -q 'Body (stdin)' || fail "--help must state the body contract"
+printf '%s\n' "$help_out" | grep -q 'VERIFY' || fail "--help must say VERIFY is not an END STATE"
+
+# A decision-check that cannot RUN (here: a fixture whose search.json is not
+# JSON, exit 1) blocks feature work but not the repair card that fixes it.
+# papercut-kanban-file-pr-repair-work-class-still-runs-decision-check-20260923
+broken_fix="$tmp/broken-decision-fixture"
+mkdir -p "$broken_fix"
+printf 'not json\n' >"$broken_fix/search.json"
+: >"$tmp/add.log"
+set +e
+broken_feature_out="$("$bin" broken-feature --board-cli "$fake_kanban" --title "Feature" \
+  --repo EdgeVector/last-stack --north-star ns-a --milestone ms-live \
+  --decision-fixture "$broken_fix" <"$body_ok" 2>&1)"
+broken_feature_rc=$?
+set -e
+[ "$broken_feature_rc" -eq 2 ] || fail "feature with a broken check should exit 2, got $broken_feature_rc: $broken_feature_out"
+[ -s "$tmp/add.log" ] && fail "feature with a broken check wrote add: $(cat "$tmp/add.log")"
+printf '%s\n' "$broken_feature_out" | grep -q 'feature work fails closed' \
+  || fail "feature refusal must say why: $broken_feature_out"
+
+for wc in repair incident proof closeout; do
+  : >"$tmp/add.log"
+  : >"$tmp/add.body"
+  set +e
+  degraded_out="$("$bin" "broken-$wc" --board-cli "$fake_kanban" --title "Repair the check" \
+    --repo EdgeVector/last-stack --north-star ns-a --milestone ms-live --work-class "$wc" \
+    --decision-fixture "$broken_fix" <"$body_ok" 2>&1)"
+  degraded_rc=$?
+  set -e
+  [ "$degraded_rc" -eq 0 ] || fail "$wc with a broken check must file, got $degraded_rc: $degraded_out"
+  grep -q "broken-$wc" "$tmp/add.log" || fail "$wc card not filed: $(cat "$tmp/add.log")"
+  grep -q '^verdict: unavailable$' "$tmp/add.body" || fail "$wc stamp missing unavailable: $(cat "$tmp/add.body")"
+  grep -q '^## END STATE' "$tmp/add.body" || fail "$wc body lost its END STATE"
+  printf '%s\n' "$degraded_out" | grep -q 'WARNING decision-check could not run' \
+    || fail "$wc degrade must warn: $degraded_out"
+done
+
+# ...but a real CONFLICT still refuses a repair card.
+: >"$tmp/add.log"
+set +e
+"$bin" bad-review-repair --board-cli "$fake_kanban" --title "Add a review column" \
+  --repo EdgeVector/last-stack --north-star ns-a --milestone ms-live --work-class repair \
+  --decision-fixture "$conflict_fix" <"$body_conflict" >/dev/null 2>&1
+conflict_repair_rc=$?
+set -e
+[ "$conflict_repair_rc" -eq 2 ] || fail "repair conflict must still exit 2, got $conflict_repair_rc"
+[ -s "$tmp/add.log" ] && fail "repair conflict wrote add: $(cat "$tmp/add.log")"
+
+# One refusal names every missing section, and says VERIFY is not END STATE.
+# papercut-file-pr-end-state-required-after-verify-only-20260923
+set +e
+verify_only_out="$(printf '## STEPS\n1. x\n\n## VERIFY\nrun it\n' | "$bin" verify-only \
+  --board-cli "$fake_kanban" --title "x" --repo EdgeVector/last-stack \
+  --north-star ns-a --milestone ms-live --work-class repair 2>&1)"
+verify_only_rc=$?
+set -e
+[ "$verify_only_rc" -eq 2 ] || fail "verify-only body should exit 2, got $verify_only_rc"
+printf '%s\n' "$verify_only_out" | grep -q '## GOAL' || fail "refusal must name GOAL: $verify_only_out"
+printf '%s\n' "$verify_only_out" | grep -q 'VERIFY/## STEPS section is not an END STATE' \
+  || fail "refusal must say VERIFY is not END STATE: $verify_only_out"
+
 echo "ok last-stack-kanban-file-pr"

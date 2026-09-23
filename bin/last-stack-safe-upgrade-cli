@@ -17,7 +17,14 @@ set -euo pipefail
 
 die() { printf 'safe-upgrade-cli: %s\n' "$*" >&2; exit 2; }
 
-SELF="$(cd "$(dirname "$0")" && pwd -P)"
+# Resolve the file symlink chain before dirname: the PATH link
+# ~/.local/bin/<name> points into the artifact tree, and siblings live there.
+_self_src="$0"
+while [ -L "$_self_src" ]; do
+  _self_link="$(readlink "$_self_src")"
+  case "$_self_link" in /*) _self_src="$_self_link" ;; *) _self_src="$(dirname "$_self_src")/$_self_link" ;; esac
+done
+SELF="$(cd "$(dirname "$_self_src")" && pwd -P)"
 ACTIVATE="${LAST_STACK_SAFE_ACTIVATE:-$SELF/last-stack-safe-activate-cli}"
 [ -x "$ACTIVATE" ] || ACTIVATE="$(command -v last-stack-safe-activate-cli 2>/dev/null || true)"
 [ -x "$ACTIVATE" ] || die "last-stack-safe-activate-cli not found"
