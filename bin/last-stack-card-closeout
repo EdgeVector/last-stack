@@ -17,7 +17,8 @@
 #    (~/.lastdb-dev-<slug>, the AGENTS.md concurrency convention) via
 #    `lastdb-dev reclaim`. An orchestrator that invents a dev home owns deleting
 #    it; leaked homes filled the disk and exhausted CI fds on 2026-09-22.
-#    (Worktree reclaim runs in last-stack-board-closeout-sweep, not here.)
+#    (Worktree reclaim, last-stack-worktree-reclaim, runs in
+#    last-stack-board-closeout-sweep, not here.)
 # 7. Exits 0 only when the card is in the terminal column.
 #
 # Refuse final_column=done in ROUTINE_RESULT unless this helper exits 0.
