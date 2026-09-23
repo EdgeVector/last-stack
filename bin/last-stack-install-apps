@@ -18,7 +18,7 @@ usage() {
 last-stack-install-apps [options]
 
 Downloads the stable LastDB app stack from public GitHub:
-  LastDB daemon (Homebrew), brain, kanban (fkanban), situations, routines,
+  LastDB daemon, loom and lastseek (Homebrew binaries), brain, kanban (fkanban), situations, routines,
   dogfood-graph, org, lastsecrets, search, LastDB Browser, and the optional
   Kanban Factory theater UI.
 
@@ -31,7 +31,7 @@ Downloads the stable LastDB app stack from public GitHub:
 Options:
   --dir <path>      clone/update app repos under this directory
                    (default: ~/lastdb-apps or $LASTDB_APPS_DIR)
-  --no-brew         skip installing the LastDB Homebrew formula
+  --no-brew         skip the Homebrew formulas (LastDB daemon, loom, lastseek)
   --no-link         skip linking CLI commands onto PATH
   --pins <file>     candidate set (last-stack-canary-candidate-set): install
                    each app at exactly the pinned commit from its pinned source
@@ -334,6 +334,26 @@ login_home() {
   printf '%s\n' "$real_home"
 }
 
+# Apps that ship as public Homebrew binaries from the same tap (Tom
+# 2026-09-23: loom and lastseek; the source stays private). A formula that is
+# not published yet, or a failed install, warns and continues: the rest of the
+# bundle still works, and report_unmet_requires names what is missing.
+BREW_APPS="loom lastseek"
+BREW_APPS_INSTALLED=""
+install_brew_apps() {
+  local tap="edgevector/lastdb" app brew_home
+  brew_home="$(login_home)"
+  for app in $BREW_APPS; do
+    echo "==> installing $app (Homebrew binary)"
+    if [ -n "$brew_home" ] && [ "${HOME:-}" != "$brew_home" ]; then
+      HOME="$brew_home" brew install "$tap/$app" && BREW_APPS_INSTALLED="$BREW_APPS_INSTALLED $app" && continue
+    else
+      brew install "$tap/$app" && BREW_APPS_INSTALLED="$BREW_APPS_INSTALLED $app" && continue
+    fi
+    echo "    warning: could not install $tap/$app; the rest of the bundle continues" >&2
+  done
+}
+
 install_lastdb_formula() {
   local tap="edgevector/lastdb"
   local formula="$tap/lastdb"
@@ -426,6 +446,7 @@ fi
 
 if [ "$INSTALL_LASTDB" -eq 1 ]; then
   install_lastdb_formula
+  install_brew_apps
   if [ -x "$(dirname "$0")/last-stack-lastdb-current" ]; then
     echo "==> linking LastDB daemon through ~/.lastdb/current"
     brew_prefix="$(brew --prefix edgevector/lastdb/lastdb 2>/dev/null || brew --prefix lastdb 2>/dev/null || true)"
@@ -479,7 +500,7 @@ report_unmet_requires() {
   local registry="$1" installed="$2" gaps
   [ -f "$registry" ] || return 0
   gaps="$(jq -r --argjson installed "$installed" '
-    .apps | to_entries[]
+    ((.apps // {}) + (.brew_apps // {})) | to_entries[]
     | select(.key as $k | $installed | index($k))
     | .key as $app
     | (.value.requires // [])[]
@@ -497,7 +518,8 @@ report_unmet_requires() {
 # Resolve $0 first: behind a ~/.local/bin symlink dirname "$0"/.. is ~/.local.
 INSTALL_APPS_ROOT="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
 report_unmet_requires "$INSTALL_APPS_ROOT/config/registry/apps.json" \
-  '["brain","kanban","situations","routines","dogfood-graph","org","lastsecrets","search","lastdb-browser"]'
+  "$(printf '%s\n' brain kanban situations routines dogfood-graph org lastsecrets search lastdb-browser \
+      $BREW_APPS_INSTALLED | jq -R . | jq -sc 'map(select(length > 0))')"
 
 printf '\n'
 printf 'Installed LastDB apps under:\n'

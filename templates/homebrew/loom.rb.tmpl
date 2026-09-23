@@ -1,0 +1,41 @@
+# frozen_string_literal: true
+
+# Rendered by last-stack-brew-app-publish from templates/homebrew/loom.rb.tmpl.
+# Edit the template in EdgeVector/last-stack, not this file: every release
+# rewrites it.
+class Loom < Formula
+  desc "Loom: durable agent-graph runner for LastDB"
+  homepage "https://thelastdb.com"
+  version "@VERSION@"
+  license "Apache-2.0"
+
+  depends_on arch: :arm64
+  depends_on :macos
+
+  url "@URL@"
+  sha256 "@SHA256@"
+
+  def install
+    # Loom finds scripts/ by walking up from its real executable, so the
+    # binary, scripts/ and definitions/ keep their artifact layout.
+    libexec.install Dir["*"]
+    bin.install_symlink libexec/"dist/loom"
+  end
+
+  def caveats
+    <<~EOS
+      Loom needs a running LastDB daemon and the routines app:
+        brew install edgevector/lastdb/lastdb && brew services start lastdb
+        last-stack-install-apps   # installs routines, kanban and the other apps
+
+      Public graph definitions:
+        #{opt_libexec}/definitions
+      Publish one with:
+        loom publish #{opt_libexec}/definitions/<graph>.json
+    EOS
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/loom --version")
+  end
+end

@@ -747,7 +747,19 @@
       "track_gate_main": false,
       "requires": [
         "lastdbd"
-      ]
+      ],
+      "brew_release": {
+        "formula": "lastseek",
+        "version_argv": [
+          "dist/lastseek",
+          "--version"
+        ],
+        "files": [
+          "dist/lastseek",
+          "LICENSE",
+          "THIRD_PARTY_NOTICES"
+        ]
+      }
     },
     {
       "app": "search",
@@ -960,7 +972,28 @@
         "brain",
         "lastseek",
         "lastgit"
-      ]
+      ],
+      "brew_release": {
+        "formula": "loom",
+        "version_argv": [
+          "dist/loom",
+          "--version"
+        ],
+        "files": [
+          "dist/loom",
+          "LICENSE",
+          "THIRD_PARTY_NOTICES"
+        ],
+        "dirs": [
+          "scripts"
+        ],
+        "subsets": [
+          {
+            "dir": "definitions",
+            "list": "release/public-definitions.txt"
+          }
+        ]
+      }
     },
     {
       "app": "lastdb-browser",

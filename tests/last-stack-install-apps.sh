@@ -137,6 +137,9 @@ grep -Eq 'HOME=.+ brew tap( |$)' "$tmp/brew.log"
 grep -Eq 'HOME=.+ brew tap edgevector/lastdb' "$tmp/brew.log"
 grep -Eq 'HOME=.+ brew trust --tap edgevector/lastdb' "$tmp/brew.log"
 grep -Eq 'HOME=.+ brew install edgevector/lastdb/lastdb' "$tmp/brew.log"
+# loom and lastseek ship as Homebrew binaries from the same tap.
+grep -Eq 'brew install edgevector/lastdb/loom$' "$tmp/brew.log" || { echo "loom was not brew-installed" >&2; exit 1; }
+grep -Eq 'brew install edgevector/lastdb/lastseek$' "$tmp/brew.log" || { echo "lastseek was not brew-installed" >&2; exit 1; }
 if grep -Eq 'brew trust .*antoniorodr|brew trust .*openclaw|brew trust .*steipete|brew trust .*yakitrak' "$tmp/brew.log"; then
   echo "trusted an unrelated tap" >&2
   exit 1
