@@ -16,7 +16,7 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 # --- 1. helper protocol ---
 out="$(printf 'protocol=http\nhost=localhost:3300\n\n' | FORGE_TOKEN=tok123 "$HELPER" get)"
 [ "$out" = $'username=forge-token\npassword=tok123' ] || fail "forge host get: [$out]"
-out="$(printf 'protocol=http\nhost=100.109.94.59:3300\n\n' | FORGE_TOKEN=tok123 "$HELPER" get)"
+out="$(printf 'protocol=http\nhost=forge.tailnet.example:3300\n\n' | FORGE_TOKEN=tok123 "$HELPER" get)"
 [[ "$out" == *"password=tok123"* ]] || fail "tailnet forge host get: [$out]"
 out="$(printf 'protocol=https\nhost=github.com\n\n' | FORGE_TOKEN=tok123 "$HELPER" get)"
 [ -z "$out" ] || fail "non-forge host must get nothing: [$out]"

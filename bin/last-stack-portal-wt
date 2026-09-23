@@ -214,7 +214,7 @@ normalize_mirror_refspec() {
 normalize_mirror_credential() {
   local scope helper current
   case "$REMOTE" in
-    http://localhost:3300/*|http://127.0.0.1:3300/*|http://100.109.94.59:3300/*) ;;
+    http://*:3300/*) ;;
     *) return 0 ;;
   esac
   scope="${REMOTE%%/EdgeVector/*}"
