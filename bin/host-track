@@ -2037,8 +2037,19 @@ run_probe_with_incumbent_control() {
     return 0
   fi
 
-  if [ -z "$incumbent_dir" ] || [ ! -d "$incumbent_dir" ] \
-    || [ "$incumbent_dir" = "$candidate_dir" ]; then
+  # Re-probing the live tree against itself is no control at all. A RED here
+  # cannot tell a bad binary from a bad fixture (2026-09-23: brain's probe
+  # record was missing from the store, the probe failed on the live version,
+  # and refresh rolled current back to an OLDER build that fails the same
+  # probe). Say INCONCLUSIVE so no caller rolls back on it.
+  # (papercut-host-track-red-probe-rolls-current-back-when-incumbent-also-fails-20260923)
+  if [ -n "$incumbent_dir" ] && [ -d "$incumbent_dir" ] && [ -d "$candidate_dir" ] \
+    && [ "$(cd "$incumbent_dir" && pwd -P)" = "$(cd "$candidate_dir" && pwd -P)" ]; then
+    printf 'host-track: %s probe INCONCLUSIVE; candidate is the incumbent, no independent control\n' \
+      "$app" >&2
+    return 2
+  fi
+  if [ -z "$incumbent_dir" ] || [ ! -d "$incumbent_dir" ]; then
     printf 'host-track: %s probe RED; candidate exhausted and no incumbent control is available\n' \
       "$app" >&2
     return 1
@@ -2746,6 +2757,19 @@ artifact_install_app() {
   current_dir=""
   if [ -L "$install_root/current" ] && current_target_is_live "$install_root"; then
     current_dir="$install_root/$(readlink "$install_root/current")"
+  fi
+  # A restage of the live digest has no incumbent of its own. Use `previous`
+  # as the control, the same way the post-flip watch does, so a probe that
+  # fails on both trees is INCONCLUSIVE instead of a rollback.
+  if [ -n "$current_dir" ] && [ -d "$current_dir" ] && [ -d "$target" ] \
+    && [ "$(cd "$current_dir" && pwd -P)" = "$(cd "$target" && pwd -P)" ]; then
+    current_dir=""
+    if [ -L "$install_root/previous" ] \
+      && [ -d "$install_root/$(readlink "$install_root/previous")" ]; then
+      current_dir="$install_root/$(readlink "$install_root/previous")"
+    else
+      current_dir="$target"
+    fi
   fi
   if [ "$post_install_phase" = "before-probe" ] || [ "$post_install_phase" = "both" ]; then
     if ! run_artifact_post_install_on_tree "$app" "$json" "$install_root" "$digest" "$target"; then
