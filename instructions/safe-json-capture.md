@@ -42,7 +42,7 @@ status. You keep the error text AND the parser gets clean JSON.
 
 ```bash
 last-stack-json-capture /tmp/sit.json -- situations list --json
-jq -r '.[] | "\(.slug) \(.status) \(.severity)"' /tmp/sit.json
+jq -r '.[] | [.slug, .status, (.severity // "-")] | @tsv' /tmp/sit.json
 cat /tmp/sit.json.err        # the stderr you wanted, on its own
 ```
 
