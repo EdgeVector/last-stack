@@ -107,4 +107,13 @@ if bash "$synth/bin/last-stack-north-star-proof" north-star-does-not-exist >/dev
   fail "an unknown slug did not fail"
 fi
 
+# --- --list --json: the structured contract (papercut-north-star-proof-list-no-json-contract-20260923)
+json_out="$(bash "$RUNNER" --list --json)"
+[ "$(printf '%s' "$json_out" | jq -r '.schema')" = last-stack-north-star-proof.list.v1 ] || fail "--list --json: wrong schema: $json_out"
+[ "$(printf '%s' "$json_out" | jq -r '.slugs[]')" = "$(bash "$RUNNER" --list)" ] || fail "--list --json slugs differ from --list"
+[ "$(printf '%s' "$json_out" | jq -r '.count')" = "$(bash "$RUNNER" --list | grep -c .)" ] || fail "--list --json count is wrong"
+printf '%s' "$json_out" | jq -e '.harnesses | all(.script | test("^harness/north-star/[^/]+/run.sh$"))' >/dev/null \
+  || fail "--list --json harness scripts are not repo-relative run.sh paths"
+if bash "$RUNNER" --json >/dev/null 2>&1; then fail "--json without --list did not fail"; fi
+
 echo "PASS last-stack-north-star-proof-registry"

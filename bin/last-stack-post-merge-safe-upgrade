@@ -399,7 +399,14 @@ tip_seen_path() { printf '%s/%s.tip-seen\n' "$STATE_DIR" "$1"; }
 repo_venue() {
   local resolver
   resolver="$(command -v last-stack-pr-venue 2>/dev/null || true)"
-  [ -x "$resolver" ] || resolver="$(dirname "$0")/last-stack-pr-venue"
+  # Resolve the file symlink chain before dirname: the PATH link
+  # ~/.local/bin/<name> points into the artifact tree, and siblings live there.
+  _self_src="$0"
+  while [ -L "$_self_src" ]; do
+    _self_link="$(readlink "$_self_src")"
+    case "$_self_link" in /*) _self_src="$_self_link" ;; *) _self_src="$(dirname "$_self_src")/$_self_link" ;; esac
+  done
+  [ -x "$resolver" ] || resolver="$(dirname "$_self_src")/last-stack-pr-venue"
   [ -x "$resolver" ] || resolver="$HOME/.last-stack/bin/last-stack-pr-venue"
   [ -x "$resolver" ] || { printf 'lastgit\n'; return 0; }
   "$resolver" "EdgeVector/$1" 2>/dev/null || printf 'lastgit\n'

@@ -3,7 +3,8 @@
 #
 # A card whose END STATE carries a machine DONE-WHEN is evaluated at closeout.
 # Satisfied -> no end-state-unverified warning and an END-STATE-EVALUATED mark.
-# Pending -> the warning names what is missing (DONE-WHEN=pending).
+# Pending -> refuse done, card stays in doing, one CLOSEOUT-DEFERRED mark, rc!=0.
+# Absent -> warn and close (DONE-WHEN=absent).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 bin="$ROOT/bin/last-stack-card-closeout"
@@ -46,8 +47,35 @@ grep -q '^END-STATE-EVALUATED .* DONE-WHEN satisfied' "$DW_MARKS" || {
 echo doing >"$DW_COL"; : >"$DW_MARKS"
 printf '%s\n' 'Repo: EdgeVector/last-stack' 'Kind: pr' '## END STATE' 'The report passes.' \
   "DONE-WHEN: file $tmp/missing.md matches /^PASS/" >"$DW_BODY"
-out="$("$bin" dw-card-2 --board-cli "$board" 2>&1)" || true
-printf '%s\n' "$out" | grep -q 'WARN end-state-unverified' || { echo "FAIL: pending DONE-WHEN must still warn: $out" >&2; exit 1; }
-printf '%s\n' "$out" | grep -q 'DONE-WHEN=pending' || { echo "FAIL: warning must name DONE-WHEN=pending: $out" >&2; exit 1; }
+rc=0
+out="$("$bin" dw-card-2 --board-cli "$board" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || { echo "FAIL: a pending DONE-WHEN must exit non-zero: $out" >&2; exit 1; }
+printf '%s\n' "$out" | grep -q 'FAILED done-when-pending' || { echo "FAIL: expected FAILED done-when-pending: $out" >&2; exit 1; }
+[ "$(cat "$DW_COL")" = doing ] || { echo "FAIL: a pending DONE-WHEN must leave the card in doing, got $(cat "$DW_COL")" >&2; exit 1; }
+[ "$(grep -c '^CLOSEOUT-DEFERRED: DONE-WHEN pending' "$DW_MARKS")" = 1 ] || {
+  echo "FAIL: expected one CLOSEOUT-DEFERRED mark" >&2; cat "$DW_MARKS" >&2; exit 1; }
+# A repeat run does not stamp a second marker.
+"$bin" dw-card-2 --board-cli "$board" >/dev/null 2>&1 && { echo "FAIL: repeat pending run must fail" >&2; exit 1; }
+[ "$(grep -c '^CLOSEOUT-DEFERRED: DONE-WHEN pending' "$DW_MARKS")" = 1 ] || {
+  echo "FAIL: repeat run duplicated CLOSEOUT-DEFERRED" >&2; cat "$DW_MARKS" >&2; exit 1; }
+[ "$(cat "$DW_COL")" = doing ]
+
+# Absent DONE-WHEN (prose END STATE only) still warns and closes.
+echo doing >"$DW_COL"; : >"$DW_MARKS"
+printf '%s\n' 'Repo: EdgeVector/last-stack' 'Kind: pr' '## END STATE' 'The report passes.' >"$DW_BODY"
+out="$("$bin" dw-card-3 --board-cli "$board" 2>&1)" || { echo "FAIL: absent DONE-WHEN must warn and close: $out" >&2; exit 1; }
+printf '%s\n' "$out" | grep -q 'DONE-WHEN=absent' || { echo "FAIL: warning must name DONE-WHEN=absent: $out" >&2; exit 1; }
+[ "$(cat "$DW_COL")" = done ]
+
+# Through a PATH-style symlink in another directory, sibling helpers resolve.
+mkdir -p "$tmp/pathbin"
+ln -s "$bin" "$tmp/pathbin/last-stack-card-closeout"
+echo doing >"$DW_COL"; : >"$DW_MARKS"
+printf '%s\n' 'Repo: EdgeVector/last-stack' 'Kind: pr' '## END STATE' 'The report passes.' \
+  "DONE-WHEN: file $proof matches /^PASS/" >"$DW_BODY"
+out="$("$tmp/pathbin/last-stack-card-closeout" dw-card-4 --board-cli "$board" 2>&1)" || {
+  echo "FAIL: closeout through a symlink failed: $out" >&2; exit 1; }
+grep -q '^END-STATE-EVALUATED .* DONE-WHEN satisfied' "$DW_MARKS" || {
+  echo "FAIL: through a symlink the DONE-WHEN evaluator sibling was not found: $out" >&2; exit 1; }
 
 echo "ok last-stack-card-closeout-done-when"
