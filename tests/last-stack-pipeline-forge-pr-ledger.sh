@@ -206,6 +206,29 @@ jq -e '.ledger.actions[0].action == "attributed"' "$tmp/out.json" >/dev/null || 
 if grep -q '^papercut file' "$tmp/brain/calls.log"; then echo "FAIL re-filed a duplicate-attributed PR"; exit 1; fi
 echo "ok   a duplicate-attributed PR row is not re-filed"
 
+# 9c. a PR red only on a context a LIVE named root cause owns → evidence there
+printf 'EdgeVector/fold\tForge CI / Mini (pull_request)\tpapercut-known-mini-flake\n' >"$tmp/root-causes.tsv"
+echo open >"$tmp/brain/papercut-known-mini-flake.status"
+pulls_open 11 | put "repos/$R/pulls?state=open&limit=50"
+cp "$fx/repos_EdgeVector_fold_commits_head7_status.json" "$fx/repos_EdgeVector_fold_commits_head11_status.json"
+: >"$tmp/brain/calls.log"
+sync --apply --root-causes-file "$tmp/root-causes.tsv"
+jq -e '([.ledger.actions[] | select(.action=="append" and .slug=="papercut-known-mini-flake")] | length) == 1
+       and ([.ledger.actions[] | select(.action=="file")] | length) == 0' "$tmp/out.json" >/dev/null \
+  || { echo "FAIL known root cause must take the evidence"; cat "$tmp/out.json"; exit 1; }
+[ ! -f "$tmp/brain/papercut-pipeline-forge-fold-pr-11.status" ] || { echo "FAIL per-PR row filed under a known root cause"; exit 1; }
+# the root cause is never closed by the ledger, even when its PRs leave
+echo '[]' | put "repos/$R/pulls?state=open&limit=50"
+sync --apply --root-causes-file "$tmp/root-causes.tsv"
+[ "$(cat "$tmp/brain/papercut-known-mini-flake.status")" = open ] || { echo "FAIL ledger closed a root cause it does not own"; exit 1; }
+# once the root cause is closed, a PR red on that context gets its own row again
+echo verified >"$tmp/brain/papercut-known-mini-flake.status"
+pulls_open 12 | put "repos/$R/pulls?state=open&limit=50"
+cp "$fx/repos_EdgeVector_fold_commits_head7_status.json" "$fx/repos_EdgeVector_fold_commits_head12_status.json"
+sync --apply --root-causes-file "$tmp/root-causes.tsv"
+[ "$(cat "$tmp/brain/papercut-pipeline-forge-fold-pr-12.status" 2>/dev/null)" = open ] || { echo "FAIL closed root cause must stop absorbing PRs"; cat "$tmp/out.json"; exit 1; }
+echo "ok   a live named root cause absorbs PRs red only on its context"
+
 # 10. the prompt uses the ledger and forbids per-state slugs
 grep -Fq 'last-stack-pipeline-forge-pr-ledger" sync --apply' "$ROOT/routines/pipeline-health.md" \
   || { echo "FAIL pipeline-health.md must run the ledger"; exit 1; }

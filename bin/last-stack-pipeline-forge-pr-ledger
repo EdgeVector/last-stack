@@ -182,6 +182,25 @@ def pr_slug(repo: str, number: int) -> str:
     return f"papercut-pipeline-forge-{repo_token(repo)}-pr-{number}"
 
 
+DEFAULT_ROOT_CAUSES_FILE = HERE.parent / "config" / "pipeline-known-root-causes.tsv"
+
+
+def load_known_root_causes(path: str) -> list[tuple[str, str, str]]:
+    """(repo, required-context stem, papercut slug) rows; '#' comments allowed."""
+    rows: list[tuple[str, str, str]] = []
+    try:
+        text = Path(path).read_text()
+    except OSError:
+        return rows
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        parts = [x.strip() for x in line.split("\t")]
+        if len(parts) >= 3 and all(parts[:3]):
+            rows.append((parts[0], stem(parts[1]), parts[2]))
+    return rows
+
+
 def main_red_slug(repo: str) -> str:
     return f"papercut-pipeline-forge-{repo_token(repo)}-main-red"
 
@@ -378,6 +397,32 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
         actions.append(row)
         return row
 
+    # 0. a PR red ONLY on a context that a live, named root-cause papercut
+    #    already owns (config/pipeline-known-root-causes.tsv, e.g. fold's flaky
+    #    required Mini lane) is evidence for that papercut, not a new row. Once
+    #    that papercut is closed, the mapping stops applying and a red PR gets
+    #    its own row again.
+    known = load_known_root_causes(args.root_causes_file)
+    known_status: dict[str, str | None] = {}
+    for pr in report["prs"]:
+        if not (pr["stuck"] and pr["shape"] == "red" and pr["red_contexts"] and not pr["root_cause"]):
+            continue
+        for repo_k, ctx, rc_slug in known:
+            if repo_k != pr["repo"]:
+                continue
+            mapped = {c for r, c, sl in known if r == pr["repo"] and sl == rc_slug}
+            if not set(pr["red_contexts"]) <= mapped:
+                continue
+            if rc_slug not in known_status:
+                try:
+                    known_status[rc_slug] = brain_status(brain, rc_slug)
+                except BrainBusy:
+                    known_status[rc_slug] = None
+            if known_status[rc_slug] in LIVE:
+                pr["root_cause"] = "known"
+                pr["ledger_slug"] = rc_slug
+                break
+
     # 1. stuck PRs → file or append (one row per PR, or one per repo when main is red)
     grouped: dict[str, list[dict[str, Any]]] = {}
     for pr in report["prs"]:
@@ -396,7 +441,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                 act("owned", slug, card=owner)
                 continue
         try:
-            status = brain_status(brain, slug)
+            status = known_status[slug] if pr["root_cause"] == "known" else brain_status(brain, slug)
         except BrainBusy as exc:
             act("skip-busy", slug, error=str(exc))
             continue
@@ -472,7 +517,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             tracked[slug] = {
                 "repo": pr["repo"],
                 "prs": [p["number"] for p in prs],
-                "kind": "main-red" if pr["root_cause"] else "pr",
+                "kind": {"base-red": "main-red", "known": "known"}.get(pr["root_cause"], "pr"),
                 "fingerprint": fingerprint,
                 "last_evidence_at": checked_at,
             }
@@ -481,6 +526,12 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
     for slug, meta in sorted(tracked.items()):
         repo = meta.get("repo") or ""
         if repo in unreadable:
+            continue
+        if meta.get("kind") == "known":
+            # Not ours to close: the owner of the root cause closes it. Stop
+            # tracking once none of its PRs is stuck on it any more.
+            if not any(p["ledger_slug"] == slug and p["stuck"] for p in report["prs"]):
+                tracked.pop(slug, None)
             continue
         if meta.get("kind") == "main-red":
             still = [p for p in report["prs"] if p["ledger_slug"] == slug and p["stuck"]]
@@ -564,6 +615,8 @@ def main() -> int:
         sp.add_argument("--repos-file", default=str(DEFAULT_REPOS_FILE))
         sp.add_argument("--min-age-min", type=int, default=10, help="red/conflict/green-unmerged older than this is stuck")
         sp.add_argument("--pending-stale-min", type=int, default=120, help="pending/absent with no PR update for this long is stuck")
+        sp.add_argument("--root-causes-file", default=os.environ.get("LAST_STACK_PIPELINE_ROOT_CAUSES", str(DEFAULT_ROOT_CAUSES_FILE)),
+                        help="TSV: repo, required context, root-cause papercut slug")
         sp.add_argument("--json", action="store_true", dest="json_out")
         if name == "sync":
             sp.add_argument("--apply", action="store_true", help="write the ledger (default: dry run)")
