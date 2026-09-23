@@ -571,6 +571,17 @@ to LEAVE IT ALONE; you only act when there is concrete PR/branch evidence or a
 satisfied non-PR predicate. When in doubt, do nothing.** Skip a card only if it
 has no `Repo:` header (it isn't meant for this flow). For each candidate:
 
+**Loom-owned cards are hands-off (Tom, 2026-09-23: all pickup goes through
+Loom).** A card whose `assignee` starts with `loom:`, or whose PR head branch
+starts with `lx-`, is driven by a Loom `land-card` walk. That walk runs its own
+REVIEW step and then merges. Do not merge, schedule a merge
+(`merge_when_checks_succeed`), push, rebase, close, move or re-claim that card
+or its PR. Report it as `loom-owned` and continue. On 2026-09-23 a RECONCILE
+sweep scheduled the merge of fold#2173 at 19:12:36Z, before the walk's REVIEW
+ran; the review then saw an empty diff and escalated. A Loom walk that is stuck
+is released by the Loom kickoff (engine park) or by a human, not by this sweep.
+
+
 1. **Classify the card.** Parse `Kind:` and any single-line `DONE-WHEN:`
    predicate. Treat missing `Kind:` as `pr` only for legacy PR-shaped cards.
    For `Kind: tracker|validation|meta`, evaluate `DONE-WHEN` before PR lookup:

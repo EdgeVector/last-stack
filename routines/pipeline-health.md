@@ -365,6 +365,13 @@ On refusal, record the reason in the existing papercut and leave the PR to its
 owner or its current CI run. Do not clear an assignee to make the guard pass.
 Read-only diagnosis and auto-merge re-arm retain their existing rules.
 
+**Loom-owned PRs are hands-off.** Skip every action below, including the
+auto-merge re-arm, for a PR whose head branch starts with `lx-` or whose card
+`assignee` starts with `loom:`. A Loom `land-card` walk owns that PR: it reviews
+the PR, then merges it itself and waits for the merge (loom PR 43). A merge
+from outside the walk can land before its REVIEW step; on 2026-09-23 a sweep
+merged fold#2173 that way. Report the PR as `loom-owned`.
+
 Point-read the PR (`repos/<owner>/<repo>/pulls/<n>`) immediately before ANY
 mutation. The list can be stale: a PR that the point read shows closed, or a
 404, is benign inventory drift, not an error
