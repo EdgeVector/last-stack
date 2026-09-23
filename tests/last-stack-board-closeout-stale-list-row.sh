@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Proof: board-closeout-sweep confirms the column against `show` (Card truth)
-# before it moves a card. `kanban list --column doing` can serve a stale
-# BoardCards row for a card that already moved to done; the sweep must not
-# demote or roll that card. When show is unavailable the sweep fails open and
-# keeps the legacy list-driven behavior.
+# Proof: board-closeout-sweep uses a lightweight doing preview, then confirms
+# the column against `show` (Card truth) before it moves a card. `kanban list
+# --column doing` can serve a stale BoardCards row for a card that already
+# moved to done; the sweep must not demote or roll that card. When show is
+# unavailable the sweep fails open and keeps the preview-driven behavior.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -24,6 +24,12 @@ set -euo pipefail
 cmd="${1:-}"
 case "$cmd" in
   list)
+    case " $* " in
+      *" --full-body "*)
+        echo "unexpected full-body BoardCards read: $*" >&2
+        exit 2
+        ;;
+    esac
     # Three deploy-parked rows the list reports in doing.
     cat <<'JSON'
 [

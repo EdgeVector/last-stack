@@ -220,14 +220,33 @@ the index.
 
 **Every wake, before zombie reclaim and before any early exit:**
 
+The watch already reads the `doing` column for zombie and overlap checks. Pass
+those slugs to the named heal path. The named path reads one BoardCards spine
+and only the columns that contain those cards. Do not run the unscoped heal on
+every watch wake. `groom-board` keeps the full audit for cross-column orphan
+repair and skip-reason reporting.
+
 ```bash
-kanban groom board-cards-heal --apply
-# or: kanban groom board-cards-heal --apply
+doing_json="$(mktemp "${TMPDIR:-/tmp}/kanban-watch-doing.XXXXXX")"
+if "$last_stack/bin/last-stack-json-capture" "$doing_json" -- kanban list --column doing --json; then
+  heal_args=()
+  while IFS= read -r slug; do
+    [ -n "$slug" ] && heal_args+=(--slug "$slug")
+  done < <(jq -r '(.cards // .items // .)[]? | .slug // empty' "$doing_json")
+  if [ "${#heal_args[@]}" -gt 0 ]; then
+    kanban groom board-cards-heal --apply "${heal_args[@]}"
+  else
+    printf '%s\n' 'list-show-drift=0 no-doing-cards'
+  fi
+else
+  printf '%s\n' "list-show-drift-failed=doing-list"
+fi
 ```
 
 - Dry-run first only when debugging; production wakes **apply**.
-- Cheap: one BoardCards partition + CardListIndex, then deletes/upserts only
-  drifted slugs.
+- The named path repairs drift for live `doing` cards without a board census.
+- The full audit remains available to `groom-board` for orphan rows in other
+  columns and for complete skip-reason and column data.
 - Heartbeat keys:
   - `list-show-drift=0` when clean
   - `list-show-drift-healed=<n>` when apply fixed n cards

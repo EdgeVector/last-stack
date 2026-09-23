@@ -69,9 +69,8 @@ Brain record (stable):
 `north-star-dashboard` (type `reference`)
 
 ## Each run — do exactly this
-1. **Preflight.** Confirm `brain` and `kanban` are on PATH. Run a cheap
-   socket-safe read: `kanban list --column todo --json` or `kanban ping` when
-   available. Do **not** use `brain list` for health or inventory (list is a
+1. **Preflight.** Confirm `brain` and `kanban` are on PATH. Run the cheap
+   socket health check `kanban ping`. Do **not** use `brain list` for health or inventory (list is a
    SAMPLE, not a census). On busy-node errors, EXIT with noop.
 2. **Regenerate.** Always go through the wrapper, never the bare binary:
    ```bash
