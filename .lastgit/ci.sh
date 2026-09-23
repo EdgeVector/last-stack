@@ -774,3 +774,9 @@ ci_test tests/last-stack-kanban-watch-targeted-heal.sh
 ci_test tests/last-stack-portal-wt-start-installs-deps.sh
 ci_test tests/last-stack-bin-root-resolves-symlinks.sh
 ci_test tests/last-stack-ci-test-registration.sh
+# Routine shell guard: the pre-exec lint, its Claude hook and the Codex
+# zsh->bash entry snippet; every prompt shell block passes the lint; the
+# read-only DONE-WHEN sweep helper (papercut burn-down wave 2, PR 142).
+ci_test tests/last-stack-routine-shell-lint.sh
+ci_test tests/last-stack-prompt-shell-blocks.sh
+ci_test tests/last-stack-kanban-done-when-sweep.sh
