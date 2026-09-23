@@ -32,6 +32,10 @@ Helpers that remove the hand-written parse:
 - `last-stack-kanban-done-when-sweep`: the DONE-WHEN sweep, one TSV row per
   card with no empty field.
 - `last-stack-json-capture <file> -- <cmd> --json`, then `jq` the file.
+- One card field, no hand-written filter:
+  `kanban show <slug> --json | last-stack-json-get .body` (also `.tags`,
+  `.column`). `kanban show` gives one object; `kanban list` gives
+  `{cards: [...]}`; do not mix the two shapes in one `jq` call.
 - The Codex exec guard (inside the Codex app) rejects any `rm -f` / `rm -rf`.
   Put scratch files in `mktemp` paths under `$TMPDIR` and do not clean up; the
   run-dir prune removes them. That rejection is known too: do not file it.
