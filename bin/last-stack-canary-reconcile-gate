@@ -2,7 +2,8 @@
 # The hourly reconciler as the release loop runs it: the stateless v2 gate
 # with exactly one action armed. A green quiet window dispatches
 # `last-stack-canary-promote-material` (PROMOTE.md + notify); every other
-# action stays planned. Nothing here publishes — stable is a human command.
+# action stays planned. Since 2026-09-21 promote-material also publishes
+# (release-publish --if-needed); a failed promote is retried on a later tick.
 #
 # The plain gate keeps its "actions are held unless execute is explicit"
 # contract for tests and ad-hoc runs; this wrapper is the explicit switch

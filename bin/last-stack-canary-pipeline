@@ -1087,33 +1087,83 @@ def queue_heal_if_new(path: Path, verdict: dict) -> bool:
     return lock_and_run(path, inner)
 
 
-def reserve_action_dispatch(path: Path, verdict: dict) -> bool:
-    """Record a dispatch attempt before execution so a later tick cannot repeat it."""
-    token = action_token(verdict)
+# A failed promote is retried on a later hourly tick, a bounded number of
+# times. Before 2026-09-23 one failed publish (a stale LastGit-era promote
+# script, exit 128) left the candidate "promote-eligible" every hour with no
+# second attempt, so stable never moved
+# (papercut-release-publish-uses-stale-lastgit-fold-mirror-20260923).
+# Every other action stays one attempt per verdict token.
+RETRYABLE_ACTIONS = ("promote-eligible",)
 
-    def inner() -> bool:
+
+def promote_retry_policy() -> tuple[int, float, float]:
+    """(max attempts, seconds between attempts, seconds before an unfinished attempt counts as failed)."""
+    max_attempts = int(env_float("LAST_STACK_CANARY_V2_PROMOTE_MAX_ATTEMPTS", 6.0))
+    interval = env_float("LAST_STACK_CANARY_V2_PROMOTE_RETRY_SECONDS", 50 * 60.0)
+    stale = env_float("LAST_STACK_CANARY_V2_PROMOTE_STALE_SECONDS", 2 * 60 * 60.0)
+    return max(1, max_attempts), max(0.0, interval), max(0.0, stale)
+
+
+def reserve_action_dispatch(path: Path, verdict: dict) -> tuple[int, str]:
+    """Record a dispatch attempt before execution so a later tick cannot repeat it.
+
+    Returns (attempt number, "") when this tick owns a new attempt, else
+    (0, reason). A retryable action gets a new attempt when the last one
+    finished non-ok (or never finished within the stale bound), the retry
+    interval has passed, and the attempt budget is not spent."""
+    token = action_token(verdict)
+    retryable = verdict["action"] in RETRYABLE_ACTIONS
+    max_attempts, interval, stale = promote_retry_policy()
+    now = parse_ts(str(verdict.get("at") or "")) or dt.datetime.now(dt.timezone.utc)
+
+    def inner() -> tuple[int, str]:
+        starts: list[dict] = []
+        results: dict[int, str] = {}
         for event in load_events(path):
-            if event.get("record_type") == "action_dispatch" and event.get("action_token") == token:
-                return False
+            if event.get("action_token") != token:
+                continue
+            if event.get("record_type") == "action_dispatch":
+                starts.append(event)
+            elif event.get("record_type") == "action_dispatch_result":
+                results[int(event.get("attempt") or 1)] = str(event.get("status") or "")
+        attempt = 1
+        if starts:
+            if not retryable:
+                return 0, "already-dispatched"
+            last = starts[-1]
+            last_attempt = int(last.get("attempt") or len(starts))
+            status = results.get(last_attempt)
+            if status == "ok":
+                return 0, "already-dispatched"
+            last_ts = parse_ts(str(last.get("ts") or ""))
+            age = (now - last_ts).total_seconds() if last_ts else float("inf")
+            if status is None and age < stale:
+                return 0, "already-dispatched"
+            if last_attempt >= max_attempts:
+                return 0, "retry-exhausted"
+            if age < interval:
+                return 0, "retry-wait"
+            attempt = last_attempt + 1
         append_event(
             path,
             {
                 "record_type": "action_dispatch",
-                "ts": utc_now(),
+                "ts": verdict.get("at") or utc_now(),
                 "candidate": verdict["candidate"],
                 "action": verdict["action"],
                 "subject": verdict.get("subject") or "",
                 "evidence": verdict["evidence"],
                 "action_token": token,
+                "attempt": attempt,
                 "status": "started",
             },
         )
-        return True
+        return attempt, ""
 
     return lock_and_run(path, inner)
 
 
-def finish_action_dispatch(path: Path, verdict: dict, status: str) -> None:
+def finish_action_dispatch(path: Path, verdict: dict, status: str, attempt: int = 1) -> None:
     lock_and_run(
         path,
         lambda: append_event(
@@ -1123,10 +1173,26 @@ def finish_action_dispatch(path: Path, verdict: dict, status: str) -> None:
                 "ts": utc_now(),
                 "candidate": verdict["candidate"],
                 "action_token": action_token(verdict),
+                "attempt": attempt,
                 "status": status,
             },
         ),
     )
+
+
+def post_retry_notice(verdict: dict, title: str, summary: str) -> None:
+    """Best-effort Situations FYI for a promote retry; never fails the tick."""
+    notice_bin = os.environ.get("LAST_STACK_CANARY_V2_NOTICE_BIN", "situations").strip()
+    if not notice_bin or notice_bin == "0" or not shutil.which(notice_bin):
+        return
+    try:
+        subprocess.run(
+            [notice_bin, "notice", "--title", title, "--kind", "other", "--system", "lastdb-release",
+             "--actor", "routine:lastdb-canary-soak-watch", "--summary", summary],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def reconcile(path: Path, args: argparse.Namespace) -> dict:
@@ -1185,9 +1251,19 @@ def reconcile(path: Path, args: argparse.Namespace) -> dict:
         # Held until the matching short command is configured. Never invent a wait.
         verdict["action_dispatch"] = "planned"
         return verdict
-    if not reserve_action_dispatch(path, verdict):
-        verdict["action_dispatch"] = "already-dispatched"
+    attempt, held = reserve_action_dispatch(path, verdict)
+    if not attempt:
+        verdict["action_dispatch"] = held
         return verdict
+    verdict["action_attempt"] = attempt
+    max_attempts = promote_retry_policy()[0]
+    if attempt > 1:
+        post_retry_notice(
+            verdict,
+            f"LastDB stable publish retry {attempt}/{max_attempts} for {args.candidate}",
+            f"soak-watch retries the failed promote action (attempt {attempt} of {max_attempts}); "
+            "a stable publish updates the public Homebrew tap",
+        )
     env = {
         **os.environ,
         "LAST_STACK_CANARY_CANDIDATE": args.candidate,
@@ -1202,7 +1278,15 @@ def reconcile(path: Path, args: argparse.Namespace) -> dict:
     # `jq: parse error: Invalid numeric literal`.
     completed = subprocess.run(command, shell=True, env=env, stdout=sys.stderr)
     verdict["action_dispatch"] = "ok" if completed.returncode == 0 else f"exit_{completed.returncode}"
-    finish_action_dispatch(path, verdict, verdict["action_dispatch"])
+    finish_action_dispatch(path, verdict, verdict["action_dispatch"], attempt)
+    if (completed.returncode != 0 and verdict["action"] in RETRYABLE_ACTIONS
+            and attempt >= max_attempts):
+        post_retry_notice(
+            verdict,
+            f"LastDB stable publish gave up for {args.candidate}",
+            f"the promote action failed {attempt} times; no more automatic retries. "
+            "Read ~/.local/state/last-stack/canary-promote/<day>/publish.err",
+        )
     if completed.returncode != 0:
         die(f"short action failed: exit {completed.returncode}")
     return verdict
@@ -2337,22 +2421,18 @@ def download_canary_assets(version: str, dest: Path, *, preferred_oid: str = "")
 
 
 def find_fold_promote_script() -> Path | None:
-    env = os.environ.get("LAST_STACK_CANARY_FORGE_PROMOTE")
-    if env and Path(env).is_file():
-        return Path(env)
-    home = Path.home()
-    candidates = [
-        home / "code/edgevector/fold/scripts/release/forge-promote-homebrew-stable.sh",
-    ]
-    # Prefer a recent worktree if portal has no scripts
-    wt_root = home / "code/edgevector/.routine-worktrees"
-    if wt_root.is_dir():
-        for p in sorted(wt_root.glob("*/scripts/release/forge-promote-homebrew-stable.sh"), reverse=True):
-            candidates.append(p)
-    for c in candidates:
-        if c.is_file():
-            return c
-    return None
+    """fold's promote script from fold's Forgejo main (lib/fold_promote_script.py).
+
+    Not the fold portal (it has no checkout) and never ~/.lastgit/mirrors/fold
+    (papercut-release-publish-uses-stale-lastgit-fold-mirror-20260923)."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+    import fold_promote_script  # noqa: E402  (lib/ is not a package)
+
+    try:
+        script, _source = fold_promote_script.resolve(None)
+    except fold_promote_script.PromoteScriptError as exc:
+        die(str(exc))
+    return script
 
 
 def promote_execute(path: Path, args: argparse.Namespace) -> dict:
