@@ -42,32 +42,38 @@ if [ -n "${CLOUD_TRANSACTION_GROUPS_ALLOW_CUTOVER:-}" ]; then
   finish FAIL "This harness does not start a cloud cutover. Remove CLOUD_TRANSACTION_GROUPS_ALLOW_CUTOVER."
 fi
 
+# Resolve every symlink hop, including a parent directory symlink, before a read.
+canonical_path() {
+  local path="$1" canon
+  canon="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$path")" || return 1
+  printf '%s\n' "$canon"
+}
+
 refuse_primary() {
-  local candidate="$1" link
+  local candidate="$1" canon root
   [ -n "$candidate" ] || return 0
-  case "$candidate" in
-    "$HOME/.lastdb"|"$HOME/.lastdb/"*|"$HOME/.folddb"|"$HOME/.folddb/"*)
-      finish FAIL "The harness refuses a LastDB home path."
-      ;;
-  esac
-  if [ -L "$candidate" ]; then
-    link="$(readlink "$candidate")"
-    case "$link" in
-      "$HOME/.lastdb"|"$HOME/.lastdb/"*|"$HOME/.folddb"|"$HOME/.folddb/"*|*/.lastdb|*/.lastdb/*|*/.folddb|*/.folddb/*)
+  canon="$(canonical_path "$candidate")" || finish FAIL "The harness could not resolve the path."
+  for root in "$HOME/.lastdb" "$HOME/.folddb"; do
+    root="$(canonical_path "$root")" || finish FAIL "The harness could not resolve the primary home."
+    case "$canon" in
+      "$root"|"$root"/*)
         finish FAIL "The harness refuses a LastDB home path."
         ;;
     esac
-  fi
+  done
 }
 
 copy_pin_log() {
-  local repo="$1" source_label="$2"
+  local repo="$1" source_label="$2" file
   refuse_primary "$repo"
-  if [ -f "$repo/$PIN_REL" ]; then
-    cp "$repo/$PIN_REL" "$TMP/pin_log.rs"
+  file="$repo/$PIN_REL"
+  refuse_primary "$file"
+  if [ -f "$file" ]; then
+    cp "$file" "$TMP/pin_log.rs"
     printf '%s\n' "$source_label"
     return 0
   fi
+  refuse_primary "$repo/.git"
   if [ -d "$repo/.git" ] || [ -f "$repo/.git" ]; then
     if ! git -C "$repo" show "HEAD:$PIN_REL" >"$TMP/pin_log.rs"; then
       finish FAIL "The Fold pin-log source is absent."

@@ -6,11 +6,18 @@ Does not open a LastDB home and does not start a cloud cutover.
 """
 
 import json
+import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 FRONTIER = "1787974212509104000"
+FRONTIER_N = int(FRONTIER)
 EVIDENCE_SCHEMA = "lastdb-cloud-transaction-groups-proof.v1"
+INT_RE = re.compile(r"[0-9]+")
+UTC_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+SHA_RE = re.compile(r"[0-9a-f]{64}")
+SOAK_SECONDS = 24 * 60 * 60
 PRIMARY_MARKERS = (
     "/.lastdb",
     "/.folddb",
@@ -269,36 +276,191 @@ def walk_strings(value, found):
             walk_strings(item, found)
 
 
-def evidence_failures(path):
+def measured_text(value):
+    return isinstance(value, str) and bool(value.strip())
+
+
+def measured_map(text):
+    values = {}
+    for line in text.splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if key and key not in values:
+            values[key] = value
+    return values
+
+
+def measured_int(values, key):
+    raw = values.get(key)
+    if raw is None or INT_RE.fullmatch(raw) is None:
+        return None
+    return int(raw)
+
+
+def measured_time(values, key):
+    raw = values.get(key)
+    if raw is None or UTC_RE.fullmatch(raw) is None:
+        return None
+    return datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ")
+
+
+def cow_measure(text):
+    values = measured_map(text)
+    failures = []
+    before = measured_int(values, "published_through_before")
+    after = measured_int(values, "published_through_after")
+    rows_before = measured_int(values, "pin_rows_before")
+    rows_after = measured_int(values, "pin_rows_after")
+    deleted = measured_int(values, "deleted")
+    quarantined = measured_int(values, "quarantined")
+    failed_before = measured_int(values, "failed_upload_frontier_before")
+    failed_after = measured_int(values, "failed_upload_frontier_after")
+    retry_objects = measured_int(values, "retry_object_count")
+    retry_new = measured_int(values, "retry_new_keys")
+    if (
+        values.get("frontier") != FRONTIER
+        or before is None
+        or after is None
+        or before >= FRONTIER_N
+        or after < FRONTIER_N
+    ):
+        failures.append(
+            "Frontier %s did not drain on the measured CoW output." % FRONTIER
+        )
+    if (
+        rows_before is None
+        or rows_after is None
+        or rows_before <= rows_after
+        or deleted != 0
+        or quarantined != 0
+    ):
+        failures.append(
+            "The CoW output did not record a row drain without delete or quarantine."
+        )
+    if (
+        failed_before is None
+        or failed_after is None
+        or failed_before != failed_after
+        or retry_objects is None
+        or retry_objects < 1
+        or retry_new != 0
+    ):
+        failures.append(
+            "The CoW output did not measure an unchanged frontier and an idempotent retry."
+        )
+    notes = []
+    if not failures:
+        notes.append(
+            "- Frontier %s drained on a CoW copy. published_through %s to %s. pin rows %s to %s. deleted=0 quarantined=0."
+            % (FRONTIER, before, after, rows_before, rows_after)
+        )
+        notes.append(
+            "- A failed upload left published_through at %s. A retry reused %s object keys and minted 0 new keys."
+            % (failed_before, retry_objects)
+        )
+    return failures, notes
+
+
+def restore_measure(text):
+    values = measured_map(text)
+    failures = []
+    primary = measured_int(values, "primary_records")
+    restored = measured_int(values, "restored_records")
+    primary_hash = values.get("primary_projection_sha256")
+    restored_hash = values.get("restored_projection_sha256")
+    v1_records = measured_int(values, "v1_records")
+    v1_restored = measured_int(values, "v1_restored_records")
+    partial_before = measured_int(values, "partial_group_frontier_before")
+    partial_after = measured_int(values, "partial_group_frontier_after")
+    if primary is None or restored is None or primary < 1 or primary != restored:
+        failures.append(
+            "The restore output does not show equal primary and restored records."
+        )
+    if (
+        primary_hash is None
+        or restored_hash is None
+        or SHA_RE.fullmatch(primary_hash) is None
+        or primary_hash != restored_hash
+    ):
+        failures.append("The restore output does not show equal projection digests.")
+    if (
+        v1_records is None
+        or v1_restored is None
+        or v1_records < 1
+        or v1_records != v1_restored
+    ):
+        failures.append(
+            "The restore output does not show a valid V1 single-schema restore."
+        )
+    if (
+        partial_before is None
+        or partial_after is None
+        or partial_before != partial_after
+    ):
+        failures.append("A partial group advanced the restore frontier.")
+    notes = []
+    if not failures:
+        notes.append(
+            "- An empty-home restore reproduced %s records. projection sha256 %s matched. V1 records %s matched. The partial-group frontier stayed %s."
+            % (primary, primary_hash, v1_records, partial_before)
+        )
+    return failures, notes
+
+
+def soak_measure(text):
+    values = measured_map(text)
+    failures = []
+    upgrade = measured_time(values, "safe_upgrade_at")
+    started = measured_time(values, "soak_started_at")
+    ended = measured_time(values, "soak_ended_at")
+    canary = measured_time(values, "canary_started_at")
+    if upgrade is None or started is None or ended is None or canary is None:
+        failures.append("The soak output has no measured window.")
+        return failures, []
+    if upgrade > started:
+        failures.append("The safe upgrade is not before the soak window.")
+    window = (ended - started).total_seconds()
+    if window < SOAK_SECONDS:
+        failures.append("The soak window is shorter than 24 hours.")
+    if canary < ended:
+        failures.append("The canary started before the soak window ended.")
+    notes = []
+    if not failures:
+        notes.append(
+            "- The soak window ran from %s to %s. The canary started at %s after the safe upgrade at %s."
+            % (
+                values["soak_started_at"],
+                values["soak_ended_at"],
+                values["canary_started_at"],
+                values["safe_upgrade_at"],
+            )
+        )
+    return failures, notes
+
+
+def evidence_assessment(path):
     raw = path.read_text()
     for marker in PRIMARY_MARKERS:
         if marker in raw:
-            return ["The evidence file names a primary home or a credential."]
+            return ["The evidence file names a primary home or a credential."], []
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
-        return ["The evidence file is not JSON."]
+        return ["The evidence file is not JSON."], []
     if not isinstance(data, dict):
-        return ["The evidence file is not a JSON object."]
+        return ["The evidence file is not a JSON object."], []
 
     strings = []
     walk_strings(data, strings)
     for item in strings:
         for marker in PRIMARY_MARKERS:
             if marker in item:
-                return ["The evidence file names a primary home or a credential."]
+                return ["The evidence file names a primary home or a credential."], []
 
     failures = []
-    expected_keys = {
-        "schema",
-        "surface",
-        "frontier_drain",
-        "publish",
-        "restore",
-        "canary",
-    }
-    if set(data) != expected_keys:
-        failures.append("The evidence object keys do not match the contract.")
     if data.get("schema") != EVIDENCE_SCHEMA:
         failures.append("The evidence schema is not %s." % EVIDENCE_SCHEMA)
 
@@ -320,72 +482,27 @@ def evidence_failures(path):
             "The evidence surface is not a CoW copy with the primary home closed."
         )
 
-    drain = data.get("frontier_drain")
-    if not isinstance(drain, dict) or set(drain) != {
-        "frontier",
-        "drained_on_cow_copy",
-        "deleted",
-        "quarantined",
-    }:
-        failures.append("The frontier drain keys do not match the contract.")
-    elif (
-        drain.get("frontier") != FRONTIER
-        or drain.get("drained_on_cow_copy") is not True
-        or drain.get("deleted") is not False
-        or drain.get("quarantined") is not False
+    cow = data.get("cow_output")
+    restore = data.get("restore_output")
+    soak = data.get("soak_output")
+    if not (
+        measured_text(cow) and measured_text(restore) and measured_text(soak)
     ):
         failures.append(
-            "Frontier %s did not drain on a CoW copy without delete or quarantine."
+            "The evidence file lacks measured CoW output for frontier %s, the restore, and the soak window."
             % FRONTIER
         )
+        return failures, []
 
-    publish = data.get("publish")
-    if not isinstance(publish, dict) or set(publish) != {
-        "failed_upload_leaves_frontier_unchanged",
-        "retry_idempotent",
-    }:
-        failures.append("The publish evidence keys do not match the contract.")
-    elif (
-        publish.get("failed_upload_leaves_frontier_unchanged") is not True
-        or publish.get("retry_idempotent") is not True
-    ):
-        failures.append("The publish evidence does not prove the frontier and the retry.")
-
-    restore = data.get("restore")
-    if not isinstance(restore, dict) or set(restore) != {
-        "empty_home",
-        "brain_primary_reproduced",
-        "projections_exact",
-        "v1_single_schema_valid",
-        "partial_group_advances_restore_frontier",
-    }:
-        failures.append("The restore evidence keys do not match the contract.")
-    elif (
-        restore.get("empty_home") is not True
-        or restore.get("brain_primary_reproduced") is not True
-        or restore.get("projections_exact") is not True
-        or restore.get("v1_single_schema_valid") is not True
-        or restore.get("partial_group_advances_restore_frontier") is not False
-    ):
-        failures.append("The restore evidence does not prove one atomic empty-home restore.")
-
-    canary = data.get("canary")
-    soak = canary.get("soak_hours") if isinstance(canary, dict) else None
-    if not isinstance(canary, dict) or set(canary) != {
-        "safe_upgrade_before_start",
-        "soak_hours",
-        "live_canary_passed",
-    }:
-        failures.append("The canary evidence keys do not match the contract.")
-    elif (
-        canary.get("safe_upgrade_before_start") is not True
-        or not isinstance(soak, int)
-        or isinstance(soak, bool)
-        or soak < 24
-        or canary.get("live_canary_passed") is not True
-    ):
-        failures.append("The live canary did not follow a safe upgrade and a 24-hour soak.")
-    return failures
+    cow_bad, cow_notes = cow_measure(cow)
+    restore_bad, restore_notes = restore_measure(restore)
+    soak_bad, soak_notes = soak_measure(soak)
+    failures.extend(cow_bad)
+    failures.extend(restore_bad)
+    failures.extend(soak_bad)
+    if failures:
+        return failures, []
+    return [], cow_notes + restore_notes + soak_notes
 
 
 def main():
@@ -444,7 +561,7 @@ def main():
             failures.append("Operational evidence is absent.")
     else:
         evidence_path = Path(evidence_arg)
-        evidence_bad = evidence_failures(evidence_path)
+        evidence_bad, evidence_notes = evidence_assessment(evidence_path)
         if evidence_bad:
             lines.append("Operational evidence: FAIL")
             for item in evidence_bad:
@@ -452,16 +569,7 @@ def main():
             failures.extend(evidence_bad)
         else:
             lines.append("Operational evidence: PASS")
-            lines.append(
-                "- Frontier %s drained on a CoW copy without delete or quarantine."
-                % FRONTIER
-            )
-            lines.append("- A failed upload left the published frontier unchanged.")
-            lines.append("- A retry did not duplicate the transaction.")
-            lines.append("- An empty-home restore reproduced the Brain primary and the projections.")
-            lines.append("- A V1 single-schema restore stayed valid.")
-            lines.append("- A partial group did not advance the restore frontier.")
-            lines.append("- The live canary followed a safe upgrade and a 24-hour soak.")
+            lines.extend(evidence_notes)
 
     print("\n".join(lines))
     return 1 if failures else 0
