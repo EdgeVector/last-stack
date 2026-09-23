@@ -159,6 +159,10 @@ read/write, fail loudly if the resolved path is empty or starts with
      The ledger JSON already holds every field; read it with `jq -r ... @tsv`.
    - Put every jq filter in single quotes. Never escape quotes inside a
      double-quoted jq program.
+   - Do not name a shell variable `status`, `path`, or `argv`: zsh reserves
+     them (`status=0` stops with `read-only variable: status`, and the heartbeat
+     never ran; `papercut-pipeline-health-closeout-zsh-status-variable`). Use
+     `rc`.
    - Write multi-line brain text (closeout report, evidence) through a quoted
      heredoc: `brain put <slug> --type <t> <<'EOF'` ... `EOF`. `printf %s` with
      `\n` in the text writes one line, and the missing frontmatter makes the

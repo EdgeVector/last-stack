@@ -74,6 +74,8 @@ then stops on `$2`, and the guard receives an empty `--pr` (rc=2). That broke
 the first guard pass of most runs on 2026-09-22 and again on 2026-09-23.
 Do not `rm` files in the run dir: the Codex exec guard rejects the whole
 command. Write each output to a new file name instead.
+Do not name a shell variable `status`, `path`, or `argv`: zsh reserves them.
+Use `rc`.
 
 **Venue coverage is part of the pass, not a detail.** An empty inventory is
 only a real `open=0` when `.unreadable` is empty. If a repo query fails, report
