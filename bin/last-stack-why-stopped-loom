@@ -384,28 +384,42 @@ with stderr_path.open("a", encoding="utf-8") as stderr_file:
             pass
 
     def stop_group():
+        # macOS answers killpg with EPERM (PermissionError) for a group whose
+        # remaining members cannot be signalled, e.g. only zombies are left.
+        # That crashed the timeout path with a traceback and exit 3 instead of
+        # 124 (Forge CI 2026-09-23, tests/last-stack-why-stopped-loom.sh).
+        # Treat EPERM as "nothing left we can signal": stop the direct child
+        # and return.
         def group_exists():
             try:
                 os.killpg(process.pid, 0)
                 return True
+            except (ProcessLookupError, PermissionError):
+                return False
+
+        def signal_group(sig):
+            try:
+                os.killpg(process.pid, sig)
+                return True
             except ProcessLookupError:
+                return False
+            except PermissionError:
+                try:
+                    process.send_signal(sig)
+                except (ProcessLookupError, OSError):
+                    pass
                 return False
 
         if not group_exists():
             return
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
+        if not signal_group(signal.SIGTERM):
             return
         deadline = time.monotonic() + 0.5
         while time.monotonic() < deadline:
             if not group_exists():
                 return
             time.sleep(0.05)
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        signal_group(signal.SIGKILL)
         try:
             process.wait(timeout=1)
         except subprocess.TimeoutExpired:
