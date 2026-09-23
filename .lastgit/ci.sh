@@ -757,4 +757,9 @@ ci_test tests/last-stack-ci-shard-supervisor.sh
 # forge + fake brain + fake board, no node, no network.
 # APPENDED (see the shard-stability note above): ci_test shards by list position.
 ci_test tests/last-stack-pipeline-forge-pr-ledger.sh
+# kanban health-only reads use `kanban ping`, and kanban-watch heals doing
+# cards by name (no BoardCards sweep). Fake kanban, no node, no network.
+# APPENDED (see the shard-stability note above): ci_test shards by list position.
+ci_test tests/last-stack-kanban-cheap-health-reads.sh
+ci_test tests/last-stack-kanban-watch-targeted-heal.sh
 ci_test tests/last-stack-ci-test-registration.sh
