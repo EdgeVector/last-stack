@@ -44,6 +44,11 @@ An audit agent read the call sites. A second reader checked the key claims.
 The public bundle omits `lastdbd` from `requires`, because the bundle always
 installs the LastDB daemon from Homebrew.
 
+loom and lastseek reach public users as Homebrew binaries from the
+`edgevector/lastdb` tap (Tom, 2026-09-23). They are in the public registry
+under `brew_apps`, not `apps`, so the canary candidate set does not pin them.
+In the public registry, kanban requires loom and brain recommends lastseek.
+
 ## Build edges (not in the registry)
 
 - Every artifact app needs **lastgit** and **last-stack** to install:
@@ -62,8 +67,9 @@ installs the LastDB daemon from Homebrew.
   routine setting on this host, not an app edge.
   **Tom, 2026-09-23: declare it anyway.** The pickup path runs Kanban cards
   through Loom, so a Kanban install without Loom is not a working factory.
-  `kanban` now `requires` `loom` in the Host Track registry. The public bundle
-  does not install Loom yet, so the public registry does not carry the edge.
+  `kanban` now `requires` `loom` in the Host Track registry and in the public
+  registry. The public bundle installs Loom as a Homebrew binary
+  (`brew_apps` in `config/registry/apps.json`).
 - **"brain requires lastseek."** brain prefers LastSeek and falls back to
   search and then to the node search. brain's own CI replaces lastseek with a
   stub that exits 127. So the edge is `recommends`, not `requires`.

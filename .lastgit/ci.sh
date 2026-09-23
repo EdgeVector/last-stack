@@ -424,6 +424,7 @@ ci_test tests/last-stack-legacy-residue-closeout.sh
 ci_test tests/last-stack-why-shipping-stopped.sh
 ci_test tests/host-track-artifacts.sh
 ci_test tests/host-track-requires.sh
+ci_test tests/last-stack-brew-app-publish.sh
 ci_test tests/host-track-on-channel-unpublished-main.sh
 ci_test tests/host-track-safe-upgrade-probe.sh
 ci_test tests/host-track-canary-soak.sh

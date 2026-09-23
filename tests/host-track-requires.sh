@@ -161,7 +161,7 @@ grep -q 'unknown required app: ghost' "$tmp/unknown-install.err" \
 HOST_TRACK_REGISTRY="$ROOT/config/host-track/apps.json" "$ROOT/bin/host-track" validate-registry --json \
   | jq -e '.bad_requires == 0' >/dev/null || fail "shipped host-track registry has bad requires"
 # The public bundle has no validate-registry: every edge must name a bundle app.
-bad_public="$(jq -r '.apps as $a | $a | to_entries[] | .key as $app
+bad_public="$(jq -r '((.apps // {}) + (.brew_apps // {})) as $a | $a | to_entries[] | .key as $app
   | ((.value.requires // []) + (.value.recommends // []))[]
   | select(. as $d | $a | has($d) | not) | "\($app) -> \(.)"' "$ROOT/config/registry/apps.json")"
 [ -z "$bad_public" ] || fail "public registry names apps outside the bundle: $bad_public"

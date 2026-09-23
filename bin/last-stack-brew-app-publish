@@ -1,0 +1,457 @@
+#!/usr/bin/env python3
+"""Publish a Host Track app's soaked artifact as a public Homebrew binary.
+
+Tom, 2026-09-23 (brain decision-2026-09-23-loom-lastseek-public-via-homebrew-binaries):
+loom and lastseek reach public users as Homebrew formulas in the public tap
+EdgeVector/homebrew-lastdb. The source stays private; the tarball carries the
+binary, the files the app needs at runtime, LICENSE and THIRD_PARTY_NOTICES.
+
+What gets published is exactly what this Mac runs: the Host Track `current`
+tree of the app, after its soak and post-flip watch, with every file checked
+against the artifact manifest. Nothing is rebuilt.
+
+Steps (each refuses on the first failure):
+  1. gate    current == stamped digest, post-flip watch done, files match manifest
+  2. version `<version_argv>` in the current tree; tag `<formula>-v<version>`
+  3. package tarball + bundle manifest + SHA256SUMS.txt
+  4. release PUBLIC: `gh release create <tag> --latest=false` on the tap
+  5. formula render templates/homebrew/<formula>.rb.tmpl, open a Forgejo tap PR
+     with auto-merge (PUBLIC when the GitHub push mirror syncs)
+
+The FIRST release of a formula needs --approve-first-release (Tom approves
+the first upload of each app). Later releases run unattended from
+`host-track refresh --all` with --if-needed.
+
+Config lives on the Host Track registry entry:
+  "brew_release": {
+    "formula": "loom",
+    "version_argv": ["dist/loom", "--version"],
+    "files": ["dist/loom", "LICENSE", "THIRD_PARTY_NOTICES"],
+    "dirs": ["scripts"],
+    "subsets": [{"dir": "definitions", "list": "release/public-definitions.txt"}]
+  }
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+SELF = Path(os.path.realpath(__file__))
+ROOT = SELF.parent.parent
+TRIPLE = "aarch64-apple-darwin"
+TAP_GITHUB = "EdgeVector/homebrew-lastdb"
+TAP_FORGE_REPO = "EdgeVector/homebrew-lastdb"
+FORGE_BASE = os.environ.get("LAST_STACK_FORGE_BASE", "http://localhost:3300")
+SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
+
+EXIT_OK = 0
+EXIT_FAIL = 1
+EXIT_USAGE = 2
+EXIT_NEEDS_APPROVAL = 3
+
+
+class Refuse(Exception):
+    def __init__(self, msg: str, code: int = EXIT_FAIL):
+        super().__init__(msg)
+        self.code = code
+
+
+def log(msg: str) -> None:
+    print(f"brew-app-publish: {msg}", file=sys.stderr)
+
+
+def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
+    kw.setdefault("text", True)
+    kw.setdefault("capture_output", True)
+    kw.setdefault("check", False)
+    return subprocess.run(cmd, **kw)
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def expand(p: str) -> Path:
+    if p.startswith("$HOME"):
+        p = str(Path.home()) + p[len("$HOME"):]
+    return Path(os.path.expanduser(p))
+
+
+# --- registry / install tree -------------------------------------------------
+
+def load_entry(registry: Path, app: str) -> dict:
+    data = json.loads(registry.read_text(encoding="utf-8"))
+    for entry in data.get("apps", []):
+        if entry.get("app") == app:
+            if not isinstance(entry.get("brew_release"), dict):
+                raise Refuse(f"{app} has no brew_release config in {registry}", EXIT_USAGE)
+            return entry
+    raise Refuse(f"unknown app {app} in {registry}", EXIT_USAGE)
+
+
+def install_root(entry: dict) -> Path:
+    raw = entry.get("install_root") or f"$HOME/.host-track/apps/{entry.get('artifact_app') or entry['app']}"
+    return expand(raw)
+
+
+def gate(app: str, entry: dict, stamp_dir: Path, artifact_root_override: str) -> tuple[Path, dict, dict]:
+    """Return (current_tree, stamp, manifest) or refuse."""
+    root = install_root(entry)
+    cur_link = root / "current"
+    if not cur_link.is_symlink():
+        raise Refuse(f"{app}: no current install at {cur_link}")
+    target = os.readlink(cur_link)
+    m = re.fullmatch(r"versions/([0-9a-f]{64})", target)
+    if not m:
+        raise Refuse(f"{app}: current points at {target}, not versions/<digest>")
+    digest = m.group(1)
+    stamp_path = stamp_dir / f"{app}.json"
+    try:
+        stamp = json.loads(stamp_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise Refuse(f"{app}: unreadable stamp {stamp_path}: {exc}")
+    if stamp.get("manifest_digest") != digest:
+        raise Refuse(f"{app}: current {digest[:12]} is not the stamped digest "
+                     f"{str(stamp.get('manifest_digest'))[:12]} (install in progress?)")
+    post_flip = stamp_dir / f"{app}.postflip.json"
+    if post_flip.exists():
+        raise Refuse(f"{app}: post-flip watch still running ({post_flip}); publish after it clears")
+    art_root = expand(artifact_root_override or stamp.get("artifact_root") or "$HOME/.lastgit/artifacts")
+    man_path = art_root / "manifests" / f"{digest}.json"
+    try:
+        manifest = json.loads(man_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise Refuse(f"{app}: unreadable artifact manifest {man_path}: {exc}")
+    return root / target, stamp, manifest
+
+
+def select_files(tree: Path, cfg: dict, manifest: dict) -> list[str]:
+    """Relative paths to ship. Every one must be in the artifact manifest."""
+    by_path = {f["path"]: f for f in manifest.get("files", [])}
+    wanted: list[str] = []
+    for rel in cfg.get("files", []):
+        if rel not in by_path:
+            raise Refuse(f"required file {rel} is not in the artifact (add it to the app's artifact paths)")
+        wanted.append(rel)
+    for d in cfg.get("dirs", []):
+        pre = d.rstrip("/") + "/"
+        hits = sorted(p for p in by_path if p.startswith(pre))
+        if not hits:
+            raise Refuse(f"required dir {d}/ is empty or missing in the artifact")
+        wanted.extend(hits)
+    for sub in cfg.get("subsets", []):
+        list_rel = sub["list"]
+        if list_rel not in by_path:
+            raise Refuse(f"subset list {list_rel} is not in the artifact")
+        pre = sub["dir"].rstrip("/") + "/"
+        for raw in (tree / list_rel).read_text(encoding="utf-8").splitlines():
+            name = raw.split("#", 1)[0].strip()
+            if not name:
+                continue
+            rel = pre + name
+            if rel not in by_path:
+                raise Refuse(f"{list_rel} names {name}, which is not in {pre}")
+            wanted.append(rel)
+    seen: set[str] = set()
+    out = []
+    for rel in wanted:
+        if rel in seen:
+            continue
+        seen.add(rel)
+        f = by_path[rel]
+        actual = tree / rel
+        if not actual.is_file():
+            raise Refuse(f"{rel} is in the manifest but missing from {tree}")
+        got = sha256_file(actual)
+        if got != f["sha256"]:
+            raise Refuse(f"hash mismatch: path={rel} manifest={f['sha256'][:12]} tree={got[:12]}")
+        out.append(rel)
+    return out
+
+
+def app_version(tree: Path, cfg: dict) -> str:
+    argv = list(cfg.get("version_argv") or [])
+    if not argv:
+        raise Refuse("brew_release.version_argv is empty", EXIT_USAGE)
+    argv[0] = str(tree / argv[0])
+    proc = run(argv, timeout=30)
+    text = (proc.stdout or "").strip().splitlines()
+    token = text[0].split()[-1] if text and text[0].split() else ""
+    token = token.lstrip("v")
+    if proc.returncode != 0 or not SEMVER.match(token):
+        raise Refuse(f"version probe {' '.join(argv)} gave rc={proc.returncode} out={proc.stdout!r}; "
+                     "expected '<name> X.Y.Z'")
+    return token
+
+
+# --- package -----------------------------------------------------------------
+
+def package(app: str, formula: str, version: str, tree: Path, files: list[str],
+            stamp: dict, manifest_digest: str, out_dir: Path) -> dict:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tar_name = f"{formula}-{TRIPLE}.tar.gz"
+    tar_path = out_dir / tar_name
+
+    def clean(ti: tarfile.TarInfo) -> tarfile.TarInfo:
+        ti.uid = ti.gid = 0
+        ti.uname = ti.gname = ""
+        ti.mtime = 0
+        return ti
+
+    with tarfile.open(tar_path, "w:gz") as tar:
+        for rel in files:
+            tar.add(str(tree / rel), arcname=rel, recursive=False, filter=clean)
+    tar_sha = sha256_file(tar_path)
+    bundle = {
+        "schema": "lastdb.app.bundle.v1",
+        "app": app,
+        "formula": formula,
+        "version": version,
+        "tag": f"{formula}-v{version}",
+        "triple": TRIPLE,
+        "source_oid": stamp.get("source_oid", ""),
+        "repo": stamp.get("repo", ""),
+        "manifest_digest": manifest_digest,
+        "tarball": tar_name,
+        "tarball_sha256": tar_sha,
+        "files": files,
+        "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    man_name = f"{formula}-{TRIPLE}.manifest.json"
+    (out_dir / man_name).write_text(json.dumps(bundle, indent=2) + "\n", encoding="utf-8")
+    sums = "".join(f"{sha256_file(out_dir / n)}  {n}\n" for n in (tar_name, man_name))
+    (out_dir / "SHA256SUMS.txt").write_text(sums, encoding="utf-8")
+    bundle["assets"] = [str(out_dir / n) for n in (tar_name, man_name, "SHA256SUMS.txt")]
+    return bundle
+
+
+def render_formula(template: Path, bundle: dict) -> str:
+    text = template.read_text(encoding="utf-8")
+    url = (f"https://github.com/{TAP_GITHUB}/releases/download/"
+           f"{bundle['tag']}/{bundle['tarball']}")
+    for key, val in (("@VERSION@", bundle["version"]), ("@URL@", url),
+                     ("@SHA256@", bundle["tarball_sha256"])):
+        if key not in text:
+            raise Refuse(f"template {template} lacks placeholder {key}", EXIT_USAGE)
+        text = text.replace(key, val)
+    left = re.findall(r"@[A-Z0-9_]+@", text)
+    if left:
+        raise Refuse(f"template {template} has unfilled placeholders: {sorted(set(left))}", EXIT_USAGE)
+    return text
+
+
+# --- GitHub release (PUBLIC) -------------------------------------------------
+
+def gh_env() -> dict:
+    env = dict(os.environ)
+    if not env.get("GH_TOKEN", "").strip() and shutil.which("lastsecrets"):
+        ls_env = {k: v for k, v in env.items() if k != "OBS_SENTRY_DSN"}
+        proc = run(["lastsecrets", "get", "github-token"], env=ls_env)
+        tok = proc.stdout.strip().splitlines()[0].strip() if proc.returncode == 0 and proc.stdout.strip() else ""
+        if tok and run(["gh", "auth", "token"]).returncode != 0:
+            env["GH_TOKEN"] = tok
+    return env
+
+
+def released_tags(gh: str, formula: str) -> list[str]:
+    proc = run([gh, "release", "list", "--repo", TAP_GITHUB, "--limit", "200",
+                "--json", "tagName", "--jq", ".[].tagName"], env=gh_env())
+    if proc.returncode != 0:
+        raise Refuse(f"gh release list failed: {proc.stderr.strip()[:300]}")
+    pre = f"{formula}-v"
+    return [t for t in proc.stdout.split() if t.startswith(pre)]
+
+
+def release_digest(gh: str, tag: str, formula: str, work: Path) -> str:
+    """manifest_digest recorded in an existing release, or '' when unknown."""
+    name = f"{formula}-{TRIPLE}.manifest.json"
+    proc = run([gh, "release", "download", tag, "--repo", TAP_GITHUB, "--pattern", name,
+                "--dir", str(work), "--clobber"], env=gh_env())
+    if proc.returncode != 0:
+        return ""
+    try:
+        return json.loads((work / name).read_text(encoding="utf-8")).get("manifest_digest", "")
+    except (OSError, ValueError):
+        return ""
+
+
+def create_release(gh: str, bundle: dict) -> None:
+    notes = (f"{bundle['app']} {bundle['version']} for Apple Silicon.\n\n"
+             f"Install: `brew install edgevector/lastdb/{bundle['formula']}`\n\n"
+             f"source_oid: {bundle['source_oid']}\nmanifest_digest: {bundle['manifest_digest']}\n")
+    notes_path = Path(bundle["assets"][0]).parent.parent / "release-notes.md"
+    notes_path.write_text(notes, encoding="utf-8")
+    proc = run([gh, "release", "create", bundle["tag"], "--repo", TAP_GITHUB,
+                "--title", f"{bundle['formula']} {bundle['version']}", "--notes-file", str(notes_path),
+                "--latest=false", *bundle["assets"]], env=gh_env())
+    if proc.returncode != 0:
+        raise Refuse(f"gh release create {bundle['tag']} failed: {proc.stderr.strip()[:400]}")
+
+
+# --- formula PR on the Forgejo tap (PUBLIC after mirror sync) ----------------
+
+def open_formula_pr(bundle: dict, formula_text: str, forge_git: str, forge_api: str) -> str:
+    formula = bundle["formula"]
+    branch = f"brew/{formula}-v{bundle['version']}"
+    with tempfile.TemporaryDirectory(prefix="brew-tap-") as tmp:
+        clone = Path(tmp) / "tap"
+        url = f"{FORGE_BASE}/{TAP_FORGE_REPO}.git"
+        for cmd in (
+            [forge_git, "clone", "--quiet", "--depth", "1", url, str(clone)],
+            [forge_git, "-C", str(clone), "checkout", "-q", "-b", branch],
+        ):
+            proc = run(cmd)
+            if proc.returncode != 0:
+                raise Refuse(f"{' '.join(cmd[:4])} failed: {proc.stderr.strip()[:300]}")
+        target = clone / "Formula" / f"{formula}.rb"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(formula_text, encoding="utf-8")
+        status = run(["git", "-C", str(clone), "status", "--porcelain"]).stdout.split("\n")
+        changed = [ln[3:] for ln in status if ln.strip()]
+        if changed != [f"Formula/{formula}.rb"]:
+            raise Refuse(f"formula PR would touch {changed}, expected only Formula/{formula}.rb")
+        msg = (f"{formula} {bundle['version']}: point the formula at release {bundle['tag']}\n\n"
+               f"Tarball sha256 {bundle['tarball_sha256']}, source_oid {bundle['source_oid']}.\n"
+               "Opened by last-stack-brew-app-publish.\n")
+        for cmd in (
+            ["git", "-C", str(clone), "add", f"Formula/{formula}.rb"],
+            ["git", "-C", str(clone), "-c", "user.name=last-stack", "-c",
+             "user.email=last-stack@localhost", "commit", "-q", "-m", msg],
+            [forge_git, "-C", str(clone), "push", "-q", "origin", f"HEAD:{branch}"],
+        ):
+            proc = run(cmd)
+            if proc.returncode != 0:
+                raise Refuse(f"{' '.join(cmd[:4])} failed: {proc.stderr.strip()[:300]}")
+    body = {"title": f"{formula} {bundle['version']}", "head": branch, "base": "main",
+            "body": msg}
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(body, f)
+        body_path = f.name
+    proc = run([forge_api, "--method", "POST", "--data", f"@{body_path}",
+                f"repos/{TAP_FORGE_REPO}/pulls", "--jq", ".number"])
+    os.unlink(body_path)
+    number = proc.stdout.strip()
+    if proc.returncode != 0 or not number.isdigit():
+        raise Refuse(f"opening the tap PR failed: {proc.stderr.strip()[:300]}")
+    arm = run([forge_api, "POST", "--data", '{"Do":"merge","merge_when_checks_succeed":true}',
+               f"repos/{TAP_FORGE_REPO}/pulls/{number}/merge"])
+    if arm.returncode != 0 and "already scheduled" not in (arm.stdout + arm.stderr):
+        log(f"tap PR {number} opened; auto-merge not armed yet ({arm.stderr.strip()[:200]})")
+    return number
+
+
+# --- main --------------------------------------------------------------------
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--app", required=True, help="Host Track app name (loom, lastseek)")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true", help="gate + package only (default)")
+    mode.add_argument("--publish", action="store_true", help="PUBLIC: GitHub release + tap formula PR")
+    ap.add_argument("--if-needed", action="store_true",
+                    help="exit 0 quietly when this digest is already released or unchanged")
+    ap.add_argument("--approve-first-release", action="store_true",
+                    help="Tom approved the first public upload of this formula")
+    ap.add_argument("--registry", type=Path,
+                    default=Path(os.environ.get("HOST_TRACK_REGISTRY", ROOT / "config/host-track/apps.json")))
+    ap.add_argument("--stamp-dir", type=Path,
+                    default=Path(os.environ.get("HOST_TRACK_STAMP_DIR", Path.home() / ".host-track/stamps")))
+    ap.add_argument("--artifact-root", default=os.environ.get("HOST_TRACK_ARTIFACT_ROOT", ""))
+    ap.add_argument("--state-dir", type=Path,
+                    default=Path(os.environ.get("LAST_STACK_BREW_PUBLISH_STATE",
+                                                Path.home() / ".local/state/last-stack/brew-app-publish")))
+    ap.add_argument("--templates", type=Path, default=ROOT / "templates/homebrew")
+    ap.add_argument("--gh", default=os.environ.get("LAST_STACK_GH_BIN", "gh"))
+    ap.add_argument("--forge-git", default=os.environ.get(
+        "LAST_STACK_FORGE_GIT_BIN", str(ROOT / "bin/last-stack-forge-git")))
+    ap.add_argument("--forge-api", default=os.environ.get(
+        "LAST_STACK_FORGE_API_BIN", str(ROOT / "bin/last-stack-forge-api")))
+    args = ap.parse_args(argv)
+
+    try:
+        entry = load_entry(args.registry, args.app)
+        cfg = entry["brew_release"]
+        formula = cfg.get("formula") or args.app
+        template = args.templates / f"{formula}.rb.tmpl"
+        if not template.is_file():
+            raise Refuse(f"missing formula template {template}", EXIT_USAGE)
+
+        tree, stamp, manifest = gate(args.app, entry, args.stamp_dir, args.artifact_root)
+        digest = stamp["manifest_digest"]
+        state = args.state_dir / f"{formula}.json"
+        if args.if_needed and state.exists():
+            try:
+                if json.loads(state.read_text(encoding="utf-8")).get("manifest_digest") == digest:
+                    log(f"{formula}: digest {digest[:12]} already handled; noop")
+                    return EXIT_OK
+            except ValueError:
+                pass
+
+        files = select_files(tree, cfg, manifest)
+        version = app_version(tree, cfg)
+        tag = f"{formula}-v{version}"
+        run_dir = args.state_dir / "runs" / f"{tag}-{digest[:12]}"
+        if run_dir.exists():
+            shutil.rmtree(run_dir)
+        bundle = package(args.app, formula, version, tree, files, stamp, digest, run_dir / "assets")
+        formula_text = render_formula(template, bundle)
+        (run_dir / f"{formula}.rb").write_text(formula_text, encoding="utf-8")
+        log(f"{formula}: packaged {len(files)} files as {tag} sha256={bundle['tarball_sha256'][:12]} "
+            f"in {run_dir}")
+
+        if not args.publish:
+            print(json.dumps({"ok": True, "mode": "dry-run", "tag": tag, "version": version,
+                              "files": len(files), "tarball_sha256": bundle["tarball_sha256"],
+                              "run_dir": str(run_dir)}))
+            return EXIT_OK
+
+        tags = released_tags(args.gh, formula)
+        if tag in tags:
+            prior = release_digest(args.gh, tag, formula, run_dir)
+            if prior == digest:
+                log(f"{tag} already released for this digest")
+            else:
+                msg = (f"{tag} exists for digest {prior[:12] or '?'} but current is {digest[:12]}; "
+                       f"bump the app version before the next release")
+                if not args.if_needed:
+                    raise Refuse(msg)
+                log(msg)
+            args.state_dir.mkdir(parents=True, exist_ok=True)
+            state.write_text(json.dumps({"manifest_digest": digest, "tag": tag, "result": "exists"}) + "\n",
+                             encoding="utf-8")
+            return EXIT_OK
+        if not tags and not args.approve_first_release:
+            raise Refuse(f"{formula} has never been released; the first public upload needs Tom's "
+                         f"approval (--approve-first-release)", EXIT_NEEDS_APPROVAL)
+
+        create_release(args.gh, bundle)
+        log(f"PUBLIC: released {tag} on {TAP_GITHUB}")
+        pr = open_formula_pr(bundle, formula_text, args.forge_git, args.forge_api)
+        log(f"tap PR {pr} opened for Formula/{formula}.rb")
+        args.state_dir.mkdir(parents=True, exist_ok=True)
+        state.write_text(json.dumps({"manifest_digest": digest, "tag": tag, "result": "released",
+                                     "tap_pr": pr}) + "\n", encoding="utf-8")
+        print(json.dumps({"ok": True, "mode": "publish", "tag": tag, "tap_pr": pr,
+                          "tarball_sha256": bundle["tarball_sha256"]}))
+        return EXIT_OK
+    except Refuse as exc:
+        log(str(exc))
+        return exc.code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

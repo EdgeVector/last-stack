@@ -3254,6 +3254,34 @@ reopen_deferred_cards() {
   }
 }
 
+# brew_publish_tick: after the soak tick, offer each app with `brew_release`
+# config to last-stack-brew-app-publish --if-needed (Tom 2026-09-23: loom and
+# lastseek ship as public Homebrew binaries, auto after a green soak, like
+# lastdb). The publisher gates on current == stamped digest, a cleared
+# post-flip watch and manifest hashes, and refuses a formula's FIRST release
+# without --approve-first-release (exit 3, quiet here). Best-effort: a
+# publish failure never fails the refresh. LAST_STACK_BREW_AUTO_PUBLISH=0
+# turns it off.
+brew_publish_tick() {
+  local app publisher rc log_dir
+  [ "${LAST_STACK_BREW_AUTO_PUBLISH:-1}" != "0" ] || return 0
+  publisher="$ROOT/bin/last-stack-brew-app-publish"
+  [ -x "$publisher" ] || return 0
+  log_dir="${LAST_STACK_BREW_PUBLISH_STATE:-$HOME/.local/state/last-stack/brew-app-publish}"
+  mkdir -p "$log_dir" 2>/dev/null || return 0
+  while IFS= read -r app; do
+    [ -n "$app" ] || continue
+    rc=0
+    HOST_TRACK_REGISTRY="$REGISTRY" HOST_TRACK_STAMP_DIR="$STAMP_DIR" \
+      run_with_timeout 900 "$publisher" --app "$app" --publish --if-needed \
+      >>"$log_dir/$app.log" 2>&1 || rc=$?
+    case "$rc" in
+      0|3) ;;
+      *) printf 'host-track: %s brew publish failed rc=%s (see %s)\n' "$app" "$rc" "$log_dir/$app.log" >&2 ;;
+    esac
+  done < <(jq -r '.apps[]? | select(.brew_release | type == "object") | .app' "$REGISTRY")
+}
+
 refresh_cmd() {
   local force=0 force_if_stale=0 all=0 app="" failures=0 rc eff
   while [ "$#" -gt 0 ]; do
@@ -3290,6 +3318,7 @@ refresh_cmd() {
     if [ "${HOST_TRACK_ACTIVATE:-0}" != "1" ] && [ "${HOST_TRACK_SKIP_SOAK_WATCH:-0}" != "1" ]; then
       soak_watch_cmd --all || failures=$((failures + 1))
     fi
+    brew_publish_tick
     reopen_deferred_cards
     [ "$failures" -eq 0 ]
     return

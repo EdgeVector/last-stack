@@ -1,5 +1,5 @@
 {
-  "_comment": "The app set the nightly canary proves as one candidate set and the public install draws from. `forge` is the source `next` rows carry (Tom's LAN); `public` is the source `stable` rows carry. `artifact_app` names the LastGit artifact CAS channel whose source_oid is the app's released head. `install_name` is the directory last-stack-install-apps uses under ~/lastdb-apps. `requires` lists bundle apps an app cannot run without (last-stack-install-apps warns on a gap); `recommends` lists bundle apps that only add a feature. Every app also needs the LastDB daemon, which the bundle installs from Homebrew, so lastdbd is not listed. Full map: docs/app-dependencies.md.",
+  "_comment": "The app set the nightly canary proves as one candidate set and the public install draws from. `forge` is the source `next` rows carry (Tom's LAN); `public` is the source `stable` rows carry. `artifact_app` names the LastGit artifact CAS channel whose source_oid is the app's released head. `install_name` is the directory last-stack-install-apps uses under ~/lastdb-apps. `requires` lists bundle apps an app cannot run without (last-stack-install-apps warns on a gap); `recommends` lists bundle apps that only add a feature. Every app also needs the LastDB daemon, which the bundle installs from Homebrew, so lastdbd is not listed. Full map: docs/app-dependencies.md. `brew_apps` are public Homebrew binaries from the edgevector/lastdb tap (source private): last-stack-install-apps installs them with brew, and the canary candidate set does not pin them.",
   "apps": {
     "brain": {
       "forge": "http://localhost:3300/EdgeVector/brain.git",
@@ -8,7 +8,8 @@
       "install_name": "brain",
       "description": "Long-lived knowledge: decisions, rationale, references.",
       "recommends": [
-        "search"
+        "search",
+        "lastseek"
       ]
     },
     "kanban": {
@@ -18,6 +19,7 @@
       "install_name": "kanban",
       "description": "Kanban board over LastDB.",
       "requires": [
+        "loom",
         "situations"
       ],
       "recommends": [
@@ -81,6 +83,19 @@
       "artifact_app": "lastdb-browser",
       "install_name": "lastdb-browser",
       "description": "Read-only local data browser."
+    }
+  },
+  "brew_apps": {
+    "loom": {
+      "formula": "edgevector/lastdb/loom",
+      "requires": [
+        "routines"
+      ],
+      "description": "Durable agent-graph runner."
+    },
+    "lastseek": {
+      "formula": "edgevector/lastdb/lastseek",
+      "description": "Local semantic search plane (Rust successor to search)."
     }
   }
 }

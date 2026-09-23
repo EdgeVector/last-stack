@@ -192,6 +192,25 @@ requirement the bundle does not install and PATH does not provide.
 
 The dependency map and its evidence: `docs/app-dependencies.md`.
 
+## Public Homebrew release (`brew_release`)
+
+Tom decided on 2026-09-23 that loom and lastseek reach public users as Homebrew binaries in the public tap `EdgeVector/homebrew-lastdb`. The source stays private. See brain `decision-2026-09-23-loom-lastseek-public-via-homebrew-binaries`.
+
+An app entry with a `brew_release` object is released by `last-stack-brew-app-publish`:
+
+- **Gate.** `current` must equal the stamped digest, the post-flip watch must be clear, and every shipped file must match the artifact manifest. Nothing is rebuilt: the tarball is what this Mac runs.
+- **Contents.** `files`, every file under `dirs`, and the definitions that each `subsets[].list` names. For loom, the list is `release/public-definitions.txt`, the generic graphs only.
+- **Tag.** `<formula>-v<version>` from `version_argv`, released with `--latest=false`, so that the lastdb `v*` tags and `releases/latest` stay unchanged.
+- **Formula.** `templates/homebrew/<formula>.rb.tmpl` is rendered and opened as a tap PR with auto-merge. Edit the template, not the tap file.
+- **Trigger.** `host-track refresh --all` runs the publisher with `--if-needed` after the soak tick. A digest that was already handled is a local noop. The same version with a new digest logs "bump the app version" and does not upload.
+- **First release.** The first release of a formula needs `--approve-first-release`, run by hand after Tom says yes. Until then the hook exits 3 quietly.
+- **Off switch.** `LAST_STACK_BREW_AUTO_PUBLISH=0`.
+
+```bash
+last-stack-brew-app-publish --app loom --dry-run      # gate + package, prints the run dir
+last-stack-brew-app-publish --app loom --publish --approve-first-release   # PUBLIC
+```
+
 ## Registry compliance (artifact | exempt | non_compliant)
 
 North Star end-state #6: every registered agent-facing app is either on verified
