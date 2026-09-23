@@ -116,6 +116,18 @@ PORT="$(cat "$PORT_FILE")"
 export FORGE_ROOT="http://127.0.0.1:${PORT}"
 export FORGE_TOKEN="test-token-not-secret"
 
+# --- Case 7: Forgejo-shape hints on stderr; stdout and rc unchanged ---
+head_err="$("$API" 'repos/EdgeVector/fold/pulls?state=all&head=kanban/x' 2>&1 >/dev/null)"
+[[ "$head_err" == *"ignores ?head="* ]] || { echo "FAIL: no ?head= hint: $head_err" >&2; exit 1; }
+am_out="$("$API" --jq '.auto_merge' repos/EdgeVector/fold/pulls/406 2>/dev/null)"
+am_err="$("$API" --jq '.auto_merge' repos/EdgeVector/fold/pulls/406 2>&1 >/dev/null)"
+[[ "$am_out" == "null" ]] || { echo "FAIL: auto_merge hint changed stdout: $am_out" >&2; exit 1; }
+[[ "$am_err" == *"no auto_merge field"* ]] || { echo "FAIL: no auto_merge hint: $am_err" >&2; exit 1; }
+quiet_err="$("$API" repos/EdgeVector/fold/ok 2>&1 >/dev/null)"
+[[ -z "$quiet_err" ]] || { echo "FAIL: a plain GET printed a hint: $quiet_err" >&2; exit 1; }
+
+echo "ok last-stack-forge-api Forgejo-shape hints"
+
 # --- Case 1: non-2xx must print body + exit non-zero (never curl: (22) alone) ---
 set +e
 err_out="$("$API" --method POST \

@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# last-stack-pc-run — run a bash script on the gaming PC (WSL) in the
+# FOREGROUND, with forge git access and no way to hang on a prompt.
+#
+# Two recorded failures of the hand-rolled path (brain infra-pc-ci-runner):
+# - a private-forge git clone from WSL sat forever at 0% CPU on a username
+#   prompt no ssh session can answer
+#   (papercut-pc-wsl-forge-clone-hangs-forever-on-credential-prompt);
+# - `nohup job &` inside `ssh pc 'wsl ... bash -s'` died when the ssh session
+#   ended, because WSL tears the session's processes down
+#   (papercut-pc-wsl-nohup-job-dies-when-ssh-session-ends-20260922).
+#
+# This helper sends the script on ssh STDIN (the token is never in argv on
+# either host), prepends GIT_TERMINAL_PROMPT=0 and the forge token as an
+# env-only git http.extraHeader (GIT_CONFIG_COUNT), and holds the ssh session
+# open until the script ends, under a timeout. To run it in the background,
+# background THIS command on the Mac (a Bash tool background call); do not
+# detach on the PC.
+#
+# Usage: last-stack-pc-run [--timeout SECS] [--distro NAME] SCRIPT
+#        last-stack-pc-run [--timeout SECS] - < SCRIPT
+# Env:   LAST_STACK_PC_HOST (default pc), FORGE_TOKEN (see lib/forge-token.sh),
+#        LAST_STACK_PC_CI_STATE (default ~/.local/state/last-stack/pc-ci/state.json)
+#
+# Owner pause: when that state file says intent=paused (Tom reserves the PC,
+# e.g. for gaming), this helper REFUSES (exit 3) and prints the reason and the
+# end time. On 2026-09-23 an agent ran cargo on the PC during such a pause
+# because nothing on the hand-rolled path read the file.
+set -euo pipefail
+
+self="${BASH_SOURCE[0]}"
+while [ -h "$self" ]; do
+  self_dir="$(cd -P "$(dirname "$self")" && pwd)"
+  self="$(readlink "$self")"
+  case "$self" in /*) ;; *) self="$self_dir/$self" ;; esac
+done
+self_root="$(cd -P "$(dirname "$self")/.." && pwd)"
+# shellcheck source=../lib/forge-token.sh
+. "$self_root/lib/forge-token.sh"
+
+timeout_s=3600
+distro="Ubuntu-24.04"
+script=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --timeout) timeout_s="${2:?}"; shift 2 ;;
+    --distro) distro="${2:?}"; shift 2 ;;
+    -h|--help) sed -n '2,24p' "$self" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -) script="-"; shift ;;
+    -*) echo "last-stack-pc-run: unknown option $1" >&2; exit 2 ;;
+    *) script="$1"; shift ;;
+  esac
+done
+[ -n "$script" ] || { echo "last-stack-pc-run: name a script file or - for stdin" >&2; exit 2; }
+case "$timeout_s" in ''|*[!0-9]*) echo "last-stack-pc-run: --timeout takes whole seconds" >&2; exit 2 ;; esac
+if [ "$script" != "-" ] && [ ! -r "$script" ]; then
+  echo "last-stack-pc-run: cannot read $script" >&2; exit 2
+fi
+
+state_file="${LAST_STACK_PC_CI_STATE:-$HOME/.local/state/last-stack/pc-ci/state.json}"
+if [ -f "$state_file" ] && command -v jq >/dev/null 2>&1 \
+  && jq -e '.intent == "paused"' "$state_file" >/dev/null 2>&1; then
+  until_ts="$(jq -r '.until // empty' "$state_file" 2>/dev/null || true)"
+  now_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  # An expired pause (until in the past) does not block; string compare works
+  # for the fixed-width UTC form the pause writer uses.
+  if [ -z "$until_ts" ] || [[ "$now_ts" < "$until_ts" ]]; then
+    echo "last-stack-pc-run: REFUSED: the PC is paused by its owner until ${until_ts:-further notice}." >&2
+    echo "last-stack-pc-run: reason: $(jq -r '.reason // "none given"' "$state_file" 2>/dev/null)" >&2
+    echo "last-stack-pc-run: run the work on the Mac or wait; do not bypass an owner pause." >&2
+    exit 3
+  fi
+fi
+
+token="$(last_stack_forge_token 2>/dev/null || true)"
+host="${LAST_STACK_PC_HOST:-pc}"
+
+payload() {
+  printf 'export GIT_TERMINAL_PROMPT=0\n'
+  if [ -n "$token" ]; then
+    printf 'export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader\n'
+    printf 'export GIT_CONFIG_VALUE_0=%q\n' "Authorization: token $token"
+  fi
+  printf '# --- caller script ---\n'
+  if [ "$script" = "-" ]; then cat; else cat -- "$script"; fi
+}
+
+# perl alarm: a timeout that exists on stock macOS. exec keeps ssh the child
+# the alarm kills, so a hung remote never leaves an orphan ssh.
+payload | perl -e 'alarm shift; exec @ARGV or die "exec: $!"' "$timeout_s" \
+  ssh -o ConnectTimeout=10 -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+  "$host" "wsl -d $distro -u tom -- bash -s"

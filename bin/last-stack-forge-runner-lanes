@@ -458,11 +458,28 @@ if live:
         except Exception as exc:  # noqa: BLE001
             live_report["error"] = str(exc)
 
+def runner_down(row: dict) -> bool:
+    # Status vocabulary varies (idle/active/online) across Forgejo versions;
+    # "offline" is the one word that means the runner cannot take a job.
+    return str(row.get("status") or "").strip().lower() == "offline"
+
+
 heavy_ok_live = False
+merge_gate_expected_offline: list[str] = []
 if live and live_report.get("ok"):
-    # Presence of a registered heavy-labeled runner is enough; status
-    # vocabulary varies (idle/active/online) across Forgejo versions.
-    heavy_ok_live = bool(live_report.get("heavy_online"))
+    # A registered heavy runner counts only when it is not offline. On
+    # 2026-09-22 23:35Z all three PC runners were offline and check_ok still
+    # said true (papercut-forge-runner-lanes-check-ok-while-all-pc-runners-offline-20260922).
+    heavy_ok_live = any(not runner_down(r) for r in live_report.get("heavy_online") or [])
+    # The merge-gate runners the policy names (mac-forge-runner, pc-forge-runner)
+    # carry labels that required jobs pin; one of them offline is a lane down.
+    expected = [str(n) for n in policy.get("merge_gate", {}).get("expected_global_runners") or []]
+    by_name = {str(r.get("name")): r for r in live_report.get("merge_gate_online") or []}
+    for name in expected:
+        row = by_name.get(name)
+        if row is not None and runner_down(row):
+            merge_gate_expected_offline.append(name)
+live_report["merge_gate_expected_offline"] = merge_gate_expected_offline
 
 # Final verdict
 if live:
@@ -471,7 +488,7 @@ else:
     heavy_ok = heavy_ok_local
 
 separated = (not merge_gate_has_heavy) and heavy_ok_local
-check_ok = heavy_ok and separated and (not merge_gate_has_heavy)
+check_ok = heavy_ok and separated and (not merge_gate_has_heavy) and not merge_gate_expected_offline
 
 report = {
     "config": str(config_path),
@@ -534,6 +551,8 @@ else:
                 f"    merge-online: {r.get('name')} status={r.get('status')} "
                 f"labels={r.get('labels')} id={r.get('id')}"
             )
+        for name in merge_gate_expected_offline:
+            print(f"    merge-gate runner OFFLINE: {name}")
     print("  routing: release/deploy -> runs-on: heavy|macos (not ci-required)")
     print(f"  check_ok: {str(check_ok).lower()}")
 

@@ -801,4 +801,7 @@ ci_test tests/last-stack-forge-pr-update-branch.sh
 ci_test tests/last-stack-board-closeout-failure-reasons.sh
 ci_test tests/last-stack-kanban-mark-once.sh
 ci_test tests/last-stack-prompt-kanban-json-envelope.sh
+ci_test tests/last-stack-portal-wt-forge-credential.sh
+ci_test tests/last-stack-pc-run.sh
+ci_test tests/last-stack-forge-dbfs-read.sh
 ci_test tests/last-stack-ci-test-registration.sh

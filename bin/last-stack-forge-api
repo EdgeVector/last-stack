@@ -20,7 +20,7 @@ Usage:
   last-stack-forge-api METHOD [--data JSON|@file] [--jq FILTER] <api-path-or-url>
 
 Examples:
-  last-stack-forge-api repos/EdgeVector/fold/pulls?state=open --jq '.[] | [.number,.title] | @tsv'
+  last-stack-forge-api 'repos/EdgeVector/fold/pulls?state=open' --jq '.[] | [.number,.title] | @tsv'
   last-stack-forge-api --method POST --data @body.json repos/EdgeVector/fold/pulls
   last-stack-forge-api POST --data '{"Do":"merge","merge_when_checks_succeed":true}' repos/EdgeVector/fold/pulls/123/merge
 
@@ -32,6 +32,22 @@ Response shapes worth knowing:
   A status target_url names a RUN NUMBER (.../actions/runs/<n>/jobs/<i>); the API has
   no jobs or logs route for it. Read the job log with:
     last-stack-forge-ci-log EdgeVector/fold --pr <number>   (or --sha <sha>, or <run-number>)
+
+Quote a path that has ? or &: zsh expands them before this helper runs
+("no matches found: repos/...pulls?state=all&limit=20").
+
+Forgejo shapes that differ from GitHub:
+  The pulls list ignores ?head=<branch> and returns every PR. For one branch use
+    last-stack-forge-api 'repos/EdgeVector/fold/pulls/main/<head-branch>' --jq '.number'
+  A PR read has no auto-merge field: .auto_merge is ALWAYS null. To confirm
+  auto-merge is armed, POST the merge again with merge_when_checks_succeed:
+  HTTP 409 "already scheduled to auto merge" means it is armed; 200 arms it.
+  --jq prints strings raw (like gh api --jq); do not strip quotes.
+  Forgejo 15.0.3 has NO API route to rerun or cancel an actions run (its
+  swagger lists only runs, runs/{id}, tasks, runners, workflows/.../dispatches);
+  POST .../actions/runs/<n>/rerun is a 404. The web route needs a password,
+  which agents must not use. To re-run a required check, push a new commit to
+  the PR branch (an empty commit is fine for a proven flake).
 
 Path forms:
   repos/OWNER/REPO/...      -> $FORGE_ROOT/api/v1/repos/OWNER/REPO/...
@@ -155,6 +171,17 @@ case "$path_arg" in
     url="$forge_root/api/v1/$path_arg"
     ;;
 esac
+
+# Forgejo-shape hints, stderr only, never a change to the call
+# (papercut-forge-api-pulls-head-query-unfiltered-20260922,
+# papercut-forgejo-auto-merge-state-null-after-scheduled-20260923). Agents bring
+# GitHub habits; these two read as "no match" / "not armed" without an error.
+if [[ "$method" == "GET" && "$url" == */pulls\?* && "$url" == *[\?\&]head=* ]]; then
+  echo "last-stack-forge-api: note: Forgejo ignores ?head= on the pulls list (every PR comes back). Use repos/<o>/<r>/pulls/<base>/<head-branch>." >&2
+fi
+if [[ "$jq_filter" == *auto_merge* && "$url" == */pulls* ]]; then
+  echo "last-stack-forge-api: note: a Forgejo PR has no auto_merge field; it reads null even when armed. Re-POST the merge with merge_when_checks_succeed (409 'already scheduled' = armed)." >&2
+fi
 
 token="$(last_stack_forge_token || true)"
 if [[ -z "$token" ]]; then
