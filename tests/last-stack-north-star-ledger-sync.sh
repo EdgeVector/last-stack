@@ -67,6 +67,7 @@ case "${1:-} ${2:-}" in
     ;;
   "add example-ns-terminal-verification") cat >"$MOCK_CARD_BODY" ;;
   "add north-star-example-terminal-proof-harness") cat >"$MOCK_HARNESS_BODY" ;;
+  "mark example-ns-terminal-verification") printf '%s\n' "${3:-}" >>"${MOCK_MARKS:?}" ;;
   *) exit 2 ;;
 esac
 EOF
@@ -151,6 +152,30 @@ MOCK_EXISTING=1 MOCK_CARD_BODY="$tmp/healed-card.md" \
 grep -Fq 'DONE-WHEN: file $HOME/.last-stack/north-star-proofs/north-star-example.md matches /^PASS/' "$tmp/healed-card.md"
 ! grep -Fq 'docs/north-star-proofs' "$tmp/healed-card.md"
 grep -Fq 'healed_terminal_done_when:example-ns-terminal-verification' "$tmp/heal.json"
+
+# The folder is the registry: a harness in a SHORT dir that declares the
+# slug counts as registered (papercut-validation-proof-card-unregistered-harness-20260923).
+mkdir -p "$tmp/harness-short/example-short"
+printf '%s\n' '#!/usr/bin/env bash' '# north-star-slug: north-star-example' \
+  >"$tmp/harness-short/example-short/run.sh"
+MOCK_EXISTING=1 MOCK_CARD_BODY="$tmp/short-card.md" MOCK_MARKS="$tmp/short-marks" \
+  MOCK_HARNESS_BODY="$tmp/short-harness-card.md" \
+  HOME="$tmp/home" PATH="$tmp/bin:$PATH" NORTH_STAR_HARNESS_ROOT="$tmp/harness-short" \
+  python3 "$BIN" --apply --ns north-star-example --json >"$tmp/short.json"
+! grep -Fq 'terminal_harness_unregistered' "$tmp/short.json"
+! test -e "$tmp/short-harness-card.md"
+
+# An EXISTING proof card whose North Star has no registered harness gets the
+# harness card plus ONE stable blocker line, never a free-text note.
+mkdir -p "$tmp/harness-empty"
+MOCK_EXISTING=1 MOCK_CARD_BODY="$tmp/unreg-card.md" MOCK_MARKS="$tmp/unreg-marks" \
+  MOCK_HARNESS_BODY="$tmp/unreg-harness-card.md" \
+  HOME="$tmp/home" PATH="$tmp/bin:$PATH" NORTH_STAR_HARNESS_ROOT="$tmp/harness-empty" \
+  python3 "$BIN" --apply --ns north-star-example --json >"$tmp/unreg.json"
+grep -Fq 'terminal_harness_unregistered:north-star-example' "$tmp/unreg.json"
+grep -Fq 'marked_no_harness:example-ns-terminal-verification' "$tmp/unreg.json"
+grep -Fq 'Kind: pr' "$tmp/unreg-harness-card.md"
+grep -Fxq 'BLOCKED[no-registered-harness]: no registered proof harness for north-star-example; harness card north-star-example-terminal-proof-harness owns the fix' "$tmp/unreg-marks"
 
 # driver mentions ledger-sync
 grep -q 'last-stack-north-star-ledger-sync' "$ROOT/routines/north-star-driver.md"

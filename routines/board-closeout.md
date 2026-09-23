@@ -65,6 +65,21 @@ last_stack="${LAST_STACK_ROOT:-$HOME/.last-stack}"
 Final response = the printed `board-closeout <ISO> …` line. Do not invent
 card moves, do not open PRs, do not restart `lastdbd`.
 
+Reading the result:
+
+- The sweep ALWAYS ends with a `board-closeout <ISO> <ok|noop|error> …` line,
+  also on a hang (`flagged=engine-timeout-<n>s`, bound by
+  `BOARD_CLOSEOUT_TIMEOUT_SEC`, default 900) or a signal
+  (`flagged=engine-interrupted`). No line at all is a defect in the caller's
+  shell, not a quiet pass.
+- `close-failed:<slug>:<reason-token>` names the card AND why
+  `last-stack-card-closeout` refused it; the JSON line above it carries
+  `close_failed: [{slug, reason}]` with the full text. Act on the reason;
+  do not file "closeout cannot close X" without it.
+- `open-branch-pr-preserved:<slug>:forge#<n>` means the structured PR was
+  closed but a newer open PR exists on the same branch; the sweep restored
+  it and kept the card in `doing`.
+
 ## Called from other routines (belt + suspenders)
 
 These should invoke the sweep as a **CHEAP first or last step** even when the

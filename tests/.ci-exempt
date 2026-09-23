@@ -32,3 +32,6 @@ tests/last-stack-repark-shared-checkouts.sh	Passes in 4s but walks the live ~/co
 # --- not executed during the seeding pass, deliberately ---
 tests/last-stack-north-star-proof.sh	Held back from the 2026-09-06 seeding run: it invokes lastgit/host-track/lastdb in command position outside comments, so executing it to classify it could touch shared state. Classify it before wiring.
 tests/last-stack-north-star-proof-cloud-backup.sh	Held back from the 2026-09-06 seeding run: invokes brain get in command position, so a classification run would read the live primary. Classify it before wiring.
+tests/last-stack-routine-shell-lint.sh	runs inside tests/last-stack-hooks-guards.sh (a registered required-gate test), which calls it; kept out of the ci.sh append point that conflicts across concurrent PRs
+tests/last-stack-prompt-shell-blocks.sh	runs inside tests/last-stack-hooks-guards.sh (a registered required-gate test), which calls it; kept out of the ci.sh append point that conflicts across concurrent PRs
+tests/last-stack-kanban-done-when-sweep.sh	runs inside tests/last-stack-hooks-guards.sh (a registered required-gate test), which calls it; kept out of the ci.sh append point that conflicts across concurrent PRs

@@ -66,5 +66,18 @@ test "$and_pending_rc" -eq 1
 test "$unsupported_rc" -eq 2
 printf '%s\n' "$unsupported_out" | grep -F "malformed: compound DONE-WHEN has an unsupported side"
 printf '%s\n' "$unsupported_out" | grep -F "supported: brain <slug> exists"
+# A malformed predicate prints exactly one stable marker line.
+test "$(printf '%s\n' "$unsupported_out" | grep -c '^DONE-WHEN-MALFORMED: pred=[0-9a-f]\{12\}$')" -eq 1
+
+# --check parses only: supported -> 0 (the file is never read), unsupported -> 2
+# with the same marker as a real evaluation of the same predicate.
+"$BIN" --check --predicate 'file /nonexistent/proof.md matches /^PASS/' | grep -F "well-formed: file matches"
+"$BIN" --check --predicate 'date >= 2000-01-01 AND brain some-slug exists' | grep -F "well-formed: compound DONE-WHEN"
+set +e
+check_bad_out="$("$BIN" --check --predicate 'date >= 2000-01-01 AND kanban groom board-cards-heal exits 0 in under 10s')"
+check_bad_rc=$?
+set -e
+test "$check_bad_rc" -eq 2
+test "$(printf '%s\n' "$check_bad_out" | grep '^DONE-WHEN-MALFORMED:')" = "$(printf '%s\n' "$unsupported_out" | grep '^DONE-WHEN-MALFORMED:')"
 
 echo ok

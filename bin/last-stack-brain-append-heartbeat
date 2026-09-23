@@ -23,10 +23,15 @@ default_log() {
     printf '%s\n' "$LAST_STACK_HEARTBEATS_FILE"
     return
   fi
-  # Prefer the last-stack install this script lives in, else ~/.last-stack
+  # Prefer the last-stack root this script lives in, else ~/.last-stack.
+  # Use <root>/logs only when it exists. The old test also accepted any root
+  # with a bin/: via the ~/.local/bin PATH link that chose ~/.local/logs, a
+  # stale file outside the Codex sandbox, and with the link resolved it would
+  # choose logs/ inside the immutable artifact version
+  # (papercut-routine-heartbeat-primary-log-permission-20260923).
   local root
   root="$(cd "$(dirname "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd)"
-  if [ -d "$root/logs" ] || [ -d "$root/bin" ]; then
+  if [ -d "$root/logs" ]; then
     printf '%s\n' "$root/logs/routine-heartbeats.log"
     return
   fi

@@ -254,4 +254,12 @@ CMD
 )"
 assert_allow "$node_prose" "node -e / JSON.parse named inside a heredoc body"
 
+# The routine-shell guard family runs here, inside this registered gate test,
+# so adding it does not touch the .lastgit/ci.sh append point that every
+# concurrent test PR edits (papercut-last-stack-ci-sh-append-point-conflicts-
+# every-concurrent-test-pr-20260923). tests/.ci-exempt names the three files.
+bash "$ROOT/tests/last-stack-routine-shell-lint.sh"
+bash "$ROOT/tests/last-stack-prompt-shell-blocks.sh"
+bash "$ROOT/tests/last-stack-kanban-done-when-sweep.sh"
+
 echo "ok"

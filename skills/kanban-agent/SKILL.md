@@ -83,7 +83,8 @@ genuinely blocked.
 > because it routes projections through the control-char-safe jq wrapper.
 > view = `last-stack-forge-api repos/EdgeVector/<repo>/pulls/<n>` (merged=`.merged`, mergeable=`.mergeable`,
 > draft=`.draft`); CI = `last-stack-forge-api repos/EdgeVector/<repo>/commits/<head-sha>/status`; update a BEHIND
-> branch = `last-stack-forge-api --method POST repos/EdgeVector/<repo>/pulls/<n>/update`; comment =
+> branch = `last-stack-forge-pr-update-branch --repo EdgeVector/<repo> --pr <n> --apply` (it refuses
+> while a CI run on the head is pending — an update cancels that run; never POST `pulls/<n>/update` raw); comment =
 > `last-stack-forge-api --method POST --data @comment.json repos/EdgeVector/<repo>/issues/<n>/comments`; close = `last-stack-forge-api --method PATCH --data @close.json repos/EdgeVector/<repo>/pulls/<n>` with
 > `{"state":"closed"}`. No rerun-failed API — push an empty commit to re-trigger
 > a flaky run **only when a status task already exists** (stuck task / 405 merge
@@ -488,6 +489,8 @@ to `review`, append a one-line note explaining what's missing, and exit.
    - **BEHIND** (and otherwise clean/green) → `gh -R <repo> pr update-branch <n>`
      (lightweight, no worktree). Don't assume the queue self-updates a BEHIND
      branch. Then keep watching; auto-merge fires once it re-greens.
+     Never while a CI run on the head is pending/running: the update cancels
+     it. Forgejo: `last-stack-forge-pr-update-branch --repo <r> --pr <n> --apply`.
    - **DIRTY / CONFLICTING** → rebase in your worktree (`git fetch origin
      <base>` → rebase onto `origin/<base>` → resolve → re-run VERIFY →
      force-push with lease). If the conflict needs product judgment you can't
@@ -654,7 +657,10 @@ has no `Repo:` header (it isn't meant for this flow). For each candidate:
      because one merge re-BEHINDs the others, update-branch the OLDEST few
      clean-green-BEHIND carded PRs each wake (not just one), and ensure each
      still has auto-merge armed. They re-green and advance. CHEAP advance
-     (uncapped).
+     (uncapped). **Skip any PR whose CI is in flight** — an update cancels the
+     run (papercut-forge-pr-branch-update-cancels-in-flight-ci-20260922).
+     Forgejo: `last-stack-forge-pr-update-branch --repo <r> --pr <n> --apply`
+     (exit 3 = in flight). GitHub: no PENDING/IN_PROGRESS/QUEUED check.
    - **Conflicts / dirty** (`mergeStateStatus` = DIRTY/CONFLICTING) → enter the
      worktree, `git fetch origin <base>`, rebase onto `origin/<base>`, resolve,
      re-verify, force-push with lease. HEAVY. If the conflict needs product
@@ -683,8 +689,9 @@ has no `Repo:` header (it isn't meant for this flow). For each candidate:
 that's what lets a burst of BEHIND PRs rot. Each wake:
 - Do EVERY CHEAP advance (uncapped): move every merged card to `done`; re-arm
   auto-merge on every clean-but-unarmed/stuck PR (including ones whose auto-merge
-  was *dropped*); `gh -R <repo> pr update-branch` the oldest few clean-green-BEHIND carded
-  PRs (not just one).
+  was *dropped*); update-branch the oldest few clean-green-BEHIND carded
+  PRs (not just one) whose CI is NOT in flight (Forgejo:
+  `last-stack-forge-pr-update-branch --apply`).
 - Do at most ONE HEAVY unit: a worktree CI-fix OR a conflict rebase. Pick the
   highest-value one, then exit.
 
