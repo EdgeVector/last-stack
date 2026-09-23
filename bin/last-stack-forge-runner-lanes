@@ -337,7 +337,24 @@ if live:
         live_report["error"] = "missing_forge_token"
     else:
         try:
-            admin = http_json(f"{forge_root}/api/v1/admin/actions/runners", token)
+            # The admin inventory needs read:admin. A narrower token (the
+            # lastsecrets push token, used when the login keychain is locked)
+            # gets 403 here. Record the server's reason (it names the missing
+            # scope) and still read the repo-level runners below, so callers
+            # keep a partial inventory. `ok` stays false: the inventory is not
+            # complete. papercut-forge-runner-lanes-live-403-token-lacks-read-admin-20260923
+            admin_error = None
+            try:
+                admin = http_json(f"{forge_root}/api/v1/admin/actions/runners", token)
+            except urllib.error.HTTPError as exc:
+                reason = ""
+                try:
+                    body = json.loads(exc.read().decode("utf-8") or "{}")
+                    reason = str(body.get("message") or "") if isinstance(body, dict) else ""
+                except Exception:  # noqa: BLE001
+                    reason = ""
+                admin_error = f"HTTP Error {exc.code}: {exc.reason}" + (f" ({reason})" if reason else "")
+                admin = []
             if not isinstance(admin, list):
                 admin = []
             live_report["admin_runners"] = admin
@@ -401,7 +418,10 @@ if live:
                 seen_ids.add(rid)
                 uniq.append(row)
             live_report["heavy_online"] = uniq
-            live_report["ok"] = True
+            if admin_error:
+                live_report["error"] = admin_error
+            else:
+                live_report["ok"] = True
         except Exception as exc:  # noqa: BLE001
             live_report["error"] = str(exc)
 

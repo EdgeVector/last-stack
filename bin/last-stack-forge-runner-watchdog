@@ -178,15 +178,35 @@ preflight_ok() {
 # --check --live` showed the same runners active/idle on the forge. The forge's
 # own runner inventory is the ground truth for "is this lane serving jobs".
 # papercut-forge-runner-watchdog-dry-run-misclassifies-live-runners-20260922
+#
+# The lanes helper exits 0 even when its live read fails; the failure is only in
+# the JSON (`.live.ok == false`, `.live.error`). So there are three states:
+#   LIVE_OK=1            complete inventory (`.live.ok == true`)
+#   LIVE_READ=1, OK=0    the helper ran but the inventory is unreadable or
+#                        partial (e.g. HTTP 403, token lacks read:admin)
+#   LIVE_READ=0          the helper failed or printed no JSON (forge API down)
+# An unreadable inventory must never read as "no runners": on 2026-09-23 a 403
+# made an empty admin list page "heavy lane down" and "pc-linux not registered".
+# papercut-forge-runner-watchdog-treats-failed-live-read-as-empty-inventory-20260923
 LIVE_JSON="$STATE_DIR/lanes-live.json"
 LIVE_OK=0
-if "$LANES_BIN" --live --json > "$LIVE_JSON" 2>/dev/null; then
-  LIVE_OK=1
+LIVE_READ=0
+LIVE_ERROR=""
+if "$LANES_BIN" --live --json > "$LIVE_JSON" 2>/dev/null \
+   && "$JQ" -e 'type == "object"' "$LIVE_JSON" >/dev/null 2>&1; then
+  LIVE_READ=1
+  if "$JQ" -e '.live.ok == true' "$LIVE_JSON" >/dev/null 2>&1; then
+    LIVE_OK=1
+  else
+    LIVE_ERROR="$($JQ -r '.live.error // "unknown error"' "$LIVE_JSON" 2>/dev/null || echo 'unknown error')"
+  fi
 fi
 
-# Forge status (idle/active/offline/...) of a runner by name, or empty.
+# Forge status (idle/active/offline/...) of a runner by name, or empty. A
+# partial inventory still counts: a runner the forge DOES list as idle/active is
+# serving jobs even when another endpoint (admin) was unreadable.
 runner_live_status() {  # runner-name
-  [ "$LIVE_OK" -eq 1 ] || return 0
+  [ "$LIVE_READ" -eq 1 ] || return 0
   $JQ -r --arg n "$1" '
     [ (.live.admin_runners // [])[], ((.live.repo_runners // {}) | .[][]?) ]
     | map(select(.name == $n)) | .[0].status // empty' "$LIVE_JSON" 2>/dev/null || true
@@ -296,6 +316,13 @@ if [ "$LIVE_OK" -eq 1 ]; then
       *) add_down "pc-linux-offline" "pc-linux runner is '$pc_status' — fold merges will freeze (build_test is pinned to it)." "pc-linux gate" ;;
     esac
   fi
+elif [ "$LIVE_READ" -eq 1 ]; then
+  # The forge answered, but the runner inventory is unreadable. That is an
+  # observability failure, not a runner outage: name it as such. Like any
+  # forge-API failure it stays loud under a PC pause.
+  add_down "forge-inventory-unreadable" \
+    "Forge runner inventory is unreadable ($LIVE_ERROR). The watchdog cannot see the heavy or pc-linux lanes. This does NOT mean the runners are down. Fix the forge token (needs read:admin)." \
+    "forge runner inventory"
 else
   # A forge-API failure is never a PC lane symptom: it stays loud under a pause.
   add_down "forge-api" "Could not query the Forgejo runner API — forge may be down, or the token is unreadable." "forge API"
@@ -425,6 +452,13 @@ fi
 
 if [ -n "$(printf '%s' "$DOWN_KEYS" | /usr/bin/tr -d '[:space:]')" ]; then
   BODY="🚨 CI runner lane down"
+  PAGE_PRIO=high
+  # An unreadable inventory alone is a blind watchdog, not a dead lane: say so,
+  # and page at normal priority.
+  if [ "$(printf '%s' "$DOWN_KEYS" | /usr/bin/grep -v -x -e 'forge-inventory-unreadable' -e '' | /usr/bin/wc -l | /usr/bin/tr -d ' ')" = "0" ]; then
+    BODY="⚠️ CI runner watchdog is blind: forge runner inventory unreadable"
+    PAGE_PRIO=normal
+  fi
   while IFS= read -r m; do
     [ -n "$m" ] && BODY="$BODY
 • $m"
@@ -451,7 +485,7 @@ $DOWN_KEYS
 EOF
 
   if [ "$PAGED_ANY" -eq 1 ]; then
-    notify high "$BODY"
+    notify "$PAGE_PRIO" "$BODY"
     NOWP="$(now_epoch)"
     while IFS= read -r key; do
       [ -n "$key" ] && record_state "$key" "$NOWP"
