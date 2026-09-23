@@ -815,4 +815,8 @@ ci_test tests/last-stack-north-star-proof-exemem-hands-off.sh
 # Fixture pin-log plus optional redacted evidence. No LastDB home. No cutover.
 # APPENDED before the registration guard, which stays last.
 ci_test tests/last-stack-north-star-proof-cloud-transaction-groups.sh
+# Offline terminal proof for north-star-lastgit-pack-blobs-b2-migration.
+# Fixture source plus optional measured evidence. No LastDB home. No B2 cutover.
+# APPENDED before the registration guard, which stays last.
+ci_test tests/last-stack-north-star-proof-pack-blobs-b2.sh
 ci_test tests/last-stack-ci-test-registration.sh
