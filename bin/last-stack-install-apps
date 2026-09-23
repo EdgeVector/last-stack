@@ -494,7 +494,9 @@ report_unmet_requires() {
     printf '         %s may fail until %s is on PATH.\n' "$app" "$dep" >&2
   done <<<"$gaps"
 }
-report_unmet_requires "$(dirname "$0")/../config/registry/apps.json" \
+# Resolve $0 first: behind a ~/.local/bin symlink dirname "$0"/.. is ~/.local.
+INSTALL_APPS_ROOT="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
+report_unmet_requires "$INSTALL_APPS_ROOT/config/registry/apps.json" \
   '["brain","kanban","situations","routines","dogfood-graph","org","lastsecrets","search","lastdb-browser"]'
 
 printf '\n'
