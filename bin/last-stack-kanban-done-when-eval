@@ -145,8 +145,15 @@ if [[ "$predicate" =~ ^routine[[:space:]]+([^[:space:]]+)[[:space:]]+heartbeat[[
   # Heartbeats live on the filesystem, not LastDB/brain.
   hb_file="${LAST_STACK_HEARTBEATS_FILE:-}"
   if [ -z "$hb_file" ]; then
-    _ls_root="$(cd "$(dirname "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd)"
-    if [ -d "$_ls_root/bin" ]; then
+    # Resolve the file symlink chain before dirname: the PATH link
+    # ~/.local/bin/<name> points into the artifact tree, and siblings live there.
+    _self_src="$0"
+    while [ -L "$_self_src" ]; do
+      _self_link="$(readlink "$_self_src")"
+      case "$_self_link" in /*) _self_src="$_self_link" ;; *) _self_src="$(dirname "$_self_src")/$_self_link" ;; esac
+    done
+    _ls_root="$(cd "$(dirname "$_self_src")/.." && pwd)"
+    if [ -d "$_ls_root/logs" ]; then  # the artifact tree has no logs/; fall back to the compat root
       hb_file="$_ls_root/logs/routine-heartbeats.log"
     else
       hb_file="${HOME}/.last-stack/logs/routine-heartbeats.log"

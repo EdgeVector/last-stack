@@ -325,9 +325,20 @@ has_live_process() {
   # Product binary or build tool with worktree path on argv (absolute path exec).
   # pgrep -f matches the full command line; covers target/release/<bin> runs
   # whose cwd is elsewhere.
-  if pgrep -f "$wt" >/dev/null 2>&1; then
+  local pg_rc=0
+  pgrep -f "$wt" >/dev/null 2>&1 || pg_rc=$?
+  if [ "$pg_rc" -eq 0 ]; then
     live_reason="live_exec_image"
     return 0
+  fi
+  if [ "$pg_rc" -gt 1 ]; then
+    # pgrep could not read the process list (sandbox): an executable image
+    # under the worktree, from lsof, is the same signal.
+    if lsof +c 0 -nP -a -u "$(id -un)" -d txt -Fn 2>/dev/null \
+      | awk -v wt="$wt" '/^n/ { p = substr($0, 2); if (p == wt || index(p, wt "/") == 1) { found = 1; exit } } END { exit found ? 0 : 1 }'; then
+      live_reason="live_exec_image"
+      return 0
+    fi
   fi
   return 1
 }
@@ -409,11 +420,28 @@ build_live_index() {
   # last-stack-disk-reclaim heartbeats) every worktree would classify as idle.
   # A live process ALWAYS has a cwd, so zero cwd rows means the probe failed,
   # never that the host is idle. Same for a ps that cannot see even itself.
+  #
+  # ps fallback (papercut-disk-reclaim-process-inspection-denied-20260921): the
+  # Codex seatbelt of the scheduled run denies exec of setuid /bin/ps and
+  # pgrep has no process list there, but `lsof -u <uid>` still returns pid,
+  # full command name and cwd for every process of this user. So a working
+  # lsof alone is a real process view: cwd rows mark live trees, build-tool
+  # command names mark live builds, and `txt` (executable image) rows replace
+  # the ps command-line scan. liveness_unavailable stays 0 in that case.
+  local ps_ok=1 lsof_rows=0
   if [ "${LAST_STACK_RECLAIM_SKIP_LSOF:-0}" != "1" ]; then
-    lsof_rows=0
     lsof_rows="$(
-      lsof -nP -a -u "$(id -un)" -d cwd -Fn 2>/dev/null \
-        | awk '/^n/ { p = substr($0, 2); sub(/\/$/, "", p); if (p != "") print "live_cwd\t" p }' \
+      lsof +c 0 -nP -a -u "$(id -un)" -d cwd -Fpcn 2>/dev/null \
+        | awk '
+            /^p/ { comm = "" }
+            /^c/ { comm = substr($0, 2) }
+            /^n/ {
+              p = substr($0, 2); sub(/\/$/, "", p)
+              if (p == "") next
+              reason = "live_cwd"
+              if (comm ~ /^(cargo|rustc|rustdoc|bun|node|npm|pnpm|cc|c\+\+|clang|clang\+\+|ld|ld64|ld64\.lld|swift|swift-frontend|go|make|tsc)$/) reason = "live_build_tool"
+              print reason "\t" p
+            }' \
         | tee -a "$out" | wc -l | tr -d ' '
     )" || lsof_rows=0
     if [ "${lsof_rows:-0}" -eq 0 ]; then
@@ -422,8 +450,13 @@ build_live_index() {
     fi
     # ps must at least see this very process.
     if ! ps -axo pid= 2>/dev/null | grep -q '[0-9]'; then
-      liveness_unavailable=1
-      log "liveness_probe_failed instrument=ps (cannot enumerate processes)"
+      ps_ok=0
+      if [ "${lsof_rows:-0}" -gt 0 ]; then
+        log "ps_unavailable fallback=lsof cwd_rows=$lsof_rows build_tools=$(grep -c '^live_build_tool' "$out" 2>/dev/null || true)"
+      else
+        liveness_unavailable=1
+        log "liveness_probe_failed instrument=ps (cannot enumerate processes)"
+      fi
     fi
   fi
   # Command lines that mention a managed worktree root (absolute-path product
@@ -431,6 +464,13 @@ build_live_index() {
   for root in "${worktree_roots[@]}"; do
     [ -d "$root" ] || continue
     root="$(_norm_path "$root")"
+    if [ "$ps_ok" -eq 0 ]; then
+      # No ps: an executable image under the root is the same signal.
+      lsof +c 0 -nP -a -u "$(id -un)" -d txt -Fn 2>/dev/null \
+        | awk -v root="$root" '/^n/ { p = substr($0, 2); if (p == root || index(p, root "/") == 1) print "live_exec_image\t" p }' \
+        >>"$out" || true
+      continue
+    fi
     while IFS= read -r cmd; do
       [ -z "$cmd" ] && continue
       # Emit space-separated tokens that contain the root prefix.
@@ -623,9 +663,27 @@ resolve_repo() {
   case "$common" in
     */.git) repo=$(dirname "$common") ;;
     */.git/worktrees/*) repo=$(dirname "$(dirname "$(dirname "$common")")") ;;
-    *) repo=$(dirname "$common") ;;
+    *)
+      # A portal worktree's common dir is a bare mirror such as
+      # ~/.cache/edgevector-git/<repo>.git. The bare dir IS the repository;
+      # its dirname is the cache ROOT, which is no repo at all
+      # (papercut-worktree-reclaim-resolves-mirror-worktree-repo-to-cache-root-20260923).
+      if [ "$(git --git-dir="$common" rev-parse --is-bare-repository 2>/dev/null)" = "true" ]; then
+        repo="$common"
+      else
+        repo=$(dirname "$common")
+      fi
+      ;;
   esac
   echo "$repo"
+}
+
+# is_git_repo <dir>: a non-bare checkout (dir/.git) or a bare repository.
+is_git_repo() {
+  local d="$1"
+  [ -n "$d" ] || return 1
+  [ -d "$d/.git" ] || [ -f "$d/.git" ] && return 0
+  [ "$(git --git-dir="$d" rev-parse --is-bare-repository 2>/dev/null)" = "true" ]
 }
 
 remove_worktree() {
@@ -644,7 +702,7 @@ remove_worktree() {
     log "dry-run remove $wt repo=${repo:-none} branch=${br:-none}"
     return 0
   fi
-  if [ -n "$repo" ] && [ -d "$repo/.git" ] || [ -f "$repo/.git" ]; then
+  if is_git_repo "$repo"; then
     if git -C "$repo" worktree remove --force "$wt" 2>/dev/null; then
       log "removed worktree $wt"
     else
