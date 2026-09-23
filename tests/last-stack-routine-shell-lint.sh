@@ -161,6 +161,22 @@ expect 0 bash date-iso-ok <<'EOF'
 date -u +%Y-%m-%dT%H:%M:%SZ
 EOF
 
+expect 2 bash printf-dash-double <<'EOF'
+printf '--- %s ---\n' "$slug"
+EOF
+expect 2 bash printf-dash-item <<'EOF'
+printf "- %s\n" "$slug"
+EOF
+expect 0 bash printf-dash-safe <<'EOF'
+printf '%s\n' '- item'; printf -- '- %s\n' "$slug"
+EOF
+expect 2 bash bin-mktemp <<'EOF'
+f=$(/bin/mktemp "$TMPDIR/x.XXXXXX")
+EOF
+expect 0 bash usr-bin-and-bin-sh-ok <<'EOF'
+f=$(/usr/bin/mktemp); /bin/sh -c 'echo ok'; /bin/date -u; ls ~/.local/bin/jq-helper
+EOF
+
 # --- zsh-only rules ----------------------------------------------------------
 expect 2 zsh zsh-status-assign <<'EOF'
 for pr in 1 2; do status=$(curl -s x); echo "$status"; done

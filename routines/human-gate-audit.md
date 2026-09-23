@@ -245,7 +245,7 @@ last-stack-real-human-notify --input /tmp/hga-real-human.json --priority high
 ## Close-out (always the LAST step)
 
 End every run with the **close-out skill**
-(`$LAST_STACK_ROOT/skills/close-out/SKILL.md`, trigger `/close-out`), then emit
+(`${LAST_STACK_ROOT:-$HOME/.last-stack}/skills/close-out/SKILL.md`, trigger `/close-out`), then emit
 the heartbeat + `ROUTINE_RESULT` trailer as the final output (contract §1).
 The close-out skill makes two brain writes; do not skip them:
 

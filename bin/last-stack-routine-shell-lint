@@ -24,6 +24,8 @@
 #   awk-match-array   macOS awk has no match(s, /re/, arr)
 #   sed-inplace       macOS sed -i needs an extension argument
 #   date-nanos        macOS date has no %N (date +%s%3N prints ...3N)
+#   printf-dash       printf '- x' / printf '--- x': a format that starts with - is an option
+#   bin-path          /bin/mktemp, /bin/sed ... do not exist on macOS (they are in /usr/bin)
 #   zsh-status        (--shell zsh only) status is read-only in zsh
 #   zsh-mapfile       (--shell zsh only) mapfile/readarray do not exist in zsh
 #
@@ -56,7 +58,7 @@ while [ "$#" -gt 0 ]; do
     --quiet) quiet=1; shift ;;
     --list-rules)
       printf '%s\n' spin-wait heredoc-backticks dquote-backticks jq-optional-call jq-escaped-quote \
-        awk-match-array sed-inplace date-nanos zsh-status zsh-mapfile
+        awk-match-array sed-inplace date-nanos printf-dash bin-path zsh-status zsh-mapfile
       exit 0 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 64 ;;
@@ -86,6 +88,8 @@ rule_slug() {
     awk-match-array) echo papercut-routine-done-when-sweep-awk-match-portability-20260923 ;;
     sed-inplace) echo papercut-macos-sed-inplace-requires-extension-20260923 ;;
     date-nanos) echo papercut-routine-zsh-date-percent-n-no-millisecond-timer-20260923 ;;
+    printf-dash) echo papercut-routine-printf-leading-dash-format-20260923 ;;
+    bin-path) echo papercut-routine-hard-coded-bin-mktemp-20260923 ;;
     zsh-status|zsh-mapfile) echo papercut-routine-shell-word-splitting ;;
   esac
 }
@@ -117,6 +121,12 @@ rule_fix() {
     date-nanos) printf '%s\n' \
       "macOS (BSD) date has no %N, so date +%s%3N prints a literal N and the arithmetic fails." \
       "Use: gdate +%s%3N (GNU coreutils is installed), or date +%s for whole seconds." ;;
+    printf-dash) printf '%s\n' \
+      "A printf format that starts with - is read as an option (bash: printf: --: invalid option)." \
+      "Use: printf '%s\\n' '- item'   or   printf -- '- item\\n'" ;;
+    bin-path) printf '%s\n' \
+      "macOS keeps mktemp, sed, grep, awk, find and friends in /usr/bin, not /bin." \
+      "Call the tool by name (mktemp) or use /usr/bin/<tool>." ;;
     zsh-status) printf '%s\n' \
       "zsh makes status a read-only special variable (same as \$?)." \
       "Use another name: rc, pr_state, ci_state." ;;
@@ -153,6 +163,8 @@ re_awk_word='(^|[^[:alnum:]_-])awk([[:space:]]|$)'
 re_awk_match='match\([^,()]*,[[:space:]]*/([^/]|\\/)*/[[:space:]]*,[[:space:]]*[[:alpha:]_]'
 q="'"
 re_sed_inplace='(^|[^[:alnum:]_-])sed[[:space:]]+(-[[:alpha:]]+[[:space:]]+)*-i[[:space:]]+([^'"$q"'"[:space:]-]|'"$q"'[^'"$q"']|"[^"]|-e[[:space:]]|-E[[:space:]])'
+re_printf_dash='(^|[;&|({[:space:]])printf[[:space:]]+["'"'"']-'
+re_bin_path='(^|[^[:alnum:]_./-])/bin/(mktemp|sed|grep|egrep|awk|find|xargs|sort|uniq|head|tail|wc|tr|cut|jq|env|dirname|basename|timeout|readlink|stat)([^[:alnum:]_-]|$)'
 re_date_nanos='(^|[^[:alnum:]_-])date[[:space:]][^;|&]*%[0-9]*N'
 re_zsh_status='(^|;|&&|[|][|]|[({]|(^|[^[:alnum:]_])(do|then|else|export|local|typeset|declare))[[:space:]]*status=|(^|[^[:alnum:]_])read[[:space:]]+(-[[:alpha:]]+[[:space:]]+)*([[:alpha:]_][[:alnum:]_]*[[:space:]]+)*status([[:space:]]|;|$)|(^|[^[:alnum:]_])(local|typeset|declare|integer)[[:space:]]+(-[[:alpha:]]+[[:space:]]+)*status([=[:space:]]|$)|(^|[^[:alnum:]_$])for[[:space:]]+status[[:space:]]+in([[:space:]]|$)'
 re_zsh_mapfile='(^|[;&|({[:space:]])(mapfile|readarray)[[:space:]]'
@@ -181,6 +193,12 @@ check_command_line() {
   fi
   if [[ $line =~ $re_date_nanos ]]; then
     reject date-nanos "$line"
+  fi
+  if [[ $line =~ $re_printf_dash ]]; then
+    reject printf-dash "$line"
+  fi
+  if [[ $line =~ $re_bin_path ]]; then
+    reject bin-path "$line"
   fi
   if [ "$shell_kind" = zsh ]; then
     if [[ $line =~ $re_zsh_status ]]; then

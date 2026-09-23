@@ -166,7 +166,7 @@ brain papercut close <slug> --status duplicate --duplicate-of <canonical-slug> \
 ### Routines end with close-out (Tom, 2026-08-17)
 
 Every scheduled routine's LAST work step is the **close-out skill**
-(`$LAST_STACK_ROOT/skills/close-out/SKILL.md`): write the brain closeout
+(`${LAST_STACK_ROOT:-$HOME/.last-stack}/skills/close-out/SKILL.md`): write the brain closeout
 report of what the run did, and file brain papercuts for friction hit.
 Only then emit the heartbeat + `ROUTINE_RESULT` trailer (contract §1).
 Skip close-out steps that do not apply (PR/card on a read-only pass); never

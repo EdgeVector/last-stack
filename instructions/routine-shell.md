@@ -19,10 +19,22 @@ fix, and the command does not run.
 | awk-match-array | macOS awk has no `match(s, /re/, arr)` | `sed -n 's/^KEY:[[:space:]]*//p' file` |
 | sed-inplace | macOS `sed -i` takes the next word as an extension | `sed -i '' 's/a/b/' file` |
 | date-nanos | macOS `date` has no `%N` | `gdate +%s%3N` |
+| printf-dash | `printf '- x'` reads `-` as an option | `printf '%s\n' '- x'` |
+| bin-path | `/bin/mktemp` does not exist on macOS | `mktemp` or `/usr/bin/mktemp` |
 | zsh-status (Claude) | `status` is read-only in zsh | `rc`, `pr_state`, `ci_state` |
 | zsh-mapfile (Claude) | zsh has no `mapfile` | `while IFS= read -r x; do ...; done < "$file"` |
 
-Two more hazards that no guard can see:
+Hazards that no guard can see:
+
+- The Codex routine shell is already bash. Do not wrap a command in
+  `bash -lc '...'`: the nested single quotes break `$'\t'`, heredocs and
+  backticks.
+- In bash, `cmd | while read x; do n=$((n+1)); done` runs the loop in a
+  subshell, so `n` is 0 after it. Read from a file: `done < "$f"`.
+- A file name that starts with `-` is read as an option (`jq . -x.json`
+  prints help). Prefix it with `./` or keep scratch names plain.
+- Put captures in a fresh `mktemp -d "$TMPDIR/x.XXXXXX"` dir, not
+  `/tmp/<name>-*.json`: a glob over /tmp mixes in files from old runs.
 
 - A TSV `read` with `IFS=$'\t'` collapses empty fields and shifts the next
   columns. Emit `-` for an empty field (`(.x // "-")`), or keep the JSON.

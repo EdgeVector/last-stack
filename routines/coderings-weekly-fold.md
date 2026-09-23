@@ -113,7 +113,7 @@ for. Write the sink after the heartbeat, then emit the heartbeat line plus the
 `ROUTINE_RESULT` trailer as the final output (contract §1).
 
 Then run the **close-out skill**
-(`$LAST_STACK_ROOT/skills/close-out/SKILL.md`, trigger `/close-out`). Its two
+(`${LAST_STACK_ROOT:-$HOME/.last-stack}/skills/close-out/SKILL.md`, trigger `/close-out`). Its two
 brain writes are not optional on a substantive run: the closeout report of what
 this run did, and a `papercut-<topic>` brain record for every friction hit
 (BRAIN ONLY, never a board card; search first, update in place). On a pure noop

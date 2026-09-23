@@ -217,7 +217,7 @@ agent no-ops, and agent no-op share. Name the highest mechanical pollers, but
 do not present them as model waste.
 
 File brain papercuts for friction. Then close-out skill
-(`$LAST_STACK_ROOT/skills/close-out/SKILL.md`) for the two brain writes.
+(`${LAST_STACK_ROOT:-$HOME/.last-stack}/skills/close-out/SKILL.md`) for the two brain writes.
 
 Heartbeat LAST:
 
