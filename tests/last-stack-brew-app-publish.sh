@@ -80,38 +80,48 @@ printf '%s\n' "$*" >> "$GH_LOG"
 case "$1 $2" in
   "release list") cat "$GH_TAGS" 2>/dev/null || true ;;
   "release download")
-    dir=""; while [ "$#" -gt 0 ]; do [ "$1" = --dir ] && dir="$2"; shift; done
-    [ -f "$GH_PRIOR_MANIFEST" ] && cp "$GH_PRIOR_MANIFEST" "$dir/" ;;
+    dir="" pat=""
+    while [ "$#" -gt 0 ]; do
+      [ "$1" = --dir ] && dir="$2"
+      [ "$1" = --pattern ] && pat="$2"
+      shift
+    done
+    if [ -f "$GH_PRIOR_MANIFEST" ]; then cp "$GH_PRIOR_MANIFEST" "$dir/$pat"; else exit 1; fi ;;
   "release create") : ;;
   "auth token") echo tok ;;
   *) exit 2 ;;
 esac
 SH
+# The tap clone uses plain git against LAST_STACK_FORGE_BASE: point it at a
+# local bare repo. (last-stack-forge-git cannot clone; it wraps an existing repo.)
+mkdir -p "$tmp/forge/EdgeVector"
+git init -q --bare "$tmp/forge/EdgeVector/homebrew-lastdb.git"
+git init -q "$tmp/seed"
+mkdir -p "$tmp/seed/Formula"; echo 'class Lastdb; end' > "$tmp/seed/Formula/lastdb.rb"
+git -C "$tmp/seed" add -A
+git -C "$tmp/seed" -c user.name=t -c user.email=t@t commit -q -m init
+git -C "$tmp/seed" push -q "$tmp/forge/EdgeVector/homebrew-lastdb.git" HEAD:main
+export LAST_STACK_FORGE_BASE="file://$tmp/forge"
 cat > "$tmp/bin/forge-git" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$FORGE_LOG"
-if [ "$1" = clone ]; then
-  dest="${@: -1}"
-  git init -q "$dest"
-  mkdir -p "$dest/Formula"; echo 'class Lastdb; end' > "$dest/Formula/lastdb.rb"
-  git -C "$dest" add -A
-  git -C "$dest" -c user.name=t -c user.email=t@t commit -q -m init
-  exit 0
-fi
-if [ "$1" = -C ] && [ "$3" = push ]; then exit 0; fi
+[ "$1" = -C ] || { echo "forge-git needs -C <repo>" >&2; exit 2; }
 exec git "$@"
 SH
 cat > "$tmp/bin/forge-api" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FORGE_LOG"
 case "$*" in
+  *"/contents/Formula/"*) [ -f "$TAP_MAIN_FORMULA" ] && base64 < "$TAP_MAIN_FORMULA" | tr -d '\n' ; exit 0 ;;
+  *"/pulls/main/"*) exit 1 ;;
   *"/pulls --jq"*) echo 42 ;;
   *"/merge"*) exit 0 ;;
 esac
 SH
 chmod +x "$tmp/bin/gh" "$tmp/bin/forge-git" "$tmp/bin/forge-api"
 export GH_LOG="$tmp/gh.log" FORGE_LOG="$tmp/forge.log" GH_TAGS="$tmp/tags.txt" GH_PRIOR_MANIFEST="$tmp/prior.json"
+export TAP_MAIN_FORMULA="$tmp/tap-main-loom.rb"
 : > "$GH_LOG"; : > "$FORGE_LOG"; : > "$GH_TAGS"
 
 pub() {
@@ -177,6 +187,10 @@ printf '%s\n' "$out" | jq -e '.tag == "loom-v0.1.1" and .tap_pr == "42"' >/dev/n
 grep -q '^release create loom-v0.1.1 --repo EdgeVector/homebrew-lastdb .*--latest=false' "$GH_LOG" \
   || fail "gh release create args wrong: $(cat "$GH_LOG")"
 grep -q 'push -q origin HEAD:brew/loom-v0.1.1' "$FORGE_LOG" || fail "tap branch not pushed"
+git -C "$tmp/forge/EdgeVector/homebrew-lastdb.git" show brew/loom-v0.1.1:Formula/loom.rb | grep -q 'loom-v0.1.1' \
+  || fail "pushed tap branch lacks the rendered formula"
+[ "$(git -C "$tmp/forge/EdgeVector/homebrew-lastdb.git" diff --name-only main brew/loom-v0.1.1)" = "Formula/loom.rb" ] \
+  || fail "tap branch touches more than Formula/loom.rb"
 grep -q 'repos/EdgeVector/homebrew-lastdb/pulls --jq .number' "$FORGE_LOG" || fail "tap PR not opened"
 
 # --- if-needed: same digest is a noop ----------------------------------------------
@@ -184,6 +198,27 @@ grep -q 'repos/EdgeVector/homebrew-lastdb/pulls --jq .number' "$FORGE_LOG" || fa
 pub --publish --if-needed >/dev/null 2>"$tmp/noop.err" || fail "if-needed rerun failed"
 grep -q 'already handled; noop' "$tmp/noop.err" || fail "if-needed did not short-circuit"
 [ ! -s "$GH_LOG" ] || fail "if-needed noop still called gh"
+
+# --- resume: the release exists for this digest but the tap PR never opened ------
+rm -f "$tmp/state/loom.json"
+git -C "$tmp/forge/EdgeVector/homebrew-lastdb.git" branch -D brew/loom-v0.1.1 >/dev/null
+echo loom-v0.1.1 > "$GH_TAGS"
+cp "$run_dir/assets/loom-aarch64-apple-darwin.manifest.json" "$GH_PRIOR_MANIFEST"
+jq --arg d "$digest" '.manifest_digest = $d' "$GH_PRIOR_MANIFEST" > "$tmp/pm.json" && mv "$tmp/pm.json" "$GH_PRIOR_MANIFEST"
+: > "$GH_LOG"; : > "$FORGE_LOG"
+pub --publish >/dev/null 2>"$tmp/resume.err" || { cat "$tmp/resume.err" >&2; fail "resume run failed"; }
+grep -q 'release existed, formula did not' "$tmp/resume.err" || fail "resume did not open the missing tap PR"
+grep -q 'release create' "$GH_LOG" && fail "resume re-uploaded the release"
+released_sha="$(jq -r .tarball_sha256 "$GH_PRIOR_MANIFEST")"
+git -C "$tmp/forge/EdgeVector/homebrew-lastdb.git" show brew/loom-v0.1.1:Formula/loom.rb | grep -q "$released_sha" \
+  || fail "resumed formula does not carry the RELEASED tarball sha256"
+# Tap main already current: no PR.
+git -C "$tmp/forge/EdgeVector/homebrew-lastdb.git" show brew/loom-v0.1.1:Formula/loom.rb > "$TAP_MAIN_FORMULA"
+rm -f "$tmp/state/loom.json"; : > "$FORGE_LOG"
+pub --publish >/dev/null 2>"$tmp/current.err" || fail "rerun with a current tap failed"
+grep -q 'tap formula for loom-v0.1.1: current' "$tmp/current.err" || fail "current tap formula not recognized"
+grep -q '/pulls --jq' "$FORGE_LOG" && fail "opened a PR although tap main is current"
+rm -f "$TAP_MAIN_FORMULA"
 
 # --- existing tag with another digest never re-uploads -------------------------
 rm -f "$tmp/state/loom.json"

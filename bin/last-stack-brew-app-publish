@@ -281,17 +281,19 @@ def released_tags(gh: str, formula: str) -> list[str]:
     return [t for t in proc.stdout.split() if t.startswith(pre)]
 
 
-def release_digest(gh: str, tag: str, formula: str, work: Path) -> str:
-    """manifest_digest recorded in an existing release, or '' when unknown."""
+def release_manifest(gh: str, tag: str, formula: str, work: Path) -> dict:
+    """The bundle manifest of an existing release, or {} when unknown."""
     name = f"{formula}-{TRIPLE}.manifest.json"
+    dl = work / "prior"
+    dl.mkdir(parents=True, exist_ok=True)
     proc = run([gh, "release", "download", tag, "--repo", TAP_GITHUB, "--pattern", name,
-                "--dir", str(work), "--clobber"], env=gh_env())
+                "--dir", str(dl), "--clobber"], env=gh_env())
     if proc.returncode != 0:
-        return ""
+        return {}
     try:
-        return json.loads((work / name).read_text(encoding="utf-8")).get("manifest_digest", "")
+        return json.loads((dl / name).read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return ""
+        return {}
 
 
 def create_release(gh: str, bundle: dict) -> None:
@@ -309,15 +311,50 @@ def create_release(gh: str, bundle: dict) -> None:
 
 # --- formula PR on the Forgejo tap (PUBLIC after mirror sync) ----------------
 
+def forge_git_clone_prefix() -> list[str]:
+    if not FORGE_BASE.startswith("http"):
+        return ["git"]
+    token = os.environ.get("FORGE_TOKEN", "").strip()
+    if not token:
+        proc = run(["bash", "-c", f'. "{ROOT / "lib" / "forge-token.sh"}" && last_stack_forge_token'])
+        token = proc.stdout.strip() if proc.returncode == 0 else ""
+    if not token:
+        return ["git"]
+    return ["git", "-c", f"http.{FORGE_BASE}/.extraHeader=Authorization: token {token}"]
+
+
+def tap_formula_state(bundle: dict, forge_api: str) -> str:
+    """'current' when tap main already points at this tarball, 'open-pr' when the
+    release branch has an open PR, else 'missing'."""
+    formula = bundle["formula"]
+    proc = run([forge_api, f"repos/{TAP_FORGE_REPO}/contents/Formula/{formula}.rb?ref=main",
+                "--jq", ".content"])
+    if proc.returncode == 0 and proc.stdout.strip():
+        import base64
+        try:
+            text = base64.b64decode(proc.stdout.strip()).decode("utf-8", "replace")
+        except ValueError:
+            text = ""
+        if bundle["tarball_sha256"] in text and f"/{bundle['tag']}/" in text:
+            return "current"
+    branch = f"brew/{formula}-v{bundle['version']}"
+    proc = run([forge_api, f"repos/{TAP_FORGE_REPO}/pulls/main/{branch}", "--jq", ".state"])
+    if proc.returncode == 0 and proc.stdout.strip() == "open":
+        return "open-pr"
+    return "missing"
+
+
 def open_formula_pr(bundle: dict, formula_text: str, forge_git: str, forge_api: str) -> str:
     formula = bundle["formula"]
     branch = f"brew/{formula}-v{bundle['version']}"
     with tempfile.TemporaryDirectory(prefix="brew-tap-") as tmp:
         clone = Path(tmp) / "tap"
         url = f"{FORGE_BASE}/{TAP_FORGE_REPO}.git"
+        # last-stack-forge-git wraps an EXISTING repo (-C <repo>, origin auth),
+        # so it cannot clone; clone with plain git and the forge token header.
         for cmd in (
-            [forge_git, "clone", "--quiet", "--depth", "1", url, str(clone)],
-            [forge_git, "-C", str(clone), "checkout", "-q", "-b", branch],
+            [*forge_git_clone_prefix(), "clone", "--quiet", "--depth", "1", "--branch", "main", url, str(clone)],
+            ["git", "-C", str(clone), "checkout", "-q", "-b", branch],
         ):
             proc = run(cmd)
             if proc.returncode != 0:
@@ -325,7 +362,7 @@ def open_formula_pr(bundle: dict, formula_text: str, forge_git: str, forge_api: 
         target = clone / "Formula" / f"{formula}.rb"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(formula_text, encoding="utf-8")
-        status = run(["git", "-C", str(clone), "status", "--porcelain"]).stdout.split("\n")
+        status = run(["git", "-C", str(clone), "status", "--porcelain", "-uall"]).stdout.split("\n")
         changed = [ln[3:] for ln in status if ln.strip()]
         if changed != [f"Formula/{formula}.rb"]:
             raise Refuse(f"formula PR would touch {changed}, expected only Formula/{formula}.rb")
@@ -426,9 +463,21 @@ def main(argv: list[str] | None = None) -> int:
 
         tags = released_tags(args.gh, formula)
         if tag in tags:
-            prior = release_digest(args.gh, tag, formula, run_dir)
+            prior_manifest = release_manifest(args.gh, tag, formula, run_dir)
+            prior = prior_manifest.get("manifest_digest", "")
             if prior == digest:
                 log(f"{tag} already released for this digest")
+                # A run can upload the release and then fail on the tap PR;
+                # finish that half from the RELEASED tarball's facts.
+                released = {**bundle, "tarball_sha256": prior_manifest.get("tarball_sha256", ""),
+                            "tarball": prior_manifest.get("tarball", bundle["tarball"])}
+                tap = tap_formula_state(released, args.forge_api)
+                if tap == "missing":
+                    pr = open_formula_pr(released, render_formula(template, released),
+                                         args.forge_git, args.forge_api)
+                    log(f"tap PR {pr} opened for Formula/{formula}.rb (release existed, formula did not)")
+                else:
+                    log(f"tap formula for {tag}: {tap}")
             else:
                 msg = (f"{tag} exists for digest {prior[:12] or '?'} but current is {digest[:12]}; "
                        f"bump the app version before the next release")
