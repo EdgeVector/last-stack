@@ -1393,7 +1393,13 @@ live_install_sidebin() {
   # Single-flight lock
   local lock="$dest/.cutover.lock"
   if [ -f "$lock" ]; then
-    local age=$(( $(date +%s) - $(stat -f %m "$lock" 2>/dev/null || echo 0) ))
+    local lock_mtime
+    if stat --version >/dev/null 2>&1; then
+      lock_mtime="$(stat -c %Y "$lock" 2>/dev/null || echo 0)"
+    else
+      lock_mtime="$(stat -f %m "$lock" 2>/dev/null || echo 0)"
+    fi
+    local age=$(( $(date +%s) - lock_mtime ))
     if [ "$age" -lt 600 ]; then
       die "cutover lock present ($lock, age ${age}s) — another upgrade in flight?"
     fi
