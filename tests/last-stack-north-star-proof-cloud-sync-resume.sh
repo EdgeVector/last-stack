@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Offline contract for north-star-lastdb-cloud-sync-resume.
-# The source check reads a fixture tree or, when present, the Fold portal.
+# The source check reads a fixture tree, a Fold worktree, or the Fold portal.
 # It does not open a LastDB home and it does not re-enable cloud sync.
 set -euo pipefail
 
@@ -318,6 +318,62 @@ expect_verdict "$WORK/cheat-report/north-star-lastdb-cloud-sync-resume.md" FAIL
 grep -q 'Source contract: FAIL' "$WORK/cheat-report/north-star-lastdb-cloud-sync-resume.md"
 grep -q 'The hash-group default is absent.' \
   "$WORK/cheat-report/north-star-lastdb-cloud-sync-resume.md"
+
+# A linked worktree keeps "gitdir: <path>" in a .git file. The checked-out
+# source files are removed so the harness must read HEAD with git -C.
+mkdir -p "$WORK/git-seed"
+git -C "$WORK/git-seed" init -q -b main
+cp -R "$FIXTURE/fold_db" "$FIXTURE/vendor" "$WORK/git-seed/"
+git -C "$WORK/git-seed" add fold_db vendor
+git -C "$WORK/git-seed" -c user.name=Test -c user.email=test@example.invalid \
+  commit -q -m 'fixture'
+git -C "$WORK/git-seed" worktree add --quiet --detach "$WORK/fold-wt" HEAD
+rm -rf "$WORK/fold-wt/fold_db" "$WORK/fold-wt/vendor"
+[ -f "$WORK/fold-wt/.git" ] || fail "the Fold worktree .git entry is not a file"
+grep -q '^gitdir: ' "$WORK/fold-wt/.git" ||
+  fail "the Fold worktree .git file lacks a gitdir prefix"
+[ ! -e "$WORK/fold-wt/vendor/laststore/src/options.rs" ] ||
+  fail "the Fold worktree still has a checked-out source file"
+
+PATH="$WORK/bin:$PATH" \
+env -u CLOUD_SYNC_RESUME_SOURCE_DIR -u CLOUD_SYNC_RESUME_PROOF_EVIDENCE_FILE \
+  -u CLOUD_SYNC_RESUME_ALLOW_REENABLE \
+  FOLD_REPO="$WORK/fold-wt" \
+  NORTH_STAR_PROOF_DIR="$WORK/worktree" \
+  "$RUNNER" --offline north-star-lastdb-cloud-sync-resume \
+  >"$WORK/worktree.out" 2>"$WORK/worktree.err" || true
+expect_verdict "$WORK/worktree/north-star-lastdb-cloud-sync-resume.md" FAIL
+grep -q 'Source contract: PASS' "$WORK/worktree/north-star-lastdb-cloud-sync-resume.md" ||
+  fail "a Fold worktree .git file did not satisfy the resume contract"
+grep -q 'Operational evidence: ABSENT' "$WORK/worktree/north-star-lastdb-cloud-sync-resume.md"
+grep -F -q "Source label: git:$WORK/fold-wt:HEAD" \
+  "$WORK/worktree/north-star-lastdb-cloud-sync-resume.md" ||
+  fail "the harness did not load the Fold worktree with git show"
+[ ! -e "$WORK/marker" ] || fail "the worktree proof called lastdb or brain"
+
+mkdir -p "$WORK/ev"
+git -C "$WORK/git-seed" worktree add --quiet --detach "$WORK/ev/fold" HEAD
+rm -rf "$WORK/ev/fold/fold_db" "$WORK/ev/fold/vendor"
+[ -f "$WORK/ev/fold/.git" ] ||
+  fail "the workspace Fold worktree .git entry is not a file"
+grep -q '^gitdir: ' "$WORK/ev/fold/.git" ||
+  fail "the workspace Fold worktree .git file lacks a gitdir prefix"
+
+PATH="$WORK/bin:$PATH" \
+env -u CLOUD_SYNC_RESUME_SOURCE_DIR -u CLOUD_SYNC_RESUME_PROOF_EVIDENCE_FILE \
+  -u CLOUD_SYNC_RESUME_ALLOW_REENABLE -u FOLD_REPO \
+  EDGEVECTOR_WORKSPACE="$WORK/ev" \
+  NORTH_STAR_PROOF_DIR="$WORK/ws-worktree" \
+  "$RUNNER" --offline north-star-lastdb-cloud-sync-resume \
+  >"$WORK/ws-worktree.out" 2>"$WORK/ws-worktree.err" || true
+expect_verdict "$WORK/ws-worktree/north-star-lastdb-cloud-sync-resume.md" FAIL
+grep -q 'Source contract: PASS' \
+  "$WORK/ws-worktree/north-star-lastdb-cloud-sync-resume.md" ||
+  fail "the workspace Fold worktree .git file did not satisfy the resume contract"
+grep -F -q "Source label: git:$WORK/ev/fold:HEAD" \
+  "$WORK/ws-worktree/north-star-lastdb-cloud-sync-resume.md" ||
+  fail "the harness did not load the workspace Fold worktree with git show"
+[ ! -e "$WORK/marker" ] || fail "the workspace worktree proof called lastdb or brain"
 
 PORTAL="${EDGEVECTOR_WORKSPACE:-$HOME/code/edgevector}/fold/.portal/cache"
 if [ -f "$PORTAL" ]; then

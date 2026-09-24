@@ -91,6 +91,25 @@ copy_from_git() {
   done
 }
 
+# A linked worktree stores "gitdir: <path>" in a .git file. Git resolves
+# that file. Do not parse it: a space-stripping parser never sees "gitdir: ".
+copy_from_checkout() {
+  local repo="$1" rel dest
+  refuse_primary "$repo"
+  refuse_primary "$repo/.git"
+  if [ ! -d "$repo/.git" ] && [ ! -f "$repo/.git" ]; then
+    return 1
+  fi
+  for rel in "${SOURCE_FILES[@]}"; do
+    dest="$TMP/src/$rel"
+    mkdir -p "$(dirname "$dest")"
+    if ! git -C "$repo" show "HEAD:$rel" >"$dest"; then
+      return 1
+    fi
+    [ -s "$dest" ] || return 1
+  done
+}
+
 load_source() {
   local explicit repo portal cache ws
   explicit="${CLOUD_SYNC_RESUME_SOURCE_DIR:-}"
@@ -107,16 +126,8 @@ load_source() {
       printf '%s\n' "$repo"
       return 0
     fi
-    if [ -f "$repo/.git" ]; then
-      cache="$(tr -d '[:space:]' <"$repo/.git")"
-      cache="${cache#gitdir: }"
-      copy_from_git "$cache" || finish FAIL "The Fold source is absent."
-      printf '%s\n' "fold-gitdir:HEAD"
-      return 0
-    fi
-    if [ -d "$repo/.git" ]; then
-      copy_from_git "$repo/.git" || finish FAIL "The Fold source is absent."
-      printf '%s\n' "fold-git:HEAD"
+    if copy_from_checkout "$repo"; then
+      printf '%s\n' "git:$repo:HEAD"
       return 0
     fi
     finish FAIL "The Fold source is absent."
@@ -135,15 +146,8 @@ load_source() {
     printf '%s\n' "fold-worktree"
     return 0
   fi
-  if [ -d "$ws/.git" ] || [ -f "$ws/.git" ]; then
-    if [ -f "$ws/.git" ]; then
-      cache="$(tr -d '[:space:]' <"$ws/.git")"
-      cache="${cache#gitdir: }"
-    else
-      cache="$ws/.git"
-    fi
-    copy_from_git "$cache" || finish FAIL "The Fold source is absent."
-    printf '%s\n' "fold-worktree:HEAD"
+  if copy_from_checkout "$ws"; then
+    printf '%s\n' "git:$ws:HEAD"
     return 0
   fi
   finish FAIL "The Fold source is absent."
