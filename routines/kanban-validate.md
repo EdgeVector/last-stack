@@ -199,6 +199,14 @@ Then re-eval the DONE-WHEN. Do not invent new harness slugs not listed by
    - Card body still has unproven `## END STATE` / `VERIFY`, or
      `BLOCKED: awaiting <validation>`
    - Skip human/prod/public cutovers
+   - Include a `done` card with a `CLOSED-ON-MERGE` line whose END STATE you
+     find unmet. Re-open it ONLY with the helper below. The helper moves it to
+     `doing`, restores its merged `pr_url`, and writes the
+     `PROOF[reopened-end-state-unmet]:` marker:
+     `"$last_stack/bin/last-stack-card-reopen-validate" <slug> --reason '<unmet clause + evidence>'`.
+     **Never** `kanban move <slug> backlog|todo` a card whose code merged. Todo
+     is the pickup WORK lane and it clears `pr_url`. On 2026-09-24 a Loom walk
+     claimed such a card and IMPLEMENT failed on "agent produced no commit".
 
    ### Pool B — terminal proof cards (NOT pickup; this routine's main gap fix)
    - Column **`backlog`** (default parking for non-PR proofs) or `todo` if
@@ -299,7 +307,9 @@ a named blocker instead of parking inside the run.
   to a `review` column. Heartbeat `ok validated=<slug> result=failed` and add
   `fix=<fix-slug>` only when the no-milestone exception files a card.
 - **BLOCKED (upstream):** write the blocker with a stable keyed marker
-  through the dedupe helper, leave in backlog/todo, heartbeat
+  through the dedupe helper, leave the card where it is (a Pool A card with
+  merged code stays in `doing` with its `pr_url`; never move it to
+  backlog/todo), heartbeat
   `noop blocked=<blocker>`:
   `"$last_stack/bin/last-stack-kanban-mark-once" <slug> --marker
   'BLOCKED[<blocker-slug>]:' --text 'awaiting <blocker> for <validation>: <current state>'`.

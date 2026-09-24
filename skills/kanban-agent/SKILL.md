@@ -769,6 +769,15 @@ Scheduled entrypoint: routine `kanban-validate` /
    dependency or cross-reference to the failed card when useful. Leave the
    proof/validation card in **`backlog`** (not a `review` column — that lane
    does not exist). Do not silently leave it in `doing`.
+   **Merged code stays out of the WORK lane.** A post-merge card whose END
+   STATE is unmet stays in `doing` with its merged `pr_url`. To re-open a
+   `done` card that closed on merge (`CLOSED-ON-MERGE`), run
+   `last-stack-card-reopen-validate <slug> --reason '<unmet clause>'`. Never
+   `kanban move` it to `todo`/`backlog`: todo is pickup WORK and clears
+   `pr_url`, and pickup would claim merged code for IMPLEMENT (no-commit fail,
+   2026-09-24). kanban pickup refuses a card with a `CLOSED-ON-MERGE`,
+   `PROOF[reopened-end-state-unmet]:` or `VALIDATE-ONLY:` line unless a later
+   `REWORK:` line asks for new implementation work.
 5. **Unrelated blockers do not thrash.** If validation cannot run because a
    named upstream blocker is already known (for example a runner-saturation or
    dev-401 card), append or refresh `BLOCKED: awaiting <blocker-slug> for
