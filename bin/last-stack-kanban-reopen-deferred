@@ -27,6 +27,15 @@ RECORDED_RE = re.compile(
 )
 PR_RE = re.compile(r"/(?:pull|pulls)/(\d+)(?:\b|/)", re.IGNORECASE)
 LASTGIT_RE = re.compile(r"lastgit://([^/]+)/cr/([^/\s?#]+)", re.IGNORECASE)
+# Same markers fkanban pickup reads (`bodyDeclaredValidateOnly`): the card's
+# code already merged and only a post-merge END STATE is left. Such a card goes
+# to doing for the validate lane, never to todo, where pickup would claim it as
+# WORK and IMPLEMENT would fail on "agent produced no commit" (2026-09-24).
+VALIDATE_ONLY_RE = re.compile(
+    r"^(?:[-*]\s+)?(?:CLOSED-ON-MERGE\b|PROOF\[reopened-end-state-unmet\]\s*:|VALIDATE-ONLY\s*:)",
+    re.IGNORECASE,
+)
+REWORK_RE = re.compile(r"^(?:[-*]\s+)?REWORK\s*:", re.IGNORECASE)
 
 
 def run(argv: list[str], timeout: int = 60) -> subprocess.CompletedProcess[str]:
@@ -73,6 +82,24 @@ def tags(card: dict[str, Any]) -> set[str]:
 def is_deferred(card: dict[str, Any]) -> bool:
     status = str(card.get("block_status") or card.get("blockStatus") or "").lower()
     return status == "deferred" or bool(tags(card) & PARKED_TAGS)
+
+
+def validate_only(card: dict[str, Any]) -> bool:
+    """Latest marker wins: a REWORK: line after the marker re-admits WORK."""
+    held = False
+    in_fence = False
+    for raw in body(card).splitlines():
+        line = raw.strip()
+        if line.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if VALIDATE_ONLY_RE.match(line):
+            held = True
+        elif REWORK_RE.match(line):
+            held = False
+    return held
 
 
 def recorded_candidates(card: dict[str, Any]) -> list[str]:
@@ -232,12 +259,22 @@ def reopen(args: argparse.Namespace) -> dict[str, Any]:
             else:
                 for tag in sorted(tags(card) & PARKED_TAGS):
                     board_call(args, "tag", "rm", slug, tag, "--json")
-                if str(card.get("kind") or "pr").strip().lower() == "pr":
-                    move = board_call(args, "move", slug, "todo")
+                dest = ""
+                if validate_only(card):
+                    dest = "doing"
+                elif str(card.get("kind") or "pr").strip().lower() == "pr":
+                    dest = "todo"
+                if dest:
+                    move = board_call(args, "move", slug, dest)
                     if move.returncode != 0:
                         result["skipped"].append({"slug": slug, "reason": "board-move-failed"})
                         continue
-        result["reopened"].append({"slug": slug, "recorded": recorded, "installed": installed})
+        result["reopened"].append({
+            "slug": slug,
+            "recorded": recorded,
+            "installed": installed,
+            "lane": "validate" if validate_only(card) else "work",
+        })
     return result
 
 

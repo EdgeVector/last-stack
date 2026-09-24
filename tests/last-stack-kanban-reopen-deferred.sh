@@ -36,6 +36,12 @@ if [ "\$1" = list ]; then
     live_status=none
     live_tags='[]'
   fi
+  val_status=deferred
+  val_tags='["awaiting-deploy"]'
+  if [ -f "$tmp/validate-cleared" ]; then
+    val_status=none
+    val_tags='[]'
+  fi
   cat <<JSON
 [
   {
@@ -45,6 +51,14 @@ if [ "\$1" = list ]; then
     "block_status": "\$live_status",
     "tags": \$live_tags,
     "body": "merge=$recorded"
+  },
+  {
+    "slug": "deferred-validate",
+    "repo": "EdgeVector/last-stack",
+    "kind": "pr",
+    "block_status": "\$val_status",
+    "tags": \$val_tags,
+    "body": "merge=$recorded\\nCLOSED-ON-MERGE 2026-09-24T02:14:05Z pr=none\\nPROOF[reopened-end-state-unmet]: live --list omits the slug"
   },
   {
     "slug": "deferred-not-live",
@@ -61,12 +75,15 @@ fi
 if [ "\$1" = set ] && [ "\$2" = deferred-live ]; then
   touch "$tmp/live-cleared"
 fi
+if [ "\$1" = set ] && [ "\$2" = deferred-validate ]; then
+  touch "$tmp/validate-cleared"
+fi
 printf '%s\n' "\$*" >>"$tmp/board.log"
 SH
 chmod +x "$tmp/bin/kanban"
 
 dry="$("$ROOT/bin/last-stack-kanban-reopen-deferred" --board-cli "$tmp/bin/kanban" --host-track "$tmp/bin/host-track" --repo-cache-root "$tmp/cache" --dry-run --json)"
-printf '%s\n' "$dry" | grep -q '"scanned": 2' || fail "dry run did not scan both deferred cards"
+printf '%s\n' "$dry" | grep -q '"scanned": 3' || fail "dry run did not scan all deferred cards"
 printf '%s\n' "$dry" | grep -q '"slug": "deferred-live"' || fail "dry run did not identify the live card"
 [ ! -f "$tmp/board.log" ] || fail "dry run wrote to the board"
 
@@ -74,6 +91,13 @@ actual="$("$ROOT/bin/last-stack-kanban-reopen-deferred" --board-cli "$tmp/bin/ka
 printf '%s\n' "$actual" | grep -q '"reopened":' || fail "live run did not report reopened cards"
 grep -q '^set deferred-live --block-status none --json$' "$tmp/board.log" || fail "live card did not clear its deferred status"
 grep -q '^move deferred-live todo$' "$tmp/board.log" || fail "live card did not move to todo"
+# A merged card that only awaits validation goes to doing, never to todo:
+# todo is the pickup WORK lane (2026-09-24 no-commit IMPLEMENT on such a card).
+grep -q '^move deferred-validate doing$' "$tmp/board.log" || fail "validate-only card did not move to doing"
+if grep -q '^move deferred-validate todo$' "$tmp/board.log"; then
+  fail "validate-only card moved to the todo WORK lane"
+fi
+printf '%s\n' "$actual" | grep -q '"lane": "validate"' || fail "validate-only card not reported as the validate lane"
 if grep -q 'deferred-not-live' "$tmp/board.log"; then
   fail "not-live card changed"
 fi

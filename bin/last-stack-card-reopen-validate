@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+"""Re-open a merged card for post-merge validation. Never re-open it as WORK.
+
+A card that `last-stack-card-closeout` closed on merge (CLOSED-ON-MERGE) can
+still have an unmet END STATE, for example one that waits on a host-track
+install. Its code is merged. The only remaining work is VALIDATE work.
+
+On 2026-09-24 a validate run re-opened such a card with `kanban move <slug>
+backlog`. The milestone driver then promoted it to todo, the todo lane cleared
+its `pr_url`, and a Loom land-card walk claimed it. IMPLEMENT had nothing to
+change and failed on "agent produced no commit".
+
+This helper is the one re-open path for that case:
+
+  1. Find the merged PR: --pr-url, else the card's pr_url, else the body
+     (`Prior-PR:`, `PR:`, `CLOSED-ON-MERGE ... pr=`, `HANDOFF: ... merged <url>`).
+     No PR found: exit 2, change nothing.
+  2. Move the card to `doing` (never todo or backlog). Pickup claims only
+     todo; the card reaper skips a doing card that carries a pr_url; the
+     validate lane (Pool A) owns a doing card with a merged PR.
+  3. Re-stamp pr_url (and branch) through `kanban add` in doing.
+  4. Write one `PROOF[reopened-end-state-unmet]:` line through
+     last-stack-kanban-mark-once. fkanban pickup refuses a card with that line.
+  5. Read the card back. Fail when column or pr_url did not stick.
+
+Usage:
+  last-stack-card-reopen-validate <slug> --reason '<which END STATE clause is unmet>'
+      [--pr-url URL] [--branch NAME] [--board-cli kanban] [--dry-run]
+
+Output: one line `reopen-validate <slug> <reopened|unchanged|would-reopen> column=doing pr_url=<url>`.
+Exit: 0 ok, 1 board read/write failed or did not stick, 2 usage error or no PR.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+MARKER = "PROOF[reopened-end-state-unmet]:"
+PR_URL_RE = re.compile(r"(?:https?://\S+?/pulls?/\d+|lastgit://[^\s/]+/cr/[A-Za-z0-9._-]+)")
+PR_LINE_RE = re.compile(r"^(?:[-*]\s+)?(?:Prior-PR\s*:|PR\s*:|CLOSED-ON-MERGE\b|HANDOFF\s*:)", re.IGNORECASE)
+BRANCH_RE = re.compile(r"^\s*Branch:\s*(\S+)\s*$", re.IGNORECASE | re.MULTILINE)
+
+
+def board(cli: str, *args: str, timeout: int = 60) -> subprocess.CompletedProcess[str]:
+    return subprocess.run([cli, *args], capture_output=True, text=True, timeout=timeout,
+                          stdin=subprocess.DEVNULL, check=False)
+
+
+def read_card(cli: str, slug: str) -> dict | None:
+    try:
+        out = board(cli, "show", slug, "--json")
+        data = json.loads(out.stdout) if out.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if isinstance(data, dict) and isinstance(data.get("card"), dict):
+        data = data["card"]
+    return data if isinstance(data, dict) else None
+
+
+def clean_url(url: str) -> str:
+    return url.rstrip(").,;'\"`>]")
+
+
+def repo_matches(url: str, repo: str) -> bool:
+    if not repo or "/" not in repo or url.startswith("lastgit://"):
+        return True
+    return f"/{repo}/pull".lower() in url.lower()
+
+
+def pr_from_body(body: str, repo: str) -> str:
+    """The latest PR URL for the card's repo on a PR-bearing line, outside code fences."""
+    found = ""
+    in_fence = False
+    for raw in body.splitlines():
+        line = raw.strip()
+        if line.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence or not PR_LINE_RE.match(line):
+            continue
+        for match in PR_URL_RE.finditer(line):
+            url = clean_url(match.group(0))
+            if repo_matches(url, repo):
+                found = url
+    return found
+
+
+def mark_once_bin() -> str:
+    here = Path(os.path.realpath(__file__)).parent / "last-stack-kanban-mark-once"
+    return str(here) if here.exists() else "last-stack-kanban-mark-once"
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("slug")
+    ap.add_argument("--reason", required=True, help="which END STATE clause is still unmet, with evidence")
+    ap.add_argument("--pr-url", default="")
+    ap.add_argument("--branch", default="")
+    ap.add_argument("--board-cli", default=os.environ.get("BOARD_CLI", "kanban"))
+    ap.add_argument("--dry-run", action="store_true")
+    args = ap.parse_args()
+
+    slug = args.slug
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", slug):
+        ap.error("invalid slug")
+    reason = " ".join(args.reason.split())
+    if not reason:
+        ap.error("--reason must not be empty")
+
+    card = read_card(args.board_cli, slug)
+    if card is None:
+        print(f"reopen-validate {slug} error board-read-failed")
+        return 1
+
+    body = str(card.get("body") or "")
+    repo = str(card.get("repo") or "").strip()
+    pr_url = clean_url(args.pr_url.strip()) or str(card.get("pr_url") or "").strip() or pr_from_body(body, repo)
+    if not pr_url:
+        print(f"reopen-validate {slug} error no-merged-pr-url", file=sys.stderr)
+        print("  A validate-only re-open needs the merged PR. Pass --pr-url <url>.", file=sys.stderr)
+        return 2
+    match = BRANCH_RE.search(body)
+    branch = args.branch.strip() or str(card.get("branch") or "").strip() or (match.group(1) if match else "")
+    column = str(card.get("column") or "")
+
+    has_marker = any(line.strip().startswith(MARKER) for line in body.splitlines())
+    if column == "doing" and str(card.get("pr_url") or "").strip() == pr_url and has_marker:
+        print(f"reopen-validate {slug} unchanged column=doing pr_url={pr_url}")
+        return 0
+    if args.dry_run:
+        print(f"reopen-validate {slug} would-reopen column={column}->doing pr_url={pr_url}")
+        return 0
+
+    if column != "doing":
+        moved = board(args.board_cli, "move", slug, "doing")
+        if moved.returncode != 0:
+            print(f"reopen-validate {slug} error board-move-failed: {moved.stderr.strip()[:300]}")
+            return 1
+
+    add_args = ["add", slug, "--pr-url", pr_url]
+    if branch:
+        add_args += ["--branch", branch]
+    stamped = board(args.board_cli, *add_args)
+    if stamped.returncode != 0:
+        print(f"reopen-validate {slug} error board-add-failed: {stamped.stderr.strip()[:300]}")
+        return 1
+
+    marked = subprocess.run(
+        [mark_once_bin(), slug, "--board-cli", args.board_cli, "--marker", MARKER,
+         "--text", f"{reason}; merged {pr_url}; validate lane owns closure, not pickup WORK"],
+        capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL, check=False,
+    )
+    if marked.returncode != 0:
+        print(f"reopen-validate {slug} error marker-write-failed: {marked.stdout.strip()[:300]}")
+        return 1
+
+    after = read_card(args.board_cli, slug)
+    if after is None:
+        print(f"reopen-validate {slug} error board-read-back-failed")
+        return 1
+    got_col = str(after.get("column") or "")
+    got_url = str(after.get("pr_url") or "").strip()
+    if got_col != "doing" or got_url != pr_url:
+        print(f"reopen-validate {slug} error did-not-stick column={got_col} pr_url={got_url or '-'}")
+        return 1
+    print(f"reopen-validate {slug} reopened column=doing pr_url={pr_url}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

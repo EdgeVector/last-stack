@@ -66,6 +66,10 @@ printf '%s\n' 'Repo: EdgeVector/last-stack' 'Kind: pr' '## END STATE' 'The repor
 out="$("$bin" dw-card-3 --board-cli "$board" 2>&1)" || { echo "FAIL: absent DONE-WHEN must warn and close: $out" >&2; exit 1; }
 printf '%s\n' "$out" | grep -q 'DONE-WHEN=absent' || { echo "FAIL: warning must name DONE-WHEN=absent: $out" >&2; exit 1; }
 [ "$(cat "$DW_COL")" = done ]
+# The CLOSED-ON-MERGE line names the PR (here none) and the validate-only
+# re-open path, so a re-open never goes back through the todo WORK lane.
+grep -q '^CLOSED-ON-MERGE .* pr=none .*last-stack-card-reopen-validate' "$DW_MARKS" || {
+  echo "FAIL: CLOSED-ON-MERGE must name pr= and the re-open helper" >&2; cat "$DW_MARKS" >&2; exit 1; }
 
 # Through a PATH-style symlink in another directory, sibling helpers resolve.
 mkdir -p "$tmp/pathbin"
