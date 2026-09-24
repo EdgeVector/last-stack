@@ -1,0 +1,55 @@
+{
+  "schema": "lastdb-cloud-sync-resume-proof.v1",
+  "surface": {
+    "kind": "ephemeral",
+    "primary_home_opened": false,
+    "primary_mutated": false,
+    "primary_reenabled_by_harness": false,
+    "live_cutover": false,
+    "home_path": "/private/tmp/csr-eph.FsT8LH"
+  },
+  "hash_group": {
+    "cow_document_count": 253,
+    "group_file_count": 2486,
+    "group_bytes_uploaded": 6854018,
+    "staging_object_count": 0,
+    "cow_proof_verdict": "PASS",
+    "promoted": false,
+    "source_unchanged": true
+  },
+  "probe": {
+    "upload_bytes": 6854018,
+    "upload_window_secs": 2,
+    "staging_growth_bytes": 0,
+    "backlog_start": 2486,
+    "backlog_end": 0,
+    "degraded": false,
+    "window_start": "2026-09-24T02:44:03Z",
+    "window_end": "2026-09-24T02:44:05Z"
+  },
+  "reenable": {
+    "situation_slug": "cloud-sync-paused-pending-laststore-redesign-20260719",
+    "situation_cleared_at": "2026-07-23T22:46:28Z",
+    "reenable_at": "2026-07-30T06:22:00Z",
+    "cleared_by": "Tom",
+    "reenable_actor": "Tom"
+  },
+  "catchup": {
+    "staging_depth": 0,
+    "staging_cap": 134217728,
+    "primary_sync_lag_bytes": 0,
+    "brain_reads": 25,
+    "brain_writes": 24,
+    "kanban_reads": 8,
+    "kanban_writes": 2,
+    "lastgit_reads": 1,
+    "lastgit_writes": 1
+  },
+  "file_blob": {
+    "upload_bytes": 27,
+    "fetch_bytes": 27,
+    "canary_sha256": "bcadd52f884de096c99e455c7f4045430862ff86f1eb3fc31b9b6057530244b1",
+    "upload_route": "upload_file_blob",
+    "fetch_route": "download_file_blob"
+  }
+}
