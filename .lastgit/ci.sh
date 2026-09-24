@@ -825,4 +825,8 @@ ci_test tests/last-stack-north-star-proof-pack-blobs-b2.sh
 # Fills the bootstrap kit and checks the generic engines. No LastDB home.
 # APPENDED before the registration guard, which stays last.
 ci_test tests/last-stack-north-star-proof-portable-routine-fleet.sh
+# Offline terminal proof for north-star-lastdb-cloud-sync-resume.
+# Fold resume contract plus measured CoW evidence. No LastDB home. No re-enable.
+# APPENDED before the registration guard, which stays last.
+ci_test tests/last-stack-north-star-proof-cloud-sync-resume.sh
 ci_test tests/last-stack-ci-test-registration.sh
