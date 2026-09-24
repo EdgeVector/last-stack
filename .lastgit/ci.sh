@@ -342,6 +342,7 @@ ci_test tests/last-stack-card-reaper-run.sh
 ci_test tests/last-stack-card-closeout.sh
 ci_test tests/last-stack-card-closeout-done-when.sh
 ci_test tests/last-stack-card-closeout-host-track-gate.sh
+ci_test tests/last-stack-card-closeout-lifecycle-gate.sh
 ci_test tests/last-stack-git-commit-c-option.sh
 ci_test tests/last-stack-skill-frontmatter-yaml.sh
 ci_test tests/last-stack-routines-host-track-post-install.sh

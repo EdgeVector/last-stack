@@ -12,7 +12,9 @@
 # 3. Refuses legacy-residue closeout unless latest main has zero marker hits
 #    and the card OUTCOME records that grep-zero proof.
 # 4. Moves the card to done (with lastdb-retry).
-# 5. Verifies show --json reports column=done; retries once if not.
+# 5. Verifies show --json reports column=done; retries once if not. Never
+#    passes --force past a kanban deploy/lifecycle gate refusal: the card stays
+#    out of done, the reason is marked, and the helper exits 1.
 # 6. Best-effort: reclaim the card's private LastDB dev home
 #    (~/.lastdb-dev-<slug>, the AGENTS.md concurrency convention) via
 #    `lastdb-dev reclaim`. An orchestrator that invents a dev home owns deleting
@@ -733,12 +735,67 @@ verify_linkage() {
 claim_doing_if_needed
 restamp_fields
 
-move_to done || true
+# Never pass --force past a deploy/lifecycle gate
+# (papercut-card-closeout-force-bypasses-host-track-deploy-gate-20260923).
+# On 2026-09-23 kanban refused done with `lifecycle_status_blocked
+# deploy:host-track=missing`; this helper then retried with --force, which
+# kanban treats as an operator override, and the card landed in done before
+# host-track had installed the merge. The board's lifecycle gate is the
+# authority: the first move to done is ALWAYS unforced (even under --force),
+# and a gate refusal keeps the card where it is, marks the reason, and fails.
+# --force is kept only for a dependency block (card_blocked), and never for a
+# card that declares Requires-Deploy, because a forced move skips every check
+# kanban would have run after the dependency check.
+gate_refusal_re='lifecycle_status_blocked|required pipeline contexts|deploy:[A-Za-z0-9_.-]+=|Requires-Deploy'
+dep_block_re='card_blocked|unfinished dependenc|blocked by'
+
+move_done_unforced() {
+  local out rc
+  set +e
+  out="$(run "$board_cli" move "$slug" done 2>&1)"
+  rc=$?
+  set -e
+  [ -z "$out" ] || printf '%s\n' "$out" >&2
+  move_out="$out"
+  return "$rc"
+}
+
+refuse_gate() {
+  local detail="$1" marker
+  detail="$(printf '%s' "$detail" | tr '\n' ' ' | cut -c1-300)"
+  echo "last-stack-card-closeout: FAILED lifecycle-gate-refused slug=$slug column=$col" >&2
+  echo "  kanban refused done: $detail" >&2
+  echo "  No --force past a deploy/lifecycle gate. The card stays in $col." >&2
+  echo "  Close it after the gate reports success (e.g. host-track installs the merge)." >&2
+  marker="CLOSEOUT-DEFERRED: lifecycle gate refused done"
+  run "$board_cli" mark "$slug" \
+    "$marker $(date -u +%Y-%m-%dT%H:%M:%SZ); $detail; merge is not done, no --force past the gate (last-stack-card-closeout)" \
+    </dev/null >/dev/null 2>&1 || true
+  exit 1
+}
+
+move_out=""
+move_done_unforced || true
 col="$(column_of)"
 if [ "$col" != "done" ]; then
-  echo "last-stack-card-closeout: column=$col after first move; retrying with --force" >&2
-  force=1
-  move_to done || true
+  if printf '%s' "$move_out" | grep -Eq "$gate_refusal_re"; then
+    refuse_gate "$(printf '%s\n' "$move_out" | grep -E "$gate_refusal_re" | head -1)"
+  fi
+  if printf '%s' "$move_out" | grep -Eqi "$dep_block_re"; then
+    if [ -n "$deploy_reqs" ]; then
+      refuse_gate "dependency block on a card that declares Requires-Deploy; a forced move would skip the deploy gate: $(printf '%s\n' "$move_out" | head -1)"
+    fi
+    echo "last-stack-card-closeout: column=$col after first move (dependency block); retrying with --force" >&2
+    force=1
+    move_to done || true
+  else
+    echo "last-stack-card-closeout: column=$col after first move; retrying once without --force" >&2
+    move_done_unforced || true
+    if [ "$(column_of)" != "done" ] && printf '%s' "$move_out" | grep -Eq "$gate_refusal_re"; then
+      col="$(column_of)"
+      refuse_gate "$(printf '%s\n' "$move_out" | grep -E "$gate_refusal_re" | head -1)"
+    fi
+  fi
   col="$(column_of)"
 fi
 
