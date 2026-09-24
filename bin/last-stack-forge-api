@@ -42,6 +42,9 @@ Forgejo shapes that differ from GitHub:
   A PR read has no auto-merge field: .auto_merge is ALWAYS null. To confirm
   auto-merge is armed, POST the merge again with merge_when_checks_succeed:
   HTTP 409 "already scheduled to auto merge" means it is armed; 200 arms it.
+  Forgejo 15.0.3 fires a schedule only on a NEW status event: armed AFTER the
+  required check is green, it never merges. Use the bounded fallback:
+    last-stack-pipeline-forge-pr-ledger merge-green --repo EdgeVector/<r> --pr <n> --apply
   --jq prints strings raw (like gh api --jq); do not strip quotes.
   Forgejo 15.0.3 has NO API route to rerun or cancel an actions run (its
   swagger lists only runs, runs/{id}, tasks, runners, workflows/.../dispatches);
