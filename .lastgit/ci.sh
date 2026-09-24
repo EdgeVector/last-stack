@@ -829,4 +829,9 @@ ci_test tests/last-stack-north-star-proof-portable-routine-fleet.sh
 # Fold resume contract plus measured CoW evidence. No LastDB home. No re-enable.
 # APPENDED before the registration guard, which stays last.
 ci_test tests/last-stack-north-star-proof-cloud-sync-resume.sh
+# Offline terminal proof for north-star-lastdb-schema-root-data-attribution.
+# Fold attribution contract plus isolated-copy evidence. No LastDB home.
+# No source delete. No production cutover.
+# APPENDED before the registration guard, which stays last.
+ci_test tests/last-stack-north-star-proof-schema-root-attribution.sh
 ci_test tests/last-stack-ci-test-registration.sh
