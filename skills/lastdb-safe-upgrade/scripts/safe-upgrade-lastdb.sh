@@ -1306,6 +1306,49 @@ ensure_primary_launchd_rss_limit() {
   log "stamped primary LaunchAgent LASTDBD_RSS_LIMIT_MB=$limit (was ${current:-unset})"
 }
 
+# launchd SIGKILLs a job ExitTimeOut seconds after SIGTERM. With no key the
+# primary job printed `exit timeout = 5`. On 2026-09-24 the 2173 -> 2274
+# cutover killed the old daemon 5 s into its graceful shutdown, before the
+# persist-lane drain and the final flush ran
+# (papercut-lastdbd-2274-persist-lane-8c01190e-unhealthy-kanban-batch-503-20260924).
+PRIMARY_EXIT_TIMEOUT_SECS="${LASTDB_PRIMARY_EXIT_TIMEOUT_SECS:-150}"
+
+ensure_primary_launchd_exit_timeout() {
+  local want="$PRIMARY_EXIT_TIMEOUT_SECS" current
+  case "$want" in
+    ''|*[!0-9]*) die "invalid LASTDB_PRIMARY_EXIT_TIMEOUT_SECS: $want" ;;
+  esac
+  if [ ! -f "$LAUNCHD_PLIST" ]; then
+    warn "primary LaunchAgent plist missing ($LAUNCHD_PLIST); cannot stamp ExitTimeOut before job reload"
+    return 0
+  fi
+  current="$(/usr/libexec/PlistBuddy -c 'Print :ExitTimeOut' "$LAUNCHD_PLIST" 2>/dev/null || true)"
+  if [ -n "$current" ] && [ "$current" -ge "$want" ] 2>/dev/null; then
+    log "primary LaunchAgent ExitTimeOut already ${current}s"
+    return 0
+  fi
+  if [ -n "$current" ]; then
+    /usr/libexec/PlistBuddy -c "Delete :ExitTimeOut" "$LAUNCHD_PLIST"
+  fi
+  /usr/libexec/PlistBuddy -c "Add :ExitTimeOut integer $want" "$LAUNCHD_PLIST"
+  log "stamped primary LaunchAgent ExitTimeOut=${want}s (was ${current:-unset}); the reloaded job gets the full graceful-drain window"
+}
+
+# The bootout below stops the OLD job with the exit timeout launchd loaded for
+# it, not the new plist value. Say so loudly when that window is short.
+warn_loaded_exit_timeout_short() {
+  local service="$1" loaded
+  loaded="$(lastdb_launchd_job_exit_timeout launchctl "$service")"
+  if [ -z "$loaded" ]; then
+    return 0
+  fi
+  if [ "$loaded" -lt "$PRIMARY_EXIT_TIMEOUT_SECS" ] 2>/dev/null; then
+    warn "loaded primary job exit timeout is ${loaded}s (< ${PRIMARY_EXIT_TIMEOUT_SECS}s): this bootout can SIGKILL the old daemon before its persist-lane drain and final flush finish. The next cutover uses the stamped ExitTimeOut."
+  else
+    log "loaded primary job exit timeout ${loaded}s"
+  fi
+}
+
 # Version parity cannot detect replacement bytes that report the same version.
 # Every sidebin copy must match the immutable Loom hashes.
 sidebin_pair_hashes_match_expected() {
@@ -1455,9 +1498,11 @@ live_install_sidebin() {
   write_cutover_recovery_state "sidebin-candidate-installed" true
 
   ensure_primary_launchd_rss_limit
+  ensure_primary_launchd_exit_timeout
 
   local uid
   uid="$(id -u)"
+  warn_loaded_exit_timeout_short "gui/${uid}/${LAUNCHD_LABEL}"
   CUTOVER_T0="$(date +%s)"
   assert_sidebin_installed_hashes_or_restore "pre-reload sidebin pair"
   write_cutover_recovery_state "sidebin-reload-started" true
