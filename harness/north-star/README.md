@@ -39,6 +39,7 @@ First line is `PASS`, `PASS-OFFLINE`, or `FAIL` for kanban DONE-WHEN matching.
 | lastdb-cloud-sync-resume | Fold snapshot+log, upload-interlock, hash-group, and file-blob source contract; PASS-OFFLINE only from measured CoW or ephemeral evidence after Tom clears the pause Situation | offline only; does not open a LastDB home and does not re-enable primary cloud sync |
 | lastgit-pack-blobs-b2-migration | LastGit pack-file source contract plus the mocked pack-file test; PASS-OFFLINE only from measured pointer coverage, a verified second backfill, and B2 SHA-256 samples | same evidence contract; does not open a LastDB home and does not start a B2 cutover |
 | portable-routine-fleet | bootstrap-kit dry-run for a second project, plus two registry-rotator triggers and two session-miner triggers; no engine edits | same checks; does not open a LastDB home and does not run a canary upgrade |
+| lastdb-schema-root-data-attribution | Fold attribution source contract plus one throwaway object graph; PASS-OFFLINE only from redacted isolated-copy evidence with zero unattributed residue and zero unknown user objects after restore | offline only; does not open a LastDB home, does not delete from a source home, and does not run a production cutover |
 
 ## Cloud-owned GC: registration is not release proof
 
