@@ -101,6 +101,10 @@ genuinely blocked.
 > not merge a sibling from the same branch and delete it out from under you.
 > The forge has no checks-watch equivalent of the GitHub CLI: hold
 > your turn by polling the head-commit status between forward actions instead.
+> Arm BEFORE the required check is green: Forgejo 15.0.3 never fires a schedule
+> armed after the last green status. If the PR is armed and green but open, run
+> `last-stack-pipeline-forge-pr-ledger merge-green --repo EdgeVector/<repo> --pr <n> --apply --wait-sec 900`
+> (bounded; merges only an armed PR; `papercut-forgejo-auto-merge-armed-after-green-never-fires-20260923`).
 > All PUBLIC repos (brain, kanban, schema-infra, last-stack, websites, …) keep
 > the normal GitHub `gh` flow unless `last-stack-pr-venue` says `lastgit`;
 > Keepside_Desktop is GitHub-primary and hands-off.

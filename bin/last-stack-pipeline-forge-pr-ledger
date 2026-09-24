@@ -30,6 +30,11 @@ This helper replaces both:
            read once its PR is merged or closed, or (main-red rows) once the
            base tip is green on every required context.
 
+  merge-green  One PR. Bounded "merge when green" fallback: Forgejo 15.0.3
+         never fires an auto-merge armed after the required check went green.
+         Merges an ARMED green PR directly after --grace-sec (dry run unless
+         --apply; --arm also merges an unarmed green PR).
+
 LastGit is not read. It is disabled for every EdgeVector repo
 (decision-2026-09-06-all-repos-venue-forgejo-no-lastgit-default).
 """
@@ -44,6 +49,7 @@ import re
 import concurrent.futures
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -714,7 +720,148 @@ def reap_plan(args: argparse.Namespace) -> dict[str, Any]:
     return report
 
 
+def forge_write(method: str, path: str, data: str | None = None) -> subprocess.CompletedProcess[str]:
+    argv = [forge_api_bin(), "--method", method]
+    if data is not None:
+        argv += ["--data", data]
+    return run(argv + [path], timeout=60)
+
+
+def schedule_state(repo: str, number: int) -> tuple[bool, dt.datetime | None]:
+    """(armed, armed_at) from the PR timeline.
+
+    A Forgejo PR read has no auto-merge field (.auto_merge is always null), and
+    the only other probe, re-POSTing merge_when_checks_succeed, ARMS the PR as a
+    side effect. The timeline records pull_scheduled_merge and
+    pull_cancel_scheduled_merge events; the later one wins.
+    """
+    armed, armed_at = False, None
+    for page in range(1, 11):  # bounded: 10 pages x 50 events
+        events = forge_get(f"repos/{repo}/issues/{number}/timeline?limit=50&page={page}")
+        if not isinstance(events, list) or not events:
+            break
+        for ev in events:
+            kind = (ev or {}).get("type") if isinstance(ev, dict) else None
+            if kind == "pull_scheduled_merge":
+                armed, armed_at = True, parse_ts(ev.get("created_at"))
+            elif kind == "pull_cancel_scheduled_merge":
+                armed, armed_at = False, None
+        if len(events) < 50:
+            break
+    return armed, armed_at
+
+
+def green_since(status_doc: Any, required: list[str]) -> dt.datetime | None:
+    """When the last required context turned success (latest per context)."""
+    latest: dict[str, tuple[str, str]] = {}
+    rows = status_doc.get("statuses") if isinstance(status_doc, dict) else None
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        key = stem(row.get("context") or "")
+        when = str(row.get("updated_at") or row.get("created_at") or "")
+        if key and (key not in latest or when >= latest[key][1]):
+            latest[key] = (str(row.get("status") or row.get("state") or "").lower(), when)
+    stamps = [parse_ts(latest[c][1]) for c in required if c in latest and latest[c][0] == "success"]
+    stamps = [s for s in stamps if s]
+    return max(stamps) if len(stamps) == len(required) and stamps else None
+
+
+def merge_green_once(args: argparse.Namespace) -> dict[str, Any]:
+    repo = args.repo[0] if "/" in args.repo[0] else f"EdgeVector/{args.repo[0]}"
+    number = args.pr
+    out: dict[str, Any] = {"repo": repo, "number": number, "applied": bool(args.apply)}
+    point = forge_get(f"repos/{repo}/pulls/{number}")
+    if point.get("merged"):
+        return {**out, "verdict": "merged", "merge_commit_sha": point.get("merge_commit_sha") or ""}
+    if point.get("state") != "open":
+        return {**out, "verdict": "closed"}
+    if point.get("draft"):
+        return {**out, "verdict": "draft"}
+    if point.get("mergeable") is False:
+        return {**out, "verdict": "conflict"}
+    head = (point.get("head") or {}).get("sha") or ""
+    base_ref = (point.get("base") or {}).get("ref") or "main"
+    required = required_contexts(repo, base_ref)
+    doc = forge_get(f"repos/{repo}/commits/{head}/status")
+    verdict, red = required_verdict(context_states(doc), required)
+    out.update({"head_sha": head, "required": required, "checks": verdict, "red_contexts": red})
+    if verdict != "green":
+        return {**out, "verdict": verdict}
+    armed, armed_at = schedule_state(repo, number)
+    green_at = green_since(doc, required)
+    out.update({"armed": armed, "armed_at": iso(armed_at) if armed_at else "",
+                "green_at": iso(green_at) if green_at else ""})
+    if not armed and not args.arm:
+        # Nobody asked for a merge (e.g. "proof in flight - do not arm").
+        return {**out, "verdict": "green-not-armed"}
+    if armed:
+        stamps = [t for t in (armed_at, green_at) if t]
+        since = max(stamps) if stamps else None
+        idle = int((now_utc() - since).total_seconds()) if since else None
+        out["armed_green_idle_sec"] = idle
+        if idle is not None and idle < args.grace_sec:
+            return {**out, "verdict": "armed-green-wait"}
+    if not args.apply:
+        return {**out, "verdict": "would-merge"}
+    # Forgejo 15.0.3 only evaluates a scheduled auto-merge on a NEW commit-status
+    # event. A schedule armed after the last required status went green never
+    # fires (papercut-forgejo-auto-merge-armed-after-green-never-fires-20260923;
+    # schema-infra PR 7 and 8 on 2026-09-23). Cancel the schedule and merge
+    # directly: branch protection still enforces the required checks on the
+    # merge call, so this cannot bypass the gate.
+    cancelled = False
+    if armed:
+        cancelled = forge_write("DELETE", f"repos/{repo}/pulls/{number}/merge").returncode == 0
+    body = json.dumps({"Do": args.style, "delete_branch_after_merge": True})
+    proc = forge_write("POST", f"repos/{repo}/pulls/{number}/merge", body)
+    out["merge_rc"] = proc.returncode
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout).strip()[:300]
+        if cancelled:
+            # Keep the owner's intent: re-arm what we cancelled.
+            forge_write("POST", f"repos/{repo}/pulls/{number}/merge",
+                        json.dumps({"Do": args.style, "merge_when_checks_succeed": True,
+                                    "delete_branch_after_merge": True}))
+        # 405 with green checks is the stuck status-check task
+        # (papercut-forge-merge-405-stuck-status-check): heal with an empty commit.
+        return {**out, "verdict": "merge-405" if "405" in err else "merge-failed", "error": err}
+    after = forge_get(f"repos/{repo}/pulls/{number}")
+    if after.get("merged"):
+        return {**out, "verdict": "merged-now", "merge_commit_sha": after.get("merge_commit_sha") or ""}
+    return {**out, "verdict": "merge-unconfirmed"}
+
+
+def merge_green(args: argparse.Namespace) -> dict[str, Any]:
+    """Bounded "merge when green" fallback for Forgejo native auto-merge.
+
+    Polls (with sleep) up to --wait-sec while the required checks are pending
+    or an armed green PR is inside --grace-sec, then merges an ARMED green PR
+    directly. It never merges a PR that nobody armed unless --arm is passed.
+    """
+    deadline = time.monotonic() + max(0, args.wait_sec)
+    report: dict[str, Any] = {"checked_at": iso(now_utc()), "prs": [], "unreadable": []}
+    while True:
+        try:
+            result = merge_green_once(args)
+        except ForgeError as exc:
+            result = {"repo": args.repo[0], "number": args.pr, "verdict": "unreadable", "error": str(exc)[:300]}
+        if result["verdict"] not in {"pending", "absent", "armed-green-wait"} or time.monotonic() >= deadline:
+            break
+        time.sleep(max(1, min(args.poll_sec, int(deadline - time.monotonic()) or 1)))
+    report["merge_green"] = result
+    return report
+
+
 def print_text(report: dict[str, Any]) -> None:
+    mg = report.get("merge_green")
+    if mg:
+        print("\t".join(str(x) for x in (
+            "merge-green", mg.get("repo"), mg.get("number"), mg.get("verdict"),
+            f"checks={mg.get('checks', '-')}", f"armed={mg.get('armed', '-')}",
+            f"merge={mg.get('merge_commit_sha') or '-'}", mg.get("error", "") or "",
+        )).rstrip("\t"))
+        return
     print(f"checked_at={report['checked_at']} stuck={report['stuck']} unreadable={len(report['unreadable'])}")
     for pr in report["prs"]:
         req = ",".join(f"{c.split(' / ')[-1]}={s}" for c, s in pr["required"].items())
@@ -761,12 +908,31 @@ def main() -> int:
                 "--owner-fresh-min", type=int, default=120,
                 help="skip a PR whose kanban/<slug> card is in doing, assigned, and updated this recently (0 = never skip)",
             )
+    mg = sub.add_parser(
+        "merge-green",
+        help="bounded merge-when-green fallback for one Forgejo PR (native auto-merge armed after green never fires)",
+    )
+    mg.add_argument("--repo", action="append", required=True, help="owner/name")
+    mg.add_argument("--pr", type=int, required=True)
+    mg.add_argument("--apply", action="store_true", help="merge (default: report would-merge)")
+    mg.add_argument("--arm", action="store_true", help="also merge a green PR that has no auto-merge schedule")
+    mg.add_argument("--grace-sec", type=int, default=90,
+                    help="give native auto-merge this long after arm/green before merging directly")
+    mg.add_argument("--wait-sec", type=int, default=0, help="poll up to this long while pending (bounded)")
+    mg.add_argument("--poll-sec", type=int, default=30)
+    mg.add_argument("--style", default="merge", choices=["merge", "rebase", "rebase-merge", "squash"])
+    mg.add_argument("--json", action="store_true", dest="json_out")
     args = parser.parse_args()
-    report = {"scan": scan, "sync": sync, "reap-plan": reap_plan}[args.cmd](args)
+    report = {"scan": scan, "sync": sync, "reap-plan": reap_plan, "merge-green": merge_green}[args.cmd](args)
     if args.json_out:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
         print_text(report)
+    if args.cmd == "merge-green":
+        verdict = report["merge_green"]["verdict"]
+        if verdict in {"merged", "merged-now", "would-merge", "green-not-armed", "armed-green-wait", "pending", "absent", "draft"}:
+            return 0
+        return 3 if verdict == "unreadable" else 1
     if report["unreadable"] and not report["prs"]:
         return 3
     return 0

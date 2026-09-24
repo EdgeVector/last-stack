@@ -180,7 +180,24 @@ is missing or pending with no update for more than 10 minutes; or merge returns
 Advance a Forgejo PR with the normal merge API, not `lastgit cr merge`.
 HTTP 409 `pull request is already scheduled to auto merge when checks succeed`
 means auto-merge is already armed: a success receipt, not an error. Do not
-retry it and do not file it. Report
+retry it and do not file it.
+
+An ARMED PR whose required check is already green can stay open forever:
+Forgejo 15.0.3 evaluates a scheduled auto-merge only on a new status event, so
+a schedule armed after the last green status never fires
+(`papercut-forgejo-auto-merge-armed-after-green-never-fires-20260923`). For
+each `green-unmerged` PR from the scan, run the bounded fallback. It merges
+only a PR that is armed (timeline `pull_scheduled_merge`), only after a 90s
+grace, and it re-arms the schedule if the direct merge fails:
+
+```bash
+"$timeout_bin" 120s "$last_stack/bin/last-stack-pipeline-forge-pr-ledger" \
+  merge-green --repo "EdgeVector/$repo" --pr "$number" --apply || true
+# merged-now = healed · green-not-armed = leave it (owner did not arm)
+# merge-405 = stuck status task: empty-commit heal below
+```
+
+Report
 Forgejo counts in the heartbeat as `forge_stuck=<n>` alongside `stuck=<n>`.
 
 ### 2. Prefer complete-only first
