@@ -48,7 +48,8 @@ pauses their live registry entries.
 
 ## Promote material and the automatic publish
 
-On a green quiet window (24 h, v2 verdict) the reconciler runs
+On a green quiet window (1 h since 2026-09-24, was 24 h; v2 verdict;
+`LAST_STACK_CANARY_V2_WINDOW_SECONDS` overrides) the reconciler runs
 `last-stack-canary-promote-material`. It writes
 `~/.local/state/last-stack/canary-promote/<date>/PROMOTE.md` with the node
 build and the `next` rows proved with it, then runs:

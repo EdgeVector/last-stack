@@ -5,7 +5,7 @@
 # the primary's build string. Writes PROMOTE.md — the node build and the
 # `next` rows proved with it — then PUBLISHES: since 2026-09-21
 # (decision-2026-09-21-stable-publish-is-automatic-on-green, Tom) a green
-# 24 h quiet window is the stable decision. `last-stack-release-publish
+# quiet window (1 h since 2026-09-24; 24 h before) is the stable decision. `last-stack-release-publish
 # --if-needed` refuses a build with no proved `next` rows, skips halves that
 # are already public, and moves brew stable and the registry `stable` rows
 # together. LAST_STACK_RELEASE_AUTO_PUBLISH=0 turns this back into
@@ -73,7 +73,7 @@ cat >"$out" <<EOF
 # LastDB release candidate — ready to publish
 
 - Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)
-- Node build: \`$candidate\` (the primary ran it through the 24 h quiet window; verdict green)
+- Node build: \`$candidate\` (the primary held the quiet window; verdict green)
 - Registry \`next\` rows proved with this build: $row_count
 
 ## Proved app rows (\`next\`)

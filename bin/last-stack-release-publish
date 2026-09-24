@@ -20,7 +20,7 @@ copy, and prints what the two PRs would carry.
 
 Since 2026-09-21 (decision-2026-09-21-stable-publish-is-automatic-on-green,
 Tom) the hourly reconciler runs this with `--if-needed` when a candidate's
-24 h quiet window is green: a build whose rows are already on `stable`
+quiet window (1 h since 2026-09-24) is green: a build whose rows are already on `stable`
 publishes nothing, a build with no `next` rows (nothing proved) is refused,
 and each half (brew, registry) is skipped when it is already done. A human
 can still run it by hand; the flags are the same.
