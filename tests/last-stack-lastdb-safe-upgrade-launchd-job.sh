@@ -65,6 +65,16 @@ case "${1:-}" in
     [ -n "$loaded_file" ] && rm -f "$loaded_file"
     exit 0
     ;;
+  kill)
+    # `launchctl kill SIG service`: signal the fake job process, if any.
+    if [ -n "${FAKE_KILL_PID:-}" ]; then
+      case "${2:-}" in
+        SIGKILL) kill -KILL "$FAKE_KILL_PID" 2>/dev/null ;;
+        *) [ "${FAKE_KILL_IGNORE_TERM:-0}" = "1" ] || kill -TERM "$FAKE_KILL_PID" 2>/dev/null ;;
+      esac
+    fi
+    exit 0
+    ;;
   bootstrap)
     if [ -e "${FAKE_BOOTOUT_PENDING_FILE:-/nonexistent}" ]; then
       printf 'EARLY_BOOTSTRAP\n' >>"$FAKE_LAUNCHCTL_LOG"
@@ -453,8 +463,73 @@ grep -q 'PRIMARY_EXIT_TIMEOUT_SECS="${LASTDB_PRIMARY_EXIT_TIMEOUT_SECS:-150}"' "
   || { echo "FAIL: driver must default the primary ExitTimeOut to 150 s" >&2; exit 1; }
 grep -A2 '^  ensure_primary_launchd_rss_limit$' "$DRIVER" | grep -q 'ensure_primary_launchd_exit_timeout' \
   || { echo "FAIL: driver must stamp ExitTimeOut before the sidebin job reload" >&2; exit 1; }
-grep -B5 'lastdb_launchd_reload_job \\' "$DRIVER" | grep -q 'warn_loaded_exit_timeout_short' \
+grep -B8 'lastdb_launchd_reload_job \\' "$DRIVER" | grep -q 'warn_loaded_exit_timeout_short' \
   || { echo "FAIL: driver must warn about a short loaded exit timeout before bootout" >&2; exit 1; }
+
+# --- Graceful pre-stop: short loaded exit timeout -> SIGTERM + full wait ------
+prog="$TMP/prestop/lastdbd"
+mkdir -p "$TMP/prestop"
+printf '#!/bin/sh\nexit 0\n' >"$prog"; chmod +x "$prog"
+: >"$FAKE_LOADED_FILE"; : >"$FAKE_LAUNCHCTL_LOG"
+# A fake old daemon that exits on SIGTERM after a short drain.
+( trap 'sleep 1; exit 0' TERM; while :; do sleep 0.2; done ) &
+fake_pid=$!
+out="$(FAKE_PRINT_EXIT_TIMEOUT=5 FAKE_PRINT_PID=$fake_pid FAKE_KILL_PID=$fake_pid \
+  lastdb_launchd_graceful_prestop "$TMP/launchctl" gui/501/com.test.lastdbd "$prog" 20 150)"
+grep -q '^LASTDB_LAUNCHD_PRESTOP=ok .* forced_kill=0$' <<<"$out" \
+  || { echo "FAIL: graceful pre-stop did not report ok: $out" >&2; exit 1; }
+kill -0 "$fake_pid" 2>/dev/null && { echo "FAIL: old daemon still alive after pre-stop" >&2; exit 1; }
+[ -x "$prog" ] && [ ! -e "$prog.prestop-hold" ] \
+  || { echo "FAIL: pre-stop must put the program back" >&2; exit 1; }
+[ ! -e "$FAKE_LOADED_FILE" ] \
+  || { echo "FAIL: pre-stop must leave the job unloaded for the reload" >&2; exit 1; }
+grep -q '^kill SIGTERM gui/501/com.test.lastdbd$' "$FAKE_LAUNCHCTL_LOG" \
+  || { echo "FAIL: pre-stop must SIGTERM via launchctl kill" >&2; exit 1; }
+if grep -q '^kill SIGKILL' "$FAKE_LAUNCHCTL_LOG"; then
+  echo "FAIL: a daemon that exits inside the window must not be SIGKILLed" >&2; exit 1
+fi
+# The reload after the pre-stop bootstraps the new definition.
+reload_out="$(lastdb_launchd_reload_job "$TMP/launchctl" gui/501 com.test.lastdbd "$TMP/primary.plist")"
+grep -q 'LASTDB_LAUNCHD_RELOAD=ok' <<<"$reload_out" \
+  || { echo "FAIL: reload after pre-stop did not load the job: $reload_out" >&2; exit 1; }
+
+# A daemon that ignores SIGTERM is SIGKILLed only after the full wait.
+: >"$FAKE_LOADED_FILE"; : >"$FAKE_LAUNCHCTL_LOG"
+( trap '' TERM; while :; do sleep 0.2; done ) &
+fake_pid=$!
+out="$(FAKE_PRINT_EXIT_TIMEOUT=5 FAKE_PRINT_PID=$fake_pid FAKE_KILL_PID=$fake_pid \
+  lastdb_launchd_graceful_prestop "$TMP/launchctl" gui/501/com.test.lastdbd "$prog" 2 150)"
+grep -q '^LASTDB_LAUNCHD_PRESTOP=ok .* waited_s=2 forced_kill=1$' <<<"$out" \
+  || { echo "FAIL: a hung drain must be SIGKILLed after the wait: $out" >&2; exit 1; }
+[ -x "$prog" ] || { echo "FAIL: program not restored after forced stop" >&2; exit 1; }
+
+# A loaded job that already has the full window: no pre-stop.
+: >"$FAKE_LOADED_FILE"; : >"$FAKE_LAUNCHCTL_LOG"
+out="$(FAKE_PRINT_EXIT_TIMEOUT=150 lastdb_launchd_graceful_prestop "$TMP/launchctl" gui/501/com.test.lastdbd "$prog" 20 150)"
+grep -q '^LASTDB_LAUNCHD_PRESTOP=skipped reason=loaded-exit-timeout-ok' <<<"$out" \
+  || { echo "FAIL: full loaded window must skip the pre-stop: $out" >&2; exit 1; }
+[ -e "$FAKE_LOADED_FILE" ] || { echo "FAIL: skipped pre-stop must not unload the job" >&2; exit 1; }
+
+# A failed SIGTERM restores the program and leaves the job loaded.
+cat >"$TMP/launchctl-killfail" <<STUB2
+#!/usr/bin/env bash
+[ "\${1:-}" = kill ] && exit 3
+exec "$TMP/launchctl" "\$@"
+STUB2
+chmod +x "$TMP/launchctl-killfail"
+( trap 'exit 0' TERM; while :; do sleep 0.2; done ) &
+fake_pid=$!
+if FAKE_PRINT_EXIT_TIMEOUT=5 FAKE_PRINT_PID=$fake_pid \
+  lastdb_launchd_graceful_prestop "$TMP/launchctl-killfail" gui/501/com.test.lastdbd "$prog" 5 150 >/dev/null 2>&1; then
+  echo "FAIL: a failed SIGTERM must fail the pre-stop" >&2; exit 1
+fi
+kill "$fake_pid" 2>/dev/null || true
+[ -x "$prog" ] && [ ! -e "$prog.prestop-hold" ] \
+  || { echo "FAIL: failed pre-stop must restore the program" >&2; exit 1; }
+[ -e "$FAKE_LOADED_FILE" ] || { echo "FAIL: failed pre-stop must leave the job loaded" >&2; exit 1; }
+grep -B3 'assert_sidebin_installed_hashes_or_restore "pre-reload sidebin pair"' "$DRIVER" \
+  | grep -q 'graceful_prestop_old_primary' \
+  || { echo "FAIL: driver must run the graceful pre-stop before the pre-reload hash check" >&2; exit 1; }
 
 # PlistBuddy round trip on a scratch plist (macOS only).
 if [ -x /usr/libexec/PlistBuddy ]; then

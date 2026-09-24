@@ -329,6 +329,16 @@ bounded 503 during a worker gap. The safe-upgrade receipt remains mandatory.
       before it dies. An unloaded primary is a total factory outage, not a log
       line.
 
+15b. **Graceful pre-stop under a short loaded exit timeout.** Only a job
+    reload loads the stamped `ExitTimeOut` (150 s), and the reload is the stop.
+    So when the LOADED job still has a shorter window, the driver stops the old
+    daemon first: it moves the program path aside so KeepAlive cannot respawn,
+    sends `launchctl kill SIGTERM`, waits up to `PRIMARY_EXIT_TIMEOUT_SECS`
+    (`LASTDB_PRIMARY_GRACEFUL_STOP_WAIT_SECS`), SIGKILLs only after that wait,
+    boots the job out with no process, and puts the program back. The reload
+    then bootstraps the new definition. Log key: `LASTDB_LAUNCHD_PRESTOP`.
+    Brain: `papercut-lastdbd-primary-launchagent-exit-timeout-5s-sigkills-shutdown-drain-20260924`.
+
 16. **Leftover socket is not up.** After `bootout`, a leftover `folddb.sock`
     inode still passes `[ -S sock ]` with no listener. Waiting only for the
     inode reports `socket up after 0s`, then the live `/health` poll spends

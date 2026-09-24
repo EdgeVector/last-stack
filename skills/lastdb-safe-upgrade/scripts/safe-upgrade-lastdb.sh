@@ -1349,6 +1349,33 @@ warn_loaded_exit_timeout_short() {
   fi
 }
 
+# A short LOADED exit timeout cannot change without a reload, and the reload
+# is the stop. So stop the old daemon first with launchctl kill SIGTERM and
+# the full PRIMARY_EXIT_TIMEOUT_SECS window, while its program path is held
+# aside so KeepAlive cannot respawn it. A failure falls back to the plain
+# reload (the old behavior) after the program is back in place.
+graceful_prestop_old_primary() {
+  local service="$1" program="$2" plist_program="" out="" rc=0 line=""
+  plist_program="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$LAUNCHD_PLIST" 2>/dev/null || true)"
+  if [ "$plist_program" != "$program" ]; then
+    warn "graceful pre-stop skipped: plist program '${plist_program:-unset}' is not $program"
+    return 0
+  fi
+  set +e
+  out="$(lastdb_launchd_graceful_prestop launchctl "$service" "$program" \
+    "${LASTDB_PRIMARY_GRACEFUL_STOP_WAIT_SECS:-$PRIMARY_EXIT_TIMEOUT_SECS}" \
+    "$PRIMARY_EXIT_TIMEOUT_SECS" 2>&1)"
+  rc=$?
+  set -e
+  while IFS= read -r line; do
+    [ -n "$line" ] && log "$line"
+  done <<< "$out"
+  if [ "$rc" -ne 0 ]; then
+    warn "graceful pre-stop failed (rc=$rc); the job reload stops the old daemon with its loaded exit timeout"
+  fi
+  return 0
+}
+
 # Version parity cannot detect replacement bytes that report the same version.
 # Every sidebin copy must match the immutable Loom hashes.
 sidebin_pair_hashes_match_expected() {
@@ -1504,6 +1531,7 @@ live_install_sidebin() {
   uid="$(id -u)"
   warn_loaded_exit_timeout_short "gui/${uid}/${LAUNCHD_LABEL}"
   CUTOVER_T0="$(date +%s)"
+  graceful_prestop_old_primary "gui/${uid}/${LAUNCHD_LABEL}" "$dest/lastdbd"
   assert_sidebin_installed_hashes_or_restore "pre-reload sidebin pair"
   write_cutover_recovery_state "sidebin-reload-started" true
   if ! lastdb_launchd_reload_job \
