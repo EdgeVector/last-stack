@@ -51,6 +51,13 @@ ALLOWED = {
     "promoted": set(),
 }
 
+# The v2 quiet window a primary build must hold before the reconciler promotes
+# it to stable. Tom set it to 1 h on 2026-09-24 (was 24 h since 2026-09-21):
+# there are no external users yet, and a daily release loop that needs a full
+# day of soak after every cutover cannot prove itself more than once a day.
+# LAST_STACK_CANARY_V2_WINDOW_SECONDS still overrides it.
+DEFAULT_V2_WINDOW_SECONDS = 60 * 60.0
+
 # Default launchd uses LASTDB_LAUNCHD_LABEL from host env (never embed a personal
 # username in committed defaults — machine-leak gate). Sidebin primary is typically
 # not brew com.edgevector.lastdbd; set LASTDB_LAUNCHD_LABEL on the host.
@@ -1199,7 +1206,7 @@ def reconcile(path: Path, args: argparse.Namespace) -> dict:
     now = parse_required_ts(args.at, "reconciliation timestamp") if args.at else dt.datetime.now(dt.timezone.utc)
     window_seconds = args.window_seconds
     if window_seconds is None:
-        window_seconds = env_float("LAST_STACK_CANARY_V2_WINDOW_SECONDS", 24 * 60 * 60.0)
+        window_seconds = env_float("LAST_STACK_CANARY_V2_WINDOW_SECONDS", DEFAULT_V2_WINDOW_SECONDS)
     if window_seconds < 0:
         die("window seconds must be non-negative", 2)
     cause_policy = normalise_cause_policy(args.cause_policy)
@@ -1298,7 +1305,7 @@ def channel_state(path: Path, args: argparse.Namespace) -> dict:
     now = parse_required_ts(args.at, "channel timestamp") if args.at else dt.datetime.now(dt.timezone.utc)
     window_seconds = args.window_seconds
     if window_seconds is None:
-        window_seconds = env_float("LAST_STACK_CANARY_V2_WINDOW_SECONDS", 24 * 60 * 60.0)
+        window_seconds = env_float("LAST_STACK_CANARY_V2_WINDOW_SECONDS", DEFAULT_V2_WINDOW_SECONDS)
     if window_seconds < 0:
         die("window seconds must be non-negative", 2)
 

@@ -158,6 +158,26 @@ timeout_out="$(run_gate timeout fixture-timeout)"
 printf '%s\n' "$timeout_out" | grep -q 'verdict=red subject=build action=heal'
 
 # The source itself must never drive a Loom graph or write a wait/resume marker.
+# The default quiet window is 1 h (Tom, 2026-09-24; was 24 h). With no
+# LAST_STACK_CANARY_V2_WINDOW_SECONDS, a boot 30 min old is still soaking and a
+# boot 2 h old is green. Boot fixture: 2026-09-01T00:00:00Z.
+run_gate_default_window() {
+  LAST_STACK_CANARY_PIPELINE_DIR="$tmp/$1" \
+  LAST_STACK_CANARY_V2_CANDIDATE=vcanary \
+  LAST_STACK_CANARY_V2_BOOT_LEDGER_CMD="printf '%s\\n' '$boot_rows'" \
+  LAST_STACK_CANARY_V2_STATUS_CHECK_CMD=true \
+  LAST_STACK_CANARY_V2_HOST_CHECK_CMD=true \
+  LAST_STACK_CANARY_V2_AT="$2" \
+  ROUTINES_RUN_DIR="$tmp/run-$1" \
+    env -u LAST_STACK_CANARY_V2_WINDOW_SECONDS "$GATE"
+}
+early_out="$(run_gate_default_window default-early '2026-09-01T00:30:00Z')"
+printf '%s\n' "$early_out" | grep -q 'verdict=window-open subject=none action=wait-next-check' \
+  || { printf 'default window: a 30 min boot must still soak: %s\n' "$early_out" >&2; exit 1; }
+late_out="$(run_gate_default_window default-late '2026-09-01T02:00:00Z')"
+printf '%s\n' "$late_out" | grep -q 'verdict=green subject=none action=promote-eligible' \
+  || { printf 'default window: a 2 h boot must be green: %s\n' "$late_out" >&2; exit 1; }
+
 if rg -n 'SOAK_WAIT|last-stack-canary-loom|last-stack-canary-red-loom|resume_key|active_execution' \
   "$GATE"; then
   echo 'the v2 gate still contains legacy Loom state' >&2

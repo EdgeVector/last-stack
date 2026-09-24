@@ -8,7 +8,7 @@ export PATH="${HOME}/.local/bin:${ROOT}/bin:${PATH:-/usr/bin:/bin}"
 pipeline="${LAST_STACK_CANARY_V2_PIPELINE:-${ROOT}/bin/last-stack-canary-pipeline}"
 run_dir="${ROUTINES_RUN_DIR:-${TMPDIR:-/tmp}}"
 evidence="${LAST_STACK_CANARY_V2_GATE_EVIDENCE:-${run_dir}/canary-v2-gate.out}"
-window_seconds="${LAST_STACK_CANARY_V2_WINDOW_SECONDS:-86400}"
+window_seconds="${LAST_STACK_CANARY_V2_WINDOW_SECONDS:-3600}"
 status_command="${LAST_STACK_CANARY_V2_STATUS_CHECK_CMD:-}"
 host_command="${LAST_STACK_CANARY_V2_HOST_CHECK_CMD:-situations preflight --action lastdb-safe-upgrade}"
 
