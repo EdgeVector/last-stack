@@ -227,7 +227,12 @@ def is_rotator_trigger(text):
 def is_miner_trigger(text):
     if "session-miner" not in text:
         return False
-    if "profile=" in text:
+    # A thin trigger passes profile= as its own input line
+    # (routines/revenant-watch.md: "profile=revenant-watch"). A sentence that
+    # only mentions profile= does not make a routine a trigger: with a
+    # substring match, self-improvement-loop.md counted and the proof printed
+    # a false PASS-OFFLINE (Loom review p1 on last-stack#166).
+    if re.search(r"(?m)^\s*profile=\S", text):
         return True
     return "Follow the **session-miner** skill" in text
 
