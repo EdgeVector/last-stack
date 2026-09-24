@@ -323,9 +323,28 @@ if [ "$status" != "succeeded" ] && [ -n "$execution" ]; then
   esac
   readback_deadline=$((SECONDS + readback_wait_secs))
   running_deadline=$((SECONDS + running_wait_secs))
+  # Once the execution has read `running`, an unreadable execution is still a
+  # running one: the CUTOVER effect stops the old primary (graceful drain up to
+  # 150 s), so `loom show` has no node to answer it. Measured 2026-09-24 16:17Z:
+  # the empty reads ran the 30 s readback deadline out, the wrapper exited 3
+  # two seconds before the new daemon came up, the routine's process tree was
+  # torn down, and VERIFY and the post-check never ran on a cutover that
+  # landed. Only the running budget may end that wait.
+  seen_running=0
+  [ "$status" = "running" ] && seen_running=1
   while :; do
     readback="$(loom show "$execution" 2>/dev/null || true)"
     readback_status="$(printf '%s\n' "$readback" | awk -F': ' '/^status:/{print $2; exit}')"
+    if [ -z "$readback_status" ] && [ "$seen_running" -eq 1 ]; then
+      if [ "$SECONDS" -ge "$running_deadline" ]; then
+        printf 'last-stack-safe-upgrade-loom: %s unreadable after %ss (last read running); reporting non-green\n' \
+          "$execution" "$running_wait_secs" >&2
+        break
+      fi
+      sleep 2
+      continue
+    fi
+    [ "$readback_status" = "running" ] && seen_running=1
     if [ "$readback_status" = "succeeded" ]; then
       view="$readback"
       loom_rc=0

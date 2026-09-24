@@ -34,6 +34,16 @@ case "${1:-}" in
     exit 3
     ;;
   show)
+    # Optional: fail the first N reads (the primary is restarting under the
+    # CUTOVER effect, so there is no node to answer). Counts down in a file.
+    if [ -n "${LOOM_FAKE_UNREADABLE_READS:-}" ] && [ -f "${LOOM_FAKE_UNREADABLE_READS}" ]; then
+      left="$(cat "$LOOM_FAKE_UNREADABLE_READS")"
+      if [ "$left" -gt 0 ]; then
+        echo $((left - 1)) >"$LOOM_FAKE_UNREADABLE_READS"
+        echo 'loom: node not reachable' >&2
+        exit 1
+      fi
+    fi
     # Optional: stay `running` for the first N reads (VERIFY after a live
     # cutover), then succeed. LOOM_FAKE_RUNNING_READS counts down in a file.
     if [ -n "${LOOM_FAKE_RUNNING_READS:-}" ] && [ -f "${LOOM_FAKE_RUNNING_READS}" ]; then
@@ -102,6 +112,48 @@ out="$(
 printf '%s\n' "$out" | jq -e '.outcome == "ok" and .status == "succeeded" and .state == "DONE"' >/dev/null \
   || { printf 'FAIL: a still-running execution that then succeeds must read as ok: %s\n' "$out" >&2; exit 1; }
 [ "$(cat "$counter")" = 0 ] || { echo "FAIL: the wrapper did not wait through the running reads" >&2; exit 1; }
+
+# `loom run` came back `running`, then the node restarts under the CUTOVER
+# effect and `loom show` fails for longer than the readback window (measured
+# 2026-09-24 16:17Z as a false red). An unreadable running execution is still
+# running: the wrapper must wait it out under the running budget.
+unreadable="$tmp/unreadable-reads"
+echo 3 >"$unreadable"
+out="$(
+  HOME="$mock_home" \
+  PATH="$fake_bin:$PATH" \
+  LOOM_FAKE_UNREADABLE_READS="$unreadable" \
+  LASTDB_SAFE_UPGRADE_FOLD_GIT_DIR="$repo" \
+  LASTDB_SAFE_UPGRADE_LOOM_READBACK_SECS=1 \
+  LASTDB_SAFE_UPGRADE_LOOM_RUNNING_SECS=60 \
+  "$ROOT/bin/last-stack-safe-upgrade-loom" \
+    --candidate "$candidate/lastdbd" \
+    --source-git-oid "$oid" \
+    --json
+)"
+printf '%s\n' "$out" | jq -e '.outcome == "ok" and .status == "succeeded" and .state == "DONE"' >/dev/null \
+  || { printf 'FAIL: reads lost to a primary restart must not end the wait: %s\n' "$out" >&2; exit 1; }
+[ "$(cat "$unreadable")" = 0 ] || { echo "FAIL: the wrapper did not wait through the unreadable reads" >&2; exit 1; }
+
+# An execution that stays unreadable past the running budget is non-green.
+echo 1000 >"$unreadable"
+set +e
+out="$(
+  HOME="$mock_home" \
+  PATH="$fake_bin:$PATH" \
+  LOOM_FAKE_UNREADABLE_READS="$unreadable" \
+  LASTDB_SAFE_UPGRADE_FOLD_GIT_DIR="$repo" \
+  LASTDB_SAFE_UPGRADE_LOOM_READBACK_SECS=1 \
+  LASTDB_SAFE_UPGRADE_LOOM_RUNNING_SECS=3 \
+  "$ROOT/bin/last-stack-safe-upgrade-loom" \
+    --candidate "$candidate/lastdbd" \
+    --source-git-oid "$oid" \
+    --json
+)"
+rc=$?
+set -e
+[ "$rc" -eq 3 ] || { echo "FAIL: an execution unreadable past the budget must exit 3, got $rc" >&2; exit 1; }
+echo 0 >"$unreadable"
 
 # A running execution that never finishes inside the running budget is non-green.
 echo 1000 >"$counter"
