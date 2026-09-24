@@ -68,6 +68,101 @@ lastdb_launchd_wait_unloaded() {
   fi
 }
 
+lastdb_launchd_graceful_prestop() {
+  # Stop the OLD daemon with the full drain window when the LOADED job still
+  # carries a short exit timeout. A bootout uses the loaded value, and only a
+  # bootout can load the new ExitTimeOut, so the first cutover after the plist
+  # stamp would SIGKILL the old daemon 5 s into its drain (2026-09-24,
+  # papercut-lastdbd-primary-launchagent-exit-timeout-5s-sigkills-shutdown-drain-20260924).
+  #
+  # Method: move the job's program aside so a KeepAlive respawn cannot exec,
+  # send SIGTERM with `launchctl kill` (launchd applies no exit timeout to it),
+  # wait up to <wait-secs> for the pid to exit, SIGKILL only after that, boot
+  # the job out while no process runs, then put the program back. The caller's
+  # job reload then finds the job unloaded and bootstraps the new definition.
+  #
+  # Args: launchctl-bin service program wait-secs want-exit-timeout
+  # Prints LASTDB_LAUNCHD_PRESTOP=<skipped|ok|failed> ...
+  local launchctl_bin="$1" service="$2" program="$3" wait_secs="$4" want="$5"
+  local loaded="" pid="" hold="" elapsed=0 forced=0 kill_wait=0
+  case "$wait_secs" in ''|*[!0-9]*) printf 'invalid graceful stop wait\n' >&2; return 1 ;; esac
+  case "$want" in ''|*[!0-9]*) printf 'invalid wanted exit timeout\n' >&2; return 1 ;; esac
+
+  loaded="$(lastdb_launchd_job_exit_timeout "$launchctl_bin" "$service")"
+  if [ -n "$loaded" ] && [ "$loaded" -ge "$want" ] 2>/dev/null; then
+    printf 'LASTDB_LAUNCHD_PRESTOP=skipped reason=loaded-exit-timeout-ok loaded_s=%s\n' "$loaded"
+    return 0
+  fi
+  pid="$(lastdb_launchd_job_pid "$launchctl_bin" "$service")"
+  if [ -z "$pid" ]; then
+    printf 'LASTDB_LAUNCHD_PRESTOP=skipped reason=no-process loaded_s=%s\n' "${loaded:-unset}"
+    return 0
+  fi
+  if [ ! -x "$program" ]; then
+    printf 'LASTDB_LAUNCHD_PRESTOP=failed step=program-missing program=%s\n' "$program" >&2
+    return 1
+  fi
+
+  hold="${program}.prestop-hold"
+  rm -f -- "$hold"
+  if ! mv -f -- "$program" "$hold"; then
+    printf 'LASTDB_LAUNCHD_PRESTOP=failed step=hold program=%s\n' "$program" >&2
+    return 1
+  fi
+  _lastdb_prestop_restore() {
+    [ -e "$hold" ] || return 0
+    mv -f -- "$hold" "$program"
+  }
+
+  if ! "$launchctl_bin" kill SIGTERM "$service"; then
+    _lastdb_prestop_restore
+    printf 'LASTDB_LAUNCHD_PRESTOP=failed step=sigterm service=%s pid=%s\n' "$service" "$pid" >&2
+    return 1
+  fi
+  printf 'LASTDB_LAUNCHD_PRESTOP=sigterm service=%s pid=%s loaded_s=%s wait_s=%s\n' \
+    "$service" "$pid" "${loaded:-unset}" "$wait_secs"
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$elapsed" -ge "$wait_secs" ]; then
+      forced=1
+      "$launchctl_bin" kill SIGKILL "$service" || kill -KILL "$pid" 2>/dev/null || true
+      while kill -0 "$pid" 2>/dev/null && [ "$kill_wait" -lt 15 ]; do
+        sleep 1
+        kill_wait=$((kill_wait + 1))
+      done
+      break
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    _lastdb_prestop_restore
+    printf 'LASTDB_LAUNCHD_PRESTOP=failed step=exit-wait pid=%s waited_s=%s\n' "$pid" "$elapsed" >&2
+    return 1
+  fi
+
+  # No process runs and a respawn cannot exec. Unload before the program
+  # returns, so KeepAlive never restarts the old definition.
+  if ! "$launchctl_bin" bootout "$service"; then
+    if lastdb_launchd_job_loaded "$launchctl_bin" "$service"; then
+      _lastdb_prestop_restore
+      printf 'LASTDB_LAUNCHD_PRESTOP=failed step=bootout service=%s\n' "$service" >&2
+      return 1
+    fi
+  fi
+  if ! lastdb_launchd_wait_unloaded "$launchctl_bin" "$service"; then
+    _lastdb_prestop_restore
+    printf 'LASTDB_LAUNCHD_PRESTOP=failed step=bootout-wait service=%s\n' "$service" >&2
+    return 1
+  fi
+  if ! _lastdb_prestop_restore; then
+    printf 'LASTDB_LAUNCHD_PRESTOP=failed step=restore program=%s hold=%s\n' "$program" "$hold" >&2
+    return 1
+  fi
+  printf 'LASTDB_LAUNCHD_PRESTOP=ok service=%s pid=%s waited_s=%s forced_kill=%s\n' \
+    "$service" "$pid" "$elapsed" "$forced"
+  return 0
+}
+
 lastdb_require_supervised_primary() {
   # GREEN bar for sidebin: launchctl print must succeed, the job must have a
   # pid, and that pid must be the live listener when a live pid is known.
