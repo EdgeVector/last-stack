@@ -229,6 +229,11 @@ A card that's meant to be implemented should carry, in its `--body`:
    absolute local Git checkout path; `Base`: base branch; `Branch`: optional,
    defaults to `kanban/<slug>`; `Kind`: `pr | tracker | validation | meta`
    for new cards (`registry` only for legacy registry-record cards).
+   Optional `Difficulty: fast | normal | hard` (Loom land-card v2, 2026-09-24):
+   IMPLEMENT and REVISE route at that tier of the routing matrix; REVIEW stays
+   `fast`. Omit it for a well-scoped card (default `fast`, the low quick
+   model). Set `hard` only for a card that a small model is likely to get
+   wrong. An unknown value falls back to `fast` with a PROGRESS line.
 
    > **⚠️ Keep each header value a single clean token on its own line.**
    > `kanban-pickup` resolves `Repo:` **literally** — it does NOT strip
