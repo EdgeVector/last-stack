@@ -27,7 +27,7 @@ RECORDED_RE = re.compile(
 )
 PR_RE = re.compile(r"/(?:pull|pulls)/(\d+)(?:\b|/)", re.IGNORECASE)
 LASTGIT_RE = re.compile(r"lastgit://([^/]+)/cr/([^/\s?#]+)", re.IGNORECASE)
-# Same markers fkanban pickup reads (`bodyDeclaredValidateOnly`): the card's
+# Same markers kanban pickup reads (`bodyDeclaredValidateOnly`): the card's
 # code already merged and only a post-merge END STATE is left. Such a card goes
 # to doing for the validate lane, never to todo, where pickup would claim it as
 # WORK and IMPLEMENT would fail on "agent produced no commit" (2026-09-24).

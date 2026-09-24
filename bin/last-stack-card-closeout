@@ -822,7 +822,7 @@ fi
 
 if [ "$end_state_warning" = "1" ]; then
   # Name the merged PR on the line: a later todo move clears the structured
-  # pr_url, and the re-open helper and fkanban pickup both read this line to
+  # pr_url, and the re-open helper and kanban pickup both read this line to
   # know the code already merged (a re-open that lost pr_url was claimed as
   # WORK on 2026-09-24 and IMPLEMENT failed on no-commit).
   closed_pr="${pr_url:-$effective_pr_url}"

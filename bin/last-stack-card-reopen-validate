@@ -20,7 +20,7 @@ This helper is the one re-open path for that case:
      validate lane (Pool A) owns a doing card with a merged PR.
   3. Re-stamp pr_url (and branch) through `kanban add` in doing.
   4. Write one `PROOF[reopened-end-state-unmet]:` line through
-     last-stack-kanban-mark-once. fkanban pickup refuses a card with that line.
+     last-stack-kanban-mark-once. kanban pickup refuses a card with that line.
   5. Read the card back. Fail when column or pr_url did not stick.
 
 Usage:

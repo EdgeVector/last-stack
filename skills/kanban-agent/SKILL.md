@@ -775,7 +775,7 @@ Scheduled entrypoint: routine `kanban-validate` /
    `last-stack-card-reopen-validate <slug> --reason '<unmet clause>'`. Never
    `kanban move` it to `todo`/`backlog`: todo is pickup WORK and clears
    `pr_url`, and pickup would claim merged code for IMPLEMENT (no-commit fail,
-   2026-09-24). fkanban pickup refuses a card with a `CLOSED-ON-MERGE`,
+   2026-09-24). kanban pickup refuses a card with a `CLOSED-ON-MERGE`,
    `PROOF[reopened-end-state-unmet]:` or `VALIDATE-ONLY:` line unless a later
    `REWORK:` line asks for new implementation work.
 5. **Unrelated blockers do not thrash.** If validation cannot run because a

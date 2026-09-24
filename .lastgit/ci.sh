@@ -836,4 +836,6 @@ ci_test tests/last-stack-north-star-proof-cloud-sync-resume.sh
 # No source delete. No production cutover.
 # APPENDED before the registration guard, which stays last.
 ci_test tests/last-stack-north-star-proof-schema-root-attribution.sh
+# Merged code re-opens into doing with its pr_url, never the todo WORK lane.
+ci_test tests/last-stack-card-reopen-validate.sh
 ci_test tests/last-stack-ci-test-registration.sh
