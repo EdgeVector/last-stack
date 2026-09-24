@@ -279,8 +279,12 @@ run_bun_install() {
 install_lastdb_browser() {
   local dest="$TARGET_DIR/lastdb-browser"
   echo "==> building lastdb-browser"
-  npm --prefix "$dest" ci --no-audit --no-fund
-  npm --prefix "$dest" run build
+  # Run npm inside the package, not with --prefix. With npm 11.19.1,
+  # `npm --prefix <dir> ci` fails on this lockfile from any working
+  # directory ("Missing: <dir-name>@0.1.0 from lock file"), while a plain
+  # `npm ci` in <dir> passes. It turned the 2026-09-24 canary smoke RED, so
+  # no registry row was proved for LastDB 2321 and kanban could not install.
+  (cd "$dest" && npm ci --no-audit --no-fund && npm run build)
   test -f "$dest/dist/index.html" || {
     echo "lastdb-browser build did not produce dist/index.html" >&2
     return 1

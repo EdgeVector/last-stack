@@ -106,13 +106,14 @@ chmod +x "$stubbin/bun"
 cat >"$stubbin/npm" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-if [ "$1" = "--prefix" ]; then
-  dest="$2"
-  shift 2
-else
-  echo "npm stub requires --prefix" >&2
+# npm 11.19.1 `npm --prefix <dir> ci` fails on the lastdb-browser lockfile
+# (2026-09-24 canary smoke RED). The installer must cd into the package.
+if [ "${1:-}" = "--prefix" ]; then
+  echo "npm stub: --prefix is not allowed; run npm inside the package" >&2
   exit 1
 fi
+test -f package.json || { echo "npm stub: no package.json in $PWD" >&2; exit 1; }
+dest="$PWD"
 case "$1" in
   ci)
     exit 0
