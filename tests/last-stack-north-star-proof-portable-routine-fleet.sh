@@ -29,7 +29,16 @@ export NORTH_STAR_PROOF_DIR="$PROOF_DIR"
 unset PORTABLE_FLEET_TEMPLATE_DIR PORTABLE_FLEET_ROUTINES_DIR \
   PORTABLE_FLEET_ROTATOR_SKILL PORTABLE_FLEET_MINER_SKILL || true
 
-"$BIN" --offline north-star-portable-routine-fleet >"$PROOF_DIR/run.out"
+# The live routines hold one thin session-miner trigger (revenant-watch); the
+# proof needs two. The positive path adds one fixture trigger so it tests the
+# harness logic. The real-repo verdict stays the North Star's own result.
+pos_routines="$NEG_DIR/pos-routines"
+mkdir -p "$pos_routines"
+cp "$ROOT/routines/"*.md "$pos_routines/"
+printf '%s\n' '---' 'name: fixture-miner-trigger' '---' 'Follow the **session-miner** skill.' '' 'profile=papercuts' \
+  >"$pos_routines/fixture-miner-trigger.md"
+PORTABLE_FLEET_ROUTINES_DIR="$pos_routines" \
+  "$BIN" --offline north-star-portable-routine-fleet >"$PROOF_DIR/run.out"
 report="$PROOF_DIR/north-star-portable-routine-fleet.md"
 [ -f "$report" ] || fail "missing report"
 head -1 "$report" | grep -qx 'PASS-OFFLINE' || fail "positive verdict is not PASS-OFFLINE"
@@ -91,6 +100,21 @@ if PORTABLE_FLEET_ROUTINES_DIR="$bad_routines" bash "$HARNESS" >"$NEG_DIR/trigge
 fi
 head -1 "$NORTH_STAR_PROOF_DIR/north-star-portable-routine-fleet.md" | grep -qx 'FAIL' \
   || fail "missing triggers did not write FAIL"
+
+# Cause removed: a routine that only MENTIONS profile= in a sentence is not a
+# thin trigger. Keep one real trigger plus one mention-only routine.
+mention_routines="$NEG_DIR/mention-routines"
+mkdir -p "$mention_routines"
+cp "$ROOT/routines/"*.md "$mention_routines/"
+printf '%s\n' '---' 'name: fixture-mention-only' '---' 'Use the `session-miner` skill with `profile=friction-patterns` for detail.' \
+  >"$mention_routines/fixture-mention-only.md"
+export NORTH_STAR_PROOF_DIR="$NEG_DIR/mention-only"
+mkdir -p "$NORTH_STAR_PROOF_DIR"
+if PORTABLE_FLEET_ROUTINES_DIR="$mention_routines" bash "$HARNESS" >"$NEG_DIR/mention.out"; then
+  fail "a profile= mention inside a sentence counted as a thin trigger"
+fi
+head -1 "$NORTH_STAR_PROOF_DIR/north-star-portable-routine-fleet.md" | grep -qx 'FAIL' \
+  || fail "mention-only routines did not write FAIL"
 
 # A primary LastDB path is refused before any read.
 export NORTH_STAR_PROOF_DIR="$NEG_DIR/primary"
