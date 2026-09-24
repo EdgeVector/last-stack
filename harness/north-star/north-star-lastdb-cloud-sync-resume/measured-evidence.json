@@ -6,50 +6,43 @@
     "primary_mutated": false,
     "primary_reenabled_by_harness": false,
     "live_cutover": false,
-    "home_path": "/private/tmp/csr-eph.FsT8LH"
+    "home_path": "/private/tmp/csr-measure.lujH3v"
   },
   "hash_group": {
-    "cow_document_count": 38,
-    "group_file_count": 2486,
-    "group_bytes_uploaded": 6518578,
+    "cow_document_count": 0,
+    "group_file_count": 0,
+    "group_bytes_uploaded": 0,
     "staging_object_count": 0,
-    "cow_proof_verdict": "PASS",
+    "cow_proof_verdict": "FAIL",
     "promoted": false,
     "source_unchanged": true
   },
   "probe": {
-    "upload_bytes": 6518578,
-    "upload_window_secs": 21,
+    "upload_bytes": 0,
+    "upload_window_secs": 2,
     "staging_growth_bytes": 0,
-    "backlog_start": 2486,
+    "backlog_start": 0,
     "backlog_end": 0,
-    "degraded": false,
-    "window_start": "2026-09-24T02:17:39Z",
-    "window_end": "2026-09-24T02:18:00Z"
+    "degraded": true,
+    "window_start": "2026-09-24T03:50:37Z",
+    "window_end": "2026-09-24T03:50:39Z"
   },
   "reenable": {
-    "situation_slug": "cloud-sync-paused-pending-laststore-redesign-20260719",
-    "situation_cleared_at": "2026-07-23T22:46:28Z",
-    "reenable_at": "2026-07-30T06:22:00Z",
-    "cleared_by": "Tom",
-    "reenable_actor": "Tom"
+    "situation_slug": "cloud-sync-paused-pending-laststore-redesign-20260719"
   },
   "catchup": {
     "staging_depth": 0,
-    "staging_cap": 8,
-    "primary_sync_lag_bytes": 0,
-    "brain_reads": 1,
-    "brain_writes": 1,
-    "kanban_reads": 1,
-    "kanban_writes": 1,
-    "lastgit_reads": 1,
-    "lastgit_writes": 1
+    "brain_reads": 0,
+    "brain_writes": 0,
+    "kanban_reads": 0,
+    "kanban_writes": 0,
+    "lastgit_reads": 0,
+    "lastgit_writes": 0
   },
   "file_blob": {
-    "upload_bytes": 27,
-    "fetch_bytes": 27,
-    "canary_sha256": "bcadd52f884de096c99e455c7f4045430862ff86f1eb3fc31b9b6057530244b1",
-    "upload_route": "upload_file_blob",
-    "fetch_route": "download_file_blob"
-  }
+    "upload_bytes": 0,
+    "fetch_bytes": 0,
+    "upload_route": "upload_file_blob"
+  },
+  "measurement_note": "Throwaway /private/tmp/csr-measure.lujH3v booted with cloud_sync false and Sync disabled. lastdb cloud snapshot returned HTTP 500. lastdb db put-file-blob returned HTTP 409 because cloud sync is not configured. csn_high_water is 0. No backup commit exists. download_file_blob did not run. The probe window is not PASS. This file does not claim Situation clearance or a re-enable."
 }
