@@ -33,9 +33,24 @@ lastdb_launchd_job_state() {
   '
 }
 
+lastdb_launchd_job_exit_timeout() {
+  # Parse `exit timeout = N` from `launchctl print`: the SIGTERM-to-SIGKILL
+  # window launchd gives the LOADED job. Empty when unloaded or not printed.
+  local launchctl_bin="$1" service="$2"
+  "$launchctl_bin" print "$service" 2>/dev/null | awk '
+    $1 == "exit" && $2 == "timeout" && $3 == "=" {
+      gsub(/;/, "", $4)
+      print $4
+      exit
+    }
+  '
+}
+
 lastdb_launchd_wait_unloaded() {
   local launchctl_bin="$1" service="$2"
-  local wait_secs="${LASTDB_LAUNCHD_BOOTOUT_WAIT_SECS:-30}" elapsed=0
+  # A graceful lastdbd stop drains persist lanes, stops sync, and flushes.
+  # The primary plist gives it ExitTimeOut 150 s, so the wait must exceed it.
+  local wait_secs="${LASTDB_LAUNCHD_BOOTOUT_WAIT_SECS:-180}" elapsed=0
   case "$wait_secs" in
     ''|*[!0-9]*) printf 'invalid launchd bootout wait\n' >&2; return 1 ;;
   esac

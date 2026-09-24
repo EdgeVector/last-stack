@@ -50,6 +50,9 @@ case "${1:-}" in
     if [ "${FAKE_OMIT_PID:-0}" != "1" ]; then
       printf '\tpid = %s\n' "${FAKE_PRINT_PID:-59155}"
     fi
+    if [ -n "${FAKE_PRINT_EXIT_TIMEOUT:-}" ]; then
+      printf '\texit timeout = %s\n' "$FAKE_PRINT_EXIT_TIMEOUT"
+    fi
     printf '}\n'
     exit 0
     ;;
@@ -435,5 +438,43 @@ grep -B2 'die "launchd job-definition reload failed' "$DRIVER" | grep -q 'page_h
   || { echo "FAIL: an UNLOADED primary must page before it dies" >&2; exit 1; }
 grep -q 'RA_BIN' "$DRIVER" \
   || { echo "FAIL: page_human must use the ra notify argv the fleet already uses" >&2; exit 1; }
+
+# --- Exit timeout: parse the loaded window; the driver stamps and warns ------
+: >"$FAKE_LOADED_FILE"
+got="$(FAKE_PRINT_EXIT_TIMEOUT=5 lastdb_launchd_job_exit_timeout "$TMP/launchctl" gui/501/com.test.lastdbd)"
+[ "$got" = "5" ] \
+  || { echo "FAIL: exit timeout parse gave '$got', want 5" >&2; exit 1; }
+got="$(lastdb_launchd_job_exit_timeout "$TMP/launchctl" gui/501/com.test.lastdbd)"
+[ -z "$got" ] \
+  || { echo "FAIL: a job print without exit timeout must parse empty, got '$got'" >&2; exit 1; }
+grep -q 'LASTDB_LAUNCHD_BOOTOUT_WAIT_SECS:-180' "$CHECKS" \
+  || { echo "FAIL: the bootout wait must exceed the 150 s primary ExitTimeOut" >&2; exit 1; }
+grep -q 'PRIMARY_EXIT_TIMEOUT_SECS="${LASTDB_PRIMARY_EXIT_TIMEOUT_SECS:-150}"' "$DRIVER" \
+  || { echo "FAIL: driver must default the primary ExitTimeOut to 150 s" >&2; exit 1; }
+grep -A2 '^  ensure_primary_launchd_rss_limit$' "$DRIVER" | grep -q 'ensure_primary_launchd_exit_timeout' \
+  || { echo "FAIL: driver must stamp ExitTimeOut before the sidebin job reload" >&2; exit 1; }
+grep -B5 'lastdb_launchd_reload_job \\' "$DRIVER" | grep -q 'warn_loaded_exit_timeout_short' \
+  || { echo "FAIL: driver must warn about a short loaded exit timeout before bootout" >&2; exit 1; }
+
+# PlistBuddy round trip on a scratch plist (macOS only).
+if [ -x /usr/libexec/PlistBuddy ]; then
+  plist="$TMP/exit-timeout.plist"
+  printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+    '<plist version="1.0"><dict><key>Label</key><string>com.test.lastdbd</string>' \
+    '<key>ExitTimeOut</key><integer>5</integer></dict></plist>' >"$plist"
+  (
+    log() { :; }
+    warn() { :; }
+    die() { echo "FAIL: $*" >&2; exit 1; }
+    eval "$(sed -n '/^PRIMARY_EXIT_TIMEOUT_SECS=/p;/^ensure_primary_launchd_exit_timeout() {/,/^}/p' "$DRIVER")"
+    LAUNCHD_PLIST="$plist"
+    ensure_primary_launchd_exit_timeout
+    ensure_primary_launchd_exit_timeout
+  )
+  got="$(/usr/libexec/PlistBuddy -c 'Print :ExitTimeOut' "$plist")"
+  [ "$got" = "150" ] \
+    || { echo "FAIL: stamped ExitTimeOut is '$got', want 150" >&2; exit 1; }
+fi
 
 echo "PASS: lastdb-safe-upgrade retries bootstrap, refuses GREEN while launchd is unloaded, releases the cutover lock, and detects config drift"
