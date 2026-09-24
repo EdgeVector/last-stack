@@ -178,6 +178,7 @@ cp "$WORK/good.json" "$WORK/home/.lastdb/evidence.json"
 
 PATH="$WORK/bin:$PATH" \
 CLOUD_SYNC_RESUME_SOURCE_DIR="$FIXTURE" \
+CLOUD_SYNC_RESUME_PROOF_EVIDENCE_FILE= \
 NORTH_STAR_PROOF_DIR="$WORK/absent" \
   "$RUNNER" --offline north-star-lastdb-cloud-sync-resume >"$WORK/absent.out" 2>"$WORK/absent.err" || true
 [ ! -e "$WORK/marker" ] || fail "the offline proof called lastdb or brain"
@@ -192,6 +193,38 @@ if "$EVALUATOR" --kind validation \
   fail "a report without operational evidence satisfied /^PASS/"
 fi
 grep -q '^pending:' "$WORK/absent-eval.out" || fail "missing-evidence report was not pending"
+
+# An unset evidence variable loads the committed measurement. That file
+# records a refused upload and does not claim Situation clearance, so the
+# proof stays FAIL.
+if PATH="$WORK/bin:$PATH" \
+  env -u CLOUD_SYNC_RESUME_PROOF_EVIDENCE_FILE \
+  CLOUD_SYNC_RESUME_SOURCE_DIR="$FIXTURE" \
+  NORTH_STAR_PROOF_DIR="$WORK/committed" \
+  "$RUNNER" --offline north-star-lastdb-cloud-sync-resume \
+  >"$WORK/committed.out" 2>"$WORK/committed.err"; then
+  fail "the committed measurement was accepted as PASS"
+fi
+expect_verdict "$WORK/committed/north-star-lastdb-cloud-sync-resume.md" FAIL
+grep -F -q "Evidence file: $ROOT/harness/north-star/north-star-lastdb-cloud-sync-resume/measured-evidence.json" \
+  "$WORK/committed/north-star-lastdb-cloud-sync-resume.md" ||
+  fail "the default evidence path is not measured-evidence.json"
+grep -q 'Operational evidence: FAIL' \
+  "$WORK/committed/north-star-lastdb-cloud-sync-resume.md"
+grep -q 'The hash-group CoW proof verdict is not PASS.' \
+  "$WORK/committed/north-star-lastdb-cloud-sync-resume.md"
+grep -q 'Tom did not clear the Situation.' \
+  "$WORK/committed/north-star-lastdb-cloud-sync-resume.md"
+grep -q 'The file-blob canary has no SHA-256 sample.' \
+  "$WORK/committed/north-star-lastdb-cloud-sync-resume.md"
+if grep -q 'Operational evidence: ABSENT' \
+  "$WORK/committed/north-star-lastdb-cloud-sync-resume.md"; then
+  fail "the committed measurement was treated as absent"
+fi
+if grep -q 'Operational evidence: PASS' \
+  "$WORK/committed/north-star-lastdb-cloud-sync-resume.md"; then
+  fail "the committed measurement passed the operational check"
+fi
 
 if PATH="$WORK/bin:$PATH" \
   CLOUD_SYNC_RESUME_SOURCE_DIR="$FIXTURE" \
@@ -336,8 +369,8 @@ grep -q '^gitdir: ' "$WORK/fold-wt/.git" ||
   fail "the Fold worktree still has a checked-out source file"
 
 PATH="$WORK/bin:$PATH" \
-env -u CLOUD_SYNC_RESUME_SOURCE_DIR -u CLOUD_SYNC_RESUME_PROOF_EVIDENCE_FILE \
-  -u CLOUD_SYNC_RESUME_ALLOW_REENABLE \
+env -u CLOUD_SYNC_RESUME_SOURCE_DIR -u CLOUD_SYNC_RESUME_ALLOW_REENABLE \
+  CLOUD_SYNC_RESUME_PROOF_EVIDENCE_FILE= \
   FOLD_REPO="$WORK/fold-wt" \
   NORTH_STAR_PROOF_DIR="$WORK/worktree" \
   "$RUNNER" --offline north-star-lastdb-cloud-sync-resume \
@@ -360,8 +393,8 @@ grep -q '^gitdir: ' "$WORK/ev/fold/.git" ||
   fail "the workspace Fold worktree .git file lacks a gitdir prefix"
 
 PATH="$WORK/bin:$PATH" \
-env -u CLOUD_SYNC_RESUME_SOURCE_DIR -u CLOUD_SYNC_RESUME_PROOF_EVIDENCE_FILE \
-  -u CLOUD_SYNC_RESUME_ALLOW_REENABLE -u FOLD_REPO \
+env -u CLOUD_SYNC_RESUME_SOURCE_DIR -u CLOUD_SYNC_RESUME_ALLOW_REENABLE -u FOLD_REPO \
+  CLOUD_SYNC_RESUME_PROOF_EVIDENCE_FILE= \
   EDGEVECTOR_WORKSPACE="$WORK/ev" \
   NORTH_STAR_PROOF_DIR="$WORK/ws-worktree" \
   "$RUNNER" --offline north-star-lastdb-cloud-sync-resume \
@@ -378,8 +411,8 @@ grep -F -q "Source label: git:$WORK/ev/fold:HEAD" \
 PORTAL="${EDGEVECTOR_WORKSPACE:-$HOME/code/edgevector}/fold/.portal/cache"
 if [ -f "$PORTAL" ]; then
   PATH="$WORK/bin:$PATH" \
-  env -u CLOUD_SYNC_RESUME_SOURCE_DIR -u CLOUD_SYNC_RESUME_PROOF_EVIDENCE_FILE \
-    -u CLOUD_SYNC_RESUME_ALLOW_REENABLE -u FOLD_REPO \
+  env -u CLOUD_SYNC_RESUME_SOURCE_DIR -u CLOUD_SYNC_RESUME_ALLOW_REENABLE -u FOLD_REPO \
+    CLOUD_SYNC_RESUME_PROOF_EVIDENCE_FILE= \
     NORTH_STAR_PROOF_DIR="$WORK/portal" \
     "$RUNNER" --offline north-star-lastdb-cloud-sync-resume >"$WORK/portal.out" 2>"$WORK/portal.err" || true
   expect_verdict "$WORK/portal/north-star-lastdb-cloud-sync-resume.md" FAIL
