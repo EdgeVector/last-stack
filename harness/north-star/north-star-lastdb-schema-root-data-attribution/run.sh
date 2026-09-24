@@ -167,7 +167,13 @@ fi
 load_source >"$TMP/source-label"
 SOURCE_LABEL="$(sed -n '1p' "$TMP/source-label")"
 
-EVIDENCE="${SCHEMA_ROOT_ATTRIBUTION_PROOF_EVIDENCE_FILE:-}"
+# Unset selects the committed measurement. An empty value keeps evidence
+# absent so a source-only run can still prove that path.
+if [ -z "${SCHEMA_ROOT_ATTRIBUTION_PROOF_EVIDENCE_FILE+x}" ]; then
+  EVIDENCE="$HERE/measured-evidence.json"
+else
+  EVIDENCE="${SCHEMA_ROOT_ATTRIBUTION_PROOF_EVIDENCE_FILE}"
+fi
 if [ -n "$EVIDENCE" ]; then
   refuse_primary "$EVIDENCE"
   [ -f "$EVIDENCE" ] || finish FAIL "The evidence file is absent."
@@ -186,6 +192,10 @@ fi
 BODY="${BODY}
 
 Source label: ${SOURCE_LABEL}"
+if [ -n "$EVIDENCE" ]; then
+  BODY="${BODY}
+Evidence file: ${EVIDENCE}"
+fi
 
 if [ "$RC" -ne 0 ]; then
   finish FAIL "$BODY"

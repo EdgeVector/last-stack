@@ -1,0 +1,31 @@
+{
+  "copy": {
+    "injected_object_deleted": true,
+    "rooted_objects_preserved": true,
+    "second_scrub_extra_deletes": 0,
+    "source_digest_unchanged": true
+  },
+  "restore": {
+    "retention_attributed_objects": 0,
+    "schema_attributed_objects": 4,
+    "shared_atom_schema_paths": 2,
+    "system_attributed_objects": 0,
+    "unattributed_residue_user_objects": 0,
+    "unknown_user_objects": 0
+  },
+  "schema": "lastdb-schema-root-data-attribution-proof.v1",
+  "surface": {
+    "captured_at": "2026-09-24T04:47:12Z",
+    "kind": "isolated-copy",
+    "primary_mutated": false,
+    "primary_opened": false,
+    "prod_cutover": false,
+    "source_delete": false
+  },
+  "writes": {
+    "concurrent_write_attribution_paths": 0,
+    "concurrent_write_source_events": 1,
+    "later_write_inline_size_before_response": false,
+    "later_write_source_event_before_response": true
+  }
+}

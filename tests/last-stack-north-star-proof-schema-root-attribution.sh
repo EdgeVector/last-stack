@@ -105,6 +105,7 @@ cp "$WORK/good.json" "$WORK/home/.lastdb/evidence.json"
 
 PATH="$WORK/bin:$PATH" \
 SCHEMA_ROOT_ATTRIBUTION_SOURCE_DIR="$FIXTURE" \
+SCHEMA_ROOT_ATTRIBUTION_PROOF_EVIDENCE_FILE= \
 NORTH_STAR_PROOF_DIR="$WORK/absent" \
   "$RUNNER" --offline north-star-lastdb-schema-root-data-attribution \
   >"$WORK/absent.out" 2>"$WORK/absent.err" || true
@@ -127,6 +128,40 @@ if "$EVALUATOR" --kind validation \
   fail "a report without operational evidence satisfied /^PASS/"
 fi
 grep -q '^pending:' "$WORK/absent-eval.out" || fail "missing-evidence report was not pending"
+
+# An unset evidence variable loads the committed measurement. That file
+# records the throwaway copy. The node wrote no history row, no system
+# schema, no attribution path, and no inline size, so the proof stays FAIL.
+if PATH="$WORK/bin:$PATH" \
+  env -u SCHEMA_ROOT_ATTRIBUTION_PROOF_EVIDENCE_FILE \
+  SCHEMA_ROOT_ATTRIBUTION_SOURCE_DIR="$FIXTURE" \
+  NORTH_STAR_PROOF_DIR="$WORK/committed" \
+  "$RUNNER" --offline north-star-lastdb-schema-root-data-attribution \
+  >"$WORK/committed.out" 2>"$WORK/committed.err"; then
+  fail "the committed measurement was accepted as PASS"
+fi
+expect_verdict "$WORK/committed/north-star-lastdb-schema-root-data-attribution.md" FAIL
+grep -F -q "Evidence file: $ROOT/harness/north-star/north-star-lastdb-schema-root-data-attribution/measured-evidence.json" \
+  "$WORK/committed/north-star-lastdb-schema-root-data-attribution.md" ||
+  fail "the default evidence path is not measured-evidence.json"
+grep -q 'Operational evidence: FAIL' \
+  "$WORK/committed/north-star-lastdb-schema-root-data-attribution.md"
+grep -q 'The evidence field retention_attributed_objects is below 1.' \
+  "$WORK/committed/north-star-lastdb-schema-root-data-attribution.md"
+grep -q 'The evidence field system_attributed_objects is below 1.' \
+  "$WORK/committed/north-star-lastdb-schema-root-data-attribution.md"
+grep -q 'The evidence field concurrent_write_attribution_paths is not 1.' \
+  "$WORK/committed/north-star-lastdb-schema-root-data-attribution.md"
+grep -q 'The evidence field later_write_inline_size_before_response is not true.' \
+  "$WORK/committed/north-star-lastdb-schema-root-data-attribution.md"
+if grep -q 'Operational evidence: ABSENT' \
+  "$WORK/committed/north-star-lastdb-schema-root-data-attribution.md"; then
+  fail "the committed measurement was treated as absent"
+fi
+if grep -q 'Operational evidence: PASS' \
+  "$WORK/committed/north-star-lastdb-schema-root-data-attribution.md"; then
+  fail "the committed measurement passed the operational check"
+fi
 
 if PATH="$WORK/bin:$PATH" \
   SCHEMA_ROOT_ATTRIBUTION_SOURCE_DIR="$FIXTURE" \
@@ -306,8 +341,9 @@ grep -q '^gitdir: ' "$WORK/fold-wt/.git" ||
   fail "the Fold worktree still has a checked-out source file"
 
 PATH="$WORK/bin:$PATH" \
-env -u SCHEMA_ROOT_ATTRIBUTION_SOURCE_DIR -u SCHEMA_ROOT_ATTRIBUTION_PROOF_EVIDENCE_FILE \
+env -u SCHEMA_ROOT_ATTRIBUTION_SOURCE_DIR \
   -u SCHEMA_ROOT_ATTRIBUTION_ALLOW_SOURCE_DELETE -u SCHEMA_ROOT_ATTRIBUTION_ALLOW_PROD_CUTOVER \
+  SCHEMA_ROOT_ATTRIBUTION_PROOF_EVIDENCE_FILE= \
   FOLD_REPO="$WORK/fold-wt" \
   NORTH_STAR_PROOF_DIR="$WORK/worktree" \
   "$RUNNER" --offline north-star-lastdb-schema-root-data-attribution \
@@ -325,9 +361,10 @@ grep -F -q "Source label: git:$WORK/fold-wt:HEAD" \
 PORTAL="${EDGEVECTOR_WORKSPACE:-$HOME/code/edgevector}/fold/.portal/cache"
 if [ -f "$PORTAL" ]; then
   PATH="$WORK/bin:$PATH" \
-  env -u SCHEMA_ROOT_ATTRIBUTION_SOURCE_DIR -u SCHEMA_ROOT_ATTRIBUTION_PROOF_EVIDENCE_FILE \
+  env -u SCHEMA_ROOT_ATTRIBUTION_SOURCE_DIR \
     -u SCHEMA_ROOT_ATTRIBUTION_ALLOW_SOURCE_DELETE -u SCHEMA_ROOT_ATTRIBUTION_ALLOW_PROD_CUTOVER \
     -u FOLD_REPO \
+    SCHEMA_ROOT_ATTRIBUTION_PROOF_EVIDENCE_FILE= \
     NORTH_STAR_PROOF_DIR="$WORK/portal" \
     "$RUNNER" --offline north-star-lastdb-schema-root-data-attribution \
     >"$WORK/portal.out" 2>"$WORK/portal.err" || true
