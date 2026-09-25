@@ -73,6 +73,35 @@ LABELED_REF_LINE_RE = re.compile(
 # LastGit CR id, a forge repo name, or a PR number.
 REF_TOKEN_TRIM = "`'\"*_~,;:.!?()[]{}<>"
 FORGE_VENUE_REPOS = frozenset({"fold", "lastgit", "exemem-infra", "exemem-workspace"})
+# The registry doc's own documented shape is a `### papercut-<slug>` block
+# (parsed by the heading/`- Prevention:`/`- Card:` branches below). A second,
+# undocumented shape is also in live use — one line per entry, appended by the
+# reconciler and by pipeline-health rather than restructuring the doc:
+#   <ISO> papercut-<slug> | invariant: ... | compound-test: ... | MISSING | card:<slug> | evidence: ...
+# Both shapes must be readable, or half the registry is invisible to every
+# reader of this file (papercut-registry-write-back-not-run-after-card-done-20260925).
+# The leading ISO timestamp is inconsistent in live use — one appended row
+# carries it, an older one right next to it in the same doc does not — so the
+# prefix token must be optional, not assumed.
+FLAT_ENTRY_RE = re.compile(
+    r"^(?:\S+\s+)?(?P<slug>papercut-[a-z0-9-]+)\s*\|.*?\|\s*"
+    r"(?P<prevention>MISSING|COVERED|NOT_APPLICABLE)\s*\|\s*card:(?P<card>[^\s|()<>]+)"
+)
+# A card can reach `done` on a bare merge (`CLOSED-ON-MERGE` says outright its
+# END STATE was not evaluated) or sit in `DEPLOY-PENDING`/`VALIDATION-PENDING`
+# with the real proof still outstanding. Only a bare `PROOF`/`RUNTIME` marker —
+# never a bracketed `PROOF[reopened-...]` reopen marker — counts as confirmed,
+# and only when it is the LAST status marker: a pending marker written after a
+# proof line means that proof was superseded. A marker's own colon is not
+# always adjacent to the word: this codebase's convention is often
+# `MARKER <ISO-or-date>: text` (`RUNTIME 2026-09-25T04:36Z: Active artifact…`),
+# so the marker is matched on its own and an optional ` <label>` may sit
+# between it and the colon.
+STATUS_MARKER_RE = re.compile(
+    r"(?m)^(?P<marker>PROOF\[[^\]]*\]|PROOF|RUNTIME|VALIDATION-PENDING|DEPLOY-PENDING|MERGED|CLOSED-ON-MERGE|HANDOFF|PROGRESS)"
+    r"(?:\s[^:\n]*)?:.*$"
+)
+CONFIRMED_MARKERS = ("PROOF", "RUNTIME")
 
 
 @dataclass(frozen=True)
@@ -250,7 +279,7 @@ def tool(name: str, env_name: str) -> str | None:
     return shutil.which(name)
 
 
-def parse_registry_entries(registry: str, limit: int) -> list[RegistryEntry]:
+def parse_registry_entries(registry: str, limit: int, want: str = "COVERED") -> list[RegistryEntry]:
     entries: list[RegistryEntry] = []
     current_slug = ""
     prevention = ""
@@ -258,7 +287,7 @@ def parse_registry_entries(registry: str, limit: int) -> list[RegistryEntry]:
 
     def flush() -> None:
         nonlocal current_slug, prevention, card
-        if current_slug.startswith("papercut-") and prevention == "COVERED" and card:
+        if current_slug.startswith("papercut-") and prevention == want and card:
             entries.append(RegistryEntry(current_slug, card))
         current_slug = ""
         prevention = ""
@@ -270,21 +299,53 @@ def parse_registry_entries(registry: str, limit: int) -> list[RegistryEntry]:
         if heading:
             flush()
             first = heading.group(1).split()[0].strip("`:,")
-            current_slug = first if first.startswith("papercut-") else ""
+            # The doc's own "Entry format" spec shows a literal
+            # `### papercut-<slug>` template inside an indented code block;
+            # `.strip()` above removes that indent, so the template line reads
+            # like a real heading. A real slug never contains `<`/`>`.
+            current_slug = first if re.fullmatch(r"papercut-[a-z0-9][a-z0-9-]*", first) else ""
             continue
         papercut = re.match(r"^-\s*Papercut:\s*`?([^`\s]+)`?", line)
         if papercut:
             current_slug = papercut.group(1)
             continue
-        if re.match(r"^-\s*Prevention:\s*COVERED\b", line):
-            prevention = "COVERED"
+        prevention_match = re.match(r"^-\s*Prevention:\s*(COVERED|MISSING|NOT_APPLICABLE)\b", line)
+        if prevention_match:
+            prevention = prevention_match.group(1)
             continue
-        card_match = re.match(r"^-\s*Card:\s*`?([^`\s()]+)`?", line)
+        card_match = re.match(r"^-\s*Card:\s*`?([^`\s()<>]+)`?", line)
         if card_match:
             card = card_match.group(1)
             continue
+        # A flat one-line entry is a standalone record: flush any `### ` block
+        # in progress first so it never leaks state into or out of this line.
+        flat = FLAT_ENTRY_RE.match(line)
+        if flat:
+            flush()
+            if flat.group("prevention") == want:
+                entries.append(RegistryEntry(flat.group("slug"), flat.group("card")))
+            continue
     flush()
     return entries[:limit]
+
+
+def latest_status_marker(body: str) -> tuple[bool, str]:
+    """Return (confirmed, line) for the most recent status marker in a card body."""
+    matches = list(STATUS_MARKER_RE.finditer(body))
+    if not matches:
+        return False, ""
+    last = matches[-1]
+    return last.group("marker") in CONFIRMED_MARKERS, last.group(0).strip()[:400]
+
+
+def last_review_url(body: str) -> str:
+    forge = list(FORGE_RE.finditer(body))
+    if forge:
+        return forge[-1].group(0)
+    github = list(GITHUB_RE.finditer(body))
+    if github:
+        return github[-1].group(0)
+    return ""
 
 
 def try_registry_close(args: argparse.Namespace, iso: str) -> dict[str, Any] | None:
@@ -381,6 +442,107 @@ def try_registry_close(args: argparse.Namespace, iso: str) -> dict[str, Any] | N
         "scanned": scanned,
         "candidates": len(entries),
         "fixed": fixed,
+        "dry_run": args.dry_run,
+        "skipped": skipped,
+    }
+
+
+def try_registry_cover(args: argparse.Namespace, iso: str) -> dict[str, Any] | None:
+    """Flip MISSING prevention-registry entries to COVERED once proven.
+
+    `try_registry_close` reads COVERED entries to auto-close the typed
+    papercut once its card is `done`. Nothing writes COVERED in the first
+    place: Step 5 of the reconciler only appends new MISSING rows, and no step
+    ever revisits one after its card finishes — a guard can land, merge, and
+    pass a live soak while the registry still reads MISSING
+    (papercut-registry-write-back-not-run-after-card-done-20260925). This is
+    that missing half. It is conservative on purpose: an entry only flips when
+    its card is `done` AND the card's own most recent status marker is an
+    unbracketed PROOF/RUNTIME line, never a merge-only close or a still-open
+    VALIDATION-PENDING/DEPLOY-PENDING hold.
+    """
+    brain = tool(args.brain_bin, "LAST_STACK_PAPERCUT_LIFECYCLE_BRAIN")
+    kanban = tool("kanban", "LAST_STACK_PAPERCUT_LIFECYCLE_KANBAN")
+    if not brain or not kanban:
+        missing = ",".join(name for name, path in (("brain", brain), ("kanban", kanban)) if not path)
+        return {"ok": False, "reason": "lifecycle_dependency_missing", "missing": missing, "scanned": 0, "covered": 0}
+
+    try:
+        registry_proc = run([brain, "get", "papercut-prevention-registry", "--type", "reference"], timeout=args.read_timeout)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "reason": "registry_read_timeout", "scanned": 0, "covered": 0}
+    if registry_proc.returncode != 0:
+        return None
+
+    entries = parse_registry_entries(registry_proc.stdout, args.limit, want="MISSING")
+    if not entries:
+        return None
+
+    scanned = 0
+    covered = 0
+    skipped: list[str] = []
+    for entry in entries:
+        scanned += 1
+        # `Card: none (<reason>)` is how Step 1/Step 5 record a MISSING entry
+        # with no card yet (nothing to check against). It is a real, non-empty
+        # token, so it survives the parser's truthy-card guard on purpose.
+        if entry.card in ("none", "None", "-"):
+            skipped.append(f"{entry.slug}:no_card")
+            continue
+        try:
+            card_proc = run([kanban, "show", entry.card, "--json"], timeout=args.read_timeout)
+        except subprocess.TimeoutExpired:
+            skipped.append(f"{entry.slug}:card_timeout")
+            continue
+        if card_proc.returncode != 0:
+            skipped.append(f"{entry.slug}:card_unreadable")
+            continue
+        try:
+            card = json.loads(card_proc.stdout)
+        except json.JSONDecodeError:
+            skipped.append(f"{entry.slug}:card_bad_json")
+            continue
+        if card.get("column") != "done":
+            skipped.append(f"{entry.slug}:card_not_done")
+            continue
+
+        confirmed, marker_line = latest_status_marker(str(card.get("body") or ""))
+        if not confirmed:
+            skipped.append(f"{entry.slug}:no_confirmed_proof")
+            continue
+
+        if args.dry_run:
+            skipped.append(f"{entry.slug}:dry_run")
+            continue
+
+        ref_url = last_review_url(str(card.get("body") or ""))
+        evidence = f"card:{entry.card} done; {marker_line}"
+        if ref_url:
+            evidence += f"; {ref_url}"
+        addendum = (
+            f"{iso} {entry.slug} STATUS-UPDATE: Prevention MISSING -> COVERED | "
+            f"card:{entry.card} (done) | evidence: {evidence} "
+            "(last-stack-papercut-lifecycle-close)\n"
+        )
+        try:
+            append_proc = run(
+                [brain, "append", "papercut-prevention-registry", "--type", "reference"],
+                stdin=addendum,
+                timeout=args.read_timeout,
+            )
+        except subprocess.TimeoutExpired:
+            skipped.append(f"{entry.slug}:append_timeout")
+            continue
+        if append_proc.returncode != 0:
+            skipped.append(f"{entry.slug}:append_failed")
+            continue
+        covered += 1
+
+    return {
+        "ok": True,
+        "scanned": scanned,
+        "candidates": len(entries),
+        "covered": covered,
         "dry_run": args.dry_run,
         "skipped": skipped,
     }
@@ -1058,30 +1220,38 @@ def _fixed_count(value: Any) -> int:
     return 0
 
 
-def merge_default_results(registry: dict[str, Any], review: dict[str, Any]) -> dict[str, Any]:
+def merge_default_results(
+    registry: dict[str, Any], review: dict[str, Any], cover: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Keep the registry COVERED closer and still walk open review refs.
 
     Returning only the registry payload used to hide the pipeline-stuck
     cluster: scanned stayed at 3 COVERED rows and close_review_records
     never ran.
     """
+    cover = cover or {}
     reg_scanned = int(registry.get("scanned") or 0)
     rev_checked = int(review.get("checked") or 0)
+    cover_scanned = int(cover.get("scanned") or 0)
     skipped: list[Any] = []
+    if isinstance(cover.get("skipped"), list):
+        skipped.extend(cover["skipped"])
     if isinstance(registry.get("skipped"), list):
         skipped.extend(registry["skipped"])
     if isinstance(review.get("skipped"), list):
         skipped.extend(review["skipped"])
     errors = review.get("errors") if isinstance(review.get("errors"), list) else []
     return {
-        "ok": bool(registry.get("ok", True)) and bool(review.get("ok", True)),
-        "scanned": reg_scanned + rev_checked,
+        "ok": bool(registry.get("ok", True)) and bool(review.get("ok", True)) and bool(cover.get("ok", True)),
+        "scanned": reg_scanned + rev_checked + cover_scanned,
         "checked": rev_checked,
         "fixed": _fixed_count(registry.get("fixed")) + _fixed_count(review.get("fixed")),
         "skipped": skipped,
         "errors": errors,
-        "dry_run": bool(registry.get("dry_run") or review.get("dry_run")),
+        "dry_run": bool(registry.get("dry_run") or review.get("dry_run") or cover.get("dry_run")),
         "registry_scanned": reg_scanned,
+        "registry_covered": int(cover.get("covered") or 0),
+        "registry_cover_scanned": cover_scanned,
         "review_checked": rev_checked,
         "pipeline_stuck_checked": int(review.get("pipeline_stuck_checked") or 0),
         "fixed_refs": review.get("fixed") if isinstance(review.get("fixed"), list) else [],
@@ -1149,6 +1319,10 @@ def main() -> int:
             }
     else:
         try:
+            cover_result = try_registry_cover(args, iso)
+        except BudgetExhausted:
+            cover_result = None
+        try:
             registry_result = try_registry_close(args, iso)
         except BudgetExhausted:
             registry_result = None
@@ -1177,7 +1351,7 @@ def main() -> int:
         if registry_result is None:
             result = review_result
         else:
-            result = merge_default_results(registry_result, review_result)
+            result = merge_default_results(registry_result, review_result, cover_result)
 
     result["budget_seconds"] = args.budget_seconds
     result["budget_exhausted"] = DEADLINE.exhausted
@@ -1193,6 +1367,7 @@ def main() -> int:
         print(
             "papercut-lifecycle-close "
             f"checked={checked} fixed={fixed_count} "
+            f"registry_covered={int(result.get('registry_covered') or 0)} "
             f"closed_unmerged={_fixed_count(result.get('closed_unmerged'))} "
             f"skipped={len(skipped) if isinstance(skipped, list) else 0} "
             f"errors={len(result.get('errors', [])) if isinstance(result.get('errors', []), list) else 0}"
