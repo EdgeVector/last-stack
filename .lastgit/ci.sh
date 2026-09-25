@@ -419,6 +419,10 @@ ci_test tests/last-stack-lastdb-retry.sh
 ci_test tests/last-stack-whats-wrong-routine.sh
 ci_test tests/last-stack-forge-dead-trigger.sh
 ci_test tests/last-stack-forge-api.sh
+# The Forge token must never reach a child's argv: `ps aux` is world readable here.
+# papercut-forge-git-extraheader-token-visible-in-ps-20260923 (p0, git) and
+# papercut-last-stack-forge-api-token-on-curl-argv-20260924 (p1, curl).
+ci_test tests/forge-token-not-on-argv.sh
 # Consumer half of the same wrapper contract: the merge probe is the only
 # caller whose failure mode was a SILENT wrong answer (every Forgejo PR read
 # as unmerged for days because a bad --jq call was hidden by 2>/dev/null).

@@ -13,6 +13,20 @@
 #            quoting, env flags and argparse, and every draft is a partial
 #            script. New helpers use ONE language. Existing nests are held in
 #            config/bin-authoring-baseline.tsv and may only shrink.
+#   3. SOFT  an auth header built onto a child process's ARGV: a
+#            `git -c http.<base>.extraHeader=Authorization: ...` word, or a
+#            `curl -H "Authorization: ..."` word. `ps aux` lists argv to every
+#            local account, so those publish the Forge token machine-wide for the
+#            life of the call. Two live sightings:
+#            papercut-forge-git-extraheader-token-visible-in-ps-20260923 (p0) and
+#            papercut-last-stack-forge-api-token-on-curl-argv-20260924 (p1).
+#            The safe forms are in lib/forge-token.sh:
+#            `last_stack_forge_export_git_config` (GIT_CONFIG_* in the
+#            environment; measured 2026-09-25, `ps -E`/`ps eww` print no
+#            environment on this host) and `last_stack_forge_curl_auth_config`
+#            (a 0600 `curl -K` config file). Existing offenders are held in
+#            config/forge-token-argv-baseline.tsv and may only shrink; a line
+#            that genuinely needs argv states why: `# argv-token-ok: <reason>`.
 #
 # Ground truth: brain papercut-agent-zero-llm-cli-bash-python-heredoc-rglob
 # (filed 2026-08-02). The bounded replacement for a walk is
@@ -22,9 +36,11 @@
 # Modes:
 #   (default) / --ci      gate: exit 1 on any hard finding or a non-baselined nest
 #   --report              print every finding; exit 0 always
-#   --write-baseline      rewrite the baseline from the nests present now
+#   --write-baseline      rewrite both baselines from the findings present now
 #   --root DIR            tree to lint (default: this checkout)
-#   --baseline PATH       baseline file (default: <root>/config/bin-authoring-baseline.tsv)
+#   --baseline PATH       nest baseline (default: <root>/config/bin-authoring-baseline.tsv)
+#   --argv-token-baseline PATH
+#                         argv-token baseline (default: <root>/config/forge-token-argv-baseline.tsv)
 #   -h | --help           print this usage
 set -euo pipefail
 
@@ -32,9 +48,14 @@ SELF_ROOT="$(cd "$(dirname "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0
 ROOT="$SELF_ROOT"
 MODE=gate
 BASELINE_PATH=""
+ARGV_TOKEN_BASELINE_PATH=""
 
+# Print the whole leading comment block, minus the shebang. A line RANGE went
+# stale the moment the header grew: `sed -n '2,30p'` silently stopped printing the
+# Modes section when a third finding class was documented above it, so --help lost
+# the flags it exists to list. Stop at the first non-comment line instead.
 usage() {
-  sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -46,6 +67,8 @@ while [ "$#" -gt 0 ]; do
     --root=*) ROOT="${1#*=}"; shift ;;
     --baseline) BASELINE_PATH="${2:-}"; shift 2 ;;
     --baseline=*) BASELINE_PATH="${1#*=}"; shift ;;
+    --argv-token-baseline) ARGV_TOKEN_BASELINE_PATH="${2:-}"; shift 2 ;;
+    --argv-token-baseline=*) ARGV_TOKEN_BASELINE_PATH="${1#*=}"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown arg: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -54,6 +77,7 @@ done
 [ -d "$ROOT" ] || { echo "last-stack-lint-bin-authoring: no such root: $ROOT" >&2; exit 2; }
 ROOT="$(cd "$ROOT" && pwd -P)"
 [ -n "$BASELINE_PATH" ] || BASELINE_PATH="$ROOT/config/bin-authoring-baseline.tsv"
+[ -n "$ARGV_TOKEN_BASELINE_PATH" ] || ARGV_TOKEN_BASELINE_PATH="$ROOT/config/forge-token-argv-baseline.tsv"
 
 # Never lint: this linter, its test, and test fixtures that carry deliberate
 # bad examples.
@@ -74,13 +98,21 @@ ROOT_RE='code/edgevector|\.fkanban|\.cache/edgevector-git|\$HOME/code([[:space:]
 DEPTH_RE='-maxdepth|--max-depth|(^|[[:space:]])-(d|L)[[:space:]]*[0-9]'
 FIND_RE='(^|[[:space:];&|(`])[[:space:]]*(sudo[[:space:]]+)?(time[[:space:]]+)?(find|fd)[[:space:]]'
 NEST_RE='python3?[[:space:]]+-[[:space:]]*<<'
+# An auth header assembled into a child's argv. Two observed shapes: a git
+# `-c http.<base>.extraHeader=Authorization: ...` word, and a curl
+# `-H "Authorization: ..."` word. The safe spellings (GIT_CONFIG_VALUE_n=... in
+# the environment, and `header = "Authorization: ..."` written into a curl -K
+# config file) do not match, on purpose.
+ARGV_TOKEN_RE='extraHeader=Authorization|-H[[:space:]]*["'"'"']?Authorization:'
 
 tmpdir="$(mktemp -d "${TMPDIR:-${TMP:-${TEMP:-/tmp}}}/last-stack-lint-bin-authoring.XXXXXX")"
 trap 'rm -rf "$tmpdir"' EXIT
 hard="$tmpdir/hard.tsv"
 nests="$tmpdir/nests.txt"
+argv_tokens="$tmpdir/argv-tokens.txt"
 : >"$hard"
 : >"$nests"
+: >"$argv_tokens"
 
 # Files in scope: every regular file directly under bin/, lib/, hooks/ and
 # skills/*/scripts/. A bounded listing, on purpose.
@@ -131,6 +163,14 @@ while IFS= read -r file; do
         printf 'find\t%s\t%s\t%s\n' "$rel" "$lineno" "$(printf '%s' "$content" | tr -s '[:space:]' ' ' | cut -c1-160)" >>"$hard"
       done || true
 
+  # Soft: an auth header on a child process's argv.
+  if grep -nE "$ARGV_TOKEN_RE" "$file" 2>/dev/null \
+    | grep -v 'argv-token-ok:' \
+    | grep -vE '^[0-9]+:[[:space:]]*#' \
+    | grep -q .; then
+    printf '%s\n' "$rel" >>"$argv_tokens"
+  fi
+
   # Soft: bash→python heredoc nest in a bin/ helper.
   case "$rel" in
     bin/*)
@@ -143,8 +183,10 @@ done < <(list_targets)
 
 sort -u "$hard" -o "$hard"
 sort -u "$nests" -o "$nests"
+sort -u "$argv_tokens" -o "$argv_tokens"
 hard_count="$(wc -l <"$hard" | tr -d ' ')"
 nest_count="$(wc -l <"$nests" | tr -d ' ')"
+argv_token_count="$(wc -l <"$argv_tokens" | tr -d ' ')"
 
 write_baseline() {
   mkdir -p "$(dirname "$BASELINE_PATH")"
@@ -156,6 +198,18 @@ write_baseline() {
     cat "$nests"
   } >"$BASELINE_PATH"
   echo "wrote baseline nests=$nest_count -> $BASELINE_PATH"
+  mkdir -p "$(dirname "$ARGV_TOKEN_BASELINE_PATH")"
+  {
+    printf '# forge-token argv baseline: helpers that still build an auth header onto a child process argv.\n'
+    printf '# `ps aux` is readable by every local account, so each of these publishes the token machine-wide\n'
+    printf '# for the life of the call. This list may only SHRINK. Convert a helper with the safe forms in\n'
+    printf '# lib/forge-token.sh: last_stack_forge_export_git_config (GIT_CONFIG_* env) or\n'
+    printf '# last_stack_forge_curl_auth_config (0600 curl -K file). Regenerate after converting one:\n'
+    printf '#   bin/last-stack-lint-bin-authoring --write-baseline\n'
+    printf '# path\n'
+    cat "$argv_tokens"
+  } >"$ARGV_TOKEN_BASELINE_PATH"
+  echo "wrote baseline argv_tokens=$argv_token_count -> $ARGV_TOKEN_BASELINE_PATH"
 }
 
 if [ "$MODE" = "write_baseline" ]; then
@@ -168,6 +222,18 @@ baseline="$tmpdir/baseline.txt"
 if [ -f "$BASELINE_PATH" ]; then
   grep -vE '^[[:space:]]*(#|$)' "$BASELINE_PATH" | sort -u >"$baseline" || true
 fi
+argv_baseline="$tmpdir/argv_baseline.txt"
+: >"$argv_baseline"
+if [ -f "$ARGV_TOKEN_BASELINE_PATH" ]; then
+  grep -vE '^[[:space:]]*(#|$)' "$ARGV_TOKEN_BASELINE_PATH" | sort -u >"$argv_baseline" || true
+fi
+new_argv_tokens="$tmpdir/new_argv_tokens.txt"
+retired_argv_tokens="$tmpdir/retired_argv_tokens.txt"
+comm -23 "$argv_tokens" "$argv_baseline" >"$new_argv_tokens"
+comm -13 "$argv_tokens" "$argv_baseline" >"$retired_argv_tokens"
+new_argv_count="$(wc -l <"$new_argv_tokens" | tr -d ' ')"
+retired_argv_count="$(wc -l <"$retired_argv_tokens" | tr -d ' ')"
+
 new_nests="$tmpdir/new_nests.txt"
 retired_nests="$tmpdir/retired_nests.txt"
 comm -23 "$nests" "$baseline" >"$new_nests"
@@ -176,10 +242,12 @@ new_count="$(wc -l <"$new_nests" | tr -d ' ')"
 retired_count="$(wc -l <"$retired_nests" | tr -d ' ')"
 
 if [ "$MODE" = "report" ]; then
-  echo "bin-authoring report root=$ROOT hard=$hard_count nests=$nest_count new_nests=$new_count retired_nests=$retired_count"
+  echo "bin-authoring report root=$ROOT hard=$hard_count nests=$nest_count new_nests=$new_count retired_nests=$retired_count argv_tokens=$argv_token_count new_argv_tokens=$new_argv_count retired_argv_tokens=$retired_argv_count"
   [ "$hard_count" -eq 0 ] || { echo "-- hard (kind path line content)"; cat "$hard"; }
   [ "$nest_count" -eq 0 ] || { echo "-- nests"; cat "$nests"; }
   [ "$retired_count" -eq 0 ] || { echo "-- retired nests (run --write-baseline)"; cat "$retired_nests"; }
+  [ "$argv_token_count" -eq 0 ] || { echo "-- argv token headers"; cat "$argv_tokens"; }
+  [ "$retired_argv_count" -eq 0 ] || { echo "-- retired argv token headers (run --write-baseline)"; cat "$retired_argv_tokens"; }
   exit 0
 fi
 
@@ -199,7 +267,17 @@ if [ "$new_count" -ne 0 ]; then
   echo "Write a new helper in ONE language (#!/usr/bin/env python3 with argparse, or pure bash)." >&2
   echo "The baseline at $BASELINE_PATH only shrinks; it is not the place for a new nest." >&2
 fi
+if [ "$new_argv_count" -ne 0 ]; then
+  status=1
+  echo "FAIL last-stack-lint-bin-authoring: $new_argv_count helper(s) build an auth header onto a child process argv:" >&2
+  cat "$new_argv_tokens" >&2
+  echo "\`ps aux\` is readable by every local account, so the token is published machine-wide for the call." >&2
+  echo "Use lib/forge-token.sh: last_stack_forge_export_git_config (GIT_CONFIG_* in the environment) for git," >&2
+  echo "or last_stack_forge_curl_auth_config (a 0600 file passed as curl -K) for curl." >&2
+  echo "If a line genuinely needs argv, state why on it: # argv-token-ok: <reason>" >&2
+  echo "The baseline at $ARGV_TOKEN_BASELINE_PATH only shrinks; it is not the place for a new site." >&2
+fi
 if [ "$status" -eq 0 ]; then
-  echo "ok last-stack-lint-bin-authoring hard=0 nests=$nest_count baseline=$(wc -l <"$baseline" | tr -d ' ') retired=$retired_count"
+  echo "ok last-stack-lint-bin-authoring hard=0 nests=$nest_count baseline=$(wc -l <"$baseline" | tr -d ' ') retired=$retired_count argv_tokens=$argv_token_count argv_baseline=$(wc -l <"$argv_baseline" | tr -d ' ') argv_retired=$retired_argv_count"
 fi
 exit "$status"

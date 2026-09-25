@@ -19,7 +19,10 @@ Usage:
   last-stack-forge-git [-C <repo>] <git-args...>
 
 Runs git with the local Forgejo token injected as an HTTP extraHeader, avoiding
-hand-built auth headers for http://localhost:3300 remotes.
+hand-built auth headers for http://localhost:3300 remotes. The token travels in
+GIT_CONFIG_* environment entries, never on the command line: `ps aux` is world
+readable on this host, and passing the header as a `git -c` word put the secret
+there (papercut-forge-git-extraheader-token-visible-in-ps-20260923).
 
 Example:
   last-stack-forge-git -C /path/to/fold ls-remote --heads origin main
@@ -50,13 +53,13 @@ if [[ "$origin_url" != http://localhost:3300/* && "$origin_url" != http://127.0.
   exec git "${args[@]}"
 fi
 
-token="$(last_stack_forge_token || true)"
-if [[ -z "$token" ]]; then
+# The token goes into the environment, not into argv. `ps aux` lists argv to every
+# local account; `ps -E`/`ps eww` print no environment at all on this host, even
+# for the caller's own child. Measured 2026-09-25.
+# papercut-forge-git-extraheader-token-visible-in-ps-20260923
+if ! last_stack_forge_export_git_config; then
   last_stack_forge_token_missing_msg
   exit 1
 fi
 
-exec git \
-  -c "http.http://localhost:3300/.extraHeader=Authorization: token $token" \
-  -c "http.http://127.0.0.1:3300/.extraHeader=Authorization: token $token" \
-  "${args[@]}"
+exec git "${args[@]}"

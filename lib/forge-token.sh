@@ -67,3 +67,59 @@ Store the fallback so a locked keychain cannot block unattended work:
       --value-stdin
 MSG
 }
+
+# --- keeping the token off process argv -------------------------------------
+#
+# `ps aux` is readable by every local account. A token passed as
+# `git -c http.<base>.extraHeader=Authorization: token <t>` or as
+# `curl -H "Authorization: token <t>"` is therefore a secret published to the
+# whole machine for the life of the process. Both were observed live:
+#   papercut-forge-git-extraheader-token-visible-in-ps-20260923   (p0, git)
+#   papercut-last-stack-forge-api-token-on-curl-argv-20260924     (p1, curl)
+#
+# Measured on this host (Darwin 25.5, 2026-09-25): `ps -E -ww -p <pid>` and
+# `ps eww -p <pid>` print NO environment, not even for the caller's own child,
+# while `ps aux` prints the full argv. So the environment is a real boundary
+# here and argv is not. A curl config file adds the stronger form: the bytes sit
+# in a 0600 file that only this uid can open.
+#
+# Use these two helpers instead of hand-building an auth word list.
+
+# Export the forge token as git HTTP config in the ENVIRONMENT, for both spellings
+# of the local forge host. Appends to any GIT_CONFIG_COUNT a caller already set
+# (last-stack-portal-wt exports two entries of its own), so nesting one forge
+# helper inside another does not silently drop the outer config.
+# Returns 1 with nothing exported when no token source has a token.
+last_stack_forge_export_git_config() {
+  local token base count
+  token="$(last_stack_forge_token || true)"
+  [ -n "$token" ] || return 1
+  count="${GIT_CONFIG_COUNT:-0}"
+  case "$count" in ''|*[!0-9]*) count=0 ;; esac
+  for base in "http://localhost:3300/" "http://127.0.0.1:3300/"; do
+    export "GIT_CONFIG_KEY_$count=http.${base}.extraHeader"
+    export "GIT_CONFIG_VALUE_$count=Authorization: token $token"
+    count=$((count + 1))
+  done
+  export GIT_CONFIG_COUNT="$count"
+}
+
+# Write a curl config file (`curl -K <file>`) holding the Authorization header and
+# print its path. The file is created 0600 inside a private directory; the caller
+# owns removing it, normally from the same trap that cleans its body file.
+# Returns 1 and prints nothing when no token source has a token.
+last_stack_forge_curl_auth_config() {
+  local token dir file old_umask
+  token="$(last_stack_forge_token || true)"
+  [ -n "$token" ] || return 1
+  old_umask="$(umask)"
+  umask 077
+  dir="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-forge-auth.XXXXXX")" || { umask "$old_umask"; return 1; }
+  file="$dir/auth.conf"
+  # curl reads long option names without dashes from a config file. A quoted
+  # value keeps the space in "token <t>" intact.
+  printf 'header = "Authorization: token %s"\n' "$token" >"$file"
+  umask "$old_umask"
+  chmod 600 "$file" 2>/dev/null || true
+  printf '%s' "$file"
+}

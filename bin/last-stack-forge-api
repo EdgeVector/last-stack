@@ -186,11 +186,21 @@ if [[ "$jq_filter" == *auto_merge* && "$url" == */pulls* ]]; then
   echo "last-stack-forge-api: note: a Forgejo PR has no auto_merge field; it reads null even when armed. Re-POST the merge with merge_when_checks_succeed (409 'already scheduled' = armed)." >&2
 fi
 
-token="$(last_stack_forge_token || true)"
-if [[ -z "$token" ]]; then
+# The token goes into a 0600 curl config file, never onto argv. `ps aux` is
+# readable by every local account, so `-H "Authorization: token <t>"` published
+# the secret to the whole machine for the life of each call
+# (papercut-last-stack-forge-api-token-on-curl-argv-20260924). Measured on this
+# host 2026-09-25: `ps -E`/`ps eww` print no environment and `ps aux` prints the
+# full argv, so the file (and the environment) are real boundaries and argv is not.
+auth_config="$(last_stack_forge_curl_auth_config || true)"
+if [[ -z "$auth_config" ]]; then
   last_stack_forge_token_missing_msg
   exit 1
 fi
+auth_dir="$(dirname "$auth_config")"
+trap 'rm -rf "$auth_dir"' EXIT
+# Every curl call in this script reads the header from $auth_config.
+curl_auth=(-K "$auth_config")
 
 # Update-branch guard (papercut-forge-pr-branch-update-cancels-in-flight-ci-20260922).
 # POST .../pulls/<n>/update merges main into the PR branch. Forgejo then
@@ -204,10 +214,10 @@ update_branch_guard() {
   local pr_url="${url%%\?*}" pr_body head_sha status_body state
   pr_url="${pr_url%/update}"
   command -v jq >/dev/null 2>&1 || return 0
-  pr_body="$(curl -sS -X GET -H "Authorization: token $token" -H "Accept: application/json" "$pr_url" 2>/dev/null || true)"
+  pr_body="$(curl -sS -X GET "${curl_auth[@]}" -H "Accept: application/json" "$pr_url" 2>/dev/null || true)"
   head_sha="$(printf '%s' "$pr_body" | jq -r '.head.sha // empty' 2>/dev/null || true)"
   [[ -n "$head_sha" ]] || return 0
-  status_body="$(curl -sS -X GET -H "Authorization: token $token" -H "Accept: application/json" "${pr_url%/pulls/*}/commits/$head_sha/status" 2>/dev/null || true)"
+  status_body="$(curl -sS -X GET "${curl_auth[@]}" -H "Accept: application/json" "${pr_url%/pulls/*}/commits/$head_sha/status" 2>/dev/null || true)"
   state="$(printf '%s' "$status_body" | jq -r '[.statuses[]? | select(.status == "pending")] | length' 2>/dev/null || echo 0)"
   if [[ "$state" =~ ^[0-9]+$ && "$state" -gt 0 ]]; then
     echo "last-stack-forge-api: REFUSED update-branch: PR head ${head_sha:0:10} has $state pending check(s)." >&2
@@ -224,7 +234,7 @@ fi
 # Do NOT pass curl -f. A 409/405 from merge auto-arm must keep the response
 # body so agents can name the blocker (pending checks, approvals, stuck status)
 # instead of collapsing to opaque "curl: (22) The requested URL returned error".
-curl_args=(-sS -X "$method" -H "Authorization: token $token" -H "Accept: application/json")
+curl_args=(-sS -X "$method" "${curl_auth[@]}" -H "Accept: application/json")
 if [[ -n "$data_arg" ]]; then
   curl_args+=(-H "Content-Type: application/json")
   curl_args+=(--data-binary "$data_arg")
@@ -232,7 +242,9 @@ fi
 curl_args+=("$url")
 
 body_file="$(mktemp "${TMPDIR:-/tmp}/last-stack-forge-api.XXXXXX")"
-trap 'rm -f "$body_file"' EXIT
+# One trap for both temporaries: a second `trap ... EXIT` REPLACES the first, and
+# the one it would have replaced is the one holding the token.
+trap 'rm -f "$body_file"; rm -rf "$auth_dir"' EXIT
 
 set +e
 http_code="$(curl "${curl_args[@]}" -o "$body_file" -w '%{http_code}')"
@@ -269,7 +281,7 @@ fi
 merge_405_verdict() {
   local pr_url="${url%/merge}" pr_num="${url##*/pulls/}" pr_body mergeable
   pr_num="${pr_num%%/*}"
-  pr_body="$(curl -sS -X GET -H "Authorization: token $token" -H "Accept: application/json" "$pr_url" 2>/dev/null || true)"
+  pr_body="$(curl -sS -X GET "${curl_auth[@]}" -H "Accept: application/json" "$pr_url" 2>/dev/null || true)"
   if [[ -z "$pr_body" ]]; then
     echo "last-stack-forge-api: could not read PR #$pr_num to tell a stuck status check from an unmergeable branch." >&2
     return
@@ -290,7 +302,7 @@ merge_405_verdict() {
     local reread
     for reread in 1 2 3; do
       sleep "${LAST_STACK_FORGE_MERGEABLE_REREAD_S:-3}"
-      pr_body="$(curl -sS -X GET -H "Authorization: token $token" -H "Accept: application/json" "$pr_url" 2>/dev/null || true)"
+      pr_body="$(curl -sS -X GET "${curl_auth[@]}" -H "Accept: application/json" "$pr_url" 2>/dev/null || true)"
       if [[ "$pr_body" =~ \"mergeable\"[[:space:]]*:[[:space:]]*true ]]; then
         echo "last-stack-forge-api: PR #$pr_num read mergeable=false at the 405 and mergeable=true on re-read ${reread}: Forgejo was still recomputing after a push. Retry the merge call; this is not a conflict." >&2
         return

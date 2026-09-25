@@ -131,4 +131,76 @@ set -e
 # 7. The real tree is green: no unbounded walk, and no nest outside the baseline.
 out="$("$LINT" --ci 2>&1)" || fail "the real tree must pass the gate: $out"
 
+# 8. The argv-token class, on its own fixture tree so the counts above stay readable.
+# `ps aux` lists argv to every local account, so an auth header built into a child's
+# command line publishes the Forge token machine-wide:
+# papercut-forge-git-extraheader-token-visible-in-ps-20260923 (p0) and
+# papercut-last-stack-forge-api-token-on-curl-argv-20260924 (p1).
+at="$tmp/argv-tree"
+mkdir -p "$at/bin" "$at/lib" "$at/config"
+
+# Baselined offender: reported, never failed.
+cat >"$at/bin/argv-git-old" <<'EOF'
+#!/usr/bin/env bash
+exec git -c "http.http://localhost:3300/.extraHeader=Authorization: token $token" "$@"
+EOF
+
+# New offender: must fail the gate.
+cat >"$at/bin/argv-curl-new" <<'EOF'
+#!/usr/bin/env bash
+curl -sS -H "Authorization: token $token" "$url"
+EOF
+
+# The safe environment form must not match.
+cat >"$at/lib/argv-safe-env.sh" <<'EOF'
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0="http.http://localhost:3300/.extraHeader"
+export GIT_CONFIG_VALUE_0="Authorization: token $token"
+EOF
+
+# The safe curl-config form must not match either.
+cat >"$at/lib/argv-safe-curl.sh" <<'EOF'
+printf 'header = "Authorization: token %s"\n' "$token" >"$f"
+curl -sS -K "$f" "$url"
+EOF
+
+# A stated exception passes; a comment is not a call site.
+cat >"$at/bin/argv-hatch" <<'EOF'
+#!/usr/bin/env bash
+# curl -H "Authorization: token $t" is what this used to do.
+curl -sS -H "Authorization: token $token" "$url"  # argv-token-ok: probes the leak itself
+EOF
+
+printf '# path\nbin/argv-git-old\n' >"$at/config/forge-token-argv-baseline.tsv"
+
+set +e
+out="$("$LINT" --ci --root "$at" 2>&1)"
+rc=$?
+set -e
+[ "$rc" -eq 1 ] || fail "a new argv auth header must fail the gate, got $rc: $out"
+printf '%s' "$out" | grep -q '^bin/argv-curl-new$' || fail "missing new argv site: $out"
+printf '%s' "$out" | grep -q 'argv-git-old' && fail "baselined argv site must not be reported as new: $out"
+printf '%s' "$out" | grep -q 'argv-safe-env' && fail "GIT_CONFIG_VALUE env form must pass: $out"
+printf '%s' "$out" | grep -q 'argv-safe-curl' && fail "curl -K config form must pass: $out"
+printf '%s' "$out" | grep -q 'argv-hatch' && fail "argv-token-ok line must pass: $out"
+printf '%s' "$out" | grep -q 'last_stack_forge_export_git_config' || fail "deny text must name the safe git form: $out"
+printf '%s' "$out" | grep -q 'last_stack_forge_curl_auth_config' || fail "deny text must name the safe curl form: $out"
+
+# Admitting it into the baseline turns the gate green; removing it is only reported.
+"$LINT" --write-baseline --root "$at" >/dev/null
+grep -q '^bin/argv-curl-new$' "$at/config/forge-token-argv-baseline.tsv" \
+  || fail "--write-baseline must record the argv site"
+out="$("$LINT" --ci --root "$at" 2>&1)" || fail "gate must pass once the baseline holds every argv site: $out"
+printf '%s' "$out" | grep -q 'argv_tokens=2 argv_baseline=2 argv_retired=0' || fail "argv pass line wrong: $out"
+rm "$at/bin/argv-git-old"
+out="$("$LINT" --ci --root "$at" 2>&1)" || fail "a retired argv site must not fail the gate: $out"
+printf '%s' "$out" | grep -q 'argv_retired=1' || fail "retired argv site must be counted: $out"
+
+# 9. The two helpers the p0/p1 papercuts name must stay OUT of the argv baseline.
+# They are the reason this class exists; a regression in either one is a fresh leak.
+for helper in bin/last-stack-forge-git bin/last-stack-forge-api; do
+  grep -qx "$helper" "$ROOT/config/forge-token-argv-baseline.tsv" \
+    && fail "$helper must not be baselined: it is the converted reference implementation"
+done
+
 echo "PASS last-stack-lint-bin-authoring"

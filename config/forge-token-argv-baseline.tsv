@@ -1,0 +1,17 @@
+# forge-token argv baseline: helpers that still build an auth header onto a child process argv.
+# `ps aux` is readable by every local account, so each of these publishes the token machine-wide
+# for the life of the call. This list may only SHRINK. Convert a helper with the safe forms in
+# lib/forge-token.sh: last_stack_forge_export_git_config (GIT_CONFIG_* env) or
+# last_stack_forge_curl_auth_config (0600 curl -K file). Regenerate after converting one:
+#   bin/last-stack-lint-bin-authoring --write-baseline
+# path
+bin/host-track
+bin/last-stack-brew-app-publish
+bin/last-stack-canary-promote-material
+bin/last-stack-ci-superseded
+bin/last-stack-deploy-watch-gate
+bin/last-stack-dogfood-target-checkout
+bin/last-stack-forge-ci-log
+bin/last-stack-git-checkout-freshness
+bin/last-stack-registry-publish-next
+bin/last-stack-release-publish
