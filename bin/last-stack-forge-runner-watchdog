@@ -49,7 +49,7 @@ STATE_FILE="$STATE_DIR/state.json"
 LOG_FILE="$STATE_DIR/watchdog.log"
 # Durable owner intent for the PC CI lanes. Written by the factory, read here.
 PC_PAUSE_FILE="${FORGE_WATCHDOG_PC_PAUSE_FILE:-$HOME/.local/state/last-stack/pc-ci/state.json}"
-FORGE_LOG="$HOME/.lastgit/forge-primary/forge.log"
+FORGE_LOG="${FORGE_WATCHDOG_FORGE_LOG:-$HOME/.lastgit/forge-primary/forge.log}"
 
 # Re-page cadence for a condition that stays broken (seconds). Page is immediate
 # on a new failure; this only throttles the nagging.
