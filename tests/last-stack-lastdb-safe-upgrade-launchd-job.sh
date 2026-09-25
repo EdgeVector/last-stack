@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+. "$ROOT/tests/ci/pid-is-live.sh"
 CHECKS="$ROOT/skills/lastdb-safe-upgrade/scripts/launchd-job-checks.sh"
 DRIVER="$ROOT/skills/lastdb-safe-upgrade/scripts/safe-upgrade-lastdb.sh"
 SKILL_MD="$ROOT/skills/lastdb-safe-upgrade/SKILL.md"
@@ -478,7 +479,7 @@ out="$(FAKE_PRINT_EXIT_TIMEOUT=5 FAKE_PRINT_PID=$fake_pid FAKE_KILL_PID=$fake_pi
   lastdb_launchd_graceful_prestop "$TMP/launchctl" gui/501/com.test.lastdbd "$prog" 20 150)"
 grep -q '^LASTDB_LAUNCHD_PRESTOP=ok .* forced_kill=0$' <<<"$out" \
   || { echo "FAIL: graceful pre-stop did not report ok: $out" >&2; exit 1; }
-kill -0 "$fake_pid" 2>/dev/null && { echo "FAIL: old daemon still alive after pre-stop" >&2; exit 1; }
+pid_is_live "$fake_pid" && { echo "FAIL: old daemon still alive after pre-stop" >&2; exit 1; }
 [ -x "$prog" ] && [ ! -e "$prog.prestop-hold" ] \
   || { echo "FAIL: pre-stop must put the program back" >&2; exit 1; }
 [ ! -e "$FAKE_LOADED_FILE" ] \
