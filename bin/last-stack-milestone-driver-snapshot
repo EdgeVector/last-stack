@@ -1,220 +1,343 @@
-#!/usr/bin/env bash
-# Capture and validate one milestone-driver input snapshot.
-set -euo pipefail
+#!/usr/bin/env python3
+"""Capture a fresh driver snapshot and fence each supported board mutation.
 
-usage() {
-  cat >&2 <<'USAGE'
-Usage:
-  last-stack-milestone-driver-snapshot capture --run-dir DIR --run-id ID [--preflight-bin PATH] [--kanban-bin PATH]
-  last-stack-milestone-driver-snapshot verify  --run-dir DIR --run-id ID --artifact PATH
-  last-stack-milestone-driver-snapshot consume --run-dir DIR --run-id ID --artifact PATH
-  last-stack-milestone-driver-snapshot guard   --run-dir DIR --run-id ID --artifact PATH -- COMMAND [ARG ...]
-USAGE
-  exit 2
-}
+The run ledger survives recapture. A reserved slot remains consumed after an
+uncertain command result; a retry needs a new run and fresh point reads.
+"""
+import argparse
+from datetime import datetime, timezone
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import time
+import uuid
 
-mode="${1:-}"
-[ -n "$mode" ] || usage
-shift
 
-run_dir="${ROUTINES_RUN_DIR:-}"
-run_id="${ROUTINES_RUN_ID:-}"
-artifact=""
-preflight_bin=""
-kanban_bin="${KANBAN_BIN:-kanban}"
-guard_command=()
+class Refusal(Exception):
+    def __init__(self, reason, code=1):
+        self.reason, self.code = reason, code
 
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --run-dir) run_dir="${2:-}"; shift 2 ;;
-    --run-id) run_id="${2:-}"; shift 2 ;;
-    --artifact) artifact="${2:-}"; shift 2 ;;
-    --preflight-bin) preflight_bin="${2:-}"; shift 2 ;;
-    --kanban-bin) kanban_bin="${2:-}"; shift 2 ;;
-    --) shift; guard_command=("$@"); break ;;
-    -h|--help) usage ;;
-    *) printf 'MILESTONE_DRIVER_SNAPSHOT error=unknown-argument arg=%s\n' "$1" >&2; usage ;;
-  esac
-done
 
-case "$run_dir" in
-  /*) ;;
-  *) printf 'MILESTONE_DRIVER_SNAPSHOT error=run-dir-must-be-absolute\n' >&2; exit 2 ;;
-esac
-[ "$run_dir" != "/" ] || {
-  printf 'MILESTONE_DRIVER_SNAPSHOT error=unsafe-run-dir\n' >&2
-  exit 2
-}
-[ -n "$run_id" ] || {
-  printf 'MILESTONE_DRIVER_SNAPSHOT error=missing-run-id\n' >&2
-  exit 2
-}
+def refuse(reason, code=1):
+    raise Refusal(reason, code)
 
-snapshot_dir="$run_dir/milestone-driver"
-expected_artifact="$snapshot_dir/gap-report.json"
-preflight_stamp="$snapshot_dir/preflight.json"
 
-validate_snapshot() {
-  [ -n "$artifact" ] || {
-    printf 'MILESTONE_DRIVER_SNAPSHOT error=missing-artifact\n' >&2
-    return 2
-  }
-  [ "$artifact" = "$expected_artifact" ] || {
-    printf 'MILESTONE_DRIVER_SNAPSHOT error=artifact-outside-current-run artifact=%s\n' "$artifact" >&2
-    return 1
-  }
-  [ -f "$artifact" ] && [ -f "$preflight_stamp" ] || {
-    printf 'MILESTONE_DRIVER_SNAPSHOT error=current-run-artifact-missing run_id=%s\n' "$run_id" >&2
-    return 1
-  }
+def load(path):
+    try:
+        return json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        refuse(f"invalid-json path={path}")
 
-  jq -e --arg run_id "$run_id" --arg artifact "$artifact" \
-    --slurpfile stamp "$preflight_stamp" '
-      ._milestone_driver_run as $run
-      | ($stamp[0]) as $preflight
-      | ($run.run_id == $run_id)
-        and ($preflight.run_id == $run_id)
-        and ($run.preflight_token == $preflight.preflight_token)
-        and ($run.preflight_succeeded == true)
-        and ($preflight.preflight_succeeded == true)
-        and ($run.preflight_succeeded_epoch >= 0)
-        and ($run.created_epoch >= $run.preflight_succeeded_epoch)
-        and ($run.artifact == $artifact)
-    ' "$artifact" >/dev/null || {
-      printf 'MILESTONE_DRIVER_SNAPSHOT error=stale-or-invalid-artifact run_id=%s artifact=%s\n' \
-        "$run_id" "$artifact" >&2
-      return 1
-    }
-}
 
-case "$mode" in
-  capture)
-    mkdir -p "$snapshot_dir"
-    backlog_artifact="$snapshot_dir/backlog.json"
-    todo_artifact="$snapshot_dir/todo.json"
-    doing_artifact="$snapshot_dir/doing.json"
-    portfolio_artifact="$snapshot_dir/portfolio.json"
-    candidate_artifact="$snapshot_dir/.gap-report.candidate.json"
-    final_artifact="$snapshot_dir/.gap-report.final.json"
+def save(path, value):
+    temporary = path.with_name(path.name + '.' + uuid.uuid4().hex)
+    with temporary.open('w') as stream:
+        stream.write(json.dumps(value, indent=2) + '\n')
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.replace(path)
 
-    # Clear this run's files before preflight. No former-run file can survive a stop.
-    rm -f "$expected_artifact" "$preflight_stamp" "$backlog_artifact" \
-      "$todo_artifact" "$doing_artifact" "$portfolio_artifact" \
-      "$candidate_artifact" "$final_artifact"
 
-    if [ -z "$preflight_bin" ]; then
-      script_dir="$(cd "$(dirname "$0")" && pwd -P)"
-      preflight_bin="$script_dir/last-stack-generator-preflight"
-    fi
+def point_read(board, argv):
+    try:
+        result = subprocess.run([board, *argv, '--json'], capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        refuse(f"point-read-timeout command={' '.join(argv)} seconds=30")
+    if result.returncode:
+        refuse(f"point-read-failed command={' '.join(argv)} rc={result.returncode}")
+    try:
+        value = json.loads(result.stdout)
+        if not isinstance(value, dict):
+            refuse(f"point-read-invalid command={' '.join(argv)}")
+        return value
+    except ValueError:
+        refuse(f"point-read-invalid command={' '.join(argv)}")
 
-    set +e
-    "$preflight_bin" milestone-driver >&2
-    preflight_rc=$?
-    set -e
-    if [ "$preflight_rc" -ne 0 ]; then
-      printf 'MILESTONE_DRIVER_PREFLIGHT stopped rc=%s run_id=%s no_board_commands=1\n' \
-        "$preflight_rc" "$run_id" >&2
-      exit "$preflight_rc"
-    fi
 
-    preflight_succeeded_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    preflight_succeeded_epoch="$(date -u +%s)"
-    preflight_token="$run_id-$$-$preflight_succeeded_epoch"
-    jq -n \
-      --arg run_id "$run_id" \
-      --arg token "$preflight_token" \
-      --arg succeeded_at "$preflight_succeeded_at" \
-      --argjson succeeded_epoch "$preflight_succeeded_epoch" \
-      '{run_id:$run_id, preflight_token:$token, preflight_succeeded:true,
-        preflight_succeeded_at:$succeeded_at,
-        preflight_succeeded_epoch:$succeeded_epoch}' >"$preflight_stamp"
+def detail(board, slug):
+    if not isinstance(slug, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', slug):
+        refuse('invalid-milestone-slug')
+    value = point_read(board, ['milestone', 'detail', slug])
+    milestone = value.get('milestone', {})
+    if (not isinstance(milestone, dict) or milestone.get('slug') != slug
+        or not isinstance(milestone.get('deps'), list)
+        or not all(isinstance(dep, str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', dep) for dep in milestone['deps'])):
+        refuse(f"milestone-evidence-invalid slug={slug}")
+    return value
 
-    # One board read per artifact. A failed read used to end the script under
-    # `set -e` with a zero-byte artifact and no diagnostic
-    # (papercut-milestone-driver-snapshot-empty-portfolio-20260922). Now a
-    # busy-node failure (BoardMilestones partition read failed, service_timeout,
-    # ...) gets two bounded retries, and a final failure prints one
-    # MILESTONE_DRIVER_SNAPSHOT error line with the step, rc and stderr tail.
-    capture_step() {
-      local step="$1" out="$2" err rc attempt=1
-      shift 2
-      err="$snapshot_dir/.$step.err"
-      while :; do
-        set +e
-        "$@" >"$out" 2>"$err"
-        rc=$?
-        set -e
-        if [ "$rc" -eq 0 ] && [ -s "$out" ]; then
-          rm -f "$err"
-          return 0
-        fi
-        if [ "$attempt" -lt 3 ] \
-          && grep -Eqi 'partition read failed|service_timeout|did not respond|too many concurrent|busy' "$err"; then
-          sleep $((attempt * 10))
-          attempt=$((attempt + 1))
-          continue
-        fi
-        printf 'MILESTONE_DRIVER_SNAPSHOT error=board-read-failed step=%s rc=%s attempts=%s run_id=%s stderr=%s\n' \
-          "$step" "$rc" "$attempt" "$run_id" \
-          "$(tr '\n' ' ' <"$err" | cut -c1-300)" >&2
-        exit 1
-      done
-    }
-    capture_step backlog "$backlog_artifact" "$kanban_bin" list --column backlog --json
-    capture_step todo "$todo_artifact" "$kanban_bin" list --column todo --json
-    capture_step doing "$doing_artifact" "$kanban_bin" list --column doing --json
-    capture_step portfolio "$portfolio_artifact" "$kanban_bin" milestone portfolio --json
-    capture_step gap-report "$candidate_artifact" "$kanban_bin" milestone gap-report --json
-    jq -e 'type == "object" and (.counts | type == "object") and (.work_queue | type == "array")' \
-      "$candidate_artifact" >/dev/null
 
-    created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    created_epoch="$(date -u +%s)"
-    jq \
-      --arg run_id "$run_id" \
-      --arg token "$preflight_token" \
-      --arg preflight_at "$preflight_succeeded_at" \
-      --arg created_at "$created_at" \
-      --arg artifact "$expected_artifact" \
-      --argjson preflight_epoch "$preflight_succeeded_epoch" \
-      --argjson created_epoch "$created_epoch" '
-        . + {"_milestone_driver_run": {
-          run_id: $run_id,
-          preflight_token: $token,
-          preflight_succeeded: true,
-          preflight_succeeded_at: $preflight_at,
-          preflight_succeeded_epoch: $preflight_epoch,
-          created_at: $created_at,
-          created_epoch: $created_epoch,
-          artifact: $artifact
-        }}
-      ' "$candidate_artifact" >"$final_artifact"
-    mv "$final_artifact" "$expected_artifact"
-    artifact="$expected_artifact"
-    validate_snapshot
-    jq -n \
-      --arg artifact "$artifact" \
-      --arg run_id "$run_id" \
-      --arg preflight_succeeded_at "$preflight_succeeded_at" \
-      --arg created_at "$created_at" \
-      '{artifact:$artifact, run_id:$run_id,
-        preflight_succeeded_at:$preflight_succeeded_at, created_at:$created_at}'
-    ;;
-  verify)
-    validate_snapshot
-    printf 'MILESTONE_DRIVER_SNAPSHOT valid run_id=%s artifact=%s\n' "$run_id" "$artifact"
-    ;;
-  consume)
-    validate_snapshot
-    cat "$artifact"
-    ;;
-  guard)
-    validate_snapshot
-    [ "${#guard_command[@]}" -gt 0 ] || {
-      printf 'MILESTONE_DRIVER_SNAPSHOT error=missing-guard-command\n' >&2
-      exit 2
-    }
-    exec "${guard_command[@]}"
-    ;;
-  *) usage ;;
-esac
+def prerequisites(board, root):
+    visiting, checked = set(), set()
+    cache = {root['milestone']['slug']: root}
+
+    def check(value):
+        slug = value['milestone']['slug']
+        if slug in visiting:
+            refuse(f"dependency-cycle slug={slug}")
+        if slug in checked:
+            return
+        if len(checked) + len(visiting) >= 128:
+            refuse('dependency-bound-exceeded')
+        visiting.add(slug)
+        for dependency in value['milestone']['deps']:
+            if dependency not in cache:
+                if len(cache) >= 128:
+                    refuse('dependency-bound-exceeded')
+                cache[dependency] = detail(board, dependency)
+            dep = cache[dependency]
+            ms = dep['milestone']
+            if ms.get('state') != 'complete' or dep.get('proof_verdict') not in ('passing', 'not_required'):
+                refuse(f"dependency-unsatisfied slug={dependency}")
+            if dep.get('proof_verdict') != ms.get('proof_status'):
+                refuse(f"dependency-proof-disagrees slug={dependency}")
+            check(dep)
+        visiting.remove(slug)
+        checked.add(slug)
+    check(root)
+
+
+def flags(args, allowed):
+    values = {}
+    index = 0
+    while index < len(args):
+        key = args[index]
+        if key not in allowed or key in values:
+            refuse(f"unsupported-or-duplicate-option option={key}")
+        if key == '--json':
+            values[key] = True
+            index += 1
+        else:
+            if index + 1 >= len(args) or args[index + 1].startswith('--'):
+                refuse(f"missing-option-value option={key}")
+            values[key] = args[index + 1]
+            index += 2
+    return values
+
+
+def has_section(body, title):
+    section = re.search(r'^##[ \t]+' + re.escape(title) + r'[ \t]*\r?\n(.*?)(?=^##[ \t]|\Z)', body, re.M | re.S)
+    return bool(section and section.group(1).strip())
+
+
+def authorize(command, board, control, report):
+    """Known command shapes only. No shell wrapper or raw PR add escape."""
+    program, args = Path(command[0]).name, command[1:]
+    owner, cost, action = None, 0, None
+    proof_status, proof_card = None, None
+    if program == 'last-stack-kanban-file-pr':
+        if not args:
+            refuse('missing-card-slug')
+        options = flags(args[1:], {'--title', '--repo', '--north-star', '--milestone',
+            '--column', '--deps', '--surfaces', '--base', '--tags', '--priority'})
+        owner = options.get('--milestone')
+        if not options.get('--surfaces', '').strip() or not any(s.strip() for s in options['--surfaces'].split(',')):
+            refuse('missing-source-surfaces')
+        if options.get('--column', 'todo') not in ('todo', 'backlog'):
+            refuse('invalid-new-card-column')
+        cost, action = 1, 'decompose'
+    elif program in ('kanban', 'fkanban', Path(board).name):
+        if len(args) >= 3 and args[0] == 'move' and args[2] == 'todo':
+            flags(args[3:], {'--json'})
+            card = point_read(board, ['show', args[1]])
+            if card.get('slug') != args[1] or card.get('column') != 'backlog':
+                refuse('promotion-card-not-backlog')
+            if not card.get('surfaces') or card.get('block_status') not in ('', 'none'):
+                refuse('promotion-held-or-missing-surfaces')
+            owner, cost, action = card.get('milestone'), 1, 'promote'
+        elif len(args) >= 3 and args[0] == 'milestone' and args[1] == 'add':
+            owner = args[2]
+            options = flags(args[3:], {'--proof-card', '--proof-status', '--json'})
+            proof_status = options.get('--proof-status')
+            proof_card = options.get('--proof-card')
+            if not proof_status and not options.get('--proof-card'):
+                refuse('empty-proof-update')
+        elif len(args) >= 4 and args[:2] == ['milestone', 'state'] and args[3] == 'complete':
+            owner = args[2]
+            options = flags(args[4:], {'--proof-status', '--json'})
+            proof_status = options.get('--proof-status')
+            action = 'complete_proof'
+        else:
+            refuse('unsupported-guard-command')
+    else:
+        refuse('unsupported-guard-program')
+    if not owner:
+        refuse('missing-owner-milestone')
+    if control['target'] and owner != control['target']:
+        refuse(f"target-mismatch expected={control['target']} actual={owner}")
+    current = detail(board, owner)
+    milestone = current['milestone']
+    if milestone.get('state') not in ('planned', 'active', 'proving'):
+        refuse(f"milestone-not-live slug={owner}")
+    if proof_status == 'not_required' and milestone.get('proof_status') != 'not_required':
+        refuse(f"proof-waiver-refused slug={owner}")
+    if proof_status is not None and proof_status not in ('pending', 'passing', 'not_required'):
+        refuse('unsupported-proof-status')
+    passing_current = current.get('proof_verdict') == 'passing' and milestone.get('proof_status') == 'passing'
+    if proof_status == 'passing' and not passing_current:
+        # A pending operator status deliberately has a pending live verdict.
+        # Bootstrap only from a current, terminal validation card with exact
+        # PASS evidence; the underlying state command repeats its proof gate.
+        linked = milestone.get('proof_card')
+        if not linked or milestone.get('proof_status') != 'pending':
+            refuse(f"passing-proof-not-current slug={owner}")
+        proof = point_read(board, ['show', linked, '--canonical'])
+        if (proof.get('slug') != linked or proof.get('milestone') != owner
+            or not milestone.get('board') or proof.get('board') != milestone['board']
+            or proof.get('kind') != 'validation' or proof.get('column') != 'done'
+            or not re.search(r'^[ \t]*(?:PROOF|RESULT):[ \t]*PASS[ \t]*$', proof.get('body', ''), re.M | re.I)):
+            refuse(f"passing-proof-not-current slug={owner}")
+        passing_current = True
+    if proof_card:
+        card = point_read(board, ['show', proof_card, '--canonical'])
+        body = card.get('body', '')
+        if (card.get('slug') != proof_card or card.get('milestone') != owner
+            or card.get('kind') != 'validation'
+            or not milestone.get('board') or card.get('board') != milestone['board']
+            or not has_section(body, 'GOAL') or not has_section(body, 'END STATE')
+            or not re.search(r'^DONE-WHEN:\s*\S', body, re.M)):
+            refuse('existing-proof-card-invalid')
+        if proof_status != 'pending':
+            refuse('proof-attachment-must-remain-pending')
+    if action == 'complete_proof':
+        if not (proof_status == 'passing' and passing_current or proof_status == 'not_required' and current.get('proof_verdict') == milestone.get('proof_status') == 'not_required'):
+            refuse(f"completion-proof-not-current slug={owner}")
+    prerequisites(board, current)
+    if action:
+        entries = [entry for entry in report.get('work_queue', [])
+                   if entry.get('slug') == owner and entry.get('action') == action]
+        if not entries:
+            refuse(f"action-not-in-current-queue slug={owner} action={action}")
+        if action == 'promote' and not any(args[1] in entry.get('promoteable', []) for entry in entries):
+            refuse('promotion-not-in-current-queue')
+    if cost and control['reserved_actions'] >= control['safety_cap']:
+        refuse(f"safety-cap-exhausted cap={control['safety_cap']}")
+    return cost, owner
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('mode', choices=['capture', 'verify', 'consume', 'guard'])
+    parser.add_argument('--run-dir', default=os.environ.get('ROUTINES_RUN_DIR', ''))
+    parser.add_argument('--run-id', default=os.environ.get('ROUTINES_RUN_ID', ''))
+    parser.add_argument('--artifact', default='')
+    parser.add_argument('--preflight-bin')
+    parser.add_argument('--kanban-bin', default=os.environ.get('KANBAN_BIN', 'kanban'))
+    argv = sys.argv[1:]
+    boundary = argv.index('--') if '--' in argv else len(argv)
+    command = argv[boundary + 1:]
+    args = parser.parse_args(argv[:boundary])
+    run = Path(args.run_dir)
+    if not run.is_absolute() or str(run) == '/':
+        refuse('run-dir-must-be-absolute', 2)
+    if not args.run_id:
+        refuse('missing-run-id', 2)
+    snapshot = run / 'milestone-driver'
+    snapshot.mkdir(parents=True, exist_ok=True)
+    expected = snapshot / 'gap-report.json'
+    stamp = snapshot / 'preflight.json'
+    ledger = snapshot / 'action-ledger.json'
+    # A kernel lock has no stale-owner cleanup path and cannot reset the budget.
+    with (snapshot / 'action.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            refuse('run-action-in-progress', 75)
+        control = load(ledger) if ledger.exists() else None
+        if control:
+            if control.get('run_id') != args.run_id:
+                refuse('run-ledger-id-mismatch')
+            for key, env in [('target', 'MILESTONE_DRIVER_TARGET'), ('safety_cap', 'MILESTONE_DRIVER_SAFETY_CAP')]:
+                if env in os.environ and str(control[key]) != os.environ[env]:
+                    refuse(f"run-scope-changed field={key}")
+        if args.mode == 'capture':
+            for name in ['gap-report.json', 'preflight.json', 'backlog.json', 'todo.json', 'doing.json', 'portfolio.json']:
+                (snapshot / name).unlink(missing_ok=True)
+            preflight = args.preflight_bin or str(Path(__file__).resolve().with_name('last-stack-generator-preflight'))
+            outcome = subprocess.run([preflight, 'milestone-driver'], stdout=sys.stderr)
+            if outcome.returncode:
+                print(f'MILESTONE_DRIVER_PREFLIGHT stopped rc={outcome.returncode} run_id={args.run_id} no_board_commands=1', file=sys.stderr)
+                return outcome.returncode
+            if control is None:
+                cap = os.environ.get('MILESTONE_DRIVER_SAFETY_CAP', '8')
+                if cap not in tuple(str(n) for n in range(1, 9)):
+                    refuse('invalid-safety-cap', 2)
+                control = {'run_id': args.run_id, 'target': os.environ.get('MILESTONE_DRIVER_TARGET', ''),
+                           'safety_cap': int(cap), 'reserved_actions': 0, 'actions': []}
+                save(ledger, control)
+            now = int(time.time())
+            preflight_at = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+            token = uuid.uuid4().hex
+            evidence = {'run_id': args.run_id, 'preflight_token': token,
+                        'preflight_succeeded': True, 'preflight_succeeded_epoch': now, 'preflight_succeeded_at': preflight_at}
+            save(stamp, evidence)
+            for step, argv in [('backlog', ['list', '--column', 'backlog']),
+                               ('todo', ['list', '--column', 'todo']), ('doing', ['list', '--column', 'doing']),
+                               ('portfolio', ['milestone', 'portfolio']), ('gap-report', ['milestone', 'gap-report'])]:
+                for attempt in range(1, 4):
+                    result = subprocess.run([args.kanban_bin, *argv, '--json'], capture_output=True, text=True)
+                    (snapshot / (step + '.json')).write_text(result.stdout)
+                    if result.returncode == 0 and result.stdout.strip():
+                        break
+                    if attempt < 3 and re.search(r'partition read failed|service_timeout|did not respond|too many concurrent|busy', result.stderr, re.I):
+                        time.sleep(attempt * 10)
+                        continue
+                    refuse(f"board-read-failed step={step} rc={result.returncode} attempts={attempt} run_id={args.run_id} stderr={result.stderr[:300].replace(chr(10), ' ')}")
+                value = load(snapshot / (step + '.json'))
+            if not isinstance(value.get('counts'), dict) or not isinstance(value.get('work_queue'), list):
+                refuse('invalid-gap-report')
+            value['_milestone_driver_run'] = {**evidence, 'created_epoch': int(time.time()),
+                'artifact': str(expected), 'target': control['target'], 'safety_cap': control['safety_cap'],
+                'created_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}
+            save(expected, value)
+            print(json.dumps({'artifact': str(expected), 'run_id': args.run_id,
+                'target': control['target'], 'safety_cap': control['safety_cap'], 'reserved_actions': control['reserved_actions'],
+                'preflight_succeeded_at': preflight_at, 'created_at': value['_milestone_driver_run']['created_at']}))
+            return 0
+        if args.artifact != str(expected):
+            refuse('artifact-outside-current-run')
+        if not control or not stamp.exists() or not expected.exists():
+            refuse('current-run-artifact-missing')
+        report, preflight = load(expected), load(stamp)
+        metadata = report.get('_milestone_driver_run', {})
+        if not (metadata.get('run_id') == preflight.get('run_id') == args.run_id
+            and metadata.get('preflight_token') == preflight.get('preflight_token')
+            and metadata.get('preflight_succeeded') is True and preflight.get('preflight_succeeded') is True
+            and isinstance(metadata.get('created_epoch'), int)
+            and metadata.get('preflight_succeeded_epoch') == preflight.get('preflight_succeeded_epoch')
+            and metadata.get('created_epoch', -1) >= preflight.get('preflight_succeeded_epoch', 0) >= 0
+            and metadata.get('artifact') == str(expected)
+            and metadata.get('target') == control['target'] and metadata.get('safety_cap') == control['safety_cap']):
+            refuse('stale-or-invalid-artifact')
+        if args.mode == 'verify':
+            print(f'MILESTONE_DRIVER_SNAPSHOT valid run_id={args.run_id} artifact={expected}')
+        elif args.mode == 'consume':
+            print(json.dumps(report))
+        else:
+            if not command:
+                refuse('missing-guard-command', 2)
+            cost, owner = authorize(command, args.kanban_bin, control, report)
+            control['reserved_actions'] += cost
+            control['actions'].append({'command': command, 'milestone': owner, 'cost': cost, 'state': 'reserved'})
+            save(ledger, control)
+            try:
+                result = subprocess.run(command)
+            except OSError as error:
+                control['actions'][-1].update(state='launch_failed', error=str(error))
+                save(ledger, control)
+                refuse(f"command-launch-failed error={error}")
+            control['actions'][-1].update(state='returned', exit_code=result.returncode)
+            save(ledger, control)
+            return result.returncode
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except Refusal as error:
+        print(f'MILESTONE_DRIVER_SNAPSHOT error={error.reason}', file=sys.stderr)
+        sys.exit(error.code)

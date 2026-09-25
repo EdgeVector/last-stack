@@ -14,7 +14,7 @@ bash -n "$ROOT/bin/last-stack-canary-loom"
 bash -n "$ROOT/bin/last-stack-lastdb-canary-candidate-set-routine"
 bash -n "$ROOT/bin/last-stack-fold-ci-health"
 bash -n "$ROOT/bin/last-stack-generator-preflight"
-bash -n "$ROOT/bin/last-stack-milestone-driver-snapshot"
+python3 -m py_compile "$ROOT/bin/last-stack-milestone-driver-snapshot"
 [ -x "$ROOT/bin/last-stack-milestone-driver-snapshot" ] \
   || fail "milestone-driver snapshot helper is not executable"
 bash -n "$ROOT/bin/last-stack-milestone-driver-gate"
