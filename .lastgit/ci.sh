@@ -308,6 +308,9 @@ ci_test tests/last-stack-pr-reaper-stale-open-heal.sh
 # CR whose head never reached main. Required, not FULL-only — the defect it
 # covers removed CRs from the open inventory, so nothing downstream noticed.
 ci_test tests/last-stack-pr-reaper-close-guard.sh
+# PR reaper lifecycle safety: requeue owned recovery cards and distinguish empty
+# ledger reads from valid empty plans (pr-reaper fix #195).
+ci_test tests/last-stack-pr-reaper-lifecycle-safety.sh
 ci_test tests/last-stack-factory-hardening.sh
 ci_test tests/last-stack-milestone-driver-snapshot.sh
 ci_test tests/last-stack-factory-ready-buffer-activation.sh

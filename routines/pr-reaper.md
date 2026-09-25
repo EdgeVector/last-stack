@@ -57,16 +57,28 @@ pass-level `error`).
 ```bash
 run_dir="${ROUTINES_RUN_DIR:-$(mktemp -d)}"
 "$last_stack/bin/last-stack-pipeline-forge-pr-ledger" reap-plan --json >"$run_dir/reap-plan.json" 2>"$run_dir/reap-plan.err" || true
-jq -r '.reap_plan[] | [.repo, .number, .age_min, .guard_verdict, .guard_reason, .may_close, .may_merge] | @tsv' "$run_dir/reap-plan.json"
+jq -r '.reap_plan[] | [.repo, .number, .age_min, .guard_verdict, .guard_reason, .may_close, .may_merge, .owned_by] | @tsv' "$run_dir/reap-plan.json"
 jq -r '.unreadable[] | [.repo, .error] | @tsv' "$run_dir/reap-plan.json"
+
+plan_valid="$(jq -r '.plan_valid // false' "$run_dir/reap-plan.json")"
+if [ "$plan_valid" != "true" ] && jq -e '.unreadable | length > 0' "$run_dir/reap-plan.json" >/dev/null 2>&1; then
+  heartbeat "error flagged=forge-unreadable-repos"
+  exit 1
+fi
 ```
 
 The helper reads every repo in `config/merge-demand-forge-repos` (fold,
 lastgit, exemem-infra, last-stack, fkanban, routines, loom). For each PR open
 longer than 60 minutes it has ALREADY run the close guard (STEP 2) and a fresh
 point read. `may_close=true` means: guard `close-ok`, still open, head
-unchanged. `may_merge=true` means: every required context green, still open,
+unchanged, and NOT owned by an active Loom recovery. `may_merge=true` means: every required context green, still open,
 head unchanged. Act only on those rows, one explicit API call per row.
+
+**Ownership check:** `.owned_by` names a kanban card when the PR's head branch
+is `kanban/<slug>`, the card is in doing, has an assignee, and was updated
+within `--owner-fresh-min` (default 120 min). If `.owned_by` is not empty, the
+reaper does NOT close the PR or requeue the card — it belongs to an active
+Loom recovery and will be re-reaped next round if still over-age.
 
 CAUTION: do not write your own loop over `"repo pr"` strings, and do not re-run
 the guard in a loop. Under zsh, `set -- $spec` does not word-split, `set -u`
