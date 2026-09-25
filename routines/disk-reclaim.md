@@ -128,6 +128,17 @@ continue — do not fail the whole run.
    strip `target`/`node_modules`, then remove only when clean + not `doing` +
    no live cwd. Never leave multi‑GB `target/` dirs behind even when keeping a
    tree.
+3c. **Reclaim finished Loom step worktrees.** Loom keeps one worktree per
+   execution step under `~/.loom/worktrees` and never removes it; the helper
+   above does not walk that root. On 2026-09-25 it held 40 trees / 20 GiB at
+   28 GiB free. Run:
+   ```bash
+   "$last_stack/bin/last-stack-loom-worktree-reclaim"
+   ```
+   It removes a tree only when `loom show` reports `succeeded`/`cancelled`
+   (after 60 min) or `failed` (after 48 h) and no process uses it; lsof
+   failure keeps every tree. Add its last-line `loom_wt_*` tokens to the
+   heartbeat.
 3b. **Reclaim leaked LastDB dev homes.** Agents given a private
    `LASTDB_DEV_HOME` left 74 GB of CoW clones on 2026-09-22 and the Forge CI
    host then failed tests with `Too many open files (os error 24)`

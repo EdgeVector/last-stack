@@ -69,7 +69,8 @@ if [ -s "$tmp/unaccounted" ]; then
   status=1
   echo "these test files run in NO required gate and are not recorded as exclusions:" >&2
   sed 's/^/  /' "$tmp/unaccounted" >&2
-  echo "  fix: add 'ci_test <path>' at the END of .lastgit/ci.sh (position shards)," >&2
+  echo "  fix: add 'ci_test <path>' at the end of .lastgit/ci.sh, just ABOVE the final" >&2
+  echo "       'ci_test tests/last-stack-ci-test-registration.sh' line (it must stay last)," >&2
   echo "       or add '<path><TAB><reason>' to tests/.ci-exempt" >&2
 fi
 

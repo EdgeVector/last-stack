@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+# Reclaim Loom step worktrees under ~/.loom/worktrees whose execution is over.
+#
+# Loom creates one git worktree per execution step (`<exec-id>#<STEP>`, plus a
+# `<exec-id>#<STEP>.loom-guard` file) and never removes it. The kanban pool
+# helper (last-stack-worktree-reclaim) only walks ~/.fkanban/worktrees, so
+# nothing reclaimed these. On 2026-09-25 the pool held 40 trees and 20 GiB
+# (6.6 GiB of fold target/ in one succeeded run) while the disk sat at 28 GiB
+# free and papercut-low-disk-emergency was open at p0.
+#
+# Usage:
+#   last-stack-loom-worktree-reclaim [--dry-run] [--min-age-minutes 60]
+#                                    [--failed-age-hours 48]
+#
+# A worktree is removed only when ALL hold:
+#   1. `loom show <exec-id>` answers, and its status is terminal:
+#        succeeded | cancelled  -> reclaim after --min-age-minutes (grace)
+#        failed                 -> reclaim after --failed-age-hours (a human
+#                                  may still want to read the tree)
+#      Any other status, or an unreadable execution, keeps the tree.
+#   2. No process has its cwd in the tree and no process command line names
+#      it. When lsof cannot run, every tree is kept (fail closed).
+#   3. A dirty tree first gets a patch in the worktree-patches dir.
+# Removal is `git worktree remove --force` against the tree's own gitdir, with
+# an rm + `git worktree prune` fallback, then the `.loom-guard` file goes.
+#
+# The last stdout line carries heartbeat tokens:
+#   loom_wt_seen= loom_wt_reclaimed= loom_wt_kept= loom_wt_liveness_unavailable=
+# Exit 0 on success, including nothing to do.
+#
+# Test knobs: LOOM_WORKTREES_DIR (root), LOOM_BIN (loom command),
+# LAST_STACK_LOOM_RECLAIM_LSOF (lsof command).
+set -euo pipefail
+
+home="${HOME:?HOME must be set}"
+root="${LOOM_WORKTREES_DIR:-$home/.loom/worktrees}"
+loom_bin="${LOOM_BIN:-loom}"
+lsof_bin="${LAST_STACK_LOOM_RECLAIM_LSOF:-lsof}"
+patch_root="${LAST_STACK_WORKTREE_PATCH_DIR:-$home/.local/state/last-stack/runtime/worktree-patches}"
+dry_run=0
+min_age_minutes=60
+failed_age_hours=48
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dry-run) dry_run=1; shift ;;
+    --min-age-minutes) min_age_minutes="${2:?}"; shift 2 ;;
+    --failed-age-hours) failed_age_hours="${2:?}"; shift 2 ;;
+    -h|--help) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+log() { printf 'last-stack-loom-worktree-reclaim: %s\n' "$*"; }
+
+seen=0
+reclaimed=0
+kept=0
+liveness_unavailable=0
+
+if [ ! -d "$root" ]; then
+  log "no root $root"
+  echo "loom_wt_seen=0 loom_wt_reclaimed=0 loom_wt_kept=0 loom_wt_liveness_unavailable=0"
+  exit 0
+fi
+root="$(cd "$root" && pwd -P)"
+
+# One liveness snapshot per run: every process cwd, plus command lines.
+live_file="$(mktemp "${TMPDIR:-/tmp}/loom-wt-live.XXXXXX")"
+trap 'rm -f "$live_file"' EXIT
+if "$lsof_bin" +c 0 -nP -a -u "$(id -un)" -d cwd -Fn >"$live_file.raw" 2>/dev/null \
+  && [ -s "$live_file.raw" ]; then
+  sed -n 's/^n//p' "$live_file.raw" >>"$live_file"
+else
+  liveness_unavailable=1
+  log "liveness_probe_failed instrument=lsof (keeping every tree)"
+fi
+rm -f "$live_file.raw"
+# shellcheck disable=SC2009 # need full argv lines, not pids
+ps -axo command= 2>/dev/null | grep -F -- "$root" >>"$live_file" || true
+
+is_live() {
+  local wt="$1"
+  [ "$liveness_unavailable" -eq 1 ] && return 0
+  grep -qF -- "$wt" "$live_file"
+}
+
+mtime_of() {
+  if stat --version >/dev/null 2>&1; then
+    stat -c %Y "$1" 2>/dev/null || echo 0
+  else
+    stat -f %m "$1" 2>/dev/null || echo 0
+  fi
+}
+
+save_patch() {
+  local wt="$1" name patch
+  git -C "$wt" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  [ -n "$(git -C "$wt" status --porcelain 2>/dev/null || true)" ] || return 0
+  name="$(basename "$wt" | tr '#' '_')"
+  patch="$patch_root/loom-${name}-$(date -u +%Y%m%dT%H%M%SZ).patch"
+  if [ "$dry_run" -eq 1 ]; then
+    log "dry-run would save dirty patch $patch"
+    return 0
+  fi
+  mkdir -p "$patch_root"
+  {
+    git -C "$wt" diff --binary HEAD 2>/dev/null || true
+    git -C "$wt" ls-files --others --exclude-standard 2>/dev/null | sed 's/^/# untracked: /'
+  } >"$patch"
+  log "saved dirty patch $patch"
+}
+
+remove_tree() {
+  local wt="$1" gitdir common
+  if [ "$dry_run" -eq 1 ]; then
+    log "dry-run would remove $wt"
+    return 0
+  fi
+  common=""
+  if [ -f "$wt/.git" ]; then
+    gitdir="$(sed -n 's/^gitdir: //p' "$wt/.git")"
+    [ -n "$gitdir" ] && common="$(git --git-dir="$gitdir" rev-parse --git-common-dir 2>/dev/null || true)"
+    case "$common" in /*) ;; ?*) common="$gitdir/$common" ;; esac
+  fi
+  if [ -n "$common" ] && git --git-dir="$common" worktree remove --force "$wt" >/dev/null 2>&1; then
+    :
+  else
+    rm -rf "$wt"
+    [ -n "$common" ] && git --git-dir="$common" worktree prune >/dev/null 2>&1 || true
+  fi
+  rm -f "$wt.loom-guard"
+  log "removed $wt"
+}
+
+now="$(date +%s)"
+for wt in "$root"/*; do
+  [ -d "$wt" ] || continue
+  name="$(basename "$wt")"
+  case "$name" in *'#'*) ;; *) continue ;; esac
+  seen=$((seen + 1))
+  exec_id="${name%%#*}"
+  status="$("$loom_bin" show "$exec_id" 2>/dev/null | sed -n 's/^status:[[:space:]]*//p' | head -n 1 || true)"
+  age=$((now - $(mtime_of "$wt")))
+  case "$status" in
+    succeeded|cancelled) need=$((min_age_minutes * 60)) ;;
+    failed) need=$((failed_age_hours * 3600)) ;;
+    *)
+      log "keep status=${status:-unreadable} $name"
+      kept=$((kept + 1))
+      continue
+      ;;
+  esac
+  if [ "$age" -lt "$need" ]; then
+    log "keep young status=$status age_min=$((age / 60)) $name"
+    kept=$((kept + 1))
+    continue
+  fi
+  if is_live "$wt"; then
+    log "keep live status=$status $name"
+    kept=$((kept + 1))
+    continue
+  fi
+  log "reclaim status=$status age_h=$((age / 3600)) $name"
+  save_patch "$wt"
+  remove_tree "$wt"
+  reclaimed=$((reclaimed + 1))
+done
+
+echo "loom_wt_seen=$seen loom_wt_reclaimed=$reclaimed loom_wt_kept=$kept loom_wt_liveness_unavailable=$liveness_unavailable dry_run=$dry_run"
