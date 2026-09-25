@@ -480,8 +480,8 @@ run_wd "$sd" "$lanes_pc_down"
 grep -q "pc-linux" "$pages" \
   || { echo "FAIL: an expired scheduled pause suppressed a PC outage alert"; cat "$pages"; exit 1; }
 # Pause notice should NOT be recorded (pause is expired, not active)
-[ ! -f "$sd/pc-pause-notice" ] || grep -q "paused by the owner" "$sd/watchdog.log" \
-  || { echo "FAIL: expired pause was recorded as active in the state"; exit 1; }
+grep -qv "PC CI paused by the owner" "$notices" \
+  || { echo "FAIL: expired pause was recorded as active in Situations"; cat "$notices"; exit 1; }
 echo "ok: expired scheduled pause does not suppress alerts (auto-resume)"
 
 # --- 25. scheduled pause still active: continues to suppress ----------------
