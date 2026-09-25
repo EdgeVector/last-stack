@@ -5,7 +5,18 @@ BOARD_CLI="${LAST_STACK_READY_BUFFER_BOARD_CLI:-kanban}"
 ROUTINES_CLI="${LAST_STACK_READY_BUFFER_ROUTINES_CLI:-routines}"
 DRIVER_ID="${LAST_STACK_READY_BUFFER_DRIVER_ID:-last-stack-milestone-driver}"
 NS_DRIVER_ID="${LAST_STACK_READY_BUFFER_NS_DRIVER_ID:-last-stack-north-star-driver}"
-REFILL_CLI="${LAST_STACK_READY_BUFFER_REFILL_CLI:-$(dirname -- "$0")/last-stack-portfolio-auto-refill}"
+# ~/.local/bin links this script; resolve the link chain so the sibling
+# refill helper is found in the installed artifact, not in ~/.local/bin.
+self="$0"
+while [ -L "$self" ]; do
+  link="$(readlink "$self")"
+  case "$link" in
+    /*) self="$link" ;;
+    *) self="$(dirname -- "$self")/$link" ;;
+  esac
+done
+SELF_DIR="$(CDPATH= cd -- "$(dirname -- "$self")" && pwd -P)"
+REFILL_CLI="${LAST_STACK_READY_BUFFER_REFILL_CLI:-$SELF_DIR/last-stack-portfolio-auto-refill}"
 THRESHOLD="${LAST_STACK_READY_BUFFER_THRESHOLD:-3}"
 COOLDOWN_S="${LAST_STACK_READY_BUFFER_COOLDOWN_S:-1800}"
 NOW_EPOCH="${LAST_STACK_READY_BUFFER_NOW_EPOCH:-$(date +%s)}"
