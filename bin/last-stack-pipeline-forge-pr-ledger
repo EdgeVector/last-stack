@@ -26,6 +26,11 @@ This helper replaces both:
            is not a PR defect. It is attributed to the per-repo root-cause row
              papercut-pipeline-forge-<repo>-main-red
            and no per-PR row is written.
+         - a green, mergeable PR that nobody armed for auto-merge is not a PR
+           defect either: nobody asked for the merge. It is RECORDED in the
+           heartbeat as `green_unarmed=` and in the actions as
+           `action=green-unarmed`, and no row is written. Its owner is the
+           card's `needs_human` decision, not this ledger. See merge_intent().
          - every row this helper tracks is closed `verified` with a live point
            read once its PR is merged or closed, or (main-red rows) once the
            base tip is green on every required context.
@@ -185,6 +190,44 @@ def repo_token(repo: str) -> str:
     return re.sub(r"[^a-z0-9-]+", "-", repo.rsplit("/", 1)[-1].lower()).strip("-")
 
 
+def merge_intent(repo: str, number: int) -> str:
+    """Does anybody want this green PR merged? "armed" | "unarmed" | "unknown".
+
+    A green, mergeable, UNARMED PR is not a pipeline defect: nobody asked for
+    the merge. The state is produced on purpose — a loom land-card execution
+    that parked because its review escalated at cap, a proof still in flight, a
+    PR held for a human decision — and the board carries it as the owning card's
+    `needs_human` block reason. Filing a p0 pipeline row for it puts a
+    deliberate park at the top of the factory's priority queue, and the row can
+    never close, because nothing will merge the PR. `merge-green` already makes
+    exactly this judgment for the same PR (verdict `green-not-armed`, "Nobody
+    asked for a merge"); before 2026-09-25 the stuck classifier did not, so the
+    two halves of this helper disagreed about one PR.
+
+    "armed" is the real defect: Forgejo 15.0.3 never fires a schedule armed
+    after the last required status went green
+    (papercut-forgejo-auto-merge-armed-after-green-never-fires-20260923), and
+    `merge-green --apply` is its repair.
+
+    Who owns an unarmed green PR instead of this ledger: `pr-reaper`, whose
+    1-hour open-PR SLA (Tom directive 2026-07-19) drives ANY PR open past 60
+    minutes to a terminal state — merged when it is green and mergeable, closed
+    otherwise, with no class exempt by age. That is why `may_merge` in the reap
+    plan is deliberately NOT gated on this value: the reaper's job does not
+    change. Only the papercut ledger's does. The board carries the same PR a
+    second time, as the owning card's `needs_human` block reason when a loom
+    execution parked it.
+
+    A timeline read that fails answers "unknown", which stays stuck: an
+    unreadable probe must not silence a row.
+    """
+    try:
+        armed, _ = schedule_state(repo, number)
+    except ForgeError:
+        return "unknown"
+    return "armed" if armed else "unarmed"
+
+
 def pr_slug(repo: str, number: int) -> str:
     return f"papercut-pipeline-forge-{repo_token(repo)}-pr-{number}"
 
@@ -237,6 +280,11 @@ def heartbeat_fields(report: dict[str, Any]) -> str:
         f"stuck_prs={','.join(stuck) or '-'}",
         f"unreadable={','.join(u['repo'].rsplit('/', 1)[-1] for u in report.get('unreadable', [])) or '-'}",
     ]
+    # Recorded, not filed: a green PR nobody armed is the owning card's
+    # needs_human decision, so the heartbeat names it and no p0 row is written.
+    unarmed = [f"{p['repo'].rsplit('/', 1)[-1]}#{p['number']}" for p in report.get("prs", []) if p.get("stuck_excluded") == "green-unarmed"]
+    if unarmed:
+        fields.append(f"green_unarmed={','.join(unarmed)}")
     ledger = report.get("ledger")
     if ledger:
         counts: dict[str, int] = {}
@@ -320,7 +368,14 @@ def scan_repo(repo: str, args: argparse.Namespace, now: dt.datetime) -> tuple[di
         else:
             shape = verdict  # pending | absent | unreadable
         stuck = False
-        if age_min is not None and age_min >= args.min_age_min and shape in {"conflict", "red", "green-unmerged"}:
+        over_age = age_min is not None and age_min >= args.min_age_min
+        # "" — the field does not apply (this PR is not green).
+        # "not-read" — green but under --min-age-min, so the answer cannot
+        #              change any verdict this pass and the read is skipped.
+        intent = "" if shape != "green-unmerged" else ("not-read" if not over_age else merge_intent(repo, number))
+        if over_age and shape in {"conflict", "red"}:
+            stuck = True
+        if over_age and shape == "green-unmerged" and intent != "unarmed":
             stuck = True
         if idle_min is not None and idle_min >= args.pending_stale_min and shape in {"pending", "absent"}:
             stuck = True
@@ -341,6 +396,8 @@ def scan_repo(repo: str, args: argparse.Namespace, now: dt.datetime) -> tuple[di
                 "required": {c: states.get(c, "absent") for c in base["required"]},
                 "red_contexts": red,
                 "shape": shape,
+                "merge_intent": intent,
+                "stuck_excluded": "green-unarmed" if (over_age and shape == "green-unmerged" and intent == "unarmed") else "",
                 "stuck": stuck,
                 "root_cause": root_cause,
                 "ledger_slug": main_red_slug(repo) if root_cause else pr_slug(repo, number),
@@ -447,8 +504,9 @@ def live_card_owner(args: argparse.Namespace, pr: dict[str, Any], now: dt.dateti
 
 def evidence_line(pr: dict[str, Any], checked_at: str) -> str:
     req = ", ".join(f"{c}={s}" for c, s in pr["required"].items())
+    intent = f" intent={pr['merge_intent']}" if pr.get("merge_intent") else ""
     return (
-        f"- {checked_at}: {pr['repo']}#{pr['number']} shape={pr['shape']} head={pr['head_sha'][:12]} "
+        f"- {checked_at}: {pr['repo']}#{pr['number']} shape={pr['shape']}{intent} head={pr['head_sha'][:12]} "
         f"mergeable={pr['mergeable']} age_min={pr['age_min']} required: {req}\n"
     )
 
@@ -494,6 +552,11 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                 pr["root_cause"] = "known"
                 pr["ledger_slug"] = rc_slug
                 break
+
+    # 0b. a green PR nobody armed is recorded, never filed (see merge_intent).
+    for pr in report["prs"]:
+        if pr.get("stuck_excluded") == "green-unarmed":
+            act("green-unarmed", pr_slug(pr["repo"], pr["number"]), age_min=pr["age_min"])
 
     # 1. stuck PRs → file or append (one row per PR, or one per repo when main is red)
     grouped: dict[str, list[dict[str, Any]]] = {}
@@ -715,6 +778,10 @@ def reap_plan(args: argparse.Namespace) -> dict[str, Any]:
                 "owned_by": owned_by,
                 # The only rows the reaper may terminalize this pass.
                 "may_close": still_open and fresh["head_sha"] == pr["head_sha"] and guard.get("verdict") == "close-ok" and not owned_by,
+                # Informational. may_merge is NOT gated on it: the reaper's
+                # 1-hour SLA terminalizes an unarmed green PR by merging it, and
+                # that directive is unchanged by this field.
+                "merge_intent": pr.get("merge_intent", ""),
                 "may_merge": still_open and fresh["head_sha"] == pr["head_sha"] and pr["shape"] == "green-unmerged",
             }
         )
@@ -741,6 +808,12 @@ def schedule_state(repo: str, number: int) -> tuple[bool, dt.datetime | None]:
     armed, armed_at = False, None
     for page in range(1, 11):  # bounded: 10 pages x 50 events
         events = forge_get(f"repos/{repo}/issues/{number}/timeline?limit=50&page={page}")
+        if page == 1 and not isinstance(events, list):
+            # A timeline that does not read as a list of events is UNREADABLE.
+            # Answering "not armed" here would let a broken read look like
+            # "nobody asked for the merge", which is the one thing every caller
+            # of this function decides on.
+            raise ForgeError(f"repos/{repo}/issues/{number}/timeline: response is not a list")
         if not isinstance(events, list) or not events:
             break
         for ev in events:
