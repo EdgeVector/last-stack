@@ -91,6 +91,7 @@ require 'last-stack-feature-portfolio-admission' "$north"
 require '--work-class feature' "$north"
 require 'admission-record-unreadable' "$north"
 require 'admission-paused' "$north"
+require 'Steps 4-6 choose among admitted North Stars only' "$north"
 require 'never admits a third outcome' "$north"
 
 require 'Portfolio admission gate' "$milestone"

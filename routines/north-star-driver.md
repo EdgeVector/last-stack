@@ -163,6 +163,13 @@ Use the milestone portfolio captured by the creation inventory gate. Then:
      --limit 30 --json` — treat hits as incomplete, never as membership.
    Then `brain get <slug> --type project` for each candidate slug. Skip misses.
 3. Ignore done, archived, retired, or definition-incomplete North Stars.
+   In an untargeted run, also drop every candidate that does not hold the
+   Primary or Secondary slot: run the admission gate below for each candidate
+   and keep only `rc=0`. Steps 4-6 choose among admitted North Stars only.
+   A pending request on a paused North Star waits for admission; it must not
+   consume the pass. (2026-09-25: a paused North Star's pending request won
+   step 4 on every pass, the gate then reported `admission-paused`, and the
+   newly admitted Secondary never got a milestone.)
 4. Prefer the oldest explicit approved request marker in a North Star body:
    `MILESTONE_REQUEST slug=<slug> status=pending`, followed by its Outcome and
    Acceptance text.
@@ -201,7 +208,8 @@ fi
 - `rc=0` — the North Star holds the Primary or the Secondary slot. Continue.
 - `rc=2` — the North Star is paused for new feature creation. Create no
   milestone for it. Report `noop admission-paused north_star=<slug>` and pick
-  no replacement outcome in this pass.
+  no replacement outcome in this pass. In an untargeted run this means no admitted
+  North Star had an eligible outcome after the selection filter above.
 - `rc=1` — the admission record is missing or malformed. Create nothing.
   Report `noop admission-record-unreadable` and stop. This is fail-closed by
   design.
