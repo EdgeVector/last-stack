@@ -91,8 +91,10 @@ fresh = card("just-filed", updated_at=_t.strftime("%Y-%m-%dT%H:%M:%SZ", _t.gmtim
 check("fresh card ignored", fh.unreachable_backlog_cards([fresh], _t.time(), 3.0), [])
 
 # Oldest first, and the snapshot carries count + oldest age + a capped sample.
+# Hermetic: never let the snapshot reach the live forge or LastGit.
+NO_SHIPS = fh.ShipRead.missing("unavailable")
 many = [card(f"c{i}") for i in range(7)]
-snap, _ = fh.build_snapshot(many, None, True, parked_min_age_h=3.0)
+snap, _ = fh.build_snapshot(many, None, True, parked_min_age_h=3.0, ship_read=NO_SHIPS)
 check("snapshot count", snap.parked_ungated, 7)
 check("sample capped at 5", len(snap.parked_ungated_slugs), 5)
 if snap.parked_ungated_oldest_h <= 0:
@@ -121,11 +123,11 @@ if "c0" not in alerts[0].detail:
 if "live_pr_milestone_required" not in alerts[0].detail:
     fails.append("detail does not name the gate that refuses them")
 
-snap_hard, _ = fh.build_snapshot([card(f"h{i}") for i in range(12)], None, True, 3.0)
+snap_hard, _ = fh.build_snapshot([card(f"h{i}") for i in range(12)], None, True, 3.0, ship_read=NO_SHIPS)
 check("hard fires at 12", [a.code for a in codes_for(band, snap_hard)],
       ["backlog_unreachable_hard"])
 
-clean, _ = fh.build_snapshot([card("ok", milestone="ms-real")], None, True, 3.0)
+clean, _ = fh.build_snapshot([card("ok", milestone="ms-real")], None, True, 3.0, ship_read=NO_SHIPS)
 check("silent when healthy", [a.code for a in codes_for(band, clean)], [])
 check("respects enabled=false",
       [a.code for a in codes_for({"enabled": False}, snap)], [])
