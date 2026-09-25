@@ -677,6 +677,7 @@ ci_test tests/last-stack-feature-portfolio-admission.sh
 ci_test tests/last-stack-fkanban-compat-skills.sh
 ci_test tests/last-stack-forge-json-jq.sh
 ci_test tests/last-stack-forge-runner-lanes.sh
+ci_test tests/last-stack-forge-ci-pc-route.sh
 ci_test tests/last-stack-forge-runner-watchdog.sh
 ci_test tests/last-stack-gh-pr-queue-state.sh
 ci_test tests/last-stack-git-checkout-freshness.sh
