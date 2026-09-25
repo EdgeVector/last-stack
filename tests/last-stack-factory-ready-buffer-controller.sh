@@ -24,7 +24,14 @@ printf 'cap=%s trigger=%s args=%s\n' \
   "$*" >> "$ROUTINES_LOG"
 EOF
 
-chmod +x "$TMP/bin/kanban" "$TMP/bin/routines"
+cat > "$TMP/bin/refill" <<'EOF'
+#!/bin/sh
+set -eu
+[ "${FAKE_REFILL:-no-trigger-supply-not-drained}" != fail ] || exit 1
+printf '{"verdict":"%s"}\n' "${FAKE_REFILL:-no-trigger-supply-not-drained}"
+EOF
+
+chmod +x "$TMP/bin/kanban" "$TMP/bin/routines" "$TMP/bin/refill"
 
 run_controller() {
   ready="$1"
@@ -34,6 +41,7 @@ run_controller() {
   ROUTINES_LOG="$TMP/routines.log" \
   LAST_STACK_READY_BUFFER_BOARD_CLI="$TMP/bin/kanban" \
   LAST_STACK_READY_BUFFER_ROUTINES_CLI="$TMP/bin/routines" \
+  LAST_STACK_READY_BUFFER_REFILL_CLI="$TMP/bin/refill" \
   LAST_STACK_READY_BUFFER_STATE_FILE="$state_file" \
   LAST_STACK_READY_BUFFER_NOW_EPOCH="$now_epoch" \
     "$CONTROLLER" --json
@@ -94,6 +102,28 @@ out="$(run_controller 0 "$stale_state" 5000)"
 
 out="$(run_controller 3 "$TMP/state/no-lock-recovery" 5000)"
 [ "$(printf '%s\n' "$out" | jq -r .lock_reclaimed)" = false ]
+[ "$(printf '%s\n' "$out" | jq -r .north_star_driver)" = null ]
+
+# Supply not drained: the milestone driver runs, the North Star driver does not.
+out="$(run_controller 0 "$TMP/state/ns-not-needed" 5000)"
+[ "$(printf '%s\n' "$out" | jq -r .north_star_driver)" = not-needed:no-trigger-supply-not-drained ]
+[ "$(grep -c 'last-stack-north-star-driver' "$TMP/routines.log")" -eq 0 ]
+
+# Drained portfolio: escalate to the North Star driver in the same pass.
+out="$(FAKE_REFILL=would-refill run_controller 0 "$TMP/state/ns-refill" 5000)"
+[ "$(printf '%s\n' "$out" | jq -r .action)" = run ]
+[ "$(printf '%s\n' "$out" | jq -r .north_star_driver)" = ran ]
+[ "$(grep -c 'args=run last-stack-north-star-driver --quiet' "$TMP/routines.log")" -eq 1 ]
+
+# An unreadable refill check never runs the North Star driver.
+out="$(FAKE_REFILL=fail run_controller 0 "$TMP/state/ns-fail" 5000)"
+[ "$(printf '%s\n' "$out" | jq -r .north_star_driver)" = refill-check-failed ]
+[ "$(grep -c 'last-stack-north-star-driver' "$TMP/routines.log")" -eq 1 ]
+
+# Cooldown still gates both drivers.
+out="$(FAKE_REFILL=would-refill run_controller 0 "$TMP/state/ns-refill" 5001)"
+[ "$(printf '%s\n' "$out" | jq -r .detail)" = cooldown ]
+[ "$(grep -c 'last-stack-north-star-driver' "$TMP/routines.log")" -eq 1 ]
 
 grep -q 'MILESTONE_DRIVER_SAFETY_CAP:-8' "$ROOT/routines/milestone-driver.md"
 grep -q 'ready-buffer controller sets this value to 1' "$ROOT/routines/milestone-driver.md"

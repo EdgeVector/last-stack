@@ -4,6 +4,19 @@ set -eu
 BOARD_CLI="${LAST_STACK_READY_BUFFER_BOARD_CLI:-kanban}"
 ROUTINES_CLI="${LAST_STACK_READY_BUFFER_ROUTINES_CLI:-routines}"
 DRIVER_ID="${LAST_STACK_READY_BUFFER_DRIVER_ID:-last-stack-milestone-driver}"
+NS_DRIVER_ID="${LAST_STACK_READY_BUFFER_NS_DRIVER_ID:-last-stack-north-star-driver}"
+# ~/.local/bin links this script; resolve the link chain so the sibling
+# refill helper is found in the installed artifact, not in ~/.local/bin.
+self="$0"
+while [ -L "$self" ]; do
+  link="$(readlink "$self")"
+  case "$link" in
+    /*) self="$link" ;;
+    *) self="$(dirname -- "$self")/$link" ;;
+  esac
+done
+SELF_DIR="$(CDPATH= cd -- "$(dirname -- "$self")" && pwd -P)"
+REFILL_CLI="${LAST_STACK_READY_BUFFER_REFILL_CLI:-$SELF_DIR/last-stack-portfolio-auto-refill}"
 THRESHOLD="${LAST_STACK_READY_BUFFER_THRESHOLD:-3}"
 COOLDOWN_S="${LAST_STACK_READY_BUFFER_COOLDOWN_S:-1800}"
 NOW_EPOCH="${LAST_STACK_READY_BUFFER_NOW_EPOCH:-$(date +%s)}"
@@ -16,6 +29,7 @@ JSON=0
 LOCK_HELD=0
 LOCK_RECLAIMED=0
 STATE_TMP=""
+NS_DRIVER=""
 
 usage() {
   cat <<'EOF'
@@ -24,6 +38,11 @@ Usage: last-stack-factory-ready-buffer-controller [--dry-run] [--json]
 Read `kanban pickup ready --json`. Run the milestone driver once when the
 pickup-ready count is below three. A successful run starts a 30-minute
 cooldown and gives the driver a one-card safety cap.
+
+After the milestone driver runs, ask `last-stack-portfolio-auto-refill` (dry
+run) whether the admitted North Stars are drained. When it answers
+`would-refill`, run the North Star driver once so the refill lands now and
+not at the daily backstop. The `north_star_driver` field reports the result.
 EOF
 }
 
@@ -42,14 +61,16 @@ emit() {
       --argjson threshold "$THRESHOLD" \
       --argjson cooldown_s "$COOLDOWN_S" \
       --argjson lock_reclaimed "$LOCK_RECLAIMED" \
+      --arg ns_driver "$NS_DRIVER" \
       '{result:$result,action:$action,detail:$detail,
         ready:(if $ready == "" then null else ($ready | tonumber) end),
         threshold:$threshold,cooldown_s:$cooldown_s,
-        lock_reclaimed:($lock_reclaimed == 1)}'
+        lock_reclaimed:($lock_reclaimed == 1),
+        north_star_driver:(if $ns_driver == "" then null else $ns_driver end)}'
   else
-    printf 'READY_BUFFER result=%s action=%s ready=%s threshold=%s lock_reclaimed=%s detail=%s\n' \
+    printf 'READY_BUFFER result=%s action=%s ready=%s threshold=%s lock_reclaimed=%s north_star_driver=%s detail=%s\n' \
       "$result" "$action" "${ready:-unknown}" "$THRESHOLD" \
-      "$LOCK_RECLAIMED" "$detail"
+      "$LOCK_RECLAIMED" "${NS_DRIVER:--}" "$detail"
   fi
 }
 
@@ -157,4 +178,27 @@ STATE_TMP="$STATE_FILE.tmp.$$"
 printf '%s\n' "$NOW_EPOCH" > "$STATE_TMP"
 mv "$STATE_TMP" "$STATE_FILE"
 STATE_TMP=""
+
+# The retired idle ladder ran the North Star driver as rung 3. Without that
+# step a drained portfolio waited for the daily backstop: on 2026-09-25 the
+# refill trigger was true for hours while pickup-ready stayed 0. The refill
+# helper is idempotent (a rewrite needs two fresh drained passes before it can
+# fire again), so no second cooldown is needed here.
+refill_verdict=""
+if refill_json="$("$REFILL_CLI" --json 2>/dev/null)"; then
+  refill_verdict="$(printf '%s\n' "$refill_json" | jq -r '.verdict // ""' 2>/dev/null || true)"
+fi
+case "$refill_verdict" in
+  would-refill)
+    if NORTH_STAR_DRIVER_TRIGGER=ready-buffer-controller \
+      "$ROUTINES_CLI" run "$NS_DRIVER_ID" --quiet; then
+      NS_DRIVER=ran
+    else
+      NS_DRIVER=failed
+    fi
+    ;;
+  "") NS_DRIVER=refill-check-failed ;;
+  *) NS_DRIVER="not-needed:$refill_verdict" ;;
+esac
+
 emit ok run driver-selected "$ready"
