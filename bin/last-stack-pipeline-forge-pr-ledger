@@ -698,6 +698,7 @@ def reap_plan(args: argparse.Namespace) -> dict[str, Any]:
         except ForgeError as exc:
             fresh = {"state": "unreadable", "merged": None, "head_sha": "", "error": str(exc)[:200]}
         still_open = fresh["state"] == "open" and not fresh["merged"]
+        owned_by = live_card_owner(args, pr, now_utc()) if hasattr(args, "kanban_bin") else ""
         plan.append(
             {
                 "repo": pr["repo"],
@@ -711,12 +712,14 @@ def reap_plan(args: argparse.Namespace) -> dict[str, Any]:
                 "guard_exit": guard.get("exit"),
                 "point": fresh,
                 "head_unchanged": fresh["head_sha"] == pr["head_sha"],
+                "owned_by": owned_by,
                 # The only rows the reaper may terminalize this pass.
-                "may_close": still_open and fresh["head_sha"] == pr["head_sha"] and guard.get("verdict") == "close-ok",
+                "may_close": still_open and fresh["head_sha"] == pr["head_sha"] and guard.get("verdict") == "close-ok" and not owned_by,
                 "may_merge": still_open and fresh["head_sha"] == pr["head_sha"] and pr["shape"] == "green-unmerged",
             }
         )
     report["reap_plan"] = plan
+    report["plan_valid"] = not bool(report["unreadable"])
     return report
 
 
@@ -899,6 +902,10 @@ def main() -> int:
         sp.add_argument("--json", action="store_true", dest="json_out")
         if name == "reap-plan":
             sp.add_argument("--reap-age-min", type=int, default=60, help="only PRs open longer than this (the one-hour SLA)")
+            sp.add_argument("--kanban-bin", default=os.environ.get("KANBAN_BIN", "kanban"),
+                            help="kanban CLI for checking card ownership")
+            sp.add_argument("--owner-fresh-min", type=int, default=120,
+                            help="skip a PR whose kanban/<slug> card is in doing, assigned, and updated this recently")
         if name == "sync":
             sp.add_argument("--apply", action="store_true", help="write the ledger (default: dry run)")
             sp.add_argument("--brain-bin", default=os.environ.get("BRAIN_BIN", "brain"))
