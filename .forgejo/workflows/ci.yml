@@ -100,6 +100,17 @@ jobs:
           git clean -ffdxq
           echo "checked out $(git rev-parse --short HEAD) from $repo_url"
 
+      # Scripts and tests call the macOS plist tool by absolute path. The PC
+      # job is a disposable Linux container, so install the fixture-grade
+      # stand-in (tests/ci/plistbuddy-compat.py) there. The Mac keeps the
+      # native tool.
+      - name: Install PlistBuddy compatibility (Linux only)
+        run: |
+          if [ ! -x /usr/libexec/PlistBuddy ]; then
+            install -d -m 755 /usr/libexec
+            install -m 755 tests/ci/plistbuddy-compat.py /usr/libexec/PlistBuddy
+          fi
+
       # Parity with the LastGit watcher, which ran the gate through a pipe:
       # renderers that key on isTTY must not paint ANSI codes into text that
       # tests compare literally. No LAST_STACK_CI_HOST_LOCK: that lock guards

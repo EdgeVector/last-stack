@@ -17,6 +17,7 @@ unset LOOM_LIVE LOOM_CANARY_LIVE LOOM_CANARY_RED_LIVE \
   LASTDB_DEV_STAMP_RECEIPT || true
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+. "$ROOT/tests/ci/pid-is-live.sh"
 FRESH="$ROOT/lib/canary-loom/lastdb-candidate-freshness.py"
 STEP="$ROOT/lib/canary-loom/loom-safe-upgrade-step.sh"
 GRAPH="$ROOT/lib/canary-loom/lastdb-safe-upgrade.json"
@@ -508,7 +509,7 @@ timeout_ceiling=$(( timeout_budget_floor * 4 ))
   || fail "TERM did not let the driver remove its owned CoW residue"
 [ -s "$timeout_pid_file" ] || fail "timeout fixture did not start its stubborn child"
 timeout_child_pid="$(cat "$timeout_pid_file")"
-if kill -0 "$timeout_child_pid" 2>/dev/null; then
+if pid_is_live "$timeout_child_pid"; then
   fail "bounded timeout left a driver descendant alive"
 fi
 
