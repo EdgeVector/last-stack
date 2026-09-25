@@ -58,7 +58,10 @@ if [ "$script" != "-" ] && [ ! -r "$script" ]; then
 fi
 
 state_file="${LAST_STACK_PC_CI_STATE:-$HOME/.local/state/last-stack/pc-ci/state.json}"
-if [ -f "$state_file" ] && command -v jq >/dev/null 2>&1 \
+# Use [ -s ... ] to ensure the file is not empty (explicit guard against empty pause file).
+# An empty file is not a pause: jq on an empty file exits non-zero anyway, but we
+# are explicit to handle both BSD and GNU jq variants correctly.
+if [ -s "$state_file" ] && command -v jq >/dev/null 2>&1 \
   && jq -e '.intent == "paused"' "$state_file" >/dev/null 2>&1; then
   until_ts="$(jq -r '.until // empty' "$state_file" 2>/dev/null || true)"
   now_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
