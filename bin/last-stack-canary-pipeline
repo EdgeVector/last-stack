@@ -1326,9 +1326,25 @@ def channel_state(path: Path, args: argparse.Namespace) -> dict:
         for event in events
         if event.get("record_type") == "boot" and event.get("candidate") == args.main_build
     ]
+    # The hold protects a primary build that is still proving itself. A build
+    # that already went green has proved itself (and was promoted); a later
+    # operator restart only reopens its window, and holding a cutover to
+    # re-soak it helps nothing. 2026-09-25: three config restarts of the
+    # already-published 2328 held the 2339 cutover for an hour.
+    primary_ever_green = any(
+        event.get("record_type") == "reconciler"
+        and event.get("candidate") == args.main_build
+        and event.get("verdict") == "green"
+        for event in events
+    )
     hold = False
     remaining_seconds: float | None = None
-    if args.incoming_build and not args.incoming_fixes_red and primary_verdict is not None:
+    if (
+        args.incoming_build
+        and not args.incoming_fixes_red
+        and primary_verdict is not None
+        and not primary_ever_green
+    ):
         if primary_verdict.get("verdict") == "window-open" and primary_boots:
             newest_boot = max(primary_boots, key=lambda event: str(event.get("ts") or ""))
             started = event_timestamp(newest_boot)
@@ -1349,7 +1365,9 @@ def channel_state(path: Path, args: argparse.Namespace) -> dict:
         "cutover": {
             "incoming_build": args.incoming_build,
             "hold": hold,
-            "reason": "quiet_window_near_complete" if hold else "allowed",
+            "reason": "quiet_window_near_complete"
+            if hold
+            else ("primary_already_green" if primary_ever_green else "allowed"),
             "remaining_seconds": remaining_seconds,
             "incoming_fixes_red": args.incoming_fixes_red,
         },

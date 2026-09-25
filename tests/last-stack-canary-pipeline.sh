@@ -795,6 +795,23 @@ out="$("$CLI" --state-dir "$v2_dir" --json channels --main-build channel-green \
   --window-seconds 86400 --at '2026-09-01T00:00:00Z')"
 [ "$(printf '%s\n' "$out" | jq -r '.stable.build')" = "channel-green" ]
 
+# An operator restart reopens a green build's window, but a build that already
+# went green never holds an incoming cutover (2026-09-25: config restarts of
+# the published 2328 held the 2339 cutover for an hour).
+"$CLI" --state-dir "$v2_dir" record-boot --candidate channel-green --pid 110 \
+  --start-ts '2026-09-01T00:10:00Z' --build vgreen --cause operator >/dev/null
+"$CLI" --state-dir "$v2_dir" record-observation --candidate channel-green --check status \
+  --subject build --result pass --at '2026-09-01T00:11:00Z' >/dev/null
+"$CLI" --state-dir "$v2_dir" reconcile --candidate channel-green --window-seconds 86400 \
+  --at '2026-09-01T00:20:00Z' >/dev/null
+out="$("$CLI" --state-dir "$v2_dir" --json channels --main-build channel-green --incoming-build next2 \
+  --window-seconds 86400 --cutover-hold-hours 48 --at '2026-09-01T00:20:00Z')"
+[ "$(printf '%s\n' "$out" | jq -r '.primary.verdict')" = "window-open" ] \
+  || { echo "an operator restart must reopen the window: $out" >&2; exit 1; }
+[ "$(printf '%s\n' "$out" | jq -r '.cutover.hold')" = "false" ] \
+  || { echo "an already-green primary must not hold a cutover: $out" >&2; exit 1; }
+[ "$(printf '%s\n' "$out" | jq -r '.cutover.reason')" = "primary_already_green" ]
+
 # The live collector reads only Fold's bounded owner boot ledger. A later build
 # retires the candidate; a failed collector remains named observer evidence,
 # while the missing boot row remains a build failure.
