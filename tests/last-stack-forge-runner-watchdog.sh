@@ -71,6 +71,9 @@ cat >"$lanes_pc_offline" <<'EOF'
  "live": {"ok": true, "admin_runners": [{"name":"pc-forge-runner","status":"offline","labels":["pc-linux"]}]}}
 EOF
 
+# The LastGit forge.log check must read a fixture, not the host: after the
+# 2026-09-25 LastGit launchd pause the real log went stale and every run of
+# this test paged on the "healthy" fleet.
 run_wd() {  # state-dir, lanes-json, extra args...
   local sd="$1" lanes="$2"; shift 2
   FAKE_LOADED="$loaded" FAKE_BOOTSTRAPPED="$bootstrapped" \
@@ -82,6 +85,7 @@ run_wd() {  # state-dir, lanes-json, extra args...
   FORGE_WATCHDOG_PLIST_DIR="$plists" \
   FORGE_WATCHDOG_PC_PAUSE_FILE="$pause_file" \
   FORGE_WATCHDOG_STATE_DIR="$sd" \
+  FORGE_WATCHDOG_FORGE_LOG="${FAKE_FORGE_LOG:-$tmp/no-forge.log}" \
   "$wd" "$@" >/dev/null 2>&1 || true
 }
 
@@ -389,7 +393,7 @@ out="$(FAKE_LOADED="$loaded" FAKE_BOOTSTRAPPED="$bootstrapped" FAKE_PAGES="$page
   FORGE_WATCHDOG_LAUNCHCTL="$tmp/launchctl" FORGE_WATCHDOG_RA="$tmp/ra" \
   FORGE_WATCHDOG_LANES="$tmp/lanes" FORGE_WATCHDOG_SITUATIONS="$tmp/situations" \
   FORGE_WATCHDOG_PLIST_DIR="$plists" FORGE_WATCHDOG_PC_PAUSE_FILE="$pause_file" \
-  FORGE_WATCHDOG_STATE_DIR="$tmp/s21c" "$wd" --dry-run 2>&1 || true)"
+  FORGE_WATCHDOG_STATE_DIR="$tmp/s21c" FORGE_WATCHDOG_FORGE_LOG="$tmp/no-forge.log" "$wd" --dry-run 2>&1 || true)"
 printf '%s\n' "$out" | grep -q "WOULD PAGE.*blind" \
   || { echo "FAIL: dry-run did not name a blind watchdog"; printf '%s\n' "$out"; exit 1; }
 if printf '%s\n' "$out" | grep -q "No runner is LIVE\|NOT registered"; then

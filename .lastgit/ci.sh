@@ -337,7 +337,6 @@ ci_test tests/last-stack-board-closeout-sweep.sh
 ci_test tests/last-stack-board-closeout-stale-list-row.sh
 ci_test tests/last-stack-board-closeout-merge-proof-guard.sh
 ci_test tests/last-stack-board-closeout-evidence-freshness.sh
-ci_test tests/last-stack-board-closeout-loom-claim.sh
 ci_test tests/last-stack-loom-reaper.sh
 ci_test tests/last-stack-card-reaper-run.sh
 ci_test tests/last-stack-card-reaper-loom-guard.sh
@@ -840,4 +839,7 @@ ci_test tests/last-stack-north-star-proof-cloud-sync-resume.sh
 ci_test tests/last-stack-north-star-proof-schema-root-attribution.sh
 # Merged code re-opens into doing with its pr_url, never the todo WORK lane.
 ci_test tests/last-stack-card-reopen-validate.sh
+ci_test tests/last-stack-papercut-lifecycle-close-registry-cover.sh
+# board-closeout keeps a card a live Loom execution holds.
+ci_test tests/last-stack-board-closeout-loom-claim.sh
 ci_test tests/last-stack-ci-test-registration.sh
