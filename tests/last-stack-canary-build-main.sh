@@ -149,6 +149,18 @@ out="$(
 [ "$(printf '%s\n' "$out" | jq -r '.status')" = "built" ]
 [ "$(printf '%s\n' "$out" | jq -r '.rebuilt')" = "true" ]
 
+# --- a real build path survives a workdir that disk reclaim deleted ---
+# 2026-09-25: reclaim emptied the cache dir, the mirror still registered the
+# worktree, and `worktree add` exited 128 ("missing but already registered").
+fake_cargo="mkdir -p target/release && cp '$stub_bin/lastdb' '$stub_bin/lastdbd' '$stub_bin/lastdb_restore_probe' target/release/"
+LAST_STACK_CANARY_CARGO_CMD="$fake_cargo" "$CLI" --force --json >/dev/null
+git -C "$mirror" worktree list | grep -q "$workdir"
+rm -rf "$workdir"
+out="$(LAST_STACK_CANARY_CARGO_CMD="$fake_cargo" "$CLI" --force --json)" \
+  || { echo 'FAIL: build after the workdir was deleted' >&2; exit 1; }
+[ "$(printf '%s\n' "$out" | jq -r '.status')" = "built" ]
+[ -x "$workdir/target/release/lastdbd" ]
+
 # --- dogfood resolves the staged binary as forge-main ---
 DOG="$ROOT/bin/last-stack-lastdb-canary-dogfood"
 LEDGER="$ROOT/bin/last-stack-canary-pipeline"

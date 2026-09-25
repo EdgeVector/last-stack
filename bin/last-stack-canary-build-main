@@ -214,6 +214,13 @@ prune_old_stages() {
 ensure_worktree() {
   local oid="$1"
   mkdir -p "$(dirname "$WORKDIR")"
+  # The workdir is a cache under ~/.local/state, and disk reclaim may delete it.
+  # The mirror still lists the worktree then, and `worktree add` refuses with
+  # "is a missing but already registered worktree" (exit 128). Measured
+  # 2026-09-25: the 00:48 PT disk-reclaim run emptied canary-build/, and the
+  # 02:47 PT nightly stopped at stage=build rc=128. Drop registrations whose
+  # directory is gone before any add.
+  git -C "$FOLD_MIRROR" worktree prune 2>/dev/null || true
   if [ -d "$WORKDIR/.git" ] || [ -f "$WORKDIR/.git" ]; then
     # Detached checkout at desired oid
     git -C "$WORKDIR" fetch --no-tags origin refs/heads/main:refs/remotes/origin/main 2>/dev/null || true
@@ -225,15 +232,15 @@ ensure_worktree() {
     git -C "$WORKDIR" checkout --detach "$oid" 2>/dev/null || {
       # recreate
       git -C "$FOLD_MIRROR" worktree remove --force "$WORKDIR" 2>/dev/null || rm -rf "$WORKDIR"
-      git -C "$FOLD_MIRROR" worktree add --detach "$WORKDIR" "$oid"
+      git -C "$FOLD_MIRROR" worktree add --detach "$WORKDIR" "$oid" >&2
     }
   else
     rm -rf "$WORKDIR"
-    git -C "$FOLD_MIRROR" worktree add --detach "$WORKDIR" "$oid"
+    git -C "$FOLD_MIRROR" worktree add --detach "$WORKDIR" "$oid" >&2
   fi
   # Ensure clean enough for non-dirty release binaries
-  git -C "$WORKDIR" reset --hard "$oid"
-  git -C "$WORKDIR" clean -fdx -e target 2>/dev/null || git -C "$WORKDIR" clean -fd
+  git -C "$WORKDIR" reset --hard "$oid" >&2
+  { git -C "$WORKDIR" clean -fdx -e target 2>/dev/null || git -C "$WORKDIR" clean -fd; } >&2
 }
 
 emit_result() {
@@ -287,7 +294,7 @@ else
   ensure_worktree "$main_oid"
   log "building in $WORKDIR: $CARGO_CMD"
   # shellcheck disable=SC2086
-  ( cd "$WORKDIR" && eval "$CARGO_CMD" )
+  ( cd "$WORKDIR" && eval "$CARGO_CMD" ) >&2
   bin_dir="$WORKDIR/target/release"
 fi
 
