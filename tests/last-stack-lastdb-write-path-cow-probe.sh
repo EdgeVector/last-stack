@@ -122,8 +122,8 @@ RC=$?
 set -e
 [ "$RC" -ne 0 ] || fail "correct-but-slow must RED; out=$OUT"
 
-# Probe clones into TMPDIR, never $HOME.
-grep -q 'cp -cR' "$PROBE" || fail "probe must clone with cp -cR"
+# Probe clones into TMPDIR, never $HOME. Portable: cp -cR (macOS) or cp -R (Linux).
+grep -qE 'cp -R' "$PROBE" || fail "probe must clone with cp -R"
 grep -q 'TMPDIR' "$PROBE" || fail "probe must clone under TMPDIR"
 grep -q 'cloud_sync.json' "$PROBE" || fail "probe must strip production cloud_sync.json"
 if grep -E -- '--data-dir[~ ]*/\.lastdb|"--data-dir ~/.lastdb"' "$PROBE" | grep -vq 'refuse\|RED\|never\|live-home'; then
