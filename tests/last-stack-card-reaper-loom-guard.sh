@@ -50,7 +50,7 @@ cat > "$tmp/bin/ps" <<'FAKE'
 [ "$MODE" != ps-unknown ]
 FAKE
 chmod +x "$tmp/bin/kanban" "$tmp/bin/loom" "$tmp/bin/git" "$tmp/bin/ps"
-for MODE in original resumed parked terminal unknown missing mismatch owner-only malformed branch-only malformed-branch card-missing card-invalid stale-todo stale-backlog stale-race recent unknown-age ps-unknown dead; do
+for MODE in original resumed parked terminal unknown missing mismatch owner-only malformed branch-only malformed-branch card-missing card-invalid stale-todo stale-backlog stale-race recent recent-churn unknown-age ps-unknown dead; do
  export MODE
  export HOME="$tmp/home-$MODE"
  mkdir -p "$HOME"
@@ -62,11 +62,14 @@ for MODE in original resumed parked terminal unknown missing mismatch owner-only
   branch-only) jq '.assignee="" | .body="" | .branch="lx-original#IMPLEMENT"' "$tmp/card" > "$tmp/next"; mv "$tmp/next" "$tmp/card" ;;
   malformed-branch) jq '.assignee="" | .body="" | .branch="lx-broken"' "$tmp/card" > "$tmp/next"; mv "$tmp/next" "$tmp/card" ;;
   resumed) jq '.body += "\nBLOCKER: loom exec=lx-original parked: prior failure"' "$tmp/card" > "$tmp/next"; mv "$tmp/next" "$tmp/card" ;;
-  stale-race|recent|unknown-age|ps-unknown|dead)
+  stale-race|recent|recent-churn|unknown-age|ps-unknown|dead)
    jq '.assignee="" | .body="legacy work" | .first_doing_at="2026-07-20T10:00:00Z" | .updated_at="2026-07-20T11:31:08Z"' "$tmp/card" > "$tmp/next"; mv "$tmp/next" "$tmp/card"
-   if [ "$MODE" = recent ]; then jq '.updated_at="2026-07-20T13:20:00Z"' "$tmp/card" > "$tmp/next"; mv "$tmp/next" "$tmp/card"; fi
+   if [ "$MODE" = recent ] || [ "$MODE" = recent-churn ]; then jq '.updated_at="2026-07-20T13:20:00Z"' "$tmp/card" > "$tmp/next"; mv "$tmp/next" "$tmp/card"; fi
    if [ "$MODE" = unknown-age ]; then jq 'del(.first_doing_at,.updated_at)' "$tmp/card" > "$tmp/next"; mv "$tmp/next" "$tmp/card"; fi ;;
  esac
+ : > "$tmp/memory-$MODE"
+ if [ "$MODE" = recent-churn ]; then echo 'prior rolled_back card-a rule=dead' > "$tmp/memory-$MODE"; fi
+ cp "$tmp/memory-$MODE" "$tmp/memory-before"
  if [ "$MODE" = ps-unknown ]; then mkdir -p "$HOME/.fkanban/worktrees/card-a"; fi
  jq '[.]' "$tmp/card" > "$tmp/board"
  case "$MODE" in stale-todo|stale-backlog)
@@ -80,7 +83,7 @@ for MODE in original resumed parked terminal unknown missing mismatch owner-only
  else
   test ! -s "$tmp/writes"
   ! grep -Eq '^(add|move|rm) ' "$tmp/calls"
-  test ! -s "$tmp/memory-$MODE"
+  cmp "$tmp/memory-$MODE" "$tmp/memory-before"
  fi
  ! grep -Eq 'worktree remove|commit|push' "$tmp/git-calls"
  test "$(wc -l < "$tmp/loom-calls")" -le 1
