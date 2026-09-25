@@ -337,6 +337,19 @@ function notePapercutPromotionValidation(slug, out) {
 
 function withCardGuard(card, fn) {
   try {
+    {
+      const fresh = canonicalCard(card.slug);
+      if (!fresh) return false;
+      if (protectLoomClaim(fresh)) return false;
+      // This catches a stale selection, not a transaction with the later
+      // cleanup. Legacy cleanup has no compound board/Loom predicate.
+      const fields = ["column", "assignee", "branch", "pr_url", "updated_at", "first_doing_at", "position", "block_status", "block_reason"];
+      if (card.column === "doing") fields.push("body");
+      if (fields.some((key) => JSON.stringify(card[key] ?? "") !== JSON.stringify(fresh[key] ?? ""))) {
+        res.flagged.push(`card-snapshot-changed:${card.slug}`);
+        return false;
+      }
+    }
     return fn();
   } catch (e) {
     const slug = String(card?.slug || "unknown");
@@ -381,6 +394,57 @@ function dateMs(s) {
 function ageHours(card) {
   const t = dateMs(card.created_at || card.createdAt || card.created);
   return Number.isFinite(t) ? (nowMs - t) / 36e5 : 0;
+}
+
+function doingAgeHours(card) {
+  let t = dateMs(card.first_doing_at);
+  const position = Number(card.position);
+  if (!Number.isFinite(t) && position >= 1e12 && position < 1e13) t = position;
+  const activity = dateMs(card.updated_at);
+  if (Number.isFinite(activity)) t = Number.isFinite(t) ? Math.max(t, activity) : activity;
+  return Number.isFinite(t) && t <= nowMs ? (nowMs - t) / 36e5 : null;
+}
+
+function canonicalCard(slug) {
+  const out = run("kanban", ["show", slug, "--canonical", "--json"], {timeout: 15000});
+  let card;
+  try { card = out.ok ? JSON.parse(out.stdout) : null; } catch { card = null; }
+  if (!card || card.slug !== slug || typeof card.column !== "string" ||
+      typeof card.assignee !== "string" || typeof card.body !== "string") {
+    res.flagged.push(`card-read-unknown:${slug}`);
+    return null;
+  }
+  return card;
+}
+
+function protectLoomClaim(card) {
+  const ids = [];
+  let associated = String(card.assignee || "").startsWith("loom:");
+  for (const line of String(card.body || "").split("\n")) {
+    if (/^(PROGRESS: loom land-card |BLOCKER: loom exec=)/.test(line)) associated = true;
+    const match = line.match(/^(?:PROGRESS: loom land-card exec=|BLOCKER: loom exec=)(lx-[A-Za-z0-9.-]+)(?: claimed| parked:)/);
+    if (match) ids.push(match[1]);
+  }
+  const branch = String(branchOf(card));
+  if (branch.startsWith("lx-")) associated = true;
+  const branchId = branch.match(/^(lx-[A-Za-z0-9.-]+)#(?:IMPLEMENT|REVISE)$/);
+  if (branchId) { associated = true; if (!ids.length) ids.push(branchId[1]); }
+  if (!associated) return false;
+  const id = ids.at(-1);
+  let detail = "unknown";
+  if (id) {
+    // One exact execution read. Never list executions or walk their worktrees.
+    const out = run("loom", ["show", id], {timeout: 15000});
+    const status = out.stdout.match(/^status: ([a-z_]+)$/m)?.[1];
+    const boundCard = out.stdout.match(/^context\.card: (.+)$/m)?.[1];
+    let bound = null;
+    try { bound = JSON.parse(boundCard || "null"); } catch { /* unknown */ }
+    if (out.ok && out.stdout.split("\n")[0] === id && bound === card.slug && status) detail = status;
+  }
+  // Even terminal Loom work stays with Loom/closeout: this reaper cannot
+  // atomically fence a resume while it clears ownership, deletes, or moves todo.
+  res.flagged.push(`loom-claim-protected:${card.slug}:${detail}`);
+  return true;
 }
 
 function branchOf(card) {
@@ -437,7 +501,11 @@ function hasLiveProcess(wt) {
   if (!wt || !fs.existsSync(wt)) return false;
   if (_psCache === null) {
     const out = run("ps", ["-ax", "-o", "command="], {timeout: 15000});
-    _psCache = out.ok ? out.stdout.split("\n") : [];
+    if (!out.ok) {
+      res.flagged.push("process-read-unknown");
+      return true; // failed observation is not proof that a worker is dead
+    }
+    _psCache = out.stdout.split("\n");
   }
   return _psCache.some((line) => line.includes(wt) && !/\b(rg|grep)\b/.test(line));
 }
@@ -712,7 +780,7 @@ const budgetMs = Number(process.env.CARD_REAPER_BUDGET_MS || 120000);
 function overBudget() { return Date.now() - startedMs > budgetMs; }
 
 try {
-  for (const card of byOrder.filter((c) => String(c.column || "").toLowerCase() === "doing")) {
+  for (const preview of byOrder.filter((c) => String(c.column || "").toLowerCase() === "doing")) {
     if (overBudget()) {
       res.flagged.push("time-budget");
       break;
@@ -721,7 +789,11 @@ try {
       res.flagged.push(`reap-capped:${Math.max(0, byOrder.length - actions)}`);
       break;
     }
-    const slug = String(card.slug);
+    const slug = String(preview.slug);
+    const card = canonicalCard(slug);
+    if (!card) continue;
+    if (protectLoomClaim(card)) continue;
+    if (card.column !== "doing") { res.flagged.push(`doing-column-changed:${slug}`); continue; }
     if (isNeedsHuman(card)) {
       if (ageHours(card) > 168) {
         res.exempt_needs_human++;
@@ -740,11 +812,12 @@ try {
     }
     const wt = worktreePath(slug);
     const dead = !hasProgressSignal(card, 1) && !hasLiveProcess(wt);
-    const hrs = ageHours(card);
+    const hrs = doingAgeHours(card);
+    if (hrs === null) { res.flagged.push(`doing-age-unknown:${slug}`); continue; }
     let memText = "";
     try { if (fs.existsSync(mem)) memText = fs.readFileSync(mem, "utf8"); } catch { res.memory_unwritable = true; }
     const churn = memText.includes(`rolled_back ${slug}`);
-    if (dead && churn) {
+    if (dead && churn && hrs >= 1) {
       if (withCardGuard(card, () => parkDoingToBacklog(card, `doing churn after prior rollback; age=${hrs.toFixed(1)}h`))) {
         parkedThisRun.add(slug);
         actions++;
