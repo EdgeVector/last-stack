@@ -680,6 +680,35 @@ function hasLiveWorker(wt) {
   return out.stdout.split("\n").some((line) => line.includes(needle) && !/\b(rg|grep)\b/.test(line));
 }
 
+// A Loom land-card owns its card from CLAIM to merge, but it does not stamp
+// pr_url on the card: the PR lives in the execution context. Between drives
+// the execution has no process in any worktree, so the no-PR zombie path saw
+// "doing, no PR, no live worker" and rolled a card back to todo while its
+// execution sat in WAIT_CI on an open PR (lastdb-storage-recovery-rollback,
+// fold PR 2191, 2026-09-25T18:03Z). Pickup then called the card ready again.
+// Return a flag detail when a non-terminal (or unreadable) Loom execution holds
+// the card; null when no Loom execution is bound or it is terminal.
+const LOOM_TERMINAL = new Set(["failed", "succeeded", "completed", "cancelled", "canceled", "dropped", "aborted"]);
+function loomClaimHold(card) {
+  let associated = String(card.assignee || "").startsWith("loom:");
+  let id = "";
+  for (const line of String(bodyOf(card) || "").split("\n")) {
+    if (/^(PROGRESS: loom land-card |BLOCKER: loom exec=)/.test(line)) associated = true;
+    const m = line.match(/^(?:PROGRESS: loom land-card exec=|BLOCKER: loom exec=)(lx-[A-Za-z0-9.-]+)(?: claimed| parked:)/);
+    if (m) id = m[1];
+  }
+  if (!associated) return null;
+  if (!id) return "unknown";
+  // One exact execution read. Never list executions.
+  const loomBin = process.env.BOARD_CLOSEOUT_LOOM_BIN || "loom";
+  const out = run(loomBin, ["show", id], { timeout: 15000 });
+  const status = out.ok ? (out.stdout.match(/^status: ([a-z_]+)$/m) || [])[1] : "";
+  // A failed read is not proof that the execution ended.
+  if (!status) return "unknown";
+  if (LOOM_TERMINAL.has(status)) return null;
+  return status;
+}
+
 function branchHasCommits(card, wt) {
   const branch = String(card.branch || "").trim();
   const cwd = wt && fs.existsSync(wt) ? wt : "";
@@ -1240,6 +1269,13 @@ for (const card of cards) {
     continue;
   }
 
+  const loomHold = loomClaimHold(card);
+  if (loomHold) {
+    res.flagged.push(`loom-claim-protected:${slug}:${loomHold}`);
+    res.skipped.push(`${slug}:loom-claim-live`);
+    continue;
+  }
+
   // Deploy-gated / live-proof wait without a parseable PR: demote out of WIP.
   // Do not roll to todo (pickup thrash) and do not leave in doing.
   // A card a worker holds (assignee set) inside the grace window, or with a
@@ -1654,6 +1690,30 @@ def heal_pr_url(slug, url):
     if dry_run or not url:
         return
     run([board_cli, "add", slug, "--pr-url", url], timeout=45)
+
+# See loomClaimHold in the node engine.
+LOOM_TERMINAL = {"failed", "succeeded", "completed", "cancelled", "canceled", "dropped", "aborted"}
+
+def loom_claim_hold(card):
+    associated = str(card.get("assignee") or "").startswith("loom:")
+    exec_id = ""
+    for line in str(body_of(card) or "").split("\n"):
+        if re.match(r"^(PROGRESS: loom land-card |BLOCKER: loom exec=)", line):
+            associated = True
+        m = re.match(r"^(?:PROGRESS: loom land-card exec=|BLOCKER: loom exec=)(lx-[A-Za-z0-9.-]+)(?: claimed| parked:)", line)
+        if m:
+            exec_id = m.group(1)
+    if not associated:
+        return None
+    if not exec_id:
+        return "unknown"
+    ok, out, _err = run([os.environ.get("BOARD_CLOSEOUT_LOOM_BIN") or "loom", "show", exec_id], timeout=15)
+    m = re.search(r"^status: ([a-z_]+)$", out, re.M) if ok else None
+    if not m:
+        return "unknown"
+    if m.group(1) in LOOM_TERMINAL:
+        return None
+    return m.group(1)
 
 def tag_list(card):
     t = card.get("tags") or card.get("Tags") or []
@@ -2274,6 +2334,11 @@ for card in cards:
             heal_pr_url(slug, url)
             res["flagged"].append(f"pr-url-healed:{slug}")
         res["skipped"].append(f"{slug}:pr-open-or-unknown")
+        continue
+    loom_hold = loom_claim_hold(card)
+    if loom_hold:
+        res["flagged"].append(f"loom-claim-protected:{slug}:{loom_hold}")
+        res["skipped"].append(f"{slug}:loom-claim-live")
         continue
     # A fresh claim is not a deploy wait (see the node engine).
     tag_parked = any(

@@ -337,6 +337,7 @@ ci_test tests/last-stack-board-closeout-sweep.sh
 ci_test tests/last-stack-board-closeout-stale-list-row.sh
 ci_test tests/last-stack-board-closeout-merge-proof-guard.sh
 ci_test tests/last-stack-board-closeout-evidence-freshness.sh
+ci_test tests/last-stack-board-closeout-loom-claim.sh
 ci_test tests/last-stack-loom-reaper.sh
 ci_test tests/last-stack-card-reaper-run.sh
 ci_test tests/last-stack-card-reaper-loom-guard.sh
