@@ -21,4 +21,9 @@ python3 "$tool" -c 'Add :EnvironmentVariables:MODE string test' "$plist"
 python3 "$tool" -c 'Set :EnvironmentVariables:MODE verified' "$plist"
 [ "$(python3 "$tool" -c 'Print :EnvironmentVariables:MODE' "$plist")" = verified ]
 
+python3 "$tool" -c 'Delete :EnvironmentVariables:MODE' "$plist"
+if python3 "$tool" -c 'Print :EnvironmentVariables:MODE' "$plist" >/dev/null 2>&1; then
+  echo "Delete left the key in place" >&2; exit 1
+fi
+
 echo "ok last-stack-plistbuddy-compat"

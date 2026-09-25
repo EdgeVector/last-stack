@@ -11,6 +11,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+. "$ROOT/tests/ci/pid-is-live.sh"
 # shellcheck source=../lib/ci-shard-supervisor.sh
 . "$ROOT/lib/ci-shard-supervisor.sh"
 
@@ -51,10 +52,10 @@ case "$CI_SUPERVISE_RUNNING_AT_DEADLINE" in *" 1"*) ;; *) fail "running-at-deadl
 grep -q '^ci_progress elapsed=' "$out" || fail "no heartbeat before the deadline: $(cat "$out")"
 grep -q 'shard 1: running tests/stuck.sh' "$out" || fail "heartbeat did not name the running test"
 
-if kill -0 "$stuck_pid" 2>/dev/null; then fail "stuck shard still alive after the deadline"; fi
+if pid_is_live "$stuck_pid"; then fail "stuck shard still alive after the deadline"; fi
 child_pid="$(cat "$child_pid_file" 2>/dev/null || true)"
 [ -n "$child_pid" ] || fail "fixture did not record its child pid"
-if kill -0 "$child_pid" 2>/dev/null; then
+if pid_is_live "$child_pid"; then
   kill -KILL "$child_pid" 2>/dev/null || true
   fail "the stuck shard's child survived; the stop must reach the process group"
 fi

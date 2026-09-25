@@ -25,7 +25,9 @@ verdict() {
   local out
   out="$(printf '{"tool_name":"Bash","tool_input":{"command":%s}}' \
     "$(jq -Rn --arg c "$1" '$c')" | HOME="$tmp" bash "$HOOK")"
-  if printf '%s' "$out" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null 2>&1; then
+  # An allowed command prints nothing. jq 1.6 (the PC CI image) exits 0 for
+  # `jq -e` on empty input, which read every ALLOW as DENY.
+  if [ -n "$out" ] && printf '%s' "$out" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null 2>&1; then
     printf 'DENY\n'
   else
     printf 'ALLOW\n'
