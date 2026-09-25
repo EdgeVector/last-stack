@@ -851,4 +851,5 @@ ci_test tests/last-stack-papercut-lifecycle-close-registry-cover.sh
 ci_test tests/last-stack-board-closeout-loom-claim.sh
 # disk-reclaim step 3c: finished Loom step worktrees.
 ci_test tests/last-stack-loom-worktree-reclaim.sh
+ci_test tests/last-stack-loom-parked-triage.sh
 ci_test tests/last-stack-ci-test-registration.sh
