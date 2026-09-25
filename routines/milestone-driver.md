@@ -44,7 +44,8 @@ Ready-buffer keeps `routines run last-stack-milestone-driver`.
   and create the gap report inside the current routines run directory.
 - Never read a shared `/tmp` gap report. Every report consumer and board
   mutation must validate the current run ID and the post-preflight creation time.
-- **Trust the report.** Do not re-rank the portfolio by vibe. Process
+- Use the report as a candidate queue. Live proof and prerequisite guards can
+  refuse its candidates. Do not infer acceptance completion from child counts. Process
   `work_queue` in order: all **promote** entries first, then **decompose**.
 - Never implement product code, open or merge a PR/CR, spawn another agent, or
   run a card agent.
@@ -53,9 +54,9 @@ Ready-buffer keeps `routines run last-stack-milestone-driver`.
   - `kanban milestone state <slug> complete --proof-status passing --json`
     when a real harness/report shows PASS and the CLI accepts it, or
   - `kanban milestone state <slug> complete --proof-status not_required --json`
-    when gap-report says `action=complete_proof` with reason mentioning
-    `not_required` / `no proof card` (all linked `Kind: pr` done; no harness —
-    preferred over minting empty `Kind: validation` shells).
+    only when a live milestone point read already declares `not_required` and
+    its current `proof_verdict` agrees. A missing harness or proof card never
+    authorizes a proof waiver. Explicit acceptance requirements remain pending.
   Never force `passing` without evidence.
   The CLI rejects this transition unless the proof contract passes.
 - **`complete_proof` is a first-class work_queue action.** Do not leave
@@ -291,12 +292,13 @@ Meanings (from fkanban code, not your opinion):
 | `idle_empty` | decompose | File full next-gate Kind:pr set for **that** milestone (agent work) |
 | `idle_blocked` | skip | Do not invent; leave held/hollow/dep-blocked backlog |
 | `proof_pending` | await_proof | Do not invent filler PRs; leave for validate when a real proof card is pending PASS |
-| `proof_ready` | complete_proof | CLI complete: `passing` if PASS evidence, else `not_required` when report reason says so |
+| `proof_ready` | complete_proof | Complete only with a current live proof verdict; never waive a pending proof |
 | `complete` / `blocked` / `no_north_star` | skip | Ignore |
 
-**Note:** When all Kind:pr are done and there is **no** proof card (or
-`proof_status=not_required`), gap-report classifies **`proof_ready` +
-`complete_proof`** (not `await_proof`). That is the autonomous close path.
+**Classifier limit:** The current gap report can suggest `complete_proof` from
+done child counts and an absent proof card. That suggestion does not establish
+acceptance coverage. Keep required proof pending until an executable check passes.
+The snapshot action guard refuses an implicit waiver even if this report suggests one.
 
 Print:
 
@@ -319,6 +321,31 @@ printf 'GAP_FILL IDLE_MILESTONES=%s SKIPPED_IN_FLIGHT=%s FILED=%s PROMOTED=%s PR
 Run each board mutation through the snapshot helper's `guard` mode. This works
 when each command runs in a new shell. If the board may have changed, call
 `capture` again first. Capture runs preflight and replaces only this run's snapshot.
+
+The first capture freezes `MILESTONE_DRIVER_TARGET` and
+`MILESTONE_DRIVER_SAFETY_CAP` in this run's ledger. Check the returned values
+before any action. If an intended targeted dispatch reports an empty target or
+an incorrect cap, stop the run. Do not continue as an unscoped pass.
+Recapture preserves this scope and the action count. A later shell may omit
+the variables, but it cannot change their frozen values.
+
+Before decomposition, point-read every prerequisite with
+`kanban milestone detail <dependency> --json`. These are milestone identifiers;
+`kanban show` is the wrong entity path. A prerequisite must be complete with a
+current matching proof verdict. Missing, unreadable, pending, or cyclic dependency
+evidence is a refusal. Do not file a release card to get around this gate.
+The action guard repeats these point checks before any mutation.
+
+New PR cards need nonempty `--surfaces` as well as the existing full brief,
+admission, decision, and source-satisfaction checks. Only documented command
+forms pass the guard. Do not wrap a mutation in a shell or use raw PR `add`.
+The helper reserves a cap slot before a create or promotion, then records the
+command's exit status. A failed or interrupted command can have an uncertain
+effect. Its reservation remains spent across recapture. Point-read the card;
+do not retry blindly. Lock contention refuses the concurrent action. Each
+dependency point read has a 30-second timeout. The guard checks at most 128
+unique milestone slugs and reuses each result within one action.
+
 
 Process **in order**: all `promote` → all `decompose` (until `safety_cap`) →
 all `complete_proof` (always; not limited by SAFETY_CAP).
@@ -350,16 +377,10 @@ For each `work_queue` item with `action=decompose`, until `safety_cap`:
    backlog, bounce through `needs_human`, and get reaped/recreated without
    proving anything.
    - If the milestone already has a live `proof_card`, leave it alone.
-   - If it has **no** `proof_card`, set proof to **not required** (do not invent
-     a validation card):
-     ```bash
-     "${LAST_STACK_ROOT:-$HOME/.last-stack}/bin/last-stack-milestone-driver-snapshot" guard \
-       --run-dir "${ROUTINES_RUN_DIR:?}" --run-id "${ROUTINES_RUN_ID:?}" \
-       --artifact "${ROUTINES_RUN_DIR:?}/milestone-driver/gap-report.json" -- \
-       kanban milestone add <slug> --proof-status not_required --json
-     ```
-     (Only updates proof fields; do not rewrite outcome body.)
-   - **Only** attach/create a `Kind: validation` proof when **all** of these hold:
+   - If it has no proof card or executable harness, preserve `proof_status=pending`.
+     A missing implementation artifact is unfinished work, not a proof exemption.
+     Do not send `--proof-status not_required` to remove this requirement.
+   - **Only** attach an existing `Kind: validation` proof when **all** of these hold:
      1. A concrete executable check already exists today (registered
         `last-stack-north-star-proof` harness for the North Star, or an explicit
         command in the milestone Outcome that can pass/fail without inventing
@@ -368,11 +389,13 @@ For each `work_queue` item with `action=decompose`, until `safety_cap`:
         or a command whose exit status is the gate), and
      3. Implementation PRs for this milestone are already done or this pass is
         *only* wiring proof after a green impl frontier — not "prove someday."
-     Then file **one** validation card in **backlog** (never default `todo`),
-     link with `--proof-card <slug> --proof-status pending`, tags
-     `feature-proof,terminal-verification,milestone-proof` only.
-   - Prefer completing with `proof_status=not_required` when all linked
-     `Kind: pr` cards are `done` and no harness exists, over inventing theater.
+     Point-read the existing card and verify its milestone, substantive brief,
+     and executable `DONE-WHEN`. Attach it with the guarded milestone update:
+     `--proof-card <slug> --proof-status pending`. If no valid card exists,
+     leave proof pending and record the missing proof work for its existing
+     owner. This driver does not create validation cards.
+   - Do not infer complete acceptance from the linked card count. List remaining
+     acceptance clauses and keep the proof pending when any clause lacks evidence.
 3. From the milestone **Outcome / Acceptance** body (and North Star end state if
    needed), list the **next-gate** PR slices required to make the milestone
    objectively reachable. Prefer multiple small PRs over one epic.
@@ -409,17 +432,21 @@ milestone or every queue entry):
    are terminal and note `proof_status` / proof card, plus **`proof_verdict` and
    `proof_verdict_reason`** (the live re-check of the evidence; see
    **Proof verdict** below).
-2. Choose proof path from the **gap-report entry reason** + detail:
-   - If reason/body has machine PASS evidence (or proof card DONE with
-     `PROOF: PASS` / `RESULT: PASS`):
+2. Choose the proof path from the live detail and accepted requirements. The
+   gap-report reason alone does not authorize a transition:
+   - For passing proof, require the current passing verdict and status. A
+     pending status can advance only when its exact canonical proof card is
+     validation, belongs to the same board/milestone, is done, and has an exact
+     `PROOF: PASS` or `RESULT: PASS` line. File-only DONE-WHEN evidence needs
+     the proof owner to record that exact PASS line first:
      ```bash
      "${LAST_STACK_ROOT:-$HOME/.last-stack}/bin/last-stack-milestone-driver-snapshot" guard \
        --run-dir "${ROUTINES_RUN_DIR:?}" --run-id "${ROUTINES_RUN_ID:?}" \
        --artifact "${ROUTINES_RUN_DIR:?}/milestone-driver/gap-report.json" -- \
        kanban milestone state <slug> complete --proof-status passing --json
      ```
-   - Else if reason mentions `not_required` or `no proof card` (or detail
-     `proof_status=not_required` and no harness):
+   - Else only if the live detail already declares `proof_status=not_required`
+     and `proof_verdict=not_required`, with no accepted requirement contradicted:
      ```bash
      "${LAST_STACK_ROOT:-$HOME/.last-stack}/bin/last-stack-milestone-driver-snapshot" guard \
        --run-dir "${ROUTINES_RUN_DIR:?}" --run-id "${ROUTINES_RUN_ID:?}" \
