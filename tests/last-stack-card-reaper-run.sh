@@ -17,6 +17,36 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Legacy fixtures model their authoritative Card from the explicit board file.
+# New stale-preview/failure cases live in last-stack-card-reaper-loom-guard.sh.
+# Keep these tests isolated: no canonical read may reach the real board.
+mkdir -p "$tmp/canonical-bin"
+mkdir -p "$tmp/no-last-stack"
+export LAST_STACK_ROOT="$tmp/no-last-stack"
+cat >"$tmp/canonical-bin/kanban" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = show ] && [ "${3:-}" = --canonical ]; then
+  jq --arg slug "$2" '.[] | select(.slug==$slug) | .assignee //= "" | .body //= "" | if .column=="doing" then .updated_at //= .created_at else . end' "$REAPER_TEST_BOARD"
+else
+  exec "$REAPER_TEST_KANBAN" "$@"
+fi
+EOF
+cat >"$tmp/reaper-entry" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+args=("$@")
+for ((i=0; i<${#args[@]}; i++)); do
+  if [ "${args[$i]}" = --board-json ]; then export REAPER_TEST_BOARD="${args[$((i+1))]}"; fi
+done
+export REAPER_TEST_KANBAN="$(command -v kanban)"
+export PATH="$REAPER_TEST_SHIMS:$PATH"
+exec "$REAPER_TEST_REAL" "$@"
+EOF
+chmod +x "$tmp/canonical-bin/kanban" "$tmp/reaper-entry"
+export REAPER_TEST_REAL="$ROOT/bin/last-stack-card-reaper-run" REAPER_TEST_SHIMS="$tmp/canonical-bin"
+REAPER="$tmp/reaper-entry"
+
 board="$tmp/board.json"
 cat >"$board" <<'JSON'
 [
@@ -63,7 +93,7 @@ cat >"$board" <<'JSON'
 ]
 JSON
 
-out="$("$ROOT/bin/last-stack-card-reaper-run" \
+out="$("$REAPER" \
   --dry-run \
   --skip-preflight \
   --board-json "$board" \
@@ -110,7 +140,7 @@ esac
 EOF
 chmod +x "$fake_bin/kanban"
 
-transient_out="$(PATH="$fake_bin:$PATH" LAST_STACK_ROOT="$tmp/no-last-stack" "$ROOT/bin/last-stack-card-reaper-run" \
+transient_out="$(PATH="$fake_bin:$PATH" LAST_STACK_ROOT="$tmp/no-last-stack" "$REAPER" \
   --skip-preflight \
   --board-json "$transient_board" \
   --memory "$tmp/transient-memory.md" \
@@ -169,7 +199,7 @@ esac
 EOF
 chmod +x "$reference_bin/kanban"
 
-reference_out="$(PATH="$reference_bin:$PATH" LAST_STACK_ROOT="$tmp/no-last-stack" "$ROOT/bin/last-stack-card-reaper-run" \
+reference_out="$(PATH="$reference_bin:$PATH" LAST_STACK_ROOT="$tmp/no-last-stack" "$REAPER" \
   --skip-preflight \
   --board-json "$reference_board" \
   --memory "$tmp/reference-memory.md" \
@@ -190,7 +220,7 @@ exit 1
 EOF
 chmod +x "$unexpected_bin/kanban"
 
-unexpected_out="$(PATH="$unexpected_bin:$PATH" LAST_STACK_ROOT="$tmp/no-last-stack" "$ROOT/bin/last-stack-card-reaper-run" \
+unexpected_out="$(PATH="$unexpected_bin:$PATH" LAST_STACK_ROOT="$tmp/no-last-stack" "$REAPER" \
   --skip-preflight \
   --board-json "$transient_board" \
   --memory "$tmp/unexpected-memory.md" \
@@ -238,7 +268,7 @@ esac
 EOF
 chmod +x "$promotion_bin/kanban"
 
-promotion_out="$(PATH="$promotion_bin:$PATH" LAST_STACK_ROOT="$tmp/no-last-stack" "$ROOT/bin/last-stack-card-reaper-run" \
+promotion_out="$(PATH="$promotion_bin:$PATH" LAST_STACK_ROOT="$tmp/no-last-stack" "$REAPER" \
   --skip-preflight \
   --board-json "$promotion_board" \
   --memory "$tmp/promotion-memory.md" \
@@ -274,7 +304,7 @@ cat >"$doing_board" <<'JSON'
 JSON
 printf '%s\n' "2026-07-20T12:00:00Z rolled_back churn-after-rollback rule=doing dead claim >60m; age=3.5h" >"$tmp/doing-memory.md"
 
-doing_out="$("$ROOT/bin/last-stack-card-reaper-run" \
+doing_out="$("$REAPER" \
   --dry-run \
   --skip-preflight \
   --board-json "$doing_board" \
@@ -352,7 +382,7 @@ chain_out="$(
     set -uo pipefail
     ( "$1/bin/last-stack-board-closeout-sweep" || true )
     "$2" --skip-preflight --board-json "$3" --memory "$4" --now 2026-07-20T13:31:08Z
-  ' _ "$noop_stack" "$ROOT/bin/last-stack-card-reaper-run" "$stale_board" "$tmp/pass-memory.md"
+  ' _ "$noop_stack" "$REAPER" "$stale_board" "$tmp/pass-memory.md"
 )"
 
 printf '%s\n' "$chain_out" | grep -q '^board-closeout 2026-07-20T13:31:08Z noop '
@@ -379,7 +409,7 @@ test -s "$run_owned/scratch/result.json"
 # pickup worker overwrote that worker's outcome with a fixture verdict.
 foreign="$tmp/routines/runs/last-stack-fkanban-pickup-w3/2026-08-30T13-40-09-658Z"
 mkdir -p "$foreign"
-foreign_out="$(ROUTINES_RUN_DIR="$foreign" "$ROOT/bin/last-stack-card-reaper-run" \
+foreign_out="$(ROUTINES_RUN_DIR="$foreign" "$REAPER" \
   --dry-run \
   --skip-preflight \
   --board-json "$board" \
@@ -402,7 +432,7 @@ grep -q 'belongs to another routine' "$tmp/foreign.err"
 # callers and tests keep a way to name the sink they want.
 explicit="$tmp/explicit-run"
 mkdir -p "$explicit"
-CARD_REAPER_RUN_DIR="$explicit" "$ROOT/bin/last-stack-card-reaper-run" \
+CARD_REAPER_RUN_DIR="$explicit" "$REAPER" \
   --dry-run \
   --skip-preflight \
   --board-json "$board" \
@@ -459,7 +489,7 @@ esac
 EOF
 chmod +x "$refuse_bin/kanban"
 
-refuse_out="$(PATH="$refuse_bin:$PATH" LAST_STACK_ROOT="$tmp/no-last-stack" "$ROOT/bin/last-stack-card-reaper-run" \
+refuse_out="$(PATH="$refuse_bin:$PATH" LAST_STACK_ROOT="$tmp/no-last-stack" "$REAPER" \
   --skip-preflight \
   --board-json "$refuse_board" \
   --memory "$tmp/refuse-memory.md" \
@@ -510,7 +540,7 @@ cat >"$kind_board" <<'JSON'
 ]
 JSON
 
-kind_out="$("$ROOT/bin/last-stack-card-reaper-run" \
+kind_out="$("$REAPER" \
   --dry-run \
   --skip-preflight \
   --board-json "$kind_board" \
