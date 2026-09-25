@@ -264,6 +264,60 @@ zero_snap = fh.Snapshot(
 vol = volume_codes(zero_snap)
 check("measured zero still can alert", "ship_volume_hard" in vol, True)
 
+# ── 2026-09-25: dashboard read 0 with available=false; forge held merges ──
+dash_partial = {
+    "velocity": {
+        "available": False,
+        "unavailableRepos": ["fold", "last-stack", "lastgit-fleet"],
+        "ships": {"h24": {"count": 0, "perHour": 0, "unknown": 11, "hours": 24, "available": False}},
+        "hourly": [{"hourAgo": 1, "ships": 0, "available": False}],
+    }
+}
+part = fh.ships_from_dashboard(dash_partial, True)
+check("partial dashboard h24 is None not 0", part.h24 if part else "no-read", None)
+check("partial dashboard available=false", part.available if part else None, False)
+
+fg_now = ts("2026-09-25T21:05:00Z")
+fg_calls = []
+
+
+def stub_forge_only(cmd, timeout=0):
+    fg_calls.append(cmd[-1])
+    if cmd[0] == "lastgit":
+        return 1, "", "repo-list index read failed"
+    path = cmd[-1]
+    if path.startswith("orgs/EdgeVector/repos"):
+        return 0, json.dumps([
+            {"name": "fold", "updated_at": "2026-09-25T13:25:34-07:00"},
+            {"name": "idle", "updated_at": "2026-09-01T00:00:00Z"},
+            {"name": "old-mirror", "mirror": True, "updated_at": "2026-09-25T13:00:00Z"},
+        ]), ""
+    if path.startswith("repos/EdgeVector/fold/pulls"):
+        return 0, json.dumps([
+            {"merged": True, "merged_at": "2026-09-25T13:45:00-07:00", "updated_at": "2026-09-25T13:45:00-07:00"},
+            {"merged": True, "merged_at": "2026-09-25T12:10:00-07:00", "updated_at": "2026-09-25T12:10:00-07:00"},
+            {"merged": False, "merged_at": None, "updated_at": "2026-09-20T00:00:00Z"},
+        ]), ""
+    return 1, "", "unexpected " + path
+
+
+fell = fh.resolve_ships(dash_partial, True, now=fg_now, runner=stub_forge_only)
+check("unavailable dashboard falls back to forgejo", fell.source, "forgejo")
+check("forgejo fallback counts completed hour", fell.last_h, 1.0)
+check("forgejo fallback h24", fell.h24, 2.0)
+check("idle repo pulls are not read", any("repos/EdgeVector/idle/" in c for c in fg_calls), False)
+check("mirror repo pulls are not read", any("old-mirror" in c for c in fg_calls), False)
+check("pull pages are small", any("limit=20&page=1" in c for c in fg_calls), True)
+
+
+def stub_all_fail(cmd, timeout=0):
+    return 1, "", "down"
+
+
+kept = fh.resolve_ships(dash_partial, True, now=fg_now, runner=stub_all_fail)
+check("all readers down keeps the unavailable dashboard read", kept.source, "dashboard")
+check("all readers down: h24 None", kept.h24, None)
+
 # ── heartbeat formatter ───────────────────────────────────────────────────
 check("fmt unavailable", fh.fmt_ships(None), "unavailable")
 check("fmt measured zero", fh.fmt_ships(0.0), "0")

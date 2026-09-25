@@ -335,7 +335,10 @@ def ships_from_dashboard(
         per_hour = h24_f / 24.0
     if not last_avail:
         last_h = None
-    if window_missing:
+    if window_missing or h24_avail is False:
+        # A partial read (some repos unreadable) is not a measured count. The
+        # dashboard read 0 with available=false on 2026-09-25 while the forge
+        # held 21 merges; the 0 went to Tom as ships_24h=0.
         h24_f = None
         per_hour = None
     return ShipRead(
@@ -443,68 +446,98 @@ def lastgit_merged_times(
     return times
 
 
+FORGEJO_PAGE_LIMIT = 20
+FORGEJO_MAX_PAGES = 5
+
+
 def forgejo_merged_times(
     since_h: float = 26.0,
     org: str = "EdgeVector",
     runner=None,
     now: Optional[float] = None,
-    budget_s: float = 25.0,
+    budget_s: float = 90.0,
 ) -> Optional[list[float]]:
-    """Merged Forgejo PR timestamps across one org. None = the listing failed."""
+    """Merged Forgejo PR timestamps across one org. None = the listing failed.
+
+    A 50-PR page carries every PR body and took 10-44 s under host load on
+    2026-09-25. Repos not updated inside the window hold no merge inside it
+    and are skipped; the rest are read in 20-PR pages that stop at the window
+    edge. A budget that runs out before every active repo is read returns
+    None: a partial read is not a measured count.
+    """
     runner = runner or run
     now = time.time() if now is None else now
     cutoff = now - since_h * HOUR_S
     t0 = time.time()
     api = "last-stack-forge-api"
-    code, out, _err = runner(
-        [api, f"orgs/{org}/repos?limit=50&page=1"],
-        timeout=15.0,
-    )
-    if code != 0:
-        return None
-    try:
-        repos = parse_json(out)
-    except Exception:
-        return None
-    if not isinstance(repos, list):
-        return None
+    repos: list[Any] = []
+    for page in range(1, 6):
+        code, out, _err = runner(
+            [api, f"orgs/{org}/repos?limit=50&page={page}"],
+            timeout=20.0,
+        )
+        if code != 0:
+            return None
+        try:
+            batch = parse_json(out)
+        except Exception:
+            return None
+        if not isinstance(batch, list):
+            return None
+        repos.extend(batch)
+        if len(batch) < 50:
+            break
     times: list[float] = []
     any_ok = False
     for repo in repos:
-        if time.time() - t0 > budget_s:
-            break
         name = ""
         if isinstance(repo, dict):
+            if repo.get("archived") or repo.get("mirror"):
+                continue
+            updated = parse_merge_ts(repo.get("updated_at"))
+            if updated is not None and updated < cutoff:
+                any_ok = True
+                continue
             name = str(repo.get("name") or repo.get("full_name") or "")
             if "/" in name:
                 name = name.rsplit("/", 1)[-1]
         if not name:
             continue
-        code, out, _err = runner(
-            [
-                api,
-                f"repos/{org}/{name}/pulls?state=closed&limit=50&sort=recentupdate&type=pulls",
-            ],
-            timeout=15.0,
-        )
-        if code != 0:
-            continue
-        try:
-            prs = parse_json(out)
-        except Exception:
-            continue
-        if not isinstance(prs, list):
-            continue
-        any_ok = True
-        for pr in prs:
-            if not isinstance(pr, dict):
-                continue
-            if not pr.get("merged"):
-                continue
-            ts = parse_merge_ts(pr.get("merged_at") or pr.get("mergedAt"))
-            if ts is None or ts < cutoff:
-                continue
-            times.append(ts)
+        for page in range(1, FORGEJO_MAX_PAGES + 1):
+            if time.time() - t0 > budget_s:
+                return None
+            code, out, _err = runner(
+                [
+                    api,
+                    f"repos/{org}/{name}/pulls?state=closed&limit={FORGEJO_PAGE_LIMIT}"
+                    f"&page={page}&sort=recentupdate&type=pulls",
+                ],
+                timeout=45.0,
+            )
+            if code != 0:
+                break
+            try:
+                prs = parse_json(out)
+            except Exception:
+                break
+            if not isinstance(prs, list):
+                break
+            any_ok = True
+            oldest = None
+            for pr in prs:
+                if not isinstance(pr, dict):
+                    continue
+                upd = parse_merge_ts(pr.get("updated_at"))
+                if upd is not None:
+                    oldest = upd if oldest is None else min(oldest, upd)
+                if not pr.get("merged"):
+                    continue
+                ts = parse_merge_ts(pr.get("merged_at") or pr.get("mergedAt"))
+                if ts is None or ts < cutoff:
+                    continue
+                times.append(ts)
+            if len(prs) < FORGEJO_PAGE_LIMIT or (oldest is not None and oldest < cutoff):
+                break
     if not any_ok:
         return None
     return times
@@ -518,8 +551,20 @@ def resolve_ships(
 ) -> ShipRead:
     """Dashboard merge-derived first, then lastgit, then Forgejo. Never board cards."""
     dash = ships_from_dashboard(factory, use_completed_hour)
-    if dash is not None:
+    if dash is not None and dash.available:
         return dash
+    direct = _resolve_ships_direct(use_completed_hour, now=now, runner=runner)
+    if direct.source == "unavailable" and dash is not None:
+        return dash
+    return direct
+
+
+def _resolve_ships_direct(
+    use_completed_hour: bool,
+    now: Optional[float] = None,
+    runner=None,
+) -> ShipRead:
+    """lastgit, then Forgejo. Used when the dashboard is absent or unavailable."""
     lg = lastgit_merged_times(since_h=26.0, runner=runner)
     if lg:
         return ships_from_merge_times(
