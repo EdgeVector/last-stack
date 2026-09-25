@@ -167,7 +167,47 @@ def matching_tail(passes: list[dict], primary: str, secondary: str, updated_at: 
     return matched
 
 
-def pick_candidate(paused_field: str, primary: str, secondary: str) -> Optional[str]:
+# A North Star in one of these states has no outcome left to drive. On
+# 2026-09-25 17:44Z the refill admitted north-star-lastdb-canary-pipeline-v2
+# (status: done): rebuild_paused puts the displaced Secondary back where the
+# candidate stood, so the two most recent occupants swap forever, and a done
+# one leaves the Secondary slot with no eligible outcome
+# (papercut-portfolio-auto-refill-admits-done-north-star-20260925).
+TERMINAL_NORTH_STAR_STATUSES = (
+    "done", "complete", "completed", "archived", "retired", "superseded",
+    "cancelled", "canceled", "abandoned", "wontfix",
+)
+
+
+def read_north_star_status(slug: str, brain_bin: str, fixture_dir: Optional[Path]) -> str:
+    """One point read of the North Star project record. '' when unreadable."""
+    if fixture_dir is not None:
+        path = fixture_dir / "get" / f"{slug}.txt"
+        if not path.is_file():
+            return ""
+        text = path.read_text()
+    else:
+        try:
+            cp = subprocess.run(
+                [brain_bin, "get", slug, "--type", "project"],
+                text=True, capture_output=True, timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        if cp.returncode != 0:
+            return ""
+        text = cp.stdout
+    meta, _body = split_get_output(text)
+    return (meta.get("status") or "").strip().lower()
+
+
+def pick_candidate(
+    paused_field: str,
+    primary: str,
+    secondary: str,
+    status_of=lambda _slug: "",
+    skipped: Optional[list] = None,
+) -> Optional[str]:
     for tok in paused_field.split(","):
         cand = normalize(tok)
         if not cand or cand in PLACEHOLDER_TOKENS:
@@ -175,6 +215,13 @@ def pick_candidate(paused_field: str, primary: str, secondary: str) -> Optional[
         if not SLUG_RE.match(cand):
             continue
         if cand in (primary, secondary):
+            continue
+        # An unreadable record keeps the old behavior (admit): a brain read
+        # blip must not stop the rotation. Only a stated terminal status skips.
+        status = status_of(cand)
+        if status in TERMINAL_NORTH_STAR_STATUSES:
+            if skipped is not None:
+                skipped.append(f"{cand}:{status}")
             continue
         return cand
     return None
@@ -360,7 +407,15 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(json.dumps(result, indent=2, sort_keys=True))
         return 0
 
-    candidate = pick_candidate(paused, primary, secondary)
+    skipped: list = []
+    candidate = pick_candidate(
+        paused,
+        primary,
+        secondary,
+        status_of=lambda slug: read_north_star_status(slug, args.brain, fixture),
+        skipped=skipped,
+    )
+    result["skipped_terminal"] = skipped
     if candidate is None:
         result["verdict"] = "no-candidate"
         if args.json:

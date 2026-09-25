@@ -197,6 +197,36 @@ printf '%s' "$out" | jq -e '.refilled == true and .notice_posted == true' >/dev/
 grep -q 'notice --title' "$NOTICE_LOG" || fail "situations notice was not invoked: $(cat "$NOTICE_LOG")"
 grep -q 'north-star-a' "$NOTICE_LOG" || fail "notice must name the admitted North Star: $(cat "$NOTICE_LOG")"
 
+# ------------------------------------------- a done North Star is skipped
+# papercut-portfolio-auto-refill-admits-done-north-star-20260925: the refill
+# admitted a status=done North Star and the Secondary slot had no outcome.
+live6="$tmp/skip-done"
+write_admission "$live6" < <(base_record)
+cat >"$live6/get/north-star-a.txt" <<'REC'
+---
+type: project
+title: North Star A
+status: done
+---
+
+Finished outcome.
+REC
+cat >"$live6/get/north-star-b.txt" <<'REC'
+[project] north-star-b
+title:      North Star B
+status:     in_progress
+---
+
+Live outcome.
+REC
+passes6="$tmp/skip-done.jsonl"
+{ drained_pass 2026-09-03T18:00:00Z 2026-09-01T00:00:00Z
+  drained_pass 2026-09-03T19:00:00Z 2026-09-01T00:00:00Z
+} >"$passes6"
+out="$("$bin" --fixture-dir "$live6" --passes-file "$passes6" --json)"
+printf '%s' "$out" | jq -e '.verdict == "would-refill" and .candidate == "north-star-b" and (.skipped_terminal == ["north-star-a:done"])' >/dev/null \
+  || fail "a done North Star must be skipped for the next live one: $out"
+
 # ----------------------------------------------------- admission fail-closed
 missing="$tmp/missing-admission"
 mkdir -p "$missing/get"
