@@ -706,7 +706,34 @@ function loomClaimHold(card) {
   // A failed read is not proof that the execution ended.
   if (!status) return "unknown";
   if (LOOM_TERMINAL.has(status)) return null;
-  return status;
+  const reaped = loomReapDeadWalk(loomBin, id, status);
+  return reaped ? `${status}+reap:${reaped}` : status;
+}
+
+// A `running` walk whose worker died keeps its card protected until the
+// hourly loom-reaper pass reaches it (2026-09-26: a MERGE on an already
+// merged PR sat 50 min with every lease expired). A targeted reap is a few
+// point reads and is a no-op (`skip_live`) while any lease is live, so try it
+// here. At most BOARD_CLOSEOUT_LOOM_REAP_MAX acting reaps per sweep.
+let loomReapBudget = Number(process.env.BOARD_CLOSEOUT_LOOM_REAP_MAX ?? 1);
+const LOOM_REAP_IDLE = new Set(["skip_live", "defer_resume", ""]);
+function loomReapDeadWalk(loomBin, id, status) {
+  if (status !== "running" || !(loomReapBudget > 0)) return "";
+  const resumeS = Number(process.env.BOARD_CLOSEOUT_LOOM_REAP_RESUME_SEC || 240);
+  const args = ["reap", "--execution", id, "--resume-timeout-secs", String(resumeS), "--json"];
+  if (dryRun) args.push("--dry-run");
+  const out = run(loomBin, args, { timeout: (resumeS + 60) * 1000 });
+  if (!out.ok) return "";
+  let action = "";
+  try {
+    const outcome = (JSON.parse(out.stdout).outcomes || []).find((o) => o.exec_id === id);
+    action = String((outcome && outcome.action) || "");
+  } catch {
+    return "";
+  }
+  if (LOOM_REAP_IDLE.has(action)) return "";
+  loomReapBudget -= 1;
+  return action;
 }
 
 function branchHasCommits(card, wt) {
@@ -1713,13 +1740,42 @@ def loom_claim_hold(card):
         return None
     if not exec_id:
         return "unknown"
-    ok, out, _err = run([os.environ.get("BOARD_CLOSEOUT_LOOM_BIN") or "loom", "show", exec_id], timeout=15)
+    loom_bin = os.environ.get("BOARD_CLOSEOUT_LOOM_BIN") or "loom"
+    ok, out, _err = run([loom_bin, "show", exec_id], timeout=15)
     m = re.search(r"^status: ([a-z_]+)$", out, re.M) if ok else None
     if not m:
         return "unknown"
     if m.group(1) in LOOM_TERMINAL:
         return None
-    return m.group(1)
+    reaped = loom_reap_dead_walk(loom_bin, exec_id, m.group(1))
+    return f"{m.group(1)}+reap:{reaped}" if reaped else m.group(1)
+
+# See loomReapDeadWalk in the node engine.
+LOOM_REAP_IDLE = {"skip_live", "defer_resume", ""}
+_loom_reap_budget = [int(os.environ.get("BOARD_CLOSEOUT_LOOM_REAP_MAX", "1") or 0)]
+
+def loom_reap_dead_walk(loom_bin, exec_id, status):
+    if status != "running" or _loom_reap_budget[0] <= 0:
+        return ""
+    resume_s = int(os.environ.get("BOARD_CLOSEOUT_LOOM_REAP_RESUME_SEC") or 240)
+    args = [loom_bin, "reap", "--execution", exec_id, "--resume-timeout-secs", str(resume_s), "--json"]
+    if dry_run:
+        args.append("--dry-run")
+    ok, out, _err = run(args, timeout=resume_s + 60)
+    if not ok:
+        return ""
+    try:
+        outcomes = json.loads(out).get("outcomes") or []
+    except (ValueError, AttributeError):
+        return ""
+    action = ""
+    for outcome in outcomes:
+        if isinstance(outcome, dict) and outcome.get("exec_id") == exec_id:
+            action = str(outcome.get("action") or "")
+    if action in LOOM_REAP_IDLE:
+        return ""
+    _loom_reap_budget[0] -= 1
+    return action
 
 def tag_list(card):
     t = card.get("tags") or card.get("Tags") or []
