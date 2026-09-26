@@ -177,7 +177,15 @@ if [ -n "$EVIDENCE" ]; then
 fi
 
 set +e
-BODY="$(python3 "$CHECK" "$TMP/src" "$EVIDENCE" 2>"$TMP/check.err")"
+LOG_FILE=""
+if [ -n "$EVIDENCE" ] && [ -f "$EVIDENCE" ]; then
+  # Look for a corresponding log file next to the evidence
+  LOG_CANDIDATE="${EVIDENCE%.json}.log"
+  if [ -f "$LOG_CANDIDATE" ]; then
+    LOG_FILE="$LOG_CANDIDATE"
+  fi
+fi
+BODY="$(python3 "$CHECK" "$TMP/src" "$EVIDENCE" "$LOG_FILE" 2>"$TMP/check.err")"
 RC=$?
 set -e
 if [ -s "$TMP/check.err" ]; then
@@ -192,6 +200,10 @@ Source label: ${SOURCE_LABEL}"
 if [ -n "$EVIDENCE" ]; then
   BODY="${BODY}
 Evidence file: ${EVIDENCE}"
+  if [ -n "$LOG_FILE" ]; then
+    BODY="${BODY}
+Evidence log: ${LOG_FILE}"
+  fi
 fi
 
 if [ "$RC" -ne 0 ]; then

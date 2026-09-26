@@ -226,6 +226,13 @@ def req_time(obj, key, failures):
         return None
 
 
+def req_string(obj, key, failures):
+    if not isinstance(obj, dict) or not isinstance(obj.get(key), str) or not obj[key]:
+        failures.append("The evidence field %s is not a non-empty string." % key)
+        return None
+    return obj[key]
+
+
 def section(data, name, failures):
     value = data.get(name)
     if not isinstance(value, dict):
@@ -234,7 +241,35 @@ def section(data, name, failures):
     return value
 
 
-def evidence_failures(path):
+def verify_log_hash(evidence_data, log_path):
+    """Verify that the run log matches the provenance hash.
+
+    Returns True if hash matches or no log is provided, False otherwise.
+    Updates evidence_data['provenance']['log_verification'] with status.
+    """
+    import hashlib
+
+    provenance = evidence_data.get("provenance", {})
+    log_sha256 = provenance.get("run_log_sha256")
+
+    if not log_sha256:
+        return True
+
+    if not log_path or not Path(log_path).is_file():
+        return False
+
+    try:
+        sha = hashlib.sha256()
+        with open(log_path, "rb") as f:
+            while chunk := f.read(65536):
+                sha.update(chunk)
+        computed = sha.hexdigest()
+        return computed == log_sha256
+    except (OSError, IOError):
+        return False
+
+
+def evidence_failures(path, log_path=None):
     failures = []
     measured = {"gap": False}
     try:
@@ -245,6 +280,30 @@ def evidence_failures(path):
         return ["The evidence file is not a JSON object."]
     if data.get("schema") != EVIDENCE_SCHEMA:
         failures.append("The evidence schema is not %s." % EVIDENCE_SCHEMA)
+
+    # Validate provenance (required)
+    provenance = section(data, "provenance", failures)
+    if provenance:
+        command = req_string(provenance, "command", failures)
+        run_start = req_time(provenance, "run_start_at", failures)
+        run_end = req_time(provenance, "run_end_at", failures)
+        home_path = req_string(provenance, "ephemeral_home_path", failures)
+        log_hash = req_string(provenance, "run_log_sha256", failures)
+
+        if run_start is not None and run_end is not None and run_start >= run_end:
+            failures.append("The run start time is not before run end time.")
+
+        if home_path and any(marker in home_path for marker in PRIMARY_MARKERS):
+            failures.append("The ephemeral home path names a primary home or a secret.")
+
+        if log_hash and not SHA_RE.fullmatch(log_hash):
+            failures.append("The run log hash is not a valid SHA-256.")
+
+        if log_hash:
+            if not log_path:
+                failures.append("The run log is absent. Provide the log file to verify provenance.")
+            elif not verify_log_hash(data, log_path):
+                failures.append("The run log hash does not match the log file.")
 
     for text in walk_strings(data):
         for marker in PRIMARY_MARKERS:
@@ -398,6 +457,7 @@ def measured_summary(path):
 def main():
     source_dir = Path(sys.argv[1])
     evidence_arg = sys.argv[2] if len(sys.argv) > 2 else ""
+    log_arg = sys.argv[3] if len(sys.argv) > 3 else ""
     failures = source_failures(source_dir)
     source_line = "Source contract: FAIL" if failures else "Source contract: PASS"
     lines = [
@@ -424,7 +484,8 @@ def main():
         return 1
 
     evidence_path = Path(evidence_arg)
-    op_failures = evidence_failures(evidence_path)
+    log_path = log_arg if log_arg else None
+    op_failures = evidence_failures(evidence_path, log_path)
     if op_failures:
         lines.insert(1, "Operational evidence: FAIL")
         lines.append("")
