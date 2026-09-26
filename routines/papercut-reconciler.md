@@ -269,6 +269,19 @@ For each pattern worth fixing now:
   against a live outcome; `--ensure-milestone` if the cluster has no
   active/planned/proving milestone. Never raw `kanban add` a Kind:pr
   without those flags (pickup: `unattached-outcome`).
+- Set the `Difficulty:` header on each Kind:pr card (its own line, after
+  `Kind: pr`). Loom land-card routes IMPLEMENT and REVISE by it, and no line
+  means `fast`, the smallest model (decision-2026-09-23-pickup-lanes-fast-tier-via-matrix).
+  - `Difficulty: hard`: a storage-engine or data-path correctness fix (a race,
+    data loss, a key range or ordering bug, a false complete/trust state), or
+    any card whose DONE WHEN needs a red-before/green-after fixture of a
+    concurrency or storage failure.
+  - `Difficulty: normal`: a fix that crosses two or more components or repos.
+  - No line: a well-scoped single-file or tooling fix.
+  Measured 2026-09-26: fold PR 2196 (meter-repair race + order-log range, no
+  Difficulty) came back from the fast tier with a test that reproduced nothing
+  and a range change that did not change the key set
+  (papercut-land-card-fast-tier-hollow-pr-on-correctness-card-20260926).
 - File as many pattern cards as the evidence genuinely supports; too ambiguous
   or too large → one `backlog` card with what you know.
 
