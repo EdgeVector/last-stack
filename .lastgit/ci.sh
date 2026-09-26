@@ -851,4 +851,6 @@ ci_test tests/last-stack-papercut-lifecycle-close-registry-cover.sh
 ci_test tests/last-stack-board-closeout-loom-claim.sh
 # disk-reclaim step 3c: finished Loom step worktrees.
 ci_test tests/last-stack-loom-worktree-reclaim.sh
+ci_test tests/host-track-local-safe-forgejo-gate-freshness.sh
+ci_test tests/host-track-local-safe-rollback-resolves-real-path.sh
 ci_test tests/last-stack-ci-test-registration.sh
