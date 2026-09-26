@@ -45,13 +45,34 @@ FORGE_RE = re.compile(r"https?://[^/\s)>\]]+/([^/\s)>\]]+)/([^/\s)>\]]+)/pulls?/
 # titled claim is unfixed. So the citation label counts only in a body that is
 # actually a card — which is the Loom-copied card body that search_repair_prs
 # was written for (papercut-card-merge-does-not-close-its-named-papercuts-20260926).
-REPAIR_VERB_LINE_RE = re.compile(r"(?im)^[ \t>*-]*(?:fixes|fixed|closes|resolves)[ \t]*:(?P<rest>.*)$")
-CITATION_LABEL_LINE_RE = re.compile(r"(?im)^[ \t>*-]*(?:papercut|papercuts)[ \t]*:(?P<rest>.*)$")
-# The card contract last-stack-kanban-file-pr enforces: a brief carries `## GOAL`
-# (or `GOAL:`) and `## END STATE` (or `END STATE:` / `DONE WHEN:`). A reconciler
-# entry also carries a `Card:` line. A PR trailer has none of these.
-CARD_SHAPED_RE = re.compile(
-    r"(?im)^[ \t>*-]*(?:#{1,6}[ \t]*)?(?:GOAL|END[ \t]STATE|DONE[ \t]WHEN|Card)\b"
+REPAIR_LINE_RE = re.compile(r"(?im)^[ \t>*-]*(?:papercut|papercuts|fixes|fixed|closes|resolves)[ \t]*:(?P<rest>.*)$")
+# MEASURED 2026-09-26, and it is why `papercut` stays in that alternation: of the
+# merged PRs the forge search returns for `papercut-`, SEVEN carry a
+# `Papercut: <slug>` line and NONE carry a card marker (`## GOAL`, `## END STATE`,
+# `Card:`) — #249, #250, #251, #252, #255, #265, fkanban#43. A bare
+# `Papercut: <slug>` near the top of a hand-written body IS the fleet's repair
+# convention, so requiring a card-shaped body would have stopped 7 of 7 real
+# closures and re-opened
+# papercut-card-merge-does-not-close-its-named-papercuts-20260926 (13 papercuts
+# left open after their fix merged). The label genuinely cannot separate a repair
+# claim from a citation, so the discrimination lives on the RECORD instead — see
+# keep_open_marker(), whose record is the authority on whether its own claim is resolved.
+# (papercut-lifecycle-closer-treats-incident-pr-as-fix-20260925)
+#
+# A record that says in its own body that it must stay open is never auto-closed.
+# The structured form is the reliable one; the prose forms are what the corpus
+# already contains. A `#`-commented line does not count, so a record can quote
+# the marker while explaining it.
+KEEP_OPEN_STRUCTURED_RE = re.compile(r"(?im)^(?![ \t]*#)[ \t>*-]*Keep-open[ \t]*:[ \t]*(?P<rest>.*)$")
+# The prose arm demands a SELF-reference. Measured false positive 2026-09-26:
+# papercut-card-merge-does-not-close-its-named-papercuts-20260926 opens with
+# "Symptom: papercuts stay open after the card that names them merges" — a
+# description of its own defect, on a record that is legitimately fixed. Half the
+# defects in this ledger are about something staying open, so a bare
+# "stays open" would hold a large slice of the corpus open forever.
+KEEP_OPEN_PROSE_RE = re.compile(
+    r"(?i)\bthis[ \t]+(?:record|row|papercut)[ \t]+(?:must[ \t]+)?"
+    r"(?:stays?|remains?|stay|remain)[ \t]+open\b"
 )
 GITHUB_RE = re.compile(r"https?://github\.com/([^/\s)>\]]+)/([^/\s)>\]]+)/pull/(\d+)")
 PIPELINE_STUCK_SLUG_RE = re.compile(r"^papercut-pipeline-stuck-(cr|forge|pr|merges)-")
@@ -678,6 +699,30 @@ def brain_get(args: argparse.Namespace, slug: str) -> dict[str, Any]:
     return value
 
 
+def keep_open_marker(body: str) -> str:
+    """The record's own standing-open assertion, or "".
+
+    Scope, stated because a regex guard is scoped to what it matches and not to
+    what its name promises. Two arms:
+
+      * `Keep-open: <reason>` on its own line. The reliable form; use it.
+      * the prose the corpus already carries, and ONLY with a self-reference:
+        "this record stays open", "this row must remain open". A bare "stays
+        open" is not enough and must not be made enough — see
+        KEEP_OPEN_PROSE_RE for the record it would have wrongly held.
+
+    It does not understand a record that means the same thing in other words.
+    The failure direction is a missed close, which is visible in
+    `papercut list --status open` and taken on the next pass; the failure it
+    prevents is invisible.
+    """
+    match = KEEP_OPEN_STRUCTURED_RE.search(body) or KEEP_OPEN_PROSE_RE.search(body)
+    if not match:
+        return ""
+    line = body[match.start() :].splitlines()[0].strip()
+    return line[:200]
+
+
 def status_is_open(body: str) -> bool:
     statuses = [m.group(1).upper() for m in re.finditer(r"(?im)^\s*Status:\s*([A-Z_]+)", body)]
     if not statuses:
@@ -922,20 +967,13 @@ def review_refs(body: str, slug: str = "") -> tuple[list[ReviewRef], list[str]]:
 def names_repair(text: str, slug: str) -> bool:
     """True when a labeled repair line names exactly this slug.
 
-    A repair VERB line counts in any body. A bare `Papercut:` line counts only
-    when the body is card-shaped, because that label is also how prose and PR
-    trailers CITE a papercut, and an auto-close on a live claim is the expensive
-    direction: a `fixed` row is invisible to `papercut list --status open`, to
-    triage and to every stale sweep, so the residual claim does not wait, it
-    disappears while the ledger reports it shipped. A missed close is visible
-    and gets taken on the next pass.
+    `Papercut:` counts here, because it is the fleet's repair convention in a
+    hand-written PR body (7 of 7 merged PRs, measured — see REPAIR_LINE_RE). It
+    is ALSO how prose cites a record for context, and this function cannot tell
+    the two apart from the label. `honors_keep_open` carries that discrimination.
     """
     token = re.compile(r"(?<![a-z0-9-])" + re.escape(slug) + r"(?![a-z0-9-])")
-    if any(token.search(m.group("rest")) for m in REPAIR_VERB_LINE_RE.finditer(text)):
-        return True
-    if not CARD_SHAPED_RE.search(text):
-        return False
-    return any(token.search(m.group("rest")) for m in CITATION_LABEL_LINE_RE.finditer(text))
+    return any(token.search(m.group("rest")) for m in REPAIR_LINE_RE.finditer(text))
 
 
 def search_repair_prs(args: argparse.Namespace, slug: str) -> list[ReviewRef]:
@@ -1229,6 +1267,17 @@ def close_review_records(args: argparse.Namespace, iso: str) -> dict[str, Any]:
         if not is_open:
             result["skipped"].append({"slug": slug, "reason": "not-open"})
             continue
+        # The record is the authority on whether its own claim is resolved. A
+        # PR's `Papercut: <slug>` line cannot say whether it fixes the record or
+        # merely cites it (REPAIR_LINE_RE), so a record that states it must stay
+        # open wins over any review ref. Costs nothing: this runs before every
+        # ref read and every forge call.
+        keep_open = keep_open_marker(body)
+        if keep_open and not getattr(args, "ignore_keep_open", False):
+            result["skipped"].append(
+                {"slug": slug, "reason": "keep-open-asserted", "marker": keep_open}
+            )
+            continue
         refs, ref_skips = review_refs(body, slug)
         owner_name, repo_name = record_repo(record)
         agg_repo = aggregate_repo(slug, repo_name)
@@ -1389,6 +1438,12 @@ def main() -> int:
         action="store_false",
         dest="forge_search",
         help="do not search merged forge PRs for a labeled repair line when a papercut names no review",
+    )
+    parser.add_argument(
+        "--ignore-keep-open",
+        action="store_true",
+        help="close records that assert they must stay open (operator override; the "
+        "record is normally the authority on whether its own claim is resolved)",
     )
     parser.add_argument("--ledger-slug", default="papercut-reconciler-ledger")
     args = parser.parse_args()
