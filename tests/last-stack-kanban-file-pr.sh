@@ -359,4 +359,33 @@ printf '%s\n' "$verify_only_out" | grep -q '## GOAL' || fail "refusal must name 
 printf '%s\n' "$verify_only_out" | grep -q 'VERIFY/## STEPS section is not an END STATE' \
   || fail "refusal must say VERIFY is not END STATE: $verify_only_out"
 
+# Difficulty: a P0/P1 card with no line gets `normal`; the flag sets it; a body
+# line wins. papercut-land-card-fast-tier-hollow-pr-on-correctness-card-20260926
+file_difficulty() {
+  local slug="$1" body_file="$2"; shift 2
+  : >"$tmp/add.body"
+  "$bin" "$slug" --board-cli "$fake_kanban" --title "x" --repo EdgeVector/last-stack \
+    --north-star ns-a --milestone ms-live --work-class repair "$@" <"$body_file" >/dev/null 2>&1 \
+    || fail "$slug should file"
+  sed -n 's/^Difficulty:[[:space:]]*//p' "$tmp/add.body" | tr '\n' ' '
+}
+[ "$(file_difficulty d-p1-tag "$body_ok" --tags papercut,p1)" = "normal " ] \
+  || fail "p1 tag must stamp Difficulty: normal: $(cat "$tmp/add.body")"
+[ "$(file_difficulty d-p0-pri "$body_ok" --priority P0)" = "normal " ] \
+  || fail "P0 priority must stamp Difficulty: normal"
+[ "$(file_difficulty d-flag "$body_ok" --tags p1 --difficulty hard)" = "hard " ] \
+  || fail "--difficulty hard must win over the p1 default"
+[ -z "$(file_difficulty d-p2 "$body_ok" --tags p2)" ] \
+  || fail "p2 card must keep no Difficulty line"
+[ -z "$(file_difficulty d-p10 "$body_ok" --tags p10,p1x)" ] \
+  || fail "p10/p1x must not read as p1"
+body_hard="$(mktemp "$tmp/body.XXXX")"
+{ printf 'Difficulty: hard\n'; cat "$body_ok"; } >"$body_hard"
+[ "$(file_difficulty d-body "$body_hard" --tags p1 --difficulty fast)" = "hard " ] \
+  || fail "a body Difficulty line must win and not duplicate"
+if "$bin" d-bad --board-cli "$fake_kanban" --title "x" --repo EdgeVector/last-stack \
+  --north-star ns-a --milestone ms-live --difficulty huge <"$body_ok" >/dev/null 2>&1; then
+  fail "--difficulty huge must be refused"
+fi
+
 echo "ok last-stack-kanban-file-pr"

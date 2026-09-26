@@ -21,6 +21,12 @@
 #   --priority P0-P3
 #   --tags a,b
 #   --deps a,b
+#   --difficulty fast|normal|hard
+#                           loom land-card routes IMPLEMENT and REVISE by the
+#                           body's `Difficulty:` line; no line means fast (the
+#                           smallest model). A body line wins over this flag.
+#                           When neither is set and --priority or --tags name
+#                           P0/P1, the helper stamps `Difficulty: normal`.
 #   --surfaces a,b          file surfaces claim-v2 compares; when absent the
 #                           helper derives them from repo paths the body
 #                           names (last-stack-kanban-derive-surfaces)
@@ -103,6 +109,7 @@ column="todo"
 base="main"
 kind="pr"
 priority=""
+difficulty=""
 tags=""
 deps=""
 surfaces=""
@@ -127,6 +134,7 @@ while [ "$#" -gt 0 ]; do
     --kind) kind="${2:-}"; shift 2 ;;
     --priority) priority="${2:-}"; shift 2 ;;
     --tags) tags="${2:-}"; shift 2 ;;
+    --difficulty) difficulty="${2:-}"; shift 2 ;;
     --deps) deps="${2:-}"; shift 2 ;;
     --surfaces) surfaces="${2:-}"; shift 2 ;;
     --no-derive-surfaces) derive_surfaces=0; shift ;;
@@ -163,6 +171,10 @@ esac
 case "$repo" in
   */*) ;;
   *) die "repo must be owner/name (got $repo)" ;;
+esac
+case "$difficulty" in
+  ""|fast|normal|hard) ;;
+  *) die "difficulty must be fast, normal, or hard (got $difficulty)" ;;
 esac
 case "$work_class" in
   feature|closeout|proof|repair|incident) ;;
@@ -336,6 +348,25 @@ fi
 
 if [ -n "$ms_ns" ] && [ "$ms_ns" != "$north_star" ]; then
   die "milestone '$milestone' is under north_star '$ms_ns', not '$north_star'"
+fi
+
+# No `Difficulty:` line routes the land-card walk to the fast tier. On
+# 2026-09-25/26 p1 cards filed without one came back as hollow PRs
+# (last-stack PR 211, PR 219, fold PR 2196):
+# papercut-land-card-fast-tier-hollow-pr-on-correctness-card-20260926.
+if ! printf '%s\n' "$body" | grep -q '^Difficulty:'; then
+  if [ -z "$difficulty" ]; then
+    case ",$(printf '%s' "$priority,$tags" | tr '[:upper:]' '[:lower:]' | tr -d ' ')," in
+      *,p0,*|*,p1,*)
+        difficulty=normal
+        printf 'last-stack-kanban-file-pr: %s is P0/P1 with no Difficulty; stamping Difficulty: normal (pass --difficulty to choose)\n' "$slug" >&2
+        ;;
+    esac
+  fi
+  if [ -n "$difficulty" ]; then
+    body="Difficulty: $difficulty
+$body"
+  fi
 fi
 
 # A card with no surfaces reserves its whole repository in claim-v2
