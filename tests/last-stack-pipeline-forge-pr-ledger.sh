@@ -210,6 +210,82 @@ sync --apply
 [ "$(cat "$tmp/brain/papercut-pipeline-forge-fold-main-red.status")" = verified ] || { echo "FAIL main-red close"; cat "$tmp/out.json"; exit 1; }
 echo "ok   green main closes the main-red row verified"
 
+# ── 8b-8e. a CANCELLED required run is infra, not a product red ───────────────
+# papercut-fold-ci-required-cancelled-run-stored-as-a-required-red-20260925:
+# the forge stores a cancelled run as `failure` with the description
+# "Has been cancelled". Only the description tells the two apart, and before
+# this classification every consumer read a red the commit never earned.
+cancelled_base() { # cancelled_base <desc-for-Mini>
+  put "repos/$R/commits/base1/status" <<J
+{"statuses":[{"context":"Forge CI / ci-required (push)","status":"success","created_at":"2026-09-22T11:00:00Z"},
+             {"context":"Forge CI / Mini (push)","status":"failure","description":"$1","created_at":"2026-09-22T11:00:00Z"}]}
+J
+}
+
+# 8b. a base tip whose only red is a cancellation is NOT a red main, so no PR
+#     is attributed to it and no main-red row is filed.
+cancelled_base "Has been cancelled"
+pulls_open 40 | put "repos/$R/pulls?state=open&limit=50"
+cat >"$fx/repos_EdgeVector_fold_commits_head40_status.json" <<'J'
+{"statuses":[{"context":"Forge CI / ci-required (pull_request)","status":"success","created_at":"2026-09-22T10:10:00Z"},
+             {"context":"Forge CI / Mini (pull_request)","status":"failure","description":"Has been cancelled","created_at":"2026-09-22T10:20:00Z"}]}
+J
+"$LEDGER" scan --repo "$R" --json >"$tmp/scan.json"
+jq -e '.repos[0].base.main.verdict == "cancelled" and .repos[0].base.main.red_contexts == []
+       and .repos[0].base.main.cancelled_contexts == ["Forge CI / Mini"]' "$tmp/scan.json" >/dev/null   || { echo "FAIL cancelled base must not be a red main"; jq .repos "$tmp/scan.json"; exit 1; }
+jq -e '.prs[0].root_cause == "" and .prs[0].ledger_slug == "papercut-pipeline-forge-fold-pr-40"' "$tmp/scan.json" >/dev/null   || { echo "FAIL a cancelled base must not absorb PRs into main-red"; jq .prs "$tmp/scan.json"; exit 1; }
+echo "ok   a base tip red only on a cancelled run is not a red main"
+
+# 8c. the PR itself is shape=cancelled, still stuck, and its row names the re-run
+jq -e '.prs[0].shape == "cancelled" and .prs[0].stuck == true and .prs[0].red_contexts == []
+       and .prs[0].cancelled_contexts == ["Forge CI / Mini"]' "$tmp/scan.json" >/dev/null   || { echo "FAIL cancelled PR classification"; jq .prs "$tmp/scan.json"; exit 1; }
+: >"$tmp/brain/calls.log"
+sync --apply
+[ "$(cat "$tmp/brain/papercut-pipeline-forge-fold-pr-40.status")" = open ] || { echo "FAIL cancelled PR not filed"; cat "$tmp/out.json"; exit 1; }
+[ ! -f "$tmp/brain/papercut-pipeline-forge-fold-main-red.status.new" ] || true
+grep -q -- '--title Pipeline: EdgeVector/fold PR 40 is stuck on a CANCELLED required run (re-run it)' "$tmp/brain/calls.log"   || { echo "FAIL cancelled row must name the re-run in its title"; cat "$tmp/brain/calls.log"; exit 1; }
+grep -q -- 'the remedy is a re-run, not a code change' "$tmp/brain/calls.log"   || { echo "FAIL cancelled row must name the remedy in its symptom"; cat "$tmp/brain/calls.log"; exit 1; }
+grep -q 'cancelled=Forge CI / Mini' "$tmp/brain/calls.log"   || { echo "FAIL evidence line must name the cancelled contexts"; cat "$tmp/brain/calls.log"; exit 1; }
+echo "ok   a cancelled PR is stuck, filed on its own, and names the re-run"
+
+# 8d. a REAL red outranks a cancellation: the commit earned the red, and the
+#     cancelled context must not soften it (fold f045a0b83223 is this shape).
+put "repos/$R/commits/base1/status" <<'J'
+{"statuses":[{"context":"Forge CI / ci-required (push)","status":"success","created_at":"2026-09-22T11:00:00Z"},
+             {"context":"Forge CI / Mini (push)","status":"success","created_at":"2026-09-22T11:30:00Z"}]}
+J
+pulls_open 41 | put "repos/$R/pulls?state=open&limit=50"
+cat >"$fx/repos_EdgeVector_fold_commits_head41_status.json" <<'J'
+{"statuses":[{"context":"Forge CI / ci-required (pull_request)","status":"failure","description":"Has been cancelled","created_at":"2026-09-22T10:10:00Z"},
+             {"context":"Forge CI / Mini (pull_request)","status":"failure","description":"Failing after 14m24s","created_at":"2026-09-22T10:20:00Z"}]}
+J
+"$LEDGER" scan --repo "$R" --json >"$tmp/scan.json"
+jq -e '.prs[0].shape == "red" and .prs[0].red_contexts == ["Forge CI / Mini"]
+       and .prs[0].cancelled_contexts == ["Forge CI / ci-required"]' "$tmp/scan.json" >/dev/null   || { echo "FAIL a real red must outrank a cancellation"; jq .prs "$tmp/scan.json"; exit 1; }
+echo "ok   a real red outranks a cancellation on the same commit"
+
+# 8e. only the DESCRIPTION distinguishes them: the same status value with an
+#     ordinary failure description stays a product red. This is the assertion
+#     that fails if anyone widens the match to the status value.
+cancelled_base "Failing after 15m27s"
+pulls_open 42 | put "repos/$R/pulls?state=open&limit=50"
+cp "$fx/repos_EdgeVector_fold_commits_head40_status.json" "$fx/repos_EdgeVector_fold_commits_head42_status.json"
+"$LEDGER" scan --repo "$R" --json >"$tmp/scan.json"
+jq -e '.repos[0].base.main.verdict == "red" and .repos[0].base.main.red_contexts == ["Forge CI / Mini"]
+       and .repos[0].base.main.cancelled_contexts == []' "$tmp/scan.json" >/dev/null   || { echo "FAIL a failure without a cancel description is still a product red"; jq .repos "$tmp/scan.json"; exit 1; }
+echo "ok   a failure whose description is not a cancellation stays a red main"
+
+# reset the board for the cases that follow
+put "repos/$R/commits/base1/status" <<'J'
+{"statuses":[{"context":"Forge CI / ci-required (push)","status":"success","created_at":"2026-09-22T11:00:00Z"},
+             {"context":"Forge CI / Mini (push)","status":"success","created_at":"2026-09-22T11:30:00Z"}]}
+J
+echo '[]' | put "repos/$R/pulls?state=open&limit=50"
+put "repos/$R/pulls/40" <<'J'
+{"number":40,"state":"closed","merged":true,"merged_at":"2026-09-22T11:59:00Z"}
+J
+sync --apply >/dev/null 2>&1 || true
+
 # 9. dedupe gate refusal naming only sibling PR rows is cleared precisely
 touch "$tmp/brain/refuse-once"
 pulls_open 10 | put "repos/$R/pulls?state=open&limit=50"
