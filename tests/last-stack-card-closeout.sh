@@ -23,7 +23,7 @@ if command -v gtimeout >/dev/null 2>&1 || command -v timeout >/dev/null 2>&1; th
 set -euo pipefail
 case "${1:-}" in
   show)
-    sleep 5
+    sleep 30
     printf '{"slug":"%s","column":"doing","body":""}\n' "$2"
     ;;
   add|move)
@@ -44,9 +44,11 @@ EOF
     exit 1
   fi
   elapsed=$(( $(date +%s) - started ))
-  # wallclock-bound-ok: 4s ceiling over a 1s COMMAND_TIMEOUT_SEC (4x slack); the
-  # failing side is an unbounded board read, so the ceiling only has to be finite.
-  if [ "$elapsed" -gt 4 ]; then
+  # wallclock-bound-ok: 15s ceiling over a 1s COMMAND_TIMEOUT_SEC; the fake
+  # board sleeps 30s, so an unbounded read lands at 30s and a bounded one at
+  # ~1s. The old 4s ceiling sat 1s under a 5s sleep and went red on a loaded
+  # runner with elapsed=5s (last-stack PR 249, 2026-09-26).
+  if [ "$elapsed" -gt 15 ]; then
     cat /tmp/card-closeout-slow.$$ >&2
     rm -f /tmp/card-closeout-slow.$$
     echo "slow board read was not bounded: elapsed=${elapsed}s" >&2
