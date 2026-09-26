@@ -578,7 +578,8 @@ ci_test tests/last-stack-lastdb-safe-upgrade-dev-photograph-stamp.sh
 # APPENDED (see the shard-stability note above): ci_test shards by list position.
 ci_test tests/last-stack-portal-wt-mirror-origin-refspec.sh
 
-# New ci_test entries go at this append-only tail. A mid-list insertion
+# A new test needs NO line here: ci_test_discovered (end of file) runs it.
+# An explicit entry, if you still add one, goes at this append-only tail. A mid-list insertion
 # renumbers every later shard assignment and has reddened the full gate once
 # (papercut-last-stack-ci-sharding-contract-does-not-enforce-append-only-registration).
 # A managed command only takes effect if PATH resolves into the active tree.
@@ -866,3 +867,31 @@ ci_test tests/last-stack-board-closeout-loom-claim.sh
 ci_test tests/last-stack-loom-worktree-reclaim.sh
 ci_test tests/last-stack-loom-parked-triage.sh
 ci_test tests/last-stack-ci-test-registration.sh
+
+# Auto-discovery. A tests/*.sh that is neither listed above nor in
+# tests/.ci-exempt runs here, so a new test needs no edit to this file.
+# Before this, every PR that added a test edited the same lines just above the
+# registration guard: parallel PRs conflicted there, and a PR that forgot the
+# line went red one full CI cycle later (last-stack PRs 137, 206, 219, 229;
+# papercut-last-stack-ci-sh-append-point-conflicts-every-concurrent-test-pr-20260923).
+# The shard comes from a hash of the path, not from a list position, so adding
+# or removing a discovered test never moves any other test to another shard.
+# It does not touch ci_test_index, so the explicit list above keeps its slots.
+ci_test_discovered() {
+  local listed exempt test_script test_slot ci_test_started ci_test_rc
+  listed="$(grep -oE '^ci_test tests/[^ ]+' "$ROOT/.lastgit/ci.sh" | awk '{print $2}')"
+  exempt="$(grep -vE '^(#|$)' "$ROOT/tests/.ci-exempt" | cut -f1)"
+  for test_script in tests/*.sh; do
+    [ -f "$test_script" ] || continue
+    if printf '%s\n' "$listed" "$exempt" | grep -Fxq -- "$test_script"; then continue; fi
+    test_slot=$(( $(printf '%s' "$test_script" | cksum | awk '{print $1}') % CI_SHARD_COUNT ))
+    [ "$test_slot" -eq "$CI_SHARD_INDEX" ] || continue
+    echo "ci_test start: $test_script (auto-discovered)"
+    ci_test_started="$SECONDS"
+    ci_test_rc=0
+    bash "$test_script" || ci_test_rc=$?
+    echo "ci_test done: $test_script rc=${ci_test_rc} secs=$((SECONDS - ci_test_started))"
+    [ "$ci_test_rc" -eq 0 ] || return "$ci_test_rc"
+  done
+}
+ci_test_discovered
