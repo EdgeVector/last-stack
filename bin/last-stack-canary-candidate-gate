@@ -18,9 +18,14 @@
 # their registry pin on 2026-09-26.
 #
 # A RED smoke stops before the cutover: the primary keeps its build and the
-# ledger gets a build-subject line event. Rows are written only after a GREEN
-# smoke AND a successful cutover, so `next` never names a pair the primary
+# ledger gets a build-subject line event. Candidate rows are written only after a
+# GREEN smoke AND a successful cutover, so `next` never names a pair the primary
 # did not accept.
+#
+# When the cutover FAILS, the gate stays `outcome=error` and still runs the
+# apps-only pass, pinned to the build the primary actually runs after the
+# failure. The candidate's GREEN set names a build this host did not take; the
+# apps-only set names one it does.
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")")/.." && pwd -P)"
@@ -120,14 +125,39 @@ apps_only_fingerprint() {
     "$set_file" 2>/dev/null | shasum -a 256 | awk '{print $1}'
 }
 
-apps_only_pass() {
-  # apps_only_pass <why>: <why> names the resolve outcome that sent us here, so
-  # the result line still says why the full pass did not run.
+apps_only_run() {
+  # apps_only_run <why>: the WORKER. It returns a status instead of calling
+  # `result`, so a caller that must keep its own outcome can still publish the
+  # rows. That is the whole reason for the split: a failed primary cutover has
+  # to stay `outcome=error` or routinesd's error escalation stops firing on it,
+  # and it used to `result error` two steps above the rows —
+  # papercut-canary-gate-discards-a-green-app-set-when-the-primary-cutover-fails-20260926
+  #
+  #    0  a GREEN proof, rows published (or skipped by a test flag)
+  #   10  nothing to prove: no primary binary, every app already proved, cooldown
+  #   20  red: a tool is missing, the set failed, the smoke was RED, rows failed
+  #
+  # <why> names the outcome that sent us here, so the detail still says why the
+  # full pass did not run. Sets apps_only_status / apps_only_evidence /
+  # apps_only_rows for a caller that reports one short field, and
+  # apps_only_detail for the thin wrapper that reports it verbatim.
   local why="$1"
+  apps_only_status=noop
+  apps_only_evidence=unset
+  apps_only_rows=-
+  apps_only_moved=-
+  apps_only_detail=""
   if [ -z "$primary_lastdbd" ] || [ ! -x "$primary_lastdbd" ]; then
-    result noop "stage=apps-only candidate=$incoming primary=$primary evidence=${why}_primary_lastdbd_absent bin=${primary_lastdbd:-unset}"
+    apps_only_evidence=primary_lastdbd_absent
+    apps_only_detail="stage=apps-only candidate=$incoming primary=$primary evidence=${why}_primary_lastdbd_absent bin=${primary_lastdbd:-unset}"
+    return 10
   fi
-  [ -x "$candidate_set_bin" ] || result error "evidence=tool_missing tool=$candidate_set_bin"
+  if [ ! -x "$candidate_set_bin" ]; then
+    apps_only_status=red
+    apps_only_evidence=tool_missing
+    apps_only_detail="evidence=tool_missing tool=$candidate_set_bin"
+    return 20
+  fi
   mkdir -p "$run_dir"
   local set_file="$run_dir/apps-only-set.json" rc=0 count moved
   set +e
@@ -136,12 +166,17 @@ apps_only_pass() {
   set -e
   if [ "$rc" -ne 0 ]; then
     "$pipeline" record-line-event --check candidate_set --subject observer --result fail --detail "exit=$rc" >/dev/null || true
-    result error "stage=apps-only primary=$primary evidence=candidate_set_failed rc=$rc after=$why"
+    apps_only_status=red
+    apps_only_evidence=candidate_set_failed
+    apps_only_detail="stage=apps-only primary=$primary evidence=candidate_set_failed rc=$rc after=$why"
+    return 20
   fi
   count="$(jq -r '.apps | length' "$set_file")"
   moved="$(apps_moved_past_registry "$set_file")"
   if [ -z "$moved" ]; then
-    result noop "stage=apps-only candidate=$incoming primary=$primary apps=$count evidence=${why}_apps_already_proved"
+    apps_only_evidence=apps_already_proved
+    apps_only_detail="stage=apps-only candidate=$incoming primary=$primary apps=$count evidence=${why}_apps_already_proved"
+    return 10
   fi
 
   # The smoke costs ~18 minutes of the primary host. This routine does NOT fire
@@ -154,7 +189,9 @@ apps_only_pass() {
   #
   # So: one apps-only smoke per <primary build, app-pin fingerprint> per
   # cooldown, recorded whatever the verdict. A RED set must not be re-smoked
-  # every ten minutes either.
+  # every ten minutes either. The cutover-failure caller shares this stamp on
+  # purpose: a primary that fails its cutover fails it again next run, and that
+  # must not buy a second ~18-minute smoke for pins already proved.
   local fp fp_short stamp stamp_fp stamp_at stamp_age stamp_result
   fp="$(apps_only_fingerprint "$set_file")"
   fp_short="${fp:0:12}"
@@ -166,13 +203,20 @@ apps_only_pass() {
     stamp_result="$(jq -r '.result // "unknown"' "$stamp" 2>/dev/null || true)"
     stamp_age=$(( $(date +%s) - stamp_at ))
     if [ "$stamp_fp" = "$fp" ] && [ "$stamp_age" -lt "$apps_only_cooldown" ]; then
-      result noop "stage=apps-only primary=$primary apps=$count moved=$moved fingerprint=$fp_short evidence=${why}_apps_only_cooldown last=${stamp_result} age=${stamp_age}s cooldown=${apps_only_cooldown}s"
+      apps_only_evidence=apps_only_cooldown
+      apps_only_detail="stage=apps-only primary=$primary apps=$count moved=$moved fingerprint=$fp_short evidence=${why}_apps_only_cooldown last=${stamp_result} age=${stamp_age}s cooldown=${apps_only_cooldown}s"
+      return 10
     fi
   fi
 
   local smoke_status=skipped proof_file="$run_dir/apps-only-proof.json" src=0 steps
   if [ "$skip_smoke" != 1 ]; then
-    [ -f "$smoke_run" ] || result error "evidence=tool_missing tool=$smoke_run"
+    if [ ! -f "$smoke_run" ]; then
+      apps_only_status=red
+      apps_only_evidence=tool_missing
+      apps_only_detail="evidence=tool_missing tool=$smoke_run"
+      return 20
+    fi
     set +e
     SMOKE_LASTDBD_BIN="$primary_lastdbd" SMOKE_CANDIDATE_SET="$set_file" \
       bash "$smoke_run" --json >"$proof_file" 2>"$run_dir/apps-only-smoke.err"
@@ -185,7 +229,10 @@ apps_only_pass() {
       # primary, which is untouched here. No rows, and no ledger line event
       # for the same reason the candidate smoke writes none.
       write_apps_only_stamp "$stamp" "$fp" red
-      result error "stage=apps-only primary=$primary apps=$count moved=$moved evidence=smoke_red steps=$steps log=$run_dir/apps-only-smoke.err after=$why"
+      apps_only_status=red
+      apps_only_evidence=smoke_red
+      apps_only_detail="stage=apps-only primary=$primary apps=$count moved=$moved evidence=smoke_red steps=$steps log=$run_dir/apps-only-smoke.err after=$why"
+      return 20
     fi
   fi
 
@@ -193,20 +240,46 @@ apps_only_pass() {
 
   local rows_status=skipped rows_out rows_pr rrc=0
   if [ "$skip_rows" != 1 ] && [ "$skip_smoke" != 1 ]; then
-    [ -x "$publish_next" ] || result error "evidence=tool_missing tool=$publish_next"
+    if [ ! -x "$publish_next" ]; then
+      apps_only_status=red
+      apps_only_evidence=tool_missing
+      apps_only_detail="evidence=tool_missing tool=$publish_next"
+      return 20
+    fi
     set +e
     rows_out="$("$publish_next" --candidate-set "$set_file" --proof "$proof_file" 2>"$run_dir/apps-only-rows.err")"
     rrc=$?
     set -e
     if [ "$rrc" -ne 0 ]; then
-      result error "stage=apps-only primary=$primary evidence=rows_failed rc=$rrc log=$run_dir/apps-only-rows.err after=$why"
+      apps_only_status=red
+      apps_only_evidence=rows_failed
+      apps_only_detail="stage=apps-only primary=$primary evidence=rows_failed rc=$rrc log=$run_dir/apps-only-rows.err after=$why"
+      return 20
     fi
     rows_status="$(printf '%s\n' "$rows_out" | sed -n 's/^REGISTRY_NEXT status=\([^ ]*\).*/\1/p' | tail -n1)"
     rows_pr="$(printf '%s\n' "$rows_out" | sed -n 's/.* pr=\([^ ]*\).*/\1/p' | tail -n1)"
     [ -z "$rows_pr" ] || rows_status="$rows_status:$rows_pr"
   fi
 
-  result ok "stage=apps-only primary=$primary apps=$count moved=$moved smoke=$smoke_status cutover=skipped rows=$rows_status after=$why"
+  apps_only_status=ok
+  apps_only_evidence=rows_published
+  [ "$rows_status" != skipped ] || apps_only_evidence=rows_skipped
+  apps_only_rows="$rows_status"
+  apps_only_moved="$moved"
+  apps_only_detail="stage=apps-only primary=$primary apps=$count moved=$moved smoke=$smoke_status cutover=skipped rows=$rows_status after=$why"
+  return 0
+}
+
+apps_only_pass() {
+  # The thin wrapper for the two `resolve` exits: the apps-only pass IS the
+  # outcome there, so the worker's status becomes the result line verbatim.
+  local why="$1" rc=0
+  apps_only_run "$why" || rc=$?
+  case "$rc" in
+    0)  result ok "$apps_only_detail" ;;
+    10) result noop "$apps_only_detail" ;;
+    *)  result error "$apps_only_detail" ;;
+  esac
 }
 
 for tool in "$dogfood" "$pipeline"; do
@@ -231,18 +304,26 @@ if [ "$skip_build" != 1 ]; then
   build_status="$(printf '%s\n' "$build_json" | jq -r '.status // "unknown"' 2>/dev/null || echo unknown)"
 fi
 
-# ── 2. resolve the candidate and the hold policy ─────────────────────────
-primary=""
 identity_command="${LAST_STACK_CANARY_V2_PRIMARY_IDENTITY_CMD:-last-stack-lastdb-memory-guard --identity}"
-set +e
-identity_output="$(eval "$identity_command" 2>/dev/null)"
-identity_rc=$?
-set -e
-if [ "$identity_rc" -eq 0 ]; then
-  for token in $identity_output; do
-    case "$token" in build=*) primary="${token#build=}" ;; esac
+
+read_primary_build() {
+  # Print the build the primary runs right now, or nothing. Read twice: once at
+  # step 2, and again after a failed cutover, because a row is a proved PAIR and
+  # the second half of the pair is whatever the primary runs AT THAT MOMENT.
+  local out rc=0 token
+  set +e
+  out="$(eval "$identity_command" 2>/dev/null)"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || return 0
+  for token in $out; do
+    case "$token" in build=*) printf '%s' "${token#build=}" ;; esac
   done
-fi
+  return 0
+}
+
+# ── 2. resolve the candidate and the hold policy ─────────────────────────
+primary="$(read_primary_build)"
 if [ -z "$primary" ] || [ "$primary" = unknown ]; then
   "$pipeline" record-line-event --check primary_identity --subject observer --result fail --detail absent >/dev/null || true
   result error "stage=resolve subject=observer evidence=primary_identity_absent"
@@ -315,7 +396,36 @@ cutover="$("$dogfood" --cutover --json)"
 cutover_rc=$?
 set -e
 if [ "$cutover_rc" -ne 0 ]; then
-  result error "stage=cutover candidate=$incoming smoke=$smoke_status evidence=cutover_failed"
+  # The GREEN set above proved the app commits against the CANDIDATE build, and
+  # the primary did not take that build -- so those rows are useless to this
+  # host and step 6 below is never reached. That discarded a GREEN app set on 3
+  # of the 13 runs before 2026-09-26, including the 09:47Z one that left brain
+  # 5 commits behind its pin:
+  # papercut-canary-gate-discards-a-green-app-set-when-the-primary-cutover-fails-20260926
+  #
+  # So publish the rows the host CAN use, from the third call site of the
+  # apps-only worker, pinned to the build the primary actually runs. The cutover
+  # failure stays outcome=error -- routinesd escalates on that and must keep
+  # doing so -- and the rows are reported in the detail.
+  #
+  # Re-read the identity first. A cutover that reports failure may still have
+  # moved (or be moving) the primary, and a row proved against a build the host
+  # does not run is exactly the wrong thing this record warns about. No identity,
+  # no rows.
+  apps_only_status=skipped
+  apps_only_evidence=not_attempted
+  apps_only_rows=-
+  apps_only_moved=-
+  primary_now="$(read_primary_build)"
+  if [ -z "$primary_now" ] || [ "$primary_now" = unknown ]; then
+    apps_only_status=unknown
+    apps_only_evidence=primary_identity_absent_after_cutover
+  else
+    primary="$primary_now"
+    apps_only_rc=0
+    apps_only_run cutover_failed || apps_only_rc=$?
+  fi
+  result error "stage=cutover candidate=$incoming smoke=$smoke_status evidence=cutover_failed primary_now=${primary_now:-unknown} apps_only=$apps_only_status apps_only_evidence=$apps_only_evidence apps_only_moved=$apps_only_moved rows=$apps_only_rows"
 fi
 cutover_result="$(printf '%s\n' "$cutover" | jq -r '.safe_upgrade // "unknown"' 2>/dev/null || true)"
 
