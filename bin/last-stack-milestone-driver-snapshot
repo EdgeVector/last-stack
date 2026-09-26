@@ -430,13 +430,24 @@ def authorize(command, board, control, report):
         if not args:
             refuse('missing-card-slug')
         options = flags(args[1:], {'--title', '--repo', '--north-star', '--milestone',
-            '--column', '--deps', '--surfaces', '--base', '--tags', '--priority'})
+            '--column', '--deps', '--surfaces', '--base', '--tags', '--priority',
+            '--kind', '--work-class'})
         owner = options.get('--milestone')
-        if not options.get('--surfaces', '').strip() or not any(s.strip() for s in options['--surfaces'].split(',')):
-            refuse('missing-source-surfaces')
+        kind = options.get('--kind', 'pr')
+        if kind not in ('pr', 'validation'):
+            refuse(f"unsupported-card-kind kind={kind}")
         if options.get('--column', 'todo') not in ('todo', 'backlog'):
             refuse('invalid-new-card-column')
-        cost, action = 1, 'decompose'
+        if kind == 'validation':
+            # file_proof_card: the proof card for a complete_proof queue entry
+            # that has no proof card yet. A validation card has no source
+            # surfaces; the checks below hold it to exactly that gap
+            # (papercut-milestone-driver-guard-hardcodes-decompose-action-for-file-pr-20260926).
+            cost, action = 1, 'file_proof'
+        else:
+            if not options.get('--surfaces', '').strip() or not any(s.strip() for s in options['--surfaces'].split(',')):
+                refuse('missing-source-surfaces')
+            cost, action = 1, 'decompose'
     elif program in ('kanban', 'fkanban', Path(board).name):
         if len(args) >= 3 and args[0] == 'move' and args[2] == 'todo':
             flags(args[3:], {'--json'})
@@ -500,13 +511,20 @@ def authorize(command, board, control, report):
             refuse('existing-proof-card-invalid')
         if proof_status != 'pending':
             refuse('proof-attachment-must-remain-pending')
+    if action == 'file_proof':
+        if milestone.get('proof_card'):
+            refuse(f"proof-card-already-linked slug={owner}")
+        if 'not_required' in (milestone.get('proof_status'), current.get('proof_verdict')):
+            refuse(f"proof-not-required slug={owner}")
     if action == 'complete_proof':
         if not (proof_status == 'passing' and passing_current or proof_status == 'not_required' and current.get('proof_verdict') == milestone.get('proof_status') == 'not_required'):
             refuse(f"completion-proof-not-current slug={owner}")
     prerequisites(board, current)
     if action:
+        # A proof card closes the gap a complete_proof entry names.
+        queue_action = 'complete_proof' if action == 'file_proof' else action
         entries = [entry for entry in report.get('work_queue', [])
-                   if entry.get('slug') == owner and entry.get('action') == action]
+                   if entry.get('slug') == owner and entry.get('action') == queue_action]
         if not entries:
             refuse(f"action-not-in-current-queue slug={owner} action={action}")
         if action == 'promote' and not any(args[1] in entry.get('promoteable', []) for entry in entries):
