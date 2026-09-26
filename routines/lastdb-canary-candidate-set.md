@@ -27,8 +27,13 @@ Step 0 comes first and never stops the gate:
 
 0. **primary-rows** — when registry `next` has no row proved with the build
    the primary runs now, prove the app set against that build (set + smoke on
-   the primary's own `lastdbd` + rows). No build, no cutover. One
-   `lastdb app resolve` when the rows exist. `--primary-rows-only` runs it
+   the primary's own `lastdbd` + rows). No build, no cutover. When the rows
+   exist, it reads each app head (the step 3 pick, `--no-version-lookup`) and
+   compares it with the pin in `next`. A moved head runs the same proof. The
+   limits: one smoke an hour; a RED set is not smoked again until a head
+   moves; a RED files or appends a brain papercut with the smoke output.
+   Nothing moved costs one head read and one `lastdb app resolve` per app
+   (about 2 s). `--primary-rows-only` runs it
    alone; `--detach` returns at once. lastdb-safe-upgrade and the hourly
    reconcile gate call it that way.
 1. **build** — `last-stack-canary-build-main` stages Forge fold `main` under
