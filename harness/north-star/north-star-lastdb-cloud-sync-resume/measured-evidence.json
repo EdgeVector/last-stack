@@ -1,12 +1,19 @@
 {
   "schema": "lastdb-cloud-sync-resume-proof.v1",
+  "provenance": {
+    "command": "harness/north-star/north-star-lastdb-cloud-sync-resume/measure.sh",
+    "run_start_at": "2026-09-26T13:06:05Z",
+    "run_end_at": "2026-09-26T13:06:07Z",
+    "ephemeral_home_path": "/tmp/csr.AdMj0m",
+    "run_log_sha256": "02bb817c7afac23a402450a970dd0e4c2086292253aba8aeb75179bfb6080f66"
+  },
   "surface": {
     "kind": "ephemeral",
     "primary_home_opened": false,
     "primary_mutated": false,
     "primary_reenabled_by_harness": false,
     "live_cutover": false,
-    "home_path": "/private/tmp/csr-measure.lujH3v"
+    "home_path": "/tmp/csr.AdMj0m"
   },
   "hash_group": {
     "cow_document_count": 0,
@@ -24,14 +31,16 @@
     "backlog_start": 0,
     "backlog_end": 0,
     "degraded": true,
-    "window_start": "2026-09-24T03:50:37Z",
-    "window_end": "2026-09-24T03:50:39Z"
+    "window_start": "2026-09-26T13:06:05Z",
+    "window_end": "2026-09-26T13:06:07Z"
   },
   "reenable": {
     "situation_slug": "cloud-sync-paused-pending-laststore-redesign-20260719"
   },
   "catchup": {
+    "primary_sync_lag_bytes": 0,
     "staging_depth": 0,
+    "staging_cap": 0,
     "brain_reads": 0,
     "brain_writes": 0,
     "kanban_reads": 0,
@@ -43,6 +52,5 @@
     "upload_bytes": 0,
     "fetch_bytes": 0,
     "upload_route": "upload_file_blob"
-  },
-  "measurement_note": "Throwaway /private/tmp/csr-measure.lujH3v booted with cloud_sync false and Sync disabled. lastdb cloud snapshot returned HTTP 500. lastdb db put-file-blob returned HTTP 409 because cloud sync is not configured. csn_high_water is 0. No backup commit exists. download_file_blob did not run. The probe window is not PASS. This file does not claim Situation clearance or a re-enable."
+  }
 }

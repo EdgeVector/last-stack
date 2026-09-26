@@ -1,0 +1,32 @@
+Measurement: cloud-sync-resume proof (real ephemeral probe)
+Measurement ID: csr-20260926-130605-4780
+Ephemeral home: /tmp/csr.AdMj0m
+Situation: cloud-sync-paused-pending-laststore-redesign-20260719
+This harness never runs 'lastdb connect' and never clears that pause.
+
+PROBE_RESULT: boot_ok=1
+
+$ lastdb --data-dir <ephemeral-home> cloud status
+error: missing /tmp/csr.AdMj0m/cloud_sync.json (No such file or directory (os error 2)) — run `lastdb connect` or `lastdb cloud setup-paid` first
+Exit: 1
+PROBE_RESULT: cloud_status_exit=1
+
+$ lastdb --data-dir <ephemeral-home> cloud snapshot
+error: laststore-snapshot returned HTTP/1.1 500 Internal Server Error: Internal Server Error
+Exit: 1
+PROBE_RESULT: snapshot_exit=1
+
+$ lastdb --data-dir <ephemeral-home> db put-file-blob --schema files/File --field file --key-hash csr-20260926-130605-4780 --bytes /tmp/csr.AdMj0m/canary.bin
+error: /api/db/file-blob returned HTTP/1.1 409 Conflict: cloud sync is not configured on this node
+Exit: 1
+PROBE_RESULT: put_file_blob_exit=1
+
+$ lastdb --data-dir <ephemeral-home> ops --by-app
+App / verb latency (idle long-poll wait excluded):
+  1. app=lastdb verb=other count=1 avg=1ms p95=1ms max=1ms err=1 [500x1 last=500 0s ago]
+  2. app=lastdb verb=file_blob count=1 avg=0ms p95=0ms max=0ms err=1 [409x1 last=409 0s ago]
+
+Tip: clients should send header `X-LastDB-Client: <name>` (e.g. kanban, brain). Unlabeled traffic still shows path= and peer pid/comm on Slowest recent.
+
+PROBE_RESULT: canary_bytes=35
+PROBE_RESULT: canary_sha256=bb9437e56e74adb007daa2bfca3d0c9e5ce2561215900e18390cfc0fb60185d9

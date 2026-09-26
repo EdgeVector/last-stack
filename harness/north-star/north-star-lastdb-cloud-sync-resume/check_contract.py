@@ -226,6 +226,13 @@ def req_time(obj, key, failures):
         return None
 
 
+def req_string(obj, key, failures):
+    if not isinstance(obj, dict) or not isinstance(obj.get(key), str) or not obj[key]:
+        failures.append("The evidence field %s is not a non-empty string." % key)
+        return None
+    return obj[key]
+
+
 def section(data, name, failures):
     value = data.get(name)
     if not isinstance(value, dict):
@@ -234,7 +241,138 @@ def section(data, name, failures):
     return value
 
 
-def evidence_failures(path):
+def verify_log_hash(evidence_data, log_path):
+    """Verify that the run log matches the provenance hash.
+
+    Returns True if hash matches or no log is provided, False otherwise.
+    Updates evidence_data['provenance']['log_verification'] with status.
+    """
+    import hashlib
+
+    provenance = evidence_data.get("provenance", {})
+    log_sha256 = provenance.get("run_log_sha256")
+
+    if not log_sha256:
+        return True
+
+    if not log_path or not Path(log_path).is_file():
+        return False
+
+    try:
+        sha = hashlib.sha256()
+        with open(log_path, "rb") as f:
+            while chunk := f.read(65536):
+                sha.update(chunk)
+        computed = sha.hexdigest()
+        return computed == log_sha256
+    except (OSError, IOError):
+        return False
+
+
+def extract_measured_values_from_log(log_path):
+    """Parse the measurement log and extract numeric counts.
+
+    Returns a dict with extracted values or empty dict if parsing fails.
+    """
+    if not log_path or not Path(log_path).is_file():
+        return {}
+
+    try:
+        log_text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+    except (OSError, UnicodeError):
+        return {}
+
+    values = {}
+    # Extract measurement summaries from log lines
+    # Format: "Key: value" patterns
+    import re
+
+    for line in log_text.split("\n"):
+        # Match patterns like "brain_reads: 5" or "upload_bytes: 8192"
+        match = re.match(r".*?(brain_reads|brain_writes|kanban_reads|kanban_writes|" +
+                        r"lastgit_reads|lastgit_writes|upload_bytes|backlog_start|" +
+                        r"backlog_end|staging_growth_bytes|upload_window_secs):\s*(\d+)", line)
+        if match:
+            key, value = match.group(1), int(match.group(2))
+            values[key] = value
+
+    return values
+
+
+def parse_probe_results(log_text):
+    """Parse the `PROBE_RESULT: key=value` lines a real measure.sh run
+    writes as it executes each `lastdb` command against its ephemeral
+    daemon."""
+    results = {}
+    for line in log_text.split("\n"):
+        match = re.match(r"^PROBE_RESULT: ([a-z_]+)=(.+)$", line)
+        if match:
+            results[match.group(1)] = match.group(2)
+    return results
+
+
+def probe_transcript_failures(log_path, evidence_data):
+    """Cross-check evidence against the PROBE_RESULT markers a genuine
+    measure.sh run writes to the log.
+
+    Evidence and log both come from measure.sh, so matching numbers alone do
+    not prove a real measurement happened -- a template could hardcode both
+    identically. This ties specific evidence claims (the hash-group verdict,
+    the degraded flag, uploaded file-blob bytes) to the *exit code* a real
+    `lastdb` command produced against the real ephemeral daemon, which a
+    template log cannot fabricate without also fabricating the transcript.
+    """
+    failures = []
+    if not log_path or not Path(log_path).is_file():
+        return failures
+    try:
+        log_text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+    except (OSError, UnicodeError):
+        return failures
+
+    results = parse_probe_results(log_text)
+    if "boot_ok" not in results:
+        # No PROBE_RESULT markers at all: not a real-probe transcript (for
+        # example a hand-authored fixture). Nothing to cross-check here.
+        return failures
+
+    if results.get("boot_ok") != "1":
+        failures.append("The run log records a probe whose ephemeral daemon never booted.")
+        return failures
+
+    for key in ("cloud_status_exit", "snapshot_exit", "put_file_blob_exit"):
+        if key not in results:
+            failures.append("The run log is missing the real %s result." % key)
+    if failures:
+        return failures
+
+    snapshot_ok = results["snapshot_exit"] == "0"
+    put_ok = results["put_file_blob_exit"] == "0"
+    all_ok = snapshot_ok and put_ok and results["cloud_status_exit"] == "0"
+
+    hash_group = evidence_data.get("hash_group") or {}
+    probe = evidence_data.get("probe") or {}
+    file_blob = evidence_data.get("file_blob") or {}
+
+    expected_verdict = "PASS" if snapshot_ok else "FAIL"
+    if hash_group.get("cow_proof_verdict") != expected_verdict:
+        failures.append(
+            "The evidence hash-group verdict does not match the logged snapshot exit code."
+        )
+
+    if probe.get("degraded") is not (not all_ok):
+        failures.append("The evidence degraded flag does not match the logged probe exits.")
+
+    upload_bytes = file_blob.get("upload_bytes")
+    if not put_ok and isinstance(upload_bytes, int) and upload_bytes > 0:
+        failures.append(
+            "The evidence claims uploaded file-blob bytes but the logged upload failed."
+        )
+
+    return failures
+
+
+def evidence_failures(path, log_path=None):
     failures = []
     measured = {"gap": False}
     try:
@@ -245,6 +383,35 @@ def evidence_failures(path):
         return ["The evidence file is not a JSON object."]
     if data.get("schema") != EVIDENCE_SCHEMA:
         failures.append("The evidence schema is not %s." % EVIDENCE_SCHEMA)
+
+    # Validate provenance (required)
+    provenance = data.get("provenance")
+    if not isinstance(provenance, dict) or not provenance:
+        failures.append("The evidence provenance is absent or empty.")
+        return failures
+    else:
+        command = req_string(provenance, "command", failures)
+        run_start = req_time(provenance, "run_start_at", failures)
+        run_end = req_time(provenance, "run_end_at", failures)
+        home_path = req_string(provenance, "ephemeral_home_path", failures)
+        # run_log_sha256 is optional; only check it if present
+        log_hash = provenance.get("run_log_sha256") if isinstance(provenance, dict) else None
+
+        if run_start is not None and run_end is not None and run_start >= run_end:
+            failures.append("The run start time is not before run end time.")
+
+        if home_path and any(marker in home_path for marker in PRIMARY_MARKERS):
+            failures.append("The ephemeral home path names a primary home or a secret.")
+
+        if log_hash:
+            if not isinstance(log_hash, str) or not SHA_RE.fullmatch(log_hash):
+                failures.append("The run log hash is not a valid SHA-256.")
+
+        if log_hash:
+            if not log_path:
+                failures.append("The run log is absent. Provide the log file to verify provenance.")
+            elif not verify_log_hash(data, log_path):
+                failures.append("The run log hash does not match the log file.")
 
     for text in walk_strings(data):
         for marker in PRIMARY_MARKERS:
@@ -331,6 +498,9 @@ def evidence_failures(path):
         failures.append("Primary sync lag is not zero.")
     if depth is not None and cap is not None and (depth < 0 or cap <= depth):
         failures.append("Staging depth is not below the cap.")
+
+    # Validate catchup counts
+    log_values = extract_measured_values_from_log(log_path)
     for key in (
         "brain_reads",
         "brain_writes",
@@ -342,6 +512,11 @@ def evidence_failures(path):
         count = req_int(catchup, key, failures, measured)
         if count is not None and count < 1:
             failures.append("The local %s count is zero." % key)
+        # If log is available, validate that evidence matches logged measurements
+        if count is not None and log_values and key in log_values:
+            if count != log_values[key]:
+                failures.append("The evidence %s (%d) does not match the log measurement (%d)." %
+                              (key, count, log_values[key]))
 
     blobs = section(data, "file_blob", failures)
     blob_upload = req_int(blobs, "upload_bytes", failures, measured)
@@ -358,6 +533,8 @@ def evidence_failures(path):
     if not isinstance(digest, str) or SHA_RE.fullmatch(digest) is None:
         measured["gap"] = True
         failures.append("The file-blob canary has no SHA-256 sample.")
+
+    failures.extend(probe_transcript_failures(log_path, data))
 
     if measured["gap"]:
         failures.append("The evidence lacks measured CoW or ephemeral output.")
@@ -398,6 +575,7 @@ def measured_summary(path):
 def main():
     source_dir = Path(sys.argv[1])
     evidence_arg = sys.argv[2] if len(sys.argv) > 2 else ""
+    log_arg = sys.argv[3] if len(sys.argv) > 3 else ""
     failures = source_failures(source_dir)
     source_line = "Source contract: FAIL" if failures else "Source contract: PASS"
     lines = [
@@ -424,7 +602,8 @@ def main():
         return 1
 
     evidence_path = Path(evidence_arg)
-    op_failures = evidence_failures(evidence_path)
+    log_path = log_arg if log_arg else None
+    op_failures = evidence_failures(evidence_path, log_path)
     if op_failures:
         lines.insert(1, "Operational evidence: FAIL")
         lines.append("")

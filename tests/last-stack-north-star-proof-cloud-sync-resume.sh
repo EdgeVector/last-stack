@@ -54,6 +54,12 @@ write_measured() {
   cat >"$path" <<EOF
 {
   "schema": "lastdb-cloud-sync-resume-proof.v1",
+  "provenance": {
+    "command": "measure.sh",
+    "run_start_at": "2026-09-23T00:00:00Z",
+    "run_end_at": "2026-09-23T00:01:30Z",
+    "ephemeral_home_path": "/tmp/ephemeral"
+  },
   "surface": {
     "kind": "cow",
     "primary_home_opened": false,
@@ -113,6 +119,12 @@ EOF
 cat >"$WORK/booleans.json" <<'EOF'
 {
   "schema": "lastdb-cloud-sync-resume-proof.v1",
+  "provenance": {
+    "command": "measure.sh",
+    "run_start_at": "2026-09-23T00:00:00Z",
+    "run_end_at": "2026-09-23T00:01:30Z",
+    "ephemeral_home_path": "/tmp/ephemeral"
+  },
   "surface": {
     "kind": "cow",
     "primary_home_opened": false,
@@ -212,9 +224,13 @@ if "$EVALUATOR" --kind validation \
 fi
 grep -q '^pending:' "$WORK/absent-eval.out" || fail "missing-evidence report was not pending"
 
-# An unset evidence variable loads the committed measurement. That file
-# records a refused upload and does not claim Situation clearance, so the
-# proof stays FAIL.
+# An unset evidence variable loads the committed measurement. The committed
+# file is the real output of measure.sh: a genuine ephemeral lastdbd probe
+# against a real (non-primary) LastDB home. Cloud sync is paused
+# product-wide pending the laststore redesign and this harness never runs
+# `lastdb connect` or clears that pause, so the real probe's cloud commands
+# are refused and the proof stays FAIL until Tom performs the bounded
+# human re-enable by hand.
 if PATH="$WORK/bin:$PATH" \
   env -u CLOUD_SYNC_RESUME_PROOF_EVIDENCE_FILE \
   CLOUD_SYNC_RESUME_SOURCE_DIR="$FIXTURE" \
@@ -228,6 +244,10 @@ grep -F -q "Evidence file: $ROOT/harness/north-star/north-star-lastdb-cloud-sync
   "$WORK/committed/north-star-lastdb-cloud-sync-resume.md" ||
   fail "the default evidence path is not measured-evidence.json"
 grep -q 'Operational evidence: FAIL' \
+  "$WORK/committed/north-star-lastdb-cloud-sync-resume.md"
+grep -q 'The harness did not open a LastDB home.' \
+  "$WORK/committed/north-star-lastdb-cloud-sync-resume.md"
+grep -q 'The harness did not re-enable primary cloud sync.' \
   "$WORK/committed/north-star-lastdb-cloud-sync-resume.md"
 grep -q 'The hash-group CoW proof verdict is not PASS.' \
   "$WORK/committed/north-star-lastdb-cloud-sync-resume.md"
