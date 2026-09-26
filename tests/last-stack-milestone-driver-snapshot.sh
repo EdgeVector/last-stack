@@ -5,6 +5,9 @@ HELPER="${MILESTONE_DRIVER_TEST_HELPER:-$ROOT/bin/last-stack-milestone-driver-sn
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
+# A guard call passes stdin through to the filer; never inherit a caller pipe
+# that stays open (a background runner hangs on it).
+exec </dev/null
 mkdir -p "$TMP/bin" "$TMP/run"
 export FIXTURE_STATE="$TMP/state.json" FIXTURE_READS="$TMP/reads.log" FIXTURE_WRITES="$TMP/writes.log"
 cat >"$FIXTURE_STATE" <<'JSON'
@@ -161,6 +164,26 @@ guard "$KANBAN_BIN" milestone state release complete --proof-status not_required
 change 'del(.milestones.release.milestone.proof_status)'
 reject 'missing completion status' guard "$KANBAN_BIN" milestone state release complete --proof-status passing --json
 change '.milestones.release.milestone.proof_status="passing" | .milestones.release.proof_verdict="passing"'
+
+# file_proof_card: a Kind:validation filing closes a complete_proof entry, not a
+# decompose one, and needs no source surfaces.
+file_proof() { guard "$TMP/bin/last-stack-kanban-file-pr" "$1" --kind validation --work-class proof --milestone release --north-star ns --repo EdgeVector/fold --title proof; }
+change '.milestones.release.milestone.proof_card="" | .milestones.release.milestone.proof_status="pending" | .milestones.release.proof_verdict="pending" | .report.work_queue=[{"slug":"release","action":"decompose"}]'
+new_run proof-card
+reject 'proof card without complete_proof entry' file_proof release-proof
+grep -q 'action-not-in-current-queue slug=release action=file_proof' "$TMP/reject.err" || fail 'proof refusal did not name file_proof'
+change '.report.work_queue=[{"slug":"release","action":"complete_proof"}]';capture >/dev/null
+reject 'decompose on a proof-only queue' file_card release-slice
+reject 'unknown card kind' guard "$TMP/bin/last-stack-kanban-file-pr" release-proof --kind epic --milestone release
+change '.milestones.release.milestone.proof_card="card-a"'
+reject 'proof card already linked' file_proof release-proof
+change '.milestones.release.milestone.proof_card="" | .milestones.release.proof_verdict="not_required"'
+reject 'proof not required' file_proof release-proof
+change '.milestones.release.proof_verdict="pending"'
+file_proof release-proof
+grep -q 'release-proof --kind validation' "$FIXTURE_WRITES" || fail 'proof card not filed'
+reject 'second proof card over cap' file_proof release-proof-2
+change '.milestones.release.milestone.proof_status="passing" | .milestones.release.proof_verdict="passing" | .report.work_queue=[{"slug":"release","action":"decompose"},{"slug":"release","action":"complete_proof"},{"slug":"release","action":"promote","promoteable":["card-a"]}]'
 
 # Uncertain failures consume the reservation; never retry through a fresh snapshot.
 new_run uncertain
