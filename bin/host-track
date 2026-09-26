@@ -971,6 +971,7 @@ status_json_for() {
   local install_mode artifact_app artifact_channel artifact_root install_root installed_digest channel_digest
   local stamp_install_mode stamp_current
   local track_repo track_ref main_tip channel_oid artifact_current artifact_previous artifact_problem
+  local stamp_digest stamp_oid live_digest stamp_diverged
   local exemption_kind deployment_binary deployment_peer_binary deployment_repo_cache
   local deployment_version deployment_head deployment_peer_version deployment_peer_head
   local deployment_pair_match deployment_problem behind_by distance deployment_expanded
@@ -1005,6 +1006,9 @@ status_json_for() {
   install_root=""
   installed_digest=""
   channel_digest=""
+  stamp_digest=""
+  stamp_oid=""
+  stamp_diverged="false"
   artifact_current=""
   artifact_previous=""
   artifact_problem=""
@@ -1030,9 +1034,43 @@ status_json_for() {
     artifact_current="$(artifact_pointer_target "$install_root" current || true)"
     artifact_previous="$(artifact_pointer_target "$install_root" previous || true)"
     artifact_problem="$(artifact_install_problem "$install_root" || true)"
-    installed_digest="$(jq -r '.manifest_digest // ""' "$stamp_path" 2>/dev/null || true)"
     channel_digest="$(artifact_channel_manifest "$artifact_root" "$artifact_app" "$artifact_channel")"
-    host_head="$(jq -r '.source_oid // ""' "$stamp_path" 2>/dev/null || true)"
+    stamp_digest="$(jq -r '.manifest_digest // ""' "$stamp_path" 2>/dev/null || true)"
+    stamp_oid="$(jq -r '.source_oid // ""' "$stamp_path" 2>/dev/null || true)"
+    # The live `current` symlink is what runs on this host. The stamp is only a
+    # record left by the last path that CHOSE to write one, so any writer that
+    # moves `current` without restamping leaves the stamp naming a tree that is
+    # not installed -- and then `manifest_digest` can equal `channel_digest`
+    # while the live tree is older, `stale` reads false, and the force-fresh
+    # guard never fires. Measured 2026-09-26: the automatic post-flip RED
+    # rollback moved current off 03ba4bd169a2 at 04:32:15Z and left the 04:30:35Z
+    # stamp in place; `host_head` named that digest's oid 45 minutes later while
+    # two merged fixes were absent from the tree on PATH.
+    # Read the symlink, resolve its oid from the digest-named manifest, fall
+    # back to the stamp only when the symlink cannot answer, and always report
+    # the divergence rather than hiding it behind one of the two values.
+    installed_digest=""
+    case "$artifact_current" in
+      versions/*)
+        live_digest="${artifact_current#versions/}"
+        [[ "$live_digest" =~ ^[0-9a-f]{64}$ ]] && installed_digest="$live_digest"
+        ;;
+    esac
+    if [ -n "$installed_digest" ]; then
+      host_head="$(jq -r '.source_oid // ""' \
+        "$artifact_root/manifests/$installed_digest.json" 2>/dev/null || true)"
+      if [ "$installed_digest" = "$stamp_digest" ]; then
+        # Same tree: the stamp is a valid fallback when the manifest was pruned.
+        [ -n "$host_head" ] || host_head="$stamp_oid"
+      else
+        # Different tree. A missing manifest here means the oid is genuinely
+        # unknown; never substitute the stamp's oid, which names the other tree.
+        stamp_diverged="true"
+      fi
+    else
+      installed_digest="$stamp_digest"
+      host_head="$stamp_oid"
+    fi
     host_head_short="${host_head:0:12}"
     channel_oid="$(jq -r '.source_oid // ""' "$artifact_root/channels/$artifact_app/$artifact_channel.json" 2>/dev/null || true)"
     # A registry pin replaces the channel head as the desired oid. No proved
@@ -1292,6 +1330,8 @@ status_json_for() {
     --arg artifact_root "$artifact_root" \
     --arg install_root "$install_root" \
     --arg manifest_digest "$installed_digest" \
+    --arg stamp_manifest_digest "$stamp_digest" \
+    --argjson stamp_diverged "$stamp_diverged" \
     --arg channel_manifest_digest "$channel_digest" \
     --arg artifact_current "$artifact_current" \
     --arg artifact_previous "$artifact_previous" \
@@ -1359,6 +1399,8 @@ status_json_for() {
       artifact_root: ($artifact_root | select(length > 0) // null),
       install_root: ($install_root | select(length > 0) // null),
       manifest_digest: ($manifest_digest | select(length > 0) // null),
+      stamp_manifest_digest: ($stamp_manifest_digest | select(length > 0) // null),
+      stamp_diverged: $stamp_diverged,
       channel_manifest_digest: ($channel_manifest_digest | select(length > 0) // null),
       artifact_current: ($artifact_current | select(length > 0) // null),
       artifact_previous: ($artifact_previous | select(length > 0) // null),
@@ -1386,6 +1428,7 @@ status_plain_for() {
       "binary_pair_match=" + ((.binary_pair_match // "-") | tostring),
       "deployment_problem=" + (.deployment_problem // "-"),
       "stale=" + (.stale | tostring),
+      "stamp_diverged=" + ((.stamp_diverged // false) | tostring),
       "main_unpublished=" + ((.main_unpublished // false) | tostring),
       "registry=" + (if .registry_channel then .registry_channel + ":" + (.registry_pin_state // "-") else "-" end),
       "freshness=" + (.freshness // "-"),
@@ -2447,6 +2490,33 @@ run_safe_upgrade_probes() {
   return 0
 }
 
+# Rewrite the install stamp so it describes the digest that is live NOW.
+# Every path that moves `current` owes the stamp this call: `rollback` (the
+# explicit verb) already restamped from the target manifest, and the automatic
+# RED-probe rollback did not, which is how a stamp came to name a tree that was
+# not installed for 45 minutes on 2026-09-26. `field` names the timestamp key
+# so a reader can tell an install from a rollback.
+# rc 1 = the stamp was left alone (bad digest, or no manifest to restamp from).
+restamp_artifact_install() {
+  local app="$1" json="$2" digest="$3" field="${4:-installed_at}"
+  local artifact_app channel artifact_root install_root manifest stamp_path
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
+  IFS=$'\t' read -r artifact_app channel artifact_root install_root < <(artifact_paths "$app" "$json")
+  manifest="$artifact_root/manifests/$digest.json"
+  [ -f "$manifest" ] || return 1
+  stamp_path="$STAMP_DIR/$app.json"
+  mkdir -p "$STAMP_DIR"
+  jq --arg app "$app" --arg channel "$channel" --arg artifact_root "$artifact_root" \
+    --arg install_root "$install_root" --arg field "$field" \
+    --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{app: $app, install_mode: "artifact", artifact_app: .app, artifact_channel: $channel,
+      artifact_root: $artifact_root, install_root: $install_root,
+      manifest_digest: .manifest_digest, source_oid: .source_oid, repo: .repo,
+      platform: .platform} + {($field): $at}' \
+    "$manifest" > "$stamp_path.tmp" || { rm -f "$stamp_path.tmp"; return 1; }
+  mv "$stamp_path.tmp" "$stamp_path"
+}
+
 rollback_current_to_previous() {
   local app="$1" install_root="$2" digest="$3" json="$4"
   local prev
@@ -2458,6 +2528,15 @@ rollback_current_to_previous() {
   printf 'host-track: %s rolling current back to %s after RED probe\n' "$app" "$prev" >&2
   atomic_symlink "$prev" "$install_root/current"
   install_artifact_links "$json" "$install_root" || true
+  # The post-flip caller reaches here AFTER the install stamped the flipped
+  # digest as fresh, so the stamp now names the RED tree we just left. That is
+  # not only a reporting lie: `stale` is computed from the stamped digest, so
+  # while the channel stays on the rolled-back digest the host reports fresh
+  # and nothing -- refresh, check, or the force-fresh guard -- ever advances it.
+  if ! restamp_artifact_install "$app" "$json" "${prev#versions/}" rolled_back_at; then
+    printf 'host-track: %s rolled back to %s but could not restamp; stamp still names %s\n' \
+      "$app" "${prev#versions/}" "${digest:0:12}" >&2
+  fi
 }
 
 soak_hours_for() {
@@ -3159,8 +3238,13 @@ artifact_install_app() {
     # Attempt rollback to previous if live.
     if [ -L "$install_root/previous" ] && [ -d "$install_root/$(readlink "$install_root/previous")" ]; then
       printf 'host-track: %s attempting rollback to previous after failed verify\n' "$app" >&2
-      atomic_symlink "$(readlink "$install_root/previous")" "$install_root/current" || true
+      prev_target="$(readlink "$install_root/previous")"
+      atomic_symlink "$prev_target" "$install_root/current" || true
       install_artifact_links "$json" "$install_root" || true
+      # `previous` is usually the tree the stamp already describes, but nothing
+      # guarantees it (an earlier path may have cleared or repointed it), so
+      # restamp from what is live rather than trusting that coincidence.
+      restamp_artifact_install "$app" "$json" "${prev_target#versions/}" rolled_back_at || true
     fi
     finish_artifact_install_lock "$reuse_install_lock"
     return 1
