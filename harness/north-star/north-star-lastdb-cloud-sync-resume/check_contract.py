@@ -269,6 +269,36 @@ def verify_log_hash(evidence_data, log_path):
         return False
 
 
+def extract_measured_values_from_log(log_path):
+    """Parse the measurement log and extract numeric counts.
+
+    Returns a dict with extracted values or empty dict if parsing fails.
+    """
+    if not log_path or not Path(log_path).is_file():
+        return {}
+
+    try:
+        log_text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+    except (OSError, UnicodeError):
+        return {}
+
+    values = {}
+    # Extract measurement summaries from log lines
+    # Format: "Key: value" patterns
+    import re
+
+    for line in log_text.split("\n"):
+        # Match patterns like "brain_reads: 5" or "upload_bytes: 8192"
+        match = re.match(r".*?(brain_reads|brain_writes|kanban_reads|kanban_writes|" +
+                        r"lastgit_reads|lastgit_writes|upload_bytes|backlog_start|" +
+                        r"backlog_end|staging_growth_bytes|upload_window_secs):\s*(\d+)", line)
+        if match:
+            key, value = match.group(1), int(match.group(2))
+            values[key] = value
+
+    return values
+
+
 def evidence_failures(path, log_path=None):
     failures = []
     measured = {"gap": False}
@@ -281,9 +311,11 @@ def evidence_failures(path, log_path=None):
     if data.get("schema") != EVIDENCE_SCHEMA:
         failures.append("The evidence schema is not %s." % EVIDENCE_SCHEMA)
 
-    # Validate provenance if present
-    provenance = data.get("provenance", {})
-    if provenance:
+    # Validate provenance (required)
+    provenance = data.get("provenance")
+    if not isinstance(provenance, dict) or not provenance:
+        failures.append("The evidence provenance is absent or empty.")
+    else:
         command = req_string(provenance, "command", failures)
         run_start = req_time(provenance, "run_start_at", failures)
         run_end = req_time(provenance, "run_end_at", failures)
@@ -390,6 +422,9 @@ def evidence_failures(path, log_path=None):
         failures.append("Primary sync lag is not zero.")
     if depth is not None and cap is not None and (depth < 0 or cap <= depth):
         failures.append("Staging depth is not below the cap.")
+
+    # Validate catchup counts
+    log_values = extract_measured_values_from_log(log_path)
     for key in (
         "brain_reads",
         "brain_writes",
@@ -401,6 +436,11 @@ def evidence_failures(path, log_path=None):
         count = req_int(catchup, key, failures, measured)
         if count is not None and count < 1:
             failures.append("The local %s count is zero." % key)
+        # If log is available, validate that evidence matches logged measurements
+        if count is not None and log_values and key in log_values:
+            if count != log_values[key]:
+                failures.append("The evidence %s (%d) does not match the log measurement (%d)." %
+                              (key, count, log_values[key]))
 
     blobs = section(data, "file_blob", failures)
     blob_upload = req_int(blobs, "upload_bytes", failures, measured)
