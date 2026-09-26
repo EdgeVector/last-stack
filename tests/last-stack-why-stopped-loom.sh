@@ -2,6 +2,7 @@
 # last-stack-why-stopped-loom: mock loom, check JSON contract + fallback exit 3.
 set -euo pipefail
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+. "$ROOT/tests/ci/pid-is-live.sh"
 BIN="$ROOT/bin/last-stack-why-stopped-loom"
 fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 
@@ -332,7 +333,7 @@ printf '%s\n' "$timeout_out" | grep -q '"deadline_reap": "cancelled"' \
   || fail "bounded loom run did not report its execution cleanup: $timeout_out"
 read -r loom_pid descendant_pid <"$LOOM_PROCESS_IDS"
 for child_pid in "$loom_pid" "$descendant_pid"; do
-  if kill -0 "$child_pid" 2>/dev/null; then
+  if pid_is_live "$child_pid"; then
     kill -9 "$child_pid" 2>/dev/null || true
     fail "bounded loom run left pid $child_pid alive"
   fi
@@ -369,7 +370,7 @@ set -e
 [ "$signal_rc" -eq 124 ] || fail "signalled wrapper should exit 124, got $signal_rc"
 read -r loom_pid descendant_pid <"$LOOM_PROCESS_IDS"
 for child_pid in "$loom_pid" "$descendant_pid"; do
-  if kill -0 "$child_pid" 2>/dev/null; then
+  if pid_is_live "$child_pid"; then
     kill -9 "$child_pid" 2>/dev/null || true
     fail "signalled wrapper left pid $child_pid alive"
   fi

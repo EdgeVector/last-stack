@@ -62,6 +62,13 @@ Env:
   FORGE_TOKEN    API token override; otherwise keychain forgejo-token, then
                  lastsecrets://forgejo-token (survives a locked keychain)
 
+Merge preflight guard:
+  POST .../pulls/<n>/merge first runs `situations preflight --action merge-pr
+  --repo OWNER/REPO`. BLOCKED (exit 3) refuses the call with exit 3 and the
+  Situation text. A missing or failing situations CLI does not block.
+  DELETE .../pulls/<n>/merge (cancel a scheduled merge) is never guarded.
+  Override (rare): LAST_STACK_FORGE_MERGE_PREFLIGHT_SKIP=1.
+  Env: LAST_STACK_SITUATIONS_BIN (default: situations on PATH).
 Update-branch guard:
   POST .../pulls/<n>/update is refused (exit 3) while the PR head has a pending
   check: the update cancels the in-flight run and re-queues the PR. BEHIND never
@@ -229,6 +236,36 @@ update_branch_guard() {
 }
 if [[ "$method" == "POST" && "${url%%\?*}" == */pulls/*/update && "${LAST_STACK_FORGE_UPDATE_BRANCH_FORCE:-0}" != "1" ]]; then
   update_branch_guard
+fi
+
+# Merge preflight guard. A merge POST is a shared-system mutation, and the
+# Situations preflight is the rule for those. On 2026-09-25 two callers armed
+# auto-merge on EdgeVector/loom while loom-budget-schema-deployment-hold
+# blocked merge-pr: the pipeline-health routine (PR 60 merged, an incident)
+# and kanban-factory-manager (PR 63, cancelled). Both skipped the preflight.
+# Put the check where every caller passes. BLOCKED refuses; a CLI that cannot
+# run fails open, because a broken situations install must not stop every
+# merge on the forge.
+merge_preflight_guard() {
+  local path_only="${url%%\?*}" repo sit_bin out rc
+  repo="$(printf '%s' "$path_only" | sed -n -E 's#.*/api/v1/repos/([^/]+/[^/]+)/pulls/[0-9]+/merge$#\1#p')"
+  [[ -n "$repo" ]] || return 0
+  sit_bin="${LAST_STACK_SITUATIONS_BIN:-situations}"
+  command -v "$sit_bin" >/dev/null 2>&1 || return 0
+  set +e
+  out="$("$sit_bin" preflight --action merge-pr --repo "$repo" 2>&1)"
+  rc=$?
+  set -e
+  if [[ "$rc" -eq 3 || "$out" == BLOCKED* ]]; then
+    echo "last-stack-forge-api: REFUSED merge on $repo: Situations preflight says BLOCKED." >&2
+    printf '%s\n' "$out" | head -5 | sed 's/^/last-stack-forge-api:   /' >&2
+    echo "last-stack-forge-api: cancel a scheduled merge with --method DELETE on the same path." >&2
+    echo "last-stack-forge-api: override (rare, needs clearance): LAST_STACK_FORGE_MERGE_PREFLIGHT_SKIP=1" >&2
+    exit 3
+  fi
+}
+if [[ "$method" == "POST" && "${url%%\?*}" == */pulls/*/merge && "${LAST_STACK_FORGE_MERGE_PREFLIGHT_SKIP:-0}" != "1" ]]; then
+  merge_preflight_guard
 fi
 
 # Do NOT pass curl -f. A 409/405 from merge auto-arm must keep the response

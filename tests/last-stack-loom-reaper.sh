@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+. "$ROOT/tests/ci/pid-is-live.sh"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-loom-reaper.XXXXXX")"
 stale_owner=""
 cleanup() {
@@ -127,7 +128,7 @@ jq -e '
 ' "$state/last-stack/loom-reaper/result.json" >/dev/null \
   || fail "deadline result was not recorded"
 deadline_child="$(cat "$MOCK_LOOM_CHILD_PID_FILE")"
-if kill -0 "$deadline_child" 2>/dev/null; then
+if pid_is_live "$deadline_child"; then
   fail "deadline left descendant $deadline_child alive"
 fi
 

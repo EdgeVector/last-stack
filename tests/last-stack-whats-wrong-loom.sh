@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+. "$ROOT/tests/ci/pid-is-live.sh"
 BIN="$ROOT/bin/last-stack-whats-wrong-loom"
 fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 
@@ -209,7 +210,7 @@ printf '%s\n' "$hout" | grep -q 'readback=unavailable' || fail "hung loom missin
 printf '%s\n' "$hout" | grep -q 'loom-timeout=' || fail "hung loom missing timeout marker: $hout"
 if [ -f "$tmp/hang.pid" ]; then
   hpid="$(cat "$tmp/hang.pid")"
-  if [ -n "$hpid" ] && kill -0 "$hpid" 2>/dev/null; then
+  if [ -n "$hpid" ] && pid_is_live "$hpid"; then
     kill -9 "$hpid" 2>/dev/null || true
     fail "hung loom pid $hpid still alive after wrapper"
   fi
