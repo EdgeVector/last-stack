@@ -6,9 +6,9 @@
 #
 #   exit 0  → skip harness (noop)
 #   exit 10 → proceed (promote, admitted decompose, complete_proof, or
-#             repair work: a decompose entry flagged repair/next-slice, or a
+#             repair work: a decompose entry flagged repair/next-slice, a
 #             proof_pending milestone whose proof card last verdict is a
-#             stale FAIL)
+#             stale FAIL, or a proof_passing milestone ready to close)
 #   exit 2  → usage
 #
 # Skip: empty work_queue with no idle promote/empty counts and no repair
@@ -149,6 +149,19 @@ repair_flagged="$("$jq_bin" -r '
   | length' "$tmp/gap.json")"
 case "$repair_flagged" in ''|*[!0-9]*) repair_flagged=0 ;; esac
 
+# Close-ready rows: fkanban reports proof_passing=true (terminal proof card
+# with a PASS line) and no live Kind:pr, but scores the row idle_empty /
+# decompose. The snapshot turns it into complete_proof + proof_pass_close
+# (also for a stored proof_status=failing whose repair re-proved PASS). Like
+# repair work, closing it is never admission-gated.
+close_ready="$("$jq_bin" -r '
+  [.milestones[]? | select(.proof_passing == true
+      and ((.state // "") == "active" or (.state // "") == "proving")
+      and ((.pr_live // 0) == 0) and ((.pr_done // 0) > 0))]
+  | length' "$tmp/gap.json")"
+case "$close_ready" in ''|*[!0-9]*) close_ready=0 ;; esac
+repair_flagged=$((repair_flagged + close_ready))
+
 # The verdict of one proof card: its LAST PROOF:/RESULT: verdict line. The
 # rule matches _proof_verdict() in last-stack-milestone-driver-snapshot
 # (tests/last-stack-milestone-driver-gate.sh checks the two agree). Prints
@@ -216,6 +229,9 @@ proof_pending_repair_count() {
 
 idle=$((idle_promoteable + idle_empty))
 if [ "$wq_len" -eq 0 ] && [ "$idle" -eq 0 ]; then
+  if [ "$close_ready" -gt 0 ]; then
+    proceed "proof-pass-close=${close_ready} work_queue=0"
+  fi
   pp_repair="$(proof_pending_repair_count)"
   if [ "$pp_repair" -gt 0 ]; then
     proceed "proof-pending-repair=${pp_repair} work_queue=0"

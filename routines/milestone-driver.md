@@ -20,6 +20,7 @@ kanban milestone gap-report --json
   → promote steps: kanban move <slug> todo   (no invention)
   → decompose steps: agent files next-gate Kind:pr set for THAT milestone only
   → complete_proof steps: kanban milestone state complete (--proof-status passing|not_required)
+      (state=active + passing: first `state proving --proof-status pending`)
 ```
 
 Implementation remains with `last-stack-fkanban-pickup*`. Proof **execution**
@@ -36,6 +37,7 @@ A decompose-only queue also runs
 Paused or unreadable admission skips. Board or Brain unreadable skips.
 Promote and complete_proof still proceed when those actions exist.
 Repair work (a proof_pending milestone with a stale FAIL proof, or a decompose entry flagged repair/next-slice) always proceeds; admission never skips it.
+A proof_passing milestone with no live Kind:pr (ready to close) also always proceeds.
 Ready-buffer keeps `routines run last-stack-milestone-driver`.
 
 ## Non-negotiable contract
@@ -293,6 +295,7 @@ Meanings (from fkanban code, not your opinion):
 | `in_flight` | skip | Leave alone (Kind:pr already in todo/doing) |
 | `idle_promoteable` | promote | `kanban move <slug> todo` for each listed promoteable PR (cap remaining) |
 | `idle_empty` | decompose | File full next-gate Kind:pr set for **that** milestone (agent work) |
+| `needs_next_slice` | decompose + `next_slice=true` | No live Kind:pr, some done, proof not passing, no proof card. File the **next** slice or the proof card -- see **next_slice** below |
 | `idle_blocked` | skip | Do not invent; leave held/hollow/dep-blocked backlog |
 | `proof_pending` | await_proof | Do not invent filler PRs; leave for validate when a real proof card is pending PASS. Exception: when the linked proof card's last verdict is a stale FAIL, `capture` puts the milestone on the work_queue as `decompose` + `stale_fail_proof=true` + `from_status=proof_pending` -- see **repair_proof** |
 | `proof_ready` | complete_proof | Complete only with a current live proof verdict; never waive a pending proof |
@@ -313,7 +316,9 @@ the same stuck count next run:
 |---|---|---|
 | `decompose` + `stale_fail_proof=true`, `proof_card=<slug>` | idle_empty, but the linked terminal proof card's last verdict line is a FAIL older than one driver cadence | See **repair_proof** below instead of filing a fresh next-gate PR set |
 | `decompose` + `stale_fail_proof=true`, `proof_card=<slug>`, `from_status=proof_pending` | proof_pending (fkanban `await_proof`, off the raw queue): all implementation Kind:pr cards are done, and the linked proof card's last verdict line is a FAIL older than one driver cadence. `capture` appends this entry itself. | See **repair_proof** below. This is how a multi-slice milestone gets its next slice: fkanban only decomposes milestones with zero done cards |
+| `complete_proof` + `proof_pass_close=true`, `proof_card`, `from_proof_status`, `from_state` | fkanban reports `proof_passing=true` (terminal proof card with a PASS line) and no live Kind:pr, but scores the row `idle_empty` / decompose. The linked card's LAST verdict line is PASS. `from_proof_status` can be `failing` (a repair merged and the proof re-ran PASS). `capture` replaces the decompose entry | See **Two-step close** in complete_proof below. Do not decompose it |
 | `complete_proof` + `missing_proof_card=true` | implementation done, no proof card exists at all, no live `not_required` | See **file_proof_card** below instead of leaving it `await_proof` forever |
+| `decompose` + `next_slice=true` (+ `missing_proof_card=true` when `proof_card` is empty) | fkanban `needs_next_slice`: implementation slices done so far, acceptance not proven, no proof card | See **next_slice** below. The guard authorizes the next Kind:pr slice (as decompose) or the proof card (as `file_proof`) for this entry |
 | `decompose` + `needs_spec=true`, `sibling_milestones=[...]` | the milestone body is only a bare newline list of other milestone slugs -- no Outcome/Acceptance/Goal/End-State spec to decompose from | See **needs_spec** below instead of silently skipping the entry |
 
 Print:
@@ -390,7 +395,7 @@ For each `work_queue` item with `action=decompose`, until `safety_cap`:
 If the entry carries `stale_fail_proof=true` (from idle_empty or from
 `from_status=proof_pending`), skip straight to **repair_proof** below instead
 of steps 1-6 — it is not a fresh idle_empty candidate. If it carries `needs_spec=true`, skip straight to **needs_spec**
-below.
+below. If it carries `next_slice=true`, skip straight to **next_slice** below.
 
 1. `kanban milestone detail <slug> --json` + `kanban milestone reconcile <slug> --json`
 2. **Do not mint empty proof cards.** Hollow `Kind: validation` shells with a
@@ -447,6 +452,32 @@ below.
    **stop** for that milestone with `needs-decomposition` — do not spam shells
    (PR or validation).
 
+### next_slice (agent path — fkanban needs_next_slice)
+
+For each `work_queue` item with `action=decompose` and `next_slice=true`:
+no Kind:pr is live, some implementation slices are done, the proof is not
+passing, `proof_status` is not `not_required`, and no proof card exists.
+Done slices do not prove the milestone. Never waive the proof because only
+PR cards exist.
+
+1. Re-read `kanban milestone detail <slug> --json`. Stop for this slug when a
+   Kind:pr is now live or a proof card is now linked (a concurrent run acted).
+2. Compare each Acceptance bullet with the done cards and with current repo
+   main. Read main only through the bare mirror:
+   `git -C ~/.cache/edgevector-git/<repo>.git show refs/remotes/origin/main:<path>`.
+3. When one or more Acceptance items are still unimplemented, file the NEXT
+   concrete slice(s). Use the same rules as **Decompose** steps 3-5:
+   `last-stack-kanban-file-pr` through the guard, a substantive brief, the
+   decision check, and portfolio admission for the feature work-class.
+   Count each slice as `filed_n`. Each slice costs 1 against `safety_cap`.
+4. Else, when the implementation looks complete but the proof is missing,
+   file the proof card. Use the **file_proof_card** steps 1-4. The entry
+   carries `missing_proof_card=true` for this branch. Count it as `proof_n`.
+   A proof card costs 0 against `safety_cap`.
+5. When you cannot name a concrete slice or a concrete executable proof,
+   report `needs-decomposition reason=<why>` for this slug. Never file a
+   hollow card (PR or validation).
+
 ### repair_proof (agent path — idle_empty or proof_pending with a stale FAIL proof)
 
 For each `work_queue` item flagged `stale_fail_proof=true`
@@ -494,8 +525,9 @@ decompose the entry as fresh idle_empty:
 4. Do not waive or reclassify the FAIL. `complete_proof` only fires later,
    from fresh PASS evidence produced by step 2 or by the repair card's own
    merged fix and re-run. When that re-run writes a PASS verdict line last,
-   fkanban classifies the milestone `proof_ready` / `complete_proof`, and the
-   guard authorizes `milestone state <slug> complete --proof-status passing`.
+   `capture` queues the milestone as `complete_proof` + `proof_pass_close=true`
+   (also when its stored `proof_status` is still `failing`). Close it with the
+   **Two-step close** in complete_proof below.
 5. Count this as `proof_n` for GAP_FILL (a proof-repair action), not as a
    fresh `filed_n` decompose slice, so the run line distinguishes "filed new
    work" from "repaired a failing proof."
@@ -561,6 +593,24 @@ milestone or every queue entry):
      **file_proof_card** below instead of leaving it alone — this is the one
      case where "leave alone" is the dead end, not the safe default.
    - Else: leave alone (true `await_proof`); do not invent a validation shell.
+   - **Two-step close** (fkanban rule, `src/commands/milestone.ts`
+     `validateTransition`): a `failing` proof forces the milestone to `active`,
+     and `active -> complete` is legal only with `not_required`. So when
+     `state=active` and the close is `passing`, run two guarded steps:
+     ```bash
+     guard=( "${LAST_STACK_ROOT:-$HOME/.last-stack}/bin/last-stack-milestone-driver-snapshot" guard
+       --run-dir "${ROUTINES_RUN_DIR:?}" --run-id "${ROUTINES_RUN_ID:?}"
+       --artifact "${ROUTINES_RUN_DIR:?}/milestone-driver/gap-report.json" -- )
+     "${guard[@]}" kanban milestone state <slug> proving --proof-status pending --json
+     "${guard[@]}" kanban milestone state <slug> complete --proof-status passing --json
+     ```
+     The guard permits step 1 only from `state=active` with `proof_status`
+     `pending` or `failing`, when the linked terminal validation card's LAST
+     verdict line is PASS. It refuses a last FAIL or no verdict. It refuses a
+     direct `complete` from `failing` with `failing-proof-enter-proving-first`.
+     Both steps cost 0 against `safety_cap`. fkanban `complete` also needs an
+     exact `PROOF: PASS` or `RESULT: PASS` line; if it refuses, record the
+     reason and stop for that slug. `state=proving` skips step 1.
 3. Re-read detail; require `state=complete` and `proof_status` matching the path
    used (`passing` or `not_required`) **and `proof_verdict` equal to that same
    value**. Only then count as `proof_n+=1` for the GAP_FILL line.
@@ -575,7 +625,9 @@ still run the same complete path for the target slug.
 ### file_proof_card (agent path — proof_ready with no proof card at all)
 
 For each `work_queue` item flagged `missing_proof_card=true`
-(papercut-milestones-with-done-work-and-no-proof-card-have-no-exit-20260926):
+(papercut-milestones-with-done-work-and-no-proof-card-have-no-exit-20260926).
+A `decompose` + `next_slice=true` entry reaches this path from **next_slice**
+step 4 only; the guard authorizes its validation filing too:
 implementation is done, `proof_card` is empty, and `proof_status`/
 `proof_verdict` are not `not_required` — the complete_proof path above
 correctly refuses the implicit waiver, but nothing else was filing the card

@@ -21,6 +21,17 @@
 #    queue it as decompose + stale_fail_proof (+ from_status=proof_pending)
 #    so the driver files the repair_proof card that carries the next slice.
 #    The verdict parser must read the live validate-lane FAIL shapes.
+# 6. needs_next_slice (fkanban: decompose + next_slice) with no proof card --
+#    capture flags `missing_proof_card`, and the guard authorizes EITHER the
+#    next Kind:pr slice OR the proof card (validation, cost 0). A plain
+#    decompose (idle_empty) entry and an unqueued slug never authorize a
+#    validation filing.
+# 7. A milestone whose stored proof_status is `failing` and whose linked
+#    terminal proof card's LAST verdict is now PASS: capture queues it as
+#    complete_proof + proof_pass_close (fkanban scored it decompose), and the
+#    guard authorizes the fkanban-legal two-step close:
+#    `state <slug> proving --proof-status pending`, then
+#    `state <slug> complete --proof-status passing`. A last FAIL is refused.
 set -euo pipefail
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)"
@@ -404,5 +415,174 @@ jq -e '(.work_queue | length) == 0' "$artifact5b" >/dev/null \
   || fail 'fix5b: a fresh (non-stale) proof_pending FAIL must not be queued yet'
 
 echo "ok fix5b: proof_pending with a stale failing proof is queued as repair work the guard authorizes"
+
+# ---------------------------------------------------------------------------
+# Fix 6: needs_next_slice -> the guard authorizes the next slice or the proof.
+# ---------------------------------------------------------------------------
+S6="$TMP/s6"
+mkdir -p "$S6/run"
+cat >"$S6/kanban" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  'list --column backlog --json'|'list --column todo --json'|'list --column doing --json')
+    echo '{"cards":[],"total":0,"truncated":false}';;
+  'milestone portfolio --json') echo '{"entries":[],"total":0,"truncated":false}';;
+  'milestone gap-report --json')
+    echo '{"counts":{"idle_empty":1,"needs_next_slice":1},"work_queue":[
+      {"slug":"ms-next","action":"decompose","promoteable":[]},
+      {"slug":"ms-plain","action":"decompose","promoteable":[]}],"milestones":[
+      {"slug":"ms-next","status":"needs_next_slice","action":"decompose","next_slice":true,"state":"active","pr_live":0,"pr_done":2,"proof_passing":false},
+      {"slug":"ms-plain","status":"idle_empty","action":"decompose","state":"active","pr_live":0,"pr_done":0,"proof_passing":false}]}';;
+  'milestone show '*) echo "{\"slug\":\"$3\",\"north_star\":\"ns-a\"}";;
+  'milestone detail ms-next --json')
+    echo '{"milestone":{"slug":"ms-next","state":"active","deps":[],"proof_status":"pending","proof_card":"","board":"default","body":"## Outcome\nx\n## Acceptance\n- a\n- b"},"proof_verdict":"pending"}';;
+  'milestone detail ms-plain --json')
+    echo '{"milestone":{"slug":"ms-plain","state":"active","deps":[],"proof_status":"pending","proof_card":"","board":"default","body":"## Outcome\nx\n## Acceptance\n- a"},"proof_verdict":"pending"}';;
+  'milestone detail ms-unqueued --json')
+    echo '{"milestone":{"slug":"ms-unqueued","state":"active","deps":[],"proof_status":"pending","proof_card":"","board":"default"},"proof_verdict":"pending"}';;
+  *) echo "unexpected fixture command: $*" >&2; exit 9;;
+esac
+EOF
+chmod +x "$S6/kanban"
+artifact6="$(capture_artifact "$S6/kanban" "$S6/run" s6)"
+# fkanban PR 44 puts next_slice on the milestones row only; capture stamps it
+# onto the work_queue entry the guard reads.
+jq -e '.work_queue[] | select(.slug == "ms-next")
+  | .action == "decompose" and .next_slice == true and .missing_proof_card == true' "$artifact6" >/dev/null \
+  || fail 'fix6: next_slice entry with an empty proof_card was not flagged missing_proof_card'
+jq -e '.work_queue[] | select(.slug == "ms-plain") | (.missing_proof_card // false) == false' "$artifact6" >/dev/null \
+  || fail 'fix6: a plain decompose entry must not be flagged missing_proof_card'
+jq -e '.counts.missing_proof_card == 1' "$artifact6" >/dev/null \
+  || fail 'fix6: counts.missing_proof_card not incremented for the next_slice entry'
+
+cat >"$S6/last-stack-kanban-file-pr" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$(dirname "$0")/writes.log"
+EOF
+chmod +x "$S6/last-stack-kanban-file-pr"
+guard6() {
+  env -u MILESTONE_DRIVER_TARGET -u MILESTONE_DRIVER_SAFETY_CAP "$HELPER" guard --run-dir "$S6/run" --run-id s6 \
+    --artifact "$artifact6" --kanban-bin "$S6/kanban" -- "$S6/last-stack-kanban-file-pr" "$@" </dev/null
+}
+# The next Kind:pr slice (decompose, cost 1).
+guard6 ms-next-slice-2 --milestone ms-next --north-star ns-a --repo EdgeVector/fold \
+  --title slice --column todo --surfaces src/a.ts \
+  || fail 'fix6: guard refused the next Kind:pr slice for a next_slice entry'
+# The proof card (validation, cost 0).
+guard6 ms-next-proof --milestone ms-next --north-star ns-a --repo EdgeVector/fold \
+  --title proof --kind validation --work-class proof \
+  || fail 'fix6: guard refused the proof card for a decompose + next_slice entry'
+grep -q 'ms-next-slice-2 --milestone ms-next' "$S6/writes.log" || fail 'fix6: slice not filed'
+grep -q 'ms-next-proof --milestone ms-next' "$S6/writes.log" || fail 'fix6: proof card not filed'
+jq -e '.reserved_actions == 1' "$S6/run/milestone-driver/action-ledger.json" >/dev/null \
+  || fail 'fix6: the proof card must cost 0 against SAFETY_CAP (slice 1 + proof 0)'
+jq -e '[.actions[] | select(.milestone == "ms-next") | .action] == ["decompose","file_proof"]' \
+  "$S6/run/milestone-driver/action-ledger.json" >/dev/null || fail 'fix6: ledger actions wrong'
+# A second proof card for the same milestone in one run is refused.
+if guard6 ms-next-proof-2 --milestone ms-next --north-star ns-a --repo EdgeVector/fold \
+  --title proof --kind validation --work-class proof 2>"$S6/dup.err"; then
+  fail 'fix6: guard filed a second proof card for the same milestone in one run'
+fi
+grep -q 'proof-card-already-filed-this-run slug=ms-next' "$S6/dup.err" || fail 'fix6: duplicate refusal not explicit'
+# A plain decompose (idle_empty) entry never authorizes a proof card.
+if guard6 ms-plain-proof --milestone ms-plain --north-star ns-a --repo EdgeVector/fold \
+  --title proof --kind validation --work-class proof 2>"$S6/plain.err"; then
+  fail 'fix6: guard filed a proof card for a plain decompose entry'
+fi
+grep -q 'action-not-in-current-queue slug=ms-plain action=file_proof' "$S6/plain.err" \
+  || fail 'fix6: plain decompose refusal not explicit'
+# A slug that is not in the queue never authorizes a proof card.
+if guard6 ms-unqueued-proof --milestone ms-unqueued --north-star ns-a --repo EdgeVector/fold \
+  --title proof --kind validation --work-class proof 2>"$S6/unq.err"; then
+  fail 'fix6: guard filed a proof card for an unqueued milestone'
+fi
+grep -q 'action-not-in-current-queue slug=ms-unqueued action=file_proof' "$S6/unq.err" \
+  || fail 'fix6: unqueued refusal not explicit'
+! grep -q 'ms-plain-proof\|ms-unqueued-proof\|ms-next-proof-2' "$S6/writes.log" \
+  || fail 'fix6: a refused filing reached the file-pr helper'
+
+echo "ok fix6: needs_next_slice authorizes the next slice or the proof card; plain decompose does not"
+
+# ---------------------------------------------------------------------------
+# Fix 7: failing proof re-proved PASS -> two-step close; last FAIL refused.
+# ---------------------------------------------------------------------------
+S7="$TMP/s7"
+mkdir -p "$S7/run"
+export S7_STATE="$S7/state.json" S7_WRITES="$S7/writes.log"
+cat >"$S7_STATE" <<'JSON'
+{"milestones":{
+  "ms-fixed":{"milestone":{"slug":"ms-fixed","state":"active","deps":[],"proof_status":"failing","proof_card":"pc-fixed","board":"default"},"proof_verdict":"failing"},
+  "ms-still":{"milestone":{"slug":"ms-still","state":"active","deps":[],"proof_status":"failing","proof_card":"pc-still","board":"default"},"proof_verdict":"failing"}},
+ "cards":{
+  "pc-fixed":{"slug":"pc-fixed","column":"done","kind":"validation","milestone":"ms-fixed","board":"default","updated_at":"2026-09-06T00:00:00Z","body":"## GOAL\nprove\nPROOF[failed-isolated-copy-contract]: clause FAIL\nPROOF: PASS"},
+  "pc-still":{"slug":"pc-still","column":"done","kind":"validation","milestone":"ms-still","board":"default","updated_at":"2026-09-06T00:00:00Z","body":"## GOAL\nprove\nPROOF: PASS\nPROOF: FAIL"}},
+ "report":{"counts":{"idle_empty":2},"work_queue":[
+   {"slug":"ms-fixed","action":"decompose","promoteable":[]},
+   {"slug":"ms-still","action":"decompose","promoteable":[]}],"milestones":[
+   {"slug":"ms-fixed","status":"idle_empty","action":"decompose","state":"active","pr_live":0,"pr_done":2,"proof_passing":true},
+   {"slug":"ms-still","status":"idle_empty","action":"decompose","state":"active","pr_live":0,"pr_done":2,"proof_passing":true}]}}
+JSON
+cat >"$S7/kanban" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  'list --column backlog --json'|'list --column todo --json'|'list --column doing --json')
+    echo '{"cards":[],"total":0,"truncated":false}';;
+  'milestone portfolio --json') echo '{"entries":[],"total":0,"truncated":false}';;
+  'milestone gap-report --json') jq '.report' "$S7_STATE";;
+  'milestone show '*) echo "{\"slug\":\"$3\",\"north_star\":\"ns-a\"}";;
+  'milestone detail '*) jq -e --arg s "$3" '.milestones[$s] // empty' "$S7_STATE";;
+  'show '*' --canonical --json'|'show '*' --json') jq -e --arg s "$2" '.cards[$s] // empty' "$S7_STATE";;
+  'milestone state '*) printf '%s\n' "$*" >>"$S7_WRITES";;
+  *) echo "unexpected fixture command: $*" >&2; exit 9;;
+esac
+EOF
+chmod +x "$S7/kanban"
+artifact7="$(capture_artifact "$S7/kanban" "$S7/run" s7)"
+jq -e '[.work_queue[] | select(.slug == "ms-fixed")] == [{"slug":"ms-fixed","action":"complete_proof","promoteable":[],
+  "proof_pass_close":true,"proof_card":"pc-fixed","from_proof_status":"failing","from_state":"active"}]' "$artifact7" >/dev/null \
+  || fail 'fix7: failing milestone with a last-PASS proof was not queued as complete_proof + proof_pass_close'
+jq -e '[.work_queue[] | select(.slug == "ms-still" and .action == "complete_proof")] | length == 0' "$artifact7" >/dev/null \
+  || fail 'fix7: a last-FAIL proof must not be queued for a close'
+jq -e '.counts.proof_pass_close == 1' "$artifact7" >/dev/null || fail 'fix7: counts.proof_pass_close not set'
+
+guard7() {
+  env -u MILESTONE_DRIVER_TARGET -u MILESTONE_DRIVER_SAFETY_CAP "$HELPER" guard --run-dir "$S7/run" --run-id s7 \
+    --artifact "$artifact7" --kanban-bin "$S7/kanban" -- "$S7/kanban" "$@" </dev/null
+}
+# Direct complete from failing: fkanban refuses it (a failing proof forces
+# `active`, and active -> complete is legal only for not_required), so the
+# guard names the proving step instead of burning a doomed call.
+if guard7 milestone state ms-fixed complete --proof-status passing --json 2>"$S7/direct.err"; then
+  fail 'fix7: guard allowed a direct complete from proof_status=failing'
+fi
+grep -q 'failing-proof-enter-proving-first slug=ms-fixed' "$S7/direct.err" || fail 'fix7: direct-complete refusal not explicit'
+# Step 1 needs --proof-status pending exactly.
+if guard7 milestone state ms-fixed proving --proof-status passing --json 2>"$S7/s1bad.err"; then
+  fail 'fix7: proving step accepted --proof-status passing'
+fi
+grep -q 'proving-step-requires-proof-status-pending' "$S7/s1bad.err" || fail 'fix7: proving-status refusal not explicit'
+# failing + last PASS -> step 1 permitted.
+guard7 milestone state ms-fixed proving --proof-status pending --json \
+  || fail 'fix7: guard refused the proving step for failing + last PASS'
+grep -q 'milestone state ms-fixed proving --proof-status pending --json' "$S7_WRITES" || fail 'fix7: proving step not run'
+# fkanban applies step 1: proving + pending. Step 2 is then permitted.
+jq '.milestones["ms-fixed"].milestone.state="proving" | .milestones["ms-fixed"].milestone.proof_status="pending"
+  | .milestones["ms-fixed"].proof_verdict="pending"' "$S7_STATE" >"$S7_STATE.tmp" && mv "$S7_STATE.tmp" "$S7_STATE"
+guard7 milestone state ms-fixed complete --proof-status passing --json \
+  || fail 'fix7: guard refused the complete step after the proving step'
+grep -q 'milestone state ms-fixed complete --proof-status passing --json' "$S7_WRITES" || fail 'fix7: complete step not run'
+jq -e '.reserved_actions == 0' "$S7/run/milestone-driver/action-ledger.json" >/dev/null \
+  || fail 'fix7: the close steps must cost 0 against SAFETY_CAP'
+# failing + last FAIL -> refused by the proof check itself (it runs before the
+# queue match, so a queued entry would not change the verdict).
+if guard7 milestone state ms-still proving --proof-status pending --json 2>"$S7/still.err"; then
+  fail 'fix7: guard allowed the proving step for failing + last FAIL'
+fi
+grep -q 'proving-step-proof-not-passing slug=ms-still' "$S7/still.err" || fail 'fix7: last-FAIL refusal not explicit'
+! grep -q 'ms-still' "$S7_WRITES" || fail 'fix7: a refused close reached the board'
+
+echo "ok fix7: failing proof re-proved PASS closes by proving -> complete; a last FAIL is refused"
 
 echo "ok last-stack-milestone-driver-lifecycle-exits"

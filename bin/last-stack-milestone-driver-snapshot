@@ -286,6 +286,9 @@ def _annotate_stuck_states(board, report, detail_cache, card_cache):
       Acceptance spec): flag `needs_spec` + `sibling_milestones` so the
       driver treats it as needing a spec instead of silently skipping it.
       (papercut-milestone-driver-rollup-body-milestones-block-decompose-20260926)
+    - decompose + `next_slice` (fkanban needs_next_slice) with no proof card:
+      flag `missing_proof_card` so the driver can choose between the next
+      Kind:pr slice and the proof card.
     """
     work_queue = report.get('work_queue')
     if not isinstance(work_queue, list):
@@ -326,15 +329,25 @@ def _annotate_stuck_states(board, report, detail_cache, card_cache):
                     annotated.append({**entry, 'stale_fail_proof': True, 'proof_card': proof_card_slug})
                     bump('stale_fail_proof')
                     flagged = True
+            extra = {}
+            if (entry.get('next_slice') is True and detail is not None
+                    and not (isinstance(proof_card_slug, str) and proof_card_slug)
+                    and 'not_required' not in (milestone.get('proof_status'), detail.get('proof_verdict'))):
+                # fkanban needs_next_slice: implementation slices are done,
+                # acceptance is not proven, and no proof card exists. The
+                # driver may file the next slice OR the proof card; this flag
+                # lets the prompt branch without a second point read.
+                extra['missing_proof_card'] = True
+                bump('missing_proof_card')
             if not flagged:
                 body = milestone.get('body', '') if detail else ''
                 if detail and _is_bare_slug_list_body(body):
                     siblings = [line.strip() for line in body.splitlines() if line.strip()]
-                    annotated.append({**entry, 'needs_spec': True, 'sibling_milestones': siblings})
+                    annotated.append({**entry, **extra, 'needs_spec': True, 'sibling_milestones': siblings})
                     bump('needs_spec')
                     flagged = True
             if not flagged:
-                annotated.append(entry)
+                annotated.append({**entry, **extra} if extra else entry)
         elif action == 'complete_proof':
             detail = _milestone_detail_best_effort(board, slug, detail_cache)
             milestone = detail.get('milestone', {}) if detail else {}
@@ -418,6 +431,99 @@ def _queue_proof_pending_repairs(board, report, ns_children, detail_cache, card_
             if not isinstance(current, (int, float)) or isinstance(current, bool):
                 current = 0
             counts[name] = current + added
+    report['work_queue'] = work_queue
+    return report
+
+
+def _stamp_next_slice(report):
+    """Copy fkanban's needs_next_slice flag onto its work_queue entry.
+
+    fkanban (PR 44) sets `next_slice: true` and `status: needs_next_slice` on
+    the `milestones[]` row only; its work_queue entry is just
+    {slug, action: decompose, promoteable}. The guard and the prompt read the
+    queue entry, so stamp the flag there.
+    """
+    work_queue = report.get('work_queue')
+    milestones = report.get('milestones')
+    if not isinstance(work_queue, list) or not isinstance(milestones, list):
+        return report
+    next_slugs = {row.get('slug') for row in milestones
+                  if isinstance(row, dict) and (row.get('status') == 'needs_next_slice' or row.get('next_slice') is True)}
+    report['work_queue'] = [
+        {**entry, 'next_slice': True}
+        if (isinstance(entry, dict) and entry.get('action') == 'decompose'
+            and entry.get('slug') in next_slugs and entry.get('next_slice') is not True)
+        else entry
+        for entry in work_queue]
+    return report
+
+
+_PROOF_PASS_CLOSE_SCAN_MAX = 25
+
+
+def _queue_proof_pass_closes(board, report, detail_cache, card_cache):
+    """Queue a milestone whose linked terminal proof card now PASSes as
+    complete_proof, even when its stored proof_status is `failing`.
+
+    fkanban scores proof_passing=true (terminal card with an exact PASS line)
+    with no live Kind:pr as idle_empty/decompose, so a milestone whose repair
+    merged and whose proof re-ran PASS gets decomposed again instead of
+    closed, and its `failing` status never clears. Replace that decompose
+    entry with `complete_proof` + `proof_pass_close=true` when the point reads
+    agree: state active/proving, proof_status pending/failing, and the linked
+    validation card is done on the same board/milestone with a LAST verdict
+    line of PASS. Bounded to _PROOF_PASS_CLOSE_SCAN_MAX point-read rows.
+    """
+    work_queue = report.get('work_queue')
+    milestones = report.get('milestones')
+    if not isinstance(work_queue, list) or not isinstance(milestones, list):
+        return report
+    added, scanned = 0, 0
+    for row in milestones:
+        if scanned >= _PROOF_PASS_CLOSE_SCAN_MAX:
+            break
+        if not isinstance(row, dict) or row.get('proof_passing') is not True:
+            continue
+        if row.get('state') not in ('active', 'proving') or row.get('pr_live', 0) != 0 or not row.get('pr_done'):
+            continue
+        slug = row.get('slug')
+        if not isinstance(slug, str) or not slug:
+            continue
+        scanned += 1
+        detail = _milestone_detail_best_effort(board, slug, detail_cache)
+        milestone = detail.get('milestone', {}) if detail else {}
+        proof_status = milestone.get('proof_status')
+        proof_card_slug = milestone.get('proof_card')
+        if (proof_status not in ('pending', 'failing') or milestone.get('state') not in ('active', 'proving')
+                or not isinstance(proof_card_slug, str) or not proof_card_slug):
+            continue
+        card = _card_best_effort(board, proof_card_slug, card_cache)
+        if (not card or card.get('column') != 'done' or card.get('kind') != 'validation'
+                or card.get('milestone') not in (None, slug)
+                or _proof_verdict(card.get('body', '')) != 'pass'):
+            continue
+        extra = {'proof_pass_close': True, 'proof_card': proof_card_slug,
+                 'from_proof_status': proof_status, 'from_state': milestone.get('state')}
+        kept, has_complete = [], False
+        for entry in work_queue:
+            if isinstance(entry, dict) and entry.get('slug') == slug:
+                if entry.get('action') == 'decompose':
+                    continue
+                if entry.get('action') == 'complete_proof':
+                    entry = {**entry, **extra}
+                    has_complete = True
+            kept.append(entry)
+        if not has_complete:
+            kept.append({'slug': slug, 'action': 'complete_proof', 'promoteable': [], **extra})
+        work_queue = kept
+        added += 1
+    if added:
+        counts = report.get('counts')
+        if isinstance(counts, dict):
+            current = counts.get('proof_pass_close', 0)
+            if not isinstance(current, (int, float)) or isinstance(current, bool):
+                current = 0
+            counts['proof_pass_close'] = current + added
     report['work_queue'] = work_queue
     return report
 
@@ -508,12 +614,16 @@ def reconcile_gap_report(board, snapshot_dir, report, admission_bin):
                 kept[index] = entry
 
     report['work_queue'] = kept
+    report = _stamp_next_slice(report)
     detail_cache, card_cache = {}, {}
     report = _annotate_stuck_states(board, report, detail_cache, card_cache)
     # After the annotation pass, so an appended repair entry is not
     # re-annotated, and after the idle_empty drop, which already applied the
     # North Star in-flight rule this call repeats.
     report = _queue_proof_pending_repairs(board, report, ns_children, detail_cache, card_cache)
+    # Last: it replaces a decompose entry with complete_proof, so no earlier
+    # pass may re-annotate or re-queue that slug as decompose work.
+    report = _queue_proof_pass_closes(board, report, detail_cache, card_cache)
     return report
 
 
@@ -559,7 +669,7 @@ def authorize(command, board, control, report):
             refuse('invalid-new-card-column')
         if kind == 'validation':
             # file_proof_card: the proof card for a complete_proof queue entry
-            # that has no proof card yet. A validation card has no source
+            # (or a decompose + next_slice entry) that has no proof card yet. A validation card has no source
             # surfaces; the checks below hold it to exactly that gap
             # (papercut-milestone-driver-guard-hardcodes-decompose-action-for-file-pr-20260926).
             # A proof card costs nothing against SAFETY_CAP: the routine
@@ -593,6 +703,18 @@ def authorize(command, board, control, report):
             options = flags(args[4:], {'--proof-status', '--json'})
             proof_status = options.get('--proof-status')
             action = 'complete_proof'
+        elif len(args) >= 4 and args[:2] == ['milestone', 'state'] and args[3] == 'proving':
+            # Step 1 of the two-step close. fkanban forces a `failing` proof
+            # back to `active` and allows `active -> complete` only for
+            # `not_required`, so a passing close from `active` must enter
+            # `proving` first. Pending, never passing: step 2 is the ordinary
+            # guarded `complete --proof-status passing`.
+            owner = args[2]
+            options = flags(args[4:], {'--proof-status', '--json'})
+            proof_status = options.get('--proof-status')
+            if proof_status != 'pending':
+                refuse('proving-step-requires-proof-status-pending')
+            action = 'enter_proving'
         else:
             refuse('unsupported-guard-command')
     else:
@@ -610,21 +732,35 @@ def authorize(command, board, control, report):
     if proof_status is not None and proof_status not in ('pending', 'passing', 'not_required'):
         refuse('unsupported-proof-status')
     passing_current = current.get('proof_verdict') == 'passing' and milestone.get('proof_status') == 'passing'
-    if proof_status == 'passing' and not passing_current:
-        # A pending operator status deliberately has a pending live verdict.
-        # Bootstrap only from a current, terminal validation card whose LAST
-        # verdict line is PASS (a later FAIL withdraws an earlier PASS); the
-        # underlying state command repeats its proof gate.
+    def linked_proof_passes():
+        # A current, terminal validation card on this board and milestone
+        # whose LAST verdict line is PASS (a later FAIL withdraws an earlier
+        # PASS, and a PASS after the last FAIL supersedes it).
         linked = milestone.get('proof_card')
-        if not linked or milestone.get('proof_status') != 'pending':
-            refuse(f"passing-proof-not-current slug={owner}")
+        if not linked:
+            return False
         proof = point_read(board, ['show', linked, '--canonical'])
-        if (proof.get('slug') != linked or proof.get('milestone') != owner
+        return not (proof.get('slug') != linked or proof.get('milestone') != owner
             or not milestone.get('board') or proof.get('board') != milestone['board']
             or proof.get('kind') != 'validation' or proof.get('column') != 'done'
-            or _proof_verdict(proof.get('body', '')) != 'pass'):
+            or _proof_verdict(proof.get('body', '')) != 'pass')
+
+    if proof_status == 'passing' and not passing_current:
+        # A pending operator status deliberately has a pending live verdict.
+        # Bootstrap only from linked_proof_passes(); the underlying state
+        # command repeats its proof gate. A `failing` milestone is always
+        # `active` in fkanban and cannot complete directly: enter proving
+        # first (see enter_proving below).
+        if milestone.get('proof_status') == 'failing':
+            refuse(f"failing-proof-enter-proving-first slug={owner}")
+        if milestone.get('proof_status') != 'pending' or not linked_proof_passes():
             refuse(f"passing-proof-not-current slug={owner}")
         passing_current = True
+    if action == 'enter_proving':
+        if milestone.get('state') != 'active':
+            refuse(f"proving-step-requires-active slug={owner} state={milestone.get('state')}")
+        if milestone.get('proof_status') not in ('pending', 'failing') or not linked_proof_passes():
+            refuse(f"proving-step-proof-not-passing slug={owner}")
     if proof_card:
         card = point_read(board, ['show', proof_card, '--canonical'])
         body = card.get('body', '')
@@ -649,10 +785,21 @@ def authorize(command, board, control, report):
             refuse(f"completion-proof-not-current slug={owner}")
     prerequisites(board, current)
     if action:
-        # A proof card closes the gap a complete_proof entry names.
-        queue_action = 'complete_proof' if action == 'file_proof' else action
+        def matches(entry):
+            if entry.get('slug') != owner:
+                return False
+            if action == 'enter_proving':
+                return entry.get('action') == 'complete_proof'
+            if action == 'file_proof':
+                # A proof card closes the gap a complete_proof entry names, or
+                # the proof half of a needs_next_slice entry (decompose +
+                # next_slice: slices done, acceptance not proven). A plain
+                # decompose (idle_empty) entry never authorizes a proof card.
+                return (entry.get('action') == 'complete_proof'
+                        or (entry.get('action') == 'decompose' and entry.get('next_slice') is True))
+            return entry.get('action') == action
         entries = [entry for entry in report.get('work_queue', [])
-                   if entry.get('slug') == owner and entry.get('action') == queue_action]
+                   if isinstance(entry, dict) and matches(entry)]
         if not entries:
             refuse(f"action-not-in-current-queue slug={owner} action={action}")
         if action == 'promote' and not any(args[1] in entry.get('promoteable', []) for entry in entries):

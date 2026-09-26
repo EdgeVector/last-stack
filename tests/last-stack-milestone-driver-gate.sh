@@ -180,6 +180,21 @@ done
 printf '%s\n' '{"counts":{"idle_promoteable":0,"idle_empty":1},"work_queue":[{"action":"decompose","slug":"ms-b"}],"milestones":[{"slug":"ms-b","status":"needs_next_slice","action":"decompose"}]}' >"$tmp/next-row.json"
 export GATE_GAP_JSON="$tmp/next-row.json"
 run_case paused-needs-next-slice-row 10 'reason=repair=1'
+# A next_slice decompose entry (fkanban PR 44 needs_next_slice) is work.
+printf '%s\n' '{"counts":{"idle_promoteable":0,"idle_empty":0,"needs_next_slice":1},"work_queue":[{"action":"decompose","slug":"ms-b","promoteable":[]}],"milestones":[{"slug":"ms-b","status":"needs_next_slice","action":"decompose","next_slice":true,"pr_live":0,"pr_done":2}]}' >"$tmp/next-pr44.json"
+export GATE_GAP_JSON="$tmp/next-pr44.json"
+run_case paused-needs-next-slice-pr44-shape 10 'reason=repair=1'
+# A proof_passing row (repair merged, proof re-ran PASS) is close work even
+# when fkanban scores it idle_empty/decompose and admission is paused.
+printf '%s\n' '{"counts":{"idle_promoteable":0,"idle_empty":1},"work_queue":[{"action":"decompose","slug":"ms-b","promoteable":[]}],"milestones":[{"slug":"ms-b","status":"idle_empty","action":"decompose","state":"active","proof_passing":true,"pr_live":0,"pr_done":3}]}' >"$tmp/pass-close.json"
+export GATE_GAP_JSON="$tmp/pass-close.json"
+run_case paused-proof-pass-close 10 'reason=repair=1'
+printf '%s\n' '{"counts":{"idle_promoteable":0,"idle_empty":0},"work_queue":[],"milestones":[{"slug":"ms-b","status":"idle_empty","action":"skip","state":"proving","proof_passing":true,"pr_live":0,"pr_done":1}]}' >"$tmp/pass-close-empty.json"
+export GATE_GAP_JSON="$tmp/pass-close-empty.json"
+run_case empty-queue-proof-pass-close 10 'reason=proof-pass-close=1'
+printf '%s\n' '{"counts":{"idle_promoteable":0,"idle_empty":0},"work_queue":[],"milestones":[{"slug":"ms-b","status":"complete","action":"skip","state":"complete","proof_passing":true,"pr_live":0,"pr_done":1}]}' >"$tmp/pass-complete.json"
+export GATE_GAP_JSON="$tmp/pass-complete.json"
+run_case complete-milestone-not-close-work 0 'empty-frontier'
 
 # Parity: the gate's jq verdict agrees with the snapshot's _proof_verdict.
 sed -n "/^proof_card_filter='/,/^    else \"fresh-fail\" end'/p" "$GATE" \
