@@ -171,9 +171,16 @@ pkill -9 -f clippy-driver; pkill -9 -f '/rustc'; pkill -9 -f cargo
 # 2. O(1) rename — zero race window — then recreate empty so worktree symlinks resolve
 mv ~/code/edgevector/fold/target ~/code/edgevector/fold/target.PURGE
 mkdir ~/code/edgevector/fold/target
-# 3. delete the bloat off to the side (slow; run in background)
-rm -rf ~/code/edgevector/fold/target.PURGE &
+# 3. delete the bloat off to the side (slow; run in background) — through the
+#    helper, NOT a bare `rm -rf`: the managed execution policy rejects an
+#    agent-issued `rm -rf`, and improvising with trash/gio strands the cache
+#    (papercut-disk-reclaim-trash-permission-denied-20260925).
+( "$HOME/.last-stack/bin/last-stack-purge-to-trash" \
+    ~/code/edgevector/fold/target.PURGE >/dev/null 2>&1 & )
 ```
+The helper tries Trash, then `gio trash`, then a direct delete, and logs why each
+one failed. Exit `0` = moved to Trash, `1` = fallback delete; both reclaimed the
+space.
 Removing `target/` only deletes build artifacts — **never source or uncommitted work** —
 so agents just rebuild clean (a full fold build is ~40 GB; the rest was stale cruft).
 A plain in-place `rm` races with relaunched builds for minutes and barely reclaims; the
