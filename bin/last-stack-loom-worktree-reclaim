@@ -90,7 +90,7 @@ has_active_ci_owner() {
   # Check if there are other active (live) step worktrees for this execution.
   # Steps share the same exec_id but have different names, e.g.,
   # lx-<id>#REPAIR or lx-<id>#CLEANUP may be running while lx-<id>#IMPLEMENT is terminal.
-  # If any sibling is live or exists after the main step is terminal, it owns the exec-id.
+  # If any sibling is live, it owns the exec-id and we must keep this tree.
   local step_pattern="${exec_id}#"
   for sibling_wt in "$root"/${step_pattern}*; do
     [ -d "$sibling_wt" ] || continue
