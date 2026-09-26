@@ -8,6 +8,10 @@
 #   - the apps-only pass is a noop when `next` already proves every app at the
 #     set's pin for the build the primary runs, and when the same pins were
 #     already smoked for this primary build inside the cooldown
+#   - a FAILED primary cutover stays outcome=error AND still publishes app rows,
+#     from an apps-only set pinned to the build the primary actually runs after
+#     the failure -- unless that build cannot be read, in which case nothing is
+#     published
 # Every tool is a fake that records its calls; nothing real runs.
 set -euo pipefail
 
@@ -35,6 +39,11 @@ echo "dogfood \$*" >>"$calls"
 if [ "\$1" = "--dry-run" ]; then
   printf '{"version":"%s","safe_upgrade_args":["--candidate","%s"]}\n' "\${FAKE_INCOMING:-0.23.3-200-gbbbbbbbbb}" "$cand_bin"
 else
+  : >"$work/cutover-attempted"
+  if [ "\${FAKE_CUTOVER:-ok}" = fail ]; then
+    echo '{"safe_upgrade":"cutover-failed"}'
+    exit 1
+  fi
   echo '{"safe_upgrade":"cutover-ok"}'
 fi
 EOF
@@ -83,6 +92,11 @@ printf '%s' "\${FAKE_PROVED:-{\}}" | jq -c --arg a "\$app" '{sha: (.[\$a] // "")
 EOF
 cat >"$fake/identity" <<EOF
 #!/usr/bin/env bash
+# A cutover restarts the primary. FAKE_IDENTITY_FAIL_AFTER_CUTOVER models the
+# window where it cannot be identified: readable at step 2, unreadable after.
+if [ "\${FAKE_IDENTITY_FAIL_AFTER_CUTOVER:-0}" = 1 ] && [ -f "$work/cutover-attempted" ]; then
+  exit 1
+fi
 echo "build=\${FAKE_PRIMARY:-0.23.3-100-gaaaaaaaaa} identity_source=test"
 EOF
 chmod +x "$fake"/*
@@ -94,6 +108,7 @@ run_gate() {
   # KEEP_APPS_ONLY_STAMPS=1. Without this, one case's stamp silences the next
   # case's smoke and the assertion passes for the wrong reason.
   [ "${KEEP_APPS_ONLY_STAMPS:-0}" = 1 ] || rm -rf "$work/apps-only-stamps"
+  rm -f "$work/cutover-attempted"
   env ROUTINES_RUN_DIR="$work/run" \
     LAST_STACK_CANARY_V2_BUILD_MAIN="$fake/build-main" \
     LAST_STACK_CANARY_V2_DOGFOOD="$fake/dogfood" \
@@ -220,5 +235,57 @@ out="$(KEEP_APPS_ONLY_STAMPS=1 run_gate env FAKE_PRIMARY=0.23.3-200-gbbbbbbbbb F
 grep -q 'ROUTINE_RESULT outcome=ok' <<<"$out" || fail "stamp setup pass: $out"
 out="$(KEEP_APPS_ONLY_STAMPS=1 run_gate env FAKE_PRIMARY=0.23.3-201-gccccccccc FAKE_INCOMING=0.23.3-201-gccccccccc FAKE_PROVED='{"brain":"abc"}')"
 grep -q '^smoke' "$calls" || fail "a new primary build reused another build's cooldown stamp"
+
+# ── a FAILED primary cutover must stay outcome=error AND publish app rows ────
+# Step 6 sits below the cutover, so a cutover_failed run used to discard a GREEN
+# app set: 3 of the 13 runs before 2026-09-26, including the one that left brain
+# 5 commits behind its registry pin.
+# papercut-canary-gate-discards-a-green-app-set-when-the-primary-cutover-fails-20260926
+out="$(run_gate env FAKE_CUTOVER=fail FAKE_PROVED='{"brain":"abc"}')"
+grep -q 'ROUTINE_RESULT outcome=error' <<<"$out" \
+  || fail "a failed cutover must stay outcome=error (routinesd escalates on it): $out"
+grep -q 'evidence=cutover_failed' <<<"$out" || fail "cutover failure evidence lost: $out"
+grep -q 'apps_only=ok' <<<"$out" || fail "failed cutover did not run the apps-only pass: $out"
+grep -q 'rows=pr:EdgeVector/homebrew-lastdb/7' <<<"$out" \
+  || fail "failed cutover discarded the app rows: $out"
+grep -q 'apps_only_moved=kanban' <<<"$out" \
+  || fail "the failed-cutover line does not name which app got a row: $out"
+grep -q "publish-next --candidate-set $work/run/apps-only-set.json --proof $work/run/apps-only-proof.json" "$calls" \
+  || fail "failed cutover published the CANDIDATE set (the primary never took that build): $(cat "$calls")"
+grep -q "smoke lastdbd=$prim_bin set=$work/run/apps-only-set.json" "$calls" \
+  || fail "the apps-only proof after a failed cutover must boot the PRIMARY lastdbd"
+order="$(grep -oE '^(candidate-set|smoke|dogfood --cutover|publish-next)' "$calls" | tr '\n' ' ')"
+[ "$order" = "candidate-set smoke dogfood --cutover candidate-set smoke publish-next " ] \
+  || fail "failed-cutover step order: $order"
+
+# Nothing to prove after a failed cutover: still error, and no second smoke.
+out="$(run_gate env FAKE_CUTOVER=fail FAKE_PROVED='{"brain":"abc","kanban":"def"}')"
+grep -q 'ROUTINE_RESULT outcome=error' <<<"$out" || fail "failed cutover not error: $out"
+grep -q 'apps_only=noop' <<<"$out" || fail "already-proved apps not a noop: $out"
+grep -q 'apps_only_evidence=apps_already_proved' <<<"$out" || fail "noop reason not named: $out"
+[ "$(grep -c '^smoke' "$calls")" = 1 ] \
+  || fail "a failed cutover with nothing to prove still bought a second smoke: $(cat "$calls")"
+grep -q 'publish-next' "$calls" && fail "nothing to prove still wrote rows"
+
+# The primary cannot be identified after the cutover: publish NOTHING. A row is
+# a proved pair, and the second half is the build the host actually runs.
+out="$(run_gate env FAKE_CUTOVER=fail FAKE_IDENTITY_FAIL_AFTER_CUTOVER=1 FAKE_PROVED='{"brain":"abc"}')"
+grep -q 'ROUTINE_RESULT outcome=error' <<<"$out" || fail "failed cutover not error: $out"
+grep -q 'apps_only=unknown' <<<"$out" || fail "unreadable primary not reported: $out"
+grep -q 'apps_only_evidence=primary_identity_absent_after_cutover' <<<"$out" || fail "unreadable primary reason: $out"
+grep -q 'publish-next' "$calls" \
+  && fail "published a row against a primary build that could not be read"
+[ "$(grep -c '^smoke' "$calls")" = 1 ] || fail "unreadable primary still ran the apps-only smoke"
+
+# The cooldown is shared with the resolve exits on purpose: a primary that fails
+# its cutover fails it again next run, and that must not buy a smoke each time.
+rm -rf "$work/apps-only-stamps"
+out="$(KEEP_APPS_ONLY_STAMPS=1 run_gate env FAKE_CUTOVER=fail FAKE_PROVED='{"brain":"abc"}')"
+grep -q 'apps_only=ok' <<<"$out" || fail "first failed-cutover apps-only pass: $out"
+out="$(KEEP_APPS_ONLY_STAMPS=1 run_gate env FAKE_CUTOVER=fail FAKE_PROVED='{"brain":"abc"}')"
+grep -q 'apps_only=noop' <<<"$out" || fail "repeat failed cutover ignored the cooldown: $out"
+grep -q 'apps_only_evidence=apps_only_cooldown' <<<"$out" || fail "cooldown reason: $out"
+[ "$(grep -c '^smoke' "$calls")" = 1 ] || fail "repeat failed cutover re-smoked inside the cooldown"
+rm -rf "$work/apps-only-stamps"
 
 echo "PASS last-stack-canary-candidate-gate"
