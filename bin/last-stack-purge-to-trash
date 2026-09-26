@@ -19,6 +19,11 @@
 #
 set -euo pipefail
 
+trash_err_file=$(mktemp "$TMPDIR/trash-err.XXXXXX")
+gio_err_file=$(mktemp "$TMPDIR/gio-err.XXXXXX")
+rm_err_file=$(mktemp "$TMPDIR/rm-err.XXXXXX")
+trap 'rm -f "$trash_err_file" "$gio_err_file" "$rm_err_file"' EXIT
+
 usage() {
   cat <<'USAGE'
 last-stack-purge-to-trash <path>
@@ -72,24 +77,22 @@ log() {
 
 # Try /usr/bin/trash first
 if command -v trash >/dev/null 2>&1; then
-  if trash "$path" 2>/tmp/trash-err-$$.txt; then
+  if trash "$path" 2>"$trash_err_file"; then
     log "moved_to_trash method=trash path=$path"
     exit 0
   fi
-  trash_err="$(cat /tmp/trash-err-$$.txt 2>/dev/null || echo 'unknown')"
-  rm -f /tmp/trash-err-$$.txt 2>/dev/null || true
+  trash_err="$(cat "$trash_err_file" 2>/dev/null || echo 'unknown')"
   log "trash_failed method=trash error='$trash_err' path=$path"
 fi
 
 # Try gio trash as fallback (only if trash failed)
 # Note: gio might be used for non-trash purposes, so we check if it has trash subcommand
 if command -v gio >/dev/null 2>&1; then
-  if gio trash "$path" 2>/tmp/gio-err-$$.txt; then
+  if gio trash "$path" 2>"$gio_err_file"; then
     log "moved_to_trash method=gio path=$path"
     exit 0
   fi
-  gio_err="$(cat /tmp/gio-err-$$.txt 2>/dev/null || echo 'unknown')"
-  rm -f /tmp/gio-err-$$.txt 2>/dev/null || true
+  gio_err="$(cat "$gio_err_file" 2>/dev/null || echo 'unknown')"
   log "trash_failed method=gio error='$gio_err' path=$path"
 fi
 
@@ -115,14 +118,12 @@ fi
 
 # Fall back to direct rm -rf
 log "fallback_delete_starting path=$path timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-if rm -rf "$path" 2>/tmp/rm-err-$$.txt; then
+if rm -rf "$path" 2>"$rm_err_file"; then
   log "fallback_delete_succeeded path=$path"
-  rm -f /tmp/rm-err-$$.txt 2>/dev/null || true
   exit 1
 fi
 
 # Direct delete also failed
-rm_err="$(cat /tmp/rm-err-$$.txt 2>/dev/null || echo 'unknown')"
-rm -f /tmp/rm-err-$$.txt 2>/dev/null || true
+rm_err="$(cat "$rm_err_file" 2>/dev/null || echo 'unknown')"
 log "fallback_delete_failed error='$rm_err' path=$path"
 exit 1

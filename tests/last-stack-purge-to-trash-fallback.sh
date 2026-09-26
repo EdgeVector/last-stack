@@ -101,12 +101,30 @@ echo "Test 2: Success case when real Trash is available..."
     exit 1
   fi
 
-  # Either Trash moved it (exit 0) or fallback deleted it (exit 1)
-  if [ "$result" -eq 0 ] || [ "$result" -eq 1 ]; then
-    echo "PASS: Command succeeded with exit code $result"
+  # If Trash CLI is available, verify that Trash was actually used (exit 0)
+  if command -v trash >/dev/null 2>&1 || command -v gio >/dev/null 2>&1; then
+    if [ "$result" -eq 0 ]; then
+      if grep -q "moved_to_trash method=" "$log_file2"; then
+        echo "PASS: Trash was used successfully (exit 0, verified in log)"
+      else
+        echo "FAIL: Exit code 0 but log does not show Trash was used" >&2
+        cat "$log_file2" >&2
+        exit 1
+      fi
+    elif [ "$result" -eq 1 ]; then
+      echo "PASS: Trash unavailable, fell back to delete (exit 1)"
+    else
+      echo "FAIL: Unexpected exit code $result" >&2
+      exit 1
+    fi
   else
-    echo "FAIL: Unexpected exit code $result" >&2
-    exit 1
+    # Trash CLI is unavailable on this system, only accept fallback exit 1
+    if [ "$result" -eq 1 ]; then
+      echo "PASS: Trash unavailable on this system, fell back to delete (exit 1)"
+    else
+      echo "FAIL: No Trash CLI available, expected fallback (exit 1), got $result" >&2
+      exit 1
+    fi
   fi
 }
 
