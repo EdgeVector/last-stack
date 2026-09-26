@@ -371,15 +371,18 @@ For each pattern worth fixing now:
   as `fixed` when a merged PR carries its labeled line. A slug named only in
   prose is context and never closes anything
   (papercut-card-merge-does-not-close-its-named-papercuts-20260926).
-- **`Papercut:` is the repair link only ON A CARD.** In a hand-written PR body
-  the same label is how authors CITE the record for context, so the closer counts
-  it as a repair claim only when the body is card-shaped (`## GOAL`,
-  `## END STATE`, `DONE WHEN:` or a `Card:` line) — which a Loom-copied card body
-  always is and a trailer never is. A hand-written PR that should close a
-  papercut writes `Fixes: <slug>`, which counts in any body. Reading the card
-  meaning in a PR trailer closed a live claim on EdgeVector/last-stack#255,
-  a PR whose own body says it is additive
-  (papercut-lifecycle-closer-treats-incident-pr-as-fix-20260925).
+- **A `Papercut:` line cannot say whether the PR FIXES the record or merely
+  CITES it, so the record decides.** A record that states in its own body that it
+  must stay open is never auto-closed: write `Keep-open: <reason>` on its own
+  line, or the prose the corpus already uses ("this record stays open"). The
+  closer reports those as `keep-open-asserted` and touches nothing. Use it
+  whenever a merged PR ships only PART of a record's remedy — say which claim
+  closed and which stands, exactly as step 2b's own record does.
+  Measured 2026-09-26: 7 of 7 merged PRs carrying a `Papercut:` line carry no
+  card marker, so `Papercut:` IS the hand-written repair convention and cannot be
+  narrowed; and EdgeVector/last-stack#255, which says in its own body that it is
+  additive, closed a record whose last two paragraphs said twice that it stays
+  open (papercut-lifecycle-closer-treats-incident-pr-as-fix-20260925).
 - File as many pattern cards as the evidence genuinely supports; too ambiguous
   or too large → one `backlog` card with what you know.
 

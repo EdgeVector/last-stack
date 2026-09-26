@@ -23,8 +23,14 @@ cat >"$tmp/records.json" <<'JSON'
    "body": "Status: OPEN\nRepo: EdgeVector/last-stack\n"},
   {"slug": "papercut-search-down", "title": "Search fails", "status": "open",
    "body": "Status: OPEN\nRepo: EdgeVector/last-stack\n"},
-  {"slug": "papercut-cited-as-context", "title": "Cited by a PR that does not fix it", "status": "open",
+  {"slug": "papercut-cited-as-context", "title": "A bare Papercut: line IS the hand-written repair convention", "status": "open",
    "body": "Status: OPEN\nRepo: EdgeVector/last-stack\n"},
+  {"slug": "papercut-keeps-itself-open", "title": "Record asserts it must stay open", "status": "open",
+   "body": "Status: OPEN\nRepo: EdgeVector/last-stack\nThe delivered half is done. Residual claim 1 is unchanged and is why this record stays open.\n"},
+  {"slug": "papercut-keep-open-structured", "title": "Record uses the structured marker", "status": "open",
+   "body": "Status: OPEN\nRepo: EdgeVector/last-stack\nKeep-open: only the instrument shipped; the titled claim stands\n"},
+  {"slug": "papercut-describes-staying-open", "title": "Its DEFECT is about things staying open", "status": "open",
+   "body": "Status: OPEN\nRepo: EdgeVector/last-stack\nSymptom: papercuts stay open after the card that names them merges; the closer skips no-review-ref.\n"},
   {"slug": "papercut-verb-no-card", "title": "A repair VERB needs no card markers", "status": "open",
    "body": "Status: OPEN\nRepo: EdgeVector/last-stack\n"}
 ]
@@ -61,7 +67,15 @@ case "$route" in
   # A repair VERB closes with no card markers anywhere in the body.
   "repos/issues/search?q=papercut-verb-no-card&"*)
     printf '['; pr last-stack 16 true 'Fixes: papercut-verb-no-card'; printf ']\n' ;;
-  repos/EdgeVector/last-stack/pulls/11|repos/EdgeVector/last-stack/pulls/15|repos/EdgeVector/last-stack/pulls/16)
+  # Both keep-open records are named by a merged PR on a labeled line. Nothing
+  # about the PR is wrong; the RECORD says it must stay open.
+  "repos/issues/search?q=papercut-keeps-itself-open&"*)
+    printf '['; pr last-stack 17 true 'Papercut: papercut-keeps-itself-open'; printf ']\n' ;;
+  "repos/issues/search?q=papercut-keep-open-structured&"*)
+    printf '['; pr last-stack 18 true 'Papercut: papercut-keep-open-structured'; printf ']\n' ;;
+  "repos/issues/search?q=papercut-describes-staying-open&"*)
+    printf '['; pr last-stack 19 true 'Papercut: papercut-describes-staying-open'; printf ']\n' ;;
+  repos/EdgeVector/last-stack/pulls/11|repos/EdgeVector/last-stack/pulls/15|repos/EdgeVector/last-stack/pulls/16|repos/EdgeVector/last-stack/pulls/17|repos/EdgeVector/last-stack/pulls/18|repos/EdgeVector/last-stack/pulls/19)
     printf '{"state":"closed","merged":true}\n' ;;
   *)
     echo "404 Not Found: $route" >&2
@@ -88,16 +102,28 @@ import json, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 assert not data.get("errors"), data.get("errors")
 fixed = {f["slug"]: f for f in data["fixed"]}
-# `papercut-verb-no-card` closes on `Fixes:` with no card markers at all;
-# `papercut-cited-as-context` must NOT close, because its only reference is a
-# `Papercut:` trailer in a body that is not a card.
-assert set(fixed) == {"papercut-labeled-fix", "papercut-verb-no-card"}, sorted(fixed)
+# A bare `Papercut:` line closes (it is the hand-written repair convention:
+# 7 of 7 merged PRs carrying one carry no card marker), and so does `Fixes:`.
+# The two keep-open records are named by merged PRs on labeled lines and must
+# still NOT close, because the record is the authority on its own claim.
+assert set(fixed) == {
+    "papercut-labeled-fix",
+    "papercut-verb-no-card",
+    "papercut-cited-as-context",
+    # Describing a defect about things staying open is NOT asserting that THIS
+    # record stays open. The prose arm demands a self-reference for exactly this
+    # row, which is real corpus text.
+    "papercut-describes-staying-open",
+}, sorted(fixed)
+keep = {s["slug"]: s for s in data["skipped"] if s.get("slug")}
+for slug in ("papercut-keeps-itself-open", "papercut-keep-open-structured"):
+    assert keep[slug]["reason"] == "keep-open-asserted", (slug, keep.get(slug))
+    assert keep[slug].get("marker"), (slug, keep[slug])
 f = fixed["papercut-labeled-fix"]
 assert f["ref"] == "http://forge.test/EdgeVector/last-stack/pulls/11", f
 assert "labeled repair line" in f["detail"], f
 skips = {s["slug"]: s for s in data["skipped"] if s.get("slug")}
-for slug in ("papercut-prose-only", "papercut-unmerged-fix", "papercut-prefix", "papercut-search-down",
-             "papercut-cited-as-context"):
+for slug in ("papercut-prose-only", "papercut-unmerged-fix", "papercut-prefix", "papercut-search-down"):
     assert skips[slug]["reason"] == "no-review-ref", (slug, skips.get(slug))
 assert "forge_search_error" in skips["papercut-search-down"], skips["papercut-search-down"]
 PY
@@ -115,4 +141,14 @@ if grep -q 'issues/search' "$FORGE_CALL_LOG"; then
   exit 1
 fi
 
-echo "ok: lifecycle closer closes on a labeled repair line in a merged PR, never on prose, unmerged, prefix matches, or a bare Papercut: citation trailer"
+# --ignore-keep-open is the operator override, and it must close BOTH keep-open
+# records while changing nothing else.
+run_closer --ignore-keep-open >"$tmp/override.json"
+python3 - "$tmp/override.json" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+fixed = {f["slug"] for f in data["fixed"]}
+assert {"papercut-keeps-itself-open", "papercut-keep-open-structured"} <= fixed, sorted(fixed)
+PY
+
+echo "ok: lifecycle closer closes on a labeled repair line in a merged PR, never on prose, unmerged, or prefix matches, and never against a record that asserts it must stay open"
