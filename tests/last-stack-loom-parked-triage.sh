@@ -4,7 +4,8 @@
 # One sweep holds every shape, so a rule that swallows everything (or
 # nothing) fails: three walks must be signalled, four must stay parked.
 # The two fenced walks prove a Situation-refused MERGE resumes only after
-# preflight allows merge-pr again.
+# preflight allows merge-pr again. The last pass ages the merged walk's
+# resume past the retry window: it must go to the validate lane, then drop.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -122,14 +123,18 @@ cat >"$stub/kanban" <<'EOF'
 #!/usr/bin/env bash
 echo "kanban $*" >>"$CALLS"
 EOF
+cat >"$stub/reopen" <<'EOF'
+#!/usr/bin/env bash
+echo "reopen $*" >>"$CALLS"
+EOF
 chmod +x "$stub"/*
-export LOOM_BIN="$stub/loom" KANBAN_BIN="$stub/kanban" FORGE_API_BIN="$stub/forge-api" SITUATIONS_BIN="$stub/situations"
+export LOOM_BIN="$stub/loom" KANBAN_BIN="$stub/kanban" FORGE_API_BIN="$stub/forge-api" SITUATIONS_BIN="$stub/situations" REOPEN_BIN="$stub/reopen"
 
 fail() { echo "FAIL: $*" >&2; cat "$CALLS" >&2; exit 1; }
 
 # Dry run: classifies, signals nothing, writes no state.
 out="$("$bin")"
-tail -1 <<<"$out" | grep -qx 'parked_seen=7 escalated=1 resumed=2 left=3 errors=1' || fail "dry-run counts: $out"
+tail -1 <<<"$out" | grep -qx 'parked_seen=7 escalated=1 resumed=2 handed_off=0 left=3 errors=1' || fail "dry-run counts: $out"
 grep -q '^escalate	lx-stall	card-stall' <<<"$out" || fail "stall not escalated"
 grep -q '^resume	lx-merged	card-merged' <<<"$out" || fail "merged not resumed"
 grep -q '^left	lx-normal' <<<"$out" || fail "normal walk must stay parked"
@@ -157,7 +162,7 @@ grep -q '^loom signal lx-fenced-open card-decision --payload {"human_decision": 
 # Second apply: escalation is once per walk; resume is rate-limited.
 : >"$CALLS"
 out="$("$bin" --apply)"
-tail -1 <<<"$out" | grep -qx 'parked_seen=7 escalated=0 resumed=0 left=6 errors=1' || fail "second pass counts: $out"
+tail -1 <<<"$out" | grep -qx 'parked_seen=7 escalated=0 resumed=0 handed_off=0 left=6 errors=1' || fail "second pass counts: $out"
 sleep 1
 grep -q '^loom signal' "$CALLS" && fail "second pass signalled again"
 
@@ -165,4 +170,47 @@ grep -q '^loom signal' "$CALLS" && fail "second pass signalled again"
 out="$("$bin" --gate)" || fail "gate exit"
 grep -q '^ROUTINE_RESULT outcome=noop detail=parked_seen=7,escalated=0' <<<"$out" || fail "gate trailer: $out"
 
-echo "ok: loom parked triage escalates once, resumes merged and unfenced, leaves the rest"
+age_resume() {
+  python3 - "$tmp/state/state.json" "$@" <<'PY'
+import json, sys
+p = sys.argv[1]
+s = json.load(open(p))
+for k in sys.argv[2:]:
+    s[k]["resume_at"] -= 7 * 3600
+json.dump(s, open(p, "w"))
+PY
+}
+
+# Merged walk still parked after the retry window: hand off, then drop.
+age_resume lx-merged lx-fenced-open
+: >"$CALLS"
+out="$("$bin" --apply)"
+tail -1 <<<"$out" | grep -qx 'parked_seen=7 escalated=0 resumed=1 handed_off=1 left=4 errors=1' || fail "handoff pass counts: $out"
+grep -q '^handoff	lx-merged	card-merged	merged; parked again after resume' <<<"$out" || fail "merged walk not handed off"
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [ "$(grep -c '^signal-ran' "$CALLS")" -ge 2 ] && break
+  sleep 0.5
+done
+grep -q '^kanban set card-merged --block-status none$' "$CALLS" || fail "handoff must clear block_status"
+grep -q '^reopen card-merged --pr-url http://forge.test/EdgeVector/routines/pulls/36 --reason loom walk lx-merged merged' "$CALLS" \
+  || fail "handoff must reopen for validate with the merged pr_url"
+grep -q '^loom signal lx-merged card-decision --payload {"human_decision": "drop"}' "$CALLS" || fail "handoff must drop the walk"
+[ "$(grep -n '^reopen card-merged' "$CALLS" | cut -d: -f1)" -lt "$(grep -n '^loom signal lx-merged' "$CALLS" | cut -d: -f1)" ] \
+  || fail "reopen must land before the drop"
+
+# A failed reopen leaves the walk parked and counts an error.
+printf '#!/usr/bin/env bash\necho "reopen $*" >>"$CALLS"\nexit 1\n' >"$stub/reopen"
+python3 - "$tmp/state/state.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+s = json.load(open(p))
+s["lx-merged"]["resume_at"] = s["lx-merged"].get("resume_at", 0) - 7 * 3600
+json.dump(s, open(p, "w"))
+PY
+: >"$CALLS"
+out="$("$bin" --apply)"
+grep -q 'reopen-validate failed, walk left parked' <<<"$out" || fail "failed reopen not reported: $out"
+sleep 1
+grep -q '^loom signal lx-merged' "$CALLS" && fail "failed reopen must not drop the walk"
+
+echo "ok: loom parked triage escalates once, resumes merged and unfenced, hands a re-parked merge to validate, leaves the rest"
