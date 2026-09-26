@@ -4,11 +4,14 @@
 # It does not open a LastDB home and it does not delete from a source home.
 set -euo pipefail
 
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)/lib/python-cache.sh"  # writable py_compile cache
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 RUNNER="$ROOT/bin/last-stack-north-star-proof"
 EVALUATOR="$ROOT/bin/last-stack-kanban-done-when-eval"
 HARNESS="$ROOT/harness/north-star/north-star-lastdb-schema-root-data-attribution/run.sh"
 CHECK="$ROOT/harness/north-star/north-star-lastdb-schema-root-data-attribution/check_contract.py"
+MEASURE="$ROOT/harness/north-star/north-star-lastdb-schema-root-data-attribution/measure.py"
 FIXTURE="$ROOT/tests/fixtures/north-star-lastdb-schema-root-data-attribution"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/schema-root-attribution-proof-test.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
@@ -47,6 +50,31 @@ chmod +x "$RUNNER" "$HARNESS"
 bash -n "$HARNESS"
 bash -n "$0"
 python3 -m py_compile "$CHECK"
+python3 - "$MEASURE" "$FIXTURE/inventory-attribution.json" "$FIXTURE/concurrent-write-response.json" <<'PY'
+import importlib.util
+import json
+import sys
+
+measure_path, inventory_path, write_path = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("schema_root_measure", measure_path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+inventory = json.load(open(inventory_path, encoding="utf-8"))
+objects, path_rows = module.attribution_summary(inventory)
+if objects.get("retention_attributed") != 2 or objects.get("system_attributed") != 3:
+    raise SystemExit("measure.py did not read inventory attribution object classes")
+if path_rows != 17:
+    raise SystemExit("measure.py did not read inventory attribution path rows")
+write = json.load(open(write_path, encoding="utf-8"))
+if module.nonnegative_int(write.get("size")) != 42:
+    raise SystemExit("measure.py did not read the inline mutation size")
+if module.nonnegative_int(True) is not None:
+    raise SystemExit("measure.py accepted a boolean as an integer")
+if not module.valid_card_slug("lastdb-system-attribution-isolated-harness-setup-20260926"):
+    raise SystemExit("measure.py rejected the system attribution follow-up card slug")
+if module.valid_card_slug("not a card slug"):
+    raise SystemExit("measure.py accepted an invalid card slug")
+PY
 
 "$RUNNER" --list | grep -qx 'north-star-lastdb-schema-root-data-attribution' ||
   fail "--list omits north-star-lastdb-schema-root-data-attribution"
@@ -107,6 +135,30 @@ json.dump(data, open(primary, "w", encoding="utf-8"))
 json.dump({"schema": "lastdb-schema-root-data-attribution-proof.v1", "ok": True}, open(booleans, "w", encoding="utf-8"))
 PY
 
+python3 - "$CHECK" "$WORK/good.json" "$WORK/system-zero-no-card.json" "$WORK/system-zero-card.json" <<'PY'
+import importlib.util
+import json
+import sys
+
+check_path, good_path, no_card_path, card_path = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("schema_root_check", check_path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+data = json.load(open(good_path, encoding="utf-8"))
+data["restore"]["system_attributed_objects"] = 0
+json.dump(data, open(no_card_path, "w", encoding="utf-8"))
+failures = module.evidence_failures(__import__("pathlib").Path(no_card_path))
+if "The zero system attribution fallback does not name a filed Fold card." not in failures:
+    raise SystemExit("zero system attribution did not require a Fold follow-up card")
+data["follow_up"] = {
+    "system_attribution_card": "lastdb-system-attribution-isolated-harness-setup-20260926"
+}
+json.dump(data, open(card_path, "w", encoding="utf-8"))
+failures = module.evidence_failures(__import__("pathlib").Path(card_path))
+if "The zero system attribution fallback does not name a filed Fold card." in failures:
+    raise SystemExit("a filed system attribution follow-up card was rejected")
+PY
+
 mkdir -p "$WORK/bin" "$WORK/home/.lastdb"
 cat >"$WORK/bin/lastdb" <<EOF
 #!/bin/sh
@@ -148,15 +200,16 @@ fi
 grep -q '^pending:' "$WORK/absent-eval.out" || fail "missing-evidence report was not pending"
 
 # An unset evidence variable loads the committed measurement. That file
-# records the throwaway copy. The node wrote no history row, no system
-# schema, no attribution path, and no inline size, so the proof stays FAIL.
+# records the throwaway copy. The product now writes retention, path-row, and
+# inline-size facts. The isolated direct-declare surface cannot yet make a
+# system-seed schema, so the real measurement stays FAIL on that one field.
 if PATH="$WORK/bin:$PATH" \
   env -u SCHEMA_ROOT_ATTRIBUTION_PROOF_EVIDENCE_FILE \
   SCHEMA_ROOT_ATTRIBUTION_SOURCE_DIR="$FIXTURE" \
   NORTH_STAR_PROOF_DIR="$WORK/committed" \
   "$RUNNER" --offline north-star-lastdb-schema-root-data-attribution \
   >"$WORK/committed.out" 2>"$WORK/committed.err"; then
-  fail "the committed measurement was accepted as PASS"
+  fail "the committed measurement hid the missing system attribution fact"
 fi
 expect_verdict "$WORK/committed/north-star-lastdb-schema-root-data-attribution.md" FAIL
 grep -F -q "Evidence file: $ROOT/harness/north-star/north-star-lastdb-schema-root-data-attribution/measured-evidence.json" \
@@ -164,13 +217,7 @@ grep -F -q "Evidence file: $ROOT/harness/north-star/north-star-lastdb-schema-roo
   fail "the default evidence path is not measured-evidence.json"
 grep -q 'Operational evidence: FAIL' \
   "$WORK/committed/north-star-lastdb-schema-root-data-attribution.md"
-grep -q 'The evidence field retention_attributed_objects is below 1.' \
-  "$WORK/committed/north-star-lastdb-schema-root-data-attribution.md"
 grep -q 'The evidence field system_attributed_objects is below 1.' \
-  "$WORK/committed/north-star-lastdb-schema-root-data-attribution.md"
-grep -q 'The evidence field concurrent_write_attribution_paths is not 1.' \
-  "$WORK/committed/north-star-lastdb-schema-root-data-attribution.md"
-grep -q 'The evidence field later_write_inline_size_before_response is not true.' \
   "$WORK/committed/north-star-lastdb-schema-root-data-attribution.md"
 if grep -q 'Operational evidence: ABSENT' \
   "$WORK/committed/north-star-lastdb-schema-root-data-attribution.md"; then
@@ -178,8 +225,33 @@ if grep -q 'Operational evidence: ABSENT' \
 fi
 if grep -q 'Operational evidence: PASS' \
   "$WORK/committed/north-star-lastdb-schema-root-data-attribution.md"; then
-  fail "the committed measurement passed the operational check"
+  fail "the committed measurement passed without a system attribution fact"
 fi
+
+# The committed trace records the raw inventory and mutation responses behind
+# the FAIL fallback. Keep it aligned with the measured evidence, so a zero
+# system count is reviewable rather than an unexplained assertion.
+python3 - "$ROOT/harness/north-star/north-star-lastdb-schema-root-data-attribution/measured-evidence.json" \
+  "$ROOT/harness/north-star/north-star-lastdb-schema-root-data-attribution/measured-trace.json" <<'PY'
+import json
+import sys
+
+evidence_path, trace_path = sys.argv[1:]
+evidence = json.load(open(evidence_path, encoding="utf-8"))
+trace = json.load(open(trace_path, encoding="utf-8"))
+expected_card = "lastdb-system-attribution-isolated-harness-setup-20260926"
+before = trace["inventory_before_concurrent"]["inventory"]["attribution"]
+after = trace["inventory_after_concurrent"]["inventory"]["attribution"]
+write = trace["concurrent_write"]
+if evidence["restore"]["system_attributed_objects"] != after["objects"]["system_attributed"]:
+    raise SystemExit("the committed trace does not support the system attribution fallback")
+if evidence.get("follow_up", {}).get("system_attribution_card") != expected_card:
+    raise SystemExit("the committed evidence does not name the filed system attribution follow-up card")
+if after["path_rows"] - before["path_rows"] != evidence["writes"]["concurrent_write_attribution_paths"]:
+    raise SystemExit("the committed trace does not support the path-row measurement")
+if not isinstance(write.get("size"), int) or write["size"] <= 0:
+    raise SystemExit("the committed trace does not show the inline mutation size")
+PY
 
 if PATH="$WORK/bin:$PATH" \
   SCHEMA_ROOT_ATTRIBUTION_SOURCE_DIR="$FIXTURE" \

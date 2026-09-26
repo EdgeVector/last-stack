@@ -1,0 +1,505 @@
+{
+  "source_retention_policy": {
+    "ok": true,
+    "retention_policy": {
+      "ttl_seconds": 3600
+    },
+    "schema": "sraproof/SchemaB",
+    "user_hash": "4e011046288f6fe6b2214e5afb217bbb"
+  },
+  "source_molecule_a": {
+    "probe_body": "6ZgtlqdrsO13-a2oNPBzjoziJq7sN4HAVGbpt-FCD3Q",
+    "probe_id": "cG2PrWU0LBfEEphSgXzkRr6UbeVvDRI37d3bnlycqi8"
+  },
+  "shared_molecule_declare_status": 200,
+  "source_writes": [
+    {
+      "schema": "sraproof/SchemaA",
+      "key": "a1",
+      "kind": "create",
+      "status": 200
+    },
+    {
+      "schema": "sraproof/SchemaA",
+      "key": "a2",
+      "kind": "create",
+      "status": 200
+    },
+    {
+      "schema": "sraproof/SchemaB",
+      "key": "b1",
+      "kind": "create",
+      "status": 200
+    },
+    {
+      "schema": "sraproof/Orphan",
+      "key": "orphan",
+      "kind": "create",
+      "status": 200
+    },
+    {
+      "schema": "sraproof/SchemaA",
+      "key": "a1",
+      "kind": "update",
+      "status": 200
+    }
+  ],
+  "bootstrap_status": 200,
+  "inventory_before_concurrent": {
+    "inventory": {
+      "attribution": {
+        "objects": {
+          "derived_attributed": 0,
+          "retention_attributed": 1,
+          "schema_attributed": 2,
+          "system_attributed": 0,
+          "unattributed_residue": 0,
+          "unknown": 0
+        },
+        "path_rows": 16
+      },
+      "main_classes": [
+        {
+          "bytes": 2696,
+          "class": "molecule_per_key_index",
+          "keys": 8,
+          "prefix": "mk:{M}:\u2026 \u2014 current tip pointer per record key"
+        },
+        {
+          "bytes": 1233,
+          "class": "molecule_update_order_log",
+          "keys": 7,
+          "prefix": "mord:{M}:{seq} \u2014 append-only update order"
+        },
+        {
+          "bytes": 204,
+          "class": "molecule_header",
+          "keys": 2,
+          "prefix": "mh:{M} \u2014 molecule header"
+        }
+      ],
+      "main_total_bytes": 4133,
+      "main_total_keys": 17,
+      "notes": [
+        "main = single sled namespace holding atoms, molecule indexes, and history (not a schema itself).",
+        "Sizes are live key+value lengths (decrypted path when store is encrypting); sled freelist not included.",
+        "clear-history: keep_last=N trims; keep_last=0 purges all history: rows. New writes no longer append history: (prev is tip prev_atom_uuid). Tips/atoms kept; orphan atoms need gc-atoms.",
+        "schemaidx markers now live in the local-only schema_index namespace; main-tree schemaidx rows are legacy leftovers.",
+        "live dual-read for schemaidx: is indexes \u2192 tips only; legacy_schema_secondary_index is not consulted (explicit CoW drain still available).",
+        "All scanned mk: tips are thin (no per-tip signature/pubkey)."
+      ],
+      "per_schema_atoms": [
+        {
+          "atom_count": 5,
+          "bytes": 995,
+          "schema_name": "sraproof/SchemaA"
+        },
+        {
+          "atom_count": 2,
+          "bytes": 402,
+          "schema_name": "sraproof/Orphan"
+        },
+        {
+          "atom_count": 2,
+          "bytes": 397,
+          "schema_name": "sraproof/SchemaB"
+        }
+      ],
+      "per_schema_atoms_total_bytes": 1794,
+      "per_schema_history": [],
+      "per_schema_order_log": [
+        {
+          "order_count_bytes_approx": 96,
+          "order_count_keys": 2,
+          "order_log_bytes_approx": 0,
+          "order_log_entries": 0,
+          "schema_name": "sraproof/SchemaA"
+        },
+        {
+          "order_count_bytes_approx": 96,
+          "order_count_keys": 2,
+          "order_log_bytes_approx": 0,
+          "order_log_entries": 0,
+          "schema_name": "sraproof/SchemaB"
+        },
+        {
+          "order_count_bytes_approx": 96,
+          "order_count_keys": 2,
+          "order_log_bytes_approx": 0,
+          "order_log_entries": 0,
+          "schema_name": "sraproof/Orphan"
+        },
+        {
+          "order_count_bytes_approx": 96,
+          "order_count_keys": 2,
+          "order_log_bytes_approx": 0,
+          "order_log_entries": 0,
+          "schema_name": "sraproof/System"
+        },
+        {
+          "order_count_bytes_approx": 96,
+          "order_count_keys": 2,
+          "order_log_bytes_approx": 0,
+          "order_log_entries": 0,
+          "schema_name": "062510aae78ab88a944356130c0d757295df316f17a0b33ccf2eff835a0b8f7c"
+        }
+      ],
+      "tip_format": {
+        "fat_bytes_approx": 0,
+        "more_remaining": false,
+        "next_after_key": "mk:cG2PrWU0LBfEEphSgXzkRr6UbeVvDRI37d3bnlycqi8:ionkHM4NdSPfDqpmQLUQfA\u0000",
+        "thin_bytes_approx": 2696,
+        "tips_fat": 0,
+        "tips_scanned": 8,
+        "tips_thin": 8,
+        "tips_unreadable": 0
+      }
+    },
+    "ok": true,
+    "user_hash": "4e011046288f6fe6b2214e5afb217bbb"
+  },
+  "concurrent_write": {
+    "background_tasks_drained": false,
+    "convergence_pending": true,
+    "durability": "queued",
+    "mutation_id": "f0afa56a-849a-4bab-9162-adffba9fc724",
+    "ok": true,
+    "operations": {
+      "created": 1,
+      "deleted": 0,
+      "no_op": 0,
+      "total": 1,
+      "updated": 0
+    },
+    "resident_stages_us": {
+      "ack": 93825,
+      "gate_wait": 6,
+      "prepare": 631,
+      "publish": 121
+    },
+    "revision": 6,
+    "size": 13,
+    "success": true,
+    "user_hash": "4e011046288f6fe6b2214e5afb217bbb"
+  },
+  "event_delta": [
+    "00000000000000000006"
+  ],
+  "ledger_path_row_delta": 1,
+  "inventory_after_concurrent": {
+    "inventory": {
+      "attribution": {
+        "objects": {
+          "derived_attributed": 0,
+          "retention_attributed": 1,
+          "schema_attributed": 2,
+          "system_attributed": 0,
+          "unattributed_residue": 0,
+          "unknown": 0
+        },
+        "path_rows": 17
+      },
+      "main_classes": [
+        {
+          "bytes": 3370,
+          "class": "molecule_per_key_index",
+          "keys": 10,
+          "prefix": "mk:{M}:\u2026 \u2014 current tip pointer per record key"
+        },
+        {
+          "bytes": 1583,
+          "class": "molecule_update_order_log",
+          "keys": 9,
+          "prefix": "mord:{M}:{seq} \u2014 append-only update order"
+        },
+        {
+          "bytes": 204,
+          "class": "molecule_header",
+          "keys": 2,
+          "prefix": "mh:{M} \u2014 molecule header"
+        }
+      ],
+      "main_total_bytes": 5157,
+      "main_total_keys": 21,
+      "notes": [
+        "main = single sled namespace holding atoms, molecule indexes, and history (not a schema itself).",
+        "Sizes are live key+value lengths (decrypted path when store is encrypting); sled freelist not included.",
+        "clear-history: keep_last=N trims; keep_last=0 purges all history: rows. New writes no longer append history: (prev is tip prev_atom_uuid). Tips/atoms kept; orphan atoms need gc-atoms.",
+        "schemaidx markers now live in the local-only schema_index namespace; main-tree schemaidx rows are legacy leftovers.",
+        "live dual-read for schemaidx: is indexes \u2192 tips only; legacy_schema_secondary_index is not consulted (explicit CoW drain still available).",
+        "All scanned mk: tips are thin (no per-tip signature/pubkey)."
+      ],
+      "per_schema_atoms": [
+        {
+          "atom_count": 5,
+          "bytes": 995,
+          "schema_name": "sraproof/SchemaA"
+        },
+        {
+          "atom_count": 4,
+          "bytes": 800,
+          "schema_name": "sraproof/SchemaB"
+        },
+        {
+          "atom_count": 2,
+          "bytes": 402,
+          "schema_name": "sraproof/Orphan"
+        }
+      ],
+      "per_schema_atoms_total_bytes": 2197,
+      "per_schema_history": [],
+      "per_schema_order_log": [
+        {
+          "order_count_bytes_approx": 96,
+          "order_count_keys": 2,
+          "order_log_bytes_approx": 0,
+          "order_log_entries": 0,
+          "schema_name": "sraproof/SchemaB"
+        },
+        {
+          "order_count_bytes_approx": 96,
+          "order_count_keys": 2,
+          "order_log_bytes_approx": 0,
+          "order_log_entries": 0,
+          "schema_name": "sraproof/System"
+        },
+        {
+          "order_count_bytes_approx": 96,
+          "order_count_keys": 2,
+          "order_log_bytes_approx": 0,
+          "order_log_entries": 0,
+          "schema_name": "sraproof/SchemaA"
+        },
+        {
+          "order_count_bytes_approx": 96,
+          "order_count_keys": 2,
+          "order_log_bytes_approx": 0,
+          "order_log_entries": 0,
+          "schema_name": "sraproof/Orphan"
+        },
+        {
+          "order_count_bytes_approx": 96,
+          "order_count_keys": 2,
+          "order_log_bytes_approx": 0,
+          "order_log_entries": 0,
+          "schema_name": "062510aae78ab88a944356130c0d757295df316f17a0b33ccf2eff835a0b8f7c"
+        }
+      ],
+      "tip_format": {
+        "fat_bytes_approx": 0,
+        "more_remaining": false,
+        "next_after_key": "mk:cG2PrWU0LBfEEphSgXzkRr6UbeVvDRI37d3bnlycqi8:ionkHM4NdSPfDqpmQLUQfA\u0000",
+        "thin_bytes_approx": 3370,
+        "tips_fat": 0,
+        "tips_scanned": 10,
+        "tips_thin": 10,
+        "tips_unreadable": 0
+      }
+    },
+    "ok": true,
+    "user_hash": "4e011046288f6fe6b2214e5afb217bbb"
+  },
+  "delete_1": {
+    "background_tasks_drained": false,
+    "convergence_pending": true,
+    "durability": "queued",
+    "mutation_id": "5a4b52d3-6648-4c65-8d42-e8523f18f431",
+    "ok": true,
+    "operations": {
+      "created": 0,
+      "deleted": 1,
+      "no_op": 0,
+      "total": 1,
+      "updated": 0
+    },
+    "resident_stages_us": {
+      "ack": 0,
+      "gate_wait": 0,
+      "prepare": 0,
+      "publish": 0
+    },
+    "revision": 7,
+    "size": 14,
+    "success": true,
+    "user_hash": "4e011046288f6fe6b2214e5afb217bbb"
+  },
+  "delete_2": {
+    "background_tasks_drained": false,
+    "convergence_pending": true,
+    "durability": "queued",
+    "mutation_id": "fc52f875-26d6-4381-afe3-7f39b13e52e0",
+    "ok": true,
+    "operations": {
+      "created": 0,
+      "deleted": 1,
+      "no_op": 0,
+      "total": 1,
+      "updated": 0
+    },
+    "resident_stages_us": {
+      "ack": 0,
+      "gate_wait": 0,
+      "prepare": 0,
+      "publish": 0
+    },
+    "revision": 8,
+    "size": 14,
+    "success": true,
+    "user_hash": "4e011046288f6fe6b2214e5afb217bbb"
+  },
+  "schemas_status": 200,
+  "schemas": {
+    "count": 5,
+    "counts_included": false,
+    "full_included": false,
+    "identity_algo_version": 2,
+    "newer_identity_algo_count": 0,
+    "newer_identity_algo_schemas": [],
+    "ok": true,
+    "ready": true,
+    "retired_name_claim_count": 1,
+    "retired_name_claims": [
+      "sraproof/SchemaA"
+    ],
+    "schemas": [
+      {
+        "descriptive_name": "SchemaA",
+        "fields": [
+          "probe_id",
+          "probe_body"
+        ],
+        "has_data": null,
+        "identity_hash": "062510aae78ab88a944356130c0d757295df316f17a0b33ccf2eff835a0b8f7c",
+        "key": {
+          "hash_field": "probe_id",
+          "range_field": null
+        },
+        "name": "062510aae78ab88a944356130c0d757295df316f17a0b33ccf2eff835a0b8f7c",
+        "name_claim_retired": false,
+        "owner_app_id": "sraproof",
+        "purpose_statement": "throwaway schema-root attribution probe",
+        "record_count": null,
+        "schema_type": "Hash",
+        "source": "user",
+        "state": "Available"
+      },
+      {
+        "descriptive_name": "SchemaB",
+        "fields": [
+          "probe_id",
+          "probe_body"
+        ],
+        "has_data": null,
+        "identity_hash": "651b86e7556826c4f16e600b50ae60e8c6ee9922e4909b1d712d0ac2c239bcef",
+        "key": {
+          "hash_field": "probe_id",
+          "range_field": null
+        },
+        "name": "sraproof/SchemaB",
+        "name_claim_retired": false,
+        "owner_app_id": "sraproof",
+        "purpose_statement": "throwaway schema-root attribution probe",
+        "record_count": null,
+        "schema_type": "Hash",
+        "source": "user",
+        "state": "Available"
+      },
+      {
+        "descriptive_name": "System",
+        "fields": [
+          "probe_id",
+          "probe_body"
+        ],
+        "has_data": null,
+        "identity_hash": "2bdb87694335db524b29e8b6bebbb3a36d6799a5f8e37f82cbe03c346f4ddbdd",
+        "key": {
+          "hash_field": "probe_id",
+          "range_field": null
+        },
+        "name": "sraproof/System",
+        "name_claim_retired": false,
+        "owner_app_id": "sraproof",
+        "purpose_statement": "throwaway schema-root attribution probe",
+        "record_count": null,
+        "schema_type": "Hash",
+        "source": "system_seed",
+        "state": "Available"
+      },
+      {
+        "descriptive_name": "SchemaA",
+        "fields": [
+          "probe_id",
+          "probe_body"
+        ],
+        "has_data": null,
+        "identity_hash": "062510aae78ab88a944356130c0d757295df316f17a0b33ccf2eff835a0b8f7c",
+        "key": {
+          "hash_field": "probe_id",
+          "range_field": null
+        },
+        "name": "sraproof/SchemaA",
+        "name_claim_retired": true,
+        "owner_app_id": "sraproof",
+        "purpose_statement": "throwaway schema-root attribution probe",
+        "record_count": null,
+        "schema_type": "Hash",
+        "source": "user",
+        "state": "Available"
+      },
+      {
+        "descriptive_name": "Orphan",
+        "fields": [
+          "probe_id",
+          "probe_body"
+        ],
+        "has_data": null,
+        "identity_hash": "5af839794e26106be20529cc2656574877230fd2b09652397f6a573f25143b9a",
+        "key": {
+          "hash_field": "probe_id",
+          "range_field": null
+        },
+        "name": "sraproof/Orphan",
+        "name_claim_retired": false,
+        "owner_app_id": "sraproof",
+        "purpose_statement": "throwaway schema-root attribution probe",
+        "record_count": null,
+        "schema_type": "Hash",
+        "source": "user",
+        "state": "Available"
+      }
+    ],
+    "user_hash": "4e011046288f6fe6b2214e5afb217bbb"
+  },
+  "molecules": {
+    "sraproof/SchemaA": {
+      "probe_body": "6ZgtlqdrsO13-a2oNPBzjoziJq7sN4HAVGbpt-FCD3Q",
+      "probe_id": "cG2PrWU0LBfEEphSgXzkRr6UbeVvDRI37d3bnlycqi8"
+    },
+    "sraproof/SchemaB": {
+      "probe_body": "6ZgtlqdrsO13-a2oNPBzjoziJq7sN4HAVGbpt-FCD3Q",
+      "probe_id": "cG2PrWU0LBfEEphSgXzkRr6UbeVvDRI37d3bnlycqi8"
+    }
+  },
+  "restore_keys": {
+    "sraproof/SchemaA": [
+      "a2",
+      "a1",
+      "b2",
+      "b1"
+    ],
+    "sraproof/SchemaB": [
+      "a2",
+      "a1",
+      "b2",
+      "b1"
+    ],
+    "sraproof/Orphan": [
+      "a2",
+      "a1",
+      "b2",
+      "b1"
+    ]
+  },
+  "retention_proxy_per_schema_history_count": 0,
+  "system_proxy_schema_rows": 0
+}
