@@ -352,4 +352,98 @@ if printf '%s\n' "$out" | grep -q 'PICKUP_GATE_PROCEED'; then
   echo "case8 must not proceed when nothing is claimable"; echo "$out"; exit 1
 fi
 
+# Case 9-11: Situation claim-card fence on the repos of claimable ready cards.
+# Fake situations: EdgeVector/fold is BLOCKED (exit 3); EdgeVector/last-stack
+# is OK; EdgeVector/broken makes the CLI fail (exit 1 -> repo stays open).
+cat >"$tmp/path/situations" <<'S'
+#!/bin/sh
+case "$*" in
+  *"--repo EdgeVector/fold"*)
+    echo "BLOCKED: claim-card by pc-gaming-pause-x"
+    echo "  paused"
+    exit 3 ;;
+  *"--repo EdgeVector/broken"*)
+    echo "socket unreachable" >&2
+    exit 1 ;;
+esac
+echo "OK"
+exit 0
+S
+chmod +x "$tmp/path/situations"
+export LAST_STACK_SITUATIONS_BIN="$tmp/path/situations"
+
+# Case 9: every claimable card is in a blocked repo -> skip, never proceed.
+cat >"$tmp/path/kanban" <<'S'
+#!/bin/sh
+if [ "$1" = pickup ] && [ "$2" = ready ]; then
+  printf '%s\n' '{"scanned":3,"ready":2,"claimable":2,"fenced":[],"counts":{"pickup-ready":2},"cards":[{"slug":"f1","ready":true,"repo":"EdgeVector/fold"},{"slug":"f2","ready":true,"repo":"EdgeVector/fold"},{"slug":"n","ready":false,"repo":"EdgeVector/last-stack"}]}'
+  exit 0
+fi
+exit 1
+S
+chmod +x "$tmp/path/kanban"
+set +e
+out="$("$GATE" 2>&1)"
+rc=$?
+set -e
+test "$rc" -eq 0 || { echo "case9 expected rc=0 got $rc"; echo "$out"; exit 1; }
+printf '%s\n' "$out" | grep -q 'noop situation-blocked ready=2 repos=EdgeVector/fold situations=pc-gaming-pause-x' \
+  || { echo "case9 missing situation-blocked heartbeat"; echo "$out"; exit 1; }
+if printf '%s\n' "$out" | grep -q 'PICKUP_GATE_PROCEED'; then
+  echo "case9 must not proceed when every repo is blocked"; echo "$out"; exit 1
+fi
+
+# Case 10: one blocked repo and one open repo -> proceed, and name the block.
+# A fenced card in an open repo does not count as open.
+cat >"$tmp/path/kanban" <<'S'
+#!/bin/sh
+if [ "$1" = pickup ] && [ "$2" = ready ]; then
+  printf '%s\n' '{"scanned":3,"ready":2,"claimable":2,"fenced":[],"counts":{"pickup-ready":2},"cards":[{"slug":"f1","ready":true,"repo":"EdgeVector/fold"},{"slug":"l1","ready":true,"repo":"EdgeVector/last-stack"}]}'
+  exit 0
+fi
+exit 1
+S
+chmod +x "$tmp/path/kanban"
+set +e
+out="$("$GATE" 2>&1)"
+rc=$?
+set -e
+test "$rc" -eq 10 || { echo "case10 expected rc=10 got $rc"; echo "$out"; exit 1; }
+printf '%s\n' "$out" | grep -q 'PICKUP_GATE situation_blocked repos=EdgeVector/fold' \
+  || { echo "case10 missing situation_blocked line"; echo "$out"; exit 1; }
+
+cat >"$tmp/path/kanban" <<'S'
+#!/bin/sh
+if [ "$1" = pickup ] && [ "$2" = ready ]; then
+  printf '%s\n' '{"scanned":3,"ready":2,"claimable":1,"fenced":[{"slug":"l1","peers":["p"]}],"counts":{"pickup-ready":2},"cards":[{"slug":"f1","ready":true,"repo":"EdgeVector/fold"},{"slug":"l1","ready":true,"repo":"EdgeVector/last-stack"}]}'
+  exit 0
+fi
+exit 1
+S
+chmod +x "$tmp/path/kanban"
+set +e
+out="$("$GATE" 2>&1)"
+rc=$?
+set -e
+test "$rc" -eq 0 || { echo "case10b expected rc=0 got $rc"; echo "$out"; exit 1; }
+printf '%s\n' "$out" | grep -q 'noop situation-blocked' \
+  || { echo "case10b fenced open-repo card must not count as open"; echo "$out"; exit 1; }
+
+# Case 11: the situations CLI fails (not exit 3) -> the repo stays open.
+cat >"$tmp/path/kanban" <<'S'
+#!/bin/sh
+if [ "$1" = pickup ] && [ "$2" = ready ]; then
+  printf '%s\n' '{"scanned":1,"ready":1,"claimable":1,"fenced":[],"counts":{"pickup-ready":1},"cards":[{"slug":"b1","ready":true,"repo":"EdgeVector/broken"}]}'
+  exit 0
+fi
+exit 1
+S
+chmod +x "$tmp/path/kanban"
+set +e
+out="$("$GATE" 2>&1)"
+rc=$?
+set -e
+test "$rc" -eq 10 || { echo "case11 expected rc=10 got $rc"; echo "$out"; exit 1; }
+unset LAST_STACK_SITUATIONS_BIN
+
 echo ok

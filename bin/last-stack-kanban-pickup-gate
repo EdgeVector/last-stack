@@ -330,6 +330,72 @@ if [ "$claimable" = "0" ]; then
   exit 0
 fi
 
+# Situation claim-card fence. On 2026-09-26 a pickup claimed a fold card 5 min
+# after Situation pc-gaming-pause-fold-work-until-20260926t0900z blocked
+# `claim-card` for EdgeVector/fold: nothing on the pickup path ran
+# `situations preflight`. Preflight each distinct repo of the claimable ready
+# cards once. Only exit 3 (BLOCKED / human clearance) fences a repo; any other
+# failure of the situations CLI leaves the repo open, the same as before this
+# check. When every claimable card's repo is fenced, skip with its own token.
+situations_bin="${LAST_STACK_SITUATIONS_BIN:-}"
+if [ -z "$situations_bin" ]; then
+  situations_bin="$(command -v situations 2>/dev/null || true)"
+fi
+if [ -z "$situations_bin" ] && [ -x "$HOME/.local/bin/situations" ]; then
+  situations_bin="$HOME/.local/bin/situations"
+fi
+candidate_repos="$(jq -r '
+  ([.fenced[]?.slug] ) as $f
+  | [.cards[]? | select(.ready == true and ((.slug // "") as $s | ($f | index($s)) == null)) | (.repo // "")]
+  | unique | .[]
+' "$tmp_status" 2>/dev/null || true)"
+if [ -n "$situations_bin" ] && [ -n "$candidate_repos" ]; then
+  open_repos=0
+  blocked_repos=""
+  blocked_by=""
+  repo_checks=0
+  while IFS= read -r repo; do
+    if [ -z "$repo" ]; then
+      # A card with no Repo: header cannot be fenced by repo scope.
+      open_repos=$((open_repos + 1))
+      continue
+    fi
+    repo_checks=$((repo_checks + 1))
+    if [ "$repo_checks" -gt 8 ]; then
+      open_repos=$((open_repos + 1))
+      continue
+    fi
+    set +e
+    # Not run_board_capped: it re-runs any non-zero exit, and exit 3 is the
+    # answer here, not a flap.
+    if [ -n "$timeout_bin" ]; then
+      pf_out="$("$timeout_bin" -k 3s 15s "$situations_bin" preflight --action claim-card --repo "$repo" 2>&1)"
+    else
+      pf_out="$("$situations_bin" preflight --action claim-card --repo "$repo" 2>&1)"
+    fi
+    pf_rc=$?
+    set -e
+    if [ "$pf_rc" -eq 3 ]; then
+      blocked_repos="${blocked_repos:+$blocked_repos,}${repo}"
+      sit="$(printf '%s\n' "$pf_out" | sed -n 's/^BLOCKED: claim-card by \([^ ]*\).*/\1/p' | head -1)"
+      blocked_by="${blocked_by:+$blocked_by,}${sit:-unknown}"
+    else
+      open_repos=$((open_repos + 1))
+    fi
+  done <<EOF_REPOS
+$candidate_repos
+EOF_REPOS
+  if [ -n "$blocked_repos" ]; then
+    printf 'PICKUP_GATE situation_blocked repos=%s situations=%s\n' "$blocked_repos" "$blocked_by"
+  fi
+  if [ -n "$blocked_repos" ] && [ "$open_repos" -eq 0 ]; then
+    detail="situation-blocked ready=${ready_i} repos=${blocked_repos} situations=${blocked_by} no_card_claimed"
+    hb "kanban-pickup $(iso_now) noop ${detail}"
+    trailer_noop "$detail"
+    exit 0
+  fi
+fi
+
 printf 'PICKUP_GATE proceed ready=%s claimable=%s\n' "$ready_i" "${claimable:-unknown}"
 printf 'PICKUP_GATE_PROCEED ready=%s\n' "$ready_i"
 exit 10
