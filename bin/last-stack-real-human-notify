@@ -66,10 +66,17 @@ def load_lines(path: Path) -> list[dict[str, Any]]:
 
     lines: list[dict[str, Any]] = []
     bucket = ""
+    section_index = 0
     for text_line in raw.splitlines():
+        is_any_heading = re.match(r"^#{1,3}\s+", text_line)
         m = re.match(r"^#{1,3}\s+(REAL_HUMAN|NOT_A_BLOCKER|NEEDS_RECOMMENDATION)\b", text_line)
-        if m:
-            bucket = m.group(1)
+        if is_any_heading:
+            if m:
+                bucket = m.group(1)
+                section_index += 1
+            else:
+                bucket = ""
+                section_index = 0
             continue
         kv = re.match(
             r"(?i)^\s*(?:-\s*)?(?:`)?([a-z0-9][a-z0-9._-]*)(?:`)?\s*\|"
@@ -103,6 +110,7 @@ def load_lines(path: Path) -> list[dict[str, Any]]:
                     "status": status_m.group(1) if status_m else "open",
                     "actionable": act_m.group(1) if act_m else "yes",
                     "text": rest or bullet.group(1),
+                    "_section": section_index,
                 }
             )
     return lines

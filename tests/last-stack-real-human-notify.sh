@@ -113,4 +113,23 @@ if [ -f "$ESCALATE" ]; then
     || { echo "escalate MCP must still say it does not notify"; exit 1; }
 fi
 
+# Multiple REAL_HUMAN headings must each have their own bucket scope.
+cat >"$tmp/multi.md" <<'MULTI'
+### REAL_HUMAN
+- item-one — status=open actionable=yes
+- item-two — status=open actionable=yes
+
+### REAL_HUMAN
+- item-three — status=open actionable=yes
+MULTI
+python3 "$BIN" --input "$tmp/multi.md" --json >"$tmp/multi.json"
+python3 - "$tmp/multi.json" <<'PY'
+import json, sys
+r = json.load(open(sys.argv[1]))
+assert r["paged_count"] == 3, f"Expected 3 paged, got {r['paged_count']}"
+slugs = [p["slug"] for p in r["paged"]]
+assert slugs == ["item-one", "item-two", "item-three"], f"Got slugs {slugs}"
+print("Multiple REAL_HUMAN headings parse correctly into separate buckets")
+PY
+
 echo "last-stack-real-human-notify tests ok"
