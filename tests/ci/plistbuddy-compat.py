@@ -90,6 +90,15 @@ def main(argv):
             container[int(key)] = " ".join(words[2:])
         else:
             container[key] = " ".join(words[2:])
+    elif verb == "Delete" and len(words) == 2:
+        container, key = parent(root, path_parts(words[1]))
+        try:
+            if isinstance(container, list):
+                del container[int(key)]
+            else:
+                del container[key]
+        except (KeyError, IndexError, ValueError):
+            die(f"Delete: entry does not exist: {words[1]}")
     else:
         die(f"unsupported command: {argv[2]}")
     with open(argv[3], "wb") as destination:

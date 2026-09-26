@@ -3,6 +3,7 @@
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
+. "$ROOT/tests/ci/pid-is-live.sh"
 GATE="$ROOT/skills/lastdb-safe-upgrade/scripts/dev-photograph-stamp-gate.sh"
 DRIVER="$ROOT/skills/lastdb-safe-upgrade/scripts/safe-upgrade-lastdb.sh"
 PROOF="$ROOT/skills/lastdb-safe-upgrade/scripts/dev-photograph-candidate-proof.sh"
@@ -736,7 +737,7 @@ fi
 # evidence cleanup, and failed at 11s despite the one-second deadline working.
 [ -s "$PROOF_SNAPSHOT_PID_FILE" ] || fail "timed-out snapshot never started"
 [ ! -e "$PROOF_SNAPSHOT_LATE_MARKER" ] || fail "snapshot exceeded its ten-second bound"
-if kill -0 "$(cat "$PROOF_SNAPSHOT_PID_FILE")" 2>/dev/null; then
+if pid_is_live "$(cat "$PROOF_SNAPSHOT_PID_FILE")"; then
   fail "timed-out snapshot process remains alive"
 fi
 [ ! -e "$PROOF_CASE_RECEIPT" ] \

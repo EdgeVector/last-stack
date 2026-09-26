@@ -17,6 +17,7 @@ unset LOOM_LIVE LOOM_CANARY_LIVE LOOM_CANARY_RED_LIVE \
   LASTDB_DEV_STAMP_RECEIPT || true
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+. "$ROOT/tests/ci/pid-is-live.sh"
 FRESH="$ROOT/lib/canary-loom/lastdb-candidate-freshness.py"
 STEP="$ROOT/lib/canary-loom/loom-safe-upgrade-step.sh"
 GRAPH="$ROOT/lib/canary-loom/lastdb-safe-upgrade.json"
@@ -508,7 +509,7 @@ timeout_ceiling=$(( timeout_budget_floor * 4 ))
   || fail "TERM did not let the driver remove its owned CoW residue"
 [ -s "$timeout_pid_file" ] || fail "timeout fixture did not start its stubborn child"
 timeout_child_pid="$(cat "$timeout_pid_file")"
-if kill -0 "$timeout_child_pid" 2>/dev/null; then
+if pid_is_live "$timeout_child_pid"; then
   fail "bounded timeout left a driver descendant alive"
 fi
 
@@ -545,7 +546,7 @@ printf '%s\n' "$signal_gap_out" \
   || fail "Popen signal seam skipped the driver cleanup trap"
 [ -s "$signal_gap_pid_file" ] \
   || fail "Popen signal seam did not start the stubborn descendant"
-if kill -0 "$(cat "$signal_gap_pid_file")" 2>/dev/null; then
+if pid_is_live "$(cat "$signal_gap_pid_file")"; then
   fail "Popen signal seam left a detached driver descendant alive"
 fi
 
@@ -591,7 +592,7 @@ grep -q 'forwarded the signal and reaped the isolated driver group' "$cancel_out
 [ ! -e "$cancel_residue" ] \
   || fail "external TERM did not let the driver cleanup trap run"
 cancel_child_pid="$(cat "$cancel_pid_file")"
-if kill -0 "$cancel_child_pid" 2>/dev/null; then
+if pid_is_live "$cancel_child_pid"; then
   fail "external TERM left a detached driver descendant alive"
 fi
 
@@ -808,7 +809,7 @@ run_cutover_recovery_case() {
   [ -s "$cutover_emergency_pid_file" ] \
     || fail "CUTOVER recovery case $exec_id did not start the nohup fallback"
   emergency_pid="$(cat "$cutover_emergency_pid_file")"
-  if kill -0 "$emergency_pid" 2>/dev/null; then
+  if pid_is_live "$emergency_pid"; then
     fail "CUTOVER recovery case $exec_id left its nohup fallback alive"
   fi
   cat "$case_out"
@@ -910,7 +911,7 @@ grep -q 'CUTOVER_TIMEOUT_RECOVERY=green' "$cutover_signal_out" \
   && grep -q 'wrapper received signal 15' "$cutover_signal_out" \
   && grep -q 'bounded supervisor recovery succeeded' "$cutover_signal_out" \
   || fail "CUTOVER external TERM did not complete bounded recovery"
-if kill -0 "$(cat "$cutover_emergency_pid_file")" 2>/dev/null; then
+if pid_is_live "$(cat "$cutover_emergency_pid_file")"; then
   fail "CUTOVER external TERM left its nohup fallback alive"
 fi
 cmp -s "$cutover_old/lastdbd" "$cutover_live/lastdbd" \

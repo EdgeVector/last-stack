@@ -18,7 +18,7 @@ usage() {
   cat <<'EOF'
 Usage: last-stack-ci-superseded --repo OWNER/REPO --pr N --sha SHA
 
-Env: FORGE_ROOT (default: GITHUB_SERVER_URL with host.docker.internal -> localhost,
+Env: FORGE_ROOT (default: GITHUB_SERVER_URL, with host.docker.internal -> localhost on macOS,
      else http://localhost:3300), FORGE_TOKEN (required).
 Exit 0 superseded, 1 current, 2 unknown. Fail-open: callers run the gate on 1 and 2.
 EOF
@@ -41,7 +41,10 @@ if [ -z "${FORGE_TOKEN:-}" ]; then echo "superseded-check: unknown (no FORGE_TOK
 command -v jq >/dev/null 2>&1 || { echo "superseded-check: unknown (no jq)"; exit 2; }
 
 root="${FORGE_ROOT:-${GITHUB_SERVER_URL:-http://localhost:3300}}"
-root="${root//host.docker.internal/localhost}"
+# The Mac host runner hands jobs host.docker.internal, which only resolves in
+# a Docker job; on the Mac host itself the forge is localhost. A PC container
+# job must keep host.docker.internal, so rewrite only on macOS.
+if [ "$(uname -s)" = "Darwin" ]; then root="${root//host.docker.internal/localhost}"; fi
 root="${root%/}"
 
 body="$(curl -sS --max-time 20 -H "Authorization: token $FORGE_TOKEN" -H "Accept: application/json" \

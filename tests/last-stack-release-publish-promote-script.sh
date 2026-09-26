@@ -43,7 +43,11 @@ git -C "$mirror" fetch --quiet origin
 export LAST_STACK_FOLD_GIT_MIRROR="$mirror"
 
 # Upstream main moves on; the resolver must fetch it (not read the stale ref).
-sed -i '' 's/promote v1/promote v2/' "$work/scripts/release/forge-promote-homebrew-stable.sh"
+# Portable in-place edit: BSD and GNU sed disagree on -i. cat > keeps the mode.
+promote_script="$work/scripts/release/forge-promote-homebrew-stable.sh"
+sed 's/promote v1/promote v2/' "$promote_script" > "$promote_script.new"
+cat "$promote_script.new" > "$promote_script"
+rm -f "$promote_script.new"
 git -C "$work" commit --quiet -am v2
 git -C "$work" push --quiet "$upstream" HEAD:refs/heads/main
 v2="$(git -C "$work" rev-parse HEAD)"
