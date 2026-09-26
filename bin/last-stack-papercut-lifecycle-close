@@ -27,6 +27,10 @@ TRANSIENT_ERRORS = (
 )
 LASTGIT_RE = re.compile(r"\blastgit://([^/\s)>\]]+)/cr/([^/\s)>\]]+)")
 FORGE_RE = re.compile(r"https?://[^/\s)>\]]+/([^/\s)>\]]+)/([^/\s)>\]]+)/pulls?/(\d+)")
+# A merged PR repairs a papercut only when it says so on a labeled line. A
+# bare mention is not a repair claim: PR bodies cite papercuts as context
+# (papercut-lifecycle-closer-treats-incident-pr-as-fix-20260925).
+REPAIR_LINE_RE = re.compile(r"(?im)^[ \t>*-]*(?:papercut|papercuts|fixes|fixed|closes|resolves)[ \t]*:(?P<rest>.*)$")
 GITHUB_RE = re.compile(r"https?://github\.com/([^/\s)>\]]+)/([^/\s)>\]]+)/pull/(\d+)")
 PIPELINE_STUCK_SLUG_RE = re.compile(r"^papercut-pipeline-stuck-(cr|forge|pr|merges)-")
 # `pipeline-health` also files an AGGREGATE row per repo (`...-merges-<repo>`,
@@ -893,6 +897,48 @@ def review_refs(body: str, slug: str = "") -> tuple[list[ReviewRef], list[str]]:
     return refs, skips
 
 
+def names_repair(text: str, slug: str) -> bool:
+    """True when a labeled repair line names exactly this slug."""
+    token = re.compile(r"(?<![a-z0-9-])" + re.escape(slug) + r"(?![a-z0-9-])")
+    return any(token.search(m.group("rest")) for m in REPAIR_LINE_RE.finditer(text))
+
+
+def search_repair_prs(args: argparse.Namespace, slug: str) -> list[ReviewRef]:
+    """Merged forge PRs whose body carries a labeled repair line for `slug`.
+
+    The papercut body is not the only place a repair is recorded. A reconciler
+    card lists `Papercut: <slug>` for each member, and a Loom PR body carries
+    the card body, so the PR names the papercut while the papercut never names
+    the PR. Before this, every such papercut skipped `no-review-ref` and stayed
+    open after its fix merged (papercut-card-merge-does-not-close-its-named-papercuts-20260926).
+    The forge search is fuzzy, so each hit is re-checked for the exact slug on
+    a labeled line.
+    """
+    if not getattr(args, "forge_search", True):
+        return []
+    data = run_json(
+        [args.forge_api_bin, f"repos/issues/search?q={slug}&type=pulls&state=closed&limit=10"],
+        timeout=30,
+    )
+    refs: list[ReviewRef] = []
+    for item in data if isinstance(data, list) else []:
+        if not isinstance(item, dict):
+            continue
+        pr = item.get("pull_request") or {}
+        if not isinstance(pr, dict) or not pr.get("merged"):
+            continue
+        if not names_repair(f"{item.get('title') or ''}\n{item.get('body') or ''}", slug):
+            continue
+        full = str((item.get("repository") or {}).get("full_name") or "")
+        owner, _, repo = full.partition("/")
+        num = str(item.get("number") or "")
+        if not owner or not repo or not num.isdigit():
+            continue
+        url = str(item.get("html_url") or f"forge:{full}#{num}")
+        refs.append(ReviewRef("forge", url, repo, num, owner))
+    return refs
+
+
 def is_absent_ref_error(text: str) -> bool:
     """The venue answered, and it does not have this review.
 
@@ -1154,8 +1200,23 @@ def close_review_records(args: argparse.Namespace, iso: str) -> dict[str, Any]:
         if agg_repo:
             refs = aggregate_review_refs(body, agg_repo, owner_name or "EdgeVector")
             ref_skips = []
+        searched = False
+        search_error = ""
+        if not refs and not ref_skips and not agg_repo:
+            # Best effort: a failed search leaves the old no-review-ref skip.
+            try:
+                refs = search_repair_prs(args, slug)
+            except BudgetExhausted:
+                result["skipped"].append({"slug": slug, "reason": "budget-exhausted"})
+                return result
+            except Exception as exc:
+                search_error = str(exc)[:200]
+                refs = []
+            searched = bool(refs)
         if not refs:
             entry: dict[str, Any] = {"slug": slug, "reason": "no-review-ref"}
+            if search_error:
+                entry["forge_search_error"] = search_error
             if ref_skips:
                 entry["reason"] = "unresolved-review-ref"
                 entry["details"] = ref_skips
@@ -1186,6 +1247,8 @@ def close_review_records(args: argparse.Namespace, iso: str) -> dict[str, Any]:
                 result["errors"].append({"slug": slug, "ref": ref.url, "error": str(exc)})
                 continue
             last_state = state
+            if searched:
+                detail += " (PR carries a labeled repair line for this papercut)"
             if state == "merged" or (state == "closed" and closed_is_terminal):
                 try:
                     close_record(args, record, ref, detail, iso, state=state)
@@ -1286,6 +1349,12 @@ def main() -> int:
     parser.add_argument("--lastgit-bin", default="lastgit")
     parser.add_argument("--forge-api-bin", default="last-stack-forge-api")
     parser.add_argument("--gh-bin", default="gh")
+    parser.add_argument(
+        "--no-forge-search",
+        action="store_false",
+        dest="forge_search",
+        help="do not search merged forge PRs for a labeled repair line when a papercut names no review",
+    )
     parser.add_argument("--ledger-slug", default="papercut-reconciler-ledger")
     args = parser.parse_args()
 
