@@ -916,7 +916,11 @@ clone_probe_home() {
   mkdir -p "$PROBE_ROOT"
   copy="$PROBE_ROOT/mp-${label}-$$"
   rm -rf "$copy"
-  cp -cR "$PRIMARY_HOME" "$copy" 2>/dev/null || true
+  if stat --version >/dev/null 2>&1; then
+    cp -R "$PRIMARY_HOME" "$copy" 2>/dev/null || true
+  else
+    cp -cR "$PRIMARY_HOME" "$copy" 2>/dev/null || true
+  fi
   if [ ! -d "$copy" ] || [ ! -f "$copy/identity.key" ] || [ ! -d "$copy/data" ]; then
     warn "$label metrics probe: CoW clone incomplete"
     rm -rf "$copy" 2>/dev/null || true
@@ -1848,13 +1852,17 @@ else
   # fall back to a full rsync copy: upgrade safety must not buy itself with disk.
   log "STEP 1/4: ephemeral CoW rollback point → $BACKUP"
   set +e
-  cp -cR "$PRIMARY_HOME" "$BACKUP" 2>"$WORK/rollback-clone.err"
+  if stat --version >/dev/null 2>&1; then
+    cp -R "$PRIMARY_HOME" "$BACKUP" 2>"$WORK/rollback-clone.err"
+  else
+    cp -cR "$PRIMARY_HOME" "$BACKUP" 2>"$WORK/rollback-clone.err"
+  fi
   CP_RC=$?
   set -e
   backup_essentials_ok "$BACKUP" \
     || die "CoW rollback clone incomplete (cp exit=$CP_RC); refusing full-copy fallback; see $WORK/rollback-clone.err"
   ROLLBACK_READY=1
-  log "rollback: APFS clone ready (cp -cR exit=$CP_RC; live sockets/vanished blobs tolerated)"
+  log "rollback: CoW clone ready (cp exit=$CP_RC; live sockets/vanished blobs tolerated)"
   if [ "$CP_RC" -ne 0 ] && [ -s "$WORK/rollback-clone.err" ]; then
     log "rollback: non-fatal cp notes (first 5 lines):"
     head -5 "$WORK/rollback-clone.err" | while IFS= read -r line; do log "  $line"; done

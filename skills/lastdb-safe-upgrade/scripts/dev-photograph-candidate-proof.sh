@@ -388,10 +388,10 @@ file_fingerprint() {
 # Clone the static rollback point that step 1 already created. Do not race a
 # second walk of the live primary after the normal probe bars.
 FAILURE_PHASE="clone_rollback"
-if [ "$(uname -s)" = "Darwin" ]; then
-  cp -cR "$CLONE_SOURCE" "$COW_HOME" >/dev/null 2>&1
+if stat --version >/dev/null 2>&1; then
+  cp -R "$CLONE_SOURCE" "$COW_HOME" >/dev/null 2>&1
 else
-  cp -a "$CLONE_SOURCE" "$COW_HOME" >/dev/null 2>&1
+  cp -cR "$CLONE_SOURCE" "$COW_HOME" >/dev/null 2>&1
 fi \
   || proof_die "the static rollback point cannot create the DEV proof CoW"
 [ -d "$COW_HOME/data" ] \
