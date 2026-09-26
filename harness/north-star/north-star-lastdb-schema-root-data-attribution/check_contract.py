@@ -14,6 +14,7 @@ from pathlib import Path
 
 EVIDENCE_SCHEMA = "lastdb-schema-root-data-attribution-proof.v1"
 UTC_FMT = "%Y-%m-%dT%H:%M:%SZ"
+CARD_SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 STRING_RE = re.compile(r'"(?:\\.|[^"\\])*"')
 BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.S)
 LINE_COMMENT_RE = re.compile(r"//.*?$", re.M)
@@ -452,6 +453,11 @@ def evidence_failures(path):
     require_count(restore, "schema_attributed_objects", 2, None, failures)
     require_count(restore, "retention_attributed_objects", 1, None, failures)
     require_count(restore, "system_attributed_objects", 1, None, failures)
+    if restore.get("system_attributed_objects") == 0:
+        follow_up = data.get("follow_up")
+        card = follow_up.get("system_attribution_card") if isinstance(follow_up, dict) else None
+        if not isinstance(card, str) or CARD_SLUG_RE.fullmatch(card) is None:
+            failures.append("The zero system attribution fallback does not name a filed Fold card.")
     require_count(restore, "shared_atom_schema_paths", 2, None, failures)
     require_count(writes, "concurrent_write_source_events", None, 1, failures)
     require_count(writes, "concurrent_write_attribution_paths", None, 1, failures)

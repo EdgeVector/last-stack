@@ -5,8 +5,8 @@ Boots lastdbd on a new directory under /tmp. Copies that home only after the
 source daemon has stopped. Never opens ~/.lastdb or ~/.folddb. Never deletes
 from the source home. Never runs a production cutover.
 
-The evidence JSON is json.dump of values read from command output. This file
-does not embed a finished evidence document.
+The evidence JSON is json.dump of values read from command output. A zero
+system-attribution result can also name the filed Fold follow-up card.
 """
 
 import argparse
@@ -29,6 +29,7 @@ SCHEMA_B = NAMESPACE + "/SchemaB"
 SCHEMA_ORPHAN = NAMESPACE + "/Orphan"
 SCHEMA_SYSTEM = NAMESPACE + "/System"
 ROOTED = (SCHEMA_A, SCHEMA_B)
+CARD_SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 class MeasureError(RuntimeError):
@@ -365,7 +366,11 @@ def attribution_summary(inventory_response):
     return objects, nonnegative_int(attribution.get("path_rows"))
 
 
-def measure(lastdbd, work):
+def valid_card_slug(value):
+    return isinstance(value, str) and CARD_SLUG_RE.fullmatch(value) is not None
+
+
+def measure(lastdbd, work, system_attribution_follow_up=None):
     work = Path(work)
     assert_not_primary(work)
     source = work / "source"
@@ -585,6 +590,11 @@ def measure(lastdbd, work):
             "later_write_inline_size_before_response": inline_size_before_response,
         },
     }
+    if system == 0:
+        # This link records the fallback owner. It does not change a measured fact.
+        evidence["follow_up"] = {
+            "system_attribution_card": system_attribution_follow_up,
+        }
     raw = json.dumps(evidence, indent=2, sort_keys=True) + "\n"
     scrub_text(raw)
     return evidence, trace
@@ -605,6 +615,7 @@ def main():
     parser.add_argument("--trace", type=Path)
     parser.add_argument("--work", type=Path)
     parser.add_argument("--lastdbd", default=shutil.which("lastdbd") or "lastdbd")
+    parser.add_argument("--system-attribution-follow-up")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -619,7 +630,9 @@ def main():
     work = args.work or Path("/tmp") / ("sra-measure-%s" % os.getpid())
     work.mkdir(parents=True, exist_ok=True)
     assert_not_primary(work)
-    evidence, trace = measure(args.lastdbd, work)
+    if args.system_attribution_follow_up and not valid_card_slug(args.system_attribution_follow_up):
+        raise MeasureError("--system-attribution-follow-up must be a card slug")
+    evidence, trace = measure(args.lastdbd, work, args.system_attribution_follow_up)
     args.out.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if args.trace:
         args.trace.write_text(json.dumps(trace, indent=2, default=str) + "\n", encoding="utf-8")

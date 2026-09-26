@@ -70,6 +70,10 @@ if module.nonnegative_int(write.get("size")) != 42:
     raise SystemExit("measure.py did not read the inline mutation size")
 if module.nonnegative_int(True) is not None:
     raise SystemExit("measure.py accepted a boolean as an integer")
+if not module.valid_card_slug("lastdb-system-attribution-isolated-harness-setup-20260926"):
+    raise SystemExit("measure.py rejected the system attribution follow-up card slug")
+if module.valid_card_slug("not a card slug"):
+    raise SystemExit("measure.py accepted an invalid card slug")
 PY
 
 "$RUNNER" --list | grep -qx 'north-star-lastdb-schema-root-data-attribution' ||
@@ -129,6 +133,30 @@ data = json.loads(open(good, encoding="utf-8").read())
 data["surface"]["home_path"] = "/tmp/schema-root-proof/.lastdb"
 json.dump(data, open(primary, "w", encoding="utf-8"))
 json.dump({"schema": "lastdb-schema-root-data-attribution-proof.v1", "ok": True}, open(booleans, "w", encoding="utf-8"))
+PY
+
+python3 - "$CHECK" "$WORK/good.json" "$WORK/system-zero-no-card.json" "$WORK/system-zero-card.json" <<'PY'
+import importlib.util
+import json
+import sys
+
+check_path, good_path, no_card_path, card_path = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("schema_root_check", check_path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+data = json.load(open(good_path, encoding="utf-8"))
+data["restore"]["system_attributed_objects"] = 0
+json.dump(data, open(no_card_path, "w", encoding="utf-8"))
+failures = module.evidence_failures(__import__("pathlib").Path(no_card_path))
+if "The zero system attribution fallback does not name a filed Fold card." not in failures:
+    raise SystemExit("zero system attribution did not require a Fold follow-up card")
+data["follow_up"] = {
+    "system_attribution_card": "lastdb-system-attribution-isolated-harness-setup-20260926"
+}
+json.dump(data, open(card_path, "w", encoding="utf-8"))
+failures = module.evidence_failures(__import__("pathlib").Path(card_path))
+if "The zero system attribution fallback does not name a filed Fold card." in failures:
+    raise SystemExit("a filed system attribution follow-up card was rejected")
 PY
 
 mkdir -p "$WORK/bin" "$WORK/home/.lastdb"
@@ -211,11 +239,14 @@ import sys
 evidence_path, trace_path = sys.argv[1:]
 evidence = json.load(open(evidence_path, encoding="utf-8"))
 trace = json.load(open(trace_path, encoding="utf-8"))
+expected_card = "lastdb-system-attribution-isolated-harness-setup-20260926"
 before = trace["inventory_before_concurrent"]["inventory"]["attribution"]
 after = trace["inventory_after_concurrent"]["inventory"]["attribution"]
 write = trace["concurrent_write"]
 if evidence["restore"]["system_attributed_objects"] != after["objects"]["system_attributed"]:
     raise SystemExit("the committed trace does not support the system attribution fallback")
+if evidence.get("follow_up", {}).get("system_attribution_card") != expected_card:
+    raise SystemExit("the committed evidence does not name the filed system attribution follow-up card")
 if after["path_rows"] - before["path_rows"] != evidence["writes"]["concurrent_write_attribution_paths"]:
     raise SystemExit("the committed trace does not support the path-row measurement")
 if not isinstance(write.get("size"), int) or write["size"] <= 0:

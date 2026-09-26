@@ -5,6 +5,9 @@
     "second_scrub_extra_deletes": 0,
     "source_digest_unchanged": true
   },
+  "follow_up": {
+    "system_attribution_card": "lastdb-system-attribution-isolated-harness-setup-20260926"
+  },
   "restore": {
     "retention_attributed_objects": 1,
     "schema_attributed_objects": 4,
