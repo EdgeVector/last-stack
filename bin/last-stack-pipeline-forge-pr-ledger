@@ -36,6 +36,11 @@ This helper replaces both:
            heartbeat as `green_unarmed=` and in the actions as
            `action=green-unarmed`, and no row is written. Its owner is the
            card's `needs_human` decision, not this ledger. See merge_intent().
+           This only applies when the repo is not policy-held: an unarmed
+           green PR on a repo a Situation blocks for merge-pr is
+           `policy-blocked` instead, same as an armed one, so `policy_hold`
+           is visible without a second preflight call
+           (papercut-pipeline-ledger-p0-for-situation-held-pr-20260925).
          - the SEVERITY of a filed row comes from its shape, not from a
            constant: `p0` only for a conflict or a red main, which cannot
            resolve unless somebody acts; `p1` for a red, cancelled, pending or
@@ -574,15 +579,22 @@ def scan_repo(repo: str, args: argparse.Namespace, now: dt.datetime) -> tuple[di
         policy, policy_detail, policy_hold = "", "", ""
         if over_age and shape in {"conflict", "red", CANCELLED}:
             stuck = True
-        if over_age and shape == "green-unmerged" and intent != "unarmed":
+        if over_age and shape == "green-unmerged":
+            # Read the policy regardless of arm state: an unarmed PR under a
+            # held repo still needs `policy_hold` set, or the row reads as an
+            # ordinary re-arm candidate to an agent that trusts `shape` alone
+            # (papercut-pipeline-ledger-p0-for-situation-held-pr-20260925,
+            # confirmed 6x on 2026-09-26 before this fix).
             policy, policy_detail = repo_merge_policy()
             policy_hold = policy_slug(policy_detail) if policy == "blocked" else ""
-            # Fail OPEN, the opposite of `merge_green_once`. A filing writes
-            # nothing to the forge, so suppressing a genuine stuck-PR signal
-            # because the policy store was busy loses information for no gain;
-            # a merge under an unreadable hold is the loss that matters. The
-            # asymmetry is deliberate.
-            stuck = policy != "blocked"
+            if intent != "unarmed":
+                # Fail OPEN, the opposite of `merge_green_once`. A filing writes
+                # nothing to the forge, so suppressing a genuine stuck-PR signal
+                # because the policy store was busy loses information for no gain;
+                # a merge under an unreadable hold is the loss that matters. The
+                # asymmetry is deliberate. Unarmed PRs never file (see
+                # `stuck_excluded` below), so `stuck` stays untouched for them.
+                stuck = policy != "blocked"
         if idle_min is not None and idle_min >= args.pending_stale_min and shape in {"pending", "absent"}:
             stuck = True
         root_cause = ""
@@ -607,8 +619,9 @@ def scan_repo(repo: str, args: argparse.Namespace, now: dt.datetime) -> tuple[di
                 "merge_policy": policy,
                 "policy_hold": policy_hold,
                 "stuck_excluded": (
-                    "green-unarmed" if (over_age and shape == "green-unmerged" and intent == "unarmed")
-                    else "policy-blocked" if policy == "blocked" else ""
+                    "policy-blocked" if policy == "blocked"
+                    else "green-unarmed" if (over_age and shape == "green-unmerged" and intent == "unarmed")
+                    else ""
                 ),
                 "stuck": stuck,
                 "root_cause": root_cause,
