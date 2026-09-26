@@ -1,0 +1,16 @@
+{
+  "inventory": {
+    "attribution": {
+      "objects": {
+        "derived_attributed": 0,
+        "retention_attributed": 2,
+        "schema_attributed": 4,
+        "system_attributed": 3,
+        "unattributed_residue": 0,
+        "unknown": 0
+      },
+      "path_rows": 17
+    },
+    "per_schema_history": []
+  }
+}

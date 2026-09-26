@@ -27,6 +27,7 @@ NAMESPACE = "sraproof"
 SCHEMA_A = NAMESPACE + "/SchemaA"
 SCHEMA_B = NAMESPACE + "/SchemaB"
 SCHEMA_ORPHAN = NAMESPACE + "/Orphan"
+SCHEMA_SYSTEM = NAMESPACE + "/System"
 ROOTED = (SCHEMA_A, SCHEMA_B)
 
 
@@ -203,7 +204,7 @@ class Node:
         self.proc.wait(timeout=5)
 
 
-def schema_body(name, molecule=None):
+def schema_body(name, molecule=None, source=None):
     local = name.split("/", 1)[1]
     schema = {
         "name": name,
@@ -220,6 +221,8 @@ def schema_body(name, molecule=None):
     }
     if molecule:
         schema["field_molecule_uuids"] = {"probe_body": molecule}
+    if source:
+        schema["source"] = source
     return {"namespace": NAMESPACE, "intent": "catalog_sync", "schema": schema}
 
 
@@ -321,30 +324,45 @@ def ledger_snapshot(home):
     return events, paths
 
 
-def count_ints(value, needles):
-    found = []
-
-    def walk(node, key):
-        if isinstance(node, dict):
-            for child_key, child in node.items():
-                walk(child, child_key)
-        elif isinstance(node, list):
-            for child in node:
-                walk(child, key)
-        elif isinstance(node, int) and not isinstance(node, bool) and key:
-            low = key.lower()
-            if any(needle in low for needle in needles):
-                found.append(node)
-
-    walk(value, "")
-    return found
-
-
 def require_ok(resp, label):
     if resp["status"] != 200:
         detail = resp["body"][-400:].replace("\n", " ")
         raise MeasureError("%s status %s %s" % (label, resp["status"], detail))
     return resp["json"]
+
+
+def inventory_snapshot(node):
+    """Return one successful inventory response from the node."""
+    inventory = node.request("POST", "/api/db/inventory", {}, timeout=180)
+    if inventory["status"] != 200:
+        # Some builds serve inventory only through the CLI path name.
+        inventory = node.request("GET", "/api/db/inventory", timeout=180)
+    require_ok(inventory, "inventory")
+    if not isinstance(inventory["json"], dict):
+        raise MeasureError("inventory response is not an object")
+    return inventory
+
+
+def nonnegative_int(value):
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
+
+
+def attribution_summary(inventory_response):
+    """Read the durable attribution facts from an inventory response."""
+    if not isinstance(inventory_response, dict):
+        return {}, None
+    inventory = inventory_response.get("inventory")
+    if not isinstance(inventory, dict):
+        return {}, None
+    attribution = inventory.get("attribution")
+    if not isinstance(attribution, dict):
+        return {}, None
+    objects = attribution.get("objects")
+    if not isinstance(objects, dict):
+        objects = {}
+    return objects, nonnegative_int(attribution.get("path_rows"))
 
 
 def measure(lastdbd, work):
@@ -360,10 +378,27 @@ def measure(lastdbd, work):
     try:
         source_node.start(lastdbd)
         declared = {}
-        for name in (SCHEMA_A, SCHEMA_B, SCHEMA_ORPHAN):
-            resp = source_node.request("POST", "/api/schemas/declare", schema_body(name), timeout=180)
+        declarations = (
+            (SCHEMA_A, None),
+            (SCHEMA_B, None),
+            (SCHEMA_ORPHAN, None),
+            # The inventory schema-root walk classifies a non-user source as
+            # SystemAttributed. This node and schema are throwaway only.
+            (SCHEMA_SYSTEM, "system_seed"),
+        )
+        for name, source_kind in declarations:
+            resp = source_node.request(
+                "POST", "/api/schemas/declare", schema_body(name, source=source_kind), timeout=180
+            )
             declared[name] = {"status": resp["status"], "json": resp["json"]}
             require_ok(resp, "declare " + name)
+        retention = source_node.request(
+            "POST",
+            "/api/db/schema-retention",
+            {"action": "set", "schema": SCHEMA_B, "ttl_seconds": 3600, "hash_partitions": []},
+        )
+        trace["source_retention_policy"] = retention["json"]
+        require_ok(retention, "set retention policy")
         molecules_a = molecule_map(schema_doc(source_node, SCHEMA_A))
         shared_molecule = molecules_a.get("probe_body")
         trace["source_molecule_a"] = molecules_a
@@ -407,9 +442,12 @@ def measure(lastdbd, work):
         before_keys = {name: keys_of(copy_node, name) for name in list(ROOTED) + [SCHEMA_ORPHAN]}
         if "orphan" not in before_keys[SCHEMA_ORPHAN] and "orphan" not in before_keys[SCHEMA_A]:
             raise MeasureError("the injected key is absent before scrub")
+        inventory_before = inventory_snapshot(copy_node)
+        trace["inventory_before_concurrent"] = inventory_before["json"]
         events_before, paths_before = ledger_snapshot(copy)
-        # One write while the copy daemon is up. Count ledger rows that exist
-        # when this response returns. Do not sleep first.
+        # One write while the copy daemon is up. The inventory totals below
+        # count its durable attribution path row after this response returns.
+        # Do not sleep first.
         concurrent = copy_node.request(
             "POST",
             "/api/mutation",
@@ -419,7 +457,9 @@ def measure(lastdbd, work):
         events_after, paths_after = ledger_snapshot(copy)
         trace["concurrent_write"] = concurrent["json"]
         trace["event_delta"] = sorted(events_after - events_before)
-        trace["path_delta"] = paths_after - paths_before
+        trace["ledger_path_row_delta"] = paths_after - paths_before
+        inventory_after = inventory_snapshot(copy_node)
+        trace["inventory_after_concurrent"] = inventory_after["json"]
         # Delete only the injected key on the copy. A shared molecule makes a
         # schema drop keep the key, so the scrub is one key delete.
         delete_1 = copy_node.request(
@@ -438,12 +478,6 @@ def measure(lastdbd, work):
         trace["delete_2"] = delete_2["json"]
         require_ok(delete_2, "second delete")
         rooted_after = {name: keys_of(copy_node, name) for name in list(ROOTED) + [SCHEMA_ORPHAN]}
-        inventory = copy_node.request("POST", "/api/db/inventory", {}, timeout=180)
-        if inventory["status"] != 200:
-            # Some builds serve inventory only through the CLI path name.
-            inventory = copy_node.request("GET", "/api/db/inventory", timeout=180)
-        trace["inventory_status"] = inventory["status"]
-        trace["inventory"] = inventory["json"]
         schemas = copy_node.request("GET", "/api/schemas?include_system=true")
         trace["schemas_status"] = schemas["status"]
         trace["schemas"] = schemas["json"]
@@ -489,26 +523,37 @@ def measure(lastdbd, work):
     injected_deleted = "orphan" not in copy_keys and "orphan" not in restore_keyset
     schema_objects = len(restore_keyset - {"orphan"})
     residue_left = 0 if "orphan" not in restore_keyset else 1
-    inventory = trace.get("inventory") if isinstance(trace.get("inventory"), dict) else {}
-    inventory = inventory.get("inventory") if isinstance(inventory.get("inventory"), dict) else {}
+    inventory = trace.get("inventory_after_concurrent")
+    inventory = inventory if isinstance(inventory, dict) else {}
+    attribution_objects, path_rows_after = attribution_summary(inventory)
+    before_inventory = trace.get("inventory_before_concurrent")
+    before_inventory = before_inventory if isinstance(before_inventory, dict) else {}
+    _before_objects, path_rows_before = attribution_summary(before_inventory)
     history = inventory.get("per_schema_history")
-    retention = len(history) if isinstance(history, list) else 0
-    system = 0
+    trace["retention_proxy_per_schema_history_count"] = len(history) if isinstance(history, list) else 0
+    system_proxy = 0
     schema_payload = trace.get("schemas")
     if isinstance(schema_payload, dict) and isinstance(schema_payload.get("schemas"), list):
         for row in schema_payload["schemas"]:
             if not isinstance(row, dict):
                 continue
             if row.get("source") == "system" or row.get("system") is True or row.get("is_system") is True:
-                system += 1
+                system_proxy += 1
+    trace["system_proxy_schema_rows"] = system_proxy
     molecule_owners = {}
     for name, fields in mols.items():
         for molecule in fields.values():
             molecule_owners.setdefault(molecule, set()).add(name)
     shared_paths = max((len(owners) for owners in molecule_owners.values()), default=0)
     source_events = len(trace.get("event_delta") or [])
-    attr_paths = trace.get("path_delta") or 0
-    size_counts = count_ints(trace.get("concurrent_write"), ("size", "bytes"))
+    retention = nonnegative_int(attribution_objects.get("retention_attributed")) or 0
+    system = nonnegative_int(attribution_objects.get("system_attributed")) or 0
+    attr_paths = 0
+    if path_rows_before is not None and path_rows_after is not None:
+        attr_paths = path_rows_after - path_rows_before
+    concurrent_write = trace.get("concurrent_write")
+    inline_size = concurrent_write.get("size") if isinstance(concurrent_write, dict) else None
+    inline_size_before_response = (nonnegative_int(inline_size) or 0) > 0
     evidence = {
         "schema": EVIDENCE_SCHEMA,
         "surface": {
@@ -537,7 +582,7 @@ def measure(lastdbd, work):
             "concurrent_write_source_events": source_events,
             "concurrent_write_attribution_paths": attr_paths,
             "later_write_source_event_before_response": source_events == 1,
-            "later_write_inline_size_before_response": bool(size_counts),
+            "later_write_inline_size_before_response": inline_size_before_response,
         },
     }
     raw = json.dumps(evidence, indent=2, sort_keys=True) + "\n"
