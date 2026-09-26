@@ -12,6 +12,12 @@ drained passes and decide the auto-refill trigger
 (`decision-2026-09-03-portfolio-auto-refill-from-ranking`). This script only
 records; it never rewrites the admission record and never touches Kanban.
 
+Each record also carries a `runnable` count per admitted North Star (Primary,
+Secondary, and the jam Backfill lane when set): the milestones whose gap-report
+status is `in_flight` or `idle_promoteable`. Zero runnable on two consecutive
+passes is a jam (`decision-2026-09-26-portfolio-jam-backfill-third-lane`);
+`jam_reasons_by_admitted` names the nonterminal milestones and their status.
+
 Best-effort instrumentation: a failure here must never fail the milestone-driver
 pass that calls it. Exit 0 on a recorded pass or a soft skip (unreadable
 admission record, missing gap-report). Exit 2 only for bad arguments.
@@ -31,7 +37,13 @@ from typing import Optional
 
 ADMISSION_SLUG = "preference-feature-delivery-portfolio-admission"
 DEFAULT_PASSES_FILE = Path.home() / ".local" / "state" / "last-stack" / "portfolio-admission-passes.jsonl"
-FIELD_RE = re.compile(r"(?im)^[ \t]*(Primary|Secondary|Updated-At|Updated-By)[ \t]*:[ \t]*(.*?)[ \t]*$")
+FIELD_RE = re.compile(
+    r"(?im)^[ \t]*(Primary|Secondary|Backfill|Backfill-For|Updated-At|Updated-By)[ \t]*:[ \t]*(.*?)[ \t]*$"
+)
+# A milestone in one of these gap-report statuses has a live or promoteable
+# Kind:pr card: pickup can take work from it now.
+RUNNABLE_STATUSES = ("in_flight", "idle_promoteable")
+TERMINAL_MILESTONE_STATUSES = ("complete", "abandoned")
 
 
 def normalize(value: str) -> str:
@@ -74,6 +86,8 @@ def read_admission(brain_bin: str, fixture_dir: Optional[Path]) -> Optional[dict
     return {
         "primary": primary,
         "secondary": normalize(fields.get("secondary", "")),
+        "backfill": normalize(fields.get("backfill", "")),
+        "backfill_for": normalize(fields.get("backfill-for", "")),
         "updated_at": fields.get("updated-at", ""),
         "updated_by": fields.get("updated-by", ""),
     }
@@ -93,6 +107,30 @@ def counts_for(milestones: list[dict], north_star: str) -> tuple[int, int]:
         elif action == "decompose":
             idle_empty += 1
     return idle_promoteable, idle_empty
+
+
+def runnable_for(milestones: list[dict], north_star: str) -> int:
+    """Milestones of one North Star that pickup can take work from now."""
+    return sum(
+        1
+        for m in milestones
+        if isinstance(m, dict)
+        and normalize(m.get("north_star", "")) == north_star
+        and m.get("status") in RUNNABLE_STATUSES
+    )
+
+
+def jam_reasons_for(milestones: list[dict], north_star: str) -> list[str]:
+    """`milestone:status` for each nonterminal milestone of one North Star."""
+    out = []
+    for m in milestones:
+        if not isinstance(m, dict) or normalize(m.get("north_star", "")) != north_star:
+            continue
+        status = str(m.get("status") or m.get("state") or "unknown")
+        if status in TERMINAL_MILESTONE_STATUSES:
+            continue
+        out.append(f"{m.get('slug', '?')}:{status}")
+    return sorted(out)
 
 
 def idle_by_north_star(milestones: list[dict]) -> dict[str, int]:
@@ -187,6 +225,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     secondary = admission["secondary"]
     p_promo, p_empty = counts_for(milestones, primary)
     s_promo, s_empty = counts_for(milestones, secondary) if secondary else (0, 0)
+    backfill = admission["backfill"]
+    admitted = [ns for ns in (primary, secondary, backfill) if ns]
+    runnable_by_admitted = {ns: runnable_for(milestones, ns) for ns in admitted}
 
     ts = args.ts or subprocess.run(
         ["date", "-u", "+%Y-%m-%dT%H:%M:%SZ"], text=True, capture_output=True, timeout=10
@@ -203,6 +244,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         "admission_updated_at": admission["updated_at"],
         "admission_updated_by": admission["updated_by"],
         "idle_by_north_star": idle_by_north_star(milestones),
+        "backfill": backfill,
+        "backfill_for": admission["backfill_for"],
+        "primary_runnable": runnable_by_admitted[primary],
+        "secondary_runnable": runnable_by_admitted.get(secondary, 0) if secondary else 0,
+        "backfill_runnable": runnable_by_admitted.get(backfill, 0) if backfill else 0,
+        "runnable_by_admitted": runnable_by_admitted,
+        "jam_reasons_by_admitted": {ns: jam_reasons_for(milestones, ns) for ns in admitted},
     }
 
     passes_path = Path(args.passes_file)
@@ -225,7 +273,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     else:
         print(
             f"portfolio-pass-record: primary={primary} "
-            f"({p_promo}/{p_empty}) secondary={secondary or 'none'} ({s_promo}/{s_empty})"
+            f"({p_promo}/{p_empty}) secondary={secondary or 'none'} ({s_promo}/{s_empty}) "
+            f"runnable={','.join(f'{ns}={n}' for ns, n in runnable_by_admitted.items())}"
         )
     return 0
 
