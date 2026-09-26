@@ -26,6 +26,11 @@ This helper replaces both:
            is not a PR defect. It is attributed to the per-repo root-cause row
              papercut-pipeline-forge-<repo>-main-red
            and no per-PR row is written.
+         - a required context the forge CANCELLED is shape `cancelled`, never
+           `red`. It is still stuck (the merge is blocked and nothing re-runs
+           the run on its own), but it is NOT a product failure: no test
+           failed, so it is never attributed to a red main and its row names a
+           re-run as the remedy. See CANCELLED.
          - a green, mergeable PR that nobody armed for auto-merge is not a PR
            defect either: nobody asked for the merge. It is RECORDED in the
            heartbeat as `green_unarmed=` and in the actions as
@@ -78,6 +83,23 @@ FALLBACK_REPOS = [
 DEFAULT_REQUIRED = ["Forge CI / ci-required"]
 RED = {"failure", "error"}
 EVENT_SUFFIX = re.compile(r"\s+\((pull_request|push|pull_request_target)\)$")
+
+# A run the forge CANCELLED is stored on the commit as a plain `failure` whose
+# description reads "Has been cancelled". The status VALUE is identical to a
+# real red, so before 2026-09-26 every consumer of this helper read a red the
+# commit never earned: on 2026-09-25, 7 of the latest 40 first-parent commits on
+# EdgeVector/fold main were red on `Forge CI / ci-required` with no failing
+# test, because ci.yml shares one concurrency group across the whole ref and a
+# later merge cancels the earlier commit's run
+# (papercut-fold-ci-required-cancelled-run-stored-as-a-required-red-20260925).
+#
+# A cancellation is NOT green — branch protection still blocks the merge — so it
+# cannot be folded into success. It is a THIRD state, because its remedy is a
+# different action: re-run the run. A product red means read the logs and change
+# code. `context_states` maps it to CANCELLED so the distinction reaches every
+# caller instead of being thrown away at the first read.
+CANCELLED = "cancelled"
+CANCELLED_DESC = re.compile(r"cancel", re.I)
 
 
 def now_utc() -> dt.datetime:
@@ -235,7 +257,13 @@ def required_contexts(repo: str, branch: str) -> list[str]:
 
 
 def context_states(status_doc: Any) -> dict[str, str]:
-    """Latest state per context stem from a combined-status document."""
+    """Latest state per context stem from a combined-status document.
+
+    A red whose DESCRIPTION says the run was cancelled is reported as
+    CANCELLED, not as its raw `failure`. The forge stores both with the same
+    status value and only the description tells them apart, so this is the one
+    place that can make the distinction — see CANCELLED above.
+    """
     out: dict[str, tuple[str, str]] = {}
     statuses = status_doc.get("statuses") if isinstance(status_doc, dict) else None
     for row in statuses or []:
@@ -244,20 +272,33 @@ def context_states(status_doc: Any) -> dict[str, str]:
         key = stem(row.get("context") or "")
         state = str(row.get("status") or row.get("state") or "").lower()
         when = str(row.get("updated_at") or row.get("created_at") or "")
+        if state in RED and CANCELLED_DESC.search(str(row.get("description") or "")):
+            state = CANCELLED
         if key and (key not in out or when >= out[key][1]):
             out[key] = (state, when)
     return {k: v[0] for k, v in out.items()}
 
 
-def required_verdict(states: dict[str, str], required: list[str]) -> tuple[str, list[str]]:
+def required_verdict(states: dict[str, str], required: list[str]) -> tuple[str, list[str], list[str]]:
+    """(verdict, product-red contexts, cancelled contexts).
+
+    A product red outranks a cancellation: a commit that has both earned the
+    red, and the cancellation is not what a reader needs to act on. A commit
+    whose ONLY reds are cancellations gets the verdict `cancelled` and an EMPTY
+    red list, which is what keeps it out of every "main is red" attribution
+    downstream. It is still not green, so nothing treats it as mergeable.
+    """
     red = [c for c in required if states.get(c) in RED]
+    cancelled = [c for c in required if states.get(c) == CANCELLED]
     if red:
-        return "red", red
+        return "red", red, cancelled
+    if cancelled:
+        return CANCELLED, [], cancelled
     if any(c not in states for c in required):
-        return "absent", []
+        return "absent", [], []
     if all(states.get(c) == "success" for c in required):
-        return "green", []
-    return "pending", []
+        return "green", [], []
+    return "pending", [], []
 
 
 def repo_token(repo: str) -> str:
@@ -339,8 +380,11 @@ def read_base(repo: str, base_ref: str) -> dict[str, Any]:
             base_states = context_states(forge_get(f"repos/{repo}/commits/{base_sha}/status"))
     except ForgeError:
         pass
-    verdict, red = required_verdict(base_states, required) if base_sha else ("unreadable", [])
-    return {"ref": base_ref, "sha": base_sha, "required": required, "verdict": verdict, "red_contexts": red}
+    verdict, red, cancelled = (
+        required_verdict(base_states, required) if base_sha else ("unreadable", [], [])
+    )
+    return {"ref": base_ref, "sha": base_sha, "required": required, "verdict": verdict,
+            "red_contexts": red, "cancelled_contexts": cancelled}
 
 
 def heartbeat_fields(report: dict[str, Any]) -> str:
@@ -445,7 +489,7 @@ def scan_repo(repo: str, args: argparse.Namespace, now: dt.datetime) -> tuple[di
                 status_error = err
             else:
                 states = context_states(doc)
-        verdict, red = required_verdict(states, base["required"])
+        verdict, red, cancelled = required_verdict(states, base["required"])
         if status_error:
             verdict = "unreadable"
         mergeable = pr.get("mergeable")
@@ -459,6 +503,12 @@ def scan_repo(repo: str, args: argparse.Namespace, now: dt.datetime) -> tuple[di
             shape = "conflict"
         elif verdict == "red":
             shape = "red"
+        elif verdict == CANCELLED:
+            # Not `red`: no product failure to read logs for, and no main-red
+            # attribution below, because base["verdict"] is `cancelled` too when
+            # the base tip's only reds are cancellations. Still stuck — the
+            # merge is blocked and nothing re-runs the run on its own.
+            shape = CANCELLED
         elif verdict == "green":
             shape = "green-unmerged"
         else:
@@ -475,7 +525,7 @@ def scan_repo(repo: str, args: argparse.Namespace, now: dt.datetime) -> tuple[di
         # inside the loom hold's own `allowed_actions`. Only `green-unmerged`
         # implies the one remedy a merge-pr block forbids.
         policy, policy_detail, policy_hold = "", "", ""
-        if over_age and shape in {"conflict", "red"}:
+        if over_age and shape in {"conflict", "red", CANCELLED}:
             stuck = True
         if over_age and shape == "green-unmerged" and intent != "unarmed":
             policy, policy_detail = repo_merge_policy()
@@ -504,6 +554,7 @@ def scan_repo(repo: str, args: argparse.Namespace, now: dt.datetime) -> tuple[di
                 "idle_min": idle_min,
                 "required": {c: states.get(c, "absent") for c in base["required"]},
                 "red_contexts": red,
+                "cancelled_contexts": cancelled,
                 "shape": shape,
                 "merge_intent": intent,
                 "merge_policy": policy,
@@ -619,9 +670,14 @@ def live_card_owner(args: argparse.Namespace, pr: dict[str, Any], now: dt.dateti
 def evidence_line(pr: dict[str, Any], checked_at: str) -> str:
     req = ", ".join(f"{c}={s}" for c, s in pr["required"].items())
     intent = f" intent={pr['merge_intent']}" if pr.get("merge_intent") else ""
+    # `cancelled=` is what tells the next reader the red is infra, not product.
+    # Without it the evidence line is the same text for both, which is the
+    # defect this whole classification exists to stop.
+    cancelled = pr.get("cancelled_contexts") or []
+    cancel = f" cancelled={', '.join(cancelled)}" if cancelled else ""
     return (
         f"- {checked_at}: {pr['repo']}#{pr['number']} shape={pr['shape']}{intent} head={pr['head_sha'][:12]} "
-        f"mergeable={pr['mergeable']} age_min={pr['age_min']} required: {req}\n"
+        f"mergeable={pr['mergeable']} age_min={pr['age_min']}{cancel} required: {req}\n"
     )
 
 
@@ -742,6 +798,17 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             if pr["root_cause"]:
                 title = f"Pipeline: {pr['repo']} main is red on required checks; open PRs inherit it"
                 symptom = f"{pr['repo']} base tip is red on {', '.join(pr['red_contexts'])}, so every open PR is red"
+            elif pr["shape"] == CANCELLED:
+                # Name the remedy in the row itself. A reader who sees only
+                # "stuck (red)" routes to the heavy arm — enter the worktree,
+                # read logs, change code — and spends a build attempt on code
+                # that was never broken. The run was cancelled; re-run it.
+                ctxs = ", ".join(pr["cancelled_contexts"])
+                title = f"Pipeline: {pr['repo']} PR {pr['number']} is stuck on a CANCELLED required run (re-run it)"
+                symptom = (
+                    f"{pr['repo']} PR {pr['number']} is stuck: required context {ctxs} was cancelled, "
+                    f"not failed - no test failed; the remedy is a re-run, not a code change"
+                )
             else:
                 title = f"Pipeline: {pr['repo']} PR {pr['number']} is stuck ({pr['shape']})"
                 symptom = f"{pr['repo']} PR {pr['number']} is stuck: {pr['shape']}"
@@ -996,8 +1063,9 @@ def merge_green_once(args: argparse.Namespace) -> dict[str, Any]:
     base_ref = (point.get("base") or {}).get("ref") or "main"
     required = required_contexts(repo, base_ref)
     doc = forge_get(f"repos/{repo}/commits/{head}/status")
-    verdict, red = required_verdict(context_states(doc), required)
-    out.update({"head_sha": head, "required": required, "checks": verdict, "red_contexts": red})
+    verdict, red, cancelled = required_verdict(context_states(doc), required)
+    out.update({"head_sha": head, "required": required, "checks": verdict,
+                "red_contexts": red, "cancelled_contexts": cancelled})
     if verdict != "green":
         return {**out, "verdict": verdict}
     armed, armed_at = schedule_state(repo, number)

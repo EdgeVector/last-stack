@@ -643,6 +643,27 @@ gh api graphql -f query='{repository(owner:"<owner>",name:"<repo>"){mergeQueue(b
           passing → just `gh run rerun <run-id> --failed` and confirm auto-merge
           is armed. This is a CHEAP, UNCAPPED advance — do it for EVERY such PR.
           A flaky-cancelled required check is the #1 reason a green-able PR rots.
+          **READ THE DESCRIPTION, NOT THE STATUS VALUE.** Forgejo stores a
+          cancelled run as a plain `failure`; only the description says
+          `Has been cancelled`. So a red required context is infra, not a
+          product failure, whenever
+          `GET repos/<owner>/<repo>/commits/<head-sha>/status` gives that
+          context a description matching `cancel` — one command, before you
+          open any log:
+
+              last-stack-forge-api GET "repos/<owner>/<repo>/commits/<sha>/status" > /tmp/st.json 2> /tmp/st.err
+              jq -r '.statuses[] | [.context, .status, (.description // "-")] | @tsv' /tmp/st.json
+
+          On 2026-09-25, 7 of the latest 40 first-parent commits on
+          EdgeVector/fold main read `failure` on `Forge CI / ci-required` with
+          no failing test, because `ci.yml` shares one concurrency group across
+          the whole ref and a later merge cancels the earlier commit's run
+          (papercut-fold-ci-required-cancelled-run-stored-as-a-required-red-20260925).
+          Routing one of those to the heavy arm spends a build attempt changing
+          code that was never broken. `last-stack-pipeline-forge-pr-ledger`
+          makes the same distinction from the same field: its rows carry
+          `shape=cancelled` and `cancelled=<contexts>`, and a row titled
+          `... is stuck on a CANCELLED required run (re-run it)` is this arm.
         - **Stale base** — CHEAP, UNCAPPED, and checked BEFORE "Real failing
           check". If the base branch moved since the PR head was cut (the PR
           head does not contain the current base tip: `git merge-base
