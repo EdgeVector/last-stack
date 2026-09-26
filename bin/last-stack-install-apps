@@ -273,7 +273,37 @@ run_bun_install() {
   echo "==> installing dependencies for $name"
   local cache_dir="${BUN_INSTALL_CACHE_DIR:-${HOME:-/tmp}/.cache/bun}"
   mkdir -p "$cache_dir"
-  bun install --cwd "$dest" --cache-dir "$cache_dir"
+  # One dependency download must not fail a release proof. This step runs inside
+  # the llms-txt install smoke, whose GREEN verdict is what writes the app
+  # registry `next` rows, so a single transient fetch error costs the whole
+  # fleet a delivery cycle. Measured 2026-09-26T11:0xZ: an apps-only canary pass
+  # went RED on `error: Fail extracting tarball for "protobufjs"` while
+  # installing `search`, with all nine pinned checkouts OK -- and the identical
+  # pinned sha installed clean in 3.81s on a retry outside the sandbox. The
+  # smoke uses a throwaway HOME, so its bun cache is always cold and every
+  # package is a fresh download.
+  #
+  # The same class cost a registry row two days earlier through npm: see
+  # install_lastdb_browser below, whose comment records the 2026-09-24 canary
+  # smoke RED. That one was deterministic and needed a real fix; this one is a
+  # fetch, and a fetch gets retried.
+  local attempts="${LAST_STACK_BUN_INSTALL_ATTEMPTS:-3}" attempt=1 backoff
+  while :; do
+    if bun install --cwd "$dest" --cache-dir "$cache_dir"; then
+      return 0
+    fi
+    if [ "$attempt" -ge "$attempts" ]; then
+      echo "    bun install for $name failed $attempt time(s); giving up" >&2
+      return 1
+    fi
+    # LAST_STACK_BUN_INSTALL_SLEEP exists so the guard test can exercise the
+    # retry without burning the real backoff; a fixture that waits 15 real
+    # seconds is a fixture nobody runs.
+    backoff="${LAST_STACK_BUN_INSTALL_SLEEP:-$(( attempt * 5 ))}"
+    echo "    bun install for $name failed (attempt $attempt/$attempts); retrying in ${backoff}s" >&2
+    [ "$backoff" -le 0 ] || sleep "$backoff"
+    attempt=$(( attempt + 1 ))
+  done
 }
 
 install_lastdb_browser() {
