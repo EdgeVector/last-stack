@@ -443,7 +443,12 @@ def authorize(command, board, control, report):
             # that has no proof card yet. A validation card has no source
             # surfaces; the checks below hold it to exactly that gap
             # (papercut-milestone-driver-guard-hardcodes-decompose-action-for-file-pr-20260926).
-            cost, action = 1, 'file_proof'
+            # A proof card costs nothing against SAFETY_CAP: the routine
+            # contract processes every complete_proof entry, and the cap
+            # budgets PR supply. The one-proof-card-per-milestone-per-run
+            # check below bounds it instead
+            # (papercut-milestone-driver-guard-caps-complete-proof-contradicts-doc-20260926).
+            cost, action = 0, 'file_proof'
         else:
             if not options.get('--surfaces', '').strip() or not any(s.strip() for s in options['--surfaces'].split(',')):
                 refuse('missing-source-surfaces')
@@ -514,6 +519,9 @@ def authorize(command, board, control, report):
     if action == 'file_proof':
         if milestone.get('proof_card'):
             refuse(f"proof-card-already-linked slug={owner}")
+        if any(entry.get('action') == 'file_proof' and entry.get('milestone') == owner
+               for entry in control['actions']):
+            refuse(f"proof-card-already-filed-this-run slug={owner}")
         if 'not_required' in (milestone.get('proof_status'), current.get('proof_verdict')):
             refuse(f"proof-not-required slug={owner}")
     if action == 'complete_proof':
@@ -531,7 +539,7 @@ def authorize(command, board, control, report):
             refuse('promotion-not-in-current-queue')
     if cost and control['reserved_actions'] >= control['safety_cap']:
         refuse(f"safety-cap-exhausted cap={control['safety_cap']}")
-    return cost, owner
+    return cost, owner, action
 
 
 def main():
@@ -639,9 +647,10 @@ def main():
         else:
             if not command:
                 refuse('missing-guard-command', 2)
-            cost, owner = authorize(command, args.kanban_bin, control, report)
+            cost, owner, action = authorize(command, args.kanban_bin, control, report)
             control['reserved_actions'] += cost
-            control['actions'].append({'command': command, 'milestone': owner, 'cost': cost, 'state': 'reserved'})
+            control['actions'].append({'command': command, 'milestone': owner, 'action': action,
+                                       'cost': cost, 'state': 'reserved'})
             save(ledger, control)
             try:
                 result = subprocess.run(command)

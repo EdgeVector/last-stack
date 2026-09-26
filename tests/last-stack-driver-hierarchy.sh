@@ -53,7 +53,7 @@ require 'read-only lifecycle report' "$milestone"
 require 'kanban milestone state <slug> complete --proof-status passing --json' "$milestone"
 require 'The CLI rejects this transition unless the proof contract passes.' "$milestone"
 require 'Never implement product code' "$milestone"
-require 'Create at most **one Kanban card** per run.' "$milestone"
+require 'Create at most **one `Kind: pr` card** per run.' "$milestone"
 
 # Deterministic gap-report orchestrator (Tom 2026-07-22)
 require 'kanban milestone gap-report --json' "$milestone"
