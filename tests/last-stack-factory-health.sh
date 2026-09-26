@@ -12,4 +12,6 @@ python3 -m py_compile "$bin"
 python3 "$ROOT/tests/factory-health-dry-run.py"
 # The doing-age clock must not be resettable by the re-dispatch loop it measures.
 python3 "$ROOT/tests/factory-health-age-clock.py"
+# Supply per admitted North Star: jam named, 2-pass page, reset on clear.
+python3 "$ROOT/tests/factory-health-supply.py"
 echo "ok last-stack-factory-health"

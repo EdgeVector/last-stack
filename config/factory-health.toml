@@ -163,3 +163,18 @@ heartbeat_scan_lines = 200
 enabled = true
 # doing cards with pr_url older than this (hours) → suggest board-closeout.
 merged_suspect_age_h = 1.5
+
+# ── Supply per admitted North Star ─────────────────────────────────────────
+# Runnable = Kind:pr cards in todo/doing for the North Star, plus milestones in
+# in_flight or idle_promoteable. An admitted North Star (Primary, Secondary,
+# Backfill in preference-feature-delivery-portfolio-admission) with zero of
+# both is JAMMED. The first jammed pass makes the verdict soft without a page;
+# alarm_after_passes consecutive jammed passes page with every open milestone
+# named. State: ~/.local/state/last-stack/factory-health/supply-state.json and
+# supply-latest.json (read by the portfolio backfill tool).
+[supply]
+enabled = true
+admission_slug = "preference-feature-delivery-portfolio-admission"
+alarm_after_passes = 2
+# Bounded `kanban show` reads that name block_reason on blocked backlog cards.
+max_block_lookups = 12

@@ -33,11 +33,15 @@ elif args == ["pickup", "status", "--json"]:
     print('{"ready":1}')
 elif args == ["milestone", "gap-report", "--json"]:
     print('{"work_queue":[]}')
+elif name == "brain" and args[:2] == ["get", "preference-feature-delivery-portfolio-admission"]:
+    print(json.dumps({"slug": args[1], "body": "Primary: north-star-fixture\\nSecondary: none\\n"}))
+elif args[:3] in (["list", "--column", "todo"], ["list", "--column", "doing"]):
+    print('{"cards":[],"total":0,"truncated":false}')
 else:
     raise SystemExit(99)
 ''', encoding="utf-8")
     stub.chmod(0o755)
-    for name in ("kanban", "fkanban", "ra", "lastgit", "last-stack-forge-api"):
+    for name in ("kanban", "fkanban", "ra", "lastgit", "last-stack-forge-api", "brain"):
         (binaries / name).symlink_to(stub.name)
     config = root / "config.toml"
     config.write_text('''[general]
@@ -61,15 +65,24 @@ hard_count = 1
     assert "notify=dry-run" in dry.stdout, dry.stdout
     assert not notifications.exists(), "dry-run reached the notifier"
     assert not (state / "state.json").exists(), "dry-run persisted state"
+    supply_dir = root / ".local" / "state" / "last-stack" / "factory-health"
+    assert not (supply_dir / "supply-latest.json").exists(), "dry-run persisted supply"
+    assert "jammed=north-star-fixture jam_passes=1" in dry.stdout, dry.stdout
     observed = [json.loads(line) for line in calls.read_text().splitlines()]
     kanban_calls = [row for row in observed if row and row[0] == "kanban"]
     assert kanban_calls == [["kanban", "list", "--json", "--all"],
                             ["kanban", "pickup", "status", "--json"],
-                            ["kanban", "milestone", "gap-report", "--json"]], observed
+                            ["kanban", "milestone", "gap-report", "--json"],
+                            ["kanban", "list", "--column", "todo", "--json", "--limit", "200"],
+                            ["kanban", "list", "--column", "doing", "--json", "--limit", "200"]], observed
+    brain_calls = [row for row in observed if row and row[0] == "brain"]
+    assert brain_calls == [["brain", "get", "preference-feature-delivery-portfolio-admission",
+                            "--type", "preference", "--json"]], brain_calls
     # Control: the same alert without --dry-run must reach our fake notifier
     # and persist state. Otherwise the negative assertions could pass vacuously.
     live = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=30)
     assert live.returncode == 0, live.stderr
     assert notifications.exists(), live.stdout
     assert (state / "state.json").exists(), "normal fixture run omitted state"
+    assert (supply_dir / "supply-latest.json").exists(), "normal fixture run omitted supply"
 print("ok factory-health isolated dry-run and notification control")
