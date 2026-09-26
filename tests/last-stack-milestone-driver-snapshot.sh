@@ -75,7 +75,7 @@ if PREFLIGHT_RC=75 capture >"$TMP/preflight.out" 2>"$TMP/preflight.err"; then fa
 [ ! -s "$FIXTURE_READS" ] || fail 'failed preflight read board'
 grep -q 'no_board_commands=1' "$TMP/preflight.err" || fail 'preflight diagnostic missing'
 capture >"$TMP/capture.json"
-[ "$(wc -l <"$FIXTURE_READS")" -eq 6 ] || fail 'capture must retain five inventory reads plus one gap-report reconciliation read'
+[ "$(wc -l <"$FIXTURE_READS")" -eq 7 ] || fail 'capture must retain five inventory reads plus one north_star reconciliation read plus one lifecycle-reclassification detail read'
 "$HELPER" consume --run-dir "$run_dir" --run-id "$run_id" --artifact "$artifact" >"$TMP/consumed.json"
 jq -e '._milestone_driver_run.target=="release" and ._milestone_driver_run.safety_cap==1' "$TMP/consumed.json" >/dev/null || fail 'scope missing'
 reject 'wrong run' "$HELPER" guard --run-dir "$run_dir" --run-id wrong --artifact "$artifact" -- "$KANBAN_BIN" move card-a todo
