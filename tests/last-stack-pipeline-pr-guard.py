@@ -24,7 +24,11 @@ if name == "mutate":
     sys.exit(0)
 if name == "kanban":
     calls = (root / "calls.jsonl").read_text().count('"kanban"')
-    print(json.dumps(data.get("card_final", data["card"]) if calls > 1 else data["card"]))
+    card = data.get("card_final", data["card"]) if calls > 1 else data["card"]
+    if card is None:
+        print("kanban: No card with slug.", file=sys.stderr)
+        sys.exit(1)
+    print(json.dumps(card))
 elif "/pulls/" in sys.argv[1]:
     calls = (root / "calls.jsonl").read_text().count('"repos/EdgeVector/fold/pulls/7"')
     print(json.dumps(data.get("pr_final", data["pr"]) if calls > 1 else data["pr"]))
@@ -137,6 +141,12 @@ class GuardTest(unittest.TestCase):
 
     def test_unbound_card_never_mutates(self):
         self.data["card"]["pr_url"] = "http://forge.test/EdgeVector/fold/pulls/8"
+        self.run_guard("unbound-card")
+
+    def test_missing_card_is_unbound_card_not_unreadable_evidence(self):
+        # kanban show exits 1 with empty stdout for a slug with no card. That
+        # is a distinguishable miss, not an unreadable read/exec failure.
+        self.data["card"] = None
         self.run_guard("unbound-card")
 
     def test_pending_status_never_mutates(self):
