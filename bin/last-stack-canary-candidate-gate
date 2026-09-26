@@ -10,6 +10,13 @@
 #   5. cutover — safe-upgrade probe + primary cutover (existing action)
 #   6. rows    — write the proved pairs to registry `next` (Forgejo PR)
 #
+# When step 2 finds no build to cut over to (the primary already runs the
+# candidate) or the cutover is held, the gate does NOT stop: it runs the
+# apps-only pass, which proves the app commits against the build the primary
+# already runs and publishes those rows. App merges are hourly and node builds
+# are nightly, so stopping here is what left three apps 5 to 9 commits behind
+# their registry pin on 2026-09-26.
+#
 # A RED smoke stops before the cutover: the primary keeps its build and the
 # ledger gets a build-subject line event. Rows are written only after a GREEN
 # smoke AND a successful cutover, so `next` never names a pair the primary
@@ -30,6 +37,8 @@ run_dir="${ROUTINES_RUN_DIR:-${TMPDIR:-/tmp}}"
 skip_build="${LAST_STACK_CANARY_SKIP_BUILD:-0}"
 skip_smoke="${LAST_STACK_CANARY_SKIP_SMOKE:-0}"
 skip_rows="${LAST_STACK_CANARY_SKIP_ROWS:-0}"
+primary_lastdbd="${LAST_STACK_CANARY_PRIMARY_LASTDBD:-$HOME/.lastdb/current/lastdbd}"
+resolve_bin="${LAST_STACK_CANARY_APP_RESOLVE_BIN:-lastdb}"
 
 usage() {
   printf '%s\n' 'last-stack-canary-candidate-gate'
@@ -38,6 +47,7 @@ usage() {
   printf '%s\n' '  LAST_STACK_CANARY_V2_PIPELINE, LAST_STACK_CANARY_CANDIDATE_SET_BIN,'
   printf '%s\n' '  LAST_STACK_CANARY_SMOKE_RUN, LAST_STACK_CANARY_PUBLISH_NEXT_BIN,'
   printf '%s\n' '  LAST_STACK_CANARY_SKIP_BUILD=1, LAST_STACK_CANARY_SKIP_SMOKE=1, LAST_STACK_CANARY_SKIP_ROWS=1'
+  printf '%s\n' '  LAST_STACK_CANARY_PRIMARY_LASTDBD, LAST_STACK_CANARY_APP_RESOLVE_BIN'
 }
 
 case "${1:-}" in
@@ -52,6 +62,99 @@ result() {
   printf 'CANARY_CANDIDATE result=%s %s\n' "$outcome" "$*"
   printf 'ROUTINE_RESULT outcome=%s detail=%s\n' "$outcome" "$(printf '%s' "$*" | tr ' ' ',')"
   exit 0
+}
+
+# ── the apps-only pass ───────────────────────────────────────────────────
+# App commits merge several times an hour. A LastDB candidate appears at most
+# once a night, and its rows reach the registry only after a successful primary
+# cutover. So every `resolve` noop below used to publish nothing, and an
+# app-only merge waited for the NODE to move: measured 2026-09-26 as 5 to 9
+# commits and 31 to 50 hours of lag on brain, kanban and routines at once, with
+# all three reading `freshness=fresh`.
+# papercut-app-only-merge-waits-for-lastdb-candidate-set-registry-pin-20260926
+#
+# A registry row is a proved PAIR, not a minimum version
+# (decision-2026-09-19-app-registry-is-the-release-unit), and the pair the host
+# needs is <app sha, the build the primary ALREADY runs>. That pair needs no new
+# build and no cutover, so the apps-only pass pins the set to the primary's own
+# lastdbd, proves it with the same isolated smoke, and publishes the same rows.
+# It never cuts the primary over: there is nothing to cut over to.
+
+apps_moved_past_registry() {
+  # Print a comma list of app ids whose set pin differs from the row `next`
+  # already proves for the build the primary runs. A resolve that cannot answer
+  # counts as MOVED: proving is the safe direction, and a silent skip is how
+  # this lag stayed invisible for two days.
+  local set_file="$1" app set_sha proved moved=""
+  while IFS= read -r app; do
+    [ -n "$app" ] || continue
+    set_sha="$(jq -r --arg a "$app" '.apps[$a].sha // empty' "$set_file" 2>/dev/null || true)"
+    [ -n "$set_sha" ] || continue
+    proved="$("$resolve_bin" app resolve "$app" --channel next --lastdb-version "$primary" --json 2>/dev/null \
+      | jq -r '.sha // empty' 2>/dev/null || true)"
+    [ "$proved" = "$set_sha" ] || moved="${moved:+$moved,}$app"
+  done < <(jq -r '.apps | keys[]' "$set_file" 2>/dev/null || true)
+  printf '%s' "$moved"
+}
+
+apps_only_pass() {
+  # apps_only_pass <why>: <why> names the resolve outcome that sent us here, so
+  # the result line still says why the full pass did not run.
+  local why="$1"
+  if [ -z "$primary_lastdbd" ] || [ ! -x "$primary_lastdbd" ]; then
+    result noop "stage=apps-only candidate=$incoming primary=$primary evidence=${why}_primary_lastdbd_absent bin=${primary_lastdbd:-unset}"
+  fi
+  [ -x "$candidate_set_bin" ] || result error "evidence=tool_missing tool=$candidate_set_bin"
+  mkdir -p "$run_dir"
+  local set_file="$run_dir/apps-only-set.json" rc=0 count moved
+  set +e
+  "$candidate_set_bin" --lastdbd "$primary_lastdbd" --out "$set_file" >"$run_dir/apps-only-set.out" 2>&1
+  rc=$?
+  set -e
+  if [ "$rc" -ne 0 ]; then
+    "$pipeline" record-line-event --check candidate_set --subject observer --result fail --detail "exit=$rc" >/dev/null || true
+    result error "stage=apps-only primary=$primary evidence=candidate_set_failed rc=$rc after=$why"
+  fi
+  count="$(jq -r '.apps | length' "$set_file")"
+  moved="$(apps_moved_past_registry "$set_file")"
+  if [ -z "$moved" ]; then
+    result noop "stage=apps-only candidate=$incoming primary=$primary apps=$count evidence=${why}_apps_already_proved"
+  fi
+
+  local smoke_status=skipped proof_file="$run_dir/apps-only-proof.json" src=0 steps
+  if [ "$skip_smoke" != 1 ]; then
+    [ -f "$smoke_run" ] || result error "evidence=tool_missing tool=$smoke_run"
+    set +e
+    SMOKE_LASTDBD_BIN="$primary_lastdbd" SMOKE_CANDIDATE_SET="$set_file" \
+      bash "$smoke_run" --json >"$proof_file" 2>"$run_dir/apps-only-smoke.err"
+    src=$?
+    set -e
+    smoke_status="$(jq -r '.verdict // empty' "$proof_file" 2>/dev/null || true)"
+    if [ "$src" -ne 0 ] || [ "$smoke_status" != GREEN ]; then
+      steps="$(jq -r '.steps // "no-verdict"' "$proof_file" 2>/dev/null || echo no-verdict)"
+      # A RED apps-only smoke is a verdict about the app set, not about the
+      # primary, which is untouched here. No rows, and no ledger line event
+      # for the same reason the candidate smoke writes none.
+      result error "stage=apps-only primary=$primary apps=$count moved=$moved evidence=smoke_red steps=$steps log=$run_dir/apps-only-smoke.err after=$why"
+    fi
+  fi
+
+  local rows_status=skipped rows_out rows_pr rrc=0
+  if [ "$skip_rows" != 1 ] && [ "$skip_smoke" != 1 ]; then
+    [ -x "$publish_next" ] || result error "evidence=tool_missing tool=$publish_next"
+    set +e
+    rows_out="$("$publish_next" --candidate-set "$set_file" --proof "$proof_file" 2>"$run_dir/apps-only-rows.err")"
+    rrc=$?
+    set -e
+    if [ "$rrc" -ne 0 ]; then
+      result error "stage=apps-only primary=$primary evidence=rows_failed rc=$rrc log=$run_dir/apps-only-rows.err after=$why"
+    fi
+    rows_status="$(printf '%s\n' "$rows_out" | sed -n 's/^REGISTRY_NEXT status=\([^ ]*\).*/\1/p' | tail -n1)"
+    rows_pr="$(printf '%s\n' "$rows_out" | sed -n 's/.* pr=\([^ ]*\).*/\1/p' | tail -n1)"
+    [ -z "$rows_pr" ] || rows_status="$rows_status:$rows_pr"
+  fi
+
+  result ok "stage=apps-only primary=$primary apps=$count moved=$moved smoke=$smoke_status cutover=skipped rows=$rows_status after=$why"
 }
 
 for tool in "$dogfood" "$pipeline"; do
@@ -105,7 +208,8 @@ candidate_bin="$(printf '%s\n' "$preview" | jq -r '.safe_upgrade_args[1] // empt
 [ -n "$candidate_bin" ] && [ -f "$candidate_bin" ] || result error "stage=resolve evidence=candidate_binary_absent candidate=$incoming"
 
 if [ "$incoming" = "$primary" ]; then
-  result noop "stage=resolve candidate=$incoming primary=$primary evidence=primary_already_on_candidate build=$build_status"
+  # No new build to cut over to. The apps may still have moved.
+  apps_only_pass primary_already_on_candidate
 fi
 
 channel_args=(--json channels --main-build "$primary" --incoming-build "$incoming" --cutover-hold-hours "$hold_hours")
@@ -113,7 +217,9 @@ channel_args=(--json channels --main-build "$primary" --incoming-build "$incomin
 [ -z "${LAST_STACK_CANARY_V2_AT:-}" ] || channel_args+=(--at "$LAST_STACK_CANARY_V2_AT")
 channel_json="$("$pipeline" "${channel_args[@]}")"
 if [ "$(printf '%s\n' "$channel_json" | jq -r '.cutover.hold // false')" = true ]; then
-  result noop "stage=resolve candidate=$incoming primary=$primary evidence=quiet_window_near_complete"
+  # The cutover is held, so the primary keeps its build. Prove the apps against
+  # the build it actually runs rather than waiting for the window.
+  apps_only_pass quiet_window_near_complete
 fi
 
 # ── 3. candidate set ─────────────────────────────────────────────────────
