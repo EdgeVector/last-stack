@@ -138,6 +138,7 @@ grep -q '^unfence	lx-fenced-open	card-fenced-open' <<<"$out" || fail "cleared fe
 grep -q '^left	lx-fenced-shut	card-fenced-shut	situation still blocks merge-pr on EdgeVector/fold' <<<"$out" \
   || fail "blocked fence must stay parked"
 grep -q 'signal' "$CALLS" && fail "dry run signalled"
+grep -q '^loom list land-card --window-hours 168 --limit 1000$' "$CALLS" || fail "list must read past the 20-row default"
 [ ! -e "$tmp/state/state.json" ] || fail "dry run wrote state"
 
 # Apply: exactly three detached signals with the right payloads, one mark each.

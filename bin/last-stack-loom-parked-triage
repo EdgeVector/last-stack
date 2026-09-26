@@ -75,7 +75,10 @@ def run(cmd, timeout=90):
 
 
 def parked_walks(limit):
-    rc, out, err = run([LOOM, "list", "land-card"])
+    # `loom list` defaults to the 20 newest walks in 36h. Parked walks age
+    # out of that view while newer walks run, so the triage saw 3 of 11
+    # parked walks on 2026-09-26. Read a week, far past any daily volume.
+    rc, out, err = run([LOOM, "list", "land-card", "--window-hours", "168", "--limit", "1000"])
     if rc != 0:
         raise RuntimeError(f"loom list land-card failed: {err.strip()[:200]}")
     rows = []
