@@ -200,6 +200,28 @@ if grep -q 'Operational evidence: PASS' \
   fail "the committed measurement passed without a system attribution fact"
 fi
 
+# The committed trace records the raw inventory and mutation responses behind
+# the FAIL fallback. Keep it aligned with the measured evidence, so a zero
+# system count is reviewable rather than an unexplained assertion.
+python3 - "$ROOT/harness/north-star/north-star-lastdb-schema-root-data-attribution/measured-evidence.json" \
+  "$ROOT/harness/north-star/north-star-lastdb-schema-root-data-attribution/measured-trace.json" <<'PY'
+import json
+import sys
+
+evidence_path, trace_path = sys.argv[1:]
+evidence = json.load(open(evidence_path, encoding="utf-8"))
+trace = json.load(open(trace_path, encoding="utf-8"))
+before = trace["inventory_before_concurrent"]["inventory"]["attribution"]
+after = trace["inventory_after_concurrent"]["inventory"]["attribution"]
+write = trace["concurrent_write"]
+if evidence["restore"]["system_attributed_objects"] != after["objects"]["system_attributed"]:
+    raise SystemExit("the committed trace does not support the system attribution fallback")
+if after["path_rows"] - before["path_rows"] != evidence["writes"]["concurrent_write_attribution_paths"]:
+    raise SystemExit("the committed trace does not support the path-row measurement")
+if not isinstance(write.get("size"), int) or write["size"] <= 0:
+    raise SystemExit("the committed trace does not show the inline mutation size")
+PY
+
 if PATH="$WORK/bin:$PATH" \
   SCHEMA_ROOT_ATTRIBUTION_SOURCE_DIR="$FIXTURE" \
   SCHEMA_ROOT_ATTRIBUTION_PROOF_EVIDENCE_FILE="$WORK/booleans.json" \
