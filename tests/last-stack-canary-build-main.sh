@@ -169,6 +169,39 @@ out="$(LAST_STACK_CANARY_CARGO_CMD="$fake_cargo" "$CLI" --force --json 2>/dev/nu
 [ -x "$workdir/target/release/lastdbd" ] || { echo 'FAIL: binary missing after rebuild' >&2; exit 1; }
 echo "ok canary-build prunes stale worktree registrations"
 
+# --- a stalled git op inside ensure_worktree fails fast and loud, not silently ---
+# papercut-last-stack-ci-shard-supervisor-timeout-flake-20260926: under real host
+# contention, `git worktree add` stalled 200+s with zero forward progress and
+# consumed the whole outer CI shard budget with no diagnostic in the log. A
+# bounded step timeout must turn that into a fast, named failure instead.
+slow_git_dir="$tmp/slow-git"
+mkdir -p "$slow_git_dir"
+real_git="$(command -v git)"
+cat >"$slow_git_dir/git" <<GITSTUB
+#!/usr/bin/env bash
+# args are "-C <dir> worktree add ..." -- "worktree add" is not \$1/\$2.
+case " \$* " in
+  *' worktree add '*) sleep 5 ;;
+esac
+exec "$real_git" "\$@"
+GITSTUB
+chmod +x "$slow_git_dir/git"
+# Force the fresh-checkout branch of ensure_worktree so `worktree add` is hit.
+rm -rf "$workdir"
+set +e
+stall_out="$(
+  PATH="$slow_git_dir:$PATH" \
+  LAST_STACK_CANARY_BUILD_STEP_TIMEOUT=1 \
+  LAST_STACK_CANARY_CARGO_CMD="$fake_cargo" \
+  "$CLI" --force --json 2>&1
+)"
+stall_rc=$?
+set -e
+[ "$stall_rc" -ne 0 ] || { echo "FAIL: bounded worktree add should have failed, not succeeded: $stall_out" >&2; exit 1; }
+printf '%s\n' "$stall_out" | grep -qi 'timed out' \
+  || { echo "FAIL: no timeout diagnostic in output: $stall_out" >&2; exit 1; }
+echo "ok ensure_worktree bounds a stalled git op instead of hanging"
+
 # --- dogfood resolves the staged binary as forge-main ---
 DOG="$ROOT/bin/last-stack-lastdb-canary-dogfood"
 LEDGER="$ROOT/bin/last-stack-canary-pipeline"
