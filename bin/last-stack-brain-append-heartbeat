@@ -17,6 +17,7 @@ set -euo pipefail
 
 slug="routine-heartbeats" # retained for CLI compatibility; not a brain slug
 line=""
+automation=""
 
 default_log() {
   if [ -n "${LAST_STACK_HEARTBEATS_FILE:-}" ]; then
@@ -47,6 +48,8 @@ usage() {
   cat <<'EOF'
 Usage:
   last-stack-brain-append-heartbeat [--slug routine-heartbeats] --line "<heartbeat>"
+  last-stack-brain-append-heartbeat --automation <routine> [--run-id <id>] --line "<rest>"
+      writes "<routine> <UTC time> <rest>", the standard heartbeat shape.
   printf '%s\n' "<heartbeat>" | last-stack-brain-append-heartbeat --stdin
 
 Appends one line to a filesystem log (NOT brain / LastDB).
@@ -91,21 +94,21 @@ capture_append() {
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --slug)
-      [ "$#" -ge 2 ] || { echo "--slug requires a value" >&2; exit 2; }
+    --slug|--label)
+      [ "$#" -ge 2 ] || { echo "$1 requires a value" >&2; exit 2; }
       slug="$2"
       shift 2
       ;;
-    --slug=*)
+    --slug=*|--label=*)
       slug="${1#*=}"
       shift
       ;;
-    --line)
-      [ "$#" -ge 2 ] || { echo "--line requires a value" >&2; exit 2; }
+    --line|--detail)
+      [ "$#" -ge 2 ] || { echo "$1 requires a value" >&2; exit 2; }
       line="$2"
       shift 2
       ;;
-    --line=*)
+    --line=*|--detail=*)
       line="${1#*=}"
       shift
       ;;
@@ -113,9 +116,40 @@ while [ "$#" -gt 0 ]; do
       IFS= read -r line || true
       shift
       ;;
+    --automation|--automation-id|--routine)
+      [ "$#" -ge 2 ] || { echo "$1 requires a value" >&2; exit 2; }
+      automation="$2"
+      shift 2
+      ;;
+    --automation=*|--automation-id=*|--routine=*)
+      automation="${1#*=}"
+      shift
+      ;;
+    --run-id)
+      # Accepted so a caller that passes it does not land its flags in the
+      # log. The run id is not part of the heartbeat shape.
+      [ "$#" -ge 2 ] || { echo "--run-id requires a value" >&2; exit 2; }
+      shift 2
+      ;;
+    --run-id=*)
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
+      ;;
+    --)
+      shift
+      [ "$#" -eq 0 ] || line="$*"
+      break
+      ;;
+    -*)
+      # An unknown flag used to fall into the positional branch, so the
+      # whole argv (flags included) became the logged line: 86 rows that
+      # start with "--automation-id last-stack-milestone-driver --line ..."
+      # which no heartbeat reader can attribute to a routine.
+      echo "unknown option: $1 (see --help)" >&2
+      exit 2
       ;;
     *)
       if [ -z "$line" ]; then
@@ -131,6 +165,9 @@ done
 if [ -z "$line" ]; then
   echo "heartbeat line is required" >&2
   exit 2
+fi
+if [ -n "$automation" ]; then
+  line="$automation $(date -u +%Y-%m-%dT%H:%M:%SZ) $line"
 fi
 case "$line" in
   *$'\n'*)
