@@ -103,18 +103,19 @@ echo "Test 2: Success case when real Trash is available..."
 
   # If Trash CLI is available, verify that Trash was actually used (exit 0)
   if command -v trash >/dev/null 2>&1 || command -v gio >/dev/null 2>&1; then
-    if [ "$result" -eq 0 ]; then
-      if grep -q "moved_to_trash method=" "$log_file2"; then
+    # When Trash CLI is available, we must verify it was used
+    if grep -q "moved_to_trash method=" "$log_file2"; then
+      if [ "$result" -eq 0 ]; then
         echo "PASS: Trash was used successfully (exit 0, verified in log)"
       else
-        echo "FAIL: Exit code 0 but log does not show Trash was used" >&2
+        echo "FAIL: Log shows Trash was used but exit code was $result, expected 0" >&2
         cat "$log_file2" >&2
         exit 1
       fi
-    elif [ "$result" -eq 1 ]; then
-      echo "PASS: Trash unavailable, fell back to delete (exit 1)"
     else
-      echo "FAIL: Unexpected exit code $result" >&2
+      # Trash CLI is available but wasn't used - this is a regression
+      echo "FAIL: Trash CLI available but was not used (log does not show 'moved_to_trash method=')" >&2
+      cat "$log_file2" >&2
       exit 1
     fi
   else
