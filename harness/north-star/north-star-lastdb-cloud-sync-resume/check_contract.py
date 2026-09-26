@@ -315,6 +315,7 @@ def evidence_failures(path, log_path=None):
     provenance = data.get("provenance")
     if not isinstance(provenance, dict) or not provenance:
         failures.append("The evidence provenance is absent or empty.")
+        # Skip provenance validation if not present
     else:
         command = req_string(provenance, "command", failures)
         run_start = req_time(provenance, "run_start_at", failures)
