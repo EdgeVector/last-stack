@@ -35,6 +35,7 @@ A decompose-only queue also runs
 `last-stack-feature-portfolio-admission --work-class feature --json`.
 Paused or unreadable admission skips. Board or Brain unreadable skips.
 Promote and complete_proof still proceed when those actions exist.
+Repair work (a proof_pending milestone with a stale FAIL proof, or a decompose entry flagged repair/next-slice) always proceeds; admission never skips it.
 Ready-buffer keeps `routines run last-stack-milestone-driver`.
 
 ## Non-negotiable contract

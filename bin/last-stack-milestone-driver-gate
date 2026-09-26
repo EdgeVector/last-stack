@@ -5,11 +5,20 @@
 # frontier must skip the harness instead of spending a model to learn that.
 #
 #   exit 0  → skip harness (noop)
-#   exit 10 → proceed (promote, admitted decompose, or complete_proof)
+#   exit 10 → proceed (promote, admitted decompose, complete_proof, or
+#             repair work: a decompose entry flagged repair/next-slice, or a
+#             proof_pending milestone whose proof card last verdict is a
+#             stale FAIL)
 #   exit 2  → usage
 #
-# Skip: empty work_queue with no idle promote/empty counts, admission paused
-# or unreadable on a decompose-only queue, or board/Brain unreadable.
+# Skip: empty work_queue with no idle promote/empty counts and no repair
+# work, admission paused or unreadable on a decompose-only queue with no
+# repair work, or board/Brain unreadable.
+#
+# Repair work is never skipped by the admission check: the feature portfolio
+# admission gates NEW feature work, and last-stack-kanban-file-pr files repair
+# with --work-class repair, which admission does not gate
+# (papercut-milestone-driver-gate-blind-to-proof-pending-repair-20260926).
 set -euo pipefail
 
 self_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
@@ -36,6 +45,9 @@ Env (optional, for tests):
   LAST_STACK_MILESTONE_DRIVER_GATE_ADMISSION admission CLI
   LAST_STACK_ADMISSION_FIXTURE              offline admission fixture dir
   LAST_STACK_MILESTONE_DRIVER_GATE_PASS_RECORD pass-record CLI ("" disables)
+  LAST_STACK_MILESTONE_DRIVER_GATE_PROOF_SCAN_MAX  max proof_pending
+                                            milestones point-read (default 25)
+  MILESTONE_DRIVER_CADENCE_SECONDS          FAIL staleness window (default 3600)
 USAGE
 }
 
@@ -123,8 +135,91 @@ case "$has_promote" in ''|*[!0-9]*) has_promote=0 ;; esac
 case "$has_complete" in ''|*[!0-9]*) has_complete=0 ;; esac
 case "$has_decompose" in ''|*[!0-9]*) has_decompose=0 ;; esac
 
+# Repair entries already on the queue: the snapshot's proof_pending repair
+# entries (decompose + stale_fail_proof) and fkanban next-slice decompose
+# entries (needs_next_slice). The raw gap-report does not carry the snapshot
+# flags; the proof_pending scan below covers that case.
+repair_flagged="$("$jq_bin" -r '
+  ([.milestones[]? | select(.status == "needs_next_slice") | .slug]) as $next
+  | [.work_queue[]? | select(.action == "decompose")
+      | select(.stale_fail_proof == true or .needs_next_slice == true
+          or .next_slice == true or .work_class == "repair"
+          or .from_status == "proof_pending" or .from_status == "needs_next_slice"
+          or .status == "needs_next_slice" or ((.slug // "") as $s | $next | index($s)) != null)]
+  | length' "$tmp/gap.json")"
+case "$repair_flagged" in ''|*[!0-9]*) repair_flagged=0 ;; esac
+
+# The verdict of one proof card: its LAST PROOF:/RESULT: verdict line. The
+# rule matches _proof_verdict() in last-stack-milestone-driver-snapshot
+# (tests/last-stack-milestone-driver-gate.sh checks the two agree). Prints
+# `stale-fail` only for a FAIL older than one driver cadence on a card that
+# is not in doing (being re-run now).
+proof_card_filter='
+  def verdict:
+    [ (.body // "") | split("\n")[]
+      | (try capture("^[ \t]*(?:PROOF|RESULT)(?:\\[(?<tag>[^\\]\n]*)\\])?:[ \t]*(?<word>\\S*)"; "i") catch null)
+      | select(. != null)
+      | ((.tag // "") | ascii_downcase | ltrimstr(" ") | rtrimstr(" ")) as $t
+      | ((.word // "") | ascii_downcase
+          | sub("^[-.,;:!\u2014\u2013]+"; "") | sub("[-.,;:!\u2014\u2013]+$"; "")) as $w
+      | if ($t != "" and ($t | test("^(fail|reopened)|unmet"))) then "fail"
+        elif ($t != "" and ($t | test("^pass"))) then "pass"
+        elif ($w | test("^fail(ed|s|ure|ing)?$")) then "fail"
+        elif ($w | test("^pass(ed|es|ing)?$")) then "pass"
+        else empty end ]
+    | last // "none";
+  (try ((.updated_at // "") | sub("\\.[0-9]+"; "") | fromdateiso8601) catch null) as $at
+  | if (.column // "") == "doing" then "running"
+    elif verdict != "fail" then verdict
+    elif $at == null then "fail-undated"
+    elif (now - $at) > ($cadence | tonumber) then "stale-fail"
+    else "fresh-fail" end'
+
+# Count proof_pending milestones whose linked proof card last verdict is a
+# stale FAIL. Bounded: at most PROOF_SCAN_MAX milestones, two point reads
+# each, and only when the gate would otherwise skip.
+stale_fail_proof_pending() {
+  local max="${LAST_STACK_MILESTONE_DRIVER_GATE_PROOF_SCAN_MAX:-25}"
+  local cadence="${MILESTONE_DRIVER_CADENCE_SECONDS:-3600}"
+  case "$max" in ''|*[!0-9]*) max=25 ;; esac
+  case "$cadence" in ''|*[!0-9]*|0) cadence=3600 ;; esac
+  "$jq_bin" -r --argjson max "$max" '
+    [.milestones[]? | select(.status == "proof_pending" or .action == "await_proof")
+      | .slug | select(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*$"))]
+    | .[:$max][]' "$tmp/gap.json" >"$tmp/proof-pending.txt" 2>/dev/null || return 0
+  local n=0 slug card verdict
+  while IFS= read -r slug; do
+    [ -n "$slug" ] || continue
+    "$kanban_bin" milestone detail "$slug" --json >"$tmp/pp-detail.json" 2>/dev/null || continue
+    card="$("$jq_bin" -r --arg slug "$slug" '
+      if (.milestone.slug // "") == $slug then (.milestone.proof_card // "") else "" end
+    ' "$tmp/pp-detail.json" 2>/dev/null || true)"
+    case "$card" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
+    "$kanban_bin" show "$card" --json >"$tmp/pp-card.json" 2>/dev/null || continue
+    verdict="$("$jq_bin" -r --arg cadence "$cadence" "$proof_card_filter" "$tmp/pp-card.json" 2>/dev/null || true)"
+    if [ "$verdict" = "stale-fail" ]; then
+      n=$((n + 1))
+      printf 'MILESTONE_DRIVER_GATE proof_pending_repair slug=%s proof_card=%s\n' "$slug" "$card"
+    fi
+  done <"$tmp/proof-pending.txt"
+  printf '%s\n' "$n" >"$tmp/proof-pending.count"
+}
+
+# One lazy scan per gate run; prints the count on the last line.
+proof_pending_repair_count() {
+  if [ ! -e "$tmp/proof-pending.count" ]; then
+    stale_fail_proof_pending >&2
+    [ -e "$tmp/proof-pending.count" ] || printf '0\n' >"$tmp/proof-pending.count"
+  fi
+  cat "$tmp/proof-pending.count"
+}
+
 idle=$((idle_promoteable + idle_empty))
 if [ "$wq_len" -eq 0 ] && [ "$idle" -eq 0 ]; then
+  pp_repair="$(proof_pending_repair_count)"
+  if [ "$pp_repair" -gt 0 ]; then
+    proceed "proof-pending-repair=${pp_repair} work_queue=0"
+  fi
   skip "empty-frontier work_queue=0 idle_promoteable=0 idle_empty=0"
 fi
 
@@ -135,9 +230,24 @@ if [ "$has_promote" -eq 0 ] && [ "$has_complete" -eq 0 ]; then
   fi
 fi
 
+# Repair work is never skipped by the admission check.
+if [ "$need_admission" -eq 1 ] && [ "$repair_flagged" -gt 0 ]; then
+  proceed "repair=${repair_flagged} work_queue=${wq_len}"
+fi
+
+# An admission skip first checks for proof_pending repair work.
+admission_skip() {
+  local reason="$1" pp_repair
+  pp_repair="$(proof_pending_repair_count)"
+  if [ "$pp_repair" -gt 0 ]; then
+    proceed "proof-pending-repair=${pp_repair} work_queue=${wq_len} admission=${reason%% *}"
+  fi
+  skip "$reason"
+}
+
 if [ "$need_admission" -eq 1 ]; then
   if [ ! -x "$admission_bin" ]; then
-    skip "admission-unreadable missing-cli"
+    admission_skip "admission-unreadable missing-cli"
   fi
   # work_queue entries carry only {action, promoteable, slug} -- no
   # north_star/northStar field ever lands there. Look the real value up on
@@ -169,10 +279,10 @@ if [ "$need_admission" -eq 1 ]; then
   adm_rc=$?
   set -e
   if [ "$adm_rc" -eq 2 ]; then
-    skip "admission-paused"
+    admission_skip "admission-paused"
   fi
   if [ "$adm_rc" -eq 1 ] || [ "$adm_rc" -ne 0 ]; then
-    skip "admission-unreadable rc=${adm_rc}"
+    admission_skip "admission-unreadable rc=${adm_rc}"
   fi
   proceed "decompose-admitted work_queue=${wq_len} idle_empty=${idle_empty}"
 fi
