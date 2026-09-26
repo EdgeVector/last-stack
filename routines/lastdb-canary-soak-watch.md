@@ -23,6 +23,11 @@ Run the zero-agent gate first.
 "$last_stack/bin/last-stack-canary-reconcile-gate"
 ```
 
+Before the verdict, the wrapper starts the candidate gate's primary-rows step
+detached (`--primary-rows-only --detach`, one line on stderr). It proves
+registry `next` rows for the build the primary runs when none exist. It is
+skipped on a dry run.
+
 The gate reads the owner-only bounded boot ledger. It records a three-sample
 status p95 with a 2-second budget. It records the host fence separately.
 

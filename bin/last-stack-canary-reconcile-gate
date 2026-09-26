@@ -18,4 +18,24 @@ case "${1:-}" in
 esac
 export LAST_STACK_CANARY_V2_EXECUTE_ACTIONS=1
 export LAST_STACK_CANARY_V2_PROMOTE_CMD="${LAST_STACK_CANARY_V2_PROMOTE_CMD:-$ROOT/bin/last-stack-canary-promote-material}"
-exec "$ROOT/bin/last-stack-canary-soak-watch-gate" "$@"
+
+# The hourly backstop for registry rows. Every path that moves the primary
+# should prove `next` rows for its build (the candidate gate does; the
+# lastdb-safe-upgrade GREEN tail starts the same step), and this tick heals a
+# missed call within the hour. It is one identity read and one resolve when the
+# rows exist. When they are missing it starts a detached worker and returns, so
+# this gate's 15-minute budget and its stdout verdict are untouched: the
+# PRIMARY_ROWS line goes to stderr. It also feeds this gate: promote-material
+# refuses a build with no proved `next` rows.
+# papercut-host-track-refresh-held-hours-after-lastdb-cutover-no-registry-proof-trigger-20260926
+primary_rows_gate="${LAST_STACK_CANARY_PRIMARY_ROWS_GATE:-$ROOT/bin/last-stack-canary-candidate-gate}"
+case " $* " in
+  *" --dry-run "*) primary_rows_hourly=0 ;;
+  *) primary_rows_hourly="${LAST_STACK_CANARY_PRIMARY_ROWS_HOURLY:-1}" ;;
+esac
+[ "${LAST_STACK_CANARY_V2_DRY_RUN:-0}" != 1 ] || primary_rows_hourly=0
+if [ "$primary_rows_hourly" = 1 ] && [ -x "$primary_rows_gate" ]; then
+  "$primary_rows_gate" --primary-rows-only --detach </dev/null >&2 || true
+fi
+
+exec "${LAST_STACK_CANARY_SOAK_WATCH_GATE:-$ROOT/bin/last-stack-canary-soak-watch-gate}" "$@"

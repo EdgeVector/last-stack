@@ -12,6 +12,10 @@
 #     from an apps-only set pinned to the build the primary actually runs after
 #     the failure -- unless that build cannot be read, in which case nothing is
 #     published
+#   - step 0 (primary-rows, also `--primary-rows-only [--detach]`) proves rows
+#     for the build the primary runs when `next` has none: a noop on one
+#     resolve when they exist, set + smoke on the PRIMARY lastdbd + publish when
+#     they do not, no rows on a RED smoke, and never a build or a cutover
 # Every tool is a fake that records its calls; nothing real runs.
 set -euo pipefail
 
@@ -86,6 +90,12 @@ printf '#!/usr/bin/env bash\necho "lastdbd 0.23.3-100-gaaaaaaaaa"\n' >"$prim_bin
 cat >"$fake/lastdb" <<EOF
 #!/usr/bin/env bash
 echo "resolve \$*" >>"$calls"
+# FAKE_RESOLVE=norow is the real CLI's answer for a build with no row (exit 1 +
+# "no next row"); FAKE_RESOLVE=error is a resolve that cannot answer at all.
+case "\${FAKE_RESOLVE:-map}" in
+  norow) echo "error: no next row for app 'x' was proved with lastdb y" >&2; exit 1 ;;
+  error) echo "error: index unreachable" >&2; exit 1 ;;
+esac
 app=""
 while [ \$# -gt 0 ]; do case "\$1" in app|resolve) shift;; --channel|--lastdb-version) shift 2;; --json) shift;; *) app="\$1"; shift;; esac; done
 printf '%s' "\${FAKE_PROVED:-{\}}" | jq -c --arg a "\$app" '{sha: (.[\$a] // "")}'
@@ -120,7 +130,11 @@ run_gate() {
     LAST_STACK_CANARY_PRIMARY_LASTDBD="$prim_bin" \
     LAST_STACK_CANARY_APP_RESOLVE_BIN="$fake/lastdb" \
     LAST_STACK_CANARY_APPS_ONLY_STAMP_DIR="$work/apps-only-stamps" \
-    "$@" "$GATE"
+    LAST_STACK_CANARY_PRIMARY_ROWS="${PRIMARY_ROWS:-0}" \
+    LAST_STACK_CANARY_PRIMARY_ROWS_PROBE_APP=brain \
+    LAST_STACK_CANARY_PRIMARY_ROWS_LOCK="$work/primary-rows.lock" \
+    LAST_STACK_CANARY_PRIMARY_ROWS_LOG_DIR="$work/primary-rows-logs" \
+    "$@" "$GATE" ${GATE_FLAGS:-}
 }
 
 # GREEN path: build → set → smoke → cutover → rows, in that order.
@@ -286,6 +300,116 @@ out="$(KEEP_APPS_ONLY_STAMPS=1 run_gate env FAKE_CUTOVER=fail FAKE_PROVED='{"bra
 grep -q 'apps_only=noop' <<<"$out" || fail "repeat failed cutover ignored the cooldown: $out"
 grep -q 'apps_only_evidence=apps_only_cooldown' <<<"$out" || fail "cooldown reason: $out"
 [ "$(grep -c '^smoke' "$calls")" = 1 ] || fail "repeat failed cutover re-smoked inside the cooldown"
+rm -rf "$work/apps-only-stamps"
+
+# ── step 0: primary-rows ───────────────────────────────────────────────────
+# Any path can move the primary (lastdb-safe-upgrade moved it to 2375 at 12:53Z
+# on 2026-09-26), and a build with no `next` row freezes every host-track
+# install. Step 0 proves the app set against the build the primary runs, with
+# the primary's own lastdbd, and never builds or cuts over.
+# papercut-host-track-refresh-held-hours-after-lastdb-cutover-no-registry-proof-trigger-20260926
+only_steps() { grep -oE '^(build-main|candidate-set|smoke|dogfood --cutover|publish-next)' "$calls" | tr '\n' ' '; }
+
+# Rows exist for the primary build: one resolve and nothing else.
+rc=0
+out="$(PRIMARY_ROWS=1 GATE_FLAGS=--primary-rows-only run_gate env FAKE_PROVED='{"brain":"abc"}')" || rc=$?
+[ "$rc" = 0 ] || fail "rows-present probe exited $rc: $out"
+grep -q '^PRIMARY_ROWS result=noop .*evidence=rows_present' <<<"$out" || fail "rows-present not a noop: $out"
+grep -q 'ROUTINE_RESULT' <<<"$out" && fail "--primary-rows-only printed a ROUTINE_RESULT (its callers own that line): $out"
+[ "$(grep -c '^resolve' "$calls")" = 1 ] || fail "rows-present cost more than one resolve: $(cat "$calls")"
+[ -z "$(only_steps)" ] || fail "rows-present still ran steps: $(only_steps)"
+grep -q -- '--lastdb-version 0.23.3-100-gaaaaaaaaa' "$calls" || fail "probe did not ask for the PRIMARY build: $(cat "$calls")"
+
+# Rows missing (the real CLI's "no next row" error): set + smoke on the PRIMARY
+# lastdbd + publish, and never a build or a cutover.
+rc=0
+out="$(PRIMARY_ROWS=1 GATE_FLAGS=--primary-rows-only run_gate env FAKE_RESOLVE=norow)" || rc=$?
+[ "$rc" = 0 ] || fail "rows-missing pass exited $rc: $out"
+grep -q '^PRIMARY_ROWS result=ok .*stage=primary-rows' <<<"$out" || fail "rows-missing not ok: $out"
+grep -q 'rows=pr:EdgeVector/homebrew-lastdb/7' <<<"$out" || fail "rows-missing wrote no rows: $out"
+[ "$(only_steps)" = "candidate-set smoke publish-next " ] || fail "rows-missing steps: $(only_steps)"
+grep -q "candidate-set --lastdbd $prim_bin" "$calls" || fail "set not pinned to the primary lastdbd"
+grep -q "smoke lastdbd=$prim_bin" "$calls" || fail "smoke did not boot the primary lastdbd: $(cat "$calls")"
+[ ! -d "$work/primary-rows.lock" ] || fail "--primary-rows-only left its lock behind"
+
+# RED smoke: no rows, exit 1, no cutover.
+rc=0
+out="$(PRIMARY_ROWS=1 GATE_FLAGS=--primary-rows-only run_gate env FAKE_RESOLVE=norow FAKE_SMOKE=RED)" || rc=$?
+[ "$rc" = 1 ] || fail "RED primary-rows smoke exited $rc, want 1: $out"
+grep -q '^PRIMARY_ROWS result=red .*evidence=smoke_red' <<<"$out" || fail "RED primary-rows evidence: $out"
+grep -q 'publish-next' "$calls" && fail "RED primary-rows smoke still wrote rows"
+grep -q 'dogfood --cutover' "$calls" && fail "primary-rows cut over"
+
+# The running build and the binary on disk differ: prove nothing.
+rc=0
+out="$(PRIMARY_ROWS=1 GATE_FLAGS=--primary-rows-only run_gate env FAKE_RESOLVE=norow FAKE_PRIMARY=0.23.3-200-gbbbbbbbbb)" || rc=$?
+grep -q 'evidence=primary_binary_mismatch' <<<"$out" || fail "binary mismatch not caught: $out"
+grep -q '^smoke' "$calls" && fail "binary mismatch still ran the smoke"
+
+# A resolve that cannot answer must not buy a smoke; it is reported (exit 1).
+rc=0
+out="$(PRIMARY_ROWS=1 GATE_FLAGS=--primary-rows-only run_gate env FAKE_RESOLVE=error)" || rc=$?
+[ "$rc" = 1 ] || fail "probe failure exited $rc, want 1: $out"
+grep -q '^PRIMARY_ROWS result=unknown .*evidence=probe_failed' <<<"$out" || fail "probe failure evidence: $out"
+[ -z "$(only_steps)" ] || fail "probe failure still ran steps: $(only_steps)"
+
+# The kill switch.
+out="$(PRIMARY_ROWS=0 GATE_FLAGS=--primary-rows-only run_gate env FAKE_RESOLVE=norow)"
+grep -q '^PRIMARY_ROWS result=skipped .*evidence=disabled' <<<"$out" || fail "kill switch: $out"
+[ -z "$(only_steps)" ] || fail "kill switch still ran steps"
+
+# A live holder of the lock (another worker, or a full gate mid-cutover).
+mkdir -p "$work/primary-rows.lock"; printf '%s\n' "$$" >"$work/primary-rows.lock/pid"
+out="$(PRIMARY_ROWS=1 GATE_FLAGS=--primary-rows-only run_gate env FAKE_RESOLVE=norow)"
+grep -q "evidence=locked holder=$$" <<<"$out" || fail "live lock not honoured: $out"
+out="$(PRIMARY_ROWS=1 GATE_FLAGS='--primary-rows-only --detach' run_gate env FAKE_RESOLVE=norow)"
+grep -q "evidence=locked holder=$$" <<<"$out" || fail "live lock not honoured by --detach: $out"
+[ -z "$(only_steps)" ] || fail "locked runs still ran steps"
+# A dead holder is taken over.
+printf '%s\n' 999999 >"$work/primary-rows.lock/pid"
+out="$(PRIMARY_ROWS=1 GATE_FLAGS=--primary-rows-only run_gate env FAKE_RESOLVE=norow)"
+grep -q '^PRIMARY_ROWS result=ok' <<<"$out" || fail "stale lock not taken over: $out"
+rm -rf "$work/primary-rows.lock"
+
+# --detach: return at once with the worker's pid and log; the worker proves the
+# rows in its own session.
+out="$(PRIMARY_ROWS=1 GATE_FLAGS='--primary-rows-only --detach' run_gate env FAKE_RESOLVE=norow)"
+grep -q '^PRIMARY_ROWS result=spawned .*evidence=rows_missing' <<<"$out" || fail "--detach did not spawn: $out"
+log="$(sed -n 's/.* log=\([^ ]*\).*/\1/p' <<<"$out")"
+[ -n "$log" ] || fail "--detach named no log: $out"
+for _ in $(seq 1 100); do
+  grep -q '^PRIMARY_ROWS result=' "$log" 2>/dev/null && break
+  sleep 0.2
+done
+grep -q '^PRIMARY_ROWS result=ok' "$log" || fail "detached worker did not publish: $(cat "$log" 2>/dev/null)"
+grep -q "smoke lastdbd=$prim_bin" "$calls" || fail "detached worker did not boot the primary lastdbd"
+grep -q 'dogfood --cutover' "$calls" && fail "detached worker cut over"
+for _ in $(seq 1 50); do [ -d "$work/primary-rows.lock" ] || break; sleep 0.1; done
+[ ! -d "$work/primary-rows.lock" ] || fail "detached worker left its lock behind"
+
+# --detach alone is a usage error.
+rc=0
+GATE_FLAGS=--detach run_gate >/dev/null 2>&1 || rc=$?
+[ "$rc" = 2 ] || fail "--detach without --primary-rows-only exited $rc, want 2"
+
+# The FULL gate runs step 0 first, before the expensive build, then carries on
+# exactly as before.
+rm -rf "$work/apps-only-stamps"
+out="$(PRIMARY_ROWS=1 run_gate env FAKE_RESOLVE=norow)"
+grep -q 'ROUTINE_RESULT outcome=ok' <<<"$out" || fail "full gate with step 0 not ok: $out"
+grep -q 'primary_rows=ok' <<<"$out" || fail "full gate result does not report step 0: $out"
+[ "$(only_steps)" = "candidate-set smoke publish-next build-main candidate-set smoke dogfood --cutover publish-next " ] \
+  || fail "full gate order with step 0: $(only_steps)"
+first_smoke="$(grep -m1 '^smoke' "$calls")"
+[ "$first_smoke" = "smoke lastdbd=$prim_bin set=$work/run/apps-only-set.json" ] \
+  || fail "step 0 smoke did not boot the primary: $first_smoke"
+[ ! -d "$work/primary-rows.lock" ] || fail "full gate left its lock behind"
+
+# Rows present: the full gate pays one resolve and keeps today's order.
+out="$(PRIMARY_ROWS=1 run_gate env FAKE_PROVED='{"brain":"abc"}')"
+grep -q 'primary_rows=noop' <<<"$out" || fail "full gate rows-present: $out"
+[ "$(only_steps)" = "build-main candidate-set smoke dogfood --cutover publish-next " ] \
+  || fail "full gate order with rows present: $(only_steps)"
 rm -rf "$work/apps-only-stamps"
 
 echo "PASS last-stack-canary-candidate-gate"

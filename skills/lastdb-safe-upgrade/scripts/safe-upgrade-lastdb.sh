@@ -2536,6 +2536,26 @@ if [ -x "$reopen_deferred_cards" ]; then
     warn "deferred-card reopen pass failed after GREEN cutover; next activation retries"
 fi
 
+# The primary now runs a new build, and host-track installs an app only from a
+# registry `next` row proved with the build the primary runs. Nothing on this
+# path wrote rows, so a GREEN cutover here froze every app install until the
+# nightly candidate gate (2026-09-26: 2375 went live at 12:53Z; kanban,
+# routines, brain and situations held for hours). Start the candidate gate's
+# primary-rows step: a noop when rows exist, else a DETACHED set + isolated
+# smoke on the primary's own lastdbd + publish-next. It never builds and never
+# cuts over, and it returns at once so this verdict is not delayed. The hourly
+# reconcile gate re-runs the same step if this one is missed.
+# LASTDB_SAFE_UPGRADE_PRIMARY_ROWS=0 turns it off.
+# papercut-host-track-refresh-held-hours-after-lastdb-cutover-no-registry-proof-trigger-20260926
+primary_rows_gate="$last_stack_root/bin/last-stack-canary-candidate-gate"
+if [ "${LASTDB_SAFE_UPGRADE_PRIMARY_ROWS:-1}" = 1 ] && [ -x "$primary_rows_gate" ]; then
+  if primary_rows_line="$("$primary_rows_gate" --primary-rows-only --detach </dev/null 2>/dev/null)"; then
+    log "registry rows: ${primary_rows_line:-no output}"
+  else
+    warn "registry rows step failed after GREEN cutover (${primary_rows_line:-no output}); the hourly reconcile gate retries"
+  fi
+fi
+
 echo ""
 echo "VERDICT: GREEN"
 echo "SUMMARY: upgraded lastdbd $CURRENT_VER → $INSTALLED and lastdb → ${INSTALLED_CLI:-?}; venue=$VENUE; cutover_s=$CUTOVER_SECS; probe + live Board read OK; probe_rss_mb=${PROBE_RSS_MB:-?} live_rss_mb=${LIVE_RSS_MB:-?} limit_mb=$(resolve_rss_limit_mb); rollback point released"
