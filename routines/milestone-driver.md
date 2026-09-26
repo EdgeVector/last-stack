@@ -293,7 +293,7 @@ Meanings (from fkanban code, not your opinion):
 | `idle_promoteable` | promote | `kanban move <slug> todo` for each listed promoteable PR (cap remaining) |
 | `idle_empty` | decompose | File full next-gate Kind:pr set for **that** milestone (agent work) |
 | `idle_blocked` | skip | Do not invent; leave held/hollow/dep-blocked backlog |
-| `proof_pending` | await_proof | Do not invent filler PRs; leave for validate when a real proof card is pending PASS |
+| `proof_pending` | await_proof | Do not invent filler PRs; leave for validate when a real proof card is pending PASS. Exception: when the linked proof card's last verdict is a stale FAIL, `capture` puts the milestone on the work_queue as `decompose` + `stale_fail_proof=true` + `from_status=proof_pending` -- see **repair_proof** |
 | `proof_ready` | complete_proof | Complete only with a current live proof verdict; never waive a pending proof |
 | `complete` / `blocked` / `no_north_star` | skip | Ignore |
 
@@ -310,7 +310,8 @@ the same stuck count next run:
 
 | Flag on the entry | Meaning | What you do |
 |---|---|---|
-| `decompose` + `stale_fail_proof=true`, `proof_card=<slug>` | idle_empty, but the linked terminal proof card already recorded a `PROOF: FAIL` / `RESULT: FAIL` older than one driver cadence | See **repair_proof** below instead of filing a fresh next-gate PR set |
+| `decompose` + `stale_fail_proof=true`, `proof_card=<slug>` | idle_empty, but the linked terminal proof card's last verdict line is a FAIL older than one driver cadence | See **repair_proof** below instead of filing a fresh next-gate PR set |
+| `decompose` + `stale_fail_proof=true`, `proof_card=<slug>`, `from_status=proof_pending` | proof_pending (fkanban `await_proof`, off the raw queue): all implementation Kind:pr cards are done, and the linked proof card's last verdict line is a FAIL older than one driver cadence. `capture` appends this entry itself. | See **repair_proof** below. This is how a multi-slice milestone gets its next slice: fkanban only decomposes milestones with zero done cards |
 | `complete_proof` + `missing_proof_card=true` | implementation done, no proof card exists at all, no live `not_required` | See **file_proof_card** below instead of leaving it `await_proof` forever |
 | `decompose` + `needs_spec=true`, `sibling_milestones=[...]` | the milestone body is only a bare newline list of other milestone slugs -- no Outcome/Acceptance/Goal/End-State spec to decompose from | See **needs_spec** below instead of silently skipping the entry |
 
@@ -385,9 +386,9 @@ groom rather than guessing.
 
 For each `work_queue` item with `action=decompose`, until `safety_cap`:
 
-If the entry carries `stale_fail_proof=true`, skip straight to
-**repair_proof** below instead of steps 1-6 — it is not a fresh idle_empty
-candidate. If it carries `needs_spec=true`, skip straight to **needs_spec**
+If the entry carries `stale_fail_proof=true` (from idle_empty or from
+`from_status=proof_pending`), skip straight to **repair_proof** below instead
+of steps 1-6 — it is not a fresh idle_empty candidate. If it carries `needs_spec=true`, skip straight to **needs_spec**
 below.
 
 1. `kanban milestone detail <slug> --json` + `kanban milestone reconcile <slug> --json`
@@ -445,33 +446,55 @@ below.
    **stop** for that milestone with `needs-decomposition` — do not spam shells
    (PR or validation).
 
-### repair_proof (agent path — idle_empty with a stale FAIL proof)
+### repair_proof (agent path — idle_empty or proof_pending with a stale FAIL proof)
 
 For each `work_queue` item flagged `stale_fail_proof=true`
-(papercut-milestone-driver-never-reruns-stale-fail-proof-20260926): a real
-gap-report classifies this milestone `idle_empty` because it has no live
-children, but its *last* attempt already ran a proof and that proof recorded
-`PROOF: FAIL` / `RESULT: FAIL` — filing another next-gate PR set would just
-repeat the same failed slice. Do not decompose it as fresh idle_empty:
+(papercut-milestone-driver-never-reruns-stale-fail-proof-20260926). It has
+two sources:
+
+- idle_empty: the milestone has no live children, but its *last* attempt
+  already ran a proof and that proof failed. Another next-gate PR set would
+  repeat the same failed slice.
+- `from_status=proof_pending`: fkanban says `await_proof` because every
+  implementation Kind:pr card is done, but the linked proof card failed.
+  fkanban never decomposes a milestone with a done card, so without this
+  path the milestone has no exit and its next slice is never filed.
+
+`capture` reads the proof card's verdict from its LAST `PROOF:` / `RESULT:`
+verdict line: `PROOF: FAIL`, `PROOF: failed ...`, `PROOF[failed-...]: ...`
+and `PROOF[reopened-...-unmet]: ...` are FAIL; `PROOF: PASS` and
+`PROOF: passed ...` are PASS; a later PASS supersedes an earlier FAIL. Do not
+decompose the entry as fresh idle_empty:
 
 1. Point-read the flagged `proof_card` (`kanban show <proof_card> --canonical
    --json`). Confirm it still belongs to this milestone/board and its body
    still carries the FAIL line; a live edit since capture means recapture
    and re-read the current state instead of acting on stale evidence.
+   If a repair Kind:pr for this milestone merged AFTER the last FAIL line,
+   the FAIL predates that fix: do step 2 (re-run) and do not file a second
+   repair card for the same clause.
 2. If a concrete, already-registered harness exists for this milestone or its
    North Star (a `last-stack-north-star-proof` registration, or an explicit
    command already named in the milestone's Outcome/Acceptance body), re-run
    it now. A fresh PASS: proceed to **complete_proof** below with that
    evidence. A fresh FAIL, or no harness to re-run: continue to step 3.
 3. File exactly one repair `Kind: pr` card via
-   `last-stack-milestone-driver-snapshot guard -- ... last-stack-kanban-file-pr`
-   (same admission/decision/surfaces checks as Decompose). Its `## GOAL` names
-   the exact FAIL evidence: proof card slug, the FAIL line, and the milestone.
-   Do not invent unrelated scope — the goal is making the *existing* proof
-   pass, not a new feature slice.
+   `last-stack-milestone-driver-snapshot guard -- ... last-stack-kanban-file-pr
+   --work-class repair` (same decision/surfaces checks as Decompose; the guard
+   authorizes it against the `decompose` queue entry). `--work-class repair`
+   is correct here and is not an admission bypass: the milestone already
+   shipped its feature work, and the card repairs its failing proof. Its
+   `## GOAL` names the failing clause(s) from the proof card by name: the
+   proof card slug, the last FAIL verdict line, and each failed check or
+   unmet END STATE clause that line or the report names (for example
+   `sentry_failure_visible`, `restore_from_empty_home`). One card carries the
+   next concrete slice for those clauses only. Do not invent unrelated scope —
+   the goal is making the *existing* proof pass, not a new feature slice.
 4. Do not waive or reclassify the FAIL. `complete_proof` only fires later,
    from fresh PASS evidence produced by step 2 or by the repair card's own
-   merged fix and re-run.
+   merged fix and re-run. When that re-run writes a PASS verdict line last,
+   fkanban classifies the milestone `proof_ready` / `complete_proof`, and the
+   guard authorizes `milestone state <slug> complete --proof-status passing`.
 5. Count this as `proof_n` for GAP_FILL (a proof-repair action), not as a
    fresh `filed_n` decompose slice, so the run line distinguishes "filed new
    work" from "repaired a failing proof."
