@@ -95,35 +95,36 @@ echo "Test 2: Success case when real Trash is available..."
   set -e
 
   if [ ! -d "$cache_dir2" ]; then
-    echo "PASS: Directory was removed (exit code $result)"
+    echo "Directory was removed (exit code $result)"
   else
     echo "FAIL: Directory was not removed" >&2
     exit 1
   fi
 
-  # If Trash CLI is available, verify that Trash was actually used (exit 0)
+  # Check if Trash CLI is available on this system
   if command -v trash >/dev/null 2>&1 || command -v gio >/dev/null 2>&1; then
-    # When Trash CLI is available, we must verify it was used
+    # Trash CLI is available - Trash method MUST have been used
     if grep -q "moved_to_trash method=" "$log_file2"; then
       if [ "$result" -eq 0 ]; then
-        echo "PASS: Trash was used successfully (exit 0, verified in log)"
+        echo "PASS: Trash method was used successfully (exit 0)"
       else
         echo "FAIL: Log shows Trash was used but exit code was $result, expected 0" >&2
         cat "$log_file2" >&2
         exit 1
       fi
     else
-      # Trash CLI is available but wasn't used - this is a regression
-      echo "FAIL: Trash CLI available but was not used (log does not show 'moved_to_trash method=')" >&2
+      # Trash CLI available but wasn't used - this is a regression
+      echo "FAIL: Trash CLI available but was not used (no 'moved_to_trash method=' in log)" >&2
       cat "$log_file2" >&2
       exit 1
     fi
   else
-    # Trash CLI is unavailable on this system, only accept fallback exit 1
-    if [ "$result" -eq 1 ]; then
-      echo "PASS: Trash unavailable on this system, fell back to delete (exit 1)"
+    # Trash CLI unavailable - fallback to delete is expected, skip this test
+    if grep -q "fallback_delete_succeeded" "$log_file2"; then
+      echo "PASS: Trash unavailable on this system, fallback delete used (skipped Trash verification)"
     else
-      echo "FAIL: No Trash CLI available, expected fallback (exit 1), got $result" >&2
+      echo "FAIL: Trash unavailable but fallback delete did not succeed" >&2
+      cat "$log_file2" >&2
       exit 1
     fi
   fi

@@ -19,6 +19,7 @@
 #
 set -euo pipefail
 
+: "${TMPDIR:=/tmp}"
 trash_err_file=$(mktemp "$TMPDIR/trash-err.XXXXXX")
 gio_err_file=$(mktemp "$TMPDIR/gio-err.XXXXXX")
 rm_err_file=$(mktemp "$TMPDIR/rm-err.XXXXXX")
