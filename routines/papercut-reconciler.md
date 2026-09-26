@@ -283,7 +283,8 @@ For each pattern worth fixing now:
   worktrees, recently merged work). Update an existing card rather than filing
   a near-duplicate.
 - File ONE pickup-ready card covering the cluster — pattern-level GOAL, the
-  member papercut slugs listed in CONTEXT as evidence, concrete STEPS/VERIFY,
+  member papercut slugs listed in CONTEXT as evidence, one
+  `Papercut: <slug>` line per member (its own line, the exact slug), concrete STEPS/VERIFY,
   and a `COMPOUND PREVENTION` section naming the failure invariant, target
   test/probe location, components crossed, red-before/green-after proof
   command, and coverage status. `DONE WHEN` must require that executable proof
@@ -308,6 +309,11 @@ For each pattern worth fixing now:
   Difficulty) came back from the fast tier with a test that reproduced nothing
   and a range change that did not change the key set
   (papercut-land-card-fast-tier-hollow-pr-on-correctness-card-20260926).
+- The `Papercut: <slug>` lines are the repair link. Loom copies the card body
+  into the PR body, and `last-stack-papercut-lifecycle-close` closes a papercut
+  as `fixed` when a merged PR carries its labeled line. A slug named only in
+  prose is context and never closes anything
+  (papercut-card-merge-does-not-close-its-named-papercuts-20260926).
 - File as many pattern cards as the evidence genuinely supports; too ambiguous
   or too large → one `backlog` card with what you know.
 
