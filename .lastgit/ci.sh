@@ -129,15 +129,23 @@ if [ -z "$CI_SHARD_INDEX" ]; then
     # answer runs the gate. The workflow sets LAST_STACK_CI_PR_NUMBER only on
     # pull_request events.
     # papercut-forge-queued-runs-for-merged-pr-heads-cannot-be-cancelled-by-agents-20260923
+    # LAST_STACK_CI_PUSH_BRANCH (push events only) asks the same question of a
+    # main push run: a newer push is queued behind it in the serial group.
     ci_exit_if_superseded() {
-      [ -n "${LAST_STACK_CI_PR_NUMBER:-}" ] || return 0
-      local out rc=0
+      local out rc=0 target
+      if [ -n "${LAST_STACK_CI_PR_NUMBER:-}" ]; then
+        target=(--pr "$LAST_STACK_CI_PR_NUMBER" --sha "${LAST_STACK_CI_PR_HEAD_SHA:-${GITHUB_SHA:-}}")
+      elif [ -n "${LAST_STACK_CI_PUSH_BRANCH:-}" ] && [ -n "${GITHUB_SHA:-}" ]; then
+        target=(--branch "$LAST_STACK_CI_PUSH_BRANCH" --sha "$GITHUB_SHA")
+      else
+        return 0
+      fi
       # A private token name: tests in this gate must never see FORGE_TOKEN.
       out="$(FORGE_TOKEN="${LAST_STACK_CI_FORGE_TOKEN:-}" "$ROOT/bin/last-stack-ci-superseded" --repo "${GITHUB_REPOSITORY:-}" \
-        --pr "$LAST_STACK_CI_PR_NUMBER" --sha "${LAST_STACK_CI_PR_HEAD_SHA:-${GITHUB_SHA:-}}")" || rc=$?
+        "${target[@]}")" || rc=$?
       echo "$out"
       if [ "$rc" -eq 0 ]; then
-        echo "last-stack required CI: SKIPPED — the PR head is superseded; no test ran"
+        echo "last-stack required CI: SKIPPED — the tested head is superseded; no test ran"
         exit 0
       fi
     }
