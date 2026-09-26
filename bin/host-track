@@ -1178,6 +1178,16 @@ status_json_for() {
           stale="true"
         fi
       fi
+    elif [ -n "$gate_remote" ] && [ -n "$gate_ref" ]; then
+      main_tip="$(remote_head "$gate_remote" "$gate_ref" || true)"
+      if [ -n "$main_tip" ]; then
+        gate_tip="$main_tip"
+        if [ "$local_safe_install_ok" -eq 1 ] && [ "$host_head" = "$main_tip" ]; then
+          stale="false"
+        else
+          stale="true"
+        fi
+      fi
     fi
     # Offline / tip-unknown fallback: integrity of the install only (not lag).
     if [ -z "$gate_tip" ] && [ "$local_safe_install_ok" -eq 1 ]; then
@@ -3336,8 +3346,8 @@ rollback_local_safe_app() {
   json="$(require_app_json "$app")"
   install_root="$(expand_path "$(field "$json" install_root)")"
   [ -n "$install_root" ] || install_root="$INSTALL_ROOT_DEFAULT/$app"
-  activate_bin="$(command -v last-stack-safe-activate-cli 2>/dev/null || true)"
-  [ -x "$activate_bin" ] || activate_bin="$ROOT/bin/last-stack-safe-activate-cli"
+  activate_bin="$ROOT/bin/last-stack-safe-activate-cli"
+  [ -x "$activate_bin" ] || activate_bin="$(command -v last-stack-safe-activate-cli 2>/dev/null || true)"
   [ -x "$activate_bin" ] || die "last-stack-safe-activate-cli not found for local-safe rollback"
   [ -L "$install_root/previous" ] || die "$app has no previous (nothing to roll back to)"
   previous_target="$(readlink "$install_root/previous")"
