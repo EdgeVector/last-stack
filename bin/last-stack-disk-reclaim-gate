@@ -7,6 +7,25 @@
 #   exit 0  → skip harness (noop)
 #   exit 10 → proceed (under floor, or df failed)
 #   exit 2  → usage
+#
+# On the skip path the gate first runs the MECHANICAL retention sweep that has
+# no reason to wait for an emergency. `last-stack-loom-worktree-reclaim` only
+# removes a Loom step worktree whose execution is terminal, past its grace
+# window, and provably not live; it needs no judgement, so it does not need the
+# LLM harness. Before 2026-09-26 it ran only inside the harness, which the floor
+# skips: the host sat above 80 GiB all evening, the sweep never executed once
+# after it installed, and ~/.loom/worktrees grew 20 GiB / 40 trees (20:10Z) to
+# 28 GiB / 34 trees + 11.3 GiB immediately reclaimable (03:2xZ). A retention
+# policy reachable only below the emergency floor is not a retention policy.
+# Under the floor the gate proceeds and the harness runs the same sweep, so the
+# gate does not duplicate it there.
+#
+# The sweep never changes the gate's verdict and never fails the gate: it is
+# bounded by a wall-clock budget, and it is skipped entirely when no bounding
+# command is available (fail closed on the mutation, fail open on the gate).
+# Its summary is appended to the skip reason and to the heartbeat line, so
+# `loom_wt_reclaimed=` becomes a receipt an operator can read without waiting
+# for the host to run out of disk.
 set -euo pipefail
 
 self_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
@@ -27,8 +46,15 @@ Zero-LLM gate for last-stack-disk-reclaim. Exit 0 = skip; 10 = proceed.
 Reads `df -kP` on LAST_STACK_RECLAIM_VOLUME (default /) and compares free
 GiB to LAST_STACK_RECLAIM_FREE_FLOOR_GIB (default 80). df failure proceeds.
 
+On the skip path it also runs last-stack-loom-worktree-reclaim, the mechanical
+Loom step-worktree retention sweep, and reports its summary. The sweep cannot
+change the verdict or fail the gate.
+
 Env (optional, for tests):
-  LAST_STACK_DISK_RECLAIM_DF_CMD   override for the df command
+  LAST_STACK_DISK_RECLAIM_DF_CMD        override for the df command
+  LAST_STACK_LOOM_WT_RECLAIM_BIN        override for the retention sweep
+  LAST_STACK_DISK_RECLAIM_GATE_LOOM_WT  set to 0 to disable the sweep
+  LAST_STACK_DISK_RECLAIM_GATE_LOOM_WT_BUDGET_S  sweep wall-clock budget (300)
 USAGE
 }
 
@@ -47,6 +73,73 @@ heartbeat() {
     "$helper" --line "$line" >/dev/null 2>&1 || true
   fi
   printf '%s\n' "$line"
+}
+
+# Run "$@" under a wall-clock budget. Returns 125 when nothing on the host can
+# bound the command, so the caller can decline to start it at all.
+#
+# routinesd shells often run with a stripped PATH, where neither `gtimeout` nor
+# `timeout` resolves and only /usr/bin/perl does — so the perl arm is the one
+# that runs in production and has to be correct, not a courtesy fallback.
+#
+# The caller must REDIRECT this to a file and must not capture it with `$(...)`.
+# A killed child can leave a grandchild holding the write end of the capture
+# pipe, and the command substitution then blocks for the grandchild's full
+# runtime even though the budget was enforced: measured 30s against a 2s budget,
+# with rc=142 (SIGALRM) proving the bound itself had fired on time.
+run_bounded() {
+  local secs="$1"; shift
+  if command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$secs" "$@"
+  elif command -v timeout >/dev/null 2>&1; then
+    timeout "$secs" "$@"
+  elif command -v perl >/dev/null 2>&1; then
+    perl -e 'alarm shift; exec @ARGV' "$secs" "$@"
+  else
+    return 125
+  fi
+}
+
+# Mechanical Loom step-worktree retention. Best effort: every failure path
+# returns a token and exit 0, because this must never decide the gate.
+loom_wt_sweep() {
+  if [ "${LAST_STACK_DISK_RECLAIM_GATE_LOOM_WT:-1}" != "1" ]; then
+    printf 'loom_wt=disabled'
+    return 0
+  fi
+  local bin="${LAST_STACK_LOOM_WT_RECLAIM_BIN:-${last_stack}/bin/last-stack-loom-worktree-reclaim}"
+  if [ ! -x "$bin" ]; then
+    printf 'loom_wt=absent'
+    return 0
+  fi
+  local budget="${LAST_STACK_DISK_RECLAIM_GATE_LOOM_WT_BUDGET_S:-300}"
+  case "$budget" in ''|*[!0-9]*) budget=300 ;; esac
+  local capture rc line
+  capture="$(mktemp "${TMPDIR:-/tmp}/disk-reclaim-gate-loomwt.XXXXXX")" || {
+    printf 'loom_wt=no-capture'
+    return 0
+  }
+  set +e
+  run_bounded "$budget" "$bin" >"$capture" 2>/dev/null </dev/null
+  rc=$?
+  set -e
+  if [ "$rc" -eq 125 ]; then
+    rm -f "$capture"
+    printf 'loom_wt=unbounded-skipped'
+    return 0
+  fi
+  if [ "$rc" -ne 0 ]; then
+    rm -f "$capture"
+    printf 'loom_wt=failed rc=%s' "$rc"
+    return 0
+  fi
+  line="$(awk '/^loom_wt_seen=/ {l=$0} END {if (l != "") print l}' "$capture")"
+  rm -f "$capture"
+  if [ -z "$line" ]; then
+    printf 'loom_wt=no-summary'
+    return 0
+  fi
+  printf '%s' "$line"
 }
 
 skip() {
@@ -92,6 +185,8 @@ esac
 
 avail_gib=$((avail_k / 1024 / 1024))
 if [ "$avail_gib" -ge "$floor" ]; then
-  skip "above-floor free_gib=${avail_gib} floor_gib=${floor}"
+  # The harness is not needed, but the mechanical retention sweep is.
+  sweep="$(loom_wt_sweep)"
+  skip "above-floor free_gib=${avail_gib} floor_gib=${floor} ${sweep}"
 fi
 proceed "under-floor free_gib=${avail_gib} floor_gib=${floor}"

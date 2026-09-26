@@ -139,6 +139,11 @@ continue — do not fail the whole run.
    (after 60 min) or `failed` (after 48 h) and no process uses it; lsof
    failure keeps every tree. Add its last-line `loom_wt_*` tokens to the
    heartbeat.
+   Since 2026-09-26 `last-stack-disk-reclaim-gate` runs this same helper on
+   its SKIP path, so the pool is bounded every hour whatever the free space
+   is, and the gate's own heartbeat line carries the `loom_wt_*` tokens. You
+   are still the below-floor pass: run it here too, because the gate does not
+   sweep when it proceeds.
 3b. **Reclaim leaked LastDB dev homes.** Agents given a private
    `LASTDB_DEV_HOME` left 74 GB of CoW clones on 2026-09-22 and the Forge CI
    host then failed tests with `Too many open files (os error 24)`
