@@ -88,14 +88,12 @@ lastdb_for_sign="${LASTDB_BIN:-$(command -v lastdb || true)}"
 # Fresh tap checkout on main. A stale clone would rebase onto old rows.
 # Unattended git against the local forge has no keychain prompt to answer;
 # hand it the forge token the way last-stack-forge-git does.
-forge_git=(git)
 case "$TAP_URL" in
   http://localhost:3300/*|http://127.0.0.1:3300/*)
     if [ -r "$ROOT/lib/forge-token.sh" ]; then
       # shellcheck source=../lib/forge-token.sh
       . "$ROOT/lib/forge-token.sh"
-      forge_token="$(last_stack_forge_token 2>/dev/null || true)"
-      [ -z "$forge_token" ] || forge_git=(git -c "http.http://localhost:3300/.extraHeader=Authorization: token $forge_token")
+      last_stack_forge_export_git_config 2>/dev/null || true
     fi ;;
 esac
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -103,12 +101,12 @@ if [ "$DRY_RUN" -eq 1 ]; then
   trap 'rm -rf "$TAP_DIR"' EXIT
 fi
 if [ -d "$TAP_DIR/.git" ]; then
-  "${forge_git[@]}" -C "$TAP_DIR" fetch --quiet origin main
+  git -C "$TAP_DIR" fetch --quiet origin main
   git -C "$TAP_DIR" checkout --quiet -B main origin/main
   git -C "$TAP_DIR" reset --quiet --hard origin/main
 else
   rm -rf "$TAP_DIR"
-  "${forge_git[@]}" clone --quiet "$TAP_URL" "$TAP_DIR"
+  git clone --quiet "$TAP_URL" "$TAP_DIR"
 fi
 branch="registry/next-$(printf '%s' "$build" | tr -c 'A-Za-z0-9.-' '_')-$(date -u +%Y%m%dT%H%M%SZ)"
 git -C "$TAP_DIR" checkout --quiet -b "$branch"
@@ -161,7 +159,7 @@ fi
 if [ -x "$FORGE_GIT" ]; then
   "$FORGE_GIT" -C "$TAP_DIR" push --quiet -u origin "$branch"
 else
-  "${forge_git[@]}" -C "$TAP_DIR" push --quiet -u origin "$branch"
+  git -C "$TAP_DIR" push --quiet -u origin "$branch"
 fi
 [ -x "$FORGE_API" ] || die "forge api helper missing at $FORGE_API"
 body="$(jq -n --arg build "$build" --arg run "$PROOF_RUN" --arg n "$count" \

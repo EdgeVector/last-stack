@@ -59,20 +59,23 @@ def die(message: str, code: int = 1) -> None:
     raise SystemExit(code)
 
 
-def forge_git() -> list[str]:
-    """`git` with the forge token as an HTTP extraHeader for the local forge, so
-    an unattended clone of the private tap has no keychain prompt to answer."""
+def forge_git_env() -> dict[str, str]:
+    """Return env dict with forge token as GIT_CONFIG_* for local forge clones."""
+    env = dict(os.environ)
     if not (TAP_URL.startswith("http://localhost:3300/") or TAP_URL.startswith("http://127.0.0.1:3300/")):
-        return ["git"]
-    token = os.environ.get("FORGE_TOKEN", "").strip()
+        return env
+    token = env.get("FORGE_TOKEN", "").strip()
     if not token:
         # lib/forge-token.sh owns the source order ($FORGE_TOKEN, keychain,
         # lastsecrets); source it through bash rather than copy it.
         proc = run(["bash", "-c", f'. "{ROOT / "lib" / "forge-token.sh"}" && last_stack_forge_token'])
         token = proc.stdout.strip() if proc.returncode == 0 else ""
     if not token:
-        return ["git"]
-    return ["git", "-c", f"http.http://localhost:3300/.extraHeader=Authorization: token {token}"]
+        return env
+    env["GIT_CONFIG_COUNT"] = "1"
+    env["GIT_CONFIG_KEY_0"] = "http.http://localhost:3300/.extraHeader"
+    env["GIT_CONFIG_VALUE_0"] = f"Authorization: token {token}"
+    return env
 
 
 def github_token() -> str:
@@ -132,9 +135,13 @@ def find_promote_script(explicit: str | None) -> Path:
     sys.path.insert(0, str(ROOT / "lib"))
     import fold_promote_script  # noqa: E402  (lib/ is not a package)
 
-    header = forge_git()[1:]
+    # Set forge auth in environment; fold_promote_script will inherit it
+    env = forge_git_env()
+    for key, val in env.items():
+        if key.startswith("GIT_CONFIG_"):
+            os.environ[key] = val
     try:
-        script, source = fold_promote_script.resolve(explicit, auth_header=header)
+        script, source = fold_promote_script.resolve(explicit, auth_header=None)
     except fold_promote_script.PromoteScriptError as exc:
         die(str(exc))
     print(f"promote script: {script} ({source})")
@@ -149,9 +156,10 @@ PUBLIC_TAP_URL = os.environ.get("LAST_STACK_PUBLIC_TAP_URL", "https://github.com
 def latest_stable_tag() -> str | None:
     best: tuple[int, int, int] | None = None
     seen_any = False
+    env = forge_git_env()
     for url in (PUBLIC_TAP_URL, TAP_URL):
-        cmd = (["git"] if url == PUBLIC_TAP_URL else forge_git()) + ["ls-remote", "--tags", "--refs", url, "v*"]
-        proc = run(cmd, timeout=60)
+        cmd = ["git", "ls-remote", "--tags", "--refs", url, "v*"]
+        proc = run(cmd, timeout=60, env=env if url != PUBLIC_TAP_URL else None)
         if proc.returncode != 0:
             continue
         seen_any = True
@@ -212,7 +220,8 @@ def tap_state_for_build(build: str, oid: str) -> dict:
     """Read the tap's main once: next/stable rows for this build, and whether the
     formula's current release was built from this source OID."""
     tap_dir = Path(tempfile.mkdtemp(prefix="release-publish-state."))
-    clone = run(forge_git() + ["clone", "--quiet", "--depth", "1", TAP_URL, str(tap_dir)], timeout=120)
+    clone = run(["git", "clone", "--quiet", "--depth", "1", TAP_URL, str(tap_dir)],
+                timeout=120, env=forge_git_env())
     if clone.returncode != 0:
         die(f"clone of {TAP_URL} failed: {clone.stderr.strip()}")
     state = {"next_rows": 0, "stable_rows": 0, "brew_tag": "", "brew_release_oid": ""}
@@ -309,7 +318,8 @@ def main(argv: list[str]) -> int:
         env = os.environ.copy()
         if args.dry_run:
             tap_dir = Path(tempfile.mkdtemp(prefix="release-publish-tap."))
-            clone = run(forge_git() + ["clone", "--quiet", TAP_URL, str(tap_dir)], timeout=120)
+            clone = run(["git", "clone", "--quiet", TAP_URL, str(tap_dir)],
+                       timeout=120, env=forge_git_env())
             if clone.returncode != 0:
                 die(f"clone of {TAP_URL} failed: {clone.stderr.strip()}")
             cmd += ["--dry-run", "--tap-dir", str(tap_dir)]
@@ -335,7 +345,8 @@ def main(argv: list[str]) -> int:
         if not SIGNING_KEY.is_file():
             die(f"signing key not found at {SIGNING_KEY}")
         tap_dir = Path(tempfile.mkdtemp(prefix="release-publish-registry."))
-        clone = run(forge_git() + ["clone", "--quiet", TAP_URL, str(tap_dir)], timeout=120)
+        clone = run(["git", "clone", "--quiet", TAP_URL, str(tap_dir)],
+                   timeout=120, env=forge_git_env())
         if clone.returncode != 0:
             die(f"clone of {TAP_URL} failed: {clone.stderr.strip()}")
         next_idx = tap_dir / "registry" / "next.json"
@@ -380,8 +391,12 @@ def main(argv: list[str]) -> int:
             registry_result = f"dry-run ({tap_dir})"
         else:
             forge_git_bin = ROOT / "bin" / "last-stack-forge-git"
-            push_cmd = [str(forge_git_bin), "-C", str(tap_dir)] if forge_git_bin.is_file() else forge_git() + ["-C", str(tap_dir)]
-            push = run(push_cmd + ["push", "--quiet", "-u", "origin", branch], timeout=120)
+            if forge_git_bin.is_file():
+                push_cmd = [str(forge_git_bin), "-C", str(tap_dir), "push", "--quiet", "-u", "origin", branch]
+                push = run(push_cmd, timeout=120)
+            else:
+                push_cmd = ["git", "-C", str(tap_dir), "push", "--quiet", "-u", "origin", branch]
+                push = run(push_cmd, timeout=120, env=forge_git_env())
             if push.returncode != 0:
                 die(f"push failed: {push.stderr.strip()}")
             forge_api = ROOT / "bin" / "last-stack-forge-api"

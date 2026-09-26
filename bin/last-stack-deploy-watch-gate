@@ -50,11 +50,14 @@ default_ref="$(jq -r '.defaults.ref // "refs/heads/main"' "$CONFIG")"
 state_root="$(jq -r '.defaults.state_root // "$HOME/.local/state/last-stack/deploy"' "$CONFIG")"
 state_root="${state_root/\$HOME/$HOME}"
 
-forge_token=""
 if [ -r "$ROOT/lib/forge-token.sh" ]; then
   # shellcheck source=../lib/forge-token.sh
   . "$ROOT/lib/forge-token.sh"
-  forge_token="$(last_stack_forge_token 2>/dev/null || true)"
+  case "$forge_root" in
+    http://localhost:3300/*|http://127.0.0.1:3300/*)
+      last_stack_forge_export_git_config 2>/dev/null || true
+      ;;
+  esac
 fi
 
 read_tip() {
@@ -63,9 +66,8 @@ read_tip() {
     "$TIP_CMD" "$repo" "$ref"
     return
   fi
-  local url="$forge_root/$owner/$repo.git" args=()
-  [ -z "$forge_token" ] || args=(-c "http.$forge_root/.extraHeader=Authorization: token $forge_token")
-  GIT_TERMINAL_PROMPT=0 timeout 60 git "${args[@]}" ls-remote "$url" "$ref" 2>/dev/null | awk '{print $1}' | head -n1
+  local url="$forge_root/$owner/$repo.git"
+  GIT_TERMINAL_PROMPT=0 timeout 60 git ls-remote "$url" "$ref" 2>/dev/null | awk '{print $1}' | head -n1
 }
 
 read_status() {

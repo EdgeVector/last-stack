@@ -311,16 +311,21 @@ def create_release(gh: str, bundle: dict) -> None:
 
 # --- formula PR on the Forgejo tap (PUBLIC after mirror sync) ----------------
 
-def forge_git_clone_prefix() -> list[str]:
+def forge_git_env() -> dict[str, str]:
+    """Return env dict with forge token as GIT_CONFIG_* for http clones."""
+    env = dict(os.environ)
     if not FORGE_BASE.startswith("http"):
-        return ["git"]
-    token = os.environ.get("FORGE_TOKEN", "").strip()
+        return env
+    token = env.get("FORGE_TOKEN", "").strip()
     if not token:
         proc = run(["bash", "-c", f'. "{ROOT / "lib" / "forge-token.sh"}" && last_stack_forge_token'])
         token = proc.stdout.strip() if proc.returncode == 0 else ""
     if not token:
-        return ["git"]
-    return ["git", "-c", f"http.{FORGE_BASE}/.extraHeader=Authorization: token {token}"]
+        return env
+    env["GIT_CONFIG_COUNT"] = "1"
+    env["GIT_CONFIG_KEY_0"] = f"http.{FORGE_BASE}/.extraHeader"
+    env["GIT_CONFIG_VALUE_0"] = f"Authorization: token {token}"
+    return env
 
 
 def tap_formula_state(bundle: dict, forge_api: str) -> str:
@@ -351,12 +356,13 @@ def open_formula_pr(bundle: dict, formula_text: str, forge_git: str, forge_api: 
         clone = Path(tmp) / "tap"
         url = f"{FORGE_BASE}/{TAP_FORGE_REPO}.git"
         # last-stack-forge-git wraps an EXISTING repo (-C <repo>, origin auth),
-        # so it cannot clone; clone with plain git and the forge token header.
+        # so it cannot clone; clone with plain git and the forge token in env.
+        env = forge_git_env()
         for cmd in (
-            [*forge_git_clone_prefix(), "clone", "--quiet", "--depth", "1", "--branch", "main", url, str(clone)],
+            ["git", "clone", "--quiet", "--depth", "1", "--branch", "main", url, str(clone)],
             ["git", "-C", str(clone), "checkout", "-q", "-b", branch],
         ):
-            proc = run(cmd)
+            proc = run(cmd, env=env if cmd[0] == "git" and "clone" in cmd else None)
             if proc.returncode != 0:
                 raise Refuse(f"{' '.join(cmd[:4])} failed: {proc.stderr.strip()[:300]}")
         target = clone / "Formula" / f"{formula}.rb"

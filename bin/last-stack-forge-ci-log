@@ -142,9 +142,15 @@ case "$repo" in */*) ;; *) echo "repo must be owner/name (positional, or --repo 
 TOKEN="$(last_stack_forge_token || true)"
 [ -n "$TOKEN" ] || { last_stack_forge_token_missing_msg; exit 3; }
 
+TOKEN_FILE=""
+if ! TOKEN_FILE="$(last_stack_forge_curl_auth_config)"; then
+  last_stack_forge_token_missing_msg; exit 3
+fi
+trap 'rm -rf "$(dirname "$TOKEN_FILE")" 2>/dev/null' EXIT
+
 # Every API read is bounded. An unbounded read of fold's task list stalled a
 # routine for more than 90 s (papercut-no-api-path-to-read-a-forgejo-ci-job-log-20260922).
-api() { curl -fsS --max-time "${FORGE_CI_LOG_API_TIMEOUT:-60}" -H "Authorization: token $TOKEN" "$ROOT/api/v1/$1"; }
+api() { curl -fsS --max-time "${FORGE_CI_LOG_API_TIMEOUT:-60}" -K "$TOKEN_FILE" "$ROOT/api/v1/$1"; }
 
 # ── Resolve the run(s) + the list of failing job indices ──────────────────────
 run_number=""

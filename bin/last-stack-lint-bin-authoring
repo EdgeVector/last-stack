@@ -13,7 +13,7 @@
 #            quoting, env flags and argparse, and every draft is a partial
 #            script. New helpers use ONE language. Existing nests are held in
 #            config/bin-authoring-baseline.tsv and may only shrink.
-#   3. SOFT  an auth header built onto a child process's ARGV: a
+#   3. HARD  an auth header built onto a child process's ARGV: a
 #            `git -c http.<base>.extraHeader=Authorization: ...` word, or a
 #            `curl -H "Authorization: ..."` word. `ps aux` lists argv to every
 #            local account, so those publish the Forge token machine-wide for the
@@ -24,9 +24,8 @@
 #            `last_stack_forge_export_git_config` (GIT_CONFIG_* in the
 #            environment; measured 2026-09-25, `ps -E`/`ps eww` print no
 #            environment on this host) and `last_stack_forge_curl_auth_config`
-#            (a 0600 `curl -K` config file). Existing offenders are held in
-#            config/forge-token-argv-baseline.tsv and may only shrink; a line
-#            that genuinely needs argv states why: `# argv-token-ok: <reason>`.
+#            (a 0600 `curl -K` config file). A line that genuinely needs argv
+#            states why: `# argv-token-ok: <reason>`.
 #
 # Ground truth: brain papercut-agent-zero-llm-cli-bash-python-heredoc-rglob
 # (filed 2026-08-02). The bounded replacement for a walk is
