@@ -594,6 +594,12 @@ ci_test tests/last-stack-portal-wt-mirror-origin-refspec.sh
 # APPENDED (see the shard-stability note above): ci_test shards by list position.
 ci_test tests/last-stack-purge-to-trash-fallback.sh
 
+# The emergency-purge prose must hand the detached cache to that helper instead
+# of a bare `rm -rf` the managed execution policy rejects. The helper shipped
+# with zero callers (papercut-disk-reclaim-trash-permission-denied-20260925).
+# APPENDED (see the shard-stability note above): ci_test shards by list position.
+ci_test tests/last-stack-purge-prose-uses-helper.sh
+
 ci_test tests/host-track-path-shadow.sh
 
 # A soak must DELAY an install, never prevent it: a channel merging faster than

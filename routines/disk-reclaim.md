@@ -264,12 +264,32 @@ continue — do not fail the whole run.
    the host session, where the docker socket is reachable. Report
    `vm_trim_skipped=<reason>` unchanged when present.
 
-5. **Disk floor.** If free space < `<your floor, e.g. ~30 GB>`, proactively purge
+5. **Disk floor (helper — never raw `rm`).** If free space < `<your floor, e.g. ~30 GB>`, proactively purge
    the largest reclaimable build-cache dir with an **atomic swap** so an active
    build doesn't see a half-deleted tree: `mv target target.PURGE` → recreate an
-   empty `target/` → `rm -rf target.PURGE` in the background. Stop active
-   compiles first (kill the compiler processes, NOT the node). Never blow away a
-   shared build cache while you're still above the floor.
+   empty `target/` → hand the detached copy to the purge helper in the
+   background. Stop active compiles first (kill the compiler processes, NOT the
+   node). Never blow away a shared build cache while you're still above the floor.
+
+   ```bash
+   mv "$cache" "$cache.PURGE" && mkdir -p "$cache"
+   ( "$last_stack/bin/last-stack-purge-to-trash" \
+       --log-file "$HOME/.last-stack/logs/disk-reclaim-purge.log" \
+       "$cache.PURGE" >/dev/null 2>&1 & )
+   ```
+
+   Do NOT delete the detached `*.PURGE*` path with your own `rm -rf`: the same
+   managed execution policy named in step 4b rejects it here too. On 2026-09-25
+   the agent that improvised around that rejection with `/usr/bin/trash`
+   (NSCocoaErrorDomain 513) and `gio trash` (could not create
+   `~/.local/share/Trash`) left a verified 6.5 GiB cache detached and reported
+   `purge_continuing`
+   (`papercut-disk-reclaim-trash-permission-denied-20260925`). The helper owns
+   that ladder: Trash, then `gio trash`, then a direct delete, logging the
+   reason each one failed. Exit `0` = moved to Trash, `1` = fallback delete —
+   both reclaimed the space, so carry `purge_method=trash` or
+   `purge_method=fallback_delete` into the heartbeat and treat neither as an
+   error.
 
    Keep this step bounded. After the swap, the routine has already made the live
    path safe; wait at most two minutes for the background delete to finish, then
