@@ -388,4 +388,43 @@ if "$bin" d-bad --board-cli "$fake_kanban" --title "x" --repo EdgeVector/last-st
   fail "--difficulty huge must be refused"
 fi
 
+# --kind validation files the milestone proof card that the milestone-driver
+# file_proof_card action needs. It defaults to backlog + work-class proof, takes
+# a DONE-WHEN line as its end, and gets no Difficulty stamp.
+# papercut-milestone-driver-file-proof-card-kind-validation-rejected-20260926
+body_proof="$(mktemp "$tmp/body.XXXX")"
+cat >"$body_proof" <<'PROOF'
+Repo: EdgeVector/last-stack
+
+## GOAL
+Prove the milestone outcome holds.
+
+DONE-WHEN: file ~/.last-stack/north-star-proofs/ns-a.md matches /^PASS/
+PROOF
+: >"$tmp/add.log"
+: >"$tmp/add.body"
+out="$("$bin" proof-ms-live --board-cli "$fake_kanban" --title "Proof" --repo EdgeVector/last-stack \
+  --north-star ns-a --milestone ms-live --kind validation --tags p1 <"$body_proof" 2>&1)" \
+  || fail "validation card should file: $out"
+printf '%s\n' "$out" | grep -q 'filed proof-ms-live column=backlog' || fail "validation stdout: $out"
+grep -q -- '--kind validation' "$tmp/add.log" || fail "validation kind: $(cat "$tmp/add.log")"
+grep -q -- '--column backlog' "$tmp/add.log" || fail "validation column: $(cat "$tmp/add.log")"
+grep -q -- '--surfaces' "$tmp/add.log" && fail "validation must not derive surfaces: $(cat "$tmp/add.log")"
+grep -q '^Difficulty:' "$tmp/add.body" && fail "validation must not get a Difficulty stamp"
+grep -q '^DONE-WHEN:' "$tmp/add.body" || fail "validation body lost DONE-WHEN"
+# proof work-class is never gated: a paused North Star still files its proof.
+if printf 'Repo: EdgeVector/last-stack\n\n## GOAL\nx\n' | "$bin" proof-hollow --board-cli "$fake_kanban" \
+  --title "x" --repo EdgeVector/last-stack --north-star ns-a --milestone ms-live --kind validation >/dev/null 2>&1; then
+  fail "validation card with no DONE-WHEN and no END STATE must be refused"
+fi
+if "$bin" k-bad --board-cli "$fake_kanban" --title "x" --repo EdgeVector/last-stack \
+  --north-star ns-a --milestone ms-live --kind tracker <"$body_ok" >/dev/null 2>&1; then
+  fail "--kind tracker must be refused"
+fi
+: >"$tmp/add.log"
+"$bin" proof-todo --board-cli "$fake_kanban" --title "x" --repo EdgeVector/last-stack \
+  --north-star ns-a --milestone ms-live --kind validation --column todo <"$body_proof" >/dev/null 2>&1 \
+  || fail "validation --column todo should file"
+grep -q -- '--column todo' "$tmp/add.log" || fail "explicit --column must win: $(cat "$tmp/add.log")"
+
 echo "ok last-stack-kanban-file-pr"

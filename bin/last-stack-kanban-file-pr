@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# last-stack-kanban-file-pr — file a pickup-ready Kind:pr card.
+# last-stack-kanban-file-pr — file a pickup-ready Kind:pr card, or a
+# milestone Kind:validation proof card (--kind validation).
 #
 # The last-stack host-track artifact must publish this helper to ~/.local/bin:
 # routinesd generator shells may use PATH without sourcing shell-prelude.
@@ -15,9 +16,15 @@
 #     --north-star SLUG --milestone SLUG [options] < body.md
 #
 # Options:
-#   --column todo|backlog   default: todo
+#   --column todo|backlog   default: todo (backlog for --kind validation)
 #   --base BRANCH           default: main
-#   --kind pr               only pr is accepted (this helper is the PR path)
+#   --kind pr|validation    default: pr. validation files the milestone proof
+#                           card that the milestone-driver file_proof_card
+#                           action needs. It defaults to --column backlog (the
+#                           validate lane's Pool B) and --work-class proof,
+#                           needs a `DONE-WHEN:` line or an `## END STATE`,
+#                           and skips the Difficulty stamp and surface
+#                           derivation (pickup never claims it).
 #   --priority P0-P3
 #   --tags a,b
 #   --deps a,b
@@ -105,7 +112,7 @@ title=""
 repo=""
 north_star=""
 milestone=""
-column="todo"
+column=""
 base="main"
 kind="pr"
 priority=""
@@ -120,7 +127,7 @@ board_cli=""
 dry=0
 decision_fixture=""
 skip_decision_check=0
-work_class="feature"
+work_class=""
 admission_fixture=""
 
 while [ "$#" -gt 0 ]; do
@@ -163,7 +170,21 @@ die() {
 [ -n "$repo" ] || die "missing --repo"
 [ -n "$north_star" ] || die "missing --north-star (pickup will not claim an unattached Kind:pr)"
 [ -n "$milestone" ] || die "missing --milestone (pickup will not claim an unattached Kind:pr)"
-[ "$kind" = "pr" ] || die "only --kind pr is supported (got $kind)"
+# Kind:validation is the milestone proof card. Before it was accepted here,
+# the milestone-driver file_proof_card action had no tool that could file one,
+# and 10 proof_ready milestones sat in await_proof on every pass.
+# papercut-milestone-driver-file-proof-card-kind-validation-rejected-20260926
+case "$kind" in
+  pr)
+    [ -n "$column" ] || column="todo"
+    [ -n "$work_class" ] || work_class="feature"
+    ;;
+  validation)
+    [ -n "$column" ] || column="backlog"
+    [ -n "$work_class" ] || work_class="proof"
+    ;;
+  *) die "--kind must be pr or validation (got $kind)" ;;
+esac
 case "$column" in
   todo|backlog) ;;
   *) die "column must be todo or backlog (got $column)" ;;
@@ -203,7 +224,11 @@ if ! printf '%s\n' "$body" | grep -Eq '(^|[[:space:]])##[[:space:]]*END STATE\b|
   if printf '%s\n' "$body" | grep -Eq '^##[[:space:]]*(VERIFY|STEPS)\b'; then
     end_hint="$end_hint — a ## VERIFY/## STEPS section is not an END STATE; add '## END STATE' with what is observably true when done"
   fi
-  missing_sections="${missing_sections:+$missing_sections; }$end_hint"
+  # A proof card may state its end as one machine-checkable DONE-WHEN line
+  # (last-stack-kanban-done-when-eval reads exactly that).
+  if [ "$kind" != "validation" ] || ! printf '%s\n' "$body" | grep -Eq '^DONE-WHEN:'; then
+    missing_sections="${missing_sections:+$missing_sections; }$end_hint"
+  fi
 fi
 if [ -n "$missing_sections" ]; then
   die "body missing $missing_sections. Body contract: ## GOAL + ## END STATE (or DONE WHEN:); run --help for the full contract"
@@ -354,7 +379,7 @@ fi
 # 2026-09-25/26 p1 cards filed without one came back as hollow PRs
 # (last-stack PR 211, PR 219, fold PR 2196):
 # papercut-land-card-fast-tier-hollow-pr-on-correctness-card-20260926.
-if ! printf '%s\n' "$body" | grep -q '^Difficulty:'; then
+if [ "$kind" = "pr" ] && ! printf '%s\n' "$body" | grep -q '^Difficulty:'; then
   if [ -z "$difficulty" ]; then
     case ",$(printf '%s' "$priority,$tags" | tr '[:upper:]' '[:lower:]' | tr -d ' ')," in
       *,p0,*|*,p1,*)
@@ -374,7 +399,7 @@ fi
 # 2026-09-25T21:45Z: 13 ready cards, none with surfaces, claim result=none.
 # Derive them from the paths the brief names; an empty answer keeps the
 # whole-repo reservation.
-if [ -z "$surfaces" ] && [ "$derive_surfaces" -eq 1 ]; then
+if [ "$kind" = "pr" ] && [ -z "$surfaces" ] && [ "$derive_surfaces" -eq 1 ]; then
   derive_bin="$ROOT/bin/last-stack-kanban-derive-surfaces"
   if [ -x "$derive_bin" ]; then
     surfaces="$(printf '%s\n' "$body" | "$derive_bin" --repo "$repo" --base "$base" 2>/dev/null || true)"
@@ -391,7 +416,7 @@ add_args=(
   --title "$title"
   --board "$board"
   --column "$column"
-  --kind pr
+  --kind "$kind"
   --repo "$repo"
   --base "$base"
   --north-star "$north_star"

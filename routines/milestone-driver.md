@@ -567,10 +567,12 @@ all, never as a substitute for real decomposition work:
    `needs-decomposition reason=no-executable-proof-named` for this slug and
    stop; leaving it flagged is honest, a hollow card is not.
 3. Otherwise file exactly one `Kind: validation` card via
-   `last-stack-milestone-driver-snapshot guard -- ... last-stack-kanban-file-pr`
-   with a full `## GOAL` / `## END STATE` and a machine-checkable `DONE-WHEN`
-   naming that exact check — same admission/decision/surfaces checks as
-   Decompose.
+   `last-stack-milestone-driver-snapshot guard -- ... last-stack-kanban-file-pr
+   <slug> --kind validation --work-class proof --repo <owner/name>
+   --north-star <ns> --milestone <slug>` with a full `## GOAL` and a
+   machine-checkable `DONE-WHEN:` line (or `## END STATE`) naming that exact
+   check. `--kind validation` files to `backlog`, where the validate lane
+   (Pool B) runs it; the proof work-class is never admission-gated.
 4. Attach it to the milestone: `kanban milestone add <slug> --proof-card
    <new-slug> --proof-status pending --json` through the guard.
 5. Count this as `proof_n` for GAP_FILL, not `filed_n` — it unblocks proof
