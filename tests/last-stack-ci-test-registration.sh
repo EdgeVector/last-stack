@@ -12,11 +12,12 @@
 # steady ~29%, because nothing rejects the omission. Three separate passes
 # noticed only by grepping a green gate log for their own test's output line.
 #
-# This guard makes the omission loud. It does NOT replace the enumeration with a
-# glob: the position-shards constraint documented at .lastgit/ci.sh is real, and
-# a blind glob would also drag environment-dependent tests into the merge path.
-# The exemption file is the artifact worth having -- it converts "forgotten"
-# into a recorded decision that a reader can audit.
+# 2026-09-26: an unlisted test is no longer "forgotten". The auto-discovery
+# block at the end of .lastgit/ci.sh runs every present, unlisted, non-exempt
+# test in a shard chosen by a hash of its path, so the list positions (and the
+# shard pairing they fix) do not move. A test that must not run in the merge
+# path still needs a '<path><TAB><reason>' line in tests/.ci-exempt; that file
+# stays the audited record of every deliberate exclusion.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -63,16 +64,19 @@ sort -u "$tmp/exempt" -o "$tmp/exempt"
 
 status=0
 
-# 1. Unaccounted: present, but neither scheduled nor exempt.
+# 1. Unaccounted: present, but neither listed nor exempt. These are no longer
+# an error: the auto-discovery block at the end of .lastgit/ci.sh runs them in
+# a hash-assigned shard. Name them so the gate log shows what it discovered.
 comm -23 "$tmp/present" <(sort -u "$tmp/scheduled" "$tmp/exempt") > "$tmp/unaccounted"
 if [ -s "$tmp/unaccounted" ]; then
-  status=1
-  echo "these test files run in NO required gate and are not recorded as exclusions:" >&2
-  sed 's/^/  /' "$tmp/unaccounted" >&2
-  echo "  fix: add 'ci_test <path>' at the end of .lastgit/ci.sh, just ABOVE the final" >&2
-  echo "       'ci_test tests/last-stack-ci-test-registration.sh' line (it must stay last)," >&2
-  echo "       or add '<path><TAB><reason>' to tests/.ci-exempt" >&2
+  echo "auto-discovered (run by ci_test_discovered, no ci.sh edit needed):"
+  sed 's/^/  /' "$tmp/unaccounted"
 fi
+grep -qx 'ci_test_discovered' "$CI" || {
+  echo "the auto-discovery call ci_test_discovered is missing from .lastgit/ci.sh," >&2
+  echo "so an unlisted, non-exempt test runs in no required gate" >&2
+  status=1
+}
 
 # 2. Dangling: scheduled, but the file is gone. The gate would die on it.
 comm -13 "$tmp/present" "$tmp/scheduled" > "$tmp/dangling"
@@ -101,4 +105,4 @@ fi
 
 [ "$status" -eq 0 ] || exit 1
 
-echo "ok last-stack-ci-test-registration present=$(wc -l < "$tmp/present" | tr -d ' ') scheduled=$(wc -l < "$tmp/scheduled" | tr -d ' ') exempt=$(wc -l < "$tmp/exempt" | tr -d ' ')"
+echo "ok last-stack-ci-test-registration present=$(wc -l < "$tmp/present" | tr -d ' ') scheduled=$(wc -l < "$tmp/scheduled" | tr -d ' ') discovered=$(wc -l < "$tmp/unaccounted" | tr -d ' ') exempt=$(wc -l < "$tmp/exempt" | tr -d ' ')"
