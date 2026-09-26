@@ -217,6 +217,28 @@ curl_auth=(-K "$auth_config")
 # block_on_outdated_branch, so a BEHIND branch never blocks a merge. Refuse the
 # update while the head has a pending check; override with
 # LAST_STACK_FORGE_UPDATE_BRANCH_FORCE=1.
+#
+# Exception (papercut-forge-update-branch-guard-blocks-lane-move-20260926): a
+# pull_request run uses the workflow file from the PR head. When main changes
+# .forgejo/workflows after the PR branched (last-stack PR 209 moved ci-required
+# from macos-arm64 to pc-linux on 2026-09-26), the old head keeps waiting on the
+# old lane. Measured: ten runs waited over an hour behind a 2-slot Mac lane while
+# the PC lane was free; after an update each one started within a minute. So
+# the guard lets the update through when the workflow listing (name + blob sha)
+# at the PR merge base differs from the base branch.
+workflows_changed_since_merge_base() {
+  local pr_body="$1" repo_url merge_base base_ref old_list new_list
+  repo_url="${url%%\?*}"
+  repo_url="${repo_url%/pulls/*}"
+  merge_base="$(printf '%s' "$pr_body" | jq -r '.merge_base // empty' 2>/dev/null || true)"
+  base_ref="$(printf '%s' "$pr_body" | jq -r '.base.ref // empty' 2>/dev/null || true)"
+  [[ -n "$merge_base" && -n "$base_ref" ]] || return 1
+  old_list="$(curl -sS -X GET "${curl_auth[@]}" -H "Accept: application/json" "$repo_url/contents/.forgejo/workflows?ref=$merge_base" 2>/dev/null \
+    | jq -r 'if type == "array" then (map("\(.name)=\(.sha)") | sort | join(",")) else empty end' 2>/dev/null || true)"
+  new_list="$(curl -sS -X GET "${curl_auth[@]}" -H "Accept: application/json" "$repo_url/contents/.forgejo/workflows?ref=$base_ref" 2>/dev/null \
+    | jq -r 'if type == "array" then (map("\(.name)=\(.sha)") | sort | join(",")) else empty end' 2>/dev/null || true)"
+  [[ -n "$old_list" && -n "$new_list" && "$old_list" != "$new_list" ]]
+}
 update_branch_guard() {
   local pr_url="${url%%\?*}" pr_body head_sha status_body state
   pr_url="${pr_url%/update}"
@@ -226,6 +248,11 @@ update_branch_guard() {
   [[ -n "$head_sha" ]] || return 0
   status_body="$(curl -sS -X GET "${curl_auth[@]}" -H "Accept: application/json" "${pr_url%/pulls/*}/commits/$head_sha/status" 2>/dev/null || true)"
   state="$(printf '%s' "$status_body" | jq -r '[.statuses[]? | select(.status == "pending")] | length' 2>/dev/null || echo 0)"
+  if [[ "$state" =~ ^[0-9]+$ && "$state" -gt 0 ]] && workflows_changed_since_merge_base "$pr_body"; then
+    echo "last-stack-forge-api: update-branch allowed: $state pending check(s), but main changed .forgejo/workflows after this PR branched." >&2
+    echo "last-stack-forge-api: the old head runs the stale workflow (maybe a stale lane); the update moves it to main's workflow." >&2
+    return 0
+  fi
   if [[ "$state" =~ ^[0-9]+$ && "$state" -gt 0 ]]; then
     echo "last-stack-forge-api: REFUSED update-branch: PR head ${head_sha:0:10} has $state pending check(s)." >&2
     echo "last-stack-forge-api: an update now cancels the in-flight run and re-queues the PR at the end of the lane." >&2
