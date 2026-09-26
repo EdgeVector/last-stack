@@ -37,8 +37,18 @@
 # rows, and kanban, routines, brain and situations all held).
 # papercut-host-track-refresh-held-hours-after-lastdb-cutover-no-registry-proof-trigger-20260926
 #
-# `--primary-rows-only` runs step 0 alone. It costs one identity read and one
-# `lastdb app resolve` when the rows exist. `--detach` adds: when rows are
+# Step 0 also proves rows when the build did NOT move but an app did. Rows pin
+# exact app commits, so an app fix merged while the LastDB build stays the same
+# (fkanban PR 45 on 2026-09-26, against a 2375 row that pinned kanban b654aecf)
+# got no row until the daily pass, and that pass noops when fold main equals the
+# primary build. After the rows-present probe, step 0 asks the candidate-set
+# tool for each app's head (the same pick: artifact channel, else Forge main)
+# and compares it with the pin `next` holds for the primary build. A head that
+# moved runs the same set + smoke + publish-next, at most one smoke an hour, and
+# a RED set is not smoked again until a head moves.
+#
+# `--primary-rows-only` runs step 0 alone. It costs one identity read, one
+# channel read per app and one `lastdb app resolve` per app when nothing moved. `--detach` adds: when rows are
 # missing, start the worker in its own session and return at once. The
 # lastdb-safe-upgrade GREEN tail and the hourly reconcile gate call it that way.
 set -euo pipefail
@@ -66,6 +76,12 @@ primary_rows_probe_app="${LAST_STACK_CANARY_PRIMARY_ROWS_PROBE_APP:-}"
 primary_rows_lock="${LAST_STACK_CANARY_PRIMARY_ROWS_LOCK:-$HOME/.local/state/last-stack/canary-primary-rows.lock}"
 primary_rows_log_dir="${LAST_STACK_CANARY_PRIMARY_ROWS_LOG_DIR:-$HOME/.local/state/last-stack/canary-primary-rows}"
 apps_config="${LAST_STACK_CANARY_APPS_CONFIG:-${ROOT}/config/registry/apps.json}"
+heads_enabled="${LAST_STACK_CANARY_PRIMARY_ROWS_HEADS:-1}"
+heads_interval="${LAST_STACK_CANARY_HEADS_SMOKE_INTERVAL_SECS:-3600}"
+heads_green_recheck="${LAST_STACK_CANARY_HEADS_GREEN_RECHECK_SECS:-86400}"
+last_smoke_stamp="${LAST_STACK_CANARY_LAST_SMOKE_STAMP:-$apps_only_stamp_dir/last-smoke.json}"
+red_papercut_enabled="${LAST_STACK_CANARY_RED_PAPERCUT:-1}"
+brain_bin="${LAST_STACK_CANARY_BRAIN_BIN:-brain}"
 self_path="$(readlink -f -- "$0" 2>/dev/null || printf '%s' "$0")"
 
 usage() {
@@ -80,9 +96,13 @@ usage() {
   printf '%s\n' '  LAST_STACK_CANARY_PRIMARY_ROWS=0 (skip step 0), LAST_STACK_CANARY_PRIMARY_ROWS_PROBE_APP,'
   printf '%s\n' '  LAST_STACK_CANARY_PRIMARY_ROWS_LOCK, LAST_STACK_CANARY_PRIMARY_ROWS_LOG_DIR,'
   printf '%s\n' '  LAST_STACK_CANARY_APPS_CONFIG, LAST_STACK_CANARY_V2_PRIMARY_IDENTITY_CMD'
+  printf '%s\n' '  LAST_STACK_CANARY_PRIMARY_ROWS_HEADS=0 (skip the app-head check),'
+  printf '%s\n' '  LAST_STACK_CANARY_HEADS_SMOKE_INTERVAL_SECS, LAST_STACK_CANARY_HEADS_GREEN_RECHECK_SECS,'
+  printf '%s\n' '  LAST_STACK_CANARY_LAST_SMOKE_STAMP, LAST_STACK_CANARY_RED_PAPERCUT=0, LAST_STACK_CANARY_BRAIN_BIN'
   printf '%s\n' ''
   printf '%s\n' '  --primary-rows-only   run step 0 alone: prove rows for the build the primary'
-  printf '%s\n' '                        runs when next has none; never builds, never cuts over'
+  printf '%s\n' '                        runs when next has none, or when an app head moved past'
+  printf '%s\n' '                        its pin; never builds, never cuts over'
   printf '%s\n' '  --detach              with --primary-rows-only: start the worker in its own'
   printf '%s\n' '                        session when rows are missing and return at once'
 }
@@ -107,6 +127,7 @@ fi
 incoming=-
 primary=-
 primary_rows_status=""
+heads_moved=""
 
 result() {
   # result <outcome> <detail-kv...>: the two contract lines, then exit 0.
@@ -264,6 +285,9 @@ apps_only_run() {
       apps_only_detail="evidence=tool_missing tool=$smoke_run"
       return 20
     fi
+    # The app-head check in step 0 allows one smoke an hour on this host, so
+    # every apps-only smoke, from any caller, counts against it.
+    write_apps_only_stamp "$last_smoke_stamp" "$fp" started
     set +e
     SMOKE_LASTDBD_BIN="$primary_lastdbd" SMOKE_CANDIDATE_SET="$set_file" \
       bash "$smoke_run" --json >"$proof_file" 2>"$run_dir/apps-only-smoke.err"
@@ -433,11 +457,129 @@ primary_rows_probe() {
   rm -f "$err_file"
 }
 
+heads_check() {
+  # heads_check <probe_app>: the rows for the primary build exist. Did an app
+  # head move past the pin those rows hold? Sets heads_moved, heads_fp and
+  # primary_rows_evidence / primary_rows_detail. Returns
+  #    0  a head moved and nothing holds it back: prove the set now
+  #   10  nothing to do (current, rate limited, RED unchanged, GREEN pending)
+  #   20  the heads could not be read (reported, never smoked on)
+  #
+  # The head pick is the candidate-set tool's own (artifact channel head, else
+  # Forge main), run with --no-version-lookup: no package.json fetch, no smoke.
+  local app="$1" heads_dir heads_file rc=0 stamp stamp_fp stamp_result stamp_at age last_at last_age
+  heads_moved=""
+  heads_fp=""
+  if [ ! -x "$candidate_set_bin" ]; then
+    primary_rows_evidence=tool_missing
+    primary_rows_detail="stage=primary-rows primary=$primary probe_app=$app evidence=tool_missing tool=$candidate_set_bin"
+    return 20
+  fi
+  heads_dir="$(mktemp -d "${TMPDIR:-/tmp}/primary-rows-heads.XXXXXX")"
+  heads_file="$heads_dir/heads.json"
+  set +e
+  "$candidate_set_bin" --lastdbd "$primary_lastdbd" --no-version-lookup --out "$heads_file" >"$heads_dir/heads.out" 2>&1
+  rc=$?
+  set -e
+  if [ "$rc" -ne 0 ] || [ ! -s "$heads_file" ]; then
+    primary_rows_evidence=heads_unreadable
+    primary_rows_detail="stage=primary-rows primary=$primary probe_app=$app evidence=heads_unreadable rc=$rc log=$heads_dir/heads.out"
+    return 20
+  fi
+  heads_moved="$(apps_moved_past_registry "$heads_file")"
+  heads_fp="$(apps_only_fingerprint "$heads_file")"
+  rm -rf "$heads_dir"
+  if [ -z "$heads_moved" ]; then
+    primary_rows_evidence=rows_present
+    primary_rows_detail="stage=primary-rows primary=$primary probe_app=$app evidence=rows_present heads=current"
+    return 10
+  fi
+
+  # The same pins were already proved for this build. A RED waits for a head to
+  # move: a persistent RED must not buy an ~18-minute smoke every hour. A GREEN
+  # waits for its tap PR to merge and the mirror to serve the row; after a day
+  # with the row still absent, the PR is presumed lost and the set is proved again.
+  stamp="$apps_only_stamp_dir/$primary.json"
+  if [ -n "$heads_fp" ] && [ -f "$stamp" ]; then
+    stamp_fp="$(jq -r '.fingerprint // ""' "$stamp" 2>/dev/null || true)"
+    stamp_result="$(jq -r '.result // ""' "$stamp" 2>/dev/null || true)"
+    stamp_at="$(jq -r '.at_epoch // 0' "$stamp" 2>/dev/null || true)"
+    [[ "$stamp_at" =~ ^[0-9]+$ ]] || stamp_at=0
+    age=$(( $(date +%s) - stamp_at ))
+    if [ "$stamp_fp" = "$heads_fp" ] && [ "$stamp_result" = red ]; then
+      primary_rows_evidence=heads_red_unchanged
+      primary_rows_detail="stage=primary-rows primary=$primary probe_app=$app moved=$heads_moved evidence=heads_red_unchanged age=${age}s"
+      return 10
+    fi
+    if [ "$stamp_fp" = "$heads_fp" ] && [ "$stamp_result" = green ] && [ "$age" -lt "$heads_green_recheck" ]; then
+      primary_rows_evidence=heads_rows_pending
+      primary_rows_detail="stage=primary-rows primary=$primary probe_app=$app moved=$heads_moved evidence=heads_rows_pending age=${age}s"
+      return 10
+    fi
+  fi
+  # At most one apps-only smoke an hour on this host, whatever started it.
+  if [ -f "$last_smoke_stamp" ]; then
+    last_at="$(jq -r '.at_epoch // 0' "$last_smoke_stamp" 2>/dev/null || true)"
+    [[ "$last_at" =~ ^[0-9]+$ ]] || last_at=0
+    last_age=$(( $(date +%s) - last_at ))
+    if [ "$last_age" -lt "$heads_interval" ]; then
+      primary_rows_evidence=heads_rate_limited
+      primary_rows_detail="stage=primary-rows primary=$primary probe_app=$app moved=$heads_moved evidence=heads_rate_limited last_smoke_age=${last_age}s interval=${heads_interval}s"
+      return 10
+    fi
+  fi
+  return 0
+}
+
+red_papercut() {
+  # red_papercut <moved>: a RED primary-rows smoke is an app set that does not
+  # install against the build the primary runs. File it once per build and
+  # append each later RED, so the smoke output reaches the backlog. Best effort:
+  # prints one short status for the detail line and never fails the step.
+  local moved="$1" slug body rc=0 status existing
+  [ "$red_papercut_enabled" = 1 ] || { printf '%s' disabled; return 0; }
+  command -v "$brain_bin" >/dev/null 2>&1 || { printf '%s' brain_absent; return 0; }
+  slug="papercut-canary-primary-rows-smoke-red-$(printf '%s' "$primary" | tr 'A-Z.' 'a-z-' | tr -cd 'a-z0-9-')"
+  body="$(mktemp "${TMPDIR:-/tmp}/primary-rows-red.XXXXXX")"
+  {
+    printf '%s\n' "## RED $(date -u +%Y-%m-%dT%H:%M:%SZ)" ''
+    printf '%s\n' "The primary-rows step of last-stack-canary-candidate-gate proved the app set" \
+      "against the LastDB build the primary runs ($primary), and the isolated" \
+      "llms-txt smoke was RED. No registry next rows were written. The step does" \
+      "not smoke this set again until an app head moves." ''
+    printf '%s\n' "- primary build: $primary" "- moved apps: ${moved:-none}" \
+      "- run dir: $run_dir" "- smoke stderr: $run_dir/apps-only-smoke.err" ''
+    printf '%s\n' '### Candidate set pins' '```'
+    jq -r '.apps | to_entries[] | "\(.key) \(.value.sha) \(.value.sha_source // "-")"' "$run_dir/apps-only-set.json" 2>/dev/null || true
+    printf '%s\n' '```' '' '### Smoke verdict' '```'
+    head -c 4000 "$run_dir/apps-only-proof.json" 2>/dev/null || true
+    printf '\n%s\n' '```' '' '### Smoke stderr (last 60 lines)' '```'
+    tail -n 60 "$run_dir/apps-only-smoke.err" 2>/dev/null || true
+    printf '%s\n' '```'
+  } >"$body"
+  existing="$("$brain_bin" get "$slug" --type papercut 2>/dev/null || true)"
+  status="$(printf '%s\n' "$existing" | sed -n 's/^status:[[:space:]]*//p' | head -n1)"
+  if [ -n "$existing" ] && { [ "$status" = open ] || [ "$status" = partial ]; }; then
+    "$brain_bin" append "$slug" --type papercut <"$body" >/dev/null 2>&1 || rc=$?
+    [ "$rc" -eq 0 ] && printf '%s' "appended:$slug" || printf '%s' "append_failed:$slug"
+  else
+    # A closed record for this build means the defect came back: a new row.
+    [ -z "$existing" ] || slug="$slug-$(date -u +%Y%m%dt%H%M%Sz)"
+    "$brain_bin" papercut file "$slug" --component canary-candidate-gate \
+      --symptom "primary-rows smoke RED for the app set on lastdb $primary (moved: ${moved:-none})" \
+      --title "Canary primary-rows smoke RED on lastdb $primary; no next rows for moved app heads" \
+      --severity p2 --repo EdgeVector/last-stack --body-file "$body" >/dev/null 2>&1 || rc=$?
+    [ "$rc" -eq 0 ] && printf '%s' "filed:$slug" || printf '%s' "file_rc$rc:$slug"
+  fi
+  rm -f "$body"
+  return 0
+}
+
 primary_rows_step() {
   # Sets primary_rows_status (ok | noop | spawned | red | unknown | skipped),
   # primary_rows_evidence and primary_rows_detail. Returns 0 on ok/spawned,
   # 10 on noop/skipped, 20 on red/unknown. Never exits the gate.
-  local app probe bin_build rc=0 ts log child_dir child
+  local app probe bin_build rc=0 ts log child_dir child why=primary_rows_missing spawn_evidence=rows_missing hrc=0 paper
   primary_rows_status=noop
   primary_rows_evidence=unset
   primary_rows_detail=""
@@ -477,9 +619,17 @@ primary_rows_step() {
   probe="$(primary_rows_probe "$app")"
   case "$probe" in
     present)
-      primary_rows_evidence=rows_present
-      primary_rows_detail="stage=primary-rows primary=$primary probe_app=$app evidence=rows_present"
-      return 10
+      if [ "$heads_enabled" != 1 ]; then
+        primary_rows_evidence=rows_present
+        primary_rows_detail="stage=primary-rows primary=$primary probe_app=$app evidence=rows_present heads=skipped"
+        return 10
+      fi
+      heads_check "$app" || hrc=$?
+      case "$hrc" in
+        0)  why=primary_rows_heads_moved; spawn_evidence=heads_moved ;;
+        10) return 10 ;;
+        *)  primary_rows_status=unknown; return 20 ;;
+      esac
       ;;
     missing) ;;
     *)
@@ -510,8 +660,8 @@ primary_rows_step() {
       "$self_path" --primary-rows-only </dev/null >"$log" 2>&1 &
     child=$!
     primary_rows_status=spawned
-    primary_rows_evidence=rows_missing
-    primary_rows_detail="stage=primary-rows primary=$primary probe_app=$app evidence=rows_missing pid=$child log=$log"
+    primary_rows_evidence="$spawn_evidence"
+    primary_rows_detail="stage=primary-rows primary=$primary probe_app=$app evidence=$spawn_evidence${heads_moved:+ moved=$heads_moved} pid=$child log=$log"
     return 0
   fi
 
@@ -520,9 +670,13 @@ primary_rows_step() {
     primary_rows_detail="stage=primary-rows primary=$primary probe_app=$app evidence=locked holder=$lock_holder"
     return 10
   fi
-  apps_only_run primary_rows_missing || rc=$?
+  apps_only_run "$why" || rc=$?
   primary_rows_detail="$(printf '%s' "$apps_only_detail" | sed 's/stage=apps-only/stage=primary-rows/') probe_app=$app"
   primary_rows_evidence="$apps_only_evidence"
+  if [ "$rc" -eq 20 ] && [ "$apps_only_evidence" = smoke_red ]; then
+    paper="$(red_papercut "$(printf '%s' "$apps_only_detail" | sed -n 's/.* moved=\([^ ]*\).*/\1/p')")"
+    primary_rows_detail="$primary_rows_detail papercut=$paper"
+  fi
   case "$rc" in
     0)  primary_rows_status=ok; return 0 ;;
     10) primary_rows_status=noop; return 10 ;;

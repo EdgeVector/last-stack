@@ -16,6 +16,11 @@
 #     for the build the primary runs when `next` has none: a noop on one
 #     resolve when they exist, set + smoke on the PRIMARY lastdbd + publish when
 #     they do not, no rows on a RED smoke, and never a build or a cutover
+#   - step 0 also proves rows when the build is unchanged but an app head moved
+#     past the pin `next` holds for it: a noop on the cheap head read when
+#     nothing moved, set + smoke on the PRIMARY lastdbd + publish when one did,
+#     no rows and a brain papercut on RED, no retry of a RED set until a head
+#     moves, and at most one smoke an hour
 # Every tool is a fake that records its calls; nothing real runs.
 set -euo pipefail
 
@@ -62,6 +67,7 @@ EOF
 cat >"$fake/candidate-set" <<EOF
 #!/usr/bin/env bash
 echo "candidate-set \$*" >>"$calls"
+[ "\${FAKE_SET_FAIL:-0}" != 1 ] || { echo "forge unreachable" >&2; exit 1; }
 out=""
 while [ \$# -gt 0 ]; do case "\$1" in --out) out="\$2"; shift 2;; *) shift;; esac; done
 k="\${FAKE_SET_KANBAN_SHA:-def}"
@@ -100,6 +106,16 @@ app=""
 while [ \$# -gt 0 ]; do case "\$1" in app|resolve) shift;; --channel|--lastdb-version) shift 2;; --json) shift;; *) app="\$1"; shift;; esac; done
 printf '%s' "\${FAKE_PROVED:-{\}}" | jq -c --arg a "\$app" '{sha: (.[\$a] // "")}'
 EOF
+cat >"$fake/brain" <<EOF
+#!/usr/bin/env bash
+echo "brain \$*" >>"$calls"
+case "\$1" in
+  get) [ -n "\${FAKE_BRAIN_EXISTS:-}" ] || exit 1
+       printf 'title: x\nstatus:     %s\n' "\$FAKE_BRAIN_EXISTS" ;;
+  append) cat >"$work/brain-append.md" ;;
+  papercut) while [ \$# -gt 0 ]; do case "\$1" in --body-file) cp "\$2" "$work/brain-file.md"; shift 2;; *) shift;; esac; done ;;
+esac
+EOF
 cat >"$fake/identity" <<EOF
 #!/usr/bin/env bash
 # A cutover restarts the primary. FAKE_IDENTITY_FAIL_AFTER_CUTOVER models the
@@ -134,6 +150,7 @@ run_gate() {
     LAST_STACK_CANARY_PRIMARY_ROWS_PROBE_APP=brain \
     LAST_STACK_CANARY_PRIMARY_ROWS_LOCK="$work/primary-rows.lock" \
     LAST_STACK_CANARY_PRIMARY_ROWS_LOG_DIR="$work/primary-rows-logs" \
+    LAST_STACK_CANARY_BRAIN_BIN="$fake/brain" \
     "$@" "$GATE" ${GATE_FLAGS:-}
 }
 
@@ -308,15 +325,19 @@ rm -rf "$work/apps-only-stamps"
 # install. Step 0 proves the app set against the build the primary runs, with
 # the primary's own lastdbd, and never builds or cuts over.
 # papercut-host-track-refresh-held-hours-after-lastdb-cutover-no-registry-proof-trigger-20260926
-only_steps() { grep -oE '^(build-main|candidate-set|smoke|dogfood --cutover|publish-next)' "$calls" | tr '\n' ' '; }
+# The cheap head read (`candidate-set --no-version-lookup`) is not a step.
+only_steps() { grep -v -- '--no-version-lookup' "$calls" | grep -oE '^(build-main|candidate-set|smoke|dogfood --cutover|publish-next)' | tr '\n' ' ' || true; }
 
-# Rows exist for the primary build: one resolve and nothing else.
+# Rows exist for the primary build and no app head moved: the probe, one head
+# read and one resolve per app, and nothing else.
 rc=0
-out="$(PRIMARY_ROWS=1 GATE_FLAGS=--primary-rows-only run_gate env FAKE_PROVED='{"brain":"abc"}')" || rc=$?
+out="$(PRIMARY_ROWS=1 GATE_FLAGS=--primary-rows-only run_gate env FAKE_PROVED="$proved_both")" || rc=$?
 [ "$rc" = 0 ] || fail "rows-present probe exited $rc: $out"
-grep -q '^PRIMARY_ROWS result=noop .*evidence=rows_present' <<<"$out" || fail "rows-present not a noop: $out"
+grep -q '^PRIMARY_ROWS result=noop .*evidence=rows_present heads=current' <<<"$out" || fail "rows-present not a noop: $out"
 grep -q 'ROUTINE_RESULT' <<<"$out" && fail "--primary-rows-only printed a ROUTINE_RESULT (its callers own that line): $out"
-[ "$(grep -c '^resolve' "$calls")" = 1 ] || fail "rows-present cost more than one resolve: $(cat "$calls")"
+[ "$(grep -c '^resolve' "$calls")" = 3 ] || fail "rows-present cost more than probe + one resolve per app: $(cat "$calls")"
+[ "$(grep -c -- "^candidate-set --lastdbd $prim_bin --no-version-lookup" "$calls")" = 1 ] \
+  || fail "rows-present did not read the heads once, cheaply, from the primary lastdbd: $(cat "$calls")"
 [ -z "$(only_steps)" ] || fail "rows-present still ran steps: $(only_steps)"
 grep -q -- '--lastdb-version 0.23.3-100-gaaaaaaaaa' "$calls" || fail "probe did not ask for the PRIMARY build: $(cat "$calls")"
 
@@ -406,10 +427,107 @@ first_smoke="$(grep -m1 '^smoke' "$calls")"
 [ ! -d "$work/primary-rows.lock" ] || fail "full gate left its lock behind"
 
 # Rows present: the full gate pays one resolve and keeps today's order.
-out="$(PRIMARY_ROWS=1 run_gate env FAKE_PROVED='{"brain":"abc"}')"
+out="$(PRIMARY_ROWS=1 run_gate env FAKE_PROVED="$proved_both")"
 grep -q 'primary_rows=noop' <<<"$out" || fail "full gate rows-present: $out"
 [ "$(only_steps)" = "build-main candidate-set smoke dogfood --cutover publish-next " ] \
   || fail "full gate order with rows present: $(only_steps)"
+rm -rf "$work/apps-only-stamps"
+
+# ── step 0: an app head moved while the build stayed the same ──────────────
+# Rows pin exact app commits. fkanban PR 45 merged at 18:0xZ on 2026-09-26
+# while the primary stayed on 2375, whose row pinned kanban b654aecf, and no
+# row followed until the daily pass. Step 0 compares each head with its pin.
+moved_kanban='{"brain":"abc","kanban":"old"}'
+red_slug=papercut-canary-primary-rows-smoke-red-0-23-3-100-gaaaaaaaaa
+
+# One head moved: set + smoke on the PRIMARY lastdbd + publish; no build, no cutover.
+rm -rf "$work/apps-only-stamps"
+rc=0
+out="$(PRIMARY_ROWS=1 GATE_FLAGS=--primary-rows-only run_gate env FAKE_PROVED="$moved_kanban")" || rc=$?
+[ "$rc" = 0 ] || fail "heads-moved pass exited $rc: $out"
+grep -q '^PRIMARY_ROWS result=ok .*stage=primary-rows' <<<"$out" || fail "heads-moved not ok: $out"
+grep -q 'moved=kanban' <<<"$out" || fail "heads-moved did not name the app: $out"
+grep -q 'after=primary_rows_heads_moved' <<<"$out" || fail "heads-moved did not say why: $out"
+grep -q 'rows=pr:EdgeVector/homebrew-lastdb/7' <<<"$out" || fail "heads-moved wrote no rows: $out"
+[ "$(only_steps)" = "candidate-set smoke publish-next " ] || fail "heads-moved steps: $(only_steps)"
+grep -q "smoke lastdbd=$prim_bin set=$work/run/apps-only-set.json" "$calls" || fail "heads-moved smoke did not boot the primary lastdbd"
+grep -q "publish-next --candidate-set $work/run/apps-only-set.json --proof $work/run/apps-only-proof.json" "$calls" \
+  || fail "heads-moved publish-next args"
+grep -q '^brain' "$calls" && fail "a GREEN heads pass touched the brain"
+[ ! -d "$work/primary-rows.lock" ] || fail "heads-moved pass left its lock behind"
+
+# The same pins again at once: rows are published but not yet served. No smoke.
+out="$(KEEP_APPS_ONLY_STAMPS=1 PRIMARY_ROWS=1 GATE_FLAGS=--primary-rows-only run_gate env FAKE_PROVED="$moved_kanban" LAST_STACK_CANARY_HEADS_SMOKE_INTERVAL_SECS=0)"
+grep -q '^PRIMARY_ROWS result=noop .*evidence=heads_rows_pending' <<<"$out" || fail "published pins re-proved: $out"
+[ -z "$(only_steps)" ] || fail "published pins still ran steps: $(only_steps)"
+
+# Rate limit: a DIFFERENT head moves inside the hour. No smoke.
+out="$(KEEP_APPS_ONLY_STAMPS=1 PRIMARY_ROWS=1 GATE_FLAGS=--primary-rows-only run_gate env FAKE_PROVED="$moved_kanban" FAKE_SET_KANBAN_SHA=zzz)"
+grep -q '^PRIMARY_ROWS result=noop .*evidence=heads_rate_limited' <<<"$out" || fail "rate limit not honoured: $out"
+[ -z "$(only_steps)" ] || fail "rate-limited run still ran steps: $(only_steps)"
+# The hour is over (interval 0): the new head is proved.
+out="$(KEEP_APPS_ONLY_STAMPS=1 PRIMARY_ROWS=1 GATE_FLAGS=--primary-rows-only run_gate env FAKE_PROVED="$moved_kanban" FAKE_SET_KANBAN_SHA=zzz LAST_STACK_CANARY_HEADS_SMOKE_INTERVAL_SECS=0)"
+grep -q '^PRIMARY_ROWS result=ok' <<<"$out" || fail "a new head after the hour was not proved: $out"
+[ "$(only_steps)" = "candidate-set smoke publish-next " ] || fail "new head after the hour steps: $(only_steps)"
+
+# The rate limit counts smokes from every caller (here the full gate's
+# apps-only pass), not only step 0's own.
+rm -rf "$work/apps-only-stamps"
+KEEP_APPS_ONLY_STAMPS=1 run_gate env FAKE_PRIMARY=0.23.3-200-gbbbbbbbbb FAKE_PROVED='{"brain":"abc"}' >/dev/null
+jq -e '.result == "started"' "$work/apps-only-stamps/last-smoke.json" >/dev/null || fail "the apps-only smoke did not stamp the rate limit"
+out="$(KEEP_APPS_ONLY_STAMPS=1 PRIMARY_ROWS=1 GATE_FLAGS=--primary-rows-only run_gate env FAKE_PROVED="$moved_kanban")"
+grep -q 'evidence=heads_rate_limited' <<<"$out" || fail "another caller's smoke did not count: $out"
+
+# RED: no rows, exit 1, a brain papercut with the smoke output.
+rm -rf "$work/apps-only-stamps" "$work/brain-file.md"
+rc=0
+out="$(KEEP_APPS_ONLY_STAMPS=1 PRIMARY_ROWS=1 GATE_FLAGS=--primary-rows-only run_gate env FAKE_PROVED="$moved_kanban" FAKE_SMOKE=RED)" || rc=$?
+[ "$rc" = 1 ] || fail "RED heads pass exited $rc, want 1: $out"
+grep -q '^PRIMARY_ROWS result=red .*evidence=smoke_red' <<<"$out" || fail "RED heads evidence: $out"
+grep -q 'moved=kanban' <<<"$out" || fail "RED did not name the moved app: $out"
+grep -q 'publish-next' "$calls" && fail "RED heads pass wrote rows"
+grep -q 'dogfood --cutover' "$calls" && fail "RED heads pass cut over"
+grep -q "papercut=filed:$red_slug" <<<"$out" || fail "RED filed no papercut: $out"
+grep -q "^brain papercut file $red_slug .*--component canary-candidate-gate" "$calls" || fail "papercut filing args: $(cat "$calls")"
+grep -q 'install-apps' "$work/brain-file.md" || fail "papercut body lacks the smoke output: $(cat "$work/brain-file.md")"
+grep -q 'moved apps: kanban' "$work/brain-file.md" || fail "papercut body lacks the moved app"
+
+# The same RED set an hour later: not smoked again, no second papercut.
+out="$(KEEP_APPS_ONLY_STAMPS=1 PRIMARY_ROWS=1 GATE_FLAGS=--primary-rows-only run_gate env FAKE_PROVED="$moved_kanban" FAKE_SMOKE=RED LAST_STACK_CANARY_HEADS_SMOKE_INTERVAL_SECS=0 LAST_STACK_CANARY_APPS_ONLY_COOLDOWN_SECS=0)"
+grep -q '^PRIMARY_ROWS result=noop .*evidence=heads_red_unchanged' <<<"$out" || fail "persistent RED re-smoked: $out"
+[ -z "$(only_steps)" ] || fail "persistent RED still ran steps: $(only_steps)"
+grep -q '^brain' "$calls" && fail "persistent RED touched the brain again"
+
+# A head moves again: smoke again, and a RED appends to the open papercut.
+rc=0
+out="$(KEEP_APPS_ONLY_STAMPS=1 PRIMARY_ROWS=1 GATE_FLAGS=--primary-rows-only run_gate env FAKE_PROVED="$moved_kanban" FAKE_SMOKE=RED FAKE_SET_KANBAN_SHA=zzz FAKE_BRAIN_EXISTS=open LAST_STACK_CANARY_HEADS_SMOKE_INTERVAL_SECS=0)" || rc=$?
+[ "$(only_steps)" = "candidate-set smoke " ] || fail "a moved head after RED did not re-smoke: $(only_steps)"
+grep -q "papercut=appended:$red_slug" <<<"$out" || fail "second RED did not append to the open papercut: $out"
+grep -q "^brain append $red_slug --type papercut" "$calls" || fail "append args: $(cat "$calls")"
+
+# A head read that fails is reported and buys no smoke.
+rc=0
+out="$(PRIMARY_ROWS=1 GATE_FLAGS=--primary-rows-only run_gate env FAKE_PROVED="$moved_kanban" FAKE_SET_FAIL=1)" || rc=$?
+[ "$rc" = 1 ] || fail "unreadable heads exited $rc, want 1: $out"
+grep -q '^PRIMARY_ROWS result=unknown .*evidence=heads_unreadable' <<<"$out" || fail "unreadable heads evidence: $out"
+grep -q '^smoke' "$calls" && fail "unreadable heads still ran the smoke"
+
+# The head check has its own kill switch; the rows-present probe stays.
+out="$(PRIMARY_ROWS=1 GATE_FLAGS=--primary-rows-only run_gate env FAKE_PROVED="$moved_kanban" LAST_STACK_CANARY_PRIMARY_ROWS_HEADS=0)"
+grep -q '^PRIMARY_ROWS result=noop .*evidence=rows_present heads=skipped' <<<"$out" || fail "heads kill switch: $out"
+grep -q '^candidate-set' "$calls" && fail "heads kill switch still read the heads"
+
+# --detach with a moved head: spawn, and the worker proves the set.
+rm -rf "$work/apps-only-stamps"
+out="$(PRIMARY_ROWS=1 GATE_FLAGS='--primary-rows-only --detach' run_gate env FAKE_PROVED="$moved_kanban")"
+grep -q '^PRIMARY_ROWS result=spawned .*evidence=heads_moved moved=kanban' <<<"$out" || fail "--detach did not spawn on a moved head: $out"
+log="$(sed -n 's/.* log=\([^ ]*\).*/\1/p' <<<"$out")"
+for _ in $(seq 1 100); do
+  grep -q '^PRIMARY_ROWS result=' "$log" 2>/dev/null && break
+  sleep 0.2
+done
+grep -q '^PRIMARY_ROWS result=ok .*after=primary_rows_heads_moved' "$log" || fail "detached heads worker did not publish: $(cat "$log" 2>/dev/null)"
+for _ in $(seq 1 50); do [ -d "$work/primary-rows.lock" ] || break; sleep 0.1; done
 rm -rf "$work/apps-only-stamps"
 
 echo "PASS last-stack-canary-candidate-gate"
