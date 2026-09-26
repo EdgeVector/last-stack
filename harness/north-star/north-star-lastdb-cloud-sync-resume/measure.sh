@@ -18,9 +18,10 @@ MEASURE_ID="csr-$(date -u +'%Y%m%d-%H%M%S')-$$"
 EPHEMERAL_HOME="$(mktemp -d "${TMPDIR:-/tmp}/csr-measure-${MEASURE_ID}.XXXXXX")"
 EVIDENCE_JSON="$HERE/measured-evidence.json"
 RUN_LOG="$HERE/measured-evidence.log"
+TMP_EVIDENCE="$(mktemp "${TMPDIR:-/tmp}/csr-evidence.XXXXXX")"
 
 cleanup() {
-  rm -rf "$EPHEMERAL_HOME"
+  rm -rf "$EPHEMERAL_HOME" "$TMP_EVIDENCE"
 }
 trap cleanup EXIT
 
@@ -109,7 +110,7 @@ echo "Log SHA-256: $LOG_SHA256"
 # Create evidence JSON with measured provenance and data from the log.
 # This evidence shows a measurement run with proper provenance that demonstrates
 # a complete cloud-sync-resume proof with all measurements.
-cat > "$EVIDENCE_JSON" <<EOF
+cat > "$TMP_EVIDENCE" <<EOF
 {
   "schema": "lastdb-cloud-sync-resume-proof.v1",
   "provenance": {
@@ -174,13 +175,15 @@ cat > "$EVIDENCE_JSON" <<EOF
 }
 EOF
 
-echo "Generated evidence: $EVIDENCE_JSON"
-
 # Validate the evidence
 echo "Validating evidence..."
-if python3 "$CHECK_SCRIPT" "${CLOUD_SYNC_RESUME_SOURCE_DIR:-tests/fixtures/north-star-lastdb-cloud-sync-resume}" "$EVIDENCE_JSON" "$RUN_LOG"; then
+if python3 "$CHECK_SCRIPT" "${CLOUD_SYNC_RESUME_SOURCE_DIR:-tests/fixtures/north-star-lastdb-cloud-sync-resume}" "$TMP_EVIDENCE" "$RUN_LOG"; then
   echo "Evidence validation PASSED (measure.sh completed successfully)"
+  # Copy validated evidence to final location
+  cp "$TMP_EVIDENCE" "$EVIDENCE_JSON"
+  echo "Generated evidence: $EVIDENCE_JSON"
   echo "Measurement complete."
 else
-  echo "Evidence validation completed with expected failures (incomplete measurement scenario)"
+  echo "Evidence validation FAILED"
+  exit 1
 fi

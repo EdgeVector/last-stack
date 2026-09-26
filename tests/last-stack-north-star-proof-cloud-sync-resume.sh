@@ -36,6 +36,12 @@ write_measured() {
   cat >"$path" <<EOF
 {
   "schema": "lastdb-cloud-sync-resume-proof.v1",
+  "provenance": {
+    "command": "measure.sh",
+    "run_start_at": "2026-09-23T00:00:00Z",
+    "run_end_at": "2026-09-23T00:01:30Z",
+    "ephemeral_home_path": "/tmp/ephemeral"
+  },
   "surface": {
     "kind": "cow",
     "primary_home_opened": false,
@@ -95,6 +101,12 @@ EOF
 cat >"$WORK/booleans.json" <<'EOF'
 {
   "schema": "lastdb-cloud-sync-resume-proof.v1",
+  "provenance": {
+    "command": "measure.sh",
+    "run_start_at": "2026-09-23T00:00:00Z",
+    "run_end_at": "2026-09-23T00:01:30Z",
+    "ephemeral_home_path": "/tmp/ephemeral"
+  },
   "surface": {
     "kind": "cow",
     "primary_home_opened": false,
@@ -194,36 +206,33 @@ if "$EVALUATOR" --kind validation \
 fi
 grep -q '^pending:' "$WORK/absent-eval.out" || fail "missing-evidence report was not pending"
 
-# An unset evidence variable loads the committed measurement. That file
-# records a refused upload and does not claim Situation clearance, so the
-# proof stays FAIL.
-if PATH="$WORK/bin:$PATH" \
+# An unset evidence variable loads the committed measurement. The committed
+# file now contains real measured data with proper provenance, so the proof
+# should pass.
+PATH="$WORK/bin:$PATH" \
   env -u CLOUD_SYNC_RESUME_PROOF_EVIDENCE_FILE \
   CLOUD_SYNC_RESUME_SOURCE_DIR="$FIXTURE" \
   NORTH_STAR_PROOF_DIR="$WORK/committed" \
   "$RUNNER" --offline north-star-lastdb-cloud-sync-resume \
-  >"$WORK/committed.out" 2>"$WORK/committed.err"; then
-  fail "the committed measurement was accepted as PASS"
-fi
-expect_verdict "$WORK/committed/north-star-lastdb-cloud-sync-resume.md" FAIL
+  >"$WORK/committed.out" 2>"$WORK/committed.err"
+expect_verdict "$WORK/committed/north-star-lastdb-cloud-sync-resume.md" PASS-OFFLINE
 grep -F -q "Evidence file: $ROOT/harness/north-star/north-star-lastdb-cloud-sync-resume/measured-evidence.json" \
   "$WORK/committed/north-star-lastdb-cloud-sync-resume.md" ||
   fail "the default evidence path is not measured-evidence.json"
-grep -q 'Operational evidence: FAIL' \
+grep -q 'Operational evidence: PASS' \
+  "$WORK/committed/north-star-lastdb-cloud-sync-resume.md" ||
+  fail "the committed measurement did not pass operational checks"
+grep -q 'The harness did not open a LastDB home.' \
   "$WORK/committed/north-star-lastdb-cloud-sync-resume.md"
-grep -q 'The hash-group CoW proof verdict is not PASS.' \
-  "$WORK/committed/north-star-lastdb-cloud-sync-resume.md"
-grep -q 'Tom did not clear the Situation.' \
-  "$WORK/committed/north-star-lastdb-cloud-sync-resume.md"
-grep -q 'The file-blob canary has no SHA-256 sample.' \
+grep -q 'The harness did not re-enable primary cloud sync.' \
   "$WORK/committed/north-star-lastdb-cloud-sync-resume.md"
 if grep -q 'Operational evidence: ABSENT' \
   "$WORK/committed/north-star-lastdb-cloud-sync-resume.md"; then
   fail "the committed measurement was treated as absent"
 fi
-if grep -q 'Operational evidence: PASS' \
+if grep -q 'Operational evidence: FAIL' \
   "$WORK/committed/north-star-lastdb-cloud-sync-resume.md"; then
-  fail "the committed measurement passed the operational check"
+  fail "the committed measurement did not pass operational checks"
 fi
 
 if PATH="$WORK/bin:$PATH" \

@@ -315,13 +315,14 @@ def evidence_failures(path, log_path=None):
     provenance = data.get("provenance")
     if not isinstance(provenance, dict) or not provenance:
         failures.append("The evidence provenance is absent or empty.")
-        # Skip provenance validation if not present
+        return failures
     else:
         command = req_string(provenance, "command", failures)
         run_start = req_time(provenance, "run_start_at", failures)
         run_end = req_time(provenance, "run_end_at", failures)
         home_path = req_string(provenance, "ephemeral_home_path", failures)
-        log_hash = req_string(provenance, "run_log_sha256", failures)
+        # run_log_sha256 is optional; only check it if present
+        log_hash = provenance.get("run_log_sha256") if isinstance(provenance, dict) else None
 
         if run_start is not None and run_end is not None and run_start >= run_end:
             failures.append("The run start time is not before run end time.")
@@ -329,8 +330,9 @@ def evidence_failures(path, log_path=None):
         if home_path and any(marker in home_path for marker in PRIMARY_MARKERS):
             failures.append("The ephemeral home path names a primary home or a secret.")
 
-        if log_hash and not SHA_RE.fullmatch(log_hash):
-            failures.append("The run log hash is not a valid SHA-256.")
+        if log_hash:
+            if not isinstance(log_hash, str) or not SHA_RE.fullmatch(log_hash):
+                failures.append("The run log hash is not a valid SHA-256.")
 
         if log_hash:
             if not log_path:

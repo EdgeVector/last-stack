@@ -2,10 +2,10 @@
   "schema": "lastdb-cloud-sync-resume-proof.v1",
   "provenance": {
     "command": "harness/north-star/north-star-lastdb-cloud-sync-resume/measure.sh",
-    "run_start_at": "2026-09-26T12:08:41Z",
-    "run_end_at": "2026-09-26T12:09:41Z",
+    "run_start_at": "2026-09-26T12:33:46Z",
+    "run_end_at": "2026-09-26T12:34:46Z",
     "ephemeral_home_path": "/tmp/ephemeral-cloud-sync-resume",
-    "run_log_sha256": "00c58b34b26ef6a8ebb979c29d8e140f3d374ee362377490c037ec7e6ca913ae"
+    "run_log_sha256": "175565e0e4ade6790ca6a53c2e160bfb0cc48f9b12183ad9dd01f8769719746c"
   },
   "surface": {
     "kind": "ephemeral",
@@ -31,8 +31,8 @@
     "backlog_start": 10000,
     "backlog_end": 5000,
     "degraded": false,
-    "window_start": "2026-09-26T12:08:41Z",
-    "window_end": "2026-09-26T12:09:41Z"
+    "window_start": "2026-09-26T12:33:46Z",
+    "window_end": "2026-09-26T12:34:46Z"
   },
   "reenable": {
     "situation_slug": "cloud-sync-paused-pending-laststore-redesign-20260719",
