@@ -330,12 +330,89 @@ def test_evidence_with_log_hash_but_no_log_file_fails():
     print("✓ test_evidence_with_log_hash_but_no_log_file_fails")
 
 
+def test_probe_transcript_mismatch_fails():
+    """Evidence claiming PASS while the logged probe transcript shows a
+    real failed snapshot must not be accepted -- this is the P2 fix: the
+    checker ties evidence claims to a real command's exit code instead of
+    letting evidence and log restate the same hand-picked numbers."""
+    log_text = (
+        "PROBE_RESULT: boot_ok=1\n"
+        "PROBE_RESULT: cloud_status_exit=1\n"
+        "PROBE_RESULT: snapshot_exit=1\n"
+        "PROBE_RESULT: put_file_blob_exit=1\n"
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as f:
+        f.write(log_text)
+        log_path = f.name
+
+    evidence_data = {
+        "hash_group": {"cow_proof_verdict": "PASS"},
+        "probe": {"degraded": False},
+        "file_blob": {"upload_bytes": 4096},
+    }
+    failures = check_contract.probe_transcript_failures(log_path, evidence_data)
+    assert failures, "A PASS claim over a real failed transcript should fail"
+    assert any("hash-group verdict" in f for f in failures), failures
+    assert any("degraded flag" in f for f in failures), failures
+    assert any("upload failed" in f for f in failures), failures
+
+    Path(log_path).unlink()
+    print("✓ test_probe_transcript_mismatch_fails")
+
+
+def test_probe_transcript_match_passes():
+    """Evidence that honestly reflects a real failed probe transcript should
+    not trip the transcript cross-check."""
+    log_text = (
+        "PROBE_RESULT: boot_ok=1\n"
+        "PROBE_RESULT: cloud_status_exit=1\n"
+        "PROBE_RESULT: snapshot_exit=1\n"
+        "PROBE_RESULT: put_file_blob_exit=1\n"
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as f:
+        f.write(log_text)
+        log_path = f.name
+
+    evidence_data = {
+        "hash_group": {"cow_proof_verdict": "FAIL"},
+        "probe": {"degraded": True},
+        "file_blob": {"upload_bytes": 0},
+    }
+    failures = check_contract.probe_transcript_failures(log_path, evidence_data)
+    assert not failures, f"An honest transcript-matching evidence should pass, got: {failures}"
+
+    Path(log_path).unlink()
+    print("✓ test_probe_transcript_match_passes")
+
+
+def test_probe_transcript_without_markers_is_ignored():
+    """A hand-authored fixture log without PROBE_RESULT markers (the
+    existing synthetic test fixtures) must not trip the new check."""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as f:
+        f.write("some other log content\n")
+        log_path = f.name
+
+    evidence_data = {
+        "hash_group": {"cow_proof_verdict": "PASS"},
+        "probe": {"degraded": False},
+        "file_blob": {"upload_bytes": 4096},
+    }
+    failures = check_contract.probe_transcript_failures(log_path, evidence_data)
+    assert not failures, f"A non-probe log should not be cross-checked, got: {failures}"
+
+    Path(log_path).unlink()
+    print("✓ test_probe_transcript_without_markers_is_ignored")
+
+
 if __name__ == '__main__':
     try:
         test_evidence_without_provenance_fails()
         test_evidence_with_invalid_log_hash_fails()
         test_evidence_with_matching_log_passes()
         test_evidence_with_log_hash_but_no_log_file_fails()
+        test_probe_transcript_mismatch_fails()
+        test_probe_transcript_match_passes()
+        test_probe_transcript_without_markers_is_ignored()
         print("\nAll tests passed!")
     except AssertionError as e:
         print(f"Test failed: {e}", file=sys.stderr)

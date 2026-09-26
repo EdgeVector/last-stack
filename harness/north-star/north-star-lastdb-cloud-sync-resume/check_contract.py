@@ -299,6 +299,79 @@ def extract_measured_values_from_log(log_path):
     return values
 
 
+def parse_probe_results(log_text):
+    """Parse the `PROBE_RESULT: key=value` lines a real measure.sh run
+    writes as it executes each `lastdb` command against its ephemeral
+    daemon."""
+    results = {}
+    for line in log_text.split("\n"):
+        match = re.match(r"^PROBE_RESULT: ([a-z_]+)=(.+)$", line)
+        if match:
+            results[match.group(1)] = match.group(2)
+    return results
+
+
+def probe_transcript_failures(log_path, evidence_data):
+    """Cross-check evidence against the PROBE_RESULT markers a genuine
+    measure.sh run writes to the log.
+
+    Evidence and log both come from measure.sh, so matching numbers alone do
+    not prove a real measurement happened -- a template could hardcode both
+    identically. This ties specific evidence claims (the hash-group verdict,
+    the degraded flag, uploaded file-blob bytes) to the *exit code* a real
+    `lastdb` command produced against the real ephemeral daemon, which a
+    template log cannot fabricate without also fabricating the transcript.
+    """
+    failures = []
+    if not log_path or not Path(log_path).is_file():
+        return failures
+    try:
+        log_text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+    except (OSError, UnicodeError):
+        return failures
+
+    results = parse_probe_results(log_text)
+    if "boot_ok" not in results:
+        # No PROBE_RESULT markers at all: not a real-probe transcript (for
+        # example a hand-authored fixture). Nothing to cross-check here.
+        return failures
+
+    if results.get("boot_ok") != "1":
+        failures.append("The run log records a probe whose ephemeral daemon never booted.")
+        return failures
+
+    for key in ("cloud_status_exit", "snapshot_exit", "put_file_blob_exit"):
+        if key not in results:
+            failures.append("The run log is missing the real %s result." % key)
+    if failures:
+        return failures
+
+    snapshot_ok = results["snapshot_exit"] == "0"
+    put_ok = results["put_file_blob_exit"] == "0"
+    all_ok = snapshot_ok and put_ok and results["cloud_status_exit"] == "0"
+
+    hash_group = evidence_data.get("hash_group") or {}
+    probe = evidence_data.get("probe") or {}
+    file_blob = evidence_data.get("file_blob") or {}
+
+    expected_verdict = "PASS" if snapshot_ok else "FAIL"
+    if hash_group.get("cow_proof_verdict") != expected_verdict:
+        failures.append(
+            "The evidence hash-group verdict does not match the logged snapshot exit code."
+        )
+
+    if probe.get("degraded") is not (not all_ok):
+        failures.append("The evidence degraded flag does not match the logged probe exits.")
+
+    upload_bytes = file_blob.get("upload_bytes")
+    if not put_ok and isinstance(upload_bytes, int) and upload_bytes > 0:
+        failures.append(
+            "The evidence claims uploaded file-blob bytes but the logged upload failed."
+        )
+
+    return failures
+
+
 def evidence_failures(path, log_path=None):
     failures = []
     measured = {"gap": False}
@@ -460,6 +533,8 @@ def evidence_failures(path, log_path=None):
     if not isinstance(digest, str) or SHA_RE.fullmatch(digest) is None:
         measured["gap"] = True
         failures.append("The file-blob canary has no SHA-256 sample.")
+
+    failures.extend(probe_transcript_failures(log_path, data))
 
     if measured["gap"]:
         failures.append("The evidence lacks measured CoW or ephemeral output.")
