@@ -149,17 +149,25 @@ out="$(
 [ "$(printf '%s\n' "$out" | jq -r '.status')" = "built" ]
 [ "$(printf '%s\n' "$out" | jq -r '.rebuilt')" = "true" ]
 
-# --- a real build path survives a workdir that disk reclaim deleted ---
-# 2026-09-25: reclaim emptied the cache dir, the mirror still registered the
-# worktree, and `worktree add` exited 128 ("missing but already registered").
+# --- canary-build prunes stale worktree registrations for missing directories ---
+# 2026-09-25: disk reclaim deleted the workdir cache, the mirror still registered
+# the worktree, and `worktree add` would fail with "missing but already registered".
+# Canary-build must explicitly prune stale registrations before add.
 fake_cargo="mkdir -p target/release && cp '$stub_bin/lastdb' '$stub_bin/lastdbd' '$stub_bin/lastdb_restore_probe' target/release/"
 LAST_STACK_CANARY_CARGO_CMD="$fake_cargo" "$CLI" --force --json >/dev/null
-git -C "$mirror" worktree list | grep -q "$workdir"
+# Verify the worktree is now registered in the mirror
+git -C "$mirror" worktree list | grep -qF -- "$workdir" || { echo 'FAIL: worktree not registered after first build' >&2; exit 1; }
+# Simulate disk reclaim: delete the workdir, leaving a stale registration
 rm -rf "$workdir"
-out="$(LAST_STACK_CANARY_CARGO_CMD="$fake_cargo" "$CLI" --force --json)" \
-  || { echo 'FAIL: build after the workdir was deleted' >&2; exit 1; }
-[ "$(printf '%s\n' "$out" | jq -r '.status')" = "built" ]
-[ -x "$workdir/target/release/lastdbd" ]
+# Verify stale registration still exists (not auto-pruned by git)
+git -C "$mirror" worktree list | grep -qF -- "$workdir" || { echo 'FAIL: stale registration was auto-pruned' >&2; exit 1; }
+# Build again: canary-build must detect and remove the stale registration
+# Without the fix, worktree add would fail with "missing but already registered" (exit 128)
+out="$(LAST_STACK_CANARY_CARGO_CMD="$fake_cargo" "$CLI" --force --json 2>/dev/null)" \
+  || { echo "FAIL: build failed after stale registration" >&2; exit 1; }
+[ "$(printf '%s\n' "$out" | jq -r '.status')" = "built" ] || { echo "FAIL: status not built: $out" >&2; exit 1; }
+[ -x "$workdir/target/release/lastdbd" ] || { echo 'FAIL: binary missing after rebuild' >&2; exit 1; }
+echo "ok canary-build prunes stale worktree registrations"
 
 # --- dogfood resolves the staged binary as forge-main ---
 DOG="$ROOT/bin/last-stack-lastdb-canary-dogfood"

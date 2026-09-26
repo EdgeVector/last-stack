@@ -165,6 +165,78 @@ printf '%s\n' "$out" | grep -q 'activating' \
 # decision: STARVE-BOUND fires when abandoned>=N and checks>=min_checks while
 # elapsed is still under the window.
 
+# --- 2b. The production shape: a replace on EVERY tick ---------------------
+# Section 2 gives the final canary two consecutive quiet ticks, so `checks`
+# climbs 1->2->3 and the bound fires on the per-digest counter. A fast-merging
+# channel never grants two quiet ticks. Measured on last-stack 2026-09-26:
+# publish replaced the canary every ~5 minutes, soak-watch ticked once between
+# replacements, and `checks` was pinned at exactly 2 against min_checks=3 for
+# EIGHT consecutive abandons — `abandoned >= starve_after` held the whole time
+# and the bound never fired, because the event that increments `abandoned` is
+# the same event that resets `checks`. host_head did not move for 4h22m across
+# 16 merged PRs.
+#
+# This fixture reproduces that cadence exactly: park, one tick, park, one tick.
+# `checks` must still be BELOW min_checks when the bound fires — that is the
+# whole point, and the assertion below pins it so nobody "fixes" this test by
+# adding a quiet tick.
+rm -f "$stamp"
+rm -f "$HOST_TRACK_STAMP_DIR/soak-history/"demo-*.soak.json 2>/dev/null || true
+ln -sfn versions/digestaaaa "$install_root/current"
+
+tick_once() {
+  ln -sfn "versions/$1" "$install_root/canary"
+  ht soak-watch demo 2>&1 || true
+}
+
+park digestbbbb oidbbbb00000000000000000000000000000011
+out="$(tick_once digestbbbb)"
+printf '%s\n' "$out" | grep -q 'STARVE-BOUND' \
+  && fail "no abandons yet; must not starve-activate: $out"
+
+park digestcccc oidcccc00000000000000000000000000000012
+[ "$(jq -r '.abandoned_consecutive' "$stamp")" = "1" ] || fail "expected abandoned=1"
+[ "$(jq -r '.checks' "$stamp")" = "1" ] \
+  || fail "per-digest checks must still reset on a replace"
+[ "$(jq -r '.checks_total' "$stamp")" = "2" ] \
+  || fail "checks_total must carry across a forward replace, got $(cat "$stamp")"
+out="$(tick_once digestcccc)"
+printf '%s\n' "$out" | grep -q 'STARVE-BOUND' \
+  && fail "abandoned=1 < 3; must not starve-activate: $out"
+
+park digestdddd oiddddd00000000000000000000000000000013
+[ "$(jq -r '.abandoned_consecutive' "$stamp")" = "2" ] || fail "expected abandoned=2"
+out="$(tick_once digestdddd)"
+printf '%s\n' "$out" | grep -q 'STARVE-BOUND' \
+  && fail "abandoned=2 < 3; must not starve-activate: $out"
+
+park digestbbbb oidbbbb00000000000000000000000000000015
+[ "$(jq -r '.abandoned_consecutive' "$stamp")" = "3" ] || fail "expected abandoned=3"
+[ "$(jq -r '.checks' "$stamp")" = "1" ] || fail "per-digest checks must reset"
+out="$(tick_once digestbbbb)"
+printf '%s\n' "$out" | grep -q 'STARVE-BOUND' \
+  || fail "starve bound must fire on a channel that replaces the canary every tick: $out"
+printf '%s\n' "$out" | grep -q 'checks=2/3' \
+  || fail "the firing tick must have per-digest checks BELOW min_checks (that is the regression), got: $out"
+printf '%s\n' "$out" | grep -q 'total=5/3' \
+  || fail "the firing tick must name the cumulative green-probe count it judged on, got: $out"
+
+# --- 2c. A non-forward replace restarts the evidence too -------------------
+# `checks_total` follows the clock: it is carried exactly where soak credit is
+# carried. A replace that is not a forward channel tip (no source_oid) resets
+# both, so a red->green incident restart cannot inherit green probes.
+rm -f "$stamp"
+rm -f "$HOST_TRACK_STAMP_DIR/soak-history/"demo-*.soak.json 2>/dev/null || true
+ln -sfn versions/digestaaaa "$install_root/current"
+park digestbbbb oidbbbb00000000000000000000000000000021
+out="$(tick_once digestbbbb)"
+out="$(tick_once digestbbbb)"
+[ "$(jq -r '.checks_total' "$stamp")" -ge 3 ] \
+  || fail "two quiet ticks should have accumulated checks_total, got $(cat "$stamp")"
+park digestcccc ""
+[ "$(jq -r '.checks_total' "$stamp")" = "1" ] \
+  || fail "a replace with no forward source_oid must reset checks_total, got $(cat "$stamp")"
+
 # --- 3. Reverting the bound (N=0) keeps the ordinary wait ------------------
 export HOST_TRACK_SOAK_STARVE_AFTER_ABANDONS=0
 rm -f "$stamp"

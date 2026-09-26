@@ -26,6 +26,11 @@ This helper replaces both:
            is not a PR defect. It is attributed to the per-repo root-cause row
              papercut-pipeline-forge-<repo>-main-red
            and no per-PR row is written.
+         - a green, mergeable PR that nobody armed for auto-merge is not a PR
+           defect either: nobody asked for the merge. It is RECORDED in the
+           heartbeat as `green_unarmed=` and in the actions as
+           `action=green-unarmed`, and no row is written. Its owner is the
+           card's `needs_human` decision, not this ledger. See merge_intent().
          - every row this helper tracks is closed `verified` with a live point
            read once its PR is merged or closed, or (main-red rows) once the
            base tip is green on every required context.
@@ -34,6 +39,11 @@ This helper replaces both:
          never fires an auto-merge armed after the required check went green.
          Merges an ARMED green PR directly after --grace-sec (dry run unless
          --apply; --arm also merges an unarmed green PR).
+         Refuses before any read or write when
+         `situations preflight --action merge-pr --repo <repo>` does not answer
+         OK: verdict `situations-blocked` (an active Situation forbids it) or
+         `situations-unreadable` (policy unreadable, so it fails closed), exit 3
+         for both, with the blocking slug rendered in JSON and text.
 
 LastGit is not read. It is disabled for every EdgeVector repo
 (decision-2026-09-06-all-repos-venue-forgejo-no-lastgit-default).
@@ -47,6 +57,7 @@ import json
 import os
 import re
 import concurrent.futures
+import shutil
 import subprocess
 import sys
 import time
@@ -104,6 +115,74 @@ def forge_api_bin() -> str:
         return env
     sibling = HERE / "last-stack-forge-api"
     return str(sibling) if sibling.exists() else "last-stack-forge-api"
+
+
+def situations_bin() -> str:
+    env = os.environ.get("LAST_STACK_SITUATIONS_BIN")
+    if env:
+        return env
+    if shutil.which("situations"):
+        return "situations"
+    # A sandboxed agent shell can lose ~/.local/bin from PATH; that is not a host
+    # without a policy store.
+    local = Path(os.path.expanduser("~/.local/bin/situations"))
+    return str(local) if local.exists() else ""
+
+
+def merge_policy(repo: str) -> tuple[str, str]:
+    """Is a merge to `repo` allowed right now? ("ok"|"blocked"|"unreadable", detail).
+
+    `bin/last-stack-forge-api` refuses the merge POST itself since last-stack#203,
+    so this is not the only gate and it is not a duplicate of it either. Without
+    it, merge_green_once on a blocked repo runs this sequence:
+
+        DELETE .../merge     cancels the owner's armed schedule  (NOT guarded,
+                             on purpose: a cancel must stay possible under a hold)
+        POST   .../merge     REFUSED by the wrapper -> verdict `merge-failed`
+        POST   .../merge     the recovery re-arm, ALSO refused by the wrapper
+
+    which cancels the schedule, does not merge, and then cannot put the schedule
+    back. It leaves the PR in a worse state than it found it and reports an
+    opaque `merge-failed` while doing so. Asking first turns all three writes
+    into one read and one honest verdict.
+
+    History: on 2026-09-25 three EdgeVector/loom PRs merged under an active p0
+    hold that named merge-pr in `blocked_actions` and EdgeVector/loom in
+    `scope_repos`; host-track then advanced 10 commits and re-absorbed the schema
+    regression the hold existed to keep out
+    (papercut-incident-pipeline-health-loom-pr60-merge-violates-active-hold-20260925).
+
+    "unreadable" is not "ok" here. The wrapper fails open on a preflight that
+    cannot run, so that a broken install cannot stop every merge on the forge;
+    this caller is a scheduled repair verb with no operator watching, its writes
+    are exactly the ones a hold exists to stop, and the workspace rule for a
+    shared-system mutation with no readable preflight is to stay read-only. A
+    host with no `situations` binary at all has no policy store to consult and
+    reads "ok" with a detail that says so.
+    """
+    sit = situations_bin()
+    if not sit:
+        return "ok", "no situations binary on this host; merge-pr policy unchecked"
+    proc = run([sit, "preflight", "--action", "merge-pr", "--repo", repo, "--field", "slug,reason"], timeout=60)
+    if proc.returncode == 0:
+        return "ok", ""
+    detail = ((proc.stdout or "") + (proc.stderr or "")).strip()[:300]
+    if proc.returncode == 3:
+        return "blocked", detail or "preflight exited 3 with no rows"
+    return "unreadable", f"preflight exited {proc.returncode}: {detail}"
+
+
+def policy_slug(detail: str) -> str:
+    """The Situation slug out of a `merge_policy` "blocked" detail, or "".
+
+    `situations preflight --field slug,reason` prints one TSV row per blocking
+    Situation. A refusal has to name what refused it — `policy-blocked` alone
+    sends the reader back to preflight to find out which hold applies, and the
+    slug is the one thing they need in order to cite it or clear it.
+    """
+    first = (detail or "").strip().splitlines()[0] if (detail or "").strip() else ""
+    token = first.split("\t")[0].strip() if first else ""
+    return token if re.fullmatch(r"[a-z0-9][a-z0-9-]*", token or "") else ""
 
 
 class ForgeError(RuntimeError):
@@ -185,6 +264,44 @@ def repo_token(repo: str) -> str:
     return re.sub(r"[^a-z0-9-]+", "-", repo.rsplit("/", 1)[-1].lower()).strip("-")
 
 
+def merge_intent(repo: str, number: int) -> str:
+    """Does anybody want this green PR merged? "armed" | "unarmed" | "unknown".
+
+    A green, mergeable, UNARMED PR is not a pipeline defect: nobody asked for
+    the merge. The state is produced on purpose — a loom land-card execution
+    that parked because its review escalated at cap, a proof still in flight, a
+    PR held for a human decision — and the board carries it as the owning card's
+    `needs_human` block reason. Filing a p0 pipeline row for it puts a
+    deliberate park at the top of the factory's priority queue, and the row can
+    never close, because nothing will merge the PR. `merge-green` already makes
+    exactly this judgment for the same PR (verdict `green-not-armed`, "Nobody
+    asked for a merge"); before 2026-09-25 the stuck classifier did not, so the
+    two halves of this helper disagreed about one PR.
+
+    "armed" is the real defect: Forgejo 15.0.3 never fires a schedule armed
+    after the last required status went green
+    (papercut-forgejo-auto-merge-armed-after-green-never-fires-20260923), and
+    `merge-green --apply` is its repair.
+
+    Who owns an unarmed green PR instead of this ledger: `pr-reaper`, whose
+    1-hour open-PR SLA (Tom directive 2026-07-19) drives ANY PR open past 60
+    minutes to a terminal state — merged when it is green and mergeable, closed
+    otherwise, with no class exempt by age. That is why `may_merge` in the reap
+    plan is deliberately NOT gated on this value: the reaper's job does not
+    change. Only the papercut ledger's does. The board carries the same PR a
+    second time, as the owning card's `needs_human` block reason when a loom
+    execution parked it.
+
+    A timeline read that fails answers "unknown", which stays stuck: an
+    unreadable probe must not silence a row.
+    """
+    try:
+        armed, _ = schedule_state(repo, number)
+    except ForgeError:
+        return "unknown"
+    return "armed" if armed else "unarmed"
+
+
 def pr_slug(repo: str, number: int) -> str:
     return f"papercut-pipeline-forge-{repo_token(repo)}-pr-{number}"
 
@@ -237,6 +354,19 @@ def heartbeat_fields(report: dict[str, Any]) -> str:
         f"stuck_prs={','.join(stuck) or '-'}",
         f"unreadable={','.join(u['repo'].rsplit('/', 1)[-1] for u in report.get('unreadable', [])) or '-'}",
     ]
+    # Recorded, not filed: a green PR nobody armed is the owning card's
+    # needs_human decision, so the heartbeat names it and no p0 row is written.
+    unarmed = [f"{p['repo'].rsplit('/', 1)[-1]}#{p['number']}" for p in report.get("prs", []) if p.get("stuck_excluded") == "green-unarmed"]
+    if unarmed:
+        fields.append(f"green_unarmed={','.join(unarmed)}")
+    # Recorded, not filed: the repo is under a Situation that blocks merge-pr,
+    # so "merge it" is not an action any agent may take. Name the PRs and the
+    # holds, so the pass is auditable without a per-PR p0 row.
+    held = [f"{p['repo'].rsplit('/', 1)[-1]}#{p['number']}" for p in report.get("prs", []) if p.get("stuck_excluded") == "policy-blocked"]
+    if held:
+        holds = sorted({p.get("policy_hold") or "-" for p in report.get("prs", []) if p.get("stuck_excluded") == "policy-blocked"})
+        fields.append(f"policy_blocked={','.join(held)}")
+        fields.append(f"policy_holds={','.join(holds)}")
     ledger = report.get("ledger")
     if ledger:
         counts: dict[str, int] = {}
@@ -282,6 +412,20 @@ def scan_repo(repo: str, args: argparse.Namespace, now: dt.datetime) -> tuple[di
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, len(heads))) as pool:
             for sha, doc, err in pool.map(fetch_status, heads):
                 status_by_head[sha] = (doc, err)
+
+    policy_cache: list[tuple[str, str]] = []
+
+    def repo_merge_policy() -> tuple[str, str]:
+        """`merge_policy(repo)`, once per repo per pass, lazily.
+
+        Lazy because most repos have no green unmerged PR on any given pass and
+        the call spawns `situations`; cached because `scan_repo` may see several
+        green PRs in one repo and the answer is a property of the repo.
+        """
+        if not policy_cache:
+            policy_cache.append(merge_policy(repo))
+        return policy_cache[0]
+
     for pr in pulls:
         if not isinstance(pr, dict) or pr.get("state") != "open":
             continue
@@ -320,8 +464,28 @@ def scan_repo(repo: str, args: argparse.Namespace, now: dt.datetime) -> tuple[di
         else:
             shape = verdict  # pending | absent | unreadable
         stuck = False
-        if age_min is not None and age_min >= args.min_age_min and shape in {"conflict", "red", "green-unmerged"}:
+        over_age = age_min is not None and age_min >= args.min_age_min
+        # "" — the field does not apply (this PR is not green).
+        # "not-read" — green but under --min-age-min, so the answer cannot
+        #              change any verdict this pass and the read is skipped.
+        intent = "" if shape != "green-unmerged" else ("not-read" if not over_age else merge_intent(repo, number))
+        # A held repo does not make a broken CI lane less broken, so `red`,
+        # `conflict` and `pending` are classified without asking about policy.
+        # Their implied remedy — read the logs, draft a fix, open a PR — is
+        # inside the loom hold's own `allowed_actions`. Only `green-unmerged`
+        # implies the one remedy a merge-pr block forbids.
+        policy, policy_detail, policy_hold = "", "", ""
+        if over_age and shape in {"conflict", "red"}:
             stuck = True
+        if over_age and shape == "green-unmerged" and intent != "unarmed":
+            policy, policy_detail = repo_merge_policy()
+            policy_hold = policy_slug(policy_detail) if policy == "blocked" else ""
+            # Fail OPEN, the opposite of `merge_green_once`. A filing writes
+            # nothing to the forge, so suppressing a genuine stuck-PR signal
+            # because the policy store was busy loses information for no gain;
+            # a merge under an unreadable hold is the loss that matters. The
+            # asymmetry is deliberate.
+            stuck = policy != "blocked"
         if idle_min is not None and idle_min >= args.pending_stale_min and shape in {"pending", "absent"}:
             stuck = True
         root_cause = ""
@@ -341,6 +505,13 @@ def scan_repo(repo: str, args: argparse.Namespace, now: dt.datetime) -> tuple[di
                 "required": {c: states.get(c, "absent") for c in base["required"]},
                 "red_contexts": red,
                 "shape": shape,
+                "merge_intent": intent,
+                "merge_policy": policy,
+                "policy_hold": policy_hold,
+                "stuck_excluded": (
+                    "green-unarmed" if (over_age and shape == "green-unmerged" and intent == "unarmed")
+                    else "policy-blocked" if policy == "blocked" else ""
+                ),
                 "stuck": stuck,
                 "root_cause": root_cause,
                 "ledger_slug": main_red_slug(repo) if root_cause else pr_slug(repo, number),
@@ -447,8 +618,9 @@ def live_card_owner(args: argparse.Namespace, pr: dict[str, Any], now: dt.dateti
 
 def evidence_line(pr: dict[str, Any], checked_at: str) -> str:
     req = ", ".join(f"{c}={s}" for c, s in pr["required"].items())
+    intent = f" intent={pr['merge_intent']}" if pr.get("merge_intent") else ""
     return (
-        f"- {checked_at}: {pr['repo']}#{pr['number']} shape={pr['shape']} head={pr['head_sha'][:12]} "
+        f"- {checked_at}: {pr['repo']}#{pr['number']} shape={pr['shape']}{intent} head={pr['head_sha'][:12]} "
         f"mergeable={pr['mergeable']} age_min={pr['age_min']} required: {req}\n"
     )
 
@@ -494,6 +666,24 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                 pr["root_cause"] = "known"
                 pr["ledger_slug"] = rc_slug
                 break
+
+    # 0b. a green PR nobody armed is recorded, never filed (see merge_intent).
+    for pr in report["prs"]:
+        if pr.get("stuck_excluded") == "green-unarmed":
+            act("green-unarmed", pr_slug(pr["repo"], pr["number"]), age_min=pr["age_min"])
+
+    # 0c. a green PR whose repo is under a Situation that blocks merge-pr is
+    #     recorded, never filed. A p0 row for it puts a deliberate hold at the
+    #     top of the factory queue and its only implied remedy is the action the
+    #     hold forbids: on 2026-09-25 three EdgeVector/loom PRs merged under
+    #     such a hold and host-track re-absorbed the schema regression the hold
+    #     existed to keep out. The row also cannot close, because nothing may
+    #     merge the PR. See merge_policy() for the classification, which is
+    #     scoped to this shape only.
+    for pr in report["prs"]:
+        if pr.get("stuck_excluded") == "policy-blocked":
+            act("policy-blocked", pr_slug(pr["repo"], pr["number"]),
+                policy=pr.get("policy_hold") or "", age_min=pr["age_min"])
 
     # 1. stuck PRs → file or append (one row per PR, or one per repo when main is red)
     grouped: dict[str, list[dict[str, Any]]] = {}
@@ -715,6 +905,10 @@ def reap_plan(args: argparse.Namespace) -> dict[str, Any]:
                 "owned_by": owned_by,
                 # The only rows the reaper may terminalize this pass.
                 "may_close": still_open and fresh["head_sha"] == pr["head_sha"] and guard.get("verdict") == "close-ok" and not owned_by,
+                # Informational. may_merge is NOT gated on it: the reaper's
+                # 1-hour SLA terminalizes an unarmed green PR by merging it, and
+                # that directive is unchanged by this field.
+                "merge_intent": pr.get("merge_intent", ""),
                 "may_merge": still_open and fresh["head_sha"] == pr["head_sha"] and pr["shape"] == "green-unmerged",
             }
         )
@@ -741,6 +935,12 @@ def schedule_state(repo: str, number: int) -> tuple[bool, dt.datetime | None]:
     armed, armed_at = False, None
     for page in range(1, 11):  # bounded: 10 pages x 50 events
         events = forge_get(f"repos/{repo}/issues/{number}/timeline?limit=50&page={page}")
+        if page == 1 and not isinstance(events, list):
+            # A timeline that does not read as a list of events is UNREADABLE.
+            # Answering "not armed" here would let a broken read look like
+            # "nobody asked for the merge", which is the one thing every caller
+            # of this function decides on.
+            raise ForgeError(f"repos/{repo}/issues/{number}/timeline: response is not a list")
         if not isinstance(events, list) or not events:
             break
         for ev in events:
@@ -774,6 +974,15 @@ def merge_green_once(args: argparse.Namespace) -> dict[str, Any]:
     repo = args.repo[0] if "/" in args.repo[0] else f"EdgeVector/{args.repo[0]}"
     number = args.pr
     out: dict[str, Any] = {"repo": repo, "number": number, "applied": bool(args.apply)}
+    # Policy before evidence. The answer does not depend on the PR, it is the
+    # same with or without --apply, and asking first is what keeps the
+    # cancel/merge/re-arm sequence from starting at all. See merge_policy().
+    policy, policy_detail = merge_policy(repo)
+    out["policy"] = policy
+    if policy_detail:
+        out["policy_detail"] = policy_detail
+    if policy != "ok":
+        return {**out, "verdict": f"situations-{policy}"}
     point = forge_get(f"repos/{repo}/pulls/{number}")
     if point.get("merged"):
         return {**out, "verdict": "merged", "merge_commit_sha": point.get("merge_commit_sha") or ""}
@@ -862,7 +1071,12 @@ def print_text(report: dict[str, Any]) -> None:
         print("\t".join(str(x) for x in (
             "merge-green", mg.get("repo"), mg.get("number"), mg.get("verdict"),
             f"checks={mg.get('checks', '-')}", f"armed={mg.get('armed', '-')}",
-            f"merge={mg.get('merge_commit_sha') or '-'}", mg.get("error", "") or "",
+            f"merge={mg.get('merge_commit_sha') or '-'}",
+            # A refusal must name what it refused ON. `situations-blocked` alone
+            # sends the reader back to preflight to find out which Situation did
+            # it; the slug is the one thing they need in order to cite it.
+            f"policy={mg.get('policy_detail')}" if mg.get("policy_detail") else "",
+            mg.get("error", "") or "",
         )).rstrip("\t"))
         return
     print(f"checked_at={report['checked_at']} stuck={report['stuck']} unreadable={len(report['unreadable'])}")
@@ -885,7 +1099,10 @@ def print_text(report: dict[str, Any]) -> None:
             f"close={r['may_close']}\tmerge={r['may_merge']}"
         )
     for a in (report.get("ledger") or {}).get("actions", []):
-        print(f"ledger\t{a['action']}\t{a['slug']}\t{a.get('ok', '')}\t{a.get('error', '')}")
+        # A suppression has to name what suppressed it: `policy-blocked` alone
+        # sends the reader back to preflight for the hold's slug.
+        policy = f"policy={a['policy']}" if a.get("policy") else ""
+        print(f"ledger\t{a['action']}\t{a['slug']}\t{a.get('ok', '')}\t{policy}\t{a.get('error', '')}".rstrip("\t"))
 
 
 def main() -> int:
@@ -939,7 +1156,11 @@ def main() -> int:
         verdict = report["merge_green"]["verdict"]
         if verdict in {"merged", "merged-now", "would-merge", "green-not-armed", "armed-green-wait", "pending", "absent", "draft"}:
             return 0
-        return 3 if verdict == "unreadable" else 1
+        # 3 is "stop and cite the reason", the same code `situations preflight`
+        # and last-stack-forge-api's merge guard use for a refusal.
+        if verdict in {"unreadable", "situations-blocked", "situations-unreadable"}:
+            return 3
+        return 1
     if report["unreadable"] and not report["prs"]:
         return 3
     return 0

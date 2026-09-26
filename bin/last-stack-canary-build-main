@@ -221,6 +221,12 @@ ensure_worktree() {
   # 02:47 PT nightly stopped at stage=build rc=128. Drop registrations whose
   # directory is gone before any add.
   git -C "$FOLD_MIRROR" worktree prune 2>/dev/null || true
+  # Explicitly remove stale registration if the directory is missing
+  if ! [ -d "$WORKDIR/.git" ] && ! [ -f "$WORKDIR/.git" ]; then
+    if git -C "$FOLD_MIRROR" worktree list 2>/dev/null | grep -qF -- "$WORKDIR"; then
+      git -C "$FOLD_MIRROR" worktree remove --force "$WORKDIR" 2>/dev/null || true
+    fi
+  fi
   if [ -d "$WORKDIR/.git" ] || [ -f "$WORKDIR/.git" ]; then
     # Detached checkout at desired oid
     git -C "$WORKDIR" fetch --no-tags origin refs/heads/main:refs/remotes/origin/main 2>/dev/null || true

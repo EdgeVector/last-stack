@@ -266,8 +266,10 @@ run_wd "$tmp/s15" "$lanes_pc_down"
 grep -q "pc-linux" "$pages" || { echo "FAIL: resume did not restore PC alerting"; cat "$pages"; exit 1; }
 echo "ok: after resume a still-down PC lane pages again"
 
-# --- 16. an unreadable pause file is NOT a pause -----------------------------
+# --- 16. an unreadable pause file is NOT a pause (incl. empty file) ----------
 # Fail loud: a truncated or half-written file must never silence a merge gate.
+# Empty pause file is a specific issue (papercut-forge-runner-watchdog-empty-pause-jq-20260923)
+# where different jq versions might parse it inconsistently.
 for bad in '' 'not json' '{"intent":' '{"intent":"pause"}' '{"paused":true}'; do
   : >"$pages"
   printf '%s' "$bad" > "$pause_file"
@@ -279,7 +281,17 @@ rm -f "$pause_file"
 : >"$pages"
 run_wd "$tmp/s16-absent" "$lanes_pc_down"
 grep -q "pc-linux" "$pages" || { echo "FAIL: a missing pause file silenced a PC outage"; exit 1; }
-echo "ok: only an explicit intent=paused is a pause"
+echo "ok: only an explicit intent=paused is a pause (including empty files)"
+
+# --- 16b. empty pause file specifically under both BSD and GNU jq -----------
+# Verify empty file doesn't read as pause on both jq variants.
+: >"$pages"
+printf '' > "$pause_file"
+run_wd "$tmp/s16b" "$lanes_pc_down"
+grep -q "pc-linux" "$pages" \
+  || { echo "FAIL: empty pause file was treated as active pause"; exit 1; }
+rm -f "$pause_file"
+echo "ok: empty pause file is treated as no pause"
 
 # --- 17. under a pause the drain is reported, not paged ----------------------
 # `active` means the PC is still finishing a job it already accepted.
@@ -451,5 +463,40 @@ for l in com.edgevector.forgejo-runner-host com.edgevector.forgejo-runner-host-e
   rm -f "$plists/$l.plist"
 done
 echo "ok: a complete inventory still drives revive in a blind shell"
+
+# --- 24. scheduled pause with expired `until`: auto-resumes (no manual intervention)
+# papercut-pc-runner-did-not-resume-after-scheduled-pause-20260923
+# When a scheduled pause has an `until` time in the past, watchdog should treat
+# it as expired and restore normal alerting (no page for "healthy again" when it
+# was never actually recovered; just restore the state).
+all_loaded
+: >"$pages"; : >"$notices"
+sd="$tmp/s24"
+# Write a pause with until time in the past
+past_time="2026-09-20T00:00:00Z"  # definitely in the past
+printf '%s\n' "{\"intent\":\"paused\",\"since\":\"2026-09-20T00:00:00Z\",\"until\":\"$past_time\",\"reason\":\"gaming session\"}" > "$pause_file"
+# PC is down and pause is expired: should page (pause is expired so doesn't suppress)
+run_wd "$sd" "$lanes_pc_down"
+grep -q "pc-linux" "$pages" \
+  || { echo "FAIL: an expired scheduled pause suppressed a PC outage alert"; cat "$pages"; exit 1; }
+# Pause notice should NOT be recorded (pause is expired, not active)
+! grep -q "PC CI paused by the owner" "$notices" \
+  || { echo "FAIL: expired pause was recorded as active in Situations"; cat "$notices"; exit 1; }
+echo "ok: expired scheduled pause does not suppress alerts (auto-resume)"
+
+# --- 25. scheduled pause still active: continues to suppress ----------------
+# When until time is in the future, the pause is still active and suppresses alerts.
+all_loaded
+: >"$pages"; : >"$notices"
+sd="$tmp/s25"
+# Write a pause with until time in the future
+future_time="2099-12-31T23:59:59Z"
+printf '%s\n' "{\"intent\":\"paused\",\"since\":\"2026-09-25T00:00:00Z\",\"until\":\"$future_time\",\"reason\":\"gaming\"}" > "$pause_file"
+run_wd "$sd" "$lanes_pc_down"
+[ ! -s "$pages" ] || { echo "FAIL: active scheduled pause did not suppress PC lane alerts"; cat "$pages"; exit 1; }
+grep -q "PC CI paused by the owner" "$notices" \
+  || { echo "FAIL: active scheduled pause not recorded in Situations"; cat "$notices"; exit 1; }
+echo "ok: active scheduled pause continues to suppress alerts"
+rm -f "$pause_file"
 
 echo "PASS last-stack-forge-runner-watchdog"

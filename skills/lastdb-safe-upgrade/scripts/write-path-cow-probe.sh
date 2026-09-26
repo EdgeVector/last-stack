@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Write-path CoW probe — Table 5 gate for T0-only mutation ack.
 #
-# Clone the live LastDB home with `cp -cR` into ${TMPDIR} (never under $HOME,
-# never --data-dir ~/.lastdb), mirror live LASTDB_* except home/data-dir via
-# live_lastdb_env_pairs(), strip production cloud_sync.json, boot the candidate
-# on an isolated socket, identity-check the live socket before and after.
+# Clone the live LastDB home with `cp -cR` (macOS) or `cp -R` (Linux) into
+# ${TMPDIR} (never under $HOME, never --data-dir ~/.lastdb), mirror live
+# LASTDB_* except home/data-dir via live_lastdb_env_pairs(), strip production
+# cloud_sync.json, boot the candidate on an isolated socket, identity-check
+# the live socket before and after.
 #
 # On today's incumbent the same probe prints RED (seconds-scale BoardCards
 # ack; persist and T2 on the request; Purge in the batch). Table 5 GREEN is
@@ -184,9 +185,13 @@ if [ ! -d "$PRIMARY_HOME" ] || [ ! -f "$PRIMARY_HOME/identity.key" ]; then
   fail_red "live home missing identity.key at $PRIMARY_HOME"
 fi
 
-log "cloning $PRIMARY_HOME -> $copy (cp -cR)"
+log "cloning $PRIMARY_HOME -> $copy (cp -R)"
 rm -rf "$copy"
-cp -cR "$PRIMARY_HOME" "$copy" 2>/dev/null || true
+if stat --version >/dev/null 2>&1; then
+  cp -R "$PRIMARY_HOME" "$copy" 2>/dev/null || true
+else
+  cp -cR "$PRIMARY_HOME" "$copy" 2>/dev/null || true
+fi
 if [ ! -d "$copy" ] || [ ! -f "$copy/identity.key" ] || [ ! -d "$copy/data" ]; then
   fail_red "CoW clone incomplete at $copy"
 fi

@@ -11,7 +11,7 @@ if grep -q '^find_reusable_backup()\|REUSABLE_BACKUP\|rsync -a.*PRIMARY_HOME' "$
   echo "FAIL: durable backup reuse/full-copy fallback survived" >&2
   exit 1
 fi
-grep -q 'cp -cR "\$PRIMARY_HOME" "\$BACKUP"' "$driver"
+grep -qE 'cp (-R|-cR) "\$PRIMARY_HOME" "\$BACKUP"' "$driver"
 grep -q 'refusing full-copy fallback' "$driver"
 grep -q 'ROLLBACK_READY=1' "$driver"
 grep -q '\[ -n "\$PROBE_ROOT" \] || PROBE_ROOT="\$WORK/probes"' "$driver"

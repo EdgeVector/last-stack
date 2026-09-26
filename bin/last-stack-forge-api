@@ -62,6 +62,15 @@ Env:
   FORGE_TOKEN    API token override; otherwise keychain forgejo-token, then
                  lastsecrets://forgejo-token (survives a locked keychain)
 
+Merge preflight guard:
+  POST .../pulls/<n>/merge first runs `situations preflight --action merge-pr
+  --repo OWNER/REPO`. BLOCKED (exit 3) refuses the call with exit 3 and the
+  Situation text. A missing or failing situations CLI does not block, but a
+  merge URL with no readable OWNER/REPO is refused: there is no repo to ask
+  about, and a silent fall-through cannot be told from an allow.
+  DELETE .../pulls/<n>/merge (cancel a scheduled merge) is never guarded.
+  Override (rare): LAST_STACK_FORGE_MERGE_PREFLIGHT_SKIP=1.
+  Env: LAST_STACK_SITUATIONS_BIN (default: situations on PATH).
 Update-branch guard:
   POST .../pulls/<n>/update is refused (exit 3) while the PR head has a pending
   check: the update cancels the in-flight run and re-queues the PR. BEHIND never
@@ -210,6 +219,28 @@ curl_auth=(-K "$auth_config")
 # block_on_outdated_branch, so a BEHIND branch never blocks a merge. Refuse the
 # update while the head has a pending check; override with
 # LAST_STACK_FORGE_UPDATE_BRANCH_FORCE=1.
+#
+# Exception (papercut-forge-update-branch-guard-blocks-lane-move-20260926): a
+# pull_request run uses the workflow file from the PR head. When main changes
+# .forgejo/workflows after the PR branched (last-stack PR 209 moved ci-required
+# from macos-arm64 to pc-linux on 2026-09-26), the old head keeps waiting on the
+# old lane. Measured: ten runs waited over an hour behind a 2-slot Mac lane while
+# the PC lane was free; after an update each one started within a minute. So
+# the guard lets the update through when the workflow listing (name + blob sha)
+# at the PR merge base differs from the base branch.
+workflows_changed_since_merge_base() {
+  local pr_body="$1" repo_url merge_base base_ref old_list new_list
+  repo_url="${url%%\?*}"
+  repo_url="${repo_url%/pulls/*}"
+  merge_base="$(printf '%s' "$pr_body" | jq -r '.merge_base // empty' 2>/dev/null || true)"
+  base_ref="$(printf '%s' "$pr_body" | jq -r '.base.ref // empty' 2>/dev/null || true)"
+  [[ -n "$merge_base" && -n "$base_ref" ]] || return 1
+  old_list="$(curl -sS -X GET "${curl_auth[@]}" -H "Accept: application/json" "$repo_url/contents/.forgejo/workflows?ref=$merge_base" 2>/dev/null \
+    | jq -r 'if type == "array" then (map("\(.name)=\(.sha)") | sort | join(",")) else empty end' 2>/dev/null || true)"
+  new_list="$(curl -sS -X GET "${curl_auth[@]}" -H "Accept: application/json" "$repo_url/contents/.forgejo/workflows?ref=$base_ref" 2>/dev/null \
+    | jq -r 'if type == "array" then (map("\(.name)=\(.sha)") | sort | join(",")) else empty end' 2>/dev/null || true)"
+  [[ -n "$old_list" && -n "$new_list" && "$old_list" != "$new_list" ]]
+}
 update_branch_guard() {
   local pr_url="${url%%\?*}" pr_body head_sha status_body state
   pr_url="${pr_url%/update}"
@@ -219,6 +250,11 @@ update_branch_guard() {
   [[ -n "$head_sha" ]] || return 0
   status_body="$(curl -sS -X GET "${curl_auth[@]}" -H "Accept: application/json" "${pr_url%/pulls/*}/commits/$head_sha/status" 2>/dev/null || true)"
   state="$(printf '%s' "$status_body" | jq -r '[.statuses[]? | select(.status == "pending")] | length' 2>/dev/null || echo 0)"
+  if [[ "$state" =~ ^[0-9]+$ && "$state" -gt 0 ]] && workflows_changed_since_merge_base "$pr_body"; then
+    echo "last-stack-forge-api: update-branch allowed: $state pending check(s), but main changed .forgejo/workflows after this PR branched." >&2
+    echo "last-stack-forge-api: the old head runs the stale workflow (maybe a stale lane); the update moves it to main's workflow." >&2
+    return 0
+  fi
   if [[ "$state" =~ ^[0-9]+$ && "$state" -gt 0 ]]; then
     echo "last-stack-forge-api: REFUSED update-branch: PR head ${head_sha:0:10} has $state pending check(s)." >&2
     echo "last-stack-forge-api: an update now cancels the in-flight run and re-queues the PR at the end of the lane." >&2
@@ -229,6 +265,83 @@ update_branch_guard() {
 }
 if [[ "$method" == "POST" && "${url%%\?*}" == */pulls/*/update && "${LAST_STACK_FORGE_UPDATE_BRANCH_FORCE:-0}" != "1" ]]; then
   update_branch_guard
+fi
+
+# Merge preflight guard. A merge POST is a shared-system mutation, and the
+# Situations preflight is the rule for those. On 2026-09-25 two callers armed
+# auto-merge on EdgeVector/loom while loom-budget-schema-deployment-hold
+# blocked merge-pr: the pipeline-health routine (PR 60 merged, an incident)
+# and kanban-factory-manager (PR 63, cancelled). Both skipped the preflight.
+# Put the check where every caller passes. BLOCKED refuses; a CLI that cannot
+# run fails open, because a broken situations install must not stop every
+# merge on the forge.
+#
+# The guard has two fail-open paths and only ONE of them is the "broken install"
+# case above:
+#
+#   * a situations CLI that is absent or cannot run -> fail open, as designed.
+#   * a merge URL this guard cannot read a repo out of -> REFUSE. There is no
+#     policy to consult, because we do not know which repo is being merged, and
+#     falling through silently is indistinguishable from an allow. The first
+#     version matched only `/api/v1/repos/<o>/<r>/pulls/<n>/merge` and returned 0
+#     on anything else, which this wrapper's OWN documented path forms reach: a
+#     caller passing `/repos/<o>/<r>/pulls/<n>/merge` (leading slash, no
+#     `/api/v1`) lands in the catch-all arm and builds
+#     `$FORGE_ROOT/api/v1//repos/...` -- a DOUBLE slash the anchored pattern
+#     cannot match, on a URL Forgejo serves happily. That form bypassed the gate
+#     entirely (measured 2026-09-25, on the very call that opened last-stack#212).
+merge_repo_from_url() {
+  local path_only="${url%%\?*}" repo
+  # Form-agnostic: everything after the FIRST /repos/ and before /pulls/. Covers
+  # `repos/...`, `/api/v1/repos/...`, the `/repos/...` catch-all that doubles the
+  # slash, and a full http:// URL, with no per-form pattern to keep in sync.
+  case "$path_only" in */repos/*/pulls/*) ;; *) return 1 ;; esac
+  repo="${path_only#*/repos/}"
+  repo="${repo%%/pulls/*}"
+  [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 1
+  printf '%s\n' "$repo"
+}
+
+situations_bin_for_merge() {
+  local sit="${LAST_STACK_SITUATIONS_BIN:-situations}"
+  if command -v "$sit" >/dev/null 2>&1; then
+    printf '%s\n' "$sit"
+    return 0
+  fi
+  # A sandboxed agent shell can lose ~/.local/bin from PATH. Losing the policy
+  # CLI to a stripped PATH is not a broken install, so look at the known install
+  # path before concluding this host has no policy store at all. An explicitly
+  # NAMED binary is never second-guessed.
+  if [[ -z "${LAST_STACK_SITUATIONS_BIN:-}" && -x "$HOME/.local/bin/situations" ]]; then
+    printf '%s\n' "$HOME/.local/bin/situations"
+    return 0
+  fi
+  return 1
+}
+
+merge_preflight_guard() {
+  local repo sit_bin out rc
+  if ! repo="$(merge_repo_from_url)"; then
+    echo "last-stack-forge-api: REFUSED merge: no OWNER/REPO in $url, so merge-pr policy could not be checked." >&2
+    echo "last-stack-forge-api: pass the path as repos/OWNER/REPO/pulls/<n>/merge." >&2
+    echo "last-stack-forge-api: override (rare, needs clearance): LAST_STACK_FORGE_MERGE_PREFLIGHT_SKIP=1" >&2
+    exit 3
+  fi
+  sit_bin="$(situations_bin_for_merge)" || return 0
+  set +e
+  out="$("$sit_bin" preflight --action merge-pr --repo "$repo" 2>&1)"
+  rc=$?
+  set -e
+  if [[ "$rc" -eq 3 || "$out" == BLOCKED* ]]; then
+    echo "last-stack-forge-api: REFUSED merge on $repo: Situations preflight says BLOCKED." >&2
+    printf '%s\n' "$out" | head -5 | sed 's/^/last-stack-forge-api:   /' >&2
+    echo "last-stack-forge-api: cancel a scheduled merge with --method DELETE on the same path." >&2
+    echo "last-stack-forge-api: override (rare, needs clearance): LAST_STACK_FORGE_MERGE_PREFLIGHT_SKIP=1" >&2
+    exit 3
+  fi
+}
+if [[ "$method" == "POST" && "${url%%\?*}" == */pulls/*/merge && "${LAST_STACK_FORGE_MERGE_PREFLIGHT_SKIP:-0}" != "1" ]]; then
+  merge_preflight_guard
 fi
 
 # Do NOT pass curl -f. A 409/405 from merge auto-arm must keep the response
@@ -293,6 +406,13 @@ merge_405_verdict() {
     mergeable="${BASH_REMATCH[1]}"
   else
     mergeable="unknown"
+  fi
+  # Forgejo also answers 405 when the PR is already merged, and still reports
+  # mergeable=true. The heal advice below would then send an agent to push an
+  # empty commit onto a merged branch (seen 2026-09-26 on fkanban PR 41).
+  if [[ "$pr_body" =~ \"merged\"[[:space:]]*:[[:space:]]*true ]]; then
+    echo "last-stack-forge-api: PR #$pr_num is already MERGED — this 405 needs no heal. Nothing to do." >&2
+    return
   fi
   # Forgejo recomputes `mergeable` asynchronously after a push, so a merge
   # POST seconds after a push can read false on a clean branch. Re-read

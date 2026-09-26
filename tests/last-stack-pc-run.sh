@@ -53,4 +53,11 @@ set +e; err="$(LAST_STACK_PC_CI_STATE="$WORK/paused.json" FORGE_TOKEN=t PATH="$W
 printf '{"intent":"paused","until":"2000-01-01T00:00:00Z","reason":"old"}\n' >"$WORK/expired.json"
 out="$(LAST_STACK_PC_CI_STATE="$WORK/expired.json" FORGE_TOKEN=t PATH="$WORK/bin:$PATH" "$BIN" "$WORK/job.sh")"
 [ "$out" = remote-ok ] || fail "expired pause still blocked: $out"
+
+# empty pause file must not block execution
+# papercut-forge-runner-watchdog-empty-pause-jq-20260923
+printf '' >"$WORK/empty.json"
+out="$(LAST_STACK_PC_CI_STATE="$WORK/empty.json" FORGE_TOKEN=t PATH="$WORK/bin:$PATH" "$BIN" "$WORK/job.sh")"
+[ "$out" = remote-ok ] || fail "empty pause file blocked execution: $out"
+
 echo "ok last-stack-pc-run"

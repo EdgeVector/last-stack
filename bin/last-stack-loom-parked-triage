@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+"""Resume parked Loom land-card walks that do not need a human.
+
+A land-card walk that hits a node error parks at AWAIT_HUMAN and waits for
+`loom signal <id> card-decision`. Nothing signals it except a person. On
+2026-09-25 five walks sat parked; the kanban-factory-manager classified them
+by hand and found only two shapes, and neither needed judgement:
+
+  escalate  REVISE failed ("reviser produced no commit") or review escalated
+            at the cap, on a card routed `fast` (Haiku). Three of five parks.
+            The signal payload merges into the walk context, so a retry with
+            `card_difficulty: normal` reruns REVISE on the matrix `normal`
+            row. Done once per walk; a second park stays for a human.
+  resume    The PR is already merged (a person or the forge merged it while
+            the walk was parked, or CLOSE_CARD failed on an install lag).
+            `merge` goes to MERGE, which sees merged and passes, then
+            CLOSE_CARD. Rate-limited per walk because CLOSE_CARD can fail
+            again until host-track installs the merge.
+
+Anything else is left parked and listed as `left`.
+
+Usage:
+  last-stack-loom-parked-triage [--apply] [--json] [--gate]
+      [--merge-retry-hours 6] [--limit 20]
+
+`--gate` is the routinesd gate_command form: it implies --apply, prints a
+`ROUTINE_RESULT outcome=ok|noop` trailer, and exits 0 so no LLM harness
+starts. An unreadable `loom list` exits 1 (routinesd records a failed run).
+
+Dry run by default. `--apply` starts each signal detached (the signal drives
+the walk in the foreground and can run for an hour), logs it under the state
+dir, and marks the card with one PROGRESS line.
+
+The last stdout line carries heartbeat tokens:
+  parked_seen= escalated= resumed= left= errors=
+
+Test knobs: LOOM_BIN, KANBAN_BIN, FORGE_API_BIN,
+LAST_STACK_LOOM_TRIAGE_STATE (state dir).
+"""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import time
+
+LOOM = os.environ.get("LOOM_BIN", "loom")
+KANBAN = os.environ.get("KANBAN_BIN", "kanban")
+FORGE_API = os.environ.get("FORGE_API_BIN", "last-stack-forge-api")
+STATE_DIR = Path(os.environ.get(
+    "LAST_STACK_LOOM_TRIAGE_STATE",
+    str(Path.home() / ".local/state/last-stack/loom-parked-triage")))
+
+ESCALATE_MARKERS = ("reviser produced no commit", "review escalated at cap")
+PR_RE = re.compile(r"/([^/]+/[^/]+)/pulls/(\d+)")
+
+
+def run(cmd, timeout=90):
+    try:
+        cp = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 1, "", str(exc)
+    return cp.returncode, cp.stdout, cp.stderr
+
+
+def parked_walks(limit):
+    rc, out, err = run([LOOM, "list", "land-card"])
+    if rc != 0:
+        raise RuntimeError(f"loom list land-card failed: {err.strip()[:200]}")
+    rows = []
+    for line in out.splitlines():
+        cols = line.split("\t")
+        if len(cols) >= 4 and cols[2] == "parked" and cols[3] == "AWAIT_HUMAN":
+            rows.append(cols[1])
+    return rows[:limit]
+
+
+def parse_show(text):
+    """Top-level fields, context.* values, and the error block of `loom show`."""
+    view = {"context": {}, "error": "", "failed_nodes": []}
+    in_error = False
+    for line in text.splitlines():
+        if line.startswith("context."):
+            in_error = False
+            key, _, raw = line[len("context."):].partition(": ")
+            try:
+                view["context"][key] = json.loads(raw)
+            except json.JSONDecodeError:
+                view["context"][key] = raw
+        elif line.startswith("error: "):
+            in_error = True
+            view["error"] += line[len("error: "):] + "\n"
+        elif line.startswith("node "):
+            in_error = False
+            m = re.match(r"node (\w+)#\d+ failed", line)
+            if m:
+                view["failed_nodes"].append(m.group(1))
+        elif ": " in line and not line.startswith(" ") and not in_error:
+            key, _, val = line.partition(": ")
+            view[key] = val
+        elif in_error:
+            view["error"] += line + "\n"
+    return view
+
+
+def pr_merged(ctx):
+    if ctx.get("merged") is True:
+        return True
+    m = PR_RE.search(str(ctx.get("pr_url") or ""))
+    if not m:
+        return False
+    rc, out, _ = run([FORGE_API, f"repos/{m.group(1)}/pulls/{m.group(2)}", "--jq", ".merged"], 60)
+    return rc == 0 and out.strip() == "true"
+
+
+def load_state():
+    try:
+        return json.loads((STATE_DIR / "state.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_state(state):
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = STATE_DIR / f"state.json.tmp.{os.getpid()}"
+    tmp.write_text(json.dumps(state, indent=1, sort_keys=True))
+    tmp.replace(STATE_DIR / "state.json")
+
+
+def classify(exec_id, view, state, merge_retry_s, now):
+    ctx = view["context"]
+    seen = state.get(exec_id, {})
+    text = (view["error"] + " " + str(ctx.get("park_reason") or "")).lower()
+    if pr_merged(ctx):
+        last = seen.get("resume_at", 0)
+        if now - last < merge_retry_s:
+            return "left", "merged; resume signalled recently", None
+        return "resume", "PR merged", {"human_decision": "merge"}
+    if any(m in text for m in ESCALATE_MARKERS):
+        if ctx.get("card_difficulty", "fast") != "fast" or ctx.get("triage_escalated") or seen.get("escalated_at"):
+            return "left", "already escalated; needs a human", None
+        return "escalate", "fast reviser stalled", {
+            "human_decision": "retry", "card_difficulty": "normal", "triage_escalated": True}
+    return "left", "no automatic rule", None
+
+
+def signal(exec_id, payload, card):
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    log = open(STATE_DIR / f"{exec_id}.log", "a")
+    log.write(f"--- {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} signal {json.dumps(payload)}\n")
+    log.flush()
+    subprocess.Popen([LOOM, "signal", exec_id, "card-decision", "--payload", json.dumps(payload)],
+                     stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                     start_new_session=True)
+    if card:
+        run([KANBAN, "mark", card,
+             f"PROGRESS: loom-parked-triage exec={exec_id} signalled {payload['human_decision']}"
+             + (f" card_difficulty={payload['card_difficulty']}" if "card_difficulty" in payload else "")], 60)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--gate", action="store_true")
+    ap.add_argument("--merge-retry-hours", type=float, default=6.0)
+    ap.add_argument("--limit", type=int, default=20)
+    args = ap.parse_args()
+    if args.gate:
+        args.apply = True
+
+    now = time.time()
+    state = load_state()
+    rows, counts = [], {"parked_seen": 0, "escalated": 0, "resumed": 0, "left": 0, "errors": 0}
+    try:
+        ids = parked_walks(args.limit)
+    except RuntimeError as exc:
+        print(f"last-stack-loom-parked-triage: {exc}", file=sys.stderr)
+        print("parked_seen=0 escalated=0 resumed=0 left=0 errors=1")
+        return 1
+    for exec_id in ids:
+        counts["parked_seen"] += 1
+        rc, out, err = run([LOOM, "show", exec_id])
+        if rc != 0:
+            counts["errors"] += 1
+            rows.append({"exec": exec_id, "action": "error", "why": err.strip()[:200]})
+            continue
+        view = parse_show(out)
+        action, why, payload = classify(exec_id, view, state, args.merge_retry_hours * 3600, now)
+        card = view["context"].get("card")
+        rows.append({"exec": exec_id, "card": card, "action": action, "why": why})
+        if action == "left":
+            counts["left"] += 1
+            continue
+        counts["escalated" if action == "escalate" else "resumed"] += 1
+        if args.apply:
+            signal(exec_id, payload, card)
+            key = "escalated_at" if action == "escalate" else "resume_at"
+            state.setdefault(exec_id, {})[key] = now
+    if args.apply:
+        save_state(state)
+    if args.json:
+        print(json.dumps({"apply": args.apply, "walks": rows}, indent=1))
+    else:
+        for r in rows:
+            print(f"{r['action']}\t{r['exec']}\t{r.get('card') or '-'}\t{r['why']}")
+    tokens = " ".join(f"{k}={v}" for k, v in counts.items())
+    if args.gate:
+        acted = counts["escalated"] + counts["resumed"]
+        print(f"ROUTINE_RESULT outcome={'ok' if acted else 'noop'} detail={tokens.replace(' ', ',')}")
+    print(tokens)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

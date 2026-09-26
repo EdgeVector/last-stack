@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""Derive a Kind:pr card's file surfaces from the repository paths its body names.
+
+Usage:
+  last-stack-kanban-derive-surfaces --repo OWNER/NAME [--base main]
+      [--mirror PATH] [--max N] < body.md
+
+Prints a comma-separated list of repository-relative paths on stdout (empty
+when nothing matches) and always exits 0 unless the arguments are wrong.
+
+Why: fkanban claim-v2 treats a card with no surfaces as reserving the whole
+repository (pickup_v2.ts effectiveSurfaces). No generator passed --surfaces,
+so every ready card in a repo overlapped the one doing card of that repo and
+pickup ran one walk per repo. Measured 2026-09-25T21:45Z: 13 cards ready,
+0 of 13 with surfaces, claim-v2 result=none, 5 of 6 pickup workers busy on
+three repos. Deriving surfaces from paths the brief already names lets two
+cards in one repo run at once when they touch different files.
+
+Matching, against the tracked tree of the repo's bare mirror at --base:
+  - a token equal to a tracked file path            -> that path
+  - a token with a slash equal to a tracked dir     -> dir/**
+  - a bare file name (has an extension) that names
+    one to three tracked files                      -> those paths
+The DECISION-CHECK section is ignored (it names brain slugs, not files).
+A missing mirror or a failed git read gives an empty answer, which keeps
+today's behaviour: the card reserves the whole repository.
+"""
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+
+TOKEN_RE = re.compile(r"[A-Za-z0-9_.\-/]+")
+MAX_BASENAME_HITS = 3
+MAX_SUBSTRING_HITS = 6
+
+
+def strip_decision_check(body: str) -> str:
+    out = []
+    skip = False
+    for line in body.splitlines():
+        if re.match(r"^##\s*DECISION-CHECK", line):
+            skip = True
+            continue
+        if skip and re.match(r"^##\s", line):
+            skip = False
+        if not skip:
+            out.append(line)
+    return "\n".join(out)
+
+
+def tracked_paths(mirror: str, ref: str, timeout_s: int) -> list:
+    if not os.path.isdir(mirror):
+        return []
+    try:
+        proc = subprocess.run(
+            ["git", "-C", mirror, "ls-tree", "-r", "--name-only", ref],
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if proc.returncode != 0:
+        return []
+    return [p for p in proc.stdout.splitlines() if p]
+
+
+def normalize_token(tok: str) -> str:
+    tok = tok.strip().strip(".,;:()[]{}'\"`")
+    tok = re.sub(r"^\./", "", tok)
+    tok = re.sub(r":\d+(-\d+)?$", "", tok)
+    return tok.rstrip("/") if tok.endswith("/") and len(tok) > 1 else tok
+
+
+def is_command_name(tok: str) -> bool:
+    # bin/ commands carry no extension (last-stack-forge-api, host-track).
+    # A hyphen or underscore and some length keep plain words out.
+    return len(tok) >= 6 and ("-" in tok or "_" in tok) and not tok.startswith("-")
+
+
+def is_subsystem_name(tok: str) -> bool:
+    # "milestone-driver", "ready-buffer": a hyphenated name the prose uses for
+    # a command family. Only hyphenated names of 10+ characters qualify, and
+    # only when they name a small set of files (MAX_SUBSTRING_HITS).
+    return len(tok) >= 10 and "-" in tok.strip("-") and "." not in tok
+
+
+def derive(body: str, paths: list, max_out: int) -> list:
+    if not paths:
+        return []
+    files = set(paths)
+    dirs = set()
+    by_base = {}
+    for p in paths:
+        parts = p.split("/")
+        for i in range(1, len(parts)):
+            dirs.add("/".join(parts[:i]))
+        by_base.setdefault(parts[-1], []).append(p)
+
+    text = strip_decision_check(body)
+    text = re.sub(r"https?://\S+", " ", text)
+    found = []
+    seen = set()
+
+    def add(surface: str) -> None:
+        if surface not in seen:
+            seen.add(surface)
+            found.append(surface)
+
+    for raw in TOKEN_RE.findall(text):
+        tok = normalize_token(raw)
+        if len(tok) < 3:
+            continue
+        if tok in files:
+            add(tok)
+        elif "/" in tok and tok in dirs:
+            add(tok + "/**")
+        elif "/" not in tok and ("." in tok.strip(".") or is_command_name(tok)):
+            hits = by_base.get(tok, [])
+            if not hits and is_subsystem_name(tok):
+                hits = [p for b, ps in by_base.items() if tok in b for p in ps]
+                if len(hits) > MAX_SUBSTRING_HITS:
+                    hits = []
+            elif len(hits) > MAX_BASENAME_HITS:
+                hits = []
+            for h in sorted(hits):
+                add(h)
+        if len(found) >= max_out:
+            break
+    return found[:max_out]
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--repo", required=True, help="OWNER/NAME")
+    ap.add_argument("--base", default="main")
+    ap.add_argument("--mirror", default="", help="bare mirror path (default: <mirror root>/<name>.git)")
+    ap.add_argument("--max", type=int, default=20, dest="max_out")
+    ap.add_argument("--timeout", type=int, default=30, help="seconds for the git read")
+    args = ap.parse_args()
+
+    if "/" not in args.repo:
+        print("last-stack-kanban-derive-surfaces: --repo must be OWNER/NAME", file=sys.stderr)
+        return 2
+    name = args.repo.split("/", 1)[1]
+    mirror = args.mirror
+    if not mirror:
+        root = os.environ.get(
+            "LAST_STACK_GIT_MIRROR_ROOT", os.path.expanduser("~/.cache/edgevector-git")
+        )
+        mirror = os.path.join(root, name + ".git")
+
+    body = sys.stdin.read()
+    paths = tracked_paths(mirror, "refs/remotes/origin/" + args.base, args.timeout)
+    if not paths:
+        paths = tracked_paths(mirror, "refs/heads/" + args.base, args.timeout)
+    print(",".join(derive(body, paths, args.max_out)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

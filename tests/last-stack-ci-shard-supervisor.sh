@@ -7,10 +7,14 @@
 # (papercut-last-stack-ci-deadline-kill-reports-as-test-failure-with-no-shard-output-20260922).
 # Pins that: a heartbeat names each shard's running test; the deadline names the
 # stuck test, sets CI_SUPERVISE_TIMED_OUT, and stops the shard AND its child;
-# fast shards finish with no timeout. Hermetic: fake shards, no network. ~6s.
+# fast shards finish with no timeout. Hermetic: fake shards, no network. ~8s.
+#
+# The heartbeat and the deadline are asserted in SEPARATE cases on purpose. A
+# single case that wants both races them on a loaded host: see case 1b.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+. "$ROOT/tests/ci/pid-is-live.sh"
 # shellcheck source=../lib/ci-shard-supervisor.sh
 . "$ROOT/lib/ci-shard-supervisor.sh"
 
@@ -48,18 +52,62 @@ grep -q 'shard 1 still running: tests/stuck.sh (finished 1 tests)' "$out" \
   || fail "deadline did not name the stuck test: $(cat "$out")"
 if grep -q 'shard 0 still running' "$out"; then fail "a finished shard was reported as running"; fi
 case "$CI_SUPERVISE_RUNNING_AT_DEADLINE" in *" 1"*) ;; *) fail "running-at-deadline list lacks shard 1" ;; esac
-grep -q '^ci_progress elapsed=' "$out" || fail "no heartbeat before the deadline: $(cat "$out")"
-grep -q 'shard 1: running tests/stuck.sh' "$out" || fail "heartbeat did not name the running test"
-
-if kill -0 "$stuck_pid" 2>/dev/null; then fail "stuck shard still alive after the deadline"; fi
+if pid_is_live "$stuck_pid"; then fail "stuck shard still alive after the deadline"; fi
 child_pid="$(cat "$child_pid_file" 2>/dev/null || true)"
 [ -n "$child_pid" ] || fail "fixture did not record its child pid"
-if kill -0 "$child_pid" 2>/dev/null; then
+if pid_is_live "$child_pid"; then
   kill -KILL "$child_pid" 2>/dev/null || true
   fail "the stuck shard's child survived; the stop must reach the process group"
 fi
 wait "$fast_pid" || fail "fast shard exit code lost"
 if wait "$stuck_pid"; then fail "a stopped shard reported success"; fi
+
+# --- Case 1b: the heartbeat, with no deadline to race -----------------------
+# Regression 2026-09-26: case 1 asserted BOTH that the deadline fires and that a
+# heartbeat was printed before it, with PROGRESS=1 and DEADLINE=3. Those two
+# properties raced. The loop prints a heartbeat only on an iteration where
+# SECONDS has advanced past next_beat AND elapsed is still under the budget, so
+# one overrunning `sleep` in the first iteration skips straight to the deadline
+# branch: last-stack#217 failed with "elapsed=4s budget=3s" and no ci_progress
+# line at all, on a host running eight test streams. Widening the budget only
+# buys a longer stall; the fix is to stop the deadline from being involved.
+# DEADLINE=0 disables the budget, so the loop runs until the shard dies, and
+# this case ends it from the outside the moment the heartbeat is in the file.
+logs="$TMP_ROOT/case1b"
+mkdir -p "$logs"
+slow_child_pid_file="$TMP_ROOT/slow-child.pid"
+set -m
+bash -c 'echo "ci_test start: tests/ok.sh"; echo "ci_test done: tests/ok.sh rc=0 secs=0";
+         echo "ci_test start: tests/slow.sh"; sleep 300 & echo $! >"$1"; wait' _ "$slow_child_pid_file" \
+  </dev/null >"$logs/0.log" 2>&1 &
+slow_pid=$!
+set +m
+out="$TMP_ROOT/case1b.out"
+ci_supervise_shards "$logs" 1 0 "$slow_pid" >"$out" &
+supervisor_pid=$!
+# Wait for the LAST line of the heartbeat block, not its header: the header and
+# the per-shard lines are separate `echo`s, so a poll that stops on
+# `ci_progress` can read the file between the two and report a heartbeat that
+# does not name its shard.
+waited=0
+until grep -q 'shard 0: running tests/slow.sh (finished 1)' "$out" 2>/dev/null; do
+  waited=$((waited + 1))
+  [ "$waited" -le 60 ] || { ci_shard_stop "$slow_pid"; fail "no heartbeat naming the running test in 60s: $(cat "$out")"; }
+  sleep 1
+done
+grep -q '^ci_progress elapsed=' "$out" \
+  || { ci_shard_stop "$slow_pid"; fail "no ci_progress header above the shard lines: $(cat "$out")"; }
+grep -q '^ci_progress elapsed=[0-9]*s running=1/1$' "$out" \
+  || { ci_shard_stop "$slow_pid"; fail "heartbeat header must count the live shards: $(cat "$out")"; }
+if grep -q 'CI_DEADLINE_EXCEEDED' "$out"; then ci_shard_stop "$slow_pid"; fail "deadline 0 must disable the budget: $(cat "$out")"; fi
+ci_shard_stop "$slow_pid"
+wait "$supervisor_pid" || fail "the supervisor did not return once its only shard died"
+slow_child_pid="$(cat "$slow_child_pid_file" 2>/dev/null || true)"
+if [ -n "$slow_child_pid" ] && pid_is_live "$slow_child_pid"; then
+  kill -KILL "$slow_child_pid" 2>/dev/null || true
+  fail "the slow shard's child survived the outside stop"
+fi
+wait "$slow_pid" 2>/dev/null || true
 
 # --- Case 2: every shard finishes -> no timeout ----------------------------
 logs="$TMP_ROOT/case2"
@@ -107,7 +155,7 @@ grep -Fq '. "$ROOT/lib/ci-shard-supervisor.sh"' "$CI" || fail "ci.sh does not so
 grep -Fq 'ci_supervise_shards "$CI_SHARD_LOG_DIR"' "$CI" || fail "ci.sh does not supervise its shards"
 grep -Fq 'exit 124' "$CI" || fail "ci.sh does not exit 124 on a deadline"
 grep -Fq 'ci_host_lock_acquire' "$CI" || fail "ci.sh does not take the host lock"
-grep -Fq 'LAST_STACK_CI_HOST_LOCK: "1"' "$ROOT/.forgejo/workflows/ci.yml" || fail "the Forge workflow does not opt into the host lock"
+grep -Fq 'LAST_STACK_CI_HOST_LOCK:-0' "$CI" || fail "ci.sh no longer lets a Mac host job opt into the host lock"
 grep -Fq 'echo "ci_test done: $* rc=${ci_test_rc} secs=' "$CI" || fail "ci_test does not print a done line"
 # A main push must never cancel the earlier main publish run
 # (papercut-forge-main-publish-starved-by-cancel-in-progress-20260922). Without

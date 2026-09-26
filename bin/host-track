@@ -656,6 +656,114 @@ parse_lastdb_gate_main() {
   esac
 }
 
+# OWNER/NAME for Situations out of an app's registry gate_main, or "" when the
+# entry carries none this can read.
+#
+# The registry is the ONLY correct source for this. Three of the seventeen
+# registered apps do not share a name with their repo -- kanban is
+# EdgeVector/fkanban, state-machine is EdgeVector/state-machine-app, and both
+# lastdb and lastdbd are EdgeVector/fold -- so deriving the repo from the app
+# name would ask the policy store about a repo that does not exist and get an
+# unconditional OK. Both venue spellings appear in the wild: the forge URL form
+# every app uses today, and the retired `lastdb:///<slug>` form.
+app_situations_repo() {
+  local json="$1" gate_main rest owner name
+  gate_main="$(field "$json" gate_main)"
+  [ -n "$gate_main" ] || { printf '%s\n' ""; return 0; }
+  rest="${gate_main%%#*}"
+  rest="${rest%.git}"
+  case "$gate_main" in
+    lastdb:///*)
+      name="${rest#lastdb:///}"
+      [ -n "$name" ] || { printf '%s\n' ""; return 0; }
+      printf '%s/%s\n' "$HOST_TRACK_SITUATIONS_DEFAULT_OWNER" "$name"
+      return 0
+      ;;
+  esac
+  name="${rest##*/}"
+  owner="${rest%/*}"
+  owner="${owner##*/}"
+  if [ -n "$name" ] && [ -n "$owner" ] && [ "$owner" != "$name" ]; then
+    printf '%s/%s\n' "$owner" "$name"
+    return 0
+  fi
+  printf '%s\n' ""
+}
+
+# The `situations` CLI, or "" when this host has no policy store.
+#
+# routinesd and a Forgejo runner step both routinely run without ~/.local/bin on
+# PATH. A stripped PATH is not a host without a policy store, and treating the
+# two the same is how this gate would quietly stop gating on exactly the
+# unattended runs it exists for.
+host_track_situations_bin() {
+  local named="${HOST_TRACK_SITUATIONS_BIN:-}"
+  if [ -n "$named" ]; then printf '%s\n' "$named"; return 0; fi
+  if command -v situations >/dev/null 2>&1; then printf '%s\n' "situations"; return 0; fi
+  if [ -x "$HOME/.local/bin/situations" ]; then printf '%s\n' "$HOME/.local/bin/situations"; return 0; fi
+  printf '%s\n' ""
+}
+
+# Refuse a refresh that an active Situation blocks. Returns 3 (the code
+# `refresh --all` already treats as "skip this app, not a failure", as
+# deployment-only does) so one held app cannot fail the whole sweep.
+#
+# Why this exists: on 2026-09-25 `loom-budget-schema-deployment-hold-20260925`
+# went active with `host-track-refresh` in blocked_actions and EdgeVector/loom in
+# scope, and host-track installed loom three times under it -- ending at
+# 60d4f6a9, which carries the held PR 59 build the hold exists to keep off this
+# machine. Nothing on the refresh path had ever read the policy.
+# (papercut-loom-held-build-promoted-and-installed-during-situation-hold-20260926)
+#
+# BLOCKED refuses. A preflight that RAN and failed also refuses: this runs
+# unattended on a 20-minute LaunchAgent with nobody reading its stderr, the
+# write is the one a hold exists to stop, and a skipped refresh is retried on
+# the next tick. Two exceptions, both narrow and both about not deadlocking the
+# repair path:
+#
+#   * a host with NO `situations` binary has no policy store to fail closed on;
+#   * the bootstrap set -- `situations` itself and `last-stack`, which ships
+#     this script -- proceeds on an UNREADABLE policy, because requiring a
+#     working policy store in order to install the fix for a broken policy store
+#     is a deadlock. An explicit BLOCK still refuses, for those apps too.
+HOST_TRACK_SITUATIONS_DEFAULT_OWNER="${HOST_TRACK_SITUATIONS_DEFAULT_OWNER:-EdgeVector}"
+HOST_TRACK_SITUATIONS_BOOTSTRAP_APPS="${HOST_TRACK_SITUATIONS_BOOTSTRAP_APPS:-situations last-stack}"
+refresh_preflight_guard() {
+  local app="$1" json="$2" repo sit out rc bootstrap
+  if [ "${HOST_TRACK_REFRESH_PREFLIGHT_SKIP:-0}" = "1" ]; then
+    # An escape hatch that leaves no trace is a gate nobody can audit.
+    printf 'host-track: %s Situations preflight SKIPPED by HOST_TRACK_REFRESH_PREFLIGHT_SKIP=1\n' "$app" >&2
+    return 0
+  fi
+  repo="$(app_situations_repo "$json")"
+  if [ -z "$repo" ]; then
+    printf 'host-track: %s has no readable gate_main repo; host-track-refresh policy unchecked\n' "$app" >&2
+    return 0
+  fi
+  sit="$(host_track_situations_bin)"
+  [ -n "$sit" ] || return 0
+  set +e
+  out="$("$sit" preflight --action host-track-refresh --repo "$repo" --field slug,reason 2>&1)"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || return 0
+  if [ "$rc" -eq 3 ]; then
+    printf 'host-track: %s REFUSED: Situations blocks host-track-refresh on %s\n' "$app" "$repo" >&2
+    printf '%s\n' "$out" | head -3 | sed 's/^/host-track:   /' >&2
+    return 3
+  fi
+  case " $HOST_TRACK_SITUATIONS_BOOTSTRAP_APPS " in
+    *" $app "*)
+      printf 'host-track: %s Situations policy unreadable (rc=%s); proceeding, %s is in the bootstrap set\n' \
+        "$app" "$rc" "$app" >&2
+      return 0
+      ;;
+  esac
+  printf 'host-track: %s REFUSED: Situations policy for %s could not be read (rc=%s)\n' "$app" "$repo" "$rc" >&2
+  printf '%s\n' "$out" | head -3 | sed 's/^/host-track:   /' >&2
+  return 3
+}
+
 # True when this artifact app's runtime tracks gate_main.
 # Tom mental model: Host Track follows green main, not a manually-promoted
 # stable pointer that can lag forever.
@@ -873,7 +981,7 @@ status_json_for() {
   local deployment_version deployment_head deployment_peer_version deployment_peer_head
   local deployment_pair_match deployment_problem behind_by distance deployment_expanded
   local main_unpublished freshness soak_state soak_checks soak_min post_flip_ticks_left
-  local soak_elapsed_secs soak_need_secs soak_abandoned
+  local soak_elapsed_secs soak_need_secs soak_abandoned soak_checks_total
   local registry_channel registry_pin_oid registry_pin_state pin_rc
 
   json="$(require_app_json "$app")"
@@ -913,6 +1021,7 @@ status_json_for() {
   soak_elapsed_secs="null"
   soak_need_secs="null"
   soak_abandoned="null"
+  soak_checks_total="null"
   post_flip_ticks_left="null"
   deployment_version=""
   deployment_head=""
@@ -994,6 +1103,11 @@ status_json_for() {
       [[ "$soak_min" =~ ^[0-9]+$ ]] || soak_min="null"
       soak_abandoned="$(jq -r '.abandoned_consecutive // 0' "$(soak_stamp_path "$app")" 2>/dev/null || true)"
       [[ "$soak_abandoned" =~ ^[0-9]+$ ]] || soak_abandoned="null"
+      # The starve arm gates on `checks_total`, so a reader diagnosing a
+      # non-flipping canary needs it: `checks` alone cannot explain why a row
+      # with abandoned >= starve_after has not activated.
+      soak_checks_total="$(jq -r '.checks_total // empty' "$(soak_stamp_path "$app")" 2>/dev/null || true)"
+      [[ "$soak_checks_total" =~ ^[0-9]+$ ]] || soak_checks_total="$soak_checks"
       # The wall clock is the BINDING half of the gate soak_watch_one applies:
       #
       #   if [ "$elapsed" -lt "$need" ] || [ "$checks" -lt "$min_checks" ]
@@ -1200,6 +1314,7 @@ status_json_for() {
     --argjson soak_elapsed_secs "$soak_elapsed_secs" \
     --argjson soak_need_secs "$soak_need_secs" \
     --argjson soak_abandoned "$soak_abandoned" \
+    --argjson soak_checks_total "$soak_checks_total" \
     --argjson post_flip_ticks_left "$post_flip_ticks_left" \
     --argjson artifact_exemption "$artifact_exemption_json" \
     --argjson stale "$stale" \
@@ -1241,6 +1356,7 @@ status_json_for() {
       soak_elapsed_secs: $soak_elapsed_secs,
       soak_need_secs: $soak_need_secs,
       soak_abandoned: $soak_abandoned,
+      soak_checks_total: $soak_checks_total,
       post_flip_ticks_left: $post_flip_ticks_left,
       stamp: $stamp,
       refresh: ($refresh | select(length > 0) // null),
@@ -1279,7 +1395,7 @@ status_plain_for() {
       "main_unpublished=" + ((.main_unpublished // false) | tostring),
       "registry=" + (if .registry_channel then .registry_channel + ":" + (.registry_pin_state // "-") else "-" end),
       "freshness=" + (.freshness // "-"),
-      "soak=" + (if .soak_state then .soak_state + ":" + ((.soak_checks // 0) | tostring) + "/" + ((.soak_min_checks // 0) | tostring) + (if .soak_need_secs then ":" + ((.soak_elapsed_secs // 0) | tostring) + "s/" + (.soak_need_secs | tostring) + "s" else "" end) + (if (.soak_abandoned // 0) > 0 then ":abandoned=" + (.soak_abandoned | tostring) else "" end) else "-" end),
+      "soak=" + (if .soak_state then .soak_state + ":" + ((.soak_checks // 0) | tostring) + "/" + ((.soak_min_checks // 0) | tostring) + (if .soak_need_secs then ":" + ((.soak_elapsed_secs // 0) | tostring) + "s/" + (.soak_need_secs | tostring) + "s" else "" end) + (if (.soak_abandoned // 0) > 0 then ":total=" + ((.soak_checks_total // .soak_checks // 0) | tostring) + ":abandoned=" + (.soak_abandoned | tostring) else "" end) else "-" end),
       "post_flip=" + ((.post_flip_ticks_left // "-") | tostring),
       "notes=" + .notes
     ] | @tsv'
@@ -2450,9 +2566,9 @@ write_post_flip_stamp() {
 }
 
 write_soak_stamp() {
-  # Args: app digest status soak_h [checks] [started] [card_slug] [abandoned] [source_oid]
+  # Args: app digest status soak_h [checks] [started] [card_slug] [abandoned] [source_oid] [checks_total]
   local app="$1" digest="$2" status="$3" soak_h="$4" checks="${5:-1}" started="${6:-}" card_slug="${7:-}"
-  local abandoned="${8:-}" source_oid="${9:-}"
+  local abandoned="${8:-}" source_oid="${9:-}" checks_total="${10:-}"
   local now path
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   path="$(soak_stamp_path "$app")"
@@ -2470,13 +2586,24 @@ write_soak_stamp() {
   if [ -z "$source_oid" ] && [ -f "$path" ]; then
     source_oid="$(jq -r '.source_oid // empty' "$path")"
   fi
+  # `checks_total` counts green soak-watch probes across a carried chain of
+  # canaries; `checks` counts them for THIS digest only. An omitted argument
+  # means "unchanged", and a stamp written before this field existed falls back
+  # to the per-digest count so an in-flight soak is never credited backwards.
+  if [ -z "$checks_total" ] && [ -f "$path" ]; then
+    checks_total="$(jq -r '.checks_total // empty' "$path")"
+  fi
+  case "$checks_total" in ''|*[!0-9]*) checks_total="$checks" ;; esac
+  [ "$checks_total" -ge "$checks" ] || checks_total="$checks"
   jq -n \
     --arg app "$app" --arg digest "$digest" --arg status "$status" \
     --arg now "$now" --argjson soak "$soak_h" --argjson checks "$checks" \
     --argjson started "$started" --arg card "$card_slug" \
     --argjson abandoned "$abandoned" --arg source_oid "$source_oid" \
+    --argjson checks_total "$checks_total" \
     '{app:$app, digest:$digest, status:$status, soak_hours:$soak,
       started_epoch:$started, last_check_at:$now, checks:$checks,
+      checks_total:$checks_total,
       abandoned_consecutive:$abandoned,
       source_oid: (if $source_oid == "" then null else $source_oid end),
       card_slug: (if $card == "" then null else $card end)}' \
@@ -2511,12 +2638,13 @@ soak_carry_credit_ok() {
 park_canary() {
   local app="$1" install_root="$2" digest="$3" soak_h="$4" source_oid="${5:-}"
   local stamp started checks prior_digest prior_status prior_oid abandoned carry_msg
-  local card_slug hist prior_started prior_checks
+  local card_slug hist prior_started prior_checks prior_checks_total checks_total
   local carry_now carry_need carry_cap carried
   atomic_symlink "versions/$digest" "$install_root/canary"
   stamp="$(soak_stamp_path "$app")"
   started=""
   checks=1
+  checks_total=""
   abandoned=0
   card_slug=""
   carry_msg=""
@@ -2526,12 +2654,15 @@ park_canary() {
     prior_oid="$(jq -r '.source_oid // empty' "$stamp")"
     prior_started="$(jq -r '.started_epoch // empty' "$stamp")"
     prior_checks="$(jq -r '.checks // 1' "$stamp")"
+    prior_checks_total="$(jq -r '.checks_total // empty' "$stamp")"
+    case "$prior_checks_total" in ''|*[!0-9]*) prior_checks_total="$prior_checks" ;; esac
     card_slug="$(jq -r '.card_slug // empty' "$stamp")"
     abandoned="$(jq -r '.abandoned_consecutive // 0' "$stamp")"
     case "$abandoned" in ''|*[!0-9]*) abandoned=0 ;; esac
     if [ "$prior_digest" = "$digest" ]; then
       started="$prior_started"
       checks="$prior_checks"
+      checks_total="$prior_checks_total"
     else
       # Mid-soak replacement: archive the abandoned window, then either carry
       # the clock (fast-forward channel tip) or restart it — but always count
@@ -2556,15 +2687,27 @@ park_canary() {
         [ "$carried" -le "$carry_cap" ] || carried="$carry_cap"
         started=$(( carry_now - carried ))
         checks=1
-        carry_msg=" (carried ${carried}s of soak credit from ${prior_digest:0:12}; abandoned=$abandoned)"
+        # Carry the green-probe evidence with the clock. `checks` still resets,
+        # because the replacing bytes must earn their own probes and the normal
+        # window arm reads it. `checks_total` does NOT, because it is the
+        # STARVE arm's input, and the starve arm exists precisely for the case
+        # where the channel — not a bad canary — keeps resetting the window.
+        # Resetting both left `abandoned >= starve_after` permanently paired
+        # with `checks < min_checks`, so the bound could never fire on the apps
+        # it was written for (measured 2026-09-26: last-stack, eight
+        # consecutive abandons, `checks` pinned at 2 against min_checks=3, no
+        # install for 4h22m across 16 merged PRs).
+        checks_total="$prior_checks_total"
+        carry_msg=" (carried ${carried}s of soak credit and ${prior_checks_total} green check(s) from ${prior_digest:0:12}; abandoned=$abandoned)"
       else
         started=""
         checks=1
+        checks_total=1
         carry_msg=" (soak clock reset; abandoned=$abandoned)"
       fi
     fi
   fi
-  write_soak_stamp "$app" "$digest" "soaking" "$soak_h" "$checks" "$started" "$card_slug" "$abandoned" "$source_oid"
+  write_soak_stamp "$app" "$digest" "soaking" "$soak_h" "$checks" "$started" "$card_slug" "$abandoned" "$source_oid" "$checks_total"
   printf 'host-track: %s canary parked at versions/%s; soak %sh; current unchanged%s\n' \
     "$app" "$digest" "$soak_h" "$carry_msg" >&2
 }
@@ -3085,6 +3228,10 @@ refresh_app() {
   local self_upgrade setup_path
 
   json="$(require_app_json "$app")"
+  # Ask the policy store FIRST: before the channel promote below, before any
+  # staging, and before the already-current fast path. A refresh that a
+  # Situation forbids must cost one local read, not a promotion.
+  refresh_preflight_guard "$app" "$json" || return $?
   install_mode="$(setting "$json" install_mode)"
   [ -n "$install_mode" ] || install_mode="checkout"
   exemption_kind="$(printf '%s\n' "$json" | jq -r '.artifact_exemption.kind // ""')"
@@ -3526,7 +3673,7 @@ validate_registry_cmd() {
 
 soak_watch_one() {
   local app="$1" json install_root canary_rel canary_dir digest soak_h min_checks stamp checks started now elapsed need current_dir probe_rc probe_log activation_rc
-  local active_target install_stamp_digest soak_stamp_digest abandoned source_oid starve_after window_ready starve_ready
+  local active_target install_stamp_digest soak_stamp_digest abandoned source_oid starve_after window_ready starve_ready checks_total
   json="$(require_app_json "$app")"
   [ "$(setting "$json" install_mode)" = "artifact" ] || return 0
   IFS=$'\t' read -r _ _ _ install_root < <(artifact_paths "$app" "$json")
@@ -3609,13 +3756,17 @@ soak_watch_one() {
   stamp="$(soak_stamp_path "$app")"
   started="$(date +%s)"
   checks=1
+  checks_total=1
   abandoned=0
   source_oid=""
   if [ -f "$stamp" ]; then
     started="$(jq -r '.started_epoch // empty' "$stamp")"
     [ -n "$started" ] || started="$(date +%s)"
     checks="$(jq -r '.checks // 0' "$stamp")"
+    checks_total="$(jq -r '.checks_total // empty' "$stamp")"
+    case "$checks_total" in ''|*[!0-9]*) checks_total="$checks" ;; esac
     checks=$((checks + 1))
+    checks_total=$((checks_total + 1))
     abandoned="$(jq -r '.abandoned_consecutive // 0' "$stamp")"
     case "$abandoned" in ''|*[!0-9]*) abandoned=0 ;; esac
     source_oid="$(jq -r '.source_oid // empty' "$stamp")"
@@ -3633,17 +3784,24 @@ soak_watch_one() {
   if [ "$elapsed" -ge "$need" ] && [ "$checks" -ge "$min_checks" ]; then
     window_ready=1
   fi
+  # Starve arm: read `checks_total`, not `checks`. A mid-soak replacement resets
+  # `checks` by design, and it is also the event that increments `abandoned` —
+  # so pairing the two conditions on the same counter made the bound
+  # self-defeating: the faster the channel merges, the further `checks` stays
+  # from `min_checks`, on exactly the apps the bound is supposed to rescue.
+  # `checks_total` counts green probes across the carried chain, and the
+  # replacing canary has always contributed at least the tick being evaluated.
   starve_ready=0
   if [ "$starve_after" -gt 0 ] \
     && [ "$abandoned" -ge "$starve_after" ] \
-    && [ "$checks" -ge "$min_checks" ]; then
+    && [ "$checks_total" -ge "$min_checks" ]; then
     starve_ready=1
   fi
   if [ "$window_ready" -eq 0 ] && [ "$starve_ready" -eq 0 ]; then
-    write_soak_stamp "$app" "$digest" "soaking" "$soak_h" "$checks" "$started" "" "$abandoned" "$source_oid"
+    write_soak_stamp "$app" "$digest" "soaking" "$soak_h" "$checks" "$started" "" "$abandoned" "$source_oid" "$checks_total"
     if [ "$starve_after" -gt 0 ] && [ "$abandoned" -gt 0 ]; then
-      printf 'host-track: %s soak pending elapsed=%ss need=%ss checks=%s/%s abandoned=%s/%s\n' \
-        "$app" "$elapsed" "$need" "$checks" "$min_checks" "$abandoned" "$starve_after"
+      printf 'host-track: %s soak pending elapsed=%ss need=%ss checks=%s/%s total=%s abandoned=%s/%s\n' \
+        "$app" "$elapsed" "$need" "$checks" "$min_checks" "$checks_total" "$abandoned" "$starve_after"
     else
       printf 'host-track: %s soak pending elapsed=%ss need=%ss checks=%s/%s\n' \
         "$app" "$elapsed" "$need" "$checks" "$min_checks"
@@ -3653,8 +3811,8 @@ soak_watch_one() {
     return 0
   fi
   if [ "$starve_ready" -eq 1 ] && [ "$window_ready" -eq 0 ]; then
-    printf 'host-track: %s soak STARVE-BOUND after %s abandons (checks=%s/%s elapsed=%ss<%ss); activating\n' \
-      "$app" "$abandoned" "$checks" "$min_checks" "$elapsed" "$need" >&2
+    printf 'host-track: %s soak STARVE-BOUND after %s abandons (checks=%s/%s total=%s/%s elapsed=%ss<%ss); activating\n' \
+      "$app" "$abandoned" "$checks" "$min_checks" "$checks_total" "$min_checks" "$elapsed" "$need" >&2
   else
     printf 'host-track: %s soak GREEN after %ss (checks=%s/%s); activating\n' \
       "$app" "$elapsed" "$checks" "$min_checks" >&2

@@ -72,7 +72,10 @@ class GuardTest(unittest.TestCase):
                    "--pr", "7", "--expected-head", SHA]
         if not probe:
             command += ["--", str(self.bin / "mutate")]
-        result = subprocess.run(command, capture_output=True, text=True, env=env, timeout=10)
+        # Each guard run spawns ~10 mock python processes. On the shared macOS
+        # CI host under a fold build, one run took over 10s (last-stack PR 201,
+        # 2026-09-25). The bound catches a hang, not a slow host.
+        result = subprocess.run(command, capture_output=True, text=True, env=env, timeout=90)
         answer = json.loads(result.stdout)
         self.assertNotIn("private-response", result.stdout + result.stderr)
         self.assertEqual(result.returncode, 3 if reason else 0, result.stderr)

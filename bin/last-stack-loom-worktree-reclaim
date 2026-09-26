@@ -80,9 +80,31 @@ rm -f "$live_file.raw"
 ps -axo command= 2>/dev/null | grep -F -- "$root" >>"$live_file" || true
 
 is_live() {
-  local wt="$1"
+  local wt="$1" live_file="$2"
   [ "$liveness_unavailable" -eq 1 ] && return 0
   grep -qF -- "$wt" "$live_file"
+}
+
+has_active_ci_owner() {
+  local exec_id="$1" wt="$2"
+  # Check if there are other active (live) step worktrees for this execution.
+  # Steps share the same exec_id but have different names, e.g.,
+  # lx-<id>#REPAIR or lx-<id>#CLEANUP may be running while lx-<id>#IMPLEMENT is terminal.
+  # If any sibling is live, it owns the exec-id and we must keep this tree.
+  local step_pattern="${exec_id}#"
+  for sibling_wt in "$root"/${step_pattern}*; do
+    [ -d "$sibling_wt" ] || continue
+    [ "$sibling_wt" = "$wt" ] && continue  # Skip self
+    local sibling_name="$(basename "$sibling_wt")"
+    local sibling_exec="$(printf '%s' "$sibling_name" | sed 's/#.*//')"
+    [ "$sibling_exec" = "$exec_id" ] || continue
+    # Check if this sibling is live
+    if is_live "$sibling_wt" "$live_file"; then
+      log "keep (active CI owner has live sibling step) $sibling_name"
+      return 0
+    fi
+  done
+  return 1
 }
 
 mtime_of() {
@@ -156,8 +178,12 @@ for wt in "$root"/*; do
     kept=$((kept + 1))
     continue
   fi
-  if is_live "$wt"; then
+  if is_live "$wt" "$live_file"; then
     log "keep live status=$status $name"
+    kept=$((kept + 1))
+    continue
+  fi
+  if has_active_ci_owner "$exec_id" "$wt"; then
     kept=$((kept + 1))
     continue
   fi

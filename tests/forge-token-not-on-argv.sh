@@ -141,7 +141,8 @@ auth_file="$(grep -A1 -x -- '-K' "$tmp/curl-argv.txt" | tail -1)"
 perm="$(env FORGE_TOKEN="$TOKEN" bash -c '
   . "'"$ROOT"'/lib/forge-token.sh"
   f="$(last_stack_forge_curl_auth_config)"
-  stat -f "%Lp" "$f"
+  # GNU stat reads -f as "filesystem"; pick the form by flavour.
+  if stat --version >/dev/null 2>&1; then stat -c "%a" "$f"; else stat -f "%Lp" "$f"; fi
   rm -rf "$(dirname "$f")"')"
 [ "$perm" = "600" ] || fail "auth config file mode is $perm, expected 600"
 

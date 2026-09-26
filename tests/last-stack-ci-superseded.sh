@@ -30,6 +30,8 @@ PULLS = {
     "3": {"state": "open", "merged": False, "head": {"sha": "cccc3333new"}},
 }
 
+BRANCHES = {"main": {"name": "main", "commit": {"id": "dddd4444head"}}}
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         sys.stderr.write("%s\n" % (fmt % args))
@@ -38,6 +40,10 @@ class H(BaseHTTPRequestHandler):
         num = self.path.rsplit("/", 1)[-1]
         if self.headers.get("Authorization") != "token t":
             code, body = 401, {"message": "unauthorized"}
+        elif "/branches/" in self.path and num in BRANCHES:
+            code, body = 200, BRANCHES[num]
+        elif "/branches/" in self.path:
+            code, body = 404, {"message": "branch not found"}
         elif num in PULLS:
             code, body = 200, PULLS[num]
         else:
@@ -77,5 +83,10 @@ expect 2 "no PR number" --repo o/r --pr "" --sha x
 FORGE_TOKEN="wrong" expect 2 "unknown" --repo o/r --pr 1 --sha aaaa1111
 FORGE_ROOT="http://127.0.0.1:9" expect 2 "unknown" --repo o/r --pr 1 --sha aaaa1111
 FORGE_TOKEN="" expect 2 "no FORGE_TOKEN" --repo o/r --pr 1 --sha aaaa1111
+# --branch: a main push run whose sha is no longer the head is superseded.
+expect 1 "current — main is at dddd4444he" --repo o/r --branch main --sha dddd4444head
+expect 0 "SUPERSEDED — main is now dddd4444he" --repo o/r --branch main --sha eeee5555old
+expect 2 "no commit id" --repo o/r --branch gone --sha x
+FORGE_ROOT="http://127.0.0.1:9" expect 2 "unknown" --repo o/r --branch main --sha x
 
 echo "ok last-stack-ci-superseded"

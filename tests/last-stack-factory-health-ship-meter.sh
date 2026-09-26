@@ -318,6 +318,26 @@ kept = fh.resolve_ships(dash_partial, True, now=fg_now, runner=stub_all_fail)
 check("all readers down keeps the unavailable dashboard read", kept.source, "dashboard")
 check("all readers down: h24 None", kept.h24, None)
 
+# ── 2026-09-26: stale local mirrors leave most merges unknown ─────────────
+dash_unknown = {
+    "velocity": {
+        "available": True,
+        "unavailableRepos": [],
+        "ships": {"h24": {"count": 1, "perHour": 0.04, "unknown": 34, "hours": 24, "available": True}},
+        "hourly": [{"hourAgo": 1, "ships": 0, "available": True}],
+    }
+}
+unk = fh.ships_from_dashboard(dash_unknown, True)
+check("unknown > count is not a measurement", unk.available if unk else None, False)
+check("unknown > count h24 is None", unk.h24 if unk else "no-read", None)
+fell_unk = fh.resolve_ships(dash_unknown, True, now=fg_now, runner=stub_forge_only)
+check("unknown-heavy dashboard falls back to forgejo", fell_unk.source, "forgejo")
+dash_few_unknown = json.loads(json.dumps(dash_unknown))
+dash_few_unknown["velocity"]["ships"]["h24"].update({"count": 40, "unknown": 3})
+few = fh.ships_from_dashboard(dash_few_unknown, True)
+check("a few unknown merges keep the dashboard", few.available if few else None, True)
+check("a few unknown merges keep h24", few.h24 if few else None, 40.0)
+
 # ── heartbeat formatter ───────────────────────────────────────────────────
 check("fmt unavailable", fh.fmt_ships(None), "unavailable")
 check("fmt measured zero", fh.fmt_ships(0.0), "0")

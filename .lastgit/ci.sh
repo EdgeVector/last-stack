@@ -129,15 +129,23 @@ if [ -z "$CI_SHARD_INDEX" ]; then
     # answer runs the gate. The workflow sets LAST_STACK_CI_PR_NUMBER only on
     # pull_request events.
     # papercut-forge-queued-runs-for-merged-pr-heads-cannot-be-cancelled-by-agents-20260923
+    # LAST_STACK_CI_PUSH_BRANCH (push events only) asks the same question of a
+    # main push run: a newer push is queued behind it in the serial group.
     ci_exit_if_superseded() {
-      [ -n "${LAST_STACK_CI_PR_NUMBER:-}" ] || return 0
-      local out rc=0
+      local out rc=0 target
+      if [ -n "${LAST_STACK_CI_PR_NUMBER:-}" ]; then
+        target=(--pr "$LAST_STACK_CI_PR_NUMBER" --sha "${LAST_STACK_CI_PR_HEAD_SHA:-${GITHUB_SHA:-}}")
+      elif [ -n "${LAST_STACK_CI_PUSH_BRANCH:-}" ] && [ -n "${GITHUB_SHA:-}" ]; then
+        target=(--branch "$LAST_STACK_CI_PUSH_BRANCH" --sha "$GITHUB_SHA")
+      else
+        return 0
+      fi
       # A private token name: tests in this gate must never see FORGE_TOKEN.
       out="$(FORGE_TOKEN="${LAST_STACK_CI_FORGE_TOKEN:-}" "$ROOT/bin/last-stack-ci-superseded" --repo "${GITHUB_REPOSITORY:-}" \
-        --pr "$LAST_STACK_CI_PR_NUMBER" --sha "${LAST_STACK_CI_PR_HEAD_SHA:-${GITHUB_SHA:-}}")" || rc=$?
+        "${target[@]}")" || rc=$?
       echo "$out"
       if [ "$rc" -eq 0 ]; then
-        echo "last-stack required CI: SKIPPED — the PR head is superseded; no test ran"
+        echo "last-stack required CI: SKIPPED — the tested head is superseded; no test ran"
         exit 0
       fi
     }
@@ -313,7 +321,9 @@ ci_test tests/last-stack-pr-reaper-close-guard.sh
 ci_test tests/last-stack-pr-reaper-lifecycle-safety.sh
 ci_test tests/last-stack-factory-hardening.sh
 ci_test tests/last-stack-milestone-driver-snapshot.sh
+ci_test tests/last-stack-milestone-driver-gap-report-reconcile.sh
 ci_test tests/last-stack-factory-ready-buffer-activation.sh
+ci_test tests/last-stack-plistbuddy-compat.sh
 ci_test tests/morning-sync-live-human-gate-reconcile.sh
 # Sentry issue pagination in the morning digest. Held out of the gate until
 # 2026-09-06 because it failed printing nothing at all: it stubbed `fbrain`
@@ -331,6 +341,7 @@ ci_test tests/last-stack-driver-hierarchy.sh
 ci_test tests/last-stack-milestone-slice-satisfaction.sh
 ci_test tests/last-stack-feature-delivery-effective-flow-proof.sh
 ci_test tests/last-stack-kanban-file-pr.sh
+ci_test tests/last-stack-kanban-derive-surfaces.sh
 ci_test tests/last-stack-kanban-file-pr-host-track-install.sh
 ci_test tests/last-stack-kanban-decision-check.sh
 ci_test tests/last-stack-kanban-decision-check-gbrain.sh
@@ -677,6 +688,7 @@ ci_test tests/last-stack-feature-portfolio-admission.sh
 ci_test tests/last-stack-fkanban-compat-skills.sh
 ci_test tests/last-stack-forge-json-jq.sh
 ci_test tests/last-stack-forge-runner-lanes.sh
+ci_test tests/last-stack-forge-ci-pc-route.sh
 ci_test tests/last-stack-forge-runner-watchdog.sh
 ci_test tests/last-stack-gh-pr-queue-state.sh
 ci_test tests/last-stack-git-checkout-freshness.sh
@@ -797,6 +809,7 @@ ci_test tests/last-stack-forge-merge-green.sh
 # APPENDED before the registration guard, which stays last.
 ci_test tests/last-stack-worktree-reclaim-bare-mirror.sh
 ci_test tests/host-track-status-unknown-app.sh
+ci_test tests/host-track-refresh-situations-preflight.sh
 ci_test tests/last-stack-host-track-links-bare-helpers.sh
 ci_test tests/last-stack-worktree-reclaim-lsof-fallback.sh
 # kanban health-only reads use `kanban ping`, and kanban-watch heals doing
@@ -851,6 +864,7 @@ ci_test tests/last-stack-papercut-lifecycle-close-registry-cover.sh
 ci_test tests/last-stack-board-closeout-loom-claim.sh
 # disk-reclaim step 3c: finished Loom step worktrees.
 ci_test tests/last-stack-loom-worktree-reclaim.sh
+ci_test tests/last-stack-loom-parked-triage.sh
 ci_test tests/host-track-local-safe-forgejo-gate-freshness.sh
 ci_test tests/host-track-local-safe-rollback-resolves-real-path.sh
 ci_test tests/last-stack-ci-test-registration.sh

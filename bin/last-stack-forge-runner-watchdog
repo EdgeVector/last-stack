@@ -297,15 +297,33 @@ pc_pause_id() {
   /usr/bin/stat -f %m "$PC_PAUSE_FILE" 2>/dev/null || printf 'unknown'
 }
 
+# Check if a scheduled pause has expired based on the `until` field.
+# If until is in the past, the pause is expired. Returns 0 (expired) or 1 (active/no-until).
+is_pause_expired() {
+  local until_ts now_ts
+  until_ts="$($JQ -r '.until // empty' "$PC_PAUSE_FILE" 2>/dev/null || true)"
+  [ -n "$until_ts" ] || return 1  # no until field means indefinite pause
+  now_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  # String compare works for fixed-width UTC ISO8601 format (YYYY-MM-DDTHH:MM:SSZ)
+  [[ "$now_ts" > "$until_ts" ]] && return 0  # now is after until: expired
+  return 1  # until is still in the future: not expired
+}
+
 PC_PAUSED=0
 PC_PAUSE_ID=""
 PC_PAUSE_REASON=""
 if [ -s "$PC_PAUSE_FILE" ] && "$JQ" -e '.intent == "paused"' "$PC_PAUSE_FILE" >/dev/null 2>&1; then
-  PC_PAUSED=1
-  PC_PAUSE_ID="$(pc_pause_id)"
-  PC_PAUSE_REASON="$($JQ -r '.reason // empty' "$PC_PAUSE_FILE" 2>/dev/null || true)"
-  add_info "PC CI is paused by the owner${PC_PAUSE_REASON:+ ($PC_PAUSE_REASON)}. Resume it from the factory."
-  log "pc-ci paused (id=$PC_PAUSE_ID); suppressing PC lane alerts only"
+  # Pause file exists and has intent=paused. Check if it's expired.
+  if is_pause_expired; then
+    log "pc-ci pause expired (past until time); resuming"
+    # Pause is expired: treat as if not paused
+  else
+    PC_PAUSED=1
+    PC_PAUSE_ID="$(pc_pause_id)"
+    PC_PAUSE_REASON="$($JQ -r '.reason // empty' "$PC_PAUSE_FILE" 2>/dev/null || true)"
+    add_info "PC CI is paused by the owner${PC_PAUSE_REASON:+ ($PC_PAUSE_REASON)}. Resume it from the factory."
+    log "pc-ci paused (id=$PC_PAUSE_ID); suppressing PC lane alerts only"
+  fi
 fi
 
 # 3. Live registration, not just a running process. A runner can be up locally
