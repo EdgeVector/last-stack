@@ -198,7 +198,53 @@ def _cadence_seconds():
     return value if value > 0 else 3600
 
 
-_FAIL_EVIDENCE_RE = re.compile(r'^[ \t]*(?:PROOF|RESULT):[ \t]*FAIL[ \t]*$', re.M | re.I)
+# One verdict line the validate lane writes on a proof card. Live shapes
+# (2026-09-26): `PROOF: FAIL`, `PROOF: failed offline north-star-... -- report
+# FAIL`, `PROOF[failed-isolated-copy-contract]: ... FAIL ...`,
+# `PROOF[reopened-end-state-unmet]: ...`, `PROOF: passed -- ...`. The old
+# bare `PROOF: FAIL` pattern matched none of the real FAIL shapes, so
+# stale_fail_proof never fired on live output.
+_PROOF_LINE_RE = re.compile(
+    r'^[ \t]*(?:PROOF|RESULT)(?:\[(?P<tag>[^\]\n]*)\])?:[ \t]*(?P<word>[^\s]*)',
+    re.M | re.I)
+_FAIL_TAG_RE = re.compile(r'^(?:fail|reopened)|unmet', re.I)
+_PASS_TAG_RE = re.compile(r'^pass', re.I)
+_FAIL_WORD_RE = re.compile(r'^fail(?:ed|s|ure|ing)?$', re.I)
+_PASS_WORD_RE = re.compile(r'^pass(?:ed|es|ing)?$', re.I)
+
+
+def _proof_line_verdict(tag, word):
+    """'fail', 'pass', or None for one PROOF/RESULT line. A classifying tag
+    wins over the first word; a line with neither is not a verdict."""
+    tag = (tag or '').strip()
+    if tag and _FAIL_TAG_RE.search(tag):
+        return 'fail'
+    if tag and _PASS_TAG_RE.search(tag):
+        return 'pass'
+    word = (word or '').strip().strip('.,;:!-\u2014\u2013')
+    if _FAIL_WORD_RE.match(word):
+        return 'fail'
+    if _PASS_WORD_RE.match(word):
+        return 'pass'
+    return None
+
+
+def _proof_verdict(body):
+    """The LAST PROOF/RESULT verdict line in a proof card body wins: a later
+    PASS supersedes an earlier FAIL and a later FAIL supersedes an earlier
+    PASS. Lines that state neither (e.g. `PROOF: fix-card filing failed`,
+    `PROOF[offline-ns-proof]: ... rc=1`) are skipped. None when no line
+    states a verdict."""
+    if not isinstance(body, str):
+        return None
+    verdict = None
+    for match in _PROOF_LINE_RE.finditer(body):
+        line_verdict = _proof_line_verdict(match.group('tag'), match.group('word'))
+        if line_verdict:
+            verdict = line_verdict
+    return verdict
+
+
 _SPEC_SECTION_RE = re.compile(r'^##\s*(outcome|acceptance|goal|end state)', re.M | re.I)
 _BARE_SLUG_LINE_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
 
@@ -242,7 +288,7 @@ def _annotate_stuck_states(board, report, detail_cache, card_cache):
       (papercut-milestone-driver-rollup-body-milestones-block-decompose-20260926)
     """
     work_queue = report.get('work_queue')
-    if not isinstance(work_queue, list) or not work_queue:
+    if not isinstance(work_queue, list):
         return report
     cadence = _cadence_seconds()
     now = datetime.now(timezone.utc)
@@ -273,7 +319,7 @@ def _annotate_stuck_states(board, report, detail_cache, card_cache):
                 proof_card = _card_best_effort(board, proof_card_slug, card_cache)
                 body = proof_card.get('body', '') if proof_card else ''
                 is_terminal = bool(proof_card) and proof_card.get('column') == 'done'
-                is_fail = bool(_FAIL_EVIDENCE_RE.search(body)) if isinstance(body, str) else False
+                is_fail = _proof_verdict(body) == 'fail'
                 updated_at = _parse_timestamp(proof_card.get('updated_at')) if proof_card else None
                 is_stale = bool(updated_at) and (now - updated_at).total_seconds() > cadence
                 if is_terminal and is_fail and is_stale:
@@ -305,6 +351,74 @@ def _annotate_stuck_states(board, report, detail_cache, card_cache):
         else:
             annotated.append(entry)
     report['work_queue'] = annotated
+    return report
+
+
+def _queue_proof_pending_repairs(board, report, ns_children, detail_cache, card_cache):
+    """Put a proof_pending milestone with a stale failing proof back on the
+    work_queue as repair work.
+
+    fkanban classifies a milestone whose implementation Kind:pr cards are all
+    done as status `proof_pending` / action `await_proof`, and leaves it OFF
+    the work_queue. When its linked proof card's last verdict is FAIL, nothing
+    ever acts: the validate lane re-proves the same code, and fkanban only
+    decomposes milestones with zero done cards, so the next slice of a
+    multi-slice milestone never gets filed. Queue it as `decompose` +
+    `stale_fail_proof` so the driver files the repair_proof Kind:pr card for
+    the failing clause. `action` must be `decompose`: `authorize()` matches a
+    guarded Kind:pr file-pr call to exactly that queue action.
+
+    Same staleness rule as the idle_empty case: the FAIL must be older than
+    one driver cadence. A proof card in `doing` is being re-run now and is
+    left alone. A North Star that already has unattached in-flight Kind:pr
+    children is covered by that work (same rule as the idle_empty drop).
+    """
+    work_queue = report.get('work_queue')
+    milestones = report.get('milestones')
+    if not isinstance(work_queue, list) or not isinstance(milestones, list):
+        return report
+    cadence = _cadence_seconds()
+    now = datetime.now(timezone.utc)
+    queued = {(entry.get('slug'), entry.get('action')) for entry in work_queue if isinstance(entry, dict)}
+    counts = report.get('counts')
+    added = 0
+    for row in milestones:
+        if not isinstance(row, dict):
+            continue
+        if row.get('status') != 'proof_pending' and row.get('action') != 'await_proof':
+            continue
+        slug = row.get('slug')
+        if not isinstance(slug, str) or not slug or (slug, 'decompose') in queued:
+            continue
+        north_star = row.get('north_star')
+        if isinstance(north_star, str) and north_star and ns_children.get(north_star, 0) > 0:
+            continue
+        detail = _milestone_detail_best_effort(board, slug, detail_cache)
+        if not detail:
+            continue
+        proof_card_slug = detail.get('milestone', {}).get('proof_card')
+        if not isinstance(proof_card_slug, str) or not proof_card_slug:
+            continue
+        proof_card = _card_best_effort(board, proof_card_slug, card_cache)
+        if not proof_card or proof_card.get('column') == 'doing':
+            continue
+        if _proof_verdict(proof_card.get('body', '')) != 'fail':
+            continue
+        updated_at = _parse_timestamp(proof_card.get('updated_at'))
+        if not updated_at or (now - updated_at).total_seconds() <= cadence:
+            continue
+        work_queue.append({'slug': slug, 'action': 'decompose', 'promoteable': [],
+                           'stale_fail_proof': True, 'proof_card': proof_card_slug,
+                           'from_status': 'proof_pending'})
+        queued.add((slug, 'decompose'))
+        added += 1
+    if added and isinstance(counts, dict):
+        for name in ('stale_fail_proof', 'proof_pending_stale_fail'):
+            current = counts.get(name, 0)
+            if not isinstance(current, (int, float)) or isinstance(current, bool):
+                current = 0
+            counts[name] = current + added
+    report['work_queue'] = work_queue
     return report
 
 
@@ -344,7 +458,7 @@ def reconcile_gap_report(board, snapshot_dir, report, admission_bin):
     action this code does not enumerate.
     """
     work_queue = report.get('work_queue')
-    if not isinstance(work_queue, list) or not work_queue:
+    if not isinstance(work_queue, list):
         return report
 
     ns_children = {}
@@ -394,7 +508,12 @@ def reconcile_gap_report(board, snapshot_dir, report, admission_bin):
                 kept[index] = entry
 
     report['work_queue'] = kept
-    report = _annotate_stuck_states(board, report, {}, {})
+    detail_cache, card_cache = {}, {}
+    report = _annotate_stuck_states(board, report, detail_cache, card_cache)
+    # After the annotation pass, so an appended repair entry is not
+    # re-annotated, and after the idle_empty drop, which already applied the
+    # North Star in-flight rule this call repeats.
+    report = _queue_proof_pending_repairs(board, report, ns_children, detail_cache, card_cache)
     return report
 
 
@@ -493,8 +612,9 @@ def authorize(command, board, control, report):
     passing_current = current.get('proof_verdict') == 'passing' and milestone.get('proof_status') == 'passing'
     if proof_status == 'passing' and not passing_current:
         # A pending operator status deliberately has a pending live verdict.
-        # Bootstrap only from a current, terminal validation card with exact
-        # PASS evidence; the underlying state command repeats its proof gate.
+        # Bootstrap only from a current, terminal validation card whose LAST
+        # verdict line is PASS (a later FAIL withdraws an earlier PASS); the
+        # underlying state command repeats its proof gate.
         linked = milestone.get('proof_card')
         if not linked or milestone.get('proof_status') != 'pending':
             refuse(f"passing-proof-not-current slug={owner}")
@@ -502,7 +622,7 @@ def authorize(command, board, control, report):
         if (proof.get('slug') != linked or proof.get('milestone') != owner
             or not milestone.get('board') or proof.get('board') != milestone['board']
             or proof.get('kind') != 'validation' or proof.get('column') != 'done'
-            or not re.search(r'^[ \t]*(?:PROOF|RESULT):[ \t]*PASS[ \t]*$', proof.get('body', ''), re.M | re.I)):
+            or _proof_verdict(proof.get('body', '')) != 'pass'):
             refuse(f"passing-proof-not-current slug={owner}")
         passing_current = True
     if proof_card:

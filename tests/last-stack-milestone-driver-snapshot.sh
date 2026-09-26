@@ -152,7 +152,9 @@ change '.milestones.release.milestone.board="default" | .milestones.release.mile
 reject 'pending proof without PASS' guard "$KANBAN_BIN" milestone state release complete --proof-status passing --json
 change '.card.body += "\nPROOF: PASS" | .card.milestone="foreign"'
 reject 'pending proof foreign milestone' guard "$KANBAN_BIN" milestone state release complete --proof-status passing --json
-change '.card.milestone="release"'
+change '.card.milestone="release" | .card.body += "\nPROOF[failed-offline-ns-proof]: harness rc=1"'
+reject 'pending proof later FAIL' guard "$KANBAN_BIN" milestone state release complete --proof-status passing --json
+change '.card.body += "\nPROOF: passed \u2014 DONE-WHEN list satisfied"'
 guard "$KANBAN_BIN" milestone state release complete --proof-status passing --json
 change '.card.column="backlog"'
 reject 'pending proof nonterminal' guard "$KANBAN_BIN" milestone state release complete --proof-status passing --json

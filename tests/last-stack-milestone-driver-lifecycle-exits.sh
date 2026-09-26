@@ -16,6 +16,11 @@
 #    must flag it (`needs_spec` + `sibling_milestones`) instead of silently
 #    skipping it.
 #    papercut-milestone-driver-rollup-body-milestones-block-decompose-20260926
+# 5. proof_pending (await_proof) whose linked proof card's LAST verdict line
+#    is a stale FAIL -- fkanban leaves it off the work_queue, so capture must
+#    queue it as decompose + stale_fail_proof (+ from_status=proof_pending)
+#    so the driver files the repair_proof card that carries the next slice.
+#    The verdict parser must read the live validate-lane FAIL shapes.
 set -euo pipefail
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)"
@@ -283,5 +288,121 @@ jq -e '(.work_queue[0].needs_spec // false) == false' "$artifact4b" >/dev/null \
   || fail 'fix4: a milestone with a real Outcome/Acceptance spec must not be flagged needs_spec'
 
 echo "ok fix4: decompose with a bare slug-list body is flagged for a spec instead of silently skipped"
+
+# ---------------------------------------------------------------------------
+# Fix 5a: proof verdict parser -- the live validate-lane FAIL shapes match,
+# the LAST verdict line wins, and PASS never reads as FAIL.
+# ---------------------------------------------------------------------------
+cat >"$TMP/verdict.py" <<'PYTEST'
+import importlib.machinery
+import importlib.util
+import sys
+loader = importlib.machinery.SourceFileLoader('snapshot', sys.argv[1])
+spec = importlib.util.spec_from_loader(loader.name, loader)
+module = importlib.util.module_from_spec(spec)
+loader.exec_module(module)
+cases = [
+    ('PROOF: FAIL', 'fail'),
+    ('RESULT: FAIL', 'fail'),
+    ('PROOF: failed offline north-star-exemem-hands-off-prod-deploy — report remains FAIL sentry_failure_visible', 'fail'),
+    ('PROOF[failed-isolated-copy-contract]: last-stack-north-star-proof --offline FAIL north-star-x', 'fail'),
+    ('PROOF[reopened-end-state-unmet]: END STATE clause 2 still unmet on main', 'fail'),
+    ('## GOAL\nx\nPROOF: FAIL\nPROOF: passed clean-clone validation — PASS clone_oid=abc', 'pass'),
+    ('PROOF: PASS', 'pass'),
+    ('PROOF: passed — DONE-WHEN list fully satisfied', 'pass'),
+    ('PROOF: PASS\nPROOF[failed-offline-ns-proof]: offline harness rc=1', 'fail'),
+    ('PROOF[failed-offline-ns-proof]: rc=1\nPROOF[offline-ns-proof]: rc=1 report first_line=FAIL', 'fail'),
+    ('PROOF: passed — x\nPROOF: fix-card filing failed during validate', 'pass'),
+    ('no verdict here\nFAIL', None),
+]
+for body, want in cases:
+    got = module._proof_verdict(body)
+    assert got == want, (body, want, got)
+PYTEST
+python3 "$TMP/verdict.py" "$HELPER" || fail 'fix5a: proof verdict parser disagrees with the live proof-card shapes'
+echo "ok fix5a: proof verdict parser reads the live FAIL shapes and lets the last verdict line win"
+
+# ---------------------------------------------------------------------------
+# Fix 5b: proof_pending milestone with a stale failing proof card is queued
+# as decompose + stale_fail_proof; the guard then authorizes the repair card.
+# ---------------------------------------------------------------------------
+S5="$TMP/s5"
+mkdir -p "$S5/run"
+cat >"$S5/kanban" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  'list --column backlog --json'|'list --column todo --json'|'list --column doing --json')
+    echo '{"cards":[],"total":0,"truncated":false}';;
+  'milestone portfolio --json') echo '{"entries":[],"total":0,"truncated":false}';;
+  'milestone gap-report --json')
+    echo '{"counts":{"idle_empty":0,"proof_pending":3},"work_queue":[],"milestones":[
+      {"slug":"ms-pp-fail","north_star":"ns-a","status":"proof_pending","action":"await_proof","pr_done":1},
+      {"slug":"ms-pp-pass-after-fail","north_star":"ns-a","status":"proof_pending","action":"await_proof","pr_done":1},
+      {"slug":"ms-pp-running","north_star":"ns-a","status":"proof_pending","action":"await_proof","pr_done":1},
+      {"slug":"ms-done","north_star":"ns-a","status":"complete","action":"skip","pr_done":2}]}';;
+  'milestone show '*) echo "{\"slug\":\"$3\",\"north_star\":\"ns-a\"}";;
+  'milestone detail ms-pp-fail --json')
+    echo '{"milestone":{"slug":"ms-pp-fail","state":"active","deps":[],"proof_status":"failing","proof_card":"pc-fail","board":"default"},"proof_verdict":"failing"}';;
+  'milestone detail ms-pp-pass-after-fail --json')
+    echo '{"milestone":{"slug":"ms-pp-pass-after-fail","state":"active","deps":[],"proof_status":"pending","proof_card":"pc-pass","board":"default"},"proof_verdict":"pending"}';;
+  'milestone detail ms-pp-running --json')
+    echo '{"milestone":{"slug":"ms-pp-running","state":"active","deps":[],"proof_status":"pending","proof_card":"pc-running","board":"default"},"proof_verdict":"pending"}';;
+  'show pc-fail --json')
+    echo '{"slug":"pc-fail","column":"backlog","kind":"validation","updated_at":"FAIL_UPDATED_AT","body":"## GOAL\nprove\nPROOF[failed-isolated-copy-contract]: last-stack-north-star-proof --offline FAIL clause restore_from_empty_home"}';;
+  'show pc-pass --json')
+    echo '{"slug":"pc-pass","column":"done","kind":"validation","updated_at":"2026-09-06T00:00:00Z","body":"PROOF: failed offline north-star-x — report remains FAIL\nPROOF: passed — PASS clone_oid=abc"}';;
+  'show pc-running --json')
+    echo '{"slug":"pc-running","column":"doing","kind":"validation","updated_at":"2026-09-06T00:00:00Z","body":"PROOF[reopened-end-state-unmet]: clause 1"}';;
+  *) echo "unexpected fixture command: $*" >&2; exit 9;;
+esac
+EOF
+sed 's/FAIL_UPDATED_AT/2026-09-06T00:00:00Z/' "$S5/kanban" >"$S5/kanban.tmp" && mv "$S5/kanban.tmp" "$S5/kanban"
+chmod +x "$S5/kanban"
+artifact5="$(capture_artifact "$S5/kanban" "$S5/run" s5)"
+jq -e '[.work_queue[] | select(.slug == "ms-pp-fail")] | length == 1' "$artifact5" >/dev/null \
+  || fail 'fix5b: proof_pending with a stale failing proof card was not queued'
+jq -e '.work_queue[] | select(.slug == "ms-pp-fail")
+  | .action == "decompose" and .stale_fail_proof == true and .proof_card == "pc-fail" and .from_status == "proof_pending"' \
+  "$artifact5" >/dev/null || fail 'fix5b: queued proof_pending entry has the wrong shape'
+jq -e '[.work_queue[] | select(.slug == "ms-pp-pass-after-fail")] | length == 0' "$artifact5" >/dev/null \
+  || fail 'fix5b: a PASS verdict after a FAIL must not queue repair work'
+jq -e '[.work_queue[] | select(.slug == "ms-pp-running")] | length == 0' "$artifact5" >/dev/null \
+  || fail 'fix5b: a proof card in doing is being re-run and must not queue repair work'
+jq -e '[.work_queue[] | select(.slug == "ms-done")] | length == 0' "$artifact5" >/dev/null \
+  || fail 'fix5b: only proof_pending milestones are scanned'
+jq -e '.counts.stale_fail_proof == 1 and .counts.proof_pending_stale_fail == 1' "$artifact5" >/dev/null \
+  || fail 'fix5b: counts for the queued proof_pending repair not incremented'
+
+# The guard authorizes exactly the repair_proof Kind:pr filing for it.
+cat >"$S5/last-stack-kanban-file-pr" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$(dirname "$0")/writes.log"
+EOF
+chmod +x "$S5/last-stack-kanban-file-pr"
+env -u MILESTONE_DRIVER_TARGET -u MILESTONE_DRIVER_SAFETY_CAP "$HELPER" guard --run-dir "$S5/run" --run-id s5 --artifact "$artifact5" --kanban-bin "$S5/kanban" -- \
+  "$S5/last-stack-kanban-file-pr" ms-pp-fail-repair-1 --milestone ms-pp-fail --north-star ns-a \
+  --repo EdgeVector/fold --title repair --column todo --surfaces src/a.ts --work-class repair </dev/null \
+  || fail 'fix5b: guard refused the repair_proof filing for a queued proof_pending milestone'
+grep -q 'ms-pp-fail-repair-1 --milestone ms-pp-fail' "$S5/writes.log" || fail 'fix5b: repair card not filed'
+if env -u MILESTONE_DRIVER_TARGET -u MILESTONE_DRIVER_SAFETY_CAP "$HELPER" guard --run-dir "$S5/run" --run-id s5 --artifact "$artifact5" --kanban-bin "$S5/kanban" -- \
+  "$S5/last-stack-kanban-file-pr" ms-pp-pass-repair --milestone ms-pp-pass-after-fail --north-star ns-a \
+  --repo EdgeVector/fold --title repair --column todo --surfaces src/a.ts --work-class repair </dev/null 2>"$S5/reject.err"; then
+  fail 'fix5b: guard filed repair work for a milestone whose proof passed'
+fi
+grep -q 'action-not-in-current-queue slug=ms-pp-pass-after-fail action=decompose' "$S5/reject.err" \
+  || fail 'fix5b: refusal for an unqueued milestone not explicit'
+
+# RED case: a fresh FAIL (inside the cadence window) is not queued yet.
+S5B="$TMP/s5b"
+mkdir -p "$S5B/run"
+sed "s/2026-09-06T00:00:00Z\",\"body\":\"## GOAL/$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"body\":\"## GOAL/" "$S5/kanban" >"$S5B/kanban"
+chmod +x "$S5B/kanban"
+grep -q "$(date -u +%Y-%m-%d)T" "$S5B/kanban" || fail 'fix5b: fresh-FAIL fixture rewrite did not apply'
+artifact5b="$(capture_artifact "$S5B/kanban" "$S5B/run" s5b)"
+jq -e '(.work_queue | length) == 0' "$artifact5b" >/dev/null \
+  || fail 'fix5b: a fresh (non-stale) proof_pending FAIL must not be queued yet'
+
+echo "ok fix5b: proof_pending with a stale failing proof is queued as repair work the guard authorizes"
 
 echo "ok last-stack-milestone-driver-lifecycle-exits"
