@@ -1,0 +1,14 @@
+# Tokens that LOOK like a cited brain slug in shipped agent prose and are not
+# one. Read by bin/last-stack-prose-citation-check.
+#
+# Format: <token><space><reason>.  A reason is required. An unexplained
+# exclusion is how a real dangling citation gets parked here forever.
+#
+# Two whole classes need no entry here and must not get one:
+#   * generator slug PREFIXES (`papercut-pipeline-forge-<repo>-pr-<n>`) are
+#     detected from the source text, one character past the token;
+#   * tokens naming a file under bin/ tests/ lib/ hooks/ (`papercut-lifecycle-close`
+#     is bin/last-stack-papercut-lifecycle-close) are detected from the tree.
+# Adding either here would hide a real citation the day the detection changes.
+
+papercut-p0-active  prose in routines/pipeline-health.md naming the p0-active STATE of the ledger, not a record: "a p0 for each one made `papercut-p0-active` ...".

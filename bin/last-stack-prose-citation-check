@@ -1,0 +1,328 @@
+#!/usr/bin/env python3
+"""Report brain slugs that shipped agent prose cites and the brain cannot serve.
+
+A dangling citation is worse than no citation: it reads as an audited ground
+truth, so the agent stops looking, and the standing rule it supports arrives
+with no evidence anyone can check. 22 of ~62 real citations were dangling when
+this was measured (2026-09-26, prose at last-stack c083521f0), mostly because
+gbrain was primary from 2026-09-06 to 2026-09-25 and holds records that were
+never migrated back into LastDB. The citations were correct when written; the
+corpus moved out from under them and nothing noticed.
+
+papercut-shipped-prose-cites-brain-slugs-that-do-not-resolve-20260926
+
+Deliberately NOT a merge gate. A required gate here would make CI depend on the
+brain node being reachable, so a busy node would turn a correct PR red. This is
+a periodic checker: the papercut-reconciler routine already runs every few hours
+and already talks to the brain.
+
+A transient node error is reported as `unknown`, never as `dangling`, and it
+sets its own exit code. A checker that reports a busy node as a dangling
+citation would be ignored within a day, and then the real dangling citations
+ride along with the noise.
+
+Exit codes:
+  0  every citation resolves (or was deliberately skipped)
+  1  at least one citation does not resolve
+  2  usage error
+  3  at least one citation could not be determined (node transient) and none
+     were proved dangling
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Iterable
+
+# Prefix -> the `--type` that `brain get` needs for it. A point get is the
+# authoritative reader here: enumeration under-reports on this store, so an
+# absence taken from a listing would be a false positive.
+CITED_TYPES = {
+    "papercut": "papercut",
+    "decision": "decision",
+    "sop": "sop",
+}
+
+TOKEN_RE = re.compile(r"(?<![A-Za-z0-9-])(" + "|".join(CITED_TYPES) + r")-[a-z0-9][a-z0-9-]*")
+
+# Prose lives in these places and nowhere else. Named, not searched: a walk over
+# an install or state root resolves into unpruned artifact version trees.
+PROSE_ROOT_FILES = ("CLAUDE.md", "AGENTS.md")
+PROSE_GLOBS = ("routines/*.md", "instructions/*.md", "skills/*/SKILL.md", "skills/*/*.md")
+
+# Names under these dirs are how a token can be a LOCAL name rather than a
+# citation: `papercut-lifecycle-close` is bin/last-stack-papercut-lifecycle-close,
+# `papercut-filing-contract` is a test. A checker that reports those is ignored.
+LOCAL_NAME_DIRS = ("bin", "tests", "tests/acceptance", "tests/ci", "lib", "hooks")
+
+TRANSIENT_SIGNALS = (
+    "node socket not reachable",
+    "not reachable",
+    "service_timeout",
+    "did not respond",
+    "too many concurrent reads",
+    "uds_connection_limit",
+    "persist_queue_full",
+    "node_locked",
+    "timed out",
+)
+
+# `brain get <slug> --type sop` on an absent record answers, on stderr:
+#     error: No sop: sop-lastdb-safe-upgrade
+#     hint:  No sop with that slug. Drop --type to search every type ...
+# The first draft of this checker looked for "no record with slug" and so
+# classified all 49 real absences as `unknown`. That is the safe direction to
+# fail in, and it is still wrong: a checker that can only say `unknown` reports
+# nothing. Match what the CLI actually prints.
+MISSING_RE = re.compile(r"\berror:\s*no\b", re.IGNORECASE)
+
+# A generator template's slug PREFIX is not a citation: `papercut-pipeline-forge-`
+# in `papercut-pipeline-forge-<repo>-pr-<n>` names a family the routine mints at
+# run time. The tell is in the source text, one character past the token, so it
+# needs no allowlist and cannot go stale as new families are added.
+TEMPLATE_NEXT = ("<", "*", "\u2026", "{", "$")
+
+
+def brain_bin() -> str:
+    return os.environ.get("PROSE_CITATION_BRAIN_BIN", "brain")
+
+
+def iter_prose_files(root: Path) -> list[Path]:
+    found: list[Path] = []
+    for name in PROSE_ROOT_FILES:
+        path = root / name
+        if path.is_file():
+            found.append(path)
+    for pattern in PROSE_GLOBS:
+        found.extend(sorted(p for p in root.glob(pattern) if p.is_file()))
+    unique: list[Path] = []
+    seen: set[Path] = set()
+    for path in found:
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        unique.append(path)
+    return unique
+
+
+def local_names(root: Path) -> set[str]:
+    """Basenames the repo itself owns, so a tool name is not read as a slug."""
+    names: set[str] = set()
+    for dirname in LOCAL_NAME_DIRS:
+        base = root / dirname
+        if not base.is_dir():
+            continue
+        for path in base.iterdir():  # one level: these dirs hold files, not trees
+            if not path.is_file():
+                continue
+            stem = path.name
+            names.add(stem)
+            for suffix in (".sh", ".py", ".rb", ".ts"):
+                if stem.endswith(suffix):
+                    names.add(stem[: -len(suffix)])
+    return names
+
+
+def is_local_name(token: str, names: set[str]) -> bool:
+    return any(token in name for name in names)
+
+
+def read_ignore(path: Path | None) -> dict[str, str]:
+    """`<token><space><reason>` per line. A reason is required: an unexplained
+    exclusion is how a real dangling citation gets parked forever."""
+    if path is None or not path.is_file():
+        return {}
+    ignored: dict[str, str] = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        token, _, reason = line.partition(" ")
+        ignored[token] = reason.strip() or "(no reason given)"
+    return ignored
+
+
+def collect_citations(root: Path) -> dict[str, list[str]]:
+    """token -> the prose files that cite it."""
+    cites: dict[str, list[str]] = {}
+    for path in iter_prose_files(root):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        where = str(path.relative_to(root))
+        for match in TOKEN_RE.finditer(text):
+            raw = match.group(0)
+            tail = text[match.end() : match.end() + 2]
+            if raw.endswith("-") and tail[:1] in TEMPLATE_NEXT:
+                continue
+            if tail.startswith("-") and tail[1:2] in TEMPLATE_NEXT:
+                continue
+            token = raw.rstrip("-.,;:)]}")
+            if token.count("-") < 2:
+                # `papercut-pipeline` and friends: a prefix, not a slug.
+                continue
+            cites.setdefault(token, [])
+            if where not in cites[token]:
+                cites[token].append(where)
+    return cites
+
+
+def get_once(argv: list[str], attempts: int = 3) -> tuple[str, str]:
+    """('ok'|'missing'|'unknown', detail) for one `brain get` shape."""
+    last = ""
+    for attempt in range(1, attempts + 1):
+        proc = subprocess.run(argv, text=True, capture_output=True, check=False)
+        if proc.returncode == 0:
+            return "ok", ""
+        last = ((proc.stderr or "") + " " + (proc.stdout or "")).strip()
+        lowered = last.lower()
+        if any(signal in lowered for signal in TRANSIENT_SIGNALS):
+            if attempt < attempts:
+                time.sleep(1.5 * attempt)
+                continue
+            return "unknown", last.splitlines()[0][:200]
+        if MISSING_RE.search(last):
+            return "missing", last.splitlines()[0][:200] if last else "no record"
+        # An unclassified non-zero exit is NOT evidence the record is absent.
+        return "unknown", last.splitlines()[0][:200] if last else f"exit {proc.returncode}"
+    return "unknown", last[:200]
+
+
+def resolve(token: str) -> tuple[str, str]:
+    """('ok'|'missing'|'unknown', detail).
+
+    A typed miss is retried WITHOUT `--type`, which is what the CLI's own hint
+    tells a human to do: `papercut-prevention-registry` and
+    `papercut-reconciler-ledger` are cited with a papercut-shaped slug and
+    filed as `reference`, so the typed get alone calls two live records dead.
+    """
+    record_type = CITED_TYPES[token.split("-", 1)[0]]
+    state, detail = get_once([brain_bin(), "get", token, "--type", record_type])
+    if state != "missing":
+        return state, detail
+    wide_state, wide_detail = get_once([brain_bin(), "get", token])
+    if wide_state == "ok":
+        return "ok", f"resolves without --type {record_type}"
+    if wide_state == "unknown":
+        return "unknown", wide_detail
+    return "missing", detail
+
+
+def main(argv: Iterable[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="last-stack-prose-citation-check",
+        description="Point-get every brain slug cited in shipped agent prose.",
+    )
+    parser.add_argument(
+        "--root",
+        default=os.environ.get("LAST_STACK_ROOT", str(Path.home() / ".last-stack")),
+        help="install root or checkout whose prose is checked (default: $LAST_STACK_ROOT)",
+    )
+    parser.add_argument(
+        "--ignore-file",
+        default=None,
+        help="token+reason exclusions (default: <root>/config/prose-citation-ignore.txt)",
+    )
+    parser.add_argument("--json", action="store_true", help="machine-readable report on stdout")
+    parser.add_argument(
+        "--list-only",
+        action="store_true",
+        help="print the cited tokens and exit 0 without touching the brain",
+    )
+    args = parser.parse_args(list(argv))
+
+    root = Path(args.root).expanduser()
+    if not root.is_dir():
+        print(f"error: root is not a directory: {root}", file=sys.stderr)
+        return 2
+
+    ignore_path = (
+        Path(args.ignore_file)
+        if args.ignore_file
+        else root / "config" / "prose-citation-ignore.txt"
+    )
+    ignored = read_ignore(ignore_path)
+    names = local_names(root)
+    cites = collect_citations(root)
+
+    checked: list[dict] = []
+    skipped: list[dict] = []
+    for token in sorted(cites):
+        if token in ignored:
+            skipped.append(
+                {"slug": token, "reason": f"ignore-file: {ignored[token]}", "cited_in": cites[token]}
+            )
+            continue
+        if is_local_name(token, names):
+            skipped.append(
+                {
+                    "slug": token,
+                    "reason": "names a file in this repo, not a brain record",
+                    "cited_in": cites[token],
+                }
+            )
+            continue
+        checked.append({"slug": token, "cited_in": cites[token]})
+
+    if args.list_only:
+        for row in checked:
+            print(row["slug"])
+        return 0
+
+    dangling: list[dict] = []
+    unknown: list[dict] = []
+    for row in checked:
+        state, detail = resolve(row["slug"])
+        row["state"] = state
+        row["detail"] = detail
+        if state == "missing":
+            dangling.append(row)
+        elif state == "unknown":
+            unknown.append(row)
+
+    report = {
+        "root": str(root),
+        "prose_files": len(iter_prose_files(root)),
+        "cited": len(cites),
+        "checked": len(checked),
+        "skipped": len(skipped),
+        "resolved": len(checked) - len(dangling) - len(unknown),
+        "dangling": dangling,
+        "unknown": unknown,
+        "skipped_rows": skipped,
+        "method": (
+            "point-get per cited slug via `brain get <slug> --type <type>`; "
+            "a transient node error is reported as unknown after 3 attempts, never as dangling; "
+            "tokens naming a file under bin/tests/lib/hooks and tokens in the ignore file are skipped"
+        ),
+    }
+
+    if args.json:
+        print(json.dumps(report, indent=2))
+    else:
+        print(
+            f"prose files {report['prose_files']}  cited {report['cited']}  "
+            f"checked {report['checked']}  resolved {report['resolved']}  "
+            f"dangling {len(dangling)}  unknown {len(unknown)}  skipped {report['skipped']}"
+        )
+        for row in dangling:
+            print(f"DANGLING {row['slug']}  cited_in={','.join(row['cited_in'])}")
+        for row in unknown:
+            print(f"UNKNOWN  {row['slug']}  {row['detail']}")
+        print(f"method: {report['method']}")
+
+    if dangling:
+        return 1
+    if unknown:
+        return 3
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
