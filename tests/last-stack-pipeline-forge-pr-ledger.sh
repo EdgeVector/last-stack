@@ -464,6 +464,40 @@ jq -e '(.prs[] | select(.number==30) | .stuck) == true
        and (.prs[] | select(.number==30) | .merge_policy) == "unreadable"' "$tmp/scan.json" >/dev/null   || { echo "FAIL an unreadable merge-pr policy must fail OPEN and stay stuck"; cat "$tmp/scan.json"; exit 1; }
 echo "ok   an unreadable policy store fails open"
 
+# 9f-2. an UNARMED green PR on a held repo must ALSO read policy_hold, not just
+#     the armed one. Regression confirmed 6x on 2026-09-26
+#     (papercut-pipeline-ledger-p0-for-situation-held-pr-20260925): loom PR 64
+#     was green, unmerged, and unarmed on a repo held by
+#     loom-budget-schema-deployment-hold-20260925, but the ledger only ever
+#     computed the policy for an ARMED PR, so it read `stuck_excluded ==
+#     "green-unarmed"` with `policy_hold` empty — an agent reading the row
+#     alone would have no idea the repo was held, and would see it as an
+#     ordinary re-arm candidate.
+echo '[]' | put "repos/$R/pulls?state=open&limit=50"
+sync --apply   # drain the tracked rows from the cases above
+pulls_open 32 | put "repos/$R/pulls?state=open&limit=50"
+put "repos/$R/commits/head32/status" <<'J'
+{"statuses":[{"context":"Forge CI / ci-required (pull_request)","status":"success","created_at":"2026-09-22T10:10:00Z"},
+             {"context":"Forge CI / Mini (pull_request)","status":"success","created_at":"2026-09-22T10:20:00Z"}]}
+J
+put "repos/$R/issues/32/timeline?limit=50&page=1" <<'J'
+[{"type":"comment","created_at":"2026-09-22T10:30:00Z"}]
+J
+
+BLOCKED_REPO="$R" BLOCKED_SLUG=hold-abc-20260926 "$LEDGER" scan --repo "$R" --json >"$tmp/scan.json"
+jq -e '(.prs[] | select(.number==32) | .merge_intent) == "unarmed"
+       and (.prs[] | select(.number==32) | .stuck) == false
+       and (.prs[] | select(.number==32) | .stuck_excluded) == "policy-blocked"
+       and (.prs[] | select(.number==32) | .policy_hold) == "hold-abc-20260926"' "$tmp/scan.json" >/dev/null   || { echo "FAIL an unarmed green PR on a held repo must read policy_hold, not read as a plain green-unarmed"; cat "$tmp/scan.json"; exit 1; }
+jq -e '.heartbeat_fields | test("policy_blocked=fold#32") and (test("green_unarmed=fold#32") | not)' "$tmp/scan.json" >/dev/null   || { echo "FAIL heartbeat must count the unarmed-but-held PR as policy_blocked, not green_unarmed"; jq -r .heartbeat_fields "$tmp/scan.json"; exit 1; }
+: >"$tmp/brain/calls.log"
+BLOCKED_REPO="$R" BLOCKED_SLUG=hold-abc-20260926 sync --apply
+jq -e '([.ledger.actions[] | select(.action=="policy-blocked" and .slug=="papercut-pipeline-forge-fold-pr-32" and .policy=="hold-abc-20260926")] | length) == 1
+       and ([.ledger.actions[] | select(.action=="green-unarmed" and .slug=="papercut-pipeline-forge-fold-pr-32")] | length) == 0
+       and ([.ledger.actions[] | select(.action=="file")] | length) == 0' "$tmp/out.json" >/dev/null   || { echo "FAIL sync must name the unarmed held PR policy-blocked, not green-unarmed, and file nothing"; cat "$tmp/out.json"; exit 1; }
+[ ! -f "$tmp/brain/papercut-pipeline-forge-fold-pr-32.status" ] || { echo "FAIL filed a p0 for an unarmed PR an active hold forbids merging"; exit 1; }
+echo "ok   an unarmed green PR on a held repo is policy-blocked, not green-unarmed"
+
 # ── 9g. severity by SHAPE, not one p0 for everything ─────────────────────────
 # papercut-pipeline-ledger-p0-per-stuck-pr-floods-the-priority-band-20260926:
 # every per-PR row was filed at a hard-coded p0, so `papercut-p0-active` — the
