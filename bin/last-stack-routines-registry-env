@@ -76,8 +76,17 @@ last_stack_registry_paths_init() {
         ;;
     esac
     REG_CWD="${HOME}/code/edgevector"
+    # An explicit, non-versioned LAST_STACK_ROOT still wins here, same
+    # priority as the non-ephemeral branch below. Without this check, any
+    # test or sandbox that sets HOME under /tmp (a common isolated-fixture
+    # pattern — last_stack_home_is_ephemeral matches /tmp/* broadly, not
+    # only the llms-txt-install-smoke shape) silently drops a caller's
+    # LAST_STACK_ROOT and falls back to ROOT or HOME/.last-stack instead.
+    if [ -n "${LAST_STACK_ROOT:-}" ] && [ -d "${LAST_STACK_ROOT}" ] \
+      && ! last_stack_registry_is_version_dir "${LAST_STACK_ROOT}"; then
+      REG_STABLE_ROOT="$(CDPATH= cd -- "${LAST_STACK_ROOT}" && pwd -P)"
     # Install tree under the sandbox (ROOT), not the host login last-stack.
-    if [ -n "${ROOT:-}" ] && [ -d "${ROOT}" ]; then
+    elif [ -n "${ROOT:-}" ] && [ -d "${ROOT}" ]; then
       REG_STABLE_ROOT="$(CDPATH= cd -- "${ROOT}" && pwd -P)"
     else
       REG_STABLE_ROOT="${HOME}/.last-stack"

@@ -166,6 +166,26 @@ resolved="$(
   || fail "non-versioned LAST_STACK_ROOT should win, got $resolved"
 rm -rf "$ver_home"
 
+# A non-versioned LAST_STACK_ROOT still wins even when HOME itself resolves
+# under /tmp (last_stack_home_is_ephemeral matches /tmp/* and /private/tmp/*
+# broadly, for the llms-txt-install-smoke case, not only that exact shape).
+# Forced under /tmp directly here, independent of $TMPDIR, so this pins the
+# ephemeral branch regardless of what temp root the runner happens to use.
+tmp_home="$(CDPATH= cd -- "$(mktemp -d /tmp/last-stack-registry-host-paths.XXXXXX)" && pwd -P)"
+mkdir -p "$tmp_home/custom-root/routines"
+printf '# custom\n' >"$tmp_home/custom-root/routines/feature-prove.md"
+resolved="$(
+  HOME="$tmp_home" LAST_STACK_ROOT="$tmp_home/custom-root" \
+  bash -c '
+    . "'"$ROOT"'/bin/last-stack-routines-registry-env"
+    last_stack_registry_paths_init
+    last_stack_registry_prompt_path feature-prove.md /fallback.md
+  '
+)"
+[ "$resolved" = "$tmp_home/custom-root/routines/feature-prove.md" ] \
+  || fail "non-versioned LAST_STACK_ROOT should win under an ephemeral-shaped HOME, got $resolved"
+rm -rf "$tmp_home"
+
 
 # --- the versioned FALLBACK must be normalized too (mid-install race) ---
 # Callers pass "$ROOT/routines/<name>" as the fallback and $ROOT is the version
