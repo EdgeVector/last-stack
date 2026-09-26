@@ -2,7 +2,8 @@
 # host-track follows the registry `next` channel (North Star slice 7):
 #   - the desired oid is the one `lastdb app resolve` proves, not the channel head
 #   - a pinned oid whose artifact is published installs it; status reads pinned
-#   - a newer channel head that is NOT proved does not make the host stale
+#   - a newer channel head that is NOT proved does not make the host stale,
+#     and `pin_behind_oid` names it so the wait is legible instead of `fresh`
 #   - no proved row → the host HOLDS its current install (refresh returns 75)
 #   - an app not on the index falls back to the channel head as before
 set -euo pipefail
@@ -119,6 +120,9 @@ grep -q -- "--index http://forge.test/registry" "$tmp/resolve-calls.log" || fail
 st="$("$ROOT/bin/host-track" status --json demo)"
 printf '%s\n' "$st" | jq -e '.registry_channel == "next" and .registry_pin_state == "pinned" and .stale == false' >/dev/null \
   || fail "pinned status: $st"
+# Nothing published past the pin yet, so there is nothing to report.
+printf '%s\n' "$st" | jq -e '.pin_behind_oid == null' >/dev/null \
+  || fail "pin_behind_oid set while the pin IS the channel head: $st"
 
 # 2. Channel head moves to oid_two (published), but the proved row is still oid_one:
 #    the host is NOT stale, and refresh keeps v1.
@@ -127,6 +131,17 @@ export HOST_TRACK_TEST_MAIN_OID="$oid_two"
 st="$("$ROOT/bin/host-track" status --json demo)"
 printf '%s\n' "$st" | jq -e '.stale == false and .registry_pin_state == "pinned"' >/dev/null \
   || fail "unproved channel head made the host stale: $st"
+# The whole point of the field: the pin is BEHIND a published head, and the
+# install is still genuinely current with the pair the registry proved. Both
+# halves are asserted together on purpose — a test that checked only
+# pin_behind_oid would pass while flipping `stale` and breaking the 7 sites
+# that branch on the freshness it feeds.
+# papercut-fkanban-host-track-fresh-while-main-ahead-20260923
+printf '%s\n' "$st" | jq -e --arg oid "$oid_two" '.pin_behind_oid == $oid and .stale == false' >/dev/null \
+  || fail "pin behind a published head not reported, or stale moved: $st"
+# And `freshness` must still be one of the three values the fleet branches on.
+printf '%s\n' "$st" | jq -e '. as $r | (["fresh","soft_stale","hard_broken"] | index($r.freshness)) != null' >/dev/null \
+  || fail "a pin-behind row invented a new freshness value; 7 sites branch on the literals: $st"
 "$ROOT/bin/host-track" refresh demo >/dev/null 2>&1 || true
 [ "$(demo)" = v1 ] || fail "refresh moved to an unproved commit"
 
@@ -135,6 +150,9 @@ printf '{"demo":"%s"}\n' "$oid_two" >"$tmp/resolve.json"
 st="$("$ROOT/bin/host-track" status --json demo)"
 printf '%s\n' "$st" | jq -e '.stale == true and .registry_pin_oid == "'"$oid_two"'"' >/dev/null \
   || fail "proved pin not stale: $st"
+# The pin caught up: the field must clear, or it becomes a permanent warning.
+printf '%s\n' "$st" | jq -e '.pin_behind_oid == null' >/dev/null \
+  || fail "pin_behind_oid survived the pin catching up: $st"
 "$ROOT/bin/host-track" refresh demo >/dev/null 2>&1
 [ "$(demo)" = v2 ] || fail "refresh did not install the proved commit"
 
