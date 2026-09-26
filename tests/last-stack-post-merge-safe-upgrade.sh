@@ -81,10 +81,13 @@ grep -q 'DRY_RUN: would promote last-stack artifact and refresh host-track repo=
 grep -qx 'cr-test' "$tmp/state/last-stack.handled" \
   || fail "last-stack CR was not marked handled after artifact action"
 
-# A merged Loom CR must take the artifact promotion + host-track refresh path,
-# not the unsupported-repo silent-handled path (which never logs an action).
-grep -q 'DRY_RUN: would host-track refresh loom repo=loom cr=cr-loom' \
-  "$tmp/post-merge.log" || fail "loom merge did not take the host-track refresh path"
+# A merged Loom CR must take the same build-capable artifact promotion path as
+# last-stack (era-3: any artifact-backed app may need `lastgit artifact
+# publish` run from source once it merges via a LastGit CR, not just a bare
+# host-track refresh assuming someone else already published a manifest), not
+# the unsupported-repo silent-handled path (which never logs an action).
+grep -q 'DRY_RUN: would promote loom artifact and refresh host-track repo=loom cr=cr-loom' \
+  "$tmp/post-merge.log" || fail "loom merge did not take the artifact promotion path"
 grep -qx 'cr-loom' "$tmp/state/loom.handled" \
   || fail "loom CR was not marked handled after artifact action"
 
@@ -150,8 +153,8 @@ PATH="$tmp/bin2:$PATH" \
   LAST_STACK_POST_MERGE_LOG="$tmp/post-merge2.log" \
   "$ROOT/bin/last-stack-post-merge-safe-upgrade" --once --all "$tmp/state2" >/dev/null
 
-grep -q 'DRY_RUN: would host-track refresh loom repo=loom cr=cr-transient' "$tmp/post-merge2.log" \
-  || fail "settled merge did not take the refresh path after the defer"
+grep -q 'DRY_RUN: would promote loom artifact and refresh host-track repo=loom cr=cr-transient' "$tmp/post-merge2.log" \
+  || fail "settled merge did not take the artifact promotion path after the defer"
 grep -qx 'cr-transient' "$tmp/state2/loom.handled" \
   || fail "settled merge was not marked handled"
 

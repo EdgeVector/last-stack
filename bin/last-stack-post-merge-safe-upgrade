@@ -20,6 +20,8 @@
 #   LAST_STACK_POST_MERGE_TIMEOUT    seconds per upgrade (default 600)
 #   LAST_STACK_POST_MERGE_MAX_ATTEMPTS  retries per CR (default 3)
 #   LAST_STACK_POST_MERGE_DRY_RUN=1  log only
+#   LAST_STACK_POST_MERGE_BUILD_TIMEOUT  seconds to build+publish a missing
+#                                    artifact from source (default 1500)
 set -euo pipefail
 
 ONCE=0
@@ -90,6 +92,7 @@ INTERVAL="${LAST_STACK_POST_MERGE_INTERVAL:-20}"
 UPGRADE_TIMEOUT="${LAST_STACK_POST_MERGE_TIMEOUT:-600}"
 MAX_ATTEMPTS="${LAST_STACK_POST_MERGE_MAX_ATTEMPTS:-3}"
 DRY_RUN="${LAST_STACK_POST_MERGE_DRY_RUN:-0}"
+BUILD_TIMEOUT="${LAST_STACK_POST_MERGE_BUILD_TIMEOUT:-1500}"
 
 UPGRADE_BIN="$(command -v last-stack-safe-upgrade-cli 2>/dev/null || true)"
 if [ -z "$UPGRADE_BIN" ] && [ -x "$HOME/.local/bin/last-stack-safe-upgrade-cli" ]; then
@@ -157,8 +160,8 @@ is_handled() {
   [ -f "$f" ] && grep -qx "$id" "$f" 2>/dev/null
 }
 
-find_last_stack_manifest() {
-  local repo="$1" oid="$2" artifact_root="${LASTGIT_ARTIFACT_ROOT:-$HOME/.lastgit/artifacts}"
+find_artifact_manifest() {
+  local app="$1" repo="$2" oid="$3" artifact_root="${LASTGIT_ARTIFACT_ROOT:-$HOME/.lastgit/artifacts}"
   local f digest platform path
   [ -n "$oid" ] || return 1
   # Prefer builds/<app>/<oid>/<platform>.json (what CI publishes).
@@ -170,7 +173,7 @@ find_last_stack_manifest() {
     Linux-aarch64|Linux-arm64) platform=linux-arm64 ;;
     *) platform=darwin-arm64 ;;
   esac
-  path="$artifact_root/builds/last-stack/$oid/$platform.json"
+  path="$artifact_root/builds/$app/$oid/$platform.json"
   if [ -f "$path" ]; then
     digest="$(jq -r '.manifest_digest // empty' "$path" 2>/dev/null || true)"
     if [ -n "$digest" ]; then
@@ -180,8 +183,8 @@ find_last_stack_manifest() {
   fi
   for f in "$artifact_root"/manifests/*.json; do
     [ -f "$f" ] || continue
-    digest="$(jq -r --arg repo "$repo" --arg oid "$oid" '
-      select(.app == "last-stack" and (.repo == $repo or .repo == "last-stack") and .source_oid == $oid)
+    digest="$(jq -r --arg app "$app" --arg repo "$repo" --arg oid "$oid" '
+      select(.app == $app and (.repo == $repo or .repo == $app) and .source_oid == $oid)
       | .manifest_digest // empty
     ' "$f" 2>/dev/null || true)"
     if [ -n "$digest" ]; then
@@ -192,21 +195,101 @@ find_last_stack_manifest() {
   return 1
 }
 
-run_last_stack_artifact_upgrade() {
-  local repo="$1" id="$2" oid="$3" artifact_root="${LASTGIT_ARTIFACT_ROOT:-$HOME/.lastgit/artifacts}"
-  local digest
-  if [ "$DRY_RUN" = 1 ]; then
-    log "DRY_RUN: would promote last-stack artifact and refresh host-track repo=$repo cr=$id oid=$oid"
-    return 0
-  fi
-  digest="$(find_last_stack_manifest "$repo" "$oid" || true)"
-  if [ -z "$digest" ]; then
-    log "ERROR: last-stack artifact manifest missing repo=$repo cr=$id oid=$oid root=$artifact_root"
+# build_and_publish_artifact — a LastGit-native repo has no Forgejo `publish`
+# job to build the binary and call `lastgit artifact publish` after a merge
+# (that job lives in .forgejo/workflows/ci.yml, which only Forgejo Actions
+# runs). This is only reached for a repo whose merge came in as a LastGit CR
+# in the first place (poll_fleet reads `lastgit cr list --all-open`), so a
+# Forgejo-venue repo (disabled on LastGit) never takes this path — see
+# repo_venue(). Reproduces the same steps as that workflow's publish job:
+# checkout the exact merge oid, run .lastgit/ci.sh once to produce build
+# outputs, then `lastgit artifact publish` every .lastgit/artifacts.json entry
+# for this app.
+build_and_publish_artifact() {
+  local app="$1" repo="$2" oid="$3" artifact_root="${LASTGIT_ARTIFACT_ROOT:-$HOME/.lastgit/artifacts}"
+  local checkout entry app_paths platform digest rc
+  [ -n "$oid" ] || return 1
+  checkout="$(mktemp -d "${TMPDIR:-/tmp}/last-stack-post-merge-build.XXXXXX")"
+  trap 'rm -rf "$checkout"' RETURN
+
+  log "cloning lastdb:///$repo to build a missing $app artifact for oid=$oid ..."
+  if ! git clone -q "lastdb:///$repo" "$checkout" >>"$LOG" 2>&1; then
+    log "ERROR: git clone lastdb:///$repo failed; cannot build $app for oid=$oid"
     return 1
   fi
-  log "promoting last-stack artifact repo=$repo cr=$id oid=$oid manifest=$digest ..."
+  if ! git -C "$checkout" checkout -q --detach "$oid" >>"$LOG" 2>&1; then
+    log "ERROR: checkout $oid failed in $repo clone; cannot build $app"
+    return 1
+  fi
+  if [ ! -f "$checkout/.lastgit/artifacts.json" ]; then
+    log "ERROR: $repo@$oid has no .lastgit/artifacts.json; cannot build $app"
+    return 1
+  fi
+  app_paths="$(jq -r --arg app "$app" '
+    [.artifacts[]? | select(.app == $app and (.context == null or .context == "ci-required"))] | length
+  ' "$checkout/.lastgit/artifacts.json" 2>/dev/null || printf 0)"
+  if [ "$app_paths" = 0 ]; then
+    log "ERROR: $repo@$oid's .lastgit/artifacts.json has no ci-required entry for app=$app; cannot build"
+    return 1
+  fi
+  if [ ! -x "$checkout/.lastgit/ci.sh" ] && [ ! -f "$checkout/.lastgit/ci.sh" ]; then
+    log "ERROR: $repo@$oid has no .lastgit/ci.sh; cannot build $app"
+    return 1
+  fi
+
+  log "building $repo@$oid (.lastgit/ci.sh) to publish $app ..."
+  rc=0
+  if [ -n "$timeout_bin" ]; then
+    ( cd "$checkout" \
+      && LASTGIT_CI_CONTEXT=ci-required LASTGIT_CI_REPO="$repo" LASTGIT_CI_OID="$oid" \
+         "$timeout_bin" "$BUILD_TIMEOUT" bash .lastgit/ci.sh ) >>"$LOG" 2>&1 || rc=$?
+  else
+    ( cd "$checkout" \
+      && LASTGIT_CI_CONTEXT=ci-required LASTGIT_CI_REPO="$repo" LASTGIT_CI_OID="$oid" \
+         bash .lastgit/ci.sh ) >>"$LOG" 2>&1 || rc=$?
+  fi
+  if [ "$rc" -ne 0 ]; then
+    log "ERROR: $repo@$oid .lastgit/ci.sh exited rc=$rc; cannot publish $app"
+    return 1
+  fi
+
+  digest=""
+  while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    app_paths="$(printf '%s' "$entry" | jq -r '.paths | join(",")')"
+    platform="$(printf '%s' "$entry" | jq -r '.platform // empty')"
+    digest="$(cd "$checkout" && lastgit artifact publish \
+        --app "$app" --repo "$repo" --oid "$oid" --input . --paths "$app_paths" \
+        ${platform:+--platform "$platform"} --root "$artifact_root" --json 2>>"$LOG" \
+      | jq -r 'select(.manifest_digest != null) | .manifest_digest' | tail -n 1)"
+    [ -n "$digest" ] || { log "ERROR: publish produced no manifest_digest for $app@$repo@$oid"; return 1; }
+  done < <(jq -c --arg app "$app" \
+    '.artifacts[] | select(.app == $app and (.context == null or .context == "ci-required"))' \
+    "$checkout/.lastgit/artifacts.json")
+
+  [ -n "$digest" ] || return 1
+  printf '%s\n' "$digest"
+}
+
+run_artifact_promote_upgrade() {
+  local app="$1" repo="$2" id="$3" oid="$4" artifact_root="${LASTGIT_ARTIFACT_ROOT:-$HOME/.lastgit/artifacts}"
+  local digest
+  if [ "$DRY_RUN" = 1 ]; then
+    log "DRY_RUN: would promote $app artifact and refresh host-track repo=$repo cr=$id oid=$oid"
+    return 0
+  fi
+  digest="$(find_artifact_manifest "$app" "$repo" "$oid" || true)"
+  if [ -z "$digest" ]; then
+    log "no published $app manifest for repo=$repo oid=$oid; building from source (LastGit-native merge, no Forgejo publish job) ..."
+    digest="$(build_and_publish_artifact "$app" "$repo" "$oid" || true)"
+  fi
+  if [ -z "$digest" ]; then
+    log "ERROR: $app artifact manifest missing and build failed repo=$repo cr=$id oid=$oid root=$artifact_root"
+    return 1
+  fi
+  log "promoting $app artifact repo=$repo cr=$id oid=$oid manifest=$digest ..."
   lastgit artifact promote \
-    --app last-stack \
+    --app "$app" \
     --channel stable \
     --manifest "$digest" \
     --repo "$repo" \
@@ -214,33 +297,16 @@ run_last_stack_artifact_upgrade() {
     --context ci-required \
     --root "$artifact_root" \
     --json >/dev/null
-  log "refreshing host-track last-stack from promoted artifact ..."
-  host-track refresh last-stack
+  log "refreshing host-track $app from promoted artifact ..."
+  host-track refresh "$app"
 }
 
 run_upgrade() {
   local app="$1" repo="$2" id="$3" oid="${4:-}" ht_app
   case "$app" in
-    artifact:last-stack)
-      run_last_stack_artifact_upgrade "$repo" "$id" "$oid"
-      return
-      ;;
     artifact:*)
       ht_app="${app#artifact:}"
-      if [ "$DRY_RUN" = 1 ]; then
-        log "DRY_RUN: would host-track refresh $ht_app repo=$repo cr=$id"
-        return 0
-      fi
-      if ! command -v host-track >/dev/null 2>&1; then
-        log "ERROR: host-track not found; cannot refresh $ht_app for $repo $id"
-        return 1
-      fi
-      log "refreshing host-track artifact app=$ht_app repo=$repo cr=$id …"
-      if [ -n "$timeout_bin" ]; then
-        "$timeout_bin" "$UPGRADE_TIMEOUT" host-track refresh "$ht_app"
-      else
-        host-track refresh "$ht_app"
-      fi
+      run_artifact_promote_upgrade "$ht_app" "$repo" "$id" "$oid"
       return
       ;;
   esac
@@ -316,11 +382,8 @@ handle_departure() {
   if [ "$attempts" -ge "$MAX_ATTEMPTS" ]; then
     mark_handled "$repo" "$id"
     case "$app" in
-      artifact:last-stack)
-        log "GIVE_UP app=$app repo=$repo cr=$id after $attempts attempts (main stays merged; promote artifact for oid=$upgrade_oid, then run: host-track refresh last-stack)"
-        ;;
       artifact:*)
-        log "GIVE_UP app=$app repo=$repo cr=$id after $attempts attempts (main stays merged; run manually: host-track refresh ${app#artifact:})"
+        log "GIVE_UP app=$app repo=$repo cr=$id after $attempts attempts (main stays merged; publish+promote $repo@$upgrade_oid for app=${app#artifact:} by hand, then run: host-track refresh ${app#artifact:})"
         ;;
       *)
         log "GIVE_UP app=$app repo=$repo cr=$id after $attempts attempts (main stays merged; run manually: last-stack-safe-upgrade-cli $app)"
@@ -413,6 +476,15 @@ repo_venue() {
 }
 
 converge_one() {
+  # NOTE: the two `success)` branches below call plain `host-track refresh
+  # "$ht_app"` on the assumption that a manifest for this tip is already
+  # published to the stable channel. That assumption does not hold for a
+  # LastGit-native repo with no Forgejo publish job (see
+  # build_and_publish_artifact / run_artifact_promote_upgrade above, added
+  # for era-3's merge-departure path) — a lone ci-required success here never
+  # built or published anything. Left as a known follow-up gap rather than
+  # widened in this change: this tail only fires when a repo went quiet
+  # without a next CR to certify its tip, an edge case, not the common path.
   local repo="$1" app ht_app ht_status eligible tip state seen_file seen_tip seen_epoch now
   local attempt_key attempts ci_rc current_tip
   app="$(map_repo_to_app "$repo")"
