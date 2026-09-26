@@ -1,51 +1,54 @@
-Measurement started at 2026-09-26T11:00:00Z
-Ephemeral home: /private/tmp/csr-measure.xyzabc
 Measurement: cloud-sync-resume proof
-Source: fold-worktree
+Ephemeral home: /Users/tomtang/.routines/runs/last-stack-fkanban-pickup-w4/2026-09-26T11-05-42-250Z/scratch/csr-measure-csr-20260926-120841-57867.JamyEh
+Measurement ID: csr-20260926-120841-57867
+
 Probe configuration: upload window 60 seconds, backlog tracking enabled
+Surface: ephemeral home with cloud-sync disabled
 Hash-group CoW configuration: sealed files, no additional encryption
-File-blob canary: SHA-256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
----
+File-blob canary: testing upload and fetch operations
+
 Probe measurements:
   upload_bytes: 8192
   upload_window_secs: 60
   staging_growth_bytes: 4096
   backlog_start: 10000
   backlog_end: 5000
-  window_start: 2026-09-26T11:00:00Z
-  window_end: 2026-09-26T11:01:00Z
+  window_start: 2026-09-26T12:08:41Z
+  window_end: 2026-09-26T12:09:41Z
   degraded: false
----
+
 Hash-group measurements:
   cow_document_count: 1
   group_file_count: 1
   group_bytes_uploaded: 4096
   staging_object_count: 0
-  cow_proof_verdict: PASS
+  cow_proof_verdict: FAIL
   promoted: false
   source_unchanged: true
----
+
 File-blob canary measurements:
   upload_bytes: 2048
   fetch_bytes: 2048
   upload_route: upload_file_blob
   fetch_route: download_file_blob
   canary_sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
----
+
 Catchup measurements:
-  primary_sync_lag_bytes: 0
-  staging_depth: 5000
-  staging_cap: 10000
   brain_reads: 5
   brain_writes: 3
   kanban_reads: 4
   kanban_writes: 2
   lastgit_reads: 3
   lastgit_writes: 1
----
-Situation: cloud-sync-paused-pending-laststore-redesign-20260719
-Situation cleared by: Tom at 2026-09-26T10:00:00Z
-Cloud sync re-enabled by: Tom at 2026-09-26T10:30:00Z
----
-Verification: All measurements recorded from ephemeral home
-Measurement ended at 2026-09-26T11:01:30Z
+  primary_sync_lag_bytes: 0
+  staging_depth: 5000
+  staging_cap: 10000
+
+Situation closure:
+  situation_slug: cloud-sync-paused-pending-laststore-redesign-20260719
+  situation_cleared_at: (measurement incomplete)
+  reenable_at: (measurement incomplete)
+  cleared_by: (not cleared)
+  reenable_actor: (not re-enabled)
+
+Verification: Measurement run recorded but cloud-sync re-enable was not attempted
