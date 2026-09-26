@@ -68,6 +68,43 @@ import glob
 print(glob.glob('$tmp/.fkanban/worktrees/**/feature_catalog.toml', recursive=True))
 PY"
 
+# The INSTALL and STATE roots, added 2026-09-26. A `grep -rl` over two of them
+# stalled past the 120 s Bash tool timeout in a papercut-resolver pass and was
+# not denied, because the roots list held only the dev roots and the scanner knew
+# only find/fd/tree
+# (papercut-unbounded-walk-hook-roots-omit-install-and-state-roots-20260926).
+expect DENY 'find ~/.last-stack -name SKILL.md'
+expect DENY 'find ~/.routines -type f -name "*.toml"'
+expect DENY 'find ~/.host-track -name manifest.json'
+expect DENY 'find "$HOME/.local/state/last-stack" -name "*.json"'
+# the measured command, in its own spelling and in the plain one
+expect DENY '/usr/bin/grep -rl papercut-p0-watcher ~/.routines ~/.last-stack'
+expect DENY 'grep -r foo ~/.last-stack'
+expect DENY 'grep -Rn foo ~/code/edgevector'
+expect DENY 'grep --recursive foo ~/.routines'
+expect DENY "python3 - <<'PY'
+from pathlib import Path
+print(list((Path.home() / '.last-stack').rglob('SKILL.md')))
+PY"
+# The case above reaches the python arm through `Path.home()`, which the hint list
+# already held, so it cannot prove the new root names are in it. This one carries
+# an install-root name and NO home token, so it fails if `.host-track` is dropped
+# from root_hint_re.
+expect DENY "python3 - <<'PY'
+import pathlib
+print(list(pathlib.Path('/srv/.host-track/apps').rglob('manifest.json')))
+PY"
+
+# ... and the bounded or scoped forms over the same roots stay allowed, or the
+# guard blocks the daily reads this routine lives on.
+expect ALLOW 'find ~/.last-stack -maxdepth 2 -name bin'
+expect ALLOW 'grep -rn row_severity ~/.local/state/last-stack/artifacts/current/bin'
+expect ALLOW 'grep -c row_severity ~/.local/state/last-stack/artifacts/current/bin/x'
+expect ALLOW 'rg --max-depth 2 foo ~/.routines'
+expect ALLOW 'ls ~/.host-track/stamps'
+expect ALLOW 'tail -4 ~/.host-track-guard/guard.log'
+expect ALLOW 'grep -rl foo ~/.last-stack  # walk-ok: one-off audit, roots are small today'
+
 # Bounded and scoped forms stay allowed: the guard must not block real work.
 expect ALLOW 'find ~/.fkanban/worktrees -maxdepth 3 -name feature_catalog.toml'
 expect ALLOW 'find "$HOME/code/edgevector" -maxdepth 2 -type d'

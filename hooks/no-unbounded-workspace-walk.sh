@@ -58,7 +58,7 @@ emit_deny() {
 # Shape 2 first, on the RAW command: a heredoc body is exactly where an inline
 # Python walk lives.
 walk_re='\.rglob\(|os\.walk\(|\.glob\([^)]*\*\*|glob\.i?glob\([^)]*\*\*'
-root_hint_re='code/edgevector|\.fkanban|\.cache/edgevector-git|Path\.home\(\)|expanduser\('
+root_hint_re='code/edgevector|\.fkanban|\.cache/edgevector-git|\.last-stack|\.routines|\.host-track|local/state/last-stack|Path\.home\(\)|expanduser\('
 if printf '%s' "$cmd" | grep -qE "$walk_re" && printf '%s' "$cmd" | grep -qE "$root_hint_re"; then
   emit_deny "BLOCKED: a recursive Python walk over a workspace root.
 
@@ -99,8 +99,20 @@ probe="$(printf '%s' "$stripped" | tr -d '"'"'" \
         -e "s#\([[:space:]]\)~\([[:space:]]\)#\1$home\2#g" \
         -e "s#\([[:space:]]\)~\$#\1$home#")"
 
-scanner_re='(^|[[:space:]])(sudo[[:space:]]+)?(time[[:space:]]+)?(find|fd|tree)[[:space:]]'
-roots_re="(^|[[:space:]])${home}/(code|code/edgevector|\.fkanban|\.fkanban/worktrees|\.cache/edgevector-git)/?([[:space:]]|$)"
+# A recursive `grep` is in here because it is what an agent actually reaches
+# for when the question is "who mentions X", and `grep` has no depth flag at
+# all: the bounded form is `rg --max-depth N` or a bounded `find ... -exec`.
+# `rg` is deliberately NOT matched — it is the fast tool this host's standing
+# rules already prescribe for state roots.
+scanner_re='(^|[[:space:]])(sudo[[:space:]]+)?(time[[:space:]]+)?((find|fd|tree)[[:space:]]|(/usr/bin/)?e?grep[[:space:]]+(--recursive|-[a-zA-Z]*[rR][a-zA-Z]*)[[:space:]])'
+# The install and state roots belong here for the same reason as the dev roots,
+# and for one more: `~/.last-stack` resolves through `current` into
+# `~/.local/state/last-stack/artifacts/versions/<digest>/`, and that directory
+# is unpruned — 106 GiB across 15 apps when it was last measured
+# (papercut-host-track-apps-versions-unbounded-retention). `~/.last-stack` is a
+# compat root of mostly symlinks, so BOTH spellings have to match: the one
+# agents type and the realpath it resolves to.
+roots_re="(^|[[:space:]])${home}/(code|code/edgevector|\.fkanban|\.fkanban/worktrees|\.cache/edgevector-git|\.last-stack|\.routines|\.host-track|\.local/state/last-stack)/?([[:space:]]|$)"
 depth_re='-maxdepth|--max-depth|(^|[[:space:]])-(d|L)[[:space:]]*[0-9]'
 
 # One segment per simple command, so a bounded find on one side of a pipe does
@@ -112,13 +124,17 @@ if [ -n "$hit" ]; then
   $hit
 
 ~/code/edgevector and ~/.fkanban/worktrees hold ~20 checkouts, each with a
-cargo target/ tree. A depth-free find takes minutes here, the task times out,
-and the timeout reads as a product failure
-(brain papercut-agent-zero-llm-cli-bash-python-heredoc-rglob).
+cargo target/ tree, and ~/.last-stack / ~/.host-track / ~/.local/state/last-stack
+resolve into unpruned artifact version trees (106 GiB across 15 apps when last
+measured). A depth-free walk takes minutes here, the task times out, and the
+timeout reads as a product failure
+(brain papercut-agent-zero-llm-cli-bash-python-heredoc-rglob,
+papercut-unbounded-walk-hook-roots-omit-install-and-state-roots-20260926).
 
 Bound it:
   find <root> -maxdepth 3 -name <file>
   fd --max-depth 3 <file> <root>
+  rg --max-depth 3 --max-filesize 1M <pattern> <root>   (grep has NO depth flag)
 or resolve the file without a walk:
   last-stack-locate-file --name <file> --env <VAR> --candidate <known path> \\
     --root <one repo or worktree> --maxdepth 3

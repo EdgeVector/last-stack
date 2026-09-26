@@ -42,6 +42,12 @@ the timeout read as a product failure. Brain:
   bash-heredoc Python nest in `bin/`. A deliberate bounded walk states its
   bound on the line: `# walk-ok: <reason>`.
 - Under Claude Code the hook `~/.claude/hooks/no-unbounded-workspace-walk.sh`
-  denies a depth-free `find`/`fd`/`tree` over a workspace root, and a Python
-  `rglob`/`os.walk` over one. The deny message hands back the bounded form.
+  denies a depth-free `find`/`fd`/`tree`/recursive-`grep` over a workspace, INSTALL
+  or STATE root — `~/code`, `~/code/edgevector`, `~/.fkanban`,
+  `~/.cache/edgevector-git`, `~/.last-stack`, `~/.routines`, `~/.host-track`,
+  `~/.local/state/last-stack` — and a Python `rglob`/`os.walk` over one. The
+  install and state roots resolve into unpruned artifact version trees, so a
+  depth-free walk there costs what one over the checkouts does. `grep` has no
+  depth flag at all: the bounded form is `rg --max-depth N` (`rg` itself is not
+  matched) or a bounded `find`. The deny message hands back the bounded form.
   Escape hatch, with a reason: `# walk-ok: <reason>`.
