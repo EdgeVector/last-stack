@@ -23,6 +23,23 @@ if grep -E 'curl_args=\(-fsS|curl_args=\(-f' "$API" >/dev/null 2>&1; then
   exit 1
 fi
 
+# A fake situations CLI keeps the merge preflight guard hermetic. It answers
+# BLOCKED for EdgeVector/held and OK for every other repo.
+SIT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/forge-api-sit.XXXXXX")"
+cat >"$SIT_DIR/situations" <<'SH'
+#!/usr/bin/env bash
+for a in "$@"; do
+  if [ "$a" = EdgeVector/held ]; then
+    echo "BLOCKED: merge-pr by test-hold"
+    echo "  Hold merges for the test."
+    exit 3
+  fi
+done
+echo "OK: merge-pr"
+SH
+chmod +x "$SIT_DIR/situations"
+export LAST_STACK_SITUATIONS_BIN="$SIT_DIR/situations"
+
 PORT_FILE="$(mktemp "${TMPDIR:-/tmp}/forge-api-port.XXXXXX")"
 LOG_FILE="$(mktemp "${TMPDIR:-/tmp}/forge-api-mock.XXXXXX")"
 BODY409='{"message":"merge blocked by required status checks","errors":["ci-required is pending"],"pending_merge":null}'
@@ -34,6 +51,7 @@ cleanup() {
     wait "$MOCK_PID" 2>/dev/null || true
   fi
   rm -f "$PORT_FILE" "$LOG_FILE"
+  rm -rf "$SIT_DIR"
 }
 trap cleanup EXIT
 
@@ -284,6 +302,36 @@ if [[ "$upd_force" != *'"ok":true'* ]]; then
   echo "FAIL: LAST_STACK_FORGE_UPDATE_BRANCH_FORCE=1 should pass through, got: $upd_force" >&2
   exit 1
 fi
+
+# --- Case 7: merge POST honours the Situations preflight ---
+set +e
+held_out="$("$API" --method POST --data '{"Do":"merge"}' repos/EdgeVector/held/pulls/7/merge 2>&1 >/dev/null)"
+rc=$?
+set -e
+if [[ "$rc" -ne 3 || "$held_out" != *"REFUSED merge on EdgeVector/held"* || "$held_out" != *"test-hold"* ]]; then
+  echo "FAIL: a BLOCKED preflight should refuse the merge with exit 3, got rc=$rc: $held_out" >&2
+  exit 1
+fi
+if grep -q 'POST /api/v1/repos/EdgeVector/held/pulls/7/merge' "$LOG_FILE"; then
+  echo "FAIL: the refused merge still reached the forge" >&2
+  exit 1
+fi
+# Cancelling a scheduled merge is always allowed.
+set +e
+LAST_STACK_SITUATIONS_BIN="$SIT_DIR/situations" "$API" --method DELETE repos/EdgeVector/held/pulls/7/merge >/dev/null 2>"$SIT_DIR/del.err"
+set -e
+if grep -q 'REFUSED' "$SIT_DIR/del.err"; then
+  echo "FAIL: DELETE (cancel) must not be guarded" >&2
+  exit 1
+fi
+# Override and a missing CLI both pass through to the forge.
+set +e
+LAST_STACK_FORGE_MERGE_PREFLIGHT_SKIP=1 "$API" --method POST --data '{"Do":"merge"}' repos/EdgeVector/held/pulls/8/merge >/dev/null 2>&1
+LAST_STACK_SITUATIONS_BIN="$SIT_DIR/absent" "$API" --method POST --data '{"Do":"merge"}' repos/EdgeVector/held/pulls/9/merge >/dev/null 2>&1
+set -e
+grep -q 'POST /api/v1/repos/EdgeVector/held/pulls/8/merge' "$LOG_FILE" || { echo "FAIL: skip override should reach the forge" >&2; exit 1; }
+grep -q 'POST /api/v1/repos/EdgeVector/held/pulls/9/merge' "$LOG_FILE" || { echo "FAIL: missing situations CLI should fail open" >&2; exit 1; }
+echo "ok last-stack-forge-api merge preflight guard"
 
 echo "ok last-stack-forge-api update-branch pending guard"
 echo "ok last-stack-forge-api error-body + 2xx path + 405 mergeable partition + --jq flag guard + raw strings"

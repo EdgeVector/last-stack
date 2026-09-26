@@ -258,6 +258,63 @@ jq -e '[.reap_plan[] | select(.number==14)][0] | .may_close==false and .point.me
   || { echo "FAIL reap-plan must not close a PR the point read shows merged"; cat "$tmp/plan.json"; exit 1; }
 echo "ok   reap-plan pairs each over-age PR with its guard verdict and a fresh point read"
 
+# 9e. a GREEN unmerged PR: armed is a defect, unarmed is somebody's decision
+#     Regression 2026-09-25: EdgeVector/routines#36 was green and mergeable for
+#     103 minutes because its loom land-card execution PARKED ("review escalated
+#     at cap") and its card sat in needs_human. Nobody armed auto-merge, so
+#     nothing would ever merge it — and the ledger filed a p0 pipeline row that
+#     could never close, while `merge-green` on the same PR answered
+#     `green-not-armed` ("Nobody asked for a merge"). The two halves of this
+#     helper have to agree.
+echo '[]' | put "repos/$R/pulls?state=open&limit=50"
+sync --apply   # drain the tracked rows from the cases above
+pulls_open 20 | put "repos/$R/pulls?state=open&limit=50"
+put "repos/$R/commits/head20/status" <<'J'
+{"statuses":[{"context":"Forge CI / ci-required (pull_request)","status":"success","created_at":"2026-09-22T10:10:00Z"},
+             {"context":"Forge CI / Mini (pull_request)","status":"success","created_at":"2026-09-22T10:20:00Z"}]}
+J
+# the timeline says nobody ever armed a schedule
+put "repos/$R/issues/20/timeline?limit=50&page=1" <<'J'
+[{"type":"comment","created_at":"2026-09-22T10:30:00Z"}]
+J
+"$LEDGER" scan --repo "$R" --json >"$tmp/scan.json"
+jq -e '.prs[0].shape == "green-unmerged" and .prs[0].merge_intent == "unarmed"
+       and .prs[0].stuck == false and .prs[0].stuck_excluded == "green-unarmed"' "$tmp/scan.json" >/dev/null   || { echo "FAIL an unarmed green PR must not be stuck"; cat "$tmp/scan.json"; exit 1; }
+jq -e '.heartbeat_fields | test("stuck=0 ") and test("green_unarmed=fold#20")' "$tmp/scan.json" >/dev/null   || { echo "FAIL heartbeat must RECORD the unarmed green PR"; jq -r .heartbeat_fields "$tmp/scan.json"; exit 1; }
+: >"$tmp/brain/calls.log"
+sync --apply
+jq -e '([.ledger.actions[] | select(.action=="green-unarmed" and .slug=="papercut-pipeline-forge-fold-pr-20")] | length) == 1
+       and ([.ledger.actions[] | select(.action=="file")] | length) == 0' "$tmp/out.json" >/dev/null   || { echo "FAIL sync must name the unarmed green PR and file nothing"; cat "$tmp/out.json"; exit 1; }
+[ ! -f "$tmp/brain/papercut-pipeline-forge-fold-pr-20.status" ] || { echo "FAIL filed a p0 for a PR nobody armed"; exit 1; }
+echo "ok   a green PR nobody armed is recorded, not filed"
+
+# same PR, now ARMED: Forgejo never fires a schedule armed after green, so this
+# one IS stuck, and its evidence line has to say which repair applies.
+put "repos/$R/issues/20/timeline?limit=50&page=1" <<'J'
+[{"type":"pull_scheduled_merge","created_at":"2026-09-22T10:30:00Z"}]
+J
+sync --apply
+jq -e '.ledger.actions[0].action == "file" and .ledger.actions[0].slug == "papercut-pipeline-forge-fold-pr-20"' "$tmp/out.json" >/dev/null   || { echo "FAIL an armed green PR must be filed"; cat "$tmp/out.json"; exit 1; }
+[ "$(cat "$tmp/brain/papercut-pipeline-forge-fold-pr-20.status")" = open ] || { echo "FAIL armed green PR not filed"; exit 1; }
+grep -Fq 'shape=green-unmerged intent=armed' "$tmp/brain/calls.log"   || { echo "FAIL evidence must name the merge intent"; cat "$tmp/brain/calls.log"; exit 1; }
+echo "ok   an armed green PR is filed and its evidence names the intent"
+
+# an UNREADABLE timeline must not silence the row
+put "repos/$R/issues/20/timeline?limit=50&page=1" <<'J'
+{"message":"boom"}
+J
+"$LEDGER" scan --repo "$R" --json >"$tmp/scan.json"
+jq -e '.prs[0].merge_intent == "unknown" and .prs[0].stuck == true' "$tmp/scan.json" >/dev/null   || { echo "FAIL an unreadable timeline must stay stuck"; cat "$tmp/scan.json"; exit 1; }
+echo "ok   an unreadable arm probe stays stuck"
+
+# a red PR never pays for the timeline read
+rm -f "$fx/repos_EdgeVector_fold_issues_20_timeline?limit=50&page=1.json"       "$fx/repos_EdgeVector_fold_issues_20_timeline_limit_50_page_1.json"
+pulls_open 21 | put "repos/$R/pulls?state=open&limit=50"
+cp "$fx/repos_EdgeVector_fold_commits_head7_status.json" "$fx/repos_EdgeVector_fold_commits_head21_status.json"
+"$LEDGER" scan --repo "$R" --json >"$tmp/scan.json"
+jq -e '.prs[0].shape == "red" and .prs[0].merge_intent == "" and .prs[0].stuck == true' "$tmp/scan.json" >/dev/null   || { echo "FAIL a red PR must not read the arm state"; cat "$tmp/scan.json"; exit 1; }
+echo "ok   merge_intent is read only for a green PR"
+
 # 10. the prompt uses the ledger and forbids per-state slugs
 grep -Fq 'last-stack-pipeline-forge-pr-ledger" reap-plan' "$ROOT/routines/pr-reaper.md" \
   || { echo "FAIL pr-reaper.md must read the reap plan"; exit 1; }

@@ -314,6 +314,7 @@ ci_test tests/last-stack-pr-reaper-lifecycle-safety.sh
 ci_test tests/last-stack-factory-hardening.sh
 ci_test tests/last-stack-milestone-driver-snapshot.sh
 ci_test tests/last-stack-factory-ready-buffer-activation.sh
+ci_test tests/last-stack-plistbuddy-compat.sh
 ci_test tests/morning-sync-live-human-gate-reconcile.sh
 # Sentry issue pagination in the morning digest. Held out of the gate until
 # 2026-09-06 because it failed printing nothing at all: it stubbed `fbrain`
@@ -678,6 +679,7 @@ ci_test tests/last-stack-feature-portfolio-admission.sh
 ci_test tests/last-stack-fkanban-compat-skills.sh
 ci_test tests/last-stack-forge-json-jq.sh
 ci_test tests/last-stack-forge-runner-lanes.sh
+ci_test tests/last-stack-forge-ci-pc-route.sh
 ci_test tests/last-stack-forge-runner-watchdog.sh
 ci_test tests/last-stack-gh-pr-queue-state.sh
 ci_test tests/last-stack-git-checkout-freshness.sh
