@@ -347,9 +347,13 @@ install-side safe-upgrade so PATH tracks main without stuffing that into CI.
   Discord notify) when the binary is on PATH
 - **Detects merges** like `notify-discord.sh`: fleet open-CR index → open→gone →
   `cr view` → if `state=merged` and base is `main` and repo is mapped → upgrade
-- **Mapped apps:** last-stack / brain / situations / fkanban|kanban (app `kanban`) →
-  `host-track refresh` (artifact + `track_gate_main`); routines, lastsecrets,
-  configurations, search → `host-track refresh` (artifact + track_gate_main)
+- **Mapped apps:** last-stack / brain / situations / fkanban|kanban (app `kanban`) /
+  routines / lastsecrets / configurations / search / loom → find the merge
+  oid's published manifest; if none exists yet (a LastGit-native repo has no
+  Forgejo `publish` job to have made one), clone `lastdb:///<repo>`, run
+  `.lastgit/ci.sh`, and `lastgit artifact publish` it from source; then
+  `lastgit artifact promote --gate lastgit` and `host-track refresh` (artifact
+  + `track_gate_main`)
 - **Failure:** log + retry (max 3); **does not unmerge**; operator can run
   `host-track refresh <app>` (artifact) or `last-stack-safe-upgrade-cli <app>`
   (local-safe) manually
