@@ -179,10 +179,17 @@ change '.milestones.release.milestone.proof_card="card-a"'
 reject 'proof card already linked' file_proof release-proof
 change '.milestones.release.milestone.proof_card="" | .milestones.release.proof_verdict="not_required"'
 reject 'proof not required' file_proof release-proof
-change '.milestones.release.proof_verdict="pending"'
+change '.milestones.release.proof_verdict="pending" | .report.work_queue=[{"slug":"release","action":"complete_proof"},{"slug":"release","action":"decompose"}]'
+capture >/dev/null
 file_proof release-proof
 grep -q 'release-proof --kind validation' "$FIXTURE_WRITES" || fail 'proof card not filed'
-reject 'second proof card over cap' file_proof release-proof-2
+# The proof card does not spend SAFETY_CAP=1: the PR slice still files after it.
+file_card release-slice
+grep -q 'release-slice' "$FIXTURE_WRITES" || fail 'proof card spent the PR safety cap'
+reject 'second proof card for one milestone' file_proof release-proof-2
+grep -q 'proof-card-already-filed-this-run slug=release' "$TMP/reject.err" || fail 'duplicate proof refusal not explicit'
+reject 'second PR card over cap' file_card release-slice-2
+grep -q 'safety-cap-exhausted cap=1' "$TMP/reject.err" || fail 'PR cap refusal not explicit'
 change '.milestones.release.milestone.proof_status="passing" | .milestones.release.proof_verdict="passing" | .report.work_queue=[{"slug":"release","action":"decompose"},{"slug":"release","action":"complete_proof"},{"slug":"release","action":"promote","promoteable":["card-a"]}]'
 
 # Uncertain failures consume the reservation; never retry through a fresh snapshot.

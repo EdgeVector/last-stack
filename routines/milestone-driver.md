@@ -66,8 +66,10 @@ Ready-buffer keeps `routines run last-stack-milestone-driver`.
 - **SAFETY_CAP=8** new or promoted `Kind: pr` cards **total** this run by
   default. Set `safety_cap="${MILESTONE_DRIVER_SAFETY_CAP:-8}"` during setup.
   The ready-buffer controller sets this value to 1. Reject values outside 1–8.
-  Ready-buffer rule: Create at most **one Kanban card** per run. The controller
-  enforces that rule with `safety_cap=1`. Other passes can use `safety_cap`.
+  Ready-buffer rule: Create at most **one `Kind: pr` card** per run. The
+  controller enforces that rule with `safety_cap=1`. Other passes can use
+  `safety_cap`. A `file_proof_card` validation card costs 0 against the cap;
+  the guard permits one proof card per milestone per run.
 - Keep `validation` / `capstone` / `tracker` / `meta` / `program` out of `todo`.
 - **New unblocked `Kind: pr` → `todo`.** Backlog only if dep-held.
 - Full briefs only: `## GOAL` + `## END STATE` + STEPS + VERIFY + bare `Repo:` /
