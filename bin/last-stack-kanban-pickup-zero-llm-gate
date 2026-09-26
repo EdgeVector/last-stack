@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# last-stack-kanban-pickup-zero-llm-gate: pickup gate + land-card kickoff in one
+# routinesd gate_command. Set it as gate_command on every pickup worker entry.
+#
+# Why (kanban-factory-manager, 2026-09-26T15:10Z): the pickup lane prompt
+# (loom-land-card-pickup-prompt.md) is three fixed shell commands. When grok
+# hit its usage limit, every pickup lane fell back to codex. Codex kills a
+# `nohup ... &` child when its shell call ends, and its seatbelt denies
+# launchctl, so every codex-started land-card walk died before loom recorded
+# an execution (3 walks, 14:52-15:00Z). Measured: nohup sleep under codex exec
+# died; the same under perl setsid survived but stays sandboxed.
+# routinesd runs gate_command outside any harness sandbox, in its own process
+# group (spawn detached:true, killed only on gate timeout), with
+# ROUTINES_RUN_DIR set. So the gate can run the kickoff itself, and the lane
+# needs no LLM and no harness at all.
+#
+# Exit: 0 after a kickoff (the harness is skipped; the trailer is the outcome).
+# When the stock gate skips, its own status passes through (0 noop, 2 config).
+# 2 when ROUTINES_RUN_DIR is unset: every worker would share one state file.
+# Papercut: papercut-codex-pickup-lane-kills-detached-loom-walk-20260926.
+set -uo pipefail
+export PATH="$HOME/.local/bin:$PATH"
+
+stock_gate="${LAST_STACK_PICKUP_GATE:-$HOME/.last-stack/bin/last-stack-kanban-pickup-gate}"
+kick="${LOOM_KICKOFF:-$HOME/.host-track/apps/loom/current/scripts/loom-land-card-kickoff.sh}"
+log_root="${LOOM_KICKOFF_LOG_ROOT:-$HOME/.loom/kickoffs}"
+heartbeat_bin="${LAST_STACK_HEARTBEAT_BIN:-$HOME/.last-stack/bin/last-stack-brain-append-heartbeat}"
+
+worker_id=""
+if [ -n "${ROUTINES_RUN_DIR:-}" ]; then
+  worker_id="$(basename "$(dirname "$ROUTINES_RUN_DIR")")"
+fi
+if [ -z "$worker_id" ]; then
+  echo "last-stack-kanban-pickup-zero-llm-gate: ROUTINES_RUN_DIR is unset; refusing to share the default worker state file" >&2
+  printf 'ROUTINE_RESULT outcome=error detail=no-worker-id\n'
+  exit 2
+fi
+
+run_kickoff() {
+  out="$(mktemp "${TMPDIR:-/tmp}/zero-llm-kick.XXXXXX")"
+  "$kick" >"$out" 2>&1 </dev/null
+  grep -v "^ROUTINE_RESULT " "$out" || true
+  line="$(grep -E '^ROUTINE_RESULT ' "$out" | tail -1 | sed 's/^ROUTINE_RESULT //')"
+  [ -n "$line" ] || line="outcome=error detail=kickoff-printed-no-trailer"
+  "$heartbeat_bin" --line "kanban-pickup $(date -u +%Y-%m-%dT%H:%M:%SZ) land-card $line" >/dev/null 2>&1 || true
+  printf 'ROUTINE_RESULT %s\n' "$line"
+  exit 0
+}
+
+# A worker that holds a walk state file must resume or report it on every
+# fire, even when the board has no ready card. The stock gate skips on
+# ready=0, which left dead walks unresumed.
+if [ -f "$log_root/$worker_id.current" ]; then
+  run_kickoff
+fi
+
+"$stock_gate"
+rc=$?
+case "$rc" in
+  10) run_kickoff ;;
+  *) exit "$rc" ;;
+esac
