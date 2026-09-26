@@ -635,22 +635,11 @@ Re-run:
   | jq '{counts, work_queue, action_counts}'
 ```
 
-**Portfolio pass record (best-effort, never blocking):** feeds
-`last-stack-north-star-driver`'s auto-refill trigger
-(`decision-2026-09-03-portfolio-auto-refill-from-ranking`) with this pass's
-per-admitted-North-Star idle counts. One Brain point get, one append to a
-local pass-history file — never a Brain list, never a Kanban write.
-
-```bash
-"${LAST_STACK_ROOT:-$HOME/.last-stack}/bin/last-stack-milestone-driver-snapshot" verify \
-  --run-dir "${ROUTINES_RUN_DIR:?}" --run-id "${ROUTINES_RUN_ID:?}" \
-  --artifact "${ROUTINES_RUN_DIR:?}/milestone-driver/gap-report.json" >/dev/null || exit 0
-"$last_stack/bin/last-stack-portfolio-pass-record" \
-  --gap-report "${ROUTINES_RUN_DIR:?}/milestone-driver/gap-report.json" --json || true
-```
-
-A failure here must never fail this run; it only affects a future
-north-star-driver pass's auto-refill visibility.
+**Portfolio pass record:** the zero-LLM gate
+(`last-stack-milestone-driver-gate`) already wrote this pass's record for
+`last-stack-north-star-driver`'s auto-refill trigger before dispatch. Do not
+run `last-stack-portfolio-pass-record` here; a second record per pass would
+let the two-pass trigger fire after one real pass.
 
 Write 5–15 lines to automation memory. Heartbeat with exactly this command
 (fill in the counts; do not add other flags):
