@@ -86,6 +86,21 @@ class H(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"number": 501, "state": "open", "head": {"sha": "aaaa501"}}))
         elif self.path.endswith("/pulls/502"):
             self._send(200, json.dumps({"number": 502, "state": "open", "head": {"sha": "bbbb502"}}))
+        elif self.path.endswith("/pulls/503"):
+            self._send(200, json.dumps({"number": 503, "state": "open", "head": {"sha": "cccc503"},
+                                        "merge_base": "mb503", "base": {"ref": "main"}}))
+        elif self.path.endswith("/pulls/504"):
+            self._send(200, json.dumps({"number": 504, "state": "open", "head": {"sha": "dddd504"},
+                                        "merge_base": "mb504", "base": {"ref": "main"}}))
+        elif self.path.endswith("/contents/.forgejo/workflows?ref=mb503"):
+            self._send(200, json.dumps([{"name": "ci.yml", "sha": "old-macos-arm64"}]))
+        elif self.path.endswith("/contents/.forgejo/workflows?ref=mb504"):
+            self._send(200, json.dumps([{"name": "ci.yml", "sha": "new-pc-linux"}]))
+        elif self.path.endswith("/contents/.forgejo/workflows?ref=main"):
+            self._send(200, json.dumps([{"name": "ci.yml", "sha": "new-pc-linux"}]))
+        elif self.path.endswith("/commits/cccc503/status") or self.path.endswith("/commits/dddd504/status"):
+            self._send(200, json.dumps({"state": "pending", "statuses": [
+                {"context": "Forge CI / ci-required (pull_request)", "status": "pending"}]}))
         elif self.path.endswith("/commits/aaaa501/status"):
             self._send(200, json.dumps({"state": "pending", "statuses": [
                 {"context": "Forge CI / ci-required (pull_request)", "status": "pending"}]}))
@@ -302,6 +317,23 @@ if [[ "$upd_force" != *'"ok":true'* ]]; then
   echo "FAIL: LAST_STACK_FORGE_UPDATE_BRANCH_FORCE=1 should pass through, got: $upd_force" >&2
   exit 1
 fi
+# papercut-forge-update-branch-guard-blocks-lane-move-20260926: main changed
+# .forgejo/workflows after the PR branched, so the pending run sits on a stale
+# lane. The update passes. An unchanged workflow listing still refuses.
+upd_lane="$("$API" --method POST repos/EdgeVector/fold/pulls/503/update 2>"$LOG_FILE.503.err")"
+if [[ "$upd_lane" != *'"ok":true'* ]] || ! grep -q 'update-branch allowed' "$LOG_FILE.503.err"; then
+  echo "FAIL: update-branch should pass when main changed the workflows, got: $upd_lane $(cat "$LOG_FILE.503.err")" >&2
+  exit 1
+fi
+set +e
+upd_same="$("$API" --method POST repos/EdgeVector/fold/pulls/504/update 2>&1 >/dev/null)"
+rc=$?
+set -e
+if [[ "$rc" -ne 3 || "$upd_same" != *"REFUSED update-branch"* ]]; then
+  echo "FAIL: update-branch with unchanged workflows and a pending check should refuse, got rc=$rc: $upd_same" >&2
+  exit 1
+fi
+echo "ok last-stack-forge-api update-branch stale-workflow exception"
 
 # --- Case 7: merge POST honours the Situations preflight ---
 set +e
